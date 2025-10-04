@@ -40,6 +40,7 @@ pub enum Hoon {
 
     BarCen(Option<()>, HashMap<Term, Box<Tome>>),
     BarTis(Box<Hoon>, Box<Hoon>),
+    BarHep(Box<Hoon>),
 
     BucTis(Term, Box<Hoon>),
 
@@ -48,8 +49,15 @@ pub enum Hoon {
 
     TisDot(Box<Hoon>, Box<Hoon>, Box<Hoon>),
     TisMic(Box<Hoon>, Box<Hoon>, Box<Hoon>),
+    TisFas(Box<Hoon>, Box<Hoon>, Box<Hoon>),
+    TisWut(Box<Hoon>, Box<Hoon>, Box<Hoon>, Box<Hoon>),
+    TisCol(Vec<((), Box<Hoon>)>, Box<Hoon>),
 
     WutCol(Box<Hoon>, Box<Hoon>, Box<Hoon>),
+    WutDot(Box<Hoon>, Box<Hoon>, Box<Hoon>),
+    WutGar(Box<Hoon>, Box<Hoon>),
+    WutZap(Box<Hoon>),
+
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

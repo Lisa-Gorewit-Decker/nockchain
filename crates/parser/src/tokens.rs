@@ -138,8 +138,6 @@ pub enum Token<'a> {
     WutBarIrregular,
     #[token("&(")]
     WutPamIrregular,
-    #[token("!")]
-    WutZapIrregular,
 
     #[token("=>")]
     TisGar,
@@ -303,8 +301,8 @@ pub enum Token<'a> {
     ZapGal,
     #[token("!;")]
     ZapMic,
-    #[token("!=")]
-    ZapTis,
+    // #[token("!=")]     this conflicts with  WutZapIrregular ->  !  ->  !=(1 2)
+    // ZapTis,
     #[token("!?")]
     ZapWut,
     #[token("!@")]
@@ -361,6 +359,8 @@ pub enum Token<'a> {
     Col,
     #[token(",")]
     Con,
+    #[token("!")]  //  WutZapIrregular/ZapTis
+    Zap,
 
     #[regex(r"[0-9]{1,3}(?:\.(?: *\n+ *| {2,})?[0-9]{3})*", |lex| lex.slice())]
     Number(&'a str),
