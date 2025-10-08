@@ -320,13 +320,21 @@ pub enum Token<'a> {
     MicColIrregular,
     #[token("~(")]
     CenSigIrregular,
-    #[regex(r"[a-zA-Z_][a-zA-Z0-9_-]*\(", priority = 1)]
-    CenTisIrregular,
+    #[regex(r"[a-zA-Z_$][a-zA-Z0-9]*\(", |lex| {  //  foo(
+        let slice = lex.slice();
+        slice.strip_suffix('(').unwrap_or(slice)
+    })]
+    CenTisIrregular(&'a str),
 
-    #[regex("'[ -~]*'")]
-    Cord,
-    #[regex("\"[ -~]*\"")]
-    Tape,
+    #[regex(r"[+-][<>](?:[+-][<>])*[+-]?", |lex| lex.slice())]
+    LarkExpression(&'a str),  //  +>- expression, with 2 or more chars,
+                              //  single chars will be matched by another rule
+
+    #[regex(r#""[^"]*""#, |lex| &lex.slice()[1..lex.slice().len() - 1])]
+    Tape(&'a str),
+
+    #[regex(r#"'[^']*'"#, |lex| &lex.slice()[1..lex.slice().len() - 1])]
+    Cord(&'a str),
 
     #[token("==")]
     TisTis,
@@ -343,22 +351,46 @@ pub enum Token<'a> {
     #[regex(r" ")]
     Ace,
 
+    #[token("%")]
+    Cen,
+    #[token(">")]  //  we are using this for gate calls
+    Gar,
+    #[token("<")]
+    Gal,
     #[token("(")]  //  we are using this for gate calls
     Pal,
     #[token(")")]
     Par,
     #[token("+")]
     Lus,
+    #[token("-")]
+    Hep,
     #[token("[")]
     Sel,
     #[token("]")]
     Ser,
+    #[token("~")]
+    Sig,
     #[token("=")]
     Tis,
     #[token(":")]
     Col,
     #[token(",")]
-    Con,
+    Com,
+    #[token("^")]
+    Ket,
+    #[token("|")]
+    Bar,
+    #[token("/")]
+    Fas,
+    #[token("\\")]
+    Bas,
+    #[token("&")]
+    Pam,
+    #[token(".")]
+    Dot,
+    #[token("$")]  //  maybe buc should match as Name
+    Buc,
     #[token("!")]  //  WutZapIrregular/ZapTis
     Zap,
 
@@ -368,25 +400,16 @@ pub enum Token<'a> {
     #[regex(r"@[a-zA-Z0-9]*", |lex| lex.slice())]
     Aura(&'a str),
 
-    #[regex(r"%[a-zA-Z0-9]+", |lex| lex.slice())]
-    Term(&'a str),
+    // #[regex(r"%[a-z][a-zA-Z0-9-]*", |lex| lex.slice())]
+    // Term(&'a str),
 
-    #[regex(r"[a-zA-Z$][a-zA-Z0-9-$]*", |lex| lex.slice())]
+    #[regex(r"[a-zA-Z][a-zA-Z0-9-]*", |lex| lex.slice())]
     Name(&'a str),
 }
-
 impl<'a> fmt::Display for Token<'a> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Token::Name(s) => write!(f, "Name({})", s),
-            Token::LusLus => write!(f, "LusLus"),
-            Token::LusBar => write!(f, "LusBar"),
-            Token::ZapZap => write!(f, "ZapZap"),
-            Token::Gap => write!(f, "Gap"),
-            Token::BarCen => write!(f, "BarCen"),
-            Token::HepHep => write!(f, "HepHep"),
-            _ =>  write!(f, ""),
-            // Add other variants as needed
-        }
+        let debug_str = format!("{:?}", self);
+        let token_name = debug_str.split('(').next().unwrap_or(&debug_str);
+        write!(f, "{}", token_name)
     }
 }
