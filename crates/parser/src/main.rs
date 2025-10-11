@@ -65,19 +65,22 @@ where
     .map(|h| Hoon::WutZap(Box::new(h)))
 }
 
-// fn kettis_irregular_parser<'tokens, 'src: 'tokens, I>(
-//     wide: impl Parser<'tokens, I, Hoon, extra::Err<Rich<'tokens, Token<'src>>>> + Clone + 'tokens,
-// ) -> impl Parser<'tokens, I, Hoon, extra::Err<Rich<'tokens, Token<'src>>>> + 'tokens
-// where
-//     I: ValueInput<'tokens, Token = Token<'src>, Span = SimpleSpan>,
-// {
-//     just(Token::KetTisIrregular)
-//         .ignore_then(hoon.clone())
-//         .then_ignore(just(Token::Ace))
-//         .then(hoon.clone())
-//         .then_ignore(just(Token::Par))
-//         .map(|(p, q)| Hoon::KetT(Box::new(p), Box::new(q)))
-// }
+fn kettis_irregular_parser<'tokens, 'src: 'tokens, I>(
+    hoon_wide: impl Parser<'tokens, I, Hoon, extra::Err<Rich<'tokens, Token<'src>>>> + Clone + 'tokens,
+) -> impl Parser<'tokens, I, Hoon, extra::Err<Rich<'tokens, Token<'src>>>> + 'tokens
+where
+    I: ValueInput<'tokens, Token = Token<'src>, Span = SimpleSpan>,
+{
+    select! {
+        Token::Name(str) => {
+            let wing = vec![Limb::Term(str.to_string())];
+            Hoon::Wing(wing)   //  TODO convert $hoon into $skin
+        }
+    }
+    .then_ignore(just(Token::Tis))
+    .then(hoon_wide.clone())
+    .map(|(p, q)| Hoon::KetTis(Box::new(p), Box::new(q)))
+}
 
 fn dottis_irregular_parser<'tokens, 'src: 'tokens, I>(
     hoon: impl Parser<'tokens, I, Hoon, extra::Err<Rich<'tokens, Token<'src>>>> + Clone + 'tokens,
@@ -136,48 +139,47 @@ where
     ))
 }
 
+fn coltar_irregular_parser<'tokens, 'src: 'tokens, I>(
+    wide: impl Parser<'tokens, I, Hoon, extra::Err<Rich<'tokens, Token<'src>>>> + Clone + 'tokens
+) -> impl Parser<'tokens, I, Hoon, extra::Err<Rich<'tokens, Token<'src>>>> + 'tokens
+where
+    I: ValueInput<'tokens, Token = Token<'src>, Span = SimpleSpan>,
+{
+    wide.clone()
+        .separated_by(just(Token::Ace))
+        .at_least(1)
+        .collect::<Vec<_>>()
+        .delimited_by(just(Token::Sel), just(Token::Ser))
+        .map(|hoons| Hoon::ColTar(hoons))
+}
+
 fn buctis_irregular_parser<'tokens, 'src: 'tokens, I>(
-    spec: impl Parser<'tokens, I, Spec, extra::Err<Rich<'tokens, Token<'src>>>> + Clone + 'tokens,
+    spec_wide: impl Parser<'tokens, I, Spec, extra::Err<Rich<'tokens, Token<'src>>>> + Clone + 'tokens,
 ) -> impl Parser<'tokens, I, Spec, extra::Err<Rich<'tokens, Token<'src>>>> + 'tokens
 where
     I: ValueInput<'tokens, Token = Token<'src>, Span = SimpleSpan>,
 {
     select! { Token::Name(n) => n }
         .then_ignore(just(Token::Tis))
-        .then(spec.clone())
+        .then(spec_wide.clone())
         .map(|(n, s)| Spec::BucTis(Skin::Term(n.to_string()), Box::new(s)))
 }
 
-fn buccol_wide_parser<'tokens, 'src: 'tokens, I>(
-    spec: impl Parser<'tokens, I, Spec, extra::Err<Rich<'tokens, Token<'src>>>> + Clone + 'tokens,
+fn buccol_irregular_parser<'tokens, 'src: 'tokens, I>(
+    spec_wide: impl Parser<'tokens, I, Spec, extra::Err<Rich<'tokens, Token<'src>>>> + Clone + 'tokens,
 ) -> impl Parser<'tokens, I, Spec, extra::Err<Rich<'tokens, Token<'src>>>> + 'tokens
 where
     I: ValueInput<'tokens, Token = Token<'src>, Span = SimpleSpan>,
 {
-    spec.clone()
+    spec_wide.clone()
         .separated_by(just(Token::Ace))
         .at_least(1)
         .collect::<Vec<_>>()
         .delimited_by(just(Token::Sel), just(Token::Ser))
         .map(|specs| {
             let (first, rest) = specs.split_first().unwrap(); // Safe due to at_least(1)
-             Spec::BucCol(Box::new(first.clone()), rest.to_vec())
+            Spec::BucCol(Box::new(first.clone()), rest.to_vec())
         })
-}
-
-
-fn spec_wide_parser<'tokens, 'src: 'tokens, I>(
-    _hoon: impl Parser<'tokens, I, Hoon, extra::Err<Rich<'tokens, Token<'src>>>> + Clone + 'tokens,
-    spec: impl Parser<'tokens, I, Spec, extra::Err<Rich<'tokens, Token<'src>>>> + Clone + 'tokens,
-) -> impl Parser<'tokens, I, Spec, extra::Err<Rich<'tokens, Token<'src>>>> + 'tokens
-where
-    I: ValueInput<'tokens, Token = Token<'src>, Span = SimpleSpan>,
-{
-     choice((
-        buctis_irregular_parser(spec.clone()),  // foo=bar
-        buccol_wide_parser(spec.clone()),  // [foo=bar foo=bar]
-        aura_spec_parser() //  @foo
-    )).boxed()
 }
 
 fn tisdot_parser<'tokens, 'src: 'tokens, I>(
@@ -704,19 +706,6 @@ where
         .map(|((p, q), r)| Hoon::WutCol(Box::new(p), Box::new(q), Box::new(r)))
 }
 
-fn spec_parser<'tokens, 'src: 'tokens, I>(
-    hoon: impl Parser<'tokens, I, Hoon, extra::Err<Rich<'tokens, Token<'src>>>> + Clone + 'tokens,
-) -> impl Parser<'tokens, I, Spec, extra::Err<Rich<'tokens, Token<'src>>>> + 'tokens
-where
-    I: ValueInput<'tokens, Token = Token<'src>, Span = SimpleSpan>,
-{
-     recursive(|spec| {
-        choice((
-            spec_wide_parser(hoon.clone(), spec.clone()),
-        )).boxed()
-    })
-}
-
 fn bartis_parser<'tokens, 'src: 'tokens, I>(
     hoon: impl Parser<'tokens, I, Hoon, extra::Err<Rich<'tokens, Token<'src>>>> + Clone + 'tokens,
 ) -> impl Parser<'tokens, I, Hoon, extra::Err<Rich<'tokens, Token<'src>>>> + 'tokens
@@ -729,6 +718,20 @@ where
         .then_ignore(gap_parser())
         .then(hoon.clone())
         .map(|(s, h)| Hoon::BarTis(Box::new(s), Box::new(h)))
+}
+
+fn barcol_parser<'tokens, 'src: 'tokens, I>(
+    hoon: impl Parser<'tokens, I, Hoon, extra::Err<Rich<'tokens, Token<'src>>>> + Clone + 'tokens,
+) -> impl Parser<'tokens, I, Hoon, extra::Err<Rich<'tokens, Token<'src>>>> + 'tokens
+where
+    I: ValueInput<'tokens, Token = Token<'src>, Span = SimpleSpan>,
+{
+    just(Token::BarCol)
+        .ignore_then(gap_parser())
+        .ignore_then(hoon.clone())
+        .then_ignore(gap_parser())
+        .then(hoon.clone())
+        .map(|(s, h)| Hoon::BarCol(Box::new(s), Box::new(h)))
 }
 
 fn barhep_parser<'tokens, 'src: 'tokens, I>(
@@ -821,7 +824,7 @@ where
 
 fn wing_or_wing_hoon_parser<'tokens, 'src: 'tokens, I>(
     hoon: impl Parser<'tokens, I, Hoon, extra::Err<Rich<'tokens, Token<'src>>>> + Clone + 'tokens,
-    wide: impl Parser<'tokens, I, Hoon, extra::Err<Rich<'tokens, Token<'src>>>> + Clone + 'tokens
+    // wide: impl Parser<'tokens, I, Hoon, extra::Err<Rich<'tokens, Token<'src>>>> + Clone + 'tokens
 ) -> impl Parser<'tokens, I, Hoon, extra::Err<Rich<'tokens, Token<'src>>>>
 where
     I: ValueInput<'tokens, Token = Token<'src>, Span = SimpleSpan>,
@@ -881,6 +884,19 @@ where
     chapter.repeated().at_least(1).collect::<Vec<_>>()
 }
 
+fn kethep_irregular_parser<'tokens, 'src: 'tokens, I>(
+    hoon_wide: impl Parser<'tokens, I, Hoon, extra::Err<Rich<'tokens, Token<'src>>>> + Clone + 'tokens,
+) -> impl Parser<'tokens, I, Hoon, extra::Err<Rich<'tokens, Token<'src>>>>
+where
+    I: ValueInput<'tokens, Token = Token<'src>, Span = SimpleSpan>,
+{
+    just(Token::Tic)
+        .ignore_then(spec_wide_parser(hoon_wide.clone()))
+        .then_ignore(just(Token::Tic))
+        .then(hoon_wide.clone())
+        .map(|(s, w)| Hoon::KetHep(Box::new(s), Box::new(w)))
+}
+
 fn centis_irregular_parser<'tokens, 'src: 'tokens, I>(
     hoon: impl Parser<'tokens, I, Hoon, extra::Err<Rich<'tokens, Token<'src>>>> + Clone + 'tokens
 ) -> impl Parser<'tokens, I, Hoon, extra::Err<Rich<'tokens, Token<'src>>>>
@@ -932,6 +948,35 @@ where
         .boxed()
 }
 
+
+fn spec_wide_parser<'tokens, 'src: 'tokens, I>(
+    _hoon: impl Parser<'tokens, I, Hoon, extra::Err<Rich<'tokens, Token<'src>>>> + Clone + 'tokens,
+) -> impl Parser<'tokens, I, Spec, extra::Err<Rich<'tokens, Token<'src>>>> + 'tokens
+where
+    I: ValueInput<'tokens, Token = Token<'src>, Span = SimpleSpan>,
+{
+    recursive(|spec_wide| {
+        choice((
+            buctis_irregular_parser(spec_wide.clone()),  // foo=bar
+            buccol_irregular_parser(spec_wide.clone()),  // [foo=bar foo=bar]
+            aura_spec_parser() //  @foo
+        )).boxed()
+    })
+}
+
+fn spec_parser<'tokens, 'src: 'tokens, I>(
+    hoon: impl Parser<'tokens, I, Hoon, extra::Err<Rich<'tokens, Token<'src>>>> + Clone + 'tokens,
+) -> impl Parser<'tokens, I, Spec, extra::Err<Rich<'tokens, Token<'src>>>> + 'tokens
+where
+    I: ValueInput<'tokens, Token = Token<'src>, Span = SimpleSpan>,
+{
+    recursive(|spec| {
+        choice((
+            spec_wide_parser(hoon.clone()),
+        )).boxed()
+    })
+}
+
 fn hoon_parser<'tokens, 'src: 'tokens, I>(
     hoon: impl Parser<'tokens, I, Hoon, extra::Err<Rich<'tokens, Token<'src>>>> + Clone + 'tokens
 ) -> impl Parser<'tokens, I, Hoon, extra::Err<Rich<'tokens, Token<'src>>>>
@@ -942,7 +987,8 @@ where
         barcen_parser(hoon.clone()),
         bartis_parser(hoon.clone()),
         barhep_parser(hoon.clone()),
-                // tismic_parser(hoon.clone()),
+        barcol_parser(hoon.clone()),
+        // tismic_parser(hoon.clone()),
         // tisfas_parser(hoon.clone()),
         tiscol_parser(hoon.clone()),
         tisgal_parser(hoon.clone()),
@@ -964,19 +1010,21 @@ where
 }
 
 fn hoon_wide_parser<'tokens, 'src: 'tokens, I>(
-        hoon: impl Parser<'tokens, I, Hoon, extra::Err<Rich<'tokens, Token<'src>>>> + Clone + 'tokens
+    hoon: impl Parser<'tokens, I, Hoon, extra::Err<Rich<'tokens, Token<'src>>>> + Clone + 'tokens
 ) -> impl Parser<'tokens, I, Hoon, extra::Err<Rich<'tokens, Token<'src>>>>
 where
     I: ValueInput<'tokens, Token = Token<'src>, Span = SimpleSpan>,
 {
-    recursive(|wide| {
+    recursive(|hoon_wide| {
         choice((
-            wing_or_wing_hoon_parser(hoon.clone(), wide.clone()),  //  foo  ,  foo+bar ,  foo/bar,
+            kettis_irregular_parser(hoon_wide.clone()),   //  p=q
+            wing_or_wing_hoon_parser(hoon.clone()),  // p,  p+q,  p/q
             ketsig_wide_parser(hoon.clone()),
-            dottis_irregular_parser(hoon.clone()),
-            wutzap_irregular_parser(hoon.clone()),
-            kettis_irregular_parser(hoon.clone()),
-            centis_irregular_parser(hoon.clone()),
+            dottis_irregular_parser(hoon.clone()),   //  =(p q)
+            coltar_irregular_parser(hoon.clone()),   // [p ... pn]
+            kethep_irregular_parser(hoon.clone()),   //  `p`q
+            wutzap_irregular_parser(hoon.clone()),   //  !p
+            centis_irregular_parser(hoon.clone()),   //  a(b c, d e, f g)
             gatecall_parser(hoon.clone()),
             increment_parser(hoon.clone()),
             aura_hoon_parser(),
@@ -984,8 +1032,8 @@ where
             const_parser(),
             name_parser(),
             number_parser(),
-            just(Token::Sig).to(Hoon::Bust(BaseType::Null)),  // move from here
-            just(Token::Lus).to(Hoon::CenTis(vec![Limb::Axis(3)], Vec::new())),  // move from here
+            just(Token::Sig).to(Hoon::Bust(BaseType::Null)),  // move from here?
+            just(Token::Lus).to(Hoon::CenTis(vec![Limb::Axis(3)], Vec::new())),  // move from here?
         )).boxed()
     })
 }

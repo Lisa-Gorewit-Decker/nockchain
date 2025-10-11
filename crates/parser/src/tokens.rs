@@ -371,6 +371,8 @@ pub enum Token<'a> {
     Ser,
     #[token("~")]
     Sig,
+    #[token("`")]
+    Tic,
     #[token("=")]
     Tis,
     #[token(":")]
