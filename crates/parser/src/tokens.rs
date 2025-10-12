@@ -224,6 +224,8 @@ pub enum Token<'a> {
     BucTis,
     #[token("$?")]
     BucWut,
+    #[token("$@(")]
+    BucPatWide,
 
     #[token(":-")]
     ColHep,
@@ -316,8 +318,10 @@ pub enum Token<'a> {
 
     #[token("=(")]
     DotTisIrregular,
-    #[token(":(")]
-    MicColIrregular,
+    #[token("?(")]
+    BucWutIrregular,
+    // #[token(":(")]
+    // MicColIrregular,
     #[token("~(")]
     CenSigIrregular,
     #[regex(r"[a-zA-Z_$][a-zA-Z0-9]*\(", |lex| {  //  foo(
@@ -389,12 +393,16 @@ pub enum Token<'a> {
     Bas,
     #[token("&")]
     Pam,
+    #[token("*")]
+    Tar,
     #[token(".")]
     Dot,
     #[token("$")]  //  maybe buc should match as Name
     Buc,
     #[token("!")]  //  WutZapIrregular/ZapTis
     Zap,
+    #[token("?")]
+    Wut,
 
     #[regex(r"[0-9]{1,3}(?:\.(?: *\n+ *| {2,})?[0-9]{3})*", |lex| lex.slice())]
     Number(&'a str),
