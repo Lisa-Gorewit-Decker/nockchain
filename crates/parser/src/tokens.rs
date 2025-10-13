@@ -226,6 +226,10 @@ pub enum Token<'a> {
     BucWut,
     #[token("$@(")]
     BucPatWide,
+    #[token("$-(")]
+    BucHepWide,
+    #[token("$+(")]
+    BucLusWide,
 
     #[token(":-")]
     ColHep,
@@ -344,6 +348,11 @@ pub enum Token<'a> {
     TisTis,
     #[token("--")]
     HepHep,
+
+    #[token("%|")]
+    CenBar,
+    #[token("%&")]
+    CenPam,
 
     #[token("~[")]
     ListOpen,
