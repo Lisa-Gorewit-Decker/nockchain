@@ -230,6 +230,8 @@ pub enum Token<'a> {
     BucHepWide,
     #[token("$+(")]
     BucLusWide,
+    #[token("$~(")]
+    BucSigWide,
 
     #[token(":-")]
     ColHep,
@@ -320,8 +322,6 @@ pub enum Token<'a> {
     #[token("!!")]
     ZapZap,
 
-    #[token("=(")]
-    DotTisIrregular,
     #[token("?(")]
     BucWutIrregular,
     // #[token(":(")]
@@ -412,6 +412,8 @@ pub enum Token<'a> {
     Zap,
     #[token("?")]
     Wut,
+    #[token("_")]
+    Cab,
 
     #[regex(r"[0-9]{1,3}(?:\.(?: *\n+ *| {2,})?[0-9]{3})*", |lex| lex.slice())]
     Number(&'a str),
