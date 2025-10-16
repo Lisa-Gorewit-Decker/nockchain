@@ -2075,7 +2075,7 @@ where
 }
 
 fn main() {
-    let source = fs::read_to_string("./src/hoon.hoon").expect("Failed to read file");
+    let source = fs::read_to_string("../hoonc/hoon/hoon-138.hoon").expect("Failed to read file");
     let start = Instant::now();
 
     let token_iter = Token::lexer(&source)
