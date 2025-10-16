@@ -29,6 +29,8 @@ pub enum Token<'a> {
     BarPat,
     #[token("|?")]
     BarWut,
+    #[token("|?(")]
+    BarWutWide,
     #[token("|$(")]
     BarBucWide,
     #[token("|:(")]
@@ -41,6 +43,8 @@ pub enum Token<'a> {
     BarSigWide,
     #[token("|*(")]
     BarTarWide,
+    #[token("|=(")]
+    BarTisWide,
 
     #[token("^|")]
     KetBar,
@@ -111,6 +115,8 @@ pub enum Token<'a> {
     WutZap,
     #[token("?-(")]
     WutHepWide,
+    #[token("?|(")]
+    WutBarWide,
     #[token("?:(")]
     WutColWide,
     #[token("?.(")]
@@ -149,8 +155,8 @@ pub enum Token<'a> {
     TisCom,
     #[token("=.")]
     TisDot,
-    #[token("=-")]
-    TisHep,
+    // #[token("=-")]
+    // TisHep,
     #[token("=^")]
     TisKet,
     #[token("=<")]
@@ -161,12 +167,14 @@ pub enum Token<'a> {
     TisMic,
     #[token("=/")]
     TisFas,
-    #[token("=~")]
-    TisSig,
-    #[token("=*")]
-    TisTar,
+    // #[token("=~")]
+    // TisSig,
+    // #[token("=*")]
+    // TisTar,
     #[token("=?")]
     TisWut,
+    #[token("=>(")]
+    TisGarWide,
 
     #[token("%_")]
     CenCab,
@@ -202,8 +210,8 @@ pub enum Token<'a> {
     BucCab,
     #[token("$%")]
     BucCen,
-    #[token("$:")]
-    BucCol,
+    // #[token("$:")]
+    // BucCol,
     #[token("$<")]
     BucGal,
     #[token("$>")]
@@ -250,8 +258,8 @@ pub enum Token<'a> {
 
     #[token(".^")]
     DotKet,
-    #[token(".+")]
-    DotLus,
+    // #[token(".+")]
+    // DotLus,
     #[token(".*")]
     DotTar,
     #[token(".=")]
@@ -276,6 +284,8 @@ pub enum Token<'a> {
     #[token(";=")]
     MicTis,
 
+    #[token("~>(")]
+    SigGarWide,
     #[token("~>")]
     SigGar,
     #[token("~|")]
@@ -328,11 +338,11 @@ pub enum Token<'a> {
     // MicColIrregular,
     #[token("~(")]
     CenSigIrregular,
-    #[regex(r"[a-zA-Z_$][a-zA-Z0-9]*\(", |lex| {  //  foo(
-        let slice = lex.slice();
-        slice.strip_suffix('(').unwrap_or(slice)
-    })]
-    CenTisIrregular(&'a str),
+    // #[regex(r"[a-zA-Z_$][a-zA-Z0-9]*\(", |lex| {  //  foo(           some invalid cases will match in here...
+    //     let slice = lex.slice();
+    //     slice.strip_suffix('(').unwrap_or(slice)
+    // })]
+    // CenTisIrregular(&'a str),
 
     #[regex(r"[+-][<>](?:[+-][<>])*[+-]?", |lex| lex.slice())]
     LarkExpression(&'a str),  //  +>- expression, with 2 or more chars,
@@ -354,8 +364,10 @@ pub enum Token<'a> {
     #[token("%&")]
     CenPam,
 
+    #[token("]~")]
+    SigSer,
     #[token("~[")]
-    ListOpen,
+    SigSel,
     #[token("+(")]
     Increment,
 
@@ -406,7 +418,7 @@ pub enum Token<'a> {
     Tar,
     #[token(".")]
     Dot,
-    #[token("$")]  //  maybe buc should match as Name
+    #[token("$")]
     Buc,
     #[token("!")]  //  WutZapIrregular/ZapTis
     Zap,
@@ -421,8 +433,8 @@ pub enum Token<'a> {
     #[regex(r"@[a-zA-Z0-9]*", |lex| lex.slice())]
     Aura(&'a str),
 
-    // #[regex(r"%[a-z][a-zA-Z0-9-]*", |lex| lex.slice())]
-    // Term(&'a str),
+    #[regex(r"0x[0-9a-fA-F]+\.[0-9a-fA-F]+")]
+    Hex(&'a str),
 
     #[regex(r"[a-zA-Z][a-zA-Z0-9-]*", |lex| lex.slice())]
     Name(&'a str),

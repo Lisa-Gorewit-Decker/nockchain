@@ -1,4 +1,7 @@
-
+::
+::::    /sys/hoon                                       ::
+  ::                                                    ::
+=<  ride
 =>  %138  =>
 ::                                                      ::
 ::::    0: version stub                                 ::
@@ -942,23 +945,25 @@
               =(0 (end 0 b))
           ==
   ==
-::
+
 ++  dis                                                 ::  binary and
   ~/  %dis
   |=  [a=@ b=@]
   =|  [c=@ d=@]
   |-  ^-  @
   ?:  ?|(=(0 a) =(0 b))  d
-  %=  $
-    a   (rsh 0 a)
-    b   (rsh 0 b)
-    c   +(c)
-    d   %+  add  d
-          %+  lsh  [0 c]
-          ?|  =(0 (end 0 a))
-              =(0 (end 0 b))
-          ==
-  ==
+  1
+  :: %=  $
+  :: 1
+::     a   (rsh 0 a)
+::     b   (rsh 0 b)
+::     c   +(c)
+::     d   %+  add  d
+::           %+  lsh  [0 c]
+::           ?|  =(0 (end 0 a))
+::               =(0 (end 0 b))
+::           ==
+::   ==
 ::
 ++  mix                                                 ::  binary xor
   ~/  %mix
@@ -7526,7 +7531,13 @@
       %gist  $(mod q.mod)
       %leaf  `p.mod
       %loop  `p.mod
-      %like  ?~(p.mod ~ ?^(i.p.mod ?:(?=(%& -.i.p.mod) ~ q.i.p.mod) `i.p.mod))
+      %like  ?~  p.mod
+                ~
+              ?^  i.p.mod
+                ?:  ?=(%& -.i.p.mod)
+                    ~
+                q.i.p.mod
+              `i.p.mod
       %make  ~(name ap p.mod)
       %made  $(mod q.mod)
       %over  $(mod q.mod)
@@ -8236,7 +8247,9 @@
     ?+  gen  ~
       [%wing *]  ?~  p.gen  ~
                  ?^  i.p.gen
-                   ?:(?=(%& -.i.p.gen) ~ q.i.p.gen)
+                   ?:  ?=(%& -.i.p.gen)  ::  check if i == Limb::Axis
+                      ~
+                    q.i.p.gen)
                  `i.p.gen
       [%limb *]  `p.gen
       [%dbug *]  $(gen ~(open ap gen))
@@ -13512,7 +13525,7 @@
     ++  wasp                                            ::  $brcb aliases
       ;~  pose
         %+  ifix
-          [;~(plug lus tar muck) muck]
+          [;~(plug lus tar muck) muck] ::  +*ace/gap  (most gap   gap
         (most muck ;~(gunk sym loll))
       ::
         (easy ~)
@@ -13803,28 +13816,28 @@
   ++  rope                                              ::  wing form
     %+  knee  *wing
     |.  ~+
-    %+  (slug |=([a=limb b=wing] [a b]))
+    %+  (slug |=([a=limb b=wing] [a b]))    ::   foo.bar.baz
       dot
     ;~  pose
-      (cold [%| 0 ~] com)
+      (cold [%| 0 ~] com)            ::   ,  == [%| 0 ~]
       %+  cook
         |=([a=(list) b=term] ?~(a b [%| (lent a) `b]))
-      ;~(plug (star ket) ;~(pose sym (cold %$ buc)))
+      ;~(plug (star ket) ;~(pose sym (cold %$ buc)))   ::  ^^^(term or $)
     ::
       %+  cook
         |=(a=axis [%& a])
       ;~  pose
-        ;~(pfix lus dim:ag)
-        ;~(pfix pam (cook |=(a=@ ?:(=(0 a) 0 (mul 2 +($(a (dec a)))))) dim:ag))
-        ;~(pfix bar (cook |=(a=@ ?:(=(0 a) 1 +((mul 2 $(a (dec a)))))) dim:ag))
-        ven
-        (cold 1 dot)
+        ;~(pfix lus dim:ag)   ::  +decimalnumber
+        ;~(pfix pam (cook |=(a=@ ?:(=(0 a) 0 (mul 2 +($(a (dec a)))))) dim:ag))  :: &10
+        ;~(pfix bar (cook |=(a=@ ?:(=(0 a) 1 +((mul 2 $(a (dec a)))))) dim:ag))  :: |10
+        ven  ::  "->+<-"
+        (cold 1 dot)    ::  . Axis(1)
       ==
     ==
   ::
   ++  wise
     ;~  pose
-      ;~  pfix  tis
+      ;~  pfix  tis             ::   =foo
         %+  sear
           |=  =spec
           ^-  (unit skin)
@@ -13834,17 +13847,17 @@
         wyde
       ==
     ::
-      %+  cook
+      %+  cook      :: variable def   =/  foo  or  =/  foo=bar
         |=  [=term =(unit spec)]
         ^-  skin
         ?~  unit
-          term
-        [%name term %spec u.unit %base %noun]
-      ;~  plug  sym
+          term  ::  if foo return this
+        [%name term %spec u.unit %base %noun]   ::  if foo=bar return this
+      ;~  plug  sym     ::   term(/ or =)spec-wide-form 
         (punt ;~(pfix ;~(pose fas tis) wyde))
       ==
     ::
-      %+  cook
+      %+  cook   ::  variable def    =/  @ud  1
         |=  =spec
         ^-  skin
         [%spec spec %base %noun]

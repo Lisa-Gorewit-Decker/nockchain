@@ -269,13 +269,12 @@ pub enum ZpwtArg {
     Pair(u64, u64),
 }
 
-pub type TermHoon = (Term, Hoon);
-pub type Alas = Vec<TermHoon>;
+pub type Alas = Vec<(Term, Hoon)>;
 
 #[derive(PartialEq, Debug, Clone)]
 pub enum TermOrPair {
     Term(Term),
-    Pair(TermHoon),
+    Pair((Term, Box<Hoon>)),
 }
 
 #[derive(PartialEq, Debug, Clone)]
@@ -349,8 +348,8 @@ pub enum Hoon {
     SigCab(Box<Hoon>, Box<Hoon>),
     SigCen(Chum, Box<Hoon>, Tyre, Box<Hoon>),
     SigFas(Chum, Box<Hoon>),
-    SigGal(Box<TermOrPair>, Box<Hoon>),
-    SigGar(Box<TermOrPair>, Box<Hoon>),
+    SigGal(TermOrPair, Box<Hoon>),
+    SigGar(TermOrPair, Box<Hoon>),
     SigBuc(Term, Box<Hoon>),
     SigLus(u64, Box<Hoon>),
     SigPam(u32, Box<Hoon>, Box<Hoon>),
@@ -365,17 +364,17 @@ pub enum Hoon {
     MicMic(Box<Spec>, Box<Hoon>),
     TisBar(Box<Spec>, Box<Hoon>),
     TisCol(Vec<(WingType, Hoon)>, Box<Hoon>),
-    // TisFas(Skin, Box<Hoon>, Box<Hoon>),
+    TisFas(Skin, Box<Hoon>, Box<Hoon>),
     // TisMic(Skin, Box<Hoon>, Box<Hoon>),
-    TisFas(Box<Hoon>, Box<Hoon>, Box<Hoon>),
+    // TisFas(Box<Hoon>, Box<Hoon>, Box<Hoon>),
     TisMic(Box<Hoon>, Box<Hoon>, Box<Hoon>),
     TisDot(WingType, Box<Hoon>, Box<Hoon>),
     TisWut(WingType, Box<Hoon>, Box<Hoon>, Box<Hoon>),
     TisGal(Box<Hoon>, Box<Hoon>),
     TisHeo(Box<Hoon>, Box<Hoon>),
     TisGar(Box<Hoon>, Box<Hoon>),
-    TisKet(Box<Hoon>, WingType, Box<Hoon>, Box<Hoon>),
-    // TisKet(Skin, WingType, Box<Hoon>, Box<Hoon>),
+    // TisKet(Box<Hoon>, WingType, Box<Hoon>, Box<Hoon>),
+    TisKet(Skin, WingType, Box<Hoon>, Box<Hoon>),
     TisLus(Box<Hoon>, Box<Hoon>),
     TisSig(Vec<Hoon>),
     TisTar((Term, Option<Box<Spec>>), Box<Hoon>, Box<Hoon>),
