@@ -121,7 +121,7 @@ pub struct Spot {
 pub enum Limb {
     Term(String),
     Axis(u64),
-    Parent(u64, Option<String>),  // ^foo  ->   (1, %foo)   ->  matches second foo in the subject
+    Parent(u64, Option<String>),
 }
 
 pub type WingType = Vec<Limb>;
@@ -228,6 +228,12 @@ pub enum BaseType {
     Null,
     Void,
     Atom(Aura),
+}
+
+#[derive(PartialEq, Debug, Clone)]
+pub enum Tiki {
+    Wing((Option<Term>, WingType)),
+    Hoon((Option<Term>, Box<Hoon>)),
 }
 
 #[derive(PartialEq, Debug, Clone)]
@@ -371,7 +377,7 @@ pub enum Hoon {
     TisDot(WingType, Box<Hoon>, Box<Hoon>),
     TisWut(WingType, Box<Hoon>, Box<Hoon>, Box<Hoon>),
     TisGal(Box<Hoon>, Box<Hoon>),
-    TisHeo(Box<Hoon>, Box<Hoon>),
+    TisHep(Box<Hoon>, Box<Hoon>),
     TisGar(Box<Hoon>, Box<Hoon>),
     // TisKet(Box<Hoon>, WingType, Box<Hoon>, Box<Hoon>),
     TisKet(Skin, WingType, Box<Hoon>, Box<Hoon>),
@@ -386,12 +392,11 @@ pub enum Hoon {
     WutKet(WingType, Box<Hoon>, Box<Hoon>),
     WutGal(Box<Hoon>, Box<Hoon>),
     WutGar(Box<Hoon>, Box<Hoon>),
-    Wutlus(WingType, Box<Hoon>, Vec<(Spec, Hoon)>),
+    WutLus(WingType, Box<Hoon>, Vec<(Spec, Hoon)>),
     WutPam(Vec<Hoon>),
     WutPat(WingType, Box<Hoon>, Box<Hoon>),
     WutSig(WingType, Box<Hoon>, Box<Hoon>),
-    WutHex(Box<Hoon>, WingType),
-    // WutHex(Skin, WingType),
+    WutHax(Skin, WingType),
     WutTis(Box<Spec>, WingType),
     WutZap(Box<Hoon>),
     ZapCom(Box<Hoon>, Box<Hoon>),

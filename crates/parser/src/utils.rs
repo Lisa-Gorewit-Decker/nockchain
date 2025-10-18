@@ -1,7 +1,6 @@
 use crate::hoon::*;
 use std::collections::*;
 
-//  example base case
 pub fn basal(bas: BaseType) -> Hoon {
     match bas {
         BaseType::Atom(a) => {
@@ -581,6 +580,97 @@ pub fn autoname(mod_spec: Spec) -> Option<Term> {  //  ++autoname:ax
     }
 }
 
+pub fn blue(tik: Tiki, gen: Hoon) -> Hoon {
+    match tik {
+        Tiki::Hoon((None, h)) => gen,
+        _ =>  Hoon::TisGar(Box::new(Hoon::Axis(3)), Box::new(gen)),
+    }
+}
+
+pub fn teal(tik: Tiki, mod_: Spec) -> Spec {
+    match tik {
+        Tiki::Wing((_, _)) => mod_,
+        Tiki::Hoon((_, _)) => Spec::Over(vec![Limb::Axis(3)], Box::new(mod_)),
+    }
+}
+
+pub fn tele(tik: Tiki, syn: Skin) -> Skin {
+    match tik {
+        Tiki::Wing((_, _)) => syn,
+        Tiki::Hoon((_, _)) => Skin::Over(vec![Limb::Axis(3)], Box::new(syn)),
+    }
+}
+
+pub fn gray(tik: Tiki, gen: Hoon) -> Hoon {
+    match tik {
+        Tiki::Wing((p, q)) => {
+            match p {
+                None => gen,
+                Some(u) => Hoon::TisTar((u, None),
+                                        Box::new(Hoon::Wing(q)),
+                                        Box::new(gen)),
+            }
+        }
+        Tiki::Hoon((p, q)) => {
+            let arg = match p {
+                None => q,
+                Some(u) => Box::new(Hoon::KetTisSkin(Skin::Term(u), q)),
+            };
+            Hoon::TisLus(arg, Box::new(gen))
+        }
+    }
+}
+
+pub fn puce(tik: Tiki) -> WingType {
+    match tik {
+        Tiki::Wing((p, q)) => match p {
+            None => q,
+            Some(u) => vec![Limb::Term(u)],
+        },
+        Tiki::Hoon((_, _)) => vec![Limb::Axis(2)],
+    }
+}
+
+pub fn wthp(tik: Tiki, opt: Vec<(Spec, Hoon)>) -> Hoon {
+    let mapped = opt.into_iter()
+                .map(|(a, b)| (a, blue(tik.clone(), b)))
+                .collect::<Vec<(Spec, Hoon)>>();
+    gray(tik.clone(), Hoon::WutHep(puce(tik.clone()), mapped))
+}
+
+pub fn wtkt(tik: Tiki, sic: Hoon, non: Hoon) -> Hoon {
+    gray(tik.clone(), Hoon::WutKet(puce(tik.clone()),
+              Box::new(blue(tik.clone(), sic)),
+              Box::new(blue(tik.clone(), non))))
+}
+
+pub fn wtls(tik: Tiki, gen: Hoon, opt: Vec<(Spec, Hoon)>) -> Hoon {
+    let mapped = opt.into_iter()
+                .map(|(a, b)| (a, blue(tik.clone(), b)))
+                .collect::<Vec<(Spec, Hoon)>>();
+    gray(tik.clone(), Hoon::WutLus(puce(tik.clone()), Box::new(blue(tik.clone(), gen)), mapped))
+}
+
+pub fn wtpt(tik: Tiki, sic: Hoon, non: Hoon) -> Hoon {
+    gray(tik.clone(), Hoon::WutPat(puce(tik.clone()),
+                            Box::new(blue(tik.clone(), sic)),
+                            Box::new(blue(tik.clone(), non))))
+}
+
+pub fn wtsg(tik: Tiki, sic: Hoon, non: Hoon) -> Hoon {
+    gray(tik.clone(), Hoon::WutSig(puce(tik.clone()),
+                            Box::new(blue(tik.clone(), sic)),
+                            Box::new(blue(tik.clone(), non))))
+}
+
+pub fn wthx(tik: Tiki, syn: Skin) -> Hoon {
+    gray(tik.clone(), Hoon::WutHax(tele(tik.clone(), syn), puce(tik.clone())))
+}
+
+pub fn wtts(tik: Tiki, mod_: Spec) -> Hoon {
+    gray(tik.clone(), Hoon::WutTis(Box::new(teal(tik.clone(), mod_)), puce(tik.clone())))
+}
+
 pub fn right_child(n: u64) -> u64 {
     if n == 0 {
         1
@@ -597,7 +687,7 @@ pub fn left_child(n: u64) -> u64 {
     }
 }
 
-pub fn peg(a: u64, b: u64) -> Result<u64, &'static str> {
+pub fn peg(a: u64, b: u64) -> Result<u64, &'static str> {  // this is broken...
     if a == 0 || b == 0 {
         return Err("a and b must be non-zero");
     }
@@ -606,3 +696,7 @@ pub fn peg(a: u64, b: u64) -> Result<u64, &'static str> {
     let offset = b & ((1u64 << k) - 1);
     Ok((a << k) + offset)
 }
+
+// pub fn autoname(mod_spec: Spec) -> Option<Term> {  //  ++autoname:ax
+
+// }

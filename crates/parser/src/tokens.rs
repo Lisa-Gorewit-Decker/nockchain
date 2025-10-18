@@ -171,8 +171,8 @@ pub enum Token<'a> {
     // TisSig,
     // #[token("=*")]
     // TisTar,
-    #[token("=?")]
-    TisWut,
+    // #[token("=?")]
+    // TisWut,
     #[token("=>(")]
     TisGarWide,
 
@@ -232,6 +232,8 @@ pub enum Token<'a> {
     BucTis,
     #[token("$?")]
     BucWut,
+    #[token("$?(")]
+    BucWutWide,
     #[token("$@(")]
     BucPatWide,
     #[token("$-(")]
@@ -245,8 +247,8 @@ pub enum Token<'a> {
     ColHep,
     #[token(":_")]
     ColCab,
-    #[token(":+")]
-    ColLus,
+    // #[token(":+")]
+    // ColLus,
     #[token(":^")]
     ColKet,
     #[token(":*")]
@@ -433,7 +435,7 @@ pub enum Token<'a> {
     #[regex(r"@[a-zA-Z0-9]*", |lex| lex.slice())]
     Aura(&'a str),
 
-    #[regex(r"0x[0-9a-fA-F]+\.[0-9a-fA-F]+")]
+    #[regex(r"0x[0-9a-fA-F]+(\.[0-9a-fA-F]+)?")]
     Hex(&'a str),
 
     #[regex(r"[a-zA-Z][a-zA-Z0-9-]*", |lex| lex.slice())]
