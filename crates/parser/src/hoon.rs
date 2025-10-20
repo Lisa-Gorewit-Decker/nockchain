@@ -329,7 +329,7 @@ pub enum Hoon {
     CenDot(Box<Hoon>, Box<Hoon>),
     CenHep(Box<Hoon>, Box<Hoon>),
     CenCol(Box<Hoon>, Vec<Hoon>),
-    Centar(WingType, Box<Hoon>, Vec<(WingType, Hoon)>),
+    CenTar(WingType, Box<Hoon>, Vec<(WingType, Hoon)>),
     CenKet(Box<Hoon>, Box<Hoon>, Box<Hoon>, Box<Hoon>),
     CenLus(Box<Hoon>, Box<Hoon>, Box<Hoon>),
     CenSig(WingType, Box<Hoon>, Vec<Hoon>),
