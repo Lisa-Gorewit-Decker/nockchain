@@ -140,8 +140,8 @@ pub enum Token<'a> {
     #[token("?!(")]
     WutZapWide,
 
-    #[token("|(")]
-    WutBarIrregular,
+    // #[token("|(")]
+    // WutBarIrregular,
     #[token("&(")]
     WutPamIrregular,
 
@@ -157,8 +157,8 @@ pub enum Token<'a> {
     TisDot,
     // #[token("=-")]
     // TisHep,
-    #[token("=^")]
-    TisKet,
+    // #[token("=^")]
+    // TisKet,
     #[token("=<")]
     TisGal,
     // #[token("=+")]
@@ -202,8 +202,8 @@ pub enum Token<'a> {
     CenCab,
     #[token("%:")]
     CenCol,
-    #[token("%.")]
-    CenDot,
+    // #[token("%.")]
+    // CenDot,
     #[token("%-")]
     CenHep,
     #[token("%^")]
@@ -218,6 +218,8 @@ pub enum Token<'a> {
     CenTis,
     #[token("%*(")]
     CenTarWide,
+    #[token("%^(")]
+    CenKetWide,
 
     #[token("+|")]
     LusBar,
@@ -267,8 +269,13 @@ pub enum Token<'a> {
     #[token("$~(")]
     BucSigWide,
 
-    #[token(":-")]
-    ColHep,
+    #[token("%.y")]
+    Yes,
+    #[token("%.n")]
+    No,
+
+    // #[token(":-")]
+    // ColHep,
     #[token(":_")]
     ColCab,
     // #[token(":+")]
@@ -279,11 +286,13 @@ pub enum Token<'a> {
     ColTar,
     #[token(":~")]
     ColSig,
-    #[regex(r"::[^\n\r]*(?:\r?\n)?", logos::skip)]
-    ColCol,
+    #[token(":_(")]
+    ColCabWide,
+    // #[regex(r"::[^\n\r]*(?:\r?\n)?", logos::skip)]  matched as Gap
+    // ColCol,
 
-    #[token(".^")]
-    DotKet,
+    // #[token(".^")]
+    // DotKet,
     // #[token(".+")]
     // DotLus,
     #[token(".*")]
@@ -292,6 +301,10 @@ pub enum Token<'a> {
     DotTis,
     #[token(".?")]
     DotWut,
+    #[token(".?(")]
+    DotWutWide,
+    #[token(".*(")]
+    DotTarWide,
 
     #[token(";:")]
     MicCol,
@@ -303,12 +316,14 @@ pub enum Token<'a> {
     MicMic,
     #[token(";/")]
     MicFas,
-    #[token(";~")]
+    #[token(";~", priority = 2)]
     MicSig,
     #[token(";*")]
     MicTar,
     #[token(";=")]
     MicTis,
+    #[token(";~(", priority = 3)]
+    MicSigWide,
 
     #[token("~>(")]
     SigGarWide,
@@ -336,6 +351,10 @@ pub enum Token<'a> {
     SigWut,
     #[token("~!")]
     SigZap,
+    #[token("~+(")]
+    SigLusWide,
+    #[token("~_(")]
+    SigCabWide,
 
     #[token("!,")]
     ZapCom,
@@ -360,8 +379,8 @@ pub enum Token<'a> {
 
     #[token("?(")]
     BucWutIrregular,
-    #[token("~(")]
-    CenSigIrregular,
+    // #[token("~(", priority = 1)]
+    // CenSigIrregular,
 
     #[regex(r"[+-][<>](?:[+-][<>])*[+-]?", |lex| lex.slice())]
     LarkExpression(&'a str),  //  +>- expression, with 2 or more chars,
@@ -370,11 +389,14 @@ pub enum Token<'a> {
     #[regex(r#""[^"]*""#, |lex| &lex.slice()[1..lex.slice().len() - 1])]
     Tape(&'a str),
 
-    #[regex(r#"'[^']*'"#, |lex| &lex.slice()[1..lex.slice().len() - 1])]
+    #[regex(r"'(?:[^'\\\n]|\\[ -~]|\\\n)*'", |lex| {
+        &lex.slice()[1..lex.slice().len() - 1]
+    })]
     Cord(&'a str),
 
-    // #[token("==")]
-    // TisTis,
+    // triple cords: '''multi\nline'''   //TODO
+    // CordLong(&'a str),
+
     #[token("--")]
     HepHep,
 
@@ -387,10 +409,8 @@ pub enum Token<'a> {
     SigSer,
     #[token("~[")]
     SigSel,
-    // #[token("+(")]
-    // Increment,
-
-    #[regex("\\s{2,}|\\n+")]
+    #[regex(r"\s{2,}(?:\n+)?|\n+")]
+    #[regex(r"::[^\n\r]*(?:\r?\n)?")]
     Gap,
     #[regex(r" ")]
     Ace,
@@ -448,14 +468,20 @@ pub enum Token<'a> {
     #[token("_")]
     Cab,
 
-    #[regex(r"0x[0-9a-fA-F]{1,4}(\.[0-9a-fA-F]{1,4})*", priority = 50)]
-    Hex(&'a str),
+    #[regex(r"0b[01]{1,4}(?:\.[\t\n\r ]*[01]{4})*", |lex| lex.slice(), priority = 1)]
+    BinaryNumber(&'a str),
+
+    // #[regex(r"0x[0-9a-fA-F]{1,4}(?:\.[\t\n\r ]*[0-9a-fA-F]{4})*|[0-9a-fA-F]{4}", |lex| lex.slice(), priority = 4)]
+    #[regex(r"0x[0-9a-fA-F]{1,4}(?:\.[\t\n\r ]*[0-9a-fA-F]{4})*", |lex| lex.slice(), priority = 4)]
+    HexNumber(&'a str),
 
     #[regex(r"-{1,2}[0-9]{1,3}(?:\.(?: *\n+ *| {2,})?[0-9]{3})*", priority = 3)]
     SignedNumber(&'a str),
 
-    #[regex(r"[0-9]{1,3}(?:\.(?: *\n+ *| {2,})?[0-9]{3})*", callback = |lex| lex.slice(), priority = 1)]
+    // #[regex(r"[0-9]{1,3}(?:\.(?: *\n+ *| {2,})?[0-9]{3})*", callback = |lex| lex.slice(), priority = 1)]
+    #[regex(r"[0-9]{1,3}(?:\.[0-9]{3})*", callback = |lex| lex.slice(), priority = 1)]
     Number(&'a str),
+    
 
     #[regex(r"@[a-zA-Z0-9]*", |lex| lex.slice())]
     Aura(&'a str),
