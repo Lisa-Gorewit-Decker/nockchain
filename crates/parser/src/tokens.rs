@@ -236,6 +236,8 @@ pub enum Token<'a> {
     BucLusWide,
     #[token("$~(")]
     BucSigWide,
+    #[token("$%(")]
+    BucCenWide,
 
     #[token("%.y")]
     Yes,
@@ -288,6 +290,8 @@ pub enum Token<'a> {
     MicSigWide,
     #[token(";;(")]
     MicMicWide,
+    #[token(";/(")]
+    MicFasWide,
 
     #[token("~>(")]
     SigGarWide,
@@ -438,16 +442,17 @@ pub enum Token<'a> {
     #[regex(r"0b[01]{1,4}(?:\.[\t\n\r ]*[01]{4})*", |lex| lex.slice(), priority = 1)]
     BinaryNumber(&'a str),
 
-    // #[regex(r"0x[0-9a-fA-F]{1,4}(?:\.[\t\n\r ]*[0-9a-fA-F]{4})*|[0-9a-fA-F]{4}", |lex| lex.slice(), priority = 4)]
     #[regex(r"0x[0-9a-fA-F]{1,4}(?:\.[\t\n\r ]*[0-9a-fA-F]{4})*", |lex| lex.slice(), priority = 4)]
     HexNumber(&'a str),
 
     #[regex(r"-{1,2}[0-9]{1,3}(?:\.(?: *\n+ *| {2,})?[0-9]{3})*", priority = 3)]
     SignedNumber(&'a str),
 
-    // #[regex(r"[0-9]{1,3}(?:\.(?: *\n+ *| {2,})?[0-9]{3})*", callback = |lex| lex.slice(), priority = 1)]
     #[regex(r"[0-9]{1,3}(?:\.[0-9]{3})*", callback = |lex| lex.slice(), priority = 1)]
     Number(&'a str),
+
+    #[regex(r"~-~?[0-9a-fA-F]+\.?|~-[a-zA-Z]|~\[(?:~-[a-zA-Z0-9]+(?:\s+)?)+\]", |lex| lex.slice())]
+    Unicode(&'a str),
 
     #[regex(r"@[a-zA-Z0-9]*", |lex| lex.slice())]
     Aura(&'a str),
