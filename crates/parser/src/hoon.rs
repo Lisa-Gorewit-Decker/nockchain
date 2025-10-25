@@ -247,7 +247,7 @@ pub enum Skin {
     Name(Term, Box<Skin>),
     Over(WingType, Box<Skin>),
     Spec(Box<Spec>, Box<Skin>),
-    Wash(u32),
+    Wash(u64),
 }
 
 #[derive(PartialEq, Debug, Clone)]
@@ -358,9 +358,9 @@ pub enum Hoon {
     SigGar(TermOrPair, Box<Hoon>),
     SigBuc(Term, Box<Hoon>),
     SigLus(u64, Box<Hoon>),
-    SigPam(u32, Box<Hoon>, Box<Hoon>),
+    SigPam(u64, Box<Hoon>, Box<Hoon>),
     SigTis(Box<Hoon>, Box<Hoon>),
-    SigWut(u32, Box<Hoon>, Box<Hoon>, Box<Hoon>),
+    SigWut(u64, Box<Hoon>, Box<Hoon>, Box<Hoon>),
     SigZap(Box<Hoon>, Box<Hoon>),
     MicTis(Marl),
     MicCol(Box<Hoon>, Vec<Hoon>),

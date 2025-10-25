@@ -147,46 +147,20 @@ pub enum Token<'a> {
 
     #[token("=>")]
     TisGar,
-    // #[token("=|")]
-    // TisBar,
-    // #[token("=:")]
-    // TisCol,
     #[token("=,")]
     TisCom,
     #[token("=.")]
     TisDot,
-    // #[token("=-")]
-    // TisHep,
-    // #[token("=^")]
-    // TisKet,
     #[token("=<")]
     TisGal,
-    // #[token("=+")]
-    // TisLus,
-    #[token("=;")]
-    TisMic,
-    #[token("=/")]
-    TisFas,
-    // #[token("=~")]
-    // TisSig,
-    // #[token("=*")]
-    // TisTar,
-    // #[token("=?")]
-    // TisWut,
     #[token("=>(")]
     TisGarWide,
-    // #[token("=|(")]
-    // TisBarWide,
     #[token("=<(")]
     TisGalWide,
-    // #[token("=+(")]
-    // TisLusWide,
     #[token("=-(")]
     TisHepWide,
     #[token("=^(")]
     TisKetWide,
-    // #[token("=:(")]
-    // TisColWide,
     #[token("=,(")]
     TisComWide,
     #[token("=.(")]
@@ -195,15 +169,11 @@ pub enum Token<'a> {
     TisMicWide,
     #[token("=/(")]
     TisFasWide,
-    #[token("=~(")]
-    TisSigWide,
 
     #[token("%_")]
     CenCab,
     #[token("%:")]
     CenCol,
-    // #[token("%.")]
-    // CenDot,
     #[token("%-")]
     CenHep,
     #[token("%^")]
@@ -220,6 +190,8 @@ pub enum Token<'a> {
     CenTarWide,
     #[token("%^(")]
     CenKetWide,
+    #[token("%=(")]
+    CenTisWide,
 
     #[token("+|")]
     LusBar,
@@ -236,8 +208,6 @@ pub enum Token<'a> {
     BucCab,
     #[token("$%")]
     BucCen,
-    // #[token("$:")]
-    // BucCol,
     #[token("$<")]
     BucGal,
     #[token("$>")]
@@ -246,8 +216,6 @@ pub enum Token<'a> {
     BucHep,
     #[token("$^")]
     BucKet,
-    #[token("$+")]
-    BucLus,
     #[token("$&")]
     BucPam,
     #[token("$~")]
@@ -274,12 +242,8 @@ pub enum Token<'a> {
     #[token("%.n")]
     No,
 
-    // #[token(":-")]
-    // ColHep,
     #[token(":_")]
     ColCab,
-    // #[token(":+")]
-    // ColLus,
     #[token(":^")]
     ColKet,
     #[token(":*")]
@@ -288,13 +252,11 @@ pub enum Token<'a> {
     ColSig,
     #[token(":_(")]
     ColCabWide,
+    #[token(":^(")]
+    ColKetWide,
     // #[regex(r"::[^\n\r]*(?:\r?\n)?", logos::skip)]  matched as Gap
     // ColCol,
 
-    // #[token(".^")]
-    // DotKet,
-    // #[token(".+")]
-    // DotLus,
     #[token(".*")]
     DotTar,
     #[token(".=")]
@@ -324,6 +286,8 @@ pub enum Token<'a> {
     MicTis,
     #[token(";~(", priority = 3)]
     MicSigWide,
+    #[token(";;(")]
+    MicMicWide,
 
     #[token("~>(")]
     SigGarWide,
@@ -355,6 +319,10 @@ pub enum Token<'a> {
     SigLusWide,
     #[token("~_(")]
     SigCabWide,
+    #[token("~|(")]
+    SigBarWide,
+    #[token("~&(")]
+    SigPamWide,
 
     #[token("!,")]
     ZapCom,
@@ -364,10 +332,6 @@ pub enum Token<'a> {
     ZapGal,
     #[token("!;")]
     ZapMic,
-    // #[token("!=")]     this conflicts with  WutZapIrregular ->  !  ->  !=(1 2)
-    // ZapTis,
-    #[token("!?")]
-    ZapWut,
     #[token("!@")]
     ZapPat,
     #[token("!:")]
@@ -376,11 +340,14 @@ pub enum Token<'a> {
     ZapDot,
     #[token("!!")]
     ZapZap,
+    #[token("!>(")]
+    ZapGarWide,
 
     #[token("?(")]
     BucWutIrregular,
-    // #[token("~(", priority = 1)]
-    // CenSigIrregular,
+
+    #[regex(r"~\d{4}\.\d{1,2}\.\d{1,2}(?:\.\.\d+\.\d+\.\d+\.\.[0-9a-f]+)?", |lex| lex.slice(), priority = 20)]
+    Date(&'a str),
 
     #[regex(r"[+-][<>](?:[+-][<>])*[+-]?", |lex| lex.slice())]
     LarkExpression(&'a str),  //  +>- expression, with 2 or more chars,
@@ -481,7 +448,6 @@ pub enum Token<'a> {
     // #[regex(r"[0-9]{1,3}(?:\.(?: *\n+ *| {2,})?[0-9]{3})*", callback = |lex| lex.slice(), priority = 1)]
     #[regex(r"[0-9]{1,3}(?:\.[0-9]{3})*", callback = |lex| lex.slice(), priority = 1)]
     Number(&'a str),
-    
 
     #[regex(r"@[a-zA-Z0-9]*", |lex| lex.slice())]
     Aura(&'a str),
