@@ -1,8 +1,7 @@
 
 use std::collections::*;
-// use std::collections::HashSet;
 
-#[derive(PartialEq, Debug, Clone)]
+#[derive(serde::Serialize, PartialEq, Debug, Clone)]
 pub enum Noun {
     Atom(Atom),  // we are storing atoms as strings, without doing any convertion/validation...
     Cell(Box<Noun>, Box<Noun>),
@@ -27,7 +26,7 @@ pub type SemiNoun = (Stencil, Noun);   //  verify SemiNoun/Stencil code later...
 
 pub type Gate = (Box<Spec>, Box<Spec>);
 
-#[derive(PartialEq, Debug, Clone)]
+#[derive(serde::Serialize, PartialEq, Debug, Clone)]
 pub enum Stencil {
     Half { left: Box<Stencil>, rite: Box<Stencil> },
     Full { blocks: Vec<Block> },  // change to set?
@@ -36,7 +35,7 @@ pub enum Stencil {
 
 pub type Block = Vec<Path>;
 
-#[derive(PartialEq, Debug, Clone)]
+#[derive(serde::Serialize, PartialEq, Debug, Clone)]
 pub enum Beer {
     Char(Cord),
     Hoon(Hoon),
@@ -49,13 +48,13 @@ pub enum Beer {
 // }
 pub type Woof = String;
 
-#[derive(PartialEq, Debug, Clone)]
+#[derive(serde::Serialize, PartialEq, Debug, Clone)]
 pub enum Mane {
     Tag(String),
     TagSpace(String, String),
 }
 
-#[derive(PartialEq, Debug, Clone)]
+#[derive(serde::Serialize, PartialEq, Debug, Clone)]
 pub struct Manx {
     pub g: Marx,
     pub c: Marl,
@@ -65,7 +64,7 @@ pub type Marl = Vec<Tuna>;
 
 pub type Mart = Vec<(Mane, Vec<Beer>)>;
 
-#[derive(PartialEq, Debug, Clone)]
+#[derive(serde::Serialize, PartialEq, Debug, Clone)]
 pub struct Marx {
     pub n: Mane,
     pub a: Mart,
@@ -83,7 +82,7 @@ pub enum Maru {
     Marl(Marl),
 }
 
-#[derive(PartialEq, Debug, Clone)]
+#[derive(serde::Serialize, PartialEq, Debug, Clone)]
 pub enum Tuna {
     Manx(Manx),
     TunaTail
@@ -97,7 +96,7 @@ pub enum TunaTail {
     Call(Hoon),
 }
 
-#[derive(PartialEq, Debug, Clone)]
+#[derive(serde::Serialize, PartialEq, Debug, Clone)]
 pub enum Chum {
     Lef(Term),
     StdKel(Term, u64),
@@ -105,19 +104,19 @@ pub enum Chum {
     VenProVerKel(Term, Term, u64, u64),
 }
 
-#[derive(PartialEq, Debug, Clone)]
+#[derive(serde::Serialize, PartialEq, Debug, Clone)]
 pub struct Pint {
     pub p: (u64, u64),
     pub q: (u64, u64),
 }
 
-#[derive(PartialEq, Debug, Clone)]
+#[derive(serde::Serialize, PartialEq, Debug, Clone)]
 pub struct Spot {
     pub p: Path,
     pub q: Pint,
 }
 
-#[derive(PartialEq, Debug, Clone)]
+#[derive(serde::Serialize, PartialEq, Debug, Clone)]
 pub enum Limb {
     Term(String),
     Axis(u64),
@@ -126,7 +125,7 @@ pub enum Limb {
 
 pub type WingType = Vec<Limb>;
 
-#[derive(PartialEq, Debug, Clone)]
+#[derive(serde::Serialize, PartialEq, Debug, Clone)]
 pub enum Spec {
     Base(BaseType),
     Dbug(Spot, Box<Spec>),
@@ -161,7 +160,7 @@ pub enum Spec {
     BucZap(Box<Spec>, HashMap<Term, Spec>),
 }
 
-#[derive(PartialEq, Debug, Clone)]
+#[derive(serde::Serialize, PartialEq, Debug, Clone)]
 pub enum Nock {
     Pair(Box<Nock>, Box<Nock>),
     Const(Noun),
@@ -179,40 +178,40 @@ pub enum Nock {
     AxisSelect(u64),
 }
 
-#[derive(PartialEq, Debug, Clone)]
+#[derive(serde::Serialize, PartialEq, Debug, Clone)]
 pub enum NockHint {
     Atom(u64),
     Pair(u64, Box<Nock>),
 }
 
-#[derive(PartialEq, Debug, Clone)]
+#[derive(serde::Serialize, PartialEq, Debug, Clone)]
 pub enum Note {
     Help(Help),
     Know(Stud),
     Made(Term, Option<Vec<WingType>>),
 }
 
-#[derive(PartialEq, Debug, Clone)]
+#[derive(serde::Serialize, PartialEq, Debug, Clone)]
 pub struct Coil {
     pub p: Garb,
     pub q: Type,
     pub r: (SemiNoun, HashMap<Term, Tome>),
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(serde::Serialize, Debug, Clone, PartialEq)]
 pub struct Garb {
     pub name: Option<Term>,
     pub poly: Poly,
     pub vair: Vair,
 }
 
-#[derive(PartialEq, Debug, Clone)]
+#[derive(serde::Serialize, PartialEq, Debug, Clone)]
 pub enum Poly {
     Wet,
     Dry,
 }
 
-#[derive(PartialEq, Debug, Clone)]
+#[derive(serde::Serialize, PartialEq, Debug, Clone)]
 pub enum Vair {
     Gold,
     Iron,
@@ -220,7 +219,7 @@ pub enum Vair {
     Zinc,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(serde::Serialize, Debug, Clone, PartialEq, Eq)]
 pub enum BaseType {
     Noun,
     Cell,
@@ -230,13 +229,13 @@ pub enum BaseType {
     Atom(Aura),
 }
 
-#[derive(PartialEq, Debug, Clone)]
+#[derive(serde::Serialize, PartialEq, Debug, Clone)]
 pub enum Tiki {
     Wing((Option<Term>, WingType)),
     Hoon((Option<Term>, Box<Hoon>)),
 }
 
-#[derive(PartialEq, Debug, Clone)]
+#[derive(serde::Serialize, PartialEq, Debug, Clone)]
 pub enum Skin {
     Term(Term),
     Base(BaseType),
@@ -250,7 +249,7 @@ pub enum Skin {
     Wash(u64),
 }
 
-#[derive(PartialEq, Debug, Clone)]
+#[derive(serde::Serialize, PartialEq, Debug, Clone)]
 pub enum Type {
     Noun,
     Void,
@@ -263,13 +262,13 @@ pub enum Type {
     Hold(Box<Type>, Hoon),
 }
 
-#[derive(PartialEq, Debug, Clone)]
+#[derive(serde::Serialize, PartialEq, Debug, Clone)]
 pub enum FaceType {
     Term(Term),
     Tune(Tune),
 }
 
-#[derive(PartialEq, Debug, Clone)]
+#[derive(serde::Serialize, PartialEq, Debug, Clone)]
 pub enum ZpwtArg {
     Atom(u64),
     Pair(u64, u64),
@@ -277,13 +276,13 @@ pub enum ZpwtArg {
 
 pub type Alas = Vec<(Term, Hoon)>;
 
-#[derive(PartialEq, Debug, Clone)]
+#[derive(serde::Serialize, PartialEq, Debug, Clone)]
 pub enum TermOrPair {
     Term(Term),
     Pair((Term, Box<Hoon>)),
 }
 
-#[derive(PartialEq, Debug, Clone)]
+#[derive(serde::Serialize, PartialEq, Debug, Clone)]
 pub enum Hoon {
     Pair(Box<Hoon>, Box<Hoon>),
     ZapZap,

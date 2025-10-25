@@ -1,5 +1,6 @@
 use logos::Logos;
 use std::fmt;
+use logos::Lexer;
 
 #[derive(Logos, Debug, PartialEq, Clone)]
 pub enum Token<'a> {
@@ -380,9 +381,11 @@ pub enum Token<'a> {
     SigSer,
     #[token("~[")]
     SigSel,
+
     #[regex(r"\s{2,}(?:\n+)?|\n+")]
-    #[regex(r"::[^\n\r]*(?:\r?\n)?")]
+    #[regex(r"(?:\s*)?::[^\n\r]*(?:\r?\n)?")]
     Gap,
+
     #[regex(r" ")]
     Ace,
 

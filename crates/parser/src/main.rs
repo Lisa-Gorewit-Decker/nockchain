@@ -6,7 +6,11 @@ use chumsky::{
 use std::fs;
 use std::collections::HashMap;
 use std::time::Instant;
+use std::io::Write;
+use std::path::PathBuf;
+
 use logos::Logos;
+use clap::{Parser as ClapParser, command, arg};
 
 pub mod tokens;
 pub mod utils;
@@ -16,7 +20,6 @@ use self::tokens::Token;
 use self::hoon::*;
 use self::utils::*;
 
-// pub type Err<'t, 'src> = extra::Err<Cheap>;  //  cheap erros messages, improves perf
 pub type Err<'tokens, 'src> = extra::Err<Rich<'tokens, Token<'src>>,>;
 
 pub fn gap_parser<'tokens, 'src: 'tokens, I>(
@@ -25,7 +28,6 @@ where
     I: ValueInput<'tokens, Token = Token<'src>, Span = SimpleSpan>,
 {
     just(Token::Gap)
-        .or(just(Token::Ace).ignore_then(just(Token::Gap)))
         .repeated()
         .at_least(1)
         .ignored()
@@ -1217,16 +1219,17 @@ where
                 Limb::Axis(axis)
             }}.labelled("Lark Expression");
 
-    com_parser
-        .or(ket_name_parser)
-        .or(lus_number_parser)
-        .or(pam_number_parser)
-        .or(bar_number_parser)
-        .or(lark_parser)
-        .or(dot_parser)
-        .or(lus_parser)
-        .or(hep_parser)
-        .separated_by(just(Token::Dot))
+    choice((
+        com_parser,
+        ket_name_parser,
+        lus_number_parser,
+        pam_number_parser,
+        bar_number_parser,
+        lark_parser,
+        dot_parser,
+        lus_parser,
+        hep_parser,
+    )).separated_by(just(Token::Dot))
         .at_least(1)
         .collect::<Vec<_>>()
         .labelled("Wing")
@@ -3678,9 +3681,21 @@ where
     hoon.padded_by(gap_parser().or_not())
 }
 
+#[derive(ClapParser, Debug)]
+#[command(author, version, about = "Parses a Hoon source file")]
+struct Cli {
+    /// Path to the input .hoon file
+    #[arg(value_name = "FILE", help = "Input Hoon source file")]
+    input: PathBuf,
+}
+
 fn main() {
-    let source = fs::read_to_string("../hoonc/hoon/hoon-138.hoon").unwrap();
-    // let source = fs::read_to_string("../../hoon/common/schedule.hoon").unwrap();
+    let cli = Cli::parse();
+
+    let source = fs::read_to_string(&cli.input).unwrap_or_else(|err| {
+        eprintln!("Error reading file '{}': {}", cli.input.display(), err);
+        std::process::exit(1);
+    });
 
     let start = Instant::now();
 
@@ -3695,6 +3710,7 @@ fn main() {
             Err(()) => (Token::LexerError, span.into()),
         });
 
+    //  print tokens
     // for (tok, span) in token_iter.clone() {
     //     println!("{:?} {:?}", tok, span);
     // }
@@ -3706,10 +3722,21 @@ fn main() {
 
     match parser().parse(token_stream).into_result() {
         Ok(res) => {
-            let took = start.elapsed();
-            println!("{:?}", res);
+           let took = start.elapsed();
+           let json = serde_json::to_string_pretty(&res)
+            .expect("serialisation failed");
+
+            let out_path = std::path::PathBuf::from("out.json");
+
+            std::fs::write(&out_path, json + "\n")
+                .unwrap_or_else(|e| {
+                    eprintln!("Failed to write '{}': {}", out_path.display(), e);
+                    std::process::exit(1);
+                });
+
+            println!("Result written to {}!", out_path.display());
             println!("took: {:?}", took);
-        },
+        }
         Err(errs) => {
             for err in errs {
                 Report::build(ReportKind::Error, ((), err.span().into_range()))
@@ -3726,25 +3753,5 @@ fn main() {
                     .unwrap();
             }
         }
-        // Err(errs) => {   //  cheap errors
-        //     for err in errs {
-        //         let message = "parse error".to_string();
-
-        //         Report::build(ReportKind::Error, ((), err.span().into_range()))
-        //             .with_config(
-        //                 ariadne::Config::new().with_index_type(ariadne::IndexType::Byte),
-        //             )
-        //             .with_code(3)
-        //             .with_message(message.clone())
-        //             .with_label(
-        //                 Label::new(((), err.span().into_range()))
-        //                     .with_message(message)
-        //                     .with_color(Color::Red),
-        //             )
-        //             .finish()
-        //             .eprint(Source::from(source.clone()))
-        //             .unwrap();
-        //     }
-        // }
     };
 }
