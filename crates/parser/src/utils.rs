@@ -1,5 +1,27 @@
-use crate::hoon::*;
 use std::collections::*;
+use crate::ast::hoon::*;
+use crate::lexer::tokens::Token;
+use chumsky::{
+    input::{Stream, ValueInput},
+    prelude::*,
+};
+
+pub type Err<'tokens, 'src> = extra::Err<Rich<'tokens, Token<'src>>,>;
+
+use chumsky::input::Input;          // <-- bring the trait into scope
+
+pub trait ParserExt<'tokens, 'src: 'tokens, I, O>:
+    Parser<'tokens, I, O, Err<'tokens, 'src>> + Clone + 'tokens
+where
+    I: Input<'tokens, Token = Token<'src>, Span = SimpleSpan>,
+{
+}
+impl<'tokens, 'src: 'tokens, I, O, P> ParserExt<'tokens, 'src, I, O> for P
+where
+    P: Parser<'tokens, I, O, Err<'tokens, 'src>> + Clone + 'tokens,
+    I: Input<'tokens, Token = Token<'src>, Span = SimpleSpan>,
+{
+}
 
 pub fn basal(bas: BaseType) -> Hoon {
     match bas {
@@ -700,3 +722,354 @@ pub fn peg(a: u64, b: u64) -> Result<u64, &'static str> {  // this is broken...
 // pub fn autoname(mod_spec: Spec) -> Option<Term> {  //  ++autoname:ax
 
 // }
+
+///  Parses one or more Gaps
+///
+///   One or more because when the lexer gets rids of comments
+///   it will generate multiple Gap Tokens for what is
+///   gramaticaly one.
+///
+pub fn gap<'tokens, 'src: 'tokens, I>(
+) -> impl Parser<'tokens, I, (), Err<'tokens, 'src>> + 'tokens
+where
+    I: ValueInput<'tokens, Token = Token<'src>, Span = SimpleSpan>,
+{
+    just(Token::Gap)
+        .repeated()
+        .at_least(1)
+        .ignored()
+}
+
+pub fn list_term_hoon<'tokens, 'src: 'tokens, I>(
+    hoon: impl Parser<'tokens, I, Hoon, Err<'tokens, 'src>> + Clone + 'tokens,
+) -> impl Parser<'tokens, I, Vec<(Term, Hoon)>, Err<'tokens, 'src>> + 'tokens
+where
+    I: ValueInput<'tokens, Token = Token<'src>, Span = SimpleSpan>,
+{
+    select! {Token::Name(n) => n.to_string()}
+        .then_ignore(gap())
+        .then(hoon.clone())
+        .then_ignore(gap())
+        .repeated()
+        .at_least(1)
+        .collect::<Vec<(Term, Hoon)>>()
+}
+
+pub fn list_spec<'tokens, 'src: 'tokens, I>(
+) -> impl Parser<'tokens, I, Vec<Term>, Err<'tokens, 'src>> + 'tokens
+where
+    I: ValueInput<'tokens, Token = Token<'src>, Span = SimpleSpan>,
+{
+   select! { Token::Name(s) => s.to_string() }
+    .separated_by(just(Token::Ace))
+    .at_least(1)
+    .collect::<Vec<_>>()
+    .delimited_by(just(Token::Sel), just(Token::Ser))
+}
+
+pub fn winglist<'tokens, 'src: 'tokens, I>(
+) -> impl Parser<'tokens, I, WingType, Err<'tokens, 'src>> + 'tokens
+where
+    I: ValueInput<'tokens, Token = Token<'src>, Span = SimpleSpan>,
+{
+    let name =      //  Name or $
+        just(Token::Buc)
+            .map(|_| "%$".to_string())
+            .or(select! { Token::Name(name) => name.to_string() });
+
+    let com =   //  ,
+        just(Token::Com)
+        .map(|_| Limb::Axis(0));
+
+    let ket_name =   //  ^^name or name
+        just(Token::Ket)
+            .repeated()
+            .count()
+            .then(name)
+            .map(|(cnt, name)| {
+                if cnt == 0 {
+                    return Limb::Term(name);
+                } else {
+                    return Limb::Parent(cnt as u64, Some(name));
+                }
+            });
+
+    let lus_number =   //  +10
+            just(Token::Lus)
+                .ignore_then(select! {Token::Number(n) => n.to_string()})
+                .map(|n| {
+                    let num = n.parse::<u64>().unwrap();
+                    Limb::Axis(num)}
+                );
+
+    let pam_number =   //  &10
+            just(Token::Pam)
+                .ignore_then(select! {Token::Number(n) => n.to_string()})
+                .map(|n| {
+                    let num = n.parse::<u64>().unwrap();
+                    Limb::Axis(left_child(num))
+                });
+
+    let bar_number =  //  |10
+            just(Token::Bar)
+                .ignore_then(select! {Token::Number(n) => n.to_string()})
+                .map(|n| {
+                    let num = n.parse::<u64>().unwrap();
+                    Limb::Axis(right_child(num))
+                });
+
+    let dot =  //  .
+            just(Token::Dot)
+                .map(|_| Limb::Axis(1));
+
+    let lus =  //  +
+        just(Token::Lus)
+            .map(|_| Limb::Axis(3));
+
+    let hep =  //  -
+        just(Token::Hep)
+            .map(|_| Limb::Axis(3));
+
+    let lark =   //    +>-<  notation
+            select! { Token::LarkExpression(str) => {
+                let mut axis = 1;
+                for c in str.chars() {
+                    match c {
+                        '+' | '>' => axis = peg(axis, 3).unwrap(),
+                        '-' | '<' => axis = peg(axis, 2).unwrap(),
+                        _ => axis = 1,
+                    }
+                }
+                Limb::Axis(axis)
+            }}.labelled("Lark Expression");
+
+    choice((
+        com,
+        ket_name,
+        lus_number,
+        pam_number,
+        bar_number,
+        lark,
+        dot,
+        lus,
+        hep,
+    )).separated_by(just(Token::Dot))
+        .at_least(1)
+        .collect::<Vec<_>>()
+        .labelled("Wing")
+}
+
+
+
+pub fn variable_name_and_type<'tokens, 'src: 'tokens, I>(
+    spec_wide:   impl ParserExt<'tokens, 'src, I, Spec>,
+) -> impl Parser<'tokens, I, Skin, Err<'tokens, 'src>> + 'tokens
+where
+    I: ValueInput<'tokens, Token = Token<'src>, Span = SimpleSpan>,
+{
+    let not_named = just(Token::Tis)  // =/  =foo
+        .ignore_then(spec_wide.clone())
+        .try_map(|spec, span| {
+            let auto = autoname(spec.clone());
+             match auto {
+                        // None => Err(Cheap::new(span).into()),
+                        None => Err(Rich::custom(span, "cannot autoname")),
+                        Some(term) => {
+                            Ok(Skin::Name(
+                              term,
+                                Box::new(Skin::Spec(
+                                    Box::new(spec),
+                                    Box::new(Skin::Base(BaseType::Noun)),
+                                )),
+                            ))
+                        }
+                    }
+        });
+
+     let named = select! { Token::Name(s) => s.to_string() }    //  =/  a=foo  ,  =/  a
+        .then_ignore(just(Token::Fas).or(just(Token::Tis)))
+        .then(
+            spec_wide.clone()
+                .or_not() // handle foo or foo=bar
+        )
+        .map(|(term, maybe_spec)|
+            match maybe_spec {
+                None => Skin::Term(term),
+                Some(spec) => Skin::Name(
+                    term,
+                    Box::new(Skin::Spec(
+                        Box::new(spec),
+                        Box::new(Skin::Base(BaseType::Noun)),
+                    )),
+                ),
+        });
+
+    let just_type = spec_wide.clone() // =/  type
+        .map(|s| Skin::Spec(Box::new(s), Box::new(Skin::Base(BaseType::Noun))));
+
+    choice((not_named, named, just_type))
+}
+
+
+
+pub fn list_wing_hoon_wide<'tokens, 'src: 'tokens, I>(
+    hoon:        impl ParserExt<'tokens, 'src, I, Hoon>,
+) -> impl Parser<'tokens, I, Vec<(WingType, Hoon)>, Err<'tokens, 'src>> + 'tokens
+where
+    I: ValueInput<'tokens, Token = Token<'src>, Span = SimpleSpan>,
+{
+    let pair = winglist()
+                .then_ignore(just(Token::Ace))
+                .then(hoon.clone());
+
+    pair
+        .separated_by(just(Token::Com).then(just(Token::Ace)))
+        .at_least(1)
+        .collect::<Vec<_>>()
+}
+
+pub fn list_hoon_wide<'tokens, 'src: 'tokens, I>(
+    hoon_wide:   impl ParserExt<'tokens, 'src, I, Hoon>,
+) -> impl Parser<'tokens, I, Vec<Hoon>, Err<'tokens, 'src>> + 'tokens
+where
+    I: ValueInput<'tokens, Token = Token<'src>, Span = SimpleSpan>,
+{
+    hoon_wide.clone()
+        .separated_by(just(Token::Ace))
+        .at_least(1)
+        .collect::<Vec<Hoon>>()
+}
+
+pub fn list_wing_hoon_tall<'tokens, 'src: 'tokens, I>(
+    hoon:        impl ParserExt<'tokens, 'src, I, Hoon>,
+) -> impl Parser<'tokens, I, Vec<(WingType, Hoon)>, Err<'tokens, 'src>> + 'tokens
+where
+    I: ValueInput<'tokens, Token = Token<'src>, Span = SimpleSpan>,
+{
+   let pair = winglist()
+                .then_ignore(gap())
+                .then(hoon.clone())
+                .then_ignore(gap());
+
+    pair.repeated().at_least(1).collect::<Vec<(WingType, Hoon)>>()
+}
+
+pub fn tiki_wide<'tokens, 'src: 'tokens, I>(
+    hoon_wide:   impl ParserExt<'tokens, 'src, I, Hoon>,
+) -> impl Parser<'tokens, I, Tiki, Err<'tokens, 'src>> + 'tokens
+where
+    I: ValueInput<'tokens, Token = Token<'src>, Span = SimpleSpan>,
+{
+    let with_name = select! { Token::Name(term) => term.to_string() }
+        .then_ignore(just(Token::Tis))
+        .then(
+            winglist()
+                .map(|w| {
+                    Box::new(move |t: String| Tiki::Wing((Some(t), w)))
+                        as Box<dyn FnOnce(String) -> Tiki>
+                })
+                .or(hoon_wide.clone()
+                    .map(|h| {
+                        Box::new(move |t: String| Tiki::Hoon((Some(t), Box::new(h))))
+                         as Box<dyn FnOnce(String) -> Tiki>
+                }))
+        )
+        .map(|(t, f)| f(t));
+
+    let no_name = winglist()
+        .map(|w| Tiki::Wing((None, w)))
+        .or(hoon_wide.clone().map(|h| Tiki::Hoon((None, Box::new(h)))));
+
+    with_name.or(no_name)
+}
+
+pub fn tiki_tall<'tokens, 'src: 'tokens, I>(
+    hoon_tall: impl ParserExt<'tokens, 'src, I, Hoon>,
+    hoon_wide:   impl ParserExt<'tokens, 'src, I, Hoon>,
+) -> impl Parser<'tokens, I, Tiki, Err<'tokens, 'src>> + 'tokens
+where
+    I: ValueInput<'tokens, Token = Token<'src>, Span = SimpleSpan>,
+{
+    let with_name = select! { Token::Name(term) => term.to_string() }
+        .then_ignore(just(Token::Tis))
+        .then(
+            winglist()
+                .map(|w| {
+                    Box::new(move |t: String| Tiki::Wing((Some(t), w)))
+                        as Box<dyn FnOnce(String) -> Tiki>
+                })
+                .or(hoon_tall.clone()
+                    .map(|h| {
+                        Box::new(move |t: String| Tiki::Hoon((Some(t), Box::new(h))))
+                         as Box<dyn FnOnce(String) -> Tiki>
+                }))
+        )
+        .map(|(t, f)| f(t));
+
+    tiki_wide(hoon_wide.clone())    //  the hoon parser has ^= case here but
+        .or(
+            just(Token::KetTis).then(gap()).or_not()
+            .ignore_then(with_name)
+        )
+        .or(
+            hoon_tall.clone().map(|h| Tiki::Hoon((None, Box::new(h))))
+        )
+}
+
+///  Parses arms of a Core (grouped by chapters).
+///     chapters can be unamed or named with +$
+///     arms can be named with ++ or +$
+///
+pub fn chapters<'tokens, 'src: 'tokens, I>(
+    hoon: impl ParserExt<'tokens, 'src, I, Hoon>,
+    spec: impl ParserExt<'tokens, 'src, I, Spec> + Clone + 'tokens
+) -> impl Parser<'tokens, I, HashMap<Term, Tome>, Err<'tokens, 'src>>
+where
+    I: ValueInput<'tokens, Token = Token<'src>, Span = SimpleSpan>,
+{
+
+    let luslus = just(Token::LusLus)
+            .ignore_then(gap())
+            .ignore_then(just(Token::Buc).to("%$").or(select! { Token::Name(s) => s }))
+            .then_ignore(gap())
+            .then(hoon.clone())
+            .map(|(name, hoon)| (name.to_string(), hoon));
+
+    let lusbuc = just(Token::LusBuc)
+            .ignore_then(gap())
+            .ignore_then(select! { Token::Name(s) => s })
+            .then_ignore(gap())
+            .then(spec.clone())
+            .map(|(name, spec)| (name.to_string(),
+                                Hoon::KetCol(Box::new(Spec::Name(name.to_string(),
+                                                        Box::new(spec))))));
+
+    let optional_chapter_label = just(Token::LusBar)
+        .then_ignore(gap())
+        .then(just(Token::Cen))
+        .ignore_then(select! { Token::Name(s) => s.to_string() })
+        .then_ignore(gap())
+        .or_not();
+
+    let chapter = optional_chapter_label
+                    .then(luslus.or(lusbuc)
+                          .then_ignore(gap())
+                          .repeated().at_least(1).collect::<Vec<_>>());
+
+    chapter.repeated().at_least(1).collect::<Vec<_>>()
+        .then_ignore(just(Token::HepHep))
+        .map(|chapters_vec: Vec<(Option<String>, Vec<(String, Hoon)>)>| {
+            let mut map_term_tome = HashMap::new();
+            for (opt_label, arms_vec) in chapters_vec {
+                let mut arms_map = HashMap::new();
+                for (name, hoon) in arms_vec {
+                    arms_map.insert(name, hoon);
+                }
+                let key = opt_label.unwrap_or_else(|| "$".to_string());
+                let what = "".to_string();
+                let tome: Tome = (what, arms_map);
+                map_term_tome.insert(key, tome);
+            }
+            map_term_tome
+        })
+}

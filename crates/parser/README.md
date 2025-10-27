@@ -2,7 +2,6 @@
 ### Clone & Build
 
 ```bash
-cd crates/parser
 cargo build --release
 ../../target/release/parser file_to_parse.hoon
 

@@ -1,51 +1,9 @@
 use logos::Logos;
 use std::fmt;
-use logos::Lexer;
 
 #[derive(Logos, Debug, PartialEq, Clone)]
 pub enum Token<'a> {
     LexerError,
-
-    #[token("|$")]
-    BarBuc,
-    #[token("|_")]
-    BarCab,
-    #[token("|:")]
-    BarCol,
-    #[token("|%")]
-    BarCen,
-    #[token("|.")]
-    BarDot,
-    #[token("|^")]
-    BarKet,
-    #[token("|-")]
-    BarHep,
-    #[token("|~")]
-    BarSig,
-    #[token("|*")]
-    BarTar,
-    #[token("|=")]
-    BarTis,
-    #[token("|@")]
-    BarPat,
-    #[token("|?")]
-    BarWut,
-    #[token("|?(")]
-    BarWutWide,
-    #[token("|$(")]
-    BarBucWide,
-    #[token("|:(")]
-    BarColWide,
-    #[token("|.(")]
-    BarDotWide,
-    #[token("|-(")]
-    BarHepWide,
-    #[token("|~(")]
-    BarSigWide,
-    #[token("|*(")]
-    BarTarWide,
-    #[token("|=(")]
-    BarTisWide,
 
     #[token("^|")]
     KetBar,
@@ -87,112 +45,6 @@ pub enum Token<'a> {
     KetTisWide,
     #[token("^?(")]
     KetWutWide,
-
-    #[token("?|")]
-    WutBar,
-    #[token("?-")]
-    WutHep,
-    #[token("?:")]
-    WutCol,
-    #[token("?.")]
-    WutDot,
-    #[token("?^")]
-    WutKet,
-    #[token("?<")]
-    WutGal,
-    #[token("?>")]
-    WutGar,
-    #[token("?+")]
-    WutLus,
-    #[token("?&")]
-    WutPam,
-    #[token("?@")]
-    WutPat,
-    #[token("?~")]
-    WutSig,
-    #[token("?=")]
-    WutTis,
-    #[token("?!")]
-    WutZap,
-    #[token("?-(")]
-    WutHepWide,
-    #[token("?|(")]
-    WutBarWide,
-    #[token("?:(")]
-    WutColWide,
-    #[token("?.(")]
-    WutDotWide,
-    #[token("?^(")]
-    WutKetWide,
-    #[token("?<(")]
-    WutGalWide,
-    #[token("?>(")]
-    WutGarWide,
-    #[token("?+(")]
-    WutLusWide,
-    #[token("?&(")]
-    WutPamWide,
-    #[token("?@(")]
-    WutPatWide,
-    #[token("?~(")]
-    WutSigWide,
-    #[token("?=(")]
-    WutTisWide,
-    #[token("?!(")]
-    WutZapWide,
-
-    // #[token("|(")]
-    // WutBarIrregular,
-    #[token("&(")]
-    WutPamIrregular,
-
-    #[token("=>")]
-    TisGar,
-    #[token("=,")]
-    TisCom,
-    #[token("=.")]
-    TisDot,
-    #[token("=<")]
-    TisGal,
-    #[token("=>(")]
-    TisGarWide,
-    #[token("=<(")]
-    TisGalWide,
-    #[token("=-(")]
-    TisHepWide,
-    #[token("=^(")]
-    TisKetWide,
-    #[token("=,(")]
-    TisComWide,
-    #[token("=.(")]
-    TisDotWide,
-    #[token("=;(")]
-    TisMicWide,
-    #[token("=/(")]
-    TisFasWide,
-
-    #[token("%_")]
-    CenCab,
-    #[token("%:")]
-    CenCol,
-    #[token("%-")]
-    CenHep,
-    #[token("%^")]
-    CenKet,
-    #[token("%+")]
-    CenLus,
-    #[token("%~")]
-    CenSig,
-    #[token("%*")]
-    CenTar,
-    #[token("%=")]
-    CenTis,
-    #[token("%*(")]
-    CenTarWide,
-    #[token("%^(")]
-    CenKetWide,
-    #[token("%=(")]
-    CenTisWide,
 
     #[token("+|")]
     LusBar,
@@ -348,9 +200,6 @@ pub enum Token<'a> {
     #[token("!>(")]
     ZapGarWide,
 
-    #[token("?(")]
-    BucWutIrregular,
-
     #[regex(r"~\d{4}\.\d{1,2}\.\d{1,2}(?:\.\.\d+\.\d+\.\d+\.\.[0-9a-f]+)?", |lex| lex.slice(), priority = 20)]
     Date(&'a str),
 
@@ -372,11 +221,6 @@ pub enum Token<'a> {
     #[token("--")]
     HepHep,
 
-    #[token("%|")]
-    CenBar,
-    #[token("%&")]
-    CenPam,
-
     #[token("]~")]
     SigSer,
     #[token("~[")]
@@ -391,11 +235,13 @@ pub enum Token<'a> {
 
     #[token("%")]
     Cen,
-    #[token(">")]  //  we are using this for gate calls
+    #[token(">")]
     Gar,
     #[token("<")]
     Gal,
-    #[token("(")]  //  we are using this for gate calls
+    #[token("@")]
+    Pat,
+    #[token("(")]
     Pal,
     #[token(")")]
     Par,
@@ -457,8 +303,8 @@ pub enum Token<'a> {
     #[regex(r"~-~?[0-9a-fA-F]+\.?|~-[a-zA-Z]|~\[(?:~-[a-zA-Z0-9]+(?:\s+)?)+\]", |lex| lex.slice())]
     Unicode(&'a str),
 
-    #[regex(r"@[a-zA-Z0-9]*", |lex| lex.slice())]
-    Aura(&'a str),
+    // #[regex(r"@[a-zA-Z0-9]*", |lex| lex.slice(), priority = 1)]
+    // Aura(&'a str),
 
     #[regex(r"[a-zA-Z][a-zA-Z0-9-]*", |lex| lex.slice())]
     Name(&'a str),
