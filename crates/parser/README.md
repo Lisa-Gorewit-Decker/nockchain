@@ -1,5 +1,5 @@
 
-### Clone & Build
+### Build & Run
 
 ```bash
 cargo build --release

@@ -1008,7 +1008,7 @@ where
 
     tiki_wide(hoon_wide.clone())    //  the hoon parser has ^= case here but
         .or(
-            just(Token::KetTis).then(gap()).or_not()
+            just([Token::Ket, Token::Tis]).then(gap()).or_not()
             .ignore_then(with_name)
         )
         .or(
@@ -1028,14 +1028,14 @@ where
     I: ValueInput<'tokens, Token = Token<'src>, Span = SimpleSpan>,
 {
 
-    let luslus = just(Token::LusLus)
+    let luslus = just([Token::Lus, Token::Lus])
             .ignore_then(gap())
             .ignore_then(just(Token::Buc).to("%$").or(select! { Token::Name(s) => s }))
             .then_ignore(gap())
             .then(hoon.clone())
             .map(|(name, hoon)| (name.to_string(), hoon));
 
-    let lusbuc = just(Token::LusBuc)
+    let lusbuc =  just([Token::Lus, Token::Buc])
             .ignore_then(gap())
             .ignore_then(select! { Token::Name(s) => s })
             .then_ignore(gap())
@@ -1044,7 +1044,8 @@ where
                                 Hoon::KetCol(Box::new(Spec::Name(name.to_string(),
                                                         Box::new(spec))))));
 
-    let optional_chapter_label = just(Token::LusBar)
+    let optional_chapter_label =
+        just([Token::Lus, Token::Bar])
         .then_ignore(gap())
         .then(just(Token::Cen))
         .ignore_then(select! { Token::Name(s) => s.to_string() })
@@ -1057,7 +1058,7 @@ where
                           .repeated().at_least(1).collect::<Vec<_>>());
 
     chapter.repeated().at_least(1).collect::<Vec<_>>()
-        .then_ignore(just(Token::HepHep))
+        .then_ignore(just([Token::Hep, Token::Hep]))
         .map(|chapters_vec: Vec<(Option<String>, Vec<(String, Hoon)>)>| {
             let mut map_term_tome = HashMap::new();
             for (opt_label, arms_vec) in chapters_vec {
@@ -1072,4 +1073,78 @@ where
             }
             map_term_tome
         })
+}
+
+pub fn list_hoon_tall<'tokens, 'src: 'tokens, I>(
+    hoon:        impl ParserExt<'tokens, 'src, I, Hoon>,
+) -> impl Parser<'tokens, I, Vec<Hoon>, Err<'tokens, 'src>> + 'tokens
+where
+    I: ValueInput<'tokens, Token = Token<'src>, Span = SimpleSpan>,
+{
+    hoon.clone()
+        .separated_by(gap())
+        .at_least(1)
+        .collect::<Vec<_>>()
+}
+
+pub fn term<'tokens, 'src: 'tokens, I>(
+) -> impl Parser<'tokens, I, String, Err<'tokens, 'src>> + 'tokens
+where
+    I: ValueInput<'tokens, Token = Token<'src>, Span = SimpleSpan>,
+{
+    just(Token::Cen)
+      .ignore_then(select! {Token::Name(s) => format!("%{}", s) })
+}
+
+pub fn jet_hooks<'tokens, 'src: 'tokens, I>(
+    hoon:        impl ParserExt<'tokens, 'src, I, Hoon>,
+) -> impl Parser<'tokens, I, Vec<(Term, Hoon)>, Err<'tokens, 'src>> + 'tokens
+where
+    I: ValueInput<'tokens, Token = Token<'src>, Span = SimpleSpan>,
+{
+    just(Token::Sig).to(Vec::new())
+        .or(
+            just([Token::Tis, Token::Tis])
+            .ignore_then(just(Token::Gap))
+            .ignore_then(just(Token::Cen)
+                        .ignore_then(select! {Token::Name(n) => format!("%{}", n)})
+                        .then_ignore(gap())
+                        .then(hoon.clone())
+                        .separated_by(gap())
+                        .at_least(1)
+                        .collect::<Vec<(Term, Hoon)>>()
+                        )
+            .then_ignore(gap())
+            .then_ignore(just([Token::Tis, Token::Tis]))
+        )
+}
+
+pub fn jet_signature<'tokens, 'src: 'tokens, I>(
+) -> impl Parser<'tokens, I, Chum, Err<'tokens, 'src>> + 'tokens
+where
+    I: ValueInput<'tokens, Token = Token<'src>, Span = SimpleSpan>,
+{
+    let lef = just(Token::Cen)  //  %k
+                .ignore_then(select!
+                    { Token::Name(s) => Chum::Lef(s.to_string())}
+                );
+
+    let stdkel = just(Token::Cen)  //  %k.138
+                .ignore_then(select!
+                    { Token::Name(s) => s.to_string() }
+                )
+                .then_ignore(just(Token::Dot))
+                .then(select! {
+                    Token::Number(n) => {
+                        n.chars()
+                            .filter(|c| c.is_digit(10))
+                            .collect::<String>()
+                            .parse::<u64>()
+                            .ok()
+                    }
+                })
+                .map(|(s, n)| Chum::StdKel(s, n.unwrap_or(0)));
+
+    stdkel
+    .or(lef)
 }

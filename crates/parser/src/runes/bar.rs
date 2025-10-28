@@ -258,7 +258,7 @@ where
     I: ValueInput<'tokens, Token = Token<'src>, Span = SimpleSpan>,
 {
     let aliases =     //   +*  foo  1
-                just(Token::LusTar)
+                just([Token::Lus, Token::Tar])
                     .ignore_then(gap())
                     .ignore_then(list_term_hoon(hoon.clone()));
 
