@@ -37,6 +37,20 @@ where
     ))
 }
 
+pub fn cen_spec_tall<'tokens, 'src: 'tokens, I>(
+    hoon:        impl ParserExt<'tokens, 'src, I, Hoon>,
+    spec:        impl ParserExt<'tokens, 'src, I, Spec>,
+    // spec_wide:   impl ParserExt<'tokens, 'src, I, Spec>,
+) -> impl Parser<'tokens, I, Spec, Err<'tokens, 'src>>
+where
+    I: ValueInput<'tokens, Token = Token<'src>, Span = SimpleSpan>,
+{
+    choice((
+        just(Token::Hep).ignore_then(cenhep_spec(hoon.clone(), spec.clone())),
+        just(Token::Lus).ignore_then(cenlus_spec(hoon.clone(), spec.clone())),
+    ))
+}
+
 pub fn cenket<'tokens, 'src: 'tokens, I>(
     hoon:        impl ParserExt<'tokens, 'src, I, Hoon>,
 ) -> impl Parser<'tokens, I, Hoon, Err<'tokens, 'src>> + 'tokens
@@ -217,6 +231,36 @@ where
 {
     winglist()
     .then(list_wing_hoon_wide(hoon_wide.clone())
-          .delimited_by(just(Token::Pal), just(Token::Par)))
+    .delimited_by(just(Token::Pal), just(Token::Par)))
     .map(|(name, list)| Hoon::CenTis(name, list))
+}
+
+pub fn cenlus_spec<'tokens, 'src: 'tokens, I>(
+    hoon:        impl ParserExt<'tokens, 'src, I, Hoon>,
+    spec:        impl ParserExt<'tokens, 'src, I, Spec>,
+) -> impl Parser<'tokens, I, Spec, Err<'tokens, 'src>> + 'tokens
+where
+    I: ValueInput<'tokens, Token = Token<'src>, Span = SimpleSpan>,
+{
+    gap()
+    .ignore_then(hoon.clone())
+    .then_ignore(gap())
+    .then(spec.clone())
+    .then_ignore(gap())
+    .then(spec.clone())
+    .map(|((p, q), r)| Spec::Make(p, vec![q, r]))
+}
+
+pub fn cenhep_spec<'tokens, 'src: 'tokens, I>(
+    hoon:        impl ParserExt<'tokens, 'src, I, Hoon>,
+    spec:        impl ParserExt<'tokens, 'src, I, Spec>,
+) -> impl Parser<'tokens, I, Spec, Err<'tokens, 'src>> + 'tokens
+where
+    I: ValueInput<'tokens, Token = Token<'src>, Span = SimpleSpan>,
+{
+    gap()
+    .ignore_then(hoon.clone())
+    .then_ignore(gap())
+    .then(spec.clone())
+    .map(|(p, q)| Spec::Make(p, vec![q]))
 }

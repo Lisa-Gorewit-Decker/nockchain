@@ -26,6 +26,7 @@ where
         just(Token::Ket).ignore_then(barket(hoon.clone(), spec.clone())),
         just(Token::Col).ignore_then(barcol(hoon.clone())),
         just(Token::Buc).ignore_then(barbuc(hoon.clone(), spec.clone())),
+        just(Token::Wut).ignore_then(barwut(hoon.clone())),
     ))
 }
 
@@ -173,7 +174,7 @@ where
     I: ValueInput<'tokens, Token = Token<'src>, Span = SimpleSpan>,
 {
     gap()
-    .ignore_then(list_spec())
+    .ignore_then(list_names())
     .then_ignore(gap())
     .then(spec.clone())
     .map(|(list, h)| Hoon::BarBuc(list, Box::new(h)))
@@ -281,4 +282,15 @@ where
     .then(hoon_wide.clone())
     .delimited_by(just(Token::Pal), just(Token::Par))
     .map(|(p, q)| Hoon::BarCol(Box::new(p), Box::new(q)))
+}
+
+pub fn barwut<'tokens, 'src: 'tokens, I>(
+    hoon: impl ParserExt<'tokens, 'src, I, Hoon>,
+) -> impl Parser<'tokens, I, Hoon, Err<'tokens, 'src>> + 'tokens
+where
+    I: ValueInput<'tokens, Token = Token<'src>, Span = SimpleSpan>,
+{
+    gap()
+    .ignore_then(hoon.clone())
+    .map(|p| Hoon::BarWut(Box::new(p)))
 }
