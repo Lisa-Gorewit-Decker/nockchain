@@ -8,29 +8,29 @@ use chumsky::{
 };
 
 pub fn buc_runes_tall<'tokens, 'src: 'tokens, I>(
-    hoon:      impl ParserExt<'tokens, 'src, I, Hoon>,
-    spec:      impl ParserExt<'tokens, 'src, I, Spec>,
+    hoon: impl ParserExt<'tokens, 'src, I, Hoon>,
+    spec: impl ParserExt<'tokens, 'src, I, Spec>,
 ) -> impl Parser<'tokens, I, Hoon, Err<'tokens, 'src>>
 where
     I: ValueInput<'tokens, Token = Token<'src>, Span = SimpleSpan>,
 {
     choice((
-        just(Token::Cen).ignore_then(buccen(spec.clone())),
-        just(Token::Wut).ignore_then(bucwut(spec.clone())),
         just(Token::Pat).ignore_then(bucpat(spec.clone())),
-        just(Token::Col).ignore_then(buccol(spec.clone())),
-        just(Token::Lus).ignore_then(buclus(spec.clone())),
-        just(Token::Ket).ignore_then(bucket(spec.clone())),
-        just(Token::Sig).ignore_then(bucsig(hoon.clone(), spec.clone())),
         just(Token::Cab).ignore_then(buccab(hoon.clone())),
-        just(Token::Gar).ignore_then(bucgal(spec.clone())),
-        just(Token::Gal).ignore_then(bucgar(spec.clone())),
+        just(Token::Col).ignore_then(buccol(spec.clone())),
+        just(Token::Cen).ignore_then(buccen(spec.clone())),
+        just(Token::Gal).ignore_then(bucgal(spec.clone())),
+        just(Token::Gar).ignore_then(bucgar(spec.clone())),
         just(Token::Bar).ignore_then(bucbar(hoon.clone(), spec.clone())),
         just(Token::Pam).ignore_then(bucpam(hoon.clone(), spec.clone())),
+        just(Token::Ket).ignore_then(bucket(spec.clone())),
+        just(Token::Sig).ignore_then(bucsig(hoon.clone(), spec.clone())),
         just(Token::Hep).ignore_then(buchep(spec.clone())),
-        just(Token::Mic).ignore_then(bucmic(hoon.clone())),
         just(Token::Tis).ignore_then(buctis(spec.clone())),
         just(Token::Wut).ignore_then(bucwut(spec.clone())),
+        just(Token::Lus).ignore_then(buclus(spec.clone())),
+        just(Token::Dot).ignore_then(bucdot(spec.clone())),
+        just(Token::Com).ignore_then(buccom(spec.clone())),
     ))
 }
 
@@ -42,75 +42,74 @@ where
     I: ValueInput<'tokens, Token = Token<'src>, Span = SimpleSpan>,
 {
     choice((
-        just(Token::Cen).ignore_then(buccen_wide(spec_wide.clone())),
-        just(Token::Wut).ignore_then(bucwut_wide(spec_wide.clone())),
         just(Token::Pat).ignore_then(bucpat_wide(spec_wide.clone())),
-        just(Token::Col).ignore_then(buccol_wide(spec_wide.clone())),
-        just(Token::Lus).ignore_then(buclus_wide(spec_wide.clone())),
-        just(Token::Ket).ignore_then(bucket_wide(spec_wide.clone())),
-        just(Token::Sig).ignore_then(bucsig_wide(hoon_wide.clone(), spec_wide.clone())),
         just(Token::Cab).ignore_then(buccab_wide(hoon_wide.clone())),
+        just(Token::Col).ignore_then(buccol_wide(spec_wide.clone())),
+        just(Token::Cen).ignore_then(buccen_wide(spec_wide.clone())),
         just(Token::Gal).ignore_then(bucgal_wide(spec_wide.clone())),
         just(Token::Gar).ignore_then(bucgar_wide(spec_wide.clone())),
         just(Token::Bar).ignore_then(bucbar_wide(hoon_wide.clone(), spec_wide.clone())),
         just(Token::Pam).ignore_then(bucpam_wide(hoon_wide.clone(), spec_wide.clone())),
+        just(Token::Ket).ignore_then(bucket_wide(spec_wide.clone())),
+        just(Token::Sig).ignore_then(bucsig_wide(hoon_wide.clone(), spec_wide.clone())),
         just(Token::Hep).ignore_then(buchep_wide(spec_wide.clone())),
-        just(Token::Mic).ignore_then(bucmic_wide(hoon_wide.clone())),
         just(Token::Tis).ignore_then(buctis_wide(spec_wide.clone())),
         just(Token::Wut).ignore_then(bucwut_wide(spec_wide.clone())),
+        just(Token::Lus).ignore_then(buclus_wide(spec_wide.clone())),
+        just(Token::Dot).ignore_then(bucdot_wide(spec_wide.clone())),
+        just(Token::Com).ignore_then(buccom_wide(spec_wide.clone())),
     ))
 }
 
 pub fn buc_spec_tall<'tokens, 'src: 'tokens, I>(
-    hoon:        impl ParserExt<'tokens, 'src, I, Hoon>,
-    spec:        impl ParserExt<'tokens, 'src, I, Spec>,
-    // spec_wide:   impl ParserExt<'tokens, 'src, I, Spec>,
+    hoon: impl ParserExt<'tokens, 'src, I, Hoon>,
+    spec: impl ParserExt<'tokens, 'src, I, Spec>,
 ) -> impl Parser<'tokens, I, Spec, Err<'tokens, 'src>> + Clone + 'tokens
 where
     I: ValueInput<'tokens, Token = Token<'src>, Span = SimpleSpan>,
 {
     choice((
-        just(Token::Cen).ignore_then(buccen_spec(spec.clone())),
-        just(Token::Bar).ignore_then(bucbar_spec(hoon.clone(), spec.clone())),
-        just(Token::Pat).ignore_then(bucpat_spec(spec.clone())),
-        just(Token::Wut).ignore_then(bucwut_spec(spec.clone())),
-        just(Token::Tis).ignore_then(buctis_spec(spec.clone())),
-        just(Token::Lus).ignore_then(buclus_spec(spec.clone())),
-        just(Token::Ket).ignore_then(bucket_spec(spec.clone())),
         just(Token::Col).ignore_then(buccol_spec(spec.clone())),
-        just(Token::Sig).ignore_then(bucsig_spec(hoon.clone(), spec.clone())),
-        just(Token::Mic).ignore_then(bucmic_spec(hoon.clone())),
-        just(Token::Pam).ignore_then(bucpam_spec(hoon.clone(), spec.clone())),
-        just(Token::Cab).ignore_then(buccab_spec(hoon.clone())),
+        just(Token::Cen).ignore_then(buccen_spec(spec.clone())),
         just(Token::Gal).ignore_then(bucgal_spec(spec.clone())),
         just(Token::Gar).ignore_then(bucgar_spec(spec.clone())),
+        just(Token::Ket).ignore_then(bucket_spec(spec.clone())),
+        just(Token::Sig).ignore_then(bucsig_spec(hoon.clone(), spec.clone())),
+        just(Token::Bar).ignore_then(bucbar_spec(hoon.clone(), spec.clone())),
+        just(Token::Pam).ignore_then(bucpam_spec(hoon.clone(), spec.clone())),
+        just(Token::Pat).ignore_then(bucpat_spec(spec.clone())),
+        just(Token::Cab).ignore_then(buccab_spec(hoon.clone())),
+        just(Token::Hep).ignore_then(buchep_spec(spec.clone())),
+        just(Token::Tis).ignore_then(buctis_spec(spec.clone())),
+        just(Token::Wut).ignore_then(bucwut_spec(spec.clone())),
+        just(Token::Mic).ignore_then(bucmic_spec(hoon.clone())),
+        just(Token::Lus).ignore_then(buclus_spec(spec.clone())),
     )).boxed()
 }
 
 pub fn buc_spec_wide<'tokens, 'src: 'tokens, I>(
-    hoon_wide:        impl ParserExt<'tokens, 'src, I, Hoon>,
-    spec_wide:        impl ParserExt<'tokens, 'src, I, Spec>,
-    // spec_wide:   impl ParserExt<'tokens, 'src, I, Spec>,
+    hoon_wide: impl ParserExt<'tokens, 'src, I, Hoon>,
+    spec_wide: impl ParserExt<'tokens, 'src, I, Spec>,
 ) -> impl Parser<'tokens, I, Spec, Err<'tokens, 'src>> + Clone + 'tokens
 where
     I: ValueInput<'tokens, Token = Token<'src>, Span = SimpleSpan>,
 {
     choice((
-        just(Token::Pat).ignore_then(bucpat_spec_wide(spec_wide.clone())),
-        just(Token::Sig).ignore_then(bucsig_spec_wide(hoon_wide.clone(), spec_wide.clone())),
-        just(Token::Hep).ignore_then(buchep_spec_wide(spec_wide.clone())),
-        just(Token::Lus).ignore_then(buclus_spec_wide(spec_wide.clone())),
-        just(Token::Cen).ignore_then(buccen_spec_wide(spec_wide.clone())),
-        just(Token::Wut).ignore_then(bucwut_spec_wide(spec_wide.clone())),
-        just(Token::Mic).ignore_then(bucmic_spec_wide(hoon_wide.clone())),
-        just(Token::Bar).ignore_then(bucbar_spec_wide(hoon_wide.clone(), spec_wide.clone())),
-        just(Token::Pam).ignore_then(bucpam_spec_wide(hoon_wide.clone(), spec_wide.clone())),
-        just(Token::Cab).ignore_then(buccab_spec_wide(hoon_wide.clone())),
-        just(Token::Tis).ignore_then(buctis_spec_wide(spec_wide.clone())),
         just(Token::Col).ignore_then(buccol_spec_wide(spec_wide.clone())),
+        just(Token::Cen).ignore_then(buccen_spec_wide(spec_wide.clone())),
         just(Token::Gal).ignore_then(bucgal_spec_wide(spec_wide.clone())),
         just(Token::Gar).ignore_then(bucgar_spec_wide(spec_wide.clone())),
         just(Token::Ket).ignore_then(bucket_spec_wide(spec_wide.clone())),
+        just(Token::Sig).ignore_then(bucsig_spec_wide(hoon_wide.clone(), spec_wide.clone())),
+        just(Token::Bar).ignore_then(bucbar_spec_wide(hoon_wide.clone(), spec_wide.clone())),
+        just(Token::Pam).ignore_then(bucpam_spec_wide(hoon_wide.clone(), spec_wide.clone())),
+        just(Token::Pat).ignore_then(bucpat_spec_wide(spec_wide.clone())),
+        just(Token::Cab).ignore_then(buccab_spec_wide(hoon_wide.clone())),
+        just(Token::Hep).ignore_then(buchep_spec_wide(spec_wide.clone())),
+        just(Token::Tis).ignore_then(buctis_spec_wide(spec_wide.clone())),
+        just(Token::Wut).ignore_then(bucwut_spec_wide(spec_wide.clone())),
+        just(Token::Mic).ignore_then(bucmic_spec_wide(hoon_wide.clone())),
+        just(Token::Lus).ignore_then(buclus_spec_wide(spec_wide.clone())),
     )).boxed()
 }
 
@@ -123,6 +122,46 @@ where
     just(Token::Cab)
         .ignore_then(hoon_wide.clone())
         .map(|h| Hoon::KetCol(Box::new(Spec::BucCab(h))))
+}
+
+pub fn bucdot<'tokens, 'src: 'tokens, I>(
+    spec:        impl ParserExt<'tokens, 'src, I, Spec>,
+) -> impl Parser<'tokens, I, Hoon, Err<'tokens, 'src>> + 'tokens
+where
+    I: ValueInput<'tokens, Token = Token<'src>, Span = SimpleSpan>,
+{
+    one_spec_closed_tall(spec.clone())
+    .map(|s| Hoon::KetTar(Box::new(s)))
+}
+
+pub fn bucdot_wide<'tokens, 'src: 'tokens, I>(
+    spec_wide:        impl ParserExt<'tokens, 'src, I, Spec>,
+) -> impl Parser<'tokens, I, Hoon, Err<'tokens, 'src>> + 'tokens
+where
+    I: ValueInput<'tokens, Token = Token<'src>, Span = SimpleSpan>,
+{
+    one_spec_closed_wide(spec_wide.clone())
+    .map(|s| Hoon::KetTar(Box::new(s)))
+}
+
+pub fn buccom<'tokens, 'src: 'tokens, I>(
+    spec:        impl ParserExt<'tokens, 'src, I, Spec>,
+) -> impl Parser<'tokens, I, Hoon, Err<'tokens, 'src>> + 'tokens
+where
+    I: ValueInput<'tokens, Token = Token<'src>, Span = SimpleSpan>,
+{
+    one_spec_closed_tall(spec.clone())
+    .map(|s| Hoon::KetCol(Box::new(s)))
+}
+
+pub fn buccom_wide<'tokens, 'src: 'tokens, I>(
+    spec_wide:        impl ParserExt<'tokens, 'src, I, Spec>,
+) -> impl Parser<'tokens, I, Hoon, Err<'tokens, 'src>> + 'tokens
+where
+    I: ValueInput<'tokens, Token = Token<'src>, Span = SimpleSpan>,
+{
+    one_spec_closed_wide(spec_wide.clone())
+    .map(|s| Hoon::KetCol(Box::new(s)))
 }
 
 pub fn bucket<'tokens, 'src: 'tokens, I>(
@@ -254,12 +293,8 @@ pub fn bucpat<'tokens, 'src: 'tokens, I>(
 where
     I: ValueInput<'tokens, Token = Token<'src>, Span = SimpleSpan>,
 {
-    two_specs_tall(spec.clone())
-    .map(|(p, q)| {
-            Hoon::KetCol(Box::new(Spec::BucPat(
-                                        Box::new(p),
-                                        Box::new(q))))
-        })
+    bucpat_spec(spec.clone())
+    .map(|s| Hoon::KetCol(Box::new(s)))
 }
 
 pub fn buccab<'tokens, 'src: 'tokens, I>(
@@ -408,7 +443,7 @@ where
     I: ValueInput<'tokens, Token = Token<'src>, Span = SimpleSpan>,
 {
     two_specs_closed_wide(spec_wide.clone())
-        .map(|(p, q)| Hoon::KetCol(Box::new(Spec::BucHep(Box::new(p), Box::new(q)))))
+    .map(|(p, q)| Hoon::KetCol(Box::new(Spec::BucHep(Box::new(p), Box::new(q)))))
 }
 
 pub fn bucpam_wide<'tokens, 'src: 'tokens, I>(
@@ -419,7 +454,7 @@ where
     I: ValueInput<'tokens, Token = Token<'src>, Span = SimpleSpan>,
 {
     spec_hoon_wide(hoon_wide.clone(), spec_wide.clone())
-        .map(|(p, q)| Hoon::KetCol(Box::new(Spec::BucPam(Box::new(p), q))))
+    .map(|(p, q)| Hoon::KetCol(Box::new(Spec::BucPam(Box::new(p), q))))
 }
 
 pub fn buccol<'tokens, 'src: 'tokens, I>(
@@ -808,6 +843,16 @@ where
     .then(spec.clone())
     .delimited_by(just(Token::Pal), just(Token::Par))
     .map(|(p, q)| Spec::BucLus(p, Box::new(q)))
+}
+
+pub fn buchep_spec<'tokens, 'src: 'tokens, I>(
+    spec:   impl ParserExt<'tokens, 'src, I, Spec>,
+) -> impl Parser<'tokens, I, Spec, Err<'tokens, 'src>>
+where
+    I: ValueInput<'tokens, Token = Token<'src>, Span = SimpleSpan>,
+{
+    two_specs_closed_tall(spec.clone())
+    .map(|(p, q)| Spec::BucHep(Box::new(p), Box::new(q)))
 }
 
 pub fn buchep_spec_wide<'tokens, 'src: 'tokens, I>(

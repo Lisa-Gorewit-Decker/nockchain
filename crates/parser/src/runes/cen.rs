@@ -14,12 +14,14 @@ where
     I: ValueInput<'tokens, Token = Token<'src>, Span = SimpleSpan>,
 {
     choice((
-        just(Token::Ket).ignore_then(cenket(hoon.clone())),
-        just(Token::Hep).ignore_then(cenhep(hoon.clone())),
-        just(Token::Dot).ignore_then(cendot(hoon.clone())),
-        just(Token::Sig).ignore_then(censig(hoon.clone())),
-        just(Token::Lus).ignore_then(cenlus(hoon.clone())),
         just(Token::Cab).ignore_then(cencab(hoon.clone())),
+        just(Token::Dot).ignore_then(cendot(hoon.clone())),
+        just(Token::Ket).ignore_then(cenket(hoon.clone())),
+        just(Token::Lus).ignore_then(cenlus(hoon.clone())),
+        just(Token::Hep).ignore_then(cenhep(hoon.clone())),
+        just(Token::Col).ignore_then(cencol(hoon.clone())),
+        just(Token::Sig).ignore_then(censig(hoon.clone())),
+        just(Token::Tar).ignore_then(centar(hoon.clone())),
         just(Token::Tis).ignore_then(centis(hoon.clone())),
     ))
 }
@@ -31,7 +33,13 @@ where
     I: ValueInput<'tokens, Token = Token<'src>, Span = SimpleSpan>,
 {
     choice((
+        just(Token::Cab).ignore_then(cencab_wide(hoon_wide.clone())),
+        just(Token::Dot).ignore_then(cendot_wide(hoon_wide.clone())),
         just(Token::Ket).ignore_then(cenket_wide(hoon_wide.clone())),
+        just(Token::Lus).ignore_then(cenlus_wide(hoon_wide.clone())),
+        just(Token::Hep).ignore_then(cenhep_wide(hoon_wide.clone())),
+        just(Token::Col).ignore_then(cencol_wide(hoon_wide.clone())),
+        just(Token::Sig).ignore_then(censig_wide(hoon_wide.clone())),
         just(Token::Tar).ignore_then(centar_wide(hoon_wide.clone())),
         just(Token::Tis).ignore_then(centis_wide(hoon_wide.clone())),
     ))
@@ -93,6 +101,40 @@ where
                                 Box::new(r)))
 }
 
+pub fn cencol<'tokens, 'src: 'tokens, I>(
+    hoon:        impl ParserExt<'tokens, 'src, I, Hoon>,
+) -> impl Parser<'tokens, I, Hoon, Err<'tokens, 'src>> + 'tokens
+where
+    I: ValueInput<'tokens, Token = Token<'src>, Span = SimpleSpan>,
+{
+    gap()
+    .ignore_then(hoon.clone())
+    .then_ignore(gap())
+    .then(list_hoon_tall(hoon.clone())
+          .then_ignore(gap())
+          .or_not())
+    .then_ignore(just([Token::Tis, Token::Tis]))
+    .map(|(p, q)| {
+        Hoon::CenCol(Box::new(p), q.unwrap_or_default())
+    })
+}
+
+pub fn cencol_wide<'tokens, 'src: 'tokens, I>(
+    hoon_wide:        impl ParserExt<'tokens, 'src, I, Hoon>,
+) -> impl Parser<'tokens, I, Hoon, Err<'tokens, 'src>> + 'tokens
+where
+    I: ValueInput<'tokens, Token = Token<'src>, Span = SimpleSpan>,
+{
+    hoon_wide.clone()
+    .then_ignore(just(Token::Ace))
+    .then(list_hoon_wide(hoon_wide.clone())
+          .or_not())
+    .delimited_by(just(Token::Pal), just(Token::Par))
+    .map(|(p, q)| {
+        Hoon::CenCol(Box::new(p), q.unwrap_or_default())
+    })
+}
+
 pub fn cenhep<'tokens, 'src: 'tokens, I>(
     hoon:        impl ParserExt<'tokens, 'src, I, Hoon>,
 ) -> impl Parser<'tokens, I, Hoon, Err<'tokens, 'src>> + 'tokens
@@ -103,6 +145,19 @@ where
     .ignore_then(hoon.clone())
     .then_ignore(gap())
     .then(hoon.clone())
+    .map(|(p, q)| Hoon::CenHep(Box::new(p), Box::new(q)))
+}
+
+pub fn cenhep_wide<'tokens, 'src: 'tokens, I>(
+    hoon_wide:        impl ParserExt<'tokens, 'src, I, Hoon>,
+) -> impl Parser<'tokens, I, Hoon, Err<'tokens, 'src>> + 'tokens
+where
+    I: ValueInput<'tokens, Token = Token<'src>, Span = SimpleSpan>,
+{
+    hoon_wide.clone()
+    .then_ignore(just(Token::Ace))
+    .then(hoon_wide.clone())
+    .delimited_by(just(Token::Pal), just(Token::Par))
     .map(|(p, q)| Hoon::CenHep(Box::new(p), Box::new(q)))
 }
 
@@ -134,6 +189,28 @@ where
     .map(|((p, q), r)| Hoon::CenLus(Box::new(p), Box::new(q), Box::new(r)))
 }
 
+pub fn cendot_wide<'tokens, 'src: 'tokens, I>(
+    hoon_wide:        impl ParserExt<'tokens, 'src, I, Hoon>,
+) -> impl Parser<'tokens, I, Hoon, Err<'tokens, 'src>> + 'tokens
+where
+    I: ValueInput<'tokens, Token = Token<'src>, Span = SimpleSpan>,
+{
+    two_hoons_wide(hoon_wide.clone())
+    .delimited_by(just(Token::Pal), just(Token::Par))
+    .map(|(p, q)| Hoon::CenDot(Box::new(p), Box::new(q)))
+}
+
+pub fn cenlus_wide<'tokens, 'src: 'tokens, I>(
+    hoon_wide:        impl ParserExt<'tokens, 'src, I, Hoon>,
+) -> impl Parser<'tokens, I, Hoon, Err<'tokens, 'src>> + 'tokens
+where
+    I: ValueInput<'tokens, Token = Token<'src>, Span = SimpleSpan>,
+{
+    three_hoons_wide(hoon_wide.clone())
+    .delimited_by(just(Token::Pal), just(Token::Par))
+    .map(|((p, q), r)| Hoon::CenLus(Box::new(p), Box::new(q), Box::new(r)))
+}
+
 pub fn cencab<'tokens, 'src: 'tokens, I>(
     hoon:        impl ParserExt<'tokens, 'src, I, Hoon>,
 ) -> impl Parser<'tokens, I, Hoon, Err<'tokens, 'src>> + 'tokens
@@ -146,6 +223,35 @@ where
     .then(list_wing_hoon_tall(hoon.clone()))
     .then_ignore(just([Token::Tis, Token::Tis]))
     .map(|(p, q)| Hoon::CenCab(p, q))
+}
+
+pub fn cencab_wide<'tokens, 'src: 'tokens, I>(
+    hoon_wide:        impl ParserExt<'tokens, 'src, I, Hoon>,
+) -> impl Parser<'tokens, I, Hoon, Err<'tokens, 'src>> + 'tokens
+where
+    I: ValueInput<'tokens, Token = Token<'src>, Span = SimpleSpan>,
+{
+    winglist()
+    .then_ignore(just(Token::Ace))
+    .then(list_wing_hoon_wide(hoon_wide.clone()))
+    .delimited_by(just(Token::Pal), just(Token::Par))
+    .map(|(p, q)| Hoon::CenCab(p, q))
+}
+
+pub fn centar<'tokens, 'src: 'tokens, I>(
+    hoon:   impl ParserExt<'tokens, 'src, I, Hoon>,
+) -> impl Parser<'tokens, I, Hoon, Err<'tokens, 'src>> + 'tokens
+where
+    I: ValueInput<'tokens, Token = Token<'src>, Span = SimpleSpan>,
+{
+    gap()
+    .ignore_then(winglist())
+    .then_ignore(gap())
+    .then(hoon.clone())
+    .then_ignore(gap())
+    .then(list_wing_hoon_tall(hoon.clone()))
+    .then_ignore(just([Token::Tis, Token::Tis]))
+    .map(|((p, q), list)| Hoon::CenTar(p, Box::new(q), list))
 }
 
 pub fn centar_wide<'tokens, 'src: 'tokens, I>(
@@ -202,6 +308,21 @@ where
     .then(hoon.clone())
     .then_ignore(gap())
     .then(hoon.clone())
+    .map(|((p, q), r)| Hoon::CenSig(p, Box::new(q), vec![r]))
+}
+
+pub fn censig_wide<'tokens, 'src: 'tokens, I>(
+    hoon_wide:      impl ParserExt<'tokens, 'src, I, Hoon>,
+) -> impl Parser<'tokens, I, Hoon, Err<'tokens, 'src>>
+where
+    I: ValueInput<'tokens, Token = Token<'src>, Span = SimpleSpan>,
+{
+    winglist()
+    .then_ignore(just(Token::Ace))
+    .then(hoon_wide.clone())
+    .then_ignore(just(Token::Ace))
+    .then(hoon_wide.clone())
+    .delimited_by(just(Token::Pal), just(Token::Par))
     .map(|((p, q), r)| Hoon::CenSig(p, Box::new(q), vec![r]))
 }
 

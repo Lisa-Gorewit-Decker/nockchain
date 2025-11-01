@@ -755,7 +755,7 @@ where
     .collect::<Vec<(Term, Hoon)>>()
 }
 
-pub fn list_names<'tokens, 'src: 'tokens, I>(
+pub fn list_names_wide<'tokens, 'src: 'tokens, I>(
 ) -> impl Parser<'tokens, I, Vec<Term>, Err<'tokens, 'src>> + 'tokens
 where
     I: ValueInput<'tokens, Token = Token<'src>, Span = SimpleSpan>,
@@ -1109,9 +1109,9 @@ where
     I: ValueInput<'tokens, Token = Token<'src>, Span = SimpleSpan>,
 {
     hoon.clone()
-        .separated_by(gap())
-        .at_least(1)
-        .collect::<Vec<_>>()
+    .separated_by(gap())
+    .at_least(1)
+    .collect::<Vec<_>>()
 }
 
 pub fn term<'tokens, 'src: 'tokens, I>(
@@ -1535,6 +1535,30 @@ where
         )
 }
 
+pub fn two_hoons_wide<'tokens, 'src: 'tokens, I>(
+    hoon_wide:        impl ParserExt<'tokens, 'src, I, Hoon>,
+) -> impl Parser<'tokens, I, (Hoon, Hoon), Err<'tokens, 'src>>
+where
+    I: ValueInput<'tokens, Token = Token<'src>, Span = SimpleSpan>,
+{
+    hoon_wide.clone()
+    .then_ignore(just(Token::Ace))
+    .then(hoon_wide.clone())
+}
+
+pub fn three_hoons_wide<'tokens, 'src: 'tokens, I>(
+    hoon_wide:        impl ParserExt<'tokens, 'src, I, Hoon>,
+) -> impl Parser<'tokens, I, ((Hoon, Hoon), Hoon), Err<'tokens, 'src>>
+where
+    I: ValueInput<'tokens, Token = Token<'src>, Span = SimpleSpan>,
+{
+    hoon_wide.clone()
+    .then_ignore(just(Token::Ace))
+    .then(hoon_wide.clone())
+    .then_ignore(just(Token::Ace))
+    .then(hoon_wide.clone())
+}
+
 pub fn two_specs_tall<'tokens, 'src: 'tokens, I>(
     spec:        impl ParserExt<'tokens, 'src, I, Spec>,
 ) -> impl Parser<'tokens, I, (Spec, Spec), Err<'tokens, 'src>>
@@ -1545,6 +1569,17 @@ where
     .ignore_then(spec.clone())
     .then_ignore(gap())
     .then(spec.clone())
+}
+
+pub fn two_specs_closed_tall<'tokens, 'src: 'tokens, I>(
+    spec:        impl ParserExt<'tokens, 'src, I, Spec>,
+) -> impl Parser<'tokens, I, (Spec, Spec), Err<'tokens, 'src>>
+where
+    I: ValueInput<'tokens, Token = Token<'src>, Span = SimpleSpan>,
+{
+    two_specs_tall(spec.clone())
+    .then_ignore(gap())
+    .then_ignore(just([Token::Tis, Token::Tis]))
 }
 
 pub fn two_specs_closed_wide<'tokens, 'src: 'tokens, I>(
@@ -1622,6 +1657,19 @@ where
     .then(spec.clone())
 }
 
+pub fn name_spec_closed_tall<'tokens, 'src: 'tokens, I>(
+    spec:        impl ParserExt<'tokens, 'src, I, Spec>,
+) -> impl Parser<'tokens, I, (String, Spec), Err<'tokens, 'src>>
+where
+    I: ValueInput<'tokens, Token = Token<'src>, Span = SimpleSpan>,
+{
+    gap()
+    .ignore_then(select! { Token::Name(n) => n.to_string() })
+    .then_ignore(gap())
+    .then(spec.clone())
+    .then_ignore(just([Token::Tis, Token::Tis]))
+}
+
 pub fn name_spec_wide<'tokens, 'src: 'tokens, I>(
     spec_wide:        impl ParserExt<'tokens, 'src, I, Spec>,
 ) -> impl Parser<'tokens, I, (String, Spec), Err<'tokens, 'src>>
@@ -1642,4 +1690,38 @@ where
 {
     hoon_wide.clone()
     .delimited_by(just(Token::Pal), just(Token::Par))
+}
+
+pub fn one_hoon_closed_tall<'tokens, 'src: 'tokens, I>(
+    hoon:        impl ParserExt<'tokens, 'src, I, Hoon>,
+) -> impl Parser<'tokens, I, Hoon, Err<'tokens, 'src>>
+where
+    I: ValueInput<'tokens, Token = Token<'src>, Span = SimpleSpan>,
+{
+    gap()
+    .ignore_then(hoon.clone())
+    .then_ignore(gap())
+    .delimited_by(just(Token::Tis), just(Token::Tis))
+}
+
+pub fn one_spec_closed_wide<'tokens, 'src: 'tokens, I>(
+    spec_wide:        impl ParserExt<'tokens, 'src, I, Spec>,
+) -> impl Parser<'tokens, I, Spec, Err<'tokens, 'src>>
+where
+    I: ValueInput<'tokens, Token = Token<'src>, Span = SimpleSpan>,
+{
+    spec_wide.clone()
+    .delimited_by(just(Token::Pal), just(Token::Par))
+}
+
+pub fn one_spec_closed_tall<'tokens, 'src: 'tokens, I>(
+    spec:        impl ParserExt<'tokens, 'src, I, Spec>,
+) -> impl Parser<'tokens, I, Spec, Err<'tokens, 'src>>
+where
+    I: ValueInput<'tokens, Token = Token<'src>, Span = SimpleSpan>,
+{
+    gap()
+    .ignore_then(spec.clone())
+    .then_ignore(gap())
+    .delimited_by(just(Token::Tis), just(Token::Tis))
 }

@@ -25,7 +25,7 @@ where
         just(Token::Hep).ignore_then(barhep(hoon.clone())),
         just(Token::Ket).ignore_then(barket(hoon.clone(), spec.clone())),
         just(Token::Col).ignore_then(barcol(hoon.clone())),
-        just(Token::Buc).ignore_then(barbuc(hoon.clone(), spec.clone())),
+        just(Token::Buc).ignore_then(barbuc(spec.clone())),
         just(Token::Wut).ignore_then(barwut(hoon.clone())),
     ))
 }
@@ -43,7 +43,9 @@ where
         just(Token::Tis).ignore_then(bartis_wide(hoon_wide.clone(), spec_wide.clone())),
         just(Token::Sig).ignore_then(barsig_wide(hoon_wide.clone(), spec_wide.clone())),
         just(Token::Hep).ignore_then(barhep_wide(hoon_wide.clone())),
+        just(Token::Ket).ignore_then(barket_wide(hoon_wide.clone(), spec_wide.clone())),
         just(Token::Col).ignore_then(barcol_wide(hoon_wide.clone())),
+        just(Token::Buc).ignore_then(barbuc_wide(spec_wide.clone())),
         just(Token::Wut).ignore_then(barwut_wide(hoon_wide.clone())),
     ))
 }
@@ -167,16 +169,28 @@ where
 }
 
 pub fn barbuc<'tokens, 'src: 'tokens, I>(
-    hoon: impl ParserExt<'tokens, 'src, I, Hoon>,
     spec: impl ParserExt<'tokens, 'src, I, Spec>,
 ) -> impl Parser<'tokens, I, Hoon, Err<'tokens, 'src>> + 'tokens
 where
     I: ValueInput<'tokens, Token = Token<'src>, Span = SimpleSpan>,
 {
     gap()
-    .ignore_then(list_names())
+    .ignore_then(list_names_wide())
     .then_ignore(gap())
     .then(spec.clone())
+    .map(|(list, h)| Hoon::BarBuc(list, Box::new(h)))
+}
+
+pub fn barbuc_wide<'tokens, 'src: 'tokens, I>(
+    spec_wide: impl ParserExt<'tokens, 'src, I, Spec>,
+) -> impl Parser<'tokens, I, Hoon, Err<'tokens, 'src>> + 'tokens
+where
+    I: ValueInput<'tokens, Token = Token<'src>, Span = SimpleSpan>,
+{
+    list_names_wide()
+    .then_ignore(just(Token::Ace))
+    .then(spec_wide.clone())
+    .delimited_by(just(Token::Pal), just(Token::Par))
     .map(|(list, h)| Hoon::BarBuc(list, Box::new(h)))
 }
 
@@ -236,6 +250,20 @@ where
     .ignore_then(hoon.clone())
     .then_ignore(gap())
     .then(chapters(hoon.clone(), spec.clone()))
+    .map(|(h, map_term_tome)| Hoon::BarKet(Box::new(h), map_term_tome))
+}
+
+pub fn barket_wide<'tokens, 'src: 'tokens, I>(
+    hoon_wide: impl ParserExt<'tokens, 'src, I, Hoon>,
+    spec_wide: impl ParserExt<'tokens, 'src, I, Spec>,
+) -> impl Parser<'tokens, I, Hoon, Err<'tokens, 'src>>
+where
+    I: ValueInput<'tokens, Token = Token<'src>, Span = SimpleSpan>,
+{
+    hoon_wide.clone()
+    .then_ignore(just(Token::Ace))
+    .then(chapters(hoon_wide.clone(), spec_wide.clone()))
+    .delimited_by(just(Token::Pal), just(Token::Par))
     .map(|(h, map_term_tome)| Hoon::BarKet(Box::new(h), map_term_tome))
 }
 
