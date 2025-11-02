@@ -103,7 +103,7 @@ where
                         ).boxed(),
         just(Token::Zap)
                 .ignore_then(
-                        zap_runes_wide(hoon_wide.clone()),
+                        zap_runes_wide(hoon_wide.clone(), spec_wide.clone()),
                         ).boxed(),
         just(Token::Mic)
                 .ignore_then(
@@ -111,7 +111,7 @@ where
                         ).boxed(),
         just(Token::Dot)
                 .ignore_then(
-                        dot_runes_wide(hoon_wide.clone()),
+                        dot_runes_wide(hoon_wide.clone(), spec_wide.clone()),
                         ).boxed(),
         tape().boxed(),
         path(hoon_wide.clone()).boxed(),
@@ -231,16 +231,16 @@ where
                 ))).boxed(),
             just(Token::Zap)
                 .ignore_then(choice((
-                        zap_runes_tall(hoon.clone()),
+                        zap_runes_tall(hoon.clone(), spec.clone()),
                         // ket_runes_wide(hoon_wide.clone(), spec_wide.clone()),
                 ))).boxed(),
             just(Token::Mic)
                 .ignore_then(
-                        mic_runes_tall(hoon.clone()),
+                        mic_runes_tall(hoon.clone(), spec.clone()),
                         ).boxed(),
             just(Token::Dot)
                 .ignore_then(
-                        dot_runes_tall(hoon.clone()),
+                        dot_runes_tall(hoon.clone(), spec.clone()),
                         ).boxed(),
     // )).box
     ];

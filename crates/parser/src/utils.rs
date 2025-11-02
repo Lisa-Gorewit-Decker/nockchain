@@ -1535,6 +1535,18 @@ where
         )
 }
 
+pub fn two_hoons_tall<'tokens, 'src: 'tokens, I>(
+    hoon:        impl ParserExt<'tokens, 'src, I, Hoon>,
+) -> impl Parser<'tokens, I, (Hoon, Hoon), Err<'tokens, 'src>>
+where
+    I: ValueInput<'tokens, Token = Token<'src>, Span = SimpleSpan>,
+{
+    gap()
+    .ignore_then(hoon.clone())
+    .then_ignore(gap())
+    .then(hoon.clone())
+}
+
 pub fn two_hoons_wide<'tokens, 'src: 'tokens, I>(
     hoon_wide:        impl ParserExt<'tokens, 'src, I, Hoon>,
 ) -> impl Parser<'tokens, I, (Hoon, Hoon), Err<'tokens, 'src>>
@@ -1544,6 +1556,20 @@ where
     hoon_wide.clone()
     .then_ignore(just(Token::Ace))
     .then(hoon_wide.clone())
+}
+
+pub fn three_hoons_tall<'tokens, 'src: 'tokens, I>(
+    hoon:        impl ParserExt<'tokens, 'src, I, Hoon>,
+) -> impl Parser<'tokens, I, ((Hoon, Hoon), Hoon), Err<'tokens, 'src>>
+where
+    I: ValueInput<'tokens, Token = Token<'src>, Span = SimpleSpan>,
+{
+    gap()
+    .ignore_then(hoon.clone())
+    .then_ignore(gap())
+    .then(hoon.clone())
+    .then_ignore(gap())
+    .then(hoon.clone())
 }
 
 pub fn three_hoons_wide<'tokens, 'src: 'tokens, I>(

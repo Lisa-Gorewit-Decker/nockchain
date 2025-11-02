@@ -270,8 +270,8 @@ pub enum FaceType {
 
 #[derive(serde::Serialize, PartialEq, Debug, Clone)]
 pub enum ZpwtArg {
-    Atom(u64),
-    Pair(u64, u64),
+    Atom(String),
+    Pair(String, String),
 }
 
 pub type Alas = Vec<(Term, Hoon)>;

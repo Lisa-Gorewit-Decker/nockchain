@@ -32,6 +32,10 @@ where
     choice((
         just(Token::Ket).ignore_then(colket_wide(hoon_wide.clone())),
         just(Token::Cab).ignore_then(colcab_wide(hoon_wide.clone())),
+        just(Token::Lus).ignore_then(collus_wide(hoon_wide.clone())),
+        just(Token::Hep).ignore_then(colhep_wide(hoon_wide.clone())),
+        just(Token::Tar).ignore_then(coltar_wide(hoon_wide.clone())),
+        just(Token::Sig).ignore_then(colsig_wide(hoon_wide.clone())),
     ))
 
 }
@@ -42,12 +46,18 @@ pub fn collus<'tokens, 'src: 'tokens, I>(
 where
     I: ValueInput<'tokens, Token = Token<'src>, Span = SimpleSpan>,
 {
-    gap()
-    .ignore_then(hoon.clone())
-    .then_ignore(gap())
-    .then(hoon.clone())
-    .then_ignore(gap())
-    .then(hoon.clone())
+    three_hoons_tall(hoon.clone())
+    .map(|((p, q), r)| Hoon::ColLus(Box::new(p), Box::new(q), Box::new(r)))
+}
+
+pub fn collus_wide<'tokens, 'src: 'tokens, I>(
+    hoon_wide:        impl ParserExt<'tokens, 'src, I, Hoon>,
+) -> impl Parser<'tokens, I, Hoon, Err<'tokens, 'src>> + 'tokens
+where
+    I: ValueInput<'tokens, Token = Token<'src>, Span = SimpleSpan>,
+{
+    three_hoons_wide(hoon_wide.clone())
+    .delimited_by(just(Token::Pal), just(Token::Par))
     .map(|((p, q), r)| Hoon::ColLus(Box::new(p), Box::new(q), Box::new(r)))
 }
 
@@ -57,10 +67,18 @@ pub fn colhep<'tokens, 'src: 'tokens, I>(
 where
     I: ValueInput<'tokens, Token = Token<'src>, Span = SimpleSpan>,
 {
-    gap()
-    .ignore_then(hoon.clone())
-    .then_ignore(gap())
-    .then(hoon.clone())
+    two_hoons_tall(hoon.clone())
+    .map(|(p, q)| Hoon::ColHep(Box::new(p), Box::new(q)))
+}
+
+pub fn colhep_wide<'tokens, 'src: 'tokens, I>(
+    hoon_wide:        impl ParserExt<'tokens, 'src, I, Hoon>,
+) -> impl Parser<'tokens, I, Hoon, Err<'tokens, 'src>> + 'tokens
+where
+    I: ValueInput<'tokens, Token = Token<'src>, Span = SimpleSpan>,
+{
+    two_hoons_wide(hoon_wide.clone())
+    .delimited_by(just(Token::Pal), just(Token::Par))
     .map(|(p, q)| Hoon::ColHep(Box::new(p), Box::new(q)))
 }
 
@@ -79,14 +97,12 @@ where
 
 
 pub fn colcab_wide<'tokens, 'src: 'tokens, I>(
-    hoon:        impl ParserExt<'tokens, 'src, I, Hoon>,
+    hoon_wide:        impl ParserExt<'tokens, 'src, I, Hoon>,
 ) -> impl Parser<'tokens, I, Hoon, Err<'tokens, 'src>> + 'tokens
 where
     I: ValueInput<'tokens, Token = Token<'src>, Span = SimpleSpan>,
 {
-    hoon.clone()
-    .then_ignore(just(Token::Ace))
-    .then(hoon.clone())
+    two_hoons_wide(hoon_wide.clone())
     .delimited_by(just(Token::Pal), just(Token::Par))
     .map(|(p, q)| Hoon::ColCab(Box::new(p), Box::new(q)))
 }
@@ -146,6 +162,17 @@ where
     .map(|list| Hoon::ColTar(list))
 }
 
+pub fn coltar_wide<'tokens, 'src: 'tokens, I>(
+    hoon_wide:      impl ParserExt<'tokens, 'src, I, Hoon>,
+) -> impl Parser<'tokens, I, Hoon, Err<'tokens, 'src>>
+where
+    I: ValueInput<'tokens, Token = Token<'src>, Span = SimpleSpan>,
+{
+    list_hoon_wide(hoon_wide.clone())
+    .delimited_by(just(Token::Pal), just(Token::Par))
+    .map(|list| Hoon::ColTar(list))
+}
+
 pub fn colsig<'tokens, 'src: 'tokens, I>(
     hoon:      impl ParserExt<'tokens, 'src, I, Hoon>,
 ) -> impl Parser<'tokens, I, Hoon, Err<'tokens, 'src>>
@@ -156,5 +183,16 @@ where
     .ignore_then(list_hoon_tall(hoon.clone()))
     .then_ignore(gap())
     .then_ignore(just([Token::Tis, Token::Tis]))
+    .map(|list| Hoon::ColSig(list))
+}
+
+pub fn colsig_wide<'tokens, 'src: 'tokens, I>(
+    hoon_wide:      impl ParserExt<'tokens, 'src, I, Hoon>,
+) -> impl Parser<'tokens, I, Hoon, Err<'tokens, 'src>>
+where
+    I: ValueInput<'tokens, Token = Token<'src>, Span = SimpleSpan>,
+{
+    list_hoon_wide(hoon_wide.clone())
+    .delimited_by(just(Token::Pal), just(Token::Par))
     .map(|list| Hoon::ColSig(list))
 }

@@ -24,6 +24,8 @@ where
         just(Token::Gal).ignore_then(siggal(hoon.clone())),
         just(Token::Pam).ignore_then(sigpam(hoon.clone())),
         just(Token::Wut).ignore_then(sigwut(hoon.clone())),
+        just(Token::Tis).ignore_then(sigtis(hoon.clone())),
+        just(Token::Zap).ignore_then(sigzap(hoon.clone())),
     ))
 }
 
@@ -34,6 +36,13 @@ where
     I: ValueInput<'tokens, Token = Token<'src>, Span = SimpleSpan>,
 {
     choice((
+        just(Token::Cen).ignore_then(sigcen_wide(hoon_wide.clone())),
+        just(Token::Fas).ignore_then(sigfas_wide(hoon_wide.clone())),
+        just(Token::Zap).ignore_then(sigzap_wide(hoon_wide.clone())),
+        just(Token::Gal).ignore_then(siggal_wide(hoon_wide.clone())),
+        just(Token::Wut).ignore_then(sigwut_wide(hoon_wide.clone())),
+        just(Token::Tis).ignore_then(sigtis_wide(hoon_wide.clone())),
+        just(Token::Zap).ignore_then(sigzap_wide(hoon_wide.clone())),
         just(Token::Gar).ignore_then(siggar_wide(hoon_wide.clone())),
         just(Token::Lus).ignore_then(siglus_wide(hoon_wide.clone())),
         just(Token::Cab).ignore_then(sigcab_wide(hoon_wide.clone())),
@@ -91,6 +100,30 @@ where
     })
 }
 
+pub fn sigwut_wide<'tokens, 'src: 'tokens, I>(
+    hoon_wide:        impl ParserExt<'tokens, 'src, I, Hoon>,
+) -> impl Parser<'tokens, I, Hoon, Err<'tokens, 'src>> + 'tokens
+where
+    I: ValueInput<'tokens, Token = Token<'src>, Span = SimpleSpan>,
+{
+    just(Token::Gar)
+        .repeated()
+        .at_most(3)
+        .count()
+        .then_ignore(just(Token::Ace))
+        .or_not()
+    .then(hoon_wide.clone())
+    .then_ignore(just(Token::Ace))
+    .then(hoon_wide.clone())
+    .then_ignore(just(Token::Ace))
+    .then(hoon_wide.clone())
+    .delimited_by(just(Token::Pal), just(Token::Par))
+    .map(|(((maybe_p, q), r), s)| {
+        let p = maybe_p.unwrap_or(0);
+        Hoon::SigWut(p as u64, Box::new(q), Box::new(r), Box::new(s))
+    })
+}
+
 pub fn sigpam_wide<'tokens, 'src: 'tokens, I>(
     hoon_wide:   impl ParserExt<'tokens, 'src, I, Hoon>,
 ) -> impl Parser<'tokens, I, Hoon, Err<'tokens, 'src>> + 'tokens
@@ -126,6 +159,16 @@ where
     .map(|(p, q)| Hoon::SigZap(Box::new(p), Box::new(q)))
 }
 
+pub fn sigzap_wide<'tokens, 'src: 'tokens, I>(
+    hoon:        impl ParserExt<'tokens, 'src, I, Hoon>,
+) -> impl Parser<'tokens, I, Hoon, Err<'tokens, 'src>> + 'tokens
+where
+    I: ValueInput<'tokens, Token = Token<'src>, Span = SimpleSpan>,
+{
+    two_hoons_tall(hoon.clone())
+    .map(|(p, q)| Hoon::SigZap(Box::new(p), Box::new(q)))
+}
+
 pub fn sigbar<'tokens, 'src: 'tokens, I>(
     hoon:        impl ParserExt<'tokens, 'src, I, Hoon>,
 ) -> impl Parser<'tokens, I, Hoon, Err<'tokens, 'src>> + 'tokens
@@ -150,6 +193,27 @@ where
     .then(hoon_wide.clone())
     .delimited_by(just(Token::Pal), just(Token::Par))
     .map(|(p, q)| Hoon::SigBar(Box::new(p), Box::new(q)))
+}
+
+pub fn sigtis<'tokens, 'src: 'tokens, I>(
+    hoon:        impl ParserExt<'tokens, 'src, I, Hoon>,
+) -> impl Parser<'tokens, I, Hoon, Err<'tokens, 'src>> + 'tokens
+where
+    I: ValueInput<'tokens, Token = Token<'src>, Span = SimpleSpan>,
+{
+    two_hoons_tall(hoon.clone())
+    .map(|(p, q)| Hoon::SigTis(Box::new(p), Box::new(q)))
+}
+
+pub fn sigtis_wide<'tokens, 'src: 'tokens, I>(
+    hoon_wide:        impl ParserExt<'tokens, 'src, I, Hoon>,
+) -> impl Parser<'tokens, I, Hoon, Err<'tokens, 'src>> + 'tokens
+where
+    I: ValueInput<'tokens, Token = Token<'src>, Span = SimpleSpan>,
+{
+    two_hoons_wide(hoon_wide.clone())
+    .delimited_by(just(Token::Pal), just(Token::Par))
+    .map(|(p, q)| Hoon::SigTis(Box::new(p), Box::new(q)))
 }
 
 pub fn siglus<'tokens, 'src: 'tokens, I>(
@@ -219,6 +283,23 @@ where
     .map(|(((p, q), r), s)| Hoon::SigCen(p, Box::new(q), r, Box::new(s)))
 }
 
+pub fn sigcen_wide<'tokens, 'src: 'tokens, I>(
+    hoon_wide:        impl ParserExt<'tokens, 'src, I, Hoon>,
+) -> impl Parser<'tokens, I, Hoon, Err<'tokens, 'src>> + 'tokens
+where
+    I: ValueInput<'tokens, Token = Token<'src>, Span = SimpleSpan>,
+{
+    jet_signature()
+    .then_ignore(just(Token::Ace))
+    .then(hoon_wide.clone())
+    .then_ignore(just(Token::Ace))
+    .then(jet_hooks(hoon_wide.clone()))
+    .then_ignore(just(Token::Ace))
+    .then(hoon_wide.clone())
+    .delimited_by(just(Token::Pal), just(Token::Par))
+    .map(|(((p, q), r), s)| Hoon::SigCen(p, Box::new(q), r, Box::new(s)))
+}
+
 pub fn sigfas<'tokens, 'src: 'tokens, I>(
     hoon:        impl ParserExt<'tokens, 'src, I, Hoon>,
 ) -> impl Parser<'tokens, I, Hoon, Err<'tokens, 'src>> + 'tokens
@@ -232,6 +313,18 @@ where
     .map(|(p, q)| Hoon::SigFas(p, Box::new(q)))
 }
 
+pub fn sigfas_wide<'tokens, 'src: 'tokens, I>(
+    hoon_wide:        impl ParserExt<'tokens, 'src, I, Hoon>,
+) -> impl Parser<'tokens, I, Hoon, Err<'tokens, 'src>> + 'tokens
+where
+    I: ValueInput<'tokens, Token = Token<'src>, Span = SimpleSpan>,
+{
+    jet_signature()
+    .then_ignore(just(Token::Ace))
+    .then(hoon_wide.clone())
+    .delimited_by(just(Token::Pal), just(Token::Par))
+    .map(|(p, q)| Hoon::SigFas(p, Box::new(q)))
+}
 
 pub fn siggar_wide<'tokens, 'src: 'tokens, I>(
     hoon_wide:   impl ParserExt<'tokens, 'src, I, Hoon>,
@@ -297,6 +390,31 @@ where
             .or_not())
     .then_ignore(gap())
     .then(hoon_wide.clone())
+    .map(|((term, maybe_hoon), q)|  {
+        match maybe_hoon {
+            None =>{
+                Hoon::SigGal(TermOrPair::Term(term), Box::new(q))
+            }
+            Some(h) => {
+                Hoon::SigGal(TermOrPair::Pair((term, Box::new(h))), Box::new(q))
+            }
+        }
+    })
+}
+
+pub fn siggal_wide<'tokens, 'src: 'tokens, I>(
+    hoon_wide:   impl ParserExt<'tokens, 'src, I, Hoon>,
+) -> impl Parser<'tokens, I, Hoon, Err<'tokens, 'src>> + 'tokens
+where
+    I: ValueInput<'tokens, Token = Token<'src>, Span = SimpleSpan>,
+{
+    term()
+    .then(just(Token::Dot)
+            .ignore_then(hoon_wide.clone())
+            .or_not())
+    .then_ignore(just(Token::Ace))
+    .then(hoon_wide.clone())
+    .delimited_by(just(Token::Pal), just(Token::Par))
     .map(|((term, maybe_hoon), q)|  {
         match maybe_hoon {
             None =>{

@@ -111,11 +111,10 @@ where
     .ignore_then(hoon.clone())
     .then_ignore(gap())
     .then(list_hoon_tall(hoon.clone())
-          .then_ignore(gap())
-          .or_not())
+          .then_ignore(gap()))
     .then_ignore(just([Token::Tis, Token::Tis]))
     .map(|(p, q)| {
-        Hoon::CenCol(Box::new(p), q.unwrap_or_default())
+        Hoon::CenCol(Box::new(p), q)
     })
 }
 
