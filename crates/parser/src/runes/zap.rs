@@ -24,6 +24,7 @@ where
         just(Token::Pat).ignore_then(zappat(hoon.clone())),
         just(Token::Tis).ignore_then(zaptis(hoon.clone())),
         just(Token::Wut).ignore_then(zapwut(hoon.clone())),
+        just(Token::Zap).to(Hoon::ZapZap),
     ))
 }
 
@@ -44,6 +45,7 @@ where
         just(Token::Pat).ignore_then(zappat_wide(hoon_wide.clone())),
         just(Token::Tis).ignore_then(zaptis_wide(hoon_wide.clone())),
         just(Token::Wut).ignore_then(zapwut_wide(hoon_wide.clone())),
+        just(Token::Zap).to(Hoon::ZapZap),
     ))
 }
 

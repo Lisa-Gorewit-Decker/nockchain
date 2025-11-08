@@ -167,12 +167,9 @@ pub fn dottis_irregular<'tokens, 'src: 'tokens, I>(
 where
     I: ValueInput<'tokens, Token = Token<'src>, Span = SimpleSpan>,
 {
-    just(Token::Tis)
-    .ignore_then(
-        hoon_wide.clone()
-        .then_ignore(just(Token::Ace))
-        .then(hoon_wide.clone())
-        .delimited_by(just(Token::Pal), just(Token::Par))
-    )
+    hoon_wide.clone()
+    .then_ignore(just(Token::Ace))
+    .then(hoon_wide.clone())
+    .delimited_by(just(Token::Pal), just(Token::Par))
     .map(|(p, q)| Hoon::DotTis(Box::new(p), Box::new(q)))
 }

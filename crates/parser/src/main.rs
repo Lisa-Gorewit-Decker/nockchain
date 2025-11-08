@@ -18,6 +18,22 @@ use parser::ast::hoon::*;
 use parser::utils::*;
 use parser::runes::*;
 
+macro_rules! rune_branch_pair {
+    ($token:expr, $tall:expr, $wide:expr) => {
+        just($token)
+            .ignore_then(choice(($tall, $wide)))
+            .boxed()
+    };
+}
+
+macro_rules! rune_branch {
+    ($token:expr, $form:expr) => {
+        just($token)
+            .ignore_then($form)
+            .boxed()
+    };
+}
+
 fn spec_parser<'tokens, 'src: 'tokens, I>(
     spec:        impl ParserExt<'tokens, 'src, I, Spec>,
     spec_wide:   impl ParserExt<'tokens, 'src, I, Spec>,
@@ -27,8 +43,14 @@ where
     I: ValueInput<'tokens, Token = Token<'src>, Span = SimpleSpan>,
 {
     choice((
-        just(Token::Buc).ignore_then(buc_spec_tall(hoon.clone(), spec.clone())),
-        just(Token::Cen).ignore_then(cen_spec_tall(hoon.clone(), spec.clone())),
+        rune_branch!(
+            Token::Buc,
+            buc_spec_tall(hoon.clone(), spec.clone())
+        ),
+        rune_branch!(
+            Token::Cen,
+            cen_spec_tall(hoon.clone(), spec.clone())
+        ),
         spec_wide.clone(),
     )).boxed()
 }
@@ -41,7 +63,10 @@ where
     I: ValueInput<'tokens, Token = Token<'src>, Span = SimpleSpan>,
 {
     let parsers = vec![
-        just(Token::Buc).ignore_then(buc_spec_wide(hoon_wide.clone(), spec_wide.clone())).boxed(),
+        rune_branch!(
+            Token::Buc,
+            buc_spec_wide(hoon_wide.clone(), spec_wide.clone())
+        ),
         buccab_spec_irregular(hoon_wide.clone()).boxed(),  //  _p
         bucmic_spec_irregular(hoon_wide.clone()).boxed(),  //  ,p
         buctis_irregular(spec_wide.clone()).boxed(),  // foo=bar, =bar,  =foo=bar
@@ -72,58 +97,72 @@ where
     I: ValueInput<'tokens, Token = Token<'src>, Span = SimpleSpan>,
 {
     let parsers = vec![
-        just(Token::Bar)
-                .ignore_then(bar_runes_wide(hoon_wide.clone(),
-                                             spec_wide.clone())).boxed(),
-        just(Token::Tis)
-                .ignore_then(tis_runes_wide(hoon_wide.clone(),
-                                             spec_wide.clone())).boxed(),
-        just(Token::Wut)
-                .ignore_then(wut_runes_wide(hoon_wide.clone(),
-                                             spec_wide.clone())).boxed(),
-        just(Token::Cen)
-                .ignore_then(
-                        cen_runes_wide(hoon_wide.clone()),
-                        ).boxed(),
-        just(Token::Col)
-                .ignore_then(
-                        col_runes_wide(hoon_wide.clone()),
-                        ).boxed(),
-        just(Token::Sig)
-                .ignore_then(
-                        sig_runes_wide(hoon_wide.clone()),
-                        ).boxed(),
-        just(Token::Buc)
-                .ignore_then(
-                        buc_runes_wide(hoon_wide.clone(), spec_wide.clone()),
-                        ).boxed(),
-        just(Token::Ket)
-                .ignore_then(
-                        ket_runes_wide(hoon_wide.clone(), spec_wide.clone()),
-                        ).boxed(),
-        just(Token::Zap)
-                .ignore_then(
-                        zap_runes_wide(hoon_wide.clone(), spec_wide.clone()),
-                        ).boxed(),
-        just(Token::Mic)
-                .ignore_then(
-                        mic_runes_wide(hoon_wide.clone(), spec_wide.clone()),
-                        ).boxed(),
-        just(Token::Dot)
-                .ignore_then(
-                        dot_runes_wide(hoon_wide.clone(), spec_wide.clone()),
-                        ).boxed(),
+        rune_branch!(
+            Token::Bar,
+            bar_runes_wide(hoon_wide.clone(), spec_wide.clone())
+        ),
+
+        just(Token::Tis).ignore_then(
+            choice((
+                    tis_runes_wide(hoon_wide.clone(), spec_wide.clone()),
+                    dottis_irregular(hoon_wide.clone()), //  =(p q)
+                ))).boxed(),
+
+        rune_branch!(
+            Token::Wut,
+            wut_runes_wide(hoon_wide.clone(), spec_wide.clone())
+        ),
+
+        rune_branch!(
+            Token::Cen,
+            cen_runes_wide(hoon_wide.clone())
+        ),
+
+        just(Token::Col).ignore_then(
+            choice((
+                    col_runes_wide(hoon_wide.clone()),
+                    miccol_irregular(hoon_wide.clone()).boxed(), //  :(a b .. z)
+                ))).boxed(),
+
+        just(Token::Sig).ignore_then(
+            choice((
+                    sig_runes_wide(hoon_wide.clone()),
+                    censig_irregular(hoon_wide.clone()).boxed(),  //  ~(a b c)
+                ))).boxed(),
+
+        rune_branch!(
+            Token::Buc,
+            buc_runes_wide(hoon_wide.clone(), spec_wide.clone())
+        ),
+
+        rune_branch!(
+            Token::Ket,
+            ket_runes_wide(hoon_wide.clone(), spec_wide.clone())
+        ),
+
+        rune_branch!(
+            Token::Zap,
+            zap_runes_wide(hoon_wide.clone(), spec_wide.clone())
+        ),
+
+        rune_branch!(
+            Token::Mic,
+            mic_runes_wide(hoon_wide.clone(), spec_wide.clone())
+        ),
+
+        rune_branch!(
+            Token::Dot,
+            dot_runes_wide(hoon_wide.clone(), spec_wide.clone())
+        ),
+
         tape().boxed(),
         path(hoon_wide.clone()).boxed(),
         buccab_irregular(hoon_wide.clone()).boxed(),              //  _p
-        miccol_irregular(hoon_wide.clone()).boxed(),              //  :(a b .. z)
-        censig_irregular(hoon_wide.clone()).boxed(),              //  ~(a b c)
-        constant_separator_hoon(hoon_wide.clone()).boxed(),           //  const+hoon,  const/hoon
-        dottis_irregular(hoon_wide.clone()).boxed(),              //  =(p q)
+        constant_separator_hoon(hoon_wide.clone()).boxed(),       //  const+hoon,  const/hoon
         list_syntax(hoon_wide.clone()).boxed(),                   // [p ... pn], ~[foo], [foo]~
         kettar_irregular(spec_wide.clone()).boxed(),              //  *foo
         kethep_irregular(hoon_wide.clone(),
-                                spec_wide.clone()).boxed(),              //  `p`q
+                                spec_wide.clone()).boxed(),       //  `p`q
         tic_cell_construction(hoon_wide.clone()).boxed(),         //  `a
         wutzap_irregular(hoon_wide.clone()).boxed(),              //  !p
         wutbar_irregular(hoon_wide.clone()).boxed(),              //  |(p q)
@@ -132,13 +171,15 @@ where
         ketcol_irregular(spec_wide.clone()).boxed(),   //  ,p
         centis_irregular(hoon_wide.clone()).boxed(),   //  a(b c, d e, f g)
         tell(hoon_wide.clone()).boxed(),  // <foo>
+        number().boxed(),
+        aura_hoon().boxed(),
         wing().boxed(),
         function_call(hoon_wide.clone()).boxed(),      //  (a b)
-        aura_hoon().boxed(),
         constant().boxed(),
-        cord().boxed(),
-        number().boxed(),
-        select! { Token::Date(d) => Hoon::Sand("%da".to_string(), Noun::Atom(d.to_string()))}.boxed(),
+        cord().map(|s| Hoon::Sand("%t".to_string(), Noun::Atom(s))).boxed(),
+        select! { Token::DateAbsolute(d) => Hoon::Sand("%da".to_string(), Noun::Atom(d.to_string()))}.boxed(),
+        select! { Token::DateRelative(d) => Hoon::Sand("%dr".to_string(), Noun::Atom(d.to_string()))}.boxed(),
+        just(Token::Sig).to(Hoon::Bust(BaseType::Null)).boxed(),
         just(Token::Yes).to(Hoon::Rock("%f".to_string(), Noun::Atom("0".to_string()))).boxed(),
         just(Token::No).to(Hoon::Rock("%f".to_string(), Noun::Atom("1".to_string()))).boxed(),
         just([Token::Cen, Token::Bar]).to(Hoon::Rock("%f".to_string(), Noun::Atom("1".to_string()))).boxed(),
@@ -147,7 +188,6 @@ where
         just(Token::Bar).to(Hoon::Sand("%f".to_string(), Noun::Atom("1".to_string()))).boxed(),
         just(Token::Tar).to(Hoon::Base(BaseType::Noun)).boxed(),
         just(Token::Wut).to(Hoon::Base(BaseType::Flag)).boxed(),
-        just(Token::Sig).to(Hoon::Bust(BaseType::Null)).boxed(),
     ];
 
     choice(parsers).boxed().labelled("hoon-wide")
@@ -164,88 +204,102 @@ where
         })
 }
 
-fn hoon_tall_parser<'tokens, 'src: 'tokens, I>(
-    hoon:        impl ParserExt<'tokens, 'src, I, Hoon>,
-    hoon_wide:   impl ParserExt<'tokens, 'src, I, Hoon>,
-    spec:        impl ParserExt<'tokens, 'src, I, Spec>,
-    spec_wide:   impl ParserExt<'tokens, 'src, I, Spec>,
+fn hoon_parser<'tokens, 'src: 'tokens, I>(
+    hoon: impl ParserExt<'tokens, 'src, I, Hoon>,
+    hoon_wide: impl ParserExt<'tokens, 'src, I, Hoon>,
+    spec: impl ParserExt<'tokens, 'src, I, Spec>,
+    spec_wide: impl ParserExt<'tokens, 'src, I, Spec>,
 ) -> impl Parser<'tokens, I, Hoon, Err<'tokens, 'src>>
 where
     I: ValueInput<'tokens, Token = Token<'src>, Span = SimpleSpan>,
 {
-     let parsers = vec![
-    // choice((
-            just(Token::Bar)
-                .ignore_then(
-                    choice((
-                        bar_runes_tall(hoon.clone(),
-                                                spec.clone()),
-                        // bar_runes_wide(hoon_wide.clone(),
-                                // spec_wide.clone()),
-                    ))).boxed(),
-            just(Token::Tis)
-                .ignore_then(
-                    choice((
-                        tis_runes_tall(hoon.clone(),
-                                       spec.clone(),
-                                       spec_wide.clone()),
-                        // tis_runes_wide(hoon_wide.clone(),
-                                            //  spec_wide.clone()),
-                    ))).boxed(),
-            just(Token::Wut)
-                .ignore_then(
-                    choice((
-                        wut_runes_tall(hoon.clone(),
-                                       hoon_wide.clone(),
-                                       spec.clone(),
-                                       spec_wide.clone()),
-                        // wut_runes_wide(hoon_wide.clone(),
-                                            //  spec_wide.clone()),
-                        ))).boxed(),
-            just(Token::Cen)
-                .ignore_then(choice((
-                        cen_runes_tall(hoon.clone()),
-                        // cen_runes_wide(hoon_wide.clone()),
-                ))
-                        ).boxed(),
-            just(Token::Col)
-                .ignore_then(choice((
-                        col_runes_tall(hoon.clone()),
-                        // col_runes_wide(hoon_wide.clone()),
-                ))
-                 ).boxed(),
-            just(Token::Sig)
-                .ignore_then(choice((
-                        sig_runes_tall(hoon.clone()),
-                        // sig_runes_wide(hoon_wide.clone()),
-                ))).boxed(),
-            just(Token::Buc)
-                .ignore_then(choice((
-                        buc_runes_tall(hoon.clone(), spec.clone()),
-                        // buc_runes_wide(hoon_wide.clone(), spec_wide.clone()),
-                ))).boxed(),
-            just(Token::Ket)
-                .ignore_then(choice((
-                        ket_runes_tall(hoon.clone(), spec.clone()),
-                        // ket_runes_wide(hoon_wide.clone(), spec_wide.clone()),
-                ))).boxed(),
-            just(Token::Zap)
-                .ignore_then(choice((
-                        zap_runes_tall(hoon.clone(), spec.clone()),
-                        // ket_runes_wide(hoon_wide.clone(), spec_wide.clone()),
-                ))).boxed(),
-            just(Token::Mic)
-                .ignore_then(
-                        mic_runes_tall(hoon.clone(), spec.clone()),
-                        ).boxed(),
-            just(Token::Dot)
-                .ignore_then(
-                        dot_runes_tall(hoon.clone(), spec.clone()),
-                        ).boxed(),
-    // )).box
+    let parsers = vec![
+        // | runes
+        rune_branch_pair!(
+            Token::Bar,
+            bar_runes_tall(hoon.clone(), spec.clone()),
+            bar_runes_wide(hoon_wide.clone(), spec_wide.clone())
+        ),
+
+        // = runes
+        rune_branch_pair!(
+            Token::Tis,
+            tis_runes_tall(hoon.clone(), spec.clone(), spec_wide.clone()),
+            tis_runes_wide(hoon_wide.clone(), spec_wide.clone())
+        ),
+
+        // ? runes
+        rune_branch_pair!(
+            Token::Wut,
+            wut_runes_tall(
+                hoon.clone(),
+                hoon_wide.clone(),
+                spec.clone(),
+                spec_wide.clone()
+            ),
+            wut_runes_wide(hoon_wide.clone(), spec_wide.clone())
+        ),
+
+        // % runes
+        rune_branch_pair!(
+            Token::Cen,
+            cen_runes_tall(hoon.clone()),
+            cen_runes_wide(hoon_wide.clone())
+        ),
+
+        // : runes
+        rune_branch_pair!(
+            Token::Col,
+            col_runes_tall(hoon.clone()),
+            col_runes_wide(hoon_wide.clone())
+        ),
+
+        // ~ runes
+        rune_branch_pair!(
+            Token::Sig,
+            sig_runes_tall(hoon.clone()),
+            sig_runes_wide(hoon_wide.clone())
+        ),
+
+        // $ runes
+        rune_branch_pair!(
+            Token::Buc,
+            buc_runes_tall(hoon.clone(), spec.clone()),
+            buc_runes_wide(hoon_wide.clone(), spec_wide.clone())
+        ),
+
+        // ^ runes
+        rune_branch_pair!(
+            Token::Ket,
+            ket_runes_tall(hoon.clone(), spec.clone()),
+            ket_runes_wide(hoon_wide.clone(), spec_wide.clone())
+        ),
+
+        // ! runes
+        rune_branch_pair!(
+            Token::Zap,
+            zap_runes_tall(hoon.clone(), spec.clone()),
+            zap_runes_wide(hoon_wide.clone(), spec_wide.clone())
+        ),
+
+        // ; runes
+        rune_branch_pair!(
+            Token::Mic,
+            mic_runes_tall(hoon.clone(), spec.clone()),
+            mic_runes_wide(hoon_wide.clone(), spec_wide.clone())
+        ),
+
+        // . runes
+        rune_branch_pair!(
+            Token::Dot,
+            dot_runes_tall(hoon.clone(), spec.clone()),
+            dot_runes_wide(hoon_wide.clone(), spec_wide.clone())
+        ),
     ];
-    choice((parsers)).boxed()
-    .labelled("hoon-tall")
+
+    choice(parsers)
+        .labelled("hoon-tall")
+        .boxed()
 }
 
 fn parser<'tokens, 'src: 'tokens, I>()
@@ -279,8 +333,11 @@ where
         let hoon_wide = hoon_wide_handle.clone();
 
         choice((
-            hoon_tall_parser(hoon.clone(), hoon_wide.clone(), spec.clone(), spec_wide),
-            hoon_wide
+            hoon_parser(hoon.clone(),
+                        hoon_wide.clone(),
+                        spec.clone(),
+                        spec_wide),
+            // hoon_wide
         ))
         .boxed()
     });
@@ -317,7 +374,7 @@ fn main() {
             Err(()) => (Token::LexerError, span.into()),
         });
 
-    //  print tokens
+    // println!("tokens:");
     // for (tok, span) in token_iter.clone() {
     //     println!("{:?} {:?}", tok, span);
     // }
@@ -329,8 +386,9 @@ fn main() {
 
     match parser().parse(token_stream).into_result() {
         Ok(res) => {
-           let took = start.elapsed();
-           let json = serde_json::to_string_pretty(&res)
+            let took = start.elapsed();
+
+            let json = serde_json::to_string_pretty(&res)
             .expect("serialisation failed");
 
             let out_path = std::path::PathBuf::from("out.json");

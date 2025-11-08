@@ -772,13 +772,13 @@ pub fn buctis_irregular<'tokens, 'src: 'tokens, I>(
 where
     I: ValueInput<'tokens, Token = Token<'src>, Span = SimpleSpan>,
 {
-    select! { Token::Name(n) => n }  //  foo=bar
+    select! { Token::AlphaNumeric(n) => n }  //  foo=bar
         .then_ignore(just(Token::Tis))
         .then(spec_wide.clone())
         .map(|(n, s)| Spec::BucTis(Skin::Term(n.to_string()), Box::new(s)))
         .or(
             just(Token::Tis)
-            .ignore_then(select! { Token::Name(n) => n }  // =foo=bar
+            .ignore_then(select! { Token::AlphaNumeric(n) => n }  // =foo=bar
                             .then_ignore(just(Token::Tis))
                             .then(spec_wide.clone())
                             .map(|(name, spec)| (Some(name), spec))
@@ -838,7 +838,7 @@ pub fn buclus_spec_wide<'tokens, 'src: 'tokens, I>(
 where
     I: ValueInput<'tokens, Token = Token<'src>, Span = SimpleSpan>,
 {
-    select! { Token::Name(s) => s.to_string() }
+    select! { Token::AlphaNumeric(s) => s.to_string() }
     .then_ignore(just(Token::Ace))
     .then(spec.clone())
     .delimited_by(just(Token::Pal), just(Token::Par))

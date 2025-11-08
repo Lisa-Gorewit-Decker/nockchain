@@ -294,9 +294,10 @@ where
     gap()
     .ignore_then(spec.clone())
     .then_ignore(gap())
-    .then(aliases.then_ignore(gap()).or_not().map(|x| x.unwrap_or(vec![])))
+    .then(aliases.or_not().map(|x| x.unwrap_or(vec![])))
     .then(chapters(hoon.clone(), spec.clone()))
-    .map(|((spec, alas), map_term_tome)| Hoon::BarCab(Box::new(spec), alas, map_term_tome))
+    .map(|((spec, alas), map_term_tome)|
+            Hoon::BarCab(Box::new(spec), alas, map_term_tome))
 }
 
 pub fn barcol_wide<'tokens, 'src: 'tokens, I>(

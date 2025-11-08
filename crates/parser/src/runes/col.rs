@@ -196,3 +196,34 @@ where
     .delimited_by(just(Token::Pal), just(Token::Par))
     .map(|list| Hoon::ColSig(list))
 }
+
+
+pub fn list_syntax<'tokens, 'src: 'tokens, I>(
+    hoon_wide:   impl ParserExt<'tokens, 'src, I, Hoon>,
+) -> impl Parser<'tokens, I, Hoon, Err<'tokens, 'src>>
+where
+    I: ValueInput<'tokens, Token = Token<'src>, Span = SimpleSpan>,
+{
+    just([Token::Sig, Token::Sel]).to(true).or(just(Token::Sel).to(false))   //  ~[  or  [
+    .then(hoon_wide.clone()
+            .separated_by(just(Token::Ace))
+            .at_least(1)
+            .collect::<Vec<_>>()
+    )
+    .then(just([Token::Ser, Token::Sig]).to(true).or(just(Token::Ser).to(false)))  //  ]~ or ]
+    .map(|((start, list), end)| {
+            if start {
+                if end {
+                    return Hoon::ColSig(vec![Hoon::ColSig(list)]);
+                } {
+                    return Hoon::ColSig(list);
+                }
+            } else {
+                if end {
+                    return Hoon::ColSig(vec![Hoon::ColTar(list)]);
+                } {
+                    return Hoon::ColTar(list);
+                }
+            }
+        })
+}

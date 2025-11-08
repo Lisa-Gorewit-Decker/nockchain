@@ -23,7 +23,7 @@ where
         just(Token::Bar).ignore_then(wutbar(hoon.clone())),
         just(Token::Gar).ignore_then(wutgar(hoon.clone())),
         just(Token::Gal).ignore_then(wutgal(hoon.clone())),
-        just(Token::Ket).ignore_then(wutket(hoon.clone())),
+        just(Token::Ket).ignore_then(wutket(hoon.clone(), hoon_wide.clone())),
         just(Token::Pam).ignore_then(wutpam(hoon.clone())),
         just(Token::Pat).ignore_then(wutpat(hoon.clone(), hoon_wide.clone())),
         just(Token::Tis).ignore_then(wuttis(hoon.clone(), hoon_wide.clone(), spec.clone())),
@@ -60,17 +60,19 @@ where
 
 pub fn wutket<'tokens, 'src: 'tokens, I>(
     hoon:        impl ParserExt<'tokens, 'src, I, Hoon>,
+    hoon_wide:        impl ParserExt<'tokens, 'src, I, Hoon>,
 ) -> impl Parser<'tokens, I, Hoon, Err<'tokens, 'src>> + 'tokens
 where
     I: ValueInput<'tokens, Token = Token<'src>, Span = SimpleSpan>,
 {
     gap()
-    .ignore_then(winglist()) //  handle non-wing cases here
+    .ignore_then(tiki_tall(hoon.clone(),
+                                hoon_wide.clone()))
     .then_ignore(gap())
     .then(hoon.clone())
     .then_ignore(gap())
     .then(hoon.clone())
-    .map(|((p, q), r)| Hoon::WutKet(p, Box::new(q), Box::new(r)))
+    .map(|((p, q), r)| wtkt(p, q, r))
 }
 
 pub fn wutket_wide<'tokens, 'src: 'tokens, I>(
@@ -79,13 +81,13 @@ pub fn wutket_wide<'tokens, 'src: 'tokens, I>(
 where
     I: ValueInput<'tokens, Token = Token<'src>, Span = SimpleSpan>,
 {
-    winglist() //  handle non-wing cases here
+    tiki_wide(hoon_wide.clone())
     .then_ignore(just(Token::Ace))
     .then(hoon_wide.clone())
     .then_ignore(just(Token::Ace))
     .then(hoon_wide.clone())
     .delimited_by(just(Token::Pal), just(Token::Par))
-    .map(|((p, q), r)| Hoon::WutKet(p, Box::new(q), Box::new(r)))
+    .map(|((p, q), r)| wtkt(p, q, r))
 }
 
 pub fn wutpat<'tokens, 'src: 'tokens, I>(

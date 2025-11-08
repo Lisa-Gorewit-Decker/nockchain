@@ -181,12 +181,9 @@ pub fn miccol_irregular<'tokens, 'src: 'tokens, I>(
 where
     I: ValueInput<'tokens, Token = Token<'src>, Span = SimpleSpan>,
 {
-    just(Token::Col)
-    .ignore_then(
-        hoon_wide.clone()
-        .then_ignore(just(Token::Ace))
-        .then(list_hoon_wide(hoon_wide.clone()))
-        .delimited_by(just(Token::Pal), just(Token::Par))
-    )
+    hoon_wide.clone()
+    .then_ignore(just(Token::Ace))
+    .then(list_hoon_wide(hoon_wide.clone()))
+    .delimited_by(just(Token::Pal), just(Token::Par))
     .map(|(p, list)| Hoon::MicCol(Box::new(p), list))
 }

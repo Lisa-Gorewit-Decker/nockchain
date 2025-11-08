@@ -326,7 +326,7 @@ where
     I: ValueInput<'tokens, Token = Token<'src>, Span = SimpleSpan>,
 {
     gap()
-    .ignore_then(select! { Token::Name(n) => n.to_string() } )
+    .ignore_then(select! { Token::AlphaNumeric(n) => n.to_string() } )
     .then(just(Token::Tis)
             .ignore_then(spec_wide.clone())
             .map(|s| Box::new(s))
@@ -348,7 +348,7 @@ pub fn tistar_wide<'tokens, 'src: 'tokens, I>(
 where
     I: ValueInput<'tokens, Token = Token<'src>, Span = SimpleSpan>,
 {
-    select! { Token::Name(n) => n.to_string() }
+    select! { Token::AlphaNumeric(n) => n.to_string() }
     .then(just(Token::Tis)
             .ignore_then(spec_wide.clone())
             .map(|s| Box::new(s))

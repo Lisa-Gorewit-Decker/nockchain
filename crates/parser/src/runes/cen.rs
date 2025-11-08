@@ -331,15 +331,12 @@ pub fn censig_irregular<'tokens, 'src: 'tokens, I>(
 where
     I: ValueInput<'tokens, Token = Token<'src>, Span = SimpleSpan>,
 {
-    just(Token::Sig)
-    .ignore_then(
-        winglist()
-        .then_ignore(just(Token::Ace))
-        .then(hoon_wide.clone())
-        .then_ignore(just(Token::Ace))
-        .then(list_hoon_wide(hoon_wide.clone()))
-        .delimited_by(just(Token::Pal), just(Token::Par))
-    )
+    winglist()
+    .then_ignore(just(Token::Ace))
+    .then(hoon_wide.clone())
+    .then_ignore(just(Token::Ace))
+    .then(list_hoon_wide(hoon_wide.clone()))
+    .delimited_by(just(Token::Pal), just(Token::Par))
     .map(|((w, h), list)| Hoon::CenSig(w, Box::new(h), list))
 }
 
