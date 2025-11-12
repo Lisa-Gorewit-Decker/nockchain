@@ -129,24 +129,8 @@ pub enum Token<'a> {
     })]
     CordClosed(&'a str),
 
-    TripleCord(String) = {
-        #[regex(r"(?s)'''\r?\n((?:.*\r?\n)*?)(\r?\n)?'''", |lex| {
-            let caps = lex.captures();
-            let mut body = caps.get(1).map(|m| m.as_str()).unwrap_or("");
-
-            if let Some(nl) = body.find('\n') {
-                let line = &body[..nl];
-                if line.trim_start().starts_with("::") || line.trim().is_empty() {
-                    body = body[nl + 1..].trim_start_matches(['\r', '\n']);
-                }
-            } else if body.trim_start().starts_with("::") || body.trim().is_empty() {
-                body = "";
-            }
-
-            body.trim_end().to_string()
-        })]
-        => TripleCord(<>)
-    };
+    #[regex(r"removethis...")]
+    TripleCord,
 
     #[regex(r"\s{2,}(?:\n+)?|\n+")]
     #[regex(r"(?:\s*)?::[^\n\r]*(?:\r?\n)?")]  // comments

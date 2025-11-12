@@ -3,24 +3,20 @@ use crate::ast::hoon::*;
 use crate::lexer::tokens::Token;
 use logos::Span;
 use chumsky::{
-    input::{Stream, ValueInput},
+    input::{Stream, ValueInput, Input, StrInput},
     prelude::*,
 };
 
-pub type Err<'tokens, 'src> = extra::Err<Rich<'tokens, Token<'src>>,>;
+pub type Err<'src> = extra::Full<Rich<'src, char>, (), ()>;
 
-use chumsky::input::Input;          // <-- bring the trait into scope
-
-pub trait ParserExt<'tokens, 'src: 'tokens, I, O>:
-    Parser<'tokens, I, O, Err<'tokens, 'src>> + Clone + 'tokens
-where
-    I: Input<'tokens, Token = Token<'src>, Span = SimpleSpan>,
+pub trait ParserExt<'src, O>:
+    Parser<'src, &'src str, O, Err<'src>> + Clone + 'src
 {
 }
-impl<'tokens, 'src: 'tokens, I, O, P> ParserExt<'tokens, 'src, I, O> for P
+
+impl<'src, O, P> ParserExt<'src, O> for P
 where
-    P: Parser<'tokens, I, O, Err<'tokens, 'src>> + Clone + 'tokens,
-    I: Input<'tokens, Token = Token<'src>, Span = SimpleSpan>,
+    P: Parser<'src, &'src str, O, Err<'src>> + Clone + 'src,
 {
 }
 
@@ -724,28 +720,42 @@ pub fn peg(a: u64, b: u64) -> Result<u64, &'static str> {  // this is broken...
 
 // }
 
-///  Parses one or more Gaps
-///
-///   One or more because when the lexer gets rids of comments
-///   it will generate multiple Gap Tokens for what is
-///   gramaticaly one.
-///
-pub fn gap<'tokens, 'src: 'tokens, I>(
-) -> impl Parser<'tokens, I, (), Err<'tokens, 'src>> + 'tokens
-where
-    I: ValueInput<'tokens, Token = Token<'src>, Span = SimpleSpan>,
+pub fn digit<'src>(
+) -> impl Parser<'src, &'src str, char, Err<'src>>
 {
-    just(Token::Gap)
-    .repeated()
-    .at_least(1)
-    .ignored()
+    one_of("0123456789")
 }
 
-pub fn list_term_hoon<'tokens, 'src: 'tokens, I>(
-    hoon: impl Parser<'tokens, I, Hoon, Err<'tokens, 'src>> + Clone + 'tokens,
-) -> impl Parser<'tokens, I, Vec<(Term, Hoon)>, Err<'tokens, 'src>> + 'tokens
-where
-    I: ValueInput<'tokens, Token = Token<'src>, Span = SimpleSpan>,
+pub fn non_zero_digit<'src>(
+) -> impl Parser<'src, &'src str, char, Err<'src>>
+{
+    one_of("0123456789")
+}
+
+pub fn lowercase<'src>(
+) -> impl Parser<'src, &'src str, char, Err<'src>>
+{
+    one_of("abcdefghijklmnopqrstuvwxyz")
+}
+
+pub fn uppercase<'src>(
+) -> impl Parser<'src, &'src str, char, Err<'src>>
+{
+    one_of("ABCDEFGHIJKLMNOPQRSTUVWXYZ")
+}
+
+pub fn gap<'src>(
+) -> impl Parser<'src, &'src str, (), Err<'src>>
+{
+    regex(r"\s{2,}(?:\n+)?|\n+")
+        .or(regex(r"(?:\s*)?::[^\n\r]*(?:\r?\n)?"))  //  comments
+        .repeated().at_least(1)
+        .labelled("Gap")
+}
+
+pub fn list_term_hoon<'src>(
+    hoon: impl ParserExt<'src, Hoon>,
+) -> impl Parser<'src, &'src str, Vec<(Term, Hoon)>, Err<'src>>
 {
     symbol()
     .then_ignore(gap())
@@ -756,34 +766,30 @@ where
     .collect::<Vec<(Term, Hoon)>>()
 }
 
-pub fn list_names_wide<'tokens, 'src: 'tokens, I>(
-) -> impl Parser<'tokens, I, Vec<Term>, Err<'tokens, 'src>> + 'tokens
-where
-    I: ValueInput<'tokens, Token = Token<'src>, Span = SimpleSpan>,
+pub fn list_names_wide<'src>(
+) -> impl Parser<'src, &'src str, Vec<Term>, Err<'src>>
 {
     symbol()
-    .separated_by(just(Token::Ace))
+    .separated_by(just(" "))
     .at_least(1)
     .collect::<Vec<_>>()
-    .delimited_by(just(Token::Sel), just(Token::Ser))
+    .delimited_by(just("["), just("]"))
 }
 
-pub fn winglist<'tokens, 'src: 'tokens, I>(
-) -> impl Parser<'tokens, I, WingType, Err<'tokens, 'src>> + 'tokens
-where
-    I: ValueInput<'tokens, Token = Token<'src>, Span = SimpleSpan>,
+pub fn winglist<'src>(
+) -> impl Parser<'src, &'src str, WingType, Err<'src>>
 {
     let name =      //  Name or $
-        just(Token::Buc)
-            .map(|_| "%$".to_string())
+        just("$")
+            .to("%$".to_string())
             .or(symbol());
 
     let com =   //  ,
-        just(Token::Com)
-        .map(|_| Limb::Axis(0));
+        just(",")
+        .to(Limb::Axis(0));
 
     let ket_name =   //  ^^name or name
-        just(Token::Ket)
+        just("^")
             .repeated()
             .count()
             .then(name)
@@ -796,43 +802,39 @@ where
             });
 
     let lus_number =   //  +10
-            just(Token::Lus)
-                .ignore_then(select! {Token::Number(n) => n.to_string()})
-                .map(|n| {
+            just("+").ignore_then(regex(r"[0-9]+"))
+                .map(|n: &str| {
                     let num = n.parse::<u64>().unwrap();
                     Limb::Axis(num)}
                 );
 
     let pam_number =   //  &10
-            just(Token::Pam)
-                .ignore_then(select! {Token::Number(n) => n.to_string()})
-                .map(|n| {
+            just("&").ignore_then((regex(r"[0-9]+")))
+                .map(|n: &str| {
                     let num = n.parse::<u64>().unwrap();
                     Limb::Axis(left_child(num))
                 });
 
     let bar_number =  //  |10
-            just(Token::Bar)
-                .ignore_then(select! {Token::Number(n) => n.to_string()})
-                .map(|n| {
+           just("|").ignore_then(regex(r"[0-9]+"))
+                .map(|n: &str| {
                     let num = n.parse::<u64>().unwrap();
                     Limb::Axis(right_child(num))
                 });
 
     let dot =  //  .
-            just(Token::Dot)
-                .map(|_| Limb::Axis(1));
+            just(".").to(Limb::Axis(1));
 
     let lus =  //  +
-        just(Token::Lus)
-            .map(|_| Limb::Axis(3));
+        just("+").to(Limb::Axis(3));
 
     let hep =  //  -
-        just(Token::Hep)
-            .map(|_| Limb::Axis(3));
+        just("-").to(Limb::Axis(2));
 
     let lark =   //    +>-<  notation
-            select! { Token::LarkExpression(str) => {
+            regex(r"[+-][<>](?:[+-][<>])*[+-]?")
+            .map(|s: &str| {
+                let str = s.to_string();
                 let mut axis = 1;
                 for c in str.chars() {
                     match c {
@@ -842,7 +844,7 @@ where
                     }
                 }
                 Limb::Axis(axis)
-            }}.labelled("Lark Expression");
+            }).labelled("Lark Expression");
 
     choice((
         com,
@@ -854,19 +856,17 @@ where
         dot,
         lus,
         hep,
-    )).separated_by(just(Token::Dot))
+    )).separated_by(just("."))
         .at_least(1)
         .collect::<Vec<_>>()
         .labelled("Wing")
 }
 
-pub fn variable_name_and_type<'tokens, 'src: 'tokens, I>(
-    spec_wide:   impl ParserExt<'tokens, 'src, I, Spec>,
-) -> impl Parser<'tokens, I, Skin, Err<'tokens, 'src>> + 'tokens
-where
-    I: ValueInput<'tokens, Token = Token<'src>, Span = SimpleSpan>,
+pub fn variable_name_and_type<'src>(
+    spec_wide:   impl ParserExt<'src, Spec>,
+) -> impl Parser<'src, &'src str, Skin, Err<'src>>
 {
-    let not_named = just(Token::Tis)  // =/  =foo
+    let not_named = just("=")  // =/  =foo
         .ignore_then(spec_wide.clone())
         .try_map(|spec, span| {
             let auto = autoname(spec.clone());
@@ -886,7 +886,7 @@ where
         });
 
      let named = symbol()    //  =/  a=foo  ,  =/  a
-        .then_ignore(just(Token::Fas).or(just(Token::Tis)))
+        .then_ignore(just("/").or(just("=")))
         .then(
             spec_wide.clone()
                 .or_not() // handle foo or foo=bar
@@ -909,52 +909,44 @@ where
     choice((not_named, named, just_type))
 }
 
-pub fn list_wing_hoon_wide<'tokens, 'src: 'tokens, I>(
-    hoon:        impl ParserExt<'tokens, 'src, I, Hoon>,
-) -> impl Parser<'tokens, I, Vec<(WingType, Hoon)>, Err<'tokens, 'src>> + 'tokens
-where
-    I: ValueInput<'tokens, Token = Token<'src>, Span = SimpleSpan>,
+pub fn list_wing_hoon_wide<'src>(
+    hoon:        impl ParserExt<'src, Hoon>,
+) -> impl Parser<'src, &'src str, Vec<(WingType, Hoon)>, Err<'src>>
 {
     let pair = winglist()
-                .then_ignore(just(Token::Ace))
+                .then_ignore(just(" "))
                 .then(hoon.clone());
 
     pair
-        .separated_by(just(Token::Com).then(just(Token::Ace)))
+        .separated_by(just(",").then(just(" ")))
         .at_least(1)
         .collect::<Vec<_>>()
 }
 
-pub fn list_hoon_wide<'tokens, 'src: 'tokens, I>(
-    hoon_wide:   impl ParserExt<'tokens, 'src, I, Hoon>,
-) -> impl Parser<'tokens, I, Vec<Hoon>, Err<'tokens, 'src>> + 'tokens
-where
-    I: ValueInput<'tokens, Token = Token<'src>, Span = SimpleSpan>,
+pub fn list_hoon_wide<'src>(
+    hoon_wide:   impl ParserExt<'src, Hoon>,
+) -> impl Parser<'src, &'src str, Vec<Hoon>, Err<'src>>
 {
     hoon_wide.clone()
-    .separated_by(just(Token::Ace))
+    .separated_by(just(" "))
     .at_least(1)
     .collect::<Vec<Hoon>>()
 }
 
-pub fn list_spec_closed_wide<'tokens, 'src: 'tokens, I>(
-    spec_wide:   impl ParserExt<'tokens, 'src, I, Spec>,
-) -> impl Parser<'tokens, I, Vec<Spec>, Err<'tokens, 'src>> + 'tokens
-where
-    I: ValueInput<'tokens, Token = Token<'src>, Span = SimpleSpan>,
+pub fn list_spec_closed_wide<'src>(
+    spec_wide:   impl ParserExt<'src, Spec>,
+) -> impl Parser<'src, &'src str, Vec<Spec>, Err<'src>>
 {
     spec_wide.clone()
-    .separated_by(just(Token::Ace))
+    .separated_by(just(" "))
     .at_least(1)
     .collect::<Vec<_>>()
-    .delimited_by(just(Token::Pal), just(Token::Par))
+    .delimited_by(just('('), just(')'))
 }
 
-pub fn list_spec_closed_tall<'tokens, 'src: 'tokens, I>(
-    spec:   impl ParserExt<'tokens, 'src, I, Spec>,
-) -> impl Parser<'tokens, I, Vec<Spec>, Err<'tokens, 'src>> + 'tokens
-where
-    I: ValueInput<'tokens, Token = Token<'src>, Span = SimpleSpan>,
+pub fn list_spec_closed_tall<'src>(
+    spec:   impl ParserExt<'src, Spec>,
+) -> impl Parser<'src, &'src str, Vec<Spec>, Err<'src>>
 {
     gap()
     .ignore_then(spec.clone()
@@ -963,14 +955,12 @@ where
                 .collect::<Vec<_>>()
         )
     .then_ignore(gap())
-    .then_ignore(just([Token::Tis, Token::Tis]))
+    .then_ignore(just("=="))
 }
 
-pub fn list_wing_hoon_tall<'tokens, 'src: 'tokens, I>(
-    hoon:        impl ParserExt<'tokens, 'src, I, Hoon>,
-) -> impl Parser<'tokens, I, Vec<(WingType, Hoon)>, Err<'tokens, 'src>> + 'tokens
-where
-    I: ValueInput<'tokens, Token = Token<'src>, Span = SimpleSpan>,
+pub fn list_wing_hoon_tall<'src>(
+    hoon:        impl ParserExt<'src, Hoon>,
+) -> impl Parser<'src, &'src str, Vec<(WingType, Hoon)>, Err<'src>>
 {
    let pair = winglist()
                 .then_ignore(gap())
@@ -980,14 +970,12 @@ where
     pair.repeated().at_least(1).collect::<Vec<(WingType, Hoon)>>()
 }
 
-pub fn tiki_wide<'tokens, 'src: 'tokens, I>(
-    hoon_wide:   impl ParserExt<'tokens, 'src, I, Hoon>,
-) -> impl Parser<'tokens, I, Tiki, Err<'tokens, 'src>> + 'tokens
-where
-    I: ValueInput<'tokens, Token = Token<'src>, Span = SimpleSpan>,
+pub fn tiki_wide<'src>(
+    hoon_wide:   impl ParserExt<'src, Hoon>,
+) -> impl Parser<'src, &'src str, Tiki, Err<'src>>
 {
     let with_name = symbol()
-        .then_ignore(just(Token::Tis))
+        .then_ignore(just("="))
         .then(
             winglist()
                 .map(|w| {
@@ -1009,15 +997,13 @@ where
     with_name.or(no_name)
 }
 
-pub fn tiki_tall<'tokens, 'src: 'tokens, I>(
-    hoon_tall: impl ParserExt<'tokens, 'src, I, Hoon>,
-    hoon_wide:   impl ParserExt<'tokens, 'src, I, Hoon>,
-) -> impl Parser<'tokens, I, Tiki, Err<'tokens, 'src>> + 'tokens
-where
-    I: ValueInput<'tokens, Token = Token<'src>, Span = SimpleSpan>,
+pub fn tiki_tall<'src>(
+    hoon_tall: impl ParserExt<'src, Hoon>,
+    hoon_wide:   impl ParserExt<'src, Hoon>,
+) -> impl Parser<'src, &'src str, Tiki, Err<'src>>
 {
     let with_name = symbol()
-        .then_ignore(just(Token::Tis))
+        .then_ignore(just("="))
         .then(
             winglist()
                 .map(|w| {
@@ -1034,7 +1020,7 @@ where
 
     tiki_wide(hoon_wide.clone())    //  the hoon parser has ^= case here but
         .or(
-            just([Token::Ket, Token::Tis]).then(gap()).or_not()
+            just("^=").then(gap()).or_not()
             .ignore_then(with_name)
         )
         .or(
@@ -1046,22 +1032,18 @@ where
 ///     chapters can be unamed or named with +$
 ///     arms can be named with ++ or +$
 ///
-pub fn chapters<'tokens, 'src: 'tokens, I>(
-    hoon: impl ParserExt<'tokens, 'src, I, Hoon>,
-    spec: impl ParserExt<'tokens, 'src, I, Spec> + Clone + 'tokens
-) -> impl Parser<'tokens, I, HashMap<Term, Tome>, Err<'tokens, 'src>>
-where
-    I: ValueInput<'tokens, Token = Token<'src>, Span = SimpleSpan>,
-{
-
-    let luslus = just([Token::Lus, Token::Lus])
+pub fn chapters<'src>(
+    hoon: impl ParserExt<'src, Hoon>,
+    spec: impl ParserExt<'src, Spec>,
+) -> impl Parser<'src, &'src str, HashMap<Term, Tome>, Err<'src>> {
+    let luslus = just("++")
             .ignore_then(gap())
-            .ignore_then(just(Token::Buc).to("%$".to_string()).or(symbol()))
+            .ignore_then(just("$").to("%$".to_string()).or(symbol()))
             .then_ignore(gap())
             .then(hoon.clone())
             .map(|(name, hoon)| (name, hoon));
 
-    let lusbuc =  just([Token::Lus, Token::Buc])
+    let lusbuc =  just("+$")
             .ignore_then(gap())
             .ignore_then(symbol())
             .then_ignore(gap())
@@ -1071,9 +1053,9 @@ where
                                                         Box::new(spec))))));
 
     let optional_chapter_label =
-        just([Token::Lus, Token::Bar])
+        just("+|")
         .then_ignore(gap())
-        .then(just(Token::Cen))
+        .then(just("%"))
         .ignore_then(symbol())
         .then_ignore(gap())
         .or_not();
@@ -1084,7 +1066,7 @@ where
                           .repeated().at_least(1).collect::<Vec<_>>());
 
     chapter.repeated().at_least(1).collect::<Vec<_>>()
-        .then_ignore(just([Token::Hep, Token::Hep]))
+        .then_ignore(just("--"))
         .map(|chapters_vec: Vec<(Option<String>, Vec<(String, Hoon)>)>| {
             let mut map_term_tome = HashMap::new();
             for (opt_label, arms_vec) in chapters_vec {
@@ -1101,11 +1083,9 @@ where
         })
 }
 
-pub fn list_hoon_tall<'tokens, 'src: 'tokens, I>(
-    hoon:        impl ParserExt<'tokens, 'src, I, Hoon>,
-) -> impl Parser<'tokens, I, Vec<Hoon>, Err<'tokens, 'src>> + 'tokens
-where
-    I: ValueInput<'tokens, Token = Token<'src>, Span = SimpleSpan>,
+pub fn list_hoon_tall<'src>(
+    hoon:        impl ParserExt<'src, Hoon>,
+) -> impl Parser<'src, &'src str, Vec<Hoon>, Err<'src>>
 {
     hoon.clone()
     .separated_by(gap())
@@ -1113,26 +1093,22 @@ where
     .collect::<Vec<_>>()
 }
 
-pub fn term<'tokens, 'src: 'tokens, I>(
-) -> impl Parser<'tokens, I, String, Err<'tokens, 'src>> + 'tokens
-where
-    I: ValueInput<'tokens, Token = Token<'src>, Span = SimpleSpan>,
+pub fn term<'src>(
+) -> impl Parser<'src, &'src str, String, Err<'src>>
 {
-    just(Token::Cen)
+    just("%")
       .ignore_then(symbol().map(|s| format!("%{}", s)))
 }
 
-pub fn jet_hooks<'tokens, 'src: 'tokens, I>(
-    hoon:        impl ParserExt<'tokens, 'src, I, Hoon>,
-) -> impl Parser<'tokens, I, Vec<(Term, Hoon)>, Err<'tokens, 'src>> + 'tokens
-where
-    I: ValueInput<'tokens, Token = Token<'src>, Span = SimpleSpan>,
+pub fn jet_hooks<'src>(
+    hoon:        impl ParserExt<'src, Hoon>,
+) -> impl Parser<'src, &'src str, Vec<(Term, Hoon)>, Err<'src>>
 {
-    just(Token::Sig).to(Vec::new())
+    just('~').to(Vec::new())
         .or(
-            just([Token::Tis, Token::Tis])
-            .ignore_then(just(Token::Gap))
-            .ignore_then(just(Token::Cen)
+            just("==")
+            .ignore_then(gap())
+            .ignore_then(just("%")
                         .ignore_then(symbol().map(|s| format!("%{}", s)))
                         .then_ignore(gap())
                         .then(hoon.clone())
@@ -1141,91 +1117,82 @@ where
                         .collect::<Vec<(Term, Hoon)>>()
                         )
             .then_ignore(gap())
-            .then_ignore(just([Token::Tis, Token::Tis]))
+            .then_ignore(just("=="))
         )
 }
 
-pub fn jet_signature<'tokens, 'src: 'tokens, I>(
-) -> impl Parser<'tokens, I, Chum, Err<'tokens, 'src>> + 'tokens
-where
-    I: ValueInput<'tokens, Token = Token<'src>, Span = SimpleSpan>,
+pub fn jet_signature<'src>(
+) -> impl Parser<'src, &'src str, Chum, Err<'src>>
 {
-    let lef = just(Token::Cen)  //  %k
+    let lef = just("%")  //  %k
                 .ignore_then(symbol().map(Chum::Lef));
 
-    let stdkel = just(Token::Cen)  //  %k.138
+    let stdkel = just("%")  //  %k.138
                 .ignore_then(symbol())
-                .then_ignore(just(Token::Dot))
-                .then(select! { Token::AlphaNumeric(s) => s.to_string()})
-                //  TODO: convert number from 1000 to 1.000 form
+                .then_ignore(just("."))
+                .then(decimal_number())
                 .map(|(s, n)| Chum::StdKel(s, n.parse().expect("failed to parse version number")));
-
+    // TODO: add other cases here
     choice((
         stdkel,
         lef
     ))
 }
 
-pub fn tape<'tokens, 'src: 'tokens, I>(
-) -> impl Parser<'tokens, I, Hoon, Err<'tokens, 'src>>
-where
-    I: ValueInput<'tokens, Token = Token<'src>, Span = SimpleSpan>,
+pub fn tape<'src>(
+) -> impl Parser<'src, &'src str, Hoon, Err<'src>>
 {
-    select! { Token::Tape(s) => Hoon::Knit(s.to_string()) }
+    regex(r#""[^"]*""#).map(|s: &str| { // fix this
+        Hoon::Knit(s.to_string())
+    })
 }
 
-pub fn aura_hoon<'tokens, 'src: 'tokens, I>(
-) -> impl Parser<'tokens, I, Hoon, Err<'tokens, 'src>> + 'tokens
-where
-    I: ValueInput<'tokens, Token = Token<'src>, Span = SimpleSpan>,
+pub fn aura_hoon<'src>(
+) -> impl Parser<'src, &'src str, Hoon, Err<'src>>
 {
-    just(Token::Pat)
-    .ignore_then(aura_text().or_not())
+    just("@")
+    .ignore_then(regex(r"[a-zA-Z]+")
+                .map(str::to_owned)
+                .or_not())
     .map(|maybe_name| {
         let name = maybe_name.unwrap_or("~.".to_string());
         Hoon::Base(BaseType::Atom(name))
     })
 }
 
-pub fn aura_spec<'tokens, 'src: 'tokens, I>(
-) -> impl Parser<'tokens, I, Spec, Err<'tokens, 'src>> + 'tokens
-where
-    I: ValueInput<'tokens, Token = Token<'src>, Span = SimpleSpan>,
+pub fn aura_spec<'src>(
+) -> impl Parser<'src, &'src str, Spec, Err<'src>>
 {
-    just(Token::Pat)
-    .ignore_then(aura_text().or_not())
+    just("@")
+    .ignore_then(regex(r"[a-zA-Z]+")
+                .map(str::to_owned)
+                .or_not())
     .map(|maybe_name| {
         let name = maybe_name.unwrap_or("~.".to_string());
         Spec::Base(BaseType::Atom(name))
     })
 }
 
-pub fn path<'tokens, 'src: 'tokens, I>(
-    hoon_wide:   impl ParserExt<'tokens, 'src, I, Hoon>,
-) -> impl Parser<'tokens, I, Hoon, Err<'tokens, 'src>> + 'tokens
-where
-    I: ValueInput<'tokens, Token = Token<'src>, Span = SimpleSpan>,
+pub fn path<'src>(
+    hoon_wide:   impl ParserExt<'src, Hoon>,
+) -> impl Parser<'src, &'src str, Hoon, Err<'src>>
 {
-    just(Token::Fas)
+    just("/")
         .to(Hoon::ColSig(vec![]))
 }
 
-pub fn concatanate<'tokens, 'src: 'tokens, I>(
-    hoon_wide:   impl ParserExt<'tokens, 'src, I, Hoon>,
-) -> impl Parser<'tokens, I, Hoon, Err<'tokens, 'src>> + 'tokens
-where
-    I: ValueInput<'tokens, Token = Token<'src>, Span = SimpleSpan>,
+pub fn concatanate<'src>(
+    hoon_wide:   impl ParserExt<'src, Hoon>,
+) -> impl Parser<'src, &'src str, Hoon, Err<'src>>
 {
     hoon_wide.clone()
-      .then_ignore(just(Token::Ket))
+      .then_ignore(just("^"))
       .then(hoon_wide.clone())
       .map(|(p, q)| Hoon::Pair(Box::new(p), Box::new(q)))
 }
 
-pub fn wing<'tokens, 'src: 'tokens, I>(
-) -> impl Parser<'tokens, I, Hoon, Err<'tokens, 'src>> + 'tokens
-where
-    I: ValueInput<'tokens, Token = Token<'src>, Span = SimpleSpan>,
+pub fn wing<'src>(
+) -> impl Parser<'src, &'src str, Hoon, Err<'src>>
 {
     winglist()
     .map(|list: WingType| {
@@ -1240,48 +1207,44 @@ where
     })
 }
 
-pub fn tell<'tokens, 'src: 'tokens, I>(
-    hoon_wide:   impl ParserExt<'tokens, 'src, I, Hoon>,
-) -> impl Parser<'tokens, I, Hoon, Err<'tokens, 'src>> + 'tokens
-where
-    I: ValueInput<'tokens, Token = Token<'src>, Span = SimpleSpan>,
+pub fn tell<'src>(
+    hoon_wide:   impl ParserExt<'src, Hoon>,
+) -> impl Parser<'src, &'src str, Hoon, Err<'src>>
 {
-    just(Token::Gal)
+    just("<")
         .ignore_then(list_hoon_wide(hoon_wide.clone()))
-        .then_ignore(just(Token::Gar))
+        .then_ignore(just(">"))
         .map(|list| Hoon::Tell(list))
 }
 
-pub fn spec_term<'tokens, 'src: 'tokens, I>(
-) -> impl Parser<'tokens, I, Spec, Err<'tokens, 'src>> + 'tokens
-where
-    I: ValueInput<'tokens, Token = Token<'src>, Span = SimpleSpan>,
+pub fn spec_term<'src>(
+) -> impl Parser<'src, &'src str, Spec, Err<'src>>
 {
     let buc =      // %$
-        just(Token::Cen)
-        .ignore_then(just(Token::Buc))
+        just("%")
+        .ignore_then(just("$"))
         .map(|_| Spec::Leaf("%tas".to_string(), "%$".to_string()));
 
     let number =      // %123
-        just(Token::Cen)
+        just("%")
         .ignore_then(decimal_number())
         .map(|n| Spec::Leaf("%ud".to_string(), n));
 
     let name =      // %foo
-        just(Token::Cen)
+        just("%")
         .ignore_then(symbol())
         .map(|s| Spec::Leaf("%tas".to_string(), s));
 
     let cord =      // %'foo'
-        just(Token::Cen)
+        just("%")
         .ignore_then(cord())
         .map(|s| Spec::Leaf("%t".to_string(), s));
 
-    let yes =      // %.y
-        just(Token::Yes).to(Spec::Leaf("%f".to_string(), "0".to_string()));
+    let yes =
+        just("%.y").to(Spec::Leaf("%f".to_string(), "0".to_string()));
 
-    let no =      // %.n
-        just(Token::No).to(Spec::Leaf("%f".to_string(), "1".to_string()));
+    let no =
+        just("%.n").to(Spec::Leaf("%f".to_string(), "1".to_string()));
 
     choice((
         buc,
@@ -1293,30 +1256,28 @@ where
     ))
 }
 
-pub fn constant<'tokens, 'src: 'tokens, I>(
-) -> impl Parser<'tokens, I, Hoon, Err<'tokens, 'src>> + 'tokens
-where
-    I: ValueInput<'tokens, Token = Token<'src>, Span = SimpleSpan>,
+pub fn constant<'src>(
+) -> impl Parser<'src, &'src str, Hoon, Err<'src>>
 {
     let buc_const =      // %$
-        just(Token::Cen)
-        .ignore_then(just(Token::Buc))
+        just("%")
+        .ignore_then(just("$"))
         .map(|_|
             Hoon::Rock("%tas".to_string(), Noun::Atom("%$".to_string()))
         );
 
     let number_const =      // %123
-        just(Token::Cen)
+        just("%")
         .ignore_then(decimal_number())
         .map(|n| Hoon::Rock("%ud".to_string(), Noun::Atom(n)));
 
     let name_const =      // %foo
-        just(Token::Cen)
+        just("%")
         .ignore_then(symbol())
         .map(|s| Hoon::Rock("%tas".to_string(), Noun::Atom(s.to_string())));
 
     let cord_const =      // %'foo'
-        just(Token::Cen)
+        just("%")
         .ignore_then(cord())
         .map(|n| Hoon::Rock("%t".to_string(), Noun::Atom(n)));
 
@@ -1328,65 +1289,58 @@ where
     ))
 }
 
-pub fn cord<'tokens, 'src: 'tokens, I>(
-) -> impl Parser<'tokens, I, String, Err<'tokens, 'src>> + 'tokens
-where
-    I: ValueInput<'tokens, Token = Token<'src>, Span = SimpleSpan>,
+pub fn cord<'src>(
+) -> impl Parser<'src, &'src str, String, Err<'src>>
 {
-    let gon = just(Token::Bas)
+    let gon = just("\\")
                 .ignore_then(gap())
-                .ignore_then(just(Token::Fas));
+                .ignore_then(just("/"));
 
-    let char_in_cord = select! {Token::AlphaNumeric(str) =>  str}
-                      .try_map(|str, span| validate_cord_chars(span, str));
+    let char_in_cord =
+    regex(r"(?:(?:\\(?:\\|'|[0-9A-Fa-f]{2}))|[^\x00-\x1F\x7F'\\])+");
 
     let single_quoted = char_in_cord
                         .separated_by(gon)
                         .at_least(1)
                         .collect::<Vec<_>>()
-                        .delimited_by(just(Token::Soq), just(Token::Soq))
+                        .delimited_by(just("\'"), just("\'"))
                         .map(|chars| chars.concat());
 
-    let triple_quoted =  select! {Token::TripleCord(str) =>  str.to_string()};
+    // let triple_quoted =  select! {Token::TripleCord(str) =>  str.to_string()};
 
     choice((
         single_quoted,
-        triple_quoted,
+        // triple_quoted,
     ))
 }
 
-pub fn increment<'tokens, 'src: 'tokens, I>(
-    hoon_wide:   impl ParserExt<'tokens, 'src, I, Hoon>,
-) -> impl Parser<'tokens, I, Hoon, Err<'tokens, 'src>> + 'tokens
-where
-    I: ValueInput<'tokens, Token = Token<'src>, Span = SimpleSpan>,
+pub fn increment<'src>(
+    hoon_wide:   impl ParserExt<'src, Hoon>,
+) -> impl Parser<'src, &'src str, Hoon, Err<'src>>
 {
-    just(Token::Dot).or_not()
-        .ignore_then(just(Token::Lus))
-        .ignore_then(just(Token::Pal))
+    just(".").or_not()
+        .ignore_then(just("+"))
+        .ignore_then(just('('))
         .ignore_then(
             hoon_wide.clone()
         )
-        // .then_ignore(just(Token::Ace).not())
-        .then_ignore(just(Token::Par))
+        .then_ignore(just(')'))
         .map(|h| Hoon::DotLus(Box::new(h)))
 }
 
-pub fn function_call<'tokens, 'src: 'tokens, I>(
-    hoon:        impl ParserExt<'tokens, 'src, I, Hoon>,
-) -> impl Parser<'tokens, I, Hoon, Err<'tokens, 'src>> + 'tokens
-where
-    I: ValueInput<'tokens, Token = Token<'src>, Span = SimpleSpan>,
+pub fn function_call<'src>(
+    hoon:        impl ParserExt<'src, Hoon>,
+) -> impl Parser<'src, &'src str, Hoon, Err<'src>>
 {
-    just(Token::Pal)
+    just('(')
         .ignore_then(hoon.clone())
         .then(
-            just(Token::Ace)
+            just(" ")
                 .ignore_then(hoon.clone())
                 .repeated()
                 .collect::<Vec<_>>()
             )
-    .then_ignore(just(Token::Par))
+    .then_ignore(just(')'))
     .map(|(func, args)| Hoon::CenCol(Box::new(func), args))
 }
 
@@ -1462,180 +1416,23 @@ fn validate_cord_chars<'a, 'src>(
     Ok(result)
 }
 
-/// Validates a symbol that:
-/// - Starts with a lowercase letter (a-z)
-/// - Is followed by zero or more lowercase letters, digits, or hyphens
-/// - Must contain at least one character (enforced by starting rule)
-fn validate_symbol<'a, 'src>(
-    span: SimpleSpan,
-    s: String,
-) -> Result<String, Rich<'a, Token<'src>>> {
-    if s.is_empty() {
-        return Err(Rich::custom(span, "name cannot be empty"));
-    }
-
-    let mut chars = s.chars();
-    let first = chars.next().unwrap();
-
-    if !first.is_ascii_lowercase() {
-        return Err(Rich::custom(span, "name must start with a lowercase letter"));
-    }
-
-    if !chars.all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-') {
-        return Err(Rich::custom(
-            span,
-            "name can only contain lowercase letters, digits, or hyphens",
-        ));
-    }
-
-    Ok(s.to_string())
+///  Alphanumeric with hyphens
+///      Start with a lowercase letter
+///      Followed by zero or more: lowercase letter, digit, or hyphen
+///
+pub fn symbol<'src>(
+) -> impl Parser<'src, &'src str, String, Err<'src>> {
+    regex(r"[a-z](?:[a-zA-Z0-9-])*").map(str::to_owned)
+    .labelled("Term")
 }
 
-//  alphanumeric with hyphens
-pub fn symbol<'tokens, 'src: 'tokens, I>(
-) -> impl Parser<'tokens, I, String, Err<'tokens, 'src>>
-where
-    I: ValueInput<'tokens, Token = Token<'src>, Span = SimpleSpan>,
+pub fn binary_number<'src>(
+) -> impl Parser<'src, &'src str, String, Err<'src>>
 {
-   select!{ Token::AlphaNumeric(str) => str }
-   .separated_by(just(Token::Hep))
-   .collect::<Vec<&str>>()
-    .map(|parts| parts.join("-"))
-    .try_map(|str, span| validate_symbol(span, str))
-}
+    let first = regex(r"0b(?:0|1[01]{0,3})");
 
-fn validate_lowercase_before_uppercase(s: &str, span: SimpleSpan) -> Result<String, Rich<'_, Token<'_>>> {
-    let mut seen_upper = false;
-    for c in s.chars() {
-        if c.is_uppercase() {
-            seen_upper = true;
-        } else if c.is_lowercase() && seen_upper {
-            return Err(Rich::custom(span, "lowercase letter appears after an uppercase one"));
-        }
-    }
-    Ok(s.to_string())
-}
-
-pub fn aura_text<'tokens, 'src: 'tokens, I>(
-) -> impl Parser<'tokens, I, String, extra::Err<Rich<'tokens, Token<'src>>>>
-where
-    I: ValueInput<'tokens, Token = Token<'src>, Span = SimpleSpan>,
-{
-    select! { Token::AlphaNumeric(str) => str }
-    .try_map(|str, span| validate_lowercase_before_uppercase(str, span))
-}
-
-fn validate_first_ux_group(span: SimpleSpan, s: &str) -> Result<&str, Rich<'_, Token<'_>>> {
-    if s.is_empty() {
-        return Err(Rich::custom(span, "ux: empty numeric group"));
-    }
-    if s.len() > 6 {
-        return Err(Rich::custom(span, "ux: first group exceeds 6 characters"));
-    }
-    if !s.starts_with("0x") || s.len() < 3 {
-        return Err(Rich::custom(span, "ux: missing or invalid '0x' prefix"));
-    }
-
-    let hex_part = &s[2..];
-    if !hex_part.chars().all(|c| c.is_ascii_hexdigit()) {
-        return Err(Rich::custom(span, "ux: invalid hexadecimal digit in group"));
-    }
-
-    Ok(s)
-}
-
-fn validate_second_ux_group(span: SimpleSpan, s: &str) -> Result<&str, Rich<'_, Token<'_>>> {
-    if s.len() != 4 {
-        return Err(Rich::custom(
-            span,
-            "ux: second group must contain exactly 4 hexadecimal digits",
-        ));
-    }
-    if !s.chars().all(|c| c.is_ascii_hexdigit()) {
-        return Err(Rich::custom(
-            span,
-            "ux: invalid hexadecimal digit in second group",
-        ));
-    }
-    Ok(s)
-}
-
-fn validate_first_ud_group(span: SimpleSpan, s: &str) -> Result<&str, Rich<'_, Token<'_>>> {
-    if s.is_empty() {
-        return Err(Rich::custom(span, "empty numeric group"));
-    }
-    if s.len() > 3 {
-        return Err(Rich::custom(span, "first group, exceeds 3 digits"));
-    }
-    if s.starts_with('0') && s.len() > 1 {
-        return Err(Rich::custom(span, "leading zero"));
-    }
-    if !s.chars().all(|c| c.is_ascii_digit()) {
-        return Err(Rich::custom(span, "non-digit character"));
-    }
-    Ok(s)
-}
-
-fn validate_second_ud_group<'a>(
-    span: SimpleSpan,
-    s: &'a str,
-) -> Result<&'a str, Rich<'a, Token<'a>>> {
-    if s.len() != 3 {
-        return Err(Rich::custom(span, "secondary numeric groups must be exactly 3 digits"));
-    }
-    if !s.chars().all(|c| char::is_ascii_digit(&c)) {
-            return Err(Rich::custom(span, "secondary group contains non-digit"));
-    }
-    Ok(s)
-}
-
-fn validate_first_ub_group(span: SimpleSpan, s: &str) -> Result<&str, Rich<'_, Token<'_>>> {
-    if s.is_empty() {
-        return Err(Rich::custom(span, "empty numeric group"));
-    }
-    if s.len() > 6 {
-        return Err(Rich::custom(span, "first group exceeds 6 characters"));
-    }
-    if !s.starts_with("0b") || s.len() < 3 {
-        return Err(Rich::custom(span, "missing or invalid prefix"));
-    }
-
-    let bin_part = &s[2..];
-    if !bin_part.chars().all(|c| c == '0' || c == '1') {
-            return Err(Rich::custom(span, "invalid digit in group"));
-    }
-
-    Ok(s)
-}
-
-fn validate_second_ub_group(span: SimpleSpan, s: &str) -> Result<&str, Rich<'_, Token<'_>>> {
-    if s.len() != 4 {
-        return Err(Rich::custom(
-            span,
-            "second group must contain exactly 4 digits",
-        ));
-    }
-    if !s.chars().all(|c| c == '0' || c == '1') {
-        return Err(Rich::custom(
-            span,
-            "invalid digit in second group",
-        ));
-    }
-    Ok(s)
-}
-
-pub fn binary_number<'tokens, 'src: 'tokens, I>(
-) -> impl Parser<'tokens, I, String, Err<'tokens, 'src>>
-where
-    I: ValueInput<'tokens, Token = Token<'src>, Span = SimpleSpan>,
-{
-    let first =
-        select! { Token::AlphaNumeric(str) => str }
-         .try_map(|str, span| validate_first_ub_group(span, str));
-
-    let rest = just(Token::Dot).ignore_then(gap().or_not())
-            .ignore_then( select! { Token::AlphaNumeric(str) => str })
-            .try_map(|str, span| validate_second_ub_group(span, str));
+    let rest = just(".").ignore_then(gap().or_not())
+            .ignore_then(regex(r"[01]{4}"));
 
     first
         .then(rest.repeated().collect::<Vec<_>>())
@@ -1651,21 +1448,17 @@ where
         .labelled("binary")
 }
 
-pub fn hexadecimal_number<'tokens, 'src: 'tokens, I>(
-) -> impl Parser<'tokens, I, String, Err<'tokens, 'src>>
-where
-    I: ValueInput<'tokens, Token = Token<'src>, Span = SimpleSpan>,
+pub fn hexadecimal_number<'src>(
+) -> impl Parser<'src, &'src str, String, Err<'src>>
 {
-    let first =
-        select! { Token::AlphaNumeric(str) => str }
-         .try_map(|str, span| validate_first_ux_group(span, str));
+    let first = regex(r"0x(0|[1-9a-fA-F][0-9a-fA-F]{0,3})");
 
-    let rest = just(Token::Dot).ignore_then(gap().or_not())
-            .ignore_then( select! { Token::AlphaNumeric(str) => str })
-            .try_map(|str, span| validate_second_ux_group(span, str));
+    let rest = just(".").ignore_then(gap().or_not())
+            .ignore_then(regex(r"[0-9a-fA-F]{4}"))
+            .repeated()
+            .collect::<Vec<_>>();
 
-    first
-        .then(rest.repeated().collect::<Vec<_>>())
+    first.then(rest)
         .map(|(first, mut rest)| {
             if rest.is_empty() {
                 first.to_string()
@@ -1678,37 +1471,38 @@ where
         .labelled("hexadecimal")
 }
 
-pub fn decimal_number<'tokens, 'src: 'tokens, I>(
-) -> impl Parser<'tokens, I, String, Err<'tokens, 'src>>
-where
-    I: ValueInput<'tokens, Token = Token<'src>, Span = SimpleSpan>,
+pub fn decimal_number<'src>(
+) -> impl Parser<'src, &'src str, String, Err<'src>>
 {
     let first =
-        select! { Token::AlphaNumeric(str) => str }
-         .try_map(|str, span| validate_first_ud_group(span, str));
+        regex(r"(0|[1-9][0-9]{0,2})")
+        .map(str::to_owned);
 
-    let rest = just(Token::Dot).ignore_then(gap().or_not())
-            .ignore_then( select! { Token::AlphaNumeric(str) => str })
-            .try_map(|str, span| validate_second_ud_group(span, str));
+    let rest = just(".")
+                .ignore_then(gap().or_not())
+                .ignore_then(regex(r"[0-9]{3}").map(str::to_owned))
+                .repeated()
+                .collect::<Vec<String>>();
 
-    first
-        .then(rest.repeated().collect::<Vec<_>>())
-        .map(|(first, mut rest)| {
-            if rest.is_empty() {
-                first.to_string()
-            } else {
-                let mut parts = vec![first];
-                parts.append(&mut rest);
-                parts.join(".").to_string()
-            }
+    first.then(rest)
+        .map(|(first_digits, rest_digits)| {
+            let all_digits: String = std::iter::once(first_digits)
+                .chain(rest_digits.into_iter())
+                .collect();
+            all_digits
+            // all_digits
+            //     .into_iter()
+            //     .map(|c| c.to_digit(10).expect("invalid digit") as u64)
+            //     .try_fold(0u64, |acc, digit| {
+            //         acc.checked_mul(10).and_then(|v| v.checked_add(digit))
+            //     })
+            //     .expect("number overflow")
         })
-        .labelled("decimal")
+        .labelled("Decimal Number")
 }
 
-pub fn number<'tokens, 'src: 'tokens, I>(
-) -> impl Parser<'tokens, I, Hoon, Err<'tokens, 'src>>
-where
-    I: ValueInput<'tokens, Token = Token<'src>, Span = SimpleSpan>,
+pub fn number<'src>(
+) -> impl Parser<'src, &'src str, Hoon, Err<'src>>
 {
     let ud_number = decimal_number().map(|s|
                         Hoon::Sand("ud".to_string(), Noun::Atom(s))
@@ -1723,119 +1517,119 @@ where
                     );
 
     let sd_number = //  signed: -num and --num
-        just(Token::Hep).ignore_then(just(Token::Hep).or_not())
+        just("-").ignore_then(just("-").or_not())
         .ignore_then(
             choice((
-                decimal_number::<I>().map(|s| Hoon::Sand("sd".to_string(), Noun::Atom(s))),
+                decimal_number().map(|s| Hoon::Sand("sd".to_string(), Noun::Atom(s))),
                 hexadecimal_number().map(|s| Hoon::Sand("sx".to_string(), Noun::Atom(s))),
                 binary_number().map(|s| Hoon::Sand("sb".to_string(), Noun::Atom(s))),
             ))
         );
 
-    let unicode = select! {
-        Token::Unicode(num_str) => {
-            Hoon::Sand("c".to_string(), Noun::Atom(num_str.to_string()))
-        }
-    };
+    let unicode =
+        regex(r"~-~?[0-9a-fA-F]+\.?|~-[a-zA-Z]|~\[(?:~-[a-zA-Z0-9]+(?:\s+)?)+\]")
+        .map(|s: &str| {
+            Hoon::Sand("c".to_string(), Noun::Atom(s.to_string()))
+        });
 
-    let ui_number = select! {
-        Token::UiNumber(str) => {
-            Hoon::Sand("ui".to_string(), Noun::Atom(str.to_string()))
-        }
-    };
+    let ui_number =
+        regex(r"0i[0-9]+").map(|s: &str| {
+            Hoon::Sand("ui".to_string(), Noun::Atom(s.to_string()))
+        });
 
     choice((
         sd_number,
-        ud_number,
         ux_number,
         ui_number,
         ub_number,
         unicode,
+        ud_number,
     ))
     .labelled("Number")
 }
 
-//  +rump: name/hoon or name+hoon
-//
-pub fn constant_separator_hoon<'tokens, 'src: 'tokens, I>(
-    hoon:        impl ParserExt<'tokens, 'src, I, Hoon>,
-) -> impl Parser<'tokens, I, Hoon, Err<'tokens, 'src>>
-where
-    I: ValueInput<'tokens, Token = Token<'src>, Span = SimpleSpan>,
-{
-    just(Token::Buc).to(Hoon::Rock("%tas".to_string(), Noun::Atom("%$".to_string())))
-        .or(symbol().map(|s| Hoon::Rock("%tas".to_string(), Noun::Atom(s))))
-        .or(select! { Token::Number(n) => Hoon::Rock("%ud".to_string(), Noun::Atom(n.to_string())) })
-        .or(just(Token::Pam).to(Hoon::Rock("%f".to_string(), Noun::Atom("0".to_string()))))
-        .or(just(Token::Bar).to(Hoon::Rock("%f".to_string(), Noun::Atom("1".to_string()))))
-        .then(just(Token::Lus).or(just(Token::Fas))
-              .ignore_then(hoon.clone()))
-        .map(|(rock, hoon)| Hoon::Pair(Box::new(rock), Box::new(hoon)))
+pub fn rap_bits(bloq: usize, list: &[u64]) -> u64 {
+    let mut acc: u128 = 0;
+    let mut pos = 0usize;
+
+    for &atom in list {
+        let bit_width = 64 - atom.leading_zeros() as usize;
+        let block_size = 1 << bloq;
+        let step = (bit_width + block_size - 1) / block_size * block_size;
+
+        acc |= (atom as u128) << pos;
+        pos += step;
+    }
+
+    acc as u64
 }
 
-pub fn tic_cell_construction<'tokens, 'src: 'tokens, I>(
-    hoon_wide:   impl ParserExt<'tokens, 'src, I, Hoon>,
-) -> impl Parser<'tokens, I, Hoon, Err<'tokens, 'src>>
-where
-    I: ValueInput<'tokens, Token = Token<'src>, Span = SimpleSpan>,
+//  +rump: name/hoon or name+hoon
+//
+pub fn constant_separator_hoon<'src>(
+    hoon:        impl ParserExt<'src, Hoon>,
+) -> impl Parser<'src, &'src str, Hoon, Err<'src>>
 {
-    just(Token::Tic)
+    just("$").to(Hoon::Rock("%tas".to_string(), Noun::Atom("0".to_string())))
+        .or(symbol().map(|s| Hoon::Rock("%tas".to_string(), Noun::Atom(s))))
+        .or(decimal_number().map(|n| Hoon::Rock("%ud".to_string(), Noun::Atom(n))))
+        .or(just("&").to(Hoon::Rock("%f".to_string(), Noun::Atom("0".to_string()))))
+        .or(just("|").to(Hoon::Rock("%f".to_string(), Noun::Atom("1".to_string()))))
+    .then(just("+").or(just("/"))
+            .ignore_then(hoon.clone()))
+    .map(|(rock, hoon)| Hoon::Pair(Box::new(rock), Box::new(hoon)))
+}
+
+pub fn tic_cell_construction<'src>(
+    hoon_wide:   impl ParserExt<'src, Hoon>,
+) -> impl Parser<'src, &'src str, Hoon, Err<'src>>
+{
+    just("`")
         .ignore_then(hoon_wide.clone())
         .map(|h| Hoon::Pair(Box::new(Hoon::Rock("%n".to_string(),
                                                      Noun::Atom("0".to_string()))),
                                  Box::new(h)))
 }
 
-pub fn parenthesis_spec<'tokens, 'src: 'tokens, I>(
-    hoon_wide:   impl ParserExt<'tokens, 'src, I, Hoon>,
-    spec_wide:   impl ParserExt<'tokens, 'src, I, Spec>,
-) -> impl Parser<'tokens, I, Spec, Err<'tokens, 'src>>
-where
-    I: ValueInput<'tokens, Token = Token<'src>, Span = SimpleSpan>,
+pub fn parenthesis_spec<'src>(
+    hoon_wide:   impl ParserExt<'src, Hoon>,
+    spec_wide:   impl ParserExt<'src, Spec>,
+) -> impl Parser<'src, &'src str, Spec, Err<'src>>
 {
     hoon_wide.clone()
         .then(
-            just(Token::Ace)
+            just(" ")
             .ignore_then(spec_wide.clone())
                 .repeated()
                 .collect::<Vec<_>>()
                 .or_not()
                 .map(|specs| specs.unwrap_or_default())
         )
-    .delimited_by(just(Token::Pal), just(Token::Par))
+    .delimited_by(just('('), just(')'))
     .map(|(name, specs)| Spec::Make(name, specs))
 }
 
-pub fn reference_spec<'tokens, 'src: 'tokens, I>(
-    spec_wide:   impl ParserExt<'tokens, 'src, I, Spec>,
-) -> impl Parser<'tokens, I, Spec, Err<'tokens, 'src>>
-where
-    I: ValueInput<'tokens, Token = Token<'src>, Span = SimpleSpan>,
+pub fn reference_spec<'src>(
+    spec_wide:   impl ParserExt<'src, Spec>,
+) -> impl Parser<'src, &'src str, Spec, Err<'src>>
 {
-    select! {
-        Token::Buc => (),
-        Token::Com => (),
-        Token::Ket => (),
-        Token::AlphaNumeric(_) => (),
-    }
+    regex(r"([a-z][a-zA-Z0-9]*)|[\$\^\,]").to(())
     .rewind()
     .ignore_then(
-        winglist()
-            .separated_by(just(Token::Col))
+            winglist()
+            .separated_by(just(':'))
             .at_least(1)
             .collect::<Vec<_>>()
             .map(|wings: Vec<WingType>| {
                         let (first, rest) = wings.split_first().unwrap();
-                        Spec::Like(first.to_vec(), rest.to_vec())
+                        Spec::Like(first.clone(), rest.to_vec())
                     })
         )
 }
 
-pub fn two_hoons_tall<'tokens, 'src: 'tokens, I>(
-    hoon:        impl ParserExt<'tokens, 'src, I, Hoon>,
-) -> impl Parser<'tokens, I, (Hoon, Hoon), Err<'tokens, 'src>>
-where
-    I: ValueInput<'tokens, Token = Token<'src>, Span = SimpleSpan>,
+pub fn two_hoons_tall<'src>(
+    hoon:        impl ParserExt<'src, Hoon>,
+) -> impl Parser<'src, &'src str, (Hoon, Hoon), Err<'src>>
 {
     gap()
     .ignore_then(hoon.clone())
@@ -1843,22 +1637,18 @@ where
     .then(hoon.clone())
 }
 
-pub fn two_hoons_wide<'tokens, 'src: 'tokens, I>(
-    hoon_wide:        impl ParserExt<'tokens, 'src, I, Hoon>,
-) -> impl Parser<'tokens, I, (Hoon, Hoon), Err<'tokens, 'src>>
-where
-    I: ValueInput<'tokens, Token = Token<'src>, Span = SimpleSpan>,
+pub fn two_hoons_wide<'src>(
+    hoon_wide:        impl ParserExt<'src, Hoon>,
+) -> impl Parser<'src, &'src str, (Hoon, Hoon), Err<'src>>
 {
     hoon_wide.clone()
-    .then_ignore(just(Token::Ace))
+    .then_ignore(just(" "))
     .then(hoon_wide.clone())
 }
 
-pub fn three_hoons_tall<'tokens, 'src: 'tokens, I>(
-    hoon:        impl ParserExt<'tokens, 'src, I, Hoon>,
-) -> impl Parser<'tokens, I, ((Hoon, Hoon), Hoon), Err<'tokens, 'src>>
-where
-    I: ValueInput<'tokens, Token = Token<'src>, Span = SimpleSpan>,
+pub fn three_hoons_tall<'src>(
+    hoon:        impl ParserExt<'src, Hoon>,
+) -> impl Parser<'src, &'src str, ((Hoon, Hoon), Hoon), Err<'src>>
 {
     gap()
     .ignore_then(hoon.clone())
@@ -1868,24 +1658,20 @@ where
     .then(hoon.clone())
 }
 
-pub fn three_hoons_wide<'tokens, 'src: 'tokens, I>(
-    hoon_wide:        impl ParserExt<'tokens, 'src, I, Hoon>,
-) -> impl Parser<'tokens, I, ((Hoon, Hoon), Hoon), Err<'tokens, 'src>>
-where
-    I: ValueInput<'tokens, Token = Token<'src>, Span = SimpleSpan>,
+pub fn three_hoons_wide<'src>(
+    hoon_wide:        impl ParserExt<'src, Hoon>,
+) -> impl Parser<'src, &'src str, ((Hoon, Hoon), Hoon), Err<'src>>
 {
     hoon_wide.clone()
-    .then_ignore(just(Token::Ace))
+    .then_ignore(just(" "))
     .then(hoon_wide.clone())
-    .then_ignore(just(Token::Ace))
+    .then_ignore(just(" "))
     .then(hoon_wide.clone())
 }
 
-pub fn two_specs_tall<'tokens, 'src: 'tokens, I>(
-    spec:        impl ParserExt<'tokens, 'src, I, Spec>,
-) -> impl Parser<'tokens, I, (Spec, Spec), Err<'tokens, 'src>>
-where
-    I: ValueInput<'tokens, Token = Token<'src>, Span = SimpleSpan>,
+pub fn two_specs_tall<'src>(
+    spec:        impl ParserExt<'src, Spec>,
+) -> impl Parser<'src, &'src str, (Spec, Spec), Err<'src>>
 {
     gap()
     .ignore_then(spec.clone())
@@ -1893,48 +1679,40 @@ where
     .then(spec.clone())
 }
 
-pub fn two_specs_closed_tall<'tokens, 'src: 'tokens, I>(
-    spec:        impl ParserExt<'tokens, 'src, I, Spec>,
-) -> impl Parser<'tokens, I, (Spec, Spec), Err<'tokens, 'src>>
-where
-    I: ValueInput<'tokens, Token = Token<'src>, Span = SimpleSpan>,
+pub fn two_specs_closed_tall<'src>(
+    spec:        impl ParserExt<'src, Spec>,
+) -> impl Parser<'src, &'src str, (Spec, Spec), Err<'src>>
 {
     two_specs_tall(spec.clone())
     .then_ignore(gap())
-    .then_ignore(just([Token::Tis, Token::Tis]))
+    .then_ignore(just("=="))
 }
 
-pub fn two_specs_closed_wide<'tokens, 'src: 'tokens, I>(
-    spec_wide:        impl ParserExt<'tokens, 'src, I, Spec>,
-) -> impl Parser<'tokens, I, (Spec, Spec), Err<'tokens, 'src>>
-where
-    I: ValueInput<'tokens, Token = Token<'src>, Span = SimpleSpan>,
+pub fn two_specs_closed_wide<'src>(
+    spec_wide:        impl ParserExt<'src, Spec>,
+) -> impl Parser<'src, &'src str, (Spec, Spec), Err<'src>>
 {
     spec_wide.clone()
-    .then_ignore(just(Token::Ace))
+    .then_ignore(just(" "))
     .then(spec_wide.clone())
-    .delimited_by(just(Token::Pal), just(Token::Par))
+    .delimited_by(just('('), just(')'))
 }
 
-pub fn hoon_spec_wide<'tokens, 'src: 'tokens, I>(
-    hoon_wide:        impl ParserExt<'tokens, 'src, I, Hoon>,
-    spec_wide:        impl ParserExt<'tokens, 'src, I, Spec>,
-) -> impl Parser<'tokens, I, (Hoon, Spec), Err<'tokens, 'src>>
-where
-    I: ValueInput<'tokens, Token = Token<'src>, Span = SimpleSpan>,
+pub fn hoon_spec_wide<'src>(
+    hoon_wide:        impl ParserExt<'src, Hoon>,
+    spec_wide:        impl ParserExt<'src, Spec>,
+) -> impl Parser<'src, &'src str, (Hoon, Spec), Err<'src>>
 {
     hoon_wide.clone()
-    .then_ignore(just(Token::Ace))
+    .then_ignore(just(" "))
     .then(spec_wide.clone())
-    .delimited_by(just(Token::Pal), just(Token::Par))
+    .delimited_by(just('('), just(')'))
 }
 
-pub fn hoon_spec_tall<'tokens, 'src: 'tokens, I>(
-    hoon:           impl ParserExt<'tokens, 'src, I, Hoon>,
-    spec:           impl ParserExt<'tokens, 'src, I, Spec>,
-) -> impl Parser<'tokens, I, (Hoon, Spec), Err<'tokens, 'src>>
-where
-    I: ValueInput<'tokens, Token = Token<'src>, Span = SimpleSpan>,
+pub fn hoon_spec_tall<'src>(
+    hoon:           impl ParserExt<'src, Hoon>,
+    spec:           impl ParserExt<'src, Spec>,
+) -> impl Parser<'src, &'src str, (Hoon, Spec), Err<'src>>
 {
     gap()
     .ignore_then(hoon.clone())
@@ -1942,12 +1720,10 @@ where
     .then(spec.clone())
 }
 
-pub fn spec_hoon_tall<'tokens, 'src: 'tokens, I>(
-    hoon:        impl ParserExt<'tokens, 'src, I, Hoon>,
-    spec:        impl ParserExt<'tokens, 'src, I, Spec>,
-) -> impl Parser<'tokens, I, (Spec, Hoon), Err<'tokens, 'src>>
-where
-    I: ValueInput<'tokens, Token = Token<'src>, Span = SimpleSpan>,
+pub fn spec_hoon_tall<'src>(
+    hoon:        impl ParserExt<'src, Hoon>,
+    spec:        impl ParserExt<'src, Spec>,
+) -> impl Parser<'src, &'src str, (Spec, Hoon), Err<'src>>
 {
     gap()
     .ignore_then(spec.clone())
@@ -1955,23 +1731,19 @@ where
     .then(hoon.clone())
 }
 
-pub fn spec_hoon_wide<'tokens, 'src: 'tokens, I>(
-    hoon_wide:        impl ParserExt<'tokens, 'src, I, Hoon>,
-    spec_wide:        impl ParserExt<'tokens, 'src, I, Spec>,
-) -> impl Parser<'tokens, I, (Spec, Hoon), Err<'tokens, 'src>>
-where
-    I: ValueInput<'tokens, Token = Token<'src>, Span = SimpleSpan>,
+pub fn spec_hoon_wide<'src>(
+    hoon_wide:        impl ParserExt<'src, Hoon>,
+    spec_wide:        impl ParserExt<'src, Spec>,
+) -> impl Parser<'src, &'src str, (Spec, Hoon), Err<'src>>
 {
     spec_wide.clone()
-    .then_ignore(just(Token::Ace))
+    .then_ignore(just(" "))
     .then(hoon_wide.clone())
 }
 
-pub fn name_spec_tall<'tokens, 'src: 'tokens, I>(
-    spec:        impl ParserExt<'tokens, 'src, I, Spec>,
-) -> impl Parser<'tokens, I, (String, Spec), Err<'tokens, 'src>>
-where
-    I: ValueInput<'tokens, Token = Token<'src>, Span = SimpleSpan>,
+pub fn name_spec_tall<'src>(
+    spec:        impl ParserExt<'src, Spec>,
+) -> impl Parser<'src,  &'src str, (String, Spec), Err<'src>>
 {
     gap()
     .ignore_then(symbol())
@@ -1979,71 +1751,59 @@ where
     .then(spec.clone())
 }
 
-pub fn name_spec_closed_tall<'tokens, 'src: 'tokens, I>(
-    spec:        impl ParserExt<'tokens, 'src, I, Spec>,
-) -> impl Parser<'tokens, I, (String, Spec), Err<'tokens, 'src>>
-where
-    I: ValueInput<'tokens, Token = Token<'src>, Span = SimpleSpan>,
+pub fn name_spec_closed_tall<'src>(
+    spec:        impl ParserExt<'src, Spec>,
+) -> impl Parser<'src, &'src str, (String, Spec), Err<'src>>
 {
     gap()
     .ignore_then(symbol())
     .then_ignore(gap())
     .then(spec.clone())
-    .then_ignore(just([Token::Tis, Token::Tis]))
+    .then_ignore(just("=="))
 }
 
-pub fn name_spec_wide<'tokens, 'src: 'tokens, I>(
-    spec_wide:        impl ParserExt<'tokens, 'src, I, Spec>,
-) -> impl Parser<'tokens, I, (String, Spec), Err<'tokens, 'src>>
-where
-    I: ValueInput<'tokens, Token = Token<'src>, Span = SimpleSpan>,
+pub fn name_spec_wide<'src>(
+    spec_wide:        impl ParserExt<'src, Spec> + Clone,
+) -> impl Parser<'src, &'src str, (String, Spec), Err<'src>>
 {
     symbol()
-    .then_ignore(just(Token::Ace))
+    .then_ignore(just(" "))
     .then(spec_wide.clone())
-    .delimited_by(just(Token::Pal), just(Token::Par))
+    .delimited_by(just('('), just(')'))
 }
 
-pub fn one_hoon_closed_wide<'tokens, 'src: 'tokens, I>(
-    hoon_wide:        impl ParserExt<'tokens, 'src, I, Hoon>,
-) -> impl Parser<'tokens, I, Hoon, Err<'tokens, 'src>>
-where
-    I: ValueInput<'tokens, Token = Token<'src>, Span = SimpleSpan>,
+pub fn one_hoon_closed_wide<'src>(
+    hoon_wide:        impl ParserExt<'src, Hoon>,
+) -> impl Parser<'src, &'src str, Hoon, Err<'src>>
 {
     hoon_wide.clone()
-    .delimited_by(just(Token::Pal), just(Token::Par))
+    .delimited_by(just('('), just(')'))
 }
 
-pub fn one_hoon_closed_tall<'tokens, 'src: 'tokens, I>(
-    hoon:        impl ParserExt<'tokens, 'src, I, Hoon>,
-) -> impl Parser<'tokens, I, Hoon, Err<'tokens, 'src>>
-where
-    I: ValueInput<'tokens, Token = Token<'src>, Span = SimpleSpan>,
+pub fn one_hoon_closed_tall<'src>(
+    hoon:        impl ParserExt<'src, Hoon>,
+) -> impl Parser<'src, &'src str, Hoon, Err<'src>>
 {
     gap()
     .ignore_then(hoon.clone())
     .then_ignore(gap())
-    .delimited_by(just(Token::Tis), just(Token::Tis))
+    .delimited_by(just("="), just("="))
 }
 
-pub fn one_spec_closed_wide<'tokens, 'src: 'tokens, I>(
-    spec_wide:        impl ParserExt<'tokens, 'src, I, Spec>,
-) -> impl Parser<'tokens, I, Spec, Err<'tokens, 'src>>
-where
-    I: ValueInput<'tokens, Token = Token<'src>, Span = SimpleSpan>,
+pub fn one_spec_closed_wide<'src>(
+    spec_wide:        impl ParserExt<'src, Spec>,
+) -> impl Parser<'src, &'src str, Spec, Err<'src>>
 {
     spec_wide.clone()
-    .delimited_by(just(Token::Pal), just(Token::Par))
+    .delimited_by(just('('), just(')'))
 }
 
-pub fn one_spec_closed_tall<'tokens, 'src: 'tokens, I>(
-    spec:        impl ParserExt<'tokens, 'src, I, Spec>,
-) -> impl Parser<'tokens, I, Spec, Err<'tokens, 'src>>
-where
-    I: ValueInput<'tokens, Token = Token<'src>, Span = SimpleSpan>,
+pub fn one_spec_closed_tall<'src>(
+    spec:        impl ParserExt<'src, Spec>,
+) -> impl Parser<'src, &'src str, Spec, Err<'src>>
 {
     gap()
     .ignore_then(spec.clone())
     .then_ignore(gap())
-    .delimited_by(just(Token::Tis), just(Token::Tis))
+    .delimited_by(just("="), just("="))
 }

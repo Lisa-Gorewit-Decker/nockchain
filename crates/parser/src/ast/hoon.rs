@@ -3,12 +3,11 @@ use std::collections::*;
 
 #[derive(serde::Serialize, PartialEq, Debug, Clone)]
 pub enum Noun {
-    Atom(Atom),  // we are storing atoms as strings, without doing any convertion/validation...
+    Atom(String),
     Cell(Box<Noun>, Box<Noun>),
 }
 
 pub type Atom = String;
-
 pub type What = String;
 pub type Term = String;
 pub type Tome = (What, HashMap<Term, Hoon>);

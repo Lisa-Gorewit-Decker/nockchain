@@ -7,90 +7,78 @@ use chumsky::{
 };
 use std::collections::*;
 
-pub fn mic_runes_tall<'tokens, 'src: 'tokens, I>(
-    hoon:      impl ParserExt<'tokens, 'src, I, Hoon>,
-    spec:      impl ParserExt<'tokens, 'src, I, Spec>,
-) -> impl Parser<'tokens, I, Hoon, Err<'tokens, 'src>>
-where
-    I: ValueInput<'tokens, Token = Token<'src>, Span = SimpleSpan>,
+pub fn mic_runes_tall<'src>(
+    hoon:      impl ParserExt<'src, Hoon>,
+    spec:      impl ParserExt<'src, Spec>,
+) -> impl Parser<'src, &'src str, Hoon, Err<'src>>
 {
     choice((
-        just(Token::Col).ignore_then(miccol(hoon.clone())),
-        just(Token::Fas).ignore_then(micfas(hoon.clone())),
-        just(Token::Gal).ignore_then(micgal(hoon.clone(), spec.clone())),
-        just(Token::Sig).ignore_then(micsig(hoon.clone())),
-        just(Token::Mic).ignore_then(micmic(hoon.clone(), spec.clone())),
+        just(':').ignore_then(miccol(hoon.clone())),
+        just("/").ignore_then(micfas(hoon.clone())),
+        just("<").ignore_then(micgal(hoon.clone(), spec.clone())),
+        just('~').ignore_then(micsig(hoon.clone())),
+        just(";").ignore_then(micmic(hoon.clone(), spec.clone())),
     ))
 }
 
-pub fn mic_runes_wide<'tokens, 'src: 'tokens, I>(
-    hoon_wide: impl ParserExt<'tokens, 'src, I, Hoon>,
-    spec_wide: impl ParserExt<'tokens, 'src, I, Spec>,
-) -> impl Parser<'tokens, I, Hoon, Err<'tokens, 'src>>
-where
-    I: ValueInput<'tokens, Token = Token<'src>, Span = SimpleSpan>,
+pub fn mic_runes_wide<'src>(
+    hoon_wide: impl ParserExt<'src, Hoon>,
+    spec_wide: impl ParserExt<'src, Spec>,
+) -> impl Parser<'src, &'src str, Hoon, Err<'src>>
 {
     choice((
-        just(Token::Col).ignore_then(miccol_wide(hoon_wide.clone())),
-        just(Token::Fas).ignore_then(micfas_wide(hoon_wide.clone())),
-        just(Token::Gal).ignore_then(micgal_wide(hoon_wide.clone(), spec_wide.clone())),
-        just(Token::Sig).ignore_then(micsig_wide(hoon_wide.clone())),
-        just(Token::Mic).ignore_then(micmic_wide(hoon_wide.clone(), spec_wide.clone())),
+        just(':').ignore_then(miccol_wide(hoon_wide.clone())),
+        just("/").ignore_then(micfas_wide(hoon_wide.clone())),
+        just("<").ignore_then(micgal_wide(hoon_wide.clone(), spec_wide.clone())),
+        just('~').ignore_then(micsig_wide(hoon_wide.clone())),
+        just(";").ignore_then(micmic_wide(hoon_wide.clone(), spec_wide.clone())),
     ))
 }
 
-pub fn micsig<'tokens, 'src: 'tokens, I>(
-    hoon:        impl ParserExt<'tokens, 'src, I, Hoon>,
-) -> impl Parser<'tokens, I, Hoon, Err<'tokens, 'src>> + 'tokens
-where
-    I: ValueInput<'tokens, Token = Token<'src>, Span = SimpleSpan>,
+pub fn micsig<'src>(
+    hoon:        impl ParserExt<'src, Hoon>,
+) -> impl Parser<'src, &'src str, Hoon, Err<'src>>
 {
     gap()
     .ignore_then(hoon.clone())
     .then_ignore(gap())
     .then(list_hoon_tall(hoon.clone()))
     .then_ignore(gap())
-    .then_ignore(just([Token::Tis, Token::Tis]))
+    .then_ignore(just("=="))
     .map(|(func, args)| Hoon::MicSig(Box::new(func), args))
 }
 
-pub fn micsig_wide<'tokens, 'src: 'tokens, I>(
-    hoon:        impl ParserExt<'tokens, 'src, I, Hoon>,
-) -> impl Parser<'tokens, I, Hoon, Err<'tokens, 'src>> + 'tokens
-where
-    I: ValueInput<'tokens, Token = Token<'src>, Span = SimpleSpan>,
+pub fn micsig_wide<'src>(
+    hoon:        impl ParserExt<'src, Hoon>,
+) -> impl Parser<'src, &'src str, Hoon, Err<'src>>
 {
     hoon.clone()
     .then(
-        just(Token::Ace)
+        just(" ")
             .ignore_then(hoon.clone())
             .repeated()
             .collect::<Vec<_>>()
     )
-    .delimited_by(just(Token::Pal), just(Token::Par))
+    .delimited_by(just('('), just(')'))
     .map(|(func, args)| Hoon::MicSig(Box::new(func), args))
 }
 
-pub fn micmic_wide<'tokens, 'src: 'tokens, I>(
-    hoon_wide:   impl ParserExt<'tokens, 'src, I, Hoon>,
-    spec_wide:   impl ParserExt<'tokens, 'src, I, Spec>,
-) -> impl Parser<'tokens, I, Hoon, Err<'tokens, 'src>> + 'tokens
-where
-    I: ValueInput<'tokens, Token = Token<'src>, Span = SimpleSpan>,
+pub fn micmic_wide<'src>(
+    hoon_wide:   impl ParserExt<'src, Hoon>,
+    spec_wide:   impl ParserExt<'src, Spec>,
+) -> impl Parser<'src, &'src str, Hoon, Err<'src>>
 {
     spec_wide.clone()
-    .then_ignore(just(Token::Ace))
+    .then_ignore(just(" "))
     .then(hoon_wide.clone())
-    .delimited_by(just(Token::Pal), just(Token::Par))
+    .delimited_by(just('('), just(')'))
     .map(|(s, h)| Hoon::MicMic(Box::new(s), Box::new(h)))
 }
 
-pub fn micgal<'tokens, 'src: 'tokens, I>(
-    hoon:   impl ParserExt<'tokens, 'src, I, Hoon>,
-    spec:   impl ParserExt<'tokens, 'src, I, Spec>,
-) -> impl Parser<'tokens, I, Hoon, Err<'tokens, 'src>> + 'tokens
-where
-    I: ValueInput<'tokens, Token = Token<'src>, Span = SimpleSpan>,
+pub fn micgal<'src>(
+    hoon:   impl ParserExt<'src, Hoon>,
+    spec:   impl ParserExt<'src, Spec>,
+) -> impl Parser<'src, &'src str, Hoon, Err<'src>>
 {
     gap()
     .ignore_then(spec.clone())
@@ -98,26 +86,22 @@ where
     .map(|(p, ((q, r), s))| Hoon::MicGal(Box::new(p), Box::new(q), Box::new(r), Box::new(s)))
 }
 
-pub fn micgal_wide<'tokens, 'src: 'tokens, I>(
-    hoon_wide:   impl ParserExt<'tokens, 'src, I, Hoon>,
-    spec_wide:   impl ParserExt<'tokens, 'src, I, Spec>,
-) -> impl Parser<'tokens, I, Hoon, Err<'tokens, 'src>> + 'tokens
-where
-    I: ValueInput<'tokens, Token = Token<'src>, Span = SimpleSpan>,
+pub fn micgal_wide<'src>(
+    hoon_wide:   impl ParserExt<'src, Hoon>,
+    spec_wide:   impl ParserExt<'src, Spec>,
+) -> impl Parser<'src, &'src str, Hoon, Err<'src>>
 {
     spec_wide.clone()
-    .then_ignore(just(Token::Ace))
+    .then_ignore(just(" "))
     .then(three_hoons_wide(hoon_wide.clone()))
-    .delimited_by(just(Token::Pal), just(Token::Par))
+    .delimited_by(just('('), just(')'))
     .map(|(p, ((q, r), s))| Hoon::MicGal(Box::new(p), Box::new(q), Box::new(r), Box::new(s)))
 }
 
-pub fn micmic<'tokens, 'src: 'tokens, I>(
-    hoon:   impl ParserExt<'tokens, 'src, I, Hoon>,
-    spec:   impl ParserExt<'tokens, 'src, I, Spec>,
-) -> impl Parser<'tokens, I, Hoon, Err<'tokens, 'src>> + 'tokens
-where
-    I: ValueInput<'tokens, Token = Token<'src>, Span = SimpleSpan>,
+pub fn micmic<'src>(
+    hoon:   impl ParserExt<'src, Hoon>,
+    spec:   impl ParserExt<'src, Spec>,
+) -> impl Parser<'src, &'src str, Hoon, Err<'src>>
 {
     spec.clone()
     .then_ignore(gap())
@@ -125,65 +109,55 @@ where
     .map(|(s, h)| Hoon::MicMic(Box::new(s), Box::new(h)))
 }
 
-pub fn micfas<'tokens, 'src: 'tokens, I>(
-    hoon:   impl ParserExt<'tokens, 'src, I, Hoon>,
-) -> impl Parser<'tokens, I, Hoon, Err<'tokens, 'src>> + 'tokens
-where
-    I: ValueInput<'tokens, Token = Token<'src>, Span = SimpleSpan>,
+pub fn micfas<'src>(
+    hoon:   impl ParserExt<'src, Hoon>,
+) -> impl Parser<'src, &'src str, Hoon, Err<'src>>
 {
     gap()
     .ignore_then(hoon.clone())
     .map(|(h)| Hoon::MicFas(Box::new(h)))
 }
 
-pub fn micfas_wide<'tokens, 'src: 'tokens, I>(
-    hoon_wide:   impl ParserExt<'tokens, 'src, I, Hoon>,
-) -> impl Parser<'tokens, I, Hoon, Err<'tokens, 'src>> + 'tokens
-where
-    I: ValueInput<'tokens, Token = Token<'src>, Span = SimpleSpan>,
+pub fn micfas_wide<'src>(
+    hoon_wide:   impl ParserExt<'src, Hoon>,
+) -> impl Parser<'src, &'src str, Hoon, Err<'src>>
 {
     hoon_wide.clone()
-    .delimited_by(just(Token::Pal), just(Token::Par))
+    .delimited_by(just('('), just(')'))
     .map(|(h)| Hoon::MicFas(Box::new(h)))
 }
 
-pub fn miccol<'tokens, 'src: 'tokens, I>(
-    hoon:      impl ParserExt<'tokens, 'src, I, Hoon>,
-) -> impl Parser<'tokens, I, Hoon, Err<'tokens, 'src>>
-where
-    I: ValueInput<'tokens, Token = Token<'src>, Span = SimpleSpan>,
+pub fn miccol<'src>(
+    hoon:      impl ParserExt<'src, Hoon>,
+) -> impl Parser<'src, &'src str, Hoon, Err<'src>>
 {
     gap()
     .ignore_then(hoon.clone())
     .then_ignore(gap())
     .then(list_hoon_tall(hoon.clone()))
     .then_ignore(gap())
-    .then_ignore(just([Token::Tis, Token::Tis]))
+    .then_ignore(just("=="))
     .map(|(p, list)| Hoon::MicCol(Box::new(p), list))
 }
 
-pub fn miccol_wide<'tokens, 'src: 'tokens, I>(
-    hoon_wide:      impl ParserExt<'tokens, 'src, I, Hoon>,
-) -> impl Parser<'tokens, I, Hoon, Err<'tokens, 'src>>
-where
-    I: ValueInput<'tokens, Token = Token<'src>, Span = SimpleSpan>,
+pub fn miccol_wide<'src>(
+    hoon_wide:      impl ParserExt<'src, Hoon>,
+) -> impl Parser<'src, &'src str, Hoon, Err<'src>>
 {
     hoon_wide.clone()
-    .then_ignore(just(Token::Ace))
+    .then_ignore(just(" "))
     .then(list_hoon_wide(hoon_wide.clone()))
-    .delimited_by(just(Token::Pal), just(Token::Par))
+    .delimited_by(just('('), just(')'))
     .map(|(p, list)| Hoon::MicCol(Box::new(p), list))
 }
 
-pub fn miccol_irregular<'tokens, 'src: 'tokens, I>(
-    hoon_wide:   impl ParserExt<'tokens, 'src, I, Hoon>,
-) -> impl Parser<'tokens, I, Hoon, Err<'tokens, 'src>>
-where
-    I: ValueInput<'tokens, Token = Token<'src>, Span = SimpleSpan>,
+pub fn miccol_irregular<'src>(
+    hoon_wide:   impl ParserExt<'src, Hoon>,
+) -> impl Parser<'src, &'src str, Hoon, Err<'src>>
 {
     hoon_wide.clone()
-    .then_ignore(just(Token::Ace))
+    .then_ignore(just(" "))
     .then(list_hoon_wide(hoon_wide.clone()))
-    .delimited_by(just(Token::Pal), just(Token::Par))
+    .delimited_by(just('('), just(')'))
     .map(|(p, list)| Hoon::MicCol(Box::new(p), list))
 }
