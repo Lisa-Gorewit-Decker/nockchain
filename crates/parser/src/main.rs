@@ -10,10 +10,8 @@ use std::time::Instant;
 use std::io::Write;
 use std::path::PathBuf;
 
-use logos::Logos;
 use clap::{Parser as ClapParser, command, arg};
 
-use parser::lexer::tokens::Token;
 use parser::ast::hoon::*;
 use parser::utils::*;
 use parser::runes::*;
@@ -61,7 +59,7 @@ fn spec_wide_parser<'src>(
 {
     let parsers = vec![
         just("!").to(Spec::Loop("dsads".to_string())).boxed(),
-        just("$").ignore_then(buc_spec_wide(hoon_wide.clone(), spec_wide.clone())).boxed(),
+        just('$').ignore_then(buc_spec_wide(hoon_wide.clone(), spec_wide.clone())).boxed(),
         buccab_spec_irregular(hoon_wide.clone()).boxed(),  //  _p
         bucmic_spec_irregular(hoon_wide.clone()).boxed(),  //  ,p
         buctis_irregular(spec_wide.clone()).boxed(),  // foo=bar, =bar,  =foo=bar
@@ -70,7 +68,7 @@ fn spec_wide_parser<'src>(
         bucwut_irregular(spec_wide.clone()).boxed(),  // ?(foo bar)
         parenthesis_spec(hoon_wide.clone(),
                                 spec_wide.clone()).boxed(),  // (foo bar)
-        just("^").to(Spec::Base(BaseType::Cell)).boxed(),
+        just('^').to(Spec::Base(BaseType::Cell)).boxed(),
         just('?').to(Spec::Base(BaseType::Flag)).boxed(),
         just('~').to(Spec::Base(BaseType::Null)).boxed(),
         just('*').to(Spec::Base(BaseType::Noun)).boxed(),
@@ -87,27 +85,28 @@ fn spec_wide_parser<'src>(
 fn hoon_wide_parser<'src>(
     hoon_wide:   impl ParserExt<'src, Hoon>,
     spec_wide:   impl ParserExt<'src, Spec>,
+    wer: PathBuf,
 ) -> impl Parser<'src, &'src str, Hoon, Err<'src>> + Clone
 {
     let parsers = vec![
         rune_branch!(
-            "|",
+            '|',
             bar_runes_wide(hoon_wide.clone(), spec_wide.clone())
         ),
 
-        just("=").ignore_then(
+        just('=').ignore_then(
             choice((
                     tis_runes_wide(hoon_wide.clone(), spec_wide.clone()),
                     dottis_irregular(hoon_wide.clone()), //  =(p q)
                 ))).boxed(),
 
         rune_branch!(
-            "?",
+            '?',
             wut_runes_wide(hoon_wide.clone(), spec_wide.clone())
         ),
 
         rune_branch!(
-            "%",
+            '%',
             cen_runes_wide(hoon_wide.clone())
         ),
 
@@ -124,32 +123,31 @@ fn hoon_wide_parser<'src>(
                 ))).boxed(),
 
         rune_branch!(
-            "$",
+            '$',
             buc_runes_wide(hoon_wide.clone(), spec_wide.clone())
         ),
 
         rune_branch!(
-            "^",
+            '^',
             ket_runes_wide(hoon_wide.clone(), spec_wide.clone())
         ),
 
         rune_branch!(
-            "!",
+            '!',
             zap_runes_wide(hoon_wide.clone(), spec_wide.clone())
         ),
 
         rune_branch!(
-            ";",
+            ';',
             mic_runes_wide(hoon_wide.clone(), spec_wide.clone())
         ),
 
         rune_branch!(
-            ".",
+            '.',
             dot_runes_wide(hoon_wide.clone(), spec_wide.clone())
         ),
-
+        aura_hoon().boxed(),
         tape().boxed(),
-        path(hoon_wide.clone()).boxed(),
         buccab_irregular(hoon_wide.clone()).boxed(),              //  _p
         constant_separator_hoon(hoon_wide.clone()).boxed(),       //  const+hoon,  const/hoon
         list_syntax(hoon_wide.clone()).boxed(),                   // [p ... pn], ~[foo], [foo]~
@@ -173,27 +171,27 @@ fn hoon_wide_parser<'src>(
             .map(|s: &str| Hoon::Sand("%da".to_string(), Noun::Atom(s.to_string()))).boxed(),
         regex(r"~[dhms]\d+(?:\.[dhms]\d+)*")
           .map(|s: &str| Hoon::Sand("%dr".to_string(), Noun::Atom(s.to_string()))).boxed(),
-        aura_hoon().boxed(),
         just('~').to(Hoon::Bust(BaseType::Null)).boxed(),
         just("%.y").to(Hoon::Rock("%f".to_string(), Noun::Atom("0".to_string()))).boxed(),
         just("%.n").to(Hoon::Rock("%f".to_string(), Noun::Atom("1".to_string()))).boxed(),
         just("%|").to(Hoon::Rock("%f".to_string(), Noun::Atom("1".to_string()))).boxed(),
         just("%&").to(Hoon::Rock("%f".to_string(), Noun::Atom("0".to_string()))).boxed(),
-        just("&").to(Hoon::Sand("%f".to_string(), Noun::Atom("0".to_string()))).boxed(),
-        just("|").to(Hoon::Sand("%f".to_string(), Noun::Atom("1".to_string()))).boxed(),
+        path(hoon_wide.clone(), wer).boxed(),
+        just('&').to(Hoon::Sand("%f".to_string(), Noun::Atom("0".to_string()))).boxed(),
+        just('|').to(Hoon::Sand("%f".to_string(), Noun::Atom("1".to_string()))).boxed(),
         just('*').to(Hoon::Base(BaseType::Noun)).boxed(),
         just('?').to(Hoon::Base(BaseType::Flag)).boxed(),
     ];
 
     choice(parsers).boxed().labelled("hoon-wide")
-        .then(just("=").or(just(":")).or(just("^"))
+        .then(just('=').or(just(':')).or(just('^'))
                 .then(hoon_wide.clone())
                 .or_not())
         .map(|(p, maybe_separator)|  {
             match maybe_separator  {
-                Some(("=", q)) => Hoon::KetTis(Box::new(p), Box::new(q)),
-                Some((":", q)) => Hoon::TisGal(Box::new(p), Box::new(q)),
-                Some(("^", q)) => Hoon::Pair(Box::new(p), Box::new(q)),
+                Some(('=', q)) => Hoon::KetTis(Box::new(p), Box::new(q)),
+                Some((':', q)) => Hoon::TisGal(Box::new(p), Box::new(q)),
+                Some(('^', q)) => Hoon::Pair(Box::new(p), Box::new(q)),
                 _ => p,
             }
         })
@@ -208,19 +206,19 @@ fn hoon_parser<'src>(
 {
     let parsers = vec![
         rune_branch_pair!(
-            "|",
+            '|',
             bar_runes_tall(hoon.clone(), spec.clone()),
             bar_runes_wide(hoon_wide.clone(), spec_wide.clone())
         ),
 
         rune_branch_pair!(
-            "=",
+            '=',
             tis_runes_tall(hoon.clone(), spec.clone(), spec_wide.clone()),
             tis_runes_wide(hoon_wide.clone(), spec_wide.clone())
         ),
 
         rune_branch_pair!(
-            "?",
+            '?',
             wut_runes_tall(
                 hoon.clone(),
                 hoon_wide.clone(),
@@ -231,49 +229,49 @@ fn hoon_parser<'src>(
         ),
 
         rune_branch_pair!(
-            "%",
+            '%',
             cen_runes_tall(hoon.clone()),
             cen_runes_wide(hoon_wide.clone())
         ),
 
         rune_branch_pair!(
-            ":",
+            ':',
             col_runes_tall(hoon.clone()),
             col_runes_wide(hoon_wide.clone())
         ),
 
         rune_branch_pair!(
-            "~",
+            '~',
             sig_runes_tall(hoon.clone()),
             sig_runes_wide(hoon_wide.clone())
         ),
 
         rune_branch_pair!(
-            "$",
+            '$',
             buc_runes_tall(hoon.clone(), spec.clone()),
             buc_runes_wide(hoon_wide.clone(), spec_wide.clone())
         ),
 
         rune_branch_pair!(
-            "^",
+            '^',
             ket_runes_tall(hoon.clone(), spec.clone()),
             ket_runes_wide(hoon_wide.clone(), spec_wide.clone())
         ),
 
         rune_branch_pair!(
-            "!",
+            '!',
             zap_runes_tall(hoon.clone(), spec.clone()),
             zap_runes_wide(hoon_wide.clone(), spec_wide.clone())
         ),
 
         rune_branch_pair!(
-            ";",
+            ';',
             mic_runes_tall(hoon.clone(), spec.clone()),
             mic_runes_wide(hoon_wide.clone(), spec_wide.clone())
         ),
 
         rune_branch_pair!(
-            ".",
+            '.',
             dot_runes_tall(hoon.clone(), spec.clone()),
             dot_runes_wide(hoon_wide.clone(), spec_wide.clone())
         ),
@@ -284,7 +282,10 @@ fn hoon_parser<'src>(
         .boxed()
 }
 
-pub fn parser<'src>()
+pub fn parser<'src>(
+    // bug: bool,
+    wer: PathBuf,
+)
 -> impl Parser<'src, &'src str, Hoon, Err<'src>> {
     let hoon = recursive(|hoon| {
         let mut spec_wide_handle = Recursive::declare();
@@ -303,6 +304,7 @@ pub fn parser<'src>()
         let hoon_wide_body = hoon_wide_parser(
             hoon_wide_handle.clone(),
             spec_wide_handle.clone(),
+            wer.clone(),
         );
 
         spec_wide_handle.define(spec_wide_body);
@@ -339,7 +341,7 @@ fn main() {
 
     let start = Instant::now();
 
-    match parser().parse(source.as_str()).into_result() {
+    match parser(cli.input).parse(source.as_str()).into_result() {
         Ok(res) => {
             let took = start.elapsed();
             let json = serde_json::to_string_pretty(&res).expect("serialisation failed");

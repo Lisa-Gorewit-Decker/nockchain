@@ -1,4 +1,3 @@
-use crate::lexer::tokens::Token;
 use crate::ast::hoon::*;
 use crate::utils::*;
 use std::collections::*;
@@ -14,12 +13,12 @@ pub fn ket_runes_tall<'src>(
 {
     choice((
             just("|").ignore_then(ketbar(hoon.clone())),
-            just(".").ignore_then(ketdot(hoon.clone())),
-            just("-").ignore_then(kethep(hoon.clone(), spec.clone())),
+            just('.').ignore_then(ketdot(hoon.clone())),
+            just('-').ignore_then(kethep(hoon.clone(), spec.clone())),
             just("+").ignore_then(ketlus(hoon.clone())),
             just("&").ignore_then(ketpam(hoon.clone())),
             just('~').ignore_then(ketsig(hoon.clone())),
-            just("=").ignore_then(kettis(hoon.clone())),
+            just('=').ignore_then(kettis(hoon.clone())),
             just('?').ignore_then(ketwut(hoon.clone())),
     ))
 }
@@ -32,11 +31,11 @@ pub fn ket_runes_wide<'src>(
     choice((
         just('~').ignore_then(ketsig_wide(hoon_wide.clone())),
         just("+").ignore_then(ketlus_wide(hoon_wide.clone())),
-        just(".").ignore_then(ketdot_wide(hoon_wide.clone())),
-        just("-").ignore_then(kethep_wide(hoon_wide.clone(), spec_wide.clone())),
+        just('.').ignore_then(ketdot_wide(hoon_wide.clone())),
+        just('-').ignore_then(kethep_wide(hoon_wide.clone(), spec_wide.clone())),
         just("|").ignore_then(ketbar_wide(hoon_wide.clone())),
         just("&").ignore_then(ketpam_wide(hoon_wide.clone())),
-        just("=").ignore_then(kettis_wide(hoon_wide.clone())),
+        just('=').ignore_then(kettis_wide(hoon_wide.clone())),
         just('?').ignore_then(ketwut_wide(hoon_wide.clone())),
     ))
 }

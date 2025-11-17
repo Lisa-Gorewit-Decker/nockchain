@@ -13,16 +13,16 @@ pub fn bar_runes_tall<'src>(
 {
     choice((
         just('%').ignore_then(barcen(hoon.clone(), spec.clone())),
-        just(".").ignore_then(bardot(hoon.clone())),
+        just('.').ignore_then(bardot(hoon.clone())),
         just('*').ignore_then(bartar(hoon.clone(), spec.clone())),
         just('_').ignore_then(barcab(hoon.clone(), spec.clone())),
         just('@').ignore_then(barpat(hoon.clone(), spec.clone())),
-        just("=").ignore_then(bartis(hoon.clone(), spec.clone())),
+        just('=').ignore_then(bartis(hoon.clone(), spec.clone())),
         just('~').ignore_then(barsig(hoon.clone(), spec.clone())),
-        just("-").ignore_then(barhep(hoon.clone())),
-        just("^").ignore_then(barket(hoon.clone(), spec.clone())),
+        just('-').ignore_then(barhep(hoon.clone())),
+        just('^').ignore_then(barket(hoon.clone(), spec.clone())),
         just(':').ignore_then(barcol(hoon.clone())),
-        just("$").ignore_then(barbuc(spec.clone())),
+        just('$').ignore_then(barbuc(spec.clone())),
         just('?').ignore_then(barwut(hoon.clone())),
     ))
 }
@@ -33,14 +33,14 @@ pub fn bar_runes_wide<'src>(
 ) -> impl Parser<'src, &'src str, Hoon, Err<'src>>
 {
     choice((
-        just(".").ignore_then(bardot_wide(hoon_wide.clone())),
+        just('.').ignore_then(bardot_wide(hoon_wide.clone())),
         just('*').ignore_then(bartar_wide(hoon_wide.clone(), spec_wide.clone())),
-        just("=").ignore_then(bartis_wide(hoon_wide.clone(), spec_wide.clone())),
+        just('=').ignore_then(bartis_wide(hoon_wide.clone(), spec_wide.clone())),
         just('~').ignore_then(barsig_wide(hoon_wide.clone(), spec_wide.clone())),
-        just("-").ignore_then(barhep_wide(hoon_wide.clone())),
-        just("^").ignore_then(barket_wide(hoon_wide.clone(), spec_wide.clone())),
+        just('-').ignore_then(barhep_wide(hoon_wide.clone())),
+        just('^').ignore_then(barket_wide(hoon_wide.clone(), spec_wide.clone())),
         just(':').ignore_then(barcol_wide(hoon_wide.clone())),
-        just("$").ignore_then(barbuc_wide(spec_wide.clone())),
+        just('$').ignore_then(barbuc_wide(spec_wide.clone())),
         just('?').ignore_then(barwut_wide(hoon_wide.clone())),
     ))
 }

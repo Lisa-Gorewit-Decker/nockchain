@@ -1,4 +1,3 @@
-use crate::lexer::tokens::Token;
 use crate::ast::hoon::*;
 use crate::utils::*;
 use chumsky::{
@@ -15,9 +14,9 @@ pub fn dot_runes_tall<'src>(
     choice((
         just("+").ignore_then(dotlus(hoon.clone())),
         just('*').ignore_then(dottar(hoon.clone())),
-        just("=").ignore_then(dottis(hoon.clone())),
+        just('=').ignore_then(dottis(hoon.clone())),
         just('?').ignore_then(dotwut(hoon.clone())),
-        just("^").ignore_then(dotket(hoon.clone(), spec.clone())),
+        just('^').ignore_then(dotket(hoon.clone(), spec.clone())),
     ))
 }
 
@@ -29,9 +28,9 @@ pub fn dot_runes_wide<'src>(
     choice((
         just("+").ignore_then(dotlus_wide(hoon_wide.clone())),
         just('*').ignore_then(dottar_wide(hoon_wide.clone())),
-        just("=").ignore_then(dottis_wide(hoon_wide.clone())),
+        just('=').ignore_then(dottis_wide(hoon_wide.clone())),
         just('?').ignore_then(dotwut_wide(hoon_wide.clone())),
-        just("^").ignore_then(dotket_wide(hoon_wide.clone(), spec_wide.clone())),
+        just('^').ignore_then(dotket_wide(hoon_wide.clone(), spec_wide.clone())),
     ))
 }
 

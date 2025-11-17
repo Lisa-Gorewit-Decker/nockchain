@@ -1,4 +1,3 @@
-use crate::lexer::tokens::Token;
 use crate::ast::hoon::*;
 use crate::utils::*;
 use chumsky::{
@@ -14,13 +13,13 @@ pub fn zap_runes_tall<'src>(
 {
     choice((
         just(':').ignore_then(zapcol(hoon.clone())),
-        just(".").ignore_then(zapdot(hoon.clone())),
+        just('.').ignore_then(zapdot(hoon.clone())),
         just(",").ignore_then(zapcom(hoon.clone())),
         just(";").ignore_then(zapmic(hoon.clone())),
         just(">").ignore_then(zapgar(hoon.clone())),
         just("<").ignore_then(zapgal(hoon.clone(), spec.clone())),
         just('@').ignore_then(zappat(hoon.clone())),
-        just("=").ignore_then(zaptis(hoon.clone())),
+        just('=').ignore_then(zaptis(hoon.clone())),
         just('?').ignore_then(zapwut(hoon.clone())),
         just("!").to(Hoon::ZapZap),
     ))
@@ -33,13 +32,13 @@ pub fn zap_runes_wide<'src>(
 {
     choice((
         just(':').ignore_then(zapcol_wide(hoon_wide.clone())),
-        just(".").ignore_then(zapdot_wide(hoon_wide.clone())),
+        just('.').ignore_then(zapdot_wide(hoon_wide.clone())),
         just(",").ignore_then(zapcom_wide(hoon_wide.clone())),
         just(";").ignore_then(zapmic_wide(hoon_wide.clone())),
         just(">").ignore_then(zapgar_wide(hoon_wide.clone())),
         just("<").ignore_then(zapgal_wide(hoon_wide.clone(), spec_wide.clone())),
         just('@').ignore_then(zappat_wide(hoon_wide.clone())),
-        just("=").ignore_then(zaptis_wide(hoon_wide.clone())),
+        just('=').ignore_then(zaptis_wide(hoon_wide.clone())),
         just('?').ignore_then(zapwut_wide(hoon_wide.clone())),
         just("!").to(Hoon::ZapZap),
     ))

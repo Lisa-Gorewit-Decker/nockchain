@@ -1,4 +1,3 @@
-use crate::lexer::tokens::Token;
 use crate::ast::hoon::*;
 use crate::utils::*;
 use std::collections::*;
@@ -12,10 +11,10 @@ pub fn col_runes_tall<'src>(
 ) -> impl Parser<'src, &'src str, Hoon, Err<'src>>
 {
     choice((
-        just("^").ignore_then(colket(hoon.clone())),
+        just('^').ignore_then(colket(hoon.clone())),
         just('_').ignore_then(colcab(hoon.clone())),
         just("+").ignore_then(collus(hoon.clone())),
-        just("-").ignore_then(colhep(hoon.clone())),
+        just('-').ignore_then(colhep(hoon.clone())),
         just('*').ignore_then(coltar(hoon.clone())),
         just('~').ignore_then(colsig(hoon.clone())),
     ))
@@ -26,10 +25,10 @@ pub fn col_runes_wide<'src>(
 ) -> impl Parser<'src, &'src str, Hoon, Err<'src>>
 {
     choice((
-        just("^").ignore_then(colket_wide(hoon_wide.clone())),
+        just('^').ignore_then(colket_wide(hoon_wide.clone())),
         just('_').ignore_then(colcab_wide(hoon_wide.clone())),
         just("+").ignore_then(collus_wide(hoon_wide.clone())),
-        just("-").ignore_then(colhep_wide(hoon_wide.clone())),
+        just('-').ignore_then(colhep_wide(hoon_wide.clone())),
         just('*').ignore_then(coltar_wide(hoon_wide.clone())),
         just('~').ignore_then(colsig_wide(hoon_wide.clone())),
     ))

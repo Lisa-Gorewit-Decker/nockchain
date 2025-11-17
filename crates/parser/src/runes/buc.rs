@@ -1,4 +1,3 @@
-use crate::lexer::tokens::Token;
 use crate::ast::hoon::*;
 use crate::utils::*;
 use std::collections::*;
@@ -21,13 +20,13 @@ pub fn buc_runes_tall<'src>(
         just(">").ignore_then(bucgar(spec.clone())),
         just("|").ignore_then(bucbar(hoon.clone(), spec.clone())),
         just("&").ignore_then(bucpam(hoon.clone(), spec.clone())),
-        just("^").ignore_then(bucket(spec.clone())),
+        just('^').ignore_then(bucket(spec.clone())),
         just('~').ignore_then(bucsig(hoon.clone(), spec.clone())),
-        just("-").ignore_then(buchep(spec.clone())),
-        just("=").ignore_then(buctis(spec.clone())),
+        just('-').ignore_then(buchep(spec.clone())),
+        just('=').ignore_then(buctis(spec.clone())),
         just('?').ignore_then(bucwut(spec.clone())),
         just("+").ignore_then(buclus(spec.clone())),
-        just(".").ignore_then(bucdot(spec.clone())),
+        just('.').ignore_then(bucdot(spec.clone())),
         just(",").ignore_then(buccom(spec.clone())),
     ))
 }
@@ -46,13 +45,13 @@ pub fn buc_runes_wide<'src>(
         just(">").ignore_then(bucgar_wide(spec_wide.clone())),
         just("|").ignore_then(bucbar_wide(hoon_wide.clone(), spec_wide.clone())),
         just("&").ignore_then(bucpam_wide(hoon_wide.clone(), spec_wide.clone())),
-        just("^").ignore_then(bucket_wide(spec_wide.clone())),
+        just('^').ignore_then(bucket_wide(spec_wide.clone())),
         just('~').ignore_then(bucsig_wide(hoon_wide.clone(), spec_wide.clone())),
-        just("-").ignore_then(buchep_wide(spec_wide.clone())),
-        just("=").ignore_then(buctis_wide(spec_wide.clone())),
+        just('-').ignore_then(buchep_wide(spec_wide.clone())),
+        just('=').ignore_then(buctis_wide(spec_wide.clone())),
         just('?').ignore_then(bucwut_wide(spec_wide.clone())),
         just("+").ignore_then(buclus_wide(spec_wide.clone())),
-        just(".").ignore_then(bucdot_wide(spec_wide.clone())),
+        just('.').ignore_then(bucdot_wide(spec_wide.clone())),
         just(",").ignore_then(buccom_wide(spec_wide.clone())),
     ))
 }
@@ -67,14 +66,14 @@ pub fn buc_spec_tall<'src>(
         just("%").ignore_then(buccen_spec(spec.clone())),
         just("<").ignore_then(bucgal_spec(spec.clone())),
         just(">").ignore_then(bucgar_spec(spec.clone())),
-        just("^").ignore_then(bucket_spec(spec.clone())),
+        just('^').ignore_then(bucket_spec(spec.clone())),
         just('~').ignore_then(bucsig_spec(hoon.clone(), spec.clone())),
         just("|").ignore_then(bucbar_spec(hoon.clone(), spec.clone())),
         just("&").ignore_then(bucpam_spec(hoon.clone(), spec.clone())),
         just('@').ignore_then(bucpat_spec(spec.clone())),
         just('_').ignore_then(buccab_spec(hoon.clone())),
-        just("-").ignore_then(buchep_spec(spec.clone())),
-        just("=").ignore_then(buctis_spec(spec.clone())),
+        just('-').ignore_then(buchep_spec(spec.clone())),
+        just('=').ignore_then(buctis_spec(spec.clone())),
         just('?').ignore_then(bucwut_spec(spec.clone())),
         just(";").ignore_then(bucmic_spec(hoon.clone())),
         just("+").ignore_then(buclus_spec(spec.clone())),
@@ -91,14 +90,14 @@ pub fn buc_spec_wide<'src>(
         just("%").ignore_then(buccen_spec_wide(spec_wide.clone())),
         just("<").ignore_then(bucgal_spec_wide(spec_wide.clone())),
         just(">").ignore_then(bucgar_spec_wide(spec_wide.clone())),
-        just("^").ignore_then(bucket_spec_wide(spec_wide.clone())),
+        just('^').ignore_then(bucket_spec_wide(spec_wide.clone())),
         just('~').ignore_then(bucsig_spec_wide(hoon_wide.clone(), spec_wide.clone())),
         just("|").ignore_then(bucbar_spec_wide(hoon_wide.clone(), spec_wide.clone())),
         just("&").ignore_then(bucpam_spec_wide(hoon_wide.clone(), spec_wide.clone())),
         just('@').ignore_then(bucpat_spec_wide(spec_wide.clone())),
         just('_').ignore_then(buccab_spec_wide(hoon_wide.clone())),
-        just("-").ignore_then(buchep_spec_wide(spec_wide.clone())),
-        just("=").ignore_then(buctis_spec_wide(spec_wide.clone())),
+        just('-').ignore_then(buchep_spec_wide(spec_wide.clone())),
+        just('=').ignore_then(buctis_spec_wide(spec_wide.clone())),
         just('?').ignore_then(bucwut_spec_wide(spec_wide.clone())),
         just(";").ignore_then(bucmic_spec_wide(hoon_wide.clone())),
         just("+").ignore_then(buclus_spec_wide(spec_wide.clone())),
@@ -653,13 +652,13 @@ pub fn buctis_irregular<'src>(
 ) -> impl Parser<'src, &'src str, Spec, Err<'src>>
 {
     symbol()  //  foo=bar
-        .then_ignore(just("="))
+        .then_ignore(just('='))
         .then(spec_wide.clone())
         .map(|(n, s)| Spec::BucTis(Skin::Term(n.to_string()), Box::new(s)))
         .or(
-            just("=")
+            just('=')
             .ignore_then(symbol() // =foo=bar
-                            .then_ignore(just("="))
+                            .then_ignore(just('='))
                             .then(spec_wide.clone())
                             .map(|(name, spec)| (Some(name), spec))
                         .or(spec_wide.clone()

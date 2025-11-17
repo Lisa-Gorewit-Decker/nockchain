@@ -1,4 +1,3 @@
-use crate::lexer::tokens::Token;
 use crate::ast::hoon::*;
 use crate::utils::*;
 use chumsky::{
@@ -22,7 +21,7 @@ pub fn sig_runes_tall<'src>(
         just("<").ignore_then(siggal(hoon.clone())),
         just("&").ignore_then(sigpam(hoon.clone())),
         just('?').ignore_then(sigwut(hoon.clone())),
-        just("=").ignore_then(sigtis(hoon.clone())),
+        just('=').ignore_then(sigtis(hoon.clone())),
         just("!").ignore_then(sigzap(hoon.clone())),
     ))
 }
@@ -37,7 +36,7 @@ pub fn sig_runes_wide<'src>(
         just("!").ignore_then(sigzap_wide(hoon_wide.clone())),
         just("<").ignore_then(siggal_wide(hoon_wide.clone())),
         just('?').ignore_then(sigwut_wide(hoon_wide.clone())),
-        just("=").ignore_then(sigtis_wide(hoon_wide.clone())),
+        just('=').ignore_then(sigtis_wide(hoon_wide.clone())),
         just(">").ignore_then(siggar_wide(hoon_wide.clone())),
         just("+").ignore_then(siglus_wide(hoon_wide.clone())),
         just('_').ignore_then(sigcab_wide(hoon_wide.clone())),
@@ -290,7 +289,7 @@ pub fn siggar_wide<'src>(
 ) -> impl Parser<'src, &'src str, Hoon, Err<'src>>
 {
     term()
-    .then(just(".")
+    .then(just('.')
             .ignore_then(hoon_wide.clone())
             .or_not()
             )
@@ -315,7 +314,7 @@ pub fn siggar<'src>(
 {
     gap()
     .ignore_then(term())
-    .then(just(".")
+    .then(just('.')
             .ignore_then(hoon_wide.clone())
             .or_not())
     .then_ignore(gap())
@@ -338,7 +337,7 @@ pub fn siggal<'src>(
 {
     gap()
     .ignore_then(term())
-    .then(just(".")
+    .then(just('.')
             .ignore_then(hoon_wide.clone())
             .or_not())
     .then_ignore(gap())
@@ -360,7 +359,7 @@ pub fn siggal_wide<'src>(
 ) -> impl Parser<'src, &'src str, Hoon, Err<'src>>
 {
     term()
-    .then(just(".")
+    .then(just('.')
             .ignore_then(hoon_wide.clone())
             .or_not())
     .then_ignore(just(" "))

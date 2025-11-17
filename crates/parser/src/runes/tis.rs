@@ -14,15 +14,15 @@ pub fn tis_runes_tall<'src>(
 {
     choice((
         just("|").ignore_then(tisbar(hoon.clone(), spec.clone())),
-        just(".").ignore_then(tisdot(hoon.clone())),
+        just('.').ignore_then(tisdot(hoon.clone())),
         just('?').ignore_then(tiswut(hoon.clone())),
-        just("^").ignore_then(tisket(hoon.clone(), spec_wide.clone())),
+        just('^').ignore_then(tisket(hoon.clone(), spec_wide.clone())),
         just(':').ignore_then(tiscol(hoon.clone())),
         just("/").ignore_then(tisfas(hoon.clone(), spec_wide.clone())),
         just(";").ignore_then(tismic(hoon.clone(), spec_wide.clone())),
         just("<").ignore_then(tisgal(hoon.clone())),
         just(">").ignore_then(tisgar(hoon.clone())),
-        just("-").ignore_then(tishep(hoon.clone())),
+        just('-').ignore_then(tishep(hoon.clone())),
         just('*').ignore_then(tistar(hoon.clone(), spec_wide.clone())),
         just(",").ignore_then(tiscom(hoon.clone())),
         just("+").ignore_then(tislus(hoon.clone())),
@@ -37,15 +37,15 @@ pub fn tis_runes_wide<'src>(
 {
     choice((
         just("|").ignore_then(tisbar_wide(hoon_wide.clone(), spec_wide.clone())),
-        just(".").ignore_then(tisdot_wide(hoon_wide.clone())),
+        just('.').ignore_then(tisdot_wide(hoon_wide.clone())),
         just('?').ignore_then(tiswut_wide(hoon_wide.clone())),
-        just("^").ignore_then(tisket_wide(hoon_wide.clone(), spec_wide.clone())),
+        just('^').ignore_then(tisket_wide(hoon_wide.clone(), spec_wide.clone())),
         just(':').ignore_then(tiscol_wide(hoon_wide.clone())),
         just("/").ignore_then(tisfas_wide(hoon_wide.clone(), spec_wide.clone())),
         just(";").ignore_then(tismic_wide(hoon_wide.clone(), spec_wide.clone())),
         just("<").ignore_then(tisgal_wide(hoon_wide.clone())),
         just(">").ignore_then(tisgar_wide(hoon_wide.clone())),
-        just("-").ignore_then(tishep_wide(hoon_wide.clone())),
+        just('-').ignore_then(tishep_wide(hoon_wide.clone())),
         just('*').ignore_then(tistar_wide(hoon_wide.clone(), spec_wide.clone())),
         just(",").ignore_then(tiscom_wide(hoon_wide.clone())),
         just("+").ignore_then(tislus_wide(hoon_wide.clone())),
@@ -289,7 +289,7 @@ pub fn tistar<'src>(
 {
     gap()
     .ignore_then(symbol())
-    .then(just("=")
+    .then(just('=')
             .ignore_then(spec_wide.clone())
             .map(|s| Box::new(s))
             .or_not()
@@ -309,7 +309,7 @@ pub fn tistar_wide<'src>(
 ) -> impl Parser<'src, &'src str, Hoon, Err<'src>>
 {
     symbol()
-    .then(just("=")
+    .then(just('=')
             .ignore_then(spec_wide.clone())
             .map(|s| Box::new(s))
             .or_not()

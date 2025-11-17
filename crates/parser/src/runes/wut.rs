@@ -1,4 +1,3 @@
-use crate::lexer::tokens::Token;
 use crate::ast::hoon::*;
 use crate::utils::*;
 use chumsky::{
@@ -16,17 +15,17 @@ pub fn wut_runes_tall<'src>(
 {
     choice((
         just('~').ignore_then(wutsig(hoon.clone(), hoon_wide.clone())),
-        just(".").ignore_then(wutdot(hoon.clone())),
+        just('.').ignore_then(wutdot(hoon.clone())),
         just(':').ignore_then(wutcol(hoon.clone())),
         just("|").ignore_then(wutbar(hoon.clone())),
         just(">").ignore_then(wutgar(hoon.clone())),
         just("<").ignore_then(wutgal(hoon.clone())),
-        just("^").ignore_then(wutket(hoon.clone(), hoon_wide.clone())),
+        just('^').ignore_then(wutket(hoon.clone(), hoon_wide.clone())),
         just("&").ignore_then(wutpam(hoon.clone())),
         just('@').ignore_then(wutpat(hoon.clone(), hoon_wide.clone())),
-        just("=").ignore_then(wuttis(hoon.clone(), hoon_wide.clone(), spec.clone())),
+        just('=').ignore_then(wuttis(hoon.clone(), hoon_wide.clone(), spec.clone())),
         just("+").ignore_then(wutlus(hoon.clone(), hoon_wide.clone(), spec.clone())),
-        just("-").ignore_then(wuthep(hoon.clone(), hoon_wide.clone(), spec.clone())),
+        just('-').ignore_then(wuthep(hoon.clone(), hoon_wide.clone(), spec.clone())),
         just("!").ignore_then(wutzap(hoon.clone())), 
          // add wuthax here..
     ))
@@ -39,17 +38,17 @@ pub fn wut_runes_wide<'src>(
 {
     choice((
         just('~').ignore_then(wutsig_wide(hoon_wide.clone())),
-        just(".").ignore_then(wutdot_wide(hoon_wide.clone())),
+        just('.').ignore_then(wutdot_wide(hoon_wide.clone())),
         just(':').ignore_then(wutcol_wide(hoon_wide.clone())),
         just("|").ignore_then(wutbar_wide(hoon_wide.clone())),
         just(">").ignore_then(wutgar_wide(hoon_wide.clone())),
         just("<").ignore_then(wutgal_wide(hoon_wide.clone())),
-        just("^").ignore_then(wutket_wide(hoon_wide.clone())),
+        just('^').ignore_then(wutket_wide(hoon_wide.clone())),
         just("&").ignore_then(wutpam_wide(hoon_wide.clone())),
         just('@').ignore_then(wutpat_wide(hoon_wide.clone())),
-        just("=").ignore_then(wuttis_wide(hoon_wide.clone(), spec_wide.clone())),
+        just('=').ignore_then(wuttis_wide(hoon_wide.clone(), spec_wide.clone())),
         just("+").ignore_then(wutlus_wide(hoon_wide.clone(), spec_wide.clone())),
-        just("-").ignore_then(wuthep_wide(hoon_wide.clone(), spec_wide.clone())),
+        just('-').ignore_then(wuthep_wide(hoon_wide.clone(), spec_wide.clone())),
         just("!").ignore_then(wutzap_wide(hoon_wide.clone())),
     ))
 }

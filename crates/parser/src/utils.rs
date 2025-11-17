@@ -1,7 +1,7 @@
 use std::collections::*;
 use crate::ast::hoon::*;
-use crate::lexer::tokens::Token;
-use logos::Span;
+use std::sync::Arc;
+use std::path::PathBuf;
 use chumsky::{
     input::{Stream, ValueInput, Input, StrInput},
     prelude::*,
@@ -747,10 +747,9 @@ pub fn uppercase<'src>(
 pub fn gap<'src>(
 ) -> impl Parser<'src, &'src str, (), Err<'src>>
 {
-    regex(r"\s{2,}(?:\n+)?|\n+")
-        .or(regex(r"(?:\s*)?::[^\n\r]*(?:\r?\n)?"))  //  comments
-        .repeated().at_least(1)
-        .labelled("Gap")
+    regex(r"(?:(?:\s{2,}\n*|\n+|(?:\s*)?::[^\n\r]*(?:\r?\n)?))+")
+    .ignored()
+    .labelled("Gap")
 }
 
 pub fn list_term_hoon<'src>(
@@ -780,7 +779,7 @@ pub fn winglist<'src>(
 ) -> impl Parser<'src, &'src str, WingType, Err<'src>>
 {
     let name =      //  Name or $
-        just("$")
+        just('$')
             .to("%$".to_string())
             .or(symbol());
 
@@ -789,7 +788,7 @@ pub fn winglist<'src>(
         .to(Limb::Axis(0));
 
     let ket_name =   //  ^^name or name
-        just("^")
+        just('^')
             .repeated()
             .count()
             .then(name)
@@ -823,13 +822,13 @@ pub fn winglist<'src>(
                 });
 
     let dot =  //  .
-            just(".").to(Limb::Axis(1));
+            just('.').to(Limb::Axis(1));
 
     let lus =  //  +
         just("+").to(Limb::Axis(3));
 
     let hep =  //  -
-        just("-").to(Limb::Axis(2));
+        just('-').to(Limb::Axis(2));
 
     let lark =   //    +>-<  notation
             regex(r"[+-][<>](?:[+-][<>])*[+-]?")
@@ -856,7 +855,7 @@ pub fn winglist<'src>(
         dot,
         lus,
         hep,
-    )).separated_by(just("."))
+    )).separated_by(just('.'))
         .at_least(1)
         .collect::<Vec<_>>()
         .labelled("Wing")
@@ -866,12 +865,11 @@ pub fn variable_name_and_type<'src>(
     spec_wide:   impl ParserExt<'src, Spec>,
 ) -> impl Parser<'src, &'src str, Skin, Err<'src>>
 {
-    let not_named = just("=")  // =/  =foo
+    let not_named = just('=')  // =/  =foo
         .ignore_then(spec_wide.clone())
         .try_map(|spec, span| {
             let auto = autoname(spec.clone());
              match auto {
-                        // None => Err(Cheap::new(span).into()),
                         None => Err(Rich::custom(span, "cannot autoname")),
                         Some(term) => {
                             Ok(Skin::Name(
@@ -886,7 +884,7 @@ pub fn variable_name_and_type<'src>(
         });
 
      let named = symbol()    //  =/  a=foo  ,  =/  a
-        .then_ignore(just("/").or(just("=")))
+        .then_ignore(just('/').or(just('=')))
         .then(
             spec_wide.clone()
                 .or_not() // handle foo or foo=bar
@@ -975,7 +973,7 @@ pub fn tiki_wide<'src>(
 ) -> impl Parser<'src, &'src str, Tiki, Err<'src>>
 {
     let with_name = symbol()
-        .then_ignore(just("="))
+        .then_ignore(just('='))
         .then(
             winglist()
                 .map(|w| {
@@ -1003,7 +1001,7 @@ pub fn tiki_tall<'src>(
 ) -> impl Parser<'src, &'src str, Tiki, Err<'src>>
 {
     let with_name = symbol()
-        .then_ignore(just("="))
+        .then_ignore(just('='))
         .then(
             winglist()
                 .map(|w| {
@@ -1038,7 +1036,7 @@ pub fn chapters<'src>(
 ) -> impl Parser<'src, &'src str, HashMap<Term, Tome>, Err<'src>> {
     let luslus = just("++")
             .ignore_then(gap())
-            .ignore_then(just("$").to("%$".to_string()).or(symbol()))
+            .ignore_then(just('$').to("%$".to_string()).or(symbol()))
             .then_ignore(gap())
             .then(hoon.clone())
             .map(|(name, hoon)| (name, hoon));
@@ -1129,7 +1127,7 @@ pub fn jet_signature<'src>(
 
     let stdkel = just("%")  //  %k.138
                 .ignore_then(symbol())
-                .then_ignore(just("."))
+                .then_ignore(just('.'))
                 .then(decimal_number())
                 .map(|(s, n)| Chum::StdKel(s, n.parse().expect("failed to parse version number")));
     // TODO: add other cases here
@@ -1173,20 +1171,12 @@ pub fn aura_spec<'src>(
     })
 }
 
-pub fn path<'src>(
-    hoon_wide:   impl ParserExt<'src, Hoon>,
-) -> impl Parser<'src, &'src str, Hoon, Err<'src>>
-{
-    just("/")
-        .to(Hoon::ColSig(vec![]))
-}
-
 pub fn concatanate<'src>(
     hoon_wide:   impl ParserExt<'src, Hoon>,
 ) -> impl Parser<'src, &'src str, Hoon, Err<'src>>
 {
     hoon_wide.clone()
-      .then_ignore(just("^"))
+      .then_ignore(just('^'))
       .then(hoon_wide.clone())
       .map(|(p, q)| Hoon::Pair(Box::new(p), Box::new(q)))
 }
@@ -1222,7 +1212,7 @@ pub fn spec_term<'src>(
 {
     let buc =      // %$
         just("%")
-        .ignore_then(just("$"))
+        .ignore_then(just('$'))
         .map(|_| Spec::Leaf("%tas".to_string(), "%$".to_string()));
 
     let number =      // %123
@@ -1260,16 +1250,14 @@ pub fn constant<'src>(
 ) -> impl Parser<'src, &'src str, Hoon, Err<'src>>
 {
     let buc_const =      // %$
-        just("%")
-        .ignore_then(just("$"))
+        just("%$")
         .map(|_|
             Hoon::Rock("%tas".to_string(), Noun::Atom("%$".to_string()))
         );
 
     let number_const =      // %123
         just("%")
-        .ignore_then(decimal_number())
-        .map(|n| Hoon::Rock("%ud".to_string(), Noun::Atom(n)));
+        .ignore_then(number_constant());
 
     let name_const =      // %foo
         just("%")
@@ -1299,15 +1287,13 @@ pub fn cord<'src>(
     let char_in_cord =
     regex(r"(?:(?:\\(?:\\|'|[0-9A-Fa-f]{2}))|[^\x00-\x1F\x7F'\\])+");
 
-    let single_quoted = char_in_cord
+    let single_quoted =
+                            char_in_cord
                         .separated_by(gon)
                         .at_least(1)
                         .collect::<Vec<_>>()
                         .delimited_by(just("\'"), just("\'"))
                         .map(|chars| chars.concat());
-
-    // let triple_quoted =  select! {Token::TripleCord(str) =>  str.to_string()};
-
     choice((
         single_quoted,
         // triple_quoted,
@@ -1318,7 +1304,7 @@ pub fn increment<'src>(
     hoon_wide:   impl ParserExt<'src, Hoon>,
 ) -> impl Parser<'src, &'src str, Hoon, Err<'src>>
 {
-    just(".").or_not()
+    just('.').or_not()
         .ignore_then(just("+"))
         .ignore_then(just('('))
         .ignore_then(
@@ -1344,78 +1330,6 @@ pub fn function_call<'src>(
     .map(|(func, args)| Hoon::CenCol(Box::new(func), args))
 }
 
-/// Validates cord chars that:
-/// - contains non-control chars: 32 to 256 - excluding 127 (del)
-/// - can contain the sequence: \\ + (\\ or singlequote 2hexdigit)
-///     (drops the first \\)
-/// - can't contain singlequote nor \\ alone
-fn validate_cord_chars<'a, 'src>(
-    span: SimpleSpan,
-    s: &str,
-) -> Result<String, Rich<'a, Token<'src>>> {
-    let mut result = String::with_capacity(s.len());
-    let bytes = s.as_bytes();
-    let mut i = 0;
-
-    while i < bytes.len() {
-        let ch = bytes[i];
-
-        // printable range 32-255, exclude DEL (127)
-        if ch < 32 || ch == 127 || ch > 255 {
-            return Err(Rich::custom(span, "cord contains forbidden control character"));
-        }
-
-        match ch {
-            b'\\' => {
-                // must have following character
-                if i + 1 >= bytes.len() {
-                    return Err(Rich::custom(span, "trailing backslash"));
-                }
-
-                match bytes[i + 1] {
-                    b'\\' => {
-                        result.push('\\');
-                        i += 2;
-                    }
-                    b'\'' => {
-                        result.push('\'');
-                        i += 2;
-                    }
-                    hex1 if char::from(hex1).is_ascii_hexdigit() => {
-                        if i + 2 >= bytes.len() {
-                            return Err(Rich::custom(span, "incomplete hex escape"));
-                        }
-
-                        let hex2 = bytes[i + 2];
-                        if !char::from(hex2).is_ascii_hexdigit() {
-                            return Err(Rich::custom(span, "invalid hex escape"));
-                        }
-
-                        let val1 = (hex1 as char).to_digit(16).unwrap();
-                        let val2 = (hex2 as char).to_digit(16).unwrap();
-                        let byte_val = ((val1 << 4) | val2) as u8;
-
-                        result.push(byte_val as char);
-                        i += 3;
-                    }
-                    _ => {
-                        return Err(Rich::custom(span, "invalid escape sequence"));
-                    }
-                }
-            }
-            b'\'' => {
-                return Err(Rich::custom(span, "unescaped single quote"));
-            }
-            _ => {
-                result.push(ch as char);
-                i += 1;
-            }
-        }
-    }
-
-    Ok(result)
-}
-
 ///  Alphanumeric with hyphens
 ///      Start with a lowercase letter
 ///      Followed by zero or more: lowercase letter, digit, or hyphen
@@ -1431,7 +1345,7 @@ pub fn binary_number<'src>(
 {
     let first = regex(r"0b(?:0|1[01]{0,3})");
 
-    let rest = just(".").ignore_then(gap().or_not())
+    let rest = just('.').ignore_then(gap().or_not())
             .ignore_then(regex(r"[01]{4}"));
 
     first
@@ -1453,7 +1367,7 @@ pub fn hexadecimal_number<'src>(
 {
     let first = regex(r"0x(0|[1-9a-fA-F][0-9a-fA-F]{0,3})");
 
-    let rest = just(".").ignore_then(gap().or_not())
+    let rest = just('.').ignore_then(gap().or_not())
             .ignore_then(regex(r"[0-9a-fA-F]{4}"))
             .repeated()
             .collect::<Vec<_>>();
@@ -1478,7 +1392,7 @@ pub fn decimal_number<'src>(
         regex(r"(0|[1-9][0-9]{0,2})")
         .map(str::to_owned);
 
-    let rest = just(".")
+    let rest = just('.')
                 .ignore_then(gap().or_not())
                 .ignore_then(regex(r"[0-9]{3}").map(str::to_owned))
                 .repeated()
@@ -1501,6 +1415,275 @@ pub fn decimal_number<'src>(
         .labelled("Decimal Number")
 }
 
+pub fn number_constant<'src>(
+) -> impl Parser<'src, &'src str, Hoon, Err<'src>>
+{
+    let ud_number = decimal_number().map(|s|
+                        Hoon::Rock("ud".to_string(), Noun::Atom(s))
+                    );
+
+    let ux_number = hexadecimal_number().map(|s|
+                        Hoon::Rock("ux".to_string(), Noun::Atom(s))
+                 );
+
+    let ub_number = binary_number().map(|s|
+                        Hoon::Rock("ub".to_string(), Noun::Atom(s))
+                    );
+
+    let sd_number = //  signed: -num and --num
+        just('-').ignore_then(just('-').or_not())
+        .ignore_then(
+            choice((
+                decimal_number().map(|s| Hoon::Rock("sd".to_string(), Noun::Atom(s))),
+                hexadecimal_number().map(|s| Hoon::Rock("sx".to_string(), Noun::Atom(s))),
+                binary_number().map(|s| Hoon::Rock("sb".to_string(), Noun::Atom(s))),
+            ))
+        );
+
+    let unicode =
+        regex(r"~-~?[0-9a-fA-F]+\.?|~-[a-zA-Z]|~\[(?:~-[a-zA-Z0-9]+(?:\s+)?)+\]")
+        .map(|s: &str| {
+            Hoon::Rock("c".to_string(), Noun::Atom(s.to_string()))
+        });
+
+    let ui_number =
+        regex(r"0i[0-9]+").map(|s: &str| {
+            Hoon::Rock("ui".to_string(), Noun::Atom(s.to_string()))
+        });
+
+    choice((
+        sd_number,
+        ux_number,
+        ui_number,
+        ub_number,
+        unicode,
+        ud_number,
+    ))
+}
+
+pub fn weld<T: Clone>(a: impl AsRef<[T]>, b: impl AsRef<[T]>) -> Vec<T> {
+    let a = a.as_ref();
+    let b = b.as_ref();
+    let mut v = Vec::with_capacity(a.len() + b.len());
+    v.extend_from_slice(a);
+    v.extend_from_slice(b);
+    v
+}
+
+pub fn scag<T: Clone>(n: usize, list: impl AsRef<[T]>) -> Vec<T> {
+    list.as_ref().iter().take(n).cloned().collect()
+}
+
+pub fn slag<T: Clone>(n: usize, list: impl AsRef<[T]>) -> Vec<T> {
+    list.as_ref().iter().skip(n).cloned().collect()
+}
+
+pub fn flop<T: Clone>(list: impl AsRef<[T]>) -> Vec<T> {
+    let mut v = list.as_ref().to_vec();
+    v.reverse();
+    v
+}
+
+fn poof(pax: Vec<String>) -> Vec<Hoon> {
+    pax.iter()
+        .map(|a| { Hoon::Sand(
+            "%ta".to_string(),
+            Noun::Atom(a.to_string()),
+        )})
+        .collect()
+}
+
+fn poon(
+    pag: &[Hoon],
+    goo: &[Option<Hoon>],
+) -> Option<Vec<Hoon>> {
+    if goo.is_empty() {
+        return Some(vec![]);
+    }
+
+    let (goo_hd, goo_tl) = goo.split_first().unwrap();
+
+    let head = match goo_hd {
+        Some(x) => x.clone(),
+        None => {
+            let (pag_hd, _) = pag.split_first()?;
+            pag_hd.clone()
+        }
+    };
+
+    let pag_tl = if pag.is_empty() {
+        &[]
+    } else {
+        &pag[1..]
+    };
+
+    let mut rest = poon(pag_tl, goo_tl)?;
+
+    let mut out = Vec::with_capacity(rest.len() + 1);
+    out.push(head);
+    out.append(&mut rest);
+
+    Some(out)
+}
+
+pub fn posh(
+    pre: Option<Vec<Option<Hoon>>>,           // (unit tyke)
+    pof: Option<(usize, Vec<Option<Hoon>>)>,  // (unit [p=@ud q=tyke])
+    wer: &PathBuf,
+) -> Option<Vec<Hoon>> {
+
+    let wer_strings: Vec<String> = wer
+        .iter()
+        .map(|s| s.to_string_lossy().into_owned())
+        .collect();
+
+    let wom: Vec<Hoon> = poof(wer_strings);
+
+    let yez = if pre.is_none() {
+        Some(wom.clone())
+    } else {
+        let pre_val = pre.as_ref().unwrap();
+
+        let moz = poon(&wom, pre_val)?;
+
+        if let Some(_) = pof {
+            let n  = pre_val.len();
+            let sl = slag(n, &wom.clone());
+            Some(weld(&moz, &sl))
+        } else {
+            Some(moz)
+        }
+    }?;
+
+    if pof.is_none() {
+        return Some(yez);
+    }
+
+    let (p, q) = pof.unwrap();
+
+    let zey = flop(&yez.clone());
+
+    let moz = scag(p, &zey);
+    let gul = slag(p, &zey);
+
+    let zom = poon(&flop(&moz.clone()), &q);
+
+    match zom {
+        None => None,
+        Some(z) => Some(weld(&flop(&gul), z))
+    }
+}
+
+pub fn path<'src>(
+    hoon_wide: impl ParserExt<'src, Hoon>,
+    wer: PathBuf,
+) -> impl Parser<'src, &'src str, Hoon, Err<'src>>
+{
+    let wer = Arc::new(wer);
+
+    let hasp = choice((
+                hoon_wide.clone().delimited_by(just("["), just("]")),
+                hoon_wide.clone()
+                    .separated_by(just(" "))
+                    .at_least(1)
+                    .collect::<Vec<_>>()
+                    .delimited_by(just("("), just(")"))
+                    .map(|list| {
+                        let (first, rest) = list.split_first().unwrap();
+                        Hoon::CenCol(Box::new(first.clone()), rest.to_vec())
+                    }),
+                just('$').to(Hoon::Sand("tas".to_string(), Noun::Atom("%$".to_string()))),
+                cord().map(|s| Hoon::Sand("t".to_string(), Noun::Atom(s))),
+                symbol().map(|s| Hoon::Sand("ta".to_string(), Noun::Atom(s))),  // add the other cases here...
+            ));
+
+    let gasp = choice((
+                    just('=')
+                        .to(None)
+                        .repeated()
+                        .collect::<Vec<Option<Hoon>>>()
+                    .then(hasp.map(|h| vec![Some(h)]))
+                        .then(
+                            just('=')
+                                .to(None)
+                                .repeated()
+                                .collect::<Vec<Option<Hoon>>>()
+                        )
+                        .map(|((mut a, b), c)| {
+                            a.extend(b);
+                            a.extend(c);
+                            a
+                        }),
+                    just('=')
+                        .to(None)
+                        .repeated()
+                        .at_least(1)
+                        .collect::<Vec<Option<Hoon>>>(),
+                    ));
+
+    let limp =  just("/").repeated().count()
+                .then(gasp)
+                .map(|(a, mut b)| {
+                    for _ in 0..a {
+                        b.insert(0, Some(Hoon::Sand("tas".to_string(), Noun::Atom("%$".to_string()))));
+                    }
+                    b
+                });
+
+    let gash = limp
+            .separated_by(just("/"))
+            .collect::<Vec<Vec<Option<Hoon>>>>()
+            .map(|a| a.into_iter().flatten().collect::<Vec<_>>())
+            .boxed();
+
+    let porc = just("%").repeated().count()     //  usize
+                .then(just("/").ignore_then(gash.clone())); // Vec<Option<Hoon>>
+
+    let poor = gash.clone()
+                .map(|pre| Some(pre))
+                    .then(just("%")
+                            .ignore_then(porc.clone())
+                            .or_not());
+
+    let rood = {
+        let wer2 = wer.clone();
+        just("/")
+        .ignore_then(poor.try_map(move |(pre, pof), span| {
+            match posh(pre, pof, &wer2) {
+                Some(list) => Ok(Hoon::ColSig(list)),
+                None => Err(Rich::custom(span, "error parsing path")),
+            }
+        }))
+    };
+
+    let cen_fas = {
+        let wer2 = wer.clone();
+        porc.try_map(move |(a, b), span| {
+            match posh(Some(vec![None]), Some((a, b)), &wer2) {
+                Some(list) => Ok(Hoon::ColSig(list)),
+                None => Err(Rich::custom(span, "error parsing path")),
+            }
+        })
+    };
+
+    let multi_cen = {
+        let wer2 = wer.clone();
+        just("%").repeated().count().try_map(move |n, span| {
+            match posh(Some(vec![None]), Some((n, vec![])), &wer2) {
+                Some(list) => Ok(Hoon::ColSig(list)),
+                None => Err(Rich::custom(span, "error parsing path")),
+            }
+        })
+    };
+
+    let cen_path = just("%").ignore_then(choice((cen_fas, multi_cen)));
+
+    choice((
+        rood,       //  /foo/%/foo
+        cen_path,   //  %/foo  and  %%
+    )).labelled("Path")
+}
+
 pub fn number<'src>(
 ) -> impl Parser<'src, &'src str, Hoon, Err<'src>>
 {
@@ -1517,7 +1700,7 @@ pub fn number<'src>(
                     );
 
     let sd_number = //  signed: -num and --num
-        just("-").ignore_then(just("-").or_not())
+        just('-').ignore_then(just('-').or_not())
         .ignore_then(
             choice((
                 decimal_number().map(|s| Hoon::Sand("sd".to_string(), Noun::Atom(s))),
@@ -1545,7 +1728,6 @@ pub fn number<'src>(
         unicode,
         ud_number,
     ))
-    .labelled("Number")
 }
 
 pub fn rap_bits(bloq: usize, list: &[u64]) -> u64 {
@@ -1570,7 +1752,7 @@ pub fn constant_separator_hoon<'src>(
     hoon:        impl ParserExt<'src, Hoon>,
 ) -> impl Parser<'src, &'src str, Hoon, Err<'src>>
 {
-    just("$").to(Hoon::Rock("%tas".to_string(), Noun::Atom("0".to_string())))
+    just('$').to(Hoon::Rock("%tas".to_string(), Noun::Atom("0".to_string())))
         .or(symbol().map(|s| Hoon::Rock("%tas".to_string(), Noun::Atom(s))))
         .or(decimal_number().map(|n| Hoon::Rock("%ud".to_string(), Noun::Atom(n))))
         .or(just("&").to(Hoon::Rock("%f".to_string(), Noun::Atom("0".to_string()))))
@@ -1787,7 +1969,7 @@ pub fn one_hoon_closed_tall<'src>(
     gap()
     .ignore_then(hoon.clone())
     .then_ignore(gap())
-    .delimited_by(just("="), just("="))
+    .delimited_by(just('='), just('='))
 }
 
 pub fn one_spec_closed_wide<'src>(
@@ -1805,5 +1987,5 @@ pub fn one_spec_closed_tall<'src>(
     gap()
     .ignore_then(spec.clone())
     .then_ignore(gap())
-    .delimited_by(just("="), just("="))
+    .delimited_by(just('='), just('='))
 }

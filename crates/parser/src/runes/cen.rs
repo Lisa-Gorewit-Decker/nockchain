@@ -1,4 +1,3 @@
-use crate::lexer::tokens::Token;
 use crate::ast::hoon::*;
 use crate::utils::*;
 use chumsky::{
@@ -13,14 +12,14 @@ pub fn cen_runes_tall<'src>(
 {
     choice((
         just('_').ignore_then(cencab(hoon.clone())),
-        just(".").ignore_then(cendot(hoon.clone())),
-        just("^").ignore_then(cenket(hoon.clone())),
+        just('.').ignore_then(cendot(hoon.clone())),
+        just('^').ignore_then(cenket(hoon.clone())),
         just("+").ignore_then(cenlus(hoon.clone())),
-        just("-").ignore_then(cenhep(hoon.clone())),
+        just('-').ignore_then(cenhep(hoon.clone())),
         just(':').ignore_then(cencol(hoon.clone())),
         just('~').ignore_then(censig(hoon.clone())),
         just('*').ignore_then(centar(hoon.clone())),
-        just("=").ignore_then(centis(hoon.clone())),
+        just('=').ignore_then(centis(hoon.clone())),
     ))
 }
 
@@ -30,14 +29,14 @@ pub fn cen_runes_wide<'src>(
 {
     choice((
         just('_').ignore_then(cencab_wide(hoon_wide.clone())),
-        just(".").ignore_then(cendot_wide(hoon_wide.clone())),
-        just("^").ignore_then(cenket_wide(hoon_wide.clone())),
+        just('.').ignore_then(cendot_wide(hoon_wide.clone())),
+        just('^').ignore_then(cenket_wide(hoon_wide.clone())),
         just("+").ignore_then(cenlus_wide(hoon_wide.clone())),
-        just("-").ignore_then(cenhep_wide(hoon_wide.clone())),
+        just('-').ignore_then(cenhep_wide(hoon_wide.clone())),
         just(':').ignore_then(cencol_wide(hoon_wide.clone())),
         just('~').ignore_then(censig_wide(hoon_wide.clone())),
         just('*').ignore_then(centar_wide(hoon_wide.clone())),
-        just("=").ignore_then(centis_wide(hoon_wide.clone())),
+        just('=').ignore_then(centis_wide(hoon_wide.clone())),
     ))
 }
 
@@ -48,7 +47,7 @@ pub fn cen_spec_tall<'src>(
 ) -> impl Parser<'src, &'src str, Spec, Err<'src>>
 {
     choice((
-        just("-").ignore_then(cenhep_spec(hoon.clone(), spec.clone())),
+        just('-').ignore_then(cenhep_spec(hoon.clone(), spec.clone())),
         just("+").ignore_then(cenlus_spec(hoon.clone(), spec.clone())),
     ))
 }

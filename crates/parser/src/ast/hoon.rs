@@ -3,7 +3,7 @@ use std::collections::*;
 
 #[derive(serde::Serialize, PartialEq, Debug, Clone)]
 pub enum Noun {
-    Atom(String),
+    Atom(Atom),
     Cell(Box<Noun>, Box<Noun>),
 }
 
