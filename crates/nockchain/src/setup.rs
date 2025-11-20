@@ -14,6 +14,24 @@ use tracing::info;
 
 use crate::NounSlab;
 
+#[cfg(test)]
+struct TestArenaGuard {
+    _stack: nockvm::mem::NockStack,
+}
+
+#[cfg(test)]
+impl TestArenaGuard {
+    fn install() -> Self {
+        let stack = nockvm::mem::NockStack::new(1 << 16, 0);
+        Self { _stack: stack }
+    }
+}
+
+#[cfg(test)]
+impl Drop for TestArenaGuard {
+    fn drop(&mut self) {}
+}
+
 #[cfg(feature = "bazel_build")]
 pub static FAKENET_GENESIS_BLOCK: &[u8] = include_bytes!(env!("FAKENET_GENESIS_PATH"));
 
@@ -335,12 +353,13 @@ impl IntoSlab for BlockchainConstants {
 #[cfg(test)]
 mod tests {
     use ibig::UBig;
+    use nockvm::noun::NounHandle;
 
     use super::*;
 
-    fn tuple_len(noun: Noun) -> usize {
+    fn tuple_len<'a>(noun: &NounHandle<'a>) -> usize {
         let mut len = 0;
-        let mut cur = noun;
+        let mut cur = noun.clone();
         loop {
             if let Ok(cell) = cur.as_cell() {
                 len += 1;
@@ -433,10 +452,12 @@ mod tests {
 
     #[test]
     fn blockchain_constants_encode_in_new_v1_wrapper() {
+        let _arena = TestArenaGuard::install();
         let slab = BlockchainConstants::new().into_slab();
         let root = unsafe { *slab.root() };
+        let space = slab.noun_space();
 
-        let outer = root.as_cell().expect("outer tuple");
+        let outer = root.in_space(&space).as_cell().expect("outer tuple");
         let v1_phase_atom = outer.head().as_atom().expect("v1-phase should be atom");
         assert_eq!(
             v1_phase_atom.as_u64().expect("v1-phase as u64"),
@@ -497,7 +518,7 @@ mod tests {
 
         let v0_constants = input_fee_divisor_and_rest.tail();
         assert_eq!(
-            tuple_len(v0_constants),
+            tuple_len(&v0_constants),
             13,
             "v0 constants should be a 13-tuple"
         );
