@@ -31,6 +31,7 @@ pub fn dot_runes_wide<'src>(
         just('=').ignore_then(dottis_wide(hoon_wide.clone())),
         just('?').ignore_then(dotwut_wide(hoon_wide.clone())),
         just('^').ignore_then(dotket_wide(hoon_wide.clone(), spec_wide.clone())),
+        dotlus_irregular(hoon_wide.clone()),
     ))
 }
 
@@ -44,6 +45,15 @@ pub fn dotlus<'src>(
 }
 
 pub fn dotlus_wide<'src>(
+    hoon_wide:        impl ParserExt<'src, Hoon>,
+) -> impl Parser<'src, &'src str, Hoon, Err<'src>>
+{
+    hoon_wide.clone()
+    .delimited_by(just('('), just(')'))
+    .map(|p| Hoon::DotLus(Box::new(p)))
+}
+
+pub fn dotlus_irregular<'src>(
     hoon_wide:        impl ParserExt<'src, Hoon>,
 ) -> impl Parser<'src, &'src str, Hoon, Err<'src>>
 {

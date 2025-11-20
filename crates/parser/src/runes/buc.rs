@@ -651,36 +651,41 @@ pub fn buctis_irregular<'src>(
     spec_wide:   impl ParserExt<'src, Spec>,
 ) -> impl Parser<'src, &'src str, Spec, Err<'src>>
 {
-    symbol()  //  foo=bar
+    let symbol_tis_spec = symbol()
         .then_ignore(just('='))
         .then(spec_wide.clone())
-        .map(|(n, s)| Spec::BucTis(Skin::Term(n.to_string()), Box::new(s)))
-        .or(
-            just('=')
-            .ignore_then(symbol() // =foo=bar
-                            .then_ignore(just('='))
-                            .then(spec_wide.clone())
-                            .map(|(name, spec)| (Some(name), spec))
-                        .or(spec_wide.clone()
-                            .map(|spec| (None, spec)))      //   =bar
-                        .try_map(|(name, spec), span| {
-                            let auto = autoname(spec.clone());
-                            match auto {
-                                None => Err(Rich::custom(span, "cannot autoname")),
-                                Some(auto_term) => {
-                                    let term = match name {
-                                        None => auto_term.to_string(),
-                                        Some(n) => {
-                                            let new_name = format!("{}-{}", n, auto_term);
-                                            new_name
-                                        }
-                                    };
-                                    Ok(Spec::BucTis(Skin::Term(term), Box::new(spec.clone())))
-                                }
+        .map(|(n, s)| Spec::BucTis(Skin::Term(n.to_string()), Box::new(s)));
+
+    let tis_symbol_tis_spec =
+            symbol()
+                .then_ignore(just('='))
+                .then(spec_wide.clone())
+                .map(|(name, spec)| (Some(name), spec));
+
+    let tis_spec = spec_wide.clone().map(|spec| (None, spec));
+
+    choice((
+        symbol_tis_spec,  // foo=bar
+        just('=').ignore_then(choice((
+            tis_symbol_tis_spec,  // =foo=bar
+            tis_spec,             // =bar
+        ))).try_map(|(name, spec), span| {
+                let auto = autoname(spec.clone());
+                match auto {
+                    None => Err(Rich::custom(span, "cannot autoname")),
+                    Some(auto_term) => {
+                        let term = match name {
+                            None => auto_term.to_string(),
+                            Some(n) => {
+                                let new_name = format!("{}-{}", n, auto_term);
+                                new_name
                             }
-                        })
-                    )
-        )
+                        };
+                        Ok(Spec::BucTis(Skin::Term(term), Box::new(spec.clone())))
+                    }
+                }
+            })
+    ))
 }
 
 pub fn buccol_irregular<'src>(

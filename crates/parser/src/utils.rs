@@ -1257,7 +1257,7 @@ pub fn constant<'src>(
 
     let number_const =      // %123
         just("%")
-        .ignore_then(number_constant());
+        .ignore_then(number_rock());
 
     let name_const =      // %foo
         just("%")
@@ -1340,6 +1340,10 @@ pub fn symbol<'src>(
     .labelled("Term")
 }
 
+pub fn urx<'src>(
+) -> impl Parser<'src, &'src str, String, Err<'src>> {
+    regex(r"(?:[0-9a-z._-]|~[0-9a-fA-F]+\.)+").map(str::to_owned)
+}
 pub fn binary_number<'src>(
 ) -> impl Parser<'src, &'src str, String, Err<'src>>
 {
@@ -1413,52 +1417,6 @@ pub fn decimal_number<'src>(
             //     .expect("number overflow")
         })
         .labelled("Decimal Number")
-}
-
-pub fn number_constant<'src>(
-) -> impl Parser<'src, &'src str, Hoon, Err<'src>>
-{
-    let ud_number = decimal_number().map(|s|
-                        Hoon::Rock("ud".to_string(), Noun::Atom(s))
-                    );
-
-    let ux_number = hexadecimal_number().map(|s|
-                        Hoon::Rock("ux".to_string(), Noun::Atom(s))
-                 );
-
-    let ub_number = binary_number().map(|s|
-                        Hoon::Rock("ub".to_string(), Noun::Atom(s))
-                    );
-
-    let sd_number = //  signed: -num and --num
-        just('-').ignore_then(just('-').or_not())
-        .ignore_then(
-            choice((
-                decimal_number().map(|s| Hoon::Rock("sd".to_string(), Noun::Atom(s))),
-                hexadecimal_number().map(|s| Hoon::Rock("sx".to_string(), Noun::Atom(s))),
-                binary_number().map(|s| Hoon::Rock("sb".to_string(), Noun::Atom(s))),
-            ))
-        );
-
-    let unicode =
-        regex(r"~-~?[0-9a-fA-F]+\.?|~-[a-zA-Z]|~\[(?:~-[a-zA-Z0-9]+(?:\s+)?)+\]")
-        .map(|s: &str| {
-            Hoon::Rock("c".to_string(), Noun::Atom(s.to_string()))
-        });
-
-    let ui_number =
-        regex(r"0i[0-9]+").map(|s: &str| {
-            Hoon::Rock("ui".to_string(), Noun::Atom(s.to_string()))
-        });
-
-    choice((
-        sd_number,
-        ux_number,
-        ui_number,
-        ub_number,
-        unicode,
-        ud_number,
-    ))
 }
 
 pub fn weld<T: Clone>(a: impl AsRef<[T]>, b: impl AsRef<[T]>) -> Vec<T> {
@@ -1574,6 +1532,23 @@ pub fn posh(
     }
 }
 
+pub fn nuck<'src>(
+    rad: bool, // rock or sand
+) -> impl Parser<'src, &'src str, Hoon, Err<'src>>
+{
+    if rad {
+        choice((
+            symbol().map(|s| Hoon::Rock("tas".to_string(), Noun::Atom(s))),
+            number_rock(),
+        )).boxed()
+    } else {
+        choice((
+            symbol().map(|s| Hoon::Sand("tas".to_string(), Noun::Atom(s))),
+            number_sand(),
+        )).boxed()
+    }
+}
+
 pub fn path<'src>(
     hoon_wide: impl ParserExt<'src, Hoon>,
     wer: PathBuf,
@@ -1594,7 +1569,7 @@ pub fn path<'src>(
                     }),
                 just('$').to(Hoon::Sand("tas".to_string(), Noun::Atom("%$".to_string()))),
                 cord().map(|s| Hoon::Sand("t".to_string(), Noun::Atom(s))),
-                symbol().map(|s| Hoon::Sand("ta".to_string(), Noun::Atom(s))),  // add the other cases here...
+                nuck(false),
             ));
 
     let gasp = choice((
@@ -1685,39 +1660,39 @@ pub fn path<'src>(
 }
 
 pub fn number<'src>(
-) -> impl Parser<'src, &'src str, Hoon, Err<'src>>
+) -> impl Parser<'src, &'src str, (String, Noun), Err<'src>>
 {
-    let ud_number = decimal_number().map(|s|
-                        Hoon::Sand("ud".to_string(), Noun::Atom(s))
-                    );
+    let ud_number = decimal_number()
+                    .map(|s|
+                        ("ud".to_string(), Noun::Atom(s)));
 
-    let ux_number = hexadecimal_number().map(|s|
-                        Hoon::Sand("ux".to_string(), Noun::Atom(s))
-                 );
+    let ux_number = hexadecimal_number()
+                    .map(|s|
+                        ("ux".to_string(), Noun::Atom(s)));
 
-    let ub_number = binary_number().map(|s|
-                        Hoon::Sand("ub".to_string(), Noun::Atom(s))
-                    );
+    let ub_number = binary_number()
+                    .map(|s|
+                        ("ub".to_string(), Noun::Atom(s)));
 
     let sd_number = //  signed: -num and --num
         just('-').ignore_then(just('-').or_not())
         .ignore_then(
             choice((
-                decimal_number().map(|s| Hoon::Sand("sd".to_string(), Noun::Atom(s))),
-                hexadecimal_number().map(|s| Hoon::Sand("sx".to_string(), Noun::Atom(s))),
-                binary_number().map(|s| Hoon::Sand("sb".to_string(), Noun::Atom(s))),
+                decimal_number().map(|s| ("sd".to_string(), Noun::Atom(s))),
+                hexadecimal_number().map(|s| ("sx".to_string(), Noun::Atom(s))),
+                binary_number().map(|s| ("sb".to_string(), Noun::Atom(s))),
             ))
         );
 
-    let unicode =
-        regex(r"~-~?[0-9a-fA-F]+\.?|~-[a-zA-Z]|~\[(?:~-[a-zA-Z0-9]+(?:\s+)?)+\]")
-        .map(|s: &str| {
-            Hoon::Sand("c".to_string(), Noun::Atom(s.to_string()))
-        });
+    // let unicode =
+    //     regex(r"~-~?[0-9a-fA-F]+\.?|~-[a-zA-Z]|~\[(?:~-[a-zA-Z0-9]+(?:\s+)?)+\]")
+    //     .map(|s: &str| {
+    //         ("c".to_string(), Noun::Atom(s.to_string()))
+    //     });
 
     let ui_number =
         regex(r"0i[0-9]+").map(|s: &str| {
-            Hoon::Sand("ui".to_string(), Noun::Atom(s.to_string()))
+            ("ui".to_string(), Noun::Atom(s.to_string()))
         });
 
     choice((
@@ -1725,9 +1700,20 @@ pub fn number<'src>(
         ux_number,
         ui_number,
         ub_number,
-        unicode,
         ud_number,
     ))
+}
+
+pub fn number_sand<'src>(
+) -> impl Parser<'src, &'src str, Hoon, Err<'src>>
+{
+    number().map(|(a, b)| Hoon::Sand(a, b))
+}
+
+pub fn number_rock<'src>(
+) -> impl Parser<'src, &'src str, Hoon, Err<'src>>
+{
+    number().map(|(a, b)| Hoon::Rock(a, b))
 }
 
 pub fn rap_bits(bloq: usize, list: &[u64]) -> u64 {
@@ -1746,20 +1732,290 @@ pub fn rap_bits(bloq: usize, list: &[u64]) -> u64 {
     acc as u64
 }
 
+// decimal without leading 0 and without dots.
+//
+pub fn decimal_without_dots<'src>(
+) -> impl Parser<'src, &'src str, String, Err<'src>>
+{
+    regex(r"(0|[1-9][0-9]*)").map(str::to_owned)
+}
+
+// decimal with leading 0 and without dots.
+//
+pub fn leading_zero_decimal_without_dots<'src>(
+) -> impl Parser<'src, &'src str, String, Err<'src>>
+{
+    regex(r"([0-9]*)").map(str::to_owned)
+}
+
+pub fn absolute_date<'src>(
+) -> impl Parser<'src, &'src str, Hoon, Err<'src>>
+{
+    let year = decimal_without_dots()
+            .then(just('-')
+                .to(false)
+                .or_not()
+                .map(|opt| opt.unwrap_or(true)))
+            .map(|(a, b)| (b, a)); // (bool, year_str)
+    let month =  just('.')
+                .ignore_then(regex(r"(1[0-2]|[1-9])")
+                .map(str::to_owned)); // month_str
+    let day =  just('.')
+                .ignore_then(regex(r"([1-9][0-9]*)")
+                .map(str::to_owned)); // day_str
+    let hour_min_secs_fractions =
+             just("..")
+                .ignore_then(leading_zero_decimal_without_dots()
+                            .then_ignore(just("."))
+                            .then(leading_zero_decimal_without_dots())
+                            .then_ignore(just("."))
+                            .then(leading_zero_decimal_without_dots()))
+                .then(just("..")
+                    .ignore_then(
+                        regex(r"[0-9a-fA-F]{4}")
+                        .separated_by(just("."))
+                        .at_least(1)
+                        .collect::<Vec<_>>()
+                    )
+                    .or_not()
+                    .map(|opt| opt.unwrap_or(vec![]))
+                )
+                .or_not()
+                .map(|opt| {
+                    opt.unwrap_or((
+                        (("0".to_string(), "0".to_string()), "0".to_string()),
+                        Vec::new(),
+                    ))
+                });
+
+    year
+    .then(month)
+    .then(day)
+    .then(hour_min_secs_fractions)
+    .to(Hoon::Sand("%da".to_string(), Noun::Atom("foo".to_string())))
+}
+
+pub fn relative_date<'src>(
+) -> impl Parser<'src, &'src str, Hoon, Err<'src>>
+{
+    one_of("dhms")
+        .ignore_then(decimal_without_dots())
+        .separated_by(just('.'))
+        .at_least(1)
+        .then(just("..")
+            .ignore_then(
+                regex(r"[0-9a-fA-F]{4}")
+                .separated_by(just('.'))
+                .at_least(1)
+                .collect::<Vec<_>>()
+            )
+            .or_not()
+            .map(|opt| opt.unwrap_or(vec![]))
+        )
+    .to(Hoon::Sand("%dr".to_string(), Noun::Atom("foo".to_string())))
+}
+
+/// Prefix syllables (Hoon `sis`), 256 entries × 3 bytes.
+pub const SIS: [[u8; 3]; 256] = [
+    *b"doz", *b"mar", *b"bin", *b"wan", *b"sam", *b"lit", *b"sig", *b"hid",
+    *b"fid", *b"lis", *b"sog", *b"dir", *b"wac", *b"sab", *b"wis", *b"sib",
+    *b"rig", *b"sol", *b"dop", *b"mod", *b"fog", *b"lid", *b"hop", *b"dar",
+    *b"dor", *b"lor", *b"hod", *b"fol", *b"rin", *b"tog", *b"sil", *b"mir",
+    *b"hol", *b"pas", *b"lac", *b"rov", *b"liv", *b"dal", *b"sat", *b"lib",
+    *b"tab", *b"han", *b"tic", *b"pid", *b"tor", *b"bol", *b"fos", *b"dot",
+    *b"los", *b"dil", *b"for", *b"pil", *b"ram", *b"tir", *b"win", *b"tad",
+    *b"bic", *b"dif", *b"roc", *b"wid", *b"bis", *b"das", *b"mid", *b"lop",
+    *b"ril", *b"nar", *b"dap", *b"mol", *b"san", *b"loc", *b"nov", *b"sit",
+    *b"nid", *b"tip", *b"sic", *b"rop", *b"wit", *b"nat", *b"pan", *b"min",
+    *b"rit", *b"pod", *b"mot", *b"tam", *b"tol", *b"sav", *b"pos", *b"nap",
+    *b"nop", *b"som", *b"fin", *b"fon", *b"ban", *b"mor", *b"wor", *b"sip",
+    *b"ron", *b"nor", *b"bot", *b"wic", *b"soc", *b"wat", *b"dol", *b"mag",
+    *b"pic", *b"dav", *b"bid", *b"bal", *b"tim", *b"tas", *b"mal", *b"lig",
+    *b"siv", *b"tag", *b"pad", *b"sal", *b"div", *b"dac", *b"tan", *b"sid",
+    *b"fab", *b"tar", *b"mon", *b"ran", *b"nis", *b"wol", *b"mis", *b"pal",
+    *b"las", *b"dis", *b"map", *b"rab", *b"tob", *b"rol", *b"lat", *b"lon",
+    *b"nod", *b"nav", *b"fig", *b"nom", *b"nib", *b"pag", *b"sop", *b"ral",
+    *b"bil", *b"had", *b"doc", *b"rid", *b"moc", *b"pac", *b"rav", *b"rip",
+    *b"fal", *b"tod", *b"til", *b"tin", *b"hap", *b"mic", *b"fan", *b"pat",
+    *b"tac", *b"lab", *b"mog", *b"sim", *b"son", *b"pin", *b"lom", *b"ric",
+    *b"tap", *b"fir", *b"has", *b"bos", *b"bat", *b"poc", *b"hac", *b"tid",
+    *b"hav", *b"sap", *b"lin", *b"dib", *b"hos", *b"dab", *b"bit", *b"bar",
+    *b"rac", *b"par", *b"lod", *b"dos", *b"bor", *b"toc", *b"hil", *b"mac",
+    *b"tom", *b"dig", *b"fil", *b"fas", *b"mit", *b"hob", *b"har", *b"mig",
+    *b"hin", *b"rad", *b"mas", *b"hal", *b"rag", *b"lag", *b"fad", *b"top",
+    *b"mop", *b"hab", *b"nil", *b"nos", *b"mil", *b"fop", *b"fam", *b"dat",
+    *b"nol", *b"din", *b"hat", *b"nac", *b"ris", *b"fot", *b"rib", *b"hoc",
+    *b"nim", *b"lar", *b"fit", *b"wal", *b"rap", *b"sar", *b"nal", *b"mos",
+    *b"lan", *b"don", *b"dan", *b"lad", *b"dov", *b"riv", *b"bac", *b"pol",
+    *b"lap", *b"tal", *b"pit", *b"nam", *b"bon", *b"ros", *b"ton", *b"fod",
+    *b"pon", *b"sov", *b"noc", *b"sor", *b"lav", *b"mat", *b"mip", *b"fip",
+];
+
+/// You must fill this with the actual 256 suffix syllables.
+pub const DEX: [[u8; 3]; 256] = [
+    *b"zod", *b"nec", *b"bud", *b"wes", *b"sev", *b"per", *b"sut", *b"let", *b"ful", *b"pen", *b"syt", *b"dur", *b"wep", *b"ser", *b"wyl", *b"sun", 
+    *b"ryp", *b"syx", *b"dyr", *b"nup", *b"heb", *b"peg", *b"lup", *b"dep", *b"dys", *b"put", *b"lug", *b"hec", *b"ryt", *b"tyv", *b"syd", *b"nex", 
+    *b"lun", *b"mep", *b"lut", *b"sep", *b"pes", *b"del", *b"sul", *b"ped", *b"tem", *b"led", *b"tul", *b"met", *b"wen", *b"byn", *b"hex", *b"feb", 
+    *b"pyl", *b"dul", *b"het", *b"mev", *b"rut", *b"tyl", *b"wyd", *b"tep", *b"bes", *b"dex", *b"sef", *b"wyc", *b"bur", *b"der", *b"nep", *b"pur", 
+    *b"rys", *b"reb", *b"den", *b"nut", *b"sub", *b"pet", *b"rul", *b"syn", *b"reg", *b"tyd", *b"sup", *b"sem", *b"wyn", *b"rec", *b"meg", *b"net", 
+    *b"sec", *b"mul", *b"nym", *b"tev", *b"web", *b"sum", *b"mut", *b"nyx", *b"rex", *b"teb", *b"fus", *b"hep", *b"ben", *b"mus", *b"wyx", *b"sym", 
+    *b"sel", *b"ruc", *b"dec", *b"wex", *b"syr", *b"wet", *b"dyl", *b"myn", *b"mes", *b"det", *b"bet", *b"bel", *b"tux", *b"tug", *b"myr", *b"pel", 
+    *b"syp", *b"ter", *b"meb", *b"set", *b"dut", *b"deg", *b"tex", *b"sur", *b"fel", *b"tud", *b"nux", *b"rux", *b"ren", *b"wyt", *b"nub", *b"med", 
+    *b"lyt", *b"dus", *b"neb", *b"rum", *b"tyn", *b"seg", *b"lyx", *b"pun", *b"res", *b"red", *b"fun", *b"rev", *b"ref", *b"mec", *b"ted", *b"rus", 
+    *b"bex", *b"leb", *b"dux", *b"ryn", *b"num", *b"pyx", *b"ryg", *b"ryx", *b"fep", *b"tyr", *b"tus", *b"tyc", *b"leg", *b"nem", *b"fer", *b"mer", 
+    *b"ten", *b"lus", *b"nus", *b"syl", *b"tec", *b"mex", *b"pub", *b"rym", *b"tuc", *b"fyl", *b"lep", *b"deb", *b"ber", *b"mug", *b"hut", *b"tun", 
+    *b"byl", *b"sud", *b"pem", *b"dev", *b"lur", *b"def", *b"bus", *b"bep", *b"run", *b"mel", *b"pex", *b"dyt", *b"byt", *b"typ", *b"lev", *b"myl", 
+    *b"wed", *b"duc", *b"fur", *b"fex", *b"nul", *b"luc", *b"len", *b"ner", *b"lex", *b"rup", *b"ned", *b"lec", *b"ryd", *b"lyd", *b"fen", *b"wel", 
+    *b"nyd", *b"hus", *b"rel", *b"rud", *b"nes", *b"hes", *b"fet", *b"des", *b"ret", *b"dun", *b"ler", *b"nyr", *b"seb", *b"hul", *b"ryl", *b"lud", 
+    *b"rem", *b"lys", *b"fyn", *b"wer", *b"ryc", *b"sug", *b"nys", *b"nyl", *b"lyn", *b"dyn", *b"dem", *b"lux", *b"fed", *b"sed", *b"bec", *b"mun", 
+    *b"lyr", *b"tes", *b"mud", *b"nyt", *b"byr", *b"sen", *b"weg", *b"fyr", *b"mur", *b"tel", *b"rep", *b"teg", *b"pec", *b"nel", *b"nev", *b"fes"
+];
+
+/// Fetch prefix syllable (Hoon ++tos)
+pub fn tos(i: u8) -> &'static [u8; 3] {
+    &SIS[i as usize]
+}
+
+/// Fetch suffix syllable (Hoon ++tod)
+pub fn tod(i: u8) -> &'static [u8; 3] {
+    &DEX[i as usize]
+}
+
+/// Linear prefix search (Hoon ++ins)
+pub fn ins(a: &[u8]) -> Option<u8> {
+    if a.len() != 3 {
+        return None;
+    }
+    let a = [a[0], a[1], a[2]];
+    for i in 0u8..=255 {
+        if SIS[i as usize] == a {
+            return Some(i);
+        }
+    }
+    None
+}
+
+/// Linear suffix search (Hoon ++ind)
+pub fn ind(a: &[u8]) -> Option<u8> {
+    if a.len() != 3 {
+        return None;
+    }
+    let a = [a[0], a[1], a[2]];
+    for i in 0u8..=255 {
+        if DEX[i as usize] == a {
+            return Some(i);
+        }
+    }
+    None
+}
+
+pub fn phonemic_name<'src>(
+) -> impl Parser<'src, &'src str, Hoon, Err<'src>>
+{
+    let tip = regex(r"[a-z]{3}")
+        .try_map(|s: &str, span| {
+            match ins(s.as_bytes()) {
+                Some(i) => Ok(i),
+                None => Err(Rich::custom(span, format!("invalid prefix syllable '{s}'"))),
+            }
+        });
+   let tiq = regex(r"[a-z]{3}")
+        .try_map(|s: &str, span| {
+            match ind(s.as_bytes()) {
+                Some(i) => Ok(i),
+                None => Err(Rich::custom(span, format!("invalid suffix syllable '{s}'"))),
+            }
+        });
+
+    let tep = regex(r"[a-z]{3}")
+        .try_map(|s: &str, span| {
+            if s == "doz" {
+                return Err(Rich::custom(span, "suffix 'doz' is forbidden"));
+            }
+            match ind(s.as_bytes()) {
+                Some(i) => Ok(i),
+                None => Err(Rich::custom(span, format!("invalid suffix syllable '{s}'"))),
+            }
+        });
+
+    let hef = tip.then(tiq.clone()); // check if atom is not zero for hef
+    let hif = hef.clone();
+    let huf =  hef.clone()
+                .then(just('-')
+                    .ignore_then(hif.clone())
+                    .repeated()
+                    .at_most(3));
+    let hyf =  hif.clone()
+                .separated_by(just('-'))
+                .exactly(4);
+    let other = huf
+                .then(just("--").ignore_then(gap().or_not())
+                        .ignore_then(hyf));
+    let planet_moon = hef
+                    .then(
+                        just('-')
+                        .ignore_then(hif.clone())
+                        .repeated()
+                        .at_least(1)
+                        .at_most(4)
+                    );
+    let star = tep.then(tiq.clone());
+
+    let galaxy = tiq.clone();
+
+    choice((other.ignored(),
+            planet_moon.ignored(),
+            star.ignored(),
+            galaxy.ignored(),
+        )).to(Hoon::Sand("p".to_string(), Noun::Atom("foo".to_string())))
+}
+
+pub fn twid<'src>(
+) -> impl Parser<'src, &'src str, Hoon, Err<'src>>
+{
+    choice((
+        just('0')
+            .ignore_then(regex(r"[0-9a-v]+").map(str::to_owned))
+            .map(|s| Hoon::Sand("%$".to_string(), Noun::Atom(s))),
+        crub(),
+    ))
+}
+pub fn crub<'src>(
+) -> impl Parser<'src, &'src str, Hoon, Err<'src>>
+{
+    choice((
+            absolute_date(),
+            relative_date(),
+            phonemic_name(),
+            just('.')
+                .ignore_then(regex(r"[0-9a-z._~\-]+").map(str::to_owned))
+                .map(|s| Hoon::Sand("%ta".to_string(), Noun::Atom(s))),
+            just('~')
+                .ignore_then(urx())
+                .map(|s| Hoon::Sand("%t".to_string(), Noun::Atom(s))),
+            just('-')
+                .ignore_then(urx())
+                .map(|s| Hoon::Sand("%c".to_string(), Noun::Atom(s))),
+    ))
+}
+
 //  +rump: name/hoon or name+hoon
 //
 pub fn constant_separator_hoon<'src>(
     hoon:        impl ParserExt<'src, Hoon>,
 ) -> impl Parser<'src, &'src str, Hoon, Err<'src>>
 {
-    just('$').to(Hoon::Rock("%tas".to_string(), Noun::Atom("0".to_string())))
-        .or(symbol().map(|s| Hoon::Rock("%tas".to_string(), Noun::Atom(s))))
-        .or(decimal_number().map(|n| Hoon::Rock("%ud".to_string(), Noun::Atom(n))))
-        .or(just("&").to(Hoon::Rock("%f".to_string(), Noun::Atom("0".to_string()))))
-        .or(just("|").to(Hoon::Rock("%f".to_string(), Noun::Atom("1".to_string()))))
+    choice((
+        just('$').to(Hoon::Rock("%tas".to_string(), Noun::Atom("0".to_string()))),
+        symbol().map(|s| Hoon::Rock("%tas".to_string(), Noun::Atom(s))),
+        decimal_number().map(|n| Hoon::Rock("%ud".to_string(), Noun::Atom(n))),
+        just("&").to(Hoon::Rock("%f".to_string(), Noun::Atom("0".to_string()))),
+        just("|").to(Hoon::Rock("%f".to_string(), Noun::Atom("1".to_string()))),
+        just("~").to(Hoon::Bust(BaseType::Null)),
+    ))
     .then(just("+").or(just("/"))
             .ignore_then(hoon.clone()))
-    .map(|(rock, hoon)| Hoon::Pair(Box::new(rock), Box::new(hoon)))
+    .map(|(p, hoon)| Hoon::Pair(Box::new(p), Box::new(hoon)))
 }
 
 pub fn tic_cell_construction<'src>(

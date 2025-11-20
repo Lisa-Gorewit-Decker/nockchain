@@ -39,7 +39,6 @@ fn spec_parser<'src>(
 ) -> impl Parser<'src, &'src str, Spec, Err<'src>> + Clone
 {
     choice((
-        just('!').to(Spec::Loop("dsads".to_string())),
         rune_branch!(
             "$",
             buc_spec_tall(hoon.clone(), spec.clone())
@@ -58,7 +57,6 @@ fn spec_wide_parser<'src>(
 ) -> impl Parser<'src, &'src str, Spec, Err<'src>> + Clone
 {
     let parsers = vec![
-        just("!").to(Spec::Loop("dsads".to_string())).boxed(),
         just('$').ignore_then(buc_spec_wide(hoon_wide.clone(), spec_wide.clone())).boxed(),
         buccab_spec_irregular(hoon_wide.clone()).boxed(),  //  _p
         bucmic_spec_irregular(hoon_wide.clone()).boxed(),  //  ,p
@@ -72,6 +70,7 @@ fn spec_wide_parser<'src>(
         just('?').to(Spec::Base(BaseType::Flag)).boxed(),
         just('~').to(Spec::Base(BaseType::Null)).boxed(),
         just('*').to(Spec::Base(BaseType::Noun)).boxed(),
+        just("!!").to(Spec::Base(BaseType::Void)).boxed(),
         just("%~").to(Spec::Leaf("%n".to_string(), "0".to_string())).boxed(),
         just("%|").to(Spec::Leaf("%f".to_string(), "1".to_string())).boxed(),
         just("%&").to(Spec::Leaf("%f".to_string(), "0".to_string())).boxed(),
@@ -116,10 +115,12 @@ fn hoon_wide_parser<'src>(
                     miccol_irregular(hoon_wide.clone()).boxed(), //  :(a b .. z)
                 ))).boxed(),
 
-        just('~').ignore_then(
+        just('~')
+            .ignore_then(
             choice((
                     sig_runes_wide(hoon_wide.clone()),
-                    censig_irregular(hoon_wide.clone()).boxed(),  //  ~(a b c)
+                    censig_irregular(hoon_wide.clone()),  //  ~(a b c)
+                    twid(),
                 ))).boxed(),
 
         rune_branch!(
@@ -162,15 +163,11 @@ fn hoon_wide_parser<'src>(
         ketcol_irregular(spec_wide.clone()).boxed(),   //  ,p
         centis_irregular(hoon_wide.clone()).boxed(),   //  a(b c, d e, f g)
         tell(hoon_wide.clone()).boxed(),  // <foo>
-        number().boxed(),
+        number_sand().boxed(),
         wing().boxed(),
         function_call(hoon_wide.clone()).boxed(),      //  (a b)
         constant().boxed(),
         cord().map(|s| Hoon::Sand("%t".to_string(), Noun::Atom(s))).boxed(),
-        regex(r"~\d{4}\.\d{1,2}\.\d{1,2}(?:\.\.\d+\.\d+\.\d+\.\.[0-9a-f]+)?")
-            .map(|s: &str| Hoon::Sand("%da".to_string(), Noun::Atom(s.to_string()))).boxed(),
-        regex(r"~[dhms]\d+(?:\.[dhms]\d+)*")
-          .map(|s: &str| Hoon::Sand("%dr".to_string(), Noun::Atom(s.to_string()))).boxed(),
         just('~').to(Hoon::Bust(BaseType::Null)).boxed(),
         just("%.y").to(Hoon::Rock("%f".to_string(), Noun::Atom("0".to_string()))).boxed(),
         just("%.n").to(Hoon::Rock("%f".to_string(), Noun::Atom("1".to_string()))).boxed(),
@@ -358,7 +355,7 @@ fn main() {
                 Report::build(ReportKind::Error, ((), err.span().into_range()))
                     .with_config(ariadne::Config::new().with_index_type(ariadne::IndexType::Byte))
                     .with_code(3)
-                    .with_message(err.to_string())
+                    // .with_message(err.to_string())
                     .with_label(
                         Label::new(((), err.span().into_range()))
                             .with_message(err.reason().to_string())
