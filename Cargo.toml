@@ -1,7 +1,7 @@
 resolver = "2"
 
 [workspace]
-members = ["crates/nockchain-api", "crates/nockchain-explorer-tui", "crates/nockchain-peek", "crates/equix-latency", "crates/hoon", "crates/hoonc", "crates/kernels", "crates/nockapp", "crates/nockapp-grpc", "crates/nockapp-grpc-proto", "crates/nockchain", "crates/nockchain-libp2p-io", "crates/nockchain-math", "crates/nockchain-types", "crates/nockchain-wallet", "crates/raw-tx-checker", "crates/nockvm/rust/ibig", "crates/nockvm/rust/murmur3", "crates/nockvm/rust/nockvm", "crates/nockvm/rust/nockvm_macros", "crates/noun-serde", "crates/noun-serde-derive", "crates/zkvm-jetpack"]
+members = ["crates/chaff", "crates/habit", "crates/nockchain-api", "crates/nockchain-explorer-tui", "crates/nockchain-peek", "crates/equix-latency", "crates/hoon", "crates/hoonc", "crates/kernels", "crates/nockapp", "crates/nockapp-grpc", "crates/nockapp-grpc-proto", "crates/nockchain", "crates/nockchain-libp2p-io", "crates/nockchain-math", "crates/nockchain-types", "crates/nockchain-wallet", "crates/raw-tx-checker", "crates/nockvm/rust/ibig", "crates/nockvm/rust/murmur3", "crates/nockvm/rust/nockvm", "crates/nockvm/rust/nockvm_macros", "crates/noun-serde", "crates/noun-serde-derive", "crates/zkvm-jetpack"]
 
 [workspace.package]
 version = "0.1.0"
@@ -93,7 +93,9 @@ reqwest = { version = "0.12", default-features = false, features = [
     "http2",
     "charset",
 ] }
+rusqlite = { version = "0.32.1", features = ["bundled"] }
 rkyv = "0.8.10"
+rustix = { version = "0.38", features = ["fs", "mm"] }
 rustls = "0.23.0"
 rustls-pemfile = "2.0.0"
 serde = "1.0.217"
@@ -158,6 +160,12 @@ x25519-dalek = { version = "2.0.0", features = [
 ], default-features = false }
 x509-parser = "0.17.0"
 yaque = "0.6.6"
+
+[workspace.dependencies.chaff]
+path = "crates/chaff"
+
+[workspace.dependencies.habit]
+path = "crates/habit"
 
 [workspace.dependencies.hoon]
 path = "crates/hoon"

@@ -1,5 +1,4 @@
 use std::collections::{BTreeMap, HashMap};
-use std::convert::TryFrom;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -10,7 +9,7 @@ use nockchain_math::noun_ext::NounMathExt;
 use nockchain_math::structs::HoonMapIter;
 use nockchain_types::tx_engine::common::{BlockHeight, Hash, Name};
 use nockchain_types::tx_engine::v0::{Lock, NoteV0, RawTx};
-use nockvm::noun::{Noun, SIG};
+use nockvm::noun::{Noun, NounAllocator, NounSpace, SIG};
 use noun_serde::{NounDecode, NounDecodeError, NounEncode};
 use tokio::sync::{RwLock, Semaphore};
 use tracing::{debug, info, warn};
@@ -476,10 +475,11 @@ impl BlockExplorerCache {
             .ok_or(NockAppGrpcError::PeekFailed)?;
 
         let result_noun = unsafe { result.root() };
+        let space = result.noun_space();
 
         // Decode Option<Option<(BlockHeight, Hash)>>
         let opt: Option<Option<(BlockHeight, Hash)>> =
-            NounDecode::from_noun(&result_noun).map_err(NockAppGrpcError::NounDecode)?;
+            NounDecode::from_noun(&result_noun, &space).map_err(NockAppGrpcError::NounDecode)?;
 
         let (height, hash) = opt.flatten().ok_or(NockAppGrpcError::PeekReturnedNoData)?;
 
@@ -536,13 +536,16 @@ impl BlockExplorerCache {
             .ok_or(NockAppGrpcError::PeekFailed)?;
 
         let result_noun = unsafe { result.root() };
+        let space = result.noun_space();
         let opt: Option<Option<Vec<BlockRangeEntryNoun>>> =
-            NounDecode::from_noun(&result_noun).map_err(NockAppGrpcError::NounDecode)?;
+            NounDecode::from_noun(&result_noun, &space).map_err(NockAppGrpcError::NounDecode)?;
         let entries = opt.flatten().ok_or(NockAppGrpcError::PeekReturnedNoData)?;
 
         let mut parsed = Vec::new();
         for entry in entries {
-            parsed.push(BlockEntryWithTxs::try_from(entry).map_err(NockAppGrpcError::NounDecode)?);
+            parsed.push(
+                BlockEntryWithTxs::from_raw(entry, &space).map_err(NockAppGrpcError::NounDecode)?,
+            );
         }
 
         parsed
@@ -742,11 +745,12 @@ impl BlockExplorerCache {
             .ok_or(NockAppGrpcError::PeekFailed)?;
 
         let result_noun = unsafe { result.root() };
+        let space = result.noun_space();
 
         // Decode Option<Option<Vec<(height, block-id, page, txs)>>>
         // We need to extract fields from the page and txs
         let opt: Option<Option<Vec<BlockRangeEntryNoun>>> =
-            NounDecode::from_noun(&result_noun).map_err(NockAppGrpcError::NounDecode)?;
+            NounDecode::from_noun(&result_noun, &space).map_err(NockAppGrpcError::NounDecode)?;
 
         let entries = opt.flatten().ok_or(NockAppGrpcError::PeekReturnedNoData)?;
         if entries.is_empty() {
@@ -754,7 +758,7 @@ impl BlockExplorerCache {
         }
         let entries: Vec<BlockRangeEntry> = entries
             .into_iter()
-            .map(BlockRangeEntry::try_from)
+            .map(|entry| BlockRangeEntry::from_raw(entry, &space))
             .collect::<std::result::Result<Vec<_>, _>>()
             .map_err(NockAppGrpcError::NounDecode)?;
 
@@ -816,17 +820,18 @@ struct PageNoun {
     _msg: Noun,
 }
 
-impl TryFrom<BlockRangeEntryNoun> for BlockRangeEntry {
-    type Error = NounDecodeError;
-
-    fn try_from(raw: BlockRangeEntryNoun) -> std::result::Result<Self, Self::Error> {
+impl BlockRangeEntry {
+    fn from_raw(
+        raw: BlockRangeEntryNoun,
+        space: &NounSpace,
+    ) -> std::result::Result<Self, NounDecodeError> {
         let BlockRangeEntryNoun { height, tail } = raw;
         let BlockRangeEntryTail { block_id, tail } = tail;
         let PageAndTxs { page, txs } = tail;
 
         let parent_id = page.parent;
-        let timestamp = u64::from_noun(&page.timestamp)?;
-        let tx_ids = extract_tx_ids_from_map(&txs)?;
+        let timestamp = u64::from_noun(&page.timestamp, space)?;
+        let tx_ids = extract_tx_ids_from_map(&txs, space)?;
 
         Ok(Self {
             height: height.0 .0,
@@ -841,20 +846,21 @@ impl TryFrom<BlockRangeEntryNoun> for BlockRangeEntry {
 /// Extract transaction IDs from transactions map (z-map tx-id tx)
 fn extract_tx_ids_from_map(
     txs_noun: &Noun,
+    space: &NounSpace,
 ) -> std::result::Result<Vec<Hash>, noun_serde::NounDecodeError> {
     // Check if it's an empty map (atom 0)
-    if let Ok(atom) = txs_noun.as_atom() {
+    if let Ok(atom) = txs_noun.in_space(space).as_atom() {
         if atom.as_u64()? == 0 {
             return Ok(Vec::new());
         }
     }
 
     // Iterate over the z-map and collect keys (tx-ids)
-    let tx_ids: Vec<Hash> = HoonMapIter::from(*txs_noun)
+    let tx_ids: Vec<Hash> = HoonMapIter::new(*txs_noun, space)
         .filter(|entry| entry.is_cell())
         .filter_map(|entry| {
-            let [key, _value] = entry.uncell().ok()?;
-            Hash::from_noun(&key).ok()
+            let [key, _value] = entry.uncell(space).ok()?;
+            Hash::from_noun(&key, space).ok()
         })
         .collect();
 
@@ -866,17 +872,18 @@ struct BlockEntryWithTxs {
     txs: Vec<(Hash, TxV0)>,
 }
 
-impl TryFrom<BlockRangeEntryNoun> for BlockEntryWithTxs {
-    type Error = NounDecodeError;
-
-    fn try_from(raw: BlockRangeEntryNoun) -> std::result::Result<Self, Self::Error> {
+impl BlockEntryWithTxs {
+    fn from_raw(
+        raw: BlockRangeEntryNoun,
+        space: &NounSpace,
+    ) -> std::result::Result<Self, NounDecodeError> {
         let BlockRangeEntryNoun { height, tail } = raw;
         let BlockRangeEntryTail { block_id, tail } = tail;
         let PageAndTxs { page, txs } = tail;
 
         let parent_id = page.parent;
-        let timestamp = u64::from_noun(&page.timestamp)?;
-        let txs_full = extract_transactions_from_map(&txs)?;
+        let timestamp = u64::from_noun(&page.timestamp, space)?;
+        let txs_full = extract_transactions_from_map(&txs, space)?;
         let tx_ids = txs_full.iter().map(|(hash, _)| hash.clone()).collect();
 
         Ok(Self {
@@ -894,21 +901,24 @@ impl TryFrom<BlockRangeEntryNoun> for BlockEntryWithTxs {
 
 fn extract_transactions_from_map(
     txs_noun: &Noun,
+    space: &NounSpace,
 ) -> std::result::Result<Vec<(Hash, TxV0)>, noun_serde::NounDecodeError> {
-    if let Ok(atom) = txs_noun.as_atom() {
+    if let Ok(atom) = txs_noun.in_space(space).as_atom() {
         if atom.as_u64()? == 0 {
             return Ok(Vec::new());
         }
     }
 
     let mut txs = Vec::new();
-    for entry in HoonMapIter::from(*txs_noun) {
+    for entry in HoonMapIter::new(*txs_noun, space) {
         if !entry.is_cell() {
             continue;
         }
-        let [key, value] = entry.uncell().map_err(|_| NounDecodeError::ExpectedCell)?;
-        let hash = Hash::from_noun(&key)?;
-        let tx = TxV0::from_noun(&value)?;
+        let [key, value] = entry
+            .uncell(space)
+            .map_err(|_| NounDecodeError::ExpectedCell)?;
+        let hash = Hash::from_noun(&key, space)?;
+        let tx = TxV0::from_noun(&value, space)?;
         txs.push((hash, tx));
     }
 
@@ -930,18 +940,22 @@ struct TxOutput {
 }
 
 impl NounDecode for TxV0 {
-    fn from_noun(noun: &Noun) -> Result<Self, NounDecodeError> {
-        let cell = noun.as_cell()?;
-        let version = u64::from_noun(&cell.head())?;
+    fn from_noun(noun: &Noun, space: &NounSpace) -> Result<Self, NounDecodeError> {
+        let cell = noun.in_space(space).as_cell()?;
+        let version_noun = cell.head().noun();
+        let version = u64::from_noun(&version_noun, space)?;
 
         let tail = cell.tail();
         let cell = tail.as_cell()?;
-        let raw_tx = RawTx::from_noun(&cell.head())?;
+        let raw_tx_noun = cell.head().noun();
+        let raw_tx = RawTx::from_noun(&raw_tx_noun, space)?;
 
         let tail = cell.tail();
         let cell = tail.as_cell()?;
-        let total_size = u64::from_noun(&cell.head())?;
-        let outputs = decode_outputs(&cell.tail())?;
+        let total_noun = cell.head().noun();
+        let total_size = u64::from_noun(&total_noun, space)?;
+        let outputs_noun = cell.tail().noun();
+        let outputs = decode_outputs(&outputs_noun, space)?;
 
         Ok(Self {
             version,
@@ -952,22 +966,28 @@ impl NounDecode for TxV0 {
     }
 }
 
-fn decode_outputs(noun: &Noun) -> Result<Vec<TxOutput>, NounDecodeError> {
-    if let Ok(atom) = noun.as_atom() {
+fn decode_outputs(noun: &Noun, space: &NounSpace) -> Result<Vec<TxOutput>, NounDecodeError> {
+    if let Ok(atom) = noun.in_space(space).as_atom() {
         if atom.as_u64()? == 0 {
             return Ok(Vec::new());
         }
     }
 
     let mut outputs = Vec::new();
-    for entry in HoonMapIter::from(*noun) {
+    for entry in HoonMapIter::new(*noun, space) {
         if !entry.is_cell() {
             continue;
         }
-        let [key, value] = entry.uncell().map_err(|_| NounDecodeError::ExpectedCell)?;
-        let lock = Lock::from_noun(&key)?;
-        let value_cell = value.as_cell().map_err(|_| NounDecodeError::ExpectedCell)?;
-        let note = NoteV0::from_noun(&value_cell.head())?;
+        let [key, value] = entry
+            .uncell(space)
+            .map_err(|_| NounDecodeError::ExpectedCell)?;
+        let lock = Lock::from_noun(&key, space)?;
+        let value_cell = value
+            .in_space(space)
+            .as_cell()
+            .map_err(|_| NounDecodeError::ExpectedCell)?;
+        let note_noun = value_cell.head().noun();
+        let note = NoteV0::from_noun(&note_noun, space)?;
         outputs.push(TxOutput { lock, note });
     }
 
@@ -1067,23 +1087,42 @@ fn lock_summary(lock: &Lock) -> String {
 mod tests {
     use nockchain_math::belt::Belt;
     use nockchain_types::tx_engine::common::{BlockHeight, Hash};
+    use nockvm::mem::NockStack;
+    use nockvm::noun::NounAllocator;
     use noun_serde::{NounDecode, NounEncode};
 
     use super::*;
 
+    struct TestArenaGuard {
+        _stack: NockStack,
+    }
+
+    impl TestArenaGuard {
+        fn install() -> Self {
+            let stack = NockStack::new(1 << 16, 0);
+            Self { _stack: stack }
+        }
+    }
+
+    impl Drop for TestArenaGuard {
+        fn drop(&mut self) {}
+    }
+
     #[test]
     fn test_decode_blockheight_as_atom() {
+        let _arena = TestArenaGuard::install();
         let mut slab: NounSlab = NounSlab::new();
 
         // Test that BlockHeight encodes as a simple atom
         let height = BlockHeight(Belt(105));
         let height_noun = height.to_noun(&mut slab);
+        let space = slab.noun_space();
 
         // Verify it's an atom
         assert!(height_noun.is_atom(), "BlockHeight should encode as atom");
 
         // Try to decode as u64 directly
-        let result_u64 = u64::from_noun(&height_noun);
+        let result_u64 = u64::from_noun(&height_noun, &space);
         match result_u64 {
             Ok(val) => {
                 println!("BlockHeight decoded as u64: {}", val);
@@ -1095,7 +1134,7 @@ mod tests {
         }
 
         // Try to decode as BlockHeight
-        let result_height = BlockHeight::from_noun(&height_noun);
+        let result_height = BlockHeight::from_noun(&height_noun, &space);
         match result_height {
             Ok(h) => {
                 println!("BlockHeight decoded correctly: {:?}", h);
@@ -1109,6 +1148,7 @@ mod tests {
 
     #[test]
     fn test_decode_block_range_entry_minimal() {
+        let _arena = TestArenaGuard::install();
         let mut slab: NounSlab = NounSlab::new();
 
         // Create a minimal BlockRangeEntry structure
@@ -1163,8 +1203,9 @@ mod tests {
         let entry_noun = nockvm::noun::T(&mut slab, &[height_noun, block_page_cell]);
 
         // Try to decode it
-        let raw = BlockRangeEntryNoun::from_noun(&entry_noun).expect("decode raw entry");
-        let entry = BlockRangeEntry::try_from(raw).expect("convert raw entry");
+        let space = slab.noun_space();
+        let raw = BlockRangeEntryNoun::from_noun(&entry_noun, &space).expect("decode raw entry");
+        let entry = BlockRangeEntry::from_raw(raw, &space).expect("convert raw entry");
 
         assert_eq!(entry.height, 42);
         assert_eq!(entry.block_id, block_id);

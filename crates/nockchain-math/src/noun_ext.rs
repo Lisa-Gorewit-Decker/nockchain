@@ -1,4 +1,4 @@
-use nockvm::noun::{IndirectAtom, NounAllocator, Result};
+use nockvm::noun::{IndirectAtom, NounAllocator, NounSpace, Result};
 
 use crate::belt::Belt;
 use crate::felt::Felt;
@@ -7,18 +7,18 @@ use crate::felt::Felt;
 // their implementations are found in hand/convert
 pub trait AtomMathExt {
     fn as_u32(&self) -> Result<u32>;
-    fn as_belt(&self) -> Result<Belt>;
-    fn as_felt<'a>(&self) -> Result<&'a Felt>;
-    fn as_mut_felt<'a>(&self) -> Result<&'a mut Felt>;
+    fn as_belt(&self, space: &NounSpace) -> Result<Belt>;
+    fn as_felt<'a>(&self, space: &NounSpace) -> Result<&'a Felt>;
+    fn as_mut_felt<'a>(&self, space: &NounSpace) -> Result<&'a mut Felt>;
 }
 
 // Note: since these are methods for converting to other types,
 // their implementations are found in hand/convert
 pub trait NounMathExt: Sized {
-    fn as_belt(&self) -> Result<Belt>;
-    fn as_felt<'a>(&self) -> Result<&'a Felt>;
-    fn as_mut_felt<'a>(&self) -> Result<&'a mut Felt>;
-    fn uncell<const N: usize>(&self) -> Result<[Self; N]>;
+    fn as_belt(&self, space: &NounSpace) -> Result<Belt>;
+    fn as_felt<'a>(&self, space: &NounSpace) -> Result<&'a Felt>;
+    fn as_mut_felt<'a>(&self, space: &NounSpace) -> Result<&'a mut Felt>;
+    fn uncell<const N: usize>(&self, space: &NounSpace) -> Result<[Self; N]>;
 }
 
 pub trait IndirectAtomExt {

@@ -20,28 +20,29 @@ fn lagrange_one_bpoly(len: usize) -> BPolyVec {
 }
 
 pub fn mp_substitute_mega_jet(context: &mut Context, subject: Noun) -> Result {
-    let sam = slot(subject, 6)?;
+    let space = context.stack.noun_space();
+    let sam = slot(subject, 6, &space)?;
     let stack = &mut context.stack;
 
     let [p_noun, trace_evals_noun, height_noun, chals_noun, dyns_noun, com_map_noun] =
-        sam.uncell()?;
+        sam.uncell(&space)?;
 
-    let Ok(trace_evals) = BPolySlice::try_from(trace_evals_noun) else {
+    let Ok(trace_evals) = BPolySlice::try_from(trace_evals_noun, &space) else {
         return Err(BAIL_FAIL);
     };
     let Ok(height_atom) = height_noun.as_atom() else {
         return Err(BAIL_FAIL);
     };
-    let Ok(height) = height_atom.as_u64() else {
+    let Ok(height) = height_atom.in_space(&space).as_u64() else {
         return Err(BAIL_FAIL);
     };
     let height_usize = height as usize;
 
-    let Ok(dyns) = BPolySlice::try_from(dyns_noun) else {
+    let Ok(dyns) = BPolySlice::try_from(dyns_noun, &space) else {
         return Err(BAIL_FAIL);
     };
 
-    let Ok(challenges) = BPolySlice::try_from(chals_noun) else {
+    let Ok(challenges) = BPolySlice::try_from(chals_noun, &space) else {
         return Err(BAIL_FAIL);
     };
 
@@ -49,19 +50,19 @@ pub fn mp_substitute_mega_jet(context: &mut Context, subject: Noun) -> Result {
         if com_map_noun.raw_equals(&D(0)) {
             None
         } else {
-            HoonMap::try_from(com_map_noun).ok()
+            HoonMap::try_from(com_map_noun, &space).ok()
         }
     };
 
     let mut acc_vec = zero_bpoly();
 
-    let mut p_iter = HoonMapIter::from(p_noun);
+    let mut p_iter = HoonMapIter::new(p_noun, &space);
     p_iter.try_fold((), |_, n| {
-        let [k_noun, v_noun] = n.uncell()?;
-        let Ok(k) = BPolySlice::try_from(k_noun) else {
+        let [k_noun, v_noun] = n.uncell(&space)?;
+        let Ok(k) = BPolySlice::try_from(k_noun, &space) else {
             return Err(BAIL_FAIL);
         };
-        let Ok(v) = v_noun.as_belt() else {
+        let Ok(v) = v_noun.as_belt(&space) else {
             return Err(BAIL_FAIL);
         };
 
@@ -142,7 +143,7 @@ pub fn mp_substitute_mega_jet(context: &mut Context, subject: Noun) -> Result {
                         .as_ref()
                         .and_then(|m| m.get(stack, D(idx as u64)))
                         .ok_or_else(|| BAIL_EXIT)?;
-                    let Ok(com_slice) = BPolySlice::try_from(com_noun) else {
+                    let Ok(com_slice) = BPolySlice::try_from(com_noun, &space) else {
                         return Err(BAIL_FAIL);
                     };
 

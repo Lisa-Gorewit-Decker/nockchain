@@ -11,6 +11,7 @@ jemalloc = ["tikv-jemallocator"]
 tracing-heap = ["tikv-jemallocator", "tracy-client"]
 
 [dependencies]
+chaff.workspace = true
 hoonc.workspace = true
 kernels = { workspace = true, features = ["dumb", "miner"] }
 nockapp.workspace = true
@@ -61,3 +62,7 @@ vergen = { workspace = true, features = [
     "rustc",
     "si",
 ] }
+
+[dev-dependencies]
+libc.workspace = true
+memmap2.workspace = true

@@ -6,7 +6,7 @@ use nockchain_math::noun_ext::NounMathExt;
 use nockchain_math::structs::HoonMapIter;
 use nockchain_math::zoon::common::DefaultTipHasher;
 use nockchain_math::zoon::zmap;
-use nockvm::noun::{NounAllocator, D};
+use nockvm::noun::{NounAllocator, NounSpace, D};
 use noun_serde::{NounDecode, NounDecodeError, NounEncode};
 
 use crate::tx_engine::common::{BlockHeight, Hash, Name, Nicks, Version};
@@ -34,13 +34,13 @@ impl NounEncode for Balance {
 }
 
 impl NounDecode for Balance {
-    fn from_noun(noun: &Noun) -> Result<Self, NounDecodeError> {
-        let notes = HoonMapIter::from(*noun)
+    fn from_noun(noun: &Noun, space: &NounSpace) -> Result<Self, NounDecodeError> {
+        let notes = HoonMapIter::new(*noun, space)
             .filter(|kv| kv.is_cell())
             .map(|kv| {
-                let [k, v] = kv.uncell()?;
-                let name = Name::from_noun(&k)?;
-                let note = <Note as NounDecode>::from_noun(&v)?;
+                let [k, v] = kv.uncell(space)?;
+                let name = Name::from_noun(&k, space)?;
+                let note = <Note as NounDecode>::from_noun(&v, space)?;
 
                 Ok((name, note))
             })
@@ -74,11 +74,12 @@ impl NounEncode for Note {
 }
 
 impl NounDecode for Note {
-    fn from_noun(noun: &Noun) -> Result<Self, NounDecodeError> {
-        let hed = noun.as_cell()?.head();
+    fn from_noun(noun: &Noun, space: &NounSpace) -> Result<Self, NounDecodeError> {
+        let cell = noun.in_space(space).as_cell()?;
+        let hed = cell.head().noun();
         match hed.is_cell() {
-            true => Ok(Note::V0(NoteV0::from_noun(noun)?)),
-            false => Ok(Note::V1(NoteV1::from_noun(noun)?)),
+            true => Ok(Note::V0(NoteV0::from_noun(noun, space)?)),
+            false => Ok(Note::V1(NoteV1::from_noun(noun, space)?)),
         }
     }
 }
@@ -137,7 +138,8 @@ impl NounEncode for NoteData {
                 .expect("failed to cue blob");
             let mut value = unsafe {
                 let &root = slab.root();
-                allocator.copy_into(root)
+                let space = slab.noun_space();
+                allocator.copy_into(root, &space)
             };
             zmap::z_map_put(allocator, &map, &mut key, &mut value, &DefaultTipHasher)
                 .expect("failed to encode note-data entry")
@@ -146,11 +148,11 @@ impl NounEncode for NoteData {
 }
 
 impl NounDecode for NoteData {
-    fn from_noun(noun: &Noun) -> Result<Self, NounDecodeError> {
-        let entries = HoonMapIter::from(*noun)
+    fn from_noun(noun: &Noun, space: &NounSpace) -> Result<Self, NounDecodeError> {
+        let entries = HoonMapIter::new(*noun, space)
             .filter(|entry| entry.is_cell())
             .map(|entry| {
-                let [raw_key, raw_value] = entry.uncell().map_err(|_| {
+                let [raw_key, raw_value] = entry.uncell(space).map_err(|_| {
                     NounDecodeError::Custom("note-data entry must be a cell".into())
                 })?;
 
@@ -158,14 +160,14 @@ impl NounDecode for NoteData {
                     .as_atom()
                     .map_err(|_| NounDecodeError::Custom("note-data key must be an atom".into()))?;
 
-                let key = key_atom.into_string().map_err(|err| {
+                let key = key_atom.in_space(space).into_string().map_err(|err| {
                     NounDecodeError::Custom(format!(
                         "failed to convert note-data key to string: {err}"
                     ))
                 })?;
 
                 let mut slab: NounSlab<NockJammer> = NounSlab::new();
-                slab.copy_into(raw_value);
+                slab.copy_into(raw_value, space);
                 let jam = slab.jam();
                 Ok(NoteDataEntry { key, blob: jam })
             })

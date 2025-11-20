@@ -28,14 +28,17 @@ num-traits = { workspace = true }
 rand = { workspace = true }
 serde = { workspace = true }
 signal-hook = { workspace = true }
+smallvec = { workspace = true }
 slotmap = { workspace = true }
 static_assertions = { workspace = true }
 thiserror = { workspace = true }
 tracing.workspace = true
 tracing-core.workspace = true
+gnort = { workspace = true }
 
 [dev-dependencies]
 criterion = { workspace = true }
+proptest = { version = "1.5.0" }
 
 [build-dependencies]
 autotools = "0.2"
@@ -57,7 +60,12 @@ check_junior = []
 sham_hints = []
 stop_for_debug = []
 hint_dont = []
+pma-assert = []
 
 [[bench]]
 name = "hoonc_hotspots"
+harness = false
+
+[[bench]]
+name = "retag_noun_tree"
 harness = false

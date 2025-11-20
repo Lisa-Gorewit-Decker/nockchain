@@ -1,7 +1,7 @@
 use nockvm::interpreter::Context;
 use nockvm::jets::util::slot;
 use nockvm::jets::JetErr;
-use nockvm::noun::{Noun, NounAllocator, D, T};
+use nockvm::noun::{Noun, NounAllocator, NounSpace, D, T};
 use nockvm::site::{site_slam, Site};
 
 use super::common::*;
@@ -14,12 +14,13 @@ pub fn z_map_put<A: NounAllocator, H: TipHasher>(
     c: &mut Noun,
     hasher: &H,
 ) -> Result<Noun, JetErr> {
+    let space = stack.noun_space();
     if unsafe { a.raw_equals(&D(0)) } {
         let kv = T(stack, &[*b, *c]);
         Ok(T(stack, &[kv, D(0), D(0)]))
     } else {
-        let [mut an, mut al, mut ar] = a.uncell()?;
-        let [mut anp, mut anq] = an.uncell()?;
+        let [mut an, mut al, mut ar] = a.uncell(&space)?;
+        let [mut anp, mut anq] = an.uncell(&space)?;
         if unsafe { stack.equals(b, &mut anp) } {
             if unsafe { stack.equals(c, &mut anq) } {
                 return Ok(*a);
@@ -30,8 +31,9 @@ pub fn z_map_put<A: NounAllocator, H: TipHasher>(
             }
         } else if gor_tip(stack, b, &mut anp, hasher)? {
             let d = z_map_put(stack, &mut al, b, c, hasher)?;
-            let [dn, dl, dr] = d.uncell()?;
-            let [mut dnp, _dnq] = dn.uncell()?;
+            let space = stack.noun_space();
+            let [dn, dl, dr] = d.uncell(&space)?;
+            let [mut dnp, _dnq] = dn.uncell(&space)?;
             if mor_tip(stack, &mut anp, &mut dnp, hasher)? {
                 Ok(T(stack, &[an, d, ar]))
             } else {
@@ -40,8 +42,9 @@ pub fn z_map_put<A: NounAllocator, H: TipHasher>(
             }
         } else {
             let d = z_map_put(stack, &mut ar, b, c, hasher)?;
-            let [dn, dl, dr] = d.uncell()?;
-            let [mut dnp, _dnq] = dn.uncell()?;
+            let space = stack.noun_space();
+            let [dn, dl, dr] = d.uncell(&space)?;
+            let [mut dnp, _dnq] = dn.uncell(&space)?;
             if mor_tip(stack, &mut anp, &mut dnp, hasher)? {
                 Ok(T(stack, &[an, al, d]))
             } else {
@@ -54,16 +57,17 @@ pub fn z_map_put<A: NounAllocator, H: TipHasher>(
 
 /// Reduce a z-map using the gate's cached `Site`, mirroring Hoon `++rep`.
 pub fn z_map_rep(context: &mut Context, map: &Noun, gate: &mut Noun) -> Result<Noun, JetErr> {
-    let prod = slot(*gate, 13)?;
+    let space = context.stack.noun_space();
+    let prod = slot(*gate, 13, &space)?;
     let site = Site::new(context, gate);
     let mut reducer = |node: Noun, acc: Noun| -> Result<Noun, JetErr> {
         let sam = T(&mut context.stack, &[node, acc]);
         site_slam(context, &site, sam)
     };
-    rep_fold(*map, prod, &mut reducer)
+    rep_fold(*map, prod, &space, &mut reducer)
 }
 
-fn rep_fold<F>(tree: Noun, acc: Noun, reducer: &mut F) -> Result<Noun, JetErr>
+fn rep_fold<F>(tree: Noun, acc: Noun, space: &NounSpace, reducer: &mut F) -> Result<Noun, JetErr>
 where
     F: FnMut(Noun, Noun) -> Result<Noun, JetErr>,
 {
@@ -71,8 +75,8 @@ where
         return Ok(acc);
     }
 
-    let [entry, left, right] = tree.uncell()?;
+    let [entry, left, right] = tree.uncell(space)?;
     let acc = reducer(entry, acc)?;
-    let acc = rep_fold(left, acc, reducer)?;
-    rep_fold(right, acc, reducer)
+    let acc = rep_fold(left, acc, space, reducer)?;
+    rep_fold(right, acc, space, reducer)
 }

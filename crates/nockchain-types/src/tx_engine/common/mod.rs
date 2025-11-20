@@ -5,7 +5,7 @@ use nockchain_math::crypto::cheetah::{CheetahError, CheetahPoint, P_BIG};
 use nockchain_math::noun_ext::NounMathExt;
 use nockchain_math::zoon::common::DefaultTipHasher;
 use nockchain_math::zoon::zmap;
-use nockvm::noun::{Noun, NounAllocator, D};
+use nockvm::noun::{Noun, NounAllocator, NounSpace, D};
 use noun_serde::{NounDecode, NounDecodeError, NounEncode};
 use serde::{Deserialize, Serialize};
 
@@ -45,22 +45,22 @@ impl NounEncode for Signature {
 }
 
 impl NounDecode for Signature {
-    fn from_noun(noun: &Noun) -> Result<Self, NounDecodeError> {
-        if let Ok(atom) = noun.as_atom() {
+    fn from_noun(noun: &Noun, space: &NounSpace) -> Result<Self, NounDecodeError> {
+        if let Ok(atom) = noun.in_space(space).as_atom() {
             if atom.as_u64()? == 0 {
                 return Ok(Signature(Vec::new()));
             }
             return Err(NounDecodeError::Custom("signature node not a cell".into()));
         }
 
-        let entries = nockchain_math::structs::HoonMapIter::from(*noun)
+        let entries = nockchain_math::structs::HoonMapIter::new(*noun, space)
             .filter(|entry| entry.is_cell())
             .map(|entry| {
                 let [key, value] = entry
-                    .uncell()
+                    .uncell(space)
                     .map_err(|_| NounDecodeError::Custom("signature entry not a pair".into()))?;
-                let pubkey = SchnorrPubkey::from_noun(&key)?;
-                let signature = SchnorrSignature::from_noun(&value)?;
+                let pubkey = SchnorrPubkey::from_noun(&key, space)?;
+                let signature = SchnorrSignature::from_noun(&value, space)?;
                 Ok((pubkey, signature))
             })
             .collect::<Result<Vec<_>, NounDecodeError>>()?;
@@ -117,7 +117,7 @@ impl NounEncode for Version {
 }
 
 impl NounDecode for Version {
-    fn from_noun(noun: &Noun) -> Result<Self, NounDecodeError> {
+    fn from_noun(noun: &Noun, _space: &NounSpace) -> Result<Self, NounDecodeError> {
         match noun.as_atom()?.as_direct() {
             Ok(ver) if ver.data() == 0 => Ok(Version::V0),
             Ok(ver) if ver.data() == 1 => Ok(Version::V1),
