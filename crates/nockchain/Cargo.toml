@@ -50,3 +50,17 @@ tracing.workspace = true
 tracy-client = { workspace = true, optional = true }
 
 zkvm-jetpack.workspace = true
+
+[build-dependencies]
+vergen = { workspace = true, features = [
+    "build",
+    "cargo",
+    "git",
+    "gitcl",
+    "rustc",
+    "si",
+] }
+
+[dev-dependencies]
+libc.workspace = true
+memmap2.workspace = true

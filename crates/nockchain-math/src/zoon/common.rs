@@ -1,6 +1,6 @@
 use nockvm::jets::util::BAIL_FAIL;
 use nockvm::jets::JetErr;
-use nockvm::noun::{Noun, NounAllocator};
+use nockvm::noun::{Noun, NounAllocator, D};
 use noun_serde::NounDecode;
 
 use crate::belt::Belt;
@@ -21,8 +21,10 @@ impl TipHasher for DefaultTipHasher {
         stack: &mut A,
         noun: Noun,
     ) -> Result<[u64; 5], JetErr> {
-        let noun_res = crate::tip5::hash::hash_noun_varlen(stack, noun)?;
-        let digest = <[u64; 5]>::from_noun(&noun_res)?;
+        let input_space = stack.noun_space();
+        let noun_res = crate::tip5::hash::hash_noun_varlen(stack, noun, &input_space)?;
+        let output_space = stack.noun_space();
+        let digest = <[u64; 5]>::from_noun(&noun_res, &output_space)?;
         Ok(digest)
     }
     fn hash_ten_cell(&self, ten: [u64; 10]) -> Result<[u64; 5], JetErr> {
@@ -102,30 +104,33 @@ pub fn dor_tip<A: NounAllocator>(
     a: &mut Noun,
     b: &mut Noun,
 ) -> Result<bool, JetErr> {
-    use nockvm::jets::math::util::lth_b;
+    use nockvm::jets::math::util::lth;
+    let space = stack.noun_space();
     if unsafe { stack.equals(a, b) } {
         Ok(true)
     } else if !a.is_atom() {
         if b.is_atom() {
             Ok(false)
         } else {
-            let a_cell = a.as_cell()?;
-            let b_cell = b.as_cell()?;
-
-            let mut a_head = a_cell.head();
-            let mut b_head = b_cell.head();
+            let a_cell = a.in_space(&space).as_cell()?;
+            let b_cell = b.in_space(&space).as_cell()?;
+            let mut a_head = a_cell.head().noun();
+            let mut b_head = b_cell.head().noun();
             if unsafe { stack.equals(&mut a_head, &mut b_head) } {
-                let mut a_tail = a_cell.tail();
-                let mut b_tail = b_cell.tail();
+                let mut a_tail = a_cell.tail().noun();
+                let mut b_tail = b_cell.tail().noun();
                 dor_tip(stack, &mut a_tail, &mut b_tail)
             } else {
+                let mut a_head = a_cell.head().noun();
+                let mut b_head = b_cell.head().noun();
                 dor_tip(stack, &mut a_head, &mut b_head)
             }
         }
     } else if !b.is_atom() {
         Ok(true)
     } else {
-        Ok(lth_b(stack, a.as_atom()?, b.as_atom()?))
+        let cmp = lth(stack, a.as_atom()?, b.as_atom()?, &space);
+        Ok(unsafe { cmp.raw_equals(&D(0)) })
     }
 }
 

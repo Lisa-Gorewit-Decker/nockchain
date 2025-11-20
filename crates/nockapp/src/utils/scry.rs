@@ -1,5 +1,5 @@
 use either::{Left, Right};
-use nockvm::noun::Noun;
+use nockvm::noun::{Noun, NounSpace};
 
 pub enum ScryResult {
     BadPath,    // ~
@@ -8,11 +8,11 @@ pub enum ScryResult {
     Invalid,    // anything that isn't one of the above
 }
 
-impl From<&Noun> for ScryResult {
-    fn from(noun: &Noun) -> ScryResult {
-        match noun.as_either_atom_cell() {
+impl ScryResult {
+    pub fn from_noun(noun: &Noun, space: &NounSpace) -> ScryResult {
+        match noun.in_space(space).as_either_atom_cell() {
             Left(atom) => {
-                let Ok(direct) = atom.as_direct() else {
+                let Ok(direct) = atom.atom().as_direct() else {
                     return ScryResult::Invalid;
                 };
                 if direct.data() == 0 {
@@ -20,13 +20,13 @@ impl From<&Noun> for ScryResult {
                 }
             }
             Right(cell) => {
-                let Ok(head) = cell.head().as_direct() else {
+                let Ok(head) = cell.head().noun().as_direct() else {
                     return ScryResult::Invalid;
                 };
                 if head.data() == 0 {
                     match cell.tail().as_either_atom_cell() {
                         Left(atom) => {
-                            let Ok(direct) = atom.as_direct() else {
+                            let Ok(direct) = atom.atom().as_direct() else {
                                 return ScryResult::Invalid;
                             };
                             if direct.data() == 0 {
@@ -34,11 +34,11 @@ impl From<&Noun> for ScryResult {
                             }
                         }
                         Right(tail) => {
-                            let Ok(tail_head) = tail.head().as_direct() else {
+                            let Ok(tail_head) = tail.head().noun().as_direct() else {
                                 return ScryResult::Invalid;
                             };
                             if tail_head.data() == 0 {
-                                return ScryResult::Some(tail.tail());
+                                return ScryResult::Some(tail.tail().noun());
                             }
                         }
                     }
