@@ -670,21 +670,26 @@ pub fn buctis_irregular<'src>(
             tis_symbol_tis_spec,  // =foo=bar
             tis_spec,             // =bar
         ))).try_map(|(name, spec), span| {
-                let auto = autoname(spec.clone());
-                match auto {
-                    None => Err(Rich::custom(span, "cannot autoname")),
-                    Some(auto_term) => {
-                        let term = match name {
-                            None => auto_term.to_string(),
-                            Some(n) => {
-                                let new_name = format!("{}-{}", n, auto_term);
-                                new_name
-                            }
-                        };
-                        Ok(Spec::BucTis(Skin::Term(term), Box::new(spec.clone())))
+            match name {
+                Some(n) => {
+                    // no autoname needed
+                    let term = n;
+                    Ok(Spec::BucTis(Skin::Term(term), Box::new(spec)))
+                }
+                None => {
+                    // need autoname
+                    match autoname(spec.clone()) {
+                        None => Err(Rich::custom(span, "cannot name spec")),
+                        Some(auto_term) => {
+                            Ok(Spec::BucTis(
+                                Skin::Term(auto_term.to_string()),
+                                Box::new(spec),
+                            ))
+                        }
                     }
                 }
-            })
+            }
+        })
     ))
 }
 

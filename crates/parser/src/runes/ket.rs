@@ -147,6 +147,23 @@ pub fn kettis_wide<'src>(
     .map(|(p, q)| Hoon::KetTis(Box::new(p), Box::new(q)))
 }
 
+pub fn kettis_irregular<'src>(
+    spec_wide:        impl ParserExt<'src, Spec>,
+) -> impl Parser<'src, &'src str, Hoon, Err<'src>>
+{
+    spec_wide.clone()
+    .try_map(|spec, span| {
+                let auto = autoname(spec.clone());
+                match auto {
+                    None => Err(Rich::custom(span, "cannot name spec")),
+                    Some(auto_term) => {
+                        Ok(Hoon::KetTisSkin(Skin::Term(auto_term.to_string()),
+                                        Box::new(Hoon::KetTar(Box::new(spec.clone())))))
+                    }
+                }
+            })
+}
+
 pub fn kethep<'src>(
     hoon:        impl ParserExt<'src, Hoon>,
     spec:        impl ParserExt<'src, Spec>,
@@ -208,7 +225,6 @@ pub fn ketlus_wide<'src>(
     .map(|(p, q)| Hoon::KetLus(Box::new(p), Box::new(q)))
 }
 
-
 pub fn kettar_irregular<'src>(
     // hoon_wide:   impl ParserExt<'src, Hoon>,
     spec_wide:   impl ParserExt<'src, Spec>,
@@ -224,11 +240,21 @@ pub fn kethep_irregular<'src>(
     spec_wide:   impl ParserExt<'src, Spec>,
 ) -> impl Parser<'src, &'src str, Hoon, Err<'src>>
 {
-    just("`")
-        .ignore_then(spec_wide.clone())
-        .then_ignore(just("`"))
-        .then(hoon_wide.clone())
-        .map(|(s, w)| Hoon::KetHep(Box::new(s), Box::new(w)))
+    spec_wide.clone()
+    .then_ignore(just("`"))
+    .then(hoon_wide.clone())
+    .map(|(s, w)| Hoon::KetHep(Box::new(s), Box::new(w)))
+}
+
+pub fn ketlus_irregular<'src>(
+    hoon_wide:   impl ParserExt<'src, Hoon>,
+) -> impl Parser<'src, &'src str, Hoon, Err<'src>>
+{
+    just('+')
+    .ignore_then(hoon_wide.clone())
+    .then_ignore(just("`"))
+    .then(hoon_wide.clone())
+    .map(|(p, q)| Hoon::KetLus(Box::new(p), Box::new(q)))
 }
 
 pub fn ketcol_irregular<'src>(

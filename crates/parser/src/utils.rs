@@ -1145,30 +1145,40 @@ pub fn tape<'src>(
     })
 }
 
-pub fn aura_hoon<'src>(
-) -> impl Parser<'src, &'src str, Hoon, Err<'src>>
+pub fn aura_text<'src>(
+) -> impl Parser<'src, &'src str, String, Err<'src>>
 {
     just("@")
     .ignore_then(regex(r"[a-zA-Z]+")
                 .map(str::to_owned)
                 .or_not())
     .map(|maybe_name| {
-        let name = maybe_name.unwrap_or("~.".to_string());
-        Hoon::Base(BaseType::Atom(name))
+        maybe_name.unwrap_or("~.".to_string())
     })
+}
+pub fn aura_hoon<'src>(
+) -> impl Parser<'src, &'src str, Hoon, Err<'src>>
+{
+    aura_text()
+    .map(|s| Hoon::Base(BaseType::Atom(s)))
+}
+
+pub fn loop_spec<'src>(
+) -> impl Parser<'src, &'src str, Spec, Err<'src>>
+{
+    just('/')
+    .ignore_then(
+        choice((just('$').to("%$".to_string()),
+            symbol(),
+        )))
+    .map(|s| Spec::Loop(s))
 }
 
 pub fn aura_spec<'src>(
 ) -> impl Parser<'src, &'src str, Spec, Err<'src>>
 {
-    just("@")
-    .ignore_then(regex(r"[a-zA-Z]+")
-                .map(str::to_owned)
-                .or_not())
-    .map(|maybe_name| {
-        let name = maybe_name.unwrap_or("~.".to_string());
-        Spec::Base(BaseType::Atom(name))
-    })
+    aura_text()
+    .map(|s| Spec::Base(BaseType::Atom(s)))
 }
 
 pub fn concatanate<'src>(
@@ -1340,6 +1350,12 @@ pub fn symbol<'src>(
     .labelled("Term")
 }
 
+pub fn bitcoin_address<'src>(
+) -> impl Parser<'src, &'src str, String, Err<'src>> {
+    regex(r"0c[13][a-km-zA-HJ-NP-Z1-9]{25,34}").map(str::to_owned)
+    .labelled("Bitcoin_Address")
+}
+
 pub fn urx<'src>(
 ) -> impl Parser<'src, &'src str, String, Err<'src>> {
     regex(r"(?:[0-9a-z._-]|~[0-9a-fA-F]+\.)+").map(str::to_owned)
@@ -1363,7 +1379,7 @@ pub fn binary_number<'src>(
                 parts.join(".").to_string()
             }
         })
-        .labelled("binary")
+        .labelled("Binary")
 }
 
 pub fn hexadecimal_number<'src>(
@@ -1386,7 +1402,101 @@ pub fn hexadecimal_number<'src>(
                 parts.join(".").to_string()
             }
         })
-        .labelled("hexadecimal")
+        .labelled("Hexadecimal")
+}
+
+pub fn ipv4_address<'src>(
+) -> impl Parser<'src, &'src str, String, Err<'src>>
+{
+    let first = regex(r"(0|[1-9][0-9]{0,2})");
+
+    let rest = just('.').ignore_then(gap().or_not())
+            .ignore_then(regex(r"([0-9]{0,3})").clone())
+            .repeated()
+            .exactly(3)
+            .collect::<Vec<_>>();
+
+    first.then(rest)
+        .map(|(first, mut rest)| {
+            if rest.is_empty() {
+                first.to_string()
+            } else {
+                let mut parts = vec![first];
+                parts.append(&mut rest);
+                parts.join(".").to_string()
+            }
+        })
+        .labelled("Ipv4-Address")
+}
+
+pub fn ipv6_address<'src>(
+) -> impl Parser<'src, &'src str, String, Err<'src>>
+{
+    let tod = regex(r"(0|[1-9a-f][0-9a-fA-F]{0,3})");
+
+    let rest = just('.').ignore_then(gap().or_not())
+            .ignore_then(tod.clone())
+            .repeated()
+            .exactly(7)
+            .collect::<Vec<_>>();
+
+    tod.then(rest)
+        .map(|(first, mut rest)| {
+            if rest.is_empty() {
+                first.to_string()
+            } else {
+                let mut parts = vec![first];
+                parts.append(&mut rest);
+                parts.join(".").to_string()
+            }
+        })
+        .labelled("Ipv6-Address")
+}
+
+pub fn base32_number<'src>(
+) -> impl Parser<'src, &'src str, String, Err<'src>>
+{
+    let first = regex(r"0v(0|[1-9a-v][0-9av]{0,4})");
+
+    let rest = just('.').ignore_then(gap().or_not())
+            .ignore_then(regex(r"0v([0-9a-v]{0,5})"))
+            .repeated()
+            .collect::<Vec<_>>();
+
+    first.then(rest)
+        .map(|(first, mut rest)| {
+            if rest.is_empty() {
+                first.to_string()
+            } else {
+                let mut parts = vec![first];
+                parts.append(&mut rest);
+                parts.join(".").to_string()
+            }
+        })
+        .labelled("Base32")
+}
+
+pub fn base64_number<'src>(
+) -> impl Parser<'src, &'src str, String, Err<'src>>
+{
+    let first = regex(r"0w(0|[1-9a-zA-Z-~][0-9a-zA-Z-~]{0,4})");
+
+    let rest = just('.').ignore_then(gap().or_not())
+            .ignore_then(regex(r"0v([0-9a-zA-Z-~]{0,5})"))
+            .repeated()
+            .collect::<Vec<_>>();
+
+    first.then(rest)
+        .map(|(first, mut rest)| {
+            if rest.is_empty() {
+                first.to_string()
+            } else {
+                let mut parts = vec![first];
+                parts.append(&mut rest);
+                parts.join(".").to_string()
+            }
+        })
+        .labelled("Base64")
 }
 
 pub fn decimal_number<'src>(
@@ -1670,17 +1780,38 @@ pub fn number<'src>(
                     .map(|s|
                         ("ux".to_string(), Noun::Atom(s)));
 
+    let uc_number = bitcoin_address()
+                    .map(|s|
+                        ("uc".to_string(), Noun::Atom(s)));
+
     let ub_number = binary_number()
                     .map(|s|
                         ("ub".to_string(), Noun::Atom(s)));
 
-    let sd_number = //  signed: -num and --num
+    let uv_number = base32_number()
+                    .map(|s|
+                        ("uv".to_string(), Noun::Atom(s)));
+
+    let uw_number = base64_number()
+                    .map(|s|
+                        ("uw".to_string(), Noun::Atom(s)));
+
+    let ui_number =
+        regex(r"0i[0-9]+").map(|s: &str| {
+            ("ui".to_string(), Noun::Atom(s.to_string()))
+        });
+
+    let signed_number = //  signed: -num and --num
         just('-').ignore_then(just('-').or_not())
         .ignore_then(
             choice((
                 decimal_number().map(|s| ("sd".to_string(), Noun::Atom(s))),
                 hexadecimal_number().map(|s| ("sx".to_string(), Noun::Atom(s))),
                 binary_number().map(|s| ("sb".to_string(), Noun::Atom(s))),
+                bitcoin_address().map(|s| ("sc".to_string(), Noun::Atom(s))),
+                base32_number().map(|s| ("sv".to_string(), Noun::Atom(s))),
+                base64_number().map(|s| ("sw".to_string(), Noun::Atom(s))),
+                regex(r"0i[0-9]+").map(|s: &str| ("si".to_string(), Noun::Atom(s.to_string()))),
             ))
         );
 
@@ -1690,17 +1821,15 @@ pub fn number<'src>(
     //         ("c".to_string(), Noun::Atom(s.to_string()))
     //     });
 
-    let ui_number =
-        regex(r"0i[0-9]+").map(|s: &str| {
-            ("ui".to_string(), Noun::Atom(s.to_string()))
-        });
-
     choice((
-        sd_number,
+        signed_number,
         ux_number,
         ui_number,
         ub_number,
         ud_number,
+        uc_number,
+        uv_number,
+        uw_number,
     ))
 }
 
@@ -1970,6 +2099,67 @@ pub fn phonemic_name<'src>(
         )).to(Hoon::Sand("p".to_string(), Noun::Atom("foo".to_string())))
 }
 
+pub fn phonemic_name_unscrambled<'src>(
+) -> impl Parser<'src, &'src str, Hoon, Err<'src>>
+{
+    let tip = regex(r"[a-z]{3}")   //  duplicated logic!
+        .try_map(|s: &str, span| {
+            match ins(s.as_bytes()) {
+                Some(i) => Ok(i),
+                None => Err(Rich::custom(span, format!("invalid prefix syllable '{s}'"))),
+            }
+        });
+   let tiq = regex(r"[a-z]{3}")
+        .try_map(|s: &str, span| {
+            match ind(s.as_bytes()) {
+                Some(i) => Ok(i),
+                None => Err(Rich::custom(span, format!("invalid suffix syllable '{s}'"))),
+            }
+        });
+
+    let tep = regex(r"[a-z]{3}")
+        .try_map(|s: &str, span| {
+            if s == "doz" {
+                return Err(Rich::custom(span, "suffix 'doz' is forbidden"));
+            }
+            match ind(s.as_bytes()) {
+                Some(i) => Ok(i),
+                None => Err(Rich::custom(span, format!("invalid suffix syllable '{s}'"))),
+            }
+        });
+
+    let hef = tip.then(tiq.clone()); // check if atom is not zero for hef
+    let hif = hef.clone();
+    let huf =  hef.clone()
+                .then(just('-')
+                    .ignore_then(hif.clone())
+                    .repeated()
+                    .at_most(3));
+    let hyf =  hif.clone()
+                .separated_by(just('-'))
+                .exactly(4);
+    let other = huf
+                .then(just("--").ignore_then(gap().or_not())
+                        .ignore_then(hyf));
+    let planet_moon = hef
+                    .then(
+                        just('-')
+                        .ignore_then(hif.clone())
+                        .repeated()
+                        .at_least(1)
+                        .at_most(4)
+                    );
+    let star = tep.then(tiq.clone());
+
+    hif.clone()
+    .then(tiq)
+    .then(just('-')
+            .ignore_then(hif)
+            .repeated()
+            .at_least(1)
+    ).to(Hoon::Sand("q".to_string(), Noun::Atom("foo".to_string())))
+}
+
 pub fn twid<'src>(
 ) -> impl Parser<'src, &'src str, Hoon, Err<'src>>
 {
@@ -2018,14 +2208,29 @@ pub fn constant_separator_hoon<'src>(
     .map(|(p, hoon)| Hoon::Pair(Box::new(p), Box::new(hoon)))
 }
 
+//  `@p`q
+//
+pub fn tic_aura<'src>(
+    hoon_wide:   impl ParserExt<'src, Hoon>,
+) -> impl Parser<'src, &'src str, Hoon, Err<'src>>
+{
+    aura_text()
+    .then_ignore(just("`"))
+    .then(hoon_wide.clone())
+    .map(|(a, b)| {
+        Hoon::KetLus(
+            Box::new(Hoon::Sand(a, Noun::Atom("0".to_string()))),
+            Box::new(Hoon::KetLus(Box::new(Hoon::Sand("%$".to_string(), Noun::Atom("0".to_string()))), Box::new(b))),
+        )})
+}
+
 pub fn tic_cell_construction<'src>(
     hoon_wide:   impl ParserExt<'src, Hoon>,
 ) -> impl Parser<'src, &'src str, Hoon, Err<'src>>
 {
-    just("`")
-        .ignore_then(hoon_wide.clone())
+    hoon_wide.clone()
         .map(|h| Hoon::Pair(Box::new(Hoon::Rock("%n".to_string(),
-                                                     Noun::Atom("0".to_string()))),
+                                                    Noun::Atom("0".to_string()))),
                                  Box::new(h)))
 }
 

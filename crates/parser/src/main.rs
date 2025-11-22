@@ -66,6 +66,7 @@ fn spec_wide_parser<'src>(
         bucwut_irregular(spec_wide.clone()).boxed(),  // ?(foo bar)
         parenthesis_spec(hoon_wide.clone(),
                                 spec_wide.clone()).boxed(),  // (foo bar)
+        loop_spec().boxed(),
         just('^').to(Spec::Base(BaseType::Cell)).boxed(),
         just('?').to(Spec::Base(BaseType::Flag)).boxed(),
         just('~').to(Spec::Base(BaseType::Null)).boxed(),
@@ -97,17 +98,25 @@ fn hoon_wide_parser<'src>(
             choice((
                     tis_runes_wide(hoon_wide.clone(), spec_wide.clone()),
                     dottis_irregular(hoon_wide.clone()), //  =(p q)
+                    kettis_irregular(spec_wide.clone()).boxed(),  // =bar
                 ))).boxed(),
 
-        rune_branch!(
-            '?',
-            wut_runes_wide(hoon_wide.clone(), spec_wide.clone())
-        ),
+        just('?').ignore_then(
+            choice((
+                wut_runes_wide(hoon_wide.clone(), spec_wide.clone()),
+                just('?').to(Hoon::Base(BaseType::Flag)).boxed(),
+            ))
+        ).boxed(),
 
-        rune_branch!(
-            '%',
-            cen_runes_wide(hoon_wide.clone())
-        ),
+        just('%').ignore_then(
+        choice((
+            cen_runes_wide(hoon_wide.clone()),
+            just(".y").to(Hoon::Rock("%f".to_string(), Noun::Atom("0".to_string()))),
+            just(".n").to(Hoon::Rock("%f".to_string(), Noun::Atom("1".to_string()))),
+            just('|').to(Hoon::Rock("%f".to_string(), Noun::Atom("1".to_string()))),
+            just('&').to(Hoon::Rock("%f".to_string(), Noun::Atom("0".to_string()))),
+            nuck(true),
+        ))).boxed(),
 
         just(':').ignore_then(
             choice((
@@ -143,19 +152,29 @@ fn hoon_wide_parser<'src>(
             mic_runes_wide(hoon_wide.clone(), spec_wide.clone())
         ),
 
-        rune_branch!(
-            '.',
-            dot_runes_wide(hoon_wide.clone(), spec_wide.clone())
-        ),
+        just('.').ignore_then(
+            choice((
+                dot_runes_wide(hoon_wide.clone(), spec_wide.clone()),
+                just('y').to(Hoon::Sand("%f".to_string(), Noun::Atom("0".to_string()))),
+                just('n').to(Hoon::Sand("%f".to_string(), Noun::Atom("1".to_string()))),
+            ))).boxed(),
+
+        just('`')
+            .ignore_then(
+                choice((
+                    tic_aura(hoon_wide.clone()),                     //  `@p`q
+                    kethep_irregular(hoon_wide.clone(),
+                                    spec_wide.clone()).boxed(),       //  `p`q
+                    ketlus_irregular(hoon_wide.clone()),              // `+p`q
+                    tic_cell_construction(hoon_wide.clone()).boxed(), //  `a
+                ))).boxed(),
+
         aura_hoon().boxed(),
         tape().boxed(),
         buccab_irregular(hoon_wide.clone()).boxed(),              //  _p
         constant_separator_hoon(hoon_wide.clone()).boxed(),       //  const+hoon,  const/hoon
         list_syntax(hoon_wide.clone()).boxed(),                   // [p ... pn], ~[foo], [foo]~
         kettar_irregular(spec_wide.clone()).boxed(),              //  *foo
-        kethep_irregular(hoon_wide.clone(),
-                                spec_wide.clone()).boxed(),       //  `p`q
-        tic_cell_construction(hoon_wide.clone()).boxed(),         //  `a
         wutzap_irregular(hoon_wide.clone()).boxed(),              //  !p
         wutbar_irregular(hoon_wide.clone()).boxed(),              //  |(p q)
         wutpam_irregular(hoon_wide.clone()).boxed(),              //  &(p q)
@@ -169,15 +188,10 @@ fn hoon_wide_parser<'src>(
         constant().boxed(),
         cord().map(|s| Hoon::Sand("%t".to_string(), Noun::Atom(s))).boxed(),
         just('~').to(Hoon::Bust(BaseType::Null)).boxed(),
-        just("%.y").to(Hoon::Rock("%f".to_string(), Noun::Atom("0".to_string()))).boxed(),
-        just("%.n").to(Hoon::Rock("%f".to_string(), Noun::Atom("1".to_string()))).boxed(),
-        just("%|").to(Hoon::Rock("%f".to_string(), Noun::Atom("1".to_string()))).boxed(),
-        just("%&").to(Hoon::Rock("%f".to_string(), Noun::Atom("0".to_string()))).boxed(),
         path(hoon_wide.clone(), wer).boxed(),
         just('&').to(Hoon::Sand("%f".to_string(), Noun::Atom("0".to_string()))).boxed(),
         just('|').to(Hoon::Sand("%f".to_string(), Noun::Atom("1".to_string()))).boxed(),
         just('*').to(Hoon::Base(BaseType::Noun)).boxed(),
-        just('?').to(Hoon::Base(BaseType::Flag)).boxed(),
     ];
 
     choice(parsers).boxed().labelled("hoon-wide")
