@@ -907,6 +907,59 @@ pub fn variable_name_and_type<'src>(
     choice((not_named, named, just_type))
 }
 
+pub fn float_sand<'src>(
+) -> impl Parser<'src, &'src str, Hoon, Err<'src>>
+{
+    float().map(|(p, q)| Hoon::Sand(p, Noun::Atom(q)))
+}
+
+pub fn float_rock<'src>(
+) -> impl Parser<'src, &'src str, Hoon, Err<'src>>
+{
+    float().map(|(p, q)| Hoon::Rock(p, Noun::Atom(q)))
+}
+
+pub fn float<'src>(
+) -> impl Parser<'src, &'src str, (String, String), Err<'src>>
+{
+    let floats =
+            just('-').or_not()
+            .then(decimal_without_dots())
+            .then(choice((
+                    just('.')
+                        .ignore_then(leading_zero_decimal_without_dots())
+                        .map(|frac| format!(".{}", frac)),
+                    empty().to("".to_string()))))
+            .then(choice((
+                    just('e')
+                        .ignore_then(just('-').or_not())
+                        .then(decimal_without_dots())
+                        .map(|(maybe_hep, expo)| format!("e{}", expo)),
+                    empty().to("".to_string()))))
+            .map(|(((_maybe_hep, p), mant), expo)| format!("{}{}{}", p, mant, expo));
+
+    let royl_rn
+        = choice((
+            floats,  ///  1.10 or 1e10
+                  just('-').or_not()   //  -inf or inf
+                    .then(just("inf"))
+                    .map(|(_maybe_hep, inf)| inf.to_string()),
+                  just("nan").map(str::to_owned),  //  nan
+                )).boxed();
+
+    let rh = just("~~").ignore_then(royl_rn.clone());
+    let rq = just("~~~").ignore_then(royl_rn.clone());
+    let rd = just('~').ignore_then(royl_rn.clone());
+    let rs = royl_rn;
+
+    choice((
+        rh.map(|s| ("%rh".to_string(), s)),
+        rq.map(|s| ("%rh".to_string(), s)),
+        rd.map(|s| ("%rd".to_string(), s)),
+        rs.map(|s| ("%rs".to_string(), s)),
+    )).labelled("Float")
+}
+
 pub fn list_wing_hoon_wide<'src>(
     hoon:        impl ParserExt<'src, Hoon>,
 ) -> impl Parser<'src, &'src str, Vec<(WingType, Hoon)>, Err<'src>>

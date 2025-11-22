@@ -155,6 +155,7 @@ fn hoon_wide_parser<'src>(
         just('.').ignore_then(
             choice((
                 dot_runes_wide(hoon_wide.clone(), spec_wide.clone()),
+                float_sand(),
                 just('y').to(Hoon::Sand("%f".to_string(), Noun::Atom("0".to_string()))),
                 just('n').to(Hoon::Sand("%f".to_string(), Noun::Atom("1".to_string()))),
             ))).boxed(),
