@@ -40,12 +40,11 @@ pub enum Beer {
     Hoon(Hoon),
 }
 
-// #[derive(Debug, Clone)]
-// pub enum Woof {
-//     Atom(Atom),
-//     Hoon(Hoon),
-// }
-pub type Woof = String;
+#[derive(serde::Serialize, PartialEq, Debug, Clone)]
+pub enum Woof {
+    Atom(Atom),
+    Hoon(Hoon),
+}
 
 #[derive(serde::Serialize, PartialEq, Debug, Clone)]
 pub enum Mane {
@@ -293,8 +292,7 @@ pub enum Hoon {
     Hand(Box<Type>, Nock),
     Note(Note, Box<Hoon>),
     Fits(Box<Hoon>, WingType),
-    // Knit(Vec<Woof>),
-    Knit(Woof),
+    Knit(Vec<Woof>),
     Leaf(Term, Atom),
     Limb(Term),
     Lost(Box<Hoon>),

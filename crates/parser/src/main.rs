@@ -171,7 +171,6 @@ fn hoon_wide_parser<'src>(
                 ))).boxed(),
 
         aura_hoon().boxed(),
-        tape().boxed(),
         buccab_irregular(hoon_wide.clone()).boxed(),              //  _p
         constant_separator_hoon(hoon_wide.clone()).boxed(),       //  const+hoon,  const/hoon
         list_syntax(hoon_wide.clone()).boxed(),                   // [p ... pn], ~[foo], [foo]~
@@ -190,6 +189,7 @@ fn hoon_wide_parser<'src>(
         cord().map(|s| Hoon::Sand("%t".to_string(), Noun::Atom(s))).boxed(),
         just('~').to(Hoon::Bust(BaseType::Null)).boxed(),
         path(hoon_wide.clone(), wer).boxed(),
+        tape(hoon_wide.clone()).boxed(),
         just('&').to(Hoon::Sand("%f".to_string(), Noun::Atom("0".to_string()))).boxed(),
         just('|').to(Hoon::Sand("%f".to_string(), Noun::Atom("1".to_string()))).boxed(),
         just('*').to(Hoon::Base(BaseType::Noun)).boxed(),
@@ -352,6 +352,7 @@ fn main() {
     });
 
     let start = Instant::now();
+    // println!("{:?}", source.as_bytes());
 
     match parser(cli.input).parse(source.as_str()).into_result() {
         Ok(res) => {

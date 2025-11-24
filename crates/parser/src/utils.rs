@@ -1190,12 +1190,94 @@ pub fn jet_signature<'src>(
     ))
 }
 
+pub fn soil<'src>(
+    hoon_wide:   impl ParserExt<'src, Hoon>,
+) -> impl Parser<'src, &'src str, Vec<Woof>, Err<'src>>
+{
+    let sump = hoon_wide
+                .separated_by(just(' '))
+                .at_least(1)
+                .collect::<Vec<_>>()
+                .delimited_by(just('{'), just('}'))
+                .map(|h| Woof::Hoon(Hoon::ColTar(h))).boxed();
+    //
+    //  "foo"
+    //
+    let wide_tape =
+        choice((
+            // non-control 32-256, excluding DEL, {,  ", \
+            //
+            regex(r#"[\x20-\x21\x23-\x5B\x5D-\x7A\x7C\x7E\x80-\xFF]"#)
+                .map(|s: &str| Woof::Atom(s.to_string())),
+            //
+            //  escaped \, ", {, hex
+            //
+            just("\\")
+                .ignore_then(
+                    choice((just("\\"),
+                            just("\""),
+                            just("{"),
+                            regex(r"[0-9a-f]{2}"))))
+                .map(|s: &str| Woof::Atom(s.to_string())),
+            //
+            //  {hoon}
+            //
+            sump.clone(),
+        )).repeated()
+        .at_least(1)
+        .collect::<Vec<_>>()
+        .delimited_by(just("\""), just("\""));
+
+    //  """
+    //  foo
+    //  """
+    let tall_tape =
+            choice((
+                //
+                // non-control excluding DEL, {,  \
+                //
+                regex(r#"[\x20-\x7A\x7C\x7E\x80-\xFF]"#)
+                .map(|s: &str| Woof::Atom(s.to_string())),
+                //
+                //  escaped \, {, hex
+                //
+                just("\\")
+                    .ignore_then(
+                        choice((just("\\"),
+                                just("{"),
+                                regex(r"[0-9a-f]{2}"))))
+                    .map(|s: &str| Woof::Atom(s.to_string())),
+            //
+            // linebreak
+            //
+                just('\n')
+                .ignore_then(just("\"\"\"").not())
+                .to(Woof::Atom('\n'.to_string())),
+            //
+            //  {hoon}
+            //
+                sump,
+            )).repeated()
+            .at_least(1)
+            .collect::<Vec<_>>()
+            .delimited_by(just("\"\"\"").ignore_then(just('\n')),
+                          just('\n').then_ignore(just("\"\"\"")));
+
+    choice((wide_tape, tall_tape))
+}
+
 pub fn tape<'src>(
+    hoon_wide:   impl ParserExt<'src, Hoon>,
 ) -> impl Parser<'src, &'src str, Hoon, Err<'src>>
 {
-    regex(r#""[^"]*""#).map(|s: &str| { // fix this
-        Hoon::Knit(s.to_string())
-    })
+    soil(hoon_wide.clone())
+    .separated_by(just('.').ignore_then(gap().or_not()))
+    .at_least(1)
+    .collect::<Vec<_>>()
+    .map(|s: Vec<Vec<Woof>>| {
+        let wof: Vec<Woof> = s.into_iter().flatten().collect();
+        Hoon::Knit(wof)
+    }).labelled("Tape")
 }
 
 pub fn aura_text<'src>(
@@ -1350,8 +1432,7 @@ pub fn cord<'src>(
     let char_in_cord =
     regex(r"(?:(?:\\(?:\\|'|[0-9A-Fa-f]{2}))|[^\x00-\x1F\x7F'\\])+");
 
-    let single_quoted =
-                            char_in_cord
+    let single_quoted =  char_in_cord
                         .separated_by(gon)
                         .at_least(1)
                         .collect::<Vec<_>>()
