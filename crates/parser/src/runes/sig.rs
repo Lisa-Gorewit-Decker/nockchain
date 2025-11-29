@@ -98,12 +98,12 @@ pub fn sigwut_wide<'src>(
         .repeated()
         .at_most(3)
         .count()
-        .then_ignore(just(" "))
+        .then_ignore(just(' '))
         .or_not()
     .then(hoon_wide.clone())
-    .then_ignore(just(" "))
+    .then_ignore(just(' '))
     .then(hoon_wide.clone())
-    .then_ignore(just(" "))
+    .then_ignore(just(' '))
     .then(hoon_wide.clone())
     .delimited_by(just('('), just(')'))
     .map(|(((maybe_p, q), r), s)| {
@@ -120,10 +120,10 @@ pub fn sigpam_wide<'src>(
     .repeated()
     .at_most(3)
     .count()
-    .then_ignore(just(" "))
+    .then_ignore(just(' '))
     .or_not()
     .then(hoon_wide.clone())
-    .then_ignore(just(" "))
+    .then_ignore(just(' '))
     .then(hoon_wide.clone())
     .delimited_by(just('('), just(')'))
     .map(|((maybe_p, q), r)| {
@@ -167,7 +167,7 @@ pub fn sigbar_wide<'src>(
 ) -> impl Parser<'src, &'src str, Hoon, Err<'src>>
 {
     hoon_wide.clone()
-    .then_ignore(just(" "))
+    .then_ignore(just(' '))
     .then(hoon_wide.clone())
     .delimited_by(just('('), just(')'))
     .map(|(p, q)| Hoon::SigBar(Box::new(p), Box::new(q)))
@@ -226,7 +226,7 @@ pub fn sigcab_wide<'src>(
 ) -> impl Parser<'src, &'src str, Hoon, Err<'src>>
 {
     hoon.clone()
-    .then_ignore(just(" "))
+    .then_ignore(just(' '))
     .then(hoon.clone())
     .delimited_by(just('('), just(')'))
     .map(|(p, q)| Hoon::SigCab(Box::new(p), Box::new(q)))
@@ -252,11 +252,11 @@ pub fn sigcen_wide<'src>(
 ) -> impl Parser<'src, &'src str, Hoon, Err<'src>>
 {
     jet_signature()
-    .then_ignore(just(" "))
+    .then_ignore(just(' '))
     .then(hoon_wide.clone())
-    .then_ignore(just(" "))
+    .then_ignore(just(' '))
     .then(jet_hooks(hoon_wide.clone()))
-    .then_ignore(just(" "))
+    .then_ignore(just(' '))
     .then(hoon_wide.clone())
     .delimited_by(just('('), just(')'))
     .map(|(((p, q), r), s)| Hoon::SigCen(p, Box::new(q), r, Box::new(s)))
@@ -278,7 +278,7 @@ pub fn sigfas_wide<'src>(
 ) -> impl Parser<'src, &'src str, Hoon, Err<'src>>
 {
     jet_signature()
-    .then_ignore(just(" "))
+    .then_ignore(just(' '))
     .then(hoon_wide.clone())
     .delimited_by(just('('), just(')'))
     .map(|(p, q)| Hoon::SigFas(p, Box::new(q)))
@@ -293,7 +293,7 @@ pub fn siggar_wide<'src>(
             .ignore_then(hoon_wide.clone())
             .or_not()
             )
-    .then_ignore(just(" "))
+    .then_ignore(just(' '))
     .then(hoon_wide.clone())
     .delimited_by(just('('), just(')'))
     .map(|((term, maybe_hoon), q)|  {
@@ -362,7 +362,7 @@ pub fn siggal_wide<'src>(
     .then(just('.')
             .ignore_then(hoon_wide.clone())
             .or_not())
-    .then_ignore(just(" "))
+    .then_ignore(just(' '))
     .then(hoon_wide.clone())
     .delimited_by(just('('), just(')'))
     .map(|((term, maybe_hoon), q)|  {

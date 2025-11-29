@@ -441,7 +441,7 @@ pub fn buccen_wide<'src>(
 ) -> impl Parser<'src, &'src str, Hoon, Err<'src>>
 {
     spec_wide.clone()
-    .separated_by(just(" "))
+    .separated_by(just(' '))
     .at_least(1)
     .collect::<Vec<_>>()
     .delimited_by(just('('), just(')'))
@@ -457,7 +457,7 @@ pub fn bucpat_wide<'src>(
 ) -> impl Parser<'src, &'src str, Hoon, Err<'src>>
 {
     spec_wide.clone()
-    .then_ignore(just(" "))
+    .then_ignore(just(' '))
     .then(spec_wide.clone())
     .delimited_by(just('('), just(')'))
     .map(|(p, q)| Hoon::KetCol(Box::new(Spec::BucPat(Box::new(p),
@@ -563,7 +563,7 @@ pub fn bucwut_irregular<'src>(
 {
     just("?(")
         .ignore_then(spec_wide.clone()
-              .separated_by(just(" "))
+              .separated_by(just(' '))
               .at_least(1)
               .collect::<Vec<_>>()
             )
@@ -637,7 +637,7 @@ pub fn bucwut_spec_wide<'src>(
 ) -> impl Parser<'src, &'src str, Spec, Err<'src>>
 {
     spec_wide.clone()
-            .separated_by(just(" "))
+            .separated_by(just(' '))
             .at_least(1)
             .collect::<Vec<_>>()
     .delimited_by(just('('), just(')'))
@@ -698,7 +698,7 @@ pub fn buccol_irregular<'src>(
 ) -> impl Parser<'src, &'src str, Spec, Err<'src>>
 {
     spec_wide.clone()
-    .separated_by(just(" "))
+    .separated_by(just(' '))
     .at_least(1)
     .collect::<Vec<_>>()
     .delimited_by(just("["), just("]"))
@@ -723,7 +723,7 @@ pub fn buclus_spec_wide<'src>(
 ) -> impl Parser<'src, &'src str, Spec, Err<'src>>
 {
     symbol()
-    .then_ignore(just(" "))
+    .then_ignore(just(' '))
     .then(spec.clone())
     .delimited_by(just('('), just(')'))
     .map(|(p, q)| Spec::BucLus(p, Box::new(q)))
@@ -785,7 +785,7 @@ pub fn buccen_spec_wide<'src>(
 ) -> impl Parser<'src, &'src str, Spec, Err<'src>>
 {
     spec_wide.clone()
-            .separated_by(just(" "))
+            .separated_by(just(' '))
             .at_least(1)
             .collect::<Vec<_>>()
     .delimited_by(just('('), just(')'))

@@ -53,7 +53,7 @@ pub fn micsig_wide<'src>(
 {
     hoon.clone()
     .then(
-        just(" ")
+        just(' ')
             .ignore_then(hoon.clone())
             .repeated()
             .collect::<Vec<_>>()
@@ -68,7 +68,7 @@ pub fn micmic_wide<'src>(
 ) -> impl Parser<'src, &'src str, Hoon, Err<'src>>
 {
     spec_wide.clone()
-    .then_ignore(just(" "))
+    .then_ignore(just(' '))
     .then(hoon_wide.clone())
     .delimited_by(just('('), just(')'))
     .map(|(s, h)| Hoon::MicMic(Box::new(s), Box::new(h)))
@@ -91,7 +91,7 @@ pub fn micgal_wide<'src>(
 ) -> impl Parser<'src, &'src str, Hoon, Err<'src>>
 {
     spec_wide.clone()
-    .then_ignore(just(" "))
+    .then_ignore(just(' '))
     .then(three_hoons_wide(hoon_wide.clone()))
     .delimited_by(just('('), just(')'))
     .map(|(p, ((q, r), s))| Hoon::MicGal(Box::new(p), Box::new(q), Box::new(r), Box::new(s)))
@@ -144,7 +144,7 @@ pub fn miccol_wide<'src>(
 ) -> impl Parser<'src, &'src str, Hoon, Err<'src>>
 {
     hoon_wide.clone()
-    .then_ignore(just(" "))
+    .then_ignore(just(' '))
     .then(list_hoon_wide(hoon_wide.clone()))
     .delimited_by(just('('), just(')'))
     .map(|(p, list)| Hoon::MicCol(Box::new(p), list))
@@ -155,7 +155,7 @@ pub fn miccol_irregular<'src>(
 ) -> impl Parser<'src, &'src str, Hoon, Err<'src>>
 {
     hoon_wide.clone()
-    .then_ignore(just(" "))
+    .then_ignore(just(' '))
     .then(list_hoon_wide(hoon_wide.clone()))
     .delimited_by(just('('), just(')'))
     .map(|(p, list)| Hoon::MicCol(Box::new(p), list))

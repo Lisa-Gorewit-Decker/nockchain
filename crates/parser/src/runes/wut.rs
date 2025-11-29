@@ -73,9 +73,9 @@ pub fn wutket_wide<'src>(
 ) -> impl Parser<'src, &'src str, Hoon, Err<'src>>
 {
     tiki_wide(hoon_wide.clone())
-    .then_ignore(just(" "))
+    .then_ignore(just(' '))
     .then(hoon_wide.clone())
-    .then_ignore(just(" "))
+    .then_ignore(just(' '))
     .then(hoon_wide.clone())
     .delimited_by(just('('), just(')'))
     .map(|((p, q), r)| wtkt(p, q, r))
@@ -101,9 +101,9 @@ pub fn wutpat_wide<'src>(
 ) -> impl Parser<'src, &'src str, Hoon, Err<'src>>
 {
     tiki_wide(hoon_wide.clone())
-    .then_ignore(just(" "))
+    .then_ignore(just(' '))
     .then(hoon_wide.clone())
-    .then_ignore(just(" "))
+    .then_ignore(just(' '))
     .then(hoon_wide.clone())
     .delimited_by(just('('), just(')'))
     .map(|((p, q), r)| wtpt(p, q, r))
@@ -145,9 +145,9 @@ pub fn wutcol_wide<'src>(
 ) -> impl Parser<'src, &'src str, Hoon, Err<'src>>
 {
     hoon.clone()
-    .then_ignore(just(" "))
+    .then_ignore(just(' '))
     .then(hoon.clone())
-    .then_ignore(just(" "))
+    .then_ignore(just(' '))
     .then(hoon.clone())
     .delimited_by(just('('), just(')'))
     .map(|((p, q), r)| Hoon::WutCol(Box::new(p), Box::new(q), Box::new(r)))
@@ -175,9 +175,9 @@ pub fn wutdot_wide<'src>(
 ) -> impl Parser<'src, &'src str, Hoon, Err<'src>>
 {
     hoon.clone()
-    .then_ignore(just(" "))
+    .then_ignore(just(' '))
     .then(hoon.clone())
-    .then_ignore(just(" "))
+    .then_ignore(just(' '))
     .then(hoon.clone())
     .delimited_by(just('('), just(')'))
     .map(|((p, q), r)| Hoon::WutDot(Box::new(p), Box::new(q), Box::new(r)))
@@ -188,7 +188,7 @@ pub fn wutgar_wide<'src>(
 ) -> impl Parser<'src, &'src str, Hoon, Err<'src>>
 {
     hoon.clone()
-    .then_ignore(just(" "))
+    .then_ignore(just(' '))
     .then(hoon.clone())
     .delimited_by(just('('), just(')'))
     .map(|(p, q)| Hoon::WutGar(Box::new(p), Box::new(q)))
@@ -227,7 +227,7 @@ pub fn wuttis_wide<'src>(
 ) -> impl Parser<'src, &'src str, Hoon, Err<'src>>
 {
     spec_wide.clone()
-    .then_ignore(just(" "))
+    .then_ignore(just(' '))
     .then(tiki_wide(hoon_wide.clone()))
     .delimited_by(just('('), just(')'))
     .map(|(p, q)| wtts(q, p))
@@ -284,11 +284,11 @@ pub fn wuthep_wide<'src>(
 ) -> impl Parser<'src, &'src str, Hoon, Err<'src>>
 {
     tiki_wide(hoon_wide.clone())
-    .then_ignore(just(" "))
+    .then_ignore(just(' '))
     .then(spec_wide.clone()
-        .then_ignore(just(" "))
+        .then_ignore(just(' '))
         .then(hoon_wide.clone())
-        .separated_by(just(",").then(just(" ")))
+        .separated_by(just(",").then(just(' ')))
         .at_least(1)
         .collect::<Vec<_>>())
     .delimited_by(just('('), just(')'))
@@ -325,13 +325,13 @@ pub fn wutlus_wide<'src>(
 ) -> impl Parser<'src, &'src str, Hoon, Err<'src>>
 {
     tiki_wide(hoon_wide.clone())
-    .then_ignore(just(" "))
+    .then_ignore(just(' '))
     .then(hoon_wide.clone())
-    .then_ignore(just(" "))
+    .then_ignore(just(' '))
     .then(spec_wide.clone()
-            .then_ignore(just(" "))
+            .then_ignore(just(' '))
             .then(hoon_wide.clone())
-            .separated_by(just(",").then(just(" ")))
+            .separated_by(just(",").then(just(' ')))
             .at_least(1)
             .collect::<Vec<_>>()
         )
@@ -344,7 +344,7 @@ pub fn wutbar_wide<'src>(
 ) -> impl Parser<'src, &'src str, Hoon, Err<'src>>
 {
     hoon_wide.clone()
-    .separated_by(just(" "))
+    .separated_by(just(' '))
     .at_least(1)
     .collect::<Vec<_>>()
     .delimited_by(just('('), just(')'))
@@ -383,9 +383,9 @@ pub fn wutsig_wide<'src>(
 ) -> impl Parser<'src, &'src str, Hoon, Err<'src>>
 {
     tiki_wide(hoon_wide.clone())
-    .then_ignore(just(" "))
+    .then_ignore(just(' '))
     .then(hoon_wide.clone())
-    .then_ignore(just(" "))
+    .then_ignore(just(' '))
     .then(hoon_wide.clone())
     .delimited_by(just('('), just(')'))
     .map(|((p, q), r)| wtsg(p, q, r))
@@ -409,7 +409,7 @@ pub fn wutpam_wide<'src>(
 ) -> impl Parser<'src, &'src str, Hoon, Err<'src>>
 {
     hoon_wide.clone()
-    .separated_by(just(" "))
+    .separated_by(just(' '))
     .at_least(1)
     .collect::<Vec<_>>()
     .delimited_by(just('('), just(')'))
@@ -422,7 +422,7 @@ pub fn wutpam_irregular<'src>(
 {
     just("&")
     .ignore_then(hoon_wide.clone()
-            .separated_by(just(" "))
+            .separated_by(just(' '))
             .at_least(1)
             .collect::<Vec<_>>()
             .delimited_by(just('('), just(')')))
@@ -436,7 +436,7 @@ pub fn wutbar_irregular<'src>(
     just("|")
     .ignore_then(
         hoon_wide.clone()
-        .separated_by(just(" "))
+        .separated_by(just(' '))
         .at_least(1)
         .collect::<Vec<_>>()
         .delimited_by(just('('), just(')')))

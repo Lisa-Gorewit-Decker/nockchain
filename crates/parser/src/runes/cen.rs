@@ -76,11 +76,11 @@ pub fn cenket_wide<'src>(
 ) -> impl Parser<'src, &'src str, Hoon, Err<'src>>
 {
     hoon_wide.clone()
-    .then_ignore(just(" "))
+    .then_ignore(just(' '))
     .then(hoon_wide.clone())
-    .then_ignore(just(" "))
+    .then_ignore(just(' '))
     .then(hoon_wide.clone())
-    .then_ignore(just(" "))
+    .then_ignore(just(' '))
     .then(hoon_wide.clone())
     .delimited_by(just('('), just(')'))
     .map(|(((p, q), s), r)|
@@ -110,7 +110,7 @@ pub fn cencol_wide<'src>(
 ) -> impl Parser<'src, &'src str, Hoon, Err<'src>>
 {
     hoon_wide.clone()
-    .then_ignore(just(" "))
+    .then_ignore(just(' '))
     .then(list_hoon_wide(hoon_wide.clone())
           .or_not())
     .delimited_by(just('('), just(')'))
@@ -135,7 +135,7 @@ pub fn cenhep_wide<'src>(
 ) -> impl Parser<'src, &'src str, Hoon, Err<'src>>
 {
     hoon_wide.clone()
-    .then_ignore(just(" "))
+    .then_ignore(just(' '))
     .then(hoon_wide.clone())
     .delimited_by(just('('), just(')'))
     .map(|(p, q)| Hoon::CenHep(Box::new(p), Box::new(q)))
@@ -200,7 +200,7 @@ pub fn cencab_wide<'src>(
 ) -> impl Parser<'src, &'src str, Hoon, Err<'src>>
 {
     winglist()
-    .then_ignore(just(" "))
+    .then_ignore(just(' '))
     .then(list_wing_hoon_wide(hoon_wide.clone()))
     .delimited_by(just('('), just(')'))
     .map(|(p, q)| Hoon::CenCab(p, q))
@@ -225,9 +225,9 @@ pub fn centar_wide<'src>(
 ) -> impl Parser<'src, &'src str, Hoon, Err<'src>>
 {
     winglist()
-    .then_ignore(just(" "))
+    .then_ignore(just(' '))
     .then(hoon_wide.clone())
-    .then_ignore(just(" "))
+    .then_ignore(just(' '))
     .then(list_wing_hoon_wide(hoon_wide.clone()))
     .delimited_by(just('('), just(')'))
     .map(|((p, q), list)| Hoon::CenTar(p, Box::new(q), list))
@@ -250,7 +250,7 @@ pub fn centis_wide<'src>(
 ) -> impl Parser<'src, &'src str, Hoon, Err<'src>>
 {
     winglist()
-    .then_ignore(just(" "))
+    .then_ignore(just(' '))
     .then(list_wing_hoon_wide(hoon.clone()))
     .delimited_by(just('('), just(')'))
     .map(|(name, list)| Hoon::CenTis(name, list))
@@ -274,9 +274,9 @@ pub fn censig_wide<'src>(
 ) -> impl Parser<'src, &'src str, Hoon, Err<'src>>
 {
     winglist()
-    .then_ignore(just(" "))
+    .then_ignore(just(' '))
     .then(hoon_wide.clone())
-    .then_ignore(just(" "))
+    .then_ignore(just(' '))
     .then(hoon_wide.clone())
     .delimited_by(just('('), just(')'))
     .map(|((p, q), r)| Hoon::CenSig(p, Box::new(q), vec![r]))
@@ -287,9 +287,9 @@ pub fn censig_irregular<'src>(
 ) -> impl Parser<'src, &'src str, Hoon, Err<'src>>
 {
     winglist()
-    .then_ignore(just(" "))
+    .then_ignore(just(' '))
     .then(hoon_wide.clone())
-    .then_ignore(just(" "))
+    .then_ignore(just(' '))
     .then(list_hoon_wide(hoon_wide.clone()))
     .delimited_by(just('('), just(')'))
     .map(|((w, h), list)| Hoon::CenSig(w, Box::new(h), list))

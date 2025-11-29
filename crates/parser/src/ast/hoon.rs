@@ -10,7 +10,7 @@ pub enum Noun {
 pub type Atom = String;
 pub type What = String;
 pub type Term = String;
-pub type Tome = (What, HashMap<Term, Hoon>);
+pub type Tome = HashMap<Term, Hoon>;
 pub type Stud = String;
 pub type Tune = String;
 pub type Help = String;
@@ -127,7 +127,6 @@ pub type WingType = Vec<Limb>;
 pub enum Spec {
     Base(BaseType),
     Dbug(Spot, Box<Spec>),
-    Gist(Help, Box<Spec>),
     Leaf(Term, Atom),
     Like(WingType, Vec<WingType>),
     Loop(Term),
@@ -145,13 +144,12 @@ pub enum Spec {
     BucGal(Box<Spec>, Box<Spec>),
     BucHep(Box<Spec>, Box<Spec>),
     BucKet(Box<Spec>, Box<Spec>),
-    BucLus(Stud, Box<Spec>),
+    BucLus(String, Box<Spec>),
     BucFas(Box<Spec>, HashMap<Term, Spec>),
     BucMic(Hoon),
     BucPam(Box<Spec>, Hoon),
     BucSig(Hoon, Box<Spec>),
     BucTic(Box<Spec>, HashMap<Term, Spec>),
-    // BucTis(Box<Hoon>, Box<Spec>),
     BucTis(Skin, Box<Spec>),
     BucPat(Box<Spec>, Box<Spec>),
     BucWut(Box<Spec>, Vec<Spec>),
@@ -184,7 +182,6 @@ pub enum NockHint {
 
 #[derive(serde::Serialize, PartialEq, Debug, Clone)]
 pub enum Note {
-    Help(Help),
     Know(Stud),
     Made(Term, Option<Vec<WingType>>),
 }
@@ -240,7 +237,6 @@ pub enum Skin {
     Cell(Box<Skin>, Box<Skin>),
     Dbug(Spot, Box<Skin>),
     Leaf(Aura, Atom),
-    Help(Help, Box<Skin>),
     Name(Term, Box<Skin>),
     Over(WingType, Box<Skin>),
     Spec(Box<Spec>, Box<Skin>),
@@ -341,8 +337,7 @@ pub enum Hoon {
     KetHep(Box<Spec>, Box<Hoon>),
     KetPam(Box<Hoon>),
     KetSig(Box<Hoon>),
-    KetTisSkin(Skin, Box<Hoon>),
-    KetTis(Box<Hoon>, Box<Hoon>),
+    KetTis(Skin, Box<Hoon>),
     KetWut(Box<Hoon>),
     KetTar(Box<Spec>),
     KetCol(Box<Spec>),
@@ -368,14 +363,11 @@ pub enum Hoon {
     TisCol(Vec<(WingType, Hoon)>, Box<Hoon>),
     TisFas(Skin, Box<Hoon>, Box<Hoon>),
     TisMic(Skin, Box<Hoon>, Box<Hoon>),
-    // TisFas(Box<Hoon>, Box<Hoon>, Box<Hoon>),
-    // TisMic(Box<Hoon>, Box<Hoon>, Box<Hoon>),
     TisDot(WingType, Box<Hoon>, Box<Hoon>),
     TisWut(WingType, Box<Hoon>, Box<Hoon>, Box<Hoon>),
     TisGal(Box<Hoon>, Box<Hoon>),
     TisHep(Box<Hoon>, Box<Hoon>),
     TisGar(Box<Hoon>, Box<Hoon>),
-    // TisKet(Box<Hoon>, WingType, Box<Hoon>, Box<Hoon>),
     TisKet(Skin, WingType, Box<Hoon>, Box<Hoon>),
     TisLus(Box<Hoon>, Box<Hoon>),
     TisSig(Vec<Hoon>),

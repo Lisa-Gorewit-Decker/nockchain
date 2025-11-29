@@ -57,26 +57,25 @@ fn spec_wide_parser<'src>(
 ) -> impl Parser<'src, &'src str, Spec, Err<'src>> + Clone
 {
     let parsers = vec![
-        just('$').ignore_then(buc_spec_wide(hoon_wide.clone(), spec_wide.clone())).boxed(),
-        buccab_spec_irregular(hoon_wide.clone()).boxed(),  //  _p
-        bucmic_spec_irregular(hoon_wide.clone()).boxed(),  //  ,p
-        buctis_irregular(spec_wide.clone()).boxed(),  // foo=bar, =bar,  =foo=bar
-        buccol_irregular(spec_wide.clone()).boxed(),  // [foo=bar foo=bar]
-        reference_spec(spec_wide.clone()).boxed(),    // foo or foo:bar
-        bucwut_irregular(spec_wide.clone()).boxed(),  // ?(foo bar)
+        just('$')
+            .ignore_then(buc_spec_wide(hoon_wide.clone(),
+                                        spec_wide.clone())).boxed(),
+        buccab_spec_irregular(hoon_wide.clone()).boxed(),    //  _p
+        bucmic_spec_irregular(hoon_wide.clone()).boxed(),    //  ,p0
+        buctis_irregular(spec_wide.clone()).boxed(),         // foo=bar, =bar,  =foo=bar
+        buccol_irregular(spec_wide.clone()).boxed(),         // [foo=bar foo=bar]
+        reference_spec(spec_wide.clone()).boxed(),           // foo or foo:bar
+        bucwut_irregular(spec_wide.clone()).boxed(),         // ?(foo bar)
         parenthesis_spec(hoon_wide.clone(),
                                 spec_wide.clone()).boxed(),  // (foo bar)
-        loop_spec().boxed(),
+        constant().map(|(p, q)| Spec::Leaf(p, q)).boxed(),   //  %foo
+        aura_spec().boxed(),                                 //  @foo
+        loop_spec().boxed(),                                 //  /foo
         just('^').to(Spec::Base(BaseType::Cell)).boxed(),
         just('?').to(Spec::Base(BaseType::Flag)).boxed(),
         just('~').to(Spec::Base(BaseType::Null)).boxed(),
         just('*').to(Spec::Base(BaseType::Noun)).boxed(),
         just("!!").to(Spec::Base(BaseType::Void)).boxed(),
-        just("%~").to(Spec::Leaf("%n".to_string(), "0".to_string())).boxed(),
-        just("%|").to(Spec::Leaf("%f".to_string(), "1".to_string())).boxed(),
-        just("%&").to(Spec::Leaf("%f".to_string(), "0".to_string())).boxed(),
-        aura_spec().boxed(), //  @foo
-        spec_term().boxed(), // %$, %foo, %123
     ];
 
     choice(parsers).boxed().labelled("spec-wide")
@@ -111,25 +110,23 @@ fn hoon_wide_parser<'src>(
         just('%').ignore_then(
         choice((
             cen_runes_wide(hoon_wide.clone()),
-            just(".y").to(Hoon::Rock("%f".to_string(), Noun::Atom("0".to_string()))),
-            just(".n").to(Hoon::Rock("%f".to_string(), Noun::Atom("1".to_string()))),
             just('|').to(Hoon::Rock("%f".to_string(), Noun::Atom("1".to_string()))),
             just('&').to(Hoon::Rock("%f".to_string(), Noun::Atom("0".to_string()))),
-            nuck(true),
+            nuck().map(|(p, q)| Hoon::Rock(p, Noun::Atom(q))),
         ))).boxed(),
 
         just(':').ignore_then(
             choice((
                     col_runes_wide(hoon_wide.clone()),
-                    miccol_irregular(hoon_wide.clone()).boxed(), //  :(a b .. z)
+                    miccol_irregular(hoon_wide.clone()).boxed(),     //  :(a b .. z)
                 ))).boxed(),
 
         just('~')
             .ignore_then(
             choice((
                     sig_runes_wide(hoon_wide.clone()),
-                    censig_irregular(hoon_wide.clone()),  //  ~(a b c)
-                    twid(),
+                    censig_irregular(hoon_wide.clone()),              //  ~(a b c)
+                    twid().map(|(p, q)| Hoon::Sand(p, Noun::Atom(q))),
                 ))).boxed(),
 
         rune_branch!(
@@ -155,41 +152,39 @@ fn hoon_wide_parser<'src>(
         just('.').ignore_then(
             choice((
                 dot_runes_wide(hoon_wide.clone(), spec_wide.clone()),
-                float_sand(),
-                just('y').to(Hoon::Sand("%f".to_string(), Noun::Atom("0".to_string()))),
-                just('n').to(Hoon::Sand("%f".to_string(), Noun::Atom("1".to_string()))),
+                perd().map(|(p, q)| Hoon::Sand(p, Noun::Atom(q))),
             ))).boxed(),
 
         just('`')
             .ignore_then(
                 choice((
-                    tic_aura(hoon_wide.clone()),                     //  `@p`q
+                    tic_aura(hoon_wide.clone()),                              //  `@p`q
                     kethep_irregular(hoon_wide.clone(),
-                                    spec_wide.clone()).boxed(),       //  `p`q
-                    ketlus_irregular(hoon_wide.clone()),              // `+p`q
-                    tic_cell_construction(hoon_wide.clone()).boxed(), //  `a
+                                    spec_wide.clone()).boxed(),               //  `p`q
+                    ketlus_irregular(hoon_wide.clone()),                      // `+p`q
+                    tic_cell_construction(hoon_wide.clone()).boxed(),         //  `a
                 ))).boxed(),
 
         aura_hoon().boxed(),
-        buccab_irregular(hoon_wide.clone()).boxed(),              //  _p
-        constant_separator_hoon(hoon_wide.clone()).boxed(),       //  const+hoon,  const/hoon
-        list_syntax(hoon_wide.clone()).boxed(),                   // [p ... pn], ~[foo], [foo]~
-        kettar_irregular(spec_wide.clone()).boxed(),              //  *foo
-        wutzap_irregular(hoon_wide.clone()).boxed(),              //  !p
-        wutbar_irregular(hoon_wide.clone()).boxed(),              //  |(p q)
-        wutpam_irregular(hoon_wide.clone()).boxed(),              //  &(p q)
-        increment(hoon_wide.clone()).boxed(),          //  +(a) or .+(a)
-        ketcol_irregular(spec_wide.clone()).boxed(),   //  ,p
-        centis_irregular(hoon_wide.clone()).boxed(),   //  a(b c, d e, f g)
-        tell(hoon_wide.clone()).boxed(),  // <foo>
-        number_sand().boxed(),
-        wing().boxed(),
-        function_call(hoon_wide.clone()).boxed(),      //  (a b)
-        constant().boxed(),
-        cord().map(|s| Hoon::Sand("%t".to_string(), Noun::Atom(s))).boxed(),
+        buccab_irregular(hoon_wide.clone()).boxed(),                          //  _p
+        constant_separator_hoon(hoon_wide.clone()).boxed(),                   //  const+hoon,  const/hoon
+        list_syntax(hoon_wide.clone()).boxed(),                               // [p ... pn], ~[foo], [foo]~
+        kettar_irregular(spec_wide.clone()).boxed(),                          //  *foo
+        wutzap_irregular(hoon_wide.clone()).boxed(),                          //  !p
+        wutbar_irregular(hoon_wide.clone()).boxed(),                          //  |(p q)
+        wutpam_irregular(hoon_wide.clone()).boxed(),                          //  &(p q)
+        increment(hoon_wide.clone()).boxed(),                                 //  +(a) or .+(a)
+        ketcol_irregular(spec_wide.clone()).boxed(),                          //  ,p
+        centis_irregular(hoon_wide.clone()).boxed(),                          //  a(b c, d e, f g)
+        tell(hoon_wide.clone()).boxed(),                                      // <foo>
+        number().map(|(p, q)| Hoon::Sand(p, Noun::Atom(q))).boxed(),          //  111.111, 0x1111, etc.
+        wing().boxed(),                                                       //   foo, foo.bar, etc.
+        function_call(hoon_wide.clone()).boxed(),                             //  (a b)
+        constant().map(|(p, q)| Hoon::Rock(p, Noun::Atom(q))).boxed(),        //  %foo
+        cord().map(|s| Hoon::Sand("%t".to_string(), Noun::Atom(s))).boxed(),  //  'foo'
+        path(hoon_wide.clone(), wer).boxed(),                                 //  /a/b/c
+        tape(hoon_wide.clone()).boxed(),                                      //  "foo"
         just('~').to(Hoon::Bust(BaseType::Null)).boxed(),
-        path(hoon_wide.clone(), wer).boxed(),
-        tape(hoon_wide.clone()).boxed(),
         just('&').to(Hoon::Sand("%f".to_string(), Noun::Atom("0".to_string()))).boxed(),
         just('|').to(Hoon::Sand("%f".to_string(), Noun::Atom("1".to_string()))).boxed(),
         just('*').to(Hoon::Base(BaseType::Noun)).boxed(),
@@ -199,12 +194,18 @@ fn hoon_wide_parser<'src>(
         .then(just('=').or(just(':')).or(just('^'))
                 .then(hoon_wide.clone())
                 .or_not())
-        .map(|(p, maybe_separator)|  {
+        .try_map(|(p, maybe_separator), span|  {
             match maybe_separator  {
-                Some(('=', q)) => Hoon::KetTis(Box::new(p), Box::new(q)),
-                Some((':', q)) => Hoon::TisGal(Box::new(p), Box::new(q)),
-                Some(('^', q)) => Hoon::Pair(Box::new(p), Box::new(q)),
-                _ => p,
+                Some(('=', q)) => {
+                    let maybe_skin = flay(p);
+                    match maybe_skin {
+                        None => Err(Rich::custom(span, "invalid p in p=q")),
+                        Some(s) => Ok(Hoon::KetTis(s, Box::new(q))),
+                    }
+                },
+                Some((':', q)) => Ok(Hoon::TisGal(Box::new(p), Box::new(q))),
+                Some(('^', q)) => Ok(Hoon::Pair(Box::new(p), Box::new(q))),
+                _ => Ok(p),
             }
         })
 }
@@ -287,10 +288,13 @@ fn hoon_parser<'src>(
             dot_runes_tall(hoon.clone(), spec.clone()),
             dot_runes_wide(hoon_wide.clone(), spec_wide.clone())
         ),
+
+        hoon_wide.clone().boxed(),
+
+        noun_tall(hoon.clone()).boxed(),
     ];
 
-    choice(parsers)
-        .labelled("hoon-tall")
+    choice(parsers).labelled("Hoon")
         .boxed()
 }
 
@@ -325,11 +329,7 @@ pub fn parser<'src>(
         let spec_wide = spec_wide_handle.clone();
         let hoon_wide = hoon_wide_handle.clone();
 
-        choice((
-            hoon_parser(hoon.clone(), hoon_wide.clone(), spec.clone(), spec_wide),
-            hoon_wide
-        )).labelled("Hoon")
-        .boxed()
+        hoon_parser(hoon.clone(), hoon_wide.clone(), spec.clone(), spec_wide).boxed()
     });
 
     hoon.padded_by(gap().or_not()).boxed()

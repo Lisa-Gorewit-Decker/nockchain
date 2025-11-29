@@ -53,7 +53,59 @@ pub fn basal(bas: BaseType) -> Hoon {
     }
 }
 
-//  build default sample
+pub fn function(
+    fun: Spec,
+    arg: Spec,
+    mod_: &Spec,
+    dom: u64,
+    hay: &WingType,
+    cox: &HashMap<Term, Spec>,
+    bug: &Vec<Spot>,
+    nut: &Option<Note>,
+    def: &Option<Hoon>,
+) -> Hoon {
+    Hoon::TisGar(
+        Box::new(Hoon::Pair(
+                    Box::new(example(&fun.clone(), dom, hay, cox, &vec![], &None, &None)),
+                    Box::new(example(&arg.clone(), dom, hay, cox, &vec![], &None, &None)))),
+        Box::new(Hoon::KetBar(Box::new(Hoon::BarCol(Box::new(Hoon::Axis(2)),
+                                        Box::new(Hoon::Axis(15)))))),
+    )
+}
+
+pub fn interface(
+    variance: Vair,
+    payload: Spec,
+    arms: HashMap<Term, Spec>,
+    mod_: &Spec,
+    dom: u64,
+    hay: &WingType,
+    cox: &HashMap<Term, Spec>,
+    bug: &Vec<Spot>,
+    nut: &Option<Note>,
+    def: &Option<Hoon>,
+) -> Hoon {
+
+    let map: HashMap<Term, Hoon> = arms.into_iter()
+        .map(|(term, spec)|
+                 (term, example(&spec, dom, hay, cox, &vec![], &None, &None)))
+        .collect();
+    let brcn = Hoon::BarCen(
+        None,
+        HashMap::from([("%$".to_string(), map)]),
+    );
+
+    let example_res = example(&payload, dom, hay, cox, &vec![], &None, &None);
+    let tsgr = Hoon::TisGar(Box::new(example_res), Box::new(brcn));
+    match variance {
+        Vair::Gold => tsgr,
+        Vair::Lead => Hoon::KetWut(Box::new(tsgr)),
+        Vair::Zinc => Hoon::KetPam(Box::new(tsgr)),
+        Vair::Iron => Hoon::KetBar(Box::new(tsgr)),
+    }
+}
+
+// TODO: accept args by ref?
 pub fn spore(spec: Spec,
                 dom: u64,
                 hay: WingType,
@@ -93,14 +145,10 @@ pub fn spore_recursion(spec: Spec,
             let tail = spore_recursion(*spec, dom, hay, cox, bug, nut, def);
             Hoon::Dbug(spot, Box::new(tail))
         }
-        Spec::Gist(help, spec) => spore_recursion(*spec, dom, hay, cox, bug, nut, def),
         Spec::Leaf(term, atom) => Hoon::Rock(term, Noun::Atom(atom)),
         Spec::Loop(term) => {
-            let maybe_spec = cox.get(&term);
-            match maybe_spec {
-                Some(spec) => spore_recursion(spec.clone(), dom, hay, cox, bug, nut, def),
-                None => Hoon::ZapZap,  //  we probably need to return None here...
-            }
+            let spec = cox.get(&term).expect("Spec-Loop: Name not found");
+            spore_recursion(spec.clone(), dom, hay, cox, bug, nut, def)
         }
         Spec::Like(wing, wings) => {
             let p = unreel(wing, wings);
@@ -130,9 +178,7 @@ pub fn spore_recursion(spec: Spec,
         Spec::BucSig(hoon, spec) => Hoon::KetHep(spec, Box::new(hoon)),
         Spec::BucTis(skin, spec) => {
             let tail = spore_recursion(*spec, dom, hay, cox, bug, nut, def);
-            // Hoon::KetTis(skin, Box::new(tail))
-            Hoon::KetTis(Box::new(Hoon::ZapZap), Box::new(tail)) //  TODO use skin here
-
+            Hoon::KetTis(skin, Box::new(tail))
         }
         Spec::BucPat(p_spec, q_spec) => spore_recursion(*p_spec, dom, hay, cox, bug, nut, def),
         Spec::BucWut(spec, specs) => spore_bucwut_recursion(*spec, specs, dom, hay, cox, bug, nut, def),
@@ -215,23 +261,154 @@ pub fn spore_buccen_recursion(spec: Spec,
     }
 }
 
-//  +analyse:basic
+pub fn example(
+    mod_: &Spec,
+    dom: u64,
+    hay: &WingType,
+    cox: &HashMap<Term, Spec>,
+    bug: &Vec<Spot>,
+    nut: &Option<Note>,
+    def: &Option<Hoon>,
+) -> Hoon {
+    match mod_ {
+        Spec::Base(b) => {
+            decorate(basal(b.clone()), bug.clone(), nut.clone())
+        }
+        Spec::Dbug(spot, inner) => {
+            let mut bug = bug.clone();
+            bug.push(spot.clone());
+            example(&inner, dom, hay, cox, &bug, nut, def)
+        }
+        Spec::Leaf(term, atom) => {
+            decorate(Hoon::Rock(term.clone(), Noun::Atom(atom.clone())), bug.clone(), nut.clone())
+        }
+        Spec::Like(wing, list) => {
+            example(&Spec::BucMic(unreel(wing.clone(), list.clone())),
+                dom, wing, cox, bug, nut, def)
+        }
+        Spec::Loop(term) => {
+            Hoon::Limb(term.clone())
+        }
+        Spec::Made((t, list), inner) => {
+            let pieces = list
+                .iter()
+                .map(|s| vec![Limb::Term(s.to_string())])
+                .collect();
+            example(&inner, dom, hay, cox, bug,
+                    &Some(Note::Made(t.to_string(), Some(pieces))), def)
+        }
+        Spec::Make(head, tail) => {
+            example(&Spec::BucMic(unfold(head.clone(), tail.clone())), dom, hay, cox, bug, nut, def)
+        }
+        Spec::Name(term, inner) => {
+            example(&inner, dom, hay, cox, bug, &Some(Note::Made(term.to_string(), None)), def)
+        }
+        Spec::Over(wing, inner) => {
+            example(&inner, dom, wing, cox, bug, nut, def)
+        }
+        Spec::BucCab(p) => {
+            decorate(home(p.clone(), hay.clone(), dom.clone()), bug.clone(), nut.clone())
+        }
+        Spec::BucCol(head, tail) => {
+           let mut result = example(head, dom, hay, cox, &vec![], &None, &None);
+
+            for x in tail.iter().rev() {
+                let next = example(&x, dom, hay, cox, &vec![], &None, &None);
+                result = Hoon::Pair(Box::new(next), Box::new(result));
+            }
+
+            decorate(result, bug.clone(), nut.clone())
+        }
+        Spec::BucHep(p, q) => {
+            let function_res = function(*p.clone(), *q.clone(), mod_, dom, hay, cox, &vec![], &None, &None);
+            decorate(
+                function_res,
+                bug.clone(),
+                nut.clone())
+        }
+        Spec::BucMic(inner) => {
+            let tsgl = Hoon::TisGal(
+                            Box::new(Hoon::Limb("%$".to_string())),
+                            Box::new(inner.clone()));
+            decorate(home(tsgl, hay.clone(), dom.clone()), bug.clone(), nut.clone())
+        }
+        Spec::BucSig(inner, list) => {
+            Hoon::KetLus(
+                Box::new(example(&list, dom, hay, cox, bug, nut, def)),
+                Box::new(home(inner.clone(), hay.clone(), dom.clone()))
+            )
+        }
+        Spec::BucLus(stud, inner) => {
+            decorate(
+                Hoon::Note(
+                    Note::Know(stud.clone()),
+                    Box::new(example(&inner.clone(), dom, hay, cox, bug, nut, def)),
+                ),
+                bug.clone(),
+                nut.clone())
+        }
+        Spec::BucTis(skin, inner) => {
+            decorate(
+                Hoon::KetTis(
+                    skin.clone(),
+                    Box::new(example(&inner.clone(), dom, hay, cox, bug, nut, def)),
+                ),
+                bug.clone(),
+                nut.clone())
+        }
+        Spec::BucDot(inner, map) => vair_case(Vair::Gold, *inner.clone(), map.clone(), mod_, dom, hay, cox, bug, nut, def),
+        Spec::BucFas(inner, map) => vair_case(Vair::Iron, *inner.clone(), map.clone(), mod_, dom, hay, cox, bug, nut, def),
+        Spec::BucZap(inner, map) => vair_case(Vair::Lead, *inner.clone(), map.clone(), mod_, dom, hay, cox, bug, nut, def),
+        Spec::BucTic(inner, map) => vair_case(Vair::Zinc, *inner.clone(), map.clone(), mod_, dom, hay, cox, bug, nut, def),
+        _ => {
+            let spore_result = spore(mod_.clone(),
+                                          dom.clone(),
+                                          hay.clone(),
+                                          cox.clone(),
+                                          bug.clone(),
+                                          nut.clone(),
+                                          def.clone());
+            let dom = peg(dom, 3).expect("example +peg failed");
+            let relative_result = relative(2, mod_, dom, hay, cox, bug, nut, def);
+            Hoon::TisLus(Box::new(spore_result), Box::new(relative_result))
+        }
+    }
+}
+
+// used in +example
+fn vair_case(
+    vair: Vair,
+    payload: Spec,
+    arms: HashMap<Term, Spec>,
+    mod_: &Spec,
+    dom: u64,
+    hay: &WingType,
+    cox: &HashMap<Term, Spec>,
+    bug: &Vec<Spot>,
+    nut: &Option<Note>,
+    def: &Option<Hoon>,
+) -> Hoon {
+    let hoon = interface(vair, payload, arms, mod_, dom, hay, cox, bug, nut, def);
+    decorate(home(hoon, hay.clone(), dom.clone()), bug.clone(), nut.clone())
+}
+
 pub fn basic(bas: BaseType,
                 axe: u64,
-                spec: Spec,
+                mod_: &Spec,
                 dom: u64,
-                hay: WingType,
-                cox: HashMap<Term, Spec>,
-                mut bug: Vec<Spot>,
-                nut: Option<Note>,
-                def: Option<Hoon>) -> Hoon {
+                hay: &WingType,
+                cox: &HashMap<Term, Spec>,
+                bug: &Vec<Spot>,
+                nut: &Option<Note>,
+                def: &Option<Hoon>) -> Hoon {
     match bas {
         BaseType::Atom(a) => {
             let cnls = Hoon::CenLus(Box::new(Hoon::Limb("%ruth".to_string())),
                                     Box::new(Hoon::Sand("%ta".to_string(), Noun::Atom(a))),
                                     Box::new(Hoon::Axis(axe)));
 
-            let example_res = Box::new(Hoon::ZapZap);
+            let example_res = Box::new(example(mod_, dom, hay, cox, bug, nut, def));
+
             let wtpt_limb = Limb::Axis(axe);
             let wtpt_wing: Vec<Limb> = vec![wtpt_limb];
             let wtpt = Hoon::WutPat(wtpt_wing, Box::new(Hoon::Axis(axe)), Box::new(Hoon::ZapZap));
@@ -244,7 +421,7 @@ pub fn basic(bas: BaseType,
             Hoon::KetLus(example_res, Box::new(zppt))
         }
         BaseType::Cell => {
-            let example_res = Box::new(Hoon::ZapZap);
+            let example_res = Box::new(example(mod_, dom, hay, cox, bug, nut, def));
             let wing = Limb::Axis(axe);
             let wing: Vec<Limb> = vec![wing];
             let mut p = wing.clone();
@@ -283,20 +460,295 @@ pub fn basic(bas: BaseType,
     }
 }
 
-//  +analyse:relative
-// pub fn relative(axe: u64,
-//                 spec: Spec,
-//                 dom: u64,
-//                 hay: WingType,
-//                 cox: HashMap<Term, Spec>,
-//                 mut bug: Vec<Spot>,
-//                 nut: Option<Note>,
-//                 def: Option<Hoon>) -> Hoon {
-//     match spec {
-//         Spec::Base => 
-//         _ => Hoon::ZapZap
-//     }
-// }
+pub fn switch(
+    one: Spec,
+    mut rep: Vec<Spec>,
+    axe: u64,
+    mod_: &Spec,
+    dom: u64,
+    hay: &WingType,
+    cox: &HashMap<Term, Spec>,
+    bug: &Vec<Spot>,
+    nut: &Option<Note>,
+    def: &Option<Hoon>,
+) -> Hoon {
+    if rep.is_empty() {
+        return relative(axe, &one, dom, hay, cox, &vec![], &None, &None);
+    }
+
+    let mut iter = rep.into_iter();
+    let i_rep = iter.next().unwrap();
+    let t_rep: Vec<Spec> = iter.collect();
+
+    let fin = switch(i_rep.clone(), t_rep, axe, mod_, dom, hay, cox, bug, nut, def);
+
+    let example_res = example(&one.clone(), dom, hay, cox, &vec![], &None, &None);
+
+    let fits = Hoon::Fits(
+        Box::new(Hoon::TisGal(
+            Box::new(Hoon::Axis(2)),
+            Box::new(example_res),
+        )),
+        vec![Limb::Axis(peg(axe, 2).expect("+switch, peg failed!"))],
+    );
+
+    let relative_result = relative(axe, &one, dom, hay, cox, &vec![], &None, &None);
+
+    Hoon::WutCol(Box::new(fits), Box::new(relative_result), Box::new(fin))
+}
+
+pub fn choice_(one: Spec,
+            mut rep: Vec<Spec>,
+            axe: u64,
+            mod_: &Spec,
+            dom: u64,
+            hay: &WingType,
+            cox: &HashMap<Term, Spec>,
+            bug: &Vec<Spot>,
+            nut: &Option<Note>,
+            def: &Option<Hoon>,
+) -> Hoon {
+    if rep.is_empty() {
+        return relative(axe, &one, dom, hay, cox, &vec![], &None, &None);
+    }
+
+    let mut iter = rep.into_iter();
+    let i_rep = iter.next().unwrap();
+    let t_rep: Vec<Spec> = iter.collect();
+
+    let example_res = example(&one.clone(), dom, hay, cox, &vec![], &None, &None);
+
+    let fits = Hoon::Fits(
+        Box::new(example_res),
+        vec![Limb::Axis(axe)],
+    );
+
+    let relative_result =
+            relative(axe,
+                        &one.clone(),
+                        dom,
+                        hay,
+                        cox,
+                        &vec![],
+                        &None,
+                        &None);
+    let tail = choice_(i_rep.clone(), t_rep, axe, mod_, dom, hay, cox, bug, nut, def);
+
+    Hoon::WutCol(Box::new(fits), Box::new(relative_result), Box::new(tail))
+}
+
+pub fn relative(axe: u64,
+                mod_: &Spec,
+                dom: u64,
+                hay: &WingType,
+                cox: &HashMap<Term, Spec>,
+                bug: &Vec<Spot>,
+                nut: &Option<Note>,
+                def: &Option<Hoon>,
+) -> Hoon {
+    match &mod_ {
+        Spec::Base(p) => decorate(basic(p.clone(), axe, mod_, dom, hay, cox, &vec![], &None, &None), bug.clone(), nut.clone()),
+        Spec::Dbug(p, q) => {
+            let mut bug = bug.clone();
+            bug.push(p.clone());
+            relative(axe, &*q, dom, hay, cox, &bug, nut, def)
+        },
+        Spec::Leaf(p, q) => {
+            decorate(
+                Hoon::WutGar(
+                    Box::new(Hoon::DotTis(Box::new(Hoon::Axis(axe)),
+                                          Box::new(Hoon::Rock("%$".to_string(), Noun::Atom(q.clone()))))),
+                    Box::new(Hoon::Rock(p.clone(), Noun::Atom(q.clone())))
+                ),
+                bug.clone(),
+                nut.clone(),
+            )
+        }
+        Spec::Make(p, q) => relative(axe, &Spec::BucMic(unfold(p.clone(), q.clone())), dom, hay, cox, bug, nut, def),
+        Spec::Like(p, q) => relative(axe, &Spec::BucMic(unreel(p.clone(), q.clone())), dom, hay, cox, bug, nut, def),
+        Spec::Loop(p) => decorate(
+            Hoon::CenHep(Box::new(Hoon::Limb(p.clone())), Box::new(Hoon::Axis(axe))),
+            bug.clone(),
+            nut.clone(),
+        ),
+        Spec::Name(p, q) => relative(axe, &*q, dom, hay, cox, bug, &Some(Note::Made(p.clone(), None)), def),
+        Spec::Made((term, list), q) => {
+            let pieces = list
+                        .iter()
+                        .map(|s| vec![Limb::Term(s.to_string())])
+                        .collect();
+            let nut = Some(Note::Made(term.clone(), Some(pieces)));
+            relative(axe, &*q, dom, hay, cox, bug, &nut, def)
+        }
+        Spec::Over(p, q) => relative(axe, &*q, dom, p, cox, bug, nut, def),
+        Spec::BucBuc(p, q) => {
+            let new_dom = peg(3, dom).expect("+relative-bucbuc-peg-failed");
+            let map: HashMap<Term, Hoon> = q.into_iter()
+                .map(|(term, spec)| (term.clone(), relative(axe, spec, new_dom, hay, cox, bug, nut, def)))
+                .collect();
+            Hoon::BarKet(
+                Box::new(relative(axe, &*p, new_dom, hay, cox, bug, nut, def)),
+                HashMap::from([("%$".to_string(), map)]),
+            )
+        }
+        Spec::BucPam(p, q) => Hoon::TisLus(
+            Box::new(relative(axe, &*p, dom, hay, cox, bug, nut, def)),
+            Box::new(Hoon::TisLus(
+                Box::new(Hoon::TisGar(Box::new(Hoon::Axis(3)), Box::new(q.clone()))),
+                Box::new(Hoon::TisLus(
+                    Box::new(Hoon::CenHep(Box::new(Hoon::Axis(2)), Box::new(Hoon::Axis(6)))),
+                    Box::new(Hoon::WutGar(
+                        Box::new(Hoon::WutBar(vec![
+                            Hoon::DotTis(Box::new(Hoon::Axis(14)), Box::new(Hoon::Axis(2))),
+                            Hoon::DotTis(
+                                Box::new(Hoon::Axis(2)),
+                                Box::new(Hoon::CenHep(Box::new(Hoon::Axis(6)), Box::new(Hoon::Axis(2))))
+                            )
+                        ])),
+                        Box::new(Hoon::Axis(2))
+                    ))
+                ))
+            ))
+        ),
+        Spec::BucBar(p, q) => Hoon::TisLus(
+            Box::new(relative(axe, &*p, dom, hay, cox, bug, nut, def)),
+            Box::new(Hoon::WutGar(
+                Box::new(Hoon::CenHep(Box::new(Hoon::TisGar(Box::new(Hoon::Axis(3)), Box::new(q.clone()))), Box::new(Hoon::Axis(2)))),
+                Box::new(Hoon::Axis(2))
+            ))
+        ),
+        Spec::BucCab(p) => decorate(home(p.clone(), hay.clone(), dom.clone()), bug.clone(), nut.clone()),
+        Spec::BucCen(p, t) => decorate(switch(*p.clone(), t.clone(), axe, mod_, dom, hay, cox, bug, nut, def),
+                                        bug.clone(),
+                                        nut.clone()),
+        Spec::BucCol(p, q) => {
+            let mut result: Option<Hoon> = None;
+            let mut current_axe = axe;
+
+            let first = relative(
+                peg(current_axe, 2).expect("+relative-buccol-peg-failed"),
+                &*p,
+                dom,
+                hay,
+                cox,
+                bug,
+                nut,
+                def,
+            );
+
+            result = Some(first);
+            current_axe = peg(current_axe, 3).expect("+relative-buccol-peg-failed");
+
+            for spec in q {
+                let hoon = relative(
+                    peg(current_axe, 2).expect("+relative-buccol-peg-failed"),
+                    spec,
+                    dom,
+                    hay,
+                    cox,
+                    bug,
+                    nut,
+                    def,
+                );
+
+                result = Some(Hoon::Pair(
+                    Box::new(result.unwrap()),
+                    Box::new(hoon),
+                ));
+
+                current_axe = peg(current_axe, 3).expect("+relative-buccol-peg-failed");
+            }
+
+            decorate(result.unwrap(), bug.clone(), nut.clone())
+        }
+        Spec::BucGal(p, q) => Hoon::TisLus(
+            Box::new(relative(axe, &*q, dom, hay, cox, &vec![], &None, &None)),
+            Box::new(Hoon::WutGal(
+                Box::new(Hoon::WutTis(
+                    Box::new(Spec::Over(vec![Limb::Axis(3)], p.clone())),
+                    vec![Limb::Axis(4)]
+                )),
+                Box::new(Hoon::Axis(2))
+            ))
+        ),
+        Spec::BucGar(p, q) => Hoon::TisLus(
+            Box::new(relative(axe, &*q, dom, hay, cox, &vec![], &None, &None)),
+            Box::new(Hoon::WutGar(
+                Box::new(Hoon::WutTis(
+                    Box::new(Spec::Over(vec![Limb::Axis(3)], p.clone())),
+                    vec![Limb::Axis(4)],
+                )),
+                Box::new(Hoon::Axis(2))
+            ))
+        ),
+        Spec::BucHep(p, q) => {
+            let function_res = function(*p.clone(), *q.clone(), mod_, dom, hay, cox, &vec![], &None, &None);
+            decorate(
+                match def {
+                    Some(d) => Hoon::KetLus(Box::new(function_res),
+                                            Box::new(d.clone())),
+                    None => function_res
+                },
+                bug.clone(),
+                nut.clone(),
+            )
+        }
+        Spec::BucKet(p, q) => decorate(
+            Hoon::WutCol(
+                Box::new(Hoon::DotWut(Box::new(Hoon::Axis(peg(axe, 2).expect("bucket-peg-failed"))))),
+                Box::new(relative(axe, &*p, dom, hay, cox, &vec![], &None, &None)),
+                Box::new(relative(axe, &*q, dom, hay, cox, &vec![], &None, &None))
+            ),
+            bug.clone(),
+            nut.clone(),
+        ),
+        Spec::BucMic(p) => decorate(
+            Hoon::CenCol(
+                Box::new(home(p.clone(), hay.clone(), dom.clone())),
+                vec![Hoon::Axis(axe)],
+            ),
+            bug.clone(),
+            nut.clone(),
+        ),
+        Spec::BucSig(p, q) => relative(axe, &*q, dom, hay, cox, bug, nut, &Some(Hoon::KetHep(q.clone(), Box::new(p.clone())))),
+        Spec::BucWut(p, t) => decorate(choice_(*p.clone(), t.clone(), axe, mod_, dom, hay, cox, bug, nut, def), bug.clone(), nut.clone()),
+        Spec::BucTis(p, q) => Hoon::KetTis(p.clone(), Box::new(relative(axe, &*q, dom, hay, cox, bug, nut, def))),
+        Spec::BucPat(p, q) => decorate(
+            Hoon::WutCol(
+                Box::new(Hoon::DotWut(Box::new(Hoon::Axis(axe)))),
+                Box::new(relative(axe, &*q, dom, hay, cox, &vec![], &None, &None)),
+                Box::new(relative(axe, &*p, dom, hay, cox, &vec![], &None, &None)),
+            ),
+            bug.clone(),
+            nut.clone(),
+        ),
+        Spec::BucLus(p, q) => Hoon::Note(Note::Know(p.clone()),
+                                        Box::new(relative(axe, &*q, dom, hay, cox, bug, nut, def))),
+        Spec::BucDot(p, q) => {
+            let x = interface(Vair::Gold, *p.clone(), q.clone(), mod_, dom, hay, cox, bug, nut, def);
+            let y = home(x, hay.clone(), dom.clone());
+            decorate(y, bug.clone(), nut.clone())
+        }
+
+        Spec::BucFas(p, q) => {
+            let x = interface(Vair::Iron, *p.clone(), q.clone(), mod_, dom, hay, cox, bug, nut, def);
+            let y = home(x, hay.clone(), dom.clone());
+            decorate(y, bug.clone(), nut.clone())
+        }
+
+        Spec::BucZap(p, q) => {
+            let x = interface(Vair::Lead, *p.clone(), q.clone(), mod_, dom, hay, cox, bug, nut, def);
+            let y = home(x, hay.clone(), dom.clone());
+            decorate(y, bug.clone(), nut.clone())
+        }
+
+        Spec::BucTic(p, q) => {
+            let x = interface(Vair::Zinc, *p.clone(), q.clone(), mod_, dom, hay, cox, bug, nut, def);
+            let y = home(x, hay.clone(), dom.clone());
+            decorate(y, bug.clone(), nut.clone())
+        }
+    }
+}
 
 pub fn home(gen: Hoon,
             mut hay: WingType,
@@ -330,21 +782,23 @@ pub fn unreel(one: WingType, res: Vec<WingType>) -> Hoon {
     }
 }
 
+
 pub fn unfold(fun: Hoon, arg: Vec<Spec>) -> Hoon {
     let cencol_tail: Vec<Hoon> = arg.iter().map(|spec| Hoon::KetCol(Box::new(spec.clone()))).collect();
     Hoon::CenCol(Box::new(fun), cencol_tail)
 }
 
-//  make a normalizing gate (mold)
-pub fn factory(spec: Spec,
+//  TODO: accept args by ref?
+pub fn factory(mod_: Spec,
                 dom: u64,
                 hay: WingType,
                 cox: HashMap<Term, Spec>,
-                mut bug: Vec<Spot>,
+                bug: Vec<Spot>,
                 nut: Option<Note>,
                 def: Option<Hoon>) -> Hoon {
-    match spec {
+    match mod_ {
         Spec::Dbug(spot, spec) => {
+            let mut bug = bug.clone();
             bug.insert(0, spot);
             factory(*spec, dom, hay, cox, bug, nut, def)
         }
@@ -354,13 +808,13 @@ pub fn factory(spec: Spec,
             factory(*spec_clone, dom, hay, cox, bug, nut, Some(Hoon::KetHep(spec_clone2, Box::new(hoon))))
         }
         _ => {
-            match (def.clone(), spec.clone()) {
-                (Some(_d), Spec::BucMic(h)) => home(h, hay, dom),
-                (Some(_d), Spec::Like(wing, vec_wing)) => home(unreel(wing, vec_wing), hay, dom),
-                (Some(_d), Spec::Loop(term)) => home(Hoon::Limb(term), hay, dom),
-                (Some(_d), Spec::Make(h, s)) => home(unfold(h, s), hay, dom),
+            match (def.clone(), mod_.clone()) {
+                (Some(_), Spec::BucMic(h)) => decorate(home(h, hay, dom), bug, nut),
+                (Some(_), Spec::Like(wing, vec_wing)) => decorate(home(unreel(wing, vec_wing), hay, dom), bug, nut),
+                (Some(_), Spec::Loop(term)) => decorate(home(Hoon::Limb(term), hay, dom), bug, nut),
+                (Some(_), Spec::Make(h, s)) => decorate(home(unfold(h, s), hay, dom), bug, nut),
                 _ => {
-                    let spore_res = spore(spec.clone(),
+                    let spore_res = spore(mod_.clone(),
                                           dom.clone(),
                                           hay.clone(),
                                           cox.clone(),
@@ -374,8 +828,7 @@ pub fn factory(spec: Spec,
                     let tislus =  Hoon::TisLus(Box::new(Hoon::DotTis(Box::new(Hoon::Axis(14)),
                                                             Box::new(Hoon::Axis(2)))),
                                                Box::new(Hoon::Axis(6)));
-                    // let relative_res = relative(6, spec, descent_axis, hay, cox, bug, nut, def);
-                    let relative_res = Hoon::ZapZap;
+                    let relative_res = relative(6, &mod_, descent_axis, &hay, &cox, &bug, &nut, &def);
                     let tail = Hoon::TisLus(Box::new(relative_res),
                                             Box::new(tislus));
 
@@ -389,7 +842,7 @@ pub fn factory(spec: Spec,
 pub fn open(gen: Hoon) -> Hoon {  // desugarer
     match gen {
         Hoon::Axis(a) =>  Hoon::CenTis(vec![Limb::Axis(a)] , Vec::new()),
-        Hoon::Base(b) =>  factory(Spec::Base(b), 1, Vec::new(), HashMap::new(), Vec::new(), None, None),
+        Hoon::Base(b) =>  factory(Spec::Base(b), 1  , Vec::new(), HashMap::new(), Vec::new(), None, None),
         Hoon::Dbug(_p, q) => *q,
         _  =>  gen
     }
@@ -443,19 +896,6 @@ pub fn flay(gen: Hoon) -> Option<Skin> {
             Some(Skin::Term(t.to_string()))
         }
 
-        Hoon::Note(n, hoon) => {
-            match n {
-                Note::Help(h) => {
-                    let maybe_skin = flay(*hoon);
-                    match maybe_skin {
-                        Some(s) => Some(Skin::Help(h.to_string(), Box::new(s))),
-                        None => None,
-                    }
-                }
-                _ => None,
-            }
-        }
-
         Hoon::Wing(w) => {
             match w.as_slice() {
                 [Limb::Term(t)] => Some(Skin::Term(t.clone())),
@@ -476,7 +916,7 @@ pub fn flay(gen: Hoon) -> Option<Skin> {
             Some(Skin::Spec(s.clone(), Box::new(Skin::Base(BaseType::Noun))))
         }
 
-        Hoon::KetTisSkin(skin, h) => {
+        Hoon::KetTis(skin, h) => {
             let maybe_skin = flay(*h);
             match maybe_skin {
                 Some(s) => {
@@ -556,7 +996,6 @@ pub fn autoname(mod_spec: Spec) -> Option<Term> {  //  ++autoname:ax
             _ => None,
         },
         Spec::Dbug(_, q) => autoname(*q),
-        Spec::Gist(_, q) => autoname(*q),
         Spec::Leaf(p, _) => Some(p),
         Spec::Loop(p) => Some(p),
         Spec::Like(wing, _list_wing) => {
@@ -599,6 +1038,19 @@ pub fn autoname(mod_spec: Spec) -> Option<Term> {  //  ++autoname:ax
     }
 }
 
+pub fn decorate(gen: Hoon, bug: Vec<Spot>, nut: Option<Note>) -> Hoon {
+    let mut out = gen;
+
+    for spot in bug.into_iter().rev() {
+        out = Hoon::Dbug(spot, Box::new(out));
+    }
+
+    match nut {
+        None => out,
+        Some(note) => Hoon::Note(note, Box::new(out)),
+    }
+}
+
 pub fn blue(tik: Tiki, gen: Hoon) -> Hoon {
     match tik {
         Tiki::Hoon((None, h)) => gen,
@@ -633,7 +1085,7 @@ pub fn gray(tik: Tiki, gen: Hoon) -> Hoon {
         Tiki::Hoon((p, q)) => {
             let arg = match p {
                 None => q,
-                Some(u) => Box::new(Hoon::KetTisSkin(Skin::Term(u), q)),
+                Some(u) => Box::new(Hoon::KetTis(Skin::Term(u), q)),
             };
             Hoon::TisLus(arg, Box::new(gen))
         }
@@ -706,9 +1158,9 @@ pub fn left_child(n: u64) -> u64 {
     }
 }
 
-pub fn peg(a: u64, b: u64) -> Result<u64, &'static str> {  // this is broken...
+pub fn peg(a: u64, b: u64) -> Result<u64, &'static str> {
     if a == 0 || b == 0 {
-        return Err("a and b must be non-zero");
+        return Err("peg: a and b must be non-zero");
     }
 
     let k = b.ilog2();
@@ -769,7 +1221,7 @@ pub fn list_names_wide<'src>(
 ) -> impl Parser<'src, &'src str, Vec<Term>, Err<'src>>
 {
     symbol()
-    .separated_by(just(" "))
+    .separated_by(just(' '))
     .at_least(1)
     .collect::<Vec<_>>()
     .delimited_by(just("["), just("]"))
@@ -907,18 +1359,6 @@ pub fn variable_name_and_type<'src>(
     choice((not_named, named, just_type))
 }
 
-pub fn float_sand<'src>(
-) -> impl Parser<'src, &'src str, Hoon, Err<'src>>
-{
-    float().map(|(p, q)| Hoon::Sand(p, Noun::Atom(q)))
-}
-
-pub fn float_rock<'src>(
-) -> impl Parser<'src, &'src str, Hoon, Err<'src>>
-{
-    float().map(|(p, q)| Hoon::Rock(p, Noun::Atom(q)))
-}
-
 pub fn float<'src>(
 ) -> impl Parser<'src, &'src str, (String, String), Err<'src>>
 {
@@ -965,11 +1405,11 @@ pub fn list_wing_hoon_wide<'src>(
 ) -> impl Parser<'src, &'src str, Vec<(WingType, Hoon)>, Err<'src>>
 {
     let pair = winglist()
-                .then_ignore(just(" "))
+                .then_ignore(just(' '))
                 .then(hoon.clone());
 
     pair
-        .separated_by(just(",").then(just(" ")))
+        .separated_by(just(",").then(just(' ')))
         .at_least(1)
         .collect::<Vec<_>>()
 }
@@ -979,7 +1419,7 @@ pub fn list_hoon_wide<'src>(
 ) -> impl Parser<'src, &'src str, Vec<Hoon>, Err<'src>>
 {
     hoon_wide.clone()
-    .separated_by(just(" "))
+    .separated_by(just(' '))
     .at_least(1)
     .collect::<Vec<Hoon>>()
 }
@@ -989,7 +1429,7 @@ pub fn list_spec_closed_wide<'src>(
 ) -> impl Parser<'src, &'src str, Vec<Spec>, Err<'src>>
 {
     spec_wide.clone()
-    .separated_by(just(" "))
+    .separated_by(just(' '))
     .at_least(1)
     .collect::<Vec<_>>()
     .delimited_by(just('('), just(')'))
@@ -1126,9 +1566,7 @@ pub fn chapters<'src>(
                     arms_map.insert(name, hoon);
                 }
                 let key = opt_label.unwrap_or_else(|| "$".to_string());
-                let what = "".to_string();
-                let tome: Tome = (what, arms_map);
-                map_term_tome.insert(key, tome);
+                map_term_tome.insert(key, arms_map);
             }
             map_term_tome
         })
@@ -1190,6 +1628,27 @@ pub fn jet_signature<'src>(
     ))
 }
 
+//  +lute
+//
+pub fn noun_tall<'src>(
+    hoon:   impl ParserExt<'src, Hoon>,
+) -> impl Parser<'src, &'src str, Hoon, Err<'src>>
+{
+    hoon // can this wrongly match something?
+    .separated_by(gap())
+    .at_least(1)
+    .collect::<Vec<_>>()
+    .delimited_by(just('[').ignore_then(gap()),
+                gap().ignore_then(just(']')))
+    .map(|h| Hoon::ColTar(h))
+}
+
+pub fn newline<'src>(
+) -> impl Parser<'src, &'src str, (), Err<'src>>
+{
+    just('\n').labelled("Newline").ignored()
+}
+
 pub fn soil<'src>(
     hoon_wide:   impl ParserExt<'src, Hoon>,
 ) -> impl Parser<'src, &'src str, Vec<Woof>, Err<'src>>
@@ -1224,7 +1683,6 @@ pub fn soil<'src>(
             //
             sump.clone(),
         )).repeated()
-        .at_least(1)
         .collect::<Vec<_>>()
         .delimited_by(just("\""), just("\""));
 
@@ -1250,7 +1708,7 @@ pub fn soil<'src>(
             //
             // linebreak
             //
-                just('\n')
+                newline()
                 .ignore_then(just("\"\"\"").not())
                 .to(Woof::Atom('\n'.to_string())),
             //
@@ -1260,8 +1718,8 @@ pub fn soil<'src>(
             )).repeated()
             .at_least(1)
             .collect::<Vec<_>>()
-            .delimited_by(just("\"\"\"").ignore_then(just('\n')),
-                          just('\n').then_ignore(just("\"\"\"")));
+            .delimited_by(just("\"\"\"").ignore_then(newline()),
+                          newline().then_ignore(just("\"\"\"")));
 
     choice((wide_tape, tall_tape))
 }
@@ -1352,74 +1810,37 @@ pub fn tell<'src>(
         .map(|list| Hoon::Tell(list))
 }
 
-pub fn spec_term<'src>(
-) -> impl Parser<'src, &'src str, Spec, Err<'src>>
+pub fn constant<'src>(
+) -> impl Parser<'src, &'src str, (String, String), Err<'src>>
 {
     let buc =      // %$
-        just("%")
-        .ignore_then(just('$'))
-        .map(|_| Spec::Leaf("%tas".to_string(), "%$".to_string()));
-
-    let number =      // %123
-        just("%")
-        .ignore_then(decimal_number())
-        .map(|n| Spec::Leaf("%ud".to_string(), n));
-
-    let name =      // %foo
-        just("%")
-        .ignore_then(symbol())
-        .map(|s| Spec::Leaf("%tas".to_string(), s));
+        just('$')
+        .to(("%tas".to_string(), "%$".to_string()));
 
     let cord =      // %'foo'
-        just("%")
-        .ignore_then(cord())
-        .map(|s| Spec::Leaf("%t".to_string(), s));
+        cord()
+        .map(|s| ("%t".to_string(), s));
 
-    let yes =
-        just("%.y").to(Spec::Leaf("%f".to_string(), "0".to_string()));
+    let coin =      // %123, %~m5, etc.
+        nuck();
 
     let no =
-        just("%.n").to(Spec::Leaf("%f".to_string(), "1".to_string()));
+        just('|')
+        .to(("%f".to_string(), "1".to_string()));
 
-    choice((
-        buc,
-        number,
-        name,
-        cord,
-        yes,
-        no,
-    ))
-}
+    let yes =
+        just('&')
+        .to(("%f".to_string(), "0".to_string()));
 
-pub fn constant<'src>(
-) -> impl Parser<'src, &'src str, Hoon, Err<'src>>
-{
-    let buc_const =      // %$
-        just("%$")
-        .map(|_|
-            Hoon::Rock("%tas".to_string(), Noun::Atom("%$".to_string()))
-        );
-
-    let number_const =      // %123
-        just("%")
-        .ignore_then(number_rock());
-
-    let name_const =      // %foo
-        just("%")
-        .ignore_then(symbol())
-        .map(|s| Hoon::Rock("%tas".to_string(), Noun::Atom(s.to_string())));
-
-    let cord_const =      // %'foo'
-        just("%")
-        .ignore_then(cord())
-        .map(|n| Hoon::Rock("%t".to_string(), Noun::Atom(n)));
-
-    choice((
-        buc_const,
-        number_const,
-        name_const,
-        cord_const,
-    ))
+    just('%')
+    .ignore_then(
+        choice((
+            buc,
+            yes,
+            no,
+            cord,
+            coin,
+        )))
 }
 
 pub fn cord<'src>(
@@ -1465,7 +1886,7 @@ pub fn function_call<'src>(
     just('(')
         .ignore_then(hoon.clone())
         .then(
-            just(" ")
+            just(' ')
                 .ignore_then(hoon.clone())
                 .repeated()
                 .collect::<Vec<_>>()
@@ -1777,20 +2198,39 @@ pub fn posh(
 }
 
 pub fn nuck<'src>(
-    rad: bool, // rock or sand
-) -> impl Parser<'src, &'src str, Hoon, Err<'src>>
+) -> impl Parser<'src, &'src str, (String, String), Err<'src>>
 {
-    if rad {
-        choice((
-            symbol().map(|s| Hoon::Rock("tas".to_string(), Noun::Atom(s))),
-            number_rock(),
-        )).boxed()
-    } else {
-        choice((
-            symbol().map(|s| Hoon::Sand("tas".to_string(), Noun::Atom(s))),
-            number_sand(),
-        )).boxed()
-    }
+    choice((
+        symbol().map(|s| ("tas".to_string(), s)),
+        number(),
+        just('.').ignore_then(perd()),
+        just('~').ignore_then(
+            choice((
+                twid(),
+                empty().to(("%n".to_string(), "0".to_string())),
+            ))),
+    )).boxed()
+}
+
+pub fn perd<'src>(
+) -> impl Parser<'src, &'src str, (String, String), Err<'src>>
+{
+    zust()
+}
+
+pub fn zust<'src>(
+) -> impl Parser<'src, &'src str, (String, String), Err<'src>>
+{
+    choice((
+        ipv4_address().map(|s| ("if".to_string(), s)),
+        ipv6_address().map(|s| ("is".to_string(), s)),
+        float().map(|(p, q)| (p, q)),
+        just("y").to(("%f".to_string(), "0".to_string())),
+        just("n").to(("%f".to_string(), "1".to_string())),
+        just('~')
+            .ignore_then(phonemic_name_unscrambled())
+            .map(|s| ("q".to_string(), s)),
+    ))
 }
 
 pub fn path<'src>(
@@ -1801,19 +2241,19 @@ pub fn path<'src>(
     let wer = Arc::new(wer);
 
     let hasp = choice((
-                hoon_wide.clone().delimited_by(just("["), just("]")),
+                hoon_wide.clone().delimited_by(just('['), just(']')),
                 hoon_wide.clone()
-                    .separated_by(just(" "))
+                    .separated_by(just(' '))
                     .at_least(1)
                     .collect::<Vec<_>>()
-                    .delimited_by(just("("), just(")"))
+                    .delimited_by(just('('), just(')'))
                     .map(|list| {
                         let (first, rest) = list.split_first().unwrap();
                         Hoon::CenCol(Box::new(first.clone()), rest.to_vec())
                     }),
                 just('$').to(Hoon::Sand("tas".to_string(), Noun::Atom("%$".to_string()))),
                 cord().map(|s| Hoon::Sand("t".to_string(), Noun::Atom(s))),
-                nuck(false),
+                nuck().map(|(p, q)| Hoon::Sand(p, Noun::Atom(q))),
             ));
 
     let gasp = choice((
@@ -1904,79 +2344,62 @@ pub fn path<'src>(
 }
 
 pub fn number<'src>(
-) -> impl Parser<'src, &'src str, (String, Noun), Err<'src>>
+) -> impl Parser<'src, &'src str, (String, String), Err<'src>>
 {
     let ud_number = decimal_number()
                     .map(|s|
-                        ("ud".to_string(), Noun::Atom(s)));
+                        ("ud".to_string(), s));
 
     let ux_number = hexadecimal_number()
                     .map(|s|
-                        ("ux".to_string(), Noun::Atom(s)));
+                        ("ux".to_string(), s));
 
     let uc_number = bitcoin_address()
                     .map(|s|
-                        ("uc".to_string(), Noun::Atom(s)));
+                        ("uc".to_string(), s));
 
     let ub_number = binary_number()
                     .map(|s|
-                        ("ub".to_string(), Noun::Atom(s)));
+                        ("ub".to_string(), s));
 
     let uv_number = base32_number()
                     .map(|s|
-                        ("uv".to_string(), Noun::Atom(s)));
+                        ("uv".to_string(), s));
 
     let uw_number = base64_number()
                     .map(|s|
-                        ("uw".to_string(), Noun::Atom(s)));
+                        ("uw".to_string(), s));
 
     let ui_number =
-        regex(r"0i[0-9]+").map(|s: &str| {
-            ("ui".to_string(), Noun::Atom(s.to_string()))
+        regex(r"0i[0-9]+")
+        .map(|s: &str| {
+            ("ui".to_string(), s.to_string())
         });
 
     let signed_number = //  signed: -num and --num
         just('-').ignore_then(just('-').or_not())
         .ignore_then(
             choice((
-                decimal_number().map(|s| ("sd".to_string(), Noun::Atom(s))),
-                hexadecimal_number().map(|s| ("sx".to_string(), Noun::Atom(s))),
-                binary_number().map(|s| ("sb".to_string(), Noun::Atom(s))),
-                bitcoin_address().map(|s| ("sc".to_string(), Noun::Atom(s))),
-                base32_number().map(|s| ("sv".to_string(), Noun::Atom(s))),
-                base64_number().map(|s| ("sw".to_string(), Noun::Atom(s))),
-                regex(r"0i[0-9]+").map(|s: &str| ("si".to_string(), Noun::Atom(s.to_string()))),
+                decimal_number().map(|s| ("sd".to_string(), s)),
+                hexadecimal_number().map(|s| ("sx".to_string(), s)),
+                binary_number().map(|s| ("sb".to_string(), s)),
+                bitcoin_address().map(|s| ("sc".to_string(), s)),
+                base32_number().map(|s| ("sv".to_string(), s)),
+                base64_number().map(|s| ("sw".to_string(), s)),
+                regex(r"0i[0-9]+").map(|s: &str| ("si".to_string(), s.to_string())),
             ))
         );
 
-    // let unicode =
-    //     regex(r"~-~?[0-9a-fA-F]+\.?|~-[a-zA-Z]|~\[(?:~-[a-zA-Z0-9]+(?:\s+)?)+\]")
-    //     .map(|s: &str| {
-    //         ("c".to_string(), Noun::Atom(s.to_string()))
-    //     });
-
     choice((
         signed_number,
-        ux_number,
-        ui_number,
         ub_number,
-        ud_number,
         uc_number,
+        ui_number,
+        ux_number,
         uv_number,
         uw_number,
+        ud_number,
     ))
-}
-
-pub fn number_sand<'src>(
-) -> impl Parser<'src, &'src str, Hoon, Err<'src>>
-{
-    number().map(|(a, b)| Hoon::Sand(a, b))
-}
-
-pub fn number_rock<'src>(
-) -> impl Parser<'src, &'src str, Hoon, Err<'src>>
-{
-    number().map(|(a, b)| Hoon::Rock(a, b))
 }
 
 pub fn rap_bits(bloq: usize, list: &[u64]) -> u64 {
@@ -2012,7 +2435,7 @@ pub fn leading_zero_decimal_without_dots<'src>(
 }
 
 pub fn absolute_date<'src>(
-) -> impl Parser<'src, &'src str, Hoon, Err<'src>>
+) -> impl Parser<'src, &'src str, String, Err<'src>>
 {
     let year = decimal_without_dots()
             .then(just('-')
@@ -2055,11 +2478,11 @@ pub fn absolute_date<'src>(
     .then(month)
     .then(day)
     .then(hour_min_secs_fractions)
-    .to(Hoon::Sand("%da".to_string(), Noun::Atom("foo".to_string())))
+    .to("foo".to_string())
 }
 
 pub fn relative_date<'src>(
-) -> impl Parser<'src, &'src str, Hoon, Err<'src>>
+) -> impl Parser<'src, &'src str, String, Err<'src>>
 {
     one_of("dhms")
         .ignore_then(decimal_without_dots())
@@ -2075,7 +2498,7 @@ pub fn relative_date<'src>(
             .or_not()
             .map(|opt| opt.unwrap_or(vec![]))
         )
-    .to(Hoon::Sand("%dr".to_string(), Noun::Atom("foo".to_string())))
+    .to("foo".to_string())
 }
 
 /// Prefix syllables (Hoon `sis`), 256 entries × 3 bytes.
@@ -2173,7 +2596,7 @@ pub fn ind(a: &[u8]) -> Option<u8> {
 }
 
 pub fn phonemic_name<'src>(
-) -> impl Parser<'src, &'src str, Hoon, Err<'src>>
+) -> impl Parser<'src, &'src str, String, Err<'src>>
 {
     let tip = regex(r"[a-z]{3}")
         .try_map(|s: &str, span| {
@@ -2230,11 +2653,11 @@ pub fn phonemic_name<'src>(
             planet_moon.ignored(),
             star.ignored(),
             galaxy.ignored(),
-        )).to(Hoon::Sand("p".to_string(), Noun::Atom("foo".to_string())))
+        )).to("foo".to_string())
 }
 
 pub fn phonemic_name_unscrambled<'src>(
-) -> impl Parser<'src, &'src str, Hoon, Err<'src>>
+) -> impl Parser<'src, &'src str, String, Err<'src>>
 {
     let tip = regex(r"[a-z]{3}")   //  duplicated logic!
         .try_map(|s: &str, span| {
@@ -2291,35 +2714,37 @@ pub fn phonemic_name_unscrambled<'src>(
             .ignore_then(hif)
             .repeated()
             .at_least(1)
-    ).to(Hoon::Sand("q".to_string(), Noun::Atom("foo".to_string())))
+    ).to("foo".to_string())
+    // ).to(Hoon::Sand("q".to_string(), Noun::Atom("foo".to_string())))
 }
 
 pub fn twid<'src>(
-) -> impl Parser<'src, &'src str, Hoon, Err<'src>>
+) -> impl Parser<'src, &'src str, (String, String), Err<'src>>
 {
     choice((
         just('0')
             .ignore_then(regex(r"[0-9a-v]+").map(str::to_owned))
-            .map(|s| Hoon::Sand("%$".to_string(), Noun::Atom(s))),
+            .map(|s| ("%$".to_string(), s)),
         crub(),
     ))
 }
+
 pub fn crub<'src>(
-) -> impl Parser<'src, &'src str, Hoon, Err<'src>>
+) -> impl Parser<'src, &'src str, (String, String), Err<'src>>
 {
     choice((
-            absolute_date(),
-            relative_date(),
-            phonemic_name(),
+            absolute_date().to(("%da".to_string(), "foo".to_string())),
+            relative_date().to(("%dr".to_string(), "foo".to_string())),
+            phonemic_name().to(("%p".to_string(), "foo".to_string())),
             just('.')
                 .ignore_then(regex(r"[0-9a-z._~\-]+").map(str::to_owned))
-                .map(|s| Hoon::Sand("%ta".to_string(), Noun::Atom(s))),
+                .map(|s| ("%ta".to_string(), s)),
             just('~')
                 .ignore_then(urx())
-                .map(|s| Hoon::Sand("%t".to_string(), Noun::Atom(s))),
+                .map(|s| ("%t".to_string(), s)),
             just('-')
                 .ignore_then(urx())
-                .map(|s| Hoon::Sand("%c".to_string(), Noun::Atom(s))),
+                .map(|s| ("%c".to_string(), s)),
     ))
 }
 
@@ -2332,12 +2757,12 @@ pub fn constant_separator_hoon<'src>(
     choice((
         just('$').to(Hoon::Rock("%tas".to_string(), Noun::Atom("0".to_string()))),
         symbol().map(|s| Hoon::Rock("%tas".to_string(), Noun::Atom(s))),
-        decimal_number().map(|n| Hoon::Rock("%ud".to_string(), Noun::Atom(n))),
-        just("&").to(Hoon::Rock("%f".to_string(), Noun::Atom("0".to_string()))),
-        just("|").to(Hoon::Rock("%f".to_string(), Noun::Atom("1".to_string()))),
-        just("~").to(Hoon::Bust(BaseType::Null)),
+        number().map(|(p, q)| Hoon::Rock(p, Noun::Atom(q))),
+        just('&').to(Hoon::Rock("%f".to_string(), Noun::Atom("0".to_string()))),
+        just('|').to(Hoon::Rock("%f".to_string(), Noun::Atom("1".to_string()))),
+        just('~').to(Hoon::Bust(BaseType::Null)),
     ))
-    .then(just("+").or(just("/"))
+    .then(just('+').or(just('/'))
             .ignore_then(hoon.clone()))
     .map(|(p, hoon)| Hoon::Pair(Box::new(p), Box::new(hoon)))
 }
@@ -2375,7 +2800,7 @@ pub fn parenthesis_spec<'src>(
 {
     hoon_wide.clone()
         .then(
-            just(" ")
+            just(' ')
             .ignore_then(spec_wide.clone())
                 .repeated()
                 .collect::<Vec<_>>()
@@ -2419,7 +2844,7 @@ pub fn two_hoons_wide<'src>(
 ) -> impl Parser<'src, &'src str, (Hoon, Hoon), Err<'src>>
 {
     hoon_wide.clone()
-    .then_ignore(just(" "))
+    .then_ignore(just(' '))
     .then(hoon_wide.clone())
 }
 
@@ -2440,9 +2865,9 @@ pub fn three_hoons_wide<'src>(
 ) -> impl Parser<'src, &'src str, ((Hoon, Hoon), Hoon), Err<'src>>
 {
     hoon_wide.clone()
-    .then_ignore(just(" "))
+    .then_ignore(just(' '))
     .then(hoon_wide.clone())
-    .then_ignore(just(" "))
+    .then_ignore(just(' '))
     .then(hoon_wide.clone())
 }
 
@@ -2470,7 +2895,7 @@ pub fn two_specs_closed_wide<'src>(
 ) -> impl Parser<'src, &'src str, (Spec, Spec), Err<'src>>
 {
     spec_wide.clone()
-    .then_ignore(just(" "))
+    .then_ignore(just(' '))
     .then(spec_wide.clone())
     .delimited_by(just('('), just(')'))
 }
@@ -2481,7 +2906,7 @@ pub fn hoon_spec_wide<'src>(
 ) -> impl Parser<'src, &'src str, (Hoon, Spec), Err<'src>>
 {
     hoon_wide.clone()
-    .then_ignore(just(" "))
+    .then_ignore(just(' '))
     .then(spec_wide.clone())
     .delimited_by(just('('), just(')'))
 }
@@ -2514,7 +2939,7 @@ pub fn spec_hoon_wide<'src>(
 ) -> impl Parser<'src, &'src str, (Spec, Hoon), Err<'src>>
 {
     spec_wide.clone()
-    .then_ignore(just(" "))
+    .then_ignore(just(' '))
     .then(hoon_wide.clone())
 }
 
@@ -2544,7 +2969,7 @@ pub fn name_spec_wide<'src>(
 ) -> impl Parser<'src, &'src str, (String, Spec), Err<'src>>
 {
     symbol()
-    .then_ignore(just(" "))
+    .then_ignore(just(' '))
     .then(spec_wide.clone())
     .delimited_by(just('('), just(')'))
 }

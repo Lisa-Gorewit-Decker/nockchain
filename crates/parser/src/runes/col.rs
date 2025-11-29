@@ -114,11 +114,11 @@ pub fn colket_wide<'src>(
 ) -> impl Parser<'src, &'src str, Hoon, Err<'src>>
 {
     hoon_wide.clone()
-    .then_ignore(just(" "))
+    .then_ignore(just(' '))
     .then(hoon_wide.clone())
-    .then_ignore(just(" "))
+    .then_ignore(just(' '))
     .then(hoon_wide.clone())
-    .then_ignore(just(" "))
+    .then_ignore(just(' '))
     .then(hoon_wide.clone())
     .delimited_by(just('('), just(')'))
     .map(|(((p, q), s), r)|
@@ -175,7 +175,7 @@ pub fn list_syntax<'src>(
 {
     just("~[").to(true).or(just("[").to(false))   //  ~[  or  [
     .then(hoon_wide.clone()
-            .separated_by(just(" "))
+            .separated_by(just(' '))
             .at_least(1)
             .collect::<Vec<_>>()
     )

@@ -56,7 +56,7 @@ pub fn ketdot_wide<'src>(
 ) -> impl Parser<'src, &'src str, Hoon, Err<'src>>
 {
     hoon_wide.clone()
-    .then_ignore(just(" "))
+    .then_ignore(just(' '))
     .then(hoon_wide.clone())
     .delimited_by(just('('), just(')'))
     .map(|(p, q)| Hoon::KetDot(Box::new(p), Box::new(q)))
@@ -133,7 +133,7 @@ pub fn kettis<'src>(
     .ignore_then(hoon.clone())
     .then_ignore(gap())
     .then(hoon.clone())
-    .map(|(p, q)| Hoon::KetTis(Box::new(p), Box::new(q)))
+    .map(|(p, q)| Hoon::KetTis(Skin::Term("dsad".to_string()), Box::new(q)))
 }
 
 pub fn kettis_wide<'src>(
@@ -141,10 +141,10 @@ pub fn kettis_wide<'src>(
 ) -> impl Parser<'src, &'src str, Hoon, Err<'src>>
 {
     hoon_wide.clone()
-    .then_ignore(just(" "))
+    .then_ignore(just(' '))
     .then(hoon_wide.clone())
     .delimited_by(just('('), just(')'))
-    .map(|(p, q)| Hoon::KetTis(Box::new(p), Box::new(q)))
+    .map(|(p, q)| Hoon::KetTis(Skin::Term("dsad".to_string()), Box::new(q)))
 }
 
 pub fn kettis_irregular<'src>(
@@ -157,7 +157,7 @@ pub fn kettis_irregular<'src>(
                 match auto {
                     None => Err(Rich::custom(span, "cannot name spec")),
                     Some(auto_term) => {
-                        Ok(Hoon::KetTisSkin(Skin::Term(auto_term.to_string()),
+                        Ok(Hoon::KetTis(Skin::Term(auto_term.to_string()),
                                         Box::new(Hoon::KetTar(Box::new(spec.clone())))))
                     }
                 }
@@ -186,7 +186,7 @@ pub fn kethep_wide<'src>(
 
 {
     spec.clone()
-    .then_ignore(just(" "))
+    .then_ignore(just(' '))
     .then(hoon.clone())
     .delimited_by(just('('), just(')'))
     .map(|(s, h)| {
@@ -219,7 +219,7 @@ pub fn ketlus_wide<'src>(
 ) -> impl Parser<'src, &'src str, Hoon, Err<'src>>
 {
     hoon_wide.clone()
-    .then_ignore(just(" "))
+    .then_ignore(just(' '))
     .then(hoon_wide.clone())
     .delimited_by(just('('), just(')'))
     .map(|(p, q)| Hoon::KetLus(Box::new(p), Box::new(q)))

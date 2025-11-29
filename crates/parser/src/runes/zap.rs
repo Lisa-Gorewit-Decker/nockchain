@@ -81,7 +81,7 @@ pub fn zappat_wide<'src>(
         .separated_by(just(","))
         .at_least(1)
         .collect::<Vec<_>>()
-    .then_ignore(just(" "))
+    .then_ignore(just(' '))
     .then(two_hoons_wide(hoon_wide.clone()))
     .delimited_by(just('('), just(')'))
     .map(|(list, (p, q))| Hoon::ZapPat(list, Box::new(p), Box::new(q)))
@@ -174,7 +174,7 @@ pub fn zapgal_wide<'src>(
 ) -> impl Parser<'src, &'src str, Hoon, Err<'src>>
 {
     spec.clone()
-    .then_ignore(just(" "))
+    .then_ignore(just(' '))
     .then(hoon.clone())
     .delimited_by(just('('), just(')'))
     .map(|(p, q)| Hoon::ZapGal(Box::new(p), Box::new(q)))
@@ -222,12 +222,12 @@ pub fn zapwut_wide<'src>(
     decimal_number().map(|n| ZpwtArg::Atom(n))
                 .or(
                     decimal_number()
-                    .then_ignore(just(" "))
+                    .then_ignore(just(' '))
                     .then(decimal_number())
                     .delimited_by(just("["), just("]"))
                     .map(|(s1, s2)| ZpwtArg::Pair(s1, s2))
                 ).map(|p| p)
-    .then_ignore(just(" "))
+    .then_ignore(just(' '))
     .then(hoon_wide.clone())
     .delimited_by(just('('), just(')'))
     .map(|(p, q)| Hoon::ZapWut(p, Box::new(q)))

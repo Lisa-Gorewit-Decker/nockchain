@@ -68,7 +68,7 @@ pub fn dotket_wide<'src>(
 ) -> impl Parser<'src, &'src str, Hoon, Err<'src>>
 {
     spec_wide.clone()
-    .then_ignore(just(" "))
+    .then_ignore(just(' '))
     .then(list_hoon_wide(hoon_wide.clone()))
     .delimited_by(just('('), just(')'))
     .map(|(s, list)| Hoon::DotKet(Box::new(s), Box::new(Hoon::ColTar(list))))
@@ -131,7 +131,7 @@ pub fn dottar_wide<'src>(
 ) -> impl Parser<'src, &'src str, Hoon, Err<'src>>
 {
     hoon_wide.clone()
-    .then_ignore(just(" "))
+    .then_ignore(just(' '))
     .then(hoon_wide.clone())
     .delimited_by(just('('), just(')'))
     .map(|(p, q)| Hoon::DotTar(Box::new(p), Box::new(q)))
@@ -151,7 +151,7 @@ pub fn dottis_irregular<'src>(
 ) -> impl Parser<'src, &'src str, Hoon, Err<'src>>
 {
     hoon_wide.clone()
-    .then_ignore(just(" "))
+    .then_ignore(just(' '))
     .then(hoon_wide.clone())
     .delimited_by(just('('), just(')'))
     .map(|(p, q)| Hoon::DotTis(Box::new(p), Box::new(q)))

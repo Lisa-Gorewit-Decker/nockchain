@@ -91,7 +91,7 @@ pub fn bartar_wide<'src>(
 ) -> impl Parser<'src, &'src str, Hoon, Err<'src>>
 {
     spec_wide.clone()
-    .then_ignore(just(" "))
+    .then_ignore(just(' '))
     .then(hoon_wide.clone())
     .delimited_by(just('('), just(')'))
     .map(|(s, h)| Hoon::BarTar(Box::new(s), Box::new(h)))
@@ -115,7 +115,7 @@ pub fn barsig_wide<'src>(
 ) -> impl Parser<'src, &'src str, Hoon, Err<'src>>
 {
     spec_wide.clone()
-    .then_ignore(just(" "))
+    .then_ignore(just(' '))
     .then(hoon_wide.clone())
     .delimited_by(just('('), just(')'))
     .map(|(s, h)| Hoon::BarSig(Box::new(s), Box::new(h)))
@@ -139,7 +139,7 @@ fn bartis_wide<'src>(
 ) -> impl Parser<'src, &'src str, Hoon, Err<'src>>
 {
     spec_wide.clone()
-    .then_ignore(just(" "))
+    .then_ignore(just(' '))
     .then(hoon_wide.clone())
     .delimited_by(just('('), just(')'))
     .map(|(s, h)| Hoon::BarTis(Box::new(s), Box::new(h)))
@@ -161,7 +161,7 @@ pub fn barbuc_wide<'src>(
 ) -> impl Parser<'src, &'src str, Hoon, Err<'src>>
 {
     list_names_wide()
-    .then_ignore(just(" "))
+    .then_ignore(just(' '))
     .then(spec_wide.clone())
     .delimited_by(just('('), just(')'))
     .map(|(list, h)| Hoon::BarBuc(list, Box::new(h)))
@@ -224,7 +224,7 @@ pub fn barket_wide<'src>(
 ) -> impl Parser<'src, &'src str, Hoon, Err<'src>>
 {
     hoon_wide.clone()
-    .then_ignore(just(" "))
+    .then_ignore(just(' '))
     .then(chapters(hoon_wide.clone(), spec_wide.clone()))
     .delimited_by(just('('), just(')'))
     .map(|(h, map_term_tome)| Hoon::BarKet(Box::new(h), map_term_tome))
@@ -264,7 +264,7 @@ pub fn barcol_wide<'src>(
 ) -> impl Parser<'src, &'src str, Hoon, Err<'src>>
 {
     hoon_wide.clone()
-    .then_ignore(just(" "))
+    .then_ignore(just(' '))
     .then(hoon_wide.clone())
     .delimited_by(just('('), just(')'))
     .map(|(p, q)| Hoon::BarCol(Box::new(p), Box::new(q)))

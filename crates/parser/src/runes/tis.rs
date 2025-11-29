@@ -58,11 +58,11 @@ pub fn tiswut_wide<'src>(
 ) -> impl Parser<'src, &'src str, Hoon, Err<'src>>
 {
     winglist()
-    .then_ignore(just(" "))
+    .then_ignore(just(' '))
     .then(hoon_wide.clone())
-    .then_ignore(just(" "))
+    .then_ignore(just(' '))
     .then(hoon_wide.clone())
-    .then_ignore(just(" "))
+    .then_ignore(just(' '))
     .then(hoon_wide.clone())
     .delimited_by(just('('), just(')'))
     .map(|(((p, q), r), s)| Hoon::TisWut(p, Box::new(q), Box::new(r), Box::new(s)))
@@ -88,7 +88,7 @@ pub fn tisgar_wide<'src>(
 ) -> impl Parser<'src, &'src str, Hoon, Err<'src>>
 {
     hoon_wide.clone()
-    .then_ignore(just(" "))
+    .then_ignore(just(' '))
     .then(hoon_wide.clone())
     .delimited_by(just('('), just(')'))
     .map(|(p, q)| Hoon::TisGar(Box::new(p), Box::new(q)))
@@ -100,7 +100,7 @@ pub fn tisgal_wide<'src>(
 
 {
     hoon_wide.clone()
-    .then_ignore(just(" "))
+    .then_ignore(just(' '))
     .then(hoon_wide.clone())
     .delimited_by(just('('), just(')'))
     .map(|(p, q)| Hoon::TisGal(Box::new(p), Box::new(q)))
@@ -112,7 +112,7 @@ pub fn tishep_wide<'src>(
 
 {
     hoon_wide.clone()
-    .then_ignore(just(" "))
+    .then_ignore(just(' '))
     .then(hoon_wide.clone())
     .delimited_by(just('('), just(')'))
     .map(|(p, q)| Hoon::TisHep(Box::new(p), Box::new(q)))
@@ -158,11 +158,11 @@ pub fn tisket_wide<'src>(
 ) -> impl Parser<'src, &'src str, Hoon, Err<'src>>
 {
     variable_name_and_type(spec_wide.clone())
-    .then_ignore(just(" "))
+    .then_ignore(just(' '))
     .then(winglist())
-    .then_ignore(just(" "))
+    .then_ignore(just(' '))
     .then(hoon_wide.clone())
-    .then_ignore(just(" "))
+    .then_ignore(just(' '))
     .then(hoon_wide.clone())
     .delimited_by(just('('), just(')'))
     .map(|(((p, q), r), s)| Hoon::TisKet(p, q, Box::new(r), Box::new(s)))
@@ -188,9 +188,9 @@ pub fn tisfas_wide<'src>(
 ) -> impl Parser<'src, &'src str, Hoon, Err<'src>>
 {
     variable_name_and_type(spec_wide.clone())
-    .then_ignore(just(" "))
+    .then_ignore(just(' '))
     .then(hoon_wide.clone())
-    .then_ignore(just(" "))
+    .then_ignore(just(' '))
     .then(hoon_wide.clone())
     .delimited_by(just('('), just(')'))
     .map(|((p, q), r)| Hoon::TisFas(p, Box::new(r), Box::new(q)))
@@ -202,9 +202,9 @@ pub fn tismic_wide<'src>(
 ) -> impl Parser<'src, &'src str, Hoon, Err<'src>>
 {
     variable_name_and_type(spec_wide.clone())
-    .then_ignore(just(" "))
+    .then_ignore(just(' '))
     .then(hoon_wide.clone())
-    .then_ignore(just(" "))
+    .then_ignore(just(' '))
     .then(hoon_wide.clone())
     .delimited_by(just('('), just(')'))
     .map(|((p, q), r)| Hoon::TisMic(p, Box::new(r), Box::new(q)))
@@ -241,7 +241,7 @@ pub fn tiscol_wide<'src>(
 ) -> impl Parser<'src, &'src str, Hoon, Err<'src>>
 {
     list_wing_hoon_wide(hoon_wide.clone())
-    .then_ignore(just(" "))
+    .then_ignore(just(' '))
     .then(hoon_wide.clone())
     .delimited_by(just('('), just(')'))
     .map(|(p, q)| Hoon::TisCol(p, Box::new(q)))
@@ -265,7 +265,7 @@ pub fn tisbar_wide<'src>(
 ) -> impl Parser<'src, &'src str, Hoon, Err<'src>>
 {
     spec.clone()
-    .then_ignore(just(" "))
+    .then_ignore(just(' '))
     .then(hoon.clone())
     .delimited_by(just('('), just(')'))
     .map(|(p, q)| Hoon::TisBar(Box::new(p), Box::new(q)))
@@ -314,9 +314,9 @@ pub fn tistar_wide<'src>(
             .map(|s| Box::new(s))
             .or_not()
         )
-    .then_ignore(just(" "))
+    .then_ignore(just(' '))
     .then(hoon_wide.clone())
-    .then_ignore(just(" "))
+    .then_ignore(just(' '))
     .then(hoon_wide.clone())
     .delimited_by(just('('), just(')'))
     .map(|(((term, maybe_spec), q), r)| {
@@ -342,9 +342,9 @@ pub fn tisdot_wide<'src>(
 ) -> impl Parser<'src, &'src str, Hoon, Err<'src>>
 {
     winglist()
-    .then_ignore(just(" "))
+    .then_ignore(just(' '))
     .then(hoon_wide.clone())
-    .then_ignore(just(" "))
+    .then_ignore(just(' '))
     .then(hoon_wide.clone())
     .delimited_by(just('('), just(')'))
     .map(|((p, q), r)| Hoon::TisDot(p, Box::new(q), Box::new(r)))
@@ -408,7 +408,7 @@ pub fn tissig_wide<'src>(
 ) -> impl Parser<'src, &'src str, Hoon, Err<'src>>
 {
     hoon_wide.clone()
-    .separated_by(just(" "))
+    .separated_by(just(' '))
     .at_least(2)
     .collect::<Vec<_>>()
     .delimited_by(just('('), just(')'))
