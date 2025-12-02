@@ -133,7 +133,13 @@ pub fn kettis<'src>(
     .ignore_then(hoon.clone())
     .then_ignore(gap())
     .then(hoon.clone())
-    .map(|(p, q)| Hoon::KetTis(Skin::Term("dsad".to_string()), Box::new(q)))
+    .try_map(|(p, q), span| {
+        let maybe_skin = flay(p);
+        match maybe_skin {
+            Some(s) => Ok(Hoon::KetTis(s, Box::new(q))),
+            None => Err(Rich::custom(span, "Invalid variable declaration.")),
+        }
+    })
 }
 
 pub fn kettis_wide<'src>(
@@ -144,7 +150,13 @@ pub fn kettis_wide<'src>(
     .then_ignore(just(' '))
     .then(hoon_wide.clone())
     .delimited_by(just('('), just(')'))
-    .map(|(p, q)| Hoon::KetTis(Skin::Term("dsad".to_string()), Box::new(q)))
+    .try_map(|(p, q), span| {
+        let maybe_skin = flay(p);
+        match maybe_skin {
+            Some(s) => Ok(Hoon::KetTis(s, Box::new(q))),
+            None => Err(Rich::custom(span, "Invalid variable declaration.")),
+        }
+    })
 }
 
 pub fn kettis_irregular<'src>(
