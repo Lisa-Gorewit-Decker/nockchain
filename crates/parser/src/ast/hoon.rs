@@ -12,7 +12,12 @@ pub type What = String;
 pub type Term = String;
 pub type Tome = HashMap<Term, Hoon>;
 pub type Stud = String;
-pub type Tune = String;
+pub type Tune = (HashMap<Term, Option<Hoon>>, Vec<Hoon>);
+#[derive(serde::Serialize, PartialEq, Debug, Clone)]
+pub enum TermOrTune {
+    Term(Term),
+    Tune(Tune),
+}
 pub type Help = String;
 pub type Knot = String;
 pub type Cord = String;
@@ -46,53 +51,53 @@ pub enum Woof {
     Hoon(Hoon),
 }
 
-#[derive(serde::Serialize, PartialEq, Debug, Clone)]
-pub enum Mane {
-    Tag(String),
-    TagSpace(String, String),
-}
+    #[derive(serde::Serialize, PartialEq, Debug, Clone)]
+    pub enum Mane {
+        Tag(String),
+        TagSpace(String, String),
+    }
 
-#[derive(serde::Serialize, PartialEq, Debug, Clone)]
-pub struct Manx {
-    pub g: Marx,
-    pub c: Marl,
-}
+    #[derive(serde::Serialize, PartialEq, Debug, Clone)]
+    pub struct Manx {
+        pub g: Marx,
+        pub c: Marl,
+    }
 
-pub type Marl = Vec<Tuna>;
+    pub type Marl = Vec<Tuna>;
 
-pub type Mart = Vec<(Mane, Vec<Beer>)>;
+    pub type Mart = Vec<(Mane, Vec<Beer>)>;
 
-#[derive(serde::Serialize, PartialEq, Debug, Clone)]
-pub struct Marx {
-    pub n: Mane,
-    pub a: Mart,
-}
+    #[derive(serde::Serialize, PartialEq, Debug, Clone)]
+    pub struct Marx {
+        pub n: Mane,
+        pub a: Mart,
+    }
 
-#[derive(Debug, Clone)]
-pub enum Mare {
-    Manx(Manx),
-    Marl(Marl),
-}
+    #[derive(Debug, Clone)]
+    pub enum Mare {
+        Manx(Manx),
+        Marl(Marl),
+    }
 
-#[derive(Debug, Clone)]
-pub enum Maru {
-    Tuna(Tuna),
-    Marl(Marl),
-}
+    #[derive(Debug, Clone)]
+    pub enum Maru {
+        Tuna(Tuna),
+        Marl(Marl),
+    }
 
-#[derive(serde::Serialize, PartialEq, Debug, Clone)]
-pub enum Tuna {
-    Manx(Manx),
-    TunaTail
-}
+    #[derive(serde::Serialize, PartialEq, Debug, Clone)]
+    pub enum Tuna {
+        Manx(Manx),
+        TunaTail(TunaTail),
+    }
 
-#[derive(Debug, Clone)]
-pub enum TunaTail {
-    Tape(Hoon),
-    Manx(Hoon),
-    Marl(Hoon),
-    Call(Hoon),
-}
+    #[derive(serde::Serialize, PartialEq, Debug, Clone)]
+    pub enum TunaTail {
+        Tape(Hoon),
+        Manx(Hoon),
+        Marl(Hoon),
+        Call(Hoon),
+    }
 
 #[derive(serde::Serialize, PartialEq, Debug, Clone)]
 pub enum Chum {
@@ -273,7 +278,7 @@ pub type Alas = Vec<(Term, Hoon)>;
 #[derive(serde::Serialize, PartialEq, Debug, Clone)]
 pub enum TermOrPair {
     Term(Term),
-    Pair((Term, Box<Hoon>)),
+    Pair(Term, Box<Hoon>),
 }
 
 #[derive(serde::Serialize, PartialEq, Debug, Clone)]
@@ -295,7 +300,7 @@ pub enum Hoon {
     Rock(Term, Noun),
     Sand(Term, Noun),
     Tell(Vec<Hoon>),
-    Tune(Term),
+    Tune(TermOrTune),
     Wing(WingType),
     Yell(Vec<Hoon>),
     Xray(Manx),

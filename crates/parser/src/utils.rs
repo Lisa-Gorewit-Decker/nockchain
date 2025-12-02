@@ -2,6 +2,7 @@ use std::collections::*;
 use crate::ast::hoon::*;
 use std::sync::Arc;
 use std::path::PathBuf;
+use std::collections::HashMap;
 use chumsky::{
     input::{Stream, ValueInput, Input, StrInput},
     prelude::*,
@@ -839,12 +840,963 @@ pub fn factory(mod_: Spec,
     }
 }
 
-pub fn open(gen: Hoon) -> Hoon {  // desugarer
+pub fn open(gen: Hoon) -> Hoon {
     match gen {
-        Hoon::Axis(a) =>  Hoon::CenTis(vec![Limb::Axis(a)] , Vec::new()),
-        Hoon::Base(b) =>  factory(Spec::Base(b), 1  , Vec::new(), HashMap::new(), Vec::new(), None, None),
-        Hoon::Dbug(_p, q) => *q,
-        _  =>  gen
+        Hoon::Axis(a) => Hoon::CenTis(vec![Limb::Axis(a)], Vec::new()),
+        Hoon::Base(b) => factory(Spec::Base(b), 1, Vec::new(), HashMap::new(), Vec::new(), None, None),
+        Hoon::Bust(b) => example(
+            &Spec::Base(b), 1, &WingType::default(), &HashMap::new(), &Vec::new(), &None, &None,
+        ),
+        Hoon::Dbug(_, q) => *q,
+        Hoon::Eror(s) => panic!("{}", s),
+        Hoon::Knit(woofs) => {
+            let ktts = Hoon::KetTis(Skin::Term("v".to_string()), Box::new(Hoon::Axis(1)));
+
+            fn knit_loop(woofs: Vec<Woof>) -> Hoon {
+                if woofs.is_empty() {
+                    Hoon::Bust(BaseType::Null)
+                } else {
+                    let head = &woofs[0];
+                    let tail = knit_loop(woofs[1..].to_vec());
+                    match head {
+                        Woof::Atom(a) => {
+                            let sand = Hoon::Sand("tD".to_string(), Noun::Atom(a.to_string()));
+                            Hoon::Pair(Box::new(sand), Box::new(tail))
+                        }
+                        Woof::Hoon(p) => {
+                            let a = Hoon::Pair(
+                                        Box::new(Hoon::KetTis(
+                                                Skin::Term("a".to_string()),
+                                                Box::new(Hoon::KetLus(
+                                                                Box::new(Hoon::Limb("%$".to_string())),
+                                                                Box::new(Hoon::TisGar(
+                                                                        Box::new(Hoon::Limb("v".to_string())),
+                                                                        Box::new(p.clone())))
+                                                            )))),
+                                        Box::new(Hoon::KetTis(Skin::Term("a".to_string()), Box::new(tail)))
+                                    );
+                            let b = Hoon::BarHep(
+                                Box::new(
+                                    Hoon::WutPat(
+                                        vec![Limb::Term("a".to_string())],
+                                        Box::new(Hoon::Limb("b".to_string())),
+                                        Box::new(Hoon::Pair(
+                                            Box::new(Hoon::TisGal(Box::new(Hoon::Axis(2)),
+                                                                  Box::new(Hoon::Limb("a".to_string()))
+                                                                )),
+                                            Box::new(Hoon::CenTis(vec![Limb::Term("$".to_string())],
+                                                                vec![(vec![Limb::Term("a".to_string())],
+                                                                        Hoon::TisGal(Box::new(Hoon::Axis(3)),
+                                                                            Box::new(Hoon::Limb("a".to_string())),
+                                                                        ))])
+                                                    ))
+                                        )
+                                    )
+                                ));
+
+                            Hoon::TisLus(
+                                Box::new(a),
+                                Box::new(b),
+                            )
+
+                        }
+                    }
+                }
+            }
+
+            let ktls =
+                Hoon::KetLus(
+                    Box::new(
+                        Hoon::BarHep(Box::new(
+                            Hoon::WutCol(
+                                Box::new(Hoon::Bust(BaseType::Flag)),
+                                Box::new(Hoon::Bust(BaseType::Null)),
+                                Box::new(Hoon::Pair(
+                                    Box::new(Hoon::KetTis(
+                                        Skin::Term("i".to_string()),
+                                        Box::new(Hoon::Sand("tD".to_string(), Noun::Atom("0".to_string()))),
+                                    )),
+                                    Box::new(Hoon::KetTis(
+                                        Skin::Term("t".to_string()),
+                                        Box::new(Hoon::Limb("%$".to_string())),
+                                    )),
+                                )),
+                            )
+                        ))),
+                    Box::new(knit_loop(woofs))
+                );
+
+            let brhp = Hoon::BarHep(Box::new(ktls));
+
+            Hoon::TisGar(
+                Box::new(ktts),
+                Box::new(brhp),
+            )
+        }
+        Hoon::Leaf(term, atom) => factory(Spec::Leaf(term, atom), 1, Vec::new(), HashMap::new(), Vec::new(), None, None),
+        Hoon::Limb(term) => Hoon::CenTis(vec![Limb::Term(term)], Vec::new()),
+        Hoon::Wing(wing) => Hoon::CenTis(wing, Vec::new()),
+        Hoon::Note(_, q) => *q,
+
+        Hoon::Tell(hoons) => {
+            let zpgr = Hoon::ZapGar(Box::new(Hoon::ColTar(hoons)));
+            Hoon::CenCol(
+                Box::new(Hoon::Limb("noah".to_string())),
+                vec![zpgr],
+            )
+        }
+
+        Hoon::Yell(hoons) => {
+            let zpgr = Hoon::ZapGar(Box::new(Hoon::ColTar(hoons)));
+            Hoon::CenCol(
+                Box::new(Hoon::Limb("cain".to_string())),
+                vec![zpgr],
+            )
+        }
+
+        Hoon::BarBuc(sample, body) => {
+            if sample.is_empty() {
+                panic!("empty sample in BarBuc");
+            }
+
+            let tar = Spec::Base(BaseType::Noun);
+            let bcsg = Spec::BucSig(
+                Hoon::Base(BaseType::Noun),
+                Box::new(Spec::BucHep(
+                    Box::new(tar.clone()),
+                    Box::new(tar),
+                )),
+            );
+
+            let transformed: Vec<Spec> = sample
+                .iter()
+                .map(|term| Spec::BucTis(Skin::Term(term.clone()), Box::new(bcsg.clone())))
+                .collect();
+
+            let (first, rest) = transformed.split_first().unwrap();
+
+            Hoon::BarTar(
+                Box::new(Spec::BucCol(
+                    Box::new(first.clone()),
+                    rest.to_vec(),
+                )),
+                Box::new(Hoon::KetCol(Box::new(*body))),
+            )
+        }
+
+        Hoon::BarCab(spec, alas, arms) => {
+            let transformed_arms = arms
+                .into_iter()
+                .map(|(term, tome)| {
+                    let wrapped_pairs: Vec<(Term, Hoon)> = tome
+                            .into_iter()
+                            .map(|(face, expr)| {
+                                let wrapped_expr = alas.iter().rev().fold(expr, |body, (alas_face, alas_init)| {
+                                    Hoon::TisTar(
+                                        (alas_face.clone(), None),
+                                        Box::new(alas_init.clone()),
+                                        Box::new(body),
+                                    )
+                                });
+                                (face, wrapped_expr)
+                            })
+                            .collect();
+
+                    let tome_map: HashMap<_, _> = wrapped_pairs.into_iter().collect();
+
+                    (term, tome_map)
+                })
+                .collect();
+
+            Hoon::TisLus(
+                Box::new(Hoon::KetTar(spec)),
+                Box::new(Hoon::BarCen(None, transformed_arms)),
+            )
+        }
+
+        Hoon::BarCol(p, q) => Hoon::TisLus(p, Box::new(Hoon::BarDot(q))),
+
+        Hoon::BarDot(p) => {
+            let map_term_hoon = {
+                let mut m = HashMap::new();
+                m.insert("%$".to_string(), *p);
+                m
+            };
+            let map_term_tome = {
+                let mut m = HashMap::new();
+                m.insert("%$".to_string(), map_term_hoon);
+                m
+            };
+            Hoon::BarCen(None, map_term_tome)
+        }
+
+        Hoon::BarKet(p, arms) => {
+            let mut map = arms.clone();
+            if let Some(zil) = arms.get(&"%$".to_string()) {
+                let updated = {
+                    let mut inner = zil.clone();
+                    inner.insert("%$".to_string(), *p.clone());
+                    inner
+                };
+                map.insert("%$".to_string(), updated);
+            } else {
+                let mut inner = HashMap::new();
+                inner.insert("%$".to_string(), *p.clone());
+                map.insert("%$".to_string(), inner);
+            }
+            Hoon::TisGal(
+                Box::new(Hoon::Limb("%$".to_string())),
+                Box::new(Hoon::BarCen(None, map)),
+            )
+        }
+
+        Hoon::BarHep(p) => Hoon::TisGal(Box::new(Hoon::Limb("%$".to_string())), Box::new(Hoon::BarDot(Box::new(*p)))),
+
+        Hoon::BarSig(spec, q) => Hoon::KetBar(Box::new(Hoon::BarTis(spec.clone(), q.clone()))),
+
+        Hoon::BarTar(spec, q) => {
+            let map_term_hoon = {
+                let mut m = HashMap::new();
+                m.insert("%$".to_string(), *q);
+                m
+            };
+            let map_term_tome = {
+                let mut m = HashMap::new();
+                m.insert("%$".to_string(), map_term_hoon);
+                m
+            };
+            Hoon::TisLus(Box::new(Hoon::KetTar(spec)),
+                        Box::new(Hoon::BarPat(None, map_term_tome)))
+        }
+
+        Hoon::BarTis(spec, q) => {
+            let map_term_hoon = {
+                let mut m = HashMap::new();
+                m.insert("%$".to_string(), *q);
+                m
+            };
+            let map_term_tome = {
+                let mut m = HashMap::new();
+                m.insert("%$".to_string(), map_term_hoon);
+                m
+            };
+            Hoon::BarCab(spec, vec![], map_term_tome)
+        }
+
+        Hoon::BarWut(p) => Hoon::KetWut(Box::new(Hoon::BarDot(p))),
+
+        Hoon::ColKet(p, q, r, s) => {
+               Hoon::Pair(
+                    p,
+                    Box::new(Hoon::Pair(
+                        q,
+                        Box::new(Hoon::Pair(
+                            r,
+                            s
+                        ))
+                    ))
+                )
+            }
+
+        Hoon::ColCab(p, q) => Hoon::Pair(q, p),
+
+        Hoon::ColHep(p, q) => Hoon::Pair(p, q),
+
+        Hoon::ColLus(p, q, r) => {
+            Hoon::Pair(
+                    p,
+                    Box::new(
+                        Hoon::Pair(
+                            q,
+                            r,
+                        )
+                    )
+                )
+        }
+
+        Hoon::ColSig(hoons) => {
+            match hoons.as_slice() {
+                [] => Hoon::Rock("n".to_string(), Noun::Atom("0".to_string())),
+                [h] => h.clone(),
+                [h, tail @ ..] => {
+                    let rest = open(Hoon::ColSig(tail.to_vec()));
+                    Hoon::Pair(Box::new(h.clone()), Box::new(rest))
+                }
+            }
+        }
+
+        Hoon::ColTar(hoons) => {
+            match hoons.as_slice() {
+                [] => Hoon::ZapZap,
+                [h] => h.clone(),
+                [h, tail @ ..] => {
+                    let rest = open(Hoon::ColTar(tail.to_vec()));
+                    Hoon::Pair(Box::new(h.clone()), Box::new(rest))
+                }
+            }
+        }
+        Hoon::KetTar(spec) => Hoon::KetSig(
+                                    Box::new(example(&spec, 1, &Vec::new(), &HashMap::new(), &Vec::new(), &None, &None))),
+
+        Hoon::CenCab(wing, pairs) => {
+            Hoon::KetLus(Box::new(Hoon::Wing(wing.clone())),
+                        Box::new(Hoon::CenTis(wing, pairs)))
+        }
+
+        Hoon::CenDot(p, q) => Hoon::CenCol(q, vec![*p]),
+
+        Hoon::CenKet(p, q, r, s) => Hoon::CenCol(p, vec![*q, *r, *s]),
+
+        Hoon::CenLus(p, q, r) => Hoon::CenCol(p, vec![*q, *r]),
+
+        Hoon::CenHep(p, q) => Hoon::CenCol(p, vec![*q]),
+
+        Hoon::CenCol(p, hoons) => {
+            Hoon::CenSig(vec![Limb::Term("%$".to_string())], p, hoons)
+        }
+
+        Hoon::CenSig(wing, p, hoons) => {
+            fn compile_r_gen_rec(r_gen: &[Hoon], axe: u64) -> Vec<(Vec<Limb>, Hoon)> {
+                match r_gen.split_first() {
+                    None => vec![],
+                    Some((hoon, rest)) => {
+                        let (wing_axe, next_axe) = if rest.is_empty() {
+                            (axe, 0)
+                        } else {
+                            (peg(axe, 2).expect("+open: peg failed"), peg(axe, 3).expect("+open: peg failed"))
+                        };
+
+                        let wing = vec![
+                            Limb::Parent(0, None),
+                            Limb::Axis(wing_axe),
+                        ];
+
+                        let mut out = vec![(wing, hoon.clone())];
+                        if !rest.is_empty() {
+                            out.extend(compile_r_gen_rec(rest, next_axe));
+                        }
+                        out
+                    }
+                }
+            }
+            let list = compile_r_gen_rec(&hoons, 6);
+            Hoon::CenTar(wing, p, list)
+        }
+
+        Hoon::CenTar(mut wing, p, pairs) => {
+            if pairs.is_empty() {
+               return Hoon::TisGar(p, Box::new(Hoon::Wing(wing)));
+            }
+            wing.extend(vec![Limb::Axis(2)]);
+            let wrapped = pairs
+                    .into_iter()
+                    .map(|(p, q)| (p, Hoon::TisGar(Box::new(Hoon::Axis(3)), Box::new(q))))
+                    .collect();
+            Hoon::TisLus(p,
+                    Box::new(
+                        Hoon::CenTis(wing, wrapped)
+                    ))
+        }
+
+        Hoon::KetDot(p, q) => Hoon::KetLus(Box::new(Hoon::CenCol(p, vec![*q.clone()])), q),
+
+        Hoon::KetHep(spec, q) => {
+            let example_res =
+                example(&spec, 1, &Vec::new(), &HashMap::new(), &Vec::new(), &None, &None);
+            Hoon::KetLus(Box::new(example_res), q)
+        }
+
+        Hoon::KetTis(skin, p) => grip(skin, *p, vec![]),
+
+
+        Hoon::SigBar(p, q) => {
+            let fek = {
+                let fek = feck(*p.clone());
+                match fek {
+                    Some(s) => Hoon::Rock("tas".to_string(), Noun::Atom(s)),
+                    None => {
+                        Hoon::BarDot(Box::new(Hoon::CenCol(
+                            Box::new(Hoon::Limb("cain".to_string())),
+                            vec![Hoon::ZapGar(Box::new(Hoon::TisGal(
+                                              Box::new(Hoon::Axis(3)), p)))])))
+                    }
+                }
+            };
+            let hint = TermOrPair::Pair("mean".to_string(), Box::new(fek));
+            Hoon::SigGar(hint, q)
+        }
+
+        Hoon::SigCab(p, q) => Hoon::SigGar(
+            TermOrPair::Term(Term::from("mean")),
+            Box::new(Hoon::BarDot(p)),
+        ),
+
+        Hoon::SigCen(chum, p, tyre, q) => {
+            let clsg_vec = {
+                let mut nob = vec![];
+                let mut r = tyre;
+                while !r.is_empty() {
+                    let (p_i, q_i) = r.remove(0);
+                    nob.push(Hoon::Pair(
+                        Box::new(Hoon::Rock("$".to_string(), Noun::Atom(p_i))),
+                        Box::new(Hoon::ZapTis(Box::new(q_i))),
+                    ));
+                }
+                nob
+            };
+            let clls =
+                Hoon::ColLus(
+                    Box::new(Hoon::Rock("$".to_string(), chum_to_noun(chum))),
+                    Box::new(Hoon::ZapTis(q.clone())),
+                    Box::new(Hoon::ColSig(clsg_vec)),
+                );
+            Hoon::SigGal(
+                TermOrPair::Pair("fast".to_string(), Box::new(clls)),
+                q,
+            )
+        }
+
+        Hoon::SigFas(chum, q) => Hoon::SigCen(chum, Box::new(Hoon::Axis(7)), vec![], q),
+
+        Hoon::SigGal(term_or_pair, q) => Hoon::TisGal(Box::new(Hoon::SigGar(term_or_pair, Box::new( Hoon::Axis(1)))), q),
+
+        Hoon::SigBuc(term, q) => Hoon::SigGar(
+            TermOrPair::Pair("live".to_string(), Box::new(Hoon::Rock("$".to_string(), Noun::Atom(term)))),
+            q
+        ),
+
+        Hoon::SigLus(a, q) => Hoon::SigGar(
+            TermOrPair::Pair("memo".to_string(), Box::new(Hoon::Rock("$".to_string(), Noun::Atom(a.to_string())))),
+            q
+        ),
+
+        Hoon::SigPam(a, p, q) => Hoon::SigGar(
+            TermOrPair::Pair(
+                "slog".to_string(),
+                Box::new(Hoon::Pair(
+                    Box::new(Hoon::Sand("$".to_string(), Noun::Atom(a.to_string()))),
+                    Box::new(Hoon::CenCol(
+                    Box::new(Hoon::Limb("cain".to_string())),
+                    vec![Hoon::ZapGar(p)]))))
+            ),
+            q,
+        ),
+
+        Hoon::SigTis(p, q) => Hoon::SigGar(
+            TermOrPair::Pair("germ".to_string(), p),
+            q,
+        ),
+
+        Hoon::SigWut(a, p, q, r) => {
+            let wtdt = Hoon::WutDot(p, Box::new(Hoon::Bust(BaseType::Null)), Box::new(Hoon::Pair(Box::new(Hoon::Bust(BaseType::Null)),
+                                                                                                 Box::new(*q))));
+            let sgpm = Hoon::SigPam(a, Box::new(Hoon::Axis(5)), Box::new(Hoon::TisGar(Box::new(Hoon::Axis(3)), r.clone())));
+            let wtsg = Hoon::WutSig(vec![Limb::Axis(2)], Box::new(Hoon::TisGar(Box::new(Hoon::Axis(3)), r)), Box::new(sgpm));
+            Hoon::TisLus(
+                Box::new(wtdt),
+                Box::new(wtsg),
+                )
+        }
+
+        Hoon::MicTis(marl) => {
+            fn loop_marl(marl: Marl) -> Hoon {
+                match marl.split_first() {
+                    None => Hoon::Bust(BaseType::Null),
+                    Some((head, tail)) => match head {
+                        Tuna::Manx(m) => {
+                            Hoon::Pair(Box::new(Hoon::Xray(m.clone())), Box::new(loop_marl(tail.to_vec())))
+                        },
+                        Tuna::TunaTail(TunaTail::Manx(m)) => Hoon::Pair(Box::new(m.clone()), Box::new(loop_marl(tail.to_vec()))),
+                        Tuna::TunaTail(TunaTail::Tape(t)) => Hoon::Pair(Box::new(Hoon::MicFas(Box::new(t.clone()))),
+                                                        Box::new(loop_marl(tail.to_vec()))),
+                        Tuna::TunaTail(TunaTail::Call(h)) => Hoon::CenCol(Box::new(h.clone()), vec![loop_marl(tail.to_vec())]),
+                        Tuna::TunaTail(TunaTail::Marl(sub)) => {
+                            let tsbr = Box::new(Hoon::TisBar(
+                                Box::new(Spec::Base(BaseType::Cell)),
+                                Box::new(Hoon::BarPat(None, {
+                                    let sug = vec![Limb::Axis(12)];
+                                    let wtsg = Hoon::WutSig(sug.clone(),
+                                                            Box::new(Hoon::CenTis(sug.clone(), vec![(vec![Limb::Axis(1)], Hoon::Axis(13))])),
+                                                            Box::new(Hoon::CenTis(sug.clone(),
+                                                                vec![(vec![Limb::Axis(3)],
+                                                                    Hoon::CenTis(vec![Limb::Term("$".to_string())],
+                                                                        vec![(sug, Hoon::Axis(25))]
+                                                                    ))]))
+                                                        );
+                                    let map_term_hoon = {
+                                        let mut m = HashMap::new();
+                                        m.insert("%$".to_string(), wtsg);
+                                        m
+                                    };
+                                    let map_term_tome = {
+                                        let mut m = HashMap::new();
+                                        m.insert("%$".to_string(), map_term_hoon);
+                                        m
+                                    };
+                                    map_term_tome
+                                }))),
+                            );
+                            Hoon::CenDot(Box::new(Hoon::Pair(Box::new(sub.clone()),
+                                                        Box::new(loop_marl(tail.to_vec())))), tsbr)
+                        }
+                    }
+                }
+            }
+            loop_marl(marl)
+        }
+
+        Hoon::MicCol(p, hoons) => {
+            match hoons.as_slice() {
+                [] => Hoon::ZapZap,
+                [h] => h.clone(),
+                [h, tail @ ..] => {
+                    let yex = hoons;
+                    fn loop_yex(yex: &[Hoon]) -> Hoon {
+                        match yex {
+                            [] => panic!("empty yex"),
+                            [h] => Hoon::TisGal(Box::new(Hoon::Axis(3)), Box::new(h.clone())),
+                            [h, t @ ..] => Hoon::CenCol(
+                                Box::new(Hoon::Axis(2)),
+                                vec![Hoon::TisGar(Box::new(Hoon::Axis(3)), Box::new(h.clone())),
+                                loop_yex(t)]),
+                            _ => panic!("miccol error"),
+                        }
+                    }
+                    Hoon::TisLus(p, Box::new(loop_yex(&yex)))
+                }
+            }
+        }
+
+        Hoon::MicFas(p) => {
+            let zoy = Hoon::Rock("ta".to_string(), Noun::Atom("$".to_string()));
+            Hoon::ColSig(vec![Hoon::Pair(
+                                Box::new(zoy.clone()),
+                                 Box::new(Hoon::ColSig(vec![Hoon::Pair(
+                                        Box::new(zoy.clone()),
+                                        p.clone())])))])
+        }
+
+        Hoon::MicGal(spec, q, r, s) => {
+            let ktcl_p = Hoon::KetCol(spec.clone());
+            let cnhp = Hoon::CenHep(q, Box::new(ktcl_p));
+            let brts = Hoon::BarTis(spec, Box::new(Hoon::TisGar(Box::new(Hoon::Axis(3)), s)));
+            Hoon::CenLus(
+                Box::new(cnhp),
+                r,
+                Box::new(brts)
+            )
+        }
+
+        Hoon::MicSig(p, q) => {
+            fn loop_tail(p: Box<Hoon>, q: Vec<Hoon>) -> Hoon {
+                match q.as_slice() {
+                    [] => {
+                        panic!("open-mcsg")
+                    }
+                    [first, rest @ ..] => {
+                        if rest.is_empty() {
+                            return Hoon::TisGar(Box::new(Hoon::Limb("v".to_string())), Box::new(first.clone()));
+                        }
+                        let a_bind = Hoon::KetTis(Skin::Term("a".to_string()),
+                                                    Box::new(loop_tail(p.clone(), rest.to_vec())));
+
+                        let b_expr = Hoon::TisGar(
+                            Box::new(Hoon::Limb("v".to_string())),
+                            Box::new(first.clone()),
+                        );
+                        let b_bind =
+                            Hoon::KetTis(
+                            Skin::Term("b".to_string()),
+                                Box::new(Hoon::TisGar(Box::new(Hoon::Limb("v".to_string())), Box::new(first.clone())))
+                            );
+
+                        let wing_c = vec![
+                            Limb::Parent(0, None),
+                            Limb::Axis(6),
+                        ];
+                        let c_expr = Hoon::TisGal(
+                            Box::new(Hoon::Wing(wing_c)),
+                            Box::new(Hoon::Limb("b".to_string())),
+                        );
+                        let c_bind =
+                            Hoon::KetTis(
+                                Skin::Term("c".to_string()),
+                                Box::new(Hoon::TisGal(
+                                            Box::new(Hoon::Wing(vec![Limb::Parent(0, None), Limb::Axis(6)])),
+                                            Box::new(Hoon::Limb("b".to_string())))));
+
+                        let tsgr_v_p = Hoon::TisGar(
+                            Box::new(Hoon::Limb("v".to_string())),
+                            p.clone(),
+                        );
+                        let cncl_b_c = Hoon::CenCol(
+                            Box::new(Hoon::Limb("b".to_string())),
+                            vec![Hoon::Limb("c".to_string())],
+                        );
+                        let cnts_wing = vec![
+                            Limb::Parent(0, None),
+                            Limb::Axis(6),
+                        ];
+                        let cnts = Hoon::CenTis(
+                            vec![Limb::Term("a".to_string())],
+                            vec![(cnts_wing, Hoon::Limb("c".to_string()))],
+                        );
+                        let cnls = Hoon::CenLus(
+                            Box::new(tsgr_v_p),
+                            Box::new(cncl_b_c),
+                            Box::new(cnts),
+                        );
+
+                        Hoon::TisLus(
+                            Box::new(a_bind),
+                            Box::new(Hoon::TisLus(
+                                Box::new(b_bind),
+                                Box::new(Hoon::TisLus(
+                                    Box::new(c_bind),
+                                    Box::new(Hoon::BarDot(
+                                        Box::new(cnls),
+                                    ))
+                                ))
+                            ))
+                        )
+                    }
+                }
+            };
+
+            let tail = loop_tail(p, q);
+
+            Hoon::TisGar(
+                Box::new(Hoon::KetTis(Skin::Term("$".to_string()), Box::new(Hoon::Axis(1)))),
+                Box::new(tail),
+            )
+        },
+
+        Hoon::MicMic(spec, q) => Hoon::CenHep(
+            Box::new(factory(*spec, 1, Vec::new(), HashMap::new(), Vec::new(), None, None)),
+            q,
+        ),
+
+        Hoon::TisBar(spec, q) => Hoon::TisLus(Box::new(Hoon::KetTar(spec)), q),
+
+        Hoon::TisTar((term, spec_opt), p, q) => {
+            let inner = match spec_opt {
+                None => *p,
+                Some(spec_box) => Hoon::KetHep(spec_box, p),
+            };
+            let mut m = HashMap::new();
+            m.insert(term, Some(inner));
+            Hoon::TisGal(q, Box::new(Hoon::Tune(TermOrTune::Tune((m, vec![])))))
+        }
+
+        Hoon::TisCol(pairs, q) => {
+            let wing = vec![Limb::Term("$".to_string())];
+            Hoon::TisGar(Box::new(Hoon::CenCab(wing, pairs)), q)
+        }
+
+        Hoon::TisFas(skin, p, q) => Hoon::TisLus(Box::new(Hoon::KetTis(skin, p)), q),
+
+        Hoon::TisMic(skin, p, q) => Hoon::TisFas(skin, q, p),
+
+        Hoon::TisDot(wing, p, q) => Hoon::TisGar(Box::new(Hoon::CenCab(vec![Limb::Axis(1)], vec![(wing, *p)])), q),
+
+        Hoon::TisWut(wing, p, q, r) => {
+            let wtcl = Hoon::WutCol(p, q, Box::new(Hoon::Wing(wing.clone())));
+            Hoon::TisDot(wing, Box::new(wtcl), r)
+        }
+
+        Hoon::TisGal(p, q) => Hoon::TisGar(q, p),
+
+        Hoon::TisHep(p, q) => Hoon::TisLus(q, p),
+
+        Hoon::TisKet(skin, wing, p, q) => {
+            let wuy = weld(wing.clone(), vec![Limb::Term("v".to_string())]);
+            let v_bind =
+                Hoon::KetTis(Skin::Term("v".to_string()),  Box::new(Hoon::Axis(1)));
+            let a_bind =
+                Hoon::KetTis(Skin::Term("a".to_string()),
+                        Box::new(Hoon::TisGar(
+                            Box::new(Hoon::Limb("v".to_string())), p.clone())));
+            let tsdt =
+                Box::new(Hoon::TisDot(
+                    wuy.clone(),
+                    Box::new(Hoon::TisGal(
+                        Box::new(Hoon::Axis(3)),
+                        Box::new(Hoon::Limb("a".to_string())),
+                    )),
+                    Box::new(Hoon::TisGar(
+                        Box::new(Hoon::Pair(
+                            Box::new(Hoon::KetTis(
+                                Skin::Over(vec![Limb::Term("v".to_string())],  Box::new(skin)),
+                                Box::new(Hoon::TisGal(
+                                    Box::new(Hoon::Axis(2)),
+                                    Box::new(Hoon::Limb("a".to_string())),
+                                )))),
+                            Box::new(Hoon::Limb("v".to_string())),
+                        )),
+                        q
+                    )),
+                ));
+            Hoon::TisGar(
+                Box::new(v_bind),
+                Box::new(Hoon::TisLus(
+                    Box::new(a_bind),
+                    tsdt,
+                )))
+        }
+
+        Hoon::TisLus(p, q) => Hoon::TisGar(Box::new(
+                                            Hoon::Pair(p,
+                                                        Box::new(Hoon::Axis(1)))),
+                                                    q),
+
+        Hoon::TisSig(hoons) => {
+            match hoons.as_slice() {
+                [] => Hoon::Axis(1),
+                [h] => h.clone(),
+                [h, tail @ ..] => {
+                    let rest = open(Hoon::TisSig(tail.to_vec()));
+                    Hoon::TisGar(Box::new(h.clone()), Box::new(rest))
+                }
+            }
+        }
+        Hoon::WutBar(p) => {
+            match p.as_slice() {
+                [] => Hoon::Rock("f".to_string(), Noun::Atom("1".to_string())),
+                [head, tail @ ..] => {
+                    let recurse = open(Hoon::WutBar(tail.to_vec()));
+                    Hoon::WutCol(
+                        Box::new(head.clone()),
+                        Box::new(Hoon::Rock("f".to_string(), Noun::Atom("0".to_string()))),
+                        Box::new(recurse),
+                    )
+                }
+            }
+        },
+
+    Hoon::WutDot(p, q, r) => {
+        Hoon::WutCol(
+            Box::new(*p),
+            r,
+            q,
+        )
+    },
+
+    Hoon::WutGal(p, q) => {
+        Hoon::WutCol(
+            Box::new(*p),
+            Box::new(Hoon::ZapZap),
+            q,
+        )
+    },
+
+    Hoon::WutGar(p, q) => {
+        Hoon::WutCol(
+            Box::new(*p),
+            q,
+            Box::new(Hoon::ZapZap),
+        )
+    },
+
+    Hoon::WutKet(p, q, r) => {
+        let WutTis = Hoon::WutTis(
+            Box::new(Spec::Base(BaseType::Atom("%$".to_string()))),
+            p,
+        );
+        Hoon::WutCol(
+            Box::new(WutTis),
+            r,
+            q,
+        )
+    },
+
+    Hoon::WutHep(p, q) => {
+        match q.as_slice() {
+            [] => {
+                Hoon::Lost(Box::new(Hoon::Wing(p)))
+            }
+            [(spec, head), tail @ ..] => {
+                let wtts = Hoon::WutTis(Box::new(spec.clone()), p.clone());
+                let recurse = open(Hoon::WutHep(p.clone(), tail.to_vec()));
+                Hoon::WutCol(
+                    Box::new(wtts),
+                    Box::new(head.clone()),
+                    Box::new(recurse),
+                )
+            }
+        }
+    },
+
+    Hoon::WutLus(p, q, r) => {
+        let mut new_r = r.clone();
+        new_r.push((Spec::Base(BaseType::Noun), *q));
+        Hoon::WutHep(p, new_r)
+    },
+
+    Hoon::WutPam(p) => {
+        match p.as_slice() {
+            [] => Hoon::Rock("f".to_string(), Noun::Atom("0".to_string())),
+            [head, tail @ ..] => {
+                let recurse = open(Hoon::WutPam(tail.to_vec()));
+                Hoon::WutCol(
+                    Box::new(head.clone()),
+                    Box::new(recurse),
+                    Box::new(Hoon::Rock("f".to_string(), Noun::Atom("1".to_string()))),
+                )
+            }
+        }
+    },
+
+    Hoon::Xray(manx) => {
+        let open_mane = match &manx.g.n {
+            Mane::Tag(s) => Hoon::Rock("tas".to_string(), Noun::Atom(s.clone())),
+            Mane::TagSpace(a, b) => {
+                let left = Hoon::Rock("tas".to_string(), Noun::Atom(a.clone()));
+                let right = Hoon::Rock("tas".to_string(), Noun::Atom(b.clone()));
+                Hoon::Pair(Box::new(left), Box::new(right))
+            }
+        };
+
+        let clsg_items: Vec<Hoon> = manx.g.a
+            .iter()
+            .map(|(mane, beers)| {
+                let n_hoon = match &mane {
+                    Mane::Tag(s) => Hoon::Rock("tas".to_string(), Noun::Atom(s.clone())),
+                    Mane::TagSpace(a, b) => {
+                        let left = Hoon::Rock("tas".to_string(), Noun::Atom(a.clone()));
+                        let right = Hoon::Rock("tas".to_string(), Noun::Atom(b.clone()));
+                        Hoon::Pair(Box::new(left), Box::new(right))
+                    }
+                };
+                let woofs: Vec<Woof> = beers
+                    .iter()
+                    .map(|b| match b {
+                        Beer::Char(cord) => Woof::Atom(cord.clone()),
+                        Beer::Hoon(hoon) => Woof::Hoon(hoon.clone()),
+                    })
+                    .collect();
+
+                Hoon::Pair(
+                    Box::new(n_hoon),
+                    Box::new(Hoon::Knit(woofs)),
+                )
+            })
+            .collect();
+
+        let clsg = Hoon::ColSig(clsg_items);
+        let head = Hoon::Pair(Box::new(open_mane), Box::new(clsg));
+        let tail = Hoon::MicTis(manx.c);
+
+        Hoon::Pair(Box::new(head), Box::new(tail))
+    },
+
+    Hoon::WutPat(p, q, r) => {
+        let wtts = Hoon::WutTis(
+            Box::new(Spec::Base(BaseType::Atom("%$".to_string()))),
+            p,
+        );
+        Hoon::WutCol(
+            Box::new(wtts),
+            q,
+            r,
+        )
+    },
+
+    Hoon::WutSig(p, q, r) => {
+        let wtts = Hoon::WutTis(
+            Box::new(Spec::Base(BaseType::Null)),
+            p,
+        );
+        Hoon::WutCol(
+            Box::new(wtts),
+            q,
+            r,
+        )
+    },
+
+    Hoon::WutTis(spec, q) => {
+        let example_res = example(&spec, 1, &Vec::new(), &HashMap::new(), &Vec::new(), &None, &None);
+        Hoon::Fits(
+            Box::new(example_res),
+            q,
+        )
+    },
+
+    Hoon::WutZap(p) => {
+        Hoon::WutCol(
+            p,
+            Box::new(Hoon::Rock("f".to_string(), Noun::Atom("1".to_string()))),
+            Box::new(Hoon::Rock("f".to_string(), Noun::Atom("0".to_string()))),
+        )
+    },
+
+    Hoon::ZapGar(p) => {
+        let limb_onan = Hoon::Limb("onan".to_string());
+        let limb_abel = Hoon::Limb("abel".to_string());
+        let bcmc = Spec::BucMic(limb_abel);
+        let kttr = Hoon::KetTar(Box::new(bcmc));
+        let zpmc = Hoon::ZapMic(Box::new(kttr), p);
+
+        Hoon::CenCol(Box::new(limb_onan), vec![zpmc])
+    },
+
+    Hoon::ZapWut(arg, q) => {
+        const HOON_VERSION: u64 = 138;  // hardcoded...
+
+        let version_ok = match &arg {
+            ZpwtArg::Atom(s) => {
+                s.parse::<u64>().map_or(false, |v| HOON_VERSION <= v)
+            }
+            ZpwtArg::Pair(min_s, max_s) => {
+                match (min_s.parse::<u64>(), max_s.parse::<u64>()) {
+                    (Ok(min), Ok(max)) => min <= HOON_VERSION && HOON_VERSION <= max,
+                    _ => false,
+                }
+            }
+        };
+
+        if version_ok {
+            *q
+        } else {
+            panic!("hoon-version")
+        }
+    },
+
+        _ => gen,
+    }
+}
+
+pub fn chum_to_noun(chum: Chum) -> Noun {
+    match chum {
+        Chum::Lef(term) => {
+            Noun::Atom(term)
+        }
+        Chum::StdKel(term, u) => {
+            Noun::Cell(
+                Box::new(Noun::Atom(term)),
+                Box::new(Noun::Atom(u.to_string())),
+            )
+        }
+        Chum::VenProKel(t1, t2, u) => {
+            Noun::Cell(
+                Box::new(Noun::Atom(t1)),
+                Box::new(Noun::Cell(
+                    Box::new(Noun::Atom(t2)),
+                    Box::new(Noun::Atom(u.to_string())),
+                )),
+            )
+        }
+        Chum::VenProVerKel(t1, t2, u1, u2) => {
+            Noun::Cell(
+                Box::new(Noun::Atom(t1)),
+                Box::new(Noun::Cell(
+                    Box::new(Noun::Atom(t2)),
+                    Box::new(Noun::Cell(
+                        Box::new(Noun::Atom(u1.to_string())),
+                        Box::new(Noun::Atom(u2.to_string())),
+                    )),
+                )),
+            )
+        }
     }
 }
 
@@ -934,14 +1886,175 @@ pub fn flay(gen: Hoon) -> Option<Skin> {
         }
 
         _ => {
-            // let desugared = open(gen.clone());
-            // if desugared == gen {
+            let desugared = open(gen.clone());
+            if desugared == gen {
                 None
-            // } else {
-                // flay(desugared)
-            // }
+            } else {
+                flay(desugared)
+            }
         }
 
+    }
+}
+
+pub fn feck(gen: Hoon) -> Option<String> {
+    match gen {
+        Hoon::Sand(term, noun) => {
+            if term == "tas" {
+                match noun {
+                    Noun::Atom(s) => Some(s),
+                    Noun::Cell(_, _) => None,
+                }
+            } else {
+                None
+            }
+        }
+
+        Hoon::Dbug(_spot, expr) => feck(*expr),
+
+        _ => None,
+    }
+}
+
+pub fn grip(skin: Skin, gen: Hoon, rel: WingType) -> Hoon {
+    match skin {
+        Skin::Term(term) => {
+            Hoon::TisGal(
+                Box::new(Hoon::Tune(TermOrTune::Term(term))),
+                Box::new(gen),
+            )
+        }
+
+        Skin::Base(base) => {
+            if base == BaseType::Noun {
+                gen
+            } else {
+                Hoon::KetHep(
+                    Box::new(Spec::Base(base)),
+                    Box::new(gen),
+                )
+            }
+        }
+
+        Skin::Cell(car_skin, cdr_skin) => {
+            let haf = half(gen.clone());
+            match haf {
+                None => {
+                    let car_gen = Hoon::Axis(4);
+                    let cdr_gen = Hoon::Axis(5);
+                    let pair = Hoon::Pair(
+                        Box::new(grip(*car_skin, car_gen, rel.clone())),
+                        Box::new(grip(*cdr_skin, cdr_gen, rel.clone())),
+                    );
+                    Hoon::TisLus(Box::new(gen), Box::new(pair))
+                }
+                Some((p, q)) => {
+                    Hoon::Pair(
+                        Box::new(grip(*car_skin, p, rel.clone())),
+                        Box::new(grip(*cdr_skin, q, rel.clone())),
+                    )
+                }
+            }
+        }
+
+        Skin::Dbug(spot, inner_skin) => {
+            Hoon::Dbug(
+                spot,
+                Box::new(grip(*inner_skin, gen, rel)),
+            )
+        }
+
+        Skin::Leaf(aura, atom) => {
+            Hoon::KetHep(
+                Box::new(Spec::Leaf(aura, atom)),
+                Box::new(gen),
+            )
+        }
+
+        Skin::Name(term, inner_skin) => {
+            Hoon::TisGal(
+                Box::new(Hoon::Tune(TermOrTune::Term(term))),
+                Box::new(grip(*inner_skin, gen, rel)),
+            )
+        }
+
+        Skin::Over(mut wing, inner_skin) => {
+            wing.extend(rel);
+            grip(*inner_skin, gen, wing)
+        }
+
+        Skin::Spec(spec, inner_skin) => {
+            let check_skin = if rel.is_empty() {
+                spec
+            } else {
+                Box::new(Spec::Over(rel.clone(), spec))
+            };
+
+            let inner = grip(*inner_skin, gen, rel);
+
+            Hoon::KetHep(
+                check_skin,
+                Box::new(inner),
+            )
+        }
+
+        Skin::Wash(depth) => {
+            let wing: WingType = (0..depth)
+                    .map(|_| Limb::Parent(0, None))
+                    .collect();
+            Hoon::TisGal(
+                Box::new(Hoon::Wing(wing)),
+                Box::new(gen),
+            )
+        }
+    }
+}
+
+pub fn half(gen: Hoon) -> Option<(Hoon, Hoon)> {
+    match gen {
+         Hoon::Pair(car, cdr) => {
+            Some((*car, *cdr))
+        }
+
+        Hoon::Dbug(_spot, expr) => {
+            half(*expr)
+        }
+
+        Hoon::ColCab(car, cdr) => {
+            Some((*cdr, *car))
+        }
+
+        Hoon::ColHep(car, cdr) => {
+            Some((*car, *cdr))
+        }
+
+        Hoon::ColKet(a, b, c, d) => {
+            let tail = Hoon::ColLus(b, c, d);
+            Some((*a, tail))
+        }
+
+        Hoon::ColSig(mut items) => {
+            if items.is_empty() {
+                None
+            } else {
+                let head = items.remove(0);
+                Some((head, Hoon::ColSig(items)))
+            }
+        }
+
+        Hoon::ColTar(mut items) => {
+            if items.is_empty() {
+                None
+            } else if items.len() == 1 {
+                half(items.remove(0))
+            } else {
+                let head = items.remove(0);
+                let tail = Hoon::ColTar(items);
+                Some((head, tail))
+            }
+        }
+
+        _ => None,
     }
 }
 

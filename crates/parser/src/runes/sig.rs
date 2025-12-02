@@ -302,7 +302,7 @@ pub fn siggar_wide<'src>(
                 Hoon::SigGar(TermOrPair::Term(term), Box::new(q))
             }
             Some(h) => {
-                Hoon::SigGar(TermOrPair::Pair((term, Box::new(h))), Box::new(q))
+                Hoon::SigGar(TermOrPair::Pair(term, Box::new(h)), Box::new(q))
             }
         }
     })
@@ -325,7 +325,7 @@ pub fn siggar<'src>(
                 Hoon::SigGar(TermOrPair::Term(term), Box::new(q))
             }
             Some(h) => {
-                Hoon::SigGar(TermOrPair::Pair((term, Box::new(h))), Box::new(q))
+                Hoon::SigGar(TermOrPair::Pair(term, Box::new(h)), Box::new(q))
             }
         }
     })
@@ -348,7 +348,7 @@ pub fn siggal<'src>(
                 Hoon::SigGal(TermOrPair::Term(term), Box::new(q))
             }
             Some(h) => {
-                Hoon::SigGal(TermOrPair::Pair((term, Box::new(h))), Box::new(q))
+                Hoon::SigGal(TermOrPair::Pair(term, Box::new(h)), Box::new(q))
             }
         }
     })
@@ -371,7 +371,7 @@ pub fn siggal_wide<'src>(
                 Hoon::SigGal(TermOrPair::Term(term), Box::new(q))
             }
             Some(h) => {
-                Hoon::SigGal(TermOrPair::Pair((term, Box::new(h))), Box::new(q))
+                Hoon::SigGal(TermOrPair::Pair(term, Box::new(h)), Box::new(q))
             }
         }
     })
