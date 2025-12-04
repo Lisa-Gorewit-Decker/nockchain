@@ -1,6 +1,5 @@
-resolver = "2"
-
 [workspace]
+resolver = "2"
 members = ["crates/nockchain-api", "crates/nockchain-explorer-tui", "crates/nockchain-peek", "crates/equix-latency", "crates/hoon", "crates/hoonc", "crates/kernels", "crates/nockapp", "crates/nockapp-grpc", "crates/nockapp-grpc-proto", "crates/nockchain", "crates/nockchain-libp2p-io", "crates/nockchain-math", "crates/nockchain-types", "crates/nockchain-wallet", "crates/raw-tx-checker", "crates/nockvm/rust/ibig", "crates/nockvm/rust/murmur3", "crates/nockup", "crates/nockvm/rust/nockvm", "crates/nockvm/rust/nockvm_macros", "crates/noun-serde", "crates/noun-serde-derive", "crates/zkvm-jetpack"]
 
 [workspace.package]
