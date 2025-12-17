@@ -337,6 +337,233 @@ conclusion of each event. An intermediate step is the copying happens, but the
 NockStack continues to work as it is - e.g. it also performs the copying to the
 opposite end of the arena task.
 
+### Phase 1 spec
+
+Here is a more detailed spec for phase 1:
+
+The central struct for the PMA:
+```rust
+pub struct Pma {
+    /// The underlying arena for memory management and pointer resolution
+    arena: Arc<Arena>,
+    /// Current allocation offset in words (bump pointer)
+    alloc_offset: AtomicUsize,
+    /// Path to the backing file (for future file-backed persistence)
+    path: PathBuf,
+}
+```
+
+As the `Pma` is a place where `Noun`s get allocated, it ought to implement
+`NounAllocator`:
+```rust
+impl NounAllocator for Pma { ... }
+```
+
+Everything that lives in a NockStack that we'd like to live in the PMA should implement a `PmaCopy`
+trait:
+```rust
+pub trait PmaCopy {
+    unsafe fn copy_to_pma(&mut self, stack: &mut NockStack, pma: &mut Pma);
+    unsafe fn assert_in_pma(&self, pma: &Pma);
+}
+```
+I'm reasonably sure that the following types may be copied into the PMA:
+```rust
+// nouns
+impl PmaCopy for Noun { ... } // Calls copy_noun_to_pma below
+// The rest of the Noun types probably just call .as_noun().copy_to_pma()
+impl PmaCopy for Atom { ... }
+impl PmaCopy for IndirectAtom { ... }
+impl PmaCopy for DirectAtom { ... }
+impl PmaCopy for Allocated { ... }
+impl PmaCopy for Cell { ... }
+// cache
+impl<T: Copy + PmaCopy> PmaCopy for Hamt<T> { ... }
+// jet state
+impl PmaCopy for Warm { ... }
+impl PmaCopy for WarmEntry { ... }
+impl PmaCopy for Hot { ... }
+impl PmaCopy for Batteres { ... }
+impl PmaCopy for BatteriesList { ... }
+impl PmaCopy for NounList { ... }
+impl PmaCopy for Cold { ... }
+```
+I'm not quite as sure that these should be, but `Preserve` is implemented for
+them so I'm listing them here.
+```rust
+impl PmaCopy for () { ... } // Ctrl-F d01347fd for why this is implemented for Preserve. It also implements
+                            // Retag which makes me think it probably will be.
+//
+// These get implemented for Result types. Not sure Results will ever end up in the PMA? Retag is not implemented for them.
+impl PmaCopy<T: PmaCopy, E: PmaCopy> PmaCopy for Result<T, E> { ... }
+impl PmaCopy for bool { ... }
+impl PmaCopy for u32 { ... }
+impl PmaCopy for usize { ... }
+impl PmaCopy for AllocationError { ... } // would be insane for allocation errors to have a reason to end up in the PMA
+```
+
+The main function to accomplish copying to the PMA for `Nouns`. Something like this:
+```rust
+pub unsafe fn copy_noun_to_pma(
+    stack: &NockStack,
+    pma: &Pma,
+    root_ptr: &mut Noun,
+) -> Result<(), PmaError> {
+    assert_acyclic!(*root_ptr);
+    assert_no_forwarding_pointers!(*root_ptr);
+
+    let arena = pma.arena();
+
+    // Skip direct atoms - nothing to evacuate
+    let root_allocated = match root_ptr.as_either_direct_allocated() {
+        Either::Left(_direct) => return Ok(()),
+        Either::Right(allocated) => allocated,
+    };
+
+    // If already in PMA (offset form), nothing to do
+    if root_allocated.is_offset() {
+        return Ok(());
+    }
+
+    // Not in current frame? Already preserved elsewhere, nothing to do
+    if !stack.is_in_frame(root_allocated.to_raw_pointer_with_arena(arena)) {
+        return Ok(());
+    }
+
+    // Worklist: (source noun, destination pointer)
+    let mut work: Vec<(Noun, *mut Noun)> = Vec::with_capacity(32);
+    work.push((*root_ptr, root_ptr as *mut Noun));
+
+    while let Some((value, dest_ptr)) = work.pop() {
+        match value.as_either_direct_allocated() {
+            Either::Left(_direct) => {
+                // Direct atoms are copied as-is
+                *dest_ptr = value;
+            }
+            Either::Right(allocated) => {
+                // Check for forwarding pointer
+                if let Some(forwarded) = forwarding_pointer_for_pma(allocated, pma) {
+                    *dest_ptr = forwarded.as_noun();
+                    continue;
+                }
+
+                // Already in PMA?
+                if allocated.is_offset() {
+                    *dest_ptr = value;
+                    continue;
+                }
+
+                // Not in current frame? (already preserved elsewhere)
+                if !stack.is_in_frame(allocated.to_raw_pointer_with_arena(arena)) {
+                    *dest_ptr = value;
+                    continue;
+                }
+
+                match allocated.as_either() {
+                    Either::Left(mut indirect) => {
+                        let size = indirect_alloc_size(indirect, arena);
+
+                        // Allocate in PMA
+                        let pma_ptr = pma.alloc_ptr(size)?;
+
+                        // Copy data (metadata + size + data words)
+                        let src_ptr = indirect.to_raw_pointer_with_arena(arena);
+                        copy_nonoverlapping(src_ptr, pma_ptr, size);
+
+                        // Set forwarding pointer in source
+                        indirect.set_forwarding_pointer(pma_ptr);
+
+                        // Compute offset and create PMA-offset form noun
+                        let offset = pma.offset_from_ptr(pma_ptr as *const u8);
+                        *dest_ptr = IndirectAtom::from_offset_words(offset).as_noun();
+                    }
+                    Either::Right(mut cell) => {
+                        // Allocate in PMA
+                        let pma_ptr = pma.alloc_ptr(word_size_of::<CellMemory>())?;
+                        let pma_cell = pma_ptr as *mut CellMemory;
+
+                        // Copy metadata
+                        let src_cell = cell.to_raw_pointer_with_arena(arena);
+                        (*pma_cell).metadata = (*src_cell).metadata;
+
+                        // Get head and tail before setting forwarding pointer
+                        let head = (*src_cell).head;
+                        let tail = (*src_cell).tail;
+
+                        // Set forwarding pointer in source
+                        cell.set_forwarding_pointer(pma_cell);
+
+                        // Queue head and tail for processing
+                        // Note: we write to the PMA cell's head/tail slots
+                        work.push((tail, &mut (*pma_cell).tail));
+                        work.push((head, &mut (*pma_cell).head));
+
+                        // Compute offset and create PMA-offset form noun
+                        let offset = pma.offset_from_ptr(pma_ptr as *const u8);
+                        *dest_ptr = Cell::from_offset_words(offset).as_noun();
+                    }
+                }
+            }
+        }
+    }
+
+    assert_acyclic!(*noun);
+    assert_no_forwarding_pointers!(*noun);
+
+    Ok(())
+}
+```
+
+#### Tests
+Summary of tests to be implemented.
+
+```rust
+    // Verifies bump allocation returns sequential offsets and correctly tracks free space.
+    fn test_pma_allocation() { ... }
+    // Verifies offset-to-pointer and pointer-to-offset conversions are inverses of each other.
+    fn test_pma_offset_round_trip() { ... }
+    // Verifies reset() clears the allocation pointer and reset_to() sets it to a specific offset.
+    fn test_pma_reset() { ... }
+    // Verifies thread-local PMA installation, access via with_current(), and cleanup via clear.
+    fn test_pma_thread_local() { ... }
+    // Verifies direct atoms are unchanged by evacuation since they fit in a single word.
+    fn test_evacuate_direct_atom() { ... }
+    // Verifies indirect atoms (too large for direct representation) are copied to PMA and converted to offset form.
+    fn test_evacuate_indirect_atom() { ... }
+    // Verifies a simple cell with direct atom contents is evacuated and readable from PMA.
+    fn test_evacuate_simple_cell() { ... }
+    // Verifies nested cell structures are fully evacuated with all sub-cells in offset form.
+    fn test_evacuate_nested_cells() { ... }
+    // Verifies cells containing indirect atoms have both the cell and atoms correctly evacuated.
+    fn test_evacuate_with_indirect_atoms() { ... }
+    // Verifies structural sharing is preserved: [x x] evacuates x only once, with both refs pointing to same PMA location.
+    fn test_evacuate_shared_structure() { ... }
+    // Verifies sharing is preserved across separate evacuate calls via forwarding pointers left in stack memory.
+    fn test_evacuate_multiple_nouns_preserves_sharing() { ... }
+    // Verifies evacuating an already-evacuated noun is a no-op that allocates nothing.
+    fn test_evacuate_already_evacuated() { ... }
+    // Verifies deeply nested structures are fully evacuated and traversable after evacuation.
+    fn test_evacuate_deep_tree() { ... }
+    // Verifies contains_ptr correctly identifies pointers inside vs outside the PMA memory region.
+    fn test_pma_contains_ptr() { ... }
+    // Verifies allocation fails gracefully when PMA is full, rolling back the failed allocation.
+    fn test_pma_out_of_memory() { ... }
+    // checks that allocating in PMA bumps the alloc ptr
+    fn test_persistent_arena_allocation_is_monotonic() { ... }
+    // checks NockStack is empty after moving noun to PMA,
+    fn test_pma_preserve_moves_noun_and_resets_stack() { ... }
+    // does a HAMT preserve work?
+    fn test_preserve_hamt_round_trip()  { ... }
+    // jet state round trip tests
+    fn test_preserve_warm_round_trip() { ... }
+    fn test_preserve_warm_entry_round_trip() { ... }
+    fn test_preserve_hot_round_trip() { ... }
+    fn test_preserve_batteries_round_trip() { ... }
+    fn test_preserve_batteries_list_round_trip() { ... }
+    fn test_preserve_noun_list_round_trip() { ... }
+    fn test_preserve_cold_round_trip() { ... }
+```
+
 ## Phase 2
 
 Once we have successfully separated out NockStack from the PMA, we need to
