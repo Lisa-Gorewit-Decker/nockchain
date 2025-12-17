@@ -301,6 +301,25 @@ This consists of two phases:
 
 Phase 1 is to separate out the NockStack from the arena.
 
+```
+
+  ┌──────────────────────┐    ┌──────────────────────┐
+  │      NockStack       │    │         PMA          │
+  │(ephemeral, anon mmap)│    │  (persistent, file)  │
+  │                      │    │                      │
+  │ [frames][stk→ ←alloc]│    │ [bump-allocated      │
+  │                      │    │  nouns in offset     │
+  │ Cleared after each   │    │  form]               │
+  │ event                │    │                      │
+  │                      │    │ Loaded at boot,      │
+  │ Stack-pointer form   │    │ persisted to disk    │
+  │ only                 │    │                      │
+  └──────────────────────┘    └──────────────────────┘
+           │                            ▲
+           │   evacuate_to_pma()        │
+           └────────────────────────────┘
+```
+
 We need to push the persistent arena to a memory slab that is bump-allocated at
 the page level. As things stand now, NockStack lives in an anonymous mmap.
 
