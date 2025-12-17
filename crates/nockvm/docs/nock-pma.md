@@ -341,7 +341,8 @@ opposite end of the arena task.
 
 Here is a more detailed spec for phase 1:
 
-The central struct for the PMA:
+The central struct for the PMA. `alloc_offset` uses `AtomicUsize` since the
+offsets for NockStack are all `usize` as well.
 ```rust
 pub struct Pma {
     /// The underlying arena for memory management and pointer resolution
@@ -402,7 +403,8 @@ impl PmaCopy for usize { ... }
 impl PmaCopy for AllocationError { ... } // would be insane for allocation errors to have a reason to end up in the PMA
 ```
 
-The main function to accomplish copying to the PMA for `Nouns`. Something like this:
+The main function to accomplish copying to the PMA for `Nouns`. Something like
+this:
 ```rust
 pub unsafe fn copy_noun_to_pma(
     stack: &NockStack,
@@ -563,6 +565,67 @@ Summary of tests to be implemented.
     fn test_preserve_noun_list_round_trip() { ... }
     fn test_preserve_cold_round_trip() { ... }
 ```
+More tests dreamed up by Opus:
+
+##### Memory alignment and layout:
+- `test_evacuate_indirect_atom_alignment` - Verifies indirect atoms of various sizes (1, 2, 3, 7, 8, 9 words)
+ are properly aligned in PMA and readable without alignment faults.
+- `test_evacuate_cell_memory_layout` - Verifies CellMemory fields (metadata, head, tail) are at correct
+offsets after evacuation by reading each field independently.
+
+##### Forwarding pointer edge cases:
+- `test_forwarding_pointer_diamond_sharing` - Verifies diamond-shaped DAGs (A→B, A→C, B→D, C→D) preserve all
+sharing and D is only copied once.
+- `test_forwarding_pointer_wide_sharing` - Verifies a single noun referenced by many (e.g., 100) different
+cells is only copied once.
+- `test_forwarding_pointer_not_leaked_to_pma` - Verifies no forwarding pointers remain in PMA memory after
+evacuation completes (they should only exist transiently in stack memory).
+
+##### Boundary and edge cases:
+- `test_evacuate_maximum_depth_tree` - Verifies evacuation handles very deep trees (e.g., 1000 levels)
+without stack overflow in the worklist loop.
+- `test_evacuate_large_indirect_atom` - Verifies indirect atoms near the maximum representable size evacuate
+correctly.
+- `test_evacuate_single_word_indirect_atom` - Verifies the smallest possible indirect atom (just over
+DIRECT_MAX) evacuates correctly.
+- `test_evacuate_mixed_pma_stack_noun` - Verifies a cell where head is already in PMA and tail is on stack
+evacuates correctly (only tail gets copied).
+
+##### Use-after-evacuation (Miri should catch these):
+- `test_stack_memory_not_accessed_after_evacuation` - After evacuation, verify that reading the evacuated
+noun uses PMA memory, not stack memory (may need to poison/zero stack to detect).
+- `test_evacuate_then_pop_frame_then_read` - Evacuate a noun, pop the stack frame that contained it, then
+read from the PMA copy - should work without accessing freed memory.
+
+##### Concurrent allocation:
+- `test_concurrent_pma_allocation` - Spawns multiple threads that allocate from PMA simultaneously, verifies
+no overlapping allocations and total allocated equals sum of individual allocations.
+- `test_concurrent_allocation_under_pressure` - Multiple threads racing to allocate when PMA is nearly full,
+verifies OOM errors are returned correctly without corruption.
+
+##### Idempotency and repeated operations:
+- `test_evacuate_same_noun_twice_same_call` - Passes the same noun pointer twice in succession; second call
+should be pure no-op.
+- `test_evacuate_after_pma_reset` - Evacuate, reset PMA, evacuate same structure again - verifies clean
+re-evacuation without confusion from old data.
+
+##### Memory initialization:
+- `test_evacuated_metadata_initialized` - Verifies cell metadata is properly copied (not uninitialized) by
+checking mug cache bits after evacuation.
+- `test_evacuated_indirect_atom_padding_zeroed` - For indirect atoms that don't fill their last word
+completely, verify padding bytes are deterministic.
+
+##### Invalid input detection (debug assertions):
+- `test_evacuate_rejects_cyclic_structure` - Verifies the assert_acyclic! macro fires when given a cyclic
+noun (if we can construct one).
+- `test_evacuate_rejects_existing_forwarding_pointer` - Verifies `assert_no_forwarding_pointers!` fires when
+given a noun with pre-existing forwarding pointers.
+
+##### Arena switching correctness:
+- `test_read_pma_noun_with_wrong_arena_installed` - Verifies reading an evacuated noun with the stack arena
+(not PMA arena) installed produces incorrect/detectable results or panics.
+- `test_arena_switch_mid_traversal` - Verifies that traversing a noun tree requires consistent arena
+installation throughout.
 
 ## Phase 2
 
