@@ -89,12 +89,21 @@ impl Pma {
 
     /// Reset the allocation pointer to zero
     pub fn reset(&mut self) {
-        todo!()
+        self.alloc_offset = 0;
     }
 
     /// Reset the allocation pointer to a specific offset
-    pub fn reset_to(&mut self, _offset: usize) {
-        todo!()
+    ///
+    /// # Panics
+    /// Panics if `offset` is greater than the PMA size.
+    pub fn reset_to(&mut self, offset: usize) {
+        assert!(
+            offset <= self.size_words(),
+            "reset_to offset {} exceeds PMA size {}",
+            offset,
+            self.size_words()
+        );
+        self.alloc_offset = offset;
     }
 
     /// Allocate `words` from the PMA, returning a pointer to the allocation.
@@ -300,5 +309,64 @@ mod tests {
             7,
             "Second allocation offset should be 7 words after first"
         );
+    }
+
+    /// Verifies reset() and reset_to() correctly manage the allocation pointer.
+    ///
+    /// This test exercises:
+    /// - reset() sets alloc_offset back to 0
+    /// - reset_to(offset) sets alloc_offset to a specific value
+    /// - After reset, free_words equals size again
+    /// - Allocations after reset start from the reset point
+    #[test]
+    #[cfg_attr(miri, ignore = "memfd_create unsupported in Miri")]
+    fn test_pma_reset() {
+        let mut pma = test_pma(1000);
+
+        // Allocate some space
+        unsafe { pma.alloc_indirect(10) }; // 12 words
+        unsafe { pma.alloc_indirect(20) }; // 22 words
+        assert_eq!(pma.alloc_offset(), 34);
+        assert_eq!(pma.free_words(), 966);
+
+        // Reset to zero
+        pma.reset();
+        assert_eq!(pma.alloc_offset(), 0, "reset() should set offset to 0");
+        assert_eq!(pma.free_words(), 1000, "reset() should restore all free space");
+
+        // Allocations after reset should start from 0
+        let ptr_after_reset = unsafe { pma.alloc_indirect(5) }; // 7 words
+        assert_eq!(pma.alloc_offset(), 7);
+        let offset_after_reset = pma.offset_from_ptr(ptr_after_reset as *const u8);
+        assert_eq!(offset_after_reset, 0, "First allocation after reset should be at offset 0");
+
+        // Allocate more to create a checkpoint
+        unsafe { pma.alloc_indirect(10) }; // 12 more words
+        let checkpoint = pma.alloc_offset();
+        assert_eq!(checkpoint, 19); // 7 + 12
+
+        // Allocate even more
+        unsafe { pma.alloc_indirect(30) }; // 32 more words
+        assert_eq!(pma.alloc_offset(), 51); // 19 + 32
+
+        // Reset to checkpoint
+        pma.reset_to(checkpoint);
+        assert_eq!(pma.alloc_offset(), 19, "reset_to() should set offset to checkpoint");
+        assert_eq!(pma.free_words(), 981, "reset_to() should restore free space from checkpoint");
+
+        // Next allocation should start at the checkpoint
+        let ptr_after_reset_to = unsafe { pma.alloc_indirect(3) }; // 5 words
+        let offset_after_reset_to = pma.offset_from_ptr(ptr_after_reset_to as *const u8);
+        assert_eq!(offset_after_reset_to, 19, "Allocation after reset_to should start at checkpoint");
+        assert_eq!(pma.alloc_offset(), 24); // 19 + 5
+    }
+
+    /// Verifies reset_to panics when given an offset outside the PMA bounds.
+    #[test]
+    #[should_panic(expected = "reset_to offset")]
+    #[cfg_attr(miri, ignore = "memfd_create unsupported in Miri")]
+    fn test_pma_reset_to_out_of_bounds() {
+        let mut pma = test_pma(1000);
+        pma.reset_to(1001); // Should panic: offset exceeds PMA size
     }
 }
