@@ -180,11 +180,11 @@
 :::
 +$  min-signers  $~(3 @)
 +$  total-signers  $~(5 @)
-+$  minimum-event-nocks  $~(1.000.000 @)  ::  1M nock event = 3000 nock fee
++$  minimum-event-nocks  $~(100.000 @)  ::  100,000 nock event = 300 nock fee
 +$  nicks-fee-per-nock  $~(195 @)  ::  2^16 * 0.003 = 196.6, rounded down to nearest factor of 5 for easy division between the bridge nodes
 +$  base-blocks-chunk  $~(100 @)
 +$  base-start-height  $~(33.387.036 @)
-::>)  !TODO!: set this to the proper cutoff for the bridge to start accepting deposits
+::  !TODO!: set this to the proper cutoff for the bridge to start accepting deposits
 +$  nockchain-start-height  $~(25 @)
 ::
 ++  bridge-lock-root-default
