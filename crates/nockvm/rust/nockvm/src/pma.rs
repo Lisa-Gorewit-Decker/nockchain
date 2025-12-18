@@ -8,8 +8,8 @@ use std::sync::Arc;
 
 use thiserror::Error;
 
-use crate::mem::{word_size_of, Arena, NewStackError};
-use crate::noun::{CellMemory, NounAllocator};
+use crate::mem::{word_size_of, Arena, NewStackError, NockStack};
+use crate::noun::{CellMemory, Noun, NounAllocator};
 
 /// Errors that can occur during PMA operations
 #[derive(Debug, Error)]
@@ -166,6 +166,50 @@ impl NounAllocator for Pma {
 
     unsafe fn equals(&mut self, _a: *mut crate::noun::Noun, _b: *mut crate::noun::Noun) -> bool {
         todo!()
+    }
+}
+
+/// Trait for types that can be copied into the PMA.
+///
+/// This is used to evacuate nouns from the NockStack to the PMA for persistence.
+pub trait PmaCopy {
+    /// Copy this value into the PMA.
+    ///
+    /// For nouns, this evacuates allocated data (indirect atoms, cells) to the PMA
+    /// and converts pointers to offset form. Direct atoms are unchanged since they
+    /// fit in a single word.
+    ///
+    /// # Safety
+    /// The caller must ensure that the stack's arena is installed in thread-local storage.
+    unsafe fn copy_to_pma(&mut self, stack: &NockStack, pma: &mut Pma);
+
+    /// Assert that this value is fully contained within the PMA.
+    ///
+    /// For nouns, this verifies that all allocated data (indirect atoms, cells)
+    /// resides in the PMA. Direct atoms always pass since they have no allocations.
+    ///
+    /// # Panics
+    /// Panics if any part of this value is not in the PMA.
+    fn assert_in_pma(&self, pma: &Pma);
+}
+
+impl PmaCopy for Noun {
+    unsafe fn copy_to_pma(&mut self, _stack: &NockStack, _pma: &mut Pma) {
+        // Direct atoms fit in a single word and don't need evacuation
+        if self.is_direct() {
+            return;
+        }
+        // TODO: Handle indirect atoms and cells
+        todo!("Evacuation of allocated nouns not yet implemented")
+    }
+
+    fn assert_in_pma(&self, _pma: &Pma) {
+        // Direct atoms have no allocations, so they're trivially "in" the PMA
+        if self.is_direct() {
+            return;
+        }
+        // TODO: Check that allocated nouns are in PMA
+        todo!("assert_in_pma for allocated nouns not yet implemented")
     }
 }
 
