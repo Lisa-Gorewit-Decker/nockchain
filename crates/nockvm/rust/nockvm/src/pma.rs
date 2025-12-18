@@ -1011,4 +1011,231 @@ mod tests {
 
         noun.assert_in_pma(&pma);
     }
+
+    /// Verifies deeply nested structures are fully evacuated and traversable after evacuation.
+    ///
+    /// This test exercises the worklist algorithm's ability to handle deep trees
+    /// without stack overflow (since we use iteration, not recursion).
+    #[test]
+    #[cfg_attr(miri, ignore = "memfd_create unsupported in Miri")]
+    fn test_evacuate_deep_tree() {
+        let mut stack = NockStack::new(1 << 14, 0); // Larger stack for deep nesting
+        let mut pma = test_pma(10000);
+
+        // Create a deeply nested structure: [1 [2 [3 [4 ... [999 1000]]]]]
+        const DEPTH: u64 = 500;
+
+        // Build from the inside out
+        let mut noun = D(DEPTH);
+        for i in (1..DEPTH).rev() {
+            noun = Cell::new(&mut stack, D(i), noun).as_noun();
+        }
+
+        // Verify it's deeply nested and stack-allocated
+        assert!(noun.is_cell(), "Root should be a cell");
+        assert!(noun.is_stack_allocated(), "Should be stack-allocated");
+
+        // Install PMA arena (needed for Cell::tail() even on stack-allocated nouns)
+        let _guard = pma.install();
+
+        // Count the depth before evacuation
+        let mut depth_before = 0u64;
+        let mut current = noun;
+        while current.is_cell() {
+            depth_before += 1;
+            current = current.as_cell().unwrap().tail();
+        }
+        assert_eq!(depth_before, DEPTH - 1, "Should have correct depth before evacuation");
+
+        // Evacuate
+        unsafe { noun.copy_to_pma(&stack, &mut pma) };
+
+        // Should allocate (DEPTH - 1) cells
+        let cell_words = word_size_of::<CellMemory>();
+        assert_eq!(
+            pma.alloc_offset(),
+            cell_words * (DEPTH as usize - 1),
+            "Should allocate {} cells",
+            DEPTH - 1
+        );
+
+        // Verify root is in offset form
+        assert!(!noun.is_stack_allocated(), "Root should be in offset form");
+
+        // Traverse the entire structure and verify values
+        let mut current = noun;
+        for expected in 1..DEPTH {
+            assert!(current.is_cell(), "Should be cell at depth {}", expected);
+            let cell = current.as_cell().expect("is cell");
+
+            // Verify head value
+            let head = cell.head();
+            assert!(head.is_direct(), "Head at depth {} should be direct", expected);
+            assert_eq!(
+                head.as_direct().expect("direct").data(),
+                expected,
+                "Head at depth {} should be {}",
+                expected,
+                expected
+            );
+
+            // Verify this cell is in offset form
+            assert!(
+                !current.is_stack_allocated(),
+                "Cell at depth {} should be in offset form",
+                expected
+            );
+
+            current = cell.tail();
+        }
+
+        // Final element should be direct atom DEPTH
+        assert!(current.is_direct(), "Leaf should be direct atom");
+        assert_eq!(
+            current.as_direct().expect("direct").data(),
+            DEPTH,
+            "Leaf should be {}",
+            DEPTH
+        );
+
+        // Verify assert_in_pma passes for entire structure
+        noun.assert_in_pma(&pma);
+    }
+
+    /// Verifies deeply nested structures with variable-sized indirect atoms are fully evacuated.
+    ///
+    /// Similar to test_evacuate_deep_tree, but each value is an IndirectAtom with
+    /// data size varying from 2 to 10 words. This tests the evacuation of mixed
+    /// cell/indirect-atom structures with variable allocation sizes.
+    #[test]
+    #[cfg_attr(miri, ignore = "memfd_create unsupported in Miri")]
+    fn test_evacuate_deep_tree_indirect_atoms() {
+        let mut stack = NockStack::new(1 << 16, 0); // Larger stack for indirect atoms
+        let mut pma = test_pma(100000); // Larger PMA for indirect atoms
+
+        const DEPTH: usize = 200;
+
+        // Helper to create an indirect atom with `word_count` words of data
+        // Data pattern: first word is the index, remaining words are index + word_position
+        let make_indirect = |stack: &mut NockStack, index: usize, word_count: usize| -> Noun {
+            let mut data = vec![0u64; word_count];
+            for (i, word) in data.iter_mut().enumerate() {
+                *word = (index as u64) << 32 | (i as u64);
+            }
+            unsafe {
+                crate::noun::IndirectAtom::new_raw(stack, word_count, data.as_ptr()).as_noun()
+            }
+        };
+
+        // Helper to compute word count for index (varies 2-10)
+        let word_count_for_index = |index: usize| -> usize { (index % 9) + 2 };
+
+        // Build from inside out: [indirect_1 [indirect_2 [indirect_3 ... indirect_DEPTH]]]
+        let mut noun = make_indirect(&mut stack, DEPTH, word_count_for_index(DEPTH));
+        for i in (1..DEPTH).rev() {
+            let head = make_indirect(&mut stack, i, word_count_for_index(i));
+            noun = Cell::new(&mut stack, head, noun).as_noun();
+        }
+
+        // Verify structure before evacuation
+        assert!(noun.is_cell(), "Root should be a cell");
+        assert!(noun.is_stack_allocated(), "Should be stack-allocated");
+
+        // Install PMA arena
+        let _guard = pma.install();
+
+        // Count expected allocations:
+        // - (DEPTH - 1) cells
+        // - DEPTH indirect atoms, each with (word_count + 2) words (metadata + size + data)
+        let cell_words = word_size_of::<CellMemory>();
+        let mut expected_indirect_words = 0usize;
+        for i in 1..=DEPTH {
+            expected_indirect_words += word_count_for_index(i) + 2; // +2 for metadata and size
+        }
+        let expected_total = (cell_words * (DEPTH - 1)) + expected_indirect_words;
+
+        // Evacuate
+        unsafe { noun.copy_to_pma(&stack, &mut pma) };
+
+        // Verify allocation size
+        assert_eq!(
+            pma.alloc_offset(),
+            expected_total,
+            "Should allocate {} words total ({} cells + {} indirect atom words)",
+            expected_total,
+            DEPTH - 1,
+            expected_indirect_words
+        );
+
+        // Verify root is in offset form
+        assert!(!noun.is_stack_allocated(), "Root should be in offset form");
+
+        // Traverse and verify all values
+        let mut current = noun;
+        for expected_index in 1..DEPTH {
+            assert!(current.is_cell(), "Should be cell at depth {}", expected_index);
+            let cell = current.as_cell().expect("is cell");
+
+            // Verify head is an indirect atom with correct data
+            let head = cell.head();
+            assert!(head.is_indirect(), "Head at depth {} should be indirect", expected_index);
+            assert!(
+                !head.is_stack_allocated(),
+                "Head at depth {} should be in offset form",
+                expected_index
+            );
+
+            let head_indirect = head.as_indirect().expect("indirect");
+            let expected_word_count = word_count_for_index(expected_index);
+            assert_eq!(
+                head_indirect.size(),
+                expected_word_count,
+                "Indirect atom at depth {} should have {} words",
+                expected_index,
+                expected_word_count
+            );
+
+            // Verify data pattern
+            let data_ptr = head_indirect.data_pointer();
+            for word_idx in 0..expected_word_count {
+                let expected_value = (expected_index as u64) << 32 | (word_idx as u64);
+                let actual_value = unsafe { *data_ptr.add(word_idx) };
+                assert_eq!(
+                    actual_value, expected_value,
+                    "Data mismatch at depth {}, word {}",
+                    expected_index, word_idx
+                );
+            }
+
+            current = cell.tail();
+        }
+
+        // Final element should be indirect atom for index DEPTH
+        assert!(current.is_indirect(), "Leaf should be indirect atom");
+        assert!(!current.is_stack_allocated(), "Leaf should be in offset form");
+
+        let leaf_indirect = current.as_indirect().expect("indirect");
+        let expected_leaf_words = word_count_for_index(DEPTH);
+        assert_eq!(
+            leaf_indirect.size(),
+            expected_leaf_words,
+            "Leaf indirect atom should have {} words",
+            expected_leaf_words
+        );
+
+        // Verify leaf data pattern
+        let leaf_data_ptr = leaf_indirect.data_pointer();
+        for word_idx in 0..expected_leaf_words {
+            let expected_value = (DEPTH as u64) << 32 | (word_idx as u64);
+            let actual_value = unsafe { *leaf_data_ptr.add(word_idx) };
+            assert_eq!(
+                actual_value, expected_value,
+                "Leaf data mismatch at word {}",
+                word_idx
+            );
+        }
+
+        // Verify assert_in_pma passes for entire structure
+        noun.assert_in_pma(&pma);
+    }
 }
