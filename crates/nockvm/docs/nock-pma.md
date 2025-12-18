@@ -361,6 +361,18 @@ As the `Pma` is a place where `Noun`s get allocated, it ought to implement
 impl NounAllocator for Pma { ... }
 ```
 
+There will probably be a `PmaError` enum.
+```rust
+pub enum PmaError {
+    #[error("PMA is full, cannot allocate {requested} words (available: {available})")]
+    OutOfMemory { requested: usize, available: usize },
+    #[error("PMA not installed in thread-local storage")]
+    NotInstalled,
+    #[error("Failed to create arena: {0}")]
+    ArenaError(#[from] crate::mem::NewStackError),
+}
+```
+
 Everything that lives in a NockStack that we'd like to live in the PMA should implement a `PmaCopy`
 trait:
 ```rust
