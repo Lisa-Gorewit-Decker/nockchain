@@ -94,8 +94,11 @@ impl Pma {
     }
 
     /// Check if a pointer is within the PMA's memory region
-    pub fn contains_ptr(&self, _ptr: *const u8) -> bool {
-        todo!()
+    pub fn contains_ptr(&self, ptr: *const u8) -> bool {
+        let base = self.arena.base_ptr() as usize;
+        let end = base + self.arena.len_bytes();
+        let ptr_addr = ptr as usize;
+        ptr_addr >= base && ptr_addr < end
     }
 
     /// Reset the allocation pointer to zero
