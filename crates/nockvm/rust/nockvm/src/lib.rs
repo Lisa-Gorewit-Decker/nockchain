@@ -14,6 +14,7 @@ pub mod jets;
 pub mod mem;
 pub mod mug;
 pub mod noun;
+pub mod pma;
 pub mod serialization;
 pub mod site;
 pub mod trace;
