@@ -54,7 +54,16 @@ impl Pma {
 
     /// Get the underlying arena
     pub fn arena(&self) -> &Arc<Arena> {
-        todo!()
+        &self.arena
+    }
+
+    /// Install the PMA's arena in thread-local storage.
+    ///
+    /// Returns a guard that automatically clears the thread-local when dropped.
+    /// This allows `Arena::with_current()` to access the PMA's arena.
+    pub fn install(&self) -> PmaInstallGuard {
+        Arena::set_thread_local(&self.arena);
+        PmaInstallGuard { _private: () }
     }
 
     /// Get the current allocation offset in words
@@ -115,6 +124,25 @@ impl Pma {
     }
 }
 
+/// RAII guard for PMA arena installation.
+///
+/// When this guard is dropped, it automatically clears the thread-local arena.
+/// This ensures the arena is only installed for the lifetime of the guard.
+///
+/// Note: Using `()` makes this a zero-sized type. If we need the ability to
+/// "disarm" the guard (skip cleanup on drop), we could switch to a `bool` field
+/// like `ReplicaInstallGuard` uses. See `ReplicaInstallGuard` in mem.rs for comparison.
+pub struct PmaInstallGuard {
+    /// Private field to prevent construction outside of Pma::install()
+    _private: (),
+}
+
+impl Drop for PmaInstallGuard {
+    fn drop(&mut self) {
+        Arena::clear_thread_local();
+    }
+}
+
 impl ibig::Stack for Pma {
     unsafe fn alloc_layout(&mut self, layout: std::alloc::Layout) -> *mut u64 {
         // Convert bytes to words, rounding up
@@ -145,9 +173,10 @@ impl NounAllocator for Pma {
 mod tests {
     use super::*;
     use crate::jets::cold::NounListMem;
-    use crate::mem::word_size_of;
+    use crate::mem::{word_size_of, Arena};
     use ibig::Stack;
     use std::alloc::Layout;
+    use std::sync::Arc;
 
     /// Helper to create a test PMA with a given size
     fn test_pma(size_words: usize) -> Pma {
@@ -368,5 +397,68 @@ mod tests {
     fn test_pma_reset_to_out_of_bounds() {
         let mut pma = test_pma(1000);
         pma.reset_to(1001); // Should panic: offset exceeds PMA size
+    }
+
+    /// Verifies thread-local PMA installation, access via with_current(), and RAII cleanup.
+    ///
+    /// This test exercises:
+    /// - pma.install() installs the PMA's arena in thread-local storage
+    /// - Arena::with_current() can access the installed arena
+    /// - The installed arena matches the PMA's arena
+    /// - PmaInstallGuard automatically clears the arena when dropped
+    #[test]
+    #[cfg_attr(miri, ignore = "memfd_create unsupported in Miri")]
+    fn test_pma_thread_local() {
+        let pma = test_pma(1000);
+        let pma_arena_ptr = Arc::as_ptr(pma.arena());
+
+        {
+            // Install the PMA's arena - guard will clear on drop
+            let _guard = pma.install();
+
+            // Verify we can access it via with_current and it's the same arena
+            Arena::with_current(|arena| {
+                let current_ptr = arena as *const Arena;
+                assert_eq!(
+                    current_ptr, pma_arena_ptr,
+                    "Installed arena should match PMA's arena"
+                );
+            });
+        } // _guard dropped here, arena should be cleared
+
+        // Verify the guard cleared the thread-local by checking that
+        // with_current would now panic (we don't call it here to avoid panic,
+        // but we test this in test_pma_thread_local_not_installed)
+    }
+
+    /// Verifies Arena::with_current panics when no arena is installed.
+    #[test]
+    #[should_panic(expected = "Arena::with_current called without an installed Arena")]
+    #[cfg_attr(miri, ignore = "memfd_create unsupported in Miri")]
+    fn test_pma_thread_local_not_installed() {
+        // Ensure no arena is installed
+        Arena::clear_thread_local();
+
+        // This should panic
+        Arena::with_current(|_arena| {});
+    }
+
+    /// Verifies PmaInstallGuard clears the arena when dropped.
+    #[test]
+    #[should_panic(expected = "Arena::with_current called without an installed Arena")]
+    #[cfg_attr(miri, ignore = "memfd_create unsupported in Miri")]
+    fn test_pma_guard_clears_on_drop() {
+        let pma = test_pma(1000);
+
+        // Ensure no arena is installed initially
+        Arena::clear_thread_local();
+
+        {
+            let _guard = pma.install();
+            // Arena is installed here, with_current would work
+        } // _guard dropped, arena should be cleared
+
+        // This should panic because the guard cleared the arena
+        Arena::with_current(|_arena| {});
     }
 }
