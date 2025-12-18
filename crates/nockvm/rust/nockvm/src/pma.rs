@@ -4,7 +4,6 @@
 //! It uses bump allocation and stores nouns in offset form.
 
 use std::path::PathBuf;
-use std::sync::atomic::AtomicUsize;
 use std::sync::Arc;
 
 use thiserror::Error;
@@ -30,19 +29,27 @@ pub enum PmaError {
 /// A bump-allocated memory region for storing nouns in offset form.
 /// The PMA is backed by a file (in future milestones) and persists across
 /// program restarts.
+///
+/// Currently only suitable for a single reader/writer. In the future,
+/// `alloc_offset` will be changed to `AtomicUsize` to allow multiple readers.
 pub struct Pma {
     /// The underlying arena for memory management and pointer resolution
     arena: Arc<Arena>,
     /// Current allocation offset in words (bump pointer)
-    alloc_offset: AtomicUsize,
+    alloc_offset: usize,
     /// Path to the backing file (for future file-backed persistence)
     path: PathBuf,
 }
 
 impl Pma {
     /// Create a new PMA with the given size in words
-    pub fn new(_size_words: usize, _path: PathBuf) -> Result<Self, PmaError> {
-        todo!()
+    pub fn new(size_words: usize, path: PathBuf) -> Result<Self, PmaError> {
+        let arena = Arena::allocate(size_words)?;
+        Ok(Self {
+            arena,
+            alloc_offset: 0,
+            path,
+        })
     }
 
     /// Get the underlying arena
@@ -52,17 +59,17 @@ impl Pma {
 
     /// Get the current allocation offset in words
     pub fn alloc_offset(&self) -> usize {
-        todo!()
+        self.alloc_offset
     }
 
     /// Get the total size of the PMA in words
     pub fn size_words(&self) -> usize {
-        todo!()
+        self.arena.words()
     }
 
     /// Get the number of free words remaining
     pub fn free_words(&self) -> usize {
-        todo!()
+        self.size_words().saturating_sub(self.alloc_offset())
     }
 
     /// Convert a pointer within the PMA to an offset in words
@@ -81,12 +88,12 @@ impl Pma {
     }
 
     /// Reset the allocation pointer to zero
-    pub fn reset(&self) {
+    pub fn reset(&mut self) {
         todo!()
     }
 
     /// Reset the allocation pointer to a specific offset
-    pub fn reset_to(&self, _offset: usize) {
+    pub fn reset_to(&mut self, _offset: usize) {
         todo!()
     }
 }
