@@ -217,7 +217,8 @@ impl PmaCopy for Noun {
 mod tests {
     use super::*;
     use crate::jets::cold::NounListMem;
-    use crate::mem::{word_size_of, Arena};
+    use crate::mem::{word_size_of, Arena, NockStack};
+    use crate::noun::{D, DIRECT_MAX};
     use ibig::Stack;
     use std::alloc::Layout;
     use std::sync::Arc;
@@ -504,5 +505,48 @@ mod tests {
 
         // This should panic because the guard cleared the arena
         Arena::with_current(|_arena| {});
+    }
+
+    /// Verifies direct atoms are unchanged by evacuation since they fit in a single word.
+    ///
+    /// Direct atoms don't require any allocation - they're just 64-bit values with
+    /// the MSB = 0. Evacuation should leave them completely unchanged.
+    #[test]
+    #[cfg_attr(miri, ignore = "memfd_create unsupported in Miri")]
+    fn test_evacuate_direct_atom() {
+        let stack = NockStack::new(1 << 10, 0);
+        let mut pma = test_pma(1000);
+
+        // Test several direct atom values
+        let test_values: [u64; 5] = [0, 1, 42, 12345, DIRECT_MAX];
+
+        for &val in &test_values {
+            let mut noun = D(val);
+            let original_raw = unsafe { noun.as_raw() };
+
+            // Evacuate to PMA
+            unsafe { noun.copy_to_pma(&stack, &mut pma) };
+
+            // Direct atoms should be completely unchanged
+            let after_raw = unsafe { noun.as_raw() };
+            assert_eq!(
+                original_raw, after_raw,
+                "Direct atom {} should be unchanged after evacuation",
+                val
+            );
+
+            // Verify it's still a direct atom
+            assert!(noun.is_direct(), "Should still be a direct atom after evacuation");
+
+            // Direct atoms should trivially pass assert_in_pma (no allocations to check)
+            noun.assert_in_pma(&pma);
+        }
+
+        // PMA should have no allocations (direct atoms don't need space)
+        assert_eq!(
+            pma.alloc_offset(),
+            0,
+            "No allocations should be made for direct atoms"
+        );
     }
 }
