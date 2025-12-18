@@ -4,12 +4,14 @@
 //! It uses bump allocation and stores nouns in offset form.
 
 use std::path::PathBuf;
+use std::ptr::copy_nonoverlapping;
 use std::sync::Arc;
 
+use either::Either::{Left, Right};
 use thiserror::Error;
 
 use crate::mem::{word_size_of, Arena, NewStackError, NockStack};
-use crate::noun::{CellMemory, Noun, NounAllocator};
+use crate::noun::{Cell, CellMemory, IndirectAtom, Noun, NounAllocator};
 
 /// Errors that can occur during PMA operations
 #[derive(Debug, Error)]
@@ -194,22 +196,151 @@ pub trait PmaCopy {
 }
 
 impl PmaCopy for Noun {
-    unsafe fn copy_to_pma(&mut self, _stack: &NockStack, _pma: &mut Pma) {
+    /// Copy a noun and all its allocated substructure to the PMA.
+    ///
+    /// Uses a worklist algorithm to avoid stack overflow on deep structures.
+    /// Structural sharing is preserved via forwarding pointers: if the same
+    /// substructure is referenced multiple times, it's only copied once.
+    ///
+    /// # Algorithm
+    /// 1. Push (noun, destination_ptr) onto worklist
+    /// 2. Pop and process each item:
+    ///    - Direct atoms: write directly to destination
+    ///    - Already in PMA (offset form): write directly to destination
+    ///    - Has forwarding pointer: write forwarded offset-form to destination
+    ///    - Indirect atom: copy to PMA, set forwarding pointer, write offset-form
+    ///    - Cell: copy metadata to PMA, set forwarding pointer, queue head/tail
+    ///
+    /// # Safety
+    /// - The PMA arena should be installed for reading evacuated nouns afterward
+    /// - Source nouns will have forwarding pointers set (corrupting the stack data)
+    unsafe fn copy_to_pma(&mut self, _stack: &NockStack, pma: &mut Pma) {
         // Direct atoms fit in a single word and don't need evacuation
         if self.is_direct() {
             return;
         }
-        // TODO: Handle indirect atoms and cells
-        todo!("Evacuation of allocated nouns not yet implemented")
+
+        // Already in offset form (already in PMA) - nothing to do
+        if !self.is_stack_allocated() {
+            return;
+        }
+
+        // Clone the Arc to avoid borrow conflicts during mutation
+        //TODO not sure this is right
+        let arena = Arc::clone(pma.arena());
+
+        // Worklist of (source noun, destination pointer)
+        // Destination pointers are either the root noun or fields within PMA cells
+        let mut work: Vec<(Noun, *mut Noun)> = Vec::with_capacity(32);
+        work.push((*self, self as *mut Noun));
+
+        while let Some((noun, dest_ptr)) = work.pop() {
+            match noun.as_either_direct_allocated() {
+                Left(_direct) => {
+                    // Direct atoms are copied as-is (no allocation needed)
+                    *dest_ptr = noun;
+                }
+                Right(allocated) => {
+                    // Check for forwarding pointer (already evacuated, structural sharing)
+                    if let Some(forwarded) = allocated.forwarding_pointer_with_arena(&arena) {
+                        // Convert forwarded pointer to offset form
+                        let pma_ptr = forwarded.to_raw_pointer_with_arena(&arena);
+                        let offset = pma.offset_from_ptr(pma_ptr as *const u8);
+                        if allocated.is_indirect() {
+                            *dest_ptr = IndirectAtom::from_offset_words(offset).as_noun();
+                        } else {
+                            *dest_ptr = Cell::from_offset_words(offset).as_noun();
+                        }
+                        continue;
+                    }
+
+                    // Already in offset form (already in PMA)
+                    if !noun.is_stack_allocated() {
+                        *dest_ptr = noun;
+                        continue;
+                    }
+
+                    match allocated.as_either() {
+                        Left(mut indirect) => {
+                            // Get size and source pointer before allocating
+                            let raw_size = indirect.raw_size_with_arena(&arena);
+                            let src_ptr = indirect.to_raw_pointer_with_arena(&arena);
+
+                            // Allocate in PMA
+                            let pma_ptr = pma.raw_alloc(raw_size);
+
+                            // Copy all data (metadata + size + data words)
+                            copy_nonoverlapping(src_ptr, pma_ptr, raw_size);
+
+                            // Set forwarding pointer in source for structural sharing
+                            indirect.set_forwarding_pointer_with_arena(pma_ptr, &arena);
+
+                            // Write offset-form noun to destination
+                            let offset = pma.offset_from_ptr(pma_ptr as *const u8);
+                            *dest_ptr = IndirectAtom::from_offset_words(offset).as_noun();
+                        }
+                        Right(mut cell) => {
+                            // Get source cell pointer
+                            let src_cell = cell.to_raw_pointer_with_arena(&arena);
+
+                            // Allocate cell in PMA
+                            let pma_ptr = pma.raw_alloc(word_size_of::<CellMemory>());
+                            let pma_cell = pma_ptr as *mut CellMemory;
+
+                            // Copy metadata
+                            (*pma_cell).metadata = (*src_cell).metadata;
+
+                            // Get head and tail BEFORE setting forwarding pointer
+                            // (forwarding pointer overwrites head field)
+                            let head = (*src_cell).head;
+                            let tail = (*src_cell).tail;
+
+                            // Set forwarding pointer in source for structural sharing
+                            cell.set_forwarding_pointer_with_arena(pma_cell, &arena);
+
+                            // Queue head and tail for processing
+                            // Destinations are the head/tail slots in the PMA cell
+                            work.push((tail, &mut (*pma_cell).tail));
+                            work.push((head, &mut (*pma_cell).head));
+
+                            // Write offset-form cell to destination
+                            let offset = pma.offset_from_ptr(pma_ptr as *const u8);
+                            *dest_ptr = Cell::from_offset_words(offset).as_noun();
+                        }
+                    }
+                }
+            }
+        }
     }
 
-    fn assert_in_pma(&self, _pma: &Pma) {
+    /// Assert that this noun and all its substructure is in the PMA.
+    ///
+    /// # Panics
+    /// Panics if any allocated part of the noun is stack-allocated rather than
+    /// in offset form (PMA).
+    ///
+    /// # Note
+    /// The PMA arena must be installed before calling this for cells, as it needs
+    /// to resolve cell head/tail pointers.
+    fn assert_in_pma(&self, pma: &Pma) {
         // Direct atoms have no allocations, so they're trivially "in" the PMA
         if self.is_direct() {
             return;
         }
-        // TODO: Check that allocated nouns are in PMA
-        todo!("assert_in_pma for allocated nouns not yet implemented")
+
+        // Check that allocated nouns are in offset form (not stack-allocated)
+        assert!(
+            !self.is_stack_allocated(),
+            "Noun is stack-allocated, not in PMA"
+        );
+
+        // For cells, recursively check head and tail
+        if self.is_cell() {
+            let cell = self.as_cell().expect("checked is_cell");
+            // Arena must be installed by caller for head()/tail() to work
+            cell.head().assert_in_pma(pma);
+            cell.tail().assert_in_pma(pma);
+        }
     }
 }
 
@@ -548,5 +679,336 @@ mod tests {
             0,
             "No allocations should be made for direct atoms"
         );
+    }
+
+    /// Verifies indirect atoms (too large for direct representation) are copied to PMA
+    /// and converted to offset form.
+    ///
+    /// This test exercises:
+    /// - Creating an indirect atom on the NockStack
+    /// - Evacuating it to the PMA via copy_to_pma
+    /// - Verifying the atom is now in offset form (LOCATION_BIT set)
+    /// - Verifying the data can be read correctly via the PMA arena
+    /// - Verifying PMA allocations were made
+    #[test]
+    #[cfg_attr(miri, ignore = "memfd_create unsupported in Miri")]
+    fn test_evacuate_indirect_atom() {
+        let mut stack = NockStack::new(1 << 10, 0);
+        let mut pma = test_pma(1000);
+
+        // Create an indirect atom on the stack (value > DIRECT_MAX requires indirect storage)
+        // We'll use a 2-word value to ensure it's indirect
+        let data: [u64; 2] = [0xDEADBEEF_CAFEBABE, 0x12345678_9ABCDEF0];
+        let indirect = unsafe { crate::noun::IndirectAtom::new_raw(&mut stack, 2, data.as_ptr()) };
+        let mut noun = indirect.as_noun();
+
+        // Verify it's an indirect atom on the stack
+        assert!(noun.is_indirect(), "Should be an indirect atom");
+        assert!(
+            !noun.is_direct(),
+            "Should not be a direct atom"
+        );
+        assert!(
+            noun.is_stack_allocated(),
+            "Should be stack-allocated before evacuation"
+        );
+
+        // Record the initial PMA offset
+        let initial_offset = pma.alloc_offset();
+        assert_eq!(initial_offset, 0, "PMA should start empty");
+
+        // Install the PMA arena for pointer resolution after evacuation
+        let _guard = pma.install();
+
+        // Evacuate to PMA
+        unsafe { noun.copy_to_pma(&stack, &mut pma) };
+
+        // Verify PMA allocation was made
+        // Indirect atom needs: metadata (1) + size (1) + data (2) = 4 words
+        assert!(
+            pma.alloc_offset() > initial_offset,
+            "PMA should have allocations after evacuation"
+        );
+        assert_eq!(
+            pma.alloc_offset(),
+            4, // metadata + size + 2 data words
+            "Indirect atom should allocate 4 words in PMA"
+        );
+
+        // Verify the noun is now in offset form (not stack-allocated)
+        assert!(
+            !noun.is_stack_allocated(),
+            "Should be in offset form after evacuation"
+        );
+        assert!(noun.is_indirect(), "Should still be an indirect atom");
+
+        // Verify data is readable and correct via PMA arena
+        let atom = noun.as_atom().expect("Should be an atom");
+        let read_indirect = atom.as_indirect().expect("Should be indirect");
+
+        // Read the size - should be 2 words
+        let size = read_indirect.size();
+        assert_eq!(size, 2, "Indirect atom should have size 2");
+
+        // Read the data back and verify it matches
+        let data_ptr = read_indirect.data_pointer();
+        let read_data = unsafe { std::slice::from_raw_parts(data_ptr, 2) };
+        assert_eq!(
+            read_data[0], data[0],
+            "First data word should match"
+        );
+        assert_eq!(
+            read_data[1], data[1],
+            "Second data word should match"
+        );
+
+        // Verify assert_in_pma passes
+        noun.assert_in_pma(&pma);
+    }
+
+    /// Verifies a simple cell with direct atom contents is evacuated and readable from PMA.
+    ///
+    /// This test exercises:
+    /// - Creating a cell [head tail] on the NockStack
+    /// - Evacuating it to the PMA
+    /// - Verifying the cell is in offset form
+    /// - Verifying head and tail are readable and correct
+    #[test]
+    #[cfg_attr(miri, ignore = "memfd_create unsupported in Miri")]
+    fn test_evacuate_simple_cell() {
+        let mut stack = NockStack::new(1 << 10, 0);
+        let mut pma = test_pma(1000);
+
+        // Create a simple cell [42 123] with direct atoms
+        let mut noun = Cell::new(&mut stack, D(42), D(123)).as_noun();
+
+        // Verify it's a cell on the stack
+        assert!(noun.is_cell(), "Should be a cell");
+        assert!(noun.is_stack_allocated(), "Should be stack-allocated before evacuation");
+
+        // Install PMA arena and evacuate
+        let _guard = pma.install();
+        unsafe { noun.copy_to_pma(&stack, &mut pma) };
+
+        // Verify PMA allocation was made (CellMemory size)
+        let cell_words = word_size_of::<CellMemory>();
+        assert_eq!(
+            pma.alloc_offset(),
+            cell_words,
+            "Cell should allocate {} words",
+            cell_words
+        );
+
+        // Verify the noun is now in offset form
+        assert!(!noun.is_stack_allocated(), "Should be in offset form after evacuation");
+        assert!(noun.is_cell(), "Should still be a cell");
+
+        // Read head and tail
+        let cell = noun.as_cell().expect("Should be a cell");
+        let head = cell.head();
+        let tail = cell.tail();
+
+        // Verify head and tail are correct direct atoms
+        assert!(head.is_direct(), "Head should be direct");
+        assert!(tail.is_direct(), "Tail should be direct");
+        assert_eq!(
+            head.as_direct().expect("head is direct").data(),
+            42,
+            "Head should be 42"
+        );
+        assert_eq!(
+            tail.as_direct().expect("tail is direct").data(),
+            123,
+            "Tail should be 123"
+        );
+
+        // Verify assert_in_pma passes
+        noun.assert_in_pma(&pma);
+    }
+
+    /// Verifies nested cell structures are fully evacuated with all sub-cells in offset form.
+    ///
+    /// This test exercises:
+    /// - Creating nested cells [[1 2] [3 4]]
+    /// - Evacuating the entire structure
+    /// - Verifying all cells are in offset form
+    /// - Verifying all values are readable
+    #[test]
+    #[cfg_attr(miri, ignore = "memfd_create unsupported in Miri")]
+    fn test_evacuate_nested_cells() {
+        let mut stack = NockStack::new(1 << 10, 0);
+        let mut pma = test_pma(1000);
+
+        // Create nested cells: [[1 2] [3 4]]
+        let left = Cell::new(&mut stack, D(1), D(2)).as_noun();
+        let right = Cell::new(&mut stack, D(3), D(4)).as_noun();
+        let mut noun = Cell::new(&mut stack, left, right).as_noun();
+
+        // Verify structure before evacuation
+        assert!(noun.is_cell(), "Root should be a cell");
+        assert!(noun.is_stack_allocated(), "Root should be stack-allocated");
+
+        // Install PMA arena and evacuate
+        let _guard = pma.install();
+        unsafe { noun.copy_to_pma(&stack, &mut pma) };
+
+        // Should allocate 3 cells worth of space
+        let cell_words = word_size_of::<CellMemory>();
+        assert_eq!(
+            pma.alloc_offset(),
+            cell_words * 3,
+            "Should allocate 3 cells"
+        );
+
+        // Verify root is in offset form
+        assert!(!noun.is_stack_allocated(), "Root should be in offset form");
+
+        // Navigate and verify structure
+        let root = noun.as_cell().expect("root is cell");
+        let left_cell = root.head().as_cell().expect("left is cell");
+        let right_cell = root.tail().as_cell().expect("right is cell");
+
+        // Verify left cell [1 2]
+        assert!(!root.head().is_stack_allocated(), "Left should be in offset form");
+        assert_eq!(left_cell.head().as_direct().expect("1").data(), 1);
+        assert_eq!(left_cell.tail().as_direct().expect("2").data(), 2);
+
+        // Verify right cell [3 4]
+        assert!(!root.tail().is_stack_allocated(), "Right should be in offset form");
+        assert_eq!(right_cell.head().as_direct().expect("3").data(), 3);
+        assert_eq!(right_cell.tail().as_direct().expect("4").data(), 4);
+
+        // Verify assert_in_pma passes for entire structure
+        noun.assert_in_pma(&pma);
+    }
+
+    /// Verifies cells containing indirect atoms have both the cell and atoms correctly evacuated.
+    #[test]
+    #[cfg_attr(miri, ignore = "memfd_create unsupported in Miri")]
+    fn test_evacuate_cell_with_indirect_atoms() {
+        let mut stack = NockStack::new(1 << 10, 0);
+        let mut pma = test_pma(1000);
+
+        // Create indirect atoms
+        let data1: [u64; 2] = [0xAAAAAAAA_BBBBBBBB, 0xCCCCCCCC_DDDDDDDD];
+        let data2: [u64; 2] = [0x11111111_22222222, 0x33333333_44444444];
+        let indirect1 = unsafe { crate::noun::IndirectAtom::new_raw(&mut stack, 2, data1.as_ptr()) };
+        let indirect2 = unsafe { crate::noun::IndirectAtom::new_raw(&mut stack, 2, data2.as_ptr()) };
+
+        // Create cell with indirect atoms
+        let mut noun = Cell::new(&mut stack, indirect1.as_noun(), indirect2.as_noun()).as_noun();
+
+        assert!(noun.is_stack_allocated(), "Should be stack-allocated");
+
+        // Install PMA arena and evacuate
+        let _guard = pma.install();
+        unsafe { noun.copy_to_pma(&stack, &mut pma) };
+
+        // Should allocate: 1 cell + 2 indirect atoms (4 words each)
+        let cell_words = word_size_of::<CellMemory>();
+        let indirect_words = 4; // metadata + size + 2 data words
+        assert_eq!(
+            pma.alloc_offset(),
+            cell_words + indirect_words * 2,
+            "Should allocate cell + 2 indirect atoms"
+        );
+
+        // Verify structure
+        assert!(!noun.is_stack_allocated(), "Root should be in offset form");
+
+        let cell = noun.as_cell().expect("is cell");
+        let head = cell.head();
+        let tail = cell.tail();
+
+        // Verify head is indirect atom with correct data
+        assert!(head.is_indirect(), "Head should be indirect");
+        assert!(!head.is_stack_allocated(), "Head should be in offset form");
+        let head_indirect = head.as_indirect().expect("head indirect");
+        let head_data = unsafe { std::slice::from_raw_parts(head_indirect.data_pointer(), 2) };
+        assert_eq!(head_data[0], data1[0]);
+        assert_eq!(head_data[1], data1[1]);
+
+        // Verify tail is indirect atom with correct data
+        assert!(tail.is_indirect(), "Tail should be indirect");
+        assert!(!tail.is_stack_allocated(), "Tail should be in offset form");
+        let tail_indirect = tail.as_indirect().expect("tail indirect");
+        let tail_data = unsafe { std::slice::from_raw_parts(tail_indirect.data_pointer(), 2) };
+        assert_eq!(tail_data[0], data2[0]);
+        assert_eq!(tail_data[1], data2[1]);
+
+        noun.assert_in_pma(&pma);
+    }
+
+    /// Verifies structural sharing is preserved: [x x] evacuates x only once.
+    ///
+    /// When the same noun is referenced multiple times, the forwarding pointer
+    /// mechanism ensures it's only copied once, and both references point to
+    /// the same PMA location.
+    #[test]
+    #[cfg_attr(miri, ignore = "memfd_create unsupported in Miri")]
+    fn test_evacuate_shared_structure() {
+        let mut stack = NockStack::new(1 << 10, 0);
+        let mut pma = test_pma(1000);
+
+        // Create a shared subcell
+        let shared = Cell::new(&mut stack, D(1), D(2)).as_noun();
+
+        // Create [shared shared] - both head and tail point to same cell
+        let mut noun = Cell::new(&mut stack, shared, shared).as_noun();
+
+        // Install PMA arena and evacuate
+        let _guard = pma.install();
+        unsafe { noun.copy_to_pma(&stack, &mut pma) };
+
+        // Should allocate only 2 cells: the root and the shared subcell (not 3!)
+        let cell_words = word_size_of::<CellMemory>();
+        assert_eq!(
+            pma.alloc_offset(),
+            cell_words * 2,
+            "Should allocate only 2 cells due to sharing"
+        );
+
+        // Verify both head and tail point to the same PMA location
+        let root = noun.as_cell().expect("is cell");
+        let head_raw = unsafe { root.head().as_raw() };
+        let tail_raw = unsafe { root.tail().as_raw() };
+        assert_eq!(
+            head_raw, tail_raw,
+            "Head and tail should point to same location (sharing preserved)"
+        );
+
+        // Verify the shared cell is correct
+        let shared_cell = root.head().as_cell().expect("shared is cell");
+        assert_eq!(shared_cell.head().as_direct().expect("1").data(), 1);
+        assert_eq!(shared_cell.tail().as_direct().expect("2").data(), 2);
+
+        noun.assert_in_pma(&pma);
+    }
+
+    /// Verifies evacuating an already-evacuated noun is a no-op that allocates nothing.
+    #[test]
+    #[cfg_attr(miri, ignore = "memfd_create unsupported in Miri")]
+    fn test_evacuate_already_evacuated() {
+        let mut stack = NockStack::new(1 << 10, 0);
+        let mut pma = test_pma(1000);
+
+        // Create and evacuate a cell
+        let mut noun = Cell::new(&mut stack, D(1), D(2)).as_noun();
+        let _guard = pma.install();
+        unsafe { noun.copy_to_pma(&stack, &mut pma) };
+
+        let offset_after_first = pma.alloc_offset();
+        assert!(offset_after_first > 0, "Should have allocated something");
+
+        // Evacuate again - should be a no-op
+        unsafe { noun.copy_to_pma(&stack, &mut pma) };
+
+        assert_eq!(
+            pma.alloc_offset(),
+            offset_after_first,
+            "Second evacuation should not allocate anything"
+        );
+
+        noun.assert_in_pma(&pma);
     }
 }
