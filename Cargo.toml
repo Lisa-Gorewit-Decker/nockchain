@@ -1,4 +1,5 @@
 [workspace]
+
 resolver = "2"
 members = ["crates/nockchain-api", "crates/nockchain-explorer-tui", "crates/nockchain-peek", "crates/equix-latency", "crates/hoon", "crates/hoonc", "crates/kernels", "crates/nockapp", "crates/nockapp-grpc", "crates/nockapp-grpc-proto", "crates/nockchain", "crates/nockchain-libp2p-io", "crates/nockchain-math", "crates/nockchain-types", "crates/nockchain-wallet", "crates/raw-tx-checker", "crates/nockvm/rust/ibig", "crates/nockvm/rust/murmur3", "crates/nockup", "crates/nockvm/rust/nockvm", "crates/nockvm/rust/nockvm_macros", "crates/noun-serde", "crates/noun-serde-derive", "crates/zkvm-jetpack"]
 
@@ -14,7 +15,7 @@ argon2 = "0.5.3"
 arrayref = "0.3.7"
 async-trait = "0.1"
 axum = "0.8.1"
-axum-server = { version = "0.7.2", features = ["tls-rustls"] }
+axum-server = { version = "0.8.0", features = ["tls-rustls"] }
 bardecoder = "0.5.0"
 bincode = "2.0.0-rc.3"
 bitcoincore-rpc = "0.19.0"
@@ -95,7 +96,7 @@ reqwest = { version = "0.12", default-features = false, features = [
 ] }
 rkyv = "0.8.10"
 rustls = "0.23.0"
-rustls-pemfile = "2.0.0"
+rustls-pki-types = "1.13.1"
 serde = "1.0.217"
 serde_bytes = { version = "0.11.15", features = ["alloc"] }
 serde_cbor = "0.11"
@@ -113,7 +114,7 @@ syn = { version = "2.0.39", features = ["full"] }
 tempfile = "3.3"
 termcolor = "1.4"
 termimad = "0.33.0"
-testcontainers = { git = "https://github.com/bitemyapp/testcontainers-rs.git", rev = "54851fd9faf9b9cded9d681b46f87c056880d870" }
+testcontainers = { git = "https://github.com/bitemyapp/testcontainers-rs.git", rev = "17c00e411341943196ccd9df1165e60a4d1c40f9" }
 test-log = "0.2.18"
 thiserror = "2.0.11"
 tikv-jemallocator = { version = "0.6" }
@@ -132,7 +133,7 @@ tokio-rustls = "0.26.0"
 tokio-stream = "0.1"
 tokio-util = "0.7.11"
 tonic = { version = "0.14.0", features = ["tls-webpki-roots"] }
-tonic-build = "0.14"
+tonic-build = "0.14.2"
 tonic-health = "0.14.2"
 tonic-prost = "0.14.0"
 tonic-prost-build = "0.14.0"
