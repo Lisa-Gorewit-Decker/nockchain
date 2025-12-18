@@ -519,6 +519,54 @@ mod tests {
         );
     }
 
+    /// Verifies contains_ptr correctly identifies pointers inside vs outside the PMA.
+    #[test]
+    #[cfg_attr(miri, ignore = "memfd_create unsupported in Miri")]
+    fn test_pma_contains_ptr() {
+        let mut pma = test_pma(1000);
+
+        // Get base pointer and compute some test pointers
+        let base = pma.arena().base_ptr();
+        let len_bytes = pma.arena().len_bytes();
+
+        // Base pointer should be in PMA
+        assert!(pma.contains_ptr(base), "Base pointer should be in PMA");
+
+        // Pointer at offset 0 should be in PMA
+        let ptr_at_0 = pma.ptr_from_offset(0);
+        assert!(pma.contains_ptr(ptr_at_0), "Pointer at offset 0 should be in PMA");
+
+        // Pointer in the middle should be in PMA
+        let middle_offset = 500u32;
+        let ptr_middle = pma.ptr_from_offset(middle_offset);
+        assert!(pma.contains_ptr(ptr_middle), "Pointer in middle should be in PMA");
+
+        // Last valid byte should be in PMA
+        let last_byte = unsafe { base.add(len_bytes - 1) };
+        assert!(pma.contains_ptr(last_byte), "Last byte should be in PMA");
+
+        // Pointer just past the end should NOT be in PMA
+        let past_end = unsafe { base.add(len_bytes) };
+        assert!(!pma.contains_ptr(past_end), "Pointer past end should not be in PMA");
+
+        // Pointer well past the end should NOT be in PMA
+        let way_past_end = unsafe { base.add(len_bytes + 1000) };
+        assert!(!pma.contains_ptr(way_past_end), "Pointer way past end should not be in PMA");
+
+        // Pointer before the base should NOT be in PMA (if base > 0)
+        if base as usize > 0 {
+            let before_base = unsafe { base.sub(1) };
+            assert!(!pma.contains_ptr(before_base), "Pointer before base should not be in PMA");
+        }
+
+        // Null pointer should NOT be in PMA
+        assert!(!pma.contains_ptr(std::ptr::null()), "Null pointer should not be in PMA");
+
+        // Allocated pointer should be in PMA
+        let alloc_ptr = unsafe { pma.alloc_indirect(10) };
+        assert!(pma.contains_ptr(alloc_ptr as *const u8), "Allocated pointer should be in PMA");
+    }
+
     /// Verifies reset() and reset_to() correctly manage the allocation pointer.
     ///
     /// This test exercises:
