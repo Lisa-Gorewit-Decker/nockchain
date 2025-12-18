@@ -293,7 +293,8 @@ communicate.
 
 # Milestone 2: Persistence
 
-Using mmap to persist to disk.
+Using mmap to persist to disk. We will be assuming only a single reader/writer
+for now (Milestone 5 is concurrent reads).
 
 This consists of two phases:
 
@@ -598,6 +599,8 @@ noun uses PMA memory, not stack memory (may need to poison/zero stack to detect)
 read from the PMA copy - should work without accessing freed memory.
 
 ##### Concurrent allocation:
+For now we are assuming the PMA has only a single writer/reader, so we won't
+implement these tests, but they are listed for future reference.
 - `test_concurrent_pma_allocation` - Spawns multiple threads that allocate from PMA simultaneously, verifies
 no overlapping allocations and total allocated equals sum of individual allocations.
 - `test_concurrent_allocation_under_pressure` - Multiple threads racing to allocate when PMA is nearly full,
