@@ -73,13 +73,13 @@ impl Pma {
     }
 
     /// Convert a pointer within the PMA to an offset in words
-    pub fn offset_from_ptr(&self, _ptr: *const u8) -> u32 {
-        todo!()
+    pub fn offset_from_ptr(&self, ptr: *const u8) -> u32 {
+        self.arena.offset_from_ptr(ptr)
     }
 
     /// Convert an offset in words to a pointer
-    pub fn ptr_from_offset(&self, _offset_words: u32) -> *mut u8 {
-        todo!()
+    pub fn ptr_from_offset(&self, offset_words: u32) -> *mut u8 {
+        self.arena.ptr_from_offset(offset_words)
     }
 
     /// Check if a pointer is within the PMA's memory region
@@ -246,6 +246,59 @@ mod tests {
         assert!(
             ptr6 >= ptr5_end,
             "ptr6 should start at or after ptr5's end"
+        );
+    }
+
+    /// Verifies offset-to-pointer and pointer-to-offset conversions are inverses.
+    ///
+    /// This test exercises:
+    /// - ptr_from_offset converts word offset to pointer
+    /// - offset_from_ptr converts pointer back to word offset
+    /// - Round-trip: offset -> ptr -> offset gives same offset
+    /// - Round-trip: ptr -> offset -> ptr gives same ptr
+    #[test]
+    #[cfg_attr(miri, ignore = "memfd_create unsupported in Miri")]
+    fn test_pma_offset_round_trip() {
+        let mut pma = test_pma(1000);
+
+        // Test with offset 0 (base of PMA)
+        let ptr_at_0 = pma.ptr_from_offset(0);
+        let offset_from_0 = pma.offset_from_ptr(ptr_at_0);
+        assert_eq!(offset_from_0, 0, "Offset at base should be 0");
+
+        // Test with a known offset
+        let test_offset: u32 = 42;
+        let ptr = pma.ptr_from_offset(test_offset);
+        let recovered_offset = pma.offset_from_ptr(ptr);
+        assert_eq!(
+            recovered_offset, test_offset,
+            "Round-trip offset -> ptr -> offset should return same offset"
+        );
+
+        // Test with pointer from an allocation
+        let alloc_ptr = unsafe { pma.alloc_indirect(10) };
+        let alloc_offset = pma.offset_from_ptr(alloc_ptr as *const u8);
+        let recovered_ptr = pma.ptr_from_offset(alloc_offset);
+        assert_eq!(
+            recovered_ptr, alloc_ptr as *mut u8,
+            "Round-trip ptr -> offset -> ptr should return same pointer"
+        );
+
+        // Test multiple allocations have distinct offsets
+        let ptr1 = unsafe { pma.alloc_indirect(5) };
+        let ptr2 = unsafe { pma.alloc_indirect(5) };
+        let offset1 = pma.offset_from_ptr(ptr1 as *const u8);
+        let offset2 = pma.offset_from_ptr(ptr2 as *const u8);
+        assert_ne!(
+            offset1, offset2,
+            "Different allocations should have different offsets"
+        );
+
+        // Verify the offsets differ by the expected amount (5 + 2 = 7 words)
+        assert_eq!(
+            offset2 - offset1,
+            7,
+            "Second allocation offset should be 7 words after first"
         );
     }
 }
