@@ -8,7 +8,7 @@ use std::sync::Arc;
 
 use thiserror::Error;
 
-use crate::mem::{Arena, NewStackError};
+use crate::mem::{word_size_of, Arena, NewStackError};
 use crate::noun::{CellMemory, NounAllocator};
 
 /// Errors that can occur during PMA operations
@@ -96,25 +96,35 @@ impl Pma {
     pub fn reset_to(&mut self, _offset: usize) {
         todo!()
     }
+
+    /// Allocate `words` from the PMA, returning a pointer to the allocation.
+    /// This is the core bump allocation primitive.
+    unsafe fn raw_alloc(&mut self, words: usize) -> *mut u64 {
+        let ptr = self.arena.ptr_from_offset(self.alloc_offset as u32) as *mut u64;
+        self.alloc_offset += words;
+        ptr
+    }
 }
 
 impl ibig::Stack for Pma {
-    unsafe fn alloc_layout(&mut self, _layout: std::alloc::Layout) -> *mut u64 {
-        todo!()
+    unsafe fn alloc_layout(&mut self, layout: std::alloc::Layout) -> *mut u64 {
+        // Convert bytes to words, rounding up
+        let words = (layout.size() + 7) >> 3;
+        self.raw_alloc(words)
     }
 }
 
 impl NounAllocator for Pma {
-    unsafe fn alloc_indirect(&mut self, _words: usize) -> *mut u64 {
-        todo!()
+    unsafe fn alloc_indirect(&mut self, words: usize) -> *mut u64 {
+        self.raw_alloc(words + 2)
     }
 
     unsafe fn alloc_cell(&mut self) -> *mut CellMemory {
-        todo!()
+        self.raw_alloc(word_size_of::<CellMemory>()) as *mut CellMemory
     }
 
-    unsafe fn alloc_struct<T>(&mut self, _count: usize) -> *mut T {
-        todo!()
+    unsafe fn alloc_struct<T>(&mut self, count: usize) -> *mut T {
+        self.raw_alloc(word_size_of::<T>() * count) as *mut T
     }
 
     unsafe fn equals(&mut self, _a: *mut crate::noun::Noun, _b: *mut crate::noun::Noun) -> bool {
