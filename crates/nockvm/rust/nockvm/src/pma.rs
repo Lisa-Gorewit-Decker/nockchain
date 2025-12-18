@@ -120,9 +120,28 @@ impl Pma {
         self.alloc_offset = offset;
     }
 
+    /// Check if an allocation of `words` would exceed available space.
+    ///
+    /// # Panics
+    /// Panics with `PmaError::OutOfMemory` if there isn't enough space.
+    pub fn alloc_would_oom(&self, words: usize) {
+        if words > self.free_words() {
+            panic!(
+                "{}",
+                PmaError::OutOfMemory {
+                    requested: words,
+                    available: self.free_words(),
+                }
+            );
+        }
+    }
+
     /// Allocate `words` from the PMA, returning a pointer to the allocation.
-    /// This is the core bump allocation primitive.
+    ///
+    /// # Panics
+    /// Panics if there isn't enough space in the PMA.
     unsafe fn raw_alloc(&mut self, words: usize) -> *mut u64 {
+        self.alloc_would_oom(words);
         let ptr = self.arena.ptr_from_offset(self.alloc_offset as u32) as *mut u64;
         self.alloc_offset += words;
         ptr
@@ -565,6 +584,66 @@ mod tests {
         // Allocated pointer should be in PMA
         let alloc_ptr = unsafe { pma.alloc_indirect(10) };
         assert!(pma.contains_ptr(alloc_ptr as *const u8), "Allocated pointer should be in PMA");
+    }
+
+    /// Verifies allocation fails gracefully when PMA is full.
+    ///
+    /// This test exercises:
+    /// - alloc_would_oom() does not panic when there's space
+    /// - alloc_would_oom() panics when there isn't enough space
+    /// - Exact-fit allocations succeed
+    #[test]
+    #[cfg_attr(miri, ignore = "memfd_create unsupported in Miri")]
+    fn test_pma_out_of_memory() {
+        use std::panic::{catch_unwind, AssertUnwindSafe};
+
+        let mut pma = test_pma(100); // Small PMA: 100 words
+
+        // alloc_would_oom should not panic when there's space
+        pma.alloc_would_oom(50); // Should not panic
+        pma.alloc_would_oom(100); // Should not panic (exact fit)
+
+        // alloc_would_oom should panic when there isn't space
+        let result = catch_unwind(AssertUnwindSafe(|| {
+            pma.alloc_would_oom(101);
+        }));
+        assert!(result.is_err(), "alloc_would_oom(101) should panic with 100 free");
+
+        // Allocate some space
+        unsafe { pma.alloc_indirect(10) }; // 12 words (10 + 2 for metadata/size)
+        assert_eq!(pma.alloc_offset(), 12);
+        assert_eq!(pma.free_words(), 88);
+
+        // alloc_would_oom should reflect remaining space
+        pma.alloc_would_oom(88); // Should not panic
+        let result = catch_unwind(AssertUnwindSafe(|| {
+            pma.alloc_would_oom(89);
+        }));
+        assert!(result.is_err(), "alloc_would_oom(89) should panic with 88 free");
+
+        // Fill the rest
+        unsafe { pma.alloc_struct::<u64>(88) };
+        assert_eq!(pma.alloc_offset(), 100);
+        assert_eq!(pma.free_words(), 0);
+
+        // alloc_would_oom should panic for any non-zero allocation when full
+        let result = catch_unwind(AssertUnwindSafe(|| {
+            pma.alloc_would_oom(1);
+        }));
+        assert!(result.is_err(), "alloc_would_oom(1) should panic when full");
+
+        // But 0 words should not panic
+        pma.alloc_would_oom(0); // Should not panic
+
+        // Reset and verify we can allocate again
+        pma.reset();
+        assert_eq!(pma.free_words(), 100);
+        pma.alloc_would_oom(100); // Should not panic after reset
+
+        // Verify exact-fit allocation works
+        unsafe { pma.alloc_struct::<u64>(100) };
+        assert_eq!(pma.alloc_offset(), 100);
+        assert_eq!(pma.free_words(), 0);
     }
 
     /// Verifies reset() and reset_to() correctly manage the allocation pointer.
