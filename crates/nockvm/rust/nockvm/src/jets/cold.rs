@@ -1768,6 +1768,83 @@ pub(crate) mod test {
         batteries.assert_in_pma(&pma);
     }
 
+    /// Verifies BatteriesList can be evacuated to PMA and remains functional.
+    ///
+    /// This test exercises:
+    /// - Creating a BatteriesList with multiple Batteries entries
+    /// - Evacuating the BatteriesList to PMA via copy_to_pma
+    /// - Verifying all entries are still accessible after evacuation
+    /// - Verifying all nouns are in offset form (not stack-allocated)
+    /// - Verifying the BatteriesList passes assert_in_pma
+    ///
+    /// Note: copy_to_pma sets forwarding pointers in the source nouns, which corrupts
+    /// them for normal use. We use expected values for comparison.
+    #[test]
+    #[cfg_attr(miri, ignore)]
+    fn test_evacuate_batteries_list_round_trip() {
+        use crate::pma::{Pma, PmaCopy};
+        use std::path::PathBuf;
+
+        let mut stack = make_test_stack(DEFAULT_STACK_SIZE);
+        let mut pma = Pma::new(100000, PathBuf::from("/tmp/test_batteries_list_pma"))
+            .expect("Failed to create test PMA");
+
+        // Install PMA arena for offset-form access
+        let _guard = pma.install();
+
+        // Create a BatteriesList using the test helper
+        // make_batteries_list(&[7, 8]) creates a list with two Batteries entries,
+        // each with a single battery noun (D(7) and D(8))
+        let mut batteries_list = make_batteries_list(&mut stack, &[7, 8]);
+
+        // Expected battery values in iteration order
+        let expected_batteries: Vec<u64> = vec![7, 8];
+
+        // Evacuate BatteriesList to PMA
+        unsafe {
+            batteries_list.copy_to_pma(&stack, &mut pma);
+        }
+
+        // Iterate over evacuated batteries_list and verify values, count, and offset form
+        let mut expected_iter = expected_batteries.iter();
+        for batteries in batteries_list {
+            let expected_battery = expected_iter
+                .next()
+                .expect("BatteriesList has more entries than expected");
+
+            // Each Batteries in this test has a single entry
+            let mut batteries_iter = batteries.into_iter();
+            let (battery_ptr, parent_axis) = batteries_iter
+                .next()
+                .expect("Batteries should have at least one entry");
+
+            let battery = unsafe { *battery_ptr };
+            assert_eq!(
+                unsafe { battery.as_raw() },
+                *expected_battery,
+                "Battery value should match"
+            );
+            assert_eq!(parent_axis.as_u64(), 0, "Parent axis should be 0");
+
+            // Verify nouns are in offset form
+            verify_noun_not_stack_allocated(battery, "BatteriesList battery");
+            verify_noun_not_stack_allocated(parent_axis.as_noun(), "BatteriesList parent_axis");
+
+            // Verify no more entries in this Batteries
+            assert!(
+                batteries_iter.next().is_none(),
+                "Batteries should have exactly one entry"
+            );
+        }
+        assert!(
+            expected_iter.next().is_none(),
+            "BatteriesList has fewer entries than expected"
+        );
+
+        // Verify the BatteriesList passes assert_in_pma
+        batteries_list.assert_in_pma(&pma);
+    }
+
     /// Verifies Cold jet state can be evacuated to PMA and remains functional.
     ///
     /// This test exercises:
