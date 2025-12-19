@@ -464,6 +464,32 @@ struct ColdMem {
     path_to_batteries: Hamt<BatteriesList>,
 }
 
+impl PmaCopy for Cold {
+    fn assert_in_pma(&self, pma: &Pma) {
+        unsafe {
+            assert!(
+                pma.contains_ptr(self.0 as *const u8),
+                "Cold struct should be in PMA"
+            );
+            (*self.0).battery_to_paths.assert_in_pma(pma);
+            (*self.0).root_to_paths.assert_in_pma(pma);
+            (*self.0).path_to_batteries.assert_in_pma(pma);
+        }
+    }
+
+    unsafe fn copy_to_pma(&mut self, stack: &NockStack, pma: &mut Pma) {
+        // Copy each HAMT to PMA
+        (*self.0).battery_to_paths.copy_to_pma(stack, pma);
+        (*self.0).root_to_paths.copy_to_pma(stack, pma);
+        (*self.0).path_to_batteries.copy_to_pma(stack, pma);
+        // Allocate ColdMem in PMA and copy
+        let dest_mem: *mut ColdMem = pma.alloc_struct(1);
+        copy_nonoverlapping(self.0, dest_mem, 1);
+        // Update pointer to point to PMA copy
+        self.0 = dest_mem;
+    }
+}
+
 impl Preserve for Cold {
     unsafe fn assert_in_stack(&self, stack: &NockStack) {
         stack.assert_struct_is_in(self.0, 1);
@@ -1992,7 +2018,6 @@ pub(crate) mod test {
     /// - Roots (base cores) -> paths
     /// - Paths -> battery lists (for matching cores to jets)
     #[test]
-    #[cfg(any())] // TODO: Enable when PmaCopy for Cold is implemented
     #[cfg_attr(miri, ignore)]
     fn test_evacuate_cold_round_trip() {
         use crate::pma::{Pma, PmaCopy};
