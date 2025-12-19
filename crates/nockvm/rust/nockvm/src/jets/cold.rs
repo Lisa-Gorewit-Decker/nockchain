@@ -1704,6 +1704,70 @@ pub(crate) mod test {
         noun_list.assert_in_pma(&pma);
     }
 
+    /// Verifies Batteries can be evacuated to PMA and remains functional.
+    ///
+    /// This test exercises:
+    /// - Creating a Batteries linked list with multiple entries
+    /// - Evacuating the Batteries to PMA via copy_to_pma
+    /// - Verifying all entries are still accessible after evacuation
+    /// - Verifying all nouns are in offset form (not stack-allocated)
+    /// - Verifying the Batteries passes assert_in_pma
+    ///
+    /// Note: copy_to_pma sets forwarding pointers in the source nouns, which corrupts
+    /// them for normal use. We use expected values for comparison.
+    #[test]
+    #[cfg_attr(miri, ignore)]
+    fn test_evacuate_batteries_round_trip() {
+        use crate::pma::{Pma, PmaCopy};
+        use std::path::PathBuf;
+
+        let mut stack = make_test_stack(DEFAULT_STACK_SIZE);
+        let mut pma = Pma::new(100000, PathBuf::from("/tmp/test_batteries_pma"))
+            .expect("Failed to create test PMA");
+
+        // Install PMA arena for offset-form access
+        let _guard = pma.install();
+
+        // Create a Batteries list using the test helper
+        // This creates: [battery=D(2), axis=D(3)] -> [battery=D(0), axis=D(1)] -> NIL
+        let mut batteries = make_batteries(&mut stack);
+
+        // Expected values (battery, parent_axis) in iteration order
+        let expected_values: Vec<(u64, u64)> = vec![(2, 3), (0, 1)];
+
+        // Evacuate Batteries to PMA
+        unsafe {
+            batteries.copy_to_pma(&stack, &mut pma);
+        }
+
+        // Iterate over evacuated batteries and verify values, count, and offset form
+        let mut expected_iter = expected_values.iter();
+        for (battery_ptr, parent_axis) in batteries {
+            let (expected_battery, expected_axis) = expected_iter
+                .next()
+                .expect("Batteries has more entries than expected");
+
+            let battery = unsafe { *battery_ptr };
+            assert_eq!(
+                unsafe { battery.as_raw() },
+                *expected_battery,
+                "Battery value should match"
+            );
+            assert_eq!(parent_axis.as_u64(), *expected_axis, "Parent axis should match");
+
+            // Verify nouns are in offset form
+            verify_noun_not_stack_allocated(battery, "Batteries battery");
+            verify_noun_not_stack_allocated(parent_axis.as_noun(), "Batteries parent_axis");
+        }
+        assert!(
+            expected_iter.next().is_none(),
+            "Batteries has fewer entries than expected"
+        );
+
+        // Verify the Batteries passes assert_in_pma
+        batteries.assert_in_pma(&pma);
+    }
+
     /// Verifies Cold jet state can be evacuated to PMA and remains functional.
     ///
     /// This test exercises:
