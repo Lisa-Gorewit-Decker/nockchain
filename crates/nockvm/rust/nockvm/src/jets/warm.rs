@@ -211,3 +211,165 @@ impl Retag for Warm {
         self.0.retag(stack);
     }
 }
+
+#[cfg(test)]
+mod test {
+    use super::*;
+    use crate::interpreter::Context;
+    use crate::jets::cold::{Batteries, BatteriesMem, NO_BATTERIES};
+    use crate::jets::JetErr;
+    use crate::mem::NockStack;
+    use crate::noun::{NounAllocator, D};
+    use crate::pma::{Pma, PmaCopy};
+    use std::path::PathBuf;
+
+    const DEFAULT_STACK_SIZE: usize = 1 << 16;
+
+    fn make_test_stack(size: usize) -> NockStack {
+        NockStack::new(size, 0)
+    }
+
+    /// Dummy jet function for testing
+    fn dummy_jet(_ctx: &mut Context, _subj: Noun) -> Result<Noun, JetErr> {
+        Ok(D(42))
+    }
+
+    /// Another dummy jet function to differentiate entries
+    fn dummy_jet_2(_ctx: &mut Context, _subj: Noun) -> Result<Noun, JetErr> {
+        Ok(D(99))
+    }
+
+    /// Create a simple Batteries for testing (single entry with given battery value)
+    fn make_simple_batteries(stack: &mut NockStack, battery_value: u64) -> Batteries {
+        let batteries_mem: *mut BatteriesMem = unsafe { stack.alloc_struct(1) };
+        unsafe {
+            batteries_mem.write(BatteriesMem {
+                battery: D(battery_value),
+                parent_axis: D(0).as_atom().expect("0 is a valid atom"),
+                parent_batteries: NO_BATTERIES,
+            });
+        }
+        Batteries::new(batteries_mem)
+    }
+
+    /// Create a WarmEntry linked list for testing
+    fn make_warm_entry(stack: &mut NockStack, entries: &[(u64, Jet, u64, bool)]) -> WarmEntry {
+        let mut warm_entry = WARM_ENTRY_NIL;
+        for &(battery_value, jet, path_value, test) in entries.iter().rev() {
+            let batteries = make_simple_batteries(stack, battery_value);
+            let warm_entry_mem: *mut WarmEntryMem = unsafe { stack.alloc_struct(1) };
+            unsafe {
+                warm_entry_mem.write(WarmEntryMem {
+                    batteries,
+                    jet,
+                    path: D(path_value),
+                    test,
+                    next: warm_entry,
+                });
+            }
+            warm_entry = WarmEntry(warm_entry_mem);
+        }
+        warm_entry
+    }
+
+    /// Helper to verify a noun is not stack-allocated (is in offset form)
+    fn verify_noun_not_stack_allocated(noun: Noun, context: &str) {
+        if noun.is_direct() {
+            return;
+        }
+        assert!(
+            !noun.is_stack_allocated(),
+            "{} should be in offset form after evacuation",
+            context
+        );
+        if let Ok(cell) = noun.as_cell() {
+            verify_noun_not_stack_allocated(cell.head(), context);
+            verify_noun_not_stack_allocated(cell.tail(), context);
+        }
+    }
+
+    /// Verifies WarmEntry can be evacuated to PMA and remains functional.
+    ///
+    /// This test exercises:
+    /// - Creating a WarmEntry linked list with multiple entries
+    /// - Evacuating the WarmEntry to PMA via copy_to_pma
+    /// - Verifying all entries are still accessible after evacuation
+    /// - Verifying all nouns are in offset form (not stack-allocated)
+    /// - Verifying the WarmEntry passes assert_in_pma
+    ///
+    /// Note: copy_to_pma sets forwarding pointers in the source nouns, which corrupts
+    /// them for normal use. We use expected values for comparison.
+    #[test]
+    #[cfg(any())] // TODO: Enable when PmaCopy for WarmEntry is implemented
+    #[cfg_attr(miri, ignore)]
+    fn test_evacuate_warm_entry_round_trip() {
+        let mut stack = make_test_stack(DEFAULT_STACK_SIZE);
+        let mut pma = Pma::new(100000, PathBuf::from("/tmp/test_warm_entry_pma"))
+            .expect("Failed to create test PMA");
+
+        // Install PMA arena for offset-form access
+        let _guard = pma.install();
+
+        // Create WarmEntry linked list with two entries
+        // (battery_value, jet, path_value, test)
+        let entries: Vec<(u64, Jet, u64, bool)> = vec![
+            (10, dummy_jet, 100, false),
+            (20, dummy_jet_2, 200, true),
+        ];
+        let mut warm_entry = make_warm_entry(&mut stack, &entries);
+
+        // Evacuate WarmEntry to PMA
+        unsafe {
+            warm_entry.copy_to_pma(&stack, &mut pma);
+        }
+
+        // Iterate over evacuated warm_entry and verify values
+        let mut expected_iter = entries.iter();
+        for (path, batteries, jet, test) in warm_entry {
+            let (expected_battery, expected_jet, expected_path, expected_test) = expected_iter
+                .next()
+                .expect("WarmEntry has more entries than expected");
+
+            // Verify path
+            assert_eq!(
+                unsafe { path.as_raw() },
+                *expected_path,
+                "Path should match"
+            );
+
+            // Verify jet function pointer
+            assert!(
+                std::ptr::fn_addr_eq(jet, *expected_jet),
+                "Jet function pointer should match"
+            );
+
+            // Verify test flag
+            assert_eq!(test, *expected_test, "Test flag should match");
+
+            // Verify batteries (first entry only for simplicity)
+            let mut batteries_iter = batteries.into_iter();
+            let (battery_ptr, parent_axis) = batteries_iter
+                .next()
+                .expect("Batteries should have at least one entry");
+            let battery = unsafe { *battery_ptr };
+            assert_eq!(
+                unsafe { battery.as_raw() },
+                *expected_battery,
+                "Battery value should match"
+            );
+            assert_eq!(parent_axis.as_u64().unwrap(), 0, "Parent axis should be 0");
+
+            // Verify nouns are in offset form
+            verify_noun_not_stack_allocated(path, "WarmEntry path");
+            verify_noun_not_stack_allocated(battery, "WarmEntry battery");
+        }
+
+        assert!(
+            expected_iter.next().is_none(),
+            "WarmEntry has fewer entries than expected"
+        );
+
+        // Verify the WarmEntry passes assert_in_pma
+        warm_entry.assert_in_pma(&pma);
+    }
+}

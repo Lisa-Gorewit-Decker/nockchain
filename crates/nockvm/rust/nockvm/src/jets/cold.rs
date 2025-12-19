@@ -23,13 +23,13 @@ pub type Result = std::result::Result<bool, Error>;
 #[derive(Copy, Clone)]
 pub struct Batteries(*mut BatteriesMem);
 
-const NO_BATTERIES: Batteries = Batteries(null_mut());
+pub(crate) const NO_BATTERIES: Batteries = Batteries(null_mut());
 
 #[derive(Copy, Clone)]
-struct BatteriesMem {
-    battery: Noun,
-    parent_axis: Atom,
-    parent_batteries: Batteries,
+pub(crate) struct BatteriesMem {
+    pub(crate) battery: Noun,
+    pub(crate) parent_axis: Atom,
+    pub(crate) parent_batteries: Batteries,
 }
 
 impl Preserve for Batteries {
@@ -149,6 +149,10 @@ impl Iterator for Batteries {
 }
 
 impl Batteries {
+    pub(crate) fn new(ptr: *mut BatteriesMem) -> Self {
+        Batteries(ptr)
+    }
+
     pub fn matches(self, stack: &mut NockStack, mut core: Noun) -> bool {
         let mut root_found: bool = false;
 
