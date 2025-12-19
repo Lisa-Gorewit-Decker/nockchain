@@ -85,6 +85,51 @@ impl Retag for Batteries {
     }
 }
 
+impl PmaCopy for Batteries {
+    fn assert_in_pma(&self, pma: &Pma) {
+        if self.0.is_null() {
+            return;
+        }
+        let mut cursor = *self;
+        loop {
+            unsafe {
+                assert!(
+                    pma.contains_ptr(cursor.0 as *const u8),
+                    "Batteries node should be in PMA"
+                );
+                (*cursor.0).battery.assert_in_pma(pma);
+                (*cursor.0).parent_axis.assert_in_pma(pma);
+                if (*cursor.0).parent_batteries.0.is_null() {
+                    break;
+                }
+                cursor = (*cursor.0).parent_batteries;
+            }
+        }
+    }
+
+    unsafe fn copy_to_pma(&mut self, stack: &NockStack, pma: &mut Pma) {
+        if self.0.is_null() {
+            return;
+        }
+        let mut ptr: *mut Batteries = self;
+        loop {
+            // Copy the battery noun and parent_axis to PMA
+            (*(*ptr).0).battery.copy_to_pma(stack, pma);
+            (*(*ptr).0).parent_axis.copy_to_pma(stack, pma);
+            // Allocate new BatteriesMem in PMA and copy
+            let dest_mem: *mut BatteriesMem = pma.alloc_struct(1);
+            copy_nonoverlapping((*ptr).0, dest_mem, 1);
+            // Update pointer to point to PMA copy
+            *ptr = Batteries(dest_mem);
+            // Move to next node
+            ptr = &mut (*dest_mem).parent_batteries;
+            if (*dest_mem).parent_batteries.0.is_null() {
+                break;
+            }
+        }
+    }
+}
+
 impl Iterator for Batteries {
     type Item = (*mut Noun, Atom);
     fn next(&mut self) -> Option<Self::Item> {
@@ -156,6 +201,49 @@ const BATTERIES_LIST_NIL: BatteriesList = BatteriesList(null_mut());
 struct BatteriesListMem {
     batteries: Batteries,
     next: BatteriesList,
+}
+
+impl PmaCopy for BatteriesList {
+    fn assert_in_pma(&self, pma: &Pma) {
+        if self.0.is_null() {
+            return;
+        }
+        let mut cursor = *self;
+        loop {
+            unsafe {
+                assert!(
+                    pma.contains_ptr(cursor.0 as *const u8),
+                    "BatteriesList node should be in PMA"
+                );
+                (*cursor.0).batteries.assert_in_pma(pma);
+                if (*cursor.0).next.0.is_null() {
+                    break;
+                }
+                cursor = (*cursor.0).next;
+            }
+        }
+    }
+
+    unsafe fn copy_to_pma(&mut self, stack: &NockStack, pma: &mut Pma) {
+        if self.0.is_null() {
+            return;
+        }
+        let mut ptr: *mut BatteriesList = self;
+        loop {
+            // Copy the batteries to PMA
+            (*(*ptr).0).batteries.copy_to_pma(stack, pma);
+            // Allocate new BatteriesListMem in PMA and copy
+            let dest_mem: *mut BatteriesListMem = pma.alloc_struct(1);
+            copy_nonoverlapping((*ptr).0, dest_mem, 1);
+            // Update pointer to point to PMA copy
+            *ptr = BatteriesList(dest_mem);
+            // Move to next node
+            ptr = &mut (*dest_mem).next;
+            if (*dest_mem).next.0.is_null() {
+                break;
+            }
+        }
+    }
 }
 
 impl Preserve for BatteriesList {
@@ -1761,7 +1849,6 @@ pub(crate) mod test {
     /// Note: copy_to_pma sets forwarding pointers in the source nouns, which corrupts
     /// them for normal use. We use expected values for comparison.
     #[test]
-    #[cfg(any())] // TODO: Enable when PmaCopy for Batteries is implemented
     #[cfg_attr(miri, ignore)]
     fn test_evacuate_batteries_round_trip() {
         use crate::pma::{Pma, PmaCopy};
@@ -1826,7 +1913,6 @@ pub(crate) mod test {
     /// Note: copy_to_pma sets forwarding pointers in the source nouns, which corrupts
     /// them for normal use. We use expected values for comparison.
     #[test]
-    #[cfg(any())] // TODO: Enable when PmaCopy for BatteriesList is implemented
     #[cfg_attr(miri, ignore)]
     fn test_evacuate_batteries_list_round_trip() {
         use crate::pma::{Pma, PmaCopy};
