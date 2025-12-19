@@ -5,7 +5,8 @@ use either::Either::{self, *};
 
 use crate::mem::{NockStack, Preserve, Retag};
 use crate::mug::mug_u32;
-use crate::noun::Noun;
+use crate::noun::{Noun, NounAllocator};
+use crate::pma::{Pma, PmaCopy};
 use crate::unifying_equality::unifying_equality;
 
 type MutStemEntry<T> = Either<*mut MutStem<T>, Leaf<T>>;
@@ -692,6 +693,178 @@ impl<T: Copy + Retag> Retag for Hamt<T> {
                         pair = pair.add(1);
                     }
                 }
+            }
+        }
+    }
+}
+
+impl<T: Copy + PmaCopy> PmaCopy for Hamt<T> {
+    fn assert_in_pma(&self, pma: &Pma) {
+        unsafe {
+            // Empty HAMT - nothing to check
+            if (*self.0).bitmap == 0 {
+                return;
+            }
+
+            // Check root stem is in PMA
+            assert!(
+                pma.contains_ptr(self.0 as *const u8),
+                "HAMT root stem should be in PMA"
+            );
+
+            // Traverse and check all internal structures
+            let mut stk: [(Stem<T>, u32, usize); 6] = [(
+                Stem {
+                    bitmap: 0,
+                    typemap: 0,
+                    buffer: null_mut(),
+                },
+                0,
+                0,
+            ); 6];
+            stk[0] = ((*self.0), (*self.0).bitmap, 0);
+            let mut depth = 1;
+
+            loop {
+                if depth == 0 {
+                    break;
+                }
+                let (stem, bits, next_idx) = &mut stk[depth - 1];
+
+                if *bits == 0 {
+                    depth -= 1;
+                    continue;
+                }
+
+                let bit = bits.trailing_zeros();
+                *bits &= *bits - 1;
+                let idx = *next_idx;
+                *next_idx = idx + 1;
+
+                let ep = stem.buffer.add(idx);
+                let is_stem = ((stem.typemap >> bit) & 1) != 0;
+
+                if is_stem {
+                    let child = (*ep).stem;
+                    assert!(
+                        pma.contains_ptr(child.buffer as *const u8),
+                        "HAMT child stem buffer should be in PMA"
+                    );
+                    stk[depth] = (child, child.bitmap, 0);
+                    depth += 1;
+                } else {
+                    let leaf = (*ep).leaf;
+                    assert!(
+                        pma.contains_ptr(leaf.buffer as *const u8),
+                        "HAMT leaf buffer should be in PMA"
+                    );
+                    // Check all nouns in key-value pairs
+                    let mut p = leaf.buffer;
+                    let end = p.add(leaf.len);
+                    while p != end {
+                        (*p).0.assert_in_pma(pma);
+                        (*p).1.assert_in_pma(pma);
+                        p = p.add(1);
+                    }
+                }
+            }
+        }
+    }
+
+    /// Copy this HAMT and all its contents to the PMA.
+    ///
+    /// This copies:
+    /// - The root Stem
+    /// - All child Stems and their entry buffers
+    /// - All Leaves and their key-value pair buffers
+    /// - All Nouns in keys, converted to offset form
+    /// - All T values in values (via T::copy_to_pma)
+    ///
+    /// After this call, self.0 points to the PMA copy and all internal
+    /// pointers reference PMA locations.
+    unsafe fn copy_to_pma(&mut self, stack: &NockStack, pma: &mut Pma) {
+        // Empty HAMT - nothing to copy
+        if (*self.0).bitmap == 0 {
+            return;
+        }
+
+        // Copy root stem to PMA
+        let dest_stem: *mut Stem<T> = pma.alloc_struct(1);
+        copy_nonoverlapping(self.0, dest_stem, 1);
+        self.0 = dest_stem;
+
+        // Copy root's buffer to PMA
+        let sz = (*dest_stem).size();
+        if sz > 0 {
+            let dest_buffer: *mut Entry<T> = pma.alloc_struct(sz);
+            copy_nonoverlapping((*dest_stem).buffer, dest_buffer, sz);
+            (*dest_stem).buffer = dest_buffer;
+        }
+
+        // Worklist: (stem whose buffer is already in PMA, remaining bitmap bits, next buffer index)
+        let mut stk: [(Stem<T>, u32, usize); 6] = [(
+            Stem {
+                bitmap: 0,
+                typemap: 0,
+                buffer: null_mut(),
+            },
+            0,
+            0,
+        ); 6];
+        stk[0] = (*dest_stem, (*dest_stem).bitmap, 0);
+        let mut depth = 1;
+
+        loop {
+            if depth == 0 {
+                break;
+            }
+            let (stem, bits, next_idx) = &mut stk[depth - 1];
+
+            if *bits == 0 {
+                depth -= 1;
+                continue;
+            }
+
+            let bit = bits.trailing_zeros(); // 0..31
+            *bits &= *bits - 1; // clear lsb set bit
+            let idx = *next_idx;
+            *next_idx = idx + 1;
+
+            let ep = stem.buffer.add(idx);
+            let is_stem = ((stem.typemap >> bit) & 1) != 0;
+
+            if is_stem {
+                // Child stem - copy its buffer to PMA
+                let child = (*ep).stem;
+                let csz = child.size();
+                let db: *mut Entry<T> = pma.alloc_struct(csz);
+                copy_nonoverlapping(child.buffer, db, csz);
+                let new_stem = Stem {
+                    bitmap: child.bitmap,
+                    typemap: child.typemap,
+                    buffer: db,
+                };
+                *ep = Entry { stem: new_stem };
+                debug_assert!(depth < 6);
+                stk[depth] = (new_stem, new_stem.bitmap, 0);
+                depth += 1;
+            } else {
+                // Leaf - copy its buffer to PMA and evacuate all nouns
+                let leaf = (*ep).leaf;
+                let len = leaf.len;
+                let db: *mut (Noun, T) = pma.alloc_struct(len);
+                copy_nonoverlapping(leaf.buffer, db, len);
+                let new_leaf = Leaf { len, buffer: db };
+
+                // Evacuate all nouns in key-value pairs
+                let mut p = new_leaf.buffer;
+                let end = p.add(len);
+                while p != end {
+                    (*p).0.copy_to_pma(stack, pma);
+                    (*p).1.copy_to_pma(stack, pma);
+                    p = p.add(1);
+                }
+                *ep = Entry { leaf: new_leaf };
             }
         }
     }

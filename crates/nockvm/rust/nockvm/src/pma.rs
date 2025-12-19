@@ -372,6 +372,7 @@ impl PmaCopy for Noun {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::hamt::Hamt;
     use crate::jets::cold::NounListMem;
     use crate::mem::{word_size_of, Arena, NockStack};
     use crate::noun::{D, DIRECT_MAX};
@@ -1393,5 +1394,345 @@ mod tests {
             !unsafe { pma.equals(&mut noun1 as *mut Noun, &mut noun3 as *mut Noun) },
             "NounAllocator::equals should return false for unequal nouns"
         );
+    }
+
+    /// Verifies that a HAMT can be evacuated to PMA and lookups still work.
+    ///
+    /// This test exercises:
+    /// - Creating a HAMT with multiple entries (direct atoms as keys/values)
+    /// - Evacuating the entire HAMT structure to PMA
+    /// - Verifying all entries are still retrievable via lookup
+    /// - Verifying all internal pointers are in offset form (not stack-allocated)
+    #[test]
+    #[cfg_attr(miri, ignore = "memfd_create unsupported in Miri")]
+    fn test_evacuate_hamt_round_trip() {
+        let mut stack = NockStack::new(1 << 16, 0);
+        let mut pma = test_pma(10000);
+        let _guard = pma.install();
+
+        // Create a HAMT with several entries
+        let mut hamt: Hamt<Noun> = Hamt::new(&mut stack);
+
+        // Insert 10 key-value pairs
+        for i in 0u64..10 {
+            let mut key = D(i);
+            let value = D(i * 100);
+            hamt = hamt.insert(&mut stack, &mut key, value);
+        }
+
+        // Verify lookups work before evacuation
+        for i in 0u64..10 {
+            let mut key = D(i);
+            let result = hamt.lookup(&mut stack, &mut key);
+            assert!(result.is_some(), "Lookup for key {} should succeed before evacuation", i);
+            let value = result.unwrap();
+            assert!(value.is_direct(), "Value should be direct atom");
+            assert_eq!(
+                value.as_direct().unwrap().data(),
+                i * 100,
+                "Value for key {} should be {}", i, i * 100
+            );
+        }
+
+        // Evacuate the HAMT to PMA
+        unsafe {
+            hamt.copy_to_pma(&stack, &mut pma);
+        }
+
+        // Verify lookups still work after evacuation
+        for i in 0u64..10 {
+            let mut key = D(i);
+            let result = hamt.lookup(&mut stack, &mut key);
+            assert!(result.is_some(), "Lookup for key {} should succeed after evacuation", i);
+            let value = result.unwrap();
+            assert!(value.is_direct(), "Value should still be direct atom after evacuation");
+            assert_eq!(
+                value.as_direct().unwrap().data(),
+                i * 100,
+                "Value for key {} should still be {} after evacuation", i, i * 100
+            );
+        }
+
+        // Verify internal structure is in PMA (offset form)
+        // Iterate over the HAMT and check all nouns are not stack-allocated
+        for entries in hamt.iter() {
+            for (key, value) in entries {
+                if !key.is_direct() {
+                    assert!(
+                        !key.is_stack_allocated(),
+                        "HAMT key should be in offset form after evacuation"
+                    );
+                }
+                if !value.is_direct() {
+                    assert!(
+                        !value.is_stack_allocated(),
+                        "HAMT value should be in offset form after evacuation"
+                    );
+                }
+            }
+        }
+    }
+
+    /// Test that copy_to_pma correctly copies nouns to PMA and produces valid offset-form nouns.
+    ///
+    /// Note: copy_to_pma sets forwarding pointers in the source nouns, which corrupts
+    /// them for normal use. This is by design for structural sharing. Therefore, we
+    /// cannot compare source vs PMA copy directly. Instead, we verify the PMA copy
+    /// contains the expected data.
+    #[test]
+    #[cfg_attr(miri, ignore = "memfd_create unsupported in Miri")]
+    fn test_copy_to_pma_preserves_data() {
+        use crate::noun::{Cell, IndirectAtom};
+
+        let mut stack = NockStack::new(1 << 16, 0);
+        stack.install_arena();
+        let mut pma = test_pma(10000);
+        let _guard = pma.install();
+
+        // Test with indirect atom
+        let data: [u64; 2] = [0xDEADBEEF_CAFEBABE, 0x12345678_9ABCDEF0];
+        let stack_indirect =
+            unsafe { IndirectAtom::new_raw(&mut stack, 2, data.as_ptr()) }.as_noun();
+
+        // Copy to PMA
+        let mut pma_indirect = stack_indirect;
+        unsafe { pma_indirect.copy_to_pma(&stack, &mut pma) };
+
+        // Verify the PMA copy is in offset form
+        assert!(!pma_indirect.is_stack_allocated(), "PMA copy should be in offset form");
+
+        // Verify the PMA copy contains correct data
+        let pma_ia = pma_indirect.as_indirect().unwrap();
+        let pma_size = pma_ia.size_with_arena(pma.arena());
+        assert_eq!(pma_size, 2, "PMA indirect atom should have size 2");
+
+        let pma_bytes = pma_ia.as_ne_bytes_with_arena(pma.arena());
+        assert_eq!(pma_bytes.len(), 16, "PMA indirect should have 16 bytes of data");
+
+        // Verify actual data values
+        let pma_slice = pma_ia.as_slice_with_arena(pma.arena());
+        assert_eq!(pma_slice[0], 0xDEADBEEF_CAFEBABE, "First word should match");
+        assert_eq!(pma_slice[1], 0x12345678_9ABCDEF0, "Second word should match");
+
+        // Test with cell containing direct atoms
+        let stack_cell = Cell::new(&mut stack, D(42), D(99)).as_noun();
+        let mut pma_cell = stack_cell;
+        unsafe { pma_cell.copy_to_pma(&stack, &mut pma) };
+
+        assert!(!pma_cell.is_stack_allocated(), "PMA cell should be in offset form");
+        let cell = pma_cell.as_cell().unwrap();
+        assert_eq!(
+            cell.head().as_direct().unwrap().data(),
+            42,
+            "Cell head should be 42"
+        );
+        assert_eq!(
+            cell.tail().as_direct().unwrap().data(),
+            99,
+            "Cell tail should be 99"
+        );
+
+        // Test with nested structure
+        let inner = Cell::new(&mut stack, D(1), D(2)).as_noun();
+        let stack_nested = Cell::new(&mut stack, inner, D(3)).as_noun();
+        let mut pma_nested = stack_nested;
+        unsafe { pma_nested.copy_to_pma(&stack, &mut pma) };
+
+        assert!(!pma_nested.is_stack_allocated(), "PMA nested should be in offset form");
+        let outer = pma_nested.as_cell().unwrap();
+        assert_eq!(
+            outer.tail().as_direct().unwrap().data(),
+            3,
+            "Outer tail should be 3"
+        );
+        let inner_cell = outer.head().as_cell().unwrap();
+        assert_eq!(
+            inner_cell.head().as_direct().unwrap().data(),
+            1,
+            "Inner head should be 1"
+        );
+        assert_eq!(
+            inner_cell.tail().as_direct().unwrap().data(),
+            2,
+            "Inner tail should be 2"
+        );
+    }
+
+    /// Test HAMT evacuation with complex noun types: Cells and IndirectAtoms.
+    ///
+    /// This test exercises:
+    /// - HAMT with indirect atoms as keys (large numbers)
+    /// - HAMT with cells as values (nested structures)
+    /// - Deep cell nesting to test recursive evacuation
+    /// - Structural equality verification using a reference copy on a separate stack
+    ///
+    /// Note: copy_to_pma sets forwarding pointers in source nouns, corrupting them.
+    /// To verify values, we create a second NockStack with fresh copies of the same
+    /// data and compare those against the PMA copy using noun_equality.
+    #[test]
+    #[cfg_attr(miri, ignore = "memfd_create unsupported in Miri")]
+    fn test_evacuate_hamt_complex_nouns() {
+        use crate::ext::noun_equality;
+        use crate::noun::{Cell, IndirectAtom};
+
+        let mut stack = NockStack::new(1 << 16, 0);
+        stack.install_arena();
+        let mut pma = test_pma(100000);
+
+        // Create a second stack with reference copies of keys/values for comparison
+        // This stack won't be corrupted by forwarding pointers
+        let mut ref_stack = NockStack::new(1 << 16, 0);
+
+        // Install PMA arena - this must be the active arena when accessing PMA nouns
+        let _guard = pma.install();
+
+        let mut hamt: Hamt<Noun> = Hamt::new(&mut stack);
+
+        // Store reference keys/values on the separate stack
+        let mut ref_keys: Vec<Noun> = Vec::new();
+        let mut ref_values: Vec<Noun> = Vec::new();
+
+        // Insert entries with indirect atom keys and cell values
+        for i in 0u64..5 {
+            let key_data: [u64; 2] = [0xDEADBEEF_CAFEBABE + i, 0x12345678_9ABCDEF0 + i];
+
+            // Create on main stack for HAMT
+            let key_atom =
+                unsafe { IndirectAtom::new_raw(&mut stack, 2, key_data.as_ptr()) }.as_noun();
+            let inner = Cell::new(&mut stack, D(i + 100), D(i + 200)).as_noun();
+            let value = Cell::new(&mut stack, D(i), inner).as_noun();
+
+            // Create identical copies on reference stack
+            let ref_key =
+                unsafe { IndirectAtom::new_raw(&mut ref_stack, 2, key_data.as_ptr()) }.as_noun();
+            let ref_inner = Cell::new(&mut ref_stack, D(i + 100), D(i + 200)).as_noun();
+            let ref_value = Cell::new(&mut ref_stack, D(i), ref_inner).as_noun();
+            ref_keys.push(ref_key);
+            ref_values.push(ref_value);
+
+            let mut key_copy = key_atom;
+            hamt = hamt.insert(&mut stack, &mut key_copy, value);
+        }
+
+        // Insert entries with cell keys and indirect atom values
+        for i in 5u64..10 {
+            let val_data: [u64; 2] = [i * 1000, i * 2000];
+
+            // Create on main stack for HAMT
+            let key = Cell::new(&mut stack, D(i), D(i + 1)).as_noun();
+            let value =
+                unsafe { IndirectAtom::new_raw(&mut stack, 2, val_data.as_ptr()) }.as_noun();
+
+            // Create identical copies on reference stack
+            let ref_key = Cell::new(&mut ref_stack, D(i), D(i + 1)).as_noun();
+            let ref_value =
+                unsafe { IndirectAtom::new_raw(&mut ref_stack, 2, val_data.as_ptr()) }.as_noun();
+            ref_keys.push(ref_key);
+            ref_values.push(ref_value);
+
+            let mut key_copy = key;
+            hamt = hamt.insert(&mut stack, &mut key_copy, value);
+        }
+
+        // Insert entries with deeply nested cells
+        for i in 10u64..12 {
+            // Create on main stack for HAMT
+            let ab = Cell::new(&mut stack, D(i), D(i + 1)).as_noun();
+            let abc = Cell::new(&mut stack, ab, D(i + 2)).as_noun();
+            let key = Cell::new(&mut stack, abc, D(i + 3)).as_noun();
+            let zw = Cell::new(&mut stack, D(i + 10), D(i + 11)).as_noun();
+            let yzw = Cell::new(&mut stack, D(i + 9), zw).as_noun();
+            let value = Cell::new(&mut stack, D(i + 8), yzw).as_noun();
+
+            // Create identical copies on reference stack
+            let ref_ab = Cell::new(&mut ref_stack, D(i), D(i + 1)).as_noun();
+            let ref_abc = Cell::new(&mut ref_stack, ref_ab, D(i + 2)).as_noun();
+            let ref_key = Cell::new(&mut ref_stack, ref_abc, D(i + 3)).as_noun();
+            let ref_zw = Cell::new(&mut ref_stack, D(i + 10), D(i + 11)).as_noun();
+            let ref_yzw = Cell::new(&mut ref_stack, D(i + 9), ref_zw).as_noun();
+            let ref_value = Cell::new(&mut ref_stack, D(i + 8), ref_yzw).as_noun();
+            ref_keys.push(ref_key);
+            ref_values.push(ref_value);
+
+            let mut key_copy = key;
+            hamt = hamt.insert(&mut stack, &mut key_copy, value);
+        }
+
+        // Count entries before evacuation
+        let count_before: usize = hamt.iter().map(|entries| entries.len()).sum();
+        assert_eq!(count_before, 12, "Should have 12 entries before evacuation");
+
+        // Evacuate the HAMT to PMA
+        unsafe {
+            hamt.copy_to_pma(&stack, &mut pma);
+        }
+
+        // Count entries after evacuation
+        let count_after: usize = hamt.iter().map(|entries| entries.len()).sum();
+        assert_eq!(
+            count_after, count_before,
+            "Entry count should be preserved after evacuation"
+        );
+
+        // Re-install PMA arena (Cell::new on ref_stack may have changed thread-local arena)
+        drop(_guard);
+        let _guard = pma.install();
+
+        // Verify all values match by comparing PMA nouns to reference stack nouns
+        let mut found_count = 0;
+        for entries in hamt.iter() {
+            for (pma_key, pma_value) in entries {
+                // Find matching reference key and verify value matches
+                let mut found = false;
+                for (idx, ref_key) in ref_keys.iter().enumerate() {
+                    if noun_equality(pma_key, ref_key) {
+                        assert!(
+                            noun_equality(pma_value, &ref_values[idx]),
+                            "Value for key {} should match reference after evacuation",
+                            idx
+                        );
+                        found = true;
+                        found_count += 1;
+                        break;
+                    }
+                }
+                assert!(found, "Every PMA key should match a reference key");
+            }
+        }
+        assert_eq!(
+            found_count,
+            ref_keys.len(),
+            "Should find all {} entries in HAMT after evacuation",
+            ref_keys.len()
+        );
+
+        // Verify all nouns in the HAMT are in offset form
+        for entries in hamt.iter() {
+            for (key, value) in entries {
+                verify_noun_not_stack_allocated(*key, "HAMT key");
+                verify_noun_not_stack_allocated(*value, "HAMT value");
+            }
+        }
+
+        // Verify the HAMT structure itself is in PMA
+        hamt.assert_in_pma(&pma);
+    }
+
+    /// Helper to recursively verify a noun is not stack-allocated
+    fn verify_noun_not_stack_allocated(noun: Noun, context: &str) {
+        if noun.is_direct() {
+            return;
+        }
+
+        assert!(
+            !noun.is_stack_allocated(),
+            "{} should be in offset form after evacuation",
+            context
+        );
+
+        if let Ok(cell) = noun.as_cell() {
+            verify_noun_not_stack_allocated(cell.head(), context);
+            verify_noun_not_stack_allocated(cell.tail(), context);
+        }
     }
 }
