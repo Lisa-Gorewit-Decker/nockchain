@@ -372,4 +372,125 @@ mod test {
         // Verify the WarmEntry passes assert_in_pma
         warm_entry.assert_in_pma(&pma);
     }
+
+    /// Verifies Warm state can be evacuated to PMA and remains functional.
+    ///
+    /// This test exercises:
+    /// - Creating a Warm HAMT with multiple formula->WarmEntry mappings
+    /// - Evacuating the Warm to PMA via copy_to_pma
+    /// - Verifying all entries are still accessible via lookup after evacuation
+    /// - Verifying all nouns are in offset form (not stack-allocated)
+    /// - Verifying the Warm passes assert_in_pma
+    ///
+    /// Note: copy_to_pma sets forwarding pointers in the source nouns, which corrupts
+    /// them for normal use. We use expected values for comparison.
+    #[test]
+    #[cfg(any())] // TODO: Enable when PmaCopy for Warm is implemented
+    #[cfg_attr(miri, ignore)]
+    fn test_evacuate_warm_round_trip() {
+        let mut stack = make_test_stack(DEFAULT_STACK_SIZE);
+        let mut pma = Pma::new(100000, PathBuf::from("/tmp/test_warm_pma"))
+            .expect("Failed to create test PMA");
+
+        // Install PMA arena for offset-form access
+        let _guard = pma.install();
+
+        // Create a Warm and insert some entries
+        let mut warm = Warm::new(&mut stack);
+
+        // Insert entry 1: formula D(100) -> (battery=10, jet=dummy_jet, path=1000, test=false)
+        let batteries1 = make_simple_batteries(&mut stack, 10);
+        let mut formula1 = D(100);
+        warm.insert(&mut stack, &mut formula1, D(1000), batteries1, dummy_jet, false);
+
+        // Insert entry 2: formula D(200) -> (battery=20, jet=dummy_jet_2, path=2000, test=true)
+        let batteries2 = make_simple_batteries(&mut stack, 20);
+        let mut formula2 = D(200);
+        warm.insert(&mut stack, &mut formula2, D(2000), batteries2, dummy_jet_2, true);
+
+        // Insert entry 3: same formula as entry 1, different jet (creates linked list)
+        let batteries3 = make_simple_batteries(&mut stack, 30);
+        let mut formula3 = D(100);
+        warm.insert(&mut stack, &mut formula3, D(3000), batteries3, dummy_jet_2, true);
+
+        // Expected values for verification
+        // formula D(100) should have two entries: (30, dummy_jet_2, 3000, true) -> (10, dummy_jet, 1000, false)
+        // formula D(200) should have one entry: (20, dummy_jet_2, 2000, true)
+        let expected_formula_100: Vec<(u64, Jet, u64, bool)> = vec![
+            (30, dummy_jet_2, 3000, true),
+            (10, dummy_jet, 1000, false),
+        ];
+        let expected_formula_200: Vec<(u64, Jet, u64, bool)> = vec![
+            (20, dummy_jet_2, 2000, true),
+        ];
+
+        // Evacuate Warm to PMA
+        unsafe {
+            warm.copy_to_pma(&stack, &mut pma);
+        }
+
+        // Verify lookup for formula D(100)
+        let mut lookup_key1 = D(100);
+        let warm_entry1 = warm.0.lookup(&mut stack, &mut lookup_key1)
+            .expect("Should find entry for formula D(100)");
+
+        let mut expected_iter1 = expected_formula_100.iter();
+        for (path, batteries, jet, test) in warm_entry1 {
+            let (expected_battery, expected_jet, expected_path, expected_test) = expected_iter1
+                .next()
+                .expect("WarmEntry has more entries than expected");
+
+            assert_eq!(unsafe { path.as_raw() }, *expected_path, "Path should match");
+            assert!(std::ptr::fn_addr_eq(jet, *expected_jet), "Jet should match");
+            assert_eq!(test, *expected_test, "Test flag should match");
+
+            // Verify battery
+            let mut batteries_iter = batteries.into_iter();
+            let (battery_ptr, _) = batteries_iter.next().expect("Batteries should have entry");
+            let battery = unsafe { *battery_ptr };
+            assert_eq!(unsafe { battery.as_raw() }, *expected_battery, "Battery should match");
+
+            // Verify nouns are in offset form
+            verify_noun_not_stack_allocated(path, "Warm path");
+            verify_noun_not_stack_allocated(battery, "Warm battery");
+        }
+        assert!(expected_iter1.next().is_none(), "Missing entries for formula D(100)");
+
+        // Verify lookup for formula D(200)
+        let mut lookup_key2 = D(200);
+        let warm_entry2 = warm.0.lookup(&mut stack, &mut lookup_key2)
+            .expect("Should find entry for formula D(200)");
+
+        let mut expected_iter2 = expected_formula_200.iter();
+        for (path, batteries, jet, test) in warm_entry2 {
+            let (expected_battery, expected_jet, expected_path, expected_test) = expected_iter2
+                .next()
+                .expect("WarmEntry has more entries than expected");
+
+            assert_eq!(unsafe { path.as_raw() }, *expected_path, "Path should match");
+            assert!(std::ptr::fn_addr_eq(jet, *expected_jet), "Jet should match");
+            assert_eq!(test, *expected_test, "Test flag should match");
+
+            // Verify battery
+            let mut batteries_iter = batteries.into_iter();
+            let (battery_ptr, _) = batteries_iter.next().expect("Batteries should have entry");
+            let battery = unsafe { *battery_ptr };
+            assert_eq!(unsafe { battery.as_raw() }, *expected_battery, "Battery should match");
+
+            // Verify nouns are in offset form
+            verify_noun_not_stack_allocated(path, "Warm path");
+            verify_noun_not_stack_allocated(battery, "Warm battery");
+        }
+        assert!(expected_iter2.next().is_none(), "Missing entries for formula D(200)");
+
+        // Verify non-existent lookup returns None
+        let mut lookup_key3 = D(999);
+        assert!(
+            warm.0.lookup(&mut stack, &mut lookup_key3).is_none(),
+            "Lookup for non-existent formula should return None"
+        );
+
+        // Verify the Warm passes assert_in_pma
+        warm.assert_in_pma(&pma);
+    }
 }
