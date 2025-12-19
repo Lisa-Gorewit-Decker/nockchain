@@ -1531,6 +1531,179 @@ pub(crate) mod test {
         }
     }
 
+    /// Verifies NounList can be evacuated to PMA and remains functional.
+    ///
+    /// This test exercises:
+    /// - Creating a NounList with multiple elements
+    /// - Evacuating the NounList to PMA via copy_to_pma
+    /// - Verifying all elements are still accessible after evacuation
+    /// - Verifying all nouns are in offset form (not stack-allocated)
+    /// - Verifying the NounList passes assert_in_pma
+    ///
+    /// Note: copy_to_pma sets forwarding pointers in the source nouns, which corrupts
+    /// them for normal use. We use expected_values (raw u64s) for comparison since
+    /// those aren't affected by forwarding pointers.
+    #[test]
+    #[cfg_attr(miri, ignore)]
+    fn test_evacuate_noun_list_round_trip() {
+        use crate::pma::{Pma, PmaCopy};
+        use std::path::PathBuf;
+
+        let mut stack = make_test_stack(DEFAULT_STACK_SIZE);
+        let mut pma = Pma::new(100000, PathBuf::from("/tmp/test_noun_list_pma"))
+            .expect("Failed to create test PMA");
+
+        // Install PMA arena for offset-form access
+        let _guard = pma.install();
+
+        // The expected values - we use these for comparison since the source
+        // nouns will have forwarding pointers set after evacuation
+        let expected_values: Vec<u64> = vec![10, 20, 30, 40, 50];
+
+        // Create a NounList with test data
+        let mut noun_list = make_noun_list(&mut stack, &expected_values);
+
+        // Count elements before evacuation
+        let count_before: usize = noun_list.into_iter().count();
+        assert_eq!(count_before, 5, "Should have 5 elements before evacuation");
+
+        // Evacuate NounList to PMA
+        unsafe {
+            noun_list.copy_to_pma(&stack, &mut pma);
+        }
+
+        // Count elements and collect values after evacuation
+        let mut values_after = Vec::new();
+        for elem_ptr in noun_list {
+            let elem = unsafe { *elem_ptr };
+            values_after.push(unsafe { elem.as_raw() });
+        }
+
+        assert_eq!(values_after.len(), expected_values.len(), "Element count should be preserved");
+        assert_eq!(values_after, expected_values, "Element values should be preserved");
+
+        // Verify all nouns in the list are in offset form
+        for elem_ptr in noun_list {
+            let elem = unsafe { *elem_ptr };
+            verify_noun_not_stack_allocated(elem, "NounList element");
+        }
+
+        // Verify the NounList passes assert_in_pma
+        noun_list.assert_in_pma(&pma);
+    }
+
+    /// Verifies NounList with complex nouns (Cells, IndirectAtoms) can be evacuated to PMA.
+    ///
+    /// This test exercises evacuation of NounList elements that are not direct atoms,
+    /// ensuring that Cells and IndirectAtoms are correctly copied to the PMA.
+    ///
+    /// Note: copy_to_pma sets forwarding pointers in the source nouns, which corrupts
+    /// them for normal use. We use a ref_stack to create reference copies for comparison.
+    #[test]
+    #[cfg_attr(miri, ignore)]
+    fn test_evacuate_noun_list_complex_nouns() {
+        use crate::noun::{Cell, IndirectAtom};
+        use crate::pma::{Pma, PmaCopy};
+        use std::path::PathBuf;
+
+        let mut stack = make_test_stack(DEFAULT_STACK_SIZE);
+        let mut ref_stack = make_test_stack(DEFAULT_STACK_SIZE);
+        let mut pma = Pma::new(100000, PathBuf::from("/tmp/test_noun_list_complex_pma"))
+            .expect("Failed to create test PMA");
+
+        // Install PMA arena for offset-form access
+        let _guard = pma.install();
+
+        // Create complex nouns on the main stack
+        // Element 0: A cell [1 2]
+        let cell1 = Cell::new(&mut stack, D(1), D(2)).as_noun();
+        // Element 1: An indirect atom (larger than 63 bits)
+        let big_data: [u64; 2] = [0xDEADBEEF_CAFEBABE, 0x12345678_9ABCDEF0];
+        let indirect1 = unsafe {
+            IndirectAtom::new_raw(&mut stack, 2, big_data.as_ptr()).as_noun()
+        };
+        // Element 2: A nested cell [[3 4] 5]
+        let inner_cell = Cell::new(&mut stack, D(3), D(4)).as_noun();
+        let nested_cell = Cell::new(&mut stack, inner_cell, D(5)).as_noun();
+        // Element 3: A direct atom for variety
+        let direct1 = D(42);
+        // Element 4: A cell with structural sharing [[a b] [a b]] where a,b are IndirectAtoms
+        let big_a: [u64; 2] = [0x1111111111111111, 0x2222222222222222];
+        let big_b: [u64; 2] = [0x3333333333333333, 0x4444444444444444];
+        let indirect_a = unsafe {
+            IndirectAtom::new_raw(&mut stack, 2, big_a.as_ptr()).as_noun()
+        };
+        let indirect_b = unsafe {
+            IndirectAtom::new_raw(&mut stack, 2, big_b.as_ptr()).as_noun()
+        };
+        let shared_cell = Cell::new(&mut stack, indirect_a, indirect_b).as_noun();
+        let structural_sharing = Cell::new(&mut stack, shared_cell, shared_cell).as_noun();
+
+        // Build the NounList manually with complex nouns
+        let mut noun_list = NOUN_LIST_NIL;
+        for noun in [direct1, nested_cell, indirect1, cell1, structural_sharing].iter().rev() {
+            let mem: *mut NounListMem = unsafe { stack.alloc_struct(1) };
+            unsafe {
+                mem.write(NounListMem {
+                    element: *noun,
+                    next: noun_list,
+                });
+            }
+            noun_list = NounList(mem);
+        }
+
+        // Create reference copies on ref_stack for comparison after evacuation
+        let ref_cell1 = Cell::new(&mut ref_stack, D(1), D(2)).as_noun();
+        let ref_indirect1 = unsafe {
+            IndirectAtom::new_raw(&mut ref_stack, 2, big_data.as_ptr()).as_noun()
+        };
+        let ref_inner_cell = Cell::new(&mut ref_stack, D(3), D(4)).as_noun();
+        let ref_nested_cell = Cell::new(&mut ref_stack, ref_inner_cell, D(5)).as_noun();
+        let ref_direct1 = D(42);
+        let ref_indirect_a = unsafe {
+            IndirectAtom::new_raw(&mut ref_stack, 2, big_a.as_ptr()).as_noun()
+        };
+        let ref_indirect_b = unsafe {
+            IndirectAtom::new_raw(&mut ref_stack, 2, big_b.as_ptr()).as_noun()
+        };
+        let ref_shared_cell = Cell::new(&mut ref_stack, ref_indirect_a, ref_indirect_b).as_noun();
+        let ref_structural_sharing = Cell::new(&mut ref_stack, ref_shared_cell, ref_shared_cell).as_noun();
+        let ref_nouns = vec![ref_cell1, ref_indirect1, ref_nested_cell, ref_direct1, ref_structural_sharing];
+
+        // Count elements before evacuation
+        let count_before: usize = noun_list.into_iter().count();
+        assert_eq!(count_before, 5, "Should have 5 elements before evacuation");
+
+        // Evacuate NounList to PMA
+        unsafe {
+            noun_list.copy_to_pma(&stack, &mut pma);
+        }
+
+        // Verify element count after evacuation
+        let count_after: usize = noun_list.into_iter().count();
+        assert_eq!(count_after, 5, "Should have 5 elements after evacuation");
+
+        // Verify elements match reference copies using unifying_equality
+        for (i, elem_ptr) in noun_list.into_iter().enumerate() {
+            let elem = unsafe { *elem_ptr };
+            let mut ref_noun = ref_nouns[i];
+            assert!(
+                unsafe { unifying_equality(&mut ref_stack, &mut ref_noun, &mut elem.clone()) },
+                "Element {} should match reference after evacuation",
+                i
+            );
+        }
+
+        // Verify all nouns in the list are in offset form
+        for elem_ptr in noun_list {
+            let elem = unsafe { *elem_ptr };
+            verify_noun_not_stack_allocated(elem, "NounList complex element");
+        }
+
+        // Verify the NounList passes assert_in_pma
+        noun_list.assert_in_pma(&pma);
+    }
+
     /// Verifies Cold jet state can be evacuated to PMA and remains functional.
     ///
     /// This test exercises:
