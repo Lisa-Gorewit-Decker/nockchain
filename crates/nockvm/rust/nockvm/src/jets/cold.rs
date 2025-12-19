@@ -1512,4 +1512,166 @@ pub(crate) mod test {
         assert_eq!(car, 0);
         assert_eq!(cdr, 1);
     }
+
+    /// Helper to recursively verify a noun is not stack-allocated
+    fn verify_noun_not_stack_allocated(noun: Noun, context: &str) {
+        if noun.is_direct() {
+            return;
+        }
+
+        assert!(
+            !noun.is_stack_allocated(),
+            "{} should be in offset form after evacuation",
+            context
+        );
+
+        if let Ok(cell) = noun.as_cell() {
+            verify_noun_not_stack_allocated(cell.head(), context);
+            verify_noun_not_stack_allocated(cell.tail(), context);
+        }
+    }
+
+    /// Verifies Cold jet state can be evacuated to PMA and remains functional.
+    ///
+    /// This test exercises:
+    /// - Creating a Cold state with populated HAMTs (battery_to_paths, root_to_paths, path_to_batteries)
+    /// - Evacuating the entire Cold structure to PMA via copy_to_pma
+    /// - Verifying all three HAMTs are accessible after evacuation
+    /// - Verifying all internal nouns are in offset form (not stack-allocated)
+    /// - Verifying the Cold structure passes assert_in_pma
+    ///
+    /// Cold is a critical component of the jet matching system, storing mappings between:
+    /// - Batteries (code) -> paths (registered names/hierarchies)
+    /// - Roots (base cores) -> paths
+    /// - Paths -> battery lists (for matching cores to jets)
+    #[test]
+    #[cfg_attr(miri, ignore)]
+    fn test_evacuate_cold_round_trip() {
+        use crate::pma::{Pma, PmaCopy};
+        use std::path::PathBuf;
+
+        let mut stack = make_test_stack(DEFAULT_STACK_SIZE);
+        let mut pma = Pma::new(100000, PathBuf::from("/tmp/test_cold_pma"))
+            .expect("Failed to create test PMA");
+
+        // Install PMA arena for offset-form access
+        let _guard = pma.install();
+
+        // Create a Cold state using make_cold_state
+        let mut cold = make_cold_state(&mut stack);
+
+        // Count entries before evacuation
+        let count_battery_to_paths_before: usize =
+            unsafe { (*cold.0).battery_to_paths.iter().map(|e| e.len()).sum() };
+        let count_root_to_paths_before: usize =
+            unsafe { (*cold.0).root_to_paths.iter().map(|e| e.len()).sum() };
+        let count_path_to_batteries_before: usize =
+            unsafe { (*cold.0).path_to_batteries.iter().map(|e| e.len()).sum() };
+
+        assert_eq!(count_battery_to_paths_before, 1, "Should have 1 battery_to_paths entry");
+        assert_eq!(count_root_to_paths_before, 2, "Should have 2 root_to_paths entries");
+        assert_eq!(count_path_to_batteries_before, 1, "Should have 1 path_to_batteries entry");
+
+        // Evacuate Cold to PMA
+        unsafe {
+            cold.copy_to_pma(&stack, &mut pma);
+        }
+
+        // Verify entry counts are preserved after evacuation
+        let count_battery_to_paths_after: usize =
+            unsafe { (*cold.0).battery_to_paths.iter().map(|e| e.len()).sum() };
+        let count_root_to_paths_after: usize =
+            unsafe { (*cold.0).root_to_paths.iter().map(|e| e.len()).sum() };
+        let count_path_to_batteries_after: usize =
+            unsafe { (*cold.0).path_to_batteries.iter().map(|e| e.len()).sum() };
+
+        assert_eq!(
+            count_battery_to_paths_after, count_battery_to_paths_before,
+            "battery_to_paths entry count should be preserved"
+        );
+        assert_eq!(
+            count_root_to_paths_after, count_root_to_paths_before,
+            "root_to_paths entry count should be preserved"
+        );
+        assert_eq!(
+            count_path_to_batteries_after, count_path_to_batteries_before,
+            "path_to_batteries entry count should be preserved"
+        );
+
+        // Verify lookups still work after evacuation
+        // Note: We use fresh D(x) atoms for lookup since the original keys
+        // may have forwarding pointers set during evacuation
+        let lookup_battery = unsafe {
+            (*cold.0).battery_to_paths.lookup(&mut stack, &mut D(200))
+        };
+        assert!(
+            lookup_battery.is_some(),
+            "battery_to_paths lookup for D(200) should succeed after evacuation"
+        );
+
+        let lookup_root1 = unsafe {
+            (*cold.0).root_to_paths.lookup(&mut stack, &mut D(100))
+        };
+        assert!(
+            lookup_root1.is_some(),
+            "root_to_paths lookup for D(100) should succeed after evacuation"
+        );
+
+        let lookup_root2 = unsafe {
+            (*cold.0).root_to_paths.lookup(&mut stack, &mut D(101))
+        };
+        assert!(
+            lookup_root2.is_some(),
+            "root_to_paths lookup for D(101) should succeed after evacuation"
+        );
+
+        let lookup_path = unsafe {
+            (*cold.0).path_to_batteries.lookup(&mut stack, &mut D(300))
+        };
+        assert!(
+            lookup_path.is_some(),
+            "path_to_batteries lookup for D(300) should succeed after evacuation"
+        );
+
+        // Verify all nouns in the Cold HAMTs are in offset form
+        // Check battery_to_paths
+        for entries in unsafe { (*cold.0).battery_to_paths.iter() } {
+            for (key, noun_list) in entries {
+                verify_noun_not_stack_allocated(*key, "battery_to_paths key");
+                // Verify NounList elements
+                for elem_ptr in *noun_list {
+                    let elem = unsafe { *elem_ptr };
+                    verify_noun_not_stack_allocated(elem, "battery_to_paths NounList element");
+                }
+            }
+        }
+
+        // Check root_to_paths
+        for entries in unsafe { (*cold.0).root_to_paths.iter() } {
+            for (key, noun_list) in entries {
+                verify_noun_not_stack_allocated(*key, "root_to_paths key");
+                for elem_ptr in *noun_list {
+                    let elem = unsafe { *elem_ptr };
+                    verify_noun_not_stack_allocated(elem, "root_to_paths NounList element");
+                }
+            }
+        }
+
+        // Check path_to_batteries
+        for entries in unsafe { (*cold.0).path_to_batteries.iter() } {
+            for (key, batteries_list) in entries {
+                verify_noun_not_stack_allocated(*key, "path_to_batteries key");
+                // Verify BatteriesList elements
+                for batteries in *batteries_list {
+                    for (battery_ptr, _parent_axis) in batteries {
+                        let battery = unsafe { *battery_ptr };
+                        verify_noun_not_stack_allocated(battery, "path_to_batteries battery");
+                    }
+                }
+            }
+        }
+
+        // Verify the Cold structure passes assert_in_pma
+        cold.assert_in_pma(&pma);
+    }
 }
