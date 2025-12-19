@@ -1479,6 +1479,9 @@ mod tests {
     /// them for normal use. This is by design for structural sharing. Therefore, we
     /// cannot compare source vs PMA copy directly. Instead, we verify the PMA copy
     /// contains the expected data.
+    ///
+    /// This test may look superfluous, but it helped debug test_evacuate_hamt_complex_nouns so
+    /// that's why its in here.
     #[test]
     #[cfg_attr(miri, ignore = "memfd_create unsupported in Miri")]
     fn test_copy_to_pma_preserves_data() {
