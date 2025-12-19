@@ -12,7 +12,7 @@ use thiserror::Error;
 
 use crate::ext::noun_equality;
 use crate::mem::{word_size_of, Arena, NewStackError, NockStack};
-use crate::noun::{Cell, CellMemory, IndirectAtom, Noun, NounAllocator};
+use crate::noun::{Atom, Cell, CellMemory, IndirectAtom, Noun, NounAllocator};
 
 /// Errors that can occur during PMA operations
 #[derive(Debug, Error)]
@@ -218,6 +218,18 @@ pub trait PmaCopy {
     /// # Panics
     /// Panics if any part of this value is not in the PMA.
     fn assert_in_pma(&self, pma: &Pma);
+}
+
+impl PmaCopy for Atom {
+    unsafe fn copy_to_pma(&mut self, stack: &NockStack, pma: &mut Pma) {
+        let mut noun = self.as_noun();
+        noun.copy_to_pma(stack, pma);
+        *self = noun.as_atom().expect("Atom remains atom after copy_to_pma");
+    }
+
+    fn assert_in_pma(&self, pma: &Pma) {
+        self.as_noun().assert_in_pma(pma);
+    }
 }
 
 impl PmaCopy for Noun {
