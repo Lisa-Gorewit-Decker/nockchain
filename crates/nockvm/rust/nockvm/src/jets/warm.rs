@@ -21,6 +21,16 @@ impl Preserve for Warm {
     }
 }
 
+impl PmaCopy for Warm {
+    fn assert_in_pma(&self, pma: &Pma) {
+        self.0.assert_in_pma(pma);
+    }
+
+    unsafe fn copy_to_pma(&mut self, stack: &NockStack, pma: &mut Pma) {
+        self.0.copy_to_pma(stack, pma);
+    }
+}
+
 #[derive(Copy, Clone)]
 struct WarmEntry(*mut WarmEntryMem);
 
@@ -430,7 +440,6 @@ mod test {
     /// Note: copy_to_pma sets forwarding pointers in the source nouns, which corrupts
     /// them for normal use. We use expected values for comparison.
     #[test]
-    #[cfg(any())] // TODO: Enable when PmaCopy for Warm is implemented
     #[cfg_attr(miri, ignore)]
     fn test_evacuate_warm_round_trip() {
         let mut stack = make_test_stack(DEFAULT_STACK_SIZE);
