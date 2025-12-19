@@ -5,7 +5,8 @@ use crate::jets::cold::{Batteries, Cold};
 use crate::jets::hot::Hot;
 use crate::jets::Jet;
 use crate::mem::{NockStack, Preserve, Retag};
-use crate::noun::{Noun, Slots};
+use crate::noun::{Noun, NounAllocator, Slots};
+use crate::pma::{Pma, PmaCopy};
 
 /// key = formula
 #[derive(Copy, Clone)]
@@ -81,6 +82,51 @@ impl Retag for WarmEntry {
                 entry.batteries.retag(stack);
                 entry.path.retag(stack);
                 cursor = entry.next;
+            }
+        }
+    }
+}
+
+impl PmaCopy for WarmEntry {
+    fn assert_in_pma(&self, pma: &Pma) {
+        if self.0.is_null() {
+            return;
+        }
+        let mut cursor = *self;
+        loop {
+            unsafe {
+                assert!(
+                    pma.contains_ptr(cursor.0 as *const u8),
+                    "WarmEntry node should be in PMA"
+                );
+                (*cursor.0).batteries.assert_in_pma(pma);
+                (*cursor.0).path.assert_in_pma(pma);
+                if (*cursor.0).next.0.is_null() {
+                    break;
+                }
+                cursor = (*cursor.0).next;
+            }
+        }
+    }
+
+    unsafe fn copy_to_pma(&mut self, stack: &NockStack, pma: &mut Pma) {
+        if self.0.is_null() {
+            return;
+        }
+        let mut ptr: *mut WarmEntry = self;
+        loop {
+            // Copy batteries and path to PMA
+            (*(*ptr).0).batteries.copy_to_pma(stack, pma);
+            (*(*ptr).0).path.copy_to_pma(stack, pma);
+            // Allocate new WarmEntryMem in PMA and copy
+            let dest_mem: *mut WarmEntryMem = pma.alloc_struct(1);
+            copy_nonoverlapping((*ptr).0, dest_mem, 1);
+            // Update pointer to point to PMA copy
+            *ptr = WarmEntry(dest_mem);
+            // Move to next node
+            ptr = &mut (*dest_mem).next;
+            if (*dest_mem).next.0.is_null() {
+                break;
             }
         }
     }
@@ -300,7 +346,6 @@ mod test {
     /// Note: copy_to_pma sets forwarding pointers in the source nouns, which corrupts
     /// them for normal use. We use expected values for comparison.
     #[test]
-    #[cfg(any())] // TODO: Enable when PmaCopy for WarmEntry is implemented
     #[cfg_attr(miri, ignore)]
     fn test_evacuate_warm_entry_round_trip() {
         let mut stack = make_test_stack(DEFAULT_STACK_SIZE);
