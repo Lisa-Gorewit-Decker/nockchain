@@ -10,6 +10,7 @@ use bytes::Bytes;
 use either::Either;
 use ibig::Stack;
 use intmap::IntMap;
+use nockvm::ext::noun_equality;
 use nockvm::mem::NockStack;
 use nockvm::mug::{calc_atom_mug_u32, calc_cell_mug_u32, get_mug, set_mug};
 use nockvm::noun::{
@@ -219,7 +220,7 @@ impl<J> NounAllocator for NounSlab<J> {
     unsafe fn equals(&mut self, a: *mut Noun, b: *mut Noun) -> bool {
         let a = unsafe { &mut *a };
         let b = unsafe { &mut *b };
-        slab_noun_equality(a, b)
+        noun_equality(a, b)
     }
 }
 
@@ -529,7 +530,7 @@ impl<V> NounMap<V> {
         let key_mug = slab_mug(key) as u64;
         if let Some(vec) = self.0.get_mut(key_mug) {
             let mut chain_iter = vec[..].iter_mut();
-            if let Some(entry) = chain_iter.find(|entry| slab_noun_equality(&key, &entry.0)) {
+            if let Some(entry) = chain_iter.find(|entry| noun_equality(&key, &entry.0)) {
                 entry.1 = value;
             } else {
                 vec.push((key, value))
@@ -544,7 +545,7 @@ impl<V> NounMap<V> {
         if let Some(vec) = self.0.get(key_mug) {
             let mut chain_iter = vec[..].iter();
             if let Some(entry) =
-                chain_iter.find(|entry| slab_noun_equality(&(key as Noun), &entry.0))
+                chain_iter.find(|entry| noun_equality(&(key as Noun), &entry.0))
             {
                 Some(&entry.1)
             } else {
@@ -557,92 +558,7 @@ impl<V> NounMap<V> {
 }
 
 pub fn slab_equality(a: &NounSlab, b: &NounSlab) -> bool {
-    slab_noun_equality(&a.root, &b.root)
-}
-
-// Does not unify: slabs are collected all-at-once so there's no point.
-pub fn slab_noun_equality(a: &Noun, b: &Noun) -> bool {
-    let mut already_equal: IntMap<u128, ()> = IntMap::new();
-
-    fn ae_keys(a: Noun, b: Noun) -> (u128, u128) {
-        let a_raw = unsafe { a.as_raw() } as u128;
-        let b_raw = unsafe { b.as_raw() } as u128;
-        (a_raw << 64 | b_raw, b_raw << 64 | a_raw)
-    }
-
-    fn check_ae(ae: &IntMap<u128, ()>, a: Noun, b: Noun) -> bool {
-        let (key1, key2) = ae_keys(a, b);
-        ae.contains_key(key1) | ae.contains_key(key2)
-    }
-
-    fn set_ae(ae: &mut IntMap<u128, ()>, a: Noun, b: Noun) {
-        let (key1, _key2) = ae_keys(a, b);
-        ae.insert(key1, ());
-    }
-
-    enum StackEntry {
-        Nouns(Noun, Noun),
-        Cells(Noun, Noun),
-    }
-
-    let mut stack = vec![StackEntry::Nouns(*a, *b)];
-    loop {
-        if let Some(entry) = stack.pop() {
-            match entry {
-                StackEntry::Cells(a, b) => {
-                    set_ae(&mut already_equal, a, b);
-                }
-                StackEntry::Nouns(a, b) => {
-                    if unsafe { a.raw_equals(&b) } {
-                        continue;
-                    }
-
-                    if check_ae(&already_equal, a, b) {
-                        continue;
-                    }
-
-                    match (
-                        a.as_ref_either_direct_allocated(),
-                        b.as_ref_either_direct_allocated(),
-                    ) {
-                        (Either::Right(a_allocated), Either::Right(b_allocated)) => {
-                            if let Some(a_mug) = a_allocated.get_cached_mug() {
-                                if let Some(b_mug) = b_allocated.get_cached_mug() {
-                                    if a_mug != b_mug {
-                                        break false;
-                                    }
-                                }
-                            };
-
-                            match (a_allocated.as_ref_either(), b_allocated.as_ref_either()) {
-                                (Either::Left(a_indirect), Either::Left(b_indirect)) => {
-                                    if a_indirect.as_slice() != b_indirect.as_slice() {
-                                        break false;
-                                    }
-                                    set_ae(&mut already_equal, a, b);
-                                    continue;
-                                }
-                                (Either::Right(a_cell), Either::Right(b_cell)) => {
-                                    stack.push(StackEntry::Cells(a, b));
-                                    stack.push(StackEntry::Nouns(a_cell.tail(), b_cell.tail()));
-                                    stack.push(StackEntry::Nouns(a_cell.head(), b_cell.head()));
-                                    continue;
-                                }
-                                _ => {
-                                    break false;
-                                }
-                            }
-                        }
-                        _ => {
-                            break false;
-                        }
-                    }
-                }
-            }
-        } else {
-            break true;
-        }
-    }
+    noun_equality(&a.root, &b.root)
 }
 
 fn slab_mug(a: Noun) -> u32 {
@@ -990,7 +906,7 @@ mod tests {
 
         // Compare the original and cued nouns
         assert!(
-            slab_noun_equality(unsafe { original_slab.root() }, &cued_noun),
+            noun_equality(unsafe { original_slab.root() }, &cued_noun),
             "Original and cued nouns should be equal"
         );
     }
@@ -1011,7 +927,7 @@ mod tests {
         let cued_noun = cued_slab.cue_into(jammed).expect("Cue should succeed");
 
         assert!(
-            slab_noun_equality(unsafe { slab.root() }, &cued_noun),
+            noun_equality(unsafe { slab.root() }, &cued_noun),
             "Complex nouns should be equal after jam/cue roundtrip"
         );
     }
@@ -1034,7 +950,7 @@ mod tests {
         println!("cued_noun: {:?}", cued_noun);
 
         assert!(
-            slab_noun_equality(&noun_with_indirect, &cued_noun),
+            noun_equality(&noun_with_indirect, &cued_noun),
             "Nouns with indirect atoms should be equal after jam/cue roundtrip"
         );
     }
@@ -1055,7 +971,7 @@ mod tests {
         let cued_noun = cued_slab.cue_into(jammed).expect("Cue should succeed");
 
         assert!(
-            slab_noun_equality(unsafe { slab.root() }, &cued_noun),
+            noun_equality(unsafe { slab.root() }, &cued_noun),
             "Nouns with tas! macros should be equal after jam/cue roundtrip"
         );
     }
@@ -1153,7 +1069,7 @@ mod tests {
         if let Ok(cued_noun) = result {
             let expected_noun = T(&mut slab, &[D(1), D(0)]);
             assert!(
-                slab_noun_equality(&cued_noun, &expected_noun),
+                noun_equality(&cued_noun, &expected_noun),
                 "Cued noun should equal [1 0]"
             );
         }
@@ -1218,7 +1134,7 @@ mod tests {
         let mut slab: NounSlab = NounSlab::new();
         slab.modify(|root| vec![D(0), D(tas!(b"bind")), root]);
         let mut test_slab: NounSlab = NounSlab::new();
-        slab_noun_equality(
+        noun_equality(
             &slab.root,
             &T(&mut test_slab, &[D(0), D(tas!(b"bind")), D(0)]),
         );

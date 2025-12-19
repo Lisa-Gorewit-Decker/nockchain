@@ -54,7 +54,8 @@ pub mod tests {
 
     use super::setup_nockapp;
     use crate::nockapp::wire::{SystemWire, Wire};
-    use crate::noun::slab::{slab_equality, slab_noun_equality, NockJammer, NounSlab};
+    use crate::noun::slab::{slab_equality, NockJammer, NounSlab};
+    use nockvm::ext::noun_equality;
     use crate::save::{SaveableCheckpoint, Saver};
     use crate::test_support::TestArena;
     use crate::utils::NOCK_STACK_SIZE;
@@ -129,7 +130,6 @@ pub mod tests {
 
     // Test nockapp save
     // TODO: need a way to grab arvo state from the serf. Probably a serf action
-    // TODO: use slab equality, not unifying equality
     #[tokio::test(flavor = "current_thread")]
     #[traced_test]
     #[cfg_attr(miri, ignore)]
@@ -441,7 +441,7 @@ pub mod tests {
                 option_env!("GIT_SHA")
             )
         });
-        unsafe { assert!(slab_noun_equality(slab1.root(), &c)) }
+        unsafe { assert!(noun_equality(slab1.root(), &c)) }
     }
 
     #[tokio::test(flavor = "current_thread")]
@@ -464,7 +464,7 @@ pub mod tests {
                 option_env!("GIT_SHA")
             )
         });
-        unsafe { assert!(slab_noun_equality(state_slab.root(), &c)) }
+        unsafe { assert!(noun_equality(state_slab.root(), &c)) }
     }
 
     #[tokio::test(flavor = "current_thread")]
