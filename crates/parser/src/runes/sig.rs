@@ -11,18 +11,18 @@ pub fn sig_runes_tall<'src>(
 ) -> impl Parser<'src, &'src str, Hoon, Err<'src>>
 {
     choice((
-        just("%").ignore_then(sigcen(hoon.clone())),
-        just("/").ignore_then(sigfas(hoon.clone())),
+        just('%').ignore_then(sigcen(hoon.clone())),
+        just('/').ignore_then(sigfas(hoon.clone())),
         just('_').ignore_then(sigcab(hoon.clone())),
-        just("+").ignore_then(siglus(hoon.clone())),
-        just("!").ignore_then(sigzap(hoon.clone())),
-        just("|").ignore_then(sigbar(hoon.clone())),
-        just(">").ignore_then(siggar(hoon.clone())),
-        just("<").ignore_then(siggal(hoon.clone())),
-        just("&").ignore_then(sigpam(hoon.clone())),
+        just('+').ignore_then(siglus(hoon.clone())),
+        just('!').ignore_then(sigzap(hoon.clone())),
+        just('|').ignore_then(sigbar(hoon.clone())),
+        just('>').ignore_then(siggar(hoon.clone())),
+        just('<').ignore_then(siggal(hoon.clone())),
+        just('&').ignore_then(sigpam(hoon.clone())),
         just('?').ignore_then(sigwut(hoon.clone())),
         just('=').ignore_then(sigtis(hoon.clone())),
-        just("!").ignore_then(sigzap(hoon.clone())),
+        just('!').ignore_then(sigzap(hoon.clone())),
     ))
 }
 
@@ -31,17 +31,17 @@ pub fn sig_runes_wide<'src>(
 ) -> impl Parser<'src, &'src str, Hoon, Err<'src>>
 {
     choice((
-        just("%").ignore_then(sigcen_wide(hoon_wide.clone())),
-        just("/").ignore_then(sigfas_wide(hoon_wide.clone())),
-        just("!").ignore_then(sigzap_wide(hoon_wide.clone())),
-        just("<").ignore_then(siggal_wide(hoon_wide.clone())),
+        just('%').ignore_then(sigcen_wide(hoon_wide.clone())),
+        just('/').ignore_then(sigfas_wide(hoon_wide.clone())),
+        just('!').ignore_then(sigzap_wide(hoon_wide.clone())),
+        just('<').ignore_then(siggal_wide(hoon_wide.clone())),
         just('?').ignore_then(sigwut_wide(hoon_wide.clone())),
         just('=').ignore_then(sigtis_wide(hoon_wide.clone())),
-        just(">").ignore_then(siggar_wide(hoon_wide.clone())),
-        just("+").ignore_then(siglus_wide(hoon_wide.clone())),
+        just('>').ignore_then(siggar_wide(hoon_wide.clone())),
+        just('+').ignore_then(siglus_wide(hoon_wide.clone())),
         just('_').ignore_then(sigcab_wide(hoon_wide.clone())),
-        just("|").ignore_then(sigbar_wide(hoon_wide.clone())),
-        just("&").ignore_then(sigpam_wide(hoon_wide.clone())),
+        just('|').ignore_then(sigbar_wide(hoon_wide.clone())),
+        just('&').ignore_then(sigpam_wide(hoon_wide.clone())),
     ))
 }
 

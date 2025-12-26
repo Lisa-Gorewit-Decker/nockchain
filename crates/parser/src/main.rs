@@ -1,3 +1,5 @@
+use clap::{Parser as ClapParser, command, arg};
+
 use ariadne::{Color, Label, Report, ReportKind, Source};
 use chumsky::{
     input::{Stream, ValueInput, StrInput},
@@ -9,8 +11,6 @@ use std::collections::HashMap;
 use std::time::Instant;
 use std::io::Write;
 use std::path::PathBuf;
-
-use clap::{Parser as ClapParser, command, arg};
 
 use parser::ast::hoon::*;
 use parser::utils::*;
@@ -110,8 +110,8 @@ fn hoon_wide_parser<'src>(
         just('%').ignore_then(
         choice((
             cen_runes_wide(hoon_wide.clone()),
-            just('|').to(Hoon::Rock("%f".to_string(), Noun::Atom("1".to_string()))),
-            just('&').to(Hoon::Rock("%f".to_string(), Noun::Atom("0".to_string()))),
+            just('|').to(Hoon::Rock("f".to_string(), Noun::Atom(Atom::Small(1)))),
+            just('&').to(Hoon::Rock("f".to_string(), Noun::Atom(Atom::Small(0)))),
             nuck().map(|(p, q)| Hoon::Rock(p, Noun::Atom(q))),
         ))).boxed(),
 
@@ -177,16 +177,17 @@ fn hoon_wide_parser<'src>(
         ketcol_irregular(spec_wide.clone()).boxed(),                          //  ,p
         centis_irregular(hoon_wide.clone()).boxed(),                          //  a(b c, d e, f g)
         tell(hoon_wide.clone()).boxed(),                                      // <foo>
+        yell(hoon_wide.clone()).boxed(),                                      // <foo>
         number().map(|(p, q)| Hoon::Sand(p, Noun::Atom(q))).boxed(),          //  111.111, 0x1111, etc.
         wing().boxed(),                                                       //   foo, foo.bar, etc.
         function_call(hoon_wide.clone()).boxed(),                             //  (a b)
         constant().map(|(p, q)| Hoon::Rock(p, Noun::Atom(q))).boxed(),        //  %foo
-        cord().map(|s| Hoon::Sand("%t".to_string(), Noun::Atom(s))).boxed(),  //  'foo'
+        cord().map(|s| Hoon::Sand("t".to_string(), Noun::Atom(s))).boxed(),  //  'foo'
         path(hoon_wide.clone(), wer).boxed(),                                 //  /a/b/c
         tape(hoon_wide.clone()).boxed(),                                      //  "foo"
         just('~').to(Hoon::Bust(BaseType::Null)).boxed(),
-        just('&').to(Hoon::Sand("%f".to_string(), Noun::Atom("0".to_string()))).boxed(),
-        just('|').to(Hoon::Sand("%f".to_string(), Noun::Atom("1".to_string()))).boxed(),
+        just('&').to(Hoon::Sand("f".to_string(), Noun::Atom(Atom::Small(0)))).boxed(),
+        just('|').to(Hoon::Sand("f".to_string(), Noun::Atom(Atom::Small(1)))).boxed(),
         just('*').to(Hoon::Base(BaseType::Noun)).boxed(),
     ];
 

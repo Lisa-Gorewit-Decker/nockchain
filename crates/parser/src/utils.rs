@@ -1,8 +1,14 @@
 use std::collections::*;
 use crate::ast::hoon::*;
+use std::cmp;
 use std::sync::Arc;
+use std::str::FromStr;
 use std::path::PathBuf;
 use std::collections::HashMap;
+use num_bigint::BigUint;
+use num_traits::{One, Num, FromPrimitive, ToPrimitive};
+use num_traits::identities::Zero;
+use sha2::{Sha256, Digest};
 use chumsky::{
     input::{Stream, ValueInput, Input, StrInput},
     prelude::*,
@@ -24,16 +30,25 @@ where
 pub fn basal(bas: BaseType) -> Hoon {
     match bas {
         BaseType::Atom(a) => {
-            let literal = if a == "%da" {
-                "~2000.1.1".to_string()
+            let literal = if a == "da" {
+                Atom::Small(year(
+                    true,
+                    2000,
+                    1,
+                    1,
+                    0,
+                    0,
+                    0,
+                    &Vec::new()
+                ))
             } else {
-                "0".to_string()
+                decimal_to_atom("0".to_string())
             };
             Hoon::Sand(a, Noun::Atom(literal))
         }
         BaseType::Noun => {
-            let rock0 = Box::new(Hoon::Rock("%$".to_string(), Noun::Atom("0".to_string())));
-            let rock1 = Box::new(Hoon::Rock("%$".to_string(), Noun::Atom("1".to_string())));
+            let rock0 = Box::new(Hoon::Rock("$".to_string(), Noun::Atom(Atom::Small(0))));
+            let rock1 = Box::new(Hoon::Rock("$".to_string(), Noun::Atom(Atom::Small(1))));
             let rock0_clone = rock0.clone();
             let rock0_clone2 = rock0.clone();
             Hoon::KetLus(Box::new(Hoon::DotTar(rock0, Box::new(Hoon::Pair(rock0_clone, rock1)))), rock0_clone2)
@@ -44,12 +59,12 @@ pub fn basal(bas: BaseType) -> Hoon {
             Hoon::Pair(noun, noun_clone)
         }
         BaseType::Flag => {
-            let rock0 = Box::new(Hoon::Rock("%$".to_string(), Noun::Atom("0".to_string())));
+            let rock0 = Box::new(Hoon::Rock("$".to_string(), Noun::Atom(Atom::Small(0))));
             let rock0_clone = rock0.clone();
             let rock1_clone = rock0.clone();
             Hoon::KetLus(Box::new(Hoon::DotTis(rock0, rock0_clone)), rock1_clone)
         }
-        BaseType::Null => Hoon::Rock("%$".to_string(), Noun::Atom("0".to_string())),
+        BaseType::Null => Hoon::Rock("$".to_string(), Noun::Atom(Atom::Small(0))),
         BaseType::Void => Hoon::ZapZap,
     }
 }
@@ -60,7 +75,7 @@ pub fn function(
     mod_: &Spec,
     dom: u64,
     hay: &WingType,
-    cox: &HashMap<Term, Spec>,
+    cox: &HashMap<String, Spec>,
     bug: &Vec<Spot>,
     nut: &Option<Note>,
     def: &Option<Hoon>,
@@ -77,23 +92,23 @@ pub fn function(
 pub fn interface(
     variance: Vair,
     payload: Spec,
-    arms: HashMap<Term, Spec>,
+    arms: HashMap<String, Spec>,
     mod_: &Spec,
     dom: u64,
     hay: &WingType,
-    cox: &HashMap<Term, Spec>,
+    cox: &HashMap<String, Spec>,
     bug: &Vec<Spot>,
     nut: &Option<Note>,
     def: &Option<Hoon>,
 ) -> Hoon {
 
-    let map: HashMap<Term, Hoon> = arms.into_iter()
+    let map: HashMap<String, Hoon> = arms.into_iter()
         .map(|(term, spec)|
                  (term, example(&spec, dom, hay, cox, &vec![], &None, &None)))
         .collect();
     let brcn = Hoon::BarCen(
         None,
-        HashMap::from([("%$".to_string(), map)]),
+        HashMap::from([("$".to_string(), map)]),
     );
 
     let example_res = example(&payload, dom, hay, cox, &vec![], &None, &None);
@@ -110,7 +125,7 @@ pub fn interface(
 pub fn spore(spec: Spec,
                 dom: u64,
                 hay: WingType,
-                cox: HashMap<Term, Spec>,
+                cox: HashMap<String, Spec>,
                 bug: Vec<Spot>,
                 nut: Option<Note>,
                 def: Option<Hoon>) -> Hoon {
@@ -125,21 +140,21 @@ pub fn spore(spec: Spec,
 pub fn spore_recursion(spec: Spec,
                 dom: u64,
                 hay: WingType,
-                cox: HashMap<Term, Spec>,
+                cox: HashMap<String, Spec>,
                 bug: Vec<Spot>,
                 nut: Option<Note>,
                 def: Option<Hoon>) -> Hoon {
     match spec {
         Spec::Base(b) => {
             match b {
-                BaseType::Void => Hoon::Rock("%n".to_string(), Noun::Atom("0".to_string())),
+                BaseType::Void => Hoon::Rock("n".to_string(), Noun::Atom(Atom::Small(0))),
                 _ => basal(b),
             }
         }
         Spec::BucBuc(s, map) => {
             let mut new_cox = cox;
             new_cox.extend(map);
-            new_cox.insert("%$".to_string(), *s.clone());
+            new_cox.insert("$".to_string(), *s.clone());
             spore_recursion(*s, dom, hay, new_cox, bug, nut, def)
         }
         Spec::Dbug(spot, spec) => {
@@ -163,10 +178,10 @@ pub fn spore_recursion(spec: Spec,
         Spec::Name(term, spec) => spore_recursion(*spec, dom, hay, cox, bug, nut, def),
         Spec::Over(wing, spec) => spore_recursion(*spec, dom, wing, cox, bug, nut, def),
         Spec::BucBar(spec, hoon) => spore_recursion(*spec, dom, hay, cox, bug, nut, def),
-        Spec::BucCab(_) => Hoon::Rock("%n".to_string(), Noun::Atom("0".to_string())),
+        Spec::BucCab(_) => Hoon::Rock("n".to_string(), Noun::Atom(Atom::Small(0))),
         Spec::BucCol(spec, specs) => spore_buccol_recursion(*spec, specs, dom, hay, cox, bug, nut, def),
         Spec::BucCen(spec, specs) => spore_buccen_recursion(*spec, specs, dom, hay, cox, bug, nut, def),
-        Spec::BucHep(spec, specs) => Hoon::Rock("%n".to_string(), Noun::Atom("0".to_string())),
+        Spec::BucHep(spec, specs) => Hoon::Rock("n".to_string(), Noun::Atom(Atom::Small(0))),
         Spec::BucGal(p_spec, q_spec) => spore_recursion(*q_spec, dom, hay, cox, bug, nut, def),
         Spec::BucGar(p_spec, q_spec) => spore_recursion(*q_spec, dom, hay, cox, bug, nut, def),
         Spec::BucKet(p_spec, q_spec) => spore_recursion(*q_spec, dom, hay, cox, bug, nut, def),
@@ -184,7 +199,7 @@ pub fn spore_recursion(spec: Spec,
         Spec::BucPat(p_spec, q_spec) => spore_recursion(*p_spec, dom, hay, cox, bug, nut, def),
         Spec::BucWut(spec, specs) => spore_bucwut_recursion(*spec, specs, dom, hay, cox, bug, nut, def),
         Spec::BucDot(..) | Spec::BucFas(..) | Spec::BucTic(..) | Spec::BucZap(..)
-         => Hoon::Rock("%n".to_string(), Noun::Atom("0".to_string())),
+         => Hoon::Rock("n".to_string(), Noun::Atom(Atom::Small(0))),
     }
 }
 
@@ -192,7 +207,7 @@ pub fn spore_buccol_recursion(spec: Spec,
                 list_spec: Vec<Spec>,
                 dom: u64,
                 hay: WingType,
-                cox: HashMap<Term, Spec>,
+                cox: HashMap<String, Spec>,
                 bug: Vec<Spot>,
                 nut: Option<Note>,
                 def: Option<Hoon>) -> Hoon {
@@ -222,7 +237,7 @@ pub fn spore_bucwut_recursion(spec: Spec,
                 list_spec: Vec<Spec>,
                 dom: u64,
                 hay: WingType,
-                cox: HashMap<Term, Spec>,
+                cox: HashMap<String, Spec>,
                 bug: Vec<Spot>,
                 nut: Option<Note>,
                 def: Option<Hoon>) -> Hoon {
@@ -244,7 +259,7 @@ pub fn spore_buccen_recursion(spec: Spec,
                 list_spec: Vec<Spec>,
                 dom: u64,
                 hay: WingType,
-                cox: HashMap<Term, Spec>,
+                cox: HashMap<String, Spec>,
                 bug: Vec<Spot>,
                 nut: Option<Note>,
                 def: Option<Hoon>) -> Hoon {
@@ -266,7 +281,7 @@ pub fn example(
     mod_: &Spec,
     dom: u64,
     hay: &WingType,
-    cox: &HashMap<Term, Spec>,
+    cox: &HashMap<String, Spec>,
     bug: &Vec<Spot>,
     nut: &Option<Note>,
     def: &Option<Hoon>,
@@ -329,7 +344,7 @@ pub fn example(
         }
         Spec::BucMic(inner) => {
             let tsgl = Hoon::TisGal(
-                            Box::new(Hoon::Limb("%$".to_string())),
+                            Box::new(Hoon::Limb("$".to_string())),
                             Box::new(inner.clone()));
             decorate(home(tsgl, hay.clone(), dom.clone()), bug.clone(), nut.clone())
         }
@@ -380,11 +395,11 @@ pub fn example(
 fn vair_case(
     vair: Vair,
     payload: Spec,
-    arms: HashMap<Term, Spec>,
+    arms: HashMap<String, Spec>,
     mod_: &Spec,
     dom: u64,
     hay: &WingType,
-    cox: &HashMap<Term, Spec>,
+    cox: &HashMap<String, Spec>,
     bug: &Vec<Spot>,
     nut: &Option<Note>,
     def: &Option<Hoon>,
@@ -398,14 +413,14 @@ pub fn basic(bas: BaseType,
                 mod_: &Spec,
                 dom: u64,
                 hay: &WingType,
-                cox: &HashMap<Term, Spec>,
+                cox: &HashMap<String, Spec>,
                 bug: &Vec<Spot>,
                 nut: &Option<Note>,
                 def: &Option<Hoon>) -> Hoon {
     match bas {
         BaseType::Atom(a) => {
-            let cnls = Hoon::CenLus(Box::new(Hoon::Limb("%ruth".to_string())),
-                                    Box::new(Hoon::Sand("%ta".to_string(), Noun::Atom(a))),
+            let cnls = Hoon::CenLus(Box::new(Hoon::Limb("ruth".to_string())),
+                                    Box::new(Hoon::Sand("ta".to_string(), Noun::Atom(string_to_atom(a)))),
                                     Box::new(Hoon::Axis(axe)));
 
             let example_res = Box::new(example(mod_, dom, hay, cox, bug, nut, def));
@@ -414,7 +429,7 @@ pub fn basic(bas: BaseType,
             let wtpt_wing: Vec<Limb> = vec![wtpt_limb];
             let wtpt = Hoon::WutPat(wtpt_wing, Box::new(Hoon::Axis(axe)), Box::new(Hoon::ZapZap));
 
-            let zppt_limb = Limb::Parent(0, Some("%ruth".to_string()));
+            let zppt_limb = Limb::Parent(0, Some("ruth".to_string()));
             let zppt_wing: Vec<Limb> = vec![zppt_limb];
             let zppt_list_wing: Vec<Vec<Limb>> = vec![zppt_wing];
             let zppt = Hoon::ZapPat(zppt_list_wing, Box::new(cnls), Box::new(wtpt));
@@ -434,22 +449,22 @@ pub fn basic(bas: BaseType,
             Hoon::KetLus(example_res, Box::new(pair))
         }
         BaseType::Flag => {
-            let rock = Box::new(Hoon::Rock("%f".to_string(), Noun::Atom("&".to_string())));
+            let rock = Box::new(Hoon::Rock("f".to_string(), Noun::Atom(Atom::Small(0))));
             let dtts = Box::new(Hoon::DotTis(
-                                    Box::new(Hoon::Rock("%$".to_string(), Noun::Atom("&".to_string()))),
+                                    Box::new(Hoon::Rock("$".to_string(), Noun::Atom(Atom::Small(0)))),
                                     Box::new(Hoon::Axis(axe))
                                 ));
             let wtgr = Box::new(Hoon::WutGar(
                             Box::new(Hoon::DotTis(
-                                Box::new(Hoon::Rock("%$".to_string(), Noun::Atom("|".to_string()))),
+                                Box::new(Hoon::Rock("$".to_string(), Noun::Atom(Atom::Small(1)))),
                                 Box::new(Hoon::Axis(axe))
                             )),
-                            Box::new(Hoon::Rock("%f".to_string(), Noun::Atom("|".to_string()))))
-                        );
+                            Box::new(Hoon::Rock("f".to_string(), Noun::Atom(Atom::Small(1))))
+                        ));
             Hoon::WutCol(dtts, rock, wtgr)
         },
         BaseType::Null => {
-            let rock = Box::new(Hoon::Rock("%n".to_string(), Noun::Atom("~".to_string())));
+            let rock = Box::new(Hoon::Rock("n".to_string(), Noun::Atom(Atom::Small(0))));
             let dtts = Box::new(Hoon::DotTis(
                                     Box::new(Hoon::Bust(BaseType::Noun)),
                                     Box::new(Hoon::Axis(axe))
@@ -468,7 +483,7 @@ pub fn switch(
     mod_: &Spec,
     dom: u64,
     hay: &WingType,
-    cox: &HashMap<Term, Spec>,
+    cox: &HashMap<String, Spec>,
     bug: &Vec<Spot>,
     nut: &Option<Note>,
     def: &Option<Hoon>,
@@ -504,7 +519,7 @@ pub fn choice_(one: Spec,
             mod_: &Spec,
             dom: u64,
             hay: &WingType,
-            cox: &HashMap<Term, Spec>,
+            cox: &HashMap<String, Spec>,
             bug: &Vec<Spot>,
             nut: &Option<Note>,
             def: &Option<Hoon>,
@@ -542,7 +557,7 @@ pub fn relative(axe: u64,
                 mod_: &Spec,
                 dom: u64,
                 hay: &WingType,
-                cox: &HashMap<Term, Spec>,
+                cox: &HashMap<String, Spec>,
                 bug: &Vec<Spot>,
                 nut: &Option<Note>,
                 def: &Option<Hoon>,
@@ -558,7 +573,7 @@ pub fn relative(axe: u64,
             decorate(
                 Hoon::WutGar(
                     Box::new(Hoon::DotTis(Box::new(Hoon::Axis(axe)),
-                                          Box::new(Hoon::Rock("%$".to_string(), Noun::Atom(q.clone()))))),
+                                          Box::new(Hoon::Rock("$".to_string(), Noun::Atom(q.clone()))))),
                     Box::new(Hoon::Rock(p.clone(), Noun::Atom(q.clone())))
                 ),
                 bug.clone(),
@@ -584,12 +599,12 @@ pub fn relative(axe: u64,
         Spec::Over(p, q) => relative(axe, &*q, dom, p, cox, bug, nut, def),
         Spec::BucBuc(p, q) => {
             let new_dom = peg(3, dom).expect("+relative-bucbuc-peg-failed");
-            let map: HashMap<Term, Hoon> = q.into_iter()
+            let map: HashMap<String, Hoon> = q.into_iter()
                 .map(|(term, spec)| (term.clone(), relative(axe, spec, new_dom, hay, cox, bug, nut, def)))
                 .collect();
             Hoon::BarKet(
                 Box::new(relative(axe, &*p, new_dom, hay, cox, bug, nut, def)),
-                HashMap::from([("%$".to_string(), map)]),
+                HashMap::from([("$".to_string(), map)]),
             )
         }
         Spec::BucPam(p, q) => Hoon::TisLus(
@@ -793,7 +808,7 @@ pub fn unfold(fun: Hoon, arg: Vec<Spec>) -> Hoon {
 pub fn factory(mod_: Spec,
                 dom: u64,
                 hay: WingType,
-                cox: HashMap<Term, Spec>,
+                cox: HashMap<String, Spec>,
                 bug: Vec<Spot>,
                 nut: Option<Note>,
                 def: Option<Hoon>) -> Hoon {
@@ -860,7 +875,7 @@ pub fn open(gen: Hoon) -> Hoon {
                     let tail = knit_loop(woofs[1..].to_vec());
                     match head {
                         Woof::Atom(a) => {
-                            let sand = Hoon::Sand("tD".to_string(), Noun::Atom(a.to_string()));
+                            let sand = Hoon::Sand("tD".to_string(), Noun::Atom(a.clone()));
                             Hoon::Pair(Box::new(sand), Box::new(tail))
                         }
                         Woof::Hoon(p) => {
@@ -868,7 +883,7 @@ pub fn open(gen: Hoon) -> Hoon {
                                         Box::new(Hoon::KetTis(
                                                 Skin::Term("a".to_string()),
                                                 Box::new(Hoon::KetLus(
-                                                                Box::new(Hoon::Limb("%$".to_string())),
+                                                                Box::new(Hoon::Limb("$".to_string())),
                                                                 Box::new(Hoon::TisGar(
                                                                         Box::new(Hoon::Limb("v".to_string())),
                                                                         Box::new(p.clone())))
@@ -914,11 +929,12 @@ pub fn open(gen: Hoon) -> Hoon {
                                 Box::new(Hoon::Pair(
                                     Box::new(Hoon::KetTis(
                                         Skin::Term("i".to_string()),
-                                        Box::new(Hoon::Sand("tD".to_string(), Noun::Atom("0".to_string()))),
+                                        Box::new(Hoon::Sand("tD".to_string(),
+                                                            Noun::Atom(Atom::Small(0)))),
                                     )),
                                     Box::new(Hoon::KetTis(
                                         Skin::Term("t".to_string()),
-                                        Box::new(Hoon::Limb("%$".to_string())),
+                                        Box::new(Hoon::Limb("$".to_string())),
                                     )),
                                 )),
                             )
@@ -988,7 +1004,7 @@ pub fn open(gen: Hoon) -> Hoon {
             let transformed_arms = arms
                 .into_iter()
                 .map(|(term, tome)| {
-                    let wrapped_pairs: Vec<(Term, Hoon)> = tome
+                    let wrapped_pairs: Vec<(String, Hoon)> = tome
                             .into_iter()
                             .map(|(face, expr)| {
                                 let wrapped_expr = alas.iter().rev().fold(expr, |body, (alas_face, alas_init)| {
@@ -1019,12 +1035,12 @@ pub fn open(gen: Hoon) -> Hoon {
         Hoon::BarDot(p) => {
             let map_term_hoon = {
                 let mut m = HashMap::new();
-                m.insert("%$".to_string(), *p);
+                m.insert("$".to_string(), *p);
                 m
             };
             let map_term_tome = {
                 let mut m = HashMap::new();
-                m.insert("%$".to_string(), map_term_hoon);
+                m.insert("$".to_string(), map_term_hoon);
                 m
             };
             Hoon::BarCen(None, map_term_tome)
@@ -1032,37 +1048,37 @@ pub fn open(gen: Hoon) -> Hoon {
 
         Hoon::BarKet(p, arms) => {
             let mut map = arms.clone();
-            if let Some(zil) = arms.get(&"%$".to_string()) {
+            if let Some(zil) = arms.get(&"$".to_string()) {
                 let updated = {
                     let mut inner = zil.clone();
-                    inner.insert("%$".to_string(), *p.clone());
+                    inner.insert("$".to_string(), *p.clone());
                     inner
                 };
-                map.insert("%$".to_string(), updated);
+                map.insert("$".to_string(), updated);
             } else {
                 let mut inner = HashMap::new();
-                inner.insert("%$".to_string(), *p.clone());
-                map.insert("%$".to_string(), inner);
+                inner.insert("$".to_string(), *p.clone());
+                map.insert("$".to_string(), inner);
             }
             Hoon::TisGal(
-                Box::new(Hoon::Limb("%$".to_string())),
+                Box::new(Hoon::Limb("$".to_string())),
                 Box::new(Hoon::BarCen(None, map)),
             )
         }
 
-        Hoon::BarHep(p) => Hoon::TisGal(Box::new(Hoon::Limb("%$".to_string())), Box::new(Hoon::BarDot(Box::new(*p)))),
+        Hoon::BarHep(p) => Hoon::TisGal(Box::new(Hoon::Limb("$".to_string())), Box::new(Hoon::BarDot(Box::new(*p)))),
 
         Hoon::BarSig(spec, q) => Hoon::KetBar(Box::new(Hoon::BarTis(spec.clone(), q.clone()))),
 
         Hoon::BarTar(spec, q) => {
             let map_term_hoon = {
                 let mut m = HashMap::new();
-                m.insert("%$".to_string(), *q);
+                m.insert("$".to_string(), *q);
                 m
             };
             let map_term_tome = {
                 let mut m = HashMap::new();
-                m.insert("%$".to_string(), map_term_hoon);
+                m.insert("$".to_string(), map_term_hoon);
                 m
             };
             Hoon::TisLus(Box::new(Hoon::KetTar(spec)),
@@ -1072,12 +1088,12 @@ pub fn open(gen: Hoon) -> Hoon {
         Hoon::BarTis(spec, q) => {
             let map_term_hoon = {
                 let mut m = HashMap::new();
-                m.insert("%$".to_string(), *q);
+                m.insert("$".to_string(), *q);
                 m
             };
             let map_term_tome = {
                 let mut m = HashMap::new();
-                m.insert("%$".to_string(), map_term_hoon);
+                m.insert("$".to_string(), map_term_hoon);
                 m
             };
             Hoon::BarCab(spec, vec![], map_term_tome)
@@ -1116,7 +1132,7 @@ pub fn open(gen: Hoon) -> Hoon {
 
         Hoon::ColSig(hoons) => {
             match hoons.as_slice() {
-                [] => Hoon::Rock("n".to_string(), Noun::Atom("0".to_string())),
+                [] => Hoon::Rock("n".to_string(), Noun::Atom(Atom::Small(0))),
                 [h] => h.clone(),
                 [h, tail @ ..] => {
                     let rest = open(Hoon::ColSig(tail.to_vec()));
@@ -1152,7 +1168,7 @@ pub fn open(gen: Hoon) -> Hoon {
         Hoon::CenHep(p, q) => Hoon::CenCol(p, vec![*q]),
 
         Hoon::CenCol(p, hoons) => {
-            Hoon::CenSig(vec![Limb::Term("%$".to_string())], p, hoons)
+            Hoon::CenSig(vec![Limb::Term("$".to_string())], p, hoons)
         }
 
         Hoon::CenSig(wing, p, hoons) => {
@@ -1227,7 +1243,7 @@ pub fn open(gen: Hoon) -> Hoon {
         }
 
         Hoon::SigCab(p, q) => Hoon::SigGar(
-            TermOrPair::Term(Term::from("mean")),
+            TermOrPair::Term("mean".to_string()),
             Box::new(Hoon::BarDot(p)),
         ),
 
@@ -1238,7 +1254,7 @@ pub fn open(gen: Hoon) -> Hoon {
                 while !r.is_empty() {
                     let (p_i, q_i) = r.remove(0);
                     nob.push(Hoon::Pair(
-                        Box::new(Hoon::Rock("$".to_string(), Noun::Atom(p_i))),
+                        Box::new(Hoon::Rock("$".to_string(), Noun::Atom(string_to_atom(p_i)))),
                         Box::new(Hoon::ZapTis(Box::new(q_i))),
                     ));
                 }
@@ -1261,12 +1277,14 @@ pub fn open(gen: Hoon) -> Hoon {
         Hoon::SigGal(term_or_pair, q) => Hoon::TisGal(Box::new(Hoon::SigGar(term_or_pair, Box::new( Hoon::Axis(1)))), q),
 
         Hoon::SigBuc(term, q) => Hoon::SigGar(
-            TermOrPair::Pair("live".to_string(), Box::new(Hoon::Rock("$".to_string(), Noun::Atom(term)))),
+            TermOrPair::Pair("live".to_string(), Box::new(Hoon::Rock("$".to_string(), Noun::Atom(string_to_atom(term))))),
             q
         ),
 
         Hoon::SigLus(a, q) => Hoon::SigGar(
-            TermOrPair::Pair("memo".to_string(), Box::new(Hoon::Rock("$".to_string(), Noun::Atom(a.to_string())))),
+            TermOrPair::Pair("memo".to_string(),
+                            Box::new(Hoon::Rock("$".to_string(),
+                                                Noun::Atom(Atom::Small(a.into()))))),
             q
         ),
 
@@ -1274,7 +1292,7 @@ pub fn open(gen: Hoon) -> Hoon {
             TermOrPair::Pair(
                 "slog".to_string(),
                 Box::new(Hoon::Pair(
-                    Box::new(Hoon::Sand("$".to_string(), Noun::Atom(a.to_string()))),
+                    Box::new(Hoon::Sand("$".to_string(), Noun::Atom(Atom::Small(a.into())))),
                     Box::new(Hoon::CenCol(
                     Box::new(Hoon::Limb("cain".to_string())),
                     vec![Hoon::ZapGar(p)]))))
@@ -1325,12 +1343,12 @@ pub fn open(gen: Hoon) -> Hoon {
                                                         );
                                     let map_term_hoon = {
                                         let mut m = HashMap::new();
-                                        m.insert("%$".to_string(), wtsg);
+                                        m.insert("$".to_string(), wtsg);
                                         m
                                     };
                                     let map_term_tome = {
                                         let mut m = HashMap::new();
-                                        m.insert("%$".to_string(), map_term_hoon);
+                                        m.insert("$".to_string(), map_term_hoon);
                                         m
                                     };
                                     map_term_tome
@@ -1368,7 +1386,7 @@ pub fn open(gen: Hoon) -> Hoon {
         }
 
         Hoon::MicFas(p) => {
-            let zoy = Hoon::Rock("ta".to_string(), Noun::Atom("$".to_string()));
+            let zoy = Hoon::Rock("ta".to_string(), Noun::Atom(Atom::Small(0)));
             Hoon::ColSig(vec![Hoon::Pair(
                                 Box::new(zoy.clone()),
                                  Box::new(Hoon::ColSig(vec![Hoon::Pair(
@@ -1561,12 +1579,12 @@ pub fn open(gen: Hoon) -> Hoon {
         }
         Hoon::WutBar(p) => {
             match p.as_slice() {
-                [] => Hoon::Rock("f".to_string(), Noun::Atom("1".to_string())),
+                [] => Hoon::Rock("f".to_string(), Noun::Atom(Atom::Small(1))),
                 [head, tail @ ..] => {
                     let recurse = open(Hoon::WutBar(tail.to_vec()));
                     Hoon::WutCol(
                         Box::new(head.clone()),
-                        Box::new(Hoon::Rock("f".to_string(), Noun::Atom("0".to_string()))),
+                        Box::new(Hoon::Rock("f".to_string(), Noun::Atom(Atom::Small(0)))),
                         Box::new(recurse),
                     )
                 }
@@ -1598,12 +1616,12 @@ pub fn open(gen: Hoon) -> Hoon {
     },
 
     Hoon::WutKet(p, q, r) => {
-        let WutTis = Hoon::WutTis(
-            Box::new(Spec::Base(BaseType::Atom("%$".to_string()))),
+        let wuttis = Hoon::WutTis(
+            Box::new(Spec::Base(BaseType::Atom("$".to_string()))),
             p,
         );
         Hoon::WutCol(
-            Box::new(WutTis),
+            Box::new(wuttis),
             r,
             q,
         )
@@ -1634,13 +1652,13 @@ pub fn open(gen: Hoon) -> Hoon {
 
     Hoon::WutPam(p) => {
         match p.as_slice() {
-            [] => Hoon::Rock("f".to_string(), Noun::Atom("0".to_string())),
+            [] => Hoon::Rock("f".to_string(), Noun::Atom(Atom::Small(0))),
             [head, tail @ ..] => {
                 let recurse = open(Hoon::WutPam(tail.to_vec()));
                 Hoon::WutCol(
                     Box::new(head.clone()),
                     Box::new(recurse),
-                    Box::new(Hoon::Rock("f".to_string(), Noun::Atom("1".to_string()))),
+                    Box::new(Hoon::Rock("f".to_string(), Noun::Atom(Atom::Small(1)))),
                 )
             }
         }
@@ -1648,10 +1666,10 @@ pub fn open(gen: Hoon) -> Hoon {
 
     Hoon::Xray(manx) => {
         let open_mane = match &manx.g.n {
-            Mane::Tag(s) => Hoon::Rock("tas".to_string(), Noun::Atom(s.clone())),
+            Mane::Tag(s) => Hoon::Rock("tas".to_string(), Noun::Atom(string_to_atom(s.clone()))),
             Mane::TagSpace(a, b) => {
-                let left = Hoon::Rock("tas".to_string(), Noun::Atom(a.clone()));
-                let right = Hoon::Rock("tas".to_string(), Noun::Atom(b.clone()));
+                let left = Hoon::Rock("tas".to_string(), Noun::Atom(string_to_atom(a.clone())));
+                let right = Hoon::Rock("tas".to_string(), Noun::Atom(string_to_atom(b.clone())));
                 Hoon::Pair(Box::new(left), Box::new(right))
             }
         };
@@ -1660,17 +1678,17 @@ pub fn open(gen: Hoon) -> Hoon {
             .iter()
             .map(|(mane, beers)| {
                 let n_hoon = match &mane {
-                    Mane::Tag(s) => Hoon::Rock("tas".to_string(), Noun::Atom(s.clone())),
+                    Mane::Tag(s) => Hoon::Rock("tas".to_string(), Noun::Atom(string_to_atom(s.clone()))),
                     Mane::TagSpace(a, b) => {
-                        let left = Hoon::Rock("tas".to_string(), Noun::Atom(a.clone()));
-                        let right = Hoon::Rock("tas".to_string(), Noun::Atom(b.clone()));
+                        let left = Hoon::Rock("tas".to_string(), Noun::Atom(string_to_atom(a.clone())));
+                        let right = Hoon::Rock("tas".to_string(), Noun::Atom(string_to_atom(b.clone())));
                         Hoon::Pair(Box::new(left), Box::new(right))
                     }
                 };
                 let woofs: Vec<Woof> = beers
                     .iter()
                     .map(|b| match b {
-                        Beer::Char(cord) => Woof::Atom(cord.clone()),
+                        Beer::Char(cord) => Woof::Atom(string_to_atom(cord.clone())),
                         Beer::Hoon(hoon) => Woof::Hoon(hoon.clone()),
                     })
                     .collect();
@@ -1691,7 +1709,7 @@ pub fn open(gen: Hoon) -> Hoon {
 
     Hoon::WutPat(p, q, r) => {
         let wtts = Hoon::WutTis(
-            Box::new(Spec::Base(BaseType::Atom("%$".to_string()))),
+            Box::new(Spec::Base(BaseType::Atom("$".to_string()))),
             p,
         );
         Hoon::WutCol(
@@ -1724,8 +1742,8 @@ pub fn open(gen: Hoon) -> Hoon {
     Hoon::WutZap(p) => {
         Hoon::WutCol(
             p,
-            Box::new(Hoon::Rock("f".to_string(), Noun::Atom("1".to_string()))),
-            Box::new(Hoon::Rock("f".to_string(), Noun::Atom("0".to_string()))),
+            Box::new(Hoon::Rock("f".to_string(), Noun::Atom(Atom::Small(1)))),
+            Box::new(Hoon::Rock("f".to_string(), Noun::Atom(Atom::Small(0)))),
         )
     },
 
@@ -1768,31 +1786,31 @@ pub fn open(gen: Hoon) -> Hoon {
 pub fn chum_to_noun(chum: Chum) -> Noun {
     match chum {
         Chum::Lef(term) => {
-            Noun::Atom(term)
+            Noun::Atom(string_to_atom(term))
         }
         Chum::StdKel(term, u) => {
             Noun::Cell(
-                Box::new(Noun::Atom(term)),
-                Box::new(Noun::Atom(u.to_string())),
+                Box::new(Noun::Atom(string_to_atom(term))),
+                Box::new(Noun::Atom(u)),
             )
         }
         Chum::VenProKel(t1, t2, u) => {
             Noun::Cell(
-                Box::new(Noun::Atom(t1)),
+                Box::new(Noun::Atom(string_to_atom(t1))),
                 Box::new(Noun::Cell(
-                    Box::new(Noun::Atom(t2)),
-                    Box::new(Noun::Atom(u.to_string())),
+                    Box::new(Noun::Atom(string_to_atom(t2))),
+                    Box::new(Noun::Atom(u)),
                 )),
             )
         }
         Chum::VenProVerKel(t1, t2, u1, u2) => {
             Noun::Cell(
-                Box::new(Noun::Atom(t1)),
+                Box::new(Noun::Atom(string_to_atom(t1))),
                 Box::new(Noun::Cell(
-                    Box::new(Noun::Atom(t2)),
+                    Box::new(Noun::Atom(string_to_atom(t2))),
                     Box::new(Noun::Cell(
-                        Box::new(Noun::Atom(u1.to_string())),
-                        Box::new(Noun::Atom(u2.to_string())),
+                        Box::new(Noun::Atom(u1)),
+                        Box::new(Noun::Atom(u2)),
                     )),
                 )),
             )
@@ -1815,7 +1833,7 @@ pub fn flay(gen: Hoon) -> Option<Skin> {
 
         Hoon::Rock(t, n) => {
             match n {
-                Noun::Atom(a) => Some(Skin::Leaf(t.to_string(), a.to_string())),
+                Noun::Atom(a) => Some(Skin::Leaf(t.to_string(), a)),
                 Noun::Cell(_, _) => None,
             }
         }
@@ -1897,7 +1915,7 @@ pub fn flay(gen: Hoon) -> Option<Skin> {
     }
 }
 
-pub fn feck(gen: Hoon) -> Option<String> {
+pub fn feck(gen: Hoon) -> Option<Atom> {
     match gen {
         Hoon::Sand(term, noun) => {
             if term == "tas" {
@@ -2073,7 +2091,7 @@ pub fn reek(gen: Hoon) -> Option<WingType> {
     }
 }
 
-pub fn name_ax(gen: Hoon) ->  Option<Term> {
+pub fn name_ax(gen: Hoon) ->  Option<String> {
     match gen {
         Hoon::Wing(p) => {
             if p.is_empty() {
@@ -2096,12 +2114,12 @@ pub fn name_ax(gen: Hoon) ->  Option<Term> {
     }
 }
 
-pub fn autoname(mod_spec: Spec) -> Option<Term> {  //  ++autoname:ax
+pub fn autoname(mod_spec: Spec) -> Option<String> {  //  ++autoname:ax
     match mod_spec {
         Spec::Base(base) => match base {
             BaseType::Atom(aura) => {
-                if aura == "%$" {    //  how empty terms will be represented here in rust land?...
-                    Some("%atom".to_string())
+                if aura == "$" {    //  how empty terms will be represented here in rust land?...
+                    Some("atom".to_string())
                 } else {
                     Some(aura)
                 }
@@ -2281,7 +2299,7 @@ pub fn peg(a: u64, b: u64) -> Result<u64, &'static str> {
     Ok((a << k) + offset)
 }
 
-// pub fn autoname(mod_spec: Spec) -> Option<Term> {  //  ++autoname:ax
+// pub fn autoname(mod_spec: Spec) -> Option<String> {  //  ++autoname:ax
 
 // }
 
@@ -2309,17 +2327,67 @@ pub fn uppercase<'src>(
     one_of("ABCDEFGHIJKLMNOPQRSTUVWXYZ")
 }
 
+// non-control ASCII (32-255, excluding 127/DEL)
+fn non_control_char<'src>(
+) -> impl Parser<'src, &'src str, char, Err<'src>> {
+    any().filter(|c: &char| {
+        let code = *c as u32;
+        (code >= 0x20 && code < 0x7F) || code >= 0x80
+    }).labelled("Non-Control Character")
+}
+
+fn gah<'src>() -> impl Parser<'src, &'src str, (), Err<'src>> {
+    choice((
+        just(' ').ignored(),
+        newline(),
+    ))
+    .labelled("Space or NewLine")
+
+}
+
+// comments
+fn vul<'src>() -> impl Parser<'src, &'src str, (), Err<'src>> {
+    just("::")
+        .ignore_then(non_control_char().repeated())
+        .ignore_then(newline())
+        .ignored()
+        .labelled("Comments")
+}
+
+fn gaq<'src>() -> impl Parser<'src, &'src str, (), Err<'src>> {
+    choice((
+        newline().ignored(),
+
+        gah().ignore_then(
+                choice((gah().ignored(),
+                        vul(),
+                        ))
+        ),
+
+        vul(),
+    ))
+    .ignored()
+}
+
 pub fn gap<'src>(
 ) -> impl Parser<'src, &'src str, (), Err<'src>>
 {
-    regex(r"(?:(?:\s{2,}\n*|\n+|(?:\s*)?::[^\n\r]*(?:\r?\n)?))+")
+    gaq()
+    .then_ignore(
+        choice((
+            vul(),
+            gah().ignored(),
+        ))
+        .repeated()
+        .or_not()
+    )
     .ignored()
     .labelled("Gap")
 }
 
 pub fn list_term_hoon<'src>(
     hoon: impl ParserExt<'src, Hoon>,
-) -> impl Parser<'src, &'src str, Vec<(Term, Hoon)>, Err<'src>>
+) -> impl Parser<'src, &'src str, Vec<(String, Hoon)>, Err<'src>>
 {
     symbol()
     .then_ignore(gap())
@@ -2327,11 +2395,11 @@ pub fn list_term_hoon<'src>(
     .then_ignore(gap())
     .repeated()
     .at_least(1)
-    .collect::<Vec<(Term, Hoon)>>()
+    .collect::<Vec<(String, Hoon)>>()
 }
 
 pub fn list_names_wide<'src>(
-) -> impl Parser<'src, &'src str, Vec<Term>, Err<'src>>
+) -> impl Parser<'src, &'src str, Vec<String>, Err<'src>>
 {
     symbol()
     .separated_by(just(' '))
@@ -2345,11 +2413,11 @@ pub fn winglist<'src>(
 {
     let name =      //  Name or $
         just('$')
-            .to("%$".to_string())
+            .to("$".to_string())
             .or(symbol());
 
     let com =   //  ,
-        just(",")
+        just(',')
         .to(Limb::Axis(0));
 
     let ket_name =   //  ^^name or name
@@ -2366,21 +2434,21 @@ pub fn winglist<'src>(
             });
 
     let lus_number =   //  +10
-            just("+").ignore_then(regex(r"[0-9]+"))
+            just('+').ignore_then(regex(r"[0-9]+"))
                 .map(|n: &str| {
                     let num = n.parse::<u64>().unwrap();
                     Limb::Axis(num)}
                 );
 
     let pam_number =   //  &10
-            just("&").ignore_then((regex(r"[0-9]+")))
+            just('&').ignore_then((regex(r"[0-9]+")))
                 .map(|n: &str| {
                     let num = n.parse::<u64>().unwrap();
                     Limb::Axis(left_child(num))
                 });
 
     let bar_number =  //  |10
-           just("|").ignore_then(regex(r"[0-9]+"))
+           just('|').ignore_then(regex(r"[0-9]+"))
                 .map(|n: &str| {
                     let num = n.parse::<u64>().unwrap();
                     Limb::Axis(right_child(num))
@@ -2390,7 +2458,7 @@ pub fn winglist<'src>(
             just('.').to(Limb::Axis(1));
 
     let lus =  //  +
-        just("+").to(Limb::Axis(3));
+        just('+').to(Limb::Axis(3));
 
     let hep =  //  -
         just('-').to(Limb::Axis(2));
@@ -2472,8 +2540,668 @@ pub fn variable_name_and_type<'src>(
     choice((not_named, named, just_type))
 }
 
+// ++  si                                                  ::  signed integer
+pub fn syn_si(a: u128) -> bool {
+    end_u128(0, 1, a) == 0
+}
+
+pub fn abs_si(a: u128) -> u128 {
+    let rsh_res = rsh_u128(0, 1, a);
+    let end_res = end_u128(0, 1, a.clone());
+    end_res + rsh_res
+}
+
+pub fn old_si(a: u128) -> (bool, u128) {
+    (syn_si(a), abs_si(a))
+}
+pub fn new_si(sign: bool, mag: u128) -> u128 {
+    if mag == 0 { 0 } else if sign { mag << 1 } else { (mag << 1) - 1 }
+}
+fn sun_si(a: u128) -> u128 {
+    a << 1
+}
+
+pub fn sum_si(a: u128, b: u128) -> u128 {
+    let (c_sign, c_mag) = old_si(a);
+    let (d_sign, d_mag) = old_si(b);
+    match (c_sign, d_sign) {
+        (false, false) => new_si(false, c_mag.wrapping_add(d_mag)),
+        (false, true) => {
+            if c_mag >= d_mag { new_si(false, c_mag - d_mag) }
+            else { new_si(true, d_mag - c_mag) }
+        },
+        (true, false) => {
+            if c_mag >= d_mag { new_si(true, c_mag - d_mag) }
+            else { new_si(false, d_mag - c_mag) }
+        },
+        (true, true) => new_si(true, c_mag.wrapping_add(d_mag)),
+    }
+}
+
+pub fn dif_si(a: u128, b: u128) -> u128 {
+    let (b_sign, b_mag) = old_si(b);
+    let neg_b = new_si(!b_sign, b_mag);
+    sum_si(a, neg_b)
+}
+
+// swr: swap rounding direction for negative numbers
+pub fn swr(r: char) -> char {
+    match r {
+        'd' => 'u',
+        'u' => 'd',
+        _ => r,
+    }
+}
+
+// fli: flip sign of BinaryFloat
+pub fn fli(a: BinaryFloat) -> BinaryFloat {
+    match a {
+        BinaryFloat::Finite { sign, exp, mant } => BinaryFloat::Finite { sign: !sign, exp, mant },
+        BinaryFloat::Infinity { sign } => BinaryFloat::Infinity { sign: !sign },
+        BinaryFloat::NaN => BinaryFloat::NaN,
+    }
+}
+
+// zer: zero float node
+pub fn zer() -> BinaryFloat {
+    BinaryFloat::Finite {
+        sign: false,
+        exp: 0, // si-encoding of 0 is 0
+        mant: BigUint::from(0u8),
+    }
+}
+
+fn rau(e: u128, a: BigUint, t: bool, p: u128, v: u128, w: u128, r: char, d: char) -> BinaryFloat {
+    let mode = match r {
+        'z' | 'd' => LugMode::Floor,
+        'a' | 'u' => LugMode::Ceiling,
+        'n'       => LugMode::Nearest,
+        _         => LugMode::Nearest,
+    };
+
+    lug(mode, e, a, t, p, v, w, r, d)
+}
+
+pub fn cmp_si(a: u128, b: u128) -> u128 {
+    if a == b {
+        0
+    } else if syn_si(a) {
+        if syn_si(b) {
+            if a > b { 2 } else { 1 }
+        } else {
+            2
+        }
+    } else if syn_si(b) {
+        1
+    } else {
+        if a  >  b { 1 } else { 2 }
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+enum LugMode {
+    Floor,     // %fl
+    Ceiling,   // %ce
+    Smaller,   // %sm
+    Larger,    // %lg
+    Nearest,   // %ne  (ties to even)
+    NearestAway,
+    NearestTowards,
+}
+
+fn sub_or_panic(mut a: u128, b: u128) -> u128 {
+    a = a.checked_sub(b).expect("subtraction underflow");
+    a
+}
+
+fn sub_or_panic_big(a: &BigUint, b: &BigUint) -> BigUint {
+    if a < b {
+        panic!("subtraction underflow");
+    }
+    a - b
+}
+
+fn prc(p: u128) -> u128 {
+    assert!(p > 1, "precision should be >= 2");
+    p
+}
+
+fn lug(mode: LugMode, mut e: u128, mut a: BigUint, s: bool, p: u128, v: u128, w: u128, r: char, d: char) -> BinaryFloat {
+
+    use BinaryFloat::*;
+    use LugMode::*;
+
+    if a == BigUint::zero() { panic!("lug: mantissa zero"); }
+
+    let m = met(0, &Atom::Big(a.clone())) as u128;
+    let prc_res = prc(p);
+    assert!(s | (m > prc_res), "lug: stick bit is false or precision is invalid");
+
+    let max_p = if m > prc_res {
+        sub_or_panic(m as u128, prc_res)
+    } else {
+        0
+    };
+
+    let max_q = {
+        let abs_arg = if d == 'i' {
+            0
+        } else if cmp_si(e, v) == 1  {
+            dif_si(v, e)
+        } else {
+            0
+        };
+        abs_si(abs_arg)
+    };
+
+    let q = max_p.max(max_q);
+
+    let b = end_big(0, q as usize, &a).to_u128().expect("value too large for u128");
+
+    a = rsh(0, q as usize, &Atom::Big(a)).to_biguint();
+
+    e = sum_si(e, sun_si(q));
+
+    if a == BigUint::zero() {
+        assert!(d != 'i', "lug: d == %i");
+        return match mode {
+            Floor | Smaller => Finite { sign: true, exp: 0, mant: BigUint::zero() },
+            Ceiling | Larger => {
+                Finite { sign: true, exp: v, mant: BigUint::one() }
+            },
+            Nearest | NearestTowards => {
+                let half = bex(q.saturating_sub(1));
+                if s {
+                    if b <= half {
+                       return Finite { sign: true, exp: 0, mant: BigUint::zero() };
+                    }
+                    return Finite { sign: true, exp: v, mant: BigUint::one() };
+                }
+                if b < half {
+                    return Finite { sign: true, exp: 0, mant: BigUint::zero() };
+                }
+                return Finite { sign: true, exp: v, mant: BigUint::one() };
+            },
+            NearestAway => {
+                let half = bex(q.saturating_sub(1));
+                if b < half {
+                    return Finite { sign: true, exp: 0, mant: BigUint::zero() };
+                }
+                return Finite { sign: true, exp: v, mant: BigUint::one() };
+            }
+        };
+    }
+
+    (e, a) = xpd(e, a, d, p, v);
+
+    match mode {
+        Floor => { /* no change */ }
+        Larger => a = a + BigUint::one(),
+        Smaller => {
+            if b == 0 && s {
+                if e == v && d != 'i' {
+                    a = sub_or_panic_big(&a, &BigUint::one());
+                } else {
+                    let y = sub_or_panic_big(&(a.clone() * BigUint::from(2 as u128)), &BigUint::one());
+                    if met_big(0, &y) as u128 <= prc_res {
+                        a = y;
+                        e = dif_si(e, 2);
+                    } else {
+                        a = sub_or_panic_big(&a, &BigUint::one());
+                    }
+                }
+            }
+        },
+        Ceiling => { if !(b == 0 && !s) { a = a + BigUint::one(); } },
+        Nearest => {
+            if b != 0 {
+                let y = bex(sub_or_panic(q, 1));
+                if b == y && s {
+                    if dis_big(&a, &BigUint::one()) != BigUint::zero() {
+                        a = a + BigUint::one();
+                    }
+                } else if b < y {
+                } else {
+                    a = a + BigUint::one();
+                }
+            }
+        }
+        NearestAway => {
+            if b != 0 {
+                let y = bex(sub_or_panic(q, 1));
+                if !(b < y) {
+                    a = a + BigUint::one();
+                }
+            }
+        }
+        NearestTowards => {
+            if b != 0 {
+                let y = bex(sub_or_panic(q, 1));
+                if b == y {
+                    if !s {
+                        a = a + BigUint::one();
+                    }
+                }
+                if !(b < y) {
+                    a = a + BigUint::one();
+                }
+            }
+        }
+    };
+
+    (e, a) = if (met_big(0, &a.clone()) as u128) != (prc_res + 1) {
+        (e, a)
+    } else {
+        a = rsh(0, 1, &Atom::Big(a)).to_u128().expect("lug: cast failled").into();
+        e = sum_si(e, 2);
+        (e, a)
+    };
+
+    if a == BigUint::zero() {
+        return Finite { sign: true, exp: 0, mant: BigUint::zero() };
+    }
+
+    let res = if d == 'i' {
+        Finite { sign: true, exp: e, mant: BigUint::from(a) }
+    } else if cmp_si(emx(v, w), e) == 1 {
+        Infinity { sign: true }
+    } else {
+        Finite { sign: true, exp: e, mant: BigUint::from(a) }
+    };
+
+    if !(d == 'f') {
+        return res;
+    }
+
+    match res {
+        Finite { sign, exp, ref mant } => {
+            if  met_big(0, &mant.clone()) as u128 == prc(p) {
+               return Finite { sign: true, exp: 0, mant: BigUint::zero() };
+            }
+            res
+        },
+        _ => res,
+    }
+}
+
+fn emx(v: u128, w: u128) -> u128 {
+    sum_si(v, sun_si(w))
+}
+
+fn rou(e: u128, a: BigUint, p: u128, v: u128, w: u128, r: char, d: char) -> BinaryFloat {
+    rau(e, a, true, p, v, w, r, d)
+}
+
+pub fn binaryfloat_mul_internal(a_e: u128, a_a: BigUint, b_e: u128, b_a: BigUint, p: u128, v: u128, w: u128, r: char, d: char) -> BinaryFloat {
+    let e = sum_si(a_e, b_e);
+    let a = a_a * b_a;
+    rou(e, a, p, v, w, r, d)
+}
+
+
+pub fn binaryfloat_div_internal(
+    a_e: u128,
+    a_a: BigUint,
+    b_e: u128,
+    b_a: BigUint,
+    p: u128,
+    v_min: u128,
+    w: u128,
+    r: char,
+    d: char,
+) -> BinaryFloat {
+    let ma = met_big(0, &a_a) as u128;
+    let mb = met_big(0, &b_a) as u128;
+
+    let rhs = sun_si(mb + prc(p) + 1);
+    let v = dif_si(sun_si(ma), rhs);
+
+    let (a_e_shifted, a_a_shifted) = if syn_si(v) {
+        (a_e, a_a)
+    } else {
+        let shift = abs_si(v) as usize;
+        let new_e = sum_si(v, a_e);
+        let new_a = lsh(0, shift, &Atom::Big(a_a.clone())).to_biguint();
+        (new_e, new_a)
+    };
+
+    let j = dif_si(a_e_shifted, b_e);
+    let (quot, rem) = dvr_big(&a_a_shifted, &b_a);
+
+    rau(j, quot, rem.is_zero(), p, v_min, w, r, d)
+}
+
+fn dvr_big(a: &BigUint, b: &BigUint) -> (BigUint, BigUint) {
+    let quot = a / b;
+    let rem  = a % b;
+    (quot, rem)
+}
+
+pub fn bex(a: u128) -> u128 {
+    if a == 0 {
+        1
+    } else {
+        assert!(a < 128, "bex: exponent too large for u128");
+        1u128 << a
+    }
+}
+
+fn xpd(e: u128, a: BigUint, d: char, p: u128, v: u128) -> (u128, BigUint) {
+    let ma = met_big(0, &a.clone()) as u128;
+
+    if ma >= prc(p) {
+        return (e, a);
+    }
+
+    let shift = if d == 'i' {
+        sub_or_panic(prc(p), ma as u128)
+    } else {
+        let w = dif_si(e, v);
+        let q = if syn_si(w) { abs_si(w) } else { 0 };
+        let needed = sub_or_panic(prc(p), ma as u128);
+        q.min(needed)
+    };
+
+    let e_new = dif_si(e, sun_si(shift));
+    let a_new = lsh_big(0, shift as usize, &a);
+
+    (e_new, a_new)
+}
+
+pub fn binaryfloat_mul(a: BinaryFloat, b: BinaryFloat, p: u128, v: u128, w: u128, mut r: char, d: char) -> BinaryFloat {
+    use BinaryFloat::*;
+
+    if matches!(a, NaN) || matches!(b, NaN) {
+        return NaN;
+    }
+
+    if let Infinity { sign: sa } = a {
+        if let Infinity { sign: sb } = b {
+            return Infinity { sign: sa == sb };
+        }
+
+        let b_mant = if let Finite { ref mant, .. } = b { mant.clone() } else { BigUint::zero() };
+        if b_mant == BigUint::zero() {
+            return NaN;
+        }
+        return Infinity { sign: sa == b.sign() };
+    }
+
+    if let Infinity { sign: sb } = b {
+        let a_mant = if let Finite { ref mant, .. } = a { mant.clone() } else { BigUint::zero() };
+        if a_mant == BigUint::zero() {
+            return NaN;
+        }
+        return Infinity { sign: a.sign() == sb };
+    }
+
+    let (sa, ea, ma) = if let Finite { sign, exp, mant } = a { (sign, exp, mant) } else { (false, 0, BigUint::zero()) };
+    let (sb, eb, mb) = if let Finite { sign, exp, mant } = b { (sign, exp, mant) } else { (false, 0, BigUint::zero()) };
+
+    if ma == BigUint::zero() || mb == BigUint::zero() {
+        return Finite {
+            sign: sa == sb, // =(s.a s.b)
+            exp: 0, // zer = [e=--0 a=0]
+            mant:  BigUint::zero(),
+        };
+    }
+
+    if ma == BigUint::zero() || mb == BigUint::zero() {
+        return binaryfloat_mul_internal(ea, ma, eb, mb, p, v, w, r, d);
+    }
+    r = swr(r);
+    fli(binaryfloat_mul_internal(ea, ma, eb, mb, p, v, w, r, d))
+}
+
+pub fn binaryfloat_div(a: BinaryFloat, b: BinaryFloat, p: u128, v: u128, w: u128, mut r: char, d: char) -> BinaryFloat {
+    use BinaryFloat::*;
+
+    if matches!(a, NaN) || matches!(b, NaN) {
+        return NaN;
+    }
+
+    if let Infinity { sign: sa } = a {
+        if let Infinity { sign: sb } = b {
+            return NaN;
+        }
+        return Infinity { sign: sa == b.sign() };
+    }
+
+    if let Infinity { sign: sb } = b {
+        return Finite {
+            sign: a.sign() == sb,
+            exp: 0,     // zer = [e=--0 a=0]
+            mant: BigUint::zero(),
+        };
+    }
+
+    let (sa, ea, ma) = if let Finite { sign, exp, mant } = a { (sign, exp, mant) } else { (false, 0, BigUint::zero()) };
+    let (sb, eb, mb) = if let Finite { sign, exp, mant } = b { (sign, exp, mant) } else { (false, 0, BigUint::zero()) };
+
+    if ma == BigUint::zero() {
+        if mb == BigUint::zero() {
+            return NaN;
+        }
+        return Finite {
+            sign: sa == sb,
+            exp: 0,
+            mant: BigUint::zero(),
+        };
+    }
+
+    if mb == BigUint::zero() {
+        return Infinity { sign: sa == sb };
+    }
+
+    if sa == sb {
+        return binaryfloat_div_internal(ea, ma, eb, mb, p, v, w, r, d);
+    }
+    r = swr(r);
+    fli(binaryfloat_div_internal(ea, ma, eb, mb, p, v, w, r, d))
+}
+
+pub fn pow(base: u128, exp: u128) -> BigUint {
+    if exp == 0 {
+        return BigUint::from(1u8);
+    }
+
+    let mut result = BigUint::from(1u8);
+    let mut base = BigUint::from(base);
+    let mut exp = exp;
+
+    while exp > 0 {
+        if exp & 1 == 1 {
+            result *= &base;
+        }
+        base *= base.clone();
+        exp >>= 1;
+    }
+
+    result
+}
+
+pub fn fil(a: u32, b: u32, c: u128) -> Atom {
+    if b == 0 {
+        return Atom::Small(0);
+    }
+
+    let bloq_bits = 1u32 << a; // 2^a bits per block
+    let mask = if bloq_bits >= 128 {
+        u128::MAX
+    } else {
+        (1u128 << bloq_bits) - 1
+    };
+    let c_masked = c & mask;
+
+    if bloq_bits as u64 * b as u64 <= 128 && c_masked != 0 {
+        let mut result = 0u128;
+        for i in 0..b {
+            let shift = (b - 1 - i) as u32 * bloq_bits;
+            if shift >= 128 { break; }
+            result |= c_masked << shift;
+        }
+        Atom::Small(result)
+    } else {
+        let c_big = BigUint::from(c_masked);
+        let mut result = BigUint::from(0u8);
+        for i in 0..b {
+            let shift = (b - 1 - i) as usize * bloq_bits as usize;
+            result |= &c_big << shift;
+        }
+        Atom::Big(result)
+    }
+}
+
+pub fn bif(a: BinaryFloat, w: u128, p: u128, b: u128, r: char) -> Atom {
+    match a {
+        BinaryFloat::Infinity { sign } => {
+            let fill_val = fil(0, w as u32, 1);
+            let q = lsh(0, p as usize, &fill_val);
+            if sign {
+                q
+            } else {
+                let q_u128 = q.to_u128()
+                            .expect("float bigger than 128 bits");
+                Atom::Small(q_u128.wrapping_add(bex(w + p)))
+            }
+        }
+
+        BinaryFloat::NaN => {
+            let fill_val = fil(0, (w + 1) as u32, 1);
+            let shift = sub_or_panic(p, 1) as usize;
+            if shift >= 128 { panic!("bif: shift too large"); }
+            lsh(0, shift, &fill_val)
+        }
+
+        BinaryFloat::Finite { sign, exp: e, mant: a_a } => {
+            if a_a.is_zero() {
+                return if sign {
+                    Atom::Small(0)
+                } else {
+                    Atom::Small(bex(w + p))
+                };
+            }
+
+            let ma = met_big(0, &a_a) as u128;
+
+            if ma != p + 1 {
+                assert!(e == dif_si(dif_si(2, b), sun_si(p)), "bif: subnormal exponent != me");
+                assert!(ma < p + 1, "bif: subnormal mantissa too large");
+
+                let a_small = if a_a.bits() > 128 {
+                    panic!("bif: mantissa too large for Small");
+                } else {
+                    a_a.to_u128().unwrap()
+                };
+
+                return if sign {
+                    Atom::Small(a_small)
+                } else {
+                    Atom::Small(a_small.wrapping_add(bex(w + p)))
+                };
+            }
+
+            let diff = dif_si(e, dif_si(dif_si(2, b), sun_si(p)));
+            let q = sum_si(diff, 2);
+
+            let abs_q = abs_si(q);
+            let shifted = (abs_q as u128) << p;
+            let a_small = if a_a.bits() > 128 {
+                panic!("bif: mantissa too large");
+            } else {
+                a_a.to_u128().unwrap()
+            };
+            let low_p = a_small & ((1u128 << p) - 1);
+            let r = shifted.wrapping_add(low_p);
+
+            if sign {
+                Atom::Small(r)
+            } else {
+                Atom::Small(r.wrapping_add(bex(w + p)))
+            }
+        }
+    }
+}
+
+pub fn grd_fl(a: DecimalFloat, b: u128, p: u128, w: u128, mut r: char) -> BinaryFloat {
+
+    //  +pa:ff arm will set these configs before calling +grd:fl
+    let v = dif_si(dif_si(2, b), sun_si(p));
+    let p = p + 1;
+    let w = bex(w) - 3;
+    let d = 'd';
+
+    match a {
+        DecimalFloat::NaN => BinaryFloat::NaN,
+        DecimalFloat::Infinity { sign } => BinaryFloat::Infinity { sign },
+        DecimalFloat::Finite { sign, exp: e, mant } => {
+            r = 'n';
+            let q = abs_si(e);
+            let pow5 = pow(5, q);
+
+            let left = BinaryFloat::Finite {
+                sign,
+                exp: 0,
+                mant: BigUint::from(mant),
+            };
+            if syn_si(e) {
+                let right = BinaryFloat::Finite {
+                    sign: true,
+                    exp: e,
+                    mant: pow5,
+                };
+                binaryfloat_mul(left, right, p, v, w, r, d)
+            } else {
+                let divisor = BinaryFloat::Finite {
+                    sign: true,
+                    exp: sun_si(q),
+                    mant: pow5,
+                };
+                binaryfloat_div(left.clone(), divisor.clone(), p, v, w, r, d)
+            }
+        }
+    }
+}
+
+//  rylh -> grd:rh -> grd:ff -> grd:fl
+pub fn rylh(a: DecimalFloat) -> Atom {
+    let w = 5;
+    let p = 10;
+    let b = 30; // --15
+    let r = 'z';
+    let grd_res = grd_fl(a, b,  p, w, r);
+    bif(grd_res, w, p, b, r)
+}
+
+pub fn rylq(a: DecimalFloat) -> Atom {
+    let w = 15;
+    let p = 112;
+    let b = 32766; // --16.383
+    let r = 'z';
+    let grd_res = grd_fl(a, b,  p, w, r);
+    bif(grd_res, w, p, b, r)
+}
+
+pub fn ryld(a: DecimalFloat) -> Atom {
+    let w = 11;
+    let p = 52;
+    let b = 2046; // --1.023
+    let r = 'z';
+    let grd_res = grd_fl(a, b,  p, w, r);
+    bif(grd_res, w, p, b, r)
+}
+
+pub fn ryls(a: DecimalFloat) -> Atom {
+    let w = 8;
+    let p = 23;
+    let b = 254; // --1.023
+    let r = 'z';
+    let grd_res = grd_fl(a, b,  p, w, r);
+    bif(grd_res, w, p, b, r)
+}
+
 pub fn float<'src>(
-) -> impl Parser<'src, &'src str, (String, String), Err<'src>>
+) -> impl Parser<'src, &'src str, (String, Atom), Err<'src>>
 {
     let floats =
             just('-').or_not()
@@ -2481,23 +3209,43 @@ pub fn float<'src>(
             .then(choice((
                     just('.')
                         .ignore_then(leading_zero_decimal_without_dots())
-                        .map(|frac| format!(".{}", frac)),
-                    empty().to("".to_string()))))
+                        .map(|frac| {
+                            (frac.len(),
+                            frac.parse::<BigUint>().expect("float: invalid fraction"))
+                        }),
+                    empty().to((0, BigUint::zero())))))
             .then(choice((
                     just('e')
                         .ignore_then(just('-').or_not())
                         .then(decimal_without_dots())
-                        .map(|(maybe_hep, expo)| format!("e{}", expo)),
-                    empty().to("".to_string()))))
-            .map(|(((_maybe_hep, p), mant), expo)| format!("{}{}{}", p, mant, expo));
+                        .map(|(maybe_hep, expo)| {
+                            (!maybe_hep.is_some(), expo.parse::<u128>().expect("float: invalid exponent"))
+                        }),
+                    empty().to((true, 0)))))
+            .map(|(((maybe_hep, p), (len_mant, mant)), (sign_expo, expo))| {
+                let term1 = new_si(sign_expo, expo);
+                let term2 = sun_si(len_mant as u128);
+                let h = dif_si(term1, term2);
+                let po = BigUint::from(10u32).pow(len_mant.try_into().unwrap());
+                let integer_part = p.parse::<BigUint>().expect("float: invalid decimal");
+                let a = integer_part * po + mant;
+                DecimalFloat::Finite { sign: !maybe_hep.is_some(), exp: h, mant: a }
+            });
+
+    let inf =  just('-').or_not()   //  -inf or inf
+                    .then(just("inf"))
+                    .map(|(maybe_hep, inf)| DecimalFloat::Infinity{ sign: !maybe_hep.is_some() })
+                    .boxed();
+
+    let nan = just("nan")
+                .to(DecimalFloat::NaN)
+                .boxed();  //  nan
 
     let royl_rn
-        = choice((
-            floats,  ///  1.10 or 1e10
-                  just('-').or_not()   //  -inf or inf
-                    .then(just("inf"))
-                    .map(|(_maybe_hep, inf)| inf.to_string()),
-                  just("nan").map(str::to_owned),  //  nan
+             =  choice((
+                  floats,  ///  1.10 or 1e10
+                  inf,
+                  nan,
                 )).boxed();
 
     let rh = just("~~").ignore_then(royl_rn.clone());
@@ -2506,10 +3254,10 @@ pub fn float<'src>(
     let rs = royl_rn;
 
     choice((
-        rh.map(|s| ("%rh".to_string(), s)),
-        rq.map(|s| ("%rh".to_string(), s)),
-        rd.map(|s| ("%rd".to_string(), s)),
-        rs.map(|s| ("%rs".to_string(), s)),
+        rh.map(|dn| ("rh".to_string(), rylh(dn))),
+        rq.map(|dn| ("rq".to_string(), rylq(dn))),
+        rd.map(|dn| ("rd".to_string(), ryld(dn))),
+        rs.map(|dn| ("rs".to_string(), ryls(dn))),
     )).labelled("Float")
 }
 
@@ -2639,13 +3387,16 @@ pub fn tiki_tall<'src>(
 pub fn chapters<'src>(
     hoon: impl ParserExt<'src, Hoon>,
     spec: impl ParserExt<'src, Spec>,
-) -> impl Parser<'src, &'src str, HashMap<Term, Tome>, Err<'src>> {
+) -> impl Parser<'src, &'src str, HashMap<String, Tome>, Err<'src>> {
     let luslus = just("++")
             .ignore_then(gap())
-            .ignore_then(just('$').to("%$".to_string()).or(symbol()))
+            .ignore_then(just('$').to("$".to_string()).or(symbol()))
             .then_ignore(gap())
             .then(hoon.clone())
-            .map(|(name, hoon)| (name, hoon));
+            .map(|(name, hoon)| {
+                // println!("parsing {}", name);
+                (name, hoon)
+            });
 
     let lusbuc =  just("+$")
             .ignore_then(gap())
@@ -2699,12 +3450,12 @@ pub fn term<'src>(
 ) -> impl Parser<'src, &'src str, String, Err<'src>>
 {
     just("%")
-      .ignore_then(symbol().map(|s| format!("%{}", s)))
+      .ignore_then(symbol())
 }
 
 pub fn jet_hooks<'src>(
     hoon:        impl ParserExt<'src, Hoon>,
-) -> impl Parser<'src, &'src str, Vec<(Term, Hoon)>, Err<'src>>
+) -> impl Parser<'src, &'src str, Vec<(String, Hoon)>, Err<'src>>
 {
     just('~').to(Vec::new())
         .or(
@@ -2716,7 +3467,7 @@ pub fn jet_hooks<'src>(
                         .then(hoon.clone())
                         .separated_by(gap())
                         .at_least(1)
-                        .collect::<Vec<(Term, Hoon)>>()
+                        .collect::<Vec<(String, Hoon)>>()
                         )
             .then_ignore(gap())
             .then_ignore(just("=="))
@@ -2733,7 +3484,8 @@ pub fn jet_signature<'src>(
                 .ignore_then(symbol())
                 .then_ignore(just('.'))
                 .then(decimal_number())
-                .map(|(s, n)| Chum::StdKel(s, n.parse().expect("failed to parse version number")));
+                .map(|(s, n)| Chum::StdKel(s, decimal_to_atom(n)));
+
     // TODO: add other cases here
     choice((
         stdkel,
@@ -2772,32 +3524,57 @@ pub fn soil<'src>(
                 .collect::<Vec<_>>()
                 .delimited_by(just('{'), just('}'))
                 .map(|h| Woof::Hoon(Hoon::ColTar(h))).boxed();
+
+     // non-control 32-256, excluding DEL, {,  ", \
+    let wide_char = any().filter(|c: &char| {
+        let x = *c as u32;
+        x >= 0x20 && x <= 0x7E && *c != '{' && *c != '"' && *c != '\\'
+            || x >= 0x80 && x <= 0xFF
+    });
+
     //
     //  "foo"
     //
     let wide_tape =
         choice((
-            // non-control 32-256, excluding DEL, {,  ", \
-            //
-            regex(r#"[\x20-\x21\x23-\x5B\x5D-\x7A\x7C\x7E\x80-\xFF]"#)
-                .map(|s: &str| Woof::Atom(s.to_string())),
             //
             //  escaped \, ", {, hex
             //
             just("\\")
                 .ignore_then(
-                    choice((just("\\"),
-                            just("\""),
-                            just("{"),
-                            regex(r"[0-9a-f]{2}"))))
-                .map(|s: &str| Woof::Atom(s.to_string())),
+                    choice((
+                            just("\\").to('\\'),
+                            just("\"").to('\"'),
+                            just("{").to('{'),
+                            // \HH hex escape
+                            any().filter(|c: &char| c.is_ascii_hexdigit())
+                                .then(any().filter(|c: &char| c.is_ascii_hexdigit()))
+                                .map(|(a, b)| {
+                                    let hx = format!("{}{}", a, b);
+                                    let byte = u8::from_str_radix(&hx, 16).unwrap();
+                                    byte as char
+                                }),
+                            ))
+                )
+                .map(|c: char| Woof::Atom(Atom::Small(c as u128))),
             //
             //  {hoon}
             //
             sump.clone(),
+            ///
+            wide_char
+                .map(|c| Woof::Atom(Atom::Small(c as u128))),
         )).repeated()
-        .collect::<Vec<_>>()
-        .delimited_by(just("\""), just("\""));
+        .collect::<Vec<Woof>>()
+        .delimited_by(just("\""), just("\""))
+        .labelled("Tape");
+
+    // non-control 32-256, excluding DEL, {,  \
+    let tall_char = any().filter(|c: &char| {
+        let x = *c as u32;
+        x >= 0x20 && x <= 0x7E && *c != '{' && *c != '\\'
+            || x >= 0x80 && x <= 0xFF
+    });
 
     //  """
     //  foo
@@ -2805,36 +3582,44 @@ pub fn soil<'src>(
     let tall_tape =
             choice((
                 //
-                // non-control excluding DEL, {,  \
-                //
-                regex(r#"[\x20-\x7A\x7C\x7E\x80-\xFF]"#)
-                .map(|s: &str| Woof::Atom(s.to_string())),
-                //
                 //  escaped \, {, hex
                 //
                 just("\\")
-                    .ignore_then(
-                        choice((just("\\"),
-                                just("{"),
-                                regex(r"[0-9a-f]{2}"))))
-                    .map(|s: &str| Woof::Atom(s.to_string())),
+                .ignore_then(
+                    choice((just("\\").to('\\'),
+                            just("{").to('{'),
+                            // \HH hex escape
+                            any().filter(|c: &char| c.is_ascii_hexdigit())
+                                .then(any().filter(|c: &char| c.is_ascii_hexdigit()))
+                                .map(|(a, b)| {
+                                    let hx = format!("{}{}", a, b);
+                                    let byte = u8::from_str_radix(&hx, 16).unwrap();
+                                    byte as char
+                                })
+                            ))
+                )
+                .map(|c: char| Woof::Atom(Atom::Small(c as u128))),
             //
             // linebreak
             //
                 newline()
                 .ignore_then(just("\"\"\"").not())
-                .to(Woof::Atom('\n'.to_string())),
+                .to(Woof::Atom(Atom::Small('\n' as u128))),
             //
             //  {hoon}
             //
                 sump,
+            //
+                tall_char
+                .map(|c| Woof::Atom(Atom::Small(c as u128))),
             )).repeated()
             .at_least(1)
-            .collect::<Vec<_>>()
+            .collect::<Vec<Woof>>()
             .delimited_by(just("\"\"\"").ignore_then(newline()),
-                          newline().then_ignore(just("\"\"\"")));
+                          newline().then_ignore(just("\"\"\"")))
+            .labelled("Tape");
 
-    choice((wide_tape, tall_tape))
+    choice((tall_tape, wide_tape))
 }
 
 pub fn tape<'src>(
@@ -2862,6 +3647,7 @@ pub fn aura_text<'src>(
         maybe_name.unwrap_or("~.".to_string())
     })
 }
+
 pub fn aura_hoon<'src>(
 ) -> impl Parser<'src, &'src str, Hoon, Err<'src>>
 {
@@ -2874,7 +3660,7 @@ pub fn loop_spec<'src>(
 {
     just('/')
     .ignore_then(
-        choice((just('$').to("%$".to_string()),
+        choice((just('$').to("$".to_string()),
             symbol(),
         )))
     .map(|s| Spec::Loop(s))
@@ -2923,27 +3709,38 @@ pub fn tell<'src>(
         .map(|list| Hoon::Tell(list))
 }
 
+
+pub fn yell<'src>(
+    hoon_wide:   impl ParserExt<'src, Hoon>,
+) -> impl Parser<'src, &'src str, Hoon, Err<'src>>
+{
+    just(">")
+        .ignore_then(list_hoon_wide(hoon_wide.clone()))
+        .then_ignore(just("<"))
+        .map(|list| Hoon::Yell(list))
+}
+
 pub fn constant<'src>(
-) -> impl Parser<'src, &'src str, (String, String), Err<'src>>
+) -> impl Parser<'src, &'src str, (String, Atom), Err<'src>>
 {
     let buc =      // %$
         just('$')
-        .to(("%tas".to_string(), "%$".to_string()));
+        .to(("tas".to_string(), Atom::Small(0)));
 
     let cord =      // %'foo'
         cord()
-        .map(|s| ("%t".to_string(), s));
+        .map(|s| ("t".to_string(), s));
 
     let coin =      // %123, %~m5, etc.
         nuck();
 
     let no =
         just('|')
-        .to(("%f".to_string(), "1".to_string()));
+        .to(("f".to_string(), Atom::Small(1)));
 
     let yes =
         just('&')
-        .to(("%f".to_string(), "0".to_string()));
+        .to(("f".to_string(), Atom::Small(0)));
 
     just('%')
     .ignore_then(
@@ -2957,25 +3754,63 @@ pub fn constant<'src>(
 }
 
 pub fn cord<'src>(
-) -> impl Parser<'src, &'src str, String, Err<'src>>
+) -> impl Parser<'src, &'src str, Atom, Err<'src>>
 {
-    let gon = just("\\")
-                .ignore_then(gap())
-                .ignore_then(just("/"));
+    //  \\, \' and \AA were A is a hex digit
+    let escape = just('\\')
+        .ignore_then(
+            choice((
+                just('\\').to('\\'),
+                just('\'').to('\''),
+                // \HH hex escape
+                any().filter(|c: &char| c.is_ascii_hexdigit())
+                    .then(any().filter(|c: &char| c.is_ascii_hexdigit()))
+                    .map(|(a, b)| {
+                        let hx = format!("{}{}", a, b);
+                        let byte = u8::from_str_radix(&hx, 16).unwrap();
+                        byte as char
+                    }),
+            ))
+        );
 
-    let char_in_cord =
-    regex(r"(?:(?:\\(?:\\|'|[0-9A-Fa-f]{2}))|[^\x00-\x1F\x7F'\\])+");
+    //  chars from 32-256 (excluding DEL, ', \)
+    let raw_char = any().filter(|c: &char| {
+        let x = *c as u32;
 
-    let single_quoted =  char_in_cord
-                        .separated_by(gon)
-                        .at_least(1)
-                        .collect::<Vec<_>>()
-                        .delimited_by(just("\'"), just("\'"))
-                        .map(|chars| chars.concat());
+        (0x20..=0x7E).contains(&x)
+            && x != 0x27   // '
+            && x != 0x5C   // '\'
+        ||
+        (0x80..=0xFF).contains(&x)
+    });
+
+    let gon = just("\\")  // multiline separator
+            .ignore_then(gap())
+            .ignore_then(just("/"))
+            .ignored()
+            .labelled("Cord Multiline Separator");
+
+    let char_in_singled_quoted = choice((escape,
+                                         raw_char,
+                                        )).labelled("Cord Character");
+
+    let single_quoted =  char_in_singled_quoted.then_ignore(gon.or_not())
+                        .repeated()
+                        .collect::<Vec<char>>()
+                        .delimited_by(just("'"), just("'"))
+                        .map(cord_chars_to_atom);
+
+    let triple_quoted = non_control_char()
+                        .repeated()
+                        .collect::<Vec<char>>()
+                        .delimited_by(just("'''").ignore_then(gap()),
+                                    newline().ignore_then(just("'''")))
+                        .map(cord_chars_to_atom);
+
     choice((
+        triple_quoted,
         single_quoted,
-        // triple_quoted,
-    ))
+    )).labelled("Cord")
 }
 
 pub fn increment<'src>(
@@ -3008,6 +3843,182 @@ pub fn function_call<'src>(
     .map(|(func, args)| Hoon::CenCol(Box::new(func), args))
 }
 
+const YEAR_OFFSET: u64 = 292_277_024_400;
+
+fn yelp(yer: u64) -> bool {
+    (yer % 4 == 0) && ((yer % 100 != 0) || (yer % 400 == 0))
+}
+
+// Constants from ++yo
+const CETY: u64 = 36_524;   // days in 100 years (non-leap century)
+const DAY: u64 = 86_400;    // seconds/day
+const ERA: u64 = 146_097;   // days in 400 years
+const HOR: u64 = 3_600;     // seconds/hour
+const MIT: u64 = 60;        // seconds/minute
+const MOH: [u64; 12] = [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31]; // normal
+const MOY: [u64; 12] = [31, 29, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31]; // leap
+
+// ++yawn: days since "Jesus" (proleptic Gregorian)
+fn yawn(mut yer: u64, mut mot: u64, mut day: u64) -> u64 {
+    // => .(mot (dec mot), day (dec day))
+    mot = mot.saturating_sub(1);
+    day = day.saturating_sub(1);
+
+    let cah = if yelp(yer) { &MOY } else { &MOH };
+    for i in 0..mot as usize {
+        day += cah[i];
+    }
+
+    loop {
+        if yer % 4 != 0 {
+            if yer == 0 { break; }
+            yer -= 1;
+            day += if yelp(yer) { 366 } else { 365 };
+            continue;
+        }
+        if yer % 100 != 0 {
+            if yer < 4 { break; }
+            yer -= 4;
+            day += if yelp(yer) { 1_461 } else { 1_460 };
+            continue;
+        }
+        if yer % 400 != 0 {
+            if yer < 100 { break; }
+            yer -= 100;
+            day += if yelp(yer) { 36_525 } else { 36_524 };
+            continue;
+        }
+        // divisible by 400
+        day += (yer / 400) * (1 + 4 * CETY); // 1 + 4*36524 = 146097 = ERA
+        break;
+    }
+    day
+}
+
+pub fn apply_sign(a: bool, b: Atom) -> Atom {
+    match b {
+        Atom::Small(n) => {
+            let out = if a {
+                2 * n
+            } else if n == 0 {
+                0
+            } else {
+                2 * (n - 1) + 1
+            };
+            Atom::Small(out)
+        }
+        Atom::Big(n) => {
+            let out = if a {
+                &n << 1
+            } else if n.is_zero() {
+                num_bigint::BigUint::from(0u32)
+            } else {
+                ((&n - 1u32) << 1) + 1u32
+            };
+            Atom::Big(out)
+        }
+    }
+}
+
+//  @ta, @tas to @
+pub fn string_to_atom(s: String) -> Atom {
+    let vec_u128: Vec<u128> = s.chars().map(|c| c as u128).collect();
+
+    rap(3, &vec_u128)
+}
+
+//  @ud to @
+pub fn decimal_to_atom(s: String) -> Atom {
+    Atom::Small(s.parse::<u128>().expect("decimal_to_atom failed"))
+}
+
+//  @ux to @
+pub fn hex_to_atom(s: String) -> Atom {
+    let clean = s.strip_prefix("0x").unwrap_or(&s);
+
+    if clean.len() <= 32 {
+        if let Ok(n) = u128::from_str_radix(clean, 16) {
+            return Atom::Small(n);
+        }
+    }
+
+    let big = BigUint::parse_bytes(clean.as_bytes(), 16)
+        .expect("invalid hex in big atom");
+
+    Atom::Big(big)
+}
+
+//  @ub to @
+pub fn binary_to_atom(s: String) -> Atom {
+    Atom::Small(u128::from_str_radix(&s, 2).expect("binary_to_atom failed"))
+}
+
+//  @t to @
+pub fn cord_chars_to_atom(chars: Vec<char>) -> Atom {
+
+    let mut atom = BigUint::zero();
+    let mut power = BigUint::from(1u32);
+    let base = BigUint::from(256u32);
+
+    for &c in &chars {
+        let byte = BigUint::from(c as u32 & 0xFF);
+        atom += &byte * &power;
+        power *= &base;
+    }
+
+    Atom::Big(atom)
+
+}
+
+const ALPH64: &str =
+    "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ-~";
+
+//  @uw to @
+pub fn base64_to_atom(s: String) -> Atom {
+    let mut n: u128 = 0;
+
+    for ch in s.chars() {
+        let v = match ALPH64.find(ch) {
+            Some(i) => i as u128,
+            None => panic!("invalid digit '{ch}' in base64"),
+        };
+
+        n = n
+            .checked_mul(64)
+            .expect("value exceeds u128 range (mul)");
+
+        n = n
+            .checked_add(v)
+            .expect("value exceeds u128 range (add)");
+    }
+
+    Atom::Small(n)
+}
+
+const ALPH32: &str = "0123456789abcdefghijklmnopqrstuv";
+
+//  @uv to @
+pub fn base32_to_atom(s: String) -> Atom {
+    let mut n: u128 = 0;
+
+    for ch in s.chars() {
+        let v = match ALPH32.find(ch) {
+            Some(i) => i as u128,
+            None => panic!("invalid digit '{ch}' in base32"),
+        };
+
+        n = n
+            .checked_mul(32)
+            .expect("value exceeds u128 range (mul)");
+
+        n = n
+            .checked_add(v)
+            .expect("value exceeds u128 range (add)");
+    }
+
+    Atom::Small(n)
+}
+
 ///  Alphanumeric with hyphens
 ///      Start with a lowercase letter
 ///      Followed by zero or more: lowercase letter, digit, or hyphen
@@ -3018,20 +4029,412 @@ pub fn symbol<'src>(
     .labelled("Term")
 }
 
+const BTC_BASE58: &str = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz";
+
+fn build_yek() -> [u8; 256] {
+    let mut yek = [0xFFu8; 256];
+    for (i, ch) in BTC_BASE58.chars().enumerate() {
+        let idx = ch as u8 as usize;
+        if idx < 256 {
+            yek[idx] = i as u8;
+        }
+    }
+    yek
+}
+
+fn cha_fa(yek: &[u8; 256], ch: char) -> Option<u8> {
+    let idx = ch as u32;
+    if idx > 255 { return None; }
+    let val = yek[idx as usize];
+    if val == 0xFF { None } else { Some(val) }
+}
+
+fn bass_58(digits: &[u8]) -> BigUint {
+    digits.iter().fold(BigUint::from(0u32), |acc, &d| {
+        &acc * 58u32 + d as u32
+    })
+}
+
+fn tok(a: &Atom) -> Atom {
+    let b = pad(&a.to_biguint());
+
+    let swapped = swp(3, a);
+
+    let padded = lsh(3, b, &swapped);
+
+    let len = b + met(3, a);
+
+    let hashed = shay(len as u64, &padded.to_biguint());
+
+    let double_hashed = &Atom::Big(shay(32, &hashed));
+    let truncated = end(3, 4, double_hashed);
+
+    let n = net(5, &truncated);
+    n
+}
+
+pub fn shay(len: u64, ruz: &BigUint) -> BigUint {
+    let len = len as usize;
+
+    let ruz_bytes = ruz.to_bytes_le();
+    let msg_len = ruz_bytes.len();
+
+    let mut msg = vec![0u8; len];
+
+    if len == 0 {
+    } else if msg_len >= len {
+        msg.copy_from_slice(&ruz_bytes[..len]);
+    } else {
+        msg[..msg_len].copy_from_slice(&ruz_bytes);
+    }
+
+    let mut hasher = Sha256::new();
+    hasher.update(&msg);
+    let digest = hasher.finalize();
+
+    BigUint::from_bytes_le(&digest)
+}
+
+fn swp(bloq: usize, b: &Atom) -> Atom {
+    let blocks = rip(bloq, b);
+    let rev = flop(&blocks);
+    rep(bloq, None, &rev)
+}
+
+fn rip(bloq: usize, b: &Atom) -> Vec<Atom> {
+    if b.is_zero() {
+        return Vec::new();
+    }
+
+    let mut out = Vec::new();
+    let mut cur = b.clone();
+
+    while !cur.is_zero() {
+        out.push(end(bloq, 1, &cur));
+        cur = rsh(bloq, 1, &cur);
+    }
+
+    out
+}
+
+pub fn den_fa(a: &Atom) -> Option<Atom> {
+    let b = rsh(3, 4, a);
+
+    if tok(&b) == end(3, 4, a) {
+        Some(b)
+    } else {
+        None
+    }
+}
+
+fn sit(a: usize, b: &Atom) -> Atom {
+    end(a, 1, b)
+}
+
+//  flip byte endianness
+fn net(a: usize, b: &Atom)
+-> Atom {
+    let b = sit(a, b);
+
+    if a <= 3 {
+        return b;
+    }
+
+    let c: usize = a - 1;
+
+    let hi_bit = cut(c, 0, 1, &b);
+    let hi = net(c, &hi_bit);
+
+    let lo_bit = cut(c, 1, 1, &b);
+    let lo = net(c, &lo_bit);
+
+    let res = con_atoms(lsh(c, 1, &hi), lo);
+    // println!("net a {} b {:?} res {:?}", a, b, res);
+    res
+}
+
+fn met_big(bloq: u32, atom: &BigUint) -> u32 {
+    let bits = 1u32 << bloq; // bloq_bits
+    if atom.is_zero() {
+        return 1;
+    }
+    let atom_bits = atom.bits() as u32;
+    (atom_bits + bits - 1) / bits
+}
+
+/// pad(a): number of zero bytes needed to pad `a` to 21 bytes
+fn pad(a: &BigUint) -> usize {
+    let b = met(3, &Atom::Big(a.clone()));
+    if b >= 21 {
+        0
+    } else {
+        21 - b as usize
+    }
+}
+
+// +fim
+pub fn base58_to_atom(s: String) -> Option<Atom> {
+    let yek = build_yek();
+
+    let digits: Vec<u8> = s.chars()
+        .map(|ch| cha_fa(&yek, ch))
+        .collect::<Option<_>>()?;
+
+    let a = Atom::Big(bass_58(&digits));
+    den_fa(&a)
+}
+
 pub fn bitcoin_address<'src>(
 ) -> impl Parser<'src, &'src str, String, Err<'src>> {
-    regex(r"0c[13][a-km-zA-HJ-NP-Z1-9]{25,34}").map(str::to_owned)
+    just("0c")
+    .ignore_then(
+        regex(r"[0-9a-zA-Z]+").map(str::to_owned))
     .labelled("Bitcoin_Address")
 }
 
 pub fn urx<'src>(
-) -> impl Parser<'src, &'src str, String, Err<'src>> {
-    regex(r"(?:[0-9a-z._-]|~[0-9a-fA-F]+\.)+").map(str::to_owned)
+) -> impl Parser<'src, &'src str, Atom, Err<'src>> {
+    let hex_escape =
+        any().filter(|c: &char| c.is_ascii_hexdigit())
+        .repeated()
+        .at_least(1)
+        .collect::<String>()
+        .delimited_by(just('~'), just('.'))
+        .map(|hex_str: String| {
+                let big = BigUint::from_str_radix(&hex_str, 16).unwrap_or_default();
+                let value_32 = big.iter_u32_digits().next().unwrap_or(0); // low 32 bits
+
+                let tuft_result = tuft(&Atom::Small(value_32 as u128));
+
+                match tuft_result {
+                    Atom::Small(n) => n,
+                    Atom::Big(_) => panic!("tuft overflow"),
+                }
+            });
+
+    let special = choice((
+        just("~~").to(b'~' as u128),
+        just("~.").to(b'.' as u128),
+        just('.').to(b' ' as u128),
+    ));
+
+    let ascii = any().filter(|c: &char| {
+        c.is_ascii_digit() || c.is_ascii_lowercase() || *c == '-' || *c == '_'
+    })
+    .map(|c| c as u128);
+
+    let token = choice((
+        hex_escape,
+        special,
+        ascii,
+    ));
+
+    token
+    .repeated()
+    .at_least(1)
+    .collect::<Vec<u128>>()
+    .map(|chars: Vec<u128>| rap(3, &chars))
 }
+
+fn atom_shl(a: &Atom, bits: usize) -> Atom {
+    if bits == 0 { return a.clone(); }
+    match a {
+        Atom::Small(n) => {
+            if bits >= 128 { Atom::from_biguint(BigUint::from(*n) << bits) }
+            else { Atom::Small(n << bits) }
+        }
+        Atom::Big(b) => Atom::from_biguint(b << bits),
+    }
+}
+
+fn atom_shr(atom: &Atom, bits: usize) -> Atom {
+    if bits == 0 {
+        return atom.clone();
+    }
+    match atom {
+        Atom::Small(n) => {
+            if bits >= 128 {
+                Atom::Small(0)
+            } else {
+                Atom::Small(n >> bits)
+            }
+        }
+        Atom::Big(b) => {
+            Atom::from_biguint(b >> bits)
+        }
+    }
+}
+
+fn atom_mask_low_bits(atom: &Atom, bits: usize) -> Atom {
+    if bits == 0 {
+        return Atom::Small(0);
+    }
+    match atom {
+        Atom::Small(n) => {
+            if bits >= 128 {
+                Atom::Small(*n)
+            } else {
+                let mask = (1u128 << bits) - 1;
+                Atom::Small(*n & mask)
+            }
+        }
+        Atom::Big(b) => {
+            if bits <= 128 {
+                let mask: u128 = (1u128 << bits) - 1;
+                let mut limbs = b.iter_u64_digits();
+                let lo = limbs.next().unwrap_or(0);
+                let hi = limbs.skip(1).next().unwrap_or(0);
+                let low_u128 = ((hi as u128) << 64) | (lo as u128);
+                Atom::Small(low_u128 & mask)
+            } else {
+                let mask = (BigUint::one() << bits) - BigUint::one();
+                Atom::from_biguint(b & &mask)
+            }
+        }
+    }
+}
+
+// tuft: Atom (codepoint) -> Atom (UTF-8 bytes, @t)
+pub fn tuft(cp_atom: &Atom) -> Atom {
+    let cp = match cp_atom {
+        Atom::Small(n) => *n as u32,
+        Atom::Big(b) => {
+            b.to_u32().unwrap_or(0)
+        }
+    };
+
+    let (bytes, len): ([u8; 4], usize) = if cp <= 0x7F {
+        ([cp as u8, 0, 0, 0], 1)
+    } else if cp <= 0x7FF {
+        ([
+            (0xC0 | ((cp >> 6) & 0x1F)) as u8,
+            (0x80 | (cp & 0x3F)) as u8,
+            0, 0,
+        ], 2)
+    } else if cp <= 0xFFFF {
+        ([
+            (0xE0 | ((cp >> 12) & 0x0F)) as u8,
+            (0x80 | ((cp >> 6) & 0x3F)) as u8,
+            (0x80 | (cp & 0x3F)) as u8,
+            0,
+        ], 3)
+    } else {
+        // 4-byte case: use low 21 bits (like Hoon's cut [18 3], [12 6], [6 6], [0 6])
+        // Hoon does not validate range — just encodes 32-bit value's low 21 bits
+        ([
+            (0xF0 | ((cp >> 18) & 0x07)) as u8,
+            (0x80 | ((cp >> 12) & 0x3F)) as u8,
+            (0x80 | ((cp >> 6) & 0x3F)) as u8,
+            (0x80 | (cp & 0x3F)) as u8,
+        ], 4)
+    };
+
+    // Pack little-endian: bytes[0] at bits 0–7, bytes[1] at 8–15, etc.
+    let mut acc: u128 = 0;
+    for i in 0..len {
+        acc |= (bytes[i] as u128) << (i * 8);
+    }
+
+    Atom::Small(acc)
+}
+
+// --- Extract low byte as u8 ---
+fn atom_to_u8(atom: &Atom) -> u8 {
+    match end(3, 1, atom) {
+        Atom::Small(n) => n as u8,
+        Atom::Big(_) => 0,
+    }
+}
+
+// --- UTF-8 continuation byte check ---
+fn is_continuation(b: u8) -> bool {
+    b & 0xC0 == 0x80
+}
+
+// --- teff: UTF-8 leading byte → length (1–4) ---
+fn teff(atom: &Atom) -> usize {
+    let b = atom_to_u8(atom);
+    if b == 0 {
+        return 0;
+    }
+    if b <= 0x7F { 1 }
+    else if b <= 0xDF { 2 }
+    else if b <= 0xEF { 3 }
+    else if b <= 0xF4 { 4 }
+    else { 1 } // invalid → skip 1 byte
+}
+
+// --- Decode one UTF-8 codepoint ---
+fn decode_one_utf8(atom: &Atom, len: usize) -> u32 {
+    match len {
+        1 => atom_to_u8(atom) as u32,
+        2 => {
+            let b0 = atom_to_u8(atom);
+            let b1 = atom_to_u8(&rsh(3, 1, atom));
+            if !is_continuation(b1) { return 0xFFFD; }
+            let cp = ((b0 & 0x1F) as u32) << 6 | (b1 & 0x3F) as u32;
+            if cp < 0x80 { 0xFFFD } else { cp }
+        }
+        3 => {
+            let b0 = atom_to_u8(atom);
+            let b1 = atom_to_u8(&rsh(3, 1, atom));
+            let b2 = atom_to_u8(&rsh(3, 2, atom));
+            if !is_continuation(b1) || !is_continuation(b2) { return 0xFFFD; }
+            let cp = ((b0 & 0x0F) as u32) << 12 | ((b1 & 0x3F) as u32) << 6 | (b2 & 0x3F) as u32;
+            if cp < 0x800 || (0xD800..=0xDFFF).contains(&cp) { 0xFFFD } else { cp }
+        }
+        4 => {
+            let b0 = atom_to_u8(atom);
+            let b1 = atom_to_u8(&rsh(3, 1, atom));
+            let b2 = atom_to_u8(&rsh(3, 2, atom));
+            let b3 = atom_to_u8(&rsh(3, 3, atom));
+            if !is_continuation(b1) || !is_continuation(b2) || !is_continuation(b3) { return 0xFFFD; }
+            let cp = ((b0 & 0x07) as u32) << 18 | ((b1 & 0x3F) as u32) << 12
+                   | ((b2 & 0x3F) as u32) << 6  | (b3 & 0x3F) as u32;
+            if !(0x1_0000..=0x10_FFFF).contains(&cp) { 0xFFFD } else { cp }
+        }
+        _ => 0xFFFD,
+    }
+}
+
+// @t (UTF-8 atom) -> @c (UTF-32 packed atom)
+pub fn taft(atom: &Atom) -> Atom {
+    let mut codepoints = Vec::new();
+    let mut current = atom.clone();
+
+    loop {
+        let len = teff(&current);
+        if len == 0 {
+            break;
+        }
+        let cp = decode_one_utf8(&current, len);
+        codepoints.push(cp);
+        current = rsh(3, len, &current); // shift by `len` bytes
+    }
+
+    // Pack into @c: each u32 in 32-bit lane, LSB-first (rap 5)
+    if codepoints.is_empty() {
+        Atom::Small(0)
+    } else if codepoints.len() <= 4 {
+        let mut acc: u128 = 0;
+        for (i, &cp) in codepoints.iter().enumerate() {
+            acc |= (cp as u128) << (i * 32);
+        }
+        Atom::Small(acc)
+    } else {
+        let mut acc = BigUint::zero();
+        for (i, &cp) in codepoints.iter().enumerate() {
+            acc |= BigUint::from(cp) << (i * 32);
+        }
+        Atom::from_biguint(acc)
+    }
+}
+
 pub fn binary_number<'src>(
 ) -> impl Parser<'src, &'src str, String, Err<'src>>
 {
-    let first = regex(r"0b(?:0|1[01]{0,3})");
+    let first = just("0b")
+                .ignore_then(regex(r"(?:0|1[01]{0,3})"));
 
     let rest = just('.').ignore_then(gap().or_not())
             .ignore_then(regex(r"[01]{4}"));
@@ -3044,7 +4447,7 @@ pub fn binary_number<'src>(
             } else {
                 let mut parts = vec![first];
                 parts.append(&mut rest);
-                parts.join(".").to_string()
+                parts.join("").to_string()
             }
         })
         .labelled("Binary")
@@ -3053,21 +4456,24 @@ pub fn binary_number<'src>(
 pub fn hexadecimal_number<'src>(
 ) -> impl Parser<'src, &'src str, String, Err<'src>>
 {
-    let first = regex(r"0x(0|[1-9a-fA-F][0-9a-fA-F]{0,3})");
+    let first =
+        just("0x")
+        .ignore_then(regex(r"0|[1-9a-fA-F][0-9a-fA-F]{0,3}"));
 
     let rest = just('.').ignore_then(gap().or_not())
             .ignore_then(regex(r"[0-9a-fA-F]{4}"))
             .repeated()
             .collect::<Vec<_>>();
 
-    first.then(rest)
+    first
+    .then(rest)
         .map(|(first, mut rest)| {
             if rest.is_empty() {
                 first.to_string()
             } else {
                 let mut parts = vec![first];
                 parts.append(&mut rest);
-                parts.join(".").to_string()
+                parts.join("").to_string()
             }
         })
         .labelled("Hexadecimal")
@@ -3097,10 +4503,19 @@ pub fn ipv4_address<'src>(
         .labelled("Ipv4-Address")
 }
 
+pub fn ipv4_to_atom(s: String) ->  Option<Atom>{
+    let addr = s
+        .parse::<std::net::Ipv4Addr>().ok()?;
+
+    let ip_num = u32::from_be_bytes(addr.octets());
+
+    Some(Atom::Small(ip_num.into()))
+}
+
 pub fn ipv6_address<'src>(
 ) -> impl Parser<'src, &'src str, String, Err<'src>>
 {
-    let tod = regex(r"(0|[1-9a-f][0-9a-fA-F]{0,3})");
+    let tod = regex(r"0|[1-9a-f][0-9a-fA-F]{0,3}");
 
     let rest = just('.').ignore_then(gap().or_not())
             .ignore_then(tod.clone())
@@ -3121,47 +4536,55 @@ pub fn ipv6_address<'src>(
         .labelled("Ipv6-Address")
 }
 
+pub fn ipv6_to_atom(s: String) -> Option<Atom> {
+    let addr = s.parse::<std::net::Ipv6Addr>().ok()?;
+    let num = u128::from_be_bytes(addr.octets());
+    Some(Atom::Small(num))
+}
+
 pub fn base32_number<'src>(
-) -> impl Parser<'src, &'src str, String, Err<'src>>
+) -> impl Parser<'src, &'src str, Atom, Err<'src>>
 {
-    let first = regex(r"0v(0|[1-9a-v][0-9av]{0,4})");
+    let first = just("0v")
+                .ignore_then(regex(r"0|[1-9a-v][0-9a-v]{0,4}"));
 
     let rest = just('.').ignore_then(gap().or_not())
-            .ignore_then(regex(r"0v([0-9a-v]{0,5})"))
+            .ignore_then(regex(r"[0-9a-v]{0,5}"))
             .repeated()
             .collect::<Vec<_>>();
 
     first.then(rest)
         .map(|(first, mut rest)| {
             if rest.is_empty() {
-                first.to_string()
+                base32_to_atom(first.to_string())
             } else {
                 let mut parts = vec![first];
                 parts.append(&mut rest);
-                parts.join(".").to_string()
+                base32_to_atom(parts.join(""))
             }
         })
         .labelled("Base32")
 }
 
 pub fn base64_number<'src>(
-) -> impl Parser<'src, &'src str, String, Err<'src>>
+) -> impl Parser<'src, &'src str, Atom, Err<'src>>
 {
-    let first = regex(r"0w(0|[1-9a-zA-Z-~][0-9a-zA-Z-~]{0,4})");
+    let first = just("0w")
+                .ignore_then(regex(r"0|[1-9a-zA-Z-~][0-9a-zA-Z-~]{0,4}"));
 
     let rest = just('.').ignore_then(gap().or_not())
-            .ignore_then(regex(r"0v([0-9a-zA-Z-~]{0,5})"))
+            .ignore_then(regex(r"[0-9a-zA-Z-~]{0,5}"))
             .repeated()
             .collect::<Vec<_>>();
 
     first.then(rest)
         .map(|(first, mut rest)| {
             if rest.is_empty() {
-                first.to_string()
+                base64_to_atom(first.to_string())
             } else {
                 let mut parts = vec![first];
                 parts.append(&mut rest);
-                parts.join(".").to_string()
+                base64_to_atom(parts.join(""))
             }
         })
         .labelled("Base64")
@@ -3223,8 +4646,8 @@ pub fn flop<T: Clone>(list: impl AsRef<[T]>) -> Vec<T> {
 fn poof(pax: Vec<String>) -> Vec<Hoon> {
     pax.iter()
         .map(|a| { Hoon::Sand(
-            "%ta".to_string(),
-            Noun::Atom(a.to_string()),
+            "ta".to_string(),
+            Noun::Atom(string_to_atom(a.clone())),
         )})
         .collect()
 }
@@ -3311,35 +4734,47 @@ pub fn posh(
 }
 
 pub fn nuck<'src>(
-) -> impl Parser<'src, &'src str, (String, String), Err<'src>>
+) -> impl Parser<'src, &'src str, (String, Atom), Err<'src>>
 {
     choice((
-        symbol().map(|s| ("tas".to_string(), s)),
+        symbol().map(|s| ("tas".to_string(), string_to_atom(s))),
         number(),
         just('.').ignore_then(perd()),
         just('~').ignore_then(
             choice((
                 twid(),
-                empty().to(("%n".to_string(), "0".to_string())),
+                empty().to(("n".to_string(), Atom::Small(0))),
             ))),
     )).boxed()
 }
 
 pub fn perd<'src>(
-) -> impl Parser<'src, &'src str, (String, String), Err<'src>>
+) -> impl Parser<'src, &'src str, (String, Atom), Err<'src>>
 {
     zust()
 }
 
 pub fn zust<'src>(
-) -> impl Parser<'src, &'src str, (String, String), Err<'src>>
+) -> impl Parser<'src, &'src str, (String, Atom), Err<'src>>
 {
     choice((
-        ipv4_address().map(|s| ("if".to_string(), s)),
-        ipv6_address().map(|s| ("is".to_string(), s)),
+        ipv4_address().try_map(|s, span| {
+            let maybe_ipv4 = ipv4_to_atom(s);
+            match maybe_ipv4 {
+                None => Err(Rich::custom(span, "invalid ipv4")),
+                Some(atom) => Ok(("if".to_string(), atom)),
+            }
+        }),
+        ipv6_address().try_map(|s, span| {
+            let maybe_ipv6 = ipv6_to_atom(s);
+            match maybe_ipv6 {
+                None => Err(Rich::custom(span, "invalid ipv6")),
+                Some(atom) => Ok(("is".to_string(), atom)),
+            }
+        }),
         float().map(|(p, q)| (p, q)),
-        just("y").to(("%f".to_string(), "0".to_string())),
-        just("n").to(("%f".to_string(), "1".to_string())),
+        just("y").to(("f".to_string(), Atom::Small(0))),
+        just("n").to(("f".to_string(), Atom::Small(1))),
         just('~')
             .ignore_then(phonemic_name_unscrambled())
             .map(|s| ("q".to_string(), s)),
@@ -3364,7 +4799,7 @@ pub fn path<'src>(
                         let (first, rest) = list.split_first().unwrap();
                         Hoon::CenCol(Box::new(first.clone()), rest.to_vec())
                     }),
-                just('$').to(Hoon::Sand("tas".to_string(), Noun::Atom("%$".to_string()))),
+                just('$').to(Hoon::Sand("tas".to_string(), Noun::Atom(Atom::Small(0)))),
                 cord().map(|s| Hoon::Sand("t".to_string(), Noun::Atom(s))),
                 nuck().map(|(p, q)| Hoon::Sand(p, Noun::Atom(q))),
             ));
@@ -3397,7 +4832,7 @@ pub fn path<'src>(
                 .then(gasp)
                 .map(|(a, mut b)| {
                     for _ in 0..a {
-                        b.insert(0, Some(Hoon::Sand("tas".to_string(), Noun::Atom("%$".to_string()))));
+                        b.insert(0, Some(Hoon::Sand("tas".to_string(), Noun::Atom(Atom::Small(0)))));
                     }
                     b
                 });
@@ -3457,51 +4892,68 @@ pub fn path<'src>(
 }
 
 pub fn number<'src>(
-) -> impl Parser<'src, &'src str, (String, String), Err<'src>>
+) -> impl Parser<'src, &'src str, (String, Atom), Err<'src>>
 {
     let ud_number = decimal_number()
                     .map(|s|
-                        ("ud".to_string(), s));
+                        ("ud".to_string(), decimal_to_atom(s)));
 
     let ux_number = hexadecimal_number()
                     .map(|s|
-                        ("ux".to_string(), s));
+                        ("ux".to_string(), hex_to_atom(s)));
 
     let uc_number = bitcoin_address()
-                    .map(|s|
-                        ("uc".to_string(), s));
+                    .try_map(|s, span| {
+                        let maybe_base58 = base58_to_atom(s);
+                        match maybe_base58 {
+                            None => Err(Rich::custom(span, "Invalid BTC address.")),
+                            Some(atom) => Ok(("uc".to_string(), atom))
+                        }
+                    });
 
     let ub_number = binary_number()
                     .map(|s|
-                        ("ub".to_string(), s));
+                        ("ub".to_string(), binary_to_atom(s)));
 
     let uv_number = base32_number()
-                    .map(|s|
-                        ("uv".to_string(), s));
+                    .map(|a|
+                        ("uv".to_string(), a));
 
     let uw_number = base64_number()
-                    .map(|s|
-                        ("uw".to_string(), s));
+                    .map(|a|
+                        ("uw".to_string(), a));
 
     let ui_number =
-        regex(r"0i[0-9]+")
+    just("0i")
+        .ignore_then(regex(r"[0-9]+"))
         .map(|s: &str| {
-            ("ui".to_string(), s.to_string())
+            ("ui".to_string(), decimal_to_atom(s.to_string()))
         });
 
-    let signed_number = //  signed: -num and --num
-        just('-').ignore_then(just('-').or_not())
+    let negative = choice((
+                hexadecimal_number().map(|s| ("sx".to_string(), hex_to_atom(s))),
+                binary_number().map(|s| ("sb".to_string(), binary_to_atom(s))),
+                bitcoin_address()
+                    .try_map(|s, span| {
+                        let maybe_base58 = base58_to_atom(s);
+                        match maybe_base58 {
+                            None => Err(Rich::custom(span, "Invalid BTC address.")),
+                            Some(atom) => Ok(("uc".to_string(), atom))
+                        }
+                    }),
+                base32_number().map(|a| ("sv".to_string(), a)),
+                base64_number().map(|a| ("sw".to_string(), a)),
+                just("0i").ignore_then(regex(r"[0-9]+"))
+                    .map(|s: &str| ("si".to_string(), decimal_to_atom(s.to_string()))),
+                decimal_number().map(|s| ("sd".to_string(), decimal_to_atom(s))),
+            )).boxed();
+
+    let signed_number = // signed: -num and --num
+        just('-')
         .ignore_then(
-            choice((
-                decimal_number().map(|s| ("sd".to_string(), s)),
-                hexadecimal_number().map(|s| ("sx".to_string(), s)),
-                binary_number().map(|s| ("sb".to_string(), s)),
-                bitcoin_address().map(|s| ("sc".to_string(), s)),
-                base32_number().map(|s| ("sv".to_string(), s)),
-                base64_number().map(|s| ("sw".to_string(), s)),
-                regex(r"0i[0-9]+").map(|s: &str| ("si".to_string(), s.to_string())),
-            ))
-        );
+            just('-')
+            .ignore_then(negative.clone().map(|(p, q)| (p, apply_sign(true, q))))
+            .or(negative.map(|(p, q)| (p, apply_sign(false, q)))));
 
     choice((
         signed_number,
@@ -3512,23 +4964,7 @@ pub fn number<'src>(
         uv_number,
         uw_number,
         ud_number,
-    ))
-}
-
-pub fn rap_bits(bloq: usize, list: &[u64]) -> u64 {
-    let mut acc: u128 = 0;
-    let mut pos = 0usize;
-
-    for &atom in list {
-        let bit_width = 64 - atom.leading_zeros() as usize;
-        let block_size = 1 << bloq;
-        let step = (bit_width + block_size - 1) / block_size * block_size;
-
-        acc |= (atom as u128) << pos;
-        pos += step;
-    }
-
-    acc as u64
+    )).labelled("Number")
 }
 
 // decimal without leading 0 and without dots.
@@ -3548,73 +4984,500 @@ pub fn leading_zero_decimal_without_dots<'src>(
 }
 
 pub fn absolute_date<'src>(
-) -> impl Parser<'src, &'src str, String, Err<'src>>
+) -> impl Parser<'src, &'src str, Atom, Err<'src>>
 {
-    let year = decimal_without_dots()
-            .then(just('-')
+    let era_year = decimal_without_dots()
+        .then(
+            just('-')
                 .to(false)
                 .or_not()
-                .map(|opt| opt.unwrap_or(true)))
-            .map(|(a, b)| (b, a)); // (bool, year_str)
-    let month =  just('.')
-                .ignore_then(regex(r"(1[0-2]|[1-9])")
-                .map(str::to_owned)); // month_str
-    let day =  just('.')
-                .ignore_then(regex(r"([1-9][0-9]*)")
-                .map(str::to_owned)); // day_str
+                .map(|opt| opt.unwrap_or(true)),
+        )
+        .try_map(|(year_str, era), span| {
+            let year: u64 = year_str.parse()
+                .map_err(|_| Rich::custom(span, "invalid year number"))?;
+
+            if year == 0 {
+                return Err(Rich::custom(span, "year must be ≥ 1"));
+            }
+
+            Ok((era, year))
+        });
+        let month = just('.')
+            .ignore_then(regex(r"[0-9]+"))
+            .try_map(|s: &str, span| {
+                let m: u64 = s.parse().map_err(|_| Rich::custom(span, "invalid month"))?;
+                if (1..=12).contains(&m) {
+                    Ok(m)
+                } else {
+                    Err(Rich::custom(span, "month out of range (1–12)"))
+                }
+            });
+        let day = just('.')
+            .ignore_then(regex(r"[0-9]+"))
+            .try_map(|s: &str, span| {
+                let d: u64 = s.parse().map_err(|_| Rich::custom(span, "invalid day"))?;
+                if (1..=31).contains(&d) {
+                    Ok(d)
+                } else {
+                    Err(Rich::custom(span, "day out of range (1–31)"))
+                }
+            });
     let hour_min_secs_fractions =
-             just("..")
-                .ignore_then(leading_zero_decimal_without_dots()
-                            .then_ignore(just("."))
-                            .then(leading_zero_decimal_without_dots())
-                            .then_ignore(just("."))
-                            .then(leading_zero_decimal_without_dots()))
-                .then(just("..")
+        just("..")
+            .ignore_then(
+                leading_zero_decimal_without_dots()
+                    .try_map(|h_str, span| {
+                        let h: u64 = h_str
+                                        .parse::<u64>()
+                                        .map_err(|_| Rich::custom(span, "invalid hour"))?;
+                        if h < 24 { Ok(h) } else { Err(Rich::custom(span, "hour out of range (0–23)")) }
+                    })
+                    .then_ignore(just("."))
+                    .then(
+                        leading_zero_decimal_without_dots()
+                        .try_map(|m_str, span| {
+                            let m: u64 = m_str
+                                .parse::<u64>()
+                                .map_err(|_| Rich::custom(span, "invalid minute"))?;
+                            if m < 60 {
+                                Ok(m)
+                            } else {
+                                Err(Rich::custom(span, "minute out of range (0–59)"))
+                            }
+                        }))
+                    .then_ignore(just("."))
+                    .then(leading_zero_decimal_without_dots()
+                          .try_map(|s_str, span| {
+                                let s: u64 = s_str
+                                    .parse::<u64>()
+                                    .map_err(|_| Rich::custom(span, "invalid second"))?;
+                                if s < 60 {
+                                    Ok(s)
+                                } else {
+                                    Err(Rich::custom(span, "second out of range (0–59)"))
+                                }
+                            })))
+            .then(
+                just("..")
                     .ignore_then(
-                        regex(r"[0-9a-fA-F]{4}")
-                        .separated_by(just("."))
-                        .at_least(1)
-                        .collect::<Vec<_>>()
+                        regex(r"[0-9a-fA-F]+")
+                            .separated_by(just("."))
+                            .at_least(1)
+                            .collect::<Vec<&str>>(),
                     )
                     .or_not()
-                    .map(|opt| opt.unwrap_or(vec![]))
-                )
-                .or_not()
-                .map(|opt| {
-                    opt.unwrap_or((
-                        (("0".to_string(), "0".to_string()), "0".to_string()),
-                        Vec::new(),
-                    ))
-                });
+                    .map(|opt| opt.unwrap_or_default()),
+            )
+            .try_map(|(((h, m), s), frags), span| {
+                let mut fractions = Vec::new();
 
-    year
+                for f in frags {
+                        let val = u16::from_str_radix(f, 16)
+                            .map_err(|_| Rich::custom(span, "invalid fraction digits"))?;
+                        fractions.push(val);
+                    }
+
+                Ok((h, m, s, fractions))
+            })
+            .or_not()
+            .map(|opt| opt.unwrap_or((0, 0, 0, Vec::new())));
+
+    era_year
     .then(month)
     .then(day)
     .then(hour_min_secs_fractions)
-    .to("foo".to_string())
+    .map(|((((era, y), m), d), (hour, min, sec, f))| {
+        Atom::Small(year(era,
+                        y,
+                        m,
+                        d,
+                        hour,
+                        min,
+                        sec,
+                        &f
+                    ))
+    })
+}
+
+fn unit_value_pair<'src>(
+)-> impl Parser<'src, &'src str, (char, u64), Err<'src>> {
+    one_of("dhms")
+        .then(
+            decimal_without_dots()
+            .try_map(|s, span| {
+                s.parse::<u64>().map_err(|_| Rich::custom(span, "Invalid Number"))
+            })
+        )
 }
 
 pub fn relative_date<'src>(
-) -> impl Parser<'src, &'src str, String, Err<'src>>
-{
-    one_of("dhms")
-        .ignore_then(decimal_without_dots())
+) -> impl Parser<'src, &'src str, Atom, Err<'src>> {
+    let time_part = unit_value_pair()
         .separated_by(just('.'))
         .at_least(1)
-        .then(just("..")
-            .ignore_then(
-                regex(r"[0-9a-fA-F]{4}")
+        .collect::<Vec<(char, u64)>>();
+
+    let hex_part = just("..")
+        .ignore_then(
+            any().filter(|c: &char| c.is_ascii_hexdigit())
+                .repeated()
+                .exactly(4)
+                .collect::<String>()
+                .map(|s| u16::from_str_radix(&s, 16).unwrap_or(0))
                 .separated_by(just('.'))
                 .at_least(1)
-                .collect::<Vec<_>>()
-            )
-            .or_not()
-            .map(|opt| opt.unwrap_or(vec![]))
+                .collect::<Vec<u16>>()
         )
-    .to("foo".to_string())
+        .or_not()
+        .map(|v| v.unwrap_or_default());
+
+    time_part
+        .then(hex_part)
+        .map(|(pairs, hex_vec):  (Vec<(char, u64)>, Vec<u16>)| {
+            let mut days = 0u64;
+            let mut hours = 0u64;
+            let mut minutes = 0u64;
+            let mut seconds = 0u64;
+
+            for (unit, value) in pairs {
+                match unit {
+                    'd' => days += value,
+                    'h' => hours += value,
+                    'm' => minutes += value,
+                    's' => seconds += value,
+                    _ => {},
+                }
+            }
+
+            Atom::Small(yule(days, hours, minutes, seconds, &hex_vec))
+        })
 }
 
-/// Prefix syllables (Hoon `sis`), 256 entries × 3 bytes.
+// ++year: date -> @da
+pub fn year(a: bool, y: u64, m: u64, d: u64, h: u64, min: u64, s: u64, f: &[u16]) -> u128 {
+    let yer = if a {
+        YEAR_OFFSET + y
+    } else {
+        // (sub 292.277.024.400 (dec y))
+        YEAR_OFFSET - (y - 1)
+    };
+
+    let day_count = yawn(yer, m, d);
+
+    yule(day_count, h, min, s, f)
+}
+
+pub fn is_leap_year(year: i32) -> bool {
+    // Gregorian calendar proleptic
+    (year % 4 == 0) && (year % 100 != 0 || year % 400 == 0)
+}
+
+pub fn yule(d: u64, h: u64, m: u64, s: u64, f: &[u16]) -> u128 {
+    let sec = d * DAY + h * HOR + m * MIT + s;
+
+    let mut fac: u64 = 0;
+    let mut muc = 4i32; // starts at 4
+    for &val in f.iter().take(4) {
+        muc -= 1; // decrement *before* shift
+        fac += (val as u64) << (muc as u32 * 16);
+    }
+
+    ((sec as u128) << 64) | (fac as u128)
+}
+
+fn bloq_bits(bloq: u32) -> u32 {
+    if bloq >= 7 {
+        panic!("bloq must be < 7 (max 64-bit chunks for u128)");
+    }
+    1 << bloq
+}
+
+pub fn met(bloq: usize, atom: &Atom) -> usize {
+    let bits_per_block: usize = 1usize << bloq;
+
+    match atom {
+        Atom::Small(n) => {
+            if *n == 0 {
+                1
+            } else {
+                let atom_bits: usize = 128 - n.leading_zeros() as usize;
+                (atom_bits + bits_per_block - 1) / bits_per_block
+            }
+        }
+        Atom::Big(b) => {
+            if b.is_zero() {
+                1
+            } else {
+                let atom_bits: usize = b.bits() as usize;
+                (atom_bits + bits_per_block - 1) / bits_per_block
+            }
+        }
+    }
+}
+
+// fn met(bloq: u32, atom: u128) -> u32 {
+//     let bits = bloq_bits(bloq);
+//     if atom == 0 {
+//         return 1;
+//     }
+//     let atom_bits = (128 - atom.leading_zeros()) as u32;
+//     (atom_bits + bits - 1) / bits
+// }
+
+/// rep: assemble list of Atoms into one Atom using bite spec
+///
+/// - `bloq`: block size exponent (e.g. 3 → 8-bit blocks)
+/// - `step_opt`: number of bloqs to take from each atom; if `None`, defaults to 1 (per Hoon ?^(a a [a *step]))
+/// - `list`: slice of Atoms (representing Hoon `(list @)`)
+///
+/// Semantics:
+///   result = Σ_i ( (atom_i & mask) << (i * chunk_bits) )
+///   where mask = (1 << chunk_bits) - 1
+pub fn rep(bloq: usize, step_opt: Option<usize>, list: &[Atom]) -> Atom {
+    let step = step_opt.unwrap_or(1); // default step = 1
+
+    let bloq_size = 1usize << bloq;        // 2^bloq
+    let chunk_bits = step * bloq_size;     // bits per item
+
+    if list.is_empty() || chunk_bits == 0 {
+        return Atom::Small(0);
+    }
+
+    let mut result = BigUint::from(0u32);
+
+    for (i, atom) in list.iter().enumerate() {
+        let atom_bu = atom.to_biguint();
+
+        let truncated = if chunk_bits < 128 {
+            let mask = (1u128 << chunk_bits) - 1;
+            let mask_bu = BigUint::from(mask);
+            atom_bu & mask_bu
+        } else {
+            if atom_bu.bits() as usize <= chunk_bits {
+                atom_bu
+            } else {
+                let mask = ( BigUint::from(1u32) << chunk_bits) - 1u8;
+                &atom_bu & mask
+            }
+        };
+
+        let shifted = if i == 0 {
+            truncated
+        } else {
+            truncated << (i * chunk_bits)
+        };
+
+        result += shifted;
+    }
+
+    Atom::Big(result)
+}
+
+pub fn rap(bloq: usize, chunks: &[u128]) -> Atom {
+    if chunks.is_empty() {
+        return Atom::Small(0);
+    }
+
+    let bits_per_bloq = bloq_bits(bloq as u32) as u64;
+    let mut result = BigUint::zero();
+    let mut shift = 0u64; // total bits shifted so far
+
+    for &chunk in chunks {
+        let width_bloqs = met(bloq, &Atom::Small(chunk)) as u64;
+        let width_bits = width_bloqs * bits_per_bloq;
+
+        // Validate that chunk fits in its declared bloq width
+        let mask = if width_bits >= 128 {
+            u128::MAX
+        } else {
+            (1u128 << width_bits) - 1
+        };
+        if chunk & !mask != 0 {
+            panic!("atom {:#x} too large for bloq {}", chunk, bloq);
+        }
+
+        // Shift left and add
+        let chunk_big = BigUint::from(chunk);
+        result |= chunk_big << shift;
+
+        shift += width_bits;
+
+        // Early exit if we already know we need BigUint
+        if shift > 128 {
+            // continue — we'll return Big at the end
+        }
+    }
+
+    // Now decide which variant to return
+    if shift <= 128 {
+        let value = result.to_u128().expect("logic error: shift <=128 but not u128");
+        Atom::Small(value)
+    } else {
+        Atom::Big(result)
+    }
+}
+
+/// Extract `run` bloqs starting at bloq `start`, where each bloq is `2^bloq` bits.
+pub fn cut(bloq: usize, start: usize, run: usize, atom: &Atom) -> Atom {
+    if run == 0 {
+        return Atom::Small(0);
+    }
+
+    let bloq_bits = match 1usize.checked_shl(bloq as u32) {
+        Some(b) => b,
+        None => return Atom::Small(0),
+    };
+
+    let bit_start = match start.checked_mul(bloq_bits) {
+        Some(s) => s,
+        None => return Atom::Small(0),
+    };
+
+    let bit_len = match run.checked_mul(bloq_bits) {
+        Some(l) => l,
+        None => return Atom::Small(0),
+    };
+
+    let src_bits = match atom {
+        Atom::Small(0) => 0,
+        Atom::Small(n) => (128 - n.leading_zeros()) as usize,
+        Atom::Big(b) => b.bits() as usize,
+    };
+
+    if bit_start >= src_bits {
+        return Atom::Small(0);
+    }
+
+    let bit_len = cmp::min(bit_len, src_bits - bit_start);
+    if bit_len == 0 {
+        return Atom::Small(0);
+    }
+
+    let shifted = match atom {
+        Atom::Small(n) => {
+            if bit_start >= 128 {
+                Atom::Small(0)
+            } else {
+                Atom::Small(n >> bit_start)
+            }
+        }
+        Atom::Big(b) => {
+            if bit_start == 0 {
+                atom.clone()
+            } else {
+                Atom::from_biguint(b >> bit_start)
+            }
+        }
+    };
+
+    match &shifted {
+        Atom::Small(n) => {
+            if bit_len >= 128 {
+                shifted
+            } else {
+                let mask = (1u128 << bit_len) - 1;
+                Atom::Small(*n & mask)
+            }
+        }
+        Atom::Big(b) => {  // b: &BigUint
+            if bit_len <= 128 {
+                // Extract low 128 bits manually (portable)
+                let low_u128 = {
+                    // Convert to u128, but preserve low bits even if truncated
+                    // u128::try_from returns Err for >u128::MAX, but we want modulo 2^128
+                    // So: take first 2 u64 limbs
+                    let mut limbs = b.iter_u64_digits();
+                    let lo = limbs.next().unwrap_or(0);
+                    let hi = limbs.next().unwrap_or(0);
+                    ((hi as u128) << 64) | (lo as u128)
+                };
+                let mask = if bit_len == 128 {
+                    u128::MAX
+                } else {
+                    (1u128 << bit_len) - 1
+                };
+                Atom::Small(low_u128 & mask)
+            } else {
+                // Big mask: (1 << bit_len) - 1
+                let mask = (BigUint::one() << bit_len) - BigUint::one();
+                // Use & with references to avoid move
+                let masked = b & &mask; // &BigUint & &BigUint → BigUint
+                Atom::from_biguint(masked)
+            }
+        }
+    }
+}
+
+pub fn lsh(bloq: usize, step: usize, atom: &Atom) -> Atom {
+    let bits = match step.checked_mul(1usize << bloq) {
+        Some(b) => b,
+        None => return Atom::Small(0),
+    };
+    atom_shl(atom, bits)
+}
+
+pub fn rsh(bloq: usize, step: usize, atom: &Atom) -> Atom {
+    let bits = match step.checked_mul(1usize << bloq) {
+        Some(b) => b,
+        None => return Atom::Small(0),
+    };
+    atom_shr(atom, bits)
+}
+
+fn lsh_u128(bloq: usize, step: usize, atom: u128) -> u128 {
+    let bits = step.checked_mul(1 << bloq).unwrap_or(128);
+    if bits >= 128 { 0 } else { atom << bits }
+}
+
+fn rsh_u128(bloq: usize, step: usize, atom: u128) -> u128 {
+    let bits = step.checked_mul(1 << bloq).unwrap_or(128);
+    if bits >= 128 { 0 } else { atom >> bits }
+}
+
+fn lsh_big(bloq: usize, step: usize, atom: &BigUint) -> BigUint {
+    let bits = step.checked_mul(1 << bloq).unwrap_or(usize::MAX);
+    if bits == 0 { atom.clone() } else { atom << bits }
+}
+
+fn rsh_big(bloq: usize, step: usize, atom: &BigUint) -> BigUint {
+    let bits = step.checked_mul(1 << bloq).unwrap_or(usize::MAX);
+    if bits == 0 { atom.clone() } else { atom >> bits }
+}
+
+fn end(bloq: usize, step: usize, atom: &Atom) -> Atom {
+    let total_bits = match step.checked_mul(1usize << bloq) {
+        Some(b) => b,
+        None => return Atom::Small(0),
+    };
+    atom_mask_low_bits(atom, total_bits)
+}
+
+fn end_big(bloq: usize, step: usize, atom: &BigUint) -> BigUint {
+    let total_bits = match step.checked_mul(1usize << bloq) {
+        Some(b) => b as u128,
+        None => return BigUint::zero(),
+    };
+    if total_bits == 0 {
+        return BigUint::zero();
+    }
+    let mask = (BigUint::one() << total_bits) - BigUint::one();
+    atom & &mask
+}
+
+fn end_u128(bloq: usize, step: usize, atom: u128) -> u128 {
+    let total_bits = match step.checked_mul(1usize << bloq) {
+        Some(b) => b as u128,
+        None => return 0,
+    };
+    if total_bits >= 128 {
+        atom
+    } else {
+        let mask = (1u128 << total_bits) - 1;
+        atom & mask
+    }
+}
+
 pub const SIS: [[u8; 3]; 256] = [
     *b"doz", *b"mar", *b"bin", *b"wan", *b"sam", *b"lit", *b"sig", *b"hid",
     *b"fid", *b"lis", *b"sog", *b"dir", *b"wac", *b"sab", *b"wis", *b"sib",
@@ -3650,7 +5513,6 @@ pub const SIS: [[u8; 3]; 256] = [
     *b"pon", *b"sov", *b"noc", *b"sor", *b"lav", *b"mat", *b"mip", *b"fip",
 ];
 
-/// You must fill this with the actual 256 suffix syllables.
 pub const DEX: [[u8; 3]; 256] = [
     *b"zod", *b"nec", *b"bud", *b"wes", *b"sev", *b"per", *b"sut", *b"let", *b"ful", *b"pen", *b"syt", *b"dur", *b"wep", *b"ser", *b"wyl", *b"sun", 
     *b"ryp", *b"syx", *b"dyr", *b"nup", *b"heb", *b"peg", *b"lup", *b"dep", *b"dys", *b"put", *b"lug", *b"hec", *b"ryt", *b"tyv", *b"syd", *b"nex", 
@@ -3685,12 +5547,15 @@ pub fn ins(a: &[u8]) -> Option<u8> {
     if a.len() != 3 {
         return None;
     }
-    let a = [a[0], a[1], a[2]];
-    for i in 0u8..=255 {
-        if SIS[i as usize] == a {
-            return Some(i);
+
+    let key = [a[0], a[1], a[2]];
+
+    for (i, entry) in SIS.iter().enumerate() {
+        if *entry == key {
+            return Some(i as u8);
         }
     }
+
     None
 }
 
@@ -3699,165 +5564,424 @@ pub fn ind(a: &[u8]) -> Option<u8> {
     if a.len() != 3 {
         return None;
     }
-    let a = [a[0], a[1], a[2]];
-    for i in 0u8..=255 {
-        if DEX[i as usize] == a {
-            return Some(i);
+
+    let key = [a[0], a[1], a[2]];
+
+    for (i, entry) in DEX.iter().enumerate() {
+        if *entry == key {
+            return Some(i as u8);
         }
     }
+
     None
 }
 
-pub fn phonemic_name<'src>(
-) -> impl Parser<'src, &'src str, String, Err<'src>>
+// +tip:ab
+pub fn tip<'src>(
+) -> impl Parser<'src, &'src str, u8, Err<'src>>
 {
-    let tip = regex(r"[a-z]{3}")
+    regex(r"[a-z]{3}")
         .try_map(|s: &str, span| {
             match ins(s.as_bytes()) {
                 Some(i) => Ok(i),
                 None => Err(Rich::custom(span, format!("invalid prefix syllable '{s}'"))),
             }
-        });
-   let tiq = regex(r"[a-z]{3}")
-        .try_map(|s: &str, span| {
-            match ind(s.as_bytes()) {
-                Some(i) => Ok(i),
-                None => Err(Rich::custom(span, format!("invalid suffix syllable '{s}'"))),
-            }
-        });
+        }).labelled("Phonetic Prefix")
+}
 
-    let tep = regex(r"[a-z]{3}")
-        .try_map(|s: &str, span| {
-            if s == "doz" {
-                return Err(Rich::custom(span, "suffix 'doz' is forbidden"));
-            }
-            match ind(s.as_bytes()) {
-                Some(i) => Ok(i),
-                None => Err(Rich::custom(span, format!("invalid suffix syllable '{s}'"))),
-            }
-        });
+// +tiq:ab
+pub fn tiq<'src>(
+) -> impl Parser<'src, &'src str, u8, Err<'src>>
+{
+    regex(r"[a-z]{3}")
+    .try_map(|s: &str, span| {
+        match ind(s.as_bytes()) {
+            Some(i) => Ok(i),
+            None => Err(Rich::custom(span, format!("invalid suffix syllable '{s}'"))),
+        }
+    }).labelled("Phonetic Suffix")
+}
 
-    let hef = tip.then(tiq.clone()); // check if atom is not zero for hef
-    let hif = hef.clone();
-    let huf =  hef.clone()
+// +hif:ab
+pub fn hif<'src>(
+) -> impl Parser<'src, &'src str, u16, Err<'src>>
+{
+    tip()
+    .then(tiq())
+    .try_map(|(p, q), span| {
+        Ok((p as u16) * 256 + (q as u16))
+    })
+}
+
+pub fn phonemic_name<'src>(
+) -> impl Parser<'src, &'src str, Atom, Err<'src>>
+{
+    let tep =  regex(r"[a-z]{3}")
+            .try_map(|s: &str, span| {
+                if s == "doz" {
+                    return Err(Rich::custom(span, "prefix 'doz' is forbidden"));
+                }
+                match ins(s.as_bytes()) {
+                    Some(i) => Ok(i),
+                    None => Err(Rich::custom(span, format!("invalid prefix syllable '{s}'"))),
+                }
+            }).labelled("Phonetic Prefix");
+    let hef = tip()
+                .then(tiq())
+                .try_map(|(p, q), span| {
+                    let val = (p as u16) * 256 + (q as u16);
+                    if val == 0 {
+                        Err(Rich::custom(span, format!("phonetic is zero")))
+                    } else {
+                        Ok(val)
+                    }
+                }).boxed();
+    let huf =  hef.clone() // u16
                 .then(just('-')
-                    .ignore_then(hif.clone())
+                    .ignore_then(hif())  // u16
                     .repeated()
-                    .at_most(3));
-    let hyf =  hif.clone()
+                    .at_most(3)
+                    .collect::<Vec<_>>())
+                    .map(|(first, rest)| {
+                        std::iter::once(first).chain(rest).collect::<Vec<_>>()
+                    })
+                    .map(|hefs: Vec<u16>| {
+                        let mut acc = BigUint::from(0u32);
+                        for &digit in &hefs {
+                            acc = (acc << 16) + BigUint::from(digit);
+                        }
+                        acc
+                    });
+    let hyf =  hif()
                 .separated_by(just('-'))
-                .exactly(4);
+                .exactly(4)
+                .collect::<Vec<_>>()
+                .map(|hefs: Vec<u16>| {
+                    let mut acc = BigUint::from(0u32);
+                    for &digit in &hefs {
+                        acc = (acc << 16) + BigUint::from(digit);
+                    }
+                    acc
+                });
     let other = huf
                 .then(just("--").ignore_then(gap().or_not())
-                        .ignore_then(hyf));
+                        .ignore_then(hyf)
+                        .repeated()
+                        .at_least(1)
+                        .collect::<Vec<_>>())
+                .map(|(first, rest)| {
+                    std::iter::once(first).chain(rest).collect::<Vec<_>>()
+                })
+                .map(|hefs: Vec<BigUint>| {
+                    let acc = hefs
+                                .iter()
+                                .fold(BigUint::from(0u32), |acc, d| (acc << 64) + d);
+                    Atom::Big(fynd_big(&acc))
+                });
     let planet_moon = hef
                     .then(
                         just('-')
-                        .ignore_then(hif.clone())
+                        .ignore_then(hif())
                         .repeated()
                         .at_least(1)
-                        .at_most(4)
-                    );
-    let star = tep.then(tiq.clone());
+                        .at_most(3)
+                        .collect::<Vec<_>>())
+                    .map(|(first, rest)| {
+                        std::iter::once(first).chain(rest).collect::<Vec<_>>()
+                    })
+                    .map(|hefs: Vec<u16>| {
+                        let mut acc = BigUint::from_u32(0).unwrap();
+                        for &digit in &hefs {
+                            acc = (acc << 16) + BigUint::from_u32(digit as u32).unwrap();
+                        }
+                        Atom::Big(fynd_big(&acc))
+                    });
+    let star = tep
+                .then(tiq())
+                .try_map(|(p, q), span| {
+                    let x = (p as u16) * 256 + (q as u16);
+                    Ok(Atom::Small(x as u128))
+                });
+    let galaxy = tiq().map(|p| Atom::Small(p.into()));
 
-    let galaxy = tiq.clone();
-
-    choice((other.ignored(),
-            planet_moon.ignored(),
-            star.ignored(),
-            galaxy.ignored(),
-        )).to("foo".to_string())
+    choice((
+            other.labelled("Long Phonemic"),
+            planet_moon.labelled("Planet or Moon"),
+            star.labelled("Star"),
+            galaxy.labelled("Galaxy"),
+        ))
 }
 
 pub fn phonemic_name_unscrambled<'src>(
-) -> impl Parser<'src, &'src str, String, Err<'src>>
+) -> impl Parser<'src, &'src str, Atom, Err<'src>>
 {
-    let tip = regex(r"[a-z]{3}")   //  duplicated logic!
-        .try_map(|s: &str, span| {
-            match ins(s.as_bytes()) {
-                Some(i) => Ok(i),
-                None => Err(Rich::custom(span, format!("invalid prefix syllable '{s}'"))),
-            }
-        });
-   let tiq = regex(r"[a-z]{3}")
-        .try_map(|s: &str, span| {
-            match ind(s.as_bytes()) {
-                Some(i) => Ok(i),
-                None => Err(Rich::custom(span, format!("invalid suffix syllable '{s}'"))),
-            }
-        });
-
-    let tep = regex(r"[a-z]{3}")
-        .try_map(|s: &str, span| {
-            if s == "doz" {
-                return Err(Rich::custom(span, "suffix 'doz' is forbidden"));
-            }
-            match ind(s.as_bytes()) {
-                Some(i) => Ok(i),
-                None => Err(Rich::custom(span, format!("invalid suffix syllable '{s}'"))),
-            }
-        });
-
-    let hef = tip.then(tiq.clone()); // check if atom is not zero for hef
-    let hif = hef.clone();
-    let huf =  hef.clone()
-                .then(just('-')
-                    .ignore_then(hif.clone())
-                    .repeated()
-                    .at_most(3));
-    let hyf =  hif.clone()
-                .separated_by(just('-'))
-                .exactly(4);
-    let other = huf
-                .then(just("--").ignore_then(gap().or_not())
-                        .ignore_then(hyf));
-    let planet_moon = hef
-                    .then(
-                        just('-')
-                        .ignore_then(hif.clone())
-                        .repeated()
-                        .at_least(1)
-                        .at_most(4)
-                    );
-    let star = tep.then(tiq.clone());
-
-    hif.clone()
-    .then(tiq)
+    hif().or(tiq().map(|i| i as u16))
     .then(just('-')
-            .ignore_then(hif)
+            .ignore_then(gap().or_not())
+            .ignore_then(hif())
             .repeated()
-            .at_least(1)
-    ).to("foo".to_string())
-    // ).to(Hoon::Sand("q".to_string(), Noun::Atom("foo".to_string())))
+            .collect::<Vec<_>>())
+    .map(|(first, rest)| {
+        std::iter::once(first)
+            .chain(rest)
+            .map(Atom::from)
+            .collect::<Vec<Atom>>()
+    })
+    .map(|mut hifs| {
+        hifs.reverse();
+        rep(4, None, &hifs)
+    })
+}
+
+fn dis_big(x: &BigUint, mask: &BigUint) -> BigUint {
+    x & mask
+}
+
+fn dis(x: u64, mask: u64) -> u64 {
+    x & mask
+}
+
+fn con(hi: u64, lo: u64) -> u64 {
+    hi | lo
+}
+
+fn con_atoms(hi: Atom, lo: Atom) -> Atom {
+    match (hi, lo) {
+        (Atom::Small(a), Atom::Small(b)) => Atom::Small(a | b),
+        (a, b) => {
+            let x = a.to_biguint();
+            let y = b.to_biguint();
+            Atom::from_biguint(x | y)
+        }
+    }
+}
+
+const RAKU: [u32; 4] = [
+    0xb76d_5eed,
+    0xee28_1300,
+    0x85bc_ae01,
+    0x4b38_7af7,
+];
+#[inline]
+fn rol32(x: u32, r: u32) -> u32 {
+    x.rotate_left(r)
+}
+
+#[inline]
+fn fmix32(mut h: u32) -> u32 {
+    h ^= h >> 16;
+    h = h.wrapping_mul(0x85eb_ca6b);
+    h ^= h >> 13;
+    h = h.wrapping_mul(0xc2b2_ae35);
+    h ^= h >> 16;
+    h
+}
+
+fn muk(seed: u32, len: u32, key: u64) -> u32 {
+    let c1: u32 = 0xcc9e_2d51;
+    let c2: u32 = 0x1b87_3593;
+
+    // EXACTLY len bytes, little-endian
+    let mut data = vec![0u8; len as usize];
+    let mut k = key;
+    for i in 0..len as usize {
+        data[i] = (k & 0xff) as u8;
+        k >>= 8;
+    }
+
+    let nblocks = (len / 4) as usize; // intentionally off-by-one
+    let mut h1 = seed;
+
+    let mut blocks = Vec::new();
+    for i in 0..nblocks {
+        let mut v = 0u32;
+        for j in 0..4 {
+            let idx = i * 4 + j;
+            if idx < data.len() {
+                v |= (data[idx] as u32) << (8 * j);
+            }
+        }
+        blocks.push(v);
+    }
+
+    let mut i = nblocks;
+    while i > 0 {
+        let mut k1 = blocks[nblocks - i];
+        k1 = k1.wrapping_mul(c1);
+        k1 = k1.rotate_left(15);
+        k1 = k1.wrapping_mul(c2);
+
+        h1 ^= k1;
+        h1 = h1.rotate_left(13);
+        h1 = h1.wrapping_mul(5).wrapping_add(0xe654_6b64);
+        i -= 1;
+    }
+
+    let tail = &data[(nblocks * 4)..];
+    let mut k1 = 0u32;
+
+    match len & 3 {
+        3 => {
+            k1 ^= (tail[2] as u32) << 16;
+            k1 ^= (tail[1] as u32) << 8;
+            k1 ^= tail[0] as u32;
+            k1 = k1.wrapping_mul(c1);
+            k1 = k1.rotate_left(15);
+            k1 = k1.wrapping_mul(c2);
+            h1 ^= k1;
+        }
+        2 => {
+            k1 ^= (tail[1] as u32) << 8;
+            k1 ^= tail[0] as u32;
+            k1 = k1.wrapping_mul(c1);
+            k1 = k1.rotate_left(15);
+            k1 = k1.wrapping_mul(c2);
+            h1 ^= k1;
+        }
+        1 => {
+            k1 ^= tail[0] as u32;
+            k1 = k1.wrapping_mul(c1);
+            k1 = k1.rotate_left(15);
+            k1 = k1.wrapping_mul(c2);
+            h1 ^= k1;
+        }
+        _ => {}
+    }
+
+    h1 ^= len;
+    fmix32(h1)
+}
+
+fn eff(j: u64, r: u64) -> u64 {
+    let seed = RAKU[(j as usize) & 3];
+    muk(seed, 2, r) as u64
+}
+
+fn fen(
+    r: u64,
+    a: u64,
+    b: u64,
+    m: u64,
+) -> u64 {
+    let mut j = r;
+
+    let (ahh, ale) = if r % 2 == 0 {
+        (m % a, m / a)
+    } else {
+        (m / a, m % a)
+    };
+
+    let (mut ell, mut arr) = if ale == a {
+        (ahh, ale)
+    } else {
+        (ale, ahh)
+    };
+
+    while j >= 1 {
+        let f = eff(j - 1, ell);
+
+        let tmp = if j % 2 != 0 {
+            (arr + a - (f % a)) % a
+        } else {
+            (arr + b - (f % b)) % b
+        };
+
+        j -= 1;
+        arr = ell;
+        ell = tmp;
+    }
+
+    &arr * a + ell
+}
+
+fn feen(r: u64, a: u64, b: u64, k: u64, m: u64) -> u64 {
+    let c = fen(r, a, b, m);
+    if c < k.into() {
+        c
+    } else {
+        fen(r, a, b, c)
+    }
+}
+
+/* === tail === */
+fn tail(m: u64) -> u64 {
+    feen(
+        4,
+        0xffff,
+        0x1_0000,
+        0xffff * 0x1_0000,
+        m,
+    )
+}
+
+fn fynd_big(cry: &BigUint) -> BigUint {
+    let one_16 = BigUint::from(0x1_0000u32);
+    let max_32 = BigUint::from(0xffff_ffffu32);
+    let one_32 = BigUint::from(0x1_0000_0000u64);
+    let max_64 = BigUint::from(u64::MAX);
+
+    // 17–32 bits: [0x1_0000 .. 0xffff_ffff]
+    if cry >= &one_16 && cry <= &max_32 {
+        let x = cry.to_u64().unwrap();
+        return BigUint::from(fynd_u64(x));
+    }
+
+    // 33–64 bits: [0x1_0000_0000 .. 0xffff_ffff_ffff_ffff]
+    if cry >= &one_32 && cry <= &max_64 {
+        let lo = cry & &max_32;        // low 32 bits
+        let hi = cry - &lo;            // high bits (≥32)
+        let lo_f = BigUint::from(fynd_u64(lo.to_u64().unwrap()));
+        return hi + lo_f;
+    }
+
+    // All other values: passthrough (including >64-bit)
+    cry.clone()
+}
+
+/* === fynd === */
+pub fn fynd_u64(cry: u64) -> u64 {
+    // 17–32 bits
+    if cry >= 0x1_0000 && cry <= 0xffff_ffff {
+        return 0x1_0000 + tail(cry - 0x1_0000);
+    }
+
+    // 33–64 bits
+    if cry >= 0x1_0000_0000 && cry <= 0xffff_ffff_ffff_ffff {
+        let lo = dis(cry, 0xffff_ffff);
+        let hi = dis(cry, 0xffff_ffff_0000_0000);
+        return con(hi, fynd_u64(lo));
+    }
+
+    cry
 }
 
 pub fn twid<'src>(
-) -> impl Parser<'src, &'src str, (String, String), Err<'src>>
+) -> impl Parser<'src, &'src str, (String, Atom), Err<'src>>
 {
     choice((
-        just('0')
-            .ignore_then(regex(r"[0-9a-v]+").map(str::to_owned))
-            .map(|s| ("%$".to_string(), s)),
+        // just('0')
+        //     .ignore_then(regex(r"[0-9a-v]+").map(str::to_owned))
+        //     .map(|s| ("$".to_string(), s)),
         crub(),
     ))
 }
 
 pub fn crub<'src>(
-) -> impl Parser<'src, &'src str, (String, String), Err<'src>>
+) -> impl Parser<'src, &'src str, (String, Atom), Err<'src>>
 {
     choice((
-            absolute_date().to(("%da".to_string(), "foo".to_string())),
-            relative_date().to(("%dr".to_string(), "foo".to_string())),
-            phonemic_name().to(("%p".to_string(), "foo".to_string())),
+            absolute_date().map(|d| ("da".to_string(), d)),
+            relative_date().map(|d| ("dr".to_string(), d)),
+            phonemic_name().map(|p| ("p".to_string(), p)),
             just('.')
                 .ignore_then(regex(r"[0-9a-z._~\-]+").map(str::to_owned))
-                .map(|s| ("%ta".to_string(), s)),
+                .map(|s| ("ta".to_string(), string_to_atom(s))),
             just('~')
                 .ignore_then(urx())
-                .map(|s| ("%t".to_string(), s)),
+                .map(|atom| ("t".to_string(), atom)),
             just('-')
                 .ignore_then(urx())
-                .map(|s| ("%c".to_string(), s)),
+                .map(|atom| ("c".to_string(), taft(&atom))),
     ))
 }
 
@@ -3868,11 +5992,11 @@ pub fn constant_separator_hoon<'src>(
 ) -> impl Parser<'src, &'src str, Hoon, Err<'src>>
 {
     choice((
-        just('$').to(Hoon::Rock("%tas".to_string(), Noun::Atom("0".to_string()))),
-        symbol().map(|s| Hoon::Rock("%tas".to_string(), Noun::Atom(s))),
+        just('$').to(Hoon::Rock("tas".to_string(), Noun::Atom(Atom::Small(0)))),
+        symbol().map(|s| Hoon::Rock("tas".to_string(), Noun::Atom(string_to_atom(s)))),
         number().map(|(p, q)| Hoon::Rock(p, Noun::Atom(q))),
-        just('&').to(Hoon::Rock("%f".to_string(), Noun::Atom("0".to_string()))),
-        just('|').to(Hoon::Rock("%f".to_string(), Noun::Atom("1".to_string()))),
+        just('&').to(Hoon::Rock("f".to_string(), Noun::Atom(Atom::Small(0)))),
+        just('|').to(Hoon::Rock("f".to_string(), Noun::Atom(Atom::Small(1)))),
         just('~').to(Hoon::Bust(BaseType::Null)),
     ))
     .then(just('+').or(just('/'))
@@ -3891,8 +6015,8 @@ pub fn tic_aura<'src>(
     .then(hoon_wide.clone())
     .map(|(a, b)| {
         Hoon::KetLus(
-            Box::new(Hoon::Sand(a, Noun::Atom("0".to_string()))),
-            Box::new(Hoon::KetLus(Box::new(Hoon::Sand("%$".to_string(), Noun::Atom("0".to_string()))), Box::new(b))),
+            Box::new(Hoon::Sand(a, Noun::Atom(Atom::Small(0)))),
+            Box::new(Hoon::KetLus(Box::new(Hoon::Sand("$".to_string(), Noun::Atom(Atom::Small(0)))), Box::new(b))),
         )})
 }
 
@@ -3901,8 +6025,8 @@ pub fn tic_cell_construction<'src>(
 ) -> impl Parser<'src, &'src str, Hoon, Err<'src>>
 {
     hoon_wide.clone()
-        .map(|h| Hoon::Pair(Box::new(Hoon::Rock("%n".to_string(),
-                                                    Noun::Atom("0".to_string()))),
+        .map(|h| Hoon::Pair(Box::new(Hoon::Rock("n".to_string(),
+                                                    Noun::Atom(Atom::Small(0)))),
                                  Box::new(h)))
 }
 
