@@ -3,14 +3,19 @@ use std::collections::*;
 use num_bigint::BigUint;
 use serde::Serialize;
 use num_traits::Zero;
+use chumsky::{
+    span::SimpleSpan,
+    input::{Stream, ValueInput, StrInput},
+    prelude::*,
+};
 
-#[derive(serde::Serialize, PartialEq, Debug, Clone)]
+#[derive(serde::Serialize, Hash, Eq, PartialEq, Debug, Clone)]
 pub enum Noun {
     Atom(Atom),
     Cell(Box<Noun>, Box<Noun>),
 }
 
-#[derive(serde::Serialize, PartialEq, Debug, Clone)]
+#[derive(serde::Serialize, Hash, Eq, PartialEq, Debug, Clone)]
 pub enum Atom {
     Small(u128),
     #[serde(serialize_with = "serialize_biguint_decimal")]
@@ -203,6 +208,13 @@ pub enum Chum {
 }
 
 #[derive(serde::Serialize, PartialEq, Debug, Clone)]
+pub enum Coin {
+    Dime(String, Atom),
+    Blob(Noun),
+    Many(Vec<Coin>),
+}
+
+#[derive(serde::Serialize, PartialEq, Debug, Clone)]
 pub struct Pint {
     pub p: (u64, u64),
     pub q: (u64, u64),
@@ -223,9 +235,12 @@ pub enum Limb {
 
 pub type WingType = Vec<Limb>;
 
+pub type ChumskySpot = (usize, usize);
+
 #[derive(serde::Serialize, PartialEq, Debug, Clone)]
 pub enum Spec {
     Base(BaseType),
+    ChumskyDbug(ChumskySpot, Box<Spec>), // resolves into Dbug after parsing
     Dbug(Spot, Box<Spec>),
     Leaf(String, Atom),
     Like(WingType, Vec<WingType>),
@@ -335,6 +350,7 @@ pub enum Skin {
     Term(String),
     Base(BaseType),
     Cell(Box<Skin>, Box<Skin>),
+    ChumskyDbug(ChumskySpot, Box<Skin>), // resolves into Dbug after parsing
     Dbug(Spot, Box<Skin>),
     Leaf(String, Atom),
     Name(String, Box<Skin>),
@@ -383,6 +399,7 @@ pub enum Hoon {
     Axis(u64),
     Base(BaseType),
     Bust(BaseType),
+    ChumskyDbug(ChumskySpot, Box<Hoon>), // resolves into Dbug after parsing
     Dbug(Spot, Box<Hoon>),
     Eror(String),
     Hand(Box<Type>, Nock),
@@ -494,4 +511,6 @@ pub enum Hoon {
     ZapTis(Box<Hoon>),
     ZapPat(Vec<WingType>, Box<Hoon>, Box<Hoon>),
     ZapWut(ZpwtArg, Box<Hoon>),
+    ZapCol(Box<Hoon>),  // should not exit in the final ast
+    ZapDot(Box<Hoon>),  // should not exit in the final ast
 }

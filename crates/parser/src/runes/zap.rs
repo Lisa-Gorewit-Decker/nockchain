@@ -108,16 +108,18 @@ pub fn zapdot<'src>(
     hoon:        impl ParserExt<'src, Hoon>,
 ) -> impl Parser<'src, &'src str, Hoon, Err<'src>>
 {
-    gap()  // TODO: this needs to disable tracing..
+    gap()
     .ignore_then(hoon.clone())
+    .map(|h| Hoon::ZapDot(Box::new(h)))
 }
 
 pub fn zapdot_wide<'src>(
     hoon_wide:        impl ParserExt<'src, Hoon>,
 ) -> impl Parser<'src, &'src str, Hoon, Err<'src>>
 {
-    hoon_wide.clone()   // TODO: this needs to disable tracing..
+    hoon_wide.clone()
     .delimited_by(just('('), just(')'))
+    .map(|h| Hoon::ZapDot(Box::new(h)))
 }
 
 pub fn zaptis<'src>(
@@ -184,16 +186,18 @@ pub fn zapcol<'src>(
     hoon:        impl ParserExt<'src, Hoon>,
 ) -> impl Parser<'src, &'src str, Hoon, Err<'src>>
 {
-    gap()   // TODO: this needs to enable tracing...
+    gap()
     .ignore_then(hoon.clone())
+    .map(|h| Hoon::ZapCol(Box::new(h)))
 }
 
 pub fn zapcol_wide<'src>(
     hoon_wide:        impl ParserExt<'src, Hoon>,
 ) -> impl Parser<'src, &'src str, Hoon, Err<'src>>
 {
-    hoon_wide.clone()   // TODO: this needs to enable tracing..
+    hoon_wide.clone()
     .delimited_by(just('('), just(')'))
+    .map(|h| Hoon::ZapCol(Box::new(h)))
 }
 
 pub fn zapwut<'src>(

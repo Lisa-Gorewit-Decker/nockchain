@@ -7,10 +7,13 @@ use chumsky::{
 };
 
 use std::fs;
+use std::rc::Rc;
 use std::collections::HashMap;
 use std::time::Instant;
 use std::io::Write;
 use std::path::PathBuf;
+use std::sync::Arc;
+use std::cell::Cell;
 
 use parser::ast::hoon::*;
 use parser::utils::*;
@@ -68,7 +71,15 @@ fn spec_wide_parser<'src>(
         bucwut_irregular(spec_wide.clone()).boxed(),         // ?(foo bar)
         parenthesis_spec(hoon_wide.clone(),
                                 spec_wide.clone()).boxed(),  // (foo bar)
-        constant().map(|(p, q)| Spec::Leaf(p, q)).boxed(),   //  %foo
+        constant()
+        .try_map(|coin, span| {                             //  %foo
+            match coin {
+                Coin::Dime(p, q) => {
+                    Ok(Spec::Leaf(p, q))
+                }
+                _ =>  Err(Rich::custom(span, "invalid spec constant")),
+            }
+        }).boxed(),
         aura_spec().boxed(),                                 //  @foo
         loop_spec().boxed(),                                 //  /foo
         just('^').to(Spec::Base(BaseType::Cell)).boxed(),
@@ -84,7 +95,7 @@ fn spec_wide_parser<'src>(
 fn hoon_wide_parser<'src>(
     hoon_wide:   impl ParserExt<'src, Hoon>,
     spec_wide:   impl ParserExt<'src, Spec>,
-    wer: PathBuf,
+    wer: Path,
 ) -> impl Parser<'src, &'src str, Hoon, Err<'src>> + Clone
 {
     let parsers = vec![
@@ -107,12 +118,13 @@ fn hoon_wide_parser<'src>(
             ))
         ).boxed(),
 
-        just('%').ignore_then(
+        just('%')
+        .ignore_then(
         choice((
             cen_runes_wide(hoon_wide.clone()),
             just('|').to(Hoon::Rock("f".to_string(), Noun::Atom(Atom::Small(1)))),
             just('&').to(Hoon::Rock("f".to_string(), Noun::Atom(Atom::Small(0)))),
-            nuck().map(|(p, q)| Hoon::Rock(p, Noun::Atom(q))),
+            nuck().map(|coin| jock(true, &coin)),
         ))).boxed(),
 
         just(':').ignore_then(
@@ -126,7 +138,7 @@ fn hoon_wide_parser<'src>(
             choice((
                     sig_runes_wide(hoon_wide.clone()),
                     censig_irregular(hoon_wide.clone()),              //  ~(a b c)
-                    twid().map(|(p, q)| Hoon::Sand(p, Noun::Atom(q))),
+                    twid().map(|coin| jock(false, &coin)),
                 ))).boxed(),
 
         rune_branch!(
@@ -152,7 +164,7 @@ fn hoon_wide_parser<'src>(
         just('.').ignore_then(
             choice((
                 dot_runes_wide(hoon_wide.clone(), spec_wide.clone()),
-                perd().map(|(p, q)| Hoon::Sand(p, Noun::Atom(q))),
+                perd().map(|coin| jock(false, &coin)),
             ))).boxed(),
 
         just('`')
@@ -181,8 +193,8 @@ fn hoon_wide_parser<'src>(
         number().map(|(p, q)| Hoon::Sand(p, Noun::Atom(q))).boxed(),          //  111.111, 0x1111, etc.
         wing().boxed(),                                                       //   foo, foo.bar, etc.
         function_call(hoon_wide.clone()).boxed(),                             //  (a b)
-        constant().map(|(p, q)| Hoon::Rock(p, Noun::Atom(q))).boxed(),        //  %foo
-        cord().map(|s| Hoon::Sand("t".to_string(), Noun::Atom(s))).boxed(),  //  'foo'
+        constant().map(|coin| jock(true, &coin)).boxed(),                      //  %foo
+        cord().map(|s| Hoon::Sand("t".to_string(), Noun::Atom(s))).boxed(),   //  'foo'
         path(hoon_wide.clone(), wer).boxed(),                                 //  /a/b/c
         tape(hoon_wide.clone()).boxed(),                                      //  "foo"
         just('~').to(Hoon::Bust(BaseType::Null)).boxed(),
@@ -216,6 +228,7 @@ fn hoon_parser<'src>(
     hoon_wide: impl ParserExt<'src, Hoon>,
     spec: impl ParserExt<'src, Spec>,
     spec_wide: impl ParserExt<'src, Spec>,
+    wer: Path,
 ) -> impl Parser<'src, &'src str, Hoon, Err<'src>>
 {
     let parsers = vec![
@@ -295,28 +308,29 @@ fn hoon_parser<'src>(
         noun_tall(hoon.clone()).boxed(),
     ];
 
-    choice(parsers).labelled("Hoon")
-        .boxed()
+    choice(parsers)
+    .map_with(wrap_hoon_with_trace())
+    .labelled("Hoon").boxed()
 }
 
 pub fn parser<'src>(
-    // bug: bool,
-    wer: PathBuf,
-)
--> impl Parser<'src, &'src str, Hoon, Err<'src>> {
+    wer: Path,
+) -> impl Parser<'src, &'src str, Hoon, Err<'src>> {
     let hoon = recursive(|hoon| {
         let mut spec_wide_handle = Recursive::declare();
         let mut hoon_wide_handle = Recursive::declare();
 
         let spec = recursive(|spec| {
             spec_parser(spec.clone(),
-                                spec_wide_handle.clone(),
-                                hoon.clone())
+                        spec_wide_handle.clone(),
+                        hoon.clone())
         }).labelled("spec");
 
-        let spec_wide_body = recursive(|spec_wide_self| {
-            spec_wide_parser(spec_wide_self.clone(), hoon_wide_handle.clone())
-        });
+        let spec_wide_body =
+            recursive(|spec_wide_self| {
+                spec_wide_parser(spec_wide_self.clone(),
+                                hoon_wide_handle.clone())
+            });
 
         let hoon_wide_body = hoon_wide_parser(
             hoon_wide_handle.clone(),
@@ -330,7 +344,12 @@ pub fn parser<'src>(
         let spec_wide = spec_wide_handle.clone();
         let hoon_wide = hoon_wide_handle.clone();
 
-        hoon_parser(hoon.clone(), hoon_wide.clone(), spec.clone(), spec_wide).boxed()
+        hoon_parser(hoon.clone(),
+                    hoon_wide.clone(),
+                    spec.clone(),
+                    spec_wide,
+                    wer)
+        .boxed()
     });
 
     hoon.padded_by(gap().or_not()).boxed()
@@ -339,9 +358,11 @@ pub fn parser<'src>(
 #[derive(ClapParser, Debug)]
 #[command(author, version, about = "Parses a Hoon source file")]
 struct Cli {
-    /// Path to the input .hoon file
-    #[arg(value_name = "FILE", help = "Input Hoon source file")]
+    #[arg(value_name = "FILE", help = "Input Hoon Source File")]
     input: PathBuf,
+
+    #[arg(long = "no_dbug", short = 'b', help = "Disables Debug Traces")]
+    no_dbug: bool,
 }
 
 fn main() {
@@ -353,12 +374,19 @@ fn main() {
     });
 
     let start = Instant::now();
-    // println!("{:?}", source.as_bytes());
 
-    match parser(cli.input).parse(source.as_str()).into_result() {
+    let wer: Vec<String> =
+        cli.input.clone()
+        .iter()
+        .map(|s| s.to_string_lossy().into_owned())
+        .collect();
+
+    match parser(wer.clone()).parse(source.as_str()).into_result() {
         Ok(res) => {
+            let linemap = Arc::new(LineMap::new(&source));
+            let traced = process_hoon_traces(res.clone(), &wer, !cli.no_dbug, &linemap);
             let took = start.elapsed();
-            let json = serde_json::to_string_pretty(&res).expect("serialisation failed");
+            let json = serde_json::to_string_pretty(&traced).expect("serialisation failed");
             let out_path = std::path::PathBuf::from("out.json");
             std::fs::write(&out_path, json + "\n").unwrap_or_else(|e| {
                 eprintln!("Failed to write '{}': {}", out_path.display(), e);
@@ -369,17 +397,18 @@ fn main() {
         }
         Err(errs) => {
             for err in errs {
-                Report::build(ReportKind::Error, ((), err.span().into_range()))
+                let file_id = cli.input.to_string_lossy().to_string();
+
+                Report::build(ReportKind::Error, (file_id.clone(), err.span().into_range()))
                     .with_config(ariadne::Config::new().with_index_type(ariadne::IndexType::Byte))
                     .with_code(3)
-                    // .with_message(err.to_string())
                     .with_label(
-                        Label::new(((), err.span().into_range()))
+                        Label::new((file_id.clone(), err.span().into_range()))
                             .with_message(err.reason().to_string())
                             .with_color(Color::Red),
                     )
                     .finish()
-                    .eprint(Source::from(source.clone()))
+                    .eprint((file_id.clone(), Source::from(source.clone())))
                     .unwrap();
             }
         }

@@ -3,14 +3,23 @@ use crate::ast::hoon::*;
 use std::cmp;
 use std::sync::Arc;
 use std::str::FromStr;
+use std::hash::{Hash, Hasher, DefaultHasher};
 use std::path::PathBuf;
+use std::rc::Rc;
+use std::cell::Cell;
 use std::collections::HashMap;
 use num_bigint::BigUint;
 use num_traits::{One, Num, FromPrimitive, ToPrimitive};
 use num_traits::identities::Zero;
 use sha2::{Sha256, Digest};
+use bitvec::prelude::*;
+use bitvec::vec::BitVec;
+use bitvec::slice::BitSlice;
+use bitvec::order::Lsb0;
 use chumsky::{
+    span::Span,
     input::{Stream, ValueInput, Input, StrInput},
+    input::MapExtra,
     prelude::*,
 };
 
@@ -76,7 +85,7 @@ pub fn function(
     dom: u64,
     hay: &WingType,
     cox: &HashMap<String, Spec>,
-    bug: &Vec<Spot>,
+    bug: &Vec<ChumskySpot>,
     nut: &Option<Note>,
     def: &Option<Hoon>,
 ) -> Hoon {
@@ -97,7 +106,7 @@ pub fn interface(
     dom: u64,
     hay: &WingType,
     cox: &HashMap<String, Spec>,
-    bug: &Vec<Spot>,
+    bug: &Vec<ChumskySpot>,
     nut: &Option<Note>,
     def: &Option<Hoon>,
 ) -> Hoon {
@@ -126,7 +135,7 @@ pub fn spore(spec: Spec,
                 dom: u64,
                 hay: WingType,
                 cox: HashMap<String, Spec>,
-                bug: Vec<Spot>,
+                bug: Vec<ChumskySpot>,
                 nut: Option<Note>,
                 def: Option<Hoon>) -> Hoon {
     let subject = match def {
@@ -141,7 +150,7 @@ pub fn spore_recursion(spec: Spec,
                 dom: u64,
                 hay: WingType,
                 cox: HashMap<String, Spec>,
-                bug: Vec<Spot>,
+                bug: Vec<ChumskySpot>,
                 nut: Option<Note>,
                 def: Option<Hoon>) -> Hoon {
     match spec {
@@ -160,6 +169,10 @@ pub fn spore_recursion(spec: Spec,
         Spec::Dbug(spot, spec) => {
             let tail = spore_recursion(*spec, dom, hay, cox, bug, nut, def);
             Hoon::Dbug(spot, Box::new(tail))
+        }
+        Spec::ChumskyDbug(spot, spec) => {
+            let tail = spore_recursion(*spec, dom, hay, cox, bug, nut, def);
+            Hoon::ChumskyDbug(spot, Box::new(tail))
         }
         Spec::Leaf(term, atom) => Hoon::Rock(term, Noun::Atom(atom)),
         Spec::Loop(term) => {
@@ -208,7 +221,7 @@ pub fn spore_buccol_recursion(spec: Spec,
                 dom: u64,
                 hay: WingType,
                 cox: HashMap<String, Spec>,
-                bug: Vec<Spot>,
+                bug: Vec<ChumskySpot>,
                 nut: Option<Note>,
                 def: Option<Hoon>) -> Hoon {
     if list_spec.is_empty() {
@@ -238,7 +251,7 @@ pub fn spore_bucwut_recursion(spec: Spec,
                 dom: u64,
                 hay: WingType,
                 cox: HashMap<String, Spec>,
-                bug: Vec<Spot>,
+                bug: Vec<ChumskySpot>,
                 nut: Option<Note>,
                 def: Option<Hoon>) -> Hoon {
     if list_spec.is_empty() {
@@ -260,7 +273,7 @@ pub fn spore_buccen_recursion(spec: Spec,
                 dom: u64,
                 hay: WingType,
                 cox: HashMap<String, Spec>,
-                bug: Vec<Spot>,
+                bug: Vec<ChumskySpot>,
                 nut: Option<Note>,
                 def: Option<Hoon>) -> Hoon {
     if list_spec.is_empty() {
@@ -282,7 +295,7 @@ pub fn example(
     dom: u64,
     hay: &WingType,
     cox: &HashMap<String, Spec>,
-    bug: &Vec<Spot>,
+    bug: &Vec<ChumskySpot>,
     nut: &Option<Note>,
     def: &Option<Hoon>,
 ) -> Hoon {
@@ -290,9 +303,14 @@ pub fn example(
         Spec::Base(b) => {
             decorate(basal(b.clone()), bug.clone(), nut.clone())
         }
-        Spec::Dbug(spot, inner) => {
+        Spec::ChumskyDbug(spot, inner) => {
             let mut bug = bug.clone();
             bug.push(spot.clone());
+            example(&inner, dom, hay, cox, &bug, nut, def)
+        }
+        Spec::Dbug(spot, inner) => {  // this should not happen here on rust land
+            // let mut bug = bug.clone();
+            // bug.push(spot.clone());
             example(&inner, dom, hay, cox, &bug, nut, def)
         }
         Spec::Leaf(term, atom) => {
@@ -400,7 +418,7 @@ fn vair_case(
     dom: u64,
     hay: &WingType,
     cox: &HashMap<String, Spec>,
-    bug: &Vec<Spot>,
+    bug: &Vec<ChumskySpot>,
     nut: &Option<Note>,
     def: &Option<Hoon>,
 ) -> Hoon {
@@ -414,7 +432,7 @@ pub fn basic(bas: BaseType,
                 dom: u64,
                 hay: &WingType,
                 cox: &HashMap<String, Spec>,
-                bug: &Vec<Spot>,
+                bug: &Vec<ChumskySpot>,
                 nut: &Option<Note>,
                 def: &Option<Hoon>) -> Hoon {
     match bas {
@@ -484,7 +502,7 @@ pub fn switch(
     dom: u64,
     hay: &WingType,
     cox: &HashMap<String, Spec>,
-    bug: &Vec<Spot>,
+    bug: &Vec<ChumskySpot>,
     nut: &Option<Note>,
     def: &Option<Hoon>,
 ) -> Hoon {
@@ -520,7 +538,7 @@ pub fn choice_(one: Spec,
             dom: u64,
             hay: &WingType,
             cox: &HashMap<String, Spec>,
-            bug: &Vec<Spot>,
+            bug: &Vec<ChumskySpot>,
             nut: &Option<Note>,
             def: &Option<Hoon>,
 ) -> Hoon {
@@ -558,13 +576,18 @@ pub fn relative(axe: u64,
                 dom: u64,
                 hay: &WingType,
                 cox: &HashMap<String, Spec>,
-                bug: &Vec<Spot>,
+                bug: &Vec<ChumskySpot>,
                 nut: &Option<Note>,
                 def: &Option<Hoon>,
 ) -> Hoon {
     match &mod_ {
         Spec::Base(p) => decorate(basic(p.clone(), axe, mod_, dom, hay, cox, &vec![], &None, &None), bug.clone(), nut.clone()),
-        Spec::Dbug(p, q) => {
+        Spec::Dbug(p, q) => {  //  this case shoud not happen here in rust land
+            // let mut bug = bug.clone();
+            // bug.push(p.clone());
+            relative(axe, &*q, dom, hay, cox, &bug, nut, def)
+        },
+        Spec::ChumskyDbug(p, q) => {
             let mut bug = bug.clone();
             bug.push(p.clone());
             relative(axe, &*q, dom, hay, cox, &bug, nut, def)
@@ -809,13 +832,13 @@ pub fn factory(mod_: Spec,
                 dom: u64,
                 hay: WingType,
                 cox: HashMap<String, Spec>,
-                bug: Vec<Spot>,
+                bug: Vec<ChumskySpot>,
                 nut: Option<Note>,
                 def: Option<Hoon>) -> Hoon {
     match mod_ {
-        Spec::Dbug(spot, spec) => {
-            let mut bug = bug.clone();
-            bug.insert(0, spot);
+        Spec::Dbug(spot, spec) => { //  this case shoud not happen here in rust land
+            // let mut bug = bug.clone();
+            // bug.insert(0, spot);
             factory(*spec, dom, hay, cox, bug, nut, def)
         }
         Spec::BucSig(hoon, spec) => {
@@ -862,6 +885,7 @@ pub fn open(gen: Hoon) -> Hoon {
         Hoon::Bust(b) => example(
             &Spec::Base(b), 1, &WingType::default(), &HashMap::new(), &Vec::new(), &None, &None,
         ),
+        Hoon::ChumskyDbug(_, q) => *q,
         Hoon::Dbug(_, q) => *q,
         Hoon::Eror(s) => panic!("{}", s),
         Hoon::Knit(woofs) => {
@@ -1930,6 +1954,9 @@ pub fn feck(gen: Hoon) -> Option<Atom> {
 
         Hoon::Dbug(_spot, expr) => feck(*expr),
 
+        Hoon::ChumskyDbug(_spot, expr) => feck(*expr),
+
+
         _ => None,
     }
 }
@@ -1977,6 +2004,13 @@ pub fn grip(skin: Skin, gen: Hoon, rel: WingType) -> Hoon {
 
         Skin::Dbug(spot, inner_skin) => {
             Hoon::Dbug(
+                spot,
+                Box::new(grip(*inner_skin, gen, rel)),
+            )
+        }
+
+        Skin::ChumskyDbug(spot, inner_skin) => {
+            Hoon::ChumskyDbug(
                 spot,
                 Box::new(grip(*inner_skin, gen, rel)),
             )
@@ -2127,6 +2161,7 @@ pub fn autoname(mod_spec: Spec) -> Option<String> {  //  ++autoname:ax
             _ => None,
         },
         Spec::Dbug(_, q) => autoname(*q),
+        Spec::ChumskyDbug(_, q) => autoname(*q),
         Spec::Leaf(p, _) => Some(p),
         Spec::Loop(p) => Some(p),
         Spec::Like(wing, _list_wing) => {
@@ -2169,11 +2204,11 @@ pub fn autoname(mod_spec: Spec) -> Option<String> {  //  ++autoname:ax
     }
 }
 
-pub fn decorate(gen: Hoon, bug: Vec<Spot>, nut: Option<Note>) -> Hoon {
+pub fn decorate(gen: Hoon, bug: Vec<ChumskySpot>, nut: Option<Note>) -> Hoon {
     let mut out = gen;
 
     for spot in bug.into_iter().rev() {
-        out = Hoon::Dbug(spot, Box::new(out));
+        out = Hoon::ChumskyDbug(spot, Box::new(out));
     }
 
     match nut {
@@ -3477,20 +3512,37 @@ pub fn jet_hooks<'src>(
 pub fn jet_signature<'src>(
 ) -> impl Parser<'src, &'src str, Chum, Err<'src>>
 {
-    let lef = just("%")  //  %k
-                .ignore_then(symbol().map(Chum::Lef));
+    let lef = symbol().map(Chum::Lef); //  %k
 
-    let stdkel = just("%")  //  %k.138
-                .ignore_then(symbol())
+    let stdkel = symbol()              //  %k.138
                 .then_ignore(just('.'))
                 .then(decimal_number())
                 .map(|(s, n)| Chum::StdKel(s, decimal_to_atom(n)));
 
-    // TODO: add other cases here
-    choice((
-        stdkel,
-        lef
-    ))
+    let venprokel =
+                symbol()  //  %k:foo.138
+                .then_ignore(just(':'))
+                .then(symbol())
+                .then_ignore(just('.'))
+                .then(decimal_number())
+                .map(|((s1, s2), n)| Chum::VenProKel(s1, s2, decimal_to_atom(n)));
+
+    let venproverkel =  //  %k:foo:bar..138
+                symbol()
+                .then_ignore(just(':'))
+                .then(symbol())
+                .then_ignore(just(".."))
+                .then(decimal_number())
+                .map(|((s1, s2), n)| Chum::VenProKel(s1, s2, decimal_to_atom(n)));
+
+    just("%")
+    .ignore_then(
+        choice((
+            venproverkel,
+            venprokel,
+            stdkel,
+            lef
+        )))
 }
 
 //  +lute
@@ -3721,26 +3773,26 @@ pub fn yell<'src>(
 }
 
 pub fn constant<'src>(
-) -> impl Parser<'src, &'src str, (String, Atom), Err<'src>>
+) -> impl Parser<'src, &'src str, Coin, Err<'src>>
 {
     let buc =      // %$
         just('$')
-        .to(("tas".to_string(), Atom::Small(0)));
+        .to(Coin::Dime("tas".to_string(), Atom::Small(0)));
 
     let cord =      // %'foo'
         cord()
-        .map(|s| ("t".to_string(), s));
+        .map(|s| Coin::Dime("t".to_string(), s));
 
     let coin =      // %123, %~m5, etc.
         nuck();
 
     let no =
         just('|')
-        .to(("f".to_string(), Atom::Small(1)));
+        .to(Coin::Dime("f".to_string(), Atom::Small(1)));
 
     let yes =
         just('&')
-        .to(("f".to_string(), Atom::Small(0)));
+        .to(Coin::Dime("f".to_string(), Atom::Small(0)));
 
     just('%')
     .ignore_then(
@@ -4190,6 +4242,48 @@ pub fn bitcoin_address<'src>(
     .ignore_then(
         regex(r"[0-9a-zA-Z]+").map(str::to_owned))
     .labelled("Bitcoin_Address")
+}
+
+
+pub fn urs<'src>(
+) -> impl Parser<'src, &'src str, Atom, Err<'src>> {
+    regex(r"[0-9a-z._~\-]+").map(|s: &str| string_to_atom(s.to_string()))
+}
+
+pub fn urt<'src>(
+) -> impl Parser<'src, &'src str, &'src str, Err<'src>> {
+    regex(r"[0-9a-z.~\-]+")
+    // .map(str::to_owned)
+}
+
+fn wick(s: &str) -> Option<String> {
+    let mut out = String::with_capacity(s.len());
+    let mut chars = s.chars().peekable();
+
+    while let Some(c) = chars.next() {
+        if c == '~' {
+            match chars.next() {
+                Some('~') => out.push('~'),           // ~~ -> ~
+                Some('-') => out.push('_'),           // ~- -> _
+                Some(_) | None => return None,        // invalid escape
+            }
+        } else {
+            // Only allow valid @ta characters: [a-z0-9._-]
+            // (original regex ensures this, but let’s be safe)
+            if c.is_ascii_lowercase()
+                || c.is_ascii_digit()
+                || c == '.'
+                || c == '_'
+                || c == '-'
+            {
+                out.push(c);
+            } else {
+                return None; // invalid char in atom
+            }
+        }
+    }
+
+    Some(out)
 }
 
 pub fn urx<'src>(
@@ -4643,13 +4737,56 @@ pub fn flop<T: Clone>(list: impl AsRef<[T]>) -> Vec<T> {
     v
 }
 
-fn poof(pax: Vec<String>) -> Vec<Hoon> {
+fn poof(pax: Path) -> Vec<Hoon> {
     pax.iter()
         .map(|a| { Hoon::Sand(
             "ta".to_string(),
             Noun::Atom(string_to_atom(a.clone())),
         )})
         .collect()
+}
+
+// used to create dbug traces
+#[derive(Clone)]
+pub struct LineMap {
+    starts: Vec<usize>,
+}
+
+impl LineMap {
+    #[inline]
+    pub fn new(src: &str) -> Self {
+        let mut starts = Vec::with_capacity(128);
+        starts.push(0);
+
+        for (i, b) in src.bytes().enumerate() {
+            if b == b'\n' {
+                starts.push(i + 1);
+            }
+        }
+
+        Self { starts }
+    }
+
+    #[inline(always)]
+    fn line_col(&self, byte: usize) -> (u64, u64) {
+        let line = match self.starts.binary_search(&byte) {
+            Ok(i) => i,
+            Err(i) => i - 1,
+        };
+
+        (
+            (line + 1) as u64,
+            (byte - self.starts[line] + 1) as u64,
+        )
+    }
+
+    #[inline(always)]
+    pub fn pint(&self, span: std::ops::Range<usize>) -> Pint {
+        Pint {
+            p: self.line_col(span.start),
+            q: self.line_col(span.end),
+        }
+    }
 }
 
 fn poon(
@@ -4688,15 +4825,10 @@ fn poon(
 pub fn posh(
     pre: Option<Vec<Option<Hoon>>>,           // (unit tyke)
     pof: Option<(usize, Vec<Option<Hoon>>)>,  // (unit [p=@ud q=tyke])
-    wer: &PathBuf,
+    wer: Path,
 ) -> Option<Vec<Hoon>> {
 
-    let wer_strings: Vec<String> = wer
-        .iter()
-        .map(|s| s.to_string_lossy().into_owned())
-        .collect();
-
-    let wom: Vec<Hoon> = poof(wer_strings);
+    let wom: Vec<Hoon> = poof(wer);
 
     let yez = if pre.is_none() {
         Some(wom.clone())
@@ -4733,60 +4865,123 @@ pub fn posh(
     }
 }
 
+pub fn nusk<'src>(
+) -> impl Parser<'src, &'src str, Coin, Err<'src>>
+{
+    urt()
+    .try_map(|s, span| {
+           wick(s).ok_or_else(||
+                Rich::custom(span, format!("invalid knot escape in '{}'", s))
+            )
+        })
+        .try_map(|unescaped: String, span| {
+            let parsed = nuck().parse(&unescaped);
+            match parsed.into_result() {
+                Ok(output) => Ok(output),
+                Err(_errors) => {
+                    Err(Rich::custom(span, "nuck parse failed"))
+                }
+            }
+        })
+}
+
+pub fn jock(rad: bool, lot: &Coin) -> Hoon {
+    match lot {
+        Coin::Dime(tag, atom) => {
+            if rad {
+                Hoon::Rock(tag.clone(), Noun::Atom(atom.clone()))
+            } else {
+                Hoon::Sand(tag.clone(), Noun::Atom(atom.clone()))
+            }
+        }
+
+        Coin::Blob(noun) => {
+            if rad {
+                Hoon::Rock("$".to_string(), noun.clone())
+            } else {
+                match noun {
+                    Noun::Atom(atom) => Hoon::Sand("$".to_string(), Noun::Atom(atom.clone())),
+                    Noun::Cell(head, tail) => {
+                        Hoon::Pair(
+                            Box::new(jock(rad, &Coin::Blob(*head.clone()))),
+                            Box::new(jock(rad, &Coin::Blob(*tail.clone()))),
+                        )
+                    }
+                }
+            }
+        }
+
+        Coin::Many(coins) => {
+            Hoon::ColTar(coins.iter().map(|c| jock(rad, c)).collect())
+        }
+    }
+}
+
 pub fn nuck<'src>(
-) -> impl Parser<'src, &'src str, (String, Atom), Err<'src>>
+) -> impl Parser<'src, &'src str, Coin, Err<'src>>
 {
     choice((
-        symbol().map(|s| ("tas".to_string(), string_to_atom(s))),
-        number(),
+        symbol().map(|s| Coin::Dime("tas".to_string(), string_to_atom(s))),
+        number().map(|(p, q)| Coin::Dime(p, q)),
         just('.').ignore_then(perd()),
         just('~').ignore_then(
             choice((
                 twid(),
-                empty().to(("n".to_string(), Atom::Small(0))),
+                empty().to(Coin::Dime("n".to_string(), Atom::Small(0))),
             ))),
     )).boxed()
 }
 
 pub fn perd<'src>(
-) -> impl Parser<'src, &'src str, (String, Atom), Err<'src>>
+) -> impl Parser<'src, &'src str, Coin, Err<'src>>
 {
-    zust()
+    choice((
+        zust(),
+        nusk()
+            .separated_by(just('_'))
+            .at_least(1)
+            .collect::<Vec<_>>()
+            .delimited_by(just('_'), just("__"))
+            .map(|t| Coin::Many(t))
+    ))
 }
 
 pub fn zust<'src>(
-) -> impl Parser<'src, &'src str, (String, Atom), Err<'src>>
+) -> impl Parser<'src, &'src str, Coin, Err<'src>>
 {
     choice((
         ipv4_address().try_map(|s, span| {
             let maybe_ipv4 = ipv4_to_atom(s);
             match maybe_ipv4 {
                 None => Err(Rich::custom(span, "invalid ipv4")),
-                Some(atom) => Ok(("if".to_string(), atom)),
+                Some(atom) => Ok(Coin::Dime("if".to_string(), atom)),
             }
         }),
         ipv6_address().try_map(|s, span| {
             let maybe_ipv6 = ipv6_to_atom(s);
             match maybe_ipv6 {
                 None => Err(Rich::custom(span, "invalid ipv6")),
-                Some(atom) => Ok(("is".to_string(), atom)),
+                Some(atom) => Ok(Coin::Dime("is".to_string(), atom)),
             }
         }),
-        float().map(|(p, q)| (p, q)),
-        just("y").to(("f".to_string(), Atom::Small(0))),
-        just("n").to(("f".to_string(), Atom::Small(1))),
+        float().map(|(p, q)| Coin::Dime(p, q)),
+        just("y").to(Coin::Dime("f".to_string(), Atom::Small(0))),
+        just("n").to(Coin::Dime("f".to_string(), Atom::Small(1))),
         just('~')
             .ignore_then(phonemic_name_unscrambled())
-            .map(|s| ("q".to_string(), s)),
+            .map(|s| Coin::Dime("q".to_string(), s)),
     ))
 }
 
 pub fn path<'src>(
     hoon_wide: impl ParserExt<'src, Hoon>,
-    wer: PathBuf,
+    wer: Path,
 ) -> impl Parser<'src, &'src str, Hoon, Err<'src>>
 {
-    let wer = Arc::new(wer);
+    let wer1 = wer.clone();
+    let wer2 = wer.clone();
+    let wer3 = wer.clone();
+    let wer4 = wer.clone();
 
     let hasp = choice((
                 hoon_wide.clone().delimited_by(just('['), just(']')),
@@ -4801,7 +4996,7 @@ pub fn path<'src>(
                     }),
                 just('$').to(Hoon::Sand("tas".to_string(), Noun::Atom(Atom::Small(0)))),
                 cord().map(|s| Hoon::Sand("t".to_string(), Noun::Atom(s))),
-                nuck().map(|(p, q)| Hoon::Sand(p, Noun::Atom(q))),
+                nuck().map(|coin| jock(false, &coin)), // TODO: call rent here..
             ));
 
     let gasp = choice((
@@ -4853,10 +5048,9 @@ pub fn path<'src>(
                             .or_not());
 
     let rood = {
-        let wer2 = wer.clone();
         just("/")
         .ignore_then(poor.try_map(move |(pre, pof), span| {
-            match posh(pre, pof, &wer2) {
+            match posh(pre, pof, wer1.clone()) {
                 Some(list) => Ok(Hoon::ColSig(list)),
                 None => Err(Rich::custom(span, "error parsing path")),
             }
@@ -4864,9 +5058,8 @@ pub fn path<'src>(
     };
 
     let cen_fas = {
-        let wer2 = wer.clone();
         porc.try_map(move |(a, b), span| {
-            match posh(Some(vec![None]), Some((a, b)), &wer2) {
+            match posh(Some(vec![None]), Some((a, b)), wer2.clone()) {
                 Some(list) => Ok(Hoon::ColSig(list)),
                 None => Err(Rich::custom(span, "error parsing path")),
             }
@@ -4874,9 +5067,8 @@ pub fn path<'src>(
     };
 
     let multi_cen = {
-        let wer2 = wer.clone();
         just("%").repeated().count().try_map(move |n, span| {
-            match posh(Some(vec![None]), Some((n, vec![])), &wer2) {
+            match posh(Some(vec![None]), Some((n, vec![])), wer3.clone()) {
                 Some(list) => Ok(Hoon::ColSig(list)),
                 None => Err(Rich::custom(span, "error parsing path")),
             }
@@ -4886,8 +5078,8 @@ pub fn path<'src>(
     let cen_path = just("%").ignore_then(choice((cen_fas, multi_cen)));
 
     choice((
-        rood,       //  /foo/%/foo
-        cen_path,   //  %/foo  and  %%
+        rood.boxed(),       //  /foo/%/foo
+        cen_path.boxed(),   //  %/foo  and  %%
     )).labelled("Path")
 }
 
@@ -5956,32 +6148,354 @@ pub fn fynd_u64(cry: u64) -> u64 {
 }
 
 pub fn twid<'src>(
-) -> impl Parser<'src, &'src str, (String, Atom), Err<'src>>
+) -> impl Parser<'src, &'src str, Coin, Err<'src>>
 {
     choice((
-        // just('0')
-        //     .ignore_then(regex(r"[0-9a-v]+").map(str::to_owned))
-        //     .map(|s| ("$".to_string(), s)),
+        just('0')
+            .ignore_then(regex(r"[0-9a-v]+"))
+             .try_map(|s: &str, span| {
+                    let atom = base32_to_atom(s.to_string());
+                    cue_simple(atom)
+                    .map(Coin::Blob)
+                    .map_err(|e| Rich::custom(span, format!("Failed to +cue: {}", e)))
+                }),
         crub(),
     ))
 }
 
+pub fn cue_simple(buffer: Atom) -> Result<Noun, Box<dyn std::error::Error>> {
+    let bits = atom_to_bits(&buffer);
+    let mut backrefs = HashMap::new();
+    let (noun, _) = cue_inner(&bits, 0, &mut backrefs)?;
+    Ok(noun)
+}
+
+fn noun_hash(noun: &Noun) -> u64 {
+    let mut hasher = DefaultHasher::new();
+    noun.hash(&mut hasher);
+    hasher.finish()
+}
+
+pub fn jam_simple(noun: Noun) -> Atom {
+    let mut bits = Vec::new();
+    let mut backrefs = HashMap::new(); // Noun → bit_offset
+    let mut stack = vec![noun];
+
+    while let Some(current) = stack.pop() {
+        if let Some(&offset) = backrefs.get(&current) {
+            let use_backref = match &current {
+                Noun::Atom(atom) => {
+                    let atom_bits = mat_bits(atom).len();
+                    let offset_bits = mat_bits(&offset_to_atom(offset)).len();
+                    offset_bits < atom_bits
+                }
+                Noun::Cell(_, _) => true,
+            };
+
+            if use_backref {
+                bits.push(true);  // 1
+                bits.push(true);  // 1
+                bits.extend(mat_bits(&offset_to_atom(offset)));
+                continue;
+            }
+        }
+
+        let offset = bits.len();
+        backrefs.insert(current.clone(), offset);
+
+        match current {
+            Noun::Atom(atom) => {
+                bits.push(false);
+                bits.extend(mat_bits(&atom));
+            }
+            Noun::Cell(head, tail) => {
+                bits.push(true);
+                bits.push(false);
+                stack.push(*tail);
+                stack.push(*head);
+            }
+        }
+    }
+
+    bits_to_atom(&bits)
+}
+
+fn offset_to_atom(offset: usize) -> Atom {
+    if offset <= u128::MAX as usize {
+        Atom::Small(offset as u128)
+    } else {
+        Atom::Big(BigUint::from(offset))
+    }
+}
+
+fn mat_bits(atom: &Atom) -> Vec<bool> {
+    let n = atom_bit_len(atom); // = met0(atom): number of bits needed to represent the atom
+
+    let mut bits = Vec::new();
+
+    if n == 0 {
+        bits.push(true);
+        return bits;
+    }
+
+    let k = usize_bit_len(n); // met0(n)
+
+    bits.extend(std::iter::repeat(false).take(k));
+
+    bits.push(true);
+
+    if k > 1 {
+        let offset = n - (1usize << (k - 1)); // same as n & ((1 << (k-1)) - 1)
+        for i in 0..(k - 1) {
+            bits.push((offset >> i) & 1 == 1);
+        }
+    }
+
+    for i in 0..n {
+        bits.push(atom_get_bit(atom, i as u64));
+    }
+
+    bits
+}
+
+fn usize_bit_len(x: usize) -> usize {
+    if x == 0 { 1 } else { (usize::BITS - x.leading_zeros()) as usize }
+}
+
+fn atom_bit_len(atom: &Atom) -> usize {
+    match atom {
+        Atom::Small(0) => 0,
+        Atom::Small(x) => (128 - x.leading_zeros() as usize),
+        Atom::Big(x) => x.bits() as usize,
+    }
+}
+
+fn atom_get_bit(atom: &Atom, i: u64) -> bool {
+    match atom {
+        Atom::Small(x) => i < 128 && ((x >> i) & 1 == 1),
+        Atom::Big(x) => {
+            let byte_index = (i / 8) as usize;
+            let bit_index = (i % 8) as u8;
+            let bytes = x.to_bytes_le();
+            if byte_index < bytes.len() {
+                let byte = bytes[byte_index];
+                (byte >> bit_index) & 1 == 1
+            } else {
+                false
+            }
+        }
+    }
+}
+
+fn bits_to_atom(bits: &[bool]) -> Atom {
+    if bits.is_empty() {
+        return Atom::Small(0);
+    }
+
+    // Count bits
+    let len = bits.len();
+
+    if len <= 128 {
+        let mut val: u128 = 0;
+        for (i, &bit) in bits.iter().enumerate() {
+            if bit {
+                val |= 1u128 << i;
+            }
+        }
+        Atom::Small(val)
+    } else {
+        let mut big = BigUint::from(0u32);
+        for (i, &bit) in bits.iter().enumerate() {
+            if bit {
+                big += BigUint::from(1u32) << i;
+            }
+        }
+        Atom::Big(big)
+    }
+}
+
+#[derive(Debug)]
+enum ParseAction {
+    Start(u64),           // start parsing noun at cursor
+    CellHeadDone(u64, Box<Noun>), // head done, now parse tail at given cursor
+    FinishCell(Box<Noun>, Box<Noun>),
+    StoreBackref(u64),
+}
+fn rub_backref(bits: &[bool], cursor: &mut usize) -> Result<u64, Box<dyn std::error::Error>> {
+    let size = get_size(bits, cursor)?;
+    if size == 0 {
+        return Ok(0);
+    }
+    if size > 64 {
+        return Err("backref offset too large (>64 bits)".into());
+    }
+    if *cursor + size as usize > bits.len() {
+        return Err("not enough bits for backref".into());
+    }
+
+    let mut val: u64 = 0;
+    for i in 0..size {
+        if bits[*cursor + i as usize] {
+            val |= 1u64 << i;
+        }
+    }
+    *cursor += size as usize;
+    Ok(val)
+}
+
+fn rub_atom(bits: &[bool], cursor: &mut usize) -> Result<Atom, Box<dyn std::error::Error>> {
+    let size = get_size(bits, cursor)?;
+
+    if size == 0 {
+        return Ok(Atom::Small(0));
+    }
+
+    if *cursor + size as usize > bits.len() {
+        return Err("not enough bits for rub atom payload".into());
+    }
+
+    // Read `size` bits, LSB-first → value = sum bit_i * 2^i
+    if size <= 128 {
+        let mut val: u128 = 0;
+        for i in 0..size {
+            if bits[*cursor + i as usize] {
+                val |= 1u128 << i;
+            }
+        }
+        *cursor += size as usize;
+        Ok(Atom::Small(val))
+    } else {
+        // Use BigUint
+        let mut big = BigUint::from(0u32);
+        for i in 0..size {
+            if bits[*cursor + i as usize] {
+                big += BigUint::from(1u32) << i;
+            }
+        }
+        *cursor += size as usize;
+        Ok(Atom::Big(big))
+    }
+}
+
+fn get_size(bits: &[bool], cursor: &mut usize) -> Result<u64, &'static str> {
+    let start = *cursor;
+    // Count leading zeros
+    while *cursor < bits.len() && !bits[*cursor] {
+        *cursor += 1;
+    }
+
+    if *cursor >= bits.len() {
+        return Err("unexpected EOF in rub size prefix");
+    }
+
+    let c = (*cursor - start) as u32; // number of leading zeros
+    *cursor += 1; // consume the '1'
+
+    if c == 0 {
+        Ok(0)
+    } else {
+        // Read c-1 bits
+        if *cursor + (c - 1) as usize > bits.len() {
+            return Err("not enough bits for rub size field");
+        }
+
+        let mut x = 0u64;
+        for i in 0..(c - 1) {
+            if bits[*cursor + i as usize] {
+                x |= 1u64 << i; // LSB-first: first bit = 2^0
+            }
+        }
+        *cursor += (c - 1) as usize;
+
+        let size = (1u64 << (c - 1)) + x;
+        Ok(size)
+    }
+}
+
+fn atom_to_bits(atom: &Atom) -> Vec<bool> {
+    match atom {
+        Atom::Small(x) => {
+            let mut bits = Vec::with_capacity(128);
+            for i in 0..128 {
+                bits.push((x >> i) & 1 == 1);
+            }
+            // Trim trailing zeros beyond highest set bit? Not needed — cue stops when done.
+            bits
+        }
+        Atom::Big(x) => {
+            // Convert to little-endian bytes, then bits
+            let bytes = x.to_bytes_le();
+            let mut bits = Vec::new();
+            for &byte in &bytes {
+                for i in 0..8 {
+                    bits.push((byte >> i) & 1 == 1);
+                }
+            }
+            // Pad to next multiple of 8? Not necessary.
+            bits
+        }
+    }
+}
+
+fn cue_inner( // rename
+    bits: &[bool],
+    cursor: usize,
+    backrefs: &mut HashMap<u64, Noun>,
+) -> Result<(Noun, usize), Box<dyn std::error::Error>> {
+    if cursor >= bits.len() {
+        return Err("unexpected EOF".into());
+    }
+
+    let tag0 = bits[cursor];
+    if !tag0 {
+        let mut cur = cursor + 1;
+        let atom = rub_atom(bits, &mut cur)?;
+        let noun = Noun::Atom(atom);
+        backrefs.insert(cursor as u64, noun.clone());
+        Ok((noun, cur))
+    } else {
+        if cursor + 1 >= bits.len() {
+            return Err("unexpected EOF after tag 1".into());
+        }
+        let tag1 = bits[cursor + 1];
+        if !tag1 {
+            let mut cur = cursor + 2;
+            let (head, next) = cue_inner(bits, cur, backrefs)?;
+            cur = next;
+            let (tail, next2) = cue_inner(bits, cur, backrefs)?;
+            cur = next2;
+            let noun = Noun::Cell(Box::new(head), Box::new(tail));
+            backrefs.insert(cursor as u64, noun.clone());
+            Ok((noun, cur))
+        } else {
+            let mut cur = cursor + 2;
+            let offset = rub_backref(bits, &mut cur)?;
+
+            let noun = backrefs
+                .get(&(offset))
+                .cloned()
+                .ok_or_else(|| format!("backref to {} not found", offset))?;
+            Ok((noun, cur))
+        }
+    }
+}
+
 pub fn crub<'src>(
-) -> impl Parser<'src, &'src str, (String, Atom), Err<'src>>
+) -> impl Parser<'src, &'src str, Coin, Err<'src>>
 {
     choice((
-            absolute_date().map(|d| ("da".to_string(), d)),
-            relative_date().map(|d| ("dr".to_string(), d)),
-            phonemic_name().map(|p| ("p".to_string(), p)),
+            absolute_date().map(|d| Coin::Dime("da".to_string(), d)),
+            relative_date().map(|d| Coin::Dime("dr".to_string(), d)),
+            phonemic_name().map(|p| Coin::Dime("p".to_string(), p)),
             just('.')
-                .ignore_then(regex(r"[0-9a-z._~\-]+").map(str::to_owned))
-                .map(|s| ("ta".to_string(), string_to_atom(s))),
+                .ignore_then(urs())
+                .map(|atom| Coin::Dime("ta".to_string(), atom)),
             just('~')
                 .ignore_then(urx())
-                .map(|atom| ("t".to_string(), atom)),
+                .map(|atom| Coin::Dime("t".to_string(), atom)),
             just('-')
                 .ignore_then(urx())
-                .map(|atom| ("c".to_string(), taft(&atom))),
+                .map(|atom| Coin::Dime("c".to_string(), taft(&atom))),
     ))
 }
 
@@ -6245,4 +6759,481 @@ pub fn one_spec_closed_tall<'src>(
     .ignore_then(spec.clone())
     .then_ignore(gap())
     .delimited_by(just('='), just('='))
+}
+
+pub fn wrap_hoon_with_trace<'src>(
+) -> impl Fn(Hoon, &mut MapExtra<'src, '_, &'src str, Err<'src>>) -> Hoon + Clone {
+    move |node, e| {
+        Hoon::ChumskyDbug(
+            (e.span().start(), e.span().end()),
+            Box::new(node),
+        )
+    }
+}
+
+pub fn wrap_spec_with_trace<'src>(
+) -> impl Fn(Spec, &mut MapExtra<'src, '_, &'src str, Err<'src>>) -> Spec + Clone {
+    move |node, e| {
+        Spec::ChumskyDbug(
+            (e.span().start(), e.span().end()),
+            Box::new(node),
+        )
+    }
+}
+
+fn chumsky_spot_to_hoon_spot(
+    span: ChumskySpot,
+    wer: &Path,
+    linemap: &LineMap,
+) -> Spot {
+    let (start, end) = span;
+
+    let (sl, sc) = linemap.line_col(start);
+    let (el, ec) = linemap.line_col(end);
+
+    Spot {
+        p: wer.clone(),
+        q: Pint {
+            p: (sl as u64, sc as u64),
+            q: (el as u64, ec as u64),
+        },
+    }
+}
+
+// turns ChumskyDbug into Dbug
+pub fn process_spec_traces(
+    spec: Spec,
+    wer: &Path,
+    bug: bool,
+    linemap: &LineMap,
+) -> Spec {
+    use Spec::*;
+
+    match spec {
+        ChumskyDbug(span, inner) if bug => {
+            let spot = chumsky_spot_to_hoon_spot(span, wer, linemap);
+            Dbug(
+                spot,
+                Box::new(process_spec_traces(*inner, wer, bug, linemap)),
+            )
+        }
+
+        ChumskyDbug(_, inner) => {
+            process_spec_traces(*inner, wer, bug, linemap)
+        }
+
+        Dbug(spot, inner) => {
+            Dbug(
+                spot,
+                Box::new(process_spec_traces(*inner, wer, bug, linemap)),
+            )
+        }
+
+        Base(b) => Base(b),
+        Leaf(a, b) => Leaf(a, b),
+        Loop(a) => Loop(a),
+
+        Name(a, s) =>
+            Name(a, Box::new(process_spec_traces(*s, wer, bug, linemap))),
+
+        Over(w, s) =>
+            Over(w, Box::new(process_spec_traces(*s, wer, bug, linemap))),
+
+        Like(w, ws) => Like(w, ws),
+
+        Made((a, b), s) =>
+            Made((a, b), Box::new(process_spec_traces(*s, wer, bug, linemap))),
+
+        Make(h, ss) =>
+            Make(
+                process_hoon_traces(h, wer, bug, linemap),
+                ss.into_iter()
+                    .map(|s| process_spec_traces(s, wer, bug, linemap))
+                    .collect(),
+            ),
+
+        BucBar(s, h) =>
+            BucBar(
+                Box::new(process_spec_traces(*s, wer, bug, linemap)),
+                process_hoon_traces(h, wer, bug, linemap),
+            ),
+
+        BucCab(h) =>
+            BucCab(process_hoon_traces(h, wer, bug, linemap)),
+
+        BucMic(h) =>
+            BucMic(process_hoon_traces(h, wer, bug, linemap)),
+
+        BucPam(s, h) =>
+            BucPam(
+                Box::new(process_spec_traces(*s, wer, bug, linemap)),
+                process_hoon_traces(h, wer, bug, linemap),
+            ),
+
+        BucSig(h, s) =>
+            BucSig(
+                process_hoon_traces(h, wer, bug, linemap),
+                Box::new(process_spec_traces(*s, wer, bug, linemap)),
+            ),
+
+        BucGar(a, b) =>
+            BucGar(
+                Box::new(process_spec_traces(*a, wer, bug, linemap)),
+                Box::new(process_spec_traces(*b, wer, bug, linemap)),
+            ),
+
+        BucGal(a, b) =>
+            BucGal(
+                Box::new(process_spec_traces(*a, wer, bug, linemap)),
+                Box::new(process_spec_traces(*b, wer, bug, linemap)),
+            ),
+
+        BucHep(a, b) =>
+            BucHep(
+                Box::new(process_spec_traces(*a, wer, bug, linemap)),
+                Box::new(process_spec_traces(*b, wer, bug, linemap)),
+            ),
+
+        BucKet(a, b) =>
+            BucKet(
+                Box::new(process_spec_traces(*a, wer, bug, linemap)),
+                Box::new(process_spec_traces(*b, wer, bug, linemap)),
+            ),
+
+        BucLus(a, b) =>
+            BucLus(a, Box::new(process_spec_traces(*b, wer, bug, linemap))),
+
+        BucPat(a, b) =>
+            BucPat(
+                Box::new(process_spec_traces(*a, wer, bug, linemap)),
+                Box::new(process_spec_traces(*b, wer, bug, linemap)),
+            ),
+
+        // ===== VECTORS =====
+
+        BucCol(a, bs) =>
+            BucCol(
+                Box::new(process_spec_traces(*a, wer, bug, linemap)),
+                bs.into_iter()
+                    .map(|s| process_spec_traces(s, wer, bug, linemap))
+                    .collect(),
+            ),
+
+        BucCen(a, bs) =>
+            BucCen(
+                Box::new(process_spec_traces(*a, wer, bug, linemap)),
+                bs.into_iter()
+                    .map(|s| process_spec_traces(s, wer, bug, linemap))
+                    .collect(),
+            ),
+
+        BucWut(a, bs) =>
+            BucWut(
+                Box::new(process_spec_traces(*a, wer, bug, linemap)),
+                bs.into_iter()
+                    .map(|s| process_spec_traces(s, wer, bug, linemap))
+                    .collect(),
+            ),
+
+        // ===== MAPS =====
+
+        BucBuc(a, m) =>
+            BucBuc(
+                Box::new(process_spec_traces(*a, wer, bug, linemap)),
+                m.into_iter()
+                    .map(|(k, v)| (k, process_spec_traces(v, wer, bug, linemap)))
+                    .collect(),
+            ),
+
+        BucDot(a, m) =>
+            BucDot(
+                Box::new(process_spec_traces(*a, wer, bug, linemap)),
+                m.into_iter()
+                    .map(|(k, v)| (k, process_spec_traces(v, wer, bug, linemap)))
+                    .collect(),
+            ),
+
+        BucFas(a, m) =>
+            BucFas(
+                Box::new(process_spec_traces(*a, wer, bug, linemap)),
+                m.into_iter()
+                    .map(|(k, v)| (k, process_spec_traces(v, wer, bug, linemap)))
+                    .collect(),
+            ),
+
+        BucTic(a, m) =>
+            BucTic(
+                Box::new(process_spec_traces(*a, wer, bug, linemap)),
+                m.into_iter()
+                    .map(|(k, v)| (k, process_spec_traces(v, wer, bug, linemap)))
+                    .collect(),
+            ),
+
+        BucZap(a, m) =>
+            BucZap(
+                Box::new(process_spec_traces(*a, wer, bug, linemap)),
+                m.into_iter()
+                    .map(|(k, v)| (k, process_spec_traces(v, wer, bug, linemap)))
+                    .collect(),
+            ),
+
+        // ===== SKIN =====
+
+        BucTis(skin, s) =>
+            BucTis(skin, Box::new(process_spec_traces(*s, wer, bug, linemap))),
+    }
+}
+
+// turns ChumskyDbug into Dbug
+pub fn process_hoon_traces(
+    hoon: Hoon,
+    wer: &Path,
+    mut bug: bool,
+    linemap: &LineMap,
+) -> Hoon {
+    use Hoon::*;
+
+    match hoon {
+        // ===== DEBUG LOWERING =====
+
+        ChumskyDbug(span, inner) if bug => {
+            let spot = chumsky_spot_to_hoon_spot(span, wer, linemap);
+            Dbug(
+                spot,
+                Box::new(process_hoon_traces(*inner, wer, bug, linemap)),
+            )
+        }
+
+        ChumskyDbug(_, inner) => {
+            process_hoon_traces(*inner, wer, bug, linemap)
+        }
+
+        // ===== TRACE CONTROL =====
+        // ZapCol disables tracing
+        ZapCol(inner) => {
+            process_hoon_traces(*inner, wer, false, linemap)
+        }
+
+        // ZapDot re-enables tracing
+        ZapDot(inner) => {
+            process_hoon_traces(*inner, wer, true, linemap)
+        }
+
+        // ===== LEAVES =====
+
+        ZapZap => ZapZap,
+        Axis(a) => Axis(a),
+        Base(b) => Base(b),
+        Bust(b) => Bust(b),
+        Eror(e) => Eror(e),
+        Leaf(a, b) => Leaf(a, b),
+        Limb(a) => Limb(a),
+        Rock(a, b) => Rock(a, b),
+        Sand(a, b) => Sand(a, b),
+        Tune(t) => Tune(t),
+        Wing(w) => Wing(w),
+        Xray(x) => Xray(x),
+        MicTis(m) => MicTis(m),
+        KetTar(s) => KetTar(Box::new(process_spec_traces(*s, wer, bug, linemap))),
+        KetCol(s) => KetCol(Box::new(process_spec_traces(*s, wer, bug, linemap))),
+        WutHax(s, w) => WutHax(s, w),
+        WutTis(s, w) => WutTis(Box::new(process_spec_traces(*s, wer, bug, linemap)), w),
+
+        // ===== SIMPLE UNARY =====
+
+        Lost(h) =>
+            Lost(Box::new(process_hoon_traces(*h, wer, bug, linemap))),
+
+        BarDot(h) =>
+            BarDot(Box::new(process_hoon_traces(*h, wer, bug, linemap))),
+
+        BarHep(h) =>
+            BarHep(Box::new(process_hoon_traces(*h, wer, bug, linemap))),
+
+        BarWut(h) =>
+            BarWut(Box::new(process_hoon_traces(*h, wer, bug, linemap))),
+
+        DotLus(h) =>
+            DotLus(Box::new(process_hoon_traces(*h, wer, bug, linemap))),
+
+        DotWut(h) =>
+            DotWut(Box::new(process_hoon_traces(*h, wer, bug, linemap))),
+
+        KetBar(h) =>
+            KetBar(Box::new(process_hoon_traces(*h, wer, bug, linemap))),
+
+        KetPam(h) =>
+            KetPam(Box::new(process_hoon_traces(*h, wer, bug, linemap))),
+
+        KetSig(h) =>
+            KetSig(Box::new(process_hoon_traces(*h, wer, bug, linemap))),
+
+        KetWut(h) =>
+            KetWut(Box::new(process_hoon_traces(*h, wer, bug, linemap))),
+
+        ZapGar(h) =>
+            ZapGar(Box::new(process_hoon_traces(*h, wer, bug, linemap))),
+
+        ZapTis(h) =>
+            ZapTis(Box::new(process_hoon_traces(*h, wer, bug, linemap))),
+
+        WutZap(h) =>
+            WutZap(Box::new(process_hoon_traces(*h, wer, bug, linemap))),
+
+        // ===== BINARY =====
+
+        Pair(a, b) =>
+            Pair(
+                Box::new(process_hoon_traces(*a, wer, bug, linemap)),
+                Box::new(process_hoon_traces(*b, wer, bug, linemap)),
+            ),
+
+        BarCol(a, b) =>
+            BarCol(
+                Box::new(process_hoon_traces(*a, wer, bug, linemap)),
+                Box::new(process_hoon_traces(*b, wer, bug, linemap)),
+            ),
+
+        ColCab(a, b) =>
+            ColCab(
+                Box::new(process_hoon_traces(*a, wer, bug, linemap)),
+                Box::new(process_hoon_traces(*b, wer, bug, linemap)),
+            ),
+
+        ColHep(a, b) =>
+            ColHep(
+                Box::new(process_hoon_traces(*a, wer, bug, linemap)),
+                Box::new(process_hoon_traces(*b, wer, bug, linemap)),
+            ),
+
+        DotTar(a, b) =>
+            DotTar(
+                Box::new(process_hoon_traces(*a, wer, bug, linemap)),
+                Box::new(process_hoon_traces(*b, wer, bug, linemap)),
+            ),
+
+        DotTis(a, b) =>
+            DotTis(
+                Box::new(process_hoon_traces(*a, wer, bug, linemap)),
+                Box::new(process_hoon_traces(*b, wer, bug, linemap)),
+            ),
+
+        KetDot(a, b) =>
+            KetDot(
+                Box::new(process_hoon_traces(*a, wer, bug, linemap)),
+                Box::new(process_hoon_traces(*b, wer, bug, linemap)),
+            ),
+
+        KetLus(a, b) =>
+            KetLus(
+                Box::new(process_hoon_traces(*a, wer, bug, linemap)),
+                Box::new(process_hoon_traces(*b, wer, bug, linemap)),
+            ),
+
+        SigBar(a, b) =>
+            SigBar(
+                Box::new(process_hoon_traces(*a, wer, bug, linemap)),
+                Box::new(process_hoon_traces(*b, wer, bug, linemap)),
+            ),
+
+        SigCab(a, b) =>
+            SigCab(
+                Box::new(process_hoon_traces(*a, wer, bug, linemap)),
+                Box::new(process_hoon_traces(*b, wer, bug, linemap)),
+            ),
+
+        SigTis(a, b) =>
+            SigTis(
+                Box::new(process_hoon_traces(*a, wer, bug, linemap)),
+                Box::new(process_hoon_traces(*b, wer, bug, linemap)),
+            ),
+
+        ZapCom(a, b) =>
+            ZapCom(
+                Box::new(process_hoon_traces(*a, wer, bug, linemap)),
+                Box::new(process_hoon_traces(*b, wer, bug, linemap)),
+            ),
+
+        ZapMic(a, b) =>
+            ZapMic(
+                Box::new(process_hoon_traces(*a, wer, bug, linemap)),
+                Box::new(process_hoon_traces(*b, wer, bug, linemap)),
+            ),
+
+        // ===== SPEC + HOON =====
+
+        BarSig(s, h) =>
+            BarSig(
+                Box::new(process_spec_traces(*s, wer, bug, linemap)),
+                Box::new(process_hoon_traces(*h, wer, bug, linemap)),
+            ),
+
+        BarTar(s, h) =>
+            BarTar(
+                Box::new(process_spec_traces(*s, wer, bug, linemap)),
+                Box::new(process_hoon_traces(*h, wer, bug, linemap)),
+            ),
+
+        BarTis(s, h) =>
+            BarTis(
+                Box::new(process_spec_traces(*s, wer, bug, linemap)),
+                Box::new(process_hoon_traces(*h, wer, bug, linemap)),
+            ),
+
+        DotKet(s, h) =>
+            DotKet(
+                Box::new(process_spec_traces(*s, wer, bug, linemap)),
+                Box::new(process_hoon_traces(*h, wer, bug, linemap)),
+            ),
+
+        KetHep(s, h) =>
+            KetHep(
+                Box::new(process_spec_traces(*s, wer, bug, linemap)),
+                Box::new(process_hoon_traces(*h, wer, bug, linemap)),
+            ),
+
+        TisBar(s, h) =>
+            TisBar(
+                Box::new(process_spec_traces(*s, wer, bug, linemap)),
+                Box::new(process_hoon_traces(*h, wer, bug, linemap)),
+            ),
+
+        ZapGal(s, h) =>
+            ZapGal(
+                Box::new(process_spec_traces(*s, wer, bug, linemap)),
+                Box::new(process_hoon_traces(*h, wer, bug, linemap)),
+            ),
+
+        // ===== VECTORS =====
+
+        Tell(v) =>
+            Tell(v.into_iter()
+                .map(|h| process_hoon_traces(h, wer, bug, linemap))
+                .collect()),
+
+        Yell(v) =>
+            Yell(v.into_iter()
+                .map(|h| process_hoon_traces(h, wer, bug, linemap))
+                .collect()),
+
+        ColSig(v) =>
+            ColSig(v.into_iter()
+                .map(|h| process_hoon_traces(h, wer, bug, linemap))
+                .collect()),
+
+        ColTar(v) =>
+            ColTar(v.into_iter()
+                .map(|h| process_hoon_traces(h, wer, bug, linemap))
+                .collect()),
+
+        SigZap(a, b) =>
+            SigZap(
+                Box::new(process_hoon_traces(*a, wer, bug, linemap)),
+                Box::new(process_hoon_traces(*b, wer, bug, linemap)),
+            ),
+
+        // ===== FALLTHROUGH (guarantees exhaustiveness) =====
+
+        other => other,
+    }
 }
