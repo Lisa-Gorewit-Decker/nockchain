@@ -51,7 +51,9 @@ fn spec_parser<'src>(
             cen_spec_tall(hoon.clone(), spec.clone())
         ),
         spec_wide.clone(),
-    )).boxed()
+    ))
+    .map_with(wrap_spec_with_trace())
+    .boxed()
 }
 
 fn spec_wide_parser<'src>(
@@ -89,13 +91,23 @@ fn spec_wide_parser<'src>(
         just("!!").to(Spec::Base(BaseType::Void)).boxed(),
     ];
 
-    choice(parsers).boxed().labelled("spec-wide")
+    choice(parsers)
+    .map_with(wrap_spec_with_trace())
+    .boxed().labelled("spec-wide")
+}
+
+#[derive(serde::Serialize, PartialEq, Debug, Clone)]
+enum WideOp {
+    KetTis,
+    TisGal,
+    Pair,
 }
 
 fn hoon_wide_parser<'src>(
     hoon_wide:   impl ParserExt<'src, Hoon>,
     spec_wide:   impl ParserExt<'src, Spec>,
     wer: Path,
+    // bug: bool,
 ) -> impl Parser<'src, &'src str, Hoon, Err<'src>> + Clone
 {
     let parsers = vec![
@@ -203,24 +215,28 @@ fn hoon_wide_parser<'src>(
         just('*').to(Hoon::Base(BaseType::Noun)).boxed(),
     ];
 
-    choice(parsers).boxed().labelled("hoon-wide")
-        .then(just('=').or(just(':')).or(just('^'))
-                .then(hoon_wide.clone())
-                .or_not())
-        .try_map(|(p, maybe_separator), span|  {
+    choice(parsers).boxed()
+    .then(choice((just('=').to(WideOp::KetTis),
+            just(':').to(WideOp::TisGal),
+            just('^').to(WideOp::Pair)))
+        .then(hoon_wide.clone())
+        .or_not())
+    .try_map(|(p, maybe_separator), span| {
             match maybe_separator  {
-                Some(('=', q)) => {
+                Some((WideOp::KetTis, q)) => {
                     let maybe_skin = flay(p);
                     match maybe_skin {
                         None => Err(Rich::custom(span, "invalid p in p=q")),
                         Some(s) => Ok(Hoon::KetTis(s, Box::new(q))),
                     }
                 },
-                Some((':', q)) => Ok(Hoon::TisGal(Box::new(p), Box::new(q))),
-                Some(('^', q)) => Ok(Hoon::Pair(Box::new(p), Box::new(q))),
-                _ => Ok(p),
+                Some((WideOp::TisGal, q)) => Ok(Hoon::TisGal(Box::new(p), Box::new(q))),
+                Some((WideOp::Pair, q)) => Ok(Hoon::Pair(Box::new(p), Box::new(q))),
+                None => Ok(p),
             }
         })
+    .map_with(wrap_hoon_with_trace())
+    .labelled("hoon-wide")
 }
 
 fn hoon_parser<'src>(
@@ -229,6 +245,7 @@ fn hoon_parser<'src>(
     spec: impl ParserExt<'src, Spec>,
     spec_wide: impl ParserExt<'src, Spec>,
     wer: Path,
+    // bug: bool,
 ) -> impl Parser<'src, &'src str, Hoon, Err<'src>>
 {
     let parsers = vec![
@@ -383,16 +400,20 @@ fn main() {
 
     match parser(wer.clone()).parse(source.as_str()).into_result() {
         Ok(res) => {
+            let took_without_traces = start.elapsed();
             let linemap = Arc::new(LineMap::new(&source));
             let traced = process_hoon_traces(res.clone(), &wer, !cli.no_dbug, &linemap);
             let took = start.elapsed();
+
             let json = serde_json::to_string_pretty(&traced).expect("serialisation failed");
             let out_path = std::path::PathBuf::from("out.json");
             std::fs::write(&out_path, json + "\n").unwrap_or_else(|e| {
                 eprintln!("Failed to write '{}': {}", out_path.display(), e);
                 std::process::exit(1);
             });
+
             println!("Result written to {}!", out_path.display());
+            println!("took without traces: {:?}", took_without_traces);
             println!("took: {:?}", took);
         }
         Err(errs) => {
