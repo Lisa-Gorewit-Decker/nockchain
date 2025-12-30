@@ -3,11 +3,6 @@ use std::collections::*;
 use num_bigint::BigUint;
 use serde::Serialize;
 use num_traits::Zero;
-use chumsky::{
-    span::SimpleSpan,
-    input::{Stream, ValueInput, StrInput},
-    prelude::*,
-};
 
 #[derive(serde::Serialize, Hash, Eq, PartialEq, Debug, Clone)]
 pub enum Noun {
@@ -235,12 +230,10 @@ pub enum Limb {
 
 pub type WingType = Vec<Limb>;
 
-pub type ChumskySpot = (usize, usize);
 
 #[derive(serde::Serialize, PartialEq, Debug, Clone)]
 pub enum Spec {
     Base(BaseType),
-    ChumskyDbug(ChumskySpot, Box<Spec>), // resolves into Dbug after parsing
     Dbug(Spot, Box<Spec>),
     Leaf(String, Atom),
     Like(WingType, Vec<WingType>),
@@ -350,7 +343,6 @@ pub enum Skin {
     Term(String),
     Base(BaseType),
     Cell(Box<Skin>, Box<Skin>),
-    ChumskyDbug(ChumskySpot, Box<Skin>), // resolves into Dbug after parsing
     Dbug(Spot, Box<Skin>),
     Leaf(String, Atom),
     Name(String, Box<Skin>),
@@ -399,7 +391,6 @@ pub enum Hoon {
     Axis(u64),
     Base(BaseType),
     Bust(BaseType),
-    ChumskyDbug(ChumskySpot, Box<Hoon>), // resolves into Dbug after parsing
     Dbug(Spot, Box<Hoon>),
     Eror(String),
     Hand(Box<Type>, Nock),

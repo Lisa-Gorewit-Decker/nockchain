@@ -36,9 +36,9 @@ macro_rules! rune_branch {
 }
 
 fn spec_parser<'src>(
+    hoon:        impl ParserExt<'src, Hoon>,
     spec:        impl ParserExt<'src, Spec>,
     spec_wide:   impl ParserExt<'src, Spec>,
-    hoon:        impl ParserExt<'src, Hoon>,
 ) -> impl Parser<'src, &'src str, Spec, Err<'src>> + Clone
 {
     choice((
@@ -52,7 +52,6 @@ fn spec_parser<'src>(
         ),
         spec_wide.clone(),
     ))
-    .map_with(wrap_spec_with_trace())
     .boxed()
 }
 
@@ -91,9 +90,7 @@ fn spec_wide_parser<'src>(
         just("!!").to(Spec::Base(BaseType::Void)).boxed(),
     ];
 
-    choice(parsers)
-    .map_with(wrap_spec_with_trace())
-    .boxed().labelled("spec-wide")
+    choice(parsers).boxed()
 }
 
 #[derive(serde::Serialize, PartialEq, Debug, Clone)]
@@ -106,8 +103,9 @@ enum WideOp {
 fn hoon_wide_parser<'src>(
     hoon_wide:   impl ParserExt<'src, Hoon>,
     spec_wide:   impl ParserExt<'src, Spec>,
+    hoon_wide_with_trace: impl ParserExt<'src, Hoon>,
+    hoon_wide_no_trace:   impl ParserExt<'src, Hoon>,
     wer: Path,
-    // bug: bool,
 ) -> impl Parser<'src, &'src str, Hoon, Err<'src>> + Clone
 {
     let parsers = vec![
@@ -165,7 +163,10 @@ fn hoon_wide_parser<'src>(
 
         rune_branch!(
             '!',
-            zap_runes_wide(hoon_wide.clone(), spec_wide.clone())
+            zap_runes_wide(hoon_wide.clone(),
+                            spec_wide.clone(),
+                            hoon_wide_with_trace.clone(),
+                            hoon_wide_no_trace.clone())
         ),
 
         rune_branch!(
@@ -235,141 +236,206 @@ fn hoon_wide_parser<'src>(
                 None => Ok(p),
             }
         })
-    .map_with(wrap_hoon_with_trace())
-    .labelled("hoon-wide")
 }
 
-fn hoon_parser<'src>(
+pub fn hoon_parser<'src>(
     hoon: impl ParserExt<'src, Hoon>,
     hoon_wide: impl ParserExt<'src, Hoon>,
     spec: impl ParserExt<'src, Spec>,
     spec_wide: impl ParserExt<'src, Spec>,
-    wer: Path,
-    // bug: bool,
+    hoon_with_trace: impl ParserExt<'src, Hoon>,
+    hoon_no_trace: impl ParserExt<'src, Hoon>,
+    hoon_wide_with_trace: impl ParserExt<'src, Hoon>,
+    hoon_wide_no_trace: impl ParserExt<'src, Hoon>,
 ) -> impl Parser<'src, &'src str, Hoon, Err<'src>>
 {
     let parsers = vec![
-        rune_branch_pair!(
-            '|',
-            bar_runes_tall(hoon.clone(), spec.clone()),
-            bar_runes_wide(hoon_wide.clone(), spec_wide.clone())
-        ),
-
-        rune_branch_pair!(
-            '=',
-            tis_runes_tall(hoon.clone(), spec.clone(), spec_wide.clone()),
-            tis_runes_wide(hoon_wide.clone(), spec_wide.clone())
-        ),
-
-        rune_branch_pair!(
-            '?',
-            wut_runes_tall(
-                hoon.clone(),
-                hoon_wide.clone(),
-                spec.clone(),
-                spec_wide.clone()
+            rune_branch_pair!(
+                '|',
+                bar_runes_tall(hoon.clone(), spec.clone()),
+                bar_runes_wide(hoon_wide.clone(), spec_wide.clone())
             ),
-            wut_runes_wide(hoon_wide.clone(), spec_wide.clone())
-        ),
 
-        rune_branch_pair!(
-            '%',
-            cen_runes_tall(hoon.clone()),
-            cen_runes_wide(hoon_wide.clone())
-        ),
+            rune_branch_pair!(
+                '=',
+                tis_runes_tall(hoon.clone(), spec.clone(), spec_wide.clone()),
+                tis_runes_wide(hoon_wide.clone(), spec_wide.clone())
+            ),
 
-        rune_branch_pair!(
-            ':',
-            col_runes_tall(hoon.clone()),
-            col_runes_wide(hoon_wide.clone())
-        ),
+            rune_branch_pair!(
+                '?',
+                wut_runes_tall(
+                    hoon.clone(),
+                    hoon_wide.clone(),
+                    spec.clone(),
+                    spec_wide.clone()
+                ),
+                wut_runes_wide(hoon_wide.clone(), spec_wide.clone())
+            ),
 
-        rune_branch_pair!(
-            '~',
-            sig_runes_tall(hoon.clone()),
-            sig_runes_wide(hoon_wide.clone())
-        ),
+            rune_branch_pair!(
+                '%',
+                cen_runes_tall(hoon.clone()),
+                cen_runes_wide(hoon_wide.clone())
+            ),
 
-        rune_branch_pair!(
-            '$',
-            buc_runes_tall(hoon.clone(), spec.clone()),
-            buc_runes_wide(hoon_wide.clone(), spec_wide.clone())
-        ),
+            rune_branch_pair!(
+                ':',
+                col_runes_tall(hoon.clone()),
+                col_runes_wide(hoon_wide.clone())
+            ),
 
-        rune_branch_pair!(
-            '^',
-            ket_runes_tall(hoon.clone(), spec.clone()),
-            ket_runes_wide(hoon_wide.clone(), spec_wide.clone())
-        ),
+            rune_branch_pair!(
+                '~',
+                sig_runes_tall(hoon.clone()),
+                sig_runes_wide(hoon_wide.clone())
+            ),
 
-        rune_branch_pair!(
-            '!',
-            zap_runes_tall(hoon.clone(), spec.clone()),
-            zap_runes_wide(hoon_wide.clone(), spec_wide.clone())
-        ),
+            rune_branch_pair!(
+                '$',
+                buc_runes_tall(hoon.clone(), spec.clone()),
+                buc_runes_wide(hoon_wide.clone(), spec_wide.clone())
+            ),
 
-        rune_branch_pair!(
-            ';',
-            mic_runes_tall(hoon.clone(), spec.clone()),
-            mic_runes_wide(hoon_wide.clone(), spec_wide.clone())
-        ),
+            rune_branch_pair!(
+                '^',
+                ket_runes_tall(hoon.clone(), spec.clone()),
+                ket_runes_wide(hoon_wide.clone(), spec_wide.clone())
+            ),
 
-        rune_branch_pair!(
-            '.',
-            dot_runes_tall(hoon.clone(), spec.clone()),
-            dot_runes_wide(hoon_wide.clone(), spec_wide.clone())
-        ),
+            rune_branch_pair!(
+                '!',
+                zap_runes_tall(hoon.clone(), spec.clone(), hoon_with_trace.clone(), hoon_no_trace.clone()),
+                zap_runes_wide(hoon_wide.clone(),
+                                spec_wide.clone(),
+                                hoon_wide_with_trace.clone(),
+                                hoon_wide_no_trace.clone())
+            ),
 
-        hoon_wide.clone().boxed(),
+            rune_branch_pair!(
+                ';',
+                mic_runes_tall(hoon.clone(), spec.clone()),
+                mic_runes_wide(hoon_wide.clone(), spec_wide.clone())
+            ),
 
-        noun_tall(hoon.clone()).boxed(),
-    ];
+            rune_branch_pair!(
+                '.',
+                dot_runes_tall(hoon.clone(), spec.clone()),
+                dot_runes_wide(hoon_wide.clone(), spec_wide.clone())
+            ),
+
+
+            hoon_wide.clone().boxed(),
+
+            noun_tall(hoon.clone()).boxed(),
+        ];
 
     choice(parsers)
-    .map_with(wrap_hoon_with_trace())
-    .labelled("Hoon").boxed()
 }
 
 pub fn parser<'src>(
     wer: Path,
+    bug: bool,
+    linemap: Arc<LineMap>,
 ) -> impl Parser<'src, &'src str, Hoon, Err<'src>> {
-    let hoon = recursive(|hoon| {
-        let mut spec_wide_handle = Recursive::declare();
-        let mut hoon_wide_handle = Recursive::declare();
 
-        let spec = recursive(|spec| {
-            spec_parser(spec.clone(),
-                        spec_wide_handle.clone(),
-                        hoon.clone())
-        }).labelled("spec");
+    let mut hoon                = Recursive::declare();
+    let mut hoon_wide           = Recursive::declare();
+    let mut spec                = Recursive::declare();
+    let mut spec_wide           = Recursive::declare();
 
-        let spec_wide_body =
-            recursive(|spec_wide_self| {
-                spec_wide_parser(spec_wide_self.clone(),
-                                hoon_wide_handle.clone())
-            });
+    let mut hoon_no_trace       = Recursive::declare();
+    let mut hoon_wide_no_trace  = Recursive::declare();
+    let mut spec_no_trace       = Recursive::declare();
+    let mut spec_wide_no_trace  = Recursive::declare();
 
-        let hoon_wide_body = hoon_wide_parser(
-            hoon_wide_handle.clone(),
-            spec_wide_handle.clone(),
-            wer.clone(),
-        );
+    let spec_body = spec_parser(hoon.clone(),
+                                spec.clone(),
+                                spec_wide.clone())
+                                .map_with(wrap_spec_with_trace(wer.clone(), linemap.clone()))
+                                .boxed();
 
-        spec_wide_handle.define(spec_wide_body);
-        hoon_wide_handle.define(hoon_wide_body);
+    spec.define(spec_body);
 
-        let spec_wide = spec_wide_handle.clone();
-        let hoon_wide = hoon_wide_handle.clone();
+    let spec_wide_body =
+            spec_wide_parser(spec_wide.clone(),
+                             hoon_wide.clone())
+                             .map_with(wrap_spec_with_trace(wer.clone(), linemap.clone()))
+                             .boxed();
 
-        hoon_parser(hoon.clone(),
-                    hoon_wide.clone(),
-                    spec.clone(),
-                    spec_wide,
-                    wer)
-        .boxed()
-    });
+    spec_wide.define(spec_wide_body);
 
-    hoon.padded_by(gap().or_not()).boxed()
+    let hoon_wide_body = hoon_wide_parser(
+                                hoon_wide.clone(),
+                                spec_wide.clone(),
+                                hoon_wide.clone(),
+                                hoon_wide_no_trace.clone(),
+                                wer.clone(),
+                            )
+                            .map_with(wrap_hoon_with_trace(wer.clone(), linemap.clone()))
+                            .boxed();
+
+    hoon_wide.define(hoon_wide_body);
+
+    let hoon_body =
+            hoon_parser(hoon.clone(),
+                        hoon_wide.clone(),
+                        spec.clone(),
+                        spec_wide.clone(),
+                        hoon.clone(),
+                        hoon_no_trace.clone(),
+                        hoon_wide.clone(),
+                        hoon_wide_no_trace.clone(),
+                        )
+                        .map_with(wrap_hoon_with_trace(wer.clone(), linemap.clone()))
+                        .boxed();
+
+    hoon.define(hoon_body);
+
+    let hoon_no_trace_body =
+            hoon_parser(hoon_no_trace.clone(),
+                        hoon_wide_no_trace.clone(),
+                        spec_no_trace.clone(),
+                        spec_wide_no_trace.clone(),
+                        hoon.clone(),
+                        hoon_no_trace.clone(),
+                        hoon_wide.clone(),
+                        hoon_wide_no_trace.clone())
+                        .boxed();
+
+    hoon_no_trace.define(hoon_no_trace_body);
+
+    let hoon_wide_no_trace_body
+                    = hoon_wide_parser(
+                                        hoon_wide_no_trace.clone(),
+                                        spec_wide_no_trace.clone(),
+                                        hoon_wide.clone(),
+                                        hoon_wide_no_trace.clone(),
+                                        wer.clone(),
+                                    )
+                                    .boxed();
+
+    hoon_wide_no_trace.define(hoon_wide_no_trace_body);
+
+    let spec_body_no_trace = spec_parser(hoon_no_trace.clone(),
+                                spec_no_trace.clone(),
+                                spec_wide_no_trace.clone())
+                                .boxed();
+
+    spec_no_trace.define(spec_body_no_trace);
+
+    let spec_wide_no_trace_body =
+            spec_wide_parser(spec_wide_no_trace.clone(),
+                             hoon_wide_no_trace.clone())
+                             .boxed();
+
+    spec_wide_no_trace.define(spec_wide_no_trace_body);
+
+    if bug {
+        hoon.padded_by(gap().or_not()).boxed()
+    } else {
+        hoon_no_trace.padded_by(gap().or_not()).boxed()
+    }
 }
 
 #[derive(ClapParser, Debug)]
@@ -398,14 +464,13 @@ fn main() {
         .map(|s| s.to_string_lossy().into_owned())
         .collect();
 
-    match parser(wer.clone()).parse(source.as_str()).into_result() {
+    let linemap = Arc::new(LineMap::new(&source));
+
+    match parser(wer.clone(), !cli.no_dbug, linemap).parse(source.as_str()).into_result() {
         Ok(res) => {
-            let took_without_traces = start.elapsed();
-            let linemap = Arc::new(LineMap::new(&source));
-            let traced = process_hoon_traces(res.clone(), &wer, !cli.no_dbug, &linemap);
             let took = start.elapsed();
 
-            let json = serde_json::to_string_pretty(&traced).expect("serialisation failed");
+            let json = serde_json::to_string_pretty(&res).expect("serialisation failed");
             let out_path = std::path::PathBuf::from("out.json");
             std::fs::write(&out_path, json + "\n").unwrap_or_else(|e| {
                 eprintln!("Failed to write '{}': {}", out_path.display(), e);
@@ -413,7 +478,6 @@ fn main() {
             });
 
             println!("Result written to {}!", out_path.display());
-            println!("took without traces: {:?}", took_without_traces);
             println!("took: {:?}", took);
         }
         Err(errs) => {

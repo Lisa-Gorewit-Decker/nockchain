@@ -7,13 +7,17 @@ use chumsky::{
 use std::collections::*;
 
 pub fn zap_runes_tall<'src>(
-    hoon:      impl ParserExt<'src, Hoon>,
-    spec:      impl ParserExt<'src, Spec>,
+    hoon: impl ParserExt<'src, Hoon>,
+    spec: impl ParserExt<'src, Spec>,
+    hoon_with_trace: impl ParserExt<'src, Hoon>,
+    hoon_no_trace: impl ParserExt<'src, Hoon>,
+    // bug: bool,
 ) -> impl Parser<'src, &'src str, Hoon, Err<'src>>
 {
+    // let h = if bug { hoon.clone().boxed() } else { hoon_no_trace.clone().boxed() };
     choice((
-        just(':').ignore_then(zapcol(hoon.clone())),
-        just('.').ignore_then(zapdot(hoon.clone())),
+        just(':').ignore_then(zapcol(hoon_with_trace.clone())),
+        just('.').ignore_then(zapdot(hoon_no_trace.clone())),
         just(",").ignore_then(zapcom(hoon.clone())),
         just(";").ignore_then(zapmic(hoon.clone())),
         just(">").ignore_then(zapgar(hoon.clone())),
@@ -22,17 +26,19 @@ pub fn zap_runes_tall<'src>(
         just('=').ignore_then(zaptis(hoon.clone())),
         just('?').ignore_then(zapwut(hoon.clone())),
         just("!").to(Hoon::ZapZap),
-    ))
+    )).boxed()
 }
 
 pub fn zap_runes_wide<'src>(
     hoon_wide: impl ParserExt<'src, Hoon>,
     spec_wide: impl ParserExt<'src, Spec>,
+    hoon_with_trace: impl ParserExt<'src,   Hoon>,
+    hoon_no_trace: impl ParserExt<'src, Hoon>,
 ) -> impl Parser<'src, &'src str, Hoon, Err<'src>>
 {
     choice((
-        just(':').ignore_then(zapcol_wide(hoon_wide.clone())),
-        just('.').ignore_then(zapdot_wide(hoon_wide.clone())),
+        just(':').ignore_then(zapcol_wide(hoon_with_trace.clone())),
+        just('.').ignore_then(zapdot_wide(hoon_no_trace.clone())),
         just(",").ignore_then(zapcom_wide(hoon_wide.clone())),
         just(";").ignore_then(zapmic_wide(hoon_wide.clone())),
         just(">").ignore_then(zapgar_wide(hoon_wide.clone())),
@@ -105,12 +111,11 @@ pub fn zapmic_wide<'src>(
 }
 
 pub fn zapdot<'src>(
-    hoon:        impl ParserExt<'src, Hoon>,
+    hoon_no_trace: impl ParserExt<'src, Hoon>,
 ) -> impl Parser<'src, &'src str, Hoon, Err<'src>>
 {
     gap()
-    .ignore_then(hoon.clone())
-    .map(|h| Hoon::ZapDot(Box::new(h)))
+    .ignore_then(hoon_no_trace.clone()).boxed()
 }
 
 pub fn zapdot_wide<'src>(
@@ -119,7 +124,6 @@ pub fn zapdot_wide<'src>(
 {
     hoon_wide.clone()
     .delimited_by(just('('), just(')'))
-    .map(|h| Hoon::ZapDot(Box::new(h)))
 }
 
 pub fn zaptis<'src>(
@@ -188,7 +192,6 @@ pub fn zapcol<'src>(
 {
     gap()
     .ignore_then(hoon.clone())
-    .map(|h| Hoon::ZapCol(Box::new(h)))
 }
 
 pub fn zapcol_wide<'src>(
@@ -197,7 +200,6 @@ pub fn zapcol_wide<'src>(
 {
     hoon_wide.clone()
     .delimited_by(just('('), just(')'))
-    .map(|h| Hoon::ZapCol(Box::new(h)))
 }
 
 pub fn zapwut<'src>(

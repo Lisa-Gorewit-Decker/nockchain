@@ -85,7 +85,7 @@ pub fn function(
     dom: u64,
     hay: &WingType,
     cox: &HashMap<String, Spec>,
-    bug: &Vec<ChumskySpot>,
+    bug: &Vec<Spot>,
     nut: &Option<Note>,
     def: &Option<Hoon>,
 ) -> Hoon {
@@ -106,7 +106,7 @@ pub fn interface(
     dom: u64,
     hay: &WingType,
     cox: &HashMap<String, Spec>,
-    bug: &Vec<ChumskySpot>,
+    bug: &Vec<Spot>,
     nut: &Option<Note>,
     def: &Option<Hoon>,
 ) -> Hoon {
@@ -135,7 +135,7 @@ pub fn spore(spec: Spec,
                 dom: u64,
                 hay: WingType,
                 cox: HashMap<String, Spec>,
-                bug: Vec<ChumskySpot>,
+                bug: Vec<Spot>,
                 nut: Option<Note>,
                 def: Option<Hoon>) -> Hoon {
     let subject = match def {
@@ -150,7 +150,7 @@ pub fn spore_recursion(spec: Spec,
                 dom: u64,
                 hay: WingType,
                 cox: HashMap<String, Spec>,
-                bug: Vec<ChumskySpot>,
+                bug: Vec<Spot>,
                 nut: Option<Note>,
                 def: Option<Hoon>) -> Hoon {
     match spec {
@@ -169,10 +169,6 @@ pub fn spore_recursion(spec: Spec,
         Spec::Dbug(spot, spec) => {
             let tail = spore_recursion(*spec, dom, hay, cox, bug, nut, def);
             Hoon::Dbug(spot, Box::new(tail))
-        }
-        Spec::ChumskyDbug(spot, spec) => {
-            let tail = spore_recursion(*spec, dom, hay, cox, bug, nut, def);
-            Hoon::ChumskyDbug(spot, Box::new(tail))
         }
         Spec::Leaf(term, atom) => Hoon::Rock(term, Noun::Atom(atom)),
         Spec::Loop(term) => {
@@ -221,7 +217,7 @@ pub fn spore_buccol_recursion(spec: Spec,
                 dom: u64,
                 hay: WingType,
                 cox: HashMap<String, Spec>,
-                bug: Vec<ChumskySpot>,
+                bug: Vec<Spot>,
                 nut: Option<Note>,
                 def: Option<Hoon>) -> Hoon {
     if list_spec.is_empty() {
@@ -251,7 +247,7 @@ pub fn spore_bucwut_recursion(spec: Spec,
                 dom: u64,
                 hay: WingType,
                 cox: HashMap<String, Spec>,
-                bug: Vec<ChumskySpot>,
+                bug: Vec<Spot>,
                 nut: Option<Note>,
                 def: Option<Hoon>) -> Hoon {
     if list_spec.is_empty() {
@@ -273,7 +269,7 @@ pub fn spore_buccen_recursion(spec: Spec,
                 dom: u64,
                 hay: WingType,
                 cox: HashMap<String, Spec>,
-                bug: Vec<ChumskySpot>,
+                bug: Vec<Spot>,
                 nut: Option<Note>,
                 def: Option<Hoon>) -> Hoon {
     if list_spec.is_empty() {
@@ -295,7 +291,7 @@ pub fn example(
     dom: u64,
     hay: &WingType,
     cox: &HashMap<String, Spec>,
-    bug: &Vec<ChumskySpot>,
+    bug: &Vec<Spot>,
     nut: &Option<Note>,
     def: &Option<Hoon>,
 ) -> Hoon {
@@ -303,14 +299,9 @@ pub fn example(
         Spec::Base(b) => {
             decorate(basal(b.clone()), bug.clone(), nut.clone())
         }
-        Spec::ChumskyDbug(spot, inner) => {
+        Spec::Dbug(spot, inner) => {
             let mut bug = bug.clone();
             bug.push(spot.clone());
-            example(&inner, dom, hay, cox, &bug, nut, def)
-        }
-        Spec::Dbug(spot, inner) => {  // this should not happen here on rust land
-            // let mut bug = bug.clone();
-            // bug.push(spot.clone());
             example(&inner, dom, hay, cox, &bug, nut, def)
         }
         Spec::Leaf(term, atom) => {
@@ -418,7 +409,7 @@ fn vair_case(
     dom: u64,
     hay: &WingType,
     cox: &HashMap<String, Spec>,
-    bug: &Vec<ChumskySpot>,
+    bug: &Vec<Spot>,
     nut: &Option<Note>,
     def: &Option<Hoon>,
 ) -> Hoon {
@@ -432,7 +423,7 @@ pub fn basic(bas: BaseType,
                 dom: u64,
                 hay: &WingType,
                 cox: &HashMap<String, Spec>,
-                bug: &Vec<ChumskySpot>,
+                bug: &Vec<Spot>,
                 nut: &Option<Note>,
                 def: &Option<Hoon>) -> Hoon {
     match bas {
@@ -502,7 +493,7 @@ pub fn switch(
     dom: u64,
     hay: &WingType,
     cox: &HashMap<String, Spec>,
-    bug: &Vec<ChumskySpot>,
+    bug: &Vec<Spot>,
     nut: &Option<Note>,
     def: &Option<Hoon>,
 ) -> Hoon {
@@ -538,7 +529,7 @@ pub fn choice_(one: Spec,
             dom: u64,
             hay: &WingType,
             cox: &HashMap<String, Spec>,
-            bug: &Vec<ChumskySpot>,
+            bug: &Vec<Spot>,
             nut: &Option<Note>,
             def: &Option<Hoon>,
 ) -> Hoon {
@@ -576,18 +567,13 @@ pub fn relative(axe: u64,
                 dom: u64,
                 hay: &WingType,
                 cox: &HashMap<String, Spec>,
-                bug: &Vec<ChumskySpot>,
+                bug: &Vec<Spot>,
                 nut: &Option<Note>,
                 def: &Option<Hoon>,
 ) -> Hoon {
     match &mod_ {
         Spec::Base(p) => decorate(basic(p.clone(), axe, mod_, dom, hay, cox, &vec![], &None, &None), bug.clone(), nut.clone()),
-        Spec::Dbug(p, q) => {  //  this case shoud not happen here in rust land
-            // let mut bug = bug.clone();
-            // bug.push(p.clone());
-            relative(axe, &*q, dom, hay, cox, &bug, nut, def)
-        },
-        Spec::ChumskyDbug(p, q) => {
+        Spec::Dbug(p, q) => {
             let mut bug = bug.clone();
             bug.push(p.clone());
             relative(axe, &*q, dom, hay, cox, &bug, nut, def)
@@ -827,23 +813,17 @@ pub fn unfold(fun: Hoon, arg: Vec<Spec>) -> Hoon {
     Hoon::CenCol(Box::new(fun), cencol_tail)
 }
 
-//  TODO: accept args by ref?
 pub fn factory(mod_: Spec,
                 dom: u64,
                 hay: WingType,
                 cox: HashMap<String, Spec>,
-                bug: Vec<ChumskySpot>,
+                bug: Vec<Spot>,
                 nut: Option<Note>,
                 def: Option<Hoon>) -> Hoon {
     match mod_ {
-        Spec::ChumskyDbug(spot, spec) => { //  this case shoud not happen here in rust land
-            // let mut bug = bug.clone();
-            // bug.insert(0, spot);
-            factory(*spec, dom, hay, cox, bug, nut, def)
-        }
-        Spec::Dbug(spot, spec) => { //  this case shoud not happen here in rust land
-            // let mut bug = bug.clone();
-            // bug.insert(0, spot);
+        Spec::Dbug(spot, spec) => {
+            let mut bug = bug.clone();
+            bug.insert(0, spot);
             factory(*spec, dom, hay, cox, bug, nut, def)
         }
         Spec::BucSig(hoon, spec) => {
@@ -890,7 +870,6 @@ pub fn open(gen: Hoon) -> Hoon {
         Hoon::Bust(b) => example(
             &Spec::Base(b), 1, &WingType::default(), &HashMap::new(), &Vec::new(), &None, &None,
         ),
-        Hoon::ChumskyDbug(_, q) => *q,
         Hoon::Dbug(_, q) => *q,
         Hoon::Eror(s) => panic!("{}", s),
         Hoon::Knit(woofs) => {
@@ -1959,8 +1938,6 @@ pub fn feck(gen: Hoon) -> Option<Atom> {
 
         Hoon::Dbug(_spot, expr) => feck(*expr),
 
-        Hoon::ChumskyDbug(_spot, expr) => feck(*expr),
-
         _ => None,
     }
 }
@@ -2008,13 +1985,6 @@ pub fn grip(skin: Skin, gen: Hoon, rel: WingType) -> Hoon {
 
         Skin::Dbug(spot, inner_skin) => {
             Hoon::Dbug(
-                spot,
-                Box::new(grip(*inner_skin, gen, rel)),
-            )
-        }
-
-        Skin::ChumskyDbug(spot, inner_skin) => {
-            Hoon::ChumskyDbug(
                 spot,
                 Box::new(grip(*inner_skin, gen, rel)),
             )
@@ -2076,10 +2046,6 @@ pub fn half(gen: Hoon) -> Option<(Hoon, Hoon)> {
             half(*expr)
         }
 
-        Hoon::ChumskyDbug(_spot, expr) => {
-            half(*expr)
-        }
-
         Hoon::ColCab(car, cdr) => {
             Some((*cdr, *car))
         }
@@ -2129,7 +2095,6 @@ pub fn reek(gen: Hoon) -> Option<WingType> {
         Hoon::Limb(t) => Some(vec![Limb::Term(t.clone())]),
         Hoon::Wing(w) => Some(w.to_vec()),
         Hoon::Dbug(_s, h) => reek(*h),
-        Hoon::ChumskyDbug(_s, h) => reek(*h),
         _ => None
     }
 }
@@ -2151,7 +2116,6 @@ pub fn name_ax(gen: Hoon) ->  Option<String> {
         }
         Hoon::Limb(p) => Some(p),
         Hoon::Dbug(_, q) => name_ax(*q),
-        Hoon::ChumskyDbug(_, q) => name_ax(*q),
         Hoon::TisGal(p, q) => name_ax(Hoon::TisGar(q, p)),
         Hoon::TisGar(_, q) => name_ax(*q),
         _ => None
@@ -2171,7 +2135,6 @@ pub fn autoname(mod_spec: Spec) -> Option<String> {  //  ++autoname:ax
             _ => None,
         },
         Spec::Dbug(_, q) => autoname(*q),
-        Spec::ChumskyDbug(_, q) => autoname(*q),
         Spec::Leaf(p, _) => Some(p),
         Spec::Loop(p) => Some(p),
         Spec::Like(wing, _list_wing) => {
@@ -2214,11 +2177,11 @@ pub fn autoname(mod_spec: Spec) -> Option<String> {  //  ++autoname:ax
     }
 }
 
-pub fn decorate(gen: Hoon, bug: Vec<ChumskySpot>, nut: Option<Note>) -> Hoon {
+pub fn decorate(gen: Hoon, bug: Vec<Spot>, nut: Option<Note>) -> Hoon {
     let mut out = gen;
 
     for spot in bug.into_iter().rev() {
-        out = Hoon::ChumskyDbug(spot, Box::new(out));
+        out = Hoon::Dbug(spot, Box::new(out));
     }
 
     match nut {
@@ -6771,38 +6734,44 @@ pub fn one_spec_closed_tall<'src>(
     .delimited_by(just('='), just('='))
 }
 
-pub fn wrap_hoon_with_trace<'src>(
-    // bug: bool,
-) -> impl Fn(Hoon, &mut MapExtra<'src, '_, &'src str, Err<'src>>) -> Hoon + Clone {
+pub fn wrap_hoon_with_trace(
+    wer: Path,
+    linemap: Arc<LineMap>,
+) -> impl for<'src> Fn(
+        Hoon,
+        &mut MapExtra<'src, '_, &'src str, Err<'src>>,
+    ) -> Hoon
+    + Clone
+{
     move |node, e| {
-        // if bug {
-                Hoon::ChumskyDbug(
-                    (e.span().start(), e.span().end()),
-                    Box::new(node),
-                )
-        // }
-        // node
+        Hoon::Dbug(
+            chumsky_spot_to_hoon_spot((e.span().start(), e.span().end()), &wer, &linemap),
+            Box::new(node),
+        )
     }
 }
 
-pub fn wrap_spec_with_trace<'src>(
-    // bug: bool,
-) -> impl Fn(Spec, &mut MapExtra<'src, '_, &'src str, Err<'src>>) -> Spec + Clone {
+pub fn wrap_spec_with_trace(
+    wer: Path,
+    linemap: Arc<LineMap>,
+) -> impl for<'src> Fn(
+        Spec,
+        &mut MapExtra<'src, '_, &'src str, Err<'src>>,
+    ) -> Spec
+    + Clone
+{
     move |node, e| {
-        // if bug {
-            Spec::ChumskyDbug(
-                (e.span().start(), e.span().end()),
-                Box::new(node),
-            )
-        // }
-        // node
+        Spec::Dbug(
+            chumsky_spot_to_hoon_spot((e.span().start(), e.span().end()), &wer, &linemap),
+            Box::new(node),
+        )
     }
 }
 
 fn chumsky_spot_to_hoon_spot(
-    span: ChumskySpot,
+    span: (usize, usize),
     wer: &Path,
-    linemap: &LineMap,
+    linemap: &Arc<LineMap>,
 ) -> Spot {
     let (start, end) = span;
 
@@ -6815,558 +6784,5 @@ fn chumsky_spot_to_hoon_spot(
             p: (sl as u64, sc as u64),
             q: (el as u64, ec as u64),
         },
-    }
-}
-
-// turns ChumskyDbug into Dbug
-pub fn process_spec_traces(
-    spec: Spec,
-    wer: &Path,
-    bug: bool,
-    linemap: &LineMap,
-) -> Spec {
-    use Spec::*;
-
-    match spec {
-        ChumskyDbug(span, inner) if bug => {
-            let spot = chumsky_spot_to_hoon_spot(span, wer, linemap);
-            Dbug(
-                spot,
-                Box::new(process_spec_traces(*inner, wer, bug, linemap)),
-            )
-        }
-
-        ChumskyDbug(_, inner) => {
-            process_spec_traces(*inner, wer, bug, linemap)
-        }
-
-        Dbug(spot, inner) => {
-            Dbug(
-                spot,
-                Box::new(process_spec_traces(*inner, wer, bug, linemap)),
-            )
-        }
-
-        Base(b) => Base(b),
-        Leaf(a, b) => Leaf(a, b),
-        Loop(a) => Loop(a),
-
-        Name(a, s) =>
-            Name(a, Box::new(process_spec_traces(*s, wer, bug, linemap))),
-
-        Over(w, s) =>
-            Over(w, Box::new(process_spec_traces(*s, wer, bug, linemap))),
-
-        Like(w, ws) => Like(w, ws),
-
-        Made((a, b), s) =>
-            Made((a, b), Box::new(process_spec_traces(*s, wer, bug, linemap))),
-
-        Make(h, ss) =>
-            Make(
-                process_hoon_traces(h, wer, bug, linemap),
-                ss.into_iter()
-                    .map(|s| process_spec_traces(s, wer, bug, linemap))
-                    .collect(),
-            ),
-
-        BucBar(s, h) =>
-            BucBar(
-                Box::new(process_spec_traces(*s, wer, bug, linemap)),
-                process_hoon_traces(h, wer, bug, linemap),
-            ),
-
-        BucCab(h) =>
-            BucCab(process_hoon_traces(h, wer, bug, linemap)),
-
-        BucMic(h) =>
-            BucMic(process_hoon_traces(h, wer, bug, linemap)),
-
-        BucPam(s, h) =>
-            BucPam(
-                Box::new(process_spec_traces(*s, wer, bug, linemap)),
-                process_hoon_traces(h, wer, bug, linemap),
-            ),
-
-        BucSig(h, s) =>
-            BucSig(
-                process_hoon_traces(h, wer, bug, linemap),
-                Box::new(process_spec_traces(*s, wer, bug, linemap)),
-            ),
-
-        BucGar(a, b) =>
-            BucGar(
-                Box::new(process_spec_traces(*a, wer, bug, linemap)),
-                Box::new(process_spec_traces(*b, wer, bug, linemap)),
-            ),
-
-        BucGal(a, b) =>
-            BucGal(
-                Box::new(process_spec_traces(*a, wer, bug, linemap)),
-                Box::new(process_spec_traces(*b, wer, bug, linemap)),
-            ),
-
-        BucHep(a, b) =>
-            BucHep(
-                Box::new(process_spec_traces(*a, wer, bug, linemap)),
-                Box::new(process_spec_traces(*b, wer, bug, linemap)),
-            ),
-
-        BucKet(a, b) =>
-            BucKet(
-                Box::new(process_spec_traces(*a, wer, bug, linemap)),
-                Box::new(process_spec_traces(*b, wer, bug, linemap)),
-            ),
-
-        BucLus(a, b) =>
-            BucLus(a, Box::new(process_spec_traces(*b, wer, bug, linemap))),
-
-        BucPat(a, b) =>
-            BucPat(
-                Box::new(process_spec_traces(*a, wer, bug, linemap)),
-                Box::new(process_spec_traces(*b, wer, bug, linemap)),
-            ),
-
-        BucCol(a, bs) =>
-            BucCol(
-                Box::new(process_spec_traces(*a, wer, bug, linemap)),
-                bs.into_iter()
-                    .map(|s| process_spec_traces(s, wer, bug, linemap))
-                    .collect(),
-            ),
-
-        BucCen(a, bs) =>
-            BucCen(
-                Box::new(process_spec_traces(*a, wer, bug, linemap)),
-                bs.into_iter()
-                    .map(|s| process_spec_traces(s, wer, bug, linemap))
-                    .collect(),
-            ),
-
-        BucWut(a, bs) =>
-            BucWut(
-                Box::new(process_spec_traces(*a, wer, bug, linemap)),
-                bs.into_iter()
-                    .map(|s| process_spec_traces(s, wer, bug, linemap))
-                    .collect(),
-            ),
-
-        BucBuc(a, m) =>
-            BucBuc(
-                Box::new(process_spec_traces(*a, wer, bug, linemap)),
-                m.into_iter()
-                    .map(|(k, v)| (k, process_spec_traces(v, wer, bug, linemap)))
-                    .collect(),
-            ),
-
-        BucDot(a, m) =>
-            BucDot(
-                Box::new(process_spec_traces(*a, wer, bug, linemap)),
-                m.into_iter()
-                    .map(|(k, v)| (k, process_spec_traces(v, wer, bug, linemap)))
-                    .collect(),
-            ),
-
-        BucFas(a, m) =>
-            BucFas(
-                Box::new(process_spec_traces(*a, wer, bug, linemap)),
-                m.into_iter()
-                    .map(|(k, v)| (k, process_spec_traces(v, wer, bug, linemap)))
-                    .collect(),
-            ),
-
-        BucTic(a, m) =>
-            BucTic(
-                Box::new(process_spec_traces(*a, wer, bug, linemap)),
-                m.into_iter()
-                    .map(|(k, v)| (k, process_spec_traces(v, wer, bug, linemap)))
-                    .collect(),
-            ),
-
-        BucZap(a, m) =>
-            BucZap(
-                Box::new(process_spec_traces(*a, wer, bug, linemap)),
-                m.into_iter()
-                    .map(|(k, v)| (k, process_spec_traces(v, wer, bug, linemap)))
-                    .collect(),
-            ),
-
-        BucTis(skin, s) =>
-            BucTis(process_skin_traces(skin, wer, bug, linemap), Box::new(process_spec_traces(*s, wer, bug, linemap))),
-
-        // _ => spec,
-    }
-}
-
-// turns ChumskyDbug into Dbug
-pub fn process_hoon_traces(
-    hoon: Hoon,
-    wer: &Path,
-    bug: bool,
-    linemap: &LineMap,
-) -> Hoon {
-    use Hoon::*;
-    match hoon {
-        ChumskyDbug(span, inner) if bug => {
-            let spot = chumsky_spot_to_hoon_spot(span, wer, linemap);
-            Dbug(spot, Box::new(process_hoon_traces(*inner, wer, bug, linemap)))
-        }
-        ChumskyDbug(_, inner) => {
-            process_hoon_traces(*inner, wer, bug, linemap)
-        }
-        ZapCol(inner) => process_hoon_traces(*inner, wer, true, linemap),
-        ZapDot(inner) => process_hoon_traces(*inner, wer, false, linemap),
-        ZapZap => ZapZap,
-        Axis(a) => Axis(a),
-        Base(b) => Base(b),
-        Bust(b) => Bust(b),
-        Eror(e) => Eror(e),
-        Limb(a) => Limb(a),
-        Leaf(a, b) => Leaf(a, b),
-        Rock(a, b) => Rock(a, b),
-        Sand(a, b) => Sand(a, b),
-        Tune(t) => Tune(t),
-        Wing(w) => Wing(w),
-        Xray(x) => Xray(x),
-        MicTis(m) => MicTis(m),
-        Dbug(s, h) => Dbug(s, Box::new(process_hoon_traces(*h, wer, bug, linemap))),
-        Hand(t, n) => Hand(t, n),
-        Knit(v) => Knit(v),
-        Fits(h, w) => Fits(Box::new(process_hoon_traces(*h, wer, bug, linemap)), w),
-        Note(n, h) => Note(n, Box::new(process_hoon_traces(*h, wer, bug, linemap))),
-        Lost(h) => Lost(Box::new(process_hoon_traces(*h, wer, bug, linemap))),
-        BarDot(h) => BarDot(Box::new(process_hoon_traces(*h, wer, bug, linemap))),
-        BarHep(h) => BarHep(Box::new(process_hoon_traces(*h, wer, bug, linemap))),
-        BarWut(h) => BarWut(Box::new(process_hoon_traces(*h, wer, bug, linemap))),
-        DotLus(h) => DotLus(Box::new(process_hoon_traces(*h, wer, bug, linemap))),
-        DotWut(h) => DotWut(Box::new(process_hoon_traces(*h, wer, bug, linemap))),
-        KetBar(h) => KetBar(Box::new(process_hoon_traces(*h, wer, bug, linemap))),
-        KetPam(h) => KetPam(Box::new(process_hoon_traces(*h, wer, bug, linemap))),
-        KetSig(h) => KetSig(Box::new(process_hoon_traces(*h, wer, bug, linemap))),
-        KetWut(h) => KetWut(Box::new(process_hoon_traces(*h, wer, bug, linemap))),
-        ZapGar(h) => ZapGar(Box::new(process_hoon_traces(*h, wer, bug, linemap))),
-        ZapTis(h) => ZapTis(Box::new(process_hoon_traces(*h, wer, bug, linemap))),
-        WutZap(h) => WutZap(Box::new(process_hoon_traces(*h, wer, bug, linemap))),
-        MicFas(h) => MicFas(Box::new(process_hoon_traces(*h, wer, bug, linemap))),
-        Pair(a, b) => Pair(
-            Box::new(process_hoon_traces(*a, wer, bug, linemap)),
-            Box::new(process_hoon_traces(*b, wer, bug, linemap)),
-        ),
-        BarCol(a, b) => BarCol(
-            Box::new(process_hoon_traces(*a, wer, bug, linemap)),
-            Box::new(process_hoon_traces(*b, wer, bug, linemap)),
-        ),
-        ColCab(a, b) => ColCab(
-            Box::new(process_hoon_traces(*a, wer, bug, linemap)),
-            Box::new(process_hoon_traces(*b, wer, bug, linemap)),
-        ),
-        ColHep(a, b) => ColHep(
-            Box::new(process_hoon_traces(*a, wer, bug, linemap)),
-            Box::new(process_hoon_traces(*b, wer, bug, linemap)),
-        ),
-        DotTar(a, b) => DotTar(
-            Box::new(process_hoon_traces(*a, wer, bug, linemap)),
-            Box::new(process_hoon_traces(*b, wer, bug, linemap)),
-        ),
-        DotTis(a, b) => DotTis(
-            Box::new(process_hoon_traces(*a, wer, bug, linemap)),
-            Box::new(process_hoon_traces(*b, wer, bug, linemap)),
-        ),
-        KetDot(a, b) => KetDot(
-            Box::new(process_hoon_traces(*a, wer, bug, linemap)),
-            Box::new(process_hoon_traces(*b, wer, bug, linemap)),
-        ),
-        KetLus(a, b) => KetLus(
-            Box::new(process_hoon_traces(*a, wer, bug, linemap)),
-            Box::new(process_hoon_traces(*b, wer, bug, linemap)),
-        ),
-        SigBar(a, b) => SigBar(
-            Box::new(process_hoon_traces(*a, wer, bug, linemap)),
-            Box::new(process_hoon_traces(*b, wer, bug, linemap)),
-        ),
-        SigCab(a, b) => SigCab(
-            Box::new(process_hoon_traces(*a, wer, bug, linemap)),
-            Box::new(process_hoon_traces(*b, wer, bug, linemap)),
-        ),
-        SigTis(a, b) => SigTis(
-            Box::new(process_hoon_traces(*a, wer, bug, linemap)),
-            Box::new(process_hoon_traces(*b, wer, bug, linemap)),
-        ),
-        SigZap(a, b) => SigZap(
-            Box::new(process_hoon_traces(*a, wer, bug, linemap)),
-            Box::new(process_hoon_traces(*b, wer, bug, linemap)),
-        ),
-        ZapCom(a, b) => ZapCom(
-            Box::new(process_hoon_traces(*a, wer, bug, linemap)),
-            Box::new(process_hoon_traces(*b, wer, bug, linemap)),
-        ),
-        ZapMic(a, b) => ZapMic(
-            Box::new(process_hoon_traces(*a, wer, bug, linemap)),
-            Box::new(process_hoon_traces(*b, wer, bug, linemap)),
-        ),
-        ZapPat(ws, a, b) => ZapPat(
-            ws,
-            Box::new(process_hoon_traces(*a, wer, bug, linemap)),
-            Box::new(process_hoon_traces(*b, wer, bug, linemap)),
-        ),
-        KetTar(s) => KetTar(Box::new(process_spec_traces(*s, wer, bug, linemap))),
-        KetTis(s, h) => KetTis(process_skin_traces(s, wer, bug, linemap), Box::new(process_hoon_traces(*h, wer, bug, linemap))),
-        KetCol(s) => KetCol(Box::new(process_spec_traces(*s, wer, bug, linemap))),
-        WutTis(s, w) => WutTis(
-            Box::new(process_spec_traces(*s, wer, bug, linemap)),
-            w,
-        ),
-        BarSig(s, h) => BarSig(
-            Box::new(process_spec_traces(*s, wer, bug, linemap)),
-            Box::new(process_hoon_traces(*h, wer, bug, linemap)),
-        ),
-        BarTar(s, h) => BarTar(
-            Box::new(process_spec_traces(*s, wer, bug, linemap)),
-            Box::new(process_hoon_traces(*h, wer, bug, linemap)),
-        ),
-        BarTis(s, h) => BarTis(
-            Box::new(process_spec_traces(*s, wer, bug, linemap)),
-            Box::new(process_hoon_traces(*h, wer, bug, linemap)),
-        ),
-        DotKet(s, h) => DotKet(
-            Box::new(process_spec_traces(*s, wer, bug, linemap)),
-            Box::new(process_hoon_traces(*h, wer, bug, linemap)),
-        ),
-        KetHep(s, h) => KetHep(
-            Box::new(process_spec_traces(*s, wer, bug, linemap)),
-            Box::new(process_hoon_traces(*h, wer, bug, linemap)),
-        ),
-        TisBar(s, h) => TisBar(
-            Box::new(process_spec_traces(*s, wer, bug, linemap)),
-            Box::new(process_hoon_traces(*h, wer, bug, linemap)),
-        ),
-        ZapGal(s, h) => ZapGal(
-            Box::new(process_spec_traces(*s, wer, bug, linemap)),
-            Box::new(process_hoon_traces(*h, wer, bug, linemap)),
-        ),
-        Tell(v) => Tell(v.into_iter().map(|h| process_hoon_traces(h, wer, bug, linemap)).collect()),
-        Yell(v) => Yell(v.into_iter().map(|h| process_hoon_traces(h, wer, bug, linemap)).collect()),
-        ColSig(v) => ColSig(v.into_iter().map(|h| process_hoon_traces(h, wer, bug, linemap)).collect()),
-        ColTar(v) => ColTar(v.into_iter().map(|h| process_hoon_traces(h, wer, bug, linemap)).collect()),
-        BarBuc(v, s) => BarBuc(v, Box::new(process_spec_traces(*s, wer, bug, linemap))),
-        BarCab(s, a, m) => BarCab(
-                        Box::new(process_spec_traces(*s, wer, bug, linemap)),
-                        a,
-                        m.into_iter()
-                            .map(|(k, v)| (k, v.into_iter()
-                                                .map(|(kk, vv)| (kk, process_hoon_traces(vv, wer, bug, linemap)))
-                                                .collect()))
-                            .collect(),
-                  ),
-        BarCen(o, m) => BarCen(
-                        o,
-                        m.into_iter()
-                            .map(|(k, v)| (k, v.into_iter().map(|(kk, vv)| (kk, process_hoon_traces(vv, wer, bug, linemap))).collect()))
-                            .collect(),
-                        ),
-        BarKet(h, m) => BarKet(
-                    Box::new(process_hoon_traces(*h, wer, bug, linemap)),
-                    m.into_iter()
-                    .map(|(k, v)| (k, v.into_iter().map(|(kk, vv)| (kk, process_hoon_traces(vv, wer, bug, linemap))).collect()))
-                    .collect(),
-                ),
-        BarPat(o, m) => BarPat(
-                o,
-                m.into_iter()
-                    .map(|(k, v)| (k, v.into_iter().map(|(kk, vv)| (kk, process_hoon_traces(vv, wer, bug, linemap))).collect()))
-                    .collect(),
-            ),
-        ColKet(a, b, c, d) => ColKet(
-            Box::new(process_hoon_traces(*a, wer, bug, linemap)),
-            Box::new(process_hoon_traces(*b, wer, bug, linemap)),
-            Box::new(process_hoon_traces(*c, wer, bug, linemap)),
-            Box::new(process_hoon_traces(*d, wer, bug, linemap)),
-        ),
-        ColLus(a, b, c) => ColLus(
-            Box::new(process_hoon_traces(*a, wer, bug, linemap)),
-            Box::new(process_hoon_traces(*b, wer, bug, linemap)),
-            Box::new(process_hoon_traces(*c, wer, bug, linemap)),
-        ),
-        CenCab(w, v) => CenCab(
-            w,
-            v.into_iter()
-                .map(|(ww, h)| (ww, process_hoon_traces(h, wer, bug, linemap)))
-                .collect(),
-        ),
-        CenDot(a, b) => CenDot(
-            Box::new(process_hoon_traces(*a, wer, bug, linemap)),
-            Box::new(process_hoon_traces(*b, wer, bug, linemap)),
-        ),
-        CenHep(a, b) => CenHep(
-            Box::new(process_hoon_traces(*a, wer, bug, linemap)),
-            Box::new(process_hoon_traces(*b, wer, bug, linemap)),
-        ),
-        CenCol(a, v) => CenCol(Box::new(process_hoon_traces(*a, wer, bug, linemap)), v.into_iter().map(|h| process_hoon_traces(h, wer, bug, linemap)).collect()),
-        CenTar(w, h, v) => CenTar(
-                            w,
-                            Box::new(process_hoon_traces(*h, wer, bug, linemap)),
-                            v.into_iter()
-                                .map(|(ww, hh)| (ww, process_hoon_traces(hh, wer, bug, linemap)))
-                                .collect(),
-                          ),
-        CenKet(a, b, c, d) => CenKet(
-            Box::new(process_hoon_traces(*a, wer, bug, linemap)),
-            Box::new(process_hoon_traces(*b, wer, bug, linemap)),
-            Box::new(process_hoon_traces(*c, wer, bug, linemap)),
-            Box::new(process_hoon_traces(*d, wer, bug, linemap)),
-        ),
-        CenLus(a, b, c) => CenLus(
-            Box::new(process_hoon_traces(*a, wer, bug, linemap)),
-            Box::new(process_hoon_traces(*b, wer, bug, linemap)),
-            Box::new(process_hoon_traces(*c, wer, bug, linemap)),
-        ),
-        CenSig(w, h, v) => CenSig(w,
-                                    Box::new(process_hoon_traces(*h, wer, bug, linemap)),
-                                     v.into_iter().map(|h| process_hoon_traces(h, wer, bug, linemap)).collect()),
-        CenTis(w, v) => CenTis(
-                            w,
-                            v.into_iter()
-                                .map(|(ww, h)| (ww, process_hoon_traces(h, wer, bug, linemap)))
-                                .collect(),
-                        ),
-        SigCen(c, h1, t, h2) => SigCen(
-            c,
-            Box::new(process_hoon_traces(*h1, wer, bug, linemap)),
-            t.into_iter()
-                .map(|(k, v)| (k, process_hoon_traces(v, wer, bug, linemap)))
-                .collect(),
-            Box::new(process_hoon_traces(*h2, wer, bug, linemap)),
-        ),
-        SigFas(c, h) => SigFas(c, Box::new(process_hoon_traces(*h, wer, bug, linemap))),
-        SigGal(t, h) => SigGal(
-            match t {
-                TermOrPair::Term(s) => TermOrPair::Term(s),
-                TermOrPair::Pair(s, hh) => TermOrPair::Pair(s, Box::new(process_hoon_traces(*hh, wer, bug, linemap))),
-            },
-            Box::new(process_hoon_traces(*h, wer, bug, linemap))),
-        SigGar(t, h) => SigGar(
-            match t {
-                TermOrPair::Term(s) => TermOrPair::Term(s),
-                TermOrPair::Pair(s, hh) => TermOrPair::Pair(s, Box::new(process_hoon_traces(*hh, wer, bug, linemap))),
-            },
-            Box::new(process_hoon_traces(*h, wer, bug, linemap)),
-        ),
-        SigGar(t, h) => SigGar(t, Box::new(process_hoon_traces(*h, wer, bug, linemap))),
-        SigBuc(s, h) => SigBuc(s, Box::new(process_hoon_traces(*h, wer, bug, linemap))),
-        SigLus(u, h) => SigLus(u, Box::new(process_hoon_traces(*h, wer, bug, linemap))),
-        SigPam(u, h1, h2) => SigPam(u, Box::new(process_hoon_traces(*h1, wer, bug, linemap)), Box::new(process_hoon_traces(*h2, wer, bug, linemap))),
-        SigWut(u, h1, h2, h3) => SigWut(u, Box::new(process_hoon_traces(*h1, wer, bug, linemap)), Box::new(process_hoon_traces(*h2, wer, bug, linemap)), Box::new(process_hoon_traces(*h3, wer, bug, linemap))),
-        MicCol(h, v) => MicCol(Box::new(process_hoon_traces(*h, wer, bug, linemap)), v.into_iter().map(|h| process_hoon_traces(h, wer, bug, linemap)).collect()),
-        MicGal(s, h1, h2, h3) => MicGal(s, Box::new(process_hoon_traces(*h1, wer, bug, linemap)), Box::new(process_hoon_traces(*h2, wer, bug, linemap)), Box::new(process_hoon_traces(*h3, wer, bug, linemap))),
-        MicSig(h, v) => MicSig(Box::new(process_hoon_traces(*h, wer, bug, linemap)), v.into_iter().map(|h| process_hoon_traces(h, wer, bug, linemap)).collect()),
-        MicMic(s, h) => MicMic(Box::new(process_spec_traces(*s, wer, bug, linemap)), Box::new(process_hoon_traces(*h, wer, bug, linemap))),
-        TisCol(v, h) => TisCol(
-            v.into_iter()
-                .map(|(w, hh)| (w, process_hoon_traces(hh, wer, bug, linemap)))
-                .collect(),
-            Box::new(process_hoon_traces(*h, wer, bug, linemap)),
-        ),
-        TisFas(s, h1, h2) => TisFas(process_skin_traces(s, wer, bug, linemap), Box::new(process_hoon_traces(*h1, wer, bug, linemap)), Box::new(process_hoon_traces(*h2, wer, bug, linemap))),
-        TisMic(s, h1, h2) => TisMic(process_skin_traces(s, wer, bug, linemap), Box::new(process_hoon_traces(*h1, wer, bug, linemap)), Box::new(process_hoon_traces(*h2, wer, bug, linemap))),
-        TisDot(w, h1, h2) => TisDot(w, Box::new(process_hoon_traces(*h1, wer, bug, linemap)), Box::new(process_hoon_traces(*h2, wer, bug, linemap))),
-        TisWut(w, h1, h2, h3) => TisWut(w, Box::new(process_hoon_traces(*h1, wer, bug, linemap)), Box::new(process_hoon_traces(*h2, wer, bug, linemap)), Box::new(process_hoon_traces(*h3, wer, bug, linemap))),
-        TisGal(h1, h2) => TisGal(Box::new(process_hoon_traces(*h1, wer, bug, linemap)), Box::new(process_hoon_traces(*h2, wer, bug, linemap))),
-        TisHep(h1, h2) => TisHep(Box::new(process_hoon_traces(*h1, wer, bug, linemap)), Box::new(process_hoon_traces(*h2, wer, bug, linemap))),
-        TisGar(h1, h2) => TisGar(Box::new(process_hoon_traces(*h1, wer, bug, linemap)), Box::new(process_hoon_traces(*h2, wer, bug, linemap))),
-        TisKet(s, w, h1, h2) => TisKet(process_skin_traces(s, wer, bug, linemap), w, Box::new(process_hoon_traces(*h1, wer, bug, linemap)), Box::new(process_hoon_traces(*h2, wer, bug, linemap))),
-        TisLus(h1, h2) => TisLus(Box::new(process_hoon_traces(*h1, wer, bug, linemap)), Box::new(process_hoon_traces(*h2, wer, bug, linemap))),
-        TisSig(v) => TisSig(v.into_iter().map(|h| process_hoon_traces(h, wer, bug, linemap)).collect()),
-        TisTar(p, h1, h2) => TisTar(
-                (p.0, p.1.map(|s| Box::new(process_spec_traces(*s, wer, bug, linemap)))),
-                Box::new(process_hoon_traces(*h1, wer, bug, linemap)),
-                Box::new(process_hoon_traces(*h2, wer, bug, linemap)),
-            ),
-        TisCom(h1, h2) => TisCom(Box::new(process_hoon_traces(*h1, wer, bug, linemap)), Box::new(process_hoon_traces(*h2, wer, bug, linemap))),
-        WutBar(v) => WutBar(v.into_iter().map(|h| process_hoon_traces(h, wer, bug, linemap)).collect()),
-        WutHep(w, v) => WutHep(
-            w,
-            v.into_iter()
-                .map(|(s, h)| (process_spec_traces(s, wer, bug, linemap), process_hoon_traces(h, wer, bug, linemap)))
-                .collect(),
-        ),
-        WutCol(h1, h2, h3) => WutCol(
-            Box::new(process_hoon_traces(*h1, wer, bug, linemap)),
-            Box::new(process_hoon_traces(*h2, wer, bug, linemap)),
-            Box::new(process_hoon_traces(*h3, wer, bug, linemap)),
-        ),
-        WutDot(h1, h2, h3) => WutDot(
-            Box::new(process_hoon_traces(*h1, wer, bug, linemap)),
-            Box::new(process_hoon_traces(*h2, wer, bug, linemap)),
-            Box::new(process_hoon_traces(*h3, wer, bug, linemap)),
-        ),
-        WutKet(w, h1, h2) => WutKet(w, Box::new(process_hoon_traces(*h1, wer, bug, linemap)), Box::new(process_hoon_traces(*h2, wer, bug, linemap))),
-        WutGal(h1, h2) => WutGal(Box::new(process_hoon_traces(*h1, wer, bug, linemap)), Box::new(process_hoon_traces(*h2, wer, bug, linemap))),
-        WutGar(h1, h2) => WutGar(Box::new(process_hoon_traces(*h1, wer, bug, linemap)), Box::new(process_hoon_traces(*h2, wer, bug, linemap))),
-        WutLus(w, h, v) => WutLus(
-            w,
-            Box::new(process_hoon_traces(*h, wer, bug, linemap)),
-            v.into_iter()
-                .map(|(s, hh)| (process_spec_traces(s, wer, bug, linemap), process_hoon_traces(hh, wer, bug, linemap)))
-                .collect(),
-        ),
-        WutPam(v) => WutPam(v.into_iter().map(|h| process_hoon_traces(h, wer, bug, linemap)).collect()),
-        WutPat(w, h1, h2) => WutPat(w, Box::new(process_hoon_traces(*h1, wer, bug, linemap)), Box::new(process_hoon_traces(*h2, wer, bug, linemap))),
-        WutSig(w, h1, h2) => WutSig(w, Box::new(process_hoon_traces(*h1, wer, bug, linemap)), Box::new(process_hoon_traces(*h2, wer, bug, linemap))),
-        WutHax(s, w) => WutHax(process_skin_traces(s, wer, bug, linemap), w),
-        ZapWut(z, h) => ZapWut(z, Box::new(process_hoon_traces(*h, wer, bug, linemap))),
-        // _ => hoon,
-    }
-}
-
-pub fn process_skin_traces(
-    skin: Skin,
-    wer: &Path,
-    bug: bool,
-    linemap: &LineMap,
-) -> Skin {
-    use Skin::*;
-
-    match skin {
-        ChumskyDbug(span, inner) if bug => {
-            let spot = chumsky_spot_to_hoon_spot(span, wer, linemap);
-            Dbug(
-                spot,
-                Box::new(process_skin_traces(*inner, wer, bug, linemap)),
-            )
-        }
-
-        ChumskyDbug(_, inner) => {
-            process_skin_traces(*inner, wer, bug, linemap)
-        }
-
-        Term(t) => Term(t),
-        Base(b) => Base(b),
-        Leaf(a, b) => Leaf(a, b),
-        Wash(n) => Wash(n),
-
-        Cell(a, b) => Cell(
-            Box::new(process_skin_traces(*a, wer, bug, linemap)),
-            Box::new(process_skin_traces(*b, wer, bug, linemap)),
-        ),
-
-        Name(n, s) => Name(
-            n,
-            Box::new(process_skin_traces(*s, wer, bug, linemap)),
-        ),
-
-        Over(w, s) => Over(
-            w,
-            Box::new(process_skin_traces(*s, wer, bug, linemap)),
-        ),
-
-        Spec(sp, s) => Spec(
-            Box::new(process_spec_traces(*sp, wer, bug, linemap)),
-            Box::new(process_skin_traces(*s, wer, bug, linemap)),
-        ),
-
-        Dbug(spot, inner) => Dbug(
-            spot,
-            Box::new(process_skin_traces(*inner, wer, bug, linemap)),
-        ),
     }
 }
