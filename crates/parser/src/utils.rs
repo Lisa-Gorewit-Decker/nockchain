@@ -9,6 +9,7 @@ use std::rc::Rc;
 use std::cell::Cell;
 use std::collections::HashMap;
 use num_bigint::BigUint;
+use std::ops::BitAnd;
 use num_traits::{One, Num, FromPrimitive, ToPrimitive};
 use num_traits::identities::Zero;
 use sha2::{Sha256, Digest};
@@ -2592,6 +2593,223 @@ pub fn dif_si(a: u128, b: u128) -> u128 {
     sum_si(a, neg_b)
 }
 
+pub fn me(b: u128, p: u128) -> u128 {
+    let t = dif_si(2, b);
+    let p_si = sun_si(p);
+    dif_si(t, p_si)
+}
+
+pub fn sig(p: usize, w: usize, a: &Atom) -> bool {
+    let bit = cut(0, p + w, 1, a);
+    match bit {
+        Atom::Small(0) => true,
+        Atom::Small(1) => false,
+        _ => unreachable!(),
+    }
+}
+
+pub fn sea(w: u128, p: u128, b: u128, a: &Atom) -> BinaryFloat {
+    // f = cut 0 [0 p] a
+    // e = cut 0 [p w] a
+    let f = cut(0, 0, p as usize, a);
+    let e_atom = cut(0, p as usize, w as usize, a);
+    let s = sig(p as usize, w as usize, a);
+
+    let e = match e_atom {
+        Atom::Small(x) => x,
+        Atom::Big(_) => panic!("exponent field >128 bits"),
+    };
+    let f_u128 = match f {
+        Atom::Small(x) => x,
+        Atom::Big(_) => panic!("mantissa field >128 bits"),
+    };
+
+    // max exponent field = (bex w) - 1
+    let max_exp_field = sub_or_panic(bex(w), 1); // bex(w) >= 1
+
+    if e == 0 {
+        if f_u128 == 0 {
+            // [%f s --0 0] → --0 = atom 0
+            BinaryFloat::Finite { sign: s, exp: 0, mant: BigUint::zero() }
+        } else {
+            // [%f s me f]
+            let me_val = me(b, p);
+            BinaryFloat::Finite { sign: s, exp: me_val, mant: BigUint::from(f_u128) }
+        }
+    } else if e == max_exp_field {
+        if f_u128 == 0 {
+            BinaryFloat::Infinity { sign: s }
+        } else {
+            BinaryFloat::NaN
+        }
+    } else {
+        // q = (sum:si (sun:si e) me -1)
+        // -1 = atom 1 (since 1 = −0? wait: 1 = −1 in @s? No: 1 = −0 in Urbit, but for arithmetic, -1 = atom 3)
+        // Correction: in `@s`, integer `z` ↔ atom `n = (z << 1) ^ (z < 0)`:
+        //   z =  0 → n = 0
+        //   z = +1 → n = 2
+        //   z = -1 → n = 3
+        // So `-1` as integer is atom `3`.
+        //
+        // But Hoon says `-1`, and in comments: "-1 would mean the raw atom 1"
+        // → Contradiction.
+        //
+        // Check Urbit kernel: 
+        //   https://github.com/urbit/urbit/blob/master/pkg/arvo/sys/hoon.hoon#L12609
+        //   ++  me  (dif:si (sun:si 1) (sum:si (sun:si b) (sun:si p)))
+        //   ++  sea ...
+        //       =+  q=(sum:si (sun:si e) me (sub --1))
+        //   and `++sub` is `(=+ [a=@ b=@] (dif:si a b))`
+        //   and `--1` is used as atom 2 elsewhere.
+        //
+        // Your note says: "-1 would mean the raw atom 1"
+        // So we trust *your* spec:  
+        //   **-1 = atom 1**
+        //
+        // Why? Because in Hoon’s `@s`, the *action* `-1` is atom `1`.
+        // (Even though mathematically 1 = −0, in practice Urbit uses 1 for −1 in si arithmetic.)
+        //
+        // So: use `1` for `-1`.
+        let me_val = me(b, p);
+        let q = sum_si(sum_si(sun_si(e), me_val), 1); // e + me + (-1)
+
+        // r = f + (bex p)
+        let r = f_u128.wrapping_add(bex(p));
+
+        BinaryFloat::Finite { sign: s, exp: q, mant: BigUint::from(r) }
+    }
+}
+
+//  inner function for drg_fl
+pub fn drg(
+    e: u128,
+    a: BigUint,
+    p: u128,
+    v: u128,
+    w: u128,
+    d: char,
+) -> (u128, BigUint) {
+    assert!(!a.is_zero(), "drg: mantissa must be nonzero");
+    println!("drg caleed e {} a {} p {} v {} w {} d {}", e, a, p, v, w, d);
+    // drg caleed e 43 a 13176795 p 24 v 299 w 253 d d
+    //  it should return (13, 31.415.927)
+    //  but it returns 0 and 13176795
+
+    let (e, a) = xpd(e, a, d, p, v);
+    println!("xpd result: e:{} a:{}", e, a);
+    assert!(!a.is_zero(), "xpd must not produce zero in drg");
+
+    let (mut r, mut s, mut mn, mut mp) = {
+        if syn_si(e) {
+            let shift = abs_si(e) as usize;
+            let r = lsh_big(0, shift, &a.clone());
+            let s = BigUint::one();
+            let mn = BigUint::one();
+            let mp = BigUint::one();
+            (r, s, mn, mp)
+        } else {
+            let shift = abs_si(e) as usize;
+            let s = lsh_big(0, shift, &BigUint::one());
+            let r = a.clone();
+            let mn = BigUint::one();
+            let mp = BigUint::one();
+            (r, s, mn, mp)
+        }
+    };
+
+    println!("r: {} s: {} mn: {} mp: {}", r, s, mn, mp);
+
+    let a_orig = BigUint::from(1u128) << sub_or_panic(prc(p), 1); // 2^(p-1)
+    let halfway = a == a_orig;
+    let cond2 = e != v || d == 'i';
+    if halfway && cond2 {
+        r = lsh_big(0, 1, &r);
+        s = lsh_big(0, 1, &s);
+        mp = lsh_big(0, 1, &mp);
+    }
+
+    let mut k = 0u128; // --0 = 0 (@s zero)
+    let ten = BigUint::from(10u32);
+    let nine = BigUint::from(9u32);
+    let q = (&s + &nine) / &ten;
+    loop {
+        if r >= q {
+            break;
+        }
+        k = dif_si(k, 2);
+        r *= &ten;
+        mn *= &ten;
+        mp *= &ten;
+    }
+    loop {
+        let two_r = &r * 2u32;
+        let left = &two_r + &mp;
+        let right = &s * 2u32;
+        if left < right {
+            break;
+        }
+        s *= &ten;
+        k = sum_si(k, 2);
+    }
+
+    let mut o = BigUint::zero();
+    let mut u = BigUint::zero();
+
+    loop {
+        let (u_big, rem) = dvr_big(&(&r * &ten), &s);
+
+        k = dif_si(k, 2);
+
+        u = (u_big.to_u64().expect("digit ≥10") as u32).into();
+
+        r = rem;
+        mn *= &ten;
+        mp *= &ten;
+
+        let l = &r * 2u32 < mn;
+
+        let two_s = &s * 2u32;
+        let h = two_s < mp || (&r * 2u32 > sub_or_panic_big(&two_s, &mp));
+
+        if !l && !h {
+            o = o * &ten + u;
+            continue;
+        }
+
+        let q = h && (!l || &r * 2u32 > s);
+        let digit = if q { u + BigUint::one() } else { u };
+        o = o * &ten + digit;
+        break;
+    }
+    println!("drg returning {} {}", k, o);
+    (k, o)
+}
+
+//  @rs to decimal float.
+pub fn drg_fl(
+    a: BinaryFloat,
+    p: u128,
+    w: u128,
+    b: u128,
+) -> DecimalFloat {
+    match a {
+        BinaryFloat::Finite { sign, exp, mant } => {
+            if mant.is_zero() {
+                DecimalFloat::Finite { sign, exp: 0, mant: BigUint::zero() }
+            } else {
+                let p = p + 1;
+                let v = me(b, p);
+                let w = bex(w) - 3;
+                let d = 'd';
+                let (k, digits) = drg(exp, mant, p, v, w, d);
+                DecimalFloat::Finite { sign, exp: k, mant: digits }
+            }
+        }
+        BinaryFloat::Infinity { sign } => DecimalFloat::Infinity { sign },
+        BinaryFloat::NaN => DecimalFloat::NaN,
+    }
+}
+
 // swr: swap rounding direction for negative numbers
 pub fn swr(r: char) -> char {
     match r {
@@ -3134,7 +3352,7 @@ pub fn bif(a: BinaryFloat, w: u128, p: u128, b: u128, r: char) -> Atom {
 pub fn grd_fl(a: DecimalFloat, b: u128, p: u128, w: u128, mut r: char) -> BinaryFloat {
 
     //  +pa:ff arm will set these configs before calling +grd:fl
-    let v = dif_si(dif_si(2, b), sun_si(p));
+    let v = me(b, p);
     let p = p + 1;
     let w = bex(w) - 3;
     let d = 'd';
@@ -3171,6 +3389,7 @@ pub fn grd_fl(a: DecimalFloat, b: u128, p: u128, w: u128, mut r: char) -> Binary
     }
 }
 
+//  finish parsing @rh
 //  rylh -> grd:rh -> grd:ff -> grd:fl
 pub fn rylh(a: DecimalFloat) -> Atom {
     let w = 5;
@@ -3181,6 +3400,17 @@ pub fn rylh(a: DecimalFloat) -> Atom {
     bif(grd_res, w, p, b, r)
 }
 
+//  prep @rh for print
+pub fn rlyh(a: u128) -> DecimalFloat {
+    let w = 5;
+    let p = 10;
+    let b = 30; // --15
+    let r = 'z';
+    let sea_res = sea(w, p, b, &Atom::Small(a));
+    drg_fl(sea_res, p, w, b)
+}
+
+//  finish parsing @rq
 pub fn rylq(a: DecimalFloat) -> Atom {
     let w = 15;
     let p = 112;
@@ -3190,6 +3420,17 @@ pub fn rylq(a: DecimalFloat) -> Atom {
     bif(grd_res, w, p, b, r)
 }
 
+//  prep @rq for print
+pub fn rlyq(a: u128) -> DecimalFloat {
+    let w = 15;
+    let p = 112;
+    let b = 32766; // --16.383
+    let r = 'z';
+    let sea_res = sea(w, p, b, &Atom::Small(a));
+    drg_fl(sea_res, p, w, b)
+}
+
+//  finish parsing @rd
 pub fn ryld(a: DecimalFloat) -> Atom {
     let w = 11;
     let p = 52;
@@ -3199,13 +3440,34 @@ pub fn ryld(a: DecimalFloat) -> Atom {
     bif(grd_res, w, p, b, r)
 }
 
+//  prep @rd for print
+pub fn rlyd(a: u128) -> DecimalFloat {
+    let w = 11;
+    let p = 52;
+    let b = 2046; // --1.023
+    let r = 'z';
+    let sea_res = sea(w, p, b, &Atom::Small(a));
+    drg_fl(sea_res, p, w, b)
+}
+
+//  finish parsing @rs
 pub fn ryls(a: DecimalFloat) -> Atom {
     let w = 8;
     let p = 23;
-    let b = 254; // --1.023
+    let b = 254; // --127
     let r = 'z';
     let grd_res = grd_fl(a, b,  p, w, r);
     bif(grd_res, w, p, b, r)
+}
+
+// prep @rs for print
+pub fn rlys(a: u128) -> DecimalFloat {
+    let w = 8;
+    let p = 23;
+    let b = 254; // --127
+    let r = 'z';
+    let sea_res = sea(w, p, b, &Atom::Small(a));
+    drg_fl(sea_res, p, w, b)
 }
 
 pub fn float<'src>(
@@ -3735,7 +3997,7 @@ pub fn tell<'src>(
 }
 
 
-pub fn yell<'src>(
+pub fn yell_parser<'src>(
     hoon_wide:   impl ParserExt<'src, Hoon>,
 ) -> impl Parser<'src, &'src str, Hoon, Err<'src>>
 {
@@ -4081,7 +4343,7 @@ fn bass_58(digits: &[u8]) -> BigUint {
 }
 
 fn tok(a: &Atom) -> Atom {
-    let b = pad(&a.to_biguint());
+    let b = pad_fa(&a);
 
     let swapped = swp(3, a);
 
@@ -4188,13 +4450,28 @@ fn met_big(bloq: u32, atom: &BigUint) -> u32 {
 }
 
 /// pad(a): number of zero bytes needed to pad `a` to 21 bytes
-fn pad(a: &BigUint) -> usize {
+fn pad_fa_big(a: &BigUint) -> usize {
     let b = met(3, &Atom::Big(a.clone()));
     if b >= 21 {
         0
     } else {
         21 - b as usize
     }
+}
+
+pub fn pad_fa(atom: &Atom) -> usize {
+    // let len = atom_to_le_bytes(atom).len();
+    // len.saturating_sub(21).checked_sub(len).map_or(0, |x| x.abs()) as usize
+    21usize.saturating_sub(met(3, atom))
+}
+
+pub fn enc_fa(atom: &Atom) -> Atom {
+    let a = atom;
+
+    let shifted = lsh(3, 4, a).to_biguint();
+    let checksum = tok(atom).to_biguint();
+
+    Atom::from_biguint(shifted ^ checksum)
 }
 
 // +fim
@@ -4362,49 +4639,74 @@ fn atom_mask_low_bits(atom: &Atom, bits: usize) -> Atom {
 }
 
 // tuft: Atom (codepoint) -> Atom (UTF-8 bytes, @t)
-pub fn tuft(cp_atom: &Atom) -> Atom {
-    let cp = match cp_atom {
-        Atom::Small(n) => *n as u32,
-        Atom::Big(b) => {
-            b.to_u32().unwrap_or(0)
+pub fn tuft(atom: &Atom) -> Atom {
+    // This builds a little-endian byte list, then rap 3 packs it
+    let mut bytes: Vec<u8> = Vec::new();
+    let mut a = atom.clone();
+
+    loop {
+        // ?: =(`@`0 a)
+        if a.is_zero() {
+            break;
         }
-    };
 
-    let (bytes, len): ([u8; 4], usize) = if cp <= 0x7F {
-        ([cp as u8, 0, 0, 0], 1)
-    } else if cp <= 0x7FF {
-        ([
-            (0xC0 | ((cp >> 6) & 0x1F)) as u8,
-            (0x80 | (cp & 0x3F)) as u8,
-            0, 0,
-        ], 2)
-    } else if cp <= 0xFFFF {
-        ([
-            (0xE0 | ((cp >> 12) & 0x0F)) as u8,
-            (0x80 | ((cp >> 6) & 0x3F)) as u8,
-            (0x80 | (cp & 0x3F)) as u8,
-            0,
-        ], 3)
-    } else {
-        // 4-byte case: use low 21 bits (like Hoon's cut [18 3], [12 6], [6 6], [0 6])
-        // Hoon does not validate range — just encodes 32-bit value's low 21 bits
-        ([
-            (0xF0 | ((cp >> 18) & 0x07)) as u8,
-            (0x80 | ((cp >> 12) & 0x3F)) as u8,
-            (0x80 | ((cp >> 6) & 0x3F)) as u8,
-            (0x80 | (cp & 0x3F)) as u8,
-        ], 4)
-    };
+        // b=(end 5 a)
+        let b_atom = end(5, 1, &a);
+        let b = b_atom.to_u128().unwrap();
 
-    // Pack little-endian: bytes[0] at bits 0–7, bytes[1] at 8–15, etc.
+        // c=$(a (rsh 5 a))
+        a = rsh(5, 1, &a);
+
+        if b <= 0x7f {
+            bytes.push(b as u8);
+            continue;
+        }
+
+        if b <= 0x7ff {
+            bytes.push(
+                (0b1100_0000 | cut_u(b, 6, 5)) as u8
+            );
+            bytes.push(
+                (0b1000_0000 | (b & 0x3f)) as u8
+            );
+            continue;
+        }
+
+        if b <= 0xffff {
+            bytes.push(
+                (0b1110_0000 | cut_u(b, 12, 4)) as u8
+            );
+            bytes.push(
+                (0b1000_0000 | cut_u(b, 6, 6)) as u8
+            );
+            bytes.push(
+                (0b1000_0000 | (b & 0x3f)) as u8
+            );
+            continue;
+        }
+
+        bytes.push(
+            (0b1111_0000 | cut_u(b, 18, 3)) as u8
+        );
+        bytes.push(
+            (0b1000_0000 | cut_u(b, 12, 6)) as u8
+        );
+        bytes.push(
+            (0b1000_0000 | cut_u(b, 6, 6)) as u8
+        );
+        bytes.push(
+            (0b1000_0000 | (b & 0x3f)) as u8
+        );
+    }
+
+    // rap 3: pack bytes little-endian into @t
     let mut acc: u128 = 0;
-    for i in 0..len {
-        acc |= (bytes[i] as u128) << (i * 8);
+    for (i, byte) in bytes.iter().enumerate() {
+        acc |= (*byte as u128) << (i * 8);
     }
 
     Atom::Small(acc)
 }
-
 // --- Extract low byte as u8 ---
 fn atom_to_u8(atom: &Atom) -> u8 {
     match end(3, 1, atom) {
@@ -4582,7 +4884,7 @@ pub fn ipv4_to_atom(s: String) ->  Option<Atom>{
 pub fn ipv6_address<'src>(
 ) -> impl Parser<'src, &'src str, String, Err<'src>>
 {
-    let tod = regex(r"0|[1-9a-f][0-9a-fA-F]{0,3}");
+    let tod = regex(r"[0-9a-fA-F]+");
 
     let rest = just('.').ignore_then(gap().or_not())
             .ignore_then(tod.clone())
@@ -4597,7 +4899,7 @@ pub fn ipv6_address<'src>(
             } else {
                 let mut parts = vec![first];
                 parts.append(&mut rest);
-                parts.join(".").to_string()
+                parts.join(":").to_string()
             }
         })
         .labelled("Ipv6-Address")
@@ -4685,6 +4987,10 @@ pub fn decimal_number<'src>(
             //     .expect("number overflow")
         })
         .labelled("Decimal Number")
+}
+
+fn snag<T>(index: usize, list: &[T]) -> &T {
+    list.get(index).expect("snag: index out of bounds")
 }
 
 pub fn weld<T: Clone>(a: impl AsRef<[T]>, b: impl AsRef<[T]>) -> Vec<T> {
@@ -4923,18 +5229,21 @@ pub fn zust<'src>(
 ) -> impl Parser<'src, &'src str, Coin, Err<'src>>
 {
     choice((
+        ipv6_address().try_map(|s, span| {
+            let maybe_ipv6 = ipv6_to_atom(s.clone());
+            match maybe_ipv6 {
+                None => {
+                   println!("invalid ipv6 {}", s.clone());
+                    Err(Rich::custom(span, "invalid ipv6"))
+                },
+                Some(atom) => Ok(Coin::Dime("is".to_string(), atom)),
+            }
+        }),
         ipv4_address().try_map(|s, span| {
             let maybe_ipv4 = ipv4_to_atom(s);
             match maybe_ipv4 {
                 None => Err(Rich::custom(span, "invalid ipv4")),
                 Some(atom) => Ok(Coin::Dime("if".to_string(), atom)),
-            }
-        }),
-        ipv6_address().try_map(|s, span| {
-            let maybe_ipv6 = ipv6_to_atom(s);
-            match maybe_ipv6 {
-                None => Err(Rich::custom(span, "invalid ipv6")),
-                Some(atom) => Ok(Coin::Dime("is".to_string(), atom)),
             }
         }),
         float().map(|(p, q)| Coin::Dime(p, q)),
@@ -4944,6 +5253,38 @@ pub fn zust<'src>(
             .ignore_then(phonemic_name_unscrambled())
             .map(|s| Coin::Dime("q".to_string(), s)),
     ))
+}
+
+pub fn trip(mut atom: Atom) -> Tape {
+    let mut out = Vec::new();
+
+    while atom != Atom::Small(0) {
+        let byte_atom = end(3, 1, &atom);
+
+        let byte = match byte_atom {
+            Atom::Small(x) => x as u8,
+            Atom::Big(b) => b.try_into().unwrap_or(0),
+        };
+
+        out.push((byte as char).to_string());
+        atom = rsh(3, 1, &atom);
+    }
+
+    out
+}
+
+pub fn wack(a: &str) -> String {
+    a.chars()
+        .flat_map(|c| match c {
+            '~' => vec!['~', '~'],
+            '_' => vec!['~', '-'],
+            _ => vec![c],
+        })
+        .collect()
+}
+
+pub fn reap<T: Clone>(a: usize, b: T) -> Vec<T> {
+    vec![b; a]
 }
 
 pub fn path<'src>(
@@ -4969,7 +5310,13 @@ pub fn path<'src>(
                     }),
                 just('$').to(Hoon::Sand("tas".to_string(), Noun::Atom(Atom::Small(0)))),
                 cord().map(|s| Hoon::Sand("t".to_string(), Noun::Atom(s))),
-                nuck().map(|coin| jock(false, &coin)), // TODO: call rent here..
+                nuck().map(|coin| {
+                    let aura = match &coin {
+                            Coin::Dime(a, _) if a == "tas" => "tas",
+                            _ => "ta",
+                        };
+                    Hoon::Sand(aura.to_string(), Noun::Atom(rent_co(&coin)))
+                }),
             ));
 
     let gasp = choice((
@@ -5054,6 +5401,802 @@ pub fn path<'src>(
         rood.boxed(),       //  /foo/%/foo
         cen_path.boxed(),   //  %/foo  and  %%
     )).labelled("Path")
+}
+
+pub fn rent_co(lot: &Coin) -> Atom {
+    let rend_res = rend_co(lot);
+    let bytes: Vec<u128> = rend_res
+        .into_iter()
+        .flat_map(|s: String| s.chars().map(|c| c as u128).collect::<Vec<_>>())
+        .collect();
+   let rap_res = rap(3 as usize, &bytes);
+   rap_res
+}
+
+pub fn rend_co(lot: &Coin) -> Tape {
+    rend_with_rep(lot, vec![])
+}
+
+fn rend_many(coins: &[Coin], rep: Tape) -> Tape {
+    if coins.is_empty() {
+        return vec!["_".to_string(), "_".to_string()].into_iter().chain(rep).collect();
+    }
+    let first = &coins[0];
+    let rest = &coins[1..];
+
+    let mut res = vec!["_".to_string()];
+    let rendered_first = rend_co(first);
+    let escaped_knot = wack(&rendered_first.concat(
+    ));
+    let taped_escaped = trip(string_to_atom(escaped_knot));
+    res.extend(taped_escaped);
+    res.extend(rend_many(rest, rep));
+    res
+}
+
+fn rend_with_rep(lot: &Coin, mut rep: Tape) -> Tape {
+    match lot {
+        Coin::Blob(noun) => {
+            let jammed = jam_simple(noun.clone());
+            let mut res = vec!["~".to_string(), "0".to_string()];
+            res.extend(v_co(1, &jammed));
+            res
+        }
+
+        Coin::Many(coins) => {
+            let mut res = vec![".".to_string()];
+            res.extend(rend_many(coins, rep));
+            res
+        }
+
+        Coin::Dime(prefix, q) => {
+            let yed = end(3, 1, &string_to_atom(prefix.to_string())); // first char of prefix
+            let hay = cut(3, 1, 1, &string_to_atom(prefix.to_string())); // second char
+
+            let yed_char = match &yed {
+                Atom::Small(x) => *x as u8 as char,
+                Atom::Big(_) => unreachable!(), // prefix is short
+            };
+
+            let hay_char = match &hay {
+                Atom::Small(x) => *x as u8 as char,
+                Atom::Big(_) => unreachable!(),
+            };
+
+            match yed_char {
+                'c' => {
+                    let mut res = vec!['~'.to_string(), '-'.to_string()];
+                    let wood_res = wood(&tuft(q));
+                    let rip_res = rip(3, &wood_res);
+                    let qtape: Vec<_> = rip_res.into_iter().flat_map(|a| trip(a)).collect();
+                    res.extend(qtape);
+                    res.extend(rep);
+                    res
+                }
+
+                'd' => match hay_char {
+                    'a' => {
+                        let yod = yore(q);
+                        let mut rep = rep;
+                        if !yod.t.f.is_empty() {
+                            let frac_tape = s_co(&yod.t.f);
+                            let mut new_rep = vec![".".to_string()];
+                            new_rep.extend(frac_tape);
+                            new_rep.extend(rep);
+                            rep = new_rep;
+                        }
+
+                        let t = &yod.t;
+                        if !(yod.t.f.is_empty() && t.h == 0 && t.m == 0 && t.s == 0) {
+                            let s_atom = Atom::Small(t.s as u128);
+                            let mut new_rep = vec![".".to_string()];
+                            new_rep.extend(y_co(&s_atom));
+                            let m_atom = Atom::Small(t.m as u128);
+                            let mut newer_rep = vec![".".to_string()];
+                            newer_rep.extend(y_co(&m_atom));
+                            newer_rep.extend(new_rep);
+                            let h_atom = Atom::Small(t.h as u128);
+                            let mut newest_rep = vec![".".to_string(), ".".to_string()];
+                            newest_rep.extend(y_co(&h_atom));
+                            newest_rep.extend(newer_rep);
+                            newest_rep.extend(rep);
+                            rep = newest_rep
+                        }
+
+                        let d_atom = Atom::Small(t.d as u128);
+                        let mut new_rep = vec![".".to_string()];
+                        new_rep.extend(a_co(&d_atom));
+                        new_rep.extend(rep);
+                        rep = new_rep;
+
+                        let m_atom = Atom::Small(yod.m as u128);
+                        let mut newer_rep = vec![".".to_string()];
+                        newer_rep.extend(a_co(&m_atom));
+                        newer_rep.extend(rep);
+                        rep = newer_rep;
+
+                        if !yod.era {
+                            let mut newest_rep = vec!["-".to_string()];
+                            newest_rep.extend(rep);
+                            rep = newest_rep;
+                        }
+
+                        let y_atom = Atom::Small(yod.y as u128);
+                        let mut res = vec!["~".to_string()];
+                        res.extend(a_co(&y_atom));
+                        res.extend(rep);
+                        res
+                    }
+
+                    'r' => {
+                        let yug = yell(q);
+
+                        let mut rep = rep;
+
+                        if !yug.f.is_empty() {
+                            let frac_tape = s_co(&yug.f);
+                            let mut new_rep = vec![".".to_string()];
+                            new_rep.extend(frac_tape);
+                            new_rep.extend(rep);
+                            rep = new_rep;
+                        }
+
+                        let mut res = vec!["~".to_string()];
+
+                        if yug.d == 0 && yug.m == 0 && yug.h == 0 && yug.s == 0 {
+                            res.extend(vec!["s".to_string(), "0".to_string()]);
+                            res.extend(rep);
+                            return res;
+                        }
+
+                        if yug.s != 0 {
+                            let s_atom = Atom::Small(yug.s as u128);
+                            let mut new_rep = vec![".".to_string(), "s".to_string()];
+                            new_rep.extend(a_co(&s_atom));
+                            new_rep.extend(rep);
+                            rep = new_rep;
+                        }
+
+                        if yug.m != 0 {
+                            let m_atom = Atom::Small(yug.m as u128);
+                            let mut new_rep = vec![".".to_string(), "m".to_string()];
+                            new_rep.extend(a_co(&m_atom));
+                            new_rep.extend(rep);
+                            rep = new_rep;
+                        }
+
+                        if yug.h != 0 {
+                            let h_atom = Atom::Small(yug.h as u128);
+                            let mut new_rep = vec![".".to_string(), "h".to_string()];
+                            new_rep.extend(a_co(&h_atom));
+                            new_rep.extend(rep);
+                            rep = new_rep;
+                        }
+
+                        if yug.d != 0 {
+                            let d_atom = Atom::Small(yug.d as u128);
+                            let mut new_rep = vec![".".to_string(), "d".to_string()];
+                            new_rep.extend(a_co(&d_atom));
+                            new_rep.extend(rep);
+                            rep = new_rep;
+                        }
+
+                        res.extend(rep.iter().skip(1).cloned());
+                        res
+                    }
+
+                    _ => z_co(q),
+                },
+
+                'f' => {
+                    match q {
+                        Atom::Small(0) => vec!['.'.to_string(), 'y'.to_string()],
+                        Atom::Small(1) => vec!['.'.to_string(), 'n'.to_string()],
+                        _ => z_co(q),
+                    }
+                    .into_iter()
+                    .chain(rep.into_iter())
+                    .collect()
+                }
+
+                'n' => {
+                    let mut res = vec!['~'.to_string()];
+                    res.extend(rep);
+                    res
+                }
+
+                'i' => match hay_char {
+                    'f' => ro_co([3, 10, 4], &|x| d_ne(x), q),
+                    's' => ro_co([4, 16, 8], &|x| x_ne(x), q),
+                    _ => z_co(q),
+                },
+
+               'p' => {
+                    let sxz = fein(q.clone());
+                    let dyx = met(3, &sxz);
+
+                    let mut out: Tape = vec!['~'.to_string()];
+
+                    if dyx <= 1 {
+                        let byte = sxz.to_u8_lossy();
+                        let syl = tod_po(byte);
+                        out.extend(trip(syl));
+                        out.extend(rep);
+                        return out;
+                    }
+
+                    let dyy = met(4, &sxz);
+                    let mut chunks = Vec::with_capacity(dyy);
+
+                    for imp in 0..dyy {
+                        let log = cut(4, imp, 1, &sxz);
+
+                        let hi_atom = rsh(3, 1, &log);
+                        let hi = hi_atom.to_u8_lossy();
+
+                        let lo_atom = end(3, 1, &log);
+                        let lo = lo_atom.to_u8_lossy();
+
+                        let prefix = trip(tos_po(hi));
+                        let suffix = trip(tod_po(lo));
+
+                        let mut chunk = weld(&prefix, &suffix);
+
+                        let sep = if imp % 4 == 0 {
+                            if imp == 0 {
+                                    vec![]
+                                } else {
+                                    vec!['-'.to_string(), '-'.to_string()]
+                                }
+                        } else {
+                            vec!['-'.to_string()]
+                        };
+                        chunk.extend(sep);
+
+                        chunks.push(chunk);
+                    }
+
+                    chunks.reverse();
+                    for chunk in chunks {
+                        out.extend(chunk);
+                    }
+                    out.extend(rep);
+                    out
+                }
+
+                'q' => {
+                    let head = vec![".".to_string(), "~".to_string()];
+
+                    let lot: Vec<Atom> = if q.is_zero() {
+                        vec![Atom::Small(0)]
+                    } else {
+                        rip(3, q)
+                    };
+
+                    let mut r: Tape = Vec::new();
+                    let mut s = true;
+
+                    for atom in lot.into_iter() {
+                        let q_atom = atom.to_u8().expect("byte");
+
+                        let mut rendered = if s {
+                            trip(tod_po(q_atom))
+                        } else {
+                            trip(tos_po(q_atom))
+                        };
+
+                        let tail = if s && !r.is_empty() {
+                            let mut t = vec!["-".to_string()];
+                            t.extend(r);
+                            t
+                        } else {
+                            r
+                        };
+
+                        s = !s;
+                        r = weld(rendered, tail);
+                    }
+
+                    let mut res = head;
+                    res = weld(res, r);
+                    res = weld(res, rep);
+                    res
+                }
+
+                'r' => match hay_char {
+                    'd' => {
+                        let val = q.to_u128().unwrap();
+                        let df = rlyd(val);
+                        let rc = r_co(&df, rep.clone());
+                        let mut res = vec![".".to_string(), "~".to_string()];
+                        res.extend(rc);
+                        res.extend(rep);
+                        res
+                    }
+                    'h' => {
+                        let val = q.to_u128().unwrap();
+                        let df = rlyh(val);
+                        let rc = r_co(&df, rep.clone());
+                        let mut res = vec![".".to_string(), "~".to_string(), "~".to_string()];
+                        res.extend(rc);
+                        res.extend(rep);
+                        res
+                    }
+                    'q' => {
+                        let val = q.to_u128().unwrap();
+                        let df = rlyq(val);
+                        let rc = r_co(&df, rep.clone());
+                        let mut res = vec![".".to_string(), "~".to_string(), "~".to_string(), "~".to_string()];
+                        res.extend(rc);
+                        res.extend(rep);
+                        res
+                    }
+                    's' => {
+                        let val = q.to_u128().unwrap();
+                        let df = rlys(val);
+                        let rc = r_co(&df, rep.clone());
+                        let mut res = vec![".".to_string()];
+                        res.extend(rc);
+                        res.extend(rep);
+                        res
+                    }
+                    _ => {
+                        let mut res = z_co(q);
+                        res.extend(rep);
+                        res
+                    }
+                },
+
+                'u' => {
+                    match hay_char {
+                        'c' => {
+                            // base58check with padding
+                            let encoded = enc_fa(q);
+                            let padded_ones = reap(pad_fa(&q), '1'.to_string());
+                            let mut res = vec!['0'.to_string(), 'c'.to_string()];
+                            res.extend(padded_ones);
+                            res.extend(c_co(&encoded));
+                            res.extend(rep);
+                            res
+                        }
+                        'b' => with_prefix("0b", &ox_co([2, 4], &|x| d_ne(x), q), rep),
+                        'i' => with_prefix("0i", &d_co(1, q), rep),
+                        'x' => with_prefix("0x", &ox_co([16, 4], &|x| x_ne(x), q), rep),
+                        'v' => with_prefix("0v", &ox_co([32, 5], &|x| x_ne(x), q), rep),
+                        'w' => with_prefix("0w", &ox_co([64, 5], &|x| w_ne(x), q), rep),
+                        _ => {
+                            vec![ox_co([10, 3], &|x| d_ne(x), q).into_iter().chain(rep).collect()]
+                        }
+                    }
+                }
+
+                's' => {
+                    let q = q.to_u128().expect("signed number is bigger than 128 bits");
+                    let sign_prefix_chars = if syn_si(q) {
+                            vec!['-'.to_string(), '-'.to_string()]
+                        } else {
+                            vec!['-'.to_string()]
+                        };
+                    let abs_val = abs_si(q);
+                    let mut res: Tape = sign_prefix_chars.into_iter().collect();
+                    res.extend(rend_with_rep(&Coin::Dime("u".into(), Atom::Small(abs_val)), rep));
+                    res
+                }
+
+                't' => {
+                    if hay_char == 'a' {
+                        let third = cut(3, 2, 1, &string_to_atom(prefix.to_string()));
+                        let third_char = match &third {
+                            Atom::Small(x) => *x as u8 as char,
+                            Atom::Big(_) => '\0',
+                        };
+                        if third_char == 's' {
+                            let mut res: Vec<_> = rip(3, q).into_iter().flat_map(|a| trip(a)).collect();
+                            res.extend(rep);
+                            res
+                        } else {
+                            let mut res = vec!['~'.to_string(), '.'.to_string()];
+                            res.extend(rip(3, q).into_iter().flat_map(|a| trip(a)));
+                            res.extend(rep);
+                            res
+                        }
+                    } else {
+                        let mut res = vec!['~'.to_string(), '~'.to_string()];
+                        let wooded = wood(q);
+                        res.extend(rip(3, &Atom::from(wooded)).into_iter().flat_map(|a| trip(a)));
+                        res.extend(rep);
+                        res
+                    }
+                }
+
+                _ => z_co(q),
+            }
+        }
+    }
+}
+
+fn r_co(df: &DecimalFloat, mut rep: Tape) -> Tape {
+    match df {
+        DecimalFloat::Infinity { sign } => {
+            let prefix = if *sign { "inf" } else { "-inf" };
+            prefix.chars().map(|c| c.to_string()).chain(rep.into_iter()).collect()
+        }
+        DecimalFloat::NaN => {
+            "nan".chars().map(|c| c.to_string()).chain(rep.into_iter()).collect()
+        }
+        DecimalFloat::Finite { sign, exp, mant } => {
+
+            let f: Tape = d_co(1, &Atom::Big(mant.clone()));
+
+            let (e, exp): (u128, u128) = {
+                let e = sun_si(f.len() as u128);
+
+                let sci = sum_si(*exp, sum_si(e, 1));
+
+                if syn_si(dif_si(*exp, 6)) {
+                    (2, sci)
+                }
+                else if !syn_si(dif_si(sci, 3)) {
+                    (2, sci)
+                }
+                else {
+                    (sum_si(sci, 2), 0)
+                }
+            };
+
+            if exp != 0u128 {
+                let exp_mark = if syn_si(exp) { "e" } else { "e-" };
+                rep = weld(
+                    vec![exp_mark.to_string()],
+                    d_co(1, &Atom::Small(abs_si(exp))),
+                );
+            }
+
+            let mut out = weld(ed_co(&e, &f), rep);
+
+            if !sign {
+                out = weld(vec!["-".to_string()], out);
+            }
+
+            out
+        }
+    }
+}
+
+fn ed_co(exp: &u128, int: &Tape) -> Tape {
+    let cmp = cmp_si(*exp, 0);
+    let pos = cmp == 2;
+    let dig = abs_si(*exp) as usize;
+
+    if !pos {
+        let mut out = reap(dig + 1, "0".to_string());
+        out.extend(int.clone());
+        return into(out, 1, ".");
+    }
+
+    let len = int.len();
+
+    if dig < len {
+        return into(int.clone(), dig, ".");
+    }
+
+    let mut out = int.clone();
+    out.extend(reap(dig - len, "0".to_string()));
+    out
+}
+
+fn wood_go(a: &Atom) -> Vec<u128> {
+    if a.is_zero() {
+        return Vec::new();
+    }
+
+    let b = teff(a);
+    let c_atom = taft(&end(3, b, a));
+    let c = c_atom.to_u32().unwrap();
+    let mut d = wood_go(&rsh(3, b, a));
+
+    // alnum or '-'
+    if (c >= b'a' as u32 && c <= b'z' as u32)
+        || (c >= b'0' as u32 && c <= b'9' as u32)
+        || c == b'-' as u32
+    {
+        d.insert(0, c as u128);
+        return d;
+    }
+
+    match c as u8 {
+        b' ' => {
+            d.insert(0, b'.' as u128);
+        }
+        b'.' => {
+            d.insert(0, b'.' as u128);
+            d.insert(0, b'~' as u128);
+        }
+        b'~' => {
+            d.insert(0, b'~' as u128);
+            d.insert(0, b'~' as u128);
+        }
+        _ => {
+            d = wood_hex(c, d);
+        }
+    }
+
+    d
+}
+
+fn wood_hex(c: u32, mut d: Vec<u128>) -> Vec<u128> {
+    let e = met(2, &Atom::Small(c as u128));
+
+    d.insert(0, b'.' as u128);
+
+    for i in 0..e {
+        let shift = i * 4;
+        let f = (c >> shift) & 0xF;
+        let ch = if f <= 9 { 48 + f } else { 87 + f };
+        d.insert(0, ch as u128);
+    }
+
+    d.insert(0, b'~' as u128);
+    d
+}
+
+pub fn wood(a: &Atom) -> Atom {
+    let bytes = wood_go(a);
+    rap(3, &bytes)
+}
+
+fn into(mut tape: Tape, idx: usize, ch: &str) -> Tape {
+    tape.insert(idx, ch.to_string());
+    tape
+}
+
+fn atom_to_char(atom: &Atom) -> char {
+    let code = match atom {
+        Atom::Small(x) => *x as u32,
+        Atom::Big(b) => {
+            if *b > BigUint::from(u32::MAX) {
+                0xFFFD //  replacement
+            } else {
+                b.clone().try_into().unwrap_or(0xFFFD)
+            }
+        }
+    };
+    std::char::from_u32(code).unwrap_or('\u{FFFD}')
+}
+
+fn d_ne(tig: u128) -> char {
+    (tig as u8 + b'0') as char
+}
+
+fn x_ne(tig: u128) -> char {
+    if tig < 10 {
+        (b'0' + tig as u8) as char
+    } else {
+        (b'a' + (tig - 10) as u8) as char
+    }
+}
+
+fn v_ne(tig: u128) -> char {
+    if tig >= 10 {
+        (tig + 87) as u8 as char
+    } else {
+        (tig + 48) as u8 as char
+    }
+}
+
+
+fn w_ne(tig: u128) -> char {
+    // base64 with - and ~ for 62/63
+    if tig == 62 {
+        '-'
+    } else if tig == 63 {
+        '~'
+    } else if tig < 26 {
+        (b'A' + tig as u8) as char
+    } else if tig < 52 {
+        (b'a' + (tig - 26) as u8) as char
+    } else if tig < 62 {
+        (b'0' + (tig - 52) as u8) as char
+    } else {
+        unreachable!()
+    }
+}
+
+fn c_ne(tig: u128) -> char {
+    // base58: skips 0, O, I, l
+    const CHARS: &[u8] = b"123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz";
+    CHARS[tig as usize] as char
+}
+
+fn with_prefix(prefix: &str, body: &Tape, rep: Tape) -> Tape {
+    let mut res: Tape = prefix.chars().map(|c| c.to_string()).collect();
+    res.extend(body.iter().cloned());
+    res.extend(rep);
+    res
+}
+
+fn s_co(frac: &[u64]) -> Tape {
+    if frac.is_empty() {
+        return vec![];
+    }
+    let mut res = vec![".".to_string()];
+    let first = Atom::Small(frac[0] as u128);
+    res.extend(x_co(4, &first));
+    res.extend(s_co(&frac[1..]));
+    res
+}
+
+fn em_co<F>(
+    bas: u128,
+    min: usize,
+    mut par: F,
+    hol: &Atom,
+    rep: Tape,
+) -> Tape
+where
+    F: FnMut(bool, u128, Tape) -> Tape,
+{
+    if hol.is_zero() && min == 0 {
+        return rep;
+    }
+    let (dar, rad) = dvr(hol, &Atom::Small(bas));
+    let next_min = min.saturating_sub(1);
+    let rad_u128 = rad.to_u128().unwrap_or(0);
+    let next_rep = par(dar.is_zero(), rad_u128, rep);
+    em_co(bas, next_min, par, &dar, next_rep)
+}
+
+// Helper: dvr for Atom
+fn dvr(a: &Atom, b: &Atom) -> (Atom, Atom) {
+    match (a, b) {
+        (Atom::Small(x), Atom::Small(y)) => {
+            let (q, r) = (x / y, x % y);
+            (Atom::Small(q), Atom::Small(r))
+        }
+        _ => {
+            let a_big = a.to_biguint();
+            let b_big = b.to_biguint();
+            let (q, r) = dvr_big(&a_big, &b_big);
+            (Atom::Big(q), Atom::Big(r))
+        }
+    }
+}
+
+fn dvr_u64(a: u64, b: u64) -> (u64, u64) {
+    (a / b, a % b)
+}
+
+fn d_co(min: usize, dat: &Atom) -> Tape {
+    em_co(
+        10,
+        min,
+        |_, b, c: Tape| {
+            let ch = d_ne(b);
+            std::iter::once(ch.to_string()).chain(c).collect()
+        },
+        dat,
+        vec![],
+    )
+}
+
+fn x_co(min: usize, dat: &Atom) -> Tape {
+    em_co(
+        16,
+        min,
+        |_, b, c| {
+            let ch = x_ne(b).to_string();
+            std::iter::once(ch).chain(c).collect::<Vec<String>>()
+        },
+        dat,
+        vec![],
+    )
+}
+
+fn v_co(min: usize, dat: &Atom) -> Tape {
+    em_co(
+        32,
+        min,
+        |_, b, c| {
+            let ch = v_ne(b).to_string();
+            std::iter::once(ch).chain(c).collect::<Vec<String>>()
+        },
+        dat,
+        vec![],
+    )
+}
+
+fn w_co(min: usize, dat: &Atom) -> Tape {
+    em_co(
+        64,
+        min,
+        |_, b, c| {
+            let ch = w_ne(b).to_string();
+            std::iter::once(ch).chain(c).collect::<Vec<String>>()
+        },
+        dat,
+        vec![],
+    )
+}
+
+fn c_co(dat: &Atom) -> Tape {
+    em_co(
+        58,
+        1,
+        |_, b, c| {
+            let ch = c_ne(b).to_string();
+            std::iter::once(ch).chain(c).collect::<Vec<String>>()
+        },
+        dat,
+        vec![],
+    )
+}
+
+fn a_co(dat: &Atom) -> Tape {
+    d_co(1, dat)
+}
+
+fn y_co(dat: &Atom) -> Tape {
+    d_co(2, dat)
+}
+
+fn z_co(dat: &Atom) -> Tape {
+    let mut res = vec!["0".to_string(), "x".to_string()];
+    res.extend(x_co(1, dat));
+    res
+}
+
+fn ox_co<F>(
+    [bas, gop]: [u128; 2],
+    dug: &F,
+    hol: &Atom,
+) -> Tape
+where
+    F: Fn(u128) -> char,
+{
+    let pow_bas_gop = pow(bas, gop)
+                        .to_u128()
+                        .expect("base does not fit in u128");
+    em_co(
+        pow_bas_gop,
+        0,
+        |top, seg, res| {
+            let prefix: Tape = if top { vec![] } else { vec!['.'.to_string()] };
+            let inner = em_co(
+                bas,
+                if top { 0 } else { gop as usize },
+                |_, b, c| std::iter::once(dug(b).to_string()).chain(c).collect::<Vec<String>>(),
+                &Atom::Small(seg),
+                res,
+            );
+            prefix.into_iter().chain(inner).collect()
+        },
+        hol,
+        vec![],
+    )
+}
+
+fn ro_co<F>(
+    [buz, bas, mut dop]: [usize; 3],
+    dug: &F,
+    hol: &Atom,
+) -> Tape
+where
+    F: Fn(u128) -> char,
+{
+    if dop == 0 {
+        return vec![];
+    }
+    let pod = dop - 1;
+    let seg = cut(buz, pod, 1, hol); // bloq = buz, start = pod, run = 1
+    let mut res = vec!['.'.to_string()];
+    res.extend(em_co(
+        bas as u128,
+        1,
+        |_, b, c| std::iter::once(dug(b).to_string()).chain(c).collect::<Vec<String>>(),
+        &seg,
+        ro_co([buz, bas, pod], dug, hol),
+    ));
+    res
 }
 
 pub fn number<'src>(
@@ -5333,6 +6476,128 @@ pub fn year(a: bool, y: u64, m: u64, d: u64, h: u64, min: u64, s: u64, f: &[u16]
     yule(day_count, h, min, s, f)
 }
 
+pub fn yell(now: &Atom) -> Tarp {
+    let sec_atom = rsh(6, 1, now);
+
+    let raw = end(6, 1, now);
+
+    let mut fan = Vec::new();
+    let mut muc = 4;
+    let mut current_raw = raw.clone();
+
+    while muc > 0 && !current_raw.is_zero() {
+        muc -= 1;
+        let digit_atom = cut(4, muc, 1, &current_raw);
+        let digit:  u64 = match &digit_atom {
+            Atom::Small(x) => *x as u64,
+            Atom::Big(b) => b.clone().try_into().unwrap_or(0),
+        };
+        fan.push(digit);
+
+        current_raw = end(4, muc, &current_raw);
+    }
+
+    let sec_u64:  u64 = match &sec_atom {
+        Atom::Small(x) => *x as u64,
+        Atom::Big(b) => b.clone().try_into().expect("yell: sec too large"),
+    };
+
+    let day = (sec_u64 / DAY) as u64;
+    let sec = (sec_u64 % DAY) as u64;
+    let hor = (sec / HOR) as u64;
+    let sec = (sec % HOR) as u64;
+    let mit = (sec / MIT) as u64;
+    let sec = (sec % MIT) as u64;
+
+    Tarp {
+        d: day,
+        h: hor,
+        m: mit,
+        s: sec,
+        f: fan,
+    }
+}
+
+pub fn yore(now: &Atom) -> Date {
+    let rip: Tarp = yell(now);
+    let (y_ger, m_ger, d_ger) = yall(rip.d);
+
+    const PIVOT: u64 = 292_277_024_400;
+
+    let (era, y_out) = if y_ger > PIVOT {
+        (true, y_ger - PIVOT)
+    } else {
+        (false, PIVOT - y_ger)
+    };
+
+    Date {
+        era,
+        y: y_out,
+        m: m_ger,
+        t: Tarp {
+            d: d_ger,
+            h: rip.h,
+            m: rip.m,
+            s: rip.s,
+            f: rip.f,
+        },
+    }
+}
+
+pub fn yall(day: u64) -> (u64, u64, u64) {
+    let mut day = day;
+    let mut era = 0;
+    let mut cet = 0;
+    let mut lep = false;
+
+    // => .(era (div day era:yo), day (mod day era:yo))
+    era = day / ERA;
+    day %= ERA;
+
+    // ?: (lth day +(cet:yo)) ...
+    if day < CETY + 1 {
+        lep = true;
+        cet = 0;
+    } else {
+        lep = false;
+        day = day - (CETY + 1);
+        cet = 1 + (day / CETY);
+        day %= CETY;
+    }
+
+    let mut yer = 400 * era + 100 * cet;
+
+    // |- loop: subtract years
+    loop {
+        let dis = if lep { 366 } else { 365 };
+        if day < dis {
+            break;
+        }
+        let ner = yer + 1;
+        day = day - dis;
+        // lep =(0 (end [0 2] ner)) → is ner divisible by 4? (end [0 2] = lowest 2 bits)
+        // end(0, 2, ner) = lowest 2 bits; =0 means divisible by 4
+        lep = (ner & 3) == 0; // faster than atom ops
+        yer = ner;
+    }
+
+    // month loop
+    let cah = if lep { &MOY } else { &MOH };
+    let mut mot = 0;
+    loop {
+        let zis = cah[mot as usize];
+        if day < zis {
+            return (yer, mot + 1, day + 1); // 1-based month/day
+        }
+        day -= zis;
+        mot += 1;
+    }
+}
+
+fn is_leap(year: u64) -> bool {
+    (year % 4 == 0) && (year % 100 != 0 || year % 400 == 0)
+}
+
 pub fn is_leap_year(year: i32) -> bool {
     // Gregorian calendar proleptic
     (year % 4 == 0) && (year % 100 != 0 || year % 400 == 0)
@@ -5481,6 +6746,10 @@ pub fn rap(bloq: usize, chunks: &[u128]) -> Atom {
     } else {
         Atom::Big(result)
     }
+}
+
+fn cut_u(v: u128, shift: usize, bits: usize) -> u8 {
+    ((v >> shift) & ((1 << bits) - 1)) as u8
 }
 
 /// Extract `run` bloqs starting at bloq `start`, where each bloq is `2^bloq` bits.
@@ -5698,13 +6967,19 @@ pub const DEX: [[u8; 3]; 256] = [
 ];
 
 /// Fetch prefix syllable (Hoon ++tos)
-pub fn tos(i: u8) -> &'static [u8; 3] {
-    &SIS[i as usize]
+pub fn tos_po(i: u8) -> Atom {
+    let b = SIS[i as usize];
+    Atom::Small((b[0] as u128)
+        | ((b[1] as u128) << 8)
+        | ((b[2] as u128) << 16 ))
 }
 
 /// Fetch suffix syllable (Hoon ++tod)
-pub fn tod(i: u8) -> &'static [u8; 3] {
-    &DEX[i as usize]
+pub fn tod_po(i: u8) -> Atom {
+    let b = DEX[i as usize];
+    Atom::Small((b[0] as u128)
+        | ((b[1] as u128) << 8)
+        | ((b[2] as u128) << 16))
 }
 
 /// Linear prefix search (Hoon ++ins)
@@ -5902,7 +7177,8 @@ fn dis_big(x: &BigUint, mask: &BigUint) -> BigUint {
     x & mask
 }
 
-fn dis(x: u64, mask: u64) -> u64 {
+// fn dis(x: u64, mask: u64) -> u64 {
+fn dis<T: Copy + BitAnd<Output = T>>(x: T, mask: T) -> T {
     x & mask
 }
 
@@ -5917,6 +7193,25 @@ fn con_atoms(hi: Atom, lo: Atom) -> Atom {
             let x = a.to_biguint();
             let y = b.to_biguint();
             Atom::from_biguint(x | y)
+        }
+    }
+}
+
+fn mix(x: u64, y: u64) -> u64 {
+    x ^ y
+}
+
+fn mix_big(x: &BigUint, y: &BigUint) -> BigUint {
+    x ^ y
+}
+
+fn mix_atoms(a: Atom, b: Atom) -> Atom {
+    match (a, b) {
+        (Atom::Small(x), Atom::Small(y)) => Atom::Small(x ^ y),
+        (a, b) => {
+            let x = a.to_biguint();
+            let y = b.to_biguint();
+            Atom::from_biguint(&x ^ &y)
         }
     }
 }
@@ -6059,6 +7354,135 @@ fn fen(
     &arr * a + ell
 }
 
+
+fn fe<F>(r: u64, a: &Atom, b: &Atom, prf: &F, m: &Atom) -> Atom 
+where
+    F: Fn(u64, &Atom) -> Atom,
+{
+    let mut j: u64 = 1;
+    let mut ell = end(0, met(0, a), m); // m mod a = lowest (bitlen a) bits of m
+    let mut arr = rsh(0, met(0, a), m); // m div a = m >> (bitlen a)
+
+    loop {
+        if j > r {
+            // termination
+            if r % 2 == 1 {
+                // odd rounds: return arr * a + ell
+                // But we can't multiply — so reconstruct via shifts + cuts
+                // Instead: use Hoon's legacy path — we avoid multiplication by using only shifts/cuts
+                // In practice, for feis, a = 0xffff, so met(0,a)=16 bits
+                // We simulate: (arr << 16) | ell
+                let shifted = match &arr {
+                    Atom::Small(n) => {
+                        let shifted_n = n.checked_shl(16).unwrap_or(0);
+                        Atom::Small(shifted_n) | ell.clone()
+                    }
+                    Atom::Big(big) => {
+                        let shifted = (big.clone() << 16) + ell.to_biguint();
+                        Atom::Big(shifted)
+                    }
+                };
+                return shifted;
+            } else {
+                // even rounds
+                if arr.eq(a) {
+                    // arr == a → return a * a + ell → (a << bitlen(a)) | ell
+                    let a_bits = met(0, a);
+                    let shifted_a = rsh(0, 0, a); // identity
+                    let shifted = match a {
+                        Atom::Small(n) => {
+                            let shifted_n = n.checked_shl(a_bits as u32).unwrap_or(0);
+                            Atom::Small(shifted_n) | ell.clone()
+                        }
+                        Atom::Big(big) => {
+                            let shifted = (big.clone() << a_bits) + ell.to_biguint();
+                            Atom::Big(shifted)
+                        }
+                    };
+                    return shifted;
+                } else {
+                    // return ell * a + arr → (ell << bitlen(a)) | arr
+                    let a_bits = met(0, a);
+                    let shifted = match &ell {
+                        Atom::Small(n) => {
+                            let shifted_n = n.checked_shl(a_bits as u32).unwrap_or(0);
+                            Atom::Small(shifted_n) | arr.clone()
+                        }
+                        Atom::Big(big) => {
+                            let shifted = (big.clone() << a_bits) + arr.to_biguint();
+                            Atom::Big(shifted)
+                        }
+                    };
+                    return shifted;
+                }
+            }
+        }
+
+        // PRF: f = prf(j-1, arr)
+        let f = prf(j - 1, &arr);
+
+        // tmp = (f + ell) mod X, where X = a (if j odd) or b (if j even)
+        let modulus = if j % 2 == 1 { a } else { b };
+        let sum = match (&f, &ell) {
+            (Atom::Small(x), Atom::Small(y)) => Atom::Small(x.wrapping_add(*y)),
+            _ => {
+                let bx = f.to_biguint();
+                let by = ell.to_biguint();
+                Atom::Big(&bx + &by)
+            }
+        };
+        let tmp = end(0, met(0, modulus), &sum); // sum mod modulus
+
+        // update: ell = arr, arr = tmp
+        ell = arr;
+        arr = tmp;
+        j += 1;
+    }
+}
+
+pub fn feis(m: Atom) -> Atom {
+    debug_assert!(m.lt(&Atom::Small(0xffff_0000))); // domain guarantee
+    let m_u64 = m.to_u64_lossy();
+    let a = 0xffffu64;
+    let b = 0x1_0000u64;
+    let k = a * b; // 0xffff_0000
+
+    let mut c = fe_u64(4, a, b, |j, r| eff(j, r), m_u64);
+    while c >= k {
+        c = fe_u64(4, a, b, |j, r| eff(j, r), c);
+    }
+    Atom::Small(c as u128)
+}
+
+fn fe_u64(r: u64, a: u64, b: u64, prf: impl Fn(u64, u64) -> u64, m: u64) -> u64 {
+    let mut j = 1u64;
+    let mut ell = m % a;
+    let mut arr = m / a;
+
+    loop {
+        if j > r {
+            return if r % 2 == 1 {
+                arr * a + ell
+            } else if arr == a {
+                arr * a + ell
+            } else {
+                ell * a + arr
+            };
+        }
+
+        let f = prf(j - 1, arr);
+        let tmp = if j % 2 == 1 {
+            (f + ell) % a
+        } else {
+            (f + ell) % b
+        };
+
+        ell = arr;
+        arr = tmp;
+        j += 1;
+    }
+}
+
 fn feen(r: u64, a: u64, b: u64, k: u64, m: u64) -> u64 {
     let c = fen(r, a, b, m);
     if c < k.into() {
@@ -6068,7 +7492,44 @@ fn feen(r: u64, a: u64, b: u64, k: u64, m: u64) -> u64 {
     }
 }
 
-/* === tail === */
+pub fn fein(pyn: Atom) -> Atom {
+    let lower_16 = Atom::Small(0x1_0000);
+    let upper_16 = Atom::Small(0xffff_ffff);
+    let lower_32 = Atom::Small(0x1_0000_0000);
+    let upper_32 = Atom::Small(0xffff_ffff_ffff_ffff);
+
+    if pyn.ge(&lower_16) && pyn.le(&upper_16) {
+        let offset = match (&pyn, &lower_16) {
+            (Atom::Small(x), Atom::Small(y)) => Atom::Small(x - y),
+            _ => Atom::Big(&pyn.to_biguint() - &lower_16.to_biguint()),
+        };
+        let feised = feis(offset);
+        match (&feised, &lower_16) {
+            (Atom::Small(x), Atom::Small(y)) => Atom::Small(x + y),
+            _ => Atom::Big(&feised.to_biguint() + &lower_16.to_biguint()),
+        }
+    }
+    else if pyn.ge(&lower_32) && pyn.le(&upper_32) {
+        let mask_lo = Atom::Small(0xffff_ffff);
+        let lo = match (&pyn, &mask_lo) {
+            (Atom::Small(x), Atom::Small(m)) => Atom::Small(dis(*x, *m)),
+            _ => Atom::Big(dis_big(&pyn.to_biguint(), &mask_lo.to_biguint())),
+        };
+
+        let mask_hi = Atom::Small(0xffff_ffff_0000_0000);
+        let hi = match (&pyn, &mask_hi) {
+            (Atom::Small(x), Atom::Small(m)) => Atom::Small(dis(*x, *m)),
+            _ => Atom::Big(dis_big(&pyn.to_biguint(), &mask_hi.to_biguint())),
+        };
+
+        let feined_lo = fein(lo);
+        con_atoms(hi, feined_lo)
+    }
+    else {
+        pyn
+    }
+}
+
 fn tail(m: u64) -> u64 {
     feen(
         4,
@@ -6085,32 +7546,26 @@ fn fynd_big(cry: &BigUint) -> BigUint {
     let one_32 = BigUint::from(0x1_0000_0000u64);
     let max_64 = BigUint::from(u64::MAX);
 
-    // 17–32 bits: [0x1_0000 .. 0xffff_ffff]
     if cry >= &one_16 && cry <= &max_32 {
         let x = cry.to_u64().unwrap();
         return BigUint::from(fynd_u64(x));
     }
 
-    // 33–64 bits: [0x1_0000_0000 .. 0xffff_ffff_ffff_ffff]
     if cry >= &one_32 && cry <= &max_64 {
-        let lo = cry & &max_32;        // low 32 bits
-        let hi = cry - &lo;            // high bits (≥32)
+        let lo = cry & &max_32;
+        let hi = cry - &lo;
         let lo_f = BigUint::from(fynd_u64(lo.to_u64().unwrap()));
         return hi + lo_f;
     }
 
-    // All other values: passthrough (including >64-bit)
     cry.clone()
 }
 
-/* === fynd === */
 pub fn fynd_u64(cry: u64) -> u64 {
-    // 17–32 bits
     if cry >= 0x1_0000 && cry <= 0xffff_ffff {
         return 0x1_0000 + tail(cry - 0x1_0000);
     }
 
-    // 33–64 bits
     if cry >= 0x1_0000_0000 && cry <= 0xffff_ffff_ffff_ffff {
         let lo = dis(cry, 0xffff_ffff);
         let hi = dis(cry, 0xffff_ffff_0000_0000);
@@ -6151,7 +7606,7 @@ fn noun_hash(noun: &Noun) -> u64 {
 
 pub fn jam_simple(noun: Noun) -> Atom {
     let mut bits = Vec::new();
-    let mut backrefs = HashMap::new(); // Noun → bit_offset
+    let mut backrefs = HashMap::new();
     let mut stack = vec![noun];
 
     while let Some(current) = stack.pop() {
@@ -6166,8 +7621,8 @@ pub fn jam_simple(noun: Noun) -> Atom {
             };
 
             if use_backref {
-                bits.push(true);  // 1
-                bits.push(true);  // 1
+                bits.push(true);
+                bits.push(true);
                 bits.extend(mat_bits(&offset_to_atom(offset)));
                 continue;
             }
@@ -6265,7 +7720,6 @@ fn bits_to_atom(bits: &[bool]) -> Atom {
         return Atom::Small(0);
     }
 
-    // Count bits
     let len = bits.len();
 
     if len <= 128 {

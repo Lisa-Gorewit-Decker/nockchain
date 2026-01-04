@@ -1,5 +1,6 @@
 
 use std::collections::*;
+use std::ops::BitOr;
 use num_bigint::BigUint;
 use serde::Serialize;
 use num_traits::Zero;
@@ -47,6 +48,18 @@ impl From<u64> for Atom {
 
 impl Atom {
 
+    pub fn to_u8(&self) -> Option<u8> {
+        match self {
+            Atom::Small(n) => (*n as u128).try_into().ok(),
+            Atom::Big(b) => b.try_into().ok(),
+        }
+    }
+    pub fn to_u32(&self) -> Option<u32> {
+        match self {
+            Atom::Small(n) => Some(*n as u32),
+            Atom::Big(b) => b.try_into().ok(),
+        }
+    }
     pub fn to_u128(&self) -> Option<u128> {
         match self {
             Atom::Small(n) => Some(*n as u128),
@@ -79,9 +92,94 @@ impl Atom {
     pub fn zero() -> Self {
         Atom::Small(0)
     }
+
+    pub fn to_u64_lossy(&self) -> u64 {
+        match self {
+            Atom::Small(n) => *n as u64,
+            Atom::Big(b) => {
+                // truncate safely — only used where input < 2^16
+                let bytes = b.to_bytes_le();
+                let mut out = 0u64;
+                for (i, &byte) in bytes.iter().take(8).enumerate() {
+                    out |= (byte as u64) << (i * 8);
+                }
+                out
+            }
+        }
+    }
+
+    pub fn to_u8_lossy(&self) -> u8 {
+        (self.to_u64_lossy() & 0xFF) as u8
+    }
+
+    pub fn to_u16_lossy(&self) -> u16 {
+        (self.to_u64_lossy() & 0xFFFF) as u16
+    }
+
+    pub fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        match (self, other) {
+            (Atom::Small(a), Atom::Small(b)) => a.cmp(b),
+            (Atom::Small(a), Atom::Big(b)) => {
+                let a_big = BigUint::from(*a);
+                a_big.cmp(b)
+            }
+            (Atom::Big(a), Atom::Small(b)) => {
+                let b_big = BigUint::from(*b);
+                a.cmp(&b_big)
+            }
+            (Atom::Big(a), Atom::Big(b)) => a.cmp(b),
+        }
+    }
+
+    pub fn lt(&self, other: &Self) -> bool { self.cmp(other) == std::cmp::Ordering::Less }
+    pub fn le(&self, other: &Self) -> bool { self.cmp(other) != std::cmp::Ordering::Greater }
+    pub fn gt(&self, other: &Self) -> bool { self.cmp(other) == std::cmp::Ordering::Greater }
+    pub fn ge(&self, other: &Self) -> bool { self.cmp(other) != std::cmp::Ordering::Less }
+    pub fn eq(&self, other: &Self) -> bool { self.cmp(other) == std::cmp::Ordering::Equal }
+}
+
+impl From<&str> for Atom {
+    fn from(s: &str) -> Self {
+        // UTF-8 bytes, little-endian @
+        let bytes: Vec<u8> = s.bytes().collect();
+        let mut acc = BigUint::from(0u32);
+        for &b in bytes.iter().rev() { // little-endian: first char = lowest byte
+            acc = (acc << 8) + BigUint::from(b);
+        }
+        if let Ok(small) = acc.clone().try_into() {
+            Atom::Small(small)
+        } else {
+            Atom::Big(acc)
+        }
+    }
+}
+
+impl BitOr for Atom {
+    type Output = Atom;
+
+    fn bitor(self, rhs: Atom) -> Atom {
+        match (self, rhs) {
+            (Atom::Small(a), Atom::Small(b)) => {
+                Atom::Small(a | b)
+            }
+
+            (Atom::Small(a), Atom::Big(b)) => {
+                Atom::Big(BigUint::from(a) | b)
+            }
+
+            (Atom::Big(a), Atom::Small(b)) => {
+                Atom::Big(a | BigUint::from(b))
+            }
+
+            (Atom::Big(a), Atom::Big(b)) => {
+                Atom::Big(a | b)
+            }
+        }
+    }
 }
 
 // (-1)^s * a * 10^e
+//  +dn
 #[derive(Clone, Debug)]
 pub enum DecimalFloat {
     Finite { sign: bool, exp: u128, mant: BigUint },
@@ -90,6 +188,7 @@ pub enum DecimalFloat {
 }
 
 //  (-1)^s * a * 2^e
+//  +fn
 #[derive(Clone, Debug)]
 pub enum BinaryFloat {
     Finite { sign: bool, exp: u128, mant: BigUint },
@@ -117,11 +216,14 @@ pub enum TermOrTune {
 pub type Help = String;
 pub type Knot = String;
 pub type Cord = String;
+
+// TODO: should be vec<u8>, or maybe just String
+pub type Tape = Vec<String>;
 pub type Path = Vec<Knot>;
 pub type Tyre = Vec<(String, Hoon)>;
 pub type Axis = u64;
 
-pub type SemiNoun = (Stencil, Noun);   //  verify SemiNoun/Stencil code later...
+pub type SemiNoun = (Stencil, Noun);
 
 pub type Gate = (Box<Spec>, Box<Spec>);
 
@@ -382,6 +484,23 @@ pub type Alas = Vec<(String, Hoon)>;
 pub enum TermOrPair {
     Term(String),
     Pair(String, Box<Hoon>),
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct Tarp {
+    pub d: u64,
+    pub h: u64,
+    pub m: u64,
+    pub s: u64,
+    pub f: Vec<u64>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct Date {
+    pub era: bool,   // a=? — true = AD, false = BC (Urbit uses astronomical year numbering)
+    pub y: u64,      // year (1-based; year 0 = 1 BC, year -1 = 2 BC, etc.)
+    pub m: u64,      // month (1–12)
+    pub t: Tarp,     // time-of-day + day-of-month in tarp.d
 }
 
 #[derive(serde::Serialize, PartialEq, Debug, Clone)]

@@ -201,12 +201,12 @@ fn hoon_wide_parser<'src>(
         increment(hoon_wide.clone()).boxed(),                                 //  +(a) or .+(a)
         ketcol_irregular(spec_wide.clone()).boxed(),                          //  ,p
         centis_irregular(hoon_wide.clone()).boxed(),                          //  a(b c, d e, f g)
-        tell(hoon_wide.clone()).boxed(),                                      // <foo>
-        yell(hoon_wide.clone()).boxed(),                                      // <foo>
+        tell(hoon_wide.clone()).boxed(),                                      // <foo> render as tape
+        yell_parser(hoon_wide.clone()).boxed(),                               // >foo< render as tank
         number().map(|(p, q)| Hoon::Sand(p, Noun::Atom(q))).boxed(),          //  111.111, 0x1111, etc.
         wing().boxed(),                                                       //   foo, foo.bar, etc.
         function_call(hoon_wide.clone()).boxed(),                             //  (a b)
-        constant().map(|coin| jock(true, &coin)).boxed(),                      //  %foo
+        constant().map(|coin| jock(true, &coin)).boxed(),                     //  %foo
         cord().map(|s| Hoon::Sand("t".to_string(), Noun::Atom(s))).boxed(),   //  'foo'
         path(hoon_wide.clone(), wer).boxed(),                                 //  /a/b/c
         tape(hoon_wide.clone()).boxed(),                                      //  "foo"
