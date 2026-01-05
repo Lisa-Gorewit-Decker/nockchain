@@ -220,6 +220,12 @@ pub trait PmaCopy {
     fn assert_in_pma(&self, pma: &Pma);
 }
 
+impl PmaCopy for () {
+    unsafe fn copy_to_pma(&mut self, _stack: &NockStack, _pma: &mut Pma) {}
+
+    fn assert_in_pma(&self, _pma: &Pma) {}
+}
+
 impl PmaCopy for Atom {
     unsafe fn copy_to_pma(&mut self, stack: &NockStack, pma: &mut Pma) {
         let mut noun = self.as_noun();
@@ -1749,5 +1755,32 @@ mod tests {
             verify_noun_not_stack_allocated(cell.head(), context);
             verify_noun_not_stack_allocated(cell.tail(), context);
         }
+    }
+
+    /// Verifies that PmaCopy for () is a no-op that allocates nothing.
+    ///
+    /// The unit type has no data, so copy_to_pma should not allocate anything
+    /// and assert_in_pma should trivially pass.
+    #[test]
+    #[cfg_attr(miri, ignore = "memfd_create unsupported in Miri")]
+    fn test_evacuate_unit() {
+        let stack = NockStack::new(1 << 10, 0);
+        let mut pma = test_pma(1000);
+
+        let mut unit = ();
+        let initial_offset = pma.alloc_offset();
+
+        // Copy to PMA - should be a no-op
+        unsafe { unit.copy_to_pma(&stack, &mut pma) };
+
+        // Verify no allocations were made
+        assert_eq!(
+            pma.alloc_offset(),
+            initial_offset,
+            "No allocations should be made for unit type"
+        );
+
+        // assert_in_pma should not panic
+        unit.assert_in_pma(&pma);
     }
 }
