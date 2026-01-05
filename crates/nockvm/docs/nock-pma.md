@@ -334,9 +334,7 @@ This step is to be replaced with a new copying step, into a file-backed mmap
 called the persistent memory arena (PMA).
 
 Phase 1 will be complete when data is being copied into the PMA at the
-conclusion of each event. An intermediate step is the copying happens, but the
-NockStack continues to work as it is - e.g. it also performs the copying to the
-opposite end of the arena task.
+conclusion of each event.
 
 ### Phase 1 spec
 
