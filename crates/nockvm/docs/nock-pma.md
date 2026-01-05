@@ -352,7 +352,34 @@ gets enabled.
 /// The PMA is backed by a file (in future milestones) and persists across
 /// program restarts.
 ///
-/// Currently only suitable for a single reader/writer. In the future,
+/// "Bump-allocated" means allocation simply increments the `alloc_offset`
+/// pointer by the requested size—there is no free list, no compaction, and
+/// no mechanism to reclaim memory once allocated. This makes allocation
+/// extremely fast (just a pointer bump) but means the PMA grows monotonically
+/// until explicitly reset.
+///
+/// When a Noun that lives in the PMA needs to be modified, the workflow is:
+/// 1. The Noun is read from the PMA (already in offset form)
+/// 2. Modifications happen in the NockStack (ephemeral working memory)
+/// 3. The modified Noun is copied back to the PMA via `copy_to_pma()`
+///
+/// Step 3 only allocates space for the Allocated subtrees that changed. For
+/// example, if `[2 3]` becomes `[4 3]`:
+/// - The Cell is Allocated, so a NEW cell is allocated in the PMA with head=4,
+///   tail=3 with new DirectAtoms for the 4 and 3 since they are not Allocated.
+/// - The old `[2 3]` cell remains in the PMA, untouched but now unreachable
+///
+/// For Allocated structures, unchanged subtrees that are already in PMA (offset
+/// form) are reused without copying. If `[[1 2] 3]` becomes `[[1 2] 4]`:
+/// - A NEW outer cell is allocated with tail=4
+/// - The head still points to the existing `[1 2]` in PMA (no copy needed)
+/// - Only the old outer cell becomes garbage; `[1 2]` is shared
+///
+/// This copy allocates fresh space in the PMA for the new version—the old
+/// version is not overwritten or freed, it simply becomes unreachable garbage.
+/// Garbage collection (Milestone 4) will eventually reclaim this dead space.
+///
+/// Currently Pma is only suitable for a single reader/writer. In the future,
 /// `alloc_offset` will be changed to `AtomicUsize` to allow multiple readers.
 pub struct Pma {
     /// The underlying arena for memory management and pointer resolution
