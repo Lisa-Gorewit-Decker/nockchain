@@ -284,6 +284,99 @@ impl Arena {
     }
 }
 
+/// LOCATION_BIT distinguishes stack pointers from PMA offsets.
+/// - LOCATION_BIT=0: Stack pointer (raw pointer >> 3)
+/// - LOCATION_BIT=1: PMA offset (words into PMA arena)
+const LOCATION_BIT: u64 = 1 << 60;
+
+/// Memory context for unified noun pointer resolution.
+///
+/// Bundles references to both NockStack and PMA arena, enabling resolution
+/// of mixed noun graphs where some cells are on the stack and others in PMA.
+///
+/// # Memory Model
+/// - **Stack data (LOCATION_BIT=0)**: Ephemeral, lives only during event processing.
+///   Stored as raw pointers, resolved by direct bit manipulation.
+/// - **PMA data (LOCATION_BIT=1)**: Persistent, file-backed mmap.
+///   Stored as offsets, resolved using the PMA arena's base pointer.
+///
+/// # Usage
+/// ```ignore
+/// let mem = MemContext::new(&stack, &pma_arena);
+/// let head = cell.head_with_mem_context(&mem);
+/// ```
+#[derive(Copy, Clone)]
+pub struct MemContext<'a> {
+    /// NockStack for ephemeral allocations
+    stack: &'a NockStack,
+    /// PMA arena for resolving PMA offsets (LOCATION_BIT=1)
+    pma_arena: &'a Arena,
+}
+
+impl<'a> MemContext<'a> {
+    /// Create a new MemContext from a NockStack and PMA arena.
+    #[inline(always)]
+    pub fn new(stack: &'a NockStack, pma_arena: &'a Arena) -> Self {
+        Self { stack, pma_arena }
+    }
+
+    /// Get a reference to the NockStack.
+    #[inline(always)]
+    pub fn stack(&self) -> &'a NockStack {
+        self.stack
+    }
+
+    /// Get a reference to the PMA arena.
+    #[inline(always)]
+    pub fn pma_arena(&self) -> &'a Arena {
+        self.pma_arena
+    }
+
+    /// Resolve a tagged noun pointer to a raw memory address.
+    ///
+    /// # Arguments
+    /// * `raw` - The raw 64-bit noun value
+    /// * `mask` - The tag mask (CELL_MASK or INDIRECT_MASK)
+    ///
+    /// # Returns
+    /// Raw pointer to the noun's memory location.
+    ///
+    /// # Safety
+    /// The returned pointer is only valid while both the NockStack and PMA
+    /// arena are live. Callers must ensure they don't use the pointer after
+    /// either is dropped.
+    #[inline(always)]
+    pub fn resolve(&self, raw: u64, mask: u64) -> *const u8 {
+        if raw & LOCATION_BIT == 0 {
+            // Stack pointer - direct reconstruction from shifted pointer
+            let payload = raw & !(mask | LOCATION_BIT);
+            (payload << 3) as *const u8
+        } else {
+            // PMA offset - use PMA arena base
+            let payload = raw & !(mask | LOCATION_BIT);
+            self.pma_arena.ptr_from_offset(payload as u32)
+        }
+    }
+
+    /// Resolve a tagged noun pointer to a mutable raw memory address.
+    #[inline(always)]
+    pub fn resolve_mut(&self, raw: u64, mask: u64) -> *mut u8 {
+        self.resolve(raw, mask) as *mut u8
+    }
+
+    /// Check if a raw noun value points to PMA (offset form).
+    #[inline(always)]
+    pub fn is_pma(raw: u64) -> bool {
+        raw & LOCATION_BIT != 0
+    }
+
+    /// Check if a raw noun value points to stack (pointer form).
+    #[inline(always)]
+    pub fn is_stack(raw: u64) -> bool {
+        raw & LOCATION_BIT == 0
+    }
+}
+
 /// A stack for Nock computation, which supports stack allocation and delimited copying collection
 /// for returned nouns
 pub struct NockStack {
@@ -371,12 +464,14 @@ impl NockStack {
                     .expect("checked is_indirect before retag");
                 let ptr = indirect.to_raw_pointer();
                 let offset = self.offset_from_ptr(ptr as *const u8);
-                *noun = IndirectAtom::from_offset_words(offset).as_noun();
+                // TODO: retag_noun should be removed - stack data should never use offset form
+                *noun = IndirectAtom::from_pma_offset(offset).as_noun();
             } else if noun.is_cell() {
                 let cell = noun.as_cell().expect("checked is_cell before retag");
                 let ptr = cell.to_raw_pointer();
                 let offset = self.offset_from_ptr(ptr as *const u8);
-                *noun = Cell::from_offset_words(offset).as_noun();
+                // TODO: retag_noun should be removed - stack data should never use offset form
+                *noun = Cell::from_pma_offset(offset).as_noun();
             }
         }
     }
@@ -2144,8 +2239,8 @@ impl Preserve for IndirectAtom {
         let size = indirect_raw_size(*self);
         let buf = stack.struct_alloc_in_previous_frame::<u64>(size);
         copy_nonoverlapping(self.to_raw_pointer(), buf, size);
-        let offset = stack.offset_from_ptr(buf as *const u8);
-        *self = IndirectAtom::from_offset_words(offset);
+        // Keep as raw pointer (LOCATION_BIT=0) - stack data should never use offset form
+        *self = IndirectAtom::from_raw_pointer(buf);
     }
     unsafe fn assert_in_stack(&self, stack: &NockStack) {
         stack.assert_noun_in(self.as_atom().as_noun());
@@ -2227,8 +2322,8 @@ unsafe fn noun_preserve(stack: &mut NockStack, noun: &mut Noun) {
                             indirect_raw_size(indirect),
                         );
                         indirect.set_forwarding_pointer(alloc);
-                        let offset = stack.offset_from_ptr(alloc as *const u8);
-                        *dest_ptr = IndirectAtom::from_offset_words(offset).as_noun();
+                        // Keep as raw pointer (LOCATION_BIT=0) - stack data should never use offset form
+                        *dest_ptr = IndirectAtom::from_raw_pointer(alloc).as_noun();
                     }
                     Either::Right(mut cell) => {
                         let alloc = stack.struct_alloc_in_previous_frame::<CellMemory>(1);
@@ -2242,8 +2337,8 @@ unsafe fn noun_preserve(stack: &mut NockStack, noun: &mut Noun) {
                         work.push((tail, &mut (*alloc).tail));
                         work.push((head, &mut (*alloc).head));
 
-                        let offset = stack.offset_from_ptr(alloc as *const u8);
-                        *dest_ptr = Cell::from_offset_words(offset).as_noun();
+                        // Keep as raw pointer (LOCATION_BIT=0) - stack data should never use offset form
+                        *dest_ptr = Cell::from_raw_pointer(alloc).as_noun();
                     }
                 }
             },
@@ -2543,10 +2638,16 @@ mod test {
         false
     }
 
-    fn assert_all_offsets(root: Noun) {
+    fn assert_all_stack_pointers(root: Noun) {
         let mut work = vec![root];
         while let Some(noun) = work.pop() {
-            assert!(!noun.is_stack_allocated(), "found stack pointer {:?}", noun);
+            if noun.is_allocated() {
+                assert!(
+                    noun.is_stack_allocated(),
+                    "expected stack pointer, found offset {:?}",
+                    noun
+                );
+            }
             if let Ok(cell) = noun.as_cell() {
                 work.push(cell.head());
                 work.push(cell.tail());
@@ -2560,7 +2661,7 @@ mod test {
 
     #[test]
     #[cfg_attr(miri, ignore = "memfd_create unsupported in Miri")]
-    fn preserve_indirect_atom_retags_to_offsets() {
+    fn preserve_indirect_atom_keeps_stack_pointer() {
         let mut stack = make_test_stack(DEFAULT_STACK_SIZE);
         let _guard = install_arena_guard(&stack);
         stack.frame_push(0);
@@ -2578,15 +2679,17 @@ mod test {
             stack.frame_pop();
         }
 
+        // Stack data should remain as raw pointers (LOCATION_BIT=0)
+        // Only PMA data uses offset form (LOCATION_BIT=1)
         assert!(
-            !noun.is_stack_allocated(),
-            "indirect atom should be retagged to offset form"
+            noun.is_stack_allocated(),
+            "preserved stack data should remain as stack pointer"
         );
     }
 
     #[test]
     #[cfg_attr(miri, ignore = "memfd_create unsupported in Miri")]
-    fn preserve_cell_tree_retags_entire_structure() {
+    fn preserve_cell_tree_keeps_stack_pointers() {
         let mut stack = make_test_stack(DEFAULT_STACK_SIZE);
         let _guard = install_arena_guard(&stack);
         stack.frame_push(0);
@@ -2608,7 +2711,9 @@ mod test {
             stack.frame_pop();
         }
 
-        assert_all_offsets(noun);
+        // Stack data should remain as raw pointers after preserve
+        // Only PMA data uses offset form (LOCATION_BIT=1)
+        assert_all_stack_pointers(noun);
     }
 
     #[test]
@@ -2630,6 +2735,42 @@ mod test {
             assert_eq!(head.as_direct().unwrap().data(), 7);
             assert_eq!(tail.as_direct().unwrap().data(), 9);
         }
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore = "memfd_create unsupported in Miri")]
+    fn mem_context_resolves_stack_pointers() {
+        use crate::pma::Pma;
+
+        let mut stack = make_test_stack(DEFAULT_STACK_SIZE);
+        stack.install_arena();
+
+        // Create a cell on the stack
+        let cell = Cell::new(&mut stack, D(42), D(99));
+        let noun = cell.as_noun();
+
+        // Get stack pointer before creating MemContext
+        let raw_ptr = unsafe { cell.to_raw_pointer() };
+
+        // Create a temporary PMA for MemContext
+        let temp_dir = std::env::temp_dir();
+        let pma_path = temp_dir.join(format!("test_pma_{}", std::process::id()));
+        let pma = Pma::new(1024, pma_path.clone()).expect("pma creation failed");
+        let _pma_guard = pma.install();
+
+        // Create MemContext
+        let mem = MemContext::new(&stack, pma.arena());
+
+        // Verify resolution works for stack pointers
+        let resolved = mem.resolve(unsafe { noun.as_raw() }, crate::noun::CELL_MASK);
+        assert_eq!(resolved as *const _, raw_ptr as *const _);
+
+        // Verify is_stack/is_pma work correctly
+        assert!(MemContext::is_stack(unsafe { noun.as_raw() }));
+        assert!(!MemContext::is_pma(unsafe { noun.as_raw() }));
+
+        // Cleanup
+        let _ = std::fs::remove_file(&pma_path);
     }
 
     proptest! {

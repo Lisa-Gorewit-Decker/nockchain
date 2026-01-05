@@ -15,7 +15,7 @@ use crate::jets::hot::Hot;
 use crate::jets::list::util::weld;
 use crate::jets::warm::Warm;
 use crate::jets::{cold, JetErr};
-use crate::mem::{Arena, NockStack, Preserve};
+use crate::mem::{Arena, MemContext, NockStack, Preserve};
 use crate::noun::{Atom, Cell, IndirectAtom, Noun, Slots, D, T};
 use crate::trace::{write_nock_trace, TraceInfo, TraceStack};
 use crate::unifying_equality::unifying_equality;
@@ -502,6 +502,22 @@ impl Context {
 
     pub fn install_arena(&self) {
         Arena::set_thread_local(&self.arena);
+    }
+
+    /// Create a MemContext for lifetime-bound noun access.
+    ///
+    /// This method provides a unified interface for resolving noun pointers
+    /// that may reside in either the NockStack (ephemeral) or PMA (persistent).
+    ///
+    /// # Example
+    /// ```ignore
+    /// let mem = context.mem_context();
+    /// let noun_ref = NounRef::bind(noun, &mem);
+    /// let head = noun_ref.as_cell()?.head();
+    /// ```
+    #[inline(always)]
+    pub fn mem_context(&self) -> MemContext<'_> {
+        MemContext::new(&self.stack, &self.arena)
     }
 
     /**

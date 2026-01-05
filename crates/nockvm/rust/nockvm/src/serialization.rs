@@ -101,31 +101,25 @@ enum CueStackEntry {
 /// * `stack` - A mutable reference to the NockStack
 /// * `buffer` - A reference to a BitSlice containing the serialized noun
 /// * `use_offset_tags` - If true, create nouns in offset form during deserialization.
-///   **NOTE:** This parameter is largely redundant because `with_frame` calls `preserve()`
-///   on the result, which converts all nouns to offset form anyway. The only effect of
-///   `use_offset_tags=true` is to avoid a redundant conversion (nouns start in offset form
-///   rather than being created in stack-pointer form and then converted by preserve).
+///   **NOTE:** This parameter is now largely obsolete. Preserve keeps stack data as
+///   raw pointers (LOCATION_BIT=0), so the final result will be in stack-pointer form
+///   regardless of this setting.
 ///
 /// # Returns
 /// A Result containing either the deserialized Noun or an Error
 ///
-/// # Important: Output is always in offset form
+/// # Important: Output is always in stack-pointer form
 ///
-/// **This function always produces offset-form nouns**, regardless of the `use_offset_tags`
-/// parameter. This is because:
+/// **This function always produces stack-pointer-form nouns**, regardless of the
+/// `use_offset_tags` parameter. This is because:
 ///
 /// 1. The function uses `stack.with_frame()` to manage the stack frame for its worklist
 /// 2. `with_frame()` calls `preserve()` on the return value before popping the frame
-/// 3. `preserve()` for `Noun` copies all nouns to the previous frame and converts them
-///    to offset form (using `Cell::from_offset_words()` and `IndirectAtom::from_offset_words()`)
+/// 3. `preserve()` now keeps stack data as raw pointers (LOCATION_BIT=0)
+///    - Only PMA data uses offset form (LOCATION_BIT=1)
 ///
-/// If you need stack-pointer-form nouns (e.g., for benchmarking `retag_noun_tree`),
-/// use `cue_into_stack_pointer_form()` instead, which manually manages the frame
-/// without calling `preserve()`.
-///
-/// **Additional caveat with backrefs:** When the serialized data contains backreferences
-/// (structural sharing), the result may have *mixed* tagging (some stack-pointer, some offset)
-/// due to interactions between `unifying_equality` in the HAMT and the preserve step.
+/// The `cue_into_stack_pointer_form()` function is now equivalent to `cue()` in terms
+/// of output format, but differs in that it does not call preserve (used for benchmarking).
 fn cue_bitslice_with_mode(
     stack: &mut NockStack,
     buffer: &BitSlice<u64, Lsb0>,
@@ -166,10 +160,12 @@ fn cue_bitslice_with_mode(
                             } else {
                                 // 10 tag: cell
                                 let (cell, cell_mem_ptr) = Cell::new_raw_mut(stack);
+                                // TODO: use_offset_tags is now obsolete - preserve keeps stack pointers
+                                // This branch is never meaningful since preserve converts back to raw pointers
                                 let cell_noun = if use_offset_tags {
                                     let offset =
                                         stack.offset_from_ptr(cell_mem_ptr as *const u8) as u32;
-                                    Cell::from_offset_words(offset).as_noun()
+                                    Cell::from_pma_offset(offset).as_noun()
                                 } else {
                                     cell.as_noun()
                                 };
@@ -388,12 +384,13 @@ fn rub_atom_internal(
         let (mut atom, slice) = unsafe { IndirectAtom::new_raw_mut_bitslice(stack, wordsize) };
         slice[0..bits.len()].copy_from_bitslice(bits);
         debug_assert!(atom.size() > 0);
+        // TODO: use_offset_tags is now obsolete - preserve keeps stack pointers
         if use_offset_tags {
             let offset =
                 stack.offset_from_ptr(
                     unsafe { atom.to_raw_pointer_with_arena(stack.arena_ref()) } as *const u8
                 );
-            atom = IndirectAtom::from_offset_words(offset);
+            atom = IndirectAtom::from_pma_offset(offset);
         }
         unsafe { Ok(atom.normalize_as_atom()) }
     }
@@ -1228,11 +1225,12 @@ mod tests {
         true
     }
 
-    /// Test that cue() produces offset-form nouns (due to with_frame preserve)
-    /// even when use_offset_tags would be false internally.
+    /// Test that cue() produces stack-pointer-form nouns.
+    /// Note: preserve now keeps stack data as raw pointers (LOCATION_BIT=0)
+    /// instead of converting to offset form.
     #[test]
     #[cfg_attr(miri, ignore)]
-    fn test_cue_produces_offset_form() {
+    fn test_cue_produces_stack_pointer_form() {
         let mut stack = setup_stack();
 
         // Create a simple cell [1 2]
@@ -1243,21 +1241,23 @@ mod tests {
         // Jam it
         let jammed = jam(&mut stack, cell.as_noun());
 
-        // Cue it back using regular cue (which internally uses use_offset_tags=false)
+        // Cue it back using regular cue
         let cued = cue(&mut stack, jammed).expect("cue should succeed");
 
-        // The result should be in offset form because with_frame's preserve
-        // converts everything to offset form
+        // Stack data remains as raw pointers (LOCATION_BIT=0)
+        // Only PMA data uses offset form (LOCATION_BIT=1)
         assert!(
-            is_entirely_offset_form(&stack, cued),
-            "cue() should produce offset-form nouns due to with_frame preserve"
+            is_entirely_stack_pointer_form(&stack, cued),
+            "cue() should produce stack-pointer-form nouns"
         );
     }
 
-    /// Test that cue_into_offset() also produces offset-form nouns
+    /// Test that cue_into_offset() also produces stack-pointer-form nouns
+    /// (despite the name - preserve now keeps stack pointers).
+    /// TODO: Consider renaming this function since it no longer produces offset form.
     #[test]
     #[cfg_attr(miri, ignore)]
-    fn test_cue_into_offset_produces_offset_form() {
+    fn test_cue_into_offset_produces_stack_pointer_form() {
         let mut stack = setup_stack();
 
         // Create a simple cell [1 2]
@@ -1271,10 +1271,11 @@ mod tests {
         // Cue it back using cue_into_offset
         let cued = cue_into_offset(&mut stack, jammed).expect("cue_into_offset should succeed");
 
-        // The result should be in offset form
+        // Stack data remains as raw pointers (LOCATION_BIT=0)
+        // Only PMA data uses offset form (LOCATION_BIT=1)
         assert!(
-            is_entirely_offset_form(&stack, cued),
-            "cue_into_offset() should produce offset-form nouns"
+            is_entirely_stack_pointer_form(&stack, cued),
+            "cue_into_offset() should produce stack-pointer-form nouns after preserve"
         );
     }
 
@@ -1317,11 +1318,11 @@ mod tests {
         // Jam it
         let jammed = jam(&mut stack, cell.as_noun());
 
-        // Test cue() produces offset form
-        let cued_offset = cue(&mut stack, jammed).expect("cue should succeed");
+        // Test cue() produces stack-pointer form (preserve now keeps raw pointers)
+        let cued_stack_ptr = cue(&mut stack, jammed).expect("cue should succeed");
         assert!(
-            is_entirely_offset_form(&stack, cued_offset),
-            "cue() should produce offset-form nouns even with indirect atoms"
+            is_entirely_stack_pointer_form(&stack, cued_stack_ptr),
+            "cue() should produce stack-pointer-form nouns even with indirect atoms"
         );
 
         // Test cue_into_stack_pointer_form() produces stack-pointer form

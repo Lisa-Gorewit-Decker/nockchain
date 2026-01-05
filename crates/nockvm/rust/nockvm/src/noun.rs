@@ -8,7 +8,7 @@ use intmap::IntMap;
 use nockvm_macros::tas;
 use static_assertions::assert_cfg;
 
-use crate::mem::{word_size_of, Arena, NockStack};
+use crate::mem::{word_size_of, Arena, MemContext, NockStack};
 
 crate::gdb!();
 
@@ -429,7 +429,13 @@ impl IndirectAtom {
         IndirectAtom(TaggedPtr::from_stack_ptr(ptr as *const u8, INDIRECT_TAG).raw())
     }
 
-    pub fn from_offset_words(words: u32) -> Self {
+    /// Create an IndirectAtom from a PMA offset.
+    ///
+    /// **IMPORTANT**: This should ONLY be used for PMA-resident data.
+    /// Stack data should always use `from_raw_pointer()` (LOCATION_BIT=0).
+    /// PMA data uses offset form (LOCATION_BIT=1) and requires the PMA arena
+    /// for resolution.
+    pub fn from_pma_offset(words: u32) -> Self {
         IndirectAtom(TaggedPtr::from_offset(words, INDIRECT_TAG).raw())
     }
 
@@ -904,7 +910,13 @@ impl Cell {
         Cell(TaggedPtr::from_stack_ptr(ptr as *const u8, CELL_TAG).raw())
     }
 
-    pub fn from_offset_words(words: u32) -> Self {
+    /// Create a Cell from a PMA offset.
+    ///
+    /// **IMPORTANT**: This should ONLY be used for PMA-resident data.
+    /// Stack data should always use `from_raw_pointer()` (LOCATION_BIT=0).
+    /// PMA data uses offset form (LOCATION_BIT=1) and requires the PMA arena
+    /// for resolution.
+    pub fn from_pma_offset(words: u32) -> Self {
         Cell(TaggedPtr::from_offset(words, CELL_TAG).raw())
     }
 
@@ -2104,6 +2116,393 @@ mod private {
     }
 }
 
+// =============================================================================
+// NounRef API - Lifetime-bound noun access with explicit memory context
+// =============================================================================
+
+/// Lifetime-bound noun reference. Prevents use-after-free by tying
+/// access to the lifetime of the underlying memory context.
+///
+/// # Overview
+///
+/// `NounRef` provides safe access to nouns while ensuring the backing memory
+/// (NockStack or PMA) remains valid. All noun traversal operations go through
+/// this type.
+///
+/// # Usage
+///
+/// ```ignore
+/// let mem = MemContext::new(&stack, &pma_arena);
+/// let noun_ref = NounRef::bind(noun, &mem);
+///
+/// if let Ok(cell) = noun_ref.as_cell() {
+///     let head = cell.head();
+///     let tail = cell.tail();
+/// }
+///
+/// // Store the raw noun when done
+/// let stored: Noun = noun_ref.unbind();
+/// ```
+#[derive(Copy, Clone)]
+pub struct NounRef<'a> {
+    raw: u64,
+    mem: &'a MemContext<'a>,
+}
+
+impl<'a> NounRef<'a> {
+    /// Bind a raw Noun to a memory context, creating a lifetime-bound reference.
+    #[inline(always)]
+    pub fn bind(noun: Noun, mem: &'a MemContext<'a>) -> Self {
+        NounRef {
+            raw: unsafe { noun.raw },
+            mem,
+        }
+    }
+
+    /// Unbind this reference, returning the raw Noun for storage.
+    /// The returned Noun has no lifetime protection.
+    #[inline(always)]
+    pub fn unbind(self) -> Noun {
+        Noun { raw: self.raw }
+    }
+
+    /// Get the raw u64 value (for advanced use cases).
+    #[inline(always)]
+    pub fn raw(&self) -> u64 {
+        self.raw
+    }
+
+    /// Get a reference to the memory context.
+    #[inline(always)]
+    pub fn mem(&self) -> &'a MemContext<'a> {
+        self.mem
+    }
+
+    // -------------------------------------------------------------------------
+    // Type queries (no memory access required)
+    // -------------------------------------------------------------------------
+
+    /// Check if this is a direct atom (value fits in 63 bits).
+    #[inline(always)]
+    pub fn is_direct(&self) -> bool {
+        is_direct_atom(self.raw)
+    }
+
+    /// Check if this is an indirect atom (heap-allocated).
+    #[inline(always)]
+    pub fn is_indirect(&self) -> bool {
+        is_indirect_atom(self.raw)
+    }
+
+    /// Check if this is a cell.
+    #[inline(always)]
+    pub fn is_cell(&self) -> bool {
+        is_cell(self.raw)
+    }
+
+    /// Check if this is any kind of atom (direct or indirect).
+    #[inline(always)]
+    pub fn is_atom(&self) -> bool {
+        self.is_direct() || self.is_indirect()
+    }
+
+    /// Check if this is an allocated noun (indirect atom or cell).
+    #[inline(always)]
+    pub fn is_allocated(&self) -> bool {
+        !self.is_direct()
+    }
+
+    /// Check if this noun is stored in PMA (persistent memory).
+    #[inline(always)]
+    pub fn is_pma(&self) -> bool {
+        MemContext::is_pma(self.raw)
+    }
+
+    /// Check if this noun is stored on the stack (ephemeral memory).
+    #[inline(always)]
+    pub fn is_stack(&self) -> bool {
+        MemContext::is_stack(self.raw)
+    }
+
+    // -------------------------------------------------------------------------
+    // Type conversions
+    // -------------------------------------------------------------------------
+
+    /// Try to convert this to a CellRef.
+    #[inline(always)]
+    pub fn as_cell(&self) -> Result<CellRef<'a>> {
+        if self.is_cell() {
+            Ok(CellRef {
+                raw: self.raw,
+                mem: self.mem,
+            })
+        } else {
+            Err(Error::NotCell)
+        }
+    }
+
+    /// Try to convert this to an AtomRef.
+    #[inline(always)]
+    pub fn as_atom(&self) -> Result<AtomRef<'a>> {
+        if self.is_atom() {
+            Ok(AtomRef {
+                raw: self.raw,
+                mem: self.mem,
+            })
+        } else {
+            Err(Error::NotAtom)
+        }
+    }
+
+    /// Try to get this as a direct atom value.
+    #[inline(always)]
+    pub fn as_direct(&self) -> Result<u64> {
+        if self.is_direct() {
+            Ok(self.raw & DIRECT_MAX)
+        } else {
+            Err(Error::NotDirectAtom)
+        }
+    }
+
+    /// Convert to Either<AtomRef, CellRef>.
+    #[inline(always)]
+    pub fn as_either(&self) -> Either<AtomRef<'a>, CellRef<'a>> {
+        if self.is_cell() {
+            Right(CellRef {
+                raw: self.raw,
+                mem: self.mem,
+            })
+        } else {
+            Left(AtomRef {
+                raw: self.raw,
+                mem: self.mem,
+            })
+        }
+    }
+
+    // -------------------------------------------------------------------------
+    // Equality
+    // -------------------------------------------------------------------------
+
+    /// Raw bit equality (for hash maps, etc.)
+    #[inline(always)]
+    pub fn raw_equals(&self, other: &NounRef<'_>) -> bool {
+        self.raw == other.raw
+    }
+}
+
+impl<'a> fmt::Debug for NounRef<'a> {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f, "NounRef({:#x})", self.raw)
+    }
+}
+
+/// Lifetime-bound cell reference. Provides safe access to cell head/tail.
+#[derive(Copy, Clone)]
+pub struct CellRef<'a> {
+    raw: u64,
+    mem: &'a MemContext<'a>,
+}
+
+impl<'a> CellRef<'a> {
+    /// Get the head of this cell.
+    #[inline(always)]
+    pub fn head(&self) -> NounRef<'a> {
+        let ptr = self.mem.resolve(self.raw, CELL_MASK) as *const CellMemory;
+        let head_raw = unsafe { (*ptr).head.raw };
+        NounRef {
+            raw: head_raw,
+            mem: self.mem,
+        }
+    }
+
+    /// Get the tail of this cell.
+    #[inline(always)]
+    pub fn tail(&self) -> NounRef<'a> {
+        let ptr = self.mem.resolve(self.raw, CELL_MASK) as *const CellMemory;
+        let tail_raw = unsafe { (*ptr).tail.raw };
+        NounRef {
+            raw: tail_raw,
+            mem: self.mem,
+        }
+    }
+
+    /// Get both head and tail at once.
+    #[inline(always)]
+    pub fn head_tail(&self) -> (NounRef<'a>, NounRef<'a>) {
+        let ptr = self.mem.resolve(self.raw, CELL_MASK) as *const CellMemory;
+        unsafe {
+            let head_raw = (*ptr).head.raw;
+            let tail_raw = (*ptr).tail.raw;
+            (
+                NounRef {
+                    raw: head_raw,
+                    mem: self.mem,
+                },
+                NounRef {
+                    raw: tail_raw,
+                    mem: self.mem,
+                },
+            )
+        }
+    }
+
+    /// Unbind this reference, returning the raw Cell for storage.
+    #[inline(always)]
+    pub fn unbind(self) -> Cell {
+        Cell(self.raw)
+    }
+
+    /// Convert to NounRef.
+    #[inline(always)]
+    pub fn as_noun(&self) -> NounRef<'a> {
+        NounRef {
+            raw: self.raw,
+            mem: self.mem,
+        }
+    }
+
+    /// Get the raw u64 value.
+    #[inline(always)]
+    pub fn raw(&self) -> u64 {
+        self.raw
+    }
+
+    /// Check if this cell is stored in PMA (persistent memory).
+    #[inline(always)]
+    pub fn is_pma(&self) -> bool {
+        MemContext::is_pma(self.raw)
+    }
+
+    /// Check if this cell is stored on the stack (ephemeral memory).
+    #[inline(always)]
+    pub fn is_stack(&self) -> bool {
+        MemContext::is_stack(self.raw)
+    }
+}
+
+impl<'a> fmt::Debug for CellRef<'a> {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f, "CellRef({:#x})", self.raw)
+    }
+}
+
+/// Lifetime-bound atom reference. Provides safe access to atom data.
+#[derive(Copy, Clone)]
+pub struct AtomRef<'a> {
+    raw: u64,
+    mem: &'a MemContext<'a>,
+}
+
+impl<'a> AtomRef<'a> {
+    /// Check if this is a direct atom.
+    #[inline(always)]
+    pub fn is_direct(&self) -> bool {
+        is_direct_atom(self.raw)
+    }
+
+    /// Check if this is an indirect atom.
+    #[inline(always)]
+    pub fn is_indirect(&self) -> bool {
+        is_indirect_atom(self.raw)
+    }
+
+    /// Get the value if this is a direct atom.
+    #[inline(always)]
+    pub fn as_direct(&self) -> Result<u64> {
+        if self.is_direct() {
+            Ok(self.raw & DIRECT_MAX)
+        } else {
+            Err(Error::NotDirectAtom)
+        }
+    }
+
+    /// Get the size in 64-bit words (1 for direct atoms).
+    #[inline(always)]
+    pub fn size(&self) -> usize {
+        if self.is_direct() {
+            1
+        } else {
+            let ptr = self.mem.resolve(self.raw, INDIRECT_MASK) as *const u64;
+            unsafe { *ptr as usize }
+        }
+    }
+
+    /// Get byte slice for indirect atoms, or convert direct to bytes.
+    ///
+    /// For indirect atoms, returns a slice into the allocated memory.
+    /// For direct atoms, this method is not available (use as_direct() instead).
+    pub fn as_bytes(&self) -> Result<&'a [u8]> {
+        if self.is_direct() {
+            Err(Error::NotIndirectAtom)
+        } else {
+            let ptr = self.mem.resolve(self.raw, INDIRECT_MASK) as *const u64;
+            unsafe {
+                let size = *ptr as usize;
+                let data_ptr = ptr.add(2) as *const u8;
+                Ok(from_raw_parts(data_ptr, size * 8))
+            }
+        }
+    }
+
+    /// Get the data slice as u64 words for indirect atoms.
+    pub fn as_slice(&self) -> Result<&'a [u64]> {
+        if self.is_direct() {
+            Err(Error::NotIndirectAtom)
+        } else {
+            let ptr = self.mem.resolve(self.raw, INDIRECT_MASK) as *const u64;
+            unsafe {
+                let size = *ptr as usize;
+                let data_ptr = ptr.add(2);
+                Ok(from_raw_parts(data_ptr, size))
+            }
+        }
+    }
+
+    /// Unbind this reference, returning the raw Atom for storage.
+    #[inline(always)]
+    pub fn unbind(self) -> Atom {
+        Atom { raw: self.raw }
+    }
+
+    /// Convert to NounRef.
+    #[inline(always)]
+    pub fn as_noun(&self) -> NounRef<'a> {
+        NounRef {
+            raw: self.raw,
+            mem: self.mem,
+        }
+    }
+
+    /// Get the raw u64 value.
+    #[inline(always)]
+    pub fn raw(&self) -> u64 {
+        self.raw
+    }
+
+    /// Check if this atom is stored in PMA (persistent memory).
+    #[inline(always)]
+    pub fn is_pma(&self) -> bool {
+        self.is_indirect() && MemContext::is_pma(self.raw)
+    }
+
+    /// Check if this atom is stored on the stack (ephemeral memory).
+    #[inline(always)]
+    pub fn is_stack(&self) -> bool {
+        self.is_direct() || MemContext::is_stack(self.raw)
+    }
+}
+
+impl<'a> fmt::Debug for AtomRef<'a> {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        if self.is_direct() {
+            write!(f, "AtomRef::Direct({:#x})", self.raw & DIRECT_MAX)
+        } else {
+            write!(f, "AtomRef::Indirect({:#x})", self.raw)
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use crate::jets::util::test::init_context;
@@ -2277,5 +2676,136 @@ mod test {
                 0xef, 0xa0
             ]
         );
+    }
+}
+
+#[cfg(test)]
+mod noun_ref_tests {
+    use crate::jets::util::test::init_context;
+    use crate::mem::MemContext;
+    use crate::noun::{AtomRef, Cell, CellRef, NounRef, D};
+
+    #[test]
+    #[cfg_attr(miri, ignore = "memfd_create unsupported in Miri")]
+    fn test_noun_ref_bind_unbind() {
+        let mut context = init_context();
+        let noun = D(42);
+        let mem = MemContext::new(&context.stack, context.stack.arena());
+        let noun_ref = NounRef::bind(noun, &mem);
+
+        assert!(noun_ref.is_direct());
+        assert!(!noun_ref.is_cell());
+        assert!(noun_ref.is_atom());
+
+        let unbound = noun_ref.unbind();
+        assert_eq!(unsafe { unbound.raw }, unsafe { noun.raw });
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore = "memfd_create unsupported in Miri")]
+    fn test_noun_ref_cell_traversal() {
+        let mut context = init_context();
+        let cell = Cell::new(&mut context.stack, D(1), D(2));
+        let noun = cell.as_noun();
+
+        let mem = MemContext::new(&context.stack, context.stack.arena());
+        let noun_ref = NounRef::bind(noun, &mem);
+
+        assert!(noun_ref.is_cell());
+        let cell_ref = noun_ref.as_cell().expect("should be cell");
+
+        let head = cell_ref.head();
+        let tail = cell_ref.tail();
+
+        assert!(head.is_direct());
+        assert!(tail.is_direct());
+        assert_eq!(head.as_direct().unwrap(), 1);
+        assert_eq!(tail.as_direct().unwrap(), 2);
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore = "memfd_create unsupported in Miri")]
+    fn test_noun_ref_nested_cells() {
+        let mut context = init_context();
+        let inner = Cell::new(&mut context.stack, D(3), D(4));
+        let outer = Cell::new(&mut context.stack, D(1), inner.as_noun());
+
+        let mem = MemContext::new(&context.stack, context.stack.arena());
+        let noun_ref = NounRef::bind(outer.as_noun(), &mem);
+
+        // [1 [3 4]]
+        let cell_ref = noun_ref.as_cell().expect("should be cell");
+        assert_eq!(cell_ref.head().as_direct().unwrap(), 1);
+
+        let inner_ref = cell_ref.tail().as_cell().expect("tail should be cell");
+        assert_eq!(inner_ref.head().as_direct().unwrap(), 3);
+        assert_eq!(inner_ref.tail().as_direct().unwrap(), 4);
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore = "memfd_create unsupported in Miri")]
+    fn test_noun_ref_head_tail() {
+        let mut context = init_context();
+        let cell = Cell::new(&mut context.stack, D(10), D(20));
+
+        let mem = MemContext::new(&context.stack, context.stack.arena());
+        let cell_ref = CellRef {
+            raw: cell.0,
+            mem: &mem,
+        };
+
+        let (head, tail) = cell_ref.head_tail();
+        assert_eq!(head.as_direct().unwrap(), 10);
+        assert_eq!(tail.as_direct().unwrap(), 20);
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore = "memfd_create unsupported in Miri")]
+    fn test_atom_ref_direct() {
+        let mut context = init_context();
+        let noun = D(12345);
+
+        let mem = MemContext::new(&context.stack, context.stack.arena());
+        let noun_ref = NounRef::bind(noun, &mem);
+
+        let atom_ref = noun_ref.as_atom().expect("should be atom");
+        assert!(atom_ref.is_direct());
+        assert!(!atom_ref.is_indirect());
+        assert_eq!(atom_ref.as_direct().unwrap(), 12345);
+        assert_eq!(atom_ref.size(), 1);
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore = "memfd_create unsupported in Miri")]
+    fn test_noun_ref_as_either() {
+        let mut context = init_context();
+
+        // Create cell first before borrowing stack for MemContext
+        let cell = Cell::new(&mut context.stack, D(1), D(2));
+
+        let mem = MemContext::new(&context.stack, context.stack.arena());
+
+        // Test atom
+        let atom = D(5);
+        let atom_ref = NounRef::bind(atom, &mem);
+        assert!(atom_ref.as_either().is_left());
+
+        // Test cell
+        let cell_noun_ref = NounRef::bind(cell.as_noun(), &mem);
+        assert!(cell_noun_ref.as_either().is_right());
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore = "memfd_create unsupported in Miri")]
+    fn test_noun_ref_is_stack() {
+        let mut context = init_context();
+        let cell = Cell::new(&mut context.stack, D(1), D(2));
+
+        let mem = MemContext::new(&context.stack, context.stack.arena());
+        let noun_ref = NounRef::bind(cell.as_noun(), &mem);
+
+        // Stack-allocated data should have LOCATION_BIT=0
+        assert!(noun_ref.is_stack());
+        assert!(!noun_ref.is_pma());
     }
 }

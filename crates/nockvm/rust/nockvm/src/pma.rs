@@ -315,13 +315,13 @@ impl PmaCopy for Noun {
                 Right(allocated) => {
                     // Check for forwarding pointer (already evacuated, structural sharing)
                     if let Some(forwarded) = allocated.forwarding_pointer_with_arena(&arena) {
-                        // Convert forwarded pointer to offset form
+                        // Convert forwarded pointer to PMA offset form
                         let pma_ptr = forwarded.to_raw_pointer_with_arena(&arena);
                         let offset = pma.offset_from_ptr(pma_ptr as *const u8);
                         if allocated.is_indirect() {
-                            *dest_ptr = IndirectAtom::from_offset_words(offset).as_noun();
+                            *dest_ptr = IndirectAtom::from_pma_offset(offset).as_noun();
                         } else {
-                            *dest_ptr = Cell::from_offset_words(offset).as_noun();
+                            *dest_ptr = Cell::from_pma_offset(offset).as_noun();
                         }
                         continue;
                     }
@@ -347,9 +347,9 @@ impl PmaCopy for Noun {
                             // Set forwarding pointer in source for structural sharing
                             indirect.set_forwarding_pointer_with_arena(pma_ptr, &arena);
 
-                            // Write offset-form noun to destination
+                            // Write PMA offset-form noun to destination
                             let offset = pma.offset_from_ptr(pma_ptr as *const u8);
-                            *dest_ptr = IndirectAtom::from_offset_words(offset).as_noun();
+                            *dest_ptr = IndirectAtom::from_pma_offset(offset).as_noun();
                         }
                         Right(mut cell) => {
                             // Get source cell pointer
@@ -375,9 +375,9 @@ impl PmaCopy for Noun {
                             work.push((tail, &mut (*pma_cell).tail));
                             work.push((head, &mut (*pma_cell).head));
 
-                            // Write offset-form cell to destination
+                            // Write PMA offset-form cell to destination
                             let offset = pma.offset_from_ptr(pma_ptr as *const u8);
-                            *dest_ptr = Cell::from_offset_words(offset).as_noun();
+                            *dest_ptr = Cell::from_pma_offset(offset).as_noun();
                         }
                     }
                 }
