@@ -172,6 +172,7 @@ pub enum Direction {
 pub struct Arena {
     base: *mut u8,
     words: usize,
+    mapped_bytes: usize,
     fd: Arc<File>,
     mapping: MappingKind,
 }
@@ -195,13 +196,21 @@ impl Arena {
         Ok(Arc::new(Self {
             base,
             words,
+            mapped_bytes: bytes,
             fd: file,
             mapping: MappingKind::ReadWrite(mapping),
         }))
     }
 
-    pub fn allocate_file(path: &Path, words: usize) -> Result<Arc<Self>, NewStackError> {
+    pub fn allocate_file(
+        path: &Path,
+        words: usize,
+        tail_bytes: usize,
+    ) -> Result<Arc<Self>, NewStackError> {
         let bytes = words.checked_shl(3).ok_or(NewStackError::StackTooSmall)?;
+        let file_bytes = bytes
+            .checked_add(tail_bytes)
+            .ok_or(NewStackError::StackTooSmall)?;
         let file = OpenOptions::new()
             .read(true)
             .write(true)
@@ -209,14 +218,35 @@ impl Arena {
             .truncate(true)
             .open(path)
             .map_err(NewStackError::FileOpenFailed)?;
-        file.set_len(bytes as u64)
+        file.set_len(file_bytes as u64)
             .map_err(NewStackError::FileResizeFailed)?;
         let file = Arc::new(file);
         let mut mapping = unsafe { MmapMut::map_mut(&*file).map_err(NewStackError::MmapFailed)? };
         let base = mapping.as_mut_ptr();
+        let mapped_bytes = mapping.len();
         Ok(Arc::new(Self {
             base,
             words,
+            mapped_bytes,
+            fd: file,
+            mapping: MappingKind::ReadWrite(mapping),
+        }))
+    }
+
+    pub fn open_file(path: &Path, words: usize) -> Result<Arc<Self>, NewStackError> {
+        let file = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(path)
+            .map_err(NewStackError::FileOpenFailed)?;
+        let file = Arc::new(file);
+        let mut mapping = unsafe { MmapMut::map_mut(&*file).map_err(NewStackError::MmapFailed)? };
+        let base = mapping.as_mut_ptr();
+        let mapped_bytes = mapping.len();
+        Ok(Arc::new(Self {
+            base,
+            words,
+            mapped_bytes,
             fd: file,
             mapping: MappingKind::ReadWrite(mapping),
         }))
@@ -230,6 +260,11 @@ impl Arena {
     #[inline]
     pub fn len_bytes(&self) -> usize {
         self.words << 3
+    }
+
+    #[inline]
+    pub fn mapped_len_bytes(&self) -> usize {
+        self.mapped_bytes
     }
 
     #[inline]
@@ -262,7 +297,7 @@ impl Arena {
     pub fn map_copy_read_only(&self) -> io::Result<Mmap> {
         unsafe {
             MmapOptions::new()
-                .len(self.words << 3)
+                .len(self.mapped_bytes)
                 .map_copy_read_only(&*self.fd)
         }
     }
@@ -270,13 +305,14 @@ impl Arena {
     pub fn clone_read_only(&self) -> io::Result<Arc<Arena>> {
         let mapping = unsafe {
             MmapOptions::new()
-                .len(self.words << 3)
+                .len(self.mapped_bytes)
                 .map_copy_read_only(&*self.fd)?
         };
         let base = mapping.as_ptr() as *mut u8;
         Ok(Arc::new(Self {
             base,
             words: self.words,
+            mapped_bytes: self.mapped_bytes,
             fd: self.fd.clone(),
             mapping: MappingKind::ReadOnly(mapping),
         }))

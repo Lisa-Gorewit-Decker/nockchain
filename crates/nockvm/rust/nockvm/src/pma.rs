@@ -3,6 +3,7 @@
 //! The PMA is a file-backed memory region for storing long-lived Nouns.
 //! It uses bump allocation and stores nouns in offset form.
 
+use std::io::{Read, Seek, SeekFrom};
 use std::path::PathBuf;
 use std::ptr::copy_nonoverlapping;
 use std::sync::Arc;
@@ -17,6 +18,44 @@ use crate::noun::{
     NounSpace,
 };
 
+const PMA_MAGIC: u64 = u64::from_le_bytes(*b"NOCKPMA1");
+const PMA_VERSION: u64 = 1;
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct PmaTrailer {
+    magic: u64,
+    version: u64,
+    data_words: u64,
+    alloc_offset: u64,
+}
+
+const PMA_TRAILER_BYTES: usize = std::mem::size_of::<PmaTrailer>();
+
+impl PmaTrailer {
+    fn to_bytes(self) -> [u8; PMA_TRAILER_BYTES] {
+        let mut buf = [0u8; PMA_TRAILER_BYTES];
+        buf[0..8].copy_from_slice(&self.magic.to_le_bytes());
+        buf[8..16].copy_from_slice(&self.version.to_le_bytes());
+        buf[16..24].copy_from_slice(&self.data_words.to_le_bytes());
+        buf[24..32].copy_from_slice(&self.alloc_offset.to_le_bytes());
+        buf
+    }
+
+    fn from_bytes(buf: [u8; PMA_TRAILER_BYTES]) -> Self {
+        let magic = u64::from_le_bytes(buf[0..8].try_into().expect("magic slice"));
+        let version = u64::from_le_bytes(buf[8..16].try_into().expect("version slice"));
+        let data_words = u64::from_le_bytes(buf[16..24].try_into().expect("data_words slice"));
+        let alloc_offset = u64::from_le_bytes(buf[24..32].try_into().expect("alloc_offset slice"));
+        Self {
+            magic,
+            version,
+            data_words,
+            alloc_offset,
+        }
+    }
+}
+
 /// Errors that can occur during PMA operations
 #[derive(Debug, Error)]
 pub enum PmaError {
@@ -25,6 +64,12 @@ pub enum PmaError {
 
     #[error("Failed to create arena: {0}")]
     ArenaError(#[from] NewStackError),
+
+    #[error("PMA metadata IO failed: {0}")]
+    MetadataIo(#[from] std::io::Error),
+
+    #[error("Invalid PMA metadata: {0}")]
+    InvalidMetadata(String),
 }
 
 /// The Persistent Memory Arena
@@ -75,12 +120,71 @@ pub struct Pma {
 impl Pma {
     /// Create a new PMA with the given size in words
     pub fn new(size_words: usize, path: PathBuf) -> Result<Self, PmaError> {
-        let arena = Arena::allocate_file(&path, size_words)?;
-        Ok(Self {
+        let arena = Arena::allocate_file(&path, size_words, PMA_TRAILER_BYTES)?;
+        let pma = Self {
             arena,
             alloc_offset: 0,
             path,
-        })
+        };
+        pma.persist_metadata();
+        Ok(pma)
+    }
+
+    /// Open an existing PMA file without truncating it.
+    pub fn open(path: PathBuf) -> Result<Self, PmaError> {
+        let mut file = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&path)?;
+        let file_len = file.metadata()?.len() as usize;
+        if file_len < PMA_TRAILER_BYTES {
+            return Err(PmaError::InvalidMetadata(format!(
+                "file too small: {file_len} bytes"
+            )));
+        }
+        let data_bytes = file_len - PMA_TRAILER_BYTES;
+        if data_bytes % 8 != 0 {
+            return Err(PmaError::InvalidMetadata(format!(
+                "data region not word-aligned: {data_bytes} bytes"
+            )));
+        }
+        let data_words = data_bytes >> 3;
+
+        let mut trailer_bytes = [0u8; PMA_TRAILER_BYTES];
+        file.seek(SeekFrom::End(-(PMA_TRAILER_BYTES as i64)))?;
+        file.read_exact(&mut trailer_bytes)?;
+        let trailer = PmaTrailer::from_bytes(trailer_bytes);
+
+        if trailer.magic != PMA_MAGIC {
+            return Err(PmaError::InvalidMetadata("bad PMA magic".to_string()));
+        }
+        if trailer.version != PMA_VERSION {
+            return Err(PmaError::InvalidMetadata(format!(
+                "unsupported PMA version {}",
+                trailer.version
+            )));
+        }
+        if trailer.data_words as usize != data_words {
+            return Err(PmaError::InvalidMetadata(format!(
+                "metadata data_words {} does not match file ({data_words})",
+                trailer.data_words
+            )));
+        }
+        if trailer.alloc_offset > trailer.data_words {
+            return Err(PmaError::InvalidMetadata(format!(
+                "alloc_offset {} exceeds data_words {}",
+                trailer.alloc_offset, trailer.data_words
+            )));
+        }
+
+        let arena = Arena::open_file(&path, data_words)?;
+        let pma = Self {
+            arena,
+            alloc_offset: trailer.alloc_offset as usize,
+            path,
+        };
+        pma.persist_metadata();
+        Ok(pma)
     }
 
     /// Get the underlying arena
@@ -124,6 +228,7 @@ impl Pma {
     /// Reset the allocation pointer to zero
     pub fn reset(&mut self) {
         self.alloc_offset = 0;
+        self.persist_metadata();
     }
 
     /// Reset the allocation pointer to a specific offset
@@ -138,6 +243,7 @@ impl Pma {
             self.size_words()
         );
         self.alloc_offset = offset;
+        self.persist_metadata();
     }
 
     /// Check if an allocation of `words` would exceed available space.
@@ -164,7 +270,26 @@ impl Pma {
         self.alloc_would_oom(words);
         let ptr = self.arena.ptr_from_offset(self.alloc_offset as u32) as *mut u64;
         self.alloc_offset += words;
+        self.persist_metadata();
         ptr
+    }
+
+    fn persist_metadata(&self) {
+        debug_assert!(
+            self.arena.mapped_len_bytes() >= self.arena.len_bytes() + PMA_TRAILER_BYTES,
+            "PMA arena mapping is too small for metadata trailer"
+        );
+        let trailer = PmaTrailer {
+            magic: PMA_MAGIC,
+            version: PMA_VERSION,
+            data_words: self.arena.words() as u64,
+            alloc_offset: self.alloc_offset as u64,
+        };
+        let bytes = trailer.to_bytes();
+        let dst = unsafe { self.arena.base_ptr().add(self.arena.len_bytes()) };
+        unsafe {
+            std::ptr::copy_nonoverlapping(bytes.as_ptr(), dst, bytes.len());
+        }
     }
 }
 
@@ -805,6 +930,20 @@ mod tests {
     fn test_pma_reset_to_out_of_bounds() {
         let mut pma = test_pma(1000);
         pma.reset_to(1001); // Should panic: offset exceeds PMA size
+    }
+
+    #[test]
+    fn test_pma_open_restores_alloc_offset() {
+        let path = test_pma_path("open_restore");
+        {
+            let mut pma = Pma::new(1000, path.clone()).expect("Failed to create test PMA");
+            unsafe { pma.alloc_indirect(10) };
+            unsafe { pma.alloc_cell() };
+            assert!(pma.alloc_offset() > 0, "Expected allocations to advance offset");
+        }
+
+        let pma = Pma::open(path).expect("Failed to open PMA");
+        assert!(pma.alloc_offset() > 0, "alloc_offset should be restored on open");
     }
 
     /// Verifies direct atoms are unchanged by evacuation since they fit in a single word.
@@ -1873,5 +2012,169 @@ mod tests {
 
         // assert_in_pma should not panic
         unit.assert_in_pma(&pma);
+    }
+}
+
+#[cfg(all(test, any(target_os = "linux", target_os = "macos")))]
+mod paging_tests {
+    use super::{test_pma_path, Pma};
+
+    const SLAB_BYTES: usize = 64 * 1024 * 1024;
+    const TOUCH_PAGES: usize = 64;
+
+    #[test]
+    #[cfg_attr(miri, ignore = "mincore/madvise unsupported in Miri")]
+    fn pma_file_backed_pages_out_and_faults_lazily() {
+        let words = SLAB_BYTES >> 3;
+        let path = test_pma_path("paging");
+        let pma = Pma::new(words, path).expect("failed to create PMA");
+        let base = pma.arena().base_ptr();
+        let len = pma.arena().len_bytes();
+        let page = page_size();
+
+        assert_eq!(len, SLAB_BYTES, "unexpected PMA length");
+        assert_eq!(
+            len % page,
+            0,
+            "PMA length must be page sized, len={len}, page={page}"
+        );
+
+        touch_entire_region(base, len, page);
+        let resident_bitmap = mincore_bitmap(base, len);
+        let initial_ratio = residency_ratio(&resident_bitmap);
+        println!("[pma-paging] initial residency ratio {:.3}", initial_ratio);
+        assert!(
+            resident_bitmap.iter().all(|b| b & 1 == 1),
+            "expected fully resident slab after touching every page"
+        );
+
+        drop_all_pages(base, len);
+        let after_drop = mincore_bitmap(base, len);
+        let post_drop_ratio = residency_ratio(&after_drop);
+        println!(
+            "[pma-paging] post-drop residency ratio {:.3}",
+            post_drop_ratio
+        );
+        if post_drop_ratio > 0.9 {
+            println!(
+                "[pma-paging] paging did not drop pages; skipping remainder (ratio={post_drop_ratio:.3})"
+            );
+            return;
+        }
+        assert!(
+            post_drop_ratio < 0.1,
+            "expected paging to drop most pages, ratio={post_drop_ratio}"
+        );
+
+        let total_pages = len / page;
+        let touched_pages = fault_sparse(base, len, page, TOUCH_PAGES);
+        assert!(touched_pages > 0, "expected to fault at least one page");
+
+        let post_fault = mincore_bitmap(base, len);
+        let post_fault_ratio = residency_ratio(&post_fault);
+        let expected_ratio = touched_pages as f64 / total_pages.max(1) as f64;
+        println!(
+            "[pma-paging] post-fault residency ratio {:.4} (expected {:.4}, touched {} pages)",
+            post_fault_ratio, expected_ratio, touched_pages
+        );
+        assert!(
+            post_fault_ratio >= expected_ratio * 0.5 && post_fault_ratio <= expected_ratio * 2.0,
+            "faulted pages should roughly match touched subset (ratio {} expected {})",
+            post_fault_ratio,
+            expected_ratio
+        );
+    }
+
+    fn touch_entire_region(ptr: *mut u8, len: usize, page: usize) {
+        for offset in (0..len).step_by(page) {
+            unsafe {
+                std::ptr::write_volatile(ptr.add(offset), (offset / page % 255) as u8);
+            }
+        }
+    }
+
+    fn fault_sparse(ptr: *mut u8, len: usize, page: usize, desired_pages: usize) -> usize {
+        let total_pages = len / page;
+        if total_pages == 0 {
+            return 0;
+        }
+        let touches = desired_pages.min(total_pages.max(1));
+        let stride = (total_pages / touches).max(1);
+        let mut touched = 0;
+        let mut page_idx = 0;
+        while touched < touches && page_idx < total_pages {
+            unsafe {
+                std::ptr::read_volatile(ptr.add(page_idx * page));
+            }
+            touched += 1;
+            page_idx = page_idx.saturating_add(stride);
+        }
+        touched
+    }
+
+    fn drop_all_pages(ptr: *mut u8, len: usize) {
+        #[cfg(target_os = "linux")]
+        {
+            let ret = unsafe { libc::madvise(ptr as *mut libc::c_void, len, libc::MADV_PAGEOUT) };
+            if ret != 0 {
+                let err = std::io::Error::last_os_error();
+                match err.raw_os_error() {
+                    Some(libc::EINVAL) | Some(libc::ENOSYS) => {
+                        let fallback = unsafe {
+                            libc::madvise(ptr as *mut libc::c_void, len, libc::MADV_DONTNEED)
+                        };
+                        if fallback != 0 {
+                            panic!(
+                                "madvise fallback failed: {}",
+                                std::io::Error::last_os_error()
+                            );
+                        }
+                    }
+                    _ => panic!("madvise(MADV_PAGEOUT) failed: {err}"),
+                }
+            }
+        }
+        #[cfg(target_os = "macos")]
+        {
+            let ret = unsafe { libc::madvise(ptr as *mut libc::c_void, len, libc::MADV_DONTNEED) };
+            if ret != 0 {
+                panic!("madvise(MADV_DONTNEED) failed: {}", std::io::Error::last_os_error());
+            }
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+
+    fn mincore_bitmap(ptr: *mut u8, len: usize) -> Vec<u8> {
+        let page = page_size();
+        assert_eq!(
+            len % page,
+            0,
+            "mincore requires len to be page sized, len={len}, page={page}"
+        );
+        let pages = len / page;
+        let mut vec = vec![0u8; pages];
+        let ret = unsafe {
+            libc::mincore(
+                ptr as *mut libc::c_void,
+                len,
+                vec.as_mut_ptr() as *mut libc::c_uchar,
+            )
+        };
+        if ret != 0 {
+            panic!("mincore failed: {}", std::io::Error::last_os_error());
+        }
+        vec
+    }
+
+    fn residency_ratio(bitmap: &[u8]) -> f64 {
+        if bitmap.is_empty() {
+            return 0.0;
+        }
+        let resident = bitmap.iter().filter(|b| **b & 1 == 1).count();
+        resident as f64 / bitmap.len() as f64
+    }
+
+    fn page_size() -> usize {
+        unsafe { libc::sysconf(libc::_SC_PAGESIZE) as usize }
     }
 }
