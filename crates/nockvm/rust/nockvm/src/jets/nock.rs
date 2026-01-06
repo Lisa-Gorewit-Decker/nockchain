@@ -1,19 +1,20 @@
 /** Virtualization jets
  */
 use crate::interpreter::Context;
-use crate::jets::util::slot;
+use crate::jets::util::slot_with_arena;
 use crate::jets::{JetErr, Result};
 use crate::noun::{Noun, D, NO, T};
 
 crate::gdb!();
 
 pub fn jet_mink(context: &mut Context, subject: Noun) -> Result {
-    let arg = slot(subject, 6)?;
+    let arena = &*context.arena;
+    let arg = slot_with_arena(subject, 6, arena)?;
     // mink sample = [nock scry_namespace]
     //             = [[subject formula] scry_namespace]
-    let v_subject = slot(arg, 4)?;
-    let v_formula = slot(arg, 5)?;
-    let scry_handler = slot(arg, 3)?;
+    let v_subject = slot_with_arena(arg, 4, arena)?;
+    let v_formula = slot_with_arena(arg, 5, arena)?;
+    let scry_handler = slot_with_arena(arg, 3, arena)?;
 
     // Implicit error conversion
     Ok(util::mink(context, v_subject, v_formula, scry_handler)?)
@@ -28,7 +29,8 @@ pub fn jet_mule(context: &mut Context, subject: Noun) -> Result {
 }
 
 pub fn jet_mure(context: &mut Context, subject: Noun) -> Result {
-    let tap = slot(subject, 6)?;
+    let arena = &*context.arena;
+    let tap = slot_with_arena(subject, 6, arena)?;
     let fol = util::slam_gate_fol(&mut context.stack);
     let scry = util::pass_thru_scry(&mut context.stack);
 
@@ -45,7 +47,8 @@ pub fn jet_mure(context: &mut Context, subject: Noun) -> Result {
 }
 
 pub fn jet_mute(context: &mut Context, subject: Noun) -> Result {
-    let tap = slot(subject, 6)?;
+    let arena = std::sync::Arc::clone(&context.arena);
+    let tap = slot_with_arena(subject, 6, &arena)?;
     let fol = util::slam_gate_fol(&mut context.stack);
     let scry = util::pass_thru_scry(&mut context.stack);
 
@@ -53,16 +56,16 @@ pub fn jet_mute(context: &mut Context, subject: Noun) -> Result {
 
     match util::mook(context, tone?.as_cell()?, false) {
         Ok(toon) => {
-            match toon.head() {
+            match toon.head_with_arena(&arena) {
                 x if unsafe { x.raw_equals(&D(0)) } => Ok(toon.as_noun()),
                 x if unsafe { x.raw_equals(&D(1)) } => {
                     //  XX: Need to check that result is actually of type path
                     //      return [[%leaf "mute.hunk"] ~] if not
-                    let bon = util::smyt(&mut context.stack, toon.tail())?;
+                    let bon = util::smyt(&mut context.stack, toon.tail_with_arena(&arena))?;
                     Ok(T(&mut context.stack, &[NO, bon, D(0)]))
                 }
                 x if unsafe { x.raw_equals(&D(2)) } => {
-                    Ok(T(&mut context.stack, &[NO, toon.tail()]))
+                    Ok(T(&mut context.stack, &[NO, toon.tail_with_arena(&arena)]))
                 }
                 _ => panic!("serf: mook: invalid toon"),
             }

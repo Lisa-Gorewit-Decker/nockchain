@@ -1034,6 +1034,14 @@ impl Cell {
         Arena::with_current(|arena| self.head_with_arena(arena))
     }
 
+    /// Get head using MemContext for pointer resolution.
+    /// This is the preferred method for new code.
+    #[inline(always)]
+    pub fn head_with_mem(&self, mem: &MemContext<'_>) -> Noun {
+        let ptr = mem.resolve(self.0, CELL_MASK) as *const CellMemory;
+        unsafe { (*ptr).head }
+    }
+
     // TODO: Ditto, etc.
     pub fn tail_with_arena(&self, arena: &Arena) -> Noun {
         unsafe { (*(self.to_raw_pointer_with_arena(arena))).tail }
@@ -1041,6 +1049,22 @@ impl Cell {
 
     pub fn tail(&self) -> Noun {
         Arena::with_current(|arena| self.tail_with_arena(arena))
+    }
+
+    /// Get tail using MemContext for pointer resolution.
+    /// This is the preferred method for new code.
+    #[inline(always)]
+    pub fn tail_with_mem(&self, mem: &MemContext<'_>) -> Noun {
+        let ptr = mem.resolve(self.0, CELL_MASK) as *const CellMemory;
+        unsafe { (*ptr).tail }
+    }
+
+    /// Get both head and tail using MemContext.
+    /// More efficient than calling head_with_mem and tail_with_mem separately.
+    #[inline(always)]
+    pub fn head_tail_with_mem(&self, mem: &MemContext<'_>) -> (Noun, Noun) {
+        let ptr = mem.resolve(self.0, CELL_MASK) as *const CellMemory;
+        unsafe { ((*ptr).head, (*ptr).tail) }
     }
 
     pub fn head_ref_with_arena<'a>(&'a self, arena: &'a Arena) -> &'a Noun {
@@ -1345,6 +1369,101 @@ fn slot_indirect(cell: &Cell, words: &[u64]) -> Result<Noun> {
     Ok(noun)
 }
 
+// Arena-aware versions of slot functions
+
+/// Direct axis traversal with explicit arena - for u64 axes
+#[inline(always)]
+fn slot_direct_with_arena(cell: &Cell, axis: u64, arena: &Arena) -> Result<Noun> {
+    if axis == 0 {
+        return Err(Error::NotRepresentable);
+    }
+    if axis == 1 {
+        return Ok(cell.as_noun());
+    }
+
+    let highest = 63 - axis.leading_zeros() as usize;
+    let mut current = *cell;
+    let mut noun = current.as_noun();
+
+    for idx in (0..highest).rev() {
+        let descend_tail = ((axis >> idx) & 1) != 0;
+        let memory = unsafe { current.to_raw_pointer_with_arena(arena) };
+        noun = unsafe {
+            if descend_tail {
+                (*memory).tail
+            } else {
+                (*memory).head
+            }
+        };
+
+        if idx != 0 {
+            if noun.is_cell() {
+                current = unsafe { noun.cell };
+            } else {
+                return Err(Error::NotRepresentable);
+            }
+        }
+    }
+
+    Ok(noun)
+}
+
+/// Indirect axis traversal with explicit arena - for large axes stored in word slices
+#[inline(always)]
+fn slot_indirect_with_arena(cell: &Cell, words: &[u64], arena: &Arena) -> Result<Noun> {
+    if words.is_empty() {
+        return Err(Error::NotRepresentable);
+    }
+
+    // Find highest bit in the axis
+    let mut highest_word_idx = words.len() - 1;
+    while highest_word_idx > 0 && words[highest_word_idx] == 0 {
+        highest_word_idx -= 1;
+    }
+
+    let highest_word = words[highest_word_idx];
+    if highest_word == 0 {
+        return Err(Error::NotRepresentable);
+    }
+
+    let highest_bit_in_word = 63 - highest_word.leading_zeros() as usize;
+    let highest = (highest_word_idx << 6) + highest_bit_in_word;
+
+    if highest == 0 {
+        return Ok(cell.as_noun());
+    }
+
+    let mut current = *cell;
+    let mut noun = current.as_noun();
+    let mut idx = highest;
+
+    while idx != 0 {
+        idx -= 1;
+        let word_idx = idx >> 6;
+        let bit_idx = idx & 63;
+        let descend_tail = ((words[word_idx] >> bit_idx) & 1) != 0;
+
+        let memory = unsafe { current.to_raw_pointer_with_arena(arena) };
+        noun = unsafe {
+            if descend_tail {
+                (*memory).tail
+            } else {
+                (*memory).head
+            }
+        };
+
+        if idx != 0 {
+            if noun.is_cell() {
+                current = unsafe { noun.cell };
+            } else {
+                return Err(Error::NotRepresentable);
+            }
+        }
+    }
+
+    Ok(noun)
+}
+
 impl private::RawSlots for Cell {
     #[inline(always)]
     fn raw_slot_direct(&self, axis: u64) -> Result<Noun> {
@@ -1354,6 +1473,23 @@ impl private::RawSlots for Cell {
     #[inline(always)]
     fn raw_slot_indirect(&self, axis: &[u64]) -> Result<Noun> {
         slot_indirect(self, axis)
+    }
+}
+
+impl Cell {
+    /// Retrieve component Noun at given axis using explicit arena
+    #[inline(always)]
+    pub fn slot_with_arena(&self, axis: u64, arena: &Arena) -> Result<Noun> {
+        slot_direct_with_arena(self, axis, arena)
+    }
+
+    /// Retrieve component Noun at axis given as Atom using explicit arena
+    #[inline(always)]
+    pub fn slot_atom_with_arena(&self, atom: Atom, arena: &Arena) -> Result<Noun> {
+        match atom.as_either() {
+            either::Left(direct) => slot_direct_with_arena(self, direct.data(), arena),
+            either::Right(indirect) => slot_indirect_with_arena(self, indirect.as_slice(), arena),
+        }
     }
 }
 
@@ -1911,6 +2047,53 @@ impl Noun {
 
     pub unsafe fn from_raw(raw: u64) -> Noun {
         Noun { raw }
+    }
+
+    /// Retrieve component Noun at given axis using explicit arena
+    ///
+    /// For atoms, axis 1 returns self, any other axis fails.
+    /// For cells, traverses based on axis bits (2=head, 3=tail, etc.)
+    #[inline(always)]
+    pub fn slot_with_arena(&self, axis: u64, arena: &Arena) -> Result<Noun> {
+        match self.as_either_atom_cell() {
+            Right(cell) => cell.slot_with_arena(axis, arena),
+            Left(_atom) => {
+                if axis == 1 {
+                    Ok(*self)
+                } else {
+                    Err(Error::NotCell)
+                }
+            }
+        }
+    }
+
+    /// Retrieve component Noun at axis given as Atom using explicit arena
+    #[inline(always)]
+    pub fn slot_atom_with_arena(&self, atom: Atom, arena: &Arena) -> Result<Noun> {
+        match self.as_either_atom_cell() {
+            Right(cell) => cell.slot_atom_with_arena(atom, arena),
+            Left(_atom) => {
+                match atom.as_either() {
+                    Left(direct) => {
+                        if direct.data() == 1 {
+                            Ok(*self)
+                        } else {
+                            Err(Error::NotCell)
+                        }
+                    }
+                    Right(indirect) => {
+                        let words = indirect.as_slice();
+                        if words.len() == 1 && words[0] == 1 {
+                            Ok(*self)
+                        } else if words.is_empty() || (words.len() == 1 && words[0] == 0) {
+                            Err(Error::NotRepresentable)
+                        } else {
+                            Err(Error::NotCell)
+                        }
+                    }
+                }
+            }
+        }
     }
 
     /** Produce the total size of a noun, in words

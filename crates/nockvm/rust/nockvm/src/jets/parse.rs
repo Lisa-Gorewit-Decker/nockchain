@@ -5,7 +5,7 @@ use either::{Left, Right};
 use crate::interpreter::Context;
 use crate::jets::bits::util::met;
 use crate::jets::math::util::{gte_b, lte_b, lth_b};
-use crate::jets::util::{kick, slam, slot, BAIL_FAIL};
+use crate::jets::util::{kick, slam, slot, slot_with_arena, BAIL_FAIL};
 use crate::jets::Result;
 use crate::noun::{Cell, Noun, D, T};
 
@@ -15,7 +15,8 @@ crate::gdb!();
 //  Text conversion
 //
 pub fn jet_trip(context: &mut Context, subject: Noun) -> Result {
-    let sam = slot(subject, 6)?.as_atom()?;
+    let arena = &*context.arena;
+    let sam = slot_with_arena(subject, 6, arena)?.as_atom()?;
     let chars = met(3, sam);
     if chars == 0 {
         return Ok(D(0));

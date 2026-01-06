@@ -210,6 +210,7 @@ pub mod util {
     use super::*;
     use crate::interpreter::interpret;
     use crate::noun::{Noun, D, T};
+    use crate::mem::Arena;
 
     pub const BAIL_EXIT: JetErr = JetErr::Fail(Error::Deterministic(Mote::Exit, D(0)));
     pub const BAIL_FAIL: JetErr = JetErr::Fail(Error::NonDeterministic(Mote::Fail, D(0)));
@@ -258,6 +259,11 @@ pub mod util {
         noun.slot(axis).map_err(|_e| BAIL_EXIT)
     }
 
+    /// Arena-aware version of slot for explicit memory context
+    pub fn slot_with_arena(noun: Noun, axis: u64, arena: &Arena) -> Result {
+        noun.slot_with_arena(axis, arena).map_err(|_e| BAIL_EXIT)
+    }
+
     /// Extract a bloq and check that it's computable by the current system
     pub fn bloq(a: Noun) -> result::Result<usize, JetErr> {
         let bloq = a.as_direct()?.data() as usize;
@@ -273,6 +279,17 @@ pub mod util {
         if let Ok(cell) = a.as_cell() {
             let bloq = bloq(cell.head())?;
             let step = cell.tail().as_direct()?.data() as usize;
+            Ok((bloq, step))
+        } else {
+            bloq(a).map(|x| (x, 1_usize))
+        }
+    }
+
+    /// Arena-aware version of bite for explicit memory context
+    pub fn bite_with_arena(a: Noun, arena: &Arena) -> result::Result<(usize, usize), JetErr> {
+        if let Ok(cell) = a.as_cell() {
+            let bloq = bloq(cell.head_with_arena(arena))?;
+            let step = cell.tail_with_arena(arena).as_direct()?.data() as usize;
             Ok((bloq, step))
         } else {
             bloq(a).map(|x| (x, 1_usize))

@@ -1,15 +1,16 @@
 /** Formatting jets
  */
 use crate::interpreter::Context;
-use crate::jets::util::slot;
+use crate::jets::util::slot_with_arena;
 use crate::jets::Result;
 use crate::noun::Noun;
 
 crate::gdb!();
 
 pub fn jet_scow(context: &mut Context, subject: Noun) -> Result {
-    let aura = slot(subject, 12)?.as_direct()?;
-    let atom = slot(subject, 13)?.as_atom()?;
+    let arena = &*context.arena;
+    let aura = slot_with_arena(subject, 12, arena)?.as_direct()?;
+    let atom = slot_with_arena(subject, 13, arena)?.as_atom()?;
     util::scow(&mut context.stack, aura, atom)
 }
 

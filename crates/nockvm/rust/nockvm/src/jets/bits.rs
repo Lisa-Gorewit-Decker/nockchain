@@ -16,23 +16,26 @@ crate::gdb!();
  */
 
 pub fn jet_bex(context: &mut Context, subject: Noun) -> Result {
-    let arg = slot(subject, 6)?.as_direct()?.data() as usize;
+    let arena = &*context.arena;
+    let arg = slot_with_arena(subject, 6, arena)?.as_direct()?.data() as usize;
     Ok(util::bex(&mut context.stack, arg).as_noun())
 }
 
 pub fn jet_can(context: &mut Context, subject: Noun) -> Result {
-    let arg = slot(subject, 6)?;
-    let bloq = bloq(slot(arg, 2)?)?;
-    let original_list = slot(arg, 3)?;
+    let arena = &*context.arena;
+    let arg = slot_with_arena(subject, 6, arena)?;
+    let bloq = bloq(slot_with_arena(arg, 2, arena)?)?;
+    let original_list = slot_with_arena(arg, 3, arena)?;
 
     util::can(&mut context.stack, bloq, original_list)
 }
 
 pub fn jet_cat(context: &mut Context, subject: Noun) -> Result {
-    let arg = slot(subject, 6)?;
-    let bloq = bloq(slot(arg, 2)?)?;
-    let a = slot(arg, 6)?.as_atom()?;
-    let b = slot(arg, 7)?.as_atom()?;
+    let arena = &*context.arena;
+    let arg = slot_with_arena(subject, 6, arena)?;
+    let bloq = bloq(slot_with_arena(arg, 2, arena)?)?;
+    let a = slot_with_arena(arg, 6, arena)?.as_atom()?;
+    let b = slot_with_arena(arg, 7, arena)?.as_atom()?;
 
     let len_a = util::met(bloq, a);
     let len_b = util::met(bloq, b);
@@ -51,11 +54,12 @@ pub fn jet_cat(context: &mut Context, subject: Noun) -> Result {
 }
 
 pub fn jet_cut(context: &mut Context, subject: Noun) -> Result {
-    let arg = slot(subject, 6)?;
-    let bloq = bloq(slot(arg, 2)?)?;
-    let start = slot(arg, 12)?.as_direct()?.data() as usize;
-    let run = slot(arg, 13)?.as_direct()?.data() as usize;
-    let atom = slot(arg, 7)?.as_atom()?;
+    let arena = &*context.arena;
+    let arg = slot_with_arena(subject, 6, arena)?;
+    let bloq = bloq(slot_with_arena(arg, 2, arena)?)?;
+    let start = slot_with_arena(arg, 12, arena)?.as_direct()?.data() as usize;
+    let run = slot_with_arena(arg, 13, arena)?.as_direct()?.data() as usize;
+    let atom = slot_with_arena(arg, 7, arena)?.as_atom()?;
 
     if run == 0 {
         return Ok(D(0));
@@ -71,19 +75,20 @@ pub fn jet_cut(context: &mut Context, subject: Noun) -> Result {
 }
 
 pub fn jet_sew(context: &mut Context, subject: Noun) -> Result {
-    let sam = slot(subject, 6)?;
-    let bloq = bloq(slot(sam, 2)?)?;
-    let e = slot(sam, 7)?.as_atom()?;
+    let arena = &*context.arena;
+    let sam = slot_with_arena(subject, 6, arena)?;
+    let bloq = bloq(slot_with_arena(sam, 2, arena)?)?;
+    let e = slot_with_arena(sam, 7, arena)?.as_atom()?;
 
-    let bcd = slot(sam, 6)?;
-    let offset = slot(bcd, 2)?.as_atom()?.as_u64()? as usize;
-    let step = slot(bcd, 6)?.as_atom()?.as_u64()? as usize;
+    let bcd = slot_with_arena(sam, 6, arena)?;
+    let offset = slot_with_arena(bcd, 2, arena)?.as_atom()?.as_u64()? as usize;
+    let step = slot_with_arena(bcd, 6, arena)?.as_atom()?.as_u64()? as usize;
 
     if step == 0 {
         return Ok(e.as_noun());
     }
 
-    let donor = slot(bcd, 7)?.as_atom()?;
+    let donor = slot_with_arena(bcd, 7, arena)?.as_atom()?;
 
     let len_d = util::met(bloq, donor);
     let len_e = util::met(bloq, e);
@@ -106,9 +111,10 @@ pub fn jet_sew(context: &mut Context, subject: Noun) -> Result {
 }
 
 pub fn jet_end(context: &mut Context, subject: Noun) -> Result {
-    let arg = slot(subject, 6)?;
-    let (bloq, step) = bite(slot(arg, 2)?)?;
-    let a = slot(arg, 3)?.as_atom()?;
+    let arena = &*context.arena;
+    let arg = slot_with_arena(subject, 6, arena)?;
+    let (bloq, step) = bite_with_arena(slot_with_arena(arg, 2, arena)?, arena)?;
+    let a = slot_with_arena(arg, 3, arena)?.as_atom()?;
 
     if step == 0 {
         Ok(D(0))
@@ -125,34 +131,38 @@ pub fn jet_end(context: &mut Context, subject: Noun) -> Result {
 }
 
 pub fn jet_lsh(context: &mut Context, subject: Noun) -> Result {
-    let arg = slot(subject, 6)?;
-    let (bloq, step) = bite(slot(arg, 2)?)?;
-    let a = slot(arg, 3)?.as_atom()?;
+    let arena = &*context.arena;
+    let arg = slot_with_arena(subject, 6, arena)?;
+    let (bloq, step) = bite_with_arena(slot_with_arena(arg, 2, arena)?, arena)?;
+    let a = slot_with_arena(arg, 3, arena)?.as_atom()?;
 
     util::lsh(&mut context.stack, bloq, step, a)
 }
 
-pub fn jet_met(_context: &mut Context, subject: Noun) -> Result {
-    let arg = slot(subject, 6)?;
-    let bloq = bloq(slot(arg, 2)?)?;
-    let a = slot(arg, 3)?.as_atom()?;
+pub fn jet_met(context: &mut Context, subject: Noun) -> Result {
+    let arena = &*context.arena;
+    let arg = slot_with_arena(subject, 6, arena)?;
+    let bloq = bloq(slot_with_arena(arg, 2, arena)?)?;
+    let a = slot_with_arena(arg, 3, arena)?.as_atom()?;
 
     Ok(D(util::met(bloq, a) as u64))
 }
 
 pub fn jet_rap(context: &mut Context, subject: Noun) -> Result {
-    let arg = slot(subject, 6)?;
-    let bloq = bloq(slot(arg, 2)?)?;
-    let original_list = slot(arg, 3)?;
+    let arena = &*context.arena;
+    let arg = slot_with_arena(subject, 6, arena)?;
+    let bloq = bloq(slot_with_arena(arg, 2, arena)?)?;
+    let original_list = slot_with_arena(arg, 3, arena)?;
     Ok(util::rap(&mut context.stack, bloq, original_list)?.as_noun())
 }
 
 pub fn jet_rep(context: &mut Context, subject: Noun) -> Result {
+    let arena = &*context.arena;
     let stack = &mut context.stack;
 
-    let arg = slot(subject, 6)?;
-    let arg2 = slot(arg, 2)?;
-    let arg3 = slot(arg, 3)?;
+    let arg = slot_with_arena(subject, 6, arena)?;
+    let arg2 = slot_with_arena(arg, 2, arena)?;
+    let arg3 = slot_with_arena(arg, 3, arena)?;
 
     rep(stack, arg2, arg3)
 }
@@ -200,16 +210,17 @@ pub fn rep(stack: &mut NockStack, a: Noun, b: Noun) -> Result {
 }
 
 pub fn jet_rev(context: &mut Context, subject: Noun) -> Result {
-    let arg = slot(subject, 6)?;
-    let boz = slot(arg, 2)?.as_atom()?.as_direct()?.data();
+    let arena = &*context.arena;
+    let arg = slot_with_arena(subject, 6, arena)?;
+    let boz = slot_with_arena(arg, 2, arena)?.as_atom()?.as_direct()?.data();
 
     if boz >= 64 {
         return Err(BAIL_EXIT);
     }
 
     let boz = boz as usize;
-    let len = slot(arg, 6)?.as_atom()?.as_direct()?.data();
-    let dat = slot(arg, 7)?.as_atom()?;
+    let len = slot_with_arena(arg, 6, arena)?.as_atom()?.as_direct()?.data();
+    let dat = slot_with_arena(arg, 7, arena)?.as_atom()?;
     let bits = len << boz;
 
     let src = dat.as_bitslice();
@@ -230,16 +241,18 @@ pub fn jet_rev(context: &mut Context, subject: Noun) -> Result {
 }
 
 pub fn jet_rip(context: &mut Context, subject: Noun) -> Result {
-    let arg = slot(subject, 6)?;
-    let (bloq, step) = bite(slot(arg, 2)?)?;
-    let atom = slot(arg, 3)?.as_atom()?;
+    let arena = &*context.arena;
+    let arg = slot_with_arena(subject, 6, arena)?;
+    let (bloq, step) = bite_with_arena(slot_with_arena(arg, 2, arena)?, arena)?;
+    let atom = slot_with_arena(arg, 3, arena)?.as_atom()?;
     util::rip(&mut context.stack, bloq, step, atom)
 }
 
 pub fn jet_rsh(context: &mut Context, subject: Noun) -> Result {
-    let arg = slot(subject, 6)?;
-    let (bloq, step) = bite(slot(arg, 2)?)?;
-    let a = slot(arg, 3)?.as_atom()?;
+    let arena = &*context.arena;
+    let arg = slot_with_arena(subject, 6, arena)?;
+    let (bloq, step) = bite_with_arena(slot_with_arena(arg, 2, arena)?, arena)?;
+    let a = slot_with_arena(arg, 3, arena)?.as_atom()?;
 
     let len = util::met(bloq, a);
     if step >= len {
@@ -254,9 +267,10 @@ pub fn jet_rsh(context: &mut Context, subject: Noun) -> Result {
     }
 }
 
-pub fn jet_xeb(_context: &mut Context, subject: Noun) -> Result {
-    let sam = slot(subject, 6)?;
-    let a = slot(sam, 1)?.as_atom()?;
+pub fn jet_xeb(context: &mut Context, subject: Noun) -> Result {
+    let arena = &*context.arena;
+    let sam = slot_with_arena(subject, 6, arena)?;
+    let a = slot_with_arena(sam, 1, arena)?.as_atom()?;
     Ok(D(util::met(0, a) as u64))
 }
 
@@ -265,17 +279,19 @@ pub fn jet_xeb(_context: &mut Context, subject: Noun) -> Result {
  */
 
 pub fn jet_con(context: &mut Context, subject: Noun) -> Result {
-    let arg = slot(subject, 6)?;
-    let a = slot(arg, 2)?.as_atom()?;
-    let b = slot(arg, 3)?.as_atom()?;
+    let arena = &*context.arena;
+    let arg = slot_with_arena(subject, 6, arena)?;
+    let a = slot_with_arena(arg, 2, arena)?.as_atom()?;
+    let b = slot_with_arena(arg, 3, arena)?.as_atom()?;
 
     Ok(util::con(&mut context.stack, a, b).as_noun())
 }
 
 pub fn jet_dis(context: &mut Context, subject: Noun) -> Result {
-    let arg = slot(subject, 6)?;
-    let a = slot(arg, 2)?.as_atom()?;
-    let b = slot(arg, 3)?.as_atom()?;
+    let arena = &*context.arena;
+    let arg = slot_with_arena(subject, 6, arena)?;
+    let a = slot_with_arena(arg, 2, arena)?.as_atom()?;
+    let b = slot_with_arena(arg, 3, arena)?.as_atom()?;
 
     let new_size = cmp::max(a.size(), b.size());
 
@@ -289,9 +305,10 @@ pub fn jet_dis(context: &mut Context, subject: Noun) -> Result {
 }
 
 pub fn jet_mix(context: &mut Context, subject: Noun) -> Result {
-    let arg = slot(subject, 6)?;
-    let a = slot(arg, 2)?.as_atom()?;
-    let b = slot(arg, 3)?.as_atom()?;
+    let arena = &*context.arena;
+    let arg = slot_with_arena(subject, 6, arena)?;
+    let a = slot_with_arena(arg, 2, arena)?.as_atom()?;
+    let b = slot_with_arena(arg, 3, arena)?.as_atom()?;
 
     let new_size = cmp::max(a.size(), b.size());
 

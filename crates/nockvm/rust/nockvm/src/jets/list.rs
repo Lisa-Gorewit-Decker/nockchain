@@ -1,7 +1,7 @@
 /** Text processing jets
  */
 use crate::interpreter::Context;
-use crate::jets::util::{slot, BAIL_FAIL};
+use crate::jets::util::{slot_with_arena, BAIL_FAIL};
 use crate::jets::Result;
 use crate::noun::{Cell, Noun, D, T};
 use crate::site::{site_slam, Site};
@@ -9,33 +9,37 @@ use crate::site::{site_slam, Site};
 crate::gdb!();
 
 pub fn jet_weld(context: &mut Context, subject: Noun) -> Result {
-    let sam = slot(subject, 6)?;
-    let a = slot(sam, 2)?;
-    let b = slot(sam, 3)?;
+    let arena = &*context.arena;
+    let sam = slot_with_arena(subject, 6, arena)?;
+    let a = slot_with_arena(sam, 2, arena)?;
+    let b = slot_with_arena(sam, 3, arena)?;
     util::weld(&mut context.stack, a, b)
 }
 
 pub fn jet_flop(context: &mut Context, subject: Noun) -> Result {
-    let sam = slot(subject, 6)?;
+    let arena = &*context.arena;
+    let sam = slot_with_arena(subject, 6, arena)?;
     util::flop(&mut context.stack, sam)
 }
 
-pub fn jet_lent(_context: &mut Context, subject: Noun) -> Result {
-    let list = slot(subject, 6)?;
+pub fn jet_lent(context: &mut Context, subject: Noun) -> Result {
+    let arena = &*context.arena;
+    let list = slot_with_arena(subject, 6, arena)?;
     util::lent(list).map(|x| D(x as u64))
 }
 
 pub fn jet_roll(context: &mut Context, subject: Noun) -> Result {
-    let sample = slot(subject, 6)?;
-    let mut list = slot(sample, 2)?;
-    let mut gate = slot(sample, 3)?;
-    let mut prod = slot(gate, 13)?;
+    let arena = std::sync::Arc::clone(&context.arena);
+    let sample = slot_with_arena(subject, 6, &arena)?;
+    let mut list = slot_with_arena(sample, 2, &arena)?;
+    let mut gate = slot_with_arena(sample, 3, &arena)?;
+    let mut prod = slot_with_arena(gate, 13, &arena)?;
 
     let site = Site::new(context, &mut gate);
     loop {
         if let Ok(list_cell) = list.as_cell() {
-            list = list_cell.tail();
-            let sam = T(&mut context.stack, &[list_cell.head(), prod]);
+            list = list_cell.tail_with_arena(&arena);
+            let sam = T(&mut context.stack, &[list_cell.head_with_arena(&arena), prod]);
             prod = site_slam(context, &site, sam)?;
         } else {
             if unsafe { !list.raw_equals(&D(0)) } {
@@ -46,23 +50,26 @@ pub fn jet_roll(context: &mut Context, subject: Noun) -> Result {
     }
 }
 
-pub fn jet_snag(_context: &mut Context, subject: Noun) -> Result {
-    let sam = slot(subject, 6)?;
-    let index = slot(sam, 2)?;
-    let list = slot(sam, 3)?;
+pub fn jet_snag(context: &mut Context, subject: Noun) -> Result {
+    let arena = &*context.arena;
+    let sam = slot_with_arena(subject, 6, arena)?;
+    let index = slot_with_arena(sam, 2, arena)?;
+    let list = slot_with_arena(sam, 3, arena)?;
 
     util::snag(list, index)
 }
 
 pub fn jet_snip(context: &mut Context, subject: Noun) -> Result {
-    let list = slot(subject, 6)?;
+    let arena = &*context.arena;
+    let list = slot_with_arena(subject, 6, arena)?;
     util::snip(&mut context.stack, list)
 }
 
 pub fn jet_turn(context: &mut Context, subject: Noun) -> Result {
-    let sample = slot(subject, 6)?;
-    let mut list = slot(sample, 2)?;
-    let mut gate = slot(sample, 3)?;
+    let arena = std::sync::Arc::clone(&context.arena);
+    let sample = slot_with_arena(subject, 6, &arena)?;
+    let mut list = slot_with_arena(sample, 2, &arena)?;
+    let mut gate = slot_with_arena(sample, 3, &arena)?;
     let mut res = D(0);
     let mut dest: *mut Noun = &mut res; // Mutable pointer because we cannot guarantee initialized
 
@@ -71,10 +78,10 @@ pub fn jet_turn(context: &mut Context, subject: Noun) -> Result {
     let site = Site::new(context, &mut gate);
     loop {
         if let Ok(list_cell) = list.as_cell() {
-            list = list_cell.tail();
+            list = list_cell.tail_with_arena(&arena);
             unsafe {
                 let (new_cell, new_mem) = Cell::new_raw_mut(&mut context.stack);
-                (*new_mem).head = site_slam(context, &site, list_cell.head())?;
+                (*new_mem).head = site_slam(context, &site, list_cell.head_with_arena(&arena))?;
                 *dest = new_cell.as_noun();
                 dest = &mut (*new_mem).tail;
             }
@@ -91,41 +98,46 @@ pub fn jet_turn(context: &mut Context, subject: Noun) -> Result {
 }
 
 pub fn jet_zing(context: &mut Context, subject: Noun) -> Result {
-    let list = slot(subject, 6)?;
+    let arena = &*context.arena;
+    let list = slot_with_arena(subject, 6, arena)?;
     let stack = &mut context.stack;
 
     util::zing(stack, list)
 }
 
 pub fn jet_reap(context: &mut Context, subject: Noun) -> Result {
-    let sam = slot(subject, 6)?;
-    let a_noun = slot(sam, 2)?;
-    let b_noun = slot(sam, 3)?;
+    let arena = &*context.arena;
+    let sam = slot_with_arena(subject, 6, arena)?;
+    let a_noun = slot_with_arena(sam, 2, arena)?;
+    let b_noun = slot_with_arena(sam, 3, arena)?;
 
     let a = a_noun.as_atom()?.as_u64()?;
     util::reap(&mut context.stack, a, b_noun)
 }
 
 pub fn jet_levy(context: &mut Context, subject: Noun) -> Result {
-    let sam = slot(subject, 6)?;
-    let a_noun = slot(sam, 2)?;
-    let b_noun = slot(sam, 3)?;
+    let arena = &*context.arena;
+    let sam = slot_with_arena(subject, 6, arena)?;
+    let a_noun = slot_with_arena(sam, 2, arena)?;
+    let b_noun = slot_with_arena(sam, 3, arena)?;
 
     util::levy(context, a_noun, b_noun)
 }
 
 pub fn jet_find(context: &mut Context, subject: Noun) -> Result {
-    let sam = slot(subject, 6)?;
-    let nedl = slot(sam, 2)?;
-    let hstk = slot(sam, 3)?;
+    let arena = &*context.arena;
+    let sam = slot_with_arena(subject, 6, arena)?;
+    let nedl = slot_with_arena(sam, 2, arena)?;
+    let hstk = slot_with_arena(sam, 3, arena)?;
 
     util::find(context, nedl, hstk)
 }
 
 pub fn jet_scag(context: &mut Context, subject: Noun) -> Result {
-    let sam = slot(subject, 6)?;
-    let a = sam.as_cell()?.head().as_atom()?;
-    let b = sam.as_cell()?.tail();
+    let arena = &*context.arena;
+    let sam = slot_with_arena(subject, 6, arena)?;
+    let a = sam.as_cell()?.head_with_arena(arena).as_atom()?;
+    let b = sam.as_cell()?.tail_with_arena(arena);
 
     util::scag(context, a, b)
 }

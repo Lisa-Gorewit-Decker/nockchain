@@ -2,7 +2,7 @@ use std::cmp::Ordering;
 
 use crate::interpreter::Context;
 use crate::jets::sort::util::{gor, mor};
-use crate::jets::util::slot;
+use crate::jets::util::slot_with_arena;
 use crate::jets::{JetErr, Result};
 use crate::mem::NockStack;
 //use crate::mug::mug;
@@ -28,12 +28,13 @@ fn make_node(stack: &mut NockStack, value: Noun, left: Noun, right: Noun) -> Nou
 
 // TODO: fix this jet. identical elements are not being deduplicated
 pub fn jet_put(context: &mut Context, subject: Noun) -> Result {
-    let elem = slot(subject, 6)?;
-    let parent = match slot(subject, 7) {
+    let arena = &*context.arena;
+    let elem = slot_with_arena(subject, 6, arena)?;
+    let parent = match slot_with_arena(subject, 7, arena) {
         Ok(parent) => parent,
         Err(_) => return Err(JetErr::Punt),
     };
-    let set = match slot(parent, 6) {
+    let set = match slot_with_arena(parent, 6, arena) {
         Ok(set) => set,
         Err(_) => return Err(JetErr::Punt),
     };

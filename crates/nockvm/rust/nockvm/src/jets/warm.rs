@@ -274,7 +274,7 @@ mod test {
     use crate::interpreter::Context;
     use crate::jets::cold::{Batteries, BatteriesMem, NO_BATTERIES};
     use crate::jets::JetErr;
-    use crate::mem::NockStack;
+    use crate::mem::{Arena, NockStack};
     use crate::noun::{NounAllocator, D};
     use crate::pma::{Pma, PmaCopy};
     use std::path::PathBuf;
@@ -329,7 +329,7 @@ mod test {
     }
 
     /// Helper to verify a noun is not stack-allocated (is in offset form)
-    fn verify_noun_not_stack_allocated(noun: Noun, context: &str) {
+    fn verify_noun_not_stack_allocated(noun: Noun, arena: &Arena, context: &str) {
         if noun.is_direct() {
             return;
         }
@@ -339,8 +339,8 @@ mod test {
             context
         );
         if let Ok(cell) = noun.as_cell() {
-            verify_noun_not_stack_allocated(cell.head(), context);
-            verify_noun_not_stack_allocated(cell.tail(), context);
+            verify_noun_not_stack_allocated(cell.head_with_arena(arena), arena, context);
+            verify_noun_not_stack_allocated(cell.tail_with_arena(arena), arena, context);
         }
     }
 
@@ -415,8 +415,9 @@ mod test {
             assert_eq!(parent_axis.as_u64().unwrap(), 0, "Parent axis should be 0");
 
             // Verify nouns are in offset form
-            verify_noun_not_stack_allocated(path, "WarmEntry path");
-            verify_noun_not_stack_allocated(battery, "WarmEntry battery");
+            let arena = pma.arena();
+            verify_noun_not_stack_allocated(path, arena, "WarmEntry path");
+            verify_noun_not_stack_allocated(battery, arena, "WarmEntry battery");
         }
 
         assert!(
@@ -505,8 +506,9 @@ mod test {
             assert_eq!(unsafe { battery.as_raw() }, *expected_battery, "Battery should match");
 
             // Verify nouns are in offset form
-            verify_noun_not_stack_allocated(path, "Warm path");
-            verify_noun_not_stack_allocated(battery, "Warm battery");
+            let arena = pma.arena();
+            verify_noun_not_stack_allocated(path, arena, "Warm path");
+            verify_noun_not_stack_allocated(battery, arena, "Warm battery");
         }
         assert!(expected_iter1.next().is_none(), "Missing entries for formula D(100)");
 
@@ -532,8 +534,9 @@ mod test {
             assert_eq!(unsafe { battery.as_raw() }, *expected_battery, "Battery should match");
 
             // Verify nouns are in offset form
-            verify_noun_not_stack_allocated(path, "Warm path");
-            verify_noun_not_stack_allocated(battery, "Warm battery");
+            let arena = pma.arena();
+            verify_noun_not_stack_allocated(path, arena, "Warm path");
+            verify_noun_not_stack_allocated(battery, arena, "Warm battery");
         }
         assert!(expected_iter2.next().is_none(), "Missing entries for formula D(200)");
 
