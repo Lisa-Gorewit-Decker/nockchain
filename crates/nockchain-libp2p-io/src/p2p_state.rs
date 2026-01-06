@@ -430,7 +430,7 @@ mod tests {
 
     use nockapp::noun::slab::NounSlab;
     use nockapp::AtomExt;
-    use nockvm::mem::{Arena, NockStack};
+    use nockvm::mem::NockStack;
     use nockvm::noun::{D, NounAllocator, T};
 
     use super::*;
@@ -439,28 +439,13 @@ mod tests {
 
     pub static LIBP2P_CONFIG: LazyLock<LibP2PConfig> = LazyLock::new(|| LibP2PConfig::default());
 
-    struct TestArenaGuard {
-        _stack: NockStack,
-    }
-
-    impl TestArenaGuard {
-        fn install() -> Self {
-            let stack = NockStack::new(1 << 16, 0);
-            stack.install_arena();
-            Self { _stack: stack }
-        }
-    }
-
-    impl Drop for TestArenaGuard {
-        fn drop(&mut self) {
-            Arena::clear_thread_local();
-        }
+    fn install_test_arena() -> NockStack {
+        NockStack::new(1 << 16, 0)
     }
 
     #[test]
     #[cfg_attr(miri, ignore)] // ibig has a memory leak so miri fails this test
     fn test_message_tracker_basic() {
-        let _arena = TestArenaGuard::install();
         let metrics = Arc::new(
             NockchainP2PMetrics::register(gnort::global_metrics_registry())
                 .expect("Could not register metrics"),
@@ -519,7 +504,7 @@ mod tests {
     #[test]
     #[cfg_attr(miri, ignore)] // ibig has a memory leak so miri fails this test
     fn test_bad_block_id() {
-        let _arena = TestArenaGuard::install();
+        let _arena = install_test_arena();
         let metrics = Arc::new(
             NockchainP2PMetrics::register(gnort::global_metrics_registry())
                 .expect("Could not register metrics"),
@@ -563,7 +548,7 @@ mod tests {
 
     #[test]
     fn test_peer_id_base58_roundtrip() {
-        let _arena = TestArenaGuard::install();
+        let _arena = install_test_arena();
         use nockvm::noun::Atom;
         // Generate a random PeerId
         let original_peer_id = PeerId::random();
@@ -594,7 +579,7 @@ mod tests {
     #[test]
     #[cfg_attr(miri, ignore)] // ibig has a memory leak so miri fails this test
     fn test_add_peer_if_tracking_block_id() {
-        let _arena = TestArenaGuard::install();
+        let _arena = install_test_arena();
         let metrics = Arc::new(
             NockchainP2PMetrics::register(gnort::global_metrics_registry())
                 .expect("Could not register metrics"),
@@ -656,7 +641,7 @@ mod tests {
     #[test]
     #[cfg_attr(miri, ignore)] // ibig has a memory leak so miri fails this test
     fn test_add_peer_if_tracking_block_id_then_remove() {
-        let _arena = TestArenaGuard::install();
+        let _arena = install_test_arena();
         let metrics = Arc::new(
             NockchainP2PMetrics::register(gnort::global_metrics_registry())
                 .expect("Could not register metrics"),
@@ -742,7 +727,7 @@ mod tests {
     #[test]
     #[cfg_attr(miri, ignore)] // ibig has a memory leak so miri fails this test
     fn test_process_bad_block_id_removes_peers() {
-        let _arena = TestArenaGuard::install();
+        let _arena = install_test_arena();
         let metrics = Arc::new(
             NockchainP2PMetrics::register(gnort::global_metrics_registry())
                 .expect("Could not register metrics"),

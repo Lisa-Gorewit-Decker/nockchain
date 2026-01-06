@@ -3,36 +3,18 @@ use nockapp::noun::slab::NounSlab;
 use nockchain_math::belt::Belt;
 use nockchain_types::common::{BlockHeight, Version};
 use nockchain_types::tx_engine::v1;
-use nockvm::mem::{Arena, NockStack};
+use nockvm::noun::NounAllocator;
 use noun_serde::{NounDecode, NounEncode};
-
-struct TestArenaGuard {
-    _stack: NockStack,
-}
-
-impl TestArenaGuard {
-    fn install() -> Self {
-        let stack = NockStack::new(1 << 16, 0);
-        stack.install_arena();
-        Self { _stack: stack }
-    }
-}
-
-impl Drop for TestArenaGuard {
-    fn drop(&mut self) {
-        Arena::clear_thread_local();
-    }
-}
 
 #[test]
 fn decode_raw_tx_from_jam_v1() -> Result<(), Box<dyn std::error::Error>> {
-    let _arena = TestArenaGuard::install();
     const RAW_TX_JAM: &[u8] = include_bytes!("../jams/v1/raw-tx.jam");
 
     let mut slab: NounSlab = NounSlab::new();
     let noun = slab.cue_into(Bytes::from_static(RAW_TX_JAM))?;
+    let space = slab.noun_space();
 
-    let raw_tx = v1::RawTx::from_noun(&noun)?;
+    let raw_tx = v1::RawTx::from_noun(&noun, &space)?;
 
     // basic structural checks
     assert_eq!(raw_tx.version, Version::V1);
@@ -40,7 +22,8 @@ fn decode_raw_tx_from_jam_v1() -> Result<(), Box<dyn std::error::Error>> {
     // noun roundtrip
     let mut encode_slab: NounSlab = NounSlab::new();
     let encoded = v1::RawTx::to_noun(&raw_tx, &mut encode_slab);
-    let round_trip = v1::RawTx::from_noun(&encoded)?;
+    let encode_space = encode_slab.noun_space();
+    let round_trip = v1::RawTx::from_noun(&encoded, &encode_space)?;
     assert_eq!(round_trip, raw_tx);
 
     Ok(())
@@ -48,16 +31,16 @@ fn decode_raw_tx_from_jam_v1() -> Result<(), Box<dyn std::error::Error>> {
 
 #[test]
 fn decode_note_from_jam_v1() -> Result<(), Box<dyn std::error::Error>> {
-    let _arena = TestArenaGuard::install();
     const NOTE_JAM: &[u8] = include_bytes!("../jams/v1/note.jam");
 
     let mut slab: NounSlab = NounSlab::new();
     let noun = slab.cue_into(Bytes::from_static(NOTE_JAM))?;
+    let space = slab.noun_space();
 
     eprintln!("decoding note");
-    let ver = noun.as_cell().expect("not a cell").head();
+    let ver = noun.as_cell().expect("not a cell").head(&space);
     eprintln!("version: {:?}", ver);
-    let note = v1::Note::from_noun(&noun)?;
+    let note = v1::Note::from_noun(&noun, &space)?;
     eprintln!("decoded note");
 
     // basic structural checks
@@ -71,7 +54,8 @@ fn decode_note_from_jam_v1() -> Result<(), Box<dyn std::error::Error>> {
     // noun roundtrip
     let mut encode_slab: NounSlab = NounSlab::new();
     let encoded = v1::Note::to_noun(&note, &mut encode_slab);
-    let round_trip = v1::Note::from_noun(&encoded)?;
+    let encode_space = encode_slab.noun_space();
+    let round_trip = v1::Note::from_noun(&encoded, &encode_space)?;
     assert_eq!(round_trip, note);
 
     Ok(())
@@ -79,16 +63,16 @@ fn decode_note_from_jam_v1() -> Result<(), Box<dyn std::error::Error>> {
 
 #[test]
 fn decode_name_from_jam_v1() -> Result<(), Box<dyn std::error::Error>> {
-    let _arena = TestArenaGuard::install();
     const NOTE_JAM: &[u8] = include_bytes!("../jams/v1/note.jam");
 
     let mut slab: NounSlab = NounSlab::new();
     let noun = slab.cue_into(Bytes::from_static(NOTE_JAM))?;
+    let space = slab.noun_space();
 
     eprintln!("decoding note");
-    let ver = noun.as_cell().expect("not a cell").head();
+    let ver = noun.as_cell().expect("not a cell").head(&space);
     eprintln!("version: {:?}", ver);
-    let note = v1::Note::from_noun(&noun)?;
+    let note = v1::Note::from_noun(&noun, &space)?;
     eprintln!("decoded note");
 
     // basic structural checks
@@ -102,7 +86,8 @@ fn decode_name_from_jam_v1() -> Result<(), Box<dyn std::error::Error>> {
     // noun roundtrip
     let mut encode_slab: NounSlab = NounSlab::new();
     let encoded = v1::Note::to_noun(&note, &mut encode_slab);
-    let round_trip = v1::Note::from_noun(&encoded)?;
+    let encode_space = encode_slab.noun_space();
+    let round_trip = v1::Note::from_noun(&encoded, &encode_space)?;
     assert_eq!(round_trip, note);
 
     Ok(())

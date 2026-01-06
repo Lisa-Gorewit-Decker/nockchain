@@ -71,9 +71,8 @@ pub const DEFAULT_NOCK_STACK_SIZE: usize = 1 << 27;
 
 #[cfg(test)]
 pub mod test_support {
-    use nockvm::mem::{Arena, NockStack};
+    use nockvm::mem::NockStack;
 
-    /// Installs a [`NockStack`] in TLS for tests so noun helpers can dereference offsets safely.
     pub struct TestArena {
         stack: NockStack,
     }
@@ -81,7 +80,6 @@ pub mod test_support {
     impl TestArena {
         pub fn with_words(words: usize) -> Self {
             let stack = NockStack::new(words, 0);
-            stack.install_arena();
             Self { stack }
         }
     }
@@ -90,12 +88,6 @@ pub mod test_support {
         fn default() -> Self {
             // A modest stack is enough because tests mostly need TLS to be populated.
             Self::with_words(1 << 16)
-        }
-    }
-
-    impl Drop for TestArena {
-        fn drop(&mut self) {
-            Arena::clear_thread_local();
         }
     }
 

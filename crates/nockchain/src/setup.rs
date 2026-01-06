@@ -23,16 +23,13 @@ struct TestArenaGuard {
 impl TestArenaGuard {
     fn install() -> Self {
         let stack = nockvm::mem::NockStack::new(1 << 16, 0);
-        stack.install_arena();
         Self { _stack: stack }
     }
 }
 
 #[cfg(test)]
 impl Drop for TestArenaGuard {
-    fn drop(&mut self) {
-        nockvm::mem::Arena::clear_thread_local();
-    }
+    fn drop(&mut self) {}
 }
 
 #[cfg(feature = "bazel_build")]

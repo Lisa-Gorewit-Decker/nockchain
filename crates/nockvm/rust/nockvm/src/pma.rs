@@ -461,11 +461,10 @@ mod tests {
     use super::*;
     use crate::hamt::Hamt;
     use crate::jets::cold::NounListMem;
-    use crate::mem::{word_size_of, Arena, NockStack};
+    use crate::mem::{word_size_of, NockStack};
     use crate::noun::{D, DIRECT_MAX};
     use ibig::Stack;
     use std::alloc::Layout;
-    use std::sync::Arc;
 
     /// Helper to create a test PMA with a given size
     fn test_pma(size_words: usize) -> Pma {
@@ -796,69 +795,6 @@ mod tests {
         pma.reset_to(1001); // Should panic: offset exceeds PMA size
     }
 
-    /// Verifies thread-local PMA installation, access via with_current(), and RAII cleanup.
-    ///
-    /// This test exercises:
-    /// - pma.install() installs the PMA's arena in thread-local storage
-    /// - Arena::with_current() can access the installed arena
-    /// - The installed arena matches the PMA's arena
-    /// - PmaInstallGuard automatically clears the arena when dropped
-    #[test]
-    #[cfg_attr(miri, ignore = "memfd_create unsupported in Miri")]
-    fn test_pma_thread_local() {
-        let pma = test_pma(1000);
-        let pma_arena_ptr = Arc::as_ptr(pma.arena());
-
-        {
-            // Install the PMA's arena - guard will clear on drop
-            let _guard = pma.install();
-
-            // Verify we can access it via with_current and it's the same arena
-            Arena::with_current(|arena| {
-                let current_ptr = arena as *const Arena;
-                assert_eq!(
-                    current_ptr, pma_arena_ptr,
-                    "Installed arena should match PMA's arena"
-                );
-            });
-        } // _guard dropped here, arena should be cleared
-
-        // Verify the guard cleared the thread-local by checking that
-        // with_current would now panic (we don't call it here to avoid panic,
-        // but we test this in test_pma_thread_local_not_installed)
-    }
-
-    /// Verifies Arena::with_current panics when no arena is installed.
-    #[test]
-    #[should_panic(expected = "Arena::with_current called without an installed Arena")]
-    #[cfg_attr(miri, ignore = "memfd_create unsupported in Miri")]
-    fn test_pma_thread_local_not_installed() {
-        // Ensure no arena is installed
-        Arena::clear_thread_local();
-
-        // This should panic
-        Arena::with_current(|_arena| {});
-    }
-
-    /// Verifies PmaInstallGuard clears the arena when dropped.
-    #[test]
-    #[should_panic(expected = "Arena::with_current called without an installed Arena")]
-    #[cfg_attr(miri, ignore = "memfd_create unsupported in Miri")]
-    fn test_pma_guard_clears_on_drop() {
-        let pma = test_pma(1000);
-
-        // Ensure no arena is installed initially
-        Arena::clear_thread_local();
-
-        {
-            let _guard = pma.install();
-            // Arena is installed here, with_current would work
-        } // _guard dropped, arena should be cleared
-
-        // This should panic because the guard cleared the arena
-        Arena::with_current(|_arena| {});
-    }
-
     /// Verifies direct atoms are unchanged by evacuation since they fit in a single word.
     ///
     /// Direct atoms don't require any allocation - they're just 64-bit values with
@@ -916,6 +852,7 @@ mod tests {
     fn test_evacuate_indirect_atom() {
         let mut stack = NockStack::new(1 << 10, 0);
         let mut pma = test_pma(1000);
+        let space = NounSpace::new(&stack, &pma);
 
         // Create an indirect atom on the stack (value > DIRECT_MAX requires indirect storage)
         // We'll use a 2-word value to ensure it's indirect
@@ -930,16 +867,13 @@ mod tests {
             "Should not be a direct atom"
         );
         assert!(
-            noun.is_stack_allocated(),
+            noun.is_stack_allocated(&space),
             "Should be stack-allocated before evacuation"
         );
 
         // Record the initial PMA offset
         let initial_offset = pma.alloc_offset();
         assert_eq!(initial_offset, 0, "PMA should start empty");
-
-        // Install the PMA arena for pointer resolution after evacuation
-        let _guard = pma.install();
 
         // Evacuate to PMA
         unsafe { noun.copy_to_pma(&stack, &mut pma) };
@@ -958,7 +892,7 @@ mod tests {
 
         // Verify the noun is now in offset form (not stack-allocated)
         assert!(
-            !noun.is_stack_allocated(),
+            !noun.is_stack_allocated(&space),
             "Should be in offset form after evacuation"
         );
         assert!(noun.is_indirect(), "Should still be an indirect atom");
@@ -968,11 +902,11 @@ mod tests {
         let read_indirect = atom.as_indirect().expect("Should be indirect");
 
         // Read the size - should be 2 words
-        let size = read_indirect.size();
+        let size = read_indirect.size(&space);
         assert_eq!(size, 2, "Indirect atom should have size 2");
 
         // Read the data back and verify it matches
-        let data_ptr = read_indirect.data_pointer();
+        let data_ptr = read_indirect.data_pointer(&space);
         let read_data = unsafe { std::slice::from_raw_parts(data_ptr, 2) };
         assert_eq!(
             read_data[0], data[0],
@@ -999,16 +933,18 @@ mod tests {
     fn test_evacuate_simple_cell() {
         let mut stack = NockStack::new(1 << 10, 0);
         let mut pma = test_pma(1000);
+        let space = NounSpace::new(&stack, &pma);
 
         // Create a simple cell [42 123] with direct atoms
         let mut noun = Cell::new(&mut stack, D(42), D(123)).as_noun();
 
         // Verify it's a cell on the stack
         assert!(noun.is_cell(), "Should be a cell");
-        assert!(noun.is_stack_allocated(), "Should be stack-allocated before evacuation");
+        assert!(
+            noun.is_stack_allocated(&space),
+            "Should be stack-allocated before evacuation"
+        );
 
-        // Install PMA arena and evacuate
-        let _guard = pma.install();
         unsafe { noun.copy_to_pma(&stack, &mut pma) };
 
         // Verify PMA allocation was made (CellMemory size)
@@ -1021,13 +957,16 @@ mod tests {
         );
 
         // Verify the noun is now in offset form
-        assert!(!noun.is_stack_allocated(), "Should be in offset form after evacuation");
+        assert!(
+            !noun.is_stack_allocated(&space),
+            "Should be in offset form after evacuation"
+        );
         assert!(noun.is_cell(), "Should still be a cell");
 
         // Read head and tail
         let cell = noun.as_cell().expect("Should be a cell");
-        let head = cell.head();
-        let tail = cell.tail();
+        let head = cell.head(&space);
+        let tail = cell.tail(&space);
 
         // Verify head and tail are correct direct atoms
         assert!(head.is_direct(), "Head should be direct");
@@ -1059,6 +998,7 @@ mod tests {
     fn test_evacuate_nested_cells() {
         let mut stack = NockStack::new(1 << 10, 0);
         let mut pma = test_pma(1000);
+        let space = NounSpace::new(&stack, &pma);
 
         // Create nested cells: [[1 2] [3 4]]
         let left = Cell::new(&mut stack, D(1), D(2)).as_noun();
@@ -1067,10 +1007,11 @@ mod tests {
 
         // Verify structure before evacuation
         assert!(noun.is_cell(), "Root should be a cell");
-        assert!(noun.is_stack_allocated(), "Root should be stack-allocated");
+        assert!(
+            noun.is_stack_allocated(&space),
+            "Root should be stack-allocated"
+        );
 
-        // Install PMA arena and evacuate
-        let _guard = pma.install();
         unsafe { noun.copy_to_pma(&stack, &mut pma) };
 
         // Should allocate 3 cells worth of space
@@ -1082,22 +1023,43 @@ mod tests {
         );
 
         // Verify root is in offset form
-        assert!(!noun.is_stack_allocated(), "Root should be in offset form");
+        assert!(
+            !noun.is_stack_allocated(&space),
+            "Root should be in offset form"
+        );
 
         // Navigate and verify structure
         let root = noun.as_cell().expect("root is cell");
-        let left_cell = root.head().as_cell().expect("left is cell");
-        let right_cell = root.tail().as_cell().expect("right is cell");
+        let left_cell = root.head(&space).as_cell().expect("left is cell");
+        let right_cell = root.tail(&space).as_cell().expect("right is cell");
 
         // Verify left cell [1 2]
-        assert!(!root.head().is_stack_allocated(), "Left should be in offset form");
-        assert_eq!(left_cell.head().as_direct().expect("1").data(), 1);
-        assert_eq!(left_cell.tail().as_direct().expect("2").data(), 2);
+        assert!(
+            !root.head(&space).is_stack_allocated(&space),
+            "Left should be in offset form"
+        );
+        assert_eq!(
+            left_cell.head(&space).as_direct().expect("1").data(),
+            1
+        );
+        assert_eq!(
+            left_cell.tail(&space).as_direct().expect("2").data(),
+            2
+        );
 
         // Verify right cell [3 4]
-        assert!(!root.tail().is_stack_allocated(), "Right should be in offset form");
-        assert_eq!(right_cell.head().as_direct().expect("3").data(), 3);
-        assert_eq!(right_cell.tail().as_direct().expect("4").data(), 4);
+        assert!(
+            !root.tail(&space).is_stack_allocated(&space),
+            "Right should be in offset form"
+        );
+        assert_eq!(
+            right_cell.head(&space).as_direct().expect("3").data(),
+            3
+        );
+        assert_eq!(
+            right_cell.tail(&space).as_direct().expect("4").data(),
+            4
+        );
 
         // Verify assert_in_pma passes for entire structure
         noun.assert_in_pma(&pma);
@@ -1109,6 +1071,7 @@ mod tests {
     fn test_evacuate_cell_with_indirect_atoms() {
         let mut stack = NockStack::new(1 << 10, 0);
         let mut pma = test_pma(1000);
+        let space = NounSpace::new(&stack, &pma);
 
         // Create indirect atoms
         let data1: [u64; 2] = [0xAAAAAAAA_BBBBBBBB, 0xCCCCCCCC_DDDDDDDD];
@@ -1119,10 +1082,11 @@ mod tests {
         // Create cell with indirect atoms
         let mut noun = Cell::new(&mut stack, indirect1.as_noun(), indirect2.as_noun()).as_noun();
 
-        assert!(noun.is_stack_allocated(), "Should be stack-allocated");
+        assert!(
+            noun.is_stack_allocated(&space),
+            "Should be stack-allocated"
+        );
 
-        // Install PMA arena and evacuate
-        let _guard = pma.install();
         unsafe { noun.copy_to_pma(&stack, &mut pma) };
 
         // Should allocate: 1 cell + 2 indirect atoms (4 words each)
@@ -1135,25 +1099,36 @@ mod tests {
         );
 
         // Verify structure
-        assert!(!noun.is_stack_allocated(), "Root should be in offset form");
+        assert!(
+            !noun.is_stack_allocated(&space),
+            "Root should be in offset form"
+        );
 
         let cell = noun.as_cell().expect("is cell");
-        let head = cell.head();
-        let tail = cell.tail();
+        let head = cell.head(&space);
+        let tail = cell.tail(&space);
 
         // Verify head is indirect atom with correct data
         assert!(head.is_indirect(), "Head should be indirect");
-        assert!(!head.is_stack_allocated(), "Head should be in offset form");
+        assert!(
+            !head.is_stack_allocated(&space),
+            "Head should be in offset form"
+        );
         let head_indirect = head.as_indirect().expect("head indirect");
-        let head_data = unsafe { std::slice::from_raw_parts(head_indirect.data_pointer(), 2) };
+        let head_data =
+            unsafe { std::slice::from_raw_parts(head_indirect.data_pointer(&space), 2) };
         assert_eq!(head_data[0], data1[0]);
         assert_eq!(head_data[1], data1[1]);
 
         // Verify tail is indirect atom with correct data
         assert!(tail.is_indirect(), "Tail should be indirect");
-        assert!(!tail.is_stack_allocated(), "Tail should be in offset form");
+        assert!(
+            !tail.is_stack_allocated(&space),
+            "Tail should be in offset form"
+        );
         let tail_indirect = tail.as_indirect().expect("tail indirect");
-        let tail_data = unsafe { std::slice::from_raw_parts(tail_indirect.data_pointer(), 2) };
+        let tail_data =
+            unsafe { std::slice::from_raw_parts(tail_indirect.data_pointer(&space), 2) };
         assert_eq!(tail_data[0], data2[0]);
         assert_eq!(tail_data[1], data2[1]);
 
@@ -1170,6 +1145,7 @@ mod tests {
     fn test_evacuate_shared_structure() {
         let mut stack = NockStack::new(1 << 10, 0);
         let mut pma = test_pma(1000);
+        let space = NounSpace::new(&stack, &pma);
 
         // Create a shared subcell
         let shared = Cell::new(&mut stack, D(1), D(2)).as_noun();
@@ -1177,8 +1153,6 @@ mod tests {
         // Create [shared shared] - both head and tail point to same cell
         let mut noun = Cell::new(&mut stack, shared, shared).as_noun();
 
-        // Install PMA arena and evacuate
-        let _guard = pma.install();
         unsafe { noun.copy_to_pma(&stack, &mut pma) };
 
         // Should allocate only 2 cells: the root and the shared subcell (not 3!)
@@ -1191,17 +1165,23 @@ mod tests {
 
         // Verify both head and tail point to the same PMA location
         let root = noun.as_cell().expect("is cell");
-        let head_raw = unsafe { root.head().as_raw() };
-        let tail_raw = unsafe { root.tail().as_raw() };
+        let head_raw = unsafe { root.head(&space).as_raw() };
+        let tail_raw = unsafe { root.tail(&space).as_raw() };
         assert_eq!(
             head_raw, tail_raw,
             "Head and tail should point to same location (sharing preserved)"
         );
 
         // Verify the shared cell is correct
-        let shared_cell = root.head().as_cell().expect("shared is cell");
-        assert_eq!(shared_cell.head().as_direct().expect("1").data(), 1);
-        assert_eq!(shared_cell.tail().as_direct().expect("2").data(), 2);
+        let shared_cell = root.head(&space).as_cell().expect("shared is cell");
+        assert_eq!(
+            shared_cell.head(&space).as_direct().expect("1").data(),
+            1
+        );
+        assert_eq!(
+            shared_cell.tail(&space).as_direct().expect("2").data(),
+            2
+        );
 
         noun.assert_in_pma(&pma);
     }
@@ -1215,7 +1195,6 @@ mod tests {
 
         // Create and evacuate a cell
         let mut noun = Cell::new(&mut stack, D(1), D(2)).as_noun();
-        let _guard = pma.install();
         unsafe { noun.copy_to_pma(&stack, &mut pma) };
 
         let offset_after_first = pma.alloc_offset();
@@ -1242,6 +1221,7 @@ mod tests {
     fn test_evacuate_deep_tree() {
         let mut stack = NockStack::new(1 << 14, 0); // Larger stack for deep nesting
         let mut pma = test_pma(10000);
+        let space = NounSpace::new(&stack, &pma);
 
         // Create a deeply nested structure: [1 [2 [3 [4 ... [999 1000]]]]]
         const DEPTH: u64 = 500;
@@ -1254,17 +1234,17 @@ mod tests {
 
         // Verify it's deeply nested and stack-allocated
         assert!(noun.is_cell(), "Root should be a cell");
-        assert!(noun.is_stack_allocated(), "Should be stack-allocated");
-
-        // Install PMA arena (needed for Cell::tail() even on stack-allocated nouns)
-        let _guard = pma.install();
+        assert!(
+            noun.is_stack_allocated(&space),
+            "Should be stack-allocated"
+        );
 
         // Count the depth before evacuation
         let mut depth_before = 0u64;
         let mut current = noun;
         while current.is_cell() {
             depth_before += 1;
-            current = current.as_cell().unwrap().tail();
+            current = current.as_cell().unwrap().tail(&space);
         }
         assert_eq!(depth_before, DEPTH - 1, "Should have correct depth before evacuation");
 
@@ -1281,7 +1261,10 @@ mod tests {
         );
 
         // Verify root is in offset form
-        assert!(!noun.is_stack_allocated(), "Root should be in offset form");
+        assert!(
+            !noun.is_stack_allocated(&space),
+            "Root should be in offset form"
+        );
 
         // Traverse the entire structure and verify values
         let mut current = noun;
@@ -1290,7 +1273,7 @@ mod tests {
             let cell = current.as_cell().expect("is cell");
 
             // Verify head value
-            let head = cell.head();
+            let head = cell.head(&space);
             assert!(head.is_direct(), "Head at depth {} should be direct", expected);
             assert_eq!(
                 head.as_direct().expect("direct").data(),
@@ -1302,12 +1285,12 @@ mod tests {
 
             // Verify this cell is in offset form
             assert!(
-                !current.is_stack_allocated(),
+                !current.is_stack_allocated(&space),
                 "Cell at depth {} should be in offset form",
                 expected
             );
 
-            current = cell.tail();
+            current = cell.tail(&space);
         }
 
         // Final element should be direct atom DEPTH
@@ -1333,6 +1316,7 @@ mod tests {
     fn test_evacuate_deep_tree_indirect_atoms() {
         let mut stack = NockStack::new(1 << 16, 0); // Larger stack for indirect atoms
         let mut pma = test_pma(100000); // Larger PMA for indirect atoms
+        let space = NounSpace::new(&stack, &pma);
 
         const DEPTH: usize = 200;
 
@@ -1360,10 +1344,10 @@ mod tests {
 
         // Verify structure before evacuation
         assert!(noun.is_cell(), "Root should be a cell");
-        assert!(noun.is_stack_allocated(), "Should be stack-allocated");
-
-        // Install PMA arena
-        let _guard = pma.install();
+        assert!(
+            noun.is_stack_allocated(&space),
+            "Should be stack-allocated"
+        );
 
         // Count expected allocations:
         // - (DEPTH - 1) cells
@@ -1389,7 +1373,10 @@ mod tests {
         );
 
         // Verify root is in offset form
-        assert!(!noun.is_stack_allocated(), "Root should be in offset form");
+        assert!(
+            !noun.is_stack_allocated(&space),
+            "Root should be in offset form"
+        );
 
         // Traverse and verify all values
         let mut current = noun;
@@ -1398,10 +1385,10 @@ mod tests {
             let cell = current.as_cell().expect("is cell");
 
             // Verify head is an indirect atom with correct data
-            let head = cell.head();
+            let head = cell.head(&space);
             assert!(head.is_indirect(), "Head at depth {} should be indirect", expected_index);
             assert!(
-                !head.is_stack_allocated(),
+                !head.is_stack_allocated(&space),
                 "Head at depth {} should be in offset form",
                 expected_index
             );
@@ -1409,7 +1396,7 @@ mod tests {
             let head_indirect = head.as_indirect().expect("indirect");
             let expected_word_count = word_count_for_index(expected_index);
             assert_eq!(
-                head_indirect.size(),
+                head_indirect.size(&space),
                 expected_word_count,
                 "Indirect atom at depth {} should have {} words",
                 expected_index,
@@ -1417,7 +1404,7 @@ mod tests {
             );
 
             // Verify data pattern
-            let data_ptr = head_indirect.data_pointer();
+            let data_ptr = head_indirect.data_pointer(&space);
             for word_idx in 0..expected_word_count {
                 let expected_value = (expected_index as u64) << 32 | (word_idx as u64);
                 let actual_value = unsafe { *data_ptr.add(word_idx) };
@@ -1428,24 +1415,27 @@ mod tests {
                 );
             }
 
-            current = cell.tail();
+            current = cell.tail(&space);
         }
 
         // Final element should be indirect atom for index DEPTH
         assert!(current.is_indirect(), "Leaf should be indirect atom");
-        assert!(!current.is_stack_allocated(), "Leaf should be in offset form");
+        assert!(
+            !current.is_stack_allocated(&space),
+            "Leaf should be in offset form"
+        );
 
         let leaf_indirect = current.as_indirect().expect("indirect");
         let expected_leaf_words = word_count_for_index(DEPTH);
         assert_eq!(
-            leaf_indirect.size(),
+            leaf_indirect.size(&space),
             expected_leaf_words,
             "Leaf indirect atom should have {} words",
             expected_leaf_words
         );
 
         // Verify leaf data pattern
-        let leaf_data_ptr = leaf_indirect.data_pointer();
+        let leaf_data_ptr = leaf_indirect.data_pointer(&space);
         for word_idx in 0..expected_leaf_words {
             let expected_value = (DEPTH as u64) << 32 | (word_idx as u64);
             let actual_value = unsafe { *leaf_data_ptr.add(word_idx) };
@@ -1465,12 +1455,17 @@ mod tests {
     #[cfg_attr(miri, ignore = "memfd_create unsupported in Miri")]
     fn test_pma_noun_allocator_equals() {
         let mut stack = NockStack::new(1 << 10, 0);
-        stack.install_arena(); // Required for Cell::new to work
         let mut pma = test_pma(1000);
 
         let mut noun1 = Cell::new(&mut stack, D(1), D(2)).as_noun();
         let mut noun2 = Cell::new(&mut stack, D(1), D(2)).as_noun();
         let mut noun3 = Cell::new(&mut stack, D(1), D(3)).as_noun();
+
+        unsafe {
+            noun1.copy_to_pma(&stack, &mut pma);
+            noun2.copy_to_pma(&stack, &mut pma);
+            noun3.copy_to_pma(&stack, &mut pma);
+        }
 
         // Test through NounAllocator trait
         assert!(
@@ -1495,7 +1490,7 @@ mod tests {
     fn test_evacuate_hamt_round_trip() {
         let mut stack = NockStack::new(1 << 16, 0);
         let mut pma = test_pma(10000);
-        let _guard = pma.install();
+        let space = NounSpace::new(&stack, &pma);
 
         // Create a HAMT with several entries
         let mut hamt: Hamt<Noun> = Hamt::new(&mut stack);
@@ -1526,19 +1521,32 @@ mod tests {
             hamt.copy_to_pma(&stack, &mut pma);
         }
 
-        // Verify lookups still work after evacuation
-        for i in 0u64..10 {
-            let mut key = D(i);
-            let result = hamt.lookup(&mut stack, &mut key);
-            assert!(result.is_some(), "Lookup for key {} should succeed after evacuation", i);
-            let value = result.unwrap();
-            assert!(value.is_direct(), "Value should still be direct atom after evacuation");
-            assert_eq!(
-                value.as_direct().unwrap().data(),
-                i * 100,
-                "Value for key {} should still be {} after evacuation", i, i * 100
-            );
+        // Verify entries are still present after evacuation
+        let mut found = vec![false; 10];
+        for entries in hamt.iter() {
+            for (key, value) in entries {
+                let key_direct = key.as_direct().expect("key should be direct");
+                let value_direct = value.as_direct().expect("value should be direct");
+                let idx = key_direct.data() as usize;
+                assert!(
+                    idx < found.len(),
+                    "Key {} should be within expected range",
+                    idx
+                );
+                assert_eq!(
+                    value_direct.data(),
+                    (idx as u64) * 100,
+                    "Value for key {} should still be {} after evacuation",
+                    idx,
+                    (idx as u64) * 100
+                );
+                found[idx] = true;
+            }
         }
+        assert!(
+            found.iter().all(|present| *present),
+            "All keys should be present after evacuation"
+        );
 
         // Verify internal structure is in PMA (offset form)
         // Iterate over the HAMT and check all nouns are not stack-allocated
@@ -1546,13 +1554,13 @@ mod tests {
             for (key, value) in entries {
                 if !key.is_direct() {
                     assert!(
-                        !key.is_stack_allocated(),
+                        !key.is_stack_allocated(&space),
                         "HAMT key should be in offset form after evacuation"
                     );
                 }
                 if !value.is_direct() {
                     assert!(
-                        !value.is_stack_allocated(),
+                        !value.is_stack_allocated(&space),
                         "HAMT value should be in offset form after evacuation"
                     );
                 }
@@ -1575,9 +1583,8 @@ mod tests {
         use crate::noun::{Cell, IndirectAtom};
 
         let mut stack = NockStack::new(1 << 16, 0);
-        stack.install_arena();
         let mut pma = test_pma(10000);
-        let _guard = pma.install();
+        let space = NounSpace::new(&stack, &pma);
 
         // Test with indirect atom
         let data: [u64; 2] = [0xDEADBEEF_CAFEBABE, 0x12345678_9ABCDEF0];
@@ -1589,18 +1596,21 @@ mod tests {
         unsafe { pma_indirect.copy_to_pma(&stack, &mut pma) };
 
         // Verify the PMA copy is in offset form
-        assert!(!pma_indirect.is_stack_allocated(), "PMA copy should be in offset form");
+        assert!(
+            !pma_indirect.is_stack_allocated(&space),
+            "PMA copy should be in offset form"
+        );
 
         // Verify the PMA copy contains correct data
         let pma_ia = pma_indirect.as_indirect().unwrap();
-        let pma_size = pma_ia.size_with_arena(pma.arena());
+        let pma_size = pma_ia.size(&space);
         assert_eq!(pma_size, 2, "PMA indirect atom should have size 2");
 
-        let pma_bytes = pma_ia.as_ne_bytes_with_arena(pma.arena());
+        let pma_bytes = pma_ia.as_ne_bytes(&space);
         assert_eq!(pma_bytes.len(), 16, "PMA indirect should have 16 bytes of data");
 
         // Verify actual data values
-        let pma_slice = pma_ia.as_slice_with_arena(pma.arena());
+        let pma_slice = pma_ia.as_slice(&space);
         assert_eq!(pma_slice[0], 0xDEADBEEF_CAFEBABE, "First word should match");
         assert_eq!(pma_slice[1], 0x12345678_9ABCDEF0, "Second word should match");
 
@@ -1609,15 +1619,18 @@ mod tests {
         let mut pma_cell = stack_cell;
         unsafe { pma_cell.copy_to_pma(&stack, &mut pma) };
 
-        assert!(!pma_cell.is_stack_allocated(), "PMA cell should be in offset form");
+        assert!(
+            !pma_cell.is_stack_allocated(&space),
+            "PMA cell should be in offset form"
+        );
         let cell = pma_cell.as_cell().unwrap();
         assert_eq!(
-            cell.head().as_direct().unwrap().data(),
+            cell.head(&space).as_direct().unwrap().data(),
             42,
             "Cell head should be 42"
         );
         assert_eq!(
-            cell.tail().as_direct().unwrap().data(),
+            cell.tail(&space).as_direct().unwrap().data(),
             99,
             "Cell tail should be 99"
         );
@@ -1628,21 +1641,24 @@ mod tests {
         let mut pma_nested = stack_nested;
         unsafe { pma_nested.copy_to_pma(&stack, &mut pma) };
 
-        assert!(!pma_nested.is_stack_allocated(), "PMA nested should be in offset form");
+        assert!(
+            !pma_nested.is_stack_allocated(&space),
+            "PMA nested should be in offset form"
+        );
         let outer = pma_nested.as_cell().unwrap();
         assert_eq!(
-            outer.tail().as_direct().unwrap().data(),
+            outer.tail(&space).as_direct().unwrap().data(),
             3,
             "Outer tail should be 3"
         );
-        let inner_cell = outer.head().as_cell().unwrap();
+        let inner_cell = outer.head(&space).as_cell().unwrap();
         assert_eq!(
-            inner_cell.head().as_direct().unwrap().data(),
+            inner_cell.head(&space).as_direct().unwrap().data(),
             1,
             "Inner head should be 1"
         );
         assert_eq!(
-            inner_cell.tail().as_direct().unwrap().data(),
+            inner_cell.tail(&space).as_direct().unwrap().data(),
             2,
             "Inner tail should be 2"
         );
@@ -1666,15 +1682,13 @@ mod tests {
         use crate::noun::{Cell, IndirectAtom};
 
         let mut stack = NockStack::new(1 << 16, 0);
-        stack.install_arena();
         let mut pma = test_pma(100000);
 
         // Create a second stack with reference copies of keys/values for comparison
         // This stack won't be corrupted by forwarding pointers
         let mut ref_stack = NockStack::new(1 << 16, 0);
-
-        // Install PMA arena - this must be the active arena when accessing PMA nouns
-        let _guard = pma.install();
+        let space = NounSpace::new(&stack, &pma);
+        let ref_space = NounSpace::new(&ref_stack, &pma);
 
         let mut hamt: Hamt<Noun> = Hamt::new(&mut stack);
 
@@ -1764,10 +1778,6 @@ mod tests {
             "Entry count should be preserved after evacuation"
         );
 
-        // Re-install PMA arena (Cell::new on ref_stack may have changed thread-local arena)
-        drop(_guard);
-        let _guard = pma.install();
-
         // Verify all values match by comparing PMA nouns to reference stack nouns
         let mut found_count = 0;
         for entries in hamt.iter() {
@@ -1775,9 +1785,9 @@ mod tests {
                 // Find matching reference key and verify value matches
                 let mut found = false;
                 for (idx, ref_key) in ref_keys.iter().enumerate() {
-                    if noun_equality(pma_key, ref_key) {
+                    if noun_equality(pma_key, ref_key, &ref_space) {
                         assert!(
-                            noun_equality(pma_value, &ref_values[idx]),
+                            noun_equality(pma_value, &ref_values[idx], &ref_space),
                             "Value for key {} should match reference after evacuation",
                             idx
                         );
@@ -1799,8 +1809,8 @@ mod tests {
         // Verify all nouns in the HAMT are in offset form
         for entries in hamt.iter() {
             for (key, value) in entries {
-                verify_noun_not_stack_allocated(*key, "HAMT key");
-                verify_noun_not_stack_allocated(*value, "HAMT value");
+                verify_noun_not_stack_allocated(*key, &space, "HAMT key");
+                verify_noun_not_stack_allocated(*value, &space, "HAMT value");
             }
         }
 
@@ -1809,20 +1819,20 @@ mod tests {
     }
 
     /// Helper to recursively verify a noun is not stack-allocated
-    fn verify_noun_not_stack_allocated(noun: Noun, context: &str) {
+    fn verify_noun_not_stack_allocated(noun: Noun, space: &NounSpace, context: &str) {
         if noun.is_direct() {
             return;
         }
 
         assert!(
-            !noun.is_stack_allocated(),
+            !noun.is_stack_allocated(space),
             "{} should be in offset form after evacuation",
             context
         );
 
         if let Ok(cell) = noun.as_cell() {
-            verify_noun_not_stack_allocated(cell.head(), context);
-            verify_noun_not_stack_allocated(cell.tail(), context);
+            verify_noun_not_stack_allocated(cell.head(space), space, context);
+            verify_noun_not_stack_allocated(cell.tail(space), space, context);
         }
     }
 

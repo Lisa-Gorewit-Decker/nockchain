@@ -178,7 +178,6 @@ mod test {
     use bytes::Bytes;
     use nockapp::noun::slab::NounSlab;
     use nockchain_math::belt::Belt;
-    use nockvm::mem::{Arena, NockStack};
     use nockvm::noun::NounAllocator;
     use noun_serde::{NounDecode, NounEncode};
     use quickcheck::{quickcheck, Arbitrary, Gen};
@@ -210,27 +209,8 @@ mod test {
         Ok(Bytes::from(jam_path))
     }
 
-    struct TestArenaGuard {
-        _stack: NockStack,
-    }
-
-    impl TestArenaGuard {
-        fn install() -> Self {
-            let stack = NockStack::new(1 << 16, 0);
-            stack.install_arena();
-            Self { _stack: stack }
-        }
-    }
-
-    impl Drop for TestArenaGuard {
-        fn drop(&mut self) {
-            Arena::clear_thread_local();
-        }
-    }
-
     #[test]
     fn test_balance() -> Result<(), Box<dyn std::error::Error>> {
-        let _arena = TestArenaGuard::install();
         let balance_jam = try_path("balance.jam")?;
         let mut slab: NounSlab = NounSlab::new();
         let mut balance_noun = slab.cue_into(balance_jam)?;
@@ -243,7 +223,6 @@ mod test {
 
     #[test]
     fn test_note() -> Result<(), Box<dyn std::error::Error>> {
-        let _arena = TestArenaGuard::install();
         let note_jam = try_path("note.jam")?;
         let mut slab: NounSlab = NounSlab::new();
         let mut note_noun = slab.cue_into(note_jam)?;
@@ -257,7 +236,6 @@ mod test {
 
     #[test]
     fn test_timelock() -> Result<(), Box<dyn std::error::Error>> {
-        let _arena = TestArenaGuard::install();
         let timelock_jam = try_path("timelock.jam")?;
         let mut slab: NounSlab = NounSlab::new();
         let timelock_noun = slab.cue_into(timelock_jam)?;
@@ -275,7 +253,6 @@ mod test {
 
     #[test]
     fn test_timelock_roundtrip_none() {
-        let _arena = TestArenaGuard::install();
         let mut slab: NounSlab = NounSlab::new();
         let tl = Timelock(None);
         let mut n1 = Timelock::to_noun(&tl, &mut slab);
@@ -287,7 +264,6 @@ mod test {
 
     #[test]
     fn test_timelock_roundtrip_absolute_only() {
-        let _arena = TestArenaGuard::install();
         let mut slab: NounSlab = NounSlab::new();
         let tl = Timelock(Some(TimelockIntent {
             absolute: TimelockRangeAbsolute::new(Some(bh(100)), None),
@@ -322,7 +298,6 @@ mod test {
 
     #[test]
     fn test_timelock_roundtrip_relative_only() {
-        let _arena = TestArenaGuard::install();
         let mut slab: NounSlab = NounSlab::new();
         let tl = Timelock(Some(TimelockIntent {
             absolute: TimelockRangeAbsolute::none(),
@@ -337,7 +312,6 @@ mod test {
 
     #[test]
     fn test_timelock_roundtrip_both() {
-        let _arena = TestArenaGuard::install();
         let mut slab: NounSlab = NounSlab::new();
         let tl = Timelock(Some(TimelockIntent {
             absolute: TimelockRangeAbsolute::new(Some(bh(10)), Some(bh(20))),
@@ -527,7 +501,6 @@ mod test {
     #[test]
     fn quickcheck_balance_update_noun_roundtrip() {
         fn prop(update: BalanceUpdate) -> bool {
-            let _arena = TestArenaGuard::install();
             let mut slab: NounSlab = NounSlab::new();
             let mut n1 = BalanceUpdate::to_noun(&update, &mut slab);
             let space = slab.noun_space();

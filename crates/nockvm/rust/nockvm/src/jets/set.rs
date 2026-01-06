@@ -172,15 +172,16 @@ mod tests {
     //    }
 
     fn contains(stack: &mut NockStack, mut tree: Noun, elem: Noun) -> bool {
+        let space = stack.noun_space();
         loop {
             if unsafe { tree.raw_equals(&D(0)) } {
                 return false;
             }
-            let (value, left, right) = decompose(tree).unwrap();
+            let (value, left, right) = decompose(tree, &space).unwrap();
             if unsafe { value.raw_equals(&elem) } {
                 return true;
             }
-            tree = if is_yes(gor(stack, elem, value)) {
+            tree = if is_yes(gor(stack, elem, value, &space)) {
                 left
             } else {
                 right
@@ -229,21 +230,22 @@ mod tests {
     }
 
     fn put_recursive(stack: &mut NockStack, tree: Noun, elem: Noun) -> JetResult<Noun> {
+        let space = stack.noun_space();
         if unsafe { tree.raw_equals(&D(0)) } {
             return Ok(make_node(stack, elem, D(0), D(0)));
         }
 
-        let (value, left, right) = decompose(tree)?;
+        let (value, left, right) = decompose(tree, &space)?;
 
         if unsafe { elem.raw_equals(&value) } {
             return Ok(tree);
         }
 
-        if is_yes(gor(stack, elem, value)) {
+        if is_yes(gor(stack, elem, value, &space)) {
             let c = put_recursive(stack, left, elem)?;
-            let (c_val, c_left, c_right) = decompose(c)?;
+            let (c_val, c_left, c_right) = decompose(c, &space)?;
 
-            if is_yes(mor(stack, value, c_val)) {
+            if is_yes(mor(stack, value, c_val, &space)) {
                 Ok(make_node(stack, value, c, right))
             } else {
                 let new_a = make_node(stack, value, c_right, right);
@@ -251,9 +253,9 @@ mod tests {
             }
         } else {
             let c = put_recursive(stack, right, elem)?;
-            let (c_val, c_left, c_right) = decompose(c)?;
+            let (c_val, c_left, c_right) = decompose(c, &space)?;
 
-            if is_yes(mor(stack, value, c_val)) {
+            if is_yes(mor(stack, value, c_val, &space)) {
                 Ok(make_node(stack, value, left, c))
             } else {
                 let new_a = make_node(stack, value, left, c_left);
@@ -275,7 +277,7 @@ mod tests {
         }
     }
 
-    fn tree_height(tree: Noun) -> usize {
+    fn tree_height(tree: Noun, space: &NounSpace) -> usize {
         let mut max = 0usize;
         let mut stack_vec = vec![(tree, 0usize)];
 
@@ -288,7 +290,7 @@ mod tests {
                 max = depth;
             }
 
-            let (value, left, right) = decompose(node).unwrap_or((node, D(0), D(0)));
+            let (value, left, right) = decompose(node, space).unwrap_or((node, D(0), D(0)));
             let _ = value;
             stack_vec.push((left, depth + 1));
             stack_vec.push((right, depth + 1));
@@ -308,14 +310,15 @@ mod tests {
             let context = &mut init_context();
             let mut jet_tree = D(0);
             let mut rec_tree = D(0);
+            let space = context.stack.noun_space();
 
             for val in perm {
                 let noun_val = D(val);
-                jet_tree = put_iter(&mut context.stack, jet_tree, noun_val).unwrap();
+                jet_tree = put_iter(&mut context.stack, jet_tree, noun_val, &space).unwrap();
                 rec_tree = put_recursive(&mut context.stack, rec_tree, noun_val).unwrap();
             }
 
-            assert_eq!(tree_height(jet_tree), tree_height(rec_tree));
+            assert_eq!(tree_height(jet_tree, &space), tree_height(rec_tree, &space));
             assert_noun_eq(&mut context.stack, jet_tree, rec_tree);
         }
     }
@@ -328,16 +331,17 @@ mod tests {
             let context = &mut init_context();
             let mut jet_tree = D(0);
             let mut rec_tree = D(0);
+            let space = context.stack.noun_space();
 
             for _ in 0..80 {
                 seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1);
                 let value = (seed >> 32) & 0xFFFF;
                 let noun_val = D(value);
-                jet_tree = put_iter(&mut context.stack, jet_tree, noun_val).unwrap();
+                jet_tree = put_iter(&mut context.stack, jet_tree, noun_val, &space).unwrap();
                 rec_tree = put_recursive(&mut context.stack, rec_tree, noun_val).unwrap();
             }
 
-            assert_eq!(tree_height(jet_tree), tree_height(rec_tree));
+            assert_eq!(tree_height(jet_tree, &space), tree_height(rec_tree, &space));
             assert_noun_eq(&mut context.stack, jet_tree, rec_tree);
         }
     }

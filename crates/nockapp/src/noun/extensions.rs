@@ -147,12 +147,11 @@ impl IntoSlab for &str {
 }
 
 pub trait NounAllocatorExt {
-    fn copy_into(&mut self, noun: Noun) -> Noun;
+    fn copy_into(&mut self, noun: Noun, space: &NounSpace) -> Noun;
 }
 
 impl<A: NounAllocator> NounAllocatorExt for A {
-    fn copy_into(&mut self, noun: Noun) -> Noun {
-        let space = self.noun_space();
+    fn copy_into(&mut self, noun: Noun, space: &NounSpace) -> Noun {
         let mut stack = Vec::with_capacity(32);
         let mut res = D(0);
         stack.push((noun, &mut res as *mut Noun));

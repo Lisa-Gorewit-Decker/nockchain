@@ -137,7 +137,8 @@ impl NounEncode for NoteData {
                 .expect("failed to cue blob");
             let mut value = unsafe {
                 let &root = slab.root();
-                allocator.copy_into(root)
+                let space = slab.noun_space();
+                allocator.copy_into(root, &space)
             };
             zmap::z_map_put(allocator, &map, &mut key, &mut value, &DefaultTipHasher)
                 .expect("failed to encode note-data entry")

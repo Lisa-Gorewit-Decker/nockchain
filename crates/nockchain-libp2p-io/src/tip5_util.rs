@@ -114,29 +114,10 @@ pub fn decimal_to_base_p(value: UBig) -> Result<[u64; 5], NockAppError> {
 #[cfg(test)]
 mod tests {
     use nockapp::noun::slab::NounSlab;
-    use nockvm::mem::{Arena, NockStack};
     use nockvm::noun::{D, NounAllocator, T};
     use quickcheck::{Arbitrary, Gen, QuickCheck, TestResult};
 
     use super::*;
-
-    struct TestArenaGuard {
-        _stack: NockStack,
-    }
-
-    impl TestArenaGuard {
-        fn install() -> Self {
-            let stack = NockStack::new(1 << 16, 0);
-            stack.install_arena();
-            Self { _stack: stack }
-        }
-    }
-
-    impl Drop for TestArenaGuard {
-        fn drop(&mut self) {
-            Arena::clear_thread_local();
-        }
-    }
 
     fn iso(tip5: [u64; 5]) {
         let ubig = base_p_to_decimal(tip5).unwrap();
@@ -154,17 +135,16 @@ mod tests {
 
     #[test]
     fn test_tip5_hash_to_base58_stack() {
-        let _arena = TestArenaGuard::install();
         use nockapp::noun::slab::NounSlab;
         use nockvm::noun::Atom;
 
         // Create a NounSlab to use as both allocator and Stack
         let mut slab: NounSlab = NounSlab::new();
-        let space = slab.noun_space();
 
         // Test case 1: Simple tuple [1 2 3 4 5]
         let tuple1 = T(&mut slab, &[D(1), D(2), D(3), D(4), D(5)]);
         let expected1 = "2V9arU36gvtaofWmNowewoj9u7gbNA2qsJZEQ3WPky5mQ";
+        let space = slab.noun_space();
         let result1 = tip5_hash_to_base58_stack(&mut slab, tuple1, &space).unwrap();
         assert_eq!(result1, expected1);
 
@@ -180,6 +160,7 @@ mod tests {
             &[a1.as_noun(), a2.as_noun(), a3.as_noun(), a4.as_noun(), a5.as_noun()],
         );
         let expected2 = "6UkUko9WTwwR6VVRXwPQpUy5pswdvNtoyHspY5n9nLVnBxzAgEyMwPR";
+        let space = slab.noun_space();
         let result2 = tip5_hash_to_base58_stack(&mut slab, tuple2, &space).unwrap();
         assert_eq!(result2, expected2);
     }
@@ -187,15 +168,14 @@ mod tests {
     #[test]
     #[cfg_attr(miri, ignore)] // ibig has a memory leak so miri fails this test
     fn test_tip5_hash_to_base58() {
-        let _arena = TestArenaGuard::install();
         use nockvm::noun::Atom;
         // Create a NounSlab to use as an allocator
         let mut slab: NounSlab = NounSlab::new();
-        let space = slab.noun_space();
 
         // Test case 1: Simple tuple [1 2 3 4 5]
         let tuple1 = T(&mut slab, &[D(1), D(2), D(3), D(4), D(5)]);
         let expected1 = "2V9arU36gvtaofWmNowewoj9u7gbNA2qsJZEQ3WPky5mQ";
+        let space = slab.noun_space();
         let result1 = tip5_hash_to_base58(tuple1, &space).unwrap_or_else(|_| {
             panic!(
                 "Called `expect()` at {}:{} (git sha: {})",
@@ -218,6 +198,7 @@ mod tests {
             &[a1.as_noun(), a2.as_noun(), a3.as_noun(), a4.as_noun(), a5.as_noun()],
         );
         let expected2 = "6UkUko9WTwwR6VVRXwPQpUy5pswdvNtoyHspY5n9nLVnBxzAgEyMwPR";
+        let space = slab.noun_space();
         let result2 = tip5_hash_to_base58(tuple2, &space).unwrap_or_else(|err| {
             panic!(
                 "Panicked with {err:?} at {}:{} (git sha: {:?})",
@@ -431,7 +412,6 @@ mod tests {
 
     #[test]
     fn test_noun_integration_quickcheck() {
-        let _arena = TestArenaGuard::install();
         fn prop_noun_roundtrip(tip5_hash: Tip5Hash) -> TestResult {
             let tip5 = tip5_hash.0;
             let mut slab: NounSlab = NounSlab::new();

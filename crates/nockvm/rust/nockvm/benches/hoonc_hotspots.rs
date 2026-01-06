@@ -23,7 +23,6 @@ impl Slogger for BenchSlogger {
 
 fn bench_context() -> Context {
     let mut stack = NockStack::new(8 << 20, 0);
-    stack.install_arena();
     let arena = stack.arena().clone();
     let cold = Cold::new(&mut stack);
     let warm = Warm::new(&mut stack);
@@ -70,7 +69,6 @@ fn bench_hamt_symbol_table(c: &mut Criterion) {
         b.iter_batched(
             || {
                 let mut stack = NockStack::new(16 << 20, 0);
-                stack.install_arena();
                 let (table, keys) = build_symbol_table(&mut stack, 256);
                 (stack, table, keys)
             },
@@ -116,7 +114,6 @@ fn bench_noun_preserve(c: &mut Criterion) {
         b.iter_batched(
             || {
                 let mut stack = NockStack::new(24 << 20, 0);
-                stack.install_arena();
                 let ast = build_deep_ast(&mut stack, 160, 4);
                 (stack, ast)
             },
@@ -212,7 +209,6 @@ fn bench_unifying_equality(c: &mut Criterion) {
         b.iter_batched(
             || {
                 let mut stack = NockStack::new(24 << 20, 0);
-                stack.install_arena();
                 let mut pairs = Vec::with_capacity(48);
                 for i in 0..48 {
                     let left = build_balanced_tree(&mut stack, 6, i as u64 + 1);
@@ -258,7 +254,6 @@ fn bench_cue_jam_roundtrip(c: &mut Criterion) {
         b.iter_batched(
             || {
                 let mut stack = NockStack::new(32 << 20, 0);
-                stack.install_arena();
                 let noun = build_serialization_fixture(&mut stack);
                 let jammed = jam(&mut stack, noun);
                 (stack, jammed)

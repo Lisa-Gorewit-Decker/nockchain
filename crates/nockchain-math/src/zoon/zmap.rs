@@ -31,6 +31,7 @@ pub fn z_map_put<A: NounAllocator, H: TipHasher>(
             }
         } else if gor_tip(stack, b, &mut anp, hasher)? {
             let d = z_map_put(stack, &mut al, b, c, hasher)?;
+            let space = stack.noun_space();
             let [dn, dl, dr] = d.uncell(&space)?;
             let [mut dnp, _dnq] = dn.uncell(&space)?;
             if mor_tip(stack, &mut anp, &mut dnp, hasher)? {
@@ -41,6 +42,7 @@ pub fn z_map_put<A: NounAllocator, H: TipHasher>(
             }
         } else {
             let d = z_map_put(stack, &mut ar, b, c, hasher)?;
+            let space = stack.noun_space();
             let [dn, dl, dr] = d.uncell(&space)?;
             let [mut dnp, _dnq] = dn.uncell(&space)?;
             if mor_tip(stack, &mut anp, &mut dnp, hasher)? {

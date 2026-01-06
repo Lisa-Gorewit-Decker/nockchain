@@ -101,27 +101,20 @@ enum CueStackEntry {
 /// * `stack` - A mutable reference to the NockStack
 /// * `buffer` - A reference to a BitSlice containing the serialized noun
 /// * `use_offset_tags` - If true, create nouns in offset form during deserialization.
-///   **NOTE:** This parameter is largely redundant because `with_frame` calls `preserve()`
-///   on the result, which converts all nouns to offset form anyway. The only effect of
-///   `use_offset_tags=true` is to avoid a redundant conversion (nouns start in offset form
-///   rather than being created in stack-pointer form and then converted by preserve).
+///   When false, nouns are created in stack-pointer form. The returned noun is preserved into
+///   the previous frame and returned in stack-pointer form either way.
 ///
 /// # Returns
 /// A Result containing either the deserialized Noun or an Error
 ///
-/// # Important: Output is always in offset form
+/// # Output form
 ///
-/// **This function always produces offset-form nouns**, regardless of the `use_offset_tags`
-/// parameter. This is because:
+/// The return value is preserved into the previous frame using stack-pointer tags, so the
+/// returned noun is in stack-pointer form. `use_offset_tags` only affects the temporary
+/// representation during deserialization inside the current frame.
 ///
-/// 1. The function uses `stack.with_frame()` to manage the stack frame for its worklist
-/// 2. `with_frame()` calls `preserve()` on the return value before popping the frame
-/// 3. `preserve()` for `Noun` copies all nouns to the previous frame and converts them
-///    to offset form (using `Cell::from_offset_words()` and `IndirectAtom::from_offset_words()`)
-///
-/// If you need stack-pointer-form nouns (e.g., for benchmarking `retag_noun_tree`),
-/// use `cue_into_stack_pointer_form()` instead, which manually manages the frame
-/// without calling `preserve()`.
+/// If you need stack-pointer-form nouns without preserving into the previous frame, use
+/// `cue_into_stack_pointer_form()`, which manually manages the frame.
 ///
 /// **Additional caveat with backrefs:** When the serialized data contains backreferences
 /// (structural sharing), the result may have *mixed* tagging (some stack-pointer, some offset)
@@ -136,11 +129,9 @@ fn cue_bitslice_with_mode(
     let mut cursor = 0;
     let space = stack.noun_space();
 
-    // NOTE: with_frame() calls preserve() on the return value, which converts
-    // all nouns to offset form. This means the `use_offset_tags` parameter only
-    // affects whether nouns are created in offset form during deserialization
-    // (avoiding a redundant conversion) or created in stack-pointer form first
-    // and then converted by preserve().
+    // NOTE: with_frame() preserves into the previous frame using stack-pointer tags. The
+    // `use_offset_tags` parameter controls whether nouns are created in offset form or
+    // stack-pointer form during deserialization, before preservation.
     unsafe {
         stack.with_frame(0, |stack: &mut NockStack| {
             *(stack.push::<CueStackEntry>()) =
@@ -624,7 +615,6 @@ mod tests {
     use crate::noun::{Atom, Cell, CellMemory, Noun};
     fn setup_stack() -> NockStack {
         let stack = NockStack::new(1 << 30, 0);
-        stack.install_arena();
         stack
     }
 
@@ -914,6 +904,7 @@ mod tests {
         println!("Testing noun with depth: {}", depth);
 
         let mut stack = setup_stack();
+        let space = stack.noun_space();
         let mut rng_clone = rng.clone();
         let (original, total_size) = generate_deeply_nested_noun(&mut stack, depth, &mut rng_clone);
 
@@ -921,11 +912,14 @@ mod tests {
             "Total size of all generated nouns: {:.2} KB",
             total_size as f64 / 1024.0
         );
-        println!("Original size: {:.2} KB", original.mass() as f64 / 1024.0);
+        println!(
+            "Original size: {:.2} KB",
+            original.mass(&space) as f64 / 1024.0
+        );
         let jammed = jam(&mut stack, original);
         println!(
             "Jammed size: {:.2} KB",
-            jammed.as_noun().mass() as f64 / 1024.0
+            jammed.as_noun().mass(&space) as f64 / 1024.0
         );
         let cued = cue(&mut stack, jammed).unwrap_or_else(|err| {
             panic!(
@@ -935,7 +929,7 @@ mod tests {
                 option_env!("GIT_SHA")
             )
         });
-        println!("Cued size: {:.2} KB", cued.mass() as f64 / 1024.0);
+        println!("Cued size: {:.2} KB", cued.mass(&space) as f64 / 1024.0);
 
         assert_noun_eq(&mut stack, cued, original);
     }
@@ -948,6 +942,7 @@ mod tests {
         println!("Testing noun with depth: {}", depth);
 
         let mut stack = setup_stack();
+        let space = stack.noun_space();
         let mut rng_clone = rng.clone();
         let (original, total_size) = generate_deeply_nested_noun(&mut stack, depth, &mut rng_clone);
 
@@ -955,11 +950,14 @@ mod tests {
             "Total size of all generated nouns: {:.2} KB",
             total_size as f64 / 1024.0
         );
-        println!("Original size: {:.2} KB", original.mass() as f64 / 1024.0);
+        println!(
+            "Original size: {:.2} KB",
+            original.mass(&space) as f64 / 1024.0
+        );
         let jammed = jam(&mut stack, original);
         println!(
             "Jammed size: {:.2} KB",
-            jammed.as_noun().mass() as f64 / 1024.0
+            jammed.as_noun().mass(&space) as f64 / 1024.0
         );
         let cued = cue_into_offset(&mut stack, jammed).unwrap_or_else(|err| {
             panic!(
@@ -969,7 +967,7 @@ mod tests {
                 option_env!("GIT_SHA")
             )
         });
-        println!("Cued size: {:.2} KB", cued.mass() as f64 / 1024.0);
+        println!("Cued size: {:.2} KB", cued.mass(&space) as f64 / 1024.0);
 
         assert_noun_eq(&mut stack, cued, original);
     }
@@ -985,6 +983,7 @@ mod tests {
             depth: usize,
             accumulated_size: usize,
         ) -> (Noun, usize) {
+            let space = stack.noun_space();
             let mut done = false;
             if depth >= MAX_DEPTH || stack.size() < 1024 || accumulated_size > stack.size() - 1024 {
                 // println!("Done at depth and size: {} {:.2} KB", depth, accumulated_size as f64 / 1024.0);
@@ -995,20 +994,20 @@ mod tests {
                 let value = rng.random::<u64>();
                 let atom = Atom::new(stack, value);
                 let noun = atom.as_noun();
-                (noun, accumulated_size + noun.mass())
+                (noun, accumulated_size + noun.mass(&space))
             } else {
                 let (left, left_size) = inner(stack, bits / 2, rng, depth + 1, accumulated_size);
                 let (right, _) = inner(stack, bits / 2, rng, depth + 1, left_size);
 
                 let cell = Cell::new(stack, left, right);
                 let noun = cell.as_noun();
-                (noun, noun.mass())
+                (noun, noun.mass(&space))
             };
 
             if space_needed_noun(result.0, stack) > stack.size() {
                 eprintln!(
                     "Stack size exceeded with noun size {:.2} KB",
-                    result.0.mass() as f64 / 1024.0
+                    result.0.mass(&space) as f64 / 1024.0
                 );
                 unsafe {
                     let top_noun = *stack.top::<Noun>();
@@ -1026,6 +1025,7 @@ mod tests {
         unsafe {
             stack.with_frame(0, |stack| {
                 *(stack.push::<Noun>()) = noun;
+                let space = stack.noun_space();
                 let mut size = 0;
                 while !stack.stack_is_empty() {
                     let noun = *(stack.top::<Noun>());
@@ -1034,13 +1034,13 @@ mod tests {
                         Left(atom) => match atom.as_either() {
                             Left(_) => {}
                             Right(indirect) => {
-                                size += indirect.raw_size();
+                                size += indirect.raw_size(&space);
                             }
                         },
                         Right(cell) => {
                             size += size_of::<CellMemory>();
-                            *(stack.push::<Noun>()) = cell.tail();
-                            *(stack.push::<Noun>()) = cell.head();
+                            *(stack.push::<Noun>()) = cell.tail(&space);
+                            *(stack.push::<Noun>()) = cell.head(&space);
                         }
                     }
                 }
@@ -1062,20 +1062,21 @@ mod tests {
             let (right, right_size) = generate_deeply_nested_noun(stack, depth - 1, rng);
             let cell = Cell::new(stack, left, right);
             let noun = cell.as_noun();
-            let total_size = left_size + right_size + noun.mass();
+            let space = stack.noun_space();
+            let total_size = left_size + right_size + noun.mass(&space);
 
             if { space_needed_noun(noun, stack) } > stack.size() {
                 eprintln!(
                     "Stack size exceeded at depth {} with noun size {:.2} KB",
                     depth,
-                    noun.mass() as f64 / 1024.0
+                    noun.mass(&space) as f64 / 1024.0
                 );
                 unsafe {
                     let top_noun = *stack.top::<Noun>();
                     (top_noun, total_size)
                 }
             } else {
-                // println!("Size: {:.2} KB, depth: {}", noun.mass() as f64 / 1024.0, depth);
+                // println!("Size: {:.2} KB, depth: {}", noun.mass(&space) as f64 / 1024.0, depth);
                 (noun, total_size)
             }
         }
@@ -1125,10 +1126,11 @@ mod tests {
 
         // Attempt to jam and then cue the large atom in the big stack
         let jammed = jam(&mut big_stack, large_atom);
+        let jam_space = big_stack.noun_space();
 
         // make a smaller stack to try to cause a nondeterministic error
         // NOTE: if the stack is big enough to fit the jammed atom, cue panics
-        let mut stack = NockStack::new(jammed.as_noun().mass() / 2_usize, 0);
+        let mut stack = NockStack::new(jammed.as_noun().mass(&jam_space) / 2_usize, 0);
 
         // Attempt to cue the jammed noun with limited stack space
         let result: Result<(), Error> = match cue(&mut stack, jammed) {
@@ -1159,10 +1161,11 @@ mod tests {
 
         // Attempt to jam and then cue the large atom in the big stack
         let jammed = jam(&mut big_stack, large_atom);
+        let jam_space = big_stack.noun_space();
 
         // make a smaller stack to try to cause a nondeterministic error
         // NOTE: if the stack is big enough to fit the jammed atom, cue panics
-        let mut stack = NockStack::new(jammed.as_noun().mass() / 2_usize, 0);
+        let mut stack = NockStack::new(jammed.as_noun().mass(&jam_space) / 2_usize, 0);
 
         // Attempt to cue the jammed noun with limited stack space
         let result: Result<(), Error> = match cue_into_offset(&mut stack, jammed) {
@@ -1185,14 +1188,15 @@ mod tests {
     #[cfg_attr(miri, ignore)]
     fn test_cell_construction() {
         let mut stack = setup_stack();
+        let space = stack.noun_space();
         let (cell, cell_mem_ptr) = unsafe { Cell::new_raw_mut(&mut stack) };
-        unsafe { assert!(cell_mem_ptr as *const CellMemory == cell.to_raw_pointer()) };
+        unsafe { assert!(cell_mem_ptr as *const CellMemory == cell.to_raw_pointer(&space)) };
     }
 
     /// Helper to check if a noun tree is entirely in stack-pointer form
     fn is_entirely_stack_pointer_form(stack: &NockStack, root: Noun) -> bool {
         use std::collections::HashSet;
-        let arena = stack.arena_ref();
+        let space = stack.noun_space();
         let mut work: Vec<Noun> = Vec::with_capacity(32);
         let mut visited: HashSet<u64> = HashSet::new();
         work.push(root);
@@ -1205,12 +1209,12 @@ mod tests {
             if !visited.insert(raw) {
                 continue;
             }
-            if noun.is_allocated() && !noun.is_stack_allocated() {
+            if noun.is_allocated() && !noun.is_stack_allocated(&space) {
                 return false;
             }
             if let Ok(cell) = noun.as_cell() {
-                work.push(cell.head_with_arena(arena));
-                work.push(cell.tail_with_arena(arena));
+                work.push(cell.head(&space));
+                work.push(cell.tail(&space));
             }
         }
         true
@@ -1219,7 +1223,7 @@ mod tests {
     /// Helper to check if a noun tree is entirely in offset form
     fn is_entirely_offset_form(stack: &NockStack, root: Noun) -> bool {
         use std::collections::HashSet;
-        let arena = stack.arena_ref();
+        let space = stack.noun_space();
         let mut work: Vec<Noun> = Vec::with_capacity(32);
         let mut visited: HashSet<u64> = HashSet::new();
         work.push(root);
@@ -1232,22 +1236,21 @@ mod tests {
             if !visited.insert(raw) {
                 continue;
             }
-            if noun.is_allocated() && noun.is_stack_allocated() {
+            if noun.is_allocated() && noun.is_stack_allocated(&space) {
                 return false;
             }
             if let Ok(cell) = noun.as_cell() {
-                work.push(cell.head_with_arena(arena));
-                work.push(cell.tail_with_arena(arena));
+                work.push(cell.head(&space));
+                work.push(cell.tail(&space));
             }
         }
         true
     }
 
-    /// Test that cue() produces offset-form nouns (due to with_frame preserve)
-    /// even when use_offset_tags would be false internally.
+    /// Test that cue() produces stack-pointer-form nouns.
     #[test]
     #[cfg_attr(miri, ignore)]
-    fn test_cue_produces_offset_form() {
+    fn test_cue_produces_stack_pointer_form() {
         let mut stack = setup_stack();
 
         // Create a simple cell [1 2]
@@ -1261,18 +1264,17 @@ mod tests {
         // Cue it back using regular cue (which internally uses use_offset_tags=false)
         let cued = cue(&mut stack, jammed).expect("cue should succeed");
 
-        // The result should be in offset form because with_frame's preserve
-        // converts everything to offset form
+        // The result should be in stack-pointer form
         assert!(
-            is_entirely_offset_form(&stack, cued),
-            "cue() should produce offset-form nouns due to with_frame preserve"
+            is_entirely_stack_pointer_form(&stack, cued),
+            "cue() should produce stack-pointer-form nouns"
         );
     }
 
-    /// Test that cue_into_offset() also produces offset-form nouns
+    /// Test that cue_into_offset() returns stack-pointer-form nouns after preserve
     #[test]
     #[cfg_attr(miri, ignore)]
-    fn test_cue_into_offset_produces_offset_form() {
+    fn test_cue_into_offset_produces_stack_pointer_form() {
         let mut stack = setup_stack();
 
         // Create a simple cell [1 2]
@@ -1286,10 +1288,10 @@ mod tests {
         // Cue it back using cue_into_offset
         let cued = cue_into_offset(&mut stack, jammed).expect("cue_into_offset should succeed");
 
-        // The result should be in offset form
+        // The result should be in stack-pointer form
         assert!(
-            is_entirely_offset_form(&stack, cued),
-            "cue_into_offset() should produce offset-form nouns"
+            is_entirely_stack_pointer_form(&stack, cued),
+            "cue_into_offset() should produce stack-pointer-form nouns after preserve"
         );
     }
 
@@ -1332,11 +1334,11 @@ mod tests {
         // Jam it
         let jammed = jam(&mut stack, cell.as_noun());
 
-        // Test cue() produces offset form
-        let cued_offset = cue(&mut stack, jammed).expect("cue should succeed");
+        // Test cue() produces stack-pointer form
+        let cued_stack = cue(&mut stack, jammed).expect("cue should succeed");
         assert!(
-            is_entirely_offset_form(&stack, cued_offset),
-            "cue() should produce offset-form nouns even with indirect atoms"
+            is_entirely_stack_pointer_form(&stack, cued_stack),
+            "cue() should produce stack-pointer-form nouns even with indirect atoms"
         );
 
         // Test cue_into_stack_pointer_form() produces stack-pointer form
@@ -1351,7 +1353,7 @@ mod tests {
     /// Helper to count stack-pointer and offset form nouns
     fn count_noun_tagging(stack: &NockStack, root: Noun) -> (usize, usize) {
         use std::collections::HashSet;
-        let arena = stack.arena_ref();
+        let space = stack.noun_space();
         let mut work: Vec<Noun> = Vec::with_capacity(32);
         let mut visited: HashSet<u64> = HashSet::new();
         let mut stack_pointer_count = 0usize;
@@ -1367,15 +1369,15 @@ mod tests {
                 continue;
             }
             if noun.is_allocated() {
-                if noun.is_stack_allocated() {
+                if noun.is_stack_allocated(&space) {
                     stack_pointer_count += 1;
                 } else {
                     offset_count += 1;
                 }
             }
             if let Ok(cell) = noun.as_cell() {
-                work.push(cell.head_with_arena(arena));
-                work.push(cell.tail_with_arena(arena));
+                work.push(cell.head(&space));
+                work.push(cell.tail(&space));
             }
         }
         (stack_pointer_count, offset_count)

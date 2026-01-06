@@ -363,8 +363,8 @@ impl<J> NounSlab<J> {
                                 let indirect_mem = stack.alloc_indirect(indirect.size(&space));
                                 std::ptr::copy_nonoverlapping(raw_pointer, indirect_mem, raw_size);
                                 indirect.set_forwarding_pointer(indirect_mem, &space);
-                                let offset = stack.offset_from_ptr(indirect_mem as *const u8);
-                                *dest = IndirectAtom::from_offset_words(offset).as_atom().as_noun();
+                                *dest =
+                                    IndirectAtom::from_raw_pointer(indirect_mem).as_atom().as_noun();
                             }
                         }
                         Either::Right(mut cell) => {
@@ -381,8 +381,7 @@ impl<J> NounSlab<J> {
                                     &mut (*cell_mem).head as *mut Noun,
                                 ));
                                 cell.set_forwarding_pointer(cell_mem, &space);
-                                let offset = stack.offset_from_ptr(cell_mem as *const u8);
-                                *dest = Cell::from_offset_words(offset).as_noun()
+                                *dest = Cell::from_raw_pointer(cell_mem).as_noun()
                             }
                         }
                     }
@@ -908,17 +907,18 @@ mod tests {
     fn test_jam() {
         let _test_arena = install_test_arena();
         let mut slab: NounSlab = NounSlab::new();
-        let test_noun = T(
+        let slab_noun = T(
             &mut slab,
             &[D(tas!(b"request")), D(tas!(b"block")), D(tas!(b"by-id")), D(0)],
         );
-        slab.set_root(test_noun);
+        slab.set_root(slab_noun);
         let jammed: Vec<u8> = slab.jam().to_vec();
         println!("jammed: {:?}", jammed);
 
         let mut stack = NockStack::new(1000, 0);
+        let stack_noun = slab.copy_to_stack(&mut stack);
         let space = stack.noun_space();
-        let mut nockvm_jammed: Vec<u8> = nockvm::serialization::jam(&mut stack, test_noun)
+        let mut nockvm_jammed: Vec<u8> = nockvm::serialization::jam(&mut stack, stack_noun)
             .as_ne_bytes(&space)
             .to_vec();
         let nockvm_suffix: Vec<u8> = nockvm_jammed.split_off(jammed.len());
@@ -1196,12 +1196,13 @@ mod tests {
         let mut slab: NounSlab = NounSlab::new();
         slab.modify(|root| vec![D(0), D(tas!(b"bind")), root]);
         let mut test_slab: NounSlab = NounSlab::new();
+        let test_noun = T(&mut test_slab, &[D(0), D(tas!(b"bind")), D(0)]);
         let mut ranges = slab.ptr_ranges();
         ranges.extend(test_slab.ptr_ranges());
         let space = NounSpace::empty().with_extra_ptr_ranges(ranges);
         noun_equality(
             &slab.root,
-            &T(&mut test_slab, &[D(0), D(tas!(b"bind")), D(0)]),
+            &test_noun,
             &space,
         );
         // let peek_res = unsafe { bind_slab.root_owned() };

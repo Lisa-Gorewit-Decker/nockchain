@@ -199,7 +199,8 @@ impl NounEncode for Witness {
                 slab.cue_into(entry.value.clone())
                     .expect("failed to cue value");
                 let &root = slab.root();
-                allocator.copy_into(root)
+                let space = slab.noun_space();
+                allocator.copy_into(root, &space)
             };
             zmap::z_map_put(
                 allocator, &acc, &mut key, &mut value_noun, &DefaultTipHasher,

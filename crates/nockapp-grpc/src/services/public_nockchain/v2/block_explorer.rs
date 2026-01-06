@@ -1076,7 +1076,7 @@ fn lock_summary(lock: &Lock) -> String {
 mod tests {
     use nockchain_math::belt::Belt;
     use nockchain_types::tx_engine::common::{BlockHeight, Hash};
-    use nockvm::mem::{Arena, NockStack};
+    use nockvm::mem::NockStack;
     use nockvm::noun::NounAllocator;
     use noun_serde::{NounDecode, NounEncode};
 
@@ -1089,15 +1089,12 @@ mod tests {
     impl TestArenaGuard {
         fn install() -> Self {
             let stack = NockStack::new(1 << 16, 0);
-            stack.install_arena();
             Self { _stack: stack }
         }
     }
 
     impl Drop for TestArenaGuard {
-        fn drop(&mut self) {
-            Arena::clear_thread_local();
-        }
+        fn drop(&mut self) {}
     }
 
     #[test]

@@ -45,7 +45,7 @@ pub mod tests {
     use bytes::Bytes;
     use nockvm::jets::util::slot;
     use nockvm::mem::NockStack;
-    use nockvm::noun::{Noun, NounSpace, D, T};
+    use nockvm::noun::{Noun, NounAllocator, NounSpace, D, T};
     use nockvm::serialization::{cue, jam};
     use nockvm::unifying_equality::unifying_equality;
     use nockvm_macros::tas;
@@ -340,7 +340,6 @@ pub mod tests {
 
         // The invalid checkpoint has a higher event number than the valid checkpoint
         let mut checkpoint_stack = NockStack::new(NOCK_STACK_SIZE, 0);
-        checkpoint_stack.install_arena();
         let valid = jam_paths
             .load_checkpoint(&mut checkpoint_stack)
             .unwrap_or_else(|err| {
@@ -397,7 +396,6 @@ pub mod tests {
         let (_temp, nockapp) = setup_nockapp("test-ker.jam").await;
         let kernel = nockapp.kernel;
         let mut jam_stack = NockStack::new(NOCK_STACK_SIZE, 0);
-        jam_stack.install_arena();
         let arvo_slab = kernel
             .serf
             .get_kernel_state_slab()
@@ -437,7 +435,7 @@ pub mod tests {
             });
         let jammed_bytes = slab1.jam();
         let mut slab2: NounSlab = NounSlab::new();
-        let c = slab2.cue_into(jammed_bytes).unwrap_or_else(|err| {
+        let _c = slab2.cue_into(jammed_bytes).unwrap_or_else(|err| {
             panic!(
                 "Panicked with {err:?} at {}:{} (git sha: {:?})",
                 file!(),
@@ -445,7 +443,7 @@ pub mod tests {
                 option_env!("GIT_SHA")
             )
         });
-        unsafe { assert!(noun_equality(slab1.root(), &c)) }
+        assert!(slab_equality(&slab1, &slab2));
     }
 
     #[tokio::test(flavor = "current_thread")]
@@ -468,7 +466,8 @@ pub mod tests {
                 option_env!("GIT_SHA")
             )
         });
-        unsafe { assert!(noun_equality(state_slab.root(), &c)) }
+        let space = state_slab.noun_space();
+        unsafe { assert!(noun_equality(state_slab.root(), &c, &space)) }
     }
 
     #[tokio::test(flavor = "current_thread")]
@@ -478,7 +477,6 @@ pub mod tests {
         let (_temp, nockapp) = setup_nockapp("test-ker.jam").await;
         let kernel = nockapp.kernel;
         let mut stack = NockStack::new(NOCK_STACK_SIZE, 0);
-        stack.install_arena();
         let state_slab = kernel
             .serf
             .get_kernel_state_slab()

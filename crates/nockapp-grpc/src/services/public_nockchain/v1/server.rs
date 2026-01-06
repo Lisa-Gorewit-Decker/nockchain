@@ -789,7 +789,7 @@ mod tests {
     use std::sync::Arc;
 
     use nockchain_math::crypto::cheetah::A_GEN;
-    use nockvm::mem::{Arena, NockStack};
+    use nockvm::mem::NockStack;
 
     use super::*;
     use crate::pb::common::v1 as pb_common;
@@ -820,8 +820,9 @@ mod tests {
             &self,
             path: NounSlab,
         ) -> std::result::Result<Option<NounSlab>, nockapp::nockapp::error::NockAppError> {
+            let space = path.noun_space();
             let root = unsafe { path.root() };
-            if let Ok(segments) = <Vec<String>>::from_noun(&root) {
+            if let Ok(segments) = <Vec<String>>::from_noun(&root, &space) {
                 if segments.first().map(String::as_str) == Some("heaviest-chain") {
                     let mut slab = NounSlab::new();
                     let noun = Some(Some((
@@ -857,15 +858,12 @@ mod tests {
     impl TestArenaGuard {
         fn install() -> Self {
             let stack = NockStack::new(1 << 16, 0);
-            stack.install_arena();
             Self { _stack: stack }
         }
     }
 
     impl Drop for TestArenaGuard {
-        fn drop(&mut self) {
-            Arena::clear_thread_local();
-        }
+        fn drop(&mut self) {}
     }
 
     #[tokio::test(flavor = "current_thread")]

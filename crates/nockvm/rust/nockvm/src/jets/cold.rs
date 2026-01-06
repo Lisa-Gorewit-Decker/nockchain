@@ -1207,9 +1207,10 @@ pub(crate) mod test {
     use std::iter::FromIterator;
 
     use super::*;
+    use crate::ext::noun_equality;
     use crate::hamt::Hamt;
     use crate::mem::NockStack;
-    use crate::noun::{Cell, Noun, D};
+    use crate::noun::{Cell, Noun, NounSpace, D};
     /// Default stack size for tests where you aren't intending to run out of space
     pub(crate) const DEFAULT_STACK_SIZE: usize = 1 << 27;
     pub(crate) fn make_test_stack(size: usize) -> NockStack {
@@ -1344,11 +1345,12 @@ pub(crate) mod test {
     #[cfg_attr(miri, ignore)]
     fn hamt_bidirectional_conversion() {
         let mut stack = make_test_stack(DEFAULT_STACK_SIZE);
+        let space = stack.noun_space();
         let items = vec![(D(0), D(1)), (D(2), D(3))];
         let hamt = super::hamt_from_vec(&mut stack, items);
         let noun = hamt.into_noun(&mut stack);
         let new_hamt: Vec<(Noun, Noun)> = <Hamt<Noun> as Nounable>::from_noun::<NockStack>(
-            &mut stack, &noun,
+            &mut stack, &noun, &space,
         )
         .unwrap_or_else(|err| {
             panic!(
@@ -1510,10 +1512,11 @@ pub(crate) mod test {
     #[cfg_attr(miri, ignore)]
     fn tuple_bidirectional_conversion() {
         let mut stack = make_test_stack(DEFAULT_STACK_SIZE);
+        let space = stack.noun_space();
         let tup = (D(1), D(2), D(3));
         let noun = tup.into_noun(&mut stack);
         let new_tup: (Noun, Noun, Noun) =
-            <(Noun, Noun, Noun) as Nounable>::from_noun::<NockStack>(&mut stack, &noun)
+            <(Noun, Noun, Noun) as Nounable>::from_noun::<NockStack>(&mut stack, &noun, &space)
                 .unwrap_or_else(|err| {
                     panic!(
                         "Panicked with {err:?} at {}:{} (git sha: {:?})",
@@ -1869,11 +1872,12 @@ pub(crate) mod test {
         assert_eq!(count_after, 5, "Should have 5 elements after evacuation");
 
         // Verify elements match reference copies using unifying_equality
+        let ref_space = NounSpace::new(&ref_stack, &pma);
         for (i, elem_ptr) in noun_list.into_iter().enumerate() {
             let elem = unsafe { *elem_ptr };
-            let mut ref_noun = ref_nouns[i];
+            let ref_noun = ref_nouns[i];
             assert!(
-                unsafe { unifying_equality(&mut ref_stack, &mut ref_noun, &mut elem.clone()) },
+                noun_equality(&ref_noun, &elem, &ref_space),
                 "Element {} should match reference after evacuation",
                 i
             );

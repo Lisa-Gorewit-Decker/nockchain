@@ -33,11 +33,11 @@ use nockchain_types::common::{Hash, SchnorrPubkey, TimelockRangeAbsolute, Timelo
 use nockchain_types::{v0, v1};
 use nockvm::jets::cold::Nounable;
 #[cfg(test)]
-use nockvm::mem::{Arena, NockStack};
-use nockvm::noun::{Atom, Cell, IndirectAtom, Noun, D, NO, SIG, T, YES};
+use nockvm::mem::NockStack;
+use nockvm::noun::{Atom, Cell, IndirectAtom, Noun, NounAllocator, D, NO, SIG, T, YES};
 use noun_serde::prelude::*;
 use noun_serde::NounDecodeError;
-use recipient::{recipient_tokens_to_specs, RecipientSpec};
+use recipient::{recipient_tokens_to_specs, RecipientSpec, RecipientSpecToken};
 use termimad::MadSkin;
 use tokio::fs as tokio_fs;
 use tracing::{error, info, warn};
@@ -54,16 +54,13 @@ struct TestArenaGuard {
 impl TestArenaGuard {
     fn install() -> Self {
         let stack = NockStack::new(1 << 16, 0);
-        stack.install_arena();
         Self { _stack: stack }
     }
 }
 
 #[cfg(test)]
 impl Drop for TestArenaGuard {
-    fn drop(&mut self) {
-        Arena::clear_thread_local();
-    }
+    fn drop(&mut self) {}
 }
 
 #[tokio::main]
@@ -363,7 +360,10 @@ async fn main() -> Result<(), NockAppError> {
             pubkey_slab
                 .to_vec()
                 .iter()
-                .map(|key| String::from_noun(unsafe { key.root() }))
+                .map(|key| {
+                    let space = key.noun_space();
+                    String::from_noun(unsafe { key.root() }, &space)
+                })
                 .collect::<Result<Vec<String>, NounDecodeError>>()?
                 .into_iter()
                 .filter_map(|value| match normalize_watch_address(value) {
@@ -378,7 +378,8 @@ async fn main() -> Result<(), NockAppError> {
 
         let first_names: Vec<String> = if let Some(name_slab) = first_name_slab {
             let names_noun = unsafe { name_slab.root() };
-            <Vec<String>>::from_noun(names_noun)?
+            let name_space = name_slab.noun_space();
+            <Vec<String>>::from_noun(names_noun, &name_space)?
         } else {
             Vec::new()
         };
@@ -1519,9 +1520,10 @@ fn format_transaction_accepted_markdown(tx_id: &str, accepted: bool) -> String {
 }
 
 pub fn from_bytes(stack: &mut NounSlab, bytes: &[u8]) -> Atom {
+    let space = stack.noun_space();
     unsafe {
         let mut tas_atom = IndirectAtom::new_raw_bytes(stack, bytes.len(), bytes.as_ptr());
-        tas_atom.normalize_as_atom()
+        tas_atom.normalize_as_atom(&space)
     }
 }
 
@@ -1689,8 +1691,10 @@ mod tests {
             keygen_result.len() == 2,
             "Expected keygen result to be a list of 2 noun slabs - markdown and exit"
         );
-        let exit_cause = unsafe { keygen_result[1].root() };
-        let code = exit_cause.as_cell()?.tail();
+        let exit_slab = &keygen_result[1];
+        let exit_space = exit_slab.noun_space();
+        let exit_cause = unsafe { exit_slab.root() };
+        let code = exit_cause.as_cell()?.tail(&exit_space);
         assert!(unsafe { code.raw_equals(&D(0)) }, "Expected exit code 0");
 
         Ok(())
@@ -1742,8 +1746,10 @@ mod tests {
             "Expected derive result to be a list of 2 noun slabs - markdown and exit"
         );
 
-        let exit_cause = unsafe { derive_result[1].root() };
-        let code = exit_cause.as_cell()?.tail();
+        let exit_slab = &derive_result[1];
+        let exit_space = exit_slab.noun_space();
+        let exit_cause = unsafe { exit_slab.root() };
+        let code = exit_cause.as_cell()?.tail(&exit_space);
         assert!(unsafe { code.raw_equals(&D(0)) }, "Expected exit code 0");
 
         Ok(())
@@ -1766,39 +1772,36 @@ mod tests {
         let test_data = vec![0u8; 32]; // TODO make this a real input bundle
         fs::write(bundle_path, &test_data).map_err(|e| NockAppError::IoError(e))?;
 
-        let wire = WalletWire::Command(Commands::SignTx {
+        let wire = WalletWire::Command(Commands::SignMultisigTx {
             transaction: bundle_path.to_string(),
-            index: None,
-            hardened: false,
+            sign_keys: None,
         })
         .to_wire();
 
         // Test signing with valid indices
-        let (noun, op) = Wallet::sign_tx(bundle_path, None, false)?;
+        let (noun, op) = Wallet::sign_multisig_tx(bundle_path, None)?;
         let sign_result = wallet.app.poke(wire, noun.clone()).await?;
 
         println!("sign_result: {:?}", sign_result);
 
-        let wire = WalletWire::Command(Commands::SignTx {
+        let wire = WalletWire::Command(Commands::SignMultisigTx {
             transaction: bundle_path.to_string(),
-            index: Some(1),
-            hardened: false,
+            sign_keys: Some("1".to_string()),
         })
         .to_wire();
 
-        let (noun, op) = Wallet::sign_tx(bundle_path, Some(1), false)?;
+        let (noun, op) = Wallet::sign_multisig_tx(bundle_path, Some("1"))?;
         let sign_result = wallet.app.poke(wire, noun.clone()).await?;
 
         println!("sign_result: {:?}", sign_result);
 
-        let wire = WalletWire::Command(Commands::SignTx {
+        let wire = WalletWire::Command(Commands::SignMultisigTx {
             transaction: bundle_path.to_string(),
-            index: Some(255),
-            hardened: false,
+            sign_keys: Some("255".to_string()),
         })
         .to_wire();
 
-        let (noun, op) = Wallet::sign_tx(bundle_path, Some(255), false)?;
+        let (noun, op) = Wallet::sign_multisig_tx(bundle_path, Some("255"))?;
         let sign_result = wallet.app.poke(wire, noun.clone()).await?;
 
         println!("sign_result: {:?}", sign_result);
@@ -1900,24 +1903,31 @@ mod tests {
         let recipients = vec!["pk1:1".to_string()];
         let fee = 1;
 
+        let recipient_tokens: Vec<RecipientSpecToken> = recipients
+            .iter()
+            .map(|raw| RecipientSpecToken::from_cli_arg(raw))
+            .collect::<Result<_, CrownError>>()?;
+        let recipient_specs = recipient_tokens_to_specs(recipient_tokens.clone())?;
+        let sign_keys = Vec::new();
+
         let (noun, op) = Wallet::create_tx(
             names.clone(),
-            recipients.clone(),
+            recipient_specs,
             fee,
             None::<String>,
-            None,
-            false,
+            sign_keys,
             true,
             false,
         )?;
         let wire = WalletWire::Command(Commands::CreateTx {
             names: names.clone(),
-            recipients: recipients.clone(),
+            recipients: recipient_tokens,
             fee: fee.clone(),
             refund_pkh: None,
             index: None,
             hardened: false,
             include_data: true,
+            sign_keys: Vec::new(),
             save_raw_tx: false,
         })
         .to_wire();
@@ -1943,17 +1953,23 @@ mod tests {
         let recipients = vec!["3HKKp7xZgCw1mhzk4iw735S2ZTavCLHc8YDGRP6G9sSTrRGsaPBu1AqJ8cBDiw2LwhRFnQG7S3N9N9okc28uBda6oSAUCBfMSg5uC9cefhrFrvXVGomoGcRvcFZTWuJzm3ch:100".to_string()];
         let fee = 0;
 
+        let recipient_tokens: Vec<RecipientSpecToken> = recipients
+            .iter()
+            .map(|raw| RecipientSpecToken::from_cli_arg(raw))
+            .collect::<Result<_, CrownError>>()?;
+        let recipient_specs = recipient_tokens_to_specs(recipient_tokens.clone())?;
+        let sign_keys = Vec::new();
+
         // generate keys
         let version = 1;
         let (genkey_noun, genkey_op) =
             Wallet::import_seed_phrase("correct horse battery staple", version)?;
         let (spend_noun, spend_op) = Wallet::create_tx(
             names.clone(),
-            recipients.clone(),
+            recipient_specs,
             fee,
             None::<String>,
-            None,
-            false,
+            sign_keys,
             true,
             false,
         )?;
@@ -1970,12 +1986,13 @@ mod tests {
 
         let wire2 = WalletWire::Command(Commands::CreateTx {
             names: names.clone(),
-            recipients: recipients.clone(),
+            recipients: recipient_tokens,
             fee: fee.clone(),
             refund_pkh: None,
             index: None,
             hardened: false,
             include_data: true,
+            sign_keys: Vec::new(),
             save_raw_tx: false,
         })
         .to_wire();

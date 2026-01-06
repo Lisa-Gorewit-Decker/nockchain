@@ -187,7 +187,8 @@ pub mod util {
             res = T(alloc, &[cell.head(space), res]);
             cur = cell.tail(space);
         }
-        flop(alloc, res, space)
+        let out_space = alloc.noun_space();
+        flop(alloc, res, &out_space)
     }
 
     pub fn lent(tape: Noun, space: &NounSpace) -> result::Result<usize, JetErr> {

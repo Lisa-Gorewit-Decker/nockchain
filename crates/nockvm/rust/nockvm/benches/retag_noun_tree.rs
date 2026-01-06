@@ -38,14 +38,12 @@ enum OffsetMix {
 
 fn make_stack() -> NockStack {
     let stack = NockStack::new(STACK_WORDS, 0);
-    stack.install_arena();
     stack
 }
 
 #[allow(dead_code)]
 fn make_kernel_stack() -> NockStack {
     let stack = NockStack::new(KERNEL_STACK_WORDS, 0);
-    stack.install_arena();
     stack
 }
 
@@ -131,7 +129,7 @@ fn compute_stack_sizes(
     stack: &mut NockStack,
     root_ptr: *mut Noun,
 ) -> (HashMap<usize, usize>, usize) {
-    let arena = stack.arena_ref();
+    let space = stack.noun_space();
     let mut sizes: HashMap<usize, usize> = HashMap::new();
     let mut total_stack_allocated = 0usize;
     let mut work: Vec<(*mut Noun, bool)> = Vec::with_capacity(32);
@@ -141,14 +139,14 @@ fn compute_stack_sizes(
         let noun = unsafe { &mut *ptr };
         let is_cell = noun.is_cell();
         if visited {
-            if noun.is_stack_allocated() {
+            if noun.is_stack_allocated(&space) {
                 let mut size = 1usize;
                 if is_cell {
                     let cell = noun.as_cell().expect("checked cell");
                     let (head_ptr, tail_ptr) = unsafe {
                         (
-                            cell.head_as_mut_with_arena(arena),
-                            cell.tail_as_mut_with_arena(arena),
+                            cell.head_as_mut(&space),
+                            cell.tail_as_mut(&space),
                         )
                     };
                     size += *sizes.get(&(head_ptr as usize)).unwrap_or(&0);
@@ -157,15 +155,15 @@ fn compute_stack_sizes(
                 sizes.insert(ptr as usize, size);
             }
         } else {
-            if noun.is_stack_allocated() {
+            if noun.is_stack_allocated(&space) {
                 total_stack_allocated += 1;
             }
             if is_cell {
                 let cell = noun.as_cell().expect("checked cell");
                 let (head_ptr, tail_ptr) = unsafe {
                     (
-                        cell.head_as_mut_with_arena(arena),
-                        cell.tail_as_mut_with_arena(arena),
+                        cell.head_as_mut(&space),
+                        cell.tail_as_mut(&space),
                     )
                 };
                 work.push((ptr, true));
@@ -203,7 +201,7 @@ fn apply_offset_mix(
         return;
     }
 
-    let arena = stack.arena_ref();
+    let space = stack.noun_space();
     let mut work: Vec<*mut Noun> = Vec::with_capacity(32);
     work.push(root_ptr);
     while let Some(ptr) = work.pop() {
@@ -211,7 +209,7 @@ fn apply_offset_mix(
             break;
         }
         let noun = unsafe { &mut *ptr };
-        if !noun.is_stack_allocated() {
+        if !noun.is_stack_allocated(&space) {
             continue;
         }
         let subtree = *sizes.get(&(ptr as usize)).unwrap_or(&1);
@@ -221,8 +219,8 @@ fn apply_offset_mix(
         } else if let Ok(cell) = noun.as_cell() {
             let (head_ptr, tail_ptr) = unsafe {
                 (
-                    cell.head_as_mut_with_arena(arena),
-                    cell.tail_as_mut_with_arena(arena),
+                    cell.head_as_mut(&space),
+                    cell.tail_as_mut(&space),
                 )
             };
             work.push(tail_ptr);
@@ -320,19 +318,23 @@ fn load_kernel_dumb_stack_pointer_form(stack: &mut NockStack) -> Noun {
 #[allow(dead_code)]
 fn debug_kernel_load(stack: &mut NockStack) {
     let kernel = load_kernel_dumb_stack_pointer_form(stack);
+    let space = stack.noun_space();
     eprintln!("Root noun is_direct: {}", kernel.is_direct());
     eprintln!("Root noun is_cell: {}", kernel.is_cell());
     eprintln!("Root noun is_allocated: {}", kernel.is_allocated());
-    eprintln!("Root noun is_stack_allocated: {}", kernel.is_stack_allocated());
+    eprintln!(
+        "Root noun is_stack_allocated: {}",
+        kernel.is_stack_allocated(&space)
+    );
     eprintln!("Root noun raw: 0x{:016x}", unsafe { kernel.as_raw() });
 
     if kernel.is_cell() {
         let cell = kernel.as_cell().unwrap();
-        let head = cell.head_with_arena(stack.arena_ref());
-        let tail = cell.tail_with_arena(stack.arena_ref());
-        eprintln!("Head is_stack_allocated: {}", head.is_stack_allocated());
+        let head = cell.head(&space);
+        let tail = cell.tail(&space);
+        eprintln!("Head is_stack_allocated: {}", head.is_stack_allocated(&space));
         eprintln!("Head raw: 0x{:016x}", unsafe { head.as_raw() });
-        eprintln!("Tail is_stack_allocated: {}", tail.is_stack_allocated());
+        eprintln!("Tail is_stack_allocated: {}", tail.is_stack_allocated(&space));
         eprintln!("Tail raw: 0x{:016x}", unsafe { tail.as_raw() });
     }
 }
@@ -343,7 +345,7 @@ fn debug_kernel_load(stack: &mut NockStack) {
 /// Returns (is_valid, stack_pointer_count, offset_count) for debugging
 #[allow(dead_code)]
 fn check_noun_tagging_state(stack: &NockStack, root: Noun) -> (bool, usize, usize) {
-    let arena = stack.arena_ref();
+    let space = stack.noun_space();
     let mut work: Vec<Noun> = Vec::with_capacity(32);
     let mut visited: HashSet<u64> = HashSet::new();
     let mut stack_pointer_count = 0usize;
@@ -364,7 +366,7 @@ fn check_noun_tagging_state(stack: &NockStack, root: Noun) -> (bool, usize, usiz
 
         // For allocated nouns (cells and indirect atoms), count their form
         if noun.is_allocated() {
-            if noun.is_stack_allocated() {
+            if noun.is_stack_allocated(&space) {
                 stack_pointer_count += 1;
             } else {
                 offset_count += 1;
@@ -373,8 +375,8 @@ fn check_noun_tagging_state(stack: &NockStack, root: Noun) -> (bool, usize, usiz
 
         // If it's a cell, traverse children
         if let Ok(cell) = noun.as_cell() {
-            let head = cell.head_with_arena(arena);
-            let tail = cell.tail_with_arena(arena);
+            let head = cell.head(&space);
+            let tail = cell.tail(&space);
             work.push(head);
             work.push(tail);
         }
@@ -396,7 +398,7 @@ fn is_entirely_stack_pointer_form(stack: &NockStack, root: Noun) -> bool {
 /// Direct atoms are ignored since they have no allocation.
 #[allow(dead_code)]
 fn is_entirely_offset_form(stack: &NockStack, root: Noun) -> bool {
-    let arena = stack.arena_ref();
+    let space = stack.noun_space();
     let mut work: Vec<Noun> = Vec::with_capacity(32);
     let mut visited: HashSet<u64> = HashSet::new();
     work.push(root);
@@ -415,7 +417,7 @@ fn is_entirely_offset_form(stack: &NockStack, root: Noun) -> bool {
 
         // For allocated nouns (cells and indirect atoms), check they're in offset form
         if noun.is_allocated() {
-            if noun.is_stack_allocated() {
+            if noun.is_stack_allocated(&space) {
                 // This noun is in stack-pointer form, not offset form
                 return false;
             }
@@ -423,8 +425,8 @@ fn is_entirely_offset_form(stack: &NockStack, root: Noun) -> bool {
 
         // If it's a cell, traverse children
         if let Ok(cell) = noun.as_cell() {
-            let head = cell.head_with_arena(arena);
-            let tail = cell.tail_with_arena(arena);
+            let head = cell.head(&space);
+            let tail = cell.tail(&space);
             work.push(head);
             work.push(tail);
         }

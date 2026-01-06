@@ -9,7 +9,8 @@ pub fn dyck<A: NounAllocator>(
     space: &NounSpace,
 ) -> Result<Noun, JetErr> {
     let vec = dyck_recursive(stack, t, D(0), space)?;
-    flop(stack, vec, space)
+    let stack_space = stack.noun_space();
+    flop(stack, vec, &stack_space)
 }
 
 fn dyck_recursive<A: NounAllocator>(

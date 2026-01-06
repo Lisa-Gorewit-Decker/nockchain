@@ -131,13 +131,15 @@ pub fn hash_noun_varlen<A: NounAllocator>(
 ) -> Result<Noun, JetErr> {
     let leaf = leaf_sequence(stack, n, space)?;
     let dyck = dyck(stack, n, space)?;
-    let size = lent(leaf, space).map(|x| D(x as u64))?;
+    let stack_space = stack.noun_space();
+    let size = lent(leaf, &stack_space).map(|x| D(x as u64))?;
 
     // [size (weld leaf dyck)]
-    let weld = weld(stack, leaf, dyck, space)?;
+    let weld = weld(stack, leaf, dyck, &stack_space)?;
     let arg = T(stack, &[size, weld]);
 
-    hash_belts_list(stack, arg, space)
+    let stack_space = stack.noun_space();
+    hash_belts_list(stack, arg, &stack_space)
 }
 
 pub fn hash_noun_varlen_digest<A: NounAllocator>(
@@ -146,7 +148,8 @@ pub fn hash_noun_varlen_digest<A: NounAllocator>(
     space: &NounSpace,
 ) -> Result<[u64; 5], JetErr> {
     let noun_res = hash_noun_varlen(stack, n, space)?;
-    let digest = <[u64; 5]>::from_noun(&noun_res, space)?;
+    let stack_space = stack.noun_space();
+    let digest = <[u64; 5]>::from_noun(&noun_res, &stack_space)?;
     Ok(digest)
 }
 

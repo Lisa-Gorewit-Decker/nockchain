@@ -234,23 +234,36 @@ impl NounSpace {
     }
 
     fn resolve_pma_ptr(&self, payload: u64) -> *const u8 {
-        let arena = self
-            .pma
-            .as_ref()
-            .expect("PMA arena is required to resolve PMA offset nouns");
         let offset_words = payload as u32;
-        let ptr = arena.ptr_from_offset(offset_words) as *const u8;
-        assert!(
-            {
-                let base = arena.base_ptr() as usize;
-                let end = base + arena.len_bytes();
-                let addr = ptr as usize;
-                addr >= base && addr < end
-            },
-            "PMA offset {} resolves outside the PMA arena",
-            offset_words
-        );
-        ptr
+        if let Some(arena) = &self.pma {
+            let ptr = arena.ptr_from_offset(offset_words) as *const u8;
+            assert!(
+                {
+                    let base = arena.base_ptr() as usize;
+                    let end = base + arena.len_bytes();
+                    let addr = ptr as usize;
+                    addr >= base && addr < end
+                },
+                "PMA offset {} resolves outside the PMA arena",
+                offset_words
+            );
+            ptr
+        } else if let Some(arena) = &self.stack {
+            let ptr = arena.ptr_from_offset(offset_words) as *const u8;
+            assert!(
+                {
+                    let base = arena.base_ptr() as usize;
+                    let end = base + arena.len_bytes();
+                    let addr = ptr as usize;
+                    addr >= base && addr < end
+                },
+                "stack offset {} resolves outside the stack arena",
+                offset_words
+            );
+            ptr
+        } else {
+            panic!("stack or PMA arena is required to resolve offset nouns");
+        }
     }
 }
 
@@ -2258,9 +2271,10 @@ mod test {
     #[cfg_attr(miri, ignore)]
     fn test_to_ne_bytes_direct() {
         let mut context = init_context();
+        let space = context.stack.noun_space();
         let big = ubig!(0x1234567890abcdefa0);
         let atom = Atom::from_ubig(&mut context.stack, &big);
-        let bytes = atom.to_ne_bytes();
+        let bytes = atom.to_ne_bytes(&space);
         #[cfg(target_endian = "little")]
         {
             assert_eq!(
@@ -2288,8 +2302,9 @@ mod test {
     #[cfg_attr(miri, ignore)]
     fn test_to_ne_bytes_indirect() {
         let mut context = init_context();
+        let space = context.stack.noun_space();
         let atom = Atom::new(&mut context.stack, 0x1234);
-        let bytes = atom.to_ne_bytes();
+        let bytes = atom.to_ne_bytes(&space);
         #[cfg(target_endian = "little")]
         {
             assert_eq!(bytes, vec![0x34, 0x12, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00]);
@@ -2305,14 +2320,15 @@ mod test {
     #[cfg_attr(miri, ignore)]
     fn test_to_x_bytes_direct() {
         let mut context = init_context();
+        let space = context.stack.noun_space();
         let atom = Atom::new(&mut context.stack, 0x1234);
-        let bytes_le = atom.to_le_bytes();
+        let bytes_le = atom.to_le_bytes(&space);
         assert_eq!(
             bytes_le,
             vec![0x34, 0x12, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00]
         );
 
-        let bytes_be = atom.to_be_bytes();
+        let bytes_be = atom.to_be_bytes(&space);
         assert_eq!(
             bytes_be,
             vec![0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x12, 0x34]
@@ -2324,14 +2340,15 @@ mod test {
     #[cfg_attr(miri, ignore)]
     fn test_to_le_bytes_indirect() {
         let mut context = init_context();
+        let space = context.stack.noun_space();
         let big = ubig!(0x1234567890abcd);
         let atom = Atom::from_ubig(&mut context.stack, &big);
-        let bytes = atom.to_le_bytes();
+        let bytes = atom.to_le_bytes(&space);
         assert_eq!(bytes, vec![0xcd, 0xab, 0x90, 0x78, 0x56, 0x34, 0x12, 0x00]);
         //
         let big = ubig!(0x1234567890abcdefa0);
         let atom = Atom::from_ubig(&mut context.stack, &big);
-        let bytes = atom.to_le_bytes();
+        let bytes = atom.to_le_bytes(&space);
         assert_eq!(
             bytes,
             vec![
@@ -2346,14 +2363,15 @@ mod test {
     #[cfg_attr(miri, ignore)]
     fn test_to_be_bytes_indirect() {
         let mut context = init_context();
+        let space = context.stack.noun_space();
         let big = ubig!(0x34567890abcdef);
         let atom = Atom::from_ubig(&mut context.stack, &big);
-        let bytes = atom.to_be_bytes();
+        let bytes = atom.to_be_bytes(&space);
         assert_eq!(bytes, vec![0x00, 0x34, 0x56, 0x78, 0x90, 0xab, 0xcd, 0xef]);
         //
         let big = ubig!(0x1234567890abcdefa0);
         let atom = Atom::from_ubig(&mut context.stack, &big);
-        let bytes = atom.to_be_bytes();
+        let bytes = atom.to_be_bytes(&space);
         assert_eq!(
             bytes,
             vec![

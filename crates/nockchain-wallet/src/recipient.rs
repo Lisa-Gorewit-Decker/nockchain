@@ -177,6 +177,7 @@ pub fn recipient_tokens_to_specs(
 mod tests {
     use nockapp::noun::slab::{NockJammer, NounSlab};
     use nockvm::noun::FullDebugCell;
+    use nockvm::noun::NounAllocator;
     use noun_serde::NounDecode;
 
     use super::*;
@@ -298,9 +299,17 @@ mod tests {
         let mut slab = NounSlab::<NockJammer>::new();
         for spec in specs {
             let noun = spec.to_noun(&mut slab);
-            eprintln!("spec noun: {:?}", FullDebugCell(&noun.as_cell().unwrap()));
+            let space = slab.noun_space();
+            let noun_cell = noun.as_cell().unwrap();
+            eprintln!(
+                "spec noun: {:?}",
+                FullDebugCell {
+                    cell: &noun_cell,
+                    space: &space
+                }
+            );
             let decoded =
-                RecipientSpec::from_noun(&noun).expect("recipient spec should decode from noun");
+                RecipientSpec::from_noun(&noun, &space).expect("recipient spec should decode from noun");
             assert_eq!(decoded, spec);
         }
     }

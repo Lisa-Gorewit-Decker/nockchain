@@ -1178,7 +1178,7 @@ impl NounDecode for Spend {
 
 #[cfg(test)]
 mod tests {
-    use nockvm::mem::{Arena, NockStack};
+    use nockvm::mem::NockStack;
 
     use super::*;
 
@@ -1189,7 +1189,6 @@ mod tests {
     impl StackGuard {
         fn new(words: usize) -> Self {
             let stack = NockStack::new(words, 0);
-            stack.install_arena();
             Self { stack }
         }
     }
@@ -1208,15 +1207,10 @@ mod tests {
         }
     }
 
-    impl Drop for StackGuard {
-        fn drop(&mut self) {
-            Arena::clear_thread_local();
-        }
-    }
-
     #[test]
     fn test_trek_encoding() {
         let mut stack = StackGuard::new(8 << 10 << 10);
+        let space = stack.noun_space();
 
         let trek = Trek(vec![
             "path".to_string(),
@@ -1224,28 +1218,30 @@ mod tests {
             "key".to_string(),
         ]);
         let encoded = trek.to_noun(&mut *stack);
-        let decoded = Trek::from_noun(&encoded, space).unwrap();
+        let decoded = Trek::from_noun(&encoded, &space).unwrap();
         assert_eq!(trek, decoded);
     }
 
     #[test]
     fn test_source_encoding() {
         let mut stack = StackGuard::new(8 << 10 << 10);
+        let space = stack.noun_space();
 
         let hash = Source::Hash(0x1234);
         let encoded = hash.to_noun(&mut *stack);
-        let decoded = Source::from_noun(&encoded, space).unwrap();
+        let decoded = Source::from_noun(&encoded, &space).unwrap();
         assert_eq!(hash, decoded);
 
         let coinbase = Source::Coinbase;
         let encoded = coinbase.to_noun(&mut *stack);
-        let decoded = Source::from_noun(&encoded, space).unwrap();
+        let decoded = Source::from_noun(&encoded, &space).unwrap();
         assert_eq!(coinbase, decoded);
     }
 
     #[test]
     fn test_lock_encoding() {
         let mut stack = StackGuard::new(8 << 10 << 10);
+        let space = stack.noun_space();
 
         let mut pubkeys = HashSet::new();
         pubkeys.insert(0x1234);
@@ -1253,26 +1249,28 @@ mod tests {
 
         let lock = Lock { m: 2, pubkeys };
         let encoded = lock.to_noun(&mut *stack);
-        let decoded = Lock::from_noun(&encoded, space).unwrap();
+        let decoded = Lock::from_noun(&encoded, &space).unwrap();
         assert_eq!(lock, decoded);
     }
 
     #[test]
     fn test_timelock_encoding() {
         let mut stack = StackGuard::new(8 << 10 << 10);
+        let space = stack.noun_space();
 
         let timelock = Timelock {
             block: 0x1234,
             intent: TimelockIntent::After,
         };
         let encoded = timelock.to_noun(&mut *stack);
-        let decoded = Timelock::from_noun(&encoded, space).unwrap();
+        let decoded = Timelock::from_noun(&encoded, &space).unwrap();
         assert_eq!(timelock, decoded);
     }
 
     #[test]
     fn test_seed_encoding() {
         let mut stack = StackGuard::new(8 << 10 << 10);
+        let space = stack.noun_space();
 
         let mut pubkeys = HashSet::new();
         pubkeys.insert(0x1234);
@@ -1285,13 +1283,14 @@ mod tests {
             parent_hash: 0x9abc,
         };
         let encoded = seed.to_noun(&mut *stack);
-        let decoded = Seed::from_noun(&encoded, space).unwrap();
+        let decoded = Seed::from_noun(&encoded, &space).unwrap();
         assert_eq!(seed, decoded);
     }
 
     #[test]
     fn test_preseed_encoding() {
         let mut stack = StackGuard::new(8 << 10 << 10);
+        let space = stack.noun_space();
 
         let preseed = PreSeed {
             name: "test_seed".to_string(),
@@ -1305,13 +1304,14 @@ mod tests {
             },
         };
         let encoded = preseed.to_noun(&mut *stack);
-        let decoded = PreSeed::from_noun(&encoded, space).unwrap();
+        let decoded = PreSeed::from_noun(&encoded, &space).unwrap();
         assert_eq!(preseed, decoded);
     }
 
     #[test]
     fn test_spend_encoding() {
         let mut stack = StackGuard::new(8 << 10 << 10);
+        let space = stack.noun_space();
 
         let mut signatures = HashMap::new();
         signatures.insert(0x1234, 0x5678);
@@ -1335,13 +1335,14 @@ mod tests {
             fee: 10,
         };
         let encoded = spend.to_noun(&mut *stack);
-        let decoded = Spend::from_noun(&encoded, space).unwrap();
+        let decoded = Spend::from_noun(&encoded, &space).unwrap();
         assert_eq!(spend, decoded);
     }
 
     #[test]
     fn test_preinput_encoding() {
         let mut stack = StackGuard::new(8 << 10 << 10);
+        let space = stack.noun_space();
 
         let preinput = PreInput {
             name: "test_input".to_string(),
@@ -1356,20 +1357,21 @@ mod tests {
             },
         };
         let encoded = preinput.to_noun(&mut *stack);
-        let decoded = PreInput::from_noun(&encoded, space).unwrap();
+        let decoded = PreInput::from_noun(&encoded, &space).unwrap();
         assert_eq!(preinput, decoded);
     }
 
     #[test]
     fn test_draft_encoding() {
         let mut stack = StackGuard::new(8 << 10 << 10);
+        let space = stack.noun_space();
 
         let draft = Draft {
             name: "test_draft".to_string(),
             inputs: 0x1234, // Using u64 as specified in struct
         };
         let encoded = draft.to_noun(&mut *stack);
-        let decoded = Draft::from_noun(&encoded, space).unwrap();
+        let decoded = Draft::from_noun(&encoded, &space).unwrap();
         assert_eq!(draft, decoded);
     }
 }

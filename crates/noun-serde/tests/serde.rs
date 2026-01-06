@@ -10,7 +10,6 @@ struct TestStackGuard {
 impl TestStackGuard {
     fn new(words: usize) -> Self {
         let stack = nockvm::mem::NockStack::new(words, 0);
-        stack.install_arena();
         Self { stack }
     }
 }
@@ -32,16 +31,11 @@ impl DerefMut for TestStackGuard {
 }
 
 #[cfg(test)]
-impl Drop for TestStackGuard {
-    fn drop(&mut self) {
-        nockvm::mem::Arena::clear_thread_local();
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use std::collections::HashSet;
 
+    use nockvm::noun::NounSpace;
     use noun_serde::{decode_bool, encode_bool, NounDecode, NounEncode};
 
     use super::TestStackGuard;
@@ -67,63 +61,69 @@ mod tests {
     #[test]
     fn test_u64_encoding() {
         let mut stack = TestStackGuard::new(8 << 10 << 10);
+        let space = stack.noun_space();
         let original = 42u64;
         let encoded = original.to_noun(&mut *stack);
-        let decoded = u64::from_noun(&encoded).unwrap();
+        let decoded = u64::from_noun(&encoded, &space).unwrap();
         assert_eq!(original, decoded);
     }
 
     #[test]
     fn test_string_encoding() {
         let mut stack = TestStackGuard::new(8 << 10 << 10);
+        let space = stack.noun_space();
         let original = String::from("test");
         let encoded = original.to_noun(&mut *stack);
-        let decoded = String::from_noun(&encoded).unwrap();
+        let decoded = String::from_noun(&encoded, &space).unwrap();
         assert_eq!(original, decoded);
     }
 
     #[test]
     fn test_option_encoding() {
         let mut stack = TestStackGuard::new(8 << 10 << 10);
+        let space = stack.noun_space();
 
         // Test Some
         let original = Some(42u64);
         let encoded = original.to_noun(&mut *stack);
-        let decoded = Option::<u64>::from_noun(&encoded).unwrap();
+        let decoded = Option::<u64>::from_noun(&encoded, &space).unwrap();
         assert_eq!(original, decoded);
 
         // Test None
         let original: Option<u64> = None;
         let encoded = original.to_noun(&mut *stack);
-        let decoded = Option::<u64>::from_noun(&encoded).unwrap();
+        let decoded = Option::<u64>::from_noun(&encoded, &space).unwrap();
         assert_eq!(original, decoded);
     }
 
     #[test]
     fn test_vec_encoding() {
         let mut stack = TestStackGuard::new(8 << 10 << 10);
+        let space = stack.noun_space();
         let original = vec![1u64, 2, 3, 4, 5];
         let encoded = original.to_noun(&mut *stack);
-        let decoded = Vec::<u64>::from_noun(&encoded).unwrap();
+        let decoded = Vec::<u64>::from_noun(&encoded, &space).unwrap();
         assert_eq!(original, decoded);
     }
 
     #[test]
     fn test_bool_encoding() {
+        let space = NounSpace::empty();
         // Test true
         let encoded = encode_bool(true);
-        let decoded = decode_bool(&encoded).unwrap();
+        let decoded = decode_bool(&encoded, &space).unwrap();
         assert!(decoded);
 
         // Test false
         let encoded = encode_bool(false);
-        let decoded = decode_bool(&encoded).unwrap();
+        let decoded = decode_bool(&encoded, &space).unwrap();
         assert!(!decoded);
     }
 
     #[test]
     fn test_struct_encoding() {
         let mut stack = TestStackGuard::new(8 << 10 << 10);
+        let space = stack.noun_space();
         let original = TestStruct {
             a: 42,
             b: "test".to_string(),
@@ -131,13 +131,14 @@ mod tests {
         };
         let encoded = original.to_noun(&mut *stack);
         println!("encoded TestStruct: {:?}", encoded);
-        let decoded = TestStruct::from_noun(&encoded).unwrap();
+        let decoded = TestStruct::from_noun(&encoded, &space).unwrap();
         assert_eq!(original, decoded);
     }
 
     #[test]
     fn test_enum_variants() {
         let mut stack = TestStackGuard::new(8 << 10 << 10);
+        let space = stack.noun_space();
 
         // Test variant A (single field)
         let original = TestEnum::A(42);
@@ -146,10 +147,10 @@ mod tests {
         let encoded = original.to_noun(&mut *stack);
         println!("encoded raw: {:?}", encoded);
         if let Ok(cell) = encoded.as_cell() {
-            println!("head: {:?}", cell.head());
-            println!("tail: {:?}", cell.tail());
+            println!("head: {:?}", cell.head(&space));
+            println!("tail: {:?}", cell.tail(&space));
         }
-        let decoded = TestEnum::from_noun(&encoded).unwrap();
+        let decoded = TestEnum::from_noun(&encoded, &space).unwrap();
         println!("decoded: {:?}", decoded);
         assert_eq!(original, decoded);
 
@@ -163,14 +164,14 @@ mod tests {
         let encoded = original.to_noun(&mut *stack);
         println!("encoded raw: {:?}", encoded);
         if let Ok(cell) = encoded.as_cell() {
-            println!("head: {:?}", cell.head());
-            println!("tail: {:?}", cell.tail());
-            if let Ok(tail_cell) = cell.tail().as_cell() {
-                println!("tail.head: {:?}", tail_cell.head());
-                println!("tail.tail: {:?}", tail_cell.tail());
+            println!("head: {:?}", cell.head(&space));
+            println!("tail: {:?}", cell.tail(&space));
+            if let Ok(tail_cell) = cell.tail(&space).as_cell() {
+                println!("tail.head: {:?}", tail_cell.head(&space));
+                println!("tail.tail: {:?}", tail_cell.tail(&space));
             }
         }
-        let decoded = TestEnum::from_noun(&encoded).unwrap();
+        let decoded = TestEnum::from_noun(&encoded, &space).unwrap();
         println!("decoded: {:?}", decoded);
         assert_eq!(original, decoded);
 
@@ -181,16 +182,17 @@ mod tests {
         let encoded = original.to_noun(&mut *stack);
         println!("encoded raw: {:?}", encoded);
         if let Ok(cell) = encoded.as_cell() {
-            println!("head: {:?}", cell.head());
-            println!("tail: {:?}", cell.tail());
+            println!("head: {:?}", cell.head(&space));
+            println!("tail: {:?}", cell.tail(&space));
         }
-        let decoded = TestEnum::from_noun(&encoded).unwrap();
+        let decoded = TestEnum::from_noun(&encoded, &space).unwrap();
         assert_eq!(original, decoded);
     }
 
     #[test]
     fn test_hashset_encoding() {
         let mut stack = TestStackGuard::new(8 << 10 << 10);
+        let space = stack.noun_space();
 
         // Create a test set
         let mut set = HashSet::new();
@@ -200,13 +202,13 @@ mod tests {
 
         // Test encoding and decoding
         let encoded = set.to_noun(&mut *stack);
-        let decoded = HashSet::<u64>::from_noun(&encoded).unwrap();
+        let decoded = HashSet::<u64>::from_noun(&encoded, &space).unwrap();
         assert_eq!(set, decoded);
 
         // Test empty set
         let empty_set: HashSet<u64> = HashSet::new();
         let encoded_empty = empty_set.to_noun(&mut *stack);
-        let decoded_empty = HashSet::<u64>::from_noun(&encoded_empty).unwrap();
+        let decoded_empty = HashSet::<u64>::from_noun(&encoded_empty, &space).unwrap();
         assert_eq!(empty_set, decoded_empty);
     }
 }
@@ -217,7 +219,7 @@ mod complex_tests {
     use std::fmt::Debug;
 
     use nockvm::ext::{make_tas, AtomExt};
-    use nockvm::noun::{FullDebugCell, Noun, NounAllocator, Slots, T};
+    use nockvm::noun::{FullDebugCell, Noun, NounAllocator, NounSpace, Slots, T};
     use noun_serde::{NounDecode, NounDecodeError, NounEncode};
 
     use super::TestStackGuard;
@@ -268,17 +270,17 @@ mod complex_tests {
     where
         T: NounEncode + NounDecode + Debug + PartialEq + Clone,
     {
-        fn from_noun(noun: &Noun) -> Result<Self, NounDecodeError> {
+        fn from_noun(noun: &Noun, space: &NounSpace) -> Result<Self, NounDecodeError> {
             let cell = noun.as_cell().map_err(|_| NounDecodeError::ExpectedCell)?;
-            let tag = cell.head().as_atom()?.into_string()?;
+            let tag = cell.head(space).as_atom()?.into_string(space)?;
 
             match tag.as_str() {
                 "branch" => {
-                    let data = cell.tail().as_cell()?;
-                    let left = Box::new(Tree::from_noun(&data.head())?);
-                    let rest = data.tail().as_cell()?;
-                    let right = Box::new(Tree::from_noun(&rest.head())?);
-                    let metadata = HashMap::from_noun(&rest.tail())?;
+                    let data = cell.tail(space).as_cell()?;
+                    let left = Box::new(Tree::from_noun(&data.head(space), space)?);
+                    let rest = data.tail(space).as_cell()?;
+                    let right = Box::new(Tree::from_noun(&rest.head(space), space)?);
+                    let metadata = HashMap::from_noun(&rest.tail(space), space)?;
                     Ok(Tree::Branch {
                         left,
                         right,
@@ -286,7 +288,7 @@ mod complex_tests {
                     })
                 }
                 "leaf" => {
-                    let value = T::from_noun(&cell.tail())?;
+                    let value = T::from_noun(&cell.tail(space), space)?;
                     Ok(Tree::Leaf(value))
                 }
                 _ => Err(NounDecodeError::InvalidEnumVariant),
@@ -324,6 +326,7 @@ mod complex_tests {
     #[test]
     fn test_recursive_tree() {
         let mut stack = TestStackGuard::new(8 << 10 << 10);
+        let space = stack.noun_space();
 
         // Create a complex tree
         let mut metadata1 = HashMap::new();
@@ -343,18 +346,23 @@ mod complex_tests {
         };
 
         let encoded = tree.to_noun(&mut *stack);
+        let encoded_cell = encoded.as_cell().unwrap();
         println!(
             "Encoded tree: {:?}",
-            FullDebugCell(&encoded.as_cell().unwrap())
+            FullDebugCell {
+                cell: &encoded_cell,
+                space: &space
+            }
         );
 
-        let decoded = Tree::from_noun(&encoded).unwrap();
+        let decoded = Tree::from_noun(&encoded, &space).unwrap();
         assert_eq!(tree, decoded);
     }
 
     #[test]
     fn test_transaction_status() {
         let mut stack = TestStackGuard::new(8 << 10 << 10);
+        let space = stack.noun_space();
 
         let status = TransactionStatus::Pending {
             retries: 3,
@@ -367,28 +375,29 @@ mod complex_tests {
 
         if let Ok(cell) = encoded.as_cell() {
             println!("Status cell structure:");
-            println!("Head: {:?}", cell.head());
-            if let Ok(head_atom) = cell.head().as_atom() {
-                if let Ok(tag) = head_atom.into_string() {
+            println!("Head: {:?}", cell.head(&space));
+            if let Ok(head_atom) = cell.head(&space).as_atom() {
+                if let Ok(tag) = head_atom.into_string(&space) {
                     println!("Tag string: {}", tag);
                 }
             }
-            println!("Tail: {:?}", cell.tail());
-            if let Ok(tail_cell) = cell.tail().as_cell() {
+            println!("Tail: {:?}", cell.tail(&space));
+            if let Ok(tail_cell) = cell.tail(&space).as_cell() {
                 println!("Tail structure:");
-                println!("  Head: {:?}", tail_cell.head());
-                println!("  Tail: {:?}", tail_cell.tail());
+                println!("  Head: {:?}", tail_cell.head(&space));
+                println!("  Tail: {:?}", tail_cell.tail(&space));
             }
         }
 
         println!("\nDecoding status...");
-        let decoded = TransactionStatus::from_noun(&encoded).unwrap();
+        let decoded = TransactionStatus::from_noun(&encoded, &space).unwrap();
         println!("Decoded status: {:?}", decoded);
         assert_eq!(status, decoded);
     }
     #[test]
     fn test_transaction_data_decoding() {
         let mut stack = TestStackGuard::new(8 << 10 << 10);
+        let space = stack.noun_space();
 
         let original = TransactionData {
             sender: 0x1234,
@@ -405,17 +414,23 @@ mod complex_tests {
         // Print the binary tree structure
         if let Ok(cell) = encoded.as_cell() {
             println!("\nBinary tree structure:");
-            println!("Root cell: {:?}", FullDebugCell(&cell));
-            println!("At axis 2 (sender): {:?}", cell.slot(2));
-            println!("At axis 3: {:?}", cell.slot(3));
-            println!("At axis 6 (receiver): {:?}", cell.slot(6));
-            println!("At axis 7: {:?}", cell.slot(7));
-            println!("At axis 14 (amount): {:?}", cell.slot(14));
-            println!("At axis 15: {:?}", cell.slot(15));
+            println!(
+                "Root cell: {:?}",
+                FullDebugCell {
+                    cell: &cell,
+                    space: &space
+                }
+            );
+            println!("At axis 2 (sender): {:?}", cell.slot(2, &space));
+            println!("At axis 3: {:?}", cell.slot(3, &space));
+            println!("At axis 6 (receiver): {:?}", cell.slot(6, &space));
+            println!("At axis 7: {:?}", cell.slot(7, &space));
+            println!("At axis 14 (amount): {:?}", cell.slot(14, &space));
+            println!("At axis 15: {:?}", cell.slot(15, &space));
         }
 
         println!("\nDecoding TransactionData...");
-        let decoded = TransactionData::from_noun(&encoded).unwrap();
+        let decoded = TransactionData::from_noun(&encoded, &space).unwrap();
         println!("Decoded result: {:?}", decoded);
 
         assert_eq!(original, decoded);
@@ -423,6 +438,7 @@ mod complex_tests {
     #[test]
     fn test_complex_transaction() {
         let mut stack = TestStackGuard::new(8 << 10 << 10);
+        let space = stack.noun_space();
 
         let transaction = Transaction {
             id: 1,
@@ -445,16 +461,16 @@ mod complex_tests {
         let encoded = transaction.to_noun(&mut *stack);
         println!("\nEncoded transaction noun: {:?}", encoded);
         if let Ok(cell) = encoded.as_cell() {
-            println!("Transaction cell head: {:?}", cell.head());
-            println!("Transaction cell tail: {:?}", cell.tail());
-            if let Ok(status_cell) = cell.slot(7).unwrap().as_cell() {
-                println!("Status tag: {:?}", status_cell.head());
-                println!("Status data: {:?}", status_cell.tail());
+            println!("Transaction cell head: {:?}", cell.head(&space));
+            println!("Transaction cell tail: {:?}", cell.tail(&space));
+            if let Ok(status_cell) = cell.slot(7, &space).unwrap().as_cell() {
+                println!("Status tag: {:?}", status_cell.head(&space));
+                println!("Status data: {:?}", status_cell.tail(&space));
             }
         }
 
         println!("\nDecoding transaction...");
-        let decoded = Transaction::from_noun(&encoded).unwrap();
+        let decoded = Transaction::from_noun(&encoded, &space).unwrap();
         println!("Successfully decoded transaction: {:?}", decoded);
         assert_eq!(transaction, decoded);
 
@@ -464,7 +480,7 @@ mod complex_tests {
             result: Ok(vec![1, 2, 3]),
         };
         let encoded2 = transaction2.to_noun(&mut *stack);
-        let decoded2 = Transaction::from_noun(&encoded2).unwrap();
+        let decoded2 = Transaction::from_noun(&encoded2, &space).unwrap();
         assert_eq!(transaction2, decoded2);
 
         let mut transaction3 = transaction;
@@ -473,31 +489,36 @@ mod complex_tests {
             trace: vec![404, 500],
         };
         let encoded3 = transaction3.to_noun(&mut *stack);
-        let decoded3 = Transaction::from_noun(&encoded3).unwrap();
+        let decoded3 = Transaction::from_noun(&encoded3, &space).unwrap();
         assert_eq!(transaction3, decoded3);
     }
 
     #[test]
     fn test_nested_options_and_results() {
         let mut stack = TestStackGuard::new(8 << 10 << 10);
+        let space = stack.noun_space();
 
         // Test deeply nested Option<Result<Option<T>>>
         let nested_data: Option<Result<Option<Vec<u64>>, String>> = Some(Ok(Some(vec![1, 2, 3])));
 
         let encoded = nested_data.to_noun(&mut *stack);
+        let encoded_cell = encoded.as_cell().unwrap();
         println!(
             "Encoded nested data: {:?}",
-            FullDebugCell(&encoded.as_cell().unwrap())
+            FullDebugCell {
+                cell: &encoded_cell,
+                space: &space
+            }
         );
 
-        let decoded = Option::<Result<Option<Vec<u64>>, String>>::from_noun(&encoded).unwrap();
+        let decoded = Option::<Result<Option<Vec<u64>>, String>>::from_noun(&encoded, &space).unwrap();
         assert_eq!(nested_data, decoded);
 
         // Test None case
         let none_data: Option<Result<Option<Vec<u64>>, String>> = None;
         let encoded_none = none_data.to_noun(&mut *stack);
         let decoded_none =
-            Option::<Result<Option<Vec<u64>>, String>>::from_noun(&encoded_none).unwrap();
+            Option::<Result<Option<Vec<u64>>, String>>::from_noun(&encoded_none, &space).unwrap();
         assert_eq!(none_data, decoded_none);
 
         // Test Error case
@@ -505,13 +526,14 @@ mod complex_tests {
             Some(Err("test error".to_string()));
         let encoded_err = err_data.to_noun(&mut *stack);
         let decoded_err =
-            Option::<Result<Option<Vec<u64>>, String>>::from_noun(&encoded_err).unwrap();
+            Option::<Result<Option<Vec<u64>>, String>>::from_noun(&encoded_err, &space).unwrap();
         assert_eq!(err_data, decoded_err);
     }
 
     #[test]
     fn test_complex_collections() {
         let mut stack = TestStackGuard::new(8 << 10 << 10);
+        let space = stack.noun_space();
 
         // Test Vec<HashMap<String, Vec<Option<u64>>>>
         let mut map1 = HashMap::new();
@@ -524,12 +546,16 @@ mod complex_tests {
         let complex_collection = vec![map1, map2];
 
         let encoded = complex_collection.to_noun(&mut *stack);
+        let encoded_cell = encoded.as_cell().unwrap();
         println!(
             "Encoded collection: {:?}",
-            FullDebugCell(&encoded.as_cell().unwrap())
+            FullDebugCell {
+                cell: &encoded_cell,
+                space: &space
+            }
         );
 
-        let decoded = Vec::<HashMap<String, Vec<Option<u64>>>>::from_noun(&encoded).unwrap();
+        let decoded = Vec::<HashMap<String, Vec<Option<u64>>>>::from_noun(&encoded, &space).unwrap();
         assert_eq!(complex_collection, decoded);
     }
 }

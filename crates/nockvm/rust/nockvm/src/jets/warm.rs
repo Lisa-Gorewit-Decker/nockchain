@@ -256,7 +256,7 @@ mod test {
     use crate::jets::cold::{Batteries, BatteriesMem, NO_BATTERIES};
     use crate::jets::JetErr;
     use crate::mem::NockStack;
-    use crate::noun::{NounAllocator, D};
+    use crate::noun::{NounAllocator, NounSpace, D};
     use crate::pma::{Pma, PmaCopy};
     use std::path::PathBuf;
 
@@ -310,18 +310,18 @@ mod test {
     }
 
     /// Helper to verify a noun is not stack-allocated (is in offset form)
-    fn verify_noun_not_stack_allocated(noun: Noun, context: &str) {
+    fn verify_noun_not_stack_allocated(noun: Noun, space: &NounSpace, context: &str) {
         if noun.is_direct() {
             return;
         }
         assert!(
-            !noun.is_stack_allocated(),
+            !noun.is_stack_allocated(space),
             "{} should be in offset form after evacuation",
             context
         );
         if let Ok(cell) = noun.as_cell() {
-            verify_noun_not_stack_allocated(cell.head(), context);
-            verify_noun_not_stack_allocated(cell.tail(), context);
+            verify_noun_not_stack_allocated(cell.head(space), space, context);
+            verify_noun_not_stack_allocated(cell.tail(space), space, context);
         }
     }
 
@@ -342,9 +342,7 @@ mod test {
         let mut stack = make_test_stack(DEFAULT_STACK_SIZE);
         let mut pma = Pma::new(100000, PathBuf::from("/tmp/test_warm_entry_pma"))
             .expect("Failed to create test PMA");
-
-        // Install PMA arena for offset-form access
-        let _guard = pma.install();
+        let space = NounSpace::new(&stack, &pma);
 
         // Create WarmEntry linked list with two entries
         // (battery_value, jet, path_value, test)
@@ -393,11 +391,15 @@ mod test {
                 *expected_battery,
                 "Battery value should match"
             );
-            assert_eq!(parent_axis.as_u64().unwrap(), 0, "Parent axis should be 0");
+            assert_eq!(
+                parent_axis.as_u64(&space).unwrap(),
+                0,
+                "Parent axis should be 0"
+            );
 
             // Verify nouns are in offset form
-            verify_noun_not_stack_allocated(path, "WarmEntry path");
-            verify_noun_not_stack_allocated(battery, "WarmEntry battery");
+            verify_noun_not_stack_allocated(path, &space, "WarmEntry path");
+            verify_noun_not_stack_allocated(battery, &space, "WarmEntry battery");
         }
 
         assert!(
@@ -426,9 +428,7 @@ mod test {
         let mut stack = make_test_stack(DEFAULT_STACK_SIZE);
         let mut pma = Pma::new(100000, PathBuf::from("/tmp/test_warm_pma"))
             .expect("Failed to create test PMA");
-
-        // Install PMA arena for offset-form access
-        let _guard = pma.install();
+        let space = NounSpace::new(&stack, &pma);
 
         // Create a Warm and insert some entries
         let mut warm = Warm::new(&mut stack);
@@ -486,8 +486,8 @@ mod test {
             assert_eq!(unsafe { battery.as_raw() }, *expected_battery, "Battery should match");
 
             // Verify nouns are in offset form
-            verify_noun_not_stack_allocated(path, "Warm path");
-            verify_noun_not_stack_allocated(battery, "Warm battery");
+            verify_noun_not_stack_allocated(path, &space, "Warm path");
+            verify_noun_not_stack_allocated(battery, &space, "Warm battery");
         }
         assert!(expected_iter1.next().is_none(), "Missing entries for formula D(100)");
 
@@ -513,8 +513,8 @@ mod test {
             assert_eq!(unsafe { battery.as_raw() }, *expected_battery, "Battery should match");
 
             // Verify nouns are in offset form
-            verify_noun_not_stack_allocated(path, "Warm path");
-            verify_noun_not_stack_allocated(battery, "Warm battery");
+            verify_noun_not_stack_allocated(path, &space, "Warm path");
+            verify_noun_not_stack_allocated(battery, &space, "Warm battery");
         }
         assert!(expected_iter2.next().is_none(), "Missing entries for formula D(200)");
 

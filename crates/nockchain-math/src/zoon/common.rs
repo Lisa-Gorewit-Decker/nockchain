@@ -21,9 +21,10 @@ impl TipHasher for DefaultTipHasher {
         stack: &mut A,
         noun: Noun,
     ) -> Result<[u64; 5], JetErr> {
-        let space = stack.noun_space();
-        let noun_res = crate::tip5::hash::hash_noun_varlen(stack, noun, &space)?;
-        let digest = <[u64; 5]>::from_noun(&noun_res, &space)?;
+        let input_space = stack.noun_space();
+        let noun_res = crate::tip5::hash::hash_noun_varlen(stack, noun, &input_space)?;
+        let output_space = stack.noun_space();
+        let digest = <[u64; 5]>::from_noun(&noun_res, &output_space)?;
         Ok(digest)
     }
     fn hash_ten_cell(&self, ten: [u64; 10]) -> Result<[u64; 5], JetErr> {
