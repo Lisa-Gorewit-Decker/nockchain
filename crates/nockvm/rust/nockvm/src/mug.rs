@@ -60,12 +60,13 @@ pub fn calc_atom_mug_u32(atom: Atom, space: &NounSpace) -> u32 {
  * # Safety
  * head_mug and tail_mug both have msb 0.
  */
-pub unsafe fn calc_cell_mug_u32(head_mug: u32, tail_mug: u32) -> u32 {
+pub unsafe fn calc_cell_mug_u32(head_mug: u32, tail_mug: u32, space: &NounSpace) -> u32 {
     let cat_mugs = (head_mug as u64) | ((tail_mug as u64) << 32);
     mum_u32(
         0xDEADBEEF,
         0xFFFE,
         DirectAtom::new_unchecked(cat_mugs).as_atom(),
+        space,
     ) // this is safe on mugs since mugs are 31 bits
 }
 
@@ -109,7 +110,7 @@ pub fn allocated_mug_u32_one(allocated: &mut Allocated, space: &NounSpace) -> Op
             }
             Right(cell) => match (get_mug(cell.head(space), space), get_mug(cell.tail(space), space)) {
                 (Some(head_mug), Some(tail_mug)) => {
-                    let mug = unsafe { calc_cell_mug_u32(head_mug, tail_mug) };
+                    let mug = unsafe { calc_cell_mug_u32(head_mug, tail_mug, space) };
                     unsafe {
                         set_mug(allocated, mug, space);
                     }
@@ -137,9 +138,9 @@ pub fn mug_u32(stack: &mut NockStack, noun: Noun) -> u32 {
     }
 
     {
-        let space = stack.noun_space();
-        assert_acyclic!(space, noun);
-        assert_no_forwarding_pointers!(space, noun);
+        let _space = stack.noun_space();
+        assert_acyclic!(_space, noun);
+        assert_no_forwarding_pointers!(_space, noun);
     }
     assert_no_junior_pointers!(stack, noun);
 
@@ -194,7 +195,7 @@ pub fn mug_u32(stack: &mut NockStack, noun: Noun) -> u32 {
                                         let space = stack.noun_space();
                                         set_mug(
                                             &mut allocated,
-                                            calc_cell_mug_u32(head_mug, tail_mug),
+                                            calc_cell_mug_u32(head_mug, tail_mug, &space),
                                             &space,
                                         );
                                         stack.pop::<Noun>();
@@ -220,9 +221,9 @@ pub fn mug_u32(stack: &mut NockStack, noun: Noun) -> u32 {
     }
 
     {
-        let space = stack.noun_space();
-        assert_acyclic!(space, noun);
-        assert_no_forwarding_pointers!(space, noun);
+        let _space = stack.noun_space();
+        assert_acyclic!(_space, noun);
+        assert_no_forwarding_pointers!(_space, noun);
     }
     assert_no_junior_pointers!(stack, noun);
 

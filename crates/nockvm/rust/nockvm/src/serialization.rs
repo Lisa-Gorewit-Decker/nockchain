@@ -5,13 +5,13 @@ use crate::hamt::MutHamt;
 use crate::interpreter::Error::{self, *};
 use crate::interpreter::Mote::*;
 use crate::mem::NockStack;
-use crate::noun::{Atom, Cell, DirectAtom, IndirectAtom, Noun, D};
+use crate::noun::{Atom, Cell, DirectAtom, IndirectAtom, Noun, NounSpace, D};
 
 crate::gdb!();
 
 /// Calculate the number of bits needed to represent an atom
-pub fn met0_usize(atom: Atom) -> usize {
-    let atom_bitslice = atom.as_bitslice();
+pub fn met0_usize(atom: Atom, space: &NounSpace) -> usize {
+    let atom_bitslice = atom.as_bitslice(space);
     atom_bitslice.last_one().map_or(0, |last_one| last_one + 1)
 }
 
@@ -131,10 +131,10 @@ fn cue_bitslice_with_mode(
     buffer: &BitSlice<u64, Lsb0>,
     use_offset_tags: bool,
 ) -> Result<Noun, Error> {
-    stack.install_arena();
     let backref_map = MutHamt::<Noun>::new(stack);
     let mut result = D(0);
     let mut cursor = 0;
+    let space = stack.noun_space();
 
     // NOTE: with_frame() calls preserve() on the return value, which converts
     // all nouns to offset form. This means the `use_offset_tags` parameter only
@@ -189,9 +189,14 @@ fn cue_bitslice_with_mode(
                         } else {
                             // 0 tag: atom
                             let backref: u64 = (cursor - 1) as u64;
-                            *dest_ptr =
-                                rub_atom_internal(stack, &mut cursor, buffer, use_offset_tags)?
-                                    .as_noun();
+                            *dest_ptr = rub_atom_internal(
+                                stack,
+                                &mut cursor,
+                                buffer,
+                                use_offset_tags,
+                                &space,
+                            )?
+                            .as_noun();
                             let mut backref_atom = Atom::new(stack, backref).as_noun();
                             backref_map.insert(stack, &mut backref_atom, *dest_ptr);
                         }
@@ -221,8 +226,8 @@ pub fn cue_bitslice(stack: &mut NockStack, buffer: &BitSlice<u64, Lsb0>) -> Resu
 /// # Returns
 /// A Result containing either the deserialized Noun or an Error
 pub fn cue(stack: &mut NockStack, buffer: Atom) -> Result<Noun, Error> {
-    stack.install_arena();
-    let buffer_bitslice = buffer.as_bitslice();
+    let space = stack.noun_space();
+    let buffer_bitslice = buffer.as_bitslice(&space);
     cue_bitslice_with_mode(stack, buffer_bitslice, false)
 }
 
@@ -236,8 +241,8 @@ pub fn cue_bitslice_into_offset(
 
 /// Deserialize a noun from an Atom into offset-tagged form.
 pub fn cue_into_offset(stack: &mut NockStack, buffer: Atom) -> Result<Noun, Error> {
-    stack.install_arena();
-    let buffer_bitslice = buffer.as_bitslice();
+    let space = stack.noun_space();
+    let buffer_bitslice = buffer.as_bitslice(&space);
     cue_bitslice_into_offset(stack, buffer_bitslice)
 }
 
@@ -254,11 +259,11 @@ pub fn cue_into_stack_pointer_form(
     stack: &mut NockStack,
     buffer: Atom,
 ) -> Result<Noun, Error> {
-    stack.install_arena();
     let backref_map = MutHamt::<Noun>::new(stack);
     let mut result = D(0);
     let mut cursor = 0;
-    let buffer_bitslice = buffer.as_bitslice();
+    let space = stack.noun_space();
+    let buffer_bitslice = buffer.as_bitslice(&space);
 
     // Manually manage frame without the preserve step
     unsafe {
@@ -301,7 +306,7 @@ pub fn cue_into_stack_pointer_form(
                         // 0 tag: atom - always use stack-pointer form
                         let backref: u64 = (cursor - 1) as u64;
                         *dest_ptr =
-                            rub_atom_internal(stack, &mut cursor, buffer_bitslice, false)?
+                            rub_atom_internal(stack, &mut cursor, buffer_bitslice, false, &space)?
                                 .as_noun();
                         let mut backref_atom = Atom::new(stack, backref).as_noun();
                         backref_map.insert(stack, &mut backref_atom, *dest_ptr);
@@ -364,7 +369,8 @@ fn rub_atom(
     cursor: &mut usize,
     buffer: &BitSlice<u64, Lsb0>,
 ) -> Result<Atom, Error> {
-    rub_atom_internal(stack, cursor, buffer, false)
+    let space = stack.noun_space();
+    rub_atom_internal(stack, cursor, buffer, false, &space)
 }
 
 fn rub_atom_internal(
@@ -372,6 +378,7 @@ fn rub_atom_internal(
     cursor: &mut usize,
     buffer: &BitSlice<u64, Lsb0>,
     use_offset_tags: bool,
+    space: &NounSpace,
 ) -> Result<Atom, Error> {
     let size = get_size(cursor, buffer)?;
     let bits = next_up_to_n_bits(cursor, buffer, size);
@@ -387,15 +394,13 @@ fn rub_atom_internal(
         let wordsize = (size + 63) >> 6;
         let (mut atom, slice) = unsafe { IndirectAtom::new_raw_mut_bitslice(stack, wordsize) };
         slice[0..bits.len()].copy_from_bitslice(bits);
-        debug_assert!(atom.size() > 0);
+        debug_assert!(atom.size(space) > 0);
         if use_offset_tags {
             let offset =
-                stack.offset_from_ptr(
-                    unsafe { atom.to_raw_pointer_with_arena(stack.arena_ref()) } as *const u8
-                );
+                stack.offset_from_ptr(unsafe { atom.to_raw_pointer(space) } as *const u8);
             atom = IndirectAtom::from_offset_words(offset);
         }
-        unsafe { Ok(atom.normalize_as_atom()) }
+        unsafe { Ok(atom.normalize_as_atom(space)) }
     }
 }
 
@@ -430,8 +435,8 @@ struct JamState<'a> {
 ///
 /// Implements a compact encoding scheme for nouns, with backreferences for shared structures.
 pub fn jam(stack: &mut NockStack, noun: Noun) -> Atom {
-    stack.install_arena();
     let backref_map = MutHamt::new(stack);
+    let space = stack.noun_space();
     let size = 8;
     let (atom, slice) = unsafe { IndirectAtom::new_raw_mut_bitslice(stack, size) };
     let mut state = JamState {
@@ -452,16 +457,16 @@ pub fn jam(stack: &mut NockStack, noun: Noun) -> Atom {
             if let Some(backref) = backref_map.lookup(stack, &mut noun) {
                 match noun.as_either_atom_cell() {
                     Left(atom) => {
-                        let atom_size = met0_usize(atom);
+                        let atom_size = met0_usize(atom, &space);
                         let backref_size = met0_u64_to_usize(backref);
                         if atom_size <= backref_size {
-                            jam_atom(stack, &mut state, atom);
+                            jam_atom(stack, &mut state, atom, &space);
                         } else {
-                            jam_backref(stack, &mut state, backref);
+                            jam_backref(stack, &mut state, backref, &space);
                         }
                     }
                     Right(_cell) => {
-                        jam_backref(stack, &mut state, backref);
+                        jam_backref(stack, &mut state, backref, &space);
                     }
                 }
                 unsafe {
@@ -472,7 +477,7 @@ pub fn jam(stack: &mut NockStack, noun: Noun) -> Atom {
             backref_map.insert(stack, &mut noun, state.cursor as u64);
             match noun.as_either_atom_cell() {
                 Left(atom) => {
-                    jam_atom(stack, &mut state, atom);
+                    jam_atom(stack, &mut state, atom, &space);
                     unsafe {
                         stack.pop::<Noun>();
                     };
@@ -482,8 +487,8 @@ pub fn jam(stack: &mut NockStack, noun: Noun) -> Atom {
                     jam_cell(stack, &mut state);
                     unsafe {
                         stack.pop::<Noun>();
-                        *(stack.push::<Noun>()) = cell.tail();
-                        *(stack.push::<Noun>()) = cell.head();
+                        *(stack.push::<Noun>()) = cell.tail(&space);
+                        *(stack.push::<Noun>()) = cell.head(&space);
                     };
                     continue;
                 }
@@ -491,7 +496,7 @@ pub fn jam(stack: &mut NockStack, noun: Noun) -> Atom {
         }
     }
     unsafe {
-        let mut result = state.atom.normalize_as_atom();
+        let mut result = state.atom.normalize_as_atom(&space);
         stack.preserve(&mut result);
         stack.frame_pop();
         result
@@ -499,7 +504,7 @@ pub fn jam(stack: &mut NockStack, noun: Noun) -> Atom {
 }
 
 /// Serialize an atom into the jam state
-fn jam_atom(traversal: &mut NockStack, state: &mut JamState, atom: Atom) {
+fn jam_atom(traversal: &mut NockStack, state: &mut JamState, atom: Atom, space: &NounSpace) {
     loop {
         if state.cursor + 1 > state.slice.len() {
             double_atom_size(traversal, state);
@@ -510,7 +515,7 @@ fn jam_atom(traversal: &mut NockStack, state: &mut JamState, atom: Atom) {
     state.slice.set(state.cursor, false); // 0 tag for atom
     state.cursor += 1;
     loop {
-        if let Ok(()) = mat(traversal, state, atom) {
+        if let Ok(()) = mat(traversal, state, atom, space) {
             break;
         } else {
             double_atom_size(traversal, state);
@@ -533,7 +538,12 @@ fn jam_cell(traversal: &mut NockStack, state: &mut JamState) {
 }
 
 /// Serialize a backreference into the jam state
-fn jam_backref(traversal: &mut NockStack, state: &mut JamState, backref: u64) {
+fn jam_backref(
+    traversal: &mut NockStack,
+    state: &mut JamState,
+    backref: u64,
+    space: &NounSpace,
+) {
     loop {
         if state.cursor + 2 > state.slice.len() {
             double_atom_size(traversal, state);
@@ -546,7 +556,7 @@ fn jam_backref(traversal: &mut NockStack, state: &mut JamState, backref: u64) {
     state.cursor += 2;
     let backref_atom = Atom::new(traversal, backref);
     loop {
-        if let Ok(()) = mat(traversal, state, backref_atom) {
+        if let Ok(()) = mat(traversal, state, backref_atom, space) {
             break;
         } else {
             double_atom_size(traversal, state);
@@ -567,8 +577,13 @@ fn double_atom_size(traversal: &mut NockStack, state: &mut JamState) {
 /// Encode an atom's size and value into the jam state
 ///
 /// INVARIANT: mat must not modify state.cursor unless it will also return `Ok(())`
-fn mat(traversal: &mut NockStack, state: &mut JamState, atom: Atom) -> Result<(), ()> {
-    let b_atom_size = met0_usize(atom);
+fn mat(
+    traversal: &mut NockStack,
+    state: &mut JamState,
+    atom: Atom,
+    space: &NounSpace,
+) -> Result<(), ()> {
+    let b_atom_size = met0_usize(atom, space);
     let b_atom_size_atom = Atom::new(traversal, b_atom_size as u64);
     if b_atom_size == 0 {
         if state.cursor + 1 > state.slice.len() {
@@ -579,17 +594,17 @@ fn mat(traversal: &mut NockStack, state: &mut JamState, atom: Atom) -> Result<()
             Ok(())
         }
     } else {
-        let c_b_size = met0_usize(b_atom_size_atom);
+        let c_b_size = met0_usize(b_atom_size_atom, space);
         if state.cursor + c_b_size + c_b_size + b_atom_size > state.slice.len() {
             Err(())
         } else {
             state.slice[state.cursor..state.cursor + c_b_size].fill(false); // a 0 bit for each bit in the atom size
             state.slice.set(state.cursor + c_b_size, true); // a terminating 1 bit
             state.slice[state.cursor + c_b_size + 1..state.cursor + c_b_size + c_b_size]
-                .copy_from_bitslice(&b_atom_size_atom.as_bitslice()[0..c_b_size - 1]); // the atom size excepting the most significant 1 (since we know where that is from the size-of-the-size)
+                .copy_from_bitslice(&b_atom_size_atom.as_bitslice(space)[0..c_b_size - 1]); // the atom size excepting the most significant 1 (since we know where that is from the size-of-the-size)
             state.slice[state.cursor + c_b_size + c_b_size
                 ..state.cursor + c_b_size + c_b_size + b_atom_size]
-                .copy_from_bitslice(&atom.as_bitslice()[0..b_atom_size]);
+                .copy_from_bitslice(&atom.as_bitslice(space)[0..b_atom_size]);
             state.cursor += c_b_size + c_b_size + b_atom_size;
             Ok(())
         }

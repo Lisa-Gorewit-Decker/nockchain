@@ -471,6 +471,7 @@ pub mod util {
                 )
             });
             assert!(res.is_atom(), "jet result not atom");
+            let space = context.stack.noun_space();
             let res_siz = res
                 .atom()
                 .unwrap_or_else(|| {
@@ -481,7 +482,7 @@ pub mod util {
                         option_env!("GIT_SHA")
                     )
                 })
-                .size();
+                .size(&space);
             assert!(siz == res_siz, "got: {res_siz}, need: {siz}");
         }
 

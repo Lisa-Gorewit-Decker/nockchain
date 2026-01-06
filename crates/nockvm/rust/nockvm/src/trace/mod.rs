@@ -13,7 +13,7 @@ use crate::jets::bits::util::rap;
 use crate::jets::form::util::scow;
 use crate::mem::NockStack;
 use crate::mug::met3_usize;
-use crate::noun::{Atom, DirectAtom, IndirectAtom, Noun, NounSpace};
+use crate::noun::{Atom, DirectAtom, IndirectAtom, Noun};
 
 mod json;
 pub use json::*;

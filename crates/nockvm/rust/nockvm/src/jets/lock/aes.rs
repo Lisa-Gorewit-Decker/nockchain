@@ -165,7 +165,7 @@ mod util {
                 buffer[0..len].copy_from_slice(&(bytes[0..len]));
 
                 item.length = bytes.len();
-                item.bytes = atom.data_pointer_mut() as *mut u8;
+                item.bytes = atom.data_pointer_mut(space) as *mut u8;
 
                 ads = cell.tail(space);
             }

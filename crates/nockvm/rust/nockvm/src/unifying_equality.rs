@@ -296,11 +296,11 @@ unsafe fn x_is_junior(
 /// into more junior frames, which would result in incorrect operation of the copier.
 pub unsafe fn unifying_equality(stack: &mut NockStack, a: *mut Noun, b: *mut Noun) -> bool {
     {
-        let space = stack.noun_space();
-        assert_acyclic!(space, *a);
-        assert_acyclic!(space, *b);
-        assert_no_forwarding_pointers!(space, *a);
-        assert_no_forwarding_pointers!(space, *b);
+        let _space = stack.noun_space();
+        assert_acyclic!(_space, *a);
+        assert_acyclic!(_space, *b);
+        assert_no_forwarding_pointers!(_space, *a);
+        assert_no_forwarding_pointers!(_space, *b);
     }
     assert_no_junior_pointers!(stack, *a);
     assert_no_junior_pointers!(stack, *b);
@@ -431,11 +431,11 @@ pub unsafe fn unifying_equality(stack: &mut NockStack, a: *mut Noun, b: *mut Nou
     stack.frame_pop();
 
     {
-        let space = stack.noun_space();
-        assert_acyclic!(space, *a);
-        assert_acyclic!(space, *b);
-        assert_no_forwarding_pointers!(space, *a);
-        assert_no_forwarding_pointers!(space, *b);
+        let _space = stack.noun_space();
+        assert_acyclic!(_space, *a);
+        assert_acyclic!(_space, *b);
+        assert_no_forwarding_pointers!(_space, *a);
+        assert_no_forwarding_pointers!(_space, *b);
     }
     assert_no_junior_pointers!(stack, *a);
     assert_no_junior_pointers!(stack, *b);

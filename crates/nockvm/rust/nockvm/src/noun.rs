@@ -157,6 +157,7 @@ impl TaggedPtr {
 pub struct NounSpace {
     stack: Option<Arc<Arena>>,
     pma: Option<Arc<Arena>>,
+    extra_ptr_ranges: Vec<(usize, usize)>,
 }
 
 impl NounSpace {
@@ -164,6 +165,7 @@ impl NounSpace {
         Self {
             stack: Some(Arc::clone(stack.arena())),
             pma: Some(Arc::clone(pma.arena())),
+            extra_ptr_ranges: Vec::new(),
         }
     }
 
@@ -171,6 +173,7 @@ impl NounSpace {
         Self {
             stack: Some(Arc::clone(stack.arena())),
             pma: None,
+            extra_ptr_ranges: Vec::new(),
         }
     }
 
@@ -178,7 +181,21 @@ impl NounSpace {
         Self {
             stack: None,
             pma: Some(Arc::clone(pma.arena())),
+            extra_ptr_ranges: Vec::new(),
         }
+    }
+
+    pub fn empty() -> Self {
+        Self {
+            stack: None,
+            pma: None,
+            extra_ptr_ranges: Vec::new(),
+        }
+    }
+
+    pub fn with_extra_ptr_ranges(mut self, ranges: Vec<(usize, usize)>) -> Self {
+        self.extra_ptr_ranges = ranges;
+        self
     }
 
     fn resolve_stack_ptr(&self, payload: u64) -> *const u8 {
@@ -202,6 +219,12 @@ impl NounSpace {
             let addr = ptr as usize;
             if addr >= base && addr < end {
                 return AllocLocation::PmaPtr;
+            }
+        }
+        for (base, end) in &self.extra_ptr_ranges {
+            let addr = ptr as usize;
+            if addr >= *base && addr < *end {
+                return AllocLocation::Stack;
             }
         }
         panic!(

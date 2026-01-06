@@ -311,7 +311,7 @@ pub mod util {
                         }
                         // "{end_col}]>"
                         let p4 = T(stack, &[D(b']' as u64), D(b'>' as u64), D(0)]);
-                        (*list.tail_as_mut()) = p4;
+                        (*list.tail_as_mut(&space)) = p4;
 
                         list = end_lin.as_cell()?;
                         loop {
@@ -322,7 +322,7 @@ pub mod util {
                         }
                         // "{end_lin} {end_col}]>"
                         let p3 = T(stack, &[D(b' ' as u64), end_col]);
-                        (*list.tail_as_mut()) = p3;
+                        (*list.tail_as_mut(&space)) = p3;
 
                         list = str_col.as_cell()?;
                         loop {
@@ -336,7 +336,7 @@ pub mod util {
                             stack,
                             &[D(b']' as u64), D(b'.' as u64), D(b'[' as u64), end_lin],
                         );
-                        (*list.tail_as_mut()) = p2;
+                        (*list.tail_as_mut(&space)) = p2;
 
                         list = str_lin.as_cell()?;
                         loop {
@@ -347,7 +347,7 @@ pub mod util {
                         }
                         // "{str_lin} {str_col}].[{end_lin} {end_col}]>"
                         let p1 = T(stack, &[D(b' ' as u64), str_col]);
-                        (*list.tail_as_mut()) = p1;
+                        (*list.tail_as_mut(&space)) = p1;
 
                         // "<[{str_lin} {str_col}].[{end_lin} {end_col}]>"
                         let tape = T(stack, &[D(b'<' as u64), D(b'[' as u64), str_lin]);

@@ -313,7 +313,7 @@ impl PmaCopy for Noun {
                 Left(_direct) => {
                     *dest_ptr = noun;
                 }
-                Right(mut allocated) => {
+                Right(allocated) => {
                     let forwarded = {
                         let space = NounSpace::new(stack, &*pma);
                         allocated.forwarding_pointer(&space)

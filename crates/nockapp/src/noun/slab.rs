@@ -14,7 +14,8 @@ use nockvm::ext::noun_equality;
 use nockvm::mem::NockStack;
 use nockvm::mug::{calc_atom_mug_u32, calc_cell_mug_u32, get_mug, set_mug};
 use nockvm::noun::{
-    Atom, Cell, CellMemory, DirectAtom, IndirectAtom, Noun, NounAllocator, D, DIRECT_MAX,
+    Atom, Cell, CellMemory, DirectAtom, IndirectAtom, Noun, NounAllocator, NounSpace, D,
+    DIRECT_MAX,
 };
 use nockvm::serialization::{met0_u64_to_usize, met0_usize};
 use thiserror::Error;
@@ -221,6 +222,19 @@ impl<J> NounAllocator for NounSlab<J> {
         let a = unsafe { &mut *a };
         let b = unsafe { &mut *b };
         noun_equality(a, b)
+    }
+
+    fn noun_space(&self) -> NounSpace {
+        let mut ranges = Vec::with_capacity(self.slabs.len());
+        for (base, layout) in &self.slabs {
+            if base.is_null() || layout.size() == 0 {
+                continue;
+            }
+            let start = *base as usize;
+            let end = start + layout.size();
+            ranges.push((start, end));
+        }
+        NounSpace::empty().with_extra_ptr_ranges(ranges)
     }
 }
 
