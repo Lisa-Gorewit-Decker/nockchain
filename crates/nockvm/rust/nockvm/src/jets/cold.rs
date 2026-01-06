@@ -1,7 +1,7 @@
 use std::ptr::{copy_nonoverlapping, null_mut};
 
 use crate::hamt::Hamt;
-use crate::mem::{self, NockStack, Preserve, Retag};
+use crate::mem::{self, Arena, NockStack, Preserve, Retag};
 use crate::noun::{self, Atom, DirectAtom, IndirectAtom, Noun, NounAllocator, Slots, D, T};
 use crate::pma::{Pma, PmaCopy};
 use crate::unifying_equality::unifying_equality;
@@ -606,6 +606,7 @@ impl Cold {
         mut chum: Noun,
     ) -> Result {
         unsafe {
+            let arena = stack.arena_ref();
             // Are we registering a root?
             if let Ok(parent_axis_direct) = parent_axis.as_direct() {
                 if parent_axis_direct.data() == 0 {
@@ -672,7 +673,7 @@ impl Cold {
             if let Some(paths) = (*(self.0)).battery_to_paths.lookup(stack, &mut battery) {
                 for path in paths {
                     if let Ok(path_cell) = (*path).as_cell() {
-                        if unifying_equality(stack, &mut path_cell.head(), &mut chum) {
+                        if unifying_equality(stack, &mut path_cell.head_with_arena(arena), &mut chum) {
                             if let Some(batteries_list) =
                                 (*(self.0)).path_to_batteries.lookup(stack, &mut *path)
                             {
@@ -805,14 +806,20 @@ impl Cold {
     }
 }
 
-pub struct NounListIterator(Noun);
+pub struct NounListIterator<'a>(Noun, &'a Arena);
 
-impl Iterator for NounListIterator {
+impl<'a> NounListIterator<'a> {
+    pub fn new(noun: Noun, arena: &'a Arena) -> Self {
+        NounListIterator(noun, arena)
+    }
+}
+
+impl<'a> Iterator for NounListIterator<'a> {
     type Item = Noun;
     fn next(&mut self) -> Option<Self::Item> {
         if let Ok(it) = self.0.as_cell() {
-            self.0 = it.tail();
-            Some(it.head())
+            self.0 = it.tail_with_arena(self.1);
+            Some(it.head_with_arena(self.1))
         } else if unsafe { self.0.raw_equals(&D(0)) } {
             None
         } else {
@@ -841,8 +848,8 @@ pub trait Nounable {
     type Target;
     // type Allocator;
 
-    fn into_noun<A: NounAllocator>(self, stack: &mut A) -> Noun;
-    fn from_noun<A: NounAllocator>(stack: &mut A, noun: &Noun) -> NounableResult<Self::Target>
+    fn into_noun<A: NounAllocator>(self, stack: &mut A, arena: &Arena) -> Noun;
+    fn from_noun<A: NounAllocator>(stack: &mut A, arena: &Arena, noun: &Noun) -> NounableResult<Self::Target>
     where
         Self: Sized;
 }
@@ -850,50 +857,50 @@ pub trait Nounable {
 impl Nounable for Atom {
     type Target = Self;
 
-    fn into_noun<A: NounAllocator>(self, _stack: &mut A) -> Noun {
+    fn into_noun<A: NounAllocator>(self, _stack: &mut A, _arena: &Arena) -> Noun {
         self.as_noun()
     }
-    fn from_noun<A: NounAllocator>(_stack: &mut A, noun: &Noun) -> NounableResult<Self::Target> {
+    fn from_noun<A: NounAllocator>(_stack: &mut A, _arena: &Arena, noun: &Noun) -> NounableResult<Self::Target> {
         noun.atom().ok_or(FromNounError::NotAtom)
     }
 }
 
 impl Nounable for u64 {
     type Target = Self;
-    fn into_noun<A: NounAllocator>(self, _stack: &mut A) -> Noun {
+    fn into_noun<A: NounAllocator>(self, _stack: &mut A, arena: &Arena) -> Noun {
         // Copied from Crown's IntoNoun, not sure why this isn't D(*self)
-        unsafe { Atom::from_raw(self).into_noun(_stack) }
+        unsafe { Atom::from_raw(self).into_noun(_stack, arena) }
     }
-    fn from_noun<A: NounAllocator>(_stack: &mut A, noun: &Noun) -> NounableResult<Self::Target> {
+    fn from_noun<A: NounAllocator>(_stack: &mut A, arena: &Arena, noun: &Noun) -> NounableResult<Self::Target> {
         let atom = noun.atom().ok_or(FromNounError::NotAtom)?;
-        let as_u64 = atom.as_u64()?;
+        let as_u64 = atom.as_u64_with_arena(arena)?;
         Ok(as_u64)
     }
 }
 
 impl Nounable for Noun {
     type Target = Self;
-    fn into_noun<A: NounAllocator>(self, _stack: &mut A) -> Noun {
+    fn into_noun<A: NounAllocator>(self, _stack: &mut A, _arena: &Arena) -> Noun {
         self
     }
 
-    fn from_noun<A: NounAllocator>(_stack: &mut A, noun: &Self) -> NounableResult<Self::Target> {
+    fn from_noun<A: NounAllocator>(_stack: &mut A, _arena: &Arena, noun: &Self) -> NounableResult<Self::Target> {
         Ok(*noun)
     }
 }
 
 impl Nounable for &str {
     type Target = String;
-    fn into_noun<A: NounAllocator>(self, stack: &mut A) -> Noun {
+    fn into_noun<A: NounAllocator>(self, stack: &mut A, arena: &Arena) -> Noun {
         let contents_atom = unsafe {
             let bytes = self.bytes().collect::<Vec<u8>>();
-            IndirectAtom::new_raw_bytes_ref(stack, bytes.as_slice()).normalize_as_atom()
+            IndirectAtom::new_raw_bytes_ref(stack, bytes.as_slice()).normalize_as_atom_with_arena(arena)
         };
-        contents_atom.into_noun(stack)
+        contents_atom.into_noun(stack, arena)
     }
-    fn from_noun<A: NounAllocator>(_stack: &mut A, noun: &Noun) -> NounableResult<Self::Target> {
+    fn from_noun<A: NounAllocator>(_stack: &mut A, arena: &Arena, noun: &Noun) -> NounableResult<Self::Target> {
         let atom = noun.as_atom()?;
-        let bytes = atom.as_ne_bytes();
+        let bytes = atom.as_ne_bytes_with_arena(arena);
         let utf8 = std::str::from_utf8(bytes)?;
         let allocated = utf8.to_string();
         Ok(allocated)
@@ -902,19 +909,19 @@ impl Nounable for &str {
 
 impl<T: Nounable + Copy> Nounable for &[T] {
     type Target = Vec<T::Target>;
-    fn into_noun<A: NounAllocator>(self, stack: &mut A) -> Noun {
+    fn into_noun<A: NounAllocator>(self, stack: &mut A, arena: &Arena) -> Noun {
         let mut list = D(0);
         for item in self.iter().rev() {
-            let item_noun = item.into_noun(stack);
+            let item_noun = item.into_noun(stack, arena);
             list = T(stack, &[item_noun, list]);
         }
         list
     }
 
-    fn from_noun<A: NounAllocator>(_stack: &mut A, noun: &Noun) -> NounableResult<Self::Target> {
+    fn from_noun<A: NounAllocator>(_stack: &mut A, arena: &Arena, noun: &Noun) -> NounableResult<Self::Target> {
         let mut items: Vec<<T as Nounable>::Target> = vec![];
-        for item in NounListIterator(*noun) {
-            let item = T::from_noun(_stack, &item)?;
+        for item in NounListIterator::new(*noun, arena) {
+            let item = T::from_noun(_stack, arena, &item)?;
             items.push(item);
         }
         Ok(items)
@@ -923,50 +930,50 @@ impl<T: Nounable + Copy> Nounable for &[T] {
 
 impl<T: Nounable, U: Nounable, V: Nounable> Nounable for (T, U, V) {
     type Target = (T::Target, U::Target, V::Target);
-    fn into_noun<A: NounAllocator>(self, stack: &mut A) -> Noun {
+    fn into_noun<A: NounAllocator>(self, stack: &mut A, arena: &Arena) -> Noun {
         // It's a three-tuple now
         let (a, b, c) = self;
-        let a_noun = a.into_noun(stack);
-        let b_noun = b.into_noun(stack);
-        let c_noun = c.into_noun(stack);
+        let a_noun = a.into_noun(stack, arena);
+        let b_noun = b.into_noun(stack, arena);
+        let c_noun = c.into_noun(stack, arena);
         T(stack, &[a_noun, b_noun, c_noun])
     }
 
-    fn from_noun<A: NounAllocator>(_stack: &mut A, noun: &Noun) -> NounableResult<Self::Target> {
+    fn from_noun<A: NounAllocator>(_stack: &mut A, arena: &Arena, noun: &Noun) -> NounableResult<Self::Target> {
         // it's a three tuple now
         let cell = noun.cell().ok_or(FromNounError::NotCell)?;
-        let head = cell.head();
-        let tail = cell.tail();
-        let a = T::from_noun(_stack, &head)?;
+        let head = cell.head_with_arena(arena);
+        let tail = cell.tail_with_arena(arena);
+        let a = T::from_noun(_stack, arena, &head)?;
         let cell = tail.as_cell()?;
-        let b = U::from_noun(_stack, &cell.head())?;
-        let c = V::from_noun(_stack, &cell.tail())?;
+        let b = U::from_noun(_stack, arena, &cell.head_with_arena(arena))?;
+        let c = V::from_noun(_stack, arena, &cell.tail_with_arena(arena))?;
         Ok((a, b, c))
     }
 }
 
 impl<T: Nounable, U: Nounable> Nounable for (T, U) {
     type Target = (T::Target, U::Target);
-    fn into_noun<A: NounAllocator>(self, stack: &mut A) -> Noun {
+    fn into_noun<A: NounAllocator>(self, stack: &mut A, arena: &Arena) -> Noun {
         let (a, b) = self;
-        let a_noun = a.into_noun(stack);
-        let b_noun = b.into_noun(stack);
+        let a_noun = a.into_noun(stack, arena);
+        let b_noun = b.into_noun(stack, arena);
         T(stack, &[a_noun, b_noun])
     }
 
-    fn from_noun<A: NounAllocator>(_stack: &mut A, noun: &Noun) -> NounableResult<Self::Target> {
+    fn from_noun<A: NounAllocator>(_stack: &mut A, arena: &Arena, noun: &Noun) -> NounableResult<Self::Target> {
         let cell = noun.cell().ok_or(FromNounError::NotCell)?;
-        let head = cell.head();
-        let tail = cell.tail();
-        let a = T::from_noun(_stack, &head)?;
-        let b = U::from_noun(_stack, &tail)?;
+        let head = cell.head_with_arena(arena);
+        let tail = cell.tail_with_arena(arena);
+        let a = T::from_noun(_stack, arena, &head)?;
+        let b = U::from_noun(_stack, arena, &tail)?;
         Ok((a, b))
     }
 }
 
 impl Nounable for NounList {
     type Target = NounList;
-    fn into_noun<A: NounAllocator>(self, stack: &mut A) -> Noun {
+    fn into_noun<A: NounAllocator>(self, stack: &mut A, _arena: &Arena) -> Noun {
         let mut list = D(0);
         for item in self {
             list = T(stack, &[unsafe { *item }, list]);
@@ -974,9 +981,9 @@ impl Nounable for NounList {
         list
     }
 
-    fn from_noun<A: NounAllocator>(stack: &mut A, noun: &Noun) -> NounableResult<Self::Target> {
+    fn from_noun<A: NounAllocator>(stack: &mut A, arena: &Arena, noun: &Noun) -> NounableResult<Self::Target> {
         let mut result = NOUN_LIST_NIL;
-        for item in NounListIterator(*noun) {
+        for item in NounListIterator::new(*noun, arena) {
             let list_mem_ptr: *mut NounListMem = unsafe { stack.alloc_struct(1) };
             unsafe {
                 list_mem_ptr.write(NounListMem {
@@ -992,7 +999,7 @@ impl Nounable for NounList {
 
 impl Nounable for Batteries {
     type Target = Batteries;
-    fn into_noun<A: NounAllocator>(self, stack: &mut A) -> Noun {
+    fn into_noun<A: NounAllocator>(self, stack: &mut A, _arena: &Arena) -> Noun {
         let mut list = D(0);
         for (battery, parent_axis) in self {
             let battery_noun = unsafe { *battery };
@@ -1003,12 +1010,12 @@ impl Nounable for Batteries {
         list
     }
 
-    fn from_noun<A: NounAllocator>(stack: &mut A, noun: &Noun) -> NounableResult<Self::Target> {
+    fn from_noun<A: NounAllocator>(stack: &mut A, arena: &Arena, noun: &Noun) -> NounableResult<Self::Target> {
         let mut batteries = NO_BATTERIES;
-        for item in NounListIterator(*noun) {
+        for item in NounListIterator::new(*noun, arena) {
             let cell = item.cell().ok_or(FromNounError::NotCell)?;
-            let battery = cell.head();
-            let parent_axis = cell.tail().as_atom()?;
+            let battery = cell.head_with_arena(arena);
+            let parent_axis = cell.tail_with_arena(arena).as_atom()?;
             let batteries_mem: *mut BatteriesMem = unsafe { stack.alloc_struct(1) };
             unsafe {
                 batteries_mem.write(BatteriesMem {
@@ -1025,19 +1032,19 @@ impl Nounable for Batteries {
 
 impl Nounable for BatteriesList {
     type Target = BatteriesList;
-    fn into_noun<A: NounAllocator>(self, stack: &mut A) -> Noun {
+    fn into_noun<A: NounAllocator>(self, stack: &mut A, arena: &Arena) -> Noun {
         let mut list = D(0);
         for batteries in self {
-            let batteries_noun = batteries.into_noun(stack);
+            let batteries_noun = batteries.into_noun(stack, arena);
             list = T(stack, &[batteries_noun, list]);
         }
         list
     }
 
-    fn from_noun<A: NounAllocator>(stack: &mut A, noun: &Noun) -> NounableResult<Self::Target> {
+    fn from_noun<A: NounAllocator>(stack: &mut A, arena: &Arena, noun: &Noun) -> NounableResult<Self::Target> {
         let mut batteries_list = BATTERIES_LIST_NIL;
-        for item in NounListIterator(*noun) {
-            let batteries = Batteries::from_noun(stack, &item)?;
+        for item in NounListIterator::new(*noun, arena) {
+            let batteries = Batteries::from_noun(stack, arena, &item)?;
             let batteries_list_mem: *mut BatteriesListMem = unsafe { stack.alloc_struct(1) };
             unsafe {
                 batteries_list_mem.write(BatteriesListMem {
@@ -1054,7 +1061,7 @@ impl Nounable for BatteriesList {
 impl<T: Nounable + Copy + mem::Preserve> Nounable for Hamt<T> {
     type Target = Vec<(Noun, T::Target)>;
 
-    fn into_noun<A: NounAllocator>(self, stack: &mut A) -> Noun {
+    fn into_noun<A: NounAllocator>(self, stack: &mut A, arena: &Arena) -> Noun {
         let mut list = D(0);
         let mut reverse = Vec::new();
         for item in self.iter() {
@@ -1063,7 +1070,7 @@ impl<T: Nounable + Copy + mem::Preserve> Nounable for Hamt<T> {
         reverse.reverse();
         for slice in reverse {
             for (key, value) in slice {
-                let value_noun = value.into_noun(stack);
+                let value_noun = value.into_noun(stack, arena);
                 let items = T(stack, &[*key, value_noun]);
                 list = T(stack, &[items, list]);
             }
@@ -1071,12 +1078,12 @@ impl<T: Nounable + Copy + mem::Preserve> Nounable for Hamt<T> {
         list
     }
 
-    fn from_noun<A: NounAllocator>(stack: &mut A, noun: &Noun) -> NounableResult<Self::Target> {
+    fn from_noun<A: NounAllocator>(stack: &mut A, arena: &Arena, noun: &Noun) -> NounableResult<Self::Target> {
         let mut items = Vec::new();
-        for item in NounListIterator(*noun) {
+        for item in NounListIterator::new(*noun, arena) {
             let cell = item.cell().ok_or(FromNounError::NotCell)?;
-            let key = cell.head();
-            let value = T::from_noun(stack, &cell.tail())?;
+            let key = cell.head_with_arena(arena);
+            let value = T::from_noun(stack, arena, &cell.tail_with_arena(arena))?;
             items.push((key, value));
         }
         // items.reverse();
@@ -1103,7 +1110,7 @@ impl Nounable for Cold {
         Vec<(Noun, BatteriesList)>,
     );
 
-    fn into_noun<A: NounAllocator>(self, stack: &mut A) -> Noun {
+    fn into_noun<A: NounAllocator>(self, stack: &mut A, arena: &Arena) -> Noun {
         let cold_mem = self.0;
         let mut battery_to_paths_noun = D(0);
         let mut root_to_paths_noun = D(0);
@@ -1111,8 +1118,8 @@ impl Nounable for Cold {
         unsafe {
             for slice in (*cold_mem).battery_to_paths.iter() {
                 for (battery, paths) in slice {
-                    let battery_noun = battery.into_noun(stack);
-                    let paths_noun = paths.into_noun(stack);
+                    let battery_noun = battery.into_noun(stack, arena);
+                    let paths_noun = paths.into_noun(stack, arena);
                     // two-step the cons'ing for correct associativity
                     let items = T(stack, &[battery_noun, paths_noun]);
                     battery_to_paths_noun = T(stack, &[items, battery_to_paths_noun]);
@@ -1120,8 +1127,8 @@ impl Nounable for Cold {
             }
             for slice in (*cold_mem).root_to_paths.iter() {
                 for (root, paths) in slice {
-                    let root_noun = root.into_noun(stack);
-                    let paths_noun = paths.into_noun(stack);
+                    let root_noun = root.into_noun(stack, arena);
+                    let paths_noun = paths.into_noun(stack, arena);
                     // two-step the cons'ing for correct associativity
                     let items = T(stack, &[root_noun, paths_noun]);
                     root_to_paths_noun = T(stack, &[items, root_to_paths_noun]);
@@ -1129,8 +1136,8 @@ impl Nounable for Cold {
             }
             for slice in (*cold_mem).path_to_batteries.iter() {
                 for (path, batteries) in slice {
-                    let path_noun = path.into_noun(stack);
-                    let batteries_noun = batteries.into_noun(stack);
+                    let path_noun = path.into_noun(stack, arena);
+                    let batteries_noun = batteries.into_noun(stack, arena);
                     // two-step the cons'ing for correct associativity
                     let items = T(stack, &[path_noun, batteries_noun]);
                     path_to_batteries_noun = T(stack, &[items, path_to_batteries_noun]);
@@ -1144,7 +1151,7 @@ impl Nounable for Cold {
         )
     }
 
-    fn from_noun<A: NounAllocator>(stack: &mut A, noun: &Noun) -> NounableResult<Self::Target> {
+    fn from_noun<A: NounAllocator>(stack: &mut A, arena: &Arena, noun: &Noun) -> NounableResult<Self::Target> {
         let mut battery_to_paths = Vec::new();
         let mut root_to_paths = Vec::new();
         let mut path_to_batteries = Vec::new();
@@ -1154,26 +1161,26 @@ impl Nounable for Cold {
         let path_to_batteries_noun = noun.slot(7)?;
 
         // iterate over battery_to_paths_noun
-        for item in NounListIterator(battery_to_paths_noun) {
+        for item in NounListIterator::new(battery_to_paths_noun, arena) {
             let cell = item.cell().ok_or(FromNounError::NotCell)?;
-            let key = cell.head();
-            let value = NounList::from_noun(stack, &cell.tail())?;
+            let key = cell.head_with_arena(arena);
+            let value = NounList::from_noun(stack, arena, &cell.tail_with_arena(arena))?;
             battery_to_paths.push((key, value));
         }
 
         // iterate over root_to_paths_noun
-        for item in NounListIterator(root_to_paths_noun) {
+        for item in NounListIterator::new(root_to_paths_noun, arena) {
             let cell = item.cell().ok_or(FromNounError::NotCell)?;
-            let key = cell.head();
-            let value = NounList::from_noun(stack, &cell.tail())?;
+            let key = cell.head_with_arena(arena);
+            let value = NounList::from_noun(stack, arena, &cell.tail_with_arena(arena))?;
             root_to_paths.push((key, value));
         }
 
         // iterate over path_to_batteries_noun
-        for item in NounListIterator(path_to_batteries_noun) {
+        for item in NounListIterator::new(path_to_batteries_noun, arena) {
             let cell = item.cell().ok_or(FromNounError::NotCell)?;
-            let key = cell.head();
-            let value = BatteriesList::from_noun(stack, &cell.tail())?;
+            let key = cell.head_with_arena(arena);
+            let value = BatteriesList::from_noun(stack, arena, &cell.tail_with_arena(arena))?;
             path_to_batteries.push((key, value));
         }
         battery_to_paths.reverse();

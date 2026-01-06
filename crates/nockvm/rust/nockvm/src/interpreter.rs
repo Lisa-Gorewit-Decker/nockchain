@@ -1723,7 +1723,7 @@ fn edit(stack: &mut NockStack, arena: &Arena, edit_axis: Atom, patch: Noun, mut 
             }
         }
         Right(indirect) => {
-            let mut axis_iter = IndirectAxisIterator::new(indirect.as_slice())
+            let mut axis_iter = IndirectAxisIterator::new(indirect.as_slice_with_arena(arena))
                 .expect("0 is not allowed as an edit axis");
 
             while let Some(descend_tail) = axis_iter.next() {
@@ -1756,21 +1756,24 @@ fn edit(stack: &mut NockStack, arena: &Arena, edit_axis: Atom, patch: Noun, mut 
 }
 
 pub fn inc(stack: &mut NockStack, atom: Atom) -> Atom {
+    let arena = stack.arena_ref();
     match atom.as_either() {
         Left(direct) => Atom::new(stack, direct.data() + 1),
         Right(indirect) => {
-            let indirect_slice = indirect.as_bitslice();
+            let indirect_slice = indirect.as_bitslice_with_arena(arena);
             match indirect_slice.first_zero() {
                 None => {
                     // all ones, make an indirect one word bigger
-                    let (new_indirect, new_slice) =
-                        unsafe { IndirectAtom::new_raw_mut_bitslice(stack, indirect.size() + 1) };
+                    let (new_indirect, new_slice) = unsafe {
+                        IndirectAtom::new_raw_mut_bitslice(stack, indirect.size_with_arena(arena) + 1)
+                    };
                     new_slice.set(indirect_slice.len(), true);
                     new_indirect.as_atom()
                 }
                 Some(first_zero) => {
-                    let (new_indirect, new_slice) =
-                        unsafe { IndirectAtom::new_raw_mut_bitslice(stack, indirect.size()) };
+                    let (new_indirect, new_slice) = unsafe {
+                        IndirectAtom::new_raw_mut_bitslice(stack, indirect.size_with_arena(arena))
+                    };
                     new_slice.set(first_zero, true);
                     new_slice[first_zero + 1..]
                         .copy_from_bitslice(&indirect_slice[first_zero + 1..]);
@@ -2076,7 +2079,8 @@ mod hint {
                                     flog!(context, "serf: cold: register: cell chum");
                                     return None;
                                 };
-                                let chum_bytes = Vec::from(chum_atom.as_ne_bytes());
+                                let arena = context.arena_ref();
+                                let chum_bytes = Vec::from(chum_atom.as_ne_bytes_with_arena(arena));
                                 let Ok(chum_str) = String::from_utf8(chum_bytes) else {
                                     flog!(context, "serf: cold: register: unprintable chum");
                                     return None;
@@ -2127,8 +2131,8 @@ mod debug {
     fn assert_normalized_helper(noun: Noun, path: Noun, depth: Option<usize>, arena: &Arena) {
         match noun.as_either_atom_cell() {
             Left(atom) => {
-                if !atom.is_normalized() {
-                    if atom.size() == 1 {
+                if !atom.is_normalized_with_arena(arena) {
+                    if atom.size_with_arena(arena) == 1 {
                         panic!(
                             "Un-normalized indirect_atom (should be direct) returned from jet for {path:?}",
                         );

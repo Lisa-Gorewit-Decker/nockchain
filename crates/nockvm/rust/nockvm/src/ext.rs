@@ -6,16 +6,16 @@ use either::Either::{Left, Right};
 use intmap::IntMap;
 
 use crate::interpreter::Error;
-use crate::mem::NockStack;
+use crate::mem::{Arena, NockStack};
 use crate::noun::{Atom, IndirectAtom, Noun, NounAllocator, D};
 use crate::serialization::{cue, jam};
 
 /// Convenience helpers for working with `Atom`.
 pub trait AtomExt {
     fn from_bytes<A: NounAllocator>(allocator: &mut A, bytes: &[u8]) -> Atom;
-    fn eq_bytes<B: AsRef<[u8]>>(&self, bytes: B) -> bool;
-    fn to_bytes_until_nul(&self) -> std::result::Result<Vec<u8>, str::Utf8Error>;
-    fn into_string(self) -> std::result::Result<String, str::Utf8Error>;
+    fn eq_bytes_with_arena<B: AsRef<[u8]>>(&self, bytes: B, arena: &Arena) -> bool;
+    fn to_bytes_until_nul_with_arena(&self, arena: &Arena) -> std::result::Result<Vec<u8>, str::Utf8Error>;
+    fn into_string_with_arena(self, arena: &Arena) -> std::result::Result<String, str::Utf8Error>;
 }
 
 impl AtomExt for Atom {
@@ -23,9 +23,9 @@ impl AtomExt for Atom {
         <IndirectAtom as IndirectAtomExt>::from_bytes(allocator, bytes)
     }
 
-    fn eq_bytes<B: AsRef<[u8]>>(&self, bytes: B) -> bool {
+    fn eq_bytes_with_arena<B: AsRef<[u8]>>(&self, bytes: B, arena: &Arena) -> bool {
         let bytes_ref = bytes.as_ref();
-        let atom_bytes = self.as_ne_bytes();
+        let atom_bytes = self.as_ne_bytes_with_arena(arena);
         if bytes_ref.len() > atom_bytes.len() {
             return false;
         }
@@ -38,13 +38,13 @@ impl AtomExt for Atom {
         &atom_bytes[0..bytes_ref.len()] == bytes_ref
     }
 
-    fn to_bytes_until_nul(&self) -> std::result::Result<Vec<u8>, str::Utf8Error> {
-        str::from_utf8(self.as_ne_bytes())
+    fn to_bytes_until_nul_with_arena(&self, arena: &Arena) -> std::result::Result<Vec<u8>, str::Utf8Error> {
+        str::from_utf8(self.as_ne_bytes_with_arena(arena))
             .map(|bytes| bytes.trim_end_matches('\0').as_bytes().to_vec())
     }
 
-    fn into_string(self) -> std::result::Result<String, str::Utf8Error> {
-        str::from_utf8(self.as_ne_bytes()).map(|string| string.trim_end_matches('\0').to_string())
+    fn into_string_with_arena(self, arena: &Arena) -> std::result::Result<String, str::Utf8Error> {
+        str::from_utf8(self.as_ne_bytes_with_arena(arena)).map(|string| string.trim_end_matches('\0').to_string())
     }
 }
 
@@ -79,8 +79,8 @@ pub trait NounExt {
     fn cue_bytes(stack: &mut NockStack, bytes: &Bytes) -> std::result::Result<Noun, Error>;
     fn cue_bytes_slice(stack: &mut NockStack, bytes: &[u8]) -> std::result::Result<Noun, Error>;
     fn jam_self(self, stack: &mut NockStack) -> JammedNoun;
-    fn list_iter(self) -> NounListIterator;
-    fn eq_bytes(self, bytes: impl AsRef<[u8]>) -> bool;
+    fn list_iter_with_arena(self, arena: &Arena) -> NounListIterator;
+    fn eq_bytes_with_arena(self, bytes: impl AsRef<[u8]>, arena: &Arena) -> bool;
 }
 
 impl NounExt for Noun {
@@ -98,13 +98,13 @@ impl NounExt for Noun {
         JammedNoun::from_noun(stack, self)
     }
 
-    fn list_iter(self) -> NounListIterator {
-        NounListIterator(self)
+    fn list_iter_with_arena(self, arena: &Arena) -> NounListIterator {
+        NounListIterator::new(self, arena)
     }
 
-    fn eq_bytes(self, bytes: impl AsRef<[u8]>) -> bool {
+    fn eq_bytes_with_arena(self, bytes: impl AsRef<[u8]>, arena: &Arena) -> bool {
         if let Ok(atom) = self.as_atom() {
-            atom.eq_bytes(bytes)
+            atom.eq_bytes_with_arena(bytes, arena)
         } else {
             false
         }
@@ -121,7 +121,8 @@ impl JammedNoun {
 
     pub fn from_noun(stack: &mut NockStack, noun: Noun) -> Self {
         let jammed_atom = jam(stack, noun);
-        JammedNoun(Bytes::copy_from_slice(jammed_atom.as_ne_bytes()))
+        let arena = stack.arena_ref();
+        JammedNoun(Bytes::copy_from_slice(jammed_atom.as_ne_bytes_with_arena(arena)))
     }
 
     pub fn cue_self(&self, stack: &mut NockStack) -> std::result::Result<Noun, Error> {
@@ -160,15 +161,21 @@ impl Default for JammedNoun {
     }
 }
 
-pub struct NounListIterator(Noun);
+pub struct NounListIterator<'a>(Noun, &'a Arena);
 
-impl Iterator for NounListIterator {
+impl<'a> NounListIterator<'a> {
+    pub fn new(noun: Noun, arena: &'a Arena) -> Self {
+        NounListIterator(noun, arena)
+    }
+}
+
+impl<'a> Iterator for NounListIterator<'a> {
     type Item = Noun;
 
     fn next(&mut self) -> Option<Self::Item> {
         if let Ok(cell) = self.0.as_cell() {
-            self.0 = cell.tail();
-            Some(cell.head())
+            self.0 = cell.tail_with_arena(self.1);
+            Some(cell.head_with_arena(self.1))
         } else if unsafe { self.0.raw_equals(&D(0)) } {
             None
         } else {
@@ -191,7 +198,7 @@ pub fn make_tas<A: NounAllocator>(allocator: &mut A, tas: &str) -> Atom {
 /// Uses a worklist algorithm to avoid stack overflow on deep structures.
 /// Tracks already-compared pairs to handle structural sharing efficiently.
 /// Uses cached mugs (hashes) to quickly reject unequal nouns.
-pub fn noun_equality(a: &Noun, b: &Noun) -> bool {
+pub fn noun_equality(a: &Noun, b: &Noun, arena: &Arena) -> bool {
     // Track pairs we've already determined to be equal
     // Key is a_raw << 64 | b_raw (or b_raw << 64 | a_raw for symmetry)
     let mut already_equal: IntMap<u128, ()> = IntMap::new();
@@ -259,7 +266,9 @@ pub fn noun_equality(a: &Noun, b: &Noun) -> bool {
                         match (a_alloc.as_ref_either(), b_alloc.as_ref_either()) {
                             (Left(a_indirect), Left(b_indirect)) => {
                                 // Both indirect atoms - compare byte slices
-                                if a_indirect.as_slice() != b_indirect.as_slice() {
+                                if a_indirect.as_slice_with_arena(arena)
+                                    != b_indirect.as_slice_with_arena(arena)
+                                {
                                     return false;
                                 }
                                 set_ae(&mut already_equal, a, b);
@@ -268,8 +277,14 @@ pub fn noun_equality(a: &Noun, b: &Noun) -> bool {
                                 // Both cells - queue children for comparison
                                 // Mark as equal after children are verified
                                 stack.push(StackEntry::MarkEqual(a, b));
-                                stack.push(StackEntry::Nouns(a_cell.tail(), b_cell.tail()));
-                                stack.push(StackEntry::Nouns(a_cell.head(), b_cell.head()));
+                                stack.push(StackEntry::Nouns(
+                                    a_cell.tail_with_arena(arena),
+                                    b_cell.tail_with_arena(arena),
+                                ));
+                                stack.push(StackEntry::Nouns(
+                                    a_cell.head_with_arena(arena),
+                                    b_cell.head_with_arena(arena),
+                                ));
                             }
                             _ => {
                                 // One indirect, one cell - not equal

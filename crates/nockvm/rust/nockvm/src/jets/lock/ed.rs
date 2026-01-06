@@ -2,7 +2,7 @@ use nockvm_crypto::ed25519::{ac_ed_puck, ac_ed_shar, ac_ed_sign, ac_ed_veri};
 
 use crate::interpreter::Context;
 use crate::jets::bits::util::met;
-use crate::jets::util::{slot, BAIL_EXIT};
+use crate::jets::util::{slot_with_arena, BAIL_EXIT};
 use crate::jets::{JetErr, Result};
 use crate::mem::NockStack;
 use crate::noun::{IndirectAtom, Noun, NO, YES};
@@ -10,35 +10,37 @@ use crate::noun::{IndirectAtom, Noun, NO, YES};
 crate::gdb!();
 
 pub fn jet_puck(context: &mut Context, subject: Noun) -> Result {
+    let arena = &*context.arena;
     let stack = &mut context.stack;
-    let sed = slot(subject, 6)?.as_atom()?;
+    let sed = slot_with_arena(subject, 6, arena)?.as_atom()?;
 
-    let sed_len = met(3, sed);
+    let sed_len = met(3, arena, sed);
     if sed_len > 32 {
         return Err(BAIL_EXIT);
     }
 
     unsafe {
         let sed_bytes = &mut [0u8; 32];
-        sed_bytes[0..sed_len].copy_from_slice(&(sed.as_ne_bytes())[0..sed_len]);
+        sed_bytes[0..sed_len].copy_from_slice(&(sed.as_ne_bytes_with_arena(arena))[0..sed_len]);
 
         let (mut pub_ida, pub_key) = IndirectAtom::new_raw_mut_bytearray::<32, NockStack>(stack);
         ac_ed_puck(sed_bytes, pub_key);
 
-        Ok(pub_ida.normalize_as_atom().as_noun())
+        Ok(pub_ida.normalize_as_atom_with_arena(arena).as_noun())
     }
 }
 
 pub fn jet_shar(context: &mut Context, subject: Noun) -> Result {
+    let arena = &*context.arena;
     let stack = &mut context.stack;
-    let pub_key = slot(subject, 12)?.as_atom()?;
-    let sec_key = slot(subject, 13)?.as_atom()?;
+    let pub_key = slot_with_arena(subject, 12, arena)?.as_atom()?;
+    let sec_key = slot_with_arena(subject, 13, arena)?.as_atom()?;
 
-    if met(3, sec_key) > 32 {
+    if met(3, arena, sec_key) > 32 {
         // sek is size checked by +puck via +suck
         return Err(BAIL_EXIT);
     }
-    if met(3, pub_key) > 32 {
+    if met(3, arena, pub_key) > 32 {
         // pub is not size checked in Hoon, but it must be 32 bytes or less for
         // ucrypt. Therefore, punt on larger values.
         return Err(JetErr::Punt);
@@ -48,8 +50,8 @@ pub fn jet_shar(context: &mut Context, subject: Noun) -> Result {
         let public = &mut [0u8; 32];
         let secret = &mut [0u8; 32];
 
-        let pub_bytes = pub_key.as_ne_bytes();
-        let sec_bytes = sec_key.as_ne_bytes();
+        let pub_bytes = pub_key.as_ne_bytes_with_arena(arena);
+        let sec_bytes = sec_key.as_ne_bytes_with_arena(arena);
 
         public[0..pub_bytes.len()].copy_from_slice(pub_bytes);
         secret[0..sec_bytes.len()].copy_from_slice(sec_bytes);
@@ -57,17 +59,18 @@ pub fn jet_shar(context: &mut Context, subject: Noun) -> Result {
         let (mut shar_ida, shar) = IndirectAtom::new_raw_mut_bytearray::<32, NockStack>(stack);
         ac_ed_shar(public, secret, shar);
 
-        Ok(shar_ida.normalize_as_atom().as_noun())
+        Ok(shar_ida.normalize_as_atom_with_arena(arena).as_noun())
     }
 }
 
 pub fn jet_sign(context: &mut Context, subject: Noun) -> Result {
+    let arena = &*context.arena;
     let stack = &mut context.stack;
-    let msg = slot(subject, 12)?.as_atom()?;
-    let sed = slot(subject, 13)?.as_atom()?;
+    let msg = slot_with_arena(subject, 12, arena)?.as_atom()?;
+    let sed = slot_with_arena(subject, 13, arena)?.as_atom()?;
 
     unsafe {
-        let sed_bytes = sed.as_ne_bytes();
+        let sed_bytes = sed.as_ne_bytes_with_arena(arena);
         let sed_len = sed_bytes.len();
         if sed_len > 32 {
             return Err(BAIL_EXIT);
@@ -77,41 +80,42 @@ pub fn jet_sign(context: &mut Context, subject: Noun) -> Result {
 
         let (mut sig_ida, sig) = IndirectAtom::new_raw_mut_bytearray::<64, NockStack>(stack);
 
-        let msg_len = met(3, msg);
+        let msg_len = met(3, arena, msg);
         if msg_len > 0 {
             let (_msg_ida, message) = IndirectAtom::new_raw_mut_bytes(stack, msg_len);
-            message.copy_from_slice(&msg.as_ne_bytes()[0..msg_len]);
+            message.copy_from_slice(&msg.as_ne_bytes_with_arena(arena)[0..msg_len]);
             ac_ed_sign(message, seed, sig);
         } else {
             ac_ed_sign(&[0u8; 0], seed, sig);
         }
 
         sig.reverse();
-        Ok(sig_ida.normalize_as_atom().as_noun())
+        Ok(sig_ida.normalize_as_atom_with_arena(arena).as_noun())
     }
 }
 
-pub fn jet_veri(_context: &mut Context, subject: Noun) -> Result {
-    let sig = slot(subject, 12)?.as_atom()?;
-    let msg = slot(subject, 26)?.as_atom()?;
-    let puk = slot(subject, 27)?.as_atom()?;
+pub fn jet_veri(context: &mut Context, subject: Noun) -> Result {
+    let arena = &*context.arena;
+    let sig = slot_with_arena(subject, 12, arena)?.as_atom()?;
+    let msg = slot_with_arena(subject, 26, arena)?.as_atom()?;
+    let puk = slot_with_arena(subject, 27, arena)?.as_atom()?;
 
     // Both are size checked by Hoon, but without crashing
-    let sig_bytes = sig.as_ne_bytes();
+    let sig_bytes = sig.as_ne_bytes_with_arena(arena);
     if sig_bytes.len() > 64 {
         return Ok(NO);
     };
     let signature = &mut [0u8; 64];
     signature[0..sig_bytes.len()].copy_from_slice(sig_bytes);
 
-    let pub_bytes = puk.as_ne_bytes();
+    let pub_bytes = puk.as_ne_bytes_with_arena(arena);
     if pub_bytes.len() > 32 {
         return Ok(NO);
     };
     let public_key = &mut [0u8; 32];
     public_key[0..pub_bytes.len()].copy_from_slice(pub_bytes);
 
-    let message = &(msg.as_ne_bytes())[0..met(3, msg)]; // drop trailing zeros
+    let message = &(msg.as_ne_bytes_with_arena(arena))[0..met(3, arena, msg)]; // drop trailing zeros
 
     let valid = ac_ed_veri(message, public_key, signature);
 

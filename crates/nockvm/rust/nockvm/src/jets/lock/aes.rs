@@ -18,11 +18,11 @@ pub fn jet_siva_en(context: &mut Context, subject: Noun) -> Result {
     let key = slot_with_arena(subject, 60, arena)?.as_atom()?;
     let ads = slot_with_arena(subject, 61, arena)?;
 
-    if met(3, key) > 32 {
+    if met(3, arena, key) > 32 {
         Err(JetErr::Punt)
     } else {
         let key_bytes = &mut [0u8; 32];
-        key_bytes[0..key.as_ne_bytes().len()].copy_from_slice(key.as_ne_bytes());
+        key_bytes[0..key.as_ne_bytes_with_arena(arena).len()].copy_from_slice(key.as_ne_bytes_with_arena(arena));
 
         util::_siv_en::<32>(stack, key_bytes, ads, txt, arena)
     }
@@ -37,11 +37,11 @@ pub fn jet_siva_de(context: &mut Context, subject: Noun) -> Result {
     let key = slot_with_arena(subject, 60, arena)?.as_atom()?;
     let ads = slot_with_arena(subject, 61, arena)?;
 
-    if met(3, key) > 32 {
+    if met(3, arena, key) > 32 {
         Err(JetErr::Punt)
     } else {
         let key_bytes = &mut [0u8; 32];
-        key_bytes[0..key.as_ne_bytes().len()].copy_from_slice(key.as_ne_bytes());
+        key_bytes[0..key.as_ne_bytes_with_arena(arena).len()].copy_from_slice(key.as_ne_bytes_with_arena(arena));
 
         util::_siv_de::<32>(stack, key_bytes, ads, iv, len, txt, arena)
     }
@@ -54,11 +54,11 @@ pub fn jet_sivb_en(context: &mut Context, subject: Noun) -> Result {
     let key = slot_with_arena(subject, 60, arena)?.as_atom()?;
     let ads = slot_with_arena(subject, 61, arena)?;
 
-    if met(3, key) > 48 {
+    if met(3, arena, key) > 48 {
         Err(JetErr::Punt)
     } else {
         let key_bytes = &mut [0u8; 48];
-        key_bytes[0..key.as_ne_bytes().len()].copy_from_slice(key.as_ne_bytes());
+        key_bytes[0..key.as_ne_bytes_with_arena(arena).len()].copy_from_slice(key.as_ne_bytes_with_arena(arena));
 
         util::_siv_en::<48>(stack, key_bytes, ads, txt, arena)
     }
@@ -73,11 +73,11 @@ pub fn jet_sivb_de(context: &mut Context, subject: Noun) -> Result {
     let key = slot_with_arena(subject, 60, arena)?.as_atom()?;
     let ads = slot_with_arena(subject, 61, arena)?;
 
-    if met(3, key) > 48 {
+    if met(3, arena, key) > 48 {
         Err(JetErr::Punt)
     } else {
         let key_bytes = &mut [0u8; 48];
-        key_bytes[0..key.as_ne_bytes().len()].copy_from_slice(key.as_ne_bytes());
+        key_bytes[0..key.as_ne_bytes_with_arena(arena).len()].copy_from_slice(key.as_ne_bytes_with_arena(arena));
 
         util::_siv_de::<48>(stack, key_bytes, ads, iv, len, txt, arena)
     }
@@ -90,11 +90,11 @@ pub fn jet_sivc_en(context: &mut Context, subject: Noun) -> Result {
     let key = slot_with_arena(subject, 60, arena)?.as_atom()?;
     let ads = slot_with_arena(subject, 61, arena)?;
 
-    if met(3, key) > 64 {
+    if met(3, arena, key) > 64 {
         Err(JetErr::Punt)
     } else {
         let key_bytes = &mut [0u8; 64];
-        key_bytes[0..key.as_ne_bytes().len()].copy_from_slice(key.as_ne_bytes());
+        key_bytes[0..key.as_ne_bytes_with_arena(arena).len()].copy_from_slice(key.as_ne_bytes_with_arena(arena));
 
         util::_siv_en::<64>(stack, key_bytes, ads, txt, arena)
     }
@@ -109,11 +109,11 @@ pub fn jet_sivc_de(context: &mut Context, subject: Noun) -> Result {
     let key = slot_with_arena(subject, 60, arena)?.as_atom()?;
     let ads = slot_with_arena(subject, 61, arena)?;
 
-    if met(3, key) > 64 {
+    if met(3, arena, key) > 64 {
         Err(JetErr::Punt)
     } else {
         let key_bytes = &mut [0u8; 64];
-        key_bytes[0..key.as_ne_bytes().len()].copy_from_slice(key.as_ne_bytes());
+        key_bytes[0..key.as_ne_bytes_with_arena(arena).len()].copy_from_slice(key.as_ne_bytes_with_arena(arena));
 
         util::_siv_de::<64>(stack, key_bytes, ads, iv, len, txt, arena)
     }
@@ -158,8 +158,8 @@ mod util {
             for item in siv_data.iter_mut().take(length) {
                 let cell = ads.as_cell()?;
                 let head = cell.head_with_arena(arena).as_atom()?;
-                let bytes = head.as_ne_bytes();
-                let len = met(3, head);
+                let bytes = head.as_ne_bytes_with_arena(arena);
+                let len = met(3, arena, head);
 
                 let (mut atom, buffer) = IndirectAtom::new_raw_mut_bytes(stack, bytes.len());
                 buffer[0..len].copy_from_slice(&(bytes[0..len]));
@@ -188,7 +188,7 @@ mod util {
                 ac_siv_data.len(),
             );
 
-            let txt_len = met(3, txt);
+            let txt_len = met(3, arena, txt);
 
             let (mut iv, iv_bytes) = IndirectAtom::new_raw_mut_bytearray::<16, NockStack>(stack);
 
@@ -205,11 +205,11 @@ mod util {
                                 option_env!("GIT_SHA")
                             )
                         });
-                    Ok(T(stack, &[iv.normalize_as_atom().as_noun(), D(0), D(0)]))
+                    Ok(T(stack, &[iv.normalize_as_atom_with_arena(arena).as_noun(), D(0), D(0)]))
                 }
                 _ => {
                     let (_txt_ida, txt_bytes) = IndirectAtom::new_raw_mut_bytes(stack, txt_len);
-                    txt_bytes.copy_from_slice(&txt.as_ne_bytes()[0..txt_len]);
+                    txt_bytes.copy_from_slice(&txt.as_ne_bytes_with_arena(arena)[0..txt_len]);
                     let (mut out_atom, out_bytes) = IndirectAtom::new_raw_mut_bytes(stack, txt_len);
                     ac_aes_siv_en::<N>(key, txt_bytes, siv_data, iv_bytes, out_bytes)
                         .unwrap_or_else(|err| {
@@ -223,9 +223,9 @@ mod util {
                     Ok(T(
                         stack,
                         &[
-                            iv.normalize_as_atom().as_noun(),
+                            iv.normalize_as_atom_with_arena(arena).as_noun(),
                             D(txt_len as u64),
-                            out_atom.normalize_as_atom().as_noun(),
+                            out_atom.normalize_as_atom_with_arena(arena).as_noun(),
                         ],
                     ))
                 }
@@ -249,7 +249,7 @@ mod util {
             };
 
             let iv_bytes = &mut [0u8; 16];
-            iv_bytes.copy_from_slice(&iv.as_ne_bytes()[0..16]);
+            iv_bytes.copy_from_slice(&iv.as_ne_bytes_with_arena(arena)[0..16]);
 
             let ac_siv_data = _allocate_ads(stack, ads, arena)?;
             let siv_data: &mut [&mut [u8]] = std::slice::from_raw_parts_mut(
@@ -273,7 +273,7 @@ mod util {
                 }
                 _ => {
                     let (_txt_ida, txt_bytes) = IndirectAtom::new_raw_mut_bytes(stack, txt_len);
-                    txt_bytes.copy_from_slice(&txt.as_ne_bytes()[0..txt_len]);
+                    txt_bytes.copy_from_slice(&txt.as_ne_bytes_with_arena(arena)[0..txt_len]);
                     ac_aes_siv_de::<N>(key, txt_bytes, siv_data, iv_bytes, out_bytes)
                         .unwrap_or_else(|err| {
                             panic!(
@@ -286,7 +286,7 @@ mod util {
                 }
             }
 
-            Ok(T(stack, &[D(0), out_atom.normalize_as_atom().as_noun()]))
+            Ok(T(stack, &[D(0), out_atom.normalize_as_atom_with_arena(arena).as_noun()]))
         }
     }
 }

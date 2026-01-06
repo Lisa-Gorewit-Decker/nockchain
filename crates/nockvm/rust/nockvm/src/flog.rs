@@ -26,7 +26,8 @@ impl<'s> NockWriter<'s, '_> {
     }
 
     unsafe fn finalize(mut self) -> Atom {
-        self.indirect.normalize_as_atom()
+        let arena = self.stack.arena_ref();
+        self.indirect.normalize_as_atom_with_arena(arena)
     }
 
     unsafe fn expand(&mut self) {
