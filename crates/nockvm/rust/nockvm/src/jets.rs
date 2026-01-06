@@ -332,9 +332,11 @@ pub mod util {
     }
 
     pub fn slam(context: &mut Context, gate: Noun, sample: Noun) -> result::Result<Noun, JetErr> {
+        let arena = &*context.arena;
+        let gate_cell = gate.as_cell()?;
         let core: Noun = T(
             &mut context.stack,
-            &[gate.as_cell()?.head(), sample, gate.as_cell()?.tail().as_cell()?.tail()],
+            &[gate_cell.head_with_arena(arena), sample, gate_cell.tail_with_arena(arena).as_cell()?.tail_with_arena(arena)],
         );
         kick(context, core, D(2))
     }

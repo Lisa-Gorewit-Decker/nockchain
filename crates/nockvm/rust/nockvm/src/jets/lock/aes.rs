@@ -1,6 +1,6 @@
 use crate::interpreter::Context;
 use crate::jets::bits::util::met;
-use crate::jets::util::slot;
+use crate::jets::util::slot_with_arena;
 use crate::jets::{JetErr, Result};
 use crate::noun::Noun;
 
@@ -12,10 +12,11 @@ crate::gdb!();
 //          too large.
 
 pub fn jet_siva_en(context: &mut Context, subject: Noun) -> Result {
+    let arena = &*context.arena;
     let stack = &mut context.stack;
-    let txt = slot(subject, 6)?.as_atom()?;
-    let key = slot(subject, 60)?.as_atom()?;
-    let ads = slot(subject, 61)?;
+    let txt = slot_with_arena(subject, 6, arena)?.as_atom()?;
+    let key = slot_with_arena(subject, 60, arena)?.as_atom()?;
+    let ads = slot_with_arena(subject, 61, arena)?;
 
     if met(3, key) > 32 {
         Err(JetErr::Punt)
@@ -23,17 +24,18 @@ pub fn jet_siva_en(context: &mut Context, subject: Noun) -> Result {
         let key_bytes = &mut [0u8; 32];
         key_bytes[0..key.as_ne_bytes().len()].copy_from_slice(key.as_ne_bytes());
 
-        util::_siv_en::<32>(stack, key_bytes, ads, txt)
+        util::_siv_en::<32>(stack, key_bytes, ads, txt, arena)
     }
 }
 
 pub fn jet_siva_de(context: &mut Context, subject: Noun) -> Result {
+    let arena = &*context.arena;
     let stack = &mut context.stack;
-    let iv = slot(subject, 12)?.as_atom()?;
-    let len = slot(subject, 26)?.as_atom()?;
-    let txt = slot(subject, 27)?.as_atom()?;
-    let key = slot(subject, 60)?.as_atom()?;
-    let ads = slot(subject, 61)?;
+    let iv = slot_with_arena(subject, 12, arena)?.as_atom()?;
+    let len = slot_with_arena(subject, 26, arena)?.as_atom()?;
+    let txt = slot_with_arena(subject, 27, arena)?.as_atom()?;
+    let key = slot_with_arena(subject, 60, arena)?.as_atom()?;
+    let ads = slot_with_arena(subject, 61, arena)?;
 
     if met(3, key) > 32 {
         Err(JetErr::Punt)
@@ -41,15 +43,16 @@ pub fn jet_siva_de(context: &mut Context, subject: Noun) -> Result {
         let key_bytes = &mut [0u8; 32];
         key_bytes[0..key.as_ne_bytes().len()].copy_from_slice(key.as_ne_bytes());
 
-        util::_siv_de::<32>(stack, key_bytes, ads, iv, len, txt)
+        util::_siv_de::<32>(stack, key_bytes, ads, iv, len, txt, arena)
     }
 }
 
 pub fn jet_sivb_en(context: &mut Context, subject: Noun) -> Result {
+    let arena = &*context.arena;
     let stack = &mut context.stack;
-    let txt = slot(subject, 6)?.as_atom()?;
-    let key = slot(subject, 60)?.as_atom()?;
-    let ads = slot(subject, 61)?;
+    let txt = slot_with_arena(subject, 6, arena)?.as_atom()?;
+    let key = slot_with_arena(subject, 60, arena)?.as_atom()?;
+    let ads = slot_with_arena(subject, 61, arena)?;
 
     if met(3, key) > 48 {
         Err(JetErr::Punt)
@@ -57,17 +60,18 @@ pub fn jet_sivb_en(context: &mut Context, subject: Noun) -> Result {
         let key_bytes = &mut [0u8; 48];
         key_bytes[0..key.as_ne_bytes().len()].copy_from_slice(key.as_ne_bytes());
 
-        util::_siv_en::<48>(stack, key_bytes, ads, txt)
+        util::_siv_en::<48>(stack, key_bytes, ads, txt, arena)
     }
 }
 
 pub fn jet_sivb_de(context: &mut Context, subject: Noun) -> Result {
+    let arena = &*context.arena;
     let stack = &mut context.stack;
-    let iv = slot(subject, 12)?.as_atom()?;
-    let len = slot(subject, 26)?.as_atom()?;
-    let txt = slot(subject, 27)?.as_atom()?;
-    let key = slot(subject, 60)?.as_atom()?;
-    let ads = slot(subject, 61)?;
+    let iv = slot_with_arena(subject, 12, arena)?.as_atom()?;
+    let len = slot_with_arena(subject, 26, arena)?.as_atom()?;
+    let txt = slot_with_arena(subject, 27, arena)?.as_atom()?;
+    let key = slot_with_arena(subject, 60, arena)?.as_atom()?;
+    let ads = slot_with_arena(subject, 61, arena)?;
 
     if met(3, key) > 48 {
         Err(JetErr::Punt)
@@ -75,15 +79,16 @@ pub fn jet_sivb_de(context: &mut Context, subject: Noun) -> Result {
         let key_bytes = &mut [0u8; 48];
         key_bytes[0..key.as_ne_bytes().len()].copy_from_slice(key.as_ne_bytes());
 
-        util::_siv_de::<48>(stack, key_bytes, ads, iv, len, txt)
+        util::_siv_de::<48>(stack, key_bytes, ads, iv, len, txt, arena)
     }
 }
 
 pub fn jet_sivc_en(context: &mut Context, subject: Noun) -> Result {
+    let arena = &*context.arena;
     let stack = &mut context.stack;
-    let txt = slot(subject, 6)?.as_atom()?;
-    let key = slot(subject, 60)?.as_atom()?;
-    let ads = slot(subject, 61)?;
+    let txt = slot_with_arena(subject, 6, arena)?.as_atom()?;
+    let key = slot_with_arena(subject, 60, arena)?.as_atom()?;
+    let ads = slot_with_arena(subject, 61, arena)?;
 
     if met(3, key) > 64 {
         Err(JetErr::Punt)
@@ -91,17 +96,18 @@ pub fn jet_sivc_en(context: &mut Context, subject: Noun) -> Result {
         let key_bytes = &mut [0u8; 64];
         key_bytes[0..key.as_ne_bytes().len()].copy_from_slice(key.as_ne_bytes());
 
-        util::_siv_en::<64>(stack, key_bytes, ads, txt)
+        util::_siv_en::<64>(stack, key_bytes, ads, txt, arena)
     }
 }
 
 pub fn jet_sivc_de(context: &mut Context, subject: Noun) -> Result {
+    let arena = &*context.arena;
     let stack = &mut context.stack;
-    let iv = slot(subject, 12)?.as_atom()?;
-    let len = slot(subject, 26)?.as_atom()?;
-    let txt = slot(subject, 27)?.as_atom()?;
-    let key = slot(subject, 60)?.as_atom()?;
-    let ads = slot(subject, 61)?;
+    let iv = slot_with_arena(subject, 12, arena)?.as_atom()?;
+    let len = slot_with_arena(subject, 26, arena)?.as_atom()?;
+    let txt = slot_with_arena(subject, 27, arena)?.as_atom()?;
+    let key = slot_with_arena(subject, 60, arena)?.as_atom()?;
+    let ads = slot_with_arena(subject, 61, arena)?;
 
     if met(3, key) > 64 {
         Err(JetErr::Punt)
@@ -109,7 +115,7 @@ pub fn jet_sivc_de(context: &mut Context, subject: Noun) -> Result {
         let key_bytes = &mut [0u8; 64];
         key_bytes[0..key.as_ne_bytes().len()].copy_from_slice(key.as_ne_bytes());
 
-        util::_siv_de::<64>(stack, key_bytes, ads, iv, len, txt)
+        util::_siv_de::<64>(stack, key_bytes, ads, iv, len, txt, arena)
     }
 }
 
@@ -121,7 +127,7 @@ mod util {
     use crate::jets::bits::util::met;
     use crate::jets::util::BAIL_FAIL;
     use crate::jets::{list, JetErr, Result};
-    use crate::mem::NockStack;
+    use crate::mem::{Arena, NockStack};
     use crate::noun::{Atom, IndirectAtom, Noun, D, T};
 
     /// Associated data for AES-SIV functions.
@@ -135,12 +141,13 @@ mod util {
     fn _allocate_ads(
         stack: &mut NockStack,
         mut ads: Noun,
+        arena: &Arena,
     ) -> result::Result<&'static mut [AcAesSivData], JetErr> {
         if unsafe { ads.raw_equals(&D(0)) } {
             return Ok(&mut []);
         }
 
-        let length = list::util::lent(ads)?;
+        let length = list::util::lent(ads, arena)?;
 
         let siv_data: &mut [AcAesSivData] = unsafe {
             let ptr = stack.struct_alloc::<AcAesSivData>(length);
@@ -150,7 +157,7 @@ mod util {
         unsafe {
             for item in siv_data.iter_mut().take(length) {
                 let cell = ads.as_cell()?;
-                let head = cell.head().as_atom()?;
+                let head = cell.head_with_arena(arena).as_atom()?;
                 let bytes = head.as_ne_bytes();
                 let len = met(3, head);
 
@@ -160,7 +167,7 @@ mod util {
                 item.length = bytes.len();
                 item.bytes = atom.data_pointer_mut() as *mut u8;
 
-                ads = cell.tail();
+                ads = cell.tail_with_arena(arena);
             }
         }
 
@@ -172,9 +179,10 @@ mod util {
         key: &mut [u8; N],
         ads: Noun,
         txt: Atom,
+        arena: &Arena,
     ) -> Result {
         unsafe {
-            let ac_siv_data = _allocate_ads(stack, ads)?;
+            let ac_siv_data = _allocate_ads(stack, ads, arena)?;
             let siv_data: &mut [&mut [u8]] = std::slice::from_raw_parts_mut(
                 ac_siv_data.as_mut_ptr() as *mut &mut [u8],
                 ac_siv_data.len(),
@@ -232,6 +240,7 @@ mod util {
         iv: Atom,
         len: Atom,
         txt: Atom,
+        arena: &Arena,
     ) -> Result {
         unsafe {
             let txt_len = match len.as_direct() {
@@ -242,7 +251,7 @@ mod util {
             let iv_bytes = &mut [0u8; 16];
             iv_bytes.copy_from_slice(&iv.as_ne_bytes()[0..16]);
 
-            let ac_siv_data = _allocate_ads(stack, ads)?;
+            let ac_siv_data = _allocate_ads(stack, ads, arena)?;
             let siv_data: &mut [&mut [u8]] = std::slice::from_raw_parts_mut(
                 ac_siv_data.as_mut_ptr() as *mut &mut [u8],
                 ac_siv_data.len(),

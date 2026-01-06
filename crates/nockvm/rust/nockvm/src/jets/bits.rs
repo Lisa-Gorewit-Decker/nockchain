@@ -27,7 +27,7 @@ pub fn jet_can(context: &mut Context, subject: Noun) -> Result {
     let bloq = bloq(slot_with_arena(arg, 2, arena)?)?;
     let original_list = slot_with_arena(arg, 3, arena)?;
 
-    util::can(&mut context.stack, bloq, original_list)
+    util::can(&mut context.stack, bloq, original_list, arena)
 }
 
 pub fn jet_cat(context: &mut Context, subject: Noun) -> Result {
@@ -153,7 +153,7 @@ pub fn jet_rap(context: &mut Context, subject: Noun) -> Result {
     let arg = slot_with_arena(subject, 6, arena)?;
     let bloq = bloq(slot_with_arena(arg, 2, arena)?)?;
     let original_list = slot_with_arena(arg, 3, arena)?;
-    Ok(util::rap(&mut context.stack, bloq, original_list)?.as_noun())
+    Ok(util::rap(&mut context.stack, bloq, original_list, arena)?.as_noun())
 }
 
 pub fn jet_rep(context: &mut Context, subject: Noun) -> Result {
@@ -164,10 +164,10 @@ pub fn jet_rep(context: &mut Context, subject: Noun) -> Result {
     let arg2 = slot_with_arena(arg, 2, arena)?;
     let arg3 = slot_with_arena(arg, 3, arena)?;
 
-    rep(stack, arg2, arg3)
+    rep(stack, arg2, arg3, arena)
 }
 
-pub fn rep(stack: &mut NockStack, a: Noun, b: Noun) -> Result {
+pub fn rep(stack: &mut NockStack, a: Noun, b: Noun, arena: &crate::mem::Arena) -> Result {
     let (bloq, step) = bite(a)?;
     let original_list = b;
 
@@ -181,7 +181,7 @@ pub fn rep(stack: &mut NockStack, a: Noun, b: Noun) -> Result {
         let cell = list.as_cell()?;
 
         len = checked_add(len, step)?;
-        list = cell.tail();
+        list = cell.tail_with_arena(arena);
     }
 
     if len == 0 {
@@ -198,11 +198,11 @@ pub fn rep(stack: &mut NockStack, a: Noun, b: Noun) -> Result {
                 }
 
                 let cell = list.as_cell()?;
-                let atom = cell.head().as_atom()?;
+                let atom = cell.head_with_arena(arena).as_atom()?;
                 chop(bloq, 0, step, pos, new_slice, atom.as_bitslice())?;
 
                 pos += step;
-                list = cell.tail();
+                list = cell.tail_with_arena(arena);
             }
             Ok(new_indirect.normalize_as_atom().as_noun())
         }
@@ -326,7 +326,7 @@ pub mod util {
 
     use crate::jets::util::*;
     use crate::jets::{JetErr, Result};
-    use crate::mem::NockStack;
+    use crate::mem::{Arena, NockStack};
     use crate::noun::{Atom, Cell, DirectAtom, IndirectAtom, Noun, D};
 
     /// Binary exponent
@@ -356,7 +356,7 @@ pub mod util {
         }
     }
 
-    pub fn can(stack: &mut NockStack, bloq: usize, original_list: Noun) -> Result {
+    pub fn can(stack: &mut NockStack, bloq: usize, original_list: Noun, arena: &Arena) -> Result {
         let mut len = 0usize;
         let mut list = original_list;
         loop {
@@ -365,11 +365,11 @@ pub mod util {
             }
 
             let cell = list.as_cell()?;
-            let item = cell.head().as_cell()?;
-            let step = item.head().as_direct()?.data() as usize;
+            let item = cell.head_with_arena(arena).as_cell()?;
+            let step = item.head_with_arena(arena).as_direct()?.data() as usize;
 
             len = checked_add(len, step)?;
-            list = cell.tail();
+            list = cell.tail_with_arena(arena);
         }
 
         if len == 0 {
@@ -386,13 +386,13 @@ pub mod util {
                     }
 
                     let cell = list.as_cell()?;
-                    let item = cell.head().as_cell()?;
-                    let step = item.head().as_direct()?.data() as usize;
-                    let atom = item.tail().as_atom()?;
+                    let item = cell.head_with_arena(arena).as_cell()?;
+                    let step = item.head_with_arena(arena).as_direct()?.data() as usize;
+                    let atom = item.tail_with_arena(arena).as_atom()?;
                     chop(bloq, 0, step, pos, new_slice, atom.as_bitslice())?;
 
                     pos += step;
-                    list = cell.tail();
+                    list = cell.tail_with_arena(arena);
                 }
                 Ok(new_indirect.normalize_as_atom().as_noun())
             }
@@ -444,6 +444,7 @@ pub mod util {
         stack: &mut NockStack,
         bloq: usize,
         original_list: Noun,
+        arena: &Arena,
     ) -> result::Result<Atom, JetErr> {
         let mut len = 0usize;
         let mut list = original_list;
@@ -454,8 +455,8 @@ pub mod util {
 
             let cell = list.as_cell()?;
 
-            len = checked_add(len, met(bloq, cell.head().as_atom()?))?;
-            list = cell.tail();
+            len = checked_add(len, met(bloq, cell.head_with_arena(arena).as_atom()?))?;
+            list = cell.tail_with_arena(arena);
         }
 
         if len == 0 {
@@ -473,12 +474,12 @@ pub mod util {
                     }
 
                     let cell = list.as_cell()?;
-                    let atom = cell.head().as_atom()?;
+                    let atom = cell.head_with_arena(arena).as_atom()?;
                     let step = met(bloq, atom);
                     chop(bloq, 0, step, pos, new_slice, atom.as_bitslice())?;
 
                     pos += step;
-                    list = cell.tail();
+                    list = cell.tail_with_arena(arena);
                 }
 
                 Ok(new_indirect.normalize_as_atom())

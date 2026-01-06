@@ -11,7 +11,7 @@ use crate::flog;
 use crate::interpreter::Context;
 use crate::jets::bits::util::rap;
 use crate::jets::form::util::scow;
-use crate::mem::NockStack;
+use crate::mem::{Arena, NockStack};
 use crate::mug::met3_usize;
 use crate::noun::{Atom, DirectAtom, IndirectAtom, Noun};
 
@@ -27,11 +27,12 @@ pub use filter::*;
 crate::gdb!();
 
 pub trait TraceBackend: Send {
-    fn append_trace(&mut self, stack: &mut NockStack, path: Noun);
+    fn append_trace(&mut self, stack: &mut NockStack, arena: &Arena, path: Noun);
 
     unsafe fn write_nock_trace(
         &mut self,
         stack: &mut NockStack,
+        arena: &Arena,
         trace_stack: *const TraceStack,
     ) -> Result<(), Error>;
 
@@ -86,14 +87,14 @@ pub struct TraceInfo {
 }
 
 impl TraceInfo {
-    pub fn append_trace(&mut self, stack: &mut NockStack, path: Noun) {
+    pub fn append_trace(&mut self, stack: &mut NockStack, arena: &Arena, path: Noun) {
         if let Some(filter) = self.filter.as_mut() {
             if !filter.should_trace(path) {
                 return;
             }
         }
 
-        self.backend.append_trace(stack, path);
+        self.backend.append_trace(stack, arena, path);
     }
 }
 
@@ -139,32 +140,33 @@ pub fn write_serf_trace(info: &mut TraceInfo, name: &str, start: Instant) -> Res
 
 pub unsafe fn write_nock_trace(
     stack: &mut NockStack,
+    arena: &Arena,
     info: &mut TraceInfo,
     trace_stack: *const TraceStack,
 ) -> Result<(), Error> {
-    info.backend.write_nock_trace(stack, trace_stack)
+    info.backend.write_nock_trace(stack, arena, trace_stack)
 }
 
 //  XX: Need Rust string interpolation helper that doesn't allocate
-pub fn path_to_cord(stack: &mut NockStack, path: Noun) -> Atom {
+pub fn path_to_cord(stack: &mut NockStack, arena: &Arena, path: Noun) -> Atom {
     let mut cursor = path;
     let mut length = 0usize;
 
     // count how much size we need
     while let Ok(c) = cursor.as_cell() {
         unsafe {
-            match c.head().as_either_atom_cell() {
+            match c.head_with_arena(arena).as_either_atom_cell() {
                 Left(a) => {
                     length += 1;
                     length += met3_usize(a);
                 }
                 Right(ch) => {
-                    if let Ok(nm) = ch.head().as_atom() {
-                        if let Ok(kv) = ch.tail().as_atom() {
-                            let kvt = scow(stack, DirectAtom::new_unchecked(tas!(b"ud")), kv)
+                    if let Ok(nm) = ch.head_with_arena(arena).as_atom() {
+                        if let Ok(kv) = ch.tail_with_arena(arena).as_atom() {
+                            let kvt = scow(stack, arena, DirectAtom::new_unchecked(tas!(b"ud")), kv)
                                 .expect("scow should succeed in path_to_cord");
                             let kvc =
-                                rap(stack, 3, kvt).expect("rap should succeed in path_to_cord");
+                                rap(stack, 3, kvt, arena).expect("rap should succeed in path_to_cord");
                             length += 1;
                             length += met3_usize(nm);
                             length += met3_usize(kvc);
@@ -173,7 +175,7 @@ pub fn path_to_cord(stack: &mut NockStack, path: Noun) -> Atom {
                 }
             }
         }
-        cursor = c.tail();
+        cursor = c.tail_with_arena(arena);
     }
 
     // reset cursor, then actually write the path
@@ -184,7 +186,7 @@ pub fn path_to_cord(stack: &mut NockStack, path: Noun) -> Atom {
 
     while let Ok(c) = cursor.as_cell() {
         unsafe {
-            match c.head().as_either_atom_cell() {
+            match c.head_with_arena(arena).as_either_atom_cell() {
                 Left(a) => {
                     buffer[idx] = slash;
                     idx += 1;
@@ -193,12 +195,12 @@ pub fn path_to_cord(stack: &mut NockStack, path: Noun) -> Atom {
                     idx += bytelen;
                 }
                 Right(ch) => {
-                    if let Ok(nm) = ch.head().as_atom() {
-                        if let Ok(kv) = ch.tail().as_atom() {
-                            let kvt = scow(stack, DirectAtom::new_unchecked(tas!(b"ud")), kv)
+                    if let Ok(nm) = ch.head_with_arena(arena).as_atom() {
+                        if let Ok(kv) = ch.tail_with_arena(arena).as_atom() {
+                            let kvt = scow(stack, arena, DirectAtom::new_unchecked(tas!(b"ud")), kv)
                                 .expect("scow should succeed in path_to_cord");
                             let kvc =
-                                rap(stack, 3, kvt).expect("rap should succeed in path_to_cord");
+                                rap(stack, 3, kvt, arena).expect("rap should succeed in path_to_cord");
                             buffer[idx] = slash;
                             idx += 1;
                             let nmlen = met3_usize(nm);
@@ -213,7 +215,7 @@ pub fn path_to_cord(stack: &mut NockStack, path: Noun) -> Atom {
                 }
             }
         }
-        cursor = c.tail();
+        cursor = c.tail_with_arena(arena);
     }
 
     unsafe { deres.normalize_as_atom() }

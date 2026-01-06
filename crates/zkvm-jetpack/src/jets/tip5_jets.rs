@@ -2,7 +2,7 @@ use ibig::UBig;
 use nockvm::interpreter::Context;
 use nockvm::jets::util::{slot, BAIL_FAIL};
 use nockvm::jets::JetErr;
-use nockvm::mem::NockStack;
+use nockvm::mem::{Arena, NockStack};
 use nockvm::noun::{Atom, Noun, D, T};
 use nockvm_macros::tas;
 
@@ -170,9 +170,10 @@ pub fn hash_ten_cell_jet(context: &mut Context, subject: Noun) -> Result<Noun, J
 }
 
 fn hash_ten_cell(stack: &mut NockStack, ten_cell: Noun) -> Result<Noun, JetErr> {
+    let arena = Arena::stub_for_stack_only();
     // leaf_sequence(ten-cell)
     let mut leaf: Vec<u64> = Vec::<u64>::new();
-    crate::form::shape::do_leaf_sequence(ten_cell, &mut leaf)?;
+    crate::form::shape::do_leaf_sequence(ten_cell, &mut leaf, arena)?;
     let mut leaf_belt = leaf.into_iter().map(Belt).collect();
 
     // list-to-tuple hash10
@@ -181,19 +182,21 @@ fn hash_ten_cell(stack: &mut NockStack, ten_cell: Noun) -> Result<Noun, JetErr> 
 }
 
 pub fn hash_noun_varlen_jet(context: &mut Context, subject: Noun) -> Result<Noun, JetErr> {
+    let arena = Arena::stub_for_stack_only();
     let stack = &mut context.stack;
     let n = slot(subject, 6)?;
-    tip5::hash::hash_noun_varlen(stack, n)
+    tip5::hash::hash_noun_varlen(stack, n, arena)
 }
 
 pub fn hash_hashable_jet(context: &mut Context, subject: Noun) -> Result<Noun, JetErr> {
+    let arena = Arena::stub_for_stack_only();
     let stack = &mut context.stack;
     let h = slot(subject, 6)?;
 
-    hash_hashable(stack, h)
+    hash_hashable(stack, h, arena)
 }
 
-pub fn hash_hashable(stack: &mut NockStack, h: Noun) -> Result<Noun, JetErr> {
+pub fn hash_hashable(stack: &mut NockStack, h: Noun, arena: &Arena) -> Result<Noun, JetErr> {
     if !h.is_cell() {
         return Err(BAIL_FAIL);
     }
@@ -206,31 +209,31 @@ pub fn hash_hashable(stack: &mut NockStack, h: Noun) -> Result<Noun, JetErr> {
 
         match tag.data() {
             tas!(b"hash") => hash_hashable_hash(stack, h_tail),
-            tas!(b"leaf") => hash_hashable_leaf(stack, h_tail),
-            tas!(b"list") => hash_hashable_list(stack, h_tail),
-            tas!(b"mary") => hash_hashable_mary(stack, h_tail),
-            _ => hash_hashable_other(stack, h_head, h_tail),
+            tas!(b"leaf") => hash_hashable_leaf(stack, h_tail, arena),
+            tas!(b"list") => hash_hashable_list(stack, h_tail, arena),
+            tas!(b"mary") => hash_hashable_mary(stack, h_tail, arena),
+            _ => hash_hashable_other(stack, h_head, h_tail, arena),
         }
     } else {
-        hash_hashable_other(stack, h_head, h_tail)
+        hash_hashable_other(stack, h_head, h_tail, arena)
     }
 }
 
 fn hash_hashable_hash(_stack: &mut NockStack, p: Noun) -> Result<Noun, JetErr> {
     Ok(p)
 }
-fn hash_hashable_leaf(stack: &mut NockStack, p: Noun) -> Result<Noun, JetErr> {
-    tip5::hash::hash_noun_varlen(stack, p)
+fn hash_hashable_leaf(stack: &mut NockStack, p: Noun, arena: &Arena) -> Result<Noun, JetErr> {
+    tip5::hash::hash_noun_varlen(stack, p, arena)
 }
-fn hash_hashable_list(stack: &mut NockStack, p: Noun) -> Result<Noun, JetErr> {
+fn hash_hashable_list(stack: &mut NockStack, p: Noun, arena: &Arena) -> Result<Noun, JetErr> {
     let turn: Vec<Noun> = HoonList::try_from(p)?
         .into_iter()
-        .map(|x| hash_hashable(stack, x).unwrap())
+        .map(|x| hash_hashable(stack, x, arena).unwrap())
         .collect();
     let turn_list = vecnoun_to_hoon_list(stack, &turn);
-    tip5::hash::hash_noun_varlen(stack, turn_list)
+    tip5::hash::hash_noun_varlen(stack, turn_list, arena)
 }
-fn hash_hashable_mary(stack: &mut NockStack, p: Noun) -> Result<Noun, JetErr> {
+fn hash_hashable_mary(stack: &mut NockStack, p: Noun, arena: &Arena) -> Result<Noun, JetErr> {
     let (ma_step, ma_array_len, _ma_array_dat) = get_mary_fields(p)?;
 
     let ma_changed = change_step(stack, p, D(1))?;
@@ -243,12 +246,12 @@ fn hash_hashable_mary(stack: &mut NockStack, p: Noun) -> Result<Noun, JetErr> {
     let hash = T(stack, &[D(tas!(b"hash")), hash_belts_list]);
     let arg = T(stack, &[leaf_step, leaf_len, hash]);
 
-    hash_hashable(stack, arg)
+    hash_hashable(stack, arg, arena)
 }
 
-fn hash_hashable_other(stack: &mut NockStack, p: Noun, q: Noun) -> Result<Noun, JetErr> {
-    let ph = hash_hashable(stack, p)?;
-    let qh = hash_hashable(stack, q)?;
+fn hash_hashable_other(stack: &mut NockStack, p: Noun, q: Noun, arena: &Arena) -> Result<Noun, JetErr> {
+    let ph = hash_hashable(stack, p, arena)?;
+    let qh = hash_hashable(stack, q, arena)?;
 
     let cell = T(stack, &[ph, qh]);
 

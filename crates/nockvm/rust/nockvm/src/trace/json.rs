@@ -22,7 +22,7 @@ pub struct JsonBackend {
 }
 
 impl TraceBackend for JsonBackend {
-    fn append_trace(&mut self, stack: &mut NockStack, path: Noun) {
+    fn append_trace(&mut self, stack: &mut NockStack, _arena: &super::Arena, path: Noun) {
         TraceStack::push_on_stack(
             stack,
             TraceData {
@@ -35,6 +35,7 @@ impl TraceBackend for JsonBackend {
     unsafe fn write_nock_trace(
         &mut self,
         stack: &mut NockStack,
+        arena: &super::Arena,
         trace_stack: *const TraceStack,
     ) -> Result<(), Error> {
         let mut trace_stack = trace_stack as *const TraceStack<TraceData>;
@@ -56,7 +57,7 @@ impl TraceBackend for JsonBackend {
                 continue;
             }
 
-            let pc = path_to_cord(stack, (*trace_stack).path);
+            let pc = path_to_cord(stack, arena, (*trace_stack).path);
             let pc_len = met3_usize(pc);
             let pc_bytes = &pc.as_ne_bytes()[0..pc_len];
             let pc_str = match std::str::from_utf8(pc_bytes) {

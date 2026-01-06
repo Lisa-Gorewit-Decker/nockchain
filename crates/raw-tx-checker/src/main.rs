@@ -4,7 +4,7 @@ use std::path::PathBuf;
 use anyhow::{anyhow, Context, Result};
 use clap::Parser;
 use nockchain_types::tx_engine::common::Hash;
-use nockvm::mem::NockStack;
+use nockvm::mem::{Arena, NockStack};
 use nockvm::noun::IndirectAtom;
 use nockvm::serialization;
 use noun_serde::prelude::*;
@@ -34,7 +34,8 @@ fn main() -> Result<()> {
 
     let hashable = serialization::cue(&mut stack, jam_atom)
         .map_err(|err| anyhow!("failed to cue jammed noun: {err:?}"))?;
-    let digest_noun = hash_hashable(&mut stack, hashable)
+    let arena = Arena::stub_for_stack_only();
+    let digest_noun = hash_hashable(&mut stack, hashable, arena)
         .map_err(|err| anyhow!("hash_hashable jet failed: {err:?}"))?;
 
     let tip5_hash = Hash::from_noun(&digest_noun)?;

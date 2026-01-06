@@ -1,19 +1,22 @@
 use nockvm::interpreter::Context;
 use nockvm::jets::util::slot;
 use nockvm::jets::JetErr;
+use nockvm::mem::Arena;
 use nockvm::noun::Noun;
 
 use crate::form::shape::{dyck, leaf_sequence};
 
 pub fn leaf_sequence_jet(context: &mut Context, subject: Noun) -> Result<Noun, JetErr> {
+    let arena = Arena::stub_for_stack_only();
     let t = slot(subject, 6)?;
-    leaf_sequence(&mut context.stack, t)
+    leaf_sequence(&mut context.stack, t, arena)
 }
 
 pub fn dyck_jet(context: &mut Context, subject: Noun) -> Result<Noun, JetErr> {
+    let arena = Arena::stub_for_stack_only();
     let stack = &mut context.stack;
     let t = slot(subject, 6)?;
-    dyck(stack, t)
+    dyck(stack, t, arena)
 }
 
 #[cfg(test)]

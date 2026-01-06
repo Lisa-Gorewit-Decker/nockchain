@@ -5,6 +5,7 @@ use nockchain_math::crypto::cheetah::{CheetahError, CheetahPoint, P_BIG};
 use nockchain_math::noun_ext::NounMathExt;
 use nockchain_math::zoon::common::DefaultTipHasher;
 use nockchain_math::zoon::zmap;
+use nockvm::mem::Arena;
 use nockvm::noun::{Noun, NounAllocator, D};
 use noun_serde::{NounDecode, NounDecodeError, NounEncode};
 use serde::{Deserialize, Serialize};
@@ -35,10 +36,11 @@ pub struct Signature(pub Vec<(SchnorrPubkey, SchnorrSignature)>);
 
 impl NounEncode for Signature {
     fn to_noun<A: NounAllocator>(&self, stack: &mut A) -> Noun {
+        let arena = Arena::stub_for_stack_only();
         self.0.iter().fold(D(0), |map, (pubkey, sig)| {
             let mut key = pubkey.to_noun(stack);
             let mut value = sig.to_noun(stack);
-            zmap::z_map_put(stack, &map, &mut key, &mut value, &DefaultTipHasher)
+            zmap::z_map_put(stack, &map, &mut key, &mut value, &DefaultTipHasher, arena)
                 .expect("z-map put for signature should not fail")
         })
     }

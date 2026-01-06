@@ -849,7 +849,7 @@ pub fn interpret(context: &mut Context, mut subject: Noun, formula: Noun) -> Res
                                             context.cold.matches(stack, &mut res).zip(Some(v))
                                         })
                                     {
-                                        trace_info.append_trace(stack, path);
+                                        trace_info.append_trace(stack, arena, path);
                                     }
 
                                     subject = res;
@@ -875,7 +875,7 @@ pub fn interpret(context: &mut Context, mut subject: Noun, formula: Noun) -> Res
                                             context.cold.matches(stack, &mut res).zip(Some(v))
                                         })
                                     {
-                                        trace_info.append_trace(stack, path);
+                                        trace_info.append_trace(stack, arena, path);
                                     }
                                 }
                             } else {
@@ -933,7 +933,7 @@ pub fn interpret(context: &mut Context, mut subject: Noun, formula: Noun) -> Res
                             try_or_bail!(push_formula(&mut context.stack, &*context.arena, diet.patch, false));
                         }
                         Todo10::Edit => {
-                            res = edit(&mut context.stack, diet.axis, res, diet.tree);
+                            res = edit(&mut context.stack, &*context.arena, diet.axis, res, diet.tree);
                             context.stack.pop::<NockWork>();
                         }
                     }
@@ -1290,16 +1290,16 @@ mod cold_paths {
                 if let Some(cell) = context.scry_stack.cell() {
                     scry.path = res.clone();
                     let scry_stack = context.scry_stack;
-                    let scry_handler = cell.head();
+                    let scry_handler = cell.head_with_arena(&*context.arena);
                     let scry_gate = scry_handler.as_cell()?;
                     let payload = T(&mut context.stack, &[scry.reff, res.clone()]);
                     let scry_core = T(
                         &mut context.stack,
-                        &[scry_gate.head(), payload, scry_gate.tail().as_cell()?.tail()],
+                        &[scry_gate.head_with_arena(&*context.arena), payload, scry_gate.tail_with_arena(&*context.arena).as_cell()?.tail_with_arena(&*context.arena)],
                     );
                     let scry_form = T(&mut context.stack, &[D(9), D(2), D(1), scry_core]);
 
-                    context.scry_stack = cell.tail();
+                    context.scry_stack = cell.tail_with_arena(&*context.arena);
                     // Alternately, we could use scry_core as the subject and [9 2 0 1] as
                     // the formula. It's unclear if performance will be better with a purely
                     // static formula.
@@ -1312,7 +1312,7 @@ mod cold_paths {
                                     return Err(Error::ScryCrashed(D(0)));
                                 }
                             }
-                            Right(cell) => match cell.tail().as_either_atom_cell() {
+                            Right(cell) => match cell.tail_with_arena(&*context.arena).as_either_atom_cell() {
                                 Left(_) => {
                                     let stack = &mut context.stack;
                                     let hunk = T(stack, &[D(tas!(b"hunk")), scry.reff, scry.path]);
@@ -1320,7 +1320,7 @@ mod cold_paths {
                                     return Err(Error::ScryCrashed(D(0)));
                                 }
                                 Right(cell) => {
-                                    *res = cell.tail();
+                                    *res = cell.tail_with_arena(&*context.arena);
                                     context.scry_stack = scry_stack;
                                     context.stack.pop::<NockWork>();
                                     return OK_CONTINUE;
@@ -1626,6 +1626,7 @@ fn exit(
             context.stack.frame_pop();
         }
 
+        let arena = std::sync::Arc::clone(&context.arena);
         let stack = &mut context.stack;
         let mut preserve = match error {
             Error::ScryBlocked(path) => path,
@@ -1634,7 +1635,7 @@ fn exit(
                 let h = *(stack.local_noun_pointer(0));
                 // XX: Small chance of clobbering something important after OOM?
                 // XX: what if we OOM while making a stack trace
-                match weld(stack, t, h) {
+                match weld(stack, t, h, &arena) {
                     Ok(trace) => trace,
                     Err(_) => h,
                 }
@@ -1678,16 +1679,16 @@ fn mean_push(stack: &mut NockStack, noun: Noun) {
 
 /** Pop off of the mean stack.
  */
-fn mean_pop(stack: &mut NockStack) {
+fn mean_pop(stack: &mut NockStack, arena: &Arena) {
     unsafe {
         *(stack.local_noun_pointer(0)) = (*(stack.local_noun_pointer(0)))
             .as_cell()
             .expect("serf: unexpected end of mean stack\r")
-            .tail();
+            .tail_with_arena(arena);
     }
 }
 
-fn edit(stack: &mut NockStack, edit_axis: Atom, patch: Noun, mut tree: Noun) -> Noun {
+fn edit(stack: &mut NockStack, arena: &Arena, edit_axis: Atom, patch: Noun, mut tree: Noun) -> Noun {
     use either::{Left, Right};
 
     use crate::noun::{DirectAxisIterator, IndirectAxisIterator};
@@ -1706,18 +1707,18 @@ fn edit(stack: &mut NockStack, edit_axis: Atom, patch: Noun, mut tree: Noun) -> 
                     unsafe {
                         let (cell, cellmem) = Cell::new_raw_mut(stack);
                         *dest = cell.as_noun();
-                        (*cellmem).head = tree_cell.head();
+                        (*cellmem).head = tree_cell.head_with_arena(arena);
                         dest = &mut ((*cellmem).tail);
                     }
-                    tree = tree_cell.tail();
+                    tree = tree_cell.tail_with_arena(arena);
                 } else {
                     unsafe {
                         let (cell, cellmem) = Cell::new_raw_mut(stack);
                         *dest = cell.as_noun();
-                        (*cellmem).tail = tree_cell.tail();
+                        (*cellmem).tail = tree_cell.tail_with_arena(arena);
                         dest = &mut ((*cellmem).head);
                     }
-                    tree = tree_cell.head();
+                    tree = tree_cell.head_with_arena(arena);
                 }
             }
         }
@@ -1731,18 +1732,18 @@ fn edit(stack: &mut NockStack, edit_axis: Atom, patch: Noun, mut tree: Noun) -> 
                     unsafe {
                         let (cell, cellmem) = Cell::new_raw_mut(stack);
                         *dest = cell.as_noun();
-                        (*cellmem).head = tree_cell.head();
+                        (*cellmem).head = tree_cell.head_with_arena(arena);
                         dest = &mut ((*cellmem).tail);
                     }
-                    tree = tree_cell.tail();
+                    tree = tree_cell.tail_with_arena(arena);
                 } else {
                     unsafe {
                         let (cell, cellmem) = Cell::new_raw_mut(stack);
                         *dest = cell.as_noun();
-                        (*cellmem).tail = tree_cell.tail();
+                        (*cellmem).tail = tree_cell.tail_with_arena(arena);
                         dest = &mut ((*cellmem).head);
                     }
-                    tree = tree_cell.head();
+                    tree = tree_cell.head_with_arena(arena);
                 }
             }
         }
@@ -1786,7 +1787,7 @@ unsafe fn write_trace(context: &mut Context) {
         let trace_stack = *(context.stack.local_noun_pointer(1) as *mut *const TraceStack);
         // Abort writing to trace file if we encountered an error. This should
         // result in a well-formed partial trace file.
-        if let Err(_e) = write_nock_trace(&mut context.stack, info, trace_stack) {
+        if let Err(_e) = write_nock_trace(&mut context.stack, &*context.arena, info, trace_stack) {
             flog!(context, "\rserf: error writing nock trace to file: {:?}", _e);
             context.trace_info = None;
         }
@@ -1830,7 +1831,7 @@ mod hint {
                 if cfg!(feature = "sham_hints") {
                     let jet_formula = hint.cell()?;
                     // XX: what is the head here?
-                    let jet_name = jet_formula.tail();
+                    let jet_name = jet_formula.tail_with_arena(&*context.arena);
 
                     if let Some(jet) = jets::get_jet(context, jet_name) {
                         match jet(context, subject) {
@@ -1929,13 +1930,14 @@ mod hint {
                 Some(res)
             }
             tas!(b"slog") => {
+                let arena = &*context.arena;
                 let stack = &mut context.stack;
                 let slogger = &mut context.slogger;
 
                 let (_form, clue) = hint?;
                 let slog_cell = clue.cell()?;
-                let pri = slog_cell.head().direct()?.data();
-                let tank = slog_cell.tail();
+                let pri = slog_cell.head_with_arena(arena).direct()?.data();
+                let tank = slog_cell.tail_with_arena(arena);
 
                 let s = (*slogger).deref_mut();
                 s.slog(stack, pri, tank);
@@ -1959,25 +1961,26 @@ mod hint {
 
                 match mook(context, tone, true) {
                     Ok(toon) => {
+                        let arena = std::sync::Arc::clone(&context.arena);
                         let stack = &mut context.stack;
                         let slogger = &mut context.slogger;
 
-                        if unsafe { !toon.head().raw_equals(&D(2)) } {
+                        if unsafe { !toon.head_with_arena(&arena).raw_equals(&D(2)) } {
                             // +mook will only ever return a $toon with non-%2 head if that's what it was given as
                             // input. Since we control the input for this call exactly, there must exist a programming
                             // error in Ares if this occurs.
                             panic!("serf: %hela: mook returned invalid tone");
                         }
 
-                        let mut list = toon.tail();
+                        let mut list = toon.tail_with_arena(&arena);
                         loop {
                             if unsafe { list.raw_equals(&D(0)) } {
                                 break;
                             }
 
                             if let Ok(cell) = list.as_cell() {
-                                slogger.slog(stack, 0, cell.head());
-                                list = cell.tail();
+                                slogger.slog(stack, 0, cell.head_with_arena(&arena));
+                                list = cell.tail_with_arena(&arena);
                             } else {
                                 flog!(context, "serf: %hela: list ends without ~");
                                 break;
@@ -2018,7 +2021,7 @@ mod hint {
                 context.cache = cache.insert(stack, &mut key, res);
             }
             tas!(b"hand") | tas!(b"hunk") | tas!(b"lose") | tas!(b"mean") | tas!(b"spot") => {
-                mean_pop(stack);
+                mean_pop(stack, &*context.arena);
             }
             tas!(b"fast") => {
                 if !cfg!(feature = "sham_hints") {
@@ -2027,7 +2030,7 @@ mod hint {
                         let mut parent = clue.slot(6).ok()?;
                         loop {
                             if let Ok(parent_cell) = parent.as_cell() {
-                                if unsafe { parent_cell.head().raw_equals(&D(11)) } {
+                                if unsafe { parent_cell.head_with_arena(&*context.arena).raw_equals(&D(11)) } {
                                     match parent.slot(7) {
                                         Ok(noun) => {
                                             parent = noun;
@@ -2107,20 +2110,21 @@ mod hint {
 mod debug {
     use either::Either::*;
 
+    use crate::mem::Arena;
     use crate::noun::Noun;
 
     #[allow(dead_code)]
-    pub(super) fn assert_normalized(noun: Noun, path: Noun) {
-        assert_normalized_helper(noun, path, None);
+    pub(super) fn assert_normalized(noun: Noun, path: Noun, arena: &Arena) {
+        assert_normalized_helper(noun, path, None, arena);
     }
 
     #[allow(dead_code)]
-    pub(super) fn assert_normalized_depth(noun: Noun, path: Noun, depth: usize) {
-        assert_normalized_helper(noun, path, Some(depth));
+    pub(super) fn assert_normalized_depth(noun: Noun, path: Noun, depth: usize, arena: &Arena) {
+        assert_normalized_helper(noun, path, Some(depth), arena);
     }
 
     #[allow(dead_code)]
-    fn assert_normalized_helper(noun: Noun, path: Noun, depth: Option<usize>) {
+    fn assert_normalized_helper(noun: Noun, path: Noun, depth: Option<usize>, arena: &Arena) {
         match noun.as_either_atom_cell() {
             Left(atom) => {
                 if !atom.is_normalized() {
@@ -2138,8 +2142,8 @@ mod debug {
             Right(cell) => {
                 if depth.is_none_or(|d| d != 0) {
                     let new_depth = depth.map(|x| x - 1);
-                    assert_normalized_helper(cell.head(), path, new_depth);
-                    assert_normalized_helper(cell.tail(), path, new_depth);
+                    assert_normalized_helper(cell.head_with_arena(arena), path, new_depth, arena);
+                    assert_normalized_helper(cell.tail_with_arena(arena), path, new_depth, arena);
                 }
             }
         }

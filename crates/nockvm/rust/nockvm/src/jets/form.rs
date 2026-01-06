@@ -11,7 +11,7 @@ pub fn jet_scow(context: &mut Context, subject: Noun) -> Result {
     let arena = &*context.arena;
     let aura = slot_with_arena(subject, 12, arena)?.as_direct()?;
     let atom = slot_with_arena(subject, 13, arena)?.as_atom()?;
-    util::scow(&mut context.stack, aura, atom)
+    util::scow(&mut context.stack, arena, aura, atom)
 }
 
 pub mod util {
@@ -20,11 +20,12 @@ pub mod util {
 
     use crate::jets;
     use crate::jets::JetErr;
-    use crate::mem::NockStack;
+    use crate::mem::{Arena, NockStack};
     use crate::noun::{Atom, Cell, DirectAtom, D, T};
 
     pub fn scow(
         stack: &mut NockStack,
+        arena: &Arena,
         aura: DirectAtom, // XX: technically this should be Atom?
         atom: Atom,
     ) -> jets::Result {
@@ -62,11 +63,11 @@ pub mod util {
                         if lent % 3 == 0 {
                             let (cell, memory) = Cell::new_raw_mut(stack);
                             (*memory).head = D(b'.' as u64);
-                            (*memory).tail = list.tail();
+                            (*memory).tail = list.tail_with_arena(arena);
                             (*(list.to_raw_pointer_mut())).tail = cell.as_noun();
-                            list = list.tail().as_cell()?;
+                            list = list.tail_with_arena(arena).as_cell()?;
                         }
-                        list = list.tail().as_cell()?;
+                        list = list.tail_with_arena(arena).as_cell()?;
                         lent -= 1;
                     }
 

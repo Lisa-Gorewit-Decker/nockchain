@@ -6,6 +6,7 @@ use nockchain_math::noun_ext::NounMathExt;
 use nockchain_math::structs::HoonMapIter;
 use nockchain_math::zoon::common::DefaultTipHasher;
 use nockchain_math::zoon::zmap;
+use nockvm::mem::Arena;
 use nockvm::noun::{NounAllocator, D};
 use noun_serde::{NounDecode, NounDecodeError, NounEncode};
 
@@ -24,10 +25,11 @@ pub struct Balance(pub Vec<(Name, Note)>);
 
 impl NounEncode for Balance {
     fn to_noun<A: NounAllocator>(&self, stack: &mut A) -> Noun {
+        let arena = Arena::stub_for_stack_only();
         let keys_noun_map = self.0.iter().fold(D(0), |map, (name, note)| {
             let mut key = name.to_noun(stack);
             let mut value = note.to_noun(stack);
-            zmap::z_map_put(stack, &map, &mut key, &mut value, &DefaultTipHasher).unwrap()
+            zmap::z_map_put(stack, &map, &mut key, &mut value, &DefaultTipHasher, arena).unwrap()
         });
         keys_noun_map
     }
@@ -127,6 +129,7 @@ impl NoteDataEntry {
 
 impl NounEncode for NoteData {
     fn to_noun<A: NounAllocator>(&self, allocator: &mut A) -> Noun {
+        let arena = Arena::stub_for_stack_only();
         self.0.iter().fold(D(0), |map, entry| {
             let mut key = make_tas(allocator, &entry.key).as_noun();
             // TODO error if key is not a belt
@@ -139,7 +142,7 @@ impl NounEncode for NoteData {
                 let &root = slab.root();
                 allocator.copy_into(root)
             };
-            zmap::z_map_put(allocator, &map, &mut key, &mut value, &DefaultTipHasher)
+            zmap::z_map_put(allocator, &map, &mut key, &mut value, &DefaultTipHasher, arena)
                 .expect("failed to encode note-data entry")
         })
     }

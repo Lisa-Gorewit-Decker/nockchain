@@ -6,6 +6,7 @@ use nockchain_math::noun_ext::NounMathExt;
 use nockchain_math::structs::HoonMapIter;
 use nockchain_math::zoon::common::DefaultTipHasher;
 use nockchain_math::zoon::{zmap, zset};
+use nockvm::mem::Arena;
 use nockvm::noun::{NounAllocator, D, SIG};
 use noun_serde::{NounDecode, NounDecodeError, NounEncode};
 
@@ -47,13 +48,14 @@ pub struct Lock {
 
 impl NounEncode for Lock {
     fn to_noun<A: NounAllocator>(&self, stack: &mut A) -> Noun {
+        let arena = Arena::stub_for_stack_only();
         let m = u64::to_noun(&self.keys_required, stack);
         let keys_noun_map = self
             .pubkeys
             .iter()
             .fold(SIG, |map, pubkey: &SchnorrPubkey| {
                 let mut val = pubkey.to_noun(stack);
-                zset::z_set_put(stack, &map, &mut val, &DefaultTipHasher)
+                zset::z_set_put(stack, &map, &mut val, &DefaultTipHasher, arena)
                     .expect("Failed to put public key into set")
             });
         let lock_noun = nockvm::noun::T(stack, &[m, keys_noun_map]);
@@ -124,10 +126,11 @@ pub struct Balance(pub Vec<(Name, NoteV0)>);
 
 impl NounEncode for Balance {
     fn to_noun<A: NounAllocator>(&self, stack: &mut A) -> Noun {
+        let arena = Arena::stub_for_stack_only();
         let keys_noun_map = self.0.iter().fold(D(0), |map, (name, note)| {
             let mut key = name.to_noun(stack);
             let mut value = note.to_noun(stack);
-            zmap::z_map_put(stack, &map, &mut key, &mut value, &DefaultTipHasher).unwrap()
+            zmap::z_map_put(stack, &map, &mut key, &mut value, &DefaultTipHasher, arena).unwrap()
         });
         keys_noun_map
     }

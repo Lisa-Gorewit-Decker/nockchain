@@ -13,19 +13,19 @@ pub fn jet_weld(context: &mut Context, subject: Noun) -> Result {
     let sam = slot_with_arena(subject, 6, arena)?;
     let a = slot_with_arena(sam, 2, arena)?;
     let b = slot_with_arena(sam, 3, arena)?;
-    util::weld(&mut context.stack, a, b)
+    util::weld(&mut context.stack, a, b, &arena)
 }
 
 pub fn jet_flop(context: &mut Context, subject: Noun) -> Result {
     let arena = &*context.arena;
     let sam = slot_with_arena(subject, 6, arena)?;
-    util::flop(&mut context.stack, sam)
+    util::flop(&mut context.stack, sam, &arena)
 }
 
 pub fn jet_lent(context: &mut Context, subject: Noun) -> Result {
     let arena = &*context.arena;
     let list = slot_with_arena(subject, 6, arena)?;
-    util::lent(list).map(|x| D(x as u64))
+    util::lent(list, &arena).map(|x| D(x as u64))
 }
 
 pub fn jet_roll(context: &mut Context, subject: Noun) -> Result {
@@ -56,13 +56,13 @@ pub fn jet_snag(context: &mut Context, subject: Noun) -> Result {
     let index = slot_with_arena(sam, 2, arena)?;
     let list = slot_with_arena(sam, 3, arena)?;
 
-    util::snag(list, index)
+    util::snag(list, index, &arena)
 }
 
 pub fn jet_snip(context: &mut Context, subject: Noun) -> Result {
     let arena = &*context.arena;
     let list = slot_with_arena(subject, 6, arena)?;
-    util::snip(&mut context.stack, list)
+    util::snip(&mut context.stack, list, &arena)
 }
 
 pub fn jet_turn(context: &mut Context, subject: Noun) -> Result {
@@ -102,7 +102,7 @@ pub fn jet_zing(context: &mut Context, subject: Noun) -> Result {
     let list = slot_with_arena(subject, 6, arena)?;
     let stack = &mut context.stack;
 
-    util::zing(stack, list)
+    util::zing(stack, list, &arena)
 }
 
 pub fn jet_reap(context: &mut Context, subject: Noun) -> Result {
@@ -116,30 +116,30 @@ pub fn jet_reap(context: &mut Context, subject: Noun) -> Result {
 }
 
 pub fn jet_levy(context: &mut Context, subject: Noun) -> Result {
-    let arena = &*context.arena;
-    let sam = slot_with_arena(subject, 6, arena)?;
-    let a_noun = slot_with_arena(sam, 2, arena)?;
-    let b_noun = slot_with_arena(sam, 3, arena)?;
+    let arena = std::sync::Arc::clone(&context.arena);
+    let sam = slot_with_arena(subject, 6, &arena)?;
+    let a_noun = slot_with_arena(sam, 2, &arena)?;
+    let b_noun = slot_with_arena(sam, 3, &arena)?;
 
-    util::levy(context, a_noun, b_noun)
+    util::levy(context, a_noun, b_noun, &arena)
 }
 
 pub fn jet_find(context: &mut Context, subject: Noun) -> Result {
-    let arena = &*context.arena;
-    let sam = slot_with_arena(subject, 6, arena)?;
-    let nedl = slot_with_arena(sam, 2, arena)?;
-    let hstk = slot_with_arena(sam, 3, arena)?;
+    let arena = std::sync::Arc::clone(&context.arena);
+    let sam = slot_with_arena(subject, 6, &arena)?;
+    let nedl = slot_with_arena(sam, 2, &arena)?;
+    let hstk = slot_with_arena(sam, 3, &arena)?;
 
-    util::find(context, nedl, hstk)
+    util::find(context, nedl, hstk, &arena)
 }
 
 pub fn jet_scag(context: &mut Context, subject: Noun) -> Result {
-    let arena = &*context.arena;
-    let sam = slot_with_arena(subject, 6, arena)?;
-    let a = sam.as_cell()?.head_with_arena(arena).as_atom()?;
-    let b = sam.as_cell()?.tail_with_arena(arena);
+    let arena = std::sync::Arc::clone(&context.arena);
+    let sam = slot_with_arena(subject, 6, &arena)?;
+    let a = sam.as_cell()?.head_with_arena(&arena).as_atom()?;
+    let b = sam.as_cell()?.tail_with_arena(&arena);
 
-    util::scag(context, a, b)
+    util::scag(context, a, b, &arena)
 }
 
 pub mod util {
@@ -148,12 +148,12 @@ pub mod util {
     use crate::interpreter::Context;
     use crate::jets::util::BAIL_EXIT;
     use crate::jets::{JetErr, Result};
-    use crate::mem::NockStack;
+    use crate::mem::{Arena, NockStack};
     use crate::noun::{Atom, Cell, Noun, NounAllocator, D, NO, T, YES};
     use crate::site::{site_slam, Site};
 
     /// Reverse order of list
-    pub fn flop<T: NounAllocator>(alloc: &mut T, noun: Noun) -> Result {
+    pub fn flop<T: NounAllocator>(alloc: &mut T, noun: Noun, arena: &Arena) -> Result {
         let mut list = noun;
         let mut tsil = D(0);
         loop {
@@ -162,14 +162,14 @@ pub mod util {
             }
 
             let cell = list.as_cell()?;
-            tsil = T(alloc, &[cell.head(), tsil]);
-            list = cell.tail();
+            tsil = T(alloc, &[cell.head_with_arena(arena), tsil]);
+            list = cell.tail_with_arena(arena);
         }
 
         Ok(tsil)
     }
 
-    pub fn weld<A: NounAllocator>(alloc: &mut A, a: Noun, b: Noun) -> Result {
+    pub fn weld<A: NounAllocator>(alloc: &mut A, a: Noun, b: Noun, arena: &Arena) -> Result {
         let mut res = D(0);
         let mut cur = a;
         loop {
@@ -177,8 +177,8 @@ pub mod util {
                 break;
             }
             let cell = cur.as_cell()?;
-            res = T(alloc, &[cell.head(), res]);
-            cur = cell.tail();
+            res = T(alloc, &[cell.head_with_arena(arena), res]);
+            cur = cell.tail_with_arena(arena);
         }
         cur = b;
         loop {
@@ -186,13 +186,13 @@ pub mod util {
                 break;
             }
             let cell = cur.as_cell()?;
-            res = T(alloc, &[cell.head(), res]);
-            cur = cell.tail();
+            res = T(alloc, &[cell.head_with_arena(arena), res]);
+            cur = cell.tail_with_arena(arena);
         }
-        flop(alloc, res)
+        flop(alloc, res, arena)
     }
 
-    pub fn lent(tape: Noun) -> result::Result<usize, JetErr> {
+    pub fn lent(tape: Noun, arena: &Arena) -> result::Result<usize, JetErr> {
         let mut len = 0usize;
         let mut list = tape;
         loop {
@@ -206,12 +206,12 @@ pub mod util {
             let cell = list.as_cell()?;
             // don't need checked_add or indirect atom result: 2^63-1 atoms would be 64 ebibytes
             len += 1;
-            list = cell.tail();
+            list = cell.tail_with_arena(arena);
         }
         Ok(len)
     }
 
-    pub fn snag(tape: Noun, index: Noun) -> Result {
+    pub fn snag(tape: Noun, index: Noun, arena: &Arena) -> Result {
         let mut list = tape;
         let mut idx = index.as_atom()?.as_u64()? as usize;
         loop {
@@ -220,14 +220,14 @@ pub mod util {
             }
             let cell = list.as_cell()?;
             if idx == 0 {
-                return Ok(cell.head());
+                return Ok(cell.head_with_arena(arena));
             }
             idx -= 1;
-            list = cell.tail();
+            list = cell.tail_with_arena(arena);
         }
     }
 
-    pub fn snip(stack: &mut NockStack, tape: Noun) -> Result {
+    pub fn snip(stack: &mut NockStack, tape: Noun, arena: &Arena) -> Result {
         let mut ret = D(0);
         let mut dest = &mut ret as *mut Noun;
         let mut list = tape;
@@ -240,7 +240,7 @@ pub mod util {
 
         loop {
             let cell = list.as_cell()?;
-            if let Some(atom) = cell.tail().atom() {
+            if let Some(atom) = cell.tail_with_arena(arena).atom() {
                 if atom.as_bitslice().first_one().is_none() {
                     break;
                 } else {
@@ -249,30 +249,30 @@ pub mod util {
             }
             unsafe {
                 let (new_cell, new_mem) = Cell::new_raw_mut(stack);
-                (*new_mem).head = cell.head();
+                (*new_mem).head = cell.head_with_arena(arena);
                 *dest = new_cell.as_noun();
                 dest = &mut (*new_mem).tail;
             }
-            list = cell.tail();
+            list = cell.tail_with_arena(arena);
         }
         unsafe { *dest = D(0) };
         Ok(ret)
     }
 
-    pub fn zing(stack: &mut NockStack, mut list: Noun) -> Result {
+    pub fn zing(stack: &mut NockStack, mut list: Noun, arena: &Arena) -> Result {
         unsafe {
             let mut res: Noun = D(0);
             let mut dest = &mut res as *mut Noun;
 
             while !list.raw_equals(&D(0)) {
                 let pair = list.as_cell()?;
-                let mut sublist = pair.head();
-                list = pair.tail();
+                let mut sublist = pair.head_with_arena(arena);
+                list = pair.tail_with_arena(arena);
 
                 while !sublist.raw_equals(&D(0)) {
                     let it = sublist.as_cell()?;
-                    let i = it.head();
-                    sublist = it.tail();
+                    let i = it.head_with_arena(arena);
+                    sublist = it.tail_with_arena(arena);
 
                     let (new_cell, new_memory) = Cell::new_raw_mut(stack);
                     (*new_memory).head = i;
@@ -298,7 +298,7 @@ pub mod util {
         }
         Ok(tsil)
     }
-    pub fn levy(context: &mut Context, a_noun: Noun, mut b_noun: Noun) -> Result {
+    pub fn levy(context: &mut Context, a_noun: Noun, mut b_noun: Noun, arena: &Arena) -> Result {
         let site = Site::new(context, &mut b_noun);
         let mut list = a_noun;
 
@@ -308,15 +308,15 @@ pub mod util {
             }
 
             let cell = list.as_cell()?;
-            let b_res = site_slam(context, &site, cell.head())?;
+            let b_res = site_slam(context, &site, cell.head_with_arena(arena))?;
             if unsafe { b_res.raw_equals(&NO) } {
                 return Ok(NO);
             }
-            list = cell.tail();
+            list = cell.tail_with_arena(arena);
         }
     }
 
-    pub fn find(context: &mut Context, nedl: Noun, hstk: Noun) -> Result {
+    pub fn find(context: &mut Context, nedl: Noun, hstk: Noun, arena: &Arena) -> Result {
         let mut hstk = hstk;
         let mut i = 0;
         loop {
@@ -328,26 +328,26 @@ pub mod util {
                     return Ok(D(0)); // (unit @ud)  ~
                 }
 
-                if unsafe { n.as_cell()?.head().raw_equals(&h.as_cell()?.head()) } {
-                    if unsafe { n.as_cell()?.tail().raw_equals(&D(0)) } {
+                if unsafe { n.as_cell()?.head_with_arena(arena).raw_equals(&h.as_cell()?.head_with_arena(arena)) } {
+                    if unsafe { n.as_cell()?.tail_with_arena(arena).raw_equals(&D(0)) } {
                         // match found
                         return Ok(T(&mut context.stack, &[D(0), D(i)])); // (unit @ud)  i
                     }
 
-                    n = n.as_cell()?.tail();
-                    h = h.as_cell()?.tail();
+                    n = n.as_cell()?.tail_with_arena(arena);
+                    h = h.as_cell()?.tail_with_arena(arena);
                     continue;
                 }
 
                 // try next position
-                hstk = hstk.as_cell()?.tail();
+                hstk = hstk.as_cell()?.tail_with_arena(arena);
                 i += 1;
                 break;
             }
         }
     }
 
-    pub fn scag(context: &mut Context, a: Atom, b: Noun) -> Result {
+    pub fn scag(context: &mut Context, a: Atom, b: Noun, arena: &Arena) -> Result {
         // Accepts an atom a and list b, producing the first a elements of the front of the list.
         let a = a.as_u64()?;
         let mut res: Vec<Noun> = vec![];
@@ -361,8 +361,8 @@ pub mod util {
             if pos >= a {
                 break;
             }
-            res.push(current_cell.head());
-            list = current_cell.tail();
+            res.push(current_cell.head_with_arena(arena));
+            list = current_cell.tail_with_arena(arena);
             pos += 1;
         }
 

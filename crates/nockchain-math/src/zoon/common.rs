@@ -1,5 +1,6 @@
 use nockvm::jets::util::BAIL_FAIL;
 use nockvm::jets::JetErr;
+use nockvm::mem::Arena;
 use nockvm::noun::{Noun, NounAllocator, D};
 use noun_serde::NounDecode;
 
@@ -10,6 +11,7 @@ pub trait TipHasher {
         &self,
         stack: &mut A,
         a: Noun,
+        arena: &Arena,
     ) -> Result<[u64; 5], JetErr>;
     fn hash_ten_cell(&self, ten: [u64; 10]) -> Result<[u64; 5], JetErr>;
 }
@@ -20,8 +22,9 @@ impl TipHasher for DefaultTipHasher {
         &self,
         stack: &mut A,
         noun: Noun,
+        arena: &Arena,
     ) -> Result<[u64; 5], JetErr> {
-        let noun_res = crate::tip5::hash::hash_noun_varlen(stack, noun)?;
+        let noun_res = crate::tip5::hash::hash_noun_varlen(stack, noun, arena)?;
         let digest = <[u64; 5]>::from_noun(&noun_res)?;
         Ok(digest)
     }
@@ -38,16 +41,18 @@ pub fn tip<H: TipHasher, A: NounAllocator>(
     stack: &mut A,
     a: Noun,
     hasher: &H,
+    arena: &Arena,
 ) -> Result<[u64; 5], JetErr> {
-    hasher.hash_noun_varlen(stack, a)
+    hasher.hash_noun_varlen(stack, a, arena)
 }
 
 pub fn double_tip<H: TipHasher, A: NounAllocator>(
     stack: &mut A,
     a: Noun,
     hasher: &H,
+    arena: &Arena,
 ) -> Result<[u64; 5], JetErr> {
-    let hash = hasher.hash_noun_varlen(stack, a)?;
+    let hash = hasher.hash_noun_varlen(stack, a, arena)?;
     let mut ten_cell = [0; 10];
     ten_cell[0..5].copy_from_slice(&hash);
     ten_cell[5..].copy_from_slice(&hash);
@@ -70,9 +75,10 @@ pub fn gor_tip<A: NounAllocator, H: TipHasher>(
     a: &mut Noun,
     b: &mut Noun,
     hasher: &H,
+    arena: &Arena,
 ) -> Result<bool, JetErr> {
-    let a_tip = tip(stack, *a, hasher)?;
-    let b_tip = tip(stack, *b, hasher)?;
+    let a_tip = tip(stack, *a, hasher, arena)?;
+    let b_tip = tip(stack, *b, hasher, arena)?;
 
     if a_tip == b_tip {
         dor_tip(stack, a, b)
@@ -86,9 +92,10 @@ pub fn mor_tip<A: NounAllocator, H: TipHasher>(
     a: &mut Noun,
     b: &mut Noun,
     hasher: &H,
+    arena: &Arena,
 ) -> Result<bool, JetErr> {
-    let a_tip = double_tip(stack, *a, hasher)?;
-    let b_tip = double_tip(stack, *b, hasher)?;
+    let a_tip = double_tip(stack, *a, hasher, arena)?;
+    let b_tip = double_tip(stack, *b, hasher, arena)?;
 
     if a_tip == b_tip {
         dor_tip(stack, a, b)

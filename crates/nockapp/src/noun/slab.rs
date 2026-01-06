@@ -353,8 +353,7 @@ impl<J> NounSlab<J> {
                                 let indirect_mem = stack.alloc_indirect(indirect.size());
                                 std::ptr::copy_nonoverlapping(raw_pointer, indirect_mem, raw_size);
                                 indirect.set_forwarding_pointer(indirect_mem);
-                                let offset = stack.offset_from_ptr(indirect_mem as *const u8);
-                                *dest = IndirectAtom::from_offset_words(offset).as_atom().as_noun();
+                                *dest = IndirectAtom::from_raw_pointer(indirect_mem).as_atom().as_noun();
                             }
                         }
                         Either::Right(mut cell) => {
@@ -365,8 +364,7 @@ impl<J> NounSlab<J> {
                                 copy_stack.push((cell.tail(), &mut (*cell_mem).tail as *mut Noun));
                                 copy_stack.push((cell.head(), &mut (*cell_mem).head as *mut Noun));
                                 cell.set_forwarding_pointer(cell_mem);
-                                let offset = stack.offset_from_ptr(cell_mem as *const u8);
-                                *dest = Cell::from_offset_words(offset).as_noun()
+                                *dest = Cell::from_raw_pointer(cell_mem).as_noun()
                             }
                         }
                     }

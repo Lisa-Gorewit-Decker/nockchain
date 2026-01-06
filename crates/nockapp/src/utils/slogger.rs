@@ -3,7 +3,7 @@ use std::io::{stderr, Write};
 use either::Either::*;
 use nockvm::interpreter::Slogger;
 use nockvm::jets::list::util::lent;
-use nockvm::mem::NockStack;
+use nockvm::mem::{Arena, NockStack};
 use nockvm::noun::{Atom, DirectAtom, IndirectAtom, Noun, Slots};
 use nockvm_macros::tas;
 use tracing::{debug, error, info, trace, warn};
@@ -153,7 +153,8 @@ fn slog_tank<W: Write>(stack: &mut NockStack, tank: Noun, out: &mut W) -> Result
 }
 
 fn crip(stack: &mut NockStack, mut tape: Noun) -> Result<Atom> {
-    let l = lent(tape)?;
+    let arena = Arena::stub_for_stack_only();
+    let l = lent(tape, arena)?;
     if l == 0 {
         return Ok(unsafe { DirectAtom::new_unchecked(0).as_atom() });
     }

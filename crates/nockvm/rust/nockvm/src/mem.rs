@@ -282,6 +282,35 @@ impl Arena {
             mapping: MappingKind::ReadOnly(mapping),
         }))
     }
+
+    /// Get a stub arena for stack-only operations.
+    ///
+    /// This returns a thread-local Arena that will panic if any PMA offset resolution
+    /// is attempted. It's safe to use for operations on pure stack-allocated nouns
+    /// (where LOCATION_BIT=0 for all allocated data), such as encoding operations
+    /// where all nouns are freshly allocated.
+    ///
+    /// # Safety
+    /// Using this arena with nouns that have PMA-resident cells (LOCATION_BIT=1)
+    /// will cause a panic. Only use for pure stack operations.
+    pub fn stub_for_stack_only() -> &'static Arena {
+        thread_local! {
+            static STUB_ARENA: Arc<Arena> = Arena::allocate(1).expect("failed to allocate stub arena");
+        }
+
+        // SAFETY: The thread_local arena lives for the duration of the thread,
+        // which is longer than any single encoding operation. The 'static lifetime
+        // is an approximation that is safe because:
+        // 1. The arena is never deallocated during thread execution
+        // 2. The returned reference is only used during encoding operations
+        // 3. We never mutate the arena after creation
+        STUB_ARENA.with(|arena| {
+            // SAFETY: The Arc<Arena> is thread-local and lives for the thread's lifetime.
+            // We return a 'static reference because the arena is never deallocated
+            // while the thread is running.
+            unsafe { &*(Arc::as_ptr(arena) as *const Arena) }
+        })
+    }
 }
 
 /// LOCATION_BIT distinguishes stack pointers from PMA offsets.

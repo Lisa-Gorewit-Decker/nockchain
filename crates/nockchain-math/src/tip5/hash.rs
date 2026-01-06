@@ -1,5 +1,6 @@
 use nockvm::jets::list::util::{lent, weld};
 use nockvm::jets::JetErr;
+use nockvm::mem::Arena;
 use nockvm::noun::{Noun, NounAllocator, D, T};
 use noun_serde::{NounDecode, NounEncode};
 
@@ -124,13 +125,13 @@ pub fn hash_10(input_vec: &mut Vec<Belt>) -> [u64; 5] {
     tip5_calc_digest(&sponge)
 }
 
-pub fn hash_noun_varlen<A: NounAllocator>(stack: &mut A, n: Noun) -> Result<Noun, JetErr> {
-    let leaf = leaf_sequence(stack, n)?;
-    let dyck = dyck(stack, n)?;
-    let size = lent(leaf).map(|x| D(x as u64))?;
+pub fn hash_noun_varlen<A: NounAllocator>(stack: &mut A, n: Noun, arena: &Arena) -> Result<Noun, JetErr> {
+    let leaf = leaf_sequence(stack, n, arena)?;
+    let dyck = dyck(stack, n, arena)?;
+    let size = lent(leaf, arena).map(|x| D(x as u64))?;
 
     // [size (weld leaf dyck)]
-    let weld = weld(stack, leaf, dyck)?;
+    let weld = weld(stack, leaf, dyck, arena)?;
     let arg = T(stack, &[size, weld]);
 
     hash_belts_list(stack, arg)
@@ -139,8 +140,9 @@ pub fn hash_noun_varlen<A: NounAllocator>(stack: &mut A, n: Noun) -> Result<Noun
 pub fn hash_noun_varlen_digest<A: NounAllocator>(
     stack: &mut A,
     n: Noun,
+    arena: &Arena,
 ) -> Result<[u64; 5], JetErr> {
-    let noun_res = hash_noun_varlen(stack, n)?;
+    let noun_res = hash_noun_varlen(stack, n, arena)?;
     let digest = <[u64; 5]>::from_noun(&noun_res)?;
     Ok(digest)
 }

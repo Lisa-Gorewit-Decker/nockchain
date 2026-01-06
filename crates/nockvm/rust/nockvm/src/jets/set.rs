@@ -4,9 +4,9 @@ use crate::interpreter::Context;
 use crate::jets::sort::util::{gor, mor};
 use crate::jets::util::slot_with_arena;
 use crate::jets::{JetErr, Result};
-use crate::mem::NockStack;
+use crate::mem::{Arena, NockStack};
 //use crate::mug::mug;
-use crate::noun::{Noun, Slots, D, NO, T, YES};
+use crate::noun::{Noun, D, NO, T, YES};
 
 type JetResult<T> = std::result::Result<T, JetErr>;
 
@@ -15,10 +15,10 @@ fn is_yes(noun: Noun) -> bool {
     unsafe { noun.raw_equals(&YES) }
 }
 
-fn decompose(node: Noun) -> JetResult<(Noun, Noun, Noun)> {
+fn decompose(node: Noun, arena: &Arena) -> JetResult<(Noun, Noun, Noun)> {
     let cell = node.as_cell()?;
-    let tail = cell.tail().as_cell()?;
-    Ok((cell.head(), tail.head(), tail.tail()))
+    let tail = cell.tail_with_arena(arena).as_cell()?;
+    Ok((cell.head_with_arena(arena), tail.head_with_arena(arena), tail.tail_with_arena(arena)))
 }
 
 fn make_node(stack: &mut NockStack, value: Noun, left: Noun, right: Noun) -> Noun {
@@ -28,21 +28,21 @@ fn make_node(stack: &mut NockStack, value: Noun, left: Noun, right: Noun) -> Nou
 
 // TODO: fix this jet. identical elements are not being deduplicated
 pub fn jet_put(context: &mut Context, subject: Noun) -> Result {
-    let arena = &*context.arena;
-    let elem = slot_with_arena(subject, 6, arena)?;
-    let parent = match slot_with_arena(subject, 7, arena) {
+    let arena = std::sync::Arc::clone(&context.arena);
+    let elem = slot_with_arena(subject, 6, &arena)?;
+    let parent = match slot_with_arena(subject, 7, &arena) {
         Ok(parent) => parent,
         Err(_) => return Err(JetErr::Punt),
     };
-    let set = match slot_with_arena(parent, 6, arena) {
+    let set = match slot_with_arena(parent, 6, &arena) {
         Ok(set) => set,
         Err(_) => return Err(JetErr::Punt),
     };
 
-    put_iter(&mut context.stack, set, elem)
+    put_iter(&mut context.stack, &arena, set, elem)
 }
 
-fn put_iter(stack: &mut NockStack, root: Noun, elem: Noun) -> JetResult<Noun> {
+fn put_iter(stack: &mut NockStack, arena: &Arena, root: Noun, elem: Noun) -> JetResult<Noun> {
     if unsafe { root.raw_equals(&D(0)) } {
         return Ok(make_node(stack, elem, D(0), D(0)));
     }
@@ -55,7 +55,7 @@ fn put_iter(stack: &mut NockStack, root: Noun, elem: Noun) -> JetResult<Noun> {
             break;
         }
 
-        let (value, left, right) = decompose(current)?;
+        let (value, left, right) = decompose(current, arena)?;
 
         if unsafe { elem.raw_equals(&value) } {
             return Ok(root);
@@ -69,8 +69,8 @@ fn put_iter(stack: &mut NockStack, root: Noun, elem: Noun) -> JetResult<Noun> {
     let mut new_subtree = make_node(stack, elem, D(0), D(0));
 
     while let Some((node, went_left)) = path.pop() {
-        let (value, left, right) = decompose(node)?;
-        let (c_val, c_left, c_right) = decompose(new_subtree)?;
+        let (value, left, right) = decompose(node, arena)?;
+        let (c_val, c_left, c_right) = decompose(new_subtree, arena)?;
 
         new_subtree = if went_left {
             if is_yes(mor(stack, value, c_val)) {
@@ -104,9 +104,9 @@ fn ord_cmp(stack: &mut NockStack, a: Noun, b: Noun) -> Ordering {
     }
 }
 
-fn has_loop(stack: &mut NockStack, mut tree: Noun, elem: Noun) -> JetResult<bool> {
+fn has_loop(stack: &mut NockStack, arena: &Arena, mut tree: Noun, elem: Noun) -> JetResult<bool> {
     while unsafe { !tree.raw_equals(&D(0)) } {
-        let (val, left, right) = decompose(tree)?;
+        let (val, left, right) = decompose(tree, arena)?;
         match ord_cmp(stack, elem, val) {
             Ordering::Equal => return Ok(true),
             Ordering::Less => tree = left,
@@ -118,16 +118,17 @@ fn has_loop(stack: &mut NockStack, mut tree: Noun, elem: Noun) -> JetResult<bool
 
 // TODO: check this jet.
 pub fn jet_has(context: &mut Context, subject: Noun) -> Result {
-    let elem = subject.slot(6)?;
-    let parent = match subject.slot(7) {
+    let arena = &*context.arena;
+    let elem = slot_with_arena(subject, 6, arena)?;
+    let parent = match slot_with_arena(subject, 7, arena) {
         Ok(parent) => parent,
         Err(_) => return Err(JetErr::Punt),
     };
-    let set = match parent.slot(6) {
+    let set = match slot_with_arena(parent, 6, arena) {
         Ok(set) => set,
         Err(_) => return Err(JetErr::Punt),
     };
-    let present = has_loop(&mut context.stack, set, elem)?;
+    let present = has_loop(&mut context.stack, arena, set, elem)?;
     Ok(if present { YES } else { NO })
 }
 
@@ -160,12 +161,12 @@ mod tests {
     //        assert_jet_door(context, jet_has, D(2), pay, NO);
     //    }
 
-    fn contains(stack: &mut NockStack, mut tree: Noun, elem: Noun) -> bool {
+    fn contains(stack: &mut NockStack, arena: &Arena, mut tree: Noun, elem: Noun) -> bool {
         loop {
             if unsafe { tree.raw_equals(&D(0)) } {
                 return false;
             }
-            let (value, left, right) = decompose(tree).unwrap();
+            let (value, left, right) = decompose(tree, arena).unwrap();
             if unsafe { value.raw_equals(&elem) } {
                 return true;
             }
@@ -202,35 +203,36 @@ mod tests {
     #[cfg_attr(miri, ignore = "memfd_create unsupported in Miri")]
     fn insert_distinct_elements() {
         let context = &mut init_context();
+        let arena = std::sync::Arc::clone(&context.arena);
         let base = node(&mut context.stack, D(9), D(0), D(0));
         let pay_left = context_with_set(&mut context.stack, base);
         let subject_left = T(&mut context.stack, &[D(0), D(4), pay_left]);
         let res_left = jet_put(context, subject_left).expect("jet_put left insert");
-        assert!(contains(&mut context.stack, res_left, D(4)));
-        assert!(contains(&mut context.stack, res_left, D(9)));
+        assert!(contains(&mut context.stack, &arena, res_left, D(4)));
+        assert!(contains(&mut context.stack, &arena, res_left, D(9)));
 
         let pay_right = context_with_set(&mut context.stack, res_left);
         let subject_right = T(&mut context.stack, &[D(0), D(12), pay_right]);
         let res_right = jet_put(context, subject_right).expect("jet_put right insert");
-        assert!(contains(&mut context.stack, res_right, D(4)));
-        assert!(contains(&mut context.stack, res_right, D(9)));
-        assert!(contains(&mut context.stack, res_right, D(12)));
+        assert!(contains(&mut context.stack, &arena, res_right, D(4)));
+        assert!(contains(&mut context.stack, &arena, res_right, D(9)));
+        assert!(contains(&mut context.stack, &arena, res_right, D(12)));
     }
 
-    fn put_recursive(stack: &mut NockStack, tree: Noun, elem: Noun) -> JetResult<Noun> {
+    fn put_recursive(stack: &mut NockStack, arena: &Arena, tree: Noun, elem: Noun) -> JetResult<Noun> {
         if unsafe { tree.raw_equals(&D(0)) } {
             return Ok(make_node(stack, elem, D(0), D(0)));
         }
 
-        let (value, left, right) = decompose(tree)?;
+        let (value, left, right) = decompose(tree, arena)?;
 
         if unsafe { elem.raw_equals(&value) } {
             return Ok(tree);
         }
 
         if is_yes(gor(stack, elem, value)) {
-            let c = put_recursive(stack, left, elem)?;
-            let (c_val, c_left, c_right) = decompose(c)?;
+            let c = put_recursive(stack, arena, left, elem)?;
+            let (c_val, c_left, c_right) = decompose(c, arena)?;
 
             if is_yes(mor(stack, value, c_val)) {
                 Ok(make_node(stack, value, c, right))
@@ -239,8 +241,8 @@ mod tests {
                 Ok(make_node(stack, c_val, c_left, new_a))
             }
         } else {
-            let c = put_recursive(stack, right, elem)?;
-            let (c_val, c_left, c_right) = decompose(c)?;
+            let c = put_recursive(stack, arena, right, elem)?;
+            let (c_val, c_left, c_right) = decompose(c, arena)?;
 
             if is_yes(mor(stack, value, c_val)) {
                 Ok(make_node(stack, value, left, c))
@@ -264,7 +266,7 @@ mod tests {
         }
     }
 
-    fn tree_height(tree: Noun) -> usize {
+    fn tree_height(tree: Noun, arena: &Arena) -> usize {
         let mut max = 0usize;
         let mut stack_vec = vec![(tree, 0usize)];
 
@@ -277,7 +279,7 @@ mod tests {
                 max = depth;
             }
 
-            let (value, left, right) = decompose(node).unwrap_or((node, D(0), D(0)));
+            let (value, left, right) = decompose(node, arena).unwrap_or((node, D(0), D(0)));
             let _ = value;
             stack_vec.push((left, depth + 1));
             stack_vec.push((right, depth + 1));
@@ -295,16 +297,17 @@ mod tests {
 
         for perm in perms.into_iter().take(120) {
             let context = &mut init_context();
+            let arena = std::sync::Arc::clone(&context.arena);
             let mut jet_tree = D(0);
             let mut rec_tree = D(0);
 
             for val in perm {
                 let noun_val = D(val);
-                jet_tree = put_iter(&mut context.stack, jet_tree, noun_val).unwrap();
-                rec_tree = put_recursive(&mut context.stack, rec_tree, noun_val).unwrap();
+                jet_tree = put_iter(&mut context.stack, &arena, jet_tree, noun_val).unwrap();
+                rec_tree = put_recursive(&mut context.stack, &arena, rec_tree, noun_val).unwrap();
             }
 
-            assert_eq!(tree_height(jet_tree), tree_height(rec_tree));
+            assert_eq!(tree_height(jet_tree, &arena), tree_height(rec_tree, &arena));
             assert_noun_eq(&mut context.stack, jet_tree, rec_tree);
         }
     }
@@ -315,6 +318,7 @@ mod tests {
         let mut seed = 0xDEADBEEFu64;
         for _ in 0..20 {
             let context = &mut init_context();
+            let arena = std::sync::Arc::clone(&context.arena);
             let mut jet_tree = D(0);
             let mut rec_tree = D(0);
 
@@ -322,11 +326,11 @@ mod tests {
                 seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1);
                 let value = (seed >> 32) & 0xFFFF;
                 let noun_val = D(value);
-                jet_tree = put_iter(&mut context.stack, jet_tree, noun_val).unwrap();
-                rec_tree = put_recursive(&mut context.stack, rec_tree, noun_val).unwrap();
+                jet_tree = put_iter(&mut context.stack, &arena, jet_tree, noun_val).unwrap();
+                rec_tree = put_recursive(&mut context.stack, &arena, rec_tree, noun_val).unwrap();
             }
 
-            assert_eq!(tree_height(jet_tree), tree_height(rec_tree));
+            assert_eq!(tree_height(jet_tree, &arena), tree_height(rec_tree, &arena));
             assert_noun_eq(&mut context.stack, jet_tree, rec_tree);
         }
     }

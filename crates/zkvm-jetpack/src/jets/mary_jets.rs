@@ -5,7 +5,7 @@ use nockvm::jets::list::util::{lent, reap, snip, weld, zing};
 use nockvm::jets::math::util::add;
 use nockvm::jets::util::{bite_to_word, chop, slot, BAIL_FAIL};
 use nockvm::jets::JetErr;
-use nockvm::mem::NockStack;
+use nockvm::mem::{Arena, NockStack};
 use nockvm::noun::{Atom, IndirectAtom, Noun, D, NO, T, YES};
 use nockvm_macros::tas;
 use tracing::{debug, error};
@@ -123,6 +123,7 @@ pub fn lift_elt_jet(context: &mut Context, subject: Noun) -> Result<Noun, JetErr
 }
 
 pub fn fet_jet(context: &mut Context, subject: Noun) -> Result<Noun, JetErr> {
+    let arena = Arena::stub_for_stack_only();
     let stack = &mut context.stack;
     let door = slot(subject, 7)?;
     let step = slot(door, 6)?.as_atom()?.as_u64()?;
@@ -130,7 +131,7 @@ pub fn fet_jet(context: &mut Context, subject: Noun) -> Result<Noun, JetErr> {
 
     let v = rip_correct(stack, 6, 1, a)?;
 
-    let lent_v = lent(v)? as u64;
+    let lent_v = lent(v, arena)? as u64;
 
     if ((lent_v == 1) && (step == 1)) || (lent_v == (step + 1)) && levy_based(v) {
         Ok(YES)
@@ -284,11 +285,12 @@ pub fn change_step(
 }
 
 pub fn bp_build_merk_heap_jet(context: &mut Context, subject: Noun) -> Result<Noun, JetErr> {
+    let arena = Arena::stub_for_stack_only();
     let stack = &mut context.stack;
     let mary_noun = slot(subject, 6)?;
 
     let (_ma_step, ma_array_len, _ma_array_dat) = get_mary_fields(mary_noun)?;
-    let heap_mary = heapify_mary(stack, mary_noun)?;
+    let heap_mary = heapify_mary(stack, mary_noun, arena)?;
     let xeb_m = simple_xeb(ma_array_len.as_u64()? as usize);
 
     let snag_digest = snag_as_digest(stack, heap_mary, 0)?;
@@ -312,7 +314,7 @@ pub fn get_mary_fields(p: Noun) -> Result<(Atom, Atom, Noun), JetErr> {
     Ok((ma_step.as_atom()?, ma_array_len.as_atom()?, ma_array_dat))
 }
 
-fn heapify_mary(stack: &mut NockStack, m_noun: Noun) -> Result<Noun, JetErr> {
+fn heapify_mary(stack: &mut NockStack, m_noun: Noun, arena: &Arena) -> Result<Noun, JetErr> {
     let (_ma_step, ma_array_len, _ma_array_dat) = get_mary_fields(m_noun)?;
     let size = bex(simple_xeb(ma_array_len.as_u64()? as usize)) - 1;
 
@@ -324,26 +326,26 @@ fn heapify_mary(stack: &mut NockStack, m_noun: Noun) -> Result<Noun, JetErr> {
     for i in 0..ma_array_len.as_u64()? {
         let t = snag_as_bpoly(stack, m_noun, i as usize)?;
         let hashable_bpoly = T(stack, &[D(tas!(b"mary")), D(1), t]);
-        let hash = hash_hashable(stack, hashable_bpoly)?;
-        let leafs = leaf_sequence(stack, hash)?;
+        let hash = hash_hashable(stack, hashable_bpoly, arena)?;
+        let leafs = leaf_sequence(stack, hash, arena)?;
         res_vec.push(leafs);
     }
     let mut res = vecnoun_to_hoon_list(stack, res_vec.as_slice());
 
     let mut curr = res;
     loop {
-        let lent_curr = lent(curr)?;
+        let lent_curr = lent(curr, arena)?;
         if lent_curr == 1 {
             break;
         } else {
             let pairs = hash_pairs(stack, curr)?;
-            res = weld(stack, pairs, res)?;
+            res = weld(stack, pairs, res, arena)?;
             curr = pairs;
         }
     }
 
-    let a = zing(stack, res)?;
-    let b = rep(stack, D(6), a)?;
+    let a = zing(stack, res, arena)?;
+    let b = rep(stack, D(6), a, arena)?;
     let c = add(stack, high_bit, b.as_atom()?);
     let res = T(stack, &[D(5), D(size as u64), c.as_noun()]);
 
@@ -392,12 +394,13 @@ pub fn mary_to_list_fields(
     ma_array_dat: Noun,
     ma_step: usize,
 ) -> Result<Noun, JetErr> {
+    let arena = Arena::stub_for_stack_only();
     if ma_array_len.as_u64()? == 0 {
         return Ok(D(0));
     }
 
     let res_rip = rip(stack, 6, ma_step, ma_array_dat.as_atom()?)?;
-    let res_snip = snip(stack, res_rip)?;
+    let res_snip = snip(stack, res_rip, arena)?;
 
     let mut res_turn: Vec<Noun> = Vec::new();
     for elem in HoonList::try_from(res_snip)?.into_iter() {

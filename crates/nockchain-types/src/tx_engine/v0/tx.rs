@@ -2,6 +2,7 @@ use nockchain_math::noun_ext::NounMathExt;
 use nockchain_math::structs::HoonMapIter;
 use nockchain_math::zoon::common::DefaultTipHasher;
 use nockchain_math::zoon::{zmap, zset};
+use nockvm::mem::Arena;
 use nockvm::noun::{Noun, NounAllocator, D};
 use noun_serde::{NounDecode, NounDecodeError, NounEncode};
 
@@ -65,10 +66,11 @@ pub struct Inputs(pub Vec<(Name, Input)>);
 
 impl NounEncode for Inputs {
     fn to_noun<A: NounAllocator>(&self, stack: &mut A) -> Noun {
+        let arena = Arena::stub_for_stack_only();
         self.0.iter().fold(D(0), |map, (name, input)| {
             let mut key = name.to_noun(stack);
             let mut value = input.to_noun(stack);
-            zmap::z_map_put(stack, &map, &mut key, &mut value, &DefaultTipHasher).unwrap()
+            zmap::z_map_put(stack, &map, &mut key, &mut value, &DefaultTipHasher, arena).unwrap()
         })
     }
 }
@@ -148,9 +150,10 @@ pub struct Seed {
 
 impl NounEncode for Seeds {
     fn to_noun<A: NounAllocator>(&self, stack: &mut A) -> Noun {
+        let arena = Arena::stub_for_stack_only();
         self.seeds.iter().fold(D(0), |set, seed| {
             let mut value = seed.to_noun(stack);
-            zset::z_set_put(stack, &set, &mut value, &DefaultTipHasher)
+            zset::z_set_put(stack, &set, &mut value, &DefaultTipHasher, arena)
                 .expect("z-set put for seeds should not fail")
         })
     }

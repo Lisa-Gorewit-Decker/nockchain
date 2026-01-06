@@ -12,7 +12,7 @@ use nockvm::interpreter::{self, interpret, Error, Mote, NockCancelToken};
 use nockvm::jets::cold::{Cold, Nounable};
 use nockvm::jets::hot::{HotEntry, URBIT_HOT_STATE};
 use nockvm::jets::nock::util::mook;
-use nockvm::mem::{NockStack, Retag};
+use nockvm::mem::{Arena, NockStack, Retag};
 use nockvm::mug::met3_usize;
 use nockvm::noun::{Atom, Cell, DirectAtom, IndirectAtom, Noun, Slots, D, T};
 use nockvm::trace::{path_to_cord, write_serf_trace_safe};
@@ -1111,7 +1111,8 @@ impl Serf {
     ///
     /// A string representing the trace name.
     fn poke_trace_name(stack: &mut NockStack, wire: Noun, vent: Atom) -> String {
-        let wpc = path_to_cord(stack, wire);
+        let arena = Arena::stub_for_stack_only();
+        let wpc = path_to_cord(stack, arena, wire);
         let wpc_len = met3_usize(wpc);
         let wpc_bytes = &wpc.as_ne_bytes()[0..wpc_len];
         let wpc_str = match std::str::from_utf8(wpc_bytes) {

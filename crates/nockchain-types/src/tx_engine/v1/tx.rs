@@ -5,6 +5,7 @@ use nockchain_math::structs::{HoonList, HoonMapIter};
 use nockchain_math::zoon::common::DefaultTipHasher;
 use nockchain_math::zoon::{zmap, zset};
 use nockvm::ext::{make_tas, AtomExt};
+use nockvm::mem::Arena;
 use nockvm::noun::{Noun, NounAllocator, D};
 use noun_serde::{NounDecode, NounDecodeError, NounEncode};
 
@@ -61,10 +62,11 @@ pub struct Spends(pub Vec<(Name, Spend)>);
 
 impl NounEncode for Spends {
     fn to_noun<A: NounAllocator>(&self, allocator: &mut A) -> Noun {
+        let arena = Arena::stub_for_stack_only();
         self.0.iter().fold(D(0), |acc, (name, spend)| {
             let mut key = name.to_noun(allocator);
             let mut value = spend.to_noun(allocator);
-            zmap::z_map_put(allocator, &acc, &mut key, &mut value, &DefaultTipHasher)
+            zmap::z_map_put(allocator, &acc, &mut key, &mut value, &DefaultTipHasher, arena)
                 .expect("failed to encode spends map")
         })
     }
@@ -141,9 +143,10 @@ pub struct Seeds(pub Vec<Seed>);
 
 impl NounEncode for Seeds {
     fn to_noun<A: NounAllocator>(&self, allocator: &mut A) -> Noun {
+        let arena = Arena::stub_for_stack_only();
         self.0.iter().fold(D(0), |acc, seed| {
             let mut value = seed.to_noun(allocator);
-            zset::z_set_put(allocator, &acc, &mut value, &DefaultTipHasher)
+            zset::z_set_put(allocator, &acc, &mut value, &DefaultTipHasher, arena)
                 .expect("failed to encode seeds set")
         })
     }
@@ -190,6 +193,7 @@ impl Witness {
 
 impl NounEncode for Witness {
     fn to_noun<A: NounAllocator>(&self, allocator: &mut A) -> Noun {
+        let arena = Arena::stub_for_stack_only();
         let lmp = self.lock_merkle_proof.to_noun(allocator);
         let pkh = self.pkh_signature.to_noun(allocator);
         let hax = self.hax.iter().fold(D(0), |acc, entry| {
@@ -202,7 +206,7 @@ impl NounEncode for Witness {
                 allocator.copy_into(root)
             };
             zmap::z_map_put(
-                allocator, &acc, &mut key, &mut value_noun, &DefaultTipHasher,
+                allocator, &acc, &mut key, &mut value_noun, &DefaultTipHasher, arena,
             )
             .expect("failed to encode witness hax map")
         });
@@ -268,10 +272,11 @@ impl PkhSignature {
 
 impl NounEncode for PkhSignature {
     fn to_noun<A: NounAllocator>(&self, allocator: &mut A) -> Noun {
+        let arena = Arena::stub_for_stack_only();
         self.0.iter().fold(D(0), |acc, entry| {
             let mut key = entry.hash.to_noun(allocator);
             let mut value = entry.to_noun(allocator);
-            zmap::z_map_put(allocator, &acc, &mut key, &mut value, &DefaultTipHasher)
+            zmap::z_map_put(allocator, &acc, &mut key, &mut value, &DefaultTipHasher, arena)
                 .expect("failed to encode pkh-signature map")
         })
     }
@@ -492,10 +497,11 @@ pub struct Pkh {
 
 impl NounEncode for Pkh {
     fn to_noun<A: NounAllocator>(&self, allocator: &mut A) -> Noun {
+        let arena = Arena::stub_for_stack_only();
         let m = self.m.to_noun(allocator);
         let hashes = self.hashes.iter().fold(D(0), |acc, hash| {
             let mut value = hash.to_noun(allocator);
-            zset::z_set_put(allocator, &acc, &mut value, &DefaultTipHasher)
+            zset::z_set_put(allocator, &acc, &mut value, &DefaultTipHasher, arena)
                 .expect("failed to encode pkh hash set")
         });
         nockvm::noun::T(allocator, &[m, hashes])
@@ -529,9 +535,10 @@ pub struct Hax(pub Vec<Hash>);
 
 impl NounEncode for Hax {
     fn to_noun<A: NounAllocator>(&self, allocator: &mut A) -> Noun {
+        let arena = Arena::stub_for_stack_only();
         self.0.iter().fold(D(0), |acc, hash| {
             let mut value = hash.to_noun(allocator);
-            zset::z_set_put(allocator, &acc, &mut value, &DefaultTipHasher)
+            zset::z_set_put(allocator, &acc, &mut value, &DefaultTipHasher, arena)
                 .expect("failed to encode hax set")
         })
     }

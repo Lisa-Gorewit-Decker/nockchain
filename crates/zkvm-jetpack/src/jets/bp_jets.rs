@@ -2,7 +2,7 @@ use nockvm::interpreter::Context;
 use nockvm::jets::list::util::flop;
 use nockvm::jets::util::{slot, BAIL_FAIL};
 use nockvm::jets::{JetErr, Result};
-use nockvm::mem::NockStack;
+use nockvm::mem::{Arena, NockStack};
 use nockvm::noun::{Atom, Cell, IndirectAtom, Noun, D, NO, T, YES};
 use tracing::debug;
 
@@ -286,6 +286,7 @@ pub fn get_bpoly_fields(bpoly: Noun) -> std::result::Result<(Atom, Atom), JetErr
 
 // bpeval-lift: evaluate a bpoly at a felt
 pub fn bpeval_lift_jet(context: &mut Context, subject: Noun) -> Result {
+    let arena = Arena::stub_for_stack_only();
     let stack = &mut context.stack;
     let sam = slot(subject, 6)?;
     let [bp, x_noun] = sam.uncell()?; // TODO defaults? [bp=`bpoly`one-bpoly x=`felt`(lift 1)]
@@ -304,7 +305,7 @@ pub fn bpeval_lift_jet(context: &mut Context, subject: Noun) -> Result {
     }
 
     let p = mary_to_list_fields(stack, bp_len, bp_dat.as_noun(), 1)?;
-    let mut p = flop(stack, p)?;
+    let mut p = flop(stack, p, arena)?;
     let mut res = lift0;
     loop {
         if is_hoon_list_end(&p) {

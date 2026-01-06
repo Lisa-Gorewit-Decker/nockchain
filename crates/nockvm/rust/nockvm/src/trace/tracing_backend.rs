@@ -130,13 +130,13 @@ impl Drop for TracingBackend {
 }
 
 impl TraceBackend for TracingBackend {
-    fn append_trace(&mut self, stack: &mut NockStack, path: Noun) {
+    fn append_trace(&mut self, stack: &mut NockStack, arena: &super::Arena, path: Noun) {
         let mut tmp = path;
 
         let chum = loop {
             match tmp.as_either_atom_cell() {
                 Either::Left(atom) => break atom,
-                Either::Right(cell) => tmp = cell.head(),
+                Either::Right(cell) => tmp = cell.head_with_arena(arena),
             }
         };
 
@@ -146,7 +146,7 @@ impl TraceBackend for TracingBackend {
 
         let chum = chum.trim_end_matches('\0');
 
-        let path = path_to_cord(stack, path);
+        let path = path_to_cord(stack, arena, path);
         let path = std::str::from_utf8(path.as_ne_bytes()).unwrap_or("");
 
         if self.subscriber.is_none() {
@@ -177,6 +177,7 @@ impl TraceBackend for TracingBackend {
     unsafe fn write_nock_trace(
         &mut self,
         _: &mut NockStack,
+        _arena: &super::Arena,
         trace_stack: *const TraceStack,
     ) -> Result<(), Error> {
         let mut trace_stack = trace_stack as *const TraceStack<TraceData>;
