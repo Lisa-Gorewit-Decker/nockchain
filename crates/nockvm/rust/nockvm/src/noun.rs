@@ -161,36 +161,28 @@ pub struct NounSpace {
 }
 
 impl NounSpace {
-    pub fn new(stack: &NockStack, pma: &Pma) -> Self {
+    pub fn from_arenas(stack: Option<Arc<Arena>>, pma: Option<Arc<Arena>>) -> Self {
         Self {
-            stack: Some(Arc::clone(stack.arena())),
-            pma: Some(Arc::clone(pma.arena())),
+            stack,
+            pma,
             extra_ptr_ranges: Vec::new(),
         }
+    }
+
+    pub fn new(stack: &NockStack, pma: &Pma) -> Self {
+        Self::from_arenas(Some(Arc::clone(stack.arena())), Some(Arc::clone(pma.arena())))
     }
 
     pub fn stack_only(stack: &NockStack) -> Self {
-        Self {
-            stack: Some(Arc::clone(stack.arena())),
-            pma: None,
-            extra_ptr_ranges: Vec::new(),
-        }
+        Self::from_arenas(Some(Arc::clone(stack.arena())), None)
     }
 
     pub fn pma_only(pma: &Pma) -> Self {
-        Self {
-            stack: None,
-            pma: Some(Arc::clone(pma.arena())),
-            extra_ptr_ranges: Vec::new(),
-        }
+        Self::from_arenas(None, Some(Arc::clone(pma.arena())))
     }
 
     pub fn empty() -> Self {
-        Self {
-            stack: None,
-            pma: None,
-            extra_ptr_ranges: Vec::new(),
-        }
+        Self::from_arenas(None, None)
     }
 
     pub fn with_extra_ptr_ranges(mut self, ranges: Vec<(usize, usize)>) -> Self {
@@ -235,35 +227,22 @@ impl NounSpace {
 
     fn resolve_pma_ptr(&self, payload: u64) -> *const u8 {
         let offset_words = payload as u32;
-        if let Some(arena) = &self.pma {
-            let ptr = arena.ptr_from_offset(offset_words) as *const u8;
-            assert!(
-                {
-                    let base = arena.base_ptr() as usize;
-                    let end = base + arena.len_bytes();
-                    let addr = ptr as usize;
-                    addr >= base && addr < end
-                },
-                "PMA offset {} resolves outside the PMA arena",
-                offset_words
-            );
-            ptr
-        } else if let Some(arena) = &self.stack {
-            let ptr = arena.ptr_from_offset(offset_words) as *const u8;
-            assert!(
-                {
-                    let base = arena.base_ptr() as usize;
-                    let end = base + arena.len_bytes();
-                    let addr = ptr as usize;
-                    addr >= base && addr < end
-                },
-                "stack offset {} resolves outside the stack arena",
-                offset_words
-            );
-            ptr
-        } else {
-            panic!("stack or PMA arena is required to resolve offset nouns");
-        }
+        let arena = self
+            .pma
+            .as_ref()
+            .expect("PMA arena is required to resolve offset nouns");
+        let ptr = arena.ptr_from_offset(offset_words) as *const u8;
+        assert!(
+            {
+                let base = arena.base_ptr() as usize;
+                let end = base + arena.len_bytes();
+                let addr = ptr as usize;
+                addr >= base && addr < end
+            },
+            "PMA offset {} resolves outside the PMA arena",
+            offset_words
+        );
+        ptr
     }
 }
 
@@ -282,7 +261,7 @@ impl NounSpace {
  *      1. The current frame must be immediately popped after preserving data, when
  *          copying from a junior NockStack frame to a senior NockStack frame.
  *      2. All persistent derived state (e.g. Hot state, Warm state) must be preserved
- *          and the root NockStack frame flipped after saving data to the PMA.
+ *          and the NockStack reset after saving data to the PMA.
  */
 
 /** Tag for a forwarding pointer */

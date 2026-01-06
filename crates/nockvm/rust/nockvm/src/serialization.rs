@@ -1,5 +1,6 @@
 use bitvec::prelude::{BitSlice, Lsb0};
 use either::Either::{Left, Right};
+use std::sync::Arc;
 
 use crate::hamt::MutHamt;
 use crate::interpreter::Error::{self, *};
@@ -127,7 +128,12 @@ fn cue_bitslice_with_mode(
     let backref_map = MutHamt::<Noun>::new(stack);
     let mut result = D(0);
     let mut cursor = 0;
-    let space = stack.noun_space();
+    let space = if use_offset_tags {
+        let arena = Arc::clone(stack.arena());
+        NounSpace::from_arenas(Some(Arc::clone(&arena)), Some(arena))
+    } else {
+        stack.noun_space()
+    };
 
     // NOTE: with_frame() preserves into the previous frame using stack-pointer tags. The
     // `use_offset_tags` parameter controls whether nouns are created in offset form or
@@ -222,12 +228,15 @@ pub fn cue(stack: &mut NockStack, buffer: Atom) -> Result<Noun, Error> {
     cue_bitslice_with_mode(stack, buffer_bitslice, false)
 }
 
-/// Deserialize a noun from a BitSlice, retagging allocations into offset form.
+/// Deserialize a noun from a BitSlice.
+///
+/// Offset tagging is reserved for PMA copy at event boundaries; cue_into_offset
+/// returns stack-pointer nouns for now.
 pub fn cue_bitslice_into_offset(
     stack: &mut NockStack,
     buffer: &BitSlice<u64, Lsb0>,
 ) -> Result<Noun, Error> {
-    cue_bitslice_with_mode(stack, buffer, true)
+    cue_bitslice_with_mode(stack, buffer, false)
 }
 
 /// Deserialize a noun from an Atom into offset-tagged form.

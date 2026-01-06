@@ -138,6 +138,16 @@ impl NockAppExit {
 }
 
 impl<J: Jammer + Send + 'static> NockApp<J> {
+    fn metrics_enabled() -> bool {
+        if std::env::var_os("NOCKAPP_DISABLE_METRICS").is_some() {
+            return false;
+        }
+        if std::env::var_os("GNORT_DISABLE").is_some() {
+            return false;
+        }
+        std::env::var_os("RUST_TEST_THREADS").is_none()
+    }
+
     /// This constructs a Tokio interval, even though it doesn't look like it, a Tokio runtime is _required_.
     pub async fn new<F, U, E>(
         kernel_from_checkpoint: F,
@@ -150,10 +160,24 @@ impl<J: Jammer + Send + 'static> NockApp<J> {
         NockAppError: From<E>,
     {
         // let cancel_token = tokio_util::sync::CancellationToken::new();
-        let metrics = Arc::new(
-            NockAppMetrics::register(gnort::global_metrics_registry())
-                .expect("Failed to register metrics!"),
-        );
+        let metrics = if Self::metrics_enabled() {
+            match gnort::GnortClient::default() {
+                Ok(client) => {
+                    let registry = gnort::MetricsRegistry::new(
+                        gnort::RegistryConfig::default().with_client(client),
+                    );
+                    Arc::new(
+                        NockAppMetrics::register(&registry).expect("Failed to register metrics!"),
+                    )
+                }
+                Err(err) => {
+                    warn!("Failed to initialize metrics client, disabling metrics: {err}");
+                    Arc::new(NockAppMetrics::default())
+                }
+            }
+        } else {
+            Arc::new(NockAppMetrics::default())
+        };
         let (saver, checkpoint) = Saver::<J>::try_load(snapshot_path, Some(metrics.clone()))
             .await
             .expect("Failed to set up snapshotting");

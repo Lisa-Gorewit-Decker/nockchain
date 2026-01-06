@@ -1,4 +1,5 @@
 use gnort::*;
+use gnort::instrument::{Count, Gauge, TimingCount};
 
 metrics_struct![
     NockAppMetrics,
@@ -25,3 +26,32 @@ metrics_struct![
     (serf_loop_provide_metrics, "nockapp.serf_loop.provide_metrics", TimingCount),
     (next_effect_lagged_error, "nockapp.next_effect.lag", Count)
 ];
+
+impl Default for NockAppMetrics {
+    fn default() -> Self {
+        Self {
+            handle_shutdown: Count::default(),
+            handle_save_permit_res: Count::default(),
+            handle_action: Count::default(),
+            handle_exit: Count::default(),
+            poke_during_exit: Count::default(),
+            peek_during_exit: Count::default(),
+            least_free_space_seen_in_slam: Gauge::default(),
+            save_jam_time: TimingCount::default(),
+            load_cue_time: TimingCount::default(),
+            serf_loop_blocking_recv: TimingCount::default(),
+            serf_loop_all: TimingCount::default(),
+            serf_loop_load_state: TimingCount::default(),
+            serf_loop_get_state_bytes: TimingCount::default(),
+            serf_loop_get_kernel_state_slab: TimingCount::default(),
+            serf_loop_get_cold_state_slab: TimingCount::default(),
+            serf_loop_checkpoint: TimingCount::default(),
+            serf_loop_noun_encode_cold_state: TimingCount::default(),
+            serf_loop_copy_state_noun: TimingCount::default(),
+            serf_loop_peek: TimingCount::default(),
+            serf_loop_poke: TimingCount::default(),
+            serf_loop_provide_metrics: TimingCount::default(),
+            next_effect_lagged_error: Count::default(),
+        }
+    }
+}

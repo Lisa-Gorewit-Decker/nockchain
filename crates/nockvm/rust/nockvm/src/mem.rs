@@ -336,6 +336,8 @@ pub struct NockStack {
     least_space: usize,
     /// Shared arena metadata / backing allocation
     arena: Arc<Arena>,
+    /// Optional PMA arena for offset noun resolution
+    pma: Option<Arc<Arena>>,
     /// Whether or not [`Self::pre_copy()`] has been called on the current stack frame.
     pc: bool,
 }
@@ -395,7 +397,17 @@ impl NockStack {
 
     #[inline]
     pub fn noun_space(&self) -> NounSpace {
-        NounSpace::stack_only(self)
+        NounSpace::from_arenas(Some(Arc::clone(&self.arena)), self.pma.clone())
+    }
+
+    #[inline]
+    pub fn install_pma_arena(&mut self, pma: Arc<Arena>) {
+        self.pma = Some(pma);
+    }
+
+    #[inline]
+    pub fn clear_pma_arena(&mut self) {
+        self.pma = None;
     }
 
     #[inline]
@@ -478,6 +490,7 @@ impl NockStack {
                 alloc_offset,
                 least_space,
                 arena,
+                pma: None,
                 pc: false,
             },
             free,
@@ -793,7 +806,7 @@ impl NockStack {
 
     /// Resets the NockStack. The top frame is west as in the initial creation of the NockStack.
     // Doesn't need an OOM check, pop analogue
-    pub(crate) fn reset(&mut self, top_slots: usize) {
+    pub unsafe fn reset(&mut self, top_slots: usize) {
         // Set offsets for west frame layout
         self.frame_offset = RESERVED + top_slots;
         self.stack_offset = self.frame_offset;
@@ -804,19 +817,17 @@ impl NockStack {
             .expect("Resetting a stack too small (should never happen)");
         self.pc = false;
 
-        unsafe {
-            // Calculate slot offsets for previous pointers
-            let prev_frame_slot = self.frame_offset - (FRAME + 1);
-            let prev_stack_slot = self.frame_offset - (STACK + 1);
-            let prev_alloc_slot = self.frame_offset - (ALLOC + 1);
+        // Calculate slot offsets for previous pointers
+        let prev_frame_slot = self.frame_offset - (FRAME + 1);
+        let prev_stack_slot = self.frame_offset - (STACK + 1);
+        let prev_alloc_slot = self.frame_offset - (ALLOC + 1);
 
-            // Store null pointers for previous frame/stack and base pointer for previous alloc
-            *(self.derive_ptr(prev_frame_slot)) = ptr::null::<u64>() as u64; // "frame pointer" from "previous" frame
-            *(self.derive_ptr(prev_stack_slot)) = ptr::null::<u64>() as u64; // "stack pointer" from "previous" frame
-            *(self.derive_ptr(prev_alloc_slot)) = self.start as u64; // "alloc pointer" from "previous" frame
+        // Store null pointers for previous frame/stack and base pointer for previous alloc
+        *(self.derive_ptr(prev_frame_slot)) = ptr::null::<u64>() as u64; // "frame pointer" from "previous" frame
+        *(self.derive_ptr(prev_stack_slot)) = ptr::null::<u64>() as u64; // "stack pointer" from "previous" frame
+        *(self.derive_ptr(prev_alloc_slot)) = self.start as u64; // "alloc pointer" from "previous" frame
 
-            assert!(self.is_west());
-        };
+        assert!(self.is_west());
     }
 
     pub(crate) fn copying(&self) -> bool {

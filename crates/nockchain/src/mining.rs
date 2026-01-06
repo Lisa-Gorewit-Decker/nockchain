@@ -350,6 +350,7 @@ pub fn create_mining_driver(
                                         None,
                                         hot_state.clone(),
                                         NOCK_STACK_SIZE_TINY,
+                                        None,
                                         test_jets.clone(),
                                         Default::default(),
                                     )

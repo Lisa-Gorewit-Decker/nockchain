@@ -18,10 +18,14 @@ use tracing_subscriber::util::SubscriberInitExt;
 use tracing_subscriber::{fmt, EnvFilter, Layer};
 
 use crate::export::ExportedState;
-use crate::kernel::form::Kernel;
+use crate::kernel::form::{Kernel, PmaConfig};
 use crate::noun::slab::{Jammer, NounSlab};
 use crate::save::SaveableCheckpoint;
 use crate::utils::error::{CrownError, ExternalError};
+use crate::utils::{
+    NOCK_STACK_SIZE, NOCK_STACK_SIZE_HUGE, NOCK_STACK_SIZE_LARGE, NOCK_STACK_SIZE_MEDIUM,
+    NOCK_STACK_SIZE_SMALL, NOCK_STACK_SIZE_TINY,
+};
 use crate::{default_data_dir, AtomExt, NockApp};
 
 pub const DEFAULT_SAVE_INTERVAL: u64 = 120000;
@@ -414,6 +418,8 @@ pub async fn setup_<J: Jammer + Send + 'static>(
         std::fs::remove_dir_all(&pma_dir)?;
         debug!("Deleted existing pma directory: {:?}", pma_dir);
     }
+    std::fs::create_dir_all(&pma_dir)?;
+    debug!("Created pma directory: {:?}", pma_dir);
 
     if cli.new && jams_dir.exists() {
         std::fs::remove_dir_all(&jams_dir)?;
@@ -427,40 +433,79 @@ pub async fn setup_<J: Jammer + Send + 'static>(
     let save_interval = cli
         .normalized_save_interval()
         .map(std::time::Duration::from_millis);
+    let pma_path = pma_dir.join("pma.mmap");
+    let stack_size = cli.stack_size.clone();
+    let trace_opts = cli.trace_opts.clone();
 
-    let kernel_f = async |checkpoint| {
-        let kernel: Kernel<SaveableCheckpoint> = match cli.stack_size {
+    let kernel_f = async move |checkpoint| {
+        let pma_config = |words| Some(PmaConfig {
+            path: pma_path.clone(),
+            words,
+        });
+        let kernel: Kernel<SaveableCheckpoint> = match stack_size {
             NockStackSize::Tiny => {
                 Kernel::load_with_hot_state_tiny(
-                    jam, checkpoint, hot_state, test_jets, cli.trace_opts,
+                    jam,
+                    checkpoint,
+                    hot_state,
+                    test_jets,
+                    trace_opts.clone(),
+                    pma_config(NOCK_STACK_SIZE_TINY),
                 )
                 .await?
             }
             NockStackSize::Small => {
                 Kernel::load_with_hot_state_small(
-                    jam, checkpoint, hot_state, test_jets, cli.trace_opts,
+                    jam,
+                    checkpoint,
+                    hot_state,
+                    test_jets,
+                    trace_opts.clone(),
+                    pma_config(NOCK_STACK_SIZE_SMALL),
                 )
                 .await?
             }
             NockStackSize::Normal => {
-                Kernel::load_with_hot_state(jam, checkpoint, hot_state, test_jets, cli.trace_opts)
-                    .await?
+                Kernel::load_with_hot_state(
+                    jam,
+                    checkpoint,
+                    hot_state,
+                    test_jets,
+                    trace_opts.clone(),
+                    pma_config(NOCK_STACK_SIZE),
+                )
+                .await?
             }
             NockStackSize::Medium => {
                 Kernel::load_with_hot_state_medium(
-                    jam, checkpoint, hot_state, test_jets, cli.trace_opts,
+                    jam,
+                    checkpoint,
+                    hot_state,
+                    test_jets,
+                    trace_opts.clone(),
+                    pma_config(NOCK_STACK_SIZE_MEDIUM),
                 )
                 .await?
             }
             NockStackSize::Large => {
                 Kernel::load_with_hot_state_large(
-                    jam, checkpoint, hot_state, test_jets, cli.trace_opts,
+                    jam,
+                    checkpoint,
+                    hot_state,
+                    test_jets,
+                    trace_opts.clone(),
+                    pma_config(NOCK_STACK_SIZE_LARGE),
                 )
                 .await?
             }
             NockStackSize::Huge => {
                 Kernel::load_with_hot_state_huge(
-                    jam, checkpoint, hot_state, test_jets, cli.trace_opts,
+                    jam,
+                    checkpoint,
+                    hot_state,
+                    test_jets,
+                    trace_opts,
+                    pma_config(NOCK_STACK_SIZE_HUGE),
                 )
                 .await?
             }

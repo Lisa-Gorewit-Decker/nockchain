@@ -24,7 +24,9 @@ pub async fn setup_nockapp(jam: &str) -> (TempDir, NockApp) {
         .unwrap_or_else(|| panic!("Failed to read {} file from any known location", jam));
 
     let kernel_f =
-        async |checkpoint| Kernel::load(&jam_bytes, checkpoint, vec![], Default::default()).await;
+        async |checkpoint| {
+            Kernel::load(&jam_bytes, checkpoint, vec![], Default::default(), None).await
+        };
     (
         temp_dir,
         NockApp::new(

@@ -1,6 +1,7 @@
 #![allow(dead_code)]
 use std::any::Any;
 use std::future::Future;
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Instant;
@@ -15,6 +16,7 @@ use nockvm::jets::nock::util::mook;
 use nockvm::mem::NockStack;
 use nockvm::mug::met3_usize;
 use nockvm::noun::{Atom, Cell, DirectAtom, IndirectAtom, Noun, NounSpace, Slots, D, T};
+use nockvm::pma::{Pma, PmaCopy};
 use nockvm::trace::{path_to_cord, write_serf_trace_safe};
 use nockvm_macros::tas;
 use tokio::sync::{mpsc, oneshot};
@@ -45,6 +47,12 @@ pub struct LoadState {
     pub ker_hash: Hash,
     pub event_num: u64,
     pub kernel_state: NounSlab,
+}
+
+#[derive(Clone, Debug)]
+pub struct PmaConfig {
+    pub path: PathBuf,
+    pub words: usize,
 }
 
 // Actions to request of the serf thread
@@ -105,33 +113,45 @@ impl<C: SerfCheckpoint + Send + 'static> SerfThread<C> {
         checkpoint: Option<C>,
         constant_hot_state: Vec<HotEntry>,
         nock_stack_size: usize,
+        pma: Option<PmaConfig>,
         test_jets: Vec<NounSlab>,
         trace: TraceOpts,
     ) -> Result<Self> {
         let (action_sender, action_receiver) = mpsc::channel(1);
-        let (event_number_sender, event_number_receiver) = oneshot::channel();
-        let (cancel_token_sender, cancel_token_receiver) = oneshot::channel();
+        let (init_sender, init_receiver) = oneshot::channel();
         let inhibit = Arc::new(AtomicBool::new(false));
         let inhibit_clone = inhibit.clone();
         let handle = std::thread::Builder::new()
             .name("serf".to_string())
             .stack_size(SERF_THREAD_STACK_SIZE)
             .spawn(move || {
+                let pma = match pma {
+                    Some(config) => match Pma::new(config.words, config.path) {
+                        Ok(pma) => Some(pma),
+                        Err(err) => {
+                            let _ =
+                                init_sender.send(Err(CrownError::Unknown(err.to_string())));
+                            return;
+                        }
+                    },
+                    None => None,
+                };
                 let stack = NockStack::new(nock_stack_size, 0);
                 let serf = Serf::new(
-                    stack, checkpoint, &kernel_bytes, &constant_hot_state, test_jets, trace,
+                    stack,
+                    pma,
+                    checkpoint,
+                    &kernel_bytes,
+                    &constant_hot_state,
+                    test_jets,
+                    trace,
                 );
-                event_number_sender
-                    .send(serf.event_num.clone())
-                    .expect("Could not send event number out of serf thread");
-                cancel_token_sender
-                    .send(serf.context.cancel_token())
-                    .expect("Could not send cancel token out of serf thread");
+                let _ = init_sender.send(Ok((serf.event_num.clone(), serf.context.cancel_token())));
                 serf_loop(serf, action_receiver, inhibit_clone);
             })?;
-
-        let event_number = event_number_receiver.await?;
-        let cancel_token = cancel_token_receiver.await?;
+        let (event_number, cancel_token) = init_receiver
+            .await
+            .map_err(|err| CrownError::Unknown(err.to_string()))??;
         Ok(SerfThread {
             inhibit,
             handle: Some(handle),
@@ -477,14 +497,22 @@ fn serf_loop<C: SerfCheckpoint>(
                     let cause_noun = cause.copy_to_stack(serf.stack());
                     let noun_res = serf.poke(wire, cause_noun);
                     let space = serf.context.stack.noun_space();
-                    let noun_slab_res = noun_res.map(|noun| {
-                        let mut slab = NounSlab::new();
-                        slab.copy_into(noun, &space);
-                        slab
-                    });
+                    let (noun_slab_res, did_update) = match noun_res {
+                        Ok(noun) => {
+                            let mut slab = NounSlab::new();
+                            slab.copy_into(noun, &space);
+                            (Ok(slab), true)
+                        }
+                        Err(err) => (Err(err), false),
+                    };
                     let _ = result.send(noun_slab_res).inspect_err(|_e| {
                         debug!("Failed to send poke result from serf thread");
                     });
+                    if did_update {
+                        unsafe {
+                            serf.preserve_event_update_leftovers();
+                        }
+                    }
                 };
                 let _ = result_ack.blocking_recv().inspect_err(|_e| {
                     debug!("Failed to receive result ack in serf thread");
@@ -566,11 +594,18 @@ impl<C: SerfCheckpoint + 'static> Kernel<C> {
         hot_state: &[HotEntry],
         test_jets: Vec<NounSlab>,
         trace: TraceOpts,
+        pma: Option<PmaConfig>,
     ) -> Result<Self> {
         let kernel_vec = Vec::from(kernel);
         let hot_state_vec = Vec::from(hot_state);
         let serf = SerfThread::new(
-            kernel_vec, checkpoint, hot_state_vec, NOCK_STACK_SIZE, test_jets, trace,
+            kernel_vec,
+            checkpoint,
+            hot_state_vec,
+            NOCK_STACK_SIZE,
+            pma,
+            test_jets,
+            trace,
         )
         .await?;
         Ok(Self { serf })
@@ -582,11 +617,18 @@ impl<C: SerfCheckpoint + 'static> Kernel<C> {
         hot_state: &[HotEntry],
         test_jets: Vec<NounSlab>,
         trace: TraceOpts,
+        pma: Option<PmaConfig>,
     ) -> Result<Self> {
         let kernel_vec = Vec::from(kernel);
         let hot_state_vec = Vec::from(hot_state);
         let serf = SerfThread::new(
-            kernel_vec, checkpoint, hot_state_vec, NOCK_STACK_SIZE_TINY, test_jets, trace,
+            kernel_vec,
+            checkpoint,
+            hot_state_vec,
+            NOCK_STACK_SIZE_TINY,
+            pma,
+            test_jets,
+            trace,
         )
         .await?;
         Ok(Self { serf })
@@ -598,11 +640,18 @@ impl<C: SerfCheckpoint + 'static> Kernel<C> {
         hot_state: &[HotEntry],
         test_jets: Vec<NounSlab>,
         trace: TraceOpts,
+        pma: Option<PmaConfig>,
     ) -> Result<Self> {
         let kernel_vec = Vec::from(kernel);
         let hot_state_vec = Vec::from(hot_state);
         let serf = SerfThread::new(
-            kernel_vec, checkpoint, hot_state_vec, NOCK_STACK_SIZE_SMALL, test_jets, trace,
+            kernel_vec,
+            checkpoint,
+            hot_state_vec,
+            NOCK_STACK_SIZE_SMALL,
+            pma,
+            test_jets,
+            trace,
         )
         .await?;
         Ok(Self { serf })
@@ -614,11 +663,18 @@ impl<C: SerfCheckpoint + 'static> Kernel<C> {
         hot_state: &[HotEntry],
         test_jets: Vec<NounSlab>,
         trace: TraceOpts,
+        pma: Option<PmaConfig>,
     ) -> Result<Self> {
         let kernel_vec = Vec::from(kernel);
         let hot_state_vec = Vec::from(hot_state);
         let serf = SerfThread::new(
-            kernel_vec, checkpoint, hot_state_vec, NOCK_STACK_SIZE_MEDIUM, test_jets, trace,
+            kernel_vec,
+            checkpoint,
+            hot_state_vec,
+            NOCK_STACK_SIZE_MEDIUM,
+            pma,
+            test_jets,
+            trace,
         )
         .await?;
         Ok(Self { serf })
@@ -630,11 +686,18 @@ impl<C: SerfCheckpoint + 'static> Kernel<C> {
         hot_state: &[HotEntry],
         test_jets: Vec<NounSlab>,
         trace: TraceOpts,
+        pma: Option<PmaConfig>,
     ) -> Result<Self> {
         let kernel_vec = Vec::from(kernel);
         let hot_state_vec = Vec::from(hot_state);
         let serf = SerfThread::new(
-            kernel_vec, checkpoint, hot_state_vec, NOCK_STACK_SIZE_LARGE, test_jets, trace,
+            kernel_vec,
+            checkpoint,
+            hot_state_vec,
+            NOCK_STACK_SIZE_LARGE,
+            pma,
+            test_jets,
+            trace,
         )
         .await?;
         Ok(Self { serf })
@@ -646,11 +709,18 @@ impl<C: SerfCheckpoint + 'static> Kernel<C> {
         hot_state: &[HotEntry],
         test_jets: Vec<NounSlab>,
         trace: TraceOpts,
+        pma: Option<PmaConfig>,
     ) -> Result<Self> {
         let kernel_vec = Vec::from(kernel);
         let hot_state_vec = Vec::from(hot_state);
         let serf = SerfThread::new(
-            kernel_vec, checkpoint, hot_state_vec, NOCK_STACK_SIZE_HUGE, test_jets, trace,
+            kernel_vec,
+            checkpoint,
+            hot_state_vec,
+            NOCK_STACK_SIZE_HUGE,
+            pma,
+            test_jets,
+            trace,
         )
         .await?;
         Ok(Self { serf })
@@ -672,8 +742,9 @@ impl<C: SerfCheckpoint + 'static> Kernel<C> {
         checkpoint: Option<C>,
         test_jets: Vec<NounSlab>,
         trace: TraceOpts,
+        pma: Option<PmaConfig>,
     ) -> Result<Self> {
-        Self::load_with_hot_state(kernel, checkpoint, &Vec::new(), test_jets, trace).await
+        Self::load_with_hot_state(kernel, checkpoint, &Vec::new(), test_jets, trace, pma).await
     }
 
     /// Produces a checkpoint of the kernel state.
@@ -736,6 +807,8 @@ pub struct Serf {
     pub arvo: Noun,
     /// The interpreter context.
     pub context: interpreter::Context,
+    /// Persistent memory arena for long-lived state.
+    pub pma: Option<Pma>,
     /// Cancellation
     pub cancel_token: NockCancelToken,
     /// The current event number.
@@ -760,6 +833,7 @@ impl Serf {
     /// A new `Serf` instance.
     fn new<C: SerfCheckpoint>(
         mut stack: NockStack,
+        pma: Option<Pma>,
         checkpoint: Option<C>,
         kernel_bytes: &[u8],
         constant_hot_state: &[HotEntry],
@@ -767,6 +841,10 @@ impl Serf {
         trace: TraceOpts,
     ) -> Self {
         let hot_state = [URBIT_HOT_STATE, constant_hot_state].concat();
+
+        if let Some(ref pma) = pma {
+            stack.install_pma_arena(Arc::clone(pma.arena()));
+        }
 
         let mut hasher = Hasher::new();
         hasher.update(kernel_bytes);
@@ -830,6 +908,7 @@ impl Serf {
             ker_hash,
             arvo,
             context,
+            pma,
             event_num,
             cancel_token,
             metrics: None,
@@ -934,13 +1013,11 @@ impl Serf {
         match self.soft(job, POKE_AXIS, Some("poke".to_string())) {
             Ok(res) => {
                 let cell = res.as_cell().expect("serf: poke: +slam returned atom");
-                let mut fec = cell.head(&space);
+                let fec = cell.head(&space);
                 let eve = self.event_num.load(Ordering::SeqCst);
 
                 unsafe {
                     self.event_update(eve + 1, cell.tail(&space));
-                    self.stack().preserve(&mut fec);
-                    self.preserve_event_update_leftovers();
                 }
                 Ok(fec)
             }
@@ -1043,8 +1120,6 @@ impl Serf {
 
                     unsafe {
                         self.event_update(eve, arvo);
-                        self.context.stack.preserve(&mut lit);
-                        self.preserve_event_update_leftovers();
                     }
                 }
                 Err(goof) => {
@@ -1081,7 +1156,7 @@ impl Serf {
         let crud = DirectAtom::new_panic(tas!(b"crud"));
         let event_num = D(self.event_num.load(Ordering::SeqCst) + 1);
 
-        let mut ovo = T(stack, &[event_num, wire, goof, job_input]);
+        let ovo = T(stack, &[event_num, wire, goof, job_input]);
         let trace_name = if self.context.trace_info.is_some() {
             Some(Self::poke_trace_name(
                 &mut self.context.stack,
@@ -1095,14 +1170,11 @@ impl Serf {
         match self.soft(ovo, POKE_AXIS, trace_name) {
             Ok(res) => {
                 let cell = res.as_cell().expect("serf: poke: crud +slam returned atom");
-                let mut fec = cell.head(&space);
+                let fec = cell.head(&space);
                 let eve = self.event_num.load(Ordering::SeqCst);
 
                 unsafe {
                     self.event_update(eve + 1, cell.tail(&space));
-                    self.context.stack.preserve(&mut ovo);
-                    self.context.stack.preserve(&mut fec);
-                    self.preserve_event_update_leftovers();
                 }
                 Ok(fec)
             }
@@ -1210,13 +1282,33 @@ impl Serf {
     #[tracing::instrument(level = "info", skip_all)]
     pub unsafe fn preserve_event_update_leftovers(&mut self) {
         let stack = &mut self.context.stack;
-        stack.preserve(&mut self.context.warm);
-        stack.preserve(&mut self.context.test_jets);
-        stack.preserve(&mut self.context.hot);
-        stack.preserve(&mut self.context.cache);
-        stack.preserve(&mut self.context.cold);
-        stack.preserve(&mut self.arvo);
-        stack.flip_top_frame(0);
+        if let Some(pma) = self.pma.as_mut() {
+            self.context.warm.copy_to_pma(stack, pma);
+            self.context.test_jets.copy_to_pma(stack, pma);
+            self.context.hot.copy_to_pma(stack, pma);
+            self.context.cache.copy_to_pma(stack, pma);
+            self.context.cold.copy_to_pma(stack, pma);
+            self.arvo.copy_to_pma(stack, pma);
+
+            if std::env::var_os("NOCK_PMA_ASSERT").is_some() {
+                self.context.warm.assert_in_pma(pma);
+                self.context.test_jets.assert_in_pma(pma);
+                self.context.hot.assert_in_pma(pma);
+                self.context.cache.assert_in_pma(pma);
+                self.context.cold.assert_in_pma(pma);
+                self.arvo.assert_in_pma(pma);
+            }
+
+            stack.reset(0);
+        } else {
+            stack.preserve(&mut self.context.warm);
+            stack.preserve(&mut self.context.test_jets);
+            stack.preserve(&mut self.context.hot);
+            stack.preserve(&mut self.context.cache);
+            stack.preserve(&mut self.context.cold);
+            stack.preserve(&mut self.arvo);
+            stack.flip_top_frame(0);
+        }
     }
 
     /// Returns a mutable reference to the Nock stack.
@@ -1285,6 +1377,7 @@ mod tests {
             ker_hash: Hash::from([0; 32]),
             arvo: D(0),
             context,
+            pma: None,
             cancel_token,
             event_num: Arc::new(AtomicU64::new(0)),
             metrics: None,
@@ -1298,7 +1391,7 @@ mod tests {
             .join(jam);
         let jam_bytes =
             fs::read(jam_path).unwrap_or_else(|_| panic!("Failed to read {} file", jam));
-        Kernel::load(&jam_bytes, None, vec![], TraceOpts::default())
+        Kernel::load(&jam_bytes, None, vec![], TraceOpts::default(), None)
             .await
             .expect("Could not load kernel")
     }
