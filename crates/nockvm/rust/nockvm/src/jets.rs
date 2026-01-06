@@ -209,7 +209,7 @@ pub mod util {
 
     use super::*;
     use crate::interpreter::interpret;
-    use crate::noun::{Noun, D, T};
+    use crate::noun::{Noun, NounSpace, D, T};
 
     pub const BAIL_EXIT: JetErr = JetErr::Fail(Error::Deterministic(Mote::Exit, D(0)));
     pub const BAIL_FAIL: JetErr = JetErr::Fail(Error::NonDeterministic(Mote::Fail, D(0)));
@@ -254,8 +254,8 @@ pub mod util {
         bits_to_word(checked_left_shift(bloq, step)?)
     }
 
-    pub fn slot(noun: Noun, axis: u64) -> Result {
-        noun.slot(axis).map_err(|_e| BAIL_EXIT)
+    pub fn slot(noun: Noun, axis: u64, space: &NounSpace) -> Result {
+        noun.slot(axis, space).map_err(|_e| BAIL_EXIT)
     }
 
     /// Extract a bloq and check that it's computable by the current system
@@ -269,10 +269,10 @@ pub mod util {
     }
 
     /// Extract the bloq and step from a bite
-    pub fn bite(a: Noun) -> result::Result<(usize, usize), JetErr> {
+    pub fn bite(a: Noun, space: &NounSpace) -> result::Result<(usize, usize), JetErr> {
         if let Ok(cell) = a.as_cell() {
-            let bloq = bloq(cell.head())?;
-            let step = cell.tail().as_direct()?.data() as usize;
+            let bloq = bloq(cell.head(space))?;
+            let step = cell.tail(space).as_direct()?.data() as usize;
             Ok((bloq, step))
         } else {
             bloq(a).map(|x| (x, 1_usize))
@@ -315,9 +315,14 @@ pub mod util {
     }
 
     pub fn slam(context: &mut Context, gate: Noun, sample: Noun) -> result::Result<Noun, JetErr> {
+        let space = context.stack.noun_space();
         let core: Noun = T(
             &mut context.stack,
-            &[gate.as_cell()?.head(), sample, gate.as_cell()?.tail().as_cell()?.tail()],
+            &[
+                gate.as_cell()?.head(&space),
+                sample,
+                gate.as_cell()?.tail(&space).as_cell()?.tail(&space),
+            ],
         );
         kick(context, core, D(2))
     }
@@ -349,7 +354,6 @@ pub mod util {
 
         pub fn init_context() -> Context {
             let mut stack = NockStack::new(8 << 10 << 10, 0);
-            stack.install_arena();
             let arena = stack.arena().clone();
             let cold = Cold::new(&mut stack);
             let warm = Warm::new(&mut stack);

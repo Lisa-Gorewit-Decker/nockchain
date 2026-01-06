@@ -6,7 +6,7 @@ use crate::jets::util::slot;
 use crate::jets::{JetErr, Result};
 use crate::mem::NockStack;
 //use crate::mug::mug;
-use crate::noun::{Noun, Slots, D, NO, T, YES};
+use crate::noun::{Noun, NounSpace, Slots, D, NO, T, YES};
 
 type JetResult<T> = std::result::Result<T, JetErr>;
 
@@ -15,10 +15,10 @@ fn is_yes(noun: Noun) -> bool {
     unsafe { noun.raw_equals(&YES) }
 }
 
-fn decompose(node: Noun) -> JetResult<(Noun, Noun, Noun)> {
+fn decompose(node: Noun, space: &NounSpace) -> JetResult<(Noun, Noun, Noun)> {
     let cell = node.as_cell()?;
-    let tail = cell.tail().as_cell()?;
-    Ok((cell.head(), tail.head(), tail.tail()))
+    let tail = cell.tail(space).as_cell()?;
+    Ok((cell.head(space), tail.head(space), tail.tail(space)))
 }
 
 fn make_node(stack: &mut NockStack, value: Noun, left: Noun, right: Noun) -> Noun {
@@ -28,20 +28,26 @@ fn make_node(stack: &mut NockStack, value: Noun, left: Noun, right: Noun) -> Nou
 
 // TODO: fix this jet. identical elements are not being deduplicated
 pub fn jet_put(context: &mut Context, subject: Noun) -> Result {
-    let elem = slot(subject, 6)?;
-    let parent = match slot(subject, 7) {
+    let space = context.stack.noun_space();
+    let elem = slot(subject, 6, &space)?;
+    let parent = match slot(subject, 7, &space) {
         Ok(parent) => parent,
         Err(_) => return Err(JetErr::Punt),
     };
-    let set = match slot(parent, 6) {
+    let set = match slot(parent, 6, &space) {
         Ok(set) => set,
         Err(_) => return Err(JetErr::Punt),
     };
 
-    put_iter(&mut context.stack, set, elem)
+    put_iter(&mut context.stack, set, elem, &space)
 }
 
-fn put_iter(stack: &mut NockStack, root: Noun, elem: Noun) -> JetResult<Noun> {
+fn put_iter(
+    stack: &mut NockStack,
+    root: Noun,
+    elem: Noun,
+    space: &NounSpace,
+) -> JetResult<Noun> {
     if unsafe { root.raw_equals(&D(0)) } {
         return Ok(make_node(stack, elem, D(0), D(0)));
     }
@@ -54,13 +60,13 @@ fn put_iter(stack: &mut NockStack, root: Noun, elem: Noun) -> JetResult<Noun> {
             break;
         }
 
-        let (value, left, right) = decompose(current)?;
+        let (value, left, right) = decompose(current, space)?;
 
         if unsafe { elem.raw_equals(&value) } {
             return Ok(root);
         }
 
-        let go_left = is_yes(gor(stack, elem, value));
+        let go_left = is_yes(gor(stack, elem, value, space));
         path.push((current, go_left));
         current = if go_left { left } else { right };
     }
@@ -68,17 +74,17 @@ fn put_iter(stack: &mut NockStack, root: Noun, elem: Noun) -> JetResult<Noun> {
     let mut new_subtree = make_node(stack, elem, D(0), D(0));
 
     while let Some((node, went_left)) = path.pop() {
-        let (value, left, right) = decompose(node)?;
-        let (c_val, c_left, c_right) = decompose(new_subtree)?;
+        let (value, left, right) = decompose(node, space)?;
+        let (c_val, c_left, c_right) = decompose(new_subtree, space)?;
 
         new_subtree = if went_left {
-            if is_yes(mor(stack, value, c_val)) {
+            if is_yes(mor(stack, value, c_val, space)) {
                 make_node(stack, value, new_subtree, right)
             } else {
                 let new_a = make_node(stack, value, c_right, right);
                 make_node(stack, c_val, c_left, new_a)
             }
-        } else if is_yes(mor(stack, value, c_val)) {
+        } else if is_yes(mor(stack, value, c_val, space)) {
             make_node(stack, value, left, new_subtree)
         } else {
             let new_a = make_node(stack, value, left, c_left);
@@ -90,23 +96,28 @@ fn put_iter(stack: &mut NockStack, root: Noun, elem: Noun) -> JetResult<Noun> {
 }
 
 #[inline(always)]
-fn ord_cmp(stack: &mut NockStack, a: Noun, b: Noun) -> Ordering {
+fn ord_cmp(stack: &mut NockStack, a: Noun, b: Noun, space: &NounSpace) -> Ordering {
     unsafe {
         if a.raw_equals(&b) {
             return Ordering::Equal;
         }
     }
-    if is_yes(gor(stack, b, a)) {
+    if is_yes(gor(stack, b, a, space)) {
         return Ordering::Less;
     } else {
         return Ordering::Greater;
     }
 }
 
-fn has_loop(stack: &mut NockStack, mut tree: Noun, elem: Noun) -> JetResult<bool> {
+fn has_loop(
+    stack: &mut NockStack,
+    mut tree: Noun,
+    elem: Noun,
+    space: &NounSpace,
+) -> JetResult<bool> {
     while unsafe { !tree.raw_equals(&D(0)) } {
-        let (val, left, right) = decompose(tree)?;
-        match ord_cmp(stack, elem, val) {
+        let (val, left, right) = decompose(tree, space)?;
+        match ord_cmp(stack, elem, val, space) {
             Ordering::Equal => return Ok(true),
             Ordering::Less => tree = left,
             Ordering::Greater => tree = right,
@@ -117,16 +128,17 @@ fn has_loop(stack: &mut NockStack, mut tree: Noun, elem: Noun) -> JetResult<bool
 
 // TODO: check this jet.
 pub fn jet_has(context: &mut Context, subject: Noun) -> Result {
-    let elem = subject.slot(6)?;
-    let parent = match subject.slot(7) {
+    let space = context.stack.noun_space();
+    let elem = subject.slot(6, &space)?;
+    let parent = match subject.slot(7, &space) {
         Ok(parent) => parent,
         Err(_) => return Err(JetErr::Punt),
     };
-    let set = match parent.slot(6) {
+    let set = match parent.slot(6, &space) {
         Ok(set) => set,
         Err(_) => return Err(JetErr::Punt),
     };
-    let present = has_loop(&mut context.stack, set, elem)?;
+    let present = has_loop(&mut context.stack, set, elem, &space)?;
     Ok(if present { YES } else { NO })
 }
 

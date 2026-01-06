@@ -1,8 +1,10 @@
 use std::ptr::{copy_nonoverlapping, null_mut};
 
 use crate::hamt::Hamt;
-use crate::mem::{self, NockStack, Preserve, Retag};
-use crate::noun::{self, Atom, DirectAtom, IndirectAtom, Noun, NounAllocator, Slots, D, T};
+use crate::mem::{self, NockStack, Preserve};
+use crate::noun::{
+    self, Atom, DirectAtom, IndirectAtom, Noun, NounAllocator, NounSpace, Slots, D, T,
+};
 use crate::pma::{Pma, PmaCopy};
 use crate::unifying_equality::unifying_equality;
 
@@ -66,20 +68,6 @@ impl Preserve for Batteries {
                 };
             } else {
                 break;
-            }
-        }
-    }
-}
-
-impl Retag for Batteries {
-    fn retag(&mut self, stack: &NockStack) {
-        let mut cursor = self.0;
-        while !cursor.is_null() {
-            unsafe {
-                let entry = &mut *cursor;
-                entry.battery.retag(stack);
-                entry.parent_axis.retag(stack);
-                cursor = entry.parent_batteries.0;
             }
         }
     }
@@ -155,6 +143,7 @@ impl Batteries {
 
     pub fn matches(self, stack: &mut NockStack, mut core: Noun) -> bool {
         let mut root_found: bool = false;
+        let space = stack.noun_space();
 
         for (battery, parent_axis) in self {
             if root_found {
@@ -171,11 +160,11 @@ impl Batteries {
                     };
                 };
             };
-            if let Ok(mut core_battery) = core.slot(2) {
+            if let Ok(mut core_battery) = core.slot(2, &space) {
                 if unsafe { !unifying_equality(stack, &mut core_battery, battery) } {
                     return false;
                 };
-                if let Ok(core_parent) = core.slot_atom(parent_axis) {
+                if let Ok(core_parent) = core.slot_atom(parent_axis, &space) {
                     core = core_parent;
                     continue;
                 } else {
@@ -287,19 +276,6 @@ impl Preserve for BatteriesList {
     }
 }
 
-impl Retag for BatteriesList {
-    fn retag(&mut self, stack: &NockStack) {
-        let mut cursor = self.0;
-        while !cursor.is_null() {
-            unsafe {
-                let entry = &mut *cursor;
-                entry.batteries.retag(stack);
-                cursor = entry.next.0;
-            }
-        }
-    }
-}
-
 impl Iterator for BatteriesList {
     type Item = Batteries;
     fn next(&mut self) -> Option<Self::Item> {
@@ -367,19 +343,6 @@ impl Preserve for NounList {
                 };
             } else {
                 break;
-            }
-        }
-    }
-}
-
-impl Retag for NounList {
-    fn retag(&mut self, stack: &NockStack) {
-        let mut cursor = self.0;
-        while !cursor.is_null() {
-            unsafe {
-                let entry = &mut *cursor;
-                entry.element.retag(stack);
-                cursor = entry.next.0;
             }
         }
     }
@@ -511,16 +474,6 @@ impl Preserve for Cold {
     }
 }
 
-impl Retag for Cold {
-    fn retag(&mut self, stack: &NockStack) {
-        unsafe {
-            (*self.0).battery_to_paths.retag(stack);
-            (*self.0).root_to_paths.retag(stack);
-            (*self.0).path_to_batteries.retag(stack);
-        }
-    }
-}
-
 impl Cold {
     pub fn is_null(&self) -> bool {
         unsafe {
@@ -577,7 +530,8 @@ impl Cold {
     /** Try to match a core directly to the cold state, print the resulting path if found
      */
     pub fn matches(&mut self, stack: &mut NockStack, core: &mut Noun) -> Option<Noun> {
-        let mut battery = (*core).slot(2).ok()?;
+        let space = stack.noun_space();
+        let mut battery = (*core).slot(2, &space).ok()?;
         unsafe {
             let paths = (*(self.0)).battery_to_paths.lookup(stack, &mut battery)?;
             for path in paths {
@@ -605,6 +559,7 @@ impl Cold {
         parent_axis: Atom,
         mut chum: Noun,
     ) -> Result {
+        let space = stack.noun_space();
         unsafe {
             // Are we registering a root?
             if let Ok(parent_axis_direct) = parent_axis.as_direct() {
@@ -666,13 +621,13 @@ impl Cold {
                 }
             }
 
-            let mut battery = core.slot(2)?;
-            let mut parent = core.slot_atom(parent_axis)?;
+            let mut battery = core.slot(2, &space)?;
+            let mut parent = core.slot_atom(parent_axis, &space)?;
             // Check if we already registered this core
             if let Some(paths) = (*(self.0)).battery_to_paths.lookup(stack, &mut battery) {
                 for path in paths {
                     if let Ok(path_cell) = (*path).as_cell() {
-                        if unifying_equality(stack, &mut path_cell.head(), &mut chum) {
+                        if unifying_equality(stack, &mut path_cell.head(&space), &mut chum) {
                             if let Some(batteries_list) =
                                 (*(self.0)).path_to_batteries.lookup(stack, &mut *path)
                             {
@@ -685,7 +640,7 @@ impl Cold {
                 }
             }
 
-            let mut parent_battery = parent.slot(2)?;
+            let mut parent_battery = parent.slot(2, &space)?;
 
             // err until we actually found a parent
             let mut ret: Result = Err(Error::NoParent);
@@ -805,18 +760,27 @@ impl Cold {
     }
 }
 
-pub struct NounListIterator(Noun);
+pub struct NounListIterator<'a> {
+    noun: Noun,
+    space: &'a NounSpace,
+}
 
-impl Iterator for NounListIterator {
+impl<'a> NounListIterator<'a> {
+    fn new(noun: Noun, space: &'a NounSpace) -> Self {
+        Self { noun, space }
+    }
+}
+
+impl<'a> Iterator for NounListIterator<'a> {
     type Item = Noun;
     fn next(&mut self) -> Option<Self::Item> {
-        if let Ok(it) = self.0.as_cell() {
-            self.0 = it.tail();
-            Some(it.head())
-        } else if unsafe { self.0.raw_equals(&D(0)) } {
+        if let Ok(it) = self.noun.as_cell() {
+            self.noun = it.tail(self.space);
+            Some(it.head(self.space))
+        } else if unsafe { self.noun.raw_equals(&D(0)) } {
             None
         } else {
-            panic!("Improper list terminator: {:?}", self.0)
+            panic!("Improper list terminator: {:?}", self.noun)
         }
     }
 }
@@ -842,7 +806,11 @@ pub trait Nounable {
     // type Allocator;
 
     fn into_noun<A: NounAllocator>(self, stack: &mut A) -> Noun;
-    fn from_noun<A: NounAllocator>(stack: &mut A, noun: &Noun) -> NounableResult<Self::Target>
+    fn from_noun<A: NounAllocator>(
+        stack: &mut A,
+        noun: &Noun,
+        space: &NounSpace,
+    ) -> NounableResult<Self::Target>
     where
         Self: Sized;
 }
@@ -853,7 +821,11 @@ impl Nounable for Atom {
     fn into_noun<A: NounAllocator>(self, _stack: &mut A) -> Noun {
         self.as_noun()
     }
-    fn from_noun<A: NounAllocator>(_stack: &mut A, noun: &Noun) -> NounableResult<Self::Target> {
+    fn from_noun<A: NounAllocator>(
+        _stack: &mut A,
+        noun: &Noun,
+        _space: &NounSpace,
+    ) -> NounableResult<Self::Target> {
         noun.atom().ok_or(FromNounError::NotAtom)
     }
 }
@@ -864,9 +836,13 @@ impl Nounable for u64 {
         // Copied from Crown's IntoNoun, not sure why this isn't D(*self)
         unsafe { Atom::from_raw(self).into_noun(_stack) }
     }
-    fn from_noun<A: NounAllocator>(_stack: &mut A, noun: &Noun) -> NounableResult<Self::Target> {
+    fn from_noun<A: NounAllocator>(
+        _stack: &mut A,
+        noun: &Noun,
+        space: &NounSpace,
+    ) -> NounableResult<Self::Target> {
         let atom = noun.atom().ok_or(FromNounError::NotAtom)?;
-        let as_u64 = atom.as_u64()?;
+        let as_u64 = atom.as_u64(space)?;
         Ok(as_u64)
     }
 }
@@ -877,7 +853,11 @@ impl Nounable for Noun {
         self
     }
 
-    fn from_noun<A: NounAllocator>(_stack: &mut A, noun: &Self) -> NounableResult<Self::Target> {
+    fn from_noun<A: NounAllocator>(
+        _stack: &mut A,
+        noun: &Self,
+        _space: &NounSpace,
+    ) -> NounableResult<Self::Target> {
         Ok(*noun)
     }
 }
@@ -887,13 +867,18 @@ impl Nounable for &str {
     fn into_noun<A: NounAllocator>(self, stack: &mut A) -> Noun {
         let contents_atom = unsafe {
             let bytes = self.bytes().collect::<Vec<u8>>();
-            IndirectAtom::new_raw_bytes_ref(stack, bytes.as_slice()).normalize_as_atom()
+            let space = stack.noun_space();
+            IndirectAtom::new_raw_bytes_ref(stack, bytes.as_slice()).normalize_as_atom(&space)
         };
         contents_atom.into_noun(stack)
     }
-    fn from_noun<A: NounAllocator>(_stack: &mut A, noun: &Noun) -> NounableResult<Self::Target> {
+    fn from_noun<A: NounAllocator>(
+        _stack: &mut A,
+        noun: &Noun,
+        space: &NounSpace,
+    ) -> NounableResult<Self::Target> {
         let atom = noun.as_atom()?;
-        let bytes = atom.as_ne_bytes();
+        let bytes = atom.as_ne_bytes(space);
         let utf8 = std::str::from_utf8(bytes)?;
         let allocated = utf8.to_string();
         Ok(allocated)
@@ -911,10 +896,14 @@ impl<T: Nounable + Copy> Nounable for &[T] {
         list
     }
 
-    fn from_noun<A: NounAllocator>(_stack: &mut A, noun: &Noun) -> NounableResult<Self::Target> {
+    fn from_noun<A: NounAllocator>(
+        _stack: &mut A,
+        noun: &Noun,
+        space: &NounSpace,
+    ) -> NounableResult<Self::Target> {
         let mut items: Vec<<T as Nounable>::Target> = vec![];
-        for item in NounListIterator(*noun) {
-            let item = T::from_noun(_stack, &item)?;
+        for item in NounListIterator::new(*noun, space) {
+            let item = T::from_noun(_stack, &item, space)?;
             items.push(item);
         }
         Ok(items)
@@ -932,15 +921,19 @@ impl<T: Nounable, U: Nounable, V: Nounable> Nounable for (T, U, V) {
         T(stack, &[a_noun, b_noun, c_noun])
     }
 
-    fn from_noun<A: NounAllocator>(_stack: &mut A, noun: &Noun) -> NounableResult<Self::Target> {
+    fn from_noun<A: NounAllocator>(
+        _stack: &mut A,
+        noun: &Noun,
+        space: &NounSpace,
+    ) -> NounableResult<Self::Target> {
         // it's a three tuple now
         let cell = noun.cell().ok_or(FromNounError::NotCell)?;
-        let head = cell.head();
-        let tail = cell.tail();
-        let a = T::from_noun(_stack, &head)?;
+        let head = cell.head(space);
+        let tail = cell.tail(space);
+        let a = T::from_noun(_stack, &head, space)?;
         let cell = tail.as_cell()?;
-        let b = U::from_noun(_stack, &cell.head())?;
-        let c = V::from_noun(_stack, &cell.tail())?;
+        let b = U::from_noun(_stack, &cell.head(space), space)?;
+        let c = V::from_noun(_stack, &cell.tail(space), space)?;
         Ok((a, b, c))
     }
 }
@@ -954,12 +947,16 @@ impl<T: Nounable, U: Nounable> Nounable for (T, U) {
         T(stack, &[a_noun, b_noun])
     }
 
-    fn from_noun<A: NounAllocator>(_stack: &mut A, noun: &Noun) -> NounableResult<Self::Target> {
+    fn from_noun<A: NounAllocator>(
+        _stack: &mut A,
+        noun: &Noun,
+        space: &NounSpace,
+    ) -> NounableResult<Self::Target> {
         let cell = noun.cell().ok_or(FromNounError::NotCell)?;
-        let head = cell.head();
-        let tail = cell.tail();
-        let a = T::from_noun(_stack, &head)?;
-        let b = U::from_noun(_stack, &tail)?;
+        let head = cell.head(space);
+        let tail = cell.tail(space);
+        let a = T::from_noun(_stack, &head, space)?;
+        let b = U::from_noun(_stack, &tail, space)?;
         Ok((a, b))
     }
 }
@@ -974,9 +971,13 @@ impl Nounable for NounList {
         list
     }
 
-    fn from_noun<A: NounAllocator>(stack: &mut A, noun: &Noun) -> NounableResult<Self::Target> {
+    fn from_noun<A: NounAllocator>(
+        stack: &mut A,
+        noun: &Noun,
+        space: &NounSpace,
+    ) -> NounableResult<Self::Target> {
         let mut result = NOUN_LIST_NIL;
-        for item in NounListIterator(*noun) {
+        for item in NounListIterator::new(*noun, space) {
             let list_mem_ptr: *mut NounListMem = unsafe { stack.alloc_struct(1) };
             unsafe {
                 list_mem_ptr.write(NounListMem {
@@ -1003,12 +1004,16 @@ impl Nounable for Batteries {
         list
     }
 
-    fn from_noun<A: NounAllocator>(stack: &mut A, noun: &Noun) -> NounableResult<Self::Target> {
+    fn from_noun<A: NounAllocator>(
+        stack: &mut A,
+        noun: &Noun,
+        space: &NounSpace,
+    ) -> NounableResult<Self::Target> {
         let mut batteries = NO_BATTERIES;
-        for item in NounListIterator(*noun) {
+        for item in NounListIterator::new(*noun, space) {
             let cell = item.cell().ok_or(FromNounError::NotCell)?;
-            let battery = cell.head();
-            let parent_axis = cell.tail().as_atom()?;
+            let battery = cell.head(space);
+            let parent_axis = cell.tail(space).as_atom()?;
             let batteries_mem: *mut BatteriesMem = unsafe { stack.alloc_struct(1) };
             unsafe {
                 batteries_mem.write(BatteriesMem {
@@ -1034,10 +1039,14 @@ impl Nounable for BatteriesList {
         list
     }
 
-    fn from_noun<A: NounAllocator>(stack: &mut A, noun: &Noun) -> NounableResult<Self::Target> {
+    fn from_noun<A: NounAllocator>(
+        stack: &mut A,
+        noun: &Noun,
+        space: &NounSpace,
+    ) -> NounableResult<Self::Target> {
         let mut batteries_list = BATTERIES_LIST_NIL;
-        for item in NounListIterator(*noun) {
-            let batteries = Batteries::from_noun(stack, &item)?;
+        for item in NounListIterator::new(*noun, space) {
+            let batteries = Batteries::from_noun(stack, &item, space)?;
             let batteries_list_mem: *mut BatteriesListMem = unsafe { stack.alloc_struct(1) };
             unsafe {
                 batteries_list_mem.write(BatteriesListMem {
@@ -1071,12 +1080,16 @@ impl<T: Nounable + Copy + mem::Preserve> Nounable for Hamt<T> {
         list
     }
 
-    fn from_noun<A: NounAllocator>(stack: &mut A, noun: &Noun) -> NounableResult<Self::Target> {
+    fn from_noun<A: NounAllocator>(
+        stack: &mut A,
+        noun: &Noun,
+        space: &NounSpace,
+    ) -> NounableResult<Self::Target> {
         let mut items = Vec::new();
-        for item in NounListIterator(*noun) {
+        for item in NounListIterator::new(*noun, space) {
             let cell = item.cell().ok_or(FromNounError::NotCell)?;
-            let key = cell.head();
-            let value = T::from_noun(stack, &cell.tail())?;
+            let key = cell.head(space);
+            let value = T::from_noun(stack, &cell.tail(space), space)?;
             items.push((key, value));
         }
         // items.reverse();
@@ -1144,36 +1157,40 @@ impl Nounable for Cold {
         )
     }
 
-    fn from_noun<A: NounAllocator>(stack: &mut A, noun: &Noun) -> NounableResult<Self::Target> {
+    fn from_noun<A: NounAllocator>(
+        stack: &mut A,
+        noun: &Noun,
+        space: &NounSpace,
+    ) -> NounableResult<Self::Target> {
         let mut battery_to_paths = Vec::new();
         let mut root_to_paths = Vec::new();
         let mut path_to_batteries = Vec::new();
 
-        let battery_to_paths_noun = noun.slot(2)?;
-        let root_to_paths_noun = noun.slot(6)?;
-        let path_to_batteries_noun = noun.slot(7)?;
+        let battery_to_paths_noun = noun.slot(2, space)?;
+        let root_to_paths_noun = noun.slot(6, space)?;
+        let path_to_batteries_noun = noun.slot(7, space)?;
 
         // iterate over battery_to_paths_noun
-        for item in NounListIterator(battery_to_paths_noun) {
+        for item in NounListIterator::new(battery_to_paths_noun, space) {
             let cell = item.cell().ok_or(FromNounError::NotCell)?;
-            let key = cell.head();
-            let value = NounList::from_noun(stack, &cell.tail())?;
+            let key = cell.head(space);
+            let value = NounList::from_noun(stack, &cell.tail(space), space)?;
             battery_to_paths.push((key, value));
         }
 
         // iterate over root_to_paths_noun
-        for item in NounListIterator(root_to_paths_noun) {
+        for item in NounListIterator::new(root_to_paths_noun, space) {
             let cell = item.cell().ok_or(FromNounError::NotCell)?;
-            let key = cell.head();
-            let value = NounList::from_noun(stack, &cell.tail())?;
+            let key = cell.head(space);
+            let value = NounList::from_noun(stack, &cell.tail(space), space)?;
             root_to_paths.push((key, value));
         }
 
         // iterate over path_to_batteries_noun
-        for item in NounListIterator(path_to_batteries_noun) {
+        for item in NounListIterator::new(path_to_batteries_noun, space) {
             let cell = item.cell().ok_or(FromNounError::NotCell)?;
-            let key = cell.head();
-            let value = BatteriesList::from_noun(stack, &cell.tail())?;
+            let key = cell.head(space);
+            let value = BatteriesList::from_noun(stack, &cell.tail(space), space)?;
             path_to_batteries.push((key, value));
         }
         battery_to_paths.reverse();
@@ -1199,7 +1216,6 @@ pub(crate) mod test {
         let top_slots = 3;
 
         let stack = NockStack::new(size, top_slots);
-        stack.install_arena();
         stack
     }
 
@@ -1235,10 +1251,11 @@ pub(crate) mod test {
     #[cfg_attr(miri, ignore)]
     fn cold_bidirectional_conversion() {
         let mut stack = make_test_stack(DEFAULT_STACK_SIZE);
+        let space = stack.noun_space();
         let cold = make_cold_state(&mut stack);
         let cold_noun = cold.into_noun(&mut stack);
-        let new_cold =
-            Cold::from_noun(&mut stack, &cold_noun).expect("Failed to convert noun to cold");
+        let new_cold = Cold::from_noun(&mut stack, &cold_noun, &space)
+            .expect("Failed to convert noun to cold");
 
         // battery_to_paths
         let old_battery_to_paths = unsafe { &(*cold.0).battery_to_paths };
@@ -1397,9 +1414,14 @@ pub(crate) mod test {
     #[cfg_attr(miri, ignore)]
     fn batteries_list_bidirectional_conversion() {
         let mut stack = make_test_stack(DEFAULT_STACK_SIZE);
+        let space = stack.noun_space();
         let batteries_list2 = make_batteries_list(&mut stack, &[1, 2]);
         let batteries_list_noun = batteries_list2.into_noun(&mut stack);
-        let new_batteries_list2 = BatteriesList::from_noun(&mut stack, &batteries_list_noun)
+        let new_batteries_list2 = BatteriesList::from_noun(
+            &mut stack,
+            &batteries_list_noun,
+            &space,
+        )
             .expect("Failed to convert noun to batteries list");
         for (a, b) in batteries_list2.zip(new_batteries_list2) {
             let mut a_noun = a.into_noun(&mut stack);
@@ -1453,9 +1475,10 @@ pub(crate) mod test {
     #[cfg_attr(miri, ignore)]
     fn batteries_bidirectional_conversion() {
         let mut stack = make_test_stack(DEFAULT_STACK_SIZE);
+        let space = stack.noun_space();
         let batteries2 = make_batteries(&mut stack);
         let batteries_noun = batteries2.into_noun(&mut stack);
-        let new_batteries = Batteries::from_noun(&mut stack, &batteries_noun)
+        let new_batteries = Batteries::from_noun(&mut stack, &batteries_noun, &space)
             .expect("Failed to convert noun to batteries");
         assert_eq!(new_batteries.count(), 2);
         assert_eq!(batteries2.count(), 2);
@@ -1477,8 +1500,8 @@ pub(crate) mod test {
             assert!(
                 unsafe { unifying_equality(&mut stack, a_atom_noun_ptr, b_atom_noun_ptr) },
                 "Parent axes don't match: {:?} {:?}",
-                a_atom.as_u64(),
-                b_atom.as_u64()
+                a_atom.as_u64(&space),
+                b_atom.as_u64(&space)
             );
         }
     }
@@ -1542,8 +1565,9 @@ pub(crate) mod test {
         let slice = vec.as_slice();
         let noun_list = make_noun_list(&mut stack, slice);
         let noun = noun_list.into_noun(&mut stack);
+        let space = stack.noun_space();
         let new_noun_list: NounList = <NounList as Nounable>::from_noun::<NockStack>(
-            &mut stack, &noun,
+            &mut stack, &noun, &space,
         )
         .unwrap_or_else(|err| {
             panic!(
@@ -1573,6 +1597,7 @@ pub(crate) mod test {
     #[cfg_attr(miri, ignore)]
     fn how_to_noun() {
         let mut stack = make_test_stack(DEFAULT_STACK_SIZE);
+        let space = stack.noun_space();
         let tup: &[Noun] = &[D(0), D(1)];
         let cell = Cell::new_tuple(&mut stack, tup);
         let noun: Noun = cell.as_noun();
@@ -1586,7 +1611,7 @@ pub(crate) mod test {
                     option_env!("GIT_SHA")
                 )
             })
-            .head()
+            .head(&space)
             .direct()
             .unwrap_or_else(|| {
                 panic!(
@@ -1607,7 +1632,7 @@ pub(crate) mod test {
                     option_env!("GIT_SHA")
                 )
             })
-            .tail()
+            .tail(&space)
             .direct()
             .unwrap_or_else(|| {
                 panic!(
@@ -1626,6 +1651,7 @@ pub(crate) mod test {
     #[cfg_attr(miri, ignore)]
     fn how_to_noun_but_listy() {
         let mut stack = make_test_stack(DEFAULT_STACK_SIZE);
+        let space = stack.noun_space();
         let tup: &[Noun] = &[D(0), D(1)];
         let cell = Cell::new_tuple(&mut stack, tup);
         let noun: Noun = cell.as_noun();
@@ -1639,7 +1665,7 @@ pub(crate) mod test {
                     option_env!("GIT_SHA")
                 )
             })
-            .head()
+            .head(&space)
             .direct()
             .unwrap_or_else(|| {
                 panic!(
@@ -1660,7 +1686,7 @@ pub(crate) mod test {
                     option_env!("GIT_SHA")
                 )
             })
-            .tail()
+            .tail(&space)
             .direct()
             .unwrap_or_else(|| {
                 panic!(
@@ -1676,20 +1702,20 @@ pub(crate) mod test {
     }
 
     /// Helper to recursively verify a noun is not stack-allocated
-    fn verify_noun_not_stack_allocated(noun: Noun, context: &str) {
+    fn verify_noun_not_stack_allocated(noun: Noun, space: &NounSpace, context: &str) {
         if noun.is_direct() {
             return;
         }
 
         assert!(
-            !noun.is_stack_allocated(),
+            !noun.is_stack_allocated(space),
             "{} should be in offset form after evacuation",
             context
         );
 
         if let Ok(cell) = noun.as_cell() {
-            verify_noun_not_stack_allocated(cell.head(), context);
-            verify_noun_not_stack_allocated(cell.tail(), context);
+            verify_noun_not_stack_allocated(cell.head(space), space, context);
+            verify_noun_not_stack_allocated(cell.tail(space), space, context);
         }
     }
 
@@ -1714,9 +1740,7 @@ pub(crate) mod test {
         let mut stack = make_test_stack(DEFAULT_STACK_SIZE);
         let mut pma = Pma::new(100000, PathBuf::from("/tmp/test_noun_list_pma"))
             .expect("Failed to create test PMA");
-
-        // Install PMA arena for offset-form access
-        let _guard = pma.install();
+        let space = NounSpace::new(&stack, &pma);
 
         // The expected values - we use these for comparison since the source
         // nouns will have forwarding pointers set after evacuation
@@ -1747,7 +1771,7 @@ pub(crate) mod test {
         // Verify all nouns in the list are in offset form
         for elem_ptr in noun_list {
             let elem = unsafe { *elem_ptr };
-            verify_noun_not_stack_allocated(elem, "NounList element");
+            verify_noun_not_stack_allocated(elem, &space, "NounList element");
         }
 
         // Verify the NounList passes assert_in_pma
@@ -1772,9 +1796,7 @@ pub(crate) mod test {
         let mut ref_stack = make_test_stack(DEFAULT_STACK_SIZE);
         let mut pma = Pma::new(100000, PathBuf::from("/tmp/test_noun_list_complex_pma"))
             .expect("Failed to create test PMA");
-
-        // Install PMA arena for offset-form access
-        let _guard = pma.install();
+        let space = NounSpace::new(&stack, &pma);
 
         // Create complex nouns on the main stack
         // Element 0: A cell [1 2]
@@ -1860,7 +1882,7 @@ pub(crate) mod test {
         // Verify all nouns in the list are in offset form
         for elem_ptr in noun_list {
             let elem = unsafe { *elem_ptr };
-            verify_noun_not_stack_allocated(elem, "NounList complex element");
+            verify_noun_not_stack_allocated(elem, &space, "NounList complex element");
         }
 
         // Verify the NounList passes assert_in_pma
@@ -1887,9 +1909,7 @@ pub(crate) mod test {
         let mut stack = make_test_stack(DEFAULT_STACK_SIZE);
         let mut pma = Pma::new(100000, PathBuf::from("/tmp/test_batteries_pma"))
             .expect("Failed to create test PMA");
-
-        // Install PMA arena for offset-form access
-        let _guard = pma.install();
+        let space = NounSpace::new(&stack, &pma);
 
         // Create a Batteries list using the test helper
         // This creates: [battery=D(2), axis=D(3)] -> [battery=D(0), axis=D(1)] -> NIL
@@ -1916,11 +1936,19 @@ pub(crate) mod test {
                 *expected_battery,
                 "Battery value should match"
             );
-            assert_eq!(parent_axis.as_u64().unwrap(), *expected_axis, "Parent axis should match");
+            assert_eq!(
+                parent_axis.as_u64(&space).unwrap(),
+                *expected_axis,
+                "Parent axis should match"
+            );
 
             // Verify nouns are in offset form
-            verify_noun_not_stack_allocated(battery, "Batteries battery");
-            verify_noun_not_stack_allocated(parent_axis.as_noun(), "Batteries parent_axis");
+            verify_noun_not_stack_allocated(battery, &space, "Batteries battery");
+            verify_noun_not_stack_allocated(
+                parent_axis.as_noun(),
+                &space,
+                "Batteries parent_axis",
+            );
         }
         assert!(
             expected_iter.next().is_none(),
@@ -1951,9 +1979,7 @@ pub(crate) mod test {
         let mut stack = make_test_stack(DEFAULT_STACK_SIZE);
         let mut pma = Pma::new(100000, PathBuf::from("/tmp/test_batteries_list_pma"))
             .expect("Failed to create test PMA");
-
-        // Install PMA arena for offset-form access
-        let _guard = pma.install();
+        let space = NounSpace::new(&stack, &pma);
 
         // Create a BatteriesList using the test helper
         // make_batteries_list(&[7, 8]) creates a list with two Batteries entries,
@@ -1987,11 +2013,19 @@ pub(crate) mod test {
                 *expected_battery,
                 "Battery value should match"
             );
-            assert_eq!(parent_axis.as_u64().unwrap(), 0, "Parent axis should be 0");
+            assert_eq!(
+                parent_axis.as_u64(&space).unwrap(),
+                0,
+                "Parent axis should be 0"
+            );
 
             // Verify nouns are in offset form
-            verify_noun_not_stack_allocated(battery, "BatteriesList battery");
-            verify_noun_not_stack_allocated(parent_axis.as_noun(), "BatteriesList parent_axis");
+            verify_noun_not_stack_allocated(battery, &space, "BatteriesList battery");
+            verify_noun_not_stack_allocated(
+                parent_axis.as_noun(),
+                &space,
+                "BatteriesList parent_axis",
+            );
 
             // Verify no more entries in this Batteries
             assert!(
@@ -2030,9 +2064,7 @@ pub(crate) mod test {
         let mut stack = make_test_stack(DEFAULT_STACK_SIZE);
         let mut pma = Pma::new(100000, PathBuf::from("/tmp/test_cold_pma"))
             .expect("Failed to create test PMA");
-
-        // Install PMA arena for offset-form access
-        let _guard = pma.install();
+        let space = NounSpace::new(&stack, &pma);
 
         // Create a Cold state using make_cold_state
         let mut cold = make_cold_state(&mut stack);
@@ -2114,11 +2146,15 @@ pub(crate) mod test {
         // Check battery_to_paths
         for entries in unsafe { (*cold.0).battery_to_paths.iter() } {
             for (key, noun_list) in entries {
-                verify_noun_not_stack_allocated(*key, "battery_to_paths key");
+                verify_noun_not_stack_allocated(*key, &space, "battery_to_paths key");
                 // Verify NounList elements
                 for elem_ptr in *noun_list {
                     let elem = unsafe { *elem_ptr };
-                    verify_noun_not_stack_allocated(elem, "battery_to_paths NounList element");
+                    verify_noun_not_stack_allocated(
+                        elem,
+                        &space,
+                        "battery_to_paths NounList element",
+                    );
                 }
             }
         }
@@ -2126,10 +2162,14 @@ pub(crate) mod test {
         // Check root_to_paths
         for entries in unsafe { (*cold.0).root_to_paths.iter() } {
             for (key, noun_list) in entries {
-                verify_noun_not_stack_allocated(*key, "root_to_paths key");
+                verify_noun_not_stack_allocated(*key, &space, "root_to_paths key");
                 for elem_ptr in *noun_list {
                     let elem = unsafe { *elem_ptr };
-                    verify_noun_not_stack_allocated(elem, "root_to_paths NounList element");
+                    verify_noun_not_stack_allocated(
+                        elem,
+                        &space,
+                        "root_to_paths NounList element",
+                    );
                 }
             }
         }
@@ -2137,12 +2177,16 @@ pub(crate) mod test {
         // Check path_to_batteries
         for entries in unsafe { (*cold.0).path_to_batteries.iter() } {
             for (key, batteries_list) in entries {
-                verify_noun_not_stack_allocated(*key, "path_to_batteries key");
+                verify_noun_not_stack_allocated(*key, &space, "path_to_batteries key");
                 // Verify BatteriesList elements
                 for batteries in *batteries_list {
                     for (battery_ptr, _parent_axis) in batteries {
                         let battery = unsafe { *battery_ptr };
-                        verify_noun_not_stack_allocated(battery, "path_to_batteries battery");
+                        verify_noun_not_stack_allocated(
+                            battery,
+                            &space,
+                            "path_to_batteries battery",
+                        );
                     }
                 }
             }

@@ -7,18 +7,24 @@ use crate::serialization::{cue, cue_into_offset, jam};
 crate::gdb!();
 
 pub fn jet_cue(context: &mut Context, subject: Noun) -> Result {
-    Ok(cue(&mut context.stack, slot(subject, 6)?.as_atom()?)?)
+    let space = context.stack.noun_space();
+    Ok(cue(
+        &mut context.stack,
+        slot(subject, 6, &space)?.as_atom()?,
+    )?)
 }
 
 pub fn jet_cue_into_offset(context: &mut Context, subject: Noun) -> Result {
+    let space = context.stack.noun_space();
     Ok(cue_into_offset(
         &mut context.stack,
-        slot(subject, 6)?.as_atom()?,
+        slot(subject, 6, &space)?.as_atom()?,
     )?)
 }
 
 pub fn jet_jam(context: &mut Context, subject: Noun) -> Result {
-    Ok(jam(&mut context.stack, slot(subject, 6)?).as_noun())
+    let space = context.stack.noun_space();
+    Ok(jam(&mut context.stack, slot(subject, 6, &space)?).as_noun())
 }
 
 #[cfg(test)]

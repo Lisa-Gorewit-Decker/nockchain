@@ -132,22 +132,23 @@ impl Drop for TracingBackend {
 impl TraceBackend for TracingBackend {
     fn append_trace(&mut self, stack: &mut NockStack, path: Noun) {
         let mut tmp = path;
+        let space = stack.noun_space();
 
         let chum = loop {
             match tmp.as_either_atom_cell() {
                 Either::Left(atom) => break atom,
-                Either::Right(cell) => tmp = cell.head(),
+                Either::Right(cell) => tmp = cell.head(&space),
             }
         };
 
-        let Ok(chum) = std::str::from_utf8(chum.as_ne_bytes()) else {
+        let Ok(chum) = std::str::from_utf8(chum.as_ne_bytes(&space)) else {
             return;
         };
 
         let chum = chum.trim_end_matches('\0');
 
         let path = path_to_cord(stack, path);
-        let path = std::str::from_utf8(path.as_ne_bytes()).unwrap_or("");
+        let path = std::str::from_utf8(path.as_ne_bytes(&space)).unwrap_or("");
 
         if self.subscriber.is_none() {
             self.subscriber = Some(dispatcher::get_default(Clone::clone));

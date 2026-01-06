@@ -3,7 +3,7 @@ use std::slice;
 
 use either::Either::{self, *};
 
-use crate::mem::{NockStack, Preserve, Retag};
+use crate::mem::{NockStack, Preserve};
 use crate::mug::mug_u32;
 use crate::noun::{Noun, NounAllocator};
 use crate::pma::{Pma, PmaCopy};
@@ -66,7 +66,6 @@ pub struct MutHamt<T: Copy>(*mut MutStem<T>);
 
 impl<T: Copy> MutHamt<T> {
     pub fn new(stack: &mut NockStack) -> MutHamt<T> {
-        stack.install_arena();
         unsafe {
             let new_stem = stack.struct_alloc::<MutStem<T>>(1);
             (*new_stem).bitmap = 0;
@@ -76,7 +75,6 @@ impl<T: Copy> MutHamt<T> {
     }
 
     pub fn lookup(self, stack: &mut NockStack, n: &mut Noun) -> Option<T> {
-        stack.install_arena();
         let mut stem = self.0;
         let mut mug = mug_u32(stack, *n);
         unsafe {
@@ -104,7 +102,6 @@ impl<T: Copy> MutHamt<T> {
     }
 
     pub fn insert(self, stack: &mut NockStack, n: &mut Noun, t: T) {
-        stack.install_arena();
         let mut stem = self.0;
         let mut mug = mug_u32(stack, *n);
         let mut depth = 0u8;
@@ -292,7 +289,6 @@ impl<T: Copy + Preserve> Hamt<T> {
     }
     // Make a new, empty HAMT
     pub fn new(stack: &mut NockStack) -> Self {
-        stack.install_arena();
         unsafe {
             let stem_ptr = stack.struct_alloc::<Stem<T>>(1);
             // debug_assert for null stem_ptr
@@ -321,7 +317,6 @@ impl<T: Copy + Preserve> Hamt<T> {
      * in the HAMT
      */
     pub fn lookup(&self, stack: &mut NockStack, n: &mut Noun) -> Option<T> {
-        stack.install_arena();
         let mut stem = unsafe { *self.0 };
         let mut mug = mug_u32(stack, *n);
         'lookup: loop {
@@ -351,7 +346,6 @@ impl<T: Copy + Preserve> Hamt<T> {
 
     /// Make a new HAMT with the value inserted or replaced at the key.
     pub fn insert(&self, stack: &mut NockStack, n: &mut Noun, t: T) -> Hamt<T> {
-        stack.install_arena();
         let mut mug = mug_u32(stack, *n);
         let mut depth = 0u8;
         let mut stem = unsafe { *self.0 };
@@ -636,66 +630,6 @@ impl<T: Copy + Preserve> Preserve for Hamt<T> {
     // gen2, 2.9% improvement, self reported time:
     // gen2 only: 273.1 seconds
     // gen2 + gen3: 257.47 seconds
-}
-
-impl<T: Copy + Retag> Retag for Hamt<T> {
-    fn retag(&mut self, stack: &NockStack) {
-        unsafe {
-            if (*self.0).bitmap == 0 {
-                return;
-            }
-        }
-
-        let mut traversal: [(Stem<T>, u32, usize); 6] = [(
-            Stem {
-                bitmap: 0,
-                typemap: 0,
-                buffer: core::ptr::null_mut(),
-            },
-            0,
-            0,
-        ); 6];
-
-        unsafe {
-            traversal[0] = ((*self.0), (*self.0).bitmap, 0);
-        }
-        let mut depth = 1usize;
-
-        loop {
-            if depth == 0 {
-                break;
-            }
-
-            let (stem, bits, idx) = &mut traversal[depth - 1];
-            if *bits == 0 {
-                depth -= 1;
-                continue;
-            }
-
-            let bit = bits.trailing_zeros();
-            *bits &= *bits - 1;
-            let entry_idx = *idx;
-            *idx += 1;
-
-            unsafe {
-                let entry_ptr = stem.buffer.add(entry_idx);
-                let is_stem = ((stem.typemap >> bit) & 1) != 0;
-                if is_stem {
-                    let child = (*entry_ptr).stem;
-                    traversal[depth] = (child, child.bitmap, 0);
-                    depth += 1;
-                } else {
-                    let leaf = (*entry_ptr).leaf;
-                    let mut pair = leaf.buffer;
-                    for _ in 0..leaf.len {
-                        (*pair).0.retag(stack);
-                        (*pair).1.retag(stack);
-                        pair = pair.add(1);
-                    }
-                }
-            }
-        }
-    }
 }
 
 impl<T: Copy + PmaCopy> PmaCopy for Hamt<T> {
@@ -1091,40 +1025,6 @@ mod test {
             }
         }
         assert!(hs.is_empty(), "{:?}", hs);
-    }
-
-    #[test]
-    #[cfg_attr(miri, ignore = "memfd_create unsupported in Miri")]
-    fn hamt_retag_converts_entries_to_offsets() {
-        let size = 1 << 18;
-        let top_slots = 0;
-        let mut stack = NockStack::new(size, top_slots);
-        stack.install_arena();
-        let mut hamt = Hamt::<Noun>::new(&mut stack);
-
-        let value = Cell::new(&mut stack, D(7), D(9)).as_noun();
-        let mut key = D(42);
-        hamt = hamt.insert(&mut stack, &mut key, value);
-
-        unsafe {
-            stack.flip_top_frame(0);
-        }
-
-        hamt.retag(&stack);
-
-        let mut iter = hamt.iter();
-        while let Some(entries) = iter.next() {
-            for (noun_key, noun_val) in entries {
-                assert!(
-                    !noun_key.is_stack_allocated(),
-                    "hamt key should use offset tags"
-                );
-                assert!(
-                    !noun_val.is_stack_allocated(),
-                    "hamt value should use offset tags"
-                );
-            }
-        }
     }
 
     // Hold onto this in case we need it later.

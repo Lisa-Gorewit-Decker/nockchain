@@ -4,7 +4,7 @@ use either::Either::{self, Left, Right};
 use nockvm_macros::tas;
 
 use crate::jets::*;
-use crate::mem::{NockStack, Preserve, Retag};
+use crate::mem::{NockStack, Preserve};
 use crate::noun::{Atom, DirectAtom, IndirectAtom, Noun, D, T};
 
 /** Root for Hoon %k.138
@@ -839,6 +839,7 @@ pub struct Hot(*mut HotMem);
 impl Hot {
     pub fn init(stack: &mut NockStack, constant_hot_state: &[HotEntry]) -> Self {
         unsafe {
+            let space = stack.noun_space();
             let mut next = Hot(null_mut());
             for (htap, axe, jet) in constant_hot_state {
                 let mut a_path = D(0);
@@ -846,7 +847,7 @@ impl Hot {
                     match i {
                         Left(tas) => {
                             let chum = IndirectAtom::new_raw_bytes_ref(stack, tas)
-                                .normalize_as_atom()
+                                .normalize_as_atom(&space)
                                 .as_noun();
                             a_path = T(stack, &[chum, a_path]);
                         }
@@ -918,20 +919,6 @@ impl Preserve for Hot {
             (*it.0).a_path.assert_in_stack(stack);
             (*it.0).axis.assert_in_stack(stack);
             it = &mut (*it.0).next;
-        }
-    }
-}
-
-impl Retag for Hot {
-    fn retag(&mut self, stack: &NockStack) {
-        let mut cursor = self.0;
-        while !cursor.is_null() {
-            unsafe {
-                let entry = &mut *cursor;
-                entry.a_path.retag(stack);
-                entry.axis.retag(stack);
-                cursor = entry.next.0;
-            }
         }
     }
 }

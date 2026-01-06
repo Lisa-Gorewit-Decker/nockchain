@@ -500,10 +500,6 @@ impl Context {
         &self.arena
     }
 
-    pub fn install_arena(&self) {
-        Arena::set_thread_local(&self.arena);
-    }
-
     /**
      * For jets that need a stack frame internally.
      *
@@ -621,8 +617,9 @@ macro_rules! try_or_bail {
 #[allow(unused_variables)]
 #[inline(always)]
 fn debug_assertions(stack: &mut NockStack, noun: Noun) {
-    assert_acyclic!(noun);
-    assert_no_forwarding_pointers!(noun);
+    let space = stack.noun_space();
+    assert_acyclic!(space, noun);
+    assert_no_forwarding_pointers!(space, noun);
     assert_no_junior_pointers!(stack, noun);
 }
 
@@ -688,7 +685,11 @@ pub fn interpret(context: &mut Context, mut subject: Noun, formula: Noun) -> Res
             match &mut *work_ptr {
                 NockWork::Work0(zero) => {
                     opcode_tick!(WORK0);
-                    if let Ok(noun) = subject.slot_atom(zero.axis) {
+                    let noun = {
+                        let space = context.stack.noun_space();
+                        subject.slot_atom(zero.axis, &space)
+                    };
+                    if let Ok(noun) = noun {
                         res = noun;
                         context.stack.pop::<NockWork>();
                     } else {
@@ -786,7 +787,11 @@ pub fn interpret(context: &mut Context, mut subject: Noun, formula: Noun) -> Res
                         }
                         Todo9::ComputeResult => {
                             opcode_tick!(WORK9);
-                            if let Ok(mut formula) = res.slot_atom(kale.axis) {
+                            let formula = {
+                                let space = context.stack.noun_space();
+                                res.slot_atom(kale.axis, &space)
+                            };
+                            if let Ok(mut formula) = formula {
                                 if !cfg!(feature = "sham_hints") {
                                     if let Some((jet, _path, test)) = context
                                         .warm
@@ -1267,18 +1272,23 @@ mod cold_paths {
             }
             Todo12::Scry => {
                 if let Some(cell) = context.scry_stack.cell() {
+                    let space = context.stack.noun_space();
                     scry.path = res.clone();
                     let scry_stack = context.scry_stack;
-                    let scry_handler = cell.head();
+                    let scry_handler = cell.head(&space);
                     let scry_gate = scry_handler.as_cell()?;
                     let payload = T(&mut context.stack, &[scry.reff, res.clone()]);
                     let scry_core = T(
                         &mut context.stack,
-                        &[scry_gate.head(), payload, scry_gate.tail().as_cell()?.tail()],
+                        &[
+                            scry_gate.head(&space),
+                            payload,
+                            scry_gate.tail(&space).as_cell()?.tail(&space),
+                        ],
                     );
                     let scry_form = T(&mut context.stack, &[D(9), D(2), D(1), scry_core]);
 
-                    context.scry_stack = cell.tail();
+                    context.scry_stack = cell.tail(&space);
                     // Alternately, we could use scry_core as the subject and [9 2 0 1] as
                     // the formula. It's unclear if performance will be better with a purely
                     // static formula.
@@ -1291,7 +1301,7 @@ mod cold_paths {
                                     return Err(Error::ScryCrashed(D(0)));
                                 }
                             }
-                            Right(cell) => match cell.tail().as_either_atom_cell() {
+                            Right(cell) => match cell.tail(&space).as_either_atom_cell() {
                                 Left(_) => {
                                     let stack = &mut context.stack;
                                     let hunk = T(stack, &[D(tas!(b"hunk")), scry.reff, scry.path]);
@@ -1299,7 +1309,7 @@ mod cold_paths {
                                     return Err(Error::ScryCrashed(D(0)));
                                 }
                                 Right(cell) => {
-                                    *res = cell.tail();
+                                    *res = cell.tail(&space);
                                     context.scry_stack = scry_stack;
                                     context.stack.pop::<NockWork>();
                                     return OK_CONTINUE;
@@ -1328,21 +1338,22 @@ mod cold_paths {
 
 fn push_formula(stack: &mut NockStack, formula: Noun, tail: bool) -> Result {
     unsafe {
+        let space = stack.noun_space();
         if let Ok(formula_cell) = formula.as_cell() {
             // Formula
-            match formula_cell.head().as_either_atom_cell() {
+            match formula_cell.head(&space).as_either_atom_cell() {
                 Right(_cell) => {
                     *stack.push() = NockWork::WorkCons(NockCons {
                         todo: TodoCons::ComputeHead,
-                        head: formula_cell.head(),
-                        tail: formula_cell.tail(),
+                        head: formula_cell.head(&space),
+                        tail: formula_cell.tail(&space),
                     });
                 }
                 Left(atom) => {
                     if let Ok(direct) = atom.as_direct() {
                         match direct.data() {
                             0 => {
-                                if let Ok(axis_atom) = formula_cell.tail().as_atom() {
+                                if let Ok(axis_atom) = formula_cell.tail(&space).as_atom() {
                                     *stack.push() = NockWork::Work0(Nock0 { axis: axis_atom });
                                 } else {
                                     // Axis for Nock 0 must be an atom
@@ -1351,15 +1362,15 @@ fn push_formula(stack: &mut NockStack, formula: Noun, tail: bool) -> Result {
                             }
                             1 => {
                                 *stack.push() = NockWork::Work1(Nock1 {
-                                    noun: formula_cell.tail(),
+                                    noun: formula_cell.tail(&space),
                                 });
                             }
                             2 => {
-                                if let Ok(arg_cell) = formula_cell.tail().as_cell() {
+                                if let Ok(arg_cell) = formula_cell.tail(&space).as_cell() {
                                     *stack.push() = NockWork::Work2(Nock2 {
                                         todo: Todo2::ComputeSubject,
-                                        subject: arg_cell.head(),
-                                        formula: arg_cell.tail(),
+                                        subject: arg_cell.head(&space),
+                                        formula: arg_cell.tail(&space),
                                         tail,
                                     });
                                 } else {
@@ -1370,21 +1381,21 @@ fn push_formula(stack: &mut NockStack, formula: Noun, tail: bool) -> Result {
                             3 => {
                                 *stack.push() = NockWork::Work3(Nock3 {
                                     todo: Todo3::ComputeChild,
-                                    child: formula_cell.tail(),
+                                    child: formula_cell.tail(&space),
                                 });
                             }
                             4 => {
                                 *stack.push() = NockWork::Work4(Nock4 {
                                     todo: Todo4::ComputeChild,
-                                    child: formula_cell.tail(),
+                                    child: formula_cell.tail(&space),
                                 });
                             }
                             5 => {
-                                if let Ok(arg_cell) = formula_cell.tail().as_cell() {
+                                if let Ok(arg_cell) = formula_cell.tail(&space).as_cell() {
                                     *stack.push() = NockWork::Work5(Nock5 {
                                         todo: Todo5::ComputeLeftChild,
-                                        left: arg_cell.head(),
-                                        right: arg_cell.tail(),
+                                        left: arg_cell.head(&space),
+                                        right: arg_cell.tail(&space),
                                     });
                                 } else {
                                     // Argument to Nock 5 must be cell
@@ -1392,13 +1403,13 @@ fn push_formula(stack: &mut NockStack, formula: Noun, tail: bool) -> Result {
                                 };
                             }
                             6 => {
-                                if let Ok(arg_cell) = formula_cell.tail().as_cell() {
-                                    if let Ok(branch_cell) = arg_cell.tail().as_cell() {
+                                if let Ok(arg_cell) = formula_cell.tail(&space).as_cell() {
+                                    if let Ok(branch_cell) = arg_cell.tail(&space).as_cell() {
                                         *stack.push() = NockWork::Work6(Nock6 {
                                             todo: Todo6::ComputeTest,
-                                            test: arg_cell.head(),
-                                            zero: branch_cell.head(),
-                                            once: branch_cell.tail(),
+                                            test: arg_cell.head(&space),
+                                            zero: branch_cell.head(&space),
+                                            once: branch_cell.tail(&space),
                                             tail,
                                         });
                                     } else {
@@ -1411,11 +1422,11 @@ fn push_formula(stack: &mut NockStack, formula: Noun, tail: bool) -> Result {
                                 }
                             }
                             7 => {
-                                if let Ok(arg_cell) = formula_cell.tail().as_cell() {
+                                if let Ok(arg_cell) = formula_cell.tail(&space).as_cell() {
                                     *stack.push() = NockWork::Work7(Nock7 {
                                         todo: Todo7::ComputeSubject,
-                                        subject: arg_cell.head(),
-                                        formula: arg_cell.tail(),
+                                        subject: arg_cell.head(&space),
+                                        formula: arg_cell.tail(&space),
                                         tail,
                                     });
                                 } else {
@@ -1424,11 +1435,11 @@ fn push_formula(stack: &mut NockStack, formula: Noun, tail: bool) -> Result {
                                 };
                             }
                             8 => {
-                                if let Ok(arg_cell) = formula_cell.tail().as_cell() {
+                                if let Ok(arg_cell) = formula_cell.tail(&space).as_cell() {
                                     *stack.push() = NockWork::Work8(Nock8 {
                                         todo: Todo8::ComputeSubject,
-                                        pin: arg_cell.head(),
-                                        formula: arg_cell.tail(),
+                                        pin: arg_cell.head(&space),
+                                        formula: arg_cell.tail(&space),
                                         tail,
                                     });
                                 } else {
@@ -1437,13 +1448,13 @@ fn push_formula(stack: &mut NockStack, formula: Noun, tail: bool) -> Result {
                                 };
                             }
                             9 => {
-                                if let Ok(arg_cell) = formula_cell.tail().as_cell() {
-                                    if let Ok(axis_atom) = arg_cell.head().as_atom() {
+                                if let Ok(arg_cell) = formula_cell.tail(&space).as_cell() {
+                                    if let Ok(axis_atom) = arg_cell.head(&space).as_atom() {
                                         let p = stack.push();
                                         *p = NockWork::Work9(Nock9 {
                                             todo: Todo9::ComputeCore,
                                             axis: axis_atom,
-                                            core: arg_cell.tail(),
+                                            core: arg_cell.tail(&space),
                                             tail,
                                         });
                                     } else {
@@ -1456,14 +1467,14 @@ fn push_formula(stack: &mut NockStack, formula: Noun, tail: bool) -> Result {
                                 };
                             }
                             10 => {
-                                if let Ok(arg_cell) = formula_cell.tail().as_cell() {
-                                    if let Ok(patch_cell) = arg_cell.head().as_cell() {
-                                        if let Ok(axis_atom) = patch_cell.head().as_atom() {
+                                if let Ok(arg_cell) = formula_cell.tail(&space).as_cell() {
+                                    if let Ok(patch_cell) = arg_cell.head(&space).as_cell() {
+                                        if let Ok(axis_atom) = patch_cell.head(&space).as_atom() {
                                             *stack.push() = NockWork::Work10(Nock10 {
                                                 todo: Todo10::ComputeTree,
                                                 axis: axis_atom,
-                                                tree: arg_cell.tail(),
-                                                patch: patch_cell.tail(),
+                                                tree: arg_cell.tail(&space),
+                                                patch: patch_cell.tail(&space),
                                             });
                                         } else {
                                             // Axis for Nock 10 must be an atom
@@ -1479,23 +1490,23 @@ fn push_formula(stack: &mut NockStack, formula: Noun, tail: bool) -> Result {
                                 };
                             }
                             11 => {
-                                if let Ok(arg_cell) = formula_cell.tail().as_cell() {
-                                    match arg_cell.head().as_either_atom_cell() {
+                                if let Ok(arg_cell) = formula_cell.tail(&space).as_cell() {
+                                    match arg_cell.head(&space).as_either_atom_cell() {
                                         Left(tag_atom) => {
                                             *stack.push() = NockWork::Work11S(Nock11S {
                                                 todo: Todo11S::ComputeResult,
                                                 tag: tag_atom,
-                                                body: arg_cell.tail(),
+                                                body: arg_cell.tail(&space),
                                                 tail: tail && hint::is_tail(tag_atom),
                                             });
                                         }
                                         Right(hint_cell) => {
-                                            if let Ok(tag_atom) = hint_cell.head().as_atom() {
+                                            if let Ok(tag_atom) = hint_cell.head(&space).as_atom() {
                                                 *stack.push() = NockWork::Work11D(Nock11D {
                                                     todo: Todo11D::ComputeHint,
                                                     tag: tag_atom,
-                                                    hint: hint_cell.tail(),
-                                                    body: arg_cell.tail(),
+                                                    hint: hint_cell.tail(&space),
+                                                    body: arg_cell.tail(&space),
                                                     tail: tail && hint::is_tail(tag_atom),
                                                 });
                                             } else {
@@ -1510,11 +1521,11 @@ fn push_formula(stack: &mut NockStack, formula: Noun, tail: bool) -> Result {
                                 };
                             }
                             12 => {
-                                if let Ok(arg_cell) = formula_cell.tail().as_cell() {
+                                if let Ok(arg_cell) = formula_cell.tail(&space).as_cell() {
                                     *stack.push() = NockWork::Work12(Nock12 {
                                         todo: Todo12::ComputeReff,
-                                        reff: arg_cell.head(),
-                                        path: arg_cell.tail(),
+                                        reff: arg_cell.head(&space),
+                                        path: arg_cell.tail(&space),
                                     });
                                 } else {
                                     // Argument for Nock 12 must be cell
@@ -1565,7 +1576,8 @@ fn exit(
                 let h = *(stack.local_noun_pointer(0));
                 // XX: Small chance of clobbering something important after OOM?
                 // XX: what if we OOM while making a stack trace
-                match weld(stack, t, h) {
+                let space = stack.noun_space();
+                match weld(stack, t, h, &space) {
                     Ok(trace) => trace,
                     Err(_) => h,
                 }
@@ -1611,10 +1623,11 @@ fn mean_push(stack: &mut NockStack, noun: Noun) {
  */
 fn mean_pop(stack: &mut NockStack) {
     unsafe {
+        let space = stack.noun_space();
         *(stack.local_noun_pointer(0)) = (*(stack.local_noun_pointer(0)))
             .as_cell()
             .expect("serf: unexpected end of mean stack\r")
-            .tail();
+            .tail(&space);
     }
 }
 
@@ -1623,6 +1636,7 @@ fn edit(stack: &mut NockStack, edit_axis: Atom, patch: Noun, mut tree: Noun) -> 
 
     use crate::noun::{DirectAxisIterator, IndirectAxisIterator};
 
+    let space = stack.noun_space();
     let mut res = patch;
     let mut dest: *mut Noun = &mut res;
 
@@ -1637,23 +1651,23 @@ fn edit(stack: &mut NockStack, edit_axis: Atom, patch: Noun, mut tree: Noun) -> 
                     unsafe {
                         let (cell, cellmem) = Cell::new_raw_mut(stack);
                         *dest = cell.as_noun();
-                        (*cellmem).head = tree_cell.head();
+                        (*cellmem).head = tree_cell.head(&space);
                         dest = &mut ((*cellmem).tail);
                     }
-                    tree = tree_cell.tail();
+                    tree = tree_cell.tail(&space);
                 } else {
                     unsafe {
                         let (cell, cellmem) = Cell::new_raw_mut(stack);
                         *dest = cell.as_noun();
-                        (*cellmem).tail = tree_cell.tail();
+                        (*cellmem).tail = tree_cell.tail(&space);
                         dest = &mut ((*cellmem).head);
                     }
-                    tree = tree_cell.head();
+                    tree = tree_cell.head(&space);
                 }
             }
         }
         Right(indirect) => {
-            let mut axis_iter = IndirectAxisIterator::new(indirect.as_slice())
+            let mut axis_iter = IndirectAxisIterator::new(indirect.as_slice(&space))
                 .expect("0 is not allowed as an edit axis");
 
             while let Some(descend_tail) = axis_iter.next() {
@@ -1662,18 +1676,18 @@ fn edit(stack: &mut NockStack, edit_axis: Atom, patch: Noun, mut tree: Noun) -> 
                     unsafe {
                         let (cell, cellmem) = Cell::new_raw_mut(stack);
                         *dest = cell.as_noun();
-                        (*cellmem).head = tree_cell.head();
+                        (*cellmem).head = tree_cell.head(&space);
                         dest = &mut ((*cellmem).tail);
                     }
-                    tree = tree_cell.tail();
+                    tree = tree_cell.tail(&space);
                 } else {
                     unsafe {
                         let (cell, cellmem) = Cell::new_raw_mut(stack);
                         *dest = cell.as_noun();
-                        (*cellmem).tail = tree_cell.tail();
+                        (*cellmem).tail = tree_cell.tail(&space);
                         dest = &mut ((*cellmem).head);
                     }
-                    tree = tree_cell.head();
+                    tree = tree_cell.head(&space);
                 }
             }
         }
@@ -1689,18 +1703,19 @@ pub fn inc(stack: &mut NockStack, atom: Atom) -> Atom {
     match atom.as_either() {
         Left(direct) => Atom::new(stack, direct.data() + 1),
         Right(indirect) => {
-            let indirect_slice = indirect.as_bitslice();
+            let space = stack.noun_space();
+            let indirect_slice = indirect.as_bitslice(&space);
             match indirect_slice.first_zero() {
                 None => {
                     // all ones, make an indirect one word bigger
                     let (new_indirect, new_slice) =
-                        unsafe { IndirectAtom::new_raw_mut_bitslice(stack, indirect.size() + 1) };
+                        unsafe { IndirectAtom::new_raw_mut_bitslice(stack, indirect.size(&space) + 1) };
                     new_slice.set(indirect_slice.len(), true);
                     new_indirect.as_atom()
                 }
                 Some(first_zero) => {
                     let (new_indirect, new_slice) =
-                        unsafe { IndirectAtom::new_raw_mut_bitslice(stack, indirect.size()) };
+                        unsafe { IndirectAtom::new_raw_mut_bitslice(stack, indirect.size(&space)) };
                     new_slice.set(first_zero, true);
                     new_slice[first_zero + 1..]
                         .copy_from_bitslice(&indirect_slice[first_zero + 1..]);
@@ -1761,7 +1776,8 @@ mod hint {
                 if cfg!(feature = "sham_hints") {
                     let jet_formula = hint.cell()?;
                     // XX: what is the head here?
-                    let jet_name = jet_formula.tail();
+                    let space = context.stack.noun_space();
+                    let jet_name = jet_formula.tail(&space);
 
                     if let Some(jet) = jets::get_jet(context, jet_name) {
                         match jet(context, subject) {
@@ -1865,8 +1881,9 @@ mod hint {
 
                 let (_form, clue) = hint?;
                 let slog_cell = clue.cell()?;
-                let pri = slog_cell.head().direct()?.data();
-                let tank = slog_cell.tail();
+                let space = stack.noun_space();
+                let pri = slog_cell.head(&space).direct()?.data();
+                let tank = slog_cell.tail(&space);
 
                 let s = (*slogger).deref_mut();
                 s.slog(stack, pri, tank);
@@ -1892,23 +1909,24 @@ mod hint {
                     Ok(toon) => {
                         let stack = &mut context.stack;
                         let slogger = &mut context.slogger;
+                        let space = stack.noun_space();
 
-                        if unsafe { !toon.head().raw_equals(&D(2)) } {
+                        if unsafe { !toon.head(&space).raw_equals(&D(2)) } {
                             // +mook will only ever return a $toon with non-%2 head if that's what it was given as
                             // input. Since we control the input for this call exactly, there must exist a programming
                             // error in Ares if this occurs.
                             panic!("serf: %hela: mook returned invalid tone");
                         }
 
-                        let mut list = toon.tail();
+                        let mut list = toon.tail(&space);
                         loop {
                             if unsafe { list.raw_equals(&D(0)) } {
                                 break;
                             }
 
                             if let Ok(cell) = list.as_cell() {
-                                slogger.slog(stack, 0, cell.head());
-                                list = cell.tail();
+                                slogger.slog(stack, 0, cell.head(&space));
+                                list = cell.tail(&space);
                             } else {
                                 flog!(context, "serf: %hela: list ends without ~");
                                 break;
@@ -1941,6 +1959,7 @@ mod hint {
         let cold = &mut context.cold;
         let hot = &context.hot;
         let cache = &mut context.cache;
+        let space = stack.noun_space();
 
         //  XX: handle IndirectAtom tags
         match tag.direct()?.data() {
@@ -1954,12 +1973,12 @@ mod hint {
             tas!(b"fast") => {
                 if !cfg!(feature = "sham_hints") {
                     if let Some(clue) = hint {
-                        let chum = clue.slot(2).ok()?;
-                        let mut parent = clue.slot(6).ok()?;
+                        let chum = clue.slot(2, &space).ok()?;
+                        let mut parent = clue.slot(6, &space).ok()?;
                         loop {
                             if let Ok(parent_cell) = parent.as_cell() {
-                                if unsafe { parent_cell.head().raw_equals(&D(11)) } {
-                                    match parent.slot(7) {
+                                if unsafe { parent_cell.head(&space).raw_equals(&D(11)) } {
+                                    match parent.slot(7, &space) {
                                         Ok(noun) => {
                                             parent = noun;
                                         }
@@ -1974,8 +1993,9 @@ mod hint {
                                 return None;
                             }
                         }
-                        let parent_formula_op = parent.slot(2).ok()?.atom()?.direct()?;
-                        let parent_formula_ax = parent.slot(3).ok()?.atom()?;
+                        let parent_formula_op =
+                            parent.slot(2, &space).ok()?.atom()?.direct()?;
+                        let parent_formula_ax = parent.slot(3, &space).ok()?.atom()?;
 
                         let cold_res: cold::Result = {
                             if parent_formula_op.data() == 1 {
@@ -2004,7 +2024,7 @@ mod hint {
                                     flog!(context, "serf: cold: register: cell chum");
                                     return None;
                                 };
-                                let chum_bytes = Vec::from(chum_atom.as_ne_bytes());
+                                let chum_bytes = Vec::from(chum_atom.as_ne_bytes(&space));
                                 let Ok(chum_str) = String::from_utf8(chum_bytes) else {
                                     flog!(context, "serf: cold: register: unprintable chum");
                                     return None;
@@ -2038,24 +2058,24 @@ mod hint {
 mod debug {
     use either::Either::*;
 
-    use crate::noun::Noun;
+    use crate::noun::{Noun, NounSpace};
 
     #[allow(dead_code)]
-    pub(super) fn assert_normalized(noun: Noun, path: Noun) {
-        assert_normalized_helper(noun, path, None);
+    pub(super) fn assert_normalized(noun: Noun, path: Noun, space: &NounSpace) {
+        assert_normalized_helper(noun, path, None, space);
     }
 
     #[allow(dead_code)]
-    pub(super) fn assert_normalized_depth(noun: Noun, path: Noun, depth: usize) {
-        assert_normalized_helper(noun, path, Some(depth));
+    pub(super) fn assert_normalized_depth(noun: Noun, path: Noun, depth: usize, space: &NounSpace) {
+        assert_normalized_helper(noun, path, Some(depth), space);
     }
 
     #[allow(dead_code)]
-    fn assert_normalized_helper(noun: Noun, path: Noun, depth: Option<usize>) {
+    fn assert_normalized_helper(noun: Noun, path: Noun, depth: Option<usize>, space: &NounSpace) {
         match noun.as_either_atom_cell() {
             Left(atom) => {
-                if !atom.is_normalized() {
-                    if atom.size() == 1 {
+                if !atom.is_normalized(space) {
+                    if atom.size(space) == 1 {
                         panic!(
                             "Un-normalized indirect_atom (should be direct) returned from jet for {path:?}",
                         );
@@ -2069,8 +2089,8 @@ mod debug {
             Right(cell) => {
                 if depth.is_none_or(|d| d != 0) {
                     let new_depth = depth.map(|x| x - 1);
-                    assert_normalized_helper(cell.head(), path, new_depth);
-                    assert_normalized_helper(cell.tail(), path, new_depth);
+                    assert_normalized_helper(cell.head(space), path, new_depth, space);
+                    assert_normalized_helper(cell.tail(space), path, new_depth, space);
                 }
             }
         }

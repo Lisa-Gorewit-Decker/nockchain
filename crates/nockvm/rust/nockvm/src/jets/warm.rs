@@ -4,7 +4,7 @@ use crate::hamt::Hamt;
 use crate::jets::cold::{Batteries, Cold};
 use crate::jets::hot::Hot;
 use crate::jets::Jet;
-use crate::mem::{NockStack, Preserve, Retag};
+use crate::mem::{NockStack, Preserve};
 use crate::noun::{Noun, NounAllocator, Slots};
 use crate::pma::{Pma, PmaCopy};
 
@@ -78,20 +78,6 @@ impl Preserve for WarmEntry {
                 };
             } else {
                 break;
-            }
-        }
-    }
-}
-
-impl Retag for WarmEntry {
-    fn retag(&mut self, stack: &NockStack) {
-        let mut cursor = *self;
-        while !cursor.0.is_null() {
-            unsafe {
-                let entry = &mut *cursor.0;
-                entry.batteries.retag(stack);
-                entry.path.retag(stack);
-                cursor = entry.next;
             }
         }
     }
@@ -217,6 +203,7 @@ impl Warm {
 
     pub fn init(stack: &mut NockStack, cold: &mut Cold, hot: &Hot, test_jets: &Hamt<()>) -> Self {
         let mut warm = Self::new(stack);
+        let space = stack.noun_space();
         for (mut path, axis, jet) in *hot {
             let test_path = test_jets.lookup(stack, &mut path).is_some();
             let batteries_list = cold.find(stack, &mut path);
@@ -225,7 +212,7 @@ impl Warm {
                 let (battery, _parent_axis) = batteries_tmp
                     .next()
                     .expect("IMPOSSIBLE: empty battery entry in cold state");
-                if let Ok(mut formula) = unsafe { (*battery).slot_atom(axis) } {
+                if let Ok(mut formula) = unsafe { (*battery).slot_atom(axis, &space) } {
                     warm.insert(stack, &mut formula, path, batteries, jet, test_path);
                 } else {
                     //  XX: need NockStack allocated string interpolation
@@ -259,12 +246,6 @@ impl Warm {
             }
         }
         JetLookupResult::NoJet
-    }
-}
-
-impl Retag for Warm {
-    fn retag(&mut self, stack: &NockStack) {
-        self.0.retag(stack);
     }
 }
 

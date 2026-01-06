@@ -1,7 +1,5 @@
 // TODO: fix stack push in PC
 use std::alloc::Layout;
-use std::cell::Cell as ThreadCell;
-use std::collections::HashSet;
 use std::fs::File;
 use std::panic::panic_any;
 use std::ptr::copy_nonoverlapping;
@@ -16,7 +14,7 @@ use rustix::cstr;
 use rustix::fs::{self, MemfdFlags};
 use thiserror::Error;
 
-use crate::noun::{Atom, Cell, CellMemory, IndirectAtom, Noun, NounAllocator};
+use crate::noun::{Atom, Cell, CellMemory, IndirectAtom, Noun, NounAllocator, NounSpace};
 use crate::{assert_acyclic, assert_no_forwarding_pointers, assert_no_junior_pointers};
 
 crate::gdb!();
@@ -36,9 +34,9 @@ pub(crate) const fn word_size_of<T>() -> usize {
 }
 
 /** Utility function to compute the raw memory usage of an [IndirectAtom] */
-fn indirect_raw_size(atom: IndirectAtom) -> usize {
-    debug_assert!(atom.size() > 0);
-    atom.size() + 2
+fn indirect_raw_size(atom: IndirectAtom, space: &NounSpace) -> usize {
+    debug_assert!(atom.size(space) > 0);
+    atom.size(space) + 2
 }
 
 #[derive(Debug, Clone)]
@@ -179,10 +177,6 @@ enum MappingKind {
     ReadOnly(Mmap),
 }
 
-thread_local! {
-    static CURRENT_ARENA: ThreadCell<*const Arena> = ThreadCell::new(ptr::null());
-}
-
 impl Arena {
     pub fn allocate(words: usize) -> Result<Arc<Self>, NewStackError> {
         let bytes = words.checked_shl(3).ok_or(NewStackError::StackTooSmall)?;
@@ -236,28 +230,6 @@ impl Arena {
             "unaligned pointer passed to offset_from_ptr: {ptr:p}"
         );
         (offset_bytes >> 3) as u32
-    }
-
-    pub fn set_thread_local(arena: &Arc<Arena>) {
-        let ptr = Arc::as_ptr(arena);
-        CURRENT_ARENA.with(|cell| cell.set(ptr));
-    }
-
-    pub fn clear_thread_local() {
-        CURRENT_ARENA.with(|cell| cell.set(ptr::null()));
-    }
-
-    pub fn with_current<F, R>(f: F) -> R
-    where
-        F: FnOnce(&Arena) -> R,
-    {
-        CURRENT_ARENA.with(|cell| {
-            let ptr = cell.get();
-            if ptr.is_null() {
-                panic!("Arena::with_current called without an installed Arena");
-            }
-            unsafe { f(&*ptr) }
-        })
     }
 
     pub fn map_copy_read_only(&self) -> io::Result<Mmap> {
@@ -358,67 +330,9 @@ impl NockStack {
         &self.arena
     }
 
-    pub fn retag_noun(&self, noun_ptr: *mut Noun) {
-        unsafe {
-            let noun = &mut *noun_ptr;
-            if !noun.is_stack_allocated() {
-                return;
-            }
-
-            if noun.is_indirect() {
-                let indirect = noun
-                    .as_indirect()
-                    .expect("checked is_indirect before retag");
-                let ptr = indirect.to_raw_pointer();
-                let offset = self.offset_from_ptr(ptr as *const u8);
-                *noun = IndirectAtom::from_offset_words(offset).as_noun();
-            } else if noun.is_cell() {
-                let cell = noun.as_cell().expect("checked is_cell before retag");
-                let ptr = cell.to_raw_pointer();
-                let offset = self.offset_from_ptr(ptr as *const u8);
-                *noun = Cell::from_offset_words(offset).as_noun();
-            }
-        }
-    }
-
-    pub fn retag_noun_tree(&self, root_ptr: *mut Noun) {
-        let arena = self.arena_ref();
-        let mut work: Vec<*mut Noun> = Vec::with_capacity(32);
-        let mut visited_cells: HashSet<*const CellMemory> = HashSet::new();
-        work.push(root_ptr);
-        while let Some(ptr) = work.pop() {
-            unsafe {
-                let noun = &mut *ptr;
-                if !noun.is_stack_allocated() {
-                    continue;
-                }
-                // For cells, get the memory pointer before retagging for deduplication.
-                // We only track cells since atoms have no children to traverse.
-                let cell_ptr = if noun.is_cell() {
-                    noun.as_cell()
-                        .expect("is_cell check passed")
-                        .stack_memory_pointer()
-                } else {
-                    None
-                };
-                self.retag_noun(ptr);
-                if let Some(cell_ptr) = cell_ptr {
-                    if !visited_cells.insert(cell_ptr) {
-                        continue;
-                    }
-                    let cell = Cell::from_raw_pointer(cell_ptr);
-                    let head_ptr = cell.head_as_mut_with_arena(arena);
-                    let tail_ptr = cell.tail_as_mut_with_arena(arena);
-                    work.push(head_ptr);
-                    work.push(tail_ptr);
-                }
-            }
-        }
-    }
-
     #[inline]
-    pub fn install_arena(&self) {
-        Arena::set_thread_local(&self.arena);
+    pub fn noun_space(&self) -> NounSpace {
+        NounSpace::stack_only(self)
     }
 
     #[inline]
@@ -431,10 +345,6 @@ impl NockStack {
         self.arena.offset_from_ptr(ptr)
     }
 
-    pub fn read_only_replica(&self) -> io::Result<ReadOnlyReplica> {
-        let arena = self.arena.clone_read_only()?;
-        Ok(ReadOnlyReplica { arena })
-    }
 
     /**  Initialization:
      * The initial frame is a west frame. When the stack is initialized, a number of slots is given.
@@ -1493,6 +1403,7 @@ impl NockStack {
     unsafe fn assert_noun_in(&self, noun: Noun) {
         let mut dbg_stack = Vec::new();
         dbg_stack.push(noun);
+        let space = self.noun_space();
 
         // Get the appropriate offsets based on pre-copy status
         let alloc_offset = if self.pc {
@@ -1524,7 +1435,7 @@ impl NockStack {
             if let Some(subnoun) = dbg_stack.pop() {
                 if let Ok(a) = subnoun.as_allocated() {
                     // Get the pointer address
-                    let np = a.to_raw_pointer() as usize;
+                    let np = a.to_raw_pointer(&space) as usize;
 
                     // Check if the noun is in the free space (which would be an error)
                     if np >= low && np < hi {
@@ -1533,8 +1444,8 @@ impl NockStack {
 
                     // If it's a cell, check its head and tail too
                     if let Right(c) = a.as_either() {
-                        dbg_stack.push(c.tail());
-                        dbg_stack.push(c.head());
+                        dbg_stack.push(c.tail(&space));
+                        dbg_stack.push(c.head(&space));
                     }
                 }
             } else {
@@ -1821,6 +1732,7 @@ impl NockStack {
     pub(crate) fn no_junior_pointers(&self, noun: Noun) -> bool {
         unsafe {
             if let Ok(c) = noun.as_cell() {
+                let space = self.noun_space();
                 let mut dbg_stack = Vec::new();
 
                 // Start with the current frame's offsets
@@ -1846,7 +1758,8 @@ impl NockStack {
                 };
 
                 // Determine the cell pointer offset
-                let cell_ptr_offset = (c.to_raw_pointer() as usize - self.start as usize) / 8;
+                let cell_ptr_offset =
+                    (c.to_raw_pointer(&space) as usize - self.start as usize) / 8;
 
                 // Determine range for the cell's frame
                 let (range_lo_offset, range_hi_offset) = loop {
@@ -1918,11 +1831,11 @@ impl NockStack {
                 let range_hi_ptr = self.derive_ptr(range_hi_offset);
 
                 // Check all nouns in the tree
-                dbg_stack.push(c.head());
-                dbg_stack.push(c.tail());
+                dbg_stack.push(c.head(&space));
+                dbg_stack.push(c.tail(&space));
                 while let Some(n) = dbg_stack.pop() {
                     if let Ok(a) = n.as_allocated() {
-                        let ptr = a.to_raw_pointer();
+                        let ptr = a.to_raw_pointer(&space);
                         // Calculate pointer offset
                         let ptr_offset = (ptr as usize - self.start as usize) / 8;
 
@@ -1940,8 +1853,8 @@ impl NockStack {
 
                         // Continue traversing if it's a cell
                         if let Some(c) = a.cell() {
-                            dbg_stack.push(c.tail());
-                            dbg_stack.push(c.head());
+                            dbg_stack.push(c.tail(&space));
+                            dbg_stack.push(c.head(&space));
                         }
                     }
                 }
@@ -2057,33 +1970,6 @@ impl NockStack {
     }
 }
 
-pub struct ReadOnlyReplica {
-    arena: Arc<Arena>,
-}
-
-impl ReadOnlyReplica {
-    pub fn install(&self) -> ReplicaInstallGuard {
-        Arena::set_thread_local(&self.arena);
-        ReplicaInstallGuard { installed: true }
-    }
-
-    pub fn arena(&self) -> &Arc<Arena> {
-        &self.arena
-    }
-}
-
-pub struct ReplicaInstallGuard {
-    installed: bool,
-}
-
-impl Drop for ReplicaInstallGuard {
-    fn drop(&mut self) {
-        if self.installed {
-            Arena::clear_thread_local();
-        }
-    }
-}
-
 impl NounAllocator for NockStack {
     unsafe fn alloc_indirect(&mut self, words: usize) -> *mut u64 {
         self.indirect_alloc(words)
@@ -2100,6 +1986,10 @@ impl NounAllocator for NockStack {
     unsafe fn equals(&mut self, a: *mut Noun, b: *mut Noun) -> bool {
         crate::unifying_equality::unifying_equality(self, a, b)
     }
+
+    fn noun_space(&self) -> NounSpace {
+        NockStack::noun_space(self)
+    }
 }
 
 /// Immutable, acyclic objects which may be copied up the stack
@@ -2107,30 +1997,6 @@ pub trait Preserve {
     /// Ensure an object will not be invalidated by popping the NockStack
     unsafe fn preserve(&mut self, stack: &mut NockStack);
     unsafe fn assert_in_stack(&self, stack: &NockStack);
-}
-
-pub trait Retag {
-    fn retag(&mut self, stack: &NockStack);
-}
-
-impl Retag for () {
-    #[inline]
-    fn retag(&mut self, _stack: &NockStack) {}
-}
-
-impl Retag for Atom {
-    fn retag(&mut self, stack: &NockStack) {
-        if self.is_indirect() {
-            let noun_ptr = self as *mut Atom as *mut Noun;
-            stack.retag_noun(noun_ptr);
-        }
-    }
-}
-
-impl Retag for Noun {
-    fn retag(&mut self, stack: &NockStack) {
-        stack.retag_noun_tree(self as *mut Noun);
-    }
 }
 
 impl Preserve for () {
@@ -2141,11 +2007,11 @@ impl Preserve for () {
 
 impl Preserve for IndirectAtom {
     unsafe fn preserve(&mut self, stack: &mut NockStack) {
-        let size = indirect_raw_size(*self);
+        let space = stack.noun_space();
+        let size = indirect_raw_size(*self, &space);
         let buf = stack.struct_alloc_in_previous_frame::<u64>(size);
-        copy_nonoverlapping(self.to_raw_pointer(), buf, size);
-        let offset = stack.offset_from_ptr(buf as *const u8);
-        *self = IndirectAtom::from_offset_words(offset);
+        copy_nonoverlapping(self.to_raw_pointer(&space), buf, size);
+        *self = IndirectAtom::from_raw_pointer(buf);
     }
     unsafe fn assert_in_stack(&self, stack: &NockStack) {
         stack.assert_noun_in(self.as_atom().as_noun());
@@ -2180,8 +2046,9 @@ impl Preserve for Noun {
 /// This version tries to bail earlier than the old one and we're using a Vec
 /// for the worklist.
 unsafe fn noun_preserve(stack: &mut NockStack, noun: &mut Noun) {
-    assert_acyclic!(*noun);
-    assert_no_forwarding_pointers!(*noun);
+    let space = stack.noun_space();
+    assert_acyclic!(space, *noun);
+    assert_no_forwarding_pointers!(space, *noun);
     assert_no_junior_pointers!(stack, *noun);
 
     let root_allocated = match noun.as_either_direct_allocated() {
@@ -2189,12 +2056,12 @@ unsafe fn noun_preserve(stack: &mut NockStack, noun: &mut Noun) {
         Either::Right(allocated) => allocated,
     };
 
-    if let Some(new_allocated) = root_allocated.forwarding_pointer() {
+    if let Some(new_allocated) = root_allocated.forwarding_pointer(&space) {
         *noun = new_allocated.as_noun();
         return;
     }
 
-    if !stack.is_in_frame(root_allocated.to_raw_pointer()) {
+    if !stack.is_in_frame(root_allocated.to_raw_pointer(&space)) {
         return;
     }
 
@@ -2208,50 +2075,48 @@ unsafe fn noun_preserve(stack: &mut NockStack, noun: &mut Noun) {
                 *dest_ptr = value;
             },
             Either::Right(allocated) => unsafe {
-                if let Some(new_allocated) = allocated.forwarding_pointer() {
+                if let Some(new_allocated) = allocated.forwarding_pointer(&space) {
                     *dest_ptr = new_allocated.as_noun();
                     continue;
                 }
 
-                if !stack.is_in_frame(allocated.to_raw_pointer()) {
+                if !stack.is_in_frame(allocated.to_raw_pointer(&space)) {
                     *dest_ptr = value;
                     continue;
                 }
 
                 match allocated.as_either() {
                     Either::Left(mut indirect) => {
-                        let alloc = stack.indirect_alloc_in_previous_frame(indirect.size());
+                        let alloc = stack.indirect_alloc_in_previous_frame(indirect.size(&space));
                         copy_nonoverlapping(
-                            indirect.to_raw_pointer(),
+                            indirect.to_raw_pointer(&space),
                             alloc,
-                            indirect_raw_size(indirect),
+                            indirect_raw_size(indirect, &space),
                         );
-                        indirect.set_forwarding_pointer(alloc);
-                        let offset = stack.offset_from_ptr(alloc as *const u8);
-                        *dest_ptr = IndirectAtom::from_offset_words(offset).as_noun();
+                        indirect.set_forwarding_pointer(alloc, &space);
+                        *dest_ptr = IndirectAtom::from_raw_pointer(alloc).as_noun();
                     }
                     Either::Right(mut cell) => {
                         let alloc = stack.struct_alloc_in_previous_frame::<CellMemory>(1);
-                        (*alloc).metadata = (*cell.to_raw_pointer()).metadata;
+                        (*alloc).metadata = (*cell.to_raw_pointer(&space)).metadata;
 
-                        let tail = cell.tail();
-                        let head = cell.head();
+                        let tail = cell.tail(&space);
+                        let head = cell.head(&space);
 
-                        cell.set_forwarding_pointer(alloc);
+                        cell.set_forwarding_pointer(alloc, &space);
 
                         work.push((tail, &mut (*alloc).tail));
                         work.push((head, &mut (*alloc).head));
 
-                        let offset = stack.offset_from_ptr(alloc as *const u8);
-                        *dest_ptr = Cell::from_offset_words(offset).as_noun();
+                        *dest_ptr = Cell::from_raw_pointer(alloc).as_noun();
                     }
                 }
             },
         }
     }
 
-    assert_acyclic!(*noun);
-    assert_no_forwarding_pointers!(*noun);
+    assert_acyclic!(space, *noun);
+    assert_no_forwarding_pointers!(space, *noun);
     assert_no_junior_pointers!(stack, *noun);
 }
 
@@ -2516,121 +2381,6 @@ mod test {
         );
     }
 
-    struct ArenaInstallGuard;
-
-    impl Drop for ArenaInstallGuard {
-        fn drop(&mut self) {
-            Arena::clear_thread_local();
-        }
-    }
-
-    fn install_arena_guard(stack: &NockStack) -> ArenaInstallGuard {
-        stack.install_arena();
-        ArenaInstallGuard
-    }
-
-    fn subtree_contains_stack_allocated(root: Noun) -> bool {
-        let mut work = vec![root];
-        while let Some(noun) = work.pop() {
-            if noun.is_stack_allocated() {
-                return true;
-            }
-            if let Ok(cell) = noun.as_cell() {
-                work.push(cell.head());
-                work.push(cell.tail());
-            }
-        }
-        false
-    }
-
-    fn assert_all_offsets(root: Noun) {
-        let mut work = vec![root];
-        while let Some(noun) = work.pop() {
-            assert!(!noun.is_stack_allocated(), "found stack pointer {:?}", noun);
-            if let Ok(cell) = noun.as_cell() {
-                work.push(cell.head());
-                work.push(cell.tail());
-            }
-        }
-    }
-
-    fn stack_allocated_pair(stack: &mut NockStack, left: Noun, right: Noun) -> Noun {
-        Cell::new(stack, left, right).as_noun()
-    }
-
-    #[test]
-    #[cfg_attr(miri, ignore = "memfd_create unsupported in Miri")]
-    fn preserve_indirect_atom_retags_to_offsets() {
-        let mut stack = make_test_stack(DEFAULT_STACK_SIZE);
-        let _guard = install_arena_guard(&stack);
-        stack.frame_push(0);
-
-        let mut noun = Atom::new(&mut stack, DIRECT_MAX + 1).as_noun();
-        assert!(
-            noun.is_stack_allocated(),
-            "expected stack pointer before preserve"
-        );
-
-        unsafe {
-            stack.preserve(&mut noun);
-        }
-        unsafe {
-            stack.frame_pop();
-        }
-
-        assert!(
-            !noun.is_stack_allocated(),
-            "indirect atom should be retagged to offset form"
-        );
-    }
-
-    #[test]
-    #[cfg_attr(miri, ignore = "memfd_create unsupported in Miri")]
-    fn preserve_cell_tree_retags_entire_structure() {
-        let mut stack = make_test_stack(DEFAULT_STACK_SIZE);
-        let _guard = install_arena_guard(&stack);
-        stack.frame_push(0);
-
-        let leaf = stack_allocated_pair(&mut stack, D(10), D(11));
-        let inner = stack_allocated_pair(&mut stack, leaf, D(12));
-        let tail_atom = Atom::new(&mut stack, DIRECT_MAX + 5).as_noun();
-        let mut noun = stack_allocated_pair(&mut stack, inner, tail_atom);
-
-        assert!(
-            subtree_contains_stack_allocated(noun),
-            "fixture should contain stack pointers before preserve"
-        );
-
-        unsafe {
-            stack.preserve(&mut noun);
-        }
-        unsafe {
-            stack.frame_pop();
-        }
-
-        assert_all_offsets(noun);
-    }
-
-    #[test]
-    #[cfg_attr(miri, ignore = "memfd_create unsupported in Miri")]
-    fn read_only_replica_resolves_nouns() {
-        let mut stack = make_test_stack(DEFAULT_STACK_SIZE);
-        let mut noun = Cell::new(&mut stack, D(7), D(9)).as_noun();
-        unsafe {
-            stack.preserve(&mut noun);
-            stack.flip_top_frame(0);
-        }
-
-        let replica = stack.read_only_replica().expect("replica");
-        {
-            let _guard = replica.install();
-            let cell = noun.as_cell().expect("cell");
-            let head = cell.head().as_atom().expect("atom");
-            let tail = cell.tail().as_atom().expect("atom");
-            assert_eq!(head.as_direct().unwrap().data(), 7);
-            assert_eq!(tail.as_direct().unwrap().data(), 9);
-        }
-    }
 
     proptest! {
         #[test]
@@ -2649,7 +2399,6 @@ mod test {
         #[cfg_attr(miri, ignore = "memfd_create unsupported in Miri")]
         fn stack_offset_round_trip_across_orientations(words in (RESERVED + 8)..512usize, offset in 0usize..4096) {
             let mut stack = NockStack::new(words, 0);
-            stack.install_arena();
             let total_words = stack.arena().words();
             let off = offset % total_words;
             let ptr = unsafe { stack.arena().base_ptr().add(off << 3) };
@@ -2789,7 +2538,6 @@ mod paging_tests {
     fn run_increment_workload(arena: &Arc<Arena>, iterations: usize) -> f64 {
         let (mut stack, _) =
             NockStack::from_arena(arena.clone(), 0).expect("failed to reuse arena");
-        stack.install_arena();
         stack.frame_push(0);
         let mut atom = Atom::new(&mut stack, 1);
         for _ in 0..iterations {

@@ -12,16 +12,16 @@ use thiserror::Error;
 
 use crate::ext::noun_equality;
 use crate::mem::{word_size_of, Arena, NewStackError, NockStack};
-use crate::noun::{Atom, Cell, CellMemory, IndirectAtom, Noun, NounAllocator};
+use crate::noun::{
+    AllocLocation, Atom, Cell, CellMemory, IndirectAtom, Noun, NounAllocator, NounRepr,
+    NounSpace,
+};
 
 /// Errors that can occur during PMA operations
 #[derive(Debug, Error)]
 pub enum PmaError {
     #[error("PMA is full, cannot allocate {requested} words (available: {available})")]
     OutOfMemory { requested: usize, available: usize },
-
-    #[error("PMA not installed in thread-local storage")]
-    NotInstalled,
 
     #[error("Failed to create arena: {0}")]
     ArenaError(#[from] NewStackError),
@@ -87,15 +87,6 @@ impl Pma {
     /// Get the underlying arena
     pub fn arena(&self) -> &Arc<Arena> {
         &self.arena
-    }
-
-    /// Install the PMA's arena in thread-local storage.
-    ///
-    /// Returns a guard that automatically clears the thread-local when dropped.
-    /// This allows `Arena::with_current()` to access the PMA's arena.
-    pub fn install(&self) -> PmaInstallGuard {
-        Arena::set_thread_local(&self.arena);
-        PmaInstallGuard { _private: () }
     }
 
     /// Get the current allocation offset in words
@@ -178,25 +169,6 @@ impl Pma {
     }
 }
 
-/// RAII guard for PMA arena installation.
-///
-/// When this guard is dropped, it automatically clears the thread-local arena.
-/// This ensures the arena is only installed for the lifetime of the guard.
-///
-/// Note: Using `()` makes this a zero-sized type. If we need the ability to
-/// "disarm" the guard (skip cleanup on drop), we could switch to a `bool` field
-/// like `ReplicaInstallGuard` uses. See `ReplicaInstallGuard` in mem.rs for comparison.
-pub struct PmaInstallGuard {
-    /// Private field to prevent construction outside of Pma::install()
-    _private: (),
-}
-
-impl Drop for PmaInstallGuard {
-    fn drop(&mut self) {
-        Arena::clear_thread_local();
-    }
-}
-
 impl ibig::Stack for Pma {
     unsafe fn alloc_layout(&mut self, layout: std::alloc::Layout) -> *mut u64 {
         // Convert bytes to words, rounding up
@@ -221,7 +193,12 @@ impl NounAllocator for Pma {
     unsafe fn equals(&mut self, a: *mut Noun, b: *mut Noun) -> bool {
         let a = &*a;
         let b = &*b;
-        noun_equality(a, b)
+        let space = NounSpace::pma_only(self);
+        noun_equality(a, b, &space)
+    }
+
+    fn noun_space(&self) -> NounSpace {
+        NounSpace::pma_only(self)
     }
 }
 
@@ -236,7 +213,8 @@ pub trait PmaCopy {
     /// fit in a single word.
     ///
     /// # Safety
-    /// The caller must ensure that the stack's arena is installed in thread-local storage.
+    /// The caller must ensure `stack` and `pma` describe the arenas that own the
+    /// nouns being copied; pointer-form nouns are resolved via `NounSpace::new`.
     unsafe fn copy_to_pma(&mut self, stack: &NockStack, pma: &mut Pma);
 
     /// Assert that this value is fully contained within the PMA.
@@ -284,98 +262,163 @@ impl PmaCopy for Noun {
     ///    - Cell: copy metadata to PMA, set forwarding pointer, queue head/tail
     ///
     /// # Safety
-    /// - The PMA arena should be installed for reading evacuated nouns afterward
     /// - Source nouns will have forwarding pointers set (corrupting the stack data)
-    unsafe fn copy_to_pma(&mut self, _stack: &NockStack, pma: &mut Pma) {
-        // Direct atoms fit in a single word and don't need evacuation
+    unsafe fn copy_to_pma(&mut self, stack: &NockStack, pma: &mut Pma) {
         if self.is_direct() {
             return;
         }
 
-        // Already in offset form (already in PMA) - nothing to do
-        if !self.is_stack_allocated() {
-            return;
+        let root_repr = {
+            let space = NounSpace::new(stack, &*pma);
+            self.repr(&space)
+        };
+        match root_repr {
+            NounRepr::Indirect(AllocLocation::PmaOffset)
+            | NounRepr::Cell(AllocLocation::PmaOffset) => {
+                self.assert_in_pma(pma);
+                return;
+            }
+            NounRepr::Indirect(AllocLocation::PmaPtr)
+            | NounRepr::Cell(AllocLocation::PmaPtr) => {
+                let offset_noun = {
+                    let space = NounSpace::new(stack, &*pma);
+                    let allocated = self.as_allocated().expect("repr said allocated");
+                    let ptr = allocated.to_raw_pointer(&space);
+                    assert!(
+                        pma.contains_ptr(ptr as *const u8),
+                        "noun claims PMA pointer but is outside PMA"
+                    );
+                    let offset = pma.offset_from_ptr(ptr as *const u8);
+                    if allocated.is_indirect() {
+                        IndirectAtom::from_offset_words(offset).as_noun()
+                    } else {
+                        Cell::from_offset_words(offset).as_noun()
+                    }
+                };
+                *self = offset_noun;
+                self.assert_in_pma(pma);
+                return;
+            }
+            NounRepr::Forwarding(_) => {
+                panic!("forwarding-pointer noun encountered during PMA copy");
+            }
+            _ => {}
         }
 
-        // Clone the Arc to avoid borrow conflicts during mutation
-        //TODO not sure this is right
-        let arena = Arc::clone(pma.arena());
-
-        // Worklist of (source noun, destination pointer)
-        // Destination pointers are either the root noun or fields within PMA cells
         let mut work: Vec<(Noun, *mut Noun)> = Vec::with_capacity(32);
         work.push((*self, self as *mut Noun));
 
         while let Some((noun, dest_ptr)) = work.pop() {
             match noun.as_either_direct_allocated() {
                 Left(_direct) => {
-                    // Direct atoms are copied as-is (no allocation needed)
                     *dest_ptr = noun;
                 }
-                Right(allocated) => {
-                    // Check for forwarding pointer (already evacuated, structural sharing)
-                    if let Some(forwarded) = allocated.forwarding_pointer_with_arena(&arena) {
-                        // Convert forwarded pointer to offset form
-                        let pma_ptr = forwarded.to_raw_pointer_with_arena(&arena);
-                        let offset = pma.offset_from_ptr(pma_ptr as *const u8);
-                        if allocated.is_indirect() {
-                            *dest_ptr = IndirectAtom::from_offset_words(offset).as_noun();
-                        } else {
-                            *dest_ptr = Cell::from_offset_words(offset).as_noun();
-                        }
+                Right(mut allocated) => {
+                    let forwarded = {
+                        let space = NounSpace::new(stack, &*pma);
+                        allocated.forwarding_pointer(&space)
+                    };
+                    if let Some(forwarded) = forwarded {
+                        let offset_noun = {
+                            let space = NounSpace::new(stack, &*pma);
+                            let ptr = forwarded.to_raw_pointer(&space);
+                            assert!(
+                                pma.contains_ptr(ptr as *const u8),
+                                "forwarding pointer escapes PMA"
+                            );
+                            let offset = pma.offset_from_ptr(ptr as *const u8);
+                            if forwarded.is_indirect() {
+                                IndirectAtom::from_offset_words(offset).as_noun()
+                            } else {
+                                Cell::from_offset_words(offset).as_noun()
+                            }
+                        };
+                        *dest_ptr = offset_noun;
                         continue;
                     }
 
-                    // Already in offset form (already in PMA)
-                    if !noun.is_stack_allocated() {
-                        *dest_ptr = noun;
-                        continue;
+                    let repr = {
+                        let space = NounSpace::new(stack, &*pma);
+                        noun.repr(&space)
+                    };
+
+                    match repr {
+                        NounRepr::Indirect(AllocLocation::PmaOffset)
+                        | NounRepr::Cell(AllocLocation::PmaOffset) => {
+                            noun.assert_in_pma(pma);
+                            *dest_ptr = noun;
+                            continue;
+                        }
+                        NounRepr::Indirect(AllocLocation::PmaPtr)
+                        | NounRepr::Cell(AllocLocation::PmaPtr) => {
+                            let offset_noun = {
+                                let space = NounSpace::new(stack, &*pma);
+                                let ptr = allocated.to_raw_pointer(&space);
+                                assert!(
+                                    pma.contains_ptr(ptr as *const u8),
+                                    "noun claims PMA pointer but is outside PMA"
+                                );
+                                let offset = pma.offset_from_ptr(ptr as *const u8);
+                                if allocated.is_indirect() {
+                                    IndirectAtom::from_offset_words(offset).as_noun()
+                                } else {
+                                    Cell::from_offset_words(offset).as_noun()
+                                }
+                            };
+                            noun.assert_in_pma(pma);
+                            *dest_ptr = offset_noun;
+                            continue;
+                        }
+                        NounRepr::Forwarding(_) => {
+                            panic!("forwarding-pointer noun encountered during PMA copy");
+                        }
+                        NounRepr::Direct => {
+                            *dest_ptr = noun;
+                            continue;
+                        }
+                        NounRepr::Indirect(AllocLocation::Stack)
+                        | NounRepr::Cell(AllocLocation::Stack) => {}
                     }
 
                     match allocated.as_either() {
                         Left(mut indirect) => {
-                            // Get size and source pointer before allocating
-                            let raw_size = indirect.raw_size_with_arena(&arena);
-                            let src_ptr = indirect.to_raw_pointer_with_arena(&arena);
+                            let (raw_size, src_ptr) = {
+                                let space = NounSpace::new(stack, &*pma);
+                                (indirect.raw_size(&space), indirect.to_raw_pointer(&space))
+                            };
 
-                            // Allocate in PMA
                             let pma_ptr = pma.raw_alloc(raw_size);
-
-                            // Copy all data (metadata + size + data words)
                             copy_nonoverlapping(src_ptr, pma_ptr, raw_size);
 
-                            // Set forwarding pointer in source for structural sharing
-                            indirect.set_forwarding_pointer_with_arena(pma_ptr, &arena);
+                            {
+                                let space = NounSpace::new(stack, &*pma);
+                                indirect.set_forwarding_pointer(pma_ptr, &space);
+                            }
 
-                            // Write offset-form noun to destination
                             let offset = pma.offset_from_ptr(pma_ptr as *const u8);
                             *dest_ptr = IndirectAtom::from_offset_words(offset).as_noun();
                         }
                         Right(mut cell) => {
-                            // Get source cell pointer
-                            let src_cell = cell.to_raw_pointer_with_arena(&arena);
+                            let (src_cell, head, tail) = {
+                                let space = NounSpace::new(stack, &*pma);
+                                let src_cell = cell.to_raw_pointer(&space);
+                                let head = (*src_cell).head;
+                                let tail = (*src_cell).tail;
+                                (src_cell, head, tail)
+                            };
 
-                            // Allocate cell in PMA
                             let pma_ptr = pma.raw_alloc(word_size_of::<CellMemory>());
                             let pma_cell = pma_ptr as *mut CellMemory;
-
-                            // Copy metadata
                             (*pma_cell).metadata = (*src_cell).metadata;
 
-                            // Get head and tail BEFORE setting forwarding pointer
-                            // (forwarding pointer overwrites head field)
-                            let head = (*src_cell).head;
-                            let tail = (*src_cell).tail;
+                            {
+                                let space = NounSpace::new(stack, &*pma);
+                                cell.set_forwarding_pointer(pma_cell, &space);
+                            }
 
-                            // Set forwarding pointer in source for structural sharing
-                            cell.set_forwarding_pointer_with_arena(pma_cell, &arena);
-
-                            // Queue head and tail for processing
-                            // Destinations are the head/tail slots in the PMA cell
                             work.push((tail, &mut (*pma_cell).tail));
                             work.push((head, &mut (*pma_cell).head));
 
-                            // Write offset-form cell to destination
                             let offset = pma.offset_from_ptr(pma_ptr as *const u8);
                             *dest_ptr = Cell::from_offset_words(offset).as_noun();
                         }
@@ -387,31 +430,28 @@ impl PmaCopy for Noun {
 
     /// Assert that this noun and all its substructure is in the PMA.
     ///
-    /// # Panics
-    /// Panics if any allocated part of the noun is stack-allocated rather than
-    /// in offset form (PMA).
-    ///
-    /// # Note
-    /// The PMA arena must be installed before calling this for cells, as it needs
-    /// to resolve cell head/tail pointers.
     fn assert_in_pma(&self, pma: &Pma) {
-        // Direct atoms have no allocations, so they're trivially "in" the PMA
         if self.is_direct() {
             return;
         }
 
-        // Check that allocated nouns are in offset form (not stack-allocated)
-        assert!(
-            !self.is_stack_allocated(),
-            "Noun is stack-allocated, not in PMA"
-        );
+        let space = NounSpace::pma_only(pma);
+        match self.repr(&space) {
+            NounRepr::Indirect(AllocLocation::Stack)
+            | NounRepr::Cell(AllocLocation::Stack) => {
+                panic!("noun is stack-allocated, not in PMA");
+            }
+            NounRepr::Forwarding(_) => {
+                panic!("forwarding pointer is not valid PMA state");
+            }
+            _ => {}
+        }
 
         // For cells, recursively check head and tail
         if self.is_cell() {
             let cell = self.as_cell().expect("checked is_cell");
-            // Arena must be installed by caller for head()/tail() to work
-            cell.head().assert_in_pma(pma);
-            cell.tail().assert_in_pma(pma);
+            cell.head(&space).assert_in_pma(pma);
+            cell.tail(&space).assert_in_pma(pma);
         }
     }
 }
