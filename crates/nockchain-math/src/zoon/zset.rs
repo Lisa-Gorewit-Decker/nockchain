@@ -10,15 +10,16 @@ pub fn z_set_put<A: NounAllocator, H: TipHasher>(
     b: &mut Noun,
     hasher: &H,
 ) -> Result<Noun, JetErr> {
+    let space = stack.noun_space();
     if unsafe { a.raw_equals(&D(0)) } {
         Ok(T(stack, &[*b, D(0), D(0)]))
     } else {
-        let [mut an, al, ar] = a.uncell()?;
+        let [mut an, al, ar] = a.uncell(&space)?;
         if unsafe { stack.equals(b, &mut an) } {
             Ok(*a)
         } else if gor_tip(stack, b, &mut an, hasher)? {
             let c = z_set_put(stack, &al, b, hasher)?;
-            let [mut cn, cl, cr] = c.uncell()?;
+            let [mut cn, cl, cr] = c.uncell(&space)?;
             if mor_tip(stack, &mut an, &mut cn, hasher)? {
                 Ok(T(stack, &[an, c, ar]))
             } else {
@@ -27,7 +28,7 @@ pub fn z_set_put<A: NounAllocator, H: TipHasher>(
             }
         } else {
             let c = z_set_put(stack, &ar, b, hasher)?;
-            let [mut cn, cl, cr] = c.uncell()?;
+            let [mut cn, cl, cr] = c.uncell(&space)?;
             if mor_tip(stack, &mut an, &mut cn, hasher)? {
                 Ok(T(stack, &[an, al, c]))
             } else {
@@ -50,28 +51,30 @@ pub fn z_set_bif<A: NounAllocator, H: TipHasher>(
         b: &mut Noun,
         hasher: &H,
     ) -> Result<Noun, JetErr> {
+        let space = stack.noun_space();
         if unsafe { a.raw_equals(&D(0)) } {
             Ok(T(stack, &[*b, D(0), D(0)]))
         } else {
-            let [mut n, mut l, mut r] = a.uncell()?;
+            let [mut n, mut l, mut r] = a.uncell(&space)?;
             if unsafe { stack.equals(b, &mut n) } {
                 Ok(*a)
             } else if gor_tip(stack, b, &mut n, hasher)? {
                 // could also parameterize Hasher if needed
                 let c = do_bif(stack, &mut l, b, hasher)?;
-                let [cn, cl, cr] = c.uncell()?;
+                let [cn, cl, cr] = c.uncell(&space)?;
                 let new_a = T(stack, &[n, cr, r]);
                 Ok(T(stack, &[cn, cl, new_a]))
             } else {
                 let c = do_bif(stack, &mut r, b, hasher)?;
-                let [cn, cl, cr] = c.uncell()?;
+                let [cn, cl, cr] = c.uncell(&space)?;
                 let new_a = T(stack, &[n, l, cl]);
                 Ok(T(stack, &[cn, new_a, cr]))
             }
         }
     }
     let res = do_bif(stack, a, b, hasher)?;
-    Ok(res.as_cell()?.tail())
+    let space = stack.noun_space();
+    Ok(res.as_cell()?.tail(&space))
 }
 
 pub fn z_set_dif<A: NounAllocator, H: TipHasher>(
@@ -86,13 +89,14 @@ pub fn z_set_dif<A: NounAllocator, H: TipHasher>(
         e: &mut Noun,
         hasher: &H,
     ) -> Result<Noun, JetErr> {
+        let space = stack.noun_space();
         if unsafe { d.raw_equals(&D(0)) } {
             Ok(*e)
         } else if unsafe { e.raw_equals(&D(0)) } {
             Ok(*d)
         } else {
-            let [mut dn, dl, mut dr] = d.uncell()?;
-            let [mut en, mut el, er] = e.uncell()?;
+            let [mut dn, dl, mut dr] = d.uncell(&space)?;
+            let [mut en, mut el, er] = e.uncell(&space)?;
             if mor_tip(stack, &mut dn, &mut en, hasher)? {
                 let df = dif_helper(stack, &mut dr, e, hasher)?;
                 Ok(T(stack, &[dn, dl, df]))
@@ -106,9 +110,10 @@ pub fn z_set_dif<A: NounAllocator, H: TipHasher>(
     if unsafe { b.raw_equals(&D(0)) } {
         Ok(*a)
     } else {
-        let [mut bn, mut bl, mut br] = b.uncell()?;
+        let space = stack.noun_space();
+        let [mut bn, mut bl, mut br] = b.uncell(&space)?;
         let c = z_set_bif(stack, a, &mut bn, hasher)?; // could also be generic if needed
-        let [mut cl, mut cr] = c.uncell()?;
+        let [mut cl, mut cr] = c.uncell(&space)?;
         let mut d = z_set_dif(stack, &mut cl, &mut bl, hasher)?;
         let mut e = z_set_dif(stack, &mut cr, &mut br, hasher)?;
         dif_helper(stack, &mut d, &mut e, hasher)

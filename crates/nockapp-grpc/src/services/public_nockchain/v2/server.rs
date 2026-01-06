@@ -8,7 +8,7 @@ use nockapp::driver::{NockAppHandle, PokeResult};
 use nockapp::noun::slab::NounSlab;
 use nockapp::wire::WireRepr;
 use nockchain_types::tx_engine::{v0, v1};
-use nockvm::noun::SIG;
+use nockvm::noun::{NounAllocator, SIG};
 use noun_serde::{NounDecode, NounEncode};
 use tokio::sync::RwLock;
 use tokio::time::{self, Duration};
@@ -207,7 +207,11 @@ impl PublicNockchainGrpcServer {
         let result = match peek_result {
             Ok(Some(result_slab)) => {
                 let result_noun = unsafe { result_slab.root() };
-                match <Option<Option<(v1::BlockHeight, v1::Hash)>>>::from_noun(&result_noun) {
+                let space = result_slab.noun_space();
+                match <Option<Option<(v1::BlockHeight, v1::Hash)>>>::from_noun(
+                    &result_noun,
+                    &space,
+                ) {
                     Ok(opt) => Ok(opt.flatten()),
                     // Peek either returned [~ ~] or ~
                     Err(_) => Err(NockAppGrpcError::PeekReturnedNoData),
@@ -561,7 +565,9 @@ impl NockchainService for PublicNockchainGrpcServer {
                 match peek_result {
                     Ok(Some(result_slab)) => {
                         let result_noun = unsafe { result_slab.root() };
-                        let result = <Option<Option<v0::BalanceUpdate>>>::from_noun(&result_noun);
+                        let space = result_slab.noun_space();
+                        let result =
+                            <Option<Option<v0::BalanceUpdate>>>::from_noun(&result_noun, &space);
 
                         match result {
                             Ok(update) => {
@@ -788,7 +794,9 @@ impl NockchainService for PublicNockchainGrpcServer {
                 match peek_result {
                     Ok(Some(result_slab)) => {
                         let result_noun = unsafe { result_slab.root() };
-                        let result = <Option<Option<v1::BalanceUpdate>>>::from_noun(&result_noun);
+                        let space = result_slab.noun_space();
+                        let result =
+                            <Option<Option<v1::BalanceUpdate>>>::from_noun(&result_noun, &space);
 
                         match result {
                             Ok(update) => {
@@ -1113,7 +1121,8 @@ impl NockchainService for PublicNockchainGrpcServer {
         match peek_result {
             Ok(Some(result_slab)) => {
                 let result_noun = unsafe { result_slab.root() };
-                match <Option<Option<bool>>>::from_noun(&result_noun) {
+                let space = result_slab.noun_space();
+                match <Option<Option<bool>>>::from_noun(&result_noun, &space) {
                     Ok(opt) => {
                         let accepted = opt.flatten().unwrap_or(false);
                         timed_return(

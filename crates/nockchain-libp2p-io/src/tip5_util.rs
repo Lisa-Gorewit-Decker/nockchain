@@ -1,7 +1,7 @@
 use bs58;
 use ibig::{ubig, Stack, UBig};
 use nockapp::NockAppError;
-use nockvm::noun::Noun;
+use nockvm::noun::{Noun, NounSpace};
 use noun_serde::prelude::*;
 
 //TODO all this stuff would be useful as jets, which mostly just requires
@@ -20,8 +20,8 @@ const P: u64 = 0xffffffff00000001;
 ///
 /// # Returns
 /// The Noun as a Base58 string
-pub fn tip5_hash_to_base58(noun: Noun) -> Result<String, NockAppError> {
-    let tuple: [u64; 5] = noun.decode()?;
+pub fn tip5_hash_to_base58(noun: Noun, space: &NounSpace) -> Result<String, NockAppError> {
+    let tuple: [u64; 5] = noun.decode(space)?;
     let decimal_value = base_p_to_decimal(tuple)?;
     let base58_string = ubig_to_base58(decimal_value);
 
@@ -32,8 +32,9 @@ pub fn tip5_hash_to_base58(noun: Noun) -> Result<String, NockAppError> {
 pub fn tip5_hash_to_base58_stack<S: Stack>(
     stack: &mut S,
     noun: Noun,
+    space: &NounSpace,
 ) -> Result<String, NockAppError> {
-    let tuple: [u64; 5] = noun.decode()?;
+    let tuple: [u64; 5] = noun.decode(space)?;
     let decimal_value = base_p_to_decimal_stack(stack, tuple)?;
     let base58_string = ubig_to_base58(decimal_value);
 
@@ -114,7 +115,7 @@ pub fn decimal_to_base_p(value: UBig) -> Result<[u64; 5], NockAppError> {
 mod tests {
     use nockapp::noun::slab::NounSlab;
     use nockvm::mem::{Arena, NockStack};
-    use nockvm::noun::{D, T};
+    use nockvm::noun::{D, NounAllocator, T};
     use quickcheck::{Arbitrary, Gen, QuickCheck, TestResult};
 
     use super::*;
@@ -159,11 +160,12 @@ mod tests {
 
         // Create a NounSlab to use as both allocator and Stack
         let mut slab: NounSlab = NounSlab::new();
+        let space = slab.noun_space();
 
         // Test case 1: Simple tuple [1 2 3 4 5]
         let tuple1 = T(&mut slab, &[D(1), D(2), D(3), D(4), D(5)]);
         let expected1 = "2V9arU36gvtaofWmNowewoj9u7gbNA2qsJZEQ3WPky5mQ";
-        let result1 = tip5_hash_to_base58_stack(&mut slab, tuple1).unwrap();
+        let result1 = tip5_hash_to_base58_stack(&mut slab, tuple1, &space).unwrap();
         assert_eq!(result1, expected1);
 
         // Test case 2: Complex values
@@ -178,7 +180,7 @@ mod tests {
             &[a1.as_noun(), a2.as_noun(), a3.as_noun(), a4.as_noun(), a5.as_noun()],
         );
         let expected2 = "6UkUko9WTwwR6VVRXwPQpUy5pswdvNtoyHspY5n9nLVnBxzAgEyMwPR";
-        let result2 = tip5_hash_to_base58_stack(&mut slab, tuple2).unwrap();
+        let result2 = tip5_hash_to_base58_stack(&mut slab, tuple2, &space).unwrap();
         assert_eq!(result2, expected2);
     }
 
@@ -189,11 +191,12 @@ mod tests {
         use nockvm::noun::Atom;
         // Create a NounSlab to use as an allocator
         let mut slab: NounSlab = NounSlab::new();
+        let space = slab.noun_space();
 
         // Test case 1: Simple tuple [1 2 3 4 5]
         let tuple1 = T(&mut slab, &[D(1), D(2), D(3), D(4), D(5)]);
         let expected1 = "2V9arU36gvtaofWmNowewoj9u7gbNA2qsJZEQ3WPky5mQ";
-        let result1 = tip5_hash_to_base58(tuple1).unwrap_or_else(|_| {
+        let result1 = tip5_hash_to_base58(tuple1, &space).unwrap_or_else(|_| {
             panic!(
                 "Called `expect()` at {}:{} (git sha: {})",
                 file!(),
@@ -215,7 +218,7 @@ mod tests {
             &[a1.as_noun(), a2.as_noun(), a3.as_noun(), a4.as_noun(), a5.as_noun()],
         );
         let expected2 = "6UkUko9WTwwR6VVRXwPQpUy5pswdvNtoyHspY5n9nLVnBxzAgEyMwPR";
-        let result2 = tip5_hash_to_base58(tuple2).unwrap_or_else(|err| {
+        let result2 = tip5_hash_to_base58(tuple2, &space).unwrap_or_else(|err| {
             panic!(
                 "Panicked with {err:?} at {}:{} (git sha: {:?})",
                 file!(),
@@ -444,9 +447,10 @@ mod tests {
                     D(tip5[4] as u64),
                 ],
             );
+            let space = slab.noun_space();
 
             // Convert to base58 and back
-            let base58 = match tip5_hash_to_base58(noun) {
+            let base58 = match tip5_hash_to_base58(noun, &space) {
                 Ok(s) => s,
                 Err(_) => return TestResult::discard(),
             };

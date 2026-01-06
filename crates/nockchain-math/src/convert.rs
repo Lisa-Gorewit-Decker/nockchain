@@ -1,7 +1,7 @@
 use either::{Left, Right};
 use nockvm::jets::util::BAIL_FAIL;
 use nockvm::jets::JetErr;
-use nockvm::noun::{Atom, Cell, Error, IndirectAtom, Noun, Result, D};
+use nockvm::noun::{Atom, Cell, Error, IndirectAtom, Noun, NounSpace, Result, D};
 use noun_serde::{NounDecode, NounEncode};
 
 use crate::belt::*;
@@ -24,18 +24,18 @@ impl AtomMathExt for Atom {
         }
     }
 
-    fn as_belt(&self) -> Result<Belt> {
-        if let Ok(x) = self.as_u64() {
+    fn as_belt(&self, space: &NounSpace) -> Result<Belt> {
+        if let Ok(x) = self.as_u64(space) {
             Ok(Belt(x))
         } else {
             Err(Error::NotRepresentable)
         }
     }
 
-    fn as_felt<'a>(&self) -> Result<&'a Felt> {
+    fn as_felt<'a>(&self, space: &NounSpace) -> Result<&'a Felt> {
         if let Ok(atom) = self.as_indirect() {
-            if atom.size() == 4 {
-                let buf_ptr = atom.data_pointer();
+            if atom.size(space) == 4 {
+                let buf_ptr = atom.data_pointer(space);
                 unsafe {
                     assert!(*(buf_ptr.add(3)) == 0x1);
                 }
@@ -49,10 +49,10 @@ impl AtomMathExt for Atom {
         }
     }
 
-    fn as_mut_felt<'a>(&self) -> Result<&'a mut Felt> {
+    fn as_mut_felt<'a>(&self, space: &NounSpace) -> Result<&'a mut Felt> {
         if let Ok(mut atom) = self.as_indirect() {
-            if atom.size() == 4 {
-                let buf_ptr = atom.data_pointer_mut();
+            if atom.size(space) == 4 {
+                let buf_ptr = atom.data_pointer_mut(space);
                 unsafe {
                     assert!(*(buf_ptr.add(3)) == 0x1);
                 }
@@ -68,31 +68,31 @@ impl AtomMathExt for Atom {
 }
 
 impl NounMathExt for Noun {
-    fn as_belt(&self) -> Result<Belt> {
+    fn as_belt(&self, space: &NounSpace) -> Result<Belt> {
         if let Ok(atom) = self.as_atom() {
-            atom.as_belt()
+            atom.as_belt(space)
         } else {
             Err(Error::NotRepresentable)
         }
     }
 
-    fn as_felt<'a>(&self) -> Result<&'a Felt> {
+    fn as_felt<'a>(&self, space: &NounSpace) -> Result<&'a Felt> {
         if let Ok(atom) = self.as_atom() {
-            atom.as_felt()
+            atom.as_felt(space)
         } else {
             Err(Error::NotRepresentable)
         }
     }
 
-    fn as_mut_felt<'a>(&self) -> Result<&'a mut Felt> {
+    fn as_mut_felt<'a>(&self, space: &NounSpace) -> Result<&'a mut Felt> {
         if let Ok(atom) = self.as_atom() {
-            atom.as_mut_felt()
+            atom.as_mut_felt(space)
         } else {
             Err(Error::NotRepresentable)
         }
     }
 
-    fn uncell<const N: usize>(&self) -> Result<[Self; N]> {
+    fn uncell<const N: usize>(&self, space: &NounSpace) -> Result<[Self; N]> {
         let mut inp = *self;
         let mut cnt = 0;
         let mut ret = [(); N].map(|_| {
@@ -101,8 +101,8 @@ impl NounMathExt for Noun {
                 Ok(inp)
             } else {
                 let c = inp.as_cell()?;
-                inp = c.tail();
-                Ok(c.head())
+                inp = c.tail(space);
+                Ok(c.head(space))
             }
         });
         if let Some(e) = ret.iter_mut().find(|v| v.is_err()) {
@@ -113,52 +113,29 @@ impl NounMathExt for Noun {
     }
 }
 
-impl TryFrom<Noun> for MarySlice<'_> {
-    type Error = ();
-
-    fn try_from(n: Noun) -> std::result::Result<Self, Self::Error> {
-        if n.is_atom() {
+impl MarySlice<'_> {
+    pub fn try_from(noun: Noun, space: &NounSpace) -> std::result::Result<Self, ()> {
+        if noun.is_atom() {
             Err(())
         } else {
-            MarySlice::try_from(n.as_cell()?)
+            MarySlice::try_from_cell(noun.as_cell()?, space)
         }
     }
-}
-
-impl TryFrom<Noun> for Mary {
-    type Error = ();
-
-    fn try_from(n: Noun) -> std::result::Result<Self, Self::Error> {
-        if n.is_atom() {
-            Err(())
-        } else {
-            let slice = MarySlice::try_from(n.as_cell()?)?;
-            Ok(Mary {
-                step: slice.step,
-                len: slice.len,
-                dat: slice.dat.to_vec(),
-            })
-        }
-    }
-}
-
-impl TryFrom<Cell> for MarySlice<'_> {
-    type Error = ();
 
     #[inline(always)]
-    fn try_from(c: Cell) -> std::result::Result<Self, Self::Error> {
-        let step = c.head().as_atom()?.as_u32()?;
-        let len = c.tail().as_cell()?.head().as_atom()?.as_u32()?;
-        let cell: Cell = c.tail().as_cell()?;
-        let dat_noun: Atom = c.tail().as_cell()?.tail().as_atom()?;
+    pub fn try_from_cell(c: Cell, space: &NounSpace) -> std::result::Result<Self, ()> {
+        let step = c.head(space).as_atom()?.as_u32()?;
+        let len = c.tail(space).as_cell()?.head(space).as_atom()?.as_u32()?;
+        let cell: Cell = c.tail(space).as_cell()?;
+        let dat_noun: Atom = c.tail(space).as_cell()?.tail(space).as_atom()?;
         let dat_slice: &[u64] = match dat_noun.as_either() {
             Left(_direct) => unsafe {
-                let tail_ptr2 = &(*(cell.to_raw_pointer())).tail as *const Noun;
+                let tail_ptr2 = &(*(cell.to_raw_pointer(space))).tail as *const Noun;
                 std::slice::from_raw_parts(tail_ptr2 as *const u64, (len * step) as usize)
             },
             Right(indirect) => unsafe {
                 std::slice::from_raw_parts(
-                    indirect.data_pointer() as *mut u64,
+                    indirect.data_pointer(space) as *mut u64,
                     (len * step) as usize,
                 )
             },
@@ -171,26 +148,35 @@ impl TryFrom<Cell> for MarySlice<'_> {
     }
 }
 
-impl TryFrom<Noun> for Table<'_> {
-    type Error = ();
-
-    fn try_from(n: Noun) -> std::result::Result<Self, Self::Error> {
-        if n.is_atom() {
+impl Mary {
+    pub fn try_from(noun: Noun, space: &NounSpace) -> std::result::Result<Self, ()> {
+        if noun.is_atom() {
             Err(())
         } else {
-            Table::try_from(n.as_cell()?)
+            let slice = MarySlice::try_from_cell(noun.as_cell()?, space)?;
+            Ok(Mary {
+                step: slice.step,
+                len: slice.len,
+                dat: slice.dat.to_vec(),
+            })
         }
     }
 }
 
-impl TryFrom<Cell> for Table<'_> {
-    type Error = ();
+impl Table<'_> {
+    pub fn try_from(noun: Noun, space: &NounSpace) -> std::result::Result<Self, ()> {
+        if noun.is_atom() {
+            Err(())
+        } else {
+            Table::try_from_cell(noun.as_cell()?, space)
+        }
+    }
 
     #[inline(always)]
-    fn try_from(c: Cell) -> std::result::Result<Self, Self::Error> {
-        let full_width = c.head().as_atom()?.as_u32()?;
-        let mary_cell = c.tail().as_cell()?;
-        let mary = MarySlice::try_from(mary_cell)?;
+    pub fn try_from_cell(c: Cell, space: &NounSpace) -> std::result::Result<Self, ()> {
+        let full_width = c.head(space).as_atom()?.as_u32()?;
+        let mary_cell = c.tail(space).as_cell()?;
+        let mary = MarySlice::try_from_cell(mary_cell, space)?;
 
         Ok(Table {
             num_cols: full_width,
@@ -201,57 +187,25 @@ impl TryFrom<Cell> for Table<'_> {
 
 // TODO: use Ares::noun::Result or Error somehow for the methods that
 // convert our structs from nouns
-impl TryFrom<Noun> for BPolySlice<'_> {
-    type Error = JetErr;
-
+impl BPolySlice<'_> {
     #[inline(always)]
-    fn try_from(n: Noun) -> std::result::Result<Self, Self::Error> {
-        if n.is_atom() {
+    pub fn try_from(noun: Noun, space: &NounSpace) -> std::result::Result<Self, JetErr> {
+        if noun.is_atom() {
             Err(BAIL_FAIL)
         } else {
-            BPolySlice::try_from(n.as_cell()?)
+            BPolySlice::try_from_cell(noun.as_cell()?, space)
         }
     }
-}
-
-impl TryFrom<Noun> for FPolySlice<'_> {
-    type Error = JetErr;
 
     #[inline(always)]
-    fn try_from(n: Noun) -> std::result::Result<Self, Self::Error> {
-        if n.is_atom() {
-            Err(BAIL_FAIL)
-        } else {
-            FPolySlice::try_from(n.as_cell()?)
-        }
-    }
-}
-
-impl TryFrom<&Noun> for FPolySlice<'_> {
-    type Error = JetErr;
-
-    #[inline(always)]
-    fn try_from(n: &Noun) -> std::result::Result<Self, Self::Error> {
-        if n.is_atom() {
-            Err(BAIL_FAIL)
-        } else {
-            FPolySlice::try_from(n.as_cell()?)
-        }
-    }
-}
-
-impl TryFrom<Cell> for BPolySlice<'_> {
-    type Error = JetErr;
-
-    #[inline(always)]
-    fn try_from(c: Cell) -> std::result::Result<Self, Self::Error> {
-        let head = c.head().as_atom();
-        let tail = c.tail().as_atom();
+    pub fn try_from_cell(c: Cell, space: &NounSpace) -> std::result::Result<Self, JetErr> {
+        let head = c.head(space).as_atom();
+        let tail = c.tail(space).as_atom();
         if let (Ok(head), Ok(tail)) = (head, tail) {
             let len32 = head.as_u32()?;
             let dat_slice: BPolySlice = unsafe {
                 PolySlice(std::slice::from_raw_parts(
-                    tail.data_pointer() as *const Belt,
+                    tail.data_pointer(space) as *const Belt,
                     len32 as usize,
                 ))
             };
@@ -262,18 +216,25 @@ impl TryFrom<Cell> for BPolySlice<'_> {
     }
 }
 
-impl TryFrom<Cell> for FPolySlice<'_> {
-    type Error = JetErr;
+impl FPolySlice<'_> {
+    #[inline(always)]
+    pub fn try_from(noun: Noun, space: &NounSpace) -> std::result::Result<Self, JetErr> {
+        if noun.is_atom() {
+            Err(BAIL_FAIL)
+        } else {
+            FPolySlice::try_from_cell(noun.as_cell()?, space)
+        }
+    }
 
     #[inline(always)]
-    fn try_from(c: Cell) -> std::result::Result<Self, Self::Error> {
-        let head = c.head().as_atom();
-        let tail = c.tail().as_atom();
+    pub fn try_from_cell(c: Cell, space: &NounSpace) -> std::result::Result<Self, JetErr> {
+        let head = c.head(space).as_atom();
+        let tail = c.tail(space).as_atom();
         if let (Ok(head), Ok(tail)) = (head, tail) {
             let len32 = head.as_u32()?;
             let dat_slice: FPolySlice = unsafe {
                 PolySlice(std::slice::from_raw_parts(
-                    tail.data_pointer() as *const Felt,
+                    tail.data_pointer(space) as *const Felt,
                     len32 as usize,
                 ))
             };
@@ -284,19 +245,29 @@ impl TryFrom<Cell> for FPolySlice<'_> {
     }
 }
 
-impl TryFrom<Cell> for FPolyVec {
-    type Error = JetErr;
+impl FPolyVec {
+    #[inline(always)]
+    pub fn try_from(noun: Noun, space: &NounSpace) -> std::result::Result<Self, JetErr> {
+        if noun.is_atom() {
+            Err(BAIL_FAIL)
+        } else {
+            FPolyVec::try_from_cell(noun.as_cell()?, space)
+        }
+    }
 
     #[inline(always)]
-    fn try_from(c: Cell) -> std::result::Result<Self, Self::Error> {
-        let head = c.head().as_atom();
-        let tail = c.tail().as_atom();
+    pub fn try_from_cell(c: Cell, space: &NounSpace) -> std::result::Result<Self, JetErr> {
+        let head = c.head(space).as_atom();
+        let tail = c.tail(space).as_atom();
         if let (Ok(head), Ok(tail)) = (head, tail) {
             let len32 = head.as_u32()?;
             let dat_vec: FPolyVec = unsafe {
                 PolyVec(
-                    std::slice::from_raw_parts(tail.data_pointer() as *const Felt, len32 as usize)
-                        .to_vec(),
+                    std::slice::from_raw_parts(
+                        tail.data_pointer(space) as *const Felt,
+                        len32 as usize,
+                    )
+                    .to_vec(),
                 )
             };
             Ok(dat_vec)
@@ -306,19 +277,29 @@ impl TryFrom<Cell> for FPolyVec {
     }
 }
 
-impl TryFrom<Cell> for BPolyVec {
-    type Error = JetErr;
+impl BPolyVec {
+    #[inline(always)]
+    pub fn try_from(noun: Noun, space: &NounSpace) -> std::result::Result<Self, JetErr> {
+        if noun.is_atom() {
+            Err(BAIL_FAIL)
+        } else {
+            BPolyVec::try_from_cell(noun.as_cell()?, space)
+        }
+    }
 
     #[inline(always)]
-    fn try_from(c: Cell) -> std::result::Result<Self, Self::Error> {
-        let head = c.head().as_atom();
-        let tail = c.tail().as_atom();
+    pub fn try_from_cell(c: Cell, space: &NounSpace) -> std::result::Result<Self, JetErr> {
+        let head = c.head(space).as_atom();
+        let tail = c.tail(space).as_atom();
         if let (Ok(head), Ok(tail)) = (head, tail) {
             let len32 = head.as_u32()?;
             let dat_vec: BPolyVec = unsafe {
                 PolyVec(
-                    std::slice::from_raw_parts(tail.data_pointer() as *const Belt, len32 as usize)
-                        .to_vec(),
+                    std::slice::from_raw_parts(
+                        tail.data_pointer(space) as *const Belt,
+                        len32 as usize,
+                    )
+                    .to_vec(),
                 )
             };
             Ok(dat_vec)
@@ -331,8 +312,9 @@ impl TryFrom<Cell> for BPolyVec {
 impl NounDecode for FPolyVec {
     fn from_noun(
         noun: &nockvm::noun::Noun,
+        space: &NounSpace,
     ) -> std::result::Result<Self, noun_serde::NounDecodeError> {
-        FPolyVec::try_from(noun.as_cell().expect("not a cell"))
+        FPolyVec::try_from(*noun, space)
             .map_err(|_| noun_serde::NounDecodeError::FPolyDecodeError)
     }
 }
@@ -349,8 +331,9 @@ impl NounEncode for FPolyVec {
 impl NounDecode for BPolyVec {
     fn from_noun(
         noun: &nockvm::noun::Noun,
+        space: &NounSpace,
     ) -> std::result::Result<Self, noun_serde::NounDecodeError> {
-        BPolyVec::try_from(noun.as_cell().expect("not a cell"))
+        BPolyVec::try_from(*noun, space)
             .map_err(|_| noun_serde::NounDecodeError::FPolyDecodeError)
     }
 }

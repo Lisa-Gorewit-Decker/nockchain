@@ -45,7 +45,7 @@ pub mod tests {
     use bytes::Bytes;
     use nockvm::jets::util::slot;
     use nockvm::mem::NockStack;
-    use nockvm::noun::{Noun, D, T};
+    use nockvm::noun::{Noun, NounSpace, D, T};
     use nockvm::serialization::{cue, jam};
     use nockvm::unifying_equality::unifying_equality;
     use nockvm_macros::tas;
@@ -181,7 +181,8 @@ pub mod tests {
         let poke_noun = D(tas!(b"inc"));
         let poke = {
             let mut slab = NounSlab::new();
-            slab.copy_into(poke_noun);
+            let space = NounSpace::empty();
+            slab.copy_into(poke_noun, &space);
             slab
         };
 
@@ -225,14 +226,15 @@ pub mod tests {
         let (temp, mut nockapp) = setup_nockapp("test-ker.jam").await;
         assert_eq!(nockapp.kernel.serf.event_number.load(Ordering::SeqCst), 0);
         let mut stack = NockStack::new(NOCK_STACK_SIZE, 0);
-        stack.install_arena();
+        let space = stack.noun_space();
 
         for i in 1..4 {
             // Poke to increment the state
             let poke_noun = D(tas!(b"inc"));
             let poke = {
                 let mut slab = NounSlab::new();
-                slab.copy_into(poke_noun);
+                let space = NounSpace::empty();
+                slab.copy_into(poke_noun, &space);
                 slab
             };
             let wire = SystemWire.to_wire();
@@ -262,7 +264,7 @@ pub mod tests {
             let peek_noun = T(&mut stack, &[D(tas!(b"state")), D(0)]);
             let peek = {
                 let mut slab = NounSlab::new();
-                slab.copy_into(peek_noun);
+                slab.copy_into(peek_noun, &space);
                 slab
             };
 
@@ -275,8 +277,9 @@ pub mod tests {
                     option_env!("GIT_SHA")
                 )
             });
+            let res_space = res.noun_space();
             res.modify_noun(|r| {
-                slot(r, 7)
+                slot(r, 7, &res_space)
                     .unwrap_or_else(|err| {
                         panic!(
                             "Panicked with {err:?} at {}:{} (git sha: {:?})",
@@ -294,12 +297,13 @@ pub mod tests {
                             option_env!("GIT_SHA")
                         )
                     })
-                    .tail()
+                    .tail(&res_space)
             });
 
             let comp = {
                 let mut slab = NounSlab::new();
-                slab.copy_into(D(i));
+                let space = NounSpace::empty();
+                slab.copy_into(D(i), &space);
                 slab
             };
 

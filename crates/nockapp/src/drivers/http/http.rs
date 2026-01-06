@@ -11,7 +11,7 @@ use axum::response::Response;
 use axum::routing::get;
 use axum::{serve, Router};
 use axum_server::tls_rustls::RustlsConfig;
-use nockvm::noun::{Atom, D, T};
+use nockvm::noun::{Atom, NounAllocator, D, T};
 use nockvm_macros::tas;
 use tokio::select;
 use tokio::sync::{oneshot, RwLock};
@@ -514,85 +514,112 @@ pub fn http() -> IODriverFn {
                                 return Ok(());
                             }
                         };
-                        let effect = unsafe { slab.root() };
-                        let res_list = effect.as_cell()?;
-
-                        let head_tag = res_list.head().as_atom()?;
-                        let tag_val = head_tag.as_u64().map_err(|e| HttpError::AtomCreationError(e.to_string()))?;
-                        if tag_val != tas!(b"res") && tag_val != tas!(b"cache") && tag_val != tas!(b"htmx") && tag_val != tas!(b"h-cache") {
-                            debug!("http: not an HTTP response effect, skipping. Got tag: {:?}", head_tag);
-                            return Ok(());
+                        struct ParsedEffect {
+                            tag_val: u64,
+                            id: u64,
+                            status_code: u64,
+                            headers: Vec<(String, String)>,
+                            body: Option<Bytes>,
                         }
 
-                        debug!("processing HTTP response effect");
-                        let mut res = res_list.tail().as_cell()?;
-                        let id = res.head().as_atom()?.as_u64()
-                            .map_err(|e| HttpError::AtomCreationError(e.to_string()))?;
-                        debug!("HTTP response for request id: {}", id);
+                        let parsed = (|| -> Result<Option<ParsedEffect>, HttpError> {
+                            let effect = unsafe { slab.root() };
+                            let space = slab.noun_space();
+                            let res_list = effect.as_cell()?;
 
-                        res = res.tail().as_cell()?;
-                        let status_code = res
-                            .head()
-                            .as_atom()?
-                            .direct()
-                            .expect("not a valid status code!")
-                            .data();
-                        debug!("HTTP response status code: {}", status_code);
+                            let head_tag = res_list.head(&space).as_atom()?;
+                            let tag_val = head_tag
+                                .as_u64(&space)
+                                .map_err(|e| HttpError::AtomCreationError(e.to_string()))?;
+                            if tag_val != tas!(b"res")
+                                && tag_val != tas!(b"cache")
+                                && tag_val != tas!(b"htmx")
+                                && tag_val != tas!(b"h-cache")
+                            {
+                                debug!(
+                                    "http: not an HTTP response effect, skipping. Got tag: {:?}",
+                                    head_tag
+                                );
+                                return Ok(None);
+                            }
 
-                        let mut header_list = res.tail().as_cell()?.head();
-                        let mut header_vec: Vec<(String, String)> = Vec::new();
-                        loop {
-                            if header_list.is_atom() {
-                                break;
-                            } else {
-                                let header = header_list.as_cell()?.head().as_cell()?;
-                                let key_vec = header.head().as_atom()?;
-                                let val_vec = header.tail().as_atom()?;
+                            debug!("processing HTTP response effect");
+                            let mut res = res_list.tail(&space).as_cell()?;
+                            let id = res
+                                .head(&space)
+                                .as_atom()?
+                                .as_u64(&space)
+                                .map_err(|e| HttpError::AtomCreationError(e.to_string()))?;
+                            debug!("HTTP response for request id: {}", id);
 
-                                if let Ok(key) = key_vec.to_bytes_until_nul() {
-                                    if let Ok(val) = val_vec.to_bytes_until_nul() {
-                                        let key_str = String::from_utf8(key)?;
-                                        let val_str = String::from_utf8(val)?;
-                                        debug!("HTTP response header: {}: {}", key_str, val_str);
-                                        header_vec.push((key_str, val_str));
-                                        header_list = header_list.as_cell()?.tail();
+                            res = res.tail(&space).as_cell()?;
+                            let status_code = res
+                                .head(&space)
+                                .as_atom()?
+                                .direct()
+                                .expect("not a valid status code!")
+                                .data();
+                            debug!("HTTP response status code: {}", status_code);
+
+                            let mut header_list = res.tail(&space).as_cell()?.head(&space);
+                            let mut headers: Vec<(String, String)> = Vec::new();
+                            loop {
+                                if header_list.is_atom() {
+                                    break;
+                                } else {
+                                    let header = header_list.as_cell()?.head(&space).as_cell()?;
+                                    let key_vec = header.head(&space).as_atom()?;
+                                    let val_vec = header.tail(&space).as_atom()?;
+
+                                    if let Ok(key) = key_vec.to_bytes_until_nul(&space) {
+                                        if let Ok(val) = val_vec.to_bytes_until_nul(&space) {
+                                            let key_str = String::from_utf8(key)?;
+                                            let val_str = String::from_utf8(val)?;
+                                            debug!(
+                                                "HTTP response header: {}: {}",
+                                                key_str, val_str
+                                            );
+                                            headers.push((key_str, val_str));
+                                            header_list = header_list.as_cell()?.tail(&space);
+                                        } else {
+                                            break;
+                                        }
                                     } else {
                                         break;
                                     }
-                                } else {
-                                    break;
                                 }
                             }
-                        }
 
-                        let maybe_body = res.tail().as_cell()?.tail();
+                            let maybe_body = res.tail(&space).as_cell()?.tail(&space);
 
-                        let body: Option<Bytes> = {
-                            if maybe_body.is_cell() {
-                                let body_octs = maybe_body.as_cell()?.tail().as_cell()?;
+                            let body: Option<Bytes> = if maybe_body.is_cell() {
+                                let body_octs = maybe_body.as_cell()?.tail(&space).as_cell()?;
                                 let body_len = body_octs
-                                    .head()
+                                    .head(&space)
                                     .as_atom()?
                                     .direct()
                                     .expect("body len")
                                     .data();
-                                let len: usize = body_len.try_into().map_err(|_| HttpError::BodyLengthConversion)?;
+                                let len: usize =
+                                    body_len.try_into().map_err(|_| HttpError::BodyLengthConversion)?;
                                 let mut body_vec: Vec<u8> = vec![0; len];
-                                let body_atom = body_octs.tail().as_atom()?;
+                                let body_atom = body_octs.tail(&space).as_atom()?;
 
                                 // Use lossy conversion to handle invalid UTF-8 gracefully
-                                let body_bytes = match body_atom.to_bytes_until_nul() {
+                                let body_bytes = match body_atom.to_bytes_until_nul(&space) {
                                     Ok(bytes) => bytes,
                                     Err(e) => {
                                         error!("Failed to convert body atom to bytes: {}", e);
                                         // Try to get raw bytes from the atom instead
-                                        let raw_bytes = body_atom.to_ne_bytes();
+                                        let raw_bytes = body_atom.to_ne_bytes(&space);
                                         let raw_size = std::cmp::min(len, raw_bytes.len());
                                         raw_bytes[..raw_size].to_vec()
                                     }
                                 };
 
-                                body_vec.copy_from_slice(&body_bytes[..std::cmp::min(body_bytes.len(), len)]);
+                                body_vec.copy_from_slice(
+                                    &body_bytes[..std::cmp::min(body_bytes.len(), len)],
+                                );
                                 let bytes = Bytes::from(body_vec);
 
                                 // Log the response body as string if possible, using lossy conversion
@@ -606,8 +633,28 @@ pub fn http() -> IODriverFn {
                             } else {
                                 debug!("HTTP response has no body");
                                 None
-                            }
+                            };
+
+                            Ok(Some(ParsedEffect {
+                                tag_val,
+                                id,
+                                status_code,
+                                headers,
+                                body,
+                            }))
+                        })();
+
+                        let Some(parsed) = parsed? else {
+                            return Ok(());
                         };
+
+                        let ParsedEffect {
+                            tag_val,
+                            id,
+                            status_code,
+                            headers: header_vec,
+                            body,
+                        } = parsed;
 
                         let resp = if let Ok(status) = StatusCode::from_u16(status_code as u16) {
                             debug!("Building HTTP response with status: {}", status);
@@ -646,7 +693,6 @@ pub fn http() -> IODriverFn {
                             Ok(response)
                         } else {
                             error!("http: not a valid status code: {}", status_code);
-                            error!("http: res: {:?}", res);
                             Err(StatusCode::INTERNAL_SERVER_ERROR)
                         };
 

@@ -5,7 +5,7 @@ use nockchain_math::structs::{HoonList, HoonMapIter};
 use nockchain_math::zoon::common::DefaultTipHasher;
 use nockchain_math::zoon::{zmap, zset};
 use nockvm::ext::{make_tas, AtomExt};
-use nockvm::noun::{Noun, NounAllocator, D};
+use nockvm::noun::{Noun, NounAllocator, NounSpace, D};
 use noun_serde::{NounDecode, NounDecodeError, NounEncode};
 
 use super::note::NoteData;
@@ -32,17 +32,17 @@ impl NounEncode for RawTx {
 }
 
 impl NounDecode for RawTx {
-    fn from_noun(noun: &Noun) -> Result<Self, NounDecodeError> {
+    fn from_noun(noun: &Noun, space: &NounSpace) -> Result<Self, NounDecodeError> {
         let cell = noun.as_cell()?;
-        let version = Version::from_noun(&cell.head())?;
+        let version = Version::from_noun(&cell.head(space), space)?;
 
-        let tail = cell.tail();
+        let tail = cell.tail(space);
         let cell = tail
             .as_cell()
             .map_err(|_| NounDecodeError::Custom("raw-tx tail not a cell".into()))?;
-        let id = TxId::from_noun(&cell.head())?;
+        let id = TxId::from_noun(&cell.head(space), space)?;
 
-        let spends = Spends::from_noun(&cell.tail())?;
+        let spends = Spends::from_noun(&cell.tail(space), space)?;
 
         if version != Version::V1 {
             return Err(NounDecodeError::Custom("expected raw-tx version 1".into()));
@@ -71,15 +71,15 @@ impl NounEncode for Spends {
 }
 
 impl NounDecode for Spends {
-    fn from_noun(noun: &Noun) -> Result<Self, NounDecodeError> {
-        let entries = HoonMapIter::from(*noun)
+    fn from_noun(noun: &Noun, space: &NounSpace) -> Result<Self, NounDecodeError> {
+        let entries = HoonMapIter::new(*noun, space)
             .filter(|entry| entry.is_cell())
             .map(|entry| {
                 let [name_raw, spend_raw] = entry
-                    .uncell()
+                    .uncell(space)
                     .map_err(|_| NounDecodeError::Custom("spend entry must be a pair".into()))?;
-                let name = Name::from_noun(&name_raw)?;
-                let spend = Spend::from_noun(&spend_raw)?;
+                let name = Name::from_noun(&name_raw, space)?;
+                let spend = Spend::from_noun(&spend_raw, space)?;
                 Ok((name, spend))
             })
             .collect::<Result<Vec<_>, NounDecodeError>>()?;
@@ -111,12 +111,12 @@ impl NounEncode for Spend {
 }
 
 impl NounDecode for Spend {
-    fn from_noun(noun: &Noun) -> Result<Self, NounDecodeError> {
+    fn from_noun(noun: &Noun, space: &NounSpace) -> Result<Self, NounDecodeError> {
         let cell = noun.as_cell()?;
-        let tag = cell.head().as_atom()?.as_u64()?;
+        let tag = cell.head(space).as_atom()?.as_u64(space)?;
         match tag {
-            0 => Ok(Spend::Legacy(Spend0::from_noun(&cell.tail())?)),
-            1 => Ok(Spend::Witness(Spend1::from_noun(&cell.tail())?)),
+            0 => Ok(Spend::Legacy(Spend0::from_noun(&cell.tail(space), space)?)),
+            1 => Ok(Spend::Witness(Spend1::from_noun(&cell.tail(space), space)?)),
             _ => Err(NounDecodeError::InvalidEnumVariant),
         }
     }
@@ -150,8 +150,8 @@ impl NounEncode for Seeds {
 }
 
 impl NounDecode for Seeds {
-    fn from_noun(noun: &Noun) -> Result<Self, NounDecodeError> {
-        decode_zset(noun, Seed::from_noun).map(Self)
+    fn from_noun(noun: &Noun, space: &NounSpace) -> Result<Self, NounDecodeError> {
+        decode_zset(noun, space, Seed::from_noun).map(Self)
     }
 }
 
@@ -212,30 +212,30 @@ impl NounEncode for Witness {
 }
 
 impl NounDecode for Witness {
-    fn from_noun(noun: &Noun) -> Result<Self, NounDecodeError> {
+    fn from_noun(noun: &Noun, space: &NounSpace) -> Result<Self, NounDecodeError> {
         let cell = noun.as_cell()?;
-        let lock_merkle_proof = LockMerkleProof::from_noun(&cell.head())?;
+        let lock_merkle_proof = LockMerkleProof::from_noun(&cell.head(space), space)?;
 
-        let tail = cell.tail();
+        let tail = cell.tail(space);
         let cell = tail
             .as_cell()
             .map_err(|_| NounDecodeError::Custom("witness tail not a cell".into()))?;
-        let pkh_signature = PkhSignature::from_noun(&cell.head())?;
+        let pkh_signature = PkhSignature::from_noun(&cell.head(space), space)?;
 
-        let tail = cell.tail();
+        let tail = cell.tail(space);
         let cell = tail
             .as_cell()
             .map_err(|_| NounDecodeError::Custom("witness hax tail not a cell".into()))?;
 
-        let hax_entries = HoonMapIter::from(cell.head())
+        let hax_entries = HoonMapIter::new(cell.head(space), space)
             .filter(|entry| entry.is_cell())
             .map(|entry| {
-                let [hash_raw, value_noun] = entry.uncell().map_err(|_| {
+                let [hash_raw, value_noun] = entry.uncell(space).map_err(|_| {
                     NounDecodeError::Custom("witness hax entry must be a pair".into())
                 })?;
-                let hash = Hash::from_noun(&hash_raw)?;
+                let hash = Hash::from_noun(&hash_raw, space)?;
                 let mut slab: NounSlab<NockJammer> = NounSlab::new();
-                slab.copy_into(value_noun);
+                slab.copy_into(value_noun, space);
                 let value = slab.jam();
                 Ok(HaxPreimage { hash, value })
             })
@@ -278,15 +278,15 @@ impl NounEncode for PkhSignature {
 }
 
 impl NounDecode for PkhSignature {
-    fn from_noun(noun: &Noun) -> Result<Self, NounDecodeError> {
-        let entries = HoonMapIter::from(*noun)
+    fn from_noun(noun: &Noun, space: &NounSpace) -> Result<Self, NounDecodeError> {
+        let entries = HoonMapIter::new(*noun, space)
             .filter(|entry| entry.is_cell())
             .map(|entry| {
-                let [hash_raw, value_raw] = entry.uncell().map_err(|_| {
+                let [hash_raw, value_raw] = entry.uncell(space).map_err(|_| {
                     NounDecodeError::Custom("pkh-signature entry must be a pair".into())
                 })?;
-                let hash = Hash::from_noun(&hash_raw)?;
-                PkhSignatureEntry::decode(hash, &value_raw)
+                let hash = Hash::from_noun(&hash_raw, space)?;
+                PkhSignatureEntry::decode(hash, &value_raw, space)
             })
             .collect::<Result<Vec<_>, NounDecodeError>>()?;
         Ok(Self(entries))
@@ -309,10 +309,10 @@ impl NounEncode for PkhSignatureEntry {
 }
 
 impl PkhSignatureEntry {
-    fn decode(hash: Hash, noun: &Noun) -> Result<Self, NounDecodeError> {
+    fn decode(hash: Hash, noun: &Noun, space: &NounSpace) -> Result<Self, NounDecodeError> {
         let cell = noun.as_cell()?;
-        let pubkey = SchnorrPubkey::from_noun(&cell.head())?;
-        let signature = SchnorrSignature::from_noun(&cell.tail())?;
+        let pubkey = SchnorrPubkey::from_noun(&cell.head(space), space)?;
+        let signature = SchnorrSignature::from_noun(&cell.tail(space), space)?;
         Ok(Self {
             hash,
             pubkey,
@@ -376,15 +376,15 @@ impl NounEncode for MerkleProof {
 }
 
 impl NounDecode for MerkleProof {
-    fn from_noun(noun: &Noun) -> Result<Self, NounDecodeError> {
+    fn from_noun(noun: &Noun, space: &NounSpace) -> Result<Self, NounDecodeError> {
         let cell = noun.as_cell()?;
-        let root = Hash::from_noun(&cell.head())?;
-        let path_iter = HoonList::try_from(cell.tail())
+        let root = Hash::from_noun(&cell.head(space), space)?;
+        let path_iter = HoonList::try_from(cell.tail(space), space)
             .map_err(|_| NounDecodeError::Custom("merkle proof path must be a list".into()))?;
 
         let mut path = Vec::new();
         for entry in path_iter {
-            path.push(Hash::from_noun(&entry)?);
+            path.push(Hash::from_noun(&entry, space)?);
         }
 
         Ok(Self { root, path })
@@ -414,13 +414,13 @@ impl NounEncode for SpendCondition {
 }
 
 impl NounDecode for SpendCondition {
-    fn from_noun(noun: &Noun) -> Result<Self, NounDecodeError> {
-        let iter = HoonList::try_from(*noun)
+    fn from_noun(noun: &Noun, space: &NounSpace) -> Result<Self, NounDecodeError> {
+        let iter = HoonList::try_from(*noun, space)
             .map_err(|_| NounDecodeError::Custom("spend-condition must be a list".into()))?;
 
         let mut primitives = Vec::new();
         for entry in iter {
-            primitives.push(LockPrimitive::from_noun(&entry)?);
+            primitives.push(LockPrimitive::from_noun(&entry, space)?);
         }
 
         Ok(Self(primitives))
@@ -463,20 +463,20 @@ impl NounEncode for LockPrimitive {
 }
 
 impl NounDecode for LockPrimitive {
-    fn from_noun(noun: &Noun) -> Result<Self, NounDecodeError> {
+    fn from_noun(noun: &Noun, space: &NounSpace) -> Result<Self, NounDecodeError> {
         let cell = noun.as_cell()?;
         let tag_atom = cell
-            .head()
+            .head(space)
             .as_atom()
             .map_err(|_| NounDecodeError::Custom("lock-primitive tag must be an atom".into()))?;
         let tag = tag_atom
-            .into_string()
+            .into_string(space)
             .map_err(|err| NounDecodeError::Custom(format!("invalid lock-primitive tag: {err}")))?;
 
         match tag.as_str() {
-            "pkh" => Ok(LockPrimitive::Pkh(Pkh::from_noun(&cell.tail())?)),
-            "tim" => Ok(LockPrimitive::Tim(LockTim::from_noun(&cell.tail())?)),
-            "hax" => Ok(LockPrimitive::Hax(Hax::from_noun(&cell.tail())?)),
+            "pkh" => Ok(LockPrimitive::Pkh(Pkh::from_noun(&cell.tail(space), space)?)),
+            "tim" => Ok(LockPrimitive::Tim(LockTim::from_noun(&cell.tail(space), space)?)),
+            "hax" => Ok(LockPrimitive::Hax(Hax::from_noun(&cell.tail(space), space)?)),
             "brn" => Ok(LockPrimitive::Burn),
             _ => Err(NounDecodeError::InvalidEnumVariant),
         }
@@ -503,10 +503,10 @@ impl NounEncode for Pkh {
 }
 
 impl NounDecode for Pkh {
-    fn from_noun(noun: &Noun) -> Result<Self, NounDecodeError> {
+    fn from_noun(noun: &Noun, space: &NounSpace) -> Result<Self, NounDecodeError> {
         let cell = noun.as_cell()?;
-        let m = u64::from_noun(&cell.head())?;
-        let hashes = decode_zset(&cell.tail(), Hash::from_noun)?;
+        let m = u64::from_noun(&cell.head(space), space)?;
+        let hashes = decode_zset(&cell.tail(space), space, Hash::from_noun)?;
         Ok(Self { m, hashes })
     }
 }
@@ -538,21 +538,30 @@ impl NounEncode for Hax {
 }
 
 impl NounDecode for Hax {
-    fn from_noun(noun: &Noun) -> Result<Self, NounDecodeError> {
-        decode_zset(noun, Hash::from_noun).map(Self)
+    fn from_noun(noun: &Noun, space: &NounSpace) -> Result<Self, NounDecodeError> {
+        decode_zset(noun, space, Hash::from_noun).map(Self)
     }
 }
 
-fn decode_zset<T, F>(noun: &Noun, mut f: F) -> Result<Vec<T>, NounDecodeError>
+fn decode_zset<T, F>(
+    noun: &Noun,
+    space: &NounSpace,
+    mut f: F,
+) -> Result<Vec<T>, NounDecodeError>
 where
-    F: FnMut(&Noun) -> Result<T, NounDecodeError>,
+    F: FnMut(&Noun, &NounSpace) -> Result<T, NounDecodeError>,
 {
-    fn traverse<T, F>(node: &Noun, acc: &mut Vec<T>, f: &mut F) -> Result<(), NounDecodeError>
+    fn traverse<T, F>(
+        node: &Noun,
+        space: &NounSpace,
+        acc: &mut Vec<T>,
+        f: &mut F,
+    ) -> Result<(), NounDecodeError>
     where
-        F: FnMut(&Noun) -> Result<T, NounDecodeError>,
+        F: FnMut(&Noun, &NounSpace) -> Result<T, NounDecodeError>,
     {
         if let Ok(atom) = node.as_atom() {
-            if atom.as_u64()? == 0 {
+            if atom.as_u64(space)? == 0 {
                 return Ok(());
             }
             return Err(NounDecodeError::ExpectedCell);
@@ -561,18 +570,18 @@ where
         let cell = node
             .as_cell()
             .map_err(|_| NounDecodeError::Custom("z-set node must be a cell".into()))?;
-        acc.push(f(&cell.head())?);
+        acc.push(f(&cell.head(space), space)?);
 
         let branches = cell
-            .tail()
+            .tail(space)
             .as_cell()
             .map_err(|_| NounDecodeError::Custom("z-set branches must be a cell".into()))?;
-        traverse(&branches.head(), acc, f)?;
-        traverse(&branches.tail(), acc, f)?;
+        traverse(&branches.head(space), space, acc, f)?;
+        traverse(&branches.tail(space), space, acc, f)?;
         Ok(())
     }
 
     let mut acc = Vec::new();
-    traverse(noun, &mut acc, &mut f)?;
+    traverse(noun, space, &mut acc, &mut f)?;
     Ok(acc)
 }

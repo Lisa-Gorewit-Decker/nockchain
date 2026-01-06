@@ -3,6 +3,7 @@ use std::net::SocketAddr;
 use nockapp::driver::{make_driver, IODriverFn, NockAppHandle};
 use nockchain_types::tx_engine::v1;
 use nockvm::ext::NounExt;
+use nockvm::noun::{NounAllocator, NounSpace};
 use nockvm_macros::tas;
 use noun_serde::{NounDecode, NounDecodeError};
 use tracing::{error, info, warn};
@@ -16,14 +17,17 @@ pub enum PublicNockchainEffect {
 }
 
 impl NounDecode for PublicNockchainEffect {
-    fn from_noun(effect: &nockapp::Noun) -> Result<Self, NounDecodeError> {
+    fn from_noun(effect: &nockapp::Noun, space: &NounSpace) -> Result<Self, NounDecodeError> {
         let effect_cell = effect.as_cell()?;
-        if !effect_cell.head().eq_bytes(b"nockchain-grpc") {
+        if !effect_cell
+            .head(space)
+            .eq_bytes(b"nockchain-grpc", space)
+        {
             return Err(NounDecodeError::InvalidTag);
         }
 
-        let payload_cell = effect_cell.tail().as_cell()?;
-        let tag_atom = payload_cell.head().as_atom()?;
+        let payload_cell = effect_cell.tail(space).as_cell()?;
+        let tag_atom = payload_cell.head(space).as_atom()?;
         let tag = tag_atom
             .as_direct()
             .map_err(|_| NounDecodeError::InvalidTag)?
@@ -31,7 +35,7 @@ impl NounDecode for PublicNockchainEffect {
 
         match tag {
             t if t == tas!(b"send-tx") => {
-                let raw_tx = v1::RawTx::from_noun(&payload_cell.tail())?;
+                let raw_tx = v1::RawTx::from_noun(&payload_cell.tail(space), space)?;
                 Ok(PublicNockchainEffect::SendTx { raw_tx })
             }
             _ => Err(NounDecodeError::InvalidTag),
@@ -78,7 +82,12 @@ pub fn grpc_listener_driver(addr: String) -> IODriverFn {
                 Err(_) => continue,
             };
 
-            let effect = match PublicNockchainEffect::from_noun(unsafe { effect.root() }) {
+            let effect = {
+                let effect_noun = unsafe { effect.root() };
+                let space = effect.noun_space();
+                PublicNockchainEffect::from_noun(&effect_noun, &space)
+            };
+            let effect = match effect {
                 Ok(effect) => effect,
                 Err(NounDecodeError::InvalidTag) => continue,
                 Err(err) => {

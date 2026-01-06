@@ -64,9 +64,13 @@ where
 pub fn new_handle_mut_felt<'a, T: NounAllocator>(alloc: &mut T) -> (IndirectAtom, &'a mut Felt) {
     let (felt_atom, dat_ptr) = unsafe { IndirectAtom::new_raw_mut_words(alloc, 4) };
     dat_ptr[3] = 0x1;
+    let space = alloc.noun_space();
     (
         felt_atom,
-        felt_atom.as_atom().as_mut_felt().unwrap_or_else(|err| {
+        felt_atom
+            .as_atom()
+            .as_mut_felt(&space)
+            .unwrap_or_else(|err| {
             panic!(
                 "Panicked with {err:?} at {}:{} (git sha: {:?})",
                 file!(),
@@ -109,8 +113,9 @@ pub fn finalize_mary<A: NounAllocator>(
     len: usize,
     mut res: IndirectAtom,
 ) -> Noun {
+    let space = allocator.noun_space();
     unsafe {
-        res.normalize();
+        res.normalize(&space);
     }
     let array = T(allocator, &[D(len as u64), res.as_noun()]);
 
@@ -122,8 +127,9 @@ pub fn finalize_poly<A: NounAllocator>(
     len: Option<usize>,
     mut res: IndirectAtom,
 ) -> Noun {
+    let space = allocator.noun_space();
     unsafe {
-        res.normalize();
+        res.normalize(&space);
     }
     let head = Atom::new(
         allocator,

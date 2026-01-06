@@ -4,7 +4,7 @@ use bytes::Bytes;
 use either::Either;
 use nockvm::ext::AtomExt as CoreAtomExt;
 pub use nockvm::ext::{IndirectAtomExt, JammedNoun, NounExt};
-use nockvm::noun::{Atom, Cell, IndirectAtom, NounAllocator, D};
+use nockvm::noun::{Atom, Cell, IndirectAtom, NounAllocator, NounSpace, D};
 
 use crate::noun::slab::NounSlab;
 use crate::{Noun, Result, ToBytes, ToBytesExt};
@@ -16,9 +16,9 @@ use crate::{Noun, Result, ToBytes, ToBytesExt};
 pub trait AtomExt: CoreAtomExt {
     fn from_bytes<A: NounAllocator>(allocator: &mut A, bytes: &Bytes) -> Atom;
     fn from_value<A: NounAllocator, T: ToBytes>(allocator: &mut A, value: T) -> Result<Atom>;
-    fn eq_bytes(self, bytes: impl AsRef<[u8]>) -> bool;
-    fn to_bytes_until_nul(self) -> Result<Vec<u8>>;
-    fn into_string(self) -> Result<String>;
+    fn eq_bytes(self, bytes: impl AsRef<[u8]>, space: &NounSpace) -> bool;
+    fn to_bytes_until_nul(self, space: &NounSpace) -> Result<Vec<u8>>;
+    fn into_string(self, space: &NounSpace) -> Result<String>;
 }
 
 impl AtomExt for Atom {
@@ -36,16 +36,16 @@ impl AtomExt for Atom {
     /** Test for byte equality, ignoring trailing 0s in the Atom representation
         beyond the length of the bytes compared to
     */
-    fn eq_bytes(self, bytes: impl AsRef<[u8]>) -> bool {
-        CoreAtomExt::eq_bytes(&self, bytes)
+    fn eq_bytes(self, bytes: impl AsRef<[u8]>, space: &NounSpace) -> bool {
+        CoreAtomExt::eq_bytes(&self, bytes, space)
     }
 
-    fn to_bytes_until_nul(self) -> Result<Vec<u8>> {
-        CoreAtomExt::to_bytes_until_nul(&self).map_err(Into::into)
+    fn to_bytes_until_nul(self, space: &NounSpace) -> Result<Vec<u8>> {
+        CoreAtomExt::to_bytes_until_nul(&self, space).map_err(Into::into)
     }
 
-    fn into_string(self) -> Result<String> {
-        CoreAtomExt::into_string(self).map_err(Into::into)
+    fn into_string(self, space: &NounSpace) -> Result<String> {
+        CoreAtomExt::into_string(self, space).map_err(Into::into)
     }
 }
 
@@ -65,8 +65,8 @@ impl IntoNoun for u64 {
 }
 
 impl FromAtom for u64 {
-    fn from_atom(atom: Atom) -> Self {
-        atom.as_u64().unwrap_or_else(|err| {
+    fn from_atom(atom: Atom, space: &NounSpace) -> Self {
+        atom.as_u64(space).unwrap_or_else(|err| {
             panic!(
                 "Panicked with {err:?} at {}:{} (git sha: {:?})",
                 file!(),
@@ -95,21 +95,21 @@ impl IntoNoun for &str {
         });
         let contents_atom =
             <IndirectAtom as IndirectAtomExt>::from_bytes(&mut slab, bytes.as_slice());
-        Noun::from_atom(contents_atom)
+        contents_atom.as_noun()
     }
 }
 
 pub trait AsSlabVec {
-    fn as_slab_vec(&self) -> Vec<NounSlab>;
+    fn as_slab_vec(&self, space: &NounSpace) -> Vec<NounSlab>;
 }
 
 impl AsSlabVec for Noun {
-    fn as_slab_vec(&self) -> Vec<NounSlab> {
+    fn as_slab_vec(&self, space: &NounSpace) -> Vec<NounSlab> {
         let noun_list = *self;
         let mut slab_vec = Vec::new();
-        for noun in noun_list.list_iter() {
+        for noun in noun_list.list_iter(space) {
             let mut new_slab = NounSlab::new();
-            new_slab.copy_into(noun);
+            new_slab.copy_into(noun, space);
             slab_vec.push(new_slab);
         }
         slab_vec
@@ -117,17 +117,18 @@ impl AsSlabVec for Noun {
 }
 
 impl AsSlabVec for NounSlab {
-    fn as_slab_vec(&self) -> Vec<NounSlab> {
+    fn as_slab_vec(&self, _space: &NounSpace) -> Vec<NounSlab> {
         let noun_list = unsafe { self.root() };
-        noun_list.as_slab_vec()
+        let space = self.noun_space();
+        noun_list.as_slab_vec(&space)
     }
 }
 
 pub trait FromAtom {
-    fn from_atom(atom: Atom) -> Self;
+    fn from_atom(atom: Atom, space: &NounSpace) -> Self;
 }
 impl FromAtom for Noun {
-    fn from_atom(atom: Atom) -> Self {
+    fn from_atom(atom: Atom, _space: &NounSpace) -> Self {
         atom.as_noun()
     }
 }
@@ -151,6 +152,7 @@ pub trait NounAllocatorExt {
 
 impl<A: NounAllocator> NounAllocatorExt for A {
     fn copy_into(&mut self, noun: Noun) -> Noun {
+        let space = self.noun_space();
         let mut stack = Vec::with_capacity(32);
         let mut res = D(0);
         stack.push((noun, &mut res as *mut Noun));
@@ -161,16 +163,16 @@ impl<A: NounAllocator> NounAllocatorExt for A {
                 },
                 Either::Right(a) => match a.as_either() {
                     Either::Left(i) => unsafe {
-                        let word_size = i.size();
+                        let word_size = i.size(&space);
                         let ia = self.alloc_indirect(word_size);
-                        copy_nonoverlapping(i.to_raw_pointer(), ia, word_size + 2);
+                        copy_nonoverlapping(i.to_raw_pointer(&space), ia, word_size + 2);
                         *dest = IndirectAtom::from_raw_pointer(ia).as_noun();
                     },
                     Either::Right(c) => unsafe {
                         let cm = self.alloc_cell();
                         *dest = Cell::from_raw_pointer(cm).as_noun();
-                        stack.push((c.tail(), &mut (*cm).tail));
-                        stack.push((c.head(), &mut (*cm).head));
+                        stack.push((c.tail(&space), &mut (*cm).tail));
+                        stack.push((c.head(&space), &mut (*cm).head));
                     },
                 },
             }

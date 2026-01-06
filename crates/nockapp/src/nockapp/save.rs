@@ -7,6 +7,7 @@ use bincode::config::Configuration;
 use bincode::{config, encode_to_vec, Decode, Encode};
 use blake3::{Hash, Hasher};
 use bytes::Bytes;
+use nockvm::noun::NounAllocator;
 use nockvm_macros::tas;
 use thiserror::Error;
 use tokio::fs::create_dir_all;
@@ -257,13 +258,14 @@ impl SaveableCheckpoint {
         let cell = root
             .as_cell()
             .expect("legacy checkpoint root should be a cell");
+        let space = slab.noun_space();
 
         let mut state_slab: NounSlab = NounSlab::new();
-        let state_copy = state_slab.copy_into(cell.head());
+        let state_copy = state_slab.copy_into(cell.head(&space), &space);
         state_slab.set_root(state_copy);
 
         let mut cold_slab: NounSlab = NounSlab::new();
-        let cold_copy = cold_slab.copy_into(cell.tail());
+        let cold_copy = cold_slab.copy_into(cell.tail(&space), &space);
         cold_slab.set_root(cold_copy);
 
         Ok(Self {
@@ -638,14 +640,15 @@ impl From<JammedCheckpointV0> for JammedCheckpoint {
         let cell = root
             .as_cell()
             .expect("legacy checkpoint root should be a cell");
+        let space = slab.noun_space();
 
         let mut state_slab: NounSlab = NounSlab::new();
-        let state_copy = state_slab.copy_into(cell.head());
+        let state_copy = state_slab.copy_into(cell.head(&space), &space);
         state_slab.set_root(state_copy);
         let state_jam = JammedNoun::new(state_slab.jam());
 
         let mut cold_slab: NounSlab = NounSlab::new();
-        let cold_copy = cold_slab.copy_into(cell.tail());
+        let cold_copy = cold_slab.copy_into(cell.tail(&space), &space);
         cold_slab.set_root(cold_copy);
         let cold_jam = JammedNoun::new(cold_slab.jam());
 
@@ -738,7 +741,7 @@ impl JammedCheckpointV0 {
 #[cfg(test)]
 mod version_tests {
     use blake3::hash;
-    use nockvm::noun::{Noun, D, T};
+    use nockvm::noun::{Noun, NounSpace, D, T};
     use tempfile::TempDir;
 
     use super::*;
@@ -746,17 +749,18 @@ mod version_tests {
 
     fn legacy_pair_jam(state_value: u64, cold_value: u64) -> JammedNoun {
         let mut slab = NounSlab::<NockJammer>::new();
-        let state = slab.copy_into(D(state_value));
-        let cold = slab.copy_into(D(cold_value));
+        let space = NounSpace::empty();
+        let state = slab.copy_into(D(state_value), &space);
+        let cold = slab.copy_into(D(cold_value), &space);
         let root = T(&mut slab, &[state, cold]);
         slab.set_root(root);
         JammedNoun::new(slab.coerce_jammer::<NockJammer>().jam())
     }
 
-    fn atom_value(noun: Noun) -> u64 {
+    fn atom_value(noun: Noun, space: &NounSpace) -> u64 {
         noun.as_atom()
             .expect("expected atom")
-            .as_u64()
+            .as_u64(space)
             .expect("expected atom to fit in u64")
     }
 
@@ -782,8 +786,10 @@ mod version_tests {
         assert_eq!(saveable.ker_hash, ker_hash);
         assert_eq!(saveable.event_num, 7);
 
-        let loaded_state = atom_value(unsafe { *saveable.state.root() });
-        let loaded_cold = atom_value(unsafe { *saveable.cold.root() });
+        let state_space = saveable.state.noun_space();
+        let cold_space = saveable.cold.noun_space();
+        let loaded_state = atom_value(unsafe { *saveable.state.root() }, &state_space);
+        let loaded_cold = atom_value(unsafe { *saveable.cold.root() }, &cold_space);
         assert_eq!(loaded_state, state_value);
         assert_eq!(loaded_cold, cold_value);
     }
@@ -810,8 +816,10 @@ mod version_tests {
         assert_eq!(saveable.ker_hash, ker_hash);
         assert_eq!(saveable.event_num, 3);
 
-        let loaded_state = atom_value(unsafe { *saveable.state.root() });
-        let loaded_cold = atom_value(unsafe { *saveable.cold.root() });
+        let state_space = saveable.state.noun_space();
+        let cold_space = saveable.cold.noun_space();
+        let loaded_state = atom_value(unsafe { *saveable.state.root() }, &state_space);
+        let loaded_cold = atom_value(unsafe { *saveable.cold.root() }, &cold_space);
         assert_eq!(loaded_state, state_value);
         assert_eq!(loaded_cold, cold_value);
     }

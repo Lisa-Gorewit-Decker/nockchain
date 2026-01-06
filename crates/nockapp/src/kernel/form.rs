@@ -12,9 +12,9 @@ use nockvm::interpreter::{self, interpret, Error, Mote, NockCancelToken};
 use nockvm::jets::cold::{Cold, Nounable};
 use nockvm::jets::hot::{HotEntry, URBIT_HOT_STATE};
 use nockvm::jets::nock::util::mook;
-use nockvm::mem::{NockStack, Retag};
+use nockvm::mem::NockStack;
 use nockvm::mug::met3_usize;
-use nockvm::noun::{Atom, Cell, DirectAtom, IndirectAtom, Noun, Slots, D, T};
+use nockvm::noun::{Atom, Cell, DirectAtom, IndirectAtom, Noun, NounSpace, Slots, D, T};
 use nockvm::trace::{path_to_cord, write_serf_trace_safe};
 use nockvm_macros::tas;
 use tokio::sync::{mpsc, oneshot};
@@ -320,7 +320,6 @@ fn serf_loop<C: SerfCheckpoint>(
     inhibit: Arc<AtomicBool>,
 ) {
     loop {
-        serf.context.install_arena();
         let start = std::time::Instant::now();
         let Some(action) = action_receiver.blocking_recv() else {
             break;
@@ -337,12 +336,13 @@ fn serf_loop<C: SerfCheckpoint>(
                 break;
             }
             SerfAction::Export { result } => {
-                let kernel_state_noun = serf.arvo.slot(STATE_AXIS);
+                let space = serf.context.stack.noun_space();
+                let kernel_state_noun = serf.arvo.slot(STATE_AXIS, &space);
                 let kernel_state = kernel_state_noun.map_or_else(
                     |err| Err(CrownError::from(err)),
                     |noun| {
                         let mut slab = NounSlab::new();
-                        slab.copy_into(noun);
+                        slab.copy_into(noun, &space);
                         Ok(slab)
                     },
                 );
@@ -382,12 +382,13 @@ fn serf_loop<C: SerfCheckpoint>(
                 }
             }
             SerfAction::GetKernelStateSlab { result } => {
-                let kernel_state_noun = serf.arvo.slot(STATE_AXIS);
+                let space = serf.context.stack.noun_space();
+                let kernel_state_noun = serf.arvo.slot(STATE_AXIS, &space);
                 let kernel_state_slab = kernel_state_noun.map_or_else(
                     |err| Err(CrownError::from(err)),
                     |noun| {
                         let mut slab = NounSlab::new();
-                        slab.copy_into(noun);
+                        slab.copy_into(noun, &space);
                         Ok(slab)
                     },
                 );
@@ -405,7 +406,8 @@ fn serf_loop<C: SerfCheckpoint>(
                 let cold_state_noun = serf.context.cold.into_noun(serf.stack());
                 let cold_state_slab = {
                     let mut slab = NounSlab::new();
-                    slab.copy_into(cold_state_noun);
+                    let space = serf.context.stack.noun_space();
+                    slab.copy_into(cold_state_noun, &space);
                     slab
                 };
                 let _ = result.send(cold_state_slab).inspect_err(|_e| {
@@ -444,9 +446,10 @@ fn serf_loop<C: SerfCheckpoint>(
                 } else {
                     let ovo_noun = ovo.copy_to_stack(serf.stack());
                     let noun_res = serf.peek(ovo_noun);
+                    let space = serf.context.stack.noun_space();
                     let noun_slab_res = noun_res.map(|noun| {
                         let mut slab = NounSlab::new();
-                        slab.copy_into(noun);
+                        slab.copy_into(noun, &space);
                         slab
                     });
                     let _ = result.send(noun_slab_res).inspect_err(|_e| {
@@ -473,9 +476,10 @@ fn serf_loop<C: SerfCheckpoint>(
                 } else {
                     let cause_noun = cause.copy_to_stack(serf.stack());
                     let noun_res = serf.poke(wire, cause_noun);
+                    let space = serf.context.stack.noun_space();
                     let noun_slab_res = noun_res.map(|noun| {
                         let mut slab = NounSlab::new();
-                        slab.copy_into(noun);
+                        slab.copy_into(noun, &space);
                         slab
                     });
                     let _ = result.send(noun_slab_res).inspect_err(|_e| {
@@ -516,7 +520,8 @@ fn create_checkpoint<C: SerfCheckpoint>(
 ) -> C {
     let ker_hash = serf.ker_hash;
     let event_num = serf.event_num.load(Ordering::SeqCst);
-    let ker_state = serf.arvo.slot(STATE_AXIS).unwrap_or_else(|err| {
+    let space = serf.context.stack.noun_space();
+    let ker_state = serf.arvo.slot(STATE_AXIS, &space).unwrap_or_else(|err| {
         panic!(
             "Panicked with {err:?} at {}:{} (git sha: {:?})",
             file!(),
@@ -772,7 +777,8 @@ impl Serf {
 
             let ker_state = saveable.state.copy_to_stack(&mut stack);
             let cold_noun = saveable.cold.copy_to_stack(&mut stack);
-            let cold_vecs = Cold::from_noun(&mut stack, &cold_noun)
+            let space = stack.noun_space();
+            let cold_vecs = Cold::from_noun(&mut stack, &cold_noun, &space)
                 .expect("Could not load cold state from snapshot");
             let cold = Cold::from_vecs(&mut stack, cold_vecs.0, cold_vecs.1, cold_vecs.2);
             if saveable.ker_hash != ker_hash {
@@ -875,9 +881,10 @@ impl Serf {
     /// A noun representing the error.
     pub fn goof(&mut self, mote: Mote, traces: Noun) -> Noun {
         let tone = Cell::new(&mut self.context.stack, D(2), traces);
+        let space = self.context.stack.noun_space();
         let tang = mook(&mut self.context, tone, false)
             .expect("serf: goof: +mook crashed on bail")
-            .tail();
+            .tail(&space);
         T(&mut self.context.stack, &[D(mote as u64), tang])
     }
 
@@ -901,11 +908,12 @@ impl Serf {
     }
 
     pub fn print_goof(&mut self, goof: Noun) {
+        let space = self.context.stack.noun_space();
         let tang = goof
             .as_cell()
             .expect("print goof: expected goof to be a cell")
-            .tail();
-        tang.list_iter().for_each(|tank: Noun| {
+            .tail(&space);
+        tang.list_iter(&space).for_each(|tank: Noun| {
             //  TODO: Slogger should be emitting Results in case of failure
             self.context.slogger.slog(&mut self.context.stack, 1, tank);
         });
@@ -922,14 +930,15 @@ impl Serf {
     /// Result containing the poke response or an error.
     #[tracing::instrument(level = "info", skip_all)]
     pub fn do_poke(&mut self, job: Noun) -> Result<Noun> {
+        let space = self.context.stack.noun_space();
         match self.soft(job, POKE_AXIS, Some("poke".to_string())) {
             Ok(res) => {
                 let cell = res.as_cell().expect("serf: poke: +slam returned atom");
-                let mut fec = cell.head();
+                let mut fec = cell.head(&space);
                 let eve = self.event_num.load(Ordering::SeqCst);
 
                 unsafe {
-                    self.event_update(eve + 1, cell.tail());
+                    self.event_update(eve + 1, cell.tail(&space));
                     self.stack().preserve(&mut fec);
                     self.preserve_event_update_leftovers();
                 }
@@ -1016,10 +1025,11 @@ impl Serf {
     ///
     /// Result containing the final Arvo state or an error.
     fn play_list(&mut self, mut lit: Noun) -> Result<Noun> {
+        let space = self.context.stack.noun_space();
         let mut eve = self.event_num.load(Ordering::SeqCst);
         while let Ok(cell) = lit.as_cell() {
-            let ovo = cell.head();
-            lit = cell.tail();
+            let ovo = cell.head(&space);
+            lit = cell.tail(&space);
             let trace_name = if self.context.trace_info.is_some() {
                 Some(format!("play [{}]", eve))
             } else {
@@ -1028,7 +1038,7 @@ impl Serf {
 
             match self.soft(ovo, POKE_AXIS, trace_name) {
                 Ok(res) => {
-                    let arvo = res.as_cell()?.tail();
+                    let arvo = res.as_cell()?.tail(&space);
                     eve += 1;
 
                     unsafe {
@@ -1057,15 +1067,16 @@ impl Serf {
     /// Result containing the new event or an error.
     fn poke_swap(&mut self, job: Noun, goof: Noun) -> Result<Noun> {
         let stack = &mut self.context.stack;
+        let space = stack.noun_space();
         self.context.cache = Hamt::<Noun>::new(stack);
         let job_cell = job.as_cell().expect("serf: poke: job not a cell");
         // job data is job without event_num
         let job_data = job_cell
-            .tail()
+            .tail(&space)
             .as_cell()
             .expect("serf: poke: data not a cell");
         //  job input is job without event_num or wire
-        let job_input = job_data.tail();
+        let job_input = job_data.tail(&space);
         let wire = T(stack, &[D(0), D(tas!(b"arvo")), D(0)]);
         let crud = DirectAtom::new_panic(tas!(b"crud"));
         let event_num = D(self.event_num.load(Ordering::SeqCst) + 1);
@@ -1084,11 +1095,11 @@ impl Serf {
         match self.soft(ovo, POKE_AXIS, trace_name) {
             Ok(res) => {
                 let cell = res.as_cell().expect("serf: poke: crud +slam returned atom");
-                let mut fec = cell.head();
+                let mut fec = cell.head(&space);
                 let eve = self.event_num.load(Ordering::SeqCst);
 
                 unsafe {
-                    self.event_update(eve + 1, cell.tail());
+                    self.event_update(eve + 1, cell.tail(&space));
                     self.context.stack.preserve(&mut ovo);
                     self.context.stack.preserve(&mut fec);
                     self.preserve_event_update_leftovers();
@@ -1112,8 +1123,9 @@ impl Serf {
     /// A string representing the trace name.
     fn poke_trace_name(stack: &mut NockStack, wire: Noun, vent: Atom) -> String {
         let wpc = path_to_cord(stack, wire);
-        let wpc_len = met3_usize(wpc);
-        let wpc_bytes = &wpc.as_ne_bytes()[0..wpc_len];
+        let space = stack.noun_space();
+        let wpc_len = met3_usize(wpc, &space);
+        let wpc_bytes = &wpc.as_ne_bytes(&space)[0..wpc_len];
         let wpc_str = match std::str::from_utf8(wpc_bytes) {
             Ok(valid) => valid,
             Err(error) => {
@@ -1122,8 +1134,8 @@ impl Serf {
             }
         };
 
-        let vc_len = met3_usize(vent);
-        let vc_bytes = &vent.as_ne_bytes()[0..vc_len];
+        let vc_len = met3_usize(vent, &space);
+        let vc_bytes = &vent.as_ne_bytes(&space)[0..vc_len];
         let vc_str = match std::str::from_utf8(vc_bytes) {
             Ok(valid) => valid,
             Err(error) => {
@@ -1205,9 +1217,6 @@ impl Serf {
         stack.preserve(&mut self.context.cold);
         stack.preserve(&mut self.arvo);
         stack.flip_top_frame(0);
-        self.retag_survivors();
-        #[cfg(debug_assertions)]
-        self.debug_assert_offsets();
     }
 
     /// Returns a mutable reference to the Nock stack.
@@ -1217,33 +1226,6 @@ impl Serf {
     /// A mutable reference to the `NockStack`.
     pub fn stack(&mut self) -> &mut NockStack {
         &mut self.context.stack
-    }
-
-    #[cfg(debug_assertions)]
-    fn debug_assert_offsets(&mut self) {
-        self.context.stack.install_arena();
-        let mut work = vec![self.arvo, self.context.scry_stack];
-        while let Some(noun) = work.pop() {
-            if noun.is_stack_allocated() {
-                panic!("serf: encountered stack pointer after preserve");
-            }
-            if let Ok(cell) = noun.as_cell() {
-                work.push(cell.head());
-                work.push(cell.tail());
-            }
-        }
-    }
-
-    fn retag_survivors(&mut self) {
-        let stack = &self.context.stack;
-        stack.install_arena();
-        stack.retag_noun_tree(&mut self.arvo as *mut Noun);
-        stack.retag_noun_tree(&mut self.context.scry_stack as *mut Noun);
-        self.context.cache.retag(stack);
-        self.context.hot.retag(stack);
-        self.context.warm.retag(stack);
-        self.context.cold.retag(stack);
-        self.context.test_jets.retag(stack);
     }
 
     /// Creates a poke swap noun.
@@ -1279,8 +1261,8 @@ impl Serf {
     }
 }
 
-fn slot(noun: Noun, axis: u64) -> Result<Noun> {
-    Ok(noun.slot(axis)?)
+fn slot(noun: Noun, axis: u64, space: &NounSpace) -> Result<Noun> {
+    Ok(noun.slot(axis, space)?)
 }
 
 #[cfg(test)]
@@ -1295,7 +1277,6 @@ mod tests {
 
     fn dummy_serf() -> Serf {
         let mut stack = NockStack::new(1 << 18, 0);
-        stack.install_arena();
         let cold = Cold::new(&mut stack);
         let hot_state: [HotEntry; 0] = [];
         let context = create_context(stack, &hot_state, cold, None, vec![]);
@@ -1339,24 +1320,7 @@ mod tests {
     //     // Add your custom assertions here to test the kernel's behavior
     // }
 
-    #[test]
-    #[cfg_attr(miri, ignore = "memfd_create unsupported in Miri")]
-    fn preserve_event_leftovers_retags_offsets() {
-        let mut serf = dummy_serf();
-        serf.context.stack.install_arena();
-        let arvo = Cell::new(&mut serf.context.stack, D(1), D(2)).as_noun();
-        assert!(arvo.is_stack_allocated());
-        serf.arvo = arvo;
-        unsafe {
-            serf.preserve_event_update_leftovers();
-        }
-        assert!(
-            !serf.arvo.is_stack_allocated(),
-            "arvo should not retain stack pointers after preserve"
-        );
-        #[cfg(debug_assertions)]
-        serf.debug_assert_offsets();
-    }
+    // preserve_event_update_leftovers no longer retags survivors into offsets.
 }
 
 pub trait SerfCheckpoint: Send {
@@ -1385,14 +1349,15 @@ impl SerfCheckpoint for SaveableCheckpoint {
         // Cold state has nouns in it which are *not* copied in into_noun
         // TODO: FIX THIS FOOTGUN
         let cold_stack_noun = cold_state.into_noun(stack);
+        let space = stack.noun_space();
         let mut cold_slab: NounSlab = NounSlab::new();
-        let cold_copy = cold_slab.copy_into(cold_stack_noun);
+        let cold_copy = cold_slab.copy_into(cold_stack_noun, &space);
         cold_slab.set_root(cold_copy);
         let cold_noun_elapsed = cold_noun_start.elapsed();
 
         let state_copy_start = Instant::now();
         let mut state_slab: NounSlab = NounSlab::new();
-        let state_copy = state_slab.copy_into(kernel_state);
+        let state_copy = state_slab.copy_into(kernel_state, &space);
         state_slab.set_root(state_copy);
         let state_copy_elapsed = state_copy_start.elapsed();
 

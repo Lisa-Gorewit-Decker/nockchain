@@ -321,7 +321,7 @@ pub fn derive_noun_encode(input: TokenStream) -> TokenStream {
                                         )*
                                         // Fold field pairs into a list: [[k1 v1] [[k2 v2] ... 0]]
                                         let data = field_nouns.into_iter().rev().fold(::nockvm::noun::D(0), |acc, pair_noun| {
-                                             if acc.is_atom() && acc.as_atom().map_or(false, |a| a.as_u64() == Ok(0)) {
+                                            if unsafe { acc.raw_equals(&::nockvm::noun::D(0)) } {
                                                 ::nockvm::noun::T(allocator, &[pair_noun, ::nockvm::noun::D(0)]) // Base case: [last_pair 0]
                                             } else {
                                                 ::nockvm::noun::T(allocator, &[pair_noun, acc])
@@ -447,7 +447,7 @@ pub fn derive_noun_decode(input: TokenStream) -> TokenStream {
                         quote! {
                             ::tracing::trace!(target: "noun_serde_decode", "Decoding {} (single field struct), is_atom={}, is_cell={}", #name_str, noun.is_atom(), noun.is_cell());
                             ::tracing::trace!(target: "noun_serde_decode", "  field={} type={}", #field_name_str, stringify!(#field_type));
-                            let #field_name = <#field_type as ::noun_serde::NounDecode>::from_noun(noun)
+                            let #field_name = <#field_type as ::noun_serde::NounDecode>::from_noun(noun, space)
                                 .map_err(|e| {
                                     ::tracing::trace!(target: "noun_serde_decode", "  FAILED decoding field {} in {}: {:?}", #field_name_str, #name_str, e);
                                     e
@@ -504,13 +504,13 @@ pub fn derive_noun_decode(input: TokenStream) -> TokenStream {
                                 let field_name_str = name.to_string();
                                 quote! {
                                     ::tracing::trace!(target: "noun_serde_decode", "  field={} type={} axis={}", #field_name_str, stringify!(#ty), #axis);
-                                    let field_noun = ::nockvm::noun::Slots::slot(&cell, #axis)
+                                    let field_noun = ::nockvm::noun::Slots::slot(&cell, #axis, space)
                                         .map_err(|e| {
                                             ::tracing::trace!(target: "noun_serde_decode", "  FAILED to get slot {} for field {} in {}: {:?}", #axis, #field_name_str, #name_str, e);
                                             ::noun_serde::NounDecodeError::ExpectedCell
                                         })?;
                                     ::tracing::trace!(target: "noun_serde_decode", "  field={} is_atom={} is_cell={}", #field_name_str, field_noun.is_atom(), field_noun.is_cell());
-                                    let #name = <#ty as ::noun_serde::NounDecode>::from_noun(&field_noun)
+                                    let #name = <#ty as ::noun_serde::NounDecode>::from_noun(&field_noun, space)
                                         .map_err(|e| {
                                             ::tracing::trace!(target: "noun_serde_decode", "  FAILED decoding field {} in {}: {:?}", #field_name_str, #name_str, e);
                                             e
@@ -540,7 +540,7 @@ pub fn derive_noun_decode(input: TokenStream) -> TokenStream {
                         quote! {
                             ::tracing::trace!(target: "noun_serde_decode", "Decoding {} (single field tuple), is_atom={}, is_cell={}", #name_str, noun.is_atom(), noun.is_cell());
                             ::tracing::trace!(target: "noun_serde_decode", "  field=0 type={}", stringify!(#field_type));
-                            let field_0 = <#field_type as ::noun_serde::NounDecode>::from_noun(noun)
+                            let field_0 = <#field_type as ::noun_serde::NounDecode>::from_noun(noun, space)
                                 .map_err(|e| {
                                     ::tracing::trace!(target: "noun_serde_decode", "  FAILED decoding field 0 in {}: {:?}", #name_str, e);
                                     e
@@ -605,13 +605,13 @@ pub fn derive_noun_decode(input: TokenStream) -> TokenStream {
 
                             quote! {
                                 ::tracing::trace!(target: "noun_serde_decode", "  field={} type={} axis={}", #field_num_str, stringify!(#field_type), #axis);
-                                let field_noun = ::nockvm::noun::Slots::slot(&cell, #axis)
+                                let field_noun = ::nockvm::noun::Slots::slot(&cell, #axis, space)
                                     .map_err(|e| {
                                         ::tracing::trace!(target: "noun_serde_decode", "  FAILED to get slot {} for field {} in {}: {:?}", #axis, #field_num_str, #name_str, e);
                                         ::noun_serde::NounDecodeError::FieldError(stringify!(#field_ident).to_string(), "Missing field".into())
                                     })?;
                                 ::tracing::trace!(target: "noun_serde_decode", "  field={} is_atom={} is_cell={}", #field_num_str, field_noun.is_atom(), field_noun.is_cell());
-                                let #field_ident = <#field_type as ::noun_serde::NounDecode>::from_noun(&field_noun)
+                                let #field_ident = <#field_type as ::noun_serde::NounDecode>::from_noun(&field_noun, space)
                                     .map_err(|e| {
                                         ::tracing::trace!(target: "noun_serde_decode", "  FAILED decoding field {} in {}: {:?}", #field_num_str, #name_str, e);
                                         ::noun_serde::NounDecodeError::FieldError(stringify!(#field_ident).to_string(), e.to_string())
@@ -708,7 +708,7 @@ pub fn derive_noun_decode(input: TokenStream) -> TokenStream {
                                     let axis = custom_axis.unwrap_or(default_axis);
                                     quote! {
                                         ::tracing::trace!(target: "noun_serde_decode", "  variant={} field={} type={} axis={}", #variant_name_str, #field_name_str, stringify!(#ty), #axis);
-                                        let field_cell = ::nockvm::noun::Slots::slot(&data, #axis)
+                                        let field_cell = ::nockvm::noun::Slots::slot(&data, #axis, space)
                                             .map_err(|e| {
                                                 ::tracing::trace!(target: "noun_serde_decode", "  FAILED to get slot {} for field {} in variant {}: {:?}", #axis, #field_name_str, #variant_name_str, e);
                                                 e
@@ -718,7 +718,7 @@ pub fn derive_noun_decode(input: TokenStream) -> TokenStream {
                                                 ::tracing::trace!(target: "noun_serde_decode", "  FAILED field {} in variant {} expected cell: {:?}", #field_name_str, #variant_name_str, e);
                                                 e
                                             })?;
-                                        let #name = <#ty as ::noun_serde::NounDecode>::from_noun(&field_cell.tail())
+                                        let #name = <#ty as ::noun_serde::NounDecode>::from_noun(&field_cell.tail(space), space)
                                             .map_err(|e| {
                                                 ::tracing::trace!(target: "noun_serde_decode", "  FAILED decoding field {} in variant {}: {:?}", #field_name_str, #variant_name_str, e);
                                                 e
@@ -731,7 +731,7 @@ pub fn derive_noun_decode(input: TokenStream) -> TokenStream {
                                 tag if tag == #tag => {
                                     ::tracing::trace!(target: "noun_serde_decode", "Matched variant {} (tagged named fields)", #variant_name_str);
                                     if let Ok(cell) = noun.as_cell() {
-                                        let data = cell.tail();
+                                        let data = cell.tail(space);
                                         #(#field_decoders)*
                                         ::tracing::trace!(target: "noun_serde_decode", "SUCCESS decoded variant {}", #variant_name_str);
                                         Ok(Self::#variant_name { #(#field_names),* })
@@ -771,13 +771,13 @@ pub fn derive_noun_decode(input: TokenStream) -> TokenStream {
                                     let field_name_str = name.to_string();
                                     quote! {
                                         ::tracing::trace!(target: "noun_serde_decode", "  variant={} field={} type={} axis={}", #variant_name_str, #field_name_str, stringify!(#ty), #axis);
-                                        let field_noun = ::nockvm::noun::Slots::slot(&data_cell, #axis)
+                                        let field_noun = ::nockvm::noun::Slots::slot(&data_cell, #axis, space)
                                             .map_err(|e| {
                                                 ::tracing::trace!(target: "noun_serde_decode", "  FAILED to get slot {} for field {} in variant {}: {:?}", #axis, #field_name_str, #variant_name_str, e);
                                                 ::noun_serde::NounDecodeError::ExpectedCell
                                             })?;
                                         ::tracing::trace!(target: "noun_serde_decode", "  variant={} field={} is_atom={} is_cell={}", #variant_name_str, #field_name_str, field_noun.is_atom(), field_noun.is_cell());
-                                        let #name = <#ty as ::noun_serde::NounDecode>::from_noun(&field_noun)
+                                        let #name = <#ty as ::noun_serde::NounDecode>::from_noun(&field_noun, space)
                                             .map_err(|e| {
                                                 ::tracing::trace!(target: "noun_serde_decode", "  FAILED decoding field {} in variant {}: {:?}", #field_name_str, #variant_name_str, e);
                                                 e
@@ -792,7 +792,7 @@ pub fn derive_noun_decode(input: TokenStream) -> TokenStream {
                                 let field_name_str = field_name.to_string();
                                 quote! {
                                     ::tracing::trace!(target: "noun_serde_decode", "Matched variant {} (untagged named fields, payload atom)", #variant_name_str);
-                                    let #field_name = <#field_type as ::noun_serde::NounDecode>::from_noun(&payload)
+                                    let #field_name = <#field_type as ::noun_serde::NounDecode>::from_noun(&payload, space)
                                         .map_err(|e| {
                                             ::tracing::trace!(target: "noun_serde_decode", "  FAILED decoding field {} in variant {}: {:?}", #field_name_str, #variant_name_str, e);
                                             e
@@ -811,7 +811,7 @@ pub fn derive_noun_decode(input: TokenStream) -> TokenStream {
                                 tag if tag == #tag => {
                                     ::tracing::trace!(target: "noun_serde_decode", "Matched variant {} (untagged named fields)", #variant_name_str);
                                     if let Ok(cell) = noun.as_cell() {
-                                        let payload = cell.tail();
+                                        let payload = cell.tail(space);
                                         if let Ok(payload_cell) = payload.as_cell() {
                                             let data_cell = payload_cell;
                                             #(#field_decoders)*
@@ -843,7 +843,7 @@ pub fn derive_noun_decode(input: TokenStream) -> TokenStream {
                             quote! {
                                 tag if tag == #tag => {
                                     if let Ok(cell) = noun.as_cell() {
-                                        let value = <#ty as ::noun_serde::NounDecode>::from_noun(&cell.tail())?;
+                                        let value = <#ty as ::noun_serde::NounDecode>::from_noun(&cell.tail(space), space)?;
                                         Ok(Self::#variant_name(value))
                                     } else {
                                         Err(::noun_serde::NounDecodeError::ExpectedCell)
@@ -879,7 +879,7 @@ pub fn derive_noun_decode(input: TokenStream) -> TokenStream {
             quote! {
                 ::tracing::trace!(target: "noun_serde_decode", "Decoding enum {}, is_atom={}, is_cell={}", #name_str, noun.is_atom(), noun.is_cell());
                 let tag = if let Ok(atom) = noun.as_atom() {
-                    let bytes = atom.as_ne_bytes();
+                    let bytes = atom.as_ne_bytes(space);
                     let tag_str = ::std::str::from_utf8(bytes)
                         .map_err(|e| {
                             ::tracing::trace!(target: "noun_serde_decode", "FAILED to decode tag for {} as UTF-8: {:?}", #name_str, e);
@@ -890,12 +890,12 @@ pub fn derive_noun_decode(input: TokenStream) -> TokenStream {
                     ::tracing::trace!(target: "noun_serde_decode", "Decoded tag for {} (from atom): {:?}", #name_str, tag_str);
                     tag_str
                 } else if let Ok(cell) = noun.as_cell() {
-                    let atom = cell.head().as_atom()
+                    let atom = cell.head(space).as_atom()
                         .map_err(|e| {
                             ::tracing::trace!(target: "noun_serde_decode", "FAILED to decode tag for {}, head is not atom", #name_str);
                             ::noun_serde::NounDecodeError::InvalidTag
                         })?;
-                    let bytes = atom.as_ne_bytes();
+                    let bytes = atom.as_ne_bytes(space);
                     let tag_str = ::std::str::from_utf8(bytes)
                         .map_err(|e| {
                             ::tracing::trace!(target: "noun_serde_decode", "FAILED to decode tag for {} as UTF-8: {:?}", #name_str, e);
@@ -928,7 +928,10 @@ pub fn derive_noun_decode(input: TokenStream) -> TokenStream {
     // Generate the impl block
     let expanded = quote! {
         impl ::noun_serde::NounDecode for #name {
-            fn from_noun(noun: &::nockvm::noun::Noun) -> Result<Self, ::noun_serde::NounDecodeError> {
+            fn from_noun(
+                noun: &::nockvm::noun::Noun,
+                space: &::nockvm::noun::NounSpace,
+            ) -> Result<Self, ::noun_serde::NounDecodeError> {
                 #decode_impl
             }
         }

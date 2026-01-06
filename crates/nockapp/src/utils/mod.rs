@@ -19,7 +19,7 @@ use nockvm::jets::cold::Cold;
 use nockvm::jets::hot::{Hot, HotEntry};
 use nockvm::jets::warm::Warm;
 use nockvm::mem::NockStack;
-use nockvm::noun::{Noun, D};
+use nockvm::noun::{Noun, NounSpace, D};
 use nockvm::serialization::jam;
 use nockvm::trace::TraceInfo;
 use slogger::CrownSlogger;
@@ -98,7 +98,8 @@ pub use nockvm::ext::make_tas;
 // serialize a noun for writing over a socket or a file descriptor
 pub fn serialize_noun(stack: &mut NockStack, noun: Noun) -> Result<Vec<u8>> {
     let atom = jam(stack, noun);
-    let size = atom.size() << 3;
+    let space = stack.noun_space();
+    let size = atom.size(&space) << 3;
 
     let buf = unsafe { from_raw_parts_mut(stack.struct_alloc::<u8>(size + 5), size + 5) };
     buf[0] = 0u8;
@@ -117,7 +118,7 @@ pub fn serialize_noun(stack: &mut NockStack, noun: Noun) -> Result<Vec<u8>> {
         },
         Either::Right(indirect) => unsafe {
             copy_nonoverlapping(
-                indirect.data_pointer() as *const u8,
+                indirect.data_pointer(&space) as *const u8,
                 buf.as_mut_ptr().add(5),
                 size,
             );
@@ -126,9 +127,9 @@ pub fn serialize_noun(stack: &mut NockStack, noun: Noun) -> Result<Vec<u8>> {
     Ok(buf.to_vec())
 }
 
-pub fn compute_timer_time(time: Noun) -> Result<u64> {
+pub fn compute_timer_time(time: Noun, space: &NounSpace) -> Result<u64> {
     let time_atom = time.as_atom()?;
-    let mut time_bytes: &[u8] = time_atom.as_ne_bytes();
+    let mut time_bytes: &[u8] = time_atom.as_ne_bytes(space);
     let timer_time: u128 = da_to_unix_ms(DA(ReadBytesExt::read_u128::<LittleEndian>(
         &mut time_bytes,
     )?));
@@ -156,7 +157,6 @@ pub fn create_context(
     trace_info: Option<TraceInfo>,
     test_jets: Vec<NounSlab>,
 ) -> Context {
-    stack.install_arena();
     let arena = stack.arena().clone();
     let cache = Hamt::<Noun>::new(&mut stack);
     let test_jets = {

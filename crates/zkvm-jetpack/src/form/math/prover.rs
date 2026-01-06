@@ -5,6 +5,7 @@ use crate::form::fpoly::*;
 use crate::form::mary::{snag_as_bpoly, MarySlice};
 use crate::form::poly::*;
 use crate::form::structs::HoonList;
+use nockvm::noun::NounSpace;
 
 pub fn precompute_ntts(
     polys: MarySlice,
@@ -33,11 +34,12 @@ pub fn compute_deep(
     omicrons: &[Felt],
     deep_challenge: &Felt,
     comp_eval_point: &Felt,
+    space: &NounSpace,
 ) -> Vec<Felt> {
     let composition_pieces = composition_pieces
         .into_iter()
         .map(|x| {
-            FPolySlice::try_from(x)
+            FPolySlice::try_from(x, space)
                 .unwrap_or_else(|err| {
                     panic!(
                         "Panicked with {err:?} at {}:{} (git sha: {:?})",
@@ -55,7 +57,7 @@ pub fn compute_deep(
 
     let mut fps: Vec<(Vec<Vec<Felt>>, &Felt)> = vec![];
     for (trace_poly, omicron) in trace_polys.into_iter().zip(omicrons.iter()) {
-        let Ok(trace_poly) = MarySlice::try_from(trace_poly) else {
+        let Ok(trace_poly) = MarySlice::try_from(trace_poly, space) else {
             panic!("trace_poly in trace_polys is not a valid FPolySlice");
         };
 

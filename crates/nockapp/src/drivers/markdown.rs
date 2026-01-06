@@ -1,4 +1,4 @@
-use nockvm::noun::D;
+use nockvm::noun::{NounAllocator, D};
 use nockvm_macros::tas;
 use termimad::MadSkin;
 use tracing::error;
@@ -16,11 +16,12 @@ pub fn markdown() -> IODriverFn {
                     let Ok(effect_cell) = unsafe { effect.root() }.as_cell() else {
                         continue;
                     };
-                    if unsafe { effect_cell.head().raw_equals(&D(tas!(b"markdown"))) } {
-                        let markdown_text = effect_cell.tail();
+                    let space = effect.noun_space();
+                    if unsafe { effect_cell.head(&space).raw_equals(&D(tas!(b"markdown"))) } {
+                        let markdown_text = effect_cell.tail(&space);
 
                         let text = if let Ok(atom) = markdown_text.as_atom() {
-                            String::from_utf8_lossy(&atom.to_bytes_until_nul()?).to_string()
+                            String::from_utf8_lossy(&atom.to_bytes_until_nul(&space)?).to_string()
                         } else {
                             error!("Failed to convert markdown text to string");
                             continue;

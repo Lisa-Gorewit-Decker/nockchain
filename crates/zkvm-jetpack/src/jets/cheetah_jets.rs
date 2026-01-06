@@ -13,17 +13,18 @@ use crate::form::tip5;
 
 #[inline(always)]
 pub fn ch_scal_jet(context: &mut Context, subject: Noun) -> Result<Noun, JetErr> {
-    let sam = subject.slot(6)?;
-    let n_atom = sam.slot(2)?.as_atom()?;
+    let space = context.stack.noun_space();
+    let sam = subject.slot(6, &space)?;
+    let n_atom = sam.slot(2, &space)?.as_atom()?;
 
-    let p = sam.slot(3)?;
-    let a_pt = CheetahPoint::from_noun(&p).map_err(|_| BAIL_FAIL)?;
+    let p = sam.slot(3, &space)?;
+    let a_pt = CheetahPoint::from_noun(&p, &space).map_err(|_| BAIL_FAIL)?;
 
-    let res = if let Ok(n) = n_atom.as_u64() {
+    let res = if let Ok(n) = n_atom.as_u64(&space) {
         ch_scal(n, &a_pt)?
     } else {
         // Convert to UBig
-        let n_big = n_atom.as_ubig(&mut context.stack);
+        let n_big = n_atom.as_ubig(&mut context.stack, &space);
         ch_scal_big(&n_big, &a_pt)?
     };
 
@@ -32,14 +33,22 @@ pub fn ch_scal_jet(context: &mut Context, subject: Noun) -> Result<Noun, JetErr>
 }
 
 pub fn verify_affine_jet(context: &mut Context, subject: Noun) -> Result<Noun, JetErr> {
-    let sam = subject.slot(6)?;
-    let pubkey = sam.slot(2)?;
-    let m = sam.slot(6)?;
-    let chal = sam.slot(14)?.as_atom()?.as_ubig(&mut context.stack);
-    let sig = sam.slot(15)?.as_atom()?.as_ubig(&mut context.stack);
+    let space = context.stack.noun_space();
+    let sam = subject.slot(6, &space)?;
+    let pubkey = sam.slot(2, &space)?;
+    let m = sam.slot(6, &space)?;
+    let chal = sam
+        .slot(14, &space)?
+        .as_atom()?
+        .as_ubig(&mut context.stack, &space);
+    let sig = sam
+        .slot(15, &space)?
+        .as_atom()?
+        .as_ubig(&mut context.stack, &space);
 
-    let pubkey: CheetahPoint = CheetahPoint::from_noun(&pubkey).map_err(|_| BAIL_FAIL)?;
-    let m = <[Belt; 5]>::from_noun(&m).map_err(|_| BAIL_FAIL)?;
+    let pubkey: CheetahPoint =
+        CheetahPoint::from_noun(&pubkey, &space).map_err(|_| BAIL_FAIL)?;
+    let m = <[Belt; 5]>::from_noun(&m, &space).map_err(|_| BAIL_FAIL)?;
 
     let res = verify_affine(pubkey, &m, &chal, &sig)?;
     Ok(res.to_noun(&mut context.stack))
@@ -70,14 +79,23 @@ pub(crate) struct ValidateArgs {
 //}
 
 pub fn batch_verify_affine_jet(context: &mut Context, subject: Noun) -> Result<Noun, JetErr> {
-    let list = subject.slot(6)?;
+    let space = context.stack.noun_space();
+    let list = subject.slot(6, &space)?;
     let args = list
-        .list_iter()
+        .list_iter(&space)
         .map(|arg| {
-            let pubkey = CheetahPoint::from_noun(&arg.slot(2)?).map_err(|_| BAIL_FAIL)?;
-            let m = <[Belt; 5]>::from_noun(&arg.slot(6)?).map_err(|_| BAIL_FAIL)?;
-            let chal = arg.slot(14)?.as_atom()?.as_ubig(&mut context.stack);
-            let sig = arg.slot(15)?.as_atom()?.as_ubig(&mut context.stack);
+            let pubkey =
+                CheetahPoint::from_noun(&arg.slot(2, &space)?, &space).map_err(|_| BAIL_FAIL)?;
+            let m =
+                <[Belt; 5]>::from_noun(&arg.slot(6, &space)?, &space).map_err(|_| BAIL_FAIL)?;
+            let chal = arg
+                .slot(14, &space)?
+                .as_atom()?
+                .as_ubig(&mut context.stack, &space);
+            let sig = arg
+                .slot(15, &space)?
+                .as_atom()?
+                .as_ubig(&mut context.stack, &space);
             Ok(ValidateArgs {
                 pubkey,
                 m,

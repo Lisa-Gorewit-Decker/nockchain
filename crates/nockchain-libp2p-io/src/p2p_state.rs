@@ -7,7 +7,7 @@ use libp2p::swarm::ConnectionId;
 use libp2p::{Multiaddr, PeerId, Swarm};
 use nockapp::noun::slab::NounSlab;
 use nockapp::NockAppError;
-use nockvm::noun::Noun;
+use nockvm::noun::{Noun, NounSpace};
 use rand::prelude::SliceRandom;
 use tracing::{debug, info, trace};
 
@@ -278,8 +278,9 @@ impl P2PState {
         &mut self,
         block_id: Noun,
         peer_id: PeerId,
+        space: &NounSpace,
     ) -> Result<(), NockAppError> {
-        let block_id_str = tip5_hash_to_base58(block_id)?;
+        let block_id_str = tip5_hash_to_base58(block_id, space)?;
         self.track_block_id_str_and_peer(block_id_str, peer_id);
         Ok(())
     }
@@ -291,8 +292,9 @@ impl P2PState {
         &mut self,
         block_id: Noun,
         peer_id: PeerId,
+        space: &NounSpace,
     ) -> Result<bool, NockAppError> {
-        let block_id_str = tip5_hash_to_base58(block_id)?;
+        let block_id_str = tip5_hash_to_base58(block_id, space)?;
 
         if self.block_id_to_peers.contains_key(&block_id_str) {
             self.track_block_id_str_and_peer(block_id_str, peer_id);
@@ -304,16 +306,16 @@ impl P2PState {
 
     /// Removes a block ID from the tracker.
     /// implements [%track %remove block-id] effect
-    pub fn remove_block_id(&mut self, block_id: Noun) -> Result<(), NockAppError> {
-        let block_id_str = tip5_hash_to_base58(block_id)?;
+    pub fn remove_block_id(&mut self, block_id: Noun, space: &NounSpace) -> Result<(), NockAppError> {
+        let block_id_str = tip5_hash_to_base58(block_id, space)?;
         self.remove_block_id_str(&block_id_str);
         Ok(())
     }
 
     /// Returns a list of peers that have sent us a given block ID.
     #[allow(dead_code)]
-    pub fn get_peers_for_block_id(&self, block_id: Noun) -> Vec<PeerId> {
-        let Ok(block_id_str) = tip5_hash_to_base58(block_id) else {
+    pub fn get_peers_for_block_id(&self, block_id: Noun, space: &NounSpace) -> Vec<PeerId> {
+        let Ok(block_id_str) = tip5_hash_to_base58(block_id, space) else {
             panic!("Invalid block ID");
         };
         self.block_id_to_peers
@@ -333,8 +335,8 @@ impl P2PState {
 
     /// Returns true if we are tracking a given block ID.
     #[allow(dead_code)]
-    pub fn is_tracking_block_id(&self, block_id: Noun) -> bool {
-        let Ok(block_id_str) = tip5_hash_to_base58(block_id) else {
+    pub fn is_tracking_block_id(&self, block_id: Noun, space: &NounSpace) -> bool {
+        let Ok(block_id_str) = tip5_hash_to_base58(block_id, space) else {
             return false;
         };
         self.block_id_to_peers.contains_key(&block_id_str)
@@ -347,8 +349,12 @@ impl P2PState {
 
     //  Removes the block id from the MessageTracker maps and returns all the
     //  peers who had sent us that block.
-    pub fn process_bad_block_id(&mut self, block_id: Noun) -> Result<Vec<PeerId>, NockAppError> {
-        let block_id_str = tip5_hash_to_base58(block_id)?;
+    pub fn process_bad_block_id(
+        &mut self,
+        block_id: Noun,
+        space: &NounSpace,
+    ) -> Result<Vec<PeerId>, NockAppError> {
+        let block_id_str = tip5_hash_to_base58(block_id, space)?;
         let peers_to_ban = self
             .block_id_to_peers
             .get(&block_id_str)
@@ -360,7 +366,7 @@ impl P2PState {
             self.remove_peer(peer);
         }
 
-        self.remove_block_id(block_id)?;
+        self.remove_block_id(block_id, space)?;
 
         Ok(peers_to_ban)
     }
@@ -425,7 +431,7 @@ mod tests {
     use nockapp::noun::slab::NounSlab;
     use nockapp::AtomExt;
     use nockvm::mem::{Arena, NockStack};
-    use nockvm::noun::{D, T};
+    use nockvm::noun::{D, NounAllocator, T};
 
     use super::*;
     use crate::config::LibP2PConfig;
@@ -465,10 +471,11 @@ mod tests {
         // Create a block ID as [1 2 3 4 5]
         let mut slab: NounSlab = NounSlab::new();
         let block_id_tuple = T(&mut slab, &[D(1), D(2), D(3), D(4), D(5)]);
+        let space = slab.noun_space();
 
         // Add the block ID
         tracker
-            .track_block_id_and_peer(block_id_tuple, peer_id)
+            .track_block_id_and_peer(block_id_tuple, peer_id, &space)
             .unwrap_or_else(|_| {
                 panic!(
                     "Called `expect()` at {}:{} (git sha: {})",
@@ -479,7 +486,7 @@ mod tests {
             });
 
         // Get the block ID string
-        let block_id_str = tip5_hash_to_base58(block_id_tuple).unwrap_or_else(|_| {
+        let block_id_str = tip5_hash_to_base58(block_id_tuple, &space).unwrap_or_else(|_| {
             panic!(
                 "Called `expect()` at {}:{} (git sha: {})",
                 file!(),
@@ -493,7 +500,9 @@ mod tests {
         assert!(tracker.peer_to_block_ids.contains_key(&peer_id));
 
         // Remove the block ID
-        tracker.remove_block_id(block_id_tuple).unwrap_or_else(|_| {
+        tracker
+            .remove_block_id(block_id_tuple, &space)
+            .unwrap_or_else(|_| {
             panic!(
                 "Called `expect()` at {}:{} (git sha: {})",
                 file!(),
@@ -521,10 +530,11 @@ mod tests {
         // Create a block ID
         let mut slab: NounSlab = NounSlab::new();
         let block_id_tuple = T(&mut slab, &[D(1), D(2), D(3), D(4), D(5)]);
+        let space = slab.noun_space();
 
         // Track the block ID
         tracker
-            .track_block_id_and_peer(block_id_tuple, peer_id)
+            .track_block_id_and_peer(block_id_tuple, peer_id, &space)
             .unwrap_or_else(|_| {
                 panic!(
                     "Called `expect()` at {}:{} (git sha: {})",
@@ -536,7 +546,7 @@ mod tests {
 
         // Mark it as bad
         let peers_to_ban = tracker
-            .process_bad_block_id(block_id_tuple)
+            .process_bad_block_id(block_id_tuple, &space)
             .unwrap_or_else(|_| {
                 panic!(
                     "Called `expect()` at {}:{} (git sha: {})",
@@ -566,7 +576,9 @@ mod tests {
             .expect("Failed to create peer ID atom");
 
         // Use the from_noun method to convert back to PeerId
-        let recovered_peer_id = PeerId::from_noun(peer_id_atom.as_noun()).unwrap_or_else(|_| {
+        let space = slab.noun_space();
+        let recovered_peer_id =
+            PeerId::from_noun(peer_id_atom.as_noun(), &space).unwrap_or_else(|_| {
             panic!(
                 "Called `expect()` at {}:{} (git sha: {})",
                 file!(),
@@ -594,10 +606,11 @@ mod tests {
         // Create a block ID
         let mut slab: NounSlab = NounSlab::new();
         let block_id_tuple = T(&mut slab, &[D(1), D(2), D(3), D(4), D(5)]);
+        let space = slab.noun_space();
 
         // First, try to add a peer to a non-existent block ID
         let result = tracker
-            .add_peer_if_tracking_block_id(block_id_tuple, peer_id1)
+            .add_peer_if_tracking_block_id(block_id_tuple, peer_id1, &space)
             .unwrap_or_else(|_| {
                 panic!(
                     "Called `expect()` at {}:{} (git sha: {})",
@@ -610,7 +623,7 @@ mod tests {
 
         // Now track the block ID with peer1
         tracker
-            .track_block_id_and_peer(block_id_tuple, peer_id1)
+            .track_block_id_and_peer(block_id_tuple, peer_id1, &space)
             .unwrap_or_else(|_| {
                 panic!(
                     "Called `expect()` at {}:{} (git sha: {})",
@@ -622,7 +635,7 @@ mod tests {
 
         // Add peer2 to the existing block ID
         let result = tracker
-            .add_peer_if_tracking_block_id(block_id_tuple, peer_id2)
+            .add_peer_if_tracking_block_id(block_id_tuple, peer_id2, &space)
             .unwrap_or_else(|_| {
                 panic!(
                     "Called `expect()` at {}:{} (git sha: {})",
@@ -634,7 +647,7 @@ mod tests {
         assert!(result); // Should return true since block ID exists
 
         // Verify both peers are associated with the block ID
-        let peers = tracker.get_peers_for_block_id(block_id_tuple);
+        let peers = tracker.get_peers_for_block_id(block_id_tuple, &space);
         assert_eq!(peers.len(), 2);
         assert!(peers.contains(&peer_id1));
         assert!(peers.contains(&peer_id2));
@@ -655,7 +668,8 @@ mod tests {
         // Create a block ID
         let mut slab: NounSlab = NounSlab::new();
         let block_id_tuple = T(&mut slab, &[D(1), D(2), D(3), D(4), D(5)]);
-        let block_id_str = tip5_hash_to_base58(block_id_tuple).unwrap_or_else(|_| {
+        let space = slab.noun_space();
+        let block_id_str = tip5_hash_to_base58(block_id_tuple, &space).unwrap_or_else(|_| {
             panic!(
                 "Called `expect()` at {}:{} (git sha: {})",
                 file!(),
@@ -666,7 +680,7 @@ mod tests {
 
         // Track the block ID with peer1
         tracker
-            .track_block_id_and_peer(block_id_tuple, peer_id1)
+            .track_block_id_and_peer(block_id_tuple, peer_id1, &space)
             .unwrap_or_else(|_| {
                 panic!(
                     "Called `expect()` at {}:{} (git sha: {})",
@@ -678,7 +692,7 @@ mod tests {
 
         // Add peer2 to the existing block ID
         let result = tracker
-            .add_peer_if_tracking_block_id(block_id_tuple, peer_id2)
+            .add_peer_if_tracking_block_id(block_id_tuple, peer_id2, &space)
             .unwrap_or_else(|_| {
                 panic!(
                     "Called `expect()` at {}:{} (git sha: {})",
@@ -690,13 +704,15 @@ mod tests {
         assert!(result); // Should return true since block ID exists
 
         // Verify both peers are associated with the block ID
-        let peers = tracker.get_peers_for_block_id(block_id_tuple);
+        let peers = tracker.get_peers_for_block_id(block_id_tuple, &space);
         assert_eq!(peers.len(), 2);
         assert!(peers.contains(&peer_id1));
         assert!(peers.contains(&peer_id2));
 
         // Now remove the block ID
-        tracker.remove_block_id(block_id_tuple).unwrap_or_else(|_| {
+        tracker
+            .remove_block_id(block_id_tuple, &space)
+            .unwrap_or_else(|_| {
             panic!(
                 "Called `expect()` at {}:{} (git sha: {})",
                 file!(),
@@ -706,7 +722,7 @@ mod tests {
         });
 
         // Verify the block ID is no longer tracked
-        let peers_after_removal = tracker.get_peers_for_block_id(block_id_tuple);
+        let peers_after_removal = tracker.get_peers_for_block_id(block_id_tuple, &space);
         assert_eq!(peers_after_removal.len(), 0);
 
         // Verify the block ID is removed from block_id_to_peers
@@ -738,13 +754,14 @@ mod tests {
         // Create a block ID
         let mut slab: NounSlab = NounSlab::new();
         let block_id_tuple = T(&mut slab, &[D(1), D(2), D(3), D(4), D(5)]);
+        let space = slab.noun_space();
 
         // Create another block ID that both peers will share
         let other_block_id = T(&mut slab, &[D(6), D(7), D(8), D(9), D(10)]);
 
         // Track both block IDs with both peers
         tracker
-            .track_block_id_and_peer(block_id_tuple, peer_id1)
+            .track_block_id_and_peer(block_id_tuple, peer_id1, &space)
             .unwrap_or_else(|_| {
                 panic!(
                     "Called `expect()` at {}:{} (git sha: {})",
@@ -754,7 +771,7 @@ mod tests {
                 )
             });
         tracker
-            .add_peer_if_tracking_block_id(block_id_tuple, peer_id2)
+            .add_peer_if_tracking_block_id(block_id_tuple, peer_id2, &space)
             .unwrap_or_else(|_| {
                 panic!(
                     "Called `expect()` at {}:{} (git sha: {})",
@@ -764,7 +781,7 @@ mod tests {
                 )
             });
         tracker
-            .track_block_id_and_peer(other_block_id, peer_id1)
+            .track_block_id_and_peer(other_block_id, peer_id1, &space)
             .unwrap_or_else(|_| {
                 panic!(
                     "Called `expect()` at {}:{} (git sha: {})",
@@ -774,7 +791,7 @@ mod tests {
                 )
             });
         tracker
-            .add_peer_if_tracking_block_id(other_block_id, peer_id2)
+            .add_peer_if_tracking_block_id(other_block_id, peer_id2, &space)
             .unwrap_or_else(|_| {
                 panic!(
                     "Called `expect()` at {}:{} (git sha: {})",
@@ -790,7 +807,7 @@ mod tests {
 
         // Process the bad block ID
         let banned_peers = tracker
-            .process_bad_block_id(block_id_tuple)
+            .process_bad_block_id(block_id_tuple, &space)
             .unwrap_or_else(|_| {
                 panic!(
                     "Called `expect()` at {}:{} (git sha: {})",
@@ -811,7 +828,7 @@ mod tests {
 
         // Verify the other block ID is also no longer tracked
         // (since we removed the peers entirely)
-        assert!(!tracker.is_tracking_block_id(other_block_id));
+        assert!(!tracker.is_tracking_block_id(other_block_id, &space));
     }
 
     #[test]

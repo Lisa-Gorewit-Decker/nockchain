@@ -4,7 +4,7 @@ use nockapp::driver::{make_driver, IODriverFn, NockAppHandle};
 use nockapp::noun::slab::NounSlab;
 use nockapp::wire::{WireRepr, WireTag as AppWireTag};
 use nockapp::{Bytes, NockAppError, Noun};
-use nockvm::noun::{D, T};
+use nockvm::noun::{NounAllocator, NounSpace, D, T};
 use nockvm_macros::tas;
 use noun_serde::prelude::*;
 use noun_serde::NounDecodeError;
@@ -67,33 +67,34 @@ pub enum PrivateGrpcEffect {
 }
 
 impl NounDecode for PrivateGrpcEffect {
-    fn from_noun(effect: &Noun) -> Result<Self, NounDecodeError> {
+    fn from_noun(effect: &Noun, space: &NounSpace) -> Result<Self, NounDecodeError> {
         let Ok(effect_cell) = effect.as_cell() else {
             return Err(NounDecodeError::ExpectedCell);
         };
-        if unsafe { effect_cell.head().raw_equals(&D(tas!(b"grpc"))) } {
-            let effect_payload = effect_cell.tail().as_cell()?;
+        if unsafe { effect_cell.head(space).raw_equals(&D(tas!(b"grpc"))) } {
+            let effect_payload = effect_cell.tail(space).as_cell()?;
 
-            match effect_payload.head().as_direct() {
+            match effect_payload.head(space).as_direct() {
                 // [%grpc %poke pid payload]
                 Ok(tag) if tag.data() == tas!(b"poke") => {
-                    let eff = effect_payload.tail().as_cell()?;
-                    let pid = u64::from_noun(&eff.head())?;
+                    let eff = effect_payload.tail(space).as_cell()?;
+                    let pid = u64::from_noun(&eff.head(space), space)?;
 
                     let mut slab: NounSlab = NounSlab::new();
-                    slab.copy_into(eff.tail());
+                    slab.copy_into(eff.tail(space), space);
                     let payload = slab.jam().to_vec();
                     Ok(PrivateGrpcEffect::Poke { pid, payload })
                 }
                 // [%grpc %peek pid [%type path]]
                 Ok(tag) if tag.data() == tas!(b"peek") => {
-                    let peek_tail = effect_payload.tail().as_cell()?;
-                    let pid: u64 = <u64>::from_noun(&peek_tail.head())?;
+                    let peek_tail = effect_payload.tail(space).as_cell()?;
+                    let pid: u64 = <u64>::from_noun(&peek_tail.head(space), space)?;
 
-                    let meta = peek_tail.tail().as_cell()?; // [%type path]
-                    let typ = String::from_noun(&meta.head())?;
+                    let meta = peek_tail.tail(space).as_cell()?; // [%type path]
+                    let typ = String::from_noun(&meta.head(space), space)?;
 
-                    let path_vec: Vec<String> = <Vec<String>>::from_noun(&meta.tail())?;
+                    let path_vec: Vec<String> =
+                        <Vec<String>>::from_noun(&meta.tail(space), space)?;
                     Ok(PrivateGrpcEffect::Peek {
                         pid,
                         typ,
@@ -119,13 +120,16 @@ pub fn grpc_listener_driver(addr: String) -> IODriverFn {
         loop {
             match handle.next_effect().await {
                 Ok(effect) => {
-                    let effect_noun = unsafe { effect.root() };
-                    let grpc_effect = PrivateGrpcEffect::from_noun(&effect_noun).map_err(|err| {
-                        NockAppError::OtherError(format!(
-                            "Failed to decode gRPC effect noun: {}",
-                            err
-                        ))
-                    });
+                    let grpc_effect = {
+                        let effect_noun = unsafe { effect.root() };
+                        let space = effect.noun_space();
+                        PrivateGrpcEffect::from_noun(&effect_noun, &space).map_err(|err| {
+                            NockAppError::OtherError(format!(
+                                "Failed to decode gRPC effect noun: {}",
+                                err
+                            ))
+                        })
+                    };
                     let grpc_effect = match grpc_effect {
                         Ok(effect) => effect,
                         Err(_) => continue,

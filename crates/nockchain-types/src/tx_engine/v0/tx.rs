@@ -2,7 +2,7 @@ use nockchain_math::noun_ext::NounMathExt;
 use nockchain_math::structs::HoonMapIter;
 use nockchain_math::zoon::common::DefaultTipHasher;
 use nockchain_math::zoon::{zmap, zset};
-use nockvm::noun::{Noun, NounAllocator, D};
+use nockvm::noun::{Noun, NounAllocator, NounSpace, D};
 use noun_serde::{NounDecode, NounDecodeError, NounEncode};
 
 use super::note::{Lock, NoteV0, TimelockIntent};
@@ -74,15 +74,15 @@ impl NounEncode for Inputs {
 }
 
 impl NounDecode for Inputs {
-    fn from_noun(noun: &Noun) -> Result<Self, NounDecodeError> {
-        let entries = HoonMapIter::from(*noun)
+    fn from_noun(noun: &Noun, space: &NounSpace) -> Result<Self, NounDecodeError> {
+        let entries = HoonMapIter::new(*noun, space)
             .filter(|entry| entry.is_cell())
             .map(|entry| {
                 let [key, value] = entry
-                    .uncell()
+                    .uncell(space)
                     .map_err(|_| NounDecodeError::Custom("input entry not a pair".into()))?;
-                let name = Name::from_noun(&key)?;
-                let input = Input::from_noun(&value)?;
+                let name = Name::from_noun(&key, space)?;
+                let input = Input::from_noun(&value, space)?;
                 Ok((name, input))
             })
             .collect::<Result<Vec<_>, NounDecodeError>>()?;
@@ -109,19 +109,19 @@ impl NounEncode for RawTx {
 }
 
 impl NounDecode for RawTx {
-    fn from_noun(noun: &Noun) -> Result<Self, NounDecodeError> {
+    fn from_noun(noun: &Noun, space: &NounSpace) -> Result<Self, NounDecodeError> {
         let cell = noun.as_cell()?;
-        let id = TxId::from_noun(&cell.head())?;
+        let id = TxId::from_noun(&cell.head(space), space)?;
 
-        let tail = cell.tail();
+        let tail = cell.tail(space);
         let cell = tail.as_cell()?;
-        let inputs = Inputs::from_noun(&cell.head())?;
+        let inputs = Inputs::from_noun(&cell.head(space), space)?;
 
-        let tail = cell.tail();
+        let tail = cell.tail(space);
         let cell = tail.as_cell()?;
-        let timelock_range = TimelockRangeAbsolute::from_noun(&cell.head())?;
+        let timelock_range = TimelockRangeAbsolute::from_noun(&cell.head(space), space)?;
 
-        let total_fees = Nicks::from_noun(&cell.tail())?;
+        let total_fees = Nicks::from_noun(&cell.tail(space), space)?;
 
         Ok(Self {
             id,
@@ -157,10 +157,14 @@ impl NounEncode for Seeds {
 }
 
 impl NounDecode for Seeds {
-    fn from_noun(noun: &Noun) -> Result<Self, NounDecodeError> {
-        fn traverse(node: &Noun, acc: &mut Vec<Seed>) -> Result<(), NounDecodeError> {
+    fn from_noun(noun: &Noun, space: &NounSpace) -> Result<Self, NounDecodeError> {
+        fn traverse(
+            node: &Noun,
+            space: &NounSpace,
+            acc: &mut Vec<Seed>,
+        ) -> Result<(), NounDecodeError> {
             if let Ok(atom) = node.as_atom() {
-                if atom.as_u64()? == 0 {
+                if atom.as_u64(space)? == 0 {
                     return Ok(());
                 }
                 return Err(NounDecodeError::ExpectedCell);
@@ -169,20 +173,20 @@ impl NounDecode for Seeds {
             let cell = node
                 .as_cell()
                 .map_err(|_| NounDecodeError::Custom("seed node not a cell".into()))?;
-            let seed = Seed::from_noun(&cell.head())?;
+            let seed = Seed::from_noun(&cell.head(space), space)?;
             acc.push(seed);
 
             let branches = cell
-                .tail()
+                .tail(space)
                 .as_cell()
                 .map_err(|_| NounDecodeError::Custom("seed branches not a cell".into()))?;
-            traverse(&branches.head(), acc)?;
-            traverse(&branches.tail(), acc)?;
+            traverse(&branches.head(space), space, acc)?;
+            traverse(&branches.tail(space), space, acc)?;
             Ok(())
         }
 
         let mut seeds = Vec::new();
-        traverse(noun, &mut seeds)?;
+        traverse(noun, space, &mut seeds)?;
         Ok(Seeds { seeds })
     }
 }
@@ -198,12 +202,12 @@ impl NounEncode for Spend {
 }
 
 impl NounDecode for Spend {
-    fn from_noun(noun: &Noun) -> Result<Self, NounDecodeError> {
+    fn from_noun(noun: &Noun, space: &NounSpace) -> Result<Self, NounDecodeError> {
         let cell = noun.as_cell()?;
-        let signature = Option::<Signature>::from_noun(&cell.head())?;
-        let inner = cell.tail().as_cell()?;
-        let seeds = Seeds::from_noun(&inner.head())?;
-        let fee = Nicks::from_noun(&inner.tail())?;
+        let signature = Option::<Signature>::from_noun(&cell.head(space), space)?;
+        let inner = cell.tail(space).as_cell()?;
+        let seeds = Seeds::from_noun(&inner.head(space), space)?;
+        let fee = Nicks::from_noun(&inner.tail(space), space)?;
 
         Ok(Spend {
             signature,

@@ -17,7 +17,7 @@ pub use error::NockAppError;
 use futures::future::{pending, Either};
 use futures::stream::StreamExt;
 use metrics::*;
-use nockvm::noun::SIG;
+use nockvm::noun::{NounAllocator, SIG};
 use signal_hook::consts::signal::*;
 use signal_hook::consts::TERM_SIGNALS;
 use signal_hook_tokio::Signals;
@@ -351,13 +351,14 @@ impl<J: Jammer + Send + 'static> NockApp<J> {
             return Err(NockAppError::PeekFailed);
         }
 
-        let tail = unsafe { res.root().as_cell()?.tail() };
+        let space = res.noun_space();
+        let tail = unsafe { res.root().as_cell()?.tail(&space) };
         if unsafe { tail.raw_equals(&SIG) } {
             Ok(None)
         } else {
-            let res_noun = tail.as_cell()?.tail();
+            let res_noun = tail.as_cell()?.tail(&space);
             let mut slab = NounSlab::new();
-            slab.copy_into(res_noun);
+            slab.copy_into(res_noun, &space);
             Ok(Some(slab))
         }
     }

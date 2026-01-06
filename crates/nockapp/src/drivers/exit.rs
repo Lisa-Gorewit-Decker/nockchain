@@ -2,6 +2,7 @@ use tracing::{debug, error};
 
 use crate::nockapp::driver::{make_driver, IODriverFn};
 use crate::NounExt;
+use nockvm::noun::NounAllocator;
 
 /// Creates an IO driver function for handling exit signals.
 ///
@@ -20,17 +21,30 @@ pub fn exit() -> IODriverFn {
                     match eff {
                         Ok(eff) => {
                             unsafe {
-                                let noun = eff.root();
-                                if let Ok(cell) = noun.as_cell() {
-                                    if cell.head().eq_bytes(b"exit") && cell.tail().is_atom() {
-                                        // Exit with the code provided in the tail
-                                        if let Ok(exit_code) = cell.tail().as_atom().and_then(|atom| atom.as_u64()) {
-                                            handle.exit.exit(exit_code as usize).await?;
+                                let exit_code = {
+                                    let noun = eff.root();
+                                    if let Ok(cell) = noun.as_cell() {
+                                        let space = eff.noun_space();
+                                        if cell.head(&space).eq_bytes(b"exit", &space)
+                                            && cell.tail(&space).is_atom()
+                                        {
+                                            Some(
+                                                cell.tail(&space)
+                                                    .as_atom()
+                                                    .and_then(|atom| atom.as_u64(&space))
+                                                    .ok(),
+                                            )
                                         } else {
-                                            // Default to error code 1 if we can't get a valid exit code
-                                            handle.exit.exit(1).await?;
+                                            None
                                         }
+                                    } else {
+                                        None
                                     }
+                                };
+
+                                if let Some(exit_code) = exit_code {
+                                    let exit_code = exit_code.unwrap_or(1);
+                                    handle.exit.exit(exit_code as usize).await?;
                                 }
                             }
                         }

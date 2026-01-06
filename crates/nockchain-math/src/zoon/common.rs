@@ -21,8 +21,9 @@ impl TipHasher for DefaultTipHasher {
         stack: &mut A,
         noun: Noun,
     ) -> Result<[u64; 5], JetErr> {
-        let noun_res = crate::tip5::hash::hash_noun_varlen(stack, noun)?;
-        let digest = <[u64; 5]>::from_noun(&noun_res)?;
+        let space = stack.noun_space();
+        let noun_res = crate::tip5::hash::hash_noun_varlen(stack, noun, &space)?;
+        let digest = <[u64; 5]>::from_noun(&noun_res, &space)?;
         Ok(digest)
     }
     fn hash_ten_cell(&self, ten: [u64; 10]) -> Result<[u64; 5], JetErr> {
@@ -103,20 +104,26 @@ pub fn dor_tip<A: NounAllocator>(
     b: &mut Noun,
 ) -> Result<bool, JetErr> {
     use nockvm::jets::math::util::lth;
+    let space = stack.noun_space();
     if unsafe { stack.equals(a, b) } {
         Ok(true)
     } else if !a.is_atom() {
         if b.is_atom() {
             Ok(false)
-        } else if unsafe { stack.equals(&mut a.as_cell()?.head(), &mut b.as_cell()?.head()) } {
-            dor_tip(stack, &mut a.as_cell()?.tail(), &mut b.as_cell()?.tail())
+        } else if unsafe {
+            stack.equals(
+                &mut a.as_cell()?.head(&space),
+                &mut b.as_cell()?.head(&space),
+            )
+        } {
+            dor_tip(stack, &mut a.as_cell()?.tail(&space), &mut b.as_cell()?.tail(&space))
         } else {
-            dor_tip(stack, &mut a.as_cell()?.head(), &mut b.as_cell()?.head())
+            dor_tip(stack, &mut a.as_cell()?.head(&space), &mut b.as_cell()?.head(&space))
         }
     } else if !b.is_atom() {
         Ok(false)
     } else {
-        let cmp = lth(stack, a.as_atom()?, b.as_atom()?);
+        let cmp = lth(stack, a.as_atom()?, b.as_atom()?, &space);
         Ok(unsafe { cmp.raw_equals(&D(1)) })
     }
 }
