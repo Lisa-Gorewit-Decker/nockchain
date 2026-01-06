@@ -1737,11 +1737,10 @@ pub(crate) mod test {
     #[test]
     #[cfg_attr(miri, ignore)]
     fn test_evacuate_noun_list_round_trip() {
-        use crate::pma::{Pma, PmaCopy};
-        use std::path::PathBuf;
+        use crate::pma::{test_pma_path, Pma, PmaCopy};
 
         let mut stack = make_test_stack(DEFAULT_STACK_SIZE);
-        let mut pma = Pma::new(100000, PathBuf::from("/tmp/test_noun_list_pma"))
+        let mut pma = Pma::new(100000, test_pma_path("noun_list"))
             .expect("Failed to create test PMA");
         let space = NounSpace::new(&stack, &pma);
 
@@ -1792,12 +1791,11 @@ pub(crate) mod test {
     #[cfg_attr(miri, ignore)]
     fn test_evacuate_noun_list_complex_nouns() {
         use crate::noun::{Cell, IndirectAtom};
-        use crate::pma::{Pma, PmaCopy};
-        use std::path::PathBuf;
+        use crate::pma::{test_pma_path, Pma, PmaCopy};
 
         let mut stack = make_test_stack(DEFAULT_STACK_SIZE);
         let mut ref_stack = make_test_stack(DEFAULT_STACK_SIZE);
-        let mut pma = Pma::new(100000, PathBuf::from("/tmp/test_noun_list_complex_pma"))
+        let mut pma = Pma::new(100000, test_pma_path("noun_list_complex"))
             .expect("Failed to create test PMA");
         let space = NounSpace::new(&stack, &pma);
 
@@ -1907,11 +1905,10 @@ pub(crate) mod test {
     #[test]
     #[cfg_attr(miri, ignore)]
     fn test_evacuate_batteries_round_trip() {
-        use crate::pma::{Pma, PmaCopy};
-        use std::path::PathBuf;
+        use crate::pma::{test_pma_path, Pma, PmaCopy};
 
         let mut stack = make_test_stack(DEFAULT_STACK_SIZE);
-        let mut pma = Pma::new(100000, PathBuf::from("/tmp/test_batteries_pma"))
+        let mut pma = Pma::new(100000, test_pma_path("batteries"))
             .expect("Failed to create test PMA");
         let space = NounSpace::new(&stack, &pma);
 
@@ -1977,11 +1974,10 @@ pub(crate) mod test {
     #[test]
     #[cfg_attr(miri, ignore)]
     fn test_evacuate_batteries_list_round_trip() {
-        use crate::pma::{Pma, PmaCopy};
-        use std::path::PathBuf;
+        use crate::pma::{test_pma_path, Pma, PmaCopy};
 
         let mut stack = make_test_stack(DEFAULT_STACK_SIZE);
-        let mut pma = Pma::new(100000, PathBuf::from("/tmp/test_batteries_list_pma"))
+        let mut pma = Pma::new(100000, test_pma_path("batteries_list"))
             .expect("Failed to create test PMA");
         let space = NounSpace::new(&stack, &pma);
 
@@ -2062,11 +2058,10 @@ pub(crate) mod test {
     #[test]
     #[cfg_attr(miri, ignore)]
     fn test_evacuate_cold_round_trip() {
-        use crate::pma::{Pma, PmaCopy};
-        use std::path::PathBuf;
+        use crate::pma::{test_pma_path, Pma, PmaCopy};
 
         let mut stack = make_test_stack(DEFAULT_STACK_SIZE);
-        let mut pma = Pma::new(100000, PathBuf::from("/tmp/test_cold_pma"))
+        let mut pma = Pma::new(100000, test_pma_path("cold"))
             .expect("Failed to create test PMA");
         let space = NounSpace::new(&stack, &pma);
 

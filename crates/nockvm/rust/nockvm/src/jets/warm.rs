@@ -257,8 +257,7 @@ mod test {
     use crate::jets::JetErr;
     use crate::mem::NockStack;
     use crate::noun::{NounAllocator, NounSpace, D};
-    use crate::pma::{Pma, PmaCopy};
-    use std::path::PathBuf;
+    use crate::pma::{test_pma_path, Pma, PmaCopy};
 
     const DEFAULT_STACK_SIZE: usize = 1 << 16;
 
@@ -340,7 +339,7 @@ mod test {
     #[cfg_attr(miri, ignore)]
     fn test_evacuate_warm_entry_round_trip() {
         let mut stack = make_test_stack(DEFAULT_STACK_SIZE);
-        let mut pma = Pma::new(100000, PathBuf::from("/tmp/test_warm_entry_pma"))
+        let mut pma = Pma::new(100000, test_pma_path("warm_entry"))
             .expect("Failed to create test PMA");
         let space = NounSpace::new(&stack, &pma);
 
@@ -426,7 +425,7 @@ mod test {
     #[cfg_attr(miri, ignore)]
     fn test_evacuate_warm_round_trip() {
         let mut stack = make_test_stack(DEFAULT_STACK_SIZE);
-        let mut pma = Pma::new(100000, PathBuf::from("/tmp/test_warm_pma"))
+        let mut pma = Pma::new(100000, test_pma_path("warm"))
             .expect("Failed to create test PMA");
         let space = NounSpace::new(&stack, &pma);
 

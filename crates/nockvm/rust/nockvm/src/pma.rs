@@ -30,8 +30,7 @@ pub enum PmaError {
 /// The Persistent Memory Arena
 ///
 /// A bump-allocated memory region for storing nouns in offset form.
-/// The PMA is backed by a file (in future milestones) and persists across
-/// program restarts.
+/// The PMA is backed by a file and can persist across program restarts.
 ///
 /// "Bump-allocated" means allocation simply increments the `alloc_offset`
 /// pointer by the requested size—there is no free list, no compaction, and
@@ -76,7 +75,7 @@ pub struct Pma {
 impl Pma {
     /// Create a new PMA with the given size in words
     pub fn new(size_words: usize, path: PathBuf) -> Result<Self, PmaError> {
-        let arena = Arena::allocate(size_words)?;
+        let arena = Arena::allocate_file(&path, size_words)?;
         Ok(Self {
             arena,
             alloc_offset: 0,
@@ -457,6 +456,18 @@ impl PmaCopy for Noun {
 }
 
 #[cfg(test)]
+pub(crate) fn test_pma_path(label: &str) -> PathBuf {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    static COUNTER: AtomicUsize = AtomicUsize::new(0);
+    let id = COUNTER.fetch_add(1, Ordering::Relaxed);
+    let pid = std::process::id();
+    let mut path = std::env::temp_dir();
+    path.push(format!("nockvm_pma_{label}_{pid}_{id}.mmap"));
+    path
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use crate::hamt::Hamt;
@@ -468,7 +479,8 @@ mod tests {
 
     /// Helper to create a test PMA with a given size
     fn test_pma(size_words: usize) -> Pma {
-        Pma::new(size_words, PathBuf::from("/tmp/test_pma")).expect("Failed to create test PMA")
+        let path = test_pma_path("pma");
+        Pma::new(size_words, path).expect("Failed to create test PMA")
     }
 
     /// Verifies bump allocation returns sequential offsets and correctly tracks free space.

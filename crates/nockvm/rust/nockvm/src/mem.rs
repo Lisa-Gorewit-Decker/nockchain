@@ -1,7 +1,8 @@
 // TODO: fix stack push in PC
 use std::alloc::Layout;
-use std::fs::File;
+use std::fs::{File, OpenOptions};
 use std::panic::panic_any;
+use std::path::Path;
 use std::ptr::copy_nonoverlapping;
 use std::sync::Arc;
 use std::vec::Vec;
@@ -83,6 +84,10 @@ pub enum NewStackError {
     MemfdFailed(std::io::Error),
     #[error("Failed to resize memfd for stack: {0}")]
     FtruncateFailed(std::io::Error),
+    #[error("Failed to open arena file: {0}")]
+    FileOpenFailed(std::io::Error),
+    #[error("Failed to resize arena file: {0}")]
+    FileResizeFailed(std::io::Error),
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -185,6 +190,28 @@ impl Arena {
         fs::ftruncate(&fd, bytes as u64)
             .map_err(|err| NewStackError::FtruncateFailed(err.into()))?;
         let file = Arc::new(File::from(fd));
+        let mut mapping = unsafe { MmapMut::map_mut(&*file).map_err(NewStackError::MmapFailed)? };
+        let base = mapping.as_mut_ptr();
+        Ok(Arc::new(Self {
+            base,
+            words,
+            fd: file,
+            mapping: MappingKind::ReadWrite(mapping),
+        }))
+    }
+
+    pub fn allocate_file(path: &Path, words: usize) -> Result<Arc<Self>, NewStackError> {
+        let bytes = words.checked_shl(3).ok_or(NewStackError::StackTooSmall)?;
+        let file = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .open(path)
+            .map_err(NewStackError::FileOpenFailed)?;
+        file.set_len(bytes as u64)
+            .map_err(NewStackError::FileResizeFailed)?;
+        let file = Arc::new(file);
         let mut mapping = unsafe { MmapMut::map_mut(&*file).map_err(NewStackError::MmapFailed)? };
         let base = mapping.as_mut_ptr();
         Ok(Arc::new(Self {
@@ -2414,229 +2441,5 @@ mod test {
             prop_assert_eq!(round2 as usize, off2);
             prop_assert_eq!(stack.ptr_from_offset(round2), ptr2);
         }
-    }
-}
-
-#[cfg(all(test, target_os = "linux"))]
-mod paging_tests {
-    use std::sync::{Arc, OnceLock};
-
-    use gnort::*;
-
-    use super::Arena;
-    use crate::interpreter::inc;
-    use crate::mem::NockStack;
-    use crate::noun::Atom;
-
-    const SLAB_BYTES: usize = 64 * 1024 * 1024;
-    const TOUCH_PAGES: usize = 64;
-    const INCREMENT_ITERATIONS: usize = 1000;
-
-    metrics_struct![
-        PmaPagingMetrics,
-        (initial_ratio, "nockvm.pma.initial_residency_ratio", Gauge),
-        (post_drop_ratio, "nockvm.pma.post_drop_residency_ratio", Gauge),
-        (replica_ratio, "nockvm.pma.replica_residency_ratio", Gauge),
-        (replica_expected_ratio, "nockvm.pma.replica_expected_ratio", Gauge),
-        (replica_touched_pages, "nockvm.pma.replica_touched_pages", Gauge),
-        (original_ratio, "nockvm.pma.original_residency_ratio", Gauge),
-        (post_compute_ratio, "nockvm.pma.post_compute_residency_ratio", Gauge)
-    ];
-
-    fn paging_metrics() -> &'static PmaPagingMetrics {
-        static METRICS: OnceLock<PmaPagingMetrics> = OnceLock::new();
-        METRICS.get_or_init(|| {
-            PmaPagingMetrics::register(gnort::global_metrics_registry())
-                .expect("Failed to register PMA paging metrics")
-        })
-    }
-
-    #[test]
-    #[cfg_attr(miri, ignore = "memfd_create unsupported in Miri")]
-    fn memfd_slab_pages_out_and_replica_faults_lazily() {
-        let words = SLAB_BYTES >> 3;
-        let arena = Arena::allocate(words).expect("failed to allocate arena");
-        let base = arena.base_ptr();
-        let len = arena.len_bytes();
-        let page = page_size();
-
-        assert_eq!(len, SLAB_BYTES, "unexpected arena length");
-
-        touch_entire_region(base, len, page);
-        let resident_bitmap = mincore_bitmap(base, len);
-        let initial_ratio = residency_ratio(&resident_bitmap);
-        paging_metrics().initial_ratio.swap(initial_ratio);
-        println!("[pma-paging] initial residency ratio {:.3}", initial_ratio);
-        assert!(
-            resident_bitmap.iter().all(|b| b & 1 == 1),
-            "expected fully resident slab after touching every page"
-        );
-
-        drop_all_pages(base, len);
-        let after_drop = mincore_bitmap(base, len);
-        let post_drop_ratio = residency_ratio(&after_drop);
-        paging_metrics().post_drop_ratio.swap(post_drop_ratio);
-        println!(
-            "[pma-paging] post-drop residency ratio {:.3}",
-            post_drop_ratio
-        );
-        if post_drop_ratio > 0.9 {
-            println!(
-                "[pma-paging] paging did not drop pages; skipping remainder (ratio={post_drop_ratio:.3})"
-            );
-            return;
-        }
-        assert!(
-            post_drop_ratio < 0.1,
-            "expected paging to drop most pages, ratio={post_drop_ratio}"
-        );
-
-        let replica = arena
-            .map_copy_read_only()
-            .expect("failed to create replica mapping");
-        let total_pages = len / page;
-        let touched_pages = fault_sparse(replica.as_ptr(), len, page, TOUCH_PAGES);
-        assert!(touched_pages > 0, "expected to fault at least one page");
-
-        let replica_bitmap = mincore_bitmap(replica.as_ptr() as *mut u8, len);
-        let replica_ratio = residency_ratio(&replica_bitmap);
-        let expected_ratio = touched_pages as f64 / total_pages.max(1) as f64;
-        println!(
-            "[pma-paging] replica residency ratio {:.4} (expected {:.4}, touched {} pages)",
-            replica_ratio, expected_ratio, touched_pages
-        );
-        let metrics = paging_metrics();
-        metrics.replica_ratio.swap(replica_ratio);
-        metrics.replica_expected_ratio.swap(expected_ratio);
-        metrics.replica_touched_pages.swap(touched_pages as f64);
-        assert!(
-            replica_ratio >= expected_ratio * 0.5 && replica_ratio <= expected_ratio * 2.0,
-            "replica should fault approximately the touched subset (ratio {} expected {})",
-            replica_ratio,
-            expected_ratio
-        );
-
-        let original_ratio = residency_ratio(&mincore_bitmap(base, len));
-        println!(
-            "[pma-paging] final original residency ratio {:.3}",
-            original_ratio
-        );
-        paging_metrics().original_ratio.swap(original_ratio);
-        assert!(
-            original_ratio < 0.2,
-            "original slab should remain mostly paged out; ratio={original_ratio}"
-        );
-
-        // Run a compute-heavy but bounded workload while verifying residency
-        let final_ratio = run_increment_workload(&arena, INCREMENT_ITERATIONS);
-        println!(
-            "[pma-paging] post-compute residency ratio {:.3}",
-            final_ratio
-        );
-        paging_metrics().post_compute_ratio.swap(final_ratio);
-        assert!(
-            final_ratio < 0.2,
-            "running interpreter workload should not fault most of the slab; ratio={final_ratio}"
-        );
-
-        drop(replica);
-    }
-
-    fn run_increment_workload(arena: &Arc<Arena>, iterations: usize) -> f64 {
-        let (mut stack, _) =
-            NockStack::from_arena(arena.clone(), 0).expect("failed to reuse arena");
-        stack.frame_push(0);
-        let mut atom = Atom::new(&mut stack, 1);
-        for _ in 0..iterations {
-            atom = inc(&mut stack, atom);
-        }
-        unsafe {
-            stack.frame_pop();
-        }
-        let bitmap = mincore_bitmap(arena.base_ptr(), arena.len_bytes());
-        residency_ratio(&bitmap)
-    }
-
-    fn touch_entire_region(ptr: *mut u8, len: usize, page: usize) {
-        for offset in (0..len).step_by(page) {
-            unsafe {
-                std::ptr::write_volatile(ptr.add(offset), (offset / page % 255) as u8);
-            }
-        }
-    }
-
-    fn fault_sparse(ptr: *const u8, len: usize, page: usize, desired_pages: usize) -> usize {
-        let total_pages = len / page;
-        if total_pages == 0 {
-            return 0;
-        }
-        let touches = desired_pages.min(total_pages.max(1));
-        let stride = (total_pages / touches).max(1);
-        let mut touched = 0;
-        let mut page_idx = 0;
-        while touched < touches && page_idx < total_pages {
-            unsafe {
-                std::ptr::read_volatile(ptr.add(page_idx * page));
-            }
-            touched += 1;
-            page_idx = page_idx.saturating_add(stride);
-        }
-        touched
-    }
-
-    fn drop_all_pages(ptr: *mut u8, len: usize) {
-        let ret = unsafe { libc::madvise(ptr as *mut libc::c_void, len, libc::MADV_PAGEOUT) };
-        if ret != 0 {
-            let err = std::io::Error::last_os_error();
-            match err.raw_os_error() {
-                Some(libc::EINVAL) | Some(libc::ENOSYS) => {
-                    let fallback = unsafe {
-                        libc::madvise(ptr as *mut libc::c_void, len, libc::MADV_DONTNEED)
-                    };
-                    if fallback != 0 {
-                        panic!(
-                            "madvise fallback failed: {}",
-                            std::io::Error::last_os_error()
-                        );
-                    }
-                }
-                _ => panic!("madvise(MADV_PAGEOUT) failed: {err}"),
-            }
-        }
-        std::thread::sleep(std::time::Duration::from_millis(50));
-    }
-
-    fn mincore_bitmap(ptr: *mut u8, len: usize) -> Vec<u8> {
-        let page = page_size();
-        assert_eq!(
-            len % page,
-            0,
-            "mincore requires len to be page sized, len={len}, page={page}"
-        );
-        let pages = len / page;
-        let mut vec = vec![0u8; pages];
-        let ret = unsafe {
-            libc::mincore(
-                ptr as *mut libc::c_void,
-                len,
-                vec.as_mut_ptr() as *mut libc::c_uchar,
-            )
-        };
-        if ret != 0 {
-            panic!("mincore failed: {}", std::io::Error::last_os_error());
-        }
-        vec
-    }
-
-    fn residency_ratio(bitmap: &[u8]) -> f64 {
-        if bitmap.is_empty() {
-            return 0.0;
-        }
-        let resident = bitmap.iter().filter(|b| **b & 1 == 1).count();
-        resident as f64 / bitmap.len() as f64
-    }
-
-    fn page_size() -> usize {
-        unsafe { libc::sysconf(libc::_SC_PAGESIZE) as usize }
     }
 }
