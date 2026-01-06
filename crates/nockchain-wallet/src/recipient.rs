@@ -176,10 +176,29 @@ pub fn recipient_tokens_to_specs(
 #[cfg(test)]
 mod tests {
     use nockapp::noun::slab::{NockJammer, NounSlab};
+    use nockvm::mem::{Arena, NockStack};
     use nockvm::noun::FullDebugCell;
     use noun_serde::NounDecode;
 
     use super::*;
+
+    struct TestArenaGuard {
+        _stack: NockStack,
+    }
+
+    impl TestArenaGuard {
+        fn install() -> Self {
+            let stack = NockStack::new(1 << 16, 0);
+            stack.install_arena();
+            Self { _stack: stack }
+        }
+    }
+
+    impl Drop for TestArenaGuard {
+        fn drop(&mut self) {
+            Arena::clear_thread_local();
+        }
+    }
 
     const SAMPLE_P2PKH: &str = "9yPePjfWAdUnzaQKyxcRXKRa5PpUzKKEwtpECBZsUYt9Jd7egSDEWoV";
     const SAMPLE_P2PKH_ALT: &str = "9phXGACnW4238oqgvn2gpwaUjG3RAqcxq2Ash2vaKp8KjzSd3MQ56Jt";
@@ -280,6 +299,7 @@ mod tests {
 
     #[test]
     fn recipient_spec_roundtrips_via_noun() {
+        let _arena = TestArenaGuard::install();
         let specs = vec![
             RecipientSpec::P2pkh {
                 address: Hash::from_base58(SAMPLE_P2PKH).expect("p2pkh hash"),

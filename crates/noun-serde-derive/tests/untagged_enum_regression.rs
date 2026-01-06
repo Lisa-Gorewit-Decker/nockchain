@@ -1,4 +1,4 @@
-use nockvm::mem::NockStack;
+use nockvm::mem::{Arena, NockStack};
 use noun_serde::{NounDecode, NounEncode};
 
 #[derive(Debug, Clone, PartialEq, Eq, NounEncode, NounDecode)]
@@ -12,8 +12,27 @@ enum RecipientSpec {
     Multi { first: u64, second: u64 },
 }
 
+struct TestArenaGuard {
+    _stack: NockStack,
+}
+
+impl TestArenaGuard {
+    fn install() -> Self {
+        let stack = NockStack::new(1 << 16, 0);
+        stack.install_arena();
+        Self { _stack: stack }
+    }
+}
+
+impl Drop for TestArenaGuard {
+    fn drop(&mut self) {
+        Arena::clear_thread_local();
+    }
+}
+
 #[test]
 fn untagged_named_variant_decodes_all_fields() {
+    let _arena = TestArenaGuard::install();
     let mut stack = NockStack::new(8 << 10 << 10, 0);
     let expected = RecipientSpec::Pkh {
         hash: Hash([0x1234, 0x5678]),
@@ -27,6 +46,7 @@ fn untagged_named_variant_decodes_all_fields() {
 
 #[test]
 fn untagged_named_variant_with_multiple_fields_decodes_all_fields() {
+    let _arena = TestArenaGuard::install();
     let mut stack = NockStack::new(8 << 10 << 10, 0);
     let expected = RecipientSpec::Multi {
         first: 0xaaaa,
