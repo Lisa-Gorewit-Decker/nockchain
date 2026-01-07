@@ -6,12 +6,7 @@ use tempfile::TempDir;
 use super::NockApp;
 use crate::kernel::form::Kernel;
 
-pub async fn setup_nockapp_with_interval(
-    jam: &str,
-    save_interval: Option<std::time::Duration>,
-) -> (TempDir, NockApp) {
-    let temp_dir = TempDir::new().expect("Failed to create temp directory");
-    let temp_dir_path = temp_dir.path().to_path_buf();
+fn load_jam_bytes(jam: &str) -> Vec<u8> {
     // Try multiple possible locations for the jam file
     let possible_paths = [
         Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -21,10 +16,19 @@ pub async fn setup_nockapp_with_interval(
         // Add other potential paths
     ];
 
-    let jam_bytes = possible_paths
+    possible_paths
         .iter()
         .find_map(|path| fs::read(path).ok())
-        .unwrap_or_else(|| panic!("Failed to read {} file from any known location", jam));
+        .unwrap_or_else(|| panic!("Failed to read {} file from any known location", jam))
+}
+
+pub async fn setup_nockapp_with_interval(
+    jam: &str,
+    save_interval: Option<std::time::Duration>,
+) -> (TempDir, NockApp) {
+    let temp_dir = TempDir::new().expect("Failed to create temp directory");
+    let temp_dir_path = temp_dir.path().to_path_buf();
+    let jam_bytes = load_jam_bytes(jam);
 
     let kernel_f =
         async |checkpoint| {
@@ -43,7 +47,9 @@ pub async fn setup_nockapp(jam: &str) -> (TempDir, NockApp) {
 }
 
 #[cfg(test)]
-pub mod tests {
+    pub mod tests {
+    use std::fs;
+    use std::path::PathBuf;
     use std::sync::atomic::Ordering;
     use std::time::{Duration, Instant};
 
@@ -54,16 +60,21 @@ pub mod tests {
     use nockvm::serialization::{cue, jam};
     use nockvm::unifying_equality::unifying_equality;
     use nockvm_macros::tas;
+    use tempfile::TempDir;
     use tracing::info;
     use tracing_test::traced_test;
 
-    use super::{setup_nockapp, setup_nockapp_with_interval};
+    use super::{load_jam_bytes, setup_nockapp};
+    use crate::kernel::form::{Kernel, PmaConfig};
     use crate::nockapp::wire::{SystemWire, Wire};
     use crate::noun::slab::{slab_equality, NockJammer, NounSlab};
     use nockvm::ext::noun_equality;
     use crate::save::{SaveableCheckpoint, Saver};
     use crate::test_support::TestArena;
-    use crate::utils::NOCK_STACK_SIZE;
+    use crate::utils::{
+        NOCK_STACK_SIZE, NOCK_STACK_SIZE_HUGE, NOCK_STACK_SIZE_LARGE, NOCK_STACK_SIZE_MEDIUM,
+        NOCK_STACK_SIZE_SMALL, NOCK_STACK_SIZE_TINY,
+    };
     use crate::{NockApp, NounExt};
 
     async fn save_nockapp(nockapp: &mut NockApp) {
@@ -362,9 +373,164 @@ pub mod tests {
         std::env::set_var("NOCKAPP_DISABLE_METRICS", "1");
 
         let _test_arena = TestArena::default();
-        let (_temp, nockapp) = setup_nockapp_with_interval("test-ker.jam", None).await;
-        let pma_timing = nockapp
-            .kernel
+        let kernel_bytes = if let Some(path) = std::env::var_os("NOCKAPP_PERF_KERNEL_JAM") {
+            let path = PathBuf::from(path);
+            fs::read(&path).unwrap_or_else(|err| {
+                panic!(
+                    "Failed to read kernel jam from {:?}: {err}",
+                    path
+                )
+            })
+        } else {
+            load_jam_bytes("test-ker.jam")
+        };
+
+        let checkpoint = if let Some(path) = std::env::var_os("NOCKAPP_PERF_CHECKPOINT_DIR") {
+            let path = PathBuf::from(path);
+            let (_saver, checkpoint_opt) =
+                Saver::<NockJammer>::try_load::<SaveableCheckpoint>(&path, None)
+                .await
+                .unwrap_or_else(|err| {
+                    panic!(
+                        "Failed to load checkpoint from {:?}: {err}",
+                        path
+                    )
+                });
+            checkpoint_opt
+        } else {
+            None
+        };
+
+        let stack_choice = std::env::var("NOCKAPP_PERF_STACK")
+            .unwrap_or_else(|_| "normal".to_string());
+        let pma_words_override = std::env::var("NOCKAPP_PERF_PMA_WORDS")
+            .ok()
+            .and_then(|val| val.parse::<usize>().ok());
+        let mut checkpoint = checkpoint;
+        let (stack_words, kernel, _pma_dir) = match stack_choice.as_str() {
+            "tiny" => {
+                let pma_dir = TempDir::new().expect("Failed to create temp PMA dir");
+                let pma_path = pma_dir.path().join("pma.mmap");
+                let pma_words = pma_words_override.unwrap_or(NOCK_STACK_SIZE_TINY);
+                let pma_config = Some(PmaConfig {
+                    path: pma_path,
+                    words: pma_words,
+                });
+                let kernel = Kernel::load_with_hot_state_tiny(
+                    &kernel_bytes,
+                    checkpoint.take(),
+                    &[],
+                    vec![],
+                    Default::default(),
+                    pma_config,
+                )
+                .await
+                .expect("Failed to load kernel");
+                (NOCK_STACK_SIZE_TINY, kernel, pma_dir)
+            }
+            "small" => {
+                let pma_dir = TempDir::new().expect("Failed to create temp PMA dir");
+                let pma_path = pma_dir.path().join("pma.mmap");
+                let pma_words = pma_words_override.unwrap_or(NOCK_STACK_SIZE_SMALL);
+                let pma_config = Some(PmaConfig {
+                    path: pma_path,
+                    words: pma_words,
+                });
+                let kernel = Kernel::load_with_hot_state_small(
+                    &kernel_bytes,
+                    checkpoint.take(),
+                    &[],
+                    vec![],
+                    Default::default(),
+                    pma_config,
+                )
+                .await
+                .expect("Failed to load kernel");
+                (NOCK_STACK_SIZE_SMALL, kernel, pma_dir)
+            }
+            "medium" => {
+                let pma_dir = TempDir::new().expect("Failed to create temp PMA dir");
+                let pma_path = pma_dir.path().join("pma.mmap");
+                let pma_words = pma_words_override.unwrap_or(NOCK_STACK_SIZE_MEDIUM);
+                let pma_config = Some(PmaConfig {
+                    path: pma_path,
+                    words: pma_words,
+                });
+                let kernel = Kernel::load_with_hot_state_medium(
+                    &kernel_bytes,
+                    checkpoint.take(),
+                    &[],
+                    vec![],
+                    Default::default(),
+                    pma_config,
+                )
+                .await
+                .expect("Failed to load kernel");
+                (NOCK_STACK_SIZE_MEDIUM, kernel, pma_dir)
+            }
+            "large" => {
+                let pma_dir = TempDir::new().expect("Failed to create temp PMA dir");
+                let pma_path = pma_dir.path().join("pma.mmap");
+                let pma_words = pma_words_override.unwrap_or(NOCK_STACK_SIZE_LARGE);
+                let pma_config = Some(PmaConfig {
+                    path: pma_path,
+                    words: pma_words,
+                });
+                let kernel = Kernel::load_with_hot_state_large(
+                    &kernel_bytes,
+                    checkpoint.take(),
+                    &[],
+                    vec![],
+                    Default::default(),
+                    pma_config,
+                )
+                .await
+                .expect("Failed to load kernel");
+                (NOCK_STACK_SIZE_LARGE, kernel, pma_dir)
+            }
+            "huge" => {
+                let pma_dir = TempDir::new().expect("Failed to create temp PMA dir");
+                let pma_path = pma_dir.path().join("pma.mmap");
+                let pma_words = pma_words_override.unwrap_or(NOCK_STACK_SIZE_HUGE);
+                let pma_config = Some(PmaConfig {
+                    path: pma_path,
+                    words: pma_words,
+                });
+                let kernel = Kernel::load_with_hot_state_huge(
+                    &kernel_bytes,
+                    checkpoint.take(),
+                    &[],
+                    vec![],
+                    Default::default(),
+                    pma_config,
+                )
+                .await
+                .expect("Failed to load kernel");
+                (NOCK_STACK_SIZE_HUGE, kernel, pma_dir)
+            }
+            _ => {
+                let pma_dir = TempDir::new().expect("Failed to create temp PMA dir");
+                let pma_path = pma_dir.path().join("pma.mmap");
+                let pma_words = pma_words_override.unwrap_or(NOCK_STACK_SIZE);
+                let pma_config = Some(PmaConfig {
+                    path: pma_path,
+                    words: pma_words,
+                });
+                let kernel = Kernel::load_with_hot_state(
+                    &kernel_bytes,
+                    checkpoint.take(),
+                    &[],
+                    vec![],
+                    Default::default(),
+                    pma_config,
+                )
+                .await
+                .expect("Failed to load kernel");
+                (NOCK_STACK_SIZE, kernel, pma_dir)
+            }
+        };
+
+        let pma_timing = kernel
             .serf
             .pma_timing
             .clone()
@@ -380,14 +546,72 @@ pub mod tests {
             .and_then(|val| val.parse().ok())
             .unwrap_or(1);
 
-        let mut stack = NockStack::new(NOCK_STACK_SIZE, 0);
-        let space = stack.noun_space();
+        let poke_jam_path = std::env::var_os("NOCKAPP_PERF_POKE_JAM");
+        let peek_jam_path = std::env::var_os("NOCKAPP_PERF_PEEK_JAM");
+        let use_custom_jam = poke_jam_path.is_some() || peek_jam_path.is_some();
+        if poke_jam_path.is_some() != peek_jam_path.is_some() {
+            panic!("Both NOCKAPP_PERF_POKE_JAM and NOCKAPP_PERF_PEEK_JAM must be set together");
+        }
+
+        let (poke_jam, peek_jam) = if let (Some(poke_path), Some(peek_path)) =
+            (poke_jam_path, peek_jam_path)
+        {
+            let poke_path = PathBuf::from(poke_path);
+            let peek_path = PathBuf::from(peek_path);
+            let poke_jam = fs::read(&poke_path).unwrap_or_else(|err| {
+                panic!(
+                    "Failed to read poke jam from {:?}: {err}",
+                    poke_path
+                )
+            });
+            let peek_jam = fs::read(&peek_path).unwrap_or_else(|err| {
+                panic!(
+                    "Failed to read peek jam from {:?}: {err}",
+                    peek_path
+                )
+            });
+            (poke_jam, peek_jam)
+        } else {
+            (Vec::new(), Vec::new())
+        };
+
+        let mut stack = if use_custom_jam {
+            None
+        } else {
+            Some(NockStack::new(NOCK_STACK_SIZE, 0))
+        };
         let mut poke_wall = Vec::with_capacity(iters);
         let mut peek_wall = Vec::with_capacity(iters);
 
+        println!(
+            "perf: stack_words={}, iters={}, warmup_skipped={}, custom_jam={}",
+            stack_words,
+            iters,
+            warmup,
+            use_custom_jam
+        );
+
+        let make_slab_from_jam = |jam: &[u8]| -> NounSlab {
+            let mut slab = NounSlab::new();
+            let noun = slab
+                .cue_into(Bytes::copy_from_slice(jam))
+                .unwrap_or_else(|err| {
+                    panic!(
+                        "Panicked with {err:?} at {}:{} (git sha: {:?})",
+                        file!(),
+                        line!(),
+                        option_env!("GIT_SHA")
+                    )
+                });
+            slab.set_root(noun);
+            slab
+        };
+
         for i in 1..=iters {
-            let poke_noun = D(tas!(b"inc"));
-            let poke = {
+            let poke = if use_custom_jam {
+                make_slab_from_jam(&poke_jam)
+            } else {
+                let poke_noun = D(tas!(b"inc"));
                 let mut slab = NounSlab::new();
                 let space = NounSpace::empty();
                 slab.copy_into(poke_noun, &space);
@@ -395,7 +619,7 @@ pub mod tests {
             };
             let wire = SystemWire.to_wire();
             let poke_start = Instant::now();
-            let _ = nockapp.kernel.poke(wire, poke).await.unwrap_or_else(|err| {
+            let _ = kernel.poke(wire, poke).await.unwrap_or_else(|err| {
                 panic!(
                     "Panicked with {err:?} at {}:{} (git sha: {:?})",
                     file!(),
@@ -405,14 +629,18 @@ pub mod tests {
             });
             poke_wall.push(poke_start.elapsed());
 
-            let peek_noun = T(&mut stack, &[D(tas!(b"state")), D(0)]);
-            let peek = {
+            let peek = if use_custom_jam {
+                make_slab_from_jam(&peek_jam)
+            } else {
+                let stack = stack.as_mut().expect("stack");
+                let space = stack.noun_space();
+                let peek_noun = T(stack, &[D(tas!(b"state")), D(0)]);
                 let mut slab = NounSlab::new();
                 slab.copy_into(peek_noun, &space);
                 slab
             };
             let peek_start = Instant::now();
-            let mut res = nockapp.kernel.peek(peek).await.unwrap_or_else(|err| {
+            let mut res = kernel.peek(peek).await.unwrap_or_else(|err| {
                 panic!(
                     "Panicked with {err:?} at {}:{} (git sha: {:?})",
                     file!(),
@@ -422,42 +650,66 @@ pub mod tests {
             });
             peek_wall.push(peek_start.elapsed());
 
-            let res_space = res.noun_space();
-            res.modify_noun(|r| {
-                let cell = slot(r, 7, &res_space)
-                    .unwrap_or_else(|err| {
-                        panic!(
-                            "Panicked with {err:?} at {}:{} (git sha: {:?})",
-                            file!(),
-                            line!(),
-                            option_env!("GIT_SHA")
-                        )
-                    })
-                    .as_cell()
-                    .unwrap_or_else(|err| {
-                        panic!(
-                            "Panicked with {err:?} at {}:{} (git sha: {:?})",
-                            file!(),
-                            line!(),
-                            option_env!("GIT_SHA")
-                        )
-                    });
-                CellHandle::new(cell, &res_space).tail().noun()
-            });
+            if use_custom_jam {
+                if i == 1 {
+                    let jammed = res.jam();
+                    let mut roundtrip = NounSlab::new();
+                    let noun = roundtrip
+                        .cue_into(jammed)
+                        .unwrap_or_else(|err| {
+                            panic!(
+                                "Panicked with {err:?} at {}:{} (git sha: {:?})",
+                                file!(),
+                                line!(),
+                                option_env!("GIT_SHA")
+                            )
+                        });
+                    roundtrip.set_root(noun);
+                    assert!(
+                        slab_equality(&res, &roundtrip),
+                        "peek roundtrip mismatch: res={:?} roundtrip={:?}",
+                        res,
+                        roundtrip
+                    );
+                }
+            } else {
+                let res_space = res.noun_space();
+                res.modify_noun(|r| {
+                    let cell = slot(r, 7, &res_space)
+                        .unwrap_or_else(|err| {
+                            panic!(
+                                "Panicked with {err:?} at {}:{} (git sha: {:?})",
+                                file!(),
+                                line!(),
+                                option_env!("GIT_SHA")
+                            )
+                        })
+                        .as_cell()
+                        .unwrap_or_else(|err| {
+                            panic!(
+                                "Panicked with {err:?} at {}:{} (git sha: {:?})",
+                                file!(),
+                                line!(),
+                                option_env!("GIT_SHA")
+                            )
+                        });
+                    CellHandle::new(cell, &res_space).tail().noun()
+                });
 
-            let comp = {
-                let mut slab = NounSlab::new();
-                let space = NounSpace::empty();
-                slab.copy_into(D(i as u64), &space);
-                slab
-            };
+                let comp = {
+                    let mut slab = NounSlab::new();
+                    let space = NounSpace::empty();
+                    slab.copy_into(D(i as u64), &space);
+                    slab
+                };
 
-            assert!(
-                slab_equality(&res, &comp),
-                "res: {:?} != comp: {:?}",
-                res,
-                comp
-            );
+                assert!(
+                    slab_equality(&res, &comp),
+                    "res: {:?} != comp: {:?}",
+                    res,
+                    comp
+                );
+            }
         }
 
         let mut pma_samples = pma_timing.take_samples();
