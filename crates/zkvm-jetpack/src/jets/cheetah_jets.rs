@@ -1,5 +1,4 @@
 use ibig::UBig;
-use nockvm::ext::NounExt;
 use nockvm::interpreter::Context;
 use nockvm::jets::util::BAIL_FAIL;
 use nockvm::jets::JetErr;
@@ -82,20 +81,15 @@ pub fn batch_verify_affine_jet(context: &mut Context, subject: Noun) -> Result<N
     let space = context.stack.noun_space();
     let list = subject.slot(6, &space)?;
     let args = list
-        .list_iter(&space)
+        .in_space(&space)
+        .list_iter()
         .map(|arg| {
             let pubkey =
-                CheetahPoint::from_noun(&arg.slot(2, &space)?, &space).map_err(|_| BAIL_FAIL)?;
+                CheetahPoint::from_noun(&arg.slot(2)?.noun(), &space).map_err(|_| BAIL_FAIL)?;
             let m =
-                <[Belt; 5]>::from_noun(&arg.slot(6, &space)?, &space).map_err(|_| BAIL_FAIL)?;
-            let chal = arg
-                .slot(14, &space)?
-                .as_atom()?
-                .as_ubig(&mut context.stack, &space);
-            let sig = arg
-                .slot(15, &space)?
-                .as_atom()?
-                .as_ubig(&mut context.stack, &space);
+                <[Belt; 5]>::from_noun(&arg.slot(6)?.noun(), &space).map_err(|_| BAIL_FAIL)?;
+            let chal = arg.slot(14)?.as_atom()?.as_ubig(&mut context.stack);
+            let sig = arg.slot(15)?.as_atom()?.as_ubig(&mut context.stack);
             Ok(ValidateArgs {
                 pubkey,
                 m,

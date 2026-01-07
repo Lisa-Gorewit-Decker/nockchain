@@ -20,8 +20,6 @@ use nockvm::noun::{
 use nockvm::serialization::{met0_u64_to_usize, met0_usize};
 use thiserror::Error;
 
-use crate::noun::NounExt;
-
 const CELL_MEM_WORD_SIZE: usize = (size_of::<CellMemory>() + 7) >> 3;
 
 /// A (mostly*) self-contained arena for allocating nouns.
@@ -82,10 +80,11 @@ impl<J> NounSlab<J> {
     pub fn to_vec(&self) -> Vec<Self> {
         let space = self.noun_space();
         self.root
-            .list_iter(&space)
+            .in_space(&space)
+            .list_iter()
             .map(|n| {
                 let mut slab = Self::new();
-                slab.copy_into(n, &space);
+                slab.copy_into(n.noun(), &space);
                 slab
             })
             .collect()

@@ -992,9 +992,11 @@ impl Serf {
             .as_cell()
             .expect("print goof: expected goof to be a cell")
             .tail(&space);
-        tang.list_iter(&space).for_each(|tank: Noun| {
+        tang.in_space(&space).list_iter().for_each(|tank| {
             //  TODO: Slogger should be emitting Results in case of failure
-            self.context.slogger.slog(&mut self.context.stack, 1, tank);
+            self.context
+                .slogger
+                .slog(&mut self.context.stack, 1, tank.noun());
         });
     }
 

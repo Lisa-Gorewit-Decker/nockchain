@@ -107,9 +107,9 @@ impl AsSlabVec for Noun {
     fn as_slab_vec(&self, space: &NounSpace) -> Vec<NounSlab> {
         let noun_list = *self;
         let mut slab_vec = Vec::new();
-        for noun in noun_list.list_iter(space) {
+        for noun in noun_list.in_space(space).list_iter() {
             let mut new_slab = NounSlab::new();
-            new_slab.copy_into(noun, space);
+            new_slab.copy_into(noun.noun(), space);
             slab_vec.push(new_slab);
         }
         slab_vec

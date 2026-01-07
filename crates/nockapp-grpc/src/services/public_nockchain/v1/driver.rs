@@ -2,7 +2,6 @@ use std::net::SocketAddr;
 
 use nockapp::driver::{make_driver, IODriverFn, NockAppHandle};
 use nockchain_types::tx_engine::v0;
-use nockvm::ext::NounExt;
 use nockvm::noun::{NounAllocator, NounSpace};
 use nockvm_macros::tas;
 use noun_serde::{NounDecode, NounDecodeError};
@@ -20,8 +19,9 @@ impl NounDecode for PublicNockchainEffect {
     fn from_noun(effect: &nockapp::Noun, space: &NounSpace) -> Result<Self, NounDecodeError> {
         let effect_cell = effect.as_cell()?;
         if !effect_cell
-            .head(space)
-            .eq_bytes(b"nockchain-grpc", space)
+            .in_space(space)
+            .head()
+            .eq_bytes(b"nockchain-grpc")
         {
             return Err(NounDecodeError::InvalidTag);
         }

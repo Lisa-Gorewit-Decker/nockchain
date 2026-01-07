@@ -1,7 +1,6 @@
 use libp2p::PeerId;
 use nockapp::noun::slab::NounSlab;
 use nockapp::NockAppError;
-use nockvm::ext::NounExt;
 use nockvm::noun::{Noun, NounAllocator, NounSpace, D};
 use nockvm_macros::tas;
 use serde_bytes::ByteBuf;
@@ -32,17 +31,17 @@ impl NockchainFact {
         let space = slab.noun_space();
         let head = noun.as_cell()?.head(&space);
 
-        if head.eq_bytes(b"heard-block", &space) {
+        if head.in_space(&space).eq_bytes(b"heard-block") {
             let page = noun.as_cell()?.tail(&space);
             let block_id = block_id_from_page(page, &space)?;
             let block_id_str = tip5_hash_to_base58_stack(slab, block_id, &space)?;
             Ok(NockchainFact::HeardBlock(block_id_str, poke_slab))
-        } else if head.eq_bytes(b"heard-tx", &space) {
+        } else if head.in_space(&space).eq_bytes(b"heard-tx") {
             let raw_tx = noun.as_cell()?.tail(&space);
             let tx_id = tx_id_from_raw_tx(raw_tx, &space)?;
             let tx_id_str = tip5_hash_to_base58_stack(slab, tx_id, &space)?;
             Ok(NockchainFact::HeardTx(tx_id_str, poke_slab))
-        } else if head.eq_bytes(b"heard-elders", &space) {
+        } else if head.in_space(&space).eq_bytes(b"heard-elders") {
             let elders_dat = noun.as_cell()?.tail(&space);
             let oldest = elders_dat
                 .as_cell()?
@@ -52,8 +51,12 @@ impl NockchainFact {
             let elder_ids = elders_dat.as_cell()?.tail(&space);
             // Need to handle the closure capturing mutable reference
             let mut elder_id_strings = Vec::new();
-            for id_noun in elder_ids.list_iter(&space) {
-                elder_id_strings.push(tip5_hash_to_base58_stack(slab, id_noun, &space)?);
+            for id_noun in elder_ids.in_space(&space).list_iter() {
+                elder_id_strings.push(tip5_hash_to_base58_stack(
+                    slab,
+                    id_noun.noun(),
+                    &space,
+                )?);
             }
             Ok(NockchainFact::HeardElders(
                 oldest, elder_id_strings, poke_slab,
@@ -125,23 +128,23 @@ impl NockchainDataRequest {
     pub fn from_noun(noun: Noun, space: &NounSpace) -> Result<Self, NockAppError> {
         let res = (|| {
             let request_cell = noun.as_cell()?;
-            if !request_cell.head(space).eq_bytes(b"request", space) {
+            if !request_cell.in_space(space).head().eq_bytes(b"request") {
                 return Err(NockAppError::OtherError(String::from(
                     "Missing %request tag",
                 )));
             }
             // kind cell type $%([%block request-block] [%raw-tx request-tx])
             let kind_cell = request_cell.tail(space).as_cell()?;
-            if kind_cell.head(space).eq_bytes(b"block", space) {
+            if kind_cell.in_space(space).head().eq_bytes(b"block") {
                 // block_cell type
                 // $%  [%by-height p=page-number:dt]
                 //     [%elders p=block-id:dt q=peer-id]
                 // ==
                 let block_cell = kind_cell.tail(space).as_cell()?;
-                if block_cell.head(space).eq_bytes(b"by-height", space) {
+                if block_cell.in_space(space).head().eq_bytes(b"by-height") {
                     let height = block_cell.tail(space).as_atom()?.as_u64(space)?;
                     Ok(Self::BlockByHeight(height))
-                } else if block_cell.head(space).eq_bytes(b"elders", space) {
+                } else if block_cell.in_space(space).head().eq_bytes(b"elders") {
                     let elders_cell = block_cell.tail(space).as_cell()?;
                     let block_id = tip5_hash_to_base58(elders_cell.head(space), space)?;
                     let peer_id = PeerId::from_noun(elders_cell.tail(space), space)?;
@@ -156,7 +159,7 @@ impl NockchainDataRequest {
                         "Failed to parse EldersById message",
                     )))
                 }
-            } else if kind_cell.head(space).eq_bytes(b"raw-tx", space) {
+            } else if kind_cell.in_space(space).head().eq_bytes(b"raw-tx") {
                 // has type [%by-id p=tx-id:dt]
                 let raw_tx_cell = kind_cell.tail(space).as_cell()?;
                 let raw_tx_id = tip5_hash_to_base58(raw_tx_cell.tail(space), space)?;

@@ -11,7 +11,6 @@ use nockapp::save::SaveableCheckpoint;
 use nockapp::utils::NOCK_STACK_SIZE_TINY;
 use nockapp::CrownError;
 use nockchain_libp2p_io::tip5_util::tip5_hash_to_base58;
-use nockvm::ext::NounExt;
 use nockvm::interpreter::NockCancelToken;
 use nockvm::noun::{Atom, NounAllocator, D, NO, T, YES};
 use nockvm_macros::tas;
@@ -198,7 +197,7 @@ pub fn create_mining_driver(
                                                         return None;
                                                     };
                                                     let hed = effect_cell.head(&space);
-                                                    if hed.eq_bytes("mine-result", &space) {
+                                                    if hed.in_space(&space).eq_bytes("mine-result") {
                                                         Some(effect_cell.tail(&space))
                                                     } else {
                                                         None
@@ -297,7 +296,7 @@ pub fn create_mining_driver(
 
                         let candidate = {
                             let space = effect.noun_space();
-                            if effect_cell.head(&space).eq_bytes("mine", &space) {
+                            if effect_cell.in_space(&space).head().eq_bytes("mine") {
                                 let (version_slab, header_slab, target_slab, pow_len) = {
                                     let [version, commit, target, pow_len_noun] = effect_cell
                                         .tail(&space)

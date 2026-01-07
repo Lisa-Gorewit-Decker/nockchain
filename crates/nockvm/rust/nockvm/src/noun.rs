@@ -1,5 +1,5 @@
 use std::slice::{from_raw_parts, from_raw_parts_mut};
-use std::{error, fmt, ptr};
+use std::{error, fmt, ptr, str};
 
 use bitvec::prelude::{BitSlice, Lsb0};
 use either::{Either, Left, Right};
@@ -8,6 +8,7 @@ use intmap::IntMap;
 use nockvm_macros::tas;
 use static_assertions::assert_cfg;
 
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
 use crate::mem::{word_size_of, Arena, NockStack};
@@ -157,6 +158,8 @@ impl TaggedPtr {
 pub struct NounSpace {
     stack: Option<Arc<Arena>>,
     pma: Option<Arc<Arena>>,
+    stack_epoch: Option<Arc<AtomicU64>>,
+    stack_epoch_snapshot: Option<u64>,
     extra_ptr_ranges: Vec<(usize, usize)>,
 }
 
@@ -165,16 +168,28 @@ impl NounSpace {
         Self {
             stack,
             pma,
+            stack_epoch: None,
+            stack_epoch_snapshot: None,
+            extra_ptr_ranges: Vec::new(),
+        }
+    }
+
+    pub fn from_stack(stack: &NockStack, pma: Option<Arc<Arena>>) -> Self {
+        Self {
+            stack: Some(Arc::clone(stack.arena())),
+            pma,
+            stack_epoch: Some(stack.stack_epoch()),
+            stack_epoch_snapshot: Some(stack.stack_epoch_snapshot()),
             extra_ptr_ranges: Vec::new(),
         }
     }
 
     pub fn new(stack: &NockStack, pma: &Pma) -> Self {
-        Self::from_arenas(Some(Arc::clone(stack.arena())), Some(Arc::clone(pma.arena())))
+        Self::from_stack(stack, Some(Arc::clone(pma.arena())))
     }
 
     pub fn stack_only(stack: &NockStack) -> Self {
-        Self::from_arenas(Some(Arc::clone(stack.arena())), None)
+        Self::from_stack(stack, None)
     }
 
     pub fn pma_only(pma: &Pma) -> Self {
@@ -190,6 +205,24 @@ impl NounSpace {
         self
     }
 
+    pub fn handle<'a>(&'a self, noun: Noun) -> NounHandle<'a> {
+        NounHandle::new(noun, self)
+    }
+
+    fn assert_stack_epoch(&self) {
+        let Some(epoch) = &self.stack_epoch else {
+            return;
+        };
+        let snapshot = self
+            .stack_epoch_snapshot
+            .expect("stack epoch snapshot missing");
+        let current = epoch.load(Ordering::Relaxed);
+        assert!(
+            current == snapshot,
+            "NounSpace used after NockStack reset/flip (current epoch {current}, snapshot {snapshot})"
+        );
+    }
+
     fn resolve_stack_ptr(&self, payload: u64) -> *const u8 {
         let ptr = ((payload) << 3) as *const u8;
         self.classify_ptr(ptr);
@@ -202,6 +235,7 @@ impl NounSpace {
             let end = base + arena.len_bytes();
             let addr = ptr as usize;
             if addr >= base && addr < end {
+                self.assert_stack_epoch();
                 return AllocLocation::Stack;
             }
         }
@@ -251,6 +285,268 @@ impl NounSpace {
             offset_words
         );
         ptr
+    }
+}
+
+#[derive(Copy, Clone)]
+pub struct NounHandle<'a> {
+    noun: Noun,
+    space: &'a NounSpace,
+}
+
+impl<'a> NounHandle<'a> {
+    pub fn new(noun: Noun, space: &'a NounSpace) -> Self {
+        Self { noun, space }
+    }
+
+    pub fn noun(self) -> Noun {
+        self.noun
+    }
+
+    pub fn space(self) -> &'a NounSpace {
+        self.space
+    }
+
+    pub fn repr(self) -> NounRepr {
+        self.noun.repr(self.space)
+    }
+
+    pub fn allocated_location(self) -> Option<AllocLocation> {
+        self.noun.allocated_location(self.space)
+    }
+
+    pub fn is_direct(self) -> bool {
+        self.noun.is_direct()
+    }
+
+    pub fn is_atom(self) -> bool {
+        self.noun.is_atom()
+    }
+
+    pub fn is_cell(self) -> bool {
+        self.noun.is_cell()
+    }
+
+    pub fn as_atom(self) -> Result<AtomHandle<'a>> {
+        self.noun.as_atom().map(|atom| AtomHandle::new(atom, self.space))
+    }
+
+    pub fn as_cell(self) -> Result<CellHandle<'a>> {
+        self.noun.as_cell().map(|cell| CellHandle::new(cell, self.space))
+    }
+
+    pub fn atom(self) -> Option<AtomHandle<'a>> {
+        self.noun.atom().map(|atom| AtomHandle::new(atom, self.space))
+    }
+
+    pub fn cell(self) -> Option<CellHandle<'a>> {
+        self.noun.cell().map(|cell| CellHandle::new(cell, self.space))
+    }
+
+    pub fn as_either_atom_cell(self) -> Either<AtomHandle<'a>, CellHandle<'a>> {
+        match self.noun.as_either_atom_cell() {
+            Left(atom) => Left(AtomHandle::new(atom, self.space)),
+            Right(cell) => Right(CellHandle::new(cell, self.space)),
+        }
+    }
+
+    pub fn slot(self, axis: u64) -> Result<NounHandle<'a>> {
+        self.noun
+            .slot(axis, self.space)
+            .map(|noun| NounHandle::new(noun, self.space))
+    }
+
+    pub fn slot_atom(self, atom: Atom) -> Result<NounHandle<'a>> {
+        self.noun
+            .slot_atom(atom, self.space)
+            .map(|noun| NounHandle::new(noun, self.space))
+    }
+
+    pub fn list_iter(self) -> NounHandleListIterator<'a> {
+        NounHandleListIterator { noun: self }
+    }
+
+    pub fn eq_bytes(self, bytes: impl AsRef<[u8]>) -> bool {
+        if let Ok(atom) = self.noun.as_atom() {
+            AtomHandle::new(atom, self.space).eq_bytes(bytes)
+        } else {
+            false
+        }
+    }
+
+    pub fn mass(self) -> usize {
+        self.noun.mass(self.space)
+    }
+
+    pub fn mass_frame(self, stack: &NockStack) -> usize {
+        self.noun.mass_frame(stack, self.space)
+    }
+}
+
+#[derive(Copy, Clone)]
+pub struct AtomHandle<'a> {
+    atom: Atom,
+    space: &'a NounSpace,
+}
+
+impl<'a> AtomHandle<'a> {
+    pub fn new(atom: Atom, space: &'a NounSpace) -> Self {
+        Self { atom, space }
+    }
+
+    pub fn atom(self) -> Atom {
+        self.atom
+    }
+
+    pub fn space(self) -> &'a NounSpace {
+        self.space
+    }
+
+    pub fn as_noun(self) -> NounHandle<'a> {
+        NounHandle::new(self.atom.as_noun(), self.space)
+    }
+
+    pub fn is_direct(self) -> bool {
+        self.atom.is_direct()
+    }
+
+    pub fn is_indirect(self) -> bool {
+        self.atom.is_indirect()
+    }
+
+    pub fn is_normalized(&self) -> bool {
+        self.atom.is_normalized(self.space)
+    }
+
+    pub fn as_ne_bytes(&self) -> &[u8] {
+        self.atom.as_ne_bytes(self.space)
+    }
+
+    pub fn eq_bytes<B: AsRef<[u8]>>(&self, bytes: B) -> bool {
+        let bytes_ref = bytes.as_ref();
+        let atom_bytes = self.as_ne_bytes();
+        if bytes_ref.len() > atom_bytes.len() {
+            return false;
+        }
+        if bytes_ref.len() == atom_bytes.len() {
+            return atom_bytes == bytes_ref;
+        }
+        if atom_bytes[bytes_ref.len()..].iter().any(|b| *b != 0) {
+            return false;
+        }
+        &atom_bytes[0..bytes_ref.len()] == bytes_ref
+    }
+
+    pub fn to_bytes_until_nul(&self) -> std::result::Result<Vec<u8>, str::Utf8Error> {
+        str::from_utf8(self.as_ne_bytes())
+            .map(|bytes| bytes.trim_end_matches('\0').as_bytes().to_vec())
+    }
+
+    pub fn into_string(self) -> std::result::Result<String, str::Utf8Error> {
+        str::from_utf8(self.as_ne_bytes())
+            .map(|string| string.trim_end_matches('\0').to_string())
+    }
+
+    pub fn to_ne_bytes(self) -> Vec<u8> {
+        self.atom.to_ne_bytes(self.space)
+    }
+
+    pub fn to_be_bytes(self) -> Vec<u8> {
+        self.atom.to_be_bytes(self.space)
+    }
+
+    pub fn to_le_bytes(self) -> Vec<u8> {
+        self.atom.to_le_bytes(self.space)
+    }
+
+    pub fn as_u64(self) -> Result<u64> {
+        self.atom.as_u64(self.space)
+    }
+
+    pub fn as_u64_pair(self) -> Result<[u64; 2]> {
+        unsafe { self.atom.as_u64_pair(self.space) }
+    }
+
+    pub fn as_bitslice(&self) -> &BitSlice<u64, Lsb0> {
+        self.atom.as_bitslice(self.space)
+    }
+
+    pub fn as_bitslice_mut(&mut self) -> &mut BitSlice<u64, Lsb0> {
+        self.atom.as_bitslice_mut(self.space)
+    }
+
+    pub fn as_ubig<S: Stack>(self, stack: &mut S) -> UBig {
+        self.atom.as_ubig(stack, self.space)
+    }
+
+    pub fn size(self) -> usize {
+        self.atom.size(self.space)
+    }
+
+    pub fn bit_size(self) -> usize {
+        self.atom.bit_size(self.space)
+    }
+
+    pub fn data_pointer(&self) -> *const u64 {
+        self.atom.data_pointer(self.space)
+    }
+
+    pub unsafe fn normalize(self) -> AtomHandle<'a> {
+        let mut atom = self.atom;
+        let normalized = atom.normalize(self.space);
+        AtomHandle::new(normalized, self.space)
+    }
+}
+
+#[derive(Copy, Clone)]
+pub struct CellHandle<'a> {
+    cell: Cell,
+    space: &'a NounSpace,
+}
+
+impl<'a> CellHandle<'a> {
+    pub fn new(cell: Cell, space: &'a NounSpace) -> Self {
+        Self { cell, space }
+    }
+
+    pub fn cell(self) -> Cell {
+        self.cell
+    }
+
+    pub fn space(self) -> &'a NounSpace {
+        self.space
+    }
+
+    pub fn as_noun(self) -> NounHandle<'a> {
+        NounHandle::new(self.cell.as_noun(), self.space)
+    }
+
+    pub fn head(self) -> NounHandle<'a> {
+        NounHandle::new(self.cell.head(self.space), self.space)
+    }
+
+    pub fn tail(self) -> NounHandle<'a> {
+        NounHandle::new(self.cell.tail(self.space), self.space)
+    }
+}
+
+pub struct NounHandleListIterator<'a> {
+    noun: NounHandle<'a>,
+}
+
+impl<'a> Iterator for NounHandleListIterator<'a> {
+    type Item = NounHandle<'a>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if let Ok(cell) = self.noun.as_cell() {
+            let head = cell.head();
+            self.noun = cell.tail();
+            Some(head)
+        } else if unsafe { self.noun.noun().raw_equals(&D(0)) } {
+            None
+        } else {
+            panic!("Improper list terminator: {:?}", self.noun.noun());
+        }
     }
 }
 
@@ -1105,6 +1401,10 @@ impl Cell {
     pub fn as_noun(&self) -> Noun {
         Noun { cell: *self }
     }
+
+    pub fn in_space<'a>(self, space: &'a NounSpace) -> CellHandle<'a> {
+        CellHandle::new(self, space)
+    }
 }
 
 impl fmt::Debug for Cell {
@@ -1487,6 +1787,10 @@ impl Atom {
         Noun { atom: self }
     }
 
+    pub fn in_space<'a>(self, space: &'a NounSpace) -> AtomHandle<'a> {
+        AtomHandle::new(self, space)
+    }
+
     /// Returns a slice of bytes in native-endian order. Currently, Sword only supports
     /// little-endian machines, so this will return little-endian.
     pub fn as_ne_bytes(&self, space: &NounSpace) -> &[u8] {
@@ -1769,6 +2073,10 @@ pub union Noun {
 impl Noun {
     pub fn is_none(self) -> bool {
         unsafe { self.raw == u64::MAX }
+    }
+
+    pub fn in_space<'a>(self, space: &'a NounSpace) -> NounHandle<'a> {
+        NounHandle::new(self, space)
     }
 
     pub fn is_direct(&self) -> bool {

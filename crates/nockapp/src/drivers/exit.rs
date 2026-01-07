@@ -1,7 +1,6 @@
 use tracing::{debug, error};
 
 use crate::nockapp::driver::{make_driver, IODriverFn};
-use crate::NounExt;
 use nockvm::noun::NounAllocator;
 
 /// Creates an IO driver function for handling exit signals.
@@ -25,7 +24,10 @@ pub fn exit() -> IODriverFn {
                                     let noun = eff.root();
                                     if let Ok(cell) = noun.as_cell() {
                                         let space = eff.noun_space();
-                                        if cell.head(&space).eq_bytes(b"exit", &space)
+                                        if cell
+                                            .in_space(&space)
+                                            .head()
+                                            .eq_bytes(b"exit")
                                             && cell.tail(&space).is_atom()
                                         {
                                             Some(

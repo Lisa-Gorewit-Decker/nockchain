@@ -4,6 +4,7 @@ use std::fs::{File, OpenOptions};
 use std::panic::panic_any;
 use std::path::Path;
 use std::ptr::copy_nonoverlapping;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::vec::Vec;
 use std::{io, mem, ptr};
@@ -338,6 +339,8 @@ pub struct NockStack {
     arena: Arc<Arena>,
     /// Optional PMA arena for offset noun resolution
     pma: Option<Arc<Arena>>,
+    /// Epoch that increments on reset/flip to invalidate stack-pointer nouns.
+    stack_epoch: Arc<AtomicU64>,
     /// Whether or not [`Self::pre_copy()`] has been called on the current stack frame.
     pc: bool,
 }
@@ -397,7 +400,17 @@ impl NockStack {
 
     #[inline]
     pub fn noun_space(&self) -> NounSpace {
-        NounSpace::from_arenas(Some(Arc::clone(&self.arena)), self.pma.clone())
+        NounSpace::from_stack(self, self.pma.clone())
+    }
+
+    #[inline]
+    pub fn stack_epoch(&self) -> Arc<AtomicU64> {
+        Arc::clone(&self.stack_epoch)
+    }
+
+    #[inline]
+    pub fn stack_epoch_snapshot(&self) -> u64 {
+        self.stack_epoch.load(Ordering::Relaxed)
     }
 
     #[inline]
@@ -491,6 +504,7 @@ impl NockStack {
                 least_space,
                 arena,
                 pma: None,
+                stack_epoch: Arc::new(AtomicU64::new(0)),
                 pc: false,
             },
             free,
@@ -802,6 +816,7 @@ impl NockStack {
 
             assert!(self.is_west());
         };
+        self.stack_epoch.fetch_add(1, Ordering::Relaxed);
     }
 
     /// Resets the NockStack. The top frame is west as in the initial creation of the NockStack.
@@ -828,6 +843,7 @@ impl NockStack {
         *(self.derive_ptr(prev_alloc_slot)) = self.start as u64; // "alloc pointer" from "previous" frame
 
         assert!(self.is_west());
+        self.stack_epoch.fetch_add(1, Ordering::Relaxed);
     }
 
     pub(crate) fn copying(&self) -> bool {

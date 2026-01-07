@@ -28,7 +28,6 @@ use nockapp::utils::make_tas;
 use nockapp::utils::scry::*;
 use nockapp::wire::{Wire, WireRepr};
 use nockapp::{AtomExt, NockAppError};
-use nockvm::ext::NounExt;
 use nockvm::noun::{Atom, Noun, NounAllocator, NounSpace, D, T};
 use nockvm_macros::tas;
 use rand::rng;
@@ -511,7 +510,10 @@ async fn handle_effect(
                     let tail_space = tail_slab.noun_space();
                     let gossip_noun = unsafe { tail_slab.root() };
                     if let Ok(data_cell) = gossip_noun.as_cell() {
-                        data_cell.head(&tail_space).eq_bytes(b"heard-block", &tail_space)
+                        data_cell
+                            .in_space(&tail_space)
+                            .head()
+                            .eq_bytes(b"heard-block")
                     } else {
                         false
                     }
@@ -556,7 +558,7 @@ async fn handle_effect(
 
                 let target_peers = if request_tag == tas!(b"block") {
                     let block_cell = request_body.tail(&space).as_cell()?;
-                    if block_cell.head(&space).eq_bytes(b"elders", &space) {
+                    if block_cell.in_space(&space).head().eq_bytes(b"elders") {
                         // Extract peer ID from elders request
                         let elders_cell = block_cell.tail(&space).as_cell()?;
                         let peer_id_atom = elders_cell.tail(&space).as_atom()?;
@@ -580,7 +582,7 @@ async fn handle_effect(
 
                 let raw_tx_id = if request_tag == tas!(b"raw-tx") {
                     if let Ok(raw_tx_cell) = request_body.tail(&space).as_cell() {
-                        if raw_tx_cell.head(&space).eq_bytes(b"by-id", &space) {
+                        if raw_tx_cell.in_space(&space).head().eq_bytes(b"by-id") {
                             is_limited_request = fast_sync;
                             trace!("Requesting raw transaction by ID, removing ID from seen set");
                             Some(tip5_hash_to_base58_stack(
@@ -718,7 +720,7 @@ async fn handle_effect(
                 let track_cell = effect_cell.tail(&space).as_cell()?;
                 let action = track_cell.head(&space);
 
-                if action.eq_bytes(b"add", &space) {
+                if action.in_space(&space).eq_bytes(b"add") {
                     // Handle [%track %add block-id peer-id]
                     let data_cell = track_cell.tail(&space).as_cell()?;
                     let block_id = data_cell.head(&space);
@@ -732,7 +734,7 @@ async fn handle_effect(
                     };
 
                     Ok(TrackAction::Add { block_id, peer_id })
-                } else if action.eq_bytes(b"remove", &space) {
+                } else if action.in_space(&space).eq_bytes(b"remove") {
                     // Handle [%track %remove block-id]
                     let block_id = track_cell.tail(&space);
                     Ok(TrackAction::Remove { block_id })
@@ -772,7 +774,7 @@ async fn handle_effect(
                 let seen_cell = effect_cell.tail(&space).as_cell()?;
                 let seen_type = seen_cell.head(&space);
 
-                if seen_type.eq_bytes(b"block", &space) {
+                if seen_type.in_space(&space).eq_bytes(b"block") {
                     let seen_pq = seen_cell.tail(&space).as_cell()?;
                     let block_id = seen_pq.head(&space).as_cell()?;
                     let block_id_str = tip5_hash_to_base58_stack(
@@ -791,7 +793,7 @@ async fn handle_effect(
                         id: block_id_str,
                         height: block_height,
                     }
-                } else if seen_type.eq_bytes(b"tx", &space) {
+                } else if seen_type.in_space(&space).eq_bytes(b"tx") {
                     let tx_id = seen_cell.tail(&space).as_cell()?;
                     let tx_id_str =
                         tip5_hash_to_base58_stack(&mut noun_slab, tx_id.as_noun(), &space)
@@ -1372,11 +1374,23 @@ async fn handle_request_response(
                 let elapsed = timing_rx.await?;
 
                 let space = response_slab.noun_space();
-                if response_cell.head(&space).eq_bytes(b"heard-block", &space) {
+                if response_cell
+                    .in_space(&space)
+                    .head()
+                    .eq_bytes(b"heard-block")
+                {
                     metrics.heard_block_poke_time.add_timing(&elapsed);
-                } else if response_cell.head(&space).eq_bytes(b"heard-tx", &space) {
+                } else if response_cell
+                    .in_space(&space)
+                    .head()
+                    .eq_bytes(b"heard-tx")
+                {
                     metrics.heard_tx_poke_time.add_timing(&elapsed);
-                } else if response_cell.head(&space).eq_bytes(b"heard-elders", &space) {
+                } else if response_cell
+                    .in_space(&space)
+                    .head()
+                    .eq_bytes(b"heard-elders")
+                {
                     metrics.heard_elders_poke_time.add_timing(&elapsed);
                 }
 
@@ -1780,8 +1794,9 @@ mod tests {
                 )
             });
             assert!(result_cell
-                .head(&result_space)
-                .eq_bytes(b"heavy-n", &result_space));
+                .in_space(&result_space)
+                .head()
+                .eq_bytes(b"heavy-n"));
 
             // Get the tail cell and check its components
             let tail_cell = result_cell
@@ -1890,8 +1905,9 @@ mod tests {
 
             // Check %elders tag
             assert!(result_cell
-                .head(&result_space)
-                .eq_bytes(b"elders", &result_space));
+                .in_space(&result_space)
+                .head()
+                .eq_bytes(b"elders"));
 
             // Get the tail cell
             let tail_cell = result_cell
