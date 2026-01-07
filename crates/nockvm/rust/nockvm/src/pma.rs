@@ -9,6 +9,7 @@ use std::ptr::copy_nonoverlapping;
 use std::sync::Arc;
 
 use either::Either::{Left, Right};
+use smallvec::SmallVec;
 use thiserror::Error;
 
 use crate::ext::noun_equality;
@@ -270,11 +271,10 @@ impl Pma {
         self.alloc_would_oom(words);
         let ptr = self.arena.ptr_from_offset(self.alloc_offset as u32) as *mut u64;
         self.alloc_offset += words;
-        self.persist_metadata();
         ptr
     }
 
-    fn persist_metadata(&self) {
+    pub fn persist_metadata(&self) {
         debug_assert!(
             self.arena.mapped_len_bytes() >= self.arena.len_bytes() + PMA_TRAILER_BYTES,
             "PMA arena mapping is too small for metadata trailer"
@@ -392,10 +392,8 @@ impl PmaCopy for Noun {
             return;
         }
 
-        let root_repr = {
-            let space = NounSpace::new(stack, &*pma);
-            self.repr(&space)
-        };
+        let space = NounSpace::new(stack, &*pma);
+        let root_repr = self.repr(&space);
         match root_repr {
             NounRepr::Indirect(AllocLocation::PmaOffset)
             | NounRepr::Cell(AllocLocation::PmaOffset) => {
@@ -405,7 +403,6 @@ impl PmaCopy for Noun {
             NounRepr::Indirect(AllocLocation::PmaPtr)
             | NounRepr::Cell(AllocLocation::PmaPtr) => {
                 let offset_noun = {
-                    let space = NounSpace::new(stack, &*pma);
                     let allocated = self.as_allocated().expect("repr said allocated");
                     let ptr = allocated.to_raw_pointer(&space);
                     assert!(
@@ -429,7 +426,7 @@ impl PmaCopy for Noun {
             _ => {}
         }
 
-        let mut work: Vec<(Noun, *mut Noun)> = Vec::with_capacity(32);
+        let mut work: SmallVec<[(Noun, *mut Noun); 64]> = SmallVec::new();
         work.push((*self, self as *mut Noun));
 
         while let Some((noun, dest_ptr)) = work.pop() {
@@ -438,13 +435,9 @@ impl PmaCopy for Noun {
                     *dest_ptr = noun;
                 }
                 Right(allocated) => {
-                    let forwarded = {
-                        let space = NounSpace::new(stack, &*pma);
-                        allocated.forwarding_pointer(&space)
-                    };
+                    let forwarded = allocated.forwarding_pointer(&space);
                     if let Some(forwarded) = forwarded {
                         let offset_noun = {
-                            let space = NounSpace::new(stack, &*pma);
                             let ptr = forwarded.to_raw_pointer(&space);
                             assert!(
                                 pma.contains_ptr(ptr as *const u8),
@@ -461,10 +454,7 @@ impl PmaCopy for Noun {
                         continue;
                     }
 
-                    let repr = {
-                        let space = NounSpace::new(stack, &*pma);
-                        noun.repr(&space)
-                    };
+                    let repr = noun.repr(&space);
 
                     match repr {
                         NounRepr::Indirect(AllocLocation::PmaOffset)
@@ -476,7 +466,6 @@ impl PmaCopy for Noun {
                         NounRepr::Indirect(AllocLocation::PmaPtr)
                         | NounRepr::Cell(AllocLocation::PmaPtr) => {
                             let offset_noun = {
-                                let space = NounSpace::new(stack, &*pma);
                                 let ptr = allocated.to_raw_pointer(&space);
                                 assert!(
                                     pma.contains_ptr(ptr as *const u8),
@@ -507,24 +496,19 @@ impl PmaCopy for Noun {
                     match allocated.as_either() {
                         Left(mut indirect) => {
                             let (raw_size, src_ptr) = {
-                                let space = NounSpace::new(stack, &*pma);
                                 (indirect.raw_size(&space), indirect.to_raw_pointer(&space))
                             };
 
                             let pma_ptr = pma.raw_alloc(raw_size);
                             copy_nonoverlapping(src_ptr, pma_ptr, raw_size);
 
-                            {
-                                let space = NounSpace::new(stack, &*pma);
-                                indirect.set_forwarding_pointer(pma_ptr, &space);
-                            }
+                            indirect.set_forwarding_pointer(pma_ptr, &space);
 
                             let offset = pma.offset_from_ptr(pma_ptr as *const u8);
                             *dest_ptr = IndirectAtom::from_offset_words(offset).as_noun();
                         }
                         Right(mut cell) => {
                             let (src_cell, head, tail) = {
-                                let space = NounSpace::new(stack, &*pma);
                                 let src_cell = cell.to_raw_pointer(&space);
                                 let head = (*src_cell).head;
                                 let tail = (*src_cell).tail;
@@ -535,10 +519,7 @@ impl PmaCopy for Noun {
                             let pma_cell = pma_ptr as *mut CellMemory;
                             (*pma_cell).metadata = (*src_cell).metadata;
 
-                            {
-                                let space = NounSpace::new(stack, &*pma);
-                                cell.set_forwarding_pointer(pma_cell, &space);
-                            }
+                            cell.set_forwarding_pointer(pma_cell, &space);
 
                             work.push((tail, &mut (*pma_cell).tail));
                             work.push((head, &mut (*pma_cell).head));

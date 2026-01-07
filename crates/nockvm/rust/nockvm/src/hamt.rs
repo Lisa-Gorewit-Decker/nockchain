@@ -717,6 +717,10 @@ impl<T: Copy + PmaCopy> PmaCopy for Hamt<T> {
     /// After this call, self.0 points to the PMA copy and all internal
     /// pointers reference PMA locations.
     unsafe fn copy_to_pma(&mut self, stack: &NockStack, pma: &mut Pma) {
+        if pma.contains_ptr(self.0 as *const u8) {
+            return;
+        }
+
         // Copy root stem to PMA
         let dest_stem: *mut Stem<T> = pma.alloc_struct(1);
         copy_nonoverlapping(self.0, dest_stem, 1);
@@ -725,9 +729,12 @@ impl<T: Copy + PmaCopy> PmaCopy for Hamt<T> {
         // Copy root's buffer to PMA
         let sz = (*dest_stem).size();
         if sz > 0 {
-            let dest_buffer: *mut Entry<T> = pma.alloc_struct(sz);
-            copy_nonoverlapping((*dest_stem).buffer, dest_buffer, sz);
-            (*dest_stem).buffer = dest_buffer;
+            let src_buffer = (*dest_stem).buffer;
+            if !pma.contains_ptr(src_buffer as *const u8) {
+                let dest_buffer: *mut Entry<T> = pma.alloc_struct(sz);
+                copy_nonoverlapping(src_buffer, dest_buffer, sz);
+                (*dest_stem).buffer = dest_buffer;
+            }
         }
 
         // Worklist: (stem whose buffer is already in PMA, remaining bitmap bits, next buffer index)
@@ -765,6 +772,9 @@ impl<T: Copy + PmaCopy> PmaCopy for Hamt<T> {
             if is_stem {
                 // Child stem - copy its buffer to PMA
                 let child = (*ep).stem;
+                if pma.contains_ptr(child.buffer as *const u8) {
+                    continue;
+                }
                 let csz = child.size();
                 let db: *mut Entry<T> = pma.alloc_struct(csz);
                 copy_nonoverlapping(child.buffer, db, csz);
@@ -780,6 +790,9 @@ impl<T: Copy + PmaCopy> PmaCopy for Hamt<T> {
             } else {
                 // Leaf - copy its buffer to PMA and evacuate all nouns
                 let leaf = (*ep).leaf;
+                if pma.contains_ptr(leaf.buffer as *const u8) {
+                    continue;
+                }
                 let len = leaf.len;
                 let db: *mut (Noun, T) = pma.alloc_struct(len);
                 copy_nonoverlapping(leaf.buffer, db, len);

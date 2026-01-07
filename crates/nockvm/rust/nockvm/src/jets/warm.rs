@@ -111,6 +111,9 @@ impl PmaCopy for WarmEntry {
         }
         let mut ptr: *mut WarmEntry = self;
         loop {
+            if pma.contains_ptr((*ptr).0 as *const u8) {
+                break;
+            }
             // Copy batteries and path to PMA
             (*(*ptr).0).batteries.copy_to_pma(stack, pma);
             (*(*ptr).0).path.copy_to_pma(stack, pma);

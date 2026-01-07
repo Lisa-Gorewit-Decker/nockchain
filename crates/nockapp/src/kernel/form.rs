@@ -1320,6 +1320,8 @@ impl Serf {
                 }
             }
 
+            pma.persist_metadata();
+
             stack.reset(0);
         } else {
             stack.preserve(&mut self.context.warm);

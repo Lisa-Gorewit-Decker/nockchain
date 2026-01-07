@@ -943,6 +943,9 @@ impl PmaCopy for Hot {
     unsafe fn copy_to_pma(&mut self, stack: &NockStack, pma: &mut Pma) {
         let mut ptr: *mut Hot = self;
         while !(*ptr).0.is_null() {
+            if pma.contains_ptr((*ptr).0 as *const u8) {
+                break;
+            }
             let src = (*ptr).0;
             (*src).a_path.copy_to_pma(stack, pma);
             (*src).axis.copy_to_pma(stack, pma);

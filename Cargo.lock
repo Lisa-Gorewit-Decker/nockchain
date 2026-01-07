@@ -4217,6 +4217,7 @@ dependencies = [
  "serde",
  "signal-hook",
  "slotmap",
+ "smallvec",
  "static_assertions",
  "thiserror 2.0.16",
  "tracing",
