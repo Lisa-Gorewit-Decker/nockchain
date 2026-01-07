@@ -1,4 +1,5 @@
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use chrono;
 use clap::{arg, command, Args, ColorChoice, Parser, ValueEnum};
@@ -31,6 +32,7 @@ use crate::{default_data_dir, AtomExt, NockApp};
 pub const DEFAULT_SAVE_INTERVAL: u64 = 120000;
 const DEFAULT_SAVE_INTERVAL_STR: &str = "120000";
 const DEFAULT_LOG_FILTER: &str = "info";
+static PMA_FILE_COUNTER: AtomicUsize = AtomicUsize::new(0);
 
 #[derive(Debug, Clone, ValueEnum)]
 pub enum NockStackSize {
@@ -414,12 +416,10 @@ pub async fn setup_<J: Jammer + Send + 'static>(
         debug!("Created jams directory: {:?}", jams_dir);
     }
 
-    if pma_dir.exists() {
-        std::fs::remove_dir_all(&pma_dir)?;
-        debug!("Deleted existing pma directory: {:?}", pma_dir);
+    if !pma_dir.exists() {
+        std::fs::create_dir_all(&pma_dir)?;
+        debug!("Created pma directory: {:?}", pma_dir);
     }
-    std::fs::create_dir_all(&pma_dir)?;
-    debug!("Created pma directory: {:?}", pma_dir);
 
     if cli.new && jams_dir.exists() {
         std::fs::remove_dir_all(&jams_dir)?;
@@ -433,7 +433,8 @@ pub async fn setup_<J: Jammer + Send + 'static>(
     let save_interval = cli
         .normalized_save_interval()
         .map(std::time::Duration::from_millis);
-    let pma_path = pma_dir.join("pma.mmap");
+    let pma_id = PMA_FILE_COUNTER.fetch_add(1, Ordering::Relaxed);
+    let pma_path = pma_dir.join(format!("pma-{}-{}.mmap", std::process::id(), pma_id));
     let stack_size = cli.stack_size.clone();
     let trace_opts = cli.trace_opts.clone();
 

@@ -231,7 +231,15 @@ impl NounSpace {
             .pma
             .as_ref()
             .expect("PMA arena is required to resolve offset nouns");
-        let ptr = arena.ptr_from_offset(offset_words) as *const u8;
+        let offset = offset_words as usize;
+        let arena_words = arena.words();
+        assert!(
+            offset < arena_words,
+            "PMA offset {} out of bounds (size words {})",
+            offset,
+            arena_words
+        );
+        let ptr = unsafe { arena.base_ptr().add(offset << 3) } as *const u8;
         assert!(
             {
                 let base = arena.base_ptr() as usize;

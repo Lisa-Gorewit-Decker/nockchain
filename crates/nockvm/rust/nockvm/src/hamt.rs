@@ -635,16 +635,16 @@ impl<T: Copy + Preserve> Preserve for Hamt<T> {
 impl<T: Copy + PmaCopy> PmaCopy for Hamt<T> {
     fn assert_in_pma(&self, pma: &Pma) {
         unsafe {
-            // Empty HAMT - nothing to check
-            if (*self.0).bitmap == 0 {
-                return;
-            }
-
             // Check root stem is in PMA
             assert!(
                 pma.contains_ptr(self.0 as *const u8),
                 "HAMT root stem should be in PMA"
             );
+
+            // Empty HAMT - nothing else to check
+            if (*self.0).bitmap == 0 {
+                return;
+            }
 
             // Traverse and check all internal structures
             let mut stk: [(Stem<T>, u32, usize); 6] = [(
@@ -717,11 +717,6 @@ impl<T: Copy + PmaCopy> PmaCopy for Hamt<T> {
     /// After this call, self.0 points to the PMA copy and all internal
     /// pointers reference PMA locations.
     unsafe fn copy_to_pma(&mut self, stack: &NockStack, pma: &mut Pma) {
-        // Empty HAMT - nothing to copy
-        if (*self.0).bitmap == 0 {
-            return;
-        }
-
         // Copy root stem to PMA
         let dest_stem: *mut Stem<T> = pma.alloc_struct(1);
         copy_nonoverlapping(self.0, dest_stem, 1);

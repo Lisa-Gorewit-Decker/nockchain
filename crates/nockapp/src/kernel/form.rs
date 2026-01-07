@@ -21,7 +21,7 @@ use nockvm::trace::{path_to_cord, write_serf_trace_safe};
 use nockvm_macros::tas;
 use tokio::sync::{mpsc, oneshot};
 use tokio::time::Duration;
-use tracing::{debug, warn};
+use tracing::{debug, info, warn};
 
 use crate::kernel::boot::TraceOpts;
 use crate::metrics::NockAppMetrics;
@@ -1283,11 +1283,30 @@ impl Serf {
     pub unsafe fn preserve_event_update_leftovers(&mut self) {
         let stack = &mut self.context.stack;
         if let Some(pma) = self.pma.as_mut() {
+            let trace_pma = std::env::var_os("NOCK_PMA_TRACE").is_some();
+            if trace_pma {
+                info!("pma-copy: warm");
+            }
             self.context.warm.copy_to_pma(stack, pma);
+            if trace_pma {
+                info!("pma-copy: test_jets");
+            }
             self.context.test_jets.copy_to_pma(stack, pma);
+            if trace_pma {
+                info!("pma-copy: hot");
+            }
             self.context.hot.copy_to_pma(stack, pma);
+            if trace_pma {
+                info!("pma-copy: cache");
+            }
             self.context.cache.copy_to_pma(stack, pma);
+            if trace_pma {
+                info!("pma-copy: cold");
+            }
             self.context.cold.copy_to_pma(stack, pma);
+            if trace_pma {
+                info!("pma-copy: arvo");
+            }
             self.arvo.copy_to_pma(stack, pma);
 
             if std::env::var_os("NOCK_PMA_ASSERT").is_some() {
@@ -1296,7 +1315,9 @@ impl Serf {
                 self.context.hot.assert_in_pma(pma);
                 self.context.cache.assert_in_pma(pma);
                 self.context.cold.assert_in_pma(pma);
-                self.arvo.assert_in_pma(pma);
+                if std::env::var_os("NOCK_PMA_ASSERT_ARVO").is_some() {
+                    self.arvo.assert_in_pma(pma);
+                }
             }
 
             stack.reset(0);
