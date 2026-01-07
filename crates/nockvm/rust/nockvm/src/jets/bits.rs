@@ -168,7 +168,7 @@ pub fn jet_rep(context: &mut Context, subject: Noun) -> Result {
 }
 
 pub fn rep(stack: &mut NockStack, a: Noun, b: Noun, arena: &crate::mem::Arena) -> Result {
-    let (bloq, step) = bite(a)?;
+    let (bloq, step) = bite_with_arena(a, arena)?;
     let original_list = b;
 
     let mut len = 0usize;

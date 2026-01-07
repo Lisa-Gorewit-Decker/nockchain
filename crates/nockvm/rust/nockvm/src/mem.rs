@@ -16,7 +16,10 @@ use rustix::cstr;
 use rustix::fs::{self, MemfdFlags};
 use thiserror::Error;
 
-use crate::noun::{Atom, Cell, CellMemory, IndirectAtom, Noun, NounAllocator};
+use crate::noun::{
+    Atom, Cell, CellMemory, IndirectAtom, MemoryResolver, Noun, NounAllocator, StackAtom,
+    StackCell,
+};
 use crate::{assert_acyclic, assert_no_forwarding_pointers, assert_no_junior_pointers};
 
 crate::gdb!();
@@ -37,8 +40,10 @@ pub(crate) const fn word_size_of<T>() -> usize {
 
 /** Utility function to compute the raw memory usage of an [IndirectAtom] */
 fn indirect_raw_size(atom: IndirectAtom) -> usize {
-    debug_assert!(atom.size() > 0);
-    atom.size() + 2
+    unsafe {
+        debug_assert!(atom.size_stack() > 0);
+        atom.size_stack() + 2
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -406,6 +411,124 @@ impl<'a> MemContext<'a> {
     }
 }
 
+impl<'a> MemoryResolver for MemContext<'a> {
+    #[inline(always)]
+    fn resolve_head(&self, cell: Cell) -> Noun {
+        cell.head_with_arena(self.pma_arena)
+    }
+
+    #[inline(always)]
+    fn resolve_tail(&self, cell: Cell) -> Noun {
+        cell.tail_with_arena(self.pma_arena)
+    }
+
+    #[inline(always)]
+    fn resolve_slice<'b>(&self, indirect: &'b IndirectAtom) -> &'b [u64] {
+        indirect.as_slice_with_arena(self.pma_arena)
+    }
+
+    #[inline(always)]
+    fn resolve_size(&self, indirect: &IndirectAtom) -> usize {
+        indirect.size_with_arena(self.pma_arena)
+    }
+}
+
+/// Context for GC copy operations - can only be created during the pre_copy phase.
+///
+/// This type provides safe access to forwarding pointer operations during garbage collection.
+/// It can only be created when `NockStack::is_in_copy_phase()` returns true (i.e., after
+/// `pre_copy()` has been called but before `frame_pop()`).
+///
+/// # Safety
+///
+/// The CopyContext ensures that forwarding pointer operations are only performed during the
+/// valid copy window. The lifetime `'a` is bound to the NockStack, ensuring that all
+/// StackCell and StackAtom references remain valid.
+pub struct CopyContext<'a> {
+    stack: &'a mut NockStack,
+}
+
+impl<'a> CopyContext<'a> {
+    /// Create a new CopyContext during the pre_copy..frame_pop window.
+    ///
+    /// Returns `None` if pre_copy has not been called on the current frame.
+    #[inline]
+    pub fn new(stack: &'a mut NockStack) -> Option<Self> {
+        if stack.is_in_copy_phase() {
+            Some(Self { stack })
+        } else {
+            None
+        }
+    }
+
+    /// Create a CopyContext without checking the copy phase.
+    ///
+    /// # Safety
+    ///
+    /// Caller must ensure that `stack.is_in_copy_phase()` would return true.
+    #[inline]
+    pub unsafe fn new_unchecked(stack: &'a mut NockStack) -> Self {
+        debug_assert!(stack.is_in_copy_phase());
+        Self { stack }
+    }
+
+    /// Get access to the underlying stack for allocation operations.
+    #[inline]
+    pub fn stack(&self) -> &NockStack {
+        self.stack
+    }
+
+    /// Get mutable access to the underlying stack for allocation operations.
+    #[inline]
+    pub fn stack_mut(&mut self) -> &mut NockStack {
+        self.stack
+    }
+
+    /// Get the forwarding pointer for a cell, if one has been set.
+    #[inline]
+    pub fn get_forwarding_cell(&self, cell: StackCell<'_>) -> Option<Cell> {
+        unsafe { cell.into_inner().forwarding_pointer_stack() }
+    }
+
+    /// Set a forwarding pointer on a cell.
+    ///
+    /// After this call, `cell`'s head slot will contain the forwarding pointer to `target`.
+    /// The original cell should not be accessed for its head/tail values after this.
+    #[inline]
+    pub fn set_forwarding_cell(&mut self, cell: StackCell<'_>, target: *const CellMemory) {
+        let mut inner = cell.into_inner();
+        unsafe { inner.set_forwarding_pointer_stack(target) }
+    }
+
+    /// Get the forwarding pointer for an indirect atom, if one has been set.
+    #[inline]
+    pub fn get_forwarding_atom(&self, atom: StackAtom<'_>) -> Option<IndirectAtom> {
+        unsafe { atom.into_inner().forwarding_pointer_stack() }
+    }
+
+    /// Set a forwarding pointer on an indirect atom.
+    ///
+    /// After this call, `atom`'s size slot will contain the forwarding pointer to `target`.
+    /// The original atom should not be accessed for its size/data after this.
+    #[inline]
+    pub fn set_forwarding_atom(&mut self, atom: StackAtom<'_>, target: *const u64) {
+        let mut inner = atom.into_inner();
+        unsafe { inner.set_forwarding_pointer_stack(target) }
+    }
+
+    /// Check if a cell is within the current frame being copied.
+    #[inline]
+    pub fn is_in_frame(&self, cell: StackCell<'_>) -> bool {
+        unsafe { self.stack.is_in_frame(cell.into_inner().to_raw_pointer_stack()) }
+    }
+
+    /// Check if an atom is within the current frame being copied.
+    #[inline]
+    pub fn is_atom_in_frame(&self, atom: StackAtom<'_>) -> bool {
+        unsafe { self.stack.is_in_frame(atom.into_inner().to_raw_pointer_stack()) }
+    }
+}
+
 /// A stack for Nock computation, which supports stack allocation and delimited copying collection
 /// for returned nouns
 pub struct NockStack {
@@ -491,13 +614,13 @@ impl NockStack {
                 let indirect = noun
                     .as_indirect()
                     .expect("checked is_indirect before retag");
-                let ptr = indirect.to_raw_pointer();
+                let ptr = indirect.to_raw_pointer_stack();
                 let offset = self.offset_from_ptr(ptr as *const u8);
                 // TODO: retag_noun should be removed - stack data should never use offset form
                 *noun = IndirectAtom::from_pma_offset(offset).as_noun();
             } else if noun.is_cell() {
                 let cell = noun.as_cell().expect("checked is_cell before retag");
-                let ptr = cell.to_raw_pointer();
+                let ptr = cell.to_raw_pointer_stack();
                 let offset = self.offset_from_ptr(ptr as *const u8);
                 // TODO: retag_noun should be removed - stack data should never use offset form
                 *noun = Cell::from_pma_offset(offset).as_noun();
@@ -1018,6 +1141,16 @@ impl NockStack {
     #[inline]
     pub(crate) fn is_west(&self) -> bool {
         self.stack_offset < self.alloc_offset
+    }
+
+    /// Check if we're in the copy phase (pre_copy has been called).
+    ///
+    /// Returns true if `pre_copy()` has been called on the current frame but
+    /// `frame_pop()` has not yet been called. This is the only window during
+    /// which forwarding pointers can be safely used.
+    #[inline]
+    pub fn is_in_copy_phase(&self) -> bool {
+        self.pc
     }
 
     /** Size **in 64-bit words** of this NockStack */
@@ -1648,7 +1781,7 @@ impl NockStack {
             if let Some(subnoun) = dbg_stack.pop() {
                 if let Ok(a) = subnoun.as_allocated() {
                     // Get the pointer address
-                    let np = a.to_raw_pointer() as usize;
+                    let np = a.to_raw_pointer_stack() as usize;
 
                     // Check if the noun is in the free space (which would be an error)
                     if np >= low && np < hi {
@@ -1657,8 +1790,8 @@ impl NockStack {
 
                     // If it's a cell, check its head and tail too
                     if let Right(c) = a.as_either() {
-                        dbg_stack.push(c.tail());
-                        dbg_stack.push(c.head());
+                        dbg_stack.push(c.tail_stack());
+                        dbg_stack.push(c.head_stack());
                     }
                 }
             } else {
@@ -1970,7 +2103,7 @@ impl NockStack {
                 };
 
                 // Determine the cell pointer offset
-                let cell_ptr_offset = (c.to_raw_pointer() as usize - self.start as usize) / 8;
+                let cell_ptr_offset = (c.to_raw_pointer_stack() as usize - self.start as usize) / 8;
 
                 // Determine range for the cell's frame
                 let (range_lo_offset, range_hi_offset) = loop {
@@ -2042,11 +2175,11 @@ impl NockStack {
                 let range_hi_ptr = self.derive_ptr(range_hi_offset);
 
                 // Check all nouns in the tree
-                dbg_stack.push(c.head());
-                dbg_stack.push(c.tail());
+                dbg_stack.push(c.head_stack());
+                dbg_stack.push(c.tail_stack());
                 while let Some(n) = dbg_stack.pop() {
                     if let Ok(a) = n.as_allocated() {
-                        let ptr = a.to_raw_pointer();
+                        let ptr = a.to_raw_pointer_stack();
                         // Calculate pointer offset
                         let ptr_offset = (ptr as usize - self.start as usize) / 8;
 
@@ -2064,8 +2197,8 @@ impl NockStack {
 
                         // Continue traversing if it's a cell
                         if let Some(c) = a.cell() {
-                            dbg_stack.push(c.tail());
-                            dbg_stack.push(c.head());
+                            dbg_stack.push(c.tail_stack());
+                            dbg_stack.push(c.head_stack());
                         }
                     }
                 }
@@ -2267,7 +2400,7 @@ impl Preserve for IndirectAtom {
     unsafe fn preserve(&mut self, stack: &mut NockStack) {
         let size = indirect_raw_size(*self);
         let buf = stack.struct_alloc_in_previous_frame::<u64>(size);
-        copy_nonoverlapping(self.to_raw_pointer(), buf, size);
+        copy_nonoverlapping(self.to_raw_pointer_stack(), buf, size);
         // Keep as raw pointer (LOCATION_BIT=0) - stack data should never use offset form
         *self = IndirectAtom::from_raw_pointer(buf);
     }
@@ -2313,12 +2446,12 @@ unsafe fn noun_preserve(stack: &mut NockStack, noun: &mut Noun) {
         Either::Right(allocated) => allocated,
     };
 
-    if let Some(new_allocated) = root_allocated.forwarding_pointer() {
+    if let Some(new_allocated) = root_allocated.forwarding_pointer_stack() {
         *noun = new_allocated.as_noun();
         return;
     }
 
-    if !stack.is_in_frame(root_allocated.to_raw_pointer()) {
+    if !stack.is_in_frame(root_allocated.to_raw_pointer_stack()) {
         return;
     }
 
@@ -2332,36 +2465,36 @@ unsafe fn noun_preserve(stack: &mut NockStack, noun: &mut Noun) {
                 *dest_ptr = value;
             },
             Either::Right(allocated) => unsafe {
-                if let Some(new_allocated) = allocated.forwarding_pointer() {
+                if let Some(new_allocated) = allocated.forwarding_pointer_stack() {
                     *dest_ptr = new_allocated.as_noun();
                     continue;
                 }
 
-                if !stack.is_in_frame(allocated.to_raw_pointer()) {
+                if !stack.is_in_frame(allocated.to_raw_pointer_stack()) {
                     *dest_ptr = value;
                     continue;
                 }
 
                 match allocated.as_either() {
                     Either::Left(mut indirect) => {
-                        let alloc = stack.indirect_alloc_in_previous_frame(indirect.size());
+                        let alloc = stack.indirect_alloc_in_previous_frame(indirect.size_stack());
                         copy_nonoverlapping(
-                            indirect.to_raw_pointer(),
+                            indirect.to_raw_pointer_stack(),
                             alloc,
                             indirect_raw_size(indirect),
                         );
-                        indirect.set_forwarding_pointer(alloc);
+                        indirect.set_forwarding_pointer_stack(alloc);
                         // Keep as raw pointer (LOCATION_BIT=0) - stack data should never use offset form
                         *dest_ptr = IndirectAtom::from_raw_pointer(alloc).as_noun();
                     }
                     Either::Right(mut cell) => {
                         let alloc = stack.struct_alloc_in_previous_frame::<CellMemory>(1);
-                        (*alloc).metadata = (*cell.to_raw_pointer()).metadata;
+                        (*alloc).metadata = (*cell.to_raw_pointer_stack()).metadata;
 
-                        let tail = cell.tail();
-                        let head = cell.head();
+                        let tail = cell.tail_stack();
+                        let head = cell.head_stack();
 
-                        cell.set_forwarding_pointer(alloc);
+                        cell.set_forwarding_pointer_stack(alloc);
 
                         work.push((tail, &mut (*alloc).tail));
                         work.push((head, &mut (*alloc).head));

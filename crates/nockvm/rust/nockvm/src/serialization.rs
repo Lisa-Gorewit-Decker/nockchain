@@ -4,14 +4,23 @@ use either::Either::{Left, Right};
 use crate::hamt::MutHamt;
 use crate::interpreter::Error::{self, *};
 use crate::interpreter::Mote::*;
-use crate::mem::NockStack;
-use crate::noun::{Atom, Cell, DirectAtom, IndirectAtom, Noun, D};
+use crate::mem::{Arena, NockStack};
+use crate::noun::{Atom, Cell, DirectAtom, IndirectAtom, Noun, WithStack, D};
 
 crate::gdb!();
 
 /// Calculate the number of bits needed to represent an atom
-pub fn met0_usize(atom: Atom) -> usize {
-    let atom_bitslice = atom.as_bitslice();
+pub fn met0_usize(atom: Atom, arena: &Arena) -> usize {
+    let atom_bitslice = atom.as_bitslice_with_arena(arena);
+    atom_bitslice.last_one().map_or(0, |last_one| last_one + 1)
+}
+
+/// Calculate the number of bits for stack-pointer form atoms only
+///
+/// # Safety
+/// Caller must ensure atom is in stack-pointer form (LOCATION_BIT=0)
+pub unsafe fn met0_usize_stack(atom: Atom) -> usize {
+    let atom_bitslice = atom.as_bitslice_stack();
     atom_bitslice.last_one().map_or(0, |last_one| last_one + 1)
 }
 
@@ -217,8 +226,8 @@ pub fn cue_bitslice(stack: &mut NockStack, buffer: &BitSlice<u64, Lsb0>) -> Resu
 /// # Returns
 /// A Result containing either the deserialized Noun or an Error
 pub fn cue(stack: &mut NockStack, buffer: Atom) -> Result<Noun, Error> {
-    stack.install_arena();
-    let buffer_bitslice = buffer.as_bitslice();
+    let arena = std::sync::Arc::clone(stack.arena());
+    let buffer_bitslice = buffer.as_bitslice_with_arena(&arena);
     cue_bitslice_with_mode(stack, buffer_bitslice, false)
 }
 
@@ -232,8 +241,8 @@ pub fn cue_bitslice_into_offset(
 
 /// Deserialize a noun from an Atom into offset-tagged form.
 pub fn cue_into_offset(stack: &mut NockStack, buffer: Atom) -> Result<Noun, Error> {
-    stack.install_arena();
-    let buffer_bitslice = buffer.as_bitslice();
+    let arena = std::sync::Arc::clone(stack.arena());
+    let buffer_bitslice = buffer.as_bitslice_with_arena(&arena);
     cue_bitslice_into_offset(stack, buffer_bitslice)
 }
 
@@ -250,11 +259,11 @@ pub fn cue_into_stack_pointer_form(
     stack: &mut NockStack,
     buffer: Atom,
 ) -> Result<Noun, Error> {
-    stack.install_arena();
+    let arena = std::sync::Arc::clone(stack.arena());
     let backref_map = MutHamt::<Noun>::new(stack);
     let mut result = D(0);
     let mut cursor = 0;
-    let buffer_bitslice = buffer.as_bitslice();
+    let buffer_bitslice = buffer.as_bitslice_with_arena(&arena);
 
     // Manually manage frame without the preserve step
     unsafe {
@@ -383,16 +392,19 @@ fn rub_atom_internal(
         let wordsize = (size + 63) >> 6;
         let (mut atom, slice) = unsafe { IndirectAtom::new_raw_mut_bitslice(stack, wordsize) };
         slice[0..bits.len()].copy_from_bitslice(bits);
-        debug_assert!(atom.size() > 0);
-        // TODO: use_offset_tags is now obsolete - preserve keeps stack pointers
-        if use_offset_tags {
-            let offset =
-                stack.offset_from_ptr(
-                    unsafe { atom.to_raw_pointer_with_arena(stack.arena_ref()) } as *const u8
-                );
-            atom = IndirectAtom::from_pma_offset(offset);
+        // SAFETY: Operating on freshly allocated stack data
+        unsafe {
+            debug_assert!(atom.size_stack() > 0);
+            // TODO: use_offset_tags is now obsolete - preserve keeps stack pointers
+            if use_offset_tags {
+                let offset =
+                    stack.offset_from_ptr(
+                        atom.to_raw_pointer_stack() as *const u8
+                    );
+                atom = IndirectAtom::from_pma_offset(offset);
+            }
+            Ok(atom.normalize_as_atom_stack())
         }
-        unsafe { Ok(atom.normalize_as_atom()) }
     }
 }
 
@@ -427,7 +439,6 @@ struct JamState<'a> {
 ///
 /// Implements a compact encoding scheme for nouns, with backreferences for shared structures.
 pub fn jam(stack: &mut NockStack, noun: Noun) -> Atom {
-    stack.install_arena();
     let backref_map = MutHamt::new(stack);
     let size = 8;
     let (atom, slice) = unsafe { IndirectAtom::new_raw_mut_bitslice(stack, size) };
@@ -449,7 +460,8 @@ pub fn jam(stack: &mut NockStack, noun: Noun) -> Atom {
             if let Some(backref) = backref_map.lookup(stack, &mut noun) {
                 match noun.as_either_atom_cell() {
                     Left(atom) => {
-                        let atom_size = met0_usize(atom);
+                        // SAFETY: jam operates on stack-allocated nouns only
+                        let atom_size = unsafe { met0_usize_stack(atom) };
                         let backref_size = met0_u64_to_usize(backref);
                         if atom_size <= backref_size {
                             jam_atom(stack, &mut state, atom);
@@ -477,18 +489,25 @@ pub fn jam(stack: &mut NockStack, noun: Noun) -> Atom {
                 }
                 Right(cell) => {
                     jam_cell(stack, &mut state);
+                    // SAFETY: jam operates on stack-allocated nouns only
+                    // Extract head/tail first, then modify stack
+                    let sc = unsafe { cell.with_stack_unchecked(stack) };
+                    let tail = sc.tail();
+                    let head = sc.head();
+                    // Now we can modify the stack
                     unsafe {
                         stack.pop::<Noun>();
-                        *(stack.push::<Noun>()) = cell.tail();
-                        *(stack.push::<Noun>()) = cell.head();
+                        *(stack.push::<Noun>()) = tail;
+                        *(stack.push::<Noun>()) = head;
                     };
                     continue;
                 }
             }
         }
     }
+    // SAFETY: normalize_as_atom_stack for freshly allocated stack atom
     unsafe {
-        let mut result = state.atom.normalize_as_atom();
+        let mut result = state.atom.normalize_as_atom_stack();
         stack.preserve(&mut result);
         stack.frame_pop();
         result
@@ -565,7 +584,8 @@ fn double_atom_size(traversal: &mut NockStack, state: &mut JamState) {
 ///
 /// INVARIANT: mat must not modify state.cursor unless it will also return `Ok(())`
 fn mat(traversal: &mut NockStack, state: &mut JamState, atom: Atom) -> Result<(), ()> {
-    let b_atom_size = met0_usize(atom);
+    // SAFETY: Operating on stack-allocated atoms
+    let b_atom_size = unsafe { met0_usize_stack(atom) };
     let b_atom_size_atom = Atom::new(traversal, b_atom_size as u64);
     if b_atom_size == 0 {
         if state.cursor + 1 > state.slice.len() {
@@ -576,17 +596,21 @@ fn mat(traversal: &mut NockStack, state: &mut JamState, atom: Atom) -> Result<()
             Ok(())
         }
     } else {
-        let c_b_size = met0_usize(b_atom_size_atom);
+        // SAFETY: Operating on stack-allocated atoms
+        let c_b_size = unsafe { met0_usize_stack(b_atom_size_atom) };
         if state.cursor + c_b_size + c_b_size + b_atom_size > state.slice.len() {
             Err(())
         } else {
             state.slice[state.cursor..state.cursor + c_b_size].fill(false); // a 0 bit for each bit in the atom size
             state.slice.set(state.cursor + c_b_size, true); // a terminating 1 bit
-            state.slice[state.cursor + c_b_size + 1..state.cursor + c_b_size + c_b_size]
-                .copy_from_bitslice(&b_atom_size_atom.as_bitslice()[0..c_b_size - 1]); // the atom size excepting the most significant 1 (since we know where that is from the size-of-the-size)
-            state.slice[state.cursor + c_b_size + c_b_size
-                ..state.cursor + c_b_size + c_b_size + b_atom_size]
-                .copy_from_bitslice(&atom.as_bitslice()[0..b_atom_size]);
+            // SAFETY: Operating on stack-allocated atoms
+            unsafe {
+                state.slice[state.cursor + c_b_size + 1..state.cursor + c_b_size + c_b_size]
+                    .copy_from_bitslice(&b_atom_size_atom.as_bitslice_stack()[0..c_b_size - 1]); // the atom size excepting the most significant 1 (since we know where that is from the size-of-the-size)
+                state.slice[state.cursor + c_b_size + c_b_size
+                    ..state.cursor + c_b_size + c_b_size + b_atom_size]
+                    .copy_from_bitslice(&atom.as_bitslice_stack()[0..b_atom_size]);
+            }
             state.cursor += c_b_size + c_b_size + b_atom_size;
             Ok(())
         }
@@ -1016,13 +1040,17 @@ mod tests {
                         Left(atom) => match atom.as_either() {
                             Left(_) => {}
                             Right(indirect) => {
-                                size += indirect.raw_size();
+                                // SAFETY: This test operates on stack-allocated nouns
+                                size += unsafe { indirect.raw_size_stack() };
                             }
                         },
                         Right(cell) => {
-                            size += size_of::<CellMemory>();
-                            *(stack.push::<Noun>()) = cell.tail();
-                            *(stack.push::<Noun>()) = cell.head();
+                            // SAFETY: This test operates on stack-allocated nouns
+                            unsafe {
+                                size += size_of::<CellMemory>();
+                                *(stack.push::<Noun>()) = cell.tail_stack();
+                                *(stack.push::<Noun>()) = cell.head_stack();
+                            }
                         }
                     }
                 }
@@ -1168,7 +1196,8 @@ mod tests {
     fn test_cell_construction() {
         let mut stack = setup_stack();
         let (cell, cell_mem_ptr) = unsafe { Cell::new_raw_mut(&mut stack) };
-        unsafe { assert!(cell_mem_ptr as *const CellMemory == cell.to_raw_pointer()) };
+        // SAFETY: cell is stack-allocated
+        unsafe { assert!(cell_mem_ptr as *const CellMemory == cell.to_raw_pointer_stack()) };
     }
 
     /// Helper to check if a noun tree is entirely in stack-pointer form

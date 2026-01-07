@@ -221,7 +221,7 @@ impl NounAllocator for Pma {
     unsafe fn equals(&mut self, a: *mut Noun, b: *mut Noun) -> bool {
         let a = &*a;
         let b = &*b;
-        noun_equality(a, b)
+        noun_equality(a, b, &self.arena)
     }
 }
 
@@ -409,9 +409,8 @@ impl PmaCopy for Noun {
         // For cells, recursively check head and tail
         if self.is_cell() {
             let cell = self.as_cell().expect("checked is_cell");
-            // Arena must be installed by caller for head()/tail() to work
-            cell.head().assert_in_pma(pma);
-            cell.tail().assert_in_pma(pma);
+            cell.head_with_arena(&pma.arena).assert_in_pma(pma);
+            cell.tail_with_arena(&pma.arena).assert_in_pma(pma);
         }
     }
 }
@@ -1151,17 +1150,19 @@ mod tests {
 
         // Verify both head and tail point to the same PMA location
         let root = noun.as_cell().expect("is cell");
-        let head_raw = unsafe { root.head().as_raw() };
-        let tail_raw = unsafe { root.tail().as_raw() };
+        let arena = pma.arena();
+        // SAFETY: accessing raw representation of PMA nouns
+        let head_raw = unsafe { root.head_with_arena(arena).as_raw() };
+        let tail_raw = unsafe { root.tail_with_arena(arena).as_raw() };
         assert_eq!(
             head_raw, tail_raw,
             "Head and tail should point to same location (sharing preserved)"
         );
 
         // Verify the shared cell is correct
-        let shared_cell = root.head().as_cell().expect("shared is cell");
-        assert_eq!(shared_cell.head().as_direct().expect("1").data(), 1);
-        assert_eq!(shared_cell.tail().as_direct().expect("2").data(), 2);
+        let shared_cell = root.head_with_arena(arena).as_cell().expect("shared is cell");
+        assert_eq!(shared_cell.head_with_arena(arena).as_direct().expect("1").data(), 1);
+        assert_eq!(shared_cell.tail_with_arena(arena).as_direct().expect("2").data(), 2);
 
         noun.assert_in_pma(&pma);
     }
@@ -1220,13 +1221,16 @@ mod tests {
         let _guard = pma.install();
 
         // Count the depth before evacuation
-        let mut depth_before = 0u64;
-        let mut current = noun;
-        while current.is_cell() {
-            depth_before += 1;
-            current = current.as_cell().unwrap().tail();
+        {
+            let mut depth_before = 0u64;
+            let mut current = noun;
+            let arena = pma.arena();
+            while current.is_cell() {
+                depth_before += 1;
+                current = current.as_cell().unwrap().tail_with_arena(arena);
+            }
+            assert_eq!(depth_before, DEPTH - 1, "Should have correct depth before evacuation");
         }
-        assert_eq!(depth_before, DEPTH - 1, "Should have correct depth before evacuation");
 
         // Evacuate
         unsafe { noun.copy_to_pma(&stack, &mut pma) };
@@ -1243,6 +1247,9 @@ mod tests {
         // Verify root is in offset form
         assert!(!noun.is_stack_allocated(), "Root should be in offset form");
 
+        // Get fresh arena for verification after copy_to_pma
+        let arena = pma.arena();
+
         // Traverse the entire structure and verify values
         let mut current = noun;
         for expected in 1..DEPTH {
@@ -1250,7 +1257,7 @@ mod tests {
             let cell = current.as_cell().expect("is cell");
 
             // Verify head value
-            let head = cell.head();
+            let head = cell.head_with_arena(arena);
             assert!(head.is_direct(), "Head at depth {} should be direct", expected);
             assert_eq!(
                 head.as_direct().expect("direct").data(),
@@ -1267,7 +1274,7 @@ mod tests {
                 expected
             );
 
-            current = cell.tail();
+            current = cell.tail_with_arena(arena);
         }
 
         // Final element should be direct atom DEPTH
@@ -1352,13 +1359,14 @@ mod tests {
         assert!(!noun.is_stack_allocated(), "Root should be in offset form");
 
         // Traverse and verify all values
+        let arena = pma.arena();
         let mut current = noun;
         for expected_index in 1..DEPTH {
             assert!(current.is_cell(), "Should be cell at depth {}", expected_index);
             let cell = current.as_cell().expect("is cell");
 
             // Verify head is an indirect atom with correct data
-            let head = cell.head();
+            let head = cell.head_with_arena(arena);
             assert!(head.is_indirect(), "Head at depth {} should be indirect", expected_index);
             assert!(
                 !head.is_stack_allocated(),
@@ -1369,7 +1377,7 @@ mod tests {
             let head_indirect = head.as_indirect().expect("indirect");
             let expected_word_count = word_count_for_index(expected_index);
             assert_eq!(
-                head_indirect.size(),
+                head_indirect.size_with_arena(arena),
                 expected_word_count,
                 "Indirect atom at depth {} should have {} words",
                 expected_index,
@@ -1377,7 +1385,7 @@ mod tests {
             );
 
             // Verify data pattern
-            let data_ptr = head_indirect.data_pointer();
+            let data_ptr = head_indirect.data_pointer_with_arena(arena);
             for word_idx in 0..expected_word_count {
                 let expected_value = (expected_index as u64) << 32 | (word_idx as u64);
                 let actual_value = unsafe { *data_ptr.add(word_idx) };
@@ -1388,7 +1396,7 @@ mod tests {
                 );
             }
 
-            current = cell.tail();
+            current = cell.tail_with_arena(arena);
         }
 
         // Final element should be indirect atom for index DEPTH
@@ -1398,14 +1406,14 @@ mod tests {
         let leaf_indirect = current.as_indirect().expect("indirect");
         let expected_leaf_words = word_count_for_index(DEPTH);
         assert_eq!(
-            leaf_indirect.size(),
+            leaf_indirect.size_with_arena(arena),
             expected_leaf_words,
             "Leaf indirect atom should have {} words",
             expected_leaf_words
         );
 
         // Verify leaf data pattern
-        let leaf_data_ptr = leaf_indirect.data_pointer();
+        let leaf_data_ptr = leaf_indirect.data_pointer_with_arena(arena);
         for word_idx in 0..expected_leaf_words {
             let expected_value = (DEPTH as u64) << 32 | (word_idx as u64);
             let actual_value = unsafe { *leaf_data_ptr.add(word_idx) };
@@ -1570,17 +1578,20 @@ mod tests {
         unsafe { pma_cell.copy_to_pma(&stack, &mut pma) };
 
         assert!(!pma_cell.is_stack_allocated(), "PMA cell should be in offset form");
-        let cell = pma_cell.as_cell().unwrap();
-        assert_eq!(
-            cell.head().as_direct().unwrap().data(),
-            42,
-            "Cell head should be 42"
-        );
-        assert_eq!(
-            cell.tail().as_direct().unwrap().data(),
-            99,
-            "Cell tail should be 99"
-        );
+        {
+            let cell = pma_cell.as_cell().unwrap();
+            let arena = pma.arena();
+            assert_eq!(
+                cell.head_with_arena(arena).as_direct().unwrap().data(),
+                42,
+                "Cell head should be 42"
+            );
+            assert_eq!(
+                cell.tail_with_arena(arena).as_direct().unwrap().data(),
+                99,
+                "Cell tail should be 99"
+            );
+        }
 
         // Test with nested structure
         let inner = Cell::new(&mut stack, D(1), D(2)).as_noun();
@@ -1590,19 +1601,20 @@ mod tests {
 
         assert!(!pma_nested.is_stack_allocated(), "PMA nested should be in offset form");
         let outer = pma_nested.as_cell().unwrap();
+        let arena = pma.arena();
         assert_eq!(
-            outer.tail().as_direct().unwrap().data(),
+            outer.tail_with_arena(arena).as_direct().unwrap().data(),
             3,
             "Outer tail should be 3"
         );
-        let inner_cell = outer.head().as_cell().unwrap();
+        let inner_cell = outer.head_with_arena(arena).as_cell().unwrap();
         assert_eq!(
-            inner_cell.head().as_direct().unwrap().data(),
+            inner_cell.head_with_arena(arena).as_direct().unwrap().data(),
             1,
             "Inner head should be 1"
         );
         assert_eq!(
-            inner_cell.tail().as_direct().unwrap().data(),
+            inner_cell.tail_with_arena(arena).as_direct().unwrap().data(),
             2,
             "Inner tail should be 2"
         );
@@ -1729,15 +1741,16 @@ mod tests {
         let _guard = pma.install();
 
         // Verify all values match by comparing PMA nouns to reference stack nouns
+        let arena = pma.arena();
         let mut found_count = 0;
         for entries in hamt.iter() {
             for (pma_key, pma_value) in entries {
                 // Find matching reference key and verify value matches
                 let mut found = false;
                 for (idx, ref_key) in ref_keys.iter().enumerate() {
-                    if noun_equality(pma_key, ref_key) {
+                    if noun_equality(pma_key, ref_key, arena) {
                         assert!(
-                            noun_equality(pma_value, &ref_values[idx]),
+                            noun_equality(pma_value, &ref_values[idx], arena),
                             "Value for key {} should match reference after evacuation",
                             idx
                         );
@@ -1759,8 +1772,8 @@ mod tests {
         // Verify all nouns in the HAMT are in offset form
         for entries in hamt.iter() {
             for (key, value) in entries {
-                verify_noun_not_stack_allocated(*key, "HAMT key");
-                verify_noun_not_stack_allocated(*value, "HAMT value");
+                verify_noun_not_stack_allocated(*key, "HAMT key", arena);
+                verify_noun_not_stack_allocated(*value, "HAMT value", arena);
             }
         }
 
@@ -1769,7 +1782,7 @@ mod tests {
     }
 
     /// Helper to recursively verify a noun is not stack-allocated
-    fn verify_noun_not_stack_allocated(noun: Noun, context: &str) {
+    fn verify_noun_not_stack_allocated(noun: Noun, context: &str, arena: &Arena) {
         if noun.is_direct() {
             return;
         }
@@ -1781,8 +1794,8 @@ mod tests {
         );
 
         if let Ok(cell) = noun.as_cell() {
-            verify_noun_not_stack_allocated(cell.head(), context);
-            verify_noun_not_stack_allocated(cell.tail(), context);
+            verify_noun_not_stack_allocated(cell.head_with_arena(arena), context, arena);
+            verify_noun_not_stack_allocated(cell.tail_with_arena(arena), context, arena);
         }
     }
 

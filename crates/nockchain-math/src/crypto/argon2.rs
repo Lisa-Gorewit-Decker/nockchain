@@ -2,6 +2,7 @@ use argon2::{Algorithm, Argon2, AssociatedData, Params, Version};
 use ibig::UBig;
 use nockvm::ext::{make_tas, AtomExt};
 use nockvm::jets::cold::{Nounable, NounableResult};
+use nockvm::mem::Arena;
 use nockvm::noun::{Atom, Noun, NounAllocator, Slots, D, T};
 
 /// Wrapper for the `$byts` Hoon cell `[wid=@ dat=@]`.
@@ -21,20 +22,22 @@ impl Byts {
 
 impl Nounable for Byts {
     type Target = Self;
-    fn into_noun<A: NounAllocator>(self, stack: &mut A) -> Noun {
+    fn into_noun<A: NounAllocator>(self, stack: &mut A, _arena: &Arena) -> Noun {
         let big = UBig::from_be_bytes(&self.0);
         let wid = D(self.0.len() as u64);
         let dat = Atom::from_ubig(stack, &big).as_noun();
         T(stack, &[wid, dat])
     }
-    fn from_noun<A: NounAllocator>(_stack: &mut A, noun: &Noun) -> NounableResult<Self::Target> {
+    fn from_noun<A: NounAllocator>(_stack: &mut A, _arena: &Arena, noun: &Noun) -> NounableResult<Self::Target> {
         let size = noun.slot(2)?;
         let dat = noun.slot(3)?.as_atom()?;
 
-        let wid = size.as_atom()?.as_u64()? as usize;
+        // SAFETY: Nounable::from_noun operates on stack-allocated nouns
+        let wid = unsafe { size.as_atom()?.as_u64_stack()? } as usize;
         let mut res = vec![0; wid];
 
-        let bytes_be = dat.to_be_bytes();
+        // SAFETY: Nounable::from_noun operates on stack-allocated nouns
+        let bytes_be = unsafe { dat.to_be_bytes_stack() };
 
         // Iterate over the bytes in reverse order
         // Start copying at the first non zero value encountered
@@ -82,14 +85,14 @@ impl Argon2Args {
 
 impl Nounable for Argon2Args {
     type Target = Self;
-    fn into_noun<A: NounAllocator>(self, stack: &mut A) -> Noun {
+    fn into_noun<A: NounAllocator>(self, stack: &mut A, arena: &Arena) -> Noun {
         let out = D(self.out as u64);
-        let secret = self.secret.into_noun(stack);
+        let secret = self.secret.into_noun(stack, arena);
         let threads = D(self.params.p_cost() as u64);
         let mem_cost = D(self.params.m_cost() as u64);
         let time_cost = D(self.params.t_cost() as u64);
         let extra_byts = Byts(self.params.data().to_vec());
-        let extra = extra_byts.into_noun(stack);
+        let extra = extra_byts.into_noun(stack, arena);
         let typ = match self.algorithm {
             Algorithm::Argon2d => "d",
             Algorithm::Argon2i => "i",
@@ -105,45 +108,31 @@ impl Nounable for Argon2Args {
             &[out, typ_noun, vers, threads, mem_cost, time_cost, secret, extra],
         )
     }
-    fn from_noun<A: NounAllocator>(stack: &mut A, params: &Noun) -> NounableResult<Self::Target> {
-        let out = params.slot(2)?.as_atom()?.as_u64()? as usize;
-        let typ = params
-            .slot(6)?
-            .as_atom()?
-            .into_string()
-            .unwrap_or_else(|err| {
-                panic!(
-                    "Panicked with {err:?} at {}:{} (git sha: {:?})",
-                    file!(),
-                    line!(),
-                    option_env!("GIT_SHA")
-                )
-            });
-        let version = params.slot(14)?.as_atom()?.as_u64()? as u8;
-        let threads = params.slot(30)?.as_atom()?.as_u64()? as u32;
-        let mem_cost = params.slot(62)?.as_atom()?.as_u64()? as u32;
-        let time_cost = params.slot(126)?.as_atom()?.as_u64()? as u32;
-        let secret = Byts::from_noun(stack, &params.slot(254)?)?;
-        let extra = Byts::from_noun(stack, &params.slot(255)?)?;
+    fn from_noun<A: NounAllocator>(stack: &mut A, arena: &Arena, params: &Noun) -> NounableResult<Self::Target> {
+        // SAFETY: Nounable::from_noun operates on stack-allocated nouns
+        unsafe {
+            let out = params.slot(2)?.as_atom()?.as_u64_stack()? as usize;
+            let typ = params
+                .slot(6)?
+                .as_atom()?
+                .into_string_stack()
+                .unwrap_or_else(|err| {
+                    panic!(
+                        "Panicked with {err:?} at {}:{} (git sha: {:?})",
+                        file!(),
+                        line!(),
+                        option_env!("GIT_SHA")
+                    )
+                });
+            let version = params.slot(14)?.as_atom()?.as_u64_stack()? as u8;
+            let threads = params.slot(30)?.as_atom()?.as_u64_stack()? as u32;
+            let mem_cost = params.slot(62)?.as_atom()?.as_u64_stack()? as u32;
+            let time_cost = params.slot(126)?.as_atom()?.as_u64_stack()? as u32;
+            let secret = Byts::from_noun(stack, arena, &params.slot(254)?)?;
+            let extra = Byts::from_noun(stack, arena, &params.slot(255)?)?;
 
-        // prepare parameters
-        let data = AssociatedData::new(&extra.0).unwrap_or_else(|err| {
-            panic!(
-                "Panicked with {err:?} at {}:{} (git sha: {:?})",
-                file!(),
-                line!(),
-                option_env!("GIT_SHA")
-            )
-        });
-
-        // translate threads, mem_cost, time_cost, and extra into Argon2 params
-        let params = argon2::ParamsBuilder::new()
-            .p_cost(threads)
-            .m_cost(mem_cost)
-            .t_cost(time_cost)
-            .data(data)
-            .build()
-            .unwrap_or_else(|err| {
+            // prepare parameters
+            let data = AssociatedData::new(&extra.0).unwrap_or_else(|err| {
                 panic!(
                     "Panicked with {err:?} at {}:{} (git sha: {:?})",
                     file!(),
@@ -152,29 +141,46 @@ impl Nounable for Argon2Args {
                 )
             });
 
-        let algorithm = match typ.as_str() {
-            "d" => argon2::Algorithm::Argon2d,
-            "i" => argon2::Algorithm::Argon2i,
-            "id" => argon2::Algorithm::Argon2id,
-            _ => {
-                return Err(nockvm::noun::Error::NotRepresentable)?;
-            }
-        };
-        let version = match version {
-            0x10 => argon2::Version::V0x10,
-            0x13 => argon2::Version::V0x13,
-            _ => {
-                return Err(nockvm::noun::Error::NotRepresentable)?;
-            }
-        };
+            // translate threads, mem_cost, time_cost, and extra into Argon2 params
+            let params = argon2::ParamsBuilder::new()
+                .p_cost(threads)
+                .m_cost(mem_cost)
+                .t_cost(time_cost)
+                .data(data)
+                .build()
+                .unwrap_or_else(|err| {
+                    panic!(
+                        "Panicked with {err:?} at {}:{} (git sha: {:?})",
+                        file!(),
+                        line!(),
+                        option_env!("GIT_SHA")
+                    )
+                });
 
-        Ok(Argon2Args {
-            out,
-            secret,
-            params,
-            algorithm,
-            version,
-        })
+            let algorithm = match typ.as_str() {
+                "d" => argon2::Algorithm::Argon2d,
+                "i" => argon2::Algorithm::Argon2i,
+                "id" => argon2::Algorithm::Argon2id,
+                _ => {
+                    return Err(nockvm::noun::Error::NotRepresentable)?;
+                }
+            };
+            let version = match version {
+                0x10 => argon2::Version::V0x10,
+                0x13 => argon2::Version::V0x13,
+                _ => {
+                    return Err(nockvm::noun::Error::NotRepresentable)?;
+                }
+            };
+
+            Ok(Argon2Args {
+                out,
+                secret,
+                params,
+                algorithm,
+                version,
+            })
+        }
     }
 }
 

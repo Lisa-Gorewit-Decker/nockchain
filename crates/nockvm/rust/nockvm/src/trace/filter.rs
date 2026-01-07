@@ -59,12 +59,16 @@ impl<T: AsRef<str> + Send> TraceFilter for KeywordFilter<T> {
                 return false;
             }
             if let Ok(n) = n.as_atom() {
-                let b = n.as_ne_bytes();
+                // SAFETY: Trace paths are stack-allocated
+                let b = unsafe { n.as_ne_bytes_stack() };
                 let b = &b[..b.iter().rposition(|&b| b != 0).map_or(0, |i| i + 1)];
                 return kw.iter().map(|v| v.as_ref()).any(|v| v.as_bytes() == b);
             }
             if let Ok(c) = n.as_cell() {
-                return has_keywords(c.head(), cnt - 1, kw) || has_keywords(c.tail(), cnt - 1, kw);
+                // SAFETY: Trace paths are stack-allocated
+                unsafe {
+                    return has_keywords(c.head_stack(), cnt - 1, kw) || has_keywords(c.tail_stack(), cnt - 1, kw);
+                }
             }
             false
         }

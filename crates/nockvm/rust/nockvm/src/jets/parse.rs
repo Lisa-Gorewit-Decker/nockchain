@@ -17,12 +17,12 @@ crate::gdb!();
 pub fn jet_trip(context: &mut Context, subject: Noun) -> Result {
     let arena = &*context.arena;
     let sam = slot_with_arena(subject, 6, arena)?.as_atom()?;
-    let chars = met(3, sam);
+    let chars = met(3, arena, sam);
     if chars == 0 {
         return Ok(D(0));
     };
 
-    let bytes = &sam.as_ne_bytes()[0..chars];
+    let bytes = &sam.as_ne_bytes_with_arena(arena)[0..chars];
 
     let mut result = D(0);
     let mut dest = &mut result as *mut Noun;
@@ -524,8 +524,8 @@ pub fn jet_stew(context: &mut Context, subject: Noun) -> Result {
 
                     match (hpn_hel.as_either(), tpn_hel.as_either()) {
                         (Left(_), Left(_)) => {
-                            gte_b(&mut context.stack, iq_tub, hpn_hel)
-                                && lte_b(&mut context.stack, iq_tub, tpn_hel)
+                            gte_b(&mut context.stack, &arena, iq_tub, hpn_hel)
+                                && lte_b(&mut context.stack, &arena, iq_tub, tpn_hel)
                         }
                         _ => {
                             // XX: Fixes jet mismatch in Vere
@@ -544,7 +544,7 @@ pub fn jet_stew(context: &mut Context, subject: Noun) -> Result {
                     Right(cell) => cell.head_with_arena(&arena).as_atom()?,
                 };
 
-                if lth_b(&mut context.stack, iq_tub, wor) {
+                if lth_b(&mut context.stack, &arena, iq_tub, wor) {
                     hel = l_hel;
                 } else {
                     hel = r_hel;

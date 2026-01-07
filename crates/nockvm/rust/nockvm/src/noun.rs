@@ -168,15 +168,18 @@ fn acyclic_noun_go(noun: Noun, seen: &mut IntMap<u64, ()>) -> bool {
                 false
             } else {
                 seen.insert(cell.0, ());
-                if acyclic_noun_go(cell.head(), seen) {
-                    if acyclic_noun_go(cell.tail(), seen) {
-                        seen.remove(cell.0);
-                        true
+                // SAFETY: This is debug code that only runs on stack-allocated nouns
+                unsafe {
+                    if acyclic_noun_go(cell.head_stack(), seen) {
+                        if acyclic_noun_go(cell.tail_stack(), seen) {
+                            seen.remove(cell.0);
+                            true
+                        } else {
+                            false
+                        }
                     } else {
                         false
                     }
-                } else {
-                    false
                 }
             }
         }
@@ -208,8 +211,11 @@ pub fn no_forwarding_pointers(noun: Noun) -> bool {
             if unsafe { noun.raw & FORWARDING_MASK == FORWARDING_TAG } {
                 return false;
             } else if let Ok(cell) = noun.as_cell() {
-                dbg_stack.push(cell.tail());
-                dbg_stack.push(cell.head());
+                // SAFETY: This is debug code that only runs on stack-allocated nouns
+                unsafe {
+                    dbg_stack.push(cell.tail_stack());
+                    dbg_stack.push(cell.head_stack());
+                }
             }
         } else {
             break;
@@ -460,7 +466,7 @@ impl IndirectAtom {
     }
 
     /// Get mutable raw pointer for stack-pointer form atoms only
-    pub fn to_raw_pointer_mut_stack(&mut self) -> *mut u64 {
+    pub unsafe fn to_raw_pointer_mut_stack(&mut self) -> *mut u64 {
         let tagged = TaggedPtr::from_raw(self.0);
         if tagged.location() == PtrLocation::Stack {
             ((tagged.payload(INDIRECT_MASK)) << 3) as *mut u64
@@ -482,6 +488,24 @@ impl IndirectAtom {
         if size_raw & FORWARDING_MASK == FORWARDING_TAG {
             let ptr =
                 TaggedPtr::from_raw(size_raw).resolve_const(FORWARDING_MASK, arena) as *const u64;
+            Some(Self::from_raw_pointer(ptr))
+        } else {
+            None
+        }
+    }
+
+    /// Set forwarding pointer (stack-pointer form only)
+    pub unsafe fn set_forwarding_pointer_stack(&mut self, new_me: *const u64) {
+        *self.to_raw_pointer_mut_stack().add(1) =
+            TaggedPtr::from_stack_ptr(new_me as *const u8, FORWARDING_TAG).raw();
+    }
+
+    /// Get forwarding pointer (stack-pointer form only)
+    pub unsafe fn forwarding_pointer_stack(&self) -> Option<IndirectAtom> {
+        let size_raw = *self.to_raw_pointer_stack().add(1);
+        if size_raw & FORWARDING_MASK == FORWARDING_TAG {
+            // Forwarding pointers always point to stack addresses
+            let ptr = (TaggedPtr::from_raw(size_raw).payload(FORWARDING_MASK) << 3) as *const u64;
             Some(Self::from_raw_pointer(ptr))
         } else {
             None
@@ -592,6 +616,11 @@ impl IndirectAtom {
         unsafe { *(self.to_raw_pointer_with_arena(arena).add(1)) as usize }
     }
 
+    /** Size of an indirect atom in 64-bit words (stack-pointer form only) */
+    pub unsafe fn size_stack(&self) -> usize {
+        *(self.to_raw_pointer_stack().add(1)) as usize
+    }
+
     /** Memory size of an indirect atom (including size + metadata fields) in 64-bit words */
     pub fn raw_size_with_arena(&self, arena: &Arena) -> usize {
         self.size_with_arena(arena) + 2
@@ -616,13 +645,9 @@ impl IndirectAtom {
         unsafe { self.to_raw_pointer_mut_with_arena(arena).add(2) }
     }
 
-    pub fn data_pointer_stack(&self) -> Option<*const u64> {
-        let tagged = TaggedPtr::from_raw(self.0);
-        if tagged.location() == PtrLocation::Stack {
-            Some(((tagged.payload(INDIRECT_MASK)) << 3) as *const u64)
-        } else {
-            None
-        }
+    /// Get data pointer for stack-pointer form only. Returns base pointer + 2 (skipping header).
+    pub unsafe fn data_pointer_stack(&self) -> *const u64 {
+        self.to_raw_pointer_stack().add(2)
     }
 
     pub fn as_slice_with_arena(&self, arena: &Arena) -> &[u64] {
@@ -632,6 +657,11 @@ impl IndirectAtom {
                 self.size_with_arena(arena),
             )
         }
+    }
+
+    /// Get slice of data words for stack-pointer form only
+    pub unsafe fn as_slice_stack(&self) -> &[u64] {
+        from_raw_parts(self.data_pointer_stack(), self.size_stack())
     }
 
     pub fn as_mut_slice_with_arena(&mut self, arena: &Arena) -> &mut [u64] {
@@ -650,6 +680,14 @@ impl IndirectAtom {
                 self.size_with_arena(arena) << 3,
             )
         }
+    }
+
+    /// Get bytes (stack-pointer form only)
+    pub unsafe fn as_ne_bytes_stack(&self) -> &[u8] {
+        from_raw_parts(
+            self.data_pointer_stack() as *const u8,
+            self.size_stack() << 3,
+        )
     }
 
     pub fn to_ne_bytes_with_arena(&self, arena: &Arena) -> Vec<u8> {
@@ -687,9 +725,41 @@ impl IndirectAtom {
         }
     }
 
+    /// Returns Vec<u8> in native-endian order (stack-pointer form only)
+    #[allow(unused)]
+    pub unsafe fn to_ne_bytes_stack(&self) -> Vec<u8> {
+        let size = self.size_stack();
+        let mut v = Vec::with_capacity(size << 3);
+        for i in 0..size {
+            v.extend_from_slice(&(*self.data_pointer_stack().add(i)).to_ne_bytes())
+        }
+        v
+    }
+
+    /// Returns Vec<u8> in big-endian order (stack-pointer form only)
+    #[allow(unused)]
+    pub unsafe fn to_be_bytes_stack(&self) -> Vec<u8> {
+        if self.size_stack() == 1 {
+            let num = *(self.data_pointer_stack());
+            num.to_be_bytes().to_vec()
+        } else {
+            let mut bytes_ne = self.to_ne_bytes_stack();
+            #[cfg(target_endian = "little")]
+            {
+                bytes_ne.reverse()
+            }
+            bytes_ne
+        }
+    }
+
     /** BitSlice view on an indirect atom, with lifetime tied to reference to indirect atom. */
     pub fn as_bitslice_with_arena(&self, arena: &Arena) -> &BitSlice<u64, Lsb0> {
         BitSlice::from_slice(self.as_slice_with_arena(arena))
+    }
+
+    /// BitSlice view for stack-pointer form only
+    pub unsafe fn as_bitslice_stack(&self) -> &BitSlice<u64, Lsb0> {
+        BitSlice::from_slice(self.as_slice_stack())
     }
 
     pub fn as_bitslice_mut_with_arena(&mut self, arena: &Arena) -> &mut BitSlice<u64, Lsb0> {
@@ -713,6 +783,15 @@ impl IndirectAtom {
     pub unsafe fn as_u64_with_arena(self, arena: &Arena) -> Result<u64> {
         if self.size_with_arena(arena) == 1 {
             Ok(*(self.data_pointer_with_arena(arena)))
+        } else {
+            Err(Error::NotRepresentable)
+        }
+    }
+
+    /// Get as u64 for stack-pointer form only
+    pub unsafe fn as_u64_stack(self) -> Result<u64> {
+        if self.size_stack() == 1 {
+            Ok(*(self.data_pointer_stack()))
         } else {
             Err(Error::NotRepresentable)
         }
@@ -856,6 +935,46 @@ impl Cell {
         }
     }
 
+    /// Get raw pointer for stack-pointer form cells only
+    pub unsafe fn to_raw_pointer_stack(&self) -> *const CellMemory {
+        let tagged = TaggedPtr::from_raw(self.0);
+        if tagged.location() == PtrLocation::Stack {
+            ((tagged.payload(CELL_MASK)) << 3) as *const CellMemory
+        } else {
+            panic!("expected stack-pointer Cell, got offset instead");
+        }
+    }
+
+    /// Get head of cell (stack-pointer form only)
+    pub unsafe fn head_stack(&self) -> Noun {
+        (*self.to_raw_pointer_stack()).head
+    }
+
+    /// Get tail of cell (stack-pointer form only)
+    pub unsafe fn tail_stack(&self) -> Noun {
+        (*self.to_raw_pointer_stack()).tail
+    }
+
+    /// Get mutable raw pointer for stack-pointer form cells only
+    pub unsafe fn to_raw_pointer_mut_stack(&mut self) -> *mut CellMemory {
+        let tagged = TaggedPtr::from_raw(self.0);
+        if tagged.location() == PtrLocation::Stack {
+            ((tagged.payload(CELL_MASK)) << 3) as *mut CellMemory
+        } else {
+            panic!("expected stack-pointer Cell, got offset instead");
+        }
+    }
+
+    /// Get mutable pointer to head (stack-pointer form only)
+    pub unsafe fn head_as_mut_stack(mut self) -> *mut Noun {
+        &mut (*self.to_raw_pointer_mut_stack()).head as *mut Noun
+    }
+
+    /// Get mutable pointer to tail (stack-pointer form only)
+    pub unsafe fn tail_as_mut_stack(mut self) -> *mut Noun {
+        &mut (*self.to_raw_pointer_mut_stack()).tail as *mut Noun
+    }
+
     pub unsafe fn head_as_mut_with_arena(mut self, arena: &Arena) -> *mut Noun {
         &mut (*self.to_raw_pointer_mut_with_arena(arena)).head as *mut Noun
     }
@@ -879,6 +998,25 @@ impl Cell {
         if head_raw & FORWARDING_MASK == FORWARDING_TAG {
             let ptr = TaggedPtr::from_raw(head_raw).resolve_const(FORWARDING_MASK, arena)
                 as *const CellMemory;
+            Some(Self::from_raw_pointer(ptr))
+        } else {
+            None
+        }
+    }
+
+    /// Set forwarding pointer (stack-pointer form only)
+    pub unsafe fn set_forwarding_pointer_stack(&mut self, new_me: *const CellMemory) {
+        (*self.to_raw_pointer_mut_stack()).head = Noun {
+            raw: TaggedPtr::from_stack_ptr(new_me as *const u8, FORWARDING_TAG).raw(),
+        }
+    }
+
+    /// Get forwarding pointer (stack-pointer form only)
+    pub unsafe fn forwarding_pointer_stack(&self) -> Option<Cell> {
+        let head_raw = (*self.to_raw_pointer_stack()).head.raw;
+        if head_raw & FORWARDING_MASK == FORWARDING_TAG {
+            // Forwarding pointers always point to stack addresses
+            let ptr = (TaggedPtr::from_raw(head_raw).payload(FORWARDING_MASK) << 3) as *const CellMemory;
             Some(Self::from_raw_pointer(ptr))
         } else {
             None
@@ -1138,7 +1276,7 @@ impl<'a> IndirectAxisIterator<'a> {
     }
 }
 
-// Direct axis traversal without bitvec - for u64 axes
+// Direct axis traversal without bitvec - for u64 axes (stack-pointer form only)
 #[inline(always)]
 fn slot_direct(cell: &Cell, axis: u64) -> Result<Noun> {
     if axis == 0 {
@@ -1154,7 +1292,7 @@ fn slot_direct(cell: &Cell, axis: u64) -> Result<Noun> {
 
     for idx in (0..highest).rev() {
         let descend_tail = ((axis >> idx) & 1) != 0;
-        let memory = unsafe { current.to_raw_pointer() };
+        let memory = unsafe { current.to_raw_pointer_stack() };
         noun = unsafe {
             if descend_tail {
                 (*memory).tail
@@ -1212,7 +1350,7 @@ fn slot_indirect(cell: &Cell, words: &[u64]) -> Result<Noun> {
         let bit_idx = idx & 63;
         let descend_tail = ((words[word_idx] >> bit_idx) & 1) != 0;
 
-        let memory = unsafe { current.to_raw_pointer() };
+        let memory = unsafe { current.to_raw_pointer_stack() };
         noun = unsafe {
             if descend_tail {
                 (*memory).tail
@@ -1352,7 +1490,7 @@ impl Cell {
     pub fn slot_atom_with_arena(&self, atom: Atom, arena: &Arena) -> Result<Noun> {
         match atom.as_either() {
             either::Left(direct) => slot_direct_with_arena(self, direct.data(), arena),
-            either::Right(indirect) => slot_indirect_with_arena(self, indirect.as_slice(), arena),
+            either::Right(indirect) => slot_indirect_with_arena(self, indirect.as_slice_with_arena(arena), arena),
         }
     }
 }
@@ -1468,6 +1606,15 @@ impl Atom {
         }
     }
 
+    /// Returns a slice of bytes (stack-pointer form only)
+    pub unsafe fn as_ne_bytes_stack(&self) -> &[u8] {
+        if self.is_direct() {
+            self.direct.as_ne_bytes()
+        } else {
+            self.indirect.as_ne_bytes_stack()
+        }
+    }
+
     /// Returns Vec<u8> in native-endian order
     pub fn to_ne_bytes_with_arena(&self, arena: &Arena) -> Vec<u8> {
         if self.is_direct() {
@@ -1486,6 +1633,15 @@ impl Atom {
         }
     }
 
+    /// Returns Vec<u8> in big-endian order (stack-pointer form only)
+    pub unsafe fn to_be_bytes_stack(self) -> Vec<u8> {
+        if self.is_direct() {
+            self.direct.to_be_bytes()
+        } else {
+            self.indirect.to_be_bytes_stack()
+        }
+    }
+
     /// Returns Vec<u8> in little-endian order
     pub fn to_le_bytes_with_arena(self, arena: &Arena) -> Vec<u8> {
         if self.is_direct() {
@@ -1500,6 +1656,15 @@ impl Atom {
             Ok(unsafe { self.direct.data() })
         } else {
             unsafe { self.indirect.as_u64_with_arena(arena) }
+        }
+    }
+
+    /// Get as u64 for stack-pointer form atoms only
+    pub unsafe fn as_u64_stack(self) -> Result<u64> {
+        if self.is_direct() {
+            Ok(self.direct.data())
+        } else {
+            self.indirect.as_u64_stack()
         }
     }
 
@@ -1528,6 +1693,15 @@ impl Atom {
             unsafe { self.indirect.as_bitslice_with_arena(arena) }
         } else {
             unsafe { self.direct.as_bitslice() }
+        }
+    }
+
+    /// BitSlice view for stack-pointer form atoms only
+    pub unsafe fn as_bitslice_stack(&self) -> &BitSlice<u64, Lsb0> {
+        if self.is_indirect() {
+            self.indirect.as_bitslice_stack()
+        } else {
+            self.direct.as_bitslice()
         }
     }
 
@@ -1581,6 +1755,14 @@ impl Atom {
         match self.as_either() {
             Left(_direct) => (self as *const Atom) as *const u64,
             Right(indirect) => indirect.data_pointer_with_arena(arena),
+        }
+    }
+
+    /// Get raw data pointer for stack-pointer form atoms only
+    pub unsafe fn data_pointer_stack(&self) -> *const u64 {
+        match self.as_either() {
+            Left(_direct) => (self as *const Atom) as *const u64,
+            Right(indirect) => indirect.data_pointer_stack(),
         }
     }
 
@@ -1659,6 +1841,31 @@ impl Allocated {
         }
     }
 
+    /// Get raw pointer for stack-pointer form allocated nouns only
+    pub unsafe fn to_raw_pointer_stack(&self) -> *const u64 {
+        let tagged = TaggedPtr::from_raw(self.raw);
+        if tagged.location() != PtrLocation::Stack {
+            panic!("expected stack-pointer Allocated, got offset instead");
+        }
+        if self.is_indirect() {
+            (tagged.payload(INDIRECT_MASK) << 3) as *const u64
+        } else {
+            (tagged.payload(CELL_MASK) << 3) as *const u64
+        }
+    }
+
+    /// Get forwarding pointer (stack-pointer form only)
+    pub unsafe fn forwarding_pointer_stack(&self) -> Option<Allocated> {
+        match self.as_either() {
+            Left(indirect) => indirect
+                .forwarding_pointer_stack()
+                .map(|i| i.as_allocated()),
+            Right(cell) => cell
+                .forwarding_pointer_stack()
+                .map(|c| c.as_allocated()),
+        }
+    }
+
     pub unsafe fn forwarding_pointer_with_arena(&self, arena: &Arena) -> Option<Allocated> {
         match self.as_either() {
             Left(indirect) => indirect
@@ -1676,6 +1883,25 @@ impl Allocated {
 
     pub unsafe fn set_metadata_with_arena(&mut self, metadata: u64, arena: &Arena) {
         *(self.const_to_raw_pointer_mut_with_arena(arena)) = metadata;
+    }
+
+    /// Get metadata for stack-pointer form allocated nouns only
+    pub unsafe fn get_metadata_stack(&self) -> u64 {
+        *(self.to_raw_pointer_stack())
+    }
+
+    /// Set metadata for stack-pointer form allocated nouns only
+    pub unsafe fn set_metadata_stack(&mut self, metadata: u64) {
+        let tagged = TaggedPtr::from_raw(self.raw);
+        if tagged.location() != PtrLocation::Stack {
+            panic!("expected stack-pointer Allocated, got offset instead");
+        }
+        let ptr = if self.is_indirect() {
+            (tagged.payload(INDIRECT_MASK) << 3) as *mut u64
+        } else {
+            (tagged.payload(CELL_MASK) << 3) as *mut u64
+        };
+        *ptr = metadata;
     }
 
     pub fn as_either(&self) -> Either<IndirectAtom, Cell> {
@@ -1706,9 +1932,10 @@ impl Allocated {
         Noun { allocated: *self }
     }
 
+    /// Get cached mug from stack-pointer form allocated noun metadata
     pub fn get_cached_mug(self: Allocated) -> Option<u32> {
         unsafe {
-            let bottom_metadata = self.get_metadata() as u32 & 0x7FFFFFFF; // magic number: LS 31 bits
+            let bottom_metadata = self.get_metadata_stack() as u32 & 0x7FFFFFFF; // magic number: LS 31 bits
             if bottom_metadata > 0 {
                 Some(bottom_metadata)
             } else {
@@ -1926,7 +2153,7 @@ impl Noun {
                         }
                     }
                     Right(indirect) => {
-                        let words = indirect.as_slice();
+                        let words = indirect.as_slice_with_arena(arena);
                         if words.len() == 1 && words[0] == 1 {
                             Ok(*self)
                         } else if words.is_empty() || (words.len() == 1 && words[0] == 0) {
@@ -1977,15 +2204,15 @@ impl Noun {
      */
     pub unsafe fn mass_wind(self, inside: &impl Fn(*const u64) -> bool) -> usize {
         if let Ok(mut allocated) = self.as_allocated() {
-            if inside(allocated.to_raw_pointer()) {
-                if allocated.get_metadata() & (1 << 32) == 0 {
-                    allocated.set_metadata(allocated.get_metadata() | (1 << 32));
+            if inside(allocated.to_raw_pointer_stack()) {
+                if allocated.get_metadata_stack() & (1 << 32) == 0 {
+                    allocated.set_metadata_stack(allocated.get_metadata_stack() | (1 << 32));
                     match allocated.as_either() {
-                        Left(indirect) => indirect.size() + 2,
+                        Left(indirect) => indirect.size_stack() + 2,
                         Right(cell) => {
                             word_size_of::<CellMemory>()
-                                + cell.head().mass_wind(inside)
-                                + cell.tail().mass_wind(inside)
+                                + cell.head_stack().mass_wind(inside)
+                                + cell.tail_stack().mass_wind(inside)
                         }
                     }
                 } else {
@@ -2002,11 +2229,11 @@ impl Noun {
     /** See mass_wind() */
     pub unsafe fn mass_unwind(self, inside: &impl Fn(*const u64) -> bool) {
         if let Ok(mut allocated) = self.as_allocated() {
-            if inside(allocated.to_raw_pointer()) {
-                allocated.set_metadata(allocated.get_metadata() & !(1 << 32));
+            if inside(allocated.to_raw_pointer_stack()) {
+                allocated.set_metadata_stack(allocated.get_metadata_stack() & !(1 << 32));
                 if let Right(cell) = allocated.as_either() {
-                    cell.head().mass_unwind(inside);
-                    cell.tail().mass_unwind(inside);
+                    cell.head_stack().mass_unwind(inside);
+                    cell.tail_stack().mass_unwind(inside);
                 }
             }
         }
@@ -2022,12 +2249,12 @@ impl fmt::Debug for Noun {
                 write!(f, "{:?}", self.indirect)
             } else if self.is_cell() {
                 write!(f, "{:?}", self.cell)
-            } else if self.allocated.forwarding_pointer().is_some() {
+            } else if self.allocated.forwarding_pointer_stack().is_some() {
                 write!(
                     f,
                     "Noun::Forwarding({:?})",
                     self.allocated
-                        .forwarding_pointer()
+                        .forwarding_pointer_stack()
                         .unwrap_or_else(|| panic!(
                             "Panicked at {}:{} (git sha: {:?})",
                             file!(),
@@ -2112,11 +2339,14 @@ pub trait Slots: private::RawSlots {
 
     /**
      * Retrieve component Noun at axis given as Atom, or fail with descriptive error
+     *
+     * SAFETY: This method assumes the atom is in stack-pointer form (LOCATION_BIT=0)
      */
     fn slot_atom(&self, atom: Atom) -> Result<Noun> {
         match atom.as_either() {
             Left(direct) => self.raw_slot_direct(direct.data()),
-            Right(indirect) => self.raw_slot_indirect(indirect.as_slice()),
+            // SAFETY: Operating on stack-allocated indirect atoms
+            Right(indirect) => self.raw_slot_indirect(unsafe { indirect.as_slice_stack() }),
         }
     }
 }
@@ -2247,7 +2477,7 @@ impl<'a> NounRef<'a> {
 
     /// Check if this noun is stored on the stack (ephemeral memory).
     #[inline(always)]
-    pub fn is_stack(&self) -> bool {
+    pub unsafe fn is_stack(&self) -> bool {
         MemContext::is_stack(self.raw)
     }
 
@@ -2403,7 +2633,7 @@ impl<'a> CellRef<'a> {
 
     /// Check if this cell is stored on the stack (ephemeral memory).
     #[inline(always)]
-    pub fn is_stack(&self) -> bool {
+    pub unsafe fn is_stack(&self) -> bool {
         MemContext::is_stack(self.raw)
     }
 }
@@ -2515,7 +2745,7 @@ impl<'a> AtomRef<'a> {
 
     /// Check if this atom is stored on the stack (ephemeral memory).
     #[inline(always)]
-    pub fn is_stack(&self) -> bool {
+    pub unsafe fn is_stack(&self) -> bool {
         self.is_direct() || MemContext::is_stack(self.raw)
     }
 }
@@ -2527,6 +2757,486 @@ impl<'a> fmt::Debug for AtomRef<'a> {
         } else {
             write!(f, "AtomRef::Indirect({:#x})", self.raw)
         }
+    }
+}
+
+// =============================================================================
+// Memory Resolver Trait and Implementations
+// =============================================================================
+
+/// Trait for resolving noun pointers to memory locations.
+///
+/// This enables a single `NounDecode` implementation to work with both
+/// stack-allocated and PMA-allocated nouns without code duplication.
+///
+/// # Implementations
+/// - [`StackResolver`]: Zero-size type for stack-only access (fastest)
+/// - [`PmaResolver`]: Carries arena reference for PMA access
+/// - [`UnifiedResolver`]: Handles both via LOCATION_BIT check
+pub trait MemoryResolver {
+    /// Resolve a cell's head noun.
+    fn resolve_head(&self, cell: Cell) -> Noun;
+
+    /// Resolve a cell's tail noun.
+    fn resolve_tail(&self, cell: Cell) -> Noun;
+
+    /// Resolve an indirect atom's data slice.
+    ///
+    /// The slice borrows from the underlying memory which the IndirectAtom points to.
+    fn resolve_slice<'a>(&self, indirect: &'a IndirectAtom) -> &'a [u64];
+
+    /// Resolve an indirect atom's size in words.
+    fn resolve_size(&self, indirect: &IndirectAtom) -> usize;
+}
+
+/// Zero-size resolver for stack-only noun access.
+///
+/// This resolver has **zero runtime overhead** because:
+/// - It's a zero-sized type (ZST)
+/// - All methods inline to the same code as raw `_stack` methods
+///
+/// # Panics
+/// Methods will panic if called on PMA-form nouns (LOCATION_BIT=1).
+///
+/// # Example
+/// ```ignore
+/// let (x, y): (u64, String) = noun.decode_stack()?;  // Uses StackResolver
+/// ```
+#[derive(Copy, Clone, Debug, Default)]
+pub struct StackResolver;
+
+impl MemoryResolver for StackResolver {
+    #[inline(always)]
+    fn resolve_head(&self, cell: Cell) -> Noun {
+        unsafe { cell.head_stack() }
+    }
+
+    #[inline(always)]
+    fn resolve_tail(&self, cell: Cell) -> Noun {
+        unsafe { cell.tail_stack() }
+    }
+
+    #[inline(always)]
+    fn resolve_slice<'a>(&self, indirect: &'a IndirectAtom) -> &'a [u64] {
+        // The slice's lifetime is tied to the IndirectAtom which holds the pointer
+        unsafe { indirect.as_slice_stack() }
+    }
+
+    #[inline(always)]
+    fn resolve_size(&self, indirect: &IndirectAtom) -> usize {
+        unsafe { indirect.size_stack() }
+    }
+}
+
+/// Resolver for PMA (Persistent Memory Arena) noun access.
+///
+/// Carries a reference to the Arena for pointer resolution.
+#[derive(Copy, Clone)]
+pub struct PmaResolver<'a> {
+    arena: &'a Arena,
+}
+
+impl<'a> PmaResolver<'a> {
+    /// Create a new PMA resolver.
+    #[inline]
+    pub fn new(arena: &'a Arena) -> Self {
+        Self { arena }
+    }
+
+    /// Get the underlying arena reference.
+    #[inline]
+    pub fn arena(&self) -> &'a Arena {
+        self.arena
+    }
+}
+
+impl MemoryResolver for PmaResolver<'_> {
+    #[inline(always)]
+    fn resolve_head(&self, cell: Cell) -> Noun {
+        cell.head_with_arena(self.arena)
+    }
+
+    #[inline(always)]
+    fn resolve_tail(&self, cell: Cell) -> Noun {
+        cell.tail_with_arena(self.arena)
+    }
+
+    #[inline(always)]
+    fn resolve_slice<'a>(&self, indirect: &'a IndirectAtom) -> &'a [u64] {
+        indirect.as_slice_with_arena(self.arena)
+    }
+
+    #[inline(always)]
+    fn resolve_size(&self, indirect: &IndirectAtom) -> usize {
+        indirect.size_with_arena(self.arena)
+    }
+}
+
+/// Unified resolver that handles both stack and PMA nouns.
+///
+/// Uses the LOCATION_BIT to determine which resolution path to take.
+/// Slightly slower than specialized resolvers but handles mixed graphs.
+#[derive(Copy, Clone)]
+pub struct UnifiedResolver<'a> {
+    arena: &'a Arena,
+}
+
+impl<'a> UnifiedResolver<'a> {
+    /// Create a new unified resolver.
+    #[inline]
+    pub fn new(arena: &'a Arena) -> Self {
+        Self { arena }
+    }
+
+    /// Get the underlying arena reference.
+    #[inline]
+    pub fn arena(&self) -> &'a Arena {
+        self.arena
+    }
+}
+
+impl MemoryResolver for UnifiedResolver<'_> {
+    #[inline(always)]
+    fn resolve_head(&self, cell: Cell) -> Noun {
+        // _with_arena handles both stack and PMA based on LOCATION_BIT
+        cell.head_with_arena(self.arena)
+    }
+
+    #[inline(always)]
+    fn resolve_tail(&self, cell: Cell) -> Noun {
+        cell.tail_with_arena(self.arena)
+    }
+
+    #[inline(always)]
+    fn resolve_slice<'a>(&self, indirect: &'a IndirectAtom) -> &'a [u64] {
+        indirect.as_slice_with_arena(self.arena)
+    }
+
+    #[inline(always)]
+    fn resolve_size(&self, indirect: &IndirectAtom) -> usize {
+        indirect.size_with_arena(self.arena)
+    }
+}
+
+// =============================================================================
+// Lifetime-Bound Stack Types
+// =============================================================================
+
+/// A Cell proven to reside on the NockStack, with lifetime bound.
+///
+/// This type provides safe access to cell data without runtime checks on every
+/// access. The safety invariants are verified once at construction time.
+///
+/// # Safety Guarantees
+/// - LOCATION_BIT = 0 (validated at construction)
+/// - Stack outlives this reference (enforced by Rust borrow checker)
+///
+/// # Zero-Cost Abstraction
+/// This type is `#[repr(transparent)]` over `Cell`, meaning it has the same
+/// memory layout and all methods inline to identical code as raw `_stack` methods.
+///
+/// # Example
+/// ```ignore
+/// let sc = cell.with_stack(stack).expect("cell not on stack");
+/// let head = sc.head();  // Safe! No runtime check needed
+/// let tail = sc.tail();  // Safe!
+/// ```
+#[derive(Copy, Clone)]
+#[repr(transparent)]
+pub struct StackCell<'a> {
+    inner: Cell,
+    _lifetime: std::marker::PhantomData<&'a NockStack>,
+}
+
+impl<'a> StackCell<'a> {
+    /// Create from a Cell with runtime validation.
+    ///
+    /// Returns `None` if the cell is in PMA form (LOCATION_BIT=1).
+    #[inline]
+    pub fn new(cell: Cell, _stack: &'a NockStack) -> Option<Self> {
+        // Check LOCATION_BIT via the cell's raw value
+        if MemContext::is_stack(cell.0) {
+            Some(Self {
+                inner: cell,
+                _lifetime: std::marker::PhantomData,
+            })
+        } else {
+            None
+        }
+    }
+
+    /// Create from a Cell without runtime validation.
+    ///
+    /// # Safety
+    /// Caller must ensure the cell is in stack-pointer form (LOCATION_BIT=0).
+    #[inline]
+    pub unsafe fn new_unchecked(cell: Cell, _stack: &'a NockStack) -> Self {
+        debug_assert!(
+            MemContext::is_stack(cell.0),
+            "StackCell::new_unchecked called on non-stack cell"
+        );
+        Self {
+            inner: cell,
+            _lifetime: std::marker::PhantomData,
+        }
+    }
+
+    /// Get the head of this cell.
+    ///
+    /// This is safe because the type proves stack residency and lifetime.
+    #[inline(always)]
+    pub fn head(&self) -> Noun {
+        // SAFETY: Validated at construction that cell is on stack
+        unsafe { self.inner.head_stack() }
+    }
+
+    /// Get the tail of this cell.
+    #[inline(always)]
+    pub fn tail(&self) -> Noun {
+        unsafe { self.inner.tail_stack() }
+    }
+
+    /// Get both head and tail.
+    #[inline(always)]
+    pub fn head_tail(&self) -> (Noun, Noun) {
+        (self.head(), self.tail())
+    }
+
+    /// Get a mutable pointer to the head slot.
+    ///
+    /// Used for unification and other in-place modifications.
+    #[inline(always)]
+    pub fn head_ptr(&self) -> *mut Noun {
+        unsafe { self.inner.head_as_mut_stack() }
+    }
+
+    /// Get a mutable pointer to the tail slot.
+    #[inline(always)]
+    pub fn tail_ptr(&self) -> *mut Noun {
+        unsafe { self.inner.tail_as_mut_stack() }
+    }
+
+    /// Get the raw pointer to the cell's memory.
+    #[inline(always)]
+    pub fn raw_pointer(&self) -> *const CellMemory {
+        unsafe { self.inner.to_raw_pointer_stack() }
+    }
+
+    /// Get the raw mutable pointer to the cell's memory.
+    #[inline(always)]
+    pub fn raw_pointer_mut(&mut self) -> *mut CellMemory {
+        unsafe { self.inner.to_raw_pointer_mut_stack() }
+    }
+
+    /// Unwrap to the inner Cell.
+    #[inline(always)]
+    pub fn into_inner(self) -> Cell {
+        self.inner
+    }
+
+    /// Get a reference to the inner Cell.
+    #[inline(always)]
+    pub fn as_cell(&self) -> Cell {
+        self.inner
+    }
+
+    /// Try to get the head as a StackCell.
+    ///
+    /// Returns `Some` if the head is also a cell on the stack.
+    #[inline]
+    pub fn head_as_stack_cell(&self, stack: &'a NockStack) -> Option<StackCell<'a>> {
+        self.head().as_cell().ok().and_then(|c| StackCell::new(c, stack))
+    }
+
+    /// Try to get the tail as a StackCell.
+    #[inline]
+    pub fn tail_as_stack_cell(&self, stack: &'a NockStack) -> Option<StackCell<'a>> {
+        self.tail().as_cell().ok().and_then(|c| StackCell::new(c, stack))
+    }
+}
+
+impl fmt::Debug for StackCell<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f, "StackCell({:?})", self.inner)
+    }
+}
+
+/// An IndirectAtom proven to reside on the NockStack, with lifetime bound.
+///
+/// Similar to [`StackCell`], this provides safe access to atom data after
+/// validating stack residency once at construction.
+///
+/// # Zero-Cost Abstraction
+/// This type is `#[repr(transparent)]` over `IndirectAtom`.
+#[derive(Copy, Clone)]
+#[repr(transparent)]
+pub struct StackAtom<'a> {
+    inner: IndirectAtom,
+    _lifetime: std::marker::PhantomData<&'a NockStack>,
+}
+
+impl<'a> StackAtom<'a> {
+    /// Create from an IndirectAtom with runtime validation.
+    ///
+    /// Returns `None` if the atom is in PMA form.
+    #[inline]
+    pub fn new(atom: IndirectAtom, _stack: &'a NockStack) -> Option<Self> {
+        // Check LOCATION_BIT via the atom's raw value
+        if MemContext::is_stack(atom.0) {
+            Some(Self {
+                inner: atom,
+                _lifetime: std::marker::PhantomData,
+            })
+        } else {
+            None
+        }
+    }
+
+    /// Create from an IndirectAtom without runtime validation.
+    ///
+    /// # Safety
+    /// Caller must ensure the atom is in stack-pointer form (LOCATION_BIT=0).
+    #[inline]
+    pub unsafe fn new_unchecked(atom: IndirectAtom, _stack: &'a NockStack) -> Self {
+        debug_assert!(
+            MemContext::is_stack(atom.0),
+            "StackAtom::new_unchecked called on non-stack atom"
+        );
+        Self {
+            inner: atom,
+            _lifetime: std::marker::PhantomData,
+        }
+    }
+
+    /// Get the size in 64-bit words.
+    #[inline(always)]
+    pub fn size(&self) -> usize {
+        unsafe { self.inner.size_stack() }
+    }
+
+    /// Get the data as a slice of u64 words.
+    #[inline(always)]
+    pub fn as_slice(&self) -> &[u64] {
+        unsafe { self.inner.as_slice_stack() }
+    }
+
+    /// Get the data as a BitSlice.
+    #[inline(always)]
+    pub fn as_bitslice(&self) -> &BitSlice<u64, Lsb0> {
+        unsafe { self.inner.as_bitslice_stack() }
+    }
+
+    /// Get the data as a byte slice in native endian order.
+    #[inline(always)]
+    pub fn as_ne_bytes(&self) -> &[u8] {
+        unsafe { self.inner.as_ne_bytes_stack() }
+    }
+
+    /// Try to convert to a u64 if the atom fits.
+    #[inline(always)]
+    pub fn as_u64(&self) -> Result<u64> {
+        unsafe { self.inner.as_u64_stack() }
+    }
+
+    /// Get the raw data pointer.
+    #[inline(always)]
+    pub fn data_pointer(&self) -> *const u64 {
+        unsafe { self.inner.data_pointer_stack() }
+    }
+
+    /// Get the raw pointer to the atom's metadata.
+    #[inline(always)]
+    pub fn raw_pointer(&self) -> *const u64 {
+        unsafe { self.inner.to_raw_pointer_stack() }
+    }
+
+    /// Unwrap to the inner IndirectAtom.
+    #[inline(always)]
+    pub fn into_inner(self) -> IndirectAtom {
+        self.inner
+    }
+
+    /// Normalize this atom (remove leading zeros).
+    #[inline]
+    pub fn normalize(&mut self) -> &IndirectAtom {
+        unsafe { self.inner.normalize_stack() }
+    }
+
+    /// Normalize and convert to Atom (may become DirectAtom if small enough).
+    #[inline]
+    pub fn normalize_as_atom(&mut self) -> Atom {
+        unsafe { self.inner.normalize_as_atom_stack() }
+    }
+}
+
+impl fmt::Debug for StackAtom<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f, "StackAtom({:?})", self.inner)
+    }
+}
+
+// =============================================================================
+// WithStack Extension Trait
+// =============================================================================
+
+/// Fluent API for binding nouns to a NockStack lifetime.
+///
+/// This trait provides `.with_stack()` and `.with_stack_unchecked()` methods
+/// for converting raw noun types to their lifetime-bound counterparts.
+///
+/// # Example
+/// ```ignore
+/// use nockvm::noun::WithStack;
+///
+/// // Checked conversion (returns Option)
+/// if let Some(sc) = cell.with_stack(stack) {
+///     let head = sc.head();  // Safe!
+/// }
+///
+/// // Unchecked conversion for proven-safe hot paths
+/// let sc = unsafe { cell.with_stack_unchecked(stack) };
+/// ```
+pub trait WithStack: Sized {
+    /// The lifetime-bound type produced by this trait.
+    type Bound<'a>;
+
+    /// Bind to a NockStack with runtime validation.
+    ///
+    /// Returns `None` if the noun is not on the stack.
+    fn with_stack<'a>(self, stack: &'a NockStack) -> Option<Self::Bound<'a>>;
+
+    /// Bind to a NockStack without runtime validation.
+    ///
+    /// # Safety
+    /// Caller must ensure the noun is in stack-pointer form.
+    unsafe fn with_stack_unchecked<'a>(self, stack: &'a NockStack) -> Self::Bound<'a>;
+}
+
+impl WithStack for Cell {
+    type Bound<'a> = StackCell<'a>;
+
+    #[inline]
+    fn with_stack<'a>(self, stack: &'a NockStack) -> Option<StackCell<'a>> {
+        StackCell::new(self, stack)
+    }
+
+    #[inline]
+    unsafe fn with_stack_unchecked<'a>(self, stack: &'a NockStack) -> StackCell<'a> {
+        StackCell::new_unchecked(self, stack)
+    }
+}
+
+impl WithStack for IndirectAtom {
+    type Bound<'a> = StackAtom<'a>;
+
+    #[inline]
+    fn with_stack<'a>(self, stack: &'a NockStack) -> Option<StackAtom<'a>> {
+        StackAtom::new(self, stack)
+    }
+
+    #[inline]
+    unsafe fn with_stack_unchecked<'a>(self, stack: &'a NockStack) -> StackAtom<'a> {
+        StackAtom::new_unchecked(self, stack)
     }
 }
 
@@ -2832,7 +3542,10 @@ mod noun_ref_tests {
         let noun_ref = NounRef::bind(cell.as_noun(), &mem);
 
         // Stack-allocated data should have LOCATION_BIT=0
-        assert!(noun_ref.is_stack());
-        assert!(!noun_ref.is_pma());
+        // SAFETY: noun_ref is bound to a valid MemContext
+        unsafe {
+            assert!(noun_ref.is_stack());
+            assert!(!noun_ref.is_pma());
+        }
     }
 }

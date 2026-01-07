@@ -111,7 +111,7 @@ pub fn jet_reap(context: &mut Context, subject: Noun) -> Result {
     let a_noun = slot_with_arena(sam, 2, arena)?;
     let b_noun = slot_with_arena(sam, 3, arena)?;
 
-    let a = a_noun.as_atom()?.as_u64()?;
+    let a = a_noun.as_atom()?.as_u64_with_arena(arena)?;
     util::reap(&mut context.stack, a, b_noun)
 }
 
@@ -197,7 +197,7 @@ pub mod util {
         let mut list = tape;
         loop {
             if let Some(atom) = list.atom() {
-                if atom.as_bitslice().first_one().is_none() {
+                if atom.as_bitslice_with_arena(arena).first_one().is_none() {
                     break;
                 } else {
                     return Err(BAIL_EXIT);
@@ -213,7 +213,7 @@ pub mod util {
 
     pub fn snag(tape: Noun, index: Noun, arena: &Arena) -> Result {
         let mut list = tape;
-        let mut idx = index.as_atom()?.as_u64()? as usize;
+        let mut idx = index.as_atom()?.as_u64_with_arena(arena)? as usize;
         loop {
             if unsafe { list.raw_equals(&D(0)) } {
                 return Err(BAIL_EXIT);
@@ -233,7 +233,7 @@ pub mod util {
         let mut list = tape;
 
         if let Some(atom) = list.atom() {
-            if atom.as_bitslice().first_one().is_none() {
+            if atom.as_bitslice_with_arena(arena).first_one().is_none() {
                 return Ok(D(0));
             }
         }
@@ -241,7 +241,7 @@ pub mod util {
         loop {
             let cell = list.as_cell()?;
             if let Some(atom) = cell.tail_with_arena(arena).atom() {
-                if atom.as_bitslice().first_one().is_none() {
+                if atom.as_bitslice_with_arena(arena).first_one().is_none() {
                     break;
                 } else {
                     return Err(BAIL_EXIT);
@@ -349,7 +349,7 @@ pub mod util {
 
     pub fn scag(context: &mut Context, a: Atom, b: Noun, arena: &Arena) -> Result {
         // Accepts an atom a and list b, producing the first a elements of the front of the list.
-        let a = a.as_u64()?;
+        let a = a.as_u64_with_arena(arena)?;
         let mut res: Vec<Noun> = vec![];
         let mut list = b;
         let mut pos = 0;

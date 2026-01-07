@@ -253,7 +253,7 @@ pub mod util {
                     tas!(b"mean") => match dat.as_either_atom_cell() {
                         Left(atom) => {
                             let stack = &mut context.stack;
-                            let tape = rip(stack, 3, 1, atom)?;
+                            let tape = rip(stack, &arena, 3, 1, atom)?;
                             T(stack, &[LEAF, tape])
                         }
                         Right(cell) => {
@@ -313,7 +313,7 @@ pub mod util {
                         }
                         // "{end_col}]>"
                         let p4 = T(stack, &[D(b']' as u64), D(b'>' as u64), D(0)]);
-                        (*list.tail_as_mut()) = p4;
+                        (*list.tail_as_mut_with_arena(&arena)) = p4;
 
                         list = end_lin.as_cell()?;
                         loop {
@@ -324,7 +324,7 @@ pub mod util {
                         }
                         // "{end_lin} {end_col}]>"
                         let p3 = T(stack, &[D(b' ' as u64), end_col]);
-                        (*list.tail_as_mut()) = p3;
+                        (*list.tail_as_mut_with_arena(&arena)) = p3;
 
                         list = str_col.as_cell()?;
                         loop {
@@ -338,7 +338,7 @@ pub mod util {
                             stack,
                             &[D(b']' as u64), D(b'.' as u64), D(b'[' as u64), end_lin],
                         );
-                        (*list.tail_as_mut()) = p2;
+                        (*list.tail_as_mut_with_arena(&arena)) = p2;
 
                         list = str_lin.as_cell()?;
                         loop {
@@ -349,7 +349,7 @@ pub mod util {
                         }
                         // "{str_lin} {str_col}].[{end_lin} {end_col}]>"
                         let p1 = T(stack, &[D(b' ' as u64), str_col]);
-                        (*list.tail_as_mut()) = p1;
+                        (*list.tail_as_mut_with_arena(&arena)) = p1;
 
                         // "<[{str_lin} {str_col}].[{end_lin} {end_col}]>"
                         let tape = T(stack, &[D(b'<' as u64), D(b'[' as u64), str_lin]);
@@ -359,7 +359,7 @@ pub mod util {
                     }
                     _ => {
                         let stack = &mut context.stack;
-                        let tape = rip(stack, 3, 1, tag.as_atom())?;
+                        let tape = rip(stack, &arena, 3, 1, tag.as_atom())?;
                         T(
                             stack,
                             &[
@@ -413,7 +413,7 @@ pub mod util {
 
         let cell = path.as_cell()?;
         let tail = smyt_help(stack, arena, cell.tail_with_arena(arena))?;
-        let trip = rip(stack, 3, 1, cell.head_with_arena(arena).as_atom()?)?;
+        let trip = rip(stack, arena, 3, 1, cell.head_with_arena(arena).as_atom()?)?;
         let head = T(stack, &[LEAF, trip]);
 
         Ok(T(stack, &[head, tail]))

@@ -1,5 +1,5 @@
 use nockvm::jets::sort::util::gor;
-use nockvm::mem::NockStack;
+use nockvm::mem::{Arena, NockStack};
 use nockvm::noun::{Cell, Noun};
 use nockvm::unifying_equality::unifying_equality;
 
@@ -16,7 +16,8 @@ impl Iterator for HoonList {
     #[inline(always)]
     fn next(&mut self) -> Option<Self::Item> {
         self.next.take().map(|cell| {
-            let tail = cell.tail();
+            // SAFETY: HoonList operates on stack-allocated nouns
+            let tail = unsafe { cell.tail_stack() };
             self.next = if tail.is_cell() {
                 Some(tail.as_cell().unwrap_or_else(|err| {
                     panic!(
@@ -29,7 +30,8 @@ impl Iterator for HoonList {
             } else {
                 None
             };
-            cell.head()
+            // SAFETY: HoonList operates on stack-allocated nouns
+            unsafe { cell.head_stack() }
         })
     }
 }
@@ -59,7 +61,8 @@ impl From<Cell> for HoonList {
 }
 
 pub fn next_cell(cell: Cell) -> Option<Cell> {
-    let tail = cell.tail();
+    // SAFETY: next_cell operates on stack-allocated nouns
+    let tail = unsafe { cell.tail_stack() };
     if tail.is_cell() {
         Some(tail.as_cell().unwrap_or_else(|err| {
             panic!(
@@ -83,22 +86,22 @@ pub struct HoonMap {
 }
 
 impl HoonMap {
-    pub fn get(&self, stack: &mut NockStack, mut k: Noun) -> Option<Noun> {
+    pub fn get(&self, stack: &mut NockStack, arena: &Arena, mut k: Noun) -> Option<Noun> {
         let [mut ck, cv] = self.node.uncell().ok()?;
 
         if unsafe { unifying_equality(stack, &mut ck, &mut k) } {
             // ?:  =(b p.n.a)
             //   (some q.n.a)
             Some(cv)
-        } else if gor(stack, k, ck).as_direct().map(|v| v.data()) == Ok(0) {
+        } else if gor(stack, arena, k, ck).as_direct().map(|v| v.data()) == Ok(0) {
             // ?:  (gor b p.n.a)
             //   $(a l.a)
             let map: Self = self.left?.try_into().ok()?;
-            map.get(stack, k)
+            map.get(stack, arena, k)
         } else {
             // $(a r.a)
             let map: Self = self.right?.try_into().ok()?;
-            map.get(stack, k)
+            map.get(stack, arena, k)
         }
     }
 }
@@ -156,18 +159,21 @@ impl TryFrom<Cell> for HoonMap {
     type Error = nockvm::noun::Error;
 
     fn try_from(c: Cell) -> std::result::Result<Self, Self::Error> {
-        let tail: Noun = c.tail();
-        if let Ok(cell_tail) = tail.as_cell() {
-            let left = cell_tail.head();
-            let right = cell_tail.tail();
+        // SAFETY: HoonMap operates on stack-allocated nouns
+        unsafe {
+            let tail: Noun = c.tail_stack();
+            if let Ok(cell_tail) = tail.as_cell() {
+                let left = cell_tail.head_stack();
+                let right = cell_tail.tail_stack();
 
-            Ok(Self {
-                node: c.head(),
-                left: left.as_cell().ok(),
-                right: right.as_cell().ok(),
-            })
-        } else {
-            not_cell()
+                Ok(Self {
+                    node: c.head_stack(),
+                    left: left.as_cell().ok(),
+                    right: right.as_cell().ok(),
+                })
+            } else {
+                not_cell()
+            }
         }
     }
 }

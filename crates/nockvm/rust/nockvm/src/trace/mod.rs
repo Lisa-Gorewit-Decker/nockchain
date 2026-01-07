@@ -158,7 +158,7 @@ pub fn path_to_cord(stack: &mut NockStack, arena: &Arena, path: Noun) -> Atom {
             match c.head_with_arena(arena).as_either_atom_cell() {
                 Left(a) => {
                     length += 1;
-                    length += met3_usize(a);
+                    length += met3_usize(a, arena);
                 }
                 Right(ch) => {
                     if let Ok(nm) = ch.head_with_arena(arena).as_atom() {
@@ -168,8 +168,8 @@ pub fn path_to_cord(stack: &mut NockStack, arena: &Arena, path: Noun) -> Atom {
                             let kvc =
                                 rap(stack, 3, kvt, arena).expect("rap should succeed in path_to_cord");
                             length += 1;
-                            length += met3_usize(nm);
-                            length += met3_usize(kvc);
+                            length += met3_usize(nm, arena);
+                            length += met3_usize(kvc, arena);
                         }
                     }
                 }
@@ -190,8 +190,8 @@ pub fn path_to_cord(stack: &mut NockStack, arena: &Arena, path: Noun) -> Atom {
                 Left(a) => {
                     buffer[idx] = slash;
                     idx += 1;
-                    let bytelen = met3_usize(a);
-                    buffer[idx..idx + bytelen].copy_from_slice(&a.as_ne_bytes()[0..bytelen]);
+                    let bytelen = met3_usize(a, arena);
+                    buffer[idx..idx + bytelen].copy_from_slice(&a.as_ne_bytes_with_arena(arena)[0..bytelen]);
                     idx += bytelen;
                 }
                 Right(ch) => {
@@ -203,12 +203,12 @@ pub fn path_to_cord(stack: &mut NockStack, arena: &Arena, path: Noun) -> Atom {
                                 rap(stack, 3, kvt, arena).expect("rap should succeed in path_to_cord");
                             buffer[idx] = slash;
                             idx += 1;
-                            let nmlen = met3_usize(nm);
-                            buffer[idx..idx + nmlen].copy_from_slice(&nm.as_ne_bytes()[0..nmlen]);
+                            let nmlen = met3_usize(nm, arena);
+                            buffer[idx..idx + nmlen].copy_from_slice(&nm.as_ne_bytes_with_arena(arena)[0..nmlen]);
                             idx += nmlen;
-                            let kvclen = met3_usize(kvc);
+                            let kvclen = met3_usize(kvc, arena);
                             buffer[idx..idx + kvclen]
-                                .copy_from_slice(&kvc.as_ne_bytes()[0..kvclen]);
+                                .copy_from_slice(&kvc.as_ne_bytes_with_arena(arena)[0..kvclen]);
                             idx += kvclen;
                         }
                     }
@@ -218,5 +218,5 @@ pub fn path_to_cord(stack: &mut NockStack, arena: &Arena, path: Noun) -> Atom {
         cursor = c.tail_with_arena(arena);
     }
 
-    unsafe { deres.normalize_as_atom() }
+    unsafe { deres.normalize_as_atom_with_arena(arena) }
 }

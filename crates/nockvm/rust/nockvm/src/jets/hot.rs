@@ -846,7 +846,7 @@ impl Hot {
                     match i {
                         Left(tas) => {
                             let chum = IndirectAtom::new_raw_bytes_ref(stack, tas)
-                                .normalize_as_atom()
+                                .normalize_as_atom_stack()
                                 .as_noun();
                             a_path = T(stack, &[chum, a_path]);
                         }

@@ -61,7 +61,7 @@ fn put_iter(stack: &mut NockStack, arena: &Arena, root: Noun, elem: Noun) -> Jet
             return Ok(root);
         }
 
-        let go_left = is_yes(gor(stack, elem, value));
+        let go_left = is_yes(gor(stack, arena, elem, value));
         path.push((current, go_left));
         current = if go_left { left } else { right };
     }
@@ -73,13 +73,13 @@ fn put_iter(stack: &mut NockStack, arena: &Arena, root: Noun, elem: Noun) -> Jet
         let (c_val, c_left, c_right) = decompose(new_subtree, arena)?;
 
         new_subtree = if went_left {
-            if is_yes(mor(stack, value, c_val)) {
+            if is_yes(mor(stack, arena, value, c_val)) {
                 make_node(stack, value, new_subtree, right)
             } else {
                 let new_a = make_node(stack, value, c_right, right);
                 make_node(stack, c_val, c_left, new_a)
             }
-        } else if is_yes(mor(stack, value, c_val)) {
+        } else if is_yes(mor(stack, arena, value, c_val)) {
             make_node(stack, value, left, new_subtree)
         } else {
             let new_a = make_node(stack, value, left, c_left);
@@ -91,13 +91,13 @@ fn put_iter(stack: &mut NockStack, arena: &Arena, root: Noun, elem: Noun) -> Jet
 }
 
 #[inline(always)]
-fn ord_cmp(stack: &mut NockStack, a: Noun, b: Noun) -> Ordering {
+fn ord_cmp(stack: &mut NockStack, arena: &Arena, a: Noun, b: Noun) -> Ordering {
     unsafe {
         if a.raw_equals(&b) {
             return Ordering::Equal;
         }
     }
-    if is_yes(gor(stack, b, a)) {
+    if is_yes(gor(stack, arena, b, a)) {
         return Ordering::Less;
     } else {
         return Ordering::Greater;
@@ -107,7 +107,7 @@ fn ord_cmp(stack: &mut NockStack, a: Noun, b: Noun) -> Ordering {
 fn has_loop(stack: &mut NockStack, arena: &Arena, mut tree: Noun, elem: Noun) -> JetResult<bool> {
     while unsafe { !tree.raw_equals(&D(0)) } {
         let (val, left, right) = decompose(tree, arena)?;
-        match ord_cmp(stack, elem, val) {
+        match ord_cmp(stack, arena, elem, val) {
             Ordering::Equal => return Ok(true),
             Ordering::Less => tree = left,
             Ordering::Greater => tree = right,

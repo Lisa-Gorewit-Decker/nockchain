@@ -75,7 +75,8 @@ pub fn z_set_bif<A: NounAllocator, H: TipHasher>(
         }
     }
     let res = do_bif(stack, a, b, hasher, arena)?;
-    Ok(res.as_cell()?.tail())
+    // SAFETY: z_set_bif operates on stack-allocated nouns
+    Ok(unsafe { res.as_cell()?.tail_stack() })
 }
 
 pub fn z_set_dif<A: NounAllocator, H: TipHasher>(

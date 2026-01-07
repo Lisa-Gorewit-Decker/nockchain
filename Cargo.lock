@@ -4284,6 +4284,7 @@ name = "noun-serde"
 version = "0.1.0"
 dependencies = [
  "bytes",
+ "either",
  "ibig",
  "nockvm",
  "noun-serde-derive",

@@ -110,7 +110,7 @@ pub fn finalize_mary<A: NounAllocator>(
     mut res: IndirectAtom,
 ) -> Noun {
     unsafe {
-        res.normalize();
+        res.normalize_stack();
     }
     let array = T(allocator, &[D(len as u64), res.as_noun()]);
 
@@ -123,7 +123,7 @@ pub fn finalize_poly<A: NounAllocator>(
     mut res: IndirectAtom,
 ) -> Noun {
     unsafe {
-        res.normalize();
+        res.normalize_stack();
     }
     let head = Atom::new(
         allocator,

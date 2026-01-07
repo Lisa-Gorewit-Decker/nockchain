@@ -2,33 +2,36 @@
  */
 use crate::interpreter::Context;
 use crate::jets;
-use crate::jets::util::slot;
+use crate::jets::util::slot_with_arena;
 use crate::noun::Noun;
 
 crate::gdb!();
 
 pub fn jet_dor(context: &mut Context, subject: Noun) -> jets::Result {
-    let sam = slot(subject, 6)?;
-    let a = slot(sam, 2)?;
-    let b = slot(sam, 3)?;
+    let arena = &*context.arena;
+    let sam = slot_with_arena(subject, 6, arena)?;
+    let a = slot_with_arena(sam, 2, arena)?;
+    let b = slot_with_arena(sam, 3, arena)?;
 
-    Ok(util::dor(&mut context.stack, a, b))
+    Ok(util::dor(&mut context.stack, arena, a, b))
 }
 
 pub fn jet_gor(context: &mut Context, subject: Noun) -> jets::Result {
-    let sam = slot(subject, 6)?;
-    let a = slot(sam, 2)?;
-    let b = slot(sam, 3)?;
+    let arena = &*context.arena;
+    let sam = slot_with_arena(subject, 6, arena)?;
+    let a = slot_with_arena(sam, 2, arena)?;
+    let b = slot_with_arena(sam, 3, arena)?;
 
-    Ok(util::gor(&mut context.stack, a, b))
+    Ok(util::gor(&mut context.stack, arena, a, b))
 }
 
 pub fn jet_mor(context: &mut Context, subject: Noun) -> jets::Result {
-    let sam = slot(subject, 6)?;
-    let a = slot(sam, 2)?;
-    let b = slot(sam, 3)?;
+    let arena = &*context.arena;
+    let sam = slot_with_arena(subject, 6, arena)?;
+    let a = slot_with_arena(sam, 2, arena)?;
+    let b = slot_with_arena(sam, 3, arena)?;
 
-    Ok(util::mor(&mut context.stack, a, b))
+    Ok(util::mor(&mut context.stack, arena, a, b))
 }
 
 pub mod util {
@@ -37,25 +40,25 @@ pub mod util {
     use either::{Left, Right};
 
     use crate::jets::math::util::lth;
-    use crate::jets::util::slot;
-    use crate::mem::NockStack;
+    use crate::jets::util::slot_with_arena;
+    use crate::mem::{Arena, NockStack};
     use crate::mug::mug;
     use crate::noun::{Noun, NO, YES};
 
-    pub fn dor(stack: &mut NockStack, a: Noun, b: Noun) -> Noun {
+    pub fn dor(stack: &mut NockStack, arena: &Arena, a: Noun, b: Noun) -> Noun {
         if unsafe { a.raw_equals(&b) } {
             YES
         } else {
             match (a.as_either_atom_cell(), b.as_either_atom_cell()) {
-                (Left(atom_a), Left(atom_b)) => lth(stack, atom_a, atom_b),
+                (Left(atom_a), Left(atom_b)) => lth(stack, arena, atom_a, atom_b),
                 (Left(_), Right(_)) => YES,
                 (Right(_), Left(_)) => NO,
                 (Right(cell_a), Right(cell_b)) => {
-                    let a_head = match slot(cell_a.as_noun(), 2) {
+                    let a_head = match slot_with_arena(cell_a.as_noun(), 2, arena) {
                         Ok(n) => n,
                         Err(_) => return NO,
                     };
-                    let b_head = slot(cell_b.as_noun(), 2).unwrap_or_else(|err| {
+                    let b_head = slot_with_arena(cell_b.as_noun(), 2, arena).unwrap_or_else(|err| {
                         panic!(
                             "Panicked with {err:?} at {}:{} (git sha: {:?})",
                             file!(),
@@ -63,7 +66,7 @@ pub mod util {
                             option_env!("GIT_SHA")
                         )
                     });
-                    let a_tail = slot(cell_a.as_noun(), 3).unwrap_or_else(|err| {
+                    let a_tail = slot_with_arena(cell_a.as_noun(), 3, arena).unwrap_or_else(|err| {
                         panic!(
                             "Panicked with {err:?} at {}:{} (git sha: {:?})",
                             file!(),
@@ -71,7 +74,7 @@ pub mod util {
                             option_env!("GIT_SHA")
                         )
                     });
-                    let b_tail = slot(cell_b.as_noun(), 3).unwrap_or_else(|err| {
+                    let b_tail = slot_with_arena(cell_b.as_noun(), 3, arena).unwrap_or_else(|err| {
                         panic!(
                             "Panicked with {err:?} at {}:{} (git sha: {:?})",
                             file!(),
@@ -80,27 +83,27 @@ pub mod util {
                         )
                     });
                     if unsafe { a_head.raw_equals(&b_head) } {
-                        dor(stack, a_tail, b_tail)
+                        dor(stack, arena, a_tail, b_tail)
                     } else {
-                        dor(stack, a_head, b_head)
+                        dor(stack, arena, a_head, b_head)
                     }
                 }
             }
         }
     }
 
-    pub fn gor(stack: &mut NockStack, a: Noun, b: Noun) -> Noun {
+    pub fn gor(stack: &mut NockStack, arena: &Arena, a: Noun, b: Noun) -> Noun {
         let c = mug(stack, a);
         let d = mug(stack, b);
 
         match c.data().cmp(&d.data()) {
             Ordering::Greater => NO,
             Ordering::Less => YES,
-            Ordering::Equal => dor(stack, a, b),
+            Ordering::Equal => dor(stack, arena, a, b),
         }
     }
 
-    pub fn mor(stack: &mut NockStack, a: Noun, b: Noun) -> Noun {
+    pub fn mor(stack: &mut NockStack, arena: &Arena, a: Noun, b: Noun) -> Noun {
         let c = mug(stack, a);
         let d = mug(stack, b);
 
@@ -110,7 +113,7 @@ pub mod util {
         match e.data().cmp(&f.data()) {
             Ordering::Greater => NO,
             Ordering::Less => YES,
-            Ordering::Equal => dor(stack, a, b),
+            Ordering::Equal => dor(stack, arena, a, b),
         }
     }
 }

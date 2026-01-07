@@ -140,14 +140,14 @@ impl TraceBackend for TracingBackend {
             }
         };
 
-        let Ok(chum) = std::str::from_utf8(chum.as_ne_bytes()) else {
+        let Ok(chum) = std::str::from_utf8(chum.as_ne_bytes_with_arena(arena)) else {
             return;
         };
 
         let chum = chum.trim_end_matches('\0');
 
         let path = path_to_cord(stack, arena, path);
-        let path = std::str::from_utf8(path.as_ne_bytes()).unwrap_or("");
+        let path = std::str::from_utf8(path.as_ne_bytes_with_arena(arena)).unwrap_or("");
 
         if self.subscriber.is_none() {
             self.subscriber = Some(dispatcher::get_default(Clone::clone));

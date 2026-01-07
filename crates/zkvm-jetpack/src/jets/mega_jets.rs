@@ -21,6 +21,7 @@ fn lagrange_one_bpoly(len: usize) -> BPolyVec {
 
 pub fn mp_substitute_mega_jet(context: &mut Context, subject: Noun) -> Result {
     let sam = slot(subject, 6)?;
+    let arena = context.arena.clone();
     let stack = &mut context.stack;
 
     let [p_noun, trace_evals_noun, height_noun, chals_noun, dyns_noun, com_map_noun] =
@@ -140,7 +141,7 @@ pub fn mp_substitute_mega_jet(context: &mut Context, subject: Noun) -> Result {
                 MegaTyp::Com => {
                     let com_noun = com_map_opt
                         .as_ref()
-                        .and_then(|m| m.get(stack, D(idx as u64)))
+                        .and_then(|m| m.get(stack, &arena, D(idx as u64)))
                         .ok_or_else(|| BAIL_EXIT)?;
                     let Ok(com_slice) = BPolySlice::try_from(com_noun) else {
                         return Err(BAIL_FAIL);

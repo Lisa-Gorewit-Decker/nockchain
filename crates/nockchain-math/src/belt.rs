@@ -89,8 +89,8 @@ impl NounDecode for Belt {
         let atom = noun
             .as_atom()
             .map_err(|_| noun_serde::NounDecodeError::ExpectedAtom)?;
-        let value = atom
-            .as_u64()
+        // SAFETY: NounDecode operates on stack-allocated nouns
+        let value = unsafe { atom.as_u64_stack() }
             .map_err(|_| noun_serde::NounDecodeError::Custom("Belt value too large".to_string()))?;
         if !based_check(value) {
             return Err(noun_serde::NounDecodeError::Custom(
@@ -266,7 +266,8 @@ impl TryFrom<Noun> for Belt {
         if !n.is_atom() {
             Err(())
         } else {
-            Belt::try_from(&n.as_atom()?.as_u64()?)
+            // SAFETY: TryFrom operates on stack-allocated nouns
+            Belt::try_from(&unsafe { n.as_atom()?.as_u64_stack() }?)
         }
     }
 }

@@ -31,7 +31,7 @@ pub mod util {
     ) -> jets::Result {
         match aura.data() {
             tas!(b"ud") => {
-                if atom.as_bitslice().first_one().is_none() {
+                if atom.as_bitslice_with_arena(arena).first_one().is_none() {
                     return Ok(T(stack, &[D(b'0' as u64), D(0)]));
                 }
 
@@ -46,7 +46,7 @@ pub mod util {
                         lent += 1;
                     }
                 } else {
-                    let mut n = atom.as_indirect()?.as_ubig(stack);
+                    let mut n = atom.as_indirect()?.as_ubig_with_arena(stack, arena);
 
                     while !n.is_zero() {
                         root = T(stack, &[D(b'0' as u64 + (&n % 10u64)), root]);
@@ -64,7 +64,7 @@ pub mod util {
                             let (cell, memory) = Cell::new_raw_mut(stack);
                             (*memory).head = D(b'.' as u64);
                             (*memory).tail = list.tail_with_arena(arena);
-                            (*(list.to_raw_pointer_mut())).tail = cell.as_noun();
+                            (*(list.to_raw_pointer_mut_with_arena(arena))).tail = cell.as_noun();
                             list = list.tail_with_arena(arena).as_cell()?;
                         }
                         list = list.tail_with_arena(arena).as_cell()?;

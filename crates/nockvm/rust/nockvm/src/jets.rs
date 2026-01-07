@@ -275,17 +275,6 @@ pub mod util {
     }
 
     /// Extract the bloq and step from a bite
-    pub fn bite(a: Noun) -> result::Result<(usize, usize), JetErr> {
-        if let Ok(cell) = a.as_cell() {
-            let bloq = bloq(cell.head())?;
-            let step = cell.tail().as_direct()?.data() as usize;
-            Ok((bloq, step))
-        } else {
-            bloq(a).map(|x| (x, 1_usize))
-        }
-    }
-
-    /// Arena-aware version of bite for explicit memory context
     pub fn bite_with_arena(a: Noun, arena: &Arena) -> result::Result<(usize, usize), JetErr> {
         if let Ok(cell) = a.as_cell() {
             let bloq = bloq(cell.head_with_arena(arena))?;
@@ -476,6 +465,7 @@ pub mod util {
         }
 
         pub fn assert_jet_size(context: &mut Context, jet: Jet, sam: Noun, siz: usize) {
+            let arena = std::sync::Arc::clone(context.stack.arena());
             let sam = T(&mut context.stack, &[D(0), sam, D(0)]);
             let res = jet(context, sam).unwrap_or_else(|err| {
                 panic!(
@@ -496,7 +486,7 @@ pub mod util {
                         option_env!("GIT_SHA")
                     )
                 })
-                .size();
+                .size_with_arena(&arena);
             assert!(siz == res_siz, "got: {res_siz}, need: {siz}");
         }
 

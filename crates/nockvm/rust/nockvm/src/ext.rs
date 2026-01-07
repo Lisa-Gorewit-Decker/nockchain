@@ -16,6 +16,11 @@ pub trait AtomExt {
     fn eq_bytes_with_arena<B: AsRef<[u8]>>(&self, bytes: B, arena: &Arena) -> bool;
     fn to_bytes_until_nul_with_arena(&self, arena: &Arena) -> std::result::Result<Vec<u8>, str::Utf8Error>;
     fn into_string_with_arena(self, arena: &Arena) -> std::result::Result<String, str::Utf8Error>;
+    /// Convert to string for stack-pointer form atoms only
+    ///
+    /// # Safety
+    /// Caller must ensure atom is in stack-pointer form (LOCATION_BIT=0)
+    unsafe fn into_string_stack(self) -> std::result::Result<String, str::Utf8Error>;
 }
 
 impl AtomExt for Atom {
@@ -45,6 +50,10 @@ impl AtomExt for Atom {
 
     fn into_string_with_arena(self, arena: &Arena) -> std::result::Result<String, str::Utf8Error> {
         str::from_utf8(self.as_ne_bytes_with_arena(arena)).map(|string| string.trim_end_matches('\0').to_string())
+    }
+
+    unsafe fn into_string_stack(self) -> std::result::Result<String, str::Utf8Error> {
+        str::from_utf8(self.as_ne_bytes_stack()).map(|string| string.trim_end_matches('\0').to_string())
     }
 }
 
@@ -330,10 +339,13 @@ mod tests {
         let d42 = D(42);
         let d42_copy = D(42);
 
-        assert!(noun_equality(&d0, &d0), "D(0) == D(0)");
-        assert!(noun_equality(&d42, &d42_copy), "D(42) == D(42)");
-        assert!(!noun_equality(&d0, &d1), "D(0) != D(1)");
-        assert!(!noun_equality(&d1, &d42), "D(1) != D(42)");
+        {
+            let arena = stack.arena_ref();
+            assert!(noun_equality(&d0, &d0, arena), "D(0) == D(0)");
+            assert!(noun_equality(&d42, &d42_copy, arena), "D(42) == D(42)");
+            assert!(!noun_equality(&d0, &d1, arena), "D(0) != D(1)");
+            assert!(!noun_equality(&d1, &d42, arena), "D(1) != D(42)");
+        }
 
         // Indirect atoms
         let data1: [u64; 2] = [0xDEADBEEF_CAFEBABE, 0x12345678];
@@ -344,10 +356,13 @@ mod tests {
         let indirect2 = unsafe { IndirectAtom::new_raw(&mut stack, 2, data2.as_ptr()) }.as_noun();
         let indirect3 = unsafe { IndirectAtom::new_raw(&mut stack, 2, data3.as_ptr()) }.as_noun();
 
-        assert!(noun_equality(&indirect1, &indirect1), "indirect1 == indirect1 (same ref)");
-        assert!(noun_equality(&indirect1, &indirect2), "indirect1 == indirect2 (same data)");
-        assert!(!noun_equality(&indirect1, &indirect3), "indirect1 != indirect3 (different data)");
-        assert!(!noun_equality(&indirect1, &d42), "indirect != direct");
+        {
+            let arena = stack.arena_ref();
+            assert!(noun_equality(&indirect1, &indirect1, arena), "indirect1 == indirect1 (same ref)");
+            assert!(noun_equality(&indirect1, &indirect2, arena), "indirect1 == indirect2 (same data)");
+            assert!(!noun_equality(&indirect1, &indirect3, arena), "indirect1 != indirect3 (different data)");
+            assert!(!noun_equality(&indirect1, &d42, arena), "indirect != direct");
+        }
 
         // Simple cells
         let cell1 = Cell::new(&mut stack, D(1), D(2)).as_noun();
@@ -355,11 +370,14 @@ mod tests {
         let cell3 = Cell::new(&mut stack, D(1), D(3)).as_noun();
         let cell4 = Cell::new(&mut stack, D(2), D(2)).as_noun();
 
-        assert!(noun_equality(&cell1, &cell1), "[1 2] == [1 2] (same ref)");
-        assert!(noun_equality(&cell1, &cell2), "[1 2] == [1 2] (different refs)");
-        assert!(!noun_equality(&cell1, &cell3), "[1 2] != [1 3]");
-        assert!(!noun_equality(&cell1, &cell4), "[1 2] != [2 2]");
-        assert!(!noun_equality(&cell1, &d1), "cell != direct atom");
+        {
+            let arena = stack.arena_ref();
+            assert!(noun_equality(&cell1, &cell1, arena), "[1 2] == [1 2] (same ref)");
+            assert!(noun_equality(&cell1, &cell2, arena), "[1 2] == [1 2] (different refs)");
+            assert!(!noun_equality(&cell1, &cell3, arena), "[1 2] != [1 3]");
+            assert!(!noun_equality(&cell1, &cell4, arena), "[1 2] != [2 2]");
+            assert!(!noun_equality(&cell1, &d1, arena), "cell != direct atom");
+        }
 
         // Nested cells - build inner cells first to avoid borrow issues
         let inner1 = Cell::new(&mut stack, D(1), D(2)).as_noun();
@@ -369,8 +387,11 @@ mod tests {
         let inner3 = Cell::new(&mut stack, D(1), D(9)).as_noun();
         let nested3 = Cell::new(&mut stack, inner3, D(3)).as_noun();
 
-        assert!(noun_equality(&nested1, &nested2), "[[1 2] 3] == [[1 2] 3]");
-        assert!(!noun_equality(&nested1, &nested3), "[[1 2] 3] != [[1 9] 3]");
+        {
+            let arena = stack.arena_ref();
+            assert!(noun_equality(&nested1, &nested2, arena), "[[1 2] 3] == [[1 2] 3]");
+            assert!(!noun_equality(&nested1, &nested3, arena), "[[1 2] 3] != [[1 9] 3]");
+        }
 
         // Structural sharing
         let shared = Cell::new(&mut stack, D(5), D(6)).as_noun();
@@ -379,15 +400,21 @@ mod tests {
         let inner_b = Cell::new(&mut stack, D(5), D(6)).as_noun();
         let without_sharing = Cell::new(&mut stack, inner_a, inner_b).as_noun();
 
-        // Both should be equal even though one shares and one doesn't
-        assert!(noun_equality(&with_sharing, &without_sharing), "[[5 6] [5 6]] with sharing == without sharing");
+        {
+            let arena = stack.arena_ref();
+            // Both should be equal even though one shares and one doesn't
+            assert!(noun_equality(&with_sharing, &without_sharing, arena), "[[5 6] [5 6]] with sharing == without sharing");
+        }
 
         // Cells containing indirect atoms
         let cell_indirect1 = Cell::new(&mut stack, indirect1, D(99)).as_noun();
         let cell_indirect2 = Cell::new(&mut stack, indirect2, D(99)).as_noun(); // same indirect data
         let cell_indirect3 = Cell::new(&mut stack, indirect3, D(99)).as_noun(); // different indirect data
 
-        assert!(noun_equality(&cell_indirect1, &cell_indirect2), "cells with same indirect atoms are equal");
-        assert!(!noun_equality(&cell_indirect1, &cell_indirect3), "cells with different indirect atoms are not equal");
+        {
+            let arena = stack.arena_ref();
+            assert!(noun_equality(&cell_indirect1, &cell_indirect2, arena), "cells with same indirect atoms are equal");
+            assert!(!noun_equality(&cell_indirect1, &cell_indirect3, arena), "cells with different indirect atoms are not equal");
+        }
     }
 }

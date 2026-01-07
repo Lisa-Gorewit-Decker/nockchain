@@ -30,7 +30,7 @@ pub fn leaf_sequence<A: NounAllocator>(stack: &mut A, t: Noun, arena: &Arena) ->
 
 pub fn do_leaf_sequence(noun: Noun, vec: &mut Vec<u64>, arena: &Arena) -> Result<(), JetErr> {
     if noun.is_atom() {
-        vec.push(noun.as_atom()?.as_u64()?);
+        vec.push(noun.as_atom()?.as_u64_with_arena(arena)?);
         Ok(())
     } else {
         let cell = noun.as_cell()?;

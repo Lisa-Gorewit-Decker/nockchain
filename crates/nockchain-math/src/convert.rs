@@ -25,7 +25,8 @@ impl AtomMathExt for Atom {
     }
 
     fn as_belt(&self) -> Result<Belt> {
-        if let Ok(x) = self.as_u64() {
+        // SAFETY: This operates on stack-allocated nouns
+        if let Ok(x) = unsafe { self.as_u64_stack() } {
             Ok(Belt(x))
         } else {
             Err(Error::NotRepresentable)
@@ -34,15 +35,16 @@ impl AtomMathExt for Atom {
 
     fn as_felt<'a>(&self) -> Result<&'a Felt> {
         if let Ok(atom) = self.as_indirect() {
-            if atom.size() == 4 {
-                let buf_ptr = atom.data_pointer();
-                unsafe {
+            // SAFETY: This operates on stack-allocated nouns
+            unsafe {
+                if atom.size_stack() == 4 {
+                    let buf_ptr = atom.data_pointer_stack();
                     assert!(*(buf_ptr.add(3)) == 0x1);
+                    let felt_ref: &Felt = &*(buf_ptr as *const Felt);
+                    Ok(felt_ref)
+                } else {
+                    Err(Error::NotRepresentable)
                 }
-                let felt_ref: &Felt = unsafe { &*(buf_ptr as *const Felt) };
-                Ok(felt_ref)
-            } else {
-                Err(Error::NotRepresentable)
             }
         } else {
             Err(Error::NotRepresentable)
@@ -50,16 +52,17 @@ impl AtomMathExt for Atom {
     }
 
     fn as_mut_felt<'a>(&self) -> Result<&'a mut Felt> {
-        if let Ok(mut atom) = self.as_indirect() {
-            if atom.size() == 4 {
-                let buf_ptr = atom.data_pointer_mut();
-                unsafe {
+        if let Ok(atom) = self.as_indirect() {
+            // SAFETY: This operates on stack-allocated nouns
+            unsafe {
+                if atom.size_stack() == 4 {
+                    let buf_ptr = atom.data_pointer_stack() as *mut u64;
                     assert!(*(buf_ptr.add(3)) == 0x1);
+                    let felt_ref: &mut Felt = &mut *(buf_ptr as *mut Felt);
+                    Ok(felt_ref)
+                } else {
+                    Err(Error::NotRepresentable)
                 }
-                let felt_ref: &mut Felt = unsafe { &mut *(buf_ptr as *mut Felt) };
-                Ok(felt_ref)
-            } else {
-                Err(Error::NotRepresentable)
             }
         } else {
             Err(Error::NotRepresentable)
@@ -101,8 +104,11 @@ impl NounMathExt for Noun {
                 Ok(inp)
             } else {
                 let c = inp.as_cell()?;
-                inp = c.tail();
-                Ok(c.head())
+                // SAFETY: This operates on stack-allocated nouns
+                unsafe {
+                    inp = c.tail_stack();
+                    Ok(c.head_stack())
+                }
             }
         });
         if let Some(e) = ret.iter_mut().find(|v| v.is_err()) {
@@ -147,27 +153,30 @@ impl TryFrom<Cell> for MarySlice<'_> {
 
     #[inline(always)]
     fn try_from(c: Cell) -> std::result::Result<Self, Self::Error> {
-        let step = c.head().as_atom()?.as_u32()?;
-        let len = c.tail().as_cell()?.head().as_atom()?.as_u32()?;
-        let cell: Cell = c.tail().as_cell()?;
-        let dat_noun: Atom = c.tail().as_cell()?.tail().as_atom()?;
-        let dat_slice: &[u64] = match dat_noun.as_either() {
-            Left(_direct) => unsafe {
-                let tail_ptr2 = &(*(cell.to_raw_pointer())).tail as *const Noun;
-                std::slice::from_raw_parts(tail_ptr2 as *const u64, (len * step) as usize)
-            },
-            Right(indirect) => unsafe {
-                std::slice::from_raw_parts(
-                    indirect.data_pointer() as *mut u64,
-                    (len * step) as usize,
-                )
-            },
-        };
-        Ok(MarySlice {
-            step,
-            len,
-            dat: dat_slice,
-        })
+        // SAFETY: TryFrom operates on stack-allocated nouns
+        unsafe {
+            let step = c.head_stack().as_atom()?.as_u32()?;
+            let len = c.tail_stack().as_cell()?.head_stack().as_atom()?.as_u32()?;
+            let cell: Cell = c.tail_stack().as_cell()?;
+            let dat_noun: Atom = c.tail_stack().as_cell()?.tail_stack().as_atom()?;
+            let dat_slice: &[u64] = match dat_noun.as_either() {
+                Left(_direct) => {
+                    let tail_ptr2 = &(*(cell.to_raw_pointer_stack())).tail as *const Noun;
+                    std::slice::from_raw_parts(tail_ptr2 as *const u64, (len * step) as usize)
+                }
+                Right(indirect) => {
+                    std::slice::from_raw_parts(
+                        indirect.data_pointer_stack() as *mut u64,
+                        (len * step) as usize,
+                    )
+                }
+            };
+            Ok(MarySlice {
+                step,
+                len,
+                dat: dat_slice,
+            })
+        }
     }
 }
 
@@ -188,14 +197,17 @@ impl TryFrom<Cell> for Table<'_> {
 
     #[inline(always)]
     fn try_from(c: Cell) -> std::result::Result<Self, Self::Error> {
-        let full_width = c.head().as_atom()?.as_u32()?;
-        let mary_cell = c.tail().as_cell()?;
-        let mary = MarySlice::try_from(mary_cell)?;
+        // SAFETY: TryFrom operates on stack-allocated nouns
+        unsafe {
+            let full_width = c.head_stack().as_atom()?.as_u32()?;
+            let mary_cell = c.tail_stack().as_cell()?;
+            let mary = MarySlice::try_from(mary_cell)?;
 
-        Ok(Table {
-            num_cols: full_width,
-            mary,
-        })
+            Ok(Table {
+                num_cols: full_width,
+                mary,
+            })
+        }
     }
 }
 
@@ -245,19 +257,20 @@ impl TryFrom<Cell> for BPolySlice<'_> {
 
     #[inline(always)]
     fn try_from(c: Cell) -> std::result::Result<Self, Self::Error> {
-        let head = c.head().as_atom();
-        let tail = c.tail().as_atom();
-        if let (Ok(head), Ok(tail)) = (head, tail) {
-            let len32 = head.as_u32()?;
-            let dat_slice: BPolySlice = unsafe {
-                PolySlice(std::slice::from_raw_parts(
-                    tail.data_pointer() as *const Belt,
+        // SAFETY: TryFrom operates on stack-allocated nouns
+        unsafe {
+            let head = c.head_stack().as_atom();
+            let tail = c.tail_stack().as_atom();
+            if let (Ok(head), Ok(tail)) = (head, tail) {
+                let len32 = head.as_u32()?;
+                let dat_slice: BPolySlice = PolySlice(std::slice::from_raw_parts(
+                    tail.data_pointer_stack() as *const Belt,
                     len32 as usize,
-                ))
-            };
-            Ok(dat_slice)
-        } else {
-            Err(BAIL_FAIL)
+                ));
+                Ok(dat_slice)
+            } else {
+                Err(BAIL_FAIL)
+            }
         }
     }
 }
@@ -267,19 +280,20 @@ impl TryFrom<Cell> for FPolySlice<'_> {
 
     #[inline(always)]
     fn try_from(c: Cell) -> std::result::Result<Self, Self::Error> {
-        let head = c.head().as_atom();
-        let tail = c.tail().as_atom();
-        if let (Ok(head), Ok(tail)) = (head, tail) {
-            let len32 = head.as_u32()?;
-            let dat_slice: FPolySlice = unsafe {
-                PolySlice(std::slice::from_raw_parts(
-                    tail.data_pointer() as *const Felt,
+        // SAFETY: TryFrom operates on stack-allocated nouns
+        unsafe {
+            let head = c.head_stack().as_atom();
+            let tail = c.tail_stack().as_atom();
+            if let (Ok(head), Ok(tail)) = (head, tail) {
+                let len32 = head.as_u32()?;
+                let dat_slice: FPolySlice = PolySlice(std::slice::from_raw_parts(
+                    tail.data_pointer_stack() as *const Felt,
                     len32 as usize,
-                ))
-            };
-            Ok(dat_slice)
-        } else {
-            Err(BAIL_FAIL)
+                ));
+                Ok(dat_slice)
+            } else {
+                Err(BAIL_FAIL)
+            }
         }
     }
 }
@@ -289,19 +303,23 @@ impl TryFrom<Cell> for FPolyVec {
 
     #[inline(always)]
     fn try_from(c: Cell) -> std::result::Result<Self, Self::Error> {
-        let head = c.head().as_atom();
-        let tail = c.tail().as_atom();
-        if let (Ok(head), Ok(tail)) = (head, tail) {
-            let len32 = head.as_u32()?;
-            let dat_vec: FPolyVec = unsafe {
-                PolyVec(
-                    std::slice::from_raw_parts(tail.data_pointer() as *const Felt, len32 as usize)
-                        .to_vec(),
-                )
-            };
-            Ok(dat_vec)
-        } else {
-            Err(BAIL_FAIL)
+        // SAFETY: TryFrom operates on stack-allocated nouns
+        unsafe {
+            let head = c.head_stack().as_atom();
+            let tail = c.tail_stack().as_atom();
+            if let (Ok(head), Ok(tail)) = (head, tail) {
+                let len32 = head.as_u32()?;
+                let dat_vec: FPolyVec = PolyVec(
+                    std::slice::from_raw_parts(
+                        tail.data_pointer_stack() as *const Felt,
+                        len32 as usize,
+                    )
+                    .to_vec(),
+                );
+                Ok(dat_vec)
+            } else {
+                Err(BAIL_FAIL)
+            }
         }
     }
 }
@@ -311,19 +329,23 @@ impl TryFrom<Cell> for BPolyVec {
 
     #[inline(always)]
     fn try_from(c: Cell) -> std::result::Result<Self, Self::Error> {
-        let head = c.head().as_atom();
-        let tail = c.tail().as_atom();
-        if let (Ok(head), Ok(tail)) = (head, tail) {
-            let len32 = head.as_u32()?;
-            let dat_vec: BPolyVec = unsafe {
-                PolyVec(
-                    std::slice::from_raw_parts(tail.data_pointer() as *const Belt, len32 as usize)
-                        .to_vec(),
-                )
-            };
-            Ok(dat_vec)
-        } else {
-            Err(BAIL_FAIL)
+        // SAFETY: TryFrom operates on stack-allocated nouns
+        unsafe {
+            let head = c.head_stack().as_atom();
+            let tail = c.tail_stack().as_atom();
+            if let (Ok(head), Ok(tail)) = (head, tail) {
+                let len32 = head.as_u32()?;
+                let dat_vec: BPolyVec = PolyVec(
+                    std::slice::from_raw_parts(
+                        tail.data_pointer_stack() as *const Belt,
+                        len32 as usize,
+                    )
+                    .to_vec(),
+                );
+                Ok(dat_vec)
+            } else {
+                Err(BAIL_FAIL)
+            }
         }
     }
 }

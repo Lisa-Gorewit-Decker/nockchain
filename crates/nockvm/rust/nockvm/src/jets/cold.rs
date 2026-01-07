@@ -673,7 +673,8 @@ impl Cold {
             if let Some(paths) = (*(self.0)).battery_to_paths.lookup(stack, &mut battery) {
                 for path in paths {
                     if let Ok(path_cell) = (*path).as_cell() {
-                        if unifying_equality(stack, &mut path_cell.head_with_arena(arena), &mut chum) {
+                        // SAFETY: Operating on stack-allocated nouns
+                        if unifying_equality(stack, &mut path_cell.head_stack(), &mut chum) {
                             if let Some(batteries_list) =
                                 (*(self.0)).path_to_batteries.lookup(stack, &mut *path)
                             {

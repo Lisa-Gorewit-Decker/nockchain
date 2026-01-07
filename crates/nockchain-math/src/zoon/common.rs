@@ -81,7 +81,7 @@ pub fn gor_tip<A: NounAllocator, H: TipHasher>(
     let b_tip = tip(stack, *b, hasher, arena)?;
 
     if a_tip == b_tip {
-        dor_tip(stack, a, b)
+        dor_tip(stack, a, b, arena)
     } else {
         Ok(lth_tip(&a_tip, &b_tip))
     }
@@ -98,7 +98,7 @@ pub fn mor_tip<A: NounAllocator, H: TipHasher>(
     let b_tip = double_tip(stack, *b, hasher, arena)?;
 
     if a_tip == b_tip {
-        dor_tip(stack, a, b)
+        dor_tip(stack, a, b, arena)
     } else {
         Ok(lth_tip(&a_tip, &b_tip))
     }
@@ -108,6 +108,7 @@ pub fn dor_tip<A: NounAllocator>(
     stack: &mut A,
     a: &mut Noun,
     b: &mut Noun,
+    arena: &Arena,
 ) -> Result<bool, JetErr> {
     use nockvm::jets::math::util::lth;
     if unsafe { stack.equals(a, b) } {
@@ -115,15 +116,22 @@ pub fn dor_tip<A: NounAllocator>(
     } else if !a.is_atom() {
         if b.is_atom() {
             Ok(false)
-        } else if unsafe { stack.equals(&mut a.as_cell()?.head(), &mut b.as_cell()?.head()) } {
-            dor_tip(stack, &mut a.as_cell()?.tail(), &mut b.as_cell()?.tail())
         } else {
-            dor_tip(stack, &mut a.as_cell()?.head(), &mut b.as_cell()?.head())
+            // SAFETY: dor_tip operates on stack-allocated nouns
+            let mut a_head = unsafe { a.as_cell()?.head_stack() };
+            let mut b_head = unsafe { b.as_cell()?.head_stack() };
+            if unsafe { stack.equals(&mut a_head, &mut b_head) } {
+                let mut a_tail = unsafe { a.as_cell()?.tail_stack() };
+                let mut b_tail = unsafe { b.as_cell()?.tail_stack() };
+                dor_tip(stack, &mut a_tail, &mut b_tail, arena)
+            } else {
+                dor_tip(stack, &mut a_head, &mut b_head, arena)
+            }
         }
     } else if !b.is_atom() {
         Ok(false)
     } else {
-        let cmp = lth(stack, a.as_atom()?, b.as_atom()?);
+        let cmp = lth(stack, arena, a.as_atom()?, b.as_atom()?);
         Ok(unsafe { cmp.raw_equals(&D(1)) })
     }
 }

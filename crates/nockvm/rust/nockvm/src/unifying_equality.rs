@@ -2,7 +2,7 @@ use either::Either::*;
 use libc::{c_void, memcmp};
 
 use crate::mem::{NockStack, ALLOC, FRAME, STACK};
-use crate::noun::Noun;
+use crate::noun::{Noun, WithStack};
 use crate::{assert_acyclic, assert_no_forwarding_pointers, assert_no_junior_pointers};
 
 #[cfg(feature = "check_junior")]
@@ -339,15 +339,18 @@ pub unsafe fn unifying_equality(stack: &mut NockStack, a: *mut Noun, b: *mut Nou
 
             match (xa.as_either(), ya.as_either()) {
                 (Left(xi), Left(yi)) => {
-                    if xi.size() == yi.size()
+                    // SAFETY: unifying_equality operates on stack-allocated nouns only
+                    let xsa = xi.with_stack_unchecked(stack);
+                    let ysa = yi.with_stack_unchecked(stack);
+                    if xsa.size() == ysa.size()
                         && memcmp(
-                            xi.data_pointer() as *const c_void,
-                            yi.data_pointer() as *const c_void,
-                            xi.size() << 3,
+                            xsa.data_pointer() as *const c_void,
+                            ysa.data_pointer() as *const c_void,
+                            xsa.size() << 3,
                         ) == 0
                     {
-                        let xptr = xi.to_raw_pointer();
-                        let yptr = yi.to_raw_pointer();
+                        let xptr = xsa.raw_pointer();
+                        let yptr = ysa.raw_pointer();
                         if x_is_junior(stack, current_bounds, &mut bounds_state, xptr, yptr) {
                             *x = *y;
                         } else {
@@ -361,15 +364,18 @@ pub unsafe fn unifying_equality(stack: &mut NockStack, a: *mut Noun, b: *mut Nou
                 }
 
                 (Right(xc), Right(yc)) => {
+                    // SAFETY: unifying_equality operates on stack-allocated nouns only
+                    let xsc = xc.with_stack_unchecked(stack);
+                    let ysc = yc.with_stack_unchecked(stack);
                     // check head; only compute tail eq if needed; push only unequal sides
-                    let xh = xc.head_as_mut();
-                    let yh = yc.head_as_mut();
+                    let xh = xsc.head_ptr();
+                    let yh = ysc.head_ptr();
                     if raw_word_eq(xh, yh) {
-                        let xt = xc.tail_as_mut();
-                        let yt = yc.tail_as_mut();
+                        let xt = xsc.tail_ptr();
+                        let yt = ysc.tail_ptr();
                         if raw_word_eq(xt, yt) {
-                            let xptr = xc.to_raw_pointer() as *const u64;
-                            let yptr = yc.to_raw_pointer() as *const u64;
+                            let xptr = xsc.raw_pointer() as *const u64;
+                            let yptr = ysc.raw_pointer() as *const u64;
                             if x_is_junior(stack, current_bounds, &mut bounds_state, xptr, yptr) {
                                 *x = *y;
                             } else {
@@ -383,8 +389,8 @@ pub unsafe fn unifying_equality(stack: &mut NockStack, a: *mut Noun, b: *mut Nou
                         }
                     } else {
                         // head unequal; only push tail if it is also unequal
-                        let xt = xc.tail_as_mut();
-                        let yt = yc.tail_as_mut();
+                        let xt = xsc.tail_ptr();
+                        let yt = ysc.tail_ptr();
                         if !raw_word_eq(xt, yt) {
                             *(stack.push::<(*mut Noun, *mut Noun)>()) = (xt, yt);
                         }

@@ -53,7 +53,8 @@ impl Site {
                 let mut ret = true;
                 for mut batteries in batteries_list {
                     if let Some((_battery, parent_axis)) = batteries.next() {
-                        let parent_axis_prefix_bits = &parent_axis.as_bitslice()[0..3];
+                        // SAFETY: parent_axis is stack-allocated from cold.find()
+                        let parent_axis_prefix_bits = unsafe { &parent_axis.as_bitslice_stack()[0..3] };
                         if parent_axis_prefix_bits == axis_7_bits {
                             continue;
                         } else {

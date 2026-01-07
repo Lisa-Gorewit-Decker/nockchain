@@ -2,6 +2,7 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use std::str;
 
 use bytes::Bytes;
+use either::{Left, Right};
 use ibig::UBig;
 pub mod wallet;
 
@@ -9,14 +10,16 @@ use nockvm::ext::{make_tas, AtomExt};
 use nockvm::jets::util::BAIL_FAIL;
 use nockvm::jets::JetErr;
 #[allow(unused_imports)]
-#[allow(unused_imports)]
 use nockvm::noun::{Atom, FullDebugCell, Noun, NounAllocator, Slots, D, T};
-use nockvm::noun::{NO, YES};
+use nockvm::noun::{MemoryResolver, StackResolver, NO, YES};
 pub use noun_serde_derive::{NounDecode, NounEncode};
 use tracing::trace;
 
 pub mod prelude {
-    pub use super::{NounDecode, NounEncode, NounSerdeDecodeExt, NounSerdeEncodeExt};
+    pub use super::{
+        NounDecode, NounDecodeExt, NounDecodeWith, NounEncode, NounSerdeDecodeExt,
+        NounSerdeEncodeExt,
+    };
 }
 
 // Trait extensions for Noun
@@ -48,6 +51,202 @@ pub trait NounEncode {
 pub trait NounDecode: Sized {
     /// Try to decode this value from a Noun
     fn from_noun(noun: &Noun) -> Result<Self, NounDecodeError>;
+}
+
+/// Trait for types that can be decoded from a Noun with an explicit memory resolver.
+///
+/// This trait allows decoding nouns from both stack-allocated and PMA-allocated memory
+/// by providing a resolver that knows how to access cell heads/tails and atom slices.
+///
+/// # Type Parameters
+///
+/// * `R` - The memory resolver type (e.g., `StackResolver`, `PmaResolver`, or `MemContext`)
+pub trait NounDecodeWith<R: MemoryResolver>: Sized {
+    /// Try to decode this value from a Noun using the given resolver
+    fn decode_with(noun: &Noun, resolver: &R) -> Result<Self, NounDecodeError>;
+}
+
+/// Extension trait for ergonomic noun decoding with resolvers.
+pub trait NounDecodeExt {
+    /// Decode assuming stack-pointer form (LOCATION_BIT=0).
+    /// This has zero overhead since `StackResolver` is a zero-sized type.
+    fn decode_stack<T: NounDecodeWith<StackResolver>>(&self) -> Result<T, NounDecodeError>;
+
+    /// Decode with an explicit memory resolver.
+    fn decode_with_resolver<T: NounDecodeWith<R>, R: MemoryResolver>(
+        &self,
+        resolver: &R,
+    ) -> Result<T, NounDecodeError>;
+}
+
+impl NounDecodeExt for Noun {
+    #[inline]
+    fn decode_stack<T: NounDecodeWith<StackResolver>>(&self) -> Result<T, NounDecodeError> {
+        T::decode_with(self, &StackResolver)
+    }
+
+    #[inline]
+    fn decode_with_resolver<T: NounDecodeWith<R>, R: MemoryResolver>(
+        &self,
+        resolver: &R,
+    ) -> Result<T, NounDecodeError> {
+        T::decode_with(self, resolver)
+    }
+}
+
+// =============================================================================
+// NounDecodeWith implementations for basic types
+// =============================================================================
+
+impl<R: MemoryResolver> NounDecodeWith<R> for Noun {
+    #[inline]
+    fn decode_with(noun: &Noun, _resolver: &R) -> Result<Self, NounDecodeError> {
+        Ok(*noun)
+    }
+}
+
+impl<R: MemoryResolver> NounDecodeWith<R> for u64 {
+    fn decode_with(noun: &Noun, resolver: &R) -> Result<Self, NounDecodeError> {
+        match noun.as_atom() {
+            Ok(atom) => match atom.as_either() {
+                Left(direct) => Ok(direct.data()),
+                Right(indirect) => {
+                    let slice = resolver.resolve_slice(&indirect);
+                    if slice.len() == 1 {
+                        Ok(slice[0])
+                    } else {
+                        Err(NounDecodeError::Custom("Atom too large for u64".into()))
+                    }
+                }
+            },
+            Err(_) => Err(NounDecodeError::ExpectedAtom),
+        }
+    }
+}
+
+impl<R: MemoryResolver> NounDecodeWith<R> for u32 {
+    fn decode_with(noun: &Noun, resolver: &R) -> Result<Self, NounDecodeError> {
+        let val: u64 = NounDecodeWith::decode_with(noun, resolver)?;
+        if val <= u32::MAX as u64 {
+            Ok(val as u32)
+        } else {
+            Err(NounDecodeError::Custom("Atom too large for u32".into()))
+        }
+    }
+}
+
+impl<R: MemoryResolver> NounDecodeWith<R> for bool {
+    fn decode_with(noun: &Noun, _resolver: &R) -> Result<Self, NounDecodeError> {
+        if unsafe { noun.raw_equals(&YES) } {
+            Ok(true)
+        } else if unsafe { noun.raw_equals(&NO) } {
+            Ok(false)
+        } else {
+            Err(NounDecodeError::Custom("Expected loobean (0 or 1)".into()))
+        }
+    }
+}
+
+// Tuple implementations using resolver for head/tail access
+impl<R: MemoryResolver, X: NounDecodeWith<R>, Y: NounDecodeWith<R>> NounDecodeWith<R> for (X, Y) {
+    fn decode_with(noun: &Noun, resolver: &R) -> Result<Self, NounDecodeError> {
+        let cell = noun.as_cell().map_err(|_| NounDecodeError::ExpectedCell)?;
+        let head = resolver.resolve_head(cell);
+        let tail = resolver.resolve_tail(cell);
+        let a = X::decode_with(&head, resolver)?;
+        let b = Y::decode_with(&tail, resolver)?;
+        Ok((a, b))
+    }
+}
+
+impl<R: MemoryResolver, X: NounDecodeWith<R>, Y: NounDecodeWith<R>, Z: NounDecodeWith<R>>
+    NounDecodeWith<R> for (X, Y, Z)
+{
+    fn decode_with(noun: &Noun, resolver: &R) -> Result<Self, NounDecodeError> {
+        let cell = noun.as_cell().map_err(|_| NounDecodeError::ExpectedCell)?;
+        let head = resolver.resolve_head(cell);
+        let tail_cell = resolver
+            .resolve_tail(cell)
+            .as_cell()
+            .map_err(|_| NounDecodeError::ExpectedCell)?;
+        let b_noun = resolver.resolve_head(tail_cell);
+        let c_noun = resolver.resolve_tail(tail_cell);
+        let a = X::decode_with(&head, resolver)?;
+        let b = Y::decode_with(&b_noun, resolver)?;
+        let c = Z::decode_with(&c_noun, resolver)?;
+        Ok((a, b, c))
+    }
+}
+
+impl<
+        R: MemoryResolver,
+        W: NounDecodeWith<R>,
+        X: NounDecodeWith<R>,
+        Y: NounDecodeWith<R>,
+        Z: NounDecodeWith<R>,
+    > NounDecodeWith<R> for (W, X, Y, Z)
+{
+    fn decode_with(noun: &Noun, resolver: &R) -> Result<Self, NounDecodeError> {
+        let cell = noun.as_cell().map_err(|_| NounDecodeError::ExpectedCell)?;
+        let a_noun = resolver.resolve_head(cell);
+
+        let tail = resolver
+            .resolve_tail(cell)
+            .as_cell()
+            .map_err(|_| NounDecodeError::ExpectedCell)?;
+        let b_noun = resolver.resolve_head(tail);
+
+        let tail2 = resolver
+            .resolve_tail(tail)
+            .as_cell()
+            .map_err(|_| NounDecodeError::ExpectedCell)?;
+        let c_noun = resolver.resolve_head(tail2);
+        let d_noun = resolver.resolve_tail(tail2);
+
+        let a = W::decode_with(&a_noun, resolver)?;
+        let b = X::decode_with(&b_noun, resolver)?;
+        let c = Y::decode_with(&c_noun, resolver)?;
+        let d = Z::decode_with(&d_noun, resolver)?;
+        Ok((a, b, c, d))
+    }
+}
+
+impl<R: MemoryResolver> NounDecodeWith<R> for String {
+    fn decode_with(noun: &Noun, resolver: &R) -> Result<Self, NounDecodeError> {
+        match noun.as_atom() {
+            Ok(atom) => {
+                match atom.as_either() {
+                    Left(direct) => {
+                        // Direct atom - extract bytes from the u64 value
+                        let data = direct.data();
+                        let bytes = data.to_le_bytes();
+                        // Find the actual length (trim trailing zeros)
+                        let len = bytes.iter().rposition(|&b| b != 0).map_or(0, |i| i + 1);
+                        str::from_utf8(&bytes[..len])
+                            .map(|s| s.to_string())
+                            .map_err(|e| NounDecodeError::Custom(format!("Invalid UTF-8: {:?}", e)))
+                    }
+                    Right(indirect) => {
+                        // Indirect atom - use resolver to get the slice
+                        let slice = resolver.resolve_slice(&indirect);
+                        // Convert u64 slice to bytes
+                        let byte_len = resolver.resolve_size(&indirect) * 8;
+                        let bytes: Vec<u8> = slice
+                            .iter()
+                            .flat_map(|&word| word.to_le_bytes())
+                            .take(byte_len)
+                            .collect();
+                        // Trim trailing zeros
+                        let len = bytes.iter().rposition(|&b| b != 0).map_or(0, |i| i + 1);
+                        str::from_utf8(&bytes[..len])
+                            .map(|s| s.to_string())
+                            .map_err(|e| NounDecodeError::Custom(format!("Invalid UTF-8: {:?}", e)))
+                    }
+                }
+            }
+            Err(_) => Err(NounDecodeError::ExpectedAtom),
+        }
+    }
 }
 
 /// Error that can occur during Noun decoding
@@ -125,12 +324,8 @@ impl NounEncode for u64 {
 
 impl NounDecode for u64 {
     fn from_noun(noun: &Noun) -> Result<Self, NounDecodeError> {
-        match noun.as_atom() {
-            Ok(atom) => atom
-                .as_u64()
-                .map_err(|_| NounDecodeError::Custom("Atom too large for u64".into())),
-            Err(_) => Err(NounDecodeError::ExpectedAtom),
-        }
+        // Delegate to the resolver-based implementation (zero overhead)
+        <Self as NounDecodeWith<StackResolver>>::decode_with(noun, &StackResolver)
     }
 }
 
@@ -149,13 +344,8 @@ impl NounEncode for UBig {
 
 impl NounDecode for u32 {
     fn from_noun(noun: &Noun) -> Result<Self, NounDecodeError> {
-        match noun.as_atom() {
-            Ok(atom) => atom
-                .as_u64()
-                .map(|x| x as u32)
-                .map_err(|_| NounDecodeError::Custom("Atom too large for u32".into())),
-            Err(_) => Err(NounDecodeError::ExpectedAtom),
-        }
+        // Delegate to the resolver-based implementation (zero overhead)
+        <Self as NounDecodeWith<StackResolver>>::decode_with(noun, &StackResolver)
     }
 }
 
@@ -168,12 +358,8 @@ impl NounEncode for String {
 
 impl NounDecode for String {
     fn from_noun(noun: &Noun) -> Result<Self, NounDecodeError> {
-        match noun.as_atom() {
-            Ok(atom) => atom
-                .into_string()
-                .map_err(|err| NounDecodeError::Custom(format!("Invalid string atom: {:?}", err))),
-            Err(_) => Err(NounDecodeError::ExpectedAtom),
-        }
+        // Delegate to the resolver-based implementation
+        <Self as NounDecodeWith<StackResolver>>::decode_with(noun, &StackResolver)
     }
 }
 
@@ -318,29 +504,13 @@ impl NounEncode for bool {
 impl NounDecode for bool {
     fn from_noun(noun: &Noun) -> Result<Self, NounDecodeError> {
         trace!("Decoding bool from noun: {:?}", noun);
-        match noun.as_atom() {
-            Ok(atom) => {
-                trace!("Successfully decoded as atom: {:?}", atom);
-                match atom.as_u64() {
-                    Ok(0) => {
-                        trace!("Decoded as 0 -> true (%.y)");
-                        Ok(true)
-                    }
-                    Ok(1) => {
-                        trace!("Decoded as 1 -> false (%.n)");
-                        Ok(false)
-                    }
-                    other => {
-                        trace!("Invalid boolean value: {:?}", other);
-                        Err(NounDecodeError::Custom("Invalid boolean value".into()))
-                    }
-                }
-            }
-            Err(e) => {
-                trace!("Failed to decode as atom: {:?}", e);
-                Err(NounDecodeError::ExpectedAtom)
-            }
+        let result = <Self as NounDecodeWith<StackResolver>>::decode_with(noun, &StackResolver);
+        match &result {
+            Ok(true) => trace!("Decoded as 0 -> true (%.y)"),
+            Ok(false) => trace!("Decoded as 1 -> false (%.n)"),
+            Err(e) => trace!("Failed to decode bool: {:?}", e),
         }
+        result
     }
 }
 impl<T: NounEncode> NounEncode for Option<T> {
@@ -357,32 +527,35 @@ impl<T: NounEncode> NounEncode for Option<T> {
 
 impl<T: NounDecode> NounDecode for Option<T> {
     fn from_noun(noun: &Noun) -> Result<Self, NounDecodeError> {
-        // First check if it's an atom 0 (None)
-        if let Ok(atom) = noun.as_atom() {
-            match atom.as_u64() {
-                Ok(0) => {
-                    trace!("Found ~ (0), returning None");
-                    return Ok(None);
+        // SAFETY: NounDecode operates on stack-allocated nouns
+        unsafe {
+            // First check if it's an atom 0 (None)
+            if let Ok(atom) = noun.as_atom() {
+                match atom.as_u64_stack() {
+                    Ok(0) => {
+                        trace!("Found ~ (0), returning None");
+                        return Ok(None);
+                    }
+                    _ => return Err(NounDecodeError::Custom("Invalid Option encoding".into())),
                 }
-                _ => return Err(NounDecodeError::Custom("Invalid Option encoding".into())),
             }
+
+            // Otherwise it must be a cell [~ value]
+            let cell = noun.as_cell().map_err(|_| NounDecodeError::ExpectedCell)?;
+            let head = cell
+                .head_stack()
+                .as_atom()
+                .map_err(|_| NounDecodeError::ExpectedAtom)?;
+
+            if head.as_u64_stack()? != 0 {
+                return Err(NounDecodeError::Custom(
+                    "Invalid Option encoding - expected ~".into(),
+                ));
+            }
+
+            let value = T::from_noun(&cell.tail_stack())?;
+            Ok(Some(value))
         }
-
-        // Otherwise it must be a cell [~ value]
-        let cell = noun.as_cell().map_err(|_| NounDecodeError::ExpectedCell)?;
-        let head = cell
-            .head()
-            .as_atom()
-            .map_err(|_| NounDecodeError::ExpectedAtom)?;
-
-        if head.as_u64()? != 0 {
-            return Err(NounDecodeError::Custom(
-                "Invalid Option encoding - expected ~".into(),
-            ));
-        }
-
-        let value = T::from_noun(&cell.tail())?;
-        Ok(Some(value))
     }
 }
 
@@ -397,29 +570,32 @@ impl<T: NounEncode> NounEncode for Vec<T> {
 
 impl<T: NounDecode> NounDecode for Vec<T> {
     fn from_noun(noun: &Noun) -> Result<Self, NounDecodeError> {
-        let mut result = Vec::new();
-        let mut current = noun;
-        #[allow(unused_assignments)]
-        let mut current_tail = None;
+        // SAFETY: NounDecode operates on stack-allocated nouns
+        unsafe {
+            let mut result = Vec::new();
+            let mut current = noun;
+            #[allow(unused_assignments)]
+            let mut current_tail = None;
 
-        while let Ok(cell) = current.as_cell() {
-            let item = T::from_noun(&cell.head())?;
-            result.push(item);
-            current_tail = Some(cell.tail());
-            current = current_tail.as_ref().unwrap();
-        }
-
-        if let Ok(atom) = current.as_atom() {
-            match atom.as_u64() {
-                Ok(0) => (),
-                // _ => return Err(NounDecodeError::Custom("Invalid list termination".into())),
-                _ => panic!("failure"),
+            while let Ok(cell) = current.as_cell() {
+                let item = T::from_noun(&cell.head_stack())?;
+                result.push(item);
+                current_tail = Some(cell.tail_stack());
+                current = current_tail.as_ref().unwrap();
             }
-        } else {
-            return Err(NounDecodeError::ExpectedAtom);
-        }
 
-        Ok(result)
+            if let Ok(atom) = current.as_atom() {
+                match atom.as_u64_stack() {
+                    Ok(0) => (),
+                    // _ => return Err(NounDecodeError::Custom("Invalid list termination".into())),
+                    _ => panic!("failure"),
+                }
+            } else {
+                return Err(NounDecodeError::ExpectedAtom);
+            }
+
+            Ok(result)
+        }
     }
 }
 
@@ -558,69 +734,74 @@ where
     V: std::fmt::Debug,
 {
     fn from_noun(noun: &Noun) -> Result<Self, NounDecodeError> {
-        trace!("\nDecoding HashMap from noun: {:?}", noun);
-        // Handle empty tree case
-        if let Ok(atom) = noun.as_atom() {
-            trace!("Got atom: {:?}", atom);
-            if atom.as_u64()? == 0 {
-                return Ok(HashMap::new());
-            }
-            return Err(NounDecodeError::ExpectedCell);
-        }
-
-        let mut map = HashMap::new();
-
-        // Helper function to recursively traverse the tree
-        fn traverse_tree<
-            K: NounDecode + std::hash::Hash + Eq + std::fmt::Debug,
-            V: NounDecode + std::fmt::Debug,
-        >(
-            node: &Noun,
-            map: &mut HashMap<K, V>,
-        ) -> Result<(), NounDecodeError> {
-            // Base case: empty branch
-            if let Ok(atom) = node.as_atom() {
-                if atom.as_u64()? == 0 {
-                    return Ok(());
+        // SAFETY: NounDecode operates on stack-allocated nouns
+        unsafe {
+            trace!("\nDecoding HashMap from noun: {:?}", noun);
+            // Handle empty tree case
+            if let Ok(atom) = noun.as_atom() {
+                trace!("Got atom: {:?}", atom);
+                if atom.as_u64_stack()? == 0 {
+                    return Ok(HashMap::new());
                 }
                 return Err(NounDecodeError::ExpectedCell);
             }
 
-            let cell = node.as_cell()?;
+            let mut map = HashMap::new();
 
-            // Get the key-value pair from the node
-            let pair = cell.head().as_cell().map_err(|e| {
-                trace!("Failed to get node cell: {:?}", e);
-                NounDecodeError::ExpectedCell
-            })?;
+            // Helper function to recursively traverse the tree
+            fn traverse_tree<
+                K: NounDecode + std::hash::Hash + Eq + std::fmt::Debug,
+                V: NounDecode + std::fmt::Debug,
+            >(
+                node: &Noun,
+                map: &mut HashMap<K, V>,
+            ) -> Result<(), NounDecodeError> {
+                unsafe {
+                    // Base case: empty branch
+                    if let Ok(atom) = node.as_atom() {
+                        if atom.as_u64_stack()? == 0 {
+                            return Ok(());
+                        }
+                        return Err(NounDecodeError::ExpectedCell);
+                    }
 
-            trace!(
-                "Got node - key: {:?}, value: {:?}",
-                pair.head(),
-                pair.tail()
-            );
-            trace!("Key type: {:?}", std::any::type_name::<K>());
-            trace!("Value type: {:?}", std::any::type_name::<V>());
+                    let cell = node.as_cell()?;
 
-            let key = K::from_noun(&pair.head())?;
-            let value = V::from_noun(&pair.tail())?;
-            trace!("Key: {:?}, Value: {:?}", key, value);
-            map.insert(key, value);
+                    // Get the key-value pair from the node
+                    let pair = cell.head_stack().as_cell().map_err(|e| {
+                        trace!("Failed to get node cell: {:?}", e);
+                        NounDecodeError::ExpectedCell
+                    })?;
 
-            // Get left and right branches
-            let rest = cell.tail().as_cell()?;
-            let left = &rest.head();
-            let right = &rest.tail();
+                    trace!(
+                        "Got node - key: {:?}, value: {:?}",
+                        pair.head_stack(),
+                        pair.tail_stack()
+                    );
+                    trace!("Key type: {:?}", std::any::type_name::<K>());
+                    trace!("Value type: {:?}", std::any::type_name::<V>());
 
-            // Recursively process left and right branches
-            traverse_tree(left, map)?;
-            traverse_tree(right, map)?;
+                    let key = K::from_noun(&pair.head_stack())?;
+                    let value = V::from_noun(&pair.tail_stack())?;
+                    trace!("Key: {:?}, Value: {:?}", key, value);
+                    map.insert(key, value);
 
-            Ok(())
+                    // Get left and right branches
+                    let rest = cell.tail_stack().as_cell()?;
+                    let left = &rest.head_stack();
+                    let right = &rest.tail_stack();
+
+                    // Recursively process left and right branches
+                    traverse_tree(left, map)?;
+                    traverse_tree(right, map)?;
+
+                    Ok(())
+                }
+            }
+
+            traverse_tree(noun, &mut map)?;
+            Ok(map)
         }
-
-        traverse_tree(noun, &mut map)?;
-        Ok(map)
     }
 }
 
@@ -699,31 +880,34 @@ impl<T: NounEncode, E: NounEncode> NounEncode for Result<T, E> {
 /// 4. Wraps in Ok/Err accordingly
 impl<T: NounDecode, E: NounDecode> NounDecode for Result<T, E> {
     fn from_noun(noun: &Noun) -> Result<Self, NounDecodeError> {
-        trace!("\nDecoding Result from noun: {:?}", noun);
-        let cell = noun.as_cell().map_err(|_| NounDecodeError::ExpectedCell)?;
-        trace!("Result cell head: {:?}", cell.head());
-        trace!("Result cell tail: {:?}", cell.tail());
+        // SAFETY: NounDecode operates on stack-allocated nouns
+        unsafe {
+            trace!("\nDecoding Result from noun: {:?}", noun);
+            let cell = noun.as_cell().map_err(|_| NounDecodeError::ExpectedCell)?;
+            trace!("Result cell head: {:?}", cell.head_stack());
+            trace!("Result cell tail: {:?}", cell.tail_stack());
 
-        let tag = cell
-            .head()
-            .as_atom()
-            .map_err(|_| NounDecodeError::ExpectedAtom)?
-            .into_string()
-            .map_err(|_| NounDecodeError::InvalidTag)?;
+            let tag = cell
+                .head_stack()
+                .as_atom()
+                .map_err(|_| NounDecodeError::ExpectedAtom)?
+                .into_string_stack()
+                .map_err(|_| NounDecodeError::InvalidTag)?;
 
-        trace!("Result tag: {}", tag);
-        match tag.as_str() {
-            "ok" => {
-                trace!("Decoding Ok variant");
-                Ok(Ok(T::from_noun(&cell.tail())?))
-            }
-            "err" => {
-                trace!("Decoding Err variant");
-                Ok(Err(E::from_noun(&cell.tail())?))
-            }
-            _ => {
-                trace!("Invalid Result tag: {}", tag);
-                Err(NounDecodeError::InvalidEnumVariant)
+            trace!("Result tag: {}", tag);
+            match tag.as_str() {
+                "ok" => {
+                    trace!("Decoding Ok variant");
+                    Ok(Ok(T::from_noun(&cell.tail_stack())?))
+                }
+                "err" => {
+                    trace!("Decoding Err variant");
+                    Ok(Err(E::from_noun(&cell.tail_stack())?))
+                }
+                _ => {
+                    trace!("Invalid Result tag: {}", tag);
+                    Err(NounDecodeError::InvalidEnumVariant)
+                }
             }
         }
     }
@@ -739,28 +923,31 @@ pub fn encode_bool(value: bool) -> Noun {
 }
 
 pub fn decode_bool(noun: &Noun) -> Result<bool, NounDecodeError> {
-    trace!("Decoding bool from noun: {:?}", noun);
-    match noun.as_atom() {
-        Ok(atom) => {
-            trace!("Successfully decoded as atom: {:?}", atom);
-            match atom.as_u64() {
-                Ok(0) => {
-                    trace!("Decoded as 0 -> true (%.y)");
-                    Ok(true)
-                }
-                Ok(1) => {
-                    trace!("Decoded as 1 -> false (%.n)");
-                    Ok(false)
-                }
-                other => {
-                    trace!("Invalid boolean value: {:?}", other);
-                    Err(NounDecodeError::Custom("Invalid boolean value".into()))
+    // SAFETY: decode_bool operates on stack-allocated nouns
+    unsafe {
+        trace!("Decoding bool from noun: {:?}", noun);
+        match noun.as_atom() {
+            Ok(atom) => {
+                trace!("Successfully decoded as atom: {:?}", atom);
+                match atom.as_u64_stack() {
+                    Ok(0) => {
+                        trace!("Decoded as 0 -> true (%.y)");
+                        Ok(true)
+                    }
+                    Ok(1) => {
+                        trace!("Decoded as 1 -> false (%.n)");
+                        Ok(false)
+                    }
+                    other => {
+                        trace!("Invalid boolean value: {:?}", other);
+                        Err(NounDecodeError::Custom("Invalid boolean value".into()))
+                    }
                 }
             }
-        }
-        Err(e) => {
-            trace!("Failed to decode as atom: {:?}", e);
-            Err(NounDecodeError::ExpectedAtom)
+            Err(e) => {
+                trace!("Failed to decode as atom: {:?}", e);
+                Err(NounDecodeError::ExpectedAtom)
+            }
         }
     }
 }
@@ -855,49 +1042,55 @@ where
     T: std::hash::Hash + Eq,
 {
     fn from_noun(noun: &Noun) -> Result<Self, NounDecodeError> {
-        // Handle empty tree case
-        if let Ok(atom) = noun.as_atom() {
-            if atom.as_u64()? == 0 {
-                return Ok(HashSet::new());
-            }
-            return Err(NounDecodeError::ExpectedCell);
-        }
-
-        let mut set = HashSet::new();
-
-        // Helper function to recursively traverse the tree
-        fn traverse_tree<T: NounDecode + std::hash::Hash + Eq>(
-            node: &Noun,
-            set: &mut HashSet<T>,
-        ) -> Result<(), NounDecodeError> {
-            // Base case: empty branch
-            if let Ok(atom) = node.as_atom() {
-                if atom.as_u64()? == 0 {
-                    return Ok(());
+        // SAFETY: NounDecode operates on stack-allocated nouns
+        unsafe {
+            // Handle empty tree case
+            if let Ok(atom) = noun.as_atom() {
+                if atom.as_u64_stack()? == 0 {
+                    return Ok(HashSet::new());
                 }
                 return Err(NounDecodeError::ExpectedCell);
             }
 
-            let cell = node.as_cell()?;
+            let mut set = HashSet::new();
 
-            // Insert the node value
-            let value = T::from_noun(&cell.head())?;
-            set.insert(value);
+            // Helper function to recursively traverse the tree
+            // SAFETY: This is called from within an unsafe block
+            fn traverse_tree<T: NounDecode + std::hash::Hash + Eq>(
+                node: &Noun,
+                set: &mut HashSet<T>,
+            ) -> Result<(), NounDecodeError> {
+                unsafe {
+                    // Base case: empty branch
+                    if let Ok(atom) = node.as_atom() {
+                        if atom.as_u64_stack()? == 0 {
+                            return Ok(());
+                        }
+                        return Err(NounDecodeError::ExpectedCell);
+                    }
 
-            // Get left and right branches
-            let rest = cell.tail().as_cell()?;
-            let left = &rest.head();
-            let right = &rest.tail();
+                    let cell = node.as_cell()?;
 
-            // Recursively process left and right branches
-            traverse_tree(left, set)?;
-            traverse_tree(right, set)?;
+                    // Insert the node value
+                    let value = T::from_noun(&cell.head_stack())?;
+                    set.insert(value);
 
-            Ok(())
+                    // Get left and right branches
+                    let rest = cell.tail_stack().as_cell()?;
+                    let left = &rest.head_stack();
+                    let right = &rest.tail_stack();
+
+                    // Recursively process left and right branches
+                    traverse_tree(left, set)?;
+                    traverse_tree(right, set)?;
+
+                    Ok(())
+                }
+            }
+
+            traverse_tree(noun, &mut set)?;
+            Ok(set)
         }
-
-        traverse_tree(noun, &mut set)?;
-        Ok(set)
     }
 }
 
@@ -1001,36 +1194,39 @@ impl<K: NounDecode + Ord, V: NounDecode> NounDecode for BTreeMap<K, V> {
     fn from_noun(noun: &Noun) -> Result<Self, NounDecodeError> {
         let mut map = BTreeMap::new();
 
+        // SAFETY: NounDecode operates on stack-allocated nouns
         fn traverse_tree<K: NounDecode + Ord, V: NounDecode>(
             node: &Noun,
             map: &mut BTreeMap<K, V>,
         ) -> Result<(), NounDecodeError> {
-            // Base case: empty tree (atom 0)
-            if let Ok(atom) = node.as_atom() {
-                if atom.as_u64()? == 0 {
-                    return Ok(());
+            unsafe {
+                // Base case: empty tree (atom 0)
+                if let Ok(atom) = node.as_atom() {
+                    if atom.as_u64_stack()? == 0 {
+                        return Ok(());
+                    }
+                    return Err(NounDecodeError::ExpectedCell);
                 }
-                return Err(NounDecodeError::ExpectedCell);
+
+                let cell = node.as_cell()?;
+
+                // Get the [key value] pair from the node
+                let pair = cell.head_stack().as_cell()?;
+                let key = K::from_noun(&pair.head_stack())?;
+                let value = V::from_noun(&pair.tail_stack())?;
+                map.insert(key, value);
+
+                // Get left and right subtrees
+                let rest = cell.tail_stack().as_cell()?;
+                let left = &rest.head_stack();
+                let right = &rest.tail_stack();
+
+                // Recursively process left and right subtrees
+                traverse_tree(left, map)?;
+                traverse_tree(right, map)?;
+
+                Ok(())
             }
-
-            let cell = node.as_cell()?;
-
-            // Get the [key value] pair from the node
-            let pair = cell.head().as_cell()?;
-            let key = K::from_noun(&pair.head())?;
-            let value = V::from_noun(&pair.tail())?;
-            map.insert(key, value);
-
-            // Get left and right subtrees
-            let rest = cell.tail().as_cell()?;
-            let left = &rest.head();
-            let right = &rest.tail();
-
-            // Recursively process left and right subtrees
-            traverse_tree(left, map)?;
-            traverse_tree(right, map)?;
-
-            Ok(())
         }
 
         traverse_tree(noun, &mut map)?;
@@ -1070,31 +1266,34 @@ impl NounDecode for usize {
 
 impl<T: NounDecode, const N: usize> NounDecode for [T; N] {
     fn from_noun(noun: &Noun) -> Result<Self, NounDecodeError> {
-        let mut result = Vec::with_capacity(N);
+        // SAFETY: NounDecode operates on stack-allocated nouns
+        unsafe {
+            let mut result = Vec::with_capacity(N);
 
-        if N > 0 {
-            let mut current = *noun;
+            if N > 0 {
+                let mut current = *noun;
 
-            // Process all elements except the last one
-            for _ in 0..N - 1 {
-                let cell = current
-                    .as_cell()
-                    .map_err(|_| NounDecodeError::ExpectedCell)?;
-                let head = cell.head();
-                let item = T::from_noun(&head)?;
-                result.push(item);
-                current = cell.tail();
+                // Process all elements except the last one
+                for _ in 0..N - 1 {
+                    let cell = current
+                        .as_cell()
+                        .map_err(|_| NounDecodeError::ExpectedCell)?;
+                    let head = cell.head_stack();
+                    let item = T::from_noun(&head)?;
+                    result.push(item);
+                    current = cell.tail_stack();
+                }
+
+                // Process the last element
+                let last_item = T::from_noun(&current)?;
+                result.push(last_item);
             }
 
-            // Process the last element
-            let last_item = T::from_noun(&current)?;
-            result.push(last_item);
+            // Convert Vec to array
+            result
+                .try_into()
+                .map_err(|_| NounDecodeError::Custom("Failed to convert Vec to array".into()))
         }
-
-        // Convert Vec to array
-        result
-            .try_into()
-            .map_err(|_| NounDecodeError::Custom("Failed to convert Vec to array".into()))
     }
 }
 
@@ -1552,8 +1751,11 @@ impl NounEncode for Bytes {
 
 impl NounDecode for Bytes {
     fn from_noun(noun: &Noun) -> Result<Self, NounDecodeError> {
-        let atom = noun.as_atom().map_err(|_| NounDecodeError::ExpectedAtom)?;
-        let bytes = atom.as_ne_bytes().to_vec();
-        Ok(Bytes::from(bytes))
+        // SAFETY: NounDecode operates on stack-allocated nouns
+        unsafe {
+            let atom = noun.as_atom().map_err(|_| NounDecodeError::ExpectedAtom)?;
+            let bytes = atom.as_ne_bytes_stack().to_vec();
+            Ok(Bytes::from(bytes))
+        }
     }
 }
