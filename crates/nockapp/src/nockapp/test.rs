@@ -24,7 +24,7 @@ pub async fn setup_nockapp(jam: &str) -> (TempDir, NockApp) {
         .unwrap_or_else(|| panic!("Failed to read {} file from any known location", jam));
 
     let kernel_f =
-        async |checkpoint| Kernel::load(&jam_bytes, checkpoint, vec![], Default::default()).await;
+        async |checkpoint| Kernel::load(&jam_bytes, checkpoint, vec![], Default::default(), None).await;
     (
         temp_dir,
         NockApp::new(
@@ -55,7 +55,7 @@ pub mod tests {
     use super::setup_nockapp;
     use crate::nockapp::wire::{SystemWire, Wire};
     use crate::noun::slab::{slab_equality, NockJammer, NounSlab};
-    use nockvm::ext::noun_equality;
+    use nockvm::ext::noun_equality_auto;
     use crate::save::{SaveableCheckpoint, Saver};
     use crate::test_support::TestArena;
     use crate::utils::NOCK_STACK_SIZE;
@@ -441,7 +441,7 @@ pub mod tests {
                 option_env!("GIT_SHA")
             )
         });
-        unsafe { assert!(noun_equality(slab1.root(), &c)) }
+        assert!(noun_equality_auto(unsafe { &slab1.root() }, &c))
     }
 
     #[tokio::test(flavor = "current_thread")]
@@ -464,7 +464,7 @@ pub mod tests {
                 option_env!("GIT_SHA")
             )
         });
-        unsafe { assert!(noun_equality(state_slab.root(), &c)) }
+        assert!(noun_equality_auto(unsafe { &state_slab.root() }, &c))
     }
 
     #[tokio::test(flavor = "current_thread")]

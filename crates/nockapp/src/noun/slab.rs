@@ -904,7 +904,7 @@ mod tests {
 
         // Compare the original and cued nouns
         assert!(
-            noun_equality(unsafe { original_slab.root() }, &cued_noun),
+            noun_equality_auto(unsafe { &original_slab.root() }, &cued_noun),
             "Original and cued nouns should be equal"
         );
     }
@@ -925,7 +925,7 @@ mod tests {
         let cued_noun = cued_slab.cue_into(jammed).expect("Cue should succeed");
 
         assert!(
-            noun_equality(unsafe { slab.root() }, &cued_noun),
+            noun_equality_auto(unsafe { &slab.root() }, &cued_noun),
             "Complex nouns should be equal after jam/cue roundtrip"
         );
     }
@@ -969,7 +969,7 @@ mod tests {
         let cued_noun = cued_slab.cue_into(jammed).expect("Cue should succeed");
 
         assert!(
-            noun_equality(unsafe { slab.root() }, &cued_noun),
+            noun_equality_auto(unsafe { &slab.root() }, &cued_noun),
             "Nouns with tas! macros should be equal after jam/cue roundtrip"
         );
     }
@@ -1132,10 +1132,10 @@ mod tests {
         let mut slab: NounSlab = NounSlab::new();
         slab.modify(|root| vec![D(0), D(tas!(b"bind")), root]);
         let mut test_slab: NounSlab = NounSlab::new();
-        noun_equality(
+        assert!(noun_equality_auto(
             &slab.root,
             &T(&mut test_slab, &[D(0), D(tas!(b"bind")), D(0)]),
-        );
+        ));
         // let peek_res = unsafe { bind_slab.root_owned() };
         // let bind_noun = T(&mut bind_slab, &[D(pid), D(tas!(b"bind")), peek_res]);
     }

@@ -1,6 +1,7 @@
 #![allow(dead_code)]
 use std::any::Any;
 use std::future::Future;
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Instant;
@@ -14,6 +15,7 @@ use nockvm::jets::hot::{HotEntry, URBIT_HOT_STATE};
 use nockvm::jets::nock::util::mook;
 use nockvm::mem::{Arena, NockStack, Retag};
 use nockvm::mug::met3_usize_auto;
+use nockvm::pma::{Pma, PmaCopy};
 use nockvm::noun::{Atom, Cell, DirectAtom, IndirectAtom, Noun, Slots, D, T};
 use nockvm::trace::{path_to_cord, write_serf_trace_safe};
 use nockvm_macros::tas;
@@ -40,6 +42,9 @@ const POKE_AXIS: u64 = 23;
 
 const SERF_FINISHED_INTERVAL: Duration = Duration::from_millis(100);
 const SERF_THREAD_STACK_SIZE: usize = 256 * 1024 * 1024; // 8MB
+
+/// Default PMA size in words (512MB = 64M words of 8 bytes each)
+const DEFAULT_PMA_SIZE_WORDS: usize = 64 * 1024 * 1024;
 
 pub struct LoadState {
     pub ker_hash: Hash,
@@ -107,6 +112,7 @@ impl<C: SerfCheckpoint + Send + 'static> SerfThread<C> {
         nock_stack_size: usize,
         test_jets: Vec<NounSlab>,
         trace: TraceOpts,
+        pma_path: Option<PathBuf>,
     ) -> Result<Self> {
         let (action_sender, action_receiver) = mpsc::channel(1);
         let (event_number_sender, event_number_receiver) = oneshot::channel();
@@ -119,7 +125,7 @@ impl<C: SerfCheckpoint + Send + 'static> SerfThread<C> {
             .spawn(move || {
                 let stack = NockStack::new(nock_stack_size, 0);
                 let serf = Serf::new(
-                    stack, checkpoint, &kernel_bytes, &constant_hot_state, test_jets, trace,
+                    stack, checkpoint, &kernel_bytes, &constant_hot_state, test_jets, trace, pma_path,
                 );
                 event_number_sender
                     .send(serf.event_num.clone())
@@ -563,11 +569,12 @@ impl<C: SerfCheckpoint + 'static> Kernel<C> {
         hot_state: &[HotEntry],
         test_jets: Vec<NounSlab>,
         trace: TraceOpts,
+        pma_path: Option<PathBuf>,
     ) -> Result<Self> {
         let kernel_vec = Vec::from(kernel);
         let hot_state_vec = Vec::from(hot_state);
         let serf = SerfThread::new(
-            kernel_vec, checkpoint, hot_state_vec, NOCK_STACK_SIZE, test_jets, trace,
+            kernel_vec, checkpoint, hot_state_vec, NOCK_STACK_SIZE, test_jets, trace, pma_path,
         )
         .await?;
         Ok(Self { serf })
@@ -579,11 +586,12 @@ impl<C: SerfCheckpoint + 'static> Kernel<C> {
         hot_state: &[HotEntry],
         test_jets: Vec<NounSlab>,
         trace: TraceOpts,
+        pma_path: Option<PathBuf>,
     ) -> Result<Self> {
         let kernel_vec = Vec::from(kernel);
         let hot_state_vec = Vec::from(hot_state);
         let serf = SerfThread::new(
-            kernel_vec, checkpoint, hot_state_vec, NOCK_STACK_SIZE_TINY, test_jets, trace,
+            kernel_vec, checkpoint, hot_state_vec, NOCK_STACK_SIZE_TINY, test_jets, trace, pma_path,
         )
         .await?;
         Ok(Self { serf })
@@ -595,11 +603,12 @@ impl<C: SerfCheckpoint + 'static> Kernel<C> {
         hot_state: &[HotEntry],
         test_jets: Vec<NounSlab>,
         trace: TraceOpts,
+        pma_path: Option<PathBuf>,
     ) -> Result<Self> {
         let kernel_vec = Vec::from(kernel);
         let hot_state_vec = Vec::from(hot_state);
         let serf = SerfThread::new(
-            kernel_vec, checkpoint, hot_state_vec, NOCK_STACK_SIZE_SMALL, test_jets, trace,
+            kernel_vec, checkpoint, hot_state_vec, NOCK_STACK_SIZE_SMALL, test_jets, trace, pma_path,
         )
         .await?;
         Ok(Self { serf })
@@ -611,11 +620,12 @@ impl<C: SerfCheckpoint + 'static> Kernel<C> {
         hot_state: &[HotEntry],
         test_jets: Vec<NounSlab>,
         trace: TraceOpts,
+        pma_path: Option<PathBuf>,
     ) -> Result<Self> {
         let kernel_vec = Vec::from(kernel);
         let hot_state_vec = Vec::from(hot_state);
         let serf = SerfThread::new(
-            kernel_vec, checkpoint, hot_state_vec, NOCK_STACK_SIZE_MEDIUM, test_jets, trace,
+            kernel_vec, checkpoint, hot_state_vec, NOCK_STACK_SIZE_MEDIUM, test_jets, trace, pma_path,
         )
         .await?;
         Ok(Self { serf })
@@ -627,11 +637,12 @@ impl<C: SerfCheckpoint + 'static> Kernel<C> {
         hot_state: &[HotEntry],
         test_jets: Vec<NounSlab>,
         trace: TraceOpts,
+        pma_path: Option<PathBuf>,
     ) -> Result<Self> {
         let kernel_vec = Vec::from(kernel);
         let hot_state_vec = Vec::from(hot_state);
         let serf = SerfThread::new(
-            kernel_vec, checkpoint, hot_state_vec, NOCK_STACK_SIZE_LARGE, test_jets, trace,
+            kernel_vec, checkpoint, hot_state_vec, NOCK_STACK_SIZE_LARGE, test_jets, trace, pma_path,
         )
         .await?;
         Ok(Self { serf })
@@ -643,11 +654,12 @@ impl<C: SerfCheckpoint + 'static> Kernel<C> {
         hot_state: &[HotEntry],
         test_jets: Vec<NounSlab>,
         trace: TraceOpts,
+        pma_path: Option<PathBuf>,
     ) -> Result<Self> {
         let kernel_vec = Vec::from(kernel);
         let hot_state_vec = Vec::from(hot_state);
         let serf = SerfThread::new(
-            kernel_vec, checkpoint, hot_state_vec, NOCK_STACK_SIZE_HUGE, test_jets, trace,
+            kernel_vec, checkpoint, hot_state_vec, NOCK_STACK_SIZE_HUGE, test_jets, trace, pma_path,
         )
         .await?;
         Ok(Self { serf })
@@ -660,6 +672,7 @@ impl<C: SerfCheckpoint + 'static> Kernel<C> {
     /// * `snap_dir` - Directory for storing snapshots.
     /// * `kernel` - Byte slice containing the kernel code.
     /// * `trace` - Whether to enable tracing.
+    /// * `pma_path` - Optional path for the PMA directory.
     ///
     /// # Returns
     ///
@@ -669,8 +682,9 @@ impl<C: SerfCheckpoint + 'static> Kernel<C> {
         checkpoint: Option<C>,
         test_jets: Vec<NounSlab>,
         trace: TraceOpts,
+        pma_path: Option<PathBuf>,
     ) -> Result<Self> {
-        Self::load_with_hot_state(kernel, checkpoint, &Vec::new(), test_jets, trace).await
+        Self::load_with_hot_state(kernel, checkpoint, &Vec::new(), test_jets, trace, pma_path).await
     }
 
     /// Produces a checkpoint of the kernel state.
@@ -739,6 +753,10 @@ pub struct Serf {
     pub event_num: Arc<AtomicU64>,
     /// A metrics
     pub metrics: Option<Arc<NockAppMetrics>>,
+    /// Persistent Memory Arena for storing live state between events.
+    /// When present, persistent state (arvo, cold, warm, hot) is evacuated
+    /// to the PMA after each event, allowing NockStack to be ephemeral.
+    pub pma: Option<Pma>,
 }
 
 impl Serf {
@@ -751,6 +769,7 @@ impl Serf {
     /// * `kernel_bytes` - Byte slice containing the kernel code.
     /// * `constant_hot_state` - Custom hot state entries.
     /// * `trace_info` - Optional nockvm tracing implementation.
+    /// * `pma_path` - Optional path for the PMA directory.
     ///
     /// # Returns
     ///
@@ -762,6 +781,7 @@ impl Serf {
         constant_hot_state: &[HotEntry],
         test_jets: Vec<NounSlab>,
         trace: TraceOpts,
+        pma_path: Option<PathBuf>,
     ) -> Self {
         let hot_state = [URBIT_HOT_STATE, constant_hot_state].concat();
 
@@ -823,6 +843,12 @@ impl Serf {
             }
         };
 
+        // Create PMA if path was provided
+        let pma = pma_path.map(|path| {
+            Pma::new(DEFAULT_PMA_SIZE_WORDS, path)
+                .expect("Failed to create PMA")
+        });
+
         let mut serf = Self {
             ker_hash,
             arvo,
@@ -830,6 +856,7 @@ impl Serf {
             event_num,
             cancel_token,
             metrics: None,
+            pma,
         };
 
         if let Some(kernel_state) = maybe_state {
@@ -1196,11 +1223,27 @@ impl Serf {
 
     /// Preserves leftovers after an event update.
     ///
+    /// If PMA is present, evacuates persistent state to PMA.
+    /// Otherwise, falls back to preserving on NockStack's previous frame.
+    ///
     /// # Safety
     ///
     /// This function is unsafe because it modifies the Serf's state directly.
     #[tracing::instrument(level = "info", skip_all)]
     pub unsafe fn preserve_event_update_leftovers(&mut self) {
+        if self.pma.is_some() {
+            self.evacuate_to_pma();
+        } else {
+            self.preserve_to_stack();
+        }
+    }
+
+    /// Preserves state to NockStack's previous frame (legacy behavior).
+    ///
+    /// # Safety
+    ///
+    /// This function is unsafe because it modifies the Serf's state directly.
+    unsafe fn preserve_to_stack(&mut self) {
         let stack = &mut self.context.stack;
         stack.preserve(&mut self.context.warm);
         stack.preserve(&mut self.context.test_jets);
@@ -1210,6 +1253,49 @@ impl Serf {
         stack.preserve(&mut self.arvo);
         stack.flip_top_frame(0);
         self.retag_survivors();
+        #[cfg(debug_assertions)]
+        self.debug_assert_offsets();
+    }
+
+    /// Evacuates persistent state to PMA.
+    ///
+    /// This copies all persistent state (arvo, cold, warm) to the PMA,
+    /// allowing NockStack to be fully ephemeral. After evacuation, the
+    /// NockStack is reset for the next event.
+    ///
+    /// Note: `Hot` is not evacuated to PMA because it doesn't implement PmaCopy.
+    /// Hot state is reconstructed from constant_hot_state and doesn't change
+    /// during execution. We preserve it to the NockStack previous frame.
+    ///
+    /// # Safety
+    ///
+    /// This function is unsafe because it modifies the Serf's state directly.
+    #[tracing::instrument(level = "info", skip_all)]
+    unsafe fn evacuate_to_pma(&mut self) {
+        let pma = self.pma.as_mut().expect("evacuate_to_pma called without PMA");
+        let stack = &self.context.stack;
+
+        // Evacuate persistent state to PMA (modifies in place)
+        // After these calls, the nouns will be in PMA (offset form)
+        self.arvo.copy_to_pma(stack, pma);
+        self.context.cold.copy_to_pma(stack, pma);
+        self.context.warm.copy_to_pma(stack, pma);
+
+        // Hot doesn't implement PmaCopy - it's initialized from constant hot state
+        // and doesn't change during execution. We still need to preserve it.
+        // Cache is reset each event anyway, test_jets is for testing only.
+        let stack = &mut self.context.stack;
+        stack.preserve(&mut self.context.hot);
+        stack.preserve(&mut self.context.test_jets);
+        stack.preserve(&mut self.context.cache);
+
+        // Reset NockStack for next event
+        stack.flip_top_frame(0);
+        self.retag_survivors();
+
+        // Note: After evacuation, arvo, cold, and warm are in PMA (offset form).
+        // Hot remains on stack. The PMA-resident nouns will be accessed via
+        // auto-dispatch methods.
         #[cfg(debug_assertions)]
         self.debug_assert_offsets();
     }
@@ -1311,6 +1397,7 @@ mod tests {
             cancel_token,
             event_num: Arc::new(AtomicU64::new(0)),
             metrics: None,
+            pma: None,
         }
     }
 
@@ -1321,7 +1408,7 @@ mod tests {
             .join(jam);
         let jam_bytes =
             fs::read(jam_path).unwrap_or_else(|_| panic!("Failed to read {} file", jam));
-        Kernel::load(&jam_bytes, None, vec![], TraceOpts::default())
+        Kernel::load(&jam_bytes, None, vec![], TraceOpts::default(), None)
             .await
             .expect("Could not load kernel")
     }

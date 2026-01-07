@@ -410,9 +410,10 @@ pub async fn setup_<J: Jammer + Send + 'static>(
         debug!("Created jams directory: {:?}", jams_dir);
     }
 
-    if pma_dir.exists() {
-        std::fs::remove_dir_all(&pma_dir)?;
-        debug!("Deleted existing pma directory: {:?}", pma_dir);
+    // Create PMA directory if it doesn't exist
+    if !pma_dir.exists() {
+        std::fs::create_dir_all(&pma_dir)?;
+        debug!("Created pma directory: {:?}", pma_dir);
     }
 
     if cli.new && jams_dir.exists() {
@@ -432,35 +433,35 @@ pub async fn setup_<J: Jammer + Send + 'static>(
         let kernel: Kernel<SaveableCheckpoint> = match cli.stack_size {
             NockStackSize::Tiny => {
                 Kernel::load_with_hot_state_tiny(
-                    jam, checkpoint, hot_state, test_jets, cli.trace_opts,
+                    jam, checkpoint, hot_state, test_jets, cli.trace_opts, Some(pma_dir.clone()),
                 )
                 .await?
             }
             NockStackSize::Small => {
                 Kernel::load_with_hot_state_small(
-                    jam, checkpoint, hot_state, test_jets, cli.trace_opts,
+                    jam, checkpoint, hot_state, test_jets, cli.trace_opts, Some(pma_dir.clone()),
                 )
                 .await?
             }
             NockStackSize::Normal => {
-                Kernel::load_with_hot_state(jam, checkpoint, hot_state, test_jets, cli.trace_opts)
+                Kernel::load_with_hot_state(jam, checkpoint, hot_state, test_jets, cli.trace_opts, Some(pma_dir.clone()))
                     .await?
             }
             NockStackSize::Medium => {
                 Kernel::load_with_hot_state_medium(
-                    jam, checkpoint, hot_state, test_jets, cli.trace_opts,
+                    jam, checkpoint, hot_state, test_jets, cli.trace_opts, Some(pma_dir.clone()),
                 )
                 .await?
             }
             NockStackSize::Large => {
                 Kernel::load_with_hot_state_large(
-                    jam, checkpoint, hot_state, test_jets, cli.trace_opts,
+                    jam, checkpoint, hot_state, test_jets, cli.trace_opts, Some(pma_dir.clone()),
                 )
                 .await?
             }
             NockStackSize::Huge => {
                 Kernel::load_with_hot_state_huge(
-                    jam, checkpoint, hot_state, test_jets, cli.trace_opts,
+                    jam, checkpoint, hot_state, test_jets, cli.trace_opts, Some(pma_dir.clone()),
                 )
                 .await?
             }

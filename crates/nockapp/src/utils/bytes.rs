@@ -181,14 +181,15 @@ mod test {
     use crate::utils::bytes::Byts;
 
     fn test_byt_direct_atom(context: &mut Context, n: u64) -> Result<(), FromNounError> {
+        let arena = context.arena.clone();
         // Start with a byt_noun which is a direct atom and consists of zeroes
         let byt_noun = T(&mut context.stack, &[D(n), D(0x0)]);
         // Convert it to byt
-        let byt = super::Byts::from_noun(&mut context.stack, &byt_noun)?;
+        let byt = super::Byts::from_noun(&mut context.stack, &arena, &byt_noun)?;
         // Check that it is equal
         assert_eq!(byt.0, vec![0x00; n as usize]);
         // Convert it back to noun
-        let roundtrip = Byts::into_noun(byt, &mut context.stack);
+        let roundtrip = Byts::into_noun(byt, &mut context.stack, &arena);
         // Check that the noun is as expected, we will truncate trailing zeroes when they aren't meaningful
         let byt_noun_with_trailing_zero = T(&mut context.stack, &[D(n), D(0)]);
         assert_noun_eq(&mut context.stack, roundtrip, byt_noun_with_trailing_zero);
@@ -199,15 +200,16 @@ mod test {
     #[cfg_attr(miri, ignore)]
     fn test_by_conversion_direct() -> Result<(), FromNounError> {
         let mut context = jets::util::test::init_context();
+        let arena = context.arena.clone();
 
         // Start with a byt_noun which is a direct atom and a trailing zero
         let byt_noun = T(&mut context.stack, &[D(3), D(0x8765)]);
         // Convert it to byt
-        let byt = super::Byts::from_noun(&mut context.stack, &byt_noun)?;
+        let byt = super::Byts::from_noun(&mut context.stack, &arena, &byt_noun)?;
         // Check that it is equal
         assert_eq!(byt.0, vec![0x87, 0x65, 0x00]);
         // Convert it back to noun
-        let roundtrip = Byts::into_noun(byt, &mut context.stack);
+        let roundtrip = Byts::into_noun(byt, &mut context.stack, &arena);
         let byt_noun_with_trailing_zero = T(&mut context.stack, &[D(3), D(0x876500)]);
         // Check that the noun is as expected, we include trailing zeros when they are meaningful
         assert_noun_eq(&mut context.stack, roundtrip, byt_noun_with_trailing_zero);
@@ -234,29 +236,30 @@ mod test {
     #[cfg_attr(miri, ignore)]
     fn test_byt_conversion_indirect() -> Result<(), FromNounError> {
         let mut context = jets::util::test::init_context();
+        let arena = context.arena.clone();
 
         // Start with a byt_noun is an indirect atom but fits in a u64
         let byt = Byts(vec![0x12, 0x34, 0x56, 0x78, 0x9A, 0xBC, 0xDE, 0xF0]);
         // Convert it to noun
-        let byt_noun = byt.clone().into_noun(&mut context.stack);
+        let byt_noun = byt.clone().into_noun(&mut context.stack, &arena);
         // Check that the noun is as expected
         let expected_byt_dat = A(&mut context.stack, &ubig!(0x123456789ABCDEF0));
         let expected_byt_noun = T(&mut context.stack, &[D(8), expected_byt_dat]);
         assert_noun_eq(&mut context.stack, byt_noun, expected_byt_noun);
         // Convert it back to a byt and check if it matches
-        let byt_roundtrip = Byts::from_noun(&mut context.stack, &byt_noun)?;
+        let byt_roundtrip = Byts::from_noun(&mut context.stack, &arena, &byt_noun)?;
         assert_eq!(byt.0, byt_roundtrip.0);
 
         // Start with a byt_noun is an indirect atom which does not fit in a u64
         let byt = Byts(vec![0x12, 0x34, 0x56, 0x78, 0x9A, 0xBC, 0xDE, 0xF0, 0x00]);
         // Convert it to noun
-        let byt_noun = byt.clone().into_noun(&mut context.stack);
+        let byt_noun = byt.clone().into_noun(&mut context.stack, &arena);
         let expected_byt_dat = A(&mut context.stack, &ubig!(0x123456789ABCDEF000));
         let expected_byt_noun = T(&mut context.stack, &[D(9), expected_byt_dat]);
         // Check that the noun is as expected
         assert_noun_eq(&mut context.stack, byt_noun, expected_byt_noun);
         // Convert it back to a byt
-        let byt_roundtrip = Byts::from_noun(&mut context.stack, &byt_noun)?;
+        let byt_roundtrip = Byts::from_noun(&mut context.stack, &arena, &byt_noun)?;
         // Check that it is the same
         assert_eq!(byt.0, byt_roundtrip.0);
         Ok(())

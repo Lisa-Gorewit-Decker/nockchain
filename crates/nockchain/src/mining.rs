@@ -291,6 +291,7 @@ pub fn create_mining_driver(
                                         NOCK_STACK_SIZE_TINY,
                                         test_jets.clone(),
                                         Default::default(),
+                                        None, // No PMA for mining threads
                                     )
                                     .await
                                     .expect("Could not load mining kernel");
