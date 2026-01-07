@@ -2446,6 +2446,11 @@ unsafe fn noun_preserve(stack: &mut NockStack, noun: &mut Noun) {
         Either::Right(allocated) => allocated,
     };
 
+    // If the root is in offset form (PMA), it doesn't need preservation
+    if !root_allocated.is_stack_allocated() {
+        return;
+    }
+
     if let Some(new_allocated) = root_allocated.forwarding_pointer_stack() {
         *noun = new_allocated.as_noun();
         return;
@@ -2465,6 +2470,12 @@ unsafe fn noun_preserve(stack: &mut NockStack, noun: &mut Noun) {
                 *dest_ptr = value;
             },
             Either::Right(allocated) => unsafe {
+                // Skip offset-form nouns - they're already in PMA and don't need preservation
+                if !allocated.is_stack_allocated() {
+                    *dest_ptr = value;
+                    continue;
+                }
+
                 if let Some(new_allocated) = allocated.forwarding_pointer_stack() {
                     *dest_ptr = new_allocated.as_noun();
                     continue;

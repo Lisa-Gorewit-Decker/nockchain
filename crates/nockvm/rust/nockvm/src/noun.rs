@@ -2230,6 +2230,12 @@ impl Allocated {
         unsafe { is_cell(self.raw) }
     }
 
+    /// Returns true if this allocated noun is in stack-pointer form (LOCATION_BIT = 0)
+    #[inline]
+    pub fn is_stack_allocated(&self) -> bool {
+        unsafe { self.raw & LOCATION_BIT == 0 }
+    }
+
     pub unsafe fn to_raw_pointer_with_arena(&self, arena: &Arena) -> *const u64 {
         let tagged = TaggedPtr::from_raw(self.raw);
         if self.is_indirect() {
@@ -2316,6 +2322,17 @@ impl Allocated {
         *(self.to_raw_pointer_stack())
     }
 
+    /// Get metadata, auto-dispatching based on LOCATION_BIT.
+    /// Uses thread-local arena for PMA pointers.
+    #[inline(always)]
+    pub fn get_metadata(&self) -> u64 {
+        if self.is_stack_allocated() {
+            unsafe { self.get_metadata_stack() }
+        } else {
+            Arena::with_current(|arena| unsafe { self.get_metadata_with_arena(arena) })
+        }
+    }
+
     /// Set metadata for stack-pointer form allocated nouns only
     pub unsafe fn set_metadata_stack(&mut self, metadata: u64) {
         let tagged = TaggedPtr::from_raw(self.raw);
@@ -2358,15 +2375,14 @@ impl Allocated {
         Noun { allocated: *self }
     }
 
-    /// Get cached mug from stack-pointer form allocated noun metadata
+    /// Get cached mug from allocated noun metadata, auto-dispatching based on LOCATION_BIT.
+    /// Uses thread-local arena for PMA pointers.
     pub fn get_cached_mug(self: Allocated) -> Option<u32> {
-        unsafe {
-            let bottom_metadata = self.get_metadata_stack() as u32 & 0x7FFFFFFF; // magic number: LS 31 bits
-            if bottom_metadata > 0 {
-                Some(bottom_metadata)
-            } else {
-                None
-            }
+        let bottom_metadata = self.get_metadata() as u32 & 0x7FFFFFFF; // magic number: LS 31 bits
+        if bottom_metadata > 0 {
+            Some(bottom_metadata)
+        } else {
+            None
         }
     }
 }

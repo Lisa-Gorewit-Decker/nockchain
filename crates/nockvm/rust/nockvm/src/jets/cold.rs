@@ -4,6 +4,7 @@ use crate::hamt::Hamt;
 use crate::mem::{self, Arena, NockStack, Preserve, Retag};
 use crate::noun::{self, Atom, DirectAtom, IndirectAtom, Noun, NounAllocator, Slots, D, T};
 use crate::pma::{Pma, PmaCopy};
+use crate::ext::noun_equality_auto;
 use crate::unifying_equality::unifying_equality;
 
 pub enum Error {
@@ -1858,12 +1859,13 @@ pub(crate) mod test {
         let count_after: usize = noun_list.into_iter().count();
         assert_eq!(count_after, 5, "Should have 5 elements after evacuation");
 
-        // Verify elements match reference copies using unifying_equality
+        // Verify elements match reference copies using noun_equality_auto
+        // (unifying_equality only works on stack-pointer form nouns)
         for (i, elem_ptr) in noun_list.into_iter().enumerate() {
             let elem = unsafe { *elem_ptr };
-            let mut ref_noun = ref_nouns[i];
+            let ref_noun = ref_nouns[i];
             assert!(
-                unsafe { unifying_equality(&mut ref_stack, &mut ref_noun, &mut elem.clone()) },
+                noun_equality_auto(&ref_noun, &elem),
                 "Element {} should match reference after evacuation",
                 i
             );

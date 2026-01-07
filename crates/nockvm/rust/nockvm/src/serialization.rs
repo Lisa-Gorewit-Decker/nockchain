@@ -174,17 +174,10 @@ fn cue_bitslice_with_mode(
                                     .ok_or(Deterministic(Exit, D(0)))?;
                             } else {
                                 // 10 tag: cell
+                                // Always create in stack-pointer form - preserve keeps stack pointers
+                                // and the use_offset_tags parameter is now obsolete
                                 let (cell, cell_mem_ptr) = Cell::new_raw_mut(stack);
-                                // TODO: use_offset_tags is now obsolete - preserve keeps stack pointers
-                                // This branch is never meaningful since preserve converts back to raw pointers
-                                let cell_noun = if use_offset_tags {
-                                    let offset =
-                                        stack.offset_from_ptr(cell_mem_ptr as *const u8) as u32;
-                                    Cell::from_pma_offset(offset).as_noun()
-                                } else {
-                                    cell.as_noun()
-                                };
-                                *dest_ptr = cell_noun;
+                                *dest_ptr = cell.as_noun();
                                 let mut backref_atom =
                                     Atom::new(stack, (cursor - 2) as u64).as_noun();
                                 backref_map.insert(stack, &mut backref_atom, *dest_ptr);
@@ -395,20 +388,14 @@ fn rub_atom_internal(
         unsafe { Ok(DirectAtom::new_unchecked(direct_raw).as_atom()) }
     } else {
         // Need an indirect atom
+        // Always create in stack-pointer form - use_offset_tags is now obsolete
         let wordsize = (size + 63) >> 6;
         let (mut atom, slice) = unsafe { IndirectAtom::new_raw_mut_bitslice(stack, wordsize) };
         slice[0..bits.len()].copy_from_bitslice(bits);
         // SAFETY: Operating on freshly allocated stack data
         unsafe {
             debug_assert!(atom.size_stack() > 0);
-            // TODO: use_offset_tags is now obsolete - preserve keeps stack pointers
-            if use_offset_tags {
-                let offset =
-                    stack.offset_from_ptr(
-                        atom.to_raw_pointer_stack() as *const u8
-                    );
-                atom = IndirectAtom::from_pma_offset(offset);
-            }
+            let _ = use_offset_tags; // Parameter kept for API compatibility but ignored
             Ok(atom.normalize_as_atom_stack())
         }
     }
