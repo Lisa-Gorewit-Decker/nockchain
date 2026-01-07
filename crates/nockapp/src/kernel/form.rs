@@ -771,6 +771,16 @@ impl<C: SerfCheckpoint + 'static> Kernel<C> {
         Ok(Self { serf })
     }
 
+    pub fn take_pma_timing_samples(&self) -> Option<Vec<(Duration, Duration)>> {
+        self.serf.pma_timing.as_ref().map(|timing| {
+            timing
+                .take_samples()
+                .into_iter()
+                .map(|sample| (sample.event, sample.pma_copy))
+                .collect()
+        })
+    }
+
     pub async fn load_with_hot_state_huge(
         kernel: &[u8],
         checkpoint: Option<C>,

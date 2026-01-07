@@ -23,7 +23,7 @@ use nockvm_macros::tas;
 use noun_serde::NounEncode;
 use rand::Rng;
 use tempfile::TempDir;
-use tracing::info;
+use tracing::{info, warn};
 use zkvm_jetpack::form::belt::PRIME;
 use zkvm_jetpack::form::noun_ext::NounMathExt;
 use zkvm_jetpack::form::structs::HoonList;
@@ -139,6 +139,19 @@ struct MiningOutput {
     gossips: Vec<NounSlab>,
     duration: Duration,
     total_attempts: u64,
+    poke_timestamps: Vec<Duration>,
+}
+
+struct CatchupOutput {
+    duration: Duration,
+    poke_timestamps: Vec<Duration>,
+}
+
+#[derive(Clone, Copy)]
+struct TimedSample {
+    idx: usize,
+    value: Duration,
+    ts: Duration,
 }
 
 #[tokio::main]
@@ -146,6 +159,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     nockvm::check_endian();
     std::env::set_var("NOCKAPP_DISABLE_METRICS", "1");
     std::env::set_var("GNORT_DISABLE", "1");
+    std::env::set_var("NOCK_PMA_TIMING", "1");
 
     let args = BenchArgs::parse();
 
@@ -174,8 +188,10 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
     let mut peer1_init = build_init_pokes(&constants, &genesis_bytes, true)?;
     let mut peer2_init = build_init_pokes(&constants, &genesis_bytes, false)?;
+    let peer1_init_count = peer1_init.len();
 
     apply_init_pokes(&mut peer2, &mut peer2_init).await?;
+    let _ = peer2.take_pma_timing_samples();
 
     let mut miner = if args.skip_mining {
         None
@@ -186,16 +202,45 @@ async fn main() -> Result<(), Box<dyn Error>> {
         &mut peer1,
         &mut miner,
         &mut peer1_init,
+        peer1_init_count,
         args.blocks,
         &genesis_id,
     )
     .await?;
 
     let peer1_id = PeerId::random();
-    let catchup_duration =
+    let catchup_output =
         run_catchup_peer(&mut peer2, &mining_output.gossips, peer1_id).await?;
 
-    print_summary(&args, &mining_output, catchup_duration);
+    print_summary(&args, &mining_output, catchup_output.duration);
+
+    let mining_samples = peer1
+        .take_pma_timing_samples()
+        .map(|mut samples| {
+            if samples.len() < peer1_init_count {
+                warn!(
+                    "bench: mining timing samples ({}) less than init pokes ({}); timing output may be incomplete",
+                    samples.len(),
+                    peer1_init_count
+                );
+                samples.clear();
+            } else {
+                samples.drain(..peer1_init_count);
+            }
+            samples
+        });
+    report_phase_timings(
+        "mining_pokes",
+        mining_samples,
+        &mining_output.poke_timestamps,
+    );
+
+    let catchup_samples = peer2.take_pma_timing_samples();
+    report_phase_timings(
+        "catchup_pokes",
+        catchup_samples,
+        &catchup_output.poke_timestamps,
+    );
 
     drop(peer1_dir);
     Ok(())
@@ -297,6 +342,7 @@ async fn run_mining_peer(
     nockapp: &mut NockApp,
     miner: &mut Option<Miner>,
     pending: &mut VecDeque<Poke>,
+    skip_pokes: usize,
     target_blocks: usize,
     genesis_id: &str,
 ) -> Result<MiningOutput, Box<dyn Error>> {
@@ -304,9 +350,25 @@ async fn run_mining_peer(
     let mut seen_blocks: HashSet<String> = HashSet::new();
     let mut mining_started = false;
     let mut start = None;
+    let mut total_pokes = 0usize;
+    let mut phase_start = if skip_pokes == 0 {
+        Some(Instant::now())
+    } else {
+        None
+    };
+    let mut poke_timestamps = Vec::new();
 
     while let Some(poke) = pending.pop_front() {
+        if phase_start.is_none() && total_pokes == skip_pokes {
+            phase_start = Some(Instant::now());
+        }
         let effects = nockapp.poke(poke.wire, poke.noun).await?;
+        total_pokes += 1;
+        if let Some(start) = phase_start {
+            if total_pokes > skip_pokes {
+                poke_timestamps.push(start.elapsed());
+            }
+        }
         for effect in effects {
             if let Some(candidate) = parse_mine_effect(&effect)? {
                 if gossips.len() >= target_blocks {
@@ -374,6 +436,7 @@ async fn run_mining_peer(
         gossips,
         duration,
         total_attempts,
+        poke_timestamps,
     })
 }
 
@@ -381,14 +444,19 @@ async fn run_catchup_peer(
     nockapp: &mut NockApp,
     gossips: &[NounSlab],
     peer_id: PeerId,
-) -> Result<Duration, Box<dyn Error>> {
+) -> Result<CatchupOutput, Box<dyn Error>> {
     let start = Instant::now();
+    let mut poke_timestamps = Vec::with_capacity(gossips.len());
     for gossip in gossips {
         let _ = nockapp
             .poke(Libp2pWire::Gossip(peer_id).to_wire(), gossip.clone())
             .await?;
+        poke_timestamps.push(start.elapsed());
     }
-    Ok(start.elapsed())
+    Ok(CatchupOutput {
+        duration: start.elapsed(),
+        poke_timestamps,
+    })
 }
 
 fn parse_mine_effect(effect: &NounSlab) -> Result<Option<MiningCandidate>, NockAppError> {
@@ -740,6 +808,121 @@ fn print_summary(args: &BenchArgs, mining: &MiningOutput, catchup: Duration) {
         catchup_ms,
         avg_catchup_ms
     );
+}
+
+fn report_phase_timings(
+    label: &str,
+    samples: Option<Vec<(Duration, Duration)>>,
+    timestamps: &[Duration],
+) {
+    let Some(samples) = samples else {
+        info!(
+            "bench: {} timings unavailable (NOCK_PMA_TIMING not enabled at boot)",
+            label
+        );
+        return;
+    };
+    if samples.is_empty() || timestamps.is_empty() {
+        info!("bench: {} timings unavailable (no samples)", label);
+        return;
+    }
+
+    let (total_samples, pma_samples) = build_timed_samples(&samples, timestamps, label);
+    info!(
+        "bench: {} timing timestamps are ms since phase start (post-init)",
+        label
+    );
+    summarize_timed_samples(&format!("{label}_total_ms"), &total_samples);
+    summarize_timed_samples(&format!("{label}_pma_ms"), &pma_samples);
+}
+
+fn build_timed_samples(
+    samples: &[(Duration, Duration)],
+    timestamps: &[Duration],
+    label: &str,
+) -> (Vec<TimedSample>, Vec<TimedSample>) {
+    let min_len = samples.len().min(timestamps.len());
+    if samples.len() != timestamps.len() {
+        warn!(
+            "bench: {} timing count mismatch: samples={}, timestamps={}, truncating to {}",
+            label,
+            samples.len(),
+            timestamps.len(),
+            min_len
+        );
+    }
+    let mut total = Vec::with_capacity(min_len);
+    let mut pma = Vec::with_capacity(min_len);
+    for (idx, ((event, pma_copy), ts)) in samples.iter().zip(timestamps).take(min_len).enumerate() {
+        let total_value = *event + *pma_copy;
+        total.push(TimedSample {
+            idx,
+            value: total_value,
+            ts: *ts,
+        });
+        pma.push(TimedSample {
+            idx,
+            value: *pma_copy,
+            ts: *ts,
+        });
+    }
+    (total, pma)
+}
+
+fn summarize_timed_samples(label: &str, samples: &[TimedSample]) {
+    if samples.is_empty() {
+        info!("bench: {}: no samples", label);
+        return;
+    }
+    let p50 = percentile_sample(samples, 50.0).unwrap();
+    let p95 = percentile_sample(samples, 95.0).unwrap();
+    let p99 = percentile_sample(samples, 99.0).unwrap();
+    let max = top_n_samples(samples, 1)[0];
+    info!(
+        "bench: {}: p50={} p95={} p99={} max={}",
+        label,
+        format_sample(p50),
+        format_sample(p95),
+        format_sample(p99),
+        format_sample(max)
+    );
+
+    let top3 = top_n_samples(samples, 3);
+    let top3_fmt = top3
+        .iter()
+        .map(|sample| format_sample(*sample))
+        .collect::<Vec<_>>()
+        .join(", ");
+    info!("bench: {}: top3=[{}]", label, top3_fmt);
+}
+
+fn percentile_sample(samples: &[TimedSample], pct: f64) -> Option<TimedSample> {
+    if samples.is_empty() {
+        return None;
+    }
+    let mut indices: Vec<usize> = (0..samples.len()).collect();
+    indices.sort_by(|&a, &b| samples[a].value.cmp(&samples[b].value));
+    let rank = ((pct / 100.0) * ((samples.len() - 1) as f64)).ceil() as usize;
+    Some(samples[indices[rank]])
+}
+
+fn top_n_samples(samples: &[TimedSample], count: usize) -> Vec<TimedSample> {
+    let mut indices: Vec<usize> = (0..samples.len()).collect();
+    indices.sort_by(|&a, &b| samples[b].value.cmp(&samples[a].value));
+    indices
+        .into_iter()
+        .take(count.min(samples.len()))
+        .map(|idx| samples[idx])
+        .collect()
+}
+
+fn format_sample(sample: TimedSample) -> String {
+    format!(
+        "{:.3}ms@t={:.3}ms(idx={})",
+        duration_ms(sample.value),
+        duration_ms(sample.ts),
+        sample.idx + 1
+    )
 }
 
 fn duration_ms(d: Duration) -> f64 {

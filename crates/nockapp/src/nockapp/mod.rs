@@ -148,6 +148,10 @@ impl<J: Jammer + Send + 'static> NockApp<J> {
         std::env::var_os("RUST_TEST_THREADS").is_none()
     }
 
+    pub fn take_pma_timing_samples(&self) -> Option<Vec<(Duration, Duration)>> {
+        self.kernel.take_pma_timing_samples()
+    }
+
     /// This constructs a Tokio interval, even though it doesn't look like it, a Tokio runtime is _required_.
     pub async fn new<F, U, E>(
         kernel_from_checkpoint: F,
