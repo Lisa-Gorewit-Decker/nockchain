@@ -252,10 +252,10 @@ impl SaveableCheckpoint {
     ) -> Result<Self, CheckpointError> {
         let mut slab: NounSlab = NounSlab::new();
         let cue_start = Instant::now();
-        let space = slab.noun_space();
         let root = slab.cue_into(jammed.jam.0)?;
         metrics.map(|m| m.load_cue_time.add_timing(&cue_start.elapsed()));
         slab.set_root(root);
+        let space = slab.noun_space();
         let cell = root
             .in_space(&space)
             .as_cell()
@@ -635,10 +635,11 @@ impl From<JammedCheckpointV0> for JammedCheckpoint {
         };
 
         let mut slab: NounSlab = NounSlab::new();
-        let space = slab.noun_space();
         let root = slab
             .cue_into(v1.jam.0.clone())
             .expect("legacy checkpoint jam should cue");
+        slab.set_root(root);
+        let space = slab.noun_space();
         let cell = root
             .in_space(&space)
             .as_cell()

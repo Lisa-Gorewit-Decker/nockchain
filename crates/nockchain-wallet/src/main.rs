@@ -1777,7 +1777,14 @@ mod tests {
         let _arena = TestArenaGuard::install();
         init_tracing();
         let (_data_dir, cli) = test_cli(&[""]);
-        let nockapp = boot::setup(KERNEL, cli.clone(), &[], "wallet", None)
+        let prover_hot_state = produce_prover_hot_state();
+        let nockapp = boot::setup(
+            KERNEL,
+            cli.clone(),
+            prover_hot_state.as_slice(),
+            "wallet",
+            None,
+        )
             .await
             .map_err(|e| CrownError::Unknown(e.to_string()))?;
         let mut wallet = Wallet::new(nockapp);
@@ -1833,7 +1840,14 @@ mod tests {
         let _arena = TestArenaGuard::install();
         init_tracing();
         let (_data_dir, cli) = test_cli(&[""]);
-        let nockapp = boot::setup(KERNEL, cli.clone(), &[], "wallet", None)
+        let prover_hot_state = produce_prover_hot_state();
+        let nockapp = boot::setup(
+            KERNEL,
+            cli.clone(),
+            prover_hot_state.as_slice(),
+            "wallet",
+            None,
+        )
             .await
             .map_err(|e| CrownError::Unknown(e.to_string()))?;
         let mut wallet = Wallet::new(nockapp);
@@ -1861,7 +1875,14 @@ mod tests {
         let _arena = TestArenaGuard::install();
         init_tracing();
         let (_data_dir, cli) = test_cli(&["--new"]);
-        let nockapp = boot::setup(KERNEL, cli.clone(), &[], "wallet", None)
+        let prover_hot_state = produce_prover_hot_state();
+        let nockapp = boot::setup(
+            KERNEL,
+            cli.clone(),
+            prover_hot_state.as_slice(),
+            "wallet",
+            None,
+        )
             .await
             .map_err(|e| CrownError::Unknown(e.to_string()))?;
         let mut wallet = Wallet::new(nockapp);
@@ -1909,7 +1930,14 @@ mod tests {
         let _arena = TestArenaGuard::install();
         init_tracing();
         let (_data_dir, cli) = test_cli(&[""]);
-        let nockapp = boot::setup(KERNEL, cli.clone(), &[], "wallet", None)
+        let prover_hot_state = produce_prover_hot_state();
+        let nockapp = boot::setup(
+            KERNEL,
+            cli.clone(),
+            prover_hot_state.as_slice(),
+            "wallet",
+            None,
+        )
             .await
             .map_err(|e| CrownError::Unknown(e.to_string()))?;
         let mut wallet = Wallet::new(nockapp);
@@ -1957,7 +1985,14 @@ mod tests {
     async fn test_spend_single_sig_format() -> Result<(), NockAppError> {
         let _arena = TestArenaGuard::install();
         let (_data_dir, cli) = test_cli(&[""]);
-        let nockapp = boot::setup(KERNEL, cli.clone(), &[], "wallet", None)
+        let prover_hot_state = produce_prover_hot_state();
+        let nockapp = boot::setup(
+            KERNEL,
+            cli.clone(),
+            prover_hot_state.as_slice(),
+            "wallet",
+            None,
+        )
             .await
             .map_err(|e| CrownError::Unknown(e.to_string()))?;
         init_tracing();
@@ -2023,7 +2058,14 @@ mod tests {
         let _arena = TestArenaGuard::install();
         init_tracing();
         let (_data_dir, cli) = test_cli(&[""]);
-        let nockapp = boot::setup(KERNEL, cli.clone(), &[], "wallet", None)
+        let prover_hot_state = produce_prover_hot_state();
+        let nockapp = boot::setup(
+            KERNEL,
+            cli.clone(),
+            prover_hot_state.as_slice(),
+            "wallet",
+            None,
+        )
             .await
             .map_err(|e| CrownError::Unknown(e.to_string()))?;
         let mut wallet = Wallet::new(nockapp);
@@ -2044,7 +2086,14 @@ mod tests {
         let _arena = TestArenaGuard::install();
         init_tracing();
         let (_data_dir, cli) = test_cli(&[""]);
-        let nockapp = boot::setup(KERNEL, cli.clone(), &[], "wallet", None)
+        let prover_hot_state = produce_prover_hot_state();
+        let nockapp = boot::setup(
+            KERNEL,
+            cli.clone(),
+            prover_hot_state.as_slice(),
+            "wallet",
+            None,
+        )
             .await
             .map_err(|e| CrownError::Unknown(e.to_string()))?;
         let mut wallet = Wallet::new(nockapp);
@@ -2088,7 +2137,14 @@ mod tests {
         let _arena = TestArenaGuard::install();
         init_tracing();
         let (_data_dir, cli) = test_cli(&[""]);
-        let nockapp = boot::setup(KERNEL, cli.clone(), &[], "wallet", None)
+        let prover_hot_state = produce_prover_hot_state();
+        let nockapp = boot::setup(
+            KERNEL,
+            cli.clone(),
+            prover_hot_state.as_slice(),
+            "wallet",
+            None,
+        )
             .await
             .map_err(|e| CrownError::Unknown(e.to_string()))?;
         let mut wallet = Wallet::new(nockapp);

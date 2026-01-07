@@ -274,6 +274,7 @@ impl Pma {
         self.alloc_would_oom(words);
         let ptr = self.arena.ptr_from_offset(self.alloc_offset as u32) as *mut u64;
         self.alloc_offset += words;
+        self.persist_metadata();
         ptr
     }
 
