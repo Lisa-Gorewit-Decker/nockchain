@@ -225,7 +225,6 @@ impl PmaCopy for WarmEntry {
                 break;
             }
             // Copy batteries and path to PMA
-            let _trace_guard = crate::jets::cold::batteries_trace_guard(trace);
             (*(*ptr).0).batteries.copy_to_pma(stack, pma);
             if trace {
                 info!("pma-copy: warm entry batteries done");

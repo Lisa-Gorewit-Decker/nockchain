@@ -1540,6 +1540,7 @@ mod tests {
     use nockchain_math::belt::Belt;
     use nockchain_types::tx_engine::common::{BlockHeight, BlockHeightDelta};
     use nockchain_types::tx_engine::v0;
+    use tempfile::TempDir;
     use tokio::sync::mpsc;
 
     use super::*;
@@ -1551,6 +1552,13 @@ mod tests {
             let cli = boot::default_boot_cli(true);
             boot::init_default_tracing(&cli);
         });
+    }
+
+    fn test_cli(args: &[&str]) -> (TempDir, BootCli) {
+        let temp_dir = TempDir::new().expect("create temp data dir");
+        let mut cli = BootCli::parse_from(args);
+        cli.data_dir = Some(temp_dir.path().to_path_buf());
+        (temp_dir, cli)
     }
 
     #[test]
@@ -1663,7 +1671,7 @@ mod tests {
     async fn test_keygen() -> Result<(), NockAppError> {
         let _arena = TestArenaGuard::install();
         init_tracing();
-        let cli = BootCli::parse_from(&["--new"]);
+        let (_data_dir, cli) = test_cli(&["--new"]);
 
         let prover_hot_state = produce_prover_hot_state();
         let nockapp = boot::setup(
@@ -1705,7 +1713,7 @@ mod tests {
     async fn test_derive_child() -> Result<(), NockAppError> {
         let _arena = TestArenaGuard::install();
         init_tracing();
-        let cli = BootCli::parse_from(&["--new"]);
+        let (_data_dir, cli) = test_cli(&["--new"]);
 
         let prover_hot_state = produce_prover_hot_state();
         let nockapp = boot::setup(
@@ -1761,7 +1769,7 @@ mod tests {
     async fn test_sign_tx() -> Result<(), NockAppError> {
         let _arena = TestArenaGuard::install();
         init_tracing();
-        let cli = BootCli::parse_from(&[""]);
+        let (_data_dir, cli) = test_cli(&[""]);
         let nockapp = boot::setup(KERNEL, cli.clone(), &[], "wallet", None)
             .await
             .map_err(|e| CrownError::Unknown(e.to_string()))?;
@@ -1817,7 +1825,7 @@ mod tests {
     async fn test_gen_master_privkey() -> Result<(), NockAppError> {
         let _arena = TestArenaGuard::install();
         init_tracing();
-        let cli = BootCli::parse_from(&[""]);
+        let (_data_dir, cli) = test_cli(&[""]);
         let nockapp = boot::setup(KERNEL, cli.clone(), &[], "wallet", None)
             .await
             .map_err(|e| CrownError::Unknown(e.to_string()))?;
@@ -1845,7 +1853,7 @@ mod tests {
     async fn test_import_keys() -> Result<(), NockAppError> {
         let _arena = TestArenaGuard::install();
         init_tracing();
-        let cli = BootCli::parse_from(&["--new"]);
+        let (_data_dir, cli) = test_cli(&["--new"]);
         let nockapp = boot::setup(KERNEL, cli.clone(), &[], "wallet", None)
             .await
             .map_err(|e| CrownError::Unknown(e.to_string()))?;
@@ -1893,7 +1901,7 @@ mod tests {
     async fn test_spend_multisig_format() -> Result<(), NockAppError> {
         let _arena = TestArenaGuard::install();
         init_tracing();
-        let cli = BootCli::parse_from(&[""]);
+        let (_data_dir, cli) = test_cli(&[""]);
         let nockapp = boot::setup(KERNEL, cli.clone(), &[], "wallet", None)
             .await
             .map_err(|e| CrownError::Unknown(e.to_string()))?;
@@ -1941,7 +1949,7 @@ mod tests {
     #[ignore]
     async fn test_spend_single_sig_format() -> Result<(), NockAppError> {
         let _arena = TestArenaGuard::install();
-        let cli = BootCli::parse_from(&[""]);
+        let (_data_dir, cli) = test_cli(&[""]);
         let nockapp = boot::setup(KERNEL, cli.clone(), &[], "wallet", None)
             .await
             .map_err(|e| CrownError::Unknown(e.to_string()))?;
@@ -2007,7 +2015,7 @@ mod tests {
     async fn test_list_notes() -> Result<(), NockAppError> {
         let _arena = TestArenaGuard::install();
         init_tracing();
-        let cli = BootCli::parse_from(&[""]);
+        let (_data_dir, cli) = test_cli(&[""]);
         let nockapp = boot::setup(KERNEL, cli.clone(), &[], "wallet", None)
             .await
             .map_err(|e| CrownError::Unknown(e.to_string()))?;
@@ -2028,7 +2036,7 @@ mod tests {
     async fn test_make_tx_from_draft() -> Result<(), NockAppError> {
         let _arena = TestArenaGuard::install();
         init_tracing();
-        let cli = BootCli::parse_from(&[""]);
+        let (_data_dir, cli) = test_cli(&[""]);
         let nockapp = boot::setup(KERNEL, cli.clone(), &[], "wallet", None)
             .await
             .map_err(|e| CrownError::Unknown(e.to_string()))?;
@@ -2072,7 +2080,7 @@ mod tests {
     async fn test_show_tx() -> Result<(), NockAppError> {
         let _arena = TestArenaGuard::install();
         init_tracing();
-        let cli = BootCli::parse_from(&[""]);
+        let (_data_dir, cli) = test_cli(&[""]);
         let nockapp = boot::setup(KERNEL, cli.clone(), &[], "wallet", None)
             .await
             .map_err(|e| CrownError::Unknown(e.to_string()))?;

@@ -9,34 +9,6 @@ use crate::pma::{Pma, PmaCopy};
 use crate::unifying_equality::unifying_equality;
 use tracing::info;
 
-thread_local! {
-    static BATTERIES_TRACE_ENABLED: std::cell::Cell<bool> = std::cell::Cell::new(false);
-}
-
-pub(crate) struct BatteriesTraceGuard {
-    prev: bool,
-}
-
-impl Drop for BatteriesTraceGuard {
-    fn drop(&mut self) {
-        BATTERIES_TRACE_ENABLED.with(|flag| {
-            flag.set(self.prev);
-        });
-    }
-}
-
-pub(crate) fn batteries_trace_guard(enable: bool) -> Option<BatteriesTraceGuard> {
-    if !enable {
-        return None;
-    }
-    let prev = BATTERIES_TRACE_ENABLED.with(|flag| flag.replace(true));
-    Some(BatteriesTraceGuard { prev })
-}
-
-fn batteries_trace_enabled() -> bool {
-    BATTERIES_TRACE_ENABLED.with(|flag| flag.get())
-}
-
 pub enum Error {
     NoParent,
     BadNock,
@@ -128,7 +100,7 @@ impl PmaCopy for Batteries {
         if self.0.is_null() {
             return;
         }
-        let trace = batteries_trace_enabled();
+        let trace = std::env::var_os("NOCK_PMA_TRACE_WARM_ENTRY").is_some();
         let start = std::time::Instant::now();
         let mut last_progress = start;
         let mut steps = 0usize;
