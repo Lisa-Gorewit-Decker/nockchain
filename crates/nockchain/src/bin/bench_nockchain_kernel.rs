@@ -1,0 +1,709 @@
+use std::collections::{HashSet, VecDeque};
+use std::error::Error;
+use std::path::PathBuf;
+use std::time::{Duration, Instant};
+
+use clap::{ColorChoice, Parser};
+use kernels::dumb::KERNEL as NOCKCHAIN_KERNEL;
+use kernels::miner::KERNEL as MINER_KERNEL;
+use libp2p::PeerId;
+use nockapp::kernel::boot::{self, NockStackSize, TraceOpts};
+use nockapp::kernel::form::SerfThread;
+use nockapp::noun::slab::NounSlab;
+use nockapp::save::SaveableCheckpoint;
+use nockapp::utils::{make_tas, NOCK_STACK_SIZE_TINY};
+use nockapp::wire::{SystemWire, Wire};
+use nockapp::{AtomExt, Bytes, NockApp, NockAppError};
+use nockchain::mining::MiningWire;
+use nockchain::setup::{self, fakenet_blockchain_constants, DEFAULT_GENESIS_BLOCK_HEIGHT};
+use nockchain_libp2p_io::driver::Libp2pWire;
+use nockchain_libp2p_io::tip5_util::tip5_hash_to_base58_stack;
+use nockvm::noun::{Atom, Noun, NounAllocator, NounSpace, D, NO, T, YES};
+use nockvm_macros::tas;
+use noun_serde::NounEncode;
+use rand::Rng;
+use tempfile::TempDir;
+use tracing::info;
+use zkvm_jetpack::form::belt::PRIME;
+use zkvm_jetpack::form::noun_ext::NounMathExt;
+use zkvm_jetpack::form::structs::HoonList;
+use zkvm_jetpack::hot::produce_prover_hot_state;
+
+const DEFAULT_BLOCKS: usize = 100;
+const DEFAULT_POW_LEN: u64 = 64;
+const DEFAULT_LOG_DIFFICULTY: u64 = 2;
+const DEFAULT_MINING_PKH: &str = "9yPePjfWAdUnzaQKyxcRXKRa5PpUzKKEwtpECBZsUYt9Jd7egSDEWoV";
+const DEFAULT_V0_PUBKEY: &str = "2cPnE4Z9RevhTv9is9Hmc1amFubEFbUxzCV2Fxb9GxevJstV5VG92oYt6Sai3d3NjLFcsuVXSLx9hikMbD1agv9M267TVw3hV9MCpMfEnGo5LYtjJ7jPyHg8SERPjJRCWTgZ";
+
+const GENESIS_POW_64_BEX_2: &[u8] = include_bytes!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/jams/fakenet-genesis-pow-64-bex-2.jam"
+));
+const GENESIS_POW_64_BEX_5: &[u8] = include_bytes!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/jams/fakenet-genesis-pow-64-bex-5.jam"
+));
+
+#[derive(Parser, Debug)]
+#[command(
+    name = "bench-nockchain-kernel",
+    about = "Kernel-only nockchain peer benchmark (mining + catch-up)."
+)]
+struct BenchArgs {
+    #[arg(long, default_value_t = DEFAULT_BLOCKS)]
+    blocks: usize,
+    #[arg(long, default_value_t = DEFAULT_POW_LEN)]
+    pow_len: u64,
+    #[arg(long, default_value_t = DEFAULT_LOG_DIFFICULTY)]
+    log_difficulty: u64,
+    #[arg(long)]
+    genesis_jam: Option<PathBuf>,
+    #[arg(long, value_enum, default_value_t = NockStackSize::Medium)]
+    stack_size: NockStackSize,
+}
+
+#[derive(Clone)]
+struct MiningCandidate {
+    version: NounSlab,
+    header: NounSlab,
+    target: NounSlab,
+    pow_len: u64,
+}
+
+struct Miner {
+    serf: SerfThread<SaveableCheckpoint>,
+    next_nonce: Option<NounSlab>,
+    total_attempts: u64,
+}
+
+impl Miner {
+    async fn new() -> Result<Self, Box<dyn Error>> {
+        let hot_state = produce_prover_hot_state();
+        let test_jets_str = std::env::var("NOCK_TEST_JETS").unwrap_or_default();
+        let test_jets = boot::parse_test_jets(test_jets_str.as_str());
+        let serf = SerfThread::<SaveableCheckpoint>::new(
+            Vec::from(MINER_KERNEL),
+            None,
+            hot_state,
+            NOCK_STACK_SIZE_TINY,
+            None,
+            test_jets,
+            TraceOpts::default(),
+        )
+        .await?;
+        Ok(Self {
+            serf,
+            next_nonce: None,
+            total_attempts: 0,
+        })
+    }
+
+    async fn mine_candidate(&mut self, candidate: &MiningCandidate) -> Result<NounSlab, Box<dyn Error>> {
+        let mut attempts = 0u64;
+        let mut nonce = self.next_nonce.take();
+        loop {
+            attempts += 1;
+            let nonce_slab = nonce.take().unwrap_or_else(random_nonce);
+            let poke_slab = create_candidate_poke(candidate, &nonce_slab);
+            let result = self
+                .serf
+                .poke(MiningWire::Candidate.to_wire(), poke_slab)
+                .await?;
+            match parse_mine_result(result)? {
+                MineResult::Success { poke, next_nonce } => {
+                    self.next_nonce = Some(next_nonce);
+                    self.total_attempts += attempts;
+                    return Ok(poke);
+                }
+                MineResult::Retry { next_nonce } => {
+                    nonce = Some(next_nonce);
+                }
+            }
+        }
+    }
+}
+
+enum MineResult {
+    Retry { next_nonce: NounSlab },
+    Success { poke: NounSlab, next_nonce: NounSlab },
+}
+
+struct Poke {
+    wire: nockapp::wire::WireRepr,
+    noun: NounSlab,
+}
+
+struct MiningOutput {
+    gossips: Vec<NounSlab>,
+    duration: Duration,
+    total_attempts: u64,
+}
+
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn Error>> {
+    nockvm::check_endian();
+    std::env::set_var("NOCKAPP_DISABLE_METRICS", "1");
+    std::env::set_var("GNORT_DISABLE", "1");
+
+    let args = BenchArgs::parse();
+
+    let boot_cli = boot::Cli {
+        new: true,
+        trace_opts: TraceOpts::default(),
+        save_interval: Some(0),
+        color: ColorChoice::Auto,
+        state_jam: None,
+        export_state_jam: None,
+        stack_size: args.stack_size.clone(),
+        data_dir: None,
+    };
+    boot::init_default_tracing(&boot_cli);
+
+    let genesis_bytes = load_genesis_bytes(&args)?;
+    let genesis_id = genesis_block_id(&genesis_bytes)?;
+
+    let (peer1_dir, mut peer1) = build_nockapp("bench-peer-1", boot_cli.clone()).await?;
+    let (_peer2_dir, mut peer2) = build_nockapp("bench-peer-2", boot_cli).await?;
+
+    let constants = fakenet_blockchain_constants(args.pow_len, args.log_difficulty);
+
+    let mut peer1_init = build_init_pokes(&constants, &genesis_bytes, true)?;
+    let mut peer2_init = build_init_pokes(&constants, &genesis_bytes, false)?;
+
+    apply_init_pokes(&mut peer2, &mut peer2_init).await?;
+
+    let mut miner = Miner::new().await?;
+    let mining_output = run_mining_peer(
+        &mut peer1,
+        &mut miner,
+        &mut peer1_init,
+        args.blocks,
+        &genesis_id,
+    )
+    .await?;
+
+    let peer1_id = PeerId::random();
+    let catchup_duration =
+        run_catchup_peer(&mut peer2, &mining_output.gossips, peer1_id).await?;
+
+    print_summary(&args, &mining_output, catchup_duration);
+
+    drop(peer1_dir);
+    Ok(())
+}
+
+async fn build_nockapp(
+    name: &str,
+    cli: boot::Cli,
+) -> Result<(TempDir, NockApp), Box<dyn Error>> {
+    let temp_dir = TempDir::new()?;
+    let hot_state = produce_prover_hot_state();
+    let app = boot::setup::<nockapp::noun::slab::NockJammer>(
+        NOCKCHAIN_KERNEL,
+        cli,
+        hot_state.as_slice(),
+        name,
+        Some(temp_dir.path().to_path_buf()),
+    )
+    .await?;
+    Ok((temp_dir, app))
+}
+
+fn load_genesis_bytes(args: &BenchArgs) -> Result<Vec<u8>, Box<dyn Error>> {
+    if let Some(path) = &args.genesis_jam {
+        return Ok(std::fs::read(path)?);
+    }
+    match (args.pow_len, args.log_difficulty) {
+        (2, 1) => Ok(setup::FAKENET_GENESIS_BLOCK.to_vec()),
+        (64, 2) => Ok(GENESIS_POW_64_BEX_2.to_vec()),
+        (64, 5) => Ok(GENESIS_POW_64_BEX_5.to_vec()),
+        _ => Err(format!(
+            "No built-in genesis jam for pow_len={} log_difficulty={}; supply --genesis-jam",
+            args.pow_len, args.log_difficulty
+        )
+        .into()),
+    }
+}
+
+fn genesis_block_id(genesis_bytes: &[u8]) -> Result<String, Box<dyn Error>> {
+    let mut slab: NounSlab = NounSlab::new();
+    let noun = slab.cue_into(Bytes::from(genesis_bytes.to_vec()))?;
+    let space = slab.noun_space();
+    let block_id = block_id_from_page(noun, &space)?;
+    Ok(tip5_hash_to_base58_stack(&mut slab, block_id, &space)?)
+}
+
+fn build_init_pokes(
+    constants: &setup::BlockchainConstants,
+    genesis_bytes: &[u8],
+    enable_mining: bool,
+) -> Result<VecDeque<Poke>, Box<dyn Error>> {
+    let mut pokes = VecDeque::new();
+
+    pokes.push_back(Poke {
+        wire: SystemWire.to_wire(),
+        noun: make_set_constants_poke(constants),
+    });
+    pokes.push_back(Poke {
+        wire: SystemWire.to_wire(),
+        noun: make_set_genesis_seal_poke(setup::FAKENET_GENESIS_MESSAGE),
+    });
+    pokes.push_back(Poke {
+        wire: SystemWire.to_wire(),
+        noun: make_set_btc_data_poke(),
+    });
+    if enable_mining {
+        pokes.push_back(Poke {
+            wire: MiningWire::SetPubKey.to_wire(),
+            noun: make_set_mining_key_poke(DEFAULT_V0_PUBKEY, DEFAULT_MINING_PKH),
+        });
+        pokes.push_back(Poke {
+            wire: MiningWire::Enable.to_wire(),
+            noun: make_enable_mining_poke(true),
+        });
+    }
+    pokes.push_back(Poke {
+        wire: SystemWire.to_wire(),
+        noun: make_born_poke(),
+    });
+    pokes.push_back(Poke {
+        wire: SystemWire.to_wire(),
+        noun: setup::heard_fake_genesis_block(Some(genesis_bytes.to_vec()))?,
+    });
+
+    Ok(pokes)
+}
+
+async fn apply_init_pokes(
+    nockapp: &mut NockApp,
+    pokes: &mut VecDeque<Poke>,
+) -> Result<(), Box<dyn Error>> {
+    while let Some(poke) = pokes.pop_front() {
+        let _ = nockapp.poke(poke.wire, poke.noun).await?;
+    }
+    Ok(())
+}
+
+async fn run_mining_peer(
+    nockapp: &mut NockApp,
+    miner: &mut Miner,
+    pending: &mut VecDeque<Poke>,
+    target_blocks: usize,
+    genesis_id: &str,
+) -> Result<MiningOutput, Box<dyn Error>> {
+    let mut gossips = Vec::new();
+    let mut seen_blocks: HashSet<String> = HashSet::new();
+    let mut mining_started = false;
+    let mut start = None;
+
+    while let Some(poke) = pending.pop_front() {
+        let effects = nockapp.poke(poke.wire, poke.noun).await?;
+        for effect in effects {
+            if let Some(candidate) = parse_mine_effect(&effect)? {
+                if gossips.len() >= target_blocks {
+                    continue;
+                }
+                if !mining_started {
+                    mining_started = true;
+                    start = Some(Instant::now());
+                }
+                let mined_poke = miner.mine_candidate(&candidate).await?;
+                pending.push_back(Poke {
+                    wire: MiningWire::Mined.to_wire(),
+                    noun: mined_poke,
+                });
+                continue;
+            }
+
+            if let Some(mut gossip) = extract_gossip_data(&effect)? {
+                if !mining_started {
+                    continue;
+                }
+                if let Some((block_id, fact_poke)) = heard_block_fact(&mut gossip)? {
+                    if block_id == genesis_id {
+                        continue;
+                    }
+                    if seen_blocks.insert(block_id) {
+                        gossips.push(fact_poke);
+                        if gossips.len() >= target_blocks {
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+
+        if gossips.len() >= target_blocks {
+            break;
+        }
+
+        if pending.is_empty() && gossips.len() < target_blocks {
+            return Err(
+                "No pending pokes while target not reached; mining stalled".to_string().into(),
+            );
+        }
+    }
+
+    if !mining_started {
+        return Err("Mining never started (no %mine effect observed)".to_string().into());
+    }
+    if gossips.len() < target_blocks {
+        return Err(format!(
+            "Mined {} blocks but target is {}",
+            gossips.len(),
+            target_blocks
+        )
+        .into());
+    }
+
+    let duration = start.unwrap_or_else(Instant::now).elapsed();
+    Ok(MiningOutput {
+        gossips,
+        duration,
+        total_attempts: miner.total_attempts,
+    })
+}
+
+async fn run_catchup_peer(
+    nockapp: &mut NockApp,
+    gossips: &[NounSlab],
+    peer_id: PeerId,
+) -> Result<Duration, Box<dyn Error>> {
+    let start = Instant::now();
+    for gossip in gossips {
+        let _ = nockapp
+            .poke(Libp2pWire::Gossip(peer_id).to_wire(), gossip.clone())
+            .await?;
+    }
+    Ok(start.elapsed())
+}
+
+fn parse_mine_effect(effect: &NounSlab) -> Result<Option<MiningCandidate>, NockAppError> {
+    let Ok(effect_cell) = (unsafe { effect.root().as_cell() }) else {
+        return Ok(None);
+    };
+    let space = effect.noun_space();
+    let effect_cell = effect_cell.in_space(&space);
+    if !effect_cell.head().eq_bytes("mine") {
+        return Ok(None);
+    }
+    let Ok([version, commit, target, pow_len_noun]) =
+        effect_cell.tail().noun().uncell(&space)
+    else {
+        return Err(NockAppError::OtherError(
+            "Expected four elements in %mine effect".to_string(),
+        ));
+    };
+    let pow_len = pow_len_noun
+        .in_space(&space)
+        .as_atom()?
+        .as_u64()
+        .map_err(|_| NockAppError::OtherError("pow-len was not a u64".to_string()))?;
+
+    let mut version_slab = NounSlab::new();
+    version_slab.copy_into(version, &space);
+    let mut header_slab = NounSlab::new();
+    header_slab.copy_into(commit, &space);
+    let mut target_slab = NounSlab::new();
+    target_slab.copy_into(target, &space);
+
+    Ok(Some(MiningCandidate {
+        version: version_slab,
+        header: header_slab,
+        target: target_slab,
+        pow_len,
+    }))
+}
+
+fn extract_gossip_data(effect: &NounSlab) -> Result<Option<NounSlab>, NockAppError> {
+    let Ok(effect_cell) = (unsafe { effect.root().as_cell() }) else {
+        return Ok(None);
+    };
+    let space = effect.noun_space();
+    let effect_cell = effect_cell.in_space(&space);
+    if !effect_cell.head().eq_bytes("gossip") {
+        return Ok(None);
+    }
+    let gossip_cell = effect_cell.tail().noun();
+    let data = gossip_cell
+        .in_space(&space)
+        .as_cell()?
+        .tail()
+        .noun();
+    let mut data_slab = NounSlab::new();
+    data_slab.copy_into(data, &space);
+    Ok(Some(data_slab))
+}
+
+fn heard_block_fact(gossip: &mut NounSlab) -> Result<Option<(String, NounSlab)>, NockAppError> {
+    let noun = unsafe { gossip.root() };
+    let space = gossip.noun_space();
+    let head = noun.in_space(&space).as_cell()?.head();
+    if !head.eq_bytes(b"heard-block") {
+        return Ok(None);
+    }
+
+    let page = noun.in_space(&space).as_cell()?.tail().noun();
+    let block_id = block_id_from_page(page, &space)?;
+    let block_id_str = tip5_hash_to_base58_stack(gossip, block_id, &space)?;
+    let mut fact_poke = NounSlab::new();
+    fact_poke.copy_from_slab(gossip);
+    fact_poke.modify(|response_noun| vec![D(tas!(b"fact")), D(0), response_noun]);
+    Ok(Some((block_id_str, fact_poke)))
+}
+
+fn block_id_from_page(page: Noun, space: &NounSpace) -> Result<Noun, NockAppError> {
+    let page_cell = page.in_space(space).as_cell()?;
+    match page_cell.head().as_atom() {
+        Ok(version_atom) => {
+            let version = version_atom.as_u64()?;
+            if version == 1 {
+                Ok(page_cell.tail().as_cell()?.head().noun())
+            } else {
+                Err(NockAppError::OtherError(format!(
+                    "Unsupported page version {}",
+                    version
+                )))
+            }
+        }
+        Err(_) => Ok(page_cell.head().noun()),
+    }
+}
+
+fn parse_mine_result(result: NounSlab) -> Result<MineResult, NockAppError> {
+    let result_noun = unsafe { result.root() };
+    let space = result.noun_space();
+    let Ok(effects) = HoonList::try_from(*result_noun, &space) else {
+        return Err(NockAppError::OtherError(String::from(
+            "Mining kernel result was not a list",
+        )));
+    };
+
+    let mining_result = effects.filter_map(|effect| {
+        if effect.is_atom() {
+            return None;
+        }
+        let Ok(effect_cell) = effect.in_space(&space).as_cell() else {
+            return None;
+        };
+        if effect_cell.head().eq_bytes("mine-result") {
+            Some(effect_cell.tail().noun())
+        } else {
+            None
+        }
+    });
+
+    let Some(mine_result) = mining_result.into_iter().next() else {
+        return Err(NockAppError::OtherError(String::from(
+            "Mining kernel result missing %mine-result",
+        )));
+    };
+
+    let Ok([res, tail]) = mine_result.uncell(&space) else {
+        return Err(NockAppError::OtherError(String::from(
+            "Malformed %mine-result payload",
+        )));
+    };
+
+    if unsafe { res.raw_equals(&D(0)) } {
+        let Ok([hash, poke]) = tail.uncell(&space) else {
+            return Err(NockAppError::OtherError(String::from(
+                "Expected hash and poke in successful %mine-result",
+            )));
+        };
+        let mut poke_slab = NounSlab::new();
+        poke_slab.copy_into(poke, &space);
+        let mut nonce_slab = NounSlab::new();
+        nonce_slab.copy_into(hash, &space);
+        Ok(MineResult::Success {
+            poke: poke_slab,
+            next_nonce: nonce_slab,
+        })
+    } else {
+        let mut nonce_slab = NounSlab::new();
+        nonce_slab.copy_into(tail, &space);
+        Ok(MineResult::Retry {
+            next_nonce: nonce_slab,
+        })
+    }
+}
+
+fn create_candidate_poke(candidate: &MiningCandidate, nonce: &NounSlab) -> NounSlab {
+    let mut slab = NounSlab::new();
+    let header_space = candidate.header.noun_space();
+    let version_space = candidate.version.noun_space();
+    let target_space = candidate.target.noun_space();
+    let nonce_space = nonce.noun_space();
+    let header = slab.copy_into(unsafe { *candidate.header.root() }, &header_space);
+    let version = slab.copy_into(unsafe { *candidate.version.root() }, &version_space);
+    let target = slab.copy_into(unsafe { *candidate.target.root() }, &target_space);
+    let nonce = slab.copy_into(unsafe { *nonce.root() }, &nonce_space);
+    let poke_noun = T(
+        &mut slab,
+        &[version, header, nonce, target, D(candidate.pow_len)],
+    );
+    slab.set_root(poke_noun);
+    slab
+}
+
+fn random_nonce() -> NounSlab {
+    let mut rng = rand::rng();
+    let mut nonce_slab = NounSlab::new();
+    let mut nonce_cell = Atom::from_value(&mut nonce_slab, rng.random::<u64>() % PRIME)
+        .expect("Failed to create nonce atom")
+        .as_noun();
+    for _ in 1..5 {
+        let nonce_atom = Atom::from_value(&mut nonce_slab, rng.random::<u64>() % PRIME)
+            .expect("Failed to create nonce atom")
+            .as_noun();
+        nonce_cell = T(&mut nonce_slab, &[nonce_atom, nonce_cell]);
+    }
+    nonce_slab.set_root(nonce_cell);
+    nonce_slab
+}
+
+fn make_set_constants_poke(constants: &setup::BlockchainConstants) -> NounSlab {
+    let mut poke_slab = NounSlab::new();
+    let tag = make_tas(&mut poke_slab, "set-constants").as_noun();
+    let constants_noun = constants.to_noun(&mut poke_slab);
+    let poke_noun = T(&mut poke_slab, &[D(tas!(b"command")), tag, constants_noun]);
+    poke_slab.set_root(poke_noun);
+    poke_slab
+}
+
+fn make_set_genesis_seal_poke(seal: &str) -> NounSlab {
+    let mut poke_slab = NounSlab::new();
+    let block_height_noun =
+        Atom::new(&mut poke_slab, DEFAULT_GENESIS_BLOCK_HEIGHT).as_noun();
+    let seal_byts = Bytes::from(
+        seal.to_string()
+            .into_bytes(),
+    );
+    let seal_noun = Atom::from_bytes(&mut poke_slab, &seal_byts).as_noun();
+    let tag = Bytes::from(b"set-genesis-seal".to_vec());
+    let set_genesis_seal = Atom::from_bytes(&mut poke_slab, &tag).as_noun();
+    let poke_noun = T(
+        &mut poke_slab,
+        &[
+            D(tas!(b"command")),
+            set_genesis_seal,
+            block_height_noun,
+            seal_noun,
+        ],
+    );
+    poke_slab.set_root(poke_noun);
+    poke_slab
+}
+
+fn make_set_btc_data_poke() -> NounSlab {
+    let mut poke_slab = NounSlab::new();
+    let poke_noun = T(
+        &mut poke_slab,
+        &[D(tas!(b"command")), D(tas!(b"btc-data")), D(0)],
+    );
+    poke_slab.set_root(poke_noun);
+    poke_slab
+}
+
+fn make_born_poke() -> NounSlab {
+    let mut poke_slab = NounSlab::new();
+    let born = T(
+        &mut poke_slab,
+        &[D(tas!(b"command")), D(tas!(b"born")), D(0)],
+    );
+    poke_slab.set_root(born);
+    poke_slab
+}
+
+fn make_enable_mining_poke(enable: bool) -> NounSlab {
+    let mut slab = NounSlab::new();
+    let enable_mining = Atom::from_value(&mut slab, "enable-mining")
+        .expect("Failed to create enable-mining atom");
+    let enable_mining_poke = T(
+        &mut slab,
+        &[
+            D(tas!(b"command")),
+            enable_mining.as_noun(),
+            if enable { YES } else { NO },
+        ],
+    );
+    slab.set_root(enable_mining_poke);
+    slab
+}
+
+fn make_set_mining_key_poke(v0_pubkey: &str, pkh: &str) -> NounSlab {
+    let mut slab = NounSlab::new();
+    let set_mining_key_adv = Atom::from_value(&mut slab, "set-mining-key-advanced")
+        .expect("Failed to create set-mining-key-advanced atom");
+
+    let mut configs_list = D(0);
+    let mut keys_noun = D(0);
+    let key_atom = Atom::from_value(&mut slab, v0_pubkey)
+        .expect("Failed to create key atom")
+        .as_noun();
+    keys_noun = T(&mut slab, &[key_atom, keys_noun]);
+    let config_tuple = T(&mut slab, &[D(1), D(1), keys_noun]);
+    configs_list = T(&mut slab, &[config_tuple, configs_list]);
+
+    let mut pkh_configs_list = D(0);
+    let pkh_noun = Atom::from_value(&mut slab, pkh)
+        .expect("Failed to create pkh atom")
+        .as_noun();
+    let pkh_tuple = T(&mut slab, &[D(1), pkh_noun]);
+    pkh_configs_list = T(&mut slab, &[pkh_tuple, pkh_configs_list]);
+
+    let set_mining_key_poke = T(
+        &mut slab,
+        &[
+            D(tas!(b"command")),
+            set_mining_key_adv.as_noun(),
+            configs_list,
+            pkh_configs_list,
+        ],
+    );
+    slab.set_root(set_mining_key_poke);
+    slab
+}
+
+fn print_summary(args: &BenchArgs, mining: &MiningOutput, catchup: Duration) {
+    let mined_blocks = mining.gossips.len() as f64;
+    let mining_ms = duration_ms(mining.duration);
+    let catchup_ms = duration_ms(catchup);
+    let avg_mining_ms = if mined_blocks > 0.0 {
+        mining_ms / mined_blocks
+    } else {
+        0.0
+    };
+    let avg_catchup_ms = if mined_blocks > 0.0 {
+        catchup_ms / mined_blocks
+    } else {
+        0.0
+    };
+    let avg_attempts = if mined_blocks > 0.0 {
+        (mining.total_attempts as f64) / mined_blocks
+    } else {
+        0.0
+    };
+
+    info!(
+        "bench: blocks_target={} pow_len={} log_difficulty={} stack_size={:?}",
+        args.blocks, args.pow_len, args.log_difficulty, args.stack_size
+    );
+    info!(
+        "bench: mined_blocks={} mining_ms={:.3} avg_ms_per_block={:.3} avg_attempts_per_block={:.2}",
+        mining.gossips.len(),
+        mining_ms,
+        avg_mining_ms,
+        avg_attempts
+    );
+    info!(
+        "bench: catchup_blocks={} catchup_ms={:.3} avg_ms_per_block={:.3}",
+        mining.gossips.len(),
+        catchup_ms,
+        avg_catchup_ms
+    );
+}
+
+fn duration_ms(d: Duration) -> f64 {
+    (d.as_micros() as f64) / 1000.0
+}
