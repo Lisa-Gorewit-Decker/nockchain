@@ -1274,6 +1274,53 @@ impl Serf {
         self.context.scry_stack = D(0);
     }
 
+    unsafe fn copy_persistent_state_to_pma(&mut self, pma: &mut Pma, trace_pma: bool) {
+        let stack = &mut self.context.stack;
+        if trace_pma {
+            info!("pma-copy: warm");
+        }
+        self.context.warm.copy_to_pma(stack, pma);
+        if trace_pma {
+            info!("pma-copy: test_jets");
+        }
+        self.context.test_jets.copy_to_pma(stack, pma);
+        if trace_pma {
+            info!("pma-copy: hot");
+        }
+        self.context.hot.copy_to_pma(stack, pma);
+        if trace_pma {
+            info!("pma-copy: cache");
+        }
+        self.context.cache.copy_to_pma(stack, pma);
+        if trace_pma {
+            info!("pma-copy: cold");
+        }
+        self.context.cold.copy_to_pma(stack, pma);
+        if trace_pma {
+            info!("pma-copy: arvo");
+        }
+        self.arvo.copy_to_pma(stack, pma);
+    }
+
+    fn assert_persistent_state_in_pma(&self, pma: &Pma) {
+        self.context.warm.assert_in_pma(pma);
+        self.context.test_jets.assert_in_pma(pma);
+        self.context.hot.assert_in_pma(pma);
+        self.context.cache.assert_in_pma(pma);
+        self.context.cold.assert_in_pma(pma);
+        self.arvo.assert_in_pma(pma);
+    }
+
+    unsafe fn preserve_persistent_state_in_stack(&mut self) {
+        let stack = &mut self.context.stack;
+        stack.preserve(&mut self.context.warm);
+        stack.preserve(&mut self.context.test_jets);
+        stack.preserve(&mut self.context.hot);
+        stack.preserve(&mut self.context.cache);
+        stack.preserve(&mut self.context.cold);
+        stack.preserve(&mut self.arvo);
+    }
+
     /// Preserves leftovers after an event update.
     ///
     /// # Safety
@@ -1281,56 +1328,26 @@ impl Serf {
     /// This function is unsafe because it modifies the Serf's state directly.
     #[tracing::instrument(level = "info", skip_all)]
     pub unsafe fn preserve_event_update_leftovers(&mut self) {
-        let stack = &mut self.context.stack;
-        if let Some(pma) = self.pma.as_mut() {
+        assert!(
+            self.context.scry_stack.is_direct(),
+            "scry_stack must be cleared before resetting the NockStack"
+        );
+        if self.pma.is_some() {
             let trace_pma = std::env::var_os("NOCK_PMA_TRACE").is_some();
-            if trace_pma {
-                info!("pma-copy: warm");
-            }
-            self.context.warm.copy_to_pma(stack, pma);
-            if trace_pma {
-                info!("pma-copy: test_jets");
-            }
-            self.context.test_jets.copy_to_pma(stack, pma);
-            if trace_pma {
-                info!("pma-copy: hot");
-            }
-            self.context.hot.copy_to_pma(stack, pma);
-            if trace_pma {
-                info!("pma-copy: cache");
-            }
-            self.context.cache.copy_to_pma(stack, pma);
-            if trace_pma {
-                info!("pma-copy: cold");
-            }
-            self.context.cold.copy_to_pma(stack, pma);
-            if trace_pma {
-                info!("pma-copy: arvo");
-            }
-            self.arvo.copy_to_pma(stack, pma);
-
-            if std::env::var_os("NOCK_PMA_ASSERT").is_some() {
-                self.context.warm.assert_in_pma(pma);
-                self.context.test_jets.assert_in_pma(pma);
-                self.context.hot.assert_in_pma(pma);
-                self.context.cache.assert_in_pma(pma);
-                self.context.cold.assert_in_pma(pma);
-                if std::env::var_os("NOCK_PMA_ASSERT_ARVO").is_some() {
-                    self.arvo.assert_in_pma(pma);
-                }
+            let mut pma = self.pma.take().expect("checked is_some");
+            self.copy_persistent_state_to_pma(&mut pma, trace_pma);
+            if cfg!(feature = "pma-assert") {
+                // Enforce: PMA data must not reference the NockStack.
+                self.assert_persistent_state_in_pma(&pma);
             }
 
             pma.persist_metadata();
 
-            stack.reset(0);
+            self.context.stack.reset(0);
+            self.pma = Some(pma);
         } else {
-            stack.preserve(&mut self.context.warm);
-            stack.preserve(&mut self.context.test_jets);
-            stack.preserve(&mut self.context.hot);
-            stack.preserve(&mut self.context.cache);
-            stack.preserve(&mut self.context.cold);
-            stack.preserve(&mut self.arvo);
-            stack.flip_top_frame(0);
+            self.preserve_persistent_state_in_stack();
+            self.context.stack.flip_top_frame(0);
         }
     }
 

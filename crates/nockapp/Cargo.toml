@@ -9,6 +9,7 @@ slog-tracing = []
 trait-alias = []
 bazel_build = []
 tracing-tracy = ["dep:tracing-tracy"]
+pma-assert = []
 
 [dependencies]
 nockvm = { workspace = true }
