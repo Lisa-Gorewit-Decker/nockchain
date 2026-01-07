@@ -563,15 +563,15 @@ pub mod util {
                         option_env!("GIT_SHA")
                     )
                 });
-            assert_eq!(met(0, a), 128);
-            assert_eq!(met(1, a), 64);
-            assert_eq!(met(2, a), 32);
-            assert_eq!(met(3, a), 16);
-            assert_eq!(met(4, a), 8);
-            assert_eq!(met(5, a), 4);
-            assert_eq!(met(6, a), 2);
-            assert_eq!(met(7, a), 1);
-            assert_eq!(met(8, a), 1);
+            assert_eq!(met_auto(0, a), 128);
+            assert_eq!(met_auto(1, a), 64);
+            assert_eq!(met_auto(2, a), 32);
+            assert_eq!(met_auto(3, a), 16);
+            assert_eq!(met_auto(4, a), 8);
+            assert_eq!(met_auto(5, a), 4);
+            assert_eq!(met_auto(6, a), 2);
+            assert_eq!(met_auto(7, a), 1);
+            assert_eq!(met_auto(8, a), 1);
 
             let a = D(0x7fffffffffffffff).as_atom().unwrap_or_else(|err| {
                 panic!(
@@ -581,14 +581,14 @@ pub mod util {
                     option_env!("GIT_SHA")
                 )
             });
-            assert_eq!(met(0, a), 63);
-            assert_eq!(met(1, a), 32);
-            assert_eq!(met(2, a), 16);
-            assert_eq!(met(3, a), 8);
-            assert_eq!(met(4, a), 4);
-            assert_eq!(met(5, a), 2);
-            assert_eq!(met(6, a), 1);
-            assert_eq!(met(7, a), 1);
+            assert_eq!(met_auto(0, a), 63);
+            assert_eq!(met_auto(1, a), 32);
+            assert_eq!(met_auto(2, a), 16);
+            assert_eq!(met_auto(3, a), 8);
+            assert_eq!(met_auto(4, a), 4);
+            assert_eq!(met_auto(5, a), 2);
+            assert_eq!(met_auto(6, a), 1);
+            assert_eq!(met_auto(7, a), 1);
         }
     }
 }

@@ -817,6 +817,22 @@ impl IndirectAtom {
         }
     }
 
+    /// Returns Vec<u8> in little-endian order (stack-pointer form only)
+    #[allow(unused)]
+    pub unsafe fn to_le_bytes_stack(&self) -> Vec<u8> {
+        if self.size_stack() == 1 {
+            let num = *(self.data_pointer_stack());
+            num.to_le_bytes().to_vec()
+        } else {
+            let mut bytes_ne = self.to_ne_bytes_stack();
+            #[cfg(target_endian = "big")]
+            {
+                bytes_ne.reverse()
+            }
+            bytes_ne
+        }
+    }
+
     /** BitSlice view on an indirect atom, with lifetime tied to reference to indirect atom. */
     pub fn as_bitslice_with_arena(&self, arena: &Arena) -> &BitSlice<u64, Lsb0> {
         BitSlice::from_slice(self.as_slice_with_arena(arena))
@@ -1059,6 +1075,18 @@ impl IndirectAtom {
             unsafe { self.to_be_bytes_stack() }
         } else {
             Arena::with_current(|arena| self.to_be_bytes_with_arena(arena))
+        }
+    }
+
+    /// Get Vec<u8> in little-endian order, auto-dispatching based on LOCATION_BIT.
+    /// Uses thread-local arena for PMA pointers.
+    #[inline(always)]
+    pub fn to_le_bytes(&self) -> Vec<u8> {
+        let tagged = TaggedPtr::from_raw(self.0);
+        if tagged.location() == PtrLocation::Stack {
+            unsafe { self.to_le_bytes_stack() }
+        } else {
+            Arena::with_current(|arena| self.to_le_bytes_with_arena(arena))
         }
     }
 
@@ -2096,6 +2124,17 @@ impl Atom {
             unsafe { self.direct.to_be_bytes() }
         } else {
             unsafe { self.indirect.to_be_bytes() }
+        }
+    }
+
+    /// Get Vec<u8> in little-endian order, auto-dispatching based on LOCATION_BIT.
+    /// Uses thread-local arena for PMA pointers.
+    #[inline(always)]
+    pub fn to_le_bytes(self) -> Vec<u8> {
+        if self.is_direct() {
+            unsafe { self.direct.to_le_bytes() }
+        } else {
+            unsafe { self.indirect.to_le_bytes() }
         }
     }
 

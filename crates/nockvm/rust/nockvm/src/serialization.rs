@@ -1047,7 +1047,7 @@ mod tests {
                             Left(_) => {}
                             Right(indirect) => {
                                 // SAFETY: This test operates on stack-allocated nouns
-                                size += unsafe { indirect.raw_size_stack() };
+                                size += unsafe { indirect.size_stack() };
                             }
                         },
                         Right(cell) => {

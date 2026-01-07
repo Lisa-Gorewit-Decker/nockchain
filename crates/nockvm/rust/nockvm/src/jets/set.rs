@@ -170,7 +170,7 @@ mod tests {
             if unsafe { value.raw_equals(&elem) } {
                 return true;
             }
-            tree = if is_yes(gor(stack, elem, value)) {
+            tree = if is_yes(gor(stack, arena, elem, value)) {
                 left
             } else {
                 right
@@ -230,11 +230,11 @@ mod tests {
             return Ok(tree);
         }
 
-        if is_yes(gor(stack, elem, value)) {
+        if is_yes(gor(stack, arena, elem, value)) {
             let c = put_recursive(stack, arena, left, elem)?;
             let (c_val, c_left, c_right) = decompose(c, arena)?;
 
-            if is_yes(mor(stack, value, c_val)) {
+            if is_yes(mor(stack, arena, value, c_val)) {
                 Ok(make_node(stack, value, c, right))
             } else {
                 let new_a = make_node(stack, value, c_right, right);
@@ -244,7 +244,7 @@ mod tests {
             let c = put_recursive(stack, arena, right, elem)?;
             let (c_val, c_left, c_right) = decompose(c, arena)?;
 
-            if is_yes(mor(stack, value, c_val)) {
+            if is_yes(mor(stack, arena, value, c_val)) {
                 Ok(make_node(stack, value, left, c))
             } else {
                 let new_a = make_node(stack, value, left, c_left);

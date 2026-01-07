@@ -1553,10 +1553,10 @@ pub(crate) mod test {
         let items = vec.iter().map(|&x| D(x)).collect::<Vec<Noun>>();
         let slice = vec.as_slice();
         let noun_list = make_noun_list(&mut stack, slice);
-        let noun = noun_list.into_noun(&mut stack);
-        let new_noun_list: NounList = <NounList as Nounable>::from_noun::<NockStack>(
-            &mut stack, &noun,
-        )
+        let noun = Arena::with_current(|arena| noun_list.into_noun(&mut stack, arena));
+        let new_noun_list: NounList = Arena::with_current(|arena| {
+            <NounList as Nounable>::from_noun::<NockStack>(&mut stack, arena, &noun)
+        })
         .unwrap_or_else(|err| {
             panic!(
                 "Panicked with {err:?} at {}:{} (git sha: {:?})",

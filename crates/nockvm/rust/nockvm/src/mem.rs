@@ -2586,9 +2586,9 @@ mod test {
         let slice = vec.as_slice();
         let noun_list = make_noun_list(&mut stack, slice);
         assert!(!noun_list.0.is_null());
-        let noun = noun_list.into_noun(&mut stack);
+        let noun = Arena::with_current(|arena| noun_list.into_noun(&mut stack, arena));
         let new_noun_list: NounList =
-            <NounList as Nounable>::from_noun::<NockStack>(&mut stack, &noun)?;
+            Arena::with_current(|arena| <NounList as Nounable>::from_noun::<NockStack>(&mut stack, arena, &noun))?;
         let mut tracking_item_count = 0;
         println!("items: {:?}", items);
         for (a, b) in new_noun_list.zip(items.iter()) {
