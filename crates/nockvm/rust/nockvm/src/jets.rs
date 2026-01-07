@@ -38,6 +38,7 @@ use crate::jets::parse::*;
 use crate::jets::serial::*;
 //use crate::jets::set::*;
 use crate::jets::sort::*;
+use crate::noun::Slots;
 use crate::jets::tree::*;
 use crate::jets::warm::Warm;
 use crate::mem::{NockStack, Preserve};

@@ -124,7 +124,7 @@ pub fn rip_correct_jet(context: &mut Context, subject: Noun) -> Result {
     let a_noun = slot(sam, 2, &space)?;
     let b_noun = slot(sam, 3, &space)?;
 
-    let b = b_noun.in_space(space).as_atom()?;
+    let b = b_noun.in_space(&space).as_atom()?.atom();
     let (bloq, step) = bite(a_noun, &space)?;
     rip_correct(stack, bloq, step, b, &space)
 }

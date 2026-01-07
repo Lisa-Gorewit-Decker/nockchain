@@ -306,11 +306,11 @@ pub fn digest_to_atom_jet(context: &mut Context, subject: Noun) -> Result<Noun, 
     let cells = slot(subject, 6, &space)?;
     let [a, b, c, d, e] = cells.uncell(&space)?;
 
-    let a_big = a.as_atom()?.as_ubig(stack, &space);
-    let b_big = b.as_atom()?.as_ubig(stack, &space);
-    let c_big = c.as_atom()?.as_ubig(stack, &space);
-    let d_big = d.as_atom()?.as_ubig(stack, &space);
-    let e_big = e.as_atom()?.as_ubig(stack, &space);
+    let a_big = a.in_space(&space).as_atom()?.as_ubig(stack);
+    let b_big = b.in_space(&space).as_atom()?.as_ubig(stack);
+    let c_big = c.in_space(&space).as_atom()?.as_ubig(stack);
+    let d_big = d.in_space(&space).as_atom()?.as_ubig(stack);
+    let e_big = e.in_space(&space).as_atom()?.as_ubig(stack);
 
     // Use stack-aware operations for pow and multiplication
     let p_ubig = UBig::from(crate::form::belt::PRIME);

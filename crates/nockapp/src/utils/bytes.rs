@@ -3,7 +3,7 @@ use std::any;
 use bytes::Bytes;
 use ibig::UBig;
 use nockvm::jets::cold::{Nounable, NounableResult};
-use nockvm::noun::{Atom, NounAllocator, NounSpace, Slots, D, T};
+use nockvm::noun::{Atom, NounAllocator, NounSpace, D, T};
 
 use crate::utils::error::ConversionError;
 use crate::{Noun, Result};

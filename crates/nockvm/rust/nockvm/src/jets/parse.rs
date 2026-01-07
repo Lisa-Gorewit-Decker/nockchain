@@ -22,7 +22,8 @@ pub fn jet_trip(context: &mut Context, subject: Noun) -> Result {
         return Ok(D(0));
     };
 
-    let bytes = &sam.in_space(&space).as_ne_bytes()[0..chars];
+    let sam_handle = sam.in_space(&space);
+    let bytes = &sam_handle.as_ne_bytes()[0..chars];
 
     let mut result = D(0);
     let mut dest = &mut result as *mut Noun;
@@ -505,7 +506,12 @@ pub fn jet_stew(context: &mut Context, subject: Noun) -> Result {
         return util::fail(context, p_tub);
     }
 
-    let iq_tub = q_tub.in_space(&space).as_cell()?.head().as_atom()?;
+    let iq_tub = q_tub
+        .in_space(&space)
+        .as_cell()?
+        .head()
+        .as_atom()?
+        .atom();
     if !iq_tub.is_direct() {
         // Character cannot be encoded using 8 bytes = computibilty error
         return Err(BAIL_FAIL);

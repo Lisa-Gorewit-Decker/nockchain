@@ -29,20 +29,20 @@ impl NockchainFact {
 
         let noun = unsafe { slab.root() };
         let space = slab.noun_space();
-        let head = noun.in_space(space).as_cell()?.head();
+        let head = noun.in_space(&space).as_cell()?.head();
 
         if head.eq_bytes(b"heard-block") {
-            let page = noun.in_space(space).as_cell()?.tail().noun();
+            let page = noun.in_space(&space).as_cell()?.tail().noun();
             let block_id = block_id_from_page(page, &space)?;
             let block_id_str = tip5_hash_to_base58_stack(slab, block_id, &space)?;
             Ok(NockchainFact::HeardBlock(block_id_str, poke_slab))
         } else if head.eq_bytes(b"heard-tx") {
-            let raw_tx = noun.in_space(space).as_cell()?.tail().noun();
+            let raw_tx = noun.in_space(&space).as_cell()?.tail().noun();
             let tx_id = tx_id_from_raw_tx(raw_tx, &space)?;
             let tx_id_str = tip5_hash_to_base58_stack(slab, tx_id, &space)?;
             Ok(NockchainFact::HeardTx(tx_id_str, poke_slab))
         } else if head.eq_bytes(b"heard-elders") {
-            let elders_noun = noun.in_space(space).as_cell()?.tail().noun();
+            let elders_noun = noun.in_space(&space).as_cell()?.tail().noun();
             let elders_dat = elders_noun.in_space(&space);
             let elders_cell = elders_dat.as_cell()?;
             let oldest = elders_cell.head().as_atom()?.as_u64()?;

@@ -339,7 +339,7 @@ pub fn bpeval_lift_jet(context: &mut Context, subject: Noun) -> Result {
         }
 
         let p_cell = p.in_space(&space).as_cell()?;
-        let res_lift = lift(p_cell.head().as_belt(&space)?);
+        let res_lift = lift(p_cell.head().noun().as_belt(&space)?);
         let mut res_fmul = Felt::zero();
         fmul(&res, x, &mut res_fmul);
         let mut res_add = Felt::zero();

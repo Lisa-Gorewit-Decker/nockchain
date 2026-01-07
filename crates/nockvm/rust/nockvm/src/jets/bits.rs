@@ -238,7 +238,8 @@ pub fn jet_rev(context: &mut Context, subject: Noun) -> Result {
     let dat = slot(arg, 7, &space)?.as_atom()?;
     let bits = len << boz;
 
-    let src = dat.in_space(&space).as_bitslice();
+    let dat_handle = dat.in_space(&space);
+    let src = dat_handle.as_bitslice();
     let (mut output, dest) =
         unsafe { IndirectAtom::new_raw_mut_bitslice(&mut context.stack, bits as usize) };
 

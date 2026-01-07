@@ -15,7 +15,7 @@ use nockvm::jets::hot::{HotEntry, URBIT_HOT_STATE};
 use nockvm::jets::nock::util::mook;
 use nockvm::mem::NockStack;
 use nockvm::mug::met3_usize;
-use nockvm::noun::{Atom, Cell, DirectAtom, IndirectAtom, Noun, NounSpace, Slots, D, T};
+use nockvm::noun::{Atom, Cell, DirectAtom, IndirectAtom, Noun, NounSpace, D, T};
 use nockvm::pma::{Pma, PmaCopy};
 use nockvm::trace::{path_to_cord, write_serf_trace_safe};
 use nockvm_macros::tas;
@@ -357,7 +357,11 @@ fn serf_loop<C: SerfCheckpoint>(
             }
             SerfAction::Export { result } => {
                 let space = serf.context.stack.noun_space();
-                let kernel_state_noun = serf.arvo.slot(STATE_AXIS, &space);
+                let kernel_state_noun = serf
+                    .arvo
+                    .in_space(&space)
+                    .slot(STATE_AXIS)
+                    .map(|handle| handle.noun());
                 let kernel_state = kernel_state_noun.map_or_else(
                     |err| Err(CrownError::from(err)),
                     |noun| {
@@ -403,7 +407,11 @@ fn serf_loop<C: SerfCheckpoint>(
             }
             SerfAction::GetKernelStateSlab { result } => {
                 let space = serf.context.stack.noun_space();
-                let kernel_state_noun = serf.arvo.slot(STATE_AXIS, &space);
+                let kernel_state_noun = serf
+                    .arvo
+                    .in_space(&space)
+                    .slot(STATE_AXIS)
+                    .map(|handle| handle.noun());
                 let kernel_state_slab = kernel_state_noun.map_or_else(
                     |err| Err(CrownError::from(err)),
                     |noun| {
@@ -549,7 +557,12 @@ fn create_checkpoint<C: SerfCheckpoint>(
     let ker_hash = serf.ker_hash;
     let event_num = serf.event_num.load(Ordering::SeqCst);
     let space = serf.context.stack.noun_space();
-    let ker_state = serf.arvo.slot(STATE_AXIS, &space).unwrap_or_else(|err| {
+    let ker_state = serf
+        .arvo
+        .in_space(&space)
+        .slot(STATE_AXIS)
+        .map(|handle| handle.noun())
+        .unwrap_or_else(|err| {
         panic!(
             "Panicked with {err:?} at {}:{} (git sha: {:?})",
             file!(),
@@ -1212,7 +1225,8 @@ impl Serf {
         let wpc = path_to_cord(stack, wire);
         let space = stack.noun_space();
         let wpc_len = met3_usize(wpc, &space);
-        let wpc_bytes = &wpc.in_space(&space).as_ne_bytes()[0..wpc_len];
+        let wpc_handle = wpc.in_space(&space);
+        let wpc_bytes = &wpc_handle.as_ne_bytes()[0..wpc_len];
         let wpc_str = match std::str::from_utf8(wpc_bytes) {
             Ok(valid) => valid,
             Err(error) => {
@@ -1222,7 +1236,8 @@ impl Serf {
         };
 
         let vc_len = met3_usize(vent, &space);
-        let vc_bytes = &vent.in_space(&space).as_ne_bytes()[0..vc_len];
+        let vent_handle = vent.in_space(&space);
+        let vc_bytes = &vent_handle.as_ne_bytes()[0..vc_len];
         let vc_str = match std::str::from_utf8(vc_bytes) {
             Ok(valid) => valid,
             Err(error) => {
@@ -1409,7 +1424,7 @@ impl Serf {
 }
 
 fn slot(noun: Noun, axis: u64, space: &NounSpace) -> Result<Noun> {
-    Ok(noun.slot(axis, space)?)
+    Ok(noun.in_space(space).slot(axis)?.noun())
 }
 
 #[cfg(test)]

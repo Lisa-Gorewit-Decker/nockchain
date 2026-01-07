@@ -2,7 +2,7 @@ use nockapp::noun::slab::NounSlab;
 use nockapp::test::setup_nockapp;
 use nockapp::wire::{SystemWire, Wire};
 use nockapp::NockApp;
-use nockvm::noun::{Noun, NounAllocator, Slots, D};
+use nockvm::noun::{Noun, NounAllocator, D};
 use nockvm_macros::tas;
 use tracing::info;
 
@@ -35,8 +35,12 @@ fn run_once(nockapp: &mut NockApp, i: u64) {
         )
     });
     let space = res.noun_space();
-    let root = unsafe { res.root() };
-    let val: Noun = root.slot(15, &space).unwrap_or_else(|err| {
+    let root = unsafe { *res.root() };
+    let val: Noun = root
+        .in_space(&space)
+        .slot(15)
+        .map(|handle| handle.noun())
+        .unwrap_or_else(|err| {
         panic!(
             "Panicked with {err:?} at {}:{} (git sha: {:?})",
             file!(),
@@ -108,8 +112,12 @@ async fn test_sync_peek_and_poke() {
                 )
             });
             let space = res.noun_space();
-            let root = unsafe { res.root() };
-            let val: Noun = root.slot(15, &space).unwrap_or_else(|err| {
+            let root = unsafe { *res.root() };
+            let val: Noun = root
+                .in_space(&space)
+                .slot(15)
+                .map(|handle| handle.noun())
+                .unwrap_or_else(|err| {
                 panic!(
                     "Panicked with {err:?} at {}:{} (git sha: {:?})",
                     file!(),

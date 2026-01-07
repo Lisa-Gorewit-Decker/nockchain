@@ -114,10 +114,8 @@ pub fn finalize_mary<A: NounAllocator>(
     mut res: IndirectAtom,
 ) -> Noun {
     let space = allocator.noun_space();
-    unsafe {
-        res.normalize(&space);
-    }
-    let array = T(allocator, &[D(len as u64), res.as_noun()]);
+    let res_atom = unsafe { res.as_atom().in_space(&space).normalize().atom() };
+    let array = T(allocator, &[D(len as u64), res_atom.as_noun()]);
 
     T(allocator, &[D(step as u64), array])
 }
@@ -128,9 +126,7 @@ pub fn finalize_poly<A: NounAllocator>(
     mut res: IndirectAtom,
 ) -> Noun {
     let space = allocator.noun_space();
-    unsafe {
-        res.normalize(&space);
-    }
+    let res_atom = unsafe { res.as_atom().in_space(&space).normalize().atom() };
     let head = Atom::new(
         allocator,
         len.unwrap_or_else(|| {
@@ -143,6 +139,6 @@ pub fn finalize_poly<A: NounAllocator>(
         }) as u64,
     )
     .as_noun();
-    let res_cell = Cell::new(allocator, head, res.as_noun());
+    let res_cell = Cell::new(allocator, head, res_atom.as_noun());
     res_cell.as_noun()
 }

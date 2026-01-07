@@ -106,11 +106,11 @@ pub fn range_jet(context: &mut Context, subject: Noun) -> Result {
 
     if let Ok(atom) = sample.in_space(&space).as_atom() {
         start = 0;
-        end = atom.as_direct()?.data();
+        end = atom.atom().as_direct()?.data();
     } else {
         let cell = sample.in_space(&space).as_cell()?;
-        start = cell.head().as_atom()?.as_direct()?.data();
-        end = cell.tail().as_atom()?.as_direct()?.data();
+        start = cell.head().as_atom()?.atom().as_direct()?.data();
+        end = cell.tail().as_atom()?.atom().as_direct()?.data();
     }
 
     for idx in start..end {

@@ -243,7 +243,7 @@ fn atom_ion(atom: Atom, alf: &Felt, space: &NounSpace) -> Result<Ion, JetErr> {
     Ok(Ion {
         size: *alf,
         dyck: Felt::zero(),
-        leaf: Felt::lift(Belt(atom.as_u64()?)),
+        leaf: Felt::lift(Belt(atom.in_space(space).as_u64()?)),
     })
 }
 

@@ -18,14 +18,15 @@ pub fn jet_shas(context: &mut Context, subject: Noun) -> Result {
     unsafe {
         let (mut out_ida, out) = IndirectAtom::new_raw_mut_bytes(stack, 32);
 
-        let sal_bytes =
-            &(sal.in_space(&space).as_ne_bytes())[0..met(3, sal, &space)]; // drop trailing zeros
+        let sal_handle = sal.in_space(&space);
+        let sal_bytes = &(sal_handle.as_ne_bytes())[0..met(3, sal, &space)]; // drop trailing zeros
         let (mut _salt_ida, salt) = IndirectAtom::new_raw_mut_bytes(stack, sal_bytes.len());
         salt.copy_from_slice(sal_bytes);
 
         let msg_len = met(3, ruz, &space);
         if msg_len > 0 {
-            let msg_bytes = &(ruz.in_space(&space).as_ne_bytes())[0..msg_len];
+            let ruz_handle = ruz.in_space(&space);
+            let msg_bytes = &(ruz_handle.as_ne_bytes())[0..msg_len];
             let (_msg_ida, msg) = IndirectAtom::new_raw_mut_bytes(stack, msg_bytes.len());
             msg.copy_from_slice(msg_bytes);
             ac_shas(msg, salt, out);
@@ -48,7 +49,8 @@ pub fn jet_shax(context: &mut Context, subject: Noun) -> Result {
         let (mut ida, out) = IndirectAtom::new_raw_mut_bytes(stack, 32);
 
         if msg_len > 0 {
-            let msg_bytes = &(ruz.in_space(&space).as_ne_bytes())[0..msg_len];
+            let ruz_handle = ruz.in_space(&space);
+            let msg_bytes = &(ruz_handle.as_ne_bytes())[0..msg_len];
             let (_msg_ida, msg) = IndirectAtom::new_raw_mut_bytes(stack, msg_bytes.len());
             msg.copy_from_slice(msg_bytes);
             ac_shay(msg, out);
@@ -75,14 +77,15 @@ pub fn jet_shay(context: &mut Context, subject: Noun) -> Result {
 
     unsafe {
         let (mut out_ida, out) = IndirectAtom::new_raw_mut_bytes(stack, 32);
+        let ruz_handle = ruz.in_space(&space);
         if length == 0 {
             ac_shay(&mut [], out);
         } else if msg_len >= length {
             let (mut _msg_ida, msg) = IndirectAtom::new_raw_mut_bytes(stack, length);
-            msg.copy_from_slice(&(ruz.in_space(&space).as_ne_bytes())[0..length]);
+            msg.copy_from_slice(&(ruz_handle.as_ne_bytes())[0..length]);
             ac_shay(msg, out);
         } else {
-            let msg_bytes = &(ruz.in_space(&space).as_ne_bytes())[0..msg_len];
+            let msg_bytes = &(ruz_handle.as_ne_bytes())[0..msg_len];
             let (mut _msg_ida, msg) = IndirectAtom::new_raw_mut_bytes(stack, length);
             msg[0..msg_len].copy_from_slice(msg_bytes);
             ac_shay(msg, out);
@@ -107,14 +110,15 @@ pub fn jet_shal(context: &mut Context, subject: Noun) -> Result {
 
     unsafe {
         let (mut out_ida, out) = IndirectAtom::new_raw_mut_bytes(stack, 64);
+        let ruz_handle = ruz.in_space(&space);
         if length == 0 {
             ac_shal(&mut [], out);
         } else if msg_len >= length {
             let (mut _msg_ida, msg) = IndirectAtom::new_raw_mut_bytes(stack, length);
-            msg.copy_from_slice(&(ruz.in_space(&space).as_ne_bytes())[0..length]);
+            msg.copy_from_slice(&(ruz_handle.as_ne_bytes())[0..length]);
             ac_shal(msg, out);
         } else {
-            let msg_bytes = &(ruz.in_space(&space).as_ne_bytes())[0..msg_len];
+            let msg_bytes = &(ruz_handle.as_ne_bytes())[0..msg_len];
             let (mut _msg_ida, msg) = IndirectAtom::new_raw_mut_bytes(stack, length);
             msg[0..msg_len].copy_from_slice(msg_bytes);
             ac_shal(msg, out);
@@ -139,14 +143,15 @@ pub fn jet_sha1(context: &mut Context, subject: Noun) -> Result {
 
     unsafe {
         let (mut out_ida, out) = IndirectAtom::new_raw_mut_bytes(stack, 20);
+        let ruz_handle = ruz.in_space(&space);
         if length == 0 {
             ac_sha1(&mut [], out);
         } else if msg_len >= length {
             let (mut _msg_ida, msg) = IndirectAtom::new_raw_mut_bytes(stack, length);
-            msg.copy_from_slice(&(ruz.in_space(&space).as_ne_bytes())[0..length]);
+            msg.copy_from_slice(&(ruz_handle.as_ne_bytes())[0..length]);
             ac_sha1(msg, out);
         } else {
-            let msg_bytes = &(ruz.in_space(&space).as_ne_bytes())[0..msg_len];
+            let msg_bytes = &(ruz_handle.as_ne_bytes())[0..msg_len];
             let (mut _msg_ida, msg) = IndirectAtom::new_raw_mut_bytes(stack, length);
             msg[0..msg_len].copy_from_slice(msg_bytes);
             ac_sha1(msg, out);

@@ -355,7 +355,7 @@ impl NounDecode for bool {
         trace!("Decoding bool from noun: {:?}", noun);
         match noun.in_space(space).as_atom() {
             Ok(atom) => {
-                trace!("Successfully decoded as atom: {:?}", atom);
+                trace!("Successfully decoded as atom: {:?}", atom.atom());
                 match atom.as_u64() {
                     Ok(0) => {
                         trace!("Decoded as 0 -> true (%.y)");
@@ -598,7 +598,7 @@ where
         trace!("\nDecoding HashMap from noun: {:?}", noun);
         // Handle empty tree case
         if let Ok(atom) = noun.in_space(space).as_atom() {
-            trace!("Got atom: {:?}", atom);
+            trace!("Got atom: {:?}", atom.atom());
             if atom.as_u64()? == 0 {
                 return Ok(HashMap::new());
             }
@@ -787,7 +787,7 @@ pub fn decode_bool(noun: &Noun, space: &NounSpace) -> Result<bool, NounDecodeErr
     trace!("Decoding bool from noun: {:?}", noun);
     match noun.in_space(space).as_atom() {
         Ok(atom) => {
-            trace!("Successfully decoded as atom: {:?}", atom);
+            trace!("Successfully decoded as atom: {:?}", atom.atom());
             match atom.as_u64() {
                 Ok(0) => {
                     trace!("Decoded as 0 -> true (%.y)");

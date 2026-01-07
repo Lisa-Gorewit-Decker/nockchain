@@ -47,7 +47,7 @@ pub mod tests {
     use bytes::Bytes;
     use nockvm::jets::util::slot;
     use nockvm::mem::NockStack;
-    use nockvm::noun::{Noun, NounAllocator, NounSpace, D, T};
+    use nockvm::noun::{CellHandle, Noun, NounAllocator, NounSpace, D, T};
     use nockvm::serialization::{cue, jam};
     use nockvm::unifying_equality::unifying_equality;
     use nockvm_macros::tas;
@@ -281,7 +281,7 @@ pub mod tests {
             });
             let res_space = res.noun_space();
             res.modify_noun(|r| {
-                slot(r, 7, &res_space)
+                let cell = slot(r, 7, &res_space)
                     .unwrap_or_else(|err| {
                         panic!(
                             "Panicked with {err:?} at {}:{} (git sha: {:?})",
@@ -298,8 +298,8 @@ pub mod tests {
                             line!(),
                             option_env!("GIT_SHA")
                         )
-                    })
-                    .tail(&res_space)
+                    });
+                CellHandle::new(cell, &res_space).tail().noun()
             });
 
             let comp = {

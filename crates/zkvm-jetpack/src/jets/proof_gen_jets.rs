@@ -130,11 +130,26 @@ impl CountMap {
                 (term_cell.head().as_atom()?.as_u64()? as usize, {
                     let tail = term_cell.tail().noun();
                     Counts {
-                        boundary: slot(tail, 2, space)?.as_atom()?.as_u64()? as usize,
-                        row: slot(tail, 6, space)?.as_atom()?.as_u64()? as usize,
-                        transition: slot(tail, 14, space)?.as_atom()?.as_u64()? as usize,
-                        terminal: slot(tail, 30, space)?.as_atom()?.as_u64()? as usize,
-                        extra: slot(tail, 31, space)?.as_atom()?.as_u64()? as usize,
+                        boundary: slot(tail, 2, space)?
+                            .in_space(space)
+                            .as_atom()?
+                            .as_u64()? as usize,
+                        row: slot(tail, 6, space)?
+                            .in_space(space)
+                            .as_atom()?
+                            .as_u64()? as usize,
+                        transition: slot(tail, 14, space)?
+                            .in_space(space)
+                            .as_atom()?
+                            .as_u64()? as usize,
+                        terminal: slot(tail, 30, space)?
+                            .in_space(space)
+                            .as_atom()?
+                            .as_u64()? as usize,
+                        extra: slot(tail, 31, space)?
+                            .in_space(space)
+                            .as_atom()?
+                            .as_u64()? as usize,
                     }
                 })
             };

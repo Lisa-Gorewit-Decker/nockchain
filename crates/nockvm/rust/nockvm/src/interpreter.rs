@@ -16,7 +16,7 @@ use crate::jets::list::util::weld;
 use crate::jets::warm::Warm;
 use crate::jets::{cold, JetErr};
 use crate::mem::{Arena, NockStack, Preserve};
-use crate::noun::{Atom, Cell, IndirectAtom, Noun, Slots, D, T};
+use crate::noun::{Atom, Cell, CellHandle, IndirectAtom, Noun, Slots, D, T};
 use crate::trace::{write_nock_trace, TraceInfo, TraceStack};
 use crate::unifying_equality::unifying_equality;
 use crate::{assert_acyclic, assert_no_forwarding_pointers, assert_no_junior_pointers, flog, noun};

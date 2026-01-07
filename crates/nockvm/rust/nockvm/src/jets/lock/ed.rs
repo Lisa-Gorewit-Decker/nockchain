@@ -50,8 +50,10 @@ pub fn jet_shar(context: &mut Context, subject: Noun) -> Result {
         let public = &mut [0u8; 32];
         let secret = &mut [0u8; 32];
 
-        let pub_bytes = pub_key.in_space(&space).as_ne_bytes();
-        let sec_bytes = sec_key.in_space(&space).as_ne_bytes();
+        let pub_handle = pub_key.in_space(&space);
+        let sec_handle = sec_key.in_space(&space);
+        let pub_bytes = pub_handle.as_ne_bytes();
+        let sec_bytes = sec_handle.as_ne_bytes();
 
         public[0..pub_bytes.len()].copy_from_slice(pub_bytes);
         secret[0..sec_bytes.len()].copy_from_slice(sec_bytes);
@@ -70,7 +72,8 @@ pub fn jet_sign(context: &mut Context, subject: Noun) -> Result {
     let sed = slot(subject, 13, &space)?.as_atom()?;
 
     unsafe {
-        let sed_bytes = sed.in_space(&space).as_ne_bytes();
+        let sed_handle = sed.in_space(&space);
+        let sed_bytes = sed_handle.as_ne_bytes();
         let sed_len = sed_bytes.len();
         if sed_len > 32 {
             return Err(BAIL_EXIT);
@@ -101,21 +104,24 @@ pub fn jet_veri(_context: &mut Context, subject: Noun) -> Result {
     let puk = slot(subject, 27, &space)?.as_atom()?;
 
     // Both are size checked by Hoon, but without crashing
-    let sig_bytes = sig.in_space(&space).as_ne_bytes();
+    let sig_handle = sig.in_space(&space);
+    let sig_bytes = sig_handle.as_ne_bytes();
     if sig_bytes.len() > 64 {
         return Ok(NO);
     };
     let signature = &mut [0u8; 64];
     signature[0..sig_bytes.len()].copy_from_slice(sig_bytes);
 
-    let pub_bytes = puk.in_space(&space).as_ne_bytes();
+    let puk_handle = puk.in_space(&space);
+    let pub_bytes = puk_handle.as_ne_bytes();
     if pub_bytes.len() > 32 {
         return Ok(NO);
     };
     let public_key = &mut [0u8; 32];
     public_key[0..pub_bytes.len()].copy_from_slice(pub_bytes);
 
-    let message = &(msg.in_space(&space).as_ne_bytes())[0..met(3, msg, &space)]; // drop trailing zeros
+    let msg_handle = msg.in_space(&space);
+    let message = &(msg_handle.as_ne_bytes())[0..met(3, msg, &space)]; // drop trailing zeros
 
     let valid = ac_ed_veri(message, public_key, signature);
 

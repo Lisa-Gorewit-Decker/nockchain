@@ -940,7 +940,8 @@ impl Nounable for &str {
         space: &NounSpace,
     ) -> NounableResult<Self::Target> {
         let atom = noun.as_atom()?;
-        let bytes = atom.in_space(space).as_ne_bytes();
+        let atom_handle = atom.in_space(space);
+        let bytes = atom_handle.as_ne_bytes();
         let utf8 = std::str::from_utf8(bytes)?;
         let allocated = utf8.to_string();
         Ok(allocated)

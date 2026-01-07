@@ -538,7 +538,7 @@ pub fn http() -> IODriverFn {
                             {
                                 debug!(
                                     "http: not an HTTP response effect, skipping. Got tag: {:?}",
-                                    head_tag
+                                    head_tag.atom()
                                 );
                                 return Ok(None);
                             }
@@ -556,7 +556,8 @@ pub fn http() -> IODriverFn {
                             let status_code = res
                                 .head()
                                 .as_atom()?
-                                .direct()
+                                .atom()
+                                .as_direct()
                                 .expect("not a valid status code!")
                                 .data();
                             debug!("HTTP response status code: {}", status_code);
@@ -606,7 +607,8 @@ pub fn http() -> IODriverFn {
                                 let body_len = body_octs
                                     .head()
                                     .as_atom()?
-                                    .direct()
+                                    .atom()
+                                    .as_direct()
                                     .expect("body len")
                                     .data();
                                 let len: usize =

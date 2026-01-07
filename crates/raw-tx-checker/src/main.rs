@@ -29,8 +29,8 @@ fn main() -> Result<()> {
     let mut stack = NockStack::new(DEFAULT_STACK_WORDS, 0);
     let space = stack.noun_space();
     let jam_atom = unsafe {
-        IndirectAtom::new_raw_bytes(&mut stack, jam_bytes.len(), jam_bytes.as_ptr())
-            .normalize_as_atom(&space)
+        let mut atom = IndirectAtom::new_raw_bytes(&mut stack, jam_bytes.len(), jam_bytes.as_ptr());
+        atom.normalize_as_atom_stack()
     };
 
     let hashable = serialization::cue(&mut stack, jam_atom)

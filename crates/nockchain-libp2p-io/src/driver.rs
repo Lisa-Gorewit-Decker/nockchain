@@ -114,7 +114,7 @@ impl EffectType {
             return EffectType::Unknown;
         };
         let Ok(bytes) = atom.to_bytes_until_nul() else {
-            warn!("atom was not properly formatted: {:?}", atom);
+            warn!("atom was not properly formatted: {:?}", atom.atom());
             return EffectType::Unknown;
         };
 
@@ -1811,16 +1811,11 @@ mod tests {
                     option_env!("GIT_SHA").unwrap_or("unknown")
                 )
             });
-            assert!(result_cell
-                .in_space(&result_space)
-                .head()
-                .eq_bytes(b"heavy-n"));
+            let result_cell = result_cell.in_space(&result_space);
+            assert!(result_cell.head().eq_bytes(b"heavy-n"));
 
             // Get the tail cell and check its components
-            let tail_cell = result_cell
-                .tail(&result_space)
-                .as_cell()
-                .unwrap_or_else(|_| {
+            let tail_cell = result_cell.tail().as_cell().unwrap_or_else(|_| {
                 panic!(
                     "Called `expect()` at {}:{} (git sha: {})",
                     file!(),
@@ -1828,7 +1823,7 @@ mod tests {
                     option_env!("GIT_SHA").unwrap_or("unknown")
                 )
             });
-            let height_atom = tail_cell.head(&result_space).as_atom().unwrap_or_else(|_| {
+            let height_atom = tail_cell.head().as_atom().unwrap_or_else(|_| {
                 panic!(
                     "Called `expect()` at {}:{} (git sha: {})",
                     file!(),
@@ -1837,7 +1832,7 @@ mod tests {
                 )
             });
             assert_eq!(
-                height_atom.as_u64(&result_space).unwrap_or_else(|err| {
+                height_atom.as_u64().unwrap_or_else(|err| {
                     panic!(
                         "Panicked with {err:?} at {}:{} (git sha: {:?})",
                         file!(),
@@ -1847,7 +1842,7 @@ mod tests {
                 }),
                 height
             );
-            let tail_atom = tail_cell.tail(&result_space).as_atom().unwrap_or_else(|_| {
+            let tail_atom = tail_cell.tail().as_atom().unwrap_or_else(|_| {
                 panic!(
                     "Called `expect()` at {}:{} (git sha: {})",
                     file!(),
@@ -1856,14 +1851,18 @@ mod tests {
                 )
             });
             assert_eq!(
-                tail_atom.as_u64(&result_space).unwrap_or_else(|err| {
-                    panic!(
-                        "Panicked with {err:?} at {}:{} (git sha: {:?})",
-                        file!(),
-                        line!(),
-                        option_env!("GIT_SHA")
-                    )
-                }),
+                tail_atom
+                    .atom()
+                    .as_direct()
+                    .unwrap_or_else(|err| {
+                        panic!(
+                            "Panicked with {err:?} at {}:{} (git sha: {:?})",
+                            file!(),
+                            line!(),
+                            option_env!("GIT_SHA")
+                        )
+                    })
+                    .data(),
                 0
             );
         }
@@ -1922,16 +1921,11 @@ mod tests {
             });
 
             // Check %elders tag
-            assert!(result_cell
-                .in_space(&result_space)
-                .head()
-                .eq_bytes(b"elders"));
+            let result_cell = result_cell.in_space(&result_space);
+            assert!(result_cell.head().eq_bytes(b"elders"));
 
             // Get the tail cell
-            let tail_cell = result_cell
-                .tail(&result_space)
-                .as_cell()
-                .unwrap_or_else(|_| {
+            let tail_cell = result_cell.tail().as_cell().unwrap_or_else(|_| {
                 panic!(
                     "Called `expect()` at {}:{} (git sha: {})",
                     file!(),
@@ -1941,10 +1935,7 @@ mod tests {
             });
 
             // Check block ID (should be base58 encoded)
-            let block_id_atom = tail_cell
-                .head(&result_space)
-                .as_atom()
-                .unwrap_or_else(|_| {
+            let block_id_atom = tail_cell.head().as_atom().unwrap_or_else(|_| {
                 panic!(
                     "Called `expect()` at {}:{} (git sha: {})",
                     file!(),
@@ -1952,9 +1943,7 @@ mod tests {
                     option_env!("GIT_SHA").unwrap_or("unknown")
                 )
             });
-            let block_id_bytes = block_id_atom
-                .to_bytes_until_nul(&result_space)
-                .unwrap_or_else(|_| {
+            let block_id_bytes = block_id_atom.to_bytes_until_nul().unwrap_or_else(|_| {
                 panic!(
                     "Called `expect()` at {}:{} (git sha: {})",
                     file!(),
@@ -1983,9 +1972,17 @@ mod tests {
             assert_eq!(block_id_str, expected_b58);
 
             // Check final 0
+            let tail_atom = tail_cell.tail().as_atom().unwrap_or_else(|_| {
+                panic!(
+                    "Called `expect()` at {}:{} (git sha: {})",
+                    file!(),
+                    line!(),
+                    option_env!("GIT_SHA").unwrap_or("unknown")
+                )
+            });
             assert_eq!(
-                tail_cell
-                    .tail(&result_space)
+                tail_atom
+                    .atom()
                     .as_direct()
                     .unwrap_or_else(|err| {
                         panic!(

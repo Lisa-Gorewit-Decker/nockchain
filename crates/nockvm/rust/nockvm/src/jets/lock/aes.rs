@@ -22,7 +22,8 @@ pub fn jet_siva_en(context: &mut Context, subject: Noun) -> Result {
         Err(JetErr::Punt)
     } else {
         let key_bytes = &mut [0u8; 32];
-        let key_ne_bytes = key.in_space(&space).as_ne_bytes();
+        let key_handle = key.in_space(&space);
+        let key_ne_bytes = key_handle.as_ne_bytes();
         key_bytes[0..key_ne_bytes.len()].copy_from_slice(key_ne_bytes);
 
         util::_siv_en::<32>(stack, key_bytes, ads, txt, &space)
@@ -42,7 +43,8 @@ pub fn jet_siva_de(context: &mut Context, subject: Noun) -> Result {
         Err(JetErr::Punt)
     } else {
         let key_bytes = &mut [0u8; 32];
-        let key_ne_bytes = key.in_space(&space).as_ne_bytes();
+        let key_handle = key.in_space(&space);
+        let key_ne_bytes = key_handle.as_ne_bytes();
         key_bytes[0..key_ne_bytes.len()].copy_from_slice(key_ne_bytes);
 
         util::_siv_de::<32>(stack, key_bytes, ads, iv, len, txt, &space)
@@ -60,7 +62,8 @@ pub fn jet_sivb_en(context: &mut Context, subject: Noun) -> Result {
         Err(JetErr::Punt)
     } else {
         let key_bytes = &mut [0u8; 48];
-        let key_ne_bytes = key.in_space(&space).as_ne_bytes();
+        let key_handle = key.in_space(&space);
+        let key_ne_bytes = key_handle.as_ne_bytes();
         key_bytes[0..key_ne_bytes.len()].copy_from_slice(key_ne_bytes);
 
         util::_siv_en::<48>(stack, key_bytes, ads, txt, &space)
@@ -80,7 +83,8 @@ pub fn jet_sivb_de(context: &mut Context, subject: Noun) -> Result {
         Err(JetErr::Punt)
     } else {
         let key_bytes = &mut [0u8; 48];
-        let key_ne_bytes = key.in_space(&space).as_ne_bytes();
+        let key_handle = key.in_space(&space);
+        let key_ne_bytes = key_handle.as_ne_bytes();
         key_bytes[0..key_ne_bytes.len()].copy_from_slice(key_ne_bytes);
 
         util::_siv_de::<48>(stack, key_bytes, ads, iv, len, txt, &space)
@@ -98,7 +102,8 @@ pub fn jet_sivc_en(context: &mut Context, subject: Noun) -> Result {
         Err(JetErr::Punt)
     } else {
         let key_bytes = &mut [0u8; 64];
-        let key_ne_bytes = key.in_space(&space).as_ne_bytes();
+        let key_handle = key.in_space(&space);
+        let key_ne_bytes = key_handle.as_ne_bytes();
         key_bytes[0..key_ne_bytes.len()].copy_from_slice(key_ne_bytes);
 
         util::_siv_en::<64>(stack, key_bytes, ads, txt, &space)
@@ -118,7 +123,8 @@ pub fn jet_sivc_de(context: &mut Context, subject: Noun) -> Result {
         Err(JetErr::Punt)
     } else {
         let key_bytes = &mut [0u8; 64];
-        let key_ne_bytes = key.in_space(&space).as_ne_bytes();
+        let key_handle = key.in_space(&space);
+        let key_ne_bytes = key_handle.as_ne_bytes();
         key_bytes[0..key_ne_bytes.len()].copy_from_slice(key_ne_bytes);
 
         util::_siv_de::<64>(stack, key_bytes, ads, iv, len, txt, &space)

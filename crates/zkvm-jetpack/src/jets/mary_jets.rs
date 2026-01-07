@@ -424,7 +424,7 @@ pub fn snag_as_digest_jet(context: &mut Context, subject: Noun) -> Result<Noun, 
     let m_noun = slot(sam, 2, &space)?;
     let i_noun = slot(sam, 3, &space)?;
 
-    let i = i_noun.in_space(space).as_atom()?.as_u64()? as usize;
+    let i = i_noun.in_space(&space).as_atom()?.as_u64()? as usize;
     snag_as_digest(stack, m_noun, i, &space)
 }
 

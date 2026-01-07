@@ -4,7 +4,7 @@ use either::Either::*;
 use nockvm::interpreter::Slogger;
 use nockvm::jets::list::util::lent;
 use nockvm::mem::NockStack;
-use nockvm::noun::{Atom, DirectAtom, IndirectAtom, Noun, NounSpace, Slots};
+use nockvm::noun::{Atom, DirectAtom, IndirectAtom, Noun, NounSpace};
 use nockvm_macros::tas;
 use tracing::{debug, error, info, trace, warn};
 
@@ -177,7 +177,8 @@ fn crip(stack: &mut NockStack, mut tape: Noun) -> Result<Atom> {
                 idx += 1;
             }
         } else {
-            break Ok(unsafe { indirect.normalize_as_atom(&space) });
+            let normalized = unsafe { indirect.as_atom().in_space(&space).normalize().atom() };
+            break Ok(normalized);
         }
     }
 }

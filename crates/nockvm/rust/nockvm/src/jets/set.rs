@@ -6,7 +6,7 @@ use crate::jets::util::slot;
 use crate::jets::{JetErr, Result};
 use crate::mem::NockStack;
 //use crate::mug::mug;
-use crate::noun::{Noun, NounSpace, D, NO, T, YES};
+use crate::noun::{Noun, NounSpace, Slots, D, NO, T, YES};
 
 type JetResult<T> = std::result::Result<T, JetErr>;
 

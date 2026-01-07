@@ -222,7 +222,7 @@ mod complex_tests {
     use std::fmt::Debug;
 
     use nockvm::ext::{make_tas, AtomExt};
-    use nockvm::noun::{FullDebugCell, Noun, NounAllocator, NounSpace, Slots, T};
+    use nockvm::noun::{FullDebugCell, Noun, NounAllocator, NounSpace, T};
     use noun_serde::{NounDecode, NounDecodeError, NounEncode};
 
     use super::TestStackGuard;
@@ -432,12 +432,49 @@ mod complex_tests {
                     space: &space
                 }
             );
-            println!("At axis 2 (sender): {:?}", cell.slot(2, &space));
-            println!("At axis 3: {:?}", cell.slot(3, &space));
-            println!("At axis 6 (receiver): {:?}", cell.slot(6, &space));
-            println!("At axis 7: {:?}", cell.slot(7, &space));
-            println!("At axis 14 (amount): {:?}", cell.slot(14, &space));
-            println!("At axis 15: {:?}", cell.slot(15, &space));
+            let cell_noun = cell.as_noun();
+            println!(
+                "At axis 2 (sender): {:?}",
+                cell_noun
+                    .in_space(&space)
+                    .slot(2)
+                    .map(|handle| handle.noun())
+            );
+            println!(
+                "At axis 3: {:?}",
+                cell_noun
+                    .in_space(&space)
+                    .slot(3)
+                    .map(|handle| handle.noun())
+            );
+            println!(
+                "At axis 6 (receiver): {:?}",
+                cell_noun
+                    .in_space(&space)
+                    .slot(6)
+                    .map(|handle| handle.noun())
+            );
+            println!(
+                "At axis 7: {:?}",
+                cell_noun
+                    .in_space(&space)
+                    .slot(7)
+                    .map(|handle| handle.noun())
+            );
+            println!(
+                "At axis 14 (amount): {:?}",
+                cell_noun
+                    .in_space(&space)
+                    .slot(14)
+                    .map(|handle| handle.noun())
+            );
+            println!(
+                "At axis 15: {:?}",
+                cell_noun
+                    .in_space(&space)
+                    .slot(15)
+                    .map(|handle| handle.noun())
+            );
         }
 
         println!("\nDecoding TransactionData...");
@@ -471,11 +508,11 @@ mod complex_tests {
         println!("\nEncoding transaction: {:?}", transaction);
         let encoded = transaction.to_noun(&mut *stack);
         println!("\nEncoded transaction noun: {:?}", encoded);
-        if let Ok(cell) = encoded.as_cell() {
-            let cell = cell.in_space(&space);
+        let encoded_handle = encoded.in_space(&space);
+        if let Ok(cell) = encoded_handle.as_cell() {
             println!("Transaction cell head: {:?}", cell.head().noun());
             println!("Transaction cell tail: {:?}", cell.tail().noun());
-            if let Ok(status_cell) = cell.slot(7).unwrap().as_cell() {
+            if let Ok(status_cell) = encoded_handle.slot(7).and_then(|h| h.as_cell()) {
                 println!("Status tag: {:?}", status_cell.head().noun());
                 println!("Status data: {:?}", status_cell.tail().noun());
             }

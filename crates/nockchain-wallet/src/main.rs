@@ -1520,10 +1520,9 @@ fn format_transaction_accepted_markdown(tx_id: &str, accepted: bool) -> String {
 }
 
 pub fn from_bytes(stack: &mut NounSlab, bytes: &[u8]) -> Atom {
-    let space = stack.noun_space();
     unsafe {
         let mut tas_atom = IndirectAtom::new_raw_bytes(stack, bytes.len(), bytes.as_ptr());
-        tas_atom.normalize_as_atom(&space)
+        tas_atom.normalize_as_atom_stack()
     }
 }
 
@@ -1702,7 +1701,11 @@ mod tests {
         let exit_slab = &keygen_result[1];
         let exit_space = exit_slab.noun_space();
         let exit_cause = unsafe { exit_slab.root() };
-        let code = exit_cause.as_cell()?.tail(&exit_space);
+        let code = exit_cause
+            .in_space(&exit_space)
+            .as_cell()?
+            .tail()
+            .noun();
         assert!(unsafe { code.raw_equals(&D(0)) }, "Expected exit code 0");
 
         Ok(())
@@ -1757,7 +1760,11 @@ mod tests {
         let exit_slab = &derive_result[1];
         let exit_space = exit_slab.noun_space();
         let exit_cause = unsafe { exit_slab.root() };
-        let code = exit_cause.as_cell()?.tail(&exit_space);
+        let code = exit_cause
+            .in_space(&exit_space)
+            .as_cell()?
+            .tail()
+            .noun();
         assert!(unsafe { code.raw_equals(&D(0)) }, "Expected exit code 0");
 
         Ok(())
