@@ -42,7 +42,9 @@ impl AtomMathExt for Atom {
         }
         let buf_ptr = handle.data_pointer();
         unsafe {
-            assert!(*(buf_ptr.add(3)) == 0x1);
+            if *(buf_ptr.add(3)) != 0x1 {
+                return Err(Error::NotRepresentable);
+            }
             Ok(&*(buf_ptr as *const Felt))
         }
     }
@@ -56,8 +58,10 @@ impl AtomMathExt for Atom {
             return Err(Error::NotRepresentable);
         }
         unsafe {
-            let buf_ptr = handle.raw_pointer_mut();
-            assert!(*(buf_ptr.add(3)) == 0x1);
+            let buf_ptr = handle.raw_pointer_mut().add(2);
+            if *(buf_ptr.add(3)) != 0x1 {
+                return Err(Error::NotRepresentable);
+            }
             Ok(&mut *(buf_ptr as *mut Felt))
         }
     }

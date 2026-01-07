@@ -352,7 +352,7 @@ impl<J> NounSlab<J> {
     /// referencing the stack. Nouns referencing the slab should not be used past this point.
     #[tracing::instrument(skip(self, stack), level = "trace")]
     pub fn copy_to_stack(self, stack: &mut NockStack) -> Noun {
-        let space = self.noun_space();
+        let space = stack.noun_space().with_extra_ptr_ranges(self.ptr_ranges());
         let mut res = D(0);
         let mut copy_stack = vec![(self.root, &mut res as *mut Noun)];
         while let Some((noun, dest)) = copy_stack.pop() {
