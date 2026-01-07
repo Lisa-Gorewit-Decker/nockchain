@@ -7,6 +7,35 @@ use crate::noun::{
 };
 use crate::pma::{Pma, PmaCopy};
 use crate::unifying_equality::unifying_equality;
+use tracing::info;
+
+thread_local! {
+    static BATTERIES_TRACE_ENABLED: std::cell::Cell<bool> = std::cell::Cell::new(false);
+}
+
+pub(crate) struct BatteriesTraceGuard {
+    prev: bool,
+}
+
+impl Drop for BatteriesTraceGuard {
+    fn drop(&mut self) {
+        BATTERIES_TRACE_ENABLED.with(|flag| {
+            flag.set(self.prev);
+        });
+    }
+}
+
+pub(crate) fn batteries_trace_guard(enable: bool) -> Option<BatteriesTraceGuard> {
+    if !enable {
+        return None;
+    }
+    let prev = BATTERIES_TRACE_ENABLED.with(|flag| flag.replace(true));
+    Some(BatteriesTraceGuard { prev })
+}
+
+fn batteries_trace_enabled() -> bool {
+    BATTERIES_TRACE_ENABLED.with(|flag| flag.get())
+}
 
 pub enum Error {
     NoParent,
@@ -99,14 +128,43 @@ impl PmaCopy for Batteries {
         if self.0.is_null() {
             return;
         }
+        let trace = batteries_trace_enabled();
+        let start = std::time::Instant::now();
+        let mut last_progress = start;
+        let mut steps = 0usize;
+        if trace {
+            info!("pma-copy: batteries start: head_ptr={:p}", self.0);
+        }
         let mut ptr: *mut Batteries = self;
         loop {
             if pma.contains_ptr((*ptr).0 as *const u8) {
                 break;
             }
+            if trace {
+                let space = stack.noun_space();
+                let battery = (*(*ptr).0).battery;
+                let axis = (*(*ptr).0).parent_axis;
+                let axis_noun = axis.as_noun();
+                info!(
+                    "pma-copy: batteries node: node_ptr={:p} battery_raw=0x{:x} battery_repr={:?} axis_raw=0x{:x} axis_repr={:?}",
+                    (*ptr).0,
+                    unsafe { battery.as_raw() },
+                    battery.repr(&space),
+                    unsafe { axis_noun.as_raw() },
+                    axis_noun.repr(&space)
+                );
+                info!("pma-copy: batteries battery copy start");
+            }
             // Copy the battery noun and parent_axis to PMA
             (*(*ptr).0).battery.copy_to_pma(stack, pma);
+            if trace {
+                info!("pma-copy: batteries battery copy done");
+                info!("pma-copy: batteries axis copy start");
+            }
             (*(*ptr).0).parent_axis.copy_to_pma(stack, pma);
+            if trace {
+                info!("pma-copy: batteries axis copy done");
+            }
             // Allocate new BatteriesMem in PMA and copy
             let dest_mem: *mut BatteriesMem = pma.alloc_struct(1);
             copy_nonoverlapping((*ptr).0, dest_mem, 1);
@@ -117,6 +175,25 @@ impl PmaCopy for Batteries {
             if (*dest_mem).parent_batteries.0.is_null() {
                 break;
             }
+            steps += 1;
+            if trace && (steps & 0x3ff == 0) {
+                let now = std::time::Instant::now();
+                if now.duration_since(last_progress).as_millis() >= 2000 {
+                    info!(
+                        "pma-copy: batteries progress: steps={}, elapsed_ms={}",
+                        steps,
+                        start.elapsed().as_millis()
+                    );
+                    last_progress = now;
+                }
+            }
+        }
+        if trace {
+            info!(
+                "pma-copy: batteries done: steps={}, elapsed_ms={}",
+                steps,
+                start.elapsed().as_millis()
+            );
         }
     }
 }

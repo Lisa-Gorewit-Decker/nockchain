@@ -1,5 +1,6 @@
 use std::ptr::{copy_nonoverlapping, null_mut};
 use std::slice;
+use std::time::Instant;
 
 use either::Either::{self, *};
 
@@ -8,6 +9,7 @@ use crate::mug::mug_u32;
 use crate::noun::{Noun, NounAllocator};
 use crate::pma::{Pma, PmaCopy};
 use crate::unifying_equality::unifying_equality;
+use tracing::info;
 
 type MutStemEntry<T> = Either<*mut MutStem<T>, Leaf<T>>;
 
@@ -717,14 +719,37 @@ impl<T: Copy + PmaCopy> PmaCopy for Hamt<T> {
     /// After this call, self.0 points to the PMA copy and all internal
     /// pointers reference PMA locations.
     unsafe fn copy_to_pma(&mut self, stack: &NockStack, pma: &mut Pma) {
+        let trace = std::env::var_os("NOCK_PMA_TRACE").is_some();
         if pma.contains_ptr(self.0 as *const u8) {
+            if trace {
+                info!("pma-copy: hamt skip: root already in PMA");
+            }
             return;
+        }
+
+        let trace_start = Instant::now();
+        let mut last_progress = trace_start;
+        let mut stem_copies = 0usize;
+        let mut leaf_copies = 0usize;
+        let mut leaf_pairs = 0usize;
+        let mut stem_skips = 0usize;
+        let mut leaf_skips = 0usize;
+        let trace_detail = trace
+            && std::env::var_os("NOCK_PMA_TRACE_HAMT_DETAIL").is_some()
+            && std::any::type_name::<T>().contains("WarmEntry");
+        if trace {
+            let root_size = (*self.0).size();
+            info!(
+                "pma-copy: hamt start: root_ptr={:p} root_size={}",
+                self.0, root_size
+            );
         }
 
         // Copy root stem to PMA
         let dest_stem: *mut Stem<T> = pma.alloc_struct(1);
         copy_nonoverlapping(self.0, dest_stem, 1);
         self.0 = dest_stem;
+        stem_copies += 1;
 
         // Copy root's buffer to PMA
         let sz = (*dest_stem).size();
@@ -734,6 +759,8 @@ impl<T: Copy + PmaCopy> PmaCopy for Hamt<T> {
                 let dest_buffer: *mut Entry<T> = pma.alloc_struct(sz);
                 copy_nonoverlapping(src_buffer, dest_buffer, sz);
                 (*dest_stem).buffer = dest_buffer;
+            } else {
+                stem_skips += 1;
             }
         }
 
@@ -773,6 +800,7 @@ impl<T: Copy + PmaCopy> PmaCopy for Hamt<T> {
                 // Child stem - copy its buffer to PMA
                 let child = (*ep).stem;
                 if pma.contains_ptr(child.buffer as *const u8) {
+                    stem_skips += 1;
                     continue;
                 }
                 let csz = child.size();
@@ -784,6 +812,7 @@ impl<T: Copy + PmaCopy> PmaCopy for Hamt<T> {
                     buffer: db,
                 };
                 *ep = Entry { stem: new_stem };
+                stem_copies += 1;
                 debug_assert!(depth < 6);
                 stk[depth] = (new_stem, new_stem.bitmap, 0);
                 depth += 1;
@@ -791,23 +820,75 @@ impl<T: Copy + PmaCopy> PmaCopy for Hamt<T> {
                 // Leaf - copy its buffer to PMA and evacuate all nouns
                 let leaf = (*ep).leaf;
                 if pma.contains_ptr(leaf.buffer as *const u8) {
+                    leaf_skips += 1;
                     continue;
                 }
                 let len = leaf.len;
                 let db: *mut (Noun, T) = pma.alloc_struct(len);
                 copy_nonoverlapping(leaf.buffer, db, len);
                 let new_leaf = Leaf { len, buffer: db };
+                leaf_copies += 1;
+                if trace_detail {
+                    info!(
+                        "pma-copy: hamt leaf start: len={}, pair_index_start={}",
+                        len, leaf_pairs
+                    );
+                }
 
                 // Evacuate all nouns in key-value pairs
                 let mut p = new_leaf.buffer;
                 let end = p.add(len);
                 while p != end {
+                    if trace_detail {
+                        info!("pma-copy: hamt pair {} key start", leaf_pairs);
+                    }
                     (*p).0.copy_to_pma(stack, pma);
+                    if trace_detail {
+                        info!("pma-copy: hamt pair {} key done", leaf_pairs);
+                        info!("pma-copy: hamt pair {} val start", leaf_pairs);
+                    }
                     (*p).1.copy_to_pma(stack, pma);
+                    if trace_detail {
+                        info!("pma-copy: hamt pair {} val done", leaf_pairs);
+                    }
                     p = p.add(1);
+                    leaf_pairs += 1;
+                    if trace && (leaf_pairs & 0x3fff == 0) {
+                        let now = Instant::now();
+                        if now.duration_since(last_progress).as_millis() >= 2000 {
+                            info!(
+                                "pma-copy: hamt progress: stems_copied={}, leaves_copied={}, leaf_pairs={}, stem_skips={}, leaf_skips={}, elapsed_ms={}",
+                                stem_copies,
+                                leaf_copies,
+                                leaf_pairs,
+                                stem_skips,
+                                leaf_skips,
+                                trace_start.elapsed().as_millis()
+                            );
+                            last_progress = now;
+                        }
+                    }
+                }
+                if trace_detail {
+                    info!(
+                        "pma-copy: hamt leaf done: len={}, pair_index_end={}",
+                        len, leaf_pairs
+                    );
                 }
                 *ep = Entry { leaf: new_leaf };
             }
+        }
+
+        if trace {
+            info!(
+                "pma-copy: hamt done: stems_copied={}, leaves_copied={}, leaf_pairs={}, stem_skips={}, leaf_skips={}, elapsed_ms={}",
+                stem_copies,
+                leaf_copies,
+                leaf_pairs,
+                stem_skips,
+                leaf_skips,
+                trace_start.elapsed().as_millis()
+            );
         }
     }
 }

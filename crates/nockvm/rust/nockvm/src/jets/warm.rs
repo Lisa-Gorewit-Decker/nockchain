@@ -1,4 +1,5 @@
 use std::ptr::{copy_nonoverlapping, null_mut};
+use std::time::Instant;
 
 use crate::hamt::Hamt;
 use crate::jets::cold::{Batteries, Cold};
@@ -7,6 +8,7 @@ use crate::jets::Jet;
 use crate::mem::{NockStack, Preserve};
 use crate::noun::{Noun, NounAllocator, Slots};
 use crate::pma::{Pma, PmaCopy};
+use tracing::info;
 
 /// key = formula
 #[derive(Copy, Clone)]
@@ -27,7 +29,108 @@ impl PmaCopy for Warm {
     }
 
     unsafe fn copy_to_pma(&mut self, stack: &NockStack, pma: &mut Pma) {
-        self.0.copy_to_pma(stack, pma);
+        let trace = std::env::var_os("NOCK_PMA_TRACE").is_some();
+        if trace {
+            info!("pma-copy: warm stats start");
+            let stats_start = Instant::now();
+            let mut last_progress = Instant::now();
+            let mut key_count = 0usize;
+            let mut list_count = 0usize;
+            let mut total_nodes = 0usize;
+            let mut nodes_stack = 0usize;
+            let mut nodes_pma = 0usize;
+            let mut prefix_nodes = 0usize;
+            let mut lists_all_stack = 0usize;
+            let mut lists_all_pma = 0usize;
+            let mut lists_mixed = 0usize;
+            let mut lists_mixed_after_pma = 0usize;
+
+            for leaf in self.0.iter() {
+                key_count += leaf.len();
+                for (_key, entry) in leaf {
+                    list_count += 1;
+                    let mut cursor = *entry;
+                    let mut seen_pma = false;
+                    let mut list_stack = 0usize;
+                    let mut list_pma = 0usize;
+                    let mut list_prefix = 0usize;
+                    let mut list_mixed_after_pma = false;
+                    while !cursor.0.is_null() {
+                        total_nodes += 1;
+                        if pma.contains_ptr(cursor.0 as *const u8) {
+                            nodes_pma += 1;
+                            list_pma += 1;
+                            seen_pma = true;
+                        } else {
+                            nodes_stack += 1;
+                            list_stack += 1;
+                            if seen_pma {
+                                list_mixed_after_pma = true;
+                            } else {
+                                list_prefix += 1;
+                            }
+                        }
+                        cursor = (*cursor.0).next;
+                        if total_nodes & 0x3fff == 0 {
+                            let now = Instant::now();
+                            if now.duration_since(last_progress).as_millis() >= 2000 {
+                                info!(
+                                    "pma-copy: warm stats progress: lists={}, nodes={}, stack_nodes={}, pma_nodes={}, elapsed_ms={}",
+                                    list_count,
+                                    total_nodes,
+                                    nodes_stack,
+                                    nodes_pma,
+                                    stats_start.elapsed().as_millis()
+                                );
+                                last_progress = now;
+                            }
+                        }
+                    }
+                    prefix_nodes += list_prefix;
+                    if list_pma == 0 {
+                        lists_all_stack += 1;
+                    } else if list_stack == 0 {
+                        lists_all_pma += 1;
+                    } else {
+                        lists_mixed += 1;
+                    }
+                    if list_mixed_after_pma {
+                        lists_mixed_after_pma += 1;
+                    }
+                }
+            }
+
+            let stats_ms = stats_start.elapsed().as_millis();
+            info!(
+                "pma-copy: warm stats done: keys={}, lists={}, nodes={}, stack_nodes={}, pma_nodes={}, prefix_nodes={}, lists_all_stack={}, lists_all_pma={}, lists_mixed={}, lists_mixed_after_pma={}, stats_ms={}",
+                key_count,
+                list_count,
+                total_nodes,
+                nodes_stack,
+                nodes_pma,
+                prefix_nodes,
+                lists_all_stack,
+                lists_all_pma,
+                lists_mixed,
+                lists_mixed_after_pma,
+                stats_ms
+            );
+            let alloc_before = pma.alloc_offset();
+            info!("pma-copy: warm copy start");
+            let copy_start = Instant::now();
+            self.0.copy_to_pma(stack, pma);
+            let copy_ms = copy_start.elapsed().as_millis();
+            let alloc_after = pma.alloc_offset();
+            let alloc_words = alloc_after.saturating_sub(alloc_before);
+
+            info!(
+                "pma-copy: warm copy done: alloc_words={}, copy_ms={}",
+                alloc_words,
+                copy_ms
+            );
+        } else {
+            self.0.copy_to_pma(stack, pma);
+        }
     }
 }
 
@@ -109,19 +212,39 @@ impl PmaCopy for WarmEntry {
         if self.0.is_null() {
             return;
         }
+        let trace = std::env::var_os("NOCK_PMA_TRACE_WARM_ENTRY").is_some();
         let mut ptr: *mut WarmEntry = self;
         loop {
+            if trace {
+                info!(
+                    "pma-copy: warm entry start: node_ptr={:p}",
+                    (*ptr).0
+                );
+            }
             if pma.contains_ptr((*ptr).0 as *const u8) {
                 break;
             }
             // Copy batteries and path to PMA
+            let _trace_guard = crate::jets::cold::batteries_trace_guard(trace);
             (*(*ptr).0).batteries.copy_to_pma(stack, pma);
+            if trace {
+                info!("pma-copy: warm entry batteries done");
+            }
             (*(*ptr).0).path.copy_to_pma(stack, pma);
+            if trace {
+                info!("pma-copy: warm entry path done");
+            }
             // Allocate new WarmEntryMem in PMA and copy
             let dest_mem: *mut WarmEntryMem = pma.alloc_struct(1);
             copy_nonoverlapping((*ptr).0, dest_mem, 1);
             // Update pointer to point to PMA copy
             *ptr = WarmEntry(dest_mem);
+            if trace {
+                info!(
+                    "pma-copy: warm entry done: dest_ptr={:p}",
+                    dest_mem
+                );
+            }
             // Move to next node
             ptr = &mut (*dest_mem).next;
             if (*dest_mem).next.0.is_null() {

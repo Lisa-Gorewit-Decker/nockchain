@@ -7,10 +7,13 @@ use std::io::{Read, Seek, SeekFrom};
 use std::path::PathBuf;
 use std::ptr::copy_nonoverlapping;
 use std::sync::Arc;
+use std::time::Instant;
 
 use either::Either::{Left, Right};
+use intmap::IntMap;
 use smallvec::SmallVec;
 use thiserror::Error;
+use tracing::info;
 
 use crate::ext::noun_equality;
 use crate::mem::{word_size_of, Arena, NewStackError, NockStack};
@@ -392,6 +395,11 @@ impl PmaCopy for Noun {
             return;
         }
 
+        let trace_noun = std::env::var_os("NOCK_PMA_TRACE_NOUN").is_some();
+        let trace_start = Instant::now();
+        let mut last_progress = trace_start;
+        let mut steps = 0usize;
+
         let space = NounSpace::new(stack, &*pma);
         let root_repr = self.repr(&space);
         match root_repr {
@@ -430,6 +438,18 @@ impl PmaCopy for Noun {
         work.push((*self, self as *mut Noun));
 
         while let Some((noun, dest_ptr)) = work.pop() {
+            steps += 1;
+            if trace_noun && (steps & 0x3fff == 0) {
+                let now = Instant::now();
+                if now.duration_since(last_progress).as_millis() >= 2000 {
+                    info!(
+                        "pma-copy: noun progress: steps={}, elapsed_ms={}",
+                        steps,
+                        trace_start.elapsed().as_millis()
+                    );
+                    last_progress = now;
+                }
+            }
             match noun.as_either_direct_allocated() {
                 Left(_direct) => {
                     *dest_ptr = noun;
@@ -531,6 +551,14 @@ impl PmaCopy for Noun {
                 }
             }
         }
+
+        if trace_noun {
+            info!(
+                "pma-copy: noun done: steps={}, elapsed_ms={}",
+                steps,
+                trace_start.elapsed().as_millis()
+            );
+        }
     }
 
     /// Assert that this noun and all its substructure is in the PMA.
@@ -541,22 +569,34 @@ impl PmaCopy for Noun {
         }
 
         let space = NounSpace::pma_only(pma);
-        match self.repr(&space) {
-            NounRepr::Indirect(AllocLocation::Stack)
-            | NounRepr::Cell(AllocLocation::Stack) => {
-                panic!("noun is stack-allocated, not in PMA");
-            }
-            NounRepr::Forwarding(_) => {
-                panic!("forwarding pointer is not valid PMA state");
-            }
-            _ => {}
-        }
+        let mut seen = IntMap::new();
+        let mut work = vec![*self];
 
-        // For cells, recursively check head and tail
-        if self.is_cell() {
-            let cell = self.as_cell().expect("checked is_cell");
-            cell.head(&space).assert_in_pma(pma);
-            cell.tail(&space).assert_in_pma(pma);
+        while let Some(noun) = work.pop() {
+            if noun.is_direct() {
+                continue;
+            }
+
+            match noun.repr(&space) {
+                NounRepr::Indirect(AllocLocation::Stack)
+                | NounRepr::Cell(AllocLocation::Stack) => {
+                    panic!("noun is stack-allocated, not in PMA");
+                }
+                NounRepr::Forwarding(_) => {
+                    panic!("forwarding pointer is not valid PMA state");
+                }
+                NounRepr::Indirect(_) | NounRepr::Direct => {}
+                NounRepr::Cell(_) => {
+                    let cell = noun.as_cell().expect("checked is_cell");
+                    let ptr = unsafe { cell.to_raw_pointer(&space) } as usize as u64;
+                    if seen.get(ptr).is_some() {
+                        continue;
+                    }
+                    seen.insert(ptr, ());
+                    work.push(cell.head(&space));
+                    work.push(cell.tail(&space));
+                }
+            }
         }
     }
 }
