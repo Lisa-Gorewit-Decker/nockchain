@@ -281,6 +281,19 @@ pub mod util {
         }
     }
 
+    /// Add two atoms, auto-dispatching based on LOCATION_BIT.
+    /// Uses thread-local arena for PMA pointers.
+    pub fn add_auto(stack: &mut NockStack, a: Atom, b: Atom) -> Atom {
+        if let (Ok(a), Ok(b)) = (a.as_direct(), b.as_direct()) {
+            Atom::new(stack, a.data() + b.data())
+        } else {
+            let a_big = a.as_ubig(stack);
+            let b_big = b.as_ubig(stack);
+            let res = UBig::add_stack(stack, a_big, b_big);
+            Atom::from_ubig(stack, &res)
+        }
+    }
+
     /// Greater than or equal to (boolean)
     pub fn gte_b(stack: &mut NockStack, arena: &Arena, a: Atom, b: Atom) -> bool {
         if let (Ok(a), Ok(b)) = (a.as_direct(), b.as_direct()) {

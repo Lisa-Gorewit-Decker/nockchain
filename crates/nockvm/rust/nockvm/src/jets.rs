@@ -285,6 +285,17 @@ pub mod util {
         }
     }
 
+    /// Auto-dispatch version of bite that uses thread-local arena for PMA pointers.
+    pub fn bite(a: Noun) -> result::Result<(usize, usize), JetErr> {
+        if let Ok(cell) = a.as_cell() {
+            let bloq = bloq(cell.head())?;
+            let step = cell.tail().as_direct()?.data() as usize;
+            Ok((bloq, step))
+        } else {
+            bloq(a).map(|x| (x, 1_usize))
+        }
+    }
+
     /** In a bloq space, copy from `from` for a span of `step`, to position `to`.
      *
      * Note: unlike the vere version, this sets the bits instead of XORing

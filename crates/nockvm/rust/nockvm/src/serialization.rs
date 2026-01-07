@@ -24,6 +24,12 @@ pub unsafe fn met0_usize_stack(atom: Atom) -> usize {
     atom_bitslice.last_one().map_or(0, |last_one| last_one + 1)
 }
 
+/// Auto-dispatch version of met0_usize that uses thread-local arena for PMA pointers.
+pub fn met0_usize_auto(atom: Atom) -> usize {
+    let atom_bitslice = atom.as_bitslice();
+    atom_bitslice.last_one().map_or(0, |last_one| last_one + 1)
+}
+
 /// Calculate the number of bits needed to represent a u64 as a usize
 pub fn met0_u64_to_usize(x: u64) -> usize {
     let usize_bitslice = BitSlice::<u64, Lsb0>::from_element(&x);

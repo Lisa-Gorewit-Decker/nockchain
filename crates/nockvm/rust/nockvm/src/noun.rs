@@ -455,6 +455,18 @@ impl IndirectAtom {
         TaggedPtr::from_raw(self.0).resolve_const(INDIRECT_MASK, arena) as *const u64
     }
 
+    /// Get raw pointer, auto-dispatching based on LOCATION_BIT.
+    /// Uses thread-local arena for PMA pointers.
+    #[inline(always)]
+    pub fn to_raw_pointer(&self) -> *const u64 {
+        let tagged = TaggedPtr::from_raw(self.0);
+        if tagged.location() == PtrLocation::Stack {
+            ((tagged.payload(INDIRECT_MASK)) << 3) as *const u64
+        } else {
+            Arena::with_current(|arena| unsafe { self.to_raw_pointer_with_arena(arena) })
+        }
+    }
+
     /// Get raw pointer for stack-pointer form atoms only
     pub unsafe fn to_raw_pointer_stack(&self) -> *const u64 {
         let tagged = TaggedPtr::from_raw(self.0);
@@ -462,6 +474,18 @@ impl IndirectAtom {
             ((tagged.payload(INDIRECT_MASK)) << 3) as *const u64
         } else {
             panic!("expected stack-pointer Noun, got offset instead");
+        }
+    }
+
+    /// Returns Some(ptr) if stack-pointer form, None if PMA form.
+    /// Used by NounSlab to check if a noun is in the slab or PMA.
+    #[inline(always)]
+    pub fn stack_data_pointer(&self) -> Option<*const u64> {
+        let tagged = TaggedPtr::from_raw(self.0);
+        if tagged.location() == PtrLocation::Stack {
+            Some(((tagged.payload(INDIRECT_MASK)) << 3) as *const u64)
+        } else {
+            None
         }
     }
 
@@ -500,6 +524,18 @@ impl IndirectAtom {
             TaggedPtr::from_stack_ptr(new_me as *const u8, FORWARDING_TAG).raw();
     }
 
+    /// Set forwarding pointer, auto-dispatching based on LOCATION_BIT.
+    /// Uses thread-local arena for PMA pointers.
+    #[inline(always)]
+    pub unsafe fn set_forwarding_pointer(&mut self, new_me: *const u64) {
+        let tagged = TaggedPtr::from_raw(self.0);
+        if tagged.location() == PtrLocation::Stack {
+            self.set_forwarding_pointer_stack(new_me)
+        } else {
+            Arena::with_current(|arena| self.set_forwarding_pointer_with_arena(new_me, arena))
+        }
+    }
+
     /// Get forwarding pointer (stack-pointer form only)
     pub unsafe fn forwarding_pointer_stack(&self) -> Option<IndirectAtom> {
         let size_raw = *self.to_raw_pointer_stack().add(1);
@@ -509,6 +545,18 @@ impl IndirectAtom {
             Some(Self::from_raw_pointer(ptr))
         } else {
             None
+        }
+    }
+
+    /// Get forwarding pointer, auto-dispatching based on LOCATION_BIT.
+    /// Note: Forwarding pointers always point to stack addresses.
+    #[inline(always)]
+    pub unsafe fn forwarding_pointer(&self) -> Option<IndirectAtom> {
+        let tagged = TaggedPtr::from_raw(self.0);
+        if tagged.location() == PtrLocation::Stack {
+            self.forwarding_pointer_stack()
+        } else {
+            Arena::with_current(|arena| self.forwarding_pointer_with_arena(arena))
         }
     }
 
@@ -626,6 +674,13 @@ impl IndirectAtom {
         self.size_with_arena(arena) + 2
     }
 
+    /// Memory size of an indirect atom (including size + metadata fields) in 64-bit words.
+    /// Auto-dispatches based on LOCATION_BIT. Uses thread-local arena for PMA pointers.
+    #[inline(always)]
+    pub fn raw_size(&self) -> usize {
+        self.size() + 2
+    }
+
     pub fn bit_size_with_arena(&self, arena: &Arena) -> usize {
         unsafe {
             ((self.size_with_arena(arena) - 1) << 6) + 64
@@ -633,6 +688,16 @@ impl IndirectAtom {
                     .to_raw_pointer_with_arena(arena)
                     .add(2 + self.size_with_arena(arena) - 1)))
                 .leading_zeros() as usize
+        }
+    }
+
+    /// Get bit size, auto-dispatching based on LOCATION_BIT.
+    /// Uses thread-local arena for PMA pointers.
+    #[inline(always)]
+    pub fn bit_size(&self) -> usize {
+        unsafe {
+            ((self.size() - 1) << 6) + 64
+                - (*(self.data_pointer().add(self.size() - 1))).leading_zeros() as usize
         }
     }
 
@@ -779,6 +844,21 @@ impl IndirectAtom {
         }
     }
 
+    /// Get as UBig, auto-dispatching based on LOCATION_BIT.
+    /// Uses thread-local arena for PMA pointers.
+    #[inline(always)]
+    pub fn as_ubig<S: Stack>(&self, stack: &mut S) -> UBig {
+        let bytes_mem_repr = self.as_ne_bytes();
+
+        #[cfg(target_endian = "little")]
+        {
+            UBig::from_le_bytes_stack(stack, bytes_mem_repr)
+        }
+        #[cfg(not(target_endian = "little"))]
+        {
+            UBig::from_be_bytes_stack(stack, bytes_mem_repr)
+        }
+    }
 
     pub unsafe fn as_u64_with_arena(self, arena: &Arena) -> Result<u64> {
         if self.size_with_arena(arena) == 1 {
@@ -802,6 +882,20 @@ impl IndirectAtom {
         if self.size_with_arena(arena) <= 2 {
             let u128_array = &mut [0u64; 2];
             u128_array.copy_from_slice(&(self.as_slice_with_arena(arena)[0..2]));
+            Ok(*u128_array)
+        } else {
+            Err(Error::NotRepresentable)
+        }
+    }
+
+    /// Produce a SoftFloat-compatible ordered pair of 64-bit words,
+    /// auto-dispatching based on LOCATION_BIT.
+    /// Uses thread-local arena for PMA pointers.
+    #[inline(always)]
+    pub fn as_u64_pair(self) -> Result<[u64; 2]> {
+        if self.size() <= 2 {
+            let u128_array = &mut [0u64; 2];
+            u128_array.copy_from_slice(&(self.as_slice()[0..2]));
             Ok(*u128_array)
         } else {
             Err(Error::NotRepresentable)
@@ -881,6 +975,116 @@ impl IndirectAtom {
     pub fn as_noun(self) -> Noun {
         Noun { indirect: self }
     }
+
+    // Auto-dispatch methods that check LOCATION_BIT and use thread-local arena for PMA
+
+    /// Size of an indirect atom in 64-bit words, auto-dispatching based on LOCATION_BIT.
+    /// Uses thread-local arena for PMA pointers.
+    #[inline(always)]
+    pub fn size(&self) -> usize {
+        let tagged = TaggedPtr::from_raw(self.0);
+        if tagged.location() == PtrLocation::Stack {
+            unsafe { self.size_stack() }
+        } else {
+            Arena::with_current(|arena| self.size_with_arena(arena))
+        }
+    }
+
+    /// Pointer to data for indirect atom, auto-dispatching based on LOCATION_BIT.
+    /// Uses thread-local arena for PMA pointers.
+    #[inline(always)]
+    pub fn data_pointer(&self) -> *const u64 {
+        let tagged = TaggedPtr::from_raw(self.0);
+        if tagged.location() == PtrLocation::Stack {
+            unsafe { self.data_pointer_stack() }
+        } else {
+            Arena::with_current(|arena| self.data_pointer_with_arena(arena))
+        }
+    }
+
+    /// Get slice of data words, auto-dispatching based on LOCATION_BIT.
+    /// Uses thread-local arena for PMA pointers.
+    #[inline(always)]
+    pub fn as_slice(&self) -> &[u64] {
+        let tagged = TaggedPtr::from_raw(self.0);
+        if tagged.location() == PtrLocation::Stack {
+            unsafe { self.as_slice_stack() }
+        } else {
+            Arena::with_current(|arena| self.as_slice_with_arena(arena))
+        }
+    }
+
+    /// Get as u64, auto-dispatching based on LOCATION_BIT.
+    /// Uses thread-local arena for PMA pointers.
+    #[inline(always)]
+    pub fn as_u64(self) -> Result<u64> {
+        let tagged = TaggedPtr::from_raw(self.0);
+        if tagged.location() == PtrLocation::Stack {
+            unsafe { self.as_u64_stack() }
+        } else {
+            Arena::with_current(|arena| unsafe { self.as_u64_with_arena(arena) })
+        }
+    }
+
+    /// Get bytes, auto-dispatching based on LOCATION_BIT.
+    /// Uses thread-local arena for PMA pointers.
+    #[inline(always)]
+    pub fn as_ne_bytes(&self) -> &[u8] {
+        let tagged = TaggedPtr::from_raw(self.0);
+        if tagged.location() == PtrLocation::Stack {
+            unsafe { self.as_ne_bytes_stack() }
+        } else {
+            Arena::with_current(|arena| self.as_ne_bytes_with_arena(arena))
+        }
+    }
+
+    /// Get Vec<u8> in native-endian order, auto-dispatching based on LOCATION_BIT.
+    /// Uses thread-local arena for PMA pointers.
+    #[inline(always)]
+    pub fn to_ne_bytes(&self) -> Vec<u8> {
+        let tagged = TaggedPtr::from_raw(self.0);
+        if tagged.location() == PtrLocation::Stack {
+            unsafe { self.to_ne_bytes_stack() }
+        } else {
+            Arena::with_current(|arena| self.to_ne_bytes_with_arena(arena))
+        }
+    }
+
+    /// Get Vec<u8> in big-endian order, auto-dispatching based on LOCATION_BIT.
+    /// Uses thread-local arena for PMA pointers.
+    #[inline(always)]
+    pub fn to_be_bytes(&self) -> Vec<u8> {
+        let tagged = TaggedPtr::from_raw(self.0);
+        if tagged.location() == PtrLocation::Stack {
+            unsafe { self.to_be_bytes_stack() }
+        } else {
+            Arena::with_current(|arena| self.to_be_bytes_with_arena(arena))
+        }
+    }
+
+    /// BitSlice view on an indirect atom, auto-dispatching based on LOCATION_BIT.
+    /// Uses thread-local arena for PMA pointers.
+    #[inline(always)]
+    pub fn as_bitslice(&self) -> &BitSlice<u64, Lsb0> {
+        let tagged = TaggedPtr::from_raw(self.0);
+        if tagged.location() == PtrLocation::Stack {
+            unsafe { self.as_bitslice_stack() }
+        } else {
+            Arena::with_current(|arena| self.as_bitslice_with_arena(arena))
+        }
+    }
+
+    /// Normalize and convert to direct atom if it will fit, auto-dispatching based on LOCATION_BIT.
+    /// Uses thread-local arena for PMA pointers.
+    #[inline(always)]
+    pub unsafe fn normalize_as_atom(&mut self) -> Atom {
+        let tagged = TaggedPtr::from_raw(self.0);
+        if tagged.location() == PtrLocation::Stack {
+            self.normalize_as_atom_stack()
+        } else {
+            Arena::with_current(|arena| self.normalize_as_atom_with_arena(arena))
+        }
+    }
 }
 
 // Debug impl cannot access arena, so just print raw value
@@ -919,6 +1123,18 @@ impl Cell {
 
     pub unsafe fn to_raw_pointer_with_arena(&self, arena: &Arena) -> *const CellMemory {
         TaggedPtr::from_raw(self.0).resolve_const(CELL_MASK, arena) as *const CellMemory
+    }
+
+    /// Get raw pointer, auto-dispatching based on LOCATION_BIT.
+    /// Uses thread-local arena for PMA pointers.
+    #[inline(always)]
+    pub fn to_raw_pointer(&self) -> *const CellMemory {
+        let tagged = TaggedPtr::from_raw(self.0);
+        if tagged.location() == PtrLocation::Stack {
+            ((tagged.payload(CELL_MASK)) << 3) as *const CellMemory
+        } else {
+            Arena::with_current(|arena| unsafe { self.to_raw_pointer_with_arena(arena) })
+        }
     }
 
     pub unsafe fn to_raw_pointer_mut_with_arena(&mut self, arena: &Arena) -> *mut CellMemory {
@@ -1011,6 +1227,18 @@ impl Cell {
         }
     }
 
+    /// Set forwarding pointer, auto-dispatching based on LOCATION_BIT.
+    /// Uses thread-local arena for PMA pointers.
+    #[inline(always)]
+    pub unsafe fn set_forwarding_pointer(&mut self, new_me: *const CellMemory) {
+        let tagged = TaggedPtr::from_raw(self.0);
+        if tagged.location() == PtrLocation::Stack {
+            self.set_forwarding_pointer_stack(new_me)
+        } else {
+            Arena::with_current(|arena| self.set_forwarding_pointer_with_arena(new_me, arena))
+        }
+    }
+
     /// Get forwarding pointer (stack-pointer form only)
     pub unsafe fn forwarding_pointer_stack(&self) -> Option<Cell> {
         let head_raw = (*self.to_raw_pointer_stack()).head.raw;
@@ -1020,6 +1248,18 @@ impl Cell {
             Some(Self::from_raw_pointer(ptr))
         } else {
             None
+        }
+    }
+
+    /// Get forwarding pointer, auto-dispatching based on LOCATION_BIT.
+    /// Uses thread-local arena for PMA pointers.
+    #[inline(always)]
+    pub unsafe fn forwarding_pointer(&self) -> Option<Cell> {
+        let tagged = TaggedPtr::from_raw(self.0);
+        if tagged.location() == PtrLocation::Stack {
+            self.forwarding_pointer_stack()
+        } else {
+            Arena::with_current(|arena| self.forwarding_pointer_with_arena(arena))
         }
     }
 
@@ -1062,6 +1302,18 @@ impl Cell {
         unsafe { (*(self.to_raw_pointer_with_arena(arena))).head }
     }
 
+    /// Get head, auto-dispatching based on LOCATION_BIT.
+    /// Uses thread-local arena for PMA pointers.
+    #[inline(always)]
+    pub fn head(&self) -> Noun {
+        let tagged = TaggedPtr::from_raw(self.0);
+        if tagged.location() == PtrLocation::Stack {
+            unsafe { self.head_stack() }
+        } else {
+            Arena::with_current(|arena| self.head_with_arena(arena))
+        }
+    }
+
     /// Get head using MemContext for pointer resolution.
     /// This is the preferred method for new code.
     #[inline(always)]
@@ -1073,6 +1325,18 @@ impl Cell {
     // TODO: Ditto, etc.
     pub fn tail_with_arena(&self, arena: &Arena) -> Noun {
         unsafe { (*(self.to_raw_pointer_with_arena(arena))).tail }
+    }
+
+    /// Get tail, auto-dispatching based on LOCATION_BIT.
+    /// Uses thread-local arena for PMA pointers.
+    #[inline(always)]
+    pub fn tail(&self) -> Noun {
+        let tagged = TaggedPtr::from_raw(self.0);
+        if tagged.location() == PtrLocation::Stack {
+            unsafe { self.tail_stack() }
+        } else {
+            Arena::with_current(|arena| self.tail_with_arena(arena))
+        }
     }
 
     /// Get tail using MemContext for pointer resolution.
@@ -1788,6 +2052,119 @@ impl Atom {
     pub unsafe fn from_raw(raw: u64) -> Atom {
         Atom { raw }
     }
+
+    // Auto-dispatch methods that check LOCATION_BIT and use thread-local arena for PMA
+
+    /// Get as u64, auto-dispatching based on LOCATION_BIT.
+    /// Uses thread-local arena for PMA pointers.
+    #[inline(always)]
+    pub fn as_u64(self) -> Result<u64> {
+        if self.is_direct() {
+            Ok(unsafe { self.direct.data() })
+        } else {
+            unsafe { self.indirect.as_u64() }
+        }
+    }
+
+    /// Get bytes, auto-dispatching based on LOCATION_BIT.
+    /// Uses thread-local arena for PMA pointers.
+    #[inline(always)]
+    pub fn as_ne_bytes(&self) -> &[u8] {
+        if self.is_direct() {
+            unsafe { self.direct.as_ne_bytes() }
+        } else {
+            unsafe { self.indirect.as_ne_bytes() }
+        }
+    }
+
+    /// Get Vec<u8> in native-endian order, auto-dispatching based on LOCATION_BIT.
+    /// Uses thread-local arena for PMA pointers.
+    #[inline(always)]
+    pub fn to_ne_bytes(&self) -> Vec<u8> {
+        if self.is_direct() {
+            unsafe { self.direct.to_ne_bytes() }
+        } else {
+            unsafe { self.indirect.to_ne_bytes() }
+        }
+    }
+
+    /// Get Vec<u8> in big-endian order, auto-dispatching based on LOCATION_BIT.
+    /// Uses thread-local arena for PMA pointers.
+    #[inline(always)]
+    pub fn to_be_bytes(self) -> Vec<u8> {
+        if self.is_direct() {
+            unsafe { self.direct.to_be_bytes() }
+        } else {
+            unsafe { self.indirect.to_be_bytes() }
+        }
+    }
+
+    /// BitSlice view on an atom, auto-dispatching based on LOCATION_BIT.
+    /// Uses thread-local arena for PMA pointers.
+    #[inline(always)]
+    pub fn as_bitslice(&self) -> &BitSlice<u64, Lsb0> {
+        if self.is_indirect() {
+            unsafe { self.indirect.as_bitslice() }
+        } else {
+            unsafe { self.direct.as_bitslice() }
+        }
+    }
+
+    /// Size of atom in 64-bit words, auto-dispatching based on LOCATION_BIT.
+    /// Uses thread-local arena for PMA pointers.
+    #[inline(always)]
+    pub fn size(&self) -> usize {
+        match self.as_either() {
+            Left(_direct) => 1,
+            Right(indirect) => indirect.size(),
+        }
+    }
+
+    /// Bit size of atom, auto-dispatching based on LOCATION_BIT.
+    /// Uses thread-local arena for PMA pointers.
+    #[inline(always)]
+    pub fn bit_size(&self) -> usize {
+        match self.as_either() {
+            Left(direct) => direct.bit_size(),
+            Right(indirect) => indirect.bit_size(),
+        }
+    }
+
+    /// Data pointer, auto-dispatching based on LOCATION_BIT.
+    /// Uses thread-local arena for PMA pointers.
+    #[inline(always)]
+    pub fn data_pointer(&self) -> *const u64 {
+        match self.as_either() {
+            Left(_direct) => (self as *const Atom) as *const u64,
+            Right(indirect) => indirect.data_pointer(),
+        }
+    }
+
+    /// Get as UBig, auto-dispatching based on LOCATION_BIT.
+    /// Uses thread-local arena for PMA pointers.
+    #[inline(always)]
+    pub fn as_ubig<S: Stack>(self, stack: &mut S) -> UBig {
+        if self.is_indirect() {
+            unsafe { self.indirect.as_ubig(stack) }
+        } else {
+            unsafe { self.direct.as_ubig(stack) }
+        }
+    }
+
+    /// Produce a SoftFloat-compatible ordered pair of 64-bit words,
+    /// auto-dispatching based on LOCATION_BIT.
+    /// Uses thread-local arena for PMA pointers.
+    #[inline(always)]
+    pub unsafe fn as_u64_pair(self) -> Result<[u64; 2]> {
+        if self.is_direct() {
+            let u128_array = &mut [0u64; 2];
+            u128_array[0] = self.as_direct()?.data();
+            u128_array[1] = 0x0_u64;
+            Ok(*u128_array)
+        } else {
+            self.indirect.as_u64_pair()
+        }
+    }
 }
 
 impl fmt::Debug for Atom {
@@ -1874,6 +2251,16 @@ impl Allocated {
             Right(cell) => cell
                 .forwarding_pointer_with_arena(arena)
                 .map(|c| c.as_allocated()),
+        }
+    }
+
+    /// Get forwarding pointer, auto-dispatching based on LOCATION_BIT.
+    /// Uses thread-local arena for PMA pointers.
+    #[inline(always)]
+    pub unsafe fn forwarding_pointer(&self) -> Option<Allocated> {
+        match self.as_either() {
+            Left(indirect) => indirect.forwarding_pointer().map(|i| i.as_allocated()),
+            Right(cell) => cell.forwarding_pointer().map(|c| c.as_allocated()),
         }
     }
 

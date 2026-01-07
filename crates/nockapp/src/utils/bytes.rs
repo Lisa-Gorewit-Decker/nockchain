@@ -3,6 +3,7 @@ use std::any;
 use bytes::Bytes;
 use ibig::UBig;
 use nockvm::jets::cold::{Nounable, NounableResult};
+use nockvm::mem::Arena;
 use nockvm::noun::{Atom, NounAllocator, Slots, D, T};
 
 use crate::utils::error::ConversionError;
@@ -136,13 +137,13 @@ impl Byts {
 
 impl Nounable for Byts {
     type Target = Self;
-    fn into_noun<A: NounAllocator>(self, stack: &mut A) -> Noun {
+    fn into_noun<A: NounAllocator>(self, stack: &mut A, _arena: &Arena) -> Noun {
         let big = UBig::from_be_bytes(&self.0);
         let wid = D(self.0.len() as u64);
         let dat = Atom::from_ubig(stack, &big).as_noun();
         T(stack, &[wid, dat])
     }
-    fn from_noun<A: NounAllocator>(_stack: &mut A, noun: &Noun) -> NounableResult<Self::Target> {
+    fn from_noun<A: NounAllocator>(_stack: &mut A, _arena: &Arena, noun: &Noun) -> NounableResult<Self::Target> {
         let size = noun.slot(2)?;
         let dat = noun.slot(3)?.as_atom()?;
 

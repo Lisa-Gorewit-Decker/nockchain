@@ -32,8 +32,9 @@ use nockapp_grpc::{private_nockapp, public_nockchain};
 use nockchain_types::common::{Hash, SchnorrPubkey, TimelockRangeAbsolute, TimelockRangeRelative};
 use nockchain_types::{v0, v1};
 use nockvm::jets::cold::Nounable;
+use nockvm::mem::Arena;
 #[cfg(test)]
-use nockvm::mem::{Arena, NockStack};
+use nockvm::mem::NockStack;
 use nockvm::noun::{Atom, Cell, IndirectAtom, Noun, D, NO, SIG, T, YES};
 use noun_serde::prelude::*;
 use noun_serde::NounDecodeError;
@@ -486,10 +487,11 @@ impl Wallet {
     /// * `sal` - The salt to use for key generation.
     fn keygen(entropy: &[u8; 32], sal: &[u8; 16]) -> CommandNoun<NounSlab> {
         let mut slab = NounSlab::new();
+        let arena = Arena::stub_for_stack_only();
         let ent: Byts = Byts::new(entropy.to_vec());
-        let ent_noun = ent.into_noun(&mut slab);
+        let ent_noun = ent.into_noun(&mut slab, arena);
         let sal: Byts = Byts::new(sal.to_vec());
-        let sal_noun = sal.into_noun(&mut slab);
+        let sal_noun = sal.into_noun(&mut slab, arena);
         Self::wallet("keygen", &[ent_noun, sal_noun], Operation::Poke, &mut slab)
     }
 
@@ -522,10 +524,11 @@ impl Wallet {
     // * `label` - Optional label for the child key
     fn derive_child(index: u64, hardened: bool, label: &Option<String>) -> CommandNoun<NounSlab> {
         let mut slab = NounSlab::new();
+        let arena = Arena::stub_for_stack_only();
         let index_noun = D(index);
         let hardened_noun = if hardened { YES } else { NO };
         let label_noun = label.as_ref().map_or(SIG, |l| {
-            let label_noun = l.into_noun(&mut slab);
+            let label_noun = l.into_noun(&mut slab, arena);
             T(&mut slab, &[SIG, label_noun])
         });
 

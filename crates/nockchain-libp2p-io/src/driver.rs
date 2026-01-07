@@ -30,6 +30,7 @@ use nockapp::utils::scry::*;
 use nockapp::wire::{Wire, WireRepr};
 use nockapp::{AtomExt, NockAppError};
 use nockvm::ext::NounExt;
+use nockvm::mem::Arena;
 use nockvm::noun::{Atom, Noun, D, T};
 use nockvm_macros::tas;
 use rand::rng;
@@ -1052,7 +1053,7 @@ async fn handle_request_response(
                         trace!(
                             "Poking kernel with wire: {:?} noun: {:?}",
                             wire,
-                            nockvm::noun::FullDebugCell(unsafe { &request_slab.root().as_cell()? })
+                            nockvm::noun::FullDebugCell(unsafe { &request_slab.root().as_cell()? }, Arena::stub_for_stack_only())
                         );
 
                         let poke = gossip.fact_poke();
@@ -1162,7 +1163,7 @@ async fn handle_request_response(
 
                 trace!(
                     "Response noun: {:?}",
-                    nockvm::noun::FullDebugCell(&response_noun.as_cell()?)
+                    nockvm::noun::FullDebugCell(&response_noun.as_cell()?, Arena::stub_for_stack_only())
                 );
 
                 let response = NockchainFact::from_noun_slab(&mut response_slab)?;

@@ -1,6 +1,6 @@
 use nockchain_math::belt::*;
 use nockvm::interpreter::Context;
-use nockvm::jets::bits::util::rip;
+use nockvm::jets::bits::util::rip_auto as rip;
 use nockvm::jets::util::{bite, slot, BAIL_FAIL};
 use nockvm::jets::Result;
 use nockvm::mem::NockStack;

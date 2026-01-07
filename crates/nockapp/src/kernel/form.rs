@@ -13,7 +13,7 @@ use nockvm::jets::cold::{Cold, Nounable};
 use nockvm::jets::hot::{HotEntry, URBIT_HOT_STATE};
 use nockvm::jets::nock::util::mook;
 use nockvm::mem::{Arena, NockStack, Retag};
-use nockvm::mug::met3_usize;
+use nockvm::mug::met3_usize_auto;
 use nockvm::noun::{Atom, Cell, DirectAtom, IndirectAtom, Noun, Slots, D, T};
 use nockvm::trace::{path_to_cord, write_serf_trace_safe};
 use nockvm_macros::tas;
@@ -402,7 +402,9 @@ fn serf_loop<C: SerfCheckpoint>(
                 };
             }
             SerfAction::GetColdStateSlab { result } => {
-                let cold_state_noun = serf.context.cold.into_noun(serf.stack());
+                let cold_state_noun = Arena::with_current(|arena| {
+                    serf.context.cold.into_noun(serf.stack(), arena)
+                });
                 let cold_state_slab = {
                     let mut slab = NounSlab::new();
                     slab.copy_into(cold_state_noun);
@@ -772,8 +774,9 @@ impl Serf {
 
             let ker_state = saveable.state.copy_to_stack(&mut stack);
             let cold_noun = saveable.cold.copy_to_stack(&mut stack);
-            let cold_vecs = Cold::from_noun(&mut stack, &cold_noun)
-                .expect("Could not load cold state from snapshot");
+            let cold_vecs = Arena::with_current(|arena| {
+                Cold::from_noun(&mut stack, arena, &cold_noun)
+            }).expect("Could not load cold state from snapshot");
             let cold = Cold::from_vecs(&mut stack, cold_vecs.0, cold_vecs.1, cold_vecs.2);
             if saveable.ker_hash != ker_hash {
                 debug!(
@@ -1113,7 +1116,7 @@ impl Serf {
     fn poke_trace_name(stack: &mut NockStack, wire: Noun, vent: Atom) -> String {
         let arena = Arena::stub_for_stack_only();
         let wpc = path_to_cord(stack, arena, wire);
-        let wpc_len = met3_usize(wpc);
+        let wpc_len = met3_usize_auto(wpc);
         let wpc_bytes = &wpc.as_ne_bytes()[0..wpc_len];
         let wpc_str = match std::str::from_utf8(wpc_bytes) {
             Ok(valid) => valid,
@@ -1123,7 +1126,7 @@ impl Serf {
             }
         };
 
-        let vc_len = met3_usize(vent);
+        let vc_len = met3_usize_auto(vent);
         let vc_bytes = &vent.as_ne_bytes()[0..vc_len];
         let vc_str = match std::str::from_utf8(vc_bytes) {
             Ok(valid) => valid,
@@ -1385,7 +1388,9 @@ impl SerfCheckpoint for SaveableCheckpoint {
         let cold_noun_start = Instant::now();
         // Cold state has nouns in it which are *not* copied in into_noun
         // TODO: FIX THIS FOOTGUN
-        let cold_stack_noun = cold_state.into_noun(stack);
+        let cold_stack_noun = Arena::with_current(|arena| {
+            cold_state.into_noun(stack, arena)
+        });
         let mut cold_slab: NounSlab = NounSlab::new();
         let cold_copy = cold_slab.copy_into(cold_stack_noun);
         cold_slab.set_root(cold_copy);

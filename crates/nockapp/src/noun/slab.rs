@@ -10,13 +10,13 @@ use bytes::Bytes;
 use either::Either;
 use ibig::Stack;
 use intmap::IntMap;
-use nockvm::ext::noun_equality;
+use nockvm::ext::noun_equality_auto;
 use nockvm::mem::NockStack;
-use nockvm::mug::{calc_atom_mug_u32, calc_cell_mug_u32, get_mug, set_mug};
+use nockvm::mug::{calc_atom_mug_u32_auto, calc_cell_mug_u32_auto, get_mug_auto, set_mug_auto};
 use nockvm::noun::{
     Atom, Cell, CellMemory, DirectAtom, IndirectAtom, Noun, NounAllocator, D, DIRECT_MAX,
 };
-use nockvm::serialization::{met0_u64_to_usize, met0_usize};
+use nockvm::serialization::{met0_u64_to_usize, met0_usize_auto};
 use thiserror::Error;
 
 use crate::noun::NounExt;
@@ -220,7 +220,7 @@ impl<J> NounAllocator for NounSlab<J> {
     unsafe fn equals(&mut self, a: *mut Noun, b: *mut Noun) -> bool {
         let a = unsafe { &mut *a };
         let b = unsafe { &mut *b };
-        noun_equality(a, b)
+        noun_equality_auto(a, b)
     }
 }
 
@@ -385,7 +385,7 @@ impl<J> NounSlab<J> {
         if let Ok(allocated) = root.as_allocated() {
             match allocated.as_either() {
                 Either::Left(indirect) => {
-                    if let Some(ptr) = indirect.data_pointer_stack() {
+                    if let Some(ptr) = indirect.stack_data_pointer() {
                         let u8_ptr = ptr as *const u8;
                         if self.contains_ptr(u8_ptr) {
                             self.root = root;
@@ -528,7 +528,7 @@ impl<V> NounMap<V> {
         let key_mug = slab_mug(key) as u64;
         if let Some(vec) = self.0.get_mut(key_mug) {
             let mut chain_iter = vec[..].iter_mut();
-            if let Some(entry) = chain_iter.find(|entry| noun_equality(&key, &entry.0)) {
+            if let Some(entry) = chain_iter.find(|entry| noun_equality_auto(&key, &entry.0)) {
                 entry.1 = value;
             } else {
                 vec.push((key, value))
@@ -543,7 +543,7 @@ impl<V> NounMap<V> {
         if let Some(vec) = self.0.get(key_mug) {
             let mut chain_iter = vec[..].iter();
             if let Some(entry) =
-                chain_iter.find(|entry| noun_equality(&(key as Noun), &entry.0))
+                chain_iter.find(|entry| noun_equality_auto(&(key as Noun), &entry.0))
             {
                 Some(&entry.1)
             } else {
@@ -556,7 +556,7 @@ impl<V> NounMap<V> {
 }
 
 pub fn slab_equality(a: &NounSlab, b: &NounSlab) -> bool {
-    noun_equality(&a.root, &b.root)
+    noun_equality_auto(&a.root, &b.root)
 }
 
 fn slab_mug(a: Noun) -> u32 {
@@ -566,11 +566,11 @@ fn slab_mug(a: Noun) -> u32 {
             if allocated.get_cached_mug().is_none() {
                 match allocated.as_either() {
                     Either::Left(indirect) => unsafe {
-                        set_mug(&mut allocated, calc_atom_mug_u32(indirect.as_atom()));
+                        set_mug_auto(&mut allocated, calc_atom_mug_u32_auto(indirect.as_atom()));
                     },
-                    Either::Right(cell) => match (get_mug(cell.head()), get_mug(cell.tail())) {
+                    Either::Right(cell) => match (get_mug_auto(cell.head()), get_mug_auto(cell.tail())) {
                         (Some(head_mug), Some(tail_mug)) => unsafe {
-                            set_mug(&mut allocated, calc_cell_mug_u32(head_mug, tail_mug));
+                            set_mug_auto(&mut allocated, calc_cell_mug_u32_auto(head_mug, tail_mug));
                         },
                         _ => {
                             stack.push(noun);
@@ -582,7 +582,7 @@ fn slab_mug(a: Noun) -> u32 {
             }
         }
     }
-    get_mug(a).expect("Noun should have a mug once mugged.")
+    get_mug_auto(a).expect("Noun should have a mug once mugged.")
 }
 
 enum CueStackEntry {
@@ -624,7 +624,7 @@ impl Jammer for NockJammer {
                 buffer.extend_from_bitslice(bits![u8, Lsb0; 0, 1]);
                 return;
             }
-            let atom_sz = met0_usize(atom);
+            let atom_sz = met0_usize_auto(atom);
             let atom_sz_sz = met0_u64_to_usize(atom_sz as u64);
             buffer.push(false); // atom tag
             let buffer_len = buffer.len();
@@ -641,7 +641,7 @@ impl Jammer for NockJammer {
         while let Some(noun) = stack.pop() {
             if let Some(backref) = backref_map.get(noun) {
                 if let Ok(atom) = noun.as_atom() {
-                    if met0_u64_to_usize(*backref as u64) < met0_usize(atom) {
+                    if met0_u64_to_usize(*backref as u64) < met0_usize_auto(atom) {
                         mat_backref(&mut buffer, *backref);
                     } else {
                         mat_atom(&mut buffer, atom)
@@ -948,7 +948,7 @@ mod tests {
         println!("cued_noun: {:?}", cued_noun);
 
         assert!(
-            noun_equality(&noun_with_indirect, &cued_noun),
+            noun_equality_auto(&noun_with_indirect, &cued_noun),
             "Nouns with indirect atoms should be equal after jam/cue roundtrip"
         );
     }
@@ -1067,7 +1067,7 @@ mod tests {
         if let Ok(cued_noun) = result {
             let expected_noun = T(&mut slab, &[D(1), D(0)]);
             assert!(
-                noun_equality(&cued_noun, &expected_noun),
+                noun_equality_auto(&cued_noun, &expected_noun),
                 "Cued noun should equal [1 0]"
             );
         }

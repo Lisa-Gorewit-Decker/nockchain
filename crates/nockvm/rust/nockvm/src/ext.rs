@@ -14,8 +14,14 @@ use crate::serialization::{cue, jam};
 pub trait AtomExt {
     fn from_bytes<A: NounAllocator>(allocator: &mut A, bytes: &[u8]) -> Atom;
     fn eq_bytes_with_arena<B: AsRef<[u8]>>(&self, bytes: B, arena: &Arena) -> bool;
+    /// Auto-dispatch version of eq_bytes using thread-local arena for PMA pointers.
+    fn eq_bytes<B: AsRef<[u8]>>(&self, bytes: B) -> bool;
     fn to_bytes_until_nul_with_arena(&self, arena: &Arena) -> std::result::Result<Vec<u8>, str::Utf8Error>;
+    /// Auto-dispatch version of to_bytes_until_nul using thread-local arena for PMA pointers.
+    fn to_bytes_until_nul(&self) -> std::result::Result<Vec<u8>, str::Utf8Error>;
     fn into_string_with_arena(self, arena: &Arena) -> std::result::Result<String, str::Utf8Error>;
+    /// Auto-dispatch version of into_string using thread-local arena for PMA pointers.
+    fn into_string(self) -> std::result::Result<String, str::Utf8Error>;
     /// Convert to string for stack-pointer form atoms only
     ///
     /// # Safety
@@ -43,13 +49,37 @@ impl AtomExt for Atom {
         &atom_bytes[0..bytes_ref.len()] == bytes_ref
     }
 
+    fn eq_bytes<B: AsRef<[u8]>>(&self, bytes: B) -> bool {
+        let bytes_ref = bytes.as_ref();
+        let atom_bytes = self.as_ne_bytes();
+        if bytes_ref.len() > atom_bytes.len() {
+            return false;
+        }
+        if bytes_ref.len() == atom_bytes.len() {
+            return atom_bytes == bytes_ref;
+        }
+        if atom_bytes[bytes_ref.len()..].iter().any(|b| *b != 0) {
+            return false;
+        }
+        &atom_bytes[0..bytes_ref.len()] == bytes_ref
+    }
+
     fn to_bytes_until_nul_with_arena(&self, arena: &Arena) -> std::result::Result<Vec<u8>, str::Utf8Error> {
         str::from_utf8(self.as_ne_bytes_with_arena(arena))
             .map(|bytes| bytes.trim_end_matches('\0').as_bytes().to_vec())
     }
 
+    fn to_bytes_until_nul(&self) -> std::result::Result<Vec<u8>, str::Utf8Error> {
+        str::from_utf8(self.as_ne_bytes())
+            .map(|bytes| bytes.trim_end_matches('\0').as_bytes().to_vec())
+    }
+
     fn into_string_with_arena(self, arena: &Arena) -> std::result::Result<String, str::Utf8Error> {
         str::from_utf8(self.as_ne_bytes_with_arena(arena)).map(|string| string.trim_end_matches('\0').to_string())
+    }
+
+    fn into_string(self) -> std::result::Result<String, str::Utf8Error> {
+        str::from_utf8(self.as_ne_bytes()).map(|string| string.trim_end_matches('\0').to_string())
     }
 
     unsafe fn into_string_stack(self) -> std::result::Result<String, str::Utf8Error> {
@@ -89,7 +119,11 @@ pub trait NounExt {
     fn cue_bytes_slice(stack: &mut NockStack, bytes: &[u8]) -> std::result::Result<Noun, Error>;
     fn jam_self(self, stack: &mut NockStack) -> JammedNoun;
     fn list_iter_with_arena(self, arena: &Arena) -> NounListIterator;
+    /// Auto-dispatch list iterator that uses LOCATION_BIT for pointer resolution.
+    fn list_iter(self) -> AutoDispatchListIterator;
     fn eq_bytes_with_arena(self, bytes: impl AsRef<[u8]>, arena: &Arena) -> bool;
+    /// Auto-dispatch version of eq_bytes using thread-local arena for PMA pointers.
+    fn eq_bytes(self, bytes: impl AsRef<[u8]>) -> bool;
 }
 
 impl NounExt for Noun {
@@ -111,9 +145,21 @@ impl NounExt for Noun {
         NounListIterator::new(self, arena)
     }
 
+    fn list_iter(self) -> AutoDispatchListIterator {
+        AutoDispatchListIterator::new(self)
+    }
+
     fn eq_bytes_with_arena(self, bytes: impl AsRef<[u8]>, arena: &Arena) -> bool {
         if let Ok(atom) = self.as_atom() {
             atom.eq_bytes_with_arena(bytes, arena)
+        } else {
+            false
+        }
+    }
+
+    fn eq_bytes(self, bytes: impl AsRef<[u8]>) -> bool {
+        if let Ok(atom) = self.as_atom() {
+            atom.eq_bytes(bytes)
         } else {
             false
         }
@@ -185,6 +231,31 @@ impl<'a> Iterator for NounListIterator<'a> {
         if let Ok(cell) = self.0.as_cell() {
             self.0 = cell.tail_with_arena(self.1);
             Some(cell.head_with_arena(self.1))
+        } else if unsafe { self.0.raw_equals(&D(0)) } {
+            None
+        } else {
+            panic!("Improper list terminator: {:?}", self.0);
+        }
+    }
+}
+
+/// Auto-dispatch list iterator that uses LOCATION_BIT to determine
+/// whether to use stack or thread-local arena for pointer resolution.
+pub struct AutoDispatchListIterator(Noun);
+
+impl AutoDispatchListIterator {
+    pub fn new(noun: Noun) -> Self {
+        AutoDispatchListIterator(noun)
+    }
+}
+
+impl Iterator for AutoDispatchListIterator {
+    type Item = Noun;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if let Ok(cell) = self.0.as_cell() {
+            self.0 = cell.tail();
+            Some(cell.head())
         } else if unsafe { self.0.raw_equals(&D(0)) } {
             None
         } else {
@@ -303,6 +374,95 @@ pub fn noun_equality(a: &Noun, b: &Noun, arena: &Arena) -> bool {
                     }
                     _ => {
                         // At least one direct atom, and raw_equals failed above
+                        return false;
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// Auto-dispatch version of noun_equality that uses thread-local arena for PMA pointers.
+///
+/// Non-unifying structural equality for nouns.
+/// See noun_equality for full documentation.
+pub fn noun_equality_auto(a: &Noun, b: &Noun) -> bool {
+    let mut already_equal: IntMap<u128, ()> = IntMap::new();
+
+    fn ae_keys(a: Noun, b: Noun) -> (u128, u128) {
+        let a_raw = unsafe { a.as_raw() } as u128;
+        let b_raw = unsafe { b.as_raw() } as u128;
+        (a_raw << 64 | b_raw, b_raw << 64 | a_raw)
+    }
+
+    fn check_ae(ae: &IntMap<u128, ()>, a: Noun, b: Noun) -> bool {
+        let (key1, key2) = ae_keys(a, b);
+        ae.contains_key(key1) || ae.contains_key(key2)
+    }
+
+    fn set_ae(ae: &mut IntMap<u128, ()>, a: Noun, b: Noun) {
+        let (key1, _key2) = ae_keys(a, b);
+        ae.insert(key1, ());
+    }
+
+    enum StackEntry {
+        Nouns(Noun, Noun),
+        MarkEqual(Noun, Noun),
+    }
+
+    let mut stack = vec![StackEntry::Nouns(*a, *b)];
+
+    loop {
+        let Some(entry) = stack.pop() else {
+            return true;
+        };
+
+        match entry {
+            StackEntry::MarkEqual(a, b) => {
+                set_ae(&mut already_equal, a, b);
+            }
+            StackEntry::Nouns(a, b) => {
+                if unsafe { a.raw_equals(&b) } {
+                    continue;
+                }
+
+                if check_ae(&already_equal, a, b) {
+                    continue;
+                }
+
+                match (
+                    a.as_ref_either_direct_allocated(),
+                    b.as_ref_either_direct_allocated(),
+                ) {
+                    (Right(a_alloc), Right(b_alloc)) => {
+                        if let Some(a_mug) = a_alloc.get_cached_mug() {
+                            if let Some(b_mug) = b_alloc.get_cached_mug() {
+                                if a_mug != b_mug {
+                                    return false;
+                                }
+                            }
+                        }
+
+                        match (a_alloc.as_ref_either(), b_alloc.as_ref_either()) {
+                            (Left(a_indirect), Left(b_indirect)) => {
+                                // Use auto-dispatch as_slice
+                                if a_indirect.as_slice() != b_indirect.as_slice() {
+                                    return false;
+                                }
+                                set_ae(&mut already_equal, a, b);
+                            }
+                            (Right(a_cell), Right(b_cell)) => {
+                                stack.push(StackEntry::MarkEqual(a, b));
+                                // Use auto-dispatch head/tail
+                                stack.push(StackEntry::Nouns(a_cell.tail(), b_cell.tail()));
+                                stack.push(StackEntry::Nouns(a_cell.head(), b_cell.head()));
+                            }
+                            _ => {
+                                return false;
+                            }
+                        }
+                    }
+                    _ => {
                         return false;
                     }
                 }

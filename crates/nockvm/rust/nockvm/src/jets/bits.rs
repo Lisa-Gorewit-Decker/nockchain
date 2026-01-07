@@ -356,6 +356,22 @@ pub mod util {
         }
     }
 
+    /// Left shift, auto-dispatching based on LOCATION_BIT.
+    /// Uses thread-local arena for PMA pointers.
+    pub fn lsh_auto(stack: &mut NockStack, bloq: usize, step: usize, a: Atom) -> Result {
+        let len = met_auto(bloq, a);
+        if len == 0 {
+            return Ok(D(0));
+        }
+
+        let new_size = bits_to_word(checked_add(a.bit_size(), checked_left_shift(bloq, step)?)?)?;
+        unsafe {
+            let (mut atom, dest) = IndirectAtom::new_raw_mut_bitslice(stack, new_size);
+            chop(bloq, 0, len, step, dest, a.as_bitslice())?;
+            Ok(atom.normalize_as_atom().as_noun())
+        }
+    }
+
     pub fn can(stack: &mut NockStack, bloq: usize, original_list: Noun, arena: &Arena) -> Result {
         let mut len = 0usize;
         let mut list = original_list;
@@ -420,6 +436,37 @@ pub mod util {
                     IndirectAtom::new_raw_mut_bitslice(stack, step << bloq);
                 chop(bloq, i * step, step, 0, new_slice, atom.as_bitslice_with_arena(arena))?;
                 new_indirect.normalize_as_atom_with_arena(arena)
+            };
+            list = Cell::new(stack, new_atom.as_noun(), list).as_noun();
+        }
+
+        Ok(list)
+    }
+
+    /// Get the number of bloq-sized units in an atom, auto-dispatching based on LOCATION_BIT.
+    /// Uses thread-local arena for PMA pointers.
+    pub fn met_auto(bloq: usize, a: Atom) -> usize {
+        if unsafe { a.as_noun().raw_equals(&D(0)) } {
+            0
+        } else if bloq < 6 {
+            (a.bit_size() + ((1 << bloq) - 1)) >> bloq
+        } else {
+            let bloq_word = bloq - 6;
+            (a.size() + ((1 << bloq_word) - 1)) >> bloq_word
+        }
+    }
+
+    /// Rip an atom into a list of chunks, auto-dispatching based on LOCATION_BIT.
+    /// Uses thread-local arena for PMA pointers.
+    pub fn rip_auto(stack: &mut NockStack, bloq: usize, step: usize, atom: Atom) -> Result {
+        let len = met_auto(bloq, atom).div_ceil(step);
+        let mut list = D(0);
+        for i in (0..len).rev() {
+            let new_atom = unsafe {
+                let (mut new_indirect, new_slice) =
+                    IndirectAtom::new_raw_mut_bitslice(stack, step << bloq);
+                chop(bloq, i * step, step, 0, new_slice, atom.as_bitslice())?;
+                new_indirect.normalize_as_atom()
             };
             list = Cell::new(stack, new_atom.as_noun(), list).as_noun();
         }

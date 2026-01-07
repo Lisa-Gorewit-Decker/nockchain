@@ -1244,9 +1244,10 @@ pub(crate) mod test {
     fn cold_bidirectional_conversion() {
         let mut stack = make_test_stack(DEFAULT_STACK_SIZE);
         let cold = make_cold_state(&mut stack);
-        let cold_noun = cold.into_noun(&mut stack);
-        let new_cold =
-            Cold::from_noun(&mut stack, &cold_noun).expect("Failed to convert noun to cold");
+        let cold_noun = Arena::with_current(|arena| cold.into_noun(&mut stack, arena));
+        let new_cold = Arena::with_current(|arena| {
+            Cold::from_noun(&mut stack, arena, &cold_noun).expect("Failed to convert noun to cold")
+        });
 
         // battery_to_paths
         let old_battery_to_paths = unsafe { &(*cold.0).battery_to_paths };
@@ -1264,8 +1265,8 @@ pub(crate) mod test {
                 a.0,
                 b.0
             );
-            let mut value_a_noun = a.1.into_noun(&mut stack);
-            let mut value_b_noun = b.1.into_noun(&mut stack);
+            let mut value_a_noun = Arena::with_current(|arena| a.1.into_noun(&mut stack, arena));
+            let mut value_b_noun = Arena::with_current(|arena| b.1.into_noun(&mut stack, arena));
             let value_a = &mut value_a_noun as *mut Noun;
             let value_b = &mut value_b_noun as *mut Noun;
             assert!(
@@ -1291,8 +1292,8 @@ pub(crate) mod test {
                 a.0,
                 b.0
             );
-            let mut value_a_noun = a.1.into_noun(&mut stack);
-            let mut value_b_noun = b.1.into_noun(&mut stack);
+            let mut value_a_noun = Arena::with_current(|arena| a.1.into_noun(&mut stack, arena));
+            let mut value_b_noun = Arena::with_current(|arena| b.1.into_noun(&mut stack, arena));
             let value_a = &mut value_a_noun as *mut Noun;
             let value_b = &mut value_b_noun as *mut Noun;
             assert!(
@@ -1318,8 +1319,8 @@ pub(crate) mod test {
                 a.0,
                 b.0
             );
-            let mut value_a_noun = a.1.into_noun(&mut stack);
-            let mut value_b_noun = b.1.into_noun(&mut stack);
+            let mut value_a_noun = Arena::with_current(|arena| a.1.into_noun(&mut stack, arena));
+            let mut value_b_noun = Arena::with_current(|arena| b.1.into_noun(&mut stack, arena));
             let value_a = &mut value_a_noun as *mut Noun;
             let value_b = &mut value_b_noun as *mut Noun;
             assert!(
@@ -1337,10 +1338,10 @@ pub(crate) mod test {
         let mut stack = make_test_stack(DEFAULT_STACK_SIZE);
         let items = vec![(D(0), D(1)), (D(2), D(3))];
         let hamt = super::hamt_from_vec(&mut stack, items);
-        let noun = hamt.into_noun(&mut stack);
-        let new_hamt: Vec<(Noun, Noun)> = <Hamt<Noun> as Nounable>::from_noun::<NockStack>(
-            &mut stack, &noun,
-        )
+        let noun = Arena::with_current(|arena| hamt.into_noun(&mut stack, arena));
+        let new_hamt: Vec<(Noun, Noun)> = Arena::with_current(|arena| {
+            <Hamt<Noun> as Nounable>::from_noun::<NockStack>(&mut stack, arena, &noun)
+        })
         .unwrap_or_else(|err| {
             panic!(
                 "Panicked with {err:?} at {}:{} (git sha: {:?})",
@@ -1406,12 +1407,13 @@ pub(crate) mod test {
     fn batteries_list_bidirectional_conversion() {
         let mut stack = make_test_stack(DEFAULT_STACK_SIZE);
         let batteries_list2 = make_batteries_list(&mut stack, &[1, 2]);
-        let batteries_list_noun = batteries_list2.into_noun(&mut stack);
-        let new_batteries_list2 = BatteriesList::from_noun(&mut stack, &batteries_list_noun)
-            .expect("Failed to convert noun to batteries list");
+        let batteries_list_noun = Arena::with_current(|arena| batteries_list2.into_noun(&mut stack, arena));
+        let new_batteries_list2 = Arena::with_current(|arena| {
+            BatteriesList::from_noun(&mut stack, arena, &batteries_list_noun)
+        }).expect("Failed to convert noun to batteries list");
         for (a, b) in batteries_list2.zip(new_batteries_list2) {
-            let mut a_noun = a.into_noun(&mut stack);
-            let mut b_noun = b.into_noun(&mut stack);
+            let mut a_noun = Arena::with_current(|arena| a.into_noun(&mut stack, arena));
+            let mut b_noun = Arena::with_current(|arena| b.into_noun(&mut stack, arena));
             let a_ptr = &mut a_noun as *mut Noun;
             let b_ptr = &mut b_noun as *mut Noun;
             assert!(
@@ -1462,9 +1464,10 @@ pub(crate) mod test {
     fn batteries_bidirectional_conversion() {
         let mut stack = make_test_stack(DEFAULT_STACK_SIZE);
         let batteries2 = make_batteries(&mut stack);
-        let batteries_noun = batteries2.into_noun(&mut stack);
-        let new_batteries = Batteries::from_noun(&mut stack, &batteries_noun)
-            .expect("Failed to convert noun to batteries");
+        let batteries_noun = Arena::with_current(|arena| batteries2.into_noun(&mut stack, arena));
+        let new_batteries = Arena::with_current(|arena| {
+            Batteries::from_noun(&mut stack, arena, &batteries_noun)
+        }).expect("Failed to convert noun to batteries");
         assert_eq!(new_batteries.count(), 2);
         assert_eq!(batteries2.count(), 2);
         for ((a, a_atom), (b, b_atom)) in new_batteries.zip(batteries2) {
@@ -1478,8 +1481,8 @@ pub(crate) mod test {
                 a_val,
                 b_val
             );
-            let a_atom_noun = a_atom.into_noun(&mut stack);
-            let b_atom_noun = b_atom.into_noun(&mut stack);
+            let a_atom_noun = Arena::with_current(|arena| a_atom.into_noun(&mut stack, arena));
+            let b_atom_noun = Arena::with_current(|arena| b_atom.into_noun(&mut stack, arena));
             let a_atom_noun_ptr = &mut a_atom_noun.clone() as *mut Noun;
             let b_atom_noun_ptr = &mut b_atom_noun.clone() as *mut Noun;
             assert!(
@@ -1496,9 +1499,10 @@ pub(crate) mod test {
     fn tuple_bidirectional_conversion() {
         let mut stack = make_test_stack(DEFAULT_STACK_SIZE);
         let tup = (D(1), D(2), D(3));
-        let noun = tup.into_noun(&mut stack);
-        let new_tup: (Noun, Noun, Noun) =
-            <(Noun, Noun, Noun) as Nounable>::from_noun::<NockStack>(&mut stack, &noun)
+        let noun = Arena::with_current(|arena| tup.into_noun(&mut stack, arena));
+        let new_tup: (Noun, Noun, Noun) = Arena::with_current(|arena| {
+            <(Noun, Noun, Noun) as Nounable>::from_noun::<NockStack>(&mut stack, arena, &noun)
+        })
                 .unwrap_or_else(|err| {
                     panic!(
                         "Panicked with {err:?} at {}:{} (git sha: {:?})",

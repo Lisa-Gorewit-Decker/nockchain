@@ -30,6 +30,83 @@ pub fn met3_usize(atom: Atom, arena: &Arena) -> usize {
     }
 }
 
+/// Auto-dispatch version of met3_usize that uses thread-local arena for PMA pointers.
+pub fn met3_usize_auto(atom: Atom) -> usize {
+    match atom.as_either() {
+        Left(direct) => (64 - (direct.data().leading_zeros() as usize) + 7) >> 3,
+        Right(indirect) => {
+            let last_word = unsafe { *(indirect.data_pointer().add(indirect.size() - 1)) };
+            let last_word_bytes = (64 - (last_word.leading_zeros() as usize) + 7) >> 3;
+            ((indirect.size() - 1) << 3) + last_word_bytes
+        }
+    }
+}
+
+// Murmur3 hash an atom using auto-dispatch
+fn muk_u32_auto(syd: u32, len: usize, key: Atom) -> u32 {
+    match key.as_either() {
+        Left(direct) => murmur3_32_of_slice(&direct.data().to_le_bytes()[0..len], syd),
+        Right(indirect) => murmur3_32_of_slice(&indirect.as_ne_bytes()[..len], syd),
+    }
+}
+
+fn mum_u32_auto(syd: u32, fal: u32, key: Atom) -> u32 {
+    let wyd = met3_usize_auto(key);
+    let mut i = 0;
+    loop {
+        if i == 8 {
+            break fal;
+        } else {
+            let haz = muk_u32_auto(syd, wyd, key);
+            let ham = (haz >> 31) ^ (haz & !(1 << 31));
+            if ham == 0 {
+                i += 1;
+                continue;
+            } else {
+                break ham;
+            }
+        }
+    }
+}
+
+/// Auto-dispatch version of calc_atom_mug_u32.
+pub fn calc_atom_mug_u32_auto(atom: Atom) -> u32 {
+    mum_u32_auto(0xCAFEBABE, 0x7FFF, atom)
+}
+
+/// Auto-dispatch version of calc_cell_mug_u32.
+///
+/// # Safety
+/// head_mug and tail_mug both have msb 0.
+pub unsafe fn calc_cell_mug_u32_auto(head_mug: u32, tail_mug: u32) -> u32 {
+    let cat_mugs = (head_mug as u64) | ((tail_mug as u64) << 32);
+    mum_u32_auto(
+        0xDEADBEEF,
+        0xFFFE,
+        DirectAtom::new_unchecked(cat_mugs).as_atom(),
+    )
+}
+
+/// Auto-dispatch version of get_mug.
+pub fn get_mug_auto(noun: Noun) -> Option<u32> {
+    match noun.as_either_direct_allocated() {
+        Left(direct) => Some(calc_atom_mug_u32_auto(direct.as_atom())),
+        Right(allocated) => allocated.get_cached_mug(),
+    }
+}
+
+/// Auto-dispatch version of set_mug.
+///
+/// # Safety
+///
+/// Ensure the calculated mug is correct or this will result in incorrect mugs being returned.
+pub unsafe fn set_mug_auto(allocated: &mut Allocated, mug: u32) {
+    Arena::with_current(|arena| {
+        let metadata = allocated.get_metadata_with_arena(arena);
+        allocated.set_metadata_with_arena((metadata & MASK_OUT_MUG) | (mug as u64), arena);
+    });
+}
+
 fn mum_u32(syd: u32, fal: u32, key: Atom, arena: &Arena) -> u32 {
     let wyd = met3_usize(key, arena);
     let mut i = 0;

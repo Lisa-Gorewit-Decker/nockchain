@@ -1,8 +1,8 @@
 use nockvm::interpreter::Context;
 use nockvm::jets::bits::rep;
-use nockvm::jets::bits::util::{lsh, rip};
+use nockvm::jets::bits::util::{lsh_auto as lsh, rip_auto as rip};
 use nockvm::jets::list::util::{lent, reap, snip, weld, zing};
-use nockvm::jets::math::util::add;
+use nockvm::jets::math::util::add_auto as add;
 use nockvm::jets::util::{bite_to_word, chop, slot, BAIL_FAIL};
 use nockvm::jets::JetErr;
 use nockvm::mem::{Arena, NockStack};

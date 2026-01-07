@@ -5,6 +5,7 @@ use nockvm::interpreter::Context;
 use nockvm::jets::cold::Nounable;
 use nockvm::jets::util::{slot, BAIL_EXIT};
 use nockvm::jets::JetErr;
+use nockvm::mem::Arena;
 use nockvm::noun::{Atom, Noun};
 
 use crate::form::crypto::argon2::{argon2_hook, Argon2Args};
@@ -13,12 +14,20 @@ pub fn argon2_jet(context: &mut Context, subject: Noun) -> Result<Noun, JetErr> 
     let parent_core = slot(subject, 7)?;
     let params = slot(parent_core, 6)?;
 
-    // prepare parameters
-    let args = Argon2Args::from_noun(&mut context.stack, &params)?;
+    // prepare parameters - use thread-local arena to avoid borrow conflicts
+    let args = Arena::with_current(|arena| {
+        Argon2Args::from_noun(&mut context.stack, arena, &params)
+    })?;
 
     let sam = slot(subject, 6)?;
-    let msg: Byts = Byts::from_noun(&mut context.stack, &slot(sam, 2)?)?;
-    let sat: Byts = Byts::from_noun(&mut context.stack, &slot(sam, 3)?)?;
+    let sam2 = slot(sam, 2)?;
+    let sam3 = slot(sam, 3)?;
+    let msg: Byts = Arena::with_current(|arena| {
+        Byts::from_noun(&mut context.stack, arena, &sam2)
+    })?;
+    let sat: Byts = Arena::with_current(|arena| {
+        Byts::from_noun(&mut context.stack, arena, &sam3)
+    })?;
 
     let mut res = vec![0; args.out];
     argon2_hook(args, &msg.0, &sat.0, &mut res).map_err(|_| BAIL_EXIT)?;
