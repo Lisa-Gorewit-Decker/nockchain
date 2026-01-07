@@ -324,9 +324,10 @@ mod tests {
             intent: TimelockIntent::After,
         };
         let encoded = timelock.to_noun(&mut *stack);
+        let arena = stack.arena_ref();
         println!(
             "Encoded timelock: {:?}",
-            FullDebugCell(&encoded.as_cell().unwrap())
+            FullDebugCell(&encoded.as_cell().unwrap(), arena)
         );
         let decoded = Timelock::from_noun(&encoded).unwrap();
         assert_eq!(timelock, decoded);

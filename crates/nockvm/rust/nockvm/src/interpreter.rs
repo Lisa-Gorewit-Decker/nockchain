@@ -18,7 +18,7 @@ use crate::jets::{cold, JetErr};
 use crate::mem::{Arena, MemContext, NockStack, Preserve};
 use crate::noun::{Atom, Cell, IndirectAtom, Noun, Slots, D, T};
 use crate::trace::{write_nock_trace, TraceInfo, TraceStack};
-use crate::unifying_equality::unifying_equality;
+use crate::ext::noun_equality_auto;
 use crate::{assert_acyclic, assert_no_forwarding_pointers, assert_no_junior_pointers, flog, noun};
 
 // Previous results, not a complete sample but indicative:
@@ -644,6 +644,10 @@ fn debug_assertions(stack: &mut NockStack, noun: Noun) {
 
 /** Interpret nock */
 pub fn interpret(context: &mut Context, mut subject: Noun, formula: Noun) -> Result {
+    // Install the context's arena before any noun operations.
+    // This ensures offset-form nouns are resolved against the correct arena.
+    context.install_arena();
+
     let orig_subject = subject; // for debugging
     let snapshot = context.save();
     let virtual_frame: *const u64 = context.stack.get_frame_pointer();
@@ -704,7 +708,8 @@ pub fn interpret(context: &mut Context, mut subject: Noun, formula: Noun) -> Res
             match &mut *work_ptr {
                 NockWork::Work0(zero) => {
                     opcode_tick!(WORK0);
-                    if let Ok(noun) = subject.slot_atom(zero.axis) {
+                    // Use slot_atom_auto to handle offset-form axis atoms from retagged formulas
+                    if let Ok(noun) = subject.slot_atom_auto(zero.axis) {
                         res = noun;
                         context.stack.pop::<NockWork>();
                     } else {
@@ -785,8 +790,8 @@ pub fn interpret(context: &mut Context, mut subject: Noun, formula: Noun) -> Res
                     Todo5::TestEquals => {
                         opcode_tick!(WORK5);
                         let stack = &mut context.stack;
-                        let saved_value_ptr = &mut five.left;
-                        res = if unifying_equality(stack, &mut res, saved_value_ptr) {
+                        let saved_value_ptr = &five.left;
+                        res = if noun_equality_auto(&res, saved_value_ptr) {
                             D(0)
                         } else {
                             D(1)
@@ -804,7 +809,8 @@ pub fn interpret(context: &mut Context, mut subject: Noun, formula: Noun) -> Res
                         }
                         Todo9::ComputeResult => {
                             opcode_tick!(WORK9);
-                            if let Ok(mut formula) = res.slot_atom(kale.axis) {
+                            // Use slot_atom_auto to handle offset-form axis atoms from retagged formulas
+                            if let Ok(mut formula) = res.slot_atom_auto(kale.axis) {
                                 if !cfg!(feature = "sham_hints") {
                                     if let Some((jet, _path, test)) = context
                                         .warm
@@ -812,14 +818,14 @@ pub fn interpret(context: &mut Context, mut subject: Noun, formula: Noun) -> Res
                                         .next()
                                     {
                                         match jet(context, res) {
-                                            Ok(mut jet_res) => {
+                                            Ok(jet_res) => {
                                                 if test {
-                                                    let mut test_res = try_or_bail!(interpret(
+                                                    let test_res = try_or_bail!(interpret(
                                                         context, res, formula
                                                     ));
-                                                    if !unifying_equality(
-                                                        &mut context.stack, &mut test_res,
-                                                        &mut jet_res,
+                                                    if !noun_equality_auto(
+                                                        &test_res,
+                                                        &jet_res,
                                                     ) {
                                                         break BAIL_JEST;
                                                     }
@@ -1805,7 +1811,7 @@ mod hint {
     use crate::jets::cold;
     use crate::jets::nock::util::{mook, LEAF};
     use crate::noun::{tape, Atom, Cell, Noun, D, T};
-    use crate::unifying_equality::unifying_equality;
+    use crate::ext::noun_equality_auto;
 
     pub(super) fn is_tail(tag: Atom) -> bool {
         //  XX: handle IndirectAtom tags
@@ -1838,20 +1844,17 @@ mod hint {
 
                     if let Some(jet) = jets::get_jet(context, jet_name) {
                         match jet(context, subject) {
-                            Ok(mut jet_res) => {
+                            Ok(jet_res) => {
                                 //  XX: simplify this by moving jet test mode into the 11 code in interpret, or into its own function?
                                 // if in test mode, check that the jet returns the same result as the raw nock
                                 if jets::get_jet_test_mode(jet_name) {
                                     //  XX: we throw away trace, which might matter for non-deterministic errors
                                     //      maybe mook and slog it?
                                     match interpret(context, subject, body) {
-                                        Ok(mut nock_res) => {
-                                            let stack = &mut context.stack;
-                                            if unsafe {
-                                                !unifying_equality(
-                                                    stack, &mut nock_res, &mut jet_res,
-                                                )
-                                            } {
+                                        Ok(nock_res) => {
+                                            if !noun_equality_auto(
+                                                &nock_res, &jet_res,
+                                            ) {
                                                 //  XX: need NockStack allocated string interpolation
                                                 // let tape = tape(stack, "jet mismatch in {}, raw: {}, jetted: {}", jet_name, nock_res, jet_res);
                                                 // let mean = T(stack, &[D(tas!(b"mean")), tape]);

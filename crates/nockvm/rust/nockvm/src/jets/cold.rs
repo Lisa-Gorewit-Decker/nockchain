@@ -154,7 +154,7 @@ impl Batteries {
         Batteries(ptr)
     }
 
-    pub fn matches(self, stack: &mut NockStack, mut core: Noun) -> bool {
+    pub fn matches(self, _stack: &mut NockStack, mut core: Noun) -> bool {
         let mut root_found: bool = false;
 
         for (battery, parent_axis) in self {
@@ -164,7 +164,8 @@ impl Batteries {
 
             if let Ok(d) = parent_axis.as_direct() {
                 if d.data() == 0 {
-                    if unsafe { unifying_equality(stack, &mut core, battery) } {
+                    // Use noun_equality_auto to handle offset-form batteries from preserved Cold state
+                    if noun_equality_auto(&core, unsafe { &*battery }) {
                         root_found = true;
                         continue;
                     } else {
@@ -172,11 +173,13 @@ impl Batteries {
                     };
                 };
             };
-            if let Ok(mut core_battery) = core.slot(2) {
-                if unsafe { !unifying_equality(stack, &mut core_battery, battery) } {
+            if let Ok(core_battery) = core.slot(2) {
+                // Use noun_equality_auto to handle offset-form batteries from preserved Cold state
+                if !noun_equality_auto(&core_battery, unsafe { &*battery }) {
                     return false;
                 };
-                if let Ok(core_parent) = core.slot_atom(parent_axis) {
+                // Use slot_atom_auto to handle offset-form parent_axis from preserved Cold state
+                if let Ok(core_parent) = core.slot_atom_auto(parent_axis) {
                     core = core_parent;
                     continue;
                 } else {
@@ -614,7 +617,8 @@ impl Cold {
                     let mut root_path = T(stack, &[chum, D(0)]);
                     if let Some(paths) = (*(self.0)).root_to_paths.lookup(stack, &mut core) {
                         for a_path in paths {
-                            if unifying_equality(stack, &mut root_path, a_path) {
+                            // Use noun_equality_auto to handle offset-form paths from preserved Cold state
+                            if noun_equality_auto(&root_path, &*a_path) {
                                 return Ok(false); // it's already in here
                             }
                         }
@@ -669,13 +673,14 @@ impl Cold {
             }
 
             let mut battery = core.slot(2)?;
-            let mut parent = core.slot_atom(parent_axis)?;
+            // Use slot_atom_auto to handle potentially offset-form parent_axis
+            let mut parent = core.slot_atom_auto(parent_axis)?;
             // Check if we already registered this core
             if let Some(paths) = (*(self.0)).battery_to_paths.lookup(stack, &mut battery) {
                 for path in paths {
                     if let Ok(path_cell) = (*path).as_cell() {
-                        // SAFETY: Operating on stack-allocated nouns
-                        if unifying_equality(stack, &mut path_cell.head_stack(), &mut chum) {
+                        // Use noun_equality_auto to handle offset-form nouns from preserved Cold state
+                        if noun_equality_auto(&path_cell.head(), &chum) {
                             if let Some(batteries_list) =
                                 (*(self.0)).path_to_batteries.lookup(stack, &mut *path)
                             {

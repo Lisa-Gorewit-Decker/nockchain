@@ -299,7 +299,7 @@ mod tests {
     impl Stack for TestStack {
         unsafe fn alloc_layout(&mut self, layout: Layout) -> *mut u64 {
             if layout.size() == 0 {
-                layout.dangling().as_ptr()
+                std::ptr::NonNull::<u64>::dangling().as_ptr()
             } else {
                 let ptr = alloc::alloc(layout);
                 ptr as *mut u64

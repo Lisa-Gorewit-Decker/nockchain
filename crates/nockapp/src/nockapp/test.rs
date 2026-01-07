@@ -217,15 +217,209 @@ pub mod tests {
         assert!(!slab_equality(&checkpoint.state, &state_before_poke.state));
     }
 
+    // Test peek WITHOUT poke first - verify peek works on fresh kernel
+    #[tokio::test(flavor = "current_thread")]
+    #[traced_test]
+    #[cfg_attr(miri, ignore)]
+    async fn test_nockapp_peek_only() {
+        let _test_arena = TestArena::default();
+        let (_temp, mut nockapp) = setup_nockapp("test-ker.jam").await;
+        let mut stack = NockStack::new(NOCK_STACK_SIZE, 0);
+        stack.install_arena();
+
+        // Peek without any poke - kernel state should be at initial value (0)
+        let peek_noun = T(&mut stack, &[D(tas!(b"state")), D(0)]);
+        let peek = {
+            let mut slab = NounSlab::new();
+            slab.copy_into(peek_noun);
+            slab
+        };
+
+        let mut res = nockapp.kernel.peek(peek).await.unwrap_or_else(|err| {
+            panic!(
+                "Panicked with {err:?} at {}:{} (git sha: {:?})",
+                file!(),
+                line!(),
+                option_env!("GIT_SHA")
+            )
+        });
+
+        // res should be [~ ~ [%0 val]]
+        res.modify_noun(|r| {
+            slot(r, 7)
+                .unwrap_or_else(|err| {
+                    panic!(
+                        "Panicked with {err:?} at {}:{} (git sha: {:?})",
+                        file!(),
+                        line!(),
+                        option_env!("GIT_SHA")
+                    )
+                })
+                .as_cell()
+                .unwrap_or_else(|err| {
+                    panic!(
+                        "Panicked with {err:?} at {}:{} (git sha: {:?})",
+                        file!(),
+                        line!(),
+                        option_env!("GIT_SHA")
+                    )
+                })
+                .tail()
+        });
+
+        let comp = {
+            let mut slab = NounSlab::new();
+            slab.copy_into(D(0)); // Should be 0 initially
+            slab
+        };
+
+        assert!(
+            slab_equality(&res, &comp),
+            "res: {:?} != comp: {:?}",
+            res,
+            comp
+        );
+    }
+
+    // Test two consecutive pokes to verify interpretation works on offset-form arvo
+    #[tokio::test(flavor = "current_thread")]
+    #[traced_test]
+    #[cfg_attr(miri, ignore)]
+    async fn test_nockapp_double_poke() {
+        // Note: setup_nockapp creates a kernel with its own stack and installs the arena.
+        // We don't create our own stack here to avoid interfering with the kernel's arena.
+        let (_temp, mut nockapp) = setup_nockapp("test-ker.jam").await;
+
+        // First poke - arvo is in stack form
+        let poke_noun = D(tas!(b"inc"));
+        let poke = {
+            let mut slab = NounSlab::new();
+            slab.copy_into(poke_noun);
+            slab
+        };
+        let wire = SystemWire.to_wire();
+        let _ = nockapp.kernel.poke(wire.clone(), poke).await.unwrap_or_else(|err| {
+            panic!(
+                "First poke failed with {err:?} at {}:{} (git sha: {:?})",
+                file!(),
+                line!(),
+                option_env!("GIT_SHA")
+            )
+        });
+
+        // Second poke - arvo is now in offset form
+        let poke_noun2 = D(tas!(b"inc"));
+        let poke2 = {
+            let mut slab = NounSlab::new();
+            slab.copy_into(poke_noun2);
+            slab
+        };
+        let _ = nockapp.kernel.poke(wire, poke2).await.unwrap_or_else(|err| {
+            panic!(
+                "Second poke (offset-form arvo) failed with {err:?} at {}:{} (git sha: {:?})",
+                file!(),
+                line!(),
+                option_env!("GIT_SHA")
+            )
+        });
+
+        // If we get here, both pokes succeeded
+        info!("Both pokes succeeded - interpretation works on offset-form arvo");
+    }
+
+    // Test poke then peek (without save/load) to isolate offset-form issues
+    #[tokio::test(flavor = "current_thread")]
+    #[traced_test]
+    #[cfg_attr(miri, ignore)]
+    async fn test_nockapp_poke_then_peek() {
+        let _test_arena = TestArena::default();
+        let (_temp, mut nockapp) = setup_nockapp("test-ker.jam").await;
+        let mut stack = NockStack::new(NOCK_STACK_SIZE, 0);
+        stack.install_arena();
+
+        // Poke to increment the state
+        let poke_noun = D(tas!(b"inc"));
+        let poke = {
+            let mut slab = NounSlab::new();
+            slab.copy_into(poke_noun);
+            slab
+        };
+        let wire = SystemWire.to_wire();
+        let _ = nockapp.kernel.poke(wire, poke).await.unwrap_or_else(|err| {
+            panic!(
+                "Panicked with {err:?} at {}:{} (git sha: {:?})",
+                file!(),
+                line!(),
+                option_env!("GIT_SHA")
+            )
+        });
+
+        // Now peek - this should work even though arvo is in offset form
+        let peek_noun = T(&mut stack, &[D(tas!(b"state")), D(0)]);
+        let peek = {
+            let mut slab = NounSlab::new();
+            slab.copy_into(peek_noun);
+            slab
+        };
+
+        let mut res = nockapp.kernel.peek(peek).await.unwrap_or_else(|err| {
+            panic!(
+                "Panicked with {err:?} at {}:{} (git sha: {:?})",
+                file!(),
+                line!(),
+                option_env!("GIT_SHA")
+            )
+        });
+
+        // res should be [~ ~ [%0 val]]
+        res.modify_noun(|r| {
+            slot(r, 7)
+                .unwrap_or_else(|err| {
+                    panic!(
+                        "Panicked with {err:?} at {}:{} (git sha: {:?})",
+                        file!(),
+                        line!(),
+                        option_env!("GIT_SHA")
+                    )
+                })
+                .as_cell()
+                .unwrap_or_else(|err| {
+                    panic!(
+                        "Panicked with {err:?} at {}:{} (git sha: {:?})",
+                        file!(),
+                        line!(),
+                        option_env!("GIT_SHA")
+                    )
+                })
+                .tail()
+        });
+
+        let comp = {
+            let mut slab = NounSlab::new();
+            slab.copy_into(D(1)); // Should be 1 after first inc
+            slab
+        };
+
+        assert!(
+            slab_equality(&res, &comp),
+            "res: {:?} != comp: {:?}",
+            res,
+            comp
+        );
+    }
+
     #[tokio::test(flavor = "current_thread")]
     #[traced_test]
     #[cfg_attr(miri, ignore)]
     async fn test_nockapp_save_multiple() {
+        // TestArena provides a default arena for operations that need one.
+        // We do NOT call stack.install_arena() because that would overwrite
+        // the kernel's arena and cause incorrect resolution of offset-form nouns.
         let _test_arena = TestArena::default();
         let (temp, mut nockapp) = setup_nockapp("test-ker.jam").await;
         assert_eq!(nockapp.kernel.serf.event_number.load(Ordering::SeqCst), 0);
         let mut stack = NockStack::new(NOCK_STACK_SIZE, 0);
-        stack.install_arena();
+        // Note: we intentionally do NOT call stack.install_arena() here
 
         for i in 1..4 {
             // Poke to increment the state

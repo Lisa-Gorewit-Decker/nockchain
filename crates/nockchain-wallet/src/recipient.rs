@@ -316,9 +316,10 @@ mod tests {
         ];
 
         let mut slab = NounSlab::<NockJammer>::new();
+        let arena = Arena::stub_for_stack_only();
         for spec in specs {
             let noun = spec.to_noun(&mut slab);
-            eprintln!("spec noun: {:?}", FullDebugCell(&noun.as_cell().unwrap()));
+            eprintln!("spec noun: {:?}", FullDebugCell(&noun.as_cell().unwrap(), arena));
             let decoded =
                 RecipientSpec::from_noun(&noun).expect("recipient spec should decode from noun");
             assert_eq!(decoded, spec);

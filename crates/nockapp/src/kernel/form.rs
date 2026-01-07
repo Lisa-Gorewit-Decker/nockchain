@@ -1029,7 +1029,11 @@ impl Serf {
                         }
                     };
 
-                    Err(self.goof(mote, traces))
+                    // Debug: print the error before wrapping
+                    eprintln!("DEBUG soft() error: mote={:?}", mote);
+                    let goof = self.goof(mote, traces);
+                    self.print_goof(goof);
+                    Err(goof)
                 }
                 _ => Err(D(0)),
             },
@@ -1325,8 +1329,9 @@ impl Serf {
     }
 
     fn retag_survivors(&mut self) {
+        // Use context's install_arena for consistency with serf_loop
+        self.context.install_arena();
         let stack = &self.context.stack;
-        stack.install_arena();
         stack.retag_noun_tree(&mut self.arvo as *mut Noun);
         stack.retag_noun_tree(&mut self.context.scry_stack as *mut Noun);
         self.context.cache.retag(stack);

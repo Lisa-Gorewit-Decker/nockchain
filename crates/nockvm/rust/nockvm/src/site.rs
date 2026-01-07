@@ -6,7 +6,7 @@ use crate::interpreter::{interpret, Context, Mote};
 use crate::jets::util::slot;
 use crate::jets::{Jet, JetErr};
 use crate::noun::{Noun, D, T};
-use crate::unifying_equality::unifying_equality;
+use crate::ext::noun_equality_auto;
 
 /// Return Err if the computation crashed or should punt to Nock
 pub(crate) type Result = std::result::Result<Noun, JetErr>;
@@ -85,10 +85,11 @@ pub fn site_slam(ctx: &mut Context, site: &Site, sample: Noun) -> Result {
     if let Some((jet, test)) = site.jet {
         let jet_res = jet(ctx, subject);
         match jet_res {
-            Ok(mut jet_res) => {
+            Ok(jet_res) => {
                 if test {
-                    let mut test_res = interpret(ctx, subject, site.battery)?;
-                    if unsafe { !unifying_equality(&mut ctx.stack, &mut test_res, &mut jet_res) } {
+                    let test_res = interpret(ctx, subject, site.battery)?;
+                    // Use noun_equality_auto to handle offset-form nouns
+                    if !noun_equality_auto(&test_res, &jet_res) {
                         return Err(JetErr::Fail(crate::interpreter::Error::NonDeterministic(
                             Mote::Jest,
                             D(0),

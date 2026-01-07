@@ -54,6 +54,7 @@ pub mod test {
     #[cfg_attr(miri, ignore)]
     fn test_argon2d_v0x13_jet() {
         let mut context = init_context();
+        let arena = context.arena.clone();
         let out = D(32);
         let algorithm = make_tas(&mut context.stack, "d").as_noun();
         let version = D(0x13);
@@ -61,18 +62,18 @@ pub mod test {
         let mem_cost = D(32);
         let time_cost = D(3);
         let secret_byts = Byts([0x03; 8].to_vec());
-        let secret = secret_byts.into_noun(&mut context.stack);
+        let secret = secret_byts.into_noun(&mut context.stack, &arena);
         let extra_byts = Byts([0x04; 12].to_vec());
-        let extra = extra_byts.into_noun(&mut context.stack);
+        let extra = extra_byts.into_noun(&mut context.stack, &arena);
 
         let params = T(
             &mut context.stack,
             &[out, algorithm, version, threads, mem_cost, time_cost, secret, extra],
         );
         let password_byts = Byts([0x01; 32].to_vec());
-        let password = password_byts.into_noun(&mut context.stack);
-        let salt_byts = Byts([0x02; 16].to_vec()).into_noun(&mut context.stack);
-        let salt = salt_byts.into_noun(&mut context.stack);
+        let password = password_byts.into_noun(&mut context.stack, &arena);
+        let salt_byts = Byts([0x02; 16].to_vec());
+        let salt = salt_byts.into_noun(&mut context.stack, &arena);
 
         let inner = T(&mut context.stack, &[password, salt]);
 
@@ -99,6 +100,7 @@ pub mod test {
     #[cfg_attr(miri, ignore)]
     fn test_argon2d_v0x13_endian_jet() {
         let mut context = init_context();
+        let arena = context.arena.clone();
         let out = D(32);
         let algorithm = make_tas(&mut context.stack, "d").as_noun();
         let version = D(0x13);
@@ -106,9 +108,9 @@ pub mod test {
         let mem_cost = D(32);
         let time_cost = D(3);
         let secret_byts = Byts([0x03; 8].to_vec());
-        let secret = secret_byts.into_noun(&mut context.stack);
+        let secret = secret_byts.into_noun(&mut context.stack, &arena);
         let extra_byts = Byts([0x04; 12].to_vec());
-        let extra = extra_byts.into_noun(&mut context.stack);
+        let extra = extra_byts.into_noun(&mut context.stack, &arena);
 
         let params = T(
             &mut context.stack,
@@ -117,12 +119,12 @@ pub mod test {
 
         let mut password_byts = Byts([0x01; 32].to_vec());
         password_byts.0[0] = 0xaa;
-        let password = password_byts.clone().into_noun(&mut context.stack);
+        let password = password_byts.clone().into_noun(&mut context.stack, &arena);
         let salt_byts = Byts([0x02; 16].to_vec());
-        let salt = salt_byts.clone().into_noun(&mut context.stack);
+        let salt = salt_byts.clone().into_noun(&mut context.stack, &arena);
         let inner = T(&mut context.stack, &[password, salt]);
 
-        let args = Argon2Args::from_noun(&mut context.stack, &params).unwrap_or_else(|err| {
+        let args = Argon2Args::from_noun(&mut context.stack, &arena, &params).unwrap_or_else(|err| {
             panic!(
                 "Panicked with {err:?} at {}:{} (git sha: {:?})",
                 file!(),

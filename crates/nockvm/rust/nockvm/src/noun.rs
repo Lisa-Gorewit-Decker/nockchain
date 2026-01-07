@@ -1568,7 +1568,7 @@ impl<'a> IndirectAxisIterator<'a> {
     }
 }
 
-// Direct axis traversal without bitvec - for u64 axes (stack-pointer form only)
+// Direct axis traversal without bitvec - for u64 axes (auto-dispatch based on LOCATION_BIT)
 #[inline(always)]
 fn slot_direct(cell: &Cell, axis: u64) -> Result<Noun> {
     if axis == 0 {
@@ -1584,7 +1584,8 @@ fn slot_direct(cell: &Cell, axis: u64) -> Result<Noun> {
 
     for idx in (0..highest).rev() {
         let descend_tail = ((axis >> idx) & 1) != 0;
-        let memory = unsafe { current.to_raw_pointer_stack() };
+        // Use auto-dispatch to_raw_pointer which handles both stack and offset forms
+        let memory = current.to_raw_pointer();
         noun = unsafe {
             if descend_tail {
                 (*memory).tail
@@ -1607,7 +1608,7 @@ fn slot_direct(cell: &Cell, axis: u64) -> Result<Noun> {
 
 impl Slots for Cell {}
 
-// Indirect axis traversal - for large axes stored in word slices
+// Indirect axis traversal - for large axes stored in word slices (auto-dispatch based on LOCATION_BIT)
 #[inline(always)]
 fn slot_indirect(cell: &Cell, words: &[u64]) -> Result<Noun> {
     if words.is_empty() {
@@ -1642,7 +1643,8 @@ fn slot_indirect(cell: &Cell, words: &[u64]) -> Result<Noun> {
         let bit_idx = idx & 63;
         let descend_tail = ((words[word_idx] >> bit_idx) & 1) != 0;
 
-        let memory = unsafe { current.to_raw_pointer_stack() };
+        // Use auto-dispatch to_raw_pointer which handles both stack and offset forms
+        let memory = current.to_raw_pointer();
         noun = unsafe {
             if descend_tail {
                 (*memory).tail
@@ -2789,6 +2791,24 @@ pub trait Slots: private::RawSlots {
             Left(direct) => self.raw_slot_direct(direct.data()),
             // SAFETY: Operating on stack-allocated indirect atoms
             Right(indirect) => self.raw_slot_indirect(unsafe { indirect.as_slice_stack() }),
+        }
+    }
+
+    /**
+     * Retrieve component Noun at axis given as Atom, or fail with descriptive error.
+     *
+     * Auto-dispatches based on LOCATION_BIT - works with both stack-pointer
+     * and offset-form atoms.
+     */
+    fn slot_atom_auto(&self, atom: Atom) -> Result<Noun> {
+        match atom.as_either() {
+            Left(direct) => self.raw_slot_direct(direct.data()),
+            Right(indirect) => {
+                // Use auto-dispatch to handle both stack and offset forms
+                crate::mem::Arena::with_current(|arena| {
+                    self.raw_slot_indirect(indirect.as_slice_with_arena(arena))
+                })
+            }
         }
     }
 }

@@ -1043,6 +1043,10 @@ impl NockStack {
                 size,
             );
 
+            // Save the preserved boundary before overwriting
+            // In east orientation, alloc marks the end of preserved data (offsets 0 to alloc)
+            let preserved_boundary = self.alloc_offset;
+
             // Set up the new frame offset at the beginning of memory + size
             let new_frame_offset = size;
             let new_frame_ptr = self.derive_ptr(new_frame_offset);
@@ -1050,14 +1054,22 @@ impl NockStack {
             // Set up the pointers for the new frame (at the west side)
             *(new_frame_ptr.sub(FRAME + 1)) = ptr::null::<u64>() as u64;
             *(new_frame_ptr.sub(STACK + 1)) = ptr::null::<u64>() as u64;
-            *(new_frame_ptr.sub(ALLOC + 1)) = self.start as u64;
+            // CRITICAL: prev_alloc must be set to the preserved boundary, not self.start.
+            // When this west frame later does preserve(), it will allocate in the previous
+            // (east) frame starting from prev_alloc and going UPWARD. If prev_alloc is 0,
+            // this would overwrite data preserved from earlier flips.
+            let preserved_boundary_ptr = self.derive_ptr(preserved_boundary);
+            *(new_frame_ptr.sub(ALLOC + 1)) = preserved_boundary_ptr as u64;
 
             // Update offsets
+            // CRITICAL: stack_offset must be set to preserved_boundary, not new_frame_offset.
+            // This ensures that when frame_push (west->east) sets alloc = old_stack,
+            // east allocations start AFTER the preserved data, not at offset 0.
             self.frame_offset = new_frame_offset;
-            self.stack_offset = new_frame_offset;
+            self.stack_offset = preserved_boundary;
             self.alloc_offset = new_alloc_offset;
             self.least_space = new_alloc_offset
-                .checked_sub(new_frame_offset)
+                .checked_sub(preserved_boundary)
                 .expect("Uncaught OOM in flip_top_frame east->west");
             self.pc = false;
 
@@ -2355,7 +2367,8 @@ impl NounAllocator for NockStack {
     }
 
     unsafe fn equals(&mut self, a: *mut Noun, b: *mut Noun) -> bool {
-        crate::unifying_equality::unifying_equality(self, a, b)
+        // Use noun_equality_auto to handle offset-form nouns
+        crate::ext::noun_equality_auto(&*a, &*b)
     }
 }
 

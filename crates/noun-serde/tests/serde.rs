@@ -217,6 +217,7 @@ mod complex_tests {
     use std::fmt::Debug;
 
     use nockvm::ext::{make_tas, AtomExt};
+    use nockvm::mem::Arena;
     use nockvm::noun::{FullDebugCell, Noun, NounAllocator, Slots, T};
     use noun_serde::{NounDecode, NounDecodeError, NounEncode};
 
@@ -343,9 +344,10 @@ mod complex_tests {
         };
 
         let encoded = tree.to_noun(&mut *stack);
+        let arena = stack.arena_ref();
         println!(
             "Encoded tree: {:?}",
-            FullDebugCell(&encoded.as_cell().unwrap())
+            FullDebugCell(&encoded.as_cell().unwrap(), arena)
         );
 
         let decoded = Tree::from_noun(&encoded).unwrap();
@@ -403,9 +405,10 @@ mod complex_tests {
         println!("Encoded noun: {:?}", encoded);
 
         // Print the binary tree structure
+        let arena = stack.arena_ref();
         if let Ok(cell) = encoded.as_cell() {
             println!("\nBinary tree structure:");
-            println!("Root cell: {:?}", FullDebugCell(&cell));
+            println!("Root cell: {:?}", FullDebugCell(&cell, arena));
             println!("At axis 2 (sender): {:?}", cell.slot(2));
             println!("At axis 3: {:?}", cell.slot(3));
             println!("At axis 6 (receiver): {:?}", cell.slot(6));
@@ -485,9 +488,10 @@ mod complex_tests {
         let nested_data: Option<Result<Option<Vec<u64>>, String>> = Some(Ok(Some(vec![1, 2, 3])));
 
         let encoded = nested_data.to_noun(&mut *stack);
+        let arena = stack.arena_ref();
         println!(
             "Encoded nested data: {:?}",
-            FullDebugCell(&encoded.as_cell().unwrap())
+            FullDebugCell(&encoded.as_cell().unwrap(), arena)
         );
 
         let decoded = Option::<Result<Option<Vec<u64>>, String>>::from_noun(&encoded).unwrap();
@@ -524,9 +528,10 @@ mod complex_tests {
         let complex_collection = vec![map1, map2];
 
         let encoded = complex_collection.to_noun(&mut *stack);
+        let arena = stack.arena_ref();
         println!(
             "Encoded collection: {:?}",
-            FullDebugCell(&encoded.as_cell().unwrap())
+            FullDebugCell(&encoded.as_cell().unwrap(), arena)
         );
 
         let decoded = Vec::<HashMap<String, Vec<Option<u64>>>>::from_noun(&encoded).unwrap();

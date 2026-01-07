@@ -7,7 +7,7 @@ use crate::mem::{NockStack, Preserve, Retag};
 use crate::mug::mug_u32;
 use crate::noun::{Noun, NounAllocator};
 use crate::pma::{Pma, PmaCopy};
-use crate::unifying_equality::unifying_equality;
+use crate::ext::noun_equality_auto;
 
 type MutStemEntry<T> = Either<*mut MutStem<T>, Leaf<T>>;
 
@@ -91,8 +91,8 @@ impl<T: Copy> MutHamt<T> {
                         stem = next_stem;
                     }
                     Some(Right(leaf)) => {
-                        for pair in leaf.to_mut_slice().iter_mut() {
-                            if unifying_equality(stack, n, &mut pair.0) {
+                        for pair in leaf.to_slice() {
+                            if noun_equality_auto(n, &pair.0) {
                                 break 'lookup Some(pair.1);
                             }
                         }
@@ -133,7 +133,7 @@ impl<T: Copy> MutHamt<T> {
                     }
                     Some(Right(leaf)) => {
                         for pair in leaf.to_mut_slice().iter_mut() {
-                            if unifying_equality(stack, n, &mut pair.0) {
+                            if noun_equality_auto(n, &pair.0) {
                                 pair.1 = t;
                                 break 'insert;
                             }
@@ -336,8 +336,8 @@ impl<T: Copy + Preserve> Hamt<T> {
                     continue;
                 }
                 Some((Right(leaf), _idx)) => {
-                    for pair in unsafe { leaf.to_mut_slice().iter_mut() } {
-                        if unsafe { unifying_equality(stack, n, &mut pair.0) } {
+                    for pair in unsafe { leaf.to_slice() } {
+                        if noun_equality_auto(n, &pair.0) {
                             break 'lookup Some(pair.1);
                         }
                     }
@@ -408,8 +408,8 @@ impl<T: Copy + Preserve> Hamt<T> {
                     // Leaf found at mug chunk index
                     Some((Right(leaf), idx)) => {
                         // Override existing value for key, if one exists
-                        for (ldx, pair) in leaf.to_mut_slice().iter_mut().enumerate() {
-                            if unifying_equality(stack, n, &mut pair.0) {
+                        for (ldx, pair) in leaf.to_slice().iter().enumerate() {
+                            if noun_equality_auto(n, &pair.0) {
                                 let new_leaf_buffer = stack.struct_alloc(leaf.len);
                                 copy_nonoverlapping(leaf.buffer, new_leaf_buffer, leaf.len);
                                 (*new_leaf_buffer.add(ldx)).1 = t;
