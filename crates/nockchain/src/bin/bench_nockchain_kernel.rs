@@ -56,6 +56,8 @@ struct BenchArgs {
     pow_len: u64,
     #[arg(long, default_value_t = DEFAULT_LOG_DIFFICULTY)]
     log_difficulty: u64,
+    #[arg(long, default_value_t = false)]
+    skip_mining: bool,
     #[arg(long)]
     genesis_jam: Option<PathBuf>,
     #[arg(long, value_enum, default_value_t = NockStackSize::Medium)]
@@ -165,14 +167,21 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let (peer1_dir, mut peer1) = build_nockapp("bench-peer-1", boot_cli.clone()).await?;
     let (_peer2_dir, mut peer2) = build_nockapp("bench-peer-2", boot_cli).await?;
 
-    let constants = fakenet_blockchain_constants(args.pow_len, args.log_difficulty);
+    let mut constants = fakenet_blockchain_constants(args.pow_len, args.log_difficulty);
+    if args.skip_mining {
+        constants.check_pow_flag = false;
+    }
 
     let mut peer1_init = build_init_pokes(&constants, &genesis_bytes, true)?;
     let mut peer2_init = build_init_pokes(&constants, &genesis_bytes, false)?;
 
     apply_init_pokes(&mut peer2, &mut peer2_init).await?;
 
-    let mut miner = Miner::new().await?;
+    let mut miner = if args.skip_mining {
+        None
+    } else {
+        Some(Miner::new().await?)
+    };
     let mining_output = run_mining_peer(
         &mut peer1,
         &mut miner,
@@ -286,7 +295,7 @@ async fn apply_init_pokes(
 
 async fn run_mining_peer(
     nockapp: &mut NockApp,
-    miner: &mut Miner,
+    miner: &mut Option<Miner>,
     pending: &mut VecDeque<Poke>,
     target_blocks: usize,
     genesis_id: &str,
@@ -307,7 +316,10 @@ async fn run_mining_peer(
                     mining_started = true;
                     start = Some(Instant::now());
                 }
-                let mined_poke = miner.mine_candidate(&candidate).await?;
+                let mined_poke = match miner.as_mut() {
+                    Some(miner) => miner.mine_candidate(&candidate).await?,
+                    None => create_pow_poke(&candidate, &random_nonce()),
+                };
                 pending.push_back(Poke {
                     wire: MiningWire::Mined.to_wire(),
                     noun: mined_poke,
@@ -357,10 +369,11 @@ async fn run_mining_peer(
     }
 
     let duration = start.unwrap_or_else(Instant::now).elapsed();
+    let total_attempts = miner.as_ref().map(|m| m.total_attempts).unwrap_or(0);
     Ok(MiningOutput {
         gossips,
         duration,
-        total_attempts: miner.total_attempts,
+        total_attempts,
     })
 }
 
@@ -546,6 +559,31 @@ fn create_candidate_poke(candidate: &MiningCandidate, nonce: &NounSlab) -> NounS
     slab
 }
 
+fn create_pow_poke(candidate: &MiningCandidate, nonce: &NounSlab) -> NounSlab {
+    let mut slab = NounSlab::new();
+    let version_space = candidate.version.noun_space();
+    let header_space = candidate.header.noun_space();
+    let nonce_space = nonce.noun_space();
+    let version = slab.copy_into(unsafe { *candidate.version.root() }, &version_space);
+    let header = slab.copy_into(unsafe { *candidate.header.root() }, &header_space);
+    let nonce = slab.copy_into(unsafe { *nonce.root() }, &nonce_space);
+    // Dummy proof/digest: skip-mining disables pow checks; 0 passes check-target.
+    let proof = T(&mut slab, &[version, D(0), D(0), D(0)]);
+    let poke_noun = T(
+        &mut slab,
+        &[
+            D(tas!(b"command")),
+            D(tas!(b"pow")),
+            proof,
+            D(0),
+            header,
+            nonce,
+        ],
+    );
+    slab.set_root(poke_noun);
+    slab
+}
+
 fn random_nonce() -> NounSlab {
     let mut rng = rand::rng();
     let mut nonce_slab = NounSlab::new();
@@ -686,8 +724,8 @@ fn print_summary(args: &BenchArgs, mining: &MiningOutput, catchup: Duration) {
     };
 
     info!(
-        "bench: blocks_target={} pow_len={} log_difficulty={} stack_size={:?}",
-        args.blocks, args.pow_len, args.log_difficulty, args.stack_size
+        "bench: blocks_target={} pow_len={} log_difficulty={} skip_mining={} stack_size={:?}",
+        args.blocks, args.pow_len, args.log_difficulty, args.skip_mining, args.stack_size
     );
     info!(
         "bench: mined_blocks={} mining_ms={:.3} avg_ms_per_block={:.3} avg_attempts_per_block={:.2}",
