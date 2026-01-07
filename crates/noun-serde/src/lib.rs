@@ -10,7 +10,7 @@ use nockvm::jets::util::BAIL_FAIL;
 use nockvm::jets::JetErr;
 #[allow(unused_imports)]
 #[allow(unused_imports)]
-use nockvm::noun::{Atom, FullDebugCell, Noun, NounAllocator, NounSpace, Slots, D, T};
+use nockvm::noun::{Atom, FullDebugCell, Noun, NounAllocator, NounSpace, D, T};
 use nockvm::noun::{NO, YES};
 pub use noun_serde_derive::{NounDecode, NounEncode};
 use tracing::trace;
@@ -125,9 +125,9 @@ impl NounEncode for u64 {
 
 impl NounDecode for u64 {
     fn from_noun(noun: &Noun, space: &NounSpace) -> Result<Self, NounDecodeError> {
-        match noun.as_atom() {
+        match noun.in_space(space).as_atom() {
             Ok(atom) => atom
-                .as_u64(space)
+                .as_u64()
                 .map_err(|_| NounDecodeError::Custom("Atom too large for u64".into())),
             Err(_) => Err(NounDecodeError::ExpectedAtom),
         }
@@ -149,9 +149,9 @@ impl NounEncode for UBig {
 
 impl NounDecode for u32 {
     fn from_noun(noun: &Noun, space: &NounSpace) -> Result<Self, NounDecodeError> {
-        match noun.as_atom() {
+        match noun.in_space(space).as_atom() {
             Ok(atom) => atom
-                .as_u64(space)
+                .as_u64()
                 .map(|x| x as u32)
                 .map_err(|_| NounDecodeError::Custom("Atom too large for u32".into())),
             Err(_) => Err(NounDecodeError::ExpectedAtom),
@@ -168,9 +168,9 @@ impl NounEncode for String {
 
 impl NounDecode for String {
     fn from_noun(noun: &Noun, space: &NounSpace) -> Result<Self, NounDecodeError> {
-        match noun.as_atom() {
+        match noun.in_space(space).as_atom() {
             Ok(atom) => atom
-                .into_string(space)
+                .into_string()
                 .map_err(|err| NounDecodeError::Custom(format!("Invalid string atom: {:?}", err))),
             Err(_) => Err(NounDecodeError::ExpectedAtom),
         }
@@ -179,9 +179,14 @@ impl NounDecode for String {
 
 impl<X: NounDecode, Y: NounDecode> NounDecode for (X, Y) {
     fn from_noun(noun: &Noun, space: &NounSpace) -> Result<Self, NounDecodeError> {
-        let cell = noun.as_cell().map_err(|_| NounDecodeError::ExpectedCell)?;
-        let a = X::from_noun(&cell.slot(2, space)?, space)?;
-        let b = Y::from_noun(&cell.slot(3, space)?, space)?;
+        let cell = noun
+            .in_space(space)
+            .as_cell()
+            .map_err(|_| NounDecodeError::ExpectedCell)?;
+        let head = cell.as_noun().slot(2)?.noun();
+        let tail = cell.as_noun().slot(3)?.noun();
+        let a = X::from_noun(&head, space)?;
+        let b = Y::from_noun(&tail, space)?;
         Ok((a, b))
     }
 }
@@ -197,10 +202,16 @@ impl<X: NounEncode, Y: NounEncode> NounEncode for (X, Y) {
 
 impl<X: NounDecode, Y: NounDecode, Z: NounDecode> NounDecode for (X, Y, Z) {
     fn from_noun(noun: &Noun, space: &NounSpace) -> Result<Self, NounDecodeError> {
-        let cell = noun.as_cell().map_err(|_| NounDecodeError::ExpectedCell)?;
-        let a = X::from_noun(&cell.slot(2, space)?, space)?;
-        let b = Y::from_noun(&cell.slot(6, space)?, space)?;
-        let c = Z::from_noun(&cell.slot(7, space)?, space)?;
+        let cell = noun
+            .in_space(space)
+            .as_cell()
+            .map_err(|_| NounDecodeError::ExpectedCell)?;
+        let a_slot = cell.as_noun().slot(2)?.noun();
+        let b_slot = cell.as_noun().slot(6)?.noun();
+        let c_slot = cell.as_noun().slot(7)?.noun();
+        let a = X::from_noun(&a_slot, space)?;
+        let b = Y::from_noun(&b_slot, space)?;
+        let c = Z::from_noun(&c_slot, space)?;
         Ok((a, b, c))
     }
 }
@@ -218,11 +229,18 @@ impl<X: NounEncode, Y: NounEncode, Z: NounEncode> NounEncode for (X, Y, Z) {
 
 impl<W: NounDecode, X: NounDecode, Y: NounDecode, Z: NounDecode> NounDecode for (W, X, Y, Z) {
     fn from_noun(noun: &Noun, space: &NounSpace) -> Result<Self, NounDecodeError> {
-        let cell = noun.as_cell().map_err(|_| NounDecodeError::ExpectedCell)?;
-        let a = W::from_noun(&cell.slot(2, space)?, space)?;
-        let b = X::from_noun(&cell.slot(6, space)?, space)?;
-        let c = Y::from_noun(&cell.slot(14, space)?, space)?;
-        let d = Z::from_noun(&cell.slot(15, space)?, space)?;
+        let cell = noun
+            .in_space(space)
+            .as_cell()
+            .map_err(|_| NounDecodeError::ExpectedCell)?;
+        let a_slot = cell.as_noun().slot(2)?.noun();
+        let b_slot = cell.as_noun().slot(6)?.noun();
+        let c_slot = cell.as_noun().slot(14)?.noun();
+        let d_slot = cell.as_noun().slot(15)?.noun();
+        let a = W::from_noun(&a_slot, space)?;
+        let b = X::from_noun(&b_slot, space)?;
+        let c = Y::from_noun(&c_slot, space)?;
+        let d = Z::from_noun(&d_slot, space)?;
         Ok((a, b, c, d))
     }
 }
@@ -244,12 +262,20 @@ impl<V: NounDecode, W: NounDecode, X: NounDecode, Y: NounDecode, Z: NounDecode> 
     for (V, W, X, Y, Z)
 {
     fn from_noun(noun: &Noun, space: &NounSpace) -> Result<Self, NounDecodeError> {
-        let cell = noun.as_cell().map_err(|_| NounDecodeError::ExpectedCell)?;
-        let a = V::from_noun(&cell.slot(2, space)?, space)?;
-        let b = W::from_noun(&cell.slot(6, space)?, space)?;
-        let c = X::from_noun(&cell.slot(14, space)?, space)?;
-        let d = Y::from_noun(&cell.slot(30, space)?, space)?;
-        let e = Z::from_noun(&cell.slot(31, space)?, space)?;
+        let cell = noun
+            .in_space(space)
+            .as_cell()
+            .map_err(|_| NounDecodeError::ExpectedCell)?;
+        let a_slot = cell.as_noun().slot(2)?.noun();
+        let b_slot = cell.as_noun().slot(6)?.noun();
+        let c_slot = cell.as_noun().slot(14)?.noun();
+        let d_slot = cell.as_noun().slot(30)?.noun();
+        let e_slot = cell.as_noun().slot(31)?.noun();
+        let a = V::from_noun(&a_slot, space)?;
+        let b = W::from_noun(&b_slot, space)?;
+        let c = X::from_noun(&c_slot, space)?;
+        let d = Y::from_noun(&d_slot, space)?;
+        let e = Z::from_noun(&e_slot, space)?;
         Ok((a, b, c, d, e))
     }
 }
@@ -275,13 +301,22 @@ impl<U: NounDecode, V: NounDecode, W: NounDecode, X: NounDecode, Y: NounDecode, 
     NounDecode for (U, V, W, X, Y, Z)
 {
     fn from_noun(noun: &Noun, space: &NounSpace) -> Result<Self, NounDecodeError> {
-        let cell = noun.as_cell().map_err(|_| NounDecodeError::ExpectedCell)?;
-        let a = U::from_noun(&cell.slot(2, space)?, space)?;
-        let b = V::from_noun(&cell.slot(6, space)?, space)?;
-        let c = W::from_noun(&cell.slot(14, space)?, space)?;
-        let d = X::from_noun(&cell.slot(30, space)?, space)?;
-        let e = Y::from_noun(&cell.slot(62, space)?, space)?;
-        let f = Z::from_noun(&cell.slot(63, space)?, space)?;
+        let cell = noun
+            .in_space(space)
+            .as_cell()
+            .map_err(|_| NounDecodeError::ExpectedCell)?;
+        let a_slot = cell.as_noun().slot(2)?.noun();
+        let b_slot = cell.as_noun().slot(6)?.noun();
+        let c_slot = cell.as_noun().slot(14)?.noun();
+        let d_slot = cell.as_noun().slot(30)?.noun();
+        let e_slot = cell.as_noun().slot(62)?.noun();
+        let f_slot = cell.as_noun().slot(63)?.noun();
+        let a = U::from_noun(&a_slot, space)?;
+        let b = V::from_noun(&b_slot, space)?;
+        let c = W::from_noun(&c_slot, space)?;
+        let d = X::from_noun(&d_slot, space)?;
+        let e = Y::from_noun(&e_slot, space)?;
+        let f = Z::from_noun(&f_slot, space)?;
         Ok((a, b, c, d, e, f))
     }
 }
@@ -318,10 +353,10 @@ impl NounEncode for bool {
 impl NounDecode for bool {
     fn from_noun(noun: &Noun, space: &NounSpace) -> Result<Self, NounDecodeError> {
         trace!("Decoding bool from noun: {:?}", noun);
-        match noun.as_atom() {
+        match noun.in_space(space).as_atom() {
             Ok(atom) => {
                 trace!("Successfully decoded as atom: {:?}", atom);
-                match atom.as_u64(space) {
+                match atom.as_u64() {
                     Ok(0) => {
                         trace!("Decoded as 0 -> true (%.y)");
                         Ok(true)
@@ -358,8 +393,8 @@ impl<T: NounEncode> NounEncode for Option<T> {
 impl<T: NounDecode> NounDecode for Option<T> {
     fn from_noun(noun: &Noun, space: &NounSpace) -> Result<Self, NounDecodeError> {
         // First check if it's an atom 0 (None)
-        if let Ok(atom) = noun.as_atom() {
-            match atom.as_u64(space) {
+        if let Ok(atom) = noun.in_space(space).as_atom() {
+            match atom.as_u64() {
                 Ok(0) => {
                     trace!("Found ~ (0), returning None");
                     return Ok(None);
@@ -369,19 +404,23 @@ impl<T: NounDecode> NounDecode for Option<T> {
         }
 
         // Otherwise it must be a cell [~ value]
-        let cell = noun.as_cell().map_err(|_| NounDecodeError::ExpectedCell)?;
+        let cell = noun
+            .in_space(space)
+            .as_cell()
+            .map_err(|_| NounDecodeError::ExpectedCell)?;
         let head = cell
-            .head(space)
+            .head()
             .as_atom()
             .map_err(|_| NounDecodeError::ExpectedAtom)?;
 
-        if head.as_u64(space)? != 0 {
+        if head.as_u64()? != 0 {
             return Err(NounDecodeError::Custom(
                 "Invalid Option encoding - expected ~".into(),
             ));
         }
 
-        let value = T::from_noun(&cell.tail(space), space)?;
+        let value_noun = cell.tail().noun();
+        let value = T::from_noun(&value_noun, space)?;
         Ok(Some(value))
     }
 }
@@ -398,19 +437,17 @@ impl<T: NounEncode> NounEncode for Vec<T> {
 impl<T: NounDecode> NounDecode for Vec<T> {
     fn from_noun(noun: &Noun, space: &NounSpace) -> Result<Self, NounDecodeError> {
         let mut result = Vec::new();
-        let mut current = noun;
-        #[allow(unused_assignments)]
-        let mut current_tail = None;
+        let mut current = noun.in_space(space);
 
         while let Ok(cell) = current.as_cell() {
-            let item = T::from_noun(&cell.head(space), space)?;
+            let head = cell.head().noun();
+            let item = T::from_noun(&head, space)?;
             result.push(item);
-            current_tail = Some(cell.tail(space));
-            current = current_tail.as_ref().unwrap();
+            current = cell.tail();
         }
 
         if let Ok(atom) = current.as_atom() {
-            match atom.as_u64(space) {
+            match atom.as_u64() {
                 Ok(0) => (),
                 // _ => return Err(NounDecodeError::Custom("Invalid list termination".into())),
                 _ => panic!("failure"),
@@ -560,9 +597,9 @@ where
     fn from_noun(noun: &Noun, space: &NounSpace) -> Result<Self, NounDecodeError> {
         trace!("\nDecoding HashMap from noun: {:?}", noun);
         // Handle empty tree case
-        if let Ok(atom) = noun.as_atom() {
+        if let Ok(atom) = noun.in_space(space).as_atom() {
             trace!("Got atom: {:?}", atom);
-            if atom.as_u64(space)? == 0 {
+            if atom.as_u64()? == 0 {
                 return Ok(HashMap::new());
             }
             return Err(NounDecodeError::ExpectedCell);
@@ -580,42 +617,44 @@ where
             space: &NounSpace,
         ) -> Result<(), NounDecodeError> {
             // Base case: empty branch
-            if let Ok(atom) = node.as_atom() {
-                if atom.as_u64(space)? == 0 {
+            if let Ok(atom) = node.in_space(space).as_atom() {
+                if atom.as_u64()? == 0 {
                     return Ok(());
                 }
                 return Err(NounDecodeError::ExpectedCell);
             }
 
-            let cell = node.as_cell()?;
+            let cell = node.in_space(space).as_cell()?;
 
             // Get the key-value pair from the node
-            let pair = cell.head(space).as_cell().map_err(|e| {
+            let pair = cell.head().as_cell().map_err(|e| {
                 trace!("Failed to get node cell: {:?}", e);
                 NounDecodeError::ExpectedCell
             })?;
 
+            let pair_head = pair.head().noun();
+            let pair_tail = pair.tail().noun();
             trace!(
                 "Got node - key: {:?}, value: {:?}",
-                pair.head(space),
-                pair.tail(space)
+                pair_head,
+                pair_tail
             );
             trace!("Key type: {:?}", std::any::type_name::<K>());
             trace!("Value type: {:?}", std::any::type_name::<V>());
 
-            let key = K::from_noun(&pair.head(space), space)?;
-            let value = V::from_noun(&pair.tail(space), space)?;
+            let key = K::from_noun(&pair_head, space)?;
+            let value = V::from_noun(&pair_tail, space)?;
             trace!("Key: {:?}, Value: {:?}", key, value);
             map.insert(key, value);
 
             // Get left and right branches
-            let rest = cell.tail(space).as_cell()?;
-            let left = &rest.head(space);
-            let right = &rest.tail(space);
+            let rest = cell.tail().as_cell()?;
+            let left = rest.head().noun();
+            let right = rest.tail().noun();
 
             // Recursively process left and right branches
-            traverse_tree(left, map, space)?;
-            traverse_tree(right, map, space)?;
+            traverse_tree(&left, map, space)?;
+            traverse_tree(&right, map, space)?;
 
             Ok(())
         }
@@ -701,26 +740,31 @@ impl<T: NounEncode, E: NounEncode> NounEncode for Result<T, E> {
 impl<T: NounDecode, E: NounDecode> NounDecode for Result<T, E> {
     fn from_noun(noun: &Noun, space: &NounSpace) -> Result<Self, NounDecodeError> {
         trace!("\nDecoding Result from noun: {:?}", noun);
-        let cell = noun.as_cell().map_err(|_| NounDecodeError::ExpectedCell)?;
-        trace!("Result cell head: {:?}", cell.head(space));
-        trace!("Result cell tail: {:?}", cell.tail(space));
+        let cell = noun
+            .in_space(space)
+            .as_cell()
+            .map_err(|_| NounDecodeError::ExpectedCell)?;
+        let head = cell.head().noun();
+        let tail = cell.tail().noun();
+        trace!("Result cell head: {:?}", head);
+        trace!("Result cell tail: {:?}", tail);
 
         let tag = cell
-            .head(space)
+            .head()
             .as_atom()
             .map_err(|_| NounDecodeError::ExpectedAtom)?
-            .into_string(space)
+            .into_string()
             .map_err(|_| NounDecodeError::InvalidTag)?;
 
         trace!("Result tag: {}", tag);
         match tag.as_str() {
             "ok" => {
                 trace!("Decoding Ok variant");
-                Ok(Ok(T::from_noun(&cell.tail(space), space)?))
+                Ok(Ok(T::from_noun(&tail, space)?))
             }
             "err" => {
                 trace!("Decoding Err variant");
-                Ok(Err(E::from_noun(&cell.tail(space), space)?))
+                Ok(Err(E::from_noun(&tail, space)?))
             }
             _ => {
                 trace!("Invalid Result tag: {}", tag);
@@ -741,10 +785,10 @@ pub fn encode_bool(value: bool) -> Noun {
 
 pub fn decode_bool(noun: &Noun, space: &NounSpace) -> Result<bool, NounDecodeError> {
     trace!("Decoding bool from noun: {:?}", noun);
-    match noun.as_atom() {
+    match noun.in_space(space).as_atom() {
         Ok(atom) => {
             trace!("Successfully decoded as atom: {:?}", atom);
-            match atom.as_u64(space) {
+            match atom.as_u64() {
                 Ok(0) => {
                     trace!("Decoded as 0 -> true (%.y)");
                     Ok(true)
@@ -857,8 +901,8 @@ where
 {
     fn from_noun(noun: &Noun, space: &NounSpace) -> Result<Self, NounDecodeError> {
         // Handle empty tree case
-        if let Ok(atom) = noun.as_atom() {
-            if atom.as_u64(space)? == 0 {
+        if let Ok(atom) = noun.in_space(space).as_atom() {
+            if atom.as_u64()? == 0 {
                 return Ok(HashSet::new());
             }
             return Err(NounDecodeError::ExpectedCell);
@@ -873,27 +917,28 @@ where
             space: &NounSpace,
         ) -> Result<(), NounDecodeError> {
             // Base case: empty branch
-            if let Ok(atom) = node.as_atom() {
-                if atom.as_u64(space)? == 0 {
+            if let Ok(atom) = node.in_space(space).as_atom() {
+                if atom.as_u64()? == 0 {
                     return Ok(());
                 }
                 return Err(NounDecodeError::ExpectedCell);
             }
 
-            let cell = node.as_cell()?;
+            let cell = node.in_space(space).as_cell()?;
 
             // Insert the node value
-            let value = T::from_noun(&cell.head(space), space)?;
+            let value_noun = cell.head().noun();
+            let value = T::from_noun(&value_noun, space)?;
             set.insert(value);
 
             // Get left and right branches
-            let rest = cell.tail(space).as_cell()?;
-            let left = &rest.head(space);
-            let right = &rest.tail(space);
+            let rest = cell.tail().as_cell()?;
+            let left = rest.head().noun();
+            let right = rest.tail().noun();
 
             // Recursively process left and right branches
-            traverse_tree(left, set, space)?;
-            traverse_tree(right, set, space)?;
+            traverse_tree(&left, set, space)?;
+            traverse_tree(&right, set, space)?;
 
             Ok(())
         }
@@ -1009,29 +1054,31 @@ impl<K: NounDecode + Ord, V: NounDecode> NounDecode for BTreeMap<K, V> {
             space: &NounSpace,
         ) -> Result<(), NounDecodeError> {
             // Base case: empty tree (atom 0)
-            if let Ok(atom) = node.as_atom() {
-                if atom.as_u64(space)? == 0 {
+            if let Ok(atom) = node.in_space(space).as_atom() {
+                if atom.as_u64()? == 0 {
                     return Ok(());
                 }
                 return Err(NounDecodeError::ExpectedCell);
             }
 
-            let cell = node.as_cell()?;
+            let cell = node.in_space(space).as_cell()?;
 
             // Get the [key value] pair from the node
-            let pair = cell.head(space).as_cell()?;
-            let key = K::from_noun(&pair.head(space), space)?;
-            let value = V::from_noun(&pair.tail(space), space)?;
+            let pair = cell.head().as_cell()?;
+            let key_noun = pair.head().noun();
+            let value_noun = pair.tail().noun();
+            let key = K::from_noun(&key_noun, space)?;
+            let value = V::from_noun(&value_noun, space)?;
             map.insert(key, value);
 
             // Get left and right subtrees
-            let rest = cell.tail(space).as_cell()?;
-            let left = &rest.head(space);
-            let right = &rest.tail(space);
+            let rest = cell.tail().as_cell()?;
+            let left = rest.head().noun();
+            let right = rest.tail().noun();
 
             // Recursively process left and right subtrees
-            traverse_tree(left, map, space)?;
-            traverse_tree(right, map, space)?;
+            traverse_tree(&left, map, space)?;
+            traverse_tree(&right, map, space)?;
 
             Ok(())
         }
@@ -1076,21 +1123,22 @@ impl<T: NounDecode, const N: usize> NounDecode for [T; N] {
         let mut result = Vec::with_capacity(N);
 
         if N > 0 {
-            let mut current = *noun;
+            let mut current = noun.in_space(space);
 
             // Process all elements except the last one
             for _ in 0..N - 1 {
                 let cell = current
                     .as_cell()
                     .map_err(|_| NounDecodeError::ExpectedCell)?;
-                let head = cell.head(space);
+                let head = cell.head().noun();
                 let item = T::from_noun(&head, space)?;
                 result.push(item);
-                current = cell.tail(space);
+                current = cell.tail();
             }
 
             // Process the last element
-            let last_item = T::from_noun(&current, space)?;
+            let last_noun = current.noun();
+            let last_item = T::from_noun(&last_noun, space)?;
             result.push(last_item);
         }
 
@@ -1137,7 +1185,14 @@ mod array_tests {
         // Test encoding
         let noun = empty_array.to_noun(stack);
         assert!(noun.is_atom());
-        assert_eq!(noun.as_atom().unwrap().as_u64(&space).unwrap(), 0);
+        assert_eq!(
+            noun.in_space(&space)
+                .as_atom()
+                .unwrap()
+                .as_u64()
+                .unwrap(),
+            0
+        );
 
         // Test decoding
         let decoded: [u64; 0] = NounDecode::from_noun(&noun, &space).unwrap();
@@ -1156,7 +1211,14 @@ mod array_tests {
 
         // Encoding should produce just the single element as an atom
         assert!(noun.is_atom());
-        assert_eq!(noun.as_atom().unwrap().as_u64(&space).unwrap(), 42);
+        assert_eq!(
+            noun.in_space(&space)
+                .as_atom()
+                .unwrap()
+                .as_u64()
+                .unwrap(),
+            42
+        );
 
         // Test decoding
         let decoded: [u64; 1] = NounDecode::from_noun(&noun, &space).unwrap();
@@ -1175,41 +1237,49 @@ mod array_tests {
 
         // It should create a right-associative chain of cells
         assert!(noun.is_cell());
-        let cell = noun.as_cell().unwrap();
+        let cell = noun.in_space(&space).as_cell().unwrap();
         assert_eq!(
-            cell.head(&space).as_atom().unwrap().as_u64(&space).unwrap(),
+            cell.head().as_atom().unwrap().as_u64().unwrap(),
             1
         );
 
         // Recursively check the structure
-        let tail1 = cell.tail(&space);
+        let tail1 = cell.tail().noun();
         assert!(tail1.is_cell());
-        let cell1 = tail1.as_cell().unwrap();
+        let cell1 = tail1.in_space(&space).as_cell().unwrap();
         assert_eq!(
-            cell1.head(&space).as_atom().unwrap().as_u64(&space).unwrap(),
+            cell1.head().as_atom().unwrap().as_u64().unwrap(),
             2
         );
 
-        let tail2 = cell1.tail(&space);
+        let tail2 = cell1.tail().noun();
         assert!(tail2.is_cell());
-        let cell2 = tail2.as_cell().unwrap();
+        let cell2 = tail2.in_space(&space).as_cell().unwrap();
         assert_eq!(
-            cell2.head(&space).as_atom().unwrap().as_u64(&space).unwrap(),
+            cell2.head().as_atom().unwrap().as_u64().unwrap(),
             3
         );
 
-        let tail3 = cell2.tail(&space);
+        let tail3 = cell2.tail().noun();
         assert!(tail3.is_cell());
-        let cell3 = tail3.as_cell().unwrap();
+        let cell3 = tail3.in_space(&space).as_cell().unwrap();
         assert_eq!(
-            cell3.head(&space).as_atom().unwrap().as_u64(&space).unwrap(),
+            cell3.head().as_atom().unwrap().as_u64().unwrap(),
             4
         );
 
         // Last element should be an atom, not a cell
-        let tail4 = cell3.tail(&space);
+        let tail4 = cell3.tail().noun();
         assert!(tail4.is_atom());
-        assert_eq!(tail4.as_atom().unwrap().as_u64(&space).unwrap(), 5);
+        assert_eq!(
+            tail4
+                .in_space(&space)
+                .as_atom()
+                .unwrap()
+                .as_u64()
+                .unwrap(),
+            5
+        );
 
         // Test decoding
         let decoded: [u64; 5] = NounDecode::from_noun(&noun, &space).unwrap();
@@ -1376,7 +1446,14 @@ mod btreemap_tests {
 
         // Empty map should encode as atom 0
         assert!(noun.as_atom().is_ok());
-        assert_eq!(noun.as_atom().unwrap().as_u64(&space).unwrap(), 0);
+        assert_eq!(
+            noun.in_space(&space)
+                .as_atom()
+                .unwrap()
+                .as_u64()
+                .unwrap(),
+            0
+        );
 
         // Round-trip test
         let decoded = BTreeMap::<u64, String>::from_noun(&noun, &space).unwrap();
@@ -1574,8 +1651,11 @@ impl NounEncode for Bytes {
 
 impl NounDecode for Bytes {
     fn from_noun(noun: &Noun, space: &NounSpace) -> Result<Self, NounDecodeError> {
-        let atom = noun.as_atom().map_err(|_| NounDecodeError::ExpectedAtom)?;
-        let bytes = atom.as_ne_bytes(space).to_vec();
+        let atom = noun
+            .in_space(space)
+            .as_atom()
+            .map_err(|_| NounDecodeError::ExpectedAtom)?;
+        let bytes = atom.as_ne_bytes().to_vec();
         Ok(Bytes::from(bytes))
     }
 }

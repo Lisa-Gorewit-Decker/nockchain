@@ -963,7 +963,9 @@ impl Serf {
         let space = self.context.stack.noun_space();
         let tang = mook(&mut self.context, tone, false)
             .expect("serf: goof: +mook crashed on bail")
-            .tail(&space);
+            .in_space(&space)
+            .tail()
+            .noun();
         T(&mut self.context.stack, &[D(mote as u64), tang])
     }
 
@@ -989,9 +991,11 @@ impl Serf {
     pub fn print_goof(&mut self, goof: Noun) {
         let space = self.context.stack.noun_space();
         let tang = goof
+            .in_space(&space)
             .as_cell()
             .expect("print goof: expected goof to be a cell")
-            .tail(&space);
+            .tail()
+            .noun();
         tang.in_space(&space).list_iter().for_each(|tank| {
             //  TODO: Slogger should be emitting Results in case of failure
             self.context
@@ -1014,12 +1018,15 @@ impl Serf {
         let space = self.context.stack.noun_space();
         match self.soft(job, POKE_AXIS, Some("poke".to_string())) {
             Ok(res) => {
-                let cell = res.as_cell().expect("serf: poke: +slam returned atom");
-                let fec = cell.head(&space);
+                let cell = res
+                    .in_space(&space)
+                    .as_cell()
+                    .expect("serf: poke: +slam returned atom");
+                let fec = cell.head().noun();
                 let eve = self.event_num.load(Ordering::SeqCst);
 
                 unsafe {
-                    self.event_update(eve + 1, cell.tail(&space));
+                    self.event_update(eve + 1, cell.tail().noun());
                 }
                 Ok(fec)
             }
@@ -1106,9 +1113,9 @@ impl Serf {
     fn play_list(&mut self, mut lit: Noun) -> Result<Noun> {
         let space = self.context.stack.noun_space();
         let mut eve = self.event_num.load(Ordering::SeqCst);
-        while let Ok(cell) = lit.as_cell() {
-            let ovo = cell.head(&space);
-            lit = cell.tail(&space);
+        while let Ok(cell) = lit.in_space(&space).as_cell() {
+            let ovo = cell.head().noun();
+            lit = cell.tail().noun();
             let trace_name = if self.context.trace_info.is_some() {
                 Some(format!("play [{}]", eve))
             } else {
@@ -1117,7 +1124,7 @@ impl Serf {
 
             match self.soft(ovo, POKE_AXIS, trace_name) {
                 Ok(res) => {
-                    let arvo = res.as_cell()?.tail(&space);
+                    let arvo = res.in_space(&space).as_cell()?.tail().noun();
                     eve += 1;
 
                     unsafe {
@@ -1146,14 +1153,17 @@ impl Serf {
         let stack = &mut self.context.stack;
         let space = stack.noun_space();
         self.context.cache = Hamt::<Noun>::new(stack);
-        let job_cell = job.as_cell().expect("serf: poke: job not a cell");
+        let job_cell = job
+            .in_space(&space)
+            .as_cell()
+            .expect("serf: poke: job not a cell");
         // job data is job without event_num
         let job_data = job_cell
-            .tail(&space)
+            .tail()
             .as_cell()
             .expect("serf: poke: data not a cell");
         //  job input is job without event_num or wire
-        let job_input = job_data.tail(&space);
+        let job_input = job_data.tail().noun();
         let wire = T(stack, &[D(0), D(tas!(b"arvo")), D(0)]);
         let crud = DirectAtom::new_panic(tas!(b"crud"));
         let event_num = D(self.event_num.load(Ordering::SeqCst) + 1);
@@ -1171,12 +1181,15 @@ impl Serf {
 
         match self.soft(ovo, POKE_AXIS, trace_name) {
             Ok(res) => {
-                let cell = res.as_cell().expect("serf: poke: crud +slam returned atom");
-                let fec = cell.head(&space);
+                let cell = res
+                    .in_space(&space)
+                    .as_cell()
+                    .expect("serf: poke: crud +slam returned atom");
+                let fec = cell.head().noun();
                 let eve = self.event_num.load(Ordering::SeqCst);
 
                 unsafe {
-                    self.event_update(eve + 1, cell.tail(&space));
+                    self.event_update(eve + 1, cell.tail().noun());
                 }
                 Ok(fec)
             }
@@ -1199,7 +1212,7 @@ impl Serf {
         let wpc = path_to_cord(stack, wire);
         let space = stack.noun_space();
         let wpc_len = met3_usize(wpc, &space);
-        let wpc_bytes = &wpc.as_ne_bytes(&space)[0..wpc_len];
+        let wpc_bytes = &wpc.in_space(&space).as_ne_bytes()[0..wpc_len];
         let wpc_str = match std::str::from_utf8(wpc_bytes) {
             Ok(valid) => valid,
             Err(error) => {
@@ -1209,7 +1222,7 @@ impl Serf {
         };
 
         let vc_len = met3_usize(vent, &space);
-        let vc_bytes = &vent.as_ne_bytes(&space)[0..vc_len];
+        let vc_bytes = &vent.in_space(&space).as_ne_bytes()[0..vc_len];
         let vc_str = match std::str::from_utf8(vc_bytes) {
             Ok(valid) => valid,
             Err(error) => {

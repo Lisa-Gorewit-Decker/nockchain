@@ -6,7 +6,7 @@ use crate::jets::util::slot;
 use crate::jets::{JetErr, Result};
 use crate::mem::NockStack;
 //use crate::mug::mug;
-use crate::noun::{Noun, NounSpace, Slots, D, NO, T, YES};
+use crate::noun::{Noun, NounSpace, D, NO, T, YES};
 
 type JetResult<T> = std::result::Result<T, JetErr>;
 
@@ -16,9 +16,9 @@ fn is_yes(noun: Noun) -> bool {
 }
 
 fn decompose(node: Noun, space: &NounSpace) -> JetResult<(Noun, Noun, Noun)> {
-    let cell = node.as_cell()?;
-    let tail = cell.tail(space).as_cell()?;
-    Ok((cell.head(space), tail.head(space), tail.tail(space)))
+    let cell = node.in_space(space).as_cell()?;
+    let tail = cell.tail().as_cell()?;
+    Ok((cell.head().noun(), tail.head().noun(), tail.tail().noun()))
 }
 
 fn make_node(stack: &mut NockStack, value: Noun, left: Noun, right: Noun) -> Noun {

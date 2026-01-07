@@ -14,16 +14,16 @@ use crate::form::tip5;
 pub fn ch_scal_jet(context: &mut Context, subject: Noun) -> Result<Noun, JetErr> {
     let space = context.stack.noun_space();
     let sam = subject.slot(6, &space)?;
-    let n_atom = sam.slot(2, &space)?.as_atom()?;
+    let n_atom = sam.slot(2, &space)?.in_space(&space).as_atom()?;
 
     let p = sam.slot(3, &space)?;
     let a_pt = CheetahPoint::from_noun(&p, &space).map_err(|_| BAIL_FAIL)?;
 
-    let res = if let Ok(n) = n_atom.as_u64(&space) {
+    let res = if let Ok(n) = n_atom.as_u64() {
         ch_scal(n, &a_pt)?
     } else {
         // Convert to UBig
-        let n_big = n_atom.as_ubig(&mut context.stack, &space);
+        let n_big = n_atom.as_ubig(&mut context.stack);
         ch_scal_big(&n_big, &a_pt)?
     };
 
@@ -38,12 +38,14 @@ pub fn verify_affine_jet(context: &mut Context, subject: Noun) -> Result<Noun, J
     let m = sam.slot(6, &space)?;
     let chal = sam
         .slot(14, &space)?
+        .in_space(&space)
         .as_atom()?
-        .as_ubig(&mut context.stack, &space);
+        .as_ubig(&mut context.stack);
     let sig = sam
         .slot(15, &space)?
+        .in_space(&space)
         .as_atom()?
-        .as_ubig(&mut context.stack, &space);
+        .as_ubig(&mut context.stack);
 
     let pubkey: CheetahPoint =
         CheetahPoint::from_noun(&pubkey, &space).map_err(|_| BAIL_FAIL)?;

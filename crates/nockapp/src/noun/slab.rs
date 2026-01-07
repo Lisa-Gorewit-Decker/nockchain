@@ -224,7 +224,7 @@ impl<J> NounAllocator for NounSlab<J> {
         let a = unsafe { &mut *a };
         let b = unsafe { &mut *b };
         let space = self.noun_space();
-        noun_equality(a, b, &space)
+        noun_equality((*a).in_space(&space), (*b).in_space(&space))
     }
 
     fn noun_space(&self) -> NounSpace {
@@ -294,13 +294,15 @@ impl<J> NounSlab<J> {
                 }
                 Either::Right(allocated) => match allocated.as_either() {
                     Either::Left(indirect) => {
-                        let indirect_ptr = unsafe { indirect.to_raw_pointer(space) };
-                        let indirect_mem_size = indirect.raw_size(space);
+                        let indirect_ptr =
+                            unsafe { indirect.as_atom().in_space(space).raw_pointer() };
+                        let indirect_mem_size = indirect.as_atom().in_space(space).raw_size();
                         if let Some(copied_noun) = copied.get(indirect_ptr as u64) {
                             unsafe { *dest = *copied_noun };
                             continue;
                         }
-                        let indirect_new_mem = unsafe { self.alloc_indirect(indirect.size(space)) };
+                        let indirect_new_mem =
+                            unsafe { self.alloc_indirect(indirect.as_atom().in_space(space).size()) };
                         unsafe {
                             copy_nonoverlapping(indirect_ptr, indirect_new_mem, indirect_mem_size)
                         };
@@ -313,7 +315,7 @@ impl<J> NounSlab<J> {
                         unsafe { *dest = copied_noun };
                     }
                     Either::Right(cell) => {
-                        let cell_ptr = unsafe { cell.to_raw_pointer(space) };
+                        let cell_ptr = unsafe { cell.in_space(space).raw_pointer() };
                         if let Some(copied_noun) = copied.get(cell_ptr as u64) {
                             unsafe { *dest = *copied_noun };
                             continue;
@@ -328,10 +330,14 @@ impl<J> NounSlab<J> {
                             //     .push((cell.tail(), &mut (*cell_new_mem).tail as *mut Noun));
                             // copy_stack
                             //     .push((cell.head(), &mut (*cell_new_mem).head as *mut Noun));
-                            copy_stack
-                                .push((cell.tail(space), std::ptr::addr_of_mut!((*cell_new_mem).tail)));
-                            copy_stack
-                                .push((cell.head(space), std::ptr::addr_of_mut!((*cell_new_mem).head)));
+                            copy_stack.push((
+                                cell.in_space(space).tail().noun(),
+                                std::ptr::addr_of_mut!((*cell_new_mem).tail),
+                            ));
+                            copy_stack.push((
+                                cell.in_space(space).head().noun(),
+                                std::ptr::addr_of_mut!((*cell_new_mem).head),
+                            ));
                         }
                     }
                 },
@@ -351,35 +357,42 @@ impl<J> NounSlab<J> {
         let mut copy_stack = vec![(self.root, &mut res as *mut Noun)];
         while let Some((noun, dest)) = copy_stack.pop() {
             if let Ok(allocated) = noun.as_allocated() {
-                if let Some(forward) = unsafe { allocated.forwarding_pointer(&space) } {
-                    unsafe { *dest = forward.as_noun() };
+                let noun_handle = noun.in_space(&space);
+                if let Some(forward) = unsafe { noun_handle.forwarding_pointer() } {
+                    unsafe { *dest = forward.noun() };
                 } else {
                     match allocated.as_either() {
                         Either::Left(mut indirect) => {
-                            let raw_pointer = unsafe { indirect.to_raw_pointer(&space) };
-                            let raw_size = indirect.raw_size(&space);
+                            let raw_pointer = unsafe {
+                                indirect.as_atom().in_space(&space).raw_pointer()
+                            };
+                            let raw_size = indirect.as_atom().in_space(&space).raw_size();
                             unsafe {
-                                let indirect_mem = stack.alloc_indirect(indirect.size(&space));
+                                let indirect_mem = stack
+                                    .alloc_indirect(indirect.as_atom().in_space(&space).size());
                                 std::ptr::copy_nonoverlapping(raw_pointer, indirect_mem, raw_size);
-                                indirect.set_forwarding_pointer(indirect_mem, &space);
+                                indirect
+                                    .as_atom()
+                                    .in_space(&space)
+                                    .set_forwarding_pointer(indirect_mem);
                                 *dest =
                                     IndirectAtom::from_raw_pointer(indirect_mem).as_atom().as_noun();
                             }
                         }
                         Either::Right(mut cell) => {
-                            let raw_pointer = unsafe { cell.to_raw_pointer(&space) };
+                            let raw_pointer = unsafe { cell.in_space(&space).raw_pointer() };
                             unsafe {
                                 let cell_mem = stack.alloc_cell();
                                 copy_nonoverlapping(raw_pointer, cell_mem, 1);
                                 copy_stack.push((
-                                    cell.tail(&space),
+                                    cell.in_space(&space).tail().noun(),
                                     &mut (*cell_mem).tail as *mut Noun,
                                 ));
                                 copy_stack.push((
-                                    cell.head(&space),
+                                    cell.in_space(&space).head().noun(),
                                     &mut (*cell_mem).head as *mut Noun,
                                 ));
-                                cell.set_forwarding_pointer(cell_mem, &space);
+                                cell.in_space(&space).set_forwarding_pointer(cell_mem);
                                 *dest = Cell::from_raw_pointer(cell_mem).as_noun()
                             }
                         }
@@ -558,9 +571,9 @@ impl<V> NounMap<V> {
         let key_mug = slab_mug(key, space) as u64;
         if let Some(vec) = self.0.get_mut(key_mug) {
             let mut chain_iter = vec[..].iter_mut();
-            if let Some(entry) =
-                chain_iter.find(|entry| noun_equality(&key, &entry.0, space))
-            {
+            if let Some(entry) = chain_iter.find(|entry| {
+                noun_equality(key.in_space(space), entry.0.in_space(space))
+            }) {
                 entry.1 = value;
             } else {
                 vec.push((key, value))
@@ -574,9 +587,9 @@ impl<V> NounMap<V> {
         let key_mug = slab_mug(key, space) as u64;
         if let Some(vec) = self.0.get(key_mug) {
             let mut chain_iter = vec[..].iter();
-            if let Some(entry) =
-                chain_iter.find(|entry| noun_equality(&(key as Noun), &entry.0, space))
-            {
+            if let Some(entry) = chain_iter.find(|entry| {
+                noun_equality((key as Noun).in_space(space), entry.0.in_space(space))
+            }) {
                 Some(&entry.1)
             } else {
                 None
@@ -591,14 +604,14 @@ pub fn slab_equality(a: &NounSlab, b: &NounSlab) -> bool {
     let mut ranges = a.ptr_ranges();
     ranges.extend(b.ptr_ranges());
     let space = NounSpace::empty().with_extra_ptr_ranges(ranges);
-    noun_equality(&a.root, &b.root, &space)
+    noun_equality(a.root.in_space(&space), b.root.in_space(&space))
 }
 
 fn slab_mug(a: Noun, space: &NounSpace) -> u32 {
     let mut stack = vec![a];
     while let Some(noun) = stack.pop() {
         if let Ok(mut allocated) = noun.as_allocated() {
-            if allocated.get_cached_mug(space).is_none() {
+            if get_mug(noun, space).is_none() {
                 match allocated.as_either() {
                     Either::Left(indirect) => unsafe {
                         set_mug(
@@ -608,8 +621,8 @@ fn slab_mug(a: Noun, space: &NounSpace) -> u32 {
                         );
                     },
                     Either::Right(cell) => match (
-                        get_mug(cell.head(space), space),
-                        get_mug(cell.tail(space), space),
+                        get_mug(cell.in_space(space).head().noun(), space),
+                        get_mug(cell.in_space(space).tail().noun(), space),
                     ) {
                         (Some(head_mug), Some(tail_mug)) => unsafe {
                             set_mug(
@@ -620,8 +633,8 @@ fn slab_mug(a: Noun, space: &NounSpace) -> u32 {
                         },
                         _ => {
                             stack.push(noun);
-                            stack.push(cell.tail(space));
-                            stack.push(cell.head(space));
+                            stack.push(cell.in_space(space).tail().noun());
+                            stack.push(cell.in_space(space).head().noun());
                         }
                     },
                 }
@@ -679,7 +692,7 @@ impl Jammer for NockJammer {
             buffer.extend_from_bitslice(
                 &BitSlice::<_, Lsb0>::from_element(&atom_sz)[0..atom_sz_sz - 1],
             );
-            buffer.extend_from_bitslice(&atom.as_bitslice(space)[0..atom_sz]);
+            buffer.extend_from_bitslice(&atom.in_space(space).as_bitslice()[0..atom_sz]);
         }
         let mut backref_map = NounMap::<usize>::new();
         let mut stack = vec![noun];
@@ -703,8 +716,9 @@ impl Jammer for NockJammer {
                     }
                     Either::Right(cell) => {
                         buffer.extend_from_bitslice(bits![u8, Lsb0; 1, 0]); // cell tag
-                        stack.push(cell.tail(space));
-                        stack.push(cell.head(space));
+                        let cell = cell.in_space(space);
+                        stack.push(cell.tail().noun());
+                        stack.push(cell.head().noun());
                     }
                 }
             }
@@ -897,7 +911,7 @@ mod tests {
         let big_exp = ubig!(0xFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF);
         let atom = Atom::from_ubig(&mut slab, &big_exp);
         let space = slab.noun_space();
-        let big = atom.as_ubig(&mut slab, &space);
+        let big = atom.in_space(&space).as_ubig(&mut slab);
         assert_eq!(big, big_exp);
     }
 
@@ -918,7 +932,8 @@ mod tests {
         let stack_noun = slab.copy_to_stack(&mut stack);
         let space = stack.noun_space();
         let mut nockvm_jammed: Vec<u8> = nockvm::serialization::jam(&mut stack, stack_noun)
-            .as_ne_bytes(&space)
+            .in_space(&space)
+            .as_ne_bytes()
             .to_vec();
         let nockvm_suffix: Vec<u8> = nockvm_jammed.split_off(jammed.len());
         println!("nockvm_jammed: {:?}", nockvm_jammed);
@@ -955,7 +970,10 @@ mod tests {
         ranges.extend(cued_slab.ptr_ranges());
         let space = NounSpace::empty().with_extra_ptr_ranges(ranges);
         assert!(
-            noun_equality(unsafe { original_slab.root() }, &cued_noun, &space),
+            noun_equality(
+                unsafe { original_slab.root() }.in_space(&space),
+                cued_noun.in_space(&space),
+            ),
             "Original and cued nouns should be equal"
         );
     }
@@ -979,7 +997,10 @@ mod tests {
         ranges.extend(cued_slab.ptr_ranges());
         let space = NounSpace::empty().with_extra_ptr_ranges(ranges);
         assert!(
-            noun_equality(unsafe { slab.root() }, &cued_noun, &space),
+            noun_equality(
+                unsafe { slab.root() }.in_space(&space),
+                cued_noun.in_space(&space),
+            ),
             "Complex nouns should be equal after jam/cue roundtrip"
         );
     }
@@ -1005,7 +1026,10 @@ mod tests {
         ranges.extend(cued_slab.ptr_ranges());
         let space = NounSpace::empty().with_extra_ptr_ranges(ranges);
         assert!(
-            noun_equality(&noun_with_indirect, &cued_noun, &space),
+            noun_equality(
+                noun_with_indirect.in_space(&space),
+                cued_noun.in_space(&space),
+            ),
             "Nouns with indirect atoms should be equal after jam/cue roundtrip"
         );
     }
@@ -1029,7 +1053,10 @@ mod tests {
         ranges.extend(cued_slab.ptr_ranges());
         let space = NounSpace::empty().with_extra_ptr_ranges(ranges);
         assert!(
-            noun_equality(unsafe { slab.root() }, &cued_noun, &space),
+            noun_equality(
+                unsafe { slab.root() }.in_space(&space),
+                cued_noun.in_space(&space),
+            ),
             "Nouns with tas! macros should be equal after jam/cue roundtrip"
         );
     }
@@ -1128,7 +1155,10 @@ mod tests {
             let expected_noun = T(&mut slab, &[D(1), D(0)]);
             let space = slab.noun_space();
             assert!(
-                noun_equality(&cued_noun, &expected_noun, &space),
+                noun_equality(
+                    cued_noun.in_space(&space),
+                    expected_noun.in_space(&space),
+                ),
                 "Cued noun should equal [1 0]"
             );
         }
@@ -1141,7 +1171,13 @@ mod tests {
         let mut slab: NounSlab = NounSlab::new();
         let (cell, cell_mem_ptr) = unsafe { Cell::new_raw_mut(&mut slab) };
         let space = slab.noun_space();
-        unsafe { assert!(cell_mem_ptr as *const CellMemory == cell.to_raw_pointer(&space)) };
+        let cell_mem_ptr = cell_mem_ptr as *const CellMemory;
+        let cell_ptr = cell
+            .in_space(&space)
+            .cell()
+            .stack_memory_pointer()
+            .expect("cell not in stack");
+        assert!(cell_mem_ptr == cell_ptr);
     }
 
     #[test]
@@ -1199,11 +1235,7 @@ mod tests {
         let mut ranges = slab.ptr_ranges();
         ranges.extend(test_slab.ptr_ranges());
         let space = NounSpace::empty().with_extra_ptr_ranges(ranges);
-        noun_equality(
-            &slab.root,
-            &test_noun,
-            &space,
-        );
+        noun_equality(slab.root.in_space(&space), test_noun.in_space(&space));
         // let peek_res = unsafe { bind_slab.root_owned() };
         // let bind_noun = T(&mut bind_slab, &[D(pid), D(tas!(b"bind")), peek_res]);
     }

@@ -22,7 +22,8 @@ pub fn jet_siva_en(context: &mut Context, subject: Noun) -> Result {
         Err(JetErr::Punt)
     } else {
         let key_bytes = &mut [0u8; 32];
-        key_bytes[0..key.as_ne_bytes(&space).len()].copy_from_slice(key.as_ne_bytes(&space));
+        let key_ne_bytes = key.in_space(&space).as_ne_bytes();
+        key_bytes[0..key_ne_bytes.len()].copy_from_slice(key_ne_bytes);
 
         util::_siv_en::<32>(stack, key_bytes, ads, txt, &space)
     }
@@ -41,7 +42,8 @@ pub fn jet_siva_de(context: &mut Context, subject: Noun) -> Result {
         Err(JetErr::Punt)
     } else {
         let key_bytes = &mut [0u8; 32];
-        key_bytes[0..key.as_ne_bytes(&space).len()].copy_from_slice(key.as_ne_bytes(&space));
+        let key_ne_bytes = key.in_space(&space).as_ne_bytes();
+        key_bytes[0..key_ne_bytes.len()].copy_from_slice(key_ne_bytes);
 
         util::_siv_de::<32>(stack, key_bytes, ads, iv, len, txt, &space)
     }
@@ -58,7 +60,8 @@ pub fn jet_sivb_en(context: &mut Context, subject: Noun) -> Result {
         Err(JetErr::Punt)
     } else {
         let key_bytes = &mut [0u8; 48];
-        key_bytes[0..key.as_ne_bytes(&space).len()].copy_from_slice(key.as_ne_bytes(&space));
+        let key_ne_bytes = key.in_space(&space).as_ne_bytes();
+        key_bytes[0..key_ne_bytes.len()].copy_from_slice(key_ne_bytes);
 
         util::_siv_en::<48>(stack, key_bytes, ads, txt, &space)
     }
@@ -77,7 +80,8 @@ pub fn jet_sivb_de(context: &mut Context, subject: Noun) -> Result {
         Err(JetErr::Punt)
     } else {
         let key_bytes = &mut [0u8; 48];
-        key_bytes[0..key.as_ne_bytes(&space).len()].copy_from_slice(key.as_ne_bytes(&space));
+        let key_ne_bytes = key.in_space(&space).as_ne_bytes();
+        key_bytes[0..key_ne_bytes.len()].copy_from_slice(key_ne_bytes);
 
         util::_siv_de::<48>(stack, key_bytes, ads, iv, len, txt, &space)
     }
@@ -94,7 +98,8 @@ pub fn jet_sivc_en(context: &mut Context, subject: Noun) -> Result {
         Err(JetErr::Punt)
     } else {
         let key_bytes = &mut [0u8; 64];
-        key_bytes[0..key.as_ne_bytes(&space).len()].copy_from_slice(key.as_ne_bytes(&space));
+        let key_ne_bytes = key.in_space(&space).as_ne_bytes();
+        key_bytes[0..key_ne_bytes.len()].copy_from_slice(key_ne_bytes);
 
         util::_siv_en::<64>(stack, key_bytes, ads, txt, &space)
     }
@@ -113,7 +118,8 @@ pub fn jet_sivc_de(context: &mut Context, subject: Noun) -> Result {
         Err(JetErr::Punt)
     } else {
         let key_bytes = &mut [0u8; 64];
-        key_bytes[0..key.as_ne_bytes(&space).len()].copy_from_slice(key.as_ne_bytes(&space));
+        let key_ne_bytes = key.in_space(&space).as_ne_bytes();
+        key_bytes[0..key_ne_bytes.len()].copy_from_slice(key_ne_bytes);
 
         util::_siv_de::<64>(stack, key_bytes, ads, iv, len, txt, &space)
     }
@@ -156,10 +162,10 @@ mod util {
 
         unsafe {
             for item in siv_data.iter_mut().take(length) {
-                let cell = ads.as_cell()?;
-                let head = cell.head(space).as_atom()?;
-                let bytes = head.as_ne_bytes(space);
-                let len = met(3, head, space);
+                let cell = ads.in_space(space).as_cell()?;
+                let head = cell.head().as_atom()?;
+                let bytes = head.as_ne_bytes();
+                let len = met(3, head.atom(), space);
 
                 let (mut atom, buffer) = IndirectAtom::new_raw_mut_bytes(stack, bytes.len());
                 buffer[0..len].copy_from_slice(&(bytes[0..len]));
@@ -167,7 +173,7 @@ mod util {
                 item.length = bytes.len();
                 item.bytes = atom.data_pointer_mut(space) as *mut u8;
 
-                ads = cell.tail(space);
+                ads = cell.tail().noun();
             }
         }
 
@@ -212,7 +218,7 @@ mod util {
                 }
                 _ => {
                     let (_txt_ida, txt_bytes) = IndirectAtom::new_raw_mut_bytes(stack, txt_len);
-                    txt_bytes.copy_from_slice(&txt.as_ne_bytes(space)[0..txt_len]);
+                    txt_bytes.copy_from_slice(&txt.in_space(space).as_ne_bytes()[0..txt_len]);
                     let (mut out_atom, out_bytes) = IndirectAtom::new_raw_mut_bytes(stack, txt_len);
                     ac_aes_siv_en::<N>(key, txt_bytes, siv_data, iv_bytes, out_bytes)
                         .unwrap_or_else(|err| {
@@ -252,7 +258,7 @@ mod util {
             };
 
             let iv_bytes = &mut [0u8; 16];
-            iv_bytes.copy_from_slice(&iv.as_ne_bytes(space)[0..16]);
+            iv_bytes.copy_from_slice(&iv.in_space(space).as_ne_bytes()[0..16]);
 
             let ac_siv_data = _allocate_ads(stack, ads, space)?;
             let siv_data: &mut [&mut [u8]] = std::slice::from_raw_parts_mut(
@@ -276,7 +282,7 @@ mod util {
                 }
                 _ => {
                     let (_txt_ida, txt_bytes) = IndirectAtom::new_raw_mut_bytes(stack, txt_len);
-                    txt_bytes.copy_from_slice(&txt.as_ne_bytes(space)[0..txt_len]);
+                    txt_bytes.copy_from_slice(&txt.in_space(space).as_ne_bytes()[0..txt_len]);
                     ac_aes_siv_de::<N>(key, txt_bytes, siv_data, iv_bytes, out_bytes)
                         .unwrap_or_else(|err| {
                             panic!(

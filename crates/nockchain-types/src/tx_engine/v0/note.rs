@@ -63,11 +63,11 @@ impl NounEncode for Lock {
 
 impl NounDecode for Lock {
     fn from_noun(noun: &Noun, space: &NounSpace) -> Result<Self, NounDecodeError> {
-        let cell = noun.as_cell()?;
-        let keys_required = cell.head(space).as_atom()?.as_u64(space)? as u64;
+        let cell = noun.in_space(space).as_cell()?;
+        let keys_required = cell.head().as_atom()?.as_u64()? as u64;
 
         // It is called HoonMapIter, but it can be used for sets as well
-        let pubkeys_iter = HoonMapIter::new(cell.tail(space), space);
+        let pubkeys_iter = HoonMapIter::new(cell.tail().noun(), space);
 
         let mut pubkeys = Vec::new();
         for pubkey in pubkeys_iter {

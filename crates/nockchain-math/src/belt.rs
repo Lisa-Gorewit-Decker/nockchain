@@ -90,10 +90,11 @@ impl NounDecode for Belt {
         space: &NounSpace,
     ) -> Result<Self, noun_serde::NounDecodeError> {
         let atom = noun
+            .in_space(space)
             .as_atom()
             .map_err(|_| noun_serde::NounDecodeError::ExpectedAtom)?;
         let value = atom
-            .as_u64(space)
+            .as_u64()
             .map_err(|_| noun_serde::NounDecodeError::Custom("Belt value too large".to_string()))?;
         if !based_check(value) {
             return Err(noun_serde::NounDecodeError::Custom(

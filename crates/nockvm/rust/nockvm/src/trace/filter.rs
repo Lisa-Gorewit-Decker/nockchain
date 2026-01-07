@@ -59,14 +59,14 @@ impl<T: AsRef<str> + Send> TraceFilter for KeywordFilter<T> {
             if cnt == 0 {
                 return false;
             }
-            if let Ok(n) = n.as_atom() {
-                let b = n.as_ne_bytes(space);
+            if let Ok(n) = n.in_space(space).as_atom() {
+                let b = n.as_ne_bytes();
                 let b = &b[..b.iter().rposition(|&b| b != 0).map_or(0, |i| i + 1)];
                 return kw.iter().map(|v| v.as_ref()).any(|v| v.as_bytes() == b);
             }
-            if let Ok(c) = n.as_cell() {
-                return has_keywords(c.head(space), cnt - 1, kw, space)
-                    || has_keywords(c.tail(space), cnt - 1, kw, space);
+            if let Ok(c) = n.in_space(space).as_cell() {
+                return has_keywords(c.head().noun(), cnt - 1, kw, space)
+                    || has_keywords(c.tail().noun(), cnt - 1, kw, space);
             }
             false
         }

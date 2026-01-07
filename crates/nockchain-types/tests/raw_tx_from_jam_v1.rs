@@ -38,7 +38,12 @@ fn decode_note_from_jam_v1() -> Result<(), Box<dyn std::error::Error>> {
     let space = slab.noun_space();
 
     eprintln!("decoding note");
-    let ver = noun.as_cell().expect("not a cell").head(&space);
+    let ver = noun
+        .in_space(&space)
+        .as_cell()
+        .expect("not a cell")
+        .head()
+        .noun();
     eprintln!("version: {:?}", ver);
     let note = v1::Note::from_noun(&noun, &space)?;
     eprintln!("decoded note");
@@ -70,7 +75,12 @@ fn decode_name_from_jam_v1() -> Result<(), Box<dyn std::error::Error>> {
     let space = slab.noun_space();
 
     eprintln!("decoding note");
-    let ver = noun.as_cell().expect("not a cell").head(&space);
+    let ver = noun
+        .in_space(&space)
+        .as_cell()
+        .expect("not a cell")
+        .head()
+        .noun();
     eprintln!("version: {:?}", ver);
     let note = v1::Note::from_noun(&noun, &space)?;
     eprintln!("decoded note");

@@ -850,8 +850,8 @@ fn extract_tx_ids_from_map(
     space: &NounSpace,
 ) -> std::result::Result<Vec<Hash>, noun_serde::NounDecodeError> {
     // Check if it's an empty map (atom 0)
-    if let Ok(atom) = txs_noun.as_atom() {
-        if atom.as_u64(space)? == 0 {
+    if let Ok(atom) = txs_noun.in_space(space).as_atom() {
+        if atom.as_u64()? == 0 {
             return Ok(Vec::new());
         }
     }
@@ -904,8 +904,8 @@ fn extract_transactions_from_map(
     txs_noun: &Noun,
     space: &NounSpace,
 ) -> std::result::Result<Vec<(Hash, TxV0)>, noun_serde::NounDecodeError> {
-    if let Ok(atom) = txs_noun.as_atom() {
-        if atom.as_u64(space)? == 0 {
+    if let Ok(atom) = txs_noun.in_space(space).as_atom() {
+        if atom.as_u64()? == 0 {
             return Ok(Vec::new());
         }
     }
@@ -940,17 +940,21 @@ struct TxOutput {
 
 impl NounDecode for TxV0 {
     fn from_noun(noun: &Noun, space: &NounSpace) -> Result<Self, NounDecodeError> {
-        let cell = noun.as_cell()?;
-        let version = u64::from_noun(&cell.head(space), space)?;
+        let cell = noun.in_space(space).as_cell()?;
+        let version_noun = cell.head().noun();
+        let version = u64::from_noun(&version_noun, space)?;
 
-        let tail = cell.tail(space);
+        let tail = cell.tail();
         let cell = tail.as_cell()?;
-        let raw_tx = RawTx::from_noun(&cell.head(space), space)?;
+        let raw_tx_noun = cell.head().noun();
+        let raw_tx = RawTx::from_noun(&raw_tx_noun, space)?;
 
-        let tail = cell.tail(space);
+        let tail = cell.tail();
         let cell = tail.as_cell()?;
-        let total_size = u64::from_noun(&cell.head(space), space)?;
-        let outputs = decode_outputs(&cell.tail(space), space)?;
+        let total_noun = cell.head().noun();
+        let total_size = u64::from_noun(&total_noun, space)?;
+        let outputs_noun = cell.tail().noun();
+        let outputs = decode_outputs(&outputs_noun, space)?;
 
         Ok(Self {
             version,
@@ -962,8 +966,8 @@ impl NounDecode for TxV0 {
 }
 
 fn decode_outputs(noun: &Noun, space: &NounSpace) -> Result<Vec<TxOutput>, NounDecodeError> {
-    if let Ok(atom) = noun.as_atom() {
-        if atom.as_u64(space)? == 0 {
+    if let Ok(atom) = noun.in_space(space).as_atom() {
+        if atom.as_u64()? == 0 {
             return Ok(Vec::new());
         }
     }
@@ -975,8 +979,12 @@ fn decode_outputs(noun: &Noun, space: &NounSpace) -> Result<Vec<TxOutput>, NounD
         }
         let [key, value] = entry.uncell(space).map_err(|_| NounDecodeError::ExpectedCell)?;
         let lock = Lock::from_noun(&key, space)?;
-        let value_cell = value.as_cell().map_err(|_| NounDecodeError::ExpectedCell)?;
-        let note = NoteV0::from_noun(&value_cell.head(space), space)?;
+        let value_cell = value
+            .in_space(space)
+            .as_cell()
+            .map_err(|_| NounDecodeError::ExpectedCell)?;
+        let note_noun = value_cell.head().noun();
+        let note = NoteV0::from_noun(&note_noun, space)?;
         outputs.push(TxOutput { lock, note });
     }
 

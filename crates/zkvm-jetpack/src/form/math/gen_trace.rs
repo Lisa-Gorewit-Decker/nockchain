@@ -62,15 +62,16 @@ pub fn build_tree_data(noun: Noun, alf: &Felt, space: &NounSpace) -> Result<Tree
             }
             Dyck::Noun(noun) => match noun.as_either_atom_cell() {
                 Right(cell) => {
-                    stack.push(Dyck::Noun(cell.tail(space)));
+                    let cell = cell.in_space(space);
+                    stack.push(Dyck::Noun(cell.tail().noun()));
                     stack.push(Dyck::One);
-                    stack.push(Dyck::Noun(cell.head(space)));
+                    stack.push(Dyck::Noun(cell.head().noun()));
                     dyck = fmul_(&dyck, alf);
                 }
                 Left(atom) => {
                     size = fmul_(&size, alf);
                     leaf = fmul_(&leaf, alf);
-                    leaf.0[0] = leaf.0[0] + Belt(atom.as_u64(space)?);
+                    leaf.0[0] = leaf.0[0] + Belt(atom.in_space(space).as_u64()?);
                 }
             },
         }
@@ -92,12 +93,14 @@ pub fn leaf_sequence(context: &mut Context, sample: Noun) -> Result<Noun, JetErr
 
 fn do_leaf_sequence(noun: Noun, vec: &mut Vec<u64>, space: &NounSpace) -> Result<(), JetErr> {
     if noun.is_atom() {
-        vec.push(noun.as_atom()?.as_u64(space)?);
+        vec.push(noun.in_space(space).as_atom()?.as_u64()?);
         Ok(())
     } else {
-        let cell = noun.as_cell()?;
-        do_leaf_sequence(cell.head(space), vec, space)?;
-        do_leaf_sequence(cell.tail(space), vec, space)?;
+        let cell = noun.in_space(space).as_cell()?;
+        let head = cell.head().noun();
+        let tail = cell.tail().noun();
+        do_leaf_sequence(head, vec, space)?;
+        do_leaf_sequence(tail, vec, space)?;
         Ok(())
     }
 }

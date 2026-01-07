@@ -137,18 +137,18 @@ impl TraceBackend for TracingBackend {
         let chum = loop {
             match tmp.as_either_atom_cell() {
                 Either::Left(atom) => break atom,
-                Either::Right(cell) => tmp = cell.head(&space),
+                Either::Right(cell) => tmp = cell.in_space(&space).head().noun(),
             }
         };
 
-        let Ok(chum) = std::str::from_utf8(chum.as_ne_bytes(&space)) else {
+        let Ok(chum) = std::str::from_utf8(chum.in_space(&space).as_ne_bytes()) else {
             return;
         };
 
         let chum = chum.trim_end_matches('\0');
 
         let path = path_to_cord(stack, path);
-        let path = std::str::from_utf8(path.as_ne_bytes(&space)).unwrap_or("");
+        let path = std::str::from_utf8(path.in_space(&space).as_ne_bytes()).unwrap_or("");
 
         if self.subscriber.is_none() {
             self.subscriber = Some(dispatcher::get_default(Clone::clone));

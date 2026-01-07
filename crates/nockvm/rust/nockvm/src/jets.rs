@@ -41,7 +41,7 @@ use crate::jets::sort::*;
 use crate::jets::tree::*;
 use crate::jets::warm::Warm;
 use crate::mem::{NockStack, Preserve};
-use crate::noun::{self, Noun, Slots};
+use crate::noun::{self, Noun};
 
 crate::gdb!();
 
@@ -270,9 +270,9 @@ pub mod util {
 
     /// Extract the bloq and step from a bite
     pub fn bite(a: Noun, space: &NounSpace) -> result::Result<(usize, usize), JetErr> {
-        if let Ok(cell) = a.as_cell() {
-            let bloq = bloq(cell.head(space))?;
-            let step = cell.tail(space).as_direct()?.data() as usize;
+        if let Ok(cell) = a.in_space(space).as_cell() {
+            let bloq = bloq(cell.head().noun())?;
+            let step = cell.tail().noun().as_direct()?.data() as usize;
             Ok((bloq, step))
         } else {
             bloq(a).map(|x| (x, 1_usize))
@@ -316,12 +316,17 @@ pub mod util {
 
     pub fn slam(context: &mut Context, gate: Noun, sample: Noun) -> result::Result<Noun, JetErr> {
         let space = context.stack.noun_space();
+        let gate_cell = gate.in_space(&space).as_cell()?;
         let core: Noun = T(
             &mut context.stack,
             &[
-                gate.as_cell()?.head(&space),
+                gate_cell.head().noun(),
                 sample,
-                gate.as_cell()?.tail(&space).as_cell()?.tail(&space),
+                gate_cell
+                    .tail()
+                    .as_cell()?
+                    .tail()
+                    .noun(),
             ],
         );
         kick(context, core, D(2))
@@ -482,7 +487,8 @@ pub mod util {
                         option_env!("GIT_SHA")
                     )
                 })
-                .size(&space);
+                .in_space(&space)
+                .size();
             assert!(siz == res_siz, "got: {res_siz}, need: {siz}");
         }
 

@@ -32,24 +32,24 @@ fn door_edit(
             }
             break;
         };
-        if let Ok(tree_cell) = tree.as_cell() {
+        if let Ok(tree_cell) = tree.in_space(space).as_cell() {
             cursor -= 1;
             if edit_axis[cursor] {
                 unsafe {
                     let (cell, cellmem) = Cell::new_raw_mut(stack);
                     *dest = cell.as_noun();
-                    (*cellmem).head = tree_cell.head(space);
+                    (*cellmem).head = tree_cell.head().noun();
                     dest = &mut ((*cellmem).tail);
                 }
-                tree = tree_cell.tail(space);
+                tree = tree_cell.tail().noun();
             } else {
                 unsafe {
                     let (cell, cellmem) = Cell::new_raw_mut(stack);
                     *dest = cell.as_noun();
-                    (*cellmem).tail = tree_cell.tail(space);
+                    (*cellmem).tail = tree_cell.tail().noun();
                     dest = &mut ((*cellmem).head);
                 }
-                tree = tree_cell.head(space);
+                tree = tree_cell.head().noun();
             }
         } else {
             panic!("Invalid axis for edit");

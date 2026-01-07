@@ -36,6 +36,8 @@ pub fn jet_cat(context: &mut Context, subject: Noun) -> Result {
     let bloq = bloq(slot(arg, 2, &space)?)?;
     let a = slot(arg, 6, &space)?.as_atom()?;
     let b = slot(arg, 7, &space)?.as_atom()?;
+    let a_handle = a.in_space(&space);
+    let b_handle = b.in_space(&space);
 
     let len_a = util::met(bloq, a, &space);
     let len_b = util::met(bloq, b, &space);
@@ -46,8 +48,8 @@ pub fn jet_cat(context: &mut Context, subject: Noun) -> Result {
         unsafe {
             let (mut new_indirect, new_slice) =
                 IndirectAtom::new_raw_mut_bitslice(&mut context.stack, new_len);
-            chop(bloq, 0, len_a, 0, new_slice, a.as_bitslice(&space))?;
-            chop(bloq, 0, len_b, len_a, new_slice, b.as_bitslice(&space))?;
+            chop(bloq, 0, len_a, 0, new_slice, a_handle.as_bitslice())?;
+            chop(bloq, 0, len_b, len_a, new_slice, b_handle.as_bitslice())?;
             Ok(new_indirect.normalize_as_atom(&space).as_noun())
         }
     }
@@ -68,7 +70,7 @@ pub fn jet_cut(context: &mut Context, subject: Noun) -> Result {
     let new_indirect = unsafe {
         let (mut new_indirect, new_slice) =
             IndirectAtom::new_raw_mut_bitslice(&mut context.stack, bite_to_word(bloq, run)?);
-        chop(bloq, start, run, 0, new_slice, atom.as_bitslice(&space))?;
+        chop(bloq, start, run, 0, new_slice, atom.in_space(&space).as_bitslice())?;
         new_indirect.normalize_as_atom(&space)
     };
     Ok(new_indirect.as_noun())
@@ -81,8 +83,14 @@ pub fn jet_sew(context: &mut Context, subject: Noun) -> Result {
     let e = slot(sam, 7, &space)?.as_atom()?;
 
     let bcd = slot(sam, 6, &space)?;
-    let offset = slot(bcd, 2, &space)?.as_atom()?.as_u64(&space)? as usize;
-    let step = slot(bcd, 6, &space)?.as_atom()?.as_u64(&space)? as usize;
+    let offset = slot(bcd, 2, &space)?
+        .in_space(&space)
+        .as_atom()?
+        .as_u64()? as usize;
+    let step = slot(bcd, 6, &space)?
+        .in_space(&space)
+        .as_atom()?
+        .as_u64()? as usize;
 
     if step == 0 {
         return Ok(e.as_noun());
@@ -98,12 +106,19 @@ pub fn jet_sew(context: &mut Context, subject: Noun) -> Result {
         let (mut dest_indirect, dest) =
             IndirectAtom::new_raw_mut_bitslice(&mut context.stack, bite_to_word(bloq, new_len)?);
 
-        chop(bloq, 0, len_e, 0, dest, e.as_bitslice(&space))?;
+        chop(bloq, 0, len_e, 0, dest, e.in_space(&space).as_bitslice())?;
 
         let (_, lead) =
             IndirectAtom::new_raw_mut_bitslice(&mut context.stack, bite_to_word(bloq, step)?);
 
-        chop(bloq, 0, min(step, len_d), 0, lead, donor.as_bitslice(&space))?;
+        chop(
+            bloq,
+            0,
+            min(step, len_d),
+            0,
+            lead,
+            donor.in_space(&space).as_bitslice(),
+        )?;
 
         chop(bloq, 0, step, offset, dest, lead)?;
         Ok(dest_indirect.normalize_as_atom(&space).as_noun())
@@ -124,7 +139,7 @@ pub fn jet_end(context: &mut Context, subject: Noun) -> Result {
         unsafe {
             let (mut new_indirect, new_slice) =
                 IndirectAtom::new_raw_mut_bitslice(&mut context.stack, bite_to_word(bloq, step)?);
-            chop(bloq, 0, step, 0, new_slice, a.as_bitslice(&space))?;
+            chop(bloq, 0, step, 0, new_slice, a.in_space(&space).as_bitslice())?;
             Ok(new_indirect.normalize_as_atom(&space).as_noun())
         }
     }
@@ -178,10 +193,10 @@ pub fn rep(stack: &mut NockStack, a: Noun, b: Noun, space: &NounSpace) -> Result
             break;
         }
 
-        let cell = list.as_cell()?;
+        let cell = list.in_space(space).as_cell()?;
 
         len = checked_add(len, step)?;
-        list = cell.tail(space);
+        list = cell.tail().noun();
     }
 
     if len == 0 {
@@ -197,12 +212,12 @@ pub fn rep(stack: &mut NockStack, a: Noun, b: Noun, space: &NounSpace) -> Result
                     break;
                 }
 
-                let cell = list.as_cell()?;
-                let atom = cell.head(space).as_atom()?;
-                chop(bloq, 0, step, pos, new_slice, atom.as_bitslice(space))?;
+                let cell = list.in_space(space).as_cell()?;
+                let atom = cell.head().as_atom()?;
+                chop(bloq, 0, step, pos, new_slice, atom.as_bitslice())?;
 
                 pos += step;
-                list = cell.tail(space);
+                list = cell.tail().noun();
             }
             Ok(new_indirect.normalize_as_atom(space).as_noun())
         }
@@ -223,7 +238,7 @@ pub fn jet_rev(context: &mut Context, subject: Noun) -> Result {
     let dat = slot(arg, 7, &space)?.as_atom()?;
     let bits = len << boz;
 
-    let src = dat.as_bitslice(&space);
+    let src = dat.in_space(&space).as_bitslice();
     let (mut output, dest) =
         unsafe { IndirectAtom::new_raw_mut_bitslice(&mut context.stack, bits as usize) };
 
@@ -253,6 +268,7 @@ pub fn jet_rsh(context: &mut Context, subject: Noun) -> Result {
     let arg = slot(subject, 6, &space)?;
     let (bloq, step) = bite(slot(arg, 2, &space)?, &space)?;
     let a = slot(arg, 3, &space)?.as_atom()?;
+    let a_handle = a.in_space(&space);
 
     let len = util::met(bloq, a, &space);
     if step >= len {
@@ -260,10 +276,10 @@ pub fn jet_rsh(context: &mut Context, subject: Noun) -> Result {
     }
 
     let new_size =
-        bits_to_word(checked_sub(a.bit_size(&space), checked_left_shift(bloq, step)?)?)?;
+        bits_to_word(checked_sub(a_handle.bit_size(), checked_left_shift(bloq, step)?)?)?;
     unsafe {
         let (mut atom, dest) = IndirectAtom::new_raw_mut_bitslice(&mut context.stack, new_size);
-        chop(bloq, step, len - step, 0, dest, a.as_bitslice(&space))?;
+        chop(bloq, step, len - step, 0, dest, a_handle.as_bitslice())?;
         Ok(atom.normalize_as_atom(&space).as_noun())
     }
 }
@@ -293,14 +309,16 @@ pub fn jet_dis(context: &mut Context, subject: Noun) -> Result {
     let arg = slot(subject, 6, &space)?;
     let a = slot(arg, 2, &space)?.as_atom()?;
     let b = slot(arg, 3, &space)?.as_atom()?;
+    let a_handle = a.in_space(&space);
+    let b_handle = b.in_space(&space);
 
-    let new_size = cmp::max(a.size(&space), b.size(&space));
+    let new_size = cmp::max(a_handle.size(), b_handle.size());
 
     unsafe {
         let (mut atom, dest) = IndirectAtom::new_raw_mut_bitslice(&mut context.stack, new_size);
-        let a_bit = a.as_bitslice(&space);
+        let a_bit = a_handle.as_bitslice();
         dest[..a_bit.len()].copy_from_bitslice(a_bit);
-        *dest &= b.as_bitslice(&space);
+        *dest &= b_handle.as_bitslice();
         Ok(atom.normalize_as_atom(&space).as_noun())
     }
 }
@@ -310,14 +328,16 @@ pub fn jet_mix(context: &mut Context, subject: Noun) -> Result {
     let arg = slot(subject, 6, &space)?;
     let a = slot(arg, 2, &space)?.as_atom()?;
     let b = slot(arg, 3, &space)?.as_atom()?;
+    let a_handle = a.in_space(&space);
+    let b_handle = b.in_space(&space);
 
-    let new_size = cmp::max(a.size(&space), b.size(&space));
+    let new_size = cmp::max(a_handle.size(), b_handle.size());
 
     unsafe {
         let (mut atom, dest) = IndirectAtom::new_raw_mut_bitslice(&mut context.stack, new_size);
-        let a_bit = a.as_bitslice(&space);
+        let a_bit = a_handle.as_bitslice();
         dest[..a_bit.len()].copy_from_bitslice(a_bit);
-        *dest ^= b.as_bitslice(&space);
+        *dest ^= b_handle.as_bitslice();
         Ok(atom.normalize_as_atom(&space).as_noun())
     }
 }
@@ -355,11 +375,12 @@ pub mod util {
             return Ok(D(0));
         }
 
+        let a_handle = a.in_space(space);
         let new_size =
-            bits_to_word(checked_add(a.bit_size(space), checked_left_shift(bloq, step)?)?)?;
+            bits_to_word(checked_add(a_handle.bit_size(), checked_left_shift(bloq, step)?)?)?;
         unsafe {
             let (mut atom, dest) = IndirectAtom::new_raw_mut_bitslice(stack, new_size);
-            chop(bloq, 0, len, step, dest, a.as_bitslice(space))?;
+            chop(bloq, 0, len, step, dest, a_handle.as_bitslice())?;
             Ok(atom.normalize_as_atom(space).as_noun())
         }
     }
@@ -377,12 +398,17 @@ pub mod util {
                 break;
             }
 
-            let cell = list.as_cell()?;
-            let item = cell.head(space).as_cell()?;
-            let step = item.head(space).as_direct()?.data() as usize;
+            let cell = list.in_space(space).as_cell()?;
+            let item = cell.head().as_cell()?;
+            let step = item
+                .head()
+                .as_atom()?
+                .atom()
+                .as_direct()?
+                .data() as usize;
 
             len = checked_add(len, step)?;
-            list = cell.tail(space);
+            list = cell.tail().noun();
         }
 
         if len == 0 {
@@ -398,14 +424,19 @@ pub mod util {
                         break;
                     }
 
-                    let cell = list.as_cell()?;
-                    let item = cell.head(space).as_cell()?;
-                    let step = item.head(space).as_direct()?.data() as usize;
-                    let atom = item.tail(space).as_atom()?;
-                    chop(bloq, 0, step, pos, new_slice, atom.as_bitslice(space))?;
+                    let cell = list.in_space(space).as_cell()?;
+                    let item = cell.head().as_cell()?;
+                    let step = item
+                        .head()
+                        .as_atom()?
+                        .atom()
+                        .as_direct()?
+                        .data() as usize;
+                    let atom = item.tail().as_atom()?;
+                    chop(bloq, 0, step, pos, new_slice, atom.as_bitslice())?;
 
                     pos += step;
-                    list = cell.tail(space);
+                    list = cell.tail().noun();
                 }
                 Ok(new_indirect.normalize_as_atom(space).as_noun())
             }
@@ -417,10 +448,10 @@ pub mod util {
         if unsafe { a.as_noun().raw_equals(&D(0)) } {
             0
         } else if bloq < 6 {
-            (a.bit_size(space) + ((1 << bloq) - 1)) >> bloq
+            (a.in_space(space).bit_size() + ((1 << bloq) - 1)) >> bloq
         } else {
             let bloq_word = bloq - 6;
-            (a.size(space) + ((1 << bloq_word) - 1)) >> bloq_word
+            (a.in_space(space).size() + ((1 << bloq_word) - 1)) >> bloq_word
         }
     }
 
@@ -437,7 +468,7 @@ pub mod util {
             let new_atom = unsafe {
                 let (mut new_indirect, new_slice) =
                     IndirectAtom::new_raw_mut_bitslice(stack, step << bloq);
-                chop(bloq, i * step, step, 0, new_slice, atom.as_bitslice(space))?;
+                chop(bloq, i * step, step, 0, new_slice, atom.in_space(space).as_bitslice())?;
                 new_indirect.normalize_as_atom(space)
             };
             list = Cell::new(stack, new_atom.as_noun(), list).as_noun();
@@ -448,13 +479,15 @@ pub mod util {
 
     /// Binary OR
     pub fn con(stack: &mut NockStack, a: Atom, b: Atom, space: &NounSpace) -> Atom {
-        let new_size = cmp::max(a.size(space), b.size(space));
+        let a_handle = a.in_space(space);
+        let b_handle = b.in_space(space);
+        let new_size = cmp::max(a_handle.size(), b_handle.size());
 
         unsafe {
             let (mut atom, dest) = IndirectAtom::new_raw_mut_bitslice(stack, new_size);
-            let a_bit = a.as_bitslice(space);
+            let a_bit = a_handle.as_bitslice();
             dest[..a_bit.len()].copy_from_bitslice(a_bit);
-            *dest |= b.as_bitslice(space);
+            *dest |= b_handle.as_bitslice();
             atom.normalize_as_atom(space)
         }
     }
@@ -472,10 +505,11 @@ pub mod util {
                 break;
             }
 
-            let cell = list.as_cell()?;
+            let cell = list.in_space(space).as_cell()?;
 
-            len = checked_add(len, met(bloq, cell.head(space).as_atom()?, space))?;
-            list = cell.tail(space);
+            let atom = cell.head().as_atom()?;
+            len = checked_add(len, met(bloq, atom.atom(), space))?;
+            list = cell.tail().noun();
         }
 
         if len == 0 {
@@ -492,13 +526,13 @@ pub mod util {
                         break;
                     }
 
-                    let cell = list.as_cell()?;
-                    let atom = cell.head(space).as_atom()?;
-                    let step = met(bloq, atom, space);
-                    chop(bloq, 0, step, pos, new_slice, atom.as_bitslice(space))?;
+                    let cell = list.in_space(space).as_cell()?;
+                    let atom = cell.head().as_atom()?;
+                    let step = met(bloq, atom.atom(), space);
+                    chop(bloq, 0, step, pos, new_slice, atom.as_bitslice())?;
 
                     pos += step;
-                    list = cell.tail(space);
+                    list = cell.tail().noun();
                 }
 
                 Ok(new_indirect.normalize_as_atom(space))

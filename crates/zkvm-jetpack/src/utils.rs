@@ -11,7 +11,7 @@ use crate::form::belt::*;
 // tests whether a felt atom has the leading 1. we cannot actually test
 // Felt, because it doesn't include the leading 1.
 pub fn felt_atom_is_valid(felt_atom: IndirectAtom, space: &NounSpace) -> bool {
-    let dat_ptr = felt_atom.data_pointer(space);
+    let dat_ptr = felt_atom.as_atom().in_space(space).data_pointer();
     unsafe { *(dat_ptr.add(3)) == 0x1 }
 }
 
@@ -103,10 +103,10 @@ pub fn hoon_list_to_vecbelt(list: Noun, space: &NounSpace) -> Result<Vec<Belt>, 
     let mut input_iterate = list;
     let mut input_vec: Vec<Belt> = Vec::new();
     while !is_hoon_list_end(&input_iterate) {
-        let input_cell = input_iterate.as_cell()?;
-        let head_belt = Belt(input_cell.head(space).as_atom()?.as_u64(space)?);
+        let input_cell = input_iterate.in_space(space).as_cell()?;
+        let head_belt = Belt(input_cell.head().as_atom()?.as_u64()?);
         input_vec.push(head_belt);
-        input_iterate = input_cell.tail(space);
+        input_iterate = input_cell.tail().noun();
     }
 
     Ok(input_vec)
@@ -116,10 +116,10 @@ pub fn hoon_list_to_vecnoun(list: Noun, space: &NounSpace) -> Result<Vec<Noun>, 
     let mut input_iterate = list;
     let mut input_vec: Vec<Noun> = Vec::new();
     while !is_hoon_list_end(&input_iterate) {
-        let input_cell = input_iterate.as_cell()?;
-        let head_belt = input_cell.head(space);
-        input_vec.push(head_belt);
-        input_iterate = input_cell.tail(space);
+        let input_cell = input_iterate.in_space(space).as_cell()?;
+        let head = input_cell.head().noun();
+        input_vec.push(head);
+        input_iterate = input_cell.tail().noun();
     }
 
     Ok(input_vec)

@@ -187,23 +187,26 @@ pub fn create_mining_driver(
                                 match HoonList::try_from(*result, &space) {
                                     Err(_) => Ok(MiningOutcome::Retry { nonce: None }),
                                     Ok(effects) => {
-                                        let mining_result =
-                                            effects.filter_map(|effect| {
+                                        let mining_result = effects
+                                            .filter_map(|effect| {
                                                 if effect.is_atom() {
                                                     None
                                                 } else {
-                                                    let Ok(effect_cell) = effect.as_cell() else {
+                                                    let Ok(effect_cell) =
+                                                        effect.in_space(&space).as_cell()
+                                                    else {
                                                         error!("Expected effect to be a cell");
                                                         return None;
                                                     };
-                                                    let hed = effect_cell.head(&space);
-                                                    if hed.in_space(&space).eq_bytes("mine-result") {
-                                                        Some(effect_cell.tail(&space))
+                                                    let hed = effect_cell.head();
+                                                    if hed.eq_bytes("mine-result") {
+                                                        Some(effect_cell.tail().noun())
                                                     } else {
                                                         None
                                                     }
                                                 }
-                                            }).next();
+                                            })
+                                            .next();
                                         match mining_result {
                                             None => Ok(MiningOutcome::Retry { nonce: None }),
                                             Some(mine_result) => {
@@ -296,10 +299,12 @@ pub fn create_mining_driver(
 
                         let candidate = {
                             let space = effect.noun_space();
-                            if effect_cell.in_space(&space).head().eq_bytes("mine") {
+                            let effect_cell = effect_cell.in_space(&space);
+                            if effect_cell.head().eq_bytes("mine") {
                                 let (version_slab, header_slab, target_slab, pow_len) = {
                                     let [version, commit, target, pow_len_noun] = effect_cell
-                                        .tail(&space)
+                                        .tail()
+                                        .noun()
                                         .uncell(&space)
                                         .expect("Expected three elements in %mine effect");
                                     let mut version_slab = NounSlab::new();
@@ -309,9 +314,10 @@ pub fn create_mining_driver(
                                     let mut target_slab = NounSlab::new();
                                     target_slab.copy_into(target, &space);
                                     let pow_len = pow_len_noun
+                                        .in_space(&space)
                                         .as_atom()
                                         .expect("Expected pow-len to be an atom")
-                                        .as_u64(&space)
+                                        .as_u64()
                                         .expect("Expected pow-len to be a u64");
                                     (version_slab, header_slab, target_slab, pow_len)
                                 };

@@ -24,16 +24,14 @@ pub fn exit() -> IODriverFn {
                                     let noun = eff.root();
                                     if let Ok(cell) = noun.as_cell() {
                                         let space = eff.noun_space();
-                                        if cell
-                                            .in_space(&space)
-                                            .head()
-                                            .eq_bytes(b"exit")
-                                            && cell.tail(&space).is_atom()
+                                        let cell = cell.in_space(&space);
+                                        if cell.head().eq_bytes(b"exit")
+                                            && cell.tail().is_atom()
                                         {
                                             Some(
-                                                cell.tail(&space)
+                                                cell.tail()
                                                     .as_atom()
-                                                    .and_then(|atom| atom.as_u64(&space))
+                                                    .and_then(|atom| atom.as_u64())
                                                     .ok(),
                                             )
                                         } else {

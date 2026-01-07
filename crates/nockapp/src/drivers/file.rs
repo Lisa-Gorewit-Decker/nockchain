@@ -111,31 +111,35 @@ pub fn file() -> IODriverFn {
             };
 
             let parsed = (|| {
-                let effect_cell = unsafe { slab.root() }.as_cell().ok()?;
                 let space = slab.noun_space();
+                let effect_cell = unsafe { slab.root() }
+                    .in_space(&space)
+                    .as_cell()
+                    .ok()?;
 
-                if !unsafe { effect_cell.head(&space).raw_equals(&D(tas!(b"file"))) } {
+                if !unsafe { effect_cell.head().noun().raw_equals(&D(tas!(b"file"))) } {
                     return None;
                 }
 
-                let file_cell = effect_cell.tail(&space).as_cell().ok()?;
-                let operation = decode_from_noun::<String>(file_cell.head(&space), &space).ok()?;
+                let file_cell = effect_cell.tail().as_cell().ok()?;
+                let operation =
+                    decode_from_noun::<String>(file_cell.head().noun(), &space).ok()?;
 
                 match operation.as_str() {
                     "read" => {
                         let path =
-                            decode_from_noun::<String>(file_cell.tail(&space), &space).ok()?;
+                            decode_from_noun::<String>(file_cell.tail().noun(), &space).ok()?;
                         Some(FileOp::Read(path))
                     }
                     "write" => {
                         let (path, contents) =
-                            decode_from_noun::<(String, Bytes)>(file_cell.tail(&space), &space)
+                            decode_from_noun::<(String, Bytes)>(file_cell.tail().noun(), &space)
                                 .ok()?;
                         Some(FileOp::Write { path, contents })
                     }
                     "batch-write" => {
                         let batch_entries = decode_from_noun::<Vec<BatchWriteRequestEntry>>(
-                            file_cell.tail(&space),
+                            file_cell.tail().noun(),
                             &space,
                         )
                         .ok()?;

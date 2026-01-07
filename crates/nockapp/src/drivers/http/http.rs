@@ -525,11 +525,11 @@ pub fn http() -> IODriverFn {
                         let parsed = (|| -> Result<Option<ParsedEffect>, HttpError> {
                             let effect = unsafe { slab.root() };
                             let space = slab.noun_space();
-                            let res_list = effect.as_cell()?;
+                            let res_list = effect.in_space(&space).as_cell()?;
 
-                            let head_tag = res_list.head(&space).as_atom()?;
+                            let head_tag = res_list.head().as_atom()?;
                             let tag_val = head_tag
-                                .as_u64(&space)
+                                .as_u64()
                                 .map_err(|e| HttpError::AtomCreationError(e.to_string()))?;
                             if tag_val != tas!(b"res")
                                 && tag_val != tas!(b"cache")
@@ -544,35 +544,39 @@ pub fn http() -> IODriverFn {
                             }
 
                             debug!("processing HTTP response effect");
-                            let mut res = res_list.tail(&space).as_cell()?;
+                            let mut res = res_list.tail().as_cell()?;
                             let id = res
-                                .head(&space)
+                                .head()
                                 .as_atom()?
-                                .as_u64(&space)
+                                .as_u64()
                                 .map_err(|e| HttpError::AtomCreationError(e.to_string()))?;
                             debug!("HTTP response for request id: {}", id);
 
-                            res = res.tail(&space).as_cell()?;
+                            res = res.tail().as_cell()?;
                             let status_code = res
-                                .head(&space)
+                                .head()
                                 .as_atom()?
                                 .direct()
                                 .expect("not a valid status code!")
                                 .data();
                             debug!("HTTP response status code: {}", status_code);
 
-                            let mut header_list = res.tail(&space).as_cell()?.head(&space);
+                            let mut header_list = res.tail().as_cell()?.head().noun();
                             let mut headers: Vec<(String, String)> = Vec::new();
                             loop {
                                 if header_list.is_atom() {
                                     break;
                                 } else {
-                                    let header = header_list.as_cell()?.head(&space).as_cell()?;
-                                    let key_vec = header.head(&space).as_atom()?;
-                                    let val_vec = header.tail(&space).as_atom()?;
+                                    let header = header_list
+                                        .in_space(&space)
+                                        .as_cell()?
+                                        .head()
+                                        .as_cell()?;
+                                    let key_vec = header.head().as_atom()?;
+                                    let val_vec = header.tail().as_atom()?;
 
-                                    if let Ok(key) = key_vec.to_bytes_until_nul(&space) {
-                                        if let Ok(val) = val_vec.to_bytes_until_nul(&space) {
+                                    if let Ok(key) = key_vec.to_bytes_until_nul() {
+                                        if let Ok(val) = val_vec.to_bytes_until_nul() {
                                             let key_str = String::from_utf8(key)?;
                                             let val_str = String::from_utf8(val)?;
                                             debug!(
@@ -580,7 +584,8 @@ pub fn http() -> IODriverFn {
                                                 key_str, val_str
                                             );
                                             headers.push((key_str, val_str));
-                                            header_list = header_list.as_cell()?.tail(&space);
+                                            header_list =
+                                                header_list.in_space(&space).as_cell()?.tail().noun();
                                         } else {
                                             break;
                                         }
@@ -590,12 +595,16 @@ pub fn http() -> IODriverFn {
                                 }
                             }
 
-                            let maybe_body = res.tail(&space).as_cell()?.tail(&space);
+                            let maybe_body = res.tail().as_cell()?.tail().noun();
 
                             let body: Option<Bytes> = if maybe_body.is_cell() {
-                                let body_octs = maybe_body.as_cell()?.tail(&space).as_cell()?;
+                                let body_octs = maybe_body
+                                    .in_space(&space)
+                                    .as_cell()?
+                                    .tail()
+                                    .as_cell()?;
                                 let body_len = body_octs
-                                    .head(&space)
+                                    .head()
                                     .as_atom()?
                                     .direct()
                                     .expect("body len")
@@ -603,15 +612,15 @@ pub fn http() -> IODriverFn {
                                 let len: usize =
                                     body_len.try_into().map_err(|_| HttpError::BodyLengthConversion)?;
                                 let mut body_vec: Vec<u8> = vec![0; len];
-                                let body_atom = body_octs.tail(&space).as_atom()?;
+                                let body_atom = body_octs.tail().as_atom()?;
 
                                 // Use lossy conversion to handle invalid UTF-8 gracefully
-                                let body_bytes = match body_atom.to_bytes_until_nul(&space) {
+                                let body_bytes = match body_atom.to_bytes_until_nul() {
                                     Ok(bytes) => bytes,
                                     Err(e) => {
                                         error!("Failed to convert body atom to bytes: {}", e);
                                         // Try to get raw bytes from the atom instead
-                                        let raw_bytes = body_atom.to_ne_bytes(&space);
+                                        let raw_bytes = body_atom.to_ne_bytes();
                                         let raw_size = std::cmp::min(len, raw_bytes.len());
                                         raw_bytes[..raw_size].to_vec()
                                     }

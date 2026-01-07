@@ -469,7 +469,8 @@ pub mod tests {
             )
         });
         let space = state_slab.noun_space();
-        unsafe { assert!(noun_equality(state_slab.root(), &c, &space)) }
+        let root = unsafe { state_slab.root() };
+        assert!(noun_equality(root.in_space(&space), c.in_space(&space)));
     }
 
     #[tokio::test(flavor = "current_thread")]

@@ -37,9 +37,9 @@ pub fn jet_roll(context: &mut Context, subject: Noun) -> Result {
 
     let site = Site::new(context, &mut gate);
     loop {
-        if let Ok(list_cell) = list.as_cell() {
-            list = list_cell.tail(&space);
-            let sam = T(&mut context.stack, &[list_cell.head(&space), prod]);
+        if let Ok(list_cell) = list.in_space(&space).as_cell() {
+            list = list_cell.tail().noun();
+            let sam = T(&mut context.stack, &[list_cell.head().noun(), prod]);
             prod = site_slam(context, &site, sam)?;
         } else {
             if unsafe { !list.raw_equals(&D(0)) } {
@@ -76,11 +76,11 @@ pub fn jet_turn(context: &mut Context, subject: Noun) -> Result {
     // loop
     let site = Site::new(context, &mut gate);
     loop {
-        if let Ok(list_cell) = list.as_cell() {
-            list = list_cell.tail(&space);
+        if let Ok(list_cell) = list.in_space(&space).as_cell() {
+            list = list_cell.tail().noun();
             unsafe {
                 let (new_cell, new_mem) = Cell::new_raw_mut(&mut context.stack);
-                (*new_mem).head = site_slam(context, &site, list_cell.head(&space))?;
+                (*new_mem).head = site_slam(context, &site, list_cell.head().noun())?;
                 *dest = new_cell.as_noun();
                 dest = &mut (*new_mem).tail;
             }
@@ -109,7 +109,7 @@ pub fn jet_reap(context: &mut Context, subject: Noun) -> Result {
     let sam = slot(subject, 6, &space)?;
     let a_noun = slot(sam, 2, &space)?;
     let b_noun = slot(sam, 3, &space)?;
-    let a = a_noun.as_atom()?.as_u64(&space)?;
+    let a = a_noun.in_space(&space).as_atom()?.as_u64()?;
     util::reap(&mut context.stack, a, b_noun)
 }
 
@@ -134,8 +134,9 @@ pub fn jet_find(context: &mut Context, subject: Noun) -> Result {
 pub fn jet_scag(context: &mut Context, subject: Noun) -> Result {
     let space = context.stack.noun_space();
     let sam = slot(subject, 6, &space)?;
-    let a = sam.as_cell()?.head(&space).as_atom()?;
-    let b = sam.as_cell()?.tail(&space);
+    let sam_cell = sam.in_space(&space).as_cell()?;
+    let a = sam_cell.head().as_atom()?.atom();
+    let b = sam_cell.tail().noun();
 
     util::scag(context, a, b)
 }
@@ -159,9 +160,9 @@ pub mod util {
                 break;
             }
 
-            let cell = list.as_cell()?;
-            tsil = T(alloc, &[cell.head(space), tsil]);
-            list = cell.tail(space);
+            let cell = list.in_space(space).as_cell()?;
+            tsil = T(alloc, &[cell.head().noun(), tsil]);
+            list = cell.tail().noun();
         }
 
         Ok(tsil)
@@ -174,18 +175,18 @@ pub mod util {
             if unsafe { cur.raw_equals(&D(0)) } {
                 break;
             }
-            let cell = cur.as_cell()?;
-            res = T(alloc, &[cell.head(space), res]);
-            cur = cell.tail(space);
+            let cell = cur.in_space(space).as_cell()?;
+            res = T(alloc, &[cell.head().noun(), res]);
+            cur = cell.tail().noun();
         }
         cur = b;
         loop {
             if unsafe { cur.raw_equals(&D(0)) } {
                 break;
             }
-            let cell = cur.as_cell()?;
-            res = T(alloc, &[cell.head(space), res]);
-            cur = cell.tail(space);
+            let cell = cur.in_space(space).as_cell()?;
+            res = T(alloc, &[cell.head().noun(), res]);
+            cur = cell.tail().noun();
         }
         let out_space = alloc.noun_space();
         flop(alloc, res, &out_space)
@@ -195,34 +196,34 @@ pub mod util {
         let mut len = 0usize;
         let mut list = tape;
         loop {
-            if let Some(atom) = list.atom() {
-                if atom.as_bitslice(space).first_one().is_none() {
+            if let Some(atom) = list.in_space(space).atom() {
+                if atom.as_bitslice().first_one().is_none() {
                     break;
                 } else {
                     return Err(BAIL_EXIT);
                 }
             }
-            let cell = list.as_cell()?;
+            let cell = list.in_space(space).as_cell()?;
             // don't need checked_add or indirect atom result: 2^63-1 atoms would be 64 ebibytes
             len += 1;
-            list = cell.tail(space);
+            list = cell.tail().noun();
         }
         Ok(len)
     }
 
     pub fn snag(tape: Noun, index: Noun, space: &NounSpace) -> Result {
         let mut list = tape;
-        let mut idx = index.as_atom()?.as_u64(space)? as usize;
+        let mut idx = index.in_space(space).as_atom()?.as_u64()? as usize;
         loop {
             if unsafe { list.raw_equals(&D(0)) } {
                 return Err(BAIL_EXIT);
             }
-            let cell = list.as_cell()?;
+            let cell = list.in_space(space).as_cell()?;
             if idx == 0 {
-                return Ok(cell.head(space));
+                return Ok(cell.head().noun());
             }
             idx -= 1;
-            list = cell.tail(space);
+            list = cell.tail().noun();
         }
     }
 
@@ -232,16 +233,16 @@ pub mod util {
         let mut list = tape;
         let space = stack.noun_space();
 
-        if let Some(atom) = list.atom() {
-            if atom.as_bitslice(&space).first_one().is_none() {
+        if let Some(atom) = list.in_space(&space).atom() {
+            if atom.as_bitslice().first_one().is_none() {
                 return Ok(D(0));
             }
         }
 
         loop {
-            let cell = list.as_cell()?;
-            if let Some(atom) = cell.tail(&space).atom() {
-                if atom.as_bitslice(&space).first_one().is_none() {
+            let cell = list.in_space(&space).as_cell()?;
+            if let Some(atom) = cell.tail().atom() {
+                if atom.as_bitslice().first_one().is_none() {
                     break;
                 } else {
                     return Err(BAIL_EXIT);
@@ -249,11 +250,11 @@ pub mod util {
             }
             unsafe {
                 let (new_cell, new_mem) = Cell::new_raw_mut(stack);
-                (*new_mem).head = cell.head(&space);
+                (*new_mem).head = cell.head().noun();
                 *dest = new_cell.as_noun();
                 dest = &mut (*new_mem).tail;
             }
-            list = cell.tail(&space);
+            list = cell.tail().noun();
         }
         unsafe { *dest = D(0) };
         Ok(ret)
@@ -266,14 +267,14 @@ pub mod util {
             let space = stack.noun_space();
 
             while !list.raw_equals(&D(0)) {
-                let pair = list.as_cell()?;
-                let mut sublist = pair.head(&space);
-                list = pair.tail(&space);
+                let pair = list.in_space(&space).as_cell()?;
+                let mut sublist = pair.head().noun();
+                list = pair.tail().noun();
 
                 while !sublist.raw_equals(&D(0)) {
-                    let it = sublist.as_cell()?;
-                    let i = it.head(&space);
-                    sublist = it.tail(&space);
+                    let it = sublist.in_space(&space).as_cell()?;
+                    let i = it.head().noun();
+                    sublist = it.tail().noun();
 
                     let (new_cell, new_memory) = Cell::new_raw_mut(stack);
                     (*new_memory).head = i;
@@ -309,12 +310,12 @@ pub mod util {
                 return Ok(YES);
             }
 
-            let cell = list.as_cell()?;
-            let b_res = site_slam(context, &site, cell.head(&space))?;
+            let cell = list.in_space(&space).as_cell()?;
+            let b_res = site_slam(context, &site, cell.head().noun())?;
             if unsafe { b_res.raw_equals(&NO) } {
                 return Ok(NO);
             }
-            list = cell.tail(&space);
+            list = cell.tail().noun();
         }
     }
 
@@ -331,19 +332,25 @@ pub mod util {
                     return Ok(D(0)); // (unit @ud)  ~
                 }
 
-                if unsafe { n.as_cell()?.head(&space).raw_equals(&h.as_cell()?.head(&space)) } {
-                    if unsafe { n.as_cell()?.tail(&space).raw_equals(&D(0)) } {
+                if unsafe {
+                    n.in_space(&space)
+                        .as_cell()?
+                        .head()
+                        .noun()
+                        .raw_equals(&h.in_space(&space).as_cell()?.head().noun())
+                } {
+                    if unsafe { n.in_space(&space).as_cell()?.tail().noun().raw_equals(&D(0)) } {
                         // match found
                         return Ok(T(&mut context.stack, &[D(0), D(i)])); // (unit @ud)  i
                     }
 
-                    n = n.as_cell()?.tail(&space);
-                    h = h.as_cell()?.tail(&space);
+                    n = n.in_space(&space).as_cell()?.tail().noun();
+                    h = h.in_space(&space).as_cell()?.tail().noun();
                     continue;
                 }
 
                 // try next position
-                hstk = hstk.as_cell()?.tail(&space);
+                hstk = hstk.in_space(&space).as_cell()?.tail().noun();
                 i += 1;
                 break;
             }
@@ -353,7 +360,7 @@ pub mod util {
     pub fn scag(context: &mut Context, a: Atom, b: Noun) -> Result {
         // Accepts an atom a and list b, producing the first a elements of the front of the list.
         let space = context.stack.noun_space();
-        let a = a.as_u64(&space)?;
+        let a = a.in_space(&space).as_u64()?;
         let mut res: Vec<Noun> = vec![];
         let mut list = b;
         let mut pos = 0;
@@ -361,12 +368,12 @@ pub mod util {
             if unsafe { list.raw_equals(&D(0)) } {
                 break;
             }
-            let current_cell = list.as_cell()?;
+            let current_cell = list.in_space(&space).as_cell()?;
             if pos >= a {
                 break;
             }
-            res.push(current_cell.head(&space));
-            list = current_cell.tail(&space);
+            res.push(current_cell.head().noun());
+            list = current_cell.tail().noun();
             pos += 1;
         }
 

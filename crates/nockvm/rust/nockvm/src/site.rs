@@ -54,7 +54,8 @@ impl Site {
                 let mut ret = true;
                 for mut batteries in batteries_list {
                     if let Some((_battery, parent_axis)) = batteries.next() {
-                        let parent_axis_prefix_bits = &parent_axis.as_bitslice(&space)[0..3];
+                        let parent_axis_handle = parent_axis.in_space(&space);
+                        let parent_axis_prefix_bits = &parent_axis_handle.as_bitslice()[0..3];
                         if parent_axis_prefix_bits == axis_7_bits {
                             continue;
                         } else {

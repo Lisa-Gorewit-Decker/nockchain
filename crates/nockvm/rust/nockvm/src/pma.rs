@@ -321,7 +321,7 @@ impl NounAllocator for Pma {
         let a = &*a;
         let b = &*b;
         let space = NounSpace::pma_only(self);
-        noun_equality(a, b, &space)
+        noun_equality(a.in_space(&space), b.in_space(&space))
     }
 
     fn noun_space(&self) -> NounSpace {
@@ -587,14 +587,14 @@ impl PmaCopy for Noun {
                 }
                 NounRepr::Indirect(_) | NounRepr::Direct => {}
                 NounRepr::Cell(_) => {
-                    let cell = noun.as_cell().expect("checked is_cell");
-                    let ptr = unsafe { cell.to_raw_pointer(&space) } as usize as u64;
+                    let cell = noun.in_space(&space).as_cell().expect("checked is_cell");
+                    let ptr = unsafe { cell.raw_pointer() } as usize as u64;
                     if seen.get(ptr).is_some() {
                         continue;
                     }
                     seen.insert(ptr, ());
-                    work.push(cell.head(&space));
-                    work.push(cell.tail(&space));
+                    work.push(cell.head().noun());
+                    work.push(cell.tail().noun());
                 }
             }
         }
@@ -619,7 +619,7 @@ mod tests {
     use crate::hamt::Hamt;
     use crate::jets::cold::NounListMem;
     use crate::mem::{word_size_of, NockStack};
-    use crate::noun::{D, DIRECT_MAX};
+    use crate::noun::{AllocLocation, D, DIRECT_MAX};
     use ibig::Stack;
     use std::alloc::Layout;
 
@@ -1039,7 +1039,10 @@ mod tests {
             "Should not be a direct atom"
         );
         assert!(
-            noun.is_stack_allocated(&space),
+            matches!(
+                noun.in_space(&space).allocated_location(),
+                Some(AllocLocation::Stack)
+            ),
             "Should be stack-allocated before evacuation"
         );
 
@@ -1064,7 +1067,10 @@ mod tests {
 
         // Verify the noun is now in offset form (not stack-allocated)
         assert!(
-            !noun.is_stack_allocated(&space),
+            !matches!(
+                noun.in_space(&space).allocated_location(),
+                Some(AllocLocation::Stack)
+            ),
             "Should be in offset form after evacuation"
         );
         assert!(noun.is_indirect(), "Should still be an indirect atom");
@@ -1074,11 +1080,12 @@ mod tests {
         let read_indirect = atom.as_indirect().expect("Should be indirect");
 
         // Read the size - should be 2 words
-        let size = read_indirect.size(&space);
+        let read_handle = read_indirect.as_atom().in_space(&space);
+        let size = read_handle.size();
         assert_eq!(size, 2, "Indirect atom should have size 2");
 
         // Read the data back and verify it matches
-        let data_ptr = read_indirect.data_pointer(&space);
+        let data_ptr = read_handle.data_pointer();
         let read_data = unsafe { std::slice::from_raw_parts(data_ptr, 2) };
         assert_eq!(
             read_data[0], data[0],
@@ -1113,7 +1120,10 @@ mod tests {
         // Verify it's a cell on the stack
         assert!(noun.is_cell(), "Should be a cell");
         assert!(
-            noun.is_stack_allocated(&space),
+            matches!(
+                noun.in_space(&space).allocated_location(),
+                Some(AllocLocation::Stack)
+            ),
             "Should be stack-allocated before evacuation"
         );
 
@@ -1130,15 +1140,18 @@ mod tests {
 
         // Verify the noun is now in offset form
         assert!(
-            !noun.is_stack_allocated(&space),
+            !matches!(
+                noun.in_space(&space).allocated_location(),
+                Some(AllocLocation::Stack)
+            ),
             "Should be in offset form after evacuation"
         );
         assert!(noun.is_cell(), "Should still be a cell");
 
         // Read head and tail
-        let cell = noun.as_cell().expect("Should be a cell");
-        let head = cell.head(&space);
-        let tail = cell.tail(&space);
+        let cell = noun.in_space(&space).as_cell().expect("Should be a cell");
+        let head = cell.head().noun();
+        let tail = cell.tail().noun();
 
         // Verify head and tail are correct direct atoms
         assert!(head.is_direct(), "Head should be direct");
@@ -1180,7 +1193,10 @@ mod tests {
         // Verify structure before evacuation
         assert!(noun.is_cell(), "Root should be a cell");
         assert!(
-            noun.is_stack_allocated(&space),
+            matches!(
+                noun.in_space(&space).allocated_location(),
+                Some(AllocLocation::Stack)
+            ),
             "Root should be stack-allocated"
         );
 
@@ -1196,40 +1212,43 @@ mod tests {
 
         // Verify root is in offset form
         assert!(
-            !noun.is_stack_allocated(&space),
+            !matches!(
+                noun.in_space(&space).allocated_location(),
+                Some(AllocLocation::Stack)
+            ),
             "Root should be in offset form"
         );
 
         // Navigate and verify structure
-        let root = noun.as_cell().expect("root is cell");
-        let left_cell = root.head(&space).as_cell().expect("left is cell");
-        let right_cell = root.tail(&space).as_cell().expect("right is cell");
+        let root = noun.in_space(&space).as_cell().expect("root is cell");
+        let left_cell = root.head().as_cell().expect("left is cell");
+        let right_cell = root.tail().as_cell().expect("right is cell");
 
         // Verify left cell [1 2]
         assert!(
-            !root.head(&space).is_stack_allocated(&space),
+            !matches!(root.head().allocated_location(), Some(AllocLocation::Stack)),
             "Left should be in offset form"
         );
         assert_eq!(
-            left_cell.head(&space).as_direct().expect("1").data(),
+            left_cell.head().noun().as_direct().expect("1").data(),
             1
         );
         assert_eq!(
-            left_cell.tail(&space).as_direct().expect("2").data(),
+            left_cell.tail().noun().as_direct().expect("2").data(),
             2
         );
 
         // Verify right cell [3 4]
         assert!(
-            !root.tail(&space).is_stack_allocated(&space),
+            !matches!(root.tail().allocated_location(), Some(AllocLocation::Stack)),
             "Right should be in offset form"
         );
         assert_eq!(
-            right_cell.head(&space).as_direct().expect("3").data(),
+            right_cell.head().noun().as_direct().expect("3").data(),
             3
         );
         assert_eq!(
-            right_cell.tail(&space).as_direct().expect("4").data(),
+            right_cell.tail().noun().as_direct().expect("4").data(),
             4
         );
 
@@ -1255,7 +1274,10 @@ mod tests {
         let mut noun = Cell::new(&mut stack, indirect1.as_noun(), indirect2.as_noun()).as_noun();
 
         assert!(
-            noun.is_stack_allocated(&space),
+            matches!(
+                noun.in_space(&space).allocated_location(),
+                Some(AllocLocation::Stack)
+            ),
             "Should be stack-allocated"
         );
 
@@ -1272,35 +1294,38 @@ mod tests {
 
         // Verify structure
         assert!(
-            !noun.is_stack_allocated(&space),
+            !matches!(
+                noun.in_space(&space).allocated_location(),
+                Some(AllocLocation::Stack)
+            ),
             "Root should be in offset form"
         );
 
-        let cell = noun.as_cell().expect("is cell");
-        let head = cell.head(&space);
-        let tail = cell.tail(&space);
+        let cell = noun.in_space(&space).as_cell().expect("is cell");
+        let head = cell.head().noun();
+        let tail = cell.tail().noun();
 
         // Verify head is indirect atom with correct data
         assert!(head.is_indirect(), "Head should be indirect");
         assert!(
-            !head.is_stack_allocated(&space),
+            !matches!(head.in_space(&space).allocated_location(), Some(AllocLocation::Stack)),
             "Head should be in offset form"
         );
         let head_indirect = head.as_indirect().expect("head indirect");
-        let head_data =
-            unsafe { std::slice::from_raw_parts(head_indirect.data_pointer(&space), 2) };
+        let head_handle = head_indirect.as_atom().in_space(&space);
+        let head_data = unsafe { std::slice::from_raw_parts(head_handle.data_pointer(), 2) };
         assert_eq!(head_data[0], data1[0]);
         assert_eq!(head_data[1], data1[1]);
 
         // Verify tail is indirect atom with correct data
         assert!(tail.is_indirect(), "Tail should be indirect");
         assert!(
-            !tail.is_stack_allocated(&space),
+            !matches!(tail.in_space(&space).allocated_location(), Some(AllocLocation::Stack)),
             "Tail should be in offset form"
         );
         let tail_indirect = tail.as_indirect().expect("tail indirect");
-        let tail_data =
-            unsafe { std::slice::from_raw_parts(tail_indirect.data_pointer(&space), 2) };
+        let tail_handle = tail_indirect.as_atom().in_space(&space);
+        let tail_data = unsafe { std::slice::from_raw_parts(tail_handle.data_pointer(), 2) };
         assert_eq!(tail_data[0], data2[0]);
         assert_eq!(tail_data[1], data2[1]);
 
@@ -1336,22 +1361,22 @@ mod tests {
         );
 
         // Verify both head and tail point to the same PMA location
-        let root = noun.as_cell().expect("is cell");
-        let head_raw = unsafe { root.head(&space).as_raw() };
-        let tail_raw = unsafe { root.tail(&space).as_raw() };
+        let root = noun.in_space(&space).as_cell().expect("is cell");
+        let head_raw = unsafe { root.head().noun().as_raw() };
+        let tail_raw = unsafe { root.tail().noun().as_raw() };
         assert_eq!(
             head_raw, tail_raw,
             "Head and tail should point to same location (sharing preserved)"
         );
 
         // Verify the shared cell is correct
-        let shared_cell = root.head(&space).as_cell().expect("shared is cell");
+        let shared_cell = root.head().as_cell().expect("shared is cell");
         assert_eq!(
-            shared_cell.head(&space).as_direct().expect("1").data(),
+            shared_cell.head().noun().as_direct().expect("1").data(),
             1
         );
         assert_eq!(
-            shared_cell.tail(&space).as_direct().expect("2").data(),
+            shared_cell.tail().noun().as_direct().expect("2").data(),
             2
         );
 
@@ -1407,7 +1432,10 @@ mod tests {
         // Verify it's deeply nested and stack-allocated
         assert!(noun.is_cell(), "Root should be a cell");
         assert!(
-            noun.is_stack_allocated(&space),
+            matches!(
+                noun.in_space(&space).allocated_location(),
+                Some(AllocLocation::Stack)
+            ),
             "Should be stack-allocated"
         );
 
@@ -1416,7 +1444,12 @@ mod tests {
         let mut current = noun;
         while current.is_cell() {
             depth_before += 1;
-            current = current.as_cell().unwrap().tail(&space);
+            current = current
+                .in_space(&space)
+                .as_cell()
+                .unwrap()
+                .tail()
+                .noun();
         }
         assert_eq!(depth_before, DEPTH - 1, "Should have correct depth before evacuation");
 
@@ -1434,7 +1467,10 @@ mod tests {
 
         // Verify root is in offset form
         assert!(
-            !noun.is_stack_allocated(&space),
+            !matches!(
+                noun.in_space(&space).allocated_location(),
+                Some(AllocLocation::Stack)
+            ),
             "Root should be in offset form"
         );
 
@@ -1442,10 +1478,10 @@ mod tests {
         let mut current = noun;
         for expected in 1..DEPTH {
             assert!(current.is_cell(), "Should be cell at depth {}", expected);
-            let cell = current.as_cell().expect("is cell");
+            let cell = current.in_space(&space).as_cell().expect("is cell");
 
             // Verify head value
-            let head = cell.head(&space);
+            let head = cell.head().noun();
             assert!(head.is_direct(), "Head at depth {} should be direct", expected);
             assert_eq!(
                 head.as_direct().expect("direct").data(),
@@ -1457,12 +1493,15 @@ mod tests {
 
             // Verify this cell is in offset form
             assert!(
-                !current.is_stack_allocated(&space),
+                !matches!(
+                    current.in_space(&space).allocated_location(),
+                    Some(AllocLocation::Stack)
+                ),
                 "Cell at depth {} should be in offset form",
                 expected
             );
 
-            current = cell.tail(&space);
+            current = cell.tail().noun();
         }
 
         // Final element should be direct atom DEPTH
@@ -1517,7 +1556,10 @@ mod tests {
         // Verify structure before evacuation
         assert!(noun.is_cell(), "Root should be a cell");
         assert!(
-            noun.is_stack_allocated(&space),
+            matches!(
+                noun.in_space(&space).allocated_location(),
+                Some(AllocLocation::Stack)
+            ),
             "Should be stack-allocated"
         );
 
@@ -1546,7 +1588,10 @@ mod tests {
 
         // Verify root is in offset form
         assert!(
-            !noun.is_stack_allocated(&space),
+            !matches!(
+                noun.in_space(&space).allocated_location(),
+                Some(AllocLocation::Stack)
+            ),
             "Root should be in offset form"
         );
 
@@ -1554,21 +1599,25 @@ mod tests {
         let mut current = noun;
         for expected_index in 1..DEPTH {
             assert!(current.is_cell(), "Should be cell at depth {}", expected_index);
-            let cell = current.as_cell().expect("is cell");
+            let cell = current.in_space(&space).as_cell().expect("is cell");
 
             // Verify head is an indirect atom with correct data
-            let head = cell.head(&space);
+            let head = cell.head().noun();
             assert!(head.is_indirect(), "Head at depth {} should be indirect", expected_index);
             assert!(
-                !head.is_stack_allocated(&space),
+                !matches!(
+                    head.in_space(&space).allocated_location(),
+                    Some(AllocLocation::Stack)
+                ),
                 "Head at depth {} should be in offset form",
                 expected_index
             );
 
             let head_indirect = head.as_indirect().expect("indirect");
+            let head_handle = head_indirect.as_atom().in_space(&space);
             let expected_word_count = word_count_for_index(expected_index);
             assert_eq!(
-                head_indirect.size(&space),
+                head_handle.size(),
                 expected_word_count,
                 "Indirect atom at depth {} should have {} words",
                 expected_index,
@@ -1576,7 +1625,7 @@ mod tests {
             );
 
             // Verify data pattern
-            let data_ptr = head_indirect.data_pointer(&space);
+            let data_ptr = head_handle.data_pointer();
             for word_idx in 0..expected_word_count {
                 let expected_value = (expected_index as u64) << 32 | (word_idx as u64);
                 let actual_value = unsafe { *data_ptr.add(word_idx) };
@@ -1587,27 +1636,31 @@ mod tests {
                 );
             }
 
-            current = cell.tail(&space);
+            current = cell.tail().noun();
         }
 
         // Final element should be indirect atom for index DEPTH
         assert!(current.is_indirect(), "Leaf should be indirect atom");
         assert!(
-            !current.is_stack_allocated(&space),
+            !matches!(
+                current.in_space(&space).allocated_location(),
+                Some(AllocLocation::Stack)
+            ),
             "Leaf should be in offset form"
         );
 
         let leaf_indirect = current.as_indirect().expect("indirect");
+        let leaf_handle = leaf_indirect.as_atom().in_space(&space);
         let expected_leaf_words = word_count_for_index(DEPTH);
         assert_eq!(
-            leaf_indirect.size(&space),
+            leaf_handle.size(),
             expected_leaf_words,
             "Leaf indirect atom should have {} words",
             expected_leaf_words
         );
 
         // Verify leaf data pattern
-        let leaf_data_ptr = leaf_indirect.data_pointer(&space);
+        let leaf_data_ptr = leaf_handle.data_pointer();
         for word_idx in 0..expected_leaf_words {
             let expected_value = (DEPTH as u64) << 32 | (word_idx as u64);
             let actual_value = unsafe { *leaf_data_ptr.add(word_idx) };
@@ -1726,13 +1779,19 @@ mod tests {
             for (key, value) in entries {
                 if !key.is_direct() {
                     assert!(
-                        !key.is_stack_allocated(&space),
+                        !matches!(
+                            key.in_space(&space).allocated_location(),
+                            Some(AllocLocation::Stack)
+                        ),
                         "HAMT key should be in offset form after evacuation"
                     );
                 }
                 if !value.is_direct() {
                     assert!(
-                        !value.is_stack_allocated(&space),
+                        !matches!(
+                            value.in_space(&space).allocated_location(),
+                            Some(AllocLocation::Stack)
+                        ),
                         "HAMT value should be in offset form after evacuation"
                     );
                 }
@@ -1769,20 +1828,25 @@ mod tests {
 
         // Verify the PMA copy is in offset form
         assert!(
-            !pma_indirect.is_stack_allocated(&space),
+            !matches!(
+                pma_indirect.in_space(&space).allocated_location(),
+                Some(AllocLocation::Stack)
+            ),
             "PMA copy should be in offset form"
         );
 
         // Verify the PMA copy contains correct data
         let pma_ia = pma_indirect.as_indirect().unwrap();
-        let pma_size = pma_ia.size(&space);
+        let pma_handle = pma_ia.as_atom().in_space(&space);
+        let pma_size = pma_handle.size();
         assert_eq!(pma_size, 2, "PMA indirect atom should have size 2");
 
-        let pma_bytes = pma_ia.as_ne_bytes(&space);
+        let pma_bytes = pma_handle.as_ne_bytes();
         assert_eq!(pma_bytes.len(), 16, "PMA indirect should have 16 bytes of data");
 
         // Verify actual data values
-        let pma_slice = pma_ia.as_slice(&space);
+        let pma_slice =
+            unsafe { std::slice::from_raw_parts(pma_handle.data_pointer(), pma_handle.size()) };
         assert_eq!(pma_slice[0], 0xDEADBEEF_CAFEBABE, "First word should match");
         assert_eq!(pma_slice[1], 0x12345678_9ABCDEF0, "Second word should match");
 
@@ -1792,17 +1856,20 @@ mod tests {
         unsafe { pma_cell.copy_to_pma(&stack, &mut pma) };
 
         assert!(
-            !pma_cell.is_stack_allocated(&space),
+            !matches!(
+                pma_cell.in_space(&space).allocated_location(),
+                Some(AllocLocation::Stack)
+            ),
             "PMA cell should be in offset form"
         );
-        let cell = pma_cell.as_cell().unwrap();
+        let cell = pma_cell.in_space(&space).as_cell().unwrap();
         assert_eq!(
-            cell.head(&space).as_direct().unwrap().data(),
+            cell.head().noun().as_direct().unwrap().data(),
             42,
             "Cell head should be 42"
         );
         assert_eq!(
-            cell.tail(&space).as_direct().unwrap().data(),
+            cell.tail().noun().as_direct().unwrap().data(),
             99,
             "Cell tail should be 99"
         );
@@ -1814,23 +1881,26 @@ mod tests {
         unsafe { pma_nested.copy_to_pma(&stack, &mut pma) };
 
         assert!(
-            !pma_nested.is_stack_allocated(&space),
+            !matches!(
+                pma_nested.in_space(&space).allocated_location(),
+                Some(AllocLocation::Stack)
+            ),
             "PMA nested should be in offset form"
         );
-        let outer = pma_nested.as_cell().unwrap();
+        let outer = pma_nested.in_space(&space).as_cell().unwrap();
         assert_eq!(
-            outer.tail(&space).as_direct().unwrap().data(),
+            outer.tail().noun().as_direct().unwrap().data(),
             3,
             "Outer tail should be 3"
         );
-        let inner_cell = outer.head(&space).as_cell().unwrap();
+        let inner_cell = outer.head().as_cell().unwrap();
         assert_eq!(
-            inner_cell.head(&space).as_direct().unwrap().data(),
+            inner_cell.head().noun().as_direct().unwrap().data(),
             1,
             "Inner head should be 1"
         );
         assert_eq!(
-            inner_cell.tail(&space).as_direct().unwrap().data(),
+            inner_cell.tail().noun().as_direct().unwrap().data(),
             2,
             "Inner tail should be 2"
         );
@@ -1957,9 +2027,15 @@ mod tests {
                 // Find matching reference key and verify value matches
                 let mut found = false;
                 for (idx, ref_key) in ref_keys.iter().enumerate() {
-                    if noun_equality(pma_key, ref_key, &ref_space) {
+                    if noun_equality(
+                        (*pma_key).in_space(&ref_space),
+                        (*ref_key).in_space(&ref_space),
+                    ) {
                         assert!(
-                            noun_equality(pma_value, &ref_values[idx], &ref_space),
+                            noun_equality(
+                                (*pma_value).in_space(&ref_space),
+                                ref_values[idx].in_space(&ref_space),
+                            ),
                             "Value for key {} should match reference after evacuation",
                             idx
                         );
@@ -1996,15 +2072,16 @@ mod tests {
             return;
         }
 
+        let location = noun.in_space(space).allocated_location();
         assert!(
-            !noun.is_stack_allocated(space),
+            !matches!(location, Some(AllocLocation::Stack)),
             "{} should be in offset form after evacuation",
             context
         );
 
-        if let Ok(cell) = noun.as_cell() {
-            verify_noun_not_stack_allocated(cell.head(space), space, context);
-            verify_noun_not_stack_allocated(cell.tail(space), space, context);
+        if let Ok(cell) = noun.in_space(space).as_cell() {
+            verify_noun_not_stack_allocated(cell.head().noun(), space, context);
+            verify_noun_not_stack_allocated(cell.tail().noun(), space, context);
         }
     }
 

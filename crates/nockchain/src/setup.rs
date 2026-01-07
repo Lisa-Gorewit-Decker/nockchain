@@ -423,29 +423,26 @@ mod tests {
         let root = unsafe { *slab.root() };
         let space = slab.noun_space();
 
-        let outer = root.as_cell().expect("outer tuple");
-        let v1_phase_atom = outer
-            .head(&space)
-            .as_atom()
-            .expect("v1-phase should be atom");
+        let outer = root.in_space(&space).as_cell().expect("outer tuple");
+        let v1_phase_atom = outer.head().as_atom().expect("v1-phase should be atom");
         assert_eq!(
-            v1_phase_atom.as_u64(&space).expect("v1-phase as u64"),
+            v1_phase_atom.as_u64().expect("v1-phase as u64"),
             BlockchainConstants::DEFAULT_V1_PHASE
         );
 
-        let rest = outer.tail(&space).as_cell().expect("rest tuple");
-        let note_data = rest.head(&space).as_cell().expect("note-data tuple");
+        let rest = outer.tail().as_cell().expect("rest tuple");
+        let note_data = rest.head().as_cell().expect("note-data tuple");
         let note_data_max_size = note_data
-            .head(&space)
+            .head()
             .as_atom()
             .expect("note-data max-size atom")
-            .as_u64(&space)
+            .as_u64()
             .expect("note-data max-size as u64");
         let note_data_min_fee = note_data
-            .tail(&space)
+            .tail()
             .as_atom()
             .expect("note-data min-fee atom")
-            .as_u64(&space)
+            .as_u64()
             .expect("note-data min-fee as u64");
         assert_eq!(
             note_data_max_size,
@@ -456,25 +453,17 @@ mod tests {
             BlockchainConstants::DEFAULT_NOTE_DATA_MIN_FEE
         );
 
-        let base_fee_and_v0 = rest.tail(&space).as_cell().expect("base-fee and v0 tuple");
-        let base_fee_atom = base_fee_and_v0
-            .head(&space)
-            .as_atom()
-            .expect("base-fee atom");
+        let base_fee_and_v0 = rest.tail().as_cell().expect("base-fee and v0 tuple");
+        let base_fee_atom = base_fee_and_v0.head().as_atom().expect("base-fee atom");
         assert_eq!(
-            base_fee_atom.as_u64(&space).expect("base-fee as u64"),
+            base_fee_atom.as_u64().expect("base-fee as u64"),
             BlockchainConstants::DEFAULT_BASE_FEE
         );
 
-        let v0_tuple = base_fee_and_v0.tail(&space).as_cell().expect("v0 tuple");
-        let max_block_size_atom = v0_tuple
-            .head(&space)
-            .as_atom()
-            .expect("max-block-size atom");
+        let v0_tuple = base_fee_and_v0.tail().as_cell().expect("v0 tuple");
+        let max_block_size_atom = v0_tuple.head().as_atom().expect("max-block-size atom");
         assert_eq!(
-            max_block_size_atom
-                .as_u64(&space)
-                .expect("max-block-size as u64"),
+            max_block_size_atom.as_u64().expect("max-block-size as u64"),
             BlockchainConstants::DEFAULT_MAX_BLOCK_SIZE
         );
     }

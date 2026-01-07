@@ -1,13 +1,13 @@
 use nockvm::jets::sort::util::gor;
 use nockvm::mem::NockStack;
-use nockvm::noun::{Cell, Noun, NounSpace};
+use nockvm::noun::{Cell, CellHandle, Noun, NounSpace};
 use nockvm::unifying_equality::unifying_equality;
 
 use crate::noun_ext::NounMathExt;
 
 #[derive(Copy, Clone)]
 pub struct HoonList<'a> {
-    pub(super) next: Option<Cell>,
+    pub(super) next: Option<Noun>,
     pub(super) space: &'a NounSpace,
 }
 
@@ -16,21 +16,22 @@ impl<'a> Iterator for HoonList<'a> {
 
     #[inline(always)]
     fn next(&mut self) -> Option<Self::Item> {
-        self.next.take().map(|cell| {
-            let tail = cell.tail(self.space);
+        self.next.take().map(|noun| {
+            let cell = noun.in_space(self.space).as_cell().unwrap_or_else(|err| {
+                panic!(
+                    "Panicked with {err:?} at {}:{} (git sha: {:?})",
+                    file!(),
+                    line!(),
+                    option_env!("GIT_SHA")
+                )
+            });
+            let tail = cell.tail().noun();
             self.next = if tail.is_cell() {
-                Some(tail.as_cell().unwrap_or_else(|err| {
-                    panic!(
-                        "Panicked with {err:?} at {}:{} (git sha: {:?})",
-                        file!(),
-                        line!(),
-                        option_env!("GIT_SHA")
-                    )
-                }))
+                Some(tail)
             } else {
                 None
             };
-            cell.head(self.space)
+            cell.head().noun()
         })
     }
 }
@@ -38,17 +39,18 @@ impl<'a> Iterator for HoonList<'a> {
 impl<'a> HoonList<'a> {
     pub fn try_from(n: Noun, space: &'a NounSpace) -> core::result::Result<Self, nockvm::noun::Error> {
         if n.is_cell() {
-            Ok(HoonList::from_cell(
-                n.as_cell().unwrap_or_else(|err| {
-                    panic!(
-                        "Panicked with {err:?} at {}:{} (git sha: {:?})",
-                        file!(),
-                        line!(),
-                        option_env!("GIT_SHA")
-                    )
-                }),
+            let _ = n.in_space(space).as_cell().unwrap_or_else(|err| {
+                panic!(
+                    "Panicked with {err:?} at {}:{} (git sha: {:?})",
+                    file!(),
+                    line!(),
+                    option_env!("GIT_SHA")
+                )
+            });
+            Ok(HoonList {
+                next: Some(n),
                 space,
-            ))
+            })
         } else {
             Ok(HoonList { next: None, space })
         }
@@ -56,23 +58,25 @@ impl<'a> HoonList<'a> {
 
     pub fn from_cell(c: Cell, space: &'a NounSpace) -> Self {
         Self {
-            next: Some(c),
+            next: Some(c.as_noun()),
             space,
         }
     }
 }
 
 pub fn next_cell(cell: Cell, space: &NounSpace) -> Option<Cell> {
-    let tail = cell.tail(space);
+    let cell_handle = CellHandle::new(cell, space);
+    let tail = cell_handle.tail().noun();
     if tail.is_cell() {
-        Some(tail.as_cell().unwrap_or_else(|err| {
+        let handle = tail.in_space(space).as_cell().unwrap_or_else(|err| {
             panic!(
                 "Panicked with {err:?} at {}:{} (git sha: {:?})",
                 file!(),
                 line!(),
                 option_env!("GIT_SHA")
             )
-        }))
+        });
+        Some(handle.cell())
     } else {
         None
     }
@@ -82,8 +86,8 @@ pub fn next_cell(cell: Cell, space: &NounSpace) -> Option<Cell> {
 #[derive(Copy, Clone)]
 pub struct HoonMap<'a> {
     pub(super) node: Noun,
-    pub(super) left: Option<Cell>,
-    pub(super) right: Option<Cell>,
+    pub(super) left: Option<Noun>,
+    pub(super) right: Option<Noun>,
     pub(super) space: &'a NounSpace,
 }
 
@@ -102,43 +106,44 @@ impl<'a> HoonMap<'a> {
         {
             // ?:  (gor b p.n.a)
             //   $(a l.a)
-            let map = Self::try_from_cell(self.left?, self.space).ok()?;
+            let map = Self::try_from(self.left?, self.space).ok()?;
             map.get(stack, k)
         } else {
             // $(a r.a)
-            let map = Self::try_from_cell(self.right?, self.space).ok()?;
+            let map = Self::try_from(self.right?, self.space).ok()?;
             map.get(stack, k)
         }
     }
 
     pub fn try_from(n: Noun, space: &'a NounSpace) -> std::result::Result<Self, nockvm::noun::Error> {
         if n.is_cell() {
-            HoonMap::try_from_cell(
-                n.as_cell().unwrap_or_else(|err| {
-                    panic!(
-                        "Panicked with {err:?} at {}:{} (git sha: {:?})",
-                        file!(),
-                        line!(),
-                        option_env!("GIT_SHA")
-                    )
-                }),
-                space,
-            )
+            let cell = n.in_space(space).as_cell().unwrap_or_else(|err| {
+                panic!(
+                    "Panicked with {err:?} at {}:{} (git sha: {:?})",
+                    file!(),
+                    line!(),
+                    option_env!("GIT_SHA")
+                )
+            });
+            HoonMap::try_from_cell(cell, space)
         } else {
             not_cell()
         }
     }
 
-    pub fn try_from_cell(c: Cell, space: &'a NounSpace) -> std::result::Result<Self, nockvm::noun::Error> {
-        let tail: Noun = c.tail(space);
-        if let Ok(cell_tail) = tail.as_cell() {
-            let left = cell_tail.head(space);
-            let right = cell_tail.tail(space);
+    pub fn try_from_cell(
+        c: CellHandle<'_>,
+        space: &'a NounSpace,
+    ) -> std::result::Result<Self, nockvm::noun::Error> {
+        let tail: Noun = c.tail().noun();
+        if let Ok(cell_tail) = tail.in_space(space).as_cell() {
+            let left = cell_tail.head().noun();
+            let right = cell_tail.tail().noun();
 
             Ok(Self {
-                node: c.head(space),
-                left: left.as_cell().ok(),
-                right: right.as_cell().ok(),
+                node: c.head().noun(),
+                left: left.is_cell().then_some(left),
+                right: right.is_cell().then_some(right),
                 space,
             })
         } else {
@@ -149,7 +154,7 @@ impl<'a> HoonMap<'a> {
 #[allow(dead_code)]
 #[derive(Clone)]
 pub struct HoonMapIter<'a> {
-    pub(super) stack: Vec<Option<Cell>>,
+    pub(super) stack: Vec<Option<Noun>>,
     pub(super) space: &'a NounSpace,
 }
 
@@ -159,8 +164,8 @@ impl<'a> Iterator for HoonMapIter<'a> {
     #[inline(always)]
     fn next(&mut self) -> Option<Self::Item> {
         if let Some(maybe_cell) = self.stack.pop() {
-            if let Some(cell) = maybe_cell {
-                if let Ok(cell_trie) = HoonMap::try_from_cell(cell, self.space) {
+            if let Some(noun) = maybe_cell {
+                if let Ok(cell_trie) = HoonMap::try_from(noun, self.space) {
                     self.stack.push(cell_trie.right);
                     self.stack.push(cell_trie.left);
                     return Some(cell_trie.node);
@@ -180,9 +185,9 @@ fn not_cell<T>() -> core::result::Result<T, nockvm::noun::Error> {
 
 impl<'a> HoonMapIter<'a> {
     pub fn new(n: Noun, space: &'a NounSpace) -> Self {
-        if let Ok(c) = n.as_cell() {
+        if n.is_cell() {
             Self {
-                stack: vec![Some(c)],
+                stack: vec![Some(n)],
                 space,
             }
         } else {

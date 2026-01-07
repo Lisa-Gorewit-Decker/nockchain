@@ -381,7 +381,7 @@ mod test {
     use crate::jets::cold::{Batteries, BatteriesMem, NO_BATTERIES};
     use crate::jets::JetErr;
     use crate::mem::NockStack;
-    use crate::noun::{NounAllocator, NounSpace, D};
+    use crate::noun::{AllocLocation, NounAllocator, NounSpace, D};
     use crate::pma::{test_pma_path, Pma, PmaCopy};
 
     const DEFAULT_STACK_SIZE: usize = 1 << 16;
@@ -438,14 +438,15 @@ mod test {
         if noun.is_direct() {
             return;
         }
+        let location = noun.in_space(space).allocated_location();
         assert!(
-            !noun.is_stack_allocated(space),
+            !matches!(location, Some(AllocLocation::Stack)),
             "{} should be in offset form after evacuation",
             context
         );
-        if let Ok(cell) = noun.as_cell() {
-            verify_noun_not_stack_allocated(cell.head(space), space, context);
-            verify_noun_not_stack_allocated(cell.tail(space), space, context);
+        if let Ok(cell) = noun.in_space(space).as_cell() {
+            verify_noun_not_stack_allocated(cell.head().noun(), space, context);
+            verify_noun_not_stack_allocated(cell.tail().noun(), space, context);
         }
     }
 
@@ -516,7 +517,7 @@ mod test {
                 "Battery value should match"
             );
             assert_eq!(
-                parent_axis.as_u64(&space).unwrap(),
+                parent_axis.in_space(&space).as_u64().unwrap(),
                 0,
                 "Parent axis should be 0"
             );

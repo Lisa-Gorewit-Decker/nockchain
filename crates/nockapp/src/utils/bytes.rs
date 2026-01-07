@@ -147,13 +147,13 @@ impl Nounable for Byts {
         noun: &Noun,
         space: &NounSpace,
     ) -> NounableResult<Self::Target> {
-        let size = noun.slot(2, space)?;
-        let dat = noun.slot(3, space)?.as_atom()?;
+        let size = noun.in_space(space).slot(2)?;
+        let dat = noun.in_space(space).slot(3)?.as_atom()?;
 
-        let wid = size.as_atom()?.as_u64(space)? as usize;
+        let wid = size.as_atom()?.as_u64()? as usize;
         let mut res = vec![0; wid];
 
-        let bytes_be = dat.to_be_bytes(space);
+        let bytes_be = dat.to_be_bytes();
 
         // Iterate over the bytes in reverse order
         // Start copying at the first non zero value encountered

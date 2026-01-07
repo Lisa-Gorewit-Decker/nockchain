@@ -376,11 +376,12 @@ impl<J: Jammer + Send + 'static> NockApp<J> {
         }
 
         let space = res.noun_space();
-        let tail = unsafe { res.root().as_cell()?.tail(&space) };
+        let root_cell = unsafe { res.root().in_space(&space).as_cell()? };
+        let tail = root_cell.tail().noun();
         if unsafe { tail.raw_equals(&SIG) } {
             Ok(None)
         } else {
-            let res_noun = tail.as_cell()?.tail(&space);
+            let res_noun = tail.in_space(&space).as_cell()?.tail().noun();
             let mut slab = NounSlab::new();
             slab.copy_into(res_noun, &space);
             Ok(Some(slab))

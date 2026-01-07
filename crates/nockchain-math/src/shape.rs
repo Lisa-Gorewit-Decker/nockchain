@@ -22,11 +22,13 @@ fn dyck_recursive<A: NounAllocator>(
     if t.is_atom() {
         Ok(vec)
     } else {
-        let t_cell = t.as_cell()?;
+        let t_cell = t.in_space(space).as_cell()?;
         let vec_inner = T(stack, &[D(0), vec]);
-        let dyck_inner = dyck_recursive(stack, t_cell.head(space), vec_inner, space)?;
+        let head = t_cell.head().noun();
+        let dyck_inner = dyck_recursive(stack, head, vec_inner, space)?;
         let vec_outer = T(stack, &[D(1), dyck_inner]);
-        dyck_recursive(stack, t_cell.tail(space), vec_outer, space)
+        let tail = t_cell.tail().noun();
+        dyck_recursive(stack, tail, vec_outer, space)
     }
 }
 
@@ -47,12 +49,14 @@ pub fn do_leaf_sequence(
     space: &NounSpace,
 ) -> Result<(), JetErr> {
     if noun.is_atom() {
-        vec.push(noun.as_atom()?.as_u64(space)?);
+        vec.push(noun.in_space(space).as_atom()?.as_u64()?);
         Ok(())
     } else {
-        let cell = noun.as_cell()?;
-        do_leaf_sequence(cell.head(space), vec, space)?;
-        do_leaf_sequence(cell.tail(space), vec, space)?;
+        let cell = noun.in_space(space).as_cell()?;
+        let head = cell.head().noun();
+        let tail = cell.tail().noun();
+        do_leaf_sequence(head, vec, space)?;
+        do_leaf_sequence(tail, vec, space)?;
         Ok(())
     }
 }

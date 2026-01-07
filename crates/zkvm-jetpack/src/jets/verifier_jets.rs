@@ -23,7 +23,7 @@ impl IndexFeltMap {
 
         for term_noun in hoon_map.into_iter() {
             let (k, v): (usize, Felt) = {
-                let term_cell = term_noun.as_cell().unwrap_or_else(|err| {
+                let term_cell = term_noun.in_space(space).as_cell().unwrap_or_else(|err| {
                     panic!(
                         "Panicked with {err:?} at {}:{} (git sha: {:?})",
                         file!(),
@@ -32,8 +32,8 @@ impl IndexFeltMap {
                     )
                 });
                 (
-                    term_cell.head(space).as_atom()?.as_u64(space)? as usize,
-                    *term_cell.tail(space).as_atom()?.as_felt(space)?,
+                    term_cell.head().as_atom()?.as_u64()? as usize,
+                    *term_cell.tail().as_atom()?.atom().as_felt(space)?,
                 )
             };
 
@@ -50,7 +50,7 @@ impl IndexBeltMap {
 
         for term_noun in hoon_map.into_iter() {
             let (k, v): (usize, Belt) = {
-                let term_cell = term_noun.as_cell().unwrap_or_else(|err| {
+                let term_cell = term_noun.in_space(space).as_cell().unwrap_or_else(|err| {
                     panic!(
                         "Panicked with {err:?} at {}:{} (git sha: {:?})",
                         file!(),
@@ -59,8 +59,8 @@ impl IndexBeltMap {
                     )
                 });
                 (
-                    term_cell.head(space).as_atom()?.as_u64(space)? as usize,
-                    term_cell.tail(space).as_atom()?.as_belt(space)?,
+                    term_cell.head().as_atom()?.as_u64()? as usize,
+                    term_cell.tail().as_atom()?.atom().as_belt(space)?,
                 )
             };
 
@@ -73,31 +73,31 @@ impl IndexBeltMap {
 pub fn evaluate_deep_jet(context: &mut Context, subject: Noun) -> Result<Noun, JetErr> {
     let space = context.stack.noun_space();
     let sam = slot(subject, 6, &space)?;
-    let mut sam_cur: Cell = sam.as_cell()?;
+    let mut sam_cur = sam.in_space(&space).as_cell()?;
 
     // Extract all parameters from the subject
-    let trace_evaluations = sam_cur.head(&space);
-    sam_cur = sam_cur.tail(&space).as_cell()?;
-    let comp_evaluations = sam_cur.head(&space);
-    sam_cur = sam_cur.tail(&space).as_cell()?;
-    let trace_elems = sam_cur.head(&space);
-    sam_cur = sam_cur.tail(&space).as_cell()?;
-    let comp_elems = sam_cur.head(&space);
-    sam_cur = sam_cur.tail(&space).as_cell()?;
-    let num_comp_pieces = sam_cur.head(&space);
-    sam_cur = sam_cur.tail(&space).as_cell()?;
-    let weights = sam_cur.head(&space);
-    sam_cur = sam_cur.tail(&space).as_cell()?;
-    let heights = sam_cur.head(&space);
-    sam_cur = sam_cur.tail(&space).as_cell()?;
-    let full_widths = sam_cur.head(&space);
-    sam_cur = sam_cur.tail(&space).as_cell()?;
-    let omega = sam_cur.head(&space);
-    sam_cur = sam_cur.tail(&space).as_cell()?;
-    let index = sam_cur.head(&space);
-    sam_cur = sam_cur.tail(&space).as_cell()?;
-    let deep_challenge = sam_cur.head(&space);
-    let new_comp_eval = sam_cur.tail(&space);
+    let trace_evaluations = sam_cur.head().noun();
+    sam_cur = sam_cur.tail().as_cell()?;
+    let comp_evaluations = sam_cur.head().noun();
+    sam_cur = sam_cur.tail().as_cell()?;
+    let trace_elems = sam_cur.head().noun();
+    sam_cur = sam_cur.tail().as_cell()?;
+    let comp_elems = sam_cur.head().noun();
+    sam_cur = sam_cur.tail().as_cell()?;
+    let num_comp_pieces = sam_cur.head().noun();
+    sam_cur = sam_cur.tail().as_cell()?;
+    let weights = sam_cur.head().noun();
+    sam_cur = sam_cur.tail().as_cell()?;
+    let heights = sam_cur.head().noun();
+    sam_cur = sam_cur.tail().as_cell()?;
+    let full_widths = sam_cur.head().noun();
+    sam_cur = sam_cur.tail().as_cell()?;
+    let omega = sam_cur.head().noun();
+    sam_cur = sam_cur.tail().as_cell()?;
+    let index = sam_cur.head().noun();
+    sam_cur = sam_cur.tail().as_cell()?;
+    let deep_challenge = sam_cur.head().noun();
+    let new_comp_eval = sam_cur.tail().noun();
 
     // Convert nouns to appropriate types
     let Ok(trace_evaluations) = FPolySlice::try_from(trace_evaluations, &space) else {
@@ -110,29 +110,29 @@ pub fn evaluate_deep_jet(context: &mut Context, subject: Noun) -> Result<Noun, J
     };
     let trace_elems: Vec<Belt> = HoonList::try_from(trace_elems, &space)?
         .into_iter()
-        .map(|x| x.as_atom().unwrap().as_u64(&space).unwrap())
+        .map(|x| x.in_space(&space).as_atom().unwrap().as_u64().unwrap())
         .map(Belt)
         .collect();
     let comp_elems: Vec<Belt> = HoonList::try_from(comp_elems, &space)?
         .into_iter()
-        .map(|x| x.as_atom().unwrap().as_u64(&space).unwrap())
+        .map(|x| x.in_space(&space).as_atom().unwrap().as_u64().unwrap())
         .map(Belt)
         .collect();
-    let num_comp_pieces = num_comp_pieces.as_atom()?.as_u64(&space)?;
+    let num_comp_pieces = num_comp_pieces.in_space(&space).as_atom()?.as_u64()?;
     let Ok(weights) = FPolySlice::try_from(weights, &space) else {
         debug!("weights is not a valid FPolySlice");
         return Err(BAIL_FAIL);
     };
     let heights: Vec<u64> = HoonList::try_from(heights, &space)?
         .into_iter()
-        .map(|x| x.as_atom().unwrap().as_u64(&space).unwrap())
+        .map(|x| x.in_space(&space).as_atom().unwrap().as_u64().unwrap())
         .collect();
     let full_widths: Vec<u64> = HoonList::try_from(full_widths, &space)?
         .into_iter()
-        .map(|x| x.as_atom().unwrap().as_u64(&space).unwrap())
+        .map(|x| x.in_space(&space).as_atom().unwrap().as_u64().unwrap())
         .collect();
     let omega = omega.as_felt(&space)?;
-    let index = index.as_atom()?.as_u64(&space)?;
+    let index = index.in_space(&space).as_atom()?.as_u64()?;
     let deep_challenge = deep_challenge.as_felt(&space)?;
     let new_comp_eval = new_comp_eval.as_felt(&space)?;
 
@@ -258,7 +258,7 @@ impl Fops for Belt {
     }
 
     fn from_noun(noun: Noun, space: &NounSpace) -> Result<Self, JetErr> {
-        Ok(Belt(noun.as_atom()?.as_u64(space)?))
+        Ok(Belt(noun.in_space(space).as_atom()?.as_u64()?))
     }
 
     fn pow(&self, exp: u64) -> Self {

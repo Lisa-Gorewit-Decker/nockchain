@@ -556,18 +556,24 @@ mod tests {
         println!("Encoded draft kind: {:?}", encoded);
         println!(
             "Encoded draft kind head: {:?}",
-            encoded.as_cell().unwrap().head(&space)
+            encoded.in_space(&space).as_cell().unwrap().head().noun()
         );
         println!(
             "Encoded draft kind tail: {:?}",
-            encoded.as_cell().unwrap().tail(&space)
+            encoded.in_space(&space).as_cell().unwrap().tail().noun()
         );
-        if let Ok(tail_cell) = encoded.as_cell().unwrap().tail(&space).as_cell() {
-            println!("Tail head: {:?}", tail_cell.head(&space));
-            println!("Tail tail: {:?}", tail_cell.tail(&space));
-            if let Ok(tail_tail_cell) = tail_cell.tail(&space).as_cell() {
-                println!("Tail tail head: {:?}", tail_tail_cell.head(&space));
-                println!("Tail tail tail: {:?}", tail_tail_cell.tail(&space));
+        if let Ok(tail_cell) = encoded
+            .in_space(&space)
+            .as_cell()
+            .unwrap()
+            .tail()
+            .as_cell()
+        {
+            println!("Tail head: {:?}", tail_cell.head().noun());
+            println!("Tail tail: {:?}", tail_cell.tail().noun());
+            if let Ok(tail_tail_cell) = tail_cell.tail().as_cell() {
+                println!("Tail tail head: {:?}", tail_tail_cell.head().noun());
+                println!("Tail tail tail: {:?}", tail_tail_cell.tail().noun());
             }
         }
         let decoded = DraftEntityKind::from_noun(&encoded, &space).unwrap();

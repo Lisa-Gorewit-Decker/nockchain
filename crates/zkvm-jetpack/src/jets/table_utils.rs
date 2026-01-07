@@ -56,7 +56,7 @@ pub struct MegaExtChals {
 pub fn init_ext_chals(chals: Noun, space: &NounSpace) -> Result<ExtChals, JetErr> {
     let mut belts: Vec<u64> = Vec::<u64>::with_capacity(100);
     for b in HoonList::try_from(chals, space)?.into_iter() {
-        belts.push(b.as_atom()?.as_u64(space)?);
+        belts.push(b.in_space(space).as_atom()?.as_u64()?);
     }
     let mut felts: Vec<Felt> = Vec::<Felt>::with_capacity(30);
     for trip in belts.chunks(3) {
@@ -92,7 +92,7 @@ pub fn init_ext_chals(chals: Noun, space: &NounSpace) -> Result<ExtChals, JetErr
 pub fn init_mega_ext_chals(chals: Noun, space: &NounSpace) -> Result<MegaExtChals, JetErr> {
     let mut belts: Vec<u64> = Vec::<u64>::with_capacity(100);
     for b in HoonList::try_from(chals, space)?.into_iter() {
-        belts.push(b.as_atom()?.as_u64(space)?);
+        belts.push(b.in_space(space).as_atom()?.as_u64()?);
     }
     let mut felts: Vec<Felt> = Vec::<Felt>::with_capacity(30);
     for trip in belts.chunks(3) {

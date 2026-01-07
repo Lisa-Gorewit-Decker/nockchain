@@ -10,9 +10,9 @@ pub enum ScryResult {
 
 impl ScryResult {
     pub fn from_noun(noun: &Noun, space: &NounSpace) -> ScryResult {
-        match noun.as_either_atom_cell() {
+        match noun.in_space(space).as_either_atom_cell() {
             Left(atom) => {
-                let Ok(direct) = atom.as_direct() else {
+                let Ok(direct) = atom.atom().as_direct() else {
                     return ScryResult::Invalid;
                 };
                 if direct.data() == 0 {
@@ -20,13 +20,13 @@ impl ScryResult {
                 }
             }
             Right(cell) => {
-                let Ok(head) = cell.head(space).as_direct() else {
+                let Ok(head) = cell.head().noun().as_direct() else {
                     return ScryResult::Invalid;
                 };
                 if head.data() == 0 {
-                    match cell.tail(space).as_either_atom_cell() {
+                    match cell.tail().as_either_atom_cell() {
                         Left(atom) => {
-                            let Ok(direct) = atom.as_direct() else {
+                            let Ok(direct) = atom.atom().as_direct() else {
                                 return ScryResult::Invalid;
                             };
                             if direct.data() == 0 {
@@ -34,11 +34,11 @@ impl ScryResult {
                             }
                         }
                         Right(tail) => {
-                            let Ok(tail_head) = tail.head(space).as_direct() else {
+                            let Ok(tail_head) = tail.head().noun().as_direct() else {
                                 return ScryResult::Invalid;
                             };
                             if tail_head.data() == 0 {
-                                return ScryResult::Some(tail.tail(space));
+                                return ScryResult::Some(tail.tail().noun());
                             }
                         }
                     }

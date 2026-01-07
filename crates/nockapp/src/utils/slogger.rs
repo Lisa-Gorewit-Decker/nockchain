@@ -83,7 +83,7 @@ impl Slogger for CrownSlogger {
 }
 
 fn slog_cord<W: Write>(cord: Atom, out: &mut W, space: &NounSpace) -> Result<()> {
-    out.write_all(cord.as_ne_bytes(space))?;
+    out.write_all(cord.in_space(space).as_ne_bytes())?;
     Ok(())
 }
 
@@ -96,18 +96,18 @@ fn slog_tape<W: Write>(stack: &mut NockStack, tape: Noun, out: &mut W) -> Result
 // XX TODO: pre-crip all tapes
 fn slog_palm<W: Write>(stack: &mut NockStack, palm: Noun, out: &mut W) -> Result<()> {
     let space = stack.noun_space();
-    let ds = palm.slot(6, &space)?;
-    let fore1 = ds.slot(6, &space)?;
-    let fore2 = ds.slot(14, &space)?;
+    let ds = palm.in_space(&space).slot(6)?.noun();
+    let fore1 = ds.in_space(&space).slot(6)?.noun();
+    let fore2 = ds.in_space(&space).slot(14)?.noun();
     slog_tape(stack, fore1, out)?;
     slog_tape(stack, fore2, out)?;
-    let mid = ds.slot(2, &space)?;
-    let end = ds.slot(15, &space)?;
-    let mut tanks = palm.slot(7, &space)?;
+    let mid = ds.in_space(&space).slot(2)?.noun();
+    let end = ds.in_space(&space).slot(15)?.noun();
+    let mut tanks = palm.in_space(&space).slot(7)?.noun();
     loop {
-        if let Ok(tanks_it) = tanks.as_cell() {
-            slog_tank(stack, tanks_it.head(&space), out)?;
-            tanks = tanks_it.tail(&space);
+        if let Ok(tanks_it) = tanks.in_space(&space).as_cell() {
+            slog_tank(stack, tanks_it.head().noun(), out)?;
+            tanks = tanks_it.tail().noun();
             if tanks.is_cell() {
                 slog_tape(stack, mid, out)?;
             }
@@ -120,18 +120,18 @@ fn slog_palm<W: Write>(stack: &mut NockStack, palm: Noun, out: &mut W) -> Result
 // XX todo: pre-crip all tapes
 fn slog_rose<W: Write>(stack: &mut NockStack, rose: Noun, out: &mut W) -> Result<()> {
     let space = stack.noun_space();
-    let ds = rose.slot(6, &space)?;
-    let fore = ds.slot(6, &space)?;
+    let ds = rose.in_space(&space).slot(6)?.noun();
+    let fore = ds.in_space(&space).slot(6)?.noun();
     slog_tape(stack, fore, out)?;
-    let mid = ds.slot(2, &space)?;
-    let end = ds.slot(7, &space)?;
+    let mid = ds.in_space(&space).slot(2)?.noun();
+    let end = ds.in_space(&space).slot(7)?.noun();
 
-    let mut tanks = rose.slot(7, &space)?;
+    let mut tanks = rose.in_space(&space).slot(7)?.noun();
 
     loop {
-        if let Ok(tanks_it) = tanks.as_cell() {
-            slog_tank(stack, tanks_it.head(&space), out)?;
-            tanks = tanks_it.tail(&space);
+        if let Ok(tanks_it) = tanks.in_space(&space).as_cell() {
+            slog_tank(stack, tanks_it.head().noun(), out)?;
+            tanks = tanks_it.tail().noun();
             if tanks.is_cell() {
                 slog_tape(stack, mid, out)?;
             }
@@ -143,12 +143,12 @@ fn slog_rose<W: Write>(stack: &mut NockStack, rose: Noun, out: &mut W) -> Result
 
 fn slog_tank<W: Write>(stack: &mut NockStack, tank: Noun, out: &mut W) -> Result<()> {
     let space = stack.noun_space();
-    match tank.as_either_atom_cell() {
-        Left(cord) => slog_cord(cord, out, &space),
+    match tank.in_space(&space).as_either_atom_cell() {
+        Left(cord) => slog_cord(cord.atom(), out, &space),
         Right(cell) => {
-            let tag = cell.head(&space).as_direct()?;
+            let tag = cell.head().noun().as_direct()?;
             match tag.data() {
-                tas!(b"leaf") => slog_tape(stack, cell.tail(&space), out),
+                tas!(b"leaf") => slog_tape(stack, cell.tail().noun(), out),
                 tas!(b"palm") => slog_palm(stack, tank, out),
                 tas!(b"rose") => slog_rose(stack, tank, out),
                 _ => Err(CrownError::Unknown("Bad tank".to_string())),
@@ -167,9 +167,9 @@ fn crip(stack: &mut NockStack, mut tape: Noun) -> Result<Atom> {
 
     let mut idx = 0;
     loop {
-        if let Ok(tape_it) = tape.as_cell() {
-            let tape_byte = tape_it.head(&space).as_direct()?;
-            tape = tape_it.tail(&space);
+        if let Ok(tape_it) = tape.in_space(&space).as_cell() {
+            let tape_byte = tape_it.head().noun().as_direct()?;
+            tape = tape_it.tail().noun();
             if tape_byte.data() >= 256 {
                 break Err(CrownError::Unknown("Bad tape".to_string()));
             } else {

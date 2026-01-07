@@ -327,6 +327,10 @@ impl<'a> NounHandle<'a> {
         self.noun.is_cell()
     }
 
+    pub fn is_allocated(self) -> bool {
+        self.noun.is_allocated()
+    }
+
     pub fn as_atom(self) -> Result<AtomHandle<'a>> {
         self.noun.as_atom().map(|atom| AtomHandle::new(atom, self.space))
     }
@@ -380,6 +384,13 @@ impl<'a> NounHandle<'a> {
 
     pub fn mass_frame(self, stack: &NockStack) -> usize {
         self.noun.mass_frame(stack, self.space)
+    }
+
+    pub unsafe fn forwarding_pointer(self) -> Option<NounHandle<'a>> {
+        let allocated = self.noun.as_allocated().ok()?;
+        allocated
+            .forwarding_pointer(self.space)
+            .map(|forwarded| NounHandle::new(forwarded.as_noun(), self.space))
     }
 }
 
@@ -491,6 +502,37 @@ impl<'a> AtomHandle<'a> {
         self.atom.data_pointer(self.space)
     }
 
+    pub fn raw_size(self) -> usize {
+        match self.atom.as_either() {
+            Left(_direct) => 1,
+            Right(indirect) => indirect.raw_size(self.space),
+        }
+    }
+
+    pub unsafe fn raw_pointer(self) -> *const u64 {
+        let indirect = self
+            .atom
+            .as_indirect()
+            .expect("expected indirect atom for raw_pointer");
+        indirect.to_raw_pointer(self.space)
+    }
+
+    pub unsafe fn raw_pointer_mut(self) -> *mut u64 {
+        let mut indirect = self
+            .atom
+            .as_indirect()
+            .expect("expected indirect atom for raw_pointer_mut");
+        indirect.to_raw_pointer_mut(self.space)
+    }
+
+    pub unsafe fn set_forwarding_pointer(self, new_me: *const u64) {
+        let mut indirect = self
+            .atom
+            .as_indirect()
+            .expect("expected indirect atom for set_forwarding_pointer");
+        indirect.set_forwarding_pointer(new_me, self.space);
+    }
+
     pub unsafe fn normalize(self) -> AtomHandle<'a> {
         let mut atom = self.atom;
         let normalized = atom.normalize(self.space);
@@ -527,6 +569,20 @@ impl<'a> CellHandle<'a> {
 
     pub fn tail(self) -> NounHandle<'a> {
         NounHandle::new(self.cell.tail(self.space), self.space)
+    }
+
+    pub unsafe fn raw_pointer(self) -> *const CellMemory {
+        self.cell.to_raw_pointer(self.space)
+    }
+
+    pub unsafe fn raw_pointer_mut(self) -> *mut CellMemory {
+        let mut cell = self.cell;
+        cell.to_raw_pointer_mut(self.space)
+    }
+
+    pub unsafe fn set_forwarding_pointer(self, new_me: *const CellMemory) {
+        let mut cell = self.cell;
+        cell.set_forwarding_pointer(new_me, self.space);
     }
 }
 
@@ -587,7 +643,7 @@ pub const NONE: Noun = unsafe { DirectAtom::new_unchecked(tas!(b"MORMAGIC")).as_
 macro_rules! assert_acyclic {
     ( $space:expr, $x:expr ) => {
         assert_no_alloc::permit_alloc(|| {
-            assert!(crate::noun::acyclic_noun($x, $space));
+            assert!(crate::noun::acyclic_noun(($x).in_space($space)));
         })
     };
 }
@@ -598,9 +654,9 @@ macro_rules! assert_acyclic {
     ( $space:expr, $x:expr ) => {};
 }
 
-pub fn acyclic_noun(noun: Noun, space: &NounSpace) -> bool {
+pub(crate) fn acyclic_noun(noun: NounHandle) -> bool {
     let mut seen = IntMap::new();
-    acyclic_noun_go(noun, &mut seen, space)
+    acyclic_noun_go(noun.noun(), &mut seen, noun.space())
 }
 
 fn acyclic_noun_go(noun: Noun, seen: &mut IntMap<u64, ()>, space: &NounSpace) -> bool {
@@ -611,8 +667,9 @@ fn acyclic_noun_go(noun: Noun, seen: &mut IntMap<u64, ()>, space: &NounSpace) ->
                 false
             } else {
                 seen.insert(cell.0, ());
-                if acyclic_noun_go(cell.head(space), seen, space) {
-                    if acyclic_noun_go(cell.tail(space), seen, space) {
+                let cell_handle = cell.in_space(space);
+                if acyclic_noun_go(cell_handle.head().noun(), seen, space) {
+                    if acyclic_noun_go(cell_handle.tail().noun(), seen, space) {
                         seen.remove(cell.0);
                         true
                     } else {
@@ -631,7 +688,7 @@ fn acyclic_noun_go(noun: Noun, seen: &mut IntMap<u64, ()>, space: &NounSpace) ->
 macro_rules! assert_no_forwarding_pointers {
     ( $space:expr, $x:expr ) => {
         assert_no_alloc::permit_alloc(|| {
-            assert!(crate::noun::no_forwarding_pointers($x, $space));
+            assert!(crate::noun::no_forwarding_pointers(($x).in_space($space)));
         })
     };
 }
@@ -642,17 +699,18 @@ macro_rules! assert_no_forwarding_pointers {
     ( $space:expr, $x:expr ) => {};
 }
 
-pub fn no_forwarding_pointers(noun: Noun, space: &NounSpace) -> bool {
+pub(crate) fn no_forwarding_pointers(noun: NounHandle) -> bool {
     let mut dbg_stack = Vec::new();
-    dbg_stack.push(noun);
+    let space = noun.space();
+    dbg_stack.push(noun.noun());
 
     while !dbg_stack.is_empty() {
         if let Some(noun) = dbg_stack.pop() {
             if unsafe { noun.raw & FORWARDING_MASK == FORWARDING_TAG } {
                 return false;
-            } else if let Ok(cell) = noun.as_cell() {
-                dbg_stack.push(cell.tail(space));
-                dbg_stack.push(cell.head(space));
+            } else if let Ok(cell) = noun.in_space(space).as_cell() {
+                dbg_stack.push(cell.tail().noun());
+                dbg_stack.push(cell.head().noun());
             }
         } else {
             break;
@@ -882,7 +940,7 @@ impl IndirectAtom {
     }
 
     /** Strip the tag from an indirect atom and return it as a pointer to its memory buffer. */
-    pub unsafe fn to_raw_pointer(&self, space: &NounSpace) -> *const u64 {
+    pub(crate) unsafe fn to_raw_pointer(&self, space: &NounSpace) -> *const u64 {
         TaggedPtr::from_raw(self.0).resolve_const(INDIRECT_MASK, space) as *const u64
     }
 
@@ -918,7 +976,7 @@ impl IndirectAtom {
             TaggedPtr::from_stack_ptr(new_me as *const u8, FORWARDING_TAG).raw();
     }
 
-    pub unsafe fn forwarding_pointer(&self, space: &NounSpace) -> Option<IndirectAtom> {
+    pub(crate) unsafe fn forwarding_pointer(&self, space: &NounSpace) -> Option<IndirectAtom> {
         let size_raw = *self.to_raw_pointer(space).add(1);
         if size_raw & FORWARDING_MASK == FORWARDING_TAG {
             let ptr = TaggedPtr::from_raw(size_raw)
@@ -1029,16 +1087,16 @@ impl IndirectAtom {
     }
 
     /** Size of an indirect atom in 64-bit words */
-    pub fn size(&self, space: &NounSpace) -> usize {
+    pub(crate) fn size(&self, space: &NounSpace) -> usize {
         unsafe { *(self.to_raw_pointer(space).add(1)) as usize }
     }
 
     /** Memory size of an indirect atom (including size + metadata fields) in 64-bit words */
-    pub fn raw_size(&self, space: &NounSpace) -> usize {
+    pub(crate) fn raw_size(&self, space: &NounSpace) -> usize {
         self.size(space) + 2
     }
 
-    pub fn bit_size(&self, space: &NounSpace) -> usize {
+    pub(crate) fn bit_size(&self, space: &NounSpace) -> usize {
         unsafe {
             ((self.size(space) - 1) << 6) + 64
                 - (*(self
@@ -1049,11 +1107,11 @@ impl IndirectAtom {
     }
 
     /** Pointer to data for indirect atom */
-    pub fn data_pointer(&self, space: &NounSpace) -> *const u64 {
+    pub(crate) fn data_pointer(&self, space: &NounSpace) -> *const u64 {
         unsafe { self.to_raw_pointer(space).add(2) }
     }
 
-    pub fn data_pointer_mut(&mut self, space: &NounSpace) -> *mut u64 {
+    pub(crate) fn data_pointer_mut(&mut self, space: &NounSpace) -> *mut u64 {
         unsafe { self.to_raw_pointer_mut(space).add(2) }
     }
 
@@ -1066,7 +1124,7 @@ impl IndirectAtom {
         }
     }
 
-    pub fn as_slice(&self, space: &NounSpace) -> &[u64] {
+    pub(crate) fn as_slice(&self, space: &NounSpace) -> &[u64] {
         unsafe {
             from_raw_parts(
                 self.data_pointer(space),
@@ -1075,7 +1133,7 @@ impl IndirectAtom {
         }
     }
 
-    pub fn as_mut_slice(&mut self, space: &NounSpace) -> &mut [u64] {
+    pub(crate) fn as_mut_slice(&mut self, space: &NounSpace) -> &mut [u64] {
         unsafe {
             from_raw_parts_mut(
                 self.data_pointer_mut(space),
@@ -1084,7 +1142,7 @@ impl IndirectAtom {
         }
     }
 
-    pub fn as_ne_bytes(&self, space: &NounSpace) -> &[u8] {
+    pub(crate) fn as_ne_bytes(&self, space: &NounSpace) -> &[u8] {
         unsafe {
             from_raw_parts(
                 self.data_pointer(space) as *const u8,
@@ -1093,12 +1151,12 @@ impl IndirectAtom {
         }
     }
 
-    pub fn to_ne_bytes(&self, space: &NounSpace) -> Vec<u8> {
+    pub(crate) fn to_ne_bytes(&self, space: &NounSpace) -> Vec<u8> {
         self.as_ne_bytes(space).to_vec()
     }
 
     #[allow(unused)]
-    pub fn to_be_bytes(&self, space: &NounSpace) -> Vec<u8> {
+    pub(crate) fn to_be_bytes(&self, space: &NounSpace) -> Vec<u8> {
         if self.size(space) == 1 {
             let num = unsafe { *(self.data_pointer(space)) };
             num.to_be_bytes().to_vec()
@@ -1114,7 +1172,7 @@ impl IndirectAtom {
 
     #[allow(unused)]
     #[allow(unused)]
-    pub fn to_le_bytes(&self, space: &NounSpace) -> Vec<u8> {
+    pub(crate) fn to_le_bytes(&self, space: &NounSpace) -> Vec<u8> {
         if self.size(space) == 1 {
             let num = unsafe { *(self.data_pointer(space)) };
             num.to_le_bytes().to_vec()
@@ -1131,15 +1189,15 @@ impl IndirectAtom {
 
     #[allow(unused)]
     /** BitSlice view on an indirect atom, with lifetime tied to reference to indirect atom. */
-    pub fn as_bitslice(&self, space: &NounSpace) -> &BitSlice<u64, Lsb0> {
+    pub(crate) fn as_bitslice(&self, space: &NounSpace) -> &BitSlice<u64, Lsb0> {
         BitSlice::from_slice(self.as_slice(space))
     }
 
-    pub fn as_bitslice_mut(&mut self, space: &NounSpace) -> &mut BitSlice<u64, Lsb0> {
+    pub(crate) fn as_bitslice_mut(&mut self, space: &NounSpace) -> &mut BitSlice<u64, Lsb0> {
         BitSlice::from_slice_mut(self.as_mut_slice(space))
     }
 
-    pub fn as_ubig<S: Stack>(&self, stack: &mut S, space: &NounSpace) -> UBig {
+    pub(crate) fn as_ubig<S: Stack>(&self, stack: &mut S, space: &NounSpace) -> UBig {
         let bytes_mem_repr = self.as_ne_bytes(space);
 
         #[cfg(target_endian = "little")]
@@ -1152,7 +1210,7 @@ impl IndirectAtom {
         }
     }
 
-    pub unsafe fn as_u64(self, space: &NounSpace) -> Result<u64> {
+    pub(crate) unsafe fn as_u64(self, space: &NounSpace) -> Result<u64> {
         if self.size(space) == 1 {
             Ok(*(self.data_pointer(space)))
         } else {
@@ -1161,7 +1219,7 @@ impl IndirectAtom {
     }
 
     /** Produce a SoftFloat-compatible ordered pair of 64-bit words */
-    pub fn as_u64_pair(self, space: &NounSpace) -> Result<[u64; 2]> {
+    pub(crate) fn as_u64_pair(self, space: &NounSpace) -> Result<[u64; 2]> {
         if self.size(space) <= 2 {
             let u128_array = &mut [0u64; 2];
             u128_array.copy_from_slice(&(self.as_slice(space)[0..2]));
@@ -1172,7 +1230,7 @@ impl IndirectAtom {
     }
 
     /** Ensure that the size does not contain any trailing 0 words */
-    pub unsafe fn normalize(&mut self, space: &NounSpace) -> &Self {
+    pub(crate) unsafe fn normalize(&mut self, space: &NounSpace) -> &Self {
         let mut index = self.size(space) - 1;
         let data = self.data_pointer(space);
         loop {
@@ -1203,7 +1261,7 @@ impl IndirectAtom {
     }
 
     /** Normalize, but convert to direct atom if it will fit */
-    pub unsafe fn normalize_as_atom(&mut self, space: &NounSpace) -> Atom {
+    pub(crate) unsafe fn normalize_as_atom(&mut self, space: &NounSpace) -> Atom {
         self.normalize(space);
         if self.size(space) == 1 && *(self.data_pointer(space)) <= DIRECT_MAX {
             Atom {
@@ -1284,11 +1342,11 @@ impl Cell {
         Cell(TaggedPtr::from_offset(words, CELL_TAG).raw())
     }
 
-    pub unsafe fn to_raw_pointer(&self, space: &NounSpace) -> *const CellMemory {
+    pub(crate) unsafe fn to_raw_pointer(&self, space: &NounSpace) -> *const CellMemory {
         TaggedPtr::from_raw(self.0).resolve_const(CELL_MASK, space) as *const CellMemory
     }
 
-    pub unsafe fn to_raw_pointer_mut(&mut self, space: &NounSpace) -> *mut CellMemory {
+    pub(crate) unsafe fn to_raw_pointer_mut(&mut self, space: &NounSpace) -> *mut CellMemory {
         TaggedPtr::from_raw(self.0).resolve_mut(CELL_MASK, space) as *mut CellMemory
     }
 
@@ -1302,11 +1360,11 @@ impl Cell {
         }
     }
 
-    pub unsafe fn head_as_mut(mut self, space: &NounSpace) -> *mut Noun {
+    pub(crate) unsafe fn head_as_mut(mut self, space: &NounSpace) -> *mut Noun {
         &mut (*self.to_raw_pointer_mut(space)).head as *mut Noun
     }
 
-    pub unsafe fn tail_as_mut(mut self, space: &NounSpace) -> *mut Noun {
+    pub(crate) unsafe fn tail_as_mut(mut self, space: &NounSpace) -> *mut Noun {
         &mut (*self.to_raw_pointer_mut(space)).tail as *mut Noun
     }
 
@@ -1320,7 +1378,7 @@ impl Cell {
         }
     }
 
-    pub unsafe fn forwarding_pointer(&self, space: &NounSpace) -> Option<Cell> {
+    pub(crate) unsafe fn forwarding_pointer(&self, space: &NounSpace) -> Option<Cell> {
         let head_raw = (*self.to_raw_pointer(space)).head.raw;
         if head_raw & FORWARDING_MASK == FORWARDING_TAG {
             let ptr = TaggedPtr::from_raw(head_raw).resolve_const(FORWARDING_MASK, space)
@@ -1366,16 +1424,16 @@ impl Cell {
     }
 
     // TODO: idk about making these owned independently of their parent
-    pub fn head(&self, space: &NounSpace) -> Noun {
+    pub(crate) fn head(&self, space: &NounSpace) -> Noun {
         unsafe { (*(self.to_raw_pointer(space))).head }
     }
 
     // TODO: Ditto, etc.
-    pub fn tail(&self, space: &NounSpace) -> Noun {
+    pub(crate) fn tail(&self, space: &NounSpace) -> Noun {
         unsafe { (*(self.to_raw_pointer(space))).tail }
     }
 
-    pub fn head_ref<'a>(&'a self, space: &'a NounSpace) -> &'a Noun {
+    pub(crate) fn head_ref<'a>(&'a self, space: &'a NounSpace) -> &'a Noun {
         unsafe {
             self.to_raw_pointer(space)
                 .as_ref()
@@ -1385,7 +1443,7 @@ impl Cell {
     }
 
     // TODO: Ditto, etc.
-    pub fn tail_ref<'a>(&'a self, space: &'a NounSpace) -> &'a Noun {
+    pub(crate) fn tail_ref<'a>(&'a self, space: &'a NounSpace) -> &'a Noun {
         unsafe {
             self.to_raw_pointer(space)
                 .as_ref()
@@ -1439,21 +1497,22 @@ impl fmt::Debug for FullDebugCell<'_, '_> {
             if brackets {
                 write!(f, "[")?;
             }
-            match cell.head(space).as_cell() {
+            let cell_handle = (*cell).in_space(space);
+            match cell_handle.head().as_cell() {
                 Ok(head_cell) => {
-                    do_fmt(&head_cell, space, true, f)?;
+                    do_fmt(&head_cell.cell(), space, true, f)?;
                     write!(f, " ")?;
                 }
                 Err(_) => {
-                    write!(f, "{:?} ", cell.head(space))?;
+                    write!(f, "{:?} ", cell_handle.head().noun())?;
                 }
             }
-            match cell.tail(space).as_cell() {
+            match cell_handle.tail().as_cell() {
                 Ok(next_cell) => {
-                    do_fmt(&next_cell, space, false, f)?;
+                    do_fmt(&next_cell.cell(), space, false, f)?;
                 }
                 Err(_) => {
-                    write!(f, "{:?}", cell.tail(space))?;
+                    write!(f, "{:?}", cell_handle.tail().noun())?;
                 }
             }
             if brackets {
@@ -1745,7 +1804,7 @@ impl Atom {
         unsafe { is_indirect_atom(self.raw) }
     }
 
-    pub fn is_normalized(&self, space: &NounSpace) -> bool {
+    pub(crate) fn is_normalized(&self, space: &NounSpace) -> bool {
         unsafe {
             if let Some(indirect) = self.indirect() {
                 if (indirect.size(space) == 1 && *indirect.data_pointer(space) <= DIRECT_MAX)
@@ -1793,7 +1852,7 @@ impl Atom {
 
     /// Returns a slice of bytes in native-endian order. Currently, Sword only supports
     /// little-endian machines, so this will return little-endian.
-    pub fn as_ne_bytes(&self, space: &NounSpace) -> &[u8] {
+    pub(crate) fn as_ne_bytes(&self, space: &NounSpace) -> &[u8] {
         if self.is_direct() {
             unsafe { self.direct.as_ne_bytes() }
         } else {
@@ -1802,7 +1861,7 @@ impl Atom {
     }
 
     /// Returns Vec<u8> in native-endian order
-    pub fn to_ne_bytes(&self, space: &NounSpace) -> Vec<u8> {
+    pub(crate) fn to_ne_bytes(&self, space: &NounSpace) -> Vec<u8> {
         if self.is_direct() {
             unsafe { self.direct.to_ne_bytes() }
         } else {
@@ -1811,7 +1870,7 @@ impl Atom {
     }
 
     /// Returns Vec<u8> in big-endian order
-    pub fn to_be_bytes(self, space: &NounSpace) -> Vec<u8> {
+    pub(crate) fn to_be_bytes(self, space: &NounSpace) -> Vec<u8> {
         if self.is_direct() {
             unsafe { self.direct.to_be_bytes() }
         } else {
@@ -1820,7 +1879,7 @@ impl Atom {
     }
 
     /// Returns Vec<u8> in little-endian order
-    pub fn to_le_bytes(self, space: &NounSpace) -> Vec<u8> {
+    pub(crate) fn to_le_bytes(self, space: &NounSpace) -> Vec<u8> {
         if self.is_direct() {
             unsafe { self.direct.to_le_bytes() }
         } else {
@@ -1828,7 +1887,7 @@ impl Atom {
         }
     }
 
-    pub fn as_u64(self, space: &NounSpace) -> Result<u64> {
+    pub(crate) fn as_u64(self, space: &NounSpace) -> Result<u64> {
         if self.is_direct() {
             Ok(unsafe { self.direct.data() })
         } else {
@@ -1845,7 +1904,7 @@ impl Atom {
     }
 
     /** Produce a SoftFloat-compatible ordered pair of 64-bit words */
-    pub unsafe fn as_u64_pair(self, space: &NounSpace) -> Result<[u64; 2]> {
+    pub(crate) unsafe fn as_u64_pair(self, space: &NounSpace) -> Result<[u64; 2]> {
         if self.is_direct() {
             let u128_array = &mut [0u64; 2];
             u128_array[0] = self.as_direct()?.data();
@@ -1856,7 +1915,7 @@ impl Atom {
         }
     }
 
-    pub fn as_bitslice(&self, space: &NounSpace) -> &BitSlice<u64, Lsb0> {
+    pub(crate) fn as_bitslice(&self, space: &NounSpace) -> &BitSlice<u64, Lsb0> {
         if self.is_indirect() {
             unsafe { self.indirect.as_bitslice(space) }
         } else {
@@ -1864,7 +1923,7 @@ impl Atom {
         }
     }
 
-    pub fn as_bitslice_mut(&mut self, space: &NounSpace) -> &mut BitSlice<u64, Lsb0> {
+    pub(crate) fn as_bitslice_mut(&mut self, space: &NounSpace) -> &mut BitSlice<u64, Lsb0> {
         if self.is_indirect() {
             unsafe { self.indirect.as_bitslice_mut(space) }
         } else {
@@ -1872,7 +1931,7 @@ impl Atom {
         }
     }
 
-    pub fn as_ubig<S: Stack>(self, stack: &mut S, space: &NounSpace) -> UBig {
+    pub(crate) fn as_ubig<S: Stack>(self, stack: &mut S, space: &NounSpace) -> UBig {
         if self.is_indirect() {
             unsafe { self.indirect.as_ubig(stack, space) }
         } else {
@@ -1896,28 +1955,28 @@ impl Atom {
         }
     }
 
-    pub fn size(&self, space: &NounSpace) -> usize {
+    pub(crate) fn size(&self, space: &NounSpace) -> usize {
         match self.as_either() {
             Left(_direct) => 1,
             Right(indirect) => indirect.size(space),
         }
     }
 
-    pub fn bit_size(&self, space: &NounSpace) -> usize {
+    pub(crate) fn bit_size(&self, space: &NounSpace) -> usize {
         match self.as_either() {
             Left(direct) => direct.bit_size(),
             Right(indirect) => indirect.bit_size(space),
         }
     }
 
-    pub fn data_pointer(&self, space: &NounSpace) -> *const u64 {
+    pub(crate) fn data_pointer(&self, space: &NounSpace) -> *const u64 {
         match self.as_either() {
             Left(_direct) => (self as *const Atom) as *const u64,
             Right(indirect) => indirect.data_pointer(space),
         }
     }
 
-    pub unsafe fn normalize(&mut self, space: &NounSpace) -> Atom {
+    pub(crate) unsafe fn normalize(&mut self, space: &NounSpace) -> Atom {
         if self.is_indirect() {
             self.indirect.normalize_as_atom(space)
         } else {
@@ -1965,7 +2024,7 @@ impl Allocated {
         unsafe { is_cell(self.raw) }
     }
 
-    pub unsafe fn to_raw_pointer(&self, space: &NounSpace) -> *const u64 {
+    pub(crate) unsafe fn to_raw_pointer(&self, space: &NounSpace) -> *const u64 {
         let tagged = TaggedPtr::from_raw(self.raw);
         if self.is_indirect() {
             tagged.resolve_const(INDIRECT_MASK, space) as *const u64
@@ -1974,7 +2033,7 @@ impl Allocated {
         }
     }
 
-    pub unsafe fn to_raw_pointer_mut(&mut self, space: &NounSpace) -> *mut u64 {
+    pub(crate) unsafe fn to_raw_pointer_mut(&mut self, space: &NounSpace) -> *mut u64 {
         let tagged = TaggedPtr::from_raw(self.raw);
         if self.is_indirect() {
             tagged.resolve_mut(INDIRECT_MASK, space) as *mut u64
@@ -1983,7 +2042,7 @@ impl Allocated {
         }
     }
 
-    unsafe fn const_to_raw_pointer_mut(self, space: &NounSpace) -> *mut u64 {
+    pub(crate) unsafe fn const_to_raw_pointer_mut(self, space: &NounSpace) -> *mut u64 {
         let tagged = TaggedPtr::from_raw(self.raw);
         if self.is_indirect() {
             tagged.resolve_mut(INDIRECT_MASK, space) as *mut u64
@@ -1992,7 +2051,7 @@ impl Allocated {
         }
     }
 
-    pub unsafe fn forwarding_pointer(&self, space: &NounSpace) -> Option<Allocated> {
+    pub(crate) unsafe fn forwarding_pointer(&self, space: &NounSpace) -> Option<Allocated> {
         match self.as_either() {
             Left(indirect) => indirect
                 .forwarding_pointer(space)
@@ -2003,11 +2062,11 @@ impl Allocated {
         }
     }
 
-    pub unsafe fn get_metadata(&self, space: &NounSpace) -> u64 {
+    pub(crate) unsafe fn get_metadata(&self, space: &NounSpace) -> u64 {
         *(self.to_raw_pointer(space))
     }
 
-    pub unsafe fn set_metadata(&mut self, metadata: u64, space: &NounSpace) {
+    pub(crate) unsafe fn set_metadata(&mut self, metadata: u64, space: &NounSpace) {
         *(self.const_to_raw_pointer_mut(space)) = metadata;
     }
 
@@ -2039,7 +2098,7 @@ impl Allocated {
         Noun { allocated: *self }
     }
 
-    pub fn get_cached_mug(self: Allocated, space: &NounSpace) -> Option<u32> {
+    pub(crate) fn get_cached_mug(self: Allocated, space: &NounSpace) -> Option<u32> {
         unsafe {
             let bottom_metadata =
                 self.get_metadata(space) as u32 & 0x7FFFFFFF; // magic number: LS 31 bits
@@ -2095,7 +2154,7 @@ impl Noun {
         self.is_indirect() || self.is_cell()
     }
 
-    pub fn repr(&self, space: &NounSpace) -> NounRepr {
+    pub(crate) fn repr(&self, space: &NounSpace) -> NounRepr {
         let raw = unsafe { self.as_raw() };
         if is_direct_atom(raw) {
             return NounRepr::Direct;
@@ -2138,12 +2197,12 @@ impl Noun {
         }
     }
 
-    pub fn allocated_location(&self, space: &NounSpace) -> Option<AllocLocation> {
+    pub(crate) fn allocated_location(&self, space: &NounSpace) -> Option<AllocLocation> {
         self.repr(space).location()
     }
 
     #[inline]
-    pub fn is_stack_allocated(&self, space: &NounSpace) -> bool {
+    pub(crate) fn is_stack_allocated(&self, space: &NounSpace) -> bool {
         matches!(self.allocated_location(space), Some(AllocLocation::Stack))
     }
 
@@ -2282,7 +2341,7 @@ impl Noun {
      *
      * This counts the total size, see mass_frame() to count the size in the current frame.
      */
-    pub fn mass(self, space: &NounSpace) -> usize {
+    pub(crate) fn mass(self, space: &NounSpace) -> usize {
         unsafe {
             let res = self.mass_wind(space, &|_| true);
             self.mass_unwind(space, &|_| true);
@@ -2291,7 +2350,7 @@ impl Noun {
     }
 
     /** Produce the size of a noun in the current frame, in words */
-    pub fn mass_frame(self, stack: &NockStack, space: &NounSpace) -> usize {
+    pub(crate) fn mass_frame(self, stack: &NockStack, space: &NounSpace) -> usize {
         unsafe {
             let res = self.mass_wind(space, &|p| stack.is_in_frame(p));
             self.mass_unwind(space, &|p| stack.is_in_frame(p));
@@ -2313,7 +2372,7 @@ impl Noun {
      * the first noun, and the second will be the mass of the second noun minus the overlap with
      * the first noun.
      */
-    pub unsafe fn mass_wind(
+    pub(crate) unsafe fn mass_wind(
         self,
         space: &NounSpace,
         inside: &impl Fn(*const u64) -> bool,
@@ -2325,9 +2384,10 @@ impl Noun {
                     match allocated.as_either() {
                         Left(indirect) => indirect.size(space) + 2,
                         Right(cell) => {
+                            let cell_handle = cell.in_space(space);
                             word_size_of::<CellMemory>()
-                                + cell.head(space).mass_wind(space, inside)
-                                + cell.tail(space).mass_wind(space, inside)
+                                + cell_handle.head().noun().mass_wind(space, inside)
+                                + cell_handle.tail().noun().mass_wind(space, inside)
                         }
                     }
                 } else {
@@ -2342,7 +2402,7 @@ impl Noun {
     }
 
     /** See mass_wind() */
-    pub unsafe fn mass_unwind(
+    pub(crate) unsafe fn mass_unwind(
         self,
         space: &NounSpace,
         inside: &impl Fn(*const u64) -> bool,
@@ -2351,8 +2411,9 @@ impl Noun {
             if inside(allocated.to_raw_pointer(space)) {
                 allocated.set_metadata(allocated.get_metadata(space) & !(1 << 32), space);
                 if let Right(cell) = allocated.as_either() {
-                    cell.head(space).mass_unwind(space, inside);
-                    cell.tail(space).mass_unwind(space, inside);
+                    let cell_handle = cell.in_space(space);
+                    cell_handle.head().noun().mass_unwind(space, inside);
+                    cell_handle.tail().noun().mass_unwind(space, inside);
                 }
             }
         }
@@ -2437,7 +2498,7 @@ pub trait NounAllocator: Sized + Stack {
 /**
  * Implementing types allow component Nouns to be retreived by numeric axis
  */
-pub trait Slots: private::RawSlots {
+pub(crate) trait Slots: private::RawSlots {
     /**
      * Retrieve component Noun at given axis, or fail with descriptive error
      */
@@ -2569,7 +2630,7 @@ mod test {
         let space = context.stack.noun_space();
         let big = ubig!(0x1234567890abcdefa0);
         let atom = Atom::from_ubig(&mut context.stack, &big);
-        let bytes = atom.to_ne_bytes(&space);
+        let bytes = atom.in_space(&space).to_ne_bytes();
         #[cfg(target_endian = "little")]
         {
             assert_eq!(
@@ -2599,7 +2660,7 @@ mod test {
         let mut context = init_context();
         let space = context.stack.noun_space();
         let atom = Atom::new(&mut context.stack, 0x1234);
-        let bytes = atom.to_ne_bytes(&space);
+        let bytes = atom.in_space(&space).to_ne_bytes();
         #[cfg(target_endian = "little")]
         {
             assert_eq!(bytes, vec![0x34, 0x12, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00]);
@@ -2617,13 +2678,13 @@ mod test {
         let mut context = init_context();
         let space = context.stack.noun_space();
         let atom = Atom::new(&mut context.stack, 0x1234);
-        let bytes_le = atom.to_le_bytes(&space);
+        let bytes_le = atom.in_space(&space).to_le_bytes();
         assert_eq!(
             bytes_le,
             vec![0x34, 0x12, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00]
         );
 
-        let bytes_be = atom.to_be_bytes(&space);
+        let bytes_be = atom.in_space(&space).to_be_bytes();
         assert_eq!(
             bytes_be,
             vec![0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x12, 0x34]
@@ -2638,12 +2699,12 @@ mod test {
         let space = context.stack.noun_space();
         let big = ubig!(0x1234567890abcd);
         let atom = Atom::from_ubig(&mut context.stack, &big);
-        let bytes = atom.to_le_bytes(&space);
+        let bytes = atom.in_space(&space).to_le_bytes();
         assert_eq!(bytes, vec![0xcd, 0xab, 0x90, 0x78, 0x56, 0x34, 0x12, 0x00]);
         //
         let big = ubig!(0x1234567890abcdefa0);
         let atom = Atom::from_ubig(&mut context.stack, &big);
-        let bytes = atom.to_le_bytes(&space);
+        let bytes = atom.in_space(&space).to_le_bytes();
         assert_eq!(
             bytes,
             vec![
@@ -2661,12 +2722,12 @@ mod test {
         let space = context.stack.noun_space();
         let big = ubig!(0x34567890abcdef);
         let atom = Atom::from_ubig(&mut context.stack, &big);
-        let bytes = atom.to_be_bytes(&space);
+        let bytes = atom.in_space(&space).to_be_bytes();
         assert_eq!(bytes, vec![0x00, 0x34, 0x56, 0x78, 0x90, 0xab, 0xcd, 0xef]);
         //
         let big = ubig!(0x1234567890abcdefa0);
         let atom = Atom::from_ubig(&mut context.stack, &big);
-        let bytes = atom.to_be_bytes(&space);
+        let bytes = atom.in_space(&space).to_be_bytes();
         assert_eq!(
             bytes,
             vec![

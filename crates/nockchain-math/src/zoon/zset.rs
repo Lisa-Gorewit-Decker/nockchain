@@ -78,7 +78,7 @@ pub fn z_set_bif<A: NounAllocator, H: TipHasher>(
     }
     let res = do_bif(stack, a, b, hasher)?;
     let space = stack.noun_space();
-    Ok(res.as_cell()?.tail(&space))
+    Ok(res.in_space(&space).as_cell()?.tail().noun())
 }
 
 pub fn z_set_dif<A: NounAllocator, H: TipHasher>(

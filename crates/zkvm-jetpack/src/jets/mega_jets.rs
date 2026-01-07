@@ -33,7 +33,7 @@ pub fn mp_substitute_mega_jet(context: &mut Context, subject: Noun) -> Result {
     let Ok(height_atom) = height_noun.as_atom() else {
         return Err(BAIL_FAIL);
     };
-    let Ok(height) = height_atom.as_u64(&space) else {
+    let Ok(height) = height_atom.in_space(&space).as_u64() else {
         return Err(BAIL_FAIL);
     };
     let height_usize = height as usize;

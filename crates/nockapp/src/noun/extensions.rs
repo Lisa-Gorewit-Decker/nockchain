@@ -16,9 +16,6 @@ use crate::{Noun, Result, ToBytes, ToBytesExt};
 pub trait AtomExt: CoreAtomExt {
     fn from_bytes<A: NounAllocator>(allocator: &mut A, bytes: &Bytes) -> Atom;
     fn from_value<A: NounAllocator, T: ToBytes>(allocator: &mut A, value: T) -> Result<Atom>;
-    fn eq_bytes(self, bytes: impl AsRef<[u8]>, space: &NounSpace) -> bool;
-    fn to_bytes_until_nul(self, space: &NounSpace) -> Result<Vec<u8>>;
-    fn into_string(self, space: &NounSpace) -> Result<String>;
 }
 
 impl AtomExt for Atom {
@@ -33,20 +30,7 @@ impl AtomExt for Atom {
         Ok(<Self as CoreAtomExt>::from_bytes(allocator, data.as_ref()))
     }
 
-    /** Test for byte equality, ignoring trailing 0s in the Atom representation
-        beyond the length of the bytes compared to
-    */
-    fn eq_bytes(self, bytes: impl AsRef<[u8]>, space: &NounSpace) -> bool {
-        CoreAtomExt::eq_bytes(&self, bytes, space)
-    }
-
-    fn to_bytes_until_nul(self, space: &NounSpace) -> Result<Vec<u8>> {
-        CoreAtomExt::to_bytes_until_nul(&self, space).map_err(Into::into)
-    }
-
-    fn into_string(self, space: &NounSpace) -> Result<String> {
-        CoreAtomExt::into_string(self, space).map_err(Into::into)
-    }
+    // NounSpace-dependent helpers moved to NounHandle/AtomHandle.
 }
 
 pub trait IntoNoun {
@@ -66,7 +50,7 @@ impl IntoNoun for u64 {
 
 impl FromAtom for u64 {
     fn from_atom(atom: Atom, space: &NounSpace) -> Self {
-        atom.as_u64(space).unwrap_or_else(|err| {
+        atom.in_space(space).as_u64().unwrap_or_else(|err| {
             panic!(
                 "Panicked with {err:?} at {}:{} (git sha: {:?})",
                 file!(),
@@ -162,16 +146,18 @@ impl<A: NounAllocator> NounAllocatorExt for A {
                 },
                 Either::Right(a) => match a.as_either() {
                     Either::Left(i) => unsafe {
-                        let word_size = i.size(&space);
+                        let i_handle = i.as_atom().in_space(space);
+                        let word_size = i_handle.size();
                         let ia = self.alloc_indirect(word_size);
-                        copy_nonoverlapping(i.to_raw_pointer(&space), ia, word_size + 2);
+                        copy_nonoverlapping(i_handle.raw_pointer(), ia, word_size + 2);
                         *dest = IndirectAtom::from_raw_pointer(ia).as_noun();
                     },
                     Either::Right(c) => unsafe {
                         let cm = self.alloc_cell();
                         *dest = Cell::from_raw_pointer(cm).as_noun();
-                        stack.push((c.tail(&space), &mut (*cm).tail));
-                        stack.push((c.head(&space), &mut (*cm).head));
+                        let c_handle = c.in_space(space);
+                        stack.push((c_handle.tail().noun(), &mut (*cm).tail));
+                        stack.push((c_handle.head().noun(), &mut (*cm).head));
                     },
                 },
             }

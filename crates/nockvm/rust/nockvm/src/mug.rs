@@ -9,10 +9,7 @@ crate::gdb!();
 
 // Murmur3 hash an atom with a given padded length
 fn muk_u32(syd: u32, len: usize, key: Atom, space: &NounSpace) -> u32 {
-    match key.as_either() {
-        Left(direct) => murmur3_32_of_slice(&direct.data().to_le_bytes()[0..len], syd),
-        Right(indirect) => murmur3_32_of_slice(&indirect.as_ne_bytes(space)[..len], syd),
-    }
+    murmur3_32_of_slice(&key.in_space(space).as_ne_bytes()[..len], syd)
 }
 
 /** Byte size of an atom.
@@ -23,10 +20,11 @@ pub fn met3_usize(atom: Atom, space: &NounSpace) -> usize {
     match atom.as_either() {
         Left(direct) => (64 - (direct.data().leading_zeros() as usize) + 7) >> 3,
         Right(indirect) => {
-            let last_word =
-                unsafe { *(indirect.data_pointer(space).add(indirect.size(space) - 1)) };
+            let indirect_handle = indirect.as_atom().in_space(space);
+            let size = indirect_handle.size();
+            let last_word = unsafe { *(indirect_handle.data_pointer().add(size - 1)) };
             let last_word_bytes = (64 - (last_word.leading_zeros() as usize) + 7) >> 3;
-            ((indirect.size(space) - 1) << 3) + last_word_bytes
+            ((size - 1) << 3) + last_word_bytes
         }
     }
 }
@@ -108,16 +106,22 @@ pub fn allocated_mug_u32_one(allocated: &mut Allocated, space: &NounSpace) -> Op
                 }
                 Some(mug)
             }
-            Right(cell) => match (get_mug(cell.head(space), space), get_mug(cell.tail(space), space)) {
-                (Some(head_mug), Some(tail_mug)) => {
-                    let mug = unsafe { calc_cell_mug_u32(head_mug, tail_mug, space) };
-                    unsafe {
-                        set_mug(allocated, mug, space);
+            Right(cell) => {
+                let cell = cell.in_space(space);
+                match (
+                    get_mug(cell.head().noun(), space),
+                    get_mug(cell.tail().noun(), space),
+                ) {
+                    (Some(head_mug), Some(tail_mug)) => {
+                        let mug = unsafe { calc_cell_mug_u32(head_mug, tail_mug, space) };
+                        unsafe {
+                            set_mug(allocated, mug, space);
+                        }
+                        Some(mug)
                     }
-                    Some(mug)
+                    _ => None,
                 }
-                _ => None,
-            },
+            }
         },
     }
 }
@@ -186,8 +190,9 @@ pub fn mug_u32(stack: &mut NockStack, noun: Noun) -> u32 {
                             Right(cell) => {
                                 let (head, tail, cached) = {
                                     let space = stack.noun_space();
-                                    let head = cell.head(&space);
-                                    let tail = cell.tail(&space);
+                                    let cell = cell.in_space(&space);
+                                    let head = cell.head().noun();
+                                    let tail = cell.tail().noun();
                                     (head, tail, (get_mug(head, &space), get_mug(tail, &space)))
                                 };
                                 match cached {

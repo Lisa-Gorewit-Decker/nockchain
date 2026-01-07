@@ -529,28 +529,30 @@ pub fn compute_v2_extend_jet(context: &mut Context, subject: Noun) -> Result<Nou
         row.e = stack[stack_idx + 2];
         stack_idx += 3;
 
-        row.f_h = build_tree_data(row.f.n.as_cell()?.head(&space), &chals.alf, &space)?;
-        row.f_t = build_tree_data(row.f.n.as_cell()?.tail(&space), &chals.alf, &space)?;
+        let f_cell = row.f.n.in_space(&space).as_cell()?;
+        row.f_h = build_tree_data(f_cell.head().noun(), &chals.alf, &space)?;
+        row.f_t = build_tree_data(f_cell.tail().noun(), &chals.alf, &space)?;
 
-        let op: u64 = if row.f.n.as_cell()?.head(&space).is_atom() {
-            row.f.n.as_cell()?.head(&space).as_atom()?.as_u64(&space)?
+        let op: u64 = if f_cell.head().is_atom() {
+            f_cell.head().as_atom()?.as_u64()?
         } else {
             9
         };
 
         if matches!(op, 2 | 5 | 6 | 7 | 8) {
-            row.f_th = build_tree_data(row.f_t.n.as_cell()?.head(&space), &chals.alf, &space)?;
+            let f_t_cell = row.f_t.n.in_space(&space).as_cell()?;
+            row.f_th = build_tree_data(f_t_cell.head().noun(), &chals.alf, &space)?;
         }
 
         if matches!(op, 2 | 5 | 6 | 7 | 8) {
-            row.f_tt = build_tree_data(row.f_t.n.as_cell()?.tail(&space), &chals.alf, &space)?;
+            let f_t_cell = row.f_t.n.in_space(&space).as_cell()?;
+            row.f_tt = build_tree_data(f_t_cell.tail().noun(), &chals.alf, &space)?;
         }
 
         if op == 6 {
-            row.f_tth =
-                build_tree_data(row.f_tt.n.as_cell()?.head(&space), &chals.alf, &space)?;
-            row.f_ttt =
-                build_tree_data(row.f_tt.n.as_cell()?.tail(&space), &chals.alf, &space)?;
+            let f_tt_cell = row.f_tt.n.in_space(&space).as_cell()?;
+            row.f_tth = build_tree_data(f_tt_cell.head().noun(), &chals.alf, &space)?;
+            row.f_ttt = build_tree_data(f_tt_cell.tail().noun(), &chals.alf, &space)?;
         }
 
         match op {

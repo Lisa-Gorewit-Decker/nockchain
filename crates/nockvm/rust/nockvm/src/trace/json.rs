@@ -59,7 +59,8 @@ impl TraceBackend for JsonBackend {
             let pc = path_to_cord(stack, (*trace_stack).path);
             let space = stack.noun_space();
             let pc_len = met3_usize(pc, &space);
-            let pc_bytes = &pc.as_ne_bytes(&space)[0..pc_len];
+            let pc_handle = pc.in_space(&space);
+            let pc_bytes = &pc_handle.as_ne_bytes()[0..pc_len];
             let pc_str = match std::str::from_utf8(pc_bytes) {
                 Ok(valid) => valid,
                 Err(error) => {

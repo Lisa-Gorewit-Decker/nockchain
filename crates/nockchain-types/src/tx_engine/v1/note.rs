@@ -75,7 +75,8 @@ impl NounEncode for Note {
 
 impl NounDecode for Note {
     fn from_noun(noun: &Noun, space: &NounSpace) -> Result<Self, NounDecodeError> {
-        let hed = noun.as_cell()?.head(space);
+        let cell = noun.in_space(space).as_cell()?;
+        let hed = cell.head().noun();
         match hed.is_cell() {
             true => Ok(Note::V0(NoteV0::from_noun(noun, space)?)),
             false => Ok(Note::V1(NoteV1::from_noun(noun, space)?)),
@@ -159,7 +160,7 @@ impl NounDecode for NoteData {
                     .as_atom()
                     .map_err(|_| NounDecodeError::Custom("note-data key must be an atom".into()))?;
 
-                let key = key_atom.into_string(space).map_err(|err| {
+                let key = key_atom.in_space(space).into_string().map_err(|err| {
                     NounDecodeError::Custom(format!(
                         "failed to convert note-data key to string: {err}"
                     ))

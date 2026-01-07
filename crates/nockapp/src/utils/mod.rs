@@ -99,7 +99,8 @@ pub use nockvm::ext::make_tas;
 pub fn serialize_noun(stack: &mut NockStack, noun: Noun) -> Result<Vec<u8>> {
     let atom = jam(stack, noun);
     let space = stack.noun_space();
-    let size = atom.size(&space) << 3;
+    let atom_handle = atom.in_space(&space);
+    let size = atom_handle.size() << 3;
 
     let buf = unsafe { from_raw_parts_mut(stack.struct_alloc::<u8>(size + 5), size + 5) };
     buf[0] = 0u8;
@@ -108,28 +109,33 @@ pub fn serialize_noun(stack: &mut NockStack, noun: Noun) -> Result<Vec<u8>> {
     buf[3] = (size >> 16) as u8;
     buf[4] = (size >> 24) as u8;
 
-    match atom.as_either() {
-        Either::Left(direct) => unsafe {
+    if atom_handle.is_direct() {
+        let direct = atom_handle
+            .atom()
+            .as_direct()
+            .expect("direct atom expected");
+        unsafe {
             copy_nonoverlapping(
                 &direct.data() as *const u64 as *const u8,
                 buf.as_mut_ptr().add(5),
                 size,
             );
-        },
-        Either::Right(indirect) => unsafe {
+        }
+    } else {
+        unsafe {
             copy_nonoverlapping(
-                indirect.data_pointer(&space) as *const u8,
+                atom_handle.data_pointer() as *const u8,
                 buf.as_mut_ptr().add(5),
                 size,
             );
-        },
-    };
+        }
+    }
     Ok(buf.to_vec())
 }
 
 pub fn compute_timer_time(time: Noun, space: &NounSpace) -> Result<u64> {
-    let time_atom = time.as_atom()?;
-    let mut time_bytes: &[u8] = time_atom.as_ne_bytes(space);
+    let time_atom = time.in_space(space).as_atom()?;
+    let mut time_bytes: &[u8] = time_atom.as_ne_bytes();
     let timer_time: u128 = da_to_unix_ms(DA(ReadBytesExt::read_u128::<LittleEndian>(
         &mut time_bytes,
     )?));

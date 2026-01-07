@@ -10,7 +10,7 @@ use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criteri
 use lazy_static::lazy_static;
 use nockvm::ext::{IndirectAtomExt, NounExt};
 use nockvm::mem::NockStack;
-use nockvm::noun::{Cell, IndirectAtom, Noun, D};
+use nockvm::noun::{AllocLocation, Cell, IndirectAtom, Noun, D};
 use nockvm::serialization::cue_into_stack_pointer_form;
 use rand::{rngs::StdRng, Rng, SeedableRng};
 
@@ -324,18 +324,27 @@ fn debug_kernel_load(stack: &mut NockStack) {
     eprintln!("Root noun is_allocated: {}", kernel.is_allocated());
     eprintln!(
         "Root noun is_stack_allocated: {}",
-        kernel.is_stack_allocated(&space)
+        matches!(
+            kernel.in_space(&space).allocated_location(),
+            Some(AllocLocation::Stack)
+        )
     );
     eprintln!("Root noun raw: 0x{:016x}", unsafe { kernel.as_raw() });
 
     if kernel.is_cell() {
-        let cell = kernel.as_cell().unwrap();
-        let head = cell.head(&space);
-        let tail = cell.tail(&space);
-        eprintln!("Head is_stack_allocated: {}", head.is_stack_allocated(&space));
-        eprintln!("Head raw: 0x{:016x}", unsafe { head.as_raw() });
-        eprintln!("Tail is_stack_allocated: {}", tail.is_stack_allocated(&space));
-        eprintln!("Tail raw: 0x{:016x}", unsafe { tail.as_raw() });
+        let cell = kernel.in_space(&space).as_cell().unwrap();
+        let head = cell.head();
+        let tail = cell.tail();
+        eprintln!(
+            "Head is_stack_allocated: {}",
+            matches!(head.allocated_location(), Some(AllocLocation::Stack))
+        );
+        eprintln!("Head raw: 0x{:016x}", unsafe { head.noun().as_raw() });
+        eprintln!(
+            "Tail is_stack_allocated: {}",
+            matches!(tail.allocated_location(), Some(AllocLocation::Stack))
+        );
+        eprintln!("Tail raw: 0x{:016x}", unsafe { tail.noun().as_raw() });
     }
 }
 
@@ -366,7 +375,10 @@ fn check_noun_tagging_state(stack: &NockStack, root: Noun) -> (bool, usize, usiz
 
         // For allocated nouns (cells and indirect atoms), count their form
         if noun.is_allocated() {
-            if noun.is_stack_allocated(&space) {
+            if matches!(
+                noun.in_space(&space).allocated_location(),
+                Some(AllocLocation::Stack)
+            ) {
                 stack_pointer_count += 1;
             } else {
                 offset_count += 1;
@@ -374,9 +386,9 @@ fn check_noun_tagging_state(stack: &NockStack, root: Noun) -> (bool, usize, usiz
         }
 
         // If it's a cell, traverse children
-        if let Ok(cell) = noun.as_cell() {
-            let head = cell.head(&space);
-            let tail = cell.tail(&space);
+        if let Ok(cell) = noun.in_space(&space).as_cell() {
+            let head = cell.head().noun();
+            let tail = cell.tail().noun();
             work.push(head);
             work.push(tail);
         }
@@ -417,16 +429,19 @@ fn is_entirely_offset_form(stack: &NockStack, root: Noun) -> bool {
 
         // For allocated nouns (cells and indirect atoms), check they're in offset form
         if noun.is_allocated() {
-            if noun.is_stack_allocated(&space) {
+            if matches!(
+                noun.in_space(&space).allocated_location(),
+                Some(AllocLocation::Stack)
+            ) {
                 // This noun is in stack-pointer form, not offset form
                 return false;
             }
         }
 
         // If it's a cell, traverse children
-        if let Ok(cell) = noun.as_cell() {
-            let head = cell.head(&space);
-            let tail = cell.tail(&space);
+        if let Ok(cell) = noun.in_space(&space).as_cell() {
+            let head = cell.head().noun();
+            let tail = cell.tail().noun();
             work.push(head);
             work.push(tail);
         }

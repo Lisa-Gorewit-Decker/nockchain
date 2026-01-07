@@ -108,11 +108,12 @@ impl EffectType {
         };
 
         let space = noun_slab.noun_space();
-        let head = effect_cell.head(&space);
-        let Ok(atom) = head.as_atom() else {
+        let effect_cell = effect_cell.in_space(&space);
+        let head = effect_cell.head().noun();
+        let Ok(atom) = head.in_space(&space).as_atom() else {
             return EffectType::Unknown;
         };
-        let Ok(bytes) = atom.to_bytes_until_nul(&space) else {
+        let Ok(bytes) = atom.to_bytes_until_nul() else {
             warn!("atom was not properly formatted: {:?}", atom);
             return EffectType::Unknown;
         };
@@ -498,22 +499,23 @@ async fn handle_effect(
                 // Get the tail of the gossip effect (after %gossip head)
                 let mut tail_slab = NounSlab::new();
                 let space = noun_slab.noun_space();
-                let gossip_cell = unsafe { noun_slab.root().as_cell()?.tail(&space) };
+                let gossip_cell = unsafe { *noun_slab.root() }
+                    .in_space(&space)
+                    .as_cell()?
+                    .tail()
+                    .noun();
 
                 // Skip version number
                 // TODO: add version negotiation, reject unknown/incompatible versions
-                let data_cell = gossip_cell.as_cell()?.tail(&space);
+                let data_cell = gossip_cell.in_space(&space).as_cell()?.tail().noun();
                 tail_slab.copy_into(data_cell, &space);
 
                 // Check if this is a heard-block gossip
                 let is_heard_block = {
                     let tail_space = tail_slab.noun_space();
-                    let gossip_noun = unsafe { tail_slab.root() };
-                    if let Ok(data_cell) = gossip_noun.as_cell() {
-                        data_cell
-                            .in_space(&tail_space)
-                            .head()
-                            .eq_bytes(b"heard-block")
+                    let gossip_noun = unsafe { *tail_slab.root() };
+                    if let Ok(data_cell) = gossip_noun.in_space(&tail_space).as_cell() {
+                        data_cell.head().eq_bytes(b"heard-block")
                     } else {
                         false
                     }
@@ -549,20 +551,22 @@ async fn handle_effect(
             let (target_peers, is_limited_request, raw_tx_id) = {
                 let space = noun_slab.noun_space();
                 // Extract request details to check if it's a peer-specific request
-                let request_cell = unsafe { noun_slab.root().as_cell()? };
-                let request_body = request_cell.tail(&space).as_cell()?;
-                let request_type = request_body.head(&space).as_direct()?;
+                let request_cell = unsafe { *noun_slab.root() }
+                    .in_space(&space)
+                    .as_cell()?;
+                let request_body = request_cell.tail().as_cell()?;
+                let request_type = request_body.head().noun().as_direct()?;
 
                 let mut is_limited_request = false;
                 let request_tag = request_type.data();
 
                 let target_peers = if request_tag == tas!(b"block") {
-                    let block_cell = request_body.tail(&space).as_cell()?;
-                    if block_cell.in_space(&space).head().eq_bytes(b"elders") {
+                    let block_cell = request_body.tail().as_cell()?;
+                    if block_cell.head().eq_bytes(b"elders") {
                         // Extract peer ID from elders request
-                        let elders_cell = block_cell.tail(&space).as_cell()?;
-                        let peer_id_atom = elders_cell.tail(&space).as_atom()?;
-                        if let Ok(bytes) = peer_id_atom.to_bytes_until_nul(&space) {
+                        let elders_cell = block_cell.tail().as_cell()?;
+                        let peer_id_atom = elders_cell.tail().as_atom()?;
+                        if let Ok(bytes) = peer_id_atom.to_bytes_until_nul() {
                             if let Ok(peer_id) = PeerId::from_bytes(&bytes) {
                                 vec![peer_id]
                             } else {
@@ -581,13 +585,13 @@ async fn handle_effect(
                 };
 
                 let raw_tx_id = if request_tag == tas!(b"raw-tx") {
-                    if let Ok(raw_tx_cell) = request_body.tail(&space).as_cell() {
-                        if raw_tx_cell.in_space(&space).head().eq_bytes(b"by-id") {
+                    if let Ok(raw_tx_cell) = request_body.tail().as_cell() {
+                        if raw_tx_cell.head().eq_bytes(b"by-id") {
                             is_limited_request = fast_sync;
                             trace!("Requesting raw transaction by ID, removing ID from seen set");
                             Some(tip5_hash_to_base58_stack(
                                 &mut noun_slab,
-                                raw_tx_cell.tail(&space),
+                                raw_tx_cell.tail().noun(),
                                 &space,
                             )?)
                         } else {
@@ -637,14 +641,16 @@ async fn handle_effect(
         EffectType::LiarPeer => {
             let peer_id = {
                 let space = noun_slab.noun_space();
-                let effect_cell = unsafe { noun_slab.root().as_cell()? };
-                let liar_peer_cell = effect_cell.tail(&space).as_cell().map_err(|_| {
+                let effect_cell = unsafe { *noun_slab.root() }
+                    .in_space(&space)
+                    .as_cell()?;
+                let liar_peer_cell = effect_cell.tail().as_cell().map_err(|_| {
                     NockAppError::IoError(std::io::Error::new(
                         std::io::ErrorKind::Other,
                         "Expected peer ID cell in liar-peer effect",
                     ))
                 })?;
-                let peer_id_atom = liar_peer_cell.head(&space).as_atom().map_err(|_| {
+                let peer_id_atom = liar_peer_cell.head().as_atom().map_err(|_| {
                     NockAppError::IoError(std::io::Error::new(
                         std::io::ErrorKind::Other,
                         "Expected peer ID atom in liar-peer effect",
@@ -652,7 +658,7 @@ async fn handle_effect(
                 })?;
 
                 let bytes = peer_id_atom
-                    .to_bytes_until_nul(&space)
+                    .to_bytes_until_nul()
                     .expect("failed to strip null bytes");
 
                 let peer_id_str = String::from_utf8(bytes).map_err(|_| {
@@ -680,15 +686,17 @@ async fn handle_effect(
         EffectType::LiarBlockId => {
             let block_id = {
                 let space = noun_slab.noun_space();
-                let effect_cell = unsafe { noun_slab.root().as_cell()? };
-                let liar_block_cell = effect_cell.tail(&space).as_cell().map_err(|_| {
+                let effect_cell = unsafe { *noun_slab.root() }
+                    .in_space(&space)
+                    .as_cell()?;
+                let liar_block_cell = effect_cell.tail().as_cell().map_err(|_| {
                     NockAppError::IoError(std::io::Error::new(
                         std::io::ErrorKind::Other,
                         "Expected block ID cell in liar-block-id effect",
                     ))
                 })?;
 
-                liar_block_cell.head(&space)
+                liar_block_cell.head().noun()
             };
 
             // Add the bad block ID
@@ -716,27 +724,31 @@ async fn handle_effect(
 
             let track_action = {
                 let space = noun_slab.noun_space();
-                let effect_cell = unsafe { noun_slab.root().as_cell()? };
-                let track_cell = effect_cell.tail(&space).as_cell()?;
-                let action = track_cell.head(&space);
+                let effect_cell = unsafe { *noun_slab.root() }
+                    .in_space(&space)
+                    .as_cell()?;
+                let track_cell = effect_cell.tail().as_cell()?;
+                let action = track_cell.head();
 
-                if action.in_space(&space).eq_bytes(b"add") {
+                if action.eq_bytes(b"add") {
                     // Handle [%track %add block-id peer-id]
-                    let data_cell = track_cell.tail(&space).as_cell()?;
-                    let block_id = data_cell.head(&space);
-                    let peer_id_atom = data_cell.tail(&space).as_atom()?;
+                    let data_cell = track_cell.tail().as_cell()?;
+                    let block_id = data_cell.head().noun();
+                    let peer_id_atom = data_cell.tail().as_atom()?;
 
                     // Convert peer_id from base58 string to PeerId
-                    let Ok(peer_id) = PeerId::from_noun(peer_id_atom.as_noun(), &space) else {
+                    let Ok(peer_id) =
+                        PeerId::from_noun(peer_id_atom.atom().as_noun(), &space)
+                    else {
                         return Err(NockAppError::OtherError(String::from(
                             "Invalid peer ID format",
                         )));
                     };
 
                     Ok(TrackAction::Add { block_id, peer_id })
-                } else if action.in_space(&space).eq_bytes(b"remove") {
+                } else if action.eq_bytes(b"remove") {
                     // Handle [%track %remove block-id]
-                    let block_id = track_cell.tail(&space);
+                    let block_id = track_cell.tail().noun();
                     Ok(TrackAction::Remove { block_id })
                 } else {
                     Err(NockAppError::IoError(std::io::Error::new(
@@ -770,22 +782,24 @@ async fn handle_effect(
 
             let seen_action = {
                 let space = noun_slab.noun_space();
-                let effect_cell = unsafe { noun_slab.root().as_cell()? };
-                let seen_cell = effect_cell.tail(&space).as_cell()?;
-                let seen_type = seen_cell.head(&space);
+                let effect_cell = unsafe { *noun_slab.root() }
+                    .in_space(&space)
+                    .as_cell()?;
+                let seen_cell = effect_cell.tail().as_cell()?;
+                let seen_type = seen_cell.head();
 
-                if seen_type.in_space(&space).eq_bytes(b"block") {
-                    let seen_pq = seen_cell.tail(&space).as_cell()?;
-                    let block_id = seen_pq.head(&space).as_cell()?;
+                if seen_type.eq_bytes(b"block") {
+                    let seen_pq = seen_cell.tail().as_cell()?;
+                    let block_id = seen_pq.head().noun();
                     let block_id_str = tip5_hash_to_base58_stack(
                         &mut noun_slab,
-                        block_id.as_noun(),
+                        block_id,
                         &space,
                     )
                     .expect("failed to convert block ID to base58");
                     let block_height =
-                        if let Ok(block_height_unit_cell) = seen_pq.tail(&space).as_cell() {
-                            Some(block_height_unit_cell.tail(&space).as_atom()?.as_u64(&space)?)
+                        if let Ok(block_height_unit_cell) = seen_pq.tail().as_cell() {
+                            Some(block_height_unit_cell.tail().as_atom()?.as_u64()?)
                         } else {
                             None
                         };
@@ -793,10 +807,13 @@ async fn handle_effect(
                         id: block_id_str,
                         height: block_height,
                     }
-                } else if seen_type.in_space(&space).eq_bytes(b"tx") {
-                    let tx_id = seen_cell.tail(&space).as_cell()?;
-                    let tx_id_str =
-                        tip5_hash_to_base58_stack(&mut noun_slab, tx_id.as_noun(), &space)
+                } else if seen_type.eq_bytes(b"tx") {
+                    let tx_id = seen_cell.tail().as_cell()?;
+                    let tx_id_str = tip5_hash_to_base58_stack(
+                        &mut noun_slab,
+                        tx_id.cell().as_noun(),
+                        &space,
+                    )
                             .expect("failed to convert tx ID to base58");
                     SeenAction::Tx { id: tx_id_str }
                 } else {
@@ -963,10 +980,11 @@ async fn handle_request_response(
                                 let request_type = {
                                     let space = request_slab.noun_space();
                                     request_noun
+                                        .in_space(&space)
                                         .as_cell()
                                         .ok()
-                                        .and_then(|cell| cell.tail(&space).as_cell().ok())
-                                        .map(|cell| cell.head(&space))
+                                        .and_then(|cell| cell.tail().as_cell().ok())
+                                        .map(|cell| cell.head().noun())
                                 };
                                 trace!(
                                     "No data found for incoming request from: {}, request type: {:?}",

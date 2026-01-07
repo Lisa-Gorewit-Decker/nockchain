@@ -687,8 +687,9 @@ impl Cold {
             // Check if we already registered this core
             if let Some(paths) = (*(self.0)).battery_to_paths.lookup(stack, &mut battery) {
                 for path in paths {
-                    if let Ok(path_cell) = (*path).as_cell() {
-                        if unifying_equality(stack, &mut path_cell.head(&space), &mut chum) {
+                    if let Ok(path_cell) = (*path).in_space(&space).as_cell() {
+                        let mut head = path_cell.head().noun();
+                        if unifying_equality(stack, &mut head, &mut chum) {
                             if let Some(batteries_list) =
                                 (*(self.0)).path_to_batteries.lookup(stack, &mut *path)
                             {
@@ -903,7 +904,7 @@ impl Nounable for u64 {
         space: &NounSpace,
     ) -> NounableResult<Self::Target> {
         let atom = noun.atom().ok_or(FromNounError::NotAtom)?;
-        let as_u64 = atom.as_u64(space)?;
+        let as_u64 = atom.in_space(space).as_u64()?;
         Ok(as_u64)
     }
 }
@@ -939,7 +940,7 @@ impl Nounable for &str {
         space: &NounSpace,
     ) -> NounableResult<Self::Target> {
         let atom = noun.as_atom()?;
-        let bytes = atom.as_ne_bytes(space);
+        let bytes = atom.in_space(space).as_ne_bytes();
         let utf8 = std::str::from_utf8(bytes)?;
         let allocated = utf8.to_string();
         Ok(allocated)
@@ -988,13 +989,13 @@ impl<T: Nounable, U: Nounable, V: Nounable> Nounable for (T, U, V) {
         space: &NounSpace,
     ) -> NounableResult<Self::Target> {
         // it's a three tuple now
-        let cell = noun.cell().ok_or(FromNounError::NotCell)?;
-        let head = cell.head(space);
-        let tail = cell.tail(space);
+        let cell = noun.in_space(space).as_cell()?;
+        let head = cell.head().noun();
+        let tail = cell.tail().noun();
         let a = T::from_noun(_stack, &head, space)?;
-        let cell = tail.as_cell()?;
-        let b = U::from_noun(_stack, &cell.head(space), space)?;
-        let c = V::from_noun(_stack, &cell.tail(space), space)?;
+        let cell = tail.in_space(space).as_cell()?;
+        let b = U::from_noun(_stack, &cell.head().noun(), space)?;
+        let c = V::from_noun(_stack, &cell.tail().noun(), space)?;
         Ok((a, b, c))
     }
 }
@@ -1013,9 +1014,9 @@ impl<T: Nounable, U: Nounable> Nounable for (T, U) {
         noun: &Noun,
         space: &NounSpace,
     ) -> NounableResult<Self::Target> {
-        let cell = noun.cell().ok_or(FromNounError::NotCell)?;
-        let head = cell.head(space);
-        let tail = cell.tail(space);
+        let cell = noun.in_space(space).as_cell()?;
+        let head = cell.head().noun();
+        let tail = cell.tail().noun();
         let a = T::from_noun(_stack, &head, space)?;
         let b = U::from_noun(_stack, &tail, space)?;
         Ok((a, b))
@@ -1072,9 +1073,9 @@ impl Nounable for Batteries {
     ) -> NounableResult<Self::Target> {
         let mut batteries = NO_BATTERIES;
         for item in NounListIterator::new(*noun, space) {
-            let cell = item.cell().ok_or(FromNounError::NotCell)?;
-            let battery = cell.head(space);
-            let parent_axis = cell.tail(space).as_atom()?;
+            let cell = item.in_space(space).as_cell()?;
+            let battery = cell.head().noun();
+            let parent_axis = cell.tail().as_atom()?.atom();
             let batteries_mem: *mut BatteriesMem = unsafe { stack.alloc_struct(1) };
             unsafe {
                 batteries_mem.write(BatteriesMem {
@@ -1148,9 +1149,9 @@ impl<T: Nounable + Copy + mem::Preserve> Nounable for Hamt<T> {
     ) -> NounableResult<Self::Target> {
         let mut items = Vec::new();
         for item in NounListIterator::new(*noun, space) {
-            let cell = item.cell().ok_or(FromNounError::NotCell)?;
-            let key = cell.head(space);
-            let value = T::from_noun(stack, &cell.tail(space), space)?;
+            let cell = item.in_space(space).as_cell()?;
+            let key = cell.head().noun();
+            let value = T::from_noun(stack, &cell.tail().noun(), space)?;
             items.push((key, value));
         }
         // items.reverse();
@@ -1233,25 +1234,25 @@ impl Nounable for Cold {
 
         // iterate over battery_to_paths_noun
         for item in NounListIterator::new(battery_to_paths_noun, space) {
-            let cell = item.cell().ok_or(FromNounError::NotCell)?;
-            let key = cell.head(space);
-            let value = NounList::from_noun(stack, &cell.tail(space), space)?;
+            let cell = item.in_space(space).as_cell()?;
+            let key = cell.head().noun();
+            let value = NounList::from_noun(stack, &cell.tail().noun(), space)?;
             battery_to_paths.push((key, value));
         }
 
         // iterate over root_to_paths_noun
         for item in NounListIterator::new(root_to_paths_noun, space) {
-            let cell = item.cell().ok_or(FromNounError::NotCell)?;
-            let key = cell.head(space);
-            let value = NounList::from_noun(stack, &cell.tail(space), space)?;
+            let cell = item.in_space(space).as_cell()?;
+            let key = cell.head().noun();
+            let value = NounList::from_noun(stack, &cell.tail().noun(), space)?;
             root_to_paths.push((key, value));
         }
 
         // iterate over path_to_batteries_noun
         for item in NounListIterator::new(path_to_batteries_noun, space) {
-            let cell = item.cell().ok_or(FromNounError::NotCell)?;
-            let key = cell.head(space);
-            let value = BatteriesList::from_noun(stack, &cell.tail(space), space)?;
+            let cell = item.in_space(space).as_cell()?;
+            let key = cell.head().noun();
+            let value = BatteriesList::from_noun(stack, &cell.tail().noun(), space)?;
             path_to_batteries.push((key, value));
         }
         battery_to_paths.reverse();
@@ -1271,7 +1272,7 @@ pub(crate) mod test {
     use crate::ext::noun_equality;
     use crate::hamt::Hamt;
     use crate::mem::NockStack;
-    use crate::noun::{Cell, Noun, NounSpace, D};
+    use crate::noun::{AllocLocation, Cell, Noun, NounSpace, D};
     /// Default stack size for tests where you aren't intending to run out of space
     pub(crate) const DEFAULT_STACK_SIZE: usize = 1 << 27;
     pub(crate) fn make_test_stack(size: usize) -> NockStack {
@@ -1563,8 +1564,8 @@ pub(crate) mod test {
             assert!(
                 unsafe { unifying_equality(&mut stack, a_atom_noun_ptr, b_atom_noun_ptr) },
                 "Parent axes don't match: {:?} {:?}",
-                a_atom.as_u64(&space),
-                b_atom.as_u64(&space)
+                a_atom.in_space(&space).as_u64(),
+                b_atom.in_space(&space).as_u64()
             );
         }
     }
@@ -1675,7 +1676,9 @@ pub(crate) mod test {
                     option_env!("GIT_SHA")
                 )
             })
-            .head(&space)
+            .in_space(&space)
+            .head()
+            .noun()
             .direct()
             .unwrap_or_else(|| {
                 panic!(
@@ -1696,7 +1699,9 @@ pub(crate) mod test {
                     option_env!("GIT_SHA")
                 )
             })
-            .tail(&space)
+            .in_space(&space)
+            .tail()
+            .noun()
             .direct()
             .unwrap_or_else(|| {
                 panic!(
@@ -1729,7 +1734,9 @@ pub(crate) mod test {
                     option_env!("GIT_SHA")
                 )
             })
-            .head(&space)
+            .in_space(&space)
+            .head()
+            .noun()
             .direct()
             .unwrap_or_else(|| {
                 panic!(
@@ -1750,7 +1757,9 @@ pub(crate) mod test {
                     option_env!("GIT_SHA")
                 )
             })
-            .tail(&space)
+            .in_space(&space)
+            .tail()
+            .noun()
             .direct()
             .unwrap_or_else(|| {
                 panic!(
@@ -1771,15 +1780,16 @@ pub(crate) mod test {
             return;
         }
 
+        let location = noun.in_space(space).allocated_location();
         assert!(
-            !noun.is_stack_allocated(space),
+            !matches!(location, Some(AllocLocation::Stack)),
             "{} should be in offset form after evacuation",
             context
         );
 
-        if let Ok(cell) = noun.as_cell() {
-            verify_noun_not_stack_allocated(cell.head(space), space, context);
-            verify_noun_not_stack_allocated(cell.tail(space), space, context);
+        if let Ok(cell) = noun.in_space(space).as_cell() {
+            verify_noun_not_stack_allocated(cell.head().noun(), space, context);
+            verify_noun_not_stack_allocated(cell.tail().noun(), space, context);
         }
     }
 
@@ -1936,7 +1946,10 @@ pub(crate) mod test {
             let elem = unsafe { *elem_ptr };
             let ref_noun = ref_nouns[i];
             assert!(
-                noun_equality(&ref_noun, &elem, &ref_space),
+                noun_equality(
+                    ref_noun.in_space(&ref_space),
+                    elem.in_space(&ref_space),
+                ),
                 "Element {} should match reference after evacuation",
                 i
             );
@@ -1999,7 +2012,7 @@ pub(crate) mod test {
                 "Battery value should match"
             );
             assert_eq!(
-                parent_axis.as_u64(&space).unwrap(),
+                parent_axis.in_space(&space).as_u64().unwrap(),
                 *expected_axis,
                 "Parent axis should match"
             );
@@ -2075,7 +2088,7 @@ pub(crate) mod test {
                 "Battery value should match"
             );
             assert_eq!(
-                parent_axis.as_u64(&space).unwrap(),
+                parent_axis.in_space(&space).as_u64().unwrap(),
                 0,
                 "Parent axis should be 0"
             );

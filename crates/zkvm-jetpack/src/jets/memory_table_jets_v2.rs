@@ -147,8 +147,9 @@ fn rna_bfta(tres: Vec<(Noun, bool)>, space: &NounSpace) -> Result<Vec<Noun>, Jet
                 option_env!("GIT_SHA")
             )
         });
-        let head = noun.as_cell()?.head(space);
-        let tail = noun.as_cell()?.tail(space);
+        let cell = noun.in_space(space).as_cell()?;
+        let head = cell.head().noun();
+        let tail = cell.tail().noun();
 
         match (head.is_atom(), tail.is_atom()) {
             (true, true) => {}
@@ -182,8 +183,9 @@ fn add_ions(
     let cache = MutHamt::<Ion>::new(stack);
 
     for noun in lst {
-        let mut head = noun.as_cell()?.head(space);
-        let mut tail = noun.as_cell()?.tail(space);
+        let cell = noun.in_space(space).as_cell()?;
+        let mut head = cell.head().noun();
+        let mut tail = cell.tail().noun();
 
         let left: Ion = if head.is_atom() {
             atom_ion(head.as_atom()?, &chals.alf, space)?
@@ -241,7 +243,7 @@ fn atom_ion(atom: Atom, alf: &Felt, space: &NounSpace) -> Result<Ion, JetErr> {
     Ok(Ion {
         size: *alf,
         dyck: Felt::zero(),
-        leaf: Felt::lift(Belt(atom.as_u64(space)?)),
+        leaf: Felt::lift(Belt(atom.as_u64()?)),
     })
 }
 

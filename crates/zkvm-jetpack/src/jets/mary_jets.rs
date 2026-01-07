@@ -29,8 +29,9 @@ pub fn mary_swag_jet(context: &mut Context, subject: Noun) -> Result<Noun, JetEr
     let door = slot(subject, 7, &space)?;
     let ma = slot(door, 6, &space)?;
     let sam = slot(subject, 6, &space)?;
-    let i = sam.as_cell()?.head(&space).as_direct()?.data() as usize;
-    let j = sam.as_cell()?.tail(&space).as_direct()?.data() as usize;
+    let sam_cell = sam.in_space(&space).as_cell()?;
+    let i = sam_cell.head().noun().as_direct()?.data() as usize;
+    let j = sam_cell.tail().noun().as_direct()?.data() as usize;
 
     let Ok(mary) = MarySlice::try_from(ma, &space) else {
         debug!("cannot convert mary arg to mary");
@@ -55,8 +56,20 @@ pub fn mary_weld_jet(context: &mut Context, subject: Noun) -> Result<Noun, JetEr
     let ma = slot(door, 6, &space)?;
     let ma2 = slot(subject, 6, &space)?;
 
-    let step = ma.as_cell()?.head(&space).as_direct()?.data() as u32;
-    let step2 = ma2.as_cell()?.head(&space).as_direct()?.data() as u32;
+    let step = ma
+        .in_space(&space)
+        .as_cell()?
+        .head()
+        .noun()
+        .as_direct()?
+        .data() as u32;
+    let step2 = ma2
+        .in_space(&space)
+        .as_cell()?
+        .head()
+        .noun()
+        .as_direct()?
+        .data() as u32;
     if step != step2 {
         debug!("can only weld marys of same step");
         return Err(BAIL_FAIL);
@@ -81,7 +94,10 @@ pub fn mary_transpose_jet(context: &mut Context, subject: Noun) -> Result<Noun, 
     let ma = slot(door, 6, &space)?;
     let offset = slot(subject, 6, &space)?;
 
-    let (Ok(mary), Ok(offset)) = (MarySlice::try_from(ma, &space), offset.as_atom()?.as_u64(&space)) else {
+    let (Ok(mary), Ok(offset)) = (
+        MarySlice::try_from(ma, &space),
+        offset.in_space(&space).as_atom()?.as_u64(),
+    ) else {
         debug!("fp is not an fpoly or n is not an atom");
         return Err(BAIL_FAIL);
     };
@@ -107,7 +123,10 @@ pub fn lift_elt_jet(context: &mut Context, subject: Noun) -> Result<Noun, JetErr
     let space = context.stack.noun_space();
     let stack = &mut context.stack;
     let door = slot(subject, 7, &space)?;
-    let step = slot(door, 6, &space)?.as_atom()?.as_u64(&space)?;
+    let step = slot(door, 6, &space)?
+        .in_space(&space)
+        .as_atom()?
+        .as_u64()?;
     let a = slot(subject, 6, &space)?;
 
     if step == 1u64 {
@@ -122,7 +141,7 @@ pub fn lift_elt_jet(context: &mut Context, subject: Noun) -> Result<Noun, JetErr
         init_bpoly(init_bpoly_arg_list, res_poly, &space);
 
         let res_cell = finalize_poly(stack, Some(res_poly.len()), res);
-        Ok(res_cell.as_cell()?.tail(&space))
+        Ok(res_cell.in_space(&space).as_cell()?.tail().noun())
     }
 }
 
@@ -130,7 +149,10 @@ pub fn fet_jet(context: &mut Context, subject: Noun) -> Result<Noun, JetErr> {
     let space = context.stack.noun_space();
     let stack = &mut context.stack;
     let door = slot(subject, 7, &space)?;
-    let step = slot(door, 6, &space)?.as_atom()?.as_u64(&space)?;
+    let step = slot(door, 6, &space)?
+        .in_space(&space)
+        .as_atom()?
+        .as_u64()?;
     let a = slot(subject, 6, &space)?.as_atom()?;
 
     let v = rip_correct(stack, 6, 1, a, &space)?;
@@ -186,10 +208,21 @@ pub fn snag_one(
     i: usize,
     space: &NounSpace,
 ) -> Result<Noun, JetErr> {
-    let mary_cell = mary_noun.as_cell()?;
-    let ma_step = mary_cell.head(space).as_atom()?.as_u32()?;
-    let ma_len = mary_cell.tail(space).as_cell()?.head(space).as_atom()?.as_u32()?;
-    let ma_dat: Atom = mary_cell.tail(space).as_cell()?.tail(space).as_atom()?;
+    let mary_cell = mary_noun.in_space(space).as_cell()?;
+    let ma_step = mary_cell.head().as_atom()?.atom().as_u32()?;
+    let ma_len = mary_cell
+        .tail()
+        .as_cell()?
+        .head()
+        .as_atom()?
+        .atom()
+        .as_u32()?;
+    let ma_dat: Atom = mary_cell
+        .tail()
+        .as_cell()?
+        .tail()
+        .as_atom()?
+        .atom();
 
     assert!(i < ma_len as usize);
     snag_one_fields(stack, i, ma_step, ma_dat, space)
@@ -228,8 +261,15 @@ fn cut(
     let new_indirect = unsafe {
         let (mut new_indirect, new_slice) =
             IndirectAtom::new_raw_mut_bitslice(stack, bite_to_word(bloq, run)?);
-        chop(bloq, start, run, 0, new_slice, atom.as_bitslice(space))?;
-        new_indirect.normalize_as_atom(space)
+        chop(
+            bloq,
+            start,
+            run,
+            0,
+            new_slice,
+            atom.in_space(space).as_bitslice(),
+        )?;
+        new_indirect.normalize_as_atom_stack()
     };
     Ok(new_indirect.as_noun())
 }
@@ -256,8 +296,8 @@ pub fn snag_as_bpoly(
     i: usize,
     space: &NounSpace,
 ) -> Result<Noun, JetErr> {
-    let mary_cell = mary_noun.as_cell()?;
-    let ma_step = mary_cell.head(space).as_atom()?.as_u32()?;
+    let mary_cell = mary_noun.in_space(space).as_cell()?;
+    let ma_step = mary_cell.head().as_atom()?.atom().as_u32()?;
 
     let dat = snag_one(stack, mary_noun, i, space)?;
 
@@ -287,13 +327,13 @@ pub fn change_step(
     new_step_noun: Noun,
     space: &NounSpace,
 ) -> Result<Noun, JetErr> {
-    let new_step = new_step_noun.as_atom()?.as_u64(space)?; //   |=  [new-step=@]  ??
+    let new_step = new_step_noun.in_space(space).as_atom()?.as_u64()?; //   |=  [new-step=@]  ??
 
     let [ma_step_noun, ma_array] = ma_noun.uncell(space)?; // +$  mary  [step=@ =array]
     let [array_len_noun, array_dat] = ma_array.uncell(space)?; // +$  array  [len=@ dat=@ux]
 
-    let ma_step = ma_step_noun.as_atom()?.as_u64(space)?;
-    let array_len = array_len_noun.as_atom()?.as_u64(space)?;
+    let ma_step = ma_step_noun.in_space(space).as_atom()?.as_u64()?;
+    let array_len = array_len_noun.in_space(space).as_atom()?.as_u64()?;
 
     if ma_step == new_step {
         return Ok(ma_noun);
@@ -312,7 +352,7 @@ pub fn bp_build_merk_heap_jet(context: &mut Context, subject: Noun) -> Result<No
 
     let (_ma_step, ma_array_len, _ma_array_dat) = get_mary_fields(mary_noun, &space)?;
     let heap_mary = heapify_mary(stack, mary_noun, &space)?;
-    let xeb_m = simple_xeb(ma_array_len.as_u64(&space)? as usize);
+    let xeb_m = simple_xeb(ma_array_len.in_space(&space).as_u64()? as usize);
 
     let snag_digest = snag_as_digest(stack, heap_mary, 0, &space)?;
 
@@ -341,14 +381,14 @@ fn heapify_mary(
     space: &NounSpace,
 ) -> Result<Noun, JetErr> {
     let (_ma_step, ma_array_len, _ma_array_dat) = get_mary_fields(m_noun, space)?;
-    let size = bex(simple_xeb(ma_array_len.as_u64(space)? as usize)) - 1;
+    let size = bex(simple_xeb(ma_array_len.in_space(space).as_u64()? as usize)) - 1;
 
     // calc high-bit
     let high_bit = lsh(stack, 6, size * 5, D(1).as_atom()?, space)?.as_atom()?;
 
     // make leaves
     let mut res_vec: Vec<Noun> = Vec::new();
-    for i in 0..ma_array_len.as_u64(space)? {
+    for i in 0..ma_array_len.in_space(space).as_u64()? {
         let t = snag_as_bpoly(stack, m_noun, i as usize, space)?;
         let hashable_bpoly = T(stack, &[D(tas!(b"mary")), D(1), t]);
         let hash = hash_hashable(stack, hashable_bpoly, space)?;
@@ -384,7 +424,7 @@ pub fn snag_as_digest_jet(context: &mut Context, subject: Noun) -> Result<Noun, 
     let m_noun = slot(sam, 2, &space)?;
     let i_noun = slot(sam, 3, &space)?;
 
-    let i = i_noun.as_atom()?.as_u64(&space)? as usize;
+    let i = i_noun.in_space(space).as_atom()?.as_u64()? as usize;
     snag_as_digest(stack, m_noun, i, &space)
 }
 
@@ -397,11 +437,26 @@ fn snag_as_digest(
     let buf = snag_one(stack, m_noun, i, space)?.as_atom()?;
 
     let mut digest = [0u64; DIGEST_LENGTH];
-    digest[0] = cut(stack, 6, 0, 1, buf, space)?.as_atom()?.as_u64(space)?;
-    digest[1] = cut(stack, 6, 1, 1, buf, space)?.as_atom()?.as_u64(space)?;
-    digest[2] = cut(stack, 6, 2, 1, buf, space)?.as_atom()?.as_u64(space)?;
-    digest[3] = cut(stack, 6, 3, 1, buf, space)?.as_atom()?.as_u64(space)?;
-    digest[4] = cut(stack, 6, 4, 1, buf, space)?.as_atom()?.as_u64(space)?;
+    digest[0] = cut(stack, 6, 0, 1, buf, space)?
+        .in_space(space)
+        .as_atom()?
+        .as_u64()?;
+    digest[1] = cut(stack, 6, 1, 1, buf, space)?
+        .in_space(space)
+        .as_atom()?
+        .as_u64()?;
+    digest[2] = cut(stack, 6, 2, 1, buf, space)?
+        .in_space(space)
+        .as_atom()?
+        .as_u64()?;
+    digest[3] = cut(stack, 6, 3, 1, buf, space)?
+        .in_space(space)
+        .as_atom()?
+        .as_u64()?;
+    digest[4] = cut(stack, 6, 4, 1, buf, space)?
+        .in_space(space)
+        .as_atom()?
+        .as_u64()?;
 
     Ok(digest_to_noundigest(stack, digest))
 }
@@ -419,7 +474,7 @@ pub fn mary_to_list(
     space: &NounSpace,
 ) -> Result<Noun, JetErr> {
     let (ma_step, ma_array_len, ma_array_dat) = get_mary_fields(ma_noun, space)?;
-    let ma_step = ma_step.as_u64(space)? as usize;
+    let ma_step = ma_step.in_space(space).as_u64()? as usize;
 
     mary_to_list_fields(stack, ma_array_len, ma_array_dat, ma_step, space)
 }
@@ -431,7 +486,7 @@ pub fn mary_to_list_fields(
     ma_step: usize,
     space: &NounSpace,
 ) -> Result<Noun, JetErr> {
-    if ma_array_len.as_u64(space)? == 0 {
+    if ma_array_len.in_space(space).as_u64()? == 0 {
         return Ok(D(0));
     }
 

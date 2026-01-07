@@ -3,7 +3,7 @@
 use crate::interpreter::Context;
 use crate::jets::util::slot;
 use crate::jets::{JetErr, Result};
-use crate::noun::{Noun, D, NO, T};
+use crate::noun::{CellHandle, Noun, D, NO, T};
 
 crate::gdb!();
 
@@ -36,7 +36,8 @@ pub fn jet_mure(context: &mut Context, subject: Noun) -> Result {
 
     match util::mink(context, tap, fol, scry) {
         Ok(tone) => {
-            if unsafe { tone.as_cell()?.head(&space).raw_equals(&D(0)) } {
+            let tone_cell = tone.in_space(&space).as_cell()?;
+            if unsafe { tone_cell.head().noun().raw_equals(&D(0)) } {
                 Ok(tone)
             } else {
                 Ok(D(0))
@@ -56,16 +57,17 @@ pub fn jet_mute(context: &mut Context, subject: Noun) -> Result {
 
     match util::mook(context, tone?.as_cell()?, false) {
         Ok(toon) => {
-            match toon.head(&space) {
+            let toon_handle = CellHandle::new(toon, &space);
+            match toon_handle.head().noun() {
                 x if unsafe { x.raw_equals(&D(0)) } => Ok(toon.as_noun()),
                 x if unsafe { x.raw_equals(&D(1)) } => {
                     //  XX: Need to check that result is actually of type path
                     //      return [[%leaf "mute.hunk"] ~] if not
-                    let bon = util::smyt(&mut context.stack, toon.tail(&space), &space)?;
+                    let bon = util::smyt(&mut context.stack, toon_handle.tail().noun(), &space)?;
                     Ok(T(&mut context.stack, &[NO, bon, D(0)]))
                 }
                 x if unsafe { x.raw_equals(&D(2)) } => {
-                    Ok(T(&mut context.stack, &[NO, toon.tail(&space)]))
+                    Ok(T(&mut context.stack, &[NO, toon_handle.tail().noun()]))
                 }
                 _ => panic!("serf: mook: invalid toon"),
             }
@@ -86,7 +88,7 @@ pub mod util {
     use crate::jets::bits::util::rip;
     use crate::jets::form::util::scow;
     use crate::mem::NockStack;
-    use crate::noun::{tape, Cell, Noun, NounSpace, D, T};
+    use crate::noun::{tape, Cell, CellHandle, Noun, NounSpace, D, T};
 
     pub const LEAF: Noun = D(tas!(b"leaf"));
     pub const ROSE: Noun = D(tas!(b"rose"));
@@ -214,8 +216,9 @@ pub mod util {
     //  XX: should write a jet_mook wrapper for this function
     pub fn mook(context: &mut Context, tone: Cell, flop: bool) -> result::Result<Cell, Error> {
         let space = context.stack.noun_space();
-        let tag = tone.head(&space).as_direct()?;
-        let original_list = tone.tail(&space);
+        let tone_handle = CellHandle::new(tone, &space);
+        let tag = tone_handle.head().noun().as_direct()?;
+        let original_list = tone_handle.tail().noun();
 
         if (tag.data() != 2) | unsafe { original_list.raw_equals(&D(0)) } {
             return Ok(tone);
@@ -231,10 +234,10 @@ pub mod util {
 
             let mut list = original_list;
             while !list.raw_equals(&D(0)) {
-                let cell = list.as_cell()?;
-                let trace = cell.head(&space).as_cell()?;
-                let tag = trace.head(&space).as_direct()?;
-                let dat = trace.tail(&space);
+                let cell = list.in_space(&space).as_cell()?;
+                let trace = cell.head().as_cell()?;
+                let tag = trace.head().noun().as_direct()?;
+                let dat = trace.tail().noun();
 
                 let tank: Noun = match tag.data() {
                     tas!(b"hunk") => match dat.as_either_atom_cell() {
@@ -246,7 +249,7 @@ pub mod util {
                         Right(cell) => {
                             //  XX: need to check that this is actually a path
                             //      return leaf+"mook.hunk" if not
-                            let path = cell.tail(&space);
+                            let path = CellHandle::new(cell, &space).tail().noun();
                             smyt(&mut context.stack, path, &space)?
                         }
                     },
@@ -260,15 +263,19 @@ pub mod util {
                             'tank: {
                                 let scry = null_scry(&mut context.stack);
                                 // if +mink didn't crash...
-                                if let Ok(tone) = mink(context, dat, cell.head(&space), scry) {
+                                let cell_handle = CellHandle::new(cell, &space);
+                                if let Ok(tone) =
+                                    mink(context, dat, cell_handle.head().noun(), scry)
+                                {
                                     if let Some(tonc) = tone.cell() {
+                                        let tonc_handle = CellHandle::new(tonc, &space);
                                         // ...and +mink didn't fail or block...
-                                        if tonc.head(&space).raw_equals(&D(0)) {
+                                        if tonc_handle.head().noun().raw_equals(&D(0)) {
                                             // ...return $tank from $tone
                                             //  XX: need to check that this is
                                             //      actually a tank;
                                             //      return leaf+"mook.mean" if not
-                                            break 'tank tonc.tail(&space);
+                                            break 'tank tonc_handle.tail().noun();
                                         }
                                     } else {
                                         panic!("+mink in +mook somehow returned atom {tone:?}")
@@ -286,28 +293,33 @@ pub mod util {
                     tas!(b"spot") => {
                         let stack = &mut context.stack;
 
-                        let spot = dat.as_cell()?;
-                        let pint = spot.tail(&space).as_cell()?;
-                        let pstr = pint.head(&space).as_cell()?;
-                        let pend = pint.tail(&space).as_cell()?;
+                        let spot = dat.in_space(&space).as_cell()?;
+                        let pint = spot.tail().as_cell()?;
+                        let pstr = pint.head().as_cell()?;
+                        let pend = pint.tail().as_cell()?;
 
                         let colo = T(stack, &[D(b':' as u64), D(0)]);
                         let trel = T(stack, &[colo, D(0), D(0)]);
 
-                        let smyt = smyt(stack, spot.head(&space), &space)?;
+                        let smyt = smyt(stack, spot.head().noun(), &space)?;
 
                         let aura = D(tas!(b"ud")).as_direct()?;
-                        let str_lin = scow(stack, aura, pstr.head(&space).as_atom()?, &space)?;
-                        let str_col = scow(stack, aura, pstr.tail(&space).as_atom()?, &space)?;
-                        let end_lin = scow(stack, aura, pend.head(&space).as_atom()?, &space)?;
-                        let end_col = scow(stack, aura, pend.tail(&space).as_atom()?, &space)?;
+                        let str_lin =
+                            scow(stack, aura, pstr.head().as_atom()?.atom(), &space)?;
+                        let str_col =
+                            scow(stack, aura, pstr.tail().as_atom()?.atom(), &space)?;
+                        let end_lin =
+                            scow(stack, aura, pend.head().as_atom()?.atom(), &space)?;
+                        let end_col =
+                            scow(stack, aura, pend.tail().as_atom()?.atom(), &space)?;
 
                         let mut list = end_col.as_cell()?;
                         loop {
-                            if list.tail(&space).atom().is_some() {
+                            let list_handle = CellHandle::new(list, &space);
+                            if list_handle.tail().atom().is_some() {
                                 break;
                             }
-                            list = list.tail(&space).as_cell()?;
+                            list = list_handle.tail().noun().as_cell()?;
                         }
                         // "{end_col}]>"
                         let p4 = T(stack, &[D(b']' as u64), D(b'>' as u64), D(0)]);
@@ -315,10 +327,11 @@ pub mod util {
 
                         list = end_lin.as_cell()?;
                         loop {
-                            if list.tail(&space).atom().is_some() {
+                            let list_handle = CellHandle::new(list, &space);
+                            if list_handle.tail().atom().is_some() {
                                 break;
                             }
-                            list = list.tail(&space).as_cell()?;
+                            list = list_handle.tail().noun().as_cell()?;
                         }
                         // "{end_lin} {end_col}]>"
                         let p3 = T(stack, &[D(b' ' as u64), end_col]);
@@ -326,10 +339,11 @@ pub mod util {
 
                         list = str_col.as_cell()?;
                         loop {
-                            if list.tail(&space).atom().is_some() {
+                            let list_handle = CellHandle::new(list, &space);
+                            if list_handle.tail().atom().is_some() {
                                 break;
                             }
-                            list = list.tail(&space).as_cell()?;
+                            list = list_handle.tail().noun().as_cell()?;
                         }
                         // "{str_col}].[{end_lin} {end_col}]>"
                         let p2 = T(
@@ -340,10 +354,11 @@ pub mod util {
 
                         list = str_lin.as_cell()?;
                         loop {
-                            if list.tail(&space).atom().is_some() {
+                            let list_handle = CellHandle::new(list, &space);
+                            if list_handle.tail().atom().is_some() {
                                 break;
                             }
-                            list = list.tail(&space).as_cell()?;
+                            list = list_handle.tail().noun().as_cell()?;
                         }
                         // "{str_lin} {str_col}].[{end_lin} {end_col}]>"
                         let p1 = T(stack, &[D(b' ' as u64), str_col]);
@@ -383,7 +398,7 @@ pub mod util {
                     dest = &mut (*new_memory).tail;
                 }
 
-                list = cell.tail(&space);
+                list = cell.tail().noun();
             }
 
             *dest = D(0);
@@ -409,9 +424,9 @@ pub mod util {
             return Ok(D(0));
         }
 
-        let cell = path.as_cell()?;
-        let tail = smyt_help(stack, cell.tail(&space), space)?;
-        let trip = rip(stack, 3, 1, cell.head(&space).as_atom()?, space)?;
+        let cell = path.in_space(space).as_cell()?;
+        let tail = smyt_help(stack, cell.tail().noun(), space)?;
+        let trip = rip(stack, 3, 1, cell.head().as_atom()?.atom(), space)?;
         let head = T(stack, &[LEAF, trip]);
 
         Ok(T(stack, &[head, tail]))

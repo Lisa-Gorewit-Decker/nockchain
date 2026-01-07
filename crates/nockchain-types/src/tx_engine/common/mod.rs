@@ -46,8 +46,8 @@ impl NounEncode for Signature {
 
 impl NounDecode for Signature {
     fn from_noun(noun: &Noun, space: &NounSpace) -> Result<Self, NounDecodeError> {
-        if let Ok(atom) = noun.as_atom() {
-            if atom.as_u64(space)? == 0 {
+        if let Ok(atom) = noun.in_space(space).as_atom() {
+            if atom.as_u64()? == 0 {
                 return Ok(Signature(Vec::new()));
             }
             return Err(NounDecodeError::Custom("signature node not a cell".into()));

@@ -37,8 +37,9 @@ pub(crate) const fn word_size_of<T>() -> usize {
 
 /** Utility function to compute the raw memory usage of an [IndirectAtom] */
 fn indirect_raw_size(atom: IndirectAtom, space: &NounSpace) -> usize {
-    debug_assert!(atom.size(space) > 0);
-    atom.size(space) + 2
+    let atom_handle = atom.as_atom().in_space(space);
+    debug_assert!(atom_handle.size() > 0);
+    atom_handle.size() + 2
 }
 
 #[derive(Debug, Clone)]
@@ -1534,8 +1535,9 @@ impl NockStack {
 
                     // If it's a cell, check its head and tail too
                     if let Right(c) = a.as_either() {
-                        dbg_stack.push(c.tail(&space));
-                        dbg_stack.push(c.head(&space));
+                        let c_handle = c.in_space(&space);
+                        dbg_stack.push(c_handle.tail().noun());
+                        dbg_stack.push(c_handle.head().noun());
                     }
                 }
             } else {
@@ -1921,8 +1923,9 @@ impl NockStack {
                 let range_hi_ptr = self.derive_ptr(range_hi_offset);
 
                 // Check all nouns in the tree
-                dbg_stack.push(c.head(&space));
-                dbg_stack.push(c.tail(&space));
+                let c_handle = c.in_space(&space);
+                dbg_stack.push(c_handle.head().noun());
+                dbg_stack.push(c_handle.tail().noun());
                 while let Some(n) = dbg_stack.pop() {
                     if let Ok(a) = n.as_allocated() {
                         let ptr = a.to_raw_pointer(&space);
@@ -1943,8 +1946,9 @@ impl NockStack {
 
                         // Continue traversing if it's a cell
                         if let Some(c) = a.cell() {
-                            dbg_stack.push(c.tail(&space));
-                            dbg_stack.push(c.head(&space));
+                            let c_handle = c.in_space(&space);
+                            dbg_stack.push(c_handle.tail().noun());
+                            dbg_stack.push(c_handle.head().noun());
                         }
                     }
                 }
@@ -2177,9 +2181,11 @@ unsafe fn noun_preserve(stack: &mut NockStack, noun: &mut Noun) {
 
                 match allocated.as_either() {
                     Either::Left(mut indirect) => {
-                        let alloc = stack.indirect_alloc_in_previous_frame(indirect.size(&space));
+                        let indirect_handle = indirect.as_atom().in_space(&space);
+                        let alloc =
+                            stack.indirect_alloc_in_previous_frame(indirect_handle.size());
                         copy_nonoverlapping(
-                            indirect.to_raw_pointer(&space),
+                            indirect_handle.raw_pointer(),
                             alloc,
                             indirect_raw_size(indirect, &space),
                         );
@@ -2190,8 +2196,9 @@ unsafe fn noun_preserve(stack: &mut NockStack, noun: &mut Noun) {
                         let alloc = stack.struct_alloc_in_previous_frame::<CellMemory>(1);
                         (*alloc).metadata = (*cell.to_raw_pointer(&space)).metadata;
 
-                        let tail = cell.tail(&space);
-                        let head = cell.head(&space);
+                        let cell_handle = cell.in_space(&space);
+                        let tail = cell_handle.tail().noun();
+                        let head = cell_handle.head().noun();
 
                         cell.set_forwarding_pointer(alloc, &space);
 

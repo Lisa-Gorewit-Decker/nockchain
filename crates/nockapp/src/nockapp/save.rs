@@ -256,16 +256,17 @@ impl SaveableCheckpoint {
         metrics.map(|m| m.load_cue_time.add_timing(&cue_start.elapsed()));
         slab.set_root(root);
         let cell = root
+            .in_space(&space)
             .as_cell()
             .expect("legacy checkpoint root should be a cell");
         let space = slab.noun_space();
 
         let mut state_slab: NounSlab = NounSlab::new();
-        let state_copy = state_slab.copy_into(cell.head(&space), &space);
+        let state_copy = state_slab.copy_into(cell.head().noun(), &space);
         state_slab.set_root(state_copy);
 
         let mut cold_slab: NounSlab = NounSlab::new();
-        let cold_copy = cold_slab.copy_into(cell.tail(&space), &space);
+        let cold_copy = cold_slab.copy_into(cell.tail().noun(), &space);
         cold_slab.set_root(cold_copy);
 
         Ok(Self {
@@ -638,17 +639,18 @@ impl From<JammedCheckpointV0> for JammedCheckpoint {
             .cue_into(v1.jam.0.clone())
             .expect("legacy checkpoint jam should cue");
         let cell = root
+            .in_space(&space)
             .as_cell()
             .expect("legacy checkpoint root should be a cell");
         let space = slab.noun_space();
 
         let mut state_slab: NounSlab = NounSlab::new();
-        let state_copy = state_slab.copy_into(cell.head(&space), &space);
+        let state_copy = state_slab.copy_into(cell.head().noun(), &space);
         state_slab.set_root(state_copy);
         let state_jam = JammedNoun::new(state_slab.jam());
 
         let mut cold_slab: NounSlab = NounSlab::new();
-        let cold_copy = cold_slab.copy_into(cell.tail(&space), &space);
+        let cold_copy = cold_slab.copy_into(cell.tail().noun(), &space);
         cold_slab.set_root(cold_copy);
         let cold_jam = JammedNoun::new(cold_slab.jam());
 
@@ -758,9 +760,10 @@ mod version_tests {
     }
 
     fn atom_value(noun: Noun, space: &NounSpace) -> u64 {
-        noun.as_atom()
+        noun.in_space(space)
+            .as_atom()
             .expect("expected atom")
-            .as_u64(space)
+            .as_u64()
             .expect("expected atom to fit in u64")
     }
 

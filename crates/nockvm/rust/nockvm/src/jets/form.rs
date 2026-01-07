@@ -31,7 +31,7 @@ pub mod util {
     ) -> jets::Result {
         match aura.data() {
             tas!(b"ud") => {
-                if atom.as_bitslice(space).first_one().is_none() {
+                if atom.in_space(space).as_bitslice().first_one().is_none() {
                     return Ok(T(stack, &[D(b'0' as u64), D(0)]));
                 }
 
@@ -63,11 +63,11 @@ pub mod util {
                         if lent % 3 == 0 {
                             let (cell, memory) = Cell::new_raw_mut(stack);
                             (*memory).head = D(b'.' as u64);
-                            (*memory).tail = list.tail(space);
+                            (*memory).tail = list.in_space(space).tail().noun();
                             (*(list.to_raw_pointer_mut(space))).tail = cell.as_noun();
-                            list = list.tail(space).as_cell()?;
+                            list = list.in_space(space).tail().as_cell()?.cell();
                         }
-                        list = list.tail(space).as_cell()?;
+                        list = list.in_space(space).tail().as_cell()?.cell();
                         lent -= 1;
                     }
 

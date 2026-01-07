@@ -68,33 +68,36 @@ pub enum PrivateGrpcEffect {
 
 impl NounDecode for PrivateGrpcEffect {
     fn from_noun(effect: &Noun, space: &NounSpace) -> Result<Self, NounDecodeError> {
-        let Ok(effect_cell) = effect.as_cell() else {
+        let Ok(effect_cell) = effect.in_space(space).as_cell() else {
             return Err(NounDecodeError::ExpectedCell);
         };
-        if unsafe { effect_cell.head(space).raw_equals(&D(tas!(b"grpc"))) } {
-            let effect_payload = effect_cell.tail(space).as_cell()?;
+        if unsafe { effect_cell.head().noun().raw_equals(&D(tas!(b"grpc"))) } {
+            let effect_payload = effect_cell.tail().as_cell()?;
 
-            match effect_payload.head(space).as_direct() {
+            match effect_payload.head().noun().as_direct() {
                 // [%grpc %poke pid payload]
                 Ok(tag) if tag.data() == tas!(b"poke") => {
-                    let eff = effect_payload.tail(space).as_cell()?;
-                    let pid = u64::from_noun(&eff.head(space), space)?;
+                    let eff = effect_payload.tail().as_cell()?;
+                    let pid_noun = eff.head().noun();
+                    let pid = u64::from_noun(&pid_noun, space)?;
 
                     let mut slab: NounSlab = NounSlab::new();
-                    slab.copy_into(eff.tail(space), space);
+                    slab.copy_into(eff.tail().noun(), space);
                     let payload = slab.jam().to_vec();
                     Ok(PrivateGrpcEffect::Poke { pid, payload })
                 }
                 // [%grpc %peek pid [%type path]]
                 Ok(tag) if tag.data() == tas!(b"peek") => {
-                    let peek_tail = effect_payload.tail(space).as_cell()?;
-                    let pid: u64 = <u64>::from_noun(&peek_tail.head(space), space)?;
+                    let peek_tail = effect_payload.tail().as_cell()?;
+                    let pid_noun = peek_tail.head().noun();
+                    let pid: u64 = <u64>::from_noun(&pid_noun, space)?;
 
-                    let meta = peek_tail.tail(space).as_cell()?; // [%type path]
-                    let typ = String::from_noun(&meta.head(space), space)?;
+                    let meta = peek_tail.tail().as_cell()?; // [%type path]
+                    let typ_noun = meta.head().noun();
+                    let typ = String::from_noun(&typ_noun, space)?;
 
                     let path_vec: Vec<String> =
-                        <Vec<String>>::from_noun(&meta.tail(space), space)?;
+                        <Vec<String>>::from_noun(&meta.tail().noun(), space)?;
                     Ok(PrivateGrpcEffect::Peek {
                         pid,
                         typ,

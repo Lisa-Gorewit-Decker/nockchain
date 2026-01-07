@@ -6,13 +6,16 @@ use crate::hamt::MutHamt;
 use crate::interpreter::Error::{self, *};
 use crate::interpreter::Mote::*;
 use crate::mem::NockStack;
-use crate::noun::{Atom, Cell, DirectAtom, IndirectAtom, Noun, NounSpace, D};
+use crate::noun::{
+    AllocLocation, Atom, Cell, CellHandle, DirectAtom, IndirectAtom, Noun, NounSpace, D,
+};
 
 crate::gdb!();
 
 /// Calculate the number of bits needed to represent an atom
 pub fn met0_usize(atom: Atom, space: &NounSpace) -> usize {
-    let atom_bitslice = atom.as_bitslice(space);
+    let atom_handle = atom.in_space(space);
+    let atom_bitslice = atom_handle.as_bitslice();
     atom_bitslice.last_one().map_or(0, |last_one| last_one + 1)
 }
 
@@ -224,7 +227,8 @@ pub fn cue_bitslice(stack: &mut NockStack, buffer: &BitSlice<u64, Lsb0>) -> Resu
 /// A Result containing either the deserialized Noun or an Error
 pub fn cue(stack: &mut NockStack, buffer: Atom) -> Result<Noun, Error> {
     let space = stack.noun_space();
-    let buffer_bitslice = buffer.as_bitslice(&space);
+    let buffer_handle = buffer.in_space(&space);
+    let buffer_bitslice = buffer_handle.as_bitslice();
     cue_bitslice_with_mode(stack, buffer_bitslice, false)
 }
 
@@ -242,7 +246,8 @@ pub fn cue_bitslice_into_offset(
 /// Deserialize a noun from an Atom into offset-tagged form.
 pub fn cue_into_offset(stack: &mut NockStack, buffer: Atom) -> Result<Noun, Error> {
     let space = stack.noun_space();
-    let buffer_bitslice = buffer.as_bitslice(&space);
+    let buffer_handle = buffer.in_space(&space);
+    let buffer_bitslice = buffer_handle.as_bitslice();
     cue_bitslice_into_offset(stack, buffer_bitslice)
 }
 
@@ -263,7 +268,8 @@ pub fn cue_into_stack_pointer_form(
     let mut result = D(0);
     let mut cursor = 0;
     let space = stack.noun_space();
-    let buffer_bitslice = buffer.as_bitslice(&space);
+    let buffer_handle = buffer.in_space(&space);
+    let buffer_bitslice = buffer_handle.as_bitslice();
 
     // Manually manage frame without the preserve step
     unsafe {
@@ -394,7 +400,7 @@ fn rub_atom_internal(
         let wordsize = (size + 63) >> 6;
         let (mut atom, slice) = unsafe { IndirectAtom::new_raw_mut_bitslice(stack, wordsize) };
         slice[0..bits.len()].copy_from_bitslice(bits);
-        debug_assert!(atom.size(space) > 0);
+        debug_assert!(atom.as_atom().in_space(space).size() > 0);
         if use_offset_tags {
             let offset =
                 stack.offset_from_ptr(unsafe { atom.to_raw_pointer(space) } as *const u8);
@@ -486,9 +492,10 @@ pub fn jam(stack: &mut NockStack, noun: Noun) -> Atom {
                 Right(cell) => {
                     jam_cell(stack, &mut state);
                     unsafe {
+                        let cell_handle = CellHandle::new(cell, &space);
                         stack.pop::<Noun>();
-                        *(stack.push::<Noun>()) = cell.tail(&space);
-                        *(stack.push::<Noun>()) = cell.head(&space);
+                        *(stack.push::<Noun>()) = cell_handle.tail().noun();
+                        *(stack.push::<Noun>()) = cell_handle.head().noun();
                     };
                     continue;
                 }
@@ -601,10 +608,12 @@ fn mat(
             state.slice[state.cursor..state.cursor + c_b_size].fill(false); // a 0 bit for each bit in the atom size
             state.slice.set(state.cursor + c_b_size, true); // a terminating 1 bit
             state.slice[state.cursor + c_b_size + 1..state.cursor + c_b_size + c_b_size]
-                .copy_from_bitslice(&b_atom_size_atom.as_bitslice(space)[0..c_b_size - 1]); // the atom size excepting the most significant 1 (since we know where that is from the size-of-the-size)
+                .copy_from_bitslice(
+                    &b_atom_size_atom.in_space(space).as_bitslice()[0..c_b_size - 1],
+                ); // the atom size excepting the most significant 1 (since we know where that is from the size-of-the-size)
             state.slice[state.cursor + c_b_size + c_b_size
                 ..state.cursor + c_b_size + c_b_size + b_atom_size]
-                .copy_from_bitslice(&atom.as_bitslice(space)[0..b_atom_size]);
+                .copy_from_bitslice(&atom.in_space(space).as_bitslice()[0..b_atom_size]);
             state.cursor += c_b_size + c_b_size + b_atom_size;
             Ok(())
         }
@@ -1048,8 +1057,9 @@ mod tests {
                         },
                         Right(cell) => {
                             size += size_of::<CellMemory>();
-                            *(stack.push::<Noun>()) = cell.tail(&space);
-                            *(stack.push::<Noun>()) = cell.head(&space);
+                            let cell_handle = CellHandle::new(cell, &space);
+                            *(stack.push::<Noun>()) = cell_handle.tail().noun();
+                            *(stack.push::<Noun>()) = cell_handle.head().noun();
                         }
                     }
                 }
@@ -1218,12 +1228,17 @@ mod tests {
             if !visited.insert(raw) {
                 continue;
             }
-            if noun.is_allocated() && !noun.is_stack_allocated(&space) {
+            if noun.is_allocated()
+                && !matches!(
+                    noun.in_space(&space).allocated_location(),
+                    Some(AllocLocation::Stack)
+                )
+            {
                 return false;
             }
-            if let Ok(cell) = noun.as_cell() {
-                work.push(cell.head(&space));
-                work.push(cell.tail(&space));
+            if let Ok(cell) = noun.in_space(&space).as_cell() {
+                work.push(cell.head().noun());
+                work.push(cell.tail().noun());
             }
         }
         true
@@ -1245,12 +1260,17 @@ mod tests {
             if !visited.insert(raw) {
                 continue;
             }
-            if noun.is_allocated() && noun.is_stack_allocated(&space) {
+            if noun.is_allocated()
+                && matches!(
+                    noun.in_space(&space).allocated_location(),
+                    Some(AllocLocation::Stack)
+                )
+            {
                 return false;
             }
-            if let Ok(cell) = noun.as_cell() {
-                work.push(cell.head(&space));
-                work.push(cell.tail(&space));
+            if let Ok(cell) = noun.in_space(&space).as_cell() {
+                work.push(cell.head().noun());
+                work.push(cell.tail().noun());
             }
         }
         true
@@ -1378,15 +1398,18 @@ mod tests {
                 continue;
             }
             if noun.is_allocated() {
-                if noun.is_stack_allocated(&space) {
+                if matches!(
+                    noun.in_space(&space).allocated_location(),
+                    Some(AllocLocation::Stack)
+                ) {
                     stack_pointer_count += 1;
                 } else {
                     offset_count += 1;
                 }
             }
-            if let Ok(cell) = noun.as_cell() {
-                work.push(cell.head(&space));
-                work.push(cell.tail(&space));
+            if let Ok(cell) = noun.in_space(&space).as_cell() {
+                work.push(cell.head().noun());
+                work.push(cell.tail().noun());
             }
         }
         (stack_pointer_count, offset_count)

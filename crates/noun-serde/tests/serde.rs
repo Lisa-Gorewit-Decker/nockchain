@@ -147,8 +147,9 @@ mod tests {
         let encoded = original.to_noun(&mut *stack);
         println!("encoded raw: {:?}", encoded);
         if let Ok(cell) = encoded.as_cell() {
-            println!("head: {:?}", cell.head(&space));
-            println!("tail: {:?}", cell.tail(&space));
+            let cell = cell.in_space(&space);
+            println!("head: {:?}", cell.head().noun());
+            println!("tail: {:?}", cell.tail().noun());
         }
         let decoded = TestEnum::from_noun(&encoded, &space).unwrap();
         println!("decoded: {:?}", decoded);
@@ -164,11 +165,12 @@ mod tests {
         let encoded = original.to_noun(&mut *stack);
         println!("encoded raw: {:?}", encoded);
         if let Ok(cell) = encoded.as_cell() {
-            println!("head: {:?}", cell.head(&space));
-            println!("tail: {:?}", cell.tail(&space));
-            if let Ok(tail_cell) = cell.tail(&space).as_cell() {
-                println!("tail.head: {:?}", tail_cell.head(&space));
-                println!("tail.tail: {:?}", tail_cell.tail(&space));
+            let cell = cell.in_space(&space);
+            println!("head: {:?}", cell.head().noun());
+            println!("tail: {:?}", cell.tail().noun());
+            if let Ok(tail_cell) = cell.tail().as_cell() {
+                println!("tail.head: {:?}", tail_cell.head().noun());
+                println!("tail.tail: {:?}", tail_cell.tail().noun());
             }
         }
         let decoded = TestEnum::from_noun(&encoded, &space).unwrap();
@@ -182,8 +184,9 @@ mod tests {
         let encoded = original.to_noun(&mut *stack);
         println!("encoded raw: {:?}", encoded);
         if let Ok(cell) = encoded.as_cell() {
-            println!("head: {:?}", cell.head(&space));
-            println!("tail: {:?}", cell.tail(&space));
+            let cell = cell.in_space(&space);
+            println!("head: {:?}", cell.head().noun());
+            println!("tail: {:?}", cell.tail().noun());
         }
         let decoded = TestEnum::from_noun(&encoded, &space).unwrap();
         assert_eq!(original, decoded);
@@ -271,16 +274,22 @@ mod complex_tests {
         T: NounEncode + NounDecode + Debug + PartialEq + Clone,
     {
         fn from_noun(noun: &Noun, space: &NounSpace) -> Result<Self, NounDecodeError> {
-            let cell = noun.as_cell().map_err(|_| NounDecodeError::ExpectedCell)?;
-            let tag = cell.head(space).as_atom()?.into_string(space)?;
+            let cell = noun
+                .in_space(space)
+                .as_cell()
+                .map_err(|_| NounDecodeError::ExpectedCell)?;
+            let tag = cell.head().as_atom()?.into_string()?;
 
             match tag.as_str() {
                 "branch" => {
-                    let data = cell.tail(space).as_cell()?;
-                    let left = Box::new(Tree::from_noun(&data.head(space), space)?);
-                    let rest = data.tail(space).as_cell()?;
-                    let right = Box::new(Tree::from_noun(&rest.head(space), space)?);
-                    let metadata = HashMap::from_noun(&rest.tail(space), space)?;
+                    let data = cell.tail().as_cell()?;
+                    let left_noun = data.head().noun();
+                    let left = Box::new(Tree::from_noun(&left_noun, space)?);
+                    let rest = data.tail().as_cell()?;
+                    let right_noun = rest.head().noun();
+                    let right = Box::new(Tree::from_noun(&right_noun, space)?);
+                    let metadata_noun = rest.tail().noun();
+                    let metadata = HashMap::from_noun(&metadata_noun, space)?;
                     Ok(Tree::Branch {
                         left,
                         right,
@@ -288,7 +297,8 @@ mod complex_tests {
                     })
                 }
                 "leaf" => {
-                    let value = T::from_noun(&cell.tail(space), space)?;
+                    let value_noun = cell.tail().noun();
+                    let value = T::from_noun(&value_noun, space)?;
                     Ok(Tree::Leaf(value))
                 }
                 _ => Err(NounDecodeError::InvalidEnumVariant),
@@ -374,18 +384,19 @@ mod complex_tests {
         println!("Encoded status noun: {:?}", encoded);
 
         if let Ok(cell) = encoded.as_cell() {
+            let cell = cell.in_space(&space);
             println!("Status cell structure:");
-            println!("Head: {:?}", cell.head(&space));
-            if let Ok(head_atom) = cell.head(&space).as_atom() {
-                if let Ok(tag) = head_atom.into_string(&space) {
+            println!("Head: {:?}", cell.head().noun());
+            if let Ok(head_atom) = cell.head().as_atom() {
+                if let Ok(tag) = head_atom.into_string() {
                     println!("Tag string: {}", tag);
                 }
             }
-            println!("Tail: {:?}", cell.tail(&space));
-            if let Ok(tail_cell) = cell.tail(&space).as_cell() {
+            println!("Tail: {:?}", cell.tail().noun());
+            if let Ok(tail_cell) = cell.tail().as_cell() {
                 println!("Tail structure:");
-                println!("  Head: {:?}", tail_cell.head(&space));
-                println!("  Tail: {:?}", tail_cell.tail(&space));
+                println!("  Head: {:?}", tail_cell.head().noun());
+                println!("  Tail: {:?}", tail_cell.tail().noun());
             }
         }
 
@@ -461,11 +472,12 @@ mod complex_tests {
         let encoded = transaction.to_noun(&mut *stack);
         println!("\nEncoded transaction noun: {:?}", encoded);
         if let Ok(cell) = encoded.as_cell() {
-            println!("Transaction cell head: {:?}", cell.head(&space));
-            println!("Transaction cell tail: {:?}", cell.tail(&space));
-            if let Ok(status_cell) = cell.slot(7, &space).unwrap().as_cell() {
-                println!("Status tag: {:?}", status_cell.head(&space));
-                println!("Status data: {:?}", status_cell.tail(&space));
+            let cell = cell.in_space(&space);
+            println!("Transaction cell head: {:?}", cell.head().noun());
+            println!("Transaction cell tail: {:?}", cell.tail().noun());
+            if let Ok(status_cell) = cell.slot(7).unwrap().as_cell() {
+                println!("Status tag: {:?}", status_cell.head().noun());
+                println!("Status data: {:?}", status_cell.tail().noun());
             }
         }
 

@@ -111,15 +111,20 @@ pub fn dor_tip<A: NounAllocator>(
     } else if !a.is_atom() {
         if b.is_atom() {
             Ok(false)
-        } else if unsafe {
-            stack.equals(
-                &mut a.as_cell()?.head(&space),
-                &mut b.as_cell()?.head(&space),
-            )
-        } {
-            dor_tip(stack, &mut a.as_cell()?.tail(&space), &mut b.as_cell()?.tail(&space))
         } else {
-            dor_tip(stack, &mut a.as_cell()?.head(&space), &mut b.as_cell()?.head(&space))
+            let a_cell = a.in_space(&space).as_cell()?;
+            let b_cell = b.in_space(&space).as_cell()?;
+            let mut a_head = a_cell.head().noun();
+            let mut b_head = b_cell.head().noun();
+            if unsafe { stack.equals(&mut a_head, &mut b_head) } {
+                let mut a_tail = a_cell.tail().noun();
+                let mut b_tail = b_cell.tail().noun();
+                dor_tip(stack, &mut a_tail, &mut b_tail)
+            } else {
+                let mut a_head = a_cell.head().noun();
+                let mut b_head = b_cell.head().noun();
+                dor_tip(stack, &mut a_head, &mut b_head)
+            }
         }
     } else if !b.is_atom() {
         Ok(false)

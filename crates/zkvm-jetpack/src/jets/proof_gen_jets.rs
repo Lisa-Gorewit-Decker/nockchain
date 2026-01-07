@@ -51,7 +51,7 @@ impl MPComp {
 
 impl MPUltra {
     pub fn try_from(mp_ultra: Noun, space: &NounSpace) -> Result<Self, JetErr> {
-        let mp_ultra_cell = mp_ultra.as_cell().unwrap_or_else(|err| {
+        let mp_ultra_cell = mp_ultra.in_space(space).as_cell().unwrap_or_else(|err| {
             panic!(
                 "Panicked with {err:?} at {}:{} (git sha: {:?})",
                 file!(),
@@ -60,7 +60,7 @@ impl MPUltra {
             )
         });
         match mp_ultra_cell
-            .head(space)
+            .head()
             .as_atom()
             .unwrap_or_else(|err| {
                 panic!(
@@ -70,7 +70,7 @@ impl MPUltra {
                     option_env!("GIT_SHA")
                 )
             })
-            .as_u64(space)
+            .as_u64()
             .unwrap_or_else(|err| {
                 panic!(
                     "Panicked with {err:?} at {}:{} (git sha: {:?})",
@@ -79,8 +79,8 @@ impl MPUltra {
                     option_env!("GIT_SHA")
                 )
             }) {
-            tas!(b"mega") => Ok(MPUltra::Mega(mp_ultra_cell.tail(space))),
-            tas!(b"comp") => Ok(MPUltra::Comp(MPComp::try_from(mp_ultra_cell.tail(space), space)?)),
+            tas!(b"mega") => Ok(MPUltra::Mega(mp_ultra_cell.tail().noun())),
+            tas!(b"comp") => Ok(MPUltra::Comp(MPComp::try_from(mp_ultra_cell.tail().noun(), space)?)),
             _ => panic!("Invalid MPUltra type"),
         }
     }
@@ -119,7 +119,7 @@ impl CountMap {
 
         for term_noun in counts.into_iter() {
             let (k, v): (usize, Counts) = {
-                let term_cell = term_noun.as_cell().unwrap_or_else(|err| {
+                let term_cell = term_noun.in_space(space).as_cell().unwrap_or_else(|err| {
                     panic!(
                         "Panicked with {err:?} at {}:{} (git sha: {:?})",
                         file!(),
@@ -127,14 +127,14 @@ impl CountMap {
                         option_env!("GIT_SHA")
                     )
                 });
-                (term_cell.head(space).as_atom()?.as_u64(space)? as usize, {
-                    let tail = term_cell.tail(space);
+                (term_cell.head().as_atom()?.as_u64()? as usize, {
+                    let tail = term_cell.tail().noun();
                     Counts {
-                        boundary: slot(tail, 2, space)?.as_atom()?.as_u64(space)? as usize,
-                        row: slot(tail, 6, space)?.as_atom()?.as_u64(space)? as usize,
-                        transition: slot(tail, 14, space)?.as_atom()?.as_u64(space)? as usize,
-                        terminal: slot(tail, 30, space)?.as_atom()?.as_u64(space)? as usize,
-                        extra: slot(tail, 31, space)?.as_atom()?.as_u64(space)? as usize,
+                        boundary: slot(tail, 2, space)?.as_atom()?.as_u64()? as usize,
+                        row: slot(tail, 6, space)?.as_atom()?.as_u64()? as usize,
+                        transition: slot(tail, 14, space)?.as_atom()?.as_u64()? as usize,
+                        terminal: slot(tail, 30, space)?.as_atom()?.as_u64()? as usize,
+                        extra: slot(tail, 31, space)?.as_atom()?.as_u64()? as usize,
                     }
                 })
             };
@@ -151,7 +151,7 @@ impl IndexBPolyMap<'_> {
 
         for term_noun in hoon_map.into_iter() {
             let (k, v): (usize, &[Belt]) = {
-                let term_cell = term_noun.as_cell().unwrap_or_else(|err| {
+                let term_cell = term_noun.in_space(space).as_cell().unwrap_or_else(|err| {
                     panic!(
                         "Panicked with {err:?} at {}:{} (git sha: {:?})",
                         file!(),
@@ -160,8 +160,8 @@ impl IndexBPolyMap<'_> {
                     )
                 });
                 (
-                    term_cell.head(space).as_atom()?.as_u64(space)? as usize,
-                    BPolySlice::try_from(term_cell.tail(space), space)
+                    term_cell.head().as_atom()?.as_u64()? as usize,
+                    BPolySlice::try_from(term_cell.tail().noun(), space)
                         .unwrap_or_else(|err| {
                             panic!(
                                 "Panicked with {err:?} at {}:{} (git sha: {:?})",
@@ -186,7 +186,7 @@ impl Constraints {
 
         for term_noun in hoon_map.into_iter() {
             let (k, v): (usize, MPDenseConstraints) = {
-                let term_cell = term_noun.as_cell().unwrap_or_else(|err| {
+                let term_cell = term_noun.in_space(space).as_cell().unwrap_or_else(|err| {
                     panic!(
                         "Panicked with {err:?} at {}:{} (git sha: {:?})",
                         file!(),
@@ -195,8 +195,8 @@ impl Constraints {
                     )
                 });
                 (
-                    term_cell.head(space).as_atom()?.as_u64(space)? as usize,
-                    MPDenseConstraints::try_from(term_cell.tail(space), space)?,
+                    term_cell.head().as_atom()?.as_u64()? as usize,
+                    MPDenseConstraints::try_from(term_cell.tail().noun(), space)?,
                 )
             };
 
@@ -238,10 +238,10 @@ impl MPDenseConstraints {
 
 impl ConstraintData {
     pub fn try_from(noun: Noun, space: &NounSpace) -> Result<Self, JetErr> {
-        let cell = noun.as_cell()?;
-        let cs = MPUltra::try_from(cell.head(space), space)?;
-        let degs: Vec<u64> = HoonList::try_from(cell.tail(space), space)?
-            .map(|n| n.as_atom()?.as_u64(space))
+        let cell = noun.in_space(space).as_cell()?;
+        let cs = MPUltra::try_from(cell.head().noun(), space)?;
+        let degs: Vec<u64> = HoonList::try_from(cell.tail().noun(), space)?
+            .map(|n| n.in_space(space).as_atom()?.as_u64())
             .collect::<Result<Vec<u64>, _>>()?;
         Ok(ConstraintData {
             constraint: cs,
@@ -254,8 +254,14 @@ pub fn precompute_ntts_jet(context: &mut Context, subject: Noun) -> Result<Noun,
     let space = context.stack.noun_space();
     let sam = slot(subject, 6, &space)?;
     let polys = slot(sam, 2, &space)?;
-    let height = slot(sam, 6, &space)?.as_atom()?.as_u64(&space)? as usize;
-    let max_ntt_len = slot(sam, 7, &space)?.as_atom()?.as_u64(&space)? as usize;
+    let height = slot(sam, 6, &space)?
+        .in_space(&space)
+        .as_atom()?
+        .as_u64()? as usize;
+    let max_ntt_len = slot(sam, 7, &space)?
+        .in_space(&space)
+        .as_atom()?
+        .as_u64()? as usize;
 
     let polys = MarySlice::try_from(polys, &space).unwrap_or_else(|err| {
         panic!(
@@ -302,7 +308,7 @@ pub fn eval_composition_poly_jet(context: &mut Context, subject: Noun) -> Result
     let deep_challenge = deep_challange.as_felt(&space)?;
     let table_full_widths: Vec<u64> = HoonList::try_from(table_full_widths, &space)?
         .into_iter()
-        .map(|x| x.as_atom().unwrap().as_u64(&space).unwrap())
+        .map(|x| x.in_space(&space).as_atom().unwrap().as_u64().unwrap())
         .collect();
     let is_extra = unsafe { is_extra.raw_equals(&D(0)) };
 

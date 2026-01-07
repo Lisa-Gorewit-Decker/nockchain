@@ -29,34 +29,29 @@ impl NockchainFact {
 
         let noun = unsafe { slab.root() };
         let space = slab.noun_space();
-        let head = noun.as_cell()?.head(&space);
+        let head = noun.in_space(space).as_cell()?.head();
 
-        if head.in_space(&space).eq_bytes(b"heard-block") {
-            let page = noun.as_cell()?.tail(&space);
+        if head.eq_bytes(b"heard-block") {
+            let page = noun.in_space(space).as_cell()?.tail().noun();
             let block_id = block_id_from_page(page, &space)?;
             let block_id_str = tip5_hash_to_base58_stack(slab, block_id, &space)?;
             Ok(NockchainFact::HeardBlock(block_id_str, poke_slab))
-        } else if head.in_space(&space).eq_bytes(b"heard-tx") {
-            let raw_tx = noun.as_cell()?.tail(&space);
+        } else if head.eq_bytes(b"heard-tx") {
+            let raw_tx = noun.in_space(space).as_cell()?.tail().noun();
             let tx_id = tx_id_from_raw_tx(raw_tx, &space)?;
             let tx_id_str = tip5_hash_to_base58_stack(slab, tx_id, &space)?;
             Ok(NockchainFact::HeardTx(tx_id_str, poke_slab))
-        } else if head.in_space(&space).eq_bytes(b"heard-elders") {
-            let elders_dat = noun.as_cell()?.tail(&space);
-            let oldest = elders_dat
-                .as_cell()?
-                .head(&space)
-                .as_atom()?
-                .as_u64(&space)?;
-            let elder_ids = elders_dat.as_cell()?.tail(&space);
+        } else if head.eq_bytes(b"heard-elders") {
+            let elders_noun = noun.in_space(space).as_cell()?.tail().noun();
+            let elders_dat = elders_noun.in_space(&space);
+            let elders_cell = elders_dat.as_cell()?;
+            let oldest = elders_cell.head().as_atom()?.as_u64()?;
+            let elder_ids = elders_cell.tail();
             // Need to handle the closure capturing mutable reference
             let mut elder_id_strings = Vec::new();
-            for id_noun in elder_ids.in_space(&space).list_iter() {
-                elder_id_strings.push(tip5_hash_to_base58_stack(
-                    slab,
-                    id_noun.noun(),
-                    &space,
-                )?);
+            for id_noun in elder_ids.list_iter() {
+                elder_id_strings
+                    .push(tip5_hash_to_base58_stack(slab, id_noun.noun(), &space)?);
             }
             Ok(NockchainFact::HeardElders(
                 oldest, elder_id_strings, poke_slab,
@@ -77,40 +72,40 @@ impl NockchainFact {
 }
 
 fn block_id_from_page(page: Noun, space: &NounSpace) -> Result<Noun, NockAppError> {
-    let page_cell = page.as_cell()?;
+    let page_cell = page.in_space(space).as_cell()?;
     // page v0: [block-id ...]
     // page v1: [%1 block-id ...]
-    match page_cell.head(space).as_atom() {
+    match page_cell.head().as_atom() {
         Ok(version_atom) => {
-            let version = version_atom.as_u64(space)?;
+            let version = version_atom.as_u64()?;
             if version == 1 {
-                return Ok(page_cell.tail(space).as_cell()?.head(space));
+                return Ok(page_cell.tail().as_cell()?.head().noun());
             }
             return Err(NockAppError::OtherError(format!(
                 "Unsupported page version {}",
                 version
             )));
         }
-        Err(_) => Ok(page_cell.head(space)),
+        Err(_) => Ok(page_cell.head().noun()),
     }
 }
 
 fn tx_id_from_raw_tx(raw_tx: Noun, space: &NounSpace) -> Result<Noun, NockAppError> {
-    let raw_tx_cell = raw_tx.as_cell()?;
+    let raw_tx_cell = raw_tx.in_space(space).as_cell()?;
     // raw-tx v0: [tx-id ...]
     // raw-tx v1: [%1 tx-id ...]
-    match raw_tx_cell.head(space).as_atom() {
+    match raw_tx_cell.head().as_atom() {
         Ok(version_atom) => {
-            let version = version_atom.as_u64(space)?;
+            let version = version_atom.as_u64()?;
             if version == 1 {
-                return Ok(raw_tx_cell.tail(space).as_cell()?.head(space));
+                return Ok(raw_tx_cell.tail().as_cell()?.head().noun());
             }
             return Err(NockAppError::OtherError(format!(
                 "Unsupported raw-tx version {}",
                 version
             )));
         }
-        Err(_) => Ok(raw_tx_cell.head(space)),
+        Err(_) => Ok(raw_tx_cell.head().noun()),
     }
 }
 
@@ -127,30 +122,30 @@ impl NockchainDataRequest {
     /// Takes noun of type [%request p=request]
     pub fn from_noun(noun: Noun, space: &NounSpace) -> Result<Self, NockAppError> {
         let res = (|| {
-            let request_cell = noun.as_cell()?;
-            if !request_cell.in_space(space).head().eq_bytes(b"request") {
+            let request_cell = noun.in_space(space).as_cell()?;
+            if !request_cell.head().eq_bytes(b"request") {
                 return Err(NockAppError::OtherError(String::from(
                     "Missing %request tag",
                 )));
             }
             // kind cell type $%([%block request-block] [%raw-tx request-tx])
-            let kind_cell = request_cell.tail(space).as_cell()?;
-            if kind_cell.in_space(space).head().eq_bytes(b"block") {
+            let kind_cell = request_cell.tail().as_cell()?;
+            if kind_cell.head().eq_bytes(b"block") {
                 // block_cell type
                 // $%  [%by-height p=page-number:dt]
                 //     [%elders p=block-id:dt q=peer-id]
                 // ==
-                let block_cell = kind_cell.tail(space).as_cell()?;
-                if block_cell.in_space(space).head().eq_bytes(b"by-height") {
-                    let height = block_cell.tail(space).as_atom()?.as_u64(space)?;
+                let block_cell = kind_cell.tail().as_cell()?;
+                if block_cell.head().eq_bytes(b"by-height") {
+                    let height = block_cell.tail().as_atom()?.as_u64()?;
                     Ok(Self::BlockByHeight(height))
-                } else if block_cell.in_space(space).head().eq_bytes(b"elders") {
-                    let elders_cell = block_cell.tail(space).as_cell()?;
-                    let block_id = tip5_hash_to_base58(elders_cell.head(space), space)?;
-                    let peer_id = PeerId::from_noun(elders_cell.tail(space), space)?;
+                } else if block_cell.head().eq_bytes(b"elders") {
+                    let elders_cell = block_cell.tail().as_cell()?;
+                    let block_id = tip5_hash_to_base58(elders_cell.head().noun(), space)?;
+                    let peer_id = PeerId::from_noun(elders_cell.tail().noun(), space)?;
                     let slab = {
                         let mut slab = NounSlab::new();
-                        slab.copy_into(elders_cell.head(space), space);
+                        slab.copy_into(elders_cell.head().noun(), space);
                         slab
                     };
                     Ok(Self::EldersById(block_id, peer_id, slab))
@@ -159,13 +154,13 @@ impl NockchainDataRequest {
                         "Failed to parse EldersById message",
                     )))
                 }
-            } else if kind_cell.in_space(space).head().eq_bytes(b"raw-tx") {
+            } else if kind_cell.head().eq_bytes(b"raw-tx") {
                 // has type [%by-id p=tx-id:dt]
-                let raw_tx_cell = kind_cell.tail(space).as_cell()?;
-                let raw_tx_id = tip5_hash_to_base58(raw_tx_cell.tail(space), space)?;
+                let raw_tx_cell = kind_cell.tail().as_cell()?;
+                let raw_tx_id = tip5_hash_to_base58(raw_tx_cell.tail().noun(), space)?;
                 let slab = {
                     let mut slab = NounSlab::new();
-                    slab.copy_into(raw_tx_cell.tail(space), space);
+                    slab.copy_into(raw_tx_cell.tail().noun(), space);
                     slab
                 };
                 Ok(Self::RawTransactionById(raw_tx_id, slab))

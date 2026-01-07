@@ -20,13 +20,13 @@ pub fn zip_roll_jet(context: &mut Context, subject: Noun) -> Result<Noun, JetErr
 
     let site = Site::new(context, &mut gate);
     loop {
-        if let Ok(list_a_cell) = list_a.as_cell() {
-            if let Ok(list_b_cell) = list_b.as_cell() {
-                list_a = list_a_cell.tail(&space);
-                list_b = list_b_cell.tail(&space);
+        if let Ok(list_a_cell) = list_a.in_space(&space).as_cell() {
+            if let Ok(list_b_cell) = list_b.in_space(&space).as_cell() {
+                list_a = list_a_cell.tail().noun();
+                list_b = list_b_cell.tail().noun();
                 let left_sam = T(
                     &mut context.stack,
-                    &[list_a_cell.head(&space), list_b_cell.head(&space)],
+                    &[list_a_cell.head().noun(), list_b_cell.head().noun()],
                 );
                 let sam = T(&mut context.stack, &[left_sam, prod]);
                 prod = site_slam(context, &site, sam)?;
@@ -150,11 +150,11 @@ pub fn fpow_jet(context: &mut Context, subject: Noun) -> Result<Noun, JetErr> {
     let x = slot(sam, 2, &space)?;
     let n = slot(sam, 3, &space)?;
 
-    let (Ok(x_felt), Ok(n_atom)) = (x.as_felt(&space), n.as_atom()) else {
+    let (Ok(x_felt), Ok(n_atom)) = (x.as_felt(&space), n.in_space(&space).as_atom()) else {
         debug!("x not a felt or n not an atom");
         return Err(BAIL_FAIL);
     };
-    let n_64 = n_atom.as_u64(&space)?;
+    let n_64 = n_atom.as_u64()?;
     let (res_atom, res_felt): (IndirectAtom, &mut Felt) = new_handle_mut_felt(&mut context.stack);
     fpow(x_felt, n_64, res_felt);
 

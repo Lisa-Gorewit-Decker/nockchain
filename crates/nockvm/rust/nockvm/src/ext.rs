@@ -1,5 +1,3 @@
-use std::str;
-
 use bincode::{Decode, Encode};
 use bytes::Bytes;
 use either::Either::{Left, Right};
@@ -7,51 +5,17 @@ use intmap::IntMap;
 
 use crate::interpreter::Error;
 use crate::mem::NockStack;
-use crate::noun::{Atom, IndirectAtom, Noun, NounAllocator, NounSpace, D};
+use crate::noun::{Atom, IndirectAtom, Noun, NounAllocator, NounHandle, D};
 use crate::serialization::{cue, jam};
 
 /// Convenience helpers for working with `Atom`.
 pub trait AtomExt {
     fn from_bytes<A: NounAllocator>(allocator: &mut A, bytes: &[u8]) -> Atom;
-    fn eq_bytes<B: AsRef<[u8]>>(&self, bytes: B, space: &NounSpace) -> bool;
-    fn to_bytes_until_nul(
-        &self,
-        space: &NounSpace,
-    ) -> std::result::Result<Vec<u8>, str::Utf8Error>;
-    fn into_string(self, space: &NounSpace) -> std::result::Result<String, str::Utf8Error>;
 }
 
 impl AtomExt for Atom {
     fn from_bytes<A: NounAllocator>(allocator: &mut A, bytes: &[u8]) -> Atom {
         <IndirectAtom as IndirectAtomExt>::from_bytes(allocator, bytes)
-    }
-
-    fn eq_bytes<B: AsRef<[u8]>>(&self, bytes: B, space: &NounSpace) -> bool {
-        let bytes_ref = bytes.as_ref();
-        let atom_bytes = self.as_ne_bytes(space);
-        if bytes_ref.len() > atom_bytes.len() {
-            return false;
-        }
-        if bytes_ref.len() == atom_bytes.len() {
-            return atom_bytes == bytes_ref;
-        }
-        if atom_bytes[bytes_ref.len()..].iter().any(|b| *b != 0) {
-            return false;
-        }
-        &atom_bytes[0..bytes_ref.len()] == bytes_ref
-    }
-
-    fn to_bytes_until_nul(
-        &self,
-        space: &NounSpace,
-    ) -> std::result::Result<Vec<u8>, str::Utf8Error> {
-        str::from_utf8(self.as_ne_bytes(space))
-            .map(|bytes| bytes.trim_end_matches('\0').as_bytes().to_vec())
-    }
-
-    fn into_string(self, space: &NounSpace) -> std::result::Result<String, str::Utf8Error> {
-        str::from_utf8(self.as_ne_bytes(space))
-            .map(|string| string.trim_end_matches('\0').to_string())
     }
 }
 
@@ -86,8 +50,6 @@ pub trait NounExt {
     fn cue_bytes(stack: &mut NockStack, bytes: &Bytes) -> std::result::Result<Noun, Error>;
     fn cue_bytes_slice(stack: &mut NockStack, bytes: &[u8]) -> std::result::Result<Noun, Error>;
     fn jam_self(self, stack: &mut NockStack) -> JammedNoun;
-    fn list_iter<'a>(self, space: &'a NounSpace) -> NounListIterator<'a>;
-    fn eq_bytes(self, bytes: impl AsRef<[u8]>, space: &NounSpace) -> bool;
 }
 
 impl NounExt for Noun {
@@ -104,21 +66,6 @@ impl NounExt for Noun {
     fn jam_self(self, stack: &mut NockStack) -> JammedNoun {
         JammedNoun::from_noun(stack, self)
     }
-
-    fn list_iter<'a>(self, space: &'a NounSpace) -> NounListIterator<'a> {
-        NounListIterator {
-            noun: self,
-            space,
-        }
-    }
-
-    fn eq_bytes(self, bytes: impl AsRef<[u8]>, space: &NounSpace) -> bool {
-        if let Ok(atom) = self.as_atom() {
-            atom.eq_bytes(bytes, space)
-        } else {
-            false
-        }
-    }
 }
 
 #[derive(Clone, PartialEq, Debug, Encode, Decode)]
@@ -132,7 +79,9 @@ impl JammedNoun {
     pub fn from_noun(stack: &mut NockStack, noun: Noun) -> Self {
         let jammed_atom = jam(stack, noun);
         let space = stack.noun_space();
-        JammedNoun(Bytes::copy_from_slice(jammed_atom.as_ne_bytes(&space)))
+        JammedNoun(Bytes::copy_from_slice(
+            jammed_atom.in_space(&space).as_ne_bytes(),
+        ))
     }
 
     pub fn cue_self(&self, stack: &mut NockStack) -> std::result::Result<Noun, Error> {
@@ -171,26 +120,6 @@ impl Default for JammedNoun {
     }
 }
 
-pub struct NounListIterator<'a> {
-    noun: Noun,
-    space: &'a NounSpace,
-}
-
-impl<'a> Iterator for NounListIterator<'a> {
-    type Item = Noun;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        if let Ok(cell) = self.noun.as_cell() {
-            self.noun = cell.tail(self.space);
-            Some(cell.head(self.space))
-        } else if unsafe { self.noun.raw_equals(&D(0)) } {
-            None
-        } else {
-            panic!("Improper list terminator: {:?}", self.noun);
-        }
-    }
-}
-
 pub fn make_tas<A: NounAllocator>(allocator: &mut A, tas: &str) -> Atom {
     <Atom as AtomExt>::from_bytes(allocator, tas.as_bytes())
 }
@@ -205,7 +134,8 @@ pub fn make_tas<A: NounAllocator>(allocator: &mut A, tas: &str) -> Atom {
 /// Uses a worklist algorithm to avoid stack overflow on deep structures.
 /// Tracks already-compared pairs to handle structural sharing efficiently.
 /// Uses cached mugs (hashes) to quickly reject unequal nouns.
-pub fn noun_equality(a: &Noun, b: &Noun, space: &NounSpace) -> bool {
+pub fn noun_equality(a: NounHandle, b: NounHandle) -> bool {
+    let space = a.space();
     // Track pairs we've already determined to be equal
     // Key is a_raw << 64 | b_raw (or b_raw << 64 | a_raw for symmetry)
     let mut already_equal: IntMap<u128, ()> = IntMap::new();
@@ -232,7 +162,7 @@ pub fn noun_equality(a: &Noun, b: &Noun, space: &NounSpace) -> bool {
         MarkEqual(Noun, Noun),
     }
 
-    let mut stack = vec![StackEntry::Nouns(*a, *b)];
+    let mut stack = vec![StackEntry::Nouns(a.noun(), b.noun())];
 
     loop {
         let Some(entry) = stack.pop() else {
@@ -273,7 +203,9 @@ pub fn noun_equality(a: &Noun, b: &Noun, space: &NounSpace) -> bool {
                         match (a_alloc.as_ref_either(), b_alloc.as_ref_either()) {
                             (Left(a_indirect), Left(b_indirect)) => {
                                 // Both indirect atoms - compare byte slices
-                                if a_indirect.as_slice(space) != b_indirect.as_slice(space) {
+                                let a_handle = a_indirect.as_atom().in_space(space);
+                                let b_handle = b_indirect.as_atom().in_space(space);
+                                if a_handle.as_ne_bytes() != b_handle.as_ne_bytes() {
                                     return false;
                                 }
                                 set_ae(&mut already_equal, a, b);
@@ -282,13 +214,15 @@ pub fn noun_equality(a: &Noun, b: &Noun, space: &NounSpace) -> bool {
                                 // Both cells - queue children for comparison
                                 // Mark as equal after children are verified
                                 stack.push(StackEntry::MarkEqual(a, b));
+                                let a_cell = (*a_cell).in_space(space);
+                                let b_cell = (*b_cell).in_space(space);
                                 stack.push(StackEntry::Nouns(
-                                    a_cell.tail(space),
-                                    b_cell.tail(space),
+                                    a_cell.tail().noun(),
+                                    b_cell.tail().noun(),
                                 ));
                                 stack.push(StackEntry::Nouns(
-                                    a_cell.head(space),
-                                    b_cell.head(space),
+                                    a_cell.head().noun(),
+                                    b_cell.head().noun(),
                                 ));
                             }
                             _ => {
@@ -371,73 +305,88 @@ mod tests {
 
         let space = stack.noun_space();
 
-        assert!(noun_equality(&d0, &d0, &space), "D(0) == D(0)");
         assert!(
-            noun_equality(&d42, &d42_copy, &space),
+            noun_equality(d0.in_space(&space), d0.in_space(&space)),
+            "D(0) == D(0)"
+        );
+        assert!(
+            noun_equality(d42.in_space(&space), d42_copy.in_space(&space)),
             "D(42) == D(42)"
         );
-        assert!(!noun_equality(&d0, &d1, &space), "D(0) != D(1)");
-        assert!(!noun_equality(&d1, &d42, &space), "D(1) != D(42)");
+        assert!(
+            !noun_equality(d0.in_space(&space), d1.in_space(&space)),
+            "D(0) != D(1)"
+        );
+        assert!(
+            !noun_equality(d1.in_space(&space), d42.in_space(&space)),
+            "D(1) != D(42)"
+        );
 
         assert!(
-            noun_equality(&indirect1, &indirect1, &space),
+            noun_equality(indirect1.in_space(&space), indirect1.in_space(&space)),
             "indirect1 == indirect1 (same ref)"
         );
         assert!(
-            noun_equality(&indirect1, &indirect2, &space),
+            noun_equality(indirect1.in_space(&space), indirect2.in_space(&space)),
             "indirect1 == indirect2 (same data)"
         );
         assert!(
-            !noun_equality(&indirect1, &indirect3, &space),
+            !noun_equality(indirect1.in_space(&space), indirect3.in_space(&space)),
             "indirect1 != indirect3 (different data)"
         );
         assert!(
-            !noun_equality(&indirect1, &d42, &space),
+            !noun_equality(indirect1.in_space(&space), d42.in_space(&space)),
             "indirect != direct"
         );
 
         assert!(
-            noun_equality(&cell1, &cell1, &space),
+            noun_equality(cell1.in_space(&space), cell1.in_space(&space)),
             "[1 2] == [1 2] (same ref)"
         );
         assert!(
-            noun_equality(&cell1, &cell2, &space),
+            noun_equality(cell1.in_space(&space), cell2.in_space(&space)),
             "[1 2] == [1 2] (different refs)"
         );
         assert!(
-            !noun_equality(&cell1, &cell3, &space),
+            !noun_equality(cell1.in_space(&space), cell3.in_space(&space)),
             "[1 2] != [1 3]"
         );
         assert!(
-            !noun_equality(&cell1, &cell4, &space),
+            !noun_equality(cell1.in_space(&space), cell4.in_space(&space)),
             "[1 2] != [2 2]"
         );
         assert!(
-            !noun_equality(&cell1, &d1, &space),
+            !noun_equality(cell1.in_space(&space), d1.in_space(&space)),
             "cell != direct atom"
         );
 
         assert!(
-            noun_equality(&nested1, &nested2, &space),
+            noun_equality(nested1.in_space(&space), nested2.in_space(&space)),
             "[[1 2] 3] == [[1 2] 3]"
         );
         assert!(
-            !noun_equality(&nested1, &nested3, &space),
+            !noun_equality(nested1.in_space(&space), nested3.in_space(&space)),
             "[[1 2] 3] != [[1 9] 3]"
         );
 
         // Both should be equal even though one shares and one doesn't
         assert!(
-            noun_equality(&with_sharing, &without_sharing, &space),
+            noun_equality(with_sharing.in_space(&space), without_sharing.in_space(&space)),
             "[[5 6] [5 6]] with sharing == without sharing"
         );
 
         assert!(
-            noun_equality(&cell_indirect1, &cell_indirect2, &space),
+            noun_equality(
+                cell_indirect1.in_space(&space),
+                cell_indirect2.in_space(&space)
+            ),
             "cells with same indirect atoms are equal"
         );
         assert!(
-            !noun_equality(&cell_indirect1, &cell_indirect3, &space),
+            !noun_equality(
+                cell_indirect1.in_space(&space),
+                cell_indirect3.in_space(&space)
+            ),
             "cells with different indirect atoms are not equal"
         );
     }

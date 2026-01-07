@@ -30,8 +30,10 @@ pub fn badd_jet(context: &mut Context, subject: Noun) -> Result {
         debug!("a or b was not an atom");
         return Err(BAIL_FAIL);
     };
-    let (a_belt, b_belt): (Belt, Belt) =
-        (a_atom.as_u64(&space)?.into(), b_atom.as_u64(&space)?.into());
+    let (a_belt, b_belt): (Belt, Belt) = (
+        a_atom.in_space(&space).as_u64()?.into(),
+        b_atom.in_space(&space).as_u64()?.into(),
+    );
     Ok(Atom::new(&mut context.stack, (a_belt + b_belt).into()).as_noun())
 }
 
@@ -45,8 +47,10 @@ pub fn bsub_jet(context: &mut Context, subject: Noun) -> Result {
         debug!("a or b was not an atom");
         return Err(BAIL_FAIL);
     };
-    let (a_belt, b_belt): (Belt, Belt) =
-        (a_atom.as_u64(&space)?.into(), b_atom.as_u64(&space)?.into());
+    let (a_belt, b_belt): (Belt, Belt) = (
+        a_atom.in_space(&space).as_u64()?.into(),
+        b_atom.in_space(&space).as_u64()?.into(),
+    );
 
     Ok(Atom::new(&mut context.stack, (a_belt - b_belt).into()).as_noun())
 }
@@ -58,7 +62,7 @@ pub fn bneg_jet(context: &mut Context, subject: Noun) -> Result {
         debug!("a was not an atom");
         return Err(BAIL_FAIL);
     };
-    let a_belt: Belt = a_atom.as_u64(&space)?.into();
+    let a_belt: Belt = a_atom.in_space(&space).as_u64()?.into();
 
     Ok(Atom::new(&mut context.stack, (-a_belt).into()).as_noun())
 }
@@ -73,8 +77,10 @@ pub fn bmul_jet(context: &mut Context, subject: Noun) -> Result {
         debug!("a or b was not an atom");
         return Err(BAIL_FAIL);
     };
-    let (a_belt, b_belt): (Belt, Belt) =
-        (a_atom.as_u64(&space)?.into(), b_atom.as_u64(&space)?.into());
+    let (a_belt, b_belt): (Belt, Belt) = (
+        a_atom.in_space(&space).as_u64()?.into(),
+        b_atom.in_space(&space).as_u64()?.into(),
+    );
 
     Ok(Atom::new(&mut context.stack, (a_belt * b_belt).into()).as_noun())
 }
@@ -87,7 +93,7 @@ pub fn ordered_root_jet(context: &mut Context, subject: Noun) -> Result {
         debug!("n was not an atom");
         return Err(BAIL_FAIL);
     };
-    let n_u64 = Belt(n_atom.as_u64(&space)?);
+    let n_u64 = Belt(n_atom.in_space(&space).as_u64()?);
     // TODO: clean this up
     let res_atom = Atom::new(&mut context.stack, n_u64.ordered_root()?.into());
     Ok(res_atom.as_noun())
@@ -103,7 +109,10 @@ pub fn bpow_jet(context: &mut Context, subject: Noun) -> Result {
         debug!("x or n was not an atom");
         return Err(BAIL_FAIL);
     };
-    let (x_belt, n_belt) = (x_atom.as_u64(&space)?, n_atom.as_u64(&space)?);
+    let (x_belt, n_belt) = (
+        x_atom.in_space(&space).as_u64()?,
+        n_atom.in_space(&space).as_u64()?,
+    );
 
     Ok(Atom::new(&mut context.stack, bpow(x_belt, n_belt)).as_noun())
 }
@@ -115,7 +124,7 @@ pub fn rip_correct_jet(context: &mut Context, subject: Noun) -> Result {
     let a_noun = slot(sam, 2, &space)?;
     let b_noun = slot(sam, 3, &space)?;
 
-    let b = b_noun.as_atom()?;
+    let b = b_noun.in_space(space).as_atom()?;
     let (bloq, step) = bite(a_noun, &space)?;
     rip_correct(stack, bloq, step, b, &space)
 }
@@ -127,7 +136,7 @@ pub fn rip_correct(
     b: Atom,
     space: &NounSpace,
 ) -> Result {
-    if b.is_direct() && b.as_u64(space)? == 0 {
+    if b.is_direct() && b.in_space(space).as_u64()? == 0 {
         return Ok(T(stack, &[D(0), D(0)]));
     }
     rip(stack, bloq, step, b, space)
@@ -139,13 +148,13 @@ pub fn levy_based(a_noun: Noun, space: &NounSpace) -> bool {
         if unsafe { list.raw_equals(&D(0)) } {
             return true;
         }
-        let cell = list.as_cell().expect("cell not found");
-        let based_res = based(cell.head(space), space);
+        let cell = list.in_space(space).as_cell().expect("cell not found");
+        let based_res = based(cell.head().noun(), space);
         if !based_res {
             return false;
         }
 
-        list = cell.tail(space);
+        list = cell.tail().noun();
     }
 }
 
@@ -160,10 +169,10 @@ pub fn based_jet(_context: &mut Context, subject: Noun) -> Result {
 }
 
 fn based(a_noun: Noun, space: &NounSpace) -> bool {
-    let Ok(a_atom) = a_noun.as_atom() else {
+    let Ok(a_atom) = a_noun.in_space(space).as_atom() else {
         return false; // no atom
     };
-    let Ok(a_u64) = a_atom.as_u64(space) else {
+    let Ok(a_u64) = a_atom.as_u64() else {
         return false; // no u64
     };
 
@@ -185,11 +194,11 @@ pub fn based_noun(n: Noun, space: &NounSpace) -> bool {
         return based(n, space);
     }
 
-    let n_cell = n.as_cell().unwrap();
-    let res1 = based_noun(n_cell.head(space), space);
+    let n_cell = n.in_space(space).as_cell().unwrap();
+    let res1 = based_noun(n_cell.head().noun(), space);
     if !res1 {
         return false;
     }
 
-    based_noun(n_cell.tail(space), space)
+    based_noun(n_cell.tail().noun(), space)
 }

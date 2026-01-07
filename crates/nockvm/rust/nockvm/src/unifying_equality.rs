@@ -351,20 +351,22 @@ pub unsafe fn unifying_equality(stack: &mut NockStack, a: *mut Noun, b: *mut Nou
                 (Left(xi), Left(yi)) => {
                     let (data_equal, xptr, yptr) = {
                         let space = stack.noun_space();
-                        let xsize = xi.size(&space);
-                        let ysize = yi.size(&space);
+                        let xi_handle = xi.as_atom().in_space(&space);
+                        let yi_handle = yi.as_atom().in_space(&space);
+                        let xsize = xi_handle.size();
+                        let ysize = yi_handle.size();
                         if xsize != ysize {
                             (false, std::ptr::null(), std::ptr::null())
                         } else {
                             let equal = memcmp(
-                                xi.data_pointer(&space) as *const c_void,
-                                yi.data_pointer(&space) as *const c_void,
+                                xi_handle.data_pointer() as *const c_void,
+                                yi_handle.data_pointer() as *const c_void,
                                 xsize << 3,
                             ) == 0;
                             (
                                 equal,
-                                xi.to_raw_pointer(&space),
-                                yi.to_raw_pointer(&space),
+                                unsafe { xi_handle.raw_pointer() },
+                                unsafe { yi_handle.raw_pointer() },
                             )
                         }
                     };

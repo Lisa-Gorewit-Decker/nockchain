@@ -44,7 +44,8 @@ pub fn jet_dec(context: &mut Context, subject: Noun) -> Result {
                 }
             }
             Right(indirect) => {
-                let indirect_slice = indirect.as_bitslice(&space);
+                let indirect_handle = indirect.as_atom().in_space(&space);
+                let indirect_slice = indirect_handle.as_bitslice();
                 match indirect_slice.first_one() {
                     None => {
                         panic!("Decrementing 0 stored as an indirect atom");
@@ -53,7 +54,7 @@ pub fn jet_dec(context: &mut Context, subject: Noun) -> Result {
                         let (mut new_indirect, new_slice) = unsafe {
                             IndirectAtom::new_raw_mut_bitslice(
                                 &mut context.stack,
-                                indirect.size(&space),
+                                indirect_handle.size(),
                             )
                         };
                         if first_one > 0 {
@@ -85,8 +86,8 @@ pub fn jet_div(context: &mut Context, subject: Noun) -> Result {
     } else if let (Ok(a), Ok(b)) = (a.as_direct(), b.as_direct()) {
         Ok(unsafe { DirectAtom::new_unchecked(a.data() / b.data()) }.as_noun())
     } else {
-        let a_big = a.as_ubig(stack, &space);
-        let b_big = b.as_ubig(stack, &space);
+        let a_big = a.in_space(&space).as_ubig(stack);
+        let b_big = b.in_space(&space).as_ubig(stack);
         let res = UBig::div_stack(stack, a_big, b_big);
         Ok(Atom::from_ubig(stack, &res).as_noun())
     }
@@ -110,11 +111,14 @@ pub fn jet_dvr(context: &mut Context, subject: Noun) -> Result {
                     DirectAtom::new_unchecked(rem).as_noun(),
                 )
             }
-        } else {
-            let (div, rem) = a.as_ubig(stack, &space).div_rem(b.as_ubig(stack, &space));
-            (
-                Atom::from_ubig(stack, &div).as_noun(),
-                Atom::from_ubig(stack, &rem).as_noun(),
+    } else {
+        let (div, rem) = a
+            .in_space(&space)
+            .as_ubig(stack)
+            .div_rem(b.in_space(&space).as_ubig(stack));
+        (
+            Atom::from_ubig(stack, &div).as_noun(),
+            Atom::from_ubig(stack, &rem).as_noun(),
             )
         };
 
@@ -169,17 +173,19 @@ pub fn jet_max(context: &mut Context, subject: Noun) -> Result {
     let a = slot(arg, 2, &space)?.as_atom()?;
     let b = slot(arg, 3, &space)?.as_atom()?;
 
+    let a_handle = a.in_space(&space);
+    let b_handle = b.in_space(&space);
     Ok(if let (Ok(a), Ok(b)) = (a.as_direct(), b.as_direct()) {
         if a.data() >= b.data() {
             a.as_noun()
         } else {
             b.as_noun()
         }
-    } else if a.bit_size(&space) > b.bit_size(&space) {
+    } else if a_handle.bit_size() > b_handle.bit_size() {
         a.as_noun()
-    } else if a.bit_size(&space) < b.bit_size(&space) {
+    } else if a_handle.bit_size() < b_handle.bit_size() {
         b.as_noun()
-    } else if a.as_ubig(stack, &space) >= b.as_ubig(stack, &space) {
+    } else if a_handle.as_ubig(stack) >= b_handle.as_ubig(stack) {
         a.as_noun()
     } else {
         b.as_noun()
@@ -193,17 +199,19 @@ pub fn jet_min(context: &mut Context, subject: Noun) -> Result {
     let a = slot(arg, 2, &space)?.as_atom()?;
     let b = slot(arg, 3, &space)?.as_atom()?;
 
+    let a_handle = a.in_space(&space);
+    let b_handle = b.in_space(&space);
     Ok(if let (Ok(a), Ok(b)) = (a.as_direct(), b.as_direct()) {
         if a.data() <= b.data() {
             a.as_noun()
         } else {
             b.as_noun()
         }
-    } else if a.bit_size(&space) < b.bit_size(&space) {
+    } else if a_handle.bit_size() < b_handle.bit_size() {
         a.as_noun()
-    } else if a.bit_size(&space) > b.bit_size(&space) {
+    } else if a_handle.bit_size() > b_handle.bit_size() {
         b.as_noun()
-    } else if a.as_ubig(stack, &space) <= b.as_ubig(stack, &space) {
+    } else if a_handle.as_ubig(stack) <= b_handle.as_ubig(stack) {
         a.as_noun()
     } else {
         b.as_noun()
@@ -222,7 +230,7 @@ pub fn jet_mod(context: &mut Context, subject: Noun) -> Result {
     } else if let (Ok(a), Ok(b)) = (a.as_direct(), b.as_direct()) {
         Ok(unsafe { DirectAtom::new_unchecked(a.data() % b.data()) }.as_noun())
     } else {
-        let res = a.as_ubig(stack, &space) % b.as_ubig(stack, &space);
+        let res = a.in_space(&space).as_ubig(stack) % b.in_space(&space).as_ubig(stack);
         Ok(Atom::from_ubig(stack, &res).as_noun())
     }
 }
@@ -249,8 +257,8 @@ pub fn jet_mul(context: &mut Context, subject: Noun) -> Result {
             .as_noun())
         }
     } else {
-        let a_big = a.as_ubig(stack, &space);
-        let b_big = b.as_ubig(stack, &space);
+        let a_big = a.in_space(&space).as_ubig(stack);
+        let b_big = b.in_space(&space).as_ubig(stack);
         let res = UBig::mul_stack(stack, a_big, b_big);
         Ok(Atom::from_ubig(stack, &res).as_noun())
     }
@@ -276,8 +284,8 @@ pub mod util {
         if let (Ok(a), Ok(b)) = (a.as_direct(), b.as_direct()) {
             Atom::new(stack, a.data() + b.data())
         } else {
-            let a_big = a.as_ubig(stack, space);
-            let b_big = b.as_ubig(stack, space);
+            let a_big = a.in_space(space).as_ubig(stack);
+            let b_big = b.in_space(space).as_ubig(stack);
             let res = UBig::add_stack(stack, a_big, b_big);
             Atom::from_ubig(stack, &res)
         }
@@ -287,12 +295,16 @@ pub mod util {
     pub fn gte_b(stack: &mut NockStack, a: Atom, b: Atom, space: &NounSpace) -> bool {
         if let (Ok(a), Ok(b)) = (a.as_direct(), b.as_direct()) {
             a.data() >= b.data()
-        } else if a.bit_size(space) > b.bit_size(space) {
-            true
-        } else if a.bit_size(space) < b.bit_size(space) {
-            false
         } else {
-            a.as_ubig(stack, space) >= b.as_ubig(stack, space)
+            let a_handle = a.in_space(space);
+            let b_handle = b.in_space(space);
+            if a_handle.bit_size() > b_handle.bit_size() {
+                true
+            } else if a_handle.bit_size() < b_handle.bit_size() {
+                false
+            } else {
+                a_handle.as_ubig(stack) >= b_handle.as_ubig(stack)
+            }
         }
     }
 
@@ -309,12 +321,16 @@ pub mod util {
     pub fn gth_b(stack: &mut NockStack, a: Atom, b: Atom, space: &NounSpace) -> bool {
         if let (Ok(a), Ok(b)) = (a.as_direct(), b.as_direct()) {
             a.data() > b.data()
-        } else if a.bit_size(space) > b.bit_size(space) {
-            true
-        } else if a.bit_size(space) < b.bit_size(space) {
-            false
         } else {
-            a.as_ubig(stack, space) > b.as_ubig(stack, space)
+            let a_handle = a.in_space(space);
+            let b_handle = b.in_space(space);
+            if a_handle.bit_size() > b_handle.bit_size() {
+                true
+            } else if a_handle.bit_size() < b_handle.bit_size() {
+                false
+            } else {
+                a_handle.as_ubig(stack) > b_handle.as_ubig(stack)
+            }
         }
     }
 
@@ -331,12 +347,16 @@ pub mod util {
     pub fn lte_b(stack: &mut NockStack, a: Atom, b: Atom, space: &NounSpace) -> bool {
         if let (Ok(a), Ok(b)) = (a.as_direct(), b.as_direct()) {
             a.data() <= b.data()
-        } else if a.bit_size(space) < b.bit_size(space) {
-            true
-        } else if a.bit_size(space) > b.bit_size(space) {
-            false
         } else {
-            a.as_ubig(stack, space) <= b.as_ubig(stack, space)
+            let a_handle = a.in_space(space);
+            let b_handle = b.in_space(space);
+            if a_handle.bit_size() < b_handle.bit_size() {
+                true
+            } else if a_handle.bit_size() > b_handle.bit_size() {
+                false
+            } else {
+                a_handle.as_ubig(stack) <= b_handle.as_ubig(stack)
+            }
         }
     }
 
@@ -358,12 +378,16 @@ pub mod util {
     ) -> bool {
         if let (Ok(a), Ok(b)) = (a.as_direct(), b.as_direct()) {
             a.data() < b.data()
-        } else if a.bit_size(space) > b.bit_size(space) {
-            false
-        } else if a.bit_size(space) < b.bit_size(space) {
-            true
         } else {
-            a.as_ubig(stack, space) < b.as_ubig(stack, space)
+            let a_handle = a.in_space(space);
+            let b_handle = b.in_space(space);
+            if a_handle.bit_size() > b_handle.bit_size() {
+                false
+            } else if a_handle.bit_size() < b_handle.bit_size() {
+                true
+            } else {
+                a_handle.as_ubig(stack) < b_handle.as_ubig(stack)
+            }
         }
     }
 
@@ -388,14 +412,14 @@ pub mod util {
                 Ok(Atom::new(stack, a_small - b_small))
             }
         } else {
-            let a_big = a.as_ubig(stack, space);
-            let b_big = b.as_ubig(stack, space);
+            let a_handle = a.in_space(space);
+            let b_handle = b.in_space(space);
+            let a_big = a_handle.as_ubig(stack);
+            let b_big = b_handle.as_ubig(stack);
 
             if a_big < b_big {
                 Err(Error::NotRepresentable)
             } else {
-                let a_big = a.as_ubig(stack, space);
-                let b_big = b.as_ubig(stack, space);
                 let res = UBig::sub_stack(stack, a_big, b_big);
                 Ok(Atom::from_ubig(stack, &res))
             }

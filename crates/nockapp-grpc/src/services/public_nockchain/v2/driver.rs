@@ -17,25 +17,23 @@ pub enum PublicNockchainEffect {
 
 impl NounDecode for PublicNockchainEffect {
     fn from_noun(effect: &nockapp::Noun, space: &NounSpace) -> Result<Self, NounDecodeError> {
-        let effect_cell = effect.as_cell()?;
-        if !effect_cell
-            .in_space(space)
-            .head()
-            .eq_bytes(b"nockchain-grpc")
-        {
+        let effect_cell = effect.in_space(space).as_cell()?;
+        if !effect_cell.head().eq_bytes(b"nockchain-grpc") {
             return Err(NounDecodeError::InvalidTag);
         }
 
-        let payload_cell = effect_cell.tail(space).as_cell()?;
-        let tag_atom = payload_cell.head(space).as_atom()?;
+        let payload_cell = effect_cell.tail().as_cell()?;
+        let tag_atom = payload_cell.head().as_atom()?;
         let tag = tag_atom
+            .atom()
             .as_direct()
             .map_err(|_| NounDecodeError::InvalidTag)?
             .data();
 
         match tag {
             t if t == tas!(b"send-tx") => {
-                let raw_tx = v1::RawTx::from_noun(&payload_cell.tail(space), space)?;
+                let raw_tx_noun = payload_cell.tail().noun();
+                let raw_tx = v1::RawTx::from_noun(&raw_tx_noun, space)?;
                 Ok(PublicNockchainEffect::SendTx { raw_tx })
             }
             _ => Err(NounDecodeError::InvalidTag),

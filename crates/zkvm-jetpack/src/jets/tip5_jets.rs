@@ -30,9 +30,9 @@ pub fn hoon_list_to_sponge(
     let mut i = 0;
 
     while current.is_cell() {
-        let cell = current.as_cell()?;
-        sponge[i] = cell.head(space).as_atom()?.as_u64(space)?;
-        current = cell.tail(space);
+        let cell = current.in_space(space).as_cell()?;
+        sponge[i] = cell.head().as_atom()?.as_u64()?;
+        current = cell.tail().noun();
         i += 1;
     }
 
@@ -70,7 +70,7 @@ pub fn montify_jet(context: &mut Context, subject: Noun) -> Result<Noun, JetErr>
     let space = context.stack.noun_space();
     let stack = &mut context.stack;
     let sam = slot(subject, 6, &space)?;
-    let x = sam.as_atom()?.as_u64(&space)?;
+    let x = sam.in_space(&space).as_atom()?.as_u64()?;
 
     let res = montify(x);
 
@@ -80,30 +80,31 @@ pub fn montify_jet(context: &mut Context, subject: Noun) -> Result<Noun, JetErr>
 pub fn montiply_jet(context: &mut Context, subject: Noun) -> Result<Noun, JetErr> {
     let space = context.stack.noun_space();
     let sam = slot(subject, 6, &space)?;
-    let a = sam.as_cell()?.head(&space).as_atom()?.as_u64(&space)?;
-    let b = sam.as_cell()?.tail(&space).as_atom()?.as_u64(&space)?;
+    let sam_cell = sam.in_space(&space).as_cell()?;
+    let a = sam_cell.head().as_atom()?.as_u64()?;
+    let b = sam_cell.tail().as_atom()?.as_u64()?;
     Ok(belt_as_noun(&mut context.stack, Belt(montiply(a, b))))
 }
 
 pub fn mont_reduction_jet(context: &mut Context, subject: Noun) -> Result<Noun, JetErr> {
     let space = context.stack.noun_space();
     let sam = slot(subject, 6, &space)?;
-    let x_atom = sam.as_atom()?;
+    let x_atom = sam.in_space(&space).as_atom()?;
 
     let x_u128: u128 = if x_atom.is_indirect() {
-        if x_atom.as_indirect()?.size(&space) > 2 {
+        if x_atom.size() > 2 {
             // mont_reduction asserts that x < RP, so u128 should be sufficient anyway??!!
-            let x_bitslice = x_atom.as_bitslice(&space);
+            let x_bitslice = x_atom.as_bitslice();
             assert!(fits_in_u128(x_bitslice));
             bitslice_to_u128(x_bitslice)
-        } else if x_atom.as_indirect()?.size(&space) == 2 {
-            let x = unsafe { x_atom.as_u64_pair(&space)? };
+        } else if x_atom.size() == 2 {
+            let x = x_atom.as_u64_pair()?;
             ((x[1] as u128) << 64u128) + (x[0] as u128)
         } else {
-            x_atom.as_u64(&space)? as u128
+            x_atom.as_u64()? as u128
         }
     } else {
-        x_atom.as_u64(&space)? as u128
+        x_atom.as_u64()? as u128
     };
 
     Ok(belt_as_noun(
@@ -224,8 +225,9 @@ pub fn hash_hashable(
         return Err(BAIL_FAIL);
     }
 
-    let h_head = h.as_cell()?.head(space);
-    let h_tail = h.as_cell()?.tail(space);
+    let h_cell = h.in_space(space).as_cell()?;
+    let h_head = h_cell.head().noun();
+    let h_tail = h_cell.tail().noun();
 
     if h_head.is_direct() {
         let tag = h_head.as_direct()?;

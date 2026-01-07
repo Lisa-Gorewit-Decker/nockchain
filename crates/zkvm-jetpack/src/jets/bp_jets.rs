@@ -115,7 +115,7 @@ pub fn bpscal_jet(context: &mut Context, subject: Noun) -> Result {
     let (Ok(c_atom), Ok(bp_poly)) = (c.as_atom(), BPolySlice::try_from(bp, &space)) else {
         return Err(BAIL_FAIL);
     };
-    let c_64 = c_atom.as_u64(&space)?;
+    let c_64 = c_atom.in_space(&space).as_u64()?;
 
     let (res, res_poly): (IndirectAtom, &mut [Belt]) =
         new_handle_mut_slice(&mut context.stack, Some(bp_poly.len()));
@@ -184,7 +184,7 @@ pub fn bp_ntt_jet(context: &mut Context, subject: Noun) -> Result {
     let (Ok(bp_poly), Ok(root_atom)) = (BPolySlice::try_from(bp, &space), root.as_atom()) else {
         return Err(BAIL_FAIL);
     };
-    let root_64 = root_atom.as_u64(&space)?;
+    let root_64 = root_atom.in_space(&space).as_u64()?;
     let returned_bpoly = bp_ntt(bp_poly.0, &Belt(root_64));
     // TODO: preallocate and pass res buffer into bp_ntt?
     let (res_atom, res_poly): (IndirectAtom, &mut [Belt]) =
@@ -326,7 +326,7 @@ pub fn bpeval_lift_jet(context: &mut Context, subject: Noun) -> Result {
 
     let (bp_len, bp_dat) = get_bpoly_fields(bp, &space)?;
 
-    if bp_len.as_u64(&space)? == 1 {
+    if bp_len.in_space(&space).as_u64()? == 1 {
         return snag_one_fields(stack, 0, 1, bp_dat, &space);
     }
 
@@ -338,19 +338,19 @@ pub fn bpeval_lift_jet(context: &mut Context, subject: Noun) -> Result {
             return Err(BAIL_FAIL);
         }
 
-        let p_cell = p.as_cell()?;
-        let res_lift = lift(p_cell.head(&space).as_belt(&space)?);
+        let p_cell = p.in_space(&space).as_cell()?;
+        let res_lift = lift(p_cell.head().as_belt(&space)?);
         let mut res_fmul = Felt::zero();
         fmul(&res, x, &mut res_fmul);
         let mut res_add = Felt::zero();
         fadd(&res_fmul, &res_lift, &mut res_add);
 
-        if is_hoon_list_end(&p_cell.tail(&space)) {
+        if is_hoon_list_end(&p_cell.tail().noun()) {
             return felt_as_noun(context, res_add);
         }
 
         res = res_add;
-        p = p_cell.tail(&space);
+        p = p_cell.tail().noun();
     }
 }
 
