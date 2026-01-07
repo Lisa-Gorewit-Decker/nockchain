@@ -6,7 +6,10 @@ use tempfile::TempDir;
 use super::NockApp;
 use crate::kernel::form::Kernel;
 
-pub async fn setup_nockapp(jam: &str) -> (TempDir, NockApp) {
+pub async fn setup_nockapp_with_interval(
+    jam: &str,
+    save_interval: Option<std::time::Duration>,
+) -> (TempDir, NockApp) {
     let temp_dir = TempDir::new().expect("Failed to create temp directory");
     let temp_dir_path = temp_dir.path().to_path_buf();
     // Try multiple possible locations for the jam file
@@ -29,20 +32,20 @@ pub async fn setup_nockapp(jam: &str) -> (TempDir, NockApp) {
         };
     (
         temp_dir,
-        NockApp::new(
-            kernel_f,
-            &temp_dir_path,
-            Some(std::time::Duration::from_secs(1)),
-        )
-        .await
-        .expect("Could not create NockApp"),
+        NockApp::new(kernel_f, &temp_dir_path, save_interval)
+            .await
+            .expect("Could not create NockApp"),
     )
+}
+
+pub async fn setup_nockapp(jam: &str) -> (TempDir, NockApp) {
+    setup_nockapp_with_interval(jam, Some(std::time::Duration::from_secs(1))).await
 }
 
 #[cfg(test)]
 pub mod tests {
     use std::sync::atomic::Ordering;
-    use std::time::Duration;
+    use std::time::{Duration, Instant};
 
     use bytes::Bytes;
     use nockvm::jets::util::slot;
@@ -54,7 +57,7 @@ pub mod tests {
     use tracing::info;
     use tracing_test::traced_test;
 
-    use super::setup_nockapp;
+    use super::{setup_nockapp, setup_nockapp_with_interval};
     use crate::nockapp::wire::{SystemWire, Wire};
     use crate::noun::slab::{slab_equality, NockJammer, NounSlab};
     use nockvm::ext::noun_equality;
@@ -80,6 +83,38 @@ pub mod tests {
             .await
             .expect("Failed to spawn nockapp save task");
         // join_handle.await.expect("Failed to save nockapp").expect("Failed to save nockapp 2");
+    }
+
+    fn summarize_samples(label: &str, samples: &[Duration]) -> (f64, f64, f64) {
+        if samples.is_empty() {
+            println!("perf: {}: no samples", label);
+            return (0.0, 0.0, 0.0);
+        }
+        let mut min = samples[0];
+        let mut max = samples[0];
+        let mut total_us: u128 = 0;
+        for sample in samples {
+            if *sample < min {
+                min = *sample;
+            }
+            if *sample > max {
+                max = *sample;
+            }
+            total_us += sample.as_micros();
+        }
+        let count = samples.len() as f64;
+        let avg_ms = (total_us as f64) / count / 1000.0;
+        let min_ms = (min.as_micros() as f64) / 1000.0;
+        let max_ms = (max.as_micros() as f64) / 1000.0;
+        println!(
+            "perf: {}: n={}, avg_ms={:.3}, min_ms={:.3}, max_ms={:.3}",
+            label,
+            samples.len(),
+            avg_ms,
+            min_ms,
+            max_ms
+        );
+        (avg_ms, min_ms, max_ms)
     }
 
     // Test nockapp save
@@ -314,6 +349,163 @@ pub mod tests {
                 "res: {:?} != comp: {:?}",
                 res,
                 comp
+            );
+        }
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    #[traced_test]
+    #[cfg_attr(miri, ignore)]
+    #[ignore]
+    async fn test_poke_peek_perf_workload() {
+        std::env::set_var("NOCK_PMA_TIMING", "1");
+        std::env::set_var("NOCKAPP_DISABLE_METRICS", "1");
+
+        let _test_arena = TestArena::default();
+        let (_temp, nockapp) = setup_nockapp_with_interval("test-ker.jam", None).await;
+        let pma_timing = nockapp
+            .kernel
+            .serf
+            .pma_timing
+            .clone()
+            .expect("NOCK_PMA_TIMING must be set before setup");
+        let _ = pma_timing.take_samples();
+
+        let iters: usize = std::env::var("NOCKAPP_PERF_ITERS")
+            .ok()
+            .and_then(|val| val.parse().ok())
+            .unwrap_or(20);
+        let warmup: usize = std::env::var("NOCKAPP_PERF_WARMUP")
+            .ok()
+            .and_then(|val| val.parse().ok())
+            .unwrap_or(1);
+
+        let mut stack = NockStack::new(NOCK_STACK_SIZE, 0);
+        let space = stack.noun_space();
+        let mut poke_wall = Vec::with_capacity(iters);
+        let mut peek_wall = Vec::with_capacity(iters);
+
+        for i in 1..=iters {
+            let poke_noun = D(tas!(b"inc"));
+            let poke = {
+                let mut slab = NounSlab::new();
+                let space = NounSpace::empty();
+                slab.copy_into(poke_noun, &space);
+                slab
+            };
+            let wire = SystemWire.to_wire();
+            let poke_start = Instant::now();
+            let _ = nockapp.kernel.poke(wire, poke).await.unwrap_or_else(|err| {
+                panic!(
+                    "Panicked with {err:?} at {}:{} (git sha: {:?})",
+                    file!(),
+                    line!(),
+                    option_env!("GIT_SHA")
+                )
+            });
+            poke_wall.push(poke_start.elapsed());
+
+            let peek_noun = T(&mut stack, &[D(tas!(b"state")), D(0)]);
+            let peek = {
+                let mut slab = NounSlab::new();
+                slab.copy_into(peek_noun, &space);
+                slab
+            };
+            let peek_start = Instant::now();
+            let mut res = nockapp.kernel.peek(peek).await.unwrap_or_else(|err| {
+                panic!(
+                    "Panicked with {err:?} at {}:{} (git sha: {:?})",
+                    file!(),
+                    line!(),
+                    option_env!("GIT_SHA")
+                )
+            });
+            peek_wall.push(peek_start.elapsed());
+
+            let res_space = res.noun_space();
+            res.modify_noun(|r| {
+                let cell = slot(r, 7, &res_space)
+                    .unwrap_or_else(|err| {
+                        panic!(
+                            "Panicked with {err:?} at {}:{} (git sha: {:?})",
+                            file!(),
+                            line!(),
+                            option_env!("GIT_SHA")
+                        )
+                    })
+                    .as_cell()
+                    .unwrap_or_else(|err| {
+                        panic!(
+                            "Panicked with {err:?} at {}:{} (git sha: {:?})",
+                            file!(),
+                            line!(),
+                            option_env!("GIT_SHA")
+                        )
+                    });
+                CellHandle::new(cell, &res_space).tail().noun()
+            });
+
+            let comp = {
+                let mut slab = NounSlab::new();
+                let space = NounSpace::empty();
+                slab.copy_into(D(i as u64), &space);
+                slab
+            };
+
+            assert!(
+                slab_equality(&res, &comp),
+                "res: {:?} != comp: {:?}",
+                res,
+                comp
+            );
+        }
+
+        let mut pma_samples = pma_timing.take_samples();
+        assert_eq!(
+            pma_samples.len(),
+            iters,
+            "expected one PMA timing sample per poke"
+        );
+
+        let skip = warmup.min(iters);
+        let poke_wall = if poke_wall.len() > skip {
+            &poke_wall[skip..]
+        } else {
+            &[]
+        };
+        let peek_wall = if peek_wall.len() > skip {
+            &peek_wall[skip..]
+        } else {
+            &[]
+        };
+        if pma_samples.len() > skip {
+            pma_samples = pma_samples.split_off(skip);
+        } else {
+            pma_samples.clear();
+        }
+
+        let event_samples: Vec<Duration> = pma_samples.iter().map(|s| s.event).collect();
+        let pma_copy_samples: Vec<Duration> = pma_samples.iter().map(|s| s.pma_copy).collect();
+        let total_samples: Vec<Duration> = pma_samples
+            .iter()
+            .map(|s| s.event + s.pma_copy)
+            .collect();
+
+        println!(
+            "perf: pokes={}, peeks={}, warmup_skipped={}",
+            iters,
+            iters,
+            skip
+        );
+        let (_event_avg, _, _) = summarize_samples("poke_event", &event_samples);
+        let (pma_avg, _, _) = summarize_samples("poke_pma_copy", &pma_copy_samples);
+        let (total_avg, _, _) = summarize_samples("poke_event_plus_pma", &total_samples);
+        summarize_samples("poke_wall", poke_wall);
+        summarize_samples("peek_wall", peek_wall);
+        if total_avg > 0.0 {
+            println!(
+                "perf: poke_pma_share_avg_pct={:.1}",
+                (pma_avg / total_avg) * 100.0
             );
         }
     }

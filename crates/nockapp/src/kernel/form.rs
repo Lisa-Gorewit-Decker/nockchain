@@ -4,6 +4,7 @@ use std::future::Future;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
+use std::sync::Mutex;
 use std::time::Instant;
 
 use blake3::{Hash, Hasher};
@@ -53,6 +54,29 @@ pub struct LoadState {
 pub struct PmaConfig {
     pub path: PathBuf,
     pub words: usize,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct PmaTimingSample {
+    pub(crate) event: Duration,
+    pub(crate) pma_copy: Duration,
+}
+
+#[derive(Default)]
+pub(crate) struct PmaTiming {
+    samples: Mutex<Vec<PmaTimingSample>>,
+}
+
+impl PmaTiming {
+    pub(crate) fn record(&self, event: Duration, pma_copy: Duration) {
+        let mut samples = self.samples.lock().unwrap_or_else(|err| err.into_inner());
+        samples.push(PmaTimingSample { event, pma_copy });
+    }
+
+    pub(crate) fn take_samples(&self) -> Vec<PmaTimingSample> {
+        let mut samples = self.samples.lock().unwrap_or_else(|err| err.into_inner());
+        std::mem::take(&mut *samples)
+    }
 }
 
 // Actions to request of the serf thread
@@ -105,6 +129,7 @@ pub struct SerfThread<C> {
     pub cancel_token: NockCancelToken,
     inhibit: Arc<AtomicBool>,
     pub event_number: Arc<AtomicU64>,
+    pub(crate) pma_timing: Option<Arc<PmaTiming>>,
 }
 
 impl<C: SerfCheckpoint + Send + 'static> SerfThread<C> {
@@ -118,9 +143,13 @@ impl<C: SerfCheckpoint + Send + 'static> SerfThread<C> {
         trace: TraceOpts,
     ) -> Result<Self> {
         let (action_sender, action_receiver) = mpsc::channel(1);
+        let pma_timing = std::env::var_os("NOCK_PMA_TIMING")
+            .is_some()
+            .then(|| Arc::new(PmaTiming::default()));
         let (init_sender, init_receiver) = oneshot::channel();
         let inhibit = Arc::new(AtomicBool::new(false));
         let inhibit_clone = inhibit.clone();
+        let pma_timing_thread = pma_timing.clone();
         let handle = std::thread::Builder::new()
             .name("serf".to_string())
             .stack_size(SERF_THREAD_STACK_SIZE)
@@ -147,7 +176,7 @@ impl<C: SerfCheckpoint + Send + 'static> SerfThread<C> {
                     trace,
                 );
                 let _ = init_sender.send(Ok((serf.event_num.clone(), serf.context.cancel_token())));
-                serf_loop(serf, action_receiver, inhibit_clone);
+                serf_loop(serf, action_receiver, inhibit_clone, pma_timing_thread);
             })?;
         let (event_number, cancel_token) = init_receiver
             .await
@@ -158,6 +187,7 @@ impl<C: SerfCheckpoint + Send + 'static> SerfThread<C> {
             action_sender,
             event_number,
             cancel_token,
+            pma_timing,
         })
     }
 }
@@ -338,6 +368,7 @@ fn serf_loop<C: SerfCheckpoint>(
     mut serf: Serf,
     mut action_receiver: mpsc::Receiver<SerfAction<C>>,
     inhibit: Arc<AtomicBool>,
+    pma_timing: Option<Arc<PmaTiming>>,
 ) {
     loop {
         let start = std::time::Instant::now();
@@ -525,6 +556,10 @@ fn serf_loop<C: SerfCheckpoint>(
                             serf.preserve_event_update_leftovers();
                         }
                         pma_elapsed = Some(pma_start.elapsed());
+                    }
+                    if let Some(timing) = &pma_timing {
+                        let pma_elapsed = pma_elapsed.unwrap_or_else(|| Duration::from_millis(0));
+                        timing.record(event_elapsed, pma_elapsed);
                     }
                     if std::env::var_os("NOCK_PMA_TIMING").is_some() {
                         let event_ms = event_elapsed.as_secs_f64() * 1000.0;
