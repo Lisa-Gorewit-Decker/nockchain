@@ -503,7 +503,9 @@ fn serf_loop<C: SerfCheckpoint>(
                         });
                 } else {
                     let cause_noun = cause.copy_to_stack(serf.stack());
+                    let event_start = Instant::now();
                     let noun_res = serf.poke(wire, cause_noun);
+                    let event_elapsed = event_start.elapsed();
                     let space = serf.context.stack.noun_space();
                     let (noun_slab_res, did_update) = match noun_res {
                         Ok(noun) => {
@@ -516,10 +518,28 @@ fn serf_loop<C: SerfCheckpoint>(
                     let _ = result.send(noun_slab_res).inspect_err(|_e| {
                         debug!("Failed to send poke result from serf thread");
                     });
+                    let mut pma_elapsed = None;
                     if did_update {
+                        let pma_start = Instant::now();
                         unsafe {
                             serf.preserve_event_update_leftovers();
                         }
+                        pma_elapsed = Some(pma_start.elapsed());
+                    }
+                    if std::env::var_os("NOCK_PMA_TIMING").is_some() {
+                        let event_ms = event_elapsed.as_secs_f64() * 1000.0;
+                        let pma_ms = pma_elapsed
+                            .map(|elapsed| elapsed.as_secs_f64() * 1000.0)
+                            .unwrap_or(0.0);
+                        let total_ms = event_ms + pma_ms;
+                        let event_num = serf.event_num.load(Ordering::SeqCst);
+                        info!(
+                            "pma-timing: event_ms={:.3} pma_copy_ms={:.3} total_ms={:.3} event_num={}",
+                            event_ms,
+                            pma_ms,
+                            total_ms,
+                            event_num
+                        );
                     }
                 };
                 let _ = result_ack.blocking_recv().inspect_err(|_e| {
