@@ -26,8 +26,8 @@ use nockchain_math::tip5::hash::hash_varlen;
 use nockchain_math::zoon::common::DefaultTipHasher;
 use nockchain_math::zoon::zset::z_set_put;
 use nockchain_types::tx_engine::common::{
-    BlockHeight, Hash, Name, Nicks, SchnorrPubkey, SchnorrSignature, Signature, Source,
-    TimelockRangeAbsolute, TimelockRangeRelative, Version,
+    BlockHeight, BlockHeightDelta, Hash, Name, Nicks, SchnorrPubkey, SchnorrSignature,
+    Signature, Source, TimelockRangeAbsolute, TimelockRangeRelative, Version,
 };
 use nockchain_types::tx_engine::v0::{
     Input, Inputs, Lock, NoteHead, NoteTail, NoteV0, RawTx, Seed, Seeds, Spend, Timelock,
@@ -491,6 +491,7 @@ fn pma_paging_kernel_workload() {
         let key = generate_key(&mut rng)?;
         let mut hasher = TxHasher::new();
         let mining_pkh = hasher.hash_schnorr_pubkey(&key.pk).to_base58();
+        let lock_pool = vec![random_lock(pubkeys_per_output, &mut rng)?];
 
         let genesis_bytes = setup::FAKENET_GENESIS_BLOCK.to_vec();
         let genesis_id = genesis_block_id(&genesis_bytes)?;
@@ -571,9 +572,8 @@ fn pma_paging_kernel_workload() {
                                 &note,
                                 next_height,
                                 outputs_per_tx,
-                                pubkeys_per_output,
                                 extra_gift,
-                                &mut rng,
+                                &lock_pool,
                             )?;
                             let heard_tx = make_heard_tx_poke(&tx.raw_tx)?;
                             init_pokes.push_back(Poke {
@@ -629,9 +629,8 @@ fn build_tx_plan(
     note: &NoteV0,
     next_height: u64,
     outputs_per_tx: usize,
-    pubkeys_per_output: usize,
     extra_gift: u64,
-    rng: &mut StdRng,
+    lock_pool: &[Lock],
 ) -> Result<TxPlan, Box<dyn Error>> {
     let mut hasher = TxHasher::new();
     let parent_hash = hasher.hash_nnote(note);
@@ -655,12 +654,22 @@ fn build_tx_plan(
 
     let mut seeds: Vec<Seed> = Vec::with_capacity(extra_outputs + 1);
     seeds.push(refund_seed.clone());
-    for _ in 0..extra_outputs {
-        let lock = random_lock(pubkeys_per_output, rng)?;
+    let lock = lock_pool
+        .first()
+        .expect("lock pool must not be empty")
+        .clone();
+    for idx in 0..extra_outputs {
+        let timelock_intent = Some(TimelockIntent {
+            absolute: TimelockRangeAbsolute::none(),
+            relative: TimelockRangeRelative::new(
+                Some(BlockHeightDelta(Belt((idx + 1) as u64))),
+                None,
+            ),
+        });
         seeds.push(Seed {
             output_source: None,
-            recipient: lock,
-            timelock_intent: None,
+            recipient: lock.clone(),
+            timelock_intent,
             gift: Nicks(extra_gift as usize),
             parent_hash: parent_hash.clone(),
         });
