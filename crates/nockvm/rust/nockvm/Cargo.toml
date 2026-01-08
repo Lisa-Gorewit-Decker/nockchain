@@ -61,6 +61,7 @@ check_junior = []
 sham_hints = []
 stop_for_debug = []
 hint_dont = []
+pma-assert = []
 
 [[bench]]
 name = "hoonc_hotspots"

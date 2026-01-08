@@ -8,7 +8,7 @@ use kernels::dumb::KERNEL as NOCKCHAIN_KERNEL;
 use kernels::miner::KERNEL as MINER_KERNEL;
 use libp2p::PeerId;
 use nockapp::kernel::boot::{self, NockStackSize, TraceOpts};
-use nockapp::kernel::form::SerfThread;
+use nockapp::kernel::form::{PmaCopyDetail, PmaTimingSample, SerfThread};
 use nockapp::noun::slab::NounSlab;
 use nockapp::save::SaveableCheckpoint;
 use nockapp::utils::{make_tas, NOCK_STACK_SIZE_TINY};
@@ -154,12 +154,20 @@ struct TimedSample {
     ts: Duration,
 }
 
+#[derive(Clone, Copy)]
+struct ValueSample {
+    idx: usize,
+    value_bytes: u64,
+    ts: Duration,
+}
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
     nockvm::check_endian();
     std::env::set_var("NOCKAPP_DISABLE_METRICS", "1");
     std::env::set_var("GNORT_DISABLE", "1");
     std::env::set_var("NOCK_PMA_TIMING", "1");
+    std::env::set_var("NOCK_PMA_TIMING_DETAIL", "1");
 
     let args = BenchArgs::parse();
 
@@ -191,7 +199,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let peer1_init_count = peer1_init.len();
 
     apply_init_pokes(&mut peer2, &mut peer2_init).await?;
-    let _ = peer2.take_pma_timing_samples();
+    let _ = peer2.take_pma_timing_samples_detailed();
 
     let mut miner = if args.skip_mining {
         None
@@ -215,7 +223,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     print_summary(&args, &mining_output, catchup_output.duration);
 
     let mining_samples = peer1
-        .take_pma_timing_samples()
+        .take_pma_timing_samples_detailed()
         .map(|mut samples| {
             if samples.len() < peer1_init_count {
                 warn!(
@@ -235,7 +243,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
         &mining_output.poke_timestamps,
     );
 
-    let catchup_samples = peer2.take_pma_timing_samples();
+    let catchup_samples = peer2.take_pma_timing_samples_detailed();
     report_phase_timings(
         "catchup_pokes",
         catchup_samples,
@@ -812,7 +820,7 @@ fn print_summary(args: &BenchArgs, mining: &MiningOutput, catchup: Duration) {
 
 fn report_phase_timings(
     label: &str,
-    samples: Option<Vec<(Duration, Duration)>>,
+    samples: Option<Vec<PmaTimingSample>>,
     timestamps: &[Duration],
 ) {
     let Some(samples) = samples else {
@@ -827,20 +835,40 @@ fn report_phase_timings(
         return;
     }
 
-    let (total_samples, pma_samples) = build_timed_samples(&samples, timestamps, label);
+    let (total_samples, pma_samples, min_len) =
+        build_timed_samples(&samples, timestamps, label);
     info!(
         "bench: {} timing timestamps are ms since phase start (post-init)",
         label
     );
     summarize_timed_samples(&format!("{label}_total_ms"), &total_samples);
     summarize_timed_samples(&format!("{label}_pma_ms"), &pma_samples);
+
+    if let Some(detail_samples) = build_detail_samples(&samples, timestamps, label, min_len) {
+        report_detail_samples(label, &detail_samples);
+    }
+}
+
+struct PmaDetailSamples {
+    warm_ms: Vec<TimedSample>,
+    warm_alloc: Vec<ValueSample>,
+    test_jets_ms: Vec<TimedSample>,
+    test_jets_alloc: Vec<ValueSample>,
+    hot_ms: Vec<TimedSample>,
+    hot_alloc: Vec<ValueSample>,
+    cache_ms: Vec<TimedSample>,
+    cache_alloc: Vec<ValueSample>,
+    cold_ms: Vec<TimedSample>,
+    cold_alloc: Vec<ValueSample>,
+    arvo_ms: Vec<TimedSample>,
+    arvo_alloc: Vec<ValueSample>,
 }
 
 fn build_timed_samples(
-    samples: &[(Duration, Duration)],
+    samples: &[PmaTimingSample],
     timestamps: &[Duration],
     label: &str,
-) -> (Vec<TimedSample>, Vec<TimedSample>) {
+) -> (Vec<TimedSample>, Vec<TimedSample>, usize) {
     let min_len = samples.len().min(timestamps.len());
     if samples.len() != timestamps.len() {
         warn!(
@@ -853,8 +881,8 @@ fn build_timed_samples(
     }
     let mut total = Vec::with_capacity(min_len);
     let mut pma = Vec::with_capacity(min_len);
-    for (idx, ((event, pma_copy), ts)) in samples.iter().zip(timestamps).take(min_len).enumerate() {
-        let total_value = *event + *pma_copy;
+    for (idx, (sample, ts)) in samples.iter().zip(timestamps).take(min_len).enumerate() {
+        let total_value = sample.event + sample.pma_copy;
         total.push(TimedSample {
             idx,
             value: total_value,
@@ -862,11 +890,127 @@ fn build_timed_samples(
         });
         pma.push(TimedSample {
             idx,
-            value: *pma_copy,
+            value: sample.pma_copy,
             ts: *ts,
         });
     }
-    (total, pma)
+    (total, pma, min_len)
+}
+
+fn build_detail_samples(
+    samples: &[PmaTimingSample],
+    timestamps: &[Duration],
+    label: &str,
+    min_len: usize,
+) -> Option<PmaDetailSamples> {
+    let mut detail = PmaDetailSamples {
+        warm_ms: Vec::with_capacity(min_len),
+        warm_alloc: Vec::with_capacity(min_len),
+        test_jets_ms: Vec::with_capacity(min_len),
+        test_jets_alloc: Vec::with_capacity(min_len),
+        hot_ms: Vec::with_capacity(min_len),
+        hot_alloc: Vec::with_capacity(min_len),
+        cache_ms: Vec::with_capacity(min_len),
+        cache_alloc: Vec::with_capacity(min_len),
+        cold_ms: Vec::with_capacity(min_len),
+        cold_alloc: Vec::with_capacity(min_len),
+        arvo_ms: Vec::with_capacity(min_len),
+        arvo_alloc: Vec::with_capacity(min_len),
+    };
+
+    for (idx, (sample, ts)) in samples.iter().zip(timestamps).take(min_len).enumerate() {
+        let Some(copy) = sample.detail else {
+            warn!(
+                "bench: {} detail timings unavailable (NOCK_PMA_TIMING_DETAIL not enabled at boot)",
+                label
+            );
+            return None;
+        };
+        push_detail_samples(&mut detail, idx, *ts, copy);
+    }
+
+    Some(detail)
+}
+
+fn push_detail_samples(detail: &mut PmaDetailSamples, idx: usize, ts: Duration, copy: PmaCopyDetail) {
+    detail.warm_ms.push(TimedSample {
+        idx,
+        value: copy.warm.elapsed,
+        ts,
+    });
+    detail.warm_alloc.push(ValueSample {
+        idx,
+        value_bytes: (copy.warm.alloc_words as u64) * 8,
+        ts,
+    });
+    detail.test_jets_ms.push(TimedSample {
+        idx,
+        value: copy.test_jets.elapsed,
+        ts,
+    });
+    detail.test_jets_alloc.push(ValueSample {
+        idx,
+        value_bytes: (copy.test_jets.alloc_words as u64) * 8,
+        ts,
+    });
+    detail.hot_ms.push(TimedSample {
+        idx,
+        value: copy.hot.elapsed,
+        ts,
+    });
+    detail.hot_alloc.push(ValueSample {
+        idx,
+        value_bytes: (copy.hot.alloc_words as u64) * 8,
+        ts,
+    });
+    detail.cache_ms.push(TimedSample {
+        idx,
+        value: copy.cache.elapsed,
+        ts,
+    });
+    detail.cache_alloc.push(ValueSample {
+        idx,
+        value_bytes: (copy.cache.alloc_words as u64) * 8,
+        ts,
+    });
+    detail.cold_ms.push(TimedSample {
+        idx,
+        value: copy.cold.elapsed,
+        ts,
+    });
+    detail.cold_alloc.push(ValueSample {
+        idx,
+        value_bytes: (copy.cold.alloc_words as u64) * 8,
+        ts,
+    });
+    detail.arvo_ms.push(TimedSample {
+        idx,
+        value: copy.arvo.elapsed,
+        ts,
+    });
+    detail.arvo_alloc.push(ValueSample {
+        idx,
+        value_bytes: (copy.arvo.alloc_words as u64) * 8,
+        ts,
+    });
+}
+
+fn report_detail_samples(label: &str, detail: &PmaDetailSamples) {
+    summarize_timed_samples(&format!("{label}_pma_warm_ms"), &detail.warm_ms);
+    summarize_value_samples(&format!("{label}_pma_warm_alloc_mib"), &detail.warm_alloc);
+    summarize_timed_samples(&format!("{label}_pma_test_jets_ms"), &detail.test_jets_ms);
+    summarize_value_samples(
+        &format!("{label}_pma_test_jets_alloc_mib"),
+        &detail.test_jets_alloc,
+    );
+    summarize_timed_samples(&format!("{label}_pma_hot_ms"), &detail.hot_ms);
+    summarize_value_samples(&format!("{label}_pma_hot_alloc_mib"), &detail.hot_alloc);
+    summarize_timed_samples(&format!("{label}_pma_cache_ms"), &detail.cache_ms);
+    summarize_value_samples(&format!("{label}_pma_cache_alloc_mib"), &detail.cache_alloc);
+    summarize_timed_samples(&format!("{label}_pma_cold_ms"), &detail.cold_ms);
+    summarize_value_samples(&format!("{label}_pma_cold_alloc_mib"), &detail.cold_alloc);
+    summarize_timed_samples(&format!("{label}_pma_arvo_ms"), &detail.arvo_ms);
+    summarize_value_samples(&format!("{label}_pma_arvo_alloc_mib"), &detail.arvo_alloc);
 }
 
 fn summarize_timed_samples(label: &str, samples: &[TimedSample]) {
@@ -896,6 +1040,33 @@ fn summarize_timed_samples(label: &str, samples: &[TimedSample]) {
     info!("bench: {}: top3=[{}]", label, top3_fmt);
 }
 
+fn summarize_value_samples(label: &str, samples: &[ValueSample]) {
+    if samples.is_empty() {
+        info!("bench: {}: no samples", label);
+        return;
+    }
+    let p50 = percentile_value_sample(samples, 50.0).unwrap();
+    let p95 = percentile_value_sample(samples, 95.0).unwrap();
+    let p99 = percentile_value_sample(samples, 99.0).unwrap();
+    let max = top_n_value_samples(samples, 1)[0];
+    info!(
+        "bench: {}: p50={} p95={} p99={} max={}",
+        label,
+        format_value_sample(p50),
+        format_value_sample(p95),
+        format_value_sample(p99),
+        format_value_sample(max)
+    );
+
+    let top3 = top_n_value_samples(samples, 3);
+    let top3_fmt = top3
+        .iter()
+        .map(|sample| format_value_sample(*sample))
+        .collect::<Vec<_>>()
+        .join(", ");
+    info!("bench: {}: top3=[{}]", label, top3_fmt);
+}
+
 fn percentile_sample(samples: &[TimedSample], pct: f64) -> Option<TimedSample> {
     if samples.is_empty() {
         return None;
@@ -906,9 +1077,29 @@ fn percentile_sample(samples: &[TimedSample], pct: f64) -> Option<TimedSample> {
     Some(samples[indices[rank]])
 }
 
+fn percentile_value_sample(samples: &[ValueSample], pct: f64) -> Option<ValueSample> {
+    if samples.is_empty() {
+        return None;
+    }
+    let mut indices: Vec<usize> = (0..samples.len()).collect();
+    indices.sort_by(|&a, &b| samples[a].value_bytes.cmp(&samples[b].value_bytes));
+    let rank = ((pct / 100.0) * ((samples.len() - 1) as f64)).ceil() as usize;
+    Some(samples[indices[rank]])
+}
+
 fn top_n_samples(samples: &[TimedSample], count: usize) -> Vec<TimedSample> {
     let mut indices: Vec<usize> = (0..samples.len()).collect();
     indices.sort_by(|&a, &b| samples[b].value.cmp(&samples[a].value));
+    indices
+        .into_iter()
+        .take(count.min(samples.len()))
+        .map(|idx| samples[idx])
+        .collect()
+}
+
+fn top_n_value_samples(samples: &[ValueSample], count: usize) -> Vec<ValueSample> {
+    let mut indices: Vec<usize> = (0..samples.len()).collect();
+    indices.sort_by(|&a, &b| samples[b].value_bytes.cmp(&samples[a].value_bytes));
     indices
         .into_iter()
         .take(count.min(samples.len()))
@@ -925,6 +1116,19 @@ fn format_sample(sample: TimedSample) -> String {
     )
 }
 
+fn format_value_sample(sample: ValueSample) -> String {
+    format!(
+        "{:.3}MiB@t={:.3}ms(idx={})",
+        bytes_to_mib(sample.value_bytes),
+        duration_ms(sample.ts),
+        sample.idx + 1
+    )
+}
+
 fn duration_ms(d: Duration) -> f64 {
     (d.as_micros() as f64) / 1000.0
+}
+
+fn bytes_to_mib(bytes: u64) -> f64 {
+    (bytes as f64) / (1024.0 * 1024.0)
 }

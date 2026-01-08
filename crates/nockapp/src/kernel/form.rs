@@ -56,10 +56,27 @@ pub struct PmaConfig {
     pub words: usize,
 }
 
+#[derive(Clone, Copy, Debug, Default)]
+pub struct PmaCopySegment {
+    pub elapsed: Duration,
+    pub alloc_words: usize,
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+pub struct PmaCopyDetail {
+    pub warm: PmaCopySegment,
+    pub test_jets: PmaCopySegment,
+    pub hot: PmaCopySegment,
+    pub cache: PmaCopySegment,
+    pub cold: PmaCopySegment,
+    pub arvo: PmaCopySegment,
+}
+
 #[derive(Clone, Copy, Debug)]
-pub(crate) struct PmaTimingSample {
-    pub(crate) event: Duration,
-    pub(crate) pma_copy: Duration,
+pub struct PmaTimingSample {
+    pub event: Duration,
+    pub pma_copy: Duration,
+    pub detail: Option<PmaCopyDetail>,
 }
 
 #[derive(Default)]
@@ -68,9 +85,18 @@ pub(crate) struct PmaTiming {
 }
 
 impl PmaTiming {
-    pub(crate) fn record(&self, event: Duration, pma_copy: Duration) {
+    pub(crate) fn record(
+        &self,
+        event: Duration,
+        pma_copy: Duration,
+        detail: Option<PmaCopyDetail>,
+    ) {
         let mut samples = self.samples.lock().unwrap_or_else(|err| err.into_inner());
-        samples.push(PmaTimingSample { event, pma_copy });
+        samples.push(PmaTimingSample {
+            event,
+            pma_copy,
+            detail,
+        });
     }
 
     pub(crate) fn take_samples(&self) -> Vec<PmaTimingSample> {
@@ -428,7 +454,7 @@ fn serf_loop<C: SerfCheckpoint>(
                         }
                         unsafe {
                             serf.event_update(state.event_num, arvo);
-                            serf.preserve_event_update_leftovers();
+                            let _ = serf.preserve_event_update_leftovers();
                         }
                         let _ = result.send(Ok(())).map_err(|err| {
                             debug!("Tried to send to dropped channel: {:?}", err);
@@ -550,16 +576,17 @@ fn serf_loop<C: SerfCheckpoint>(
                         debug!("Failed to send poke result from serf thread");
                     });
                     let mut pma_elapsed = None;
+                    let mut pma_detail = None;
                     if did_update {
                         let pma_start = Instant::now();
                         unsafe {
-                            serf.preserve_event_update_leftovers();
+                            pma_detail = serf.preserve_event_update_leftovers();
                         }
                         pma_elapsed = Some(pma_start.elapsed());
                     }
                     if let Some(timing) = &pma_timing {
                         let pma_elapsed = pma_elapsed.unwrap_or_else(|| Duration::from_millis(0));
-                        timing.record(event_elapsed, pma_elapsed);
+                        timing.record(event_elapsed, pma_elapsed, pma_detail);
                     }
                     if std::env::var_os("NOCK_PMA_TIMING").is_some() {
                         let event_ms = event_elapsed.as_secs_f64() * 1000.0;
@@ -781,6 +808,13 @@ impl<C: SerfCheckpoint + 'static> Kernel<C> {
         })
     }
 
+    pub fn take_pma_timing_samples_detailed(&self) -> Option<Vec<PmaTimingSample>> {
+        self.serf
+            .pma_timing
+            .as_ref()
+            .map(|timing| timing.take_samples())
+    }
+
     pub async fn load_with_hot_state_huge(
         kernel: &[u8],
         checkpoint: Option<C>,
@@ -998,7 +1032,7 @@ impl Serf {
 
         unsafe {
             serf.event_update(event_num_raw, arvo);
-            serf.preserve_event_update_leftovers();
+            let _ = serf.preserve_event_update_leftovers();
         }
         serf
     }
@@ -1369,34 +1403,109 @@ impl Serf {
         self.context.scry_stack = D(0);
     }
 
-    unsafe fn copy_persistent_state_to_pma(&mut self, pma: &mut Pma, trace_pma: bool) {
-        let stack = &mut self.context.stack;
+    unsafe fn copy_segment<T: PmaCopy>(
+        label: &str,
+        value: &mut T,
+        stack: &NockStack,
+        pma: &mut Pma,
+        trace_pma: bool,
+        segment: Option<&mut PmaCopySegment>,
+    ) {
         if trace_pma {
-            info!("pma-copy: warm");
+            info!("pma-copy: {label}");
         }
-        self.context.warm.copy_to_pma(stack, pma);
-        if trace_pma {
-            info!("pma-copy: test_jets");
+        if let Some(segment) = segment {
+            let before = pma.alloc_offset();
+            let start = Instant::now();
+            value.copy_to_pma(stack, pma);
+            segment.elapsed = start.elapsed();
+            segment.alloc_words = pma.alloc_offset().saturating_sub(before);
+        } else {
+            value.copy_to_pma(stack, pma);
         }
-        self.context.test_jets.copy_to_pma(stack, pma);
-        if trace_pma {
-            info!("pma-copy: hot");
-        }
-        self.context.hot.copy_to_pma(stack, pma);
-        if trace_pma {
-            info!("pma-copy: cache");
-        }
-        self.context.cache.copy_to_pma(stack, pma);
-        if trace_pma {
-            info!("pma-copy: cold");
-        }
-        self.context.cold.copy_to_pma(stack, pma);
-        if trace_pma {
-            info!("pma-copy: arvo");
-        }
-        self.arvo.copy_to_pma(stack, pma);
     }
 
+    unsafe fn copy_persistent_state_to_pma(
+        &mut self,
+        pma: &mut Pma,
+        trace_pma: bool,
+        detail: Option<&mut PmaCopyDetail>,
+    ) {
+        let stack = &mut self.context.stack;
+        if let Some(detail) = detail {
+            Self::copy_segment(
+                "warm",
+                &mut self.context.warm,
+                stack,
+                pma,
+                trace_pma,
+                Some(&mut detail.warm),
+            );
+            Self::copy_segment(
+                "test_jets",
+                &mut self.context.test_jets,
+                stack,
+                pma,
+                trace_pma,
+                Some(&mut detail.test_jets),
+            );
+            Self::copy_segment(
+                "hot",
+                &mut self.context.hot,
+                stack,
+                pma,
+                trace_pma,
+                Some(&mut detail.hot),
+            );
+            Self::copy_segment(
+                "cache",
+                &mut self.context.cache,
+                stack,
+                pma,
+                trace_pma,
+                Some(&mut detail.cache),
+            );
+            Self::copy_segment(
+                "cold",
+                &mut self.context.cold,
+                stack,
+                pma,
+                trace_pma,
+                Some(&mut detail.cold),
+            );
+            Self::copy_segment(
+                "arvo",
+                &mut self.arvo,
+                stack,
+                pma,
+                trace_pma,
+                Some(&mut detail.arvo),
+            );
+        } else {
+            Self::copy_segment("warm", &mut self.context.warm, stack, pma, trace_pma, None);
+            Self::copy_segment(
+                "test_jets",
+                &mut self.context.test_jets,
+                stack,
+                pma,
+                trace_pma,
+                None,
+            );
+            Self::copy_segment("hot", &mut self.context.hot, stack, pma, trace_pma, None);
+            Self::copy_segment(
+                "cache",
+                &mut self.context.cache,
+                stack,
+                pma,
+                trace_pma,
+                None,
+            );
+            Self::copy_segment("cold", &mut self.context.cold, stack, pma, trace_pma, None);
+            Self::copy_segment("arvo", &mut self.arvo, stack, pma, trace_pma, None);
+        }
+    }
+
+    #[cfg(feature = "pma-assert")]
     fn assert_persistent_state_in_pma(&self, pma: &Pma) {
         self.context.warm.assert_in_pma(pma);
         self.context.test_jets.assert_in_pma(pma);
@@ -1422,16 +1531,23 @@ impl Serf {
     ///
     /// This function is unsafe because it modifies the Serf's state directly.
     #[tracing::instrument(level = "info", skip_all)]
-    pub unsafe fn preserve_event_update_leftovers(&mut self) {
+    pub unsafe fn preserve_event_update_leftovers(&mut self) -> Option<PmaCopyDetail> {
         assert!(
             self.context.scry_stack.is_direct(),
             "scry_stack must be cleared before resetting the NockStack"
         );
         if self.pma.is_some() {
             let trace_pma = std::env::var_os("NOCK_PMA_TRACE").is_some();
+            let detail_enabled = std::env::var_os("NOCK_PMA_TIMING_DETAIL").is_some();
             let mut pma = self.pma.take().expect("checked is_some");
-            self.copy_persistent_state_to_pma(&mut pma, trace_pma);
-            if cfg!(feature = "pma-assert") {
+            let mut detail = if detail_enabled {
+                Some(PmaCopyDetail::default())
+            } else {
+                None
+            };
+            self.copy_persistent_state_to_pma(&mut pma, trace_pma, detail.as_mut());
+            #[cfg(feature = "pma-assert")]
+            {
                 // Enforce: PMA data must not reference the NockStack.
                 self.assert_persistent_state_in_pma(&pma);
             }
@@ -1440,9 +1556,11 @@ impl Serf {
 
             self.context.stack.reset(0);
             self.pma = Some(pma);
+            detail
         } else {
             self.preserve_persistent_state_in_stack();
             self.context.stack.flip_top_frame(0);
+            None
         }
     }
 

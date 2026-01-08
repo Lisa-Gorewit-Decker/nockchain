@@ -10,6 +10,7 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use either::Either::{Left, Right};
+#[cfg(feature = "pma-assert")]
 use intmap::IntMap;
 use smallvec::SmallVec;
 use thiserror::Error;
@@ -368,9 +369,14 @@ impl PmaCopy for Atom {
         *self = noun.as_atom().expect("Atom remains atom after copy_to_pma");
     }
 
+    #[cfg(feature = "pma-assert")]
     fn assert_in_pma(&self, pma: &Pma) {
         self.as_noun().assert_in_pma(pma);
     }
+
+    #[cfg(not(feature = "pma-assert"))]
+    #[inline(always)]
+    fn assert_in_pma(&self, _pma: &Pma) {}
 }
 
 impl PmaCopy for Noun {
@@ -564,6 +570,7 @@ impl PmaCopy for Noun {
 
     /// Assert that this noun and all its substructure is in the PMA.
     ///
+    #[cfg(feature = "pma-assert")]
     fn assert_in_pma(&self, pma: &Pma) {
         if self.is_direct() {
             return;
@@ -600,6 +607,10 @@ impl PmaCopy for Noun {
             }
         }
     }
+
+    #[cfg(not(feature = "pma-assert"))]
+    #[inline(always)]
+    fn assert_in_pma(&self, _pma: &Pma) {}
 }
 
 #[cfg(test)]

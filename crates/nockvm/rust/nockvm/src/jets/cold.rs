@@ -75,6 +75,7 @@ impl Preserve for Batteries {
 }
 
 impl PmaCopy for Batteries {
+    #[cfg(feature = "pma-assert")]
     fn assert_in_pma(&self, pma: &Pma) {
         if self.0.is_null() {
             return;
@@ -95,6 +96,10 @@ impl PmaCopy for Batteries {
             }
         }
     }
+
+    #[cfg(not(feature = "pma-assert"))]
+    #[inline(always)]
+    fn assert_in_pma(&self, _pma: &Pma) {}
 
     unsafe fn copy_to_pma(&mut self, stack: &NockStack, pma: &mut Pma) {
         if self.0.is_null() {
@@ -249,6 +254,7 @@ struct BatteriesListMem {
 }
 
 impl PmaCopy for BatteriesList {
+    #[cfg(feature = "pma-assert")]
     fn assert_in_pma(&self, pma: &Pma) {
         if self.0.is_null() {
             return;
@@ -268,6 +274,10 @@ impl PmaCopy for BatteriesList {
             }
         }
     }
+
+    #[cfg(not(feature = "pma-assert"))]
+    #[inline(always)]
+    fn assert_in_pma(&self, _pma: &Pma) {}
 
     unsafe fn copy_to_pma(&mut self, stack: &NockStack, pma: &mut Pma) {
         if self.0.is_null() {
@@ -404,6 +414,7 @@ impl Preserve for NounList {
 }
 
 impl PmaCopy for NounList {
+    #[cfg(feature = "pma-assert")]
     fn assert_in_pma(&self, pma: &Pma) {
         if self.0.is_null() {
             return;
@@ -423,6 +434,10 @@ impl PmaCopy for NounList {
             }
         }
     }
+
+    #[cfg(not(feature = "pma-assert"))]
+    #[inline(always)]
+    fn assert_in_pma(&self, _pma: &Pma) {}
 
     unsafe fn copy_to_pma(&mut self, stack: &NockStack, pma: &mut Pma) {
         if self.0.is_null() {
@@ -490,6 +505,7 @@ struct ColdMem {
 }
 
 impl PmaCopy for Cold {
+    #[cfg(feature = "pma-assert")]
     fn assert_in_pma(&self, pma: &Pma) {
         unsafe {
             assert!(
@@ -501,6 +517,10 @@ impl PmaCopy for Cold {
             (*self.0).path_to_batteries.assert_in_pma(pma);
         }
     }
+
+    #[cfg(not(feature = "pma-assert"))]
+    #[inline(always)]
+    fn assert_in_pma(&self, _pma: &Pma) {}
 
     unsafe fn copy_to_pma(&mut self, stack: &NockStack, pma: &mut Pma) {
         if pma.contains_ptr(self.0 as *const u8) {

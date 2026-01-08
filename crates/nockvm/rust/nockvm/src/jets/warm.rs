@@ -24,9 +24,14 @@ impl Preserve for Warm {
 }
 
 impl PmaCopy for Warm {
+    #[cfg(feature = "pma-assert")]
     fn assert_in_pma(&self, pma: &Pma) {
         self.0.assert_in_pma(pma);
     }
+
+    #[cfg(not(feature = "pma-assert"))]
+    #[inline(always)]
+    fn assert_in_pma(&self, _pma: &Pma) {}
 
     unsafe fn copy_to_pma(&mut self, stack: &NockStack, pma: &mut Pma) {
         let trace = std::env::var_os("NOCK_PMA_TRACE").is_some();
@@ -187,6 +192,7 @@ impl Preserve for WarmEntry {
 }
 
 impl PmaCopy for WarmEntry {
+    #[cfg(feature = "pma-assert")]
     fn assert_in_pma(&self, pma: &Pma) {
         if self.0.is_null() {
             return;
@@ -207,6 +213,10 @@ impl PmaCopy for WarmEntry {
             }
         }
     }
+
+    #[cfg(not(feature = "pma-assert"))]
+    #[inline(always)]
+    fn assert_in_pma(&self, _pma: &Pma) {}
 
     unsafe fn copy_to_pma(&mut self, stack: &NockStack, pma: &mut Pma) {
         if self.0.is_null() {

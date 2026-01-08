@@ -635,6 +635,7 @@ impl<T: Copy + Preserve> Preserve for Hamt<T> {
 }
 
 impl<T: Copy + PmaCopy> PmaCopy for Hamt<T> {
+    #[cfg(feature = "pma-assert")]
     fn assert_in_pma(&self, pma: &Pma) {
         unsafe {
             // Check root stem is in PMA
@@ -706,6 +707,10 @@ impl<T: Copy + PmaCopy> PmaCopy for Hamt<T> {
             }
         }
     }
+
+    #[cfg(not(feature = "pma-assert"))]
+    #[inline(always)]
+    fn assert_in_pma(&self, _pma: &Pma) {}
 
     /// Copy this HAMT and all its contents to the PMA.
     ///

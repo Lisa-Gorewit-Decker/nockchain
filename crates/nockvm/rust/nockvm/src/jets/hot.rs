@@ -925,6 +925,7 @@ impl Preserve for Hot {
 }
 
 impl PmaCopy for Hot {
+    #[cfg(feature = "pma-assert")]
     fn assert_in_pma(&self, pma: &Pma) {
         let mut it = *self;
         while !it.0.is_null() {
@@ -939,6 +940,10 @@ impl PmaCopy for Hot {
             it = unsafe { (*it.0).next };
         }
     }
+
+    #[cfg(not(feature = "pma-assert"))]
+    #[inline(always)]
+    fn assert_in_pma(&self, _pma: &Pma) {}
 
     unsafe fn copy_to_pma(&mut self, stack: &NockStack, pma: &mut Pma) {
         let mut ptr: *mut Hot = self;
