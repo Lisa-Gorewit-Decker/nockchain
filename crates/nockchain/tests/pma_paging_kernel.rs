@@ -229,14 +229,15 @@ impl TxHasher {
     }
 
     fn hashable_sig(&mut self, lock: &Lock) -> Noun {
+        let mut slab: NounSlab = NounSlab::new();
         let mut pubkeys_set = D(0);
         for pubkey in &lock.pubkeys {
-            let mut key_noun = pubkey.to_noun(&mut self.stack);
+            let mut key_noun = pubkey.to_noun(&mut slab);
             pubkeys_set =
-                z_set_put(&mut self.stack, &pubkeys_set, &mut key_noun, &DefaultTipHasher)
+                z_set_put(&mut slab, &pubkeys_set, &mut key_noun, &DefaultTipHasher)
                     .expect("z_set_put for pubkeys");
         }
-        let space = self.stack.noun_space();
+        let space = slab.noun_space();
         let pubkeys_hashable = self.hashable_pubkeys(pubkeys_set, &space);
         let m = self.hashable_leaf(D(lock.keys_required));
         T(&mut self.stack, &[m, pubkeys_hashable])
@@ -475,6 +476,7 @@ fn pma_paging_kernel_workload() {
     let extra_gift = env_u64("NOCKCHAIN_PMA_PAGING_GIFT", DEFAULT_EXTRA_GIFT);
     let bytes_check_interval =
         env_usize("NOCKCHAIN_PMA_PAGING_BYTES_INTERVAL", DEFAULT_BYTES_CHECK_INTERVAL).max(1);
+    let skip_mining = env_bool("NOCKCHAIN_PMA_PAGING_SKIP_MINING", true);
 
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -494,7 +496,9 @@ fn pma_paging_kernel_workload() {
         let genesis_id = genesis_block_id(&genesis_bytes)?;
 
         let mut constants = fakenet_constants();
-        constants.check_pow_flag = false;
+        if skip_mining {
+            constants.check_pow_flag = false;
+        }
         constants.max_block_size = u64::MAX;
         constants.base_fee = 0;
 
@@ -1394,5 +1398,19 @@ fn env_u64(name: &str, default: u64) -> u64 {
     std::env::var(name)
         .ok()
         .and_then(|value| value.parse::<u64>().ok())
+        .unwrap_or(default)
+}
+
+fn env_bool(name: &str, default: bool) -> bool {
+    std::env::var(name)
+        .ok()
+        .and_then(|value| {
+            let value = value.trim().to_ascii_lowercase();
+            match value.as_str() {
+                "1" | "true" | "yes" | "on" => Some(true),
+                "0" | "false" | "no" | "off" => Some(false),
+                _ => None,
+            }
+        })
         .unwrap_or(default)
 }

@@ -29,6 +29,18 @@ build-nockchain-jemalloc:
 test:
 	cargo test --release
 
+.PHONY: bench-nockchain-kernel
+bench-nockchain-kernel:
+	cargo run --release -p nockchain --bin bench_nockchain_kernel -- --skip-mining
+
+.PHONY: test-pma-paging-kernel
+test-pma-paging-kernel:
+	NOCKCHAIN_PMA_PAGING_SKIP_MINING=1 cargo test --release --test pma_paging_kernel -- --ignored
+
+.PHONY: test-pma-persist-blocks
+test-pma-persist-blocks:
+	cargo test --release --test pma_persist_blocks
+
 .PHONY: fmt
 fmt:
 	cargo fmt
