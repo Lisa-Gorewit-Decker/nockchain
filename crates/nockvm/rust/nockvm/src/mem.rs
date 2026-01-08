@@ -598,6 +598,14 @@ impl NockStack {
         &self.arena
     }
 
+    /// Set the arena for this stack.
+    ///
+    /// This is used after evacuating to PMA, to ensure that `install_arena()`
+    /// installs the PMA arena rather than the original stack arena.
+    pub fn set_arena(&mut self, arena: Arc<Arena>) {
+        self.arena = arena;
+    }
+
     #[inline]
     pub fn arena_ref(&self) -> &Arena {
         &self.arena

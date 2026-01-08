@@ -643,7 +643,11 @@ fn debug_assertions(stack: &mut NockStack, noun: Noun) {
 }
 
 /** Interpret nock */
-pub fn interpret(context: &mut Context, mut subject: Noun, formula: Noun) -> Result {
+pub fn interpret(context: &mut Context, subject: Noun, formula: Noun) -> Result {
+    interpret_inner(context, subject, formula)
+}
+
+fn interpret_inner(context: &mut Context, mut subject: Noun, formula: Noun) -> Result {
     // Install the context's arena before any noun operations.
     // This ensures offset-form nouns are resolved against the correct arena.
     context.install_arena();

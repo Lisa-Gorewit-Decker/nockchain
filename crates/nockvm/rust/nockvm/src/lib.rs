@@ -71,6 +71,7 @@ mod tests {
         use crate::noun::*;
         use crate::serialization::jam;
         let mut stack = NockStack::new(8 << 10 << 10, 0);
+        stack.install_arena();
         let head = Atom::new(&mut stack, 0).as_noun();
         let tail = Atom::new(&mut stack, 1).as_noun();
         let cell = Cell::new(&mut stack, head, tail).as_noun();

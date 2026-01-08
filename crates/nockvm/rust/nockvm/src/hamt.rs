@@ -66,7 +66,8 @@ pub struct MutHamt<T: Copy>(*mut MutStem<T>);
 
 impl<T: Copy> MutHamt<T> {
     pub fn new(stack: &mut NockStack) -> MutHamt<T> {
-        stack.install_arena();
+        // NOTE: Arena should already be installed by caller (e.g., interpret_inner)
+        // Removed stack.install_arena() to avoid overwriting context.arena with stack.arena
         unsafe {
             let new_stem = stack.struct_alloc::<MutStem<T>>(1);
             (*new_stem).bitmap = 0;
@@ -76,7 +77,7 @@ impl<T: Copy> MutHamt<T> {
     }
 
     pub fn lookup(self, stack: &mut NockStack, n: &mut Noun) -> Option<T> {
-        stack.install_arena();
+        // NOTE: Arena should already be installed by caller
         let mut stem = self.0;
         let mut mug = mug_u32(stack, *n);
         unsafe {
@@ -104,7 +105,7 @@ impl<T: Copy> MutHamt<T> {
     }
 
     pub fn insert(self, stack: &mut NockStack, n: &mut Noun, t: T) {
-        stack.install_arena();
+        // NOTE: Arena should already be installed by caller
         let mut stem = self.0;
         let mut mug = mug_u32(stack, *n);
         let mut depth = 0u8;
@@ -292,7 +293,7 @@ impl<T: Copy + Preserve> Hamt<T> {
     }
     // Make a new, empty HAMT
     pub fn new(stack: &mut NockStack) -> Self {
-        stack.install_arena();
+        // NOTE: Arena should already be installed by caller
         unsafe {
             let stem_ptr = stack.struct_alloc::<Stem<T>>(1);
             // debug_assert for null stem_ptr
@@ -321,7 +322,7 @@ impl<T: Copy + Preserve> Hamt<T> {
      * in the HAMT
      */
     pub fn lookup(&self, stack: &mut NockStack, n: &mut Noun) -> Option<T> {
-        stack.install_arena();
+        // NOTE: Arena should already be installed by caller
         let mut stem = unsafe { *self.0 };
         let mut mug = mug_u32(stack, *n);
         'lookup: loop {
@@ -351,7 +352,7 @@ impl<T: Copy + Preserve> Hamt<T> {
 
     /// Make a new HAMT with the value inserted or replaced at the key.
     pub fn insert(&self, stack: &mut NockStack, n: &mut Noun, t: T) -> Hamt<T> {
-        stack.install_arena();
+        // NOTE: Arena should already be installed by caller
         let mut mug = mug_u32(stack, *n);
         let mut depth = 0u8;
         let mut stem = unsafe { *self.0 };
@@ -976,6 +977,7 @@ mod test {
         let size = 1 << 27;
         let top_slots = 100;
         let mut stack = NockStack::new(size, top_slots);
+        stack.install_arena();
         let mut hamt = Hamt::<Noun>::new(&mut stack);
         hamt = hamt.insert(&mut stack, &mut D(0), D(1));
         hamt = hamt.insert(&mut stack, &mut D(2), D(3));
@@ -998,6 +1000,7 @@ mod test {
         let size = 1 << 27;
         let top_slots = 100;
         let mut stack = NockStack::new(size, top_slots);
+        stack.install_arena();
         let mut hamt = Hamt::<Noun>::new(&mut stack);
         let mut hs = HashSet::new();
         for n in 0..100 {
@@ -1017,6 +1020,7 @@ mod test {
         let size = 1 << 27;
         let top_slots = 100;
         let mut stack = NockStack::new(size, top_slots);
+        stack.install_arena();
         let mut hamt = Hamt::<Noun>::new(&mut stack);
         let mut n = D(0);
         let t = D(1);
@@ -1038,6 +1042,7 @@ mod test {
         let size = 1 << 27;
         let top_slots = 100;
         let mut stack = NockStack::new(size, top_slots);
+        stack.install_arena();
         let mut hamt = Hamt::<Noun>::new(&mut stack);
         // 3-way collision
         // x: 0 y: 87699370 x_hash: 2046756072 y_hash: 2046756072
@@ -1074,6 +1079,7 @@ mod test {
         let size = 1 << 27;
         let top_slots = 100;
         let mut stack = NockStack::new(size, top_slots);
+        stack.install_arena();
         let mut hamt = Hamt::<Noun>::new(&mut stack);
         // 3-way collision
         // x: 0 y: 87699370 x_hash: 2046756072 y_hash: 2046756072

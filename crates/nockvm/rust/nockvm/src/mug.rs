@@ -206,11 +206,18 @@ pub fn mug_u32_one(mut noun: Noun, arena: &Arena) -> Option<u32> {
 }
 
 pub fn mug_u32(stack: &mut NockStack, noun: Noun) -> u32 {
-    let arena = std::sync::Arc::clone(stack.arena());
-    if let Some(mug) = get_mug(noun, &arena) {
-        return mug;
-    }
+    // Use the currently installed arena (from context), not stack.arena()
+    // This is important when context.arena is the PMA arena after evacuation
+    Arena::with_current(|arena| {
+        if let Some(mug) = get_mug(noun, arena) {
+            return mug;
+        }
+        mug_u32_inner(stack, noun, arena)
+    })
+}
 
+fn mug_u32_inner(stack: &mut NockStack, noun: Noun, arena: &Arena) -> u32 {
+    // NOTE: Caller already checked if noun has a mug
     assert_acyclic!(noun);
     assert_no_forwarding_pointers!(noun);
     assert_no_junior_pointers!(stack, noun);

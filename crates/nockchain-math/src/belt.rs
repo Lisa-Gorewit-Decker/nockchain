@@ -89,8 +89,8 @@ impl NounDecode for Belt {
         let atom = noun
             .as_atom()
             .map_err(|_| noun_serde::NounDecodeError::ExpectedAtom)?;
-        // SAFETY: NounDecode operates on stack-allocated nouns
-        let value = unsafe { atom.as_u64_stack() }
+        // Use auto-dispatch as_u64 to handle both stack and PMA nouns
+        let value = atom.as_u64()
             .map_err(|_| noun_serde::NounDecodeError::Custom("Belt value too large".to_string()))?;
         if !based_check(value) {
             return Err(noun_serde::NounDecodeError::Custom(

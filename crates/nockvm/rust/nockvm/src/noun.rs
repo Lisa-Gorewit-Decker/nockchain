@@ -1161,7 +1161,9 @@ impl Cell {
         if tagged.location() == PtrLocation::Stack {
             ((tagged.payload(CELL_MASK)) << 3) as *const CellMemory
         } else {
-            Arena::with_current(|arena| unsafe { self.to_raw_pointer_with_arena(arena) })
+            Arena::with_current(|arena| {
+                unsafe { self.to_raw_pointer_with_arena(arena) }
+            })
         }
     }
 

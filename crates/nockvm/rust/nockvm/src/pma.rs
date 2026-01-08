@@ -358,6 +358,7 @@ impl PmaCopy for Noun {
                             // Allocate cell in PMA
                             let pma_ptr = pma.raw_alloc(word_size_of::<CellMemory>());
                             let pma_cell = pma_ptr as *mut CellMemory;
+                            let offset = pma.offset_from_ptr(pma_ptr as *const u8);
 
                             // Copy metadata
                             (*pma_cell).metadata = (*src_cell).metadata;
@@ -376,8 +377,8 @@ impl PmaCopy for Noun {
                             work.push((head, &mut (*pma_cell).head));
 
                             // Write PMA offset-form cell to destination
-                            let offset = pma.offset_from_ptr(pma_ptr as *const u8);
-                            *dest_ptr = Cell::from_pma_offset(offset).as_noun();
+                            let result = Cell::from_pma_offset(offset).as_noun();
+                            *dest_ptr = result;
                         }
                     }
                 }

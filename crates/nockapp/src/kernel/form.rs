@@ -1029,8 +1029,6 @@ impl Serf {
                         }
                     };
 
-                    // Debug: print the error before wrapping
-                    eprintln!("DEBUG soft() error: mote={:?}", mote);
                     let goof = self.goof(mote, traces);
                     self.print_goof(goof);
                     Err(goof)
@@ -1257,6 +1255,7 @@ impl Serf {
         stack.preserve(&mut self.arvo);
         stack.flip_top_frame(0);
         self.retag_survivors();
+
         #[cfg(debug_assertions)]
         self.debug_assert_offsets();
     }
@@ -1295,11 +1294,25 @@ impl Serf {
 
         // Reset NockStack for next event
         stack.flip_top_frame(0);
-        self.retag_survivors();
+
+        // CRITICAL: After evacuating to PMA, we must use the PMA arena for offset resolution.
+        // arvo/cold/warm are now in PMA offset form (LOCATION_BIT set, offset relative to PMA base).
+        // hot/cache/test_jets remain as raw stack pointers (LOCATION_BIT clear, direct addresses).
+        //
+        // We update context.arena to be the PMA arena so that:
+        // - PMA offset-form nouns resolve correctly using PMA base
+        // - Raw stack pointers still work (they don't use the arena)
+        //
+        // We do NOT call retag_survivors() because:
+        // 1. arvo/cold/warm are already in PMA offset form
+        // 2. hot/cache/test_jets should remain as raw stack pointers (not offset form)
+        //    because we now use the PMA arena, not the stack arena
+        let pma_arena = pma.arena().clone();
+        self.context.arena = pma_arena;
+        self.context.install_arena();
 
         // Note: After evacuation, arvo, cold, and warm are in PMA (offset form).
-        // Hot remains on stack. The PMA-resident nouns will be accessed via
-        // auto-dispatch methods.
+        // Hot/cache/test_jets remain as raw stack pointers (work without arena).
         #[cfg(debug_assertions)]
         self.debug_assert_offsets();
     }
@@ -1315,17 +1328,23 @@ impl Serf {
 
     #[cfg(debug_assertions)]
     fn debug_assert_offsets(&mut self) {
-        self.context.stack.install_arena();
+        eprintln!("debug_assert_offsets: START");
+        // Use context's arena (which may be PMA arena after evacuate_to_pma)
+        self.context.install_arena();
+        eprintln!("debug_assert_offsets: arena installed, checking arvo.raw={:#x}", unsafe { self.arvo.as_raw() });
         let mut work = vec![self.arvo, self.context.scry_stack];
+        eprintln!("debug_assert_offsets: starting loop");
         while let Some(noun) = work.pop() {
             if noun.is_stack_allocated() {
                 panic!("serf: encountered stack pointer after preserve");
             }
             if let Ok(cell) = noun.as_cell() {
+                eprintln!("debug_assert_offsets: visiting cell.raw={:#x}", cell.to_raw_pointer() as usize);
                 work.push(cell.head());
                 work.push(cell.tail());
             }
         }
+        eprintln!("debug_assert_offsets: DONE");
     }
 
     fn retag_survivors(&mut self) {
