@@ -61,3 +61,7 @@ vergen = { workspace = true, features = [
     "rustc",
     "si",
 ] }
+
+[dev-dependencies]
+libc.workspace = true
+memmap2.workspace = true
