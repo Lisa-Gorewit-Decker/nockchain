@@ -1,5 +1,5 @@
 // TODO: fix stack push in PC
-use std::alloc::Layout;
+use std::alloc::{alloc, dealloc, Layout};
 use std::fs::{File, OpenOptions};
 use std::panic::panic_any;
 use std::path::Path;
@@ -12,14 +12,17 @@ use std::{io, mem, ptr};
 use either::Either::{self, Left, Right};
 use ibig::Stack;
 use memmap2::{Mmap, MmapMut, MmapOptions};
-use rustix::cstr;
-use rustix::fs::{self, MemfdFlags};
 use thiserror::Error;
 
 use crate::noun::{Atom, Cell, CellMemory, IndirectAtom, Noun, NounAllocator, NounSpace};
 use crate::{assert_acyclic, assert_no_forwarding_pointers, assert_no_junior_pointers};
 
 crate::gdb!();
+
+#[cfg(all(feature = "mmap", feature = "malloc"))]
+compile_error!("nockvm features \"mmap\" and \"malloc\" are mutually exclusive");
+#[cfg(not(any(feature = "mmap", feature = "malloc")))]
+compile_error!("nockvm requires either the \"mmap\" or \"malloc\" feature");
 
 /** Number of reserved slots for alloc_pointer and frame_pointer in each frame */
 pub(crate) const RESERVED: usize = 3;
@@ -82,10 +85,6 @@ pub enum NewStackError {
     StackTooSmall,
     #[error("Failed to map memory for stack: {0}")]
     MmapFailed(std::io::Error),
-    #[error("Failed to create memfd for stack: {0}")]
-    MemfdFailed(std::io::Error),
-    #[error("Failed to resize memfd for stack: {0}")]
-    FtruncateFailed(std::io::Error),
     #[error("Failed to open arena file: {0}")]
     FileOpenFailed(std::io::Error),
     #[error("Failed to resize arena file: {0}")]
@@ -175,7 +174,7 @@ pub struct Arena {
     base: *mut u8,
     words: usize,
     mapped_bytes: usize,
-    fd: Arc<File>,
+    fd: Option<Arc<File>>,
     mapping: MappingKind,
 }
 
@@ -183,25 +182,62 @@ pub struct Arena {
 enum MappingKind {
     ReadWrite(MmapMut),
     ReadOnly(Mmap),
+    Malloc(MallocMapping),
+}
+
+#[derive(Debug)]
+struct MallocMapping {
+    ptr: *mut u8,
+    layout: Layout,
+}
+
+impl MallocMapping {
+    fn new(bytes: usize) -> Self {
+        let layout = Layout::from_size_align(bytes, mem::size_of::<u64>())
+            .expect("Invalid layout for stack allocation");
+        let ptr = unsafe { alloc(layout) };
+        if ptr.is_null() {
+            std::alloc::handle_alloc_error(layout);
+        }
+        Self { ptr, layout }
+    }
+}
+
+impl Drop for MallocMapping {
+    fn drop(&mut self) {
+        unsafe {
+            dealloc(self.ptr, self.layout);
+        }
+    }
 }
 
 impl Arena {
     pub fn allocate(words: usize) -> Result<Arc<Self>, NewStackError> {
         let bytes = words.checked_shl(3).ok_or(NewStackError::StackTooSmall)?;
-        let fd = fs::memfd_create(cstr!("nockstack"), MemfdFlags::CLOEXEC)
-            .map_err(|err| NewStackError::MemfdFailed(err.into()))?;
-        fs::ftruncate(&fd, bytes as u64)
-            .map_err(|err| NewStackError::FtruncateFailed(err.into()))?;
-        let file = Arc::new(File::from(fd));
-        let mut mapping = unsafe { MmapMut::map_mut(&*file).map_err(NewStackError::MmapFailed)? };
-        let base = mapping.as_mut_ptr();
-        Ok(Arc::new(Self {
-            base,
-            words,
-            mapped_bytes: bytes,
-            fd: file,
-            mapping: MappingKind::ReadWrite(mapping),
-        }))
+        #[cfg(feature = "mmap")]
+        {
+            let mut mapping = MmapMut::map_anon(bytes).map_err(NewStackError::MmapFailed)?;
+            let base = mapping.as_mut_ptr();
+            return Ok(Arc::new(Self {
+                base,
+                words,
+                mapped_bytes: bytes,
+                fd: None,
+                mapping: MappingKind::ReadWrite(mapping),
+            }));
+        }
+        #[cfg(feature = "malloc")]
+        {
+            let mapping = MallocMapping::new(bytes);
+            let base = mapping.ptr;
+            return Ok(Arc::new(Self {
+                base,
+                words,
+                mapped_bytes: bytes,
+                fd: None,
+                mapping: MappingKind::Malloc(mapping),
+            }));
+        }
     }
 
     pub fn allocate_file(
@@ -230,7 +266,7 @@ impl Arena {
             base,
             words,
             mapped_bytes,
-            fd: file,
+            fd: Some(file),
             mapping: MappingKind::ReadWrite(mapping),
         }))
     }
@@ -249,7 +285,7 @@ impl Arena {
             base,
             words,
             mapped_bytes,
-            fd: file,
+            fd: Some(file),
             mapping: MappingKind::ReadWrite(mapping),
         }))
     }
@@ -297,25 +333,33 @@ impl Arena {
     }
 
     pub fn map_copy_read_only(&self) -> io::Result<Mmap> {
-        unsafe {
-            MmapOptions::new()
-                .len(self.mapped_bytes)
-                .map_copy_read_only(&*self.fd)
-        }
+        let Some(fd) = &self.fd else {
+            return Err(io::Error::new(
+                io::ErrorKind::Unsupported,
+                "arena has no file backing",
+            ));
+        };
+        unsafe { MmapOptions::new().len(self.mapped_bytes).map_copy_read_only(&**fd) }
     }
 
     pub fn clone_read_only(&self) -> io::Result<Arc<Arena>> {
+        let Some(fd) = &self.fd else {
+            return Err(io::Error::new(
+                io::ErrorKind::Unsupported,
+                "arena has no file backing",
+            ));
+        };
         let mapping = unsafe {
             MmapOptions::new()
                 .len(self.mapped_bytes)
-                .map_copy_read_only(&*self.fd)?
+                .map_copy_read_only(&**fd)?
         };
         let base = mapping.as_ptr() as *mut u8;
         Ok(Arc::new(Self {
             base,
             words: self.words,
             mapped_bytes: self.mapped_bytes,
-            fd: self.fd.clone(),
+            fd: Some(Arc::clone(fd)),
             mapping: MappingKind::ReadOnly(mapping),
         }))
     }
