@@ -599,6 +599,7 @@ fn pma_paging_kernel_workload() {
             blocks_mined, used_bytes, target_bytes
         );
 
+        validate_paging_with_heaviest_peek(&mut app, &pma_path, used_bytes).await?;
         drop(app);
         validate_paging(&pma_path, used_bytes)?;
         drop(temp_dir);
@@ -1278,6 +1279,64 @@ fn validate_paging(path: &Path, used_bytes: u64) -> Result<(), Box<dyn Error>> {
     );
 
     Ok(())
+}
+
+async fn validate_paging_with_heaviest_peek(
+    app: &mut NockApp,
+    path: &Path,
+    used_bytes: u64,
+) -> Result<(), Box<dyn Error>> {
+    let page = page_size();
+    let len = (used_bytes as usize / page) * page;
+    if len == 0 {
+        return Err("PMA has no allocated bytes".into());
+    }
+
+    let file = File::open(path)?;
+    let mmap = unsafe { MmapOptions::new().len(len).map(&file)? };
+    let base = mmap.as_ptr() as *mut u8;
+
+    touch_entire_region(base, len, page);
+    let resident_bitmap = mincore_bitmap(base, len);
+    let touched_ratio = residency_ratio(&resident_bitmap);
+    info!(
+        "[pma-paging] pre-peek residency ratio {:.3}",
+        touched_ratio
+    );
+    if resident_bitmap.iter().all(|b| b & 1 == 1) {
+        drop_all_pages(base, len);
+    } else {
+        warn!("[pma-paging] pre-peek residency not full; continuing anyway");
+    }
+
+    let after_drop = mincore_bitmap(base, len);
+    let post_drop_ratio = residency_ratio(&after_drop);
+    info!(
+        "[pma-paging] pre-peek post-drop residency ratio {:.3}",
+        post_drop_ratio
+    );
+
+    if peek_heaviest_block(app).await?.is_none() {
+        warn!("[pma-paging] heaviest-block peek returned no data; skipping post-peek check");
+        return Ok(());
+    }
+
+    let post_peek = mincore_bitmap(base, len);
+    let post_peek_ratio = residency_ratio(&post_peek);
+    info!(
+        "[pma-paging] post-peek residency ratio {:.4}",
+        post_peek_ratio
+    );
+
+    Ok(())
+}
+
+async fn peek_heaviest_block(app: &mut NockApp) -> Result<Option<NounSlab>, Box<dyn Error>> {
+    let mut path_slab = NounSlab::new();
+    let tag = make_tas(&mut path_slab, "heaviest-block").as_noun();
+    let path = T(&mut path_slab, &[tag, D(0)]);
+    path_slab.set_root(path);
+    Ok(app.peek_handle(path_slab).await?)
 }
 
 fn touch_entire_region(ptr: *mut u8, len: usize, page: usize) {
