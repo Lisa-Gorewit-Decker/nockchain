@@ -19,13 +19,14 @@ use tracing::info;
 use crate::ext::noun_equality;
 use crate::mem::{word_size_of, Arena, NewStackError, NockStack};
 use crate::noun::{
-    AllocLocation, Atom, Cell, CellMemory, IndirectAtom, Noun, NounAllocator, NounRepr,
-    NounSpace,
+    AllocLocation, Atom, Cell, CellMemory, IndirectAtom, Noun, NounAllocator, NounRepr, NounSpace,
 };
 
 const PMA_MAGIC: u64 = u64::from_le_bytes(*b"NOCKPMA1");
 const PMA_VERSION: u64 = 1;
 
+/// The metadata for the PMA is a trailer or footer because otherwise the base + offset pointer derivations would need
+/// to account for the footer size. With this design it's just base pointer + offset.
 #[repr(C)]
 #[derive(Clone, Copy)]
 struct PmaTrailer {
@@ -415,8 +416,7 @@ impl PmaCopy for Noun {
                 self.assert_in_pma(pma);
                 return;
             }
-            NounRepr::Indirect(AllocLocation::PmaPtr)
-            | NounRepr::Cell(AllocLocation::PmaPtr) => {
+            NounRepr::Indirect(AllocLocation::PmaPtr) | NounRepr::Cell(AllocLocation::PmaPtr) => {
                 let offset_noun = {
                     let allocated = self.as_allocated().expect("repr said allocated");
                     let ptr = allocated.to_raw_pointer(&space);
@@ -522,9 +522,8 @@ impl PmaCopy for Noun {
 
                     match allocated.as_either() {
                         Left(mut indirect) => {
-                            let (raw_size, src_ptr) = {
-                                (indirect.raw_size(&space), indirect.to_raw_pointer(&space))
-                            };
+                            let (raw_size, src_ptr) =
+                                { (indirect.raw_size(&space), indirect.to_raw_pointer(&space)) };
 
                             let pma_ptr = pma.raw_alloc(raw_size);
                             copy_nonoverlapping(src_ptr, pma_ptr, raw_size);
@@ -586,8 +585,7 @@ impl PmaCopy for Noun {
             }
 
             match noun.repr(&space) {
-                NounRepr::Indirect(AllocLocation::Stack)
-                | NounRepr::Cell(AllocLocation::Stack) => {
+                NounRepr::Indirect(AllocLocation::Stack) | NounRepr::Cell(AllocLocation::Stack) => {
                     panic!("noun is stack-allocated, not in PMA");
                 }
                 NounRepr::Forwarding(_) => {
@@ -627,13 +625,15 @@ pub(crate) fn test_pma_path(label: &str) -> PathBuf {
 
 #[cfg(test)]
 mod tests {
+    use std::alloc::Layout;
+
+    use ibig::Stack;
+
     use super::*;
     use crate::hamt::Hamt;
     use crate::jets::cold::NounListMem;
     use crate::mem::{word_size_of, NockStack};
     use crate::noun::{AllocLocation, D, DIRECT_MAX};
-    use ibig::Stack;
-    use std::alloc::Layout;
 
     /// Helper to create a test PMA with a given size
     fn test_pma(size_words: usize) -> Pma {
@@ -658,23 +658,52 @@ mod tests {
 
         // Initial state: nothing allocated yet
         assert_eq!(pma.alloc_offset(), 0, "Initial alloc_offset should be 0");
-        assert_eq!(pma.free_words(), 1000, "Initial free_words should equal size");
+        assert_eq!(
+            pma.free_words(),
+            1000,
+            "Initial free_words should equal size"
+        );
 
         // First allocation: alloc_indirect(10) allocates 10 + 2 = 12 words (data + metadata + size)
         let ptr1 = unsafe { pma.alloc_indirect(10) };
-        assert!(!ptr1.is_null(), "First allocation should return non-null pointer");
-        assert_eq!(pma.alloc_offset(), 12, "After alloc_indirect(10), offset should be 12");
-        assert_eq!(pma.free_words(), 988, "After alloc_indirect(10), free should be 988");
+        assert!(
+            !ptr1.is_null(),
+            "First allocation should return non-null pointer"
+        );
+        assert_eq!(
+            pma.alloc_offset(),
+            12,
+            "After alloc_indirect(10), offset should be 12"
+        );
+        assert_eq!(
+            pma.free_words(),
+            988,
+            "After alloc_indirect(10), free should be 988"
+        );
 
         // Second allocation: alloc_indirect(20) allocates 20 + 2 = 22 words
         let ptr2 = unsafe { pma.alloc_indirect(20) };
-        assert!(!ptr2.is_null(), "Second allocation should return non-null pointer");
-        assert_eq!(pma.alloc_offset(), 34, "After second alloc, offset should be 34");
-        assert_eq!(pma.free_words(), 966, "After second alloc, free should be 966");
+        assert!(
+            !ptr2.is_null(),
+            "Second allocation should return non-null pointer"
+        );
+        assert_eq!(
+            pma.alloc_offset(),
+            34,
+            "After second alloc, offset should be 34"
+        );
+        assert_eq!(
+            pma.free_words(),
+            966,
+            "After second alloc, free should be 966"
+        );
 
         // Third allocation: alloc_cell allocates word_size_of::<CellMemory>() words
         let ptr3 = unsafe { pma.alloc_cell() };
-        assert!(!ptr3.is_null(), "Cell allocation should return non-null pointer");
+        assert!(
+            !ptr3.is_null(),
+            "Cell allocation should return non-null pointer"
+        );
         let cell_words = word_size_of::<CellMemory>();
         let offset_after_cell = 34 + cell_words;
         assert_eq!(
@@ -686,7 +715,10 @@ mod tests {
         // Fourth allocation: alloc_struct for NounListMem
         let struct_words = word_size_of::<NounListMem>();
         let ptr4: *mut NounListMem = unsafe { pma.alloc_struct(1) };
-        assert!(!ptr4.is_null(), "Struct allocation should return non-null pointer");
+        assert!(
+            !ptr4.is_null(),
+            "Struct allocation should return non-null pointer"
+        );
         let offset_after_struct = offset_after_cell + struct_words;
         assert_eq!(
             pma.alloc_offset(),
@@ -696,7 +728,10 @@ mod tests {
 
         // Fifth allocation: alloc_struct with count > 1 (allocate array of 3 NounListMem)
         let ptr5: *mut NounListMem = unsafe { pma.alloc_struct(3) };
-        assert!(!ptr5.is_null(), "Array struct allocation should return non-null pointer");
+        assert!(
+            !ptr5.is_null(),
+            "Array struct allocation should return non-null pointer"
+        );
         let offset_after_array = offset_after_struct + (struct_words * 3);
         assert_eq!(
             pma.alloc_offset(),
@@ -708,7 +743,10 @@ mod tests {
         let layout_words = 8usize;
         let layout = Layout::array::<u64>(layout_words).expect("valid layout");
         let ptr6 = unsafe { pma.alloc_layout(layout) };
-        assert!(!ptr6.is_null(), "Layout allocation should return non-null pointer");
+        assert!(
+            !ptr6.is_null(),
+            "Layout allocation should return non-null pointer"
+        );
         assert_eq!(
             pma.alloc_offset(),
             offset_after_array + layout_words,
@@ -723,10 +761,7 @@ mod tests {
         let ptr4_end = unsafe { (ptr4 as *mut u64).add(struct_words) };
         let ptr5_end = unsafe { (ptr5 as *mut u64).add(struct_words * 3) };
 
-        assert!(
-            ptr2 >= ptr1_end,
-            "ptr2 should start at or after ptr1's end"
-        );
+        assert!(ptr2 >= ptr1_end, "ptr2 should start at or after ptr1's end");
         assert!(
             ptr3 as *mut u64 >= ptr2_end,
             "ptr3 should start at or after ptr2's end"
@@ -739,10 +774,7 @@ mod tests {
             ptr5 as *mut u64 >= ptr4_end,
             "ptr5 should start at or after ptr4's end"
         );
-        assert!(
-            ptr6 >= ptr5_end,
-            "ptr6 should start at or after ptr5's end"
-        );
+        assert!(ptr6 >= ptr5_end, "ptr6 should start at or after ptr5's end");
     }
 
     /// Verifies offset-to-pointer and pointer-to-offset conversions are inverses.
@@ -813,12 +845,18 @@ mod tests {
 
         // Pointer at offset 0 should be in PMA
         let ptr_at_0 = pma.ptr_from_offset(0);
-        assert!(pma.contains_ptr(ptr_at_0), "Pointer at offset 0 should be in PMA");
+        assert!(
+            pma.contains_ptr(ptr_at_0),
+            "Pointer at offset 0 should be in PMA"
+        );
 
         // Pointer in the middle should be in PMA
         let middle_offset = 500u32;
         let ptr_middle = pma.ptr_from_offset(middle_offset);
-        assert!(pma.contains_ptr(ptr_middle), "Pointer in middle should be in PMA");
+        assert!(
+            pma.contains_ptr(ptr_middle),
+            "Pointer in middle should be in PMA"
+        );
 
         // Last valid byte should be in PMA
         let last_byte = unsafe { base.add(len_bytes - 1) };
@@ -826,24 +864,39 @@ mod tests {
 
         // Pointer just past the end should NOT be in PMA
         let past_end = unsafe { base.add(len_bytes) };
-        assert!(!pma.contains_ptr(past_end), "Pointer past end should not be in PMA");
+        assert!(
+            !pma.contains_ptr(past_end),
+            "Pointer past end should not be in PMA"
+        );
 
         // Pointer well past the end should NOT be in PMA
         let way_past_end = unsafe { base.add(len_bytes + 1000) };
-        assert!(!pma.contains_ptr(way_past_end), "Pointer way past end should not be in PMA");
+        assert!(
+            !pma.contains_ptr(way_past_end),
+            "Pointer way past end should not be in PMA"
+        );
 
         // Pointer before the base should NOT be in PMA (if base > 0)
         if base as usize > 0 {
             let before_base = unsafe { base.sub(1) };
-            assert!(!pma.contains_ptr(before_base), "Pointer before base should not be in PMA");
+            assert!(
+                !pma.contains_ptr(before_base),
+                "Pointer before base should not be in PMA"
+            );
         }
 
         // Null pointer should NOT be in PMA
-        assert!(!pma.contains_ptr(std::ptr::null()), "Null pointer should not be in PMA");
+        assert!(
+            !pma.contains_ptr(std::ptr::null()),
+            "Null pointer should not be in PMA"
+        );
 
         // Allocated pointer should be in PMA
         let alloc_ptr = unsafe { pma.alloc_indirect(10) };
-        assert!(pma.contains_ptr(alloc_ptr as *const u8), "Allocated pointer should be in PMA");
+        assert!(
+            pma.contains_ptr(alloc_ptr as *const u8),
+            "Allocated pointer should be in PMA"
+        );
     }
 
     /// Verifies allocation fails gracefully when PMA is full.
@@ -867,7 +920,10 @@ mod tests {
         let result = catch_unwind(AssertUnwindSafe(|| {
             pma.alloc_would_oom(101);
         }));
-        assert!(result.is_err(), "alloc_would_oom(101) should panic with 100 free");
+        assert!(
+            result.is_err(),
+            "alloc_would_oom(101) should panic with 100 free"
+        );
 
         // Allocate some space
         unsafe { pma.alloc_indirect(10) }; // 12 words (10 + 2 for metadata/size)
@@ -879,7 +935,10 @@ mod tests {
         let result = catch_unwind(AssertUnwindSafe(|| {
             pma.alloc_would_oom(89);
         }));
-        assert!(result.is_err(), "alloc_would_oom(89) should panic with 88 free");
+        assert!(
+            result.is_err(),
+            "alloc_would_oom(89) should panic with 88 free"
+        );
 
         // Fill the rest
         unsafe { pma.alloc_struct::<u64>(88) };
@@ -927,13 +986,20 @@ mod tests {
         // Reset to zero
         pma.reset();
         assert_eq!(pma.alloc_offset(), 0, "reset() should set offset to 0");
-        assert_eq!(pma.free_words(), 1000, "reset() should restore all free space");
+        assert_eq!(
+            pma.free_words(),
+            1000,
+            "reset() should restore all free space"
+        );
 
         // Allocations after reset should start from 0
         let ptr_after_reset = unsafe { pma.alloc_indirect(5) }; // 7 words
         assert_eq!(pma.alloc_offset(), 7);
         let offset_after_reset = pma.offset_from_ptr(ptr_after_reset as *const u8);
-        assert_eq!(offset_after_reset, 0, "First allocation after reset should be at offset 0");
+        assert_eq!(
+            offset_after_reset, 0,
+            "First allocation after reset should be at offset 0"
+        );
 
         // Allocate more to create a checkpoint
         unsafe { pma.alloc_indirect(10) }; // 12 more words
@@ -946,13 +1012,24 @@ mod tests {
 
         // Reset to checkpoint
         pma.reset_to(checkpoint);
-        assert_eq!(pma.alloc_offset(), 19, "reset_to() should set offset to checkpoint");
-        assert_eq!(pma.free_words(), 981, "reset_to() should restore free space from checkpoint");
+        assert_eq!(
+            pma.alloc_offset(),
+            19,
+            "reset_to() should set offset to checkpoint"
+        );
+        assert_eq!(
+            pma.free_words(),
+            981,
+            "reset_to() should restore free space from checkpoint"
+        );
 
         // Next allocation should start at the checkpoint
         let ptr_after_reset_to = unsafe { pma.alloc_indirect(3) }; // 5 words
         let offset_after_reset_to = pma.offset_from_ptr(ptr_after_reset_to as *const u8);
-        assert_eq!(offset_after_reset_to, 19, "Allocation after reset_to should start at checkpoint");
+        assert_eq!(
+            offset_after_reset_to, 19,
+            "Allocation after reset_to should start at checkpoint"
+        );
         assert_eq!(pma.alloc_offset(), 24); // 19 + 5
     }
 
@@ -972,11 +1049,17 @@ mod tests {
             let mut pma = Pma::new(1000, path.clone()).expect("Failed to create test PMA");
             unsafe { pma.alloc_indirect(10) };
             unsafe { pma.alloc_cell() };
-            assert!(pma.alloc_offset() > 0, "Expected allocations to advance offset");
+            assert!(
+                pma.alloc_offset() > 0,
+                "Expected allocations to advance offset"
+            );
         }
 
         let pma = Pma::open(path).expect("Failed to open PMA");
-        assert!(pma.alloc_offset() > 0, "alloc_offset should be restored on open");
+        assert!(
+            pma.alloc_offset() > 0,
+            "alloc_offset should be restored on open"
+        );
     }
 
     /// Verifies direct atoms are unchanged by evacuation since they fit in a single word.
@@ -1008,7 +1091,10 @@ mod tests {
             );
 
             // Verify it's still a direct atom
-            assert!(noun.is_direct(), "Should still be a direct atom after evacuation");
+            assert!(
+                noun.is_direct(),
+                "Should still be a direct atom after evacuation"
+            );
 
             // Direct atoms should trivially pass assert_in_pma (no allocations to check)
             noun.assert_in_pma(&pma);
@@ -1046,10 +1132,7 @@ mod tests {
 
         // Verify it's an indirect atom on the stack
         assert!(noun.is_indirect(), "Should be an indirect atom");
-        assert!(
-            !noun.is_direct(),
-            "Should not be a direct atom"
-        );
+        assert!(!noun.is_direct(), "Should not be a direct atom");
         assert!(
             matches!(
                 noun.in_space(&space).allocated_location(),
@@ -1099,14 +1182,8 @@ mod tests {
         // Read the data back and verify it matches
         let data_ptr = read_handle.data_pointer();
         let read_data = unsafe { std::slice::from_raw_parts(data_ptr, 2) };
-        assert_eq!(
-            read_data[0], data[0],
-            "First data word should match"
-        );
-        assert_eq!(
-            read_data[1], data[1],
-            "Second data word should match"
-        );
+        assert_eq!(read_data[0], data[0], "First data word should match");
+        assert_eq!(read_data[1], data[1], "Second data word should match");
 
         // Verify assert_in_pma passes
         noun.assert_in_pma(&pma);
@@ -1241,28 +1318,16 @@ mod tests {
             !matches!(root.head().allocated_location(), Some(AllocLocation::Stack)),
             "Left should be in offset form"
         );
-        assert_eq!(
-            left_cell.head().noun().as_direct().expect("1").data(),
-            1
-        );
-        assert_eq!(
-            left_cell.tail().noun().as_direct().expect("2").data(),
-            2
-        );
+        assert_eq!(left_cell.head().noun().as_direct().expect("1").data(), 1);
+        assert_eq!(left_cell.tail().noun().as_direct().expect("2").data(), 2);
 
         // Verify right cell [3 4]
         assert!(
             !matches!(root.tail().allocated_location(), Some(AllocLocation::Stack)),
             "Right should be in offset form"
         );
-        assert_eq!(
-            right_cell.head().noun().as_direct().expect("3").data(),
-            3
-        );
-        assert_eq!(
-            right_cell.tail().noun().as_direct().expect("4").data(),
-            4
-        );
+        assert_eq!(right_cell.head().noun().as_direct().expect("3").data(), 3);
+        assert_eq!(right_cell.tail().noun().as_direct().expect("4").data(), 4);
 
         // Verify assert_in_pma passes for entire structure
         noun.assert_in_pma(&pma);
@@ -1320,7 +1385,10 @@ mod tests {
         // Verify head is indirect atom with correct data
         assert!(head.is_indirect(), "Head should be indirect");
         assert!(
-            !matches!(head.in_space(&space).allocated_location(), Some(AllocLocation::Stack)),
+            !matches!(
+                head.in_space(&space).allocated_location(),
+                Some(AllocLocation::Stack)
+            ),
             "Head should be in offset form"
         );
         let head_indirect = head.as_indirect().expect("head indirect");
@@ -1332,7 +1400,10 @@ mod tests {
         // Verify tail is indirect atom with correct data
         assert!(tail.is_indirect(), "Tail should be indirect");
         assert!(
-            !matches!(tail.in_space(&space).allocated_location(), Some(AllocLocation::Stack)),
+            !matches!(
+                tail.in_space(&space).allocated_location(),
+                Some(AllocLocation::Stack)
+            ),
             "Tail should be in offset form"
         );
         let tail_indirect = tail.as_indirect().expect("tail indirect");
@@ -1383,14 +1454,8 @@ mod tests {
 
         // Verify the shared cell is correct
         let shared_cell = root.head().as_cell().expect("shared is cell");
-        assert_eq!(
-            shared_cell.head().noun().as_direct().expect("1").data(),
-            1
-        );
-        assert_eq!(
-            shared_cell.tail().noun().as_direct().expect("2").data(),
-            2
-        );
+        assert_eq!(shared_cell.head().noun().as_direct().expect("1").data(), 1);
+        assert_eq!(shared_cell.tail().noun().as_direct().expect("2").data(), 2);
 
         noun.assert_in_pma(&pma);
     }
@@ -1456,14 +1521,13 @@ mod tests {
         let mut current = noun;
         while current.is_cell() {
             depth_before += 1;
-            current = current
-                .in_space(&space)
-                .as_cell()
-                .unwrap()
-                .tail()
-                .noun();
+            current = current.in_space(&space).as_cell().unwrap().tail().noun();
         }
-        assert_eq!(depth_before, DEPTH - 1, "Should have correct depth before evacuation");
+        assert_eq!(
+            depth_before,
+            DEPTH - 1,
+            "Should have correct depth before evacuation"
+        );
 
         // Evacuate
         unsafe { noun.copy_to_pma(&stack, &mut pma) };
@@ -1494,7 +1558,11 @@ mod tests {
 
             // Verify head value
             let head = cell.head().noun();
-            assert!(head.is_direct(), "Head at depth {} should be direct", expected);
+            assert!(
+                head.is_direct(),
+                "Head at depth {} should be direct",
+                expected
+            );
             assert_eq!(
                 head.as_direct().expect("direct").data(),
                 expected,
@@ -1550,9 +1618,7 @@ mod tests {
             for (i, word) in data.iter_mut().enumerate() {
                 *word = (index as u64) << 32 | (i as u64);
             }
-            unsafe {
-                IndirectAtom::new_raw(stack, word_count, data.as_ptr()).as_noun()
-            }
+            unsafe { IndirectAtom::new_raw(stack, word_count, data.as_ptr()).as_noun() }
         };
 
         // Helper to compute word count for index (varies 2-10)
@@ -1610,12 +1676,20 @@ mod tests {
         // Traverse and verify all values
         let mut current = noun;
         for expected_index in 1..DEPTH {
-            assert!(current.is_cell(), "Should be cell at depth {}", expected_index);
+            assert!(
+                current.is_cell(),
+                "Should be cell at depth {}",
+                expected_index
+            );
             let cell = current.in_space(&space).as_cell().expect("is cell");
 
             // Verify head is an indirect atom with correct data
             let head = cell.head().noun();
-            assert!(head.is_indirect(), "Head at depth {} should be indirect", expected_index);
+            assert!(
+                head.is_indirect(),
+                "Head at depth {} should be indirect",
+                expected_index
+            );
             assert!(
                 !matches!(
                     head.in_space(&space).allocated_location(),
@@ -1743,13 +1817,19 @@ mod tests {
         for i in 0u64..10 {
             let mut key = D(i);
             let result = hamt.lookup(&mut stack, &mut key);
-            assert!(result.is_some(), "Lookup for key {} should succeed before evacuation", i);
+            assert!(
+                result.is_some(),
+                "Lookup for key {} should succeed before evacuation",
+                i
+            );
             let value = result.unwrap();
             assert!(value.is_direct(), "Value should be direct atom");
             assert_eq!(
                 value.as_direct().unwrap().data(),
                 i * 100,
-                "Value for key {} should be {}", i, i * 100
+                "Value for key {} should be {}",
+                i,
+                i * 100
             );
         }
 
@@ -1854,13 +1934,20 @@ mod tests {
         assert_eq!(pma_size, 2, "PMA indirect atom should have size 2");
 
         let pma_bytes = pma_handle.as_ne_bytes();
-        assert_eq!(pma_bytes.len(), 16, "PMA indirect should have 16 bytes of data");
+        assert_eq!(
+            pma_bytes.len(),
+            16,
+            "PMA indirect should have 16 bytes of data"
+        );
 
         // Verify actual data values
         let pma_slice =
             unsafe { std::slice::from_raw_parts(pma_handle.data_pointer(), pma_handle.size()) };
         assert_eq!(pma_slice[0], 0xDEADBEEF_CAFEBABE, "First word should match");
-        assert_eq!(pma_slice[1], 0x12345678_9ABCDEF0, "Second word should match");
+        assert_eq!(
+            pma_slice[1], 0x12345678_9ABCDEF0,
+            "Second word should match"
+        );
 
         // Test with cell containing direct atoms
         let stack_cell = Cell::new(&mut stack, D(42), D(99)).as_noun();
@@ -2248,7 +2335,10 @@ mod paging_tests {
         {
             let ret = unsafe { libc::madvise(ptr as *mut libc::c_void, len, libc::MADV_DONTNEED) };
             if ret != 0 {
-                panic!("madvise(MADV_DONTNEED) failed: {}", std::io::Error::last_os_error());
+                panic!(
+                    "madvise(MADV_DONTNEED) failed: {}",
+                    std::io::Error::last_os_error()
+                );
             }
         }
         std::thread::sleep(std::time::Duration::from_millis(50));
