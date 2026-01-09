@@ -85,15 +85,7 @@ struct MiningCandidate {
     _pow_len: u64,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum PokeKind {
-    Init,
-    HeardTx,
-    Pow,
-}
-
 struct Poke {
-    kind: PokeKind,
     wire: WireRepr,
     noun: NounSlab,
 }
@@ -510,31 +502,28 @@ fn pma_paging_kernel_workload() {
         let mut current_note: Option<(Name, NoteV0)> = None;
         let mut blocks_mined = 0usize;
         let mut used_bytes = 0u64;
-        let mut init_remaining = init_pokes.len();
-        let mut init_complete = false;
-        let mut mine_ready = false;
+        let mut pending_candidate: Option<MiningCandidate> = None;
 
         while blocks_mined < target_blocks && used_bytes < target_bytes {
             let Some(poke) = init_pokes.pop_front() else {
+                if let Some(candidate) = pending_candidate.take() {
+                    let pow_poke = create_pow_poke(&candidate, &random_nonce(&mut rng));
+                    init_pokes.push_back(Poke {
+                        wire: MiningWire::Mined.to_wire(),
+                        noun: pow_poke,
+                    });
+                    continue;
+                }
                 return Err("No pending pokes while target not reached".to_string().into());
             };
-            if poke.kind == PokeKind::Init {
-                init_remaining = init_remaining.saturating_sub(1);
-                if init_remaining == 0 && !init_complete {
-                    init_complete = true;
-                    mine_ready = true;
-                }
-            }
-            if poke.kind == PokeKind::HeardTx {
-                mine_ready = true;
-            }
             let effects = app.poke(poke.wire, poke.noun).await?;
-            let mut candidate: Option<MiningCandidate> = None;
+            let mut saw_candidate = false;
             let mut stop = false;
             let mut queued_tx = false;
             for effect in effects {
                 if let Some(candidate_effect) = parse_mine_effect(&effect)? {
-                    candidate = Some(candidate_effect);
+                    pending_candidate = Some(candidate_effect);
+                    saw_candidate = true;
                     continue;
                 }
 
@@ -577,7 +566,6 @@ fn pma_paging_kernel_workload() {
                             )?;
                             let heard_tx = make_heard_tx_poke(&tx.raw_tx)?;
                             init_pokes.push_back(Poke {
-                                kind: PokeKind::HeardTx,
                                 wire: SystemWire.to_wire(),
                                 noun: heard_tx,
                             });
@@ -591,20 +579,16 @@ fn pma_paging_kernel_workload() {
             if stop {
                 break;
             }
-
             if queued_tx {
-                mine_ready = false;
+                continue;
             }
-
-            if mine_ready {
-                if let Some(candidate) = candidate {
+            if saw_candidate {
+                if let Some(candidate) = pending_candidate.take() {
                     let pow_poke = create_pow_poke(&candidate, &random_nonce(&mut rng));
                     init_pokes.push_back(Poke {
-                        kind: PokeKind::Pow,
                         wire: MiningWire::Mined.to_wire(),
                         noun: pow_poke,
                     });
-                    mine_ready = false;
                 }
             }
         }
@@ -897,37 +881,30 @@ fn build_init_pokes(
 ) -> Result<VecDeque<Poke>, Box<dyn Error>> {
     let mut pokes = VecDeque::new();
     pokes.push_back(Poke {
-        kind: PokeKind::Init,
         wire: SystemWire.to_wire(),
         noun: make_set_constants_poke(constants),
     });
     pokes.push_back(Poke {
-        kind: PokeKind::Init,
         wire: SystemWire.to_wire(),
         noun: make_set_genesis_seal_poke(setup::FAKENET_GENESIS_MESSAGE),
     });
     pokes.push_back(Poke {
-        kind: PokeKind::Init,
         wire: SystemWire.to_wire(),
         noun: make_set_btc_data_poke(),
     });
     pokes.push_back(Poke {
-        kind: PokeKind::Init,
         wire: MiningWire::SetPubKey.to_wire(),
         noun: make_set_mining_key_poke(v0_pubkey, mining_pkh),
     });
     pokes.push_back(Poke {
-        kind: PokeKind::Init,
         wire: MiningWire::Enable.to_wire(),
         noun: make_enable_mining_poke(true),
     });
     pokes.push_back(Poke {
-        kind: PokeKind::Init,
         wire: SystemWire.to_wire(),
         noun: make_born_poke(),
     });
     pokes.push_back(Poke {
-        kind: PokeKind::Init,
         wire: SystemWire.to_wire(),
         noun: setup::heard_fake_genesis_block(Some(genesis_bytes.to_vec()))?,
     });
