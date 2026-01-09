@@ -18,7 +18,7 @@ use nockapp::wire::{SystemWire, Wire, WireRepr};
 use nockapp::{AtomExt, Bytes, NockApp, NockAppError};
 use nockchain::mining::MiningWire;
 use nockchain::setup::{self, BlockchainConstants, Seconds, DEFAULT_GENESIS_BLOCK_HEIGHT};
-use nockchain_libp2p_io::tip5_util::tip5_hash_to_base58_stack;
+use nockchain_libp2p_io::tip5_util::{tip5_hash_to_base58, tip5_hash_to_base58_stack};
 use nockchain_math::belt::{Belt, PRIME};
 use nockchain_math::crypto::cheetah::{ch_scal_big, trunc_g_order, A_GEN, G_ORDER};
 use nockchain_math::noun_ext::NounMathExt;
@@ -498,11 +498,10 @@ fn pma_paging_kernel_workload() {
         let mut init_pokes =
             build_init_pokes(&constants, &genesis_bytes, &key.pk_b58, &mining_pkh)?;
 
-        let mut pending_refund: Option<(Name, NoteV0)> = None;
-        let mut current_note: Option<(Name, NoteV0)> = None;
         let mut blocks_mined = 0usize;
         let mut used_bytes = 0u64;
         let mut pending_candidate: Option<MiningCandidate> = None;
+        let mut last_heaviest_block_id: Option<String> = None;
 
         while blocks_mined < target_blocks && used_bytes < target_bytes {
             let Some(poke) = init_pokes.pop_front() else {
@@ -532,13 +531,15 @@ fn pma_paging_kernel_workload() {
                         if block_id == genesis_id {
                             continue;
                         }
-                        blocks_mined += 1;
-
-                        if let Some(refund) = pending_refund.take() {
-                            current_note = Some(refund);
-                        } else if current_note.is_none() {
-                            current_note = Some(fetch_coinbase_note(&mut app, &key.pk_b58).await?);
+                        let heaviest_id = peek_heaviest_block_id(&mut app).await?;
+                        if heaviest_id.as_deref() != Some(block_id.as_str()) {
+                            continue;
                         }
+                        if last_heaviest_block_id.as_deref() == Some(block_id.as_str()) {
+                            continue;
+                        }
+                        last_heaviest_block_id = Some(block_id);
+                        blocks_mined += 1;
 
                         if blocks_mined % bytes_check_interval == 0 {
                             used_bytes = pma_used_bytes(&pma_path)?;
@@ -553,25 +554,23 @@ fn pma_paging_kernel_workload() {
                             break;
                         }
 
-                        if let Some((name, note)) = current_note.take() {
-                            let next_height = (blocks_mined + 1) as u64;
-                            let tx = build_tx_plan(
-                                &key,
-                                &name,
-                                &note,
-                                next_height,
-                                outputs_per_tx,
-                                extra_gift,
-                                &lock_pool,
-                            )?;
-                            let heard_tx = make_heard_tx_poke(&tx.raw_tx)?;
-                            init_pokes.push_back(Poke {
-                                wire: SystemWire.to_wire(),
-                                noun: heard_tx,
-                            });
-                            pending_refund = Some((tx.refund_name, tx.refund_note));
-                            queued_tx = true;
-                        }
+                        let (name, note) = fetch_coinbase_note(&mut app, &key.pk_b58).await?;
+                        let next_height = (blocks_mined + 1) as u64;
+                        let tx = build_tx_plan(
+                            &key,
+                            &name,
+                            &note,
+                            next_height,
+                            outputs_per_tx,
+                            extra_gift,
+                            &lock_pool,
+                        )?;
+                        let heard_tx = make_heard_tx_poke(&tx.raw_tx)?;
+                        init_pokes.push_back(Poke {
+                            wire: SystemWire.to_wire(),
+                            noun: heard_tx,
+                        });
+                        queued_tx = true;
                     }
                 }
             }
@@ -1337,6 +1336,17 @@ async fn peek_heaviest_block(app: &mut NockApp) -> Result<Option<NounSlab>, Box<
     let path = T(&mut path_slab, &[tag, D(0)]);
     path_slab.set_root(path);
     Ok(app.peek_handle(path_slab).await?)
+}
+
+async fn peek_heaviest_block_id(app: &mut NockApp) -> Result<Option<String>, Box<dyn Error>> {
+    let Some(slab) = peek_heaviest_block(app).await? else {
+        return Ok(None);
+    };
+    let noun = unsafe { slab.root() };
+    let space = slab.noun_space();
+    let block_id = block_id_from_page(*noun, &space)?;
+    let block_id_str = tip5_hash_to_base58(block_id, &space)?;
+    Ok(Some(block_id_str))
 }
 
 fn touch_entire_region(ptr: *mut u8, len: usize, page: usize) {
