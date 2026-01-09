@@ -25,3 +25,5 @@ However,
 ```
 
 It might make more sense to change the `mut noun: Noun` parameter to `noun: &mut NounHandle` or `noun: &NounHandle` instead of adding a second parameter for `space: &NounSpace`. I'm investigating.
+
+- `alloc_would_oom` in `Pma` is currently just a panic, we need to make it able to reallocate and grow itself safely.
