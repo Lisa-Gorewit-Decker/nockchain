@@ -103,7 +103,8 @@ pub fn dotwut<'src>(
     hoon:        impl ParserExt<'src, Hoon>,
 ) -> impl Parser<'src, &'src str, Hoon, Err<'src>>
 {
-    hoon.clone()
+    gap()
+    .ignore_then(hoon.clone())
     .map(|p| Hoon::DotWut(Box::new(p)))
 }
 

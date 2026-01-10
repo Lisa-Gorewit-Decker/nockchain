@@ -207,7 +207,7 @@ pub fn zapwut<'src>(
 ) -> impl Parser<'src, &'src str, Hoon, Err<'src>>
 {
     gap()
-    .ignore_then(decimal_number().map(|n| ZpwtArg::Atom(n))
+    .ignore_then(decimal_number().map(|n| ZpwtArg::ParsedAtom(n))
                 .or(
                     decimal_number()
                     .then_ignore(gap())
@@ -225,7 +225,7 @@ pub fn zapwut_wide<'src>(
     hoon_wide:        impl ParserExt<'src, Hoon>,
 ) -> impl Parser<'src, &'src str, Hoon, Err<'src>>
 {
-    decimal_number().map(|n| ZpwtArg::Atom(n))
+    decimal_number().map(|n| ZpwtArg::ParsedAtom(n))
                 .or(
                     decimal_number()
                     .then_ignore(just(' '))

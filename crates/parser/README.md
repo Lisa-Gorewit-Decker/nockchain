@@ -5,4 +5,8 @@
 cargo build --release
 ../../target/release/parser file_to_parse.hoon
 
+// use --no_dbug to disable traces
+cargo build --release
+../../target/release/parser --no_dbug file_to_parse.hoon
+
 // output will be written to out.json

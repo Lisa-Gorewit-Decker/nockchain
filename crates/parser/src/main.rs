@@ -14,6 +14,10 @@ use std::io::Write;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::cell::Cell;
+use bytes::Bytes;
+use nockapp::noun::slab::NounSlab;
+use nockvm::noun::{D, T};
+use nockvm_macros::tas;
 
 use parser::ast::hoon::*;
 use parser::utils::*;
@@ -86,7 +90,7 @@ fn spec_wide_parser<'src>(
         just('^').to(Spec::Base(BaseType::Cell)).boxed(),
         just('?').to(Spec::Base(BaseType::Flag)).boxed(),
         just('~').to(Spec::Base(BaseType::Null)).boxed(),
-        just('*').to(Spec::Base(BaseType::Noun)).boxed(),
+        just('*').to(Spec::Base(BaseType::NounExpr)).boxed(),
         just("!!").to(Spec::Base(BaseType::Void)).boxed(),
     ];
 
@@ -132,8 +136,8 @@ fn hoon_wide_parser<'src>(
         .ignore_then(
         choice((
             cen_runes_wide(hoon_wide.clone()),
-            just('|').to(Hoon::Rock("f".to_string(), Noun::Atom(Atom::Small(1)))),
-            just('&').to(Hoon::Rock("f".to_string(), Noun::Atom(Atom::Small(0)))),
+            just('|').to(Hoon::Rock("f".to_string(), NounExpr::ParsedAtom(ParsedAtom::Small(1)))),
+            just('&').to(Hoon::Rock("f".to_string(), NounExpr::ParsedAtom(ParsedAtom::Small(0)))),
             nuck().map(|coin| jock(true, &coin)),
         ))).boxed(),
 
@@ -190,6 +194,8 @@ fn hoon_wide_parser<'src>(
                     tic_cell_construction(hoon_wide.clone()).boxed(),         //  `a
                 ))).boxed(),
 
+        function_call(hoon_wide.clone()).boxed(),                             //  (a b)
+        centis_irregular(hoon_wide.clone()).boxed(),                          //  a(b c, d e, f g)
         aura_hoon().boxed(),
         buccab_irregular(hoon_wide.clone()).boxed(),                          //  _p
         constant_separator_hoon(hoon_wide.clone()).boxed(),                   //  const+hoon,  const/hoon
@@ -200,20 +206,18 @@ fn hoon_wide_parser<'src>(
         wutpam_irregular(hoon_wide.clone()).boxed(),                          //  &(p q)
         increment(hoon_wide.clone()).boxed(),                                 //  +(a) or .+(a)
         ketcol_irregular(spec_wide.clone()).boxed(),                          //  ,p
-        centis_irregular(hoon_wide.clone()).boxed(),                          //  a(b c, d e, f g)
         tell(hoon_wide.clone()).boxed(),                                      // <foo> render as tape
         yell_parser(hoon_wide.clone()).boxed(),                               // >foo< render as tank
-        number().map(|(p, q)| Hoon::Sand(p, Noun::Atom(q))).boxed(),          //  111.111, 0x1111, etc.
+        number().map(|(p, q)| Hoon::Sand(p, NounExpr::ParsedAtom(q))).boxed(),          //  111.111, 0x1111, etc.
         wing().boxed(),                                                       //   foo, foo.bar, etc.
-        function_call(hoon_wide.clone()).boxed(),                             //  (a b)
         constant().map(|coin| jock(true, &coin)).boxed(),                     //  %foo
-        cord().map(|s| Hoon::Sand("t".to_string(), Noun::Atom(s))).boxed(),   //  'foo'
+        cord().map(|s| Hoon::Sand("t".to_string(), NounExpr::ParsedAtom(s))).boxed(),   //  'foo'
         path(hoon_wide.clone(), wer).boxed(),                                 //  /a/b/c
         tape(hoon_wide.clone()).boxed(),                                      //  "foo"
         just('~').to(Hoon::Bust(BaseType::Null)).boxed(),
-        just('&').to(Hoon::Sand("f".to_string(), Noun::Atom(Atom::Small(0)))).boxed(),
-        just('|').to(Hoon::Sand("f".to_string(), Noun::Atom(Atom::Small(1)))).boxed(),
-        just('*').to(Hoon::Base(BaseType::Noun)).boxed(),
+        just('&').to(Hoon::Sand("f".to_string(), NounExpr::ParsedAtom(ParsedAtom::Small(0)))).boxed(),
+        just('|').to(Hoon::Sand("f".to_string(), NounExpr::ParsedAtom(ParsedAtom::Small(1)))).boxed(),
+        just('*').to(Hoon::Base(BaseType::NounExpr)).boxed(),
     ];
 
     choice(parsers).boxed()
@@ -448,7 +452,16 @@ struct Cli {
     no_dbug: bool,
 }
 
+#[cfg(not(feature = "bazel_build"))]
+pub static HOON138JAM: &[u8] = include_bytes!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/parsed-hoon138.jam"
+));
+
+use nockvm::noun::Atom;
+use ibig::ubig;
 fn main() {
+
     let cli = Cli::parse();
 
     let source = fs::read_to_string(&cli.input).unwrap_or_else(|err| {
@@ -458,12 +471,12 @@ fn main() {
 
     let start = Instant::now();
 
-    let wer: Vec<String> =
-        cli.input.clone()
-        .iter()
-        .map(|s| s.to_string_lossy().into_owned())
-        .collect();
-
+    // let wer: Vec<String> =
+    //     cli.input.clone()
+    //     .iter()
+    //     .map(|s| s.to_string_lossy().into_owned())
+    //     .collect();
+    let wer = vec!["hoonc".to_string(), "hoon".to_string(), "hoon-138".to_string(), "hoon".to_string()];
     let linemap = Arc::new(LineMap::new(&source));
 
     match parser(wer.clone(), !cli.no_dbug, linemap).parse(source.as_str()).into_result() {
@@ -471,17 +484,37 @@ fn main() {
             let took = start.elapsed();
 
             let json = serde_json::to_string_pretty(&res).expect("serialisation failed");
-            let out_path = std::path::PathBuf::from("out.json");
-            std::fs::write(&out_path, json + "\n").unwrap_or_else(|e| {
-                eprintln!("Failed to write '{}': {}", out_path.display(), e);
-                std::process::exit(1);
-            });
 
-            println!("Result written to {}!", out_path.display());
-            println!("took: {:?}", took);
+            let mut slab: NounSlab = NounSlab::new();
+
+            let start2 = Instant::now();
+            let parsed_hoon = hoon_to_noun(&mut slab, &res.clone());
+            let took2 = start2.elapsed();
+
+            //  uncomment to test against the contents of jamed_hoon_138
+            // let jamed_hoon_138 = Bytes::from(HOON138JAM);
+            // let cued_hoon_138 = slab.cue_into(jamed_hoon_138).unwrap();
+            // diff_and_report(&cued_hoon_138, &parsed_hoon);
+
+            // let json_a = print_noun(&cued_hoon_138, 4000, 0);
+            // fs::write("expected.debug", json_a).unwrap();
+            // let json_b = print_noun(&parsed_hoon, 4000, 0);
+            // fs::write("actual.debug", json_b).unwrap();
+
+            // let out_path = std::path::PathBuf::from("out.json");
+            // std::fs::write(&out_path, json + "\n").unwrap_or_else(|e| {
+            //     eprintln!("Failed to write '{}': {}", out_path.display(), e);
+            //     std::process::exit(1);
+            // });
+
+            // println!("Result written to {}!", out_path.display());
+            println!("parsing took: {:?}", took);
+            println!("noun creation took: {:?}", took2);
+
         }
         Err(errs) => {
             for err in errs {
+                let span = err.span().into_range();
                 let file_id = cli.input.to_string_lossy().to_string();
 
                 Report::build(ReportKind::Error, (file_id.clone(), err.span().into_range()))

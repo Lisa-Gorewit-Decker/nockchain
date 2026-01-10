@@ -243,7 +243,7 @@ pub fn wutdot<'src>(
     .then(hoon.clone())
     .then_ignore(gap())
     .then(hoon.clone())
-    .map(|((p, q), r)| Hoon::WutDot(Box::new(p), Box::new(r), Box::new(q)))
+    .map(|((p, q), r)| Hoon::WutDot(Box::new(p), Box::new(q), Box::new(r)))
 }
 
 pub fn wutgar<'src>(

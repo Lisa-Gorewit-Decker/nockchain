@@ -110,8 +110,8 @@ pub fn cencol_wide<'src>(
 ) -> impl Parser<'src, &'src str, Hoon, Err<'src>>
 {
     hoon_wide.clone()
-    .then_ignore(just(' '))
-    .then(list_hoon_wide(hoon_wide.clone())
+    .then(just(' ')
+          .ignore_then(list_hoon_wide(hoon_wide.clone()))
           .or_not())
     .delimited_by(just('('), just(')'))
     .map(|(p, q)| {

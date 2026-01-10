@@ -6,13 +6,13 @@ use serde::Serialize;
 use num_traits::Zero;
 
 #[derive(serde::Serialize, Hash, Eq, PartialEq, Debug, Clone)]
-pub enum Noun {
-    Atom(Atom),
-    Cell(Box<Noun>, Box<Noun>),
+pub enum NounExpr {
+    ParsedAtom(ParsedAtom),
+    Cell(Box<NounExpr>, Box<NounExpr>),
 }
 
 #[derive(serde::Serialize, Hash, Eq, PartialEq, Debug, Clone)]
-pub enum Atom {
+pub enum ParsedAtom {
     Small(u128),
     #[serde(serialize_with = "serialize_biguint_decimal")]
     Big(BigUint),
@@ -28,75 +28,75 @@ where
     serializer.serialize_str(&value.to_string())
 }
 
-impl From<u16> for Atom {
+impl From<u16> for ParsedAtom {
     fn from(x: u16) -> Self {
-        Atom::Small(x as u128)
+        ParsedAtom::Small(x as u128)
     }
 }
 
-impl From<u32> for Atom {
+impl From<u32> for ParsedAtom {
     fn from(x: u32) -> Self {
-        Atom::Small(x as u128)
+        ParsedAtom::Small(x as u128)
     }
 }
 
-impl From<u64> for Atom {
+impl From<u64> for ParsedAtom {
     fn from(x: u64) -> Self {
-        Atom::Small(x as u128)
+        ParsedAtom::Small(x as u128)
     }
 }
 
-impl Atom {
+impl ParsedAtom {
 
     pub fn to_u8(&self) -> Option<u8> {
         match self {
-            Atom::Small(n) => (*n as u128).try_into().ok(),
-            Atom::Big(b) => b.try_into().ok(),
+            ParsedAtom::Small(n) => (*n as u128).try_into().ok(),
+            ParsedAtom::Big(b) => b.try_into().ok(),
         }
     }
     pub fn to_u32(&self) -> Option<u32> {
         match self {
-            Atom::Small(n) => Some(*n as u32),
-            Atom::Big(b) => b.try_into().ok(),
+            ParsedAtom::Small(n) => Some(*n as u32),
+            ParsedAtom::Big(b) => b.try_into().ok(),
         }
     }
     pub fn to_u128(&self) -> Option<u128> {
         match self {
-            Atom::Small(n) => Some(*n as u128),
-            Atom::Big(b) => b.try_into().ok(),
+            ParsedAtom::Small(n) => Some(*n as u128),
+            ParsedAtom::Big(b) => b.try_into().ok(),
         }
     }
 
     pub fn to_biguint(&self) -> BigUint {
         match self {
-            Atom::Small(n) => (*n).into(),
-            Atom::Big(b) => b.clone(),
+            ParsedAtom::Small(n) => (*n).into(),
+            ParsedAtom::Big(b) => b.clone(),
         }
     }
 
     pub fn from_biguint(b: BigUint) -> Self {
         if let Ok(n) = u128::try_from(&b) {
-            Atom::Small(n)
+            ParsedAtom::Small(n)
         } else {
-            Atom::Big(b)
+            ParsedAtom::Big(b)
         }
     }
 
     pub fn is_zero(&self) -> bool {
         match self {
-            Atom::Small(n) => *n == 0,
-            Atom::Big(n) => BigUint::is_zero(n),
+            ParsedAtom::Small(n) => *n == 0,
+            ParsedAtom::Big(n) => BigUint::is_zero(n),
         }
     }
 
     pub fn zero() -> Self {
-        Atom::Small(0)
+        ParsedAtom::Small(0)
     }
 
     pub fn to_u64_lossy(&self) -> u64 {
         match self {
-            Atom::Small(n) => *n as u64,
-            Atom::Big(b) => {
+            ParsedAtom::Small(n) => *n as u64,
+            ParsedAtom::Big(b) => {
                 // truncate safely — only used where input < 2^16
                 let bytes = b.to_bytes_le();
                 let mut out = 0u64;
@@ -118,16 +118,16 @@ impl Atom {
 
     pub fn cmp(&self, other: &Self) -> std::cmp::Ordering {
         match (self, other) {
-            (Atom::Small(a), Atom::Small(b)) => a.cmp(b),
-            (Atom::Small(a), Atom::Big(b)) => {
+            (ParsedAtom::Small(a), ParsedAtom::Small(b)) => a.cmp(b),
+            (ParsedAtom::Small(a), ParsedAtom::Big(b)) => {
                 let a_big = BigUint::from(*a);
                 a_big.cmp(b)
             }
-            (Atom::Big(a), Atom::Small(b)) => {
+            (ParsedAtom::Big(a), ParsedAtom::Small(b)) => {
                 let b_big = BigUint::from(*b);
                 a.cmp(&b_big)
             }
-            (Atom::Big(a), Atom::Big(b)) => a.cmp(b),
+            (ParsedAtom::Big(a), ParsedAtom::Big(b)) => a.cmp(b),
         }
     }
 
@@ -138,7 +138,7 @@ impl Atom {
     pub fn eq(&self, other: &Self) -> bool { self.cmp(other) == std::cmp::Ordering::Equal }
 }
 
-impl From<&str> for Atom {
+impl From<&str> for ParsedAtom {
     fn from(s: &str) -> Self {
         // UTF-8 bytes, little-endian @
         let bytes: Vec<u8> = s.bytes().collect();
@@ -147,32 +147,32 @@ impl From<&str> for Atom {
             acc = (acc << 8) + BigUint::from(b);
         }
         if let Ok(small) = acc.clone().try_into() {
-            Atom::Small(small)
+            ParsedAtom::Small(small)
         } else {
-            Atom::Big(acc)
+            ParsedAtom::Big(acc)
         }
     }
 }
 
-impl BitOr for Atom {
-    type Output = Atom;
+impl BitOr for ParsedAtom {
+    type Output = ParsedAtom;
 
-    fn bitor(self, rhs: Atom) -> Atom {
+    fn bitor(self, rhs: ParsedAtom) -> ParsedAtom {
         match (self, rhs) {
-            (Atom::Small(a), Atom::Small(b)) => {
-                Atom::Small(a | b)
+            (ParsedAtom::Small(a), ParsedAtom::Small(b)) => {
+                ParsedAtom::Small(a | b)
             }
 
-            (Atom::Small(a), Atom::Big(b)) => {
-                Atom::Big(BigUint::from(a) | b)
+            (ParsedAtom::Small(a), ParsedAtom::Big(b)) => {
+                ParsedAtom::Big(BigUint::from(a) | b)
             }
 
-            (Atom::Big(a), Atom::Small(b)) => {
-                Atom::Big(a | BigUint::from(b))
+            (ParsedAtom::Big(a), ParsedAtom::Small(b)) => {
+                ParsedAtom::Big(a | BigUint::from(b))
             }
 
-            (Atom::Big(a), Atom::Big(b)) => {
-                Atom::Big(a | b)
+            (ParsedAtom::Big(a), ParsedAtom::Big(b)) => {
+                ParsedAtom::Big(a | b)
             }
         }
     }
@@ -205,12 +205,12 @@ impl BinaryFloat {
         }
     }
 }
-
-pub type Tome = HashMap<String, Hoon>;
+pub type What = Option<(String, Vec<Vec<(bool, String)>>)>; // unused
+pub type Tome = (What, HashMap<Term, Hoon>);
 pub type Tune = (HashMap<String, Option<Hoon>>, Vec<Hoon>);
 #[derive(serde::Serialize, PartialEq, Debug, Clone)]
 pub enum TermOrTune {
-    Term(String),
+    Term(Term),
     Tune(Tune),
 }
 pub type Help = String;
@@ -220,10 +220,10 @@ pub type Cord = String;
 // TODO: should be vec<u8>, or maybe just String
 pub type Tape = Vec<String>;
 pub type Path = Vec<Knot>;
-pub type Tyre = Vec<(String, Hoon)>;
+pub type Tyre = Vec<(Term, Hoon)>;
 pub type Axis = u64;
 
-pub type SemiNoun = (Stencil, Noun);
+pub type SemiNounExpr = (Stencil, NounExpr);
 
 pub type Gate = (Box<Spec>, Box<Spec>);
 
@@ -244,7 +244,7 @@ pub enum Beer {
 
 #[derive(serde::Serialize, PartialEq, Debug, Clone)]
 pub enum Woof {
-    Atom(Atom),
+    ParsedAtom(ParsedAtom),
     Hoon(Hoon),
 }
 
@@ -299,15 +299,15 @@ pub enum TunaTail {
 #[derive(serde::Serialize, PartialEq, Debug, Clone)]
 pub enum Chum {
     Lef(String),
-    StdKel(String, Atom),
-    VenProKel(String, String, Atom),
-    VenProVerKel(String, String, Atom, Atom),
+    StdKel(String, ParsedAtom),
+    VenProKel(String, String, ParsedAtom),
+    VenProVerKel(String, String, ParsedAtom, ParsedAtom),
 }
 
 #[derive(serde::Serialize, PartialEq, Debug, Clone)]
 pub enum Coin {
-    Dime(String, Atom),
-    Blob(Noun),
+    Dime(String, ParsedAtom),
+    Blob(NounExpr),
     Many(Vec<Coin>),
 }
 
@@ -331,13 +331,13 @@ pub enum Limb {
 }
 
 pub type WingType = Vec<Limb>;
-
+pub type Term = String;
 
 #[derive(serde::Serialize, PartialEq, Debug, Clone)]
 pub enum Spec {
     Base(BaseType),
     Dbug(Spot, Box<Spec>),
-    Leaf(String, Atom),
+    Leaf(String, ParsedAtom),
     Like(WingType, Vec<WingType>),
     Loop(String),
     Made((String, Vec<String>), Box<Spec>),
@@ -369,7 +369,7 @@ pub enum Spec {
 #[derive(serde::Serialize, PartialEq, Debug, Clone)]
 pub enum Nock {
     Pair(Box<Nock>, Box<Nock>),
-    Const(Noun),
+    Const(NounExpr),
     Compose(Box<Nock>, Box<Nock>),
     CellTest(Box<Nock>),
     Increment(Box<Nock>),
@@ -386,7 +386,7 @@ pub enum Nock {
 
 #[derive(serde::Serialize, PartialEq, Debug, Clone)]
 pub enum NockHint {
-    Atom(u64),
+    ParsedAtom(u64),
     Pair(u64, Box<Nock>),
 }
 
@@ -400,7 +400,7 @@ pub enum Note {
 pub struct Coil {
     pub p: Garb,
     pub q: Type,
-    pub r: (SemiNoun, HashMap<String, Tome>),
+    pub r: (SemiNounExpr, HashMap<String, Tome>),
 }
 
 #[derive(serde::Serialize, Debug, Clone, PartialEq)]
@@ -424,14 +424,16 @@ pub enum Vair {
     Zinc,
 }
 
+pub type Aura = String; // @ta
+
 #[derive(serde::Serialize, Debug, Clone, PartialEq, Eq)]
 pub enum BaseType {
-    Noun,
+    NounExpr,
     Cell,
     Flag,
     Null,
     Void,
-    Atom(String),  // Aura
+    Atom(Aura),  // Aura
 }
 
 #[derive(serde::Serialize, PartialEq, Debug, Clone)]
@@ -446,7 +448,7 @@ pub enum Skin {
     Base(BaseType),
     Cell(Box<Skin>, Box<Skin>),
     Dbug(Spot, Box<Skin>),
-    Leaf(String, Atom),
+    Leaf(String, ParsedAtom),
     Name(String, Box<Skin>),
     Over(WingType, Box<Skin>),
     Spec(Box<Spec>, Box<Skin>),
@@ -455,9 +457,9 @@ pub enum Skin {
 
 #[derive(serde::Serialize, PartialEq, Debug, Clone)]
 pub enum Type {
-    Noun,
+    NounExpr,
     Void,
-    Atom(String, Option<u64>),
+    ParsedAtom(String, Option<u64>),
     Cell(Box<Type>, Box<Type>),
     Core(Box<Type>, Box<Coil>),
     Face(FaceType, Box<Type>),
@@ -474,7 +476,7 @@ pub enum FaceType {
 
 #[derive(serde::Serialize, PartialEq, Debug, Clone)]
 pub enum ZpwtArg {
-    Atom(String),
+    ParsedAtom(String),
     Pair(String, String),
 }
 
@@ -497,7 +499,7 @@ pub struct Tarp {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Date {
-    pub era: bool,   // a=? — true = AD, false = BC (Urbit uses astronomical year numbering)
+    pub era: bool,   // a=? — true = AD, false = BC 
     pub y: u64,      // year (1-based; year 0 = 1 BC, year -1 = 2 BC, etc.)
     pub m: u64,      // month (1–12)
     pub t: Tarp,     // time-of-day + day-of-month in tarp.d
@@ -516,11 +518,11 @@ pub enum Hoon {
     Note(Note, Box<Hoon>),
     Fits(Box<Hoon>, WingType),
     Knit(Vec<Woof>),
-    Leaf(String, Atom),
+    Leaf(String, ParsedAtom),
     Limb(String),
     Lost(Box<Hoon>),
-    Rock(String, Noun),
-    Sand(String, Noun),
+    Rock(String, NounExpr),
+    Sand(String, NounExpr),
     Tell(Vec<Hoon>),
     Tune(TermOrTune),
     Wing(WingType),
@@ -621,6 +623,4 @@ pub enum Hoon {
     ZapTis(Box<Hoon>),
     ZapPat(Vec<WingType>, Box<Hoon>, Box<Hoon>),
     ZapWut(ZpwtArg, Box<Hoon>),
-    ZapCol(Box<Hoon>),  // should not exit in the final ast
-    ZapDot(Box<Hoon>),  // should not exit in the final ast
 }

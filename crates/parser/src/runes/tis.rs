@@ -207,7 +207,7 @@ pub fn tismic_wide<'src>(
     .then_ignore(just(' '))
     .then(hoon_wide.clone())
     .delimited_by(just('('), just(')'))
-    .map(|((p, q), r)| Hoon::TisMic(p, Box::new(r), Box::new(q)))
+    .map(|((p, q), r)| Hoon::TisMic(p, Box::new(q), Box::new(r)))
 }
 
 pub fn tismic<'src>(
@@ -221,7 +221,7 @@ pub fn tismic<'src>(
     .then(hoon.clone())
     .then_ignore(gap())
     .then(hoon.clone())
-    .map(|((p, q), r)| Hoon::TisMic(p, Box::new(r), Box::new(q)))
+    .map(|((p, q), r)| Hoon::TisMic(p, Box::new(q), Box::new(r)))
 }
 
 pub fn tiscol<'src>(
