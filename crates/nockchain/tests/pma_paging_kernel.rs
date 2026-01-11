@@ -1,10 +1,11 @@
-use std::collections::VecDeque;
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::error::Error;
 use std::fs::File;
 use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 
 use ibig::UBig;
+use libp2p::PeerId;
 use memmap2::MmapOptions;
 use rand::{rngs::StdRng, Rng, RngCore, SeedableRng};
 use tempfile::TempDir;
@@ -18,21 +19,23 @@ use nockapp::wire::{SystemWire, Wire, WireRepr};
 use nockapp::{AtomExt, Bytes, NockApp, NockAppError};
 use nockchain::mining::MiningWire;
 use nockchain::setup::{self, BlockchainConstants, Seconds, DEFAULT_GENESIS_BLOCK_HEIGHT};
-use nockchain_libp2p_io::tip5_util::{tip5_hash_to_base58, tip5_hash_to_base58_stack};
+use nockchain_libp2p_io::driver::Libp2pWire;
+use nockchain_libp2p_io::tip5_util::tip5_hash_to_base58_stack;
 use nockchain_math::belt::{Belt, PRIME};
-use nockchain_math::crypto::cheetah::{ch_scal_big, trunc_g_order, A_GEN, G_ORDER};
+use nockchain_math::crypto::cheetah::{ch_add, ch_neg, ch_scal_big, trunc_g_order, A_GEN, A_ID, G_ORDER};
 use nockchain_math::noun_ext::NounMathExt;
 use nockchain_math::tip5::hash::hash_varlen;
 use nockchain_math::zoon::common::DefaultTipHasher;
 use nockchain_math::zoon::zset::z_set_put;
 use nockchain_types::tx_engine::common::{
-    BlockHeight, BlockHeightDelta, Hash, Name, Nicks, SchnorrPubkey, SchnorrSignature,
-    Signature, Source, TimelockRangeAbsolute, TimelockRangeRelative, Version,
+    BlockHeight, BlockHeightDelta, Hash, Name, Nicks, SchnorrPubkey, SchnorrSignature, Signature,
+    Source, TimelockRangeAbsolute, TimelockRangeRelative, Version,
 };
 use nockchain_types::tx_engine::v0::{
     Input, Inputs, Lock, NoteHead, NoteTail, NoteV0, RawTx, Seed, Seeds, Spend, Timelock,
     TimelockIntent,
 };
+use nockvm::ext::noun_equality;
 use nockvm::mem::NockStack;
 use nockvm::noun::{Atom, Noun, NounAllocator, NounSpace, D, T, NO, SIG, YES};
 use nockvm_macros::tas;
@@ -45,7 +48,9 @@ const DEFAULT_TARGET_BYTES: u64 = 10 * 1024 * 1024 * 1024;
 const DEFAULT_OUTPUTS_PER_TX: usize = 256;
 const DEFAULT_PUBKEYS_PER_OUTPUT: usize = 4;
 const DEFAULT_EXTRA_GIFT: u64 = 1;
-const DEFAULT_BYTES_CHECK_INTERVAL: usize = 100;
+const DEFAULT_BYTES_CHECK_INTERVAL: usize = 1000;
+const DEFAULT_TXS_PER_BLOCK: usize = 4;
+const DEFAULT_NOTE_POOL: usize = 4;
 
 const HASH_STACK_WORDS: usize = 1 << 22;
 
@@ -88,6 +93,7 @@ struct MiningCandidate {
 struct Poke {
     wire: WireRepr,
     noun: NounSlab,
+    tx_id: Option<Hash>,
 }
 
 struct KeyMaterial {
@@ -102,15 +108,59 @@ struct TxPlan {
     refund_name: Name,
 }
 
+struct PendingTx {
+    id: Hash,
+    refund_note: NoteV0,
+    refund_name: Name,
+}
+
+#[derive(Default)]
+struct TxEffectStats {
+    sent: u64,
+    accepted: u64,
+    seen: u64,
+    dropped: u64,
+    liar_causes: HashMap<String, u64>,
+}
+
+impl TxEffectStats {
+    fn record_liar(&mut self, cause: String) {
+        *self.liar_causes.entry(cause).or_insert(0) += 1;
+    }
+}
+
 struct TxHasher {
     stack: NockStack,
+    lock_cache: Option<LockCache>,
+}
+
+struct LockCache {
+    lock: Lock,
+    hashable_sig: Noun,
+    sig_hash: Hash,
 }
 
 impl TxHasher {
     fn new() -> Self {
         Self {
             stack: NockStack::new(HASH_STACK_WORDS, 0),
+            lock_cache: None,
         }
+    }
+
+    fn reset(&mut self) {
+        unsafe { self.stack.reset(0) };
+        self.lock_cache = None;
+    }
+
+    fn cache_lock(&mut self, lock: &Lock) {
+        let hashable_sig = self.hashable_sig_uncached(lock);
+        let sig_hash = self.hash_hashable(hashable_sig, &self.stack.noun_space());
+        self.lock_cache = Some(LockCache {
+            lock: lock.clone(),
+            hashable_sig,
+            sig_hash,
+        });
     }
 
     fn hash_hashable(&mut self, hashable: Noun, space: &NounSpace) -> Hash {
@@ -221,6 +271,15 @@ impl TxHasher {
     }
 
     fn hashable_sig(&mut self, lock: &Lock) -> Noun {
+        if let Some(cache) = &self.lock_cache {
+            if &cache.lock == lock {
+                return cache.hashable_sig;
+            }
+        }
+        self.hashable_sig_uncached(lock)
+    }
+
+    fn hashable_sig_uncached(&mut self, lock: &Lock) -> Noun {
         let mut slab: NounSlab = NounSlab::new();
         let mut pubkeys_set = D(0);
         for pubkey in &lock.pubkeys {
@@ -236,7 +295,12 @@ impl TxHasher {
     }
 
     fn hash_sig(&mut self, lock: &Lock) -> Hash {
-        let hashable = self.hashable_sig(lock);
+        if let Some(cache) = &self.lock_cache {
+            if &cache.lock == lock {
+                return cache.sig_hash.clone();
+            }
+        }
+        let hashable = self.hashable_sig_uncached(lock);
         self.hash_hashable(hashable, &self.stack.noun_space())
     }
 
@@ -468,7 +532,12 @@ fn pma_paging_kernel_workload() {
     let extra_gift = env_u64("NOCKCHAIN_PMA_PAGING_GIFT", DEFAULT_EXTRA_GIFT);
     let bytes_check_interval =
         env_usize("NOCKCHAIN_PMA_PAGING_BYTES_INTERVAL", DEFAULT_BYTES_CHECK_INTERVAL).max(1);
+    let txs_per_block = env_usize("NOCKCHAIN_PMA_PAGING_TXS_PER_BLOCK", DEFAULT_TXS_PER_BLOCK)
+        .max(1);
+    let note_pool_target =
+        env_usize("NOCKCHAIN_PMA_PAGING_NOTE_POOL", DEFAULT_NOTE_POOL).max(txs_per_block);
     let skip_mining = env_bool("NOCKCHAIN_PMA_PAGING_SKIP_MINING", true);
+    let skip_txs = env_bool("NOCKCHAIN_PMA_PAGING_SKIP_TXS", false);
 
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -481,12 +550,13 @@ fn pma_paging_kernel_workload() {
 
         let mut rng = StdRng::seed_from_u64(1);
         let key = generate_key(&mut rng)?;
-        let mut hasher = TxHasher::new();
-        let mining_pkh = hasher.hash_schnorr_pubkey(&key.pk).to_base58();
-        let lock_pool = vec![random_lock(pubkeys_per_output, &mut rng)?];
+        let mut tx_hasher = TxHasher::new();
+        let mining_pkh = tx_hasher.hash_schnorr_pubkey(&key.pk).to_base58();
+        let lock_pool = vec![owned_lock(pubkeys_per_output, &key.pk, &mut rng)?];
 
         let genesis_bytes = setup::FAKENET_GENESIS_BLOCK.to_vec();
         let genesis_id = genesis_block_id(&genesis_bytes)?;
+        let gossip_wire = Libp2pWire::Gossip(PeerId::random()).to_wire();
 
         let mut constants = fakenet_constants();
         if skip_mining {
@@ -498,25 +568,45 @@ fn pma_paging_kernel_workload() {
         let mut init_pokes =
             build_init_pokes(&constants, &genesis_bytes, &key.pk_b58, &mining_pkh)?;
 
+        let mut spendable_notes: VecDeque<(Name, NoteV0)> = VecDeque::new();
+        let mut seen_notes: HashSet<(Hash, Hash)> = HashSet::new();
+        let mut pending_txs: Vec<PendingTx> = Vec::new();
         let mut blocks_mined = 0usize;
         let mut used_bytes = 0u64;
         let mut pending_candidate: Option<MiningCandidate> = None;
+        let mut saw_candidate = false;
         let mut last_heaviest_block_id: Option<String> = None;
+        let mut tx_effects = TxEffectStats::default();
+        let mut logged_invalid = false;
 
         while blocks_mined < target_blocks && used_bytes < target_bytes {
             let Some(poke) = init_pokes.pop_front() else {
-                if let Some(candidate) = pending_candidate.take() {
+                if let Some(candidate) = pending_candidate.as_ref() {
                     let pow_poke = create_pow_poke(&candidate, &random_nonce(&mut rng));
                     init_pokes.push_back(Poke {
                         wire: MiningWire::Mined.to_wire(),
                         noun: pow_poke,
+                        tx_id: None,
                     });
                     continue;
                 }
-                return Err("No pending pokes while target not reached".to_string().into());
+                if saw_candidate {
+                    return Err(
+                        "No pending pokes while target not reached; mining stalled"
+                            .to_string()
+                            .into(),
+                    );
+                }
+                return Err("Mining never started (no %mine effect observed)".to_string().into());
             };
             let effects = app.poke(poke.wire, poke.noun).await?;
-            let mut saw_candidate = false;
+            let mut tx_seen = false;
+            let mut tx_accepted = false;
+            let mut tx_liar = false;
+            let record_tx_effects = poke.tx_id.is_some();
+            if record_tx_effects {
+                tx_effects.sent += 1;
+            }
             let mut stop = false;
             let mut queued_tx = false;
             for effect in effects {
@@ -526,13 +616,30 @@ fn pma_paging_kernel_workload() {
                     continue;
                 }
 
-                if let Some(mut gossip) = extract_gossip_data(&effect)? {
-                    if let Some((block_id, _fact)) = heard_block_fact(&mut gossip)? {
-                        if block_id == genesis_id {
-                            continue;
+                if record_tx_effects {
+                    if let Some(cause) = parse_liar_effect(&effect)? {
+                        tx_liar = true;
+                        tx_effects.record_liar(cause);
+                    }
+
+                    if let Some(seen_tx_id) = parse_seen_tx_id(&effect)? {
+                        if poke.tx_id.as_ref() == Some(&seen_tx_id) {
+                            tx_seen = true;
                         }
-                        let heaviest_id = peek_heaviest_block_id(&mut app).await?;
-                        if heaviest_id.as_deref() != Some(block_id.as_str()) {
+                    }
+                }
+
+                if let Some(mut gossip) = extract_gossip_data(&effect)? {
+                    if record_tx_effects {
+                        if let Some(tx_id) = heard_tx_id(&mut gossip)? {
+                            if poke.tx_id.as_ref() == Some(&tx_id) {
+                                tx_accepted = true;
+                            }
+                        }
+                    }
+
+                    if let Some((block_id, page)) = heard_block_page(&mut gossip)? {
+                        if block_id == genesis_id {
                             continue;
                         }
                         if last_heaviest_block_id.as_deref() == Some(block_id.as_str()) {
@@ -540,6 +647,36 @@ fn pma_paging_kernel_workload() {
                         }
                         last_heaviest_block_id = Some(block_id);
                         blocks_mined += 1;
+
+                        if !skip_txs {
+                            if !pending_txs.is_empty() {
+                                let mut next_pending = Vec::with_capacity(pending_txs.len());
+                                for pending in pending_txs.drain(..) {
+                                    if page_contains_tx_id(&mut gossip, page, &pending.id)? {
+                                        let height = page_height(page, &gossip.noun_space())?;
+                                        let mut note = pending.refund_note;
+                                        note.head.origin_page = BlockHeight(Belt(height));
+                                        let key = note_key(&pending.refund_name);
+                                        if seen_notes.insert(key) {
+                                            spendable_notes.push_back((pending.refund_name, note));
+                                        }
+                                    } else {
+                                        next_pending.push(pending);
+                                    }
+                                }
+                                pending_txs = next_pending;
+                            }
+
+                            if spendable_notes.len() < note_pool_target {
+                                refresh_note_pool(
+                                    &mut app,
+                                    &key.pk_b58,
+                                    &mut spendable_notes,
+                                    &mut seen_notes,
+                                )
+                                .await?;
+                            }
+                        }
 
                         if blocks_mined % bytes_check_interval == 0 {
                             used_bytes = pma_used_bytes(&pma_path)?;
@@ -554,23 +691,46 @@ fn pma_paging_kernel_workload() {
                             break;
                         }
 
-                        let (name, note) = fetch_coinbase_note(&mut app, &key.pk_b58).await?;
-                        let next_height = (blocks_mined + 1) as u64;
-                        let tx = build_tx_plan(
-                            &key,
-                            &name,
-                            &note,
-                            next_height,
-                            outputs_per_tx,
-                            extra_gift,
-                            &lock_pool,
-                        )?;
-                        let heard_tx = make_heard_tx_poke(&tx.raw_tx)?;
-                        init_pokes.push_back(Poke {
-                            wire: SystemWire.to_wire(),
-                            noun: heard_tx,
-                        });
-                        queued_tx = true;
+                        if !skip_txs {
+                            let available_slots = txs_per_block.saturating_sub(pending_txs.len());
+                            for _ in 0..available_slots {
+                                let Some((name, note)) = spendable_notes.pop_front() else {
+                                    break;
+                                };
+                                let next_height = (blocks_mined + 1) as u64;
+                                let tx = build_tx_plan(
+                                    &mut tx_hasher,
+                                    &key,
+                                    &name,
+                                    &note,
+                                    next_height,
+                                    outputs_per_tx,
+                                    extra_gift,
+                                    &lock_pool,
+                                )?;
+                                if !logged_invalid {
+                                    let mut check_hasher = TxHasher::new();
+                                    if let Err(reason) =
+                                        validate_tx_plan(&tx.raw_tx, &mut check_hasher)
+                                    {
+                                        warn!("pma_paging_kernel: tx-plan invalid: {}", reason);
+                                        logged_invalid = true;
+                                    }
+                                }
+                                let heard_tx = make_heard_tx_poke(&tx.raw_tx)?;
+                                init_pokes.push_back(Poke {
+                                    wire: gossip_wire.clone(),
+                                    noun: heard_tx,
+                                    tx_id: Some(tx.raw_tx.id.clone()),
+                                });
+                                pending_txs.push(PendingTx {
+                                    id: tx.raw_tx.id.clone(),
+                                    refund_name: tx.refund_name,
+                                    refund_note: tx.refund_note,
+                                });
+                                queued_tx = true;
+                            }
+                        }
                     }
                 }
             }
@@ -581,13 +741,15 @@ fn pma_paging_kernel_workload() {
             if queued_tx {
                 continue;
             }
-            if saw_candidate {
-                if let Some(candidate) = pending_candidate.take() {
-                    let pow_poke = create_pow_poke(&candidate, &random_nonce(&mut rng));
-                    init_pokes.push_back(Poke {
-                        wire: MiningWire::Mined.to_wire(),
-                        noun: pow_poke,
-                    });
+            if poke.tx_id.is_some() {
+                if tx_accepted {
+                    tx_effects.accepted += 1;
+                }
+                if tx_seen {
+                    tx_effects.seen += 1;
+                }
+                if !tx_accepted && !tx_seen && !tx_liar {
+                    tx_effects.dropped += 1;
                 }
             }
         }
@@ -597,6 +759,17 @@ fn pma_paging_kernel_workload() {
             "paging: finished blocks={} used_bytes={} target_bytes={}",
             blocks_mined, used_bytes, target_bytes
         );
+        info!(
+            "paging: tx-effects sent={} accepted={} seen={} dropped={}",
+            tx_effects.sent, tx_effects.accepted, tx_effects.seen, tx_effects.dropped
+        );
+        if !tx_effects.liar_causes.is_empty() {
+            let mut causes: Vec<(String, u64)> = tx_effects.liar_causes.into_iter().collect();
+            causes.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+            for (cause, count) in causes {
+                info!("paging: tx-effects liar cause {} = {}", cause, count);
+            }
+        }
 
         validate_paging_with_heaviest_peek(&mut app, &pma_path, used_bytes).await?;
         drop(app);
@@ -608,6 +781,7 @@ fn pma_paging_kernel_workload() {
 }
 
 fn build_tx_plan(
+    hasher: &mut TxHasher,
     key: &KeyMaterial,
     name: &Name,
     note: &NoteV0,
@@ -616,17 +790,23 @@ fn build_tx_plan(
     extra_gift: u64,
     lock_pool: &[Lock],
 ) -> Result<TxPlan, Box<dyn Error>> {
-    let mut hasher = TxHasher::new();
+    hasher.reset();
+    let lock = lock_pool
+        .first()
+        .expect("lock pool must not be empty")
+        .clone();
+    hasher.cache_lock(&lock);
     let parent_hash = hasher.hash_nnote(note);
 
     let input_assets = note.tail.assets.0 as u64;
-    let extra_outputs = outputs_per_tx.max(1);
-    let extra_gift_total = extra_gift.saturating_mul(extra_outputs as u64);
-    let refund_gift = if extra_gift_total > input_assets {
-        input_assets
+    let max_outputs_by_assets = if extra_gift == 0 {
+        outputs_per_tx
     } else {
-        input_assets - extra_gift_total
+        (input_assets / extra_gift) as usize
     };
+    let extra_outputs = outputs_per_tx.min(max_outputs_by_assets);
+    let extra_gift_total = extra_gift.saturating_mul(extra_outputs as u64);
+    let refund_gift = input_assets.saturating_sub(extra_gift_total);
 
     let refund_seed = Seed {
         output_source: None,
@@ -638,10 +818,6 @@ fn build_tx_plan(
 
     let mut seeds: Vec<Seed> = Vec::with_capacity(extra_outputs + 1);
     seeds.push(refund_seed.clone());
-    let lock = lock_pool
-        .first()
-        .expect("lock pool must not be empty")
-        .clone();
     for idx in 0..extra_outputs {
         let timelock_intent = Some(TimelockIntent {
             absolute: TimelockRangeAbsolute::none(),
@@ -677,7 +853,7 @@ fn build_tx_plan(
         spend,
     };
     let inputs = Inputs(vec![(name.clone(), input)]);
-    let timelock_range = TimelockRangeAbsolute::none();
+    let timelock_range = timelock_range_for_note(note);
     let total_fees = Nicks(0);
 
     let id = hasher.hash_raw_tx_id(&inputs, &timelock_range, &total_fees);
@@ -697,7 +873,7 @@ fn build_tx_plan(
         is_coinbase: false,
     };
     let timelock = Timelock(None);
-    let refund_name = compute_nname(&mut hasher, &note.tail.lock, &source, &timelock);
+    let refund_name = compute_nname(hasher, &note.tail.lock, &source, &timelock);
     let refund_note = NoteV0 {
         head: NoteHead {
             version: Version::V0,
@@ -783,6 +959,39 @@ fn sign_schnorr(sk: &UBig, msg: &Hash) -> Result<SchnorrSignature, Box<dyn Error
     })
 }
 
+fn verify_schnorr(pubkey: &SchnorrPubkey, msg: &Hash, sig: &SchnorrSignature) -> bool {
+    let chal = t8_to_ubig(&sig.chal);
+    let sig_val = t8_to_ubig(&sig.sig);
+    if chal == UBig::from(0u8) || chal >= *G_ORDER {
+        return false;
+    }
+    if sig_val == UBig::from(0u8) || sig_val >= *G_ORDER {
+        return false;
+    }
+    let sig_point = match ch_scal_big(&sig_val, &A_GEN) {
+        Ok(point) => point,
+        Err(_) => return false,
+    };
+    let chal_point = match ch_scal_big(&chal, &pubkey.0) {
+        Ok(point) => point,
+        Err(_) => return false,
+    };
+    let scalar = match ch_add(&sig_point, &ch_neg(&chal_point)) {
+        Ok(point) => point,
+        Err(_) => return false,
+    };
+    if scalar == A_ID {
+        return false;
+    }
+    let mut pre_image = Vec::with_capacity(6 + 6 + 6 + 6 + 5);
+    pre_image.extend_from_slice(&scalar.x.0);
+    pre_image.extend_from_slice(&scalar.y.0);
+    pre_image.extend_from_slice(&pubkey.0.x.0);
+    pre_image.extend_from_slice(&pubkey.0.y.0);
+    pre_image.extend_from_slice(&msg.0);
+    trunc_g_order(&hash_varlen(&mut pre_image)) == chal
+}
+
 fn ubig_to_limbs(value: &UBig) -> [u32; 8] {
     let mut bytes = value.to_le_bytes();
     bytes.resize(32, 0);
@@ -804,10 +1013,134 @@ fn limbs_to_t8(value: &UBig) -> [Belt; 8] {
     out
 }
 
-fn random_lock(pubkeys_per_output: usize, rng: &mut StdRng) -> Result<Lock, Box<dyn Error>> {
+fn t8_to_ubig(value: &[Belt; 8]) -> UBig {
+    let base = UBig::from(1u64 << 32);
+    let mut factor = UBig::from(1u8);
+    let mut result = UBig::from(0u8);
+    for limb in value.iter() {
+        result += UBig::from(limb.0) * &factor;
+        factor *= &base;
+    }
+    result
+}
+
+#[test]
+fn verify_sample_raw_tx_signatures() -> Result<(), Box<dyn Error>> {
+    const RAW_TX_JAM: &[u8] = include_bytes!("../../nockchain-types/jams/v0/raw-tx.jam");
+
+    let mut slab: NounSlab = NounSlab::new();
+    let noun = slab.cue_into(Bytes::from_static(RAW_TX_JAM))?;
+    let space = slab.noun_space();
+    let raw_tx = RawTx::from_noun(&noun, &space)?;
+
+    let mut hasher = TxHasher::new();
+    let expected_id =
+        hasher.hash_raw_tx_id(&raw_tx.inputs, &raw_tx.timelock_range, &raw_tx.total_fees);
+    assert_eq!(expected_id, raw_tx.id, "raw-tx id mismatch");
+
+    let mut expected_range = TimelockRangeAbsolute::none();
+    for (_, input) in &raw_tx.inputs.0 {
+        let range = timelock_range_for_note(&input.note);
+        expected_range = merge_timelock_range(&expected_range, &range);
+    }
+    assert_eq!(
+        expected_range, raw_tx.timelock_range,
+        "raw-tx timelock range mismatch",
+    );
+
+    for (_, input) in &raw_tx.inputs.0 {
+        let sig_hash = hasher.sig_hash(&input.spend.seeds, &input.spend.fee);
+        let signature = input
+            .spend
+            .signature
+            .as_ref()
+            .ok_or("raw-tx input missing signature")?;
+        for (pk, sig) in &signature.0 {
+            assert!(
+                verify_schnorr(pk, &sig_hash, sig),
+                "raw-tx signature failed verification",
+            );
+        }
+    }
+
+    Ok(())
+}
+
+fn validate_tx_plan(raw_tx: &RawTx, hasher: &mut TxHasher) -> Result<(), String> {
+    let Some((name, input)) = raw_tx.inputs.0.first() else {
+        return Err("missing input".to_string());
+    };
+    if input.note.tail.assets.0 as u64 >= PRIME {
+        return Err("input assets not based".to_string());
+    }
+    if *name != input.note.tail.name {
+        return Err("input name mismatch".to_string());
+    }
+    if raw_tx.total_fees.0 as u64 >= PRIME {
+        return Err("total_fees not based".to_string());
+    }
+    if raw_tx.total_fees != input.spend.fee {
+        return Err("total_fees mismatch".to_string());
+    }
+    let expected_timelock = timelock_range_for_note(&input.note);
+    if raw_tx.timelock_range != expected_timelock {
+        return Err("timelock_range mismatch".to_string());
+    }
+    let mut gifts = 0u64;
+    for seed in &input.spend.seeds.seeds {
+        if seed.gift.0 as u64 >= PRIME {
+            return Err("seed gift not based".to_string());
+        }
+        gifts = gifts.saturating_add(seed.gift.0 as u64);
+    }
+    let total = gifts.saturating_add(input.spend.fee.0 as u64);
+    if total != input.note.tail.assets.0 as u64 {
+        return Err("gifts+fee mismatch".to_string());
+    }
+    let note_hash = hasher.hash_nnote(&input.note);
+    for seed in &input.spend.seeds.seeds {
+        if seed.parent_hash != note_hash {
+            return Err("parent_hash mismatch".to_string());
+        }
+    }
+    let signature = input
+        .spend
+        .signature
+        .as_ref()
+        .ok_or_else(|| "missing signature".to_string())?;
+    let required = input.note.tail.lock.keys_required as usize;
+    if signature.0.len() < required {
+        return Err("insufficient signatures".to_string());
+    }
+    for (pk, sig) in &signature.0 {
+        if !input.note.tail.lock.pubkeys.iter().any(|k| k == pk) {
+            return Err("signature key not in lock".to_string());
+        }
+        let sig_hash = hasher.sig_hash(&input.spend.seeds, &input.spend.fee);
+        if !verify_schnorr(pk, &sig_hash, sig) {
+            return Err("signature verify failed".to_string());
+        }
+    }
+    let expected_id = hasher.hash_raw_tx_id(
+        &raw_tx.inputs,
+        &raw_tx.timelock_range,
+        &raw_tx.total_fees,
+    );
+    if raw_tx.id != expected_id {
+        return Err("raw_tx id mismatch".to_string());
+    }
+    Ok(())
+}
+
+fn owned_lock(
+    pubkeys_per_output: usize,
+    owner: &SchnorrPubkey,
+    rng: &mut StdRng,
+) -> Result<Lock, Box<dyn Error>> {
     let count = pubkeys_per_output.max(1);
     let mut pubkeys = Vec::with_capacity(count);
-    for _ in 0..count {
+    pubkeys.push(owner.clone());
+    for _ in 1..count {
         let sk = random_scalar(rng);
         let pk = SchnorrPubkey(ch_scal_big(&sk, &A_GEN)?);
         pubkeys.push(pk);
@@ -883,30 +1216,37 @@ fn build_init_pokes(
     pokes.push_back(Poke {
         wire: SystemWire.to_wire(),
         noun: make_set_constants_poke(constants),
+        tx_id: None,
     });
     pokes.push_back(Poke {
         wire: SystemWire.to_wire(),
         noun: make_set_genesis_seal_poke(setup::FAKENET_GENESIS_MESSAGE),
+        tx_id: None,
     });
     pokes.push_back(Poke {
         wire: SystemWire.to_wire(),
         noun: make_set_btc_data_poke(),
+        tx_id: None,
     });
     pokes.push_back(Poke {
         wire: MiningWire::SetPubKey.to_wire(),
         noun: make_set_mining_key_poke(v0_pubkey, mining_pkh),
+        tx_id: None,
     });
     pokes.push_back(Poke {
         wire: MiningWire::Enable.to_wire(),
         noun: make_enable_mining_poke(true),
+        tx_id: None,
     });
     pokes.push_back(Poke {
         wire: SystemWire.to_wire(),
         noun: make_born_poke(),
+        tx_id: None,
     });
     pokes.push_back(Poke {
         wire: SystemWire.to_wire(),
         noun: setup::heard_fake_genesis_block(Some(genesis_bytes.to_vec()))?,
+        tx_id: None,
     });
     Ok(pokes)
 }
@@ -1071,7 +1411,7 @@ fn extract_gossip_data(effect: &NounSlab) -> Result<Option<NounSlab>, NockAppErr
     Ok(Some(data_slab))
 }
 
-fn heard_block_fact(gossip: &mut NounSlab) -> Result<Option<(String, NounSlab)>, NockAppError> {
+fn heard_block_page(gossip: &mut NounSlab) -> Result<Option<(String, Noun)>, NockAppError> {
     let noun = unsafe { gossip.root() };
     let space = gossip.noun_space();
     let head = noun.in_space(&space).as_cell()?.head();
@@ -1082,10 +1422,63 @@ fn heard_block_fact(gossip: &mut NounSlab) -> Result<Option<(String, NounSlab)>,
     let page = noun.in_space(&space).as_cell()?.tail().noun();
     let block_id = block_id_from_page(page, &space)?;
     let block_id_str = tip5_hash_to_base58_stack(gossip, block_id, &space)?;
-    let mut fact_poke = NounSlab::new();
-    fact_poke.copy_from_slab(gossip);
-    fact_poke.modify(|response_noun| vec![D(tas!(b"fact")), D(0), response_noun]);
-    Ok(Some((block_id_str, fact_poke)))
+    Ok(Some((block_id_str, page)))
+}
+
+fn heard_tx_id(gossip: &mut NounSlab) -> Result<Option<Hash>, NockAppError> {
+    let noun = unsafe { gossip.root() };
+    let space = gossip.noun_space();
+    let head = noun.in_space(&space).as_cell()?.head();
+    if !head.eq_bytes(b"heard-tx") {
+        return Ok(None);
+    }
+    let raw_tx = noun.in_space(&space).as_cell()?.tail().noun();
+    let raw_tx = RawTx::from_noun(&raw_tx, &space)
+        .map_err(|_| NockAppError::OtherError("heard-tx raw-tx decode failed".to_string()))?;
+    Ok(Some(raw_tx.id))
+}
+
+fn parse_liar_effect(effect: &NounSlab) -> Result<Option<String>, NockAppError> {
+    let Ok(effect_cell) = (unsafe { effect.root().as_cell() }) else {
+        return Ok(None);
+    };
+    let space = effect.noun_space();
+    let effect_cell = effect_cell.in_space(&space);
+    let head = effect_cell.head();
+    if !head.eq_bytes("liar-peer") && !head.eq_bytes("liar-block-id") {
+        return Ok(None);
+    }
+    let cause = effect_cell
+        .tail()
+        .noun()
+        .in_space(&space)
+        .as_cell()?
+        .tail()
+        .noun()
+        .in_space(&space)
+        .as_atom()?
+        .into_string()
+        .unwrap_or_else(|_| "<non-utf8>".to_string());
+    Ok(Some(cause))
+}
+
+fn parse_seen_tx_id(effect: &NounSlab) -> Result<Option<Hash>, NockAppError> {
+    let Ok(effect_cell) = (unsafe { effect.root().as_cell() }) else {
+        return Ok(None);
+    };
+    let space = effect.noun_space();
+    let effect_cell = effect_cell.in_space(&space);
+    if !effect_cell.head().eq_bytes("seen") {
+        return Ok(None);
+    }
+    let seen_tail = effect_cell.tail().noun().in_space(&space).as_cell()?;
+    if !seen_tail.head().eq_bytes("tx") {
+        return Ok(None);
+    }
+    let id_noun = seen_tail.tail().noun();
+    let id = Hash::from_noun(&id_noun, &space)
+        .map_err(|_| NockAppError::OtherError("seen tx id decode failed".to_string()))?;
+    Ok(Some(id))
 }
 
 fn block_id_from_page(page: Noun, space: &NounSpace) -> Result<Noun, NockAppError> {
@@ -1104,6 +1497,73 @@ fn block_id_from_page(page: Noun, space: &NounSpace) -> Result<Noun, NockAppErro
         }
         Err(_) => Ok(page_cell.head().noun()),
     }
+}
+
+fn page_field(page: Noun, space: &NounSpace, index: usize) -> Result<Noun, NockAppError> {
+    let page_cell = page.in_space(space).as_cell()?;
+    let mut cell = match page_cell.head().as_atom() {
+        Ok(version_atom) => {
+            let version = version_atom.as_u64()?;
+            if version == 1 {
+                page_cell.tail().as_cell()?
+            } else {
+                return Err(NockAppError::OtherError(format!(
+                    "Unsupported page version {}",
+                    version
+                )));
+            }
+        }
+        Err(_) => page_cell,
+    };
+
+    for _ in 0..index {
+        cell = cell.tail().as_cell()?;
+    }
+    Ok(cell.head().noun())
+}
+
+fn page_tx_ids(page: Noun, space: &NounSpace) -> Result<Noun, NockAppError> {
+    page_field(page, space, 3)
+}
+
+fn page_height(page: Noun, space: &NounSpace) -> Result<u64, NockAppError> {
+    let height_noun = page_field(page, space, 9)?;
+    height_noun
+        .in_space(space)
+        .as_atom()?
+        .as_u64()
+        .map_err(|_| NockAppError::OtherError("page height was not a u64".to_string()))
+}
+
+fn page_contains_tx_id(
+    gossip: &mut NounSlab,
+    page: Noun,
+    tx_id: &Hash,
+) -> Result<bool, NockAppError> {
+    let tx_id_noun = tx_id.to_noun(gossip);
+    let space = gossip.noun_space();
+    let tx_ids = page_tx_ids(page, &space)?;
+    z_set_contains(tx_ids, &space, tx_id_noun)
+}
+
+fn z_set_contains(node: Noun, space: &NounSpace, target: Noun) -> Result<bool, NockAppError> {
+    let mut stack = vec![node];
+    while let Some(node) = stack.pop() {
+        if unsafe { node.raw_equals(&D(0)) } {
+            continue;
+        }
+        let Ok([entry, left, right]) = node.uncell(space) else {
+            return Err(NockAppError::OtherError(
+                "tx-ids node not a cell".to_string(),
+            ));
+        };
+        if noun_equality(entry.in_space(space), target.in_space(space)) {
+            return Ok(true);
+        }
+        stack.push(left);
+        stack.push(right);
+    }
+    Ok(false)
 }
 
 fn genesis_block_id(genesis_bytes: &[u8]) -> Result<String, Box<dyn Error>> {
@@ -1153,10 +1613,89 @@ fn random_nonce(rng: &mut StdRng) -> NounSlab {
     nonce_slab
 }
 
-async fn fetch_coinbase_note(
+fn note_key(name: &Name) -> (Hash, Hash) {
+    (name.first.clone(), name.last.clone())
+}
+
+fn note_is_spendable(note: &NoteV0, now: u64) -> bool {
+    let since = (note.head.origin_page.0).0;
+    let Some(intent) = note.head.timelock.0.as_ref() else {
+        return true;
+    };
+    let rel_min = intent.relative.min.as_ref().map(|height| (height.0).0);
+    let rel_max = intent.relative.max.as_ref().map(|height| (height.0).0);
+    let abs_min = intent.absolute.min.as_ref().map(|height| (height.0).0);
+    let abs_max = intent.absolute.max.as_ref().map(|height| (height.0).0);
+    let rmin_ok = rel_min.map_or(true, |min| now >= since.saturating_add(min));
+    let rmax_ok = rel_max.map_or(true, |max| now <= since.saturating_add(max));
+    let amin_ok = abs_min.map_or(true, |min| now >= min);
+    let amax_ok = abs_max.map_or(true, |max| now <= max);
+    rmin_ok && rmax_ok && amin_ok && amax_ok
+}
+
+fn merge_timelock_range(
+    a: &TimelockRangeAbsolute,
+    b: &TimelockRangeAbsolute,
+) -> TimelockRangeAbsolute {
+    if a.min.is_none() && a.max.is_none() {
+        return b.clone();
+    }
+    if b.min.is_none() && b.max.is_none() {
+        return a.clone();
+    }
+    let min = match (&a.min, &b.min) {
+        (Some(a_min), Some(b_min)) => {
+            if (a_min.0).0 >= (b_min.0).0 {
+                Some(a_min.clone())
+            } else {
+                Some(b_min.clone())
+            }
+        }
+        (Some(a_min), None) => Some(a_min.clone()),
+        (None, Some(b_min)) => Some(b_min.clone()),
+        (None, None) => None,
+    };
+    let max = match (&a.max, &b.max) {
+        (Some(a_max), Some(b_max)) => {
+            if (a_max.0).0 <= (b_max.0).0 {
+                Some(a_max.clone())
+            } else {
+                Some(b_max.clone())
+            }
+        }
+        (Some(a_max), None) => Some(a_max.clone()),
+        (None, Some(b_max)) => Some(b_max.clone()),
+        (None, None) => None,
+    };
+    TimelockRangeAbsolute::new(min, max)
+}
+
+fn add_block_height(origin: &BlockHeight, delta: &BlockHeightDelta) -> BlockHeight {
+    BlockHeight(origin.0 + delta.0)
+}
+
+fn timelock_range_for_note(note: &NoteV0) -> TimelockRangeAbsolute {
+    let Some(intent) = note.head.timelock.0.as_ref() else {
+        return TimelockRangeAbsolute::none();
+    };
+    let origin = &note.head.origin_page;
+    let relative = &intent.relative;
+    let absolutification = if relative.min.is_none() && relative.max.is_none() {
+        TimelockRangeAbsolute::none()
+    } else {
+        let min = relative.min.as_ref().map(|height| add_block_height(origin, height));
+        let max = relative.max.as_ref().map(|height| add_block_height(origin, height));
+        TimelockRangeAbsolute::new(min, max)
+    };
+    merge_timelock_range(&absolutification, &intent.absolute)
+}
+
+async fn refresh_note_pool(
     app: &mut NockApp,
     pubkey_b58: &str,
-) -> Result<(Name, NoteV0), Box<dyn Error>> {
+    spendable_notes: &mut VecDeque<(Name, NoteV0)>,
+    seen_notes: &mut HashSet<(Hash, Hash)>,
+) -> Result<(), Box<dyn Error>> {
     let mut path_slab = NounSlab::new();
     let path_noun = vec!["balance-by-pubkey".to_string(), pubkey_b58.to_string()]
         .to_noun(&mut path_slab);
@@ -1171,23 +1710,32 @@ async fn fetch_coinbase_note(
     let update = balance_opt
         .and_then(|inner| inner)
         .ok_or("missing balance update")?;
-    let mut best: Option<(Name, NoteV0)> = None;
+    let now = (update.height.0).0;
     for (name, note) in update.notes.0 {
         if note.tail.assets.0 == 0 {
             continue;
         }
-        if note
+        if !note_is_spendable(&note, now) {
+            continue;
+        }
+        if note.tail.lock.keys_required > 1 {
+            continue;
+        }
+        if !note
             .tail
             .lock
             .pubkeys
             .iter()
             .any(|pk| pk.to_base58().ok().as_deref() == Some(pubkey_b58))
         {
-            best = Some((name, note));
-            break;
+            continue;
+        }
+        let key = note_key(&name);
+        if seen_notes.insert(key) {
+            spendable_notes.push_back((name, note));
         }
     }
-    best.ok_or_else(|| "no spendable note found".into())
+    Ok(())
 }
 
 fn find_pma_path(data_dir: &Path) -> Result<PathBuf, Box<dyn Error>> {
@@ -1336,17 +1884,6 @@ async fn peek_heaviest_block(app: &mut NockApp) -> Result<Option<NounSlab>, Box<
     let path = T(&mut path_slab, &[tag, D(0)]);
     path_slab.set_root(path);
     Ok(app.peek_handle(path_slab).await?)
-}
-
-async fn peek_heaviest_block_id(app: &mut NockApp) -> Result<Option<String>, Box<dyn Error>> {
-    let Some(slab) = peek_heaviest_block(app).await? else {
-        return Ok(None);
-    };
-    let noun = unsafe { slab.root() };
-    let space = slab.noun_space();
-    let block_id = block_id_from_page(*noun, &space)?;
-    let block_id_str = tip5_hash_to_base58(block_id, &space)?;
-    Ok(Some(block_id_str))
 }
 
 fn touch_entire_region(ptr: *mut u8, len: usize, page: usize) {
