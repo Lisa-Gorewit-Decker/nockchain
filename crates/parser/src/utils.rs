@@ -2321,34 +2321,6 @@ pub fn peg(a: u64, b: u64) -> Result<u64, &'static str> {
     Ok((a << k) + offset)
 }
 
-// pub fn autoname(mod_spec: Spec) -> Option<String> {  //  ++autoname:ax
-
-// }
-
-pub fn digit<'src>(
-) -> impl Parser<'src, &'src str, char, Err<'src>>
-{
-    one_of("0123456789")
-}
-
-pub fn non_zero_digit<'src>(
-) -> impl Parser<'src, &'src str, char, Err<'src>>
-{
-    one_of("0123456789")
-}
-
-pub fn lowercase<'src>(
-) -> impl Parser<'src, &'src str, char, Err<'src>>
-{
-    one_of("abcdefghijklmnopqrstuvwxyz")
-}
-
-pub fn uppercase<'src>(
-) -> impl Parser<'src, &'src str, char, Err<'src>>
-{
-    one_of("ABCDEFGHIJKLMNOPQRSTUVWXYZ")
-}
-
 // non-control ASCII (32-255, excluding 127/DEL)
 fn non_control_char<'src>(
 ) -> impl Parser<'src, &'src str, char, Err<'src>> {
@@ -2456,23 +2428,25 @@ pub fn winglist<'src>(
             });
 
     let lus_number =   //  +10
-            just('+').ignore_then(regex(r"[0-9]+"))
-                .map(|n: &str| {
-                    let num = n.parse::<u64>().unwrap();
-                    Limb::Axis(num)}
-                );
+            just('+')
+                .ignore_then(digits())
+                .map(|s| {
+                    let num = s.parse::<u64>().unwrap();
+                    Limb::Axis(num)
+                });
 
     let pam_number =   //  &10
-            just('&').ignore_then((regex(r"[0-9]+")))
-                .map(|n: &str| {
-                    let num = n.parse::<u64>().unwrap();
+            just('&')
+                .ignore_then(digits())
+                .map(|s| {
+                    let num = s.parse::<u64>().unwrap();
                     Limb::Axis(left_child(num))
                 });
 
     let bar_number =  //  |10
-           just('|').ignore_then(regex(r"[0-9]+"))
-                .map(|n: &str| {
-                    let num = n.parse::<u64>().unwrap();
+           just('|').ignore_then(digits())
+                .map(|s| {
+                    let num = s.parse::<u64>().unwrap();
                     Limb::Axis(right_child(num))
                 });
 
@@ -2485,12 +2459,30 @@ pub fn winglist<'src>(
     let hep =  //  -
         just('-').to(Limb::Axis(2));
 
+    let sign = any().filter(|c: &char| *c == '+' || *c == '-');
+    let angle = any().filter(|c: &char| *c == '<' || *c == '>');
+
     let lark =   //    +>-<  notation
-            regex(r"[+-][<>](?:[+-][<>])*[+-]?")
-            .map(|s: &str| {
-                let str = s.to_string();
+            sign
+                .then(angle)
+                .repeated()
+                .at_least(1)
+                .collect::<Vec<_>>()
+            .then(sign.or_not())
+            .map(|(pairs, tail)| {
+                let mut out = String::new();
+                for (s, a) in pairs {
+                    out.push(s);
+                    out.push(a);
+                }
+                if let Some(t) = tail {
+                    out.push(t);
+                }
+                out
+            })
+            .map(|s: String| {
                 let mut axis = 1;
-                for c in str.chars() {
+                for c in s.chars() {
                     match c {
                         '+' | '>' => axis = peg(axis, 3).unwrap(),
                         '-' | '<' => axis = peg(axis, 2).unwrap(),
@@ -3043,7 +3035,6 @@ pub fn binaryfloat_mul_internal(a_e: u128, a_a: BigUint, b_e: u128, b_a: BigUint
     rou(e, a, p, v, w, r, d)
 }
 
-
 pub fn binaryfloat_div_internal(
     a_e: u128,
     a_a: BigUint,
@@ -3454,10 +3445,10 @@ pub fn float<'src>(
 {
     let floats =
             just('-').or_not()
-            .then(decimal_without_dots())
+            .then(decimal_without_leading_zero())
             .then(choice((
                     just('.')
-                        .ignore_then(leading_zero_decimal_without_dots())
+                        .ignore_then(digits())
                         .map(|frac| {
                             (frac.len(),
                             frac.parse::<BigUint>().expect("float: invalid fraction"))
@@ -3466,7 +3457,7 @@ pub fn float<'src>(
             .then(choice((
                     just('e')
                         .ignore_then(just('-').or_not())
-                        .then(decimal_without_dots())
+                        .then(decimal_without_leading_zero())
                         .map(|(maybe_hep, expo)| {
                             (!maybe_hep.is_some(), expo.parse::<u128>().expect("float: invalid exponent"))
                         }),
@@ -3644,7 +3635,7 @@ pub fn chapters<'src>(
             .then(hoon.clone())
             .map(|(name, hoon)| {
                 (name, hoon)
-            });
+            }).labelled("Arm ++");
 
     let lusbuc =  just("+$")
             .ignore_then(gap())
@@ -3653,7 +3644,7 @@ pub fn chapters<'src>(
             .then(spec.clone())
             .map(|(name, spec)| (name.clone(),
                                 Hoon::KetCol(Box::new(Spec::Name(name.clone(),
-                                                        Box::new(spec))))));
+                                                        Box::new(spec)))))).labelled("Arm +$");
 
     let optional_chapter_label =
         just("+|")
@@ -3661,7 +3652,7 @@ pub fn chapters<'src>(
         .then(just("%"))
         .ignore_then(symbol())
         .then_ignore(gap())
-        .or_not();
+        .or_not().labelled("Chapter Label +|");
 
     let chapter = optional_chapter_label
                     .then(luslus.or(lusbuc)
@@ -3755,7 +3746,7 @@ pub fn jet_signature<'src>(
             venprokel,
             stdkel,
             lef
-        )))
+        ))).labelled("Jet Signature")
 }
 
 //  +lute
@@ -3904,13 +3895,26 @@ pub fn tape<'src>(
 pub fn aura_text<'src>(
 ) -> impl Parser<'src, &'src str, String, Err<'src>>
 {
-    just("@")
-    .ignore_then(regex(r"[a-zA-Z]+")
-                .map(str::to_owned)
-                .or_not())
-    .map(|maybe_name| {
-        maybe_name.unwrap_or("".to_string())
-    })
+    just('@')
+        .ignore_then(
+            any()
+                .filter(|c: &char| c.is_ascii_lowercase())
+                .repeated()
+                .collect::<Vec<char>>()
+                .then(
+                    any()
+                        .filter(|c: &char| c.is_ascii_uppercase())
+                        .repeated()
+                        .collect::<Vec<char>>()
+                )
+                .map(|(lowers, uppers)| {
+                    let mut s = String::new();
+                    s.extend(lowers);
+                    s.extend(uppers);
+                    s
+                })
+        )
+        .labelled("Aura<@foo>")
 }
 
 pub fn aura_hoon<'src>(
@@ -3918,6 +3922,7 @@ pub fn aura_hoon<'src>(
 {
     aura_text()
     .map(|s| Hoon::Base(BaseType::Atom(s)))
+    .labelled("Aura")
 }
 
 pub fn aura_spec<'src>(
@@ -3925,6 +3930,7 @@ pub fn aura_spec<'src>(
 {
     aura_text()
     .map(|s| Spec::Base(BaseType::Atom(s)))
+    .labelled("Aura")
 }
 
 pub fn loop_spec<'src>(
@@ -3962,6 +3968,7 @@ pub fn wing<'src>(
             _ => Hoon::CenTis(list, vec![])
         }
     })
+    .labelled("Wing")
 }
 
 pub fn tell<'src>(
@@ -4016,6 +4023,7 @@ pub fn constant<'src>(
             cord,
             coin,
         )))
+        .labelled("Constant<%foo>")
 }
 
 pub fn cord<'src>(
@@ -4090,6 +4098,7 @@ pub fn increment<'src>(
         )
         .then_ignore(just(')'))
         .map(|h| Hoon::DotLus(Box::new(h)))
+    .labelled("Increment: +(p)")
 }
 
 pub fn function_call<'src>(
@@ -4106,6 +4115,7 @@ pub fn function_call<'src>(
             )
     .then_ignore(just(')'))
     .map(|(func, args)| Hoon::CenCol(Box::new(func), args))
+    .labelled("Function Call")
 }
 
 const YEAR_OFFSET: u64 = 292_277_024_400;
@@ -4307,7 +4317,20 @@ pub fn base32_to_atom(s: String) -> ParsedAtom {
 ///
 pub fn symbol<'src>(
 ) -> impl Parser<'src, &'src str, String, Err<'src>> {
-    regex(r"[a-z](?:[a-zA-Z0-9-])*").map(str::to_owned)
+    any()
+    .filter(|c: &char| c.is_ascii_lowercase())
+    .then(
+        any()
+            .filter(|c: &char| matches!(c, 'a'..='z' | '0'..='9' | '-'))
+            .repeated()
+            .collect::<Vec<char>>(),
+    )
+    .map(|(first, rest)| {
+        let mut s = String::with_capacity(rest.len() + 1);
+        s.push(first);
+        s.extend(rest);
+        s
+    })
     .labelled("Term")
 }
 
@@ -4431,7 +4454,6 @@ fn net(a: usize, b: &ParsedAtom)
     let lo = net(c, &lo_bit);
 
     let res = con_atoms(lsh(c, 1, &hi), lo);
-    // println!("net a {} b {:?} res {:?}", a, b, res);
     res
 }
 
@@ -4455,8 +4477,6 @@ fn pad_fa_big(a: &BigUint) -> usize {
 }
 
 pub fn pad_fa(atom: &ParsedAtom) -> usize {
-    // let len = atom_to_le_bytes(atom).len();
-    // len.saturating_sub(21).checked_sub(len).map_or(0, |x| x.abs()) as usize
     21usize.saturating_sub(met(3, atom))
 }
 
@@ -4484,21 +4504,26 @@ pub fn base58_to_atom(s: String) -> Option<ParsedAtom> {
 pub fn bitcoin_address<'src>(
 ) -> impl Parser<'src, &'src str, String, Err<'src>> {
     just("0c")
-    .ignore_then(
-        regex(r"[0-9a-zA-Z]+").map(str::to_owned))
-    .labelled("Bitcoin_Address")
+    .ignore_then(alphanumeric())
+    .labelled("Bitcoin Address")
 }
-
 
 pub fn urs<'src>(
 ) -> impl Parser<'src, &'src str, ParsedAtom, Err<'src>> {
-    regex(r"[0-9a-z._~\-]*").map(|s: &str| string_to_atom(s.to_string()))
+    any()
+        .filter(|c: &char| matches!(c, '0'..='9' | 'a'..='z' | '.' | '_' | '~' | '-'))
+        .repeated()
+        .collect::<String>()
+        .map(string_to_atom)
 }
 
 pub fn urt<'src>(
 ) -> impl Parser<'src, &'src str, &'src str, Err<'src>> {
-    regex(r"[0-9a-z.~\-]+")
-    // .map(str::to_owned)
+    any()
+        .filter(|c: &char| matches!(c, '0'..='9' | 'a'..='z' | '.' | '~' | '-'))
+        .repeated()
+        .at_least(1)
+        .to_slice()
 }
 
 fn wick(s: &str) -> Option<String> {
@@ -4514,7 +4539,6 @@ fn wick(s: &str) -> Option<String> {
             }
         } else {
             // Only allow valid @ta characters: [a-z0-9._-]
-            // (original regex ensures this, but let’s be safe)
             if c.is_ascii_lowercase()
                 || c.is_ascii_digit()
                 || c == '.'
@@ -4795,76 +4819,108 @@ pub fn taft(atom: &ParsedAtom) -> ParsedAtom {
 }
 
 pub fn binary_number<'src>(
-) -> impl Parser<'src, &'src str, String, Err<'src>>
-{
-    let first = just("0b")
-                .ignore_then(regex(r"(?:0|1[01]{0,3})"));
+) -> impl Parser<'src, &'src str, String, Err<'src>> {
+    let bit = any().filter(|c: &char| *c == '0' || *c == '1');
 
-    let rest = just('.').ignore_then(gap().or_not())
-            .ignore_then(regex(r"[01]{4}"));
+    let first_group =
+        just('0').to("0".to_string())
+            .or(
+                just('1')
+                    .then(bit.repeated().at_most(3).collect::<String>())
+                    .map(|(h, t)| h.to_string() + &t)
+            );
+
+    let first = just("0b").ignore_then(first_group);
+
+    let rest = just('.')
+        .ignore_then(gap().or_not())
+        .ignore_then(
+            bit.repeated()
+                .exactly(4)
+                .collect::<String>(),
+        );
 
     first
-        .then(rest.repeated().collect::<Vec<_>>())
-        .map(|(first, mut rest)| {
+        .then(rest.repeated().collect::<Vec<String>>())
+        .map(|(first, rest)| {
             if rest.is_empty() {
-                first.to_string()
+                first
             } else {
-                let mut parts = vec![first];
-                parts.append(&mut rest);
-                parts.join("").to_string()
+                let mut s = first;
+                for r in rest {
+                    s.push_str(&r);
+                }
+                s
             }
         })
         .labelled("Binary")
 }
 
 pub fn hexadecimal_number<'src>(
-) -> impl Parser<'src, &'src str, String, Err<'src>>
-{
-    let first =
-        just("0x")
-        .ignore_then(regex(r"0|[1-9a-fA-F][0-9a-fA-F]{0,3}"));
+) -> impl Parser<'src, &'src str, String, Err<'src>> {
+    let hex = any().filter(|c: &char| c.is_ascii_hexdigit());
 
-    let rest = just('.').ignore_then(gap().or_not())
-            .ignore_then(regex(r"[0-9a-fA-F]{4}"))
-            .repeated()
-            .collect::<Vec<_>>();
+    let first_group = hex
+        .then(hex.repeated().at_most(3).collect::<String>())
+        .map(|(head, tail)| {
+            if head == '0' && !tail.is_empty() {
+                String::new()
+            } else {
+                let mut s = String::new();
+                s.push(head);
+                s.push_str(&tail);
+                s
+            }
+        })
+        .filter(|s| !s.is_empty());
+
+    let first = just("0x").ignore_then(first_group);
+
+    let rest = just('.')
+        .ignore_then(gap().or_not())
+        .ignore_then(
+            hex.repeated()
+                .exactly(4)
+                .collect::<String>(),
+        )
+        .repeated()
+        .collect::<Vec<String>>();
 
     first
-    .then(rest)
-        .map(|(first, mut rest)| {
+        .then(rest)
+        .map(|(first, rest)| {
             if rest.is_empty() {
-                first.to_string()
+                first
             } else {
-                let mut parts = vec![first];
-                parts.append(&mut rest);
-                parts.join("").to_string()
+                let mut s = first;
+                for r in rest {
+                    s.push_str(&r);
+                }
+                s
             }
         })
         .labelled("Hexadecimal")
 }
 
 pub fn ipv4_address<'src>(
-) -> impl Parser<'src, &'src str, String, Err<'src>>
-{
-    let first = regex(r"(0|[1-9][0-9]{0,2})");
+) -> impl Parser<'src, &'src str, String, Err<'src>> {
+    let octet = any().filter(|c: &char| c.is_ascii_digit())
+        .repeated()
+        .at_least(1)
+        .at_most(3)
+        .collect::<String>()
+        .filter(|s: &String| {
+            if s.is_empty() || s.starts_with('0') && s.len() > 1 { return false; }
+            let n = s.parse::<u16>().unwrap_or(256);
+            n <= 255
+        });
 
-    let rest = just('.').ignore_then(gap().or_not())
-            .ignore_then(regex(r"([0-9]{0,3})").clone())
-            .repeated()
-            .exactly(3)
-            .collect::<Vec<_>>();
-
-    first.then(rest)
-        .map(|(first, mut rest)| {
-            if rest.is_empty() {
-                first.to_string()
-            } else {
-                let mut parts = vec![first];
-                parts.append(&mut rest);
-                parts.join(".").to_string()
-            }
-        })
-        .labelled("Ipv4-Address")
+    octet
+        .separated_by(just('.').ignore_then(gap().or_not()))
+        .exactly(4)
+        .collect::<Vec<String>>()
+        .map(|parts| parts.join("."))
+        .labelled("IPv4-Address")
 }
 
 pub fn ipv4_to_atom(s: String) ->  Option<ParsedAtom>{
@@ -4879,15 +4935,13 @@ pub fn ipv4_to_atom(s: String) ->  Option<ParsedAtom>{
 pub fn ipv6_address<'src>(
 ) -> impl Parser<'src, &'src str, String, Err<'src>>
 {
-    let tod = regex(r"[0-9a-fA-F]+");
-
     let rest = just('.').ignore_then(gap().or_not())
-            .ignore_then(tod.clone())
+            .ignore_then(alphanumeric())
             .repeated()
             .exactly(7)
             .collect::<Vec<_>>();
 
-    tod.then(rest)
+    alphanumeric().then(rest)
         .map(|(first, mut rest)| {
             if rest.is_empty() {
                 first.to_string()
@@ -4909,13 +4963,28 @@ pub fn ipv6_to_atom(s: String) -> Option<ParsedAtom> {
 pub fn base32_number<'src>(
 ) -> impl Parser<'src, &'src str, ParsedAtom, Err<'src>>
 {
-    let first = just("0v")
-                .ignore_then(regex(r"0|[1-9a-v][0-9a-v]{0,4}"));
+    let base32_digit =
+        any().filter(|c: &char| c.is_ascii_digit() || ('a'..='v').contains(c));
 
-    let rest = just('.').ignore_then(gap().or_not())
-            .ignore_then(regex(r"[0-9a-v]{0,5}"))
-            .repeated()
-            .collect::<Vec<_>>();
+    let first = just("0v")
+                .ignore_then(
+                    choice((just('0').to("0".to_string()),
+                            any().filter(|c: &char| matches!(c, '1'..='9' | 'a'..='v'))
+                                .then(base32_digit.repeated().at_most(4).collect::<String>())
+                                .map(|(h, t)| h.to_string() + &t)
+                    ))
+                );
+
+    let rest = just('.')
+                .ignore_then(gap().or_not())
+                .ignore_then(
+                        base32_digit
+                        .repeated()
+                        .exactly(5)
+                        .collect::<String>()
+                    )
+                .repeated()
+                .collect::<Vec<String>>();
 
     first.then(rest)
         .map(|(first, mut rest)| {
@@ -4931,55 +5000,110 @@ pub fn base32_number<'src>(
 }
 
 pub fn base64_number<'src>(
-) -> impl Parser<'src, &'src str, ParsedAtom, Err<'src>>
-{
-    let first = just("0w")
-                .ignore_then(regex(r"0|[1-9a-zA-Z-~][0-9a-zA-Z-~]{0,4}"));
+) -> impl Parser<'src, &'src str, ParsedAtom, Err<'src>> {
+    let digit = any().filter(|c: &char| matches!(c, '0'..='9' | 'a'..='z' | 'A'..='Z' | '-' | '~'));
 
-    let rest = just('.').ignore_then(gap().or_not())
-            .ignore_then(regex(r"[0-9a-zA-Z-~]{0,5}"))
-            .repeated()
-            .collect::<Vec<_>>();
+    let first = just("0w").ignore_then(
+        just('0').to("0".to_string())
+            .or(
+                any().filter(|c: &char| matches!(c, '1'..='9' | 'a'..='z' | 'A'..='Z' | '-' | '~'))
+                    .then(digit.repeated().at_most(4).collect::<String>())
+                    .map(|(h, t)| h.to_string() + &t)
+            )
+    );
 
-    first.then(rest)
-        .map(|(first, mut rest)| {
+    let group = just('.')
+        .ignore_then(gap().or_not())
+        .ignore_then(digit.repeated().exactly(5).collect::<String>());
+
+    first
+        .then(group.repeated().collect::<Vec<String>>())
+        .map(|(first, rest)| {
             if rest.is_empty() {
-                base64_to_atom(first.to_string())
+                base64_to_atom(first)
             } else {
                 let mut parts = vec![first];
-                parts.append(&mut rest);
+                parts.extend(rest);
                 base64_to_atom(parts.join(""))
             }
         })
         .labelled("Base64")
 }
 
+pub fn base32<'src>(
+) -> impl Parser<'src, &'src str, String, Err<'src>> {
+    any()
+        .filter(|c: &char| c.is_ascii_alphanumeric() && *c <= 'v')
+        .repeated()
+        .at_least(1)
+        .collect::<String>()
+}
+
+pub fn digits<'src>(
+) -> impl Parser<'src, &'src str, String, Err<'src>> {
+    any()
+        .filter(|c: &char| c.is_ascii_digit())
+        .repeated()
+        .at_least(1)
+        .collect::<String>()
+}
+
+pub fn alphanumeric<'src>(
+) -> impl Parser<'src, &'src str, String, Err<'src>> {
+    any()
+        .filter(|c: &char| c.is_ascii_alphanumeric())
+        .repeated()
+        .at_least(1)
+        .collect::<String>()
+}
+
 pub fn decimal_number<'src>(
-) -> impl Parser<'src, &'src str, String, Err<'src>>
-{
+) -> impl Parser<'src, &'src str, String, Err<'src>> {
+    let digit = any()
+                    .filter(|c: &char| c.is_ascii_digit());
+
+    let non_zero_digit = any()
+                            .filter(|c: &char| matches!(c, '1'..='9'));
+
     let first =
-        regex(r"(0|[1-9][0-9]{0,2})")
-        .map(str::to_owned);
+        just('0').to("0".to_string())
+            .or(
+                non_zero_digit
+                    .then(
+                        digit
+                            .repeated()
+                            .at_most(2)
+                            .collect::<Vec<char>>()
+                    )
+                    .map(|(h, t)| {
+                        let mut s = String::with_capacity(3);
+                        s.push(h);
+                        s.extend(t);
+                        s
+                    }),
+            );
 
-    let rest = just('.')
-                .ignore_then(gap().or_not())
-                .ignore_then(regex(r"[0-9]{3}").map(str::to_owned))
-                .repeated()
-                .collect::<Vec<String>>();
+    let three_digits =
+        digit
+            .repeated()
+            .exactly(3)
+            .collect::<String>();
 
-    first.then(rest)
+    let rest =
+        just('.')
+            .ignore_then(gap().or_not())
+            .ignore_then(three_digits)
+            .repeated()
+            .collect::<Vec<String>>();
+
+    first
+        .then(rest)
         .map(|(first_digits, rest_digits)| {
-            let all_digits: String = std::iter::once(first_digits)
-                .chain(rest_digits)
-                .collect();
-            all_digits
-            // all_digits
-            //     .into_iter()
-            //     .map(|c| c.to_digit(10).expect("invalid digit") as u64)
-            //     .try_fold(0u64, |acc, digit| {
-            //         acc.checked_mul(10).and_then(|v| v.checked_add(digit))
-            //     })
-            //     .expect("number overflow")
+            let mut out = first_digits;
+            for chunk in rest_digits {
+                out.push_str(&chunk);
+            }
+            out
         })
         .labelled("Decimal Number")
 }
@@ -5369,7 +5493,7 @@ pub fn path<'src>(
                 Some(list) => Ok(Hoon::ColSig(list)),
                 None => Err(Rich::custom(span, "error parsing path")),
             }
-        }))
+        })).labelled("Path")
     };
 
     let cen_fas = {
@@ -5390,7 +5514,7 @@ pub fn path<'src>(
         })
     };
 
-    let cen_path = just("%").ignore_then(choice((cen_fas, multi_cen)));
+    let cen_path = just("%").ignore_then(choice((cen_fas, multi_cen))).labelled("Path");
 
     choice((
         rood.boxed(),       //  /foo/%/foo
@@ -6228,9 +6352,9 @@ pub fn number<'src>(
 
     let ui_number =
     just("0i")
-        .ignore_then(regex(r"[0-9]+"))
-        .map(|s: &str| {
-            ("ui".to_string(), decimal_to_atom(s.to_string()))
+        .ignore_then(digits())
+        .map(|s| {
+            ("ui".to_string(), decimal_to_atom(s))
         });
 
     let negative = choice((
@@ -6246,8 +6370,8 @@ pub fn number<'src>(
                     }),
                 base32_number().map(|a| ("sv".to_string(), a)),
                 base64_number().map(|a| ("sw".to_string(), a)),
-                just("0i").ignore_then(regex(r"[0-9]+"))
-                    .map(|s: &str| ("si".to_string(), decimal_to_atom(s.to_string()))),
+                just("0i").ignore_then(digits())
+                    .map(|s| ("si".to_string(), decimal_to_atom(s))),
                 decimal_number().map(|s| ("sd".to_string(), decimal_to_atom(s))),
             )).boxed();
 
@@ -6272,24 +6396,22 @@ pub fn number<'src>(
 
 // decimal without leading 0 and without dots.
 //
-pub fn decimal_without_dots<'src>(
+pub fn decimal_without_leading_zero<'src>(
 ) -> impl Parser<'src, &'src str, String, Err<'src>>
 {
-    regex(r"(0|[1-9][0-9]*)").map(str::to_owned)
-}
-
-// decimal with leading 0 and without dots.
-//
-pub fn leading_zero_decimal_without_dots<'src>(
-) -> impl Parser<'src, &'src str, String, Err<'src>>
-{
-    regex(r"([0-9]*)").map(str::to_owned)
+    just('0')
+    .to("0".to_string())
+    .or(
+        any().filter(|c: &char| matches!(c, '1'..='9'))
+            .then(any().filter(|c: &char| c.is_ascii_digit()).repeated().collect::<String>())
+            .map(|(h, t)| format!("{h}{t}"))
+    )
 }
 
 pub fn absolute_date<'src>(
 ) -> impl Parser<'src, &'src str, ParsedAtom, Err<'src>>
 {
-    let era_year = decimal_without_dots()
+    let era_year = decimal_without_leading_zero()
         .then(
             just('-')
                 .to(false)
@@ -6307,8 +6429,8 @@ pub fn absolute_date<'src>(
             Ok((era, year))
         });
         let month = just('.')
-            .ignore_then(regex(r"[0-9]+"))
-            .try_map(|s: &str, span| {
+            .ignore_then(digits())
+            .try_map(|s: String, span| {
                 let m: u64 = s.parse().map_err(|_| Rich::custom(span, "invalid month"))?;
                 if (1..=12).contains(&m) {
                     Ok(m)
@@ -6317,8 +6439,8 @@ pub fn absolute_date<'src>(
                 }
             });
         let day = just('.')
-            .ignore_then(regex(r"[0-9]+"))
-            .try_map(|s: &str, span| {
+            .ignore_then(digits())
+            .try_map(|s, span| {
                 let d: u64 = s.parse().map_err(|_| Rich::custom(span, "invalid day"))?;
                 if (1..=31).contains(&d) {
                     Ok(d)
@@ -6329,18 +6451,18 @@ pub fn absolute_date<'src>(
     let hour_min_secs_fractions =
         just("..")
             .ignore_then(
-                leading_zero_decimal_without_dots()
-                    .try_map(|h_str, span| {
-                        let h: u64 = h_str
+                digits()
+                    .try_map(|s, span| {
+                        let h: u64 = s
                                         .parse::<u64>()
                                         .map_err(|_| Rich::custom(span, "invalid hour"))?;
                         if h < 24 { Ok(h) } else { Err(Rich::custom(span, "hour out of range (0–23)")) }
                     })
                     .then_ignore(just("."))
                     .then(
-                        leading_zero_decimal_without_dots()
-                        .try_map(|m_str, span| {
-                            let m: u64 = m_str
+                        digits()
+                        .try_map(|s, span| {
+                            let m: u64 = s
                                 .parse::<u64>()
                                 .map_err(|_| Rich::custom(span, "invalid minute"))?;
                             if m < 60 {
@@ -6350,9 +6472,9 @@ pub fn absolute_date<'src>(
                             }
                         }))
                     .then_ignore(just("."))
-                    .then(leading_zero_decimal_without_dots()
-                          .try_map(|s_str, span| {
-                                let s: u64 = s_str
+                    .then(digits()
+                          .try_map(|s, span| {
+                                let s: u64 = s
                                     .parse::<u64>()
                                     .map_err(|_| Rich::custom(span, "invalid second"))?;
                                 if s < 60 {
@@ -6364,10 +6486,10 @@ pub fn absolute_date<'src>(
             .then(
                 just("..")
                     .ignore_then(
-                        regex(r"[0-9a-fA-F]+")
+                        alphanumeric()
                             .separated_by(just("."))
                             .at_least(1)
-                            .collect::<Vec<&str>>(),
+                            .collect::<Vec<String>>(),
                     )
                     .or_not()
                     .map(|opt| opt.unwrap_or_default()),
@@ -6376,7 +6498,7 @@ pub fn absolute_date<'src>(
                 let mut fractions = Vec::new();
 
                 for f in frags {
-                        let val = u16::from_str_radix(f, 16)
+                        let val = u16::from_str_radix(&f, 16)
                             .map_err(|_| Rich::custom(span, "invalid fraction digits"))?;
                         fractions.push(val);
                     }
@@ -6407,7 +6529,7 @@ fn unit_value_pair<'src>(
 )-> impl Parser<'src, &'src str, (char, u64), Err<'src>> {
     one_of("dhms")
         .then(
-            decimal_without_dots()
+            decimal_without_leading_zero()
             .try_map(|s, span| {
                 s.parse::<u64>().map_err(|_| Rich::custom(span, "Invalid Number"))
             })
@@ -6640,15 +6762,6 @@ pub fn met(bloq: usize, atom: &ParsedAtom) -> usize {
         }
     }
 }
-
-// fn met(bloq: u32, atom: u128) -> u32 {
-//     let bits = bloq_bits(bloq);
-//     if atom == 0 {
-//         return 1;
-//     }
-//     let atom_bits = (128 - atom.leading_zeros()) as u32;
-//     (atom_bits + bits - 1) / bits
-// }
 
 /// rep: assemble list of ParsedAtoms into one ParsedAtom using bite spec
 ///
@@ -7011,8 +7124,12 @@ pub fn ind(a: &[u8]) -> Option<u8> {
 pub fn tip<'src>(
 ) -> impl Parser<'src, &'src str, u8, Err<'src>>
 {
-    regex(r"[a-z]{3}")
-        .try_map(|s: &str, span| {
+    any()
+        .filter(|c: &char| c.is_ascii_lowercase())
+        .repeated()
+        .exactly(3)
+        .collect::<String>()
+        .try_map(|s, span| {
             match ins(s.as_bytes()) {
                 Some(i) => Ok(i),
                 None => Err(Rich::custom(span, format!("invalid prefix syllable '{s}'"))),
@@ -7024,8 +7141,12 @@ pub fn tip<'src>(
 pub fn tiq<'src>(
 ) -> impl Parser<'src, &'src str, u8, Err<'src>>
 {
-    regex(r"[a-z]{3}")
-    .try_map(|s: &str, span| {
+    any()
+    .filter(|c: &char| c.is_ascii_lowercase())
+    .repeated()
+    .exactly(3)
+    .collect::<String>()
+    .try_map(|s, span| {
         match ind(s.as_bytes()) {
             Some(i) => Ok(i),
             None => Err(Rich::custom(span, format!("invalid suffix syllable '{s}'"))),
@@ -7047,7 +7168,11 @@ pub fn hif<'src>(
 pub fn phonemic_name<'src>(
 ) -> impl Parser<'src, &'src str, ParsedAtom, Err<'src>>
 {
-    let tep =  regex(r"[a-z]{3}")
+    let tep =  any()
+            .filter(|c: &char| c.is_ascii_lowercase())
+            .repeated()
+            .exactly(3)
+            .to_slice()
             .try_map(|s: &str, span| {
                 if s == "doz" {
                     return Err(Rich::custom(span, "prefix 'doz' is forbidden"));
@@ -7558,9 +7683,9 @@ pub fn twid<'src>(
 {
     choice((
         just('0')
-            .ignore_then(regex(r"[0-9a-v]+"))
-             .try_map(|s: &str, span| {
-                    let atom = base32_to_atom(s.to_string());
+            .ignore_then(base32())
+             .try_map(|s, span| {
+                    let atom = base32_to_atom(s);
                     cue_simple(atom)
                     .map(Coin::Blob)
                     .map_err(|e| Rich::custom(span, format!("Failed to +cue: {}", e)))
@@ -7971,7 +8096,30 @@ pub fn reference_spec<'src>(
     spec_wide:   impl ParserExt<'src, Spec>,
 ) -> impl Parser<'src, &'src str, Spec, Err<'src>>
 {
-    regex(r"([a-z][a-zA-Z0-9]*)|[\$\^\,]").to(())
+    let lower =
+        any().filter(|c: &char| matches!(c, 'a'..='z'));
+
+    let ident_tail =
+        any().filter(|c: &char| c.is_ascii_alphanumeric());
+
+    let ident =
+        lower
+            .then(ident_tail.repeated().collect::<Vec<char>>())
+            .to(());
+
+    let special =
+        any()
+            .filter(|c: &char| matches!(c, '$' | '^' | ','))
+            .to(());
+
+    let guard =
+        ident
+            .or(special)
+            .rewind();
+
+    // prevents this parser from matching
+    //  inputs that starts with: "([a-z][a-zA-Z0-9]*)|[\$\^\,]"
+    guard
     .rewind()
     .ignore_then(
             winglist()
@@ -8376,7 +8524,7 @@ fn print_context(a: &Noun, b: &Noun) {
 pub fn diff_and_report(a: &Noun, b: &Noun) {
     let mut printed = false;
     if diff_noun(a, b, &mut printed).is_ok() {
-        println!("Nouns match");
+        println!("Test passed!");
     }
 }
 
@@ -9188,11 +9336,6 @@ fn cord_to_noun(slab: &mut NounSlab, s: &str) -> Noun {
     let atom = string_to_atom(s.to_string());
     atom_to_noun(slab, &atom)
 }
-
-// fn aura_to_noun(slab: &mut NounSlab, s: &str) -> Noun {
-//     let atom = ta_to_atom(s.to_string());
-//     atom_to_noun(slab, &atom)
-// }
 
 fn atom_to_noun(slab: &mut NounSlab, atom: &ParsedAtom) -> Noun {
     match atom {

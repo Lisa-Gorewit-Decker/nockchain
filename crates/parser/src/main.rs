@@ -18,7 +18,8 @@ use bytes::Bytes;
 use nockapp::noun::slab::NounSlab;
 use nockvm::noun::{D, T};
 use nockvm_macros::tas;
-
+use nockvm::noun::Atom;
+use ibig::ubig;
 use parser::ast::hoon::*;
 use parser::utils::*;
 use parser::runes::*;
@@ -357,6 +358,7 @@ pub fn parser<'src>(
                                 spec.clone(),
                                 spec_wide.clone())
                                 .map_with(wrap_spec_with_trace(wer.clone(), linemap.clone()))
+                                .labelled("Spec")
                                 .boxed();
 
     spec.define(spec_body);
@@ -365,6 +367,7 @@ pub fn parser<'src>(
             spec_wide_parser(spec_wide.clone(),
                              hoon_wide.clone())
                              .map_with(wrap_spec_with_trace(wer.clone(), linemap.clone()))
+                            .labelled("Spec Wide")
                              .boxed();
 
     spec_wide.define(spec_wide_body);
@@ -377,6 +380,7 @@ pub fn parser<'src>(
                                 wer.clone(),
                             )
                             .map_with(wrap_hoon_with_trace(wer.clone(), linemap.clone()))
+                            .labelled("Hoon Wide")
                             .boxed();
 
     hoon_wide.define(hoon_wide_body);
@@ -392,6 +396,7 @@ pub fn parser<'src>(
                         hoon_wide_no_trace.clone(),
                         )
                         .map_with(wrap_hoon_with_trace(wer.clone(), linemap.clone()))
+                        .labelled("Hoon")
                         .boxed();
 
     hoon.define(hoon_body);
@@ -405,6 +410,7 @@ pub fn parser<'src>(
                         hoon_no_trace.clone(),
                         hoon_wide.clone(),
                         hoon_wide_no_trace.clone())
+                        .labelled("Hoon")
                         .boxed();
 
     hoon_no_trace.define(hoon_no_trace_body);
@@ -417,6 +423,7 @@ pub fn parser<'src>(
                                         hoon_wide_no_trace.clone(),
                                         wer.clone(),
                                     )
+                                    .labelled("Hoon Wide")
                                     .boxed();
 
     hoon_wide_no_trace.define(hoon_wide_no_trace_body);
@@ -424,6 +431,7 @@ pub fn parser<'src>(
     let spec_body_no_trace = spec_parser(hoon_no_trace.clone(),
                                 spec_no_trace.clone(),
                                 spec_wide_no_trace.clone())
+                                .labelled("Spec")
                                 .boxed();
 
     spec_no_trace.define(spec_body_no_trace);
@@ -431,6 +439,7 @@ pub fn parser<'src>(
     let spec_wide_no_trace_body =
             spec_wide_parser(spec_wide_no_trace.clone(),
                              hoon_wide_no_trace.clone())
+                            .labelled("Spec Wide")
                              .boxed();
 
     spec_wide_no_trace.define(spec_wide_no_trace_body);
@@ -442,86 +451,134 @@ pub fn parser<'src>(
     }
 }
 
-#[derive(ClapParser, Debug)]
-#[command(author, version, about = "Parses a Hoon source file")]
-struct Cli {
-    #[arg(value_name = "FILE", help = "Input Hoon Source File")]
-    input: PathBuf,
-
-    #[arg(long = "no_dbug", short = 'b', help = "Disables Debug Traces")]
-    no_dbug: bool,
-}
-
 #[cfg(not(feature = "bazel_build"))]
 pub static HOON138JAM: &[u8] = include_bytes!(concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/parsed-hoon138.jam"
 ));
 
-use nockvm::noun::Atom;
-use ibig::ubig;
-fn main() {
+#[derive(ClapParser, Debug)]
+struct Cli {
+    /// input Hoon source file (required unless --test is used)
+    #[arg(value_name = "FILE", required = false)]
+    input: Option<PathBuf>,
 
+    /// disable debug traces
+    #[arg(long = "no-dbug", short = 'b')]
+    no_dbug: bool,
+
+    /// write JAM instead of JSON
+    #[arg(long = "jam")]
+    jam: bool,
+
+    /// output file (defaults to stdout)
+    #[arg(long = "out", short = 'o', value_name = "PATH")]
+    out: Option<PathBuf>,
+
+    /// run hardcoded hoon-138 test
+    #[arg(long = "test")]
+    test: bool,
+}
+
+fn main() {
     let cli = Cli::parse();
 
-    let source = fs::read_to_string(&cli.input).unwrap_or_else(|err| {
-        eprintln!("Error reading file '{}': {}", cli.input.display(), err);
+    let source_path = if cli.test {
+        PathBuf::from("../hoonc/hoon/hoon-138.hoon")
+    } else {
+        cli.input.clone().unwrap_or_else(|| {
+            eprintln!("Input file is required unless --test is specified");
+            std::process::exit(2);
+        })
+    };
+
+    let source = fs::read_to_string(&source_path).unwrap_or_else(|err| {
+        eprintln!("Error reading file '{}': {}", source_path.display(), err);
         std::process::exit(1);
     });
 
     let start = Instant::now();
 
-    // let wer: Vec<String> =
-    //     cli.input.clone()
-    //     .iter()
-    //     .map(|s| s.to_string_lossy().into_owned())
-    //     .collect();
-    let wer = vec!["hoonc".to_string(), "hoon".to_string(), "hoon-138".to_string(), "hoon".to_string()];
+    let wer: Vec<String> = if cli.test {
+        vec![
+            "hoonc".to_string(),
+            "hoon".to_string(),
+            "hoon-138".to_string(),
+            "hoon".to_string(),
+        ]
+    } else {
+        source_path
+            .iter()
+            .map(|s| s.to_string_lossy().into_owned())
+            .collect()
+    };
+
     let linemap = Arc::new(LineMap::new(&source));
 
-    match parser(wer.clone(), !cli.no_dbug, linemap).parse(source.as_str()).into_result() {
+    match parser(wer.clone(), !cli.no_dbug, linemap)
+        .parse(source.as_str())
+        .into_result()
+    {
         Ok(res) => {
             let took = start.elapsed();
 
-            let json = serde_json::to_string_pretty(&res).expect("serialisation failed");
-
-            let mut slab: NounSlab = NounSlab::new();
+            let mut slab = NounSlab::new();
 
             let start2 = Instant::now();
-            let parsed_hoon = hoon_to_noun(&mut slab, &res.clone());
+            let parsed_hoon = hoon_to_noun(&mut slab, &res);
             let took2 = start2.elapsed();
 
-            //  uncomment to test against the contents of jamed_hoon_138
-            // let jamed_hoon_138 = Bytes::from(HOON138JAM);
-            // let cued_hoon_138 = slab.cue_into(jamed_hoon_138).unwrap();
-            // diff_and_report(&cued_hoon_138, &parsed_hoon);
+            if cli.test {
+                let jammed = Bytes::from(HOON138JAM);
+                let cued = slab.cue_into(jammed).unwrap();
+                diff_and_report(&cued, &parsed_hoon);
+            }
+            else if cli.jam {
+                slab.set_root(parsed_hoon);
+                let jammed: Bytes = slab.jam();
 
-            // let json_a = print_noun(&cued_hoon_138, 4000, 0);
-            // fs::write("expected.debug", json_a).unwrap();
-            // let json_b = print_noun(&parsed_hoon, 4000, 0);
-            // fs::write("actual.debug", json_b).unwrap();
+                match cli.out {
+                    Some(path) => {
+                        fs::write(&path, &jammed).unwrap_or_else(|e| {
+                            eprintln!("Failed to write '{}': {}", path.display(), e);
+                            std::process::exit(1);
+                        });
+                    }
+                    None => {
+                        use std::io::{self, Write};
+                        io::stdout().write_all(&jammed).unwrap();
+                    }
+                }
+            } else {
+                let json = serde_json::to_string_pretty(&res)
+                    .expect("AST JSON serialization failed");
 
-            // let out_path = std::path::PathBuf::from("out.json");
-            // std::fs::write(&out_path, json + "\n").unwrap_or_else(|e| {
-            //     eprintln!("Failed to write '{}': {}", out_path.display(), e);
-            //     std::process::exit(1);
-            // });
-
-            // println!("Result written to {}!", out_path.display());
+                match cli.out {
+                    None => println!("{json}"),
+                    Some(path) => {
+                        fs::write(&path, json).unwrap_or_else(|e| {
+                                eprintln!("Failed to write '{}': {}", path.display(), e);
+                            std::process::exit(1);
+                        });
+                    }
+                }
+            }
             println!("parsing took: {:?}", took);
             println!("noun creation took: {:?}", took2);
-
         }
+
         Err(errs) => {
             for err in errs {
                 let span = err.span().into_range();
-                let file_id = cli.input.to_string_lossy().to_string();
+                let file_id = source_path.to_string_lossy().to_string();
 
-                Report::build(ReportKind::Error, (file_id.clone(), err.span().into_range()))
-                    .with_config(ariadne::Config::new().with_index_type(ariadne::IndexType::Byte))
-                    .with_code(3)
+                Report::build(ReportKind::Error, (file_id.clone(), span.clone()))
+                    .with_config(
+                        ariadne::Config::new()
+                            .with_index_type(ariadne::IndexType::Byte),
+                    )
                     .with_label(
-                        Label::new((file_id.clone(), err.span().into_range()))
+                        Label::new((file_id.clone(), span))
                             .with_message(err.reason().to_string())
                             .with_color(Color::Red),
                     )
