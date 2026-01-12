@@ -642,63 +642,191 @@ fn print_proc(info: &ProcInfo, report: &ProcMemReport) {
 }
 
 fn print_comparison(pma: &ProcMemReport, base: &ProcMemReport) {
-    println!("Comparison (PMA - base):");
-    println!(
-        "  VmRSS delta: {}",
-        fmt_signed_mib(delta_kb_signed(
-            pma.status.vm_rss_kb,
-            base.status.vm_rss_kb
-        ))
-    );
-    println!(
-        "  VmSize delta: {}",
-        fmt_signed_mib(delta_kb_signed(
-            pma.status.vm_size_kb,
-            base.status.vm_size_kb
-        ))
-    );
-    println!(
-        "  RssAnon delta: {}",
-        fmt_signed_mib(delta_kb_signed(
-            pma.status.rss_anon_kb,
-            base.status.rss_anon_kb
-        ))
-    );
-    println!(
-        "  RssFile delta: {}",
-        fmt_signed_mib(delta_kb_signed(
-            pma.status.rss_file_kb,
-            base.status.rss_file_kb
-        ))
-    );
-    println!(
-        "  VmSwap delta: {}",
-        fmt_signed_mib(delta_kb_signed(
-            pma.status.vm_swap_kb,
-            base.status.vm_swap_kb
-        ))
-    );
-    if pma.pma_map_count > 0 {
-        println!(
-            "  PMA map size: {} (rss_ratio={})",
-            fmt_mib(pma.pma_maps.size_kb),
-            rss_ratio_str(pma.pma_maps.rss_kb, pma.pma_maps.size_kb)
-        );
+    println!("Comparison:");
+    struct Row {
+        label: String,
+        pma: String,
+        base: String,
+        delta: String,
     }
+    let mut rows = Vec::new();
+    rows.push(Row {
+        label: "VmRSS".to_string(),
+        pma: fmt_mib(pma.status.vm_rss_kb),
+        base: fmt_mib(base.status.vm_rss_kb),
+        delta: fmt_signed_mib(delta_kb_signed(
+            pma.status.vm_rss_kb,
+            base.status.vm_rss_kb,
+        )),
+    });
+    rows.push(Row {
+        label: "VmSize".to_string(),
+        pma: fmt_mib(pma.status.vm_size_kb),
+        base: fmt_mib(base.status.vm_size_kb),
+        delta: fmt_signed_mib(delta_kb_signed(
+            pma.status.vm_size_kb,
+            base.status.vm_size_kb,
+        )),
+    });
+    rows.push(Row {
+        label: "RssAnon".to_string(),
+        pma: fmt_mib(pma.status.rss_anon_kb),
+        base: fmt_mib(base.status.rss_anon_kb),
+        delta: fmt_signed_mib(delta_kb_signed(
+            pma.status.rss_anon_kb,
+            base.status.rss_anon_kb,
+        )),
+    });
+    rows.push(Row {
+        label: "RssFile".to_string(),
+        pma: fmt_mib(pma.status.rss_file_kb),
+        base: fmt_mib(base.status.rss_file_kb),
+        delta: fmt_signed_mib(delta_kb_signed(
+            pma.status.rss_file_kb,
+            base.status.rss_file_kb,
+        )),
+    });
+    rows.push(Row {
+        label: "VmSwap".to_string(),
+        pma: fmt_mib(pma.status.vm_swap_kb),
+        base: fmt_mib(base.status.vm_swap_kb),
+        delta: fmt_signed_mib(delta_kb_signed(
+            pma.status.vm_swap_kb,
+            base.status.vm_swap_kb,
+        )),
+    });
+
+    if pma.pma_map_count > 0 {
+        rows.push(Row {
+            label: "PMA map size".to_string(),
+            pma: fmt_mib(pma.pma_maps.size_kb),
+            base: if base.pma_map_count > 0 {
+                fmt_mib(base.pma_maps.size_kb)
+            } else {
+                "n/a".to_string()
+            },
+            delta: if base.pma_map_count > 0 {
+                fmt_signed_mib(delta_kb_signed(
+                    pma.pma_maps.size_kb,
+                    base.pma_maps.size_kb,
+                ))
+            } else {
+                "n/a".to_string()
+            },
+        });
+        rows.push(Row {
+            label: "PMA rss_ratio".to_string(),
+            pma: rss_ratio_str(pma.pma_maps.rss_kb, pma.pma_maps.size_kb),
+            base: if base.pma_map_count > 0 {
+                rss_ratio_str(base.pma_maps.rss_kb, base.pma_maps.size_kb)
+            } else {
+                "n/a".to_string()
+            },
+            delta: "n/a".to_string(),
+        });
+    }
+
+    let pma_alloc = pma
+        .pma_alloc_bytes
+        .map(fmt_bytes)
+        .unwrap_or_else(|| "unknown".to_string());
+    let base_alloc = base
+        .pma_alloc_bytes
+        .map(fmt_bytes)
+        .unwrap_or_else(|| "n/a".to_string());
+    rows.push(Row {
+        label: "PMA alloc_offset".to_string(),
+        pma: pma_alloc,
+        base: base_alloc,
+        delta: "n/a".to_string(),
+    });
+
     match (&pma.checkpoint, &base.checkpoint) {
         (Some(pma_ck), Some(base_ck)) => {
-            println!(
-                "  checkpoint latest delta: {}",
-                fmt_signed_bytes(delta_bytes_signed(pma_ck.latest_bytes, base_ck.latest_bytes))
-            );
-            println!(
-                "  checkpoint total delta: {}",
-                fmt_signed_bytes(delta_bytes_signed(pma_ck.total_bytes, base_ck.total_bytes))
-            );
+            rows.push(Row {
+                label: "Checkpoint latest".to_string(),
+                pma: fmt_bytes(pma_ck.latest_bytes),
+                base: fmt_bytes(base_ck.latest_bytes),
+                delta: fmt_signed_bytes(delta_bytes_signed(
+                    pma_ck.latest_bytes,
+                    base_ck.latest_bytes,
+                )),
+            });
+            rows.push(Row {
+                label: "Checkpoint total".to_string(),
+                pma: fmt_bytes(pma_ck.total_bytes),
+                base: fmt_bytes(base_ck.total_bytes),
+                delta: fmt_signed_bytes(delta_bytes_signed(
+                    pma_ck.total_bytes,
+                    base_ck.total_bytes,
+                )),
+            });
         }
         _ => {
-            println!("  checkpoint delta: unavailable");
+            rows.push(Row {
+                label: "Checkpoint latest".to_string(),
+                pma: "n/a".to_string(),
+                base: "n/a".to_string(),
+                delta: "n/a".to_string(),
+            });
+            rows.push(Row {
+                label: "Checkpoint total".to_string(),
+                pma: "n/a".to_string(),
+                base: "n/a".to_string(),
+                delta: "n/a".to_string(),
+            });
         }
+    }
+
+    let header_label = "Metric";
+    let header_pma = "PMA";
+    let header_base = "Base";
+    let header_delta = "PMA - base";
+    let mut w_label = header_label.len();
+    let mut w_pma = header_pma.len();
+    let mut w_base = header_base.len();
+    let mut w_delta = header_delta.len();
+    for row in &rows {
+        w_label = w_label.max(row.label.len());
+        w_pma = w_pma.max(row.pma.len());
+        w_base = w_base.max(row.base.len());
+        w_delta = w_delta.max(row.delta.len());
+    }
+
+    println!(
+        "  {:<w1$}  {:>w2$}  {:>w3$}  {:>w4$}",
+        header_label,
+        header_pma,
+        header_base,
+        header_delta,
+        w1 = w_label,
+        w2 = w_pma,
+        w3 = w_base,
+        w4 = w_delta
+    );
+    println!(
+        "  {:<w1$}  {:>w2$}  {:>w3$}  {:>w4$}",
+        "-".repeat(w_label),
+        "-".repeat(w_pma),
+        "-".repeat(w_base),
+        "-".repeat(w_delta),
+        w1 = w_label,
+        w2 = w_pma,
+        w3 = w_base,
+        w4 = w_delta
+    );
+    for row in rows {
+        println!(
+            "  {:<w1$}  {:>w2$}  {:>w3$}  {:>w4$}",
+            row.label,
+            row.pma,
+            row.base,
+            row.delta,
+            w1 = w_label,
+            w2 = w_pma,
+            w3 = w_base,
+            w4 = w_delta
+        );
     }
 }
 
