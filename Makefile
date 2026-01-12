@@ -11,6 +11,13 @@ export MINIMAL_LOG_FORMAT ?= true
 export MINING_PKH ?= 9yPePjfWAdUnzaQKyxcRXKRa5PpUzKKEwtpECBZsUYt9Jd7egSDEWoV
 export
 
+DOCKER_IMAGE ?= nockchain-local
+DOCKER_MEM ?= 16g
+DOCKER_MEM_SWAP ?= 16g
+DOCKER_P2P_PORT ?= 30000
+DOCKER_DATA_DIR ?= $(CURDIR)/.data.nockchain
+DOCKER_NOCKCHAIN_ARGS ?=
+
 .PHONY: build
 build: build-hoon-all build-rust
 	$(call show_env_vars)
@@ -41,6 +48,28 @@ test-pma-paging-kernel:
 .PHONY: test-pma-persist-blocks
 test-pma-persist-blocks:
 	cargo test --release --test pma_persist_blocks
+
+.PHONY: docker-nockchain
+docker-nockchain: docker-nockchain-build docker-nockchain-run
+
+.PHONY: docker-nockchain-build
+docker-nockchain-build:
+	docker build -t $(DOCKER_IMAGE) .
+
+.PHONY: docker-nockchain-run
+docker-nockchain-run:
+	mkdir -p $(DOCKER_DATA_DIR)
+	docker run --rm -it --name nockchain \
+		--memory $(DOCKER_MEM) --memory-swap $(DOCKER_MEM_SWAP) \
+		-e RUST_BACKTRACE=1 \
+		-p $(DOCKER_P2P_PORT):$(DOCKER_P2P_PORT)/udp \
+		-v $(DOCKER_DATA_DIR):/data/.data.nockchain \
+		$(DOCKER_IMAGE) \
+		--fast-sync --num-threads 0 \
+		--data-dir /data/.data.nockchain \
+		--identity-path /data/.data.nockchain/.nockchain_identity \
+		--bind /ip4/0.0.0.0/udp/$(DOCKER_P2P_PORT)/quic-v1 \
+		$(DOCKER_NOCKCHAIN_ARGS)
 
 .PHONY: fmt
 fmt:
