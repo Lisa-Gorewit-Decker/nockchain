@@ -12,8 +12,8 @@ export MINING_PKH ?= 9yPePjfWAdUnzaQKyxcRXKRa5PpUzKKEwtpECBZsUYt9Jd7egSDEWoV
 export
 
 DOCKER_IMAGE ?= nockchain-local
-DOCKER_MEM ?= 16g
-DOCKER_MEM_SWAP ?= 16g
+DOCKER_MEM ?= 32g
+# DOCKER_MEM_SWAP ?= 32g
 DOCKER_P2P_PORT ?= 30000
 DOCKER_DATA_DIR ?= $(CURDIR)/.data.nockchain
 DOCKER_NOCKCHAIN_ARGS ?=
@@ -60,7 +60,7 @@ docker-nockchain-build:
 docker-nockchain-run:
 	mkdir -p $(DOCKER_DATA_DIR)
 	docker run --rm -it --name nockchain \
-		--memory $(DOCKER_MEM) --memory-swap $(DOCKER_MEM_SWAP) \
+		--memory $(DOCKER_MEM) \
 		-e RUST_BACKTRACE=1 \
 		-p $(DOCKER_P2P_PORT):$(DOCKER_P2P_PORT)/udp \
 		-v $(DOCKER_DATA_DIR):/data/.data.nockchain \

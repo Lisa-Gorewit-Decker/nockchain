@@ -49,6 +49,7 @@ struct ProcMemReport {
     smaps_rollup: Option<MemTotals>,
     pma_maps: MemTotals,
     pma_map_count: u64,
+    pma_smaps_available: bool,
     pma_alloc_bytes: Option<u64>,
     checkpoint: Option<CheckpointInfo>,
 }
@@ -134,6 +135,19 @@ fn discover_procs() -> Result<(ProcInfo, ProcInfo), String> {
         ));
     }
 
+    if candidates.len() == 2 {
+        let first_is_docker = is_docker_nockchain(&candidates[0]);
+        let second_is_docker = is_docker_nockchain(&candidates[1]);
+        if first_is_docker != second_is_docker {
+            let (pma, base) = if first_is_docker {
+                (candidates[0].clone(), candidates[1].clone())
+            } else {
+                (candidates[1].clone(), candidates[0].clone())
+            };
+            return Ok((pma, base));
+        }
+    }
+
     let repo_root = find_repo_root(env::current_dir().map_err(|e| e.to_string())?);
     let repo_root = match repo_root {
         Some(root) => root,
@@ -146,6 +160,104 @@ fn discover_procs() -> Result<(ProcInfo, ProcInfo), String> {
     };
 
     let base_dir = env::var("NOCKCHAIN_BASE_DIR").ok().map(PathBuf::from);
+
+    let mut docker_candidates: Vec<ProcInfo> = candidates
+        .iter()
+        .cloned()
+        .filter(|info| is_docker_nockchain(info))
+        .collect();
+    if docker_candidates.len() == 1 {
+        let pma = docker_candidates.remove(0);
+        let mut base_candidates: Vec<ProcInfo> = candidates
+            .iter()
+            .cloned()
+            .filter(|info| info.pid != pma.pid)
+            .collect();
+        if let Some(base_dir) = base_dir.as_ref() {
+            let filtered: Vec<ProcInfo> = base_candidates
+                .iter()
+                .cloned()
+                .filter(|info| is_under_root(info, base_dir))
+                .collect();
+            if !filtered.is_empty() {
+                base_candidates = filtered;
+            }
+        }
+        let base = choose_single(
+            base_candidates,
+            "base",
+            "Set NOCKCHAIN_BASE_PID or NOCKCHAIN_BASE_DIR.",
+        )?;
+        return Ok((pma, base));
+    }
+
+    let mut with_pma: Vec<ProcInfo> = Vec::new();
+    let mut without_pma: Vec<ProcInfo> = Vec::new();
+
+    for info in candidates.iter().cloned() {
+        if has_pma_mapping(info.pid).unwrap_or(false) {
+            with_pma.push(info);
+        } else {
+            without_pma.push(info);
+        }
+    }
+
+    if with_pma.len() == 1 && !without_pma.is_empty() {
+        let pma = with_pma.remove(0);
+        let base_candidates = if let Some(base_dir) = base_dir.as_ref() {
+            let filtered: Vec<ProcInfo> = without_pma
+                .iter()
+                .cloned()
+                .filter(|info| is_under_root(info, base_dir))
+                .collect();
+            if filtered.is_empty() {
+                without_pma
+            } else {
+                filtered
+            }
+        } else {
+            without_pma
+        };
+        let base = choose_single(
+            base_candidates,
+            "base",
+            "Set NOCKCHAIN_BASE_PID or NOCKCHAIN_BASE_DIR.",
+        )?;
+        return Ok((pma, base));
+    }
+
+    let mut container_candidates: Vec<ProcInfo> = Vec::new();
+    let mut host_candidates: Vec<ProcInfo> = Vec::new();
+    for info in candidates.iter().cloned() {
+        if is_container_process(&info) {
+            container_candidates.push(info);
+        } else {
+            host_candidates.push(info);
+        }
+    }
+    if container_candidates.len() == 1 && !host_candidates.is_empty() {
+        let pma = container_candidates.remove(0);
+        let base_candidates = if let Some(base_dir) = base_dir.as_ref() {
+            let filtered: Vec<ProcInfo> = host_candidates
+                .iter()
+                .cloned()
+                .filter(|info| is_under_root(info, base_dir))
+                .collect();
+            if filtered.is_empty() {
+                host_candidates
+            } else {
+                filtered
+            }
+        } else {
+            host_candidates
+        };
+        let base = choose_single(
+            base_candidates,
+            "base",
+            "Set NOCKCHAIN_BASE_PID or NOCKCHAIN_BASE_DIR.",
+        )?;
+        return Ok((pma, base));
+    }
 
     let mut pma_candidates: Vec<ProcInfo> = Vec::new();
     let mut base_candidates: Vec<ProcInfo> = Vec::new();
@@ -189,6 +301,26 @@ fn choose_single(mut candidates: Vec<ProcInfo>, label: &str, hint: &str) -> Resu
         return Ok(candidates.remove(0));
     }
 
+    if label.eq_ignore_ascii_case("base") {
+        let non_docker: Vec<ProcInfo> = candidates
+            .iter()
+            .cloned()
+            .filter(|info| !is_docker_nockchain(info))
+            .collect();
+        if non_docker.len() == 1 {
+            return Ok(non_docker[0].clone());
+        }
+    } else if label.eq_ignore_ascii_case("pma") {
+        let docker: Vec<ProcInfo> = candidates
+            .iter()
+            .cloned()
+            .filter(|info| is_docker_nockchain(info))
+            .collect();
+        if docker.len() == 1 {
+            return Ok(docker[0].clone());
+        }
+    }
+
     candidates.retain(|info| info.cmdline.contains("--fast-sync"));
     if candidates.len() == 1 {
         return Ok(candidates.remove(0));
@@ -211,6 +343,47 @@ fn choose_single(mut candidates: Vec<ProcInfo>, label: &str, hint: &str) -> Resu
         ));
     }
     Err(msg)
+}
+
+fn has_pma_mapping(pid: i32) -> Option<bool> {
+    let path = PathBuf::from("/proc").join(pid.to_string()).join("smaps");
+    let file = File::open(path).ok()?;
+    let reader = BufReader::new(file);
+    for line in reader.lines().flatten() {
+        if let Some(path_opt) = parse_smaps_header(&line) {
+            if let Some(path) = path_opt {
+                if is_pma_mapping(&path) {
+                    return Some(true);
+                }
+            }
+        }
+    }
+    Some(false)
+}
+
+fn is_container_process(info: &ProcInfo) -> bool {
+    if is_docker_nockchain(info) {
+        return true;
+    }
+    let path = PathBuf::from("/proc").join(info.pid.to_string()).join("cgroup");
+    let contents = read_to_string(&path).unwrap_or_default();
+    ["docker", "containerd", "kubepods", "libpod"]
+        .iter()
+        .any(|marker| contents.contains(marker))
+}
+
+fn is_docker_nockchain(info: &ProcInfo) -> bool {
+    if info.cmdline.contains("/data/.data.nockchain")
+        || info.cmdline.contains("/usr/local/bin/nockchain")
+    {
+        return true;
+    }
+    if let Some(exe) = &info.exe {
+        if exe.ends_with("/usr/local/bin/nockchain") {
+            return true;
+        }
+    }
+    false
 }
 
 fn is_under_root(info: &ProcInfo, root: &Path) -> bool {
@@ -304,7 +477,11 @@ fn is_nockchain_process(info: &ProcInfo) -> bool {
             return true;
         }
     }
-    info.cmdline.contains("nockchain")
+    info.cmdline
+        .split_whitespace()
+        .next()
+        .map(|arg0| arg0.ends_with("nockchain") || arg0.ends_with("/nockchain"))
+        .unwrap_or(false)
 }
 
 fn find_repo_root(start: PathBuf) -> Option<PathBuf> {
@@ -326,7 +503,7 @@ fn collect_report(
     let base = PathBuf::from("/proc").join(info.pid.to_string());
     let status = parse_status(&base.join("status")).unwrap_or_default();
     let smaps_rollup = parse_smaps_rollup(&base.join("smaps_rollup")).ok();
-    let (pma_maps, pma_map_count) = parse_pma_smaps(&base.join("smaps"))?;
+    let (pma_maps, pma_map_count, pma_smaps_available) = parse_pma_smaps(&base.join("smaps"))?;
     let pma_alloc_bytes = pma_alloc_bytes(info, data_dir_override.as_ref());
     let checkpoint = checkpoint_info(info, data_dir_override);
     Ok(ProcMemReport {
@@ -334,6 +511,7 @@ fn collect_report(
         smaps_rollup,
         pma_maps,
         pma_map_count,
+        pma_smaps_available,
         pma_alloc_bytes,
         checkpoint,
     })
@@ -370,8 +548,13 @@ fn parse_smaps_rollup(path: &Path) -> Result<MemTotals, String> {
     Ok(totals)
 }
 
-fn parse_pma_smaps(path: &Path) -> Result<(MemTotals, u64), String> {
-    let file = File::open(path).map_err(|e| e.to_string())?;
+fn parse_pma_smaps(path: &Path) -> Result<(MemTotals, u64, bool), String> {
+    let file = match File::open(path) {
+        Ok(file) => file,
+        Err(_) => {
+            return Ok((MemTotals::default(), 0, false));
+        }
+    };
     let reader = BufReader::new(file);
     let mut totals = MemTotals::default();
     let mut count = 0u64;
@@ -396,7 +579,7 @@ fn parse_pma_smaps(path: &Path) -> Result<(MemTotals, u64), String> {
         }
     }
 
-    Ok((totals, count))
+    Ok((totals, count, true))
 }
 
 fn parse_smaps_header(line: &str) -> Option<Option<String>> {
@@ -522,9 +705,19 @@ fn resolve_data_dir(info: &ProcInfo, data_dir_override: Option<PathBuf>) -> Opti
     }?;
 
     if base.is_absolute() {
+        let rooted = proc_root(info).join(base.strip_prefix("/").unwrap_or(&base));
+        if (is_container_process(info) && rooted.exists()) || (!base.exists() && rooted.exists()) {
+            return Some(rooted);
+        }
         return Some(base);
     }
     info.cwd.as_ref().map(|cwd| cwd.join(base))
+}
+
+fn proc_root(info: &ProcInfo) -> PathBuf {
+    PathBuf::from("/proc")
+        .join(info.pid.to_string())
+        .join("root")
 }
 
 fn parse_data_dir_flag(cmdline: &str) -> Option<PathBuf> {
@@ -599,7 +792,9 @@ fn print_proc(info: &ProcInfo, report: &ProcMemReport) {
     } else {
         println!("  smaps_rollup: unavailable");
     }
-    if report.pma_map_count > 0 {
+    if !report.pma_smaps_available {
+        println!("  pma_maps: unavailable (permission denied)");
+    } else if report.pma_map_count > 0 {
         let ratio = rss_ratio_str(report.pma_maps.rss_kb, report.pma_maps.size_kb);
         let alloc = report
             .pma_alloc_bytes
@@ -696,7 +891,7 @@ fn print_comparison(pma: &ProcMemReport, base: &ProcMemReport) {
         )),
     });
 
-    if pma.pma_map_count > 0 {
+    if pma.pma_smaps_available && pma.pma_map_count > 0 {
         rows.push(Row {
             label: "PMA map size".to_string(),
             pma: fmt_mib(pma.pma_maps.size_kb),
@@ -722,6 +917,19 @@ fn print_comparison(pma: &ProcMemReport, base: &ProcMemReport) {
             } else {
                 "n/a".to_string()
             },
+            delta: "n/a".to_string(),
+        });
+    } else if !pma.pma_smaps_available {
+        rows.push(Row {
+            label: "PMA map size".to_string(),
+            pma: "unavailable".to_string(),
+            base: "n/a".to_string(),
+            delta: "n/a".to_string(),
+        });
+        rows.push(Row {
+            label: "PMA rss_ratio".to_string(),
+            pma: "unavailable".to_string(),
+            base: "n/a".to_string(),
             delta: "n/a".to_string(),
         });
     }
@@ -837,6 +1045,16 @@ fn print_summary(
     base: &ProcMemReport,
 ) {
     println!("Summary:");
+    if !pma.pma_smaps_available {
+        println!(
+            "  PMA mapping info unavailable for pid {} (permission denied reading smaps).",
+            pma_proc.pid
+        );
+        println!(
+            "  Notes: run as a user with access to /proc/<pid>/smaps to see PMA RSS."
+        );
+        return;
+    }
     if pma.pma_map_count == 0 {
         println!(
             "  PMA mapping not detected for pid {}. PMA likely not enabled or mapping path unexpected.",
