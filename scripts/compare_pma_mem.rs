@@ -135,6 +135,27 @@ fn discover_procs() -> Result<(ProcInfo, ProcInfo), String> {
         ));
     }
 
+    let base_dir = env::var("NOCKCHAIN_BASE_DIR").ok().map(PathBuf::from);
+    let repo_root_opt = env::current_dir().ok().and_then(find_repo_root);
+
+    if let Some((pma, base)) = pick_by_cwd_hint(&candidates) {
+        return Ok((pma, base));
+    }
+
+    if let Some(repo_root) = repo_root_opt.as_ref() {
+        if let Some((pma, base)) = pick_by_repo_data_dir(&candidates, repo_root) {
+            return Ok((pma, base));
+        }
+    }
+
+    if let Some((pma, base)) = pick_by_data_dir_flag(&candidates) {
+        return Ok((pma, base));
+    }
+
+    if let Some((pma, base)) = pick_by_pma_presence(&candidates, base_dir.as_ref()) {
+        return Ok((pma, base));
+    }
+
     if candidates.len() == 2 {
         let first_is_docker = is_docker_nockchain(&candidates[0]);
         let second_is_docker = is_docker_nockchain(&candidates[1]);
@@ -148,8 +169,7 @@ fn discover_procs() -> Result<(ProcInfo, ProcInfo), String> {
         }
     }
 
-    let repo_root = find_repo_root(env::current_dir().map_err(|e| e.to_string())?);
-    let repo_root = match repo_root {
+    let repo_root = match repo_root_opt {
         Some(root) => root,
         None => {
             return Err(
@@ -158,8 +178,6 @@ fn discover_procs() -> Result<(ProcInfo, ProcInfo), String> {
             );
         }
     };
-
-    let base_dir = env::var("NOCKCHAIN_BASE_DIR").ok().map(PathBuf::from);
 
     let mut docker_candidates: Vec<ProcInfo> = candidates
         .iter()
@@ -173,16 +191,7 @@ fn discover_procs() -> Result<(ProcInfo, ProcInfo), String> {
             .cloned()
             .filter(|info| info.pid != pma.pid)
             .collect();
-        if let Some(base_dir) = base_dir.as_ref() {
-            let filtered: Vec<ProcInfo> = base_candidates
-                .iter()
-                .cloned()
-                .filter(|info| is_under_root(info, base_dir))
-                .collect();
-            if !filtered.is_empty() {
-                base_candidates = filtered;
-            }
-        }
+        base_candidates = apply_base_dir_filter(&base_candidates, base_dir.as_ref());
         let base = choose_single(
             base_candidates,
             "base",
@@ -204,20 +213,7 @@ fn discover_procs() -> Result<(ProcInfo, ProcInfo), String> {
 
     if with_pma.len() == 1 && !without_pma.is_empty() {
         let pma = with_pma.remove(0);
-        let base_candidates = if let Some(base_dir) = base_dir.as_ref() {
-            let filtered: Vec<ProcInfo> = without_pma
-                .iter()
-                .cloned()
-                .filter(|info| is_under_root(info, base_dir))
-                .collect();
-            if filtered.is_empty() {
-                without_pma
-            } else {
-                filtered
-            }
-        } else {
-            without_pma
-        };
+        let base_candidates = apply_base_dir_filter(&without_pma, base_dir.as_ref());
         let base = choose_single(
             base_candidates,
             "base",
@@ -237,20 +233,7 @@ fn discover_procs() -> Result<(ProcInfo, ProcInfo), String> {
     }
     if container_candidates.len() == 1 && !host_candidates.is_empty() {
         let pma = container_candidates.remove(0);
-        let base_candidates = if let Some(base_dir) = base_dir.as_ref() {
-            let filtered: Vec<ProcInfo> = host_candidates
-                .iter()
-                .cloned()
-                .filter(|info| is_under_root(info, base_dir))
-                .collect();
-            if filtered.is_empty() {
-                host_candidates
-            } else {
-                filtered
-            }
-        } else {
-            host_candidates
-        };
+        let base_candidates = apply_base_dir_filter(&host_candidates, base_dir.as_ref());
         let base = choose_single(
             base_candidates,
             "base",
@@ -291,6 +274,146 @@ fn discover_procs() -> Result<(ProcInfo, ProcInfo), String> {
     )?;
 
     Ok((pma, base))
+}
+
+fn pick_by_cwd_hint(candidates: &[ProcInfo]) -> Option<(ProcInfo, ProcInfo)> {
+    let mut pma_candidates: Vec<ProcInfo> = candidates
+        .iter()
+        .cloned()
+        .filter(|info| has_pma_hint_from_paths(info))
+        .collect();
+    if pma_candidates.len() == 1 && candidates.len() >= 2 {
+        let pma = pma_candidates.remove(0);
+        let mut base_candidates: Vec<ProcInfo> = candidates
+            .iter()
+            .cloned()
+            .filter(|info| info.pid != pma.pid)
+            .collect();
+        if base_candidates.len() == 1 {
+            return Some((pma, base_candidates.remove(0)));
+        }
+    }
+    None
+}
+
+fn pick_by_repo_data_dir(
+    candidates: &[ProcInfo],
+    repo_root: &Path,
+) -> Option<(ProcInfo, ProcInfo)> {
+    let pma_data_dir = repo_root.join(".data.nockchain");
+    let mut matches: Vec<ProcInfo> = candidates
+        .iter()
+        .cloned()
+        .filter(|info| {
+            resolve_data_dir(info, None)
+                .map(|dir| dir == pma_data_dir)
+                .unwrap_or(false)
+        })
+        .collect();
+    if matches.len() == 1 && candidates.len() >= 2 {
+        let pma = matches.remove(0);
+        let mut base_candidates: Vec<ProcInfo> = candidates
+            .iter()
+            .cloned()
+            .filter(|info| info.pid != pma.pid)
+            .collect();
+        if base_candidates.len() == 1 {
+            return Some((pma, base_candidates.remove(0)));
+        }
+    }
+    None
+}
+
+fn pick_by_data_dir_flag(candidates: &[ProcInfo]) -> Option<(ProcInfo, ProcInfo)> {
+    let mut with_flag: Vec<ProcInfo> = candidates
+        .iter()
+        .cloned()
+        .filter(|info| parse_data_dir_flag(&info.cmdline).is_some())
+        .collect();
+    let mut without_flag: Vec<ProcInfo> = candidates
+        .iter()
+        .cloned()
+        .filter(|info| parse_data_dir_flag(&info.cmdline).is_none())
+        .collect();
+    if with_flag.len() == 1 && without_flag.len() == 1 {
+        return Some((with_flag.remove(0), without_flag.remove(0)));
+    }
+    None
+}
+
+fn pick_by_pma_presence(
+    candidates: &[ProcInfo],
+    base_dir: Option<&PathBuf>,
+) -> Option<(ProcInfo, ProcInfo)> {
+    let mut with_pma = Vec::new();
+    let mut without_pma = Vec::new();
+    let mut unknown = Vec::new();
+
+    for info in candidates.iter().cloned() {
+        match detect_pma_presence(&info) {
+            Some(true) => with_pma.push(info),
+            Some(false) => without_pma.push(info),
+            None => unknown.push(info),
+        }
+    }
+
+    if with_pma.len() == 1 {
+        let pma = with_pma.remove(0);
+        let base_candidates = if !without_pma.is_empty() {
+            apply_base_dir_filter(&without_pma, base_dir)
+        } else {
+            apply_base_dir_filter(&unknown, base_dir)
+        };
+        if let Ok(base) = choose_single(
+            base_candidates,
+            "base",
+            "Set NOCKCHAIN_BASE_PID or NOCKCHAIN_BASE_DIR.",
+        ) {
+            return Some((pma, base));
+        }
+    }
+
+    if with_pma.is_empty() && without_pma.len() == 1 && !unknown.is_empty() {
+        let base = without_pma.remove(0);
+        if let Ok(pma) = choose_single(
+            apply_base_dir_filter(&unknown, base_dir),
+            "PMA",
+            "Set NOCKCHAIN_PMA_PID.",
+        ) {
+            return Some((pma, base));
+        }
+    }
+
+    if with_pma.len() > 1 && without_pma.len() == 1 {
+        let base = without_pma.remove(0);
+        if let Ok(pma) = choose_single(
+            with_pma,
+            "PMA",
+            "Set NOCKCHAIN_PMA_PID.",
+        ) {
+            return Some((pma, base));
+        }
+    }
+
+    None
+}
+
+fn apply_base_dir_filter(
+    candidates: &[ProcInfo],
+    base_dir: Option<&PathBuf>,
+) -> Vec<ProcInfo> {
+    let mut candidates: Vec<ProcInfo> = candidates.to_vec();
+    if let Some(base_dir) = base_dir {
+        let filtered: Vec<ProcInfo> = candidates
+            .iter()
+            .cloned()
+            .filter(|info| is_under_root(info, base_dir))
+            .collect();
+        if !filtered.is_empty() {
+            candidates = filtered;
+        }
+    }
+    candidates
 }
 
 fn choose_single(mut candidates: Vec<ProcInfo>, label: &str, hint: &str) -> Result<ProcInfo, String> {
@@ -346,7 +469,15 @@ fn choose_single(mut candidates: Vec<ProcInfo>, label: &str, hint: &str) -> Resu
 }
 
 fn has_pma_mapping(pid: i32) -> Option<bool> {
-    let path = PathBuf::from("/proc").join(pid.to_string()).join("smaps");
+    let smaps_path = PathBuf::from("/proc").join(pid.to_string()).join("smaps");
+    if let Some(found) = scan_mapping_file(&smaps_path) {
+        return Some(found);
+    }
+    let maps_path = PathBuf::from("/proc").join(pid.to_string()).join("maps");
+    scan_mapping_file(&maps_path)
+}
+
+fn scan_mapping_file(path: &Path) -> Option<bool> {
     let file = File::open(path).ok()?;
     let reader = BufReader::new(file);
     for line in reader.lines().flatten() {
@@ -359,6 +490,74 @@ fn has_pma_mapping(pid: i32) -> Option<bool> {
         }
     }
     Some(false)
+}
+
+fn has_pma_fd(pid: i32) -> Option<bool> {
+    let fd_dir = PathBuf::from("/proc").join(pid.to_string()).join("fd");
+    let entries = fs::read_dir(&fd_dir).ok()?;
+    for entry in entries.flatten() {
+        if let Ok(target) = fs::read_link(entry.path()) {
+            let target = target.to_string_lossy();
+            if is_pma_mapping(&target) {
+                return Some(true);
+            }
+        }
+    }
+    Some(false)
+}
+
+fn detect_pma_presence(info: &ProcInfo) -> Option<bool> {
+    if let Some(found) = has_pma_mapping(info.pid) {
+        return Some(found);
+    }
+    if let Some(found) = has_pma_fd(info.pid) {
+        return Some(found);
+    }
+    if has_pma_hint_from_paths(info) {
+        return Some(true);
+    }
+    if let Some(has_dir) = data_dir_has_pma(info) {
+        return Some(has_dir);
+    }
+    None
+}
+
+fn has_pma_hint_from_paths(info: &ProcInfo) -> bool {
+    let needles = ["pma-nockchain", "pma_nockchain"];
+    if let Some(cwd) = &info.cwd {
+        let cwd = cwd.to_string_lossy();
+        if needles.iter().any(|needle| cwd.contains(needle)) {
+            return true;
+        }
+    }
+    if let Some(exe) = &info.exe {
+        let exe = exe.to_string_lossy();
+        if needles.iter().any(|needle| exe.contains(needle)) {
+            return true;
+        }
+    }
+    false
+}
+
+fn data_dir_has_pma(info: &ProcInfo) -> Option<bool> {
+    let data_dir = resolve_data_dir(info, None)?;
+    let pma_dir = data_dir.join("pma");
+    match fs::read_dir(&pma_dir) {
+        Ok(entries) => {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.extension().and_then(|s| s.to_str()) == Some("mmap") {
+                    return Some(true);
+                }
+            }
+            Some(false)
+        }
+        Err(err) => match err.kind() {
+            std::io::ErrorKind::NotFound => Some(false),
+            std::io::ErrorKind::PermissionDenied => None,
+            _ => None,
+        },
+    }
 }
 
 fn is_container_process(info: &ProcInfo) -> bool {
@@ -702,16 +901,111 @@ fn resolve_data_dir(info: &ProcInfo, data_dir_override: Option<PathBuf>) -> Opti
         Some(override_dir)
     } else {
         parse_data_dir_flag(&info.cmdline).or_else(|| default_data_dir_from_cwd(info))
-    }?;
+    };
+
+    if base.is_none() {
+        if is_container_process(info) {
+            return probe_container_data_dir(info);
+        }
+        return None;
+    }
+    let base = base?;
 
     if base.is_absolute() {
         let rooted = proc_root(info).join(base.strip_prefix("/").unwrap_or(&base));
         if (is_container_process(info) && rooted.exists()) || (!base.exists() && rooted.exists()) {
             return Some(rooted);
         }
+        if is_container_process(info) {
+            if let Some(mapped) = map_container_path_to_host(info, &base) {
+                if mapped.exists() {
+                    return Some(mapped);
+                }
+            }
+        }
         return Some(base);
     }
     info.cwd.as_ref().map(|cwd| cwd.join(base))
+}
+
+fn probe_container_data_dir(info: &ProcInfo) -> Option<PathBuf> {
+    let root = proc_root(info);
+    let candidates = [
+        PathBuf::from("/data/.data.nockchain"),
+        PathBuf::from("/.data.nockchain"),
+        PathBuf::from("/root/.data.nockchain"),
+    ];
+    for path in candidates {
+        let rooted = root.join(path.strip_prefix("/").unwrap_or(&path));
+        if rooted.is_dir() {
+            return Some(rooted);
+        }
+        if let Some(mapped) = map_container_path_to_host(info, &path) {
+            if mapped.is_dir() {
+                return Some(mapped);
+            }
+        }
+    }
+    None
+}
+
+fn map_container_path_to_host(info: &ProcInfo, container_path: &Path) -> Option<PathBuf> {
+    let mounts_path = PathBuf::from("/proc")
+        .join(info.pid.to_string())
+        .join("mounts");
+    let mounts = read_to_string(&mounts_path)?;
+    let mut best: Option<(usize, PathBuf)> = None;
+    for line in mounts.lines() {
+        let mut parts = line.split_whitespace();
+        let source = parts.next()?;
+        let mount_point = parts.next()?;
+        let mount_point = unescape_mount_field(mount_point);
+        let source = unescape_mount_field(source);
+        let mount_point_path = Path::new(&mount_point);
+        if container_path.starts_with(mount_point_path) {
+            let rel = container_path.strip_prefix(mount_point_path).unwrap_or(Path::new(""));
+            let host_path = Path::new(&source).join(rel);
+            let len = mount_point.len();
+            let update = match &best {
+                None => true,
+                Some((best_len, _)) => len > *best_len,
+            };
+            if update {
+                best = Some((len, host_path));
+            }
+        }
+    }
+    best.map(|(_, path)| path)
+}
+
+fn unescape_mount_field(input: &str) -> String {
+    let mut out = String::with_capacity(input.len());
+    let mut chars = input.chars().peekable();
+    while let Some(ch) = chars.next() {
+        if ch != '\\' {
+            out.push(ch);
+            continue;
+        }
+        let mut code = String::new();
+        for _ in 0..3 {
+            match chars.peek() {
+                Some(c) if c.is_ascii_digit() => {
+                    code.push(*c);
+                    chars.next();
+                }
+                _ => break,
+            }
+        }
+        if code.len() == 3 {
+            if let Ok(oct) = u8::from_str_radix(&code, 8) {
+                out.push(oct as char);
+                continue;
+            }
+        }
+        out.push('\\');
+        out.push_str(&code);
+    }
+    out
 }
 
 fn proc_root(info: &ProcInfo) -> PathBuf {
@@ -1045,6 +1339,7 @@ fn print_summary(
     base: &ProcMemReport,
 ) {
     println!("Summary:");
+    let pma_maps_ok = pma.pma_smaps_available && pma.pma_map_count > 0;
     if !pma.pma_smaps_available {
         println!(
             "  PMA mapping info unavailable for pid {} (permission denied reading smaps).",
@@ -1053,25 +1348,21 @@ fn print_summary(
         println!(
             "  Notes: run as a user with access to /proc/<pid>/smaps to see PMA RSS."
         );
-        return;
-    }
-    if pma.pma_map_count == 0 {
+    } else if pma.pma_map_count == 0 {
         println!(
             "  PMA mapping not detected for pid {}. PMA likely not enabled or mapping path unexpected.",
             pma_proc.pid
         );
-        return;
+    } else {
+        let pma_size_mib = kb_to_mib(pma.pma_maps.size_kb);
+        let pma_rss_mib = kb_to_mib(pma.pma_maps.rss_kb);
+        println!(
+            "  PMA mapping size {:.1} MiB, RSS {:.1} MiB (ratio {}).",
+            pma_size_mib,
+            pma_rss_mib,
+            rss_ratio_str(pma.pma_maps.rss_kb, pma.pma_maps.size_kb)
+        );
     }
-
-    let pma_ratio = rss_ratio_value(pma.pma_maps.rss_kb, pma.pma_maps.size_kb);
-    let pma_size_mib = kb_to_mib(pma.pma_maps.size_kb);
-    let pma_rss_mib = kb_to_mib(pma.pma_maps.rss_kb);
-    println!(
-        "  PMA mapping size {:.1} MiB, RSS {:.1} MiB (ratio {}).",
-        pma_size_mib,
-        pma_rss_mib,
-        rss_ratio_str(pma.pma_maps.rss_kb, pma.pma_maps.size_kb)
-    );
 
     let rss_delta = delta_kb_signed(pma.status.vm_rss_kb, base.status.vm_rss_kb);
     println!(
@@ -1079,31 +1370,38 @@ fn print_summary(
         fmt_signed_mib(rss_delta)
     );
 
-    let mut score = 0;
-    if pma_size_mib > 256.0 {
-        score += 1;
-    }
-    if pma_ratio < 0.9 {
-        score += 1;
-    }
-    if pma.status.rss_file_kb > base.status.rss_file_kb {
-        score += 1;
-    }
-
-    let verdict = match score {
-        3 => "likely",
-        2 => "somewhat likely",
-        1 => "inconclusive",
-        _ => "unlikely",
+    let verdict = if pma_maps_ok {
+        let pma_ratio = rss_ratio_value(pma.pma_maps.rss_kb, pma.pma_maps.size_kb);
+        let pma_size_mib = kb_to_mib(pma.pma_maps.size_kb);
+        let mut score = 0;
+        if pma_size_mib > 256.0 {
+            score += 1;
+        }
+        if pma_ratio < 0.9 {
+            score += 1;
+        }
+        if pma.status.rss_file_kb > base.status.rss_file_kb {
+            score += 1;
+        }
+        match score {
+            3 => "likely",
+            2 => "somewhat likely",
+            1 => "inconclusive",
+            _ => "unlikely",
+        }
+    } else {
+        "inconclusive"
     };
 
     println!(
         "  Likelihood PMA paging is working correctly: {}.",
         verdict
     );
-    println!(
-        "  Notes: PMA paging is best-effort. If ratio ~= 1.0, the PMA may be small/hot or no memory pressure."
-    );
+    if pma_maps_ok {
+        println!(
+            "  Notes: PMA paging is best-effort. If ratio ~= 1.0, the PMA may be small/hot or no memory pressure."
+        );
+    }
     println!(
         "  Processes: PMA pid {} vs base pid {}.",
         pma_proc.pid, base_proc.pid
