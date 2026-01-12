@@ -21,6 +21,8 @@ DOCKER_METRICS_COMPOSE ?= docker-compose.metrics.yml
 DOCKER_METRICS_NETWORK ?= nockchain-metrics
 INFLUXDB_VERSION ?= 2.7
 TELEGRAF_VERSION ?= 1.30
+STATSD_HOST ?= telegraf
+STATSD_PORT ?= 8125
 
 .PHONY: build
 build: build-hoon-all build-rust
@@ -68,8 +70,11 @@ docker-nockchain-run:
 		--network $(DOCKER_METRICS_NETWORK) \
 		--memory $(DOCKER_MEM) \
 		-e RUST_BACKTRACE=1 \
+		-e NOCK_PMA_TIMING=1 \
 		-e NOCK_PMA_TIMING_DETAIL=1 \
 		-e NOCK_STACK_TIMING_DETAIL=1 \
+		-e STATSD_HOST=$(STATSD_HOST) \
+		-e STATSD_PORT=$(STATSD_PORT) \
 		-p $(DOCKER_P2P_PORT):$(DOCKER_P2P_PORT)/udp \
 		-v $(DOCKER_DATA_DIR):/data/.data.nockchain \
 		$(DOCKER_IMAGE) \
