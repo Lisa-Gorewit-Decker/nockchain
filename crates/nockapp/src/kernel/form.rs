@@ -1536,6 +1536,21 @@ impl Serf {
             self.context.scry_stack.is_direct(),
             "scry_stack must be cleared before resetting the NockStack"
         );
+        if std::env::var_os("NOCK_STACK_TIMING_DETAIL").is_some() {
+            let total_words = self.context.stack.arena().words() as u64;
+            let least_space = self.context.stack.least_space() as u64;
+            let used_words = total_words.saturating_sub(least_space);
+            let used_mib = (used_words as f64 * 8.0) / (1024.0 * 1024.0);
+            let event_num = self.event_num.load(Ordering::SeqCst);
+            info!(
+                "stack-usage: used_words={} used_mib={:.3} least_space_words={} total_words={} event_num={}",
+                used_words,
+                used_mib,
+                least_space,
+                total_words,
+                event_num
+            );
+        }
         if self.pma.is_some() {
             let trace_pma = std::env::var_os("NOCK_PMA_TRACE").is_some();
             let detail_enabled = std::env::var_os("NOCK_PMA_TIMING_DETAIL").is_some();

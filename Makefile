@@ -17,6 +17,10 @@ DOCKER_MEM ?= 32g
 DOCKER_P2P_PORT ?= 30000
 DOCKER_DATA_DIR ?= $(CURDIR)/.data.nockchain
 DOCKER_NOCKCHAIN_ARGS ?=
+DOCKER_METRICS_COMPOSE ?= docker-compose.metrics.yml
+DOCKER_METRICS_NETWORK ?= nockchain-metrics
+INFLUXDB_VERSION ?= 2.7
+TELEGRAF_VERSION ?= 1.30
 
 .PHONY: build
 build: build-hoon-all build-rust
@@ -59,9 +63,13 @@ docker-nockchain-build:
 .PHONY: docker-nockchain-run
 docker-nockchain-run:
 	mkdir -p $(DOCKER_DATA_DIR)
+	@docker network inspect $(DOCKER_METRICS_NETWORK) >/dev/null 2>&1 || docker network create $(DOCKER_METRICS_NETWORK)
 	docker run --rm -it --name nockchain \
+		--network $(DOCKER_METRICS_NETWORK) \
 		--memory $(DOCKER_MEM) \
 		-e RUST_BACKTRACE=1 \
+		-e NOCK_PMA_TIMING_DETAIL=1 \
+		-e NOCK_STACK_TIMING_DETAIL=1 \
 		-p $(DOCKER_P2P_PORT):$(DOCKER_P2P_PORT)/udp \
 		-v $(DOCKER_DATA_DIR):/data/.data.nockchain \
 		$(DOCKER_IMAGE) \
@@ -70,6 +78,11 @@ docker-nockchain-run:
 		--identity-path /data/.data.nockchain/.nockchain_identity \
 		--bind /ip4/0.0.0.0/udp/$(DOCKER_P2P_PORT)/quic-v1 \
 		$(DOCKER_NOCKCHAIN_ARGS)
+
+.PHONY: docker-metrics
+docker-metrics:
+	@docker network inspect $(DOCKER_METRICS_NETWORK) >/dev/null 2>&1 || docker network create $(DOCKER_METRICS_NETWORK)
+	docker compose -f $(DOCKER_METRICS_COMPOSE) up -d
 
 .PHONY: fmt
 fmt:
