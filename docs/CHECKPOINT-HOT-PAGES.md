@@ -45,3 +45,38 @@ It would get close to 32 GiB RAM used while checkpointing several times before a
 ## Why PMA‑persist looks so much lower
 
 With PMA persistence on, you’re not doing the slab + jam path at all, so anonymous memory stays low. The file‑backed PMA can be cold, so RSS stays small even though VmSize is huge (expected for mmap).
+
+---
+
+Hypotheses (ranked by likelihood + ease to falsify)
+
+1. Full‑state traversal faults PMA pages in during checkpoint.
+    SaveableCheckpoint::new copies kernel_state and cold_state into NounSlab via copy_into, which walks everything and reads PMA pages (crates/nockapp/src/kernel/form.rs, crates/nockapp/src/noun/slab.rs). That alone can make a big PMA map fully resident while the slab allocations
+    are growing.
+    Falsify: measure RssFile/mincore just before/after a checkpoint or run with a tiny state and see if RSS stays low.
+2. Jam serialization doubles memory on top of the slab copy.
+    SaveableCheckpoint::to_jammed_checkpoint builds two large Vec<u8> (state + cold) while the NounSlab copies still exist (crates/nockapp/src/nockapp/save.rs). That’s another full‑state footprint, and it’s anonymous memory (hard to reclaim without swap).
+    Falsify: skip jam (or stream it) and see if OOM goes away.
+3. Dirty PMA pages are hard to reclaim under pressure.
+    We write PMA via MmapMut without msync/madvise in production; dirty pages can’t be evicted until writeback keeps up (crates/nockvm/rust/nockvm/src/pma.rs, crates/nockvm/rust/nockvm/src/mem.rs). Under checkpoint pressure, the kernel may not reclaim fast enough.
+    Falsify: watch Dirty in /proc/<pid>/smaps for the PMA mapping; add a temporary msync/madvise(MADV_PAGEOUT) and see if it changes the spike.
+4. PMA size == stack size; a large stack means a huge file map.
+    PMA is created with the same words as stack size (PmaConfig in crates/nockapp/src/kernel/boot.rs, crates/nockapp/src/kernel/form.rs). If you’re on --stack-size medium/large/huge, the PMA file is 16–64 GiB and a checkpoint scan can fault a lot of that into RSS.
+    Falsify: run --stack-size small/normal and compare checkpoint RSS.
+5. No swap in the container → anon pages can’t be reclaimed.
+    NockStack + NounSlab + jam buffers are anonymous. In Docker with --memory and no swap, these can’t be evicted. Even if PMA pages are reclaimable, anon growth can still trigger OOM first.
+    Falsify: enable swap (--memory-swap) or run outside Docker.
+6. Allocator retention after checkpoint.
+    NounSlab deallocates, but the allocator may keep large arenas around; RSS stays high across checkpoints and you eventually OOM.
+    Falsify: check RSS after checkpoint completes; experiment with MALLOC_TRIM_THRESHOLD_ or jemalloc decay.
+7. Cgroup page‑cache accounting.
+    PMA is file‑backed and charged to the container (RssFile), so page‑cache reclaim is constrained by cgroup limits. Under heavy dirty/writeback it may OOM rather than evict.
+    Falsify: inspect memory.stat for file/anon and pgscan/pgsteal during checkpoint.
+
+If you want to dig deeper without changing behavior yet, I can help design instrumentation to answer: “how many PMA pages are resident during checkpoint” and “how big are the slab + jam allocations” so we can pinpoint the dominant factor.
+
+Suggested next steps:
+
+1. Capture smaps/memory.stat snapshots right before and during a checkpoint to confirm whether PMA RssFile or anon slabs/jam are the main spike.
+2. Temporarily short‑circuit jam or the slab copy to isolate which phase causes the OOM.
+3. Try a smaller stack size to see if the PMA mapping size is the dominant driver.
