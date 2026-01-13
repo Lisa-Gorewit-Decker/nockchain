@@ -594,12 +594,24 @@ fn serf_loop<C: SerfCheckpoint>(
                             .map(|elapsed| elapsed.as_secs_f64() * 1000.0)
                             .unwrap_or(0.0);
                         let total_ms = event_ms + pma_ms;
+                        let total_alloc_words = pma_detail.map_or(0usize, |detail| {
+                            detail.warm.alloc_words
+                                + detail.test_jets.alloc_words
+                                + detail.hot.alloc_words
+                                + detail.cache.alloc_words
+                                + detail.cold.alloc_words
+                                + detail.arvo.alloc_words
+                        });
+                        let total_alloc_mib =
+                            (total_alloc_words as f64 * 8.0) / (1024.0 * 1024.0);
                         let event_num = serf.event_num.load(Ordering::SeqCst);
                         info!(
-                            "pma-timing: event_ms={:.3} pma_copy_ms={:.3} total_ms={:.3} event_num={}",
+                            "pma-timing: event_ms={:.3} pma_copy_ms={:.3} total_ms={:.3} alloc_words={} alloc_mib={:.3} event_num={}",
                             event_ms,
                             pma_ms,
                             total_ms,
+                            total_alloc_words,
+                            total_alloc_mib,
                             event_num
                         );
                     }

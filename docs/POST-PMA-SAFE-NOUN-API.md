@@ -155,3 +155,143 @@ still letting call sites declare intent.
 
 If you want the least churn while gaining strong safety, Option A + E is the most
 practical path.
+
+# Precipitating error
+
+```
+I (01:10:31) handle-command: timer
+I (01:10:31) [no] kernel::form: stack-usage: used_words=5190 used_mib=0.040 least_space_words=2147478458 total_words=2147483648 event_num=145911
+I (01:10:31) [no] kernel::form: pma-timing: event_ms=8.835 pma_copy_ms=0.022 total_ms=8.857 alloc_words=29 alloc_mib=0.000 event_num=145911
+I (01:10:31) peek: %heavy-n
+
+thread 'tokio-runtime-worker' panicked at crates/nockvm/rust/nockvm/src/noun.rs:256:9:
+pointer-form noun 0x7d7054132750 is not within stack or PMA arenas
+stack backtrace:
+   0: rust_begin_unwind
+             at ./rustc/a567209daab72b7ea59eac533278064396bb0534/library/std/src/panicking.rs:695:5
+   1: core::panicking::panic_fmt
+             at ./rustc/a567209daab72b7ea59eac533278064396bb0534/library/core/src/panicking.rs:75:14
+   2: nockvm::noun::NounSpace::classify_ptr
+             at ./home/callen/work/zorp/pma-nockchain/crates/nockvm/rust/nockvm/src/noun.rs:256:9
+   3: nockvm::noun::NounSpace::resolve_stack_ptr
+             at ./home/callen/work/zorp/pma-nockchain/crates/nockvm/rust/nockvm/src/noun.rs:228:9
+   4: nockvm::noun::TaggedPtr::resolve_const
+             at ./home/callen/work/zorp/pma-nockchain/crates/nockvm/rust/nockvm/src/noun.rs:142:35
+   5: nockvm::noun::Allocated::to_raw_pointer
+   6: nockvm::noun::Allocated::get_metadata
+             at ./home/callen/work/zorp/pma-nockchain/crates/nockvm/rust/nockvm/src/noun.rs:2066:10
+   7: nockvm::noun::Allocated::get_cached_mug
+             at ./home/callen/work/zorp/pma-nockchain/crates/nockvm/rust/nockvm/src/noun.rs:2104:17
+   8: nockvm::mug::get_mug
+             at ./home/callen/work/zorp/pma-nockchain/crates/nockvm/rust/nockvm/src/mug.rs:74:29
+   9: nockapp::noun::slab::slab_mug
+             at ./home/callen/work/zorp/pma-nockchain/crates/nockapp/src/noun/slab.rs:625:25
+  10: nockapp::noun::slab::NounMap<V>::get
+             at ./home/callen/work/zorp/pma-nockchain/crates/nockapp/src/noun/slab.rs:587:23
+  11: <nockapp::noun::slab::NockJammer as nockapp::noun::slab::Jammer>::jam
+             at ./home/callen/work/zorp/pma-nockchain/crates/nockapp/src/noun/slab.rs:701:36
+  12: nockapp::noun::slab::NounSlab<J>::jam
+             at ./home/callen/work/zorp/pma-nockchain/crates/nockapp/src/noun/slab.rs:478:9
+  13: nockchain_libp2p_io::driver::create_scry_response
+             at ./home/callen/work/zorp/pma-nockchain/crates/nockchain-libp2p-io/src/driver.rs:1622:65
+  14: nockchain_libp2p_io::driver::handle_request_response::{{closure}}
+             at ./home/callen/work/zorp/pma-nockchain/crates/nockchain-libp2p-io/src/driver.rs:1047:33
+  15: nockchain_libp2p_io::driver::make_libp2p_driver::{{closure}}::{{closure}}::{{closure}}
+             at ./home/callen/work/zorp/pma-nockchain/crates/nockchain-libp2p-io/src/driver.rs:317:215
+  16: tokio::runtime::task::core::Core<T,S>::poll::{{closure}}
+             at ./home/callen/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-1.47.1/src/runtime/task/core.rs:365:17
+  17: tokio::loom::std::unsafe_cell::UnsafeCell<T>::with_mut
+             at ./home/callen/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-1.47.1/src/loom/std/unsafe_cell.rs:16:9
+  18: tokio::runtime::task::core::Core<T,S>::poll
+             at ./home/callen/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-1.47.1/src/runtime/task/core.rs:354:30
+  19: tokio::runtime::task::harness::poll_future::{{closure}}
+             at ./home/callen/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-1.47.1/src/runtime/task/harness.rs:535:19
+  20: <core::panic::unwind_safe::AssertUnwindSafe<F> as core::ops::function::FnOnce<()>>::call_once
+             at ./home/callen/.rustup/toolchains/nightly-2025-02-14-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/panic/unwind_safe.rs:272:9
+  21: std::panicking::try::do_call
+             at ./home/callen/.rustup/toolchains/nightly-2025-02-14-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/std/src/panicking.rs:587:40
+  22: std::panicking::try
+             at ./home/callen/.rustup/toolchains/nightly-2025-02-14-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/std/src/panicking.rs:550:19
+  23: std::panic::catch_unwind
+             at ./home/callen/.rustup/toolchains/nightly-2025-02-14-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/std/src/panic.rs:358:14
+  24: tokio::runtime::task::harness::poll_future
+             at ./home/callen/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-1.47.1/src/runtime/task/harness.rs:523:18
+  25: tokio::runtime::task::harness::Harness<T,S>::poll_inner
+             at ./home/callen/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-1.47.1/src/runtime/task/harness.rs:210:27
+  26: tokio::runtime::task::harness::Harness<T,S>::poll
+             at ./home/callen/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-1.47.1/src/runtime/task/harness.rs:155:15
+  27: tokio::runtime::task::raw::poll
+             at ./home/callen/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-1.47.1/src/runtime/task/raw.rs:325:5
+  28: tokio::runtime::task::raw::RawTask::poll
+             at ./home/callen/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-1.47.1/src/runtime/task/raw.rs:255:18
+  29: tokio::runtime::task::LocalNotified<S>::run
+             at ./home/callen/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-1.47.1/src/runtime/task/mod.rs:509:9
+  30: tokio::runtime::scheduler::multi_thread::worker::Context::run_task::{{closure}}
+             at ./home/callen/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-1.47.1/src/runtime/scheduler/multi_thread/worker.rs:677:22
+  31: tokio::task::coop::with_budget
+             at ./home/callen/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-1.47.1/src/task/coop/mod.rs:167:5
+  32: tokio::task::coop::budget
+             at ./home/callen/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-1.47.1/src/task/coop/mod.rs:133:5
+  33: tokio::runtime::scheduler::multi_thread::worker::Context::run_task
+             at ./home/callen/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-1.47.1/src/runtime/scheduler/multi_thread/worker.rs:591:9
+  34: tokio::runtime::scheduler::multi_thread::worker::Context::run
+             at ./home/callen/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-1.47.1/src/runtime/scheduler/multi_thread/worker.rs:539:24
+  35: tokio::runtime::scheduler::multi_thread::worker::run::{{closure}}::{{closure}}
+             at ./home/callen/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-1.47.1/src/runtime/scheduler/multi_thread/worker.rs:504:21
+  36: tokio::runtime::context::scoped::Scoped<T>::set
+             at ./home/callen/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-1.47.1/src/runtime/context/scoped.rs:40:9
+  37: tokio::runtime::context::set_scheduler::{{closure}}
+             at ./home/callen/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-1.47.1/src/runtime/context.rs:176:26
+  38: std::thread::local::LocalKey<T>::try_with
+             at ./home/callen/.rustup/toolchains/nightly-2025-02-14-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/std/src/thread/local.rs:310:12
+  39: std::thread::local::LocalKey<T>::with
+             at ./home/callen/.rustup/toolchains/nightly-2025-02-14-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/std/src/thread/local.rs:274:15
+  40: tokio::runtime::context::set_scheduler
+             at ./home/callen/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-1.47.1/src/runtime/context.rs:176:9
+  41: tokio::runtime::scheduler::multi_thread::worker::run::{{closure}}
+             at ./home/callen/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-1.47.1/src/runtime/scheduler/multi_thread/worker.rs:499:9
+  42: tokio::runtime::context::runtime::enter_runtime
+             at ./home/callen/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-1.47.1/src/runtime/context/runtime.rs:65:16
+  43: tokio::runtime::scheduler::multi_thread::worker::run
+             at ./home/callen/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-1.47.1/src/runtime/scheduler/multi_thread/worker.rs:491:5
+  44: tokio::runtime::scheduler::multi_thread::worker::Launch::launch::{{closure}}
+             at ./home/callen/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-1.47.1/src/runtime/scheduler/multi_thread/worker.rs:457:45
+  45: <tokio::runtime::blocking::task::BlockingTask<T> as core::future::future::Future>::poll
+             at ./home/callen/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-1.47.1/src/runtime/blocking/task.rs:42:21
+  46: tokio::runtime::task::core::Core<T,S>::poll::{{closure}}
+             at ./home/callen/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-1.47.1/src/runtime/task/core.rs:365:17
+  47: tokio::loom::std::unsafe_cell::UnsafeCell<T>::with_mut
+             at ./home/callen/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-1.47.1/src/loom/std/unsafe_cell.rs:16:9
+  48: tokio::runtime::task::core::Core<T,S>::poll
+             at ./home/callen/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-1.47.1/src/runtime/task/core.rs:354:30
+  49: tokio::runtime::task::harness::poll_future::{{closure}}
+             at ./home/callen/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-1.47.1/src/runtime/task/harness.rs:535:19
+  50: <core::panic::unwind_safe::AssertUnwindSafe<F> as core::ops::function::FnOnce<()>>::call_once
+             at ./home/callen/.rustup/toolchains/nightly-2025-02-14-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/panic/unwind_safe.rs:272:9
+  51: std::panicking::try::do_call
+             at ./home/callen/.rustup/toolchains/nightly-2025-02-14-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/std/src/panicking.rs:587:40
+  52: std::panicking::try
+             at ./home/callen/.rustup/toolchains/nightly-2025-02-14-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/std/src/panicking.rs:550:19
+  53: std::panic::catch_unwind
+             at ./home/callen/.rustup/toolchains/nightly-2025-02-14-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/std/src/panic.rs:358:14
+  54: tokio::runtime::task::harness::poll_future
+             at ./home/callen/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-1.47.1/src/runtime/task/harness.rs:523:18
+  55: tokio::runtime::task::harness::Harness<T,S>::poll_inner
+             at ./home/callen/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-1.47.1/src/runtime/task/harness.rs:210:27
+  56: tokio::runtime::task::harness::Harness<T,S>::poll
+             at ./home/callen/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-1.47.1/src/runtime/task/harness.rs:155:15
+  57: tokio::runtime::task::raw::poll
+             at ./home/callen/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-1.47.1/src/runtime/task/raw.rs:325:5
+  58: tokio::runtime::task::raw::RawTask::poll
+             at ./home/callen/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-1.47.1/src/runtime/task/raw.rs:255:18
+  59: tokio::runtime::task::UnownedTask<S>::run
+             at ./home/callen/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-1.47.1/src/runtime/task/mod.rs:546:9
+  60: tokio::runtime::blocking::pool::Task::run
+             at ./home/callen/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-1.47.1/src/runtime/blocking/pool.rs:161:9
+  61: tokio::runtime::blocking::pool::Inner::run
+             at ./home/callen/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-1.47.1/src/runtime/blocking/pool.rs:516:17
+  62: tokio::runtime::blocking::pool::Spawner::spawn_thread::{{closure}}
+             at ./home/callen/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-1.47.1/src/runtime/blocking/pool.rs:474:13
+note: Some details are omitted, run with `RUST_BACKTRACE=full` for a verbose backtrace.
+E (01:10:31) driver: Task error: JoinError::Panic(Id(121853), "pointer-form noun 0x7d7054132750 is not within stack or PMA arenas", ...)
+```
