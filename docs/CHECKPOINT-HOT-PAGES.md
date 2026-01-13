@@ -80,3 +80,149 @@ Suggested next steps:
 1. Capture smaps/memory.stat snapshots right before and during a checkpoint to confirm whether PMA RssFile or anon slabs/jam are the main spike.
 2. Temporarily short‑circuit jam or the slab copy to isolate which phase causes the OOM.
 3. Try a smaller stack size to see if the PMA mapping size is the dominant driver.
+
+---
+
+Comprehensive Analysis: Why Kernel Can't Page Out PMA During Checkpoint OOM
+
+Based on my exhaustive review of the codebase, here are my hypotheses ranked by likelihood and ease of falsification:
+
+H1: Anonymous Buffers Are Unswappable (HIGHEST LIKELIHOOD)
+
+Evidence:
+- SerfCheckpoint::new at form.rs:1950-1994 creates two NounSlab instances via copy_into()
+- NounSlab allocates via std::alloc::alloc() at slab.rs:72 - this is heap memory, which is anonymous
+- Then SaveableCheckpoint::to_jammed_checkpoint at save.rs:246-260 creates BitVec buffers during jam()
+- Finally JammedCheckpointV2::encode() creates another Vec<u8> for bincode output
+
+Memory footprint at peak:
+state_slab (~state size) + cold_slab (~cold size) +
+jam_bitvec_state (~state size) + jam_bitvec_cold (~cold size) +
+bincode_vec (~total jam size)
+This can be 2-3× the live state size in pure anonymous memory.
+
+Why it causes OOM: Without swap, anonymous memory cannot be reclaimed by the kernel under any circumstances. Even if the kernel could page out the entire PMA, these anonymous buffers would remain resident.
+
+Falsification: Monitor /proc/self/smaps_rollup during checkpoint save. If Private_Anonymous spikes to multi-GB while Private_File stays relatively flat, this confirms the hypothesis.
+
+---
+H2: PMA Traversal Faults All Pages Resident (HIGH LIKELIHOOD)
+
+Evidence:
+The copy_into function at slab.rs:286-347 walks the noun graph:
+while let Some((noun, dest)) = copy_stack.pop() {
+    // ...
+    let indirect_ptr = unsafe { indirect.as_atom().in_space(space).raw_pointer() };
+    // ^^^ This dereferences PMA pointers, faulting pages in
+
+Each pointer dereference in the PMA:
+1. Triggers a page fault if the page isn't resident
+2. Marks the page as accessed/active in the kernel's page aging algorithm
+3. Makes it a poor candidate for reclaim during the save
+
+Why it causes OOM: Even though PMA pages are file-backed and theoretically reclaimable, the kernel's LRU aging algorithm sees them all as "recently used" during the copy. Under memory pressure + cgroup limits, the kernel prefers to reclaim pages that were touched longer ago - but you just touched them all.
+
+Falsification: Use mincore() or vmtouch to sample PMA residency immediately before and during a checkpoint save. If residency jumps from ~10% to ~90%+ during saves, this is the trigger.
+
+---
+H3: Dirty PMA Pages Must Write Back Before Eviction (HIGH LIKELIHOOD)
+
+Evidence:
+- persist_metadata() at pma.rs:344-360 writes directly into the mmap'd region:
+unsafe {
+    std::ptr::copy_nonoverlapping(bytes.as_ptr(), dst, bytes.len());
+}
+- This happens on every allocation (lines 135, 192, 253, 298, 313, 340)
+- No msync() is ever called on the PMA in production code
+- The documentation at persistence.md:43 describes the intended msync-based commit, but it's not implemented
+
+Why it causes OOM: For MAP_SHARED mappings, dirty pages cannot simply be discarded - the kernel must write them back to the file first. Under:
+- cgroup memory limits (Docker 32GB limit)
+- overlayfs (Docker storage driver)
+- high dirty page count (continuous metadata writes)
+
+...writeback becomes the bottleneck. The kernel can't evict pages faster than writeback I/O allows.
+
+Falsification: Check memory.stat in the cgroup during saves:
+cat /sys/fs/cgroup/memory/docker/<container>/memory.stat | grep -E 'dirty|writeback'
+If dirty and writeback are high (>1GB) during OOM, this contributes.
+
+---
+H4: NockStack Anonymous Memory Never Releases (MODERATE-HIGH LIKELIHOOD)
+
+Evidence:
+- Arena::allocate at mem.rs:290-302 uses MmapMut::map_anon(bytes)
+- Stack size is NOCK_STACK_SIZE (likely hundreds of MB to several GB)
+- Cold state conversion at form.rs:1962 builds large stack nouns:
+let cold_stack_noun = cold_state.into_noun(stack);
+- No madvise(MADV_DONTNEED) is ever called on the stack after operations complete
+
+Why it causes OOM: Once touched, anonymous mmap pages are resident until the process exits. The NockStack grows during checkpoint conversion and stays inflated. This compounds with H1.
+
+Falsification: Track RssAnon in /proc/self/status before and after checkpoint saves. If it never decreases even after save completes and stack frame pops, this confirms it.
+
+---
+H5: Concurrent Buffer Lifetimes at Peak (MODERATE LIKELIHOOD)
+
+Evidence:
+The save flow at save.rs:193-225 shows overlapping lifetimes:
+let saveable = checkpoint.to_saveable();        // state_slab + cold_slab still alive
+let jammed = saveable.to_jammed_checkpoint();   // + jam buffers now alive
+jammed.save_to_file(&path).await?;              // + file write buffer
+std::mem::drop(jammed);                         // finally dropped at line 207
+
+Why it causes OOM: The peak memory moment is just before save_to_file completes - all buffers coexist. If state is 3GB, you might need 6-9GB of anonymous memory simultaneously.
+
+Falsification: Use heaptrack or jemalloc profiling to visualize overlapping allocations. Look for a "memory mountain" during checkpoint saves.
+
+---
+H6: Cgroup Accounting Charges File Pages (MODERATE LIKELIHOOD)
+
+Evidence:
+- Docker uses cgroup memory limits (32GB in your test)
+- File-backed pages (PMA) are charged against the cgroup limit by default (memory.use_hierarchy)
+- Under pressure, the cgroup sees "32GB used" even though much is reclaimable file cache
+
+Why it causes OOM: The cgroup OOM killer triggers when memory.usage_in_bytes >= memory.limit_in_bytes, regardless of how much is actually reclaimable. If the kernel can't reclaim fast enough during allocation spike, OOM triggers.
+
+Falsification: Check memory.stat for cache vs rss during the OOM. If cache is high (many GB), the cgroup is counting file pages.
+
+---
+H7: Transparent Huge Pages Impede Reclaim (LOWER LIKELIHOOD)
+
+Evidence:
+- THP can be enabled by default on Linux
+- Large contiguous allocations (like the NockStack) might get backed by 2MB huge pages
+- Huge pages are harder to split and reclaim under pressure
+
+Falsification: Check /proc/self/smaps for AnonHugePages. If it's significant, test with THP disabled:
+echo never > /sys/kernel/mm/transparent_hugepage/enabled
+
+---
+H8: Save Task Async Scheduling Delays Drop (LOWER LIKELIHOOD)
+
+Evidence:
+- The checkpoint is created on the serf thread at form.rs:642
+- But save happens asynchronously at save.rs:193-225
+- The checkpoint might be held in memory longer than necessary if the async task is delayed
+
+Falsification: Add timestamps to checkpoint creation vs completion. If the gap is large (>seconds), this extends peak memory duration.
+
+---
+Why PMA-Persist Has 85% Lower RSS
+
+With NOCK_PMA_PERSIST=1:
+1. No slab copies - checkpoint path is skipped entirely
+2. No jam/bincode encoding - state stays in file-backed form
+3. VmSize is huge (50GB) but VmRSS is tiny (1.6GB) because file-backed pages can be cold
+4. The kernel can evict PMA pages freely since there's no checkpoint traversal keeping them "active"
+
+The 50GB VmSize is just the mmap'd region - only 1.6GB is actually resident because unused pages stay on disk.
+
+---
+Recommended Investigation Order
+
+1. Easiest/Fastest: Monitor smaps_rollup during checkpoint - if Private_Anonymous >> Private_File, H1 is confirmed
+2. Second: Use mincore/vmtouch before/during save to check PMA residency spike (H2)
+3. Third: Check cgroup dirty/writeback during saves (H3)
+4. Fourth: Track RssAnon before/after saves over time (H4)
