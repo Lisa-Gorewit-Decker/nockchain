@@ -168,7 +168,6 @@ pub fn colsig_wide<'src>(
     .map(|list| Hoon::ColSig(list))
 }
 
-
 pub fn list_syntax<'src>(
     hoon_wide:   impl ParserExt<'src, Hoon>,
 ) -> impl Parser<'src, &'src str, Hoon, Err<'src>>

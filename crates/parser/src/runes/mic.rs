@@ -102,7 +102,8 @@ pub fn micmic<'src>(
     spec:   impl ParserExt<'src, Spec>,
 ) -> impl Parser<'src, &'src str, Hoon, Err<'src>>
 {
-    spec.clone()
+    gap()
+    .ignore_then(spec.clone())
     .then_ignore(gap())
     .then(hoon.clone())
     .map(|(s, h)| Hoon::MicMic(Box::new(s), Box::new(h)))

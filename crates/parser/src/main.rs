@@ -63,6 +63,7 @@ fn spec_parser<'src>(
 fn spec_wide_parser<'src>(
     spec_wide:   impl ParserExt<'src, Spec>,
     hoon_wide:   impl ParserExt<'src, Hoon>,
+    linemap: Arc<LineMap>,
 ) -> impl Parser<'src, &'src str, Spec, Err<'src>> + Clone
 {
     let parsers = vec![
@@ -77,7 +78,7 @@ fn spec_wide_parser<'src>(
         bucwut_irregular(spec_wide.clone()).boxed(),         // ?(foo bar)
         parenthesis_spec(hoon_wide.clone(),
                                 spec_wide.clone()).boxed(),  // (foo bar)
-        constant()
+        constant(linemap)
         .try_map(|coin, span| {                             //  %foo
             match coin {
                 Coin::Dime(p, q) => {
@@ -111,6 +112,7 @@ fn hoon_wide_parser<'src>(
     hoon_wide_with_trace: impl ParserExt<'src, Hoon>,
     hoon_wide_no_trace:   impl ParserExt<'src, Hoon>,
     wer: Path,
+    linemap: Arc<LineMap>,
 ) -> impl Parser<'src, &'src str, Hoon, Err<'src>> + Clone
 {
     let parsers = vec![
@@ -211,10 +213,10 @@ fn hoon_wide_parser<'src>(
         yell_parser(hoon_wide.clone()).boxed(),                               // >foo< render as tank
         number().map(|(p, q)| Hoon::Sand(p, NounExpr::ParsedAtom(q))).boxed(),          //  111.111, 0x1111, etc.
         wing().boxed(),                                                       //   foo, foo.bar, etc.
-        constant().map(|coin| jock(true, &coin)).boxed(),                     //  %foo
-        cord().map(|s| Hoon::Sand("t".to_string(), NounExpr::ParsedAtom(s))).boxed(),   //  'foo'
-        path(hoon_wide.clone(), wer).boxed(),                                 //  /a/b/c
-        tape(hoon_wide.clone()).boxed(),                                      //  "foo"
+        constant(linemap.clone()).map(|coin| jock(true, &coin)).boxed(),                     //  %foo
+        cord(linemap.clone()).map(|s| Hoon::Sand("t".to_string(), NounExpr::ParsedAtom(s))).boxed(),   //  'foo'
+        path(hoon_wide.clone(), wer, linemap.clone()).boxed(),                                 //  /a/b/c
+        tape(hoon_wide.clone(), linemap).boxed(),                                      //  "foo"
         just('~').to(Hoon::Bust(BaseType::Null)).boxed(),
         just('&').to(Hoon::Sand("f".to_string(), NounExpr::ParsedAtom(ParsedAtom::Small(0)))).boxed(),
         just('|').to(Hoon::Sand("f".to_string(), NounExpr::ParsedAtom(ParsedAtom::Small(1)))).boxed(),
@@ -365,10 +367,11 @@ pub fn parser<'src>(
 
     let spec_wide_body =
             spec_wide_parser(spec_wide.clone(),
-                             hoon_wide.clone())
-                             .map_with(wrap_spec_with_trace(wer.clone(), linemap.clone()))
+                             hoon_wide.clone(),
+                             linemap.clone())
+                            .map_with(wrap_spec_with_trace(wer.clone(), linemap.clone()))
                             .labelled("Spec Wide")
-                             .boxed();
+                            .boxed();
 
     spec_wide.define(spec_wide_body);
 
@@ -378,6 +381,7 @@ pub fn parser<'src>(
                                 hoon_wide.clone(),
                                 hoon_wide_no_trace.clone(),
                                 wer.clone(),
+                                linemap.clone(),
                             )
                             .map_with(wrap_hoon_with_trace(wer.clone(), linemap.clone()))
                             .labelled("Hoon Wide")
@@ -422,6 +426,7 @@ pub fn parser<'src>(
                                         hoon_wide.clone(),
                                         hoon_wide_no_trace.clone(),
                                         wer.clone(),
+                                        linemap.clone(),
                                     )
                                     .labelled("Hoon Wide")
                                     .boxed();
@@ -438,7 +443,8 @@ pub fn parser<'src>(
 
     let spec_wide_no_trace_body =
             spec_wide_parser(spec_wide_no_trace.clone(),
-                             hoon_wide_no_trace.clone())
+                             hoon_wide_no_trace.clone(),
+                            linemap)
                             .labelled("Spec Wide")
                              .boxed();
 

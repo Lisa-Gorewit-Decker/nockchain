@@ -124,6 +124,7 @@ pub fn dottis_wide<'src>(
 ) -> impl Parser<'src, &'src str, Hoon, Err<'src>>
 {
     two_hoons_wide(hoon_wide.clone())
+    .delimited_by(just('('), just(')'))
     .map(|(s, h)| Hoon::DotTis(Box::new(s), Box::new(h)))
 }
 

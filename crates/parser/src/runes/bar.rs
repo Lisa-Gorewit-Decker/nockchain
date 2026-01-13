@@ -199,7 +199,6 @@ pub fn barhep_wide<'src>(
 pub fn barwut_wide<'src>(
     hoon_wide: impl ParserExt<'src, Hoon>,
 ) -> impl Parser<'src, &'src str, Hoon, Err<'src>>
-
 {
     hoon_wide.clone()
     .delimited_by(just('('), just(')'))

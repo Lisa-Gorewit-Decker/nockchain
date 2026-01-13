@@ -238,7 +238,6 @@ pub fn ketlus_wide<'src>(
 }
 
 pub fn kettar_irregular<'src>(
-    // hoon_wide:   impl ParserExt<'src, Hoon>,
     spec_wide:   impl ParserExt<'src, Spec>,
 ) -> impl Parser<'src, &'src str, Hoon, Err<'src>>
 {

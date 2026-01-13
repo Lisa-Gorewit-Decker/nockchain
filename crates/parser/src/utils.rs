@@ -3772,6 +3772,7 @@ pub fn newline<'src>(
 
 pub fn soil<'src>(
     hoon_wide:   impl ParserExt<'src, Hoon>,
+    linemap: Arc<LineMap>,
 ) -> impl Parser<'src, &'src str, Vec<Woof>, Err<'src>>
 {
     let sump = hoon_wide
@@ -3784,8 +3785,8 @@ pub fn soil<'src>(
      // non-control 32-256, excluding DEL, {,  ", \
     let wide_char = any().filter(|c: &char| {
         let x = *c as u32;
-        x >= 0x20 && x <= 0x7E && *c != '{' && *c != '"' && *c != '\\'
-            || x >= 0x80 && x <= 0xFF
+        (x >= 0x20 && x <= 0x7E && *c != '{' && *c != '"' && *c != '\\')
+            || (x >= 0x80 && x <= 0xFF)
     });
 
     //
@@ -3828,14 +3829,16 @@ pub fn soil<'src>(
     // non-control 32-256, excluding DEL, {,  \
     let tall_char = any().filter(|c: &char| {
         let x = *c as u32;
-        x >= 0x20 && x <= 0x7E && *c != '{' && *c != '\\'
-            || x >= 0x80 && x <= 0xFF
+        (x >= 0x20 && x <= 0x7E && *c != '{' && *c != '\\')
+            || (x >= 0x80 && x <= 0xFF)
     });
 
-    //  """
-    //  foo
-    //  """
-    let tall_tape =
+    // let tall_tape_line_break =
+    //             newline()
+    //             .ignore_then(just("\"\"\"").not())
+    //             .to(Woof::ParsedAtom(ParsedAtom::Small('\n' as u128)));
+
+    let tall_tape_line_content =
             choice((
                 //
                 //  escaped \, {, hex
@@ -3856,23 +3859,95 @@ pub fn soil<'src>(
                 )
                 .map(|c: char| Woof::ParsedAtom(ParsedAtom::Small(c as u128))),
             //
-            // linebreak
-            //
-                newline()
-                .ignore_then(just("\"\"\"").not())
-                .to(Woof::ParsedAtom(ParsedAtom::Small('\n' as u128))),
+                tall_char
+                .map(|c| Woof::ParsedAtom(ParsedAtom::Small(c as u128))),
             //
             //  {hoon}
             //
                 sump,
-            //
-                tall_char
-                .map(|c| Woof::ParsedAtom(ParsedAtom::Small(c as u128))),
-            )).repeated()
-            .at_least(1)
-            .collect::<Vec<Woof>>()
-            .delimited_by(just("\"\"\"").ignore_then(newline()),
-                          newline().then_ignore(just("\"\"\"")))
+            ))
+            .repeated()
+            .collect::<Vec<Woof>>();
+
+    let prefix_spaces =
+        just(' ').repeated();
+
+    let tall_tape_open =
+        just("\"\"\"")
+            .map_with(move |_, extra| {
+                let span: SimpleSpan = extra.span();  // get identation
+                let (_line, col) = linemap.line_col(span.start);
+                if col != 0 {
+                    return (col - 1 ) as usize;
+                }
+                return 0 as usize;
+            });
+
+    let tall_tape_close =
+        newline()
+            .ignore_then(just(' ').repeated().count())
+            .then_ignore(just("\"\"\"")).boxed();
+
+    let tall_tape_line =
+        tall_tape_close.clone().not()
+        .ignore_then(
+                newline()
+                .ignore_then(just(' ').repeated().count())
+                .then(tall_tape_line_content));
+
+    //  """
+    //  foo
+    //  """
+    let tall_tape =
+        prefix_spaces
+            .ignore_then(tall_tape_open)
+            .then(
+                tall_tape_line
+                .repeated()
+                .collect::<Vec<_>>())
+           .then(tall_tape_close)
+            .validate(|((absolute_indent, lines), close_indent), extra, emit| {
+                let span = extra.span();
+
+                if close_indent != absolute_indent {
+                    emit.emit(Rich::custom(
+                        span,
+                        "closing delimiter indentation mismatch",
+                    ));
+                    return Vec::new();
+                }
+
+                let mut out: Vec<Woof> = vec![];
+                for (mut indent, mut line) in lines {
+
+                    if indent > absolute_indent {
+                        let extra = indent - absolute_indent;
+                        indent = absolute_indent;
+                        //  extra whitespaces belongs longs to line not indentation
+                        let space = Woof::ParsedAtom(ParsedAtom::Small(' ' as u128));
+                        line.splice(0..0, std::iter::repeat(space).take(extra));
+                    }
+
+                    //  if line is just a linebreak allow it
+                    if indent != absolute_indent &&
+                        !(line.is_empty() && (indent == 0 as usize)) {
+                        emit.emit(Rich::custom(
+                            span,
+                            "inconsistent indentation in tall tape",
+                        ));
+                        return Vec::new();
+                    }
+                    out.push(Woof::ParsedAtom(
+                        ParsedAtom::Small('\n' as u128),
+                    ));
+                    if !line.is_empty() {
+                        out.extend(line);
+                    }
+                }
+                // first linebreak after """ should not be in the tape
+                out.remove(0);
+                out
+            })
             .labelled("Tape");
 
     choice((tall_tape, wide_tape))
@@ -3880,9 +3955,10 @@ pub fn soil<'src>(
 
 pub fn tape<'src>(
     hoon_wide:   impl ParserExt<'src, Hoon>,
+    linemap: Arc<LineMap>,
 ) -> impl Parser<'src, &'src str, Hoon, Err<'src>>
 {
-    soil(hoon_wide.clone())
+    soil(hoon_wide.clone(), linemap.clone())
     .separated_by(just('.').ignore_then(gap().or_not()))
     .at_least(1)
     .collect::<Vec<_>>()
@@ -3993,6 +4069,7 @@ pub fn yell_parser<'src>(
 }
 
 pub fn constant<'src>(
+    linemap: Arc<LineMap>,
 ) -> impl Parser<'src, &'src str, Coin, Err<'src>>
 {
     let buc =      // %$
@@ -4000,7 +4077,7 @@ pub fn constant<'src>(
         .to(Coin::Dime("tas".to_string(), ParsedAtom::Small(0)));
 
     let cord =      // %'foo'
-        cord()
+        cord(linemap)
         .map(|s| Coin::Dime("t".to_string(), s));
 
     let coin =      // %123, %~m5, etc.
@@ -4027,6 +4104,7 @@ pub fn constant<'src>(
 }
 
 pub fn cord<'src>(
+    linemap: Arc<LineMap>,
 ) -> impl Parser<'src, &'src str, ParsedAtom, Err<'src>>
 {
     //  \\, \' and \AA were A is a hex digit
@@ -4073,12 +4151,91 @@ pub fn cord<'src>(
                         .delimited_by(just("'"), just("'"))
                         .map(cord_chars_to_atom);
 
-    let triple_quoted = non_control_char()
-                        .repeated()
-                        .collect::<Vec<char>>()
-                        .delimited_by(just("'''").ignore_then(gap()),
-                                    newline().ignore_then(just("'''")))
-                        .map(cord_chars_to_atom);
+    let prefix_spaces =
+        just(' ').repeated();
+
+    let triple_quoted_open =
+        just("'''")
+            .map_with(move |_, extra| {
+                let span: SimpleSpan = extra.span();  // get identation
+                let (_line, col) = linemap.line_col(span.start);
+                if col != 0 {
+                    return (col - 1 ) as usize;
+                }
+                return 0 as usize;
+            }).then_ignore(vul().or(newline()));
+
+    let triple_quoted_close =
+        newline()
+            .ignore_then(just(' ').repeated().count())
+            .then_ignore(just("'''")).boxed();
+
+    let triple_quoted_content =
+                    non_control_char()
+                    .repeated()
+                    .collect::<Vec<char>>().boxed();
+
+    let triple_quoted_first_line =
+                    triple_quoted_close.clone().not()
+                    .ignore_then(just(' ').repeated().count())
+                    .then(triple_quoted_content.clone());
+
+    let triple_quoted_line =
+        triple_quoted_close.clone().not()
+        .ignore_then(
+                newline()
+                .ignore_then(just(' ').repeated().count())
+                .then(triple_quoted_content));
+
+    let triple_quoted =
+            prefix_spaces
+            .ignore_then(triple_quoted_open)
+            .then(
+                triple_quoted_first_line
+                .then(triple_quoted_line
+                      .repeated()
+                      .collect::<Vec<_>>())
+            )
+           .then(triple_quoted_close)
+            .validate(|((absolute_indent, (first, mut rest)), close_indent), extra, emit| {
+                let span = extra.span();
+
+                if close_indent != absolute_indent {
+                    emit.emit(Rich::custom(
+                        span,
+                        "closing delimiter indentation mismatch",
+                    ));
+                    return Vec::new();
+                }
+                rest.insert(0, first);
+
+                let mut out: Vec<char> = vec![];
+                for (mut indent, mut line) in rest {
+
+                    if indent > absolute_indent {
+                        let extra = indent - absolute_indent;
+                        indent = absolute_indent;
+                        //  extra whitespaces belongs longs to line not indentation
+                        line.splice(0..0, std::iter::repeat(' ').take(extra));
+                    }
+
+                    //  if line is just a linebreak allow it
+                    if indent != absolute_indent &&
+                        !(line.is_empty() && (indent == 0 as usize)) {
+                        emit.emit(Rich::custom(
+                            span,
+                            "inconsistent indentation in multiline cord",
+                        ));
+                        return Vec::new();
+                    }
+                    out.push('\n');
+                    if !line.is_empty() {
+                        out.extend(line);
+                    }
+                }
+                out.remove(0);
+                out
+            }).map(cord_chars_to_atom);
 
     choice((
         triple_quoted,
@@ -5352,7 +5509,6 @@ pub fn zust<'src>(
             let maybe_ipv6 = ipv6_to_atom(s.clone());
             match maybe_ipv6 {
                 None => {
-                   println!("invalid ipv6 {}", s.clone());
                     Err(Rich::custom(span, "invalid ipv6"))
                 },
                 Some(atom) => Ok(Coin::Dime("is".to_string(), atom)),
@@ -5409,6 +5565,7 @@ pub fn reap<T: Clone>(a: usize, b: T) -> Vec<T> {
 pub fn path<'src>(
     hoon_wide: impl ParserExt<'src, Hoon>,
     wer: Path,
+    linemap: Arc<LineMap>,
 ) -> impl Parser<'src, &'src str, Hoon, Err<'src>>
 {
     let wer1 = wer.clone();
@@ -5428,7 +5585,7 @@ pub fn path<'src>(
                         Hoon::CenCol(Box::new(first.clone()), rest.to_vec())
                     }),
                 just('$').to(Hoon::Sand("tas".to_string(), NounExpr::ParsedAtom(ParsedAtom::Small(0)))),
-                cord().map(|s| Hoon::Sand("t".to_string(), NounExpr::ParsedAtom(s))),
+                cord(linemap).map(|s| Hoon::Sand("t".to_string(), NounExpr::ParsedAtom(s))),
                 nuck().map(|coin| {
                     let aura = match &coin {
                             Coin::Dime(a, _) if a == "tas" => "tas",
