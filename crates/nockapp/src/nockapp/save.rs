@@ -49,6 +49,19 @@ pub struct Saver<J = NockJammer> {
 }
 
 impl<J> Saver<J> {
+    pub(crate) fn new_empty(path: &PathBuf) -> Self {
+        let path_0 = path.join("0.chkjam");
+        let path_1 = path.join("1.chkjam");
+        Self {
+            path_0,
+            path_1,
+            save_to_next: WhichSnapshot::Snapshot0,
+            waiters: Vec::new(),
+            last_event_num: 0,
+            _phantom: std::marker::PhantomData,
+        }
+    }
+
     pub fn last_path(&self) -> PathBuf {
         match self.save_to_next {
             WhichSnapshot::Snapshot1 => self.path_0.clone(),

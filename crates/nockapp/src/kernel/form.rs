@@ -1,12 +1,14 @@
 #![allow(dead_code)]
 use std::any::Any;
 use std::future::Future;
+use std::fs;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::time::Instant;
 
+use bincode::{config, Decode, Encode};
 use blake3::{Hash, Hasher};
 use byteorder::{LittleEndian, WriteBytesExt};
 use nockvm::hamt::Hamt;
@@ -54,6 +56,93 @@ pub struct LoadState {
 pub struct PmaConfig {
     pub path: PathBuf,
     pub words: usize,
+    pub open_existing: bool,
+}
+
+const PMA_PERSIST_MAGIC: u64 = u64::from_le_bytes(*b"PMAPERS1");
+const PMA_PERSIST_VERSION: u32 = 2;
+
+#[derive(Clone, Encode, Decode, Debug)]
+struct PmaPersistMetadata {
+    magic: u64,
+    version: u32,
+    #[bincode(with_serde)]
+    ker_hash: Hash,
+    event_num: u64,
+    kernel_state_raw: u64,
+    cold_offset: u32,
+    pma_base: u64,
+    #[bincode(with_serde)]
+    checksum: Hash,
+}
+
+impl PmaPersistMetadata {
+    fn new(
+        ker_hash: Hash,
+        event_num: u64,
+        kernel_state_raw: u64,
+        cold_offset: u32,
+        pma_base: u64,
+    ) -> Self {
+        let checksum = Self::checksum(ker_hash, event_num, kernel_state_raw, cold_offset, pma_base);
+        Self {
+            magic: PMA_PERSIST_MAGIC,
+            version: PMA_PERSIST_VERSION,
+            ker_hash,
+            event_num,
+            kernel_state_raw,
+            cold_offset,
+            pma_base,
+            checksum,
+        }
+    }
+
+    fn checksum(
+        ker_hash: Hash,
+        event_num: u64,
+        kernel_state_raw: u64,
+        cold_offset: u32,
+        pma_base: u64,
+    ) -> Hash {
+        let mut hasher = Hasher::new();
+        hasher.update(ker_hash.as_bytes());
+        hasher.update(&event_num.to_le_bytes());
+        hasher.update(&kernel_state_raw.to_le_bytes());
+        hasher.update(&cold_offset.to_le_bytes());
+        hasher.update(&pma_base.to_le_bytes());
+        hasher.finalize()
+    }
+
+    fn validate(&self) -> bool {
+        if self.magic != PMA_PERSIST_MAGIC || self.version != PMA_PERSIST_VERSION {
+            return false;
+        }
+        self.checksum
+            == Self::checksum(
+                self.ker_hash,
+                self.event_num,
+                self.kernel_state_raw,
+                self.cold_offset,
+                self.pma_base,
+            )
+    }
+
+    fn load_from_path(path: &PathBuf) -> Option<Self> {
+        let bytes = fs::read(path).ok()?;
+        let (meta, _) =
+            bincode::decode_from_slice::<Self, config::Configuration>(&bytes, config::standard())
+                .ok()?;
+        meta.validate().then_some(meta)
+    }
+
+    fn save_to_path(&self, path: &PathBuf) -> std::io::Result<()> {
+        let bytes = bincode::encode_to_vec(self, config::standard())
+            .map_err(|err| std::io::Error::new(std::io::ErrorKind::Other, err))?;
+        let tmp_path = path.with_extension("tmp");
+        fs::write(&tmp_path, bytes)?;
+        fs::rename(tmp_path, path)?;
+        Ok(())
+    }
 }
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -169,6 +258,9 @@ impl<C: SerfCheckpoint + Send + 'static> SerfThread<C> {
         trace: TraceOpts,
     ) -> Result<Self> {
         let (action_sender, action_receiver) = mpsc::channel(1);
+        let pma_meta_path = pma
+            .as_ref()
+            .map(|config| config.path.with_extension("meta"));
         let pma_timing = std::env::var_os("NOCK_PMA_TIMING")
             .is_some()
             .then(|| Arc::new(PmaTiming::default()));
@@ -180,21 +272,61 @@ impl<C: SerfCheckpoint + Send + 'static> SerfThread<C> {
             .name("serf".to_string())
             .stack_size(SERF_THREAD_STACK_SIZE)
             .spawn(move || {
+                let mut pma_meta_load = false;
                 let pma = match pma {
-                    Some(config) => match Pma::new(config.words, config.path) {
-                        Ok(pma) => Some(pma),
-                        Err(err) => {
-                            let _ =
-                                init_sender.send(Err(CrownError::Unknown(err.to_string())));
-                            return;
+                    Some(config) => {
+                        let PmaConfig {
+                            path,
+                            words,
+                            open_existing,
+                        } = config;
+                        let pma_meta_base = if open_existing {
+                            pma_meta_path
+                                .as_ref()
+                                .and_then(PmaPersistMetadata::load_from_path)
+                                .map(|meta| meta.pma_base)
+                        } else {
+                            None
+                        };
+                        let pma_result = if open_existing && path.exists() {
+                            pma_meta_load = true;
+                            if let Some(base) = pma_meta_base {
+                                match Pma::open_with_base(path, base) {
+                                    Ok(pma) => Ok(pma),
+                                    Err(err) => {
+                                        let _ = init_sender.send(Err(CrownError::Unknown(
+                                            format!(
+                                                "PMA map failed at saved base {:#x}: {err}. To reset, pass --new or delete pma.mmap/pma.meta",
+                                                base
+                                            ),
+                                        )));
+                                        return;
+                                    }
+                                }
+                            } else {
+                                Pma::open(path)
+                            }
+                        } else {
+                            pma_meta_load = false;
+                            Pma::new(words, path)
+                        };
+                        match pma_result {
+                            Ok(pma) => Some(pma),
+                            Err(err) => {
+                                let _ =
+                                    init_sender.send(Err(CrownError::Unknown(err.to_string())));
+                                return;
+                            }
                         }
-                    },
+                    }
                     None => None,
                 };
                 let stack = NockStack::new(nock_stack_size, 0);
                 let serf = Serf::new(
                     stack,
                     pma,
+                    pma_meta_path,
+                    pma_meta_load,
                     checkpoint,
                     &kernel_bytes,
                     &constant_hot_state,
@@ -933,6 +1065,8 @@ pub struct Serf {
     pub context: interpreter::Context,
     /// Persistent memory arena for long-lived state.
     pub pma: Option<Pma>,
+    /// Optional metadata path for PMA persistence.
+    pub pma_meta_path: Option<PathBuf>,
     /// Cancellation
     pub cancel_token: NockCancelToken,
     /// The current event number.
@@ -957,7 +1091,9 @@ impl Serf {
     /// A new `Serf` instance.
     fn new<C: SerfCheckpoint>(
         mut stack: NockStack,
-        pma: Option<Pma>,
+        mut pma: Option<Pma>,
+        pma_meta_path: Option<PathBuf>,
+        pma_meta_load: bool,
         checkpoint: Option<C>,
         kernel_bytes: &[u8],
         constant_hot_state: &[HotEntry],
@@ -973,6 +1109,62 @@ impl Serf {
         let mut hasher = Hasher::new();
         hasher.update(kernel_bytes);
         let ker_hash = hasher.finalize();
+
+        let mut reset_pma = false;
+        let pma_state = if pma_meta_load && checkpoint.is_none() {
+            if let (Some(pma), Some(meta_path)) = (pma.as_ref(), pma_meta_path.as_ref()) {
+                if let Some(meta) = PmaPersistMetadata::load_from_path(meta_path) {
+                    let pma_base = pma.arena().base_ptr() as u64;
+                    if meta.pma_base != pma_base {
+                        warn!(
+                            "PMA metadata base mismatch (metadata: {:#x}, current: {:#x}); ignoring",
+                            meta.pma_base, pma_base
+                        );
+                        reset_pma = true;
+                        None
+                    } else if meta.ker_hash == ker_hash {
+                        let kernel_state = unsafe { Noun::from_raw(meta.kernel_state_raw) };
+                        let cold = unsafe { Cold::from_pma_offset(pma, meta.cold_offset) };
+                        Some((kernel_state, cold, meta.event_num))
+                    } else {
+                        warn!(
+                            "PMA metadata kernel hash mismatch (metadata: {}, kernel: {}); ignoring",
+                            meta.ker_hash, ker_hash
+                        );
+                        reset_pma = true;
+                        None
+                    }
+                } else {
+                    if meta_path.exists() {
+                        warn!(
+                            "Failed to load PMA metadata at {}; starting fresh",
+                            meta_path.display()
+                        );
+                    }
+                    reset_pma = true;
+                    None
+                }
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+
+        if !pma_meta_load {
+            if let Some(meta_path) = pma_meta_path.as_ref() {
+                let _ = fs::remove_file(meta_path);
+            }
+        }
+
+        if reset_pma {
+            if let Some(pma) = pma.as_mut() {
+                pma.reset();
+            }
+            if let Some(meta_path) = pma_meta_path.as_ref() {
+                let _ = fs::remove_file(meta_path);
+            }
+        }
 
         let (maybe_state, cold, event_num_raw) = if let Some(c) = checkpoint {
             let saveable = c.load();
@@ -990,6 +1182,9 @@ impl Serf {
                 );
             }
             (Some(ker_state), cold, saveable.event_num)
+        } else if let Some((ker_state, cold, event_num)) = pma_state {
+            info!("Loaded PMA state at event_num {}", event_num);
+            (Some(ker_state), cold, event_num)
         } else {
             (None, Cold::new(&mut stack), 0)
         };
@@ -1033,6 +1228,7 @@ impl Serf {
             arvo,
             context,
             pma,
+            pma_meta_path,
             event_num,
             cancel_token,
             metrics: None,
@@ -1537,6 +1733,46 @@ impl Serf {
         stack.preserve(&mut self.arvo);
     }
 
+    fn persist_pma_metadata(&self, pma: &Pma) {
+        let Some(meta_path) = self.pma_meta_path.as_ref() else {
+            return;
+        };
+        let space = self.context.stack.noun_space();
+        let kernel_state = self
+            .arvo
+            .in_space(&space)
+            .slot(STATE_AXIS)
+            .map(|handle| handle.noun())
+            .unwrap_or_else(|err| {
+                panic!(
+                    "Panicked with {err:?} at {}:{} (git sha: {:?})",
+                    file!(),
+                    line!(),
+                    option_env!("GIT_SHA")
+                )
+            });
+        let kernel_state_raw = unsafe { kernel_state.as_raw() };
+        let Some(cold_offset) = self.context.cold.pma_offset(pma) else {
+            warn!("PMA metadata update skipped: cold state not in PMA");
+            return;
+        };
+        let event_num = self.event_num.load(Ordering::SeqCst);
+        let pma_base = pma.arena().base_ptr() as u64;
+        let meta = PmaPersistMetadata::new(
+            self.ker_hash,
+            event_num,
+            kernel_state_raw,
+            cold_offset,
+            pma_base,
+        );
+        if let Err(err) = meta.save_to_path(meta_path) {
+            warn!(
+                "Failed to persist PMA metadata to {}: {err}",
+                meta_path.display()
+            );
+        }
+    }
+
     /// Preserves leftovers after an event update.
     ///
     /// # Safety
@@ -1580,6 +1816,7 @@ impl Serf {
             }
 
             pma.persist_metadata();
+            self.persist_pma_metadata(&pma);
 
             self.context.stack.reset(0);
             self.pma = Some(pma);
@@ -1658,6 +1895,7 @@ mod tests {
             arvo: D(0),
             context,
             pma: None,
+            pma_meta_path: None,
             cancel_token,
             event_num: Arc::new(AtomicU64::new(0)),
             metrics: None,

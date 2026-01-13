@@ -49,6 +49,8 @@ pub const EXIT_SIGINT: usize = 130;
 pub const EXIT_SIGQUIT: usize = 131;
 /// SIGTERM: Termination signal from OS or process manager
 pub const EXIT_SIGTERM: usize = 143;
+/// Enable PMA persistence and disable checkpoints.
+pub(crate) const PMA_PERSIST_ENV: &str = "NOCK_PMA_PERSIST";
 
 pub struct NockApp<J = NockJammer> {
     /// Nock kernel
@@ -71,6 +73,8 @@ pub struct NockApp<J = NockJammer> {
     effect_broadcast: Arc<broadcast::Sender<NounSlab>>,
     /// Save interval
     save_interval: Option<Interval>,
+    /// Whether checkpointing is enabled.
+    checkpointing_enabled: bool,
     /// Mutex to ensure only one save at a time
     pub(crate) save_mutex: Arc<Mutex<Saver<J>>>,
     metrics: Arc<NockAppMetrics>,
@@ -163,6 +167,7 @@ impl<J: Jammer + Send + 'static> NockApp<J> {
         kernel_from_checkpoint: F,
         snapshot_path: &PathBuf,
         save_interval_duration: Option<Duration>,
+        checkpointing_enabled: bool,
     ) -> Result<Self, NockAppError>
     where
         F: FnOnce(Option<SaveableCheckpoint>) -> U,
@@ -188,9 +193,23 @@ impl<J: Jammer + Send + 'static> NockApp<J> {
         } else {
             Arc::new(NockAppMetrics::default())
         };
-        let (saver, checkpoint) = Saver::<J>::try_load(snapshot_path, Some(metrics.clone()))
-            .await
-            .expect("Failed to set up snapshotting");
+        let pma_persist_env = std::env::var_os(PMA_PERSIST_ENV).is_some();
+        let checkpointing_enabled = checkpointing_enabled && !pma_persist_env;
+        if !checkpointing_enabled {
+            if pma_persist_env {
+                info!("{PMA_PERSIST_ENV} enabled; checkpointing disabled");
+            } else {
+                info!("Checkpointing disabled; background saves off");
+            }
+        }
+
+        let (saver, checkpoint) = if checkpointing_enabled {
+            Saver::<J>::try_load(snapshot_path, Some(metrics.clone()))
+                .await
+                .expect("Failed to set up snapshotting")
+        } else {
+            (Saver::new_empty(snapshot_path), None)
+        };
         let save_mutex = Arc::new(Mutex::new(saver));
         let mut kernel = kernel_from_checkpoint(checkpoint).await?;
         // important: we are tracking this separately here because
@@ -204,16 +223,24 @@ impl<J: Jammer + Send + 'static> NockApp<J> {
         // let tasks = TaskJoinSet::new();
         // let tasks = Arc::new(TaskJoinSet::new());
         let tasks = TaskTracker::new();
-        let save_interval = save_interval_duration.map(|duration| {
-            info!("Nockapp save interval duration: {:?}", duration);
-            let first_tick_at = Instant::now() + duration;
-            let mut interval = interval_at(first_tick_at, duration);
-            interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip); // important so we don't stack ticks when lagging
+        let save_interval = if checkpointing_enabled {
+            let interval = save_interval_duration.map(|duration| {
+                info!("Nockapp save interval duration: {:?}", duration);
+                let first_tick_at = Instant::now() + duration;
+                let mut interval = interval_at(first_tick_at, duration);
+                interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip); // important so we don't stack ticks when lagging
+                interval
+            });
+            if interval.is_none() {
+                info!("Nockapp save interval disabled; periodic saves off");
+            }
             interval
-        });
-        if save_interval.is_none() {
-            info!("Nockapp save interval disabled; periodic saves off");
-        }
+        } else {
+            if save_interval_duration.is_some() {
+                info!("Checkpointing disabled; ignoring save interval");
+            }
+            None
+        };
         let exit_status = AtomicBool::new(false);
         let abort_immediately = AtomicBool::new(false);
 
@@ -237,6 +264,7 @@ impl<J: Jammer + Send + 'static> NockApp<J> {
             action_channel_sender,
             effect_broadcast,
             save_interval,
+            checkpointing_enabled,
             save_mutex,
             // cancel_token,
             metrics,
@@ -308,6 +336,15 @@ impl<J: Jammer + Send + 'static> NockApp<J> {
         f: impl std::future::Future<Output = ()> + Send + 'static,
         mut save_permit: OwnedMutexGuard<Saver<J>>,
     ) -> Result<tokio::task::JoinHandle<NockAppResult>, NockAppError> {
+        if !self.checkpointing_enabled {
+            trace!("save_f: checkpointing disabled; skipping");
+            let join_handle = self.tasks.spawn(async move {
+                f.await;
+                Ok::<(), NockAppError>(())
+            });
+            drop(save_permit);
+            return Ok(join_handle);
+        }
         let checkpoint_fut = self.kernel.checkpoint();
         let metrics = self.metrics.clone();
 
@@ -330,11 +367,19 @@ impl<J: Jammer + Send + 'static> NockApp<J> {
 
     /// Except in tests, save should only be called by the permit handler.
     pub(crate) async fn save(&mut self, save_permit: OwnedMutexGuard<Saver<J>>) -> NockAppResult {
+        if !self.checkpointing_enabled {
+            trace!("save: checkpointing disabled; skipping");
+            return Ok(());
+        }
         let _join_handle = self.save_f(async {}, save_permit).await?;
         Ok(())
     }
 
     pub async fn save_locked(&mut self) -> NockAppResult {
+        if !self.checkpointing_enabled {
+            trace!("save_locked: checkpointing disabled; skipping");
+            return Ok(());
+        }
         trace!("save_locked: locking save_mutex");
         let guard = self.save_mutex.clone().lock_owned().await;
         trace!("save_locked: save_mutex locked");
@@ -347,6 +392,10 @@ impl<J: Jammer + Send + 'static> NockApp<J> {
 
     /// Save the kernel to disk, blocking operation
     pub async fn save_blocking(&mut self) -> NockAppResult {
+        if !self.checkpointing_enabled {
+            trace!("save_blocking: checkpointing disabled; skipping");
+            return Ok(());
+        }
         trace!("save_blocking: locking save_mutex");
         let guard = self.save_mutex.clone().lock_owned().await;
         trace!("save_blocking: save_mutex locked");
@@ -576,6 +625,9 @@ impl<J: Jammer + Send + 'static> NockApp<J> {
         &mut self,
         save_guard: OwnedMutexGuard<Saver<J>>,
     ) -> Result<NockAppRun, NockAppError> {
+        if !self.checkpointing_enabled {
+            return Ok(NockAppRun::Pending);
+        }
         //  Check if we should write in the first place
         let curr_event_num = self.kernel.serf.event_number.load(Ordering::SeqCst);
         if !save_guard.save_needed(curr_event_num) {
@@ -696,6 +748,22 @@ impl<J: Jammer + Send + 'static> NockApp<J> {
             {
                 break;
             }
+        }
+
+        if !self.checkpointing_enabled {
+            let exit = self.exit.clone();
+            let shutdown_result = if code == EXIT_OK {
+                Ok(())
+            } else {
+                Err(NockAppError::Exit(code))
+            };
+            self.tasks.spawn(async move {
+                debug!("Checkpointing disabled; finishing shutdown");
+                if let Err(e) = exit.shutdown(shutdown_result).await {
+                    error!("Error sending shutdown: {e:}")
+                }
+            });
+            return Ok(NockAppRun::Pending);
         }
 
         let exit_event_num = self.kernel.serf.event_number.load(Ordering::SeqCst);

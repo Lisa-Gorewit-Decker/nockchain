@@ -1179,6 +1179,7 @@ async fn build_nockapp(
         new: true,
         trace_opts: TraceOpts::default(),
         save_interval: Some(0),
+        pma_persist: false,
         color: clap::ColorChoice::Auto,
         state_jam: None,
         export_state_jam: None,

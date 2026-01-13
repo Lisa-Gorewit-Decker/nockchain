@@ -564,6 +564,20 @@ impl Cold {
         }
     }
 
+    pub fn pma_offset(&self, pma: &Pma) -> Option<u32> {
+        let ptr = self.0 as *const u8;
+        if pma.contains_ptr(ptr) {
+            Some(pma.offset_from_ptr(ptr))
+        } else {
+            None
+        }
+    }
+
+    pub unsafe fn from_pma_offset(pma: &Pma, offset: u32) -> Self {
+        let ptr = pma.ptr_from_offset(offset) as *mut ColdMem;
+        Cold(ptr)
+    }
+
     pub fn new(stack: &mut NockStack) -> Self {
         let battery_to_paths = Hamt::new(stack);
         let root_to_paths = Hamt::new(stack);

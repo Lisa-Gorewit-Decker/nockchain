@@ -1,5 +1,4 @@
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicUsize, Ordering};
 
 use chrono;
 use clap::{arg, command, Args, ColorChoice, Parser, ValueEnum};
@@ -20,6 +19,7 @@ use tracing_subscriber::{fmt, EnvFilter, Layer};
 
 use crate::export::ExportedState;
 use crate::kernel::form::{Kernel, PmaConfig};
+use crate::nockapp::PMA_PERSIST_ENV;
 use crate::noun::slab::{Jammer, NounSlab};
 use crate::save::SaveableCheckpoint;
 use crate::utils::error::{CrownError, ExternalError};
@@ -31,8 +31,8 @@ use crate::{default_data_dir, AtomExt, NockApp};
 
 pub const DEFAULT_SAVE_INTERVAL: u64 = 120000;
 const DEFAULT_SAVE_INTERVAL_STR: &str = "120000";
+
 const DEFAULT_LOG_FILTER: &str = "info";
-static PMA_FILE_COUNTER: AtomicUsize = AtomicUsize::new(0);
 
 #[derive(Debug, Clone, ValueEnum)]
 pub enum NockStackSize {
@@ -123,6 +123,13 @@ pub struct Cli {
         value_parser = parse_save_interval
     )]
     pub save_interval: Option<u64>,
+
+    #[arg(
+        long,
+        help = "Enable PMA persistence and disable checkpoints (can also be set with NOCK_PMA_PERSIST)",
+        default_value = "false"
+    )]
+    pub pma_persist: bool,
 
     #[arg(long, help = "Control colored output", value_enum, default_value_t = ColorChoice::Auto)]
     pub color: ColorChoice,
@@ -225,6 +232,7 @@ pub fn default_boot_cli(new: bool) -> Cli {
         export_state_jam: None,
         stack_size: NockStackSize::Normal,
         data_dir: None,
+        pma_persist: false,
     }
 }
 
@@ -433,16 +441,38 @@ pub async fn setup_<J: Jammer + Send + 'static>(
     let save_interval = cli
         .normalized_save_interval()
         .map(std::time::Duration::from_millis);
-    let pma_id = PMA_FILE_COUNTER.fetch_add(1, Ordering::Relaxed);
-    let pma_path = pma_dir.join(format!("pma-{}-{}.mmap", std::process::id(), pma_id));
+    let pma_persist_env = std::env::var_os(PMA_PERSIST_ENV).is_some();
+    let pma_persist = cli.pma_persist || pma_persist_env;
+    if pma_persist {
+        if pma_persist_env {
+            info!("{PMA_PERSIST_ENV} enabled; PMA persistence active");
+        } else {
+            info!("PMA persistence enabled via CLI; checkpoints disabled");
+        }
+    }
+    let pma_path = pma_dir.join("pma.mmap");
+    if cli.new {
+        if pma_path.exists() {
+            std::fs::remove_file(&pma_path)?;
+            debug!("Deleted existing PMA file: {:?}", pma_path);
+        }
+        let meta_path = pma_path.with_extension("meta");
+        if meta_path.exists() {
+            std::fs::remove_file(&meta_path)?;
+            debug!("Deleted existing PMA metadata file: {:?}", meta_path);
+        }
+    }
     let stack_size = cli.stack_size.clone();
     let trace_opts = cli.trace_opts.clone();
 
     let kernel_f = async move |checkpoint| {
-        let pma_config = |words| Some(PmaConfig {
-            path: pma_path.clone(),
-            words,
-        });
+        let pma_config = |words| {
+            Some(PmaConfig {
+                path: pma_path.clone(),
+                words,
+                open_existing: pma_persist,
+            })
+        };
         let kernel: Kernel<SaveableCheckpoint> = match stack_size {
             NockStackSize::Tiny => {
                 Kernel::load_with_hot_state_tiny(
@@ -515,7 +545,7 @@ pub async fn setup_<J: Jammer + Send + 'static>(
         res
     };
 
-    let app: NockApp<J> = NockApp::new(kernel_f, &jams_dir, save_interval).await?;
+    let app: NockApp<J> = NockApp::new(kernel_f, &jams_dir, save_interval, !pma_persist).await?;
 
     if let Some(export_path) = cli.export_state_jam.clone() {
         export_kernel_state(&app.kernel, &export_path).await?;

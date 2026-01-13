@@ -16,6 +16,7 @@ DOCKER_MEM ?= 32g
 # DOCKER_MEM_SWAP ?= 32g
 DOCKER_P2P_PORT ?= 30000
 DOCKER_DATA_DIR ?= $(CURDIR)/.data.nockchain
+DOCKER_NOCKCHAIN_ENVS ?=
 DOCKER_NOCKCHAIN_ARGS ?=
 DOCKER_METRICS_COMPOSE ?= docker-compose.metrics.yml
 DOCKER_METRICS_NETWORK ?= nockchain-metrics
@@ -58,6 +59,12 @@ test-pma-persist-blocks:
 .PHONY: docker-nockchain
 docker-nockchain: docker-nockchain-build docker-nockchain-run
 
+.PHONY: docker-nockchain-pma-persist
+docker-nockchain-pma-persist: docker-nockchain-build
+	$(MAKE) docker-nockchain-run \
+		DOCKER_NOCKCHAIN_ENVS="-e NOCK_PMA_PERSIST=1" \
+		DOCKER_NOCKCHAIN_ARGS="--pma-persist $(DOCKER_NOCKCHAIN_ARGS)"
+
 .PHONY: docker-nockchain-build
 docker-nockchain-build:
 	docker build -t $(DOCKER_IMAGE) .
@@ -75,10 +82,12 @@ docker-nockchain-run:
 		-e NOCK_STACK_TIMING_DETAIL=1 \
 		-e STATSD_HOST=$(STATSD_HOST) \
 		-e STATSD_PORT=$(STATSD_PORT) \
+		$(DOCKER_NOCKCHAIN_ENVS) \
 		-p $(DOCKER_P2P_PORT):$(DOCKER_P2P_PORT)/udp \
 		-v $(DOCKER_DATA_DIR):/data/.data.nockchain \
 		$(DOCKER_IMAGE) \
 		--fast-sync --num-threads 0 \
+		--save-interval 120 \
 		--data-dir /data/.data.nockchain \
 		--identity-path /data/.data.nockchain/.nockchain_identity \
 		--bind /ip4/0.0.0.0/udp/$(DOCKER_P2P_PORT)/quic-v1 \

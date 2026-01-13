@@ -193,6 +193,67 @@ impl Pma {
         Ok(pma)
     }
 
+    /// Open an existing PMA file at a fixed base address.
+    pub fn open_with_base(path: PathBuf, base: u64) -> Result<Self, PmaError> {
+        let mut file = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&path)?;
+        let file_len = file.metadata()?.len() as usize;
+        if file_len < PMA_TRAILER_BYTES {
+            return Err(PmaError::InvalidMetadata(format!(
+                "file too small: {file_len} bytes"
+            )));
+        }
+        let data_bytes = file_len - PMA_TRAILER_BYTES;
+        if data_bytes % 8 != 0 {
+            return Err(PmaError::InvalidMetadata(format!(
+                "data region not word-aligned: {data_bytes} bytes"
+            )));
+        }
+        let data_words = data_bytes >> 3;
+
+        let mut trailer_bytes = [0u8; PMA_TRAILER_BYTES];
+        file.seek(SeekFrom::End(-(PMA_TRAILER_BYTES as i64)))?;
+        file.read_exact(&mut trailer_bytes)?;
+        let trailer = PmaTrailer::from_bytes(trailer_bytes);
+
+        if trailer.magic != PMA_MAGIC {
+            return Err(PmaError::InvalidMetadata("bad PMA magic".to_string()));
+        }
+        if trailer.version != PMA_VERSION {
+            return Err(PmaError::InvalidMetadata(format!(
+                "unsupported PMA version {}",
+                trailer.version
+            )));
+        }
+        if trailer.data_words as usize != data_words {
+            return Err(PmaError::InvalidMetadata(format!(
+                "metadata data_words {} does not match file ({data_words})",
+                trailer.data_words
+            )));
+        }
+        if trailer.alloc_offset > trailer.data_words {
+            return Err(PmaError::InvalidMetadata(format!(
+                "alloc_offset {} exceeds data_words {}",
+                trailer.alloc_offset, trailer.data_words
+            )));
+        }
+
+        let base_ptr = base as *mut u8;
+        if base_ptr.is_null() {
+            return Err(PmaError::InvalidMetadata("null PMA base".to_string()));
+        }
+        let arena = Arena::open_file_with_base(&path, data_words, base_ptr)?;
+        let pma = Self {
+            arena,
+            alloc_offset: trailer.alloc_offset as usize,
+            path,
+        };
+        pma.persist_metadata();
+        Ok(pma)
+    }
+
     /// Get the underlying arena
     pub fn arena(&self) -> &Arc<Arena> {
         &self.arena

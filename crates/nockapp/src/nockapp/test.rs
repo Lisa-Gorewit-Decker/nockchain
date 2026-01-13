@@ -36,7 +36,7 @@ pub async fn setup_nockapp_with_interval(
         };
     (
         temp_dir,
-        NockApp::new(kernel_f, &temp_dir_path, save_interval)
+        NockApp::new(kernel_f, &temp_dir_path, save_interval, true)
             .await
             .expect("Could not create NockApp"),
     )
@@ -415,6 +415,7 @@ pub async fn setup_nockapp(jam: &str) -> (TempDir, NockApp) {
                 let pma_config = Some(PmaConfig {
                     path: pma_path,
                     words: pma_words,
+                    open_existing: false,
                 });
                 let kernel = Kernel::load_with_hot_state_tiny(
                     &kernel_bytes,
@@ -435,6 +436,7 @@ pub async fn setup_nockapp(jam: &str) -> (TempDir, NockApp) {
                 let pma_config = Some(PmaConfig {
                     path: pma_path,
                     words: pma_words,
+                    open_existing: false,
                 });
                 let kernel = Kernel::load_with_hot_state_small(
                     &kernel_bytes,
@@ -455,6 +457,7 @@ pub async fn setup_nockapp(jam: &str) -> (TempDir, NockApp) {
                 let pma_config = Some(PmaConfig {
                     path: pma_path,
                     words: pma_words,
+                    open_existing: false,
                 });
                 let kernel = Kernel::load_with_hot_state_medium(
                     &kernel_bytes,
@@ -475,6 +478,7 @@ pub async fn setup_nockapp(jam: &str) -> (TempDir, NockApp) {
                 let pma_config = Some(PmaConfig {
                     path: pma_path,
                     words: pma_words,
+                    open_existing: false,
                 });
                 let kernel = Kernel::load_with_hot_state_large(
                     &kernel_bytes,
@@ -495,6 +499,7 @@ pub async fn setup_nockapp(jam: &str) -> (TempDir, NockApp) {
                 let pma_config = Some(PmaConfig {
                     path: pma_path,
                     words: pma_words,
+                    open_existing: false,
                 });
                 let kernel = Kernel::load_with_hot_state_huge(
                     &kernel_bytes,
@@ -515,6 +520,7 @@ pub async fn setup_nockapp(jam: &str) -> (TempDir, NockApp) {
                 let pma_config = Some(PmaConfig {
                     path: pma_path,
                     words: pma_words,
+                    open_existing: false,
                 });
                 let kernel = Kernel::load_with_hot_state(
                     &kernel_bytes,
