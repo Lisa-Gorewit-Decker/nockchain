@@ -487,7 +487,7 @@ pub fn parser<'src>(
 #[cfg(not(feature = "bazel_build"))]
 pub static HOON138JAM: &[u8] = include_bytes!(concat!(
     env!("CARGO_MANIFEST_DIR"),
-    "/parsed-hoon138.jam"
+    "/test/parsed-hoon138.jam"
 ));
 
 #[derive(ClapParser, Debug)]
@@ -513,7 +513,7 @@ struct Cli {
     test: bool,
 }
 
-fn run_test(dbug: bool) {
+fn run_test() {
     let source_path = PathBuf::from("../hoonc/hoon/hoon-138.hoon");
 
     let source = fs::read_to_string(&source_path).unwrap();
@@ -528,14 +528,15 @@ fn run_test(dbug: bool) {
 
     let start = Instant::now();
 
-    match parser(wer, dbug, linemap)
+    match parser(wer, false, linemap)
         .parse(source.as_str())
         .into_result()
     {
         Ok(res) => {
+            let end = start.elapsed();
+
             let mut slab = NounSlab::new();
             let parsed_hoon = hoon_to_noun(&mut slab, &res);
-            let end = start.elapsed();
             let jammed = Bytes::from(HOON138JAM);
             let cued = slab.cue_into(jammed).unwrap();
 
@@ -672,7 +673,7 @@ fn main() {
     let cli = Cli::parse();
 
     if cli.test {
-        run_test(!cli.no_dbug);
+        run_test();
         return;
     }
 
@@ -689,5 +690,5 @@ fn main() {
         run_parser(&source_path, cli.jam, !cli.no_dbug, cli.out.clone());
     }
 
-    println!("finished parsing {:?} in {:?} ", input.clone() , start.elapsed());
+    println!("total running time {:?} ", start.elapsed());
 }

@@ -49,6 +49,153 @@ where
 {
 }
 
+//
+// String -> ParsedAtom conversion functions
+//
+
+pub fn string_to_atom(s: String) -> ParsedAtom {
+    let vec_u128: Vec<u128> = s.chars().map(|c| c as u128).collect();
+
+    rap(3, &vec_u128)
+}
+
+pub fn ta_to_atom(s: String) -> ParsedAtom {
+    if s == "~.".to_string() {
+        return ParsedAtom::Small(0);
+    }
+    let vec_u128: Vec<u128> = s.chars().map(|c| c as u128).collect();
+
+    rap(3, &vec_u128)
+}
+
+pub fn term_to_atom(s: String) -> ParsedAtom {
+    if s == "$".to_string() {
+        return ParsedAtom::Small(0);
+    }
+    let vec_u128: Vec<u128> = s.chars().map(|c| c as u128).collect();
+
+    rap(3, &vec_u128)
+}
+
+//  @ud to @
+pub fn decimal_to_atom(s: String) -> ParsedAtom {
+    ParsedAtom::Small(s.parse::<u128>().expect("decimal_to_atom failed"))
+}
+
+//  @ux to @
+pub fn hex_to_atom(s: String) -> ParsedAtom {
+    let clean = s.strip_prefix("0x").unwrap_or(&s);
+
+    if clean.len() <= 32 {
+        if let Ok(n) = u128::from_str_radix(clean, 16) {
+            return ParsedAtom::Small(n);
+        }
+    }
+
+    let big = BigUint::parse_bytes(clean.as_bytes(), 16)
+        .expect("invalid hex in big atom");
+
+    ParsedAtom::Big(big)
+}
+
+//  @ub to @
+pub fn binary_to_atom(s: String) -> ParsedAtom {
+    ParsedAtom::Small(u128::from_str_radix(&s, 2).expect("binary_to_atom failed"))
+}
+
+//  @t to @
+pub fn cord_chars_to_atom(chars: Vec<char>) -> ParsedAtom {
+
+    let mut atom = BigUint::zero();
+    let mut power = BigUint::from(1u32);
+    let base = BigUint::from(256u32);
+
+    for &c in &chars {
+        let byte = BigUint::from(c as u32 & 0xFF);
+        atom += &byte * &power;
+        power *= &base;
+    }
+
+    ParsedAtom::Big(atom)
+
+}
+
+const ALPH64: &str =
+    "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ-~";
+
+//  @uw to @
+pub fn base64_to_atom(s: String) -> ParsedAtom {
+    let mut n: u128 = 0;
+
+    for ch in s.chars() {
+        let v = match ALPH64.find(ch) {
+            Some(i) => i as u128,
+            None => panic!("invalid digit '{ch}' in base64"),
+        };
+
+        n = n
+            .checked_mul(64)
+            .expect("value exceeds u128 range (mul)");
+
+        n = n
+            .checked_add(v)
+            .expect("value exceeds u128 range (add)");
+    }
+
+    ParsedAtom::Small(n)
+}
+
+const ALPH32: &str = "0123456789abcdefghijklmnopqrstuv";
+
+//  @uv to @
+pub fn base32_to_atom(s: String) -> ParsedAtom {
+    let mut n: u128 = 0;
+
+    for ch in s.chars() {
+        let v = match ALPH32.find(ch) {
+            Some(i) => i as u128,
+            None => panic!("invalid digit '{ch}' in base32"),
+        };
+
+        n = n
+            .checked_mul(32)
+            .expect("value exceeds u128 range (mul)");
+
+        n = n
+            .checked_add(v)
+            .expect("value exceeds u128 range (add)");
+    }
+
+    ParsedAtom::Small(n)
+}
+
+// +fim
+pub fn base58_to_atom(s: String) -> Option<ParsedAtom> {
+    let yek = build_yek();
+
+    let digits: Vec<u8> = s.chars()
+        .map(|ch| cha_fa(&yek, ch))
+        .collect::<Option<_>>()?;
+
+    let a = ParsedAtom::Big(bass_58(&digits));
+    den_fa(&a)
+}
+
+pub fn ipv4_to_atom(s: String) ->  Option<ParsedAtom>{
+    let addr = s
+        .parse::<std::net::Ipv4Addr>().ok()?;
+
+    let ip_num = u32::from_be_bytes(addr.octets());
+
+    Some(ParsedAtom::Small(ip_num.into()))
+}
+
+pub fn ipv6_to_atom(s: String) -> Option<ParsedAtom> {
+    let addr = s.parse::<std::net::Ipv6Addr>().ok()?;
+    let num = u128::from_be_bytes(addr.octets());
+    Some(ParsedAtom::Small(num))
+}
+
 pub fn basal(bas: BaseType) -> Hoon {
     match bas {
         BaseType::Atom(a) => {
@@ -4362,122 +4509,6 @@ pub fn apply_sign(a: bool, b: ParsedAtom) -> ParsedAtom {
     }
 }
 
-pub fn string_to_atom(s: String) -> ParsedAtom {
-    let vec_u128: Vec<u128> = s.chars().map(|c| c as u128).collect();
-
-    rap(3, &vec_u128)
-}
-
-pub fn ta_to_atom(s: String) -> ParsedAtom {
-    if s == "~.".to_string() {
-        return ParsedAtom::Small(0);
-    }
-    let vec_u128: Vec<u128> = s.chars().map(|c| c as u128).collect();
-
-    rap(3, &vec_u128)
-}
-
-pub fn term_to_atom(s: String) -> ParsedAtom {
-    if s == "$".to_string() {
-        return ParsedAtom::Small(0);
-    }
-    let vec_u128: Vec<u128> = s.chars().map(|c| c as u128).collect();
-
-    rap(3, &vec_u128)
-}
-
-//  @ud to @
-pub fn decimal_to_atom(s: String) -> ParsedAtom {
-    ParsedAtom::Small(s.parse::<u128>().expect("decimal_to_atom failed"))
-}
-
-//  @ux to @
-pub fn hex_to_atom(s: String) -> ParsedAtom {
-    let clean = s.strip_prefix("0x").unwrap_or(&s);
-
-    if clean.len() <= 32 {
-        if let Ok(n) = u128::from_str_radix(clean, 16) {
-            return ParsedAtom::Small(n);
-        }
-    }
-
-    let big = BigUint::parse_bytes(clean.as_bytes(), 16)
-        .expect("invalid hex in big atom");
-
-    ParsedAtom::Big(big)
-}
-
-//  @ub to @
-pub fn binary_to_atom(s: String) -> ParsedAtom {
-    ParsedAtom::Small(u128::from_str_radix(&s, 2).expect("binary_to_atom failed"))
-}
-
-//  @t to @
-pub fn cord_chars_to_atom(chars: Vec<char>) -> ParsedAtom {
-
-    let mut atom = BigUint::zero();
-    let mut power = BigUint::from(1u32);
-    let base = BigUint::from(256u32);
-
-    for &c in &chars {
-        let byte = BigUint::from(c as u32 & 0xFF);
-        atom += &byte * &power;
-        power *= &base;
-    }
-
-    ParsedAtom::Big(atom)
-
-}
-
-const ALPH64: &str =
-    "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ-~";
-
-//  @uw to @
-pub fn base64_to_atom(s: String) -> ParsedAtom {
-    let mut n: u128 = 0;
-
-    for ch in s.chars() {
-        let v = match ALPH64.find(ch) {
-            Some(i) => i as u128,
-            None => panic!("invalid digit '{ch}' in base64"),
-        };
-
-        n = n
-            .checked_mul(64)
-            .expect("value exceeds u128 range (mul)");
-
-        n = n
-            .checked_add(v)
-            .expect("value exceeds u128 range (add)");
-    }
-
-    ParsedAtom::Small(n)
-}
-
-const ALPH32: &str = "0123456789abcdefghijklmnopqrstuv";
-
-//  @uv to @
-pub fn base32_to_atom(s: String) -> ParsedAtom {
-    let mut n: u128 = 0;
-
-    for ch in s.chars() {
-        let v = match ALPH32.find(ch) {
-            Some(i) => i as u128,
-            None => panic!("invalid digit '{ch}' in base32"),
-        };
-
-        n = n
-            .checked_mul(32)
-            .expect("value exceeds u128 range (mul)");
-
-        n = n
-            .checked_add(v)
-            .expect("value exceeds u128 range (add)");
-    }
-
-    ParsedAtom::Small(n)
-}
-
 ///  Alphanumeric with hyphens
 ///      Start with a lowercase letter
 ///      Followed by zero or more: lowercase letter, digit, or hyphen
@@ -4654,18 +4685,6 @@ pub fn enc_fa(atom: &ParsedAtom) -> ParsedAtom {
     let checksum = tok(atom).to_biguint();
 
     ParsedAtom::from_biguint(shifted ^ checksum)
-}
-
-// +fim
-pub fn base58_to_atom(s: String) -> Option<ParsedAtom> {
-    let yek = build_yek();
-
-    let digits: Vec<u8> = s.chars()
-        .map(|ch| cha_fa(&yek, ch))
-        .collect::<Option<_>>()?;
-
-    let a = ParsedAtom::Big(bass_58(&digits));
-    den_fa(&a)
 }
 
 pub fn bitcoin_address<'src>(
@@ -5090,15 +5109,6 @@ pub fn ipv4_address<'src>(
         .labelled("IPv4-Address")
 }
 
-pub fn ipv4_to_atom(s: String) ->  Option<ParsedAtom>{
-    let addr = s
-        .parse::<std::net::Ipv4Addr>().ok()?;
-
-    let ip_num = u32::from_be_bytes(addr.octets());
-
-    Some(ParsedAtom::Small(ip_num.into()))
-}
-
 pub fn ipv6_address<'src>(
 ) -> impl Parser<'src, &'src str, String, Err<'src>>
 {
@@ -5119,12 +5129,6 @@ pub fn ipv6_address<'src>(
             }
         })
         .labelled("Ipv6-Address")
-}
-
-pub fn ipv6_to_atom(s: String) -> Option<ParsedAtom> {
-    let addr = s.parse::<std::net::Ipv6Addr>().ok()?;
-    let num = u128::from_be_bytes(addr.octets());
-    Some(ParsedAtom::Small(num))
 }
 
 pub fn base32_number<'src>(
