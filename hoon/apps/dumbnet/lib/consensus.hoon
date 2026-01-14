@@ -24,13 +24,40 @@
   ::?.  ~(apt z-by min-timestamps.c)  `%inapt-min-timestamps
   ::?.  ~(apt z-by epoch-start.c)  `%inapt-epoch-start
   ::?.  ~(apt z-by targets.c)  `%inapt-targets
-  ?.  =(excluded-txs.c (~(int z-in excluded-txs.c) ~(key z-by raw-txs.c)))
+  ?.  (excluded-in-raw excluded-txs.c raw-txs.c)
     `%extra-excluded-txs
-  ?.  =(*(z-set tx-id:t) (~(int z-in excluded-txs.c) ~(key z-by blocks-needed-by.c)))
+  ?.  (excluded-disjoint-bnb excluded-txs.c blocks-needed-by.c)
     `%excluded-txs-arent
-  ?.  =(excluded-txs.c (~(dif z-in ~(key z-by raw-txs.c)) ~(key z-by blocks-needed-by.c)))
+  ?.  (raw-minus-bnb-in-excluded raw-txs.c blocks-needed-by.c excluded-txs.c)
     `%txs-fell-through-cracks
   ~
+::  streaming checks to avoid materializing large key sets
+++  excluded-in-raw
+  |=  [excluded=(z-set tx-id:t) raw=(z-map tx-id:t [raw-tx:t @])]
+  ^-  ?
+  %-  ~(all z-in excluded)
+  |=  tid=tx-id:t
+  (~(has z-by raw) tid)
+::  ensure excluded-txs has no overlap with blocks-needed-by keys
+++  excluded-disjoint-bnb
+  |=  [excluded=(z-set tx-id:t) bnb=(z-jug tx-id:t block-id:t)]
+  ^-  ?
+  %-  ~(all z-in excluded)
+  |=  tid=tx-id:t
+  ?.  (~(has z-by bnb) tid)
+    %.y
+  %.n
+::  ensure raw-txs keys are either in blocks-needed-by or excluded-txs
+++  raw-minus-bnb-in-excluded
+  |=  [raw=(z-map tx-id:t [raw-tx:t @]) bnb=(z-jug tx-id:t block-id:t) excluded=(z-set tx-id:t)]
+  ^-  ?
+  %-  ~(rep z-by raw)
+  |=  [[tid=tx-id:t val=[raw-tx:t @]] ok=?]
+  ?&  ok
+      ?~  (~(get z-by bnb) tid)
+        (~(has z-in excluded) tid)
+      %.y
+  ==
 ::
 ::  repair a bad state
 ++  repair
