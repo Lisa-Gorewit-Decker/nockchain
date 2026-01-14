@@ -24,12 +24,15 @@ use libp2p::{
 use nockapp::driver::{IODriverFn, PokeResult};
 use nockapp::noun::slab::NounSlab;
 use nockapp::noun::FromAtom;
+use nockapp::utils::error::{CrownError, ExternalError};
 use nockapp::utils::make_tas;
 use nockapp::utils::scry::*;
 use nockapp::wire::{Wire, WireRepr};
-use nockapp::{AtomExt, NockAppError, NounExt};
+use nockapp::{AtomExt, NockAppError};
+use nockvm::ext::NounExt;
 use nockvm::noun::{Atom, Noun, D, T};
 use nockvm_macros::tas;
+use rand::rng;
 use rand::seq::SliceRandom;
 use tokio::sync::{mpsc, Mutex, MutexGuard};
 use tokio::time::{Duration, MissedTickBehavior};
@@ -152,6 +155,7 @@ pub fn make_libp2p_driver(
     initial_peers: &[Multiaddr],
     force_peers: &[Multiaddr],
     prune_inbound_size: Option<usize>,
+    fast_sync: bool,
     equix_builder: equix::EquiXBuilder,
     chain_interval: Duration,
     init_complete_tx: Option<tokio::sync::oneshot::Sender<()>>,
@@ -247,7 +251,7 @@ pub fn make_libp2p_driver(
                         let state_guard = Arc::clone(&driver_state); // Clone the Arc, not the P2P state
                         let metrics_clone = metrics.clone();
                         join_set.spawn("handle_effect".to_string(), async move {
-                            handle_effect(noun_slab, swarm_tx_clone, equix_builder_clone, local_peer_id, connected_peers, state_guard, metrics_clone).await
+                            handle_effect(noun_slab, swarm_tx_clone, equix_builder_clone, local_peer_id, connected_peers, fast_sync, state_guard, metrics_clone).await
                         });
                     },
                     Some(event) = swarm.next() => {
@@ -287,16 +291,13 @@ pub fn make_libp2p_driver(
                                send_back_addr, local_addr, error);
 
                                // When connection limits are reached, randomly prune inbound connections
-                               match error {
-                                   ListenError::Denied { cause } => {
-                                       metrics.incoming_connections_blocked_by_limits.increment();
-                                       if let Some(prune_factor) = prune_inbound_size {
-                                           if let Ok(_exceeded) = cause.downcast::<libp2p::connection_limits::Exceeded>() {
-                                               driver_state.lock().await.prune_inbound_connections(metrics.clone(), &mut swarm, prune_factor);
-                                           }
+                               if let ListenError::Denied { cause } = error {
+                                   metrics.incoming_connections_blocked_by_limits.increment();
+                                   if let Some(prune_factor) = prune_inbound_size {
+                                       if let Ok(_exceeded) = cause.downcast::<libp2p::connection_limits::Exceeded>() {
+                                           driver_state.lock().await.prune_inbound_connections(metrics.clone(), &mut swarm, prune_factor);
                                        }
                                    }
-                                   _ => {}
                                }
                             },
                             SwarmEvent::Behaviour(NockchainEvent::RequestResponse(Message { connection_id , peer, message })) => {
@@ -431,8 +432,21 @@ pub fn make_libp2p_driver(
                         state_guard.seen_elders.clear();
                     },
                     Some(result) = join_set.join_next() => {
-                        if let Err(e) = result {
-                            error!("Task error: {:?}", e);
+                        match result {
+                            Ok(Ok(())) => {}
+                            Ok(Err(e)) => {
+                                match e {
+                                    NockAppError::OneShotRecvError(_) => {
+                                        // Silently ignore OneShotRecvError - this happens when sender is dropped
+                                    }
+                                    _ => {
+                                        error!("Task returned error: {:?}", e);
+                                    }
+                                }
+                            }
+                            Err(e) => {
+                                error!("Task error: {:?}", e);
+                            }
                         }
                     },
                 }
@@ -472,6 +486,7 @@ async fn handle_effect(
     equix_builder: equix::EquiXBuilder,
     local_peer_id: PeerId,
     connected_peers: Vec<PeerId>,
+    fast_sync: bool,
     driver_state: Arc<Mutex<P2PState>>,
     metrics: Arc<NockchainP2PMetrics>,
 ) -> Result<(), NockAppError> {
@@ -519,6 +534,8 @@ async fn handle_effect(
             let request_body = request_cell.tail().as_cell()?;
             let request_type = request_body.head().as_direct()?;
 
+            let mut is_limited_request = false;
+
             let target_peers = if request_type.data() == tas!(b"block") {
                 let block_cell = request_body.tail().as_cell()?;
                 if block_cell.head().eq_bytes(b"elders") {
@@ -529,9 +546,11 @@ async fn handle_effect(
                         if let Ok(peer_id) = PeerId::from_bytes(&bytes) {
                             vec![peer_id]
                         } else {
+                            is_limited_request = fast_sync;
                             connected_peers.clone()
                         }
                     } else {
+                        is_limited_request = fast_sync;
                         connected_peers.clone()
                     }
                 } else {
@@ -544,6 +563,7 @@ async fn handle_effect(
             if request_type.data() == tas!(b"raw-tx") {
                 if let Ok(raw_tx_cell) = request_body.tail().as_cell() {
                     if raw_tx_cell.head().eq_bytes(b"by-id") {
+                        is_limited_request = fast_sync;
                         trace!("Requesting raw transaction by ID, removing ID from seen set");
                         let tx_id = tip5_hash_to_base58_stack(&mut noun_slab, raw_tx_cell.tail())?;
                         let mut state_guard = driver_state.clone().lock_owned().await;
@@ -552,9 +572,19 @@ async fn handle_effect(
                 }
             }
 
-            debug!("Sending request to {} peers", target_peers.len());
-
-            for peer_id in target_peers {
+            let request_peers: Vec<_> = if is_limited_request {
+                let mut rng = rng();
+                let mut request_peers = target_peers.clone();
+                request_peers.shuffle(&mut rng);
+                request_peers.into_iter().take(2).collect()
+            } else {
+                let mut rng = rng();
+                let mut request_peers = target_peers.clone();
+                request_peers.shuffle(&mut rng);
+                request_peers.into_iter().take(8).collect()
+            };
+            debug!("Sending request to {} peers", request_peers.len());
+            for peer_id in request_peers {
                 let local_peer_id_clone = local_peer_id;
                 let mut equix_builder_clone = equix_builder.clone();
                 let request = NockchainRequest::new_request(
@@ -570,9 +600,13 @@ async fn handle_effect(
         }
         EffectType::LiarPeer => {
             let effect_cell = unsafe { noun_slab.root().as_cell()? };
-            let peer_id_atom = effect_cell.tail().as_atom().map_err(|_| {
-                NockAppError::IoError(std::io::Error::new(
-                    std::io::ErrorKind::Other,
+            let liar_peer_cell = effect_cell.tail().as_cell().map_err(|_| {
+                NockAppError::IoError(std::io::Error::other(
+                    "Expected peer ID cell in liar-peer effect",
+                ))
+            })?;
+            let peer_id_atom = liar_peer_cell.head().as_atom().map_err(|_| {
+                NockAppError::IoError(std::io::Error::other(
                     "Expected peer ID atom in liar-peer effect",
                 ))
             })?;
@@ -582,17 +616,11 @@ async fn handle_effect(
                 .expect("failed to strip null bytes");
 
             let peer_id_str = String::from_utf8(bytes).map_err(|_| {
-                NockAppError::IoError(std::io::Error::new(
-                    std::io::ErrorKind::Other,
-                    "Invalid UTF-8 in peer ID",
-                ))
+                NockAppError::IoError(std::io::Error::other("Invalid UTF-8 in peer ID"))
             })?;
 
             let peer_id = PeerId::from_str(&peer_id_str).map_err(|_| {
-                NockAppError::IoError(std::io::Error::new(
-                    std::io::ErrorKind::Other,
-                    "Invalid peer ID format",
-                ))
+                NockAppError::IoError(std::io::Error::other("Invalid peer ID format"))
             })?;
 
             swarm_tx
@@ -604,7 +632,13 @@ async fn handle_effect(
         }
         EffectType::LiarBlockId => {
             let effect_cell = unsafe { noun_slab.root().as_cell()? };
-            let block_id = effect_cell.tail();
+            let liar_block_cell = effect_cell.tail().as_cell().map_err(|_| {
+                NockAppError::IoError(std::io::Error::other(
+                    "Expected block ID cell in liar-block-id effect",
+                ))
+            })?;
+
+            let block_id = liar_block_cell.head();
 
             // Add the bad block ID
             let mut state_guard = driver_state.lock().await;
@@ -649,8 +683,7 @@ async fn handle_effect(
                 let mut state_guard = driver_state.lock().await;
                 state_guard.remove_block_id(block_id)?;
             } else {
-                return Err(NockAppError::IoError(std::io::Error::new(
-                    std::io::ErrorKind::Other,
+                return Err(NockAppError::IoError(std::io::Error::other(
                     "Invalid track action",
                 )));
             }
@@ -748,11 +781,13 @@ async fn handle_request_response(
                         .await
                         .requested(ip, request_high_threshold);
                     if let Some(count) = threshold_exceeded {
-                        warn!("IP address {ip} exceeded the request-per-interval threshold with {count} requests");
+                        trace!("IP address {ip} exceeded the request-per-interval threshold with {count} requests");
                     }
                 }
             } else {
-                warn!("Request received but connection not tracked. Please inform the developers.");
+                trace!(
+                    "Request received but connection not tracked. Please inform the developers."
+                );
             }
             let mut request_slab = NounSlab::new();
             match request {
@@ -830,6 +865,9 @@ async fn handle_request_response(
                                 Err(NockAppError::MPSCFullError(act))?
                             }
                             Err(err) => {
+                                if let NockAppError::CrownError(ref crown_err) = err {
+                                    record_crown_error_metric(crown_err, metrics.as_ref());
+                                }
                                 match data_request {
                                     NockchainDataRequest::BlockByHeight(height) => {
                                         debug!("Peek error getting block at height: {:?}", height);
@@ -1428,7 +1466,112 @@ fn prepend_tas(slab: &mut NounSlab, tas_str: &str, nouns: Vec<Noun>) -> Result<N
     Ok(T(slab, &cell_elements))
 }
 
+fn record_crown_error_metric(error: &CrownError<ExternalError>, metrics: &NockchainP2PMetrics) {
+    match error {
+        CrownError::External(_) => {
+            metrics.requests_crown_error_external.increment();
+        }
+        CrownError::MutexError => {
+            metrics.requests_crown_error_mutex.increment();
+        }
+        CrownError::InvalidKernelInput => {
+            metrics
+                .requests_crown_error_invalid_kernel_input
+                .increment();
+        }
+        CrownError::UnknownEffect => {
+            metrics.requests_crown_error_unknown_effect.increment();
+        }
+        CrownError::IOError(_) => {
+            metrics.requests_crown_error_io_error.increment();
+        }
+        CrownError::Noun(_) => {
+            metrics.requests_crown_error_noun_error.increment();
+        }
+        CrownError::InterpreterError(_) => {
+            metrics.requests_crown_error_interpreter_error.increment();
+        }
+        CrownError::KernelError(_) => {
+            metrics.requests_crown_error_kernel_error.increment();
+        }
+        CrownError::Utf8FromError(_) => {
+            metrics.requests_crown_error_utf8_from_error.increment();
+        }
+        CrownError::Utf8Error(_) => {
+            metrics.requests_crown_error_utf8_error.increment();
+        }
+        CrownError::NewtError | CrownError::Newt(_) => {
+            metrics.requests_crown_error_newt_error.increment();
+        }
+        CrownError::BootError => {
+            metrics.requests_crown_error_boot_error.increment();
+        }
+        CrownError::SerfLoadError => {
+            metrics.requests_crown_error_serf_load_error.increment();
+        }
+        CrownError::WorkBail => {
+            metrics.requests_crown_error_work_bail.increment();
+        }
+        CrownError::PeekBail => {
+            metrics.requests_crown_error_peek_bail.increment();
+        }
+        CrownError::WorkSwap => {
+            metrics.requests_crown_error_work_swap.increment();
+        }
+        CrownError::TankError => {
+            metrics.requests_crown_error_tank_error.increment();
+        }
+        CrownError::PlayBail => {
+            metrics.requests_crown_error_play_bail.increment();
+        }
+        CrownError::QueueRecv(_) => {
+            metrics.requests_crown_error_queue_recv.increment();
+        }
+        CrownError::SaveError(_) => {
+            metrics.requests_crown_error_save_error.increment();
+        }
+        CrownError::IntError(_) => {
+            metrics.requests_crown_error_int_error.increment();
+        }
+        CrownError::JoinError(_) => {
+            metrics.requests_crown_error_join_error.increment();
+        }
+        CrownError::DecodeError(_) => {
+            metrics.requests_crown_error_decode_error.increment();
+        }
+        CrownError::EncodeError(_) => {
+            metrics.requests_crown_error_encode_error.increment();
+        }
+        CrownError::StateJamFormatError => {
+            metrics
+                .requests_crown_error_state_jam_format_error
+                .increment();
+        }
+        CrownError::Unknown(_) => {
+            metrics.requests_crown_error_unknown.increment();
+        }
+        CrownError::ConversionError(_) => {
+            metrics.requests_crown_error_conversion_error.increment();
+        }
+        CrownError::UnknownError(_) => {
+            metrics.requests_crown_error_unknown_error.increment();
+        }
+        CrownError::QueueError(_) => {
+            metrics.requests_crown_error_queue_error.increment();
+        }
+        CrownError::SerfMPSCError() => {
+            metrics.requests_crown_error_serf_mpsc_error.increment();
+        }
+        CrownError::OneshotChannelError(_) => {
+            metrics
+                .requests_crown_error_oneshot_channel_error
+                .increment();
+        }
+    }
+}
+
 #[cfg(test)]
+#[allow(clippy::unwrap_used)]
 mod tests {
     use std::sync::LazyLock;
 
@@ -1439,7 +1582,7 @@ mod tests {
 
     use super::*;
 
-    pub static LIBP2P_CONFIG: LazyLock<LibP2PConfig> = LazyLock::new(|| LibP2PConfig::default());
+    pub static LIBP2P_CONFIG: LazyLock<LibP2PConfig> = LazyLock::new(LibP2PConfig::default);
 
     #[test]
     #[cfg_attr(miri, ignore)] // ibig has a memory leak so miri fails this test
@@ -1532,7 +1675,7 @@ mod tests {
             let mut slab: NounSlab = NounSlab::new();
             slab.set_root(D(123));
             let result = NockchainDataRequest::from_noun(*unsafe { slab.root() })
-                .and_then(|r| request_to_scry_slab(r));
+                .and_then(request_to_scry_slab);
             assert!(result.is_err());
         }
 
@@ -1654,8 +1797,8 @@ mod tests {
             );
             slab.set_root(invalid_request);
 
-            let result = NockchainDataRequest::from_noun(invalid_request)
-                .and_then(|r| request_to_scry_slab(r));
+            let result =
+                NockchainDataRequest::from_noun(invalid_request).and_then(request_to_scry_slab);
             assert!(result.is_err());
             drop(slab);
         }
@@ -1747,9 +1890,10 @@ mod tests {
             .expect("Failed to create liar-peer atom");
         let peer_id_atom = Atom::from_value(&mut effect_slab, peer_id_base58)
             .expect("Failed to create peer ID atom");
+        let reason_atom = make_tas(&mut effect_slab, "bad peer");
         let effect = T(
             &mut effect_slab,
-            &[liar_peer_atom.as_noun(), peer_id_atom.as_noun()],
+            &[liar_peer_atom.as_noun(), peer_id_atom.as_noun(), reason_atom.as_noun()],
         );
         effect_slab.set_root(effect);
         let metrics = Arc::new(
@@ -1767,6 +1911,7 @@ mod tests {
             EquiXBuilder::new(),
             PeerId::random(), // local peer ID (not relevant for this test)
             vec![],           // connected peers (not relevant for this test)
+            false,
             Arc::new(Mutex::new(P2PState::new(
                 metrics.clone(),
                 LIBP2P_CONFIG.seen_tx_clear_interval,
@@ -1837,6 +1982,7 @@ mod tests {
             EquiXBuilder::new(),
             PeerId::random(), // local peer ID (not relevant for this test)
             vec![],           // connected peers (not relevant for this test)
+            false,
             state_arc.clone(),
             metrics,
         )
@@ -1945,6 +2091,7 @@ mod tests {
             EquiXBuilder::new(),
             PeerId::random(), // local peer ID (not relevant for this test)
             vec![],           // connected peers (not relevant for this test)
+            false,
             state_arc.clone(),
             metrics,
         )
@@ -2062,10 +2209,11 @@ mod tests {
         // Copy the bad block ID tuple to the effect slab
         let bad_block_id_in_effect = T(&mut effect_slab, &[D(1), D(2), D(3), D(4), D(5)]);
 
+        let reason_atom = make_tas(&mut effect_slab, "bad block");
         // Build the noun structure: [%liar-block-id bad-block-id]
         let effect = T(
             &mut effect_slab,
-            &[liar_block_id_atom.as_noun(), bad_block_id_in_effect],
+            &[liar_block_id_atom.as_noun(), bad_block_id_in_effect, reason_atom.as_noun()],
         );
         effect_slab.set_root(effect);
         println!("Created liar-block-id effect");
@@ -2087,6 +2235,7 @@ mod tests {
             EquiXBuilder::new(),
             PeerId::random(), // local peer ID (not relevant for this test)
             vec![],           // connected peers (not relevant for this test)
+            false,
             state_arc.clone(),
             metrics,
         )
@@ -2210,6 +2359,7 @@ mod tests {
             EquiXBuilder::new(),
             PeerId::random(), // local peer ID (not relevant for this test)
             vec![],           // connected peers (not relevant for this test)
+            false,
             state_arc_clone,
             metrics,
         )
@@ -2260,6 +2410,7 @@ mod tests {
             EquiXBuilder::new(),
             PeerId::random(), // local peer ID (not relevant for this test)
             vec![],           // connected peers (not relevant for this test)
+            false,
             state_arc_clone,
             metrics,
         )
@@ -2278,7 +2429,7 @@ fn dial_peers(
     swarm: &mut Swarm<NockchainBehaviour>,
     peers: &[Multiaddr],
 ) -> Result<(), NockAppError> {
-    let mut rng = rand::thread_rng();
+    let mut rng = rand::rng();
 
     let cloned_peers: &mut [libp2p::Multiaddr] = &mut peers.to_vec();
     cloned_peers.shuffle(&mut rng);
@@ -2388,7 +2539,7 @@ fn dial_more_peers(swarm: &mut Swarm<NockchainBehaviour>, state_guard: MutexGuar
             }
         }
     }
-    addresses_to_dial.shuffle(&mut rand::thread_rng());
+    addresses_to_dial.shuffle(&mut rand::rng());
     for address in addresses_to_dial {
         info!("Redialing {}", address);
         if let Err(err) = swarm.dial(address) {
@@ -2479,7 +2630,7 @@ pub(crate) fn identify_received(
 
 fn log_ping_success(peer: PeerId, connection_address: Option<Multiaddr>, duration: Duration) {
     let Some(connection_address) = connection_address else {
-        warn!("Untracked connection to {peer}, please report this to the developers");
+        trace!("Untracked connection to {peer}, please report this to the developers");
         return;
     };
     let ms = duration.as_millis();
@@ -2488,7 +2639,7 @@ fn log_ping_success(peer: PeerId, connection_address: Option<Multiaddr>, duratio
 
 fn log_ping_failure(peer: PeerId, connection_address: Option<Multiaddr>, error: ping::Failure) {
     let Some(connection_address) = connection_address else {
-        warn!("Untracked connection to {peer}, please report this to the developers");
+        trace!("Untracked connection to {peer}, please report this to the developers");
         return;
     };
     debug!("Ping to {peer} via {connection_address} failed: {error}");

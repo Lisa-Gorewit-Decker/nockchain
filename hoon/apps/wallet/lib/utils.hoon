@@ -1,12 +1,13 @@
-/=  bip39  /common/bip39
-/=  slip10  /common/slip10
+/=  s10  /apps/wallet/lib/s10
 /=  m  /common/markdown/types
 /=  md  /common/markdown/markdown
 /=  transact  /common/tx-engine
 /=  zo  /common/zoon
 /=  *   /common/zose
+/=  *  /common/zeke
 /=  wt  /apps/wallet/lib/types
-|_  bug=?
+|_  [bug=? bc=blockchain-constants:transact]
++*  t  ~(. transact bc)
 ::
 ::  print helpers
 ++  warn
@@ -33,6 +34,112 @@
   |=  nodes=markdown:m
   [%markdown (crip (en:md nodes))]
 ::
+++  estimate-fee
+  |%
+  ++  spends
+    |=  [raw-spends=spends:v1:transact =input-display:wt]
+    =+  bc=*blockchain-constants:transact
+    =/  word-count=@
+      %-  ~(rep z-by:zo raw-spends)
+      |=  [[nam=nname:transact sp=spend:v1:transact] acc=@]
+      %+  add  acc
+      %+  add
+        (witness-words sp nam input-display)
+      (count-seed-words:spend-v1:transact sp)
+    =/  word-fee=@  (mul word-count base-fee.bc)
+    (max word-fee min-fee.data.bc)
+  ::
+  ::  +witness-words: estimate the number of words in a witness
+  ++  witness-words
+    |=  [=spend:v1:transact nam=nname:transact =input-display:wt]
+    ?-    -.spend
+        %0
+      ?>  ?=(%0 -.input-display)
+      =/  signature-leaves=@
+        ::  - 13 leaves for the key which is a schnorr-pubkey:
+        ::    - 6 for x, 6 for y, 1 for inf flag
+        ::  - 16 leaves for the signature
+        =/  num-sigs-required=@
+          =/  =sig:transact  (~(got z-by:zo p.input-display) nam)
+          m.sig
+        (map-words num-sigs-required 13 16)
+      signature-leaves
+    ::
+        %1
+      ?>  ?=(%1 -.input-display)
+      =/  =witness:transact  witness.+.spend
+      ?>  ?&  !=(*lock-merkle-proof:v1:transact lmp.witness)
+              =(~ tim.witness)
+              =(~ hax.witness)
+          ==
+      =/  lmp-count=@  (num-of-leaves:shape lmp.witness)
+      =/  tim-count=@  (num-of-leaves:shape tim.witness)
+      =/  hax-count=@  (num-of-leaves:shape hax.witness)
+      =/  pkh-count=@
+        ::  5 leaves for the key which is a hash
+        ::  13 leaves for the schnorr-pubkey: 6 for x, 6 for y, 1 for inf flag
+        ::  16 leaves for the signature
+        =/  num-sigs-required=@
+          =/  sc=spend-condition:transact  (~(got z-by:zo p.input-display) nam)
+          %+  roll  sc
+          |=  [lp=lock-primitive:transact acc=@]
+          ::  TODO handle hax lock primitives size contribution. for now we will just do pkhs
+          ?.  ?=(%pkh -.lp)
+            acc
+          (add acc m.lp)
+        (map-words num-sigs-required 5 (add 13 16))
+      :(add lmp-count pkh-count tim-count hax-count)
+    ==
+  ::
+  ::  +map-words:  estimate number of leaves in a map given node size and number of entries
+  ::  A map (binary tree) with n entries has n + 1 null branches, independent of shape/balance.
+  ::  To calculate the size of a map, we take the number of leaves contributed by each node by
+  ::  multiplying the per-node-leaf count by the number of entries. We leaf contribution of the
+  ::  nodes and add them to the number of null branches, each of which contributes 1 to the size.
+  ::
+  ::  If either key-leaves or val-leaves are variable size, their maximum theoretical size should
+  ::  be provided.
+  ++  map-words
+    |=  $:  entries=@
+            key-leaves=@
+            val-leaves=@
+        ==
+    ^-  @
+    =+  per-node-count=(add key-leaves val-leaves)
+    %+  add  (mul entries per-node-count)
+    (add entries 1)
+  --
+++  locks
+  |%
+  ++  pull-inner
+    |=  [nd=note-data:v1:transact nn=nname:transact pkh=(unit hash:transact)]
+    ^-  (unit spend-condition:transact)
+    ?~  lock-noun=(~(get z-by:zo nd) %lock)
+      ?~  pkh
+        ~
+      :: There's no stored lock. Attempt rebuilding from name
+      =/  simple-lock  [(simple-pkh-lp:v1:first-name:transact u.pkh)]~
+      ?:  =((first:nname:transact (hash:lock:transact simple-lock)) -.nn)
+        (some simple-lock)
+      =/  coinbase-lock  (coinbase-pkh-sc:v1:first-name:t u.pkh)
+      ?:  =((first:nname:transact (hash:lock:transact coinbase-lock)) -.nn)
+        (some coinbase-lock)
+      ~>  %slog.[2 'unsupported lock type']
+      ~
+    ?~  soft-lock=((soft lock-data:wt) u.lock-noun)
+      ~>  %slog.[0 'lock data in note is malformed']  ~
+    ?@  -.lock.u.soft-lock
+      ~>  %slog.[0 'lock data in note is not a single spend condition']  ~
+    (some lock.u.soft-lock)
+  ++  pull
+    |=  [nd=note-data:v1:transact nn=nname:transact pkh=(unit hash:transact)]
+    ^-  (unit spend-condition:transact)
+    ?~  lok=(pull-inner [nd nn pkh])
+      ~
+    ?:  =((first:nname:transact (hash:lock:transact u.lok)) -.nn)
+      lok
+    ~>  %slog.[0 'first-name does not match the pulled lock']  ~
+  --
 ::
 ::  +timelock-helpers: helper functions for creating timelock-intents
 ::
@@ -72,195 +179,16 @@
     *timelock-intent:transact
   --
 ::
-::  +edit: modify inputs
-++  edit
-  |_  =state:wt
-  ::
-  +*  inp
-    ^-  preinput:wt
-    ?~  active-input.state
-      %-  (debug "no active input set!")
-      *preinput:wt
-    =/  input-result  (~(get-input plan transaction-tree.state) u.active-input.state)
-    ?~  input-result
-      ~|("active input not found in transaction-tree" !!)
-    u.input-result
-  ::    +add-seed: add a seed to the input
-  ::
-  ++  add-seed
-    |=  =seed:transact
-    ^-  [(list effect:wt) state:wt]
-    ?:  (~(has z-in:zo seeds.spend.p.inp) seed)
-      :_  state
-      %-  print
-      %-  need
-      %-  de:md
-      %-  crip
-      """
-      ##  add-seed
-
-      **seed already exists in .spend**
-      """
-    =/  pre=preinput:wt  inp
-    =/  =preinput:wt
-      %=    pre
-          seeds.spend.p
-        %.  seed
-        ~(put z-in:zo seeds.spend.p.pre)
-        ::
-        seeds.spend.q  %.y
-      ==
-    =.  active-input.state  (some name.pre)
-    ::
-    =/  =input-name:wt  (need active-input.state)
-    =.  transaction-tree.state
-      (~(add-input plan transaction-tree.state) input-name preinput)
-    ::  if active-seed is set, link it to this input
-    =.  transaction-tree.state
-      ?:  ?=(^ active-seed.state)
-        (~(link-seed-to-input plan transaction-tree.state) input-name u.active-seed.state)
-      transaction-tree.state
-    `state
-  ::
-  ++  remove-seed
-    |=  =seed:transact
-    ^-  [(list effect:wt) state:wt]
-    ?.  (~(has z-in:zo seeds.spend.p.inp) seed)
-      :_  state
-      %-  print
-      %-  need
-      %-  de:md
-      %-  crip
-      """
-      ##  remove-seed
-
-      **seed not found in .spend**
-      """
-    =/  pre=preinput:wt  inp
-    =.  seeds.spend.p.pre
-      %.  seed
-      ~(del z-in:zo seeds.spend.p.pre)
-    =.  transaction-tree.state
-      =/  =input-name:wt  (need active-input.state)
-      (~(add-input plan transaction-tree.state) input-name pre)
-    `state
-  --
-::
-::  +draw: modify transactions
-++  draw
-  |_  =state:wt
-  +*  tx
-    ^-  transaction:wt
-    ?>  ?=(^ active-transaction.state)
-    =/  transaction-result  (~(get-transaction plan transaction-tree.state) u.active-transaction.state)
-    ?~  transaction-result
-      *transaction:wt
-    u.transaction-result
-  ::    +add-input: add an input to the transaction
-  ::
-  ++  add-input
-    |=  =input:transact
-    ^-  [(list effect:wt) state:wt]
-    =/  =transaction:wt  tx
-    =/  =input-name:wt
-      =+  (to-b58:nname:transact name.note.input)
-      %-  crip
-      "{<first>}-{<last>}"
-    ?:  (~(has z-by:zo p.tx) name.note.input)
-      :_  state
-      %-  print
-      %-  need
-      %-  de:md
-      %-  crip
-      """
-      ##  add-input
-
-      **input already exists in .transaction**
-
-      transaction already has input with note name: {<input-name>}
-      """
-    =/  active-transaction=transaction-name:wt  (need active-transaction.state)
-    =.  p.transaction
-      %-  ~(put z-by:zo p.transaction)
-      :-  name.note.input
-      input
-    =.  transaction-tree.state
-      %.  [active-transaction transaction]
-      ~(add-transaction plan transaction-tree.state)
-    =.  transaction-tree.state
-      %.  [active-transaction input-name]
-      ~(link-input-to-transaction plan transaction-tree.state)
-    write-transaction
-  ::
-  ++  write-transaction
-    ^-  [(list effect:wt) state:wt]
-    =?  active-transaction.state  ?=(~ active-transaction.state)  (some *transaction-name:wt)
-    ?>  ?=(^ active-transaction.state)
-    =/  =transaction:wt  tx
-    =.  transaction-tree.state  (~(add-transaction plan transaction-tree.state) u.active-transaction.state transaction)
-    =/  dat-jam  (jam transaction)
-    =/  path=@t  (crip "txs/{(trip u.active-transaction.state)}.tx")
-    =/  effect  [%file %write path dat-jam]
-    :_  state
-    ~[effect [%exit 0]]
-  --
-::
-::  Convenience wrapper door for slip10 library
-::  ** Never use slip10 directly in the wallet **
-++  s10
-  |_  bas=base:slip10
-  ++  gen-master-key
-    |=  [entropy=byts salt=byts]
-    =/  argon-byts=byts
-      :-  32
-      %+  argon2-nockchain:argon2:crypto
-        entropy
-      salt
-    =/  memo=tape  (from-entropy:bip39 argon-byts)
-    %-  (debug "memo: {memo}")
-    :-  (crip memo)
-    (from-seed:slip10 [64 (to-seed:bip39 memo "")])
-  ++  from-seed
-    |=  =byts
-    (from-seed:slip10 byts)
-::
-  ++  from-private
-    |=  =keyc:slip10
-    (from-private:slip10 keyc)
-::
-  ++  from-public
-    |=  =keyc:slip10
-    (from-public:slip10 keyc)
-  ::
-  ::  derives the i-th child key(s) from a parent key.
-  ::  index i can be any child index. returns the door
-  ::  with the door sample modified with the values
-  ::  corresponding to the key. the core sample can then
-  ::  be harvested for keys.
-  ::
-  ++  derive
-    |=  [parent=coil:wt i=@u]
-    ?-    -.key.parent
-        %pub
-      =>  [cor=(from-public [p.key cc]:parent) i=i]
-      (derive:cor i)
-    ::
-        %prv
-      =>  [cor=(from-private [p.key cc]:parent) i=i]
-      (derive:cor i)
-    ==
-  ::
-  ++  from-extended-key
-    |=  key=@t
-    (from-extended-key:slip10 key)
-  --
-::
 ++  vault
   |_  =state:wt
+  ::
   ++  base-path  ^-  trek
-    ?~  master.state
-      ~|("base path not accessible because master not set" !!)
-    /keys/[t/(to-b58:master:wt master.state)]
+    ?~  active-master.state
+      ~|('base path not accessible because master not set' !!)
+    /keys/[t/(to-b58:active:wt active-master.state)]
+  ::
+  ++  watch-path  ^-  trek
+    /keys/watch
   ::
   ++  seed-path  ^-  trek
     (welp base-path /seed)
@@ -281,6 +209,37 @@
     ++  key-path  ^-  trek
       (welp base-path ~[key-type])
     ::
+    ++  master-addresses
+      ^-  (list [version=@ addr=@t])
+      =/  subtree  (~(kids of keys.state) /keys)
+      %~  tap  in
+      %-  silt
+      ^-  (list [version=@ addr=@t])
+      %+  murn  ~(tap by kid.subtree)
+      |=  [pax=trek =meta:wt]
+      ^-  (unit [version=@ addr=@t])
+      =/  version=(unit @)
+        ?.  ?=(%coil -.meta)
+          ~
+        (some `@`-.p.meta)
+      =/  addr=(unit @t)
+        ?~  pax  ~
+        =/  segment  i.pax
+        ?.  ?=([%t @t] segment)
+          ~
+        `+.segment
+      (both version addr)
+    ::
+    ::  Grab other master addr
+    ++  master-by-addr
+      |=  master-b58=@t
+      ^-  coil:wt
+      =/  root-path=trek  /keys/[t/master-b58]/pub/m
+      =/  meta=(unit meta:wt)  (~(get of keys.state) root-path)
+      ?~  meta
+        ~|("Requested master addr not found" !!)
+      ?>  ?=(%coil -.u.meta)
+      p.u.meta
     ::
     ++  master
       ^-  coil:wt
@@ -288,27 +247,27 @@
       =/  =meta:wt  (~(got of keys.state) trek)
       :: check if private key matches public key
       ?>  ?=(%coil -.meta)
+      =/  =coil:wt  p.meta
       ?:  ?=(%prv key-type)
-        =/  public-key=@
-          public-key:(from-private:s10 [p.key cc]:meta)
-        ?:  =(public-key p.key:(public:master:wt master.state))
-          meta
+        =/  keyc=keyc:s10  ~(keyc get:coil:wt coil)
+        =/  public-key=@  public-key:(from-private:s10 keyc)
+        ?:  =(public-key p.key:(public:active:wt active-master.state))
+          coil
         ~|("private key does not match public key" !!)
-      meta
+      coil
     ::
     ++  sign-key
       |=  key=(unit [child-index=@ hardened=?])
       ^-  schnorr-seckey:transact
       =.  key-type  %prv
-      =/  sender=coil:wt
+      =/  =coil:wt
         ?~  key  master
         =/  [child-index=@ hardened=?]  u.key
         =/  absolute-index=@
           ?.(hardened child-index (add child-index (bex 31)))
-        =/  key-at-index=meta:wt  (by-index absolute-index)
-        ?>  ?=(%coil -.key-at-index)
-        key-at-index
-      (from-atom:schnorr-seckey:transact p.key.sender)
+        (by-index absolute-index)
+      =/  keyc=keyc:s10  ~(keyc get:coil:wt coil)
+      (from-atom:schnorr-seckey:transact p:~(key get:coil:wt coil))
     ::
     ++  by-index
       |=  index=@ud
@@ -316,32 +275,75 @@
       =/  =trek  (welp key-path /[ud/index])
       =/  =meta:wt  (~(got of keys.state) trek)
       ?>  ?=(%coil -.meta)
-      meta
+      p.meta
     ::
     ++  seed
       ^-  meta:wt
       (~(got of keys.state) seed-path)
     ::
-    ++  by-label
-      |=  label=@t
-      %+  murn  keys
-      |=  [t=trek =meta:wt]
-      ?:(&(?=(%label -.meta) =(label +.meta)) `t ~)
+    ++  watch-addrs
+      ^-  (list @t)
+      =+  subtree=(~(kids of keys.state) watch-path)
+      %+  murn
+        ~(tap by kid.subtree)
+      |=  [=trek =meta:wt]
+      ?:  ?=(%watch-key -.meta)
+        `p.meta
+      ~
+    ::
+    ++  watch-locks
+      ^-  (list [name=@t lock=@t])
+      =+  subtree=(~(kids of keys.state) watch-path)
+      %+  murn
+        ~(tap by kid.subtree)
+      |=  [=trek =meta:wt]
+      ?.  ?=(%first-name -.meta)
+        ~
+      %-  some
+      :-  (to-b58:hash:transact name.meta)
+      ?~  lock.meta
+        'N/A'
+      (lock:v1:display u.lock.meta)
+    ::
+    ++  watch-first-names
+      ^-  (list @t)
+      =+  subtree=(~(kids of keys.state) watch-path)
+      %+  roll
+        ~(tap by kid.subtree)
+      |=  [[=trek =meta:wt] acc=(list @t)]
+      ?+    -.meta  acc
+          %watch-key
+        =+  addr=p.meta
+        ?:  (gte (met 3 addr) 132)
+          acc
+        =+  pubkey-hash=(from-b58:hash:transact addr)
+        =+  simple-name=(simple:v1:first-name:transact pubkey-hash)
+        =+  coinbase-name=(coinbase:v1:first-name:transact pubkey-hash)
+        :+  (to-b58:hash:transact simple-name)
+          (to-b58:hash:transact coinbase-name)
+        acc
+      ::
+          %first-name
+        [(to-b58:hash:transact name.meta) acc]
+      ==
     ::
     ++  keys
-      ^-  (list [trek meta:wt])
+      ^-  (list [trek coil:wt])
+      ?~  active-master.state
+        ~
       =/  subtree
         %-  ~(kids of keys.state)
         key-path
-      ~(tap by kid.subtree)
+      %+  murn  ~(tap by kid.subtree)
+      |=  [pax=trek =meta:wt]
+      ^-  (unit [trek coil:wt])
+      ?:(?=(%coil -.meta) `[pax p.meta] ~)
     ::
     ++  coils
       ^-  (list coil:wt)
-      %+  murn  keys
-      |=  [t=trek =meta:wt]
-      ^-  (unit coil:wt)
-      ;;  (unit coil:wt)
-      ?:(=(%coil -.meta) `meta ~)
+      %+  turn  keys
+      |=  [=trek =coil:wt]
+      coil
     --
   ::
   ++  put
@@ -363,20 +365,47 @@
         /[key-type]/[ud/u.index]
       =/  key-path=trek  (welp base-path suffix)
       %-  (debug "adding key at {(en-tape:trek key-path)}")
-      =.  keys.state  (~(put of keys.state) key-path coil)
+      =.  keys.state  (~(put of keys.state) key-path [%coil coil])
       ?~  label
         keys.state
       %+  ~(put of keys.state)
         (welp key-path /label)
       label/u.label
+    ::
+    ++  watch-addr
+      |=  b58-addr=@t
+      %+  ~(put of keys.state)
+        (welp watch-path ~[t/b58-addr])
+      [%watch-key b58-addr]
+    ::
+    ++  watch-first-name
+      |=  [name=hash:transact lock=(unit lock:transact)]
+      =/  name-b58=@t  (to-b58:hash:transact name)
+      %+  ~(put of keys.state)
+        (welp watch-path ~[t/name-b58])
+      [%first-name name lock]
     --
   ::
   ++  get-note
     |=  name=nname:transact
     ^-  nnote:transact
-    ?:  (~(has z-by:zo balance.state) name)
-      (~(got z-by:zo balance.state) name)
-    ~|("note not found: {<name>}" !!)
+    ?:  (~(has z-by:zo notes.balance.state) name)
+      (~(got z-by:zo notes.balance.state) name)
+    ~|  "note not found: ".
+        "{(trip (name:v1:display name))}"
+    !!
+  ::
+  ++  get-note-v0
+    |=  name=nname:transact
+    ^-  nnote:v0:transact
+    ?:  (~(has z-by:zo notes.balance.state) name)
+      =/  note=nnote:transact  (~(got z-by:zo notes.balance.state) name)
+      ::  v0 note
+      ?>  ?=(^ -.note)
+      note
+    ~|  "note not found: ".
+        "{(trip (name:v1:display name))}"
+    !!
   ::
   ::  TODO: way too slow, need a better way to do this or
   ::  remove entirely in favor of requiring note names in
@@ -385,7 +414,7 @@
     |=  has=hash:transact
     ^-  (unit nname:transact)
     =/  notes=(list [name=nname:transact note=nnote:transact])
-      ~(tap z-by:zo balance.state)
+      ~(tap z-by:zo notes.balance.state)
     |-
     ?~  notes  ~
     ?:  =((hash:nnote:transact note.i.notes) has)
@@ -400,15 +429,6 @@
       ~|("note with hash {<(to-b58:hash:transact has)>} not found in balance" !!)
     (get-note u.name)
   ::
-  ++  generate-pid
-    ^-  @ud
-    =/  used-pids=(list @ud)
-      ~(tap in ~(key by peek-requests.state))
-    =/  max-pid=@ud
-      (roll used-pids max)
-    =/  next-pid=@ud  +(max-pid)
-    ?:  =(next-pid 0)  1  :: handle wraparound
-    next-pid
   ::
   ::  +derive-child: derives the i-th hardened/unhardened child key(s)
   ::
@@ -420,7 +440,7 @@
     ^-  (set coil:wt)
     ?:  (gte i (bex 32))
       ~|("Child index {<i>} out of range. Child indices are capped to values between [0, 2^32)" !!)
-    ?~  master.state
+    ?~  active-master.state
       ~|("No master keys available for derivation" !!)
     =;  coils=(list coil:wt)
       (silt coils)
@@ -432,12 +452,17 @@
       ?:  ~(master has %prv)
         ~(master get %prv)
       ~(master get %pub)
+    =/  keyc=keyc:s10  ~(keyc get:coil:wt parent)
     ?:  hardened
       ?>  ?=(%prv -.key.parent)
       ::
-      =>  (derive:s10 parent i)
-      :~  [%coil [%prv private-key] chain-code]
-          [%coil [%pub public-key] chain-code]
+      =>  (derive:s10 keyc %prv i)
+      ?:  =(%1 +..)
+        :~  [%1 [%prv private-key] `@ux`chain-code]
+            [%1 [%pub public-key] `@ux`chain-code]
+        ==
+      :~  [%0 [%prv private-key] `@ux`chain-code]
+          [%0 [%pub public-key] `@ux`chain-code]
       ==
     ::
     ::  if unhardened, we just assert that they are within the valid range
@@ -446,292 +471,470 @@
     ?-    -.key.parent
      ::  if the parent is a private key, we can derive the unhardened prv and pub child
         %prv
-      =>  (derive:s10 parent i)
-      :~  [%coil [%prv private-key] chain-code]
-          [%coil [%pub public-key] chain-code]
+      =>  [(derive:s10 keyc %prv i) version=ver.keyc]
+      ?:  =(%1 version)
+        :~  [%1 [%prv private-key] `@ux`chain-code]
+            [%1 [%pub public-key] `@ux`chain-code]
+        ==
+      :~  [%0 [%prv private-key] `@ux`chain-code]
+          [%0 [%pub public-key] `@ux`chain-code]
       ==
     ::
      ::  if the parent is a public key, we can only derive the unhardened pub child
         %pub
-      =>  (derive:s10 parent i)
-      ~[[%coil [%pub public-key] chain-code]]
+      =>  [(derive:s10 keyc %pub i) version=ver.keyc]
+      ?:  =(%1 version)
+        ~[[%1 [%pub public-key] `@ux`chain-code]]
+      ~[[%0 [%pub public-key] `@ux`chain-code]]
     ==
   -- ::vault
-  ::    +plan: core for managing transaction relationships
   ::
-  ::  provides methods for adding, removing, and navigating the transaction tree.
-  ::  uses the axal structure to maintain relationships between transactions, inputs,
-  ::  and seeds.
-  ::
-  ++  plan
-    |_  tree=transaction-tree:wt
+  ++  display
+    |%
+    ++  common
+      |%
+        ++  format-ui
+          |=  @
+          ^-  @t
+          (rsh [3 2] (scot %ui +<))
+        ++  format-ux
+          |=  @ux
+          ^-  @t
+          %-  crip
+          (z-co:co +<)
+        ::
+        ++  poke
+          |=  =cause:wt
+          ^-  effect:wt
+          =/  nodes=markdown:m
+          %-  need
+          %-  de:md
+          %-  crip
+          """
+          ## poke
+          {<cause>}
+          """
+          (make-markdown-effect nodes)
+      --  ::  +common
+    ++  v0
+      |%
+      ::
+      ++  transaction
+        |=  [name=@t p=inputs:v0:transact]
+        ^-  @t
+        =/  inputs  `(list [nname:transact input:v0:transact])`~(tap z-by:zo p)
+        =/  by-addrs
+          %+  roll  inputs
+          |=  [[name=nname:transact input=input:v0:transact] acc=_`(z-map:zo sig:transact coins:transact)`~]
+          =/  seeds  ~(tap z-in:zo seeds:spend:input)
+          %+  roll  seeds
+          |=  [seed=seed:transact acc=_acc]
+          =/  lock  recipient:seed
+          =/  cur  (~(gut z-by:zo acc) lock 0)
+          =/  gift  gift:seed
+          =/  new-bal  (add cur gift)
+          (~(put z-by:zo acc) lock new-bal)
+        %+  roll  ~(tap z-by:zo by-addrs)
+        =/  acc=@t
+          %-  crip
+          """
+          ## Transaction
+          Name: {(trip name)}
+          Outputs:
+          """
+        |=  [[recipient=sig:transact amt=coins:transact] acc=_acc]
+        =/  r58  (to-b58:sig:transact recipient)
+        =/  amtdiv  (dvr amt 65.536)
+        %^  cat  3
+          ;:  (cury cat 3)
+            acc
+            '\0a\0a- Assets: '
+            (rsh [3 2] (scot %ui amt))
+            '\0a  - Nocks: '
+            (rsh [3 2] (scot %ui p.amtdiv))
+            '\0a  - Nicks: '
+            (rsh [3 2] (scot %ui q.amtdiv))
+            '\0a- Required Signatures: '
+            (rsh [3 2] (scot %ui m.recipient))
+            '\0a- Signers: '
+          ==
+        %-  crip
+        %+  join  ' '
+        (serialize-lock recipient)
+      ::
+      ++  note-md
+        |=  =nnote:transact
+        ^-  markdown:m
+        %-  need
+        %-  de:md
+        (note nnote)
+      ::
+      ++  note
+          |=  note=nnote:transact
+          ^-  @t
+          ?>  ?=(^ -.note)
+          ^-  cord
+          ;:  (cury cat 3)
+           ;:  (cury cat 3)
+              '''
+
+              ---
+
+              ## Details
+
+              '''
+              '- Name: '
+              =+  (to-b58:nname:transact name.note)
+              :((cury cat 3) '[' first ' ' last ']')
+              '\0a- Version: '
+              (format-ui:common 0)
+              '\0a- Assets: '
+              (format-ui:common assets.note)
+              '\0a- Block Height: '
+              (format-ui:common origin-page.note)
+              '\0a- Source: '
+              (to-b58:hash:transact p.source.note)
+              '\0a## Lock'
+              '\0a  - Required Signatures: '
+              (format-ui:common m.sig.note)
+              '\0a  - Signers: '
+            ==
+          ::
+            %+  roll  (serialize-lock sig.note)
+            |=  [lock=@t acc=@t]
+            ;:  (cury cat 3)
+                acc
+                '\0a        - '
+                lock
+            ==
+          ::
+            '\0a---'
+          ==
+      ::
+      ++  serialize-lock
+        |=  =sig:transact
+        ^-  (list @t)
+        ~+
+        pks:(to-b58:sig:transact sig)
+      ::
+      --  ::  +v0
+    ++  v1
+      |%
+      ++  name
+        |=  name=nname:transact
+        ^-  @t
+        =+  (to-b58:nname:transact name)
+        :((cury cat 3) '[' first ' ' last ']')
+      ::
+      ++  lock
+        |=  lk=lock:transact
+        ^-  @t
+        =/  cond=(unit spend-condition:transact)
+          ((soft spend-condition:transact) lk)
+        ?~  cond
+          'Lock data not displayable'
+        (spend-condition u.cond)
+      ::
+      ++  lock-primitive
+        |=  prim=lock-primitive:transact
+        ^-  cord
+        ?-    -.prim
+            %pkh
+          =/  participants=(list hash:transact)  ~(tap z-in:zo h.prim)
+          %^  cat  3
+            '\0a  - PKH Lock (m-of-n)'
+          (render-lock-signers m.prim participants)
+        ::
+            %hax
+          =/  hashes=(list hash:transact)  ~(tap z-in:zo +.prim)
+          ;:  (cury cat 3)
+              '\0a  - Hash Lock'
+              '\0a    - Preimage Hashes:'
+              %+  roll  hashes
+              |=  [h=hash:transact hash-lines=@t]
+              ;:  (cury cat 3)
+                  hash-lines
+                  '\0a      - '
+                  (to-b58:hash:transact h)
+              ==
+          ==
+        ::
+            %tim
+          =/  rel-min=@t
+            %^  cat  3
+              '\0a      - Min Relative Height: '
+            ?~  min.rel.prim  'N/A'
+            (format-ui:common u.min.rel.prim)
+          =/  rel-max=@t
+            %^  cat  3
+              '\0a      - Max Relative Height: '
+            ?~  max.rel.prim  'N/A'
+            (format-ui:common u.max.rel.prim)
+          =/  abs-min=@t
+            %^  cat  3
+              '\0a      - Min Absolute Height: '
+            ?~  min.abs.prim  'N/A'
+            (format-ui:common u.min.abs.prim)
+          =/  abs-max=@t
+            %^  cat  3
+              '\0a      - Max Absolute Height: '
+            ?~  max.abs.prim  'N/A'
+            (format-ui:common u.max.abs.prim)
+          ;:  (cury cat 3)
+              '\0a    - Time Lock'
+              rel-min
+              rel-max
+              abs-min
+              abs-max
+          ==
+        ::
+            %brn
+          '\0a  - Unspendable (burn) condition'
+        ==
+      ::
+      ++  spend-condition
+        |=  cond=spend-condition:transact
+        ^-  @t
+        %+  roll  cond
+        |=  [lp=lock-primitive:transact lines=@t]
+        ;:  (cury cat 3)
+            lines
+            (lock-primitive lp)
+        ==
+      ::
+      ++  lock-data
+        |=  data=note-data:v1:transact
+        ^-  @t
+        ?~  lock-data=(~(get z-by:zo data) %lock)
+          ~>  %slog.[2 'lock data in note is missing']  'N/A'
+        ?~  soft-lock=((soft lock-data:wt) u.lock-data)
+          ~>  %slog.[2 'lock data in note is malformed']  'N/A'
+        (lock lock.u.soft-lock)
+      ::
+      ++  bool-text
+        |=  flag=?
+        ^-  @t
+        ?:  flag  'yes'  'no'
+      ::
+      ++  render-lock-signers
+        |=  [required=@ participants=(list hash:transact)]
+        ^-  @t
+        =/  signer-text=@t
+          %+  roll  participants
+          |=  [hash=hash:transact acc=@t]
+          ;:  (cury cat 3)
+              acc
+              '\0a            - '
+              (to-b58:hash:transact hash)
+          ==
+        ;:  (cury cat 3)
+            '\0a        - Required Signatures: '
+            (format-ui:common required)
+            '\0a        - Signers:'
+            signer-text
+        ==
+      ::
+      ++  lock-metadata
+        |=  data=lock-metadata:wt
+        ^-  @t
+        =?  data  ?=(^ -.data)
+          [%1 %lock data]
+        ?>  ?=(@ -.data)
+        ?-    -.+.data
+            %lock
+          =/  cond=(unit spend-condition:transact)
+            ((soft spend-condition:transact) lock.data)
+          ?~  cond
+            '\0a  - Lock data not displayable'
+          ;:  (cury cat 3)
+            '\0a  - Lock data included in note: '
+            (bool-text include-data.data)
+            (spend-condition u.cond)
+          ==
+        ::
+            %lock-root
+          ;:  (cury cat 3)
+            '\0a  - Lock data included in note: '
+            (bool-text %.n)
+            '\0a  - Assets should go to lock script root: '
+            (to-b58:hash:transact root.data)
+          ==
+        ::
+            %bridge-deposit
+          ;:  (cury cat 3)
+            '\0a  - Lock data included in note: '
+            (bool-text %.n)
+            '\0a  - Bridge Deposit: '
+            '\0a          - Assets should go to lock script root (this should be bridge operator lock root): '
+            (to-b58:hash:transact root.data)
+            '\0a          - EVM recipient address (tokens should mint to this address): '
+            (format-ux:common addr.data)
+          ==
+        ==
     ::
-    ::  +get-transaction: retrieve a transaction by name
+      ++  note-from-balance
+        |=  note=nnote-1:v1:transact
+        (^note note (lock-data note-data.note) %.n)
     ::
-    ++  get-transaction
-      |=  name=transaction-name:wt
-      ^-  (unit transaction:wt)
-      =/  res  (~(get of tree) /transaction/[name])
-      ?~  res  ~
-      ?.  ?=(%transaction -.u.res)  ~
-      `transaction.u.res
-    ::    +get-input: retrieve an input by name
+      ++  note-from-output
+        |=  $:  note=nnote-1:v1:transact
+                metadata=(unit lock-metadata:wt)
+            ==
+        ?>  ?=(@ -.note)
+        =/  lock-info=@t
+          ?~  metadata
+            (lock-data note-data.note)
+          (lock-metadata u.metadata)
+        (^note note lock-info %.y)
     ::
-    ++  get-input
-      |=  name=input-name:wt
-      ^-  (unit preinput:wt)
-      =/  res  (~(get of tree) /input/[name])
-      ?~  res  ~
-      ?.  ?=(%input -.u.res)  ~
-      `preinput.u.res
-    ::    +get-seed: retrieve a seed by name
+      ++  note-from-input
+        |=  $:  note=nnote-1:v1:transact
+                sc=spend-condition:transact
+            ==
+        =/  lock-info=@t  (spend-condition sc)
+        (^note note lock-info %.n)
     ::
-    ++  get-seed
-      |=  name=seed-name:wt
-      ^-  (unit preseed:wt)
-      =/  res  (~(get of tree) /seed/[name])
-      ?~  res  ~
-      ?.  ?=(%seed -.u.res)  ~
-      `preseed.u.res
-    ::    +add-transaction: add a new transaction
+      ::
+      ::  +note: display note. Sometimes lock data is not included in note, it can be passed in
+      ::    separately in the output-lock-map which is accumulated in the tx-builder.
+      ++  note
+        |=  $:  note=nnote-1:v1:transact
+                lock-info=@t
+                output=?
+            ==
+        ^-  @t
+        ;:  (cury cat 3)
+           '''
+
+           ## Note Information
+
+           '''
+           '- Name: '
+           (name name.note)
+           '\0a- Version: '
+           (format-ui:common 1)
+           '\0a- Assets (nicks): '
+           (format-ui:common assets.note)
+           '\0a- Block Height: '
+           ?:  output
+             'N/A (output note has not been submitted yet)'
+           (format-ui:common origin-page.note)
+           '\0a- Lock Information: '
+           lock-info
+         ==
     ::
-    ++  add-transaction
-      |=  [name=transaction-name:wt =transaction:wt]
-      ^-  transaction-tree:wt
-      =/  entity  [%transaction name transaction]
-      (~(put of tree) /transaction/[name] entity)
-    ::    +add-input: add a new input
+      ++  witness-data
+        |=  wd=witness-data:wt
+        ^-  @t
+        =;  signers=(set @t)
+          =/  signers-text=@t
+            %+  roll  ~(tap in signers)
+            |=  [signer=@t text=@t]
+            ;:  (cury cat 3)
+                text
+                '\0a        - '
+                signer
+            ==
+          ;:  (cury cat 3)
+              '\0a  - Number of Unique Signers So Far: '
+              (format-ui:common ~(wyt in signers))
+              '\0a  - Signers So Far: '
+              signers-text
+          ==
+        ?-    -.wd
+            %0
+          %-  ~(rep z-by:zo p.wd)
+          |=  $:  [=nname:transact =signature:transact]
+                  signers=(set @t)
+              ==
+          %-  ~(gas in signers)
+          %+  turn  ~(tap z-in:zo ~(key z-by:zo signature))
+          to-b58:schnorr-pubkey:transact
+        ::
+            %1
+          %-  ~(rep z-by:zo p.wd)
+          |=  $:  [=nname:transact =witness:transact]
+                  signers=(set @t)
+              ==
+          %-  ~(gas in signers)
+          %+  turn  ~(tap z-in:zo ~(key z-by:zo pkh.witness))
+          to-b58:hash:transact
+        ==
+      ::
+      ++  timelock-range
+        |=  [label=@t range=timelock-range:transact]
+        ^-  @t
+        =/  min-text=@t
+            ?~  min.range  'N/A'
+            (format-ui:common u.min.range)
+        =/  max-text=@t
+            ?~  max.range  'N/A'
+            (format-ui:common u.max.range)
+        ;:  (cury cat 3)
+            label
+            ' min: '
+            min-text  ', max: '  max-text
+        ==
     ::
-    ++  add-input
-      |=  [name=input-name:wt =preinput:wt]
-      ^-  transaction-tree:wt
-      =/  entity  [%input name preinput]
-      (~(put of tree) /input/[name] entity)
-    ::    +add-seed: add a new seed
-    ::
-    ++  add-seed
-      |=  [name=seed-name:wt =preseed:wt]
-      ^-  transaction-tree:wt
-      =/  entity  [%seed name preseed]
-      (~(put of tree) /seed/[name] entity)
-    ::    +link-input-to-transaction: link an input to a transaction
-    ::
-    ++  link-input-to-transaction
-      |=  [=transaction-name:wt =input-name:wt]
-      ^-  transaction-tree:wt
-      =/  input-entity  (~(get of tree) /input/[input-name])
-      ?~  input-entity  tree
-      ?.  ?=(%input -.u.input-entity)  tree
-      (~(put of tree) /transaction/[transaction-name]/input/[input-name] u.input-entity)
-    ::    +link-seed-to-input: link a seed to an input
-    ::
-    ++  link-seed-to-input
-      |=  [=input-name:wt seed-name=seed-name:wt]
-      ^-  transaction-tree:wt
-      =/  seed-entity  (~(get of tree) /seed/[seed-name])
-      ?~  seed-entity  tree
-      ?.  ?=(%seed -.u.seed-entity)  tree
-      (~(put of tree) /input/[input-name]/seed/[seed-name] u.seed-entity)
-    ::    +unlink-input-from-transaction: remove an input from a transaction
-    ::
-    ++  unlink-input-from-transaction
-      |=  [=transaction-name:wt =input-name:wt]
-      ^-  transaction-tree:wt
-      (~(del of tree) /transaction/[transaction-name]/input/[input-name])
-    ::    +unlink-seed-from-input: remove a seed from an input
-    ::
-    ++  unlink-seed-from-input
-      |=  [=input-name:wt seed-name=seed-name:wt]
-      ^-  transaction-tree:wt
-      (~(del of tree) /input/[input-name]/seed/[seed-name])
-    ::    +list-transaction-inputs: list all inputs in a transaction
-    ::
-    ++  list-transaction-inputs
-      |=  name=transaction-name:wt
-      ^-  (list input-name:wt)
-      =/  kids  (~(kid of tree) /transaction/[name])
-      %+  murn  ~(tap in ~(key by kids))
-      |=  pax=pith
-      ^-  (unit input-name:wt)
-      =/  pax=path  (pout pax)
-      ?>  ?=([%input *] pax)
-      ?>  ?=(^ t.pax)
-      `i.t.pax
-    ::    +list-input-seeds: list all seeds in an input
-    ::
-    ++  list-input-seeds
-      |=  name=input-name:wt
-      ^-  (list seed-name:wt)
-      =/  kids  (~(kid of tree) /input/[name])
-      %+  murn  ~(tap in ~(key by kids))
-      |=  pax=pith
-      ^-  (unit seed-name:wt)
-      =/  pax=path  (pout pax)
-      ?:  &(?=([%seed *] pax) ?=(^ t.pax))
-        `i.t.pax
-      ~
-    ::    +list-all-transactions: list all transaction names
-    ::
-    ++  list-all-transactions
-      ^-  (list transaction-name:wt)
-      =/  kids  (~(kid of tree) /transaction)
-      %+  murn  ~(tap in ~(key by kids))
-      |=  pax=pith
-      ^-  (unit transaction-name:wt)
-      =/  pax=path  (pout pax)
-      ?:  ?=(^ pax)
-        `i.pax
-      ~
-    ::    +list-all-inputs: list all input names
-    ::
-    ++  list-all-inputs
-      ^-  (list input-name:wt)
-      =/  kids  (~(kid of tree) /input)
-      %+  murn  ~(tap in ~(key by kids))
-      |=  pax=pith
-      ^-  (unit input-name:wt)
-      =/  pax=path  (pout pax)
-      ?:  ?=(^ pax)
-        `i.pax
-      ~
-    ::    +list-all-seeds: list all seed names
-    ::
-    ++  list-all-seeds
-      ^-  (list seed-name:wt)
-      =/  kids  (~(kid of tree) /seed)
-      %+  murn  ~(tap in ~(key by kids))
-      |=  pax=pith
-      ^-  (unit seed-name:wt)
-      =/  pax=path  (pout pax)
-      ?:  &(?=([%seed *] pax) ?=(^ t.pax))
-        `i.pax
-      ~
-    ::    +remove-transaction: completely remove a transaction and its associations
-    ::
-    ++  remove-transaction
-      |=  name=transaction-name:wt
-      ^-  transaction-tree:wt
-      (~(lop of tree) /transaction/[name])
-    ::    +remove-input: completely remove an input and its associations
-    ::
-    ++  remove-input
-      |=  name=input-name:wt
-      ^-  transaction-tree:wt
-      (~(lop of tree) /input/[name])
-    ::    +remove-seed: completely remove a seed and its associations
-    ::
-    ++  remove-seed
-      |=  name=seed-name:wt
-      ^-  transaction-tree:wt
-      (~(lop of tree) /seed/[name])
-    --
-  ::
-  ::  display functions
-  ::  TODO: organize these in a core
-  ::
-  ++  display-poke
-      |=  =cause:wt
-      ^-  effect:wt
-      =/  nodes=markdown:m
-      %-  need
-      %-  de:md
-      %-  crip
-      """
-      ## poke
-      {<cause>}
-      """
-      (make-markdown-effect nodes)
-  ::
-  ++  display-transaction-cord
-      |=  [name=@t p=inputs:transact]
-      ^-  @t
-      =/  inputs  `(list [nname:transact input:transact])`~(tap z-by:zo p)
-      =/  by-addrs
-        %+  roll  inputs
-        |=  [[name=nname:transact input=input:transact] acc=_`(z-map:zo lock:transact coins:transact)`~]
-        =/  seeds  ~(tap z-in:zo seeds:spend:input)
-        %+  roll  seeds
-        |=  [seed=seed:transact acc=_acc]
-        =/  lock  recipient:seed
-        =/  cur  (~(gut z-by:zo acc) lock 0)
-        =/  gift  gift:seed
-        =/  new-bal  (add cur gift)
-        (~(put z-by:zo acc) lock new-bal)
-      %+  roll  ~(tap z-by:zo by-addrs)
-      =/  acc=@t
+    ::  show-tx should require sync now
+      ++  transaction
+        |=  $:  name=@t
+                outs=outputs:v1:transact
+                fees=@
+                display=transaction-display:wt
+                get-note=$-(nname:transact nnote:transact)
+                wd=(unit witness-data:wt)
+            ==
+        ^-  @t
+        =/  input-notes=tape
+          ?:  ?=(%0 -.inputs.display)
+            %-  zing
+            %+  turn
+            ~(tap z-in:zo ~(key z-by:zo p.inputs.display))
+            |=  =nname:transact
+            =+  note=(get-note nname)
+            ?@  -.note
+              ~|  %expected-v0-note-but-got-v1-note  !!
+            "\0a{(trip (note:v0 note))}"
+          %-  zing
+          %+  turn
+            ~(tap z-by:zo p.inputs.display)
+          |=  [name=nname:transact sc=spend-condition:transact]
+          =/  out-note=nnote:transact  (get-note name)
+          ?^  -.out-note
+            ~|  %expected-v1-note-but-got-v0-note  !!
+          "\0a{(trip (note-from-input out-note sc))}"
+        =/  output-notes=tape
+          %-  zing
+          %+  turn
+            ~(tap z-in:zo outs)
+          |=  out=output:v1:transact
+          =/  out-note=nnote:v1:transact  note.out
+          =+  fn=~(first-name get:nnote:transact out-note)
+          =+  metadata=(~(get z-by:zo outputs.display) fn)
+          ?^  -.out-note
+            "\0a{(trip (note:v0 out-note))}"
+          "\0a{(trip (note-from-output out-note metadata))}"
         %-  crip
         """
-        ## Transaction
-        Name: {(trip name)}
-        Outputs:
+
+        ### Transaction Information
+        - Name: {(trip name)}
+        - Fee: {(trip (format-ui:common fees))}
+
+        ### Input Notes
+        {input-notes}
+
+        ### Output Notes
+        {output-notes}
+
+        ### Witness Data
+        {(trip ?~(wd 'N/A' (witness-data u.wd)))}
+        ---
+
         """
-      |=  [[recipient=lock:transact amt=coins:transact] acc=_acc]
-      =/  r58  (to-b58:lock:transact recipient)
-      =/  amtdiv  (dvr amt 65.536)
-      %^  cat  3
-        ;:  (cury cat 3)
-          acc
-          '\0a\0a- Assets: '
-          (rsh [3 2] (scot %ui amt))
-          '\0a  - Nocks: '
-          (rsh [3 2] (scot %ui p.amtdiv))
-          '\0a  - Nicks: '
-          (rsh [3 2] (scot %ui q.amtdiv))
-          '\0a- Required Signatures: '
-          (rsh [3 2] (scot %ui m.recipient))
-          '\0a- Signers: '
-        ==
-      %-  crip
-      %+  join  ' '
-      (serialize-lock recipient)
-  ::
-  ++  display-note-cord
-      |=  note=nnote:transact
-      ^-  @t
-      %^  cat  3
-       ;:  (cury cat 3)
-          '''
-
-          ---
-
-          ## Details
-
-          '''
-          '- Name: '
-          =+  (to-b58:nname:transact name.note)
-          :((cury cat 3) '[' first ' ' last ']')
-          '\0a- Assets: '
-          (format-ui assets.note)
-          '\0a- Block Height: '
-          (format-ui origin-page.note)
-          '\0a- Source: '
-          (to-b58:hash:transact p.source.note)
-          '\0a## Lock'
-          '\0a- Required Signatures: '
-          (format-ui m.lock.note)
-          '\0a- Signers: '
-        ==
-      %-  crip
-      %+  join  ' '
-      (serialize-lock lock.note)
-  ::
-  ++  serialize-lock
-      |=  =lock:transact
-      ^-  (list @t)
-      ~+
-      pks:(to-b58:lock:transact lock)
-  ::
-  ++  display-note
-      |=  note=nnote:transact
-      ^-  markdown:m
-      %-  need
-      %-  de:md
-      (display-note-cord note)
-  ::
-  ++  format-ui
-      |=  @
-      ^-  @t
-      (rsh [3 2] (scot %ui +<))
+      --  ::  +v1
+    --  ::  +display
   ::
   ++  show
       |=  [=state:wt =path]
@@ -739,37 +942,63 @@
       |^
       ?+    path  !!
           [%balance ~]
-        :-  ~[(display-balance balance.state)]
+        :-  ~[[%exit 0] (display-balance balance.state)]
         state
       ::
-          [%state ~]
-        :-  display-state
-        state
       ==
       ++  display-balance
         |=  =balance:wt
         ^-  effect:wt
+        =/  notes=(list nnote:transact)
+          ~(val z-by:zo notes.balance)
+        ::  shows the sum of assets included in balance, making sure to exclude watch-only pubkeys
+        =/  owned-names=(set hash:transact)
+          %-  silt
+          %+  roll
+            ~(coils ~(get vault state) %pub)
+          |=  [=coil:wt first-names=(list hash:transact)]
+          ^-  (list hash:transact)
+          :*  (simple-first-name:coil:wt coil)
+              (coinbase-first-name:coil:wt coil)
+              first-names
+          ==
+        =/  [total-notes=@ total-nicks=coins:transact]
+          %+  roll
+            ::  all notes owned by keys in wallet, excluding watch-only pubkeys
+            %+  skim  notes
+            |=  note=nnote:transact
+            %-  ~(has in owned-names)
+            ~(first-name get:nnote:transact note)
+          |=  [note=nnote:transact [len=@ acc=coins:transact]]
+          :-  +(len)
+          (add acc assets.note)
         =/  nodes=markdown:m
-        %-  need
-        %-  de:md
-        %-  crip
-        """
-        ## balance
-        {<balance>}
-        """
+          =+  block-b58=(to-b58:hash:transact block-id.balance.state)
+          %-  need
+          %-  de:md
+          %-  crip
+          """
+          ## Wallet Balance
+          Wallet balance from block {(trip block-b58)} at height {<height.balance.state>}
+          - Wallet Version: {<-.state>}
+          - Number of Notes: {(trip (format-ui:common:display total-notes))}
+          - Balance: {(trip (format-ui:common:display total-nicks))} nicks
+          """
         (make-markdown-effect nodes)
       ::
-      ++  display-state
-        ^-  (list effect:wt)
-        =/  nodes=markdown:m
-        %-  need
-        %-  de:md
-        %-  crip
-        """
-        ## state
-        - last block: {<last-block.state>}
-        """
-        ~[(make-markdown-effect nodes)]
+      ::++  display-state
+      ::  ^-  (list effect:wt)
+      ::  =/  nodes=markdown:m
+      ::  %-  need
+      ::  %-  de:md
+      ::  %-  crip
+      ::  """
+      ::  ## Wallet State
+      ::  - Wallet Version: -.state
+      ::  - Last Block: {<block-id.balance.state>}
+      ::  - Height: {<height.balance.state>}
+      ::  """
+      ::  ~[(make-markdown-effect nodes)]
       --
   ::
   ++  ui-to-tape
@@ -777,4 +1006,10 @@
       ^-  tape
       %-  trip
       (rsh [3 2] (scot %ui +<))
+  ::
+  ++  ux-to-tape
+      |=  @
+      ^-  tape
+      %-  trip
+      (rsh [3 2] (scot %ux +<))
   --

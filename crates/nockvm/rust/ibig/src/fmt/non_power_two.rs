@@ -164,6 +164,7 @@ impl PreparedLarge {
 
         let mut radix_powers = Vec::new();
         let mut big_chunks = Vec::new();
+        // FIXME: This use of ibig's pow will leak memory.
         let chunk_power = UBig::from_word(radix_info.range_per_word).pow(CHUNK_LEN);
         if chunk_power > *number {
             return PreparedLarge {
@@ -190,7 +191,7 @@ impl PreparedLarge {
             }
             // 2 * prev.len() is at most 1 larger than number.len().
             // It won't overflow because UBig::MAX_LEN is even.
-            const_assert!(UBig::MAX_LEN % 2 == 0);
+            const_assert!(UBig::MAX_LEN.is_multiple_of(2));
             let new = prev * prev;
             if new > *number {
                 break;

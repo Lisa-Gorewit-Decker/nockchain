@@ -644,8 +644,8 @@ mod tests {
                 done = true;
             }
 
-            let result = if rng.gen_bool(0.5) || done {
-                let value = rng.gen::<u64>();
+            let result = if rng.random_bool(0.5) || done {
+                let value = rng.random::<u64>();
                 let atom = Atom::new(stack, value);
                 let noun = atom.as_noun();
                 (noun, accumulated_size + noun.mass())
@@ -789,7 +789,7 @@ mod tests {
     fn test_cell_construction() {
         let mut stack = setup_stack();
         let (cell, cell_mem_ptr) = unsafe { Cell::new_raw_mut(&mut stack) };
-        unsafe { assert!(cell_mem_ptr as *const CellMemory == cell.to_raw_pointer()) };
+        unsafe { assert!(std::ptr::eq(cell_mem_ptr, cell.to_raw_pointer())) };
     }
 
     #[test]

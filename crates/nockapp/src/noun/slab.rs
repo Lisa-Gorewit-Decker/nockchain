@@ -205,6 +205,12 @@ impl<J> NounAllocator for NounSlab<J> {
         self.allocation_start = self.allocation_start.add(word_size);
         new_struct_ptr
     }
+
+    unsafe fn equals(&mut self, a: *mut Noun, b: *mut Noun) -> bool {
+        let a = unsafe { &mut *a };
+        let b = unsafe { &mut *b };
+        slab_noun_equality(a, b)
+    }
 }
 
 /// # Safety: no noun in this slab references a noun outside the slab, except in the PMA
@@ -700,7 +706,6 @@ impl Jammer for NockJammer {
             );
             buffer.extend_from_bitslice(&atom.as_bitslice()[0..atom_sz]);
         }
-
         let mut backref_map = NounMap::<usize>::new();
         let mut stack = vec![noun];
         let mut buffer = bitvec![u8, Lsb0; 0; 0];
@@ -873,11 +878,20 @@ impl Jammer for NockJammer {
 #[cfg(test)]
 mod tests {
     use bitvec::prelude::*;
+    use ibig::ubig;
     use nockvm::noun::{D, T};
     use nockvm_macros::tas;
 
     use super::*;
     use crate::AtomExt;
+    #[test]
+    fn test_ubig_alloc() {
+        let mut slab: NounSlab = NounSlab::new();
+        let big_exp = ubig!(0xFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF);
+        let atom = Atom::from_ubig(&mut slab, &big_exp);
+        let big = atom.as_ubig(&mut slab);
+        assert_eq!(big, big_exp);
+    }
 
     #[test]
     #[cfg_attr(miri, ignore)]
@@ -1087,7 +1101,12 @@ mod tests {
     fn test_cell_construction_for_noun_slab() {
         let mut slab: NounSlab = NounSlab::new();
         let (cell, cell_mem_ptr) = unsafe { Cell::new_raw_mut(&mut slab) };
-        unsafe { assert!(cell_mem_ptr as *const CellMemory == cell.to_raw_pointer()) };
+        unsafe {
+            assert!(std::ptr::eq(
+                cell_mem_ptr as *const CellMemory,
+                cell.to_raw_pointer()
+            ))
+        };
     }
 
     #[test]

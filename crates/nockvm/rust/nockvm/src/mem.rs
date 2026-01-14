@@ -3,6 +3,7 @@ use std::alloc::Layout;
 use std::ops::{Deref, DerefMut};
 use std::panic::panic_any;
 use std::ptr::copy_nonoverlapping;
+use std::vec::Vec;
 use std::{mem, ptr};
 
 use either::Either::{self, Left, Right};
@@ -24,6 +25,7 @@ pub(crate) const STACK: usize = 1;
 pub(crate) const ALLOC: usize = 2;
 
 /**  Utility function to get size in words */
+#[inline]
 pub(crate) const fn word_size_of<T>() -> usize {
     (mem::size_of::<T>() + 7) >> 3
 }
@@ -421,8 +423,16 @@ impl NockStack {
     // Types of size: word (words: usize)
     /// Check if an allocation or pointer retrieval indicates an invalid request or an invalid state
     pub(crate) fn alloc_would_oom_(&self, alloc: Allocation, words: usize) {
+        // When the fast path is enabled, make the parameters count as used to avoid
+        // unused-variable warnings while still short-circuiting.
         #[cfg(feature = "no_check_oom")]
-        return;
+        {
+            let _ = (&alloc, words);
+        }
+
+        if cfg!(feature = "no_check_oom") {
+            return;
+        }
         let _memory_state = self.memory_state(Some(words));
         if self.pc && !alloc.alloc_type.allowed_when_pc() {
             panic_any(self.cannot_alloc_in_pc(Some(words)));
@@ -620,9 +630,17 @@ impl NockStack {
             self.frame_offset = new_frame_offset;
             self.stack_offset = new_frame_offset;
             self.alloc_offset = new_alloc_offset;
-            self.least_space = new_frame_offset
-                .checked_sub(new_alloc_offset)
-                .expect("Uncaught OOM in flip_top_frame west->east");
+            self.least_space = match new_frame_offset.checked_sub(new_alloc_offset) {
+                Some(space) => space,
+                None => panic_any(self.out_of_memory(
+                    Allocation {
+                        orientation: ArenaOrientation::West,
+                        alloc_type: AllocationType::FlipTopFrame,
+                        pc: self.pc,
+                    },
+                    Some(size),
+                )),
+            };
             self.pc = false;
 
             assert!(!self.is_west());
@@ -651,9 +669,17 @@ impl NockStack {
             self.frame_offset = new_frame_offset;
             self.stack_offset = new_frame_offset;
             self.alloc_offset = new_alloc_offset;
-            self.least_space = new_alloc_offset
-                .checked_sub(new_frame_offset)
-                .expect("Uncaught OOM in flip_top_frame east->west");
+            self.least_space = match new_alloc_offset.checked_sub(new_frame_offset) {
+                Some(space) => space,
+                None => panic_any(self.out_of_memory(
+                    Allocation {
+                        orientation: ArenaOrientation::East,
+                        alloc_type: AllocationType::FlipTopFrame,
+                        pc: self.pc,
+                    },
+                    Some(size),
+                )),
+            };
             self.pc = false;
 
             assert!(self.is_west());
@@ -1028,9 +1054,12 @@ impl NockStack {
         };
 
         // Update the space low-water-mark
-        let new_space = new_alloc_offset
-            .checked_sub(self.stack_offset)
-            .expect("Uncaught OOM in raw_alloc_west");
+        let new_space = match new_alloc_offset.checked_sub(self.stack_offset) {
+            Some(space) => space,
+            None => panic_any(
+                self.out_of_memory(self.get_alloc_config(AllocationType::Alloc), Some(words)),
+            ),
+        };
         self.least_space = new_space.min(self.least_space);
 
         // Derive pointer from the new offset
@@ -1060,10 +1089,12 @@ impl NockStack {
             None => panic!("Alloc offset overflow in East frame"),
         };
 
-        let new_space = self
-            .stack_offset
-            .checked_sub(new_alloc_offset)
-            .expect("Uncaught OOM in raw_alloc_east");
+        let new_space = match self.stack_offset.checked_sub(new_alloc_offset) {
+            Some(space) => space,
+            None => panic_any(
+                self.out_of_memory(self.get_alloc_config(AllocationType::Alloc), Some(words)),
+            ),
+        };
         self.least_space = new_space.min(self.least_space);
 
         // Check that the new offset is within bounds
@@ -1280,104 +1311,6 @@ impl NockStack {
         }
     }
 
-    unsafe fn copy(&mut self, noun: &mut Noun) {
-        assert_acyclic!(*noun);
-        assert_no_forwarding_pointers!(*noun);
-        assert_no_junior_pointers!(self, *noun);
-
-        self.pre_copy();
-        assert!(self.stack_is_empty());
-        let noun_ptr = noun as *mut Noun;
-        // Add two slots to the lightweight stack
-        // Set the first new slot to the noun to be copied
-        *(self.push::<Noun>()) = *noun;
-        // Set the second new slot to a pointer to the noun being copied. this is the destination pointer, which will change
-        *(self.push::<*mut Noun>()) = noun_ptr;
-        loop {
-            if self.stack_is_empty() {
-                break;
-            }
-
-            // Pop a noun to copy from the stack
-            let next_dest = *(self.top::<*mut Noun>());
-            self.pop::<*mut Noun>();
-            let next_noun = *(self.top::<Noun>());
-            self.pop::<Noun>();
-
-            // If it's a direct atom, just write it to the destination.
-            // Otherwise, we have allocations to make.
-            match next_noun.as_either_direct_allocated() {
-                Either::Left(_direct) => {
-                    *next_dest = next_noun;
-                }
-                Either::Right(allocated) => {
-                    // If it's an allocated noun with a forwarding pointer, just write the
-                    // noun resulting from the forwarding pointer to the destination
-                    //
-                    // Otherwise, we have to allocate space for and copy the allocated noun
-                    match allocated.forwarding_pointer() {
-                        Option::Some(new_allocated) => {
-                            *next_dest = new_allocated.as_noun();
-                        }
-                        Option::None => {
-                            // Check to see if its allocated within this frame
-                            if self.is_in_frame(allocated.to_raw_pointer()) {
-                                match allocated.as_either() {
-                                    Either::Left(mut indirect) => {
-                                        // Make space for the atom
-                                        let alloc =
-                                            self.indirect_alloc_in_previous_frame(indirect.size());
-
-                                        // Indirect atoms can be copied directly
-                                        copy_nonoverlapping(
-                                            indirect.to_raw_pointer(),
-                                            alloc,
-                                            indirect_raw_size(indirect),
-                                        );
-
-                                        // Set a forwarding pointer so we don't create duplicates from other
-                                        // references
-                                        indirect.set_forwarding_pointer(alloc);
-
-                                        *next_dest =
-                                            IndirectAtom::from_raw_pointer(alloc).as_noun();
-                                    }
-                                    Either::Right(mut cell) => {
-                                        // Make space for the cell
-                                        let alloc =
-                                            self.struct_alloc_in_previous_frame::<CellMemory>(1);
-
-                                        // Copy the cell metadata
-                                        (*alloc).metadata = (*cell.to_raw_pointer()).metadata;
-
-                                        // Push the tail and the head to the work stack
-                                        *(self.push::<Noun>()) = cell.tail();
-                                        *(self.push::<*mut Noun>()) = &mut (*alloc).tail;
-                                        *(self.push::<Noun>()) = cell.head();
-                                        *(self.push::<*mut Noun>()) = &mut (*alloc).head;
-
-                                        // Set the forwarding pointer
-                                        cell.set_forwarding_pointer(alloc);
-
-                                        *next_dest = Cell::from_raw_pointer(alloc).as_noun();
-                                    }
-                                }
-                            } else {
-                                // Don't copy references outside the current frame
-                                *next_dest = allocated.as_noun();
-                            }
-                        }
-                    }
-                }
-            }
-        }
-        // Set saved previous allocation pointer its new value after this allocation
-
-        assert_acyclic!(*noun);
-        assert_no_forwarding_pointers!(*noun);
-        assert_no_junior_pointers!(self, *noun);
-    }
-
     // Doesn't need an OOM check, just an assertion. We expect it to panic.
     pub(crate) unsafe fn assert_struct_is_in<T>(&self, ptr: *const T, count: usize) {
         // Get the appropriate offsets based on pre-copy status
@@ -1515,7 +1448,7 @@ impl NockStack {
      *  adjacent to the frame pointer.
      * Push a frame onto the stack with 0 or more local variable slots. */
     /// This computation for num_locals is done in the east/west variants, but roughly speaking it's the input n words + 3 for prev frame alloc/stack/frame pointers
-    pub(crate) fn frame_push(&mut self, num_locals: usize) {
+    pub fn frame_push(&mut self, num_locals: usize) {
         if self.pc {
             panic!("frame_push during cleanup phase is prohibited.");
         }
@@ -1703,6 +1636,7 @@ impl NockStack {
      * a west frame when pc == false has a west-oriented lightweight stack,
      * but when pc == true it becomes east-oriented.*/
     // Re: #684: We don't need OOM checks on pop
+    #[inline]
     pub(crate) unsafe fn pop<T>(&mut self) {
         if self.is_west() && !self.pc || !self.is_west() && self.pc {
             self.pop_west::<T>();
@@ -1715,6 +1649,7 @@ impl NockStack {
      * this violates the _east/_west naming convention somewhat, since e.g.
      * a west frame when pc == false has a west-oriented lightweight stack,
      * but when pc == true it becomes east-oriented.*/
+    #[inline]
     pub(crate) unsafe fn top<T>(&mut self) -> *mut T {
         if self.is_west() && !self.pc || !self.is_west() && self.pc {
             self.top_west()
@@ -1724,6 +1659,7 @@ impl NockStack {
     }
 
     /** Peek the top of a west-oriented lightweight stack. */
+    #[inline]
     unsafe fn top_west<T>(&mut self) -> *mut T {
         let words = word_size_of::<T>();
         if self.stack_offset < words {
@@ -1733,6 +1669,7 @@ impl NockStack {
     }
 
     /** Peek the top of an east-oriented lightweight stack. */
+    #[inline]
     unsafe fn top_east<T>(&mut self) -> *mut T {
         self.derive_ptr(self.stack_offset) as *mut T
     }
@@ -2005,6 +1942,10 @@ impl NounAllocator for NockStack {
     unsafe fn alloc_struct<T>(&mut self, count: usize) -> *mut T {
         self.struct_alloc::<T>(count)
     }
+
+    unsafe fn equals(&mut self, a: *mut Noun, b: *mut Noun) -> bool {
+        crate::unifying_equality::unifying_equality(self, a, b)
+    }
 }
 
 /// Immutable, acyclic objects which may be copied up the stack
@@ -2049,11 +1990,88 @@ impl Preserve for Atom {
 
 impl Preserve for Noun {
     unsafe fn preserve(&mut self, stack: &mut NockStack) {
-        stack.copy(self)
+        noun_preserve(stack, self)
     }
     unsafe fn assert_in_stack(&self, stack: &NockStack) {
         stack.assert_noun_in(*self);
     }
+}
+
+/// Used to be stack.copy, but it was only used as a Preserve impl for Noun.
+/// This version tries to bail earlier than the old one and we're using a Vec
+/// for the worklist.
+unsafe fn noun_preserve(stack: &mut NockStack, noun: &mut Noun) {
+    assert_acyclic!(*noun);
+    assert_no_forwarding_pointers!(*noun);
+    assert_no_junior_pointers!(stack, *noun);
+
+    let root_allocated = match noun.as_either_direct_allocated() {
+        Either::Left(_direct) => return,
+        Either::Right(allocated) => allocated,
+    };
+
+    if let Some(new_allocated) = root_allocated.forwarding_pointer() {
+        *noun = new_allocated.as_noun();
+        return;
+    }
+
+    if !stack.is_in_frame(root_allocated.to_raw_pointer()) {
+        return;
+    }
+
+    // TODO: Try making this buffer part of NockStack
+    let mut work: Vec<(Noun, *mut Noun)> = Vec::with_capacity(32);
+    work.push((*noun, noun as *mut Noun));
+
+    while let Some((value, dest_ptr)) = work.pop() {
+        match value.as_either_direct_allocated() {
+            Either::Left(_direct) => unsafe {
+                *dest_ptr = value;
+            },
+            Either::Right(allocated) => unsafe {
+                if let Some(new_allocated) = allocated.forwarding_pointer() {
+                    *dest_ptr = new_allocated.as_noun();
+                    continue;
+                }
+
+                if !stack.is_in_frame(allocated.to_raw_pointer()) {
+                    *dest_ptr = value;
+                    continue;
+                }
+
+                match allocated.as_either() {
+                    Either::Left(mut indirect) => {
+                        let alloc = stack.indirect_alloc_in_previous_frame(indirect.size());
+                        copy_nonoverlapping(
+                            indirect.to_raw_pointer(),
+                            alloc,
+                            indirect_raw_size(indirect),
+                        );
+                        indirect.set_forwarding_pointer(alloc);
+                        *dest_ptr = IndirectAtom::from_raw_pointer(alloc).as_noun();
+                    }
+                    Either::Right(mut cell) => {
+                        let alloc = stack.struct_alloc_in_previous_frame::<CellMemory>(1);
+                        (*alloc).metadata = (*cell.to_raw_pointer()).metadata;
+
+                        let tail = cell.tail();
+                        let head = cell.head();
+
+                        cell.set_forwarding_pointer(alloc);
+
+                        work.push((tail, &mut (*alloc).tail));
+                        work.push((head, &mut (*alloc).head));
+
+                        *dest_ptr = Cell::from_raw_pointer(alloc).as_noun();
+                    }
+                }
+            },
+        }
+    }
+
+    assert_acyclic!(*noun);
+    assert_no_forwarding_pointers!(*noun);
+    assert_no_junior_pointers!(stack, *noun);
 }
 
 impl Stack for NockStack {

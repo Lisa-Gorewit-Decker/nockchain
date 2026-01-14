@@ -1,10 +1,16 @@
-use std::collections::{BTreeMap, HashMap, HashSet};
+// Allow unwrap in test code - standard practice for test assertions
+#![cfg_attr(test, allow(clippy::unwrap_used))]
 
+use std::collections::{BTreeMap, HashMap, HashSet};
+use std::str;
+
+use bytes::Bytes;
+use ibig::UBig;
 pub mod wallet;
 
-#[allow(unused_imports)]
-use nockapp::utils::make_tas;
-use nockapp::{AtomExt, NockAppError};
+use nockvm::ext::{make_tas, AtomExt};
+use nockvm::jets::util::BAIL_FAIL;
+use nockvm::jets::JetErr;
 #[allow(unused_imports)]
 use nockvm::noun::{Atom, FullDebugCell, Noun, NounAllocator, Slots, D, T};
 use nockvm::noun::{NO, YES};
@@ -80,14 +86,20 @@ pub enum NounDecodeError {
     ConstraintsDecodeError,
 }
 
-impl From<NounDecodeError> for NockAppError {
-    fn from(err: NounDecodeError) -> Self {
-        NockAppError::NounDecodeError(Box::new(err))
+impl From<NounDecodeError> for JetErr {
+    fn from(_err: NounDecodeError) -> Self {
+        BAIL_FAIL
     }
 }
 
 impl From<nockvm::noun::Error> for NounDecodeError {
     fn from(err: nockvm::noun::Error) -> Self {
+        NounDecodeError::Custom(err.to_string())
+    }
+}
+
+impl From<str::Utf8Error> for NounDecodeError {
+    fn from(err: str::Utf8Error) -> Self {
         NounDecodeError::Custom(err.to_string())
     }
 }
@@ -131,6 +143,12 @@ impl NounEncode for u32 {
     }
 }
 
+impl NounEncode for UBig {
+    fn to_noun<A: NounAllocator>(&self, allocator: &mut A) -> Noun {
+        Atom::from_ubig(allocator, self).as_noun()
+    }
+}
+
 impl NounDecode for u32 {
     fn from_noun(noun: &Noun) -> Result<Self, NounDecodeError> {
         match noun.as_atom() {
@@ -145,7 +163,7 @@ impl NounDecode for u32 {
 
 impl NounEncode for String {
     fn to_noun<A: NounAllocator>(&self, allocator: &mut A) -> Noun {
-        use nockapp::utils::make_tas;
+        use nockvm::ext::make_tas;
         make_tas(allocator, self).as_noun()
     }
 }
@@ -341,8 +359,6 @@ impl<T: NounEncode> NounEncode for Option<T> {
 
 impl<T: NounDecode> NounDecode for Option<T> {
     fn from_noun(noun: &Noun) -> Result<Self, NounDecodeError> {
-        trace!("Decoding Option with noun: {:?}", noun);
-
         // First check if it's an atom 0 (None)
         if let Ok(atom) = noun.as_atom() {
             match atom.as_u64() {
@@ -392,7 +408,7 @@ impl<T: NounDecode> NounDecode for Vec<T> {
             let item = T::from_noun(&cell.head())?;
             result.push(item);
             current_tail = Some(cell.tail());
-            current = current_tail.as_ref().unwrap();
+            current = current_tail.as_ref().expect("current_tail was just set");
         }
 
         if let Ok(atom) = current.as_atom() {
@@ -481,7 +497,7 @@ where
             let mid = entries.len() / 2;
             let (k, v) = &entries[mid];
 
-            let node = T(allocator, &[(*k).clone(), (*v).clone()]);
+            let node = T(allocator, &[**k, **v]);
             let left = build_tree(allocator, &entries[..mid]);
             let right = build_tree(allocator, &entries[mid + 1..]);
 
@@ -746,12 +762,6 @@ pub fn decode_bool(noun: &Noun) -> Result<bool, NounDecodeError> {
             trace!("Failed to decode as atom: {:?}", e);
             Err(NounDecodeError::ExpectedAtom)
         }
-    }
-}
-
-impl From<nockapp::CrownError> for NounDecodeError {
-    fn from(err: nockapp::CrownError) -> Self {
-        NounDecodeError::Custom(err.to_string())
     }
 }
 
@@ -1464,5 +1474,18 @@ mod btreemap_tests {
         assert_eq!(decoded.get(&0), Some(&100u64));
         assert_eq!(decoded.get(&1), Some(&200u64));
         assert_eq!(decoded.get(&2), Some(&300u64));
+    }
+}
+impl NounEncode for Bytes {
+    fn to_noun<A: NounAllocator>(&self, allocator: &mut A) -> Noun {
+        <Atom as AtomExt>::from_bytes(allocator, self.as_ref()).as_noun()
+    }
+}
+
+impl NounDecode for Bytes {
+    fn from_noun(noun: &Noun) -> Result<Self, NounDecodeError> {
+        let atom = noun.as_atom().map_err(|_| NounDecodeError::ExpectedAtom)?;
+        let bytes = atom.as_ne_bytes().to_vec();
+        Ok(Bytes::from(bytes))
     }
 }
