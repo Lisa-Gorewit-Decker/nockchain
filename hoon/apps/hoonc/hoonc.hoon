@@ -28,6 +28,11 @@
           arbitrary=?
           out=cord
       ==
+      $:  %parse
+          pat=cord
+          tex=cord
+          directory=(list [cord cord])
+      ==
       [%file %write path=@t contents=@ success=?]
       [%boot hoon-txt=cord]
       [%clear ~]
@@ -197,6 +202,18 @@
       [%exit 1]~
     ~&  "hoonc: build succeeded, sending out write effect"
     [%file %write path=out.cause contents=(jam u.compiled)]~
+  ::
+      %parse
+    =/  target-path=path  (parse-file-path pat.cause)
+    ::
+    ::  Create map of dep directory, includes target
+    =/  dir
+      %-  ~(gas by *(map path cord))
+      :-  [target-path tex.cause]
+      (turn directory.cause |=((pair @t @t) [(stab p) q]))
+    =/  parse-res  (parse-dir dir)
+    =/  new-pc=parse-cache  +.parse-res
+    [~ k(pc new-pc)]
   ==
 --
 =>

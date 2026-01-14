@@ -1,9 +1,9 @@
-
 use std::collections::*;
 use std::ops::BitOr;
+
 use num_bigint::BigUint;
-use serde::Serialize;
 use num_traits::Zero;
+use serde::Serialize;
 
 #[derive(serde::Serialize, Hash, Eq, PartialEq, Debug, Clone)]
 pub enum NounExpr {
@@ -18,10 +18,7 @@ pub enum ParsedAtom {
     Big(BigUint),
 }
 
-fn serialize_biguint_decimal<S>(
-    value: &BigUint,
-    serializer: S,
-) -> Result<S::Ok, S::Error>
+fn serialize_biguint_decimal<S>(value: &BigUint, serializer: S) -> Result<S::Ok, S::Error>
 where
     S: serde::Serializer,
 {
@@ -47,7 +44,6 @@ impl From<u64> for ParsedAtom {
 }
 
 impl ParsedAtom {
-
     pub fn to_u8(&self) -> Option<u8> {
         match self {
             ParsedAtom::Small(n) => (*n as u128).try_into().ok(),
@@ -131,11 +127,21 @@ impl ParsedAtom {
         }
     }
 
-    pub fn lt(&self, other: &Self) -> bool { self.cmp(other) == std::cmp::Ordering::Less }
-    pub fn le(&self, other: &Self) -> bool { self.cmp(other) != std::cmp::Ordering::Greater }
-    pub fn gt(&self, other: &Self) -> bool { self.cmp(other) == std::cmp::Ordering::Greater }
-    pub fn ge(&self, other: &Self) -> bool { self.cmp(other) != std::cmp::Ordering::Less }
-    pub fn eq(&self, other: &Self) -> bool { self.cmp(other) == std::cmp::Ordering::Equal }
+    pub fn lt(&self, other: &Self) -> bool {
+        self.cmp(other) == std::cmp::Ordering::Less
+    }
+    pub fn le(&self, other: &Self) -> bool {
+        self.cmp(other) != std::cmp::Ordering::Greater
+    }
+    pub fn gt(&self, other: &Self) -> bool {
+        self.cmp(other) == std::cmp::Ordering::Greater
+    }
+    pub fn ge(&self, other: &Self) -> bool {
+        self.cmp(other) != std::cmp::Ordering::Less
+    }
+    pub fn eq(&self, other: &Self) -> bool {
+        self.cmp(other) == std::cmp::Ordering::Equal
+    }
 }
 
 impl From<&str> for ParsedAtom {
@@ -143,7 +149,8 @@ impl From<&str> for ParsedAtom {
         // UTF-8 bytes, little-endian @
         let bytes: Vec<u8> = s.bytes().collect();
         let mut acc = BigUint::from(0u32);
-        for &b in bytes.iter().rev() { // little-endian: first char = lowest byte
+        for &b in bytes.iter().rev() {
+            // little-endian: first char = lowest byte
             acc = (acc << 8) + BigUint::from(b);
         }
         if let Ok(small) = acc.clone().try_into() {
@@ -159,21 +166,13 @@ impl BitOr for ParsedAtom {
 
     fn bitor(self, rhs: ParsedAtom) -> ParsedAtom {
         match (self, rhs) {
-            (ParsedAtom::Small(a), ParsedAtom::Small(b)) => {
-                ParsedAtom::Small(a | b)
-            }
+            (ParsedAtom::Small(a), ParsedAtom::Small(b)) => ParsedAtom::Small(a | b),
 
-            (ParsedAtom::Small(a), ParsedAtom::Big(b)) => {
-                ParsedAtom::Big(BigUint::from(a) | b)
-            }
+            (ParsedAtom::Small(a), ParsedAtom::Big(b)) => ParsedAtom::Big(BigUint::from(a) | b),
 
-            (ParsedAtom::Big(a), ParsedAtom::Small(b)) => {
-                ParsedAtom::Big(a | BigUint::from(b))
-            }
+            (ParsedAtom::Big(a), ParsedAtom::Small(b)) => ParsedAtom::Big(a | BigUint::from(b)),
 
-            (ParsedAtom::Big(a), ParsedAtom::Big(b)) => {
-                ParsedAtom::Big(a | b)
-            }
+            (ParsedAtom::Big(a), ParsedAtom::Big(b)) => ParsedAtom::Big(a | b),
         }
     }
 }
@@ -182,8 +181,14 @@ impl BitOr for ParsedAtom {
 //  +dn
 #[derive(Clone, Debug)]
 pub enum DecimalFloat {
-    Finite { sign: bool, exp: u128, mant: BigUint },
-    Infinity { sign: bool },
+    Finite {
+        sign: bool,
+        exp: u128,
+        mant: BigUint,
+    },
+    Infinity {
+        sign: bool,
+    },
     NaN,
 }
 
@@ -191,8 +196,14 @@ pub enum DecimalFloat {
 //  +fn
 #[derive(Clone, Debug)]
 pub enum BinaryFloat {
-    Finite { sign: bool, exp: u128, mant: BigUint },
-    Infinity { sign: bool },
+    Finite {
+        sign: bool,
+        exp: u128,
+        mant: BigUint,
+    },
+    Infinity {
+        sign: bool,
+    },
     NaN,
 }
 
@@ -229,9 +240,17 @@ pub type Gate = (Box<Spec>, Box<Spec>);
 
 #[derive(serde::Serialize, PartialEq, Debug, Clone)]
 pub enum Stencil {
-    Half { left: Box<Stencil>, rite: Box<Stencil> },
-    Full { blocks: Vec<Block> },  // change to set?
-    Lazy { fragment: Axis, resolve: Gate },
+    Half {
+        left: Box<Stencil>,
+        rite: Box<Stencil>,
+    },
+    Full {
+        blocks: Vec<Block>,
+    }, // change to set?
+    Lazy {
+        fragment: Axis,
+        resolve: Gate,
+    },
 }
 
 pub type Block = Vec<Path>;
@@ -433,7 +452,7 @@ pub enum BaseType {
     Flag,
     Null,
     Void,
-    Atom(Aura),  // Aura
+    Atom(Aura), // Aura
 }
 
 #[derive(serde::Serialize, PartialEq, Debug, Clone)]
@@ -499,10 +518,10 @@ pub struct Tarp {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Date {
-    pub era: bool,   // a=? — true = AD, false = BC 
-    pub y: u64,      // year (1-based; year 0 = 1 BC, year -1 = 2 BC, etc.)
-    pub m: u64,      // month (1–12)
-    pub t: Tarp,     // time-of-day + day-of-month in tarp.d
+    pub era: bool, // a=? — true = AD, false = BC
+    pub y: u64,    // year (1-based; year 0 = 1 BC, year -1 = 2 BC, etc.)
+    pub m: u64,    // month (1–12)
+    pub t: Tarp,   // time-of-day + day-of-month in tarp.d
 }
 
 #[derive(serde::Serialize, PartialEq, Debug, Clone)]
