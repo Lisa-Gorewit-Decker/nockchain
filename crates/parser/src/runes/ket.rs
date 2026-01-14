@@ -20,6 +20,7 @@ pub fn ket_runes_tall<'src>(
             just('~').ignore_then(ketsig(hoon.clone())),
             just('=').ignore_then(kettis(hoon.clone())),
             just('?').ignore_then(ketwut(hoon.clone())),
+            just('*').ignore_then(kettar(spec.clone())),
     ))
 }
 
@@ -37,6 +38,7 @@ pub fn ket_runes_wide<'src>(
         just("&").ignore_then(ketpam_wide(hoon_wide.clone())),
         just('=').ignore_then(kettis_wide(hoon_wide.clone())),
         just('?').ignore_then(ketwut_wide(hoon_wide.clone())),
+        just('*').ignore_then(kettar_wide(spec_wide.clone())),
     ))
 }
 
@@ -133,11 +135,14 @@ pub fn kettis<'src>(
     .ignore_then(hoon.clone())
     .then_ignore(gap())
     .then(hoon.clone())
-    .try_map(|(p, q), span| {
+    .validate(|(p, q), e, emit| {
         let maybe_skin = flay(p);
         match maybe_skin {
-            Some(s) => Ok(Hoon::KetTis(s, Box::new(q))),
-            None => Err(Rich::custom(span, "Invalid variable declaration.")),
+            Some(s) => Hoon::KetTis(s, Box::new(q)),
+            None => {
+                emit.emit(Rich::custom(e.span(), "Invalid variable declaration."));
+                Hoon::KetTis(Skin::Term("error".to_string()), Box::new(Hoon::ZapZap))
+            }
         }
     })
 }
@@ -281,7 +286,8 @@ pub fn kettar<'src>(
     spec:        impl ParserExt<'src, Spec>,
 ) -> impl Parser<'src, &'src str, Hoon, Err<'src>>
 {
-    one_spec_closed_tall(spec.clone())
+    gap()
+    .ignore_then(spec.clone())
     .map(|s| Hoon::KetTar(Box::new(s)))
 }
 

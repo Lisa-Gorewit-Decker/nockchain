@@ -364,6 +364,7 @@ pub fn tislus<'src>(
 {
     two_hoons_tall(hoon.clone())
     .map(|(p, q)| Hoon::TisLus(Box::new(p), Box::new(q)))
+    .labelled("TisLus")
 }
 
 pub fn tisgal<'src>(

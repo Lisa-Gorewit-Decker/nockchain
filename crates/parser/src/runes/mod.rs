@@ -30,3 +30,6 @@ pub use mic::*;
 
 pub mod dot;
 pub use dot::*;
+
+pub mod fas;
+pub use fas::*;

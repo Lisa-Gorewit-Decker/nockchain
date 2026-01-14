@@ -11,10 +11,8 @@ pub fn zap_runes_tall<'src>(
     spec: impl ParserExt<'src, Spec>,
     hoon_with_trace: impl ParserExt<'src, Hoon>,
     hoon_no_trace: impl ParserExt<'src, Hoon>,
-    // bug: bool,
 ) -> impl Parser<'src, &'src str, Hoon, Err<'src>>
 {
-    // let h = if bug { hoon.clone().boxed() } else { hoon_no_trace.clone().boxed() };
     choice((
         just(':').ignore_then(zapcol(hoon_with_trace.clone())),
         just('.').ignore_then(zapdot(hoon_no_trace.clone())),

@@ -169,14 +169,22 @@ pub fn colsig_wide<'src>(
 }
 
 pub fn list_syntax<'src>(
+    hoon:   impl ParserExt<'src, Hoon>,
     hoon_wide:   impl ParserExt<'src, Hoon>,
 ) -> impl Parser<'src, &'src str, Hoon, Err<'src>>
 {
     just("~[").to(true).or(just("[").to(false))   //  ~[  or  [
-    .then(hoon_wide.clone()
+    .then(choice((
+            hoon.clone()
+            .separated_by(gap())
+            .at_least(1)
+            .collect::<Vec<_>>()
+            .delimited_by(just(' '), gap()),
+            hoon_wide.clone()
             .separated_by(just(' '))
             .at_least(1)
             .collect::<Vec<_>>()
+            ))
     )
     .then(just("]~").to(true).or(just("]").to(false)))  //  ]~ or ]
     .map(|((start, list), end)| {

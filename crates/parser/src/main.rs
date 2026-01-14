@@ -42,18 +42,22 @@ macro_rules! rune_branch {
 
 fn spec_parser<'src>(
     hoon:        impl ParserExt<'src, Hoon>,
+    hoon_wide:        impl ParserExt<'src, Hoon>,
     spec:        impl ParserExt<'src, Spec>,
     spec_wide:   impl ParserExt<'src, Spec>,
 ) -> impl Parser<'src, &'src str, Spec, Err<'src>> + Clone
 {
     choice((
-        rune_branch!(
+        rune_branch_pair!(
             "$",
-            buc_spec_tall(hoon.clone(), spec.clone())
+            buc_spec_tall(hoon.clone(), spec.clone()),
+            buc_spec_wide(hoon_wide.clone(),
+                                        spec_wide.clone())
         ),
-        rune_branch!(
+        rune_branch_pair!(
             "%",
-            cen_spec_tall(hoon.clone(), spec.clone())
+            cen_spec_tall(hoon.clone(), spec.clone()),
+            cen_spec_wide(hoon_wide.clone(), spec_wide.clone())
         ),
         spec_wide.clone(),
     ))
@@ -107,6 +111,7 @@ enum WideOp {
 }
 
 fn hoon_wide_parser<'src>(
+    hoon:        impl ParserExt<'src, Hoon>,
     hoon_wide:   impl ParserExt<'src, Hoon>,
     spec_wide:   impl ParserExt<'src, Spec>,
     hoon_wide_with_trace: impl ParserExt<'src, Hoon>,
@@ -202,7 +207,7 @@ fn hoon_wide_parser<'src>(
         aura_hoon().boxed(),
         buccab_irregular(hoon_wide.clone()).boxed(),                          //  _p
         constant_separator_hoon(hoon_wide.clone()).boxed(),                   //  const+hoon,  const/hoon
-        list_syntax(hoon_wide.clone()).boxed(),                               // [p ... pn], ~[foo], [foo]~
+        list_syntax(hoon.clone(), hoon_wide.clone()).boxed(),                 // [p ... pn], ~[foo], [foo]~
         kettar_irregular(spec_wide.clone()).boxed(),                          //  *foo
         wutzap_irregular(hoon_wide.clone()).boxed(),                          //  !p
         wutbar_irregular(hoon_wide.clone()).boxed(),                          //  |(p q)
@@ -254,6 +259,8 @@ pub fn hoon_parser<'src>(
     hoon_no_trace: impl ParserExt<'src, Hoon>,
     hoon_wide_with_trace: impl ParserExt<'src, Hoon>,
     hoon_wide_no_trace: impl ParserExt<'src, Hoon>,
+    wer: Path,
+    linemap: Arc<LineMap>,
 ) -> impl Parser<'src, &'src str, Hoon, Err<'src>>
 {
     let parsers = vec![
@@ -331,6 +338,12 @@ pub fn hoon_parser<'src>(
                 dot_runes_wide(hoon_wide.clone(), spec_wide.clone())
             ),
 
+            just('/')  // skip imports...
+                .ignore_then(fas_runes_tall(hoon.clone(),
+                                            hoon_wide.clone(),
+                                            wer.clone(),
+                                            linemap.clone()))
+                                            .boxed(),
 
             hoon_wide.clone().boxed(),
 
@@ -357,6 +370,7 @@ pub fn parser<'src>(
     let mut spec_wide_no_trace  = Recursive::declare();
 
     let spec_body = spec_parser(hoon.clone(),
+                                hoon_wide.clone(),
                                 spec.clone(),
                                 spec_wide.clone())
                                 .map_with(wrap_spec_with_trace(wer.clone(), linemap.clone()))
@@ -376,6 +390,7 @@ pub fn parser<'src>(
     spec_wide.define(spec_wide_body);
 
     let hoon_wide_body = hoon_wide_parser(
+                                hoon.clone(),
                                 hoon_wide.clone(),
                                 spec_wide.clone(),
                                 hoon_wide.clone(),
@@ -398,6 +413,8 @@ pub fn parser<'src>(
                         hoon_no_trace.clone(),
                         hoon_wide.clone(),
                         hoon_wide_no_trace.clone(),
+                        wer.clone(),
+                        linemap.clone(),
                         )
                         .map_with(wrap_hoon_with_trace(wer.clone(), linemap.clone()))
                         .labelled("Hoon")
@@ -413,7 +430,9 @@ pub fn parser<'src>(
                         hoon.clone(),
                         hoon_no_trace.clone(),
                         hoon_wide.clone(),
-                        hoon_wide_no_trace.clone())
+                        hoon_wide_no_trace.clone(),
+                        wer.clone(),
+                        linemap.clone())
                         .labelled("Hoon")
                         .boxed();
 
@@ -421,6 +440,7 @@ pub fn parser<'src>(
 
     let hoon_wide_no_trace_body
                     = hoon_wide_parser(
+                                        hoon_no_trace.clone(),
                                         hoon_wide_no_trace.clone(),
                                         spec_wide_no_trace.clone(),
                                         hoon_wide.clone(),
@@ -434,10 +454,11 @@ pub fn parser<'src>(
     hoon_wide_no_trace.define(hoon_wide_no_trace_body);
 
     let spec_body_no_trace = spec_parser(hoon_no_trace.clone(),
-                                spec_no_trace.clone(),
-                                spec_wide_no_trace.clone())
-                                .labelled("Spec")
-                                .boxed();
+                                         hoon_wide_no_trace.clone(),
+                                         spec_no_trace.clone(),
+                                         spec_wide_no_trace.clone())
+                                        .labelled("Spec")
+                                        .boxed();
 
     spec_no_trace.define(spec_body_no_trace);
 
@@ -450,11 +471,15 @@ pub fn parser<'src>(
 
     spec_wide_no_trace.define(spec_wide_no_trace_body);
 
-    if bug {
-        hoon.padded_by(gap().or_not()).boxed()
-    } else {
-        hoon_no_trace.padded_by(gap().or_not()).boxed()
-    }
+    let hoon = if bug { hoon } else { hoon_no_trace };
+
+    hoon
+    .separated_by(gap())
+    .at_least(1)
+    .collect::<Vec<Hoon>>()
+    .map(|hoons| Hoon::TisSig(hoons))
+    .delimited_by(gap().or_not(), gap().or_not())
+    .boxed()
 }
 
 #[cfg(not(feature = "bazel_build"))]
@@ -465,8 +490,8 @@ pub static HOON138JAM: &[u8] = include_bytes!(concat!(
 
 #[derive(ClapParser, Debug)]
 struct Cli {
-    /// input Hoon source file (required unless --test is used)
-    #[arg(value_name = "FILE", required = false)]
+    /// input file or directory (required unless --test)
+    #[arg(value_name = "PATH", required = false)]
     input: Option<PathBuf>,
 
     /// disable debug traces
@@ -486,42 +511,76 @@ struct Cli {
     test: bool,
 }
 
-fn main() {
-    let cli = Cli::parse();
+fn run_test(dbug: bool) {
+    let source_path = PathBuf::from("../hoonc/hoon/hoon-138.hoon");
 
-    let source_path = if cli.test {
-        PathBuf::from("../hoonc/hoon/hoon-138.hoon")
-    } else {
-        cli.input.clone().unwrap_or_else(|| {
-            eprintln!("Input file is required unless --test is specified");
-            std::process::exit(2);
-        })
+    let source = fs::read_to_string(&source_path).unwrap();
+    let linemap = Arc::new(LineMap::new(&source));
+
+    let wer = vec![
+        "hoonc".to_string(),
+        "hoon".to_string(),
+        "hoon-138".to_string(),
+        "hoon".to_string(),
+    ];
+
+    let start = Instant::now();
+
+    match parser(wer, dbug, linemap)
+        .parse(source.as_str())
+        .into_result()
+    {
+        Ok(res) => {
+            let mut slab = NounSlab::new();
+            let parsed_hoon = hoon_to_noun(&mut slab, &res);
+            let end = start.elapsed();
+            let jammed = Bytes::from(HOON138JAM);
+            let cued = slab.cue_into(jammed).unwrap();
+
+            diff_and_report(&cued, &parsed_hoon);
+
+            println!("test parsing took: {:?}", end);
+        }
+        Err(errs) => {
+             for err in errs {
+                let span = err.span().into_range();
+                let file_id = source_path.to_string_lossy().to_string();
+
+                Report::build(ReportKind::Error, (file_id.clone(), span.clone()))
+                    .with_config(
+                        ariadne::Config::new()
+                            .with_index_type(ariadne::IndexType::Byte),
+                    )
+                    .with_label(
+                        Label::new((file_id.clone(), span))
+                            .with_message(err.reason().to_string())
+                            .with_color(Color::Red),
+                    )
+                    .finish()
+                    .eprint((file_id.clone(), Source::from(source.clone())))
+                    .unwrap();
+            }
+        }
     };
+}
 
-    let source = fs::read_to_string(&source_path).unwrap_or_else(|err| {
+fn run_parser(source_path: &PathBuf, jam: bool, dbug: bool, out: Option<PathBuf>) {
+
+    let source = fs::read_to_string(source_path).unwrap_or_else(|err| {
         eprintln!("Error reading file '{}': {}", source_path.display(), err);
         std::process::exit(1);
     });
 
     let start = Instant::now();
 
-    let wer: Vec<String> = if cli.test {
-        vec![
-            "hoonc".to_string(),
-            "hoon".to_string(),
-            "hoon-138".to_string(),
-            "hoon".to_string(),
-        ]
-    } else {
-        source_path
-            .iter()
-            .map(|s| s.to_string_lossy().into_owned())
-            .collect()
-    };
+    let wer: Vec<String> = source_path
+        .iter()
+        .map(|s| s.to_string_lossy().into_owned())
+        .collect();
 
     let linemap = Arc::new(LineMap::new(&source));
 
-    match parser(wer.clone(), !cli.no_dbug, linemap)
+    match parser(wer, dbug, linemap)
         .parse(source.as_str())
         .into_result()
     {
@@ -529,48 +588,59 @@ fn main() {
             let took = start.elapsed();
 
             let mut slab = NounSlab::new();
-
             let start2 = Instant::now();
             let parsed_hoon = hoon_to_noun(&mut slab, &res);
             let took2 = start2.elapsed();
 
-            if cli.test {
-                let jammed = Bytes::from(HOON138JAM);
-                let cued = slab.cue_into(jammed).unwrap();
-                diff_and_report(&cued, &parsed_hoon);
-            }
-            else if cli.jam {
+            if jam {
                 slab.set_root(parsed_hoon);
-                let jammed: Bytes = slab.jam();
+                let jammed = slab.jam();
 
-                match cli.out {
-                    Some(path) => {
-                        fs::write(&path, &jammed).unwrap_or_else(|e| {
-                            eprintln!("Failed to write '{}': {}", path.display(), e);
-                            std::process::exit(1);
-                        });
+                match &out {
+                    Some(out) if out.is_dir() => {
+                        let out_file = out.join(
+                            source_path.file_name().unwrap()
+                        );
+                        fs::write(out_file, &jammed).unwrap();
                     }
-                    None => {
-                        use std::io::{self, Write};
-                        io::stdout().write_all(&jammed).unwrap();
-                    }
+                    Some(out) => fs::write(out, &jammed).unwrap(),
+                    None => std::io::stdout().write_all(&jammed).unwrap(),
                 }
             } else {
                 let json = serde_json::to_string_pretty(&res)
                     .expect("AST JSON serialization failed");
 
-                match cli.out {
-                    None => println!("{json}"),
-                    Some(path) => {
-                        fs::write(&path, json).unwrap_or_else(|e| {
-                                eprintln!("Failed to write '{}': {}", path.display(), e);
+                match &out {
+                    None => {
+                        println!("{json}");
+                    }
+                    Some(out) if out.is_dir() => {
+                        let mut out_file = out.join(
+                            source_path
+                                .file_name()
+                                .expect("input has no filename"),
+                        );
+                        out_file.set_extension("json");
+                        fs::write(&out_file, json).unwrap_or_else(|e| {
+                            eprintln!("Failed to write '{}': {}", out_file.display(), e);
+                            std::process::exit(1);
+                        });
+                    }
+                    Some(out) => {
+                        fs::write(out, json).unwrap_or_else(|e| {
+                            eprintln!("Failed to write '{}': {}", out.display(), e);
                             std::process::exit(1);
                         });
                     }
                 }
             }
-            println!("parsing took: {:?}", took);
-            println!("noun creation took: {:?}", took2);
+
+            println!(
+                "parsed file {}, took {:?}, noun creation time {:?}",
+                source_path.display(),
+                took,
+                took2
+            );
         }
 
         Err(errs) => {
@@ -594,4 +664,28 @@ fn main() {
             }
         }
     };
+}
+
+fn main() {
+    let cli = Cli::parse();
+
+    if cli.test {
+        run_test(!cli.no_dbug);
+        return;
+    }
+
+    let input = cli.input.clone().unwrap_or_else(|| {
+        eprintln!("Input file or directory is required unless --test");
+        std::process::exit(2);
+    });
+
+    let inputs = collect_inputs(&input);
+
+    let start = Instant::now();
+
+    for source_path in inputs {
+        run_parser(&source_path, cli.jam, !cli.no_dbug, cli.out.clone());
+    }
+
+    println!("finished parsing {:?} in {:?} ", input.clone() , start.elapsed());
 }

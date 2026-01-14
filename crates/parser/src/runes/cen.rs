@@ -43,12 +43,28 @@ pub fn cen_runes_wide<'src>(
 pub fn cen_spec_tall<'src>(
     hoon:        impl ParserExt<'src, Hoon>,
     spec:        impl ParserExt<'src, Spec>,
-    // spec_wide:   impl ParserExt<'src, Spec>,
 ) -> impl Parser<'src, &'src str, Spec, Err<'src>>
 {
     choice((
         just('-').ignore_then(cenhep_spec(hoon.clone(), spec.clone())),
         just("+").ignore_then(cenlus_spec(hoon.clone(), spec.clone())),
+        just("^").ignore_then(cenket_spec(hoon.clone(), spec.clone())),
+        just(".").ignore_then(cendot_spec(hoon.clone(), spec.clone())),
+        just(":").ignore_then(cencol_spec(hoon.clone(), spec.clone())),
+    ))
+}
+
+pub fn cen_spec_wide<'src>(
+    hoon_wide:        impl ParserExt<'src, Hoon>,
+    spec_wide:        impl ParserExt<'src, Spec>,
+) -> impl Parser<'src, &'src str, Spec, Err<'src>>
+{
+    choice((
+        just('-').ignore_then(cenhep_spec_wide(hoon_wide.clone(), spec_wide.clone())),
+        just("+").ignore_then(cenlus_spec_wide(hoon_wide.clone(), spec_wide.clone())),
+        just("^").ignore_then(cenket_spec_wide(hoon_wide.clone(), spec_wide.clone())),
+        just(".").ignore_then(cendot_spec_wide(hoon_wide.clone(), spec_wide.clone())),
+        just(":").ignore_then(cencol_spec_wide(hoon_wide.clone(), spec_wide.clone())),
     ))
 }
 
@@ -319,7 +335,21 @@ pub fn cenlus_spec<'src>(
     .map(|((p, q), r)| Spec::Make(p, vec![q, r]))
 }
 
-pub fn cenhep_spec<'src>(
+pub fn cenlus_spec_wide<'src>(
+    hoon_wide:        impl ParserExt<'src, Hoon>,
+    spec_wide:        impl ParserExt<'src, Spec>,
+) -> impl Parser<'src, &'src str, Spec, Err<'src>>
+{
+    hoon_wide.clone()
+    .then_ignore(just(' '))
+    .then(spec_wide.clone())
+    .then_ignore(just(' '))
+    .then(spec_wide.clone())
+    .delimited_by(just('('), just(')'))
+    .map(|((p, q), r)| Spec::Make(p, vec![q, r]))
+}
+
+pub fn cenket_spec<'src>(
     hoon:        impl ParserExt<'src, Hoon>,
     spec:        impl ParserExt<'src, Spec>,
 ) -> impl Parser<'src, &'src str, Spec, Err<'src>>
@@ -328,5 +358,95 @@ pub fn cenhep_spec<'src>(
     .ignore_then(hoon.clone())
     .then_ignore(gap())
     .then(spec.clone())
+    .then_ignore(gap())
+    .then(spec.clone())
+    .then_ignore(gap())
+    .then(spec.clone())
+    .map(|(((p, q), r), s)| Spec::Make(p, vec![q, r, s]))
+}
+
+pub fn cenket_spec_wide<'src>(
+    hoon_wide:        impl ParserExt<'src, Hoon>,
+    spec_wide:        impl ParserExt<'src, Spec>,
+) -> impl Parser<'src, &'src str, Spec, Err<'src>>
+{
+    hoon_wide.clone()
+    .then_ignore(just(' '))
+    .then(spec_wide.clone())
+    .then_ignore(just(' '))
+    .then(spec_wide.clone())
+    .then_ignore(just(' '))
+    .then(spec_wide.clone())
+    .delimited_by(just('('), just(')'))
+    .map(|(((p, q), r), s)| Spec::Make(p, vec![q, r, s]))
+}
+
+pub fn cendot_spec<'src>(
+    hoon:        impl ParserExt<'src, Hoon>,
+    spec:        impl ParserExt<'src, Spec>,
+) -> impl Parser<'src, &'src str, Spec, Err<'src>>
+{
+    gap()
+    .ignore_then(spec.clone())
+    .then_ignore(gap())
+    .then(hoon.clone())
+    .map(|(p, q)| Spec::Make(q, vec![p]))
+}
+
+pub fn cendot_spec_wide<'src>(
+    hoon_wide:        impl ParserExt<'src, Hoon>,
+    spec_wide:        impl ParserExt<'src, Spec>,
+) -> impl Parser<'src, &'src str, Spec, Err<'src>>
+{
+    spec_wide.clone()
+    .then_ignore(just(' '))
+    .then(hoon_wide.clone())
+    .delimited_by(just('('), just(')'))
+    .map(|(p, q)| Spec::Make(q, vec![p]))
+}
+
+pub fn cencol_spec<'src>(
+    hoon:        impl ParserExt<'src, Hoon>,
+    spec:        impl ParserExt<'src, Spec>,
+) -> impl Parser<'src, &'src str, Spec, Err<'src>>
+{
+    gap()
+    .ignore_then(hoon.clone())
+    .then_ignore(gap())
+    .then(list_spec_closed_tall(spec.clone()))
+    .map(|(p, q)| Spec::Make(p, q))
+}
+
+pub fn cencol_spec_wide<'src>(
+    hoon_wide:        impl ParserExt<'src, Hoon>,
+    spec_wide:        impl ParserExt<'src, Spec>,
+) -> impl Parser<'src, &'src str, Spec, Err<'src>>
+{
+    hoon_wide.clone()
+    .then_ignore(just(' '))
+    .then(spec_wide.clone()
+          .separated_by(just(' '))
+          .at_least(1)
+          .collect::<Vec<_>>()
+        )
+    .delimited_by(just('('), just(')'))
+    .map(|(p, q)| Spec::Make(p, q))
+}
+
+pub fn cenhep_spec<'src>(
+    hoon:        impl ParserExt<'src, Hoon>,
+    spec:        impl ParserExt<'src, Spec>,
+) -> impl Parser<'src, &'src str, Spec, Err<'src>>
+{
+    hoon_spec_tall(hoon.clone(), spec.clone())
+    .map(|(p, q)| Spec::Make(p, vec![q]))
+}
+
+pub fn cenhep_spec_wide<'src>(
+    hoon_wide:        impl ParserExt<'src, Hoon>,
+    spec_wide:        impl ParserExt<'src, Spec>,
+) -> impl Parser<'src, &'src str, Spec, Err<'src>>
+{
+    hoon_spec_wide(hoon_wide.clone(), spec_wide.clone())
     .map(|(p, q)| Spec::Make(p, vec![q]))
 }

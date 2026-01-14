@@ -1912,11 +1912,11 @@ pub fn flay(gen: Hoon) -> Option<Skin> {
             let maybe_skin = flay(*h);
             match maybe_skin {
                 Some(s) => {
-                    match s {
-                        Skin::Term(t) => Some(Skin::Name(t, Box::new(skin.clone()))),
-                        Skin::Name(ref t, ref b) // Borrow t and b
+                    match skin {
+                        Skin::Term(ref t) => Some(Skin::Name(t.to_string(), Box::new(skin.clone()))),
+                        Skin::Name(ref t, ref b)
                             if matches!(**b, Skin::Base(BaseType::NounExpr)) => {
-                            Some(Skin::Name(t.clone(), Box::new(s))) // Clone t if needed
+                            Some(Skin::Name(t.clone(), Box::new(s)))
                         },
                         _ => None,
                     }
@@ -2339,8 +2339,7 @@ fn gah<'src>() -> impl Parser<'src, &'src str, (), Err<'src>> {
 
 }
 
-// comments
-fn vul<'src>() -> impl Parser<'src, &'src str, (), Err<'src>> {
+pub fn vul<'src>() -> impl Parser<'src, &'src str, (), Err<'src>> {
     just("::")
         .ignore_then(non_control_char().repeated())
         .ignore_then(newline())
@@ -2361,6 +2360,7 @@ fn gaq<'src>() -> impl Parser<'src, &'src str, (), Err<'src>> {
         vul(),
     ))
     .ignored()
+    .labelled("End of Line")
 }
 
 pub fn gap<'src>(
@@ -2390,6 +2390,16 @@ pub fn list_term_hoon<'src>(
     .repeated()
     .at_least(1)
     .collect::<Vec<(String, Hoon)>>()
+}
+
+pub fn list_names_tall<'src>(
+) -> impl Parser<'src, &'src str, Vec<String>, Err<'src>>
+{
+    symbol()
+    .separated_by(gap())
+    .at_least(1)
+    .collect::<Vec<_>>()
+    .then_ignore(gap().ignore_then(just("==")))
 }
 
 pub fn list_names_wide<'src>(
@@ -3755,7 +3765,7 @@ pub fn noun_tall<'src>(
     hoon:   impl ParserExt<'src, Hoon>,
 ) -> impl Parser<'src, &'src str, Hoon, Err<'src>>
 {
-    hoon // can this wrongly match something?
+    hoon
     .separated_by(gap())
     .at_least(1)
     .collect::<Vec<_>>()
@@ -10431,3 +10441,36 @@ fn atom_less_than_b(a: &Atom, b: &Atom) -> bool {
 
     false
 }
+
+pub fn collect_inputs(path: &PathBuf) -> Vec<PathBuf> {
+    let mut files = Vec::new();
+    collect_inputs_inner(path, &mut files);
+    files.sort();
+    files
+}
+
+fn collect_inputs_inner(path: &PathBuf, out: &mut Vec<PathBuf>) {
+    if path.is_file() {
+        if path.extension().and_then(|e| e.to_str()) == Some("hoon") {
+            out.push(path.to_path_buf());
+        }
+    } else if path.is_dir() {
+        let entries = std::fs::read_dir(path).unwrap_or_else(|e| {
+            eprintln!("Failed to read directory '{}': {}", path.display(), e);
+            std::process::exit(1);
+        });
+
+        for entry in entries {
+            let entry = entry.unwrap_or_else(|e| {
+                eprintln!("Failed to read directory entry in '{}': {}", path.display(), e);
+                std::process::exit(1);
+            });
+
+            collect_inputs_inner(&entry.path(), out);
+        }
+    } else {
+        eprintln!("Invalid input path: {}", path.display());
+        std::process::exit(2);
+    }
+}
+

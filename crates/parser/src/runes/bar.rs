@@ -150,21 +150,38 @@ pub fn barbuc<'src>(
 ) -> impl Parser<'src, &'src str, Hoon, Err<'src>>
 {
     gap()
-    .ignore_then(list_names_wide())
+    .ignore_then(barbuc_sample_tall())
     .then_ignore(gap())
     .then(spec.clone())
     .map(|(list, h)| Hoon::BarBuc(list, Box::new(h)))
+}
+
+pub fn barbuc_sample_tall<'src>(
+) -> impl Parser<'src, &'src str, Vec<String>, Err<'src>>
+{
+    choice((list_names_tall(),
+           list_names_wide(),
+            symbol().map(|s| vec![s]),
+        ))
 }
 
 pub fn barbuc_wide<'src>(
     spec_wide: impl ParserExt<'src, Spec>,
 ) -> impl Parser<'src, &'src str, Hoon, Err<'src>>
 {
-    list_names_wide()
+    barbuc_sample_wide()
     .then_ignore(just(' '))
     .then(spec_wide.clone())
     .delimited_by(just('('), just(')'))
     .map(|(list, h)| Hoon::BarBuc(list, Box::new(h)))
+}
+
+pub fn barbuc_sample_wide<'src>(
+) -> impl Parser<'src, &'src str, Vec<String>, Err<'src>>
+{
+    choice((list_names_wide(),
+            symbol().map(|s| vec![s]),
+        ))
 }
 
 pub fn barcol<'src>(

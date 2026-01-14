@@ -821,6 +821,7 @@ pub fn bucbar_spec_wide<'src>(
 ) -> impl Parser<'src, &'src str, Spec, Err<'src>>
 {
     spec_hoon_wide(hoon_wide.clone(), spec_wide.clone())
+    .delimited_by(just('('), just(')'))
     .map(|(p, q)| Spec::BucBar(Box::new(p), q))
 }
 
