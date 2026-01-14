@@ -798,14 +798,22 @@ fn create_checkpoint<C: SerfCheckpoint>(
     });
     let cold_state = serf.context.cold;
 
-    C::new(
+    let checkpoint = C::new(
         serf.stack(),
         ker_hash,
         event_num,
         ker_state,
         cold_state,
         metrics,
-    )
+    );
+
+    if let Some(pma) = serf.pma.as_ref() {
+        if let Err(err) = pma.advise_drop_allocated_prefix(4, 5) {
+            warn!("Failed to madvise PMA prefix after checkpoint save: {err}");
+        }
+    }
+
+    checkpoint
 }
 
 /// Represents a Sword kernel, containing a Serf and snapshot location.

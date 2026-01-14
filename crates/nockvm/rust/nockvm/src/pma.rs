@@ -3,7 +3,7 @@
 //! The PMA is a file-backed memory region for storing long-lived Nouns.
 //! It uses bump allocation and stores nouns in offset form.
 
-use std::io::{Read, Seek, SeekFrom};
+use std::io::{self, Read, Seek, SeekFrom};
 use std::path::PathBuf;
 use std::ptr::copy_nonoverlapping;
 use std::sync::Arc;
@@ -12,6 +12,8 @@ use std::time::Instant;
 use either::Either::{Left, Right};
 #[cfg(feature = "pma-assert")]
 use intmap::IntMap;
+#[cfg(unix)]
+use libc;
 use smallvec::SmallVec;
 use thiserror::Error;
 use tracing::info;
@@ -357,6 +359,52 @@ impl Pma {
         unsafe {
             std::ptr::copy_nonoverlapping(bytes.as_ptr(), dst, bytes.len());
         }
+    }
+
+    /// Hint the OS to drop the first `numerator/denominator` of allocated PMA data.
+    pub fn advise_drop_allocated_prefix(
+        &self,
+        numerator: usize,
+        denominator: usize,
+    ) -> io::Result<usize> {
+        if denominator == 0 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "denominator must be non-zero",
+            ));
+        }
+
+        let alloc_words = self.alloc_offset().min(self.size_words());
+        let advise_words = alloc_words.saturating_mul(numerator) / denominator;
+        if advise_words == 0 {
+            return Ok(0);
+        }
+        let mut len_bytes = advise_words.saturating_mul(8);
+        len_bytes = len_bytes.min(self.arena.len_bytes());
+
+        let page = unsafe { libc::sysconf(libc::_SC_PAGESIZE) };
+        if page <= 0 {
+            return Err(io::Error::new(
+                io::ErrorKind::Other,
+                "failed to read page size",
+            ));
+        }
+        let page = page as usize;
+        let len_aligned = (len_bytes / page) * page;
+        if len_aligned == 0 {
+            return Ok(0);
+        }
+        let ret = unsafe {
+            libc::madvise(
+                self.arena.base_ptr() as *mut libc::c_void,
+                len_aligned,
+                libc::MADV_DONTNEED,
+            )
+        };
+        if ret != 0 {
+            return Err(io::Error::last_os_error());
+        }
+        Ok(len_aligned)
     }
 }
 
