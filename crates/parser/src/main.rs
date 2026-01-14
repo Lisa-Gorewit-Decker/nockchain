@@ -79,7 +79,7 @@ fn spec_wide_parser<'src>(
         buctis_irregular(spec_wide.clone()).boxed(),         // foo=bar, =bar,  =foo=bar
         buccol_irregular(spec_wide.clone()).boxed(),         // [foo=bar foo=bar]
         reference_spec(spec_wide.clone()).boxed(),           // foo or foo:bar
-        bucwut_irregular(spec_wide.clone()).boxed(),         // ?(foo bar)
+        bucwut_irregular_spec(spec_wide.clone()).boxed(),    // ?(foo bar)
         parenthesis_spec(hoon_wide.clone(),
                                 spec_wide.clone()).boxed(),  // (foo bar)
         constant(linemap)
@@ -136,6 +136,7 @@ fn hoon_wide_parser<'src>(
         just('?').ignore_then(
             choice((
                 wut_runes_wide(hoon_wide.clone(), spec_wide.clone()),
+                bucwut_irregular(spec_wide.clone()).boxed(),   // ?(foo bar)
                 just('?').to(Hoon::Base(BaseType::Flag)).boxed(),
             ))
         ).boxed(),
@@ -216,12 +217,13 @@ fn hoon_wide_parser<'src>(
         ketcol_irregular(spec_wide.clone()).boxed(),                          //  ,p
         tell(hoon_wide.clone()).boxed(),                                      // <foo> render as tape
         yell_parser(hoon_wide.clone()).boxed(),                               // >foo< render as tank
-        number().map(|(p, q)| Hoon::Sand(p, NounExpr::ParsedAtom(q))).boxed(),          //  111.111, 0x1111, etc.
+        number().map(|(p, q)| Hoon::Sand(p, NounExpr::ParsedAtom(q))).boxed(),//  111.111, 0x1111, etc.
         wing().boxed(),                                                       //   foo, foo.bar, etc.
-        constant(linemap.clone()).map(|coin| jock(true, &coin)).boxed(),                     //  %foo
-        cord(linemap.clone()).map(|s| Hoon::Sand("t".to_string(), NounExpr::ParsedAtom(s))).boxed(),   //  'foo'
-        path(hoon_wide.clone(), wer, linemap.clone()).boxed(),                                 //  /a/b/c
-        tape(hoon_wide.clone(), linemap).boxed(),                                      //  "foo"
+        constant(linemap.clone()).map(|coin| jock(true, &coin)).boxed(),      //  %foo
+        cord(linemap.clone())
+            .map(|s| Hoon::Sand("t".to_string(), NounExpr::ParsedAtom(s))).boxed(), //  'foo'
+        path(hoon_wide.clone(), wer, linemap.clone()).boxed(),                      //  /a/b/c
+        tape(hoon_wide.clone(), linemap).boxed(),                                   //  "foo"
         just('~').to(Hoon::Bust(BaseType::Null)).boxed(),
         just('&').to(Hoon::Sand("f".to_string(), NounExpr::ParsedAtom(ParsedAtom::Small(0)))).boxed(),
         just('|').to(Hoon::Sand("f".to_string(), NounExpr::ParsedAtom(ParsedAtom::Small(1)))).boxed(),

@@ -488,6 +488,7 @@ pub fn bucbar_wide<'src>(
 ) -> impl Parser<'src, &'src str, Hoon, Err<'src>>
 {
     spec_hoon_wide(hoon_wide.clone(), spec_wide.clone())
+    .delimited_by(just('('), just(')'))
     .map(|(p, q)| Hoon::KetCol(Box::new(Spec::BucBar(Box::new(p), q))))
 }
 
@@ -558,6 +559,21 @@ pub fn buclus_spec<'src>(
 }
 
 pub fn bucwut_irregular<'src>(
+    spec_wide:   impl ParserExt<'src, Spec>,
+) -> impl Parser<'src, &'src str, Hoon, Err<'src>>
+{
+    spec_wide.clone()
+    .separated_by(just(' '))
+    .at_least(1)
+    .collect::<Vec<_>>()
+    .delimited_by(just('('), just(')'))
+    .map(|specs| {
+        let (first, rest) = specs.split_first().unwrap();
+        Hoon::KetCol(Box::new(Spec::BucWut(Box::new(first.clone()), rest.to_vec())))
+    })
+}
+
+pub fn bucwut_irregular_spec<'src>(
     spec_wide:   impl ParserExt<'src, Spec>,
 ) -> impl Parser<'src, &'src str, Spec, Err<'src>>
 {
