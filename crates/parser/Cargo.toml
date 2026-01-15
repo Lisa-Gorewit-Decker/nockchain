@@ -25,6 +25,7 @@ hoonc = { workspace = true }
 ibig = { workspace = true }
 tokio = { workspace = true }
 walkdir = { workspace = true }
+rayon = { workspace = true }
 
 [[bin]]
 name = "parser"

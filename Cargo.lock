@@ -5834,6 +5834,7 @@ dependencies = [
  "nockvm_macros",
  "num-bigint",
  "num-traits",
+ "rayon",
  "serde",
  "serde_json",
  "sha2",

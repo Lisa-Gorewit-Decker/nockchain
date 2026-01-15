@@ -10,6 +10,7 @@ use hoonc::{build_jam, build_jam_with_primed_parse_cache, is_valid_file_or_dir};
 use nockapp::noun::slab::NounSlab;
 use parser::native_parser;
 use parser::utils::{hoon_to_noun, LineMap};
+use rayon::prelude::*;
 use walkdir::WalkDir;
 
 const KERNEL_ENTRIES: &[&str] = &[
@@ -18,6 +19,9 @@ const KERNEL_ENTRIES: &[&str] = &[
 ];
 
 const MARKDOWN_INCLUDE: &[u8] = b"/common/markdown/markdown";
+
+const HOON_DIR: &str = "../../hoon";
+const MARKDOWN_HOON: &str = "../../hoon/common/markdown/markdown.hoon";
 
 static DISABLE_METRICS: Once = Once::new();
 
@@ -57,6 +61,44 @@ fn temp_out_dir(prefix: &str) -> Result<PathBuf, Box<dyn std::error::Error>> {
     Ok(path)
 }
 
+fn repo_hoon_dir() -> Result<PathBuf, Box<dyn std::error::Error>> {
+    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(HOON_DIR);
+    Ok(path.canonicalize()?)
+}
+
+fn markdown_hoon_path() -> Result<PathBuf, Box<dyn std::error::Error>> {
+    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(MARKDOWN_HOON);
+    Ok(path.canonicalize()?)
+}
+
+fn list_hoon_files(root: &Path) -> Result<Vec<PathBuf>, Box<dyn std::error::Error>> {
+    let walker = WalkDir::new(root).follow_links(true).into_iter();
+    let mut files = Vec::new();
+    for entry_result in walker.filter_entry(is_valid_file_or_dir) {
+        let entry = entry_result?;
+        if !entry.file_type().is_file() {
+            continue;
+        }
+        if entry.path().extension().and_then(|ext| ext.to_str()) != Some("hoon") {
+            continue;
+        }
+        files.push(entry.path().canonicalize()?);
+    }
+    Ok(files)
+}
+
+fn parse_all_hoon_files(root: &Path) -> Result<Vec<(PathBuf, String)>, Box<dyn std::error::Error>> {
+    let files = list_hoon_files(root)?;
+    let failures: Vec<(PathBuf, String)> = files
+        .par_iter()
+        .filter_map(|path| match parse_native_ast_err(path) {
+            Ok(_) => None,
+            Err(err) => Some((path.clone(), err)),
+        })
+        .collect();
+    Ok(failures)
+}
+
 fn ensure_entry_ast(
     asts: &mut HashMap<PathBuf, Vec<u8>>,
     entry: &Path,
@@ -92,6 +134,10 @@ fn parse_native_ast(path: &Path) -> Result<Vec<u8>, Box<dyn std::error::Error>> 
     let noun = hoon_to_noun(&mut slab, &parsed);
     slab.set_root(noun);
     Ok(slab.jam().to_vec())
+}
+
+fn parse_native_ast_err(path: &Path) -> Result<Vec<u8>, String> {
+    parse_native_ast(path).map_err(|err| err.to_string())
 }
 
 fn collect_native_asts(
@@ -187,9 +233,8 @@ async fn primed_parse_cache_matches_regular_build() -> Result<(), Box<dyn std::e
     let _env_guard = EnvVarGuard::set("NOCKAPP_HOME", nockapp_home.to_string_lossy().as_ref());
 
     let entry = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../hoonc/hoon/hoon-138.hoon");
-    let deps_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../hoon");
+    let deps_dir = repo_hoon_dir()?;
     let entry = entry.canonicalize()?;
-    let deps_dir = deps_dir.canonicalize()?;
 
     let native_asts = collect_native_asts(&deps_dir, &entry)?;
     let regular_out_dir = temp_out_dir("hoonc-regular")?;
@@ -235,12 +280,44 @@ async fn primed_parse_cache_matches_regular_build() -> Result<(), Box<dyn std::e
     Ok(())
 }
 
+#[test]
+fn native_parser_fails_on_markdown_hoon() -> Result<(), Box<dyn std::error::Error>> {
+    let path = markdown_hoon_path()?;
+    match parse_native_ast_err(&path) {
+        Ok(_) => Err(io::Error::new(
+            io::ErrorKind::Other,
+            format!("expected markdown.hoon to fail parsing: {}", path.display()),
+        )
+        .into()),
+        Err(err) => {
+            println!("native parser failed for markdown.hoon as expected: {err}");
+            Ok(())
+        }
+    }
+}
+
+#[test]
+fn native_parser_parses_all_hoon_files() -> Result<(), Box<dyn std::error::Error>> {
+    let root = repo_hoon_dir()?;
+    let failures = parse_all_hoon_files(&root)?;
+
+    if failures.is_empty() {
+        return Ok(());
+    }
+
+    let mut report = String::new();
+    report.push_str("native parser failures:\n");
+    for (path, error) in failures {
+        report.push_str(&format!("- {}\n    {error}\n", path.display()));
+    }
+    Err(io::Error::new(io::ErrorKind::Other, report).into())
+}
+
 #[tokio::test]
 async fn primed_parse_cache_matches_regular_build_for_kernels(
 ) -> Result<(), Box<dyn std::error::Error>> {
     disable_metrics();
-    let deps_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../hoon");
-    let deps_dir = deps_dir.canonicalize()?;
+    let deps_dir = repo_hoon_dir()?;
     let entries = kernel_entries(&deps_dir)?;
     let first_entry = entries
         .first()
