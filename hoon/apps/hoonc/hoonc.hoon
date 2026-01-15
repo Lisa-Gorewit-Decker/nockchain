@@ -33,6 +33,12 @@
           tex=cord
           directory=(list [cord cord])
       ==
+      $:  %prime
+          pat=cord
+          tex=cord
+          directory=(list [cord cord])
+          native=(list [cord hoon])
+      ==
       [%file %write path=@t contents=@ success=?]
       [%boot hoon-txt=cord]
       [%clear ~]
@@ -213,6 +219,20 @@
       (turn directory.cause |=((pair @t @t) [(stab p) q]))
     =/  parse-res  (parse-dir dir)
     =/  new-pc=parse-cache  +.parse-res
+    [~ k(pc new-pc)]
+  ::
+      %prime
+    =/  target-path=path  (parse-file-path pat.cause)
+    ::
+    ::  Create map of dep directory, includes target
+    =/  dir
+      %-  ~(gas by *(map path cord))
+      :-  [target-path tex.cause]
+      (turn directory.cause |=((pair @t @t) [(stab p) q]))
+    =/  native-map=(map path hoon)
+      %-  ~(gas by *(map path hoon))
+      (turn native.cause |=((pair @t hoon) [(stab p) q]))
+    =/  new-pc=parse-cache  (prime-dir target-path dir native-map)
     [~ k(pc new-pc)]
   ==
 --
@@ -551,6 +571,49 @@
     ^-  [pile (list raut)]
     =/  pil  (parse-pile pax tex)
     [pil (resolve-pile pil dir)]
+  --
+::  $prime-dir: create parse-cache entries using native hoon ASTs
+::
+::    .tar: entry path to start traversal
+::    .dir: directory of deps, includes build target
+::    .native: map of hoon ASTs keyed by path
+::    returns updated parse-cache
+++  prime-dir
+  |^
+  |=  [tar=path dir=(map path cord) native=(map path hoon)]
+  ^-  parse-cache
+  =|  pc=parse-cache
+  =|  seen=(set path)
+  =^  pc  seen
+    (prime-node tar dir native pc seen)
+  pc
+  ::
+  ++  prime-node
+    |=  [pat=path dir=(map path cord) native=(map path hoon) pc=parse-cache seen=(set path)]
+    ^-  [parse-cache (set path)]
+    ?:  (~(has in seen) pat)
+      [pc seen]
+    =.  seen  (~(put in seen) pat)
+    =/  fil=cord  (~(got by dir) pat)
+    =/  file-hash  (shax fil)
+    =/  native-hoon=(unit hoon)  (~(get by native) pat)
+    =/  [pil=pile deps=(list raut)]
+      ?~  e=(~(get by pc) file-hash)
+        =/  tex=tape  (trip fil)
+        =/  pil  (parse-pile pat tex)
+        [pil (resolve-pile pil dir)]
+      [pil deps]:u.e
+    =/  pil=pile
+      ?~  native-hoon
+        pil
+      pil(hoon u.native-hoon)
+    =.  pc  (~(put by pc) file-hash [pat pil deps])
+    |-
+    ?~  deps
+      [pc seen]
+    =^  pc  seen
+      (prime-node pax.i.deps dir native pc seen)
+    $(deps t.deps)
   --
 ::
 ::  $build-merk-dag: builds a merkle DAG out dependencies + target

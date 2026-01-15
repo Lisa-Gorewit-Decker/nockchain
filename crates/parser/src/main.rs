@@ -676,8 +676,8 @@ fn run_test() {
 
 fn run_test_inner() -> Result<(), Box<dyn Error>> {
     let source_path = hoon_138_source_path()?;
-    let source = fs::read_to_string(&source_path)?;
-    let source_bytes = source.as_bytes().to_vec();
+    let source = std::str::from_utf8(hoonc::HOON_138_HOON)?.to_string();
+    let source_bytes = hoonc::HOON_138_HOON.to_vec();
     let linemap = Arc::new(LineMap::new(&source));
 
     let wer = vec![
