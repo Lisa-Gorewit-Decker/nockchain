@@ -256,6 +256,28 @@ impl Pma {
         Ok(pma)
     }
 
+    /// Flush the entire PMA mapping to storage.
+    pub fn sync_all(&self) -> io::Result<()> {
+        #[cfg(unix)]
+        {
+            let len_bytes = self.arena.mapped_len_bytes();
+            if len_bytes == 0 {
+                return Ok(());
+            }
+            let ret = unsafe {
+                libc::msync(
+                    self.arena.base_ptr() as *mut libc::c_void,
+                    len_bytes,
+                    libc::MS_SYNC,
+                )
+            };
+            if ret != 0 {
+                return Err(io::Error::last_os_error());
+            }
+        }
+        Ok(())
+    }
+
     /// Get the underlying arena
     pub fn arena(&self) -> &Arc<Arena> {
         &self.arena

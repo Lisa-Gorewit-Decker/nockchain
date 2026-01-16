@@ -808,6 +808,9 @@ fn create_checkpoint<C: SerfCheckpoint>(
     );
 
     if let Some(pma) = serf.pma.as_ref() {
+        if let Err(err) = pma.sync_all() {
+            warn!("Failed to msync PMA after checkpoint save: {err}");
+        }
         if let Err(err) = pma.advise_drop_allocated_prefix(4, 5) {
             warn!("Failed to madvise PMA prefix after checkpoint save: {err}");
         }
