@@ -281,19 +281,10 @@ async fn primed_parse_cache_matches_regular_build() -> Result<(), Box<dyn std::e
 }
 
 #[test]
-fn native_parser_fails_on_markdown_hoon() -> Result<(), Box<dyn std::error::Error>> {
+fn native_parser_parses_markdown_hoon() -> Result<(), Box<dyn std::error::Error>> {
     let path = markdown_hoon_path()?;
-    match parse_native_ast_err(&path) {
-        Ok(_) => Err(io::Error::new(
-            io::ErrorKind::Other,
-            format!("expected markdown.hoon to fail parsing: {}", path.display()),
-        )
-        .into()),
-        Err(err) => {
-            println!("native parser failed for markdown.hoon as expected: {err}");
-            Ok(())
-        }
-    }
+    parse_native_ast(&path)?;
+    Ok(())
 }
 
 #[test]

@@ -169,7 +169,13 @@ fn hoon_wide_parser<'src>(
                 hoon_wide_no_trace.clone()
             )
         ),
-        rune_branch!(';', mic_runes_wide(hoon_wide.clone(), spec_wide.clone())),
+        rune_branch!(
+            ';',
+            choice((
+                sail_wide(hoon.clone(), hoon_wide.clone()),
+                mic_runes_wide(hoon_wide.clone(), spec_wide.clone()),
+            ))
+        ),
         just('.')
             .ignore_then(choice((
                 dot_runes_wide(hoon_wide.clone(), spec_wide.clone()),
@@ -326,8 +332,14 @@ pub fn hoon_parser<'src>(
         ),
         rune_branch_pair!(
             ';',
-            mic_runes_tall(hoon.clone(), spec.clone()),
-            mic_runes_wide(hoon_wide.clone(), spec_wide.clone())
+            choice((
+                sail_tall(hoon.clone(), hoon_wide.clone()),
+                mic_runes_tall(hoon.clone(), spec.clone()),
+            )),
+            choice((
+                sail_wide(hoon.clone(), hoon_wide.clone()),
+                mic_runes_wide(hoon_wide.clone(), spec_wide.clone()),
+            ))
         ),
         rune_branch_pair!(
             '.',
