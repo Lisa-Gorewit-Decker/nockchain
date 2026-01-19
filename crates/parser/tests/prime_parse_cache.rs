@@ -317,9 +317,6 @@ async fn primed_parse_cache_matches_regular_build_for_kernels(
     let mut tested = Vec::new();
 
     for entry in entries {
-        if kernel_includes_markdown(&entry, &deps_dir)? {
-            continue;
-        }
         ensure_entry_ast(&mut native_asts, &entry)?;
 
         let regular_home = temp_out_dir("nockapp-home-regular")?;
@@ -327,6 +324,8 @@ async fn primed_parse_cache_matches_regular_build_for_kernels(
 
         let regular_out_dir = temp_out_dir("hoonc-regular")?;
         let primed_out_dir = temp_out_dir("hoonc-primed")?;
+
+        println!("testing kernel: {}", entry.display());
 
         let regular_jam = {
             let _env_guard =
@@ -336,7 +335,7 @@ async fn primed_parse_cache_matches_regular_build_for_kernels(
                 deps_dir.clone(),
                 Some(regular_out_dir.clone()),
                 false,
-                true,
+                false,
             )
             .await
             .map_err(|err| {
@@ -359,7 +358,7 @@ async fn primed_parse_cache_matches_regular_build_for_kernels(
                 deps_dir.clone(),
                 Some(primed_out_dir.clone()),
                 false,
-                true,
+                false,
                 &native_asts,
             )
             .await
