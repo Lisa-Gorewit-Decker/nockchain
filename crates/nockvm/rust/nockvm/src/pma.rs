@@ -416,13 +416,13 @@ impl Pma {
         if len_aligned == 0 {
             return Ok(0);
         }
-        let ret = unsafe {
-            libc::madvise(
-                self.arena.base_ptr() as *mut libc::c_void,
-                len_aligned,
-                libc::MADV_DONTNEED,
-            )
-        };
+            let ret = unsafe {
+                libc::madvise(
+                    self.arena.base_ptr() as *mut libc::c_void,
+                    len_aligned,
+                    libc::MADV_PAGEOUT,
+                )
+            };
         if ret != 0 {
             return Err(io::Error::last_os_error());
         }
