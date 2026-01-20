@@ -2,17 +2,14 @@ use std::ffi::{CStr, CString};
 use std::os::raw::{c_char, c_int, c_void};
 use std::path::{Path, PathBuf};
 use std::ptr;
-use std::sync::Arc;
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use libsqlite3_sys as sqlite;
-use nockvm::ext::AtomExt;
 use nockvm::mem::NockStack;
-use nockvm::noun::{Atom, Noun};
-use nockvm::pma::Pma;
-use nockvm::serialization;
-use tracing::debug;
+use nockvm::noun::Noun;
+use rkyv::rancor::Error as RkyvError;
+use rkyv::to_bytes;
 
+use crate::archive::{build_archive, ArchivedNoun};
 use crate::lru::LruCache;
 use crate::{PmaSqliteError, Result};
 
@@ -20,7 +17,6 @@ use crate::{PmaSqliteError, Result};
 pub struct SqlitePmaConfig {
     pub path: PathBuf,
     pub cache_capacity: usize,
-    pub stack_words_hint: usize,
 }
 
 impl SqlitePmaConfig {
@@ -28,7 +24,6 @@ impl SqlitePmaConfig {
         Self {
             path: path.as_ref().to_path_buf(),
             cache_capacity: 1024,
-            stack_words_hint: 1024,
         }
     }
 }
@@ -40,26 +35,17 @@ pub struct SqlitePmaStats {
     pub inserts: u64,
 }
 
-pub struct CachedNoun<'a> {
-    stack: &'a mut NockStack,
-    root: Noun,
+pub struct CachedArchive<'a> {
+    root: &'a ArchivedNoun,
 }
 
-impl<'a> CachedNoun<'a> {
-    fn new(stack: &'a mut NockStack, root: Noun) -> Self {
-        Self { stack, root }
+impl<'a> CachedArchive<'a> {
+    fn new(root: &'a ArchivedNoun) -> Self {
+        Self { root }
     }
 
-    pub fn root(&self) -> Noun {
+    pub fn root(&self) -> &'a ArchivedNoun {
         self.root
-    }
-
-    pub fn stack(&self) -> &NockStack {
-        self.stack
-    }
-
-    pub fn stack_mut(&mut self) -> &mut NockStack {
-        self.stack
     }
 }
 
@@ -70,11 +56,6 @@ pub struct SqlitePma {
     list_stmt: SqliteStatement,
     cache: LruCache<i64, CachedEntry>,
     stats: SqlitePmaStats,
-    stack_words_hint: usize,
-    cache_pma: Pma,
-    cache_pma_words: usize,
-    work_stack: NockStack,
-    work_stack_words: usize,
 }
 
 impl SqlitePma {
@@ -86,24 +67,15 @@ impl SqlitePma {
              PRAGMA temp_store=MEMORY;\
              CREATE TABLE IF NOT EXISTS nouns (\
                  id INTEGER PRIMARY KEY AUTOINCREMENT,\
-                 jam BLOB NOT NULL\
+                 archive BLOB NOT NULL\
              );",
         )?;
 
-        let insert_stmt = db.prepare("INSERT INTO nouns (jam) VALUES (?1)")?;
-        let select_stmt = db.prepare("SELECT jam FROM nouns WHERE id = ?1")?;
+        let insert_stmt = db.prepare("INSERT INTO nouns (archive) VALUES (?1)")?;
+        let select_stmt = db.prepare("SELECT archive FROM nouns WHERE id = ?1")?;
         let list_stmt = db.prepare("SELECT id FROM nouns ORDER BY id")?;
 
         let cache_capacity = config.cache_capacity.max(1);
-        let cache_pma_words = config
-            .stack_words_hint
-            .saturating_mul(cache_capacity)
-            .max(config.stack_words_hint.max(1024));
-        let cache_pma_path = cache_pma_path();
-        let cache_pma = Pma::new(cache_pma_words, cache_pma_path)?;
-        let work_stack_words = config.stack_words_hint.max(1024);
-        let (mut work_stack, _) = NockStack::new_(work_stack_words, 0)?;
-        work_stack.install_pma_arena(Arc::clone(cache_pma.arena()));
 
         Ok(Self {
             db,
@@ -112,11 +84,6 @@ impl SqlitePma {
             list_stmt,
             cache: LruCache::new(cache_capacity),
             stats: SqlitePmaStats::default(),
-            stack_words_hint: config.stack_words_hint,
-            cache_pma,
-            cache_pma_words,
-            work_stack,
-            work_stack_words,
         })
     }
 
@@ -137,18 +104,21 @@ impl SqlitePma {
     }
 
     pub fn insert_noun(&mut self, stack: &mut NockStack, noun: Noun) -> Result<i64> {
-        let jammed = jam_noun(stack, noun);
-        self.insert_jam(&jammed)
+        let space = stack.noun_space();
+        let archive = build_archive(&space, noun)?;
+        let bytes = to_bytes::<RkyvError>(&archive)
+            .map_err(|err| PmaSqliteError::Archive(err.to_string()))?;
+        self.insert_archive(bytes.as_ref())
     }
 
-    pub fn insert_jam(&mut self, jammed: &[u8]) -> Result<i64> {
+    pub fn insert_archive(&mut self, archive: &[u8]) -> Result<i64> {
         self.insert_stmt.reset()?;
-        self.insert_stmt.bind_blob(1, jammed)?;
+        self.insert_stmt.bind_blob(1, archive)?;
         match self.insert_stmt.step()? {
             Step::Done => {}
             Step::Row => {
                 return Err(PmaSqliteError::Sqlite(
-                    "unexpected row while inserting jam".to_string(),
+                    "unexpected row while inserting archive".to_string(),
                 ));
             }
         }
@@ -159,43 +129,36 @@ impl SqlitePma {
 
     pub fn with_cached<R, F>(&mut self, id: i64, f: F) -> Result<R>
     where
-        F: FnOnce(&mut CachedNoun<'_>) -> R,
+        F: FnOnce(&CachedArchive<'_>) -> R,
     {
-        if let Some(root) = self.cache.get_mut(&id).map(|entry| entry.root) {
+        if let Some(entry) = self.cache.get_mut(&id) {
             self.stats.cache_hits = self.stats.cache_hits.saturating_add(1);
-            unsafe {
-                self.work_stack.reset(0);
-            }
-            let mut cached = CachedNoun::new(&mut self.work_stack, root);
-            return Ok(f(&mut cached));
+            let archived = unsafe { rkyv::access_unchecked::<ArchivedNoun>(&entry.bytes) };
+            let cached = CachedArchive::new(archived);
+            return Ok(f(&cached));
         }
 
-        let jam = self.get_jam(id)?;
-        let estimate_words = estimate_stack_words(jam.len(), self.stack_words_hint);
-        self.ensure_cache_capacity(estimate_words)?;
-        self.ensure_work_stack_capacity(estimate_words)?;
-        unsafe {
-            self.work_stack.reset(0);
-        }
-        let root = decode_jam_into_pma(&mut self.work_stack, &mut self.cache_pma, &jam)?;
-        unsafe {
-            self.work_stack.reset(0);
-        }
-        self.cache.insert(id, CachedEntry { root });
+        let archive = self.get_archive(id)?;
+        self.cache.insert(id, CachedEntry { bytes: archive });
         self.stats.cache_misses = self.stats.cache_misses.saturating_add(1);
 
-        let mut cached = CachedNoun::new(&mut self.work_stack, root);
-        Ok(f(&mut cached))
+        let entry = self
+            .cache
+            .get_mut(&id)
+            .ok_or_else(|| PmaSqliteError::Missing(id))?;
+        let archived = unsafe { rkyv::access_unchecked::<ArchivedNoun>(&entry.bytes) };
+        let cached = CachedArchive::new(archived);
+        Ok(f(&cached))
     }
 
-    pub fn get_jam(&mut self, id: i64) -> Result<Vec<u8>> {
+    pub fn get_archive(&mut self, id: i64) -> Result<Vec<u8>> {
         self.select_stmt.reset()?;
         self.select_stmt.bind_int64(1, id)?;
-        let jam = match self.select_stmt.step()? {
+        let archive = match self.select_stmt.step()? {
             Step::Row => self.select_stmt.column_blob(0)?,
             Step::Done => return Err(PmaSqliteError::Missing(id)),
         };
-        Ok(jam)
+        Ok(archive)
     }
 
     pub fn list_ids(&mut self) -> Result<Vec<i64>> {
@@ -212,77 +175,12 @@ impl SqlitePma {
 
     pub fn clear_cache(&mut self) {
         self.cache = LruCache::new(self.cache.capacity());
-        self.cache_pma.reset();
-        unsafe {
-            self.work_stack.reset(0);
-        }
     }
-
-    fn ensure_cache_capacity(&mut self, estimate_words: usize) -> Result<()> {
-        if estimate_words > self.cache_pma_words {
-            return Err(PmaSqliteError::Sqlite(
-                "cache arena too small for noun".to_string(),
-            ));
-        }
-        if self.cache_pma.free_words() < estimate_words {
-            self.cache_pma.reset();
-            self.cache = LruCache::new(self.cache.capacity());
-        }
-        Ok(())
-    }
-
-    fn ensure_work_stack_capacity(&mut self, estimate_words: usize) -> Result<()> {
-        if estimate_words <= self.work_stack_words {
-            return Ok(());
-        }
-        let new_words = estimate_words
-            .max(self.work_stack_words.saturating_mul(2))
-            .max(1024);
-        let (mut work_stack, _) = NockStack::new_(new_words, 0)?;
-        work_stack.install_pma_arena(Arc::clone(self.cache_pma.arena()));
-        self.work_stack = work_stack;
-        self.work_stack_words = new_words;
-        Ok(())
-    }
-}
-
-fn jam_noun(stack: &mut NockStack, noun: Noun) -> Vec<u8> {
-    let jammed = serialization::jam(stack, noun);
-    let space = stack.noun_space();
-    jammed.in_space(&space).to_ne_bytes()
-}
-
-fn decode_jam_into_pma(stack: &mut NockStack, pma: &mut Pma, jam: &[u8]) -> Result<Noun> {
-    let atom = <Atom as AtomExt>::from_bytes(stack, jam);
-    let root = serialization::cue_into_pma(stack, pma, atom)?;
-    debug!(
-        "sqlite-pma: decoded jam bytes len={} into stack_words={}",
-        jam.len(),
-        stack.arena_ref().words()
-    );
-    Ok(root)
-}
-
-fn estimate_stack_words(jam_len: usize, stack_words_hint: usize) -> usize {
-    let jam_words = jam_len.saturating_add(7) / 8;
-    let estimate = jam_words.saturating_mul(4).saturating_add(1024);
-    estimate.max(stack_words_hint)
 }
 
 #[derive(Debug)]
 struct CachedEntry {
-    root: Noun,
-}
-
-fn cache_pma_path() -> PathBuf {
-    let now = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default();
-    std::env::temp_dir().join(format!(
-        "pma_sqlite_cache_{}_{}",
-        std::process::id(),
-        now.as_nanos()
-    ))
+    bytes: Vec<u8>,
 }
 
 #[derive(Debug)]

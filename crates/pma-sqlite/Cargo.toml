@@ -8,6 +8,7 @@ libsqlite3-sys.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
 nockvm.workspace = true
+rkyv.workspace = true
 
 [dev-dependencies]
 rand.workspace = true

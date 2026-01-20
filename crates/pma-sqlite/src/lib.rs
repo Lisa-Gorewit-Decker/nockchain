@@ -1,3 +1,4 @@
+pub mod archive;
 pub mod lru;
 pub mod store;
 
@@ -13,6 +14,8 @@ pub enum PmaSqliteError {
     StackInit(#[from] nockvm::mem::NewStackError),
     #[error("serialization error: {0}")]
     Serialization(String),
+    #[error("archive error: {0}")]
+    Archive(String),
     #[error("missing noun id {0}")]
     Missing(i64),
     #[error("invalid sqlite path")]
@@ -21,7 +24,8 @@ pub enum PmaSqliteError {
 
 pub type Result<T> = std::result::Result<T, PmaSqliteError>;
 
-pub use store::{CachedNoun, SqlitePma, SqlitePmaConfig, SqlitePmaStats};
+pub use archive::ArchivedNoun;
+pub use store::{CachedArchive, SqlitePma, SqlitePmaConfig, SqlitePmaStats};
 
 impl From<nockvm::interpreter::Error> for PmaSqliteError {
     fn from(err: nockvm::interpreter::Error) -> Self {

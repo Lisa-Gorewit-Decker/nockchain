@@ -6,7 +6,9 @@ use std::{env, fs};
 use nockvm::mem::NockStack;
 use nockvm::noun::{Atom, Cell, Noun, NounSpace};
 use nockvm::pma::{Pma, PmaCopy};
-use pma_sqlite::{SqlitePma, SqlitePmaConfig, SqlitePmaStats};
+use pma_sqlite::archive::NounNode;
+use pma_sqlite::{ArchivedNoun, SqlitePma, SqlitePmaConfig, SqlitePmaStats};
+use rkyv::Archive;
 
 #[derive(Clone, Copy, Debug)]
 struct BenchArgs {
@@ -343,7 +345,6 @@ fn run_sqlite(
     let mut sqlite = SqlitePma::open({
         let mut config = SqlitePmaConfig::new(path);
         config.cache_capacity = bench.cache_capacity.max(1);
-        config.stack_words_hint = bench.stack_words / 4;
         config
     })?;
 
@@ -369,8 +370,7 @@ fn run_sqlite(
                         .get(index)
                         .ok_or_else(|| format!("read index {} out of range", index))?;
                     sqlite.with_cached(id, |cached| {
-                        let space = cached.stack().noun_space();
-                        let value = touch_noun(&space, cached.root());
+                        let value = touch_archived_noun(cached.root());
                         checksum = checksum.wrapping_add(value);
                     })?;
                 }
@@ -463,6 +463,39 @@ fn touch_noun(space: &NounSpace, root: Noun) -> u64 {
         } else if let Some(cell) = handle.cell() {
             pending.push(cell.tail().noun());
             pending.push(cell.head().noun());
+        }
+    }
+    acc
+}
+
+fn touch_archived_noun(root: &ArchivedNoun) -> u64 {
+    type ArchivedNounNode = <NounNode as Archive>::Archived;
+
+    let mut acc = 0u64;
+    let nodes: &[ArchivedNounNode] = root.nodes.as_slice();
+    let mut pending = Vec::new();
+    pending.push(root.root.to_native() as usize);
+    while let Some(idx) = pending.pop() {
+        let node = &nodes[idx];
+        match node {
+            ArchivedNounNode::DirectAtom(value) => {
+                let bytes = value.to_native().to_ne_bytes();
+                acc = acc.wrapping_add(bytes.len() as u64);
+                if let Some(first) = bytes.first() {
+                    acc ^= *first as u64;
+                }
+            }
+            ArchivedNounNode::IndirectAtom(bytes) => {
+                let slice = bytes.as_slice();
+                acc = acc.wrapping_add(slice.len() as u64);
+                if let Some(first) = slice.first() {
+                    acc ^= *first as u64;
+                }
+            }
+            ArchivedNounNode::Cell { head, tail } => {
+                pending.push(tail.to_native() as usize);
+                pending.push(head.to_native() as usize);
+            }
         }
     }
     acc

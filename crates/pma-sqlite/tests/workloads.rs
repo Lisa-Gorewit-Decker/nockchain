@@ -1,14 +1,13 @@
-use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use nockvm::ext::AtomExt;
 use nockvm::mem::NockStack;
-use nockvm::noun::{Atom, Cell, Noun};
+use nockvm::noun::{Atom, Cell, Noun, NounSpace};
 use nockvm::pma::{Pma, PmaCopy};
-use nockvm::serialization;
-use pma_sqlite::{SqlitePma, SqlitePmaConfig};
+use pma_sqlite::archive::NounNode;
+use pma_sqlite::{ArchivedNoun, SqlitePma, SqlitePmaConfig};
 use rand::rngs::StdRng;
 use rand::{Rng, SeedableRng};
+use rkyv::Archive;
 use tempfile::TempDir;
 
 #[derive(Clone, Copy, Debug)]
@@ -57,29 +56,32 @@ fn compare_sqlite_and_pma_timings_mixed() {
     };
     let mut rng = StdRng::seed_from_u64(1337);
     let stack_words = estimate_stack_words(spec);
-    let jams = build_jams(spec, &mut rng);
+    let seeds = build_seeds(spec, &mut rng);
 
     let temp_dir = TempDir::new().expect("temp dir");
     let sqlite_path = temp_dir.path().join("sqlite.db");
     let mut sqlite = SqlitePma::open({
         let mut config = SqlitePmaConfig::new(&sqlite_path);
         config.cache_capacity = spec.count / 2;
-        config.stack_words_hint = stack_words / 4;
         config
     })
     .expect("sqlite open");
 
     let start = Instant::now();
-    let mut ids = Vec::with_capacity(jams.len());
-    for jam in &jams {
-        let id = sqlite.insert_jam(jam).expect("sqlite insert");
+    let (mut stack, _) = NockStack::new_(stack_words, 0).expect("stack init");
+    let mut ids = Vec::with_capacity(seeds.len());
+    for seed in &seeds {
+        let noun = build_tree_from_seed(&mut stack, spec.depth, *seed);
+        let id = sqlite.insert_noun(&mut stack, noun).expect("sqlite insert");
         ids.push(id);
+        unsafe {
+            stack.reset(0);
+        }
     }
     for id in ids.iter().step_by(2) {
         sqlite
             .with_cached(*id, |cached| {
-                let root = cached.root();
-                let _ = serialization::jam(cached.stack_mut(), root);
+                let _ = touch_archived_noun(cached.root());
             })
             .expect("sqlite get");
     }
@@ -96,14 +98,14 @@ struct CompareTimings {
 fn run_compare(spec: WorkloadSpec) -> CompareTimings {
     let mut rng = StdRng::seed_from_u64(42);
     let stack_words = estimate_stack_words(spec);
-    let jams = build_jams(spec, &mut rng);
+    let seeds = build_seeds(spec, &mut rng);
 
     let temp_dir = TempDir::new().expect("temp dir");
     let sqlite_path = temp_dir.path().join("sqlite.db");
     let pma_path = temp_dir.path().join("pma.dat");
 
-    let sqlite_timings = run_sqlite_workload(&jams, &sqlite_path, spec);
-    let pma_timings = run_pma_workload(&jams, &pma_path, stack_words);
+    let sqlite_timings = run_sqlite_workload(&seeds, &sqlite_path, spec);
+    let pma_timings = run_pma_workload(&seeds, &pma_path, stack_words, spec.depth);
 
     CompareTimings {
         sqlite: sqlite_timings,
@@ -112,23 +114,27 @@ fn run_compare(spec: WorkloadSpec) -> CompareTimings {
 }
 
 fn run_sqlite_workload(
-    jams: &[Vec<u8>],
+    seeds: &[u64],
     sqlite_path: &std::path::Path,
     spec: WorkloadSpec,
 ) -> WorkloadTimings {
     let mut sqlite = SqlitePma::open({
         let mut config = SqlitePmaConfig::new(sqlite_path);
         config.cache_capacity = spec.count / 2;
-        config.stack_words_hint = estimate_stack_words(spec) / 4;
         config
     })
     .expect("sqlite open");
 
     let start = Instant::now();
-    let mut ids = Vec::with_capacity(jams.len());
-    for jam in jams {
-        let id = sqlite.insert_jam(jam).expect("sqlite insert");
+    let (mut stack, _) = NockStack::new_(estimate_stack_words(spec), 0).expect("stack init");
+    let mut ids = Vec::with_capacity(seeds.len());
+    for seed in seeds {
+        let noun = build_tree_from_seed(&mut stack, spec.depth, *seed);
+        let id = sqlite.insert_noun(&mut stack, noun).expect("sqlite insert");
         ids.push(id);
+        unsafe {
+            stack.reset(0);
+        }
     }
     let write = start.elapsed();
 
@@ -136,8 +142,7 @@ fn run_sqlite_workload(
     for id in ids {
         sqlite
             .with_cached(id, |cached| {
-                let root = cached.root();
-                let _ = serialization::jam(cached.stack_mut(), root);
+                let _ = touch_archived_noun(cached.root());
             })
             .expect("sqlite get");
     }
@@ -147,17 +152,18 @@ fn run_sqlite_workload(
 }
 
 fn run_pma_workload(
-    jams: &[Vec<u8>],
+    seeds: &[u64],
     pma_path: &std::path::Path,
     stack_words: usize,
+    depth: usize,
 ) -> WorkloadTimings {
     let mut pma = Pma::new(stack_words.saturating_mul(2), pma_path.to_path_buf()).expect("pma new");
 
     let start = Instant::now();
-    let mut roots = Vec::with_capacity(jams.len());
+    let mut roots = Vec::with_capacity(seeds.len());
     let (mut stack, _) = NockStack::new_(stack_words, 0).expect("stack init");
-    for jam in jams {
-        let mut root = cue_jam(&mut stack, jam);
+    for seed in seeds {
+        let mut root = build_tree_from_seed(&mut stack, depth, *seed);
         unsafe {
             root.copy_to_pma(&stack, &mut pma);
         }
@@ -168,35 +174,15 @@ fn run_pma_workload(
     }
     let write = start.elapsed();
 
-    let (mut jam_stack, _) = NockStack::new_(stack_words, 0).expect("stack init");
-    jam_stack.install_pma_arena(Arc::clone(pma.arena()));
+    let space = NounSpace::pma_only(&pma);
 
     let start = Instant::now();
     for root in roots {
-        let _ = serialization::jam(&mut jam_stack, root);
-        unsafe {
-            jam_stack.reset(0);
-        }
+        let _ = touch_noun(&space, root);
     }
     let read = start.elapsed();
 
     WorkloadTimings { write, read }
-}
-
-fn build_jams(spec: WorkloadSpec, rng: &mut StdRng) -> Vec<Vec<u8>> {
-    let stack_words = estimate_stack_words(spec);
-    let (mut stack, _) = NockStack::new_(stack_words, 0).expect("stack init");
-    let mut jams = Vec::with_capacity(spec.count);
-    for _ in 0..spec.count {
-        let noun = build_tree(&mut stack, spec.depth, rng);
-        let jammed = serialization::jam(&mut stack, noun);
-        let space = stack.noun_space();
-        jams.push(jammed.in_space(&space).to_ne_bytes());
-        unsafe {
-            stack.reset(0);
-        }
-    }
-    jams
 }
 
 fn build_tree(stack: &mut NockStack, depth: usize, rng: &mut StdRng) -> Noun {
@@ -210,9 +196,66 @@ fn build_tree(stack: &mut NockStack, depth: usize, rng: &mut StdRng) -> Noun {
     }
 }
 
-fn cue_jam(stack: &mut NockStack, jam: &[u8]) -> Noun {
-    let atom = <Atom as AtomExt>::from_bytes(stack, jam);
-    serialization::cue(stack, atom).expect("cue")
+fn build_tree_from_seed(stack: &mut NockStack, depth: usize, seed: u64) -> Noun {
+    let mut rng = StdRng::seed_from_u64(seed);
+    build_tree(stack, depth, &mut rng)
+}
+
+fn build_seeds(spec: WorkloadSpec, rng: &mut StdRng) -> Vec<u64> {
+    (0..spec.count).map(|_| rng.random()).collect()
+}
+
+fn touch_noun(space: &NounSpace, root: Noun) -> u64 {
+    let mut acc = 0u64;
+    let mut pending = Vec::new();
+    pending.push(root);
+    while let Some(noun) = pending.pop() {
+        let handle = space.handle(noun);
+        if let Some(atom) = handle.atom() {
+            let bytes = atom.as_ne_bytes();
+            acc = acc.wrapping_add(bytes.len() as u64);
+            if let Some(first) = bytes.first() {
+                acc ^= *first as u64;
+            }
+        } else if let Some(cell) = handle.cell() {
+            pending.push(cell.tail().noun());
+            pending.push(cell.head().noun());
+        }
+    }
+    acc
+}
+
+fn touch_archived_noun(root: &ArchivedNoun) -> u64 {
+    type ArchivedNounNode = <NounNode as Archive>::Archived;
+
+    let mut acc = 0u64;
+    let nodes: &[ArchivedNounNode] = root.nodes.as_slice();
+    let mut pending = Vec::new();
+    pending.push(root.root.to_native() as usize);
+    while let Some(idx) = pending.pop() {
+        let node = &nodes[idx];
+        match node {
+            ArchivedNounNode::DirectAtom(value) => {
+                let bytes = value.to_native().to_ne_bytes();
+                acc = acc.wrapping_add(bytes.len() as u64);
+                if let Some(first) = bytes.first() {
+                    acc ^= *first as u64;
+                }
+            }
+            ArchivedNounNode::IndirectAtom(bytes) => {
+                let slice = bytes.as_slice();
+                acc = acc.wrapping_add(slice.len() as u64);
+                if let Some(first) = slice.first() {
+                    acc ^= *first as u64;
+                }
+            }
+            ArchivedNounNode::Cell { head, tail } => {
+                pending.push(tail.to_native() as usize);
+                pending.push(head.to_native() as usize);
+            }
+        }
+    }
+    acc
 }
 
 fn estimate_stack_words(spec: WorkloadSpec) -> usize {
