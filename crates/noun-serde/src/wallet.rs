@@ -32,7 +32,10 @@ impl NounEncode for Key {
 impl NounDecode for Key {
     #[allow(unused_variables)]
     fn from_noun(noun: &Noun, space: &NounSpace) -> Result<Self, NounDecodeError> {
-        let cell = noun.in_space(space).as_cell().map_err(|_| NounDecodeError::ExpectedCell)?;
+        let cell = noun
+            .in_space(space)
+            .as_cell()
+            .map_err(|_| NounDecodeError::ExpectedCell)?;
         let tag = cell.head().as_atom()?.into_string()?;
         let value = cell.tail().as_atom()?.as_u64()?;
 
@@ -66,7 +69,10 @@ impl NounEncode for Coil {
 
 impl NounDecode for Coil {
     fn from_noun(noun: &Noun, space: &NounSpace) -> Result<Self, NounDecodeError> {
-        let cell = noun.in_space(space).as_cell().map_err(|_| NounDecodeError::ExpectedCell)?;
+        let cell = noun
+            .in_space(space)
+            .as_cell()
+            .map_err(|_| NounDecodeError::ExpectedCell)?;
         let tag = cell.head().as_atom()?.into_string()?;
         if tag != "coil" {
             return Err(NounDecodeError::InvalidTag);
@@ -109,7 +115,10 @@ impl NounEncode for Meta {
 
 impl NounDecode for Meta {
     fn from_noun(noun: &Noun, space: &NounSpace) -> Result<Self, NounDecodeError> {
-        let cell = noun.in_space(space).as_cell().map_err(|_| NounDecodeError::ExpectedCell)?;
+        let cell = noun
+            .in_space(space)
+            .as_cell()
+            .map_err(|_| NounDecodeError::ExpectedCell)?;
         let tag = cell.head().as_atom()?.into_string()?;
 
         match tag.as_str() {
@@ -154,7 +163,10 @@ impl NounEncode for Transaction {
 
 impl NounDecode for Transaction {
     fn from_noun(noun: &Noun, space: &NounSpace) -> Result<Self, NounDecodeError> {
-        let cell = noun.in_space(space).as_cell().map_err(|_| NounDecodeError::ExpectedCell)?;
+        let cell = noun
+            .in_space(space)
+            .as_cell()
+            .map_err(|_| NounDecodeError::ExpectedCell)?;
         let recipient = cell.head().as_atom()?.as_u64()?;
 
         let tail = cell.tail().as_cell()?;
@@ -224,7 +236,10 @@ impl NounEncode for FileEffect {
 
 impl NounDecode for FileEffect {
     fn from_noun(noun: &Noun, space: &NounSpace) -> Result<Self, NounDecodeError> {
-        let cell = noun.in_space(space).as_cell().map_err(|_| NounDecodeError::ExpectedCell)?;
+        let cell = noun
+            .in_space(space)
+            .as_cell()
+            .map_err(|_| NounDecodeError::ExpectedCell)?;
         let file_tag = cell.head().as_atom()?.into_string()?;
         if file_tag != "file" {
             return Err(NounDecodeError::InvalidTag);
@@ -276,7 +291,10 @@ impl NounEncode for Effect {
 
 impl NounDecode for Effect {
     fn from_noun(noun: &Noun, space: &NounSpace) -> Result<Self, NounDecodeError> {
-        let cell = noun.in_space(space).as_cell().map_err(|_| NounDecodeError::ExpectedCell)?;
+        let cell = noun
+            .in_space(space)
+            .as_cell()
+            .map_err(|_| NounDecodeError::ExpectedCell)?;
         let tag = cell.head().as_atom()?.into_string()?;
 
         match tag.as_str() {
@@ -324,7 +342,10 @@ impl NounEncode for SpendMask {
 
 impl NounDecode for SpendMask {
     fn from_noun(noun: &Noun, space: &NounSpace) -> Result<Self, NounDecodeError> {
-        let cell = noun.in_space(space).as_cell().map_err(|_| NounDecodeError::ExpectedCell)?;
+        let cell = noun
+            .in_space(space)
+            .as_cell()
+            .map_err(|_| NounDecodeError::ExpectedCell)?;
         let signature = cell.head().as_atom()?.as_u64()? != 0;
 
         let rest = cell.tail().as_cell()?;
@@ -365,7 +386,10 @@ impl NounEncode for InputMask {
 
 impl NounDecode for InputMask {
     fn from_noun(noun: &Noun, space: &NounSpace) -> Result<Self, NounDecodeError> {
-        let cell = noun.in_space(space).as_cell().map_err(|_| NounDecodeError::ExpectedCell)?;
+        let cell = noun
+            .in_space(space)
+            .as_cell()
+            .map_err(|_| NounDecodeError::ExpectedCell)?;
         let note = cell.head().as_atom()?.as_u64()? != 0;
         let spend_noun = cell.tail().noun();
         let spend = SpendMask::from_noun(&spend_noun, space)?;
@@ -466,7 +490,10 @@ impl NounEncode for PreSeed {
 
 impl NounDecode for PreSeed {
     fn from_noun(noun: &Noun, space: &NounSpace) -> Result<Self, NounDecodeError> {
-        let cell = noun.in_space(space).as_cell().map_err(|_| NounDecodeError::ExpectedCell)?;
+        let cell = noun
+            .in_space(space)
+            .as_cell()
+            .map_err(|_| NounDecodeError::ExpectedCell)?;
         let name = cell.head().as_atom()?.into_string()?;
 
         let data = cell.tail().as_cell()?;
@@ -498,7 +525,10 @@ impl NounEncode for PreInput {
 
 impl NounDecode for PreInput {
     fn from_noun(noun: &Noun, space: &NounSpace) -> Result<Self, NounDecodeError> {
-        let cell = noun.in_space(space).as_cell().map_err(|_| NounDecodeError::ExpectedCell)?;
+        let cell = noun
+            .in_space(space)
+            .as_cell()
+            .map_err(|_| NounDecodeError::ExpectedCell)?;
         let name = cell.head().as_atom()?.into_string()?;
 
         let data = cell.tail().as_cell()?;
@@ -527,7 +557,10 @@ impl NounEncode for Draft {
 
 impl NounDecode for Draft {
     fn from_noun(noun: &Noun, space: &NounSpace) -> Result<Self, NounDecodeError> {
-        let cell = noun.in_space(space).as_cell().map_err(|_| NounDecodeError::ExpectedCell)?;
+        let cell = noun
+            .in_space(space)
+            .as_cell()
+            .map_err(|_| NounDecodeError::ExpectedCell)?;
         let name = cell.head().as_atom()?.into_string()?;
         let inputs = cell.tail().as_atom()?.as_u64()?;
 
@@ -578,7 +611,10 @@ impl NounEncode for DraftEntity {
 
 impl NounDecode for DraftEntity {
     fn from_noun(noun: &Noun, space: &NounSpace) -> Result<Self, NounDecodeError> {
-        let cell = noun.in_space(space).as_cell().map_err(|_| NounDecodeError::ExpectedCell)?;
+        let cell = noun
+            .in_space(space)
+            .as_cell()
+            .map_err(|_| NounDecodeError::ExpectedCell)?;
         let tag = cell.head().as_atom()?.into_string()?;
 
         let data = cell.tail().as_cell()?;
@@ -624,7 +660,10 @@ impl NounEncode for Master {
 
 impl NounDecode for Master {
     fn from_noun(noun: &Noun, space: &NounSpace) -> Result<Self, NounDecodeError> {
-        let cell = noun.in_space(space).as_cell().map_err(|_| NounDecodeError::ExpectedCell)?;
+        let cell = noun
+            .in_space(space)
+            .as_cell()
+            .map_err(|_| NounDecodeError::ExpectedCell)?;
         let pub_key_noun = cell.head().noun();
         let prv_key_noun = cell.tail().noun();
         let pub_key = Coil::from_noun(&pub_key_noun, space)?;
@@ -850,7 +889,10 @@ impl NounEncode for Source {
 
 impl NounDecode for Source {
     fn from_noun(noun: &Noun, space: &NounSpace) -> Result<Self, NounDecodeError> {
-        let cell = noun.in_space(space).as_cell().map_err(|_| NounDecodeError::ExpectedCell)?;
+        let cell = noun
+            .in_space(space)
+            .as_cell()
+            .map_err(|_| NounDecodeError::ExpectedCell)?;
         let head = cell.head().as_atom()?.as_u64()?;
         let tail = cell.tail().as_atom()?.as_u64()?;
         match (head, tail) {
@@ -889,7 +931,10 @@ impl NounEncode for Lock {
 
 impl NounDecode for Lock {
     fn from_noun(noun: &Noun, space: &NounSpace) -> Result<Self, NounDecodeError> {
-        let cell = noun.in_space(space).as_cell().map_err(|_| NounDecodeError::ExpectedCell)?;
+        let cell = noun
+            .in_space(space)
+            .as_cell()
+            .map_err(|_| NounDecodeError::ExpectedCell)?;
         let m = cell.head().as_atom()?.as_u64()?;
         let pubkeys_noun = cell.tail().noun();
         let pubkeys = HashSet::from_noun(&pubkeys_noun, space)?;
@@ -924,7 +969,10 @@ impl NounEncode for Timelock {
 
 impl NounDecode for Timelock {
     fn from_noun(noun: &Noun, space: &NounSpace) -> Result<Self, NounDecodeError> {
-        let cell = noun.in_space(space).as_cell().map_err(|_| NounDecodeError::ExpectedCell)?;
+        let cell = noun
+            .in_space(space)
+            .as_cell()
+            .map_err(|_| NounDecodeError::ExpectedCell)?;
         let block = cell.head().as_atom()?.as_u64()?;
         let intent = match cell.tail().as_atom()?.as_u64()? {
             0 => TimelockIntent::None,
@@ -995,7 +1043,10 @@ impl NounDecode for Seed {
     fn from_noun(noun: &Noun, space: &NounSpace) -> Result<Self, NounDecodeError> {
         println!("\nDecoding Seed from noun: {:?}", noun);
 
-        let cell = noun.in_space(space).as_cell().map_err(|_| NounDecodeError::ExpectedCell)?;
+        let cell = noun
+            .in_space(space)
+            .as_cell()
+            .map_err(|_| NounDecodeError::ExpectedCell)?;
         println!(
             "Root cell - head: {:?}, tail: {:?}",
             cell.head().noun(),
@@ -1131,7 +1182,10 @@ impl NounDecode for Spend {
     fn from_noun(noun: &Noun, space: &NounSpace) -> Result<Self, NounDecodeError> {
         println!("\nDecoding Spend from noun: {:?}", noun);
 
-        let cell = noun.in_space(space).as_cell().map_err(|_| NounDecodeError::ExpectedCell)?;
+        let cell = noun
+            .in_space(space)
+            .as_cell()
+            .map_err(|_| NounDecodeError::ExpectedCell)?;
         println!(
             "Root cell - head: {:?}, tail: {:?}",
             cell.head().noun(),

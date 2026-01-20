@@ -1,6 +1,7 @@
+use std::sync::Arc;
+
 use bitvec::prelude::{BitSlice, Lsb0};
 use either::Either::{Left, Right};
-use std::sync::Arc;
 
 use crate::hamt::MutHamt;
 use crate::interpreter::Error::{self, *};
@@ -190,11 +191,7 @@ fn cue_bitslice_with_mode(
                             // 0 tag: atom
                             let backref: u64 = (cursor - 1) as u64;
                             *dest_ptr = rub_atom_internal(
-                                stack,
-                                &mut cursor,
-                                buffer,
-                                use_offset_tags,
-                                &space,
+                                stack, &mut cursor, buffer, use_offset_tags, &space,
                             )?
                             .as_noun();
                             let mut backref_atom = Atom::new(stack, backref).as_noun();
@@ -260,10 +257,7 @@ pub fn cue_into_offset(stack: &mut NockStack, buffer: Atom) -> Result<Noun, Erro
 /// WARNING: The result is allocated in the current frame and will be invalid
 /// after the frame is popped. Use this only when you need stack-pointer form
 /// nouns and will not pop the frame.
-pub fn cue_into_stack_pointer_form(
-    stack: &mut NockStack,
-    buffer: Atom,
-) -> Result<Noun, Error> {
+pub fn cue_into_stack_pointer_form(stack: &mut NockStack, buffer: Atom) -> Result<Noun, Error> {
     let backref_map = MutHamt::<Noun>::new(stack);
     let mut result = D(0);
     let mut cursor = 0;
@@ -288,7 +282,8 @@ pub fn cue_into_stack_pointer_form(
                         if next_bit(&mut cursor, buffer_bitslice) {
                             // 11 tag: backref
                             let mut backref_noun =
-                                Atom::new(stack, rub_backref(&mut cursor, buffer_bitslice)?).as_noun();
+                                Atom::new(stack, rub_backref(&mut cursor, buffer_bitslice)?)
+                                    .as_noun();
                             *dest_ptr = backref_map
                                 .lookup(stack, &mut backref_noun)
                                 .ok_or(Deterministic(Exit, D(0)))?;
@@ -296,13 +291,10 @@ pub fn cue_into_stack_pointer_form(
                             // 10 tag: cell - always use stack-pointer form
                             let (cell, cell_mem_ptr) = Cell::new_raw_mut(stack);
                             *dest_ptr = cell.as_noun();
-                            let mut backref_atom =
-                                Atom::new(stack, (cursor - 2) as u64).as_noun();
+                            let mut backref_atom = Atom::new(stack, (cursor - 2) as u64).as_noun();
                             backref_map.insert(stack, &mut backref_atom, *dest_ptr);
-                            *(stack.push()) = CueStackEntry::BackRef(
-                                cursor as u64 - 2,
-                                dest_ptr as *const Noun,
-                            );
+                            *(stack.push()) =
+                                CueStackEntry::BackRef(cursor as u64 - 2, dest_ptr as *const Noun);
                             *(stack.push()) =
                                 CueStackEntry::DestinationPointer(&mut (*cell_mem_ptr).tail);
                             *(stack.push()) =
@@ -402,8 +394,7 @@ fn rub_atom_internal(
         slice[0..bits.len()].copy_from_bitslice(bits);
         debug_assert!(atom.as_atom().in_space(space).size() > 0);
         if use_offset_tags {
-            let offset =
-                stack.offset_from_ptr(unsafe { atom.to_raw_pointer(space) } as *const u8);
+            let offset = stack.offset_from_ptr(unsafe { atom.to_raw_pointer(space) } as *const u8);
             atom = IndirectAtom::from_offset_words(offset);
         }
         unsafe { Ok(atom.normalize_as_atom(space)) }
@@ -545,12 +536,7 @@ fn jam_cell(traversal: &mut NockStack, state: &mut JamState) {
 }
 
 /// Serialize a backreference into the jam state
-fn jam_backref(
-    traversal: &mut NockStack,
-    state: &mut JamState,
-    backref: u64,
-    space: &NounSpace,
-) {
+fn jam_backref(traversal: &mut NockStack, state: &mut JamState, backref: u64, space: &NounSpace) {
     loop {
         if state.cursor + 2 > state.slice.len() {
             double_atom_size(traversal, state);
@@ -1451,7 +1437,8 @@ mod tests {
             is_entirely_stack_pointer_form(&stack, cued_stack),
             "cue_into_stack_pointer_form() should produce stack-pointer-form nouns with backrefs, \
              but got {} stack-pointer and {} offset",
-            stack_count2, offset_count2
+            stack_count2,
+            offset_count2
         );
     }
 

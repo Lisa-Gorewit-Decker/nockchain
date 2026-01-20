@@ -111,14 +111,14 @@ pub fn jet_dvr(context: &mut Context, subject: Noun) -> Result {
                     DirectAtom::new_unchecked(rem).as_noun(),
                 )
             }
-    } else {
-        let (div, rem) = a
-            .in_space(&space)
-            .as_ubig(stack)
-            .div_rem(b.in_space(&space).as_ubig(stack));
-        (
-            Atom::from_ubig(stack, &div).as_noun(),
-            Atom::from_ubig(stack, &rem).as_noun(),
+        } else {
+            let (div, rem) = a
+                .in_space(&space)
+                .as_ubig(stack)
+                .div_rem(b.in_space(&space).as_ubig(stack));
+            (
+                Atom::from_ubig(stack, &div).as_noun(),
+                Atom::from_ubig(stack, &rem).as_noun(),
             )
         };
 
@@ -370,12 +370,7 @@ pub mod util {
     }
 
     /// Less than (boolean)
-    pub fn lth_b<A: NounAllocator>(
-        stack: &mut A,
-        a: Atom,
-        b: Atom,
-        space: &NounSpace,
-    ) -> bool {
+    pub fn lth_b<A: NounAllocator>(stack: &mut A, a: Atom, b: Atom, space: &NounSpace) -> bool {
         if let (Ok(a), Ok(b)) = (a.as_direct(), b.as_direct()) {
             a.data() < b.data()
         } else {

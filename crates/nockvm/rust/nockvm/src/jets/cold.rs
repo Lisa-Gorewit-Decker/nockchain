@@ -1,5 +1,7 @@
 use std::ptr::{copy_nonoverlapping, null_mut};
 
+use tracing::info;
+
 use crate::hamt::Hamt;
 use crate::mem::{self, NockStack, Preserve};
 use crate::noun::{
@@ -7,7 +9,6 @@ use crate::noun::{
 };
 use crate::pma::{Pma, PmaCopy};
 use crate::unifying_equality::unifying_equality;
-use tracing::info;
 
 pub enum Error {
     NoParent,
@@ -1446,17 +1447,16 @@ pub(crate) mod test {
         let items = vec![(D(0), D(1)), (D(2), D(3))];
         let hamt = super::hamt_from_vec(&mut stack, items);
         let noun = hamt.into_noun(&mut stack);
-        let new_hamt: Vec<(Noun, Noun)> = <Hamt<Noun> as Nounable>::from_noun::<NockStack>(
-            &mut stack, &noun, &space,
-        )
-        .unwrap_or_else(|err| {
-            panic!(
-                "Panicked with {err:?} at {}:{} (git sha: {:?})",
-                file!(),
-                line!(),
-                option_env!("GIT_SHA")
-            )
-        });
+        let new_hamt: Vec<(Noun, Noun)> =
+            <Hamt<Noun> as Nounable>::from_noun::<NockStack>(&mut stack, &noun, &space)
+                .unwrap_or_else(|err| {
+                    panic!(
+                        "Panicked with {err:?} at {}:{} (git sha: {:?})",
+                        file!(),
+                        line!(),
+                        option_env!("GIT_SHA")
+                    )
+                });
         let flat_hamt: Vec<(Noun, Noun)> = hamt.iter().flatten().cloned().collect();
         for (a, b) in new_hamt.iter().zip(flat_hamt.iter()) {
             let key_a = &mut a.0.clone() as *mut Noun;
@@ -1516,12 +1516,9 @@ pub(crate) mod test {
         let space = stack.noun_space();
         let batteries_list2 = make_batteries_list(&mut stack, &[1, 2]);
         let batteries_list_noun = batteries_list2.into_noun(&mut stack);
-        let new_batteries_list2 = BatteriesList::from_noun(
-            &mut stack,
-            &batteries_list_noun,
-            &space,
-        )
-            .expect("Failed to convert noun to batteries list");
+        let new_batteries_list2 =
+            BatteriesList::from_noun(&mut stack, &batteries_list_noun, &space)
+                .expect("Failed to convert noun to batteries list");
         for (a, b) in batteries_list2.zip(new_batteries_list2) {
             let mut a_noun = a.into_noun(&mut stack);
             let mut b_noun = b.into_noun(&mut stack);
@@ -1666,17 +1663,16 @@ pub(crate) mod test {
         let noun_list = make_noun_list(&mut stack, slice);
         let noun = noun_list.into_noun(&mut stack);
         let space = stack.noun_space();
-        let new_noun_list: NounList = <NounList as Nounable>::from_noun::<NockStack>(
-            &mut stack, &noun, &space,
-        )
-        .unwrap_or_else(|err| {
-            panic!(
-                "Panicked with {err:?} at {}:{} (git sha: {:?})",
-                file!(),
-                line!(),
-                option_env!("GIT_SHA")
-            )
-        });
+        let new_noun_list: NounList =
+            <NounList as Nounable>::from_noun::<NockStack>(&mut stack, &noun, &space)
+                .unwrap_or_else(|err| {
+                    panic!(
+                        "Panicked with {err:?} at {}:{} (git sha: {:?})",
+                        file!(),
+                        line!(),
+                        option_env!("GIT_SHA")
+                    )
+                });
         let mut item_count = 0;
         for (a, b) in new_noun_list.zip(items.iter()) {
             let a_ptr = a;
@@ -1846,8 +1842,8 @@ pub(crate) mod test {
         use crate::pma::{test_pma_path, Pma, PmaCopy};
 
         let mut stack = make_test_stack(DEFAULT_STACK_SIZE);
-        let mut pma = Pma::new(100000, test_pma_path("noun_list"))
-            .expect("Failed to create test PMA");
+        let mut pma =
+            Pma::new(100000, test_pma_path("noun_list")).expect("Failed to create test PMA");
         let space = NounSpace::new(&stack, &pma);
 
         // The expected values - we use these for comparison since the source
@@ -1873,8 +1869,15 @@ pub(crate) mod test {
             values_after.push(unsafe { elem.as_raw() });
         }
 
-        assert_eq!(values_after.len(), expected_values.len(), "Element count should be preserved");
-        assert_eq!(values_after, expected_values, "Element values should be preserved");
+        assert_eq!(
+            values_after.len(),
+            expected_values.len(),
+            "Element count should be preserved"
+        );
+        assert_eq!(
+            values_after, expected_values,
+            "Element values should be preserved"
+        );
 
         // Verify all nouns in the list are in offset form
         for elem_ptr in noun_list {
@@ -1910,9 +1913,8 @@ pub(crate) mod test {
         let cell1 = Cell::new(&mut stack, D(1), D(2)).as_noun();
         // Element 1: An indirect atom (larger than 63 bits)
         let big_data: [u64; 2] = [0xDEADBEEF_CAFEBABE, 0x12345678_9ABCDEF0];
-        let indirect1 = unsafe {
-            IndirectAtom::new_raw(&mut stack, 2, big_data.as_ptr()).as_noun()
-        };
+        let indirect1 =
+            unsafe { IndirectAtom::new_raw(&mut stack, 2, big_data.as_ptr()).as_noun() };
         // Element 2: A nested cell [[3 4] 5]
         let inner_cell = Cell::new(&mut stack, D(3), D(4)).as_noun();
         let nested_cell = Cell::new(&mut stack, inner_cell, D(5)).as_noun();
@@ -1921,18 +1923,17 @@ pub(crate) mod test {
         // Element 4: A cell with structural sharing [[a b] [a b]] where a,b are IndirectAtoms
         let big_a: [u64; 2] = [0x1111111111111111, 0x2222222222222222];
         let big_b: [u64; 2] = [0x3333333333333333, 0x4444444444444444];
-        let indirect_a = unsafe {
-            IndirectAtom::new_raw(&mut stack, 2, big_a.as_ptr()).as_noun()
-        };
-        let indirect_b = unsafe {
-            IndirectAtom::new_raw(&mut stack, 2, big_b.as_ptr()).as_noun()
-        };
+        let indirect_a = unsafe { IndirectAtom::new_raw(&mut stack, 2, big_a.as_ptr()).as_noun() };
+        let indirect_b = unsafe { IndirectAtom::new_raw(&mut stack, 2, big_b.as_ptr()).as_noun() };
         let shared_cell = Cell::new(&mut stack, indirect_a, indirect_b).as_noun();
         let structural_sharing = Cell::new(&mut stack, shared_cell, shared_cell).as_noun();
 
         // Build the NounList manually with complex nouns
         let mut noun_list = NOUN_LIST_NIL;
-        for noun in [direct1, nested_cell, indirect1, cell1, structural_sharing].iter().rev() {
+        for noun in [direct1, nested_cell, indirect1, cell1, structural_sharing]
+            .iter()
+            .rev()
+        {
             let mem: *mut NounListMem = unsafe { stack.alloc_struct(1) };
             unsafe {
                 mem.write(NounListMem {
@@ -1945,22 +1946,21 @@ pub(crate) mod test {
 
         // Create reference copies on ref_stack for comparison after evacuation
         let ref_cell1 = Cell::new(&mut ref_stack, D(1), D(2)).as_noun();
-        let ref_indirect1 = unsafe {
-            IndirectAtom::new_raw(&mut ref_stack, 2, big_data.as_ptr()).as_noun()
-        };
+        let ref_indirect1 =
+            unsafe { IndirectAtom::new_raw(&mut ref_stack, 2, big_data.as_ptr()).as_noun() };
         let ref_inner_cell = Cell::new(&mut ref_stack, D(3), D(4)).as_noun();
         let ref_nested_cell = Cell::new(&mut ref_stack, ref_inner_cell, D(5)).as_noun();
         let ref_direct1 = D(42);
-        let ref_indirect_a = unsafe {
-            IndirectAtom::new_raw(&mut ref_stack, 2, big_a.as_ptr()).as_noun()
-        };
-        let ref_indirect_b = unsafe {
-            IndirectAtom::new_raw(&mut ref_stack, 2, big_b.as_ptr()).as_noun()
-        };
+        let ref_indirect_a =
+            unsafe { IndirectAtom::new_raw(&mut ref_stack, 2, big_a.as_ptr()).as_noun() };
+        let ref_indirect_b =
+            unsafe { IndirectAtom::new_raw(&mut ref_stack, 2, big_b.as_ptr()).as_noun() };
         let ref_shared_cell = Cell::new(&mut ref_stack, ref_indirect_a, ref_indirect_b).as_noun();
-        let ref_structural_sharing = Cell::new(&mut ref_stack, ref_shared_cell, ref_shared_cell).as_noun();
+        let ref_structural_sharing =
+            Cell::new(&mut ref_stack, ref_shared_cell, ref_shared_cell).as_noun();
         // Order must match iteration order of noun_list: direct1, nested_cell, indirect1, cell1, structural_sharing
-        let ref_nouns = vec![ref_direct1, ref_nested_cell, ref_indirect1, ref_cell1, ref_structural_sharing];
+        let ref_nouns =
+            vec![ref_direct1, ref_nested_cell, ref_indirect1, ref_cell1, ref_structural_sharing];
 
         // Count elements before evacuation
         let count_before: usize = noun_list.into_iter().count();
@@ -1981,10 +1981,7 @@ pub(crate) mod test {
             let elem = unsafe { *elem_ptr };
             let ref_noun = ref_nouns[i];
             assert!(
-                noun_equality(
-                    ref_noun.in_space(&ref_space),
-                    elem.in_space(&ref_space),
-                ),
+                noun_equality(ref_noun.in_space(&ref_space), elem.in_space(&ref_space),),
                 "Element {} should match reference after evacuation",
                 i
             );
@@ -2017,8 +2014,8 @@ pub(crate) mod test {
         use crate::pma::{test_pma_path, Pma, PmaCopy};
 
         let mut stack = make_test_stack(DEFAULT_STACK_SIZE);
-        let mut pma = Pma::new(100000, test_pma_path("batteries"))
-            .expect("Failed to create test PMA");
+        let mut pma =
+            Pma::new(100000, test_pma_path("batteries")).expect("Failed to create test PMA");
         let space = NounSpace::new(&stack, &pma);
 
         // Create a Batteries list using the test helper
@@ -2054,11 +2051,7 @@ pub(crate) mod test {
 
             // Verify nouns are in offset form
             verify_noun_not_stack_allocated(battery, &space, "Batteries battery");
-            verify_noun_not_stack_allocated(
-                parent_axis.as_noun(),
-                &space,
-                "Batteries parent_axis",
-            );
+            verify_noun_not_stack_allocated(parent_axis.as_noun(), &space, "Batteries parent_axis");
         }
         assert!(
             expected_iter.next().is_none(),
@@ -2086,8 +2079,8 @@ pub(crate) mod test {
         use crate::pma::{test_pma_path, Pma, PmaCopy};
 
         let mut stack = make_test_stack(DEFAULT_STACK_SIZE);
-        let mut pma = Pma::new(100000, test_pma_path("batteries_list"))
-            .expect("Failed to create test PMA");
+        let mut pma =
+            Pma::new(100000, test_pma_path("batteries_list")).expect("Failed to create test PMA");
         let space = NounSpace::new(&stack, &pma);
 
         // Create a BatteriesList using the test helper
@@ -2170,8 +2163,7 @@ pub(crate) mod test {
         use crate::pma::{test_pma_path, Pma, PmaCopy};
 
         let mut stack = make_test_stack(DEFAULT_STACK_SIZE);
-        let mut pma = Pma::new(100000, test_pma_path("cold"))
-            .expect("Failed to create test PMA");
+        let mut pma = Pma::new(100000, test_pma_path("cold")).expect("Failed to create test PMA");
         let space = NounSpace::new(&stack, &pma);
 
         // Create a Cold state using make_cold_state
@@ -2185,9 +2177,18 @@ pub(crate) mod test {
         let count_path_to_batteries_before: usize =
             unsafe { (*cold.0).path_to_batteries.iter().map(|e| e.len()).sum() };
 
-        assert_eq!(count_battery_to_paths_before, 1, "Should have 1 battery_to_paths entry");
-        assert_eq!(count_root_to_paths_before, 2, "Should have 2 root_to_paths entries");
-        assert_eq!(count_path_to_batteries_before, 1, "Should have 1 path_to_batteries entry");
+        assert_eq!(
+            count_battery_to_paths_before, 1,
+            "Should have 1 battery_to_paths entry"
+        );
+        assert_eq!(
+            count_root_to_paths_before, 2,
+            "Should have 2 root_to_paths entries"
+        );
+        assert_eq!(
+            count_path_to_batteries_before, 1,
+            "Should have 1 path_to_batteries entry"
+        );
 
         // Evacuate Cold to PMA
         unsafe {
@@ -2218,33 +2219,25 @@ pub(crate) mod test {
         // Verify lookups still work after evacuation
         // Note: We use fresh D(x) atoms for lookup since the original keys
         // may have forwarding pointers set during evacuation
-        let lookup_battery = unsafe {
-            (*cold.0).battery_to_paths.lookup(&mut stack, &mut D(200))
-        };
+        let lookup_battery = unsafe { (*cold.0).battery_to_paths.lookup(&mut stack, &mut D(200)) };
         assert!(
             lookup_battery.is_some(),
             "battery_to_paths lookup for D(200) should succeed after evacuation"
         );
 
-        let lookup_root1 = unsafe {
-            (*cold.0).root_to_paths.lookup(&mut stack, &mut D(100))
-        };
+        let lookup_root1 = unsafe { (*cold.0).root_to_paths.lookup(&mut stack, &mut D(100)) };
         assert!(
             lookup_root1.is_some(),
             "root_to_paths lookup for D(100) should succeed after evacuation"
         );
 
-        let lookup_root2 = unsafe {
-            (*cold.0).root_to_paths.lookup(&mut stack, &mut D(101))
-        };
+        let lookup_root2 = unsafe { (*cold.0).root_to_paths.lookup(&mut stack, &mut D(101)) };
         assert!(
             lookup_root2.is_some(),
             "root_to_paths lookup for D(101) should succeed after evacuation"
         );
 
-        let lookup_path = unsafe {
-            (*cold.0).path_to_batteries.lookup(&mut stack, &mut D(300))
-        };
+        let lookup_path = unsafe { (*cold.0).path_to_batteries.lookup(&mut stack, &mut D(300)) };
         assert!(
             lookup_path.is_some(),
             "path_to_batteries lookup for D(300) should succeed after evacuation"
@@ -2259,9 +2252,7 @@ pub(crate) mod test {
                 for elem_ptr in *noun_list {
                     let elem = unsafe { *elem_ptr };
                     verify_noun_not_stack_allocated(
-                        elem,
-                        &space,
-                        "battery_to_paths NounList element",
+                        elem, &space, "battery_to_paths NounList element",
                     );
                 }
             }
@@ -2273,11 +2264,7 @@ pub(crate) mod test {
                 verify_noun_not_stack_allocated(*key, &space, "root_to_paths key");
                 for elem_ptr in *noun_list {
                     let elem = unsafe { *elem_ptr };
-                    verify_noun_not_stack_allocated(
-                        elem,
-                        &space,
-                        "root_to_paths NounList element",
-                    );
+                    verify_noun_not_stack_allocated(elem, &space, "root_to_paths NounList element");
                 }
             }
         }
@@ -2291,9 +2278,7 @@ pub(crate) mod test {
                     for (battery_ptr, _parent_axis) in batteries {
                         let battery = unsafe { *battery_ptr };
                         verify_noun_not_stack_allocated(
-                            battery,
-                            &space,
-                            "path_to_batteries battery",
+                            battery, &space, "path_to_batteries battery",
                         );
                     }
                 }

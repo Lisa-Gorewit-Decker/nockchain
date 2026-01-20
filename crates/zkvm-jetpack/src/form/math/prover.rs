@@ -1,3 +1,5 @@
+use nockvm::noun::NounSpace;
+
 use crate::form::belt::*;
 use crate::form::bpoly::{bp_fft, bpoly_zero_extend};
 use crate::form::felt::{fpow, Felt};
@@ -5,7 +7,6 @@ use crate::form::fpoly::*;
 use crate::form::mary::{snag_as_bpoly, MarySlice};
 use crate::form::poly::*;
 use crate::form::structs::HoonList;
-use nockvm::noun::NounSpace;
 
 pub fn precompute_ntts(
     polys: MarySlice,

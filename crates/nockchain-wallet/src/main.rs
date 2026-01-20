@@ -1701,11 +1701,7 @@ mod tests {
         let exit_slab = &keygen_result[1];
         let exit_space = exit_slab.noun_space();
         let exit_cause = unsafe { exit_slab.root() };
-        let code = exit_cause
-            .in_space(&exit_space)
-            .as_cell()?
-            .tail()
-            .noun();
+        let code = exit_cause.in_space(&exit_space).as_cell()?.tail().noun();
         assert!(unsafe { code.raw_equals(&D(0)) }, "Expected exit code 0");
 
         Ok(())
@@ -1760,11 +1756,7 @@ mod tests {
         let exit_slab = &derive_result[1];
         let exit_space = exit_slab.noun_space();
         let exit_cause = unsafe { exit_slab.root() };
-        let code = exit_cause
-            .in_space(&exit_space)
-            .as_cell()?
-            .tail()
-            .noun();
+        let code = exit_cause.in_space(&exit_space).as_cell()?.tail().noun();
         assert!(unsafe { code.raw_equals(&D(0)) }, "Expected exit code 0");
 
         Ok(())
@@ -1785,8 +1777,8 @@ mod tests {
             "wallet",
             None,
         )
-            .await
-            .map_err(|e| CrownError::Unknown(e.to_string()))?;
+        .await
+        .map_err(|e| CrownError::Unknown(e.to_string()))?;
         let mut wallet = Wallet::new(nockapp);
 
         // Create a temporary input bundle file
@@ -1848,8 +1840,8 @@ mod tests {
             "wallet",
             None,
         )
-            .await
-            .map_err(|e| CrownError::Unknown(e.to_string()))?;
+        .await
+        .map_err(|e| CrownError::Unknown(e.to_string()))?;
         let mut wallet = Wallet::new(nockapp);
         let seedphrase = "correct horse battery staple";
         let version = 1;
@@ -1883,8 +1875,8 @@ mod tests {
             "wallet",
             None,
         )
-            .await
-            .map_err(|e| CrownError::Unknown(e.to_string()))?;
+        .await
+        .map_err(|e| CrownError::Unknown(e.to_string()))?;
         let mut wallet = Wallet::new(nockapp);
 
         // Create test key file
@@ -1938,8 +1930,8 @@ mod tests {
             "wallet",
             None,
         )
-            .await
-            .map_err(|e| CrownError::Unknown(e.to_string()))?;
+        .await
+        .map_err(|e| CrownError::Unknown(e.to_string()))?;
         let mut wallet = Wallet::new(nockapp);
 
         let names = "[first1 last1],[first2 last2]".to_string();
@@ -1993,8 +1985,8 @@ mod tests {
             "wallet",
             None,
         )
-            .await
-            .map_err(|e| CrownError::Unknown(e.to_string()))?;
+        .await
+        .map_err(|e| CrownError::Unknown(e.to_string()))?;
         init_tracing();
         let mut wallet = Wallet::new(nockapp);
 
@@ -2066,8 +2058,8 @@ mod tests {
             "wallet",
             None,
         )
-            .await
-            .map_err(|e| CrownError::Unknown(e.to_string()))?;
+        .await
+        .map_err(|e| CrownError::Unknown(e.to_string()))?;
         let mut wallet = Wallet::new(nockapp);
 
         // Test listing notes
@@ -2094,8 +2086,8 @@ mod tests {
             "wallet",
             None,
         )
-            .await
-            .map_err(|e| CrownError::Unknown(e.to_string()))?;
+        .await
+        .map_err(|e| CrownError::Unknown(e.to_string()))?;
         let mut wallet = Wallet::new(nockapp);
 
         // use the transaction in txs/
@@ -2145,8 +2137,8 @@ mod tests {
             "wallet",
             None,
         )
-            .await
-            .map_err(|e| CrownError::Unknown(e.to_string()))?;
+        .await
+        .map_err(|e| CrownError::Unknown(e.to_string()))?;
         let mut wallet = Wallet::new(nockapp);
 
         // Create a temporary transaction file

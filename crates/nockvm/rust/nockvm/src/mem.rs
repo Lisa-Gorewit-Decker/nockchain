@@ -1,6 +1,8 @@
 // TODO: fix stack push in PC
 use std::alloc::{alloc, dealloc, Layout};
 use std::fs::{File, OpenOptions};
+#[cfg(unix)]
+use std::os::unix::io::AsRawFd;
 use std::panic::panic_any;
 use std::path::Path;
 use std::ptr::copy_nonoverlapping;
@@ -9,14 +11,11 @@ use std::sync::Arc;
 use std::vec::Vec;
 use std::{io, mem, ptr};
 
-#[cfg(unix)]
-use std::os::unix::io::AsRawFd;
-
 use either::Either::{self, Left, Right};
 use ibig::Stack;
-use memmap2::{Mmap, MmapMut, MmapOptions};
 #[cfg(unix)]
 use libc;
+use memmap2::{Mmap, MmapMut, MmapOptions};
 use thiserror::Error;
 
 use crate::noun::{Atom, Cell, CellMemory, IndirectAtom, Noun, NounAllocator, NounSpace};
@@ -440,7 +439,11 @@ impl Arena {
                 "arena has no file backing",
             ));
         };
-        unsafe { MmapOptions::new().len(self.mapped_bytes).map_copy_read_only(&**fd) }
+        unsafe {
+            MmapOptions::new()
+                .len(self.mapped_bytes)
+                .map_copy_read_only(&**fd)
+        }
     }
 
     pub fn clone_read_only(&self) -> io::Result<Arc<Arena>> {
@@ -578,7 +581,6 @@ impl NockStack {
     pub fn offset_from_ptr(&self, ptr: *const u8) -> u32 {
         self.arena.offset_from_ptr(ptr)
     }
-
 
     /**  Initialization:
      * The initial frame is a west frame. When the stack is initialized, a number of slots is given.
@@ -1995,8 +1997,7 @@ impl NockStack {
                 };
 
                 // Determine the cell pointer offset
-                let cell_ptr_offset =
-                    (c.to_raw_pointer(&space) as usize - self.start as usize) / 8;
+                let cell_ptr_offset = (c.to_raw_pointer(&space) as usize - self.start as usize) / 8;
 
                 // Determine range for the cell's frame
                 let (range_lo_offset, range_hi_offset) = loop {
@@ -2327,8 +2328,7 @@ unsafe fn noun_preserve(stack: &mut NockStack, noun: &mut Noun) {
                 match allocated.as_either() {
                     Either::Left(mut indirect) => {
                         let indirect_handle = indirect.as_atom().in_space(&space);
-                        let alloc =
-                            stack.indirect_alloc_in_previous_frame(indirect_handle.size());
+                        let alloc = stack.indirect_alloc_in_previous_frame(indirect_handle.size());
                         copy_nonoverlapping(
                             indirect_handle.raw_pointer(),
                             alloc,
@@ -2623,7 +2623,6 @@ mod test {
             "Didn't get expected alloc error",
         );
     }
-
 
     proptest! {
         #[test]

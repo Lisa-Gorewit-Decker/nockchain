@@ -12,7 +12,7 @@ use nockvm_macros::tas;
 use thiserror::Error;
 use tokio::fs::create_dir_all;
 use tokio::sync::oneshot;
-use tracing::{debug, error, trace, warn};
+use tracing::{debug, error, info, trace, warn};
 
 use crate::metrics::NockAppMetrics;
 use crate::noun::slab::{Jammer, NockJammer, NounSlab};
@@ -196,15 +196,26 @@ impl<J: Jammer> Saver<J> {
         metrics: Arc<NockAppMetrics>,
     ) -> Result<(), CheckpointError> {
         let event_num = checkpoint.event_num();
+        info!("Checkpoint save: start (event_num={event_num})");
         trace!("Saving checkpoint at event_num {}", event_num);
         let saveable = checkpoint.to_saveable();
         trace!("Converted checkpoint to saveable");
+        info!("Checkpoint save: jam start (event_num={event_num})");
         let jammed = saveable.to_jammed_checkpoint::<J>(metrics);
         trace!("Converted saveable to jammed");
+        info!("Checkpoint save: jam done (event_num={event_num})");
         let path = self.next_path();
+        info!(
+            "Checkpoint save: write start (event_num={event_num}, path={})",
+            path.display()
+        );
         jammed.save_to_file(&path).await?;
         self.save_to_next = self.save_to_next.next();
         std::mem::drop(jammed);
+        info!(
+            "Checkpoint save: write done (event_num={event_num}, path={})",
+            path.display()
+        );
         debug!(
             "Saved checkpoint to file: {}",
             &path.as_os_str().to_str().unwrap()
@@ -221,6 +232,7 @@ impl<J: Jammer> Saver<J> {
         self.last_event_num = event_num;
         self.waiters = still_waiting;
 
+        info!("Checkpoint save: done (event_num={event_num})");
         Ok(())
     }
 }

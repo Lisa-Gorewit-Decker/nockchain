@@ -41,13 +41,13 @@ fn run_once(nockapp: &mut NockApp, i: u64) {
         .slot(15)
         .map(|handle| handle.noun())
         .unwrap_or_else(|err| {
-        panic!(
-            "Panicked with {err:?} at {}:{} (git sha: {:?})",
-            file!(),
-            line!(),
-            option_env!("GIT_SHA")
-        )
-    });
+            panic!(
+                "Panicked with {err:?} at {}:{} (git sha: {:?})",
+                file!(),
+                line!(),
+                option_env!("GIT_SHA")
+            )
+        });
     unsafe {
         assert!(val.raw_equals(&D(i)), "Expected {} but got {:?}", i, val);
     }
@@ -118,13 +118,13 @@ async fn test_sync_peek_and_poke() {
                 .slot(15)
                 .map(|handle| handle.noun())
                 .unwrap_or_else(|err| {
-                panic!(
-                    "Panicked with {err:?} at {}:{} (git sha: {:?})",
-                    file!(),
-                    line!(),
-                    option_env!("GIT_SHA")
-                )
-            });
+                    panic!(
+                        "Panicked with {err:?} at {}:{} (git sha: {:?})",
+                        file!(),
+                        line!(),
+                        option_env!("GIT_SHA")
+                    )
+                });
             unsafe {
                 assert!(val.raw_equals(&D(i)));
             }

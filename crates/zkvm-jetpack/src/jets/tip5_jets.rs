@@ -186,11 +186,7 @@ pub fn hash_ten_cell_jet(context: &mut Context, subject: Noun) -> Result<Noun, J
     hash_ten_cell(stack, ten_cell, &space)
 }
 
-fn hash_ten_cell(
-    stack: &mut NockStack,
-    ten_cell: Noun,
-    space: &NounSpace,
-) -> Result<Noun, JetErr> {
+fn hash_ten_cell(stack: &mut NockStack, ten_cell: Noun, space: &NounSpace) -> Result<Noun, JetErr> {
     // leaf_sequence(ten-cell)
     let mut leaf: Vec<u64> = Vec::<u64>::new();
     crate::form::shape::do_leaf_sequence(ten_cell, &mut leaf, space)?;
@@ -216,11 +212,7 @@ pub fn hash_hashable_jet(context: &mut Context, subject: Noun) -> Result<Noun, J
     hash_hashable(stack, h, &space)
 }
 
-pub fn hash_hashable(
-    stack: &mut NockStack,
-    h: Noun,
-    space: &NounSpace,
-) -> Result<Noun, JetErr> {
+pub fn hash_hashable(stack: &mut NockStack, h: Noun, space: &NounSpace) -> Result<Noun, JetErr> {
     if !h.is_cell() {
         return Err(BAIL_FAIL);
     }
@@ -247,18 +239,10 @@ pub fn hash_hashable(
 fn hash_hashable_hash(_stack: &mut NockStack, p: Noun) -> Result<Noun, JetErr> {
     Ok(p)
 }
-fn hash_hashable_leaf(
-    stack: &mut NockStack,
-    p: Noun,
-    space: &NounSpace,
-) -> Result<Noun, JetErr> {
+fn hash_hashable_leaf(stack: &mut NockStack, p: Noun, space: &NounSpace) -> Result<Noun, JetErr> {
     tip5::hash::hash_noun_varlen(stack, p, space)
 }
-fn hash_hashable_list(
-    stack: &mut NockStack,
-    p: Noun,
-    space: &NounSpace,
-) -> Result<Noun, JetErr> {
+fn hash_hashable_list(stack: &mut NockStack, p: Noun, space: &NounSpace) -> Result<Noun, JetErr> {
     let turn: Vec<Noun> = HoonList::try_from(p, space)?
         .into_iter()
         .map(|x| hash_hashable(stack, x, space).unwrap())
@@ -266,11 +250,7 @@ fn hash_hashable_list(
     let turn_list = vecnoun_to_hoon_list(stack, &turn);
     tip5::hash::hash_noun_varlen(stack, turn_list, space)
 }
-fn hash_hashable_mary(
-    stack: &mut NockStack,
-    p: Noun,
-    space: &NounSpace,
-) -> Result<Noun, JetErr> {
+fn hash_hashable_mary(stack: &mut NockStack, p: Noun, space: &NounSpace) -> Result<Noun, JetErr> {
     let (ma_step, ma_array_len, _ma_array_dat) = get_mary_fields(p, space)?;
 
     let ma_changed = change_step(stack, p, D(1), space)?;

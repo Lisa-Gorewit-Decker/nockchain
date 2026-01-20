@@ -306,7 +306,11 @@ impl P2PState {
 
     /// Removes a block ID from the tracker.
     /// implements [%track %remove block-id] effect
-    pub fn remove_block_id(&mut self, block_id: Noun, space: &NounSpace) -> Result<(), NockAppError> {
+    pub fn remove_block_id(
+        &mut self,
+        block_id: Noun,
+        space: &NounSpace,
+    ) -> Result<(), NockAppError> {
         let block_id_str = tip5_hash_to_base58(block_id, space)?;
         self.remove_block_id_str(&block_id_str);
         Ok(())
@@ -431,7 +435,7 @@ mod tests {
     use nockapp::noun::slab::NounSlab;
     use nockapp::AtomExt;
     use nockvm::mem::NockStack;
-    use nockvm::noun::{D, NounAllocator, T};
+    use nockvm::noun::{NounAllocator, D, T};
 
     use super::*;
     use crate::config::LibP2PConfig;
@@ -488,13 +492,13 @@ mod tests {
         tracker
             .remove_block_id(block_id_tuple, &space)
             .unwrap_or_else(|_| {
-            panic!(
-                "Called `expect()` at {}:{} (git sha: {})",
-                file!(),
-                line!(),
-                option_env!("GIT_SHA").unwrap_or("unknown")
-            )
-        });
+                panic!(
+                    "Called `expect()` at {}:{} (git sha: {})",
+                    file!(),
+                    line!(),
+                    option_env!("GIT_SHA").unwrap_or("unknown")
+                )
+            });
 
         // Verify it was removed
         assert!(!tracker.block_id_to_peers.contains_key(&block_id_str));
@@ -564,13 +568,13 @@ mod tests {
         let space = slab.noun_space();
         let recovered_peer_id =
             PeerId::from_noun(peer_id_atom.as_noun(), &space).unwrap_or_else(|_| {
-            panic!(
-                "Called `expect()` at {}:{} (git sha: {})",
-                file!(),
-                line!(),
-                option_env!("GIT_SHA").unwrap_or("unknown")
-            )
-        });
+                panic!(
+                    "Called `expect()` at {}:{} (git sha: {})",
+                    file!(),
+                    line!(),
+                    option_env!("GIT_SHA").unwrap_or("unknown")
+                )
+            });
 
         // Verify round trip
         assert_eq!(original_peer_id, recovered_peer_id);
@@ -698,13 +702,13 @@ mod tests {
         tracker
             .remove_block_id(block_id_tuple, &space)
             .unwrap_or_else(|_| {
-            panic!(
-                "Called `expect()` at {}:{} (git sha: {})",
-                file!(),
-                line!(),
-                option_env!("GIT_SHA").unwrap_or("unknown")
-            )
-        });
+                panic!(
+                    "Called `expect()` at {}:{} (git sha: {})",
+                    file!(),
+                    line!(),
+                    option_env!("GIT_SHA").unwrap_or("unknown")
+                )
+            });
 
         // Verify the block ID is no longer tracked
         let peers_after_removal = tracker.get_peers_for_block_id(block_id_tuple, &space);

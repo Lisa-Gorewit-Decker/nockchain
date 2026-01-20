@@ -363,11 +363,9 @@ pub unsafe fn unifying_equality(stack: &mut NockStack, a: *mut Noun, b: *mut Nou
                                 yi_handle.data_pointer() as *const c_void,
                                 xsize << 3,
                             ) == 0;
-                            (
-                                equal,
-                                unsafe { xi_handle.raw_pointer() },
-                                unsafe { yi_handle.raw_pointer() },
-                            )
+                            (equal, unsafe { xi_handle.raw_pointer() }, unsafe {
+                                yi_handle.raw_pointer()
+                            })
                         }
                     };
 
@@ -380,7 +378,9 @@ pub unsafe fn unifying_equality(stack: &mut NockStack, a: *mut Noun, b: *mut Nou
                                 (Some(xl), Some(yl)) if xl.is_pma() && yl.is_stack() => false,
                                 (Some(xl), Some(yl)) if xl.is_stack() && yl.is_pma() => true,
                                 (Some(xl), Some(yl)) if xl.is_pma() && yl.is_pma() => xptr > yptr,
-                                _ => x_is_junior(stack, current_bounds, &mut bounds_state, xptr, yptr),
+                                _ => x_is_junior(
+                                    stack, current_bounds, &mut bounds_state, xptr, yptr,
+                                ),
                             }
                         };
                         if replace_x {
@@ -418,8 +418,12 @@ pub unsafe fn unifying_equality(stack: &mut NockStack, a: *mut Noun, b: *mut Nou
                                 match (x_loc, y_loc) {
                                     (Some(xl), Some(yl)) if xl.is_pma() && yl.is_stack() => false,
                                     (Some(xl), Some(yl)) if xl.is_stack() && yl.is_pma() => true,
-                                    (Some(xl), Some(yl)) if xl.is_pma() && yl.is_pma() => xptr > yptr,
-                                    _ => x_is_junior(stack, current_bounds, &mut bounds_state, xptr, yptr),
+                                    (Some(xl), Some(yl)) if xl.is_pma() && yl.is_pma() => {
+                                        xptr > yptr
+                                    }
+                                    _ => x_is_junior(
+                                        stack, current_bounds, &mut bounds_state, xptr, yptr,
+                                    ),
                                 }
                             };
                             if replace_x {

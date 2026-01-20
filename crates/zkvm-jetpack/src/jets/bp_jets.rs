@@ -52,9 +52,10 @@ pub fn bpadd_jet(context: &mut Context, subject: Noun) -> Result {
     let bp = slot(sam, 2, &space)?;
     let bq = slot(sam, 3, &space)?;
 
-    let (Ok(bp_poly), Ok(bq_poly)) =
-        (BPolySlice::try_from(bp, &space), BPolySlice::try_from(bq, &space))
-    else {
+    let (Ok(bp_poly), Ok(bq_poly)) = (
+        BPolySlice::try_from(bp, &space),
+        BPolySlice::try_from(bq, &space),
+    ) else {
         return Err(BAIL_FAIL);
     };
 
@@ -91,9 +92,10 @@ pub fn bpsub_jet(context: &mut Context, subject: Noun) -> Result {
     let p = slot(sam, 2, &space)?;
     let q = slot(sam, 3, &space)?;
 
-    let (Ok(p_poly), Ok(q_poly)) =
-        (BPolySlice::try_from(p, &space), BPolySlice::try_from(q, &space))
-    else {
+    let (Ok(p_poly), Ok(q_poly)) = (
+        BPolySlice::try_from(p, &space),
+        BPolySlice::try_from(q, &space),
+    ) else {
         return Err(BAIL_FAIL);
     };
 
@@ -132,9 +134,10 @@ pub fn bpmul_jet(context: &mut Context, subject: Noun) -> Result {
     let bp = slot(sam, 2, &space)?;
     let bq = slot(sam, 3, &space)?;
 
-    let (Ok(bp_poly), Ok(bq_poly)) =
-        (BPolySlice::try_from(bp, &space), BPolySlice::try_from(bq, &space))
-    else {
+    let (Ok(bp_poly), Ok(bq_poly)) = (
+        BPolySlice::try_from(bp, &space),
+        BPolySlice::try_from(bq, &space),
+    ) else {
         return Err(BAIL_FAIL);
     };
 
@@ -159,9 +162,10 @@ pub fn bp_hadamard_jet(context: &mut Context, subject: Noun) -> Result {
     let bp = slot(sam, 2, &space)?;
     let bq = slot(sam, 3, &space)?;
 
-    let (Ok(bp_poly), Ok(bq_poly)) =
-        (BPolySlice::try_from(bp, &space), BPolySlice::try_from(bq, &space))
-    else {
+    let (Ok(bp_poly), Ok(bq_poly)) = (
+        BPolySlice::try_from(bp, &space),
+        BPolySlice::try_from(bq, &space),
+    ) else {
         return Err(BAIL_FAIL);
     };
     assert_eq!(bp_poly.len(), bq_poly.len());
@@ -239,9 +243,11 @@ pub fn bp_coseword_jet(context: &mut Context, subject: Noun) -> Result {
     let offset = slot(sam, 6, &space)?;
     let order = slot(sam, 7, &space)?;
 
-    let (Ok(p_poly), Ok(offset_belt), Ok(order_atom)) =
-        (BPolySlice::try_from(p, &space), offset.as_belt(&space), order.as_atom())
-    else {
+    let (Ok(p_poly), Ok(offset_belt), Ok(order_atom)) = (
+        BPolySlice::try_from(p, &space),
+        offset.as_belt(&space),
+        order.as_atom(),
+    ) else {
         return Err(BAIL_FAIL);
     };
     let order_32: u32 = order_atom.as_u32()?;
@@ -271,9 +277,7 @@ pub fn init_bpoly_jet(context: &mut Context, subject: Noun) -> Result {
 
 pub fn init_bpoly(list_belt: HoonList<'_>, res_poly: &mut [Belt], space: &NounSpace) {
     for (i, belt_noun) in list_belt.enumerate() {
-        let belt = belt_noun
-            .as_belt(space)
-            .expect("error at as_belt");
+        let belt = belt_noun.as_belt(space).expect("error at as_belt");
         res_poly[i] = belt;
     }
 }
@@ -360,9 +364,10 @@ pub fn bpdvr_jet(context: &mut Context, subject: Noun) -> Result {
     let ba = slot(sam, 2, &space)?;
     let bb = slot(sam, 3, &space)?;
 
-    let (Ok(ba_poly), Ok(bb_poly)) =
-        (BPolySlice::try_from(ba, &space), BPolySlice::try_from(bb, &space))
-    else {
+    let (Ok(ba_poly), Ok(bb_poly)) = (
+        BPolySlice::try_from(ba, &space),
+        BPolySlice::try_from(bb, &space),
+    ) else {
         debug!("ba or bb was not a bpoly");
         return Err(BAIL_FAIL);
     };

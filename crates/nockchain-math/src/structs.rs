@@ -26,18 +26,17 @@ impl<'a> Iterator for HoonList<'a> {
                 )
             });
             let tail = cell.tail().noun();
-            self.next = if tail.is_cell() {
-                Some(tail)
-            } else {
-                None
-            };
+            self.next = if tail.is_cell() { Some(tail) } else { None };
             cell.head().noun()
         })
     }
 }
 
 impl<'a> HoonList<'a> {
-    pub fn try_from(n: Noun, space: &'a NounSpace) -> core::result::Result<Self, nockvm::noun::Error> {
+    pub fn try_from(
+        n: Noun,
+        space: &'a NounSpace,
+    ) -> core::result::Result<Self, nockvm::noun::Error> {
         if n.is_cell() {
             let _ = n.in_space(space).as_cell().unwrap_or_else(|err| {
                 panic!(
@@ -99,11 +98,7 @@ impl<'a> HoonMap<'a> {
             // ?:  =(b p.n.a)
             //   (some q.n.a)
             Some(cv)
-        } else if gor(stack, k, ck, self.space)
-            .as_direct()
-            .map(|v| v.data())
-            == Ok(0)
-        {
+        } else if gor(stack, k, ck, self.space).as_direct().map(|v| v.data()) == Ok(0) {
             // ?:  (gor b p.n.a)
             //   $(a l.a)
             let map = Self::try_from(self.left?, self.space).ok()?;
@@ -115,7 +110,10 @@ impl<'a> HoonMap<'a> {
         }
     }
 
-    pub fn try_from(n: Noun, space: &'a NounSpace) -> std::result::Result<Self, nockvm::noun::Error> {
+    pub fn try_from(
+        n: Noun,
+        space: &'a NounSpace,
+    ) -> std::result::Result<Self, nockvm::noun::Error> {
         if n.is_cell() {
             let cell = n.in_space(space).as_cell().unwrap_or_else(|err| {
                 panic!(

@@ -551,9 +551,7 @@ async fn handle_effect(
             let (target_peers, is_limited_request, raw_tx_id) = {
                 let space = noun_slab.noun_space();
                 // Extract request details to check if it's a peer-specific request
-                let request_cell = unsafe { *noun_slab.root() }
-                    .in_space(&space)
-                    .as_cell()?;
+                let request_cell = unsafe { *noun_slab.root() }.in_space(&space).as_cell()?;
                 let request_body = request_cell.tail().as_cell()?;
                 let request_type = request_body.head().noun().as_direct()?;
 
@@ -641,9 +639,7 @@ async fn handle_effect(
         EffectType::LiarPeer => {
             let peer_id = {
                 let space = noun_slab.noun_space();
-                let effect_cell = unsafe { *noun_slab.root() }
-                    .in_space(&space)
-                    .as_cell()?;
+                let effect_cell = unsafe { *noun_slab.root() }.in_space(&space).as_cell()?;
                 let liar_peer_cell = effect_cell.tail().as_cell().map_err(|_| {
                     NockAppError::IoError(std::io::Error::new(
                         std::io::ErrorKind::Other,
@@ -686,9 +682,7 @@ async fn handle_effect(
         EffectType::LiarBlockId => {
             let block_id = {
                 let space = noun_slab.noun_space();
-                let effect_cell = unsafe { *noun_slab.root() }
-                    .in_space(&space)
-                    .as_cell()?;
+                let effect_cell = unsafe { *noun_slab.root() }.in_space(&space).as_cell()?;
                 let liar_block_cell = effect_cell.tail().as_cell().map_err(|_| {
                     NockAppError::IoError(std::io::Error::new(
                         std::io::ErrorKind::Other,
@@ -724,9 +718,7 @@ async fn handle_effect(
 
             let track_action = {
                 let space = noun_slab.noun_space();
-                let effect_cell = unsafe { *noun_slab.root() }
-                    .in_space(&space)
-                    .as_cell()?;
+                let effect_cell = unsafe { *noun_slab.root() }.in_space(&space).as_cell()?;
                 let track_cell = effect_cell.tail().as_cell()?;
                 let action = track_cell.head();
 
@@ -737,8 +729,7 @@ async fn handle_effect(
                     let peer_id_atom = data_cell.tail().as_atom()?;
 
                     // Convert peer_id from base58 string to PeerId
-                    let Ok(peer_id) =
-                        PeerId::from_noun(peer_id_atom.atom().as_noun(), &space)
+                    let Ok(peer_id) = PeerId::from_noun(peer_id_atom.atom().as_noun(), &space)
                     else {
                         return Err(NockAppError::OtherError(String::from(
                             "Invalid peer ID format",
@@ -782,38 +773,29 @@ async fn handle_effect(
 
             let seen_action = {
                 let space = noun_slab.noun_space();
-                let effect_cell = unsafe { *noun_slab.root() }
-                    .in_space(&space)
-                    .as_cell()?;
+                let effect_cell = unsafe { *noun_slab.root() }.in_space(&space).as_cell()?;
                 let seen_cell = effect_cell.tail().as_cell()?;
                 let seen_type = seen_cell.head();
 
                 if seen_type.eq_bytes(b"block") {
                     let seen_pq = seen_cell.tail().as_cell()?;
                     let block_id = seen_pq.head().noun();
-                    let block_id_str = tip5_hash_to_base58_stack(
-                        &mut noun_slab,
-                        block_id,
-                        &space,
-                    )
-                    .expect("failed to convert block ID to base58");
-                    let block_height =
-                        if let Ok(block_height_unit_cell) = seen_pq.tail().as_cell() {
-                            Some(block_height_unit_cell.tail().as_atom()?.as_u64()?)
-                        } else {
-                            None
-                        };
+                    let block_id_str = tip5_hash_to_base58_stack(&mut noun_slab, block_id, &space)
+                        .expect("failed to convert block ID to base58");
+                    let block_height = if let Ok(block_height_unit_cell) = seen_pq.tail().as_cell()
+                    {
+                        Some(block_height_unit_cell.tail().as_atom()?.as_u64()?)
+                    } else {
+                        None
+                    };
                     SeenAction::Block {
                         id: block_id_str,
                         height: block_height,
                     }
                 } else if seen_type.eq_bytes(b"tx") {
                     let tx_id = seen_cell.tail().as_cell()?;
-                    let tx_id_str = tip5_hash_to_base58_stack(
-                        &mut noun_slab,
-                        tx_id.cell().as_noun(),
-                        &space,
-                    )
+                    let tx_id_str =
+                        tip5_hash_to_base58_stack(&mut noun_slab, tx_id.cell().as_noun(), &space)
                             .expect("failed to convert tx ID to base58");
                     SeenAction::Tx { id: tx_id_str }
                 } else {
@@ -1045,10 +1027,7 @@ async fn handle_request_response(
                             match {
                                 let scry_space = scry_res_slab.noun_space();
                                 create_scry_response(
-                                    scry_res,
-                                    &scry_space,
-                                    "heard-block",
-                                    &mut res_slab,
+                                    scry_res, &scry_space, "heard-block", &mut res_slab,
                                 )
                             } {
                                 Left(()) => {
@@ -1071,10 +1050,7 @@ async fn handle_request_response(
                             match {
                                 let scry_space = scry_res_slab.noun_space();
                                 create_scry_response(
-                                    scry_res,
-                                    &scry_space,
-                                    "heard-elders",
-                                    &mut res_slab,
+                                    scry_res, &scry_space, "heard-elders", &mut res_slab,
                                 )
                             } {
                                 Left(()) => {
@@ -1097,10 +1073,7 @@ async fn handle_request_response(
                             match {
                                 let scry_space = scry_res_slab.noun_space();
                                 create_scry_response(
-                                    scry_res,
-                                    &scry_space,
-                                    "heard-tx",
-                                    &mut res_slab,
+                                    scry_res, &scry_space, "heard-tx", &mut res_slab,
                                 )
                             } {
                                 Left(()) => {
@@ -1398,11 +1371,7 @@ async fn handle_request_response(
                     .eq_bytes(b"heard-block")
                 {
                     metrics.heard_block_poke_time.add_timing(&elapsed);
-                } else if response_cell
-                    .in_space(&space)
-                    .head()
-                    .eq_bytes(b"heard-tx")
-                {
+                } else if response_cell.in_space(&space).head().eq_bytes(b"heard-tx") {
                     metrics.heard_tx_poke_time.add_timing(&elapsed);
                 } else if response_cell
                     .in_space(&space)
@@ -1762,7 +1731,7 @@ mod tests {
 
     use nockapp::noun::slab::NounSlab;
     use nockvm::mem::NockStack;
-    use nockvm::noun::{D, NounAllocator, T};
+    use nockvm::noun::{NounAllocator, D, T};
     use nockvm_macros::tas;
     use serde_bytes::ByteBuf;
 

@@ -562,13 +562,7 @@ mod tests {
             "Encoded draft kind tail: {:?}",
             encoded.in_space(&space).as_cell().unwrap().tail().noun()
         );
-        if let Ok(tail_cell) = encoded
-            .in_space(&space)
-            .as_cell()
-            .unwrap()
-            .tail()
-            .as_cell()
-        {
+        if let Ok(tail_cell) = encoded.in_space(&space).as_cell().unwrap().tail().as_cell() {
             println!("Tail head: {:?}", tail_cell.head().noun());
             println!("Tail tail: {:?}", tail_cell.tail().noun());
             if let Ok(tail_tail_cell) = tail_cell.tail().as_cell() {

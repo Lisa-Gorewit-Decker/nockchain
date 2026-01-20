@@ -570,11 +570,7 @@ impl NounDecode for Hax {
     }
 }
 
-fn decode_zset<T, F>(
-    noun: &Noun,
-    space: &NounSpace,
-    mut f: F,
-) -> Result<Vec<T>, NounDecodeError>
+fn decode_zset<T, F>(noun: &Noun, space: &NounSpace, mut f: F) -> Result<Vec<T>, NounDecodeError>
 where
     F: FnMut(&Noun, &NounSpace) -> Result<T, NounDecodeError>,
 {

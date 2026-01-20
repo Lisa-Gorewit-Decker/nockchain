@@ -12,9 +12,8 @@ pub fn markdown() -> IODriverFn {
             match handle.next_effect().await {
                 Ok(effect) => {
                     let space = effect.noun_space();
-                    let Ok(effect_cell) = unsafe { effect.root() }
-                        .in_space(&space)
-                        .as_cell() else {
+                    let Ok(effect_cell) = unsafe { effect.root() }.in_space(&space).as_cell()
+                    else {
                         continue;
                     };
                     if unsafe { effect_cell.head().noun().raw_equals(&D(tas!(b"markdown"))) } {

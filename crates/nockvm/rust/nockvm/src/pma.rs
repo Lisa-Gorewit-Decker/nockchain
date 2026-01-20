@@ -4,7 +4,7 @@
 //! It uses bump allocation and stores nouns in offset form.
 
 use std::io::{self, Read, Seek, SeekFrom};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::ptr::copy_nonoverlapping;
 use std::sync::Arc;
 use std::time::Instant;
@@ -283,6 +283,11 @@ impl Pma {
         &self.arena
     }
 
+    /// Get the backing file path.
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
+
     /// Get the current allocation offset in words
     pub fn alloc_offset(&self) -> usize {
         self.alloc_offset
@@ -416,13 +421,13 @@ impl Pma {
         if len_aligned == 0 {
             return Ok(0);
         }
-            let ret = unsafe {
-                libc::madvise(
-                    self.arena.base_ptr() as *mut libc::c_void,
-                    len_aligned,
-                    libc::MADV_PAGEOUT,
-                )
-            };
+        let ret = unsafe {
+            libc::madvise(
+                self.arena.base_ptr() as *mut libc::c_void,
+                len_aligned,
+                libc::MADV_PAGEOUT,
+            )
+        };
         if ret != 0 {
             return Err(io::Error::last_os_error());
         }

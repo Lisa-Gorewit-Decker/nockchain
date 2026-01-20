@@ -345,6 +345,7 @@ impl<J: Jammer + Send + 'static> NockApp<J> {
             drop(save_permit);
             return Ok(join_handle);
         }
+        let checkpoint_snapshot_fut = self.kernel.checkpoint_snapshot();
         let checkpoint_fut = self.kernel.checkpoint();
         let metrics = self.metrics.clone();
 
@@ -352,9 +353,26 @@ impl<J: Jammer + Send + 'static> NockApp<J> {
         let join_handle = self.tasks.spawn(async move {
             f.await;
             trace!("Save task from save_f: f.await done");
-            let checkpoint = checkpoint_fut.await?;
-            trace!("Save task from save_f: checkpoint_fut.await done");
+            info!("Checkpoint: starting save task");
+            let mut used_snapshot = false;
+            let checkpoint = match checkpoint_snapshot_fut.await {
+                Ok(snapshot) => {
+                    let metrics_opt = Some(metrics.clone());
+                    used_snapshot = true;
+                    snapshot.build_saveable_checkpoint(&metrics_opt)?
+                }
+                Err(err) => {
+                    debug!(
+                        "Checkpoint snapshot failed ({err}); falling back to full serf checkpoint"
+                    );
+                    checkpoint_fut.await?
+                }
+            };
+            let event_num = checkpoint.event_num;
+            info!("Checkpoint: saveable ready (event_num={event_num}, snapshot={used_snapshot})");
+            trace!("Save task from save_f: checkpoint build done");
             save_permit.save(checkpoint, metrics).await?;
+            info!("Checkpoint: save done (event_num={event_num}, snapshot={used_snapshot})");
             trace!("Save task from save_f: save_permit.save done");
 
             drop(save_permit);

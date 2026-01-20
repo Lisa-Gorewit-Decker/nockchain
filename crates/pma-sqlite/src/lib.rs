@@ -1,0 +1,30 @@
+pub mod lru;
+pub mod store;
+
+use thiserror::Error;
+
+#[derive(Debug, Error)]
+pub enum PmaSqliteError {
+    #[error("diesel error: {0}")]
+    Diesel(#[from] diesel::result::Error),
+    #[error("diesel connection error: {0}")]
+    DieselConnection(#[from] diesel::ConnectionError),
+    #[error("stack init error: {0}")]
+    StackInit(#[from] nockvm::mem::NewStackError),
+    #[error("serialization error: {0}")]
+    Serialization(String),
+    #[error("missing noun id {0}")]
+    Missing(i64),
+    #[error("invalid sqlite path")]
+    InvalidPath,
+}
+
+pub type Result<T> = std::result::Result<T, PmaSqliteError>;
+
+pub use store::{CachedNoun, SqlitePma, SqlitePmaConfig, SqlitePmaStats};
+
+impl From<nockvm::interpreter::Error> for PmaSqliteError {
+    fn from(err: nockvm::interpreter::Error) -> Self {
+        Self::Serialization(format!("{err:?}"))
+    }
+}

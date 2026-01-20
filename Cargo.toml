@@ -1,7 +1,7 @@
 resolver = "2"
 
 [workspace]
-members = ["crates/nockchain-api", "crates/nockchain-explorer-tui", "crates/nockchain-peek", "crates/equix-latency", "crates/hoon", "crates/hoonc", "crates/kernels", "crates/nockapp", "crates/nockapp-grpc", "crates/nockapp-grpc-proto", "crates/nockchain", "crates/nockchain-libp2p-io", "crates/nockchain-math", "crates/nockchain-types", "crates/nockchain-wallet", "crates/raw-tx-checker", "crates/nockvm/rust/ibig", "crates/nockvm/rust/murmur3", "crates/nockvm/rust/nockvm", "crates/nockvm/rust/nockvm_macros", "crates/noun-serde", "crates/noun-serde-derive", "crates/zkvm-jetpack"]
+members = ["crates/nockchain-api", "crates/nockchain-explorer-tui", "crates/nockchain-peek", "crates/equix-latency", "crates/hoon", "crates/hoonc", "crates/kernels", "crates/nockapp", "crates/nockapp-grpc", "crates/nockapp-grpc-proto", "crates/nockchain", "crates/nockchain-libp2p-io", "crates/nockchain-math", "crates/nockchain-types", "crates/nockchain-wallet", "crates/raw-tx-checker", "crates/nockvm/rust/ibig", "crates/nockvm/rust/murmur3", "crates/nockvm/rust/nockvm", "crates/nockvm/rust/nockvm_macros", "crates/noun-serde", "crates/noun-serde-derive", "crates/zkvm-jetpack", "crates/pma-sqlite"]
 
 [workspace.package]
 version = "0.1.0"
@@ -36,6 +36,7 @@ criterion = { git = "https://github.com/vlovich/criterion.rs.git", rev = "9b485a
 crossterm = "0.29"
 curve25519-dalek = { version = "4.1.1", default-features = false }
 dashmap = "6.1.0"
+diesel = "2.2.4"
 dirs = "6.0.0"
 divan = "0.1.21"
 ed25519-dalek = { version = "2.1.0", default-features = false }
@@ -57,6 +58,7 @@ json = "0.12.4"
 lazy_static = "1.4.0"
 libc = "0.2.171"
 libp2p = { git = "https://github.com/libp2p/rust-libp2p.git", rev = "da0017ee887a868e231ed78c7de892779c17800d" }
+libsqlite3-sys = { version = "0.35.0", features = ["bundled"] }
 memmap2 = "^0.9.5"
 num-derive = "0.4.2"
 num-traits = "0.2"

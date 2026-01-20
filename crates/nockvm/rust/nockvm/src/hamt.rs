@@ -3,13 +3,13 @@ use std::slice;
 use std::time::Instant;
 
 use either::Either::{self, *};
+use tracing::info;
 
 use crate::mem::{NockStack, Preserve};
 use crate::mug::mug_u32;
 use crate::noun::{Noun, NounAllocator};
 use crate::pma::{Pma, PmaCopy};
 use crate::unifying_equality::unifying_equality;
-use tracing::info;
 
 type MutStemEntry<T> = Either<*mut MutStem<T>, Leaf<T>>;
 

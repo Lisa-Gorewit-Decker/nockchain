@@ -18,9 +18,11 @@ pub fn fp_coseword_jet(context: &mut Context, subject: Noun) -> Result {
     let offset = slot(sam, 6, &space)?;
     let order = slot(sam, 7, &space)?;
 
-    let (Ok(p_poly), Ok(offset_felt), Ok(order_atom)) =
-        (FPolySlice::try_from(p, &space), offset.as_felt(&space), order.as_atom())
-    else {
+    let (Ok(p_poly), Ok(offset_felt), Ok(order_atom)) = (
+        FPolySlice::try_from(p, &space),
+        offset.as_felt(&space),
+        order.as_atom(),
+    ) else {
         debug!("p not an fpoly, offset not a felt, or order not an atom");
         return Err(BAIL_FAIL);
     };

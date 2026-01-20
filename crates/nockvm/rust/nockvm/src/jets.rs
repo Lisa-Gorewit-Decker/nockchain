@@ -38,11 +38,10 @@ use crate::jets::parse::*;
 use crate::jets::serial::*;
 //use crate::jets::set::*;
 use crate::jets::sort::*;
-use crate::noun::Slots;
 use crate::jets::tree::*;
 use crate::jets::warm::Warm;
 use crate::mem::{NockStack, Preserve};
-use crate::noun::{self, Noun};
+use crate::noun::{self, Noun, Slots};
 
 crate::gdb!();
 
@@ -320,15 +319,7 @@ pub mod util {
         let gate_cell = gate.in_space(&space).as_cell()?;
         let core: Noun = T(
             &mut context.stack,
-            &[
-                gate_cell.head().noun(),
-                sample,
-                gate_cell
-                    .tail()
-                    .as_cell()?
-                    .tail()
-                    .noun(),
-            ],
+            &[gate_cell.head().noun(), sample, gate_cell.tail().as_cell()?.tail().noun()],
         );
         kick(context, core, D(2))
     }

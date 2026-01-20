@@ -283,11 +283,8 @@ impl FPolyVec {
             }
             let dat_vec: FPolyVec = unsafe {
                 PolyVec(
-                    std::slice::from_raw_parts(
-                        tail.data_pointer() as *const Felt,
-                        len32 as usize,
-                    )
-                    .to_vec(),
+                    std::slice::from_raw_parts(tail.data_pointer() as *const Felt, len32 as usize)
+                        .to_vec(),
                 )
             };
             Ok(dat_vec)
@@ -321,11 +318,8 @@ impl BPolyVec {
             }
             let dat_vec: BPolyVec = unsafe {
                 PolyVec(
-                    std::slice::from_raw_parts(
-                        tail.data_pointer() as *const Belt,
-                        len32 as usize,
-                    )
-                    .to_vec(),
+                    std::slice::from_raw_parts(tail.data_pointer() as *const Belt, len32 as usize)
+                        .to_vec(),
                 )
             };
             Ok(dat_vec)
@@ -340,8 +334,7 @@ impl NounDecode for FPolyVec {
         noun: &nockvm::noun::Noun,
         space: &NounSpace,
     ) -> std::result::Result<Self, noun_serde::NounDecodeError> {
-        FPolyVec::try_from(*noun, space)
-            .map_err(|_| noun_serde::NounDecodeError::FPolyDecodeError)
+        FPolyVec::try_from(*noun, space).map_err(|_| noun_serde::NounDecodeError::FPolyDecodeError)
     }
 }
 
@@ -359,8 +352,7 @@ impl NounDecode for BPolyVec {
         noun: &nockvm::noun::Noun,
         space: &NounSpace,
     ) -> std::result::Result<Self, noun_serde::NounDecodeError> {
-        BPolyVec::try_from(*noun, space)
-            .map_err(|_| noun_serde::NounDecodeError::FPolyDecodeError)
+        BPolyVec::try_from(*noun, space).map_err(|_| noun_serde::NounDecodeError::FPolyDecodeError)
     }
 }
 

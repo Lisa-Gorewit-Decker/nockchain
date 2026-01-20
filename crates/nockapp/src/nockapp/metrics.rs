@@ -1,5 +1,5 @@
-use gnort::*;
 use gnort::instrument::{Count, Gauge, TimingCount};
+use gnort::*;
 
 metrics_struct![
     NockAppMetrics,

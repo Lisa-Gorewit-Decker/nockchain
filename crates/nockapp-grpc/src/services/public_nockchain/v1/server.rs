@@ -162,10 +162,8 @@ impl PublicNockchainGrpcServer {
             Ok(Some(result_slab)) => {
                 let result_noun = unsafe { result_slab.root() };
                 let space = result_slab.noun_space();
-                match <Option<Option<(v0::BlockHeight, v0::Hash)>>>::from_noun(
-                    &result_noun,
-                    &space,
-                ) {
+                match <Option<Option<(v0::BlockHeight, v0::Hash)>>>::from_noun(&result_noun, &space)
+                {
                     Ok(opt) => Ok(opt.flatten()),
                     // Peek either returned [~ ~] or ~
                     Err(_) => Err(NockAppGrpcError::PeekReturnedNoData),
@@ -418,8 +416,7 @@ impl NockchainService for PublicNockchainGrpcServer {
             Ok(Some(result_slab)) => {
                 let result_noun = unsafe { result_slab.root() };
                 let space = result_slab.noun_space();
-                let result =
-                    <Option<Option<v0::BalanceUpdate>>>::from_noun(&result_noun, &space);
+                let result = <Option<Option<v0::BalanceUpdate>>>::from_noun(&result_noun, &space);
 
                 match result {
                     Ok(update) => {

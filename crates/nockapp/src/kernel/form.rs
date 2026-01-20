@@ -1,11 +1,10 @@
 #![allow(dead_code)]
 use std::any::Any;
-use std::future::Future;
 use std::fs;
+use std::future::Future;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::Arc;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 use bincode::{config, Decode, Encode};
@@ -50,6 +49,46 @@ pub struct LoadState {
     pub ker_hash: Hash,
     pub event_num: u64,
     pub kernel_state: NounSlab,
+}
+
+#[derive(Clone)]
+pub(crate) struct PmaCheckpointSnapshot {
+    ker_hash: Hash,
+    event_num: u64,
+    kernel_state_raw: u64,
+    cold_offset: u32,
+    pma_path: PathBuf,
+    stack_words: usize,
+}
+
+impl PmaCheckpointSnapshot {
+    pub(crate) fn build_saveable_checkpoint(
+        &self,
+        metrics: &Option<Arc<NockAppMetrics>>,
+    ) -> Result<SaveableCheckpoint> {
+        info!(
+            "Checkpoint snapshot: build saveable start (event_num={})",
+            self.event_num
+        );
+        let pma =
+            Pma::open(self.pma_path.clone()).map_err(|err| CrownError::Unknown(err.to_string()))?;
+        let (mut stack, _) = NockStack::new_(self.stack_words, 0)
+            .map_err(|err| CrownError::Unknown(err.to_string()))?;
+        stack.install_pma_arena(Arc::clone(pma.arena()));
+        let kernel_state = unsafe { Noun::from_raw(self.kernel_state_raw) };
+        let cold_state = unsafe { Cold::from_pma_offset(&pma, self.cold_offset) };
+        let checkpoint = SaveableCheckpoint::new(
+            &mut stack, self.ker_hash, self.event_num, kernel_state, cold_state, metrics,
+        );
+        info!(
+            "Checkpoint snapshot: build saveable done (event_num={})",
+            self.event_num
+        );
+        if let Err(err) = pma.advise_drop_allocated_prefix(4, 5) {
+            warn!("Failed to madvise PMA prefix after checkpoint save: {err}");
+        }
+        Ok(checkpoint)
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -119,10 +158,7 @@ impl PmaPersistMetadata {
         }
         self.checksum
             == Self::checksum(
-                self.ker_hash,
-                self.event_num,
-                self.kernel_state_raw,
-                self.cold_offset,
+                self.ker_hash, self.event_num, self.kernel_state_raw, self.cold_offset,
                 self.pma_base,
             )
     }
@@ -199,6 +235,9 @@ pub enum SerfAction<C> {
     // Make a CheckPoint
     Checkpoint {
         result: oneshot::Sender<C>,
+    },
+    CheckpointSnapshot {
+        result: oneshot::Sender<Result<PmaCheckpointSnapshot>>,
     },
     Import {
         state: LoadState,
@@ -501,6 +540,19 @@ impl<C> SerfThread<C> {
         }
     }
 
+    pub(crate) fn checkpoint_snapshot(
+        &self,
+    ) -> impl Future<Output = Result<PmaCheckpointSnapshot>> {
+        let (result, result_fut) = oneshot::channel();
+        let action_sender = self.action_sender.clone();
+        async move {
+            action_sender
+                .send(SerfAction::CheckpointSnapshot { result })
+                .await?;
+            result_fut.await?
+        }
+    }
+
     pub fn import(&self, state: LoadState) -> impl Future<Output = Result<()>> {
         let (result, result_fut) = oneshot::channel();
         let action_sender = self.action_sender.clone();
@@ -653,6 +705,20 @@ fn serf_loop<C: SerfCheckpoint>(
                         .add_timing(&action_elapsed);
                 };
             }
+            SerfAction::CheckpointSnapshot { result } => {
+                let snapshot = create_checkpoint_snapshot(&mut serf);
+                if result.send(snapshot).is_err() {
+                    debug!(
+                        "Checkpoint snapshot receiver dropped before receiving result - likely timed out"
+                    );
+                };
+                let action_elapsed = action_start.elapsed();
+                if let Some(nockapp_metrics) = &serf.metrics {
+                    nockapp_metrics
+                        .serf_loop_checkpoint
+                        .add_timing(&action_elapsed);
+                };
+            }
             SerfAction::Peek { ovo, result } => {
                 if inhibit.load(Ordering::SeqCst) {
                     let _ = result
@@ -734,8 +800,7 @@ fn serf_loop<C: SerfCheckpoint>(
                                 + detail.cold.alloc_words
                                 + detail.arvo.alloc_words
                         });
-                        let total_alloc_mib =
-                            (total_alloc_words as f64 * 8.0) / (1024.0 * 1024.0);
+                        let total_alloc_mib = (total_alloc_words as f64 * 8.0) / (1024.0 * 1024.0);
                         let event_num = serf.event_num.load(Ordering::SeqCst);
                         info!(
                             "pma-timing: event_ms={:.3} pma_copy_ms={:.3} total_ms={:.3} alloc_words={} alloc_mib={:.3} event_num={}",
@@ -782,6 +847,7 @@ fn create_checkpoint<C: SerfCheckpoint>(
 ) -> C {
     let ker_hash = serf.ker_hash;
     let event_num = serf.event_num.load(Ordering::SeqCst);
+    info!("Checkpoint: full capture start (event_num={event_num})");
     let space = serf.context.stack.noun_space();
     let ker_state = serf
         .arvo
@@ -789,13 +855,13 @@ fn create_checkpoint<C: SerfCheckpoint>(
         .slot(STATE_AXIS)
         .map(|handle| handle.noun())
         .unwrap_or_else(|err| {
-        panic!(
-            "Panicked with {err:?} at {}:{} (git sha: {:?})",
-            file!(),
-            line!(),
-            option_env!("GIT_SHA")
-        )
-    });
+            panic!(
+                "Panicked with {err:?} at {}:{} (git sha: {:?})",
+                file!(),
+                line!(),
+                option_env!("GIT_SHA")
+            )
+        });
     let cold_state = serf.context.cold;
 
     let checkpoint = C::new(
@@ -816,7 +882,53 @@ fn create_checkpoint<C: SerfCheckpoint>(
         }
     }
 
+    info!("Checkpoint: full capture done (event_num={event_num})");
     checkpoint
+}
+
+fn create_checkpoint_snapshot(serf: &mut Serf) -> Result<PmaCheckpointSnapshot> {
+    let Some(pma) = serf.pma.as_ref() else {
+        return Err(CrownError::Unknown("PMA not configured".to_string()));
+    };
+
+    let ker_hash = serf.ker_hash;
+    let event_num = serf.event_num.load(Ordering::SeqCst);
+    info!("Checkpoint snapshot: capture start (event_num={event_num})");
+    pma.sync_all()?;
+    let space = serf.context.stack.noun_space();
+    let kernel_state = serf
+        .arvo
+        .in_space(&space)
+        .slot(STATE_AXIS)
+        .map(|handle| handle.noun())?;
+    if let Some(location) = kernel_state.in_space(&space).allocated_location() {
+        if location.is_stack() {
+            return Err(CrownError::Unknown(
+                "kernel state is not in PMA".to_string(),
+            ));
+        }
+        if !location.is_offset() {
+            return Err(CrownError::Unknown(
+                "kernel state is not in PMA offset form".to_string(),
+            ));
+        }
+    }
+    let cold_offset = serf
+        .context
+        .cold
+        .pma_offset(pma)
+        .ok_or_else(|| CrownError::Unknown("cold state is not in PMA".to_string()))?;
+    let kernel_state_raw = unsafe { kernel_state.as_raw() };
+
+    info!("Checkpoint snapshot: capture done (event_num={event_num})");
+    Ok(PmaCheckpointSnapshot {
+        ker_hash,
+        event_num,
+        kernel_state_raw,
+        cold_offset,
+        pma_path: pma.path().to_path_buf(),
+        stack_words: serf.context.stack.arena().words(),
+    })
 }
 
 /// Represents a Sword kernel, containing a Serf and snapshot location.
@@ -849,13 +961,7 @@ impl<C: SerfCheckpoint + 'static> Kernel<C> {
         let kernel_vec = Vec::from(kernel);
         let hot_state_vec = Vec::from(hot_state);
         let serf = SerfThread::new(
-            kernel_vec,
-            checkpoint,
-            hot_state_vec,
-            NOCK_STACK_SIZE,
-            pma,
-            test_jets,
-            trace,
+            kernel_vec, checkpoint, hot_state_vec, NOCK_STACK_SIZE, pma, test_jets, trace,
         )
         .await?;
         Ok(Self { serf })
@@ -872,13 +978,7 @@ impl<C: SerfCheckpoint + 'static> Kernel<C> {
         let kernel_vec = Vec::from(kernel);
         let hot_state_vec = Vec::from(hot_state);
         let serf = SerfThread::new(
-            kernel_vec,
-            checkpoint,
-            hot_state_vec,
-            NOCK_STACK_SIZE_TINY,
-            pma,
-            test_jets,
-            trace,
+            kernel_vec, checkpoint, hot_state_vec, NOCK_STACK_SIZE_TINY, pma, test_jets, trace,
         )
         .await?;
         Ok(Self { serf })
@@ -895,13 +995,7 @@ impl<C: SerfCheckpoint + 'static> Kernel<C> {
         let kernel_vec = Vec::from(kernel);
         let hot_state_vec = Vec::from(hot_state);
         let serf = SerfThread::new(
-            kernel_vec,
-            checkpoint,
-            hot_state_vec,
-            NOCK_STACK_SIZE_SMALL,
-            pma,
-            test_jets,
-            trace,
+            kernel_vec, checkpoint, hot_state_vec, NOCK_STACK_SIZE_SMALL, pma, test_jets, trace,
         )
         .await?;
         Ok(Self { serf })
@@ -918,13 +1012,7 @@ impl<C: SerfCheckpoint + 'static> Kernel<C> {
         let kernel_vec = Vec::from(kernel);
         let hot_state_vec = Vec::from(hot_state);
         let serf = SerfThread::new(
-            kernel_vec,
-            checkpoint,
-            hot_state_vec,
-            NOCK_STACK_SIZE_MEDIUM,
-            pma,
-            test_jets,
-            trace,
+            kernel_vec, checkpoint, hot_state_vec, NOCK_STACK_SIZE_MEDIUM, pma, test_jets, trace,
         )
         .await?;
         Ok(Self { serf })
@@ -941,13 +1029,7 @@ impl<C: SerfCheckpoint + 'static> Kernel<C> {
         let kernel_vec = Vec::from(kernel);
         let hot_state_vec = Vec::from(hot_state);
         let serf = SerfThread::new(
-            kernel_vec,
-            checkpoint,
-            hot_state_vec,
-            NOCK_STACK_SIZE_LARGE,
-            pma,
-            test_jets,
-            trace,
+            kernel_vec, checkpoint, hot_state_vec, NOCK_STACK_SIZE_LARGE, pma, test_jets, trace,
         )
         .await?;
         Ok(Self { serf })
@@ -981,13 +1063,7 @@ impl<C: SerfCheckpoint + 'static> Kernel<C> {
         let kernel_vec = Vec::from(kernel);
         let hot_state_vec = Vec::from(hot_state);
         let serf = SerfThread::new(
-            kernel_vec,
-            checkpoint,
-            hot_state_vec,
-            NOCK_STACK_SIZE_HUGE,
-            pma,
-            test_jets,
-            trace,
+            kernel_vec, checkpoint, hot_state_vec, NOCK_STACK_SIZE_HUGE, pma, test_jets, trace,
         )
         .await?;
         Ok(Self { serf })
@@ -1017,6 +1093,10 @@ impl<C: SerfCheckpoint + 'static> Kernel<C> {
     /// Produces a checkpoint of the kernel state.
     pub fn checkpoint(&self) -> impl Future<Output = Result<C>> {
         self.serf.checkpoint()
+    }
+
+    pub fn checkpoint_snapshot(&self) -> impl Future<Output = Result<PmaCheckpointSnapshot>> {
+        self.serf.checkpoint_snapshot()
     }
 }
 
@@ -1703,21 +1783,11 @@ impl Serf {
         } else {
             Self::copy_segment("warm", &mut self.context.warm, stack, pma, trace_pma, None);
             Self::copy_segment(
-                "test_jets",
-                &mut self.context.test_jets,
-                stack,
-                pma,
-                trace_pma,
-                None,
+                "test_jets", &mut self.context.test_jets, stack, pma, trace_pma, None,
             );
             Self::copy_segment("hot", &mut self.context.hot, stack, pma, trace_pma, None);
             Self::copy_segment(
-                "cache",
-                &mut self.context.cache,
-                stack,
-                pma,
-                trace_pma,
-                None,
+                "cache", &mut self.context.cache, stack, pma, trace_pma, None,
             );
             Self::copy_segment("cold", &mut self.context.cold, stack, pma, trace_pma, None);
             Self::copy_segment("arvo", &mut self.arvo, stack, pma, trace_pma, None);
@@ -1770,11 +1840,7 @@ impl Serf {
         let event_num = self.event_num.load(Ordering::SeqCst);
         let pma_base = pma.arena().base_ptr() as u64;
         let meta = PmaPersistMetadata::new(
-            self.ker_hash,
-            event_num,
-            kernel_state_raw,
-            cold_offset,
-            pma_base,
+            self.ker_hash, event_num, kernel_state_raw, cold_offset, pma_base,
         );
         if let Err(err) = meta.save_to_path(meta_path) {
             warn!(
