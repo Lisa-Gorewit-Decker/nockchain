@@ -10,6 +10,7 @@ edition = "2021"
 [workspace.dependencies]
 aes = { version = "0.8.3", default-features = false }
 aes-siv = { version = "0.7.0", default-features = false, features = ["alloc"] }
+ahash = "0.8.11"
 anyhow = "1.0"
 argon2 = "0.5.3"
 arrayref = "0.3.7"

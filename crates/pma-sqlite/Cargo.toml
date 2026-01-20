@@ -5,6 +5,7 @@ edition.workspace = true
 
 [dependencies]
 libsqlite3-sys.workspace = true
+ahash.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
 nockvm.workspace = true

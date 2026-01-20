@@ -3,11 +3,10 @@ use std::time::{Duration, Instant};
 use nockvm::mem::NockStack;
 use nockvm::noun::{Atom, Cell, Noun, NounSpace};
 use nockvm::pma::{Pma, PmaCopy};
-use pma_sqlite::archive::NounNode;
+use pma_sqlite::archive::{TAG_CELL, TAG_DIRECT_ATOM, TAG_INDIRECT_ATOM};
 use pma_sqlite::{ArchivedNoun, SqlitePma, SqlitePmaConfig};
 use rand::rngs::StdRng;
 use rand::{Rng, SeedableRng};
-use rkyv::Archive;
 use tempfile::TempDir;
 
 #[derive(Clone, Copy, Debug)]
@@ -228,36 +227,39 @@ fn touch_noun(space: &NounSpace, root: Noun) -> u64 {
 }
 
 fn touch_archived_noun(root: &ArchivedNoun) -> u64 {
-    type ArchivedNounNode = <NounNode as Archive>::Archived;
-
     let mut acc = 0u64;
-    let nodes: &[ArchivedNounNode] = root.nodes.as_slice();
+    let tags = root.tags.as_slice();
+    let direct_atoms = root.direct_atoms.as_slice();
+    let indirect_offsets = root.indirect_offsets.as_slice();
+    let indirect_lens = root.indirect_lens.as_slice();
+    let cell_heads = root.cell_heads.as_slice();
+    let cell_tails = root.cell_tails.as_slice();
     let atom_bytes = root.atom_bytes.as_slice();
     let mut pending = Vec::new();
     pending.push(root.root.to_native() as usize);
     while let Some(idx) = pending.pop() {
-        let node = &nodes[idx];
-        match node {
-            ArchivedNounNode::DirectAtom(value) => {
-                let bytes = value.to_native().to_ne_bytes();
+        match tags[idx] {
+            TAG_DIRECT_ATOM => {
+                let bytes = direct_atoms[idx].to_native().to_ne_bytes();
                 acc = acc.wrapping_add(bytes.len() as u64);
                 if let Some(first) = bytes.first() {
                     acc ^= *first as u64;
                 }
             }
-            ArchivedNounNode::IndirectAtom { offset, len } => {
-                let start = offset.to_native() as usize;
-                let end = start.saturating_add(len.to_native() as usize);
+            TAG_INDIRECT_ATOM => {
+                let start = indirect_offsets[idx].to_native() as usize;
+                let end = start.saturating_add(indirect_lens[idx].to_native() as usize);
                 let slice = &atom_bytes[start..end];
                 acc = acc.wrapping_add(slice.len() as u64);
                 if let Some(first) = slice.first() {
                     acc ^= *first as u64;
                 }
             }
-            ArchivedNounNode::Cell { head, tail } => {
-                pending.push(tail.to_native() as usize);
-                pending.push(head.to_native() as usize);
+            TAG_CELL => {
+                pending.push(cell_tails[idx].to_native() as usize);
+                pending.push(cell_heads[idx].to_native() as usize);
             }
+            _ => {}
         }
     }
     acc
