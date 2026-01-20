@@ -6,11 +6,11 @@ use std::ptr;
 use libsqlite3_sys as sqlite;
 use nockvm::mem::NockStack;
 use nockvm::noun::Noun;
+use rkyv::api::high::to_bytes_in;
 use rkyv::rancor::Error as RkyvError;
-use rkyv::to_bytes;
 use rkyv::util::AlignedVec;
 
-use crate::archive::{build_archive, ArchivedNoun};
+use crate::archive::{ArchivedNoun, NounArchiveBuilder};
 use crate::lru::LruCache;
 use crate::{PmaSqliteError, Result};
 
@@ -57,6 +57,8 @@ pub struct SqlitePma {
     list_stmt: SqliteStatement,
     cache: LruCache<i64, CachedEntry>,
     stats: SqlitePmaStats,
+    archive_builder: NounArchiveBuilder,
+    archive_scratch: AlignedVec,
 }
 
 impl SqlitePma {
@@ -85,6 +87,8 @@ impl SqlitePma {
             list_stmt,
             cache: LruCache::new(cache_capacity),
             stats: SqlitePmaStats::default(),
+            archive_builder: NounArchiveBuilder::new(),
+            archive_scratch: AlignedVec::new(),
         })
     }
 
@@ -105,16 +109,44 @@ impl SqlitePma {
     }
 
     pub fn insert_noun(&mut self, stack: &mut NockStack, noun: Noun) -> Result<i64> {
+        self.insert_stmt.reset()?;
         let space = stack.noun_space();
-        let archive = build_archive(&space, noun)?;
-        let bytes = to_bytes::<RkyvError>(&archive)
-            .map_err(|err| PmaSqliteError::Archive(err.to_string()))?;
-        self.insert_archive(bytes.as_ref())
+        let archive = self.archive_builder.build(&space, noun)?;
+        let mut scratch = std::mem::take(&mut self.archive_scratch);
+        scratch.clear();
+        let scratch = match to_bytes_in::<_, RkyvError>(&archive, scratch) {
+            Ok(bytes) => bytes,
+            Err(err) => {
+                self.archive_builder.recycle(archive);
+                self.archive_scratch = AlignedVec::new();
+                return Err(PmaSqliteError::Archive(err.to_string()));
+            }
+        };
+        let id = match self.insert_archive_static(scratch.as_ref()) {
+            Ok(id) => id,
+            Err(err) => {
+                self.archive_builder.recycle(archive);
+                self.archive_scratch = scratch;
+                return Err(err);
+            }
+        };
+        self.archive_builder.recycle(archive);
+        self.archive_scratch = scratch;
+        Ok(id)
     }
 
     pub fn insert_archive(&mut self, archive: &[u8]) -> Result<i64> {
         self.insert_stmt.reset()?;
         self.insert_stmt.bind_blob(1, archive)?;
+        self.insert_archive_step()
+    }
+
+    fn insert_archive_static(&mut self, archive: &[u8]) -> Result<i64> {
+        self.insert_stmt.bind_blob_static(1, archive)?;
+        self.insert_archive_step()
+    }
+
+    fn insert_archive_step(&mut self) -> Result<i64> {
         match self.insert_stmt.step()? {
             Step::Done => {}
             Step::Row => {
@@ -289,6 +321,28 @@ impl SqliteStatement {
             )
         };
         self.check(rc, "bind blob")
+    }
+
+    fn bind_blob_static(&mut self, index: i32, data: &[u8]) -> Result<()> {
+        let len = data
+            .len()
+            .try_into()
+            .map_err(|_| PmaSqliteError::Sqlite("blob too large".into()))?;
+        let ptr = if data.is_empty() {
+            ptr::null()
+        } else {
+            data.as_ptr()
+        };
+        let rc = unsafe {
+            sqlite::sqlite3_bind_blob(
+                self.raw,
+                index,
+                ptr as *const c_void,
+                len,
+                sqlite::SQLITE_STATIC(),
+            )
+        };
+        self.check(rc, "bind blob static")
     }
 
     fn bind_int64(&mut self, index: i32, value: i64) -> Result<()> {
