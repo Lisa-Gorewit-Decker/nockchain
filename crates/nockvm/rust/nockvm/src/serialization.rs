@@ -70,6 +70,43 @@ enum CueStackEntry {
     BackRef(u64, *const Noun),
 }
 
+#[derive(Debug, Default)]
+struct BackrefTable {
+    entries: Vec<(u64, Noun)>,
+}
+
+impl BackrefTable {
+    fn new() -> Self {
+        Self {
+            entries: Vec::new(),
+        }
+    }
+
+    fn insert(&mut self, key: u64, value: Noun) {
+        if let Some(last) = self.entries.last_mut() {
+            if last.0 == key {
+                last.1 = value;
+                return;
+            }
+            if last.0 < key {
+                self.entries.push((key, value));
+                return;
+            }
+        }
+        match self.entries.binary_search_by_key(&key, |(k, _)| *k) {
+            Ok(index) => self.entries[index].1 = value,
+            Err(index) => self.entries.insert(index, (key, value)),
+        }
+    }
+
+    fn get(&self, key: u64) -> Option<Noun> {
+        self.entries
+            .binary_search_by_key(&key, |(k, _)| *k)
+            .ok()
+            .map(|index| self.entries[index].1)
+    }
+}
+
 /// Deserialize a noun from a BitSlice
 ///
 /// This function implements the inverse of jam, unpacking a serialized noun.
@@ -339,7 +376,7 @@ fn cue_bitslice_into_pma(
     pma: &mut Pma,
     buffer: &BitSlice<u64, Lsb0>,
 ) -> Result<Noun, Error> {
-    let backref_map = MutHamt::<Noun>::new(stack);
+    let mut backrefs = BackrefTable::new();
     let mut result = D(0);
     let mut cursor = 0;
     let space = NounSpace::pma_only(pma);
@@ -358,16 +395,12 @@ fn cue_bitslice_into_pma(
                 CueStackEntry::DestinationPointer(dest_ptr) => {
                     if next_bit(&mut cursor, buffer) {
                         if next_bit(&mut cursor, buffer) {
-                            let mut backref_noun =
-                                Atom::new(stack, rub_backref(&mut cursor, buffer)?).as_noun();
-                            *dest_ptr = backref_map
-                                .lookup(stack, &mut backref_noun)
-                                .ok_or(Deterministic(Exit, D(0)))?;
+                            let backref = rub_backref(&mut cursor, buffer)?;
+                            *dest_ptr = backrefs.get(backref).ok_or(Deterministic(Exit, D(0)))?;
                         } else {
                             let (cell, cell_mem_ptr) = Cell::new_raw_mut(pma);
                             *dest_ptr = cell.as_noun();
-                            let mut backref_atom = Atom::new(stack, (cursor - 2) as u64).as_noun();
-                            backref_map.insert(stack, &mut backref_atom, *dest_ptr);
+                            backrefs.insert(cursor as u64 - 2, *dest_ptr);
                             *(stack.push()) =
                                 CueStackEntry::BackRef(cursor as u64 - 2, dest_ptr as *const Noun);
                             *(stack.push()) =
@@ -379,14 +412,10 @@ fn cue_bitslice_into_pma(
                         let backref: u64 = (cursor - 1) as u64;
                         *dest_ptr =
                             rub_atom_internal_alloc(pma, &mut cursor, buffer, &space)?.as_noun();
-                        let mut backref_atom = Atom::new(stack, backref).as_noun();
-                        backref_map.insert(stack, &mut backref_atom, *dest_ptr);
+                        backrefs.insert(backref, *dest_ptr);
                     }
                 }
-                CueStackEntry::BackRef(backref, noun_ptr) => {
-                    let mut backref_atom = Atom::new(stack, backref).as_noun();
-                    backref_map.insert(stack, &mut backref_atom, *noun_ptr)
-                }
+                CueStackEntry::BackRef(backref, noun_ptr) => backrefs.insert(backref, *noun_ptr),
             }
         };
         stack.frame_pop();
