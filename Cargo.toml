@@ -36,7 +36,6 @@ criterion = { git = "https://github.com/vlovich/criterion.rs.git", rev = "9b485a
 crossterm = "0.29"
 curve25519-dalek = { version = "4.1.1", default-features = false }
 dashmap = "6.1.0"
-diesel = "2.2.4"
 dirs = "6.0.0"
 divan = "0.1.21"
 ed25519-dalek = { version = "2.1.0", default-features = false }

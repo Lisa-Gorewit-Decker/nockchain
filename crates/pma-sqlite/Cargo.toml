@@ -4,7 +4,6 @@ version.workspace = true
 edition.workspace = true
 
 [dependencies]
-diesel = { workspace = true, features = ["sqlite"] }
 libsqlite3-sys.workspace = true
 thiserror.workspace = true
 tracing.workspace = true

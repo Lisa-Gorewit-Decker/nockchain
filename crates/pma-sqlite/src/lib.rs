@@ -5,10 +5,10 @@ use thiserror::Error;
 
 #[derive(Debug, Error)]
 pub enum PmaSqliteError {
-    #[error("diesel error: {0}")]
-    Diesel(#[from] diesel::result::Error),
-    #[error("diesel connection error: {0}")]
-    DieselConnection(#[from] diesel::ConnectionError),
+    #[error("sqlite error: {0}")]
+    Sqlite(String),
+    #[error("pma error: {0}")]
+    Pma(#[from] nockvm::pma::PmaError),
     #[error("stack init error: {0}")]
     StackInit(#[from] nockvm::mem::NewStackError),
     #[error("serialization error: {0}")]
