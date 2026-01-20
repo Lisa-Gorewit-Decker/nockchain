@@ -227,7 +227,12 @@ fn resolve_config(
 }
 
 fn build_workloads(args: &BenchArgs) -> Vec<WorkloadPlan> {
-    vec![build_read_heavy(args), build_write_heavy(args), build_mixed(args)]
+    vec![
+        build_read_heavy(args),
+        build_read_hot(args),
+        build_write_heavy(args),
+        build_mixed(args),
+    ]
 }
 
 fn build_read_heavy(args: &BenchArgs) -> WorkloadPlan {
@@ -244,6 +249,37 @@ fn build_read_heavy(args: &BenchArgs) -> WorkloadPlan {
 
     WorkloadPlan {
         name: "read-heavy",
+        ops,
+        max_items: args.count,
+    }
+}
+
+fn build_read_hot(args: &BenchArgs) -> WorkloadPlan {
+    let mut rng = SplitMix64::new(args.seed ^ 0xDEAD_BEEF_FEED_FACE);
+    let mut ops = Vec::new();
+    for _ in 0..args.count {
+        ops.push(Op::Write(rng.next_u64()));
+    }
+
+    for idx in 0..args.count {
+        ops.push(Op::Read(idx));
+    }
+
+    let cache_capacity = args
+        .cache_capacity
+        .unwrap_or_else(|| (args.count / 2).max(1))
+        .max(1);
+    let hot_items = cache_capacity.min(args.count).max(1);
+    let start = args.count.saturating_sub(hot_items);
+
+    for _ in 0..args.read_rounds {
+        for idx in start..args.count {
+            ops.push(Op::Read(idx));
+        }
+    }
+
+    WorkloadPlan {
+        name: "read-hot",
         ops,
         max_items: args.count,
     }
@@ -316,37 +352,53 @@ fn run_sqlite(
     let mut checksum = 0u64;
 
     let start = Instant::now();
-    for op in &plan.ops {
-        match *op {
-            Op::Write(seed) => {
-                let noun = build_tree_from_seed(&mut stack, bench.depth, seed);
-                let id = sqlite.insert_noun(&mut stack, noun)?;
-                ids.push(id);
-                unsafe {
-                    stack.reset(0);
+    sqlite.begin_transaction()?;
+    let result = (|| {
+        for op in &plan.ops {
+            match *op {
+                Op::Write(seed) => {
+                    let noun = build_tree_from_seed(&mut stack, bench.depth, seed);
+                    let id = sqlite.insert_noun(&mut stack, noun)?;
+                    ids.push(id);
+                    unsafe {
+                        stack.reset(0);
+                    }
+                }
+                Op::Read(index) => {
+                    let id = *ids
+                        .get(index)
+                        .ok_or_else(|| format!("read index {} out of range", index))?;
+                    sqlite.with_cached(id, |cached| {
+                        let space = cached.stack().noun_space();
+                        let value = touch_noun(&space, cached.root());
+                        checksum = checksum.wrapping_add(value);
+                    })?;
                 }
             }
-            Op::Read(index) => {
-                let id = *ids
-                    .get(index)
-                    .ok_or_else(|| format!("read index {} out of range", index))?;
-                sqlite.with_cached(id, |cached| {
-                    let space = cached.stack().noun_space();
-                    let value = touch_noun(&space, cached.root());
-                    checksum = checksum.wrapping_add(value);
-                })?;
+        }
+        let duration = start.elapsed();
+        let stats = sqlite.stats();
+        let checksum = black_box(checksum);
+
+        Ok(BackendResult {
+            duration,
+            checksum,
+            stats: Some(stats),
+        })
+    })();
+
+    match result {
+        Ok(result) => {
+            sqlite.commit_transaction()?;
+            Ok(result)
+        }
+        Err(err) => {
+            if let Err(rollback_err) = sqlite.rollback_transaction() {
+                return Err(format!("{}; rollback failed: {}", err, rollback_err).into());
             }
+            Err(err)
         }
     }
-    let duration = start.elapsed();
-    let stats = sqlite.stats();
-    let checksum = black_box(checksum);
-
-    Ok(BackendResult {
-        duration,
-        checksum,
-        stats: Some(stats),
-    })
 }
 
 fn run_pma(

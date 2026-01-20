@@ -88,6 +88,21 @@ impl SqlitePma {
         self.stats
     }
 
+    pub fn begin_transaction(&mut self) -> Result<()> {
+        self.conn.batch_execute("BEGIN")?;
+        Ok(())
+    }
+
+    pub fn commit_transaction(&mut self) -> Result<()> {
+        self.conn.batch_execute("COMMIT")?;
+        Ok(())
+    }
+
+    pub fn rollback_transaction(&mut self) -> Result<()> {
+        self.conn.batch_execute("ROLLBACK")?;
+        Ok(())
+    }
+
     pub fn insert_noun(&mut self, stack: &mut NockStack, noun: Noun) -> Result<i64> {
         let jammed = jam_noun(stack, noun);
         self.insert_jam(&jammed)
