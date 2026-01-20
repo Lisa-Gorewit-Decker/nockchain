@@ -55,7 +55,7 @@ pub struct SqlitePma {
     insert_stmt: SqliteStatement,
     select_stmt: SqliteStatement,
     list_stmt: SqliteStatement,
-    cache: LruCache<i64, CachedEntry>,
+    cache: LruCache<CachedEntry>,
     stats: SqlitePmaStats,
     archive_builder: NounArchiveBuilder,
     archive_scratch: AlignedVec,
@@ -171,7 +171,7 @@ impl SqlitePma {
     where
         F: FnOnce(&CachedArchive<'_>) -> R,
     {
-        if let Some(entry) = self.cache.get_mut(&id) {
+        if let Some(entry) = self.cache.get_mut(id) {
             self.stats.cache_hits = self.stats.cache_hits.saturating_add(1);
             let archived = unsafe { rkyv::access_unchecked::<ArchivedNoun>(&entry.bytes) };
             let cached = CachedArchive::new(archived);
@@ -184,7 +184,7 @@ impl SqlitePma {
 
         let entry = self
             .cache
-            .get_mut(&id)
+            .get_mut(id)
             .ok_or_else(|| PmaSqliteError::Missing(id))?;
         let archived = unsafe { rkyv::access_unchecked::<ArchivedNoun>(&entry.bytes) };
         let cached = CachedArchive::new(archived);
