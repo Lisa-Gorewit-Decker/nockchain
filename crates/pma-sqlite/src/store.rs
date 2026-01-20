@@ -8,6 +8,7 @@ use nockvm::mem::NockStack;
 use nockvm::noun::Noun;
 use rkyv::rancor::Error as RkyvError;
 use rkyv::to_bytes;
+use rkyv::util::AlignedVec;
 
 use crate::archive::{build_archive, ArchivedNoun};
 use crate::lru::LruCache;
@@ -151,7 +152,7 @@ impl SqlitePma {
         Ok(f(&cached))
     }
 
-    pub fn get_archive(&mut self, id: i64) -> Result<Vec<u8>> {
+    pub fn get_archive(&mut self, id: i64) -> Result<AlignedVec> {
         self.select_stmt.reset()?;
         self.select_stmt.bind_int64(1, id)?;
         let archive = match self.select_stmt.step()? {
@@ -180,7 +181,7 @@ impl SqlitePma {
 
 #[derive(Debug)]
 struct CachedEntry {
-    bytes: Vec<u8>,
+    bytes: AlignedVec,
 }
 
 #[derive(Debug)]
@@ -295,7 +296,7 @@ impl SqliteStatement {
         self.check(rc, "bind int64")
     }
 
-    fn column_blob(&self, index: i32) -> Result<Vec<u8>> {
+    fn column_blob(&self, index: i32) -> Result<AlignedVec> {
         let size = unsafe { sqlite::sqlite3_column_bytes(self.raw, index) };
         if size < 0 {
             return Err(PmaSqliteError::Sqlite("negative blob size returned".into()));
@@ -309,7 +310,9 @@ impl SqliteStatement {
         } else {
             unsafe { std::slice::from_raw_parts(ptr, size as usize) }
         };
-        Ok(slice.to_vec())
+        let mut bytes = AlignedVec::with_capacity(slice.len());
+        bytes.extend_from_slice(slice);
+        Ok(bytes)
     }
 
     fn column_int64(&self, index: i32) -> Result<i64> {
