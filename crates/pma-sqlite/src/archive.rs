@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use nockvm::noun::{Noun, NounSpace};
+use nockvm::noun::{view_noun, Noun, NounSpace, NounView};
 use rkyv::{Archive, Serialize};
 
 use crate::{PmaSqliteError, Result};
@@ -9,12 +9,13 @@ use crate::{PmaSqliteError, Result};
 pub struct NounArchive {
     pub root: u32,
     pub nodes: Vec<NounNode>,
+    pub atom_bytes: Vec<u8>,
 }
 
 #[derive(Archive, Serialize, Debug)]
 pub enum NounNode {
     DirectAtom(u64),
-    IndirectAtom(Vec<u8>),
+    IndirectAtom { offset: u32, len: u32 },
     Cell { head: u32, tail: u32 },
 }
 
@@ -27,6 +28,7 @@ enum BuildFrame {
 
 pub struct NounArchiveBuilder {
     nodes: Vec<NounNode>,
+    atom_bytes: Vec<u8>,
     index_map: HashMap<u64, u32>,
     stack: Vec<BuildFrame>,
 }
@@ -35,13 +37,21 @@ impl NounArchiveBuilder {
     pub fn new() -> Self {
         Self {
             nodes: Vec::new(),
+            atom_bytes: Vec::new(),
             index_map: HashMap::new(),
             stack: Vec::new(),
         }
     }
 
+    pub fn reserve_nodes(&mut self, nodes: usize) {
+        if self.nodes.capacity() < nodes {
+            self.nodes.reserve(nodes - self.nodes.capacity());
+        }
+    }
+
     pub fn build(&mut self, space: &NounSpace, root: Noun) -> Result<NounArchive> {
         self.nodes.clear();
+        self.atom_bytes.clear();
         self.index_map.clear();
         self.stack.clear();
         self.stack.push(BuildFrame::Visit(root));
@@ -53,36 +63,46 @@ impl NounArchiveBuilder {
                     if self.index_map.contains_key(&raw) {
                         continue;
                     }
-                    let handle = space.handle(noun);
-                    if let Some(atom) = handle.atom() {
-                        let idx = self.nodes.len() as u32;
-                        self.index_map.insert(raw, idx);
-                        if atom.is_direct() {
-                            let direct = atom.atom().as_direct().map_err(|_| {
-                                PmaSqliteError::Archive("expected direct atom".into())
-                            })?;
-                            self.nodes.push(NounNode::DirectAtom(direct.data()));
-                        } else {
-                            self.nodes
-                                .push(NounNode::IndirectAtom(atom.as_ne_bytes().to_vec()));
+                    match view_noun(noun, space).map_err(|_| {
+                        PmaSqliteError::Archive("noun was neither atom nor cell".into())
+                    })? {
+                        NounView::DirectAtom(value) => {
+                            let idx = self.nodes.len() as u32;
+                            self.index_map.insert(raw, idx);
+                            self.nodes.push(NounNode::DirectAtom(value));
                         }
-                        continue;
+                        NounView::IndirectAtom(bytes) => {
+                            let idx = self.nodes.len() as u32;
+                            self.index_map.insert(raw, idx);
+                            let offset = self.atom_bytes.len();
+                            let len = bytes.len();
+                            if offset > u32::MAX as usize || len > u32::MAX as usize {
+                                return Err(PmaSqliteError::Archive(
+                                    "atom bytes length exceeds u32::MAX".into(),
+                                ));
+                            }
+                            let end = offset.saturating_add(len);
+                            if end > u32::MAX as usize {
+                                return Err(PmaSqliteError::Archive(
+                                    "atom bytes offset exceeds u32::MAX".into(),
+                                ));
+                            }
+                            self.atom_bytes.extend_from_slice(bytes);
+                            self.nodes.push(NounNode::IndirectAtom {
+                                offset: offset as u32,
+                                len: len as u32,
+                            });
+                        }
+                        NounView::Cell { head, tail } => {
+                            let idx = self.nodes.len() as u32;
+                            self.index_map.insert(raw, idx);
+                            self.nodes.push(NounNode::Cell { head: 0, tail: 0 });
+                            self.stack
+                                .push(BuildFrame::FinalizeCell { idx, head, tail });
+                            self.stack.push(BuildFrame::Visit(tail));
+                            self.stack.push(BuildFrame::Visit(head));
+                        }
                     }
-                    if let Some(cell) = handle.cell() {
-                        let idx = self.nodes.len() as u32;
-                        self.index_map.insert(raw, idx);
-                        self.nodes.push(NounNode::Cell { head: 0, tail: 0 });
-                        let head = cell.head().noun();
-                        let tail = cell.tail().noun();
-                        self.stack
-                            .push(BuildFrame::FinalizeCell { idx, head, tail });
-                        self.stack.push(BuildFrame::Visit(tail));
-                        self.stack.push(BuildFrame::Visit(head));
-                        continue;
-                    }
-                    return Err(PmaSqliteError::Archive(
-                        "noun was neither atom nor cell".into(),
-                    ));
                 }
                 BuildFrame::FinalizeCell { idx, head, tail } => {
                     let head_raw = unsafe { head.as_raw() };
@@ -120,14 +140,17 @@ impl NounArchiveBuilder {
             .get(&root_raw)
             .ok_or_else(|| PmaSqliteError::Archive("missing root index".into()))?;
         let nodes = std::mem::take(&mut self.nodes);
+        let atom_bytes = std::mem::take(&mut self.atom_bytes);
         Ok(NounArchive {
             root: root_idx,
             nodes,
+            atom_bytes,
         })
     }
 
     pub fn recycle(&mut self, mut archive: NounArchive) {
         self.nodes = std::mem::take(&mut archive.nodes);
+        self.atom_bytes = std::mem::take(&mut archive.atom_bytes);
     }
 }
 

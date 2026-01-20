@@ -402,6 +402,38 @@ impl<'a> NounHandle<'a> {
 }
 
 #[derive(Copy, Clone)]
+pub enum NounView<'a> {
+    DirectAtom(u64),
+    IndirectAtom(&'a [u8]),
+    Cell { head: Noun, tail: Noun },
+}
+
+pub fn view_noun<'a>(noun: Noun, space: &'a NounSpace) -> Result<NounView<'a>> {
+    if noun.is_direct() {
+        let direct = noun.as_direct()?;
+        return Ok(NounView::DirectAtom(direct.data()));
+    }
+    if noun.is_indirect() {
+        let indirect = noun.as_indirect()?;
+        let bytes = unsafe {
+            std::slice::from_raw_parts(
+                indirect.data_pointer(space) as *const u8,
+                indirect.size(space) << 3,
+            )
+        };
+        return Ok(NounView::IndirectAtom(bytes));
+    }
+    if noun.is_cell() {
+        let cell = noun.as_cell()?;
+        let ptr = unsafe { cell.to_raw_pointer(space) };
+        let head = unsafe { (*ptr).head };
+        let tail = unsafe { (*ptr).tail };
+        return Ok(NounView::Cell { head, tail });
+    }
+    Err(Error::NotAtom)
+}
+
+#[derive(Copy, Clone)]
 pub struct AtomHandle<'a> {
     atom: Atom,
     space: &'a NounSpace,

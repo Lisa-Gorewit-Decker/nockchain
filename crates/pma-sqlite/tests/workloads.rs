@@ -66,6 +66,7 @@ fn compare_sqlite_and_pma_timings_mixed() {
         config
     })
     .expect("sqlite open");
+    sqlite.reserve_archive_nodes(estimate_nodes_per_tree(spec.depth));
 
     let start = Instant::now();
     let (mut stack, _) = NockStack::new_(stack_words, 0).expect("stack init");
@@ -124,6 +125,7 @@ fn run_sqlite_workload(
         config
     })
     .expect("sqlite open");
+    sqlite.reserve_archive_nodes(estimate_nodes_per_tree(spec.depth));
 
     let start = Instant::now();
     let (mut stack, _) = NockStack::new_(estimate_stack_words(spec), 0).expect("stack init");
@@ -230,6 +232,7 @@ fn touch_archived_noun(root: &ArchivedNoun) -> u64 {
 
     let mut acc = 0u64;
     let nodes: &[ArchivedNounNode] = root.nodes.as_slice();
+    let atom_bytes = root.atom_bytes.as_slice();
     let mut pending = Vec::new();
     pending.push(root.root.to_native() as usize);
     while let Some(idx) = pending.pop() {
@@ -242,8 +245,10 @@ fn touch_archived_noun(root: &ArchivedNoun) -> u64 {
                     acc ^= *first as u64;
                 }
             }
-            ArchivedNounNode::IndirectAtom(bytes) => {
-                let slice = bytes.as_slice();
+            ArchivedNounNode::IndirectAtom { offset, len } => {
+                let start = offset.to_native() as usize;
+                let end = start.saturating_add(len.to_native() as usize);
+                let slice = &atom_bytes[start..end];
                 acc = acc.wrapping_add(slice.len() as u64);
                 if let Some(first) = slice.first() {
                     acc ^= *first as u64;
@@ -259,8 +264,16 @@ fn touch_archived_noun(root: &ArchivedNoun) -> u64 {
 }
 
 fn estimate_stack_words(spec: WorkloadSpec) -> usize {
-    let nodes_per_tree = (1usize << (spec.depth + 1)).saturating_sub(1);
+    let nodes_per_tree = estimate_nodes_per_tree(spec.depth);
     let total_nodes = spec.count.saturating_mul(nodes_per_tree);
     let estimate = total_nodes.saturating_mul(4).saturating_add(1024 * 16);
     estimate.max(256 * 1024)
+}
+
+fn estimate_nodes_per_tree(depth: usize) -> usize {
+    let shift = depth.saturating_add(1);
+    if shift >= usize::BITS as usize {
+        return usize::MAX;
+    }
+    (1usize << shift).saturating_sub(1)
 }

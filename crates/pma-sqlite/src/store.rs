@@ -96,6 +96,10 @@ impl SqlitePma {
         self.stats
     }
 
+    pub fn reserve_archive_nodes(&mut self, nodes: usize) {
+        self.archive_builder.reserve_nodes(nodes);
+    }
+
     pub fn begin_transaction(&mut self) -> Result<()> {
         self.db.exec("BEGIN")
     }
@@ -130,6 +134,7 @@ impl SqlitePma {
                 return Err(err);
             }
         };
+        self.cache_archive_bytes(id, scratch.as_ref());
         self.archive_builder.recycle(archive);
         self.archive_scratch = scratch;
         Ok(id)
@@ -138,7 +143,9 @@ impl SqlitePma {
     pub fn insert_archive(&mut self, archive: &[u8]) -> Result<i64> {
         self.insert_stmt.reset()?;
         self.insert_stmt.bind_blob(1, archive)?;
-        self.insert_archive_step()
+        let id = self.insert_archive_step()?;
+        self.cache_archive_bytes(id, archive);
+        Ok(id)
     }
 
     fn insert_archive_static(&mut self, archive: &[u8]) -> Result<i64> {
@@ -208,6 +215,15 @@ impl SqlitePma {
 
     pub fn clear_cache(&mut self) {
         self.cache = LruCache::new(self.cache.capacity());
+    }
+
+    fn cache_archive_bytes(&mut self, id: i64, bytes: &[u8]) {
+        if self.cache.capacity() == 0 {
+            return;
+        }
+        let mut archive = AlignedVec::with_capacity(bytes.len());
+        archive.extend_from_slice(bytes);
+        self.cache.insert(id, CachedEntry { bytes: archive });
     }
 }
 

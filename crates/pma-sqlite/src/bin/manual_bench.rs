@@ -347,6 +347,7 @@ fn run_sqlite(
         config.cache_capacity = bench.cache_capacity.max(1);
         config
     })?;
+    sqlite.reserve_archive_nodes(estimate_nodes_per_tree(bench.depth));
 
     let (mut stack, _) = NockStack::new_(bench.stack_words, 0)?;
     let mut ids: Vec<i64> = Vec::new();
@@ -473,6 +474,7 @@ fn touch_archived_noun(root: &ArchivedNoun) -> u64 {
 
     let mut acc = 0u64;
     let nodes: &[ArchivedNounNode] = root.nodes.as_slice();
+    let atom_bytes = root.atom_bytes.as_slice();
     let mut pending = Vec::new();
     pending.push(root.root.to_native() as usize);
     while let Some(idx) = pending.pop() {
@@ -485,8 +487,10 @@ fn touch_archived_noun(root: &ArchivedNoun) -> u64 {
                     acc ^= *first as u64;
                 }
             }
-            ArchivedNounNode::IndirectAtom(bytes) => {
-                let slice = bytes.as_slice();
+            ArchivedNounNode::IndirectAtom { offset, len } => {
+                let start = offset.to_native() as usize;
+                let end = start.saturating_add(len.to_native() as usize);
+                let slice = &atom_bytes[start..end];
                 acc = acc.wrapping_add(slice.len() as u64);
                 if let Some(first) = slice.first() {
                     acc ^= *first as u64;
@@ -518,10 +522,18 @@ fn build_tree(stack: &mut NockStack, depth: usize, rng: &mut SplitMix64) -> Noun
 }
 
 fn estimate_stack_words(count: usize, depth: usize) -> usize {
-    let nodes_per_tree = (1usize << (depth + 1)).saturating_sub(1);
+    let nodes_per_tree = estimate_nodes_per_tree(depth);
     let total_nodes = count.saturating_mul(nodes_per_tree);
     let estimate = total_nodes.saturating_mul(4).saturating_add(1024 * 16);
     estimate.max(256 * 1024)
+}
+
+fn estimate_nodes_per_tree(depth: usize) -> usize {
+    let shift = depth.saturating_add(1);
+    if shift >= usize::BITS as usize {
+        return usize::MAX;
+    }
+    (1usize << shift).saturating_sub(1)
 }
 
 fn count_ops(plan: &WorkloadPlan) -> (usize, usize) {
