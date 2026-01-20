@@ -8,8 +8,9 @@ use crate::interpreter::Error::{self, *};
 use crate::interpreter::Mote::*;
 use crate::mem::NockStack;
 use crate::noun::{
-    AllocLocation, Atom, Cell, CellHandle, DirectAtom, IndirectAtom, Noun, NounSpace, D,
+    Atom, Cell, CellHandle, DirectAtom, IndirectAtom, Noun, NounAllocator, NounSpace, D,
 };
+use crate::pma::Pma;
 
 crate::gdb!();
 
@@ -229,6 +230,17 @@ pub fn cue(stack: &mut NockStack, buffer: Atom) -> Result<Noun, Error> {
     cue_bitslice_with_mode(stack, buffer_bitslice, false)
 }
 
+/// Deserialize a noun from an Atom directly into the PMA.
+///
+/// Uses the provided NockStack for traversal and backref bookkeeping, but allocates
+/// the resulting noun structure in the PMA arena.
+pub fn cue_into_pma(stack: &mut NockStack, pma: &mut Pma, buffer: Atom) -> Result<Noun, Error> {
+    let space = stack.noun_space();
+    let buffer_handle = buffer.in_space(&space);
+    let buffer_bitslice = buffer_handle.as_bitslice();
+    cue_bitslice_into_pma(stack, pma, buffer_bitslice)
+}
+
 /// Deserialize a noun from a BitSlice.
 ///
 /// Offset tagging is reserved for PMA copy at event boundaries; cue_into_offset
@@ -322,6 +334,66 @@ pub fn cue_into_stack_pointer_form(stack: &mut NockStack, buffer: Atom) -> Resul
     }
 }
 
+fn cue_bitslice_into_pma(
+    stack: &mut NockStack,
+    pma: &mut Pma,
+    buffer: &BitSlice<u64, Lsb0>,
+) -> Result<Noun, Error> {
+    let backref_map = MutHamt::<Noun>::new(stack);
+    let mut result = D(0);
+    let mut cursor = 0;
+    let space = NounSpace::pma_only(pma);
+
+    unsafe {
+        stack.frame_push(0);
+        *(stack.push::<CueStackEntry>()) =
+            CueStackEntry::DestinationPointer(&mut result as *mut Noun);
+        let res = loop {
+            if stack.stack_is_empty() {
+                break Ok(result);
+            }
+            let stack_entry = *stack.top::<CueStackEntry>();
+            stack.pop::<CueStackEntry>();
+            match stack_entry {
+                CueStackEntry::DestinationPointer(dest_ptr) => {
+                    if next_bit(&mut cursor, buffer) {
+                        if next_bit(&mut cursor, buffer) {
+                            let mut backref_noun =
+                                Atom::new(stack, rub_backref(&mut cursor, buffer)?).as_noun();
+                            *dest_ptr = backref_map
+                                .lookup(stack, &mut backref_noun)
+                                .ok_or(Deterministic(Exit, D(0)))?;
+                        } else {
+                            let (cell, cell_mem_ptr) = Cell::new_raw_mut(pma);
+                            *dest_ptr = cell.as_noun();
+                            let mut backref_atom = Atom::new(stack, (cursor - 2) as u64).as_noun();
+                            backref_map.insert(stack, &mut backref_atom, *dest_ptr);
+                            *(stack.push()) =
+                                CueStackEntry::BackRef(cursor as u64 - 2, dest_ptr as *const Noun);
+                            *(stack.push()) =
+                                CueStackEntry::DestinationPointer(&mut (*cell_mem_ptr).tail);
+                            *(stack.push()) =
+                                CueStackEntry::DestinationPointer(&mut (*cell_mem_ptr).head);
+                        }
+                    } else {
+                        let backref: u64 = (cursor - 1) as u64;
+                        *dest_ptr =
+                            rub_atom_internal_alloc(pma, &mut cursor, buffer, &space)?.as_noun();
+                        let mut backref_atom = Atom::new(stack, backref).as_noun();
+                        backref_map.insert(stack, &mut backref_atom, *dest_ptr);
+                    }
+                }
+                CueStackEntry::BackRef(backref, noun_ptr) => {
+                    let mut backref_atom = Atom::new(stack, backref).as_noun();
+                    backref_map.insert(stack, &mut backref_atom, *noun_ptr)
+                }
+            }
+        };
+        stack.frame_pop();
+        res
+    }
+}
+
 /// Get the size in bits of an encoded atom or backref
 /// TODO: use first_zero() on a slice of the buffer
 fn get_size(cursor: &mut usize, buffer: &BitSlice<u64, Lsb0>) -> Result<usize, Error> {
@@ -397,6 +469,29 @@ fn rub_atom_internal(
             let offset = stack.offset_from_ptr(unsafe { atom.to_raw_pointer(space) } as *const u8);
             atom = IndirectAtom::from_offset_words(offset);
         }
+        unsafe { Ok(atom.normalize_as_atom(space)) }
+    }
+}
+
+fn rub_atom_internal_alloc<A: NounAllocator>(
+    allocator: &mut A,
+    cursor: &mut usize,
+    buffer: &BitSlice<u64, Lsb0>,
+    space: &NounSpace,
+) -> Result<Atom, Error> {
+    let size = get_size(cursor, buffer)?;
+    let bits = next_up_to_n_bits(cursor, buffer, size);
+    if size == 0 {
+        unsafe { Ok(DirectAtom::new_unchecked(0).as_atom()) }
+    } else if size < 64 {
+        let mut direct_raw = 0;
+        BitSlice::from_element_mut(&mut direct_raw)[0..bits.len()].copy_from_bitslice(bits);
+        unsafe { Ok(DirectAtom::new_unchecked(direct_raw).as_atom()) }
+    } else {
+        let wordsize = (size + 63) >> 6;
+        let (mut atom, slice) = unsafe { IndirectAtom::new_raw_mut_bitslice(allocator, wordsize) };
+        slice[0..bits.len()].copy_from_bitslice(bits);
+        debug_assert!(atom.as_atom().in_space(space).size() > 0);
         unsafe { Ok(atom.normalize_as_atom(space)) }
     }
 }

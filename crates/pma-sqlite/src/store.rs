@@ -9,7 +9,7 @@ use libsqlite3_sys as sqlite;
 use nockvm::ext::AtomExt;
 use nockvm::mem::NockStack;
 use nockvm::noun::{Atom, Noun};
-use nockvm::pma::{Pma, PmaCopy};
+use nockvm::pma::Pma;
 use nockvm::serialization;
 use tracing::debug;
 
@@ -177,10 +177,7 @@ impl SqlitePma {
         unsafe {
             self.work_stack.reset(0);
         }
-        let mut root = decode_jam_into_stack(&mut self.work_stack, &jam)?;
-        unsafe {
-            root.copy_to_pma(&self.work_stack, &mut self.cache_pma);
-        }
+        let root = decode_jam_into_pma(&mut self.work_stack, &mut self.cache_pma, &jam)?;
         unsafe {
             self.work_stack.reset(0);
         }
@@ -255,9 +252,9 @@ fn jam_noun(stack: &mut NockStack, noun: Noun) -> Vec<u8> {
     jammed.in_space(&space).to_ne_bytes()
 }
 
-fn decode_jam_into_stack(stack: &mut NockStack, jam: &[u8]) -> Result<Noun> {
+fn decode_jam_into_pma(stack: &mut NockStack, pma: &mut Pma, jam: &[u8]) -> Result<Noun> {
     let atom = <Atom as AtomExt>::from_bytes(stack, jam);
-    let root = serialization::cue(stack, atom)?;
+    let root = serialization::cue_into_pma(stack, pma, atom)?;
     debug!(
         "sqlite-pma: decoded jam bytes len={} into stack_words={}",
         jam.len(),
