@@ -181,6 +181,19 @@ impl PmaPersistMetadata {
     }
 }
 
+pub fn write_pma_metadata(
+    path: &PathBuf,
+    ker_hash: Hash,
+    event_num: u64,
+    kernel_state_raw: u64,
+    cold_offset: u32,
+    pma_base: u64,
+) -> std::io::Result<()> {
+    let meta =
+        PmaPersistMetadata::new(ker_hash, event_num, kernel_state_raw, cold_offset, pma_base);
+    meta.save_to_path(path)
+}
+
 #[derive(Clone, Copy, Debug, Default)]
 pub struct PmaCopySegment {
     pub elapsed: Duration,
