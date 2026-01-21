@@ -4,7 +4,7 @@ use either::Either::{self, Left, Right};
 use nockvm_macros::tas;
 
 use crate::jets::*;
-use crate::mem::{NockStack, Preserve};
+use crate::mem::{word_size_of, NockStack, Preserve};
 use crate::noun::{Atom, DirectAtom, IndirectAtom, Noun, NounAllocator, D, T};
 use crate::pma::{Pma, PmaCopy};
 
@@ -949,6 +949,15 @@ impl PmaCopy for Hot {
         let mut ptr: *mut Hot = self;
         while !(*ptr).0.is_null() {
             if pma.contains_ptr((*ptr).0 as *const u8) {
+                if pma.is_marking() {
+                    let mut cursor = *ptr;
+                    while !cursor.0.is_null() {
+                        pma.mark_range(cursor.0 as *const u8, word_size_of::<HotMem>());
+                        (*cursor.0).a_path.copy_to_pma(stack, pma);
+                        (*cursor.0).axis.copy_to_pma(stack, pma);
+                        cursor = (*cursor.0).next;
+                    }
+                }
                 break;
             }
             let src = (*ptr).0;

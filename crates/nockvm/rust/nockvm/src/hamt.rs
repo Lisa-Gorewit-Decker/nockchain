@@ -5,7 +5,7 @@ use std::time::Instant;
 use either::Either::{self, *};
 use tracing::info;
 
-use crate::mem::{NockStack, Preserve};
+use crate::mem::{word_size_of, NockStack, Preserve};
 use crate::mug::mug_u32;
 use crate::noun::{Noun, NounAllocator};
 use crate::pma::{Pma, PmaCopy};
@@ -728,6 +728,66 @@ impl<T: Copy + PmaCopy> PmaCopy for Hamt<T> {
         if pma.contains_ptr(self.0 as *const u8) {
             if trace {
                 info!("pma-copy: hamt skip: root already in PMA");
+            }
+            if !pma.is_marking() {
+                return;
+            }
+            // Mark-only traversal for existing PMA HAMT.
+            let root = *self.0;
+            pma.mark_range(self.0 as *const u8, word_size_of::<Stem<T>>());
+            let root_size = root.size();
+            if root_size > 0 {
+                pma.mark_range(
+                    root.buffer as *const u8,
+                    word_size_of::<Entry<T>>() * root_size,
+                );
+            }
+            let mut stk: [(Stem<T>, u32, usize); 6] = [(
+                Stem {
+                    bitmap: 0,
+                    typemap: 0,
+                    buffer: null_mut(),
+                },
+                0,
+                0,
+            ); 6];
+            stk[0] = (root, root.bitmap, 0);
+            let mut depth = 1;
+            while depth > 0 {
+                let (stem, bits, next_idx) = &mut stk[depth - 1];
+                if *bits == 0 {
+                    depth -= 1;
+                    continue;
+                }
+                let bit = bits.trailing_zeros();
+                *bits &= *bits - 1;
+                let idx = *next_idx;
+                *next_idx = idx + 1;
+                let ep = stem.buffer.add(idx);
+                let is_stem = ((stem.typemap >> bit) & 1) != 0;
+                if is_stem {
+                    let child = (*ep).stem;
+                    let csz = child.size();
+                    if csz > 0 {
+                        pma.mark_range(child.buffer as *const u8, word_size_of::<Entry<T>>() * csz);
+                    }
+                    debug_assert!(depth < 6);
+                    stk[depth] = (child, child.bitmap, 0);
+                    depth += 1;
+                } else {
+                    let leaf = (*ep).leaf;
+                    let len = leaf.len;
+                    if len > 0 {
+                        pma.mark_range(leaf.buffer as *const u8, word_size_of::<(Noun, T)>() * len);
+                    }
+                    let mut p = leaf.buffer;
+                    let end = p.add(len);
+                    while p != end {
+                        (*p).0.copy_to_pma(stack, pma);
+                        (*p).1.copy_to_pma(stack, pma);
+                        p = p.add(1);
+                    }
+                }
             }
             return;
         }

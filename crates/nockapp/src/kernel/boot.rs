@@ -545,7 +545,9 @@ pub async fn setup_<J: Jammer + Send + 'static>(
         res
     };
 
-    let app: NockApp<J> = NockApp::new(kernel_f, &jams_dir, save_interval, !pma_persist).await?;
+    let checkpointing_enabled = !pma_persist;
+    let app: NockApp<J> =
+        NockApp::new(kernel_f, &jams_dir, save_interval, checkpointing_enabled).await?;
 
     if let Some(export_path) = cli.export_state_jam.clone() {
         export_kernel_state(&app.kernel, &export_path).await?;

@@ -1,11 +1,13 @@
 //! Persistent Memory Arena (PMA)
 //!
 //! The PMA is a file-backed memory region for storing long-lived Nouns.
-//! It uses bump allocation and stores nouns in offset form.
+//! It uses page-based allocation with copy-on-write pages and stores nouns in offset form.
 
+use std::collections::BTreeMap;
 use std::io::{self, Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 use std::ptr::copy_nonoverlapping;
+use std::slice;
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -25,7 +27,9 @@ use crate::noun::{
 };
 
 const PMA_MAGIC: u64 = u64::from_le_bytes(*b"NOCKPMA1");
-const PMA_VERSION: u64 = 1;
+const PMA_VERSION: u64 = 2;
+const PMA_PAGE_BYTES: usize = 4096;
+const PMA_PAGE_WORDS: usize = PMA_PAGE_BYTES / 8;
 
 /// The metadata for the PMA is a trailer or footer because otherwise the base + offset pointer derivations would need
 /// to account for the footer size. With this design it's just base pointer + offset.
@@ -35,7 +39,11 @@ struct PmaTrailer {
     magic: u64,
     version: u64,
     data_words: u64,
-    alloc_offset: u64,
+    page_words: u64,
+    page_count: u64,
+    page_meta_bytes: u64,
+    alloc_words: u64,
+    current_gen: u64,
 }
 
 const PMA_TRAILER_BYTES: usize = std::mem::size_of::<PmaTrailer>();
@@ -46,7 +54,11 @@ impl PmaTrailer {
         buf[0..8].copy_from_slice(&self.magic.to_le_bytes());
         buf[8..16].copy_from_slice(&self.version.to_le_bytes());
         buf[16..24].copy_from_slice(&self.data_words.to_le_bytes());
-        buf[24..32].copy_from_slice(&self.alloc_offset.to_le_bytes());
+        buf[24..32].copy_from_slice(&self.page_words.to_le_bytes());
+        buf[32..40].copy_from_slice(&self.page_count.to_le_bytes());
+        buf[40..48].copy_from_slice(&self.page_meta_bytes.to_le_bytes());
+        buf[48..56].copy_from_slice(&self.alloc_words.to_le_bytes());
+        buf[56..64].copy_from_slice(&self.current_gen.to_le_bytes());
         buf
     }
 
@@ -54,13 +66,52 @@ impl PmaTrailer {
         let magic = u64::from_le_bytes(buf[0..8].try_into().expect("magic slice"));
         let version = u64::from_le_bytes(buf[8..16].try_into().expect("version slice"));
         let data_words = u64::from_le_bytes(buf[16..24].try_into().expect("data_words slice"));
-        let alloc_offset = u64::from_le_bytes(buf[24..32].try_into().expect("alloc_offset slice"));
+        let page_words = u64::from_le_bytes(buf[24..32].try_into().expect("page_words slice"));
+        let page_count = u64::from_le_bytes(buf[32..40].try_into().expect("page_count slice"));
+        let page_meta_bytes =
+            u64::from_le_bytes(buf[40..48].try_into().expect("page_meta_bytes slice"));
+        let alloc_words = u64::from_le_bytes(buf[48..56].try_into().expect("alloc_words slice"));
+        let current_gen = u64::from_le_bytes(buf[56..64].try_into().expect("current_gen slice"));
         Self {
             magic,
             version,
             data_words,
-            alloc_offset,
+            page_words,
+            page_count,
+            page_meta_bytes,
+            alloc_words,
+            current_gen,
         }
+    }
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Default)]
+struct PageMeta {
+    alloc_gen: u64,
+    used_words: u32,
+    flags: u32,
+}
+
+const PAGE_FLAG_LARGE_HEAD: u32 = 1 << 0;
+const PAGE_FLAG_LARGE_TAIL: u32 = 1 << 1;
+
+fn build_free_runs(page_meta: &[PageMeta], free_runs: &mut BTreeMap<usize, usize>) {
+    free_runs.clear();
+    let mut run_start: Option<usize> = None;
+    for (idx, meta) in page_meta.iter().enumerate() {
+        let is_free = meta.alloc_gen == 0;
+        match (run_start, is_free) {
+            (None, true) => run_start = Some(idx),
+            (Some(start), false) => {
+                free_runs.insert(start, idx - start);
+                run_start = None;
+            }
+            _ => {}
+        }
+    }
+    if let Some(start) = run_start {
+        free_runs.insert(start, page_meta.len() - start);
     }
 }
 
@@ -82,14 +133,13 @@ pub enum PmaError {
 
 /// The Persistent Memory Arena
 ///
-/// A bump-allocated memory region for storing nouns in offset form.
+/// A page-allocated memory region for storing nouns in offset form.
 /// The PMA is backed by a file and can persist across program restarts.
 ///
-/// "Bump-allocated" means allocation simply increments the `alloc_offset`
-/// pointer by the requested size—there is no free list, no compaction, and
-/// no mechanism to reclaim memory once allocated. This makes allocation
-/// extremely fast (just a pointer bump) but means the PMA grows monotonically
-/// until explicitly reset.
+/// Allocation is done from free page runs, with a per-event marking pass that
+/// frees pages not reachable from the current persistent roots. New allocations
+/// are placed on fresh pages to avoid mutating existing data (copy-on-write
+/// at the page level).
 ///
 /// When a Noun that lives in the PMA needs to be modified, the workflow is:
 /// 1. The Noun is read from the PMA (already in offset form)
@@ -108,19 +158,35 @@ pub enum PmaError {
 /// - The head still points to the existing `[1 2]` in PMA (no copy needed)
 /// - Only the old outer cell becomes garbage; `[1 2]` is shared
 ///
-/// This copy allocates fresh space in the PMA for the new version—the old
-/// version is not overwritten or freed, it simply becomes unreachable garbage.
-/// Garbage collection (Milestone 4) will eventually reclaim this dead space.
+/// This copy allocates fresh space in the PMA for the new version. Pages that
+/// are no longer reachable after the event are freed in the subsequent sweep.
 ///
-/// Currently Pma is only suitable for a single reader/writer. In the future,
-/// `alloc_offset` will be changed to `AtomicUsize` to allow multiple readers.
+/// Currently Pma is only suitable for a single reader/writer.
 ///
 /// For more information, see nock-pma.md.
 pub struct Pma {
     /// The underlying arena for memory management and pointer resolution
     arena: Arc<Arena>,
-    /// Current allocation offset in words (bump pointer)
-    alloc_offset: usize,
+    /// Allocated words counter (monotonic within a PMA reset).
+    alloc_words: usize,
+    /// PMA page size in words.
+    page_words: usize,
+    /// Total number of pages in the PMA.
+    page_count: usize,
+    /// Current generation for copy-on-write allocations.
+    current_gen: u64,
+    /// Per-page metadata stored in the PMA trailer.
+    page_meta: Vec<PageMeta>,
+    /// Free page runs keyed by start page.
+    free_runs: BTreeMap<usize, usize>,
+    /// Per-page mark epochs for GC.
+    mark_epochs: Vec<u64>,
+    /// Current mark epoch.
+    mark_epoch: u64,
+    /// Whether marking is currently active.
+    marking: bool,
+    /// Active page cursor for small allocations.
+    active_page: Option<(usize, usize)>,
     /// Path to the backing file (for future file-backed persistence)
     path: PathBuf,
 }
@@ -128,10 +194,38 @@ pub struct Pma {
 impl Pma {
     /// Create a new PMA with the given size in words
     pub fn new(size_words: usize, path: PathBuf) -> Result<Self, PmaError> {
-        let arena = Arena::allocate_file(&path, size_words, PMA_TRAILER_BYTES)?;
+        if size_words < PMA_PAGE_WORDS {
+            return Err(PmaError::InvalidMetadata(format!(
+                "PMA size must be at least {PMA_PAGE_WORDS} words"
+            )));
+        }
+        let rounded = ((size_words + PMA_PAGE_WORDS - 1) / PMA_PAGE_WORDS) * PMA_PAGE_WORDS;
+        let page_count = rounded / PMA_PAGE_WORDS;
+        if page_count == 0 {
+            return Err(PmaError::InvalidMetadata(
+                "page_count computed to zero".to_string(),
+            ));
+        }
+        let page_meta_bytes = page_count
+            .checked_mul(std::mem::size_of::<PageMeta>())
+            .ok_or_else(|| PmaError::InvalidMetadata("page metadata size overflow".to_string()))?;
+        let arena = Arena::allocate_file(&path, rounded, page_meta_bytes + PMA_TRAILER_BYTES)?;
+        let page_meta = vec![PageMeta::default(); page_count];
+        let mut free_runs = BTreeMap::new();
+        free_runs.insert(0, page_count);
+        let mark_epochs = vec![0u64; page_count];
         let pma = Self {
             arena,
-            alloc_offset: 0,
+            alloc_words: 0,
+            page_words: PMA_PAGE_WORDS,
+            page_count,
+            current_gen: 1,
+            page_meta,
+            free_runs,
+            mark_epochs,
+            mark_epoch: 1,
+            marking: false,
+            active_page: None,
             path,
         };
         pma.persist_metadata();
@@ -150,14 +244,6 @@ impl Pma {
                 "file too small: {file_len} bytes"
             )));
         }
-        let data_bytes = file_len - PMA_TRAILER_BYTES;
-        if data_bytes % 8 != 0 {
-            return Err(PmaError::InvalidMetadata(format!(
-                "data region not word-aligned: {data_bytes} bytes"
-            )));
-        }
-        let data_words = data_bytes >> 3;
-
         let mut trailer_bytes = [0u8; PMA_TRAILER_BYTES];
         file.seek(SeekFrom::End(-(PMA_TRAILER_BYTES as i64)))?;
         file.read_exact(&mut trailer_bytes)?;
@@ -172,23 +258,75 @@ impl Pma {
                 trailer.version
             )));
         }
-        if trailer.data_words as usize != data_words {
+        if trailer.page_words == 0 || trailer.page_words as usize != PMA_PAGE_WORDS {
             return Err(PmaError::InvalidMetadata(format!(
-                "metadata data_words {} does not match file ({data_words})",
-                trailer.data_words
+                "unsupported page size {} words",
+                trailer.page_words
             )));
         }
-        if trailer.alloc_offset > trailer.data_words {
+        let data_bytes = trailer
+            .data_words
+            .checked_mul(8)
+            .ok_or_else(|| PmaError::InvalidMetadata("data_words overflow".to_string()))?
+            as usize;
+        if data_bytes % 8 != 0 {
             return Err(PmaError::InvalidMetadata(format!(
-                "alloc_offset {} exceeds data_words {}",
-                trailer.alloc_offset, trailer.data_words
+                "data region not word-aligned: {data_bytes} bytes"
+            )));
+        }
+        let expected_len = data_bytes
+            .checked_add(trailer.page_meta_bytes as usize)
+            .and_then(|bytes| bytes.checked_add(PMA_TRAILER_BYTES))
+            .ok_or_else(|| PmaError::InvalidMetadata("file size overflow".to_string()))?;
+        if expected_len != file_len {
+            return Err(PmaError::InvalidMetadata(format!(
+                "file size mismatch: expected {expected_len} bytes, got {file_len}"
+            )));
+        }
+        if trailer.page_count == 0 {
+            return Err(PmaError::InvalidMetadata("page_count is zero".to_string()));
+        }
+        let expected_meta_bytes = trailer
+            .page_count
+            .checked_mul(std::mem::size_of::<PageMeta>() as u64)
+            .ok_or_else(|| PmaError::InvalidMetadata("page metadata size overflow".to_string()))?;
+        if expected_meta_bytes != trailer.page_meta_bytes {
+            return Err(PmaError::InvalidMetadata(format!(
+                "page metadata size mismatch: expected {expected_meta_bytes}, got {}",
+                trailer.page_meta_bytes
+            )));
+        }
+        if trailer.data_words == 0
+            || trailer.page_count.saturating_mul(trailer.page_words) > trailer.data_words
+        {
+            return Err(PmaError::InvalidMetadata(format!(
+                "data_words {} too small for page_count {} and page_words {}",
+                trailer.data_words, trailer.page_count, trailer.page_words
             )));
         }
 
+        let data_words = trailer.data_words as usize;
+        let page_count = trailer.page_count as usize;
         let arena = Arena::open_file(&path, data_words)?;
+        let page_meta = unsafe {
+            let meta_ptr = arena.base_ptr().add(data_bytes) as *const PageMeta;
+            slice::from_raw_parts(meta_ptr, page_count).to_vec()
+        };
+        let mut free_runs = BTreeMap::new();
+        build_free_runs(&page_meta, &mut free_runs);
+        let mark_epochs = vec![0u64; page_count];
         let pma = Self {
             arena,
-            alloc_offset: trailer.alloc_offset as usize,
+            alloc_words: trailer.alloc_words as usize,
+            page_words: trailer.page_words as usize,
+            page_count,
+            current_gen: trailer.current_gen.max(1),
+            page_meta,
+            free_runs,
+            mark_epochs,
+            mark_epoch: 1,
+            marking: false,
+            active_page: None,
             path,
         };
         pma.persist_metadata();
@@ -207,14 +345,6 @@ impl Pma {
                 "file too small: {file_len} bytes"
             )));
         }
-        let data_bytes = file_len - PMA_TRAILER_BYTES;
-        if data_bytes % 8 != 0 {
-            return Err(PmaError::InvalidMetadata(format!(
-                "data region not word-aligned: {data_bytes} bytes"
-            )));
-        }
-        let data_words = data_bytes >> 3;
-
         let mut trailer_bytes = [0u8; PMA_TRAILER_BYTES];
         file.seek(SeekFrom::End(-(PMA_TRAILER_BYTES as i64)))?;
         file.read_exact(&mut trailer_bytes)?;
@@ -229,16 +359,50 @@ impl Pma {
                 trailer.version
             )));
         }
-        if trailer.data_words as usize != data_words {
+        if trailer.page_words == 0 || trailer.page_words as usize != PMA_PAGE_WORDS {
             return Err(PmaError::InvalidMetadata(format!(
-                "metadata data_words {} does not match file ({data_words})",
-                trailer.data_words
+                "unsupported page size {} words",
+                trailer.page_words
             )));
         }
-        if trailer.alloc_offset > trailer.data_words {
+        let data_bytes = trailer
+            .data_words
+            .checked_mul(8)
+            .ok_or_else(|| PmaError::InvalidMetadata("data_words overflow".to_string()))?
+            as usize;
+        if data_bytes % 8 != 0 {
             return Err(PmaError::InvalidMetadata(format!(
-                "alloc_offset {} exceeds data_words {}",
-                trailer.alloc_offset, trailer.data_words
+                "data region not word-aligned: {data_bytes} bytes"
+            )));
+        }
+        let expected_len = data_bytes
+            .checked_add(trailer.page_meta_bytes as usize)
+            .and_then(|bytes| bytes.checked_add(PMA_TRAILER_BYTES))
+            .ok_or_else(|| PmaError::InvalidMetadata("file size overflow".to_string()))?;
+        if expected_len != file_len {
+            return Err(PmaError::InvalidMetadata(format!(
+                "file size mismatch: expected {expected_len} bytes, got {file_len}"
+            )));
+        }
+        if trailer.page_count == 0 {
+            return Err(PmaError::InvalidMetadata("page_count is zero".to_string()));
+        }
+        let expected_meta_bytes = trailer
+            .page_count
+            .checked_mul(std::mem::size_of::<PageMeta>() as u64)
+            .ok_or_else(|| PmaError::InvalidMetadata("page metadata size overflow".to_string()))?;
+        if expected_meta_bytes != trailer.page_meta_bytes {
+            return Err(PmaError::InvalidMetadata(format!(
+                "page metadata size mismatch: expected {expected_meta_bytes}, got {}",
+                trailer.page_meta_bytes
+            )));
+        }
+        if trailer.data_words == 0
+            || trailer.page_count.saturating_mul(trailer.page_words) > trailer.data_words
+        {
+            return Err(PmaError::InvalidMetadata(format!(
+                "data_words {} too small for page_count {} and page_words {}",
+                trailer.data_words, trailer.page_count, trailer.page_words
             )));
         }
 
@@ -246,10 +410,28 @@ impl Pma {
         if base_ptr.is_null() {
             return Err(PmaError::InvalidMetadata("null PMA base".to_string()));
         }
+        let data_words = trailer.data_words as usize;
+        let page_count = trailer.page_count as usize;
         let arena = Arena::open_file_with_base(&path, data_words, base_ptr)?;
+        let page_meta = unsafe {
+            let meta_ptr = arena.base_ptr().add(data_bytes) as *const PageMeta;
+            slice::from_raw_parts(meta_ptr, page_count).to_vec()
+        };
+        let mut free_runs = BTreeMap::new();
+        build_free_runs(&page_meta, &mut free_runs);
+        let mark_epochs = vec![0u64; page_count];
         let pma = Self {
             arena,
-            alloc_offset: trailer.alloc_offset as usize,
+            alloc_words: trailer.alloc_words as usize,
+            page_words: trailer.page_words as usize,
+            page_count,
+            current_gen: trailer.current_gen.max(1),
+            page_meta,
+            free_runs,
+            mark_epochs,
+            mark_epoch: 1,
+            marking: false,
+            active_page: None,
             path,
         };
         pma.persist_metadata();
@@ -288,19 +470,32 @@ impl Pma {
         &self.path
     }
 
-    /// Get the current allocation offset in words
+    /// Get the current allocation counter in words.
     pub fn alloc_offset(&self) -> usize {
-        self.alloc_offset
+        self.alloc_words
     }
 
     /// Get the total size of the PMA in words
     pub fn size_words(&self) -> usize {
-        self.arena.words()
+        self.page_count.saturating_mul(self.page_words)
     }
 
-    /// Get the number of free words remaining
+    /// Get the number of free words remaining.
     pub fn free_words(&self) -> usize {
-        self.size_words().saturating_sub(self.alloc_offset())
+        let free_pages_words = self
+            .free_runs
+            .values()
+            .copied()
+            .sum::<usize>()
+            .saturating_mul(self.page_words);
+        let active_free = self
+            .active_page
+            .map(|(_page_id, used)| {
+                let used_words = used.min(self.page_words);
+                self.page_words.saturating_sub(used_words)
+            })
+            .unwrap_or(0);
+        free_pages_words.saturating_add(active_free)
     }
 
     /// Convert a pointer within the PMA to an offset in words
@@ -321,16 +516,131 @@ impl Pma {
         ptr_addr >= base && ptr_addr < end
     }
 
-    /// Reset the allocation pointer to zero
+    pub fn is_marking(&self) -> bool {
+        self.marking
+    }
+
+    fn page_ptr(&self, page_id: usize) -> *mut u8 {
+        unsafe { self.arena.base_ptr().add(page_id * self.page_words * 8) }
+    }
+
+    fn page_index_from_ptr(&self, ptr: *const u8) -> usize {
+        let base = self.arena.base_ptr() as usize;
+        let ptr_addr = ptr as usize;
+        (ptr_addr - base) / (self.page_words * 8)
+    }
+
+    fn take_free_run(&mut self, needed: usize) -> Option<usize> {
+        let candidate = self
+            .free_runs
+            .iter()
+            .find(|(_, &len)| len >= needed)
+            .map(|(start, len)| (*start, *len))?;
+        let (start, len) = candidate;
+        self.free_runs.remove(&start);
+        if len > needed {
+            self.free_runs.insert(start + needed, len - needed);
+        }
+        Some(start)
+    }
+
+    fn mark_pages(&mut self, start: usize, len: usize) {
+        if !self.marking || len == 0 {
+            return;
+        }
+        let end = (start + len).min(self.mark_epochs.len());
+        for page_id in start..end {
+            self.mark_epochs[page_id] = self.mark_epoch;
+        }
+    }
+
+    pub(crate) fn mark_range(&mut self, ptr: *const u8, words: usize) {
+        if !self.marking || words == 0 {
+            return;
+        }
+        let bytes = words.saturating_mul(8);
+        let base = self.arena.base_ptr() as usize;
+        let start_addr = ptr as usize;
+        if start_addr < base {
+            return;
+        }
+        let end_addr = start_addr.saturating_add(bytes.saturating_sub(1));
+        let start_page = self.page_index_from_ptr(ptr);
+        let end_page = self.page_index_from_ptr(end_addr as *const u8);
+        for page_id in start_page..=end_page {
+            if page_id < self.mark_epochs.len() {
+                self.mark_epochs[page_id] = self.mark_epoch;
+            }
+        }
+    }
+
+    fn init_large_run(&mut self, start: usize, len: usize) {
+        if len == 0 {
+            return;
+        }
+        for page_id in start..start + len {
+            self.page_meta[page_id].alloc_gen = self.current_gen;
+            self.page_meta[page_id].used_words = self.page_words as u32;
+            self.page_meta[page_id].flags = if page_id == start {
+                PAGE_FLAG_LARGE_HEAD
+            } else {
+                PAGE_FLAG_LARGE_TAIL
+            };
+        }
+    }
+
+    pub fn begin_marking(&mut self) {
+        self.current_gen = self.current_gen.saturating_add(1).max(1);
+        self.mark_epoch = self.mark_epoch.wrapping_add(1);
+        if self.mark_epoch == 0 {
+            self.mark_epochs.fill(0);
+            self.mark_epoch = 1;
+        }
+        self.marking = true;
+        self.active_page = None;
+    }
+
+    pub fn sweep_unmarked(&mut self) {
+        if !self.marking {
+            return;
+        }
+        self.marking = false;
+        self.active_page = None;
+        for (page_id, meta) in self.page_meta.iter_mut().enumerate() {
+            let marked = self.mark_epochs.get(page_id) == Some(&self.mark_epoch);
+            if meta.alloc_gen == 0 {
+                meta.used_words = 0;
+                meta.flags = 0;
+                continue;
+            }
+            if marked {
+                meta.alloc_gen = self.current_gen;
+                continue;
+            }
+            meta.alloc_gen = 0;
+            meta.used_words = 0;
+            meta.flags = 0;
+        }
+        build_free_runs(&self.page_meta, &mut self.free_runs);
+    }
+
+    /// Reset the allocation state and free all pages.
     pub fn reset(&mut self) {
-        self.alloc_offset = 0;
+        self.alloc_words = 0;
+        self.current_gen = 1;
+        self.page_meta.fill(PageMeta::default());
+        build_free_runs(&self.page_meta, &mut self.free_runs);
+        self.active_page = None;
+        self.mark_epochs.fill(0);
+        self.mark_epoch = 1;
+        self.marking = false;
         self.persist_metadata();
     }
 
-    /// Reset the allocation pointer to a specific offset
+    /// Reset the allocation state and advance by `offset` words.
     ///
     /// # Panics
-    /// Panics if `offset` is greater than the PMA size.
+    /// Panics if `offset` exceeds the PMA size.
     pub fn reset_to(&mut self, offset: usize) {
         assert!(
             offset <= self.size_words(),
@@ -338,8 +648,12 @@ impl Pma {
             offset,
             self.size_words()
         );
-        self.alloc_offset = offset;
-        self.persist_metadata();
+        self.reset();
+        if offset > 0 {
+            unsafe {
+                let _ = self.raw_alloc(offset);
+            }
+        }
     }
 
     /// Check if an allocation of `words` would exceed available space.
@@ -363,26 +677,87 @@ impl Pma {
     /// # Panics
     /// Panics if there isn't enough space in the PMA.
     unsafe fn raw_alloc(&mut self, words: usize) -> *mut u64 {
+        if words == 0 {
+            return self.arena.base_ptr() as *mut u64;
+        }
         self.alloc_would_oom(words);
-        let ptr = self.arena.ptr_from_offset(self.alloc_offset as u32) as *mut u64;
-        self.alloc_offset += words;
-        self.persist_metadata();
+        self.alloc_words = self.alloc_words.saturating_add(words);
+        let page_words = self.page_words;
+        if words > page_words {
+            let pages_needed = (words + page_words - 1) / page_words;
+            let start_page = self.take_free_run(pages_needed).unwrap_or_else(|| {
+                panic!(
+                    "{}",
+                    PmaError::OutOfMemory {
+                        requested: words,
+                        available: self.free_words(),
+                    }
+                )
+            });
+            self.mark_pages(start_page, pages_needed);
+            self.init_large_run(start_page, pages_needed);
+            return self.page_ptr(start_page) as *mut u64;
+        }
+        let (page_id, used_words) = match self.active_page {
+            Some((page_id, used_words)) if used_words + words <= page_words => {
+                (page_id, used_words)
+            }
+            _ => {
+                let page_id = self.take_free_run(1).unwrap_or_else(|| {
+                    panic!(
+                        "{}",
+                        PmaError::OutOfMemory {
+                            requested: words,
+                            available: self.free_words(),
+                        }
+                    )
+                });
+                self.page_meta[page_id].alloc_gen = self.current_gen;
+                self.page_meta[page_id].used_words = 0;
+                self.page_meta[page_id].flags = 0;
+                self.active_page = Some((page_id, 0));
+                (page_id, 0)
+            }
+        };
+        let ptr = self.page_ptr(page_id).add((used_words as usize) << 3) as *mut u64;
+        let new_used = used_words + words;
+        self.page_meta[page_id].used_words = new_used as u32;
+        self.active_page = Some((page_id, new_used));
+        self.mark_range(ptr as *const u8, words);
         ptr
     }
 
     pub fn persist_metadata(&self) {
+        let page_meta_bytes = self
+            .page_meta
+            .len()
+            .saturating_mul(std::mem::size_of::<PageMeta>());
         debug_assert!(
-            self.arena.mapped_len_bytes() >= self.arena.len_bytes() + PMA_TRAILER_BYTES,
+            self.arena.mapped_len_bytes()
+                >= self.arena.len_bytes() + page_meta_bytes + PMA_TRAILER_BYTES,
             "PMA arena mapping is too small for metadata trailer"
         );
+        let meta_ptr = unsafe { self.arena.base_ptr().add(self.arena.len_bytes()) };
+        let meta_bytes = unsafe { slice::from_raw_parts_mut(meta_ptr, page_meta_bytes) };
+        let src_bytes =
+            unsafe { slice::from_raw_parts(self.page_meta.as_ptr() as *const u8, page_meta_bytes) };
+        meta_bytes.copy_from_slice(src_bytes);
         let trailer = PmaTrailer {
             magic: PMA_MAGIC,
             version: PMA_VERSION,
             data_words: self.arena.words() as u64,
-            alloc_offset: self.alloc_offset as u64,
+            page_words: self.page_words as u64,
+            page_count: self.page_count as u64,
+            page_meta_bytes: page_meta_bytes as u64,
+            alloc_words: self.alloc_words as u64,
+            current_gen: self.current_gen,
         };
         let bytes = trailer.to_bytes();
-        let dst = unsafe { self.arena.base_ptr().add(self.arena.len_bytes()) };
+        let dst = unsafe {
+            self.arena
+                .base_ptr()
+                .add(self.arena.len_bytes() + page_meta_bytes)
+        };
         unsafe {
             std::ptr::copy_nonoverlapping(bytes.as_ptr(), dst, bytes.len());
         }
@@ -545,16 +920,19 @@ impl PmaCopy for Noun {
         let mut steps = 0usize;
 
         let space = NounSpace::new(stack, &*pma);
-        let root_repr = self.repr(&space);
+        let mut root = *self;
+        let root_repr = root.repr(&space);
         match root_repr {
             NounRepr::Indirect(AllocLocation::PmaOffset)
             | NounRepr::Cell(AllocLocation::PmaOffset) => {
                 self.assert_in_pma(pma);
-                return;
+                if !pma.is_marking() {
+                    return;
+                }
             }
             NounRepr::Indirect(AllocLocation::PmaPtr) | NounRepr::Cell(AllocLocation::PmaPtr) => {
                 let offset_noun = {
-                    let allocated = self.as_allocated().expect("repr said allocated");
+                    let allocated = root.as_allocated().expect("repr said allocated");
                     let ptr = allocated.to_raw_pointer(&space);
                     assert!(
                         pma.contains_ptr(ptr as *const u8),
@@ -568,8 +946,11 @@ impl PmaCopy for Noun {
                     }
                 };
                 *self = offset_noun;
+                root = offset_noun;
                 self.assert_in_pma(pma);
-                return;
+                if !pma.is_marking() {
+                    return;
+                }
             }
             NounRepr::Forwarding(_) => {
                 panic!("forwarding-pointer noun encountered during PMA copy");
@@ -577,8 +958,8 @@ impl PmaCopy for Noun {
             _ => {}
         }
 
-        let mut work: SmallVec<[(Noun, *mut Noun); 64]> = SmallVec::new();
-        work.push((*self, self as *mut Noun));
+        let mut work: SmallVec<[(Noun, Option<*mut Noun>); 64]> = SmallVec::new();
+        work.push((root, Some(self as *mut Noun)));
 
         while let Some((noun, dest_ptr)) = work.pop() {
             steps += 1;
@@ -595,7 +976,9 @@ impl PmaCopy for Noun {
             }
             match noun.as_either_direct_allocated() {
                 Left(_direct) => {
-                    *dest_ptr = noun;
+                    if let Some(dest_ptr) = dest_ptr {
+                        *dest_ptr = noun;
+                    }
                 }
                 Right(allocated) => {
                     let forwarded = allocated.forwarding_pointer(&space);
@@ -613,7 +996,9 @@ impl PmaCopy for Noun {
                                 Cell::from_offset_words(offset).as_noun()
                             }
                         };
-                        *dest_ptr = offset_noun;
+                        if let Some(dest_ptr) = dest_ptr {
+                            *dest_ptr = offset_noun;
+                        }
                         continue;
                     }
 
@@ -623,7 +1008,24 @@ impl PmaCopy for Noun {
                         NounRepr::Indirect(AllocLocation::PmaOffset)
                         | NounRepr::Cell(AllocLocation::PmaOffset) => {
                             noun.assert_in_pma(pma);
-                            *dest_ptr = noun;
+                            if let Some(dest_ptr) = dest_ptr {
+                                *dest_ptr = noun;
+                            }
+                            if pma.is_marking() {
+                                let ptr = allocated.to_raw_pointer(&space);
+                                if allocated.is_indirect() {
+                                    let indirect = match allocated.as_either() {
+                                        Left(indirect) => indirect,
+                                        Right(_) => unreachable!("indirect repr"),
+                                    };
+                                    pma.mark_range(ptr as *const u8, indirect.raw_size(&space));
+                                } else {
+                                    pma.mark_range(ptr as *const u8, word_size_of::<CellMemory>());
+                                    let cell = noun.in_space(&space).as_cell().expect("cell repr");
+                                    work.push((cell.tail().noun(), None));
+                                    work.push((cell.head().noun(), None));
+                                }
+                            }
                             continue;
                         }
                         NounRepr::Indirect(AllocLocation::PmaPtr)
@@ -642,14 +1044,33 @@ impl PmaCopy for Noun {
                                 }
                             };
                             noun.assert_in_pma(pma);
-                            *dest_ptr = offset_noun;
+                            if let Some(dest_ptr) = dest_ptr {
+                                *dest_ptr = offset_noun;
+                            }
+                            if pma.is_marking() {
+                                let ptr = allocated.to_raw_pointer(&space);
+                                if allocated.is_indirect() {
+                                    let indirect = match allocated.as_either() {
+                                        Left(indirect) => indirect,
+                                        Right(_) => unreachable!("indirect repr"),
+                                    };
+                                    pma.mark_range(ptr as *const u8, indirect.raw_size(&space));
+                                } else {
+                                    pma.mark_range(ptr as *const u8, word_size_of::<CellMemory>());
+                                    let cell = noun.in_space(&space).as_cell().expect("cell repr");
+                                    work.push((cell.tail().noun(), None));
+                                    work.push((cell.head().noun(), None));
+                                }
+                            }
                             continue;
                         }
                         NounRepr::Forwarding(_) => {
                             panic!("forwarding-pointer noun encountered during PMA copy");
                         }
                         NounRepr::Direct => {
-                            *dest_ptr = noun;
+                            if let Some(dest_ptr) = dest_ptr {
+                                *dest_ptr = noun;
+                            }
                             continue;
                         }
                         NounRepr::Indirect(AllocLocation::Stack)
@@ -667,7 +1088,9 @@ impl PmaCopy for Noun {
                             indirect.set_forwarding_pointer(pma_ptr, &space);
 
                             let offset = pma.offset_from_ptr(pma_ptr as *const u8);
-                            *dest_ptr = IndirectAtom::from_offset_words(offset).as_noun();
+                            if let Some(dest_ptr) = dest_ptr {
+                                *dest_ptr = IndirectAtom::from_offset_words(offset).as_noun();
+                            }
                         }
                         Right(mut cell) => {
                             let (src_cell, head, tail) = {
@@ -683,11 +1106,13 @@ impl PmaCopy for Noun {
 
                             cell.set_forwarding_pointer(pma_cell, &space);
 
-                            work.push((tail, &mut (*pma_cell).tail));
-                            work.push((head, &mut (*pma_cell).head));
+                            work.push((tail, Some(&mut (*pma_cell).tail)));
+                            work.push((head, Some(&mut (*pma_cell).head)));
 
                             let offset = pma.offset_from_ptr(pma_ptr as *const u8);
-                            *dest_ptr = Cell::from_offset_words(offset).as_noun();
+                            if let Some(dest_ptr) = dest_ptr {
+                                *dest_ptr = Cell::from_offset_words(offset).as_noun();
+                            }
                         }
                     }
                 }
@@ -774,7 +1199,9 @@ mod tests {
     /// Helper to create a test PMA with a given size
     fn test_pma(size_words: usize) -> Pma {
         let path = test_pma_path("pma");
-        Pma::new(size_words, path).expect("Failed to create test PMA")
+        let size_words = size_words.max(PMA_PAGE_WORDS);
+        let rounded = ((size_words + PMA_PAGE_WORDS - 1) / PMA_PAGE_WORDS) * PMA_PAGE_WORDS;
+        Pma::new(rounded, path).expect("Failed to create test PMA")
     }
 
     /// Verifies bump allocation returns sequential offsets and correctly tracks free space.
@@ -791,12 +1218,13 @@ mod tests {
     #[cfg_attr(miri, ignore = "memfd_create unsupported in Miri")]
     fn test_pma_allocation() {
         let mut pma = test_pma(1000);
+        let size_words = pma.size_words();
 
         // Initial state: nothing allocated yet
         assert_eq!(pma.alloc_offset(), 0, "Initial alloc_offset should be 0");
         assert_eq!(
             pma.free_words(),
-            1000,
+            size_words,
             "Initial free_words should equal size"
         );
 
@@ -813,7 +1241,7 @@ mod tests {
         );
         assert_eq!(
             pma.free_words(),
-            988,
+            size_words.saturating_sub(12),
             "After alloc_indirect(10), free should be 988"
         );
 
@@ -830,7 +1258,7 @@ mod tests {
         );
         assert_eq!(
             pma.free_words(),
-            966,
+            size_words.saturating_sub(34),
             "After second alloc, free should be 966"
         );
 
@@ -1046,39 +1474,41 @@ mod tests {
     fn test_pma_out_of_memory() {
         use std::panic::{catch_unwind, AssertUnwindSafe};
 
-        let mut pma = test_pma(100); // Small PMA: 100 words
+        let mut pma = test_pma(100); // Small PMA, rounded to a full page
+        let size_words = pma.size_words();
 
         // alloc_would_oom should not panic when there's space
         pma.alloc_would_oom(50); // Should not panic
-        pma.alloc_would_oom(100); // Should not panic (exact fit)
+        pma.alloc_would_oom(size_words); // Should not panic (exact fit)
 
         // alloc_would_oom should panic when there isn't space
         let result = catch_unwind(AssertUnwindSafe(|| {
-            pma.alloc_would_oom(101);
+            pma.alloc_would_oom(size_words + 1);
         }));
         assert!(
             result.is_err(),
-            "alloc_would_oom(101) should panic with 100 free"
+            "alloc_would_oom(size_words + 1) should panic with size_words free"
         );
 
         // Allocate some space
         unsafe { pma.alloc_indirect(10) }; // 12 words (10 + 2 for metadata/size)
+        let remaining = size_words.saturating_sub(12);
         assert_eq!(pma.alloc_offset(), 12);
-        assert_eq!(pma.free_words(), 88);
+        assert_eq!(pma.free_words(), remaining);
 
         // alloc_would_oom should reflect remaining space
-        pma.alloc_would_oom(88); // Should not panic
+        pma.alloc_would_oom(remaining); // Should not panic
         let result = catch_unwind(AssertUnwindSafe(|| {
-            pma.alloc_would_oom(89);
+            pma.alloc_would_oom(remaining + 1);
         }));
         assert!(
             result.is_err(),
-            "alloc_would_oom(89) should panic with 88 free"
+            "alloc_would_oom(remaining + 1) should panic with remaining free"
         );
 
         // Fill the rest
-        unsafe { pma.alloc_struct::<u64>(88) };
-        assert_eq!(pma.alloc_offset(), 100);
+        unsafe { pma.alloc_struct::<u64>(remaining) };
+        assert_eq!(pma.alloc_offset(), size_words);
         assert_eq!(pma.free_words(), 0);
 
         // alloc_would_oom should panic for any non-zero allocation when full
@@ -1092,12 +1522,12 @@ mod tests {
 
         // Reset and verify we can allocate again
         pma.reset();
-        assert_eq!(pma.free_words(), 100);
-        pma.alloc_would_oom(100); // Should not panic after reset
+        assert_eq!(pma.free_words(), size_words);
+        pma.alloc_would_oom(size_words); // Should not panic after reset
 
         // Verify exact-fit allocation works
-        unsafe { pma.alloc_struct::<u64>(100) };
-        assert_eq!(pma.alloc_offset(), 100);
+        unsafe { pma.alloc_struct::<u64>(size_words) };
+        assert_eq!(pma.alloc_offset(), size_words);
         assert_eq!(pma.free_words(), 0);
     }
 
@@ -1112,19 +1542,20 @@ mod tests {
     #[cfg_attr(miri, ignore = "memfd_create unsupported in Miri")]
     fn test_pma_reset() {
         let mut pma = test_pma(1000);
+        let size_words = pma.size_words();
 
         // Allocate some space
         unsafe { pma.alloc_indirect(10) }; // 12 words
         unsafe { pma.alloc_indirect(20) }; // 22 words
         assert_eq!(pma.alloc_offset(), 34);
-        assert_eq!(pma.free_words(), 966);
+        assert_eq!(pma.free_words(), size_words.saturating_sub(34));
 
         // Reset to zero
         pma.reset();
         assert_eq!(pma.alloc_offset(), 0, "reset() should set offset to 0");
         assert_eq!(
             pma.free_words(),
-            1000,
+            size_words,
             "reset() should restore all free space"
         );
 
@@ -1155,7 +1586,7 @@ mod tests {
         );
         assert_eq!(
             pma.free_words(),
-            981,
+            size_words.saturating_sub(checkpoint),
             "reset_to() should restore free space from checkpoint"
         );
 
@@ -1175,7 +1606,8 @@ mod tests {
     #[cfg_attr(miri, ignore = "memfd_create unsupported in Miri")]
     fn test_pma_reset_to_out_of_bounds() {
         let mut pma = test_pma(1000);
-        pma.reset_to(1001); // Should panic: offset exceeds PMA size
+        let out_of_bounds = pma.size_words() + 1;
+        pma.reset_to(out_of_bounds); // Should panic: offset exceeds PMA size
     }
 
     #[test]

@@ -7,7 +7,7 @@ use crate::hamt::Hamt;
 use crate::jets::cold::{Batteries, Cold};
 use crate::jets::hot::Hot;
 use crate::jets::Jet;
-use crate::mem::{NockStack, Preserve};
+use crate::mem::{word_size_of, NockStack, Preserve};
 use crate::noun::{Noun, NounAllocator, Slots};
 use crate::pma::{Pma, PmaCopy};
 
@@ -229,6 +229,15 @@ impl PmaCopy for WarmEntry {
                 info!("pma-copy: warm entry start: node_ptr={:p}", (*ptr).0);
             }
             if pma.contains_ptr((*ptr).0 as *const u8) {
+                if pma.is_marking() {
+                    let mut cursor = *ptr;
+                    while !cursor.0.is_null() {
+                        pma.mark_range(cursor.0 as *const u8, word_size_of::<WarmEntryMem>());
+                        (*cursor.0).batteries.copy_to_pma(stack, pma);
+                        (*cursor.0).path.copy_to_pma(stack, pma);
+                        cursor = (*cursor.0).next;
+                    }
+                }
                 break;
             }
             // Copy batteries and path to PMA

@@ -1256,7 +1256,6 @@ impl Serf {
                 let _ = fs::remove_file(meta_path);
             }
         }
-
         let (maybe_state, cold, event_num_raw) = if let Some(c) = checkpoint {
             let saveable = c.load();
 
@@ -1885,6 +1884,7 @@ impl Serf {
             } else {
                 None
             };
+            pma.begin_marking();
             self.copy_persistent_state_to_pma(&mut pma, trace_pma, detail.as_mut());
             #[cfg(feature = "pma-assert")]
             {
@@ -1892,9 +1892,9 @@ impl Serf {
                 self.assert_persistent_state_in_pma(&pma);
             }
 
+            pma.sweep_unmarked();
             pma.persist_metadata();
             self.persist_pma_metadata(&pma);
-
             self.context.stack.reset(0);
             self.pma = Some(pma);
             detail

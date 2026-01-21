@@ -3,7 +3,7 @@ use std::ptr::{copy_nonoverlapping, null_mut};
 use tracing::info;
 
 use crate::hamt::Hamt;
-use crate::mem::{self, NockStack, Preserve};
+use crate::mem::{self, word_size_of, NockStack, Preserve};
 use crate::noun::{
     self, Atom, DirectAtom, IndirectAtom, Noun, NounAllocator, NounSpace, Slots, D, T,
 };
@@ -116,6 +116,15 @@ impl PmaCopy for Batteries {
         let mut ptr: *mut Batteries = self;
         loop {
             if pma.contains_ptr((*ptr).0 as *const u8) {
+                if pma.is_marking() {
+                    let mut cursor = *ptr;
+                    while !cursor.0.is_null() {
+                        pma.mark_range(cursor.0 as *const u8, word_size_of::<BatteriesMem>());
+                        (*cursor.0).battery.copy_to_pma(stack, pma);
+                        (*cursor.0).parent_axis.copy_to_pma(stack, pma);
+                        cursor = (*cursor.0).parent_batteries;
+                    }
+                }
                 break;
             }
             if trace {
@@ -287,6 +296,14 @@ impl PmaCopy for BatteriesList {
         let mut ptr: *mut BatteriesList = self;
         loop {
             if pma.contains_ptr((*ptr).0 as *const u8) {
+                if pma.is_marking() {
+                    let mut cursor = *ptr;
+                    while !cursor.0.is_null() {
+                        pma.mark_range(cursor.0 as *const u8, word_size_of::<BatteriesListMem>());
+                        (*cursor.0).batteries.copy_to_pma(stack, pma);
+                        cursor = (*cursor.0).next;
+                    }
+                }
                 break;
             }
             // Copy the batteries to PMA
@@ -447,6 +464,14 @@ impl PmaCopy for NounList {
         let mut ptr: *mut NounList = self;
         loop {
             if pma.contains_ptr((*ptr).0 as *const u8) {
+                if pma.is_marking() {
+                    let mut cursor = *ptr;
+                    while !cursor.0.is_null() {
+                        pma.mark_range(cursor.0 as *const u8, word_size_of::<NounListMem>());
+                        (*cursor.0).element.copy_to_pma(stack, pma);
+                        cursor = (*cursor.0).next;
+                    }
+                }
                 break;
             }
             // Copy the element noun to PMA
@@ -525,6 +550,12 @@ impl PmaCopy for Cold {
 
     unsafe fn copy_to_pma(&mut self, stack: &NockStack, pma: &mut Pma) {
         if pma.contains_ptr(self.0 as *const u8) {
+            if pma.is_marking() {
+                pma.mark_range(self.0 as *const u8, word_size_of::<ColdMem>());
+                (*self.0).battery_to_paths.copy_to_pma(stack, pma);
+                (*self.0).root_to_paths.copy_to_pma(stack, pma);
+                (*self.0).path_to_batteries.copy_to_pma(stack, pma);
+            }
             return;
         }
         // Copy each HAMT to PMA
