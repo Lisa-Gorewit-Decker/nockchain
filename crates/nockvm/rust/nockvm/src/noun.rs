@@ -1,4 +1,6 @@
 use std::slice::{from_raw_parts, from_raw_parts_mut};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
 use std::{error, fmt, ptr, str};
 
 use bitvec::prelude::{BitSlice, Lsb0};
@@ -7,9 +9,6 @@ use ibig::{Stack, UBig};
 use intmap::IntMap;
 use nockvm_macros::tas;
 use static_assertions::assert_cfg;
-
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::Arc;
 
 use crate::mem::{word_size_of, Arena, NockStack};
 use crate::pma::Pma;
@@ -332,19 +331,27 @@ impl<'a> NounHandle<'a> {
     }
 
     pub fn as_atom(self) -> Result<AtomHandle<'a>> {
-        self.noun.as_atom().map(|atom| AtomHandle::new(atom, self.space))
+        self.noun
+            .as_atom()
+            .map(|atom| AtomHandle::new(atom, self.space))
     }
 
     pub fn as_cell(self) -> Result<CellHandle<'a>> {
-        self.noun.as_cell().map(|cell| CellHandle::new(cell, self.space))
+        self.noun
+            .as_cell()
+            .map(|cell| CellHandle::new(cell, self.space))
     }
 
     pub fn atom(self) -> Option<AtomHandle<'a>> {
-        self.noun.atom().map(|atom| AtomHandle::new(atom, self.space))
+        self.noun
+            .atom()
+            .map(|atom| AtomHandle::new(atom, self.space))
     }
 
     pub fn cell(self) -> Option<CellHandle<'a>> {
-        self.noun.cell().map(|cell| CellHandle::new(cell, self.space))
+        self.noun
+            .cell()
+            .map(|cell| CellHandle::new(cell, self.space))
     }
 
     pub fn as_either_atom_cell(self) -> Either<AtomHandle<'a>, CellHandle<'a>> {
@@ -454,8 +461,7 @@ impl<'a> AtomHandle<'a> {
     }
 
     pub fn into_string(self) -> std::result::Result<String, str::Utf8Error> {
-        str::from_utf8(self.as_ne_bytes())
-            .map(|string| string.trim_end_matches('\0').to_string())
+        str::from_utf8(self.as_ne_bytes()).map(|string| string.trim_end_matches('\0').to_string())
     }
 
     pub fn to_ne_bytes(self) -> Vec<u8> {
@@ -964,11 +970,7 @@ impl IndirectAtom {
         }
     }
 
-    pub unsafe fn set_forwarding_pointer(
-        &mut self,
-        new_me: *const u64,
-        space: &NounSpace,
-    ) {
+    pub unsafe fn set_forwarding_pointer(&mut self, new_me: *const u64, space: &NounSpace) {
         // This is OK because the size is stored as 64 bit words, not bytes.
         // Thus, a true size value will never be larger than U64::MAX >> 3, and so
         // any of the high bits set as an MSB
@@ -979,8 +981,8 @@ impl IndirectAtom {
     pub(crate) unsafe fn forwarding_pointer(&self, space: &NounSpace) -> Option<IndirectAtom> {
         let size_raw = *self.to_raw_pointer(space).add(1);
         if size_raw & FORWARDING_MASK == FORWARDING_TAG {
-            let ptr = TaggedPtr::from_raw(size_raw)
-                .resolve_const(FORWARDING_MASK, space) as *const u64;
+            let ptr =
+                TaggedPtr::from_raw(size_raw).resolve_const(FORWARDING_MASK, space) as *const u64;
             Some(Self::from_raw_pointer(ptr))
         } else {
             None
@@ -1099,10 +1101,8 @@ impl IndirectAtom {
     pub(crate) fn bit_size(&self, space: &NounSpace) -> usize {
         unsafe {
             ((self.size(space) - 1) << 6) + 64
-                - (*(self
-                    .to_raw_pointer(space)
-                    .add(2 + self.size(space) - 1)))
-                .leading_zeros() as usize
+                - (*(self.to_raw_pointer(space).add(2 + self.size(space) - 1))).leading_zeros()
+                    as usize
         }
     }
 
@@ -1125,30 +1125,15 @@ impl IndirectAtom {
     }
 
     pub(crate) fn as_slice(&self, space: &NounSpace) -> &[u64] {
-        unsafe {
-            from_raw_parts(
-                self.data_pointer(space),
-                self.size(space),
-            )
-        }
+        unsafe { from_raw_parts(self.data_pointer(space), self.size(space)) }
     }
 
     pub(crate) fn as_mut_slice(&mut self, space: &NounSpace) -> &mut [u64] {
-        unsafe {
-            from_raw_parts_mut(
-                self.data_pointer_mut(space),
-                self.size(space),
-            )
-        }
+        unsafe { from_raw_parts_mut(self.data_pointer_mut(space), self.size(space)) }
     }
 
     pub(crate) fn as_ne_bytes(&self, space: &NounSpace) -> &[u8] {
-        unsafe {
-            from_raw_parts(
-                self.data_pointer(space) as *const u8,
-                self.size(space) << 3,
-            )
-        }
+        unsafe { from_raw_parts(self.data_pointer(space) as *const u8, self.size(space) << 3) }
     }
 
     pub(crate) fn to_ne_bytes(&self, space: &NounSpace) -> Vec<u8> {
@@ -1246,8 +1231,7 @@ impl IndirectAtom {
     /// Normalize a stack-pointer form indirect atom (no arena needed).
     /// Panics if the atom is in offset form.
     pub unsafe fn normalize_stack(&mut self) -> &Self {
-        let ptr = self
-            .to_raw_pointer_mut_stack();
+        let ptr = self.to_raw_pointer_mut_stack();
         let mut index = (*(ptr.add(1)) as usize) - 1; // size is at offset 1
         let data = ptr.add(2); // data starts at offset 2
         loop {
@@ -1276,8 +1260,7 @@ impl IndirectAtom {
     /// Panics if the atom is in offset form.
     pub unsafe fn normalize_as_atom_stack(&mut self) -> Atom {
         self.normalize_stack();
-        let ptr = self
-            .to_raw_pointer_stack();
+        let ptr = self.to_raw_pointer_stack();
         let size = *(ptr.add(1)) as usize;
         let data = ptr.add(2);
         if size == 1 && *data <= DIRECT_MAX {
@@ -1368,11 +1351,7 @@ impl Cell {
         &mut (*self.to_raw_pointer_mut(space)).tail as *mut Noun
     }
 
-    pub unsafe fn set_forwarding_pointer(
-        &mut self,
-        new_me: *const CellMemory,
-        space: &NounSpace,
-    ) {
+    pub unsafe fn set_forwarding_pointer(&mut self, new_me: *const CellMemory, space: &NounSpace) {
         (*self.to_raw_pointer_mut(space)).head = Noun {
             raw: TaggedPtr::from_stack_ptr(new_me as *const u8, FORWARDING_TAG).raw(),
         }
@@ -2053,12 +2032,8 @@ impl Allocated {
 
     pub(crate) unsafe fn forwarding_pointer(&self, space: &NounSpace) -> Option<Allocated> {
         match self.as_either() {
-            Left(indirect) => indirect
-                .forwarding_pointer(space)
-                .map(|i| i.as_allocated()),
-            Right(cell) => cell
-                .forwarding_pointer(space)
-                .map(|c| c.as_allocated()),
+            Left(indirect) => indirect.forwarding_pointer(space).map(|i| i.as_allocated()),
+            Right(cell) => cell.forwarding_pointer(space).map(|c| c.as_allocated()),
         }
     }
 
@@ -2100,8 +2075,7 @@ impl Allocated {
 
     pub(crate) fn get_cached_mug(self: Allocated, space: &NounSpace) -> Option<u32> {
         unsafe {
-            let bottom_metadata =
-                self.get_metadata(space) as u32 & 0x7FFFFFFF; // magic number: LS 31 bits
+            let bottom_metadata = self.get_metadata(space) as u32 & 0x7FFFFFFF; // magic number: LS 31 bits
             if bottom_metadata > 0 {
                 Some(bottom_metadata)
             } else {

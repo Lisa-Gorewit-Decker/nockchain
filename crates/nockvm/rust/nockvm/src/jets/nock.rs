@@ -304,14 +304,10 @@ pub mod util {
                         let smyt = smyt(stack, spot.head().noun(), &space)?;
 
                         let aura = D(tas!(b"ud")).as_direct()?;
-                        let str_lin =
-                            scow(stack, aura, pstr.head().as_atom()?.atom(), &space)?;
-                        let str_col =
-                            scow(stack, aura, pstr.tail().as_atom()?.atom(), &space)?;
-                        let end_lin =
-                            scow(stack, aura, pend.head().as_atom()?.atom(), &space)?;
-                        let end_col =
-                            scow(stack, aura, pend.tail().as_atom()?.atom(), &space)?;
+                        let str_lin = scow(stack, aura, pstr.head().as_atom()?.atom(), &space)?;
+                        let str_col = scow(stack, aura, pstr.tail().as_atom()?.atom(), &space)?;
+                        let end_lin = scow(stack, aura, pend.head().as_atom()?.atom(), &space)?;
+                        let end_col = scow(stack, aura, pend.tail().as_atom()?.atom(), &space)?;
 
                         let mut list = end_col.as_cell()?;
                         loop {

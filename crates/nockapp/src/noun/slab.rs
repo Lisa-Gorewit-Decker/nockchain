@@ -14,8 +14,7 @@ use nockvm::ext::noun_equality;
 use nockvm::mem::NockStack;
 use nockvm::mug::{calc_atom_mug_u32, calc_cell_mug_u32, get_mug, set_mug};
 use nockvm::noun::{
-    Atom, Cell, CellMemory, DirectAtom, IndirectAtom, Noun, NounAllocator, NounSpace, D,
-    DIRECT_MAX,
+    Atom, Cell, CellMemory, DirectAtom, IndirectAtom, Noun, NounAllocator, NounSpace, D, DIRECT_MAX,
 };
 use nockvm::serialization::{met0_u64_to_usize, met0_usize};
 use thiserror::Error;
@@ -47,9 +46,7 @@ impl<J> Debug for NounSlab<J> {
 impl<J> NounSlab<J> {
     fn contains_ptr(&self, ptr: *const u8) -> bool {
         self.slabs.iter().any(|(base, layout)| unsafe {
-            !base.is_null()
-                && ptr >= *base as *const u8
-                && ptr < base.add(layout.size())
+            !base.is_null() && ptr >= *base as *const u8 && ptr < base.add(layout.size())
         })
     }
 
@@ -301,8 +298,9 @@ impl<J> NounSlab<J> {
                             unsafe { *dest = *copied_noun };
                             continue;
                         }
-                        let indirect_new_mem =
-                            unsafe { self.alloc_indirect(indirect.as_atom().in_space(space).size()) };
+                        let indirect_new_mem = unsafe {
+                            self.alloc_indirect(indirect.as_atom().in_space(space).size())
+                        };
                         unsafe {
                             copy_nonoverlapping(indirect_ptr, indirect_new_mem, indirect_mem_size)
                         };
@@ -363,9 +361,8 @@ impl<J> NounSlab<J> {
                 } else {
                     match allocated.as_either() {
                         Either::Left(mut indirect) => {
-                            let raw_pointer = unsafe {
-                                indirect.as_atom().in_space(&space).raw_pointer()
-                            };
+                            let raw_pointer =
+                                unsafe { indirect.as_atom().in_space(&space).raw_pointer() };
                             let raw_size = indirect.as_atom().in_space(&space).raw_size();
                             unsafe {
                                 let indirect_mem = stack
@@ -375,8 +372,9 @@ impl<J> NounSlab<J> {
                                     .as_atom()
                                     .in_space(&space)
                                     .set_forwarding_pointer(indirect_mem);
-                                *dest =
-                                    IndirectAtom::from_raw_pointer(indirect_mem).as_atom().as_noun();
+                                *dest = IndirectAtom::from_raw_pointer(indirect_mem)
+                                    .as_atom()
+                                    .as_noun();
                             }
                         }
                         Either::Right(mut cell) => {
@@ -571,9 +569,9 @@ impl<V> NounMap<V> {
         let key_mug = slab_mug(key, space) as u64;
         if let Some(vec) = self.0.get_mut(key_mug) {
             let mut chain_iter = vec[..].iter_mut();
-            if let Some(entry) = chain_iter.find(|entry| {
-                noun_equality(key.in_space(space), entry.0.in_space(space))
-            }) {
+            if let Some(entry) =
+                chain_iter.find(|entry| noun_equality(key.in_space(space), entry.0.in_space(space)))
+            {
                 entry.1 = value;
             } else {
                 vec.push((key, value))
@@ -587,9 +585,9 @@ impl<V> NounMap<V> {
         let key_mug = slab_mug(key, space) as u64;
         if let Some(vec) = self.0.get(key_mug) {
             let mut chain_iter = vec[..].iter();
-            if let Some(entry) = chain_iter.find(|entry| {
-                noun_equality((key as Noun).in_space(space), entry.0.in_space(space))
-            }) {
+            if let Some(entry) = chain_iter
+                .find(|entry| noun_equality((key as Noun).in_space(space), entry.0.in_space(space)))
+            {
                 Some(&entry.1)
             } else {
                 None
@@ -795,8 +793,7 @@ impl Jammer for NockJammer {
                             unsafe { IndirectAtom::new_raw_mut_zeroed(slab, indirect_words) };
                         let slice = unsafe {
                             BitSlice::<u64, Lsb0>::from_slice_mut(std::slice::from_raw_parts_mut(
-                                data_ptr,
-                                indirect_words,
+                                data_ptr, indirect_words,
                             ))
                         };
                         slice[0..sz].clone_from_bitslice(&buffer[*cursor..*cursor + sz]);
@@ -1155,10 +1152,7 @@ mod tests {
             let expected_noun = T(&mut slab, &[D(1), D(0)]);
             let space = slab.noun_space();
             assert!(
-                noun_equality(
-                    cued_noun.in_space(&space),
-                    expected_noun.in_space(&space),
-                ),
+                noun_equality(cued_noun.in_space(&space), expected_noun.in_space(&space),),
                 "Cued noun should equal [1 0]"
             );
         }

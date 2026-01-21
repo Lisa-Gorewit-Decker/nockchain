@@ -1,6 +1,8 @@
 use std::ptr::{copy_nonoverlapping, null_mut};
 use std::time::Instant;
 
+use tracing::info;
+
 use crate::hamt::Hamt;
 use crate::jets::cold::{Batteries, Cold};
 use crate::jets::hot::Hot;
@@ -8,7 +10,6 @@ use crate::jets::Jet;
 use crate::mem::{NockStack, Preserve};
 use crate::noun::{Noun, NounAllocator, Slots};
 use crate::pma::{Pma, PmaCopy};
-use tracing::info;
 
 /// key = formula
 #[derive(Copy, Clone)]
@@ -130,8 +131,7 @@ impl PmaCopy for Warm {
 
             info!(
                 "pma-copy: warm copy done: alloc_words={}, copy_ms={}",
-                alloc_words,
-                copy_ms
+                alloc_words, copy_ms
             );
         } else {
             self.0.copy_to_pma(stack, pma);
@@ -226,10 +226,7 @@ impl PmaCopy for WarmEntry {
         let mut ptr: *mut WarmEntry = self;
         loop {
             if trace {
-                info!(
-                    "pma-copy: warm entry start: node_ptr={:p}",
-                    (*ptr).0
-                );
+                info!("pma-copy: warm entry start: node_ptr={:p}", (*ptr).0);
             }
             if pma.contains_ptr((*ptr).0 as *const u8) {
                 break;
@@ -249,10 +246,7 @@ impl PmaCopy for WarmEntry {
             // Update pointer to point to PMA copy
             *ptr = WarmEntry(dest_mem);
             if trace {
-                info!(
-                    "pma-copy: warm entry done: dest_ptr={:p}",
-                    dest_mem
-                );
+                info!("pma-copy: warm entry done: dest_ptr={:p}", dest_mem);
             }
             // Move to next node
             ptr = &mut (*dest_mem).next;
@@ -475,16 +469,14 @@ mod test {
     #[cfg_attr(miri, ignore)]
     fn test_evacuate_warm_entry_round_trip() {
         let mut stack = make_test_stack(DEFAULT_STACK_SIZE);
-        let mut pma = Pma::new(100000, test_pma_path("warm_entry"))
-            .expect("Failed to create test PMA");
+        let mut pma =
+            Pma::new(100000, test_pma_path("warm_entry")).expect("Failed to create test PMA");
         let space = NounSpace::new(&stack, &pma);
 
         // Create WarmEntry linked list with two entries
         // (battery_value, jet, path_value, test)
-        let entries: Vec<(u64, Jet, u64, bool)> = vec![
-            (10, dummy_jet, 100, false),
-            (20, dummy_jet_2, 200, true),
-        ];
+        let entries: Vec<(u64, Jet, u64, bool)> =
+            vec![(10, dummy_jet, 100, false), (20, dummy_jet_2, 200, true)];
         let mut warm_entry = make_warm_entry(&mut stack, &entries);
 
         // Evacuate WarmEntry to PMA
@@ -561,8 +553,7 @@ mod test {
     #[cfg_attr(miri, ignore)]
     fn test_evacuate_warm_round_trip() {
         let mut stack = make_test_stack(DEFAULT_STACK_SIZE);
-        let mut pma = Pma::new(100000, test_pma_path("warm"))
-            .expect("Failed to create test PMA");
+        let mut pma = Pma::new(100000, test_pma_path("warm")).expect("Failed to create test PMA");
         let space = NounSpace::new(&stack, &pma);
 
         // Create a Warm and insert some entries
@@ -571,28 +562,45 @@ mod test {
         // Insert entry 1: formula D(100) -> (battery=10, jet=dummy_jet, path=1000, test=false)
         let batteries1 = make_simple_batteries(&mut stack, 10);
         let mut formula1 = D(100);
-        warm.insert(&mut stack, &mut formula1, D(1000), batteries1, dummy_jet, false);
+        warm.insert(
+            &mut stack,
+            &mut formula1,
+            D(1000),
+            batteries1,
+            dummy_jet,
+            false,
+        );
 
         // Insert entry 2: formula D(200) -> (battery=20, jet=dummy_jet_2, path=2000, test=true)
         let batteries2 = make_simple_batteries(&mut stack, 20);
         let mut formula2 = D(200);
-        warm.insert(&mut stack, &mut formula2, D(2000), batteries2, dummy_jet_2, true);
+        warm.insert(
+            &mut stack,
+            &mut formula2,
+            D(2000),
+            batteries2,
+            dummy_jet_2,
+            true,
+        );
 
         // Insert entry 3: same formula as entry 1, different jet (creates linked list)
         let batteries3 = make_simple_batteries(&mut stack, 30);
         let mut formula3 = D(100);
-        warm.insert(&mut stack, &mut formula3, D(3000), batteries3, dummy_jet_2, true);
+        warm.insert(
+            &mut stack,
+            &mut formula3,
+            D(3000),
+            batteries3,
+            dummy_jet_2,
+            true,
+        );
 
         // Expected values for verification
         // formula D(100) should have two entries: (30, dummy_jet_2, 3000, true) -> (10, dummy_jet, 1000, false)
         // formula D(200) should have one entry: (20, dummy_jet_2, 2000, true)
-        let expected_formula_100: Vec<(u64, Jet, u64, bool)> = vec![
-            (30, dummy_jet_2, 3000, true),
-            (10, dummy_jet, 1000, false),
-        ];
-        let expected_formula_200: Vec<(u64, Jet, u64, bool)> = vec![
-            (20, dummy_jet_2, 2000, true),
-        ];
+        let expected_formula_100: Vec<(u64, Jet, u64, bool)> =
+            vec![(30, dummy_jet_2, 3000, true), (10, dummy_jet, 1000, false)];
+        let expected_formula_200: Vec<(u64, Jet, u64, bool)> = vec![(20, dummy_jet_2, 2000, true)];
 
         // Evacuate Warm to PMA
         unsafe {
@@ -601,7 +609,9 @@ mod test {
 
         // Verify lookup for formula D(100)
         let mut lookup_key1 = D(100);
-        let warm_entry1 = warm.0.lookup(&mut stack, &mut lookup_key1)
+        let warm_entry1 = warm
+            .0
+            .lookup(&mut stack, &mut lookup_key1)
             .expect("Should find entry for formula D(100)");
 
         let mut expected_iter1 = expected_formula_100.iter();
@@ -610,7 +620,11 @@ mod test {
                 .next()
                 .expect("WarmEntry has more entries than expected");
 
-            assert_eq!(unsafe { path.as_raw() }, *expected_path, "Path should match");
+            assert_eq!(
+                unsafe { path.as_raw() },
+                *expected_path,
+                "Path should match"
+            );
             assert!(std::ptr::fn_addr_eq(jet, *expected_jet), "Jet should match");
             assert_eq!(test, *expected_test, "Test flag should match");
 
@@ -618,17 +632,26 @@ mod test {
             let mut batteries_iter = batteries.into_iter();
             let (battery_ptr, _) = batteries_iter.next().expect("Batteries should have entry");
             let battery = unsafe { *battery_ptr };
-            assert_eq!(unsafe { battery.as_raw() }, *expected_battery, "Battery should match");
+            assert_eq!(
+                unsafe { battery.as_raw() },
+                *expected_battery,
+                "Battery should match"
+            );
 
             // Verify nouns are in offset form
             verify_noun_not_stack_allocated(path, &space, "Warm path");
             verify_noun_not_stack_allocated(battery, &space, "Warm battery");
         }
-        assert!(expected_iter1.next().is_none(), "Missing entries for formula D(100)");
+        assert!(
+            expected_iter1.next().is_none(),
+            "Missing entries for formula D(100)"
+        );
 
         // Verify lookup for formula D(200)
         let mut lookup_key2 = D(200);
-        let warm_entry2 = warm.0.lookup(&mut stack, &mut lookup_key2)
+        let warm_entry2 = warm
+            .0
+            .lookup(&mut stack, &mut lookup_key2)
             .expect("Should find entry for formula D(200)");
 
         let mut expected_iter2 = expected_formula_200.iter();
@@ -637,7 +660,11 @@ mod test {
                 .next()
                 .expect("WarmEntry has more entries than expected");
 
-            assert_eq!(unsafe { path.as_raw() }, *expected_path, "Path should match");
+            assert_eq!(
+                unsafe { path.as_raw() },
+                *expected_path,
+                "Path should match"
+            );
             assert!(std::ptr::fn_addr_eq(jet, *expected_jet), "Jet should match");
             assert_eq!(test, *expected_test, "Test flag should match");
 
@@ -645,13 +672,20 @@ mod test {
             let mut batteries_iter = batteries.into_iter();
             let (battery_ptr, _) = batteries_iter.next().expect("Batteries should have entry");
             let battery = unsafe { *battery_ptr };
-            assert_eq!(unsafe { battery.as_raw() }, *expected_battery, "Battery should match");
+            assert_eq!(
+                unsafe { battery.as_raw() },
+                *expected_battery,
+                "Battery should match"
+            );
 
             // Verify nouns are in offset form
             verify_noun_not_stack_allocated(path, &space, "Warm path");
             verify_noun_not_stack_allocated(battery, &space, "Warm battery");
         }
-        assert!(expected_iter2.next().is_none(), "Missing entries for formula D(200)");
+        assert!(
+            expected_iter2.next().is_none(),
+            "Missing entries for formula D(200)"
+        );
 
         // Verify non-existent lookup returns None
         let mut lookup_key3 = D(999);

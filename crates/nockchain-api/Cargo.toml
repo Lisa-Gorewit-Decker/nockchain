@@ -9,6 +9,7 @@ tracing-heap = ["tracy-client"]
 malloc = []
 
 [dependencies]
+chaff.workspace = true
 kernels = { workspace = true, features = ["dumb"] }
 nockapp.workspace = true
 nockchain.workspace = true

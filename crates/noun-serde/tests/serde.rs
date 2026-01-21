@@ -560,7 +560,8 @@ mod complex_tests {
             }
         );
 
-        let decoded = Option::<Result<Option<Vec<u64>>, String>>::from_noun(&encoded, &space).unwrap();
+        let decoded =
+            Option::<Result<Option<Vec<u64>>, String>>::from_noun(&encoded, &space).unwrap();
         assert_eq!(nested_data, decoded);
 
         // Test None case
@@ -604,7 +605,8 @@ mod complex_tests {
             }
         );
 
-        let decoded = Vec::<HashMap<String, Vec<Option<u64>>>>::from_noun(&encoded, &space).unwrap();
+        let decoded =
+            Vec::<HashMap<String, Vec<Option<u64>>>>::from_noun(&encoded, &space).unwrap();
         assert_eq!(complex_collection, decoded);
     }
 }

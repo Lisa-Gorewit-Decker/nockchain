@@ -169,7 +169,7 @@ pub fn path_to_cord(stack: &mut NockStack, path: Noun) -> Atom {
                                 kv.atom(),
                                 &space,
                             )
-                                .expect("scow should succeed in path_to_cord");
+                            .expect("scow should succeed in path_to_cord");
                             let kvc = rap(stack, 3, kvt, &space)
                                 .expect("rap should succeed in path_to_cord");
                             length += 1;
@@ -208,14 +208,13 @@ pub fn path_to_cord(stack: &mut NockStack, path: Noun) -> Atom {
                                 kv.atom(),
                                 &space,
                             )
-                                .expect("scow should succeed in path_to_cord");
+                            .expect("scow should succeed in path_to_cord");
                             let kvc = rap(stack, 3, kvt, &space)
                                 .expect("rap should succeed in path_to_cord");
                             buffer[idx] = slash;
                             idx += 1;
                             let nmlen = met3_usize(nm.atom(), &space);
-                            buffer[idx..idx + nmlen]
-                                .copy_from_slice(&nm.as_ne_bytes()[0..nmlen]);
+                            buffer[idx..idx + nmlen].copy_from_slice(&nm.as_ne_bytes()[0..nmlen]);
                             idx += nmlen;
                             let kvclen = met3_usize(kvc, &space);
                             buffer[idx..idx + kvclen]

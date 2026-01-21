@@ -80,7 +80,10 @@ impl MPUltra {
                 )
             }) {
             tas!(b"mega") => Ok(MPUltra::Mega(mp_ultra_cell.tail().noun())),
-            tas!(b"comp") => Ok(MPUltra::Comp(MPComp::try_from(mp_ultra_cell.tail().noun(), space)?)),
+            tas!(b"comp") => Ok(MPUltra::Comp(MPComp::try_from(
+                mp_ultra_cell.tail().noun(),
+                space,
+            )?)),
             _ => panic!("Invalid MPUltra type"),
         }
     }
@@ -130,26 +133,14 @@ impl CountMap {
                 (term_cell.head().as_atom()?.as_u64()? as usize, {
                     let tail = term_cell.tail().noun();
                     Counts {
-                        boundary: slot(tail, 2, space)?
-                            .in_space(space)
-                            .as_atom()?
-                            .as_u64()? as usize,
-                        row: slot(tail, 6, space)?
-                            .in_space(space)
-                            .as_atom()?
-                            .as_u64()? as usize,
-                        transition: slot(tail, 14, space)?
-                            .in_space(space)
-                            .as_atom()?
-                            .as_u64()? as usize,
-                        terminal: slot(tail, 30, space)?
-                            .in_space(space)
-                            .as_atom()?
-                            .as_u64()? as usize,
-                        extra: slot(tail, 31, space)?
-                            .in_space(space)
-                            .as_atom()?
-                            .as_u64()? as usize,
+                        boundary: slot(tail, 2, space)?.in_space(space).as_atom()?.as_u64()?
+                            as usize,
+                        row: slot(tail, 6, space)?.in_space(space).as_atom()?.as_u64()? as usize,
+                        transition: slot(tail, 14, space)?.in_space(space).as_atom()?.as_u64()?
+                            as usize,
+                        terminal: slot(tail, 30, space)?.in_space(space).as_atom()?.as_u64()?
+                            as usize,
+                        extra: slot(tail, 31, space)?.in_space(space).as_atom()?.as_u64()? as usize,
                     }
                 })
             };
@@ -269,14 +260,8 @@ pub fn precompute_ntts_jet(context: &mut Context, subject: Noun) -> Result<Noun,
     let space = context.stack.noun_space();
     let sam = slot(subject, 6, &space)?;
     let polys = slot(sam, 2, &space)?;
-    let height = slot(sam, 6, &space)?
-        .in_space(&space)
-        .as_atom()?
-        .as_u64()? as usize;
-    let max_ntt_len = slot(sam, 7, &space)?
-        .in_space(&space)
-        .as_atom()?
-        .as_u64()? as usize;
+    let height = slot(sam, 6, &space)?.in_space(&space).as_atom()?.as_u64()? as usize;
+    let max_ntt_len = slot(sam, 7, &space)?.in_space(&space).as_atom()?.as_u64()? as usize;
 
     let polys = MarySlice::try_from(polys, &space).unwrap_or_else(|err| {
         panic!(
@@ -328,17 +313,8 @@ pub fn eval_composition_poly_jet(context: &mut Context, subject: Noun) -> Result
     let is_extra = unsafe { is_extra.raw_equals(&D(0)) };
 
     let res = eval_composition_poly(
-        &trace_evaluations,
-        &heights,
-        &constraint_map,
-        &counts_map,
-        &dyn_list,
-        &weights_map,
-        &challenges,
-        deep_challenge,
-        &table_full_widths,
-        is_extra,
-        &space,
+        &trace_evaluations, &heights, &constraint_map, &counts_map, &dyn_list, &weights_map,
+        &challenges, deep_challenge, &table_full_widths, is_extra, &space,
     )?;
 
     let (res_atom, res_felt): (IndirectAtom, &mut Felt) = new_handle_mut_felt(&mut context.stack);

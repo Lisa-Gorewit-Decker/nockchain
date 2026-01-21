@@ -3,11 +3,7 @@ use nockvm::jets::JetErr;
 use nockvm::noun::{Noun, NounAllocator, NounSpace, D, T};
 use noun_serde::NounEncode;
 
-pub fn dyck<A: NounAllocator>(
-    stack: &mut A,
-    t: Noun,
-    space: &NounSpace,
-) -> Result<Noun, JetErr> {
+pub fn dyck<A: NounAllocator>(stack: &mut A, t: Noun, space: &NounSpace) -> Result<Noun, JetErr> {
     let vec = dyck_recursive(stack, t, D(0), space)?;
     let stack_space = stack.noun_space();
     flop(stack, vec, &stack_space)
@@ -43,11 +39,7 @@ pub fn leaf_sequence<A: NounAllocator>(
     Ok(res)
 }
 
-pub fn do_leaf_sequence(
-    noun: Noun,
-    vec: &mut Vec<u64>,
-    space: &NounSpace,
-) -> Result<(), JetErr> {
+pub fn do_leaf_sequence(noun: Noun, vec: &mut Vec<u64>, space: &NounSpace) -> Result<(), JetErr> {
     if noun.is_atom() {
         vec.push(noun.in_space(space).as_atom()?.as_u64()?);
         Ok(())

@@ -42,12 +42,7 @@ pub fn jet_put(context: &mut Context, subject: Noun) -> Result {
     put_iter(&mut context.stack, set, elem, &space)
 }
 
-fn put_iter(
-    stack: &mut NockStack,
-    root: Noun,
-    elem: Noun,
-    space: &NounSpace,
-) -> JetResult<Noun> {
+fn put_iter(stack: &mut NockStack, root: Noun, elem: Noun, space: &NounSpace) -> JetResult<Noun> {
     if unsafe { root.raw_equals(&D(0)) } {
         return Ok(make_node(stack, elem, D(0), D(0)));
     }

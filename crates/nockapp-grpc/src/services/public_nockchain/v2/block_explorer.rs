@@ -544,8 +544,7 @@ impl BlockExplorerCache {
         let mut parsed = Vec::new();
         for entry in entries {
             parsed.push(
-                BlockEntryWithTxs::from_raw(entry, &space)
-                    .map_err(NockAppGrpcError::NounDecode)?,
+                BlockEntryWithTxs::from_raw(entry, &space).map_err(NockAppGrpcError::NounDecode)?,
             );
         }
 
@@ -915,7 +914,9 @@ fn extract_transactions_from_map(
         if !entry.is_cell() {
             continue;
         }
-        let [key, value] = entry.uncell(space).map_err(|_| NounDecodeError::ExpectedCell)?;
+        let [key, value] = entry
+            .uncell(space)
+            .map_err(|_| NounDecodeError::ExpectedCell)?;
         let hash = Hash::from_noun(&key, space)?;
         let tx = TxV0::from_noun(&value, space)?;
         txs.push((hash, tx));
@@ -977,7 +978,9 @@ fn decode_outputs(noun: &Noun, space: &NounSpace) -> Result<Vec<TxOutput>, NounD
         if !entry.is_cell() {
             continue;
         }
-        let [key, value] = entry.uncell(space).map_err(|_| NounDecodeError::ExpectedCell)?;
+        let [key, value] = entry
+            .uncell(space)
+            .map_err(|_| NounDecodeError::ExpectedCell)?;
         let lock = Lock::from_noun(&key, space)?;
         let value_cell = value
             .in_space(space)

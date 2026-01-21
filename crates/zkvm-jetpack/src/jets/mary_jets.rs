@@ -75,7 +75,10 @@ pub fn mary_weld_jet(context: &mut Context, subject: Noun) -> Result<Noun, JetEr
         return Err(BAIL_FAIL);
     }
 
-    let (Ok(mary1), Ok(mary2)) = (MarySlice::try_from(ma, &space), MarySlice::try_from(ma2, &space)) else {
+    let (Ok(mary1), Ok(mary2)) = (
+        MarySlice::try_from(ma, &space),
+        MarySlice::try_from(ma2, &space),
+    ) else {
         debug!("mary1 or mary2 is not an fpoly");
         return Err(BAIL_FAIL);
     };
@@ -217,12 +220,7 @@ pub fn snag_one(
         .as_atom()?
         .atom()
         .as_u32()?;
-    let ma_dat: Atom = mary_cell
-        .tail()
-        .as_cell()?
-        .tail()
-        .as_atom()?
-        .atom();
+    let ma_dat: Atom = mary_cell.tail().as_cell()?.tail().as_atom()?.atom();
 
     assert!(i < ma_len as usize);
     snag_one_fields(stack, i, ma_step, ma_dat, space)
@@ -236,7 +234,14 @@ pub fn snag_one_fields(
     ma_dat: Atom,
     space: &NounSpace,
 ) -> Result<Noun, JetErr> {
-    let res = cut(stack, 6, i * ma_step as usize, ma_step as usize, ma_dat, space)?;
+    let res = cut(
+        stack,
+        6,
+        i * ma_step as usize,
+        ma_step as usize,
+        ma_dat,
+        space,
+    )?;
     if ma_step == 1 {
         return Ok(res);
     }
@@ -375,11 +380,7 @@ pub fn get_mary_fields(p: Noun, space: &NounSpace) -> Result<(Atom, Atom, Noun),
     Ok((ma_step.as_atom()?, ma_array_len.as_atom()?, ma_array_dat))
 }
 
-fn heapify_mary(
-    stack: &mut NockStack,
-    m_noun: Noun,
-    space: &NounSpace,
-) -> Result<Noun, JetErr> {
+fn heapify_mary(stack: &mut NockStack, m_noun: Noun, space: &NounSpace) -> Result<Noun, JetErr> {
     let (_ma_step, ma_array_len, _ma_array_dat) = get_mary_fields(m_noun, space)?;
     let size = bex(simple_xeb(ma_array_len.in_space(space).as_u64()? as usize)) - 1;
 

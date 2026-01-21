@@ -87,7 +87,7 @@ docker-nockchain-run:
 		-v $(DOCKER_DATA_DIR):/data/.data.nockchain \
 		$(DOCKER_IMAGE) \
 		--fast-sync --num-threads 0 \
-		--save-interval 120 \
+		--save-interval 300000 \
 		--data-dir /data/.data.nockchain \
 		--identity-path /data/.data.nockchain/.nockchain_identity \
 		--bind /ip4/0.0.0.0/udp/$(DOCKER_P2P_PORT)/quic-v1 \

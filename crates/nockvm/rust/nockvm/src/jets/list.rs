@@ -339,7 +339,13 @@ pub mod util {
                         .noun()
                         .raw_equals(&h.in_space(&space).as_cell()?.head().noun())
                 } {
-                    if unsafe { n.in_space(&space).as_cell()?.tail().noun().raw_equals(&D(0)) } {
+                    if unsafe {
+                        n.in_space(&space)
+                            .as_cell()?
+                            .tail()
+                            .noun()
+                            .raw_equals(&D(0))
+                    } {
                         // match found
                         return Ok(T(&mut context.stack, &[D(0), D(i)])); // (unit @ud)  i
                     }

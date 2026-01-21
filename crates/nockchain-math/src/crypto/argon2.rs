@@ -114,11 +114,7 @@ impl Nounable for Argon2Args {
         params: &Noun,
         space: &NounSpace,
     ) -> NounableResult<Self::Target> {
-        let out = params
-            .in_space(space)
-            .slot(2)?
-            .as_atom()?
-            .as_u64()? as usize;
+        let out = params.in_space(space).slot(2)?.as_atom()?.as_u64()? as usize;
         let typ = params
             .in_space(space)
             .slot(6)?
@@ -132,26 +128,10 @@ impl Nounable for Argon2Args {
                     option_env!("GIT_SHA")
                 )
             });
-        let version = params
-            .in_space(space)
-            .slot(14)?
-            .as_atom()?
-            .as_u64()? as u8;
-        let threads = params
-            .in_space(space)
-            .slot(30)?
-            .as_atom()?
-            .as_u64()? as u32;
-        let mem_cost = params
-            .in_space(space)
-            .slot(62)?
-            .as_atom()?
-            .as_u64()? as u32;
-        let time_cost = params
-            .in_space(space)
-            .slot(126)?
-            .as_atom()?
-            .as_u64()? as u32;
+        let version = params.in_space(space).slot(14)?.as_atom()?.as_u64()? as u8;
+        let threads = params.in_space(space).slot(30)?.as_atom()?.as_u64()? as u32;
+        let mem_cost = params.in_space(space).slot(62)?.as_atom()?.as_u64()? as u32;
+        let time_cost = params.in_space(space).slot(126)?.as_atom()?.as_u64()? as u32;
         let secret_noun = params.in_space(space).slot(254)?.noun();
         let extra_noun = params.in_space(space).slot(255)?.noun();
         let secret = Byts::from_noun(stack, &secret_noun, space)?;

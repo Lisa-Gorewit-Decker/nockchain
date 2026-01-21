@@ -50,8 +50,7 @@ impl NockchainFact {
             // Need to handle the closure capturing mutable reference
             let mut elder_id_strings = Vec::new();
             for id_noun in elder_ids.list_iter() {
-                elder_id_strings
-                    .push(tip5_hash_to_base58_stack(slab, id_noun.noun(), &space)?);
+                elder_id_strings.push(tip5_hash_to_base58_stack(slab, id_noun.noun(), &space)?);
             }
             Ok(NockchainFact::HeardElders(
                 oldest, elder_id_strings, poke_slab,

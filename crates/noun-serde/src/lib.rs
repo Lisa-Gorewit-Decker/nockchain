@@ -634,11 +634,7 @@ where
 
             let pair_head = pair.head().noun();
             let pair_tail = pair.tail().noun();
-            trace!(
-                "Got node - key: {:?}, value: {:?}",
-                pair_head,
-                pair_tail
-            );
+            trace!("Got node - key: {:?}, value: {:?}", pair_head, pair_tail);
             trace!("Key type: {:?}", std::any::type_name::<K>());
             trace!("Value type: {:?}", std::any::type_name::<V>());
 
@@ -1186,11 +1182,7 @@ mod array_tests {
         let noun = empty_array.to_noun(stack);
         assert!(noun.is_atom());
         assert_eq!(
-            noun.in_space(&space)
-                .as_atom()
-                .unwrap()
-                .as_u64()
-                .unwrap(),
+            noun.in_space(&space).as_atom().unwrap().as_u64().unwrap(),
             0
         );
 
@@ -1212,11 +1204,7 @@ mod array_tests {
         // Encoding should produce just the single element as an atom
         assert!(noun.is_atom());
         assert_eq!(
-            noun.in_space(&space)
-                .as_atom()
-                .unwrap()
-                .as_u64()
-                .unwrap(),
+            noun.in_space(&space).as_atom().unwrap().as_u64().unwrap(),
             42
         );
 
@@ -1238,46 +1226,29 @@ mod array_tests {
         // It should create a right-associative chain of cells
         assert!(noun.is_cell());
         let cell = noun.in_space(&space).as_cell().unwrap();
-        assert_eq!(
-            cell.head().as_atom().unwrap().as_u64().unwrap(),
-            1
-        );
+        assert_eq!(cell.head().as_atom().unwrap().as_u64().unwrap(), 1);
 
         // Recursively check the structure
         let tail1 = cell.tail().noun();
         assert!(tail1.is_cell());
         let cell1 = tail1.in_space(&space).as_cell().unwrap();
-        assert_eq!(
-            cell1.head().as_atom().unwrap().as_u64().unwrap(),
-            2
-        );
+        assert_eq!(cell1.head().as_atom().unwrap().as_u64().unwrap(), 2);
 
         let tail2 = cell1.tail().noun();
         assert!(tail2.is_cell());
         let cell2 = tail2.in_space(&space).as_cell().unwrap();
-        assert_eq!(
-            cell2.head().as_atom().unwrap().as_u64().unwrap(),
-            3
-        );
+        assert_eq!(cell2.head().as_atom().unwrap().as_u64().unwrap(), 3);
 
         let tail3 = cell2.tail().noun();
         assert!(tail3.is_cell());
         let cell3 = tail3.in_space(&space).as_cell().unwrap();
-        assert_eq!(
-            cell3.head().as_atom().unwrap().as_u64().unwrap(),
-            4
-        );
+        assert_eq!(cell3.head().as_atom().unwrap().as_u64().unwrap(), 4);
 
         // Last element should be an atom, not a cell
         let tail4 = cell3.tail().noun();
         assert!(tail4.is_atom());
         assert_eq!(
-            tail4
-                .in_space(&space)
-                .as_atom()
-                .unwrap()
-                .as_u64()
-                .unwrap(),
+            tail4.in_space(&space).as_atom().unwrap().as_u64().unwrap(),
             5
         );
 
@@ -1396,9 +1367,7 @@ mod tip5_tests {
         let mut stack = StackGuard::new(1024 * 1024);
         let space = stack.noun_space();
         let noun = T(&mut *stack, &[D(1), D(2), D(3), D(4), D(5)]);
-        let decoded = noun
-            .decode::<(u64, u64, u64, u64, u64)>(&space)
-            .unwrap();
+        let decoded = noun.decode::<(u64, u64, u64, u64, u64)>(&space).unwrap();
         assert_eq!((1, 2, 3, 4, 5), decoded);
     }
 }
@@ -1447,11 +1416,7 @@ mod btreemap_tests {
         // Empty map should encode as atom 0
         assert!(noun.as_atom().is_ok());
         assert_eq!(
-            noun.in_space(&space)
-                .as_atom()
-                .unwrap()
-                .as_u64()
-                .unwrap(),
+            noun.in_space(&space).as_atom().unwrap().as_u64().unwrap(),
             0
         );
 
@@ -1546,8 +1511,7 @@ mod btreemap_tests {
         let noun = outer.to_noun(&mut *stack);
 
         // Round-trip test
-        let decoded =
-            BTreeMap::<u64, BTreeMap<String, u64>>::from_noun(&noun, &space).unwrap();
+        let decoded = BTreeMap::<u64, BTreeMap<String, u64>>::from_noun(&noun, &space).unwrap();
         assert_eq!(outer, decoded);
 
         // Check nested values

@@ -100,7 +100,10 @@ impl Miner {
         })
     }
 
-    async fn mine_candidate(&mut self, candidate: &MiningCandidate) -> Result<NounSlab, Box<dyn Error>> {
+    async fn mine_candidate(
+        &mut self,
+        candidate: &MiningCandidate,
+    ) -> Result<NounSlab, Box<dyn Error>> {
         let mut attempts = 0u64;
         let mut nonce = self.next_nonce.take();
         loop {
@@ -126,8 +129,13 @@ impl Miner {
 }
 
 enum MineResult {
-    Retry { next_nonce: NounSlab },
-    Success { poke: NounSlab, next_nonce: NounSlab },
+    Retry {
+        next_nonce: NounSlab,
+    },
+    Success {
+        poke: NounSlab,
+        next_nonce: NounSlab,
+    },
 }
 
 struct Poke {
@@ -208,18 +216,12 @@ async fn main() -> Result<(), Box<dyn Error>> {
         Some(Miner::new().await?)
     };
     let mining_output = run_mining_peer(
-        &mut peer1,
-        &mut miner,
-        &mut peer1_init,
-        peer1_init_count,
-        args.blocks,
-        &genesis_id,
+        &mut peer1, &mut miner, &mut peer1_init, peer1_init_count, args.blocks, &genesis_id,
     )
     .await?;
 
     let peer1_id = PeerId::random();
-    let catchup_output =
-        run_catchup_peer(&mut peer2, &mining_output.gossips, peer1_id).await?;
+    let catchup_output = run_catchup_peer(&mut peer2, &mining_output.gossips, peer1_id).await?;
 
     print_summary(&args, &mining_output, catchup_output.duration);
 
@@ -239,26 +241,19 @@ async fn main() -> Result<(), Box<dyn Error>> {
             samples
         });
     report_phase_timings(
-        "mining_pokes",
-        mining_samples,
-        &mining_output.poke_timestamps,
+        "mining_pokes", mining_samples, &mining_output.poke_timestamps,
     );
 
     let catchup_samples = peer2.take_pma_timing_samples_detailed();
     report_phase_timings(
-        "catchup_pokes",
-        catchup_samples,
-        &catchup_output.poke_timestamps,
+        "catchup_pokes", catchup_samples, &catchup_output.poke_timestamps,
     );
 
     drop(peer1_dir);
     Ok(())
 }
 
-async fn build_nockapp(
-    name: &str,
-    cli: boot::Cli,
-) -> Result<(TempDir, NockApp), Box<dyn Error>> {
+async fn build_nockapp(name: &str, cli: boot::Cli) -> Result<(TempDir, NockApp), Box<dyn Error>> {
     let temp_dir = TempDir::new()?;
     let hot_state = produce_prover_hot_state();
     let app = boot::setup::<nockapp::noun::slab::NockJammer>(
@@ -421,14 +416,16 @@ async fn run_mining_peer(
         }
 
         if pending.is_empty() && gossips.len() < target_blocks {
-            return Err(
-                "No pending pokes while target not reached; mining stalled".to_string().into(),
-            );
+            return Err("No pending pokes while target not reached; mining stalled"
+                .to_string()
+                .into());
         }
     }
 
     if !mining_started {
-        return Err("Mining never started (no %mine effect observed)".to_string().into());
+        return Err("Mining never started (no %mine effect observed)"
+            .to_string()
+            .into());
     }
     if gossips.len() < target_blocks {
         return Err(format!(
@@ -477,8 +474,7 @@ fn parse_mine_effect(effect: &NounSlab) -> Result<Option<MiningCandidate>, NockA
     if !effect_cell.head().eq_bytes("mine") {
         return Ok(None);
     }
-    let Ok([version, commit, target, pow_len_noun]) =
-        effect_cell.tail().noun().uncell(&space)
+    let Ok([version, commit, target, pow_len_noun]) = effect_cell.tail().noun().uncell(&space)
     else {
         return Err(NockAppError::OtherError(
             "Expected four elements in %mine effect".to_string(),
@@ -515,11 +511,7 @@ fn extract_gossip_data(effect: &NounSlab) -> Result<Option<NounSlab>, NockAppErr
         return Ok(None);
     }
     let gossip_cell = effect_cell.tail().noun();
-    let data = gossip_cell
-        .in_space(&space)
-        .as_cell()?
-        .tail()
-        .noun();
+    let data = gossip_cell.in_space(&space).as_cell()?.tail().noun();
     let mut data_slab = NounSlab::new();
     data_slab.copy_into(data, &space);
     Ok(Some(data_slab))
@@ -648,14 +640,7 @@ fn create_pow_poke(candidate: &MiningCandidate, nonce: &NounSlab) -> NounSlab {
     let proof = T(&mut slab, &[version, D(0), D(0), D(0)]);
     let poke_noun = T(
         &mut slab,
-        &[
-            D(tas!(b"command")),
-            D(tas!(b"pow")),
-            proof,
-            D(0),
-            header,
-            nonce,
-        ],
+        &[D(tas!(b"command")), D(tas!(b"pow")), proof, D(0), header, nonce],
     );
     slab.set_root(poke_noun);
     slab
@@ -688,23 +673,14 @@ fn make_set_constants_poke(constants: &setup::BlockchainConstants) -> NounSlab {
 
 fn make_set_genesis_seal_poke(seal: &str) -> NounSlab {
     let mut poke_slab = NounSlab::new();
-    let block_height_noun =
-        Atom::new(&mut poke_slab, DEFAULT_GENESIS_BLOCK_HEIGHT).as_noun();
-    let seal_byts = Bytes::from(
-        seal.to_string()
-            .into_bytes(),
-    );
+    let block_height_noun = Atom::new(&mut poke_slab, DEFAULT_GENESIS_BLOCK_HEIGHT).as_noun();
+    let seal_byts = Bytes::from(seal.to_string().into_bytes());
     let seal_noun = Atom::from_bytes(&mut poke_slab, &seal_byts).as_noun();
     let tag = Bytes::from(b"set-genesis-seal".to_vec());
     let set_genesis_seal = Atom::from_bytes(&mut poke_slab, &tag).as_noun();
     let poke_noun = T(
         &mut poke_slab,
-        &[
-            D(tas!(b"command")),
-            set_genesis_seal,
-            block_height_noun,
-            seal_noun,
-        ],
+        &[D(tas!(b"command")), set_genesis_seal, block_height_noun, seal_noun],
     );
     poke_slab.set_root(poke_noun);
     poke_slab
@@ -732,15 +708,11 @@ fn make_born_poke() -> NounSlab {
 
 fn make_enable_mining_poke(enable: bool) -> NounSlab {
     let mut slab = NounSlab::new();
-    let enable_mining = Atom::from_value(&mut slab, "enable-mining")
-        .expect("Failed to create enable-mining atom");
+    let enable_mining =
+        Atom::from_value(&mut slab, "enable-mining").expect("Failed to create enable-mining atom");
     let enable_mining_poke = T(
         &mut slab,
-        &[
-            D(tas!(b"command")),
-            enable_mining.as_noun(),
-            if enable { YES } else { NO },
-        ],
+        &[D(tas!(b"command")), enable_mining.as_noun(), if enable { YES } else { NO }],
     );
     slab.set_root(enable_mining_poke);
     slab
@@ -836,8 +808,7 @@ fn report_phase_timings(
         return;
     }
 
-    let (total_samples, pma_samples, min_len) =
-        build_timed_samples(&samples, timestamps, label);
+    let (total_samples, pma_samples, min_len) = build_timed_samples(&samples, timestamps, label);
     info!(
         "bench: {} timing timestamps are ms since phase start (post-init)",
         label
@@ -933,7 +904,12 @@ fn build_detail_samples(
     Some(detail)
 }
 
-fn push_detail_samples(detail: &mut PmaDetailSamples, idx: usize, ts: Duration, copy: PmaCopyDetail) {
+fn push_detail_samples(
+    detail: &mut PmaDetailSamples,
+    idx: usize,
+    ts: Duration,
+    copy: PmaCopyDetail,
+) {
     detail.warm_ms.push(TimedSample {
         idx,
         value: copy.warm.elapsed,

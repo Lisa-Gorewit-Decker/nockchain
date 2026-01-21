@@ -1,7 +1,7 @@
+use nockvm::noun::NounAllocator;
 use tracing::{debug, error};
 
 use crate::nockapp::driver::{make_driver, IODriverFn};
-use nockvm::noun::NounAllocator;
 
 /// Creates an IO driver function for handling exit signals.
 ///

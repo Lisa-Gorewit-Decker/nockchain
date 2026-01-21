@@ -407,8 +407,7 @@ pub fn jet_just(context: &mut Context, subject: Noun) -> Result {
     let q_tub = tub_cell.tail().noun();
 
     if unsafe {
-        q_tub.raw_equals(&D(0))
-            || !daf.raw_equals(&q_tub.in_space(&space).as_cell()?.head().noun())
+        q_tub.raw_equals(&D(0)) || !daf.raw_equals(&q_tub.in_space(&space).as_cell()?.head().noun())
     } {
         util::fail(context, p_tub)
     } else {
@@ -506,12 +505,7 @@ pub fn jet_stew(context: &mut Context, subject: Noun) -> Result {
         return util::fail(context, p_tub);
     }
 
-    let iq_tub = q_tub
-        .in_space(&space)
-        .as_cell()?
-        .head()
-        .as_atom()?
-        .atom();
+    let iq_tub = q_tub.in_space(&space).as_cell()?.head().as_atom()?.atom();
     if !iq_tub.is_direct() {
         // Character cannot be encoded using 8 bytes = computibilty error
         return Err(BAIL_FAIL);

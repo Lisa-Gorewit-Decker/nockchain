@@ -1,9 +1,9 @@
 use std::cmp::max;
 use std::vec;
 
+use nockvm::noun::NounSpace;
 use noun_serde::NounDecode;
 use num_traits::MulAdd;
-use nockvm::noun::NounSpace;
 
 use crate::belt::Belt;
 use crate::bpoly::bitreverse;

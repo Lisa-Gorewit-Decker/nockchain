@@ -112,18 +112,14 @@ pub fn file() -> IODriverFn {
 
             let parsed = (|| {
                 let space = slab.noun_space();
-                let effect_cell = unsafe { slab.root() }
-                    .in_space(&space)
-                    .as_cell()
-                    .ok()?;
+                let effect_cell = unsafe { slab.root() }.in_space(&space).as_cell().ok()?;
 
                 if !unsafe { effect_cell.head().noun().raw_equals(&D(tas!(b"file"))) } {
                     return None;
                 }
 
                 let file_cell = effect_cell.tail().as_cell().ok()?;
-                let operation =
-                    decode_from_noun::<String>(file_cell.head().noun(), &space).ok()?;
+                let operation = decode_from_noun::<String>(file_cell.head().noun(), &space).ok()?;
 
                 match operation.as_str() {
                     "read" => {
@@ -154,33 +150,30 @@ pub fn file() -> IODriverFn {
             };
 
             match operation {
-                FileOp::Read(path) => {
-                    match fs::read(&path).await {
-                        Ok(contents) => {
-                            let mut poke_slab = NounSlab::new();
-                            let contents_atom = <IndirectAtom as IndirectAtomExt>::from_bytes(
-                                &mut poke_slab,
-                                contents.as_slice(),
-                            );
-                            let poke_noun: Noun = T(
-                                &mut poke_slab,
-                                &[D(tas!(b"file")), D(tas!(b"read")), SIG, contents_atom.as_noun()],
-                            );
-                            poke_slab.set_root(poke_noun);
-                            let wire = FileWire::Read.to_wire();
-                            handle.poke(wire, poke_slab).await?;
-                        }
-                        Err(_) => {
-                            let mut poke_slab = NounSlab::new();
-                            let poke_items: Vec<Noun> =
-                                vec![D(tas!(b"file")), D(tas!(b"read")), D(0)];
-                            let poke_noun = poke_items.to_noun(&mut poke_slab);
-                            poke_slab.set_root(poke_noun);
-                            let wire = FileWire::Read.to_wire();
-                            handle.poke(wire, poke_slab).await?;
-                        }
+                FileOp::Read(path) => match fs::read(&path).await {
+                    Ok(contents) => {
+                        let mut poke_slab = NounSlab::new();
+                        let contents_atom = <IndirectAtom as IndirectAtomExt>::from_bytes(
+                            &mut poke_slab,
+                            contents.as_slice(),
+                        );
+                        let poke_noun: Noun = T(
+                            &mut poke_slab,
+                            &[D(tas!(b"file")), D(tas!(b"read")), SIG, contents_atom.as_noun()],
+                        );
+                        poke_slab.set_root(poke_noun);
+                        let wire = FileWire::Read.to_wire();
+                        handle.poke(wire, poke_slab).await?;
                     }
-                }
+                    Err(_) => {
+                        let mut poke_slab = NounSlab::new();
+                        let poke_items: Vec<Noun> = vec![D(tas!(b"file")), D(tas!(b"read")), D(0)];
+                        let poke_noun = poke_items.to_noun(&mut poke_slab);
+                        poke_slab.set_root(poke_noun);
+                        let wire = FileWire::Read.to_wire();
+                        handle.poke(wire, poke_slab).await?;
+                    }
+                },
                 FileOp::Write { path, contents } => {
                     let success = match write_then_flush(&path, contents.as_ref()).await {
                         Ok(_) => true,

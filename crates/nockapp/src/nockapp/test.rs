@@ -30,10 +30,9 @@ pub async fn setup_nockapp_with_interval(
     let temp_dir_path = temp_dir.path().to_path_buf();
     let jam_bytes = load_jam_bytes(jam);
 
-    let kernel_f =
-        async |checkpoint| {
-            Kernel::load(&jam_bytes, checkpoint, vec![], Default::default(), None).await
-        };
+    let kernel_f = async |checkpoint| {
+        Kernel::load(&jam_bytes, checkpoint, vec![], Default::default(), None).await
+    };
     (
         temp_dir,
         NockApp::new(kernel_f, &temp_dir_path, save_interval, true)
@@ -47,13 +46,14 @@ pub async fn setup_nockapp(jam: &str) -> (TempDir, NockApp) {
 }
 
 #[cfg(test)]
-    pub mod tests {
+pub mod tests {
     use std::fs;
     use std::path::PathBuf;
     use std::sync::atomic::Ordering;
     use std::time::{Duration, Instant};
 
     use bytes::Bytes;
+    use nockvm::ext::noun_equality;
     use nockvm::jets::util::slot;
     use nockvm::mem::NockStack;
     use nockvm::noun::{CellHandle, Noun, NounAllocator, NounSpace, D, T};
@@ -68,7 +68,6 @@ pub async fn setup_nockapp(jam: &str) -> (TempDir, NockApp) {
     use crate::kernel::form::{Kernel, PmaConfig};
     use crate::nockapp::wire::{SystemWire, Wire};
     use crate::noun::slab::{slab_equality, NockJammer, NounSlab};
-    use nockvm::ext::noun_equality;
     use crate::save::{SaveableCheckpoint, Saver};
     use crate::test_support::TestArena;
     use crate::utils::{
@@ -375,12 +374,8 @@ pub async fn setup_nockapp(jam: &str) -> (TempDir, NockApp) {
         let _test_arena = TestArena::default();
         let kernel_bytes = if let Some(path) = std::env::var_os("NOCKAPP_PERF_KERNEL_JAM") {
             let path = PathBuf::from(path);
-            fs::read(&path).unwrap_or_else(|err| {
-                panic!(
-                    "Failed to read kernel jam from {:?}: {err}",
-                    path
-                )
-            })
+            fs::read(&path)
+                .unwrap_or_else(|err| panic!("Failed to read kernel jam from {:?}: {err}", path))
         } else {
             load_jam_bytes("test-ker.jam")
         };
@@ -389,20 +384,17 @@ pub async fn setup_nockapp(jam: &str) -> (TempDir, NockApp) {
             let path = PathBuf::from(path);
             let (_saver, checkpoint_opt) =
                 Saver::<NockJammer>::try_load::<SaveableCheckpoint>(&path, None)
-                .await
-                .unwrap_or_else(|err| {
-                    panic!(
-                        "Failed to load checkpoint from {:?}: {err}",
-                        path
-                    )
-                });
+                    .await
+                    .unwrap_or_else(|err| {
+                        panic!("Failed to load checkpoint from {:?}: {err}", path)
+                    });
             checkpoint_opt
         } else {
             None
         };
 
-        let stack_choice = std::env::var("NOCKAPP_PERF_STACK")
-            .unwrap_or_else(|_| "normal".to_string());
+        let stack_choice =
+            std::env::var("NOCKAPP_PERF_STACK").unwrap_or_else(|_| "normal".to_string());
         let pma_words_override = std::env::var("NOCKAPP_PERF_PMA_WORDS")
             .ok()
             .and_then(|val| val.parse::<usize>().ok());
@@ -559,27 +551,20 @@ pub async fn setup_nockapp(jam: &str) -> (TempDir, NockApp) {
             panic!("Both NOCKAPP_PERF_POKE_JAM and NOCKAPP_PERF_PEEK_JAM must be set together");
         }
 
-        let (poke_jam, peek_jam) = if let (Some(poke_path), Some(peek_path)) =
-            (poke_jam_path, peek_jam_path)
-        {
-            let poke_path = PathBuf::from(poke_path);
-            let peek_path = PathBuf::from(peek_path);
-            let poke_jam = fs::read(&poke_path).unwrap_or_else(|err| {
-                panic!(
-                    "Failed to read poke jam from {:?}: {err}",
-                    poke_path
-                )
-            });
-            let peek_jam = fs::read(&peek_path).unwrap_or_else(|err| {
-                panic!(
-                    "Failed to read peek jam from {:?}: {err}",
-                    peek_path
-                )
-            });
-            (poke_jam, peek_jam)
-        } else {
-            (Vec::new(), Vec::new())
-        };
+        let (poke_jam, peek_jam) =
+            if let (Some(poke_path), Some(peek_path)) = (poke_jam_path, peek_jam_path) {
+                let poke_path = PathBuf::from(poke_path);
+                let peek_path = PathBuf::from(peek_path);
+                let poke_jam = fs::read(&poke_path).unwrap_or_else(|err| {
+                    panic!("Failed to read poke jam from {:?}: {err}", poke_path)
+                });
+                let peek_jam = fs::read(&peek_path).unwrap_or_else(|err| {
+                    panic!("Failed to read peek jam from {:?}: {err}", peek_path)
+                });
+                (poke_jam, peek_jam)
+            } else {
+                (Vec::new(), Vec::new())
+            };
 
         let mut stack = if use_custom_jam {
             None
@@ -591,10 +576,7 @@ pub async fn setup_nockapp(jam: &str) -> (TempDir, NockApp) {
 
         println!(
             "perf: stack_words={}, iters={}, warmup_skipped={}, custom_jam={}",
-            stack_words,
-            iters,
-            warmup,
-            use_custom_jam
+            stack_words, iters, warmup, use_custom_jam
         );
 
         let make_slab_from_jam = |jam: &[u8]| -> NounSlab {
@@ -660,16 +642,14 @@ pub async fn setup_nockapp(jam: &str) -> (TempDir, NockApp) {
                 if i == 1 {
                     let jammed = res.jam();
                     let mut roundtrip = NounSlab::new();
-                    let noun = roundtrip
-                        .cue_into(jammed)
-                        .unwrap_or_else(|err| {
-                            panic!(
-                                "Panicked with {err:?} at {}:{} (git sha: {:?})",
-                                file!(),
-                                line!(),
-                                option_env!("GIT_SHA")
-                            )
-                        });
+                    let noun = roundtrip.cue_into(jammed).unwrap_or_else(|err| {
+                        panic!(
+                            "Panicked with {err:?} at {}:{} (git sha: {:?})",
+                            file!(),
+                            line!(),
+                            option_env!("GIT_SHA")
+                        )
+                    });
                     roundtrip.set_root(noun);
                     assert!(
                         slab_equality(&res, &roundtrip),
@@ -744,16 +724,12 @@ pub async fn setup_nockapp(jam: &str) -> (TempDir, NockApp) {
 
         let event_samples: Vec<Duration> = pma_samples.iter().map(|s| s.event).collect();
         let pma_copy_samples: Vec<Duration> = pma_samples.iter().map(|s| s.pma_copy).collect();
-        let total_samples: Vec<Duration> = pma_samples
-            .iter()
-            .map(|s| s.event + s.pma_copy)
-            .collect();
+        let total_samples: Vec<Duration> =
+            pma_samples.iter().map(|s| s.event + s.pma_copy).collect();
 
         println!(
             "perf: pokes={}, peeks={}, warmup_skipped={}",
-            iters,
-            iters,
-            skip
+            iters, iters, skip
         );
         let (_event_avg, _, _) = summarize_samples("poke_event", &event_samples);
         let (pma_avg, _, _) = summarize_samples("poke_pma_copy", &pma_copy_samples);

@@ -115,14 +115,15 @@ pub mod test {
         let inner = T(&mut context.stack, &[password, salt]);
 
         let space = context.stack.noun_space();
-        let args = Argon2Args::from_noun(&mut context.stack, &params, &space).unwrap_or_else(|err| {
-            panic!(
-                "Panicked with {err:?} at {}:{} (git sha: {:?})",
-                file!(),
-                line!(),
-                option_env!("GIT_SHA")
-            )
-        });
+        let args =
+            Argon2Args::from_noun(&mut context.stack, &params, &space).unwrap_or_else(|err| {
+                panic!(
+                    "Panicked with {err:?} at {}:{} (git sha: {:?})",
+                    file!(),
+                    line!(),
+                    option_env!("GIT_SHA")
+                )
+            });
         let expected_tag = &mut vec![0u8; args.out];
 
         argon2_hook(args, &password_byts.0, &salt_byts.0, expected_tag).unwrap_or_else(|err| {

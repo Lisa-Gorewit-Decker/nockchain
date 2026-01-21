@@ -66,7 +66,10 @@ pub fn fp_ntt_jet(context: &mut Context, subject: Noun) -> Result<Noun, JetErr> 
     let sample = slot(subject, 6, &space)?;
     let [fp_noun, root_noun] = sample.uncell(&space)?;
 
-    let (Ok(fp), Ok(root)) = (FPolySlice::try_from(fp_noun, &space), root_noun.as_felt(&space)) else {
+    let (Ok(fp), Ok(root)) = (
+        FPolySlice::try_from(fp_noun, &space),
+        root_noun.as_felt(&space),
+    ) else {
         return Err(BAIL_FAIL);
     };
 

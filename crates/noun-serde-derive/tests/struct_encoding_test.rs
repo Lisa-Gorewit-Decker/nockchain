@@ -145,14 +145,8 @@ fn test_struct_encoding_no_terminator() {
         .tail()
         .as_cell()
         .expect("Tail should be a cell");
-    assert_eq!(
-        tail_cell.head().as_atom().unwrap().as_u64().unwrap(),
-        43
-    );
-    assert_eq!(
-        tail_cell.tail().as_atom().unwrap().as_u64().unwrap(),
-        44
-    );
+    assert_eq!(tail_cell.head().as_atom().unwrap().as_u64().unwrap(), 43);
+    assert_eq!(tail_cell.tail().as_atom().unwrap().as_u64().unwrap(), 44);
 
     // Test empty struct - should encode as 0
     let empty = EmptyStruct;
@@ -198,19 +192,10 @@ fn test_struct_encoding_no_terminator() {
         .tail()
         .as_cell()
         .expect("Tail should be a cell");
-    assert_eq!(
-        tail1.head().as_atom().unwrap().as_u64().unwrap(),
-        101
-    );
+    assert_eq!(tail1.head().as_atom().unwrap().as_u64().unwrap(), 101);
     let tail2 = tail1.tail().as_cell().expect("Tail should be a cell");
-    assert_eq!(
-        tail2.head().as_atom().unwrap().as_u64().unwrap(),
-        102
-    );
-    assert_eq!(
-        tail2.tail().as_atom().unwrap().as_u64().unwrap(),
-        103
-    );
+    assert_eq!(tail2.head().as_atom().unwrap().as_u64().unwrap(), 102);
+    assert_eq!(tail2.tail().as_atom().unwrap().as_u64().unwrap(), 103);
 
     // Test five fields - should encode as [v [w [x [y z]]]]
     let five = FiveFields {
@@ -241,24 +226,12 @@ fn test_struct_encoding_no_terminator() {
         .tail()
         .as_cell()
         .expect("Tail should be a cell");
-    assert_eq!(
-        tail1.head().as_atom().unwrap().as_u64().unwrap(),
-        201
-    );
+    assert_eq!(tail1.head().as_atom().unwrap().as_u64().unwrap(), 201);
     let tail2 = tail1.tail().as_cell().expect("Tail should be a cell");
-    assert_eq!(
-        tail2.head().as_atom().unwrap().as_u64().unwrap(),
-        202
-    );
+    assert_eq!(tail2.head().as_atom().unwrap().as_u64().unwrap(), 202);
     let tail3 = tail2.tail().as_cell().expect("Tail should be a cell");
-    assert_eq!(
-        tail3.head().as_atom().unwrap().as_u64().unwrap(),
-        203
-    );
-    assert_eq!(
-        tail3.tail().as_atom().unwrap().as_u64().unwrap(),
-        204
-    );
+    assert_eq!(tail3.head().as_atom().unwrap().as_u64().unwrap(), 203);
+    assert_eq!(tail3.tail().as_atom().unwrap().as_u64().unwrap(), 204);
 }
 
 #[test]
@@ -337,12 +310,6 @@ fn test_tuple_struct_encoding_no_terminator() {
         .tail()
         .as_cell()
         .expect("Tail should be a cell");
-    assert_eq!(
-        tail_cell.head().as_atom().unwrap().as_u64().unwrap(),
-        43
-    );
-    assert_eq!(
-        tail_cell.tail().as_atom().unwrap().as_u64().unwrap(),
-        44
-    );
+    assert_eq!(tail_cell.head().as_atom().unwrap().as_u64().unwrap(), 43);
+    assert_eq!(tail_cell.tail().as_atom().unwrap().as_u64().unwrap(), 44);
 }

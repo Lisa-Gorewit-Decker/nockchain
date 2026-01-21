@@ -1284,11 +1284,7 @@ mod cold_paths {
                         &[
                             scry_gate.head().noun(),
                             payload,
-                            scry_gate
-                                .tail()
-                                .as_cell()?
-                                .tail()
-                                .noun(),
+                            scry_gate.tail().as_cell()?.tail().noun(),
                         ],
                     );
                     let scry_form = T(&mut context.stack, &[D(9), D(2), D(1), scry_core]);
@@ -1309,18 +1305,19 @@ mod cold_paths {
                             Right(cell) => {
                                 let cell_handle = cell.in_space(&space);
                                 match cell_handle.tail().as_either_atom_cell() {
-                                Left(_) => {
-                                    let stack = &mut context.stack;
-                                    let hunk = T(stack, &[D(tas!(b"hunk")), scry.reff, scry.path]);
-                                    mean_push(stack, hunk);
-                                    return Err(Error::ScryCrashed(D(0)));
-                                }
-                                Right(cell) => {
-                                    *res = cell.tail().noun();
-                                    context.scry_stack = scry_stack;
-                                    context.stack.pop::<NockWork>();
-                                    return OK_CONTINUE;
-                                }
+                                    Left(_) => {
+                                        let stack = &mut context.stack;
+                                        let hunk =
+                                            T(stack, &[D(tas!(b"hunk")), scry.reff, scry.path]);
+                                        mean_push(stack, hunk);
+                                        return Err(Error::ScryCrashed(D(0)));
+                                    }
+                                    Right(cell) => {
+                                        *res = cell.tail().noun();
+                                        context.scry_stack = scry_stack;
+                                        context.stack.pop::<NockWork>();
+                                        return OK_CONTINUE;
+                                    }
                                 }
                             }
                         },
@@ -1660,7 +1657,10 @@ fn edit(stack: &mut NockStack, edit_axis: Atom, patch: Noun, mut tree: Noun) -> 
                 DirectAxisIterator::new(direct.data()).expect("0 is not allowed as an edit axis");
 
             while let Some(descend_tail) = axis_iter.next() {
-                let tree_cell = tree.in_space(&space).as_cell().expect("Invalid axis for edit");
+                let tree_cell = tree
+                    .in_space(&space)
+                    .as_cell()
+                    .expect("Invalid axis for edit");
                 if descend_tail {
                     unsafe {
                         let (cell, cellmem) = Cell::new_raw_mut(stack);
@@ -1689,7 +1689,10 @@ fn edit(stack: &mut NockStack, edit_axis: Atom, patch: Noun, mut tree: Noun) -> 
                 .expect("0 is not allowed as an edit axis");
 
             while let Some(descend_tail) = axis_iter.next() {
-                let tree_cell = tree.in_space(&space).as_cell().expect("Invalid axis for edit");
+                let tree_cell = tree
+                    .in_space(&space)
+                    .as_cell()
+                    .expect("Invalid axis for edit");
                 if descend_tail {
                     unsafe {
                         let (cell, cellmem) = Cell::new_raw_mut(stack);
@@ -1727,14 +1730,16 @@ pub fn inc(stack: &mut NockStack, atom: Atom) -> Atom {
             match indirect_slice.first_zero() {
                 None => {
                     // all ones, make an indirect one word bigger
-                    let (new_indirect, new_slice) =
-                        unsafe { IndirectAtom::new_raw_mut_bitslice(stack, indirect_handle.size() + 1) };
+                    let (new_indirect, new_slice) = unsafe {
+                        IndirectAtom::new_raw_mut_bitslice(stack, indirect_handle.size() + 1)
+                    };
                     new_slice.set(indirect_slice.len(), true);
                     new_indirect.as_atom()
                 }
                 Some(first_zero) => {
-                    let (new_indirect, new_slice) =
-                        unsafe { IndirectAtom::new_raw_mut_bitslice(stack, indirect_handle.size()) };
+                    let (new_indirect, new_slice) = unsafe {
+                        IndirectAtom::new_raw_mut_bitslice(stack, indirect_handle.size())
+                    };
                     new_slice.set(first_zero, true);
                     new_slice[first_zero + 1..]
                         .copy_from_bitslice(&indirect_slice[first_zero + 1..]);
@@ -2014,8 +2019,7 @@ mod hint {
                                 return None;
                             }
                         }
-                        let parent_formula_op =
-                            parent.slot(2, &space).ok()?.atom()?.direct()?;
+                        let parent_formula_op = parent.slot(2, &space).ok()?.atom()?.direct()?;
                         let parent_formula_ax = parent.slot(3, &space).ok()?.atom()?;
 
                         let cold_res: cold::Result = {

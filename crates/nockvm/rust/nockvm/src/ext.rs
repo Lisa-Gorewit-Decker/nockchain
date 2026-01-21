@@ -371,7 +371,10 @@ mod tests {
 
         // Both should be equal even though one shares and one doesn't
         assert!(
-            noun_equality(with_sharing.in_space(&space), without_sharing.in_space(&space)),
+            noun_equality(
+                with_sharing.in_space(&space),
+                without_sharing.in_space(&space)
+            ),
             "[[5 6] [5 6]] with sharing == without sharing"
         );
 

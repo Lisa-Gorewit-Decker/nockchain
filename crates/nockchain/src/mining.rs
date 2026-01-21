@@ -509,8 +509,11 @@ async fn start_mining_attempt(
     debug!(
         "starting mining attempt on thread {:?} on header {:?}with nonce: {:?}",
         id,
-        tip5_hash_to_base58(*unsafe { mining_data_ref.block_header.root() }, &header_space)
-            .expect("Failed to convert block header to Base58"),
+        tip5_hash_to_base58(
+            *unsafe { mining_data_ref.block_header.root() },
+            &header_space
+        )
+        .expect("Failed to convert block header to Base58"),
         tip5_hash_to_base58(*unsafe { nonce.root() }, &nonce_space)
             .expect("Failed to convert nonce to Base58"),
     );

@@ -1,11 +1,10 @@
 #![allow(dead_code)]
 use std::any::Any;
-use std::future::Future;
 use std::fs;
+use std::future::Future;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::Arc;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 use bincode::{config, Decode, Encode};
@@ -119,10 +118,7 @@ impl PmaPersistMetadata {
         }
         self.checksum
             == Self::checksum(
-                self.ker_hash,
-                self.event_num,
-                self.kernel_state_raw,
-                self.cold_offset,
+                self.ker_hash, self.event_num, self.kernel_state_raw, self.cold_offset,
                 self.pma_base,
             )
     }
@@ -734,8 +730,7 @@ fn serf_loop<C: SerfCheckpoint>(
                                 + detail.cold.alloc_words
                                 + detail.arvo.alloc_words
                         });
-                        let total_alloc_mib =
-                            (total_alloc_words as f64 * 8.0) / (1024.0 * 1024.0);
+                        let total_alloc_mib = (total_alloc_words as f64 * 8.0) / (1024.0 * 1024.0);
                         let event_num = serf.event_num.load(Ordering::SeqCst);
                         info!(
                             "pma-timing: event_ms={:.3} pma_copy_ms={:.3} total_ms={:.3} alloc_words={} alloc_mib={:.3} event_num={}",
@@ -789,13 +784,13 @@ fn create_checkpoint<C: SerfCheckpoint>(
         .slot(STATE_AXIS)
         .map(|handle| handle.noun())
         .unwrap_or_else(|err| {
-        panic!(
-            "Panicked with {err:?} at {}:{} (git sha: {:?})",
-            file!(),
-            line!(),
-            option_env!("GIT_SHA")
-        )
-    });
+            panic!(
+                "Panicked with {err:?} at {}:{} (git sha: {:?})",
+                file!(),
+                line!(),
+                option_env!("GIT_SHA")
+            )
+        });
     let cold_state = serf.context.cold;
 
     let checkpoint = C::new(
@@ -849,13 +844,7 @@ impl<C: SerfCheckpoint + 'static> Kernel<C> {
         let kernel_vec = Vec::from(kernel);
         let hot_state_vec = Vec::from(hot_state);
         let serf = SerfThread::new(
-            kernel_vec,
-            checkpoint,
-            hot_state_vec,
-            NOCK_STACK_SIZE,
-            pma,
-            test_jets,
-            trace,
+            kernel_vec, checkpoint, hot_state_vec, NOCK_STACK_SIZE, pma, test_jets, trace,
         )
         .await?;
         Ok(Self { serf })
@@ -872,13 +861,7 @@ impl<C: SerfCheckpoint + 'static> Kernel<C> {
         let kernel_vec = Vec::from(kernel);
         let hot_state_vec = Vec::from(hot_state);
         let serf = SerfThread::new(
-            kernel_vec,
-            checkpoint,
-            hot_state_vec,
-            NOCK_STACK_SIZE_TINY,
-            pma,
-            test_jets,
-            trace,
+            kernel_vec, checkpoint, hot_state_vec, NOCK_STACK_SIZE_TINY, pma, test_jets, trace,
         )
         .await?;
         Ok(Self { serf })
@@ -895,13 +878,7 @@ impl<C: SerfCheckpoint + 'static> Kernel<C> {
         let kernel_vec = Vec::from(kernel);
         let hot_state_vec = Vec::from(hot_state);
         let serf = SerfThread::new(
-            kernel_vec,
-            checkpoint,
-            hot_state_vec,
-            NOCK_STACK_SIZE_SMALL,
-            pma,
-            test_jets,
-            trace,
+            kernel_vec, checkpoint, hot_state_vec, NOCK_STACK_SIZE_SMALL, pma, test_jets, trace,
         )
         .await?;
         Ok(Self { serf })
@@ -918,13 +895,7 @@ impl<C: SerfCheckpoint + 'static> Kernel<C> {
         let kernel_vec = Vec::from(kernel);
         let hot_state_vec = Vec::from(hot_state);
         let serf = SerfThread::new(
-            kernel_vec,
-            checkpoint,
-            hot_state_vec,
-            NOCK_STACK_SIZE_MEDIUM,
-            pma,
-            test_jets,
-            trace,
+            kernel_vec, checkpoint, hot_state_vec, NOCK_STACK_SIZE_MEDIUM, pma, test_jets, trace,
         )
         .await?;
         Ok(Self { serf })
@@ -941,13 +912,7 @@ impl<C: SerfCheckpoint + 'static> Kernel<C> {
         let kernel_vec = Vec::from(kernel);
         let hot_state_vec = Vec::from(hot_state);
         let serf = SerfThread::new(
-            kernel_vec,
-            checkpoint,
-            hot_state_vec,
-            NOCK_STACK_SIZE_LARGE,
-            pma,
-            test_jets,
-            trace,
+            kernel_vec, checkpoint, hot_state_vec, NOCK_STACK_SIZE_LARGE, pma, test_jets, trace,
         )
         .await?;
         Ok(Self { serf })
@@ -981,13 +946,7 @@ impl<C: SerfCheckpoint + 'static> Kernel<C> {
         let kernel_vec = Vec::from(kernel);
         let hot_state_vec = Vec::from(hot_state);
         let serf = SerfThread::new(
-            kernel_vec,
-            checkpoint,
-            hot_state_vec,
-            NOCK_STACK_SIZE_HUGE,
-            pma,
-            test_jets,
-            trace,
+            kernel_vec, checkpoint, hot_state_vec, NOCK_STACK_SIZE_HUGE, pma, test_jets, trace,
         )
         .await?;
         Ok(Self { serf })
@@ -1703,21 +1662,11 @@ impl Serf {
         } else {
             Self::copy_segment("warm", &mut self.context.warm, stack, pma, trace_pma, None);
             Self::copy_segment(
-                "test_jets",
-                &mut self.context.test_jets,
-                stack,
-                pma,
-                trace_pma,
-                None,
+                "test_jets", &mut self.context.test_jets, stack, pma, trace_pma, None,
             );
             Self::copy_segment("hot", &mut self.context.hot, stack, pma, trace_pma, None);
             Self::copy_segment(
-                "cache",
-                &mut self.context.cache,
-                stack,
-                pma,
-                trace_pma,
-                None,
+                "cache", &mut self.context.cache, stack, pma, trace_pma, None,
             );
             Self::copy_segment("cold", &mut self.context.cold, stack, pma, trace_pma, None);
             Self::copy_segment("arvo", &mut self.arvo, stack, pma, trace_pma, None);
@@ -1770,11 +1719,7 @@ impl Serf {
         let event_num = self.event_num.load(Ordering::SeqCst);
         let pma_base = pma.arena().base_ptr() as u64;
         let meta = PmaPersistMetadata::new(
-            self.ker_hash,
-            event_num,
-            kernel_state_raw,
-            cold_offset,
-            pma_base,
+            self.ker_hash, event_num, kernel_state_raw, cold_offset, pma_base,
         );
         if let Err(err) = meta.save_to_path(meta_path) {
             warn!(

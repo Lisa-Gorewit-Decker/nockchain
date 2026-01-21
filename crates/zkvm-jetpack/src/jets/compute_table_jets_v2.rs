@@ -847,11 +847,7 @@ fn write_ext_row_data(table: &mut MarySliceMut, row: &Row, data: &ExtRowData) {
     write_pelt(table, &data.fcons_inv, row, &Col(ext_idx(FCONS_INV_IDX)));
 }
 
-fn build_compute_queue(
-    list: Noun,
-    alf: &Felt,
-    space: &NounSpace,
-) -> Result<Vec<TreeData>, JetErr> {
+fn build_compute_queue(list: Noun, alf: &Felt, space: &NounSpace) -> Result<Vec<TreeData>, JetErr> {
     let mut res: Vec<TreeData> = Vec::<TreeData>::new();
 
     for n in HoonList::try_from(list, space)?.into_iter() {

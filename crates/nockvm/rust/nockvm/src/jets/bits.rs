@@ -70,7 +70,14 @@ pub fn jet_cut(context: &mut Context, subject: Noun) -> Result {
     let new_indirect = unsafe {
         let (mut new_indirect, new_slice) =
             IndirectAtom::new_raw_mut_bitslice(&mut context.stack, bite_to_word(bloq, run)?);
-        chop(bloq, start, run, 0, new_slice, atom.in_space(&space).as_bitslice())?;
+        chop(
+            bloq,
+            start,
+            run,
+            0,
+            new_slice,
+            atom.in_space(&space).as_bitslice(),
+        )?;
         new_indirect.normalize_as_atom(&space)
     };
     Ok(new_indirect.as_noun())
@@ -83,14 +90,8 @@ pub fn jet_sew(context: &mut Context, subject: Noun) -> Result {
     let e = slot(sam, 7, &space)?.as_atom()?;
 
     let bcd = slot(sam, 6, &space)?;
-    let offset = slot(bcd, 2, &space)?
-        .in_space(&space)
-        .as_atom()?
-        .as_u64()? as usize;
-    let step = slot(bcd, 6, &space)?
-        .in_space(&space)
-        .as_atom()?
-        .as_u64()? as usize;
+    let offset = slot(bcd, 2, &space)?.in_space(&space).as_atom()?.as_u64()? as usize;
+    let step = slot(bcd, 6, &space)?.in_space(&space).as_atom()?.as_u64()? as usize;
 
     if step == 0 {
         return Ok(e.as_noun());
@@ -139,7 +140,14 @@ pub fn jet_end(context: &mut Context, subject: Noun) -> Result {
         unsafe {
             let (mut new_indirect, new_slice) =
                 IndirectAtom::new_raw_mut_bitslice(&mut context.stack, bite_to_word(bloq, step)?);
-            chop(bloq, 0, step, 0, new_slice, a.in_space(&space).as_bitslice())?;
+            chop(
+                bloq,
+                0,
+                step,
+                0,
+                new_slice,
+                a.in_space(&space).as_bitslice(),
+            )?;
             Ok(new_indirect.normalize_as_atom(&space).as_noun())
         }
     }
@@ -276,8 +284,10 @@ pub fn jet_rsh(context: &mut Context, subject: Noun) -> Result {
         return Ok(D(0));
     }
 
-    let new_size =
-        bits_to_word(checked_sub(a_handle.bit_size(), checked_left_shift(bloq, step)?)?)?;
+    let new_size = bits_to_word(checked_sub(
+        a_handle.bit_size(),
+        checked_left_shift(bloq, step)?,
+    )?)?;
     unsafe {
         let (mut atom, dest) = IndirectAtom::new_raw_mut_bitslice(&mut context.stack, new_size);
         chop(bloq, step, len - step, 0, dest, a_handle.as_bitslice())?;
@@ -377,8 +387,10 @@ pub mod util {
         }
 
         let a_handle = a.in_space(space);
-        let new_size =
-            bits_to_word(checked_add(a_handle.bit_size(), checked_left_shift(bloq, step)?)?)?;
+        let new_size = bits_to_word(checked_add(
+            a_handle.bit_size(),
+            checked_left_shift(bloq, step)?,
+        )?)?;
         unsafe {
             let (mut atom, dest) = IndirectAtom::new_raw_mut_bitslice(stack, new_size);
             chop(bloq, 0, len, step, dest, a_handle.as_bitslice())?;
@@ -401,12 +413,7 @@ pub mod util {
 
             let cell = list.in_space(space).as_cell()?;
             let item = cell.head().as_cell()?;
-            let step = item
-                .head()
-                .as_atom()?
-                .atom()
-                .as_direct()?
-                .data() as usize;
+            let step = item.head().as_atom()?.atom().as_direct()?.data() as usize;
 
             len = checked_add(len, step)?;
             list = cell.tail().noun();
@@ -427,12 +434,7 @@ pub mod util {
 
                     let cell = list.in_space(space).as_cell()?;
                     let item = cell.head().as_cell()?;
-                    let step = item
-                        .head()
-                        .as_atom()?
-                        .atom()
-                        .as_direct()?
-                        .data() as usize;
+                    let step = item.head().as_atom()?.atom().as_direct()?.data() as usize;
                     let atom = item.tail().as_atom()?;
                     chop(bloq, 0, step, pos, new_slice, atom.as_bitslice())?;
 
@@ -469,7 +471,14 @@ pub mod util {
             let new_atom = unsafe {
                 let (mut new_indirect, new_slice) =
                     IndirectAtom::new_raw_mut_bitslice(stack, step << bloq);
-                chop(bloq, i * step, step, 0, new_slice, atom.in_space(space).as_bitslice())?;
+                chop(
+                    bloq,
+                    i * step,
+                    step,
+                    0,
+                    new_slice,
+                    atom.in_space(space).as_bitslice(),
+                )?;
                 new_indirect.normalize_as_atom(space)
             };
             list = Cell::new(stack, new_atom.as_noun(), list).as_noun();

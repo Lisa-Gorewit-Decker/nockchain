@@ -45,8 +45,7 @@ pub fn verify_affine_jet(context: &mut Context, subject: Noun) -> Result<Noun, J
         .as_atom()?
         .as_ubig(&mut context.stack);
 
-    let pubkey: CheetahPoint =
-        CheetahPoint::from_noun(&pubkey, &space).map_err(|_| BAIL_FAIL)?;
+    let pubkey: CheetahPoint = CheetahPoint::from_noun(&pubkey, &space).map_err(|_| BAIL_FAIL)?;
     let m = <[Belt; 5]>::from_noun(&m, &space).map_err(|_| BAIL_FAIL)?;
 
     let res = verify_affine(&pubkey, &m, &chal, &sig)?;
@@ -86,8 +85,7 @@ pub fn batch_verify_affine_jet(context: &mut Context, subject: Noun) -> Result<N
         .map(|arg| {
             let pubkey =
                 CheetahPoint::from_noun(&arg.slot(2)?.noun(), &space).map_err(|_| BAIL_FAIL)?;
-            let m =
-                <[Belt; 5]>::from_noun(&arg.slot(6)?.noun(), &space).map_err(|_| BAIL_FAIL)?;
+            let m = <[Belt; 5]>::from_noun(&arg.slot(6)?.noun(), &space).map_err(|_| BAIL_FAIL)?;
             let chal = arg.slot(14)?.as_atom()?.as_ubig(&mut context.stack);
             let sig = arg.slot(15)?.as_atom()?.as_ubig(&mut context.stack);
             Ok(ValidateArgs {

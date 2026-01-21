@@ -71,13 +71,13 @@ pub fn new_handle_mut_felt<'a, T: NounAllocator>(alloc: &mut T) -> (IndirectAtom
             .as_atom()
             .as_mut_felt(&space)
             .unwrap_or_else(|err| {
-            panic!(
-                "Panicked with {err:?} at {}:{} (git sha: {:?})",
-                file!(),
-                line!(),
-                option_env!("GIT_SHA")
-            )
-        }),
+                panic!(
+                    "Panicked with {err:?} at {}:{} (git sha: {:?})",
+                    file!(),
+                    line!(),
+                    option_env!("GIT_SHA")
+                )
+            }),
     )
 }
 

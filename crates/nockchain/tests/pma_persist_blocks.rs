@@ -70,44 +70,45 @@ fn pma_persist_blocks() {
         .build()
         .expect("runtime");
 
-    runtime.block_on(async {
-        let (_peer1_dir, mut peer1) = build_nockapp("pma-persist-peer1").await?;
-        let (_peer2_dir, mut peer2) = build_nockapp("pma-persist-peer2").await?;
+    runtime
+        .block_on(async {
+            let (_peer1_dir, mut peer1) = build_nockapp("pma-persist-peer1").await?;
+            let (_peer2_dir, mut peer2) = build_nockapp("pma-persist-peer2").await?;
 
-        let genesis_bytes = setup::FAKENET_GENESIS_BLOCK.to_vec();
-        let genesis_id = genesis_block_id(&genesis_bytes)?;
+            let genesis_bytes = setup::FAKENET_GENESIS_BLOCK.to_vec();
+            let genesis_id = genesis_block_id(&genesis_bytes)?;
 
-        let mut constants =
-            fakenet_blockchain_constants(DEFAULT_POW_LEN, DEFAULT_LOG_DIFFICULTY);
-        constants.check_pow_flag = false;
+            let mut constants =
+                fakenet_blockchain_constants(DEFAULT_POW_LEN, DEFAULT_LOG_DIFFICULTY);
+            constants.check_pow_flag = false;
 
-        let mut peer1_init = build_init_pokes(&constants, &genesis_bytes, true)?;
-        let mut peer2_init = build_init_pokes(&constants, &genesis_bytes, false)?;
+            let mut peer1_init = build_init_pokes(&constants, &genesis_bytes, true)?;
+            let mut peer2_init = build_init_pokes(&constants, &genesis_bytes, false)?;
 
-        apply_init_pokes(&mut peer2, &mut peer2_init).await?;
+            apply_init_pokes(&mut peer2, &mut peer2_init).await?;
 
-        let mining_output =
-            run_mining_peer(&mut peer1, &mut peer1_init, target_blocks, &genesis_id).await?;
+            let mining_output =
+                run_mining_peer(&mut peer1, &mut peer1_init, target_blocks, &genesis_id).await?;
 
-        run_catchup_peer(&mut peer2, &mining_output.gossips, PeerId::random()).await?;
+            run_catchup_peer(&mut peer2, &mining_output.gossips, PeerId::random()).await?;
 
-        if mining_output.blocks.len() != target_blocks {
-            return Err(format!(
-                "Expected {} blocks, got {}",
-                target_blocks,
-                mining_output.blocks.len()
-            )
-            .into());
-        }
+            if mining_output.blocks.len() != target_blocks {
+                return Err(format!(
+                    "Expected {} blocks, got {}",
+                    target_blocks,
+                    mining_output.blocks.len()
+                )
+                .into());
+            }
 
-        for block in &mining_output.blocks {
-            assert_block_persisted("peer1", &mut peer1, block).await?;
-            assert_block_persisted("peer2", &mut peer2, block).await?;
-        }
+            for block in &mining_output.blocks {
+                assert_block_persisted("peer1", &mut peer1, block).await?;
+                assert_block_persisted("peer2", &mut peer2, block).await?;
+            }
 
-        Ok::<(), Box<dyn Error>>(())
-    })
-    .expect("pma persist blocks");
+            Ok::<(), Box<dyn Error>>(())
+        })
+        .expect("pma persist blocks");
 }
 
 async fn build_nockapp(name: &str) -> Result<(TempDir, NockApp), Box<dyn Error>> {
@@ -234,14 +235,16 @@ async fn run_mining_peer(
         }
 
         if pending.is_empty() {
-            return Err(
-                "No pending pokes while target not reached; mining stalled".to_string().into(),
-            );
+            return Err("No pending pokes while target not reached; mining stalled"
+                .to_string()
+                .into());
         }
     }
 
     if !mining_started {
-        return Err("Mining never started (no %mine effect observed)".to_string().into());
+        return Err("Mining never started (no %mine effect observed)"
+            .to_string()
+            .into());
     }
     if blocks.len() < target_blocks {
         return Err(format!(
@@ -300,8 +303,7 @@ fn parse_mine_effect(effect: &NounSlab) -> Result<Option<MiningCandidate>, NockA
     if !effect_cell.head().eq_bytes("mine") {
         return Ok(None);
     }
-    let Ok([version, commit, target, pow_len_noun]) =
-        effect_cell.tail().noun().uncell(&space)
+    let Ok([version, commit, target, pow_len_noun]) = effect_cell.tail().noun().uncell(&space)
     else {
         return Err(NockAppError::OtherError(
             "Expected four elements in %mine effect".to_string(),
@@ -414,14 +416,7 @@ fn create_pow_poke(candidate: &MiningCandidate, nonce: &NounSlab) -> NounSlab {
     let proof = T(&mut slab, &[version, D(0), D(0), D(0)]);
     let poke_noun = T(
         &mut slab,
-        &[
-            D(tas!(b"command")),
-            D(tas!(b"pow")),
-            proof,
-            D(0),
-            header,
-            nonce,
-        ],
+        &[D(tas!(b"command")), D(tas!(b"pow")), proof, D(0), header, nonce],
     );
     slab.set_root(poke_noun);
     slab
@@ -461,12 +456,7 @@ fn make_set_genesis_seal_poke(seal: &str) -> NounSlab {
     let set_genesis_seal = Atom::from_bytes(&mut poke_slab, &tag).as_noun();
     let poke_noun = T(
         &mut poke_slab,
-        &[
-            D(tas!(b"command")),
-            set_genesis_seal,
-            block_height_noun,
-            seal_noun,
-        ],
+        &[D(tas!(b"command")), set_genesis_seal, block_height_noun, seal_noun],
     );
     poke_slab.set_root(poke_noun);
     poke_slab
@@ -494,15 +484,11 @@ fn make_born_poke() -> NounSlab {
 
 fn make_enable_mining_poke(enable: bool) -> NounSlab {
     let mut slab = NounSlab::new();
-    let enable_mining = Atom::from_value(&mut slab, "enable-mining")
-        .expect("Failed to create enable-mining atom");
+    let enable_mining =
+        Atom::from_value(&mut slab, "enable-mining").expect("Failed to create enable-mining atom");
     let enable_mining_poke = T(
         &mut slab,
-        &[
-            D(tas!(b"command")),
-            enable_mining.as_noun(),
-            if enable { YES } else { NO },
-        ],
+        &[D(tas!(b"command")), enable_mining.as_noun(), if enable { YES } else { NO }],
     );
     slab.set_root(enable_mining_poke);
     slab

@@ -114,7 +114,7 @@ pub fn decimal_to_base_p(value: UBig) -> Result<[u64; 5], NockAppError> {
 #[cfg(test)]
 mod tests {
     use nockapp::noun::slab::NounSlab;
-    use nockvm::noun::{D, NounAllocator, T};
+    use nockvm::noun::{NounAllocator, D, T};
     use quickcheck::{Arbitrary, Gen, QuickCheck, TestResult};
 
     use super::*;
