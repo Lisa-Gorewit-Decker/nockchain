@@ -3,7 +3,7 @@
 //! The PMA is a file-backed memory region for storing long-lived Nouns.
 //! It uses page-based allocation with copy-on-write pages and stores nouns in offset form.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 use std::io::{self, Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 use std::ptr::copy_nonoverlapping;
@@ -958,6 +958,9 @@ impl PmaCopy for Noun {
             _ => {}
         }
 
+        let mut seen_offsets = pma
+            .is_marking()
+            .then(|| HashSet::<u32>::with_capacity(1024));
         let mut work: SmallVec<[(Noun, Option<*mut Noun>); 64]> = SmallVec::new();
         work.push((root, Some(self as *mut Noun)));
 
@@ -1013,6 +1016,12 @@ impl PmaCopy for Noun {
                             }
                             if pma.is_marking() {
                                 let ptr = allocated.to_raw_pointer(&space);
+                                if let Some(seen) = &mut seen_offsets {
+                                    let offset = pma.offset_from_ptr(ptr as *const u8);
+                                    if !seen.insert(offset) {
+                                        continue;
+                                    }
+                                }
                                 if allocated.is_indirect() {
                                     let indirect = match allocated.as_either() {
                                         Left(indirect) => indirect,
@@ -1030,25 +1039,27 @@ impl PmaCopy for Noun {
                         }
                         NounRepr::Indirect(AllocLocation::PmaPtr)
                         | NounRepr::Cell(AllocLocation::PmaPtr) => {
-                            let offset_noun = {
-                                let ptr = allocated.to_raw_pointer(&space);
-                                assert!(
-                                    pma.contains_ptr(ptr as *const u8),
-                                    "noun claims PMA pointer but is outside PMA"
-                                );
-                                let offset = pma.offset_from_ptr(ptr as *const u8);
-                                if allocated.is_indirect() {
-                                    IndirectAtom::from_offset_words(offset).as_noun()
-                                } else {
-                                    Cell::from_offset_words(offset).as_noun()
-                                }
+                            let ptr = allocated.to_raw_pointer(&space);
+                            assert!(
+                                pma.contains_ptr(ptr as *const u8),
+                                "noun claims PMA pointer but is outside PMA"
+                            );
+                            let offset = pma.offset_from_ptr(ptr as *const u8);
+                            let offset_noun = if allocated.is_indirect() {
+                                IndirectAtom::from_offset_words(offset).as_noun()
+                            } else {
+                                Cell::from_offset_words(offset).as_noun()
                             };
                             noun.assert_in_pma(pma);
                             if let Some(dest_ptr) = dest_ptr {
                                 *dest_ptr = offset_noun;
                             }
                             if pma.is_marking() {
-                                let ptr = allocated.to_raw_pointer(&space);
+                                if let Some(seen) = &mut seen_offsets {
+                                    if !seen.insert(offset) {
+                                        continue;
+                                    }
+                                }
                                 if allocated.is_indirect() {
                                     let indirect = match allocated.as_either() {
                                         Left(indirect) => indirect,

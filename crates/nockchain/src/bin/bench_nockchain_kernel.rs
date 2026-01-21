@@ -183,6 +183,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
         new: true,
         trace_opts: TraceOpts::default(),
         save_interval: Some(0),
+        gc_interval: Some(0),
         pma_persist: false,
         color: ColorChoice::Auto,
         state_jam: None,

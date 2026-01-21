@@ -15,7 +15,7 @@ DOCKER_IMAGE ?= nockchain-local
 DOCKER_MEM ?= 32g
 # DOCKER_MEM ?= 16g
 # DOCKER_MEM_SWAP ?= 32g
-DOCKER_P2P_PORT ?= 30000
+DOCKER_P2P_PORT ?= 30001
 DOCKER_DATA_DIR ?= $(CURDIR)/.data.nockchain
 DOCKER_NOCKCHAIN_ENVS ?=
 DOCKER_NOCKCHAIN_ARGS ?=
@@ -74,7 +74,7 @@ docker-nockchain-build:
 docker-nockchain-run:
 	mkdir -p $(DOCKER_DATA_DIR)
 	@docker network inspect $(DOCKER_METRICS_NETWORK) >/dev/null 2>&1 || docker network create $(DOCKER_METRICS_NETWORK)
-	docker run --rm -it --name nockchain \
+	docker run --rm -it --name nockchain-btree \
 		--network $(DOCKER_METRICS_NETWORK) \
 		--memory $(DOCKER_MEM) \
 		-e RUST_BACKTRACE=1 \
@@ -90,6 +90,7 @@ docker-nockchain-run:
 		$(DOCKER_IMAGE) \
 		--fast-sync --num-threads 0 \
 		--save-interval 300000 \
+		--gc-interval 120000 \
 		--data-dir /data/.data.nockchain \
 		--identity-path /data/.data.nockchain/.nockchain_identity \
 		--bind /ip4/0.0.0.0/udp/$(DOCKER_P2P_PORT)/quic-v1 \

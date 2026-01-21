@@ -408,6 +408,7 @@ pub mod tests {
                     path: pma_path,
                     words: pma_words,
                     open_existing: false,
+                    gc_interval: None,
                 });
                 let kernel = Kernel::load_with_hot_state_tiny(
                     &kernel_bytes,
@@ -429,6 +430,7 @@ pub mod tests {
                     path: pma_path,
                     words: pma_words,
                     open_existing: false,
+                    gc_interval: None,
                 });
                 let kernel = Kernel::load_with_hot_state_small(
                     &kernel_bytes,
@@ -450,6 +452,7 @@ pub mod tests {
                     path: pma_path,
                     words: pma_words,
                     open_existing: false,
+                    gc_interval: None,
                 });
                 let kernel = Kernel::load_with_hot_state_medium(
                     &kernel_bytes,
@@ -471,6 +474,7 @@ pub mod tests {
                     path: pma_path,
                     words: pma_words,
                     open_existing: false,
+                    gc_interval: None,
                 });
                 let kernel = Kernel::load_with_hot_state_large(
                     &kernel_bytes,
@@ -492,6 +496,7 @@ pub mod tests {
                     path: pma_path,
                     words: pma_words,
                     open_existing: false,
+                    gc_interval: None,
                 });
                 let kernel = Kernel::load_with_hot_state_huge(
                     &kernel_bytes,
@@ -513,6 +518,7 @@ pub mod tests {
                     path: pma_path,
                     words: pma_words,
                     open_existing: false,
+                    gc_interval: None,
                 });
                 let kernel = Kernel::load_with_hot_state(
                     &kernel_bytes,

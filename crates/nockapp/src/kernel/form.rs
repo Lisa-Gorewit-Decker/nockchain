@@ -5,7 +5,7 @@ use std::future::Future;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use bincode::{config, Decode, Encode};
 use blake3::{Hash, Hasher};
@@ -22,7 +22,6 @@ use nockvm::pma::{Pma, PmaCopy};
 use nockvm::trace::{path_to_cord, write_serf_trace_safe};
 use nockvm_macros::tas;
 use tokio::sync::{mpsc, oneshot};
-use tokio::time::Duration;
 use tracing::{debug, info, warn};
 
 use crate::kernel::boot::TraceOpts;
@@ -96,6 +95,7 @@ pub struct PmaConfig {
     pub path: PathBuf,
     pub words: usize,
     pub open_existing: bool,
+    pub gc_interval: Option<Duration>,
 }
 
 const PMA_PERSIST_MAGIC: u64 = u64::from_le_bytes(*b"PMAPERS1");
@@ -325,13 +325,16 @@ impl<C: SerfCheckpoint + Send + 'static> SerfThread<C> {
             .stack_size(SERF_THREAD_STACK_SIZE)
             .spawn(move || {
                 let mut pma_meta_load = false;
+                let mut pma_gc_interval = None;
                 let pma = match pma {
                     Some(config) => {
                         let PmaConfig {
                             path,
                             words,
                             open_existing,
+                            gc_interval,
                         } = config;
+                        pma_gc_interval = gc_interval;
                         let pma_meta_base = if open_existing {
                             pma_meta_path
                                 .as_ref()
@@ -384,6 +387,7 @@ impl<C: SerfCheckpoint + Send + 'static> SerfThread<C> {
                     &constant_hot_state,
                     test_jets,
                     trace,
+                    pma_gc_interval,
                 );
                 let _ = init_sender.send(Ok((serf.event_num.clone(), serf.context.cancel_token())));
                 serf_loop(serf, action_receiver, inhibit_clone, pma_timing_thread);
@@ -1177,6 +1181,10 @@ pub struct Serf {
     pub event_num: Arc<AtomicU64>,
     /// A metrics
     pub metrics: Option<Arc<NockAppMetrics>>,
+    /// Interval between PMA GC passes.
+    pma_gc_interval: Option<Duration>,
+    /// Last time a PMA GC pass ran.
+    last_pma_gc: Option<Instant>,
 }
 
 impl Serf {
@@ -1203,6 +1211,7 @@ impl Serf {
         constant_hot_state: &[HotEntry],
         test_jets: Vec<NounSlab>,
         trace: TraceOpts,
+        pma_gc_interval: Option<Duration>,
     ) -> Self {
         let hot_state = [URBIT_HOT_STATE, constant_hot_state].concat();
 
@@ -1335,6 +1344,8 @@ impl Serf {
             event_num,
             cancel_token,
             metrics: None,
+            pma_gc_interval,
+            last_pma_gc: pma_gc_interval.map(|_| Instant::now()),
         };
 
         if let Some(kernel_state) = maybe_state {
@@ -1897,15 +1908,13 @@ impl Serf {
             } else {
                 None
             };
-            pma.begin_marking();
             self.copy_persistent_state_to_pma(&mut pma, trace_pma, detail.as_mut());
             #[cfg(feature = "pma-assert")]
             {
                 // Enforce: PMA data must not reference the NockStack.
                 self.assert_persistent_state_in_pma(&pma);
             }
-
-            pma.sweep_unmarked();
+            self.maybe_pma_gc(&mut pma, trace_pma);
             pma.persist_metadata();
             self.persist_pma_metadata(&pma);
             self.context.stack.reset(0);
@@ -1916,6 +1925,27 @@ impl Serf {
             self.context.stack.flip_top_frame(0);
             None
         }
+    }
+
+    fn maybe_pma_gc(&mut self, pma: &mut Pma, trace_pma: bool) {
+        let Some(interval) = self.pma_gc_interval else {
+            return;
+        };
+        let Some(last_gc) = self.last_pma_gc else {
+            self.last_pma_gc = Some(Instant::now());
+            return;
+        };
+        let now = Instant::now();
+        if now.duration_since(last_gc) < interval {
+            return;
+        }
+        self.last_pma_gc = Some(now);
+        pma.begin_marking();
+        // Safety: GC runs under the same invariants as event update leftovers.
+        unsafe {
+            self.copy_persistent_state_to_pma(pma, trace_pma, None);
+        }
+        pma.sweep_unmarked();
     }
 
     /// Returns a mutable reference to the Nock stack.

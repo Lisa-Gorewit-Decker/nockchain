@@ -31,6 +31,7 @@ use crate::{default_data_dir, AtomExt, NockApp};
 
 pub const DEFAULT_SAVE_INTERVAL: u64 = 120000;
 const DEFAULT_SAVE_INTERVAL_STR: &str = "120000";
+const DEFAULT_GC_INTERVAL_STR: &str = "none";
 
 const DEFAULT_LOG_FILTER: &str = "info";
 
@@ -126,6 +127,14 @@ pub struct Cli {
 
     #[arg(
         long,
+        help = "Set the PMA GC interval (in ms). Use 'none' or '0' to disable periodic GC.",
+        default_value = DEFAULT_GC_INTERVAL_STR,
+        value_parser = parse_gc_interval
+    )]
+    pub gc_interval: Option<u64>,
+
+    #[arg(
+        long,
         help = "Enable PMA persistence and disable checkpoints (can also be set with NOCK_PMA_PERSIST)",
         default_value = "false"
     )]
@@ -165,6 +174,11 @@ impl Cli {
         self.save_interval
             .and_then(|value| if value == 0 { None } else { Some(value) })
     }
+
+    fn normalized_gc_interval(&self) -> Option<u64> {
+        self.gc_interval
+            .and_then(|value| if value == 0 { None } else { Some(value) })
+    }
 }
 
 fn parse_save_interval(input: &str) -> Result<u64, String> {
@@ -180,9 +194,22 @@ fn parse_save_interval(input: &str) -> Result<u64, String> {
     }
 }
 
+fn parse_gc_interval(input: &str) -> Result<u64, String> {
+    let trimmed = input.trim();
+
+    if trimmed.eq_ignore_ascii_case("none") {
+        Ok(0)
+    } else {
+        let value = trimmed
+            .parse::<u64>()
+            .map_err(|e| format!("Invalid GC interval '{trimmed}': {e}"))?;
+        Ok(value)
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::parse_save_interval;
+    use super::{parse_gc_interval, parse_save_interval};
 
     #[test]
     fn parse_save_interval_none_variants() {
@@ -204,6 +231,25 @@ mod tests {
     }
 
     #[test]
+    fn parse_gc_interval_none_variants() {
+        assert_eq!(parse_gc_interval("none").unwrap(), 0);
+        assert_eq!(parse_gc_interval("NoNe").unwrap(), 0);
+        assert_eq!(parse_gc_interval("0").unwrap(), 0);
+        assert_eq!(parse_gc_interval(" 0 ").unwrap(), 0);
+    }
+
+    #[test]
+    fn parse_gc_interval_positive_values() {
+        assert_eq!(parse_gc_interval("1").unwrap(), 1);
+        assert_eq!(parse_gc_interval(" 120000 ").unwrap(), 120000);
+    }
+
+    #[test]
+    fn parse_gc_interval_rejects_invalid() {
+        assert!(parse_gc_interval("abc").is_err());
+    }
+
+    #[test]
     fn normalized_save_interval_filters_zero() {
         let mut cli = super::default_boot_cli(false);
         cli.save_interval = Some(0);
@@ -211,6 +257,16 @@ mod tests {
 
         cli.save_interval = Some(5000);
         assert_eq!(cli.normalized_save_interval(), Some(5000));
+    }
+
+    #[test]
+    fn normalized_gc_interval_filters_zero() {
+        let mut cli = super::default_boot_cli(false);
+        cli.gc_interval = Some(0);
+        assert_eq!(cli.normalized_gc_interval(), None);
+
+        cli.gc_interval = Some(5000);
+        assert_eq!(cli.normalized_gc_interval(), Some(5000));
     }
 }
 
@@ -225,6 +281,7 @@ pub enum SetupResult<J> {
 pub fn default_boot_cli(new: bool) -> Cli {
     Cli {
         save_interval: Some(DEFAULT_SAVE_INTERVAL),
+        gc_interval: None,
         new,
         trace_opts: Default::default(),
         color: ColorChoice::Auto,
@@ -441,6 +498,9 @@ pub async fn setup_<J: Jammer + Send + 'static>(
     let save_interval = cli
         .normalized_save_interval()
         .map(std::time::Duration::from_millis);
+    let gc_interval = cli
+        .normalized_gc_interval()
+        .map(std::time::Duration::from_millis);
     let pma_persist_env = std::env::var_os(PMA_PERSIST_ENV).is_some();
     let pma_persist = cli.pma_persist || pma_persist_env;
     if pma_persist {
@@ -471,6 +531,7 @@ pub async fn setup_<J: Jammer + Send + 'static>(
                 path: pma_path.clone(),
                 words,
                 open_existing: pma_persist,
+                gc_interval,
             })
         };
         let kernel: Kernel<SaveableCheckpoint> = match stack_size {
