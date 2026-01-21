@@ -5,7 +5,7 @@ use std::future::Future;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::Instant;
+use std::time::{Instant, SystemTime};
 
 use bincode::{config, Decode, Encode};
 use blake3::{Hash, Hasher};
@@ -18,7 +18,7 @@ use nockvm::jets::nock::util::mook;
 use nockvm::mem::NockStack;
 use nockvm::mug::met3_usize;
 use nockvm::noun::{Atom, Cell, DirectAtom, IndirectAtom, Noun, NounSpace, D, T};
-use nockvm::pma::{Pma, PmaCopy};
+use nockvm::pma::{Pma, PmaCopy, PmaCopyFrom};
 use nockvm::trace::{path_to_cord, write_serf_trace_safe};
 use nockvm_macros::tas;
 use tokio::sync::{mpsc, oneshot};
@@ -53,9 +53,41 @@ pub struct LoadState {
 
 #[derive(Clone, Debug)]
 pub struct PmaConfig {
-    pub path: PathBuf,
+    pub path_0: PathBuf,
+    pub path_1: PathBuf,
     pub words: usize,
     pub open_existing: bool,
+    pub gc_interval: Option<Duration>,
+}
+
+#[derive(Clone, Copy, Debug)]
+enum PmaSlab {
+    Slab0,
+    Slab1,
+}
+
+impl PmaSlab {
+    fn next(self) -> Self {
+        match self {
+            PmaSlab::Slab0 => PmaSlab::Slab1,
+            PmaSlab::Slab1 => PmaSlab::Slab0,
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+struct PmaSlabPaths {
+    path_0: PathBuf,
+    path_1: PathBuf,
+}
+
+impl PmaSlabPaths {
+    fn path(&self, slab: PmaSlab) -> &PathBuf {
+        match slab {
+            PmaSlab::Slab0 => &self.path_0,
+            PmaSlab::Slab1 => &self.path_1,
+        }
+    }
 }
 
 const PMA_PERSIST_MAGIC: u64 = u64::from_le_bytes(*b"PMAPERS1");
@@ -138,6 +170,76 @@ impl PmaPersistMetadata {
         fs::write(&tmp_path, bytes)?;
         fs::rename(tmp_path, path)?;
         Ok(())
+    }
+}
+
+fn pma_meta_path(path: &PathBuf) -> PathBuf {
+    path.with_extension("meta")
+}
+
+fn pma_meta_status(path: &PathBuf, ker_hash: Hash) -> Option<(u64, SystemTime)> {
+    let meta_path = pma_meta_path(path);
+    let meta = PmaPersistMetadata::load_from_path(&meta_path)?;
+    if meta.ker_hash != ker_hash {
+        return None;
+    }
+    let modified = std::fs::metadata(&meta_path)
+        .and_then(|meta| meta.modified())
+        .unwrap_or(SystemTime::UNIX_EPOCH);
+    Some((meta.event_num, modified))
+}
+
+fn select_active_pma_slab(paths: &PmaSlabPaths, ker_hash: Hash) -> PmaSlab {
+    let status_0 = pma_meta_status(&paths.path_0, ker_hash);
+    let status_1 = pma_meta_status(&paths.path_1, ker_hash);
+    match (status_0, status_1) {
+        (Some((event_0, mod_0)), Some((event_1, mod_1))) => {
+            if event_0 > event_1 {
+                PmaSlab::Slab0
+            } else if event_1 > event_0 {
+                PmaSlab::Slab1
+            } else if mod_1 > mod_0 {
+                PmaSlab::Slab1
+            } else {
+                PmaSlab::Slab0
+            }
+        }
+        (Some(_), None) => PmaSlab::Slab0,
+        (None, Some(_)) => PmaSlab::Slab1,
+        (None, None) => PmaSlab::Slab0,
+    }
+}
+
+struct PmaGcState {
+    paths: PmaSlabPaths,
+    active: PmaSlab,
+    interval: Duration,
+    last_gc: Instant,
+    words: usize,
+}
+
+impl PmaGcState {
+    fn new(paths: PmaSlabPaths, active: PmaSlab, interval: Duration, words: usize) -> Self {
+        Self {
+            paths,
+            active,
+            interval,
+            last_gc: Instant::now(),
+            words,
+        }
+    }
+
+    fn active_path(&self) -> &PathBuf {
+        self.paths.path(self.active)
+    }
+
+    fn inactive_path(&self) -> &PathBuf {
+        self.paths.path(self.active.next())
+    }
+
+    fn mark_gc_completed(&mut self) {
+        self.active = self.active.next();
+        self.last_gc = Instant::now();
     }
 }
 
@@ -254,9 +356,6 @@ impl<C: SerfCheckpoint + Send + 'static> SerfThread<C> {
         trace: TraceOpts,
     ) -> Result<Self> {
         let (action_sender, action_receiver) = mpsc::channel(1);
-        let pma_meta_path = pma
-            .as_ref()
-            .map(|config| config.path.with_extension("meta"));
         let pma_timing = std::env::var_os("NOCK_PMA_TIMING")
             .is_some()
             .then(|| Arc::new(PmaTiming::default()));
@@ -268,46 +367,67 @@ impl<C: SerfCheckpoint + Send + 'static> SerfThread<C> {
             .name("serf".to_string())
             .stack_size(SERF_THREAD_STACK_SIZE)
             .spawn(move || {
+                let ker_hash = {
+                    let mut hasher = Hasher::new();
+                    hasher.update(&kernel_bytes);
+                    hasher.finalize()
+                };
                 let mut pma_meta_load = false;
-                let pma = match pma {
+                let (pma, pma_meta_path, pma_gc_state) = match pma {
                     Some(config) => {
                         let PmaConfig {
-                            path,
+                            path_0,
+                            path_1,
                             words,
                             open_existing,
+                            gc_interval,
                         } = config;
+                        let paths = PmaSlabPaths { path_0, path_1 };
+                        let active = if open_existing {
+                            select_active_pma_slab(&paths, ker_hash)
+                        } else {
+                            PmaSlab::Slab0
+                        };
+                        let active_path = paths.path(active).clone();
+                        let pma_meta_path = pma_meta_path(&active_path);
                         let pma_meta_base = if open_existing {
-                            pma_meta_path
-                                .as_ref()
-                                .and_then(PmaPersistMetadata::load_from_path)
+                            PmaPersistMetadata::load_from_path(&pma_meta_path)
                                 .map(|meta| meta.pma_base)
                         } else {
                             None
                         };
-                        let pma_result = if open_existing && path.exists() {
+                        let pma_result = if open_existing && active_path.exists() {
                             pma_meta_load = true;
                             if let Some(base) = pma_meta_base {
-                                match Pma::open_with_base(path, base) {
+                                match Pma::open_with_base(active_path.clone(), base) {
                                     Ok(pma) => Ok(pma),
                                     Err(err) => {
                                         let _ = init_sender.send(Err(CrownError::Unknown(
                                             format!(
-                                                "PMA map failed at saved base {:#x}: {err}. To reset, pass --new or delete pma.mmap/pma.meta",
-                                                base
+                                                "PMA map failed at saved base {:#x}: {err}. To reset, pass --new or delete {} and {}",
+                                                base,
+                                                active_path.display(),
+                                                pma_meta_path.display()
                                             ),
                                         )));
                                         return;
                                     }
                                 }
                             } else {
-                                Pma::open(path)
+                                Pma::open(active_path.clone())
                             }
                         } else {
                             pma_meta_load = false;
-                            Pma::new(words, path)
+                            Pma::new(words, active_path.clone())
                         };
                         match pma_result {
-                            Ok(pma) => Some(pma),
+                            Ok(pma) => (
+                                Some(pma),
+                                Some(pma_meta_path),
+                                gc_interval.map(|interval| {
+                                    PmaGcState::new(paths, active, interval, words)
+                                }),
+                            ),
                             Err(err) => {
                                 let _ =
                                     init_sender.send(Err(CrownError::Unknown(err.to_string())));
@@ -315,7 +435,7 @@ impl<C: SerfCheckpoint + Send + 'static> SerfThread<C> {
                             }
                         }
                     }
-                    None => None,
+                    None => (None, None, None),
                 };
                 let stack = NockStack::new(nock_stack_size, 0);
                 let serf = Serf::new(
@@ -323,6 +443,7 @@ impl<C: SerfCheckpoint + Send + 'static> SerfThread<C> {
                     pma,
                     pma_meta_path,
                     pma_meta_load,
+                    pma_gc_state,
                     checkpoint,
                     &kernel_bytes,
                     &constant_hot_state,
@@ -1037,6 +1158,8 @@ pub struct Serf {
     pub pma: Option<Pma>,
     /// Optional metadata path for PMA persistence.
     pub pma_meta_path: Option<PathBuf>,
+    /// Optional GC configuration for PMA slab compaction.
+    pma_gc_state: Option<PmaGcState>,
     /// Cancellation
     pub cancel_token: NockCancelToken,
     /// The current event number.
@@ -1064,6 +1187,7 @@ impl Serf {
         mut pma: Option<Pma>,
         pma_meta_path: Option<PathBuf>,
         pma_meta_load: bool,
+        pma_gc_state: Option<PmaGcState>,
         checkpoint: Option<C>,
         kernel_bytes: &[u8],
         constant_hot_state: &[HotEntry],
@@ -1199,6 +1323,7 @@ impl Serf {
             context,
             pma,
             pma_meta_path,
+            pma_gc_state,
             event_num,
             cancel_token,
             metrics: None,
@@ -1729,6 +1854,109 @@ impl Serf {
         }
     }
 
+    fn maybe_pma_gc(&mut self, mut pma: Pma) -> Pma {
+        let Some(gc_state) = self.pma_gc_state.as_ref() else {
+            return pma;
+        };
+        if gc_state.last_gc.elapsed() < gc_state.interval {
+            return pma;
+        }
+
+        let from_path = gc_state.active_path().clone();
+        let to_path = gc_state.inactive_path().clone();
+        let gc_words = gc_state.words;
+        let event_num = self.event_num.load(Ordering::SeqCst);
+        let gc_start = Instant::now();
+        let from_alloc = pma.alloc_offset();
+        info!(
+            "pma-gc: start: event_num={} from={} to={} from_alloc_words={}",
+            event_num,
+            from_path.display(),
+            to_path.display(),
+            from_alloc
+        );
+
+        let create_start = Instant::now();
+        let mut to_pma = match Pma::new(gc_words, to_path.clone()) {
+            Ok(pma) => pma,
+            Err(err) => {
+                warn!(
+                    "pma-gc: failed to create new PMA slab at {}: {err}",
+                    to_path.display()
+                );
+                return pma;
+            }
+        };
+        let create_elapsed = create_start.elapsed();
+
+        let warm_start = Instant::now();
+        unsafe {
+            self.context.warm.copy_from_pma(&pma, &mut to_pma);
+        }
+        let warm_elapsed = warm_start.elapsed();
+
+        let test_jets_start = Instant::now();
+        unsafe {
+            self.context.test_jets.copy_from_pma(&pma, &mut to_pma);
+        }
+        let test_jets_elapsed = test_jets_start.elapsed();
+
+        let hot_start = Instant::now();
+        unsafe {
+            self.context.hot.copy_from_pma(&pma, &mut to_pma);
+        }
+        let hot_elapsed = hot_start.elapsed();
+
+        let cache_start = Instant::now();
+        unsafe {
+            self.context.cache.copy_from_pma(&pma, &mut to_pma);
+        }
+        let cache_elapsed = cache_start.elapsed();
+
+        let cold_start = Instant::now();
+        unsafe {
+            self.context.cold.copy_from_pma(&pma, &mut to_pma);
+        }
+        let cold_elapsed = cold_start.elapsed();
+
+        let arvo_start = Instant::now();
+        unsafe {
+            self.arvo.copy_from_pma(&pma, &mut to_pma);
+        }
+        let arvo_elapsed = arvo_start.elapsed();
+
+        info!(
+            "pma-gc: copy timings: warm_ms={} test_jets_ms={} hot_ms={} cache_ms={} cold_ms={} arvo_ms={}",
+            warm_elapsed.as_millis(),
+            test_jets_elapsed.as_millis(),
+            hot_elapsed.as_millis(),
+            cache_elapsed.as_millis(),
+            cold_elapsed.as_millis(),
+            arvo_elapsed.as_millis()
+        );
+
+        self.context
+            .stack
+            .install_pma_arena(Arc::clone(to_pma.arena()));
+        self.pma_meta_path = Some(pma_meta_path(&to_path));
+        to_pma.persist_metadata();
+        self.persist_pma_metadata(&to_pma);
+
+        let to_alloc = to_pma.alloc_offset();
+        if let Some(gc_state) = self.pma_gc_state.as_mut() {
+            gc_state.mark_gc_completed();
+        }
+        info!(
+            "pma-gc: done: total_ms={} create_ms={} to_alloc_words={}",
+            gc_start.elapsed().as_millis(),
+            create_elapsed.as_millis(),
+            to_alloc
+        );
+
+        pma = to_pma;
+        pma
+    }
+
     /// Preserves leftovers after an event update.
     ///
     /// # Safety
@@ -1774,6 +2002,7 @@ impl Serf {
             pma.persist_metadata();
             self.persist_pma_metadata(&pma);
 
+            pma = self.maybe_pma_gc(pma);
             self.context.stack.reset(0);
             self.pma = Some(pma);
             detail
@@ -1852,6 +2081,7 @@ mod tests {
             context,
             pma: None,
             pma_meta_path: None,
+            pma_gc_state: None,
             cancel_token,
             event_num: Arc::new(AtomicU64::new(0)),
             metrics: None,

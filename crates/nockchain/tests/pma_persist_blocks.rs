@@ -119,6 +119,7 @@ async fn build_nockapp(name: &str) -> Result<(TempDir, NockApp), Box<dyn Error>>
         new: true,
         trace_opts: TraceOpts::default(),
         save_interval: Some(0),
+        gc_interval: None,
         pma_persist: false,
         color: ColorChoice::Auto,
         state_jam: None,

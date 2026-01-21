@@ -9,7 +9,7 @@ use crate::jets::hot::Hot;
 use crate::jets::Jet;
 use crate::mem::{NockStack, Preserve};
 use crate::noun::{Noun, NounAllocator, Slots};
-use crate::pma::{Pma, PmaCopy};
+use crate::pma::{Pma, PmaCopy, PmaCopyFrom};
 
 /// key = formula
 #[derive(Copy, Clone)]
@@ -139,6 +139,12 @@ impl PmaCopy for Warm {
     }
 }
 
+impl PmaCopyFrom for Warm {
+    unsafe fn copy_from_pma(&mut self, from_pma: &Pma, to_pma: &mut Pma) {
+        self.0.copy_from_pma(from_pma, to_pma);
+    }
+}
+
 #[derive(Copy, Clone)]
 struct WarmEntry(*mut WarmEntryMem);
 
@@ -249,6 +255,26 @@ impl PmaCopy for WarmEntry {
                 info!("pma-copy: warm entry done: dest_ptr={:p}", dest_mem);
             }
             // Move to next node
+            ptr = &mut (*dest_mem).next;
+            if (*dest_mem).next.0.is_null() {
+                break;
+            }
+        }
+    }
+}
+
+impl PmaCopyFrom for WarmEntry {
+    unsafe fn copy_from_pma(&mut self, from_pma: &Pma, to_pma: &mut Pma) {
+        if self.0.is_null() {
+            return;
+        }
+        let mut ptr: *mut WarmEntry = self;
+        loop {
+            (*(*ptr).0).batteries.copy_from_pma(from_pma, to_pma);
+            (*(*ptr).0).path.copy_from_pma(from_pma, to_pma);
+            let dest_mem: *mut WarmEntryMem = to_pma.alloc_struct(1);
+            copy_nonoverlapping((*ptr).0, dest_mem, 1);
+            *ptr = WarmEntry(dest_mem);
             ptr = &mut (*dest_mem).next;
             if (*dest_mem).next.0.is_null() {
                 break;

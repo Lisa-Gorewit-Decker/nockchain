@@ -7,7 +7,7 @@ use crate::mem::{self, NockStack, Preserve};
 use crate::noun::{
     self, Atom, DirectAtom, IndirectAtom, Noun, NounAllocator, NounSpace, Slots, D, T,
 };
-use crate::pma::{Pma, PmaCopy};
+use crate::pma::{Pma, PmaCopy, PmaCopyFrom};
 use crate::unifying_equality::unifying_equality;
 
 pub enum Error {
@@ -176,6 +176,26 @@ impl PmaCopy for Batteries {
     }
 }
 
+impl PmaCopyFrom for Batteries {
+    unsafe fn copy_from_pma(&mut self, from_pma: &Pma, to_pma: &mut Pma) {
+        if self.0.is_null() {
+            return;
+        }
+        let mut ptr: *mut Batteries = self;
+        loop {
+            (*(*ptr).0).battery.copy_from_pma(from_pma, to_pma);
+            (*(*ptr).0).parent_axis.copy_from_pma(from_pma, to_pma);
+            let dest_mem: *mut BatteriesMem = to_pma.alloc_struct(1);
+            copy_nonoverlapping((*ptr).0, dest_mem, 1);
+            *ptr = Batteries(dest_mem);
+            ptr = &mut (*dest_mem).parent_batteries;
+            if (*dest_mem).parent_batteries.0.is_null() {
+                break;
+            }
+        }
+    }
+}
+
 impl Iterator for Batteries {
     type Item = (*mut Noun, Atom);
     fn next(&mut self) -> Option<Self::Item> {
@@ -297,6 +317,25 @@ impl PmaCopy for BatteriesList {
             // Update pointer to point to PMA copy
             *ptr = BatteriesList(dest_mem);
             // Move to next node
+            ptr = &mut (*dest_mem).next;
+            if (*dest_mem).next.0.is_null() {
+                break;
+            }
+        }
+    }
+}
+
+impl PmaCopyFrom for BatteriesList {
+    unsafe fn copy_from_pma(&mut self, from_pma: &Pma, to_pma: &mut Pma) {
+        if self.0.is_null() {
+            return;
+        }
+        let mut ptr: *mut BatteriesList = self;
+        loop {
+            (*(*ptr).0).batteries.copy_from_pma(from_pma, to_pma);
+            let dest_mem: *mut BatteriesListMem = to_pma.alloc_struct(1);
+            copy_nonoverlapping((*ptr).0, dest_mem, 1);
+            *ptr = BatteriesList(dest_mem);
             ptr = &mut (*dest_mem).next;
             if (*dest_mem).next.0.is_null() {
                 break;
@@ -465,6 +504,25 @@ impl PmaCopy for NounList {
     }
 }
 
+impl PmaCopyFrom for NounList {
+    unsafe fn copy_from_pma(&mut self, from_pma: &Pma, to_pma: &mut Pma) {
+        if self.0.is_null() {
+            return;
+        }
+        let mut ptr: *mut NounList = self;
+        loop {
+            (*(*ptr).0).element.copy_from_pma(from_pma, to_pma);
+            let dest_mem: *mut NounListMem = to_pma.alloc_struct(1);
+            copy_nonoverlapping((*ptr).0, dest_mem, 1);
+            *ptr = NounList(dest_mem);
+            ptr = &mut (*dest_mem).next;
+            if (*dest_mem).next.0.is_null() {
+                break;
+            }
+        }
+    }
+}
+
 impl Iterator for NounList {
     type Item = *mut Noun;
     fn next(&mut self) -> Option<Self::Item> {
@@ -535,6 +593,20 @@ impl PmaCopy for Cold {
         let dest_mem: *mut ColdMem = pma.alloc_struct(1);
         copy_nonoverlapping(self.0, dest_mem, 1);
         // Update pointer to point to PMA copy
+        self.0 = dest_mem;
+    }
+}
+
+impl PmaCopyFrom for Cold {
+    unsafe fn copy_from_pma(&mut self, from_pma: &Pma, to_pma: &mut Pma) {
+        if self.0.is_null() {
+            return;
+        }
+        (*self.0).battery_to_paths.copy_from_pma(from_pma, to_pma);
+        (*self.0).root_to_paths.copy_from_pma(from_pma, to_pma);
+        (*self.0).path_to_batteries.copy_from_pma(from_pma, to_pma);
+        let dest_mem: *mut ColdMem = to_pma.alloc_struct(1);
+        copy_nonoverlapping(self.0, dest_mem, 1);
         self.0 = dest_mem;
     }
 }

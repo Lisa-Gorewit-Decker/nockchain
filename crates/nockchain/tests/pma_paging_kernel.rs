@@ -1168,6 +1168,7 @@ async fn build_nockapp(name: &str) -> Result<(TempDir, NockApp, PathBuf), Box<dy
         new: true,
         trace_opts: TraceOpts::default(),
         save_interval: Some(0),
+        gc_interval: None,
         pma_persist: false,
         color: clap::ColorChoice::Auto,
         state_jam: None,
@@ -1723,12 +1724,12 @@ fn find_pma_path(data_dir: &Path) -> Result<PathBuf, Box<dyn Error>> {
     for entry in std::fs::read_dir(&pma_dir)? {
         let entry = entry?;
         let path = entry.path();
-        if path.extension().and_then(|s| s.to_str()) == Some("mmap") {
+        if path.extension().and_then(|s| s.to_str()) == Some("pma") {
             entries.push(path);
         }
     }
     if entries.is_empty() {
-        return Err(format!("no pma mmap file found in {:?}", pma_dir).into());
+        return Err(format!("no pma slab file found in {:?}", pma_dir).into());
     }
     if entries.len() > 1 {
         warn!("multiple pma files found, using first: {:?}", entries[0]);

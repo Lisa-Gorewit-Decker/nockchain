@@ -402,12 +402,15 @@ pub mod tests {
         let (stack_words, kernel, _pma_dir) = match stack_choice.as_str() {
             "tiny" => {
                 let pma_dir = TempDir::new().expect("Failed to create temp PMA dir");
-                let pma_path = pma_dir.path().join("pma.mmap");
+                let pma_path_0 = pma_dir.path().join("0.pma");
+                let pma_path_1 = pma_dir.path().join("1.pma");
                 let pma_words = pma_words_override.unwrap_or(NOCK_STACK_SIZE_TINY);
                 let pma_config = Some(PmaConfig {
-                    path: pma_path,
+                    path_0: pma_path_0,
+                    path_1: pma_path_1,
                     words: pma_words,
                     open_existing: false,
+                    gc_interval: None,
                 });
                 let kernel = Kernel::load_with_hot_state_tiny(
                     &kernel_bytes,
@@ -423,12 +426,15 @@ pub mod tests {
             }
             "small" => {
                 let pma_dir = TempDir::new().expect("Failed to create temp PMA dir");
-                let pma_path = pma_dir.path().join("pma.mmap");
+                let pma_path_0 = pma_dir.path().join("0.pma");
+                let pma_path_1 = pma_dir.path().join("1.pma");
                 let pma_words = pma_words_override.unwrap_or(NOCK_STACK_SIZE_SMALL);
                 let pma_config = Some(PmaConfig {
-                    path: pma_path,
+                    path_0: pma_path_0,
+                    path_1: pma_path_1,
                     words: pma_words,
                     open_existing: false,
+                    gc_interval: None,
                 });
                 let kernel = Kernel::load_with_hot_state_small(
                     &kernel_bytes,
@@ -444,12 +450,15 @@ pub mod tests {
             }
             "medium" => {
                 let pma_dir = TempDir::new().expect("Failed to create temp PMA dir");
-                let pma_path = pma_dir.path().join("pma.mmap");
+                let pma_path_0 = pma_dir.path().join("0.pma");
+                let pma_path_1 = pma_dir.path().join("1.pma");
                 let pma_words = pma_words_override.unwrap_or(NOCK_STACK_SIZE_MEDIUM);
                 let pma_config = Some(PmaConfig {
-                    path: pma_path,
+                    path_0: pma_path_0,
+                    path_1: pma_path_1,
                     words: pma_words,
                     open_existing: false,
+                    gc_interval: None,
                 });
                 let kernel = Kernel::load_with_hot_state_medium(
                     &kernel_bytes,
@@ -465,12 +474,15 @@ pub mod tests {
             }
             "large" => {
                 let pma_dir = TempDir::new().expect("Failed to create temp PMA dir");
-                let pma_path = pma_dir.path().join("pma.mmap");
+                let pma_path_0 = pma_dir.path().join("0.pma");
+                let pma_path_1 = pma_dir.path().join("1.pma");
                 let pma_words = pma_words_override.unwrap_or(NOCK_STACK_SIZE_LARGE);
                 let pma_config = Some(PmaConfig {
-                    path: pma_path,
+                    path_0: pma_path_0,
+                    path_1: pma_path_1,
                     words: pma_words,
                     open_existing: false,
+                    gc_interval: None,
                 });
                 let kernel = Kernel::load_with_hot_state_large(
                     &kernel_bytes,
@@ -486,12 +498,15 @@ pub mod tests {
             }
             "huge" => {
                 let pma_dir = TempDir::new().expect("Failed to create temp PMA dir");
-                let pma_path = pma_dir.path().join("pma.mmap");
+                let pma_path_0 = pma_dir.path().join("0.pma");
+                let pma_path_1 = pma_dir.path().join("1.pma");
                 let pma_words = pma_words_override.unwrap_or(NOCK_STACK_SIZE_HUGE);
                 let pma_config = Some(PmaConfig {
-                    path: pma_path,
+                    path_0: pma_path_0,
+                    path_1: pma_path_1,
                     words: pma_words,
                     open_existing: false,
+                    gc_interval: None,
                 });
                 let kernel = Kernel::load_with_hot_state_huge(
                     &kernel_bytes,
@@ -507,12 +522,15 @@ pub mod tests {
             }
             _ => {
                 let pma_dir = TempDir::new().expect("Failed to create temp PMA dir");
-                let pma_path = pma_dir.path().join("pma.mmap");
+                let pma_path_0 = pma_dir.path().join("0.pma");
+                let pma_path_1 = pma_dir.path().join("1.pma");
                 let pma_words = pma_words_override.unwrap_or(NOCK_STACK_SIZE);
                 let pma_config = Some(PmaConfig {
-                    path: pma_path,
+                    path_0: pma_path_0,
+                    path_1: pma_path_1,
                     words: pma_words,
                     open_existing: false,
+                    gc_interval: None,
                 });
                 let kernel = Kernel::load_with_hot_state(
                     &kernel_bytes,

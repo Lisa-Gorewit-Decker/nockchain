@@ -31,6 +31,7 @@ use crate::{default_data_dir, AtomExt, NockApp};
 
 pub const DEFAULT_SAVE_INTERVAL: u64 = 120000;
 const DEFAULT_SAVE_INTERVAL_STR: &str = "120000";
+const DEFAULT_GC_INTERVAL_STR: &str = "none";
 
 const DEFAULT_LOG_FILTER: &str = "info";
 
@@ -126,6 +127,14 @@ pub struct Cli {
 
     #[arg(
         long,
+        help = "Set the PMA GC interval (in ms). Use 'none' or '0' to disable PMA GC.",
+        default_value = DEFAULT_GC_INTERVAL_STR,
+        value_parser = parse_save_interval
+    )]
+    pub gc_interval: Option<u64>,
+
+    #[arg(
+        long,
         help = "Enable PMA persistence and disable checkpoints (can also be set with NOCK_PMA_PERSIST)",
         default_value = "false"
     )]
@@ -163,6 +172,11 @@ pub struct Cli {
 impl Cli {
     fn normalized_save_interval(&self) -> Option<u64> {
         self.save_interval
+            .and_then(|value| if value == 0 { None } else { Some(value) })
+    }
+
+    fn normalized_gc_interval(&self) -> Option<u64> {
+        self.gc_interval
             .and_then(|value| if value == 0 { None } else { Some(value) })
     }
 }
@@ -212,6 +226,16 @@ mod tests {
         cli.save_interval = Some(5000);
         assert_eq!(cli.normalized_save_interval(), Some(5000));
     }
+
+    #[test]
+    fn normalized_gc_interval_filters_zero() {
+        let mut cli = super::default_boot_cli(false);
+        cli.gc_interval = Some(0);
+        assert_eq!(cli.normalized_gc_interval(), None);
+
+        cli.gc_interval = Some(5000);
+        assert_eq!(cli.normalized_gc_interval(), Some(5000));
+    }
 }
 
 /// Result of setting up a NockApp
@@ -225,6 +249,7 @@ pub enum SetupResult<J> {
 pub fn default_boot_cli(new: bool) -> Cli {
     Cli {
         save_interval: Some(DEFAULT_SAVE_INTERVAL),
+        gc_interval: None,
         new,
         trace_opts: Default::default(),
         color: ColorChoice::Auto,
@@ -441,6 +466,14 @@ pub async fn setup_<J: Jammer + Send + 'static>(
     let save_interval = cli
         .normalized_save_interval()
         .map(std::time::Duration::from_millis);
+    let gc_interval = cli
+        .normalized_gc_interval()
+        .map(std::time::Duration::from_millis);
+    if let Some(interval) = gc_interval {
+        info!("PMA GC interval duration: {:?}", interval);
+    } else {
+        info!("PMA GC interval disabled");
+    }
     let pma_persist_env = std::env::var_os(PMA_PERSIST_ENV).is_some();
     let pma_persist = cli.pma_persist || pma_persist_env;
     if pma_persist {
@@ -450,16 +483,19 @@ pub async fn setup_<J: Jammer + Send + 'static>(
             info!("PMA persistence enabled via CLI; checkpoints disabled");
         }
     }
-    let pma_path = pma_dir.join("pma.mmap");
+    let pma_path_0 = pma_dir.join("0.pma");
+    let pma_path_1 = pma_dir.join("1.pma");
     if cli.new {
-        if pma_path.exists() {
-            std::fs::remove_file(&pma_path)?;
-            debug!("Deleted existing PMA file: {:?}", pma_path);
-        }
-        let meta_path = pma_path.with_extension("meta");
-        if meta_path.exists() {
-            std::fs::remove_file(&meta_path)?;
-            debug!("Deleted existing PMA metadata file: {:?}", meta_path);
+        for pma_path in [&pma_path_0, &pma_path_1] {
+            if pma_path.exists() {
+                std::fs::remove_file(pma_path)?;
+                debug!("Deleted existing PMA file: {:?}", pma_path);
+            }
+            let meta_path = pma_path.with_extension("meta");
+            if meta_path.exists() {
+                std::fs::remove_file(&meta_path)?;
+                debug!("Deleted existing PMA metadata file: {:?}", meta_path);
+            }
         }
     }
     let stack_size = cli.stack_size.clone();
@@ -468,9 +504,11 @@ pub async fn setup_<J: Jammer + Send + 'static>(
     let kernel_f = async move |checkpoint| {
         let pma_config = |words| {
             Some(PmaConfig {
-                path: pma_path.clone(),
+                path_0: pma_path_0.clone(),
+                path_1: pma_path_1.clone(),
                 words,
                 open_existing: pma_persist,
+                gc_interval,
             })
         };
         let kernel: Kernel<SaveableCheckpoint> = match stack_size {

@@ -488,10 +488,27 @@ pub trait PmaCopy {
     fn assert_in_pma(&self, pma: &Pma);
 }
 
+/// Trait for types that can be copied from one PMA to another.
+///
+/// This is used for PMA compaction, copying reachable data from a from-space
+/// PMA into a to-space PMA.
+pub trait PmaCopyFrom {
+    /// Copy this value from `from_pma` into `to_pma`, updating any internal
+    /// pointers to reference the new PMA.
+    ///
+    /// # Safety
+    /// The caller must ensure the value currently resides in `from_pma`.
+    unsafe fn copy_from_pma(&mut self, from_pma: &Pma, to_pma: &mut Pma);
+}
+
 impl PmaCopy for () {
     unsafe fn copy_to_pma(&mut self, _stack: &NockStack, _pma: &mut Pma) {}
 
     fn assert_in_pma(&self, _pma: &Pma) {}
+}
+
+impl PmaCopyFrom for () {
+    unsafe fn copy_from_pma(&mut self, _from_pma: &Pma, _to_pma: &mut Pma) {}
 }
 
 impl PmaCopy for Atom {
@@ -509,6 +526,16 @@ impl PmaCopy for Atom {
     #[cfg(not(feature = "pma-assert"))]
     #[inline(always)]
     fn assert_in_pma(&self, _pma: &Pma) {}
+}
+
+impl PmaCopyFrom for Atom {
+    unsafe fn copy_from_pma(&mut self, from_pma: &Pma, to_pma: &mut Pma) {
+        let mut noun = self.as_noun();
+        noun.copy_from_pma(from_pma, to_pma);
+        if let Ok(atom) = noun.as_atom() {
+            *self = atom;
+        }
+    }
 }
 
 impl PmaCopy for Noun {
@@ -740,6 +767,70 @@ impl PmaCopy for Noun {
     #[cfg(not(feature = "pma-assert"))]
     #[inline(always)]
     fn assert_in_pma(&self, _pma: &Pma) {}
+}
+
+impl PmaCopyFrom for Noun {
+    unsafe fn copy_from_pma(&mut self, from_pma: &Pma, to_pma: &mut Pma) {
+        if self.is_direct() {
+            return;
+        }
+        let to_base = to_pma.arena().base_ptr() as usize;
+        let to_end = to_base + to_pma.arena().len_bytes();
+        let space = NounSpace::pma_only(from_pma).with_extra_ptr_ranges(vec![(to_base, to_end)]);
+        let mut work: SmallVec<[(Noun, *mut Noun); 64]> = SmallVec::new();
+        work.push((*self, self as *mut Noun));
+
+        while let Some((noun, dest_ptr)) = work.pop() {
+            match noun.as_either_direct_allocated() {
+                Left(_direct) => {
+                    *dest_ptr = noun;
+                }
+                Right(allocated) => {
+                    if let Some(forwarded) = allocated.forwarding_pointer(&space) {
+                        let ptr = forwarded.to_raw_pointer(&space) as *const u8;
+                        let offset = to_pma.offset_from_ptr(ptr);
+                        *dest_ptr = if forwarded.is_indirect() {
+                            IndirectAtom::from_offset_words(offset).as_noun()
+                        } else {
+                            Cell::from_offset_words(offset).as_noun()
+                        };
+                        continue;
+                    }
+
+                    match allocated.as_either() {
+                        Left(mut indirect) => {
+                            let raw_size = indirect.raw_size(&space);
+                            let src_ptr = indirect.to_raw_pointer(&space);
+                            let pma_ptr = to_pma.raw_alloc(raw_size);
+                            copy_nonoverlapping(src_ptr, pma_ptr, raw_size);
+
+                            indirect.set_forwarding_pointer(pma_ptr, &space);
+
+                            let offset = to_pma.offset_from_ptr(pma_ptr as *const u8);
+                            *dest_ptr = IndirectAtom::from_offset_words(offset).as_noun();
+                        }
+                        Right(mut cell) => {
+                            let src_cell = cell.to_raw_pointer(&space);
+                            let head = (*src_cell).head;
+                            let tail = (*src_cell).tail;
+
+                            let pma_ptr = to_pma.raw_alloc(word_size_of::<CellMemory>());
+                            let pma_cell = pma_ptr as *mut CellMemory;
+                            (*pma_cell).metadata = (*src_cell).metadata;
+
+                            cell.set_forwarding_pointer(pma_cell, &space);
+
+                            work.push((tail, &mut (*pma_cell).tail));
+                            work.push((head, &mut (*pma_cell).head));
+
+                            let offset = to_pma.offset_from_ptr(pma_ptr as *const u8);
+                            *dest_ptr = Cell::from_offset_words(offset).as_noun();
+                        }
+                    }
+                }
+            }
+        }
+    }
 }
 
 #[cfg(test)]
