@@ -345,6 +345,16 @@ fn build_native_ast_noun(
     Ok(native_noun)
 }
 
+/// Public wrapper for benchmarking the prime poke timing.
+pub async fn prime_parse_cache_public(
+    nockapp: &mut nockapp::NockApp<NockJammer>,
+    entry: &PathBuf,
+    deps_dir: &PathBuf,
+    native_asts: &HashMap<PathBuf, Vec<u8>>,
+) -> Result<(), Error> {
+    prime_parse_cache(nockapp, entry, deps_dir, native_asts).await
+}
+
 async fn prime_parse_cache(
     nockapp: &mut nockapp::NockApp<NockJammer>,
     entry: &PathBuf,

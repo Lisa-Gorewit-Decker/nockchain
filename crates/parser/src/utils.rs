@@ -9313,7 +9313,7 @@ pub fn hoon_to_noun(slab: &mut NounSlab, hoon: &Hoon) -> Noun {
         SigBuc(tag, p) => {
             let tag_noun = term_to_noun(slab, tag);
             let p_noun = hoon_to_noun(slab, p);
-            T(slab, &[D(tas!(b"sbbc")), tag_noun, p_noun])
+            T(slab, &[D(tas!(b"sgbc")), tag_noun, p_noun])
         }
         SigLus(n, p) => {
             let p_noun = hoon_to_noun(slab, p);
@@ -9327,7 +9327,7 @@ pub fn hoon_to_noun(slab: &mut NounSlab, hoon: &Hoon) -> Noun {
         SigTis(p, q) => {
             let p = hoon_to_noun(slab, p);
             let q = hoon_to_noun(slab, q);
-            T(slab, &[D(tas!(b"spts")), p, q])
+            T(slab, &[D(tas!(b"sgts")), p, q])
         }
         SigWut(n, a, b, c) => {
             let a = hoon_to_noun(slab, a);
@@ -9608,12 +9608,17 @@ fn map_to_noun(slab: &mut NounSlab, pairs: Vec<(Noun, Noun)>) -> Noun {
     map
 }
 
+/// Hoon maps are `(tree [key val])`.
+/// This means:
+/// - Empty tree: `~` = `0`
+/// - Non-empty tree: `[[key val] left right]`
 fn put_into_map(slab: &mut NounSlab, map: Noun, key: Noun, val: Noun) -> Noun {
     if map.is_atom() && slab_noun_equality(&map, &D(0)) {
         let node = T(slab, &[key, val]);
         return T(slab, &[node, D(0), D(0)]);
     }
 
+    // Non-empty map: [[key val] left right]
     let cell = map.as_cell().expect("non-empty map must be a cell");
     let node = cell.head();
     let children = cell.tail();
@@ -9643,6 +9648,7 @@ fn put_into_map(slab: &mut NounSlab, map: Noun, key: Noun, val: Noun) -> Noun {
             }
         }
 
+        // new_left is [[key val] left right] structure
         let new_left_cell = new_left
             .as_cell()
             .expect("new_left must be cell after insert");
@@ -9654,13 +9660,11 @@ fn put_into_map(slab: &mut NounSlab, map: Noun, key: Noun, val: Noun) -> Noun {
         } else {
             let new_left_children = new_left_cell.tail();
             let new_left_children_cell = new_left_children.as_cell().expect("children cell");
+            let new_left_left = new_left_children_cell.head();
             let new_left_right = new_left_children_cell.tail();
 
             let new_right = T(slab, &[node, new_left_right, right]);
-            T(
-                slab,
-                &[new_left_node, new_left_children_cell.head(), new_right],
-            )
+            T(slab, &[new_left_node, new_left_left, new_right])
         }
     } else {
         let new_right = put_into_map(slab, right, key, val);
@@ -9671,6 +9675,7 @@ fn put_into_map(slab: &mut NounSlab, map: Noun, key: Noun, val: Noun) -> Noun {
             }
         }
 
+        // new_right is [[key val] left right] structure
         let new_right_cell = new_right.as_cell().expect("new_right must be cell");
         let new_right_node = new_right_cell.head();
         let new_right_node_key = new_right_node.as_cell().expect("node must be [k v]").head();
@@ -9681,12 +9686,10 @@ fn put_into_map(slab: &mut NounSlab, map: Noun, key: Noun, val: Noun) -> Noun {
             let new_right_children = new_right_cell.tail();
             let new_right_children_cell = new_right_children.as_cell().expect("children cell");
             let new_right_left = new_right_children_cell.head();
+            let new_right_right = new_right_children_cell.tail();
 
             let new_left = T(slab, &[node, left, new_right_left]);
-            T(
-                slab,
-                &[new_right_node, new_left, new_right_children_cell.tail()],
-            )
+            T(slab, &[new_right_node, new_left, new_right_right])
         }
     }
 }

@@ -33,3 +33,10 @@ path = "src/main.rs"
 
 [lib]
 path = "src/lib.rs"
+
+[dev-dependencies]
+tracing-subscriber = { workspace = true }
+
+[[bench]]
+name = "kernel_build"
+harness = false

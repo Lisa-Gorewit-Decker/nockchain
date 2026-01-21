@@ -43,6 +43,29 @@
       [%boot hoon-txt=cord]
       [%clear ~]
   ==
++$  cause-debug
+  $%  $:  %build
+          pat=cord
+          tex=cord
+          directory=(list [cord cord])
+          arbitrary=?
+          out=cord
+      ==
+      $:  %parse
+          pat=cord
+          tex=cord
+          directory=(list [cord cord])
+      ==
+      $:  %prime
+          pat=*
+          tex=*
+          directory=*
+          native=*
+      ==
+      [%file %write path=@t contents=@ success=?]
+      [%boot hoon-txt=cord]
+      [%clear ~]
+  ==
 +$  effect
   $%  [%file %write path=@t contents=@]
       [%exit id=@]
@@ -169,6 +192,16 @@
   ^-  [(list effect) choo-state]
   =/  cause=(unit cause)  ((soft cause) dat)
   ?~  cause
+    =/  debug=(unit cause-debug)  ((soft cause-debug) dat)
+    ?~  debug
+      =+  scratch=(debug-hoon-noun dat)
+      ~&  "hoonc: warning: input is not a proper cause"
+      !!
+    =/  debug  u.debug
+    ?:  ?=(%prime -.debug)
+      =+  scratch=(debug-prime pat.debug tex.debug directory.debug native.debug)
+      ~&  "hoonc: warning: %prime cause did not mold, dumping native entries"
+      !!
     ~&  "hoonc: warning: input is not a proper cause"
     !!
   =/  cause  u.cause
@@ -242,6 +275,117 @@
 ::
 ~%  %dependency-system  +  ~
 |%
+::  debug helpers
+++  debug-prime
+  |=  [pat=* tex=* directory=* native=*]
+  ^-  ?
+  =/  patu  ((soft cord) pat)
+  ?~  patu
+    =+  scratch=(debug-hoon-noun pat)
+    ~&  "hoonc: prime-debug pat is not a cord"
+    %.y
+  =/  texu  ((soft cord) tex)
+  ?~  texu
+    =+  scratch=(debug-hoon-noun tex)
+    ~&  "hoonc: prime-debug tex is not a cord"
+    %.y
+  =/  listu  ((soft (list *)) directory)
+  ?~  listu
+    ~&  "hoonc: prime-debug directory is not a list"
+    %.y
+  =/  pairu  ((soft (list [* *])) directory)
+  ?~  pairu
+    ~&  "hoonc: prime-debug directory list entries are not pairs"
+    %.y
+  =/  diru  ((soft (list [cord cord])) directory)
+  ?~  diru
+    =+  scratch=(debug-directory directory)
+    ~&  "hoonc: prime-debug directory is not (list [cord cord])"
+    %.y
+  =+  scratch=(debug-native native)
+  scratch
+::
+++  debug-native
+  |=  native=*
+  ^-  ?
+  =/  native-mug  (mug native)
+  ~&  "hoonc: prime-debug native mug {<native-mug>}"
+  ?@  native
+    ~&  "hoonc: prime-debug native is atom"
+    %.n
+  =/  head  -.native
+  =/  tail  +.native
+  ~&  "hoonc: prime-debug native head mug {<(mug head)>}"
+  ~&  "hoonc: prime-debug native tail mug {<(mug tail)>}"
+  ?@  head
+    ~&  "hoonc: prime-debug native head is atom"
+    %.n
+  =/  path  -.head
+  =/  raw  +.head
+  ~&  "hoonc: prime-debug entry path mug {<(mug path)>}"
+  ~&  "hoonc: prime-debug entry raw mug {<(mug raw)>}"
+  =+  scratch=(debug-hoon-noun head)
+  %.n
+::
+++  debug-directory
+  |=  dir=*
+  ^-  ?
+  =/  idx=@ud  0
+  |-
+    ?@  dir
+      ?:  =(dir 0)
+        ~&  "hoonc: prime-debug directory ended after {<idx>} entries"
+        %.n
+      ~&  "hoonc: prime-debug directory tail atom {<dir>} at index {<idx>}"
+      %.y
+    =/  entry  -.dir
+    =/  rest  +.dir
+    ?@  entry
+      ~&  "hoonc: prime-debug directory entry atom at index {<idx>}"
+      %.y
+    ?:  ?=([cord cord] entry)
+      $(dir rest, idx +(idx))
+    ~&  "hoonc: prime-debug directory entry {<idx>} does not mold as [cord cord]"
+    ~&  "hoonc: prime-debug directory entry mug {<(mug entry)>}"
+    =/  key  -.entry
+    =/  val  +.entry
+    ?@  key
+      ?@  val
+        =/  keyu  ((soft cord) key)
+        ?~  keyu
+          ~&  "hoonc: prime-debug directory entry {<idx>} key is not cord, mug {<(mug key)>}"
+          %.y
+        =/  valu  ((soft cord) val)
+        ?~  valu
+          ~&  "hoonc: prime-debug directory entry {<idx>} path {<u.keyu>}"
+          ~&  "hoonc: prime-debug directory entry {<idx>} val is not cord for path {<u.keyu>}"
+          %.y
+        %.y
+      ~&  "hoonc: prime-debug directory entry {<idx>} val is cell, mug {<(mug val)>}"
+      %.y
+    ~&  "hoonc: prime-debug directory entry {<idx>} key is cell, mug {<(mug key)>}"
+    %.y
+::
+++  debug-hoon-noun
+  |=  raw=*
+  ^-  *
+  =/  raw-mug  (mug raw)
+  ~&  "hoonc: prime-debug noun mug {<raw-mug>}"
+  ?@  raw
+    ~&  "hoonc: prime-debug noun is atom {<raw>}"
+    ~
+  =/  head  -.raw
+  =/  tail  +.raw
+  ?@  head
+    ~&  "hoonc: prime-debug head is atom"
+    ~&  "hoonc: prime-debug head mug {<(mug head)>}"
+    ~&  "hoonc: prime-debug tail mug {<(mug tail)>}"
+    ~
+  ~&  "hoonc: prime-debug head is cell"
+  ~&  "hoonc: prime-debug head head mug {<(mug -.head)>}"
+  ~&  "hoonc: prime-debug head tail mug {<(mug +.head)>}"
+  ~&  "hoonc: prime-debug tail mug {<(mug tail)>}"
+  ~
 ::  +parse-file-path: parse cord of earth file path to $path
 ++  parse-file-path
   |=  pat=cord
@@ -586,6 +730,7 @@
   =|  seen=(set path)
   =^  pc  seen
     (prime-node tar dir native pc seen)
+  ~&  "prime-dir: pc-size {<~(wyt by pc)>}"
   pc
   ::
   ++  prime-node
