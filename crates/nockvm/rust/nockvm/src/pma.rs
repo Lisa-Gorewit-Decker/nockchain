@@ -24,6 +24,11 @@ use crate::noun::{
     AllocLocation, Atom, Cell, CellMemory, IndirectAtom, Noun, NounAllocator, NounRepr, NounSpace,
 };
 
+mod stream;
+pub use stream::{
+    classify_pma_noun, PmaDirectJamConfig, PmaDirectJamError, PmaDirectReader, PmaRawNounKind,
+};
+
 const PMA_MAGIC: u64 = u64::from_le_bytes(*b"NOCKPMA1");
 const PMA_VERSION: u64 = 1;
 
@@ -276,6 +281,11 @@ impl Pma {
             }
         }
         Ok(())
+    }
+
+    /// Get the backing file path.
+    pub fn path(&self) -> &PathBuf {
+        &self.path
     }
 
     /// Get the underlying arena

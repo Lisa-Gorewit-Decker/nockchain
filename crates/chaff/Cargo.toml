@@ -11,10 +11,10 @@ name = "large_checkpoint_bench"
 bincode.workspace = true
 bytes.workspace = true
 either.workspace = true
+blake3.workspace = true
+nockvm.workspace = true
 habit.workspace = true
 intmap.workspace = true
-nockapp.workspace = true
-nockvm.workspace = true
 nockvm_macros.workspace = true
 
 [dev-dependencies]

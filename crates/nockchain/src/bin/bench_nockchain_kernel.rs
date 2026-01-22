@@ -13,7 +13,7 @@ use nockapp::noun::slab::NounSlab;
 use nockapp::save::SaveableCheckpoint;
 use nockapp::utils::{make_tas, NOCK_STACK_SIZE_TINY};
 use nockapp::wire::{SystemWire, Wire};
-use nockapp::{AtomExt, Bytes, NockApp, NockAppError};
+use nockapp::{AtomExt, Bytes, CheckpointMode, NockApp, NockAppError};
 use nockchain::mining::MiningWire;
 use nockchain::setup::{self, fakenet_blockchain_constants, DEFAULT_GENESIS_BLOCK_HEIGHT};
 use nockchain_libp2p_io::driver::Libp2pWire;
@@ -184,6 +184,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
         trace_opts: TraceOpts::default(),
         save_interval: Some(0),
         gc_interval: None,
+        checkpoint_mode: CheckpointMode::Original,
         pma_persist: false,
         color: ColorChoice::Auto,
         state_jam: None,

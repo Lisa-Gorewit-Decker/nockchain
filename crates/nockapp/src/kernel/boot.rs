@@ -27,7 +27,7 @@ use crate::utils::{
     NOCK_STACK_SIZE, NOCK_STACK_SIZE_HUGE, NOCK_STACK_SIZE_LARGE, NOCK_STACK_SIZE_MEDIUM,
     NOCK_STACK_SIZE_SMALL, NOCK_STACK_SIZE_TINY,
 };
-use crate::{default_data_dir, AtomExt, NockApp};
+use crate::{default_data_dir, AtomExt, CheckpointMode, NockApp};
 
 pub const DEFAULT_SAVE_INTERVAL: u64 = 120000;
 const DEFAULT_SAVE_INTERVAL_STR: &str = "120000";
@@ -132,6 +132,14 @@ pub struct Cli {
         value_parser = parse_save_interval
     )]
     pub gc_interval: Option<u64>,
+
+    #[arg(
+        long,
+        help = "Checkpoint saving mode. Use 'original' for slab-based saves, 'stream' for O_DIRECT streaming, or 'none' to disable checkpointing.",
+        value_enum,
+        default_value_t = CheckpointMode::Original
+    )]
+    pub checkpoint_mode: CheckpointMode,
 
     #[arg(
         long,
@@ -250,6 +258,7 @@ pub fn default_boot_cli(new: bool) -> Cli {
     Cli {
         save_interval: Some(DEFAULT_SAVE_INTERVAL),
         gc_interval: None,
+        checkpoint_mode: CheckpointMode::Original,
         new,
         trace_opts: Default::default(),
         color: ColorChoice::Auto,
@@ -483,6 +492,15 @@ pub async fn setup_<J: Jammer + Send + 'static>(
             info!("PMA persistence enabled via CLI; checkpoints disabled");
         }
     }
+    let mut checkpoint_mode = cli.checkpoint_mode;
+    if pma_persist && checkpoint_mode.checkpointing_enabled() {
+        checkpoint_mode = CheckpointMode::Disabled;
+    }
+    match checkpoint_mode {
+        CheckpointMode::Original => info!("Checkpoint mode: original (slab copy)"),
+        CheckpointMode::Stream => info!("Checkpoint mode: stream (O_DIRECT)"),
+        CheckpointMode::Disabled => info!("Checkpoint mode: disabled"),
+    }
     let pma_path_0 = pma_dir.join("0.pma");
     let pma_path_1 = pma_dir.join("1.pma");
     if cli.new {
@@ -583,7 +601,7 @@ pub async fn setup_<J: Jammer + Send + 'static>(
         res
     };
 
-    let app: NockApp<J> = NockApp::new(kernel_f, &jams_dir, save_interval, !pma_persist).await?;
+    let app: NockApp<J> = NockApp::new(kernel_f, &jams_dir, save_interval, checkpoint_mode).await?;
 
     if let Some(export_path) = cli.export_state_jam.clone() {
         export_kernel_state(&app.kernel, &export_path).await?;

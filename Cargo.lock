@@ -911,12 +911,12 @@ name = "chaff"
 version = "0.1.0"
 dependencies = [
  "bincode",
+ "blake3",
  "bytes",
  "criterion",
  "either",
  "habit",
  "intmap",
- "nockapp",
  "nockvm",
  "nockvm_macros",
  "quickcheck",
@@ -3914,6 +3914,7 @@ dependencies = [
  "blake3",
  "byteorder",
  "bytes",
+ "chaff",
  "chrono",
  "clap",
  "config",

@@ -1,18 +1,22 @@
 use std::future::Future;
-use std::path::PathBuf;
+use std::io::{self, BufReader, BufWriter, Read, Write};
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Instant;
 
 use bincode::config::Configuration;
+use bincode::serde::Compat;
 use bincode::{config, encode_to_vec, Decode, Encode};
 use blake3::{Hash, Hasher};
 use bytes::Bytes;
 use nockvm::noun::NounAllocator;
 use nockvm_macros::tas;
+use tempfile::{Builder, TempPath};
 use thiserror::Error;
 use tokio::fs::create_dir_all;
 use tokio::sync::oneshot;
-use tracing::{debug, error, trace, warn};
+use tokio::task::spawn_blocking;
+use tracing::{debug, error, info, trace, warn};
 
 use crate::metrics::NockAppMetrics;
 use crate::noun::slab::{Jammer, NockJammer, NounSlab};
@@ -35,6 +39,45 @@ impl WhichSnapshot {
             WhichSnapshot::Snapshot0 => WhichSnapshot::Snapshot1,
             WhichSnapshot::Snapshot1 => WhichSnapshot::Snapshot0,
         }
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct StreamingCheckpointRequest {
+    pub state_path: PathBuf,
+    pub cold_path: PathBuf,
+}
+
+#[derive(Clone, Debug)]
+pub struct StreamingCheckpointMeta {
+    pub ker_hash: Hash,
+    pub event_num: u64,
+    pub state_bytes: usize,
+    pub cold_bytes: usize,
+}
+
+#[derive(Debug)]
+pub struct StreamingCheckpoint {
+    pub meta: StreamingCheckpointMeta,
+    pub state_path: TempPath,
+    pub cold_path: TempPath,
+}
+
+impl StreamingCheckpoint {
+    pub fn new(meta: StreamingCheckpointMeta, state_path: TempPath, cold_path: TempPath) -> Self {
+        Self {
+            meta,
+            state_path,
+            cold_path,
+        }
+    }
+
+    fn state_path(&self) -> &Path {
+        self.state_path.as_ref()
+    }
+
+    fn cold_path(&self) -> &Path {
+        self.cold_path.as_ref()
     }
 }
 
@@ -96,6 +139,83 @@ impl<J> Saver<J> {
     /// Check if we need to save
     pub fn save_needed(&self, event_num: u64) -> bool {
         self.last_event_num < event_num
+    }
+
+    async fn save_jammed_checkpoint(
+        &mut self,
+        checkpoint: JammedCheckpoint,
+    ) -> Result<(), CheckpointError> {
+        let event_num = checkpoint.event_num;
+        trace!("Saving checkpoint at event_num {}", event_num);
+        let path = self.next_path();
+        checkpoint.save_to_file(&path).await?;
+        self.save_to_next = self.save_to_next.next();
+        debug!(
+            "Saved checkpoint to file: {}",
+            &path.as_os_str().to_str().unwrap_or("<invalid-path>")
+        );
+
+        let mut still_waiting = Vec::new();
+        for (waiting_event_num, waiter) in self.waiters.drain(..) {
+            if waiting_event_num <= event_num {
+                let _ = waiter.send(());
+            } else {
+                still_waiting.push((waiting_event_num, waiter));
+            }
+        }
+
+        self.last_event_num = event_num;
+        self.waiters = still_waiting;
+        Ok(())
+    }
+
+    pub async fn save_jammed(
+        &mut self,
+        checkpoint: JammedCheckpoint,
+    ) -> Result<(), CheckpointError> {
+        self.save_jammed_checkpoint(checkpoint).await
+    }
+
+    pub async fn save_streaming(
+        &mut self,
+        checkpoint: StreamingCheckpoint,
+    ) -> Result<(), CheckpointError> {
+        let event_num = checkpoint.meta.event_num;
+        trace!("Saving streaming checkpoint at event_num {}", event_num);
+        let path = self.next_path();
+        let path_for_log = path.clone();
+        let write_result =
+            spawn_blocking(move || write_streaming_checkpoint(&path, checkpoint)).await;
+        match write_result {
+            Ok(result) => result?,
+            Err(err) => {
+                return Err(CheckpointError::IOError(io::Error::new(
+                    io::ErrorKind::Other,
+                    err,
+                )))
+            }
+        }
+        self.save_to_next = self.save_to_next.next();
+        debug!(
+            "Saved streaming checkpoint to file: {}",
+            &path_for_log
+                .as_os_str()
+                .to_str()
+                .unwrap_or("<invalid-path>")
+        );
+
+        let mut still_waiting = Vec::new();
+        for (waiting_event_num, waiter) in self.waiters.drain(..) {
+            if waiting_event_num <= event_num {
+                let _ = waiter.send(());
+            } else {
+                still_waiting.push((waiting_event_num, waiter));
+            }
+        }
+
+        self.last_event_num = event_num;
+        self.waiters = still_waiting;
+        Ok(())
     }
 }
 
@@ -201,25 +321,7 @@ impl<J: Jammer> Saver<J> {
         trace!("Converted checkpoint to saveable");
         let jammed = saveable.to_jammed_checkpoint::<J>(metrics);
         trace!("Converted saveable to jammed");
-        let path = self.next_path();
-        jammed.save_to_file(&path).await?;
-        self.save_to_next = self.save_to_next.next();
-        std::mem::drop(jammed);
-        debug!(
-            "Saved checkpoint to file: {}",
-            &path.as_os_str().to_str().unwrap()
-        );
-        let mut still_waiting = Vec::new();
-        for (waiting_event_num, waiter) in self.waiters.drain(..) {
-            if waiting_event_num <= event_num {
-                let _ = waiter.send(()); // An error means the receiver was dropped
-            } else {
-                still_waiting.push((waiting_event_num, waiter));
-            }
-        }
-
-        self.last_event_num = event_num;
-        self.waiters = still_waiting;
+        self.save_jammed_checkpoint(jammed).await?;
 
         Ok(())
     }
@@ -583,6 +685,176 @@ impl JammedCheckpointV2 {
 
 fn path_or_memory(path: Option<&PathBuf>) -> PathBuf {
     path.cloned().unwrap_or_else(|| PathBuf::from("<memory>"))
+}
+
+fn write_streaming_checkpoint(
+    path: &Path,
+    checkpoint: StreamingCheckpoint,
+) -> Result<(), CheckpointError> {
+    let start = Instant::now();
+    let dir = path.parent().ok_or_else(|| {
+        CheckpointError::IOError(io::Error::new(
+            io::ErrorKind::Other,
+            "checkpoint path missing parent directory",
+        ))
+    })?;
+    std::fs::create_dir_all(dir)?;
+
+    info!(
+        target: "nockapp::checkpoint::stream",
+        "checkpoint stream save start event_num={} path={}",
+        checkpoint.meta.event_num,
+        path.display()
+    );
+
+    info!(
+        target: "nockapp::checkpoint::stream",
+        "checkpoint stream checksum start event_num={}",
+        checkpoint.meta.event_num
+    );
+    let checksum_start = Instant::now();
+    let checksum = streaming_checksum(
+        checkpoint.meta.event_num,
+        checkpoint.meta.cold_bytes,
+        checkpoint.cold_path(),
+        checkpoint.meta.state_bytes,
+        checkpoint.state_path(),
+    )?;
+    let checksum_elapsed = checksum_start.elapsed();
+    info!(
+        target: "nockapp::checkpoint::stream",
+        "checkpoint stream checksum done event_num={} ms={}",
+        checkpoint.meta.event_num,
+        checksum_elapsed.as_millis()
+    );
+
+    info!(
+        target: "nockapp::checkpoint::stream",
+        "checkpoint stream payload start event_num={}",
+        checkpoint.meta.event_num
+    );
+    let payload_start = Instant::now();
+    let mut payload_tmp = Builder::new().prefix("chkjam-payload-").tempfile_in(dir)?;
+    {
+        let mut writer = BufWriter::new(payload_tmp.as_file_mut());
+        write_streaming_payload(
+            &mut writer,
+            &checkpoint.meta,
+            checksum,
+            checkpoint.cold_path(),
+            checkpoint.state_path(),
+        )?;
+        writer.flush()?;
+    }
+    let payload_len = payload_tmp.as_file().metadata()?.len();
+    let payload_path = payload_tmp.into_temp_path();
+    let payload_elapsed = payload_start.elapsed();
+    info!(
+        target: "nockapp::checkpoint::stream",
+        "checkpoint stream payload done event_num={} bytes={} ms={}",
+        checkpoint.meta.event_num,
+        payload_len,
+        payload_elapsed.as_millis()
+    );
+
+    info!(
+        target: "nockapp::checkpoint::stream",
+        "checkpoint stream final write start event_num={}",
+        checkpoint.meta.event_num
+    );
+    let final_start = Instant::now();
+    let mut final_tmp = Builder::new().prefix("chkjam-final-").tempfile_in(dir)?;
+    {
+        let mut writer = BufWriter::new(final_tmp.as_file_mut());
+        write_streaming_envelope(&mut writer, payload_len, payload_path.as_ref())?;
+        writer.flush()?;
+    }
+    final_tmp
+        .persist(path)
+        .map_err(|err| CheckpointError::IOError(err.error))?;
+    let final_elapsed = final_start.elapsed();
+    info!(
+        target: "nockapp::checkpoint::stream",
+        "checkpoint stream save done event_num={} ms={} total_ms={}",
+        checkpoint.meta.event_num,
+        final_elapsed.as_millis(),
+        start.elapsed().as_millis()
+    );
+
+    Ok(())
+}
+
+fn write_streaming_payload<W: Write>(
+    writer: &mut W,
+    meta: &StreamingCheckpointMeta,
+    checksum: Hash,
+    cold_path: &Path,
+    state_path: &Path,
+) -> Result<(), CheckpointError> {
+    let config = config::standard();
+    bincode::encode_into_std_write(Compat(&meta.ker_hash), writer, config)?;
+    bincode::encode_into_std_write(Compat(&checksum), writer, config)?;
+    bincode::encode_into_std_write(meta.event_num, writer, config)?;
+    bincode::encode_into_std_write(meta.cold_bytes as u64, writer, config)?;
+    copy_file_to_writer(cold_path, writer)?;
+    bincode::encode_into_std_write(meta.state_bytes as u64, writer, config)?;
+    copy_file_to_writer(state_path, writer)?;
+    Ok(())
+}
+
+fn write_streaming_envelope<W: Write>(
+    writer: &mut W,
+    payload_len: u64,
+    payload_path: &Path,
+) -> Result<(), CheckpointError> {
+    let config = config::standard();
+    bincode::encode_into_std_write(JAM_MAGIC_BYTES, writer, config)?;
+    bincode::encode_into_std_write(SNAPSHOT_VERSION_2, writer, config)?;
+    bincode::encode_into_std_write(payload_len, writer, config)?;
+    copy_file_to_writer(payload_path, writer)?;
+    Ok(())
+}
+
+fn copy_file_to_writer<W: Write>(path: &Path, writer: &mut W) -> Result<(), CheckpointError> {
+    let mut reader = BufReader::new(std::fs::File::open(path)?);
+    let mut buf = [0u8; 1024 * 1024];
+    loop {
+        let read = reader.read(&mut buf)?;
+        if read == 0 {
+            break;
+        }
+        writer.write_all(&buf[..read])?;
+    }
+    Ok(())
+}
+
+fn streaming_checksum(
+    event_num: u64,
+    cold_bytes: usize,
+    cold_path: &Path,
+    state_bytes: usize,
+    state_path: &Path,
+) -> Result<Hash, CheckpointError> {
+    let mut hasher = Hasher::new();
+    hasher.update(&event_num.to_le_bytes());
+    hasher.update(&cold_bytes.to_le_bytes());
+    update_hasher_from_file(&mut hasher, cold_path)?;
+    hasher.update(&state_bytes.to_le_bytes());
+    update_hasher_from_file(&mut hasher, state_path)?;
+    Ok(hasher.finalize())
+}
+
+fn update_hasher_from_file(hasher: &mut Hasher, path: &Path) -> Result<(), CheckpointError> {
+    let mut reader = BufReader::new(std::fs::File::open(path)?);
+    let mut buf = [0u8; 1024 * 1024];
+    loop {
+        let read = reader.read(&mut buf)?;
+        if read == 0 {
+            break;
+        }
+        hasher.update(&buf[..read]);
+    }
+    Ok(())
 }
 
 #[derive(Clone, Debug)]

@@ -534,6 +534,16 @@ pub enum CueError {
     TruncatedBuffer,
 }
 
+impl From<chaff::CueError> for CueError {
+    fn from(err: chaff::CueError) -> Self {
+        match err {
+            chaff::CueError::BadBackref => CueError::BadBackref,
+            chaff::CueError::BackrefTooBig => CueError::BackrefTooBig,
+            chaff::CueError::TruncatedBuffer => CueError::TruncatedBuffer,
+        }
+    }
+}
+
 /// Slab size from vector index, in 8-byte words
 fn idx_to_size(idx: usize) -> usize {
     1 << (2 * idx + 9)
@@ -883,6 +893,18 @@ impl Jammer for NockJammer {
         tracing::trace!("cue_into: noun_counter {}", noun_counter);
         slab.set_root(res);
         Ok(res)
+    }
+}
+
+impl Jammer for chaff::Chaff {
+    fn jam(noun: Noun, space: &NounSpace) -> Bytes {
+        chaff::Chaff::jam(noun, space)
+    }
+
+    fn cue(slab: &mut NounSlab<Self>, bytes: Bytes) -> Result<Noun, CueError> {
+        let noun = chaff::Chaff::cue_into(slab, bytes).map_err(CueError::from)?;
+        slab.set_root(noun);
+        Ok(noun)
     }
 }
 

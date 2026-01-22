@@ -4,21 +4,92 @@ use std::sync::OnceLock;
 
 use bincode::config::{self, Configuration};
 use bincode::Decode;
+use blake3::Hash;
 use bytes::Bytes;
 use chaff::Chaff;
 use criterion::{black_box, criterion_group, criterion_main, BatchSize, Criterion};
-use nockapp::nockapp::save::{JammedCheckpointV1, JammedCheckpointV2, JAM_MAGIC_BYTES};
-use nockapp::noun::slab::{Jammer, NockJammer, NounSlab};
+use nockvm::ext::{JammedNoun, NounExt};
+use nockvm::mem::NockStack;
+use nockvm::noun::Noun;
+use nockvm_macros::tas;
 
 const FALLBACK_CHECKPOINT: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/test-jams/0.chkjam");
 
+const JAM_MAGIC_BYTES: u64 = tas!(b"CHKJAM");
+const SNAPSHOT_VERSION_1: u32 = 1;
 const SNAPSHOT_VERSION_2: u32 = 2;
+const DEFAULT_STACK_WORDS: usize = 8 << 10 << 10;
+const TOP_SLOTS: usize = 0;
+const STACK_WORDS_ENV: &str = "NOCKAPP_BENCH_STACK_WORDS";
+
+fn stack_words() -> usize {
+    std::env::var(STACK_WORDS_ENV)
+        .ok()
+        .and_then(|value| value.parse().ok())
+        .unwrap_or(DEFAULT_STACK_WORDS)
+}
+
+fn fresh_stack() -> NockStack {
+    NockStack::new(stack_words(), TOP_SLOTS)
+}
+
+trait Jammer {
+    fn cue(stack: &mut NockStack, bytes: Bytes) -> Noun;
+    fn jam(stack: &mut NockStack, noun: Noun) -> Bytes;
+}
+
+struct NockvmJammer;
+
+impl Jammer for NockvmJammer {
+    fn cue(stack: &mut NockStack, bytes: Bytes) -> Noun {
+        Noun::cue_bytes(stack, &bytes).expect("cue should succeed for checkpoint")
+    }
+
+    fn jam(stack: &mut NockStack, noun: Noun) -> Bytes {
+        noun.jam_self(stack).0
+    }
+}
+
+struct ChaffJammer;
+
+impl Jammer for ChaffJammer {
+    fn cue(stack: &mut NockStack, bytes: Bytes) -> Noun {
+        Chaff::cue_into(stack, bytes).expect("cue should succeed for checkpoint")
+    }
+
+    fn jam(stack: &mut NockStack, noun: Noun) -> Bytes {
+        Chaff::jam(noun, &stack.noun_space())
+    }
+}
 
 #[derive(Decode)]
 struct CheckpointEnvelope {
     magic_bytes: u64,
     version: u32,
     payload: Vec<u8>,
+}
+
+#[derive(Decode)]
+struct JammedCheckpointV1 {
+    magic_bytes: u64,
+    version: u32,
+    #[bincode(with_serde)]
+    _ker_hash: Hash,
+    #[bincode(with_serde)]
+    _checksum: Hash,
+    _event_num: u64,
+    jam: JammedNoun,
+}
+
+#[derive(Decode)]
+struct JammedCheckpointV2 {
+    #[bincode(with_serde)]
+    _ker_hash: Hash,
+    #[bincode(with_serde)]
+    _checksum: Hash,
+    _event_num: u64,
+    _cold_jam: JammedNoun,
+    state_jam: JammedNoun,
 }
 
 fn checkpoint_bytes() -> &'static [u8] {
@@ -56,7 +127,7 @@ fn extract_jammed_state(bytes: &[u8]) -> Bytes {
     if let Ok((checkpoint, _)) =
         bincode::decode_from_slice::<JammedCheckpointV1, Configuration>(bytes, config)
     {
-        if checkpoint.magic_bytes == JAM_MAGIC_BYTES {
+        if checkpoint.magic_bytes == JAM_MAGIC_BYTES && checkpoint.version == SNAPSHOT_VERSION_1 {
             return checkpoint.jam.0;
         }
     }
@@ -120,17 +191,12 @@ where
     c.bench_function(name, |b| {
         b.iter_batched(
             || {
-                // Setup: cue once (not timed)
-                let mut slab = NounSlab::<J>::new();
-                let noun = slab
-                    .cue_into(jammed_bytes.clone())
-                    .expect("cue should succeed for checkpoint");
-                slab.set_root(noun);
-                slab
+                let mut stack = fresh_stack();
+                let noun = J::cue(&mut stack, jammed_bytes.clone());
+                (stack, noun)
             },
-            |slab| {
-                // Timed: just jam
-                let jammed = slab.coerce_jammer::<J>().jam();
+            |(mut stack, noun)| {
+                let jammed = J::jam(&mut stack, noun);
                 black_box(jammed);
             },
             BatchSize::SmallInput,
@@ -145,33 +211,31 @@ where
     let jammed_bytes = jammed_state_bytes().clone();
     c.bench_function(name, |b| {
         b.iter(|| {
-            let mut slab = NounSlab::<J>::new();
-            let noun = slab
-                .cue_into(jammed_bytes.clone())
-                .expect("cue should succeed for checkpoint");
+            let mut stack = fresh_stack();
+            let noun = J::cue(&mut stack, jammed_bytes.clone());
             black_box(noun);
         });
     });
 }
 
-fn jam_checkpoint_nockjammer(c: &mut Criterion) {
-    run_checkpoint_jam_bench::<NockJammer>(c, "jam_hoonc_state");
+fn jam_checkpoint_nockvm(c: &mut Criterion) {
+    run_checkpoint_jam_bench::<NockvmJammer>(c, "jam_hoonc_state_nockvm");
 }
 
 fn jam_checkpoint_chaff(c: &mut Criterion) {
-    run_checkpoint_jam_bench::<Chaff>(c, "jam_hoonc_state_chaff");
+    run_checkpoint_jam_bench::<ChaffJammer>(c, "jam_hoonc_state_chaff");
 }
 
-fn cue_checkpoint_nockjammer(c: &mut Criterion) {
-    run_checkpoint_cue_bench::<NockJammer>(c, "cue_hoonc_state");
+fn cue_checkpoint_nockvm(c: &mut Criterion) {
+    run_checkpoint_cue_bench::<NockvmJammer>(c, "cue_hoonc_state_nockvm");
 }
 
 fn cue_checkpoint_chaff(c: &mut Criterion) {
-    run_checkpoint_cue_bench::<Chaff>(c, "cue_hoonc_state_chaff");
+    run_checkpoint_cue_bench::<ChaffJammer>(c, "cue_hoonc_state_chaff");
 }
 
 criterion_group!(
-    benches, jam_checkpoint_nockjammer, jam_checkpoint_chaff, cue_checkpoint_nockjammer,
+    benches, jam_checkpoint_nockvm, jam_checkpoint_chaff, cue_checkpoint_nockvm,
     cue_checkpoint_chaff
 );
 criterion_main!(benches);

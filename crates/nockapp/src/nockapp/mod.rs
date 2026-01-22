@@ -8,10 +8,12 @@ pub mod test;
 pub mod wire;
 
 use std::future::Future;
+use std::io;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
+use clap::ValueEnum;
 use driver::{IOAction, IODriverFn, NockAppHandle, PokeResult};
 pub use error::NockAppError;
 use futures::future::{pending, Either};
@@ -21,6 +23,7 @@ use nockvm::noun::{NounAllocator, SIG};
 use signal_hook::consts::signal::*;
 use signal_hook::consts::TERM_SIGNALS;
 use signal_hook_tokio::Signals;
+use tempfile::Builder;
 use tokio::select;
 use tokio::sync::{broadcast, mpsc, Mutex, OwnedMutexGuard};
 use tokio::time::{interval_at, Duration, Instant, Interval};
@@ -30,7 +33,7 @@ use wire::WireRepr;
 
 use crate::kernel::form::Kernel;
 use crate::noun::slab::{Jammer, NockJammer, NounSlab};
-use crate::save::{SaveableCheckpoint, Saver};
+use crate::save::{SaveableCheckpoint, Saver, StreamingCheckpoint, StreamingCheckpointRequest};
 
 type NockAppResult = Result<(), NockAppError>;
 
@@ -51,6 +54,31 @@ pub const EXIT_SIGQUIT: usize = 131;
 pub const EXIT_SIGTERM: usize = 143;
 /// Enable PMA persistence and disable checkpoints.
 pub(crate) const PMA_PERSIST_ENV: &str = "NOCK_PMA_PERSIST";
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
+pub enum CheckpointMode {
+    #[value(alias = "full", alias = "slab")]
+    Original,
+    Stream,
+    #[value(alias = "none", alias = "off")]
+    Disabled,
+}
+
+impl CheckpointMode {
+    pub fn checkpointing_enabled(self) -> bool {
+        matches!(self, CheckpointMode::Original | CheckpointMode::Stream)
+    }
+
+    pub fn is_streaming(self) -> bool {
+        matches!(self, CheckpointMode::Stream)
+    }
+}
+
+impl Default for CheckpointMode {
+    fn default() -> Self {
+        CheckpointMode::Original
+    }
+}
 
 pub struct NockApp<J = NockJammer> {
     /// Nock kernel
@@ -73,8 +101,7 @@ pub struct NockApp<J = NockJammer> {
     effect_broadcast: Arc<broadcast::Sender<NounSlab>>,
     /// Save interval
     save_interval: Option<Interval>,
-    /// Whether checkpointing is enabled.
-    checkpointing_enabled: bool,
+    checkpoint_mode: CheckpointMode,
     /// Mutex to ensure only one save at a time
     pub(crate) save_mutex: Arc<Mutex<Saver<J>>>,
     metrics: Arc<NockAppMetrics>,
@@ -167,7 +194,7 @@ impl<J: Jammer + Send + 'static> NockApp<J> {
         kernel_from_checkpoint: F,
         snapshot_path: &PathBuf,
         save_interval_duration: Option<Duration>,
-        checkpointing_enabled: bool,
+        checkpoint_mode: CheckpointMode,
     ) -> Result<Self, NockAppError>
     where
         F: FnOnce(Option<SaveableCheckpoint>) -> U,
@@ -194,8 +221,11 @@ impl<J: Jammer + Send + 'static> NockApp<J> {
             Arc::new(NockAppMetrics::default())
         };
         let pma_persist_env = std::env::var_os(PMA_PERSIST_ENV).is_some();
-        let checkpointing_enabled = checkpointing_enabled && !pma_persist_env;
-        if !checkpointing_enabled {
+        let mut checkpoint_mode = checkpoint_mode;
+        if pma_persist_env && checkpoint_mode.checkpointing_enabled() {
+            checkpoint_mode = CheckpointMode::Disabled;
+        }
+        if !checkpoint_mode.checkpointing_enabled() {
             if pma_persist_env {
                 info!("{PMA_PERSIST_ENV} enabled; checkpointing disabled");
             } else {
@@ -203,7 +233,7 @@ impl<J: Jammer + Send + 'static> NockApp<J> {
             }
         }
 
-        let (saver, checkpoint) = if checkpointing_enabled {
+        let (saver, checkpoint) = if checkpoint_mode.checkpointing_enabled() {
             Saver::<J>::try_load(snapshot_path, Some(metrics.clone()))
                 .await
                 .expect("Failed to set up snapshotting")
@@ -223,7 +253,7 @@ impl<J: Jammer + Send + 'static> NockApp<J> {
         // let tasks = TaskJoinSet::new();
         // let tasks = Arc::new(TaskJoinSet::new());
         let tasks = TaskTracker::new();
-        let save_interval = if checkpointing_enabled {
+        let save_interval = if checkpoint_mode.checkpointing_enabled() {
             let interval = save_interval_duration.map(|duration| {
                 info!("Nockapp save interval duration: {:?}", duration);
                 let first_tick_at = Instant::now() + duration;
@@ -264,7 +294,7 @@ impl<J: Jammer + Send + 'static> NockApp<J> {
             action_channel_sender,
             effect_broadcast,
             save_interval,
-            checkpointing_enabled,
+            checkpoint_mode,
             save_mutex,
             // cancel_token,
             metrics,
@@ -336,7 +366,7 @@ impl<J: Jammer + Send + 'static> NockApp<J> {
         f: impl std::future::Future<Output = ()> + Send + 'static,
         mut save_permit: OwnedMutexGuard<Saver<J>>,
     ) -> Result<tokio::task::JoinHandle<NockAppResult>, NockAppError> {
-        if !self.checkpointing_enabled {
+        if !self.checkpoint_mode.checkpointing_enabled() {
             trace!("save_f: checkpointing disabled; skipping");
             let join_handle = self.tasks.spawn(async move {
                 f.await;
@@ -345,16 +375,75 @@ impl<J: Jammer + Send + 'static> NockApp<J> {
             drop(save_permit);
             return Ok(join_handle);
         }
-        let checkpoint_fut = self.kernel.checkpoint();
+        enum SaveFuture<F, S> {
+            Full(F),
+            Stream {
+                future: S,
+                state_temp: tempfile::TempPath,
+                cold_temp: tempfile::TempPath,
+            },
+        }
+
+        let checkpoint_fut = match self.checkpoint_mode {
+            CheckpointMode::Original => SaveFuture::Full(self.kernel.checkpoint()),
+            CheckpointMode::Stream => {
+                let target_path = save_permit.next_path();
+                let dir = target_path.parent().ok_or_else(|| {
+                    NockAppError::SaveError(io::Error::new(
+                        io::ErrorKind::Other,
+                        "checkpoint path missing parent directory",
+                    ))
+                })?;
+                std::fs::create_dir_all(dir).map_err(NockAppError::SaveError)?;
+                let state_temp = Builder::new()
+                    .prefix("chkjam-state-")
+                    .tempfile_in(dir)
+                    .map_err(NockAppError::SaveError)?
+                    .into_temp_path();
+                let cold_temp = Builder::new()
+                    .prefix("chkjam-cold-")
+                    .tempfile_in(dir)
+                    .map_err(NockAppError::SaveError)?
+                    .into_temp_path();
+                let request = StreamingCheckpointRequest {
+                    state_path: state_temp.to_path_buf(),
+                    cold_path: cold_temp.to_path_buf(),
+                };
+                SaveFuture::Stream {
+                    future: self.kernel.checkpoint_streaming(request),
+                    state_temp,
+                    cold_temp,
+                }
+            }
+            CheckpointMode::Disabled => {
+                return Err(NockAppError::OtherError(
+                    "checkpointing disabled while spawning save".to_string(),
+                ));
+            }
+        };
         let metrics = self.metrics.clone();
 
         trace!("Spawning save task from save_f");
         let join_handle = self.tasks.spawn(async move {
             f.await;
             trace!("Save task from save_f: f.await done");
-            let checkpoint = checkpoint_fut.await?;
-            trace!("Save task from save_f: checkpoint_fut.await done");
-            save_permit.save(checkpoint, metrics).await?;
+            match checkpoint_fut {
+                SaveFuture::Full(checkpoint_fut) => {
+                    let checkpoint = checkpoint_fut.await?;
+                    trace!("Save task from save_f: checkpoint_fut.await done");
+                    save_permit.save(checkpoint, metrics).await?;
+                }
+                SaveFuture::Stream {
+                    future,
+                    state_temp,
+                    cold_temp,
+                } => {
+                    let meta = future.await?;
+                    trace!("Save task from save_f: streaming checkpoint_fut.await done");
+                    let checkpoint = StreamingCheckpoint::new(meta, state_temp, cold_temp);
+                    save_permit.save_streaming(checkpoint).await?;
+                }
+            }
             trace!("Save task from save_f: save_permit.save done");
 
             drop(save_permit);
@@ -367,7 +456,7 @@ impl<J: Jammer + Send + 'static> NockApp<J> {
 
     /// Except in tests, save should only be called by the permit handler.
     pub(crate) async fn save(&mut self, save_permit: OwnedMutexGuard<Saver<J>>) -> NockAppResult {
-        if !self.checkpointing_enabled {
+        if !self.checkpoint_mode.checkpointing_enabled() {
             trace!("save: checkpointing disabled; skipping");
             return Ok(());
         }
@@ -376,7 +465,7 @@ impl<J: Jammer + Send + 'static> NockApp<J> {
     }
 
     pub async fn save_locked(&mut self) -> NockAppResult {
-        if !self.checkpointing_enabled {
+        if !self.checkpoint_mode.checkpointing_enabled() {
             trace!("save_locked: checkpointing disabled; skipping");
             return Ok(());
         }
@@ -392,7 +481,7 @@ impl<J: Jammer + Send + 'static> NockApp<J> {
 
     /// Save the kernel to disk, blocking operation
     pub async fn save_blocking(&mut self) -> NockAppResult {
-        if !self.checkpointing_enabled {
+        if !self.checkpoint_mode.checkpointing_enabled() {
             trace!("save_blocking: checkpointing disabled; skipping");
             return Ok(());
         }
@@ -625,7 +714,7 @@ impl<J: Jammer + Send + 'static> NockApp<J> {
         &mut self,
         save_guard: OwnedMutexGuard<Saver<J>>,
     ) -> Result<NockAppRun, NockAppError> {
-        if !self.checkpointing_enabled {
+        if !self.checkpoint_mode.checkpointing_enabled() {
             return Ok(NockAppRun::Pending);
         }
         //  Check if we should write in the first place
@@ -750,7 +839,7 @@ impl<J: Jammer + Send + 'static> NockApp<J> {
             }
         }
 
-        if !self.checkpointing_enabled {
+        if !self.checkpoint_mode.checkpointing_enabled() {
             let exit = self.exit.clone();
             let shutdown_result = if code == EXIT_OK {
                 Ok(())

@@ -2,6 +2,7 @@
 use std::any::Any;
 use std::fs;
 use std::future::Future;
+use std::io::{BufWriter, Write};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
@@ -10,6 +11,7 @@ use std::time::{Instant, SystemTime};
 use bincode::{config, Decode, Encode};
 use blake3::{Hash, Hasher};
 use byteorder::{LittleEndian, WriteBytesExt};
+use chaff::stream::{jam_noun_to_writer, jam_pma_to_writer};
 use nockvm::hamt::Hamt;
 use nockvm::interpreter::{self, interpret, Error, Mote, NockCancelToken};
 use nockvm::jets::cold::{Cold, Nounable};
@@ -18,7 +20,7 @@ use nockvm::jets::nock::util::mook;
 use nockvm::mem::NockStack;
 use nockvm::mug::met3_usize;
 use nockvm::noun::{Atom, Cell, DirectAtom, IndirectAtom, Noun, NounSpace, D, T};
-use nockvm::pma::{Pma, PmaCopy, PmaCopyFrom};
+use nockvm::pma::{Pma, PmaCopy, PmaCopyFrom, PmaDirectJamConfig, PmaDirectReader};
 use nockvm::trace::{path_to_cord, write_serf_trace_safe};
 use nockvm_macros::tas;
 use tokio::sync::{mpsc, oneshot};
@@ -30,7 +32,7 @@ use crate::metrics::NockAppMetrics;
 use crate::nockapp::wire::{wire_to_noun, WireRepr};
 use crate::noun::slab::NounSlab;
 use crate::noun::slam;
-use crate::save::SaveableCheckpoint;
+use crate::save::{SaveableCheckpoint, StreamingCheckpointMeta, StreamingCheckpointRequest};
 use crate::utils::{
     create_context, current_da, NOCK_STACK_SIZE, NOCK_STACK_SIZE_HUGE, NOCK_STACK_SIZE_LARGE,
     NOCK_STACK_SIZE_MEDIUM, NOCK_STACK_SIZE_SMALL, NOCK_STACK_SIZE_TINY,
@@ -297,6 +299,11 @@ pub enum SerfAction<C> {
     // Make a CheckPoint
     Checkpoint {
         result: oneshot::Sender<C>,
+    },
+    // Make a streaming checkpoint directly from the PMA slab
+    CheckpointStreaming {
+        request: StreamingCheckpointRequest,
+        result: oneshot::Sender<Result<StreamingCheckpointMeta>>,
     },
     Import {
         state: LoadState,
@@ -618,6 +625,20 @@ impl<C> SerfThread<C> {
         }
     }
 
+    pub(crate) fn checkpoint_streaming(
+        &self,
+        request: StreamingCheckpointRequest,
+    ) -> impl Future<Output = Result<StreamingCheckpointMeta>> {
+        let (result, result_fut) = oneshot::channel();
+        let action_sender = self.action_sender.clone();
+        async move {
+            action_sender
+                .send(SerfAction::CheckpointStreaming { request, result })
+                .await?;
+            result_fut.await?
+        }
+    }
+
     pub fn import(&self, state: LoadState) -> impl Future<Output = Result<()>> {
         let (result, result_fut) = oneshot::channel();
         let action_sender = self.action_sender.clone();
@@ -761,6 +782,22 @@ fn serf_loop<C: SerfCheckpoint>(
                 if result.send(checkpoint).is_err() {
                     debug!(
                         "Checkpoint receiver dropped before receiving result - likely timed out"
+                    );
+                };
+                let action_elapsed = action_start.elapsed();
+                if let Some(nockapp_metrics) = &serf.metrics {
+                    nockapp_metrics
+                        .serf_loop_checkpoint
+                        .add_timing(&action_elapsed);
+                };
+            }
+            SerfAction::CheckpointStreaming { request, result } => {
+                let metrics_checkpoint = serf.metrics.clone();
+                let checkpoint =
+                    create_streaming_checkpoint(&mut serf, request, &metrics_checkpoint);
+                if result.send(checkpoint).is_err() {
+                    debug!(
+                        "Streaming checkpoint receiver dropped before receiving result - likely timed out"
                     );
                 };
                 let action_elapsed = action_start.elapsed();
@@ -935,6 +972,142 @@ fn create_checkpoint<C: SerfCheckpoint>(
     checkpoint
 }
 
+fn create_streaming_checkpoint(
+    serf: &mut Serf,
+    request: StreamingCheckpointRequest,
+    metrics: &Option<Arc<NockAppMetrics>>,
+) -> Result<StreamingCheckpointMeta> {
+    let ker_hash = serf.ker_hash;
+    let event_num = serf.event_num.load(Ordering::SeqCst);
+    let kernel_state_raw = {
+        let space = serf.context.stack.noun_space();
+        let kernel_state = serf
+            .arvo
+            .in_space(&space)
+            .slot(STATE_AXIS)
+            .map(|handle| handle.noun())?;
+        unsafe { kernel_state.as_raw() }
+    };
+
+    info!(
+        target: "nockapp::checkpoint::stream",
+        "checkpoint stream start event_num={}",
+        event_num
+    );
+
+    let (state_stats, state_elapsed) = {
+        let pma = serf.pma.as_ref().ok_or_else(|| {
+            CrownError::SaveError("streaming checkpoint requires PMA persistence".to_string())
+        })?;
+
+        info!(
+            target: "nockapp::checkpoint::stream",
+            "checkpoint stream msync start event_num={}",
+            event_num
+        );
+        let sync_start = Instant::now();
+        if let Err(err) = pma.sync_all() {
+            warn!("Failed to msync PMA before streaming checkpoint: {err}");
+        }
+        let sync_elapsed = sync_start.elapsed();
+        info!(
+            target: "nockapp::checkpoint::stream",
+            "checkpoint stream msync done event_num={} ms={}",
+            event_num,
+            sync_elapsed.as_millis()
+        );
+
+        let state_start = Instant::now();
+        info!(
+            target: "nockapp::checkpoint::stream",
+            "checkpoint stream jam state start event_num={} path={}",
+            event_num,
+            request.state_path.display()
+        );
+        let state_file = std::fs::OpenOptions::new()
+            .create(true)
+            .write(true)
+            .truncate(true)
+            .open(&request.state_path)
+            .map_err(|err| CrownError::SaveError(format!("streaming state open failed: {err}")))?;
+        let mut state_writer = BufWriter::new(state_file);
+        let mut reader = PmaDirectReader::new(pma, PmaDirectJamConfig::default())
+            .map_err(|err| CrownError::SaveError(format!("streaming reader init failed: {err}")))?;
+        let state_stats = jam_pma_to_writer(&mut reader, kernel_state_raw, &mut state_writer)
+            .map_err(|err| CrownError::SaveError(format!("streaming state jam failed: {err}")))?;
+        state_writer
+            .flush()
+            .map_err(|err| CrownError::SaveError(format!("streaming state flush failed: {err}")))?;
+        let state_elapsed = state_start.elapsed();
+        info!(
+            target: "nockapp::checkpoint::stream",
+            "checkpoint stream jam state done event_num={} bytes={} ms={}",
+            event_num,
+            state_stats.byte_len,
+            state_elapsed.as_millis()
+        );
+        (state_stats, state_elapsed)
+    };
+
+    let cold_start = Instant::now();
+    info!(
+        target: "nockapp::checkpoint::stream",
+        "checkpoint stream jam cold start event_num={} path={}",
+        event_num,
+        request.cold_path.display()
+    );
+    let cold_noun = serf.context.cold.into_noun(serf.stack());
+    let cold_file = std::fs::OpenOptions::new()
+        .create(true)
+        .write(true)
+        .truncate(true)
+        .open(&request.cold_path)
+        .map_err(|err| CrownError::SaveError(format!("streaming cold open failed: {err}")))?;
+    let mut cold_writer = BufWriter::new(cold_file);
+    let cold_stats = {
+        let space = serf.context.stack.noun_space();
+        jam_noun_to_writer(cold_noun, &space, &mut cold_writer)
+            .map_err(|err| CrownError::SaveError(format!("streaming cold jam failed: {err}")))?
+    };
+    cold_writer
+        .flush()
+        .map_err(|err| CrownError::SaveError(format!("streaming cold flush failed: {err}")))?;
+    let cold_elapsed = cold_start.elapsed();
+    info!(
+        target: "nockapp::checkpoint::stream",
+        "checkpoint stream jam cold done event_num={} bytes={} ms={}",
+        event_num,
+        cold_stats.byte_len,
+        cold_elapsed.as_millis()
+    );
+
+    if let Some(metrics) = metrics {
+        let total = state_elapsed + cold_elapsed;
+        metrics.save_jam_time.add_timing(&total);
+    }
+
+    if let Some(pma) = serf.pma.as_ref() {
+        if let Err(err) = pma.advise_drop_allocated_prefix(4, 5) {
+            warn!("Failed to madvise PMA prefix after streaming checkpoint: {err}");
+        }
+    }
+
+    info!(
+        target: "nockapp::checkpoint::stream",
+        "checkpoint stream jam complete event_num={} state_bytes={} cold_bytes={}",
+        event_num,
+        state_stats.byte_len,
+        cold_stats.byte_len
+    );
+
+    Ok(StreamingCheckpointMeta {
+        ker_hash,
+        event_num,
+        state_bytes: state_stats.byte_len,
+        cold_bytes: cold_stats.byte_len,
+    })
+}
+
 /// Represents a Sword kernel, containing a Serf and snapshot location.
 pub struct Kernel<C> {
     /// The Serf managing the interface to the Sword.
@@ -1097,6 +1270,14 @@ impl<C: SerfCheckpoint + 'static> Kernel<C> {
     /// Produces a checkpoint of the kernel state.
     pub fn checkpoint(&self) -> impl Future<Output = Result<C>> {
         self.serf.checkpoint()
+    }
+
+    /// Produces a streaming checkpoint directly from the PMA slab.
+    pub fn checkpoint_streaming(
+        &self,
+        request: StreamingCheckpointRequest,
+    ) -> impl Future<Output = Result<StreamingCheckpointMeta>> {
+        self.serf.checkpoint_streaming(request)
     }
 }
 

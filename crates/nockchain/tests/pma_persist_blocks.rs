@@ -9,7 +9,7 @@ use nockapp::kernel::boot::{self, NockStackSize, TraceOpts};
 use nockapp::noun::slab::{slab_equality, NounSlab};
 use nockapp::utils::make_tas;
 use nockapp::wire::{SystemWire, Wire, WireRepr};
-use nockapp::{AtomExt, Bytes, NockApp, NockAppError};
+use nockapp::{AtomExt, Bytes, CheckpointMode, NockApp, NockAppError};
 use nockchain::mining::MiningWire;
 use nockchain::setup::{self, fakenet_blockchain_constants, DEFAULT_GENESIS_BLOCK_HEIGHT};
 use nockchain_libp2p_io::driver::Libp2pWire;
@@ -120,6 +120,7 @@ async fn build_nockapp(name: &str) -> Result<(TempDir, NockApp), Box<dyn Error>>
         trace_opts: TraceOpts::default(),
         save_interval: Some(0),
         gc_interval: None,
+        checkpoint_mode: CheckpointMode::Original,
         pma_persist: false,
         color: ColorChoice::Auto,
         state_jam: None,

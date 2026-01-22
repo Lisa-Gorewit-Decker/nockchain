@@ -41,7 +41,7 @@ pub(crate) const CELL_TAG: u64 = u64::MAX & INDIRECT_MASK;
 /** Tag mask for a cell. */
 pub(crate) const CELL_MASK: u64 = !(u64::MAX >> 3);
 
-const LOCATION_BIT: u64 = 1 << 60;
+pub(crate) const LOCATION_BIT: u64 = 1 << 60;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum PtrLocation {

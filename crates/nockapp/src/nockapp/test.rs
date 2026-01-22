@@ -3,7 +3,7 @@ use std::path::Path;
 
 use tempfile::TempDir;
 
-use super::NockApp;
+use super::{CheckpointMode, NockApp};
 use crate::kernel::form::Kernel;
 
 fn load_jam_bytes(jam: &str) -> Vec<u8> {
@@ -35,9 +35,14 @@ pub async fn setup_nockapp_with_interval(
     };
     (
         temp_dir,
-        NockApp::new(kernel_f, &temp_dir_path, save_interval, true)
-            .await
-            .expect("Could not create NockApp"),
+        NockApp::new(
+            kernel_f,
+            &temp_dir_path,
+            save_interval,
+            CheckpointMode::Original,
+        )
+        .await
+        .expect("Could not create NockApp"),
     )
 }
 

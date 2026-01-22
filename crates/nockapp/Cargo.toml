@@ -24,6 +24,7 @@ bitvec = { workspace = true, default-features = false, features = ["alloc"] }
 blake3 = { workspace = true }
 byteorder = { workspace = true }
 bytes = { workspace = true, features = ["serde"] }
+chaff = { workspace = true, default-features = false }
 chrono = { workspace = true }
 clap = { workspace = true, features = ["derive", "cargo", "color", "env"] }
 config = { workspace = true }

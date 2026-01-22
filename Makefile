@@ -68,7 +68,7 @@ docker-nockchain-pma-persist: docker-nockchain-build
 .PHONY: docker-nockchain-build
 docker-nockchain-build:
 	docker build -t $(DOCKER_IMAGE) .
-
+# --checkpoint-mode stream \
 .PHONY: docker-nockchain-run
 docker-nockchain-run:
 	mkdir -p $(DOCKER_DATA_DIR)
