@@ -884,6 +884,8 @@
     ?:  (~(has in seen) pat)
       [pc seen]
     =.  seen  (~(put in seen) pat)
+    ?.  (is-hoon pat)
+      [pc seen]
     =/  fil=@  (~(got by dir) pat)
     =/  file-hash  (shax fil)
     =/  native-hoon=(unit hoon)  (~(get by native) pat)
