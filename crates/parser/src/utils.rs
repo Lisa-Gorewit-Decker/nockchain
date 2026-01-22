@@ -10223,15 +10223,15 @@ fn tome_to_noun(slab: &mut NounSlab, tome: &Tome) -> Noun {
 }
 
 fn alas_to_noun(slab: &mut NounSlab, alas: &Alas) -> Noun {
-    let pairs: Vec<_> = alas
+    let pairs: Vec<Noun> = alas
         .iter()
         .map(|(k, v)| {
             let k_noun = term_to_noun(slab, k);
             let v_noun = hoon_to_noun(slab, v);
-            (k_noun, v_noun)
+            T(slab, &[k_noun, v_noun])
         })
         .collect();
-    map_to_noun(slab, pairs)
+    list_to_noun(slab, pairs)
 }
 
 fn tyre_to_noun(slab: &mut NounSlab, tyre: &Tyre) -> Noun {

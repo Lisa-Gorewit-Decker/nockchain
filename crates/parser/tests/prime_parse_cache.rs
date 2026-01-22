@@ -305,13 +305,17 @@ async fn prime_with_subset(
             .map_err(|err| {
                 io::Error::new(io::ErrorKind::Other, format!("bisect init failed: {err}"))
             })?;
-    prime_parse_cache_public(&mut nockapp, entry, deps_dir, subset)
-        .await
-        .map_err(|err| {
-            io::Error::new(io::ErrorKind::Other, format!("bisect prime failed: {err}"))
-        })?;
-
+    let prime_result = prime_parse_cache_public(&mut nockapp, entry, deps_dir, subset).await;
     let logs = log_capture.take_string();
+    if let Err(err) = prime_result {
+        if !logs.is_empty() {
+            println!("prime logs:\n{logs}");
+        }
+        return Err(
+            io::Error::new(io::ErrorKind::Other, format!("bisect prime failed: {err}")).into(),
+        );
+    }
+
     let warned = logs.contains("hoonc: warning: input is not a proper cause");
     let pc_size = parse_pc_size(&logs);
     Ok(PrimeAttempt { warned, pc_size })
