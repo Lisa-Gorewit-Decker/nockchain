@@ -6,7 +6,10 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use std::{fs, io};
 
 use chumsky::Parser;
-use hoonc::{build_jam, build_jam_with_primed_parse_cache, is_valid_file_or_dir};
+use hoonc::{
+    build_jam, build_jam_with_primed_parse_cache, initialize_with_default_cli,
+    is_valid_file_or_dir, prime_parse_cache_public,
+};
 use nockapp::noun::slab::NounSlab;
 use parser::ast::hoon as ast;
 use parser::native_parser;
@@ -277,6 +280,22 @@ fn collect_native_asts(
     Ok(asts)
 }
 
+fn collect_native_asts_for_paths(
+    deps_dir: &Path,
+    paths: &[PathBuf],
+) -> Result<HashMap<PathBuf, Vec<u8>>, Box<dyn std::error::Error>> {
+    let mut asts = HashMap::new();
+    for path in paths {
+        let canonical = path.canonicalize()?;
+        if asts.contains_key(&canonical) {
+            continue;
+        }
+        let jammed = parse_native_ast(&canonical, deps_dir)?;
+        asts.insert(canonical, jammed);
+    }
+    Ok(asts)
+}
+
 struct PrimeAttempt {
     warned: bool,
     failed: bool,
@@ -384,6 +403,53 @@ async fn prime_with_subset(
         failed,
         pc_size,
     })
+}
+
+async fn prime_only_with_subset(
+    entry: &PathBuf,
+    deps_dir: &PathBuf,
+    subset: &HashMap<PathBuf, Vec<u8>>,
+    log_capture: &LogCapture,
+) -> Result<PrimeAttempt, Box<dyn std::error::Error>> {
+    let nockapp_home = temp_out_dir("prime-only-home")?;
+    let _env_guard = EnvVarGuard::set("NOCKAPP_HOME", nockapp_home.to_string_lossy().as_ref());
+    let _prewarm_guard = EnvVarGuard::set("HOONC_DISABLE_PREWARM", "1");
+
+    log_capture.clear();
+    let (mut nockapp, _out_path) =
+        initialize_with_default_cli(entry.clone(), deps_dir.clone(), None, false, true).await?;
+    let prime_result = prime_parse_cache_public(&mut nockapp, entry, deps_dir, subset).await;
+    let logs = log_capture.take_string();
+
+    let warned = logs.contains("hoonc: warning: input is not a proper cause");
+    let failed = prime_result.is_err() || detect_prime_failure(&logs);
+    let pc_size = parse_pc_size(&logs);
+    if failed && !logs.is_empty() {
+        println!("prime-only logs:\n{logs}");
+    }
+    if let Err(err) = prime_result {
+        println!("prime-only error: {err}");
+    }
+    Ok(PrimeAttempt {
+        warned,
+        failed,
+        pc_size,
+    })
+}
+
+fn format_variant_inventory(counts: &HashMap<String, usize>, max_items: usize) -> String {
+    let mut items: Vec<_> = counts.iter().collect();
+    items.sort_by(|a, b| b.1.cmp(a.1).then_with(|| a.0.cmp(b.0)));
+    let mut out = String::new();
+    for (name, count) in items.into_iter().take(max_items) {
+        if !out.is_empty() {
+            out.push_str(", ");
+        }
+        out.push_str(name);
+        out.push('=');
+        out.push_str(&count.to_string());
+    }
+    out
 }
 
 async fn bisect_first_failing_path(
@@ -1129,6 +1195,79 @@ async fn primed_parse_cache_matches_regular_build_for_kernels(
     assert!(
         !tested.is_empty(),
         "no kernel entries eligible for primed parse-cache test"
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn primed_parse_cache_primes_native_ztd_eight() -> Result<(), Box<dyn std::error::Error>> {
+    disable_metrics();
+    if std::env::var("RUST_LOG").is_err() {
+        std::env::set_var("RUST_LOG", "info");
+    }
+    let log_capture = init_logging(false);
+
+    let deps_dir = repo_hoon_dir()?;
+    let entry = resolve_hoon_path(&deps_dir, KERNEL_ENTRIES[0])?;
+    let target = resolve_hoon_path(&deps_dir, "common/ztd/eight.hoon")?;
+    let subset = collect_native_asts_for_paths(&deps_dir, &[entry.clone(), target.clone()])?;
+
+    let attempt = prime_only_with_subset(&entry, &deps_dir, &subset, log_capture).await?;
+    if attempt.failed {
+        let variants = inventory_hoon_variants(&target, &deps_dir)?;
+        println!(
+            "hoon variants for {}: {}",
+            target.display(),
+            format_variant_inventory(&variants, 12)
+        );
+    }
+
+    assert!(
+        !attempt.failed,
+        "prime-only failed for {}",
+        target.display()
+    );
+    assert!(
+        attempt.pc_size.unwrap_or(0) >= 1,
+        "expected parse cache size >= 1, got {:?}",
+        attempt.pc_size
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn primed_parse_cache_builds_with_native_ztd_eight(
+) -> Result<(), Box<dyn std::error::Error>> {
+    disable_metrics();
+    if std::env::var("RUST_LOG").is_err() {
+        std::env::set_var("RUST_LOG", "info");
+    }
+    let log_capture = init_logging(false);
+
+    let deps_dir = repo_hoon_dir()?;
+    let entry = resolve_hoon_path(&deps_dir, KERNEL_ENTRIES[0])?;
+    let target = resolve_hoon_path(&deps_dir, "common/ztd/eight.hoon")?;
+    let subset = collect_native_asts_for_paths(&deps_dir, &[entry.clone(), target.clone()])?;
+
+    let attempt = prime_with_subset(&entry, &deps_dir, &subset, log_capture).await?;
+    if attempt.failed {
+        let variants = inventory_hoon_variants(&target, &deps_dir)?;
+        println!(
+            "hoon variants for {}: {}",
+            target.display(),
+            format_variant_inventory(&variants, 12)
+        );
+    }
+
+    assert!(
+        !attempt.failed,
+        "primed build failed for {} with native ASTs injected",
+        target.display()
+    );
+    assert!(
+        attempt.pc_size.unwrap_or(0) >= 1,
+        "expected parse cache size >= 1, got {:?}",
+        attempt.pc_size
     );
     Ok(())
 }

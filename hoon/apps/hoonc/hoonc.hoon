@@ -423,6 +423,22 @@
           ~&  "hoonc: prime-debug brcn tomes map failed"
           ~
         ~
+      ?:  =(u.head-term %dbug)
+        ?@  tail
+          ~&  "hoonc: prime-debug dbug tail atom {<tail>}"
+          ~
+        =/  spot  -.tail
+        =/  inner  +.tail
+        =/  spot-ok  ((soft spot) spot)
+        ?~  spot-ok
+          ~&  "hoonc: prime-debug dbug spot failed"
+          ~
+        =/  inner-ok  ((soft hoon) inner)
+        ?~  inner-ok
+          ~&  "hoonc: prime-debug dbug inner failed hoon mold"
+          =+  scratch=(debug-hoon-noun inner)
+          ~
+        ~
       ~
     ~&  "hoonc: prime-debug head atom {<head>}"
     ~&  "hoonc: prime-debug head mug {<(mug head)>}"

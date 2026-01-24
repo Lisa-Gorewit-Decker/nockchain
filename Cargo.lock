@@ -5830,6 +5830,7 @@ dependencies = [
  "hoonc",
  "ibig",
  "nockapp",
+ "nockchain-math",
  "nockvm",
  "nockvm_macros",
  "num-bigint",

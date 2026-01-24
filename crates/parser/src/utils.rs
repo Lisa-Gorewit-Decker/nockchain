@@ -23,6 +23,8 @@ use either::Either::{Left, Right};
 use ibig::UBig;
 use nockapp::noun::slab::{slab_mug, slab_noun_equality, NounSlab};
 use nockapp::AtomExt;
+use nockchain_math::zoon::common::DefaultTipHasher;
+use nockchain_math::zoon::zmap::z_map_put;
 use nockvm::jets::util::slot;
 use nockvm::noun::{Atom, DirectAtom, Noun, D, DIRECT_MAX, NO, T, YES};
 use nockvm_macros::tas;
@@ -9676,98 +9678,15 @@ fn list_to_noun(slab: &mut NounSlab, nouns: Vec<Noun>) -> Noun {
 
 fn map_to_noun(slab: &mut NounSlab, pairs: Vec<(Noun, Noun)>) -> Noun {
     let mut map = D(0);
+    let hasher = DefaultTipHasher;
 
-    for (key, val) in pairs {
-        map = put_into_map(slab, map, key, val);
+    for (mut key, mut val) in pairs {
+        if let Ok(updated) = z_map_put(slab, &map, &mut key, &mut val, &hasher) {
+            map = updated;
+        }
     }
 
     map
-}
-
-/// Hoon maps are `(tree [key val])`.
-/// This means:
-/// - Empty tree: `~` = `0`
-/// - Non-empty tree: `[[key val] left right]`
-fn put_into_map(slab: &mut NounSlab, map: Noun, key: Noun, val: Noun) -> Noun {
-    if map.is_atom() && slab_noun_equality(&map, &D(0)) {
-        let node = T(slab, &[key, val]);
-        return T(slab, &[node, D(0), D(0)]);
-    }
-
-    // Non-empty map: [[key val] left right]
-    let cell = map.as_cell().expect("non-empty map must be a cell");
-    let node = cell.head();
-    let children = cell.tail();
-    let children_cell = children.as_cell().expect("children must be a cell");
-    let left = children_cell.head();
-    let right = children_cell.tail();
-
-    let node_cell = node.as_cell().expect("node must be [key value]");
-    let node_key = node_cell.head();
-    let node_val = node_cell.tail();
-
-    if slab_noun_equality(&key, &node_key) {
-        if slab_noun_equality(&val, &node_val) {
-            return map;
-        } else {
-            let new_node = T(slab, &[key, val]);
-            return T(slab, &[new_node, left, right]);
-        }
-    }
-
-    if unsafe { gor_slab(key, node_key).raw_equals(&YES) } {
-        let new_left = put_into_map(slab, left, key, val);
-
-        if new_left.is_atom() {
-            if !slab_noun_equality(&new_left, &D(0)) {
-                panic!("put returned unexpected atom");
-            }
-        }
-
-        // new_left is [[key val] left right] structure
-        let new_left_cell = new_left
-            .as_cell()
-            .expect("new_left must be cell after insert");
-        let new_left_node = new_left_cell.head();
-        let new_left_node_key = new_left_node.as_cell().expect("node must be [k v]").head();
-
-        if unsafe { mor_slab(node_key, new_left_node_key).raw_equals(&YES) } {
-            T(slab, &[node, new_left, right])
-        } else {
-            let new_left_children = new_left_cell.tail();
-            let new_left_children_cell = new_left_children.as_cell().expect("children cell");
-            let new_left_left = new_left_children_cell.head();
-            let new_left_right = new_left_children_cell.tail();
-
-            let new_right = T(slab, &[node, new_left_right, right]);
-            T(slab, &[new_left_node, new_left_left, new_right])
-        }
-    } else {
-        let new_right = put_into_map(slab, right, key, val);
-
-        if new_right.is_atom() {
-            if !slab_noun_equality(&new_right, &D(0)) {
-                panic!("unexpected atom in new_right");
-            }
-        }
-
-        // new_right is [[key val] left right] structure
-        let new_right_cell = new_right.as_cell().expect("new_right must be cell");
-        let new_right_node = new_right_cell.head();
-        let new_right_node_key = new_right_node.as_cell().expect("node must be [k v]").head();
-
-        if unsafe { mor_slab(node_key, new_right_node_key).raw_equals(&YES) } {
-            T(slab, &[node, left, new_right])
-        } else {
-            let new_right_children = new_right_cell.tail();
-            let new_right_children_cell = new_right_children.as_cell().expect("children cell");
-            let new_right_left = new_right_children_cell.head();
-            let new_right_right = new_right_children_cell.tail();
-
-            let new_left = T(slab, &[node, left, new_right_left]);
-            T(slab, &[new_right_node, new_left, new_right_right])
-        }
-    }
 }
 
 fn term_to_noun(slab: &mut NounSlab, s: &str) -> Noun {
