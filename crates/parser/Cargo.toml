@@ -22,7 +22,6 @@ either = "1.9.0"
 bytes = "1.5.0"
 nockapp = { workspace = true }
 hoonc = { workspace = true }
-nockchain-math = { workspace = true }
 ibig = { workspace = true }
 tokio = { workspace = true }
 walkdir = { workspace = true }
@@ -37,6 +36,7 @@ path = "src/lib.rs"
 
 [dev-dependencies]
 tracing-subscriber = { workspace = true }
+nockchain-math = { workspace = true }
 
 [[bench]]
 name = "kernel_build"

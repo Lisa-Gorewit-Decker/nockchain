@@ -166,7 +166,10 @@ fn hoon_path_for_file(
     let rel = path.strip_prefix(deps_dir).map_err(|_| {
         io::Error::new(
             io::ErrorKind::InvalidInput,
-            format!("native parser path is not under hoon dir: {}", path.display()),
+            format!(
+                "native parser path is not under hoon dir: {}",
+                path.display()
+            ),
         )
     })?;
     Ok(rel
@@ -213,10 +216,7 @@ fn parse_native_ast_with_wer(
     Ok(slab.jam().to_vec())
 }
 
-fn parse_native_ast(
-    path: &Path,
-    deps_dir: &Path,
-) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
+fn parse_native_ast(path: &Path, deps_dir: &Path) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
     let wer = hoon_path_for_any(path, deps_dir);
     parse_native_ast_with_wer(path, wer)
 }
@@ -287,11 +287,8 @@ fn parse_pc_size(logs: &str) -> Option<usize> {
 
 fn detect_prime_failure(logs: &str) -> bool {
     let markers = [
-        "hoonc: warning: input is not a proper cause",
-        "prime-native: hoon mold failed",
-        "prime-dir: hoon mismatch",
-        "syntax error",
-        "hoonc: missing dependency",
+        "hoonc: warning: input is not a proper cause", "prime-native: hoon mold failed",
+        "prime-dir: hoon mismatch", "syntax error", "hoonc: missing dependency",
     ];
     markers.iter().any(|marker| logs.contains(marker))
 }

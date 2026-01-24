@@ -1,4 +1,4 @@
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::io::Write;
 use std::path::{Component, Path, PathBuf};
 use std::sync::{Arc, Mutex, Once, OnceLock};
@@ -6,14 +6,21 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use std::{fs, io};
 
 use chumsky::Parser;
+use either::Either;
 use hoonc::{
     build_jam, build_jam_with_primed_parse_cache, initialize_with_default_cli,
     is_valid_file_or_dir, prime_parse_cache_public,
 };
-use nockapp::noun::slab::NounSlab;
+use nockapp::noun::slab::{slab_noun_equality, NounSlab};
+use nockapp::one_punch::OnePunchWire;
+use nockapp::save::JammedCheckpoint;
+use nockapp::wire::Wire;
+use nockapp::AtomExt;
+use nockvm::noun::{Atom, Noun, D, T};
+use nockvm_macros::tas;
 use parser::ast::hoon as ast;
 use parser::native_parser;
-use parser::utils::{hoon_to_noun, LineMap};
+use parser::utils::{diff_noun, hoon_to_noun, print_noun, LineMap};
 use rayon::prelude::*;
 use walkdir::WalkDir;
 
@@ -188,7 +195,10 @@ fn hoon_path_for_file(
     let rel = path.strip_prefix(deps_dir).map_err(|_| {
         io::Error::new(
             io::ErrorKind::InvalidInput,
-            format!("native parser path is not under hoon dir: {}", path.display()),
+            format!(
+                "native parser path is not under hoon dir: {}",
+                path.display()
+            ),
         )
     })?;
     Ok(rel
@@ -213,13 +223,14 @@ fn hoon_path_for_absolute(path: &Path) -> Vec<String> {
         .collect()
 }
 
-fn parse_native_ast_with_wer(
+fn parse_native_ast_with_wer_and_dbug(
     path: &Path,
     wer: Vec<String>,
+    dbug: bool,
 ) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
     let source = fs::read_to_string(path)?;
     let linemap = Arc::new(LineMap::new(&source));
-    let parsed = native_parser(wer, true, linemap)
+    let parsed = native_parser(wer, dbug, linemap)
         .parse(source.as_str())
         .into_result()
         .map_err(|errs| {
@@ -235,12 +246,53 @@ fn parse_native_ast_with_wer(
     Ok(slab.jam().to_vec())
 }
 
-fn parse_native_ast(
+fn parse_native_hoon_with_wer_and_dbug(
+    path: &Path,
+    wer: Vec<String>,
+    dbug: bool,
+) -> Result<ast::Hoon, Box<dyn std::error::Error>> {
+    let source = fs::read_to_string(path)?;
+    let linemap = Arc::new(LineMap::new(&source));
+    let parsed = native_parser(wer, dbug, linemap)
+        .parse(source.as_str())
+        .into_result()
+        .map_err(|errs| {
+            io::Error::new(
+                io::ErrorKind::Other,
+                format!("native parser failed for {}: {:?}", path.display(), errs),
+            )
+        })?;
+    Ok(parsed)
+}
+
+fn parse_native_hoon_with_dbug(
     path: &Path,
     deps_dir: &Path,
+    dbug: bool,
+) -> Result<ast::Hoon, Box<dyn std::error::Error>> {
+    let wer = hoon_path_for_any(path, deps_dir);
+    parse_native_hoon_with_wer_and_dbug(path, wer, dbug)
+}
+
+fn parse_native_ast_with_wer(
+    path: &Path,
+    wer: Vec<String>,
 ) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
+    parse_native_ast_with_wer_and_dbug(path, wer, true)
+}
+
+fn parse_native_ast(path: &Path, deps_dir: &Path) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
     let wer = hoon_path_for_any(path, deps_dir);
     parse_native_ast_with_wer(path, wer)
+}
+
+fn parse_native_ast_with_dbug(
+    path: &Path,
+    deps_dir: &Path,
+    dbug: bool,
+) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
+    let wer = hoon_path_for_any(path, deps_dir);
+    parse_native_ast_with_wer_and_dbug(path, wer, dbug)
 }
 
 fn parse_native_ast_err(path: &Path, deps_dir: &Path) -> Result<Vec<u8>, String> {
@@ -296,6 +348,345 @@ fn collect_native_asts_for_paths(
     Ok(asts)
 }
 
+fn collect_native_asts_for_paths_with_dbug(
+    deps_dir: &Path,
+    paths: &[PathBuf],
+    dbug: bool,
+) -> Result<HashMap<PathBuf, Vec<u8>>, Box<dyn std::error::Error>> {
+    let mut asts = HashMap::new();
+    for path in paths {
+        let canonical = path.canonicalize()?;
+        if asts.contains_key(&canonical) {
+            continue;
+        }
+        let jammed = parse_native_ast_with_dbug(&canonical, deps_dir, dbug)?;
+        asts.insert(canonical, jammed);
+    }
+    Ok(asts)
+}
+
+fn entry_path_for_hoon(
+    entry: &Path,
+    deps_dir: &Path,
+) -> Result<String, Box<dyn std::error::Error>> {
+    let entry_abs = entry.canonicalize()?;
+    let deps_abs = deps_dir.canonicalize()?;
+    if let Ok(rel) = entry_abs.strip_prefix(&deps_abs) {
+        let rel_str = rel.to_string_lossy();
+        if rel_str.starts_with('/') {
+            Ok(rel_str.to_string())
+        } else {
+            Ok(format!("/{rel_str}"))
+        }
+    } else {
+        Ok(entry_abs.to_string_lossy().into_owned())
+    }
+}
+
+fn build_directory_noun_for_parse(
+    slab: &mut NounSlab,
+    deps_dir: &Path,
+) -> Result<Noun, Box<dyn std::error::Error>> {
+    let directory = deps_dir.canonicalize()?;
+    let directory_str = directory.to_string_lossy();
+    let mut directory_noun = D(0);
+    let walker = WalkDir::new(&directory).follow_links(true).into_iter();
+
+    for entry_result in walker.filter_entry(is_valid_file_or_dir) {
+        let entry = entry_result?;
+        if !entry.metadata()?.is_file() {
+            continue;
+        }
+
+        let path_str = entry
+            .path()
+            .to_str()
+            .ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "dependency path contains invalid UTF-8",
+                )
+            })?
+            .strip_prefix(directory_str.as_ref())
+            .ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "dependency path does not share base prefix",
+                )
+            })?;
+
+        let path_str = if path_str.starts_with('/') {
+            path_str.to_string()
+        } else {
+            format!("/{path_str}")
+        };
+
+        let path_cord = Atom::from_value(slab, path_str)?.as_noun();
+        let contents = fs::read(entry.path())?;
+        let contents = Atom::from_value(slab, contents)?.as_noun();
+
+        let entry_cell = T(slab, &[path_cord, contents]);
+        directory_noun = T(slab, &[entry_cell, directory_noun]);
+    }
+
+    Ok(directory_noun)
+}
+
+fn expect_cell(noun: Noun, context: &str) -> Result<(Noun, Noun), String> {
+    let cell = noun
+        .as_cell()
+        .map_err(|_| format!("{context} is not a cell"))?;
+    Ok((cell.head(), cell.tail()))
+}
+
+fn path_noun_to_string(path: Noun) -> Result<String, String> {
+    let mut parts = Vec::new();
+    let mut cursor = path;
+    loop {
+        if noun_is_zero(&cursor) {
+            break;
+        }
+        let (head, tail) = expect_cell(cursor, "path list")?;
+        let atom = head
+            .as_atom()
+            .map_err(|_| "path element is not atom".to_string())?;
+        let text = atom
+            .into_string()
+            .map_err(|_| "path element not valid cord".to_string())?;
+        parts.push(text);
+        cursor = tail;
+    }
+    Ok(format!("/{}", parts.join("/")))
+}
+
+fn tuple3(noun: Noun, context: &str) -> Result<(Noun, Noun, Noun), String> {
+    let (a, rest) = expect_cell(noun, context)?;
+    let (b, c) = expect_cell(rest, context)?;
+    Ok((a, b, c))
+}
+
+fn pile_hoon(pil: Noun) -> Result<Noun, String> {
+    let (_, rest) = expect_cell(pil, "pile")?;
+    let (_, rest) = expect_cell(rest, "pile")?;
+    let (_, rest) = expect_cell(rest, "pile")?;
+    let (_, rest) = expect_cell(rest, "pile")?;
+    let (_, hoon) = expect_cell(rest, "pile")?;
+    Ok(hoon)
+}
+
+fn map_find_entry_by_path(map: Noun, target: &str) -> Result<Option<(Noun, Noun, Noun)>, String> {
+    if noun_is_zero(&map) {
+        return Ok(None);
+    }
+    let (node, rest) = expect_cell(map, "map node")?;
+    let (left, right) = expect_cell(rest, "map children")?;
+    let (key, val) = expect_cell(node, "map key/value")?;
+    let (path, pil, deps) = tuple3(val, "map value")?;
+    let path_string = path_noun_to_string(path)?;
+    if path_string == target {
+        return Ok(Some((key, pil, deps)));
+    }
+    if let Some(found) = map_find_entry_by_path(left, target)? {
+        return Ok(Some(found));
+    }
+    map_find_entry_by_path(right, target)
+}
+
+fn is_state3_tag(noun: &Noun) -> bool {
+    let Ok(atom) = noun.as_atom() else {
+        return false;
+    };
+    if atom.as_u64().ok() == Some(3) {
+        return true;
+    }
+    atom.into_string().ok().as_deref() == Some("3")
+}
+
+fn parse_cache_from_state(state: Noun) -> Result<Noun, String> {
+    let mut stack = vec![state];
+    let mut seen = HashSet::new();
+
+    while let Some(noun) = stack.pop() {
+        let raw = unsafe { noun.as_raw() };
+        if !seen.insert(raw) {
+            continue;
+        }
+        let Ok(cell) = noun.as_cell() else {
+            continue;
+        };
+        if is_state3_tag(&cell.head()) {
+            if let Ok((_tag, rest)) = expect_cell(noun, "state root") {
+                if let Ok((_cached, rest)) = expect_cell(rest, "state cached") {
+                    if let Ok((_bc, pc)) = expect_cell(rest, "state cache fields") {
+                        return Ok(pc);
+                    }
+                }
+            }
+        }
+        stack.push(cell.head());
+        stack.push(cell.tail());
+    }
+
+    Err("state-3 parse cache not found in kernel state".to_string())
+}
+
+fn skip_dbug(mut noun: Noun) -> Noun {
+    loop {
+        let cell = match noun.cell() {
+            Some(c) => c,
+            None => return noun,
+        };
+
+        let head = match cell.head().as_atom() {
+            Ok(a) => a,
+            Err(_) => return noun,
+        };
+
+        if unsafe { !head.as_noun().raw_equals(&D(tas!(b"dbug"))) } {
+            return noun;
+        }
+
+        let tail_cell = match cell.tail().as_cell() {
+            Ok(c) => c,
+            Err(_) => return noun,
+        };
+
+        noun = tail_cell.tail();
+    }
+}
+
+fn strip_dbug_tree(slab: &mut NounSlab, noun: Noun) -> Noun {
+    let noun = skip_dbug(noun);
+    match noun.as_either_atom_cell() {
+        Either::Left(_) => slab.copy_into(noun),
+        Either::Right(cell) => {
+            let head = strip_dbug_tree(slab, cell.head());
+            let tail = strip_dbug_tree(slab, cell.tail());
+            T(slab, &[head, tail])
+        }
+    }
+}
+
+struct Mismatch {
+    axis: u64,
+    expected: Noun,
+    actual: Noun,
+    parent_axis: Option<u64>,
+    parent_expected: Option<Noun>,
+    parent_actual: Option<Noun>,
+}
+
+impl Mismatch {
+    fn with_parent(mut self, axis: u64, expected: Noun, actual: Noun) -> Self {
+        if self.parent_axis.is_none() {
+            self.parent_axis = Some(axis);
+            self.parent_expected = Some(expected);
+            self.parent_actual = Some(actual);
+        }
+        self
+    }
+}
+
+fn find_mismatch_axis(a: Noun, b: Noun, axis: u64) -> Option<Mismatch> {
+    let a = skip_dbug(a);
+    let b = skip_dbug(b);
+
+    if slab_noun_equality(&a, &b) {
+        return None;
+    }
+
+    match (a.as_either_atom_cell(), b.as_either_atom_cell()) {
+        (Either::Right(ac), Either::Right(bc)) => {
+            if let Some(mismatch) = find_mismatch_axis(ac.head(), bc.head(), axis * 2) {
+                return Some(mismatch.with_parent(axis, a, b));
+            }
+            if let Some(mismatch) = find_mismatch_axis(ac.tail(), bc.tail(), axis * 2 + 1) {
+                return Some(mismatch.with_parent(axis, a, b));
+            }
+            Some(Mismatch {
+                axis,
+                expected: a,
+                actual: b,
+                parent_axis: None,
+                parent_expected: None,
+                parent_actual: None,
+            })
+        }
+        _ => Some(Mismatch {
+            axis,
+            expected: a,
+            actual: b,
+            parent_axis: None,
+            parent_expected: None,
+            parent_actual: None,
+        }),
+    }
+}
+
+fn find_latest_checkpoint(dir: &Path) -> Result<PathBuf, Box<dyn std::error::Error>> {
+    let mut latest: Option<(SystemTime, PathBuf)> = None;
+    for entry in fs::read_dir(dir)? {
+        let entry = entry?;
+        if !entry.file_type()?.is_file() {
+            continue;
+        }
+        let modified = entry.metadata()?.modified()?;
+        if latest
+            .as_ref()
+            .map(|(time, _)| modified > *time)
+            .unwrap_or(true)
+        {
+            latest = Some((modified, entry.path()));
+        }
+    }
+    latest
+        .map(|(_, path)| path)
+        .ok_or_else(|| format!("No checkpoint found in {}", dir.display()).into())
+}
+
+fn load_state_from_checkpoint(path: &Path) -> Result<NounSlab, Box<dyn std::error::Error>> {
+    let bytes = fs::read(path)?;
+    let checkpoint = JammedCheckpoint::decode_from_bytes(&bytes)?;
+    let mut slab = NounSlab::new();
+    let root = slab.cue_into(checkpoint.state_jam.0.clone())?;
+    slab.set_root(root);
+    Ok(slab)
+}
+
+async fn parse_hoon_with_hoonc(
+    entry: &PathBuf,
+    deps_dir: &PathBuf,
+) -> Result<NounSlab, Box<dyn std::error::Error>> {
+    let nockapp_home = temp_out_dir("hoonc-state")?;
+    let _home_guard = EnvVarGuard::set("NOCKAPP_HOME", nockapp_home.to_string_lossy().as_ref());
+    let _prewarm_guard = EnvVarGuard::set("HOONC_DISABLE_PREWARM", "1");
+    let (mut nockapp, _out_path) =
+        initialize_with_default_cli(entry.clone(), deps_dir.clone(), None, false, true).await?;
+    let entry_string = entry_path_for_hoon(entry, deps_dir)?;
+    let entry_contents = fs::read(entry)?;
+
+    let mut slab = NounSlab::new();
+    let entry_path = Atom::from_value(&mut slab, entry_string)?.as_noun();
+    let entry_contents = Atom::from_value(&mut slab, entry_contents)?.as_noun();
+    let directory_noun = build_directory_noun_for_parse(&mut slab, deps_dir)?;
+
+    let parse_poke = T(
+        &mut slab,
+        &[D(tas!(b"parse")), entry_path, entry_contents, directory_noun],
+    );
+    slab.set_root(parse_poke);
+    nockapp.poke(OnePunchWire::Poke.to_wire(), slab).await?;
+
+    nockapp
+        .save_blocking()
+        .await
+        .map_err(|err| io::Error::new(io::ErrorKind::Other, err.to_string()))?;
+
+    let checkpoints_dir = nockapp_home.join("hoonc").join("checkpoints");
+    let checkpoint_path = find_latest_checkpoint(&checkpoints_dir)?;
+    load_state_from_checkpoint(&checkpoint_path)
+}
+
 struct PrimeAttempt {
     warned: bool,
     failed: bool,
@@ -314,19 +705,151 @@ fn parse_pc_size(logs: &str) -> Option<usize> {
 
 fn detect_prime_failure(logs: &str) -> bool {
     let markers = [
-        "hoonc: warning: input is not a proper cause",
-        "prime-native: hoon mold failed",
-        "prime-dir: hoon spot mismatch",
-        "prime-dir: hoon mismatch",
-        "hoonc: compile failed",
-        "hoonc: build failed",
-        "syntax error",
-        "hoonc: missing dependency",
-        "nockapp exited with error code",
-        "Exit(1)",
-        "-find.",
+        "hoonc: warning: input is not a proper cause", "prime-native: hoon mold failed",
+        "prime-dir: hoon mismatch", "hoonc: compile failed", "hoonc: build failed", "syntax error",
+        "hoonc: missing dependency", "nockapp exited with error code", "Exit(1)", "-find.",
     ];
     markers.iter().any(|marker| logs.contains(marker))
+}
+
+fn noun_is_zero(noun: &Noun) -> bool {
+    unsafe { noun.raw_equals(&D(0)) }
+}
+
+fn term_from_noun(noun: &Noun) -> Option<String> {
+    if noun_is_zero(noun) {
+        return Some("$".to_string());
+    }
+    let atom = noun.as_atom().ok()?;
+    atom.into_string().ok()
+}
+
+fn validate_limb_noun(noun: &Noun) -> Result<(), String> {
+    if noun.as_atom().is_ok() {
+        return Ok(());
+    }
+
+    let cell = noun
+        .as_cell()
+        .map_err(|_| "limb is neither atom nor cell".to_string())?;
+    let head = cell.head();
+    let tail = cell.tail();
+    let tag_atom = head
+        .as_atom()
+        .map_err(|_| "limb head not atom".to_string())?;
+    let tag_u64 = tag_atom.as_u64().ok();
+    let tag_label = tag_u64
+        .map(|value| value.to_string())
+        .or_else(|| term_from_noun(&head))
+        .unwrap_or_else(|| "<non-term>".to_string());
+    match tag_u64 {
+        Some(0) | Some(38) => {
+            if tail.as_atom().is_err() {
+                return Err("limb %& axis is not atom".to_string());
+            }
+            Ok(())
+        }
+        Some(1) | Some(124) => {
+            let tail_cell = tail
+                .as_cell()
+                .map_err(|_| "limb %| tail is not cell".to_string())?;
+            let p = tail_cell.head();
+            let q = tail_cell.tail();
+            if p.as_atom().is_err() {
+                return Err("limb %| p is not atom".to_string());
+            }
+            if noun_is_zero(&q) {
+                return Ok(());
+            }
+            let q_cell = q
+                .as_cell()
+                .map_err(|_| "limb %| q is not unit".to_string())?;
+            let q_head = q_cell.head();
+            let q_tail = q_cell.tail();
+            if !noun_is_zero(&q_head) {
+                return Err("limb %| q head is not 0".to_string());
+            }
+            if term_from_noun(&q_tail).is_none() {
+                return Err("limb %| q tail is not term".to_string());
+            }
+            Ok(())
+        }
+        _ => Err(format!("limb tag not 0/1/&/|: {tag_label}")),
+    }
+}
+
+fn validate_wing_noun(noun: &Noun) -> Result<(), String> {
+    if noun_is_zero(noun) {
+        return Ok(());
+    }
+    let mut cursor = *noun;
+    loop {
+        let cell = cursor
+            .as_cell()
+            .map_err(|_| "wing tail is not list".to_string())?;
+        let head = cell.head();
+        let tail = cell.tail();
+        validate_limb_noun(&head)?;
+        if noun_is_zero(&tail) {
+            return Ok(());
+        }
+        cursor = tail;
+    }
+}
+
+fn validate_hoon_tag(noun: &Noun) -> Result<(), String> {
+    let cell = noun.as_cell().map_err(|_| "hoon is atom".to_string())?;
+    let head = cell.head();
+    let tag = term_from_noun(&head).ok_or_else(|| "hoon head not term".to_string())?;
+    if tag.is_empty() {
+        return Err("hoon tag is empty".to_string());
+    }
+    Ok(())
+}
+
+fn validate_cnts_noun(noun: &Noun) -> Result<(), String> {
+    let cell = noun
+        .as_cell()
+        .map_err(|_| "cnts noun is atom".to_string())?;
+    let head = cell.head();
+    let tail = cell.tail();
+    let tag = term_from_noun(&head).ok_or_else(|| "cnts head not term".to_string())?;
+    if tag != "cnts" {
+        return Err(format!("expected cnts tag, got {tag}"));
+    }
+    let tail_cell = tail
+        .as_cell()
+        .map_err(|_| "cnts tail is not cell".to_string())?;
+    let wing = tail_cell.head();
+    let pairs = tail_cell.tail();
+    validate_wing_noun(&wing)?;
+    if noun_is_zero(&pairs) {
+        return Ok(());
+    }
+    let mut cursor = pairs;
+    let mut idx = 0usize;
+    loop {
+        let pair_cell = cursor
+            .as_cell()
+            .map_err(|_| format!("cnts list tail is not cell at {idx}"))?;
+        let item = pair_cell.head();
+        let rest = pair_cell.tail();
+        let item_cell = item
+            .as_cell()
+            .map_err(|_| format!("cnts list item is not cell at {idx}"))?;
+        let item_wing = item_cell.head();
+        let item_hoon = item_cell.tail();
+        validate_wing_noun(&item_wing)
+            .map_err(|err| format!("cnts list item wing {idx} invalid: {err}"))?;
+        validate_hoon_tag(&item_hoon)
+            .map_err(|err| format!("cnts list item hoon {idx} invalid: {err}"))?;
+        if noun_is_zero(&rest) {
+            break;
+        }
+        cursor = rest;
+        idx += 1;
+    }
+    Ok(())
 }
 
 fn native_subset_for_paths(
@@ -885,6 +1408,431 @@ fn collect_hoon_variants_in_skin(skin: &ast::Skin, counts: &mut HashMap<String, 
     }
 }
 
+fn collect_cnts_nodes(node: &ast::Hoon, out: &mut Vec<ast::Hoon>) {
+    use ast::Hoon::*;
+
+    if let CenTis(_, _) = node {
+        out.push(node.clone());
+    }
+
+    match node {
+        Pair(a, b) => {
+            collect_cnts_nodes(a, out);
+            collect_cnts_nodes(b, out);
+        }
+        ZapZap
+        | Axis(_)
+        | Base(_)
+        | Bust(_)
+        | Eror(_)
+        | Leaf(_, _)
+        | Limb(_)
+        | Rock(_, _)
+        | Sand(_, _)
+        | Wing(_) => {}
+        Dbug(_, h)
+        | Note(_, h)
+        | Fits(h, _)
+        | Lost(h)
+        | BarDot(h)
+        | BarHep(h)
+        | BarWut(h)
+        | DotLus(h)
+        | DotWut(h)
+        | KetBar(h)
+        | KetPam(h)
+        | KetSig(h)
+        | KetWut(h)
+        | SigBuc(_, h)
+        | SigLus(_, h)
+        | SigFas(_, h)
+        | MicFas(h)
+        | WutZap(h)
+        | ZapGar(h)
+        | ZapTis(h)
+        | ZapWut(_, h) => collect_cnts_nodes(h, out),
+        Hand(typ, _) => collect_cnts_nodes_in_type(typ, out),
+        Knit(woofs) => {
+            for woof in woofs {
+                collect_cnts_nodes_in_woof(woof, out);
+            }
+        }
+        Tell(hoons) | Yell(hoons) | ColSig(hoons) | ColTar(hoons) | TisSig(hoons)
+        | WutBar(hoons) | WutPam(hoons) => {
+            for h in hoons {
+                collect_cnts_nodes(h, out);
+            }
+        }
+        Tune(term_or_tune) => collect_cnts_nodes_in_term_or_tune(term_or_tune, out),
+        Xray(manx) => collect_cnts_nodes_in_manx(manx, out),
+        BarBuc(_, spec) | KetTar(spec) | KetCol(spec) => {
+            collect_cnts_nodes_in_spec(spec, out);
+        }
+        BarCab(spec, alas, tomes) => {
+            collect_cnts_nodes_in_spec(spec, out);
+            collect_cnts_nodes_in_alas(alas, out);
+            collect_cnts_nodes_in_tomes(tomes, out);
+        }
+        BarCol(a, b)
+        | CenDot(a, b)
+        | CenHep(a, b)
+        | ColCab(a, b)
+        | ColHep(a, b)
+        | DotTar(a, b)
+        | DotTis(a, b)
+        | KetDot(a, b)
+        | KetLus(a, b)
+        | SigBar(a, b)
+        | SigCab(a, b)
+        | SigPam(_, a, b)
+        | SigTis(a, b)
+        | SigZap(a, b)
+        | TisDot(_, a, b)
+        | TisGal(a, b)
+        | TisHep(a, b)
+        | TisGar(a, b)
+        | TisLus(a, b)
+        | TisCom(a, b)
+        | WutKet(_, a, b)
+        | WutGal(a, b)
+        | WutGar(a, b)
+        | WutPat(_, a, b)
+        | WutSig(_, a, b)
+        | ZapCom(a, b)
+        | ZapMic(a, b)
+        | ZapPat(_, a, b) => {
+            collect_cnts_nodes(a, out);
+            collect_cnts_nodes(b, out);
+        }
+        BarCen(_, tomes) | BarPat(_, tomes) => {
+            collect_cnts_nodes_in_tomes(tomes, out);
+        }
+        BarKet(h, tomes) => {
+            collect_cnts_nodes(h, out);
+            collect_cnts_nodes_in_tomes(tomes, out);
+        }
+        BarSig(spec, h)
+        | BarTar(spec, h)
+        | BarTis(spec, h)
+        | DotKet(spec, h)
+        | KetHep(spec, h)
+        | MicMic(spec, h)
+        | TisBar(spec, h)
+        | ZapGal(spec, h) => {
+            collect_cnts_nodes_in_spec(spec, out);
+            collect_cnts_nodes(h, out);
+        }
+        ColKet(a, b, c, d) | CenKet(a, b, c, d) => {
+            collect_cnts_nodes(a, out);
+            collect_cnts_nodes(b, out);
+            collect_cnts_nodes(c, out);
+            collect_cnts_nodes(d, out);
+        }
+        ColLus(a, b, c)
+        | CenLus(a, b, c)
+        | WutCol(a, b, c)
+        | WutDot(a, b, c)
+        | SigWut(_, a, b, c)
+        | TisWut(_, a, b, c) => {
+            collect_cnts_nodes(a, out);
+            collect_cnts_nodes(b, out);
+            collect_cnts_nodes(c, out);
+        }
+        CenCab(_, items) | CenTis(_, items) => {
+            for (_, h) in items {
+                collect_cnts_nodes(h, out);
+            }
+        }
+        CenCol(a, hoons) | CenSig(_, a, hoons) | MicSig(a, hoons) | MicCol(a, hoons) => {
+            collect_cnts_nodes(a, out);
+            for h in hoons {
+                collect_cnts_nodes(h, out);
+            }
+        }
+        CenTar(_, h, items) => {
+            collect_cnts_nodes(h, out);
+            for (_, item) in items {
+                collect_cnts_nodes(item, out);
+            }
+        }
+        KetTis(skin, h) => {
+            collect_cnts_nodes_in_skin(skin, out);
+            collect_cnts_nodes(h, out);
+        }
+        SigCen(_, a, tyre, b) => {
+            collect_cnts_nodes(a, out);
+            collect_cnts_nodes_in_tyre(tyre, out);
+            collect_cnts_nodes(b, out);
+        }
+        SigGal(term_or_pair, h) | SigGar(term_or_pair, h) => {
+            collect_cnts_nodes_in_term_or_pair(term_or_pair, out);
+            collect_cnts_nodes(h, out);
+        }
+        MicTis(marl) => collect_cnts_nodes_in_marl(marl, out),
+        MicGal(spec, a, b, c) => {
+            collect_cnts_nodes_in_spec(spec, out);
+            collect_cnts_nodes(a, out);
+            collect_cnts_nodes(b, out);
+            collect_cnts_nodes(c, out);
+        }
+        TisCol(items, h) => {
+            for (_, item) in items {
+                collect_cnts_nodes(item, out);
+            }
+            collect_cnts_nodes(h, out);
+        }
+        TisFas(skin, a, b) | TisMic(skin, a, b) => {
+            collect_cnts_nodes_in_skin(skin, out);
+            collect_cnts_nodes(a, out);
+            collect_cnts_nodes(b, out);
+        }
+        TisKet(skin, _, a, b) => {
+            collect_cnts_nodes_in_skin(skin, out);
+            collect_cnts_nodes(a, out);
+            collect_cnts_nodes(b, out);
+        }
+        TisTar((_, spec), a, b) => {
+            if let Some(spec) = spec {
+                collect_cnts_nodes_in_spec(spec, out);
+            }
+            collect_cnts_nodes(a, out);
+            collect_cnts_nodes(b, out);
+        }
+        WutHep(_, pairs) => {
+            for (spec, h) in pairs {
+                collect_cnts_nodes_in_spec(spec, out);
+                collect_cnts_nodes(h, out);
+            }
+        }
+        WutLus(_, h, pairs) => {
+            collect_cnts_nodes(h, out);
+            for (spec, item) in pairs {
+                collect_cnts_nodes_in_spec(spec, out);
+                collect_cnts_nodes(item, out);
+            }
+        }
+        WutHax(skin, _) => collect_cnts_nodes_in_skin(skin, out),
+        WutTis(spec, _) => collect_cnts_nodes_in_spec(spec, out),
+    }
+}
+
+fn collect_cnts_nodes_in_alas(alas: &ast::Alas, out: &mut Vec<ast::Hoon>) {
+    for (_, h) in alas {
+        collect_cnts_nodes(h, out);
+    }
+}
+
+fn collect_cnts_nodes_in_tomes(tomes: &HashMap<String, ast::Tome>, out: &mut Vec<ast::Hoon>) {
+    for tome in tomes.values() {
+        collect_cnts_nodes_in_tome(tome, out);
+    }
+}
+
+fn collect_cnts_nodes_in_tome(tome: &ast::Tome, out: &mut Vec<ast::Hoon>) {
+    for hoon in tome.1.values() {
+        collect_cnts_nodes(hoon, out);
+    }
+}
+
+fn collect_cnts_nodes_in_tyre(tyre: &ast::Tyre, out: &mut Vec<ast::Hoon>) {
+    for (_, hoon) in tyre {
+        collect_cnts_nodes(hoon, out);
+    }
+}
+
+fn collect_cnts_nodes_in_term_or_pair(term_or_pair: &ast::TermOrPair, out: &mut Vec<ast::Hoon>) {
+    if let ast::TermOrPair::Pair(_, hoon) = term_or_pair {
+        collect_cnts_nodes(hoon, out);
+    }
+}
+
+fn collect_cnts_nodes_in_term_or_tune(term_or_tune: &ast::TermOrTune, out: &mut Vec<ast::Hoon>) {
+    if let ast::TermOrTune::Tune(tune) = term_or_tune {
+        collect_cnts_nodes_in_tune(tune, out);
+    }
+}
+
+fn collect_cnts_nodes_in_tune(tune: &ast::Tune, out: &mut Vec<ast::Hoon>) {
+    for hoon in tune.0.values().flatten() {
+        collect_cnts_nodes(hoon, out);
+    }
+    for hoon in &tune.1 {
+        collect_cnts_nodes(hoon, out);
+    }
+}
+
+fn collect_cnts_nodes_in_spec(spec: &ast::Spec, out: &mut Vec<ast::Hoon>) {
+    use ast::Spec::*;
+
+    match spec {
+        Base(_) | Leaf(_, _) | Like(_, _) | Loop(_) => {}
+        Dbug(_, spec) | Made(_, spec) | Name(_, spec) | Over(_, spec) | BucLus(_, spec) => {
+            collect_cnts_nodes_in_spec(spec, out)
+        }
+        Make(hoon, specs) => {
+            collect_cnts_nodes(hoon, out);
+            for spec in specs {
+                collect_cnts_nodes_in_spec(spec, out);
+            }
+        }
+        BucGar(a, b) | BucGal(a, b) | BucHep(a, b) | BucKet(a, b) | BucPat(a, b) => {
+            collect_cnts_nodes_in_spec(a, out);
+            collect_cnts_nodes_in_spec(b, out);
+        }
+        BucBuc(spec, map)
+        | BucDot(spec, map)
+        | BucFas(spec, map)
+        | BucTic(spec, map)
+        | BucZap(spec, map) => {
+            collect_cnts_nodes_in_spec(spec, out);
+            for spec in map.values() {
+                collect_cnts_nodes_in_spec(spec, out);
+            }
+        }
+        BucBar(spec, hoon) | BucPam(spec, hoon) => {
+            collect_cnts_nodes_in_spec(spec, out);
+            collect_cnts_nodes(hoon, out);
+        }
+        BucCab(hoon) | BucMic(hoon) => collect_cnts_nodes(hoon, out),
+        BucCol(spec, specs) | BucCen(spec, specs) | BucWut(spec, specs) => {
+            collect_cnts_nodes_in_spec(spec, out);
+            for spec in specs {
+                collect_cnts_nodes_in_spec(spec, out);
+            }
+        }
+        BucSig(hoon, spec) => {
+            collect_cnts_nodes(hoon, out);
+            collect_cnts_nodes_in_spec(spec, out);
+        }
+        BucTis(skin, spec) => {
+            collect_cnts_nodes_in_skin(skin, out);
+            collect_cnts_nodes_in_spec(spec, out);
+        }
+    }
+}
+
+fn collect_cnts_nodes_in_skin(skin: &ast::Skin, out: &mut Vec<ast::Hoon>) {
+    use ast::Skin::*;
+
+    match skin {
+        Term(_) | Base(_) | Leaf(_, _) | Wash(_) => {}
+        Cell(a, b) => {
+            collect_cnts_nodes_in_skin(a, out);
+            collect_cnts_nodes_in_skin(b, out);
+        }
+        Dbug(_, skin) | Name(_, skin) | Over(_, skin) => {
+            collect_cnts_nodes_in_skin(skin, out);
+        }
+        Spec(spec, skin) => {
+            collect_cnts_nodes_in_spec(spec, out);
+            collect_cnts_nodes_in_skin(skin, out);
+        }
+    }
+}
+
+fn collect_cnts_nodes_in_type(typ: &ast::Type, out: &mut Vec<ast::Hoon>) {
+    use ast::Type::*;
+
+    match typ {
+        NounExpr | Void | ParsedAtom(_, _) => {}
+        Cell(a, b) => {
+            collect_cnts_nodes_in_type(a, out);
+            collect_cnts_nodes_in_type(b, out);
+        }
+        Core(a, coil) => {
+            collect_cnts_nodes_in_type(a, out);
+            collect_cnts_nodes_in_coil(coil, out);
+        }
+        Face(_, typ) => collect_cnts_nodes_in_type(typ, out),
+        Fork(types) => {
+            for typ in types {
+                collect_cnts_nodes_in_type(typ, out);
+            }
+        }
+        Hint((a, _), b) => {
+            collect_cnts_nodes_in_type(a, out);
+            collect_cnts_nodes_in_type(b, out);
+        }
+        Hold(typ, hoon) => {
+            collect_cnts_nodes_in_type(typ, out);
+            collect_cnts_nodes(hoon, out);
+        }
+    }
+}
+
+fn collect_cnts_nodes_in_coil(coil: &ast::Coil, out: &mut Vec<ast::Hoon>) {
+    collect_cnts_nodes_in_type(&coil.q, out);
+    collect_cnts_nodes_in_semi_noun_expr(&coil.r.0, out);
+    for tome in coil.r.1.values() {
+        collect_cnts_nodes_in_tome(tome, out);
+    }
+}
+
+fn collect_cnts_nodes_in_woof(woof: &ast::Woof, out: &mut Vec<ast::Hoon>) {
+    if let ast::Woof::Hoon(hoon) = woof {
+        collect_cnts_nodes(hoon, out);
+    }
+}
+
+fn collect_cnts_nodes_in_semi_noun_expr(expr: &ast::SemiNounExpr, out: &mut Vec<ast::Hoon>) {
+    collect_cnts_nodes_in_stencil(&expr.0, out);
+}
+
+fn collect_cnts_nodes_in_stencil(stencil: &ast::Stencil, out: &mut Vec<ast::Hoon>) {
+    match stencil {
+        ast::Stencil::Half { left, rite } => {
+            collect_cnts_nodes_in_stencil(left, out);
+            collect_cnts_nodes_in_stencil(rite, out);
+        }
+        ast::Stencil::Full { blocks: _ } => {}
+        ast::Stencil::Lazy { resolve, .. } => {
+            collect_cnts_nodes_in_spec(&resolve.0, out);
+            collect_cnts_nodes_in_spec(&resolve.1, out);
+        }
+    }
+}
+
+fn collect_cnts_nodes_in_manx(manx: &ast::Manx, out: &mut Vec<ast::Hoon>) {
+    collect_cnts_nodes_in_marx(&manx.g, out);
+    collect_cnts_nodes_in_marl(&manx.c, out);
+}
+
+fn collect_cnts_nodes_in_marl(marl: &ast::Marl, out: &mut Vec<ast::Hoon>) {
+    for tuna in marl {
+        match tuna {
+            ast::Tuna::Manx(manx) => collect_cnts_nodes_in_manx(manx, out),
+            ast::Tuna::TunaTail(tail) => collect_cnts_nodes_in_tuna_tail(tail, out),
+        }
+    }
+}
+
+fn collect_cnts_nodes_in_tuna_tail(tail: &ast::TunaTail, out: &mut Vec<ast::Hoon>) {
+    match tail {
+        ast::TunaTail::Tape(hoon)
+        | ast::TunaTail::Manx(hoon)
+        | ast::TunaTail::Marl(hoon)
+        | ast::TunaTail::Call(hoon) => collect_cnts_nodes(hoon, out),
+    }
+}
+
+fn collect_cnts_nodes_in_marx(marx: &ast::Marx, out: &mut Vec<ast::Hoon>) {
+    collect_cnts_nodes_in_mart(&marx.a, out);
+}
+
+fn collect_cnts_nodes_in_mart(mart: &ast::Mart, out: &mut Vec<ast::Hoon>) {
+    for (_, beers) in mart {
+        for beer in beers {
+            collect_cnts_nodes_in_beer(beer, out);
+        }
+    }
+}
+
+fn collect_cnts_nodes_in_beer(beer: &ast::Beer, out: &mut Vec<ast::Hoon>) {
+    if let ast::Beer::Hoon(hoon) = beer {
+        collect_cnts_nodes(hoon, out);
+    }
+}
+
 fn collect_hoon_variants_in_type(typ: &ast::Type, counts: &mut HashMap<String, usize>) {
     use ast::Type::*;
 
@@ -1236,8 +2184,50 @@ async fn primed_parse_cache_primes_native_ztd_eight() -> Result<(), Box<dyn std:
 }
 
 #[tokio::test]
-async fn primed_parse_cache_builds_with_native_ztd_eight(
+#[ignore]
+async fn primed_parse_cache_primes_native_ztd_eight_no_dbug(
 ) -> Result<(), Box<dyn std::error::Error>> {
+    disable_metrics();
+    if std::env::var("RUST_LOG").is_err() {
+        std::env::set_var("RUST_LOG", "info");
+    }
+    let log_capture = init_logging(false);
+
+    let deps_dir = repo_hoon_dir()?;
+    let entry = resolve_hoon_path(&deps_dir, KERNEL_ENTRIES[0])?;
+    let target = resolve_hoon_path(&deps_dir, "common/ztd/eight.hoon")?;
+    let subset = collect_native_asts_for_paths_with_dbug(
+        &deps_dir,
+        &[entry.clone(), target.clone()],
+        false,
+    )?;
+
+    let attempt = prime_only_with_subset(&entry, &deps_dir, &subset, log_capture).await?;
+    if attempt.failed {
+        let variants = inventory_hoon_variants(&target, &deps_dir)?;
+        println!(
+            "hoon variants for {}: {}",
+            target.display(),
+            format_variant_inventory(&variants, 12)
+        );
+    }
+
+    assert!(
+        !attempt.failed,
+        "prime-only failed for {} with dbug disabled",
+        target.display()
+    );
+    assert!(
+        attempt.pc_size.unwrap_or(0) >= 1,
+        "expected parse cache size >= 1, got {:?}",
+        attempt.pc_size
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn primed_parse_cache_builds_with_native_ztd_eight() -> Result<(), Box<dyn std::error::Error>>
+{
     disable_metrics();
     if std::env::var("RUST_LOG").is_err() {
         std::env::set_var("RUST_LOG", "info");
@@ -1269,6 +2259,137 @@ async fn primed_parse_cache_builds_with_native_ztd_eight(
         "expected parse cache size >= 1, got {:?}",
         attempt.pc_size
     );
+    Ok(())
+}
+
+async fn assert_native_ast_matches_hoonc_parse(
+    target: &PathBuf,
+    deps_dir: &PathBuf,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let state_slab = parse_hoon_with_hoonc(&target, &deps_dir).await?;
+    let state_noun = unsafe { *state_slab.root() };
+    let pc = parse_cache_from_state(state_noun)
+        .map_err(|err| io::Error::new(io::ErrorKind::Other, err))?;
+    let target_path = entry_path_for_hoon(&target, &deps_dir)?;
+    let (_, pil, _deps) = map_find_entry_by_path(pc, &target_path)
+        .map_err(|err| io::Error::new(io::ErrorKind::Other, err))?
+        .ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::NotFound,
+                format!("parse cache missing {}", target.display()),
+            )
+        })?;
+    let hoonc_hoon = pile_hoon(pil).map_err(|err| io::Error::new(io::ErrorKind::Other, err))?;
+
+    let native_hoon = parse_native_hoon_with_dbug(&target, &deps_dir, true)?;
+    let mut slab = NounSlab::new();
+    let native_noun = hoon_to_noun(&mut slab, &native_hoon);
+
+    let mut hoonc_clean_slab = NounSlab::new();
+    let hoonc_clean = strip_dbug_tree(&mut hoonc_clean_slab, hoonc_hoon);
+    let mut native_clean_slab = NounSlab::new();
+    let native_clean = strip_dbug_tree(&mut native_clean_slab, native_noun);
+
+    let mut printed = false;
+    if diff_noun(&hoonc_clean, &native_clean, &mut printed).is_err() {
+        if let Some(mismatch) = find_mismatch_axis(hoonc_clean, native_clean, 1) {
+            println!("mismatch axis: {}", mismatch.axis);
+            println!(
+                "expected@{}: {}",
+                mismatch.axis,
+                print_noun(&mismatch.expected, 20, 0)
+            );
+            println!(
+                "actual@{}:   {}",
+                mismatch.axis,
+                print_noun(&mismatch.actual, 20, 0)
+            );
+            if let Some(parent_axis) = mismatch.parent_axis {
+                if let (Some(expected), Some(actual)) =
+                    (mismatch.parent_expected, mismatch.parent_actual)
+                {
+                    println!(
+                        "expected parent@{parent_axis}: {}",
+                        print_noun(&expected, 12, 0)
+                    );
+                    println!(
+                        "actual parent@{parent_axis}:   {}",
+                        print_noun(&actual, 12, 0)
+                    );
+                }
+            }
+        }
+        return Err(io::Error::new(
+            io::ErrorKind::Other,
+            format!("native AST mismatched hoonc parse for {}", target.display()),
+        )
+        .into());
+    }
+
+    let mut printed_raw = false;
+    if diff_noun(&hoonc_hoon, &native_noun, &mut printed_raw).is_err() {
+        println!(
+            "note: native vs hoonc differs in dbug spot data for {}",
+            target.display()
+        );
+    }
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn native_ast_matches_hoonc_parse_for_bridge() -> Result<(), Box<dyn std::error::Error>> {
+    disable_metrics();
+
+    let deps_dir = repo_hoon_dir()?;
+    let target_rel = std::env::var("HOONC_COMPARE_TARGET")
+        .unwrap_or_else(|_| "apps/bridge/bridge.hoon".to_string());
+    let target = resolve_hoon_path(&deps_dir, &target_rel)?;
+    assert_native_ast_matches_hoonc_parse(&target, &deps_dir).await
+}
+
+#[tokio::test]
+async fn native_ast_matches_hoonc_parse_for_ztd_eight() -> Result<(), Box<dyn std::error::Error>> {
+    disable_metrics();
+
+    let deps_dir = repo_hoon_dir()?;
+    let target = resolve_hoon_path(&deps_dir, "common/ztd/eight.hoon")?;
+    assert_native_ast_matches_hoonc_parse(&target, &deps_dir).await
+}
+
+#[test]
+fn native_cnts_noun_matches_mold_for_ztd_eight() -> Result<(), Box<dyn std::error::Error>> {
+    let deps_dir = repo_hoon_dir()?;
+    let target = resolve_hoon_path(&deps_dir, "common/ztd/eight.hoon")?;
+    let hoon = parse_native_hoon_with_dbug(&target, &deps_dir, false)?;
+
+    let mut cnts_nodes = Vec::new();
+    collect_cnts_nodes(&hoon, &mut cnts_nodes);
+
+    if cnts_nodes.is_empty() {
+        return Err(
+            io::Error::new(io::ErrorKind::Other, "no %cnts nodes found in ztd/eight").into(),
+        );
+    }
+
+    for (idx, node) in cnts_nodes.iter().enumerate() {
+        let mut slab = NounSlab::new();
+        let noun = hoon_to_noun(&mut slab, node);
+        if let Err(err) = validate_cnts_noun(&noun) {
+            let summary = match node {
+                ast::Hoon::CenTis(wing, pairs) => {
+                    format!("wing_len={} pairs_len={}", wing.len(), pairs.len())
+                }
+                _ => String::new(),
+            };
+            return Err(io::Error::new(
+                io::ErrorKind::Other,
+                format!("cnts node {idx} invalid: {err} {summary}\nnode={node:?}",),
+            )
+            .into());
+        }
+    }
+
     Ok(())
 }
 

@@ -1,6 +1,5 @@
 use std::cell::Cell;
 use std::cmp;
-use std::cmp::Ordering;
 use std::collections::{HashMap, *};
 use std::fs::File;
 use std::hash::{DefaultHasher, Hash, Hasher};
@@ -23,10 +22,8 @@ use either::Either::{Left, Right};
 use ibig::UBig;
 use nockapp::noun::slab::{slab_mug, slab_noun_equality, NounSlab};
 use nockapp::AtomExt;
-use nockchain_math::zoon::common::DefaultTipHasher;
-use nockchain_math::zoon::zmap::z_map_put;
-use nockvm::jets::util::slot;
-use nockvm::noun::{Atom, DirectAtom, Noun, D, DIRECT_MAX, NO, T, YES};
+use nockvm::jets::math::util::lth_b;
+use nockvm::noun::{Atom, DirectAtom, Noun, D, DIRECT_MAX, T};
 use nockvm_macros::tas;
 use num_bigint::BigUint;
 use num_traits::identities::Zero;
@@ -2355,7 +2352,7 @@ pub fn flay(gen: Hoon) -> Option<Skin> {
             let maybe_skin = flay(*h);
             match maybe_skin {
                 Some(s) => match skin {
-                    Skin::Term(ref t) => Some(Skin::Name(t.to_string(), Box::new(skin.clone()))),
+                    Skin::Term(ref t) => Some(Skin::Name(t.to_string(), Box::new(s))),
                     Skin::Name(ref t, ref b) if matches!(**b, Skin::Base(BaseType::NounExpr)) => {
                         Some(Skin::Name(t.clone(), Box::new(s)))
                     }
@@ -5691,7 +5688,6 @@ impl LineMap {
             return idx;
         }
     }
-
 }
 
 fn poon(pag: &[Hoon], goo: &[Option<Hoon>]) -> Option<Vec<Hoon>> {
@@ -8760,7 +8756,12 @@ fn apply_hoon_trace(node: Hoon, spot: Spot) -> Hoon {
     }
 }
 
-pub fn hoon_with_span(node: Hoon, span: (usize, usize), wer: &Path, linemap: &Arc<LineMap>) -> Hoon {
+pub fn hoon_with_span(
+    node: Hoon,
+    span: (usize, usize),
+    wer: &Path,
+    linemap: &Arc<LineMap>,
+) -> Hoon {
     let spot = chumsky_spot_to_hoon_spot(span, wer, linemap);
     apply_hoon_trace(node, spot)
 }
@@ -9676,12 +9677,122 @@ fn list_to_noun(slab: &mut NounSlab, nouns: Vec<Noun>) -> Noun {
         .fold(D(0u64), |tail, head| T(slab, &[head, tail]))
 }
 
+fn noun_is_zero(noun: Noun) -> bool {
+    unsafe { noun.raw_equals(&D(0)) }
+}
+
+fn dor(slab: &mut NounSlab, a: Noun, b: Noun) -> bool {
+    if unsafe { a.raw_equals(&b) } {
+        return true;
+    }
+
+    match (a.as_either_atom_cell(), b.as_either_atom_cell()) {
+        (Left(atom_a), Left(atom_b)) => lth_b(slab, atom_a, atom_b),
+        (Left(_), Right(_)) => true,
+        (Right(_), Left(_)) => false,
+        (Right(cell_a), Right(cell_b)) => {
+            let a_head = cell_a.head();
+            let b_head = cell_b.head();
+            let a_tail = cell_a.tail();
+            let b_tail = cell_b.tail();
+
+            if unsafe { a_head.raw_equals(&b_head) } {
+                dor(slab, a_tail, b_tail)
+            } else {
+                dor(slab, a_head, b_head)
+            }
+        }
+    }
+}
+
+fn gor_mug(slab: &mut NounSlab, a: Noun, b: Noun) -> bool {
+    match slab_mug(a).cmp(&slab_mug(b)) {
+        cmp::Ordering::Less => true,
+        cmp::Ordering::Greater => false,
+        cmp::Ordering::Equal => dor(slab, a, b),
+    }
+}
+
+fn mor_mug(slab: &mut NounSlab, a: Noun, b: Noun) -> bool {
+    let mug_a = slab_mug(a);
+    let mug_b = slab_mug(b);
+    let mug_mug_a = slab_mug(D(mug_a as u64));
+    let mug_mug_b = slab_mug(D(mug_b as u64));
+
+    match mug_mug_a.cmp(&mug_mug_b) {
+        cmp::Ordering::Less => true,
+        cmp::Ordering::Greater => false,
+        cmp::Ordering::Equal => dor(slab, a, b),
+    }
+}
+
+fn map_put_mug(slab: &mut NounSlab, tree: Noun, key: Noun, value: Noun) -> Option<Noun> {
+    if noun_is_zero(tree) {
+        let node = T(slab, &[key, value]);
+        return Some(T(slab, &[node, D(0), D(0)]));
+    }
+
+    let tree_cell = tree.as_cell().ok()?;
+    let node = tree_cell.head();
+    let rest = tree_cell.tail();
+    let rest_cell = rest.as_cell().ok()?;
+    let left = rest_cell.head();
+    let right = rest_cell.tail();
+
+    let node_cell = node.as_cell().ok()?;
+    let node_key = node_cell.head();
+    let node_val = node_cell.tail();
+
+    if slab_noun_equality(&key, &node_key) {
+        if slab_noun_equality(&value, &node_val) {
+            return Some(tree);
+        }
+        let new_node = T(slab, &[key, value]);
+        return Some(T(slab, &[new_node, left, right]));
+    }
+
+    if gor_mug(slab, key, node_key) {
+        let d = map_put_mug(slab, left, key, value)?;
+        let d_cell = d.as_cell().ok()?;
+        let d_node = d_cell.head();
+        let d_rest = d_cell.tail();
+        let d_rest_cell = d_rest.as_cell().ok()?;
+        let d_left = d_rest_cell.head();
+        let d_right = d_rest_cell.tail();
+        let d_node_cell = d_node.as_cell().ok()?;
+        let d_key = d_node_cell.head();
+
+        if mor_mug(slab, node_key, d_key) {
+            Some(T(slab, &[node, d, right]))
+        } else {
+            let new_a = T(slab, &[node, d_right, right]);
+            Some(T(slab, &[d_node, d_left, new_a]))
+        }
+    } else {
+        let d = map_put_mug(slab, right, key, value)?;
+        let d_cell = d.as_cell().ok()?;
+        let d_node = d_cell.head();
+        let d_rest = d_cell.tail();
+        let d_rest_cell = d_rest.as_cell().ok()?;
+        let d_left = d_rest_cell.head();
+        let d_right = d_rest_cell.tail();
+        let d_node_cell = d_node.as_cell().ok()?;
+        let d_key = d_node_cell.head();
+
+        if mor_mug(slab, node_key, d_key) {
+            Some(T(slab, &[node, left, d]))
+        } else {
+            let new_a = T(slab, &[node, left, d_left]);
+            Some(T(slab, &[d_node, new_a, d_right]))
+        }
+    }
+}
+
 fn map_to_noun(slab: &mut NounSlab, pairs: Vec<(Noun, Noun)>) -> Noun {
     let mut map = D(0);
-    let hasher = DefaultTipHasher;
 
-    for (mut key, mut val) in pairs {
-        if let Ok(updated) = z_map_put(slab, &map, &mut key, &mut val, &hasher) {
+    for (key, val) in pairs {
+        if let Some(updated) = map_put_mug(slab, map, key, val) {
             map = updated;
         }
     }
@@ -10106,7 +10217,7 @@ fn skin_to_noun(slab: &mut NounSlab, skin: &Skin) -> Noun {
             T(slab, &[D(tas!(b"dbug")), spot_noun, s_noun])
         }
         Leaf(tag, atom) => {
-            let tag_noun = cord_to_noun(slab, tag);
+            let tag_noun = term_to_noun(slab, tag);
             let atom_noun = atom_to_noun(slab, atom);
             T(slab, &[D(tas!(b"leaf")), tag_noun, atom_noun])
         }
@@ -10508,140 +10619,6 @@ fn tuna_tail_to_noun(slab: &mut NounSlab, tail: &TunaTail) -> Noun {
 //     }
 // }
 
-pub fn dor_slab(a: Noun, b: Noun) -> Noun {
-    if unsafe { a.raw_equals(&b) } {
-        YES
-    } else {
-        match (a.as_either_atom_cell(), b.as_either_atom_cell()) {
-            (Left(atom_a), Left(atom_b)) => atom_less_than(atom_a, atom_b),
-            (Left(_), Right(_)) => YES,
-            (Right(_), Left(_)) => NO,
-            (Right(cell_a), Right(cell_b)) => {
-                let a_head = match slot(cell_a.as_noun(), 2) {
-                    Ok(n) => n,
-                    Err(_) => return NO,
-                };
-                let b_head = slot(cell_b.as_noun(), 2).unwrap_or_else(|err| {
-                    panic!(
-                        "Panicked with {err:?} at {}:{} (git sha: {:?})",
-                        file!(),
-                        line!(),
-                        option_env!("GIT_SHA")
-                    )
-                });
-                let a_tail = slot(cell_a.as_noun(), 3).unwrap_or_else(|err| {
-                    panic!(
-                        "Panicked with {err:?} at {}:{} (git sha: {:?})",
-                        file!(),
-                        line!(),
-                        option_env!("GIT_SHA")
-                    )
-                });
-                let b_tail = slot(cell_b.as_noun(), 3).unwrap_or_else(|err| {
-                    panic!(
-                        "Panicked with {err:?} at {}:{} (git sha: {:?})",
-                        file!(),
-                        line!(),
-                        option_env!("GIT_SHA")
-                    )
-                });
-                if unsafe { a_head.raw_equals(&b_head) } {
-                    dor_slab(a_tail, b_tail)
-                } else {
-                    dor_slab(a_head, b_head)
-                }
-            }
-        }
-    }
-}
-
-pub fn gor_slab(a: Noun, b: Noun) -> Noun {
-    let c = unsafe { DirectAtom::new_unchecked(slab_mug(a) as u64) };
-    let d = unsafe { DirectAtom::new_unchecked(slab_mug(b) as u64) };
-
-    match c.data().cmp(&d.data()) {
-        Ordering::Greater => NO,
-        Ordering::Less => YES,
-        Ordering::Equal => dor_slab(a, b),
-    }
-}
-
-pub fn mor_slab(a: Noun, b: Noun) -> Noun {
-    let c = unsafe { DirectAtom::new_unchecked(slab_mug(a) as u64) };
-    let d = unsafe { DirectAtom::new_unchecked(slab_mug(b) as u64) };
-
-    let e = unsafe { DirectAtom::new_unchecked(slab_mug(c.as_noun()) as u64) };
-    let f = unsafe { DirectAtom::new_unchecked(slab_mug(d.as_noun()) as u64) };
-
-    match e.data().cmp(&f.data()) {
-        Ordering::Greater => NO,
-        Ordering::Less => YES,
-        Ordering::Equal => dor_slab(a, b),
-    }
-}
-
-pub fn atom_less_than(a: Atom, b: Atom) -> Noun {
-    if atom_less_than_b(&a, &b) {
-        YES
-    } else {
-        NO
-    }
-}
-
-fn atom_less_than_b(a: &Atom, b: &Atom) -> bool {
-    if let (Some(a_direct), Some(b_direct)) = (a.direct(), b.direct()) {
-        return unsafe { a_direct.data() < b_direct.data() };
-    }
-
-    let a_bits = a.bit_size();
-    let b_bits = b.bit_size();
-
-    if a_bits != b_bits {
-        return a_bits < b_bits;
-    }
-
-    if a_bits <= 64 && b_bits <= 64 {
-        if let (Ok(a_u64), Ok(b_u64)) = (a.as_u64(), b.as_u64()) {
-            return a_u64 < b_u64;
-        }
-    }
-
-    let a_limbs = if a.is_direct() {
-        &[unsafe { a.direct().unwrap().data() }]
-    } else {
-        unsafe { std::slice::from_raw_parts(a.data_pointer(), a.size()) }
-    };
-
-    let b_limbs = if b.is_direct() {
-        &[unsafe { b.direct().unwrap().data() }]
-    } else {
-        unsafe { std::slice::from_raw_parts(b.data_pointer(), b.size()) }
-    };
-
-    let max_limbs = a_limbs.len().max(b_limbs.len());
-    for i in 0..max_limbs {
-        let a_idx = a_limbs.len().wrapping_sub(1).wrapping_sub(i);
-        let b_idx = b_limbs.len().wrapping_sub(1).wrapping_sub(i);
-
-        let a_limb = if a_idx < a_limbs.len() {
-            a_limbs[a_idx]
-        } else {
-            0
-        };
-        let b_limb = if b_idx < b_limbs.len() {
-            b_limbs[b_idx]
-        } else {
-            0
-        };
-
-        if a_limb != b_limb {
-            return a_limb < b_limb;
-        }
-    }
-
-    false
-}
-
 pub fn collect_inputs(path: &PathBuf) -> Vec<PathBuf> {
     let mut files = Vec::new();
     collect_inputs_inner(path, &mut files);
@@ -10675,5 +10652,166 @@ fn collect_inputs_inner(path: &PathBuf, out: &mut Vec<PathBuf>) {
     } else {
         eprintln!("Invalid input path: {}", path.display());
         std::process::exit(2);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use nockapp::noun::slab::{slab_mug, slab_noun_equality, NounSlab};
+    use nockchain_math::noun_ext::NounMathExt;
+    use nockchain_math::zoon::common::{gor_tip, DefaultTipHasher};
+    use nockvm::noun::{Noun, D, T};
+
+    use super::{flay, gor_mug, limb_to_noun, map_to_noun, mor_mug, term_to_noun, Limb};
+    use crate::ast::hoon::{Hoon, Skin};
+
+    fn noun_is_zero(noun: Noun) -> bool {
+        unsafe { noun.raw_equals(&D(0)) }
+    }
+
+    fn map_is_apt_mug(slab: &mut NounSlab, tree: Noun) -> bool {
+        fn inner(tree: Noun, min: Option<Noun>, max: Option<Noun>, slab: &mut NounSlab) -> bool {
+            if noun_is_zero(tree) {
+                return true;
+            }
+
+            let Ok([node, left, right]) = tree.uncell() else {
+                return false;
+            };
+            let Ok([key, _val]) = node.uncell() else {
+                return false;
+            };
+
+            if let Some(min_key) = min {
+                if gor_mug(slab, key, min_key) {
+                    return false;
+                }
+            }
+            if let Some(max_key) = max {
+                if gor_mug(slab, max_key, key) {
+                    return false;
+                }
+            }
+
+            if !noun_is_zero(left) {
+                let Ok([left_node, _, _]) = left.uncell() else {
+                    return false;
+                };
+                let Ok([left_key, _]) = left_node.uncell() else {
+                    return false;
+                };
+                if !mor_mug(slab, key, left_key) {
+                    return false;
+                }
+            }
+
+            if !noun_is_zero(right) {
+                let Ok([right_node, _, _]) = right.uncell() else {
+                    return false;
+                };
+                let Ok([right_key, _]) = right_node.uncell() else {
+                    return false;
+                };
+                if !mor_mug(slab, key, right_key) {
+                    return false;
+                }
+            }
+
+            inner(left, min, Some(key), slab) && inner(right, Some(key), max, slab)
+        }
+
+        inner(tree, None, None, slab)
+    }
+
+    fn find_tip_mug_mismatch(limit: u64) -> Option<(u64, u64)> {
+        let hasher = DefaultTipHasher;
+        let mut slab: NounSlab = NounSlab::new();
+
+        for a in 1..=limit {
+            for b in 1..=limit {
+                if a == b {
+                    continue;
+                }
+                let mut a_tip = D(a);
+                let mut b_tip = D(b);
+                let tip_less = match gor_tip(&mut slab, &mut a_tip, &mut b_tip, &hasher) {
+                    Ok(value) => value,
+                    Err(_) => continue,
+                };
+                let mug_a = slab_mug(D(a));
+                let mug_b = slab_mug(D(b));
+                if mug_a == mug_b {
+                    continue;
+                }
+                let mug_less = mug_a < mug_b;
+                if tip_less != mug_less {
+                    return Some((a, b));
+                }
+            }
+        }
+
+        None
+    }
+
+    #[test]
+    fn flay_kettis_uses_inner_skin() {
+        let expr = Hoon::KetTis(
+            Skin::Term("bnd".to_string()),
+            Box::new(Hoon::ColTar(vec![
+                Hoon::Limb("c".to_string()),
+                Hoon::Limb("d".to_string()),
+            ])),
+        );
+
+        let skin = flay(expr).expect("flay should return a skin for bnd=[c d]");
+        let expected = Skin::Name(
+            "bnd".to_string(),
+            Box::new(Skin::Cell(
+                Box::new(Skin::Term("c".to_string())),
+                Box::new(Skin::Term("d".to_string())),
+            )),
+        );
+
+        assert_eq!(skin, expected);
+    }
+
+    #[test]
+    fn map_to_noun_respects_mug_order() {
+        let (a, b) = find_tip_mug_mismatch(512).expect("no tip/mug mismatch found, raise limit");
+
+        let mut slab: NounSlab = NounSlab::new();
+        let map = map_to_noun(&mut slab, vec![(D(a), D(0)), (D(b), D(1))]);
+        assert!(
+            map_is_apt_mug(&mut slab, map),
+            "map_to_noun produced a non-apt mug map for keys {a} and {b}"
+        );
+    }
+
+    #[test]
+    fn limb_to_noun_encodes_axis_and_parent_tags() {
+        let mut slab = NounSlab::new();
+
+        let axis = limb_to_noun(&mut slab, &Limb::Axis(1));
+        let expected_axis = T(&mut slab, &[D(0), D(1)]);
+        assert!(
+            slab_noun_equality(&axis, &expected_axis),
+            "axis limb did not encode as [0 axis]"
+        );
+
+        let parent = limb_to_noun(&mut slab, &Limb::Parent(2, None));
+        let expected_parent = T(&mut slab, &[D(1), D(2), D(0)]);
+        assert!(
+            slab_noun_equality(&parent, &expected_parent),
+            "parent limb did not encode as [1 axis 0]"
+        );
+
+        let parent_with_term = limb_to_noun(&mut slab, &Limb::Parent(3, Some("foo".to_string())));
+        let term = term_to_noun(&mut slab, "foo");
+        let expected_term = T(&mut slab, &[D(0), term]);
+        let expected_parent_with_term = T(&mut slab, &[D(1), D(3), expected_term]);
+        assert!(
+            slab_noun_equality(&parent_with_term, &expected_parent_with_term),
+            "parent limb with term did not encode as [1 axis [0 term]]"
+        );
     }
 }
