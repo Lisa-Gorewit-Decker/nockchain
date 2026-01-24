@@ -7,7 +7,7 @@
 
 use std::collections::HashMap;
 use std::io::Write;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 use std::sync::{Arc, Mutex, Once, OnceLock};
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 use std::{fs, io};
@@ -159,14 +159,45 @@ fn repo_hoon_dir() -> Result<PathBuf, Box<dyn std::error::Error>> {
     Ok(path.canonicalize()?)
 }
 
-fn parse_native_ast(path: &Path) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
-    let source = fs::read_to_string(path)?;
-    let linemap = Arc::new(LineMap::new(&source));
-    let wer = path
+fn hoon_path_for_file(
+    path: &Path,
+    deps_dir: &Path,
+) -> Result<Vec<String>, Box<dyn std::error::Error>> {
+    let rel = path.strip_prefix(deps_dir).map_err(|_| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("native parser path is not under hoon dir: {}", path.display()),
+        )
+    })?;
+    Ok(rel
         .iter()
         .map(|s| s.to_string_lossy().into_owned())
-        .collect();
-    let parsed = native_parser(wer, false, linemap)
+        .collect())
+}
+
+fn hoon_path_for_any(path: &Path, deps_dir: &Path) -> Vec<String> {
+    match hoon_path_for_file(path, deps_dir) {
+        Ok(segments) => segments,
+        Err(_) => hoon_path_for_absolute(path),
+    }
+}
+
+fn hoon_path_for_absolute(path: &Path) -> Vec<String> {
+    path.components()
+        .filter_map(|component| match component {
+            Component::Normal(seg) => Some(seg.to_string_lossy().into_owned()),
+            _ => None,
+        })
+        .collect()
+}
+
+fn parse_native_ast_with_wer(
+    path: &Path,
+    wer: Vec<String>,
+) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
+    let source = fs::read_to_string(path)?;
+    let linemap = Arc::new(LineMap::new(&source));
+    let parsed = native_parser(wer, true, linemap)
         .parse(source.as_str())
         .into_result()
         .map_err(|errs| {
@@ -182,16 +213,25 @@ fn parse_native_ast(path: &Path) -> Result<Vec<u8>, Box<dyn std::error::Error>> 
     Ok(slab.jam().to_vec())
 }
 
+fn parse_native_ast(
+    path: &Path,
+    deps_dir: &Path,
+) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
+    let wer = hoon_path_for_any(path, deps_dir);
+    parse_native_ast_with_wer(path, wer)
+}
+
 fn ensure_entry_ast(
     asts: &mut HashMap<PathBuf, Vec<u8>>,
     entry: &Path,
+    deps_dir: &Path,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let entry_path = entry.canonicalize()?;
     if asts.contains_key(&entry_path) {
         return Ok(());
     }
 
-    let jammed = parse_native_ast(entry)?;
+    let jammed = parse_native_ast(entry, deps_dir)?;
     asts.insert(entry_path, jammed);
     Ok(())
 }
@@ -201,6 +241,7 @@ fn collect_native_asts(
     entry: &Path,
 ) -> Result<HashMap<PathBuf, Vec<u8>>, Box<dyn std::error::Error>> {
     let mut asts = HashMap::new();
+    let entry_path = entry.canonicalize()?;
 
     let walker = WalkDir::new(deps_dir).follow_links(true).into_iter();
     for entry_result in walker.filter_entry(is_valid_file_or_dir) {
@@ -212,20 +253,25 @@ fn collect_native_asts(
             continue;
         }
 
-        let jammed = match parse_native_ast(entry.path()) {
+        let canonical = entry.path().canonicalize()?;
+        if canonical == entry_path {
+            continue;
+        }
+        let jammed = match parse_native_ast(entry.path(), deps_dir) {
             Ok(jammed) => jammed,
             Err(_) => continue,
         };
-        asts.insert(entry.path().canonicalize()?, jammed);
+        asts.insert(canonical, jammed);
     }
 
-    ensure_entry_ast(&mut asts, entry)?;
+    ensure_entry_ast(&mut asts, entry, deps_dir)?;
 
     Ok(asts)
 }
 
 struct PrimeAttempt {
     warned: bool,
+    failed: bool,
     pc_size: Option<usize>,
 }
 
@@ -237,6 +283,17 @@ fn parse_pc_size(logs: &str) -> Option<usize> {
         let number = rest.split_whitespace().next()?.trim_matches('"');
         number.parse().ok()
     })
+}
+
+fn detect_prime_failure(logs: &str) -> bool {
+    let markers = [
+        "hoonc: warning: input is not a proper cause",
+        "prime-native: hoon mold failed",
+        "prime-dir: hoon mismatch",
+        "syntax error",
+        "hoonc: missing dependency",
+    ];
+    markers.iter().any(|marker| logs.contains(marker))
 }
 
 fn native_subset_for_prefix(
@@ -273,32 +330,36 @@ fn prime_with_subset(
     let nockapp_home = temp_out_dir("bench-bisect-home")?;
     let out_dir = temp_out_dir("bench-bisect-out")?;
     let _env_guard = EnvVarGuard::set("NOCKAPP_HOME", nockapp_home.to_string_lossy().as_ref());
+    let _prewarm_guard = EnvVarGuard::set("HOONC_DISABLE_PREWARM", "1");
 
     log_capture.clear();
-    rt.block_on(async {
-        let (mut nockapp, _out_path) = hoonc::initialize_with_default_cli(
+    let build_result = rt.block_on(async {
+        hoonc::build_jam_with_primed_parse_cache(
             entry.clone(),
             deps_dir.clone(),
             Some(out_dir),
             false,
             true,
+            subset,
         )
         .await
-        .map_err(|err| {
-            io::Error::new(io::ErrorKind::Other, format!("bisect init failed: {err}"))
-        })?;
-        hoonc::prime_parse_cache_public(&mut nockapp, entry, deps_dir, subset)
-            .await
-            .map_err(|err| {
-                io::Error::new(io::ErrorKind::Other, format!("bisect prime failed: {err}"))
-            })?;
-        Ok::<(), io::Error>(())
-    })?;
+    });
 
     let logs = log_capture.take_string();
     let warned = logs.contains("hoonc: warning: input is not a proper cause");
+    let failed = build_result.is_err() || detect_prime_failure(&logs);
     let pc_size = parse_pc_size(&logs);
-    Ok(PrimeAttempt { warned, pc_size })
+    if let Err(err) = build_result {
+        if !logs.is_empty() {
+            println!("bisect logs:\n{logs}");
+        }
+        println!("bisect build error: {err}");
+    }
+    Ok(PrimeAttempt {
+        warned,
+        failed,
+        pc_size,
+    })
 }
 
 fn bisect_first_failing_path(
@@ -321,10 +382,10 @@ fn bisect_first_failing_path(
         prime_with_subset(rt, entry, deps_dir, &subset, log_capture)?
     };
     println!(
-        "bisect: full set warned={}, pc-size={:?}",
-        full_attempt.warned, full_attempt.pc_size
+        "bisect: full set warned={} failed={} pc-size={:?}",
+        full_attempt.warned, full_attempt.failed, full_attempt.pc_size
     );
-    if !full_attempt.warned {
+    if !full_attempt.failed {
         return Ok(None);
     }
 
@@ -335,10 +396,10 @@ fn bisect_first_failing_path(
         let subset = native_subset_for_prefix(entry, native_asts, &paths, mid)?;
         let attempt = prime_with_subset(rt, entry, deps_dir, &subset, log_capture)?;
         println!(
-            "bisect: prefix={} warned={} pc-size={:?}",
-            mid, attempt.warned, attempt.pc_size
+            "bisect: prefix={} warned={} failed={} pc-size={:?}",
+            mid, attempt.warned, attempt.failed, attempt.pc_size
         );
-        if attempt.warned {
+        if attempt.failed {
             high = mid;
         } else {
             low = mid + 1;

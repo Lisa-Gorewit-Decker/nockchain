@@ -433,6 +433,42 @@
   ~&  "hoonc: prime-debug head tail mug {<(mug +.head)>}"
   ~&  "hoonc: prime-debug tail mug {<(mug tail)>}"
   ~
+
+++  find-noun-mismatch
+  |=  [a=* b=* path=*]
+  ^-  (unit [path=* a=* b=*])
+  ?:  =(a b)
+    ~
+  ?@  a
+    [~ [path a b]]
+  ?@  b
+    [~ [path a b]]
+  =/  head=(unit [path=* a=* b=*])
+    (find-noun-mismatch -.a -.b (snoc path 0))
+  ?^  head
+    head
+  (find-noun-mismatch +.a +.b (snoc path 1))
+
+++  log-noun-mismatch
+  |=  [path=* a=* b=*]
+  ^-  *
+  ~&  "prime-diff path {<path>}"
+  ~&  "prime-diff mug a {<(mug a)>} b {<(mug b)>}"
+  ~
+
+++  strip-dbug
+  |=  gen=*
+  ^-  *
+  ?@  gen  gen
+  =/  head  -.gen
+  =/  tail  +.gen
+  ?:  ?=(%dbug head)
+    ?@  tail  gen
+    $(gen +.tail)
+  :*  $(gen head)
+      $(gen tail)
+  ==
+
 ::  +debug-map-term-tome: validate map term->tome
 ++  debug-map-term-tome
   |=  map=*
@@ -818,13 +854,24 @@
       ==
     =/  fil-cord=cord  fil
     =/  tex=tape  (trip fil-cord)
+    =/  e=(unit [path pile (list raut)])  (~(get by pc) file-hash)
+    =/  cacheable=?  %.y
     =/  [pil=pile deps=(list raut)]
-      ?~  e=(~(get by pc) file-hash)
+      ?~  e
         ~&  "parsing {<pat>}"
         (process-pile pat tex dir)
-      ~&  "reusing parse cache entry for {<pat>}"
-      [pil deps]:u.e
-    :_  (~(put by new-pc) file-hash [pat pil deps])
+      =/  old-path=path  -.u.e
+      ?:  =(pat old-path)
+        ~&  "reusing parse cache entry for {<pat>}"
+        +.u.e
+      ~&  "parse-dir: hash collision {<file-hash>} new {<pat>} old {<old-path>} len {<(met 3 fil)>}"
+      =.  cacheable  %.n
+      (process-pile pat tex dir)
+    =.  new-pc
+      ?:  cacheable
+        (~(put by new-pc) file-hash [pat pil deps])
+      new-pc
+    :_  new-pc
     :*  pat                                              ::  path
         file-hash                                        ::  hash
         deps                                             ::  deps
@@ -889,26 +936,60 @@
     =/  fil=@  (~(got by dir) pat)
     =/  file-hash  (shax fil)
     =/  native-hoon=(unit hoon)  (~(get by native) pat)
+    =/  e=(unit [path pile (list raut)])  (~(get by pc) file-hash)
+    =/  cacheable=?  %.y
     =/  [pil=pile deps=(list raut)]
-      ?~  e=(~(get by pc) file-hash)
+      ?~  e
         ~&  "prime-dir parsing {<pat>}"
         =/  fil-cord=cord  fil
         =/  tex=tape  (trip fil-cord)
         =/  pil  (parse-pile pat tex)
         [pil (resolve-pile pil dir)]
-      [pil deps]:u.e
+      =/  old-path=path  -.u.e
+      ?:  =(pat old-path)
+        +.u.e
+      ~&  "prime-dir: hash collision {<file-hash>} new {<pat>} old {<old-path>} len {<(met 3 fil)>}"
+      =.  cacheable  %.n
+      =/  fil-cord=cord  fil
+      =/  tex=tape  (trip fil-cord)
+      =/  pil  (parse-pile pat tex)
+      [pil (resolve-pile pil dir)]
     =/  pil=pile
       ?~  native-hoon
         pil
       ~&  "prime-dir: injecting native hoon for {<pat>}"
-      pil(hoon u.native-hoon)
-    =.  pc  (~(put by pc) file-hash [pat pil deps])
+      =/  parsed-hoon  hoon.pil
+      =/  native  u.native-hoon
+      =/  parsed-clean  (strip-dbug parsed-hoon)
+      =/  native-clean  (strip-dbug native)
+      ?:  =(parsed-clean native-clean)
+        ?:  =(parsed-hoon native)
+          pil(hoon native)
+        ~&  "prime-dir: hoon spot mismatch for {<pat>}"
+        pil(hoon native)
+      ~&  "prime-dir: hoon mismatch for {<pat>}"
+      =/  mismatch=(unit [path=* a=* b=*])
+        (find-noun-mismatch parsed-clean native-clean ~)
+      ?^  mismatch
+        =+  scratch=(log-noun-mismatch path.u.mismatch a.u.mismatch b.u.mismatch)
+        ~
+      ~&  "prime-dir: hoon mug parser {<(mug parsed-clean)>} native {<(mug native-clean)>}"
+      ~&  "prime-dir: parsed hoon (clean)"
+      =+  scratch=(debug-hoon-noun parsed-clean)
+      ~&  "prime-dir: native hoon (clean)"
+      =+  scratch=(debug-hoon-noun native-clean)
+      pil(hoon native)
+    =.  pc
+      ?:  cacheable
+        (~(put by pc) file-hash [pat pil deps])
+      pc
+    ~&  "prime-dir: pc-size now {<~(wyt by pc)>} for {<pat>}"
     |-
     ?~  deps
       [pc seen]
     =^  pc  seen
       (prime-node pax.i.deps dir native pc seen)
-    $(deps t.deps)
+    $(deps t.deps, pc pc, seen seen)
   --
 ::
 ::  $build-merk-dag: builds a merkle DAG out dependencies + target
@@ -1076,10 +1157,15 @@
     ~/  %compile
     |=  [nod=node dep-vaz=(trap vase)]
     ^-  (unit (trap vase))
+    =+  nod-path=path.nod
+    =+  nod-leaf=leaf.nod
     =;  result=(each (trap vase) tang)
       ?-  -.result
         %&  `p.result
-        %|  ((slog p.result) ~)
+        %|  ~&  "hoonc: compile failed for {<nod-path>}"
+            ~&  "hoonc: compile failed leaf mug {<(mug nod-leaf)>}"
+            ~&  p.result
+            ~
       ==
     %-  mule
     |.
@@ -1102,12 +1188,22 @@
     =/  vaz=vase  $:swetted
     =>  vaz=vaz
     |.(vaz)
- ::
-  ++  grab
-    |=  =file-hash
-    ^-  (unit (trap vase))
-    =/  =merk-hash  (~(got by file.dag) file-hash)
-    (~(get by bc) merk-hash)
+  ::
+++  grab
+  |=  =file-hash
+  ^-  (unit (trap vase))
+  =/  merk-hash=(unit merk-hash)  (~(get by file.dag) file-hash)
+  ?~  merk-hash
+    =/  matches=(list path)
+      %+  roll
+        ~(tap by nodes)
+      |=  [[p=path n=node] acc=(list path)]
+      ?:  =(hash.n file-hash)
+        [p acc]
+      acc
+    ~&  "hoonc: grab missing file-hash {<file-hash>} file-dag-size {<~(wyt by file.dag)>} matches {<matches>}"
+    ~
+  (~(get by bc) u.merk-hash)
   --
 ::
 ::  $label-vase: label a (trap vase) with a face
@@ -1176,7 +1272,14 @@
   |=  pax=path
   ^-  ?
   =/  end  (rear pax)
-  !=(~ (find ".hoon" (trip end)))
+  =/  tape  (trip end)
+  =/  ext  (trip '.hoon')
+  =/  tape-len  (lent tape)
+  =/  ext-len  (lent ext)
+  ?:  (lth tape-len ext-len)
+    %.n
+  =/  suffix  (slag (sub tape-len ext-len) tape)
+  =(suffix ext)
 ::
 ::
 ++  is-dat

@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::env::current_dir;
 use std::ffi::OsStr;
 use std::io::Write;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use bytes::Bytes;
 use clap::{ColorChoice, Parser};
@@ -312,7 +312,7 @@ fn build_native_ast_noun(
     native_asts: &HashMap<PathBuf, Vec<u8>>,
 ) -> Result<Noun, Error> {
     let entry_path = entry.canonicalize()?;
-    let entry_string = canonicalize_and_string(entry);
+    let entry_string = entry_path_for_hoon(entry, deps_dir)?;
     let directory = canonicalize_and_string(deps_dir);
 
     let entry_jam = native_asts.get(&entry_path).ok_or_else(|| {
@@ -323,6 +323,7 @@ fn build_native_ast_noun(
     })?;
 
     let mut native_noun = D(0);
+    let mut entry_added = false;
     for (path, jam) in native_asts {
         let path_string = path.to_string_lossy();
         let rel_path = match path_string.strip_prefix(&directory) {
@@ -331,16 +332,21 @@ fn build_native_ast_noun(
             None => continue,
         };
 
+        if rel_path == entry_string {
+            entry_added = true;
+        }
         let path_cord = Atom::from_value(slab, rel_path)?.as_noun();
         let hoon_noun = slab.cue_into(Bytes::from(jam.clone()))?;
         let entry_cell = T(slab, &[path_cord, hoon_noun]);
         native_noun = T(slab, &[entry_cell, native_noun]);
     }
 
-    let entry_cord = Atom::from_value(slab, entry_string)?.as_noun();
-    let entry_hoon = slab.cue_into(Bytes::from(entry_jam.clone()))?;
-    let entry_cell = T(slab, &[entry_cord, entry_hoon]);
-    native_noun = T(slab, &[entry_cell, native_noun]);
+    if !entry_added {
+        let entry_cord = Atom::from_value(slab, entry_string)?.as_noun();
+        let entry_hoon = slab.cue_into(Bytes::from(entry_jam.clone()))?;
+        let entry_cell = T(slab, &[entry_cord, entry_hoon]);
+        native_noun = T(slab, &[entry_cell, native_noun]);
+    }
 
     Ok(native_noun)
 }
@@ -361,7 +367,7 @@ async fn prime_parse_cache(
     deps_dir: &PathBuf,
     native_asts: &HashMap<PathBuf, Vec<u8>>,
 ) -> Result<(), Error> {
-    let entry_string = canonicalize_and_string(entry);
+    let entry_string = entry_path_for_hoon(entry, deps_dir)?;
     let entry_contents = fs::read(entry).await?;
 
     let mut slab: NounSlab<NockJammer> = NounSlab::new();
@@ -457,7 +463,7 @@ async fn initialize_hoonc_inner<J: Jammer + Send + 'static>(
         .await?;
     let mut slab: NounSlab<NockJammer> = NounSlab::new();
 
-    let entry_string = canonicalize_and_string(&entry);
+    let entry_string = entry_path_for_hoon(&entry, &deps_dir)?;
     let entry_path = Atom::from_value(&mut slab, entry_string)?.as_noun();
 
     let directory_noun =
@@ -593,6 +599,21 @@ pub fn is_valid_file_or_dir(entry: &DirEntry) -> bool {
         .unwrap_or(false);
 
     is_dir || is_valid_file
+}
+
+fn entry_path_for_hoon(entry: &Path, deps_dir: &Path) -> Result<String, Error> {
+    let entry_abs = entry.canonicalize()?;
+    let deps_abs = deps_dir.canonicalize()?;
+    if let Ok(rel) = entry_abs.strip_prefix(&deps_abs) {
+        let rel_str = rel.to_string_lossy();
+        if rel_str.starts_with('/') {
+            Ok(rel_str.to_string())
+        } else {
+            Ok(format!("/{rel_str}"))
+        }
+    } else {
+        Ok(entry_abs.to_string_lossy().into_owned())
+    }
 }
 
 #[instrument]

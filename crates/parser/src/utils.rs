@@ -5601,6 +5601,7 @@ fn poof(pax: Path) -> Vec<Hoon> {
 #[derive(Clone)]
 pub struct LineMap {
     starts: Vec<usize>,
+    source: Arc<str>,
 }
 
 impl LineMap {
@@ -5615,7 +5616,8 @@ impl LineMap {
             }
         }
 
-        Self { starts }
+        let source = Arc::<str>::from(src);
+        Self { starts, source }
     }
 
     #[inline(always)]
@@ -5635,6 +5637,59 @@ impl LineMap {
             q: self.line_col(span.end),
         }
     }
+
+    #[inline]
+    fn expand_gap_start(&self, start: usize) -> usize {
+        let bytes = self.source.as_bytes();
+        let mut idx = start.min(bytes.len());
+
+        loop {
+            while idx > 0 {
+                match bytes[idx - 1] {
+                    b' ' | b'\t' => {
+                        idx -= 1;
+                        continue;
+                    }
+                    _ => break,
+                }
+            }
+
+            if idx == 0 {
+                return 0;
+            }
+
+            if bytes[idx - 1] != b'\n' {
+                return idx;
+            }
+
+            let line_end = idx - 1;
+            let mut line_start = line_end;
+            while line_start > 0 && bytes[line_start - 1] != b'\n' {
+                line_start -= 1;
+            }
+
+            let mut cursor = line_start;
+            while cursor < line_end {
+                match bytes[cursor] {
+                    b' ' | b'\t' => cursor += 1,
+                    _ => break,
+                }
+            }
+
+            if cursor >= line_end {
+                idx = line_start;
+                continue;
+            }
+
+            if bytes[cursor] == b':' && cursor + 1 < line_end && bytes[cursor + 1] == b':' {
+                idx = line_start;
+                continue;
+            }
+
+            return idx;
+        }
+    }
+
 }
 
 fn poon(pag: &[Hoon], goo: &[Option<Hoon>]) -> Option<Vec<Hoon>> {
@@ -8690,23 +8745,31 @@ pub fn one_spec_closed_tall<'src>(
         .delimited_by(just('='), just('='))
 }
 
+fn apply_hoon_trace(node: Hoon, spot: Spot) -> Hoon {
+    match node {
+        Hoon::Dbug(existing_spot, inner) => {
+            if existing_spot == spot {
+                Hoon::Dbug(existing_spot, inner)
+            } else {
+                Hoon::Dbug(spot, Box::new(Hoon::Dbug(existing_spot, inner)))
+            }
+        }
+        other => Hoon::Dbug(spot, Box::new(other)),
+    }
+}
+
+pub fn hoon_with_span(node: Hoon, span: (usize, usize), wer: &Path, linemap: &Arc<LineMap>) -> Hoon {
+    let spot = chumsky_spot_to_hoon_spot(span, wer, linemap);
+    apply_hoon_trace(node, spot)
+}
+
 pub fn wrap_hoon_with_trace(
     wer: Path,
     linemap: Arc<LineMap>,
 ) -> impl for<'src> Fn(Hoon, &mut MapExtra<'src, '_, &'src str, Err<'src>>) -> Hoon + Clone {
     move |node, e| {
         let spot = chumsky_spot_to_hoon_spot((e.span().start(), e.span().end()), &wer, &linemap);
-
-        match node {
-            Hoon::Dbug(existing_spot, inner) => {
-                if existing_spot == spot {
-                    Hoon::Dbug(existing_spot, inner)
-                } else {
-                    Hoon::Dbug(spot, Box::new(Hoon::Dbug(existing_spot, inner)))
-                }
-            }
-            other => Hoon::Dbug(spot, Box::new(other)),
-        }
+        apply_hoon_trace(node, spot)
     }
 }
 
@@ -8731,7 +8794,8 @@ pub fn wrap_spec_with_trace(
 }
 
 fn chumsky_spot_to_hoon_spot(span: (usize, usize), wer: &Path, linemap: &Arc<LineMap>) -> Spot {
-    let (start, end) = span;
+    let (raw_start, end) = span;
+    let start = linemap.expand_gap_start(raw_start);
 
     let (sl, sc) = linemap.line_col(start);
     let (el, ec) = linemap.line_col(end);
@@ -9036,9 +9100,13 @@ pub fn hoon_to_noun(slab: &mut NounSlab, hoon: &Hoon) -> Noun {
             T(slab, &[D(tas!(b"brcl")), p, q])
         }
         BarCen(prefix, tomes) => {
-            let prefix_noun = prefix
-                .as_ref()
-                .map_or_else(|| D(0u64), |s| term_to_noun(slab, s));
+            let prefix_noun = match prefix.as_ref() {
+                None => D(0u64),
+                Some(s) => {
+                    let term_noun = term_to_noun(slab, s);
+                    T(slab, &[D(0), term_noun])
+                }
+            };
             let mut tomes_pairs = Vec::new();
             for (k, tome) in tomes {
                 let k_noun = term_to_noun(slab, k);
@@ -9083,9 +9151,13 @@ pub fn hoon_to_noun(slab: &mut NounSlab, hoon: &Hoon) -> Noun {
             T(slab, &[D(tas!(b"brts")), spec_noun, p_noun])
         }
         BarPat(prefix, tomes) => {
-            let prefix_noun = prefix
-                .as_ref()
-                .map_or_else(|| D(0u64), |s| term_to_noun(slab, s));
+            let prefix_noun = match prefix.as_ref() {
+                None => D(0u64),
+                Some(s) => {
+                    let term_noun = term_to_noun(slab, s);
+                    T(slab, &[D(0), term_noun])
+                }
+            };
             let mut tomes_pairs = Vec::new();
             for (k, tome) in tomes {
                 let k_noun = term_to_noun(slab, k);
@@ -9449,10 +9521,14 @@ pub fn hoon_to_noun(slab: &mut NounSlab, hoon: &Hoon) -> Noun {
         }
         TisTar((name, spec_opt), a, b) => {
             let name_noun = term_to_noun(slab, name);
-            let spec_noun = spec_opt
-                .as_ref()
-                .map_or_else(|| D(0u64), |s| spec_to_noun(slab, s));
-            let name_spec = T(slab, &[name_noun, spec_noun]);
+            let spec_unit = match spec_opt.as_ref() {
+                None => D(0u64),
+                Some(spec) => {
+                    let spec_noun = spec_to_noun(slab, spec);
+                    T(slab, &[D(0), spec_noun])
+                }
+            };
+            let name_spec = T(slab, &[name_noun, spec_unit]);
             let a = hoon_to_noun(slab, a);
             let b = hoon_to_noun(slab, b);
             T(slab, &[D(tas!(b"tstr")), name_spec, a, b])
@@ -9848,11 +9924,11 @@ fn coil_to_noun(slab: &mut NounSlab, coil: &Coil) -> Noun {
 }
 
 fn garb_to_noun(slab: &mut NounSlab, garb: &Garb) -> Noun {
-    let name_noun = {
-        if let Some(s) = &garb.name {
-            term_to_noun(slab, s)
-        } else {
-            D(0)
+    let name_noun = match garb.name.as_ref() {
+        None => D(0),
+        Some(s) => {
+            let term_noun = term_to_noun(slab, s);
+            T(slab, &[D(0), term_noun])
         }
     };
     let poly_noun = poly_to_noun(slab, &garb.poly);
@@ -10362,10 +10438,12 @@ fn tune_to_noun(slab: &mut NounSlab, (map, vec): &Tune) -> Noun {
         .iter()
         .map(|(k, opt_v)| {
             let k_noun = term_to_noun(slab, k);
-            let v_noun = if let Some(v) = opt_v {
-                hoon_to_noun(slab, v)
-            } else {
-                D(0)
+            let v_noun = match opt_v {
+                None => D(0),
+                Some(v) => {
+                    let hoon_noun = hoon_to_noun(slab, v);
+                    T(slab, &[D(0), hoon_noun])
+                }
             };
             (k_noun, v_noun)
         })

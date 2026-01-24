@@ -1,15 +1,12 @@
 use std::collections::{BTreeSet, HashMap};
 use std::io::Write;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 use std::sync::{Arc, Mutex, Once, OnceLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 use std::{fs, io};
 
 use chumsky::Parser;
-use hoonc::{
-    build_jam, build_jam_with_primed_parse_cache, initialize_with_default_cli,
-    is_valid_file_or_dir, prime_parse_cache_public,
-};
+use hoonc::{build_jam, build_jam_with_primed_parse_cache, is_valid_file_or_dir};
 use nockapp::noun::slab::NounSlab;
 use parser::ast::hoon as ast;
 use parser::native_parser;
@@ -158,7 +155,7 @@ fn parse_all_hoon_files(root: &Path) -> Result<Vec<(PathBuf, String)>, Box<dyn s
     let files = list_hoon_files(root)?;
     let failures: Vec<(PathBuf, String)> = files
         .par_iter()
-        .filter_map(|path| match parse_native_ast_err(path) {
+        .filter_map(|path| match parse_native_ast_err(path, root) {
             Ok(_) => None,
             Err(err) => Some((path.clone(), err)),
         })
@@ -169,25 +166,57 @@ fn parse_all_hoon_files(root: &Path) -> Result<Vec<(PathBuf, String)>, Box<dyn s
 fn ensure_entry_ast(
     asts: &mut HashMap<PathBuf, Vec<u8>>,
     entry: &Path,
+    deps_dir: &Path,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let entry_path = entry.canonicalize()?;
     if asts.contains_key(&entry_path) {
         return Ok(());
     }
 
-    let jammed = parse_native_ast(entry)?;
+    let jammed = parse_native_ast(entry, deps_dir)?;
     asts.insert(entry_path, jammed);
     Ok(())
 }
 
-fn parse_native_ast(path: &Path) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
-    let source = fs::read_to_string(path)?;
-    let linemap = Arc::new(LineMap::new(&source));
-    let wer = path
+fn hoon_path_for_file(
+    path: &Path,
+    deps_dir: &Path,
+) -> Result<Vec<String>, Box<dyn std::error::Error>> {
+    let rel = path.strip_prefix(deps_dir).map_err(|_| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("native parser path is not under hoon dir: {}", path.display()),
+        )
+    })?;
+    Ok(rel
         .iter()
         .map(|s| s.to_string_lossy().into_owned())
-        .collect();
-    let parsed = native_parser(wer, false, linemap)
+        .collect())
+}
+
+fn hoon_path_for_any(path: &Path, deps_dir: &Path) -> Vec<String> {
+    match hoon_path_for_file(path, deps_dir) {
+        Ok(segments) => segments,
+        Err(_) => hoon_path_for_absolute(path),
+    }
+}
+
+fn hoon_path_for_absolute(path: &Path) -> Vec<String> {
+    path.components()
+        .filter_map(|component| match component {
+            Component::Normal(seg) => Some(seg.to_string_lossy().into_owned()),
+            _ => None,
+        })
+        .collect()
+}
+
+fn parse_native_ast_with_wer(
+    path: &Path,
+    wer: Vec<String>,
+) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
+    let source = fs::read_to_string(path)?;
+    let linemap = Arc::new(LineMap::new(&source));
+    let parsed = native_parser(wer, true, linemap)
         .parse(source.as_str())
         .into_result()
         .map_err(|errs| {
@@ -203,8 +232,16 @@ fn parse_native_ast(path: &Path) -> Result<Vec<u8>, Box<dyn std::error::Error>> 
     Ok(slab.jam().to_vec())
 }
 
-fn parse_native_ast_err(path: &Path) -> Result<Vec<u8>, String> {
-    parse_native_ast(path).map_err(|err| err.to_string())
+fn parse_native_ast(
+    path: &Path,
+    deps_dir: &Path,
+) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
+    let wer = hoon_path_for_any(path, deps_dir);
+    parse_native_ast_with_wer(path, wer)
+}
+
+fn parse_native_ast_err(path: &Path, deps_dir: &Path) -> Result<Vec<u8>, String> {
+    parse_native_ast(path, deps_dir).map_err(|err| err.to_string())
 }
 
 fn collect_native_asts(
@@ -212,6 +249,7 @@ fn collect_native_asts(
     entry: &Path,
 ) -> Result<HashMap<PathBuf, Vec<u8>>, Box<dyn std::error::Error>> {
     let mut asts = HashMap::new();
+    let entry_path = entry.canonicalize()?;
 
     let walker = WalkDir::new(deps_dir).follow_links(true).into_iter();
     for entry_result in walker.filter_entry(is_valid_file_or_dir) {
@@ -223,20 +261,25 @@ fn collect_native_asts(
             continue;
         }
 
-        let jammed = match parse_native_ast(entry.path()) {
+        let canonical = entry.path().canonicalize()?;
+        if canonical == entry_path {
+            continue;
+        }
+        let jammed = match parse_native_ast(entry.path(), deps_dir) {
             Ok(jammed) => jammed,
             Err(_) => continue,
         };
-        asts.insert(entry.path().canonicalize()?, jammed);
+        asts.insert(canonical, jammed);
     }
 
-    ensure_entry_ast(&mut asts, entry)?;
+    ensure_entry_ast(&mut asts, entry, deps_dir)?;
 
     Ok(asts)
 }
 
 struct PrimeAttempt {
     warned: bool,
+    failed: bool,
     pc_size: Option<usize>,
 }
 
@@ -248,6 +291,23 @@ fn parse_pc_size(logs: &str) -> Option<usize> {
         let number = rest.split_whitespace().next()?.trim_matches('"');
         number.parse().ok()
     })
+}
+
+fn detect_prime_failure(logs: &str) -> bool {
+    let markers = [
+        "hoonc: warning: input is not a proper cause",
+        "prime-native: hoon mold failed",
+        "prime-dir: hoon spot mismatch",
+        "prime-dir: hoon mismatch",
+        "hoonc: compile failed",
+        "hoonc: build failed",
+        "syntax error",
+        "hoonc: missing dependency",
+        "nockapp exited with error code",
+        "Exit(1)",
+        "-find.",
+    ];
+    markers.iter().any(|marker| logs.contains(marker))
 }
 
 fn native_subset_for_paths(
@@ -299,26 +359,31 @@ async fn prime_with_subset(
     let _prewarm_guard = EnvVarGuard::set("HOONC_DISABLE_PREWARM", "1");
 
     log_capture.clear();
-    let (mut nockapp, _out_path) =
-        initialize_with_default_cli(entry.clone(), deps_dir.clone(), Some(out_dir), false, true)
-            .await
-            .map_err(|err| {
-                io::Error::new(io::ErrorKind::Other, format!("bisect init failed: {err}"))
-            })?;
-    let prime_result = prime_parse_cache_public(&mut nockapp, entry, deps_dir, subset).await;
+    let build_result = build_jam_with_primed_parse_cache(
+        entry.clone(),
+        deps_dir.clone(),
+        Some(out_dir),
+        false,
+        true,
+        subset,
+    )
+    .await;
     let logs = log_capture.take_string();
-    if let Err(err) = prime_result {
-        if !logs.is_empty() {
-            println!("prime logs:\n{logs}");
-        }
-        return Err(
-            io::Error::new(io::ErrorKind::Other, format!("bisect prime failed: {err}")).into(),
-        );
-    }
 
     let warned = logs.contains("hoonc: warning: input is not a proper cause");
+    let failed = build_result.is_err() || detect_prime_failure(&logs);
     let pc_size = parse_pc_size(&logs);
-    Ok(PrimeAttempt { warned, pc_size })
+    if failed && !logs.is_empty() {
+        println!("prime logs:\n{logs}");
+    }
+    if let Err(err) = build_result {
+        println!("prime build error: {err}");
+    }
+    Ok(PrimeAttempt {
+        warned,
+        failed,
+        pc_size,
+    })
 }
 
 async fn bisect_first_failing_path(
@@ -334,16 +399,28 @@ async fn bisect_first_failing_path(
         .cloned()
         .collect();
     paths.sort_by(|a, b| a.to_string_lossy().cmp(&b.to_string_lossy()));
+    if let Ok(filter) = std::env::var("HOONC_PRIME_BISECT_FILTER") {
+        let filter = filter.trim();
+        if !filter.is_empty() {
+            paths.retain(|path| path.to_string_lossy().contains(filter));
+        }
+    }
+    if let Some(limit) = std::env::var("HOONC_PRIME_BISECT_LIMIT")
+        .ok()
+        .and_then(|value| value.parse::<usize>().ok())
+    {
+        paths.truncate(limit);
+    }
 
     let full_attempt = {
         let subset = native_subset_for_prefix(entry, native_asts, &paths, paths.len())?;
         prime_with_subset(entry, deps_dir, &subset, log_capture).await?
     };
     println!(
-        "bisect: full set warned={}, pc-size={:?}",
-        full_attempt.warned, full_attempt.pc_size
+        "bisect: full set warned={} failed={} pc-size={:?}",
+        full_attempt.warned, full_attempt.failed, full_attempt.pc_size
     );
-    if !full_attempt.warned {
+    if !full_attempt.failed {
         return Ok(None);
     }
 
@@ -354,10 +431,10 @@ async fn bisect_first_failing_path(
         let subset = native_subset_for_prefix(entry, native_asts, &paths, mid)?;
         let attempt = prime_with_subset(entry, deps_dir, &subset, log_capture).await?;
         println!(
-            "bisect: prefix={} warned={} pc-size={:?}",
-            mid, attempt.warned, attempt.pc_size
+            "bisect: prefix={} warned={} failed={} pc-size={:?}",
+            mid, attempt.warned, attempt.failed, attempt.pc_size
         );
-        if attempt.warned {
+        if attempt.failed {
             high = mid;
         } else {
             low = mid + 1;
@@ -382,14 +459,14 @@ fn resolve_hoon_path(deps_dir: &Path, path: &str) -> Result<PathBuf, Box<dyn std
     Ok(resolved.canonicalize()?)
 }
 
-fn parse_native_hoon(path: &Path) -> Result<ast::Hoon, Box<dyn std::error::Error>> {
+fn parse_native_hoon(
+    path: &Path,
+    deps_dir: &Path,
+) -> Result<ast::Hoon, Box<dyn std::error::Error>> {
     let source = fs::read_to_string(path)?;
     let linemap = Arc::new(LineMap::new(&source));
-    let wer = path
-        .iter()
-        .map(|s| s.to_string_lossy().into_owned())
-        .collect();
-    let parsed = native_parser(wer, false, linemap)
+    let wer = hoon_path_for_any(path, deps_dir);
+    let parsed = native_parser(wer, true, linemap)
         .parse(source.as_str())
         .into_result()
         .map_err(|errs| {
@@ -854,8 +931,9 @@ fn collect_hoon_variants_in_tuna_tail(tail: &ast::TunaTail, counts: &mut HashMap
 
 fn inventory_hoon_variants(
     path: &Path,
+    deps_dir: &Path,
 ) -> Result<HashMap<String, usize>, Box<dyn std::error::Error>> {
-    let hoon = parse_native_hoon(path)?;
+    let hoon = parse_native_hoon(path, deps_dir)?;
     let mut counts = HashMap::new();
     collect_hoon_variants(&hoon, &mut counts);
     Ok(counts)
@@ -946,8 +1024,9 @@ async fn primed_parse_cache_matches_regular_build() -> Result<(), Box<dyn std::e
 
 #[test]
 fn native_parser_parses_markdown_hoon() -> Result<(), Box<dyn std::error::Error>> {
+    let root = repo_hoon_dir()?;
     let path = markdown_hoon_path()?;
-    parse_native_ast(&path)?;
+    parse_native_ast(&path, &root)?;
     Ok(())
 }
 
@@ -981,7 +1060,7 @@ async fn primed_parse_cache_matches_regular_build_for_kernels(
     let mut tested = Vec::new();
 
     for entry in entries {
-        ensure_entry_ast(&mut native_asts, &entry)?;
+        ensure_entry_ast(&mut native_asts, &entry, &deps_dir)?;
 
         let regular_home = temp_out_dir("nockapp-home-regular")?;
         let primed_home = temp_out_dir("nockapp-home-primed")?;
@@ -1097,10 +1176,11 @@ async fn prime_single_path_debug() -> Result<(), Box<dyn std::error::Error>> {
     let attempt = prime_with_subset(&entry, &deps_dir, &subset, log_capture).await?;
 
     println!(
-        "prime single path entry={} target={} warned={} pc-size={:?}",
+        "prime single path entry={} target={} warned={} failed={} pc-size={:?}",
         entry.display(),
         target.display(),
         attempt.warned,
+        attempt.failed,
         attempt.pc_size
     );
     Ok(())
@@ -1133,7 +1213,7 @@ async fn enumerate_failing_primed_paths() -> Result<(), Box<dyn std::error::Erro
     for path in &paths {
         let subset = native_subset_for_paths(&entry, &native_asts, std::slice::from_ref(path))?;
         let attempt = prime_with_subset(&entry, &deps_dir, &subset, log_capture).await?;
-        if attempt.warned {
+        if attempt.failed {
             println!(
                 "failing path: {} pc-size={:?}",
                 path.display(),
@@ -1158,8 +1238,8 @@ fn compare_hoon_variant_inventory() -> Result<(), Box<dyn std::error::Error>> {
     let target = resolve_hoon_path(&deps_dir, &target_rel)?;
     let base = resolve_hoon_path(&deps_dir, &base_rel)?;
 
-    let target_counts = inventory_hoon_variants(&target)?;
-    let base_counts = inventory_hoon_variants(&base)?;
+    let target_counts = inventory_hoon_variants(&target, &deps_dir)?;
+    let base_counts = inventory_hoon_variants(&base, &deps_dir)?;
     let diffs = sorted_variant_diffs(&base_counts, &target_counts);
 
     println!("variant inventory target: {}", target.display());
