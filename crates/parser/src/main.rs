@@ -185,6 +185,7 @@ fn hoon_wide_parser<'src>(
         just('`')
             .ignore_then(choice((
                 tic_aura(hoon_wide.clone()),                                    //  `@p`q
+                kethep_noun_irregular(hoon_wide.clone()).boxed(),               //  `*`q
                 kethep_irregular(hoon_wide.clone(), spec_wide.clone()).boxed(), //  `p`q
                 ketlus_irregular(hoon_wide.clone()),                            // `+p`q
                 tic_cell_construction(hoon_wide.clone()).boxed(),               //  `a

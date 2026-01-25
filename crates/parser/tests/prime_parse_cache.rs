@@ -5,13 +5,14 @@ use std::sync::{Arc, Mutex, Once, OnceLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 use std::{fs, io};
 
+use bytes::Bytes;
 use chumsky::Parser;
 use either::Either;
 use hoonc::{
     build_jam, build_jam_with_primed_parse_cache, initialize_with_default_cli,
     is_valid_file_or_dir, prime_parse_cache_public,
 };
-use nockapp::noun::slab::{slab_noun_equality, NounSlab};
+use nockapp::noun::slab::{slab_noun_equality, NockJammer, NounSlab};
 use nockapp::one_punch::OnePunchWire;
 use nockapp::save::JammedCheckpoint;
 use nockapp::wire::Wire;
@@ -576,6 +577,98 @@ struct Mismatch {
     parent_actual: Option<Noun>,
 }
 
+struct MismatchPath {
+    path: Vec<u8>,
+    expected: Noun,
+    actual: Noun,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct SpotData {
+    path: String,
+    p: (u64, u64),
+    q: (u64, u64),
+}
+
+struct SpotMismatch {
+    path: Vec<u8>,
+    expected_spots: Vec<SpotData>,
+    actual_spots: Vec<SpotData>,
+    expected_node: Noun,
+    actual_node: Noun,
+}
+
+fn collect_dbug_chain(noun: Noun) -> (Vec<SpotData>, Noun) {
+    let mut spots = Vec::new();
+    let mut cursor = noun;
+    loop {
+        let cell = match cursor.as_cell() {
+            Ok(cell) => cell,
+            Err(_) => return (spots, cursor),
+        };
+        let head = match cell.head().as_atom() {
+            Ok(atom) => atom,
+            Err(_) => return (spots, cursor),
+        };
+        if unsafe { !head.as_noun().raw_equals(&D(tas!(b"dbug"))) } {
+            return (spots, cursor);
+        }
+        let tail_cell = match cell.tail().as_cell() {
+            Ok(cell) => cell,
+            Err(_) => return (spots, cursor),
+        };
+        let spot = tail_cell.head();
+        if let Some((path, p, q)) = decode_spot(spot) {
+            spots.push(SpotData { path, p, q });
+        }
+        cursor = tail_cell.tail();
+    }
+}
+
+fn first_spot_mismatch(expected: Noun, actual: Noun, path: &mut Vec<u8>) -> Option<SpotMismatch> {
+    let (expected_spots, expected_node) = collect_dbug_chain(expected);
+    let (actual_spots, actual_node) = collect_dbug_chain(actual);
+    if expected_spots != actual_spots {
+        return Some(SpotMismatch {
+            path: path.clone(),
+            expected_spots,
+            actual_spots,
+            expected_node,
+            actual_node,
+        });
+    }
+
+    match (expected_node.as_either_atom_cell(), actual_node.as_either_atom_cell()) {
+        (Either::Right(ec), Either::Right(ac)) => {
+            path.push(0);
+            if let Some(mismatch) = first_spot_mismatch(ec.head(), ac.head(), path) {
+                return Some(mismatch);
+            }
+            path.pop();
+            path.push(1);
+            if let Some(mismatch) = first_spot_mismatch(ec.tail(), ac.tail(), path) {
+                return Some(mismatch);
+            }
+            path.pop();
+            None
+        }
+        _ => None,
+    }
+}
+
+fn format_spot_line(spot: &SpotData) -> String {
+    if let Some(text) = line_excerpt(&spot.path, spot.p.0) {
+        return format!(
+            "{} [{} {}] [{} {}] :: {}",
+            spot.path, spot.p.0, spot.p.1, spot.q.0, spot.q.1, text
+        );
+    }
+    format!(
+        "{} [{} {}] [{} {}]",
+        spot.path, spot.p.0, spot.p.1, spot.q.0, spot.q.1
+    )
+}
+
 impl Mismatch {
     fn with_parent(mut self, axis: u64, expected: Noun, actual: Noun) -> Self {
         if self.parent_axis.is_none() {
@@ -585,6 +678,104 @@ impl Mismatch {
         }
         self
     }
+}
+
+fn noun_at_axis(mut noun: Noun, axis: u64) -> Option<Noun> {
+    if axis == 1 {
+        return Some(noun);
+    }
+    let mut bits = Vec::new();
+    let mut cursor = axis;
+    while cursor > 1 {
+        bits.push(cursor & 1);
+        cursor >>= 1;
+    }
+    for bit in bits.into_iter().rev() {
+        let cell = noun.as_cell().ok()?;
+        noun = if bit == 0 { cell.head() } else { cell.tail() };
+    }
+    Some(noun)
+}
+
+fn noun_at_path(mut noun: Noun, path: &[u8]) -> Option<Noun> {
+    for bit in path {
+        let cell = noun.as_cell().ok()?;
+        noun = if *bit == 0 { cell.head() } else { cell.tail() };
+    }
+    Some(noun)
+}
+
+fn decode_pint(noun: Noun) -> Option<((u64, u64), (u64, u64))> {
+    let (p, q) = expect_cell(noun, "pint").ok()?;
+    let (pl, pc) = expect_cell(p, "pint p").ok()?;
+    let (ql, qc) = expect_cell(q, "pint q").ok()?;
+    let pl = pl.as_atom().ok()?.as_u64().ok()?;
+    let pc = pc.as_atom().ok()?.as_u64().ok()?;
+    let ql = ql.as_atom().ok()?.as_u64().ok()?;
+    let qc = qc.as_atom().ok()?.as_u64().ok()?;
+    Some(((pl, pc), (ql, qc)))
+}
+
+fn decode_spot(noun: Noun) -> Option<(String, (u64, u64), (u64, u64))> {
+    let (path, pint) = expect_cell(noun, "spot").ok()?;
+    let path_string = path_noun_to_string(path).ok()?;
+    let (p, q) = decode_pint(pint)?;
+    Some((path_string, p, q))
+}
+
+fn line_excerpt(path: &str, line: u64) -> Option<String> {
+    let path = Path::new(path);
+    let contents = fs::read_to_string(path).ok()?;
+    let line = line as usize;
+    let text = contents.lines().nth(line.saturating_sub(1))?;
+    Some(text.to_string())
+}
+
+fn describe_nearest_dbug_path(noun: Noun, path: &[u8]) -> Option<String> {
+    let mut cursor = path.to_vec();
+    loop {
+        let node = noun_at_path(noun, &cursor)?;
+        if let Ok(cell) = node.as_cell() {
+            if let Ok(atom) = cell.head().as_atom() {
+                if unsafe { atom.as_noun().raw_equals(&D(tas!(b"dbug"))) } {
+                    let (spot, _rest) = expect_cell(cell.tail(), "dbug tail").ok()?;
+                    if let Some((path, (pl, pc), (ql, qc))) = decode_spot(spot) {
+                        if let Some(text) = line_excerpt(&path, pl) {
+                            return Some(format!("{path} [{pl} {pc}] [{ql} {qc}] :: {text}"));
+                        }
+                        return Some(format!("{path} [{pl} {pc}] [{ql} {qc}]"));
+                    }
+                }
+            }
+        }
+        if cursor.is_empty() {
+            break;
+        }
+        cursor.pop();
+    }
+    None
+}
+
+fn describe_nearest_dbug(noun: Noun, axis: u64) -> Option<String> {
+    let mut cursor = axis;
+    loop {
+        let node = noun_at_axis(noun, cursor)?;
+        if let Ok(cell) = node.as_cell() {
+            if let Ok(atom) = cell.head().as_atom() {
+                if unsafe { atom.as_noun().raw_equals(&D(tas!(b"dbug"))) } {
+                    let (spot, _rest) = expect_cell(cell.tail(), "dbug tail").ok()?;
+                    if let Some((path, (pl, pc), (ql, qc))) = decode_spot(spot) {
+                        return Some(format!("{path} [{pl} {pc}] [{ql} {qc}]"));
+                    }
+                }
+            }
+        }
+        if cursor == 1 {
+            break;
+        }
+        cursor >>= 1;
+    }
+    None
 }
 
 fn find_mismatch_axis(a: Noun, b: Noun, axis: u64) -> Option<Mismatch> {
@@ -621,6 +812,78 @@ fn find_mismatch_axis(a: Noun, b: Noun, axis: u64) -> Option<Mismatch> {
             parent_actual: None,
         }),
     }
+}
+
+fn find_mismatch_axis_raw(a: Noun, b: Noun, axis: u64) -> Option<Mismatch> {
+    if slab_noun_equality(&a, &b) {
+        return None;
+    }
+
+    match (a.as_either_atom_cell(), b.as_either_atom_cell()) {
+        (Either::Right(ac), Either::Right(bc)) => {
+            if let Some(mismatch) = find_mismatch_axis_raw(ac.head(), bc.head(), axis * 2) {
+                return Some(mismatch.with_parent(axis, a, b));
+            }
+            if let Some(mismatch) = find_mismatch_axis_raw(ac.tail(), bc.tail(), axis * 2 + 1) {
+                return Some(mismatch.with_parent(axis, a, b));
+            }
+            Some(Mismatch {
+                axis,
+                expected: a,
+                actual: b,
+                parent_axis: None,
+                parent_expected: None,
+                parent_actual: None,
+            })
+        }
+        _ => Some(Mismatch {
+            axis,
+            expected: a,
+            actual: b,
+            parent_axis: None,
+            parent_expected: None,
+            parent_actual: None,
+        }),
+    }
+}
+
+fn find_mismatch_path_raw(a: Noun, b: Noun, path: &mut Vec<u8>) -> Option<MismatchPath> {
+    if slab_noun_equality(&a, &b) {
+        return None;
+    }
+
+    match (a.as_either_atom_cell(), b.as_either_atom_cell()) {
+        (Either::Right(ac), Either::Right(bc)) => {
+            path.push(0);
+            if let Some(mismatch) = find_mismatch_path_raw(ac.head(), bc.head(), path) {
+                return Some(mismatch);
+            }
+            path.pop();
+            path.push(1);
+            if let Some(mismatch) = find_mismatch_path_raw(ac.tail(), bc.tail(), path) {
+                return Some(mismatch);
+            }
+            path.pop();
+            Some(MismatchPath {
+                path: path.clone(),
+                expected: a,
+                actual: b,
+            })
+        }
+        _ => Some(MismatchPath {
+            path: path.clone(),
+            expected: a,
+            actual: b,
+        }),
+    }
+}
+
+fn format_path_bits(path: &[u8]) -> String {
+    let mut out = String::with_capacity(path.len());
+    for bit in path {
+        out.push(if *bit == 0 { '0' } else { '1' });
+    }
+    out
 }
 
 fn find_latest_checkpoint(dir: &Path) -> Result<PathBuf, Box<dyn std::error::Error>> {
@@ -1985,6 +2248,11 @@ fn kernel_entries(deps_dir: &Path) -> Result<Vec<PathBuf>, Box<dyn std::error::E
 #[tokio::test]
 async fn primed_parse_cache_matches_regular_build() -> Result<(), Box<dyn std::error::Error>> {
     disable_metrics();
+    if std::env::var("RUST_LOG").is_err() {
+        std::env::set_var("RUST_LOG", "info");
+    }
+    let log_capture = init_logging(true);
+    log_capture.clear();
     let nockapp_home = temp_out_dir("nockapp-home")?;
     let _env_guard = EnvVarGuard::set("NOCKAPP_HOME", nockapp_home.to_string_lossy().as_ref());
 
@@ -2032,7 +2300,71 @@ async fn primed_parse_cache_matches_regular_build() -> Result<(), Box<dyn std::e
         )
     })?;
 
-    assert_eq!(regular_jam, primed_jam);
+    if regular_jam != primed_jam {
+        let logs = log_capture.take_string();
+        let mut report = String::new();
+        report.push_str("primed build output mismatch\n");
+        for line in logs.lines() {
+            if line.contains("prime-dir: hoon")
+                || line.contains("prime-dir: using parsed hoon")
+                || line.contains("prime-native:")
+                || line.contains("prime-dir: hash collision")
+            {
+                report.push_str(line);
+                report.push('\n');
+            }
+        }
+        if report.lines().count() <= 1 {
+            report.push_str("no prime-dir mismatch logs captured\n");
+        }
+        let mut regular_slab: NounSlab<NockJammer> = NounSlab::new();
+        let mut primed_slab: NounSlab<NockJammer> = NounSlab::new();
+        match (
+            regular_slab.cue_into(Bytes::from(regular_jam.clone())),
+            primed_slab.cue_into(Bytes::from(primed_jam.clone())),
+        ) {
+            (Ok(regular_root), Ok(primed_root)) => {
+                if let Some(mismatch) = find_mismatch_axis(regular_root, primed_root, 1) {
+                    report.push_str(&format!("jam mismatch axis: {}\n", mismatch.axis));
+                    report.push_str(&format!(
+                        "jam expected:\n{}\n",
+                        print_noun(&mismatch.expected, 20, 0)
+                    ));
+                    report.push_str(&format!(
+                        "jam actual:\n{}\n",
+                        print_noun(&mismatch.actual, 20, 0)
+                    ));
+                    if let Some(parent_axis) = mismatch.parent_axis {
+                        report.push_str(&format!(
+                            "jam parent axis: {}\n",
+                            parent_axis
+                        ));
+                        if let (Some(parent_expected), Some(parent_actual)) =
+                            (mismatch.parent_expected, mismatch.parent_actual)
+                        {
+                            report.push_str(&format!(
+                                "jam parent expected:\n{}\n",
+                                print_noun(&parent_expected, 20, 0)
+                            ));
+                            report.push_str(&format!(
+                                "jam parent actual:\n{}\n",
+                                print_noun(&parent_actual, 20, 0)
+                            ));
+                        }
+                    }
+                } else {
+                    report.push_str("jam mismatch, but no differing axis found\n");
+                }
+            }
+            (Err(err), _) => {
+                report.push_str(&format!("failed to cue regular jam: {err}\n"));
+            }
+            (_, Err(err)) => {
+                report.push_str(&format!("failed to cue primed jam: {err}\n"));
+            }
+        }
+        return Err(io::Error::new(io::ErrorKind::Other, report).into());
+    }
     Ok(())
 }
 
@@ -2337,6 +2669,177 @@ async fn assert_native_ast_matches_hoonc_parse(
     Ok(())
 }
 
+async fn assert_native_ast_matches_hoonc_parse_with_dbug(
+    target: &PathBuf,
+    deps_dir: &PathBuf,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let state_slab = parse_hoon_with_hoonc(&target, &deps_dir).await?;
+    let state_noun = unsafe { *state_slab.root() };
+    let pc = parse_cache_from_state(state_noun)
+        .map_err(|err| io::Error::new(io::ErrorKind::Other, err))?;
+    let target_path = entry_path_for_hoon(&target, &deps_dir)?;
+    let (_, pil, _deps) = map_find_entry_by_path(pc, &target_path)
+        .map_err(|err| io::Error::new(io::ErrorKind::Other, err))?
+        .ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::NotFound,
+                format!("parse cache missing {}", target.display()),
+            )
+        })?;
+    let hoonc_hoon = pile_hoon(pil).map_err(|err| io::Error::new(io::ErrorKind::Other, err))?;
+
+    let native_hoon = parse_native_hoon_with_dbug(&target, &deps_dir, true)?;
+    let mut slab = NounSlab::new();
+    let native_noun = hoon_to_noun(&mut slab, &native_hoon);
+
+    let mut hoonc_clean_slab = NounSlab::new();
+    let hoonc_clean = strip_dbug_tree(&mut hoonc_clean_slab, hoonc_hoon);
+    let mut native_clean_slab = NounSlab::new();
+    let native_clean = strip_dbug_tree(&mut native_clean_slab, native_noun);
+
+    let mut printed = false;
+    if diff_noun(&hoonc_clean, &native_clean, &mut printed).is_err() {
+        if let Some(mismatch) = find_mismatch_axis(hoonc_clean, native_clean, 1) {
+            println!("mismatch axis: {}", mismatch.axis);
+            println!(
+                "expected@{}: {}",
+                mismatch.axis,
+                print_noun(&mismatch.expected, 20, 0)
+            );
+            println!(
+                "actual@{}:   {}",
+                mismatch.axis,
+                print_noun(&mismatch.actual, 20, 0)
+            );
+            if let Some(parent_axis) = mismatch.parent_axis {
+                if let (Some(expected), Some(actual)) =
+                    (mismatch.parent_expected, mismatch.parent_actual)
+                {
+                    println!(
+                        "expected parent@{parent_axis}: {}",
+                        print_noun(&expected, 12, 0)
+                    );
+                    println!(
+                        "actual parent@{parent_axis}:   {}",
+                        print_noun(&actual, 12, 0)
+                    );
+                }
+            }
+        }
+        return Err(io::Error::new(
+            io::ErrorKind::Other,
+            format!("native AST mismatched hoonc parse for {}", target.display()),
+        )
+        .into());
+    }
+
+    if slab_noun_equality(&hoonc_hoon, &native_noun) {
+        return Ok(());
+    }
+
+    if let Some(mismatch) = find_mismatch_axis_raw(hoonc_hoon, native_noun, 1) {
+        println!("dbug mismatch axis: {}", mismatch.axis);
+        println!(
+            "expected@{}: {}",
+            mismatch.axis,
+            print_noun(&mismatch.expected, 20, 0)
+        );
+        println!(
+            "actual@{}:   {}",
+            mismatch.axis,
+            print_noun(&mismatch.actual, 20, 0)
+        );
+        if let Some(parent_axis) = mismatch.parent_axis {
+            if let (Some(expected), Some(actual)) =
+                (mismatch.parent_expected, mismatch.parent_actual)
+            {
+                println!(
+                    "expected parent@{parent_axis}: {}",
+                    print_noun(&expected, 12, 0)
+                );
+                println!(
+                    "actual parent@{parent_axis}:   {}",
+                    print_noun(&actual, 12, 0)
+                );
+            }
+        }
+        if let Some(desc) = describe_nearest_dbug(hoonc_hoon, mismatch.axis) {
+            println!("expected nearest dbug: {desc}");
+        }
+        if let Some(desc) = describe_nearest_dbug(native_noun, mismatch.axis) {
+            println!("actual nearest dbug:   {desc}");
+        }
+    }
+    let mut path = Vec::new();
+    if let Some(mismatch) = find_mismatch_path_raw(hoonc_hoon, native_noun, &mut path) {
+        let path_bits = format_path_bits(&mismatch.path);
+        println!(
+            "dbug mismatch path len={} bits={}",
+            mismatch.path.len(),
+            path_bits
+        );
+        println!(
+            "expected@path: {}",
+            print_noun(&mismatch.expected, 20, 0)
+        );
+        println!(
+            "actual@path:   {}",
+            print_noun(&mismatch.actual, 20, 0)
+        );
+        if let Some((_last, parent_path)) = mismatch.path.split_last() {
+            if let (Some(expected), Some(actual)) = (
+                noun_at_path(hoonc_hoon, parent_path),
+                noun_at_path(native_noun, parent_path),
+            ) {
+                println!("expected parent@path: {}", print_noun(&expected, 12, 0));
+                println!("actual parent@path:   {}", print_noun(&actual, 12, 0));
+            }
+        }
+        if let Some(desc) = describe_nearest_dbug_path(hoonc_hoon, &mismatch.path) {
+            println!("expected nearest dbug: {desc}");
+        }
+        if let Some(desc) = describe_nearest_dbug_path(native_noun, &mismatch.path) {
+            println!("actual nearest dbug:   {desc}");
+        }
+    }
+
+    let mut spot_path = Vec::new();
+    if let Some(mismatch) = first_spot_mismatch(hoonc_hoon, native_noun, &mut spot_path) {
+        println!(
+            "dbug spot mismatch path len={} bits={}",
+            mismatch.path.len(),
+            mismatch
+                .path
+                .iter()
+                .map(|b| if *b == 0 { '0' } else { '1' })
+                .collect::<String>()
+        );
+        for (idx, spot) in mismatch.expected_spots.iter().enumerate() {
+            println!("expected spot[{idx}]: {}", format_spot_line(spot));
+        }
+        for (idx, spot) in mismatch.actual_spots.iter().enumerate() {
+            println!("actual spot[{idx}]:   {}", format_spot_line(spot));
+        }
+        println!(
+            "expected node: {}",
+            print_noun(&mismatch.expected_node, 6, 0)
+        );
+        println!(
+            "actual node:   {}",
+            print_noun(&mismatch.actual_node, 6, 0)
+        );
+    }
+
+    Err(io::Error::new(
+        io::ErrorKind::Other,
+        format!(
+            "native AST mismatched hoonc parse (dbug) for {}",
+            target.display()
+        ),
+    )
+    .into())
+}
+
 #[tokio::test]
 async fn native_ast_matches_hoonc_parse_for_bridge() -> Result<(), Box<dyn std::error::Error>> {
     disable_metrics();
@@ -2355,6 +2858,18 @@ async fn native_ast_matches_hoonc_parse_for_ztd_eight() -> Result<(), Box<dyn st
     let deps_dir = repo_hoon_dir()?;
     let target = resolve_hoon_path(&deps_dir, "common/ztd/eight.hoon")?;
     assert_native_ast_matches_hoonc_parse(&target, &deps_dir).await
+}
+
+#[tokio::test]
+async fn native_ast_matches_hoonc_parse_for_hoon_138_dbug(
+) -> Result<(), Box<dyn std::error::Error>> {
+    disable_metrics();
+
+    let deps_dir = repo_hoon_dir()?;
+    let target = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../hoonc/hoon/hoon-138.hoon")
+        .canonicalize()?;
+    assert_native_ast_matches_hoonc_parse_with_dbug(&target, &deps_dir).await
 }
 
 #[test]

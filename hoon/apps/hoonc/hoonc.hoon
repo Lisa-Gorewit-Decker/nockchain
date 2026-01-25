@@ -982,7 +982,8 @@
         ?:  =(parsed-hoon native)
           pil(hoon native)
         ~&  "prime-dir: hoon spot mismatch for {<pat>}"
-        pil(hoon native)
+        ~&  "prime-dir: using parsed hoon for {<pat>}"
+        pil(hoon parsed-hoon)
       ~&  "prime-dir: hoon mismatch for {<pat>}"
       =/  mismatch=(unit [path=* a=* b=*])
         (find-noun-mismatch parsed-clean native-clean ~)
@@ -1180,7 +1181,8 @@
         %&  `p.result
         %|  ~&  "hoonc: compile failed for {<nod-path>}"
             ~&  "hoonc: compile failed leaf mug {<(mug nod-leaf)>}"
-            ~&  p.result
+            ~&  (slog p.result)
+            ~&  (debug-hoon-noun nod-leaf)
             ~
       ==
     %-  mule

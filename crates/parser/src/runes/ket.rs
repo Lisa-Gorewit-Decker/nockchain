@@ -241,6 +241,15 @@ pub fn kethep_irregular<'src>(
         .map(|(s, w)| Hoon::KetHep(Box::new(s), Box::new(w)))
 }
 
+pub fn kethep_noun_irregular<'src>(
+    hoon_wide: impl ParserExt<'src, Hoon>,
+) -> impl Parser<'src, &'src str, Hoon, Err<'src>> {
+    just('*')
+        .ignore_then(just('`'))
+        .ignore_then(hoon_wide.clone())
+        .map(|w| Hoon::KetHep(Box::new(Spec::Base(BaseType::NounExpr)), Box::new(w)))
+}
+
 pub fn ketlus_irregular<'src>(
     hoon_wide: impl ParserExt<'src, Hoon>,
 ) -> impl Parser<'src, &'src str, Hoon, Err<'src>> {
