@@ -6153,42 +6153,12 @@ impl LineMap {
         } else {
             false
         };
-        let allow_colon_doc = if bytes.get(lead) == Some(&b':')
-            && bytes.get(lead + 1) != Some(&b':')
-            && start_has_inline_doc
-            && line_start > 0
-        {
-            let prev_end = line_start.saturating_sub(1);
-            let mut prev_start = prev_end;
-            while prev_start > 0 && bytes[prev_start - 1] != b'\n' {
-                prev_start -= 1;
-            }
-            let prev_line = &bytes[prev_start..prev_end];
-            let mut prev_cursor = 0;
-            while prev_cursor < prev_line.len()
-                && (prev_line[prev_cursor] == b' ' || prev_line[prev_cursor] == b'\t')
-            {
-                prev_cursor += 1;
-            }
-            prev_cursor < prev_line.len()
-                && prev_cursor > start_cursor
-                && matches!(inline_doc_offset(prev_line), Some((true, _)))
-        } else {
-            false
-        };
         let allow_doc = match bytes[lead] {
             b'|' => {
                 let next = bytes.get(lead + 1).copied().unwrap_or(0);
                 !matches!(next, b'(' | b'-')
             }
-            b':' => {
-                let next = bytes.get(lead + 1).copied().unwrap_or(0);
-                if next == b':' {
-                    true
-                } else {
-                    allow_colon_doc
-                }
-            }
+            b':' => true,
             b'=' => matches!(bytes.get(lead + 1), Some(b'/')),
             b'$' => {
                 let next = bytes.get(lead + 1).copied().unwrap_or(0);
@@ -6226,15 +6196,19 @@ impl LineMap {
         let mut doc_indent = None;
         let mut doc_min_content_indent: Option<usize> = None;
         let mut doc_max_content_indent: Option<usize> = None;
+        let mut doc_content_lines = 0usize;
         loop {
             if idx == 0 {
                 if saw_doc_content {
                     if let Some(indent) = doc_indent {
                         if indent > 0 && indent == start_cursor {
+                            if doc_top_blank && doc_content_lines <= 1 {
+                                return start;
+                            }
                             if start_is_question {
                                 return start;
                             }
-                            if start_is_equals && doc_top_blank {
+                            if start_is_equals && doc_top_blank && doc_content_lines <= 1 {
                                 return start;
                             }
                             if start_is_equals_bar {
@@ -6388,6 +6362,7 @@ impl LineMap {
 
             if let Some((is_inline, has_content, doc_offset)) = doc_kind {
                 if !is_inline && has_content {
+                    doc_content_lines += 1;
                     let content_indent = doc_content_indent(line, doc_offset);
                     doc_min_content_indent =
                         Some(doc_min_content_indent.map_or(content_indent, |v| v.min(content_indent)));
@@ -6435,6 +6410,9 @@ impl LineMap {
                     return start;
                 }
                 if !has_content && !is_inline && !saw_doc_content && !doc_anchor_inline {
+                    if !saw_doc {
+                        doc_top_blank = true;
+                    }
                     saw_doc = true;
                     last_non_inline_blank = true;
                     if doc_indent.is_none() {
@@ -6484,7 +6462,9 @@ impl LineMap {
                 }
                 if !is_inline {
                     last_non_inline_blank = !has_content;
-                    doc_top_blank = !has_content;
+                    if !was_saw_doc {
+                        doc_top_blank = !has_content;
+                    }
                     if doc_indent.is_none() {
                         doc_indent = Some(cursor);
                     }
@@ -6534,8 +6514,13 @@ impl LineMap {
                             return start;
                         }
                         if cursor == start_cursor {
-                            if doc_top_blank {
-                                return start;
+                            if doc_top_blank && doc_content_lines <= 1 {
+                                let is_bar_dollar_line = line.get(cursor) == Some(&b'|')
+                                    && line.get(cursor + 1) == Some(&b'$');
+                                let is_tilde_line = line.get(cursor) == Some(&b'~');
+                                if !is_bar_dollar_line && !is_tilde_line {
+                                    return start;
+                                }
                             }
                             match line.get(cursor) {
                                 Some(b'?') => return start,
@@ -13738,6 +13723,29 @@ mod tests {
             "  :+  %tsls  [%ktts %a]  ::  =+  a\n",
         );
         let start = src.find(":+  %tsls").expect("missing :+");
+        let end = start + 2;
+        let linemap = Arc::new(LineMap::new(src));
+        let wer: crate::ast::hoon::Path = vec!["test".to_string()];
+        let spot = chumsky_spot_to_hoon_spot((start, end), &wer, &linemap);
+        let (start_line, start_col) = linemap.line_col(start);
+        let (end_line, end_col) = linemap.line_col(end);
+
+        assert_eq!(
+            spot.q.p,
+            (start_line, start_col),
+            "expected start to stay on the :+ line"
+        );
+        assert_eq!(spot.q.q, (end_line, end_col), "unexpected end spot");
+    }
+
+    #[test]
+    fn line_map_does_not_expand_gap_start_after_trailing_blank_doc_block() {
+        let src = concat!(
+            "  ::  descend into cell\n",
+            "  ::\n",
+            "  :+  %cell\n",
+        );
+        let start = src.find(":+").expect("missing :+");
         let end = start + 2;
         let linemap = Arc::new(LineMap::new(src));
         let wer: crate::ast::hoon::Path = vec!["test".to_string()];
