@@ -493,6 +493,59 @@ fn map_find_entry_by_path(map: Noun, target: &str) -> Result<Option<(Noun, Noun,
     map_find_entry_by_path(right, target)
 }
 
+struct ParseCacheEntry {
+    path: String,
+    pil: Noun,
+}
+
+fn collect_parse_cache_entries(map: Noun) -> Result<Vec<ParseCacheEntry>, String> {
+    let mut entries = Vec::new();
+    let mut stack = vec![map];
+
+    while let Some(node) = stack.pop() {
+        if noun_is_zero(&node) {
+            continue;
+        }
+        let (node, rest) = expect_cell(node, "map node")?;
+        let (left, right) = expect_cell(rest, "map children")?;
+        let (key, val) = expect_cell(node, "map key/value")?;
+        let (path, pil, _deps) = tuple3(val, "map value")?;
+        let path_string = path_noun_to_string(path)?;
+        let _ = key;
+        entries.push(ParseCacheEntry {
+            path: path_string,
+            pil,
+        });
+        stack.push(left);
+        stack.push(right);
+    }
+
+    Ok(entries)
+}
+
+fn resolve_parse_cache_path(path: &str, deps_dir: &Path) -> Option<PathBuf> {
+    if path.is_empty() {
+        return None;
+    }
+
+    let candidate = PathBuf::from(path);
+    if candidate.is_absolute() && candidate.exists() {
+        return Some(candidate);
+    }
+
+    let rel = path.trim_start_matches('/');
+    let joined = deps_dir.join(rel);
+    if joined.exists() {
+        return Some(joined);
+    }
+
+    None
+}
+
+fn is_hoon_path(path: &Path) -> bool {
+    path.extension().and_then(|ext| ext.to_str()) == Some("hoon")
+}
+
 fn is_state3_tag(noun: &Noun) -> bool {
     let Ok(atom) = noun.as_atom() else {
         return false;
@@ -638,7 +691,10 @@ fn first_spot_mismatch(expected: Noun, actual: Noun, path: &mut Vec<u8>) -> Opti
         });
     }
 
-    match (expected_node.as_either_atom_cell(), actual_node.as_either_atom_cell()) {
+    match (
+        expected_node.as_either_atom_cell(),
+        actual_node.as_either_atom_cell(),
+    ) {
         (Either::Right(ec), Either::Right(ac)) => {
             path.push(0);
             if let Some(mismatch) = first_spot_mismatch(ec.head(), ac.head(), path) {
@@ -776,6 +832,45 @@ fn describe_nearest_dbug(noun: Noun, axis: u64) -> Option<String> {
         cursor >>= 1;
     }
     None
+}
+
+fn describe_nearest_dbug_with_excerpt(noun: Noun, axis: u64) -> Option<String> {
+    let mut cursor = axis;
+    loop {
+        let node = noun_at_axis(noun, cursor)?;
+        if let Ok(cell) = node.as_cell() {
+            if let Ok(atom) = cell.head().as_atom() {
+                if unsafe { atom.as_noun().raw_equals(&D(tas!(b"dbug"))) } {
+                    let (spot, _rest) = expect_cell(cell.tail(), "dbug tail").ok()?;
+                    if let Some((path, (pl, pc), (ql, qc))) = decode_spot(spot) {
+                        if let Some(text) = line_excerpt(&path, pl) {
+                            return Some(format!("{path} [{pl} {pc}] [{ql} {qc}] :: {text}"));
+                        }
+                        return Some(format!("{path} [{pl} {pc}] [{ql} {qc}]"));
+                    }
+                }
+            }
+        }
+        if cursor == 1 {
+            break;
+        }
+        cursor >>= 1;
+    }
+    None
+}
+
+fn format_axis_bits(axis: u64) -> String {
+    if axis <= 1 {
+        return String::new();
+    }
+    let mut bits = Vec::new();
+    let mut cursor = axis;
+    while cursor > 1 {
+        bits.push(if cursor & 1 == 1 { '1' } else { '0' });
+        cursor >>= 1;
+    }
+    bits.reverse();
+    bits.into_iter().collect()
 }
 
 fn find_mismatch_axis(a: Noun, b: Noun, axis: u64) -> Option<Mismatch> {
@@ -2335,10 +2430,7 @@ async fn primed_parse_cache_matches_regular_build() -> Result<(), Box<dyn std::e
                         print_noun(&mismatch.actual, 20, 0)
                     ));
                     if let Some(parent_axis) = mismatch.parent_axis {
-                        report.push_str(&format!(
-                            "jam parent axis: {}\n",
-                            parent_axis
-                        ));
+                        report.push_str(&format!("jam parent axis: {}\n", parent_axis));
                         if let (Some(parent_expected), Some(parent_actual)) =
                             (mismatch.parent_expected, mismatch.parent_actual)
                         {
@@ -2397,6 +2489,10 @@ fn native_parser_parses_all_hoon_files() -> Result<(), Box<dyn std::error::Error
 async fn primed_parse_cache_matches_regular_build_for_kernels(
 ) -> Result<(), Box<dyn std::error::Error>> {
     disable_metrics();
+    if std::env::var("RUST_LOG").is_err() {
+        std::env::set_var("RUST_LOG", "info");
+    }
+    let log_capture = init_logging(true);
     let deps_dir = repo_hoon_dir()?;
     let entries = kernel_entries(&deps_dir)?;
     let first_entry = entries
@@ -2415,6 +2511,7 @@ async fn primed_parse_cache_matches_regular_build_for_kernels(
         let primed_out_dir = temp_out_dir("hoonc-primed")?;
 
         println!("testing kernel: {}", entry.display());
+        log_capture.clear();
 
         let regular_jam = {
             let _env_guard =
@@ -2463,12 +2560,92 @@ async fn primed_parse_cache_matches_regular_build_for_kernels(
             })?
         };
 
-        assert_eq!(
-            regular_jam,
-            primed_jam,
-            "kernel jam mismatch for {}",
-            entry.display()
-        );
+        if regular_jam != primed_jam {
+            let logs = log_capture.take_string();
+            let mut report = String::new();
+            report.push_str(&format!("kernel jam mismatch for {}\n", entry.display()));
+            report.push_str(&format!(
+                "regular_out_dir: {}\nprimed_out_dir: {}\n",
+                regular_out_dir.display(),
+                primed_out_dir.display()
+            ));
+            for line in logs.lines() {
+                if line.contains("prime-dir: hoon")
+                    || line.contains("prime-dir: using parsed hoon")
+                    || line.contains("prime-native:")
+                    || line.contains("prime-dir: hash collision")
+                    || line.contains("parse-dir: hash collision")
+                {
+                    report.push_str(line);
+                    report.push('\n');
+                }
+            }
+            if report.lines().count() <= 3 {
+                report.push_str("no prime-dir mismatch logs captured\n");
+            }
+            let mut regular_slab: NounSlab<NockJammer> = NounSlab::new();
+            let mut primed_slab: NounSlab<NockJammer> = NounSlab::new();
+            match (
+                regular_slab.cue_into(Bytes::from(regular_jam.clone())),
+                primed_slab.cue_into(Bytes::from(primed_jam.clone())),
+            ) {
+                (Ok(regular_root), Ok(primed_root)) => {
+                    if let Some(mismatch) = find_mismatch_axis(regular_root, primed_root, 1) {
+                        report.push_str(&format!("jam mismatch axis: {}\n", mismatch.axis));
+                        report.push_str(&format!(
+                            "jam expected:\n{}\n",
+                            print_noun(&mismatch.expected, 20, 0)
+                        ));
+                        report.push_str(&format!(
+                            "jam actual:\n{}\n",
+                            print_noun(&mismatch.actual, 20, 0)
+                        ));
+                        if let Some(raw_mismatch) =
+                            find_mismatch_axis_raw(regular_root, primed_root, 1)
+                        {
+                            report.push_str(&format!(
+                                "jam mismatch axis (with dbug): {}\n",
+                                raw_mismatch.axis
+                            ));
+                            if let Some(desc) =
+                                describe_nearest_dbug_with_excerpt(regular_root, raw_mismatch.axis)
+                            {
+                                report.push_str(&format!("dbug expected: {desc}\n"));
+                            }
+                            if let Some(desc) =
+                                describe_nearest_dbug_with_excerpt(primed_root, raw_mismatch.axis)
+                            {
+                                report.push_str(&format!("dbug actual:   {desc}\n"));
+                            }
+                        }
+                        if let Some(parent_axis) = mismatch.parent_axis {
+                            report.push_str(&format!("jam parent axis: {}\n", parent_axis));
+                            if let (Some(parent_expected), Some(parent_actual)) =
+                                (mismatch.parent_expected, mismatch.parent_actual)
+                            {
+                                report.push_str(&format!(
+                                    "jam parent expected:\n{}\n",
+                                    print_noun(&parent_expected, 20, 0)
+                                ));
+                                report.push_str(&format!(
+                                    "jam parent actual:\n{}\n",
+                                    print_noun(&parent_actual, 20, 0)
+                                ));
+                            }
+                        }
+                    } else {
+                        report.push_str("jam mismatch, but no differing axis found\n");
+                    }
+                }
+                (Err(err), _) => {
+                    report.push_str(&format!("failed to cue regular jam: {err}\n"));
+                }
+                (_, Err(err)) => {
+                    report.push_str(&format!("failed to cue primed jam: {err}\n"));
+                }
+            }
+            return Err(io::Error::new(io::ErrorKind::Other, report).into());
+        }
         tested.push(entry);
     }
 
@@ -2778,14 +2955,8 @@ async fn assert_native_ast_matches_hoonc_parse_with_dbug(
             mismatch.path.len(),
             path_bits
         );
-        println!(
-            "expected@path: {}",
-            print_noun(&mismatch.expected, 20, 0)
-        );
-        println!(
-            "actual@path:   {}",
-            print_noun(&mismatch.actual, 20, 0)
-        );
+        println!("expected@path: {}", print_noun(&mismatch.expected, 20, 0));
+        println!("actual@path:   {}", print_noun(&mismatch.actual, 20, 0));
         if let Some((_last, parent_path)) = mismatch.path.split_last() {
             if let (Some(expected), Some(actual)) = (
                 noun_at_path(hoonc_hoon, parent_path),
@@ -2824,10 +2995,7 @@ async fn assert_native_ast_matches_hoonc_parse_with_dbug(
             "expected node: {}",
             print_noun(&mismatch.expected_node, 6, 0)
         );
-        println!(
-            "actual node:   {}",
-            print_noun(&mismatch.actual_node, 6, 0)
-        );
+        println!("actual node:   {}", print_noun(&mismatch.actual_node, 6, 0));
     }
 
     Err(io::Error::new(
@@ -2852,6 +3020,18 @@ async fn native_ast_matches_hoonc_parse_for_bridge() -> Result<(), Box<dyn std::
 }
 
 #[tokio::test]
+async fn native_ast_matches_hoonc_parse_for_target_dbug() -> Result<(), Box<dyn std::error::Error>>
+{
+    disable_metrics();
+
+    let deps_dir = repo_hoon_dir()?;
+    let target_rel = std::env::var("HOONC_COMPARE_DBUG_TARGET")
+        .unwrap_or_else(|_| "common/zeke.hoon".to_string());
+    let target = resolve_hoon_path(&deps_dir, &target_rel)?;
+    assert_native_ast_matches_hoonc_parse_with_dbug(&target, &deps_dir).await
+}
+
+#[tokio::test]
 async fn native_ast_matches_hoonc_parse_for_ztd_eight() -> Result<(), Box<dyn std::error::Error>> {
     disable_metrics();
 
@@ -2861,8 +3041,17 @@ async fn native_ast_matches_hoonc_parse_for_ztd_eight() -> Result<(), Box<dyn st
 }
 
 #[tokio::test]
-async fn native_ast_matches_hoonc_parse_for_hoon_138_dbug(
-) -> Result<(), Box<dyn std::error::Error>> {
+async fn native_ast_matches_hoonc_parse_for_markdown() -> Result<(), Box<dyn std::error::Error>> {
+    disable_metrics();
+
+    let deps_dir = repo_hoon_dir()?;
+    let target = resolve_hoon_path(&deps_dir, "common/markdown/markdown.hoon")?;
+    assert_native_ast_matches_hoonc_parse(&target, &deps_dir).await
+}
+
+#[tokio::test]
+async fn native_ast_matches_hoonc_parse_for_hoon_138_dbug() -> Result<(), Box<dyn std::error::Error>>
+{
     disable_metrics();
 
     let deps_dir = repo_hoon_dir()?;
@@ -2963,6 +3152,96 @@ async fn prime_single_path_debug() -> Result<(), Box<dyn std::error::Error>> {
 
 #[tokio::test]
 #[ignore]
+async fn debug_native_ast_mismatch_for_entry() -> Result<(), Box<dyn std::error::Error>> {
+    disable_metrics();
+    if std::env::var("RUST_LOG").is_err() {
+        std::env::set_var("RUST_LOG", "info");
+    }
+
+    let deps_dir = repo_hoon_dir()?;
+    let entry_rel =
+        std::env::var("HOONC_PRIME_ENTRY").unwrap_or_else(|_| KERNEL_ENTRIES[0].to_string());
+    let entry = resolve_hoon_path(&deps_dir, &entry_rel)?;
+
+    let state_slab = parse_hoon_with_hoonc(&entry, &deps_dir).await?;
+    let state_noun = unsafe { *state_slab.root() };
+    let pc = parse_cache_from_state(state_noun)
+        .map_err(|err| io::Error::new(io::ErrorKind::Other, err))?;
+    let entries =
+        collect_parse_cache_entries(pc).map_err(|err| io::Error::new(io::ErrorKind::Other, err))?;
+
+    let mut seen = HashSet::new();
+    let mut paths = Vec::new();
+    for entry in entries {
+        let Some(path) = resolve_parse_cache_path(&entry.path, &deps_dir) else {
+            continue;
+        };
+        if !is_hoon_path(&path) {
+            continue;
+        }
+        let canonical = path.canonicalize()?;
+        if !seen.insert(canonical.clone()) {
+            continue;
+        }
+        paths.push((entry.path, canonical, entry.pil));
+    }
+    paths.sort_by(|a, b| a.0.cmp(&b.0));
+
+    for (path_str, path, pil) in paths {
+        let hoonc_hoon = pile_hoon(pil).map_err(|err| io::Error::new(io::ErrorKind::Other, err))?;
+        let native_hoon = parse_native_hoon_with_dbug(&path, &deps_dir, true)?;
+        let mut native_slab = NounSlab::new();
+        let native_noun = hoon_to_noun(&mut native_slab, &native_hoon);
+
+        let mut hoonc_clean_slab = NounSlab::new();
+        let hoonc_clean = strip_dbug_tree(&mut hoonc_clean_slab, hoonc_hoon);
+        let mut native_clean_slab = NounSlab::new();
+        let native_clean = strip_dbug_tree(&mut native_clean_slab, native_noun);
+
+        let mut printed = false;
+        if diff_noun(&hoonc_clean, &native_clean, &mut printed).is_err() {
+            if let Some(mismatch) = find_mismatch_axis(hoonc_clean, native_clean, 1) {
+                println!("mismatch path: {}", path_str);
+                println!("resolved path: {}", path.display());
+                println!("mismatch axis: {}", mismatch.axis);
+                println!(
+                    "expected@{}: {}",
+                    mismatch.axis,
+                    print_noun(&mismatch.expected, 20, 0)
+                );
+                println!(
+                    "actual@{}:   {}",
+                    mismatch.axis,
+                    print_noun(&mismatch.actual, 20, 0)
+                );
+                if let Some(parent_axis) = mismatch.parent_axis {
+                    if let (Some(expected), Some(actual)) =
+                        (mismatch.parent_expected, mismatch.parent_actual)
+                    {
+                        println!(
+                            "expected parent@{parent_axis}: {}",
+                            print_noun(&expected, 12, 0)
+                        );
+                        println!(
+                            "actual parent@{parent_axis}:   {}",
+                            print_noun(&actual, 12, 0)
+                        );
+                    }
+                }
+            }
+            return Err(io::Error::new(
+                io::ErrorKind::Other,
+                format!("native AST mismatched hoonc parse for {}", path.display()),
+            )
+            .into());
+        }
+    }
+
+    Ok(())
+}
+
+#[tokio::test]
+#[ignore]
 async fn enumerate_failing_primed_paths() -> Result<(), Box<dyn std::error::Error>> {
     disable_metrics();
     if std::env::var("RUST_LOG").is_err() {
@@ -2999,6 +3278,129 @@ async fn enumerate_failing_primed_paths() -> Result<(), Box<dyn std::error::Erro
     }
 
     println!("failing paths: {}", failing.len());
+    Ok(())
+}
+
+#[test]
+#[ignore]
+fn debug_jam_mismatch_from_env() -> Result<(), Box<dyn std::error::Error>> {
+    let expected_path = std::env::var("HOONC_JAM_EXPECTED")
+        .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "HOONC_JAM_EXPECTED missing"))?;
+    let actual_path = std::env::var("HOONC_JAM_ACTUAL")
+        .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "HOONC_JAM_ACTUAL missing"))?;
+
+    let expected_bytes = fs::read(&expected_path)?;
+    let actual_bytes = fs::read(&actual_path)?;
+
+    let mut expected_slab: NounSlab<NockJammer> = NounSlab::new();
+    let mut actual_slab: NounSlab<NockJammer> = NounSlab::new();
+    let expected_root = expected_slab.cue_into(Bytes::from(expected_bytes))?;
+    let actual_root = actual_slab.cue_into(Bytes::from(actual_bytes))?;
+
+    let strip_dbug = std::env::var("HOONC_JAM_STRIP_DBUG").is_ok();
+    let (expected_root, actual_root) = if strip_dbug {
+        let mut expected_clean_slab = NounSlab::new();
+        let mut actual_clean_slab = NounSlab::new();
+        (
+            strip_dbug_tree(&mut expected_clean_slab, expected_root),
+            strip_dbug_tree(&mut actual_clean_slab, actual_root),
+        )
+    } else {
+        (expected_root, actual_root)
+    };
+
+    if let Some(mismatch) = find_mismatch_axis(expected_root, actual_root, 1) {
+        println!("jam mismatch axis: {}", mismatch.axis);
+        println!("jam expected:\n{}", print_noun(&mismatch.expected, 12, 0));
+        println!("jam actual:\n{}", print_noun(&mismatch.actual, 12, 0));
+        let mut ancestor_axis = mismatch.parent_axis;
+        if let Some(raw_mismatch) = find_mismatch_axis_raw(expected_root, actual_root, 1) {
+            println!("jam mismatch axis (with dbug): {}", raw_mismatch.axis);
+            let axis_bits = format_axis_bits(raw_mismatch.axis);
+            if !axis_bits.is_empty() {
+                println!("jam mismatch axis bits (with dbug): {axis_bits}");
+            }
+            if let Some(desc) = describe_nearest_dbug_with_excerpt(expected_root, raw_mismatch.axis)
+            {
+                println!("dbug expected: {desc}");
+            }
+            if let Some(desc) = describe_nearest_dbug_with_excerpt(actual_root, raw_mismatch.axis) {
+                println!("dbug actual:   {desc}");
+            }
+            if raw_mismatch.parent_axis.is_some() {
+                ancestor_axis = raw_mismatch.parent_axis;
+            }
+        }
+        if let Some(parent_axis) = ancestor_axis {
+            println!("jam parent axis: {parent_axis}");
+            if let (Some(expected), Some(actual)) =
+                (mismatch.parent_expected, mismatch.parent_actual)
+            {
+                println!("jam parent expected:\n{}", print_noun(&expected, 10, 0));
+                println!("jam parent actual:\n{}", print_noun(&actual, 10, 0));
+            }
+            let mut ancestor_axis = parent_axis;
+            for depth in 1..=3 {
+                ancestor_axis >>= 1;
+                if ancestor_axis < 1 {
+                    break;
+                }
+                if let Some(expected) = noun_at_axis(expected_root, ancestor_axis) {
+                    println!(
+                        "expected ancestor@{ancestor_axis} depth={depth}: {}",
+                        print_noun(&expected, 10, 0)
+                    );
+                } else {
+                    println!("expected ancestor@{ancestor_axis} depth={depth}: <missing>");
+                }
+                if let Some(actual) = noun_at_axis(actual_root, ancestor_axis) {
+                    println!(
+                        "actual ancestor@{ancestor_axis} depth={depth}:   {}",
+                        print_noun(&actual, 10, 0)
+                    );
+                } else {
+                    println!("actual ancestor@{ancestor_axis} depth={depth}:   <missing>");
+                }
+            }
+        }
+        let mut path = Vec::new();
+        if let Some(path_mismatch) = find_mismatch_path_raw(expected_root, actual_root, &mut path) {
+            let path_bits = format_path_bits(&path_mismatch.path);
+            println!(
+                "jam mismatch path len={} bits={}",
+                path_mismatch.path.len(),
+                path_bits
+            );
+            println!(
+                "jam expected@path:\n{}",
+                print_noun(&path_mismatch.expected, 12, 0)
+            );
+            println!(
+                "jam actual@path:\n{}",
+                print_noun(&path_mismatch.actual, 12, 0)
+            );
+            if let Some((_last, parent_path)) = path_mismatch.path.split_last() {
+                if let Some(expected) = noun_at_path(expected_root, parent_path) {
+                    println!(
+                        "jam expected parent@path:\n{}",
+                        print_noun(&expected, 10, 0)
+                    );
+                }
+                if let Some(actual) = noun_at_path(actual_root, parent_path) {
+                    println!("jam actual parent@path:\n{}", print_noun(&actual, 10, 0));
+                }
+            }
+            if let Some(desc) = describe_nearest_dbug_path(expected_root, &path_mismatch.path) {
+                println!("dbug expected (path): {desc}");
+            }
+            if let Some(desc) = describe_nearest_dbug_path(actual_root, &path_mismatch.path) {
+                println!("dbug actual (path):   {desc}");
+            }
+        }
+    } else {
+        println!("jam mismatch, but no differing axis found");
+    }
+
     Ok(())
 }
 

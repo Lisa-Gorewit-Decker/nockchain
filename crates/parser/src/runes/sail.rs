@@ -67,6 +67,10 @@ fn hoon_to_beers(hoon: Hoon) -> Vec<Beer> {
     }
 }
 
+fn string_to_beers(value: String) -> Vec<Beer> {
+    value.chars().map(|ch| Beer::Char(ch.to_string())).collect()
+}
+
 fn class_attr<'src>() -> impl Parser<'src, &'src str, (Mane, Vec<Beer>), Err<'src>> {
     just('.')
         .ignore_then(symbol())
@@ -75,14 +79,14 @@ fn class_attr<'src>() -> impl Parser<'src, &'src str, (Mane, Vec<Beer>), Err<'sr
         .collect::<Vec<_>>()
         .map(|classes| {
             let value = classes.join(" ");
-            (Mane::Tag("class".to_string()), vec![Beer::Char(value)])
+            (Mane::Tag("class".to_string()), string_to_beers(value))
         })
 }
 
 fn id_attr<'src>() -> impl Parser<'src, &'src str, (Mane, Vec<Beer>), Err<'src>> {
     just('#')
         .ignore_then(symbol())
-        .map(|id| (Mane::Tag("id".to_string()), vec![Beer::Char(id)]))
+        .map(|id| (Mane::Tag("id".to_string()), string_to_beers(id)))
 }
 
 fn attr_pair<'src>(

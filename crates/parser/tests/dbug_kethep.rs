@@ -1,7 +1,6 @@
 use std::sync::Arc;
 
 use chumsky::Parser;
-
 use parser::ast::hoon::{BaseType, Hoon, Spec};
 use parser::native_parser;
 use parser::utils::LineMap;
