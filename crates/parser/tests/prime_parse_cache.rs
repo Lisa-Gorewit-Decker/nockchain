@@ -3041,6 +3041,16 @@ async fn native_ast_matches_hoonc_parse_for_ztd_eight() -> Result<(), Box<dyn st
 }
 
 #[tokio::test]
+async fn native_ast_matches_hoonc_parse_for_ztd_one_dbug() -> Result<(), Box<dyn std::error::Error>>
+{
+    disable_metrics();
+
+    let deps_dir = repo_hoon_dir()?;
+    let target = resolve_hoon_path(&deps_dir, "common/ztd/one.hoon")?;
+    assert_native_ast_matches_hoonc_parse_with_dbug(&target, &deps_dir).await
+}
+
+#[tokio::test]
 async fn native_ast_matches_hoonc_parse_for_markdown() -> Result<(), Box<dyn std::error::Error>> {
     disable_metrics();
 
