@@ -23,6 +23,7 @@ use parser::ast::hoon as ast;
 use parser::native_parser;
 use parser::utils::{diff_noun, hoon_to_noun, print_noun, LineMap};
 use rayon::prelude::*;
+use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 use walkdir::WalkDir;
 
 const KERNEL_ENTRIES: &[&str] = &[
@@ -35,11 +36,22 @@ const MARKDOWN_HOON: &str = "../../hoon/common/markdown/markdown.hoon";
 
 static DISABLE_METRICS: Once = Once::new();
 static LOG_CAPTURE: OnceLock<LogCapture> = OnceLock::new();
+static TEST_SEMAPHORE: OnceLock<Arc<Semaphore>> = OnceLock::new();
 
 fn disable_metrics() {
     DISABLE_METRICS.call_once(|| {
         std::env::set_var("NOCKAPP_DISABLE_METRICS", "1");
     });
+}
+
+async fn test_permit() -> OwnedSemaphorePermit {
+    let semaphore = TEST_SEMAPHORE
+        .get_or_init(|| Arc::new(Semaphore::new(1)))
+        .clone();
+    semaphore
+        .acquire_owned()
+        .await
+        .expect("test semaphore closed")
 }
 
 struct LogCapture {
@@ -2343,6 +2355,7 @@ fn kernel_entries(deps_dir: &Path) -> Result<Vec<PathBuf>, Box<dyn std::error::E
 #[tokio::test]
 async fn primed_parse_cache_matches_regular_build() -> Result<(), Box<dyn std::error::Error>> {
     disable_metrics();
+    let _permit = test_permit().await;
     if std::env::var("RUST_LOG").is_err() {
         std::env::set_var("RUST_LOG", "info");
     }
@@ -2489,6 +2502,7 @@ fn native_parser_parses_all_hoon_files() -> Result<(), Box<dyn std::error::Error
 async fn primed_parse_cache_matches_regular_build_for_kernels(
 ) -> Result<(), Box<dyn std::error::Error>> {
     disable_metrics();
+    let _permit = test_permit().await;
     if std::env::var("RUST_LOG").is_err() {
         std::env::set_var("RUST_LOG", "info");
     }
@@ -2659,6 +2673,7 @@ async fn primed_parse_cache_matches_regular_build_for_kernels(
 #[tokio::test]
 async fn primed_parse_cache_primes_native_ztd_eight() -> Result<(), Box<dyn std::error::Error>> {
     disable_metrics();
+    let _permit = test_permit().await;
     if std::env::var("RUST_LOG").is_err() {
         std::env::set_var("RUST_LOG", "info");
     }
@@ -2697,6 +2712,7 @@ async fn primed_parse_cache_primes_native_ztd_eight() -> Result<(), Box<dyn std:
 async fn primed_parse_cache_primes_native_ztd_eight_no_dbug(
 ) -> Result<(), Box<dyn std::error::Error>> {
     disable_metrics();
+    let _permit = test_permit().await;
     if std::env::var("RUST_LOG").is_err() {
         std::env::set_var("RUST_LOG", "info");
     }
@@ -2738,6 +2754,7 @@ async fn primed_parse_cache_primes_native_ztd_eight_no_dbug(
 async fn primed_parse_cache_builds_with_native_ztd_eight() -> Result<(), Box<dyn std::error::Error>>
 {
     disable_metrics();
+    let _permit = test_permit().await;
     if std::env::var("RUST_LOG").is_err() {
         std::env::set_var("RUST_LOG", "info");
     }
@@ -3011,6 +3028,7 @@ async fn assert_native_ast_matches_hoonc_parse_with_dbug(
 #[tokio::test]
 async fn native_ast_matches_hoonc_parse_for_bridge() -> Result<(), Box<dyn std::error::Error>> {
     disable_metrics();
+    let _permit = test_permit().await;
 
     let deps_dir = repo_hoon_dir()?;
     let target_rel = std::env::var("HOONC_COMPARE_TARGET")
@@ -3023,6 +3041,7 @@ async fn native_ast_matches_hoonc_parse_for_bridge() -> Result<(), Box<dyn std::
 async fn native_ast_matches_hoonc_parse_for_target_dbug() -> Result<(), Box<dyn std::error::Error>>
 {
     disable_metrics();
+    let _permit = test_permit().await;
 
     let deps_dir = repo_hoon_dir()?;
     let target_rel = std::env::var("HOONC_COMPARE_DBUG_TARGET")
@@ -3034,6 +3053,7 @@ async fn native_ast_matches_hoonc_parse_for_target_dbug() -> Result<(), Box<dyn 
 #[tokio::test]
 async fn native_ast_matches_hoonc_parse_for_ztd_eight() -> Result<(), Box<dyn std::error::Error>> {
     disable_metrics();
+    let _permit = test_permit().await;
 
     let deps_dir = repo_hoon_dir()?;
     let target = resolve_hoon_path(&deps_dir, "common/ztd/eight.hoon")?;
@@ -3044,6 +3064,7 @@ async fn native_ast_matches_hoonc_parse_for_ztd_eight() -> Result<(), Box<dyn st
 async fn native_ast_matches_hoonc_parse_for_ztd_one_dbug() -> Result<(), Box<dyn std::error::Error>>
 {
     disable_metrics();
+    let _permit = test_permit().await;
 
     let deps_dir = repo_hoon_dir()?;
     let target = resolve_hoon_path(&deps_dir, "common/ztd/one.hoon")?;
@@ -3053,6 +3074,7 @@ async fn native_ast_matches_hoonc_parse_for_ztd_one_dbug() -> Result<(), Box<dyn
 #[tokio::test]
 async fn native_ast_matches_hoonc_parse_for_markdown() -> Result<(), Box<dyn std::error::Error>> {
     disable_metrics();
+    let _permit = test_permit().await;
 
     let deps_dir = repo_hoon_dir()?;
     let target = resolve_hoon_path(&deps_dir, "common/markdown/markdown.hoon")?;
@@ -3063,6 +3085,7 @@ async fn native_ast_matches_hoonc_parse_for_markdown() -> Result<(), Box<dyn std
 async fn native_ast_matches_hoonc_parse_for_hoon_138_dbug() -> Result<(), Box<dyn std::error::Error>>
 {
     disable_metrics();
+    let _permit = test_permit().await;
 
     let deps_dir = repo_hoon_dir()?;
     let target = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -3111,6 +3134,7 @@ fn native_cnts_noun_matches_mold_for_ztd_eight() -> Result<(), Box<dyn std::erro
 #[ignore]
 async fn bisect_primed_parse_cache_failure() -> Result<(), Box<dyn std::error::Error>> {
     disable_metrics();
+    let _permit = test_permit().await;
     if std::env::var("RUST_LOG").is_err() {
         std::env::set_var("RUST_LOG", "info");
     }
@@ -3132,6 +3156,7 @@ async fn bisect_primed_parse_cache_failure() -> Result<(), Box<dyn std::error::E
 #[ignore]
 async fn prime_single_path_debug() -> Result<(), Box<dyn std::error::Error>> {
     disable_metrics();
+    let _permit = test_permit().await;
     if std::env::var("RUST_LOG").is_err() {
         std::env::set_var("RUST_LOG", "info");
     }
@@ -3164,6 +3189,7 @@ async fn prime_single_path_debug() -> Result<(), Box<dyn std::error::Error>> {
 #[ignore]
 async fn debug_native_ast_mismatch_for_entry() -> Result<(), Box<dyn std::error::Error>> {
     disable_metrics();
+    let _permit = test_permit().await;
     if std::env::var("RUST_LOG").is_err() {
         std::env::set_var("RUST_LOG", "info");
     }
@@ -3254,6 +3280,7 @@ async fn debug_native_ast_mismatch_for_entry() -> Result<(), Box<dyn std::error:
 #[ignore]
 async fn enumerate_failing_primed_paths() -> Result<(), Box<dyn std::error::Error>> {
     disable_metrics();
+    let _permit = test_permit().await;
     if std::env::var("RUST_LOG").is_err() {
         std::env::set_var("RUST_LOG", "info");
     }
