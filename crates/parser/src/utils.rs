@@ -7114,6 +7114,7 @@ impl LineMap {
         }
 
         let mut idx = line_start;
+        let start_line_start = line_start;
         let mut saw_doc = false;
         let mut saw_non_doc_comment_before_doc = false;
         let mut saw_doc_content = false;
@@ -7399,6 +7400,17 @@ impl LineMap {
                 } else {
                     has_content && doc_line_anchorable(line, doc_offset)
                 };
+                if is_inline
+                    && anchorable
+                    && has_content
+                    && start_is_branch_tag
+                    && start_cursor == cursor
+                    && is_branch_tag_line(line, cursor)
+                    && !inline_doc_is_heading(line, doc_offset)
+                    && prev_start != start_line_start
+                {
+                    anchorable = false;
+                }
                 let doc_line_is_question_greater = if !is_inline && has_content {
                     let content_indent = doc_content_indent(line, doc_offset);
                     let content_start = doc_offset + 2 + content_indent;
@@ -7757,11 +7769,16 @@ impl LineMap {
                 if !doc_anchor_inline {
                     let has_leading_blank_doc = doc_blank_after_content && !doc_content_after_blank;
                     let header_allows_blank_doc = is_plus_header_line(line, cursor);
+                    let doc_has_mixed_indent = matches!(
+                        (doc_min_content_indent, doc_max_content_indent),
+                        (Some(min_indent), Some(max_indent)) if max_indent > min_indent
+                    );
                     let start_allows_blank_doc = (start_is_dollar && !start_is_dollar_colon)
                         || start_is_bar_percent
                         || start_is_underscore
                         || header_allows_blank_doc
-                        || doc_under_dollar_colon;
+                        || doc_under_dollar_colon
+                        || (start_is_equals_slash && doc_has_mixed_indent);
                     let has_blank_after_content = doc_blank_after_content || doc_top_blank;
                     if start_is_colon_rune {
                         return start;
@@ -7859,7 +7876,12 @@ impl LineMap {
                                 Some(b'?') if line.get(cursor + 1) != Some(&b'>') => {
                                     return start
                                 }
-                                Some(b'=') if start_equals_has_inline_body => return start,
+                                Some(b'=')
+                                    if start_equals_has_inline_body
+                                        && !(start_is_equals_slash && doc_has_mixed_indent) =>
+                                {
+                                    return start
+                                }
                                 _ => {}
                             }
                             let prev_is_question_gt = line.get(cursor) == Some(&b'?')
@@ -7881,6 +7903,9 @@ impl LineMap {
                                 (Some(min_indent), Some(max_indent)) if max_indent > min_indent
                             );
                             let doc_block_has_blank = doc_blank_after_content || doc_top_blank;
+                            if start_is_equals_slash && doc_block_has_blank && !doc_has_mixed_indent {
+                                return start;
+                            }
                             let allow_blank_between_code_lines =
                                 doc_block_has_blank && !start_is_question;
                             let allow_mixed_indent_between_code_lines =
@@ -7963,7 +7988,7 @@ impl LineMap {
                                             if max_indent > min_indent => {}
                                         _ => return start,
                                     }
-                                } else {
+                                } else if !(start_is_equals_slash && doc_has_mixed_indent) {
                                     return start;
                                 }
                             }
@@ -13252,6 +13277,28 @@ mod tests {
     }
 
     #[test]
+    fn line_map_does_not_expand_gap_start_over_inline_doc_branch_tags_without_heading_for_plain_tag()
+    {
+        let src = concat!(
+            "  %op-l  ::  0 means atom\n",
+            "  %op-r  ::  0 means atom\n",
+            "  %count\n",
+        );
+        let start = src.find("%count").expect("missing branch tag");
+        let end = start + "%count".len();
+        let linemap = Arc::new(LineMap::new(src));
+        let wer: crate::ast::hoon::Path = vec!["test".to_string()];
+        let spot = chumsky_spot_to_hoon_spot((start, end), &wer, &linemap);
+        let (line, col) = linemap.line_col(start);
+
+        assert_eq!(
+            spot.q.p,
+            (line, col),
+            "expected start to stay on the %count line"
+        );
+    }
+
+    #[test]
     fn line_map_expands_gap_start_over_inline_doc_branch_tags_with_heading() {
         let src = concat!("  %stet  ::  == end\n", "  %dent  ::  out\n");
         let start = src.find("%dent").expect("missing branch tag");
@@ -16353,6 +16400,60 @@ mod tests {
             spot.q.p,
             (start_line, start_col),
             "expected start to stay on the :+ line"
+        );
+        assert_eq!(spot.q.q, (end_line, end_col), "unexpected end spot");
+    }
+
+    #[test]
+    fn line_map_expands_gap_start_after_mixed_indent_doc_block_with_trailing_blank() {
+        let src = concat!(
+            "  =/  tables  0\n",
+            "  ::  check that the tables have correct base width\n",
+            "  ::?:  %+  levy  tables\n",
+            "  ::    |=  t=table-dat\n",
+            "  ::    !=(step.p.p.t base-width.p.t)\n",
+            "  ::\n",
+            "  =/  num-tables  1\n",
+        );
+        let start = src.rfind("=/  num-tables").expect("missing binding");
+        let end = start + 2;
+        let linemap = Arc::new(LineMap::new(src));
+        let wer: crate::ast::hoon::Path = vec!["test".to_string()];
+        let spot = chumsky_spot_to_hoon_spot((start, end), &wer, &linemap);
+        let doc_offset = src.find("::    |=").expect("missing doc line");
+        let (doc_line, doc_col) = linemap.line_col(doc_offset);
+
+        assert_eq!(
+            spot.q.p,
+            (doc_line, doc_col),
+            "expected start to anchor to mixed-indent doc line"
+        );
+    }
+
+    #[test]
+    fn line_map_does_not_expand_gap_start_for_equals_after_blank_in_doc_block() {
+        let src = concat!(
+            "  =/  tables  0\n",
+            "  ::  compute the Composition Polynomial\n",
+            "  ::  This polynomial composes the trace polynomials with the constraints\n",
+            "  ::\n",
+            "  ::  compute weights used in linear combination of composition polynomial\n",
+            "  =/  num-constraints  1\n",
+        );
+        let start = src
+            .rfind("=/  num-constraints")
+            .expect("missing binding");
+        let end = start + 2;
+        let linemap = Arc::new(LineMap::new(src));
+        let wer: crate::ast::hoon::Path = vec!["test".to_string()];
+        let spot = chumsky_spot_to_hoon_spot((start, end), &wer, &linemap);
+        let (start_line, start_col) = linemap.line_col(start);
+        let (end_line, end_col) = linemap.line_col(end);
+
+        assert_eq!(
+            spot.q.p,
+            (start_line, start_col),
+            "expected start to stay on the =/ line"
         );
         assert_eq!(spot.q.q, (end_line, end_col), "unexpected end spot");
     }
