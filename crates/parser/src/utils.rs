@@ -5810,6 +5810,31 @@ impl LineMap {
             }
             word_end > 0 && content.get(word_end) == Some(&b':')
         };
+        let doc_line_is_simple_heading = |line: &[u8], doc_offset: usize| -> bool {
+            let mut idx = doc_offset + 2;
+            while idx < line.len() && line[idx] == b' ' {
+                idx += 1;
+            }
+            let mut end = line.len();
+            while end > idx && (line[end - 1] == b' ' || line[end - 1] == b'\t') {
+                end -= 1;
+            }
+            if idx >= end {
+                return false;
+            }
+            let mut saw_letter = false;
+            for &b in &line[idx..end] {
+                if b == b' ' {
+                    continue;
+                }
+                if b.is_ascii_lowercase() {
+                    saw_letter = true;
+                    continue;
+                }
+                return false;
+            }
+            saw_letter
+        };
         let doc_line_anchorable = |line: &[u8], doc_offset: usize| -> bool {
             let mut idx = doc_offset + 2;
             while idx < line.len() && line[idx] == b' ' {
@@ -6907,6 +6932,8 @@ impl LineMap {
         let start_is_question = bytes.get(lead) == Some(&b'?');
         let start_is_question_tilde = start_is_question && bytes.get(lead + 1) == Some(&b'~');
         let start_is_equals = bytes.get(lead) == Some(&b'=');
+        let start_is_percent_caret =
+            bytes.get(lead) == Some(&b'%') && bytes.get(lead + 1) == Some(&b'^');
         let start_is_equals_slash =
             start_is_equals && start_line.get(start_cursor + 1) == Some(&b'/');
         let start_is_equals_caret =
@@ -7131,6 +7158,7 @@ impl LineMap {
         let mut doc_any_content = false;
         let mut doc_blank_after_content = false;
         let mut doc_content_after_blank = false;
+        let mut doc_simple_heading = false;
         let mut saw_tilde_slash = false;
         let mut doc_has_triple_quote = false;
         let mut doc_mentions_start_binding = false;
@@ -7240,6 +7268,19 @@ impl LineMap {
             if doc_line_info.is_none() && doc_comment_offset(line, cursor).is_some() {
                 if !saw_doc {
                     saw_non_doc_comment_before_doc = true;
+                } else if doc_indent == Some(cursor) {
+                    saw_doc = false;
+                    saw_doc_content = false;
+                    doc_any_content = false;
+                    doc_content_lines = 0;
+                    doc_blank_after_content = false;
+                    doc_content_after_blank = false;
+                    doc_top_blank = false;
+                    doc_indent = None;
+                    doc_anchor_inline = false;
+                    doc_start = None;
+                    doc_deep_indent = false;
+                    doc_simple_heading = false;
                 }
                 idx = prev_start;
                 continue;
@@ -7365,6 +7406,11 @@ impl LineMap {
                 }
                 if !is_inline && has_content {
                     doc_content_lines += 1;
+                    if doc_content_lines == 1 {
+                        doc_simple_heading = doc_line_is_simple_heading(line, doc_offset);
+                    } else {
+                        doc_simple_heading = false;
+                    }
                     doc_any_content = true;
                     if doc_blank_after_content {
                         doc_content_after_blank = true;
@@ -7466,6 +7512,7 @@ impl LineMap {
                     doc_anchor_inline = false;
                     doc_start = None;
                     doc_deep_indent = false;
+                    doc_simple_heading = false;
                     suppress_doc_block = false;
                     idx = prev_start;
                     continue;
@@ -7534,7 +7581,7 @@ impl LineMap {
                 {
                     anchorable = false;
                 }
-                if doc_under_plus_header && start_is_bar_equals && plus_header_has_doc_content {
+                if doc_under_plus_header && start_is_bar_equals {
                     anchorable = false;
                 }
                 if doc_under_plus_header
@@ -7872,6 +7919,11 @@ impl LineMap {
                             return start;
                         }
                         if cursor == start_cursor {
+                            if line.get(cursor) == Some(&b'~')
+                                && line.get(cursor + 1) == Some(&b'+')
+                            {
+                                return start;
+                            }
                             match line.get(cursor) {
                                 Some(b'?') if line.get(cursor + 1) != Some(&b'>') => {
                                     return start
@@ -7907,7 +7959,7 @@ impl LineMap {
                                 return start;
                             }
                             let allow_blank_between_code_lines =
-                                doc_block_has_blank && !start_is_question;
+                                doc_block_has_blank && !start_is_question && !start_is_percent_caret;
                             let allow_mixed_indent_between_code_lines =
                                 doc_has_mixed_indent && !start_is_question;
                             let allow_between_code_lines = prev_is_question_gt
@@ -7977,6 +8029,13 @@ impl LineMap {
                             let trimmed = &line[cursor..end];
                             let is_tall_terminator = trimmed == b"==";
                             if start_is_caret && is_tall_terminator {
+                                return start;
+                            }
+                            if indent > cursor
+                                && doc_simple_heading
+                                && doc_blank_after_content
+                                && matches!(lead, Some(b'|'))
+                            {
                                 return start;
                             }
                             if indent < cursor && !is_tall_terminator {
@@ -15505,6 +15564,81 @@ mod tests {
     }
 
     #[test]
+    fn line_map_does_not_expand_gap_start_after_note_comment_under_arm() {
+        let src = concat!(
+            "  ++  permute\n",
+            "    ::NOTE  takes and returns eight values\n",
+            "    ::  lists keep the code tidy\n",
+            "    |=  s=(list @)\n",
+        );
+        let start = src.find("|=").expect("missing |=");
+        let end = start + 2;
+        let linemap = Arc::new(LineMap::new(src));
+        let wer: crate::ast::hoon::Path = vec!["test".to_string()];
+        let spot = chumsky_spot_to_hoon_spot((start, end), &wer, &linemap);
+        let (expected_line, expected_col) = linemap.line_col(start);
+        let (end_line, end_col) = linemap.line_col(end);
+
+        assert_eq!(
+            spot.q.p,
+            (expected_line, expected_col),
+            "expected start to stay on the |= line"
+        );
+        assert_eq!(spot.q.q, (end_line, end_col), "unexpected end spot");
+    }
+
+    #[test]
+    fn line_map_does_not_expand_gap_start_for_bar_equals_under_plus_header_doc_block() {
+        let src = concat!(
+            "  ++  sponge\n",
+            "    ::  sponge construction\n",
+            "    ::\n",
+            "    |=  $:  preperm=$-(@ud $-(@ @))\n",
+            "            padding=$-([octs @ud] octs)\n",
+            "        ==\n",
+        );
+        let start = src.find("|=").expect("missing |=");
+        let end = start + 2;
+        let linemap = Arc::new(LineMap::new(src));
+        let wer: crate::ast::hoon::Path = vec!["test".to_string()];
+        let spot = chumsky_spot_to_hoon_spot((start, end), &wer, &linemap);
+        let (expected_line, expected_col) = linemap.line_col(start);
+        let (end_line, end_col) = linemap.line_col(end);
+
+        assert_eq!(
+            spot.q.p,
+            (expected_line, expected_col),
+            "expected start to stay on the |= line"
+        );
+        assert_eq!(spot.q.q, (end_line, end_col), "unexpected end spot");
+    }
+
+    #[test]
+    fn line_map_does_not_expand_gap_start_for_bar_header_section_heading() {
+        let src = concat!(
+            "  |=  [input=octs output=@ud]\n",
+            "  |^  ^-  @\n",
+            "    ::\n",
+            "    ::  padding\n",
+            "    =.  input  (padding input bitrate)\n",
+        );
+        let start = src.find("=.").expect("missing =.");
+        let end = start + 2;
+        let linemap = Arc::new(LineMap::new(src));
+        let wer: crate::ast::hoon::Path = vec!["test".to_string()];
+        let spot = chumsky_spot_to_hoon_spot((start, end), &wer, &linemap);
+        let (expected_line, expected_col) = linemap.line_col(start);
+        let (end_line, end_col) = linemap.line_col(end);
+
+        assert_eq!(
+            spot.q.p,
+            (expected_line, expected_col),
+            "expected start to stay on the =. line"
+        );
+        assert_eq!(spot.q.q, (end_line, end_col), "unexpected end spot");
+    }
+
+    #[test]
     fn line_map_expands_gap_start_for_hoon_138_analyze_doc_block() {
         let src = include_str!(concat!(
             env!("CARGO_MANIFEST_DIR"),
@@ -16041,6 +16175,32 @@ mod tests {
     }
 
     #[test]
+    fn line_map_does_not_expand_gap_start_for_percent_caret_after_blank_doc_block() {
+        let src = concat!(
+            "  =/  foo  0\n",
+            "  ::\n",
+            "  ::  Indexing & Selector Constraints\n",
+            "  ::\n",
+            "  %^  tag-mp-pelt  %ln-inc\n",
+            "    (mpsub-pelt foo bar)\n",
+        );
+        let start = src.find("%^").expect("missing %^");
+        let end = start + 2;
+        let linemap = Arc::new(LineMap::new(src));
+        let wer: crate::ast::hoon::Path = vec!["test".to_string()];
+        let spot = chumsky_spot_to_hoon_spot((start, end), &wer, &linemap);
+        let (expected_line, expected_col) = linemap.line_col(start);
+        let (end_line, end_col) = linemap.line_col(end);
+
+        assert_eq!(
+            spot.q.p,
+            (expected_line, expected_col),
+            "expected start to stay on the %^ line"
+        );
+        assert_eq!(spot.q.q, (end_line, end_col), "unexpected end spot");
+    }
+
+    #[test]
     fn line_map_expands_gap_start_for_tilde_percent_after_equals_arrow_doc() {
         let src = concat!("=>\n", "::  header\n", "~%  %foo  +  ~\n", "|%\n");
         let start = src.find("~%").expect("missing ~%");
@@ -16428,6 +16588,31 @@ mod tests {
             (doc_line, doc_col),
             "expected start to anchor to mixed-indent doc line"
         );
+    }
+
+    #[test]
+    fn line_map_does_not_expand_gap_start_after_tilde_plus_doc_block() {
+        let src = concat!(
+            "  ~+\n",
+            "  ::\n",
+            "  ::  Equivalent to:\n",
+            "  ::    %-  bar\n",
+            "  =/  num-succ  1\n",
+        );
+        let start = src.rfind("=/  num-succ").expect("missing binding");
+        let end = start + 2;
+        let linemap = Arc::new(LineMap::new(src));
+        let wer: crate::ast::hoon::Path = vec!["test".to_string()];
+        let spot = chumsky_spot_to_hoon_spot((start, end), &wer, &linemap);
+        let (start_line, start_col) = linemap.line_col(start);
+        let (end_line, end_col) = linemap.line_col(end);
+
+        assert_eq!(
+            spot.q.p,
+            (start_line, start_col),
+            "expected start to stay on the =/ line"
+        );
+        assert_eq!(spot.q.q, (end_line, end_col), "unexpected end spot");
     }
 
     #[test]
