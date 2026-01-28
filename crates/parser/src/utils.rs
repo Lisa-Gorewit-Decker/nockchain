@@ -7341,7 +7341,6 @@ impl LineMap {
                     } else if start_cursor > cursor
                         && is_dollar_header_line(line, cursor)
                         && !inline_doc_is_heading(line, offset)
-                        && !is_bare_dollar_colon_header(line, cursor, offset)
                     {
                         None
                     } else if start_is_question
@@ -7623,6 +7622,7 @@ impl LineMap {
                     && anchorable
                     && doc_line_is_label(line, doc_offset)
                     && (start_is_equals || start_is_face_binding)
+                    && doc_content_lines <= 1
                 {
                     anchorable = false;
                 }
@@ -14580,7 +14580,7 @@ mod tests {
     }
 
     #[test]
-    fn line_map_expands_gap_start_after_bare_dollar_colon_inline_doc() {
+    fn line_map_does_not_expand_gap_start_after_bare_dollar_colon_inline_doc() {
         let src = concat!(
             "  $:  ::  if non-null, enforces output source\n",
             "      output-source=(unit source)\n",
@@ -14590,14 +14590,15 @@ mod tests {
         let linemap = Arc::new(LineMap::new(src));
         let wer: crate::ast::hoon::Path = vec!["test".to_string()];
         let spot = chumsky_spot_to_hoon_spot((start, end), &wer, &linemap);
-        let doc_offset = src.find("::  if non-null").expect("missing inline doc");
-        let (doc_line, doc_col) = linemap.line_col(doc_offset);
+        let (line, col) = linemap.line_col(start);
+        let (end_line, end_col) = linemap.line_col(end);
 
         assert_eq!(
             spot.q.p,
-            (doc_line, doc_col),
-            "expected start to anchor to inline doc on the dollar-colon header line"
+            (line, col),
+            "expected start to stay on the field line"
         );
+        assert_eq!(spot.q.q, (end_line, end_col), "unexpected end spot");
     }
 
     #[test]
@@ -16196,6 +16197,38 @@ mod tests {
             spot.q.p,
             (expected_line, expected_col),
             "expected start to stay on the %^ line"
+        );
+        assert_eq!(spot.q.q, (end_line, end_col), "unexpected end spot");
+    }
+
+    #[test]
+    fn line_map_expands_gap_start_to_label_doc_line_with_heading() {
+        let src = concat!(
+            "  $~  :*\n",
+            "        v1-phase=39.000\n",
+            "        ::  note data field constraints\n",
+            "        ::    max-size: maximum number of leaves\n",
+            "        ::    min-fee:  minimum fee\n",
+            "        data=[max-size=2.048 min-fee=256]\n",
+            "        ::  base fee per word\n",
+            "        base-fee=(bex 15)\n",
+            "    ==\n",
+        );
+        let start = src.find("data=").expect("missing data=");
+        let end = start + "data".len();
+        let linemap = Arc::new(LineMap::new(src));
+        let wer: crate::ast::hoon::Path = vec!["test".to_string()];
+        let spot = chumsky_spot_to_hoon_spot((start, end), &wer, &linemap);
+        let doc_start = src
+            .find("::    max-size")
+            .expect("missing max-size doc line");
+        let (expected_line, expected_col) = linemap.line_col(doc_start);
+        let (end_line, end_col) = linemap.line_col(end);
+
+        assert_eq!(
+            spot.q.p,
+            (expected_line, expected_col),
+            "expected start to anchor to the label doc line"
         );
         assert_eq!(spot.q.q, (end_line, end_col), "unexpected end spot");
     }
