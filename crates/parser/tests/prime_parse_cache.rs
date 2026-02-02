@@ -1330,6 +1330,43 @@ async fn prime_only_with_subset(
     })
 }
 
+async fn build_regular_jam_for_bisect(
+    entry: &PathBuf,
+    deps_dir: &PathBuf,
+) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
+    let nockapp_home = temp_out_dir("bisect-regular-home")?;
+    let out_dir = temp_out_dir("bisect-regular-out")?;
+    let _env_guard = EnvVarGuard::set("NOCKAPP_HOME", nockapp_home.to_string_lossy().as_ref());
+    let _prewarm_guard = EnvVarGuard::set("HOONC_DISABLE_PREWARM", "1");
+    Ok(build_jam(entry, deps_dir.clone(), Some(out_dir), false, true).await?)
+}
+
+async fn build_primed_jam_with_subset(
+    entry: &PathBuf,
+    deps_dir: &PathBuf,
+    subset: &HashMap<PathBuf, Vec<u8>>,
+    log_capture: &LogCapture,
+) -> Result<(Vec<u8>, String, Option<usize>), Box<dyn std::error::Error>> {
+    let nockapp_home = temp_out_dir("bisect-primed-home")?;
+    let out_dir = temp_out_dir("bisect-primed-out")?;
+    let _env_guard = EnvVarGuard::set("NOCKAPP_HOME", nockapp_home.to_string_lossy().as_ref());
+    let _prewarm_guard = EnvVarGuard::set("HOONC_DISABLE_PREWARM", "1");
+
+    log_capture.clear();
+    let jam = build_jam_with_primed_parse_cache(
+        entry.clone(),
+        deps_dir.clone(),
+        Some(out_dir),
+        false,
+        true,
+        subset,
+    )
+    .await?;
+    let logs = log_capture.take_string();
+    let pc_size = parse_pc_size(&logs);
+    Ok((jam, logs, pc_size))
+}
+
 fn format_variant_inventory(counts: &HashMap<String, usize>, max_items: usize) -> String {
     let mut items: Vec<_> = counts.iter().collect();
     items.sort_by(|a, b| b.1.cmp(a.1).then_with(|| a.0.cmp(b.0)));
@@ -1394,6 +1431,73 @@ async fn bisect_first_failing_path(
             mid, attempt.warned, attempt.failed, attempt.pc_size
         );
         if attempt.failed {
+            high = mid;
+        } else {
+            low = mid + 1;
+        }
+    }
+
+    let failing_path = if low == 0 {
+        entry_path
+    } else {
+        paths[low - 1].clone()
+    };
+    Ok(Some(failing_path))
+}
+
+async fn bisect_first_jam_mismatch_path(
+    entry: &PathBuf,
+    deps_dir: &PathBuf,
+    native_asts: &HashMap<PathBuf, Vec<u8>>,
+    log_capture: &LogCapture,
+) -> Result<Option<PathBuf>, Box<dyn std::error::Error>> {
+    let entry_path = entry.canonicalize()?;
+    let mut paths: Vec<PathBuf> = native_asts
+        .keys()
+        .filter(|path| **path != entry_path)
+        .cloned()
+        .collect();
+    paths.sort_by(|a, b| a.to_string_lossy().cmp(&b.to_string_lossy()));
+    if let Ok(filter) = std::env::var("HOONC_PRIME_BISECT_FILTER") {
+        let filter = filter.trim();
+        if !filter.is_empty() {
+            paths.retain(|path| path.to_string_lossy().contains(filter));
+        }
+    }
+    if let Some(limit) = std::env::var("HOONC_PRIME_BISECT_LIMIT")
+        .ok()
+        .and_then(|value| value.parse::<usize>().ok())
+    {
+        paths.truncate(limit);
+    }
+
+    let regular_jam = build_regular_jam_for_bisect(entry, deps_dir).await?;
+
+    let full_subset = native_subset_for_prefix(entry, native_asts, &paths, paths.len())?;
+    let (full_primed, _logs, pc_size) =
+        build_primed_jam_with_subset(entry, deps_dir, &full_subset, log_capture).await?;
+    let full_mismatch = full_primed != regular_jam;
+    println!(
+        "bisect-jam: full set mismatch={} pc-size={:?}",
+        full_mismatch, pc_size
+    );
+    if !full_mismatch {
+        return Ok(None);
+    }
+
+    let mut low = 0usize;
+    let mut high = paths.len();
+    while low < high {
+        let mid = (low + high) / 2;
+        let subset = native_subset_for_prefix(entry, native_asts, &paths, mid)?;
+        let (primed, _logs, pc_size) =
+            build_primed_jam_with_subset(entry, deps_dir, &subset, log_capture).await?;
+        let mismatch = primed != regular_jam;
+        println!(
+            "bisect-jam: prefix={} mismatch={} pc-size={:?}",
+            mid, mismatch, pc_size
+        );
+        if mismatch {
             high = mid;
         } else {
             low = mid + 1;
@@ -3072,6 +3176,16 @@ async fn native_ast_matches_hoonc_parse_for_ztd_one_dbug() -> Result<(), Box<dyn
 }
 
 #[tokio::test]
+async fn native_ast_matches_hoonc_parse_for_zose_dbug() -> Result<(), Box<dyn std::error::Error>> {
+    disable_metrics();
+    let _permit = test_permit().await;
+
+    let deps_dir = repo_hoon_dir()?;
+    let target = resolve_hoon_path(&deps_dir, "common/zose.hoon")?;
+    assert_native_ast_matches_hoonc_parse_with_dbug(&target, &deps_dir).await
+}
+
+#[tokio::test]
 async fn native_ast_matches_hoonc_parse_for_markdown() -> Result<(), Box<dyn std::error::Error>> {
     disable_metrics();
     let _permit = test_permit().await;
@@ -3148,6 +3262,29 @@ async fn bisect_primed_parse_cache_failure() -> Result<(), Box<dyn std::error::E
     match failing {
         Some(path) => println!("first failing path: {}", path.display()),
         None => println!("no failing path found"),
+    }
+    Ok(())
+}
+
+#[tokio::test]
+#[ignore]
+async fn bisect_primed_parse_cache_jam_mismatch() -> Result<(), Box<dyn std::error::Error>> {
+    disable_metrics();
+    let _permit = test_permit().await;
+    if std::env::var("RUST_LOG").is_err() {
+        std::env::set_var("RUST_LOG", "info");
+    }
+    let log_capture = init_logging(true);
+
+    let deps_dir = repo_hoon_dir()?;
+    let entry = deps_dir.join(KERNEL_ENTRIES[0]).canonicalize()?;
+    let native_asts = collect_native_asts(&deps_dir, &entry)?;
+
+    let failing =
+        bisect_first_jam_mismatch_path(&entry, &deps_dir, &native_asts, log_capture).await?;
+    match failing {
+        Some(path) => println!("first jam mismatch path: {}", path.display()),
+        None => println!("no jam mismatch found"),
     }
     Ok(())
 }

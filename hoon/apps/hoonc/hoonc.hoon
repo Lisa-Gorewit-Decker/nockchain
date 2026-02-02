@@ -880,8 +880,9 @@
       ?:  =(pat old-path)
         ~&  "reusing parse cache entry for {<pat>}"
         +.u.e
+      =/  replace=?  (lth (mug pat) (mug old-path))
       ~&  "parse-dir: hash collision {<file-hash>} new {<pat>} old {<old-path>} len {<(met 3 fil)>}"
-      =.  cacheable  %.n
+      =.  cacheable  replace
       (process-pile pat tex dir)
     =.  new-pc
       ?:  cacheable
@@ -964,8 +965,9 @@
       =/  old-path=path  -.u.e
       ?:  =(pat old-path)
         +.u.e
+      =/  replace=?  (lth (mug pat) (mug old-path))
       ~&  "prime-dir: hash collision {<file-hash>} new {<pat>} old {<old-path>} len {<(met 3 fil)>}"
-      =.  cacheable  %.n
+      =.  cacheable  replace
       =/  fil-cord=cord  fil
       =/  tex=tape  (trip fil-cord)
       =/  pil  (parse-pile pat tex)
