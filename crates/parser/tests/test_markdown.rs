@@ -8,15 +8,13 @@ use nockapp::noun::slab::{NockJammer, NounSlab};
 use parser::native_parser;
 use parser::utils::{diff_noun, hoon_to_noun, LineMap};
 
-pub static MARKDOWNJAM: &[u8] = include_bytes!(concat!(
-    env!("CARGO_MANIFEST_DIR"),
-    "/tests/markdown.jam"
-));
+pub static MARKDOWNJAM: &[u8] =
+    include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/tests/markdown.jam"));
 
 #[test]
 fn test_markdown() {
-    let source_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../../hoon/common/markdown/markdown.hoon");
+    let source_path =
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../hoon/common/markdown/markdown.hoon");
     let source = fs::read_to_string(&source_path)
         .unwrap_or_else(|err| panic!("read {source_path:?} failed: {err}"));
 

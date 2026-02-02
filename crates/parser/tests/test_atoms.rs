@@ -53,7 +53,10 @@ fn test_decimal_with_dots() {
         .unwrap();
 
     let mut actual_noun = hoon_to_noun(&mut slab, &res);
-    let atom = T(&mut slab, &[D(tas!(b"sand")), D(tas!(b"ud")), D(31415926535897)]);
+    let atom = T(
+        &mut slab,
+        &[D(tas!(b"sand")), D(tas!(b"ud")), D(31415926535897)],
+    );
     let mut expected_noun = T(&mut slab, &[D(tas!(b"tssg")), atom, D(0)]);
     assert!(slab_noun_equality(&mut actual_noun, &mut expected_noun));
 }
@@ -106,7 +109,10 @@ fn test_rs_float() {
         .unwrap();
 
     let mut actual_noun = hoon_to_noun(&mut slab, &res);
-    let atom = T(&mut slab, &[D(tas!(b"sand")), D(tas!(b"rs")), D(1078530011)]);
+    let atom = T(
+        &mut slab,
+        &[D(tas!(b"sand")), D(tas!(b"rs")), D(1078530011)],
+    );
     let mut expected_noun = T(&mut slab, &[D(tas!(b"tssg")), atom, D(0)]);
     assert!(slab_noun_equality(&mut actual_noun, &mut expected_noun));
 }
@@ -122,7 +128,10 @@ fn test_rd_float() {
         .unwrap();
 
     let mut actual_noun = hoon_to_noun(&mut slab, &res);
-    let atom = T(&mut slab, &[D(tas!(b"sand")), D(tas!(b"rd")), D(4614256656552045848)]);
+    let atom = T(
+        &mut slab,
+        &[D(tas!(b"sand")), D(tas!(b"rd")), D(4614256656552045848)],
+    );
     let mut expected_noun = T(&mut slab, &[D(tas!(b"tssg")), atom, D(0)]);
     assert!(slab_noun_equality(&mut actual_noun, &mut expected_noun));
 }
@@ -279,7 +288,10 @@ fn test_base64_number() {
 
     let mut actual_noun = hoon_to_noun(&mut slab, &res);
 
-    let atom = T(&mut slab, &[D(tas!(b"sand")), D(tas!(b"uw")), D(9315042280129358)]);
+    let atom = T(
+        &mut slab,
+        &[D(tas!(b"sand")), D(tas!(b"uw")), D(9315042280129358)],
+    );
     let mut expected_noun = T(&mut slab, &[D(tas!(b"tssg")), atom, D(0)]);
     assert!(slab_noun_equality(&mut actual_noun, &mut expected_noun));
 }
@@ -351,7 +363,10 @@ fn test_ipv6_address() {
 
     let mut actual_noun = hoon_to_noun(&mut slab, &res);
 
-    let atom = T(&mut slab, &[D(tas!(b"sand")), D(tas!(b"is")), D(123543654234)]);
+    let atom = T(
+        &mut slab,
+        &[D(tas!(b"sand")), D(tas!(b"is")), D(123543654234)],
+    );
     let mut expected_noun = T(&mut slab, &[D(tas!(b"tssg")), atom, D(0)]);
     assert!(slab_noun_equality(&mut actual_noun, &mut expected_noun));
 }
@@ -368,7 +383,10 @@ fn test_ipv4_address() {
 
     let mut actual_noun = hoon_to_noun(&mut slab, &res);
 
-    let atom = T(&mut slab, &[D(tas!(b"sand")), D(tas!(b"if")), D(3232235777)]);
+    let atom = T(
+        &mut slab,
+        &[D(tas!(b"sand")), D(tas!(b"if")), D(3232235777)],
+    );
     let mut expected_noun = T(&mut slab, &[D(tas!(b"tssg")), atom, D(0)]);
     assert!(slab_noun_equality(&mut actual_noun, &mut expected_noun));
 }
@@ -385,7 +403,10 @@ fn test_term() {
 
     let mut actual_noun = hoon_to_noun(&mut slab, &res);
 
-    let atom = T(&mut slab, &[D(tas!(b"rock")), D(tas!(b"tas")), D(1801678702)]);
+    let atom = T(
+        &mut slab,
+        &[D(tas!(b"rock")), D(tas!(b"tas")), D(1801678702)],
+    );
     let mut expected_noun = T(&mut slab, &[D(tas!(b"tssg")), atom, D(0)]);
     assert!(slab_noun_equality(&mut actual_noun, &mut expected_noun));
 }
@@ -428,7 +449,10 @@ fn test_knot() {
 
     let mut actual_noun = hoon_to_noun(&mut slab, &res);
 
-    let atom = T(&mut slab, &[D(tas!(b"sand")), D(tas!(b"ta")), D(1801678702)]);
+    let atom = T(
+        &mut slab,
+        &[D(tas!(b"sand")), D(tas!(b"ta")), D(1801678702)],
+    );
     let mut expected_noun = T(&mut slab, &[D(tas!(b"tssg")), atom, D(0)]);
     assert!(slab_noun_equality(&mut actual_noun, &mut expected_noun));
 }
@@ -489,8 +513,7 @@ fn test_empty_cord() {
 fn test_multiline_cord() {
     let mut slab: NounSlab<NockJammer> = NounSlab::new();
 
-    let multiline_cord =
-         "'''\n\
+    let multiline_cord = "'''\n\
           line one\n\
           line two\n\
           \"quotes\" are fine\n\
