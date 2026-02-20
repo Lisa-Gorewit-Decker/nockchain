@@ -21,9 +21,10 @@ This plan implements the target design:
 ## Current Risks To Address
 
 1. PMA metadata is updated in-memory each event but not durably ordered with poke acknowledgement.
-2. PMA GC copy path currently mutates from-space (forwarding pointers), which is unsafe for crash/fallback guarantees.
-3. Boot integrity checks are shallow today (metadata checks, not full graph checks).
-4. PMA persist currently disables checkpoint load path entirely instead of supporting checkpoint bootstrap-only mode.
+2. Boot integrity checks are shallow today (metadata checks, not full graph checks).
+3. PMA persist currently disables checkpoint load path entirely instead of supporting checkpoint bootstrap-only mode.
+
+Note: PMA GC copy path mutates from-space (forwarding pointers), but this is accepted. If a crash occurs mid-GC, recovery uses snapshot + event replay. Future GC changes are likely to be more invasive, not less, so a non-destructive copy is not worth the complexity.
 
 ## High-Level On-Disk Layout
 
@@ -179,20 +180,19 @@ If no snapshots exist:
 3. Mark it `ready` and active.
 4. Subsequent snapshots rotate only between `a` and `b`.
 
-## PMA / Copying Changes Required
+## PMA Changes Required
 
-1. Replace forwarding-pointer-based from-space mutation in PMA-to-PMA copy with a non-destructive copy map:
-   1. Use hash map keyed by source allocation offset.
-   2. Map to destination offset without mutating source noun memory.
-2. Keep existing forwarding-pointer stack->PMA copy only where source is ephemeral stack data.
-3. Add PMA sync methods:
-   1. `sync_used_data()` (range to `alloc_words`)
-   2. `sync_trailer()`
-   3. `sync_file()` (`fdatasync`/`fsync` on backing file)
+Add PMA sync methods for snapshot construction:
+
+1. `sync_used_data()` (range to `alloc_words`)
+2. `sync_trailer()`
+3. `sync_file()` (`fdatasync`/`fsync` on backing file)
 
 ## Integrity Verification
 
-## Snapshot-level checks (boot + post-write)
+## Snapshot-level checks
+
+### Fast checks (post-write)
 
 1. Manifest decode + checksum + version.
 2. PMA trailer magic/version/data_words/alloc bounds.
@@ -202,6 +202,11 @@ If no snapshots exist:
    1. direct atom OR
    2. offset-form indirect/cell within bounds.
 6. `cold_offset` in range and decodable.
+
+### Full verification (boot recovery)
+
+When recovering from a snapshot (an already-exceptional circumstance), run the full structural walk in addition to the fast checks above:
+
 7. Structural walk from root using `PmaDirectReader` (or `jam_pma_to_writer` to sink) must complete without:
    1. out-of-bounds offsets
    2. invalid noun tags
@@ -305,45 +310,38 @@ Store a `schema_version` key in the `meta` table. On open, check the current ver
 3. Implement structural verifier using `PmaDirectReader` traversal.
 4. Add `verify_snapshot(slot)` function that executes full check suite.
 
-## Phase 4: Non-Destructive PMA Copy
-
-1. Replace destructive from-space forwarding-pointer PMA copy with non-mutating map-based copy.
-2. Gate old path behind temporary debug flag for bisecting.
-3. Add tests:
-   1. source slab unchanged after copy
-   2. crash-injection simulations leave source valid
-
-## Phase 5: Snapshot Builder (Epoch + A/B)
+## Phase 4: Snapshot Builder (Epoch + A/B)
 
 1. Implement snapshot manager:
    1. create epoch if absent
    2. rotate between `a` and `b`
 2. Implement durable write ordering:
-   1. build target PMA
-   2. verify target
-   3. sync data + file
+   1. kernel zero-copy active PMA to target snapshot
+   2. verify target (fast checks)
+   3. fsync snapshot file
    4. write+fsync manifest
    5. DB update transaction
-   6. switch active runtime PMA
 3. Record snapshot rows in SQLite.
 
-## Phase 6: Boot Recovery Pipeline
+## Phase 5: Boot Recovery Pipeline
 
 1. Candidate selection logic (active -> other -> epoch).
-2. Full verify each candidate.
-3. Replay missing events from SQLite.
-4. Fallback to checkpoint/state-jam only if no valid snapshot.
-5. After fallback boot, create/recreate epoch snapshot.
+2. Full verify each candidate (fast checks + structural walk).
+3. Kernel zero-copy snapshot to operative PMA slab, move old slab to `corrupted_pma/`.
+4. Replay missing events from SQLite.
+5. Fallback to checkpoint/state-jam only if no valid snapshot.
+6. After fallback boot, create/recreate epoch snapshot.
 
-## Phase 7: Migration from Current PMA Persist
+## Phase 6: Migration from Current PMA Persist
 
 1. If old `*.meta` exists and new DB has no snapshots:
    1. attempt old PMA load
    2. verify and register as epoch snapshot in new DB
 2. Keep checkpoint import path available regardless of PMA persistence mode.
 3. Keep old files untouched until first successful new snapshot commit.
+4. The new snapshot load path must **skip the `pma_base` validation** (`form.rs:1392-1397`). All PMA data is already base-address-agnostic (offset-form), and snapshots are zero-copied to the operative slab location where the base address is determined by the current process's mmap.
 
-## Phase 8: Hardening + Tests
+## Phase 7: Hardening + Tests
 
 1. Unit tests:
    1. schema migration
@@ -373,54 +371,13 @@ It does not mean PMA snapshot has advanced. PMA advancement is periodic and reco
 3. Boot always verifies snapshot before using it.
 4. No log truncation in this phase.
 
-## Open Discussion Items
+## Implementation Notes
 
-### D1: `poke_swap` (crud recovery) and event logging
+### `poke_swap` (crud recovery) and event capture
 
-When `do_poke` fails, `poke_swap` constructs a **completely different job noun**: a crud poke with wire `[0 %arvo 0]`, the goof (error), and the original poke's input (minus event_num and wire). Critically, both the original poke and the crud poke attempt to use the **same event number** (`event_num + 1`), because `event_update` is only called on success — the counter hasn't advanced when `poke_swap` runs.
+When `do_poke` fails, `poke_swap` constructs a different job noun (a crud poke) and retries. Both the original and crud poke use the same event number (since `event_update` only runs on success). `play_list` (replay) has no `poke_swap` — it fails immediately on error.
 
-For deterministic replay, the logged `job_jam` must be the noun that **actually produced the accepted state transition**. If the original poke fails and the crud poke succeeds, the crud poke is what gets logged. If both fail, nothing is logged (no state transition occurred).
-
-Additionally, `play_list` (the replay function) has **no equivalent of `poke_swap`** — it fails immediately on any error. This means replay of a crud poke must succeed directly via `soft(ovo, POKE_AXIS)` without needing error recovery, which should hold as long as the logged noun is the exact crud poke that succeeded during live execution.
-
-**Questions to resolve:**
-1. Should the `job_jam` capture happen inside `do_poke`/`poke_swap` at the point where `event_update` is called (i.e., capture the noun that actually succeeded)?
-2. Does the wire metadata logged to SQLite (`wire_source`, `wire_version`, `wire_tags_json`) need to reflect the crud wire `[0 %arvo 0]` rather than the original poke's wire?
-3. Should we log both the original failed poke and the crud recovery (as separate records, one marked as failed) for observability?
-
-### D2: Non-destructive PMA copy — scope and approach
-
-Phase 4 proposes replacing the forwarding-pointer-based PMA-to-PMA copy with a hash-map-based copy. This change affects the **GC copying compactor** (`copy_from_pma` in `pma.rs`), which uses forwarding pointers set in from-space (overwriting the size field of indirect atoms and head field of cells).
-
-The forwarding pointer approach is O(1) per noun with zero extra memory per noun. A hash map keyed by **source PMA offset** (a u32 integer key, cheap to hash) would be the natural replacement — no structural comparison needed, just an integer lookup.
-
-**Questions to resolve:**
-1. Is this change actually needed for snapshot safety, given that snapshots now use kernel zero-copy of the PMA file rather than noun-by-noun copy? The forwarding pointer mutation only affects the GC compactor's from-space, not snapshots.
-2. If still needed: should the old forwarding-pointer path be retained as a non-default option (not just a debug flag) for performance-sensitive workloads?
-3. What is the expected size overhead of the hash map? For N allocated nouns, it's roughly `N * (sizeof(u32 key) + sizeof(u32 value) + hash overhead)` — manageable but non-trivial for very large states.
-
-### D3: `structure_blake3` — optional vs. mandatory
-
-`used_blake3` verifies the raw byte content of the PMA used range but cannot detect structural issues: invalid noun tags, out-of-bounds internal offsets, cycles, forwarding pointers, or invalid indirect atom sizes. Only a structural walk (via `PmaDirectReader` traversal or `jam_pma_to_writer` to sink) can catch these.
-
-The existing `PmaDirectReader` and `classify_pma_noun` already detect: out-of-bounds offsets, invalid tags, forwarding pointers, and invalid indirect atom sizes. A full structural walk is O(n) in allocated words and requires page cache I/O, but can be done on the snapshot file without blocking the serf thread.
-
-**Questions to resolve:**
-1. Should the structural walk always run during verification (boot + post-snapshot-write) even if `structure_blake3` is not persisted? This gives the safety guarantee without the cost of hashing.
-2. If `structure_blake3` is persisted, it enables fast re-verification (just recompute and compare). Is the jam-to-sink cost acceptable for every snapshot? For a 100MB PMA, this is on the order of seconds.
-3. Should boot verification be tiered: fast checks (manifest + `used_blake3`) first, then structural walk only if the fast checks pass?
-
-### D4: `pma_base` independence during snapshot load
-
-The plan says not to persist `pma_base` as an integrity requirement, and that `kernel_root_raw` must be offset-form or direct. The current PMA load path (`form.rs:1392-1397`) rejects any snapshot where `pma_base` doesn't match the current arena base.
-
-The underlying PMA data is already base-address-agnostic: all internal references use offset-form (relative to base), `cold_offset` is a word offset, and `copy_to_pma`/`copy_from_pma` both produce offset-form results. The `pma_base` check exists as a defensive guard, not because the data format requires it.
-
-For the new snapshot load path, the `pma_base` validation should be removed (or made a warning). Since snapshots are kernel-zero-copied to the operative slab location and loaded from there, the base address will be determined by the current process's mmap, not by the snapshot's origin.
-
-**Questions to resolve:**
-1. Are there any code paths that store pointer-form nouns in the PMA rather than offset-form? (Based on code review: no, but `preserve_event_update_leftovers` "no longer retags survivors into offsets" per the comment at `form.rs:2301` — what does this mean for the raw `kernel_state_raw` value stored in metadata?)
-2. Should the snapshot manifest include the original `pma_base` as informational metadata (not an integrity check) for debugging?
+The `job_jam` capture must happen at the point `event_update` is called, inside whichever code path succeeded (`do_poke` success or `poke_swap` success). This ensures the logged noun is exactly what produced the accepted state transition, and replay can feed it directly through `soft(ovo, POKE_AXIS)` without needing error recovery.
 
 ## Future Extension (Explicitly Deferred)
 
