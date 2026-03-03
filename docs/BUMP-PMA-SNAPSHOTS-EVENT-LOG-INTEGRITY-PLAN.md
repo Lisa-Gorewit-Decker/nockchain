@@ -7,7 +7,7 @@ This plan implements the target design:
 1. PMA remains the primary runtime image.
 2. Add an append-only SQLite event log (no truncation yet).
 3. Create an immutable `epoch` snapshot on first boot (or first migration boot).
-4. Maintain two rotating snapshots (`A`/`B`) that leapfrog on each snapshot update.
+4. Maintain up to two rotating snapshots named by timestamp (`snap-${TIMESTAMP}.pma`), deleting the oldest (third non-epoch) after each new snapshot is durably committed to the event log.
 5. Boot by loading latest valid PMA snapshot first, then replaying missing events from SQLite.
 6. Add explicit integrity metadata + verification + deterministic recovery fallbacks.
 
@@ -31,12 +31,12 @@ Note: PMA GC copy path mutates from-space (forwarding pointers), but this is acc
 Under `data_dir`:
 
 1. `pma/epoch.pma`
-2. `pma/snap-a.pma`
-3. `pma/snap-b.pma`
-4. `pma/epoch.manifest`
-5. `pma/snap-a.manifest`
-6. `pma/snap-b.manifest`
-7. `event-log.sqlite3`
+2. `pma/snap-${TIMESTAMP}.pma` (up to two non-epoch snapshots at a time)
+3. `pma/epoch.manifest`
+4. `pma/snap-${TIMESTAMP}.manifest` (one per snapshot)
+5. `event-log.sqlite3`
+
+`TIMESTAMP` is a monotonic identifier (e.g. Unix millis or `%Y%m%d%H%M%S%3f`) embedded in the filename at creation time. The event log SQLite `snapshots` table is the authoritative record of which snapshot files exist, which event IDs they correspond to, and which is newest.
 
 Keep existing `checkpoints/*.chkjam` for bootstrap compatibility (read/import path only; no background saver required).
 
@@ -69,8 +69,7 @@ CREATE INDEX IF NOT EXISTS events_event_num_idx ON events(event_num);
 
 CREATE TABLE IF NOT EXISTS snapshots (
   snapshot_id INTEGER PRIMARY KEY AUTOINCREMENT,
-  kind TEXT NOT NULL CHECK(kind IN ('epoch','a','b')),
-  generation INTEGER NOT NULL,                 -- monotonically increasing per kind
+  kind TEXT NOT NULL CHECK(kind IN ('epoch','rotating')),
   state TEXT NOT NULL CHECK(state IN ('writing','ready','failed','retired')),
   event_num INTEGER NOT NULL,
   pma_path TEXT NOT NULL,
@@ -83,10 +82,11 @@ CREATE TABLE IF NOT EXISTS snapshots (
   created_at_ms INTEGER NOT NULL,
   activated_at_ms INTEGER,
   base_snapshot_id INTEGER,                    -- optional lineage (epoch or previous active)
-  UNIQUE(kind, generation)
+  timestamp_tag TEXT NOT NULL,                 -- timestamp embedded in filename
+  UNIQUE(kind, timestamp_tag)
 );
 
-CREATE INDEX IF NOT EXISTS snapshots_kind_gen_idx ON snapshots(kind, generation DESC);
+CREATE INDEX IF NOT EXISTS snapshots_kind_ts_idx ON snapshots(kind, timestamp_tag DESC);
 CREATE INDEX IF NOT EXISTS snapshots_event_idx ON snapshots(event_num DESC);
 ```
 
@@ -104,8 +104,8 @@ Fields:
 
 1. `magic`
 2. `version`
-3. `kind` (`epoch|a|b`)
-4. `generation`
+3. `kind` (`epoch|rotating`)
+4. `timestamp_tag`
 5. `ker_hash`
 6. `event_num`
 7. `pma_words`
@@ -158,18 +158,16 @@ Periodic (configurable interval or event count threshold), executed at event bou
 
 Snapshot creation uses a **kernel syscall zero-copy** of the PMA slab and meta file (e.g. `copy_file_range`, `FICLONE`/reflink where available), not a noun-by-noun traversal. This keeps snapshot creation fast and avoids blocking the serf thread for extended periods. The GC copying compactor is a separate mechanism for compacting live data.
 
-1. Select target slot:
-   1. `a` if last written was `b`
-   2. `b` if last written was `a`
+1. Generate a new timestamp tag for the snapshot filename (e.g. `snap-1709472000000.pma`).
 2. `msync` active PMA used range and trailer (ensure backing file is up to date).
-3. Kernel zero-copy active PMA file to target snapshot file.
-4. Copy active meta file to target snapshot manifest (or write manifest from current metadata).
+3. Kernel zero-copy active PMA file to target snapshot file (`snap-${TIMESTAMP}.pma`).
+4. Write manifest from current metadata to `snap-${TIMESTAMP}.manifest`.
 5. Compute `used_blake3` over target snapshot used range `[0, alloc_words * 8)`.
 6. Optionally compute `structure_blake3` by streaming jam from target root to `io::sink`.
 7. `fsync` target snapshot file.
 8. Write manifest temp file -> `fsync(temp)` -> `rename` -> `fsync(parent dir)`.
-9. Insert/update SQLite `snapshots` row to `ready` in a transaction.
-10. Mark active snapshot in `meta` (`active_snapshot_id`, `active_kind`, `active_generation`).
+9. Insert SQLite `snapshots` row with `state = 'ready'` in a transaction. Mark active snapshot in `meta` (`active_snapshot_id`). `COMMIT`.
+10. After durable commit: if there are now more than two non-epoch `ready` snapshots, delete the oldest (by `timestamp_tag`) — remove its PMA and manifest files, then mark its row `retired` in SQLite.
 
 ### Epoch snapshot creation
 
@@ -178,7 +176,7 @@ If no snapshots exist:
 1. Boot from checkpoint/state-jam/current PMA migration source.
 2. Create `epoch` snapshot with event number equal to current boot event.
 3. Mark it `ready` and active.
-4. Subsequent snapshots rotate only between `a` and `b`.
+4. Subsequent snapshots use timestamp-based naming (`snap-${TIMESTAMP}.pma`), keeping at most two non-epoch snapshots.
 
 ## PMA Changes Required
 
@@ -223,14 +221,14 @@ When recovering from a snapshot (an already-exceptional circumstance), run the f
 
 ## Orphan file cleanup (boot)
 
-On boot, detect and clean up PMA snapshot files that have no corresponding `ready` row in the SQLite `snapshots` table. This handles the case where the process crashed after creating a target PMA file but before the manifest was written or the DB row was committed. Move orphan files to `corrupted_pma/` rather than deleting, for later analysis.
+On boot, scan the `pma/` directory for `snap-*.pma` and `snap-*.manifest` files that have no corresponding `ready` row in the SQLite `snapshots` table. This handles two cases: (1) the process crashed after creating a target PMA file but before the manifest was written or the DB row was committed, and (2) the process crashed after the DB commit but before the oldest snapshot was deleted (leaving three non-epoch snapshots temporarily). In case (2), simply complete the deferred deletion. In case (1), move orphan files to `corrupted_pma/` for later analysis.
 
 ## Boot Selection + Recovery/Fallback Matrix
 
-Candidate order:
+Candidate order (determined from SQLite `snapshots` table):
 
-1. Active snapshot from SQLite/meta.
-2. Other rotating snapshot.
+1. Active snapshot (newest `ready` rotating snapshot by `timestamp_tag`).
+2. Other rotating snapshot (second-newest `ready` rotating snapshot).
 3. Epoch snapshot.
 4. Checkpoint/state-jam bootstrap.
 
@@ -310,22 +308,24 @@ Store a `schema_version` key in the `meta` table. On open, check the current ver
 3. Implement structural verifier using `PmaDirectReader` traversal.
 4. Add `verify_snapshot(slot)` function that executes full check suite.
 
-## Phase 4: Snapshot Builder (Epoch + A/B)
+## Phase 4: Snapshot Builder (Epoch + Rotating)
 
 1. Implement snapshot manager:
    1. create epoch if absent
-   2. rotate between `a` and `b`
+   2. create new `snap-${TIMESTAMP}.pma` snapshots
+   3. after durable SQLite commit, delete oldest (third non-epoch) snapshot
 2. Implement durable write ordering:
-   1. kernel zero-copy active PMA to target snapshot
+   1. kernel zero-copy active PMA to target `snap-${TIMESTAMP}.pma`
    2. verify target (fast checks)
    3. fsync snapshot file
    4. write+fsync manifest
-   5. DB update transaction
+   5. DB insert + active-snapshot update in one transaction, `COMMIT`
+   6. delete oldest non-epoch snapshot files and mark row `retired`
 3. Record snapshot rows in SQLite.
 
 ## Phase 5: Boot Recovery Pipeline
 
-1. Candidate selection logic (active -> other -> epoch).
+1. Candidate selection logic from SQLite (newest rotating -> second-newest rotating -> epoch).
 2. Full verify each candidate (fast checks + structural walk).
 3. Kernel zero-copy snapshot to operative PMA slab, move old slab to `corrupted_pma/`.
 4. Replay missing events from SQLite.
@@ -351,7 +351,7 @@ Store a `schema_version` key in the `meta` table. On open, check the current ver
    1. crash before/after SQLite commit
    2. crash mid-snapshot build
    3. corrupted active snapshot fallback to alternate
-   4. corrupted both A/B fallback to epoch
+   4. corrupted both rotating snapshots fallback to epoch
 3. Property tests:
    1. replay produces same end state as live run for deterministic test streams.
 
