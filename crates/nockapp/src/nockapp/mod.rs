@@ -9,7 +9,6 @@ pub mod wire;
 
 use std::future::Future;
 use std::io;
-use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
@@ -191,13 +190,13 @@ impl<J: Jammer + Send + 'static> NockApp<J> {
 
     /// This constructs a Tokio interval, even though it doesn't look like it, a Tokio runtime is _required_.
     pub async fn new<F, U, E>(
-        kernel_from_checkpoint: F,
-        snapshot_path: &PathBuf,
+        kernel_from_boot: F,
+        saver: Saver<J>,
         save_interval_duration: Option<Duration>,
         checkpoint_mode: CheckpointMode,
     ) -> Result<Self, NockAppError>
     where
-        F: FnOnce(Option<SaveableCheckpoint>) -> U,
+        F: FnOnce() -> U,
         U: Future<Output = Result<Kernel<SaveableCheckpoint>, E>>,
         NockAppError: From<E>,
     {
@@ -220,28 +219,12 @@ impl<J: Jammer + Send + 'static> NockApp<J> {
         } else {
             Arc::new(NockAppMetrics::default())
         };
-        let pma_persist_env = std::env::var_os(PMA_PERSIST_ENV).is_some();
-        let mut checkpoint_mode = checkpoint_mode;
-        if pma_persist_env && checkpoint_mode.checkpointing_enabled() {
-            checkpoint_mode = CheckpointMode::Disabled;
-        }
         if !checkpoint_mode.checkpointing_enabled() {
-            if pma_persist_env {
-                info!("{PMA_PERSIST_ENV} enabled; checkpointing disabled");
-            } else {
-                info!("Checkpointing disabled; background saves off");
-            }
+            info!("Checkpointing disabled; background saves off");
         }
 
-        let (saver, checkpoint) = if checkpoint_mode.checkpointing_enabled() {
-            Saver::<J>::try_load(snapshot_path, Some(metrics.clone()))
-                .await
-                .expect("Failed to set up snapshotting")
-        } else {
-            (Saver::new_empty(snapshot_path), None)
-        };
         let save_mutex = Arc::new(Mutex::new(saver));
-        let mut kernel = kernel_from_checkpoint(checkpoint).await?;
+        let mut kernel = kernel_from_boot().await?;
         // important: we are tracking this separately here because
         // what matters is the last poke *we* received an ack for. Using
         // the Arc in the serf would result in a race condition!

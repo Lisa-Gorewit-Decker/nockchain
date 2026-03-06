@@ -9,7 +9,7 @@ use nockvm::trace::{
     TracingBackend,
 };
 use tokio::fs;
-use tracing::{debug, info, Level, Subscriber};
+use tracing::{debug, info, warn, Level, Subscriber};
 use tracing_subscriber::fmt::format::Writer;
 use tracing_subscriber::fmt::{FmtContext, FormatEvent, FormatFields};
 use tracing_subscriber::layer::SubscriberExt;
@@ -19,10 +19,10 @@ use tracing_subscriber::{fmt, EnvFilter, Layer};
 
 use crate::event_log::EventLogConfig;
 use crate::export::ExportedState;
-use crate::kernel::form::{Kernel, PmaConfig};
+use crate::kernel::form::{inspect_existing_pma, ExistingPmaStatus, Kernel, PmaConfig};
 use crate::nockapp::PMA_PERSIST_ENV;
 use crate::noun::slab::{Jammer, NounSlab};
-use crate::save::SaveableCheckpoint;
+use crate::save::{SaveableCheckpoint, Saver};
 use crate::utils::error::{CrownError, ExternalError};
 use crate::utils::{
     NOCK_STACK_SIZE, NOCK_STACK_SIZE_HUGE, NOCK_STACK_SIZE_LARGE, NOCK_STACK_SIZE_MEDIUM,
@@ -35,6 +35,13 @@ const DEFAULT_SAVE_INTERVAL_STR: &str = "120000";
 const DEFAULT_GC_INTERVAL_STR: &str = "none";
 
 const DEFAULT_LOG_FILTER: &str = "info";
+
+#[derive(Debug)]
+enum BootSource {
+    Pma { path: PathBuf, event_num: u64 },
+    Checkpoint { path: PathBuf, event_num: u64 },
+    Fresh,
+}
 
 #[derive(Debug, Clone, ValueEnum)]
 pub enum NockStackSize {
@@ -207,7 +214,86 @@ fn parse_save_interval(input: &str) -> Result<u64, String> {
 
 #[cfg(test)]
 mod tests {
-    use super::parse_save_interval;
+    use std::fs;
+    use std::path::Path;
+    use std::sync::atomic::Ordering;
+
+    use nockvm::noun::{NounSpace, D};
+    use nockvm_macros::tas;
+    use tempfile::TempDir;
+    use tracing_test::traced_test;
+
+    use super::{default_boot_cli, parse_save_interval, setup_, SetupResult};
+    use crate::nockapp::wire::{SystemWire, Wire};
+    use crate::noun::slab::{NockJammer, NounSlab};
+    use crate::test_support::TestArena;
+    use crate::{CheckpointMode, NockApp};
+
+    fn load_test_jam_bytes() -> Vec<u8> {
+        fs::read(
+            Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("test-jams")
+                .join("test-ker.jam"),
+        )
+        .expect("read test kernel")
+    }
+
+    fn inc_poke() -> NounSlab {
+        let mut slab = NounSlab::new();
+        let space = NounSpace::empty();
+        slab.copy_into(D(tas!(b"inc")), &space);
+        slab
+    }
+
+    async fn setup_test_app(
+        data_dir: &Path,
+        pma_persist: bool,
+        checkpoint_mode: CheckpointMode,
+    ) -> NockApp<NockJammer> {
+        let jam = load_test_jam_bytes();
+        let mut cli = default_boot_cli(false);
+        cli.data_dir = Some(data_dir.to_path_buf());
+        cli.save_interval = Some(0);
+        cli.gc_interval = Some(0);
+        cli.checkpoint_mode = checkpoint_mode;
+        cli.pma_persist = pma_persist;
+        match setup_::<NockJammer>(&jam, cli, &[], "boot-test", None)
+            .await
+            .expect("setup boot test app")
+        {
+            SetupResult::App(app) => app,
+            SetupResult::ExportedState => panic!("unexpected export"),
+        }
+    }
+
+    async fn poke_inc(app: &NockApp<NockJammer>) {
+        app.kernel
+            .poke(SystemWire.to_wire(), inc_poke())
+            .await
+            .expect("poke inc");
+    }
+
+    async fn save_app(app: &mut NockApp<NockJammer>) {
+        app.tasks.close();
+        let permit = app.save_mutex.clone().lock_owned().await;
+        app.save(permit).await.expect("save checkpoint");
+        app.tasks.wait().await;
+        app.tasks.reopen();
+    }
+
+    async fn stop_app(app: &mut NockApp<NockJammer>) {
+        app.kernel.serf.stop().await.expect("stop kernel");
+    }
+
+    fn clear_pma_files(data_dir: &Path) {
+        let pma_dir = data_dir.join("pma");
+        for file_name in ["0.pma", "1.pma", "0.meta", "1.meta"] {
+            let path = pma_dir.join(file_name);
+            if path.exists() {
+                fs::remove_file(path).expect("remove PMA artifact");
+            }
+        }
+    }
 
     #[test]
     fn parse_save_interval_none_variants() {
@@ -247,6 +333,67 @@ mod tests {
         cli.gc_interval = Some(5000);
         assert_eq!(cli.normalized_gc_interval(), Some(5000));
     }
+
+    #[tokio::test(flavor = "current_thread")]
+    #[traced_test]
+    #[cfg_attr(miri, ignore)]
+    async fn bootstraps_pma_from_checkpoint_once() {
+        let _test_arena = TestArena::default();
+        let temp = TempDir::new().expect("tempdir");
+        let data_dir = temp.path().join("bootstrapped-pma");
+
+        let mut first = setup_test_app(&data_dir, false, CheckpointMode::Original).await;
+        poke_inc(&first).await;
+        save_app(&mut first).await;
+        stop_app(&mut first).await;
+        drop(first);
+        clear_pma_files(&data_dir);
+
+        let mut second = setup_test_app(&data_dir, true, CheckpointMode::Original).await;
+        assert_eq!(second.kernel.serf.event_number.load(Ordering::SeqCst), 1);
+        assert!(
+            data_dir.join("pma").join("0.meta").exists()
+                || data_dir.join("pma").join("1.meta").exists()
+        );
+        poke_inc(&second).await;
+        assert_eq!(second.kernel.serf.event_number.load(Ordering::SeqCst), 2);
+        stop_app(&mut second).await;
+        drop(second);
+
+        let mut third = setup_test_app(&data_dir, true, CheckpointMode::Original).await;
+        assert_eq!(third.kernel.serf.event_number.load(Ordering::SeqCst), 2);
+        stop_app(&mut third).await;
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    #[traced_test]
+    #[cfg_attr(miri, ignore)]
+    async fn valid_pma_skips_corrupt_checkpoint_files() {
+        let _test_arena = TestArena::default();
+        let temp = TempDir::new().expect("tempdir");
+        let data_dir = temp.path().join("skip-corrupt-checkpoint");
+
+        let mut first = setup_test_app(&data_dir, false, CheckpointMode::Original).await;
+        poke_inc(&first).await;
+        save_app(&mut first).await;
+        stop_app(&mut first).await;
+        drop(first);
+        clear_pma_files(&data_dir);
+
+        let mut second = setup_test_app(&data_dir, true, CheckpointMode::Original).await;
+        poke_inc(&second).await;
+        assert_eq!(second.kernel.serf.event_number.load(Ordering::SeqCst), 2);
+        stop_app(&mut second).await;
+        drop(second);
+
+        let checkpoints_dir = data_dir.join("checkpoints");
+        fs::write(checkpoints_dir.join("0.chkjam"), b"corrupt checkpoint 0").expect("corrupt chk0");
+        fs::write(checkpoints_dir.join("1.chkjam"), b"corrupt checkpoint 1").expect("corrupt chk1");
+
+        let mut third = setup_test_app(&data_dir, true, CheckpointMode::Original).await;
+        assert_eq!(third.kernel.serf.event_number.load(Ordering::SeqCst), 2);
+        stop_app(&mut third).await;
+    }
 }
 
 /// Result of setting up a NockApp
@@ -255,6 +402,132 @@ pub enum SetupResult<J> {
     App(NockApp<J>),
     /// State was exported successfully
     ExportedState,
+}
+
+struct BootSelection<J> {
+    saver: Saver<J>,
+    checkpoint: Option<SaveableCheckpoint>,
+    pma_open_existing: bool,
+}
+
+async fn select_boot_state<J: Jammer>(
+    jams_dir: &PathBuf,
+    kernel_bytes: &[u8],
+    pma_persist: bool,
+    pma_path_0: &PathBuf,
+    pma_path_1: &PathBuf,
+) -> Result<BootSelection<J>, CrownError<ExternalError>> {
+    let existing_pma = if pma_persist {
+        Some(inspect_existing_pma(pma_path_0, pma_path_1, kernel_bytes))
+    } else {
+        None
+    };
+
+    if let Some(ExistingPmaStatus::Valid { path, event_num }) = existing_pma.as_ref() {
+        let (saver, checkpoint_summary) = match Saver::<J>::resume(jams_dir).await {
+            Ok(result) => result,
+            Err(err) => {
+                warn!(
+                    "checkpoint inspection failed while booting from PMA; continuing without checkpoint metadata: {err}"
+                );
+                (Saver::new_empty(jams_dir), None)
+            }
+        };
+        let boot_source = BootSource::Pma {
+            path: path.clone(),
+            event_num: *event_num,
+        };
+        match &boot_source {
+            BootSource::Pma { path, event_num } => {
+                info!(
+                    "Boot source: PMA path={} event_num={}",
+                    path.display(),
+                    event_num
+                );
+            }
+            _ => unreachable!(),
+        }
+        if let Some(summary) = checkpoint_summary.as_ref() {
+            info!(
+                "Checkpoint at {} event_num={} checksum={} is available but skipped because a valid PMA is authoritative",
+                summary.path.display(),
+                summary.event_num,
+                summary.checksum
+            );
+        }
+        return Ok(BootSelection {
+            saver,
+            checkpoint: None,
+            pma_open_existing: true,
+        });
+    }
+
+    match existing_pma.as_ref() {
+        Some(ExistingPmaStatus::Invalid { path, reason }) => {
+            warn!("Ignoring invalid PMA at {}: {}", path.display(), reason);
+        }
+        Some(ExistingPmaStatus::Missing) => {
+            info!("No valid PMA found; checking checkpoint bootstrap");
+        }
+        None => {}
+        Some(ExistingPmaStatus::Valid { .. }) => unreachable!(),
+    }
+
+    let (saver, checkpoint_summary) =
+        Saver::<J>::resume(jams_dir).await.map_err(|err| match existing_pma.as_ref() {
+            Some(ExistingPmaStatus::Invalid { path, reason }) => CrownError::Unknown(format!(
+                "checkpoint bootstrap inspection failed after PMA validation failed for {}: {} ({err})",
+                path.display(),
+                reason
+            )),
+            Some(ExistingPmaStatus::Missing) => {
+                CrownError::Unknown(format!("checkpoint bootstrap inspection failed: {err}"))
+            }
+            None => CrownError::Unknown(format!("checkpoint bootstrap inspection failed: {err}")),
+            Some(ExistingPmaStatus::Valid { .. }) => unreachable!(),
+        })?;
+
+    if let Some(summary) = checkpoint_summary {
+        let checkpoint = Saver::<J>::load_latest::<SaveableCheckpoint>(jams_dir, None)
+            .await
+            .map_err(|err| {
+                CrownError::Unknown(format!(
+                    "failed to load checkpoint bootstrap from {}: {err}",
+                    summary.path.display()
+                ))
+            })?
+            .expect("checkpoint summary should correspond to a checkpoint");
+        let boot_source = BootSource::Checkpoint {
+            path: summary.path.clone(),
+            event_num: summary.event_num,
+        };
+        match &boot_source {
+            BootSource::Checkpoint { path, event_num } => {
+                info!(
+                    "Boot source: checkpoint path={} event_num={}",
+                    path.display(),
+                    event_num
+                );
+            }
+            _ => unreachable!(),
+        }
+        return Ok(BootSelection {
+            saver,
+            checkpoint: Some(checkpoint),
+            pma_open_existing: false,
+        });
+    }
+
+    let boot_source = BootSource::Fresh;
+    match boot_source {
+        BootSource::Fresh => info!("Boot source: fresh kernel state"),
+        _ => unreachable!(),
+    }
+    Ok(BootSelection {
+        saver,
+        checkpoint: None,
+        pma_open_existing: false,
+    })
 }
 
 pub fn default_boot_cli(new: bool) -> Cli {
@@ -510,7 +783,7 @@ pub async fn setup_<J: Jammer + Send + 'static>(
         if pma_persist_env {
             info!("{PMA_PERSIST_ENV} enabled; PMA persistence active");
         } else {
-            info!("PMA persistence enabled via CLI; checkpoints disabled");
+            info!("PMA persistence enabled via CLI; background checkpoint saves disabled");
         }
     }
     let mut checkpoint_mode = cli.checkpoint_mode;
@@ -540,14 +813,20 @@ pub async fn setup_<J: Jammer + Send + 'static>(
     let stack_size = cli.stack_size.clone();
     let trace_opts = cli.trace_opts.clone();
     let event_log_path_for_kernel = event_log_path.clone();
+    let boot_selection =
+        select_boot_state::<J>(&jams_dir, jam, pma_persist, &pma_path_0, &pma_path_1).await?;
+    let saver = boot_selection.saver;
+    let checkpoint = boot_selection.checkpoint;
+    let pma_open_existing = boot_selection.pma_open_existing;
 
-    let kernel_f = async move |checkpoint| {
+    let kernel_f = async move || {
+        let mut checkpoint = checkpoint;
         let pma_config = |words| {
             Some(PmaConfig {
                 path_0: pma_path_0.clone(),
                 path_1: pma_path_1.clone(),
                 words,
-                open_existing: pma_persist,
+                open_existing: pma_open_existing,
                 gc_interval,
             })
         };
@@ -558,7 +837,7 @@ pub async fn setup_<J: Jammer + Send + 'static>(
             NockStackSize::Tiny => {
                 Kernel::load_with_hot_state_tiny_with_event_log(
                     jam,
-                    checkpoint,
+                    checkpoint.take(),
                     hot_state,
                     test_jets,
                     trace_opts.clone(),
@@ -570,7 +849,7 @@ pub async fn setup_<J: Jammer + Send + 'static>(
             NockStackSize::Small => {
                 Kernel::load_with_hot_state_small_with_event_log(
                     jam,
-                    checkpoint,
+                    checkpoint.take(),
                     hot_state,
                     test_jets,
                     trace_opts.clone(),
@@ -582,7 +861,7 @@ pub async fn setup_<J: Jammer + Send + 'static>(
             NockStackSize::Normal => {
                 Kernel::load_with_hot_state_with_event_log(
                     jam,
-                    checkpoint,
+                    checkpoint.take(),
                     hot_state,
                     test_jets,
                     trace_opts.clone(),
@@ -594,7 +873,7 @@ pub async fn setup_<J: Jammer + Send + 'static>(
             NockStackSize::Medium => {
                 Kernel::load_with_hot_state_medium_with_event_log(
                     jam,
-                    checkpoint,
+                    checkpoint.take(),
                     hot_state,
                     test_jets,
                     trace_opts.clone(),
@@ -606,7 +885,7 @@ pub async fn setup_<J: Jammer + Send + 'static>(
             NockStackSize::Large => {
                 Kernel::load_with_hot_state_large_with_event_log(
                     jam,
-                    checkpoint,
+                    checkpoint.take(),
                     hot_state,
                     test_jets,
                     trace_opts.clone(),
@@ -618,7 +897,7 @@ pub async fn setup_<J: Jammer + Send + 'static>(
             NockStackSize::Huge => {
                 Kernel::load_with_hot_state_huge_with_event_log(
                     jam,
-                    checkpoint,
+                    checkpoint.take(),
                     hot_state,
                     test_jets,
                     trace_opts,
@@ -632,7 +911,7 @@ pub async fn setup_<J: Jammer + Send + 'static>(
         res
     };
 
-    let app: NockApp<J> = NockApp::new(kernel_f, &jams_dir, save_interval, checkpoint_mode).await?;
+    let app: NockApp<J> = NockApp::new(kernel_f, saver, save_interval, checkpoint_mode).await?;
 
     if let Some(export_path) = cli.export_state_jam.clone() {
         export_kernel_state(&app.kernel, &export_path).await?;

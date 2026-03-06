@@ -91,16 +91,38 @@ pub struct Saver<J = NockJammer> {
     _phantom: std::marker::PhantomData<J>,
 }
 
+#[derive(Clone, Debug)]
+pub(crate) struct CheckpointSummary {
+    pub path: PathBuf,
+    pub event_num: u64,
+    pub checksum: Hash,
+}
+
+struct SaverState {
+    save_to_next: WhichSnapshot,
+    last_event_num: u64,
+}
+
 impl<J> Saver<J> {
     pub(crate) fn new_empty(path: &PathBuf) -> Self {
+        Self::from_state(
+            path,
+            SaverState {
+                save_to_next: WhichSnapshot::Snapshot0,
+                last_event_num: 0,
+            },
+        )
+    }
+
+    fn from_state(path: &PathBuf, state: SaverState) -> Self {
         let path_0 = path.join("0.chkjam");
         let path_1 = path.join("1.chkjam");
         Self {
             path_0,
             path_1,
-            save_to_next: WhichSnapshot::Snapshot0,
+            save_to_next: state.save_to_next,
             waiters: Vec::new(),
-            last_event_num: 0,
+            last_event_num: state.last_event_num,
             _phantom: std::marker::PhantomData,
         }
     }
@@ -117,6 +139,13 @@ impl<J> Saver<J> {
             WhichSnapshot::Snapshot1 => self.path_1.clone(),
             WhichSnapshot::Snapshot0 => self.path_0.clone(),
         }
+    }
+
+    pub(crate) async fn resume(
+        path: &PathBuf,
+    ) -> Result<(Self, Option<CheckpointSummary>), CheckpointError> {
+        let (state, _, summary) = inspect_latest(path).await?;
+        Ok((Self::from_state(path, state), summary))
     }
 
     /// The future from this function should not be awaited before any mutex
@@ -220,93 +249,33 @@ impl<J> Saver<J> {
 }
 
 impl<J: Jammer> Saver<J> {
+    pub(crate) async fn load_latest<C: Checkpoint>(
+        path: &PathBuf,
+        metrics: Option<Arc<NockAppMetrics>>,
+    ) -> Result<Option<C>, CheckpointError> {
+        let (_, loaded_checkpoint, _) = inspect_latest(path).await?;
+        loaded_checkpoint
+            .map(|checkpoint| {
+                let saveable = checkpoint.into_saveable::<J>(metrics)?;
+                C::from_saveable(saveable)
+            })
+            .transpose()
+    }
+
     pub async fn try_load<C: Checkpoint>(
         path: &PathBuf,
         metrics: Option<Arc<NockAppMetrics>>,
     ) -> Result<(Self, Option<C>), CheckpointError> {
-        let path_0 = path.join("0.chkjam");
-        let path_1 = path.join("1.chkjam");
-        let waiters = Vec::new();
-
-        // No snapshot to load
-        if !path_0.exists() && !path_1.exists() {
-            create_dir_all(path).await?;
-            return Ok((
-                Self {
-                    path_0,
-                    path_1,
-                    save_to_next: WhichSnapshot::Snapshot0,
-                    waiters,
-                    last_event_num: 0,
-                    _phantom: std::marker::PhantomData,
-                },
-                None,
-            ));
-        }
-
-        let checkpoint_0 = load_checkpoint_file(&path_0).await;
-        let checkpoint_1 = load_checkpoint_file(&path_1).await;
-
-        let (loaded_checkpoint, save_to_next) = match (checkpoint_0, checkpoint_1) {
-            (Ok(c0), Ok(c1)) => {
-                if c0.event_num() > c1.event_num() {
-                    debug!(
-                        "Loading checkpoint at: {}, checksum: {}",
-                        path_0.display(),
-                        c0.checksum()
-                    );
-                    (c0, WhichSnapshot::Snapshot1)
-                } else {
-                    debug!(
-                        "Loading checkpoint at: {}, checksum: {}",
-                        path_1.display(),
-                        c1.checksum()
-                    );
-                    (c1, WhichSnapshot::Snapshot0)
-                }
-            }
-            (Ok(c0), Err(e1)) => {
-                warn!("checkpoint at {} failed to load: {}", path_1.display(), e1);
-                debug!(
-                    "Loading checkpoint at: {}, checksum: {}",
-                    path_0.display(),
-                    c0.checksum()
-                );
-                (c0, WhichSnapshot::Snapshot1)
-            }
-            (Err(e0), Ok(c1)) => {
-                warn!("checkpoint at {} failed to load: {}", path_0.display(), e0);
-                debug!(
-                    "Loading checkpoint at: {}, checksum: {}",
-                    path_1.display(),
-                    c1.checksum()
-                );
-                (c1, WhichSnapshot::Snapshot0)
-            }
-            (Err(e0), Err(e1)) => {
-                error!("checkpoint at {} failed to load: {}", path_0.display(), e0);
-                error!("checkpoint at {} failed to load: {}", path_1.display(), e1);
-                return Err(CheckpointError::BothCheckpointsFailed(
-                    Box::new(e0),
-                    Box::new(e1),
-                ));
-            }
-        };
-        let last_event_num = loaded_checkpoint.event_num();
-        let saveable = loaded_checkpoint.into_saveable::<J>(metrics.clone())?;
-        trace!("After from_jammed_checkpoint");
-        let c = C::from_saveable(saveable)?;
-        Ok((
-            Self {
-                path_0,
-                path_1,
-                save_to_next,
-                waiters,
-                last_event_num,
-                _phantom: std::marker::PhantomData,
-            },
-            Some(c),
-        ))
+        let (state, loaded_checkpoint, _) = inspect_latest(path).await?;
+        let saver = Self::from_state(path, state);
+        let checkpoint = loaded_checkpoint
+            .map(|loaded| {
+                let saveable = loaded.into_saveable::<J>(metrics.clone())?;
+                trace!("After from_jammed_checkpoint");
+                C::from_saveable(saveable)
+            })
+            .transpose()?;
+        Ok((saver, checkpoint))
     }
 
     #[tracing::instrument(skip_all)]
@@ -861,6 +830,7 @@ fn update_hasher_from_file(hasher: &mut Hasher, path: &Path) -> Result<(), Check
 enum LoadedCheckpoint {
     V2(JammedCheckpointV2),
     V1(JammedCheckpointV1),
+    V0(JammedCheckpointV0),
 }
 
 impl LoadedCheckpoint {
@@ -868,6 +838,7 @@ impl LoadedCheckpoint {
         match self {
             LoadedCheckpoint::V2(cp) => cp.event_num,
             LoadedCheckpoint::V1(cp) => cp.event_num,
+            LoadedCheckpoint::V0(cp) => cp.event_num,
         }
     }
 
@@ -875,6 +846,7 @@ impl LoadedCheckpoint {
         match self {
             LoadedCheckpoint::V2(cp) => cp.checksum,
             LoadedCheckpoint::V1(cp) => cp.checksum,
+            LoadedCheckpoint::V0(cp) => cp.checksum,
         }
     }
 
@@ -889,8 +861,100 @@ impl LoadedCheckpoint {
             LoadedCheckpoint::V1(cp) => {
                 SaveableCheckpoint::from_jammed_checkpoint_v1::<J>(cp, metrics)
             }
+            LoadedCheckpoint::V0(cp) => SaveableCheckpoint::from_jammed_checkpoint_v2::<J>(
+                JammedCheckpoint::from(cp),
+                metrics,
+            ),
         }
     }
+}
+
+async fn inspect_latest(
+    path: &PathBuf,
+) -> Result<
+    (
+        SaverState,
+        Option<LoadedCheckpoint>,
+        Option<CheckpointSummary>,
+    ),
+    CheckpointError,
+> {
+    let path_0 = path.join("0.chkjam");
+    let path_1 = path.join("1.chkjam");
+
+    if !path_0.exists() && !path_1.exists() {
+        create_dir_all(path).await?;
+        return Ok((
+            SaverState {
+                save_to_next: WhichSnapshot::Snapshot0,
+                last_event_num: 0,
+            },
+            None,
+            None,
+        ));
+    }
+
+    let checkpoint_0 = load_checkpoint_file(&path_0).await;
+    let checkpoint_1 = load_checkpoint_file(&path_1).await;
+
+    let (loaded_checkpoint, save_to_next, selected_path) = match (checkpoint_0, checkpoint_1) {
+        (Ok(c0), Ok(c1)) => {
+            if c0.event_num() > c1.event_num() {
+                debug!(
+                    "Loading checkpoint at: {}, checksum: {}",
+                    path_0.display(),
+                    c0.checksum()
+                );
+                (c0, WhichSnapshot::Snapshot1, path_0)
+            } else {
+                debug!(
+                    "Loading checkpoint at: {}, checksum: {}",
+                    path_1.display(),
+                    c1.checksum()
+                );
+                (c1, WhichSnapshot::Snapshot0, path_1)
+            }
+        }
+        (Ok(c0), Err(e1)) => {
+            warn!("checkpoint at {} failed to load: {}", path_1.display(), e1);
+            debug!(
+                "Loading checkpoint at: {}, checksum: {}",
+                path_0.display(),
+                c0.checksum()
+            );
+            (c0, WhichSnapshot::Snapshot1, path_0)
+        }
+        (Err(e0), Ok(c1)) => {
+            warn!("checkpoint at {} failed to load: {}", path_0.display(), e0);
+            debug!(
+                "Loading checkpoint at: {}, checksum: {}",
+                path_1.display(),
+                c1.checksum()
+            );
+            (c1, WhichSnapshot::Snapshot0, path_1)
+        }
+        (Err(e0), Err(e1)) => {
+            error!("checkpoint at {} failed to load: {}", path_0.display(), e0);
+            error!("checkpoint at {} failed to load: {}", path_1.display(), e1);
+            return Err(CheckpointError::BothCheckpointsFailed(
+                Box::new(e0),
+                Box::new(e1),
+            ));
+        }
+    };
+    let summary = CheckpointSummary {
+        path: selected_path,
+        event_num: loaded_checkpoint.event_num(),
+        checksum: loaded_checkpoint.checksum(),
+    };
+    Ok((
+        SaverState {
+            save_to_next,
+            last_event_num: summary.event_num,
+        },
+        Some(loaded_checkpoint),
+        Some(summary),
+    ))
 }
 
 async fn load_checkpoint_file(path: &PathBuf) -> Result<LoadedCheckpoint, CheckpointError> {
@@ -899,7 +963,7 @@ async fn load_checkpoint_file(path: &PathBuf) -> Result<LoadedCheckpoint, Checkp
         Err(e_v2) => match JammedCheckpointV1::load_from_file(path).await {
             Ok(cp) => Ok(LoadedCheckpoint::V1(cp)),
             Err(e_v1) => match JammedCheckpointV0::load_from_file(path).await {
-                Ok(cp0) => Ok(LoadedCheckpoint::V2(JammedCheckpoint::from(cp0))),
+                Ok(cp0) => Ok(LoadedCheckpoint::V0(cp0)),
                 Err(e_v0) => Err(CheckpointError::VersionsFailedV2 {
                     v2: Box::new(e_v2),
                     v1: Box::new(e_v1),

@@ -213,6 +213,81 @@ fn select_active_pma_slab(paths: &PmaSlabPaths, ker_hash: Hash) -> PmaSlab {
     }
 }
 
+#[derive(Clone, Debug)]
+pub(crate) enum ExistingPmaStatus {
+    Missing,
+    Valid { path: PathBuf, event_num: u64 },
+    Invalid { path: PathBuf, reason: String },
+}
+
+pub(crate) fn inspect_existing_pma(
+    path_0: &PathBuf,
+    path_1: &PathBuf,
+    kernel_bytes: &[u8],
+) -> ExistingPmaStatus {
+    let mut hasher = Hasher::new();
+    hasher.update(kernel_bytes);
+    let ker_hash = hasher.finalize();
+    let paths = PmaSlabPaths {
+        path_0: path_0.clone(),
+        path_1: path_1.clone(),
+    };
+    let active = select_active_pma_slab(&paths, ker_hash);
+    let active_path = paths.path(active).clone();
+    let inactive_path = paths.path(active.next()).clone();
+    let active_meta_path = pma_meta_path(&active_path);
+    let inactive_meta_path = pma_meta_path(&inactive_path);
+    let any_pma_artifacts = active_path.exists()
+        || inactive_path.exists()
+        || active_meta_path.exists()
+        || inactive_meta_path.exists();
+
+    if !active_path.exists() {
+        return if any_pma_artifacts {
+            ExistingPmaStatus::Invalid {
+                path: active_path,
+                reason: "selected PMA slab is missing".to_string(),
+            }
+        } else {
+            ExistingPmaStatus::Missing
+        };
+    }
+
+    let Some(meta) = PmaPersistMetadata::load_from_path(&active_meta_path) else {
+        return ExistingPmaStatus::Invalid {
+            path: active_path,
+            reason: format!(
+                "missing or invalid PMA metadata at {}",
+                active_meta_path.display()
+            ),
+        };
+    };
+
+    if meta.ker_hash != ker_hash {
+        return ExistingPmaStatus::Invalid {
+            path: active_path,
+            reason: format!(
+                "kernel hash mismatch (metadata: {}, kernel: {})",
+                meta.ker_hash, ker_hash
+            ),
+        };
+    }
+
+    match Pma::open_with_base(active_path.clone(), meta.pma_base) {
+        Ok(_) => ExistingPmaStatus::Valid {
+            path: active_path,
+            event_num: meta.event_num,
+        },
+        Err(err) => ExistingPmaStatus::Invalid {
+            path: active_path,
+            reason: format!(
+                "failed to map PMA at saved base {:#x}: {err}",
+                meta.pma_base
+            ),
+        },
+    }
+}
+
 struct PmaGcState {
     paths: PmaSlabPaths,
     active: PmaSlab,
