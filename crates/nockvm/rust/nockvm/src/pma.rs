@@ -4,7 +4,7 @@
 //! It uses bump allocation and stores nouns in offset form.
 
 use std::io::{self, Read, Seek, SeekFrom};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::ptr::copy_nonoverlapping;
 use std::sync::Arc;
 use std::time::Instant;
@@ -44,6 +44,14 @@ struct PmaTrailer {
 }
 
 const PMA_TRAILER_BYTES: usize = std::mem::size_of::<PmaTrailer>();
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PmaFileMetadata {
+    pub magic: u64,
+    pub version: u64,
+    pub data_words: u64,
+    pub alloc_words: u64,
+}
 
 impl PmaTrailer {
     fn to_bytes(self) -> [u8; PMA_TRAILER_BYTES] {
@@ -131,6 +139,61 @@ pub struct Pma {
 }
 
 impl Pma {
+    pub fn read_file_metadata(path: &Path) -> Result<PmaFileMetadata, PmaError> {
+        let mut file = std::fs::File::open(path)?;
+        Self::read_file_metadata_from_reader(&mut file)
+    }
+
+    fn read_file_metadata_from_reader(file: &mut std::fs::File) -> Result<PmaFileMetadata, PmaError> {
+        let file_len = file.metadata()?.len() as usize;
+        if file_len < PMA_TRAILER_BYTES {
+            return Err(PmaError::InvalidMetadata(format!(
+                "file too small: {file_len} bytes"
+            )));
+        }
+        let data_bytes = file_len - PMA_TRAILER_BYTES;
+        if data_bytes % 8 != 0 {
+            return Err(PmaError::InvalidMetadata(format!(
+                "data region not word-aligned: {data_bytes} bytes"
+            )));
+        }
+        let data_words = data_bytes >> 3;
+
+        let mut trailer_bytes = [0u8; PMA_TRAILER_BYTES];
+        file.seek(SeekFrom::End(-(PMA_TRAILER_BYTES as i64)))?;
+        file.read_exact(&mut trailer_bytes)?;
+        let trailer = PmaTrailer::from_bytes(trailer_bytes);
+
+        if trailer.magic != PMA_MAGIC {
+            return Err(PmaError::InvalidMetadata("bad PMA magic".to_string()));
+        }
+        if trailer.version != PMA_VERSION {
+            return Err(PmaError::InvalidMetadata(format!(
+                "unsupported PMA version {}",
+                trailer.version
+            )));
+        }
+        if trailer.data_words as usize != data_words {
+            return Err(PmaError::InvalidMetadata(format!(
+                "metadata data_words {} does not match file ({data_words})",
+                trailer.data_words
+            )));
+        }
+        if trailer.alloc_offset > trailer.data_words {
+            return Err(PmaError::InvalidMetadata(format!(
+                "alloc_offset {} exceeds data_words {}",
+                trailer.alloc_offset, trailer.data_words
+            )));
+        }
+
+        Ok(PmaFileMetadata {
+            magic: trailer.magic,
+            version: trailer.version,
+            data_words: trailer.data_words,
+            alloc_words: trailer.alloc_offset,
+        })
+    }
+
     /// Create a new PMA with the given size in words
     pub fn new(size_words: usize, path: PathBuf) -> Result<Self, PmaError> {
         let arena = Arena::allocate_file(&path, size_words, PMA_TRAILER_BYTES)?;
@@ -145,55 +208,11 @@ impl Pma {
 
     /// Open an existing PMA file without truncating it.
     pub fn open(path: PathBuf) -> Result<Self, PmaError> {
-        let mut file = std::fs::OpenOptions::new()
-            .read(true)
-            .write(true)
-            .open(&path)?;
-        let file_len = file.metadata()?.len() as usize;
-        if file_len < PMA_TRAILER_BYTES {
-            return Err(PmaError::InvalidMetadata(format!(
-                "file too small: {file_len} bytes"
-            )));
-        }
-        let data_bytes = file_len - PMA_TRAILER_BYTES;
-        if data_bytes % 8 != 0 {
-            return Err(PmaError::InvalidMetadata(format!(
-                "data region not word-aligned: {data_bytes} bytes"
-            )));
-        }
-        let data_words = data_bytes >> 3;
-
-        let mut trailer_bytes = [0u8; PMA_TRAILER_BYTES];
-        file.seek(SeekFrom::End(-(PMA_TRAILER_BYTES as i64)))?;
-        file.read_exact(&mut trailer_bytes)?;
-        let trailer = PmaTrailer::from_bytes(trailer_bytes);
-
-        if trailer.magic != PMA_MAGIC {
-            return Err(PmaError::InvalidMetadata("bad PMA magic".to_string()));
-        }
-        if trailer.version != PMA_VERSION {
-            return Err(PmaError::InvalidMetadata(format!(
-                "unsupported PMA version {}",
-                trailer.version
-            )));
-        }
-        if trailer.data_words as usize != data_words {
-            return Err(PmaError::InvalidMetadata(format!(
-                "metadata data_words {} does not match file ({data_words})",
-                trailer.data_words
-            )));
-        }
-        if trailer.alloc_offset > trailer.data_words {
-            return Err(PmaError::InvalidMetadata(format!(
-                "alloc_offset {} exceeds data_words {}",
-                trailer.alloc_offset, trailer.data_words
-            )));
-        }
-
-        let arena = Arena::open_file(&path, data_words)?;
+        let metadata = Self::read_file_metadata(&path)?;
+        let arena = Arena::open_file(&path, metadata.data_words as usize)?;
         let pma = Self {
             arena,
-            alloc_offset: trailer.alloc_offset as usize,
+            alloc_offset: metadata.alloc_words as usize,
             path,
         };
         pma.persist_metadata();
@@ -202,59 +221,15 @@ impl Pma {
 
     /// Open an existing PMA file at a fixed base address.
     pub fn open_with_base(path: PathBuf, base: u64) -> Result<Self, PmaError> {
-        let mut file = std::fs::OpenOptions::new()
-            .read(true)
-            .write(true)
-            .open(&path)?;
-        let file_len = file.metadata()?.len() as usize;
-        if file_len < PMA_TRAILER_BYTES {
-            return Err(PmaError::InvalidMetadata(format!(
-                "file too small: {file_len} bytes"
-            )));
-        }
-        let data_bytes = file_len - PMA_TRAILER_BYTES;
-        if data_bytes % 8 != 0 {
-            return Err(PmaError::InvalidMetadata(format!(
-                "data region not word-aligned: {data_bytes} bytes"
-            )));
-        }
-        let data_words = data_bytes >> 3;
-
-        let mut trailer_bytes = [0u8; PMA_TRAILER_BYTES];
-        file.seek(SeekFrom::End(-(PMA_TRAILER_BYTES as i64)))?;
-        file.read_exact(&mut trailer_bytes)?;
-        let trailer = PmaTrailer::from_bytes(trailer_bytes);
-
-        if trailer.magic != PMA_MAGIC {
-            return Err(PmaError::InvalidMetadata("bad PMA magic".to_string()));
-        }
-        if trailer.version != PMA_VERSION {
-            return Err(PmaError::InvalidMetadata(format!(
-                "unsupported PMA version {}",
-                trailer.version
-            )));
-        }
-        if trailer.data_words as usize != data_words {
-            return Err(PmaError::InvalidMetadata(format!(
-                "metadata data_words {} does not match file ({data_words})",
-                trailer.data_words
-            )));
-        }
-        if trailer.alloc_offset > trailer.data_words {
-            return Err(PmaError::InvalidMetadata(format!(
-                "alloc_offset {} exceeds data_words {}",
-                trailer.alloc_offset, trailer.data_words
-            )));
-        }
-
+        let metadata = Self::read_file_metadata(&path)?;
         let base_ptr = base as *mut u8;
         if base_ptr.is_null() {
             return Err(PmaError::InvalidMetadata("null PMA base".to_string()));
         }
-        let arena = Arena::open_file_with_base(&path, data_words, base_ptr)?;
+        let arena = Arena::open_file_with_base(&path, metadata.data_words as usize, base_ptr)?;
         let pma = Self {
             arena,
-            alloc_offset: trailer.alloc_offset as usize,
+            alloc_offset: metadata.alloc_words as usize,
             path,
         };
         pma.persist_metadata();
@@ -273,6 +248,67 @@ impl Pma {
                 libc::msync(
                     self.arena.base_ptr() as *mut libc::c_void,
                     len_bytes,
+                    libc::MS_SYNC,
+                )
+            };
+            if ret != 0 {
+                return Err(io::Error::last_os_error());
+            }
+        }
+        Ok(())
+    }
+
+    pub fn sync_used_data(&self) -> io::Result<()> {
+        let used_bytes = self.alloc_offset().min(self.size_words()).saturating_mul(8);
+        self.sync_mapped_range(0, used_bytes)
+    }
+
+    pub fn sync_trailer(&self) -> io::Result<()> {
+        self.sync_mapped_range(self.arena.len_bytes(), PMA_TRAILER_BYTES)
+    }
+
+    pub fn sync_file(&self) -> io::Result<()> {
+        std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&self.path)?
+            .sync_data()
+    }
+
+    fn sync_mapped_range(&self, offset_bytes: usize, len_bytes: usize) -> io::Result<()> {
+        #[cfg(unix)]
+        {
+            if len_bytes == 0 {
+                return Ok(());
+            }
+            let mapped_len = self.arena.mapped_len_bytes();
+            if mapped_len == 0 {
+                return Ok(());
+            }
+            let page = unsafe { libc::sysconf(libc::_SC_PAGESIZE) };
+            if page <= 0 {
+                return Err(io::Error::last_os_error());
+            }
+            let page = page as usize;
+            let start = offset_bytes.min(mapped_len);
+            let end = offset_bytes.saturating_add(len_bytes).min(mapped_len);
+            if start >= end {
+                return Ok(());
+            }
+            let start_aligned = (start / page) * page;
+            let end_aligned = end
+                .checked_add(page - 1)
+                .map(|value| (value / page) * page)
+                .unwrap_or(mapped_len)
+                .min(mapped_len);
+            let sync_len = end_aligned.saturating_sub(start_aligned);
+            if sync_len == 0 {
+                return Ok(());
+            }
+            let ret = unsafe {
+                libc::msync(
+                    self.arena.base_ptr().add(start_aligned) as *mut libc::c_void,
+                    sync_len,
                     libc::MS_SYNC,
                 )
             };

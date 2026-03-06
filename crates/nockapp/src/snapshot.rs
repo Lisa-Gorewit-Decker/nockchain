@@ -1,0 +1,512 @@
+#![allow(dead_code)]
+
+use std::fs::{self, File};
+use std::io::{self, Read, Write};
+use std::path::Path;
+
+use bincode::{config, Decode, Encode};
+use blake3::{Hash, Hasher, OUT_LEN};
+use chaff::stream::{jam_pma_to_writer, JamStreamStats};
+use nockvm::pma::{
+    classify_pma_noun, Pma, PmaDirectJamConfig, PmaDirectJamError, PmaDirectReader, PmaFileMetadata,
+    PmaRawNounKind,
+};
+use thiserror::Error;
+
+const SNAPSHOT_MANIFEST_MAGIC: u64 = u64::from_le_bytes(*b"SNAPMAN1");
+const SNAPSHOT_MANIFEST_VERSION: u32 = 1;
+type HashBytes = [u8; OUT_LEN];
+
+#[derive(Clone, Copy, Debug, Encode, Decode, PartialEq, Eq)]
+pub(crate) enum SnapshotKind {
+    Epoch,
+    Rotating,
+}
+
+#[derive(Clone, Debug, Encode, Decode, PartialEq, Eq)]
+struct SnapshotManifestPayload {
+    magic: u64,
+    version: u32,
+    kind: SnapshotKind,
+    timestamp_tag: String,
+    ker_hash: HashBytes,
+    event_num: u64,
+    pma_words: u64,
+    alloc_words: u64,
+    kernel_root_raw: u64,
+    cold_offset: u32,
+    used_blake3: HashBytes,
+    structure_blake3: Option<HashBytes>,
+    created_at_ms: i64,
+}
+
+#[derive(Clone, Debug, Encode, Decode, PartialEq, Eq)]
+pub(crate) struct SnapshotManifest {
+    pub magic: u64,
+    pub version: u32,
+    pub kind: SnapshotKind,
+    pub timestamp_tag: String,
+    pub ker_hash: HashBytes,
+    pub event_num: u64,
+    pub pma_words: u64,
+    pub alloc_words: u64,
+    pub kernel_root_raw: u64,
+    pub cold_offset: u32,
+    pub used_blake3: HashBytes,
+    pub structure_blake3: Option<HashBytes>,
+    pub created_at_ms: i64,
+    pub checksum: HashBytes,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum SnapshotVerifyMode {
+    Fast,
+    Full,
+}
+
+#[derive(Debug)]
+pub(crate) struct SnapshotVerification {
+    pub manifest: SnapshotManifest,
+    pub file_metadata: PmaFileMetadata,
+    pub used_blake3: HashBytes,
+    pub structure_stats: Option<JamStreamStats>,
+}
+
+#[derive(Debug, Error)]
+pub(crate) enum SnapshotManifestError {
+    #[error("snapshot manifest io error: {0}")]
+    Io(#[from] io::Error),
+    #[error("snapshot manifest encode error: {0}")]
+    Encode(#[from] bincode::error::EncodeError),
+    #[error("snapshot manifest decode error: {0}")]
+    Decode(#[from] bincode::error::DecodeError),
+    #[error("snapshot manifest magic mismatch: expected {expected:#x}, found {found:#x}")]
+    BadMagic { expected: u64, found: u64 },
+    #[error("snapshot manifest version mismatch: expected {expected}, found {found}")]
+    BadVersion { expected: u32, found: u32 },
+    #[error("snapshot manifest checksum mismatch")]
+    ChecksumMismatch,
+}
+
+#[derive(Debug, Error)]
+pub(crate) enum SnapshotVerifyError {
+    #[error(transparent)]
+    Manifest(#[from] SnapshotManifestError),
+    #[error("snapshot PMA metadata error: {0}")]
+    Pma(#[from] nockvm::pma::PmaError),
+    #[error("snapshot PMA direct-reader error: {0}")]
+    Direct(#[from] PmaDirectJamError),
+    #[error("snapshot io error: {0}")]
+    Io(#[from] io::Error),
+    #[error("snapshot PMA words mismatch: manifest={manifest}, file={file}")]
+    PmaWordsMismatch { manifest: u64, file: u64 },
+    #[error("snapshot alloc words mismatch: manifest={manifest}, file={file}")]
+    AllocWordsMismatch { manifest: u64, file: u64 },
+    #[error("snapshot used-range hash mismatch")]
+    UsedHashMismatch {
+        expected: HashBytes,
+        actual: HashBytes,
+    },
+    #[error("snapshot structure hash mismatch")]
+    StructureHashMismatch {
+        expected: HashBytes,
+        actual: HashBytes,
+    },
+    #[error("snapshot cold_offset {cold_offset} is out of bounds for alloc_words {alloc_words}")]
+    ColdOffsetOutOfBounds { cold_offset: u32, alloc_words: u64 },
+}
+
+impl SnapshotManifest {
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn new(
+        kind: SnapshotKind,
+        timestamp_tag: String,
+        ker_hash: Hash,
+        event_num: u64,
+        pma_words: u64,
+        alloc_words: u64,
+        kernel_root_raw: u64,
+        cold_offset: u32,
+        used_blake3: Hash,
+        structure_blake3: Option<Hash>,
+        created_at_ms: i64,
+    ) -> Result<Self, SnapshotManifestError> {
+        let mut manifest = Self {
+            magic: SNAPSHOT_MANIFEST_MAGIC,
+            version: SNAPSHOT_MANIFEST_VERSION,
+            kind,
+            timestamp_tag,
+            ker_hash: to_hash_bytes(ker_hash),
+            event_num,
+            pma_words,
+            alloc_words,
+            kernel_root_raw,
+            cold_offset,
+            used_blake3: to_hash_bytes(used_blake3),
+            structure_blake3: structure_blake3.map(to_hash_bytes),
+            created_at_ms,
+            checksum: [0; OUT_LEN],
+        };
+        manifest.checksum = manifest.compute_checksum()?;
+        Ok(manifest)
+    }
+
+    pub(crate) fn validate(&self) -> Result<(), SnapshotManifestError> {
+        if self.magic != SNAPSHOT_MANIFEST_MAGIC {
+            return Err(SnapshotManifestError::BadMagic {
+                expected: SNAPSHOT_MANIFEST_MAGIC,
+                found: self.magic,
+            });
+        }
+        if self.version != SNAPSHOT_MANIFEST_VERSION {
+            return Err(SnapshotManifestError::BadVersion {
+                expected: SNAPSHOT_MANIFEST_VERSION,
+                found: self.version,
+            });
+        }
+        if self.compute_checksum()? != self.checksum {
+            return Err(SnapshotManifestError::ChecksumMismatch);
+        }
+        Ok(())
+    }
+
+    pub(crate) fn encode(&self) -> Result<Vec<u8>, SnapshotManifestError> {
+        self.validate()?;
+        Ok(bincode::encode_to_vec(self, config::standard())?)
+    }
+
+    pub(crate) fn decode(bytes: &[u8]) -> Result<Self, SnapshotManifestError> {
+        let (manifest, _) =
+            bincode::decode_from_slice::<Self, _>(bytes, config::standard())?;
+        manifest.validate()?;
+        Ok(manifest)
+    }
+
+    pub(crate) fn read_from_path(path: &Path) -> Result<Self, SnapshotManifestError> {
+        let bytes = fs::read(path)?;
+        Self::decode(&bytes)
+    }
+
+    pub(crate) fn write_to_path(&self, path: &Path) -> Result<(), SnapshotManifestError> {
+        let bytes = self.encode()?;
+        let tmp_path = path.with_extension("tmp");
+        let mut file = File::create(&tmp_path)?;
+        file.write_all(&bytes)?;
+        file.sync_all()?;
+        drop(file);
+        fs::rename(&tmp_path, path)?;
+        sync_parent_dir(path)?;
+        Ok(())
+    }
+
+    fn payload(&self) -> SnapshotManifestPayload {
+        SnapshotManifestPayload {
+            magic: self.magic,
+            version: self.version,
+            kind: self.kind,
+            timestamp_tag: self.timestamp_tag.clone(),
+            ker_hash: self.ker_hash,
+            event_num: self.event_num,
+            pma_words: self.pma_words,
+            alloc_words: self.alloc_words,
+            kernel_root_raw: self.kernel_root_raw,
+            cold_offset: self.cold_offset,
+            used_blake3: self.used_blake3,
+            structure_blake3: self.structure_blake3,
+            created_at_ms: self.created_at_ms,
+        }
+    }
+
+    fn compute_checksum(&self) -> Result<HashBytes, SnapshotManifestError> {
+        let payload = self.payload();
+        Ok(compute_checksum(&payload)?)
+    }
+}
+
+pub(crate) fn verify_snapshot(
+    manifest_path: &Path,
+    pma_path: &Path,
+    mode: SnapshotVerifyMode,
+) -> Result<SnapshotVerification, SnapshotVerifyError> {
+    let manifest = SnapshotManifest::read_from_path(manifest_path)?;
+    let file_metadata = Pma::read_file_metadata(pma_path)?;
+    if manifest.pma_words != file_metadata.data_words {
+        return Err(SnapshotVerifyError::PmaWordsMismatch {
+            manifest: manifest.pma_words,
+            file: file_metadata.data_words,
+        });
+    }
+    if manifest.alloc_words != file_metadata.alloc_words {
+        return Err(SnapshotVerifyError::AllocWordsMismatch {
+            manifest: manifest.alloc_words,
+            file: file_metadata.alloc_words,
+        });
+    }
+
+    let used_blake3 = hash_file_prefix(pma_path, file_metadata.alloc_words.saturating_mul(8))?;
+    if used_blake3 != manifest.used_blake3 {
+        return Err(SnapshotVerifyError::UsedHashMismatch {
+            expected: manifest.used_blake3,
+            actual: used_blake3,
+        });
+    }
+
+    let mut reader = PmaDirectReader::from_path(
+        pma_path,
+        file_metadata.data_words,
+        file_metadata.alloc_words,
+        PmaDirectJamConfig {
+            require_direct_io: false,
+            ..PmaDirectJamConfig::default()
+        },
+    )?;
+    validate_root_raw(&mut reader, manifest.kernel_root_raw)?;
+    validate_cold_offset(&mut reader, manifest.cold_offset)?;
+
+    let structure_stats = match mode {
+        SnapshotVerifyMode::Fast => None,
+        SnapshotVerifyMode::Full => Some(verify_structure(&mut reader, &manifest)?),
+    };
+
+    Ok(SnapshotVerification {
+        manifest,
+        file_metadata,
+        used_blake3,
+        structure_stats,
+    })
+}
+
+fn validate_root_raw(
+    reader: &mut PmaDirectReader,
+    kernel_root_raw: u64,
+) -> Result<(), SnapshotVerifyError> {
+    match classify_pma_noun(kernel_root_raw)? {
+        PmaRawNounKind::Direct(_) => Ok(()),
+        PmaRawNounKind::Indirect { offset } => {
+            let _ = reader.indirect_atom_words(offset)?;
+            Ok(())
+        }
+        PmaRawNounKind::Cell { offset } => {
+            let _ = reader.read_cell(offset)?;
+            Ok(())
+        }
+    }
+}
+
+fn validate_cold_offset(
+    reader: &mut PmaDirectReader,
+    cold_offset: u32,
+) -> Result<(), SnapshotVerifyError> {
+    let alloc_words = reader.alloc_words();
+    if u64::from(cold_offset) >= alloc_words {
+        return Err(SnapshotVerifyError::ColdOffsetOutOfBounds {
+            cold_offset,
+            alloc_words,
+        });
+    }
+    let _ = reader.read_u64(u64::from(cold_offset))?;
+    Ok(())
+}
+
+fn verify_structure(
+    reader: &mut PmaDirectReader,
+    manifest: &SnapshotManifest,
+) -> Result<JamStreamStats, SnapshotVerifyError> {
+    if let Some(expected) = manifest.structure_blake3 {
+        let mut writer = Blake3Writer::default();
+        let stats = jam_pma_to_writer(reader, manifest.kernel_root_raw, &mut writer)?;
+        let actual = writer.finish();
+        if actual != expected {
+            return Err(SnapshotVerifyError::StructureHashMismatch { expected, actual });
+        }
+        Ok(stats)
+    } else {
+        let mut sink = io::sink();
+        Ok(jam_pma_to_writer(reader, manifest.kernel_root_raw, &mut sink)?)
+    }
+}
+
+fn compute_checksum<T: Encode>(value: &T) -> Result<HashBytes, SnapshotManifestError> {
+    let encoded = bincode::encode_to_vec(value, config::standard())?;
+    let mut hasher = Hasher::new();
+    hasher.update(&encoded);
+    Ok(*hasher.finalize().as_bytes())
+}
+
+fn to_hash_bytes(hash: Hash) -> HashBytes {
+    *hash.as_bytes()
+}
+
+fn hash_file_prefix(path: &Path, len_bytes: u64) -> Result<HashBytes, io::Error> {
+    let mut file = File::open(path)?;
+    let mut hasher = Hasher::new();
+    let mut remaining = len_bytes;
+    let mut buf = [0u8; 8192];
+    while remaining > 0 {
+        let read_len = remaining.min(buf.len() as u64) as usize;
+        file.read_exact(&mut buf[..read_len])?;
+        hasher.update(&buf[..read_len]);
+        remaining -= read_len as u64;
+    }
+    Ok(*hasher.finalize().as_bytes())
+}
+
+fn sync_parent_dir(path: &Path) -> Result<(), io::Error> {
+    #[cfg(unix)]
+    {
+        if let Some(parent) = path.parent() {
+            File::open(parent)?.sync_all()?;
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = path;
+    }
+    Ok(())
+}
+
+#[derive(Default)]
+struct Blake3Writer {
+    hasher: Hasher,
+}
+
+impl Blake3Writer {
+    fn finish(self) -> HashBytes {
+        *self.hasher.finalize().as_bytes()
+    }
+}
+
+impl Write for Blake3Writer {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        self.hasher.update(buf);
+        Ok(buf.len())
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::fs::OpenOptions;
+    use std::io::{Seek, SeekFrom, Write};
+    use std::path::PathBuf;
+
+    use nockvm::jets::cold::Cold;
+    use nockvm::mem::NockStack;
+    use nockvm::noun::{Noun, D, T};
+    use nockvm::pma::{classify_pma_noun, Pma, PmaCopy, PmaRawNounKind};
+    use tempfile::TempDir;
+
+    use super::*;
+
+    fn build_test_snapshot() -> (TempDir, PathBuf, PathBuf, SnapshotManifest, u64) {
+        let temp = TempDir::new().expect("tempdir");
+        let pma_path = temp.path().join("snapshot.pma");
+        let manifest_path = temp.path().join("snapshot.manifest");
+        let mut pma = Pma::new(4096, pma_path.clone()).expect("new pma");
+        let mut stack = NockStack::new(1 << 16, 0);
+        let mut cold = Cold::new(&mut stack);
+        let mut root: Noun = T(&mut stack, &[D(42), D(0)]);
+        unsafe {
+            cold.copy_to_pma(&stack, &mut pma);
+            root.copy_to_pma(&stack, &mut pma);
+        }
+        let cold_offset = cold.pma_offset(&pma).expect("cold offset");
+        let root_raw = unsafe { root.as_raw() };
+        pma.sync_used_data().expect("sync used");
+        pma.sync_trailer().expect("sync trailer");
+        pma.sync_file().expect("sync file");
+        let manifest = SnapshotManifest::new(
+            SnapshotKind::Epoch,
+            "epoch".to_string(),
+            blake3::hash(b"kernel"),
+            7,
+            pma.size_words() as u64,
+            pma.alloc_offset() as u64,
+            root_raw,
+            cold_offset,
+            Hash::from_bytes(hash_file_prefix(&pma_path, pma.alloc_offset() as u64 * 8).expect("used hash")),
+            None,
+            1234,
+        )
+        .expect("manifest");
+        manifest.write_to_path(&manifest_path).expect("write manifest");
+        drop(pma);
+        (temp, pma_path, manifest_path, manifest, root_raw)
+    }
+
+    fn overwrite_u64(path: &Path, offset_words: u64, value: u64) {
+        let mut file = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(path)
+            .expect("open pma");
+        file.seek(SeekFrom::Start(offset_words * 8))
+            .expect("seek pma");
+        file.write_all(&value.to_ne_bytes()).expect("write word");
+        file.sync_all().expect("sync file");
+    }
+
+    #[test]
+    fn manifest_roundtrips_with_checksum() {
+        let manifest = SnapshotManifest::new(
+            SnapshotKind::Rotating,
+            "snap-123".to_string(),
+            blake3::hash(b"ker"),
+            11,
+            1024,
+            64,
+            0,
+            3,
+            blake3::hash(b"used"),
+            Some(blake3::hash(b"struct")),
+            99,
+        )
+        .expect("manifest");
+        let encoded = manifest.encode().expect("encode");
+        let decoded = SnapshotManifest::decode(&encoded).expect("decode");
+        assert_eq!(decoded, manifest);
+    }
+
+    #[test]
+    fn verify_snapshot_accepts_valid_snapshot() {
+        let (_temp, pma_path, manifest_path, manifest, _root_raw) = build_test_snapshot();
+        let verification =
+            verify_snapshot(&manifest_path, &pma_path, SnapshotVerifyMode::Full).expect("verify");
+        assert_eq!(verification.manifest, manifest);
+        assert_eq!(verification.file_metadata.alloc_words, manifest.alloc_words);
+        assert!(verification.structure_stats.is_some());
+    }
+
+    #[test]
+    fn verify_snapshot_rejects_used_hash_mismatch() {
+        let (_temp, pma_path, manifest_path, mut manifest, _root_raw) = build_test_snapshot();
+        manifest.used_blake3 = [7; OUT_LEN];
+        manifest.checksum = manifest.compute_checksum().expect("checksum");
+        manifest.write_to_path(&manifest_path).expect("write manifest");
+
+        let err =
+            verify_snapshot(&manifest_path, &pma_path, SnapshotVerifyMode::Fast).expect_err("mismatch");
+        assert!(matches!(err, SnapshotVerifyError::UsedHashMismatch { .. }));
+    }
+
+    #[test]
+    fn verify_snapshot_rejects_structural_corruption() {
+        let (_temp, pma_path, manifest_path, mut manifest, root_raw) = build_test_snapshot();
+        let root_offset = match classify_pma_noun(root_raw).expect("classify root") {
+            PmaRawNounKind::Cell { offset } => offset,
+            other => panic!("expected cell root, got {other:?}"),
+        };
+        overwrite_u64(&pma_path, root_offset + 1, u64::MAX);
+        manifest.used_blake3 =
+            hash_file_prefix(&pma_path, manifest.alloc_words * 8).expect("rehash used range");
+        manifest.checksum = manifest.compute_checksum().expect("checksum");
+        manifest.write_to_path(&manifest_path).expect("write manifest");
+
+        let err =
+            verify_snapshot(&manifest_path, &pma_path, SnapshotVerifyMode::Full).expect_err("corrupt");
+        assert!(matches!(err, SnapshotVerifyError::Direct(_)));
+    }
+}

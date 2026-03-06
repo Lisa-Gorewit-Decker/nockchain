@@ -104,14 +104,28 @@ pub struct PmaDirectReader {
 
 impl PmaDirectReader {
     pub fn new(pma: &Pma, config: PmaDirectJamConfig) -> Result<Self, PmaDirectJamError> {
-        let file = open_direct_file(pma.path(), config.require_direct_io)?;
+        Self::from_path(
+            pma.path(),
+            pma.size_words() as u64,
+            pma.alloc_offset() as u64,
+            config,
+        )
+    }
+
+    pub fn from_path(
+        path: &Path,
+        data_words: u64,
+        alloc_words: u64,
+        config: PmaDirectJamConfig,
+    ) -> Result<Self, PmaDirectJamError> {
+        let file = open_direct_file(path, config.require_direct_io)?;
         let page_size = page_size()?;
         let cache_capacity = config.cache_pages.max(1);
         Ok(Self {
             file,
             page_size,
-            data_words: pma.size_words() as u64,
-            alloc_words: pma.alloc_offset() as u64,
+            data_words,
+            alloc_words,
             cache_capacity,
             cache: Vec::with_capacity(cache_capacity),
             tick: 0,

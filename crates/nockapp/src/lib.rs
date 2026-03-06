@@ -18,6 +18,7 @@ pub mod kernel;
 pub mod nockapp;
 pub mod noun;
 pub mod observability;
+pub(crate) mod snapshot;
 pub mod utils;
 
 use std::path::PathBuf;
