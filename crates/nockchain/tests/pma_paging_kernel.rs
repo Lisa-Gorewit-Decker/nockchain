@@ -1176,6 +1176,7 @@ async fn build_nockapp(name: &str) -> Result<(TempDir, NockApp, PathBuf), Box<dy
         export_state_jam: None,
         stack_size: NockStackSize::Medium,
         data_dir: None,
+        event_log_path: None,
     };
     boot::init_default_tracing(&cli);
     let app = boot::setup(

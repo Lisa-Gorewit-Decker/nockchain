@@ -17,6 +17,7 @@ use tracing_subscriber::registry::LookupSpan;
 use tracing_subscriber::util::SubscriberInitExt;
 use tracing_subscriber::{fmt, EnvFilter, Layer};
 
+use crate::event_log::EventLogConfig;
 use crate::export::ExportedState;
 use crate::kernel::form::{Kernel, PmaConfig};
 use crate::nockapp::PMA_PERSIST_ENV;
@@ -175,6 +176,8 @@ pub struct Cli {
         help = "Override the full data directory for this nockapp instance (expects the directory that contains checkpoints/)"
     )]
     pub data_dir: Option<PathBuf>,
+    #[arg(long, help = "Override the SQLite event-log path")]
+    pub event_log_path: Option<PathBuf>,
 }
 
 impl Cli {
@@ -266,6 +269,7 @@ pub fn default_boot_cli(new: bool) -> Cli {
         export_state_jam: None,
         stack_size: NockStackSize::Normal,
         data_dir: None,
+        event_log_path: None,
         pma_persist: false,
     }
 }
@@ -452,6 +456,10 @@ pub async fn setup_<J: Jammer + Send + 'static>(
     };
     let pma_dir = data_dir.join("pma");
     let jams_dir = data_dir.join("checkpoints");
+    let event_log_path = cli
+        .event_log_path
+        .clone()
+        .unwrap_or_else(|| data_dir.join("event-log.sqlite3"));
 
     if !jams_dir.exists() {
         std::fs::create_dir_all(&jams_dir)?;
@@ -467,10 +475,23 @@ pub async fn setup_<J: Jammer + Send + 'static>(
         std::fs::remove_dir_all(&jams_dir)?;
         debug!("Deleted existing checkpoint directory: {:?}", jams_dir);
     }
+    if cli.new {
+        for path in [
+            event_log_path.clone(),
+            PathBuf::from(format!("{}-wal", event_log_path.display())),
+            PathBuf::from(format!("{}-shm", event_log_path.display())),
+        ] {
+            if path.exists() {
+                std::fs::remove_file(&path)?;
+                debug!("Deleted existing event-log file: {:?}", path);
+            }
+        }
+    }
 
     info!("kernel: starting");
     debug!("kernel: pma directory: {:?}", pma_dir);
     debug!("kernel: snapshots directory: {:?}", jams_dir);
+    debug!("kernel: event-log path: {:?}", event_log_path);
     info!("NockApp boot cli: {:?}", cli);
     let save_interval = cli
         .normalized_save_interval()
@@ -518,6 +539,7 @@ pub async fn setup_<J: Jammer + Send + 'static>(
     }
     let stack_size = cli.stack_size.clone();
     let trace_opts = cli.trace_opts.clone();
+    let event_log_path_for_kernel = event_log_path.clone();
 
     let kernel_f = async move |checkpoint| {
         let pma_config = |words| {
@@ -529,70 +551,79 @@ pub async fn setup_<J: Jammer + Send + 'static>(
                 gc_interval,
             })
         };
+        let event_log_config = Some(EventLogConfig {
+            path: event_log_path_for_kernel.clone(),
+        });
         let kernel: Kernel<SaveableCheckpoint> = match stack_size {
             NockStackSize::Tiny => {
-                Kernel::load_with_hot_state_tiny(
+                Kernel::load_with_hot_state_tiny_with_event_log(
                     jam,
                     checkpoint,
                     hot_state,
                     test_jets,
                     trace_opts.clone(),
                     pma_config(NOCK_STACK_SIZE_TINY),
+                    event_log_config.clone(),
                 )
                 .await?
             }
             NockStackSize::Small => {
-                Kernel::load_with_hot_state_small(
+                Kernel::load_with_hot_state_small_with_event_log(
                     jam,
                     checkpoint,
                     hot_state,
                     test_jets,
                     trace_opts.clone(),
                     pma_config(NOCK_STACK_SIZE_SMALL),
+                    event_log_config.clone(),
                 )
                 .await?
             }
             NockStackSize::Normal => {
-                Kernel::load_with_hot_state(
+                Kernel::load_with_hot_state_with_event_log(
                     jam,
                     checkpoint,
                     hot_state,
                     test_jets,
                     trace_opts.clone(),
                     pma_config(NOCK_STACK_SIZE),
+                    event_log_config.clone(),
                 )
                 .await?
             }
             NockStackSize::Medium => {
-                Kernel::load_with_hot_state_medium(
+                Kernel::load_with_hot_state_medium_with_event_log(
                     jam,
                     checkpoint,
                     hot_state,
                     test_jets,
                     trace_opts.clone(),
                     pma_config(NOCK_STACK_SIZE_MEDIUM),
+                    event_log_config.clone(),
                 )
                 .await?
             }
             NockStackSize::Large => {
-                Kernel::load_with_hot_state_large(
+                Kernel::load_with_hot_state_large_with_event_log(
                     jam,
                     checkpoint,
                     hot_state,
                     test_jets,
                     trace_opts.clone(),
                     pma_config(NOCK_STACK_SIZE_LARGE),
+                    event_log_config.clone(),
                 )
                 .await?
             }
             NockStackSize::Huge => {
-                Kernel::load_with_hot_state_huge(
+                Kernel::load_with_hot_state_huge_with_event_log(
                     jam,
                     checkpoint,
                     hot_state,
                     test_jets,
                     trace_opts,
                     pma_config(NOCK_STACK_SIZE_HUGE),
+                    event_log_config,
                 )
                 .await?
             }

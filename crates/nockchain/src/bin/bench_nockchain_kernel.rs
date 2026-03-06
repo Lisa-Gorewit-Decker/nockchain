@@ -191,6 +191,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
         export_state_jam: None,
         stack_size: args.stack_size.clone(),
         data_dir: None,
+        event_log_path: None,
     };
     boot::init_default_tracing(&boot_cli);
 

@@ -41,6 +41,7 @@ opentelemetry-otlp = { workspace = true, features = ["grpc-tonic"] }
 opentelemetry_sdk.workspace = true
 rand = { workspace = true }
 rcgen = { workspace = true }
+rusqlite = { workspace = true }
 rustls = { workspace = true }
 rustls-pemfile = { workspace = true }
 serde = { workspace = true }

@@ -6,7 +6,7 @@ use std::io::{BufWriter, Write};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::{Instant, SystemTime};
+use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use bincode::{config, Decode, Encode};
 use blake3::{Hash, Hasher};
@@ -25,8 +25,9 @@ use nockvm::trace::{path_to_cord, write_serf_trace_safe};
 use nockvm_macros::tas;
 use tokio::sync::{mpsc, oneshot};
 use tokio::time::Duration;
-use tracing::{debug, info, warn};
+use tracing::{debug, error, info, warn};
 
+use crate::event_log::{EventLog, EventLogConfig, EventLogEntry};
 use crate::kernel::boot::TraceOpts;
 use crate::metrics::NockAppMetrics;
 use crate::nockapp::wire::{wire_to_noun, WireRepr};
@@ -294,6 +295,20 @@ impl PmaTiming {
     }
 }
 
+#[derive(Debug, Clone)]
+struct AcceptedEventMetadata {
+    wire_source: String,
+    wire_version: i64,
+    wire_tags_json: String,
+    cause_hash: Vec<u8>,
+    created_at_ms: i64,
+}
+
+struct AcceptedPoke {
+    effects: Noun,
+    durable_event: Option<EventLogEntry>,
+}
+
 // Actions to request of the serf thread
 pub enum SerfAction<C> {
     // Make a CheckPoint
@@ -359,6 +374,23 @@ impl<C: SerfCheckpoint + Send + 'static> SerfThread<C> {
         constant_hot_state: Vec<HotEntry>,
         nock_stack_size: usize,
         pma: Option<PmaConfig>,
+        test_jets: Vec<NounSlab>,
+        trace: TraceOpts,
+    ) -> Result<Self> {
+        Self::new_with_event_log(
+            kernel_bytes, checkpoint, constant_hot_state, nock_stack_size, pma, None, test_jets,
+            trace,
+        )
+        .await
+    }
+
+    pub(crate) async fn new_with_event_log(
+        kernel_bytes: Vec<u8>,
+        checkpoint: Option<C>,
+        constant_hot_state: Vec<HotEntry>,
+        nock_stack_size: usize,
+        pma: Option<PmaConfig>,
+        event_log: Option<EventLogConfig>,
         test_jets: Vec<NounSlab>,
         trace: TraceOpts,
     ) -> Result<Self> {
@@ -444,6 +476,20 @@ impl<C: SerfCheckpoint + Send + 'static> SerfThread<C> {
                     }
                     None => (None, None, None),
                 };
+                let event_log = if let Some(config) = event_log {
+                    match EventLog::open(config.clone()) {
+                        Ok(log) => Some(log),
+                        Err(err) => {
+                            let _ = init_sender.send(Err(CrownError::Unknown(format!(
+                                "failed to open event log at {}: {err}",
+                                config.path.display()
+                            ))));
+                            return;
+                        }
+                    }
+                } else {
+                    None
+                };
                 let stack = NockStack::new(nock_stack_size, 0);
                 let serf = Serf::new(
                     stack,
@@ -451,6 +497,7 @@ impl<C: SerfCheckpoint + Send + 'static> SerfThread<C> {
                     pma_meta_path,
                     pma_meta_load,
                     pma_gc_state,
+                    event_log,
                     checkpoint,
                     &kernel_bytes,
                     &constant_hot_state,
@@ -850,17 +897,14 @@ fn serf_loop<C: SerfCheckpoint>(
                     let noun_res = serf.poke(wire, cause_noun);
                     let event_elapsed = event_start.elapsed();
                     let space = serf.context.stack.noun_space();
-                    let (noun_slab_res, did_update) = match noun_res {
-                        Ok(noun) => {
+                    let (noun_slab_res, did_update, durable_event) = match noun_res {
+                        Ok(accepted_poke) => {
                             let mut slab = NounSlab::new();
-                            slab.copy_into(noun, &space);
-                            (Ok(slab), true)
+                            slab.copy_into(accepted_poke.effects, &space);
+                            (Ok(slab), true, accepted_poke.durable_event)
                         }
-                        Err(err) => (Err(err), false),
+                        Err(err) => (Err(err), false, None),
                     };
-                    let _ = result.send(noun_slab_res).inspect_err(|_e| {
-                        debug!("Failed to send poke result from serf thread");
-                    });
                     let mut pma_elapsed = None;
                     let mut pma_detail = None;
                     if did_update {
@@ -870,6 +914,12 @@ fn serf_loop<C: SerfCheckpoint>(
                         }
                         pma_elapsed = Some(pma_start.elapsed());
                     }
+                    if let Some(durable_event) = durable_event.as_ref() {
+                        serf.append_durable_event(durable_event);
+                    }
+                    let _ = result.send(noun_slab_res).inspect_err(|_e| {
+                        debug!("Failed to send poke result from serf thread");
+                    });
                     if let Some(timing) = &pma_timing {
                         let pma_elapsed = pma_elapsed.unwrap_or_else(|| Duration::from_millis(0));
                         timing.record(event_elapsed, pma_elapsed, pma_detail);
@@ -1135,10 +1185,26 @@ impl<C: SerfCheckpoint + 'static> Kernel<C> {
         trace: TraceOpts,
         pma: Option<PmaConfig>,
     ) -> Result<Self> {
+        Self::load_with_hot_state_with_event_log(
+            kernel, checkpoint, hot_state, test_jets, trace, pma, None,
+        )
+        .await
+    }
+
+    pub(crate) async fn load_with_hot_state_with_event_log(
+        kernel: &[u8],
+        checkpoint: Option<C>,
+        hot_state: &[HotEntry],
+        test_jets: Vec<NounSlab>,
+        trace: TraceOpts,
+        pma: Option<PmaConfig>,
+        event_log: Option<EventLogConfig>,
+    ) -> Result<Self> {
         let kernel_vec = Vec::from(kernel);
         let hot_state_vec = Vec::from(hot_state);
-        let serf = SerfThread::new(
-            kernel_vec, checkpoint, hot_state_vec, NOCK_STACK_SIZE, pma, test_jets, trace,
+        let serf = SerfThread::new_with_event_log(
+            kernel_vec, checkpoint, hot_state_vec, NOCK_STACK_SIZE, pma, event_log, test_jets,
+            trace,
         )
         .await?;
         Ok(Self { serf })
@@ -1152,10 +1218,26 @@ impl<C: SerfCheckpoint + 'static> Kernel<C> {
         trace: TraceOpts,
         pma: Option<PmaConfig>,
     ) -> Result<Self> {
+        Self::load_with_hot_state_tiny_with_event_log(
+            kernel, checkpoint, hot_state, test_jets, trace, pma, None,
+        )
+        .await
+    }
+
+    pub(crate) async fn load_with_hot_state_tiny_with_event_log(
+        kernel: &[u8],
+        checkpoint: Option<C>,
+        hot_state: &[HotEntry],
+        test_jets: Vec<NounSlab>,
+        trace: TraceOpts,
+        pma: Option<PmaConfig>,
+        event_log: Option<EventLogConfig>,
+    ) -> Result<Self> {
         let kernel_vec = Vec::from(kernel);
         let hot_state_vec = Vec::from(hot_state);
-        let serf = SerfThread::new(
-            kernel_vec, checkpoint, hot_state_vec, NOCK_STACK_SIZE_TINY, pma, test_jets, trace,
+        let serf = SerfThread::new_with_event_log(
+            kernel_vec, checkpoint, hot_state_vec, NOCK_STACK_SIZE_TINY, pma, event_log, test_jets,
+            trace,
         )
         .await?;
         Ok(Self { serf })
@@ -1169,10 +1251,26 @@ impl<C: SerfCheckpoint + 'static> Kernel<C> {
         trace: TraceOpts,
         pma: Option<PmaConfig>,
     ) -> Result<Self> {
+        Self::load_with_hot_state_small_with_event_log(
+            kernel, checkpoint, hot_state, test_jets, trace, pma, None,
+        )
+        .await
+    }
+
+    pub(crate) async fn load_with_hot_state_small_with_event_log(
+        kernel: &[u8],
+        checkpoint: Option<C>,
+        hot_state: &[HotEntry],
+        test_jets: Vec<NounSlab>,
+        trace: TraceOpts,
+        pma: Option<PmaConfig>,
+        event_log: Option<EventLogConfig>,
+    ) -> Result<Self> {
         let kernel_vec = Vec::from(kernel);
         let hot_state_vec = Vec::from(hot_state);
-        let serf = SerfThread::new(
-            kernel_vec, checkpoint, hot_state_vec, NOCK_STACK_SIZE_SMALL, pma, test_jets, trace,
+        let serf = SerfThread::new_with_event_log(
+            kernel_vec, checkpoint, hot_state_vec, NOCK_STACK_SIZE_SMALL, pma, event_log,
+            test_jets, trace,
         )
         .await?;
         Ok(Self { serf })
@@ -1186,10 +1284,26 @@ impl<C: SerfCheckpoint + 'static> Kernel<C> {
         trace: TraceOpts,
         pma: Option<PmaConfig>,
     ) -> Result<Self> {
+        Self::load_with_hot_state_medium_with_event_log(
+            kernel, checkpoint, hot_state, test_jets, trace, pma, None,
+        )
+        .await
+    }
+
+    pub(crate) async fn load_with_hot_state_medium_with_event_log(
+        kernel: &[u8],
+        checkpoint: Option<C>,
+        hot_state: &[HotEntry],
+        test_jets: Vec<NounSlab>,
+        trace: TraceOpts,
+        pma: Option<PmaConfig>,
+        event_log: Option<EventLogConfig>,
+    ) -> Result<Self> {
         let kernel_vec = Vec::from(kernel);
         let hot_state_vec = Vec::from(hot_state);
-        let serf = SerfThread::new(
-            kernel_vec, checkpoint, hot_state_vec, NOCK_STACK_SIZE_MEDIUM, pma, test_jets, trace,
+        let serf = SerfThread::new_with_event_log(
+            kernel_vec, checkpoint, hot_state_vec, NOCK_STACK_SIZE_MEDIUM, pma, event_log,
+            test_jets, trace,
         )
         .await?;
         Ok(Self { serf })
@@ -1203,10 +1317,26 @@ impl<C: SerfCheckpoint + 'static> Kernel<C> {
         trace: TraceOpts,
         pma: Option<PmaConfig>,
     ) -> Result<Self> {
+        Self::load_with_hot_state_large_with_event_log(
+            kernel, checkpoint, hot_state, test_jets, trace, pma, None,
+        )
+        .await
+    }
+
+    pub(crate) async fn load_with_hot_state_large_with_event_log(
+        kernel: &[u8],
+        checkpoint: Option<C>,
+        hot_state: &[HotEntry],
+        test_jets: Vec<NounSlab>,
+        trace: TraceOpts,
+        pma: Option<PmaConfig>,
+        event_log: Option<EventLogConfig>,
+    ) -> Result<Self> {
         let kernel_vec = Vec::from(kernel);
         let hot_state_vec = Vec::from(hot_state);
-        let serf = SerfThread::new(
-            kernel_vec, checkpoint, hot_state_vec, NOCK_STACK_SIZE_LARGE, pma, test_jets, trace,
+        let serf = SerfThread::new_with_event_log(
+            kernel_vec, checkpoint, hot_state_vec, NOCK_STACK_SIZE_LARGE, pma, event_log,
+            test_jets, trace,
         )
         .await?;
         Ok(Self { serf })
@@ -1237,10 +1367,26 @@ impl<C: SerfCheckpoint + 'static> Kernel<C> {
         trace: TraceOpts,
         pma: Option<PmaConfig>,
     ) -> Result<Self> {
+        Self::load_with_hot_state_huge_with_event_log(
+            kernel, checkpoint, hot_state, test_jets, trace, pma, None,
+        )
+        .await
+    }
+
+    pub(crate) async fn load_with_hot_state_huge_with_event_log(
+        kernel: &[u8],
+        checkpoint: Option<C>,
+        hot_state: &[HotEntry],
+        test_jets: Vec<NounSlab>,
+        trace: TraceOpts,
+        pma: Option<PmaConfig>,
+        event_log: Option<EventLogConfig>,
+    ) -> Result<Self> {
         let kernel_vec = Vec::from(kernel);
         let hot_state_vec = Vec::from(hot_state);
-        let serf = SerfThread::new(
-            kernel_vec, checkpoint, hot_state_vec, NOCK_STACK_SIZE_HUGE, pma, test_jets, trace,
+        let serf = SerfThread::new_with_event_log(
+            kernel_vec, checkpoint, hot_state_vec, NOCK_STACK_SIZE_HUGE, pma, event_log, test_jets,
+            trace,
         )
         .await?;
         Ok(Self { serf })
@@ -1264,7 +1410,27 @@ impl<C: SerfCheckpoint + 'static> Kernel<C> {
         trace: TraceOpts,
         pma: Option<PmaConfig>,
     ) -> Result<Self> {
-        Self::load_with_hot_state(kernel, checkpoint, &Vec::new(), test_jets, trace, pma).await
+        Self::load_with_event_log(kernel, checkpoint, test_jets, trace, pma, None).await
+    }
+
+    pub(crate) async fn load_with_event_log(
+        kernel: &[u8],
+        checkpoint: Option<C>,
+        test_jets: Vec<NounSlab>,
+        trace: TraceOpts,
+        pma: Option<PmaConfig>,
+        event_log: Option<EventLogConfig>,
+    ) -> Result<Self> {
+        Self::load_with_hot_state_with_event_log(
+            kernel,
+            checkpoint,
+            &Vec::new(),
+            test_jets,
+            trace,
+            pma,
+            event_log,
+        )
+        .await
     }
 
     /// Produces a checkpoint of the kernel state.
@@ -1341,6 +1507,8 @@ pub struct Serf {
     pub pma_meta_path: Option<PathBuf>,
     /// Optional GC configuration for PMA slab compaction.
     pma_gc_state: Option<PmaGcState>,
+    /// Optional append-only event log used as the durability boundary.
+    event_log: Option<EventLog>,
     /// Cancellation
     pub cancel_token: NockCancelToken,
     /// The current event number.
@@ -1369,6 +1537,7 @@ impl Serf {
         pma_meta_path: Option<PathBuf>,
         pma_meta_load: bool,
         pma_gc_state: Option<PmaGcState>,
+        event_log: Option<EventLog>,
         checkpoint: Option<C>,
         kernel_bytes: &[u8],
         constant_hot_state: &[HotEntry],
@@ -1505,6 +1674,7 @@ impl Serf {
             pma,
             pma_meta_path,
             pma_gc_state,
+            event_log,
             event_num,
             cancel_token,
             metrics: None,
@@ -1610,7 +1780,11 @@ impl Serf {
     ///
     /// Result containing the poke response or an error.
     #[tracing::instrument(level = "info", skip_all)]
-    pub fn do_poke(&mut self, job: Noun) -> Result<Noun> {
+    fn do_poke(
+        &mut self,
+        job: Noun,
+        metadata: Option<&AcceptedEventMetadata>,
+    ) -> Result<AcceptedPoke> {
         let space = self.context.stack.noun_space();
         match self.soft(job, POKE_AXIS, Some("poke".to_string())) {
             Ok(res) => {
@@ -1624,9 +1798,15 @@ impl Serf {
                 unsafe {
                     self.event_update(eve + 1, cell.tail().noun());
                 }
-                Ok(fec)
+                let durable_event = metadata
+                    .map(|metadata| self.capture_accepted_event(job, eve + 1, metadata))
+                    .transpose()?;
+                Ok(AcceptedPoke {
+                    effects: fec,
+                    durable_event,
+                })
             }
-            Err(goof) => self.poke_swap(job, goof),
+            Err(goof) => self.poke_swap(job, goof, metadata),
         }
     }
 
@@ -1745,7 +1925,12 @@ impl Serf {
     /// # Returns
     ///
     /// Result containing the new event or an error.
-    fn poke_swap(&mut self, job: Noun, goof: Noun) -> Result<Noun> {
+    fn poke_swap(
+        &mut self,
+        job: Noun,
+        goof: Noun,
+        metadata: Option<&AcceptedEventMetadata>,
+    ) -> Result<AcceptedPoke> {
         let stack = &mut self.context.stack;
         let space = stack.noun_space();
         self.context.cache = Hamt::<Noun>::new(stack);
@@ -1787,7 +1972,13 @@ impl Serf {
                 unsafe {
                     self.event_update(eve + 1, cell.tail().noun());
                 }
-                Ok(fec)
+                let durable_event = metadata
+                    .map(|metadata| self.capture_accepted_event(ovo, eve + 1, metadata))
+                    .transpose()?;
+                Ok(AcceptedPoke {
+                    effects: fec,
+                    durable_event,
+                })
             }
             Err(goof_crud) => Err(CrownError::KernelError(Some(goof_crud))),
         }
@@ -1845,7 +2036,8 @@ impl Serf {
     #[tracing::instrument(level = "info", skip_all, fields(
         src = wire.source
     ))]
-    pub fn poke(&mut self, wire: WireRepr, cause: Noun) -> Result<Noun> {
+    fn poke(&mut self, wire: WireRepr, cause: Noun) -> Result<AcceptedPoke> {
+        let metadata = self.prepare_accepted_event_metadata(&wire, cause)?;
         let random_bytes = rand::random::<u64>();
         let bytes = random_bytes.as_bytes()?;
         let eny: Atom = Atom::from_bytes(&mut self.context.stack, &bytes);
@@ -1865,7 +2057,88 @@ impl Serf {
             &[event_num, wire, eny.as_noun(), our.as_noun(), now.as_noun(), cause],
         );
 
-        self.do_poke(poke)
+        self.do_poke(poke, metadata.as_ref())
+    }
+
+    fn prepare_accepted_event_metadata(
+        &self,
+        wire: &WireRepr,
+        cause: Noun,
+    ) -> Result<Option<AcceptedEventMetadata>> {
+        if self.event_log.is_none() {
+            return Ok(None);
+        }
+        let space = self.context.stack.noun_space();
+        let mut cause_jam = Vec::new();
+        jam_noun_to_writer(cause, &space, &mut cause_jam)?;
+        let cause_hash = blake3::hash(&cause_jam);
+        let wire_tags = wire
+            .tags
+            .iter()
+            .map(std::string::ToString::to_string)
+            .collect::<Vec<_>>();
+        let wire_tags_json = serde_json::to_string(&wire_tags)
+            .map_err(|err| CrownError::SaveError(format!("wire tags json encode failed: {err}")))?;
+        Ok(Some(AcceptedEventMetadata {
+            wire_source: wire.source.to_string(),
+            wire_version: i64::try_from(wire.version)?,
+            wire_tags_json,
+            cause_hash: cause_hash.as_bytes().to_vec(),
+            created_at_ms: Self::current_time_ms()?,
+        }))
+    }
+
+    fn capture_accepted_event(
+        &self,
+        accepted_job: Noun,
+        event_num: u64,
+        metadata: &AcceptedEventMetadata,
+    ) -> Result<EventLogEntry> {
+        let space = self.context.stack.noun_space();
+        let mut job_jam = Vec::new();
+        jam_noun_to_writer(accepted_job, &space, &mut job_jam)?;
+        let job_hash = blake3::hash(&job_jam);
+        Ok(EventLogEntry {
+            event_num,
+            job_jam,
+            wire_source: metadata.wire_source.clone(),
+            wire_version: metadata.wire_version,
+            wire_tags_json: metadata.wire_tags_json.clone(),
+            cause_hash: metadata.cause_hash.clone(),
+            job_hash: job_hash.as_bytes().to_vec(),
+            created_at_ms: metadata.created_at_ms,
+        })
+    }
+
+    fn current_time_ms() -> Result<i64> {
+        Ok(i64::try_from(
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .map_err(|err| CrownError::SaveError(format!("system clock error: {err}")))?
+                .as_millis(),
+        )?)
+    }
+
+    fn append_durable_event(&mut self, event: &EventLogEntry) {
+        let Some(event_log) = self.event_log.as_mut() else {
+            return;
+        };
+        let start = Instant::now();
+        if let Err(err) = event_log.append_event(event) {
+            if let Some(metrics) = &self.metrics {
+                metrics.event_log_commit_failures.increment();
+            }
+            error!(
+                "event-log commit failed for event_num={} path={}: {}",
+                event.event_num,
+                event_log.path().display(),
+                err
+            );
+            std::process::abort();
+        }
+        if let Some(metrics) = &self.metrics {
+            metrics.event_log_append.add_timing(&start.elapsed());
+        }
     }
 
     /// Updates the Serf's state after an event.
@@ -2263,6 +2536,7 @@ mod tests {
             pma: None,
             pma_meta_path: None,
             pma_gc_state: None,
+            event_log: None,
             cancel_token,
             event_num: Arc::new(AtomicU64::new(0)),
             metrics: None,

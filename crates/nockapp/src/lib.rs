@@ -13,6 +13,7 @@
 //! - `utils`: Errors, misc functions and extensions.
 //!
 pub mod drivers;
+pub(crate) mod event_log;
 pub mod kernel;
 pub mod nockapp;
 pub mod noun;
