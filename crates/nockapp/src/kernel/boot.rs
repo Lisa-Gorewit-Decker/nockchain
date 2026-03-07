@@ -261,6 +261,16 @@ mod tests {
         pma_persist: bool,
         checkpoint_mode: CheckpointMode,
     ) -> NockApp<NockJammer> {
+        try_setup_test_app(data_dir, pma_persist, checkpoint_mode)
+            .await
+            .expect("setup boot test app")
+    }
+
+    async fn try_setup_test_app(
+        data_dir: &Path,
+        pma_persist: bool,
+        checkpoint_mode: CheckpointMode,
+    ) -> Result<NockApp<NockJammer>, Box<dyn std::error::Error>> {
         let jam = load_test_jam_bytes();
         let mut cli = default_boot_cli(false);
         cli.data_dir = Some(data_dir.to_path_buf());
@@ -268,13 +278,10 @@ mod tests {
         cli.gc_interval = Some(0);
         cli.checkpoint_mode = checkpoint_mode;
         cli.pma_persist = pma_persist;
-        match setup_::<NockJammer>(&jam, cli, &[], "boot-test", None)
-            .await
-            .expect("setup boot test app")
-        {
+        Ok(match setup_::<NockJammer>(&jam, cli, &[], "boot-test", None).await? {
             SetupResult::App(app) => app,
             SetupResult::ExportedState => panic!("unexpected export"),
-        }
+        })
     }
 
     async fn poke_inc(app: &NockApp<NockJammer>) {
@@ -458,6 +465,81 @@ mod tests {
         stop_app(&mut third).await;
         drop(third);
     }
+
+    #[tokio::test(flavor = "current_thread")]
+    #[traced_test]
+    #[cfg_attr(miri, ignore)]
+    async fn replays_logged_events_after_snapshot_restore() {
+        let _guard = boot_test_guard();
+        let _test_arena = TestArena::default();
+        let temp = TempDir::new().expect("tempdir");
+        let data_dir = temp.path().join("replay-after-snapshot-restore");
+
+        let mut first = setup_test_app(&data_dir, false, CheckpointMode::Original).await;
+        poke_inc(&first).await;
+        save_app(&mut first).await;
+        stop_app(&mut first).await;
+        drop(first);
+        clear_pma_files(&data_dir);
+
+        let mut second = setup_test_app(&data_dir, true, CheckpointMode::Original).await;
+        assert_eq!(second.kernel.serf.event_number.load(Ordering::SeqCst), 1);
+        poke_inc(&second).await;
+        assert_eq!(second.kernel.serf.event_number.load(Ordering::SeqCst), 2);
+        stop_app(&mut second).await;
+        drop(second);
+
+        clear_pma_files(&data_dir);
+        let checkpoints_dir = data_dir.join("checkpoints");
+        fs::write(checkpoints_dir.join("0.chkjam"), b"corrupt checkpoint 0").expect("corrupt chk0");
+        fs::write(checkpoints_dir.join("1.chkjam"), b"corrupt checkpoint 1").expect("corrupt chk1");
+
+        let mut third = setup_test_app(&data_dir, true, CheckpointMode::Original).await;
+        assert_eq!(third.kernel.serf.event_number.load(Ordering::SeqCst), 2);
+        stop_app(&mut third).await;
+        drop(third);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    #[traced_test]
+    #[cfg_attr(miri, ignore)]
+    async fn refuses_boot_on_event_log_gap_after_snapshot() {
+        let _guard = boot_test_guard();
+        let _test_arena = TestArena::default();
+        let temp = TempDir::new().expect("tempdir");
+        let data_dir = temp.path().join("gap-after-snapshot");
+
+        let mut first = setup_test_app(&data_dir, false, CheckpointMode::Original).await;
+        poke_inc(&first).await;
+        save_app(&mut first).await;
+        stop_app(&mut first).await;
+        drop(first);
+        clear_pma_files(&data_dir);
+
+        let mut second = setup_test_app(&data_dir, true, CheckpointMode::Original).await;
+        poke_inc(&second).await;
+        poke_inc(&second).await;
+        stop_app(&mut second).await;
+        drop(second);
+
+        let conn =
+            Connection::open(data_dir.join("event-log.sqlite3")).expect("open event log sqlite");
+        conn.execute("DELETE FROM events WHERE event_num = 2", [])
+            .expect("delete event");
+
+        clear_pma_files(&data_dir);
+        let checkpoints_dir = data_dir.join("checkpoints");
+        fs::write(checkpoints_dir.join("0.chkjam"), b"corrupt checkpoint 0").expect("corrupt chk0");
+        fs::write(checkpoints_dir.join("1.chkjam"), b"corrupt checkpoint 1").expect("corrupt chk1");
+
+        let err = match try_setup_test_app(&data_dir, true, CheckpointMode::Original).await {
+            Ok(_) => panic!("boot should fail on continuity gap"),
+            Err(err) => err,
+        };
+        assert!(err
+            .to_string()
+            .contains("event log continuity check failed"));
+    }
 }
 
 /// Result of setting up a NockApp
@@ -473,6 +555,7 @@ struct BootSelection<J> {
     checkpoint: Option<SaveableCheckpoint>,
     pma_open_existing: bool,
     snapshot_manifest: Option<SnapshotManifest>,
+    replay_jobs: Vec<Vec<u8>>,
 }
 
 async fn select_boot_state<J: Jammer>(
@@ -531,6 +614,7 @@ async fn select_boot_state<J: Jammer>(
             checkpoint: None,
             pma_open_existing: true,
             snapshot_manifest: None,
+            replay_jobs: Vec::new(),
         });
     }
 
@@ -550,15 +634,39 @@ async fn select_boot_state<J: Jammer>(
             path: event_log_path.clone(),
         }) {
             Ok(mut event_log) => {
-                let event_log_max = event_log.max_event_num().unwrap_or(None).unwrap_or(0);
-                for snapshot in event_log.list_ready_snapshots().unwrap_or_default() {
-                    if snapshot.event_num < event_log_max {
-                        info!(
-                            "Skipping snapshot {} at event_num={} because replay to event_num={} is not implemented yet",
-                            snapshot.pma_path,
-                            snapshot.event_num,
-                            event_log_max
+                if let Err(err) = event_log.quick_check() {
+                    return Err(CrownError::Unknown(format!(
+                        "event log quick_check failed during snapshot recovery: {err}"
+                    )));
+                }
+                let event_log_max = event_log
+                    .max_event_num()
+                    .map_err(|err| {
+                        CrownError::Unknown(format!(
+                            "failed to read max event number from event log: {err}"
+                        ))
+                    })?
+                    .unwrap_or(0);
+                let ready_snapshots = event_log.list_ready_snapshots().map_err(|err| {
+                    CrownError::Unknown(format!(
+                        "failed to list ready snapshots from event log: {err}"
+                    ))
+                })?;
+                for snapshot in ready_snapshots {
+                    let replay_entries = event_log
+                        .replay_events_after(snapshot.event_num)
+                        .map_err(|err| {
+                            CrownError::Unknown(format!(
+                                "event log continuity check failed from snapshot {} event_num={}: {err}",
+                                snapshot.pma_path, snapshot.event_num
+                            ))
+                        })?;
+                    if snapshot.event_num > event_log_max {
+                        warn!(
+                            "Snapshot {} event_num={} is ahead of event log max {}; marking failed",
+                            snapshot.pma_path, snapshot.event_num, event_log_max
                         );
+                        let _ = event_log.mark_snapshot_failed(snapshot.snapshot_id);
                         continue;
                     }
                     match restore_verified_snapshot(&snapshot, pma_path_0) {
@@ -616,6 +724,10 @@ async fn select_boot_state<J: Jammer>(
                                 checkpoint: None,
                                 pma_open_existing: true,
                                 snapshot_manifest: Some(manifest),
+                                replay_jobs: replay_entries
+                                    .into_iter()
+                                    .map(|entry| entry.job_jam)
+                                    .collect(),
                             });
                         }
                         Err(err) => {
@@ -677,6 +789,7 @@ async fn select_boot_state<J: Jammer>(
             checkpoint: Some(checkpoint),
             pma_open_existing: false,
             snapshot_manifest: None,
+            replay_jobs: Vec::new(),
         });
     }
 
@@ -690,6 +803,7 @@ async fn select_boot_state<J: Jammer>(
         checkpoint: None,
         pma_open_existing: false,
         snapshot_manifest: None,
+        replay_jobs: Vec::new(),
     })
 }
 
@@ -984,10 +1098,12 @@ pub async fn setup_<J: Jammer + Send + 'static>(
     let checkpoint = boot_selection.checkpoint;
     let pma_open_existing = boot_selection.pma_open_existing;
     let snapshot_manifest = boot_selection.snapshot_manifest;
+    let replay_jobs = boot_selection.replay_jobs;
 
     let kernel_f = async move || {
         let mut checkpoint = checkpoint;
         let snapshot_manifest = snapshot_manifest.clone();
+        let replay_jobs = replay_jobs;
         let pma_config = |words| {
             Some(PmaConfig {
                 path_0: pma_path_0.clone(),
@@ -1076,6 +1192,10 @@ pub async fn setup_<J: Jammer + Send + 'static>(
                 .await?
             }
         };
+        if !replay_jobs.is_empty() {
+            info!("Replaying {} persisted event(s) after snapshot restore", replay_jobs.len());
+            kernel.replay_event_jobs(replay_jobs).await?;
+        }
         let res: Result<Kernel<SaveableCheckpoint>, CrownError<ExternalError>> = Ok(kernel);
         res
     };

@@ -86,6 +86,12 @@ pub(crate) struct ReadySnapshotRecord {
     pub timestamp_tag: String,
 }
 
+#[derive(Debug, Clone)]
+pub(crate) struct ReplayLogEntry {
+    pub event_num: u64,
+    pub job_jam: Vec<u8>,
+}
+
 #[derive(Debug, Error)]
 pub(crate) enum EventLogError {
     #[error("event log io error: {0}")]
@@ -98,6 +104,10 @@ pub(crate) enum EventLogError {
     InvalidEventNum(i64),
     #[error("integer field {field} out of range for sqlite INTEGER: {value}")]
     IntegerOutOfRange { field: &'static str, value: u64 },
+    #[error("event log quick_check failed: {0}")]
+    QuickCheck(String),
+    #[error("event sequence gap detected: expected event_num {expected}, found {found}")]
+    EventSequenceGap { expected: u64, found: u64 },
 }
 
 pub(crate) struct EventLog {
@@ -221,6 +231,17 @@ ON CONFLICT(key) DO UPDATE SET value = excluded.value
         Ok(snapshot_id)
     }
 
+    pub(crate) fn quick_check(&self) -> Result<(), EventLogError> {
+        let result = self
+            .conn
+            .query_row("PRAGMA quick_check", [], |row| row.get::<_, String>(0))?;
+        if result.eq_ignore_ascii_case("ok") {
+            Ok(())
+        } else {
+            Err(EventLogError::QuickCheck(result))
+        }
+    }
+
     pub(crate) fn list_ready_snapshots(&self) -> Result<Vec<ReadySnapshotRecord>, EventLogError> {
         let mut stmt = self.conn.prepare(
             r#"
@@ -281,6 +302,40 @@ ORDER BY
             params![snapshot_id],
         )?;
         Ok(())
+    }
+
+    pub(crate) fn replay_events_after(
+        &self,
+        event_num: u64,
+    ) -> Result<Vec<ReplayLogEntry>, EventLogError> {
+        let mut stmt = self.conn.prepare(
+            r#"
+SELECT event_num, job_jam
+FROM events
+WHERE event_num > ?1
+ORDER BY event_num ASC
+"#,
+        )?;
+        let rows = stmt.query_map(params![sqlite_i64("event_num", event_num)?], |row| {
+            let event_num = row.get::<_, i64>(0)?;
+            Ok(ReplayLogEntry {
+                event_num: u64::try_from(event_num)
+                    .map_err(|_| rusqlite::Error::IntegralValueOutOfRange(0, event_num))?,
+                job_jam: row.get(1)?,
+            })
+        })?;
+        let entries = rows.collect::<Result<Vec<_>, _>>()?;
+        let mut expected = event_num.saturating_add(1);
+        for entry in &entries {
+            if entry.event_num != expected {
+                return Err(EventLogError::EventSequenceGap {
+                    expected,
+                    found: entry.event_num,
+                });
+            }
+            expected = expected.saturating_add(1);
+        }
+        Ok(entries)
     }
 
     #[allow(dead_code)]
@@ -405,5 +460,23 @@ mod tests {
         let ready = log.list_ready_snapshots().expect("ready snapshots");
         assert_eq!(ready.len(), 1);
         assert_eq!(ready[0].event_num, 7);
+    }
+
+    #[test]
+    fn replay_events_detects_gaps() {
+        let temp = TempDir::new().expect("tempdir");
+        let path = temp.path().join("event-log.sqlite3");
+        let mut log = EventLog::open(EventLogConfig { path }).expect("open event log");
+        log.append_event(&sample_entry(1)).expect("append event 1");
+        log.append_event(&sample_entry(3)).expect("append event 3");
+
+        let err = log.replay_events_after(0).expect_err("gap should be detected");
+        assert!(matches!(
+            err,
+            EventLogError::EventSequenceGap {
+                expected: 2,
+                found: 3
+            }
+        ));
     }
 }

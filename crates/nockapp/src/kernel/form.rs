@@ -48,6 +48,7 @@ const POKE_AXIS: u64 = 23;
 
 const SERF_FINISHED_INTERVAL: Duration = Duration::from_millis(100);
 const SERF_THREAD_STACK_SIZE: usize = 256 * 1024 * 1024; // 8MB
+const REPLAY_PRESERVE_BATCH: usize = 64;
 
 pub struct LoadState {
     pub ker_hash: Hash,
@@ -418,6 +419,10 @@ pub enum SerfAction<C> {
         ovo: NounSlab,
         result: oneshot::Sender<Result<NounSlab>>,
     },
+    Replay {
+        jobs: Vec<Vec<u8>>,
+        result: oneshot::Sender<Result<()>>,
+    },
     // Run a poke
     //
     // TODO: send back the event number after each poke
@@ -787,6 +792,18 @@ impl<C> SerfThread<C> {
         }
     }
 
+    pub(crate) fn replay_event_jobs(
+        &self,
+        jobs: Vec<Vec<u8>>,
+    ) -> impl Future<Output = Result<()>> {
+        let (result, result_fut) = oneshot::channel();
+        let action_sender = self.action_sender.clone();
+        async move {
+            action_sender.send(SerfAction::Replay { jobs, result }).await?;
+            result_fut.await?
+        }
+    }
+
     pub fn import(&self, state: LoadState) -> impl Future<Output = Result<()>> {
         let (result, result_fut) = oneshot::channel();
         let action_sender = self.action_sender.clone();
@@ -979,6 +996,20 @@ fn serf_loop<C: SerfCheckpoint>(
                 if let Some(nockapp_metrics) = &serf.metrics {
                     nockapp_metrics.serf_loop_peek.add_timing(&action_elapsed);
                 };
+            }
+            SerfAction::Replay { jobs, result } => {
+                if inhibit.load(Ordering::SeqCst) {
+                    let _ = result
+                        .send(Err(CrownError::Unknown("Serf stopping".to_string())))
+                        .inspect_err(|_e| {
+                            debug!("Failed to send inhibited replay result from serf thread");
+                        });
+                } else {
+                    let replay_res = serf.replay_event_jobs(jobs);
+                    let _ = result.send(replay_res).inspect_err(|_e| {
+                        debug!("Failed to send replay result from serf thread");
+                    });
+                }
             }
             SerfAction::Poke {
                 wire,
@@ -1545,6 +1576,13 @@ impl<C: SerfCheckpoint + 'static> Kernel<C> {
         request: StreamingCheckpointRequest,
     ) -> impl Future<Output = Result<StreamingCheckpointMeta>> {
         self.serf.checkpoint_streaming(request)
+    }
+
+    pub(crate) fn replay_event_jobs(
+        &self,
+        jobs: Vec<Vec<u8>>,
+    ) -> impl Future<Output = Result<()>> {
+        self.serf.replay_event_jobs(jobs)
     }
 }
 
@@ -2279,6 +2317,27 @@ impl Serf {
         ) {
             warn!("epoch snapshot creation failed: {err}");
         }
+    }
+
+    fn replay_event_jobs(&mut self, jobs: Vec<Vec<u8>>) -> Result<()> {
+        let mut dirty_since_preserve = false;
+        for (idx, job_jam) in jobs.into_iter().enumerate() {
+            let job = Noun::cue_bytes_slice(&mut self.context.stack, &job_jam)?;
+            let _ = self.do_poke(job, None)?;
+            dirty_since_preserve = true;
+            if (idx + 1) % REPLAY_PRESERVE_BATCH == 0 {
+                unsafe {
+                    let _ = self.preserve_event_update_leftovers();
+                }
+                dirty_since_preserve = false;
+            }
+        }
+        if dirty_since_preserve {
+            unsafe {
+                let _ = self.preserve_event_update_leftovers();
+            }
+        }
+        Ok(())
     }
 
     /// Updates the Serf's state after an event.
