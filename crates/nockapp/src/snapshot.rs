@@ -19,7 +19,6 @@ use crate::event_log::{EventLog, EventLogError, ReadySnapshotRecord};
 
 const SNAPSHOT_MANIFEST_MAGIC: u64 = u64::from_le_bytes(*b"SNAPMAN1");
 const SNAPSHOT_MANIFEST_VERSION: u32 = 1;
-const DEFAULT_ROTATING_SNAPSHOT_INTERVAL_EVENTS: u64 = 64;
 type HashBytes = [u8; OUT_LEN];
 
 #[derive(Clone, Copy, Debug, Encode, Decode, PartialEq, Eq)]
@@ -341,14 +340,17 @@ pub(crate) fn maybe_create_rotating_snapshot(
     event_num: u64,
     kernel_root_raw: u64,
     cold_offset: u32,
+    rotating_snapshot_interval_events: Option<u64>,
 ) -> Result<bool, SnapshotBuildError> {
+    let Some(interval) = rotating_snapshot_interval_events else {
+        return Ok(false);
+    };
     let ready = event_log.list_ready_snapshots()?;
     let latest_event = ready
         .iter()
         .map(|snapshot| snapshot.event_num)
         .max()
         .unwrap_or(0);
-    let interval = rotating_snapshot_interval_events();
     if event_num <= latest_event || event_num.saturating_sub(latest_event) < interval {
         return Ok(false);
     }
@@ -572,14 +574,6 @@ fn snapshot_kind_name(kind: SnapshotKind) -> &'static str {
     }
 }
 
-fn rotating_snapshot_interval_events() -> u64 {
-    std::env::var("NOCKAPP_ROTATING_SNAPSHOT_INTERVAL_EVENTS")
-        .ok()
-        .and_then(|raw| raw.trim().parse::<u64>().ok())
-        .filter(|value| *value > 0)
-        .unwrap_or(DEFAULT_ROTATING_SNAPSHOT_INTERVAL_EVENTS)
-}
-
 fn validate_root_raw(
     reader: &mut PmaDirectReader,
     kernel_root_raw: u64,
@@ -734,6 +728,7 @@ mod tests {
     use tempfile::TempDir;
 
     use super::*;
+    use crate::test_support::native_pma_test_guard;
 
     fn build_test_snapshot() -> (TempDir, PathBuf, PathBuf, SnapshotManifest, u64) {
         let temp = TempDir::new().expect("tempdir");
@@ -810,6 +805,7 @@ mod tests {
 
     #[test]
     fn verify_snapshot_accepts_valid_snapshot() {
+        let _guard = native_pma_test_guard();
         let (_temp, pma_path, manifest_path, manifest, _root_raw) = build_test_snapshot();
         let verification =
             verify_snapshot(&manifest_path, &pma_path, SnapshotVerifyMode::Full).expect("verify");
@@ -820,6 +816,7 @@ mod tests {
 
     #[test]
     fn verify_snapshot_rejects_used_hash_mismatch() {
+        let _guard = native_pma_test_guard();
         let (_temp, pma_path, manifest_path, mut manifest, _root_raw) = build_test_snapshot();
         manifest.used_blake3 = [7; OUT_LEN];
         manifest.checksum = manifest.compute_checksum().expect("checksum");
@@ -834,6 +831,7 @@ mod tests {
 
     #[test]
     fn verify_snapshot_rejects_structural_corruption() {
+        let _guard = native_pma_test_guard();
         let (_temp, pma_path, manifest_path, mut manifest, root_raw) = build_test_snapshot();
         let root_offset = match classify_pma_noun(root_raw).expect("classify root") {
             PmaRawNounKind::Cell { offset } => offset,

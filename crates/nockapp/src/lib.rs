@@ -73,6 +73,8 @@ pub const DEFAULT_NOCK_STACK_SIZE: usize = 1 << 27;
 
 #[cfg(test)]
 pub mod test_support {
+    use std::sync::{Mutex, MutexGuard, OnceLock};
+
     use nockvm::mem::NockStack;
 
     pub struct TestArena {
@@ -105,5 +107,12 @@ pub mod test_support {
         fn deref_mut(&mut self) -> &mut Self::Target {
             &mut self.stack
         }
+    }
+
+    pub fn native_pma_test_guard() -> MutexGuard<'static, ()> {
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| Mutex::new(()))
+            .lock()
+            .expect("native PMA test mutex poisoned")
     }
 }

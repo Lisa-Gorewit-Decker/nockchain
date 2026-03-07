@@ -5,7 +5,7 @@ use tempfile::TempDir;
 
 use super::{CheckpointMode, NockApp};
 use crate::kernel::form::Kernel;
-use crate::save::Saver;
+use crate::save::{SaveableCheckpoint, Saver};
 
 fn load_jam_bytes(jam: &str) -> Vec<u8> {
     // Try multiple possible locations for the jam file
@@ -31,17 +31,18 @@ pub async fn setup_nockapp_with_interval(
     let temp_dir_path = temp_dir.path().to_path_buf();
     let jam_bytes = load_jam_bytes(jam);
 
-    let kernel_f = async || Kernel::load(&jam_bytes, None, vec![], Default::default(), None).await;
+    let kernel_f = move |_| async move {
+        let kernel = Kernel::load(&jam_bytes, None, vec![], Default::default(), None).await?;
+        Ok::<(Kernel<SaveableCheckpoint>, Saver), crate::CrownError>((
+            kernel,
+            Saver::new_empty(&temp_dir_path),
+        ))
+    };
     (
         temp_dir,
-        NockApp::new(
-            kernel_f,
-            Saver::new_empty(&temp_dir_path),
-            save_interval,
-            CheckpointMode::Original,
-        )
-        .await
-        .expect("Could not create NockApp"),
+        NockApp::new(kernel_f, save_interval, CheckpointMode::Original)
+            .await
+            .expect("Could not create NockApp"),
     )
 }
 
@@ -415,6 +416,7 @@ pub mod tests {
                     words: pma_words,
                     open_existing: false,
                     create_snapshots: false,
+                    rotating_snapshot_interval_events: None,
                     restore_manifest: None,
                     gc_interval: None,
                 });
@@ -441,6 +443,7 @@ pub mod tests {
                     words: pma_words,
                     open_existing: false,
                     create_snapshots: false,
+                    rotating_snapshot_interval_events: None,
                     restore_manifest: None,
                     gc_interval: None,
                 });
@@ -467,6 +470,7 @@ pub mod tests {
                     words: pma_words,
                     open_existing: false,
                     create_snapshots: false,
+                    rotating_snapshot_interval_events: None,
                     restore_manifest: None,
                     gc_interval: None,
                 });
@@ -493,6 +497,7 @@ pub mod tests {
                     words: pma_words,
                     open_existing: false,
                     create_snapshots: false,
+                    rotating_snapshot_interval_events: None,
                     restore_manifest: None,
                     gc_interval: None,
                 });
@@ -519,6 +524,7 @@ pub mod tests {
                     words: pma_words,
                     open_existing: false,
                     create_snapshots: false,
+                    rotating_snapshot_interval_events: None,
                     restore_manifest: None,
                     gc_interval: None,
                 });
@@ -545,6 +551,7 @@ pub mod tests {
                     words: pma_words,
                     open_existing: false,
                     create_snapshots: false,
+                    rotating_snapshot_interval_events: None,
                     restore_manifest: None,
                     gc_interval: None,
                 });

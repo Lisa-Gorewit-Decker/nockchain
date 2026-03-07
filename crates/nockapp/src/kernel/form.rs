@@ -65,6 +65,7 @@ pub struct PmaConfig {
     pub words: usize,
     pub open_existing: bool,
     pub create_snapshots: bool,
+    pub rotating_snapshot_interval_events: Option<u64>,
     pub(crate) restore_manifest: Option<SnapshotManifest>,
     pub gc_interval: Option<Duration>,
 }
@@ -497,7 +498,14 @@ impl<C: SerfCheckpoint + Send + 'static> SerfThread<C> {
                     hasher.finalize()
                 };
                 let mut pma_meta_load = false;
-                let (pma, pma_meta_path, pma_gc_state, create_snapshots, restore_manifest) = match pma {
+                let (
+                    pma,
+                    pma_meta_path,
+                    pma_gc_state,
+                    create_snapshots,
+                    rotating_snapshot_interval_events,
+                    restore_manifest,
+                ) = match pma {
                     Some(config) => {
                         let PmaConfig {
                             path_0,
@@ -505,6 +513,7 @@ impl<C: SerfCheckpoint + Send + 'static> SerfThread<C> {
                             words,
                             open_existing,
                             create_snapshots,
+                            rotating_snapshot_interval_events,
                             restore_manifest,
                             gc_interval,
                         } = config;
@@ -554,6 +563,7 @@ impl<C: SerfCheckpoint + Send + 'static> SerfThread<C> {
                                     PmaGcState::new(paths, active, interval, words)
                                 }),
                                 create_snapshots,
+                                rotating_snapshot_interval_events,
                                 restore_manifest,
                             ),
                             Err(err) => {
@@ -563,7 +573,7 @@ impl<C: SerfCheckpoint + Send + 'static> SerfThread<C> {
                             }
                         }
                     }
-                    None => (None, None, None, false, None),
+                    None => (None, None, None, false, None, None),
                 };
                 let event_log = if let Some(config) = event_log {
                     match EventLog::open(config.clone()) {
@@ -605,6 +615,7 @@ impl<C: SerfCheckpoint + Send + 'static> SerfThread<C> {
                     pma_meta_load,
                     pma_gc_state,
                     create_snapshots,
+                    rotating_snapshot_interval_events,
                     event_log,
                     checkpoint,
                     &kernel_bytes,
@@ -1648,6 +1659,7 @@ pub struct Serf {
     /// Optional GC configuration for PMA slab compaction.
     pma_gc_state: Option<PmaGcState>,
     snapshot_creation_enabled: bool,
+    rotating_snapshot_interval_events: Option<u64>,
     /// Optional append-only event log used as the durability boundary.
     event_log: Option<EventLog>,
     /// Cancellation
@@ -1679,6 +1691,7 @@ impl Serf {
         pma_meta_load: bool,
         pma_gc_state: Option<PmaGcState>,
         snapshot_creation_enabled: bool,
+        rotating_snapshot_interval_events: Option<u64>,
         event_log: Option<EventLog>,
         checkpoint: Option<C>,
         kernel_bytes: &[u8],
@@ -1817,6 +1830,7 @@ impl Serf {
             pma_meta_path,
             pma_gc_state,
             snapshot_creation_enabled,
+            rotating_snapshot_interval_events,
             event_log,
             event_num,
             cancel_token,
@@ -2313,10 +2327,16 @@ impl Serf {
             warn!("epoch snapshot skipped: cold state is not in PMA");
             return;
         };
+        let build_start = Instant::now();
         if let Err(err) = maybe_create_epoch_snapshot(
             event_log, pma, self.ker_hash, event_num, kernel_root_raw, cold_offset,
         ) {
+            if let Some(metrics) = &self.metrics {
+                metrics.snapshot_build_failures.increment();
+            }
             warn!("epoch snapshot creation failed: {err}");
+        } else if let Some(metrics) = &self.metrics {
+            metrics.snapshot_build.add_timing(&build_start.elapsed());
         }
     }
 
@@ -2369,10 +2389,17 @@ impl Serf {
             warn!("rotating snapshot skipped: cold state is not in PMA");
             return;
         };
+        let build_start = Instant::now();
         if let Err(err) = maybe_create_rotating_snapshot(
             event_log, pma, self.ker_hash, event_num, kernel_root_raw, cold_offset,
+            self.rotating_snapshot_interval_events,
         ) {
+            if let Some(metrics) = &self.metrics {
+                metrics.snapshot_build_failures.increment();
+            }
             warn!("rotating snapshot creation failed: {err}");
+        } else if let Some(metrics) = &self.metrics {
+            metrics.snapshot_build.add_timing(&build_start.elapsed());
         }
     }
 
@@ -2772,6 +2799,7 @@ mod tests {
             pma_meta_path: None,
             pma_gc_state: None,
             snapshot_creation_enabled: false,
+            rotating_snapshot_interval_events: None,
             event_log: None,
             cancel_token,
             event_num: Arc::new(AtomicU64::new(0)),

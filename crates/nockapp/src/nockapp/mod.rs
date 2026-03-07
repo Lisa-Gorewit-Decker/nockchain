@@ -191,13 +191,12 @@ impl<J: Jammer + Send + 'static> NockApp<J> {
     /// This constructs a Tokio interval, even though it doesn't look like it, a Tokio runtime is _required_.
     pub async fn new<F, U, E>(
         kernel_from_boot: F,
-        saver: Saver<J>,
         save_interval_duration: Option<Duration>,
         checkpoint_mode: CheckpointMode,
     ) -> Result<Self, NockAppError>
     where
-        F: FnOnce() -> U,
-        U: Future<Output = Result<Kernel<SaveableCheckpoint>, E>>,
+        F: FnOnce(Arc<NockAppMetrics>) -> U,
+        U: Future<Output = Result<(Kernel<SaveableCheckpoint>, Saver<J>), E>>,
         NockAppError: From<E>,
     {
         // let cancel_token = tokio_util::sync::CancellationToken::new();
@@ -223,8 +222,8 @@ impl<J: Jammer + Send + 'static> NockApp<J> {
             info!("Checkpointing disabled; background saves off");
         }
 
+        let (mut kernel, saver) = kernel_from_boot(metrics.clone()).await?;
         let save_mutex = Arc::new(Mutex::new(saver));
-        let mut kernel = kernel_from_boot().await?;
         // important: we are tracking this separately here because
         // what matters is the last poke *we* received an ack for. Using
         // the Arc in the serf would result in a race condition!

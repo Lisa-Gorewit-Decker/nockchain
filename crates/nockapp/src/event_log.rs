@@ -301,6 +301,7 @@ ORDER BY
             "UPDATE snapshots SET state = 'failed' WHERE snapshot_id = ?1",
             params![snapshot_id],
         )?;
+        self.refresh_active_snapshot_after_state_change(snapshot_id)?;
         Ok(())
     }
 
@@ -385,6 +386,7 @@ ORDER BY timestamp_tag DESC, snapshot_id DESC
             "UPDATE snapshots SET state = 'retired' WHERE snapshot_id = ?1",
             params![snapshot_id],
         )?;
+        self.refresh_active_snapshot_after_state_change(snapshot_id)?;
         Ok(())
     }
 
@@ -470,6 +472,40 @@ ON CONFLICT(key) DO UPDATE SET value = excluded.value
                 params![EVENT_LOG_SCHEMA_VERSION],
             )?;
             tx.commit()?;
+        }
+        Ok(())
+    }
+
+    fn refresh_active_snapshot_after_state_change(
+        &mut self,
+        changed_snapshot_id: i64,
+    ) -> Result<(), EventLogError> {
+        let active_snapshot_id = self.active_snapshot_id()?;
+        if active_snapshot_id != Some(changed_snapshot_id) {
+            return Ok(());
+        }
+        let replacement = self
+            .conn
+            .query_row(
+                r#"
+SELECT snapshot_id
+FROM snapshots
+WHERE state = 'ready'
+ORDER BY
+  CASE kind WHEN 'rotating' THEN 0 ELSE 1 END ASC,
+  timestamp_tag DESC,
+  snapshot_id DESC
+LIMIT 1
+"#,
+                [],
+                |row| row.get::<_, i64>(0),
+            )
+            .optional()?;
+        if let Some(replacement) = replacement {
+            self.set_active_snapshot_id(replacement)?;
+        } else {
+            self.conn
+                .execute("DELETE FROM meta WHERE key = 'active_snapshot_id'", [])?;
         }
         Ok(())
     }
