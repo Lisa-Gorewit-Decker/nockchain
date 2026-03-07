@@ -34,7 +34,7 @@ use crate::nockapp::wire::{wire_to_noun, WireRepr};
 use crate::noun::slab::NounSlab;
 use crate::noun::slam;
 use crate::save::{SaveableCheckpoint, StreamingCheckpointMeta, StreamingCheckpointRequest};
-use crate::snapshot::maybe_create_epoch_snapshot;
+use crate::snapshot::{maybe_create_epoch_snapshot, SnapshotManifest};
 use crate::utils::{
     create_context, current_da, NOCK_STACK_SIZE, NOCK_STACK_SIZE_HUGE, NOCK_STACK_SIZE_LARGE,
     NOCK_STACK_SIZE_MEDIUM, NOCK_STACK_SIZE_SMALL, NOCK_STACK_SIZE_TINY,
@@ -62,6 +62,7 @@ pub struct PmaConfig {
     pub words: usize,
     pub open_existing: bool,
     pub create_snapshots: bool,
+    pub(crate) restore_manifest: Option<SnapshotManifest>,
     pub gc_interval: Option<Duration>,
 }
 
@@ -489,7 +490,7 @@ impl<C: SerfCheckpoint + Send + 'static> SerfThread<C> {
                     hasher.finalize()
                 };
                 let mut pma_meta_load = false;
-                let (pma, pma_meta_path, pma_gc_state, create_snapshots) = match pma {
+                let (pma, pma_meta_path, pma_gc_state, create_snapshots, restore_manifest) = match pma {
                     Some(config) => {
                         let PmaConfig {
                             path_0,
@@ -497,6 +498,7 @@ impl<C: SerfCheckpoint + Send + 'static> SerfThread<C> {
                             words,
                             open_existing,
                             create_snapshots,
+                            restore_manifest,
                             gc_interval,
                         } = config;
                         let paths = PmaSlabPaths { path_0, path_1 };
@@ -545,6 +547,7 @@ impl<C: SerfCheckpoint + Send + 'static> SerfThread<C> {
                                     PmaGcState::new(paths, active, interval, words)
                                 }),
                                 create_snapshots,
+                                restore_manifest,
                             ),
                             Err(err) => {
                                 let _ =
@@ -553,7 +556,7 @@ impl<C: SerfCheckpoint + Send + 'static> SerfThread<C> {
                             }
                         }
                     }
-                    None => (None, None, None, false),
+                    None => (None, None, None, false, None),
                 };
                 let event_log = if let Some(config) = event_log {
                     match EventLog::open(config.clone()) {
@@ -569,6 +572,24 @@ impl<C: SerfCheckpoint + Send + 'static> SerfThread<C> {
                 } else {
                     None
                 };
+                if let (Some(pma), Some(meta_path), Some(manifest)) =
+                    (pma.as_ref(), pma_meta_path.as_ref(), restore_manifest.as_ref())
+                {
+                    let synthesized = PmaPersistMetadata::new(
+                        blake3::Hash::from_bytes(manifest.ker_hash),
+                        manifest.event_num,
+                        manifest.kernel_root_raw,
+                        manifest.cold_offset,
+                        pma.arena().base_ptr() as u64,
+                    );
+                    if let Err(err) = synthesized.save_to_path(meta_path) {
+                        let _ = init_sender.send(Err(CrownError::Unknown(format!(
+                            "failed to synthesize PMA metadata from snapshot manifest at {}: {err}",
+                            meta_path.display()
+                        ))));
+                        return;
+                    }
+                }
                 let stack = NockStack::new(nock_stack_size, 0);
                 let serf = Serf::new(
                     stack,

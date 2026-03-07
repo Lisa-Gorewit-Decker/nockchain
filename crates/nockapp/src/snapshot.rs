@@ -131,6 +131,14 @@ pub(crate) enum SnapshotBuildError {
     Io(#[from] io::Error),
 }
 
+#[derive(Debug, Error)]
+pub(crate) enum SnapshotRestoreError {
+    #[error(transparent)]
+    Verify(#[from] SnapshotVerifyError),
+    #[error("snapshot restore io error: {0}")]
+    Io(#[from] io::Error),
+}
+
 impl SnapshotManifest {
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn new(
@@ -350,6 +358,7 @@ pub(crate) fn maybe_create_epoch_snapshot(
     }
 
     event_log.insert_ready_snapshot(&ReadySnapshotRecord {
+        snapshot_id: 0,
         kind: "epoch".to_string(),
         event_num,
         pma_path: epoch_pma_path.to_string_lossy().into_owned(),
@@ -365,6 +374,21 @@ pub(crate) fn maybe_create_epoch_snapshot(
         timestamp_tag: "epoch".to_string(),
     })?;
     Ok(true)
+}
+
+pub(crate) fn restore_verified_snapshot(
+    record: &ReadySnapshotRecord,
+    operative_pma_path: &Path,
+) -> Result<SnapshotManifest, SnapshotRestoreError> {
+    let verification = verify_snapshot(
+        Path::new(&record.manifest_path),
+        Path::new(&record.pma_path),
+        SnapshotVerifyMode::Full,
+    )?;
+    let tmp_path = operative_pma_path.with_extension("restore.tmp");
+    copy_snapshot_file(Path::new(&record.pma_path), &tmp_path)?;
+    replace_file(&tmp_path, operative_pma_path)?;
+    Ok(verification.manifest)
 }
 
 fn validate_root_raw(

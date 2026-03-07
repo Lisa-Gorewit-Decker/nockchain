@@ -23,6 +23,7 @@ use crate::kernel::form::{inspect_existing_pma, ExistingPmaStatus, Kernel, PmaCo
 use crate::nockapp::PMA_PERSIST_ENV;
 use crate::noun::slab::{Jammer, NounSlab};
 use crate::save::{SaveableCheckpoint, Saver};
+use crate::snapshot::{restore_verified_snapshot, SnapshotManifest};
 use crate::utils::error::{CrownError, ExternalError};
 use crate::utils::{
     NOCK_STACK_SIZE, NOCK_STACK_SIZE_HUGE, NOCK_STACK_SIZE_LARGE, NOCK_STACK_SIZE_MEDIUM,
@@ -39,6 +40,7 @@ const DEFAULT_LOG_FILTER: &str = "info";
 #[derive(Debug)]
 enum BootSource {
     Pma { path: PathBuf, event_num: u64 },
+    Snapshot { path: PathBuf, event_num: u64 },
     Checkpoint { path: PathBuf, event_num: u64 },
     Fresh,
 }
@@ -217,6 +219,7 @@ mod tests {
     use std::fs;
     use std::path::Path;
     use std::sync::atomic::Ordering;
+    use std::sync::{Mutex, OnceLock};
 
     use nockvm::noun::{NounSpace, D};
     use nockvm_macros::tas;
@@ -237,6 +240,13 @@ mod tests {
                 .join("test-ker.jam"),
         )
         .expect("read test kernel")
+    }
+
+    fn boot_test_guard() -> std::sync::MutexGuard<'static, ()> {
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| Mutex::new(()))
+            .lock()
+            .expect("boot test mutex poisoned")
     }
 
     fn inc_poke() -> NounSlab {
@@ -350,6 +360,7 @@ mod tests {
     #[traced_test]
     #[cfg_attr(miri, ignore)]
     async fn bootstraps_pma_from_checkpoint_once() {
+        let _guard = boot_test_guard();
         let _test_arena = TestArena::default();
         let temp = TempDir::new().expect("tempdir");
         let data_dir = temp.path().join("bootstrapped-pma");
@@ -380,12 +391,14 @@ mod tests {
         assert_eq!(third.kernel.serf.event_number.load(Ordering::SeqCst), 2);
         assert_eq!(ready_snapshot_count(&data_dir), 1);
         stop_app(&mut third).await;
+        drop(third);
     }
 
     #[tokio::test(flavor = "current_thread")]
     #[traced_test]
     #[cfg_attr(miri, ignore)]
     async fn valid_pma_skips_corrupt_checkpoint_files() {
+        let _guard = boot_test_guard();
         let _test_arena = TestArena::default();
         let temp = TempDir::new().expect("tempdir");
         let data_dir = temp.path().join("skip-corrupt-checkpoint");
@@ -410,6 +423,40 @@ mod tests {
         let mut third = setup_test_app(&data_dir, true, CheckpointMode::Original).await;
         assert_eq!(third.kernel.serf.event_number.load(Ordering::SeqCst), 2);
         stop_app(&mut third).await;
+        drop(third);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    #[traced_test]
+    #[cfg_attr(miri, ignore)]
+    async fn restores_epoch_snapshot_when_pma_is_missing() {
+        let _guard = boot_test_guard();
+        let _test_arena = TestArena::default();
+        let temp = TempDir::new().expect("tempdir");
+        let data_dir = temp.path().join("restore-epoch-snapshot");
+
+        let mut first = setup_test_app(&data_dir, false, CheckpointMode::Original).await;
+        poke_inc(&first).await;
+        save_app(&mut first).await;
+        stop_app(&mut first).await;
+        drop(first);
+        clear_pma_files(&data_dir);
+
+        let mut second = setup_test_app(&data_dir, true, CheckpointMode::Original).await;
+        assert_eq!(second.kernel.serf.event_number.load(Ordering::SeqCst), 1);
+        stop_app(&mut second).await;
+        drop(second);
+
+        clear_pma_files(&data_dir);
+        let checkpoints_dir = data_dir.join("checkpoints");
+        fs::write(checkpoints_dir.join("0.chkjam"), b"corrupt checkpoint 0").expect("corrupt chk0");
+        fs::write(checkpoints_dir.join("1.chkjam"), b"corrupt checkpoint 1").expect("corrupt chk1");
+
+        let mut third = setup_test_app(&data_dir, true, CheckpointMode::Original).await;
+        assert_eq!(third.kernel.serf.event_number.load(Ordering::SeqCst), 1);
+        assert!(data_dir.join("pma").join("0.meta").exists());
+        stop_app(&mut third).await;
+        drop(third);
     }
 }
 
@@ -425,15 +472,22 @@ struct BootSelection<J> {
     saver: Saver<J>,
     checkpoint: Option<SaveableCheckpoint>,
     pma_open_existing: bool,
+    snapshot_manifest: Option<SnapshotManifest>,
 }
 
 async fn select_boot_state<J: Jammer>(
     jams_dir: &PathBuf,
     kernel_bytes: &[u8],
     pma_persist: bool,
+    event_log_path: &PathBuf,
     pma_path_0: &PathBuf,
     pma_path_1: &PathBuf,
 ) -> Result<BootSelection<J>, CrownError<ExternalError>> {
+    let expected_ker_hash = {
+        let mut hasher = blake3::Hasher::new();
+        hasher.update(kernel_bytes);
+        hasher.finalize()
+    };
     let existing_pma = if pma_persist {
         Some(inspect_existing_pma(pma_path_0, pma_path_1, kernel_bytes))
     } else {
@@ -476,6 +530,7 @@ async fn select_boot_state<J: Jammer>(
             saver,
             checkpoint: None,
             pma_open_existing: true,
+            snapshot_manifest: None,
         });
     }
 
@@ -488,6 +543,95 @@ async fn select_boot_state<J: Jammer>(
         }
         None => {}
         Some(ExistingPmaStatus::Valid { .. }) => unreachable!(),
+    }
+
+    if pma_persist {
+        match crate::event_log::EventLog::open(EventLogConfig {
+            path: event_log_path.clone(),
+        }) {
+            Ok(mut event_log) => {
+                let event_log_max = event_log.max_event_num().unwrap_or(None).unwrap_or(0);
+                for snapshot in event_log.list_ready_snapshots().unwrap_or_default() {
+                    if snapshot.event_num < event_log_max {
+                        info!(
+                            "Skipping snapshot {} at event_num={} because replay to event_num={} is not implemented yet",
+                            snapshot.pma_path,
+                            snapshot.event_num,
+                            event_log_max
+                        );
+                        continue;
+                    }
+                    match restore_verified_snapshot(&snapshot, pma_path_0) {
+                        Ok(manifest) => {
+                            if manifest.ker_hash != *expected_ker_hash.as_bytes() {
+                                warn!(
+                                    "Snapshot {} kernel hash mismatch; marking failed",
+                                    snapshot.pma_path
+                                );
+                                let _ = event_log.mark_snapshot_failed(snapshot.snapshot_id);
+                                continue;
+                            }
+                            for stale in [
+                                pma_path_1.clone(),
+                                pma_path_0.with_extension("meta"),
+                                pma_path_1.with_extension("meta"),
+                            ] {
+                                if stale.exists() {
+                                    let _ = std::fs::remove_file(&stale);
+                                }
+                            }
+                            let (saver, checkpoint_summary) = match Saver::<J>::resume(jams_dir)
+                                .await
+                            {
+                                Ok(result) => result,
+                                Err(err) => {
+                                    warn!(
+                                        "checkpoint inspection failed while booting from snapshot; continuing without checkpoint metadata: {err}"
+                                    );
+                                    (Saver::new_empty(jams_dir), None)
+                                }
+                            };
+                            let boot_source = BootSource::Snapshot {
+                                path: PathBuf::from(&snapshot.pma_path),
+                                event_num: snapshot.event_num,
+                            };
+                            match &boot_source {
+                                BootSource::Snapshot { path, event_num } => info!(
+                                    "Boot source: snapshot path={} event_num={}",
+                                    path.display(),
+                                    event_num
+                                ),
+                                _ => unreachable!(),
+                            }
+                            if let Some(summary) = checkpoint_summary.as_ref() {
+                                info!(
+                                    "Checkpoint at {} event_num={} checksum={} is available but skipped because a ready snapshot is authoritative",
+                                    summary.path.display(),
+                                    summary.event_num,
+                                    summary.checksum
+                                );
+                            }
+                            return Ok(BootSelection {
+                                saver,
+                                checkpoint: None,
+                                pma_open_existing: true,
+                                snapshot_manifest: Some(manifest),
+                            });
+                        }
+                        Err(err) => {
+                            warn!(
+                                "Snapshot restore failed for {}: {}; marking snapshot failed",
+                                snapshot.pma_path, err
+                            );
+                            let _ = event_log.mark_snapshot_failed(snapshot.snapshot_id);
+                        }
+                    }
+                }
+            }
+            Err(err) => {
+                warn!("snapshot inspection skipped because event log could not be opened: {err}");
+            }
+        }
     }
 
     let (saver, checkpoint_summary) =
@@ -532,6 +676,7 @@ async fn select_boot_state<J: Jammer>(
             saver,
             checkpoint: Some(checkpoint),
             pma_open_existing: false,
+            snapshot_manifest: None,
         });
     }
 
@@ -544,6 +689,7 @@ async fn select_boot_state<J: Jammer>(
         saver,
         checkpoint: None,
         pma_open_existing: false,
+        snapshot_manifest: None,
     })
 }
 
@@ -830,14 +976,18 @@ pub async fn setup_<J: Jammer + Send + 'static>(
     let stack_size = cli.stack_size.clone();
     let trace_opts = cli.trace_opts.clone();
     let event_log_path_for_kernel = event_log_path.clone();
-    let boot_selection =
-        select_boot_state::<J>(&jams_dir, jam, pma_persist, &pma_path_0, &pma_path_1).await?;
+    let boot_selection = select_boot_state::<J>(
+        &jams_dir, jam, pma_persist, &event_log_path, &pma_path_0, &pma_path_1,
+    )
+    .await?;
     let saver = boot_selection.saver;
     let checkpoint = boot_selection.checkpoint;
     let pma_open_existing = boot_selection.pma_open_existing;
+    let snapshot_manifest = boot_selection.snapshot_manifest;
 
     let kernel_f = async move || {
         let mut checkpoint = checkpoint;
+        let snapshot_manifest = snapshot_manifest.clone();
         let pma_config = |words| {
             Some(PmaConfig {
                 path_0: pma_path_0.clone(),
@@ -845,6 +995,7 @@ pub async fn setup_<J: Jammer + Send + 'static>(
                 words,
                 open_existing: pma_open_existing,
                 create_snapshots: pma_persist,
+                restore_manifest: snapshot_manifest.clone(),
                 gc_interval,
             })
         };

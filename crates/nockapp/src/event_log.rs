@@ -70,6 +70,7 @@ pub(crate) struct EventLogEntry {
 
 #[derive(Debug, Clone)]
 pub(crate) struct ReadySnapshotRecord {
+    pub snapshot_id: i64,
     pub kind: String,
     pub event_num: u64,
     pub pma_path: String,
@@ -220,6 +221,68 @@ ON CONFLICT(key) DO UPDATE SET value = excluded.value
         Ok(snapshot_id)
     }
 
+    pub(crate) fn list_ready_snapshots(&self) -> Result<Vec<ReadySnapshotRecord>, EventLogError> {
+        let mut stmt = self.conn.prepare(
+            r#"
+SELECT
+  snapshot_id,
+  kind,
+  event_num,
+  pma_path,
+  manifest_path,
+  alloc_words,
+  kernel_root_raw,
+  cold_offset,
+  used_blake3,
+  structure_blake3,
+  created_at_ms,
+  activated_at_ms,
+  base_snapshot_id,
+  timestamp_tag
+FROM snapshots
+WHERE state = 'ready'
+ORDER BY
+  CASE kind WHEN 'rotating' THEN 0 ELSE 1 END ASC,
+  timestamp_tag DESC,
+  snapshot_id DESC
+"#,
+        )?;
+        let rows = stmt.query_map([], |row| {
+            let event_num = row.get::<_, i64>(2)?;
+            let alloc_words = row.get::<_, i64>(5)?;
+            let kernel_root_raw = row.get::<_, i64>(6)?;
+            let cold_offset = row.get::<_, i64>(7)?;
+            Ok(ReadySnapshotRecord {
+                snapshot_id: row.get(0)?,
+                kind: row.get(1)?,
+                event_num: u64::try_from(event_num)
+                    .map_err(|_| rusqlite::Error::IntegralValueOutOfRange(2, event_num))?,
+                pma_path: row.get(3)?,
+                manifest_path: row.get(4)?,
+                alloc_words: u64::try_from(alloc_words)
+                    .map_err(|_| rusqlite::Error::IntegralValueOutOfRange(5, alloc_words))?,
+                kernel_root_raw: u64::from_ne_bytes(kernel_root_raw.to_ne_bytes()),
+                cold_offset: u32::try_from(cold_offset)
+                    .map_err(|_| rusqlite::Error::IntegralValueOutOfRange(7, cold_offset))?,
+                used_blake3: row.get(8)?,
+                structure_blake3: row.get(9)?,
+                created_at_ms: row.get(10)?,
+                activated_at_ms: row.get(11)?,
+                base_snapshot_id: row.get(12)?,
+                timestamp_tag: row.get(13)?,
+            })
+        })?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
+    }
+
+    pub(crate) fn mark_snapshot_failed(&mut self, snapshot_id: i64) -> Result<(), EventLogError> {
+        self.conn.execute(
+            "UPDATE snapshots SET state = 'failed' WHERE snapshot_id = ?1",
+            params![snapshot_id],
+        )?;
+        Ok(())
+    }
+
     #[allow(dead_code)]
     pub(crate) fn max_event_num(&self) -> Result<Option<u64>, EventLogError> {
         let max_event_num =
@@ -321,6 +384,7 @@ mod tests {
         assert!(!log.has_ready_snapshot().expect("ready snapshot count"));
 
         log.insert_ready_snapshot(&ReadySnapshotRecord {
+            snapshot_id: 0,
             kind: "epoch".to_string(),
             event_num: 7,
             pma_path: "epoch.pma".to_string(),
@@ -338,5 +402,8 @@ mod tests {
         .expect("insert ready snapshot");
 
         assert!(log.has_ready_snapshot().expect("ready snapshot count"));
+        let ready = log.list_ready_snapshots().expect("ready snapshots");
+        assert_eq!(ready.len(), 1);
+        assert_eq!(ready[0].event_num, 7);
     }
 }
