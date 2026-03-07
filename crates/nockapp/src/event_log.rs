@@ -68,6 +68,23 @@ pub(crate) struct EventLogEntry {
     pub created_at_ms: i64,
 }
 
+#[derive(Debug, Clone)]
+pub(crate) struct ReadySnapshotRecord {
+    pub kind: String,
+    pub event_num: u64,
+    pub pma_path: String,
+    pub manifest_path: String,
+    pub alloc_words: u64,
+    pub kernel_root_raw: u64,
+    pub cold_offset: u32,
+    pub used_blake3: Vec<u8>,
+    pub structure_blake3: Option<Vec<u8>>,
+    pub created_at_ms: i64,
+    pub activated_at_ms: Option<i64>,
+    pub base_snapshot_id: Option<i64>,
+    pub timestamp_tag: String,
+}
+
 #[derive(Debug, Error)]
 pub(crate) enum EventLogError {
     #[error("event log io error: {0}")]
@@ -78,6 +95,8 @@ pub(crate) enum EventLogError {
     UnsupportedSchemaVersion { found: i64, supported: i64 },
     #[error("invalid event number {0}")]
     InvalidEventNum(i64),
+    #[error("integer field {field} out of range for sqlite INTEGER: {value}")]
+    IntegerOutOfRange { field: &'static str, value: u64 },
 }
 
 pub(crate) struct EventLog {
@@ -137,6 +156,70 @@ INSERT INTO events (
         Ok(())
     }
 
+    pub(crate) fn has_ready_snapshot(&self) -> Result<bool, EventLogError> {
+        let count = self.conn.query_row(
+            "SELECT COUNT(1) FROM snapshots WHERE state = 'ready'",
+            [],
+            |row| row.get::<_, i64>(0),
+        )?;
+        Ok(count > 0)
+    }
+
+    pub(crate) fn insert_ready_snapshot(
+        &mut self,
+        snapshot: &ReadySnapshotRecord,
+    ) -> Result<i64, EventLogError> {
+        let tx = self
+            .conn
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        tx.execute(
+            r#"
+INSERT INTO snapshots (
+  kind,
+  state,
+  event_num,
+  pma_path,
+  manifest_path,
+  alloc_words,
+  kernel_root_raw,
+  cold_offset,
+  used_blake3,
+  structure_blake3,
+  created_at_ms,
+  activated_at_ms,
+  base_snapshot_id,
+  timestamp_tag
+) VALUES (?1, 'ready', ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)
+"#,
+            params![
+                &snapshot.kind,
+                sqlite_i64("event_num", snapshot.event_num)?,
+                &snapshot.pma_path,
+                &snapshot.manifest_path,
+                sqlite_i64("alloc_words", snapshot.alloc_words)?,
+                sqlite_bitcast_i64(snapshot.kernel_root_raw),
+                i64::from(snapshot.cold_offset),
+                &snapshot.used_blake3,
+                snapshot.structure_blake3.as_ref().map(Vec::as_slice),
+                snapshot.created_at_ms,
+                snapshot.activated_at_ms,
+                snapshot.base_snapshot_id,
+                &snapshot.timestamp_tag,
+            ],
+        )?;
+        let snapshot_id = tx.last_insert_rowid();
+        tx.execute(
+            r#"
+INSERT INTO meta (key, value)
+VALUES ('active_snapshot_id', ?1)
+ON CONFLICT(key) DO UPDATE SET value = excluded.value
+"#,
+            params![snapshot_id],
+        )?;
+        tx.commit()?;
+        Ok(snapshot_id)
+    }
+
     #[allow(dead_code)]
     pub(crate) fn max_event_num(&self) -> Result<Option<u64>, EventLogError> {
         let max_event_num =
@@ -190,6 +273,14 @@ ON CONFLICT(key) DO UPDATE SET value = excluded.value
     }
 }
 
+fn sqlite_i64(field: &'static str, value: u64) -> Result<i64, EventLogError> {
+    i64::try_from(value).map_err(|_| EventLogError::IntegerOutOfRange { field, value })
+}
+
+fn sqlite_bitcast_i64(value: u64) -> i64 {
+    i64::from_ne_bytes(value.to_ne_bytes())
+}
+
 #[cfg(test)]
 mod tests {
     use tempfile::TempDir;
@@ -220,5 +311,32 @@ mod tests {
         log.append_event(&sample_entry(2)).expect("append event 2");
 
         assert_eq!(log.max_event_num().expect("max event num"), Some(2));
+    }
+
+    #[test]
+    fn inserts_ready_snapshot_rows() {
+        let temp = TempDir::new().expect("tempdir");
+        let path = temp.path().join("event-log.sqlite3");
+        let mut log = EventLog::open(EventLogConfig { path }).expect("open event log");
+        assert!(!log.has_ready_snapshot().expect("ready snapshot count"));
+
+        log.insert_ready_snapshot(&ReadySnapshotRecord {
+            kind: "epoch".to_string(),
+            event_num: 7,
+            pma_path: "epoch.pma".to_string(),
+            manifest_path: "epoch.manifest".to_string(),
+            alloc_words: 128,
+            kernel_root_raw: u64::MAX,
+            cold_offset: 3,
+            used_blake3: vec![5; 32],
+            structure_blake3: None,
+            created_at_ms: 99,
+            activated_at_ms: Some(99),
+            base_snapshot_id: None,
+            timestamp_tag: "epoch".to_string(),
+        })
+        .expect("insert ready snapshot");
+
+        assert!(log.has_ready_snapshot().expect("ready snapshot count"));
     }
 }

@@ -3,15 +3,18 @@
 use std::fs::{self, File};
 use std::io::{self, Read, Write};
 use std::path::Path;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use bincode::{config, Decode, Encode};
 use blake3::{Hash, Hasher, OUT_LEN};
 use chaff::stream::{jam_pma_to_writer, JamStreamStats};
 use nockvm::pma::{
-    classify_pma_noun, Pma, PmaDirectJamConfig, PmaDirectJamError, PmaDirectReader, PmaFileMetadata,
-    PmaRawNounKind,
+    classify_pma_noun, Pma, PmaDirectJamConfig, PmaDirectJamError, PmaDirectReader,
+    PmaFileMetadata, PmaRawNounKind,
 };
 use thiserror::Error;
+
+use crate::event_log::{EventLog, EventLogError, ReadySnapshotRecord};
 
 const SNAPSHOT_MANIFEST_MAGIC: u64 = u64::from_le_bytes(*b"SNAPMAN1");
 const SNAPSHOT_MANIFEST_VERSION: u32 = 1;
@@ -116,6 +119,18 @@ pub(crate) enum SnapshotVerifyError {
     ColdOffsetOutOfBounds { cold_offset: u32, alloc_words: u64 },
 }
 
+#[derive(Debug, Error)]
+pub(crate) enum SnapshotBuildError {
+    #[error(transparent)]
+    Verify(#[from] SnapshotVerifyError),
+    #[error(transparent)]
+    Manifest(#[from] SnapshotManifestError),
+    #[error(transparent)]
+    EventLog(#[from] EventLogError),
+    #[error("snapshot build io error: {0}")]
+    Io(#[from] io::Error),
+}
+
 impl SnapshotManifest {
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn new(
@@ -176,8 +191,7 @@ impl SnapshotManifest {
     }
 
     pub(crate) fn decode(bytes: &[u8]) -> Result<Self, SnapshotManifestError> {
-        let (manifest, _) =
-            bincode::decode_from_slice::<Self, _>(bytes, config::standard())?;
+        let (manifest, _) = bincode::decode_from_slice::<Self, _>(bytes, config::standard())?;
         manifest.validate()?;
         Ok(manifest)
     }
@@ -276,6 +290,83 @@ pub(crate) fn verify_snapshot(
     })
 }
 
+pub(crate) fn maybe_create_epoch_snapshot(
+    event_log: &mut EventLog,
+    pma: &Pma,
+    ker_hash: Hash,
+    event_num: u64,
+    kernel_root_raw: u64,
+    cold_offset: u32,
+) -> Result<bool, SnapshotBuildError> {
+    if event_log.has_ready_snapshot()? {
+        return Ok(false);
+    }
+
+    let pma_dir = pma.path().parent().ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "PMA path missing parent directory for epoch snapshot",
+        )
+    })?;
+    fs::create_dir_all(pma_dir)?;
+    let epoch_pma_path = pma_dir.join("epoch.pma");
+    let epoch_manifest_path = pma_dir.join("epoch.manifest");
+    let tmp_epoch_pma_path = pma_dir.join("epoch.pma.tmp");
+    let created_at_ms = current_time_ms()?;
+
+    pma.sync_used_data()?;
+    pma.sync_trailer()?;
+    pma.sync_file()?;
+
+    copy_snapshot_file(pma.path(), &tmp_epoch_pma_path)?;
+    replace_file(&tmp_epoch_pma_path, &epoch_pma_path)?;
+    let used_blake3 = Hash::from_bytes(hash_file_prefix(
+        &epoch_pma_path,
+        pma.alloc_offset() as u64 * 8,
+    )?);
+    let manifest = SnapshotManifest::new(
+        SnapshotKind::Epoch,
+        "epoch".to_string(),
+        ker_hash,
+        event_num,
+        pma.size_words() as u64,
+        pma.alloc_offset() as u64,
+        kernel_root_raw,
+        cold_offset,
+        used_blake3,
+        None,
+        created_at_ms,
+    )?;
+    manifest.write_to_path(&epoch_manifest_path)?;
+
+    if let Err(err) = verify_snapshot(
+        &epoch_manifest_path,
+        &epoch_pma_path,
+        SnapshotVerifyMode::Full,
+    ) {
+        let _ = fs::remove_file(&epoch_manifest_path);
+        let _ = fs::remove_file(&epoch_pma_path);
+        return Err(err.into());
+    }
+
+    event_log.insert_ready_snapshot(&ReadySnapshotRecord {
+        kind: "epoch".to_string(),
+        event_num,
+        pma_path: epoch_pma_path.to_string_lossy().into_owned(),
+        manifest_path: epoch_manifest_path.to_string_lossy().into_owned(),
+        alloc_words: pma.alloc_offset() as u64,
+        kernel_root_raw,
+        cold_offset,
+        used_blake3: manifest.used_blake3.to_vec(),
+        structure_blake3: manifest.structure_blake3.map(|hash| hash.to_vec()),
+        created_at_ms,
+        activated_at_ms: Some(created_at_ms),
+        base_snapshot_id: None,
+        timestamp_tag: "epoch".to_string(),
+    })?;
+    Ok(true)
+}
+
 fn validate_root_raw(
     reader: &mut PmaDirectReader,
     kernel_root_raw: u64,
@@ -322,7 +413,9 @@ fn verify_structure(
         Ok(stats)
     } else {
         let mut sink = io::sink();
-        Ok(jam_pma_to_writer(reader, manifest.kernel_root_raw, &mut sink)?)
+        Ok(jam_pma_to_writer(
+            reader, manifest.kernel_root_raw, &mut sink,
+        )?)
     }
 }
 
@@ -363,6 +456,34 @@ fn sync_parent_dir(path: &Path) -> Result<(), io::Error> {
         let _ = path;
     }
     Ok(())
+}
+
+fn copy_snapshot_file(src: &Path, dst: &Path) -> Result<(), io::Error> {
+    if let Some(parent) = dst.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    fs::copy(src, dst)?;
+    File::open(dst)?.sync_all()?;
+    Ok(())
+}
+
+fn replace_file(src: &Path, dst: &Path) -> Result<(), io::Error> {
+    if dst.exists() {
+        fs::remove_file(dst)?;
+    }
+    fs::rename(src, dst)?;
+    sync_parent_dir(dst)?;
+    Ok(())
+}
+
+fn current_time_ms() -> Result<i64, io::Error> {
+    Ok(i64::try_from(
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_err(|err| io::Error::new(io::ErrorKind::Other, err))?
+            .as_millis(),
+    )
+    .map_err(|err| io::Error::new(io::ErrorKind::Other, err))?)
 }
 
 #[derive(Default)]
@@ -427,12 +548,16 @@ mod tests {
             pma.alloc_offset() as u64,
             root_raw,
             cold_offset,
-            Hash::from_bytes(hash_file_prefix(&pma_path, pma.alloc_offset() as u64 * 8).expect("used hash")),
+            Hash::from_bytes(
+                hash_file_prefix(&pma_path, pma.alloc_offset() as u64 * 8).expect("used hash"),
+            ),
             None,
             1234,
         )
         .expect("manifest");
-        manifest.write_to_path(&manifest_path).expect("write manifest");
+        manifest
+            .write_to_path(&manifest_path)
+            .expect("write manifest");
         drop(pma);
         (temp, pma_path, manifest_path, manifest, root_raw)
     }
@@ -485,10 +610,12 @@ mod tests {
         let (_temp, pma_path, manifest_path, mut manifest, _root_raw) = build_test_snapshot();
         manifest.used_blake3 = [7; OUT_LEN];
         manifest.checksum = manifest.compute_checksum().expect("checksum");
-        manifest.write_to_path(&manifest_path).expect("write manifest");
+        manifest
+            .write_to_path(&manifest_path)
+            .expect("write manifest");
 
-        let err =
-            verify_snapshot(&manifest_path, &pma_path, SnapshotVerifyMode::Fast).expect_err("mismatch");
+        let err = verify_snapshot(&manifest_path, &pma_path, SnapshotVerifyMode::Fast)
+            .expect_err("mismatch");
         assert!(matches!(err, SnapshotVerifyError::UsedHashMismatch { .. }));
     }
 
@@ -503,10 +630,12 @@ mod tests {
         manifest.used_blake3 =
             hash_file_prefix(&pma_path, manifest.alloc_words * 8).expect("rehash used range");
         manifest.checksum = manifest.compute_checksum().expect("checksum");
-        manifest.write_to_path(&manifest_path).expect("write manifest");
+        manifest
+            .write_to_path(&manifest_path)
+            .expect("write manifest");
 
-        let err =
-            verify_snapshot(&manifest_path, &pma_path, SnapshotVerifyMode::Full).expect_err("corrupt");
+        let err = verify_snapshot(&manifest_path, &pma_path, SnapshotVerifyMode::Full)
+            .expect_err("corrupt");
         assert!(matches!(err, SnapshotVerifyError::Direct(_)));
     }
 }

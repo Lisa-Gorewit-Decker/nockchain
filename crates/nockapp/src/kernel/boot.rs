@@ -220,6 +220,7 @@ mod tests {
 
     use nockvm::noun::{NounSpace, D};
     use nockvm_macros::tas;
+    use rusqlite::Connection;
     use tempfile::TempDir;
     use tracing_test::traced_test;
 
@@ -295,6 +296,17 @@ mod tests {
         }
     }
 
+    fn ready_snapshot_count(data_dir: &Path) -> i64 {
+        let conn =
+            Connection::open(data_dir.join("event-log.sqlite3")).expect("open event log sqlite");
+        conn.query_row(
+            "SELECT COUNT(1) FROM snapshots WHERE state = 'ready'",
+            [],
+            |row| row.get::<_, i64>(0),
+        )
+        .expect("count ready snapshots")
+    }
+
     #[test]
     fn parse_save_interval_none_variants() {
         assert_eq!(parse_save_interval("none").unwrap(), 0);
@@ -347,6 +359,7 @@ mod tests {
         save_app(&mut first).await;
         stop_app(&mut first).await;
         drop(first);
+        assert_eq!(ready_snapshot_count(&data_dir), 0);
         clear_pma_files(&data_dir);
 
         let mut second = setup_test_app(&data_dir, true, CheckpointMode::Original).await;
@@ -355,6 +368,9 @@ mod tests {
             data_dir.join("pma").join("0.meta").exists()
                 || data_dir.join("pma").join("1.meta").exists()
         );
+        assert!(data_dir.join("pma").join("epoch.pma").exists());
+        assert!(data_dir.join("pma").join("epoch.manifest").exists());
+        assert_eq!(ready_snapshot_count(&data_dir), 1);
         poke_inc(&second).await;
         assert_eq!(second.kernel.serf.event_number.load(Ordering::SeqCst), 2);
         stop_app(&mut second).await;
@@ -362,6 +378,7 @@ mod tests {
 
         let mut third = setup_test_app(&data_dir, true, CheckpointMode::Original).await;
         assert_eq!(third.kernel.serf.event_number.load(Ordering::SeqCst), 2);
+        assert_eq!(ready_snapshot_count(&data_dir), 1);
         stop_app(&mut third).await;
     }
 
@@ -827,6 +844,7 @@ pub async fn setup_<J: Jammer + Send + 'static>(
                 path_1: pma_path_1.clone(),
                 words,
                 open_existing: pma_open_existing,
+                create_snapshots: pma_persist,
                 gc_interval,
             })
         };

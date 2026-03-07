@@ -34,6 +34,7 @@ use crate::nockapp::wire::{wire_to_noun, WireRepr};
 use crate::noun::slab::NounSlab;
 use crate::noun::slam;
 use crate::save::{SaveableCheckpoint, StreamingCheckpointMeta, StreamingCheckpointRequest};
+use crate::snapshot::maybe_create_epoch_snapshot;
 use crate::utils::{
     create_context, current_da, NOCK_STACK_SIZE, NOCK_STACK_SIZE_HUGE, NOCK_STACK_SIZE_LARGE,
     NOCK_STACK_SIZE_MEDIUM, NOCK_STACK_SIZE_SMALL, NOCK_STACK_SIZE_TINY,
@@ -60,6 +61,7 @@ pub struct PmaConfig {
     pub path_1: PathBuf,
     pub words: usize,
     pub open_existing: bool,
+    pub create_snapshots: bool,
     pub gc_interval: Option<Duration>,
 }
 
@@ -487,13 +489,14 @@ impl<C: SerfCheckpoint + Send + 'static> SerfThread<C> {
                     hasher.finalize()
                 };
                 let mut pma_meta_load = false;
-                let (pma, pma_meta_path, pma_gc_state) = match pma {
+                let (pma, pma_meta_path, pma_gc_state, create_snapshots) = match pma {
                     Some(config) => {
                         let PmaConfig {
                             path_0,
                             path_1,
                             words,
                             open_existing,
+                            create_snapshots,
                             gc_interval,
                         } = config;
                         let paths = PmaSlabPaths { path_0, path_1 };
@@ -541,6 +544,7 @@ impl<C: SerfCheckpoint + Send + 'static> SerfThread<C> {
                                 gc_interval.map(|interval| {
                                     PmaGcState::new(paths, active, interval, words)
                                 }),
+                                create_snapshots,
                             ),
                             Err(err) => {
                                 let _ =
@@ -549,7 +553,7 @@ impl<C: SerfCheckpoint + Send + 'static> SerfThread<C> {
                             }
                         }
                     }
-                    None => (None, None, None),
+                    None => (None, None, None, false),
                 };
                 let event_log = if let Some(config) = event_log {
                     match EventLog::open(config.clone()) {
@@ -572,6 +576,7 @@ impl<C: SerfCheckpoint + Send + 'static> SerfThread<C> {
                     pma_meta_path,
                     pma_meta_load,
                     pma_gc_state,
+                    create_snapshots,
                     event_log,
                     checkpoint,
                     &kernel_bytes,
@@ -1582,6 +1587,7 @@ pub struct Serf {
     pub pma_meta_path: Option<PathBuf>,
     /// Optional GC configuration for PMA slab compaction.
     pma_gc_state: Option<PmaGcState>,
+    snapshot_creation_enabled: bool,
     /// Optional append-only event log used as the durability boundary.
     event_log: Option<EventLog>,
     /// Cancellation
@@ -1612,6 +1618,7 @@ impl Serf {
         pma_meta_path: Option<PathBuf>,
         pma_meta_load: bool,
         pma_gc_state: Option<PmaGcState>,
+        snapshot_creation_enabled: bool,
         event_log: Option<EventLog>,
         checkpoint: Option<C>,
         kernel_bytes: &[u8],
@@ -1749,6 +1756,7 @@ impl Serf {
             pma,
             pma_meta_path,
             pma_gc_state,
+            snapshot_creation_enabled,
             event_log,
             event_num,
             cancel_token,
@@ -1763,6 +1771,7 @@ impl Serf {
             serf.event_update(event_num_raw, arvo);
             let _ = serf.preserve_event_update_leftovers();
         }
+        serf.ensure_epoch_snapshot();
         serf
     }
 
@@ -2216,6 +2225,41 @@ impl Serf {
         }
     }
 
+    fn ensure_epoch_snapshot(&mut self) {
+        if !self.snapshot_creation_enabled {
+            return;
+        }
+        let kernel_root_raw = {
+            let space = self.context.stack.noun_space();
+            let kernel_state = self
+                .arvo
+                .in_space(&space)
+                .slot(STATE_AXIS)
+                .map(|handle| handle.noun());
+            match kernel_state {
+                Ok(noun) => unsafe { noun.as_raw() },
+                Err(err) => {
+                    warn!("epoch snapshot skipped: failed to resolve kernel root: {err:?}");
+                    return;
+                }
+            }
+        };
+
+        let event_num = self.event_num.load(Ordering::SeqCst);
+        let (Some(event_log), Some(pma)) = (&mut self.event_log, &self.pma) else {
+            return;
+        };
+        let Some(cold_offset) = self.context.cold.pma_offset(pma) else {
+            warn!("epoch snapshot skipped: cold state is not in PMA");
+            return;
+        };
+        if let Err(err) = maybe_create_epoch_snapshot(
+            event_log, pma, self.ker_hash, event_num, kernel_root_raw, cold_offset,
+        ) {
+            warn!("epoch snapshot creation failed: {err}");
+        }
+    }
+
     /// Updates the Serf's state after an event.
     ///
     /// # Arguments
@@ -2611,6 +2655,7 @@ mod tests {
             pma: None,
             pma_meta_path: None,
             pma_gc_state: None,
+            snapshot_creation_enabled: false,
             event_log: None,
             cancel_token,
             event_num: Arc::new(AtomicU64::new(0)),

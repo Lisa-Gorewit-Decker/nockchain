@@ -144,7 +144,9 @@ impl Pma {
         Self::read_file_metadata_from_reader(&mut file)
     }
 
-    fn read_file_metadata_from_reader(file: &mut std::fs::File) -> Result<PmaFileMetadata, PmaError> {
+    fn read_file_metadata_from_reader(
+        file: &mut std::fs::File,
+    ) -> Result<PmaFileMetadata, PmaError> {
         let file_len = file.metadata()?.len() as usize;
         if file_len < PMA_TRAILER_BYTES {
             return Err(PmaError::InvalidMetadata(format!(

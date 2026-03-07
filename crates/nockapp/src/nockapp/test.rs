@@ -414,6 +414,7 @@ pub mod tests {
                     path_1: pma_path_1,
                     words: pma_words,
                     open_existing: false,
+                    create_snapshots: false,
                     gc_interval: None,
                 });
                 let kernel = Kernel::load_with_hot_state_tiny(
@@ -438,6 +439,7 @@ pub mod tests {
                     path_1: pma_path_1,
                     words: pma_words,
                     open_existing: false,
+                    create_snapshots: false,
                     gc_interval: None,
                 });
                 let kernel = Kernel::load_with_hot_state_small(
@@ -462,6 +464,7 @@ pub mod tests {
                     path_1: pma_path_1,
                     words: pma_words,
                     open_existing: false,
+                    create_snapshots: false,
                     gc_interval: None,
                 });
                 let kernel = Kernel::load_with_hot_state_medium(
@@ -486,6 +489,7 @@ pub mod tests {
                     path_1: pma_path_1,
                     words: pma_words,
                     open_existing: false,
+                    create_snapshots: false,
                     gc_interval: None,
                 });
                 let kernel = Kernel::load_with_hot_state_large(
@@ -510,6 +514,7 @@ pub mod tests {
                     path_1: pma_path_1,
                     words: pma_words,
                     open_existing: false,
+                    create_snapshots: false,
                     gc_interval: None,
                 });
                 let kernel = Kernel::load_with_hot_state_huge(
@@ -534,6 +539,7 @@ pub mod tests {
                     path_1: pma_path_1,
                     words: pma_words,
                     open_existing: false,
+                    create_snapshots: false,
                     gc_interval: None,
                 });
                 let kernel = Kernel::load_with_hot_state(
