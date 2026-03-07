@@ -18,6 +18,7 @@ use crate::event_log::{EventLog, EventLogError, ReadySnapshotRecord};
 
 const SNAPSHOT_MANIFEST_MAGIC: u64 = u64::from_le_bytes(*b"SNAPMAN1");
 const SNAPSHOT_MANIFEST_VERSION: u32 = 1;
+const DEFAULT_ROTATING_SNAPSHOT_INTERVAL_EVENTS: u64 = 64;
 type HashBytes = [u8; OUT_LEN];
 
 #[derive(Clone, Copy, Debug, Encode, Decode, PartialEq, Eq)]
@@ -309,70 +310,56 @@ pub(crate) fn maybe_create_epoch_snapshot(
     if event_log.has_ready_snapshot()? {
         return Ok(false);
     }
-
-    let pma_dir = pma.path().parent().ok_or_else(|| {
-        io::Error::new(
-            io::ErrorKind::InvalidInput,
-            "PMA path missing parent directory for epoch snapshot",
-        )
-    })?;
-    fs::create_dir_all(pma_dir)?;
-    let epoch_pma_path = pma_dir.join("epoch.pma");
-    let epoch_manifest_path = pma_dir.join("epoch.manifest");
-    let tmp_epoch_pma_path = pma_dir.join("epoch.pma.tmp");
-    let created_at_ms = current_time_ms()?;
-
-    pma.sync_used_data()?;
-    pma.sync_trailer()?;
-    pma.sync_file()?;
-
-    copy_snapshot_file(pma.path(), &tmp_epoch_pma_path)?;
-    replace_file(&tmp_epoch_pma_path, &epoch_pma_path)?;
-    let used_blake3 = Hash::from_bytes(hash_file_prefix(
-        &epoch_pma_path,
-        pma.alloc_offset() as u64 * 8,
-    )?);
-    let manifest = SnapshotManifest::new(
+    create_ready_snapshot(
+        event_log,
+        pma,
         SnapshotKind::Epoch,
+        "epoch".to_string(),
         "epoch".to_string(),
         ker_hash,
         event_num,
-        pma.size_words() as u64,
-        pma.alloc_offset() as u64,
         kernel_root_raw,
         cold_offset,
-        used_blake3,
         None,
-        created_at_ms,
     )?;
-    manifest.write_to_path(&epoch_manifest_path)?;
+    Ok(true)
+}
 
-    if let Err(err) = verify_snapshot(
-        &epoch_manifest_path,
-        &epoch_pma_path,
-        SnapshotVerifyMode::Full,
-    ) {
-        let _ = fs::remove_file(&epoch_manifest_path);
-        let _ = fs::remove_file(&epoch_pma_path);
-        return Err(err.into());
+pub(crate) fn maybe_create_rotating_snapshot(
+    event_log: &mut EventLog,
+    pma: &Pma,
+    ker_hash: Hash,
+    event_num: u64,
+    kernel_root_raw: u64,
+    cold_offset: u32,
+) -> Result<bool, SnapshotBuildError> {
+    let ready = event_log.list_ready_snapshots()?;
+    let latest_event = ready
+        .iter()
+        .map(|snapshot| snapshot.event_num)
+        .max()
+        .unwrap_or(0);
+    let interval = rotating_snapshot_interval_events();
+    if event_num <= latest_event || event_num.saturating_sub(latest_event) < interval {
+        return Ok(false);
     }
-
-    event_log.insert_ready_snapshot(&ReadySnapshotRecord {
-        snapshot_id: 0,
-        kind: "epoch".to_string(),
+    let created_at_ms = current_time_ms()?;
+    let timestamp_tag = format!("{created_at_ms:020}-{event_num:020}");
+    let file_stem = format!("snap-{timestamp_tag}");
+    let base_snapshot_id = event_log.active_snapshot_id()?;
+    create_ready_snapshot(
+        event_log,
+        pma,
+        SnapshotKind::Rotating,
+        timestamp_tag,
+        file_stem,
+        ker_hash,
         event_num,
-        pma_path: epoch_pma_path.to_string_lossy().into_owned(),
-        manifest_path: epoch_manifest_path.to_string_lossy().into_owned(),
-        alloc_words: pma.alloc_offset() as u64,
         kernel_root_raw,
         cold_offset,
-        used_blake3: manifest.used_blake3.to_vec(),
-        structure_blake3: manifest.structure_blake3.map(|hash| hash.to_vec()),
-        created_at_ms,
-        activated_at_ms: Some(created_at_ms),
-        base_snapshot_id: None,
-        timestamp_tag: "epoch".to_string(),
-    })?;
+        base_snapshot_id,
+    )?;
+    retire_old_rotating_snapshots(event_log)?;
     Ok(true)
 }
 
@@ -389,6 +376,116 @@ pub(crate) fn restore_verified_snapshot(
     copy_snapshot_file(Path::new(&record.pma_path), &tmp_path)?;
     replace_file(&tmp_path, operative_pma_path)?;
     Ok(verification.manifest)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn create_ready_snapshot(
+    event_log: &mut EventLog,
+    pma: &Pma,
+    kind: SnapshotKind,
+    timestamp_tag: String,
+    file_stem: String,
+    ker_hash: Hash,
+    event_num: u64,
+    kernel_root_raw: u64,
+    cold_offset: u32,
+    base_snapshot_id: Option<i64>,
+) -> Result<SnapshotManifest, SnapshotBuildError> {
+    let pma_dir = pma.path().parent().ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "PMA path missing parent directory for snapshot",
+        )
+    })?;
+    fs::create_dir_all(pma_dir)?;
+    let snapshot_pma_path = pma_dir.join(format!("{file_stem}.pma"));
+    let snapshot_manifest_path = pma_dir.join(format!("{file_stem}.manifest"));
+    let tmp_snapshot_pma_path = pma_dir.join(format!("{file_stem}.pma.tmp"));
+    let created_at_ms = current_time_ms()?;
+
+    pma.sync_used_data()?;
+    pma.sync_trailer()?;
+    pma.sync_file()?;
+
+    copy_snapshot_file(pma.path(), &tmp_snapshot_pma_path)?;
+    replace_file(&tmp_snapshot_pma_path, &snapshot_pma_path)?;
+    let used_blake3 = Hash::from_bytes(hash_file_prefix(
+        &snapshot_pma_path,
+        pma.alloc_offset() as u64 * 8,
+    )?);
+    let manifest = SnapshotManifest::new(
+        kind,
+        timestamp_tag.clone(),
+        ker_hash,
+        event_num,
+        pma.size_words() as u64,
+        pma.alloc_offset() as u64,
+        kernel_root_raw,
+        cold_offset,
+        used_blake3,
+        None,
+        created_at_ms,
+    )?;
+    manifest.write_to_path(&snapshot_manifest_path)?;
+
+    if let Err(err) = verify_snapshot(
+        &snapshot_manifest_path,
+        &snapshot_pma_path,
+        SnapshotVerifyMode::Full,
+    ) {
+        let _ = fs::remove_file(&snapshot_manifest_path);
+        let _ = fs::remove_file(&snapshot_pma_path);
+        return Err(err.into());
+    }
+
+    event_log.insert_ready_snapshot(&ReadySnapshotRecord {
+        snapshot_id: 0,
+        kind: snapshot_kind_name(kind).to_string(),
+        event_num,
+        pma_path: snapshot_pma_path.to_string_lossy().into_owned(),
+        manifest_path: snapshot_manifest_path.to_string_lossy().into_owned(),
+        alloc_words: pma.alloc_offset() as u64,
+        kernel_root_raw,
+        cold_offset,
+        used_blake3: manifest.used_blake3.to_vec(),
+        structure_blake3: manifest.structure_blake3.map(|hash| hash.to_vec()),
+        created_at_ms,
+        activated_at_ms: Some(created_at_ms),
+        base_snapshot_id,
+        timestamp_tag,
+    })?;
+    Ok(manifest)
+}
+
+fn retire_old_rotating_snapshots(event_log: &mut EventLog) -> Result<(), SnapshotBuildError> {
+    let rotating = event_log.ready_rotating_snapshots()?;
+    for snapshot in rotating.into_iter().skip(2) {
+        let pma_path = Path::new(&snapshot.pma_path);
+        if pma_path.exists() {
+            fs::remove_file(pma_path)?;
+        }
+        let manifest_path = Path::new(&snapshot.manifest_path);
+        if manifest_path.exists() {
+            fs::remove_file(manifest_path)?;
+        }
+        event_log.retire_snapshot(snapshot.snapshot_id)?;
+    }
+    Ok(())
+}
+
+fn snapshot_kind_name(kind: SnapshotKind) -> &'static str {
+    match kind {
+        SnapshotKind::Epoch => "epoch",
+        SnapshotKind::Rotating => "rotating",
+    }
+}
+
+fn rotating_snapshot_interval_events() -> u64 {
+    std::env::var("NOCKAPP_ROTATING_SNAPSHOT_INTERVAL_EVENTS")
+        .ok()
+        .and_then(|raw| raw.trim().parse::<u64>().ok())
+        .filter(|value| *value > 0)
+        .unwrap_or(DEFAULT_ROTATING_SNAPSHOT_INTERVAL_EVENTS)
 }
 
 fn validate_root_raw(

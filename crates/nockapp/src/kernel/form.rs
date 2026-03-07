@@ -34,7 +34,9 @@ use crate::nockapp::wire::{wire_to_noun, WireRepr};
 use crate::noun::slab::NounSlab;
 use crate::noun::slam;
 use crate::save::{SaveableCheckpoint, StreamingCheckpointMeta, StreamingCheckpointRequest};
-use crate::snapshot::{maybe_create_epoch_snapshot, SnapshotManifest};
+use crate::snapshot::{
+    maybe_create_epoch_snapshot, maybe_create_rotating_snapshot, SnapshotManifest,
+};
 use crate::utils::{
     create_context, current_da, NOCK_STACK_SIZE, NOCK_STACK_SIZE_HUGE, NOCK_STACK_SIZE_LARGE,
     NOCK_STACK_SIZE_MEDIUM, NOCK_STACK_SIZE_SMALL, NOCK_STACK_SIZE_TINY,
@@ -792,14 +794,13 @@ impl<C> SerfThread<C> {
         }
     }
 
-    pub(crate) fn replay_event_jobs(
-        &self,
-        jobs: Vec<Vec<u8>>,
-    ) -> impl Future<Output = Result<()>> {
+    pub(crate) fn replay_event_jobs(&self, jobs: Vec<Vec<u8>>) -> impl Future<Output = Result<()>> {
         let (result, result_fut) = oneshot::channel();
         let action_sender = self.action_sender.clone();
         async move {
-            action_sender.send(SerfAction::Replay { jobs, result }).await?;
+            action_sender
+                .send(SerfAction::Replay { jobs, result })
+                .await?;
             result_fut.await?
         }
     }
@@ -1056,8 +1057,8 @@ fn serf_loop<C: SerfCheckpoint>(
                         let pma_elapsed = pma_elapsed.unwrap_or_else(|| Duration::from_millis(0));
                         timing.record(event_elapsed, pma_elapsed, pma_detail);
                     }
-                    if std::env::var_os("NOCK_PMA_TIMING").is_some() {
-                        let event_ms = event_elapsed.as_secs_f64() * 1000.0;
+	                    if std::env::var_os("NOCK_PMA_TIMING").is_some() {
+	                        let event_ms = event_elapsed.as_secs_f64() * 1000.0;
                         let pma_ms = pma_elapsed
                             .map(|elapsed| elapsed.as_secs_f64() * 1000.0)
                             .unwrap_or(0.0);
@@ -1079,16 +1080,19 @@ fn serf_loop<C: SerfCheckpoint>(
                             total_ms,
                             total_alloc_words,
                             total_alloc_mib,
-                            event_num
-                        );
-                    }
-                };
-                let _ = result_ack.blocking_recv().inspect_err(|_e| {
-                    debug!("Failed to receive result ack in serf thread");
-                });
-                let action_elapsed = action_start.elapsed();
-                if let Some(nockapp_metrics) = &serf.metrics {
-                    nockapp_metrics.serf_loop_poke.add_timing(&action_elapsed);
+	                            event_num
+	                        );
+	                    }
+	                    let _ = result_ack.blocking_recv().inspect_err(|_e| {
+	                        debug!("Failed to receive result ack in serf thread");
+	                    });
+	                    if did_update {
+	                        serf.maybe_create_rotating_snapshot();
+	                    }
+	                };
+	                let action_elapsed = action_start.elapsed();
+	                if let Some(nockapp_metrics) = &serf.metrics {
+	                    nockapp_metrics.serf_loop_poke.add_timing(&action_elapsed);
                 };
             }
             SerfAction::ProvideMetrics { metrics, result } => {
@@ -1578,10 +1582,7 @@ impl<C: SerfCheckpoint + 'static> Kernel<C> {
         self.serf.checkpoint_streaming(request)
     }
 
-    pub(crate) fn replay_event_jobs(
-        &self,
-        jobs: Vec<Vec<u8>>,
-    ) -> impl Future<Output = Result<()>> {
+    pub(crate) fn replay_event_jobs(&self, jobs: Vec<Vec<u8>>) -> impl Future<Output = Result<()>> {
         self.serf.replay_event_jobs(jobs)
     }
 }
@@ -2338,6 +2339,41 @@ impl Serf {
             }
         }
         Ok(())
+    }
+
+    fn maybe_create_rotating_snapshot(&mut self) {
+        if !self.snapshot_creation_enabled {
+            return;
+        }
+        let kernel_root_raw = {
+            let space = self.context.stack.noun_space();
+            let kernel_state = self
+                .arvo
+                .in_space(&space)
+                .slot(STATE_AXIS)
+                .map(|handle| handle.noun());
+            match kernel_state {
+                Ok(noun) => unsafe { noun.as_raw() },
+                Err(err) => {
+                    warn!("rotating snapshot skipped: failed to resolve kernel root: {err:?}");
+                    return;
+                }
+            }
+        };
+
+        let event_num = self.event_num.load(Ordering::SeqCst);
+        let (Some(event_log), Some(pma)) = (&mut self.event_log, &self.pma) else {
+            return;
+        };
+        let Some(cold_offset) = self.context.cold.pma_offset(pma) else {
+            warn!("rotating snapshot skipped: cold state is not in PMA");
+            return;
+        };
+        if let Err(err) = maybe_create_rotating_snapshot(
+            event_log, pma, self.ker_hash, event_num, kernel_root_raw, cold_offset,
+        ) {
+            warn!("rotating snapshot creation failed: {err}");
+        }
     }
 
     /// Updates the Serf's state after an event.

@@ -216,6 +216,7 @@ fn parse_save_interval(input: &str) -> Result<u64, String> {
 
 #[cfg(test)]
 mod tests {
+    use std::ffi::OsString;
     use std::fs;
     use std::path::Path;
     use std::sync::atomic::Ordering;
@@ -278,10 +279,12 @@ mod tests {
         cli.gc_interval = Some(0);
         cli.checkpoint_mode = checkpoint_mode;
         cli.pma_persist = pma_persist;
-        Ok(match setup_::<NockJammer>(&jam, cli, &[], "boot-test", None).await? {
-            SetupResult::App(app) => app,
-            SetupResult::ExportedState => panic!("unexpected export"),
-        })
+        Ok(
+            match setup_::<NockJammer>(&jam, cli, &[], "boot-test", None).await? {
+                SetupResult::App(app) => app,
+                SetupResult::ExportedState => panic!("unexpected export"),
+            },
+        )
     }
 
     async fn poke_inc(app: &NockApp<NockJammer>) {
@@ -322,6 +325,61 @@ mod tests {
             |row| row.get::<_, i64>(0),
         )
         .expect("count ready snapshots")
+    }
+
+    struct EnvVarGuard {
+        key: &'static str,
+        old: Option<OsString>,
+    }
+
+    impl Drop for EnvVarGuard {
+        fn drop(&mut self) {
+            if let Some(value) = &self.old {
+                std::env::set_var(self.key, value);
+            } else {
+                std::env::remove_var(self.key);
+            }
+        }
+    }
+
+    fn set_rotating_snapshot_interval(value: &str) -> EnvVarGuard {
+        let key = "NOCKAPP_ROTATING_SNAPSHOT_INTERVAL_EVENTS";
+        let old = std::env::var_os(key);
+        std::env::set_var(key, value);
+        EnvVarGuard { key, old }
+    }
+
+    fn ready_rotating_snapshots(data_dir: &Path) -> Vec<(i64, String, String, i64)> {
+        let conn =
+            Connection::open(data_dir.join("event-log.sqlite3")).expect("open event log sqlite");
+        let mut stmt = conn
+            .prepare(
+                "SELECT snapshot_id, pma_path, manifest_path, event_num FROM snapshots WHERE state = 'ready' AND kind = 'rotating' ORDER BY timestamp_tag DESC",
+            )
+            .expect("prepare rotating snapshots query");
+        let rows = stmt
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, i64>(3)?,
+                ))
+            })
+            .expect("query rotating snapshots");
+        rows.collect::<Result<Vec<_>, _>>()
+            .expect("collect rotating snapshots")
+    }
+
+    fn retired_rotating_snapshot_count(data_dir: &Path) -> i64 {
+        let conn =
+            Connection::open(data_dir.join("event-log.sqlite3")).expect("open event log sqlite");
+        conn.query_row(
+            "SELECT COUNT(1) FROM snapshots WHERE state = 'retired' AND kind = 'rotating'",
+            [],
+            |row| row.get::<_, i64>(0),
+        )
+        .expect("count retired rotating snapshots")
     }
 
     #[test]
@@ -540,6 +598,81 @@ mod tests {
             .to_string()
             .contains("event log continuity check failed"));
     }
+
+    #[tokio::test(flavor = "current_thread")]
+    #[traced_test]
+    #[cfg_attr(miri, ignore)]
+    async fn rotates_snapshots_and_retires_oldest() {
+        let _guard = boot_test_guard();
+        let _interval_guard = set_rotating_snapshot_interval("1");
+        let _test_arena = TestArena::default();
+        let temp = TempDir::new().expect("tempdir");
+        let data_dir = temp.path().join("rotating-snapshot-retention");
+
+        let mut first = setup_test_app(&data_dir, false, CheckpointMode::Original).await;
+        poke_inc(&first).await;
+        save_app(&mut first).await;
+        stop_app(&mut first).await;
+        drop(first);
+        clear_pma_files(&data_dir);
+
+        let mut second = setup_test_app(&data_dir, true, CheckpointMode::Original).await;
+        poke_inc(&second).await;
+        poke_inc(&second).await;
+        poke_inc(&second).await;
+        stop_app(&mut second).await;
+        drop(second);
+
+        let rotating = ready_rotating_snapshots(&data_dir);
+        assert_eq!(rotating.len(), 2);
+        assert_eq!(rotating[0].3, 4);
+        assert_eq!(rotating[1].3, 3);
+        assert_eq!(retired_rotating_snapshot_count(&data_dir), 1);
+        for (_, pma_path, manifest_path, _) in rotating {
+            assert!(Path::new(&pma_path).exists());
+            assert!(Path::new(&manifest_path).exists());
+        }
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    #[traced_test]
+    #[cfg_attr(miri, ignore)]
+    async fn falls_back_from_corrupt_newest_rotating_snapshot() {
+        let _guard = boot_test_guard();
+        let _interval_guard = set_rotating_snapshot_interval("1");
+        let _test_arena = TestArena::default();
+        let temp = TempDir::new().expect("tempdir");
+        let data_dir = temp.path().join("rotating-fallback");
+
+        let mut first = setup_test_app(&data_dir, false, CheckpointMode::Original).await;
+        poke_inc(&first).await;
+        save_app(&mut first).await;
+        stop_app(&mut first).await;
+        drop(first);
+        clear_pma_files(&data_dir);
+
+        let mut second = setup_test_app(&data_dir, true, CheckpointMode::Original).await;
+        poke_inc(&second).await;
+        poke_inc(&second).await;
+        assert_eq!(second.kernel.serf.event_number.load(Ordering::SeqCst), 3);
+        stop_app(&mut second).await;
+        drop(second);
+
+        let rotating = ready_rotating_snapshots(&data_dir);
+        assert_eq!(rotating.len(), 2);
+        fs::write(&rotating[0].1, b"corrupt newest rotating snapshot")
+            .expect("corrupt newest rotating pma");
+
+        clear_pma_files(&data_dir);
+        let checkpoints_dir = data_dir.join("checkpoints");
+        fs::write(checkpoints_dir.join("0.chkjam"), b"corrupt checkpoint 0").expect("corrupt chk0");
+        fs::write(checkpoints_dir.join("1.chkjam"), b"corrupt checkpoint 1").expect("corrupt chk1");
+
+        let mut third = setup_test_app(&data_dir, true, CheckpointMode::Original).await;
+        assert_eq!(third.kernel.serf.event_number.load(Ordering::SeqCst), 3);
+        stop_app(&mut third).await;
+        drop(third);
+    }
 }
 
 /// Result of setting up a NockApp
@@ -623,7 +756,7 @@ async fn select_boot_state<J: Jammer>(
             warn!("Ignoring invalid PMA at {}: {}", path.display(), reason);
         }
         Some(ExistingPmaStatus::Missing) => {
-            info!("No valid PMA found; checking checkpoint bootstrap");
+            info!("No valid PMA found; checking snapshot and checkpoint recovery");
         }
         None => {}
         Some(ExistingPmaStatus::Valid { .. }) => unreachable!(),
@@ -1193,7 +1326,10 @@ pub async fn setup_<J: Jammer + Send + 'static>(
             }
         };
         if !replay_jobs.is_empty() {
-            info!("Replaying {} persisted event(s) after snapshot restore", replay_jobs.len());
+            info!(
+                "Replaying {} persisted event(s) after snapshot restore",
+                replay_jobs.len()
+            );
             kernel.replay_event_jobs(replay_jobs).await?;
         }
         let res: Result<Kernel<SaveableCheckpoint>, CrownError<ExternalError>> = Ok(kernel);

@@ -304,6 +304,78 @@ ORDER BY
         Ok(())
     }
 
+    pub(crate) fn active_snapshot_id(&self) -> Result<Option<i64>, EventLogError> {
+        self.conn
+            .query_row(
+                "SELECT CAST(value AS INTEGER) FROM meta WHERE key = 'active_snapshot_id'",
+                [],
+                |row| row.get::<_, i64>(0),
+            )
+            .optional()
+            .map_err(Into::into)
+    }
+
+    pub(crate) fn ready_rotating_snapshots(
+        &self,
+    ) -> Result<Vec<ReadySnapshotRecord>, EventLogError> {
+        let mut stmt = self.conn.prepare(
+            r#"
+SELECT
+  snapshot_id,
+  kind,
+  event_num,
+  pma_path,
+  manifest_path,
+  alloc_words,
+  kernel_root_raw,
+  cold_offset,
+  used_blake3,
+  structure_blake3,
+  created_at_ms,
+  activated_at_ms,
+  base_snapshot_id,
+  timestamp_tag
+FROM snapshots
+WHERE state = 'ready' AND kind = 'rotating'
+ORDER BY timestamp_tag DESC, snapshot_id DESC
+"#,
+        )?;
+        let rows = stmt.query_map([], |row| {
+            let event_num = row.get::<_, i64>(2)?;
+            let alloc_words = row.get::<_, i64>(5)?;
+            let kernel_root_raw = row.get::<_, i64>(6)?;
+            let cold_offset = row.get::<_, i64>(7)?;
+            Ok(ReadySnapshotRecord {
+                snapshot_id: row.get(0)?,
+                kind: row.get(1)?,
+                event_num: u64::try_from(event_num)
+                    .map_err(|_| rusqlite::Error::IntegralValueOutOfRange(2, event_num))?,
+                pma_path: row.get(3)?,
+                manifest_path: row.get(4)?,
+                alloc_words: u64::try_from(alloc_words)
+                    .map_err(|_| rusqlite::Error::IntegralValueOutOfRange(5, alloc_words))?,
+                kernel_root_raw: u64::from_ne_bytes(kernel_root_raw.to_ne_bytes()),
+                cold_offset: u32::try_from(cold_offset)
+                    .map_err(|_| rusqlite::Error::IntegralValueOutOfRange(7, cold_offset))?,
+                used_blake3: row.get(8)?,
+                structure_blake3: row.get(9)?,
+                created_at_ms: row.get(10)?,
+                activated_at_ms: row.get(11)?,
+                base_snapshot_id: row.get(12)?,
+                timestamp_tag: row.get(13)?,
+            })
+        })?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
+    }
+
+    pub(crate) fn retire_snapshot(&mut self, snapshot_id: i64) -> Result<(), EventLogError> {
+        self.conn.execute(
+            "UPDATE snapshots SET state = 'retired' WHERE snapshot_id = ?1",
+            params![snapshot_id],
+        )?;
+        Ok(())
+    }
+
     pub(crate) fn replay_events_after(
         &self,
         event_num: u64,
@@ -470,7 +542,9 @@ mod tests {
         log.append_event(&sample_entry(1)).expect("append event 1");
         log.append_event(&sample_entry(3)).expect("append event 3");
 
-        let err = log.replay_events_after(0).expect_err("gap should be detected");
+        let err = log
+            .replay_events_after(0)
+            .expect_err("gap should be detected");
         assert!(matches!(
             err,
             EventLogError::EventSequenceGap {
