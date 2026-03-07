@@ -1,5 +1,6 @@
 #![allow(dead_code)]
 
+use std::collections::HashSet;
 use std::fs::{self, File};
 use std::io::{self, Read, Write};
 use std::path::Path;
@@ -137,6 +138,14 @@ pub(crate) enum SnapshotRestoreError {
     #[error(transparent)]
     Verify(#[from] SnapshotVerifyError),
     #[error("snapshot restore io error: {0}")]
+    Io(#[from] io::Error),
+}
+
+#[derive(Debug, Error)]
+pub(crate) enum SnapshotCleanupError {
+    #[error(transparent)]
+    EventLog(#[from] EventLogError),
+    #[error("snapshot cleanup io error: {0}")]
     Io(#[from] io::Error),
 }
 
@@ -359,7 +368,7 @@ pub(crate) fn maybe_create_rotating_snapshot(
         cold_offset,
         base_snapshot_id,
     )?;
-    retire_old_rotating_snapshots(event_log)?;
+    retire_old_rotating_snapshots(event_log).map_err(snapshot_cleanup_into_build)?;
     Ok(true)
 }
 
@@ -376,6 +385,45 @@ pub(crate) fn restore_verified_snapshot(
     copy_snapshot_file(Path::new(&record.pma_path), &tmp_path)?;
     replace_file(&tmp_path, operative_pma_path)?;
     Ok(verification.manifest)
+}
+
+pub(crate) fn cleanup_snapshot_artifacts(
+    event_log: &mut EventLog,
+    pma_dir: &Path,
+) -> Result<(), SnapshotCleanupError> {
+    retire_old_rotating_snapshots(event_log)?;
+    if !pma_dir.exists() {
+        return Ok(());
+    }
+
+    let tracked_paths: HashSet<_> = event_log
+        .list_ready_snapshots()?
+        .into_iter()
+        .flat_map(|snapshot| {
+            [
+                tracked_snapshot_path(pma_dir, &snapshot.pma_path),
+                tracked_snapshot_path(pma_dir, &snapshot.manifest_path),
+            ]
+        })
+        .collect();
+
+    let corrupted_dir = pma_dir.join("corrupted_pma");
+    for entry in fs::read_dir(pma_dir)? {
+        let entry = entry?;
+        let path = entry.path();
+        if !path.is_file() {
+            continue;
+        }
+        let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
+            continue;
+        };
+        if !is_snapshot_artifact(name) || tracked_paths.contains(&path) {
+            continue;
+        }
+        fs::create_dir_all(&corrupted_dir)?;
+        move_to_corrupted_dir(&path, &corrupted_dir)?;
+    }
+    Ok(())
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -457,7 +505,7 @@ fn create_ready_snapshot(
     Ok(manifest)
 }
 
-fn retire_old_rotating_snapshots(event_log: &mut EventLog) -> Result<(), SnapshotBuildError> {
+fn retire_old_rotating_snapshots(event_log: &mut EventLog) -> Result<(), SnapshotCleanupError> {
     let rotating = event_log.ready_rotating_snapshots()?;
     for snapshot in rotating.into_iter().skip(2) {
         let pma_path = Path::new(&snapshot.pma_path);
@@ -470,6 +518,50 @@ fn retire_old_rotating_snapshots(event_log: &mut EventLog) -> Result<(), Snapsho
         }
         event_log.retire_snapshot(snapshot.snapshot_id)?;
     }
+    Ok(())
+}
+
+fn snapshot_cleanup_into_build(err: SnapshotCleanupError) -> SnapshotBuildError {
+    match err {
+        SnapshotCleanupError::EventLog(err) => SnapshotBuildError::EventLog(err),
+        SnapshotCleanupError::Io(err) => SnapshotBuildError::Io(err),
+    }
+}
+
+fn tracked_snapshot_path(pma_dir: &Path, raw: &str) -> std::path::PathBuf {
+    let path = Path::new(raw);
+    if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        pma_dir.join(path)
+    }
+}
+
+fn is_snapshot_artifact(name: &str) -> bool {
+    matches!(
+        name,
+        "epoch.pma" | "epoch.manifest" | "epoch.tmp" | "epoch.pma.tmp" | "epoch.manifest.tmp"
+    ) || name.starts_with("snap-")
+}
+
+fn move_to_corrupted_dir(path: &Path, corrupted_dir: &Path) -> Result<(), io::Error> {
+    let file_name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "snapshot artifact missing filename",
+            )
+        })?;
+    let mut target = corrupted_dir.join(file_name);
+    let mut suffix = 1usize;
+    while target.exists() {
+        target = corrupted_dir.join(format!("{file_name}.{suffix}"));
+        suffix = suffix.saturating_add(1);
+    }
+    fs::rename(path, &target)?;
+    sync_parent_dir(&target)?;
     Ok(())
 }
 

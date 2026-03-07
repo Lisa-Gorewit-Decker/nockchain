@@ -1057,8 +1057,8 @@ fn serf_loop<C: SerfCheckpoint>(
                         let pma_elapsed = pma_elapsed.unwrap_or_else(|| Duration::from_millis(0));
                         timing.record(event_elapsed, pma_elapsed, pma_detail);
                     }
-	                    if std::env::var_os("NOCK_PMA_TIMING").is_some() {
-	                        let event_ms = event_elapsed.as_secs_f64() * 1000.0;
+                    if std::env::var_os("NOCK_PMA_TIMING").is_some() {
+                        let event_ms = event_elapsed.as_secs_f64() * 1000.0;
                         let pma_ms = pma_elapsed
                             .map(|elapsed| elapsed.as_secs_f64() * 1000.0)
                             .unwrap_or(0.0);
@@ -1082,17 +1082,17 @@ fn serf_loop<C: SerfCheckpoint>(
                             total_alloc_mib,
 	                            event_num
 	                        );
-	                    }
-	                    let _ = result_ack.blocking_recv().inspect_err(|_e| {
-	                        debug!("Failed to receive result ack in serf thread");
-	                    });
-	                    if did_update {
-	                        serf.maybe_create_rotating_snapshot();
-	                    }
-	                };
-	                let action_elapsed = action_start.elapsed();
-	                if let Some(nockapp_metrics) = &serf.metrics {
-	                    nockapp_metrics.serf_loop_poke.add_timing(&action_elapsed);
+                    }
+                    let _ = result_ack.blocking_recv().inspect_err(|_e| {
+                        debug!("Failed to receive result ack in serf thread");
+                    });
+                    if did_update {
+                        serf.maybe_create_rotating_snapshot();
+                    }
+                };
+                let action_elapsed = action_start.elapsed();
+                if let Some(nockapp_metrics) = &serf.metrics {
+                    nockapp_metrics.serf_loop_poke.add_timing(&action_elapsed);
                 };
             }
             SerfAction::ProvideMetrics { metrics, result } => {

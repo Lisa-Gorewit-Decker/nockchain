@@ -315,6 +315,18 @@ ORDER BY
             .map_err(Into::into)
     }
 
+    pub(crate) fn set_active_snapshot_id(&mut self, snapshot_id: i64) -> Result<(), EventLogError> {
+        self.conn.execute(
+            r#"
+INSERT INTO meta (key, value)
+VALUES ('active_snapshot_id', ?1)
+ON CONFLICT(key) DO UPDATE SET value = excluded.value
+"#,
+            params![snapshot_id],
+        )?;
+        Ok(())
+    }
+
     pub(crate) fn ready_rotating_snapshots(
         &self,
     ) -> Result<Vec<ReadySnapshotRecord>, EventLogError> {

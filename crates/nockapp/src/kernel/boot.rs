@@ -17,13 +17,13 @@ use tracing_subscriber::registry::LookupSpan;
 use tracing_subscriber::util::SubscriberInitExt;
 use tracing_subscriber::{fmt, EnvFilter, Layer};
 
-use crate::event_log::EventLogConfig;
+use crate::event_log::{EventLogConfig, ReadySnapshotRecord};
 use crate::export::ExportedState;
 use crate::kernel::form::{inspect_existing_pma, ExistingPmaStatus, Kernel, PmaConfig};
 use crate::nockapp::PMA_PERSIST_ENV;
 use crate::noun::slab::{Jammer, NounSlab};
 use crate::save::{SaveableCheckpoint, Saver};
-use crate::snapshot::{restore_verified_snapshot, SnapshotManifest};
+use crate::snapshot::{cleanup_snapshot_artifacts, restore_verified_snapshot, SnapshotManifest};
 use crate::utils::error::{CrownError, ExternalError};
 use crate::utils::{
     NOCK_STACK_SIZE, NOCK_STACK_SIZE_HUGE, NOCK_STACK_SIZE_LARGE, NOCK_STACK_SIZE_MEDIUM,
@@ -382,6 +382,42 @@ mod tests {
         .expect("count retired rotating snapshots")
     }
 
+    fn active_snapshot_id_for_test(data_dir: &Path) -> Option<i64> {
+        let conn =
+            Connection::open(data_dir.join("event-log.sqlite3")).expect("open event log sqlite");
+        conn.query_row(
+            "SELECT CAST(value AS INTEGER) FROM meta WHERE key = 'active_snapshot_id'",
+            [],
+            |row| row.get::<_, i64>(0),
+        )
+        .ok()
+    }
+
+    fn set_active_snapshot_id_for_test(data_dir: &Path, snapshot_id: i64) {
+        let conn =
+            Connection::open(data_dir.join("event-log.sqlite3")).expect("open event log sqlite");
+        conn.execute(
+            r#"
+INSERT INTO meta (key, value)
+VALUES ('active_snapshot_id', ?1)
+ON CONFLICT(key) DO UPDATE SET value = excluded.value
+"#,
+            [snapshot_id],
+        )
+        .expect("set active snapshot id");
+    }
+
+    fn snapshot_state_for_test(data_dir: &Path, snapshot_id: i64) -> String {
+        let conn =
+            Connection::open(data_dir.join("event-log.sqlite3")).expect("open event log sqlite");
+        conn.query_row(
+            "SELECT state FROM snapshots WHERE snapshot_id = ?1",
+            [snapshot_id],
+            |row| row.get::<_, String>(0),
+        )
+        .expect("snapshot state")
+    }
+
     #[test]
     fn parse_save_interval_none_variants() {
         assert_eq!(parse_save_interval("none").unwrap(), 0);
@@ -673,6 +709,103 @@ mod tests {
         stop_app(&mut third).await;
         drop(third);
     }
+
+    #[tokio::test(flavor = "current_thread")]
+    #[traced_test]
+    #[cfg_attr(miri, ignore)]
+    async fn honors_active_snapshot_selection_before_ordering() {
+        let _guard = boot_test_guard();
+        let _interval_guard = set_rotating_snapshot_interval("1");
+        let _test_arena = TestArena::default();
+        let temp = TempDir::new().expect("tempdir");
+        let data_dir = temp.path().join("active-snapshot-selection");
+
+        let mut first = setup_test_app(&data_dir, false, CheckpointMode::Original).await;
+        poke_inc(&first).await;
+        save_app(&mut first).await;
+        stop_app(&mut first).await;
+        drop(first);
+        clear_pma_files(&data_dir);
+
+        let mut second = setup_test_app(&data_dir, true, CheckpointMode::Original).await;
+        poke_inc(&second).await;
+        poke_inc(&second).await;
+        assert_eq!(second.kernel.serf.event_number.load(Ordering::SeqCst), 3);
+        stop_app(&mut second).await;
+        drop(second);
+
+        let rotating = ready_rotating_snapshots(&data_dir);
+        assert_eq!(rotating.len(), 2);
+        let older_snapshot_id = rotating[1].0;
+        let newer_snapshot_id = rotating[0].0;
+        set_active_snapshot_id_for_test(&data_dir, older_snapshot_id);
+        fs::write(&rotating[1].1, b"corrupt active rotating snapshot")
+            .expect("corrupt active rotating pma");
+
+        clear_pma_files(&data_dir);
+        let checkpoints_dir = data_dir.join("checkpoints");
+        fs::write(checkpoints_dir.join("0.chkjam"), b"corrupt checkpoint 0").expect("corrupt chk0");
+        fs::write(checkpoints_dir.join("1.chkjam"), b"corrupt checkpoint 1").expect("corrupt chk1");
+
+        let mut third = setup_test_app(&data_dir, true, CheckpointMode::Original).await;
+        assert_eq!(third.kernel.serf.event_number.load(Ordering::SeqCst), 3);
+        stop_app(&mut third).await;
+        drop(third);
+
+        assert_eq!(
+            snapshot_state_for_test(&data_dir, older_snapshot_id),
+            "failed"
+        );
+        assert_eq!(
+            active_snapshot_id_for_test(&data_dir),
+            Some(newer_snapshot_id)
+        );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    #[traced_test]
+    #[cfg_attr(miri, ignore)]
+    async fn moves_orphan_snapshot_files_to_corrupted_pma() {
+        let _guard = boot_test_guard();
+        let _interval_guard = set_rotating_snapshot_interval("1");
+        let _test_arena = TestArena::default();
+        let temp = TempDir::new().expect("tempdir");
+        let data_dir = temp.path().join("orphan-snapshot-cleanup");
+
+        let mut first = setup_test_app(&data_dir, false, CheckpointMode::Original).await;
+        poke_inc(&first).await;
+        save_app(&mut first).await;
+        stop_app(&mut first).await;
+        drop(first);
+        clear_pma_files(&data_dir);
+
+        let mut second = setup_test_app(&data_dir, true, CheckpointMode::Original).await;
+        poke_inc(&second).await;
+        assert_eq!(second.kernel.serf.event_number.load(Ordering::SeqCst), 2);
+        stop_app(&mut second).await;
+        drop(second);
+
+        let pma_dir = data_dir.join("pma");
+        let orphan_pma = pma_dir.join("snap-orphan.pma");
+        let orphan_manifest = pma_dir.join("snap-orphan.manifest");
+        let orphan_tmp = pma_dir.join("snap-orphan.tmp");
+        fs::write(&orphan_pma, b"orphan pma").expect("write orphan pma");
+        fs::write(&orphan_manifest, b"orphan manifest").expect("write orphan manifest");
+        fs::write(&orphan_tmp, b"orphan tmp").expect("write orphan tmp");
+
+        let mut third = setup_test_app(&data_dir, true, CheckpointMode::Original).await;
+        assert_eq!(third.kernel.serf.event_number.load(Ordering::SeqCst), 2);
+        stop_app(&mut third).await;
+        drop(third);
+
+        let corrupted_dir = pma_dir.join("corrupted_pma");
+        assert!(!orphan_pma.exists());
+        assert!(!orphan_manifest.exists());
+        assert!(!orphan_tmp.exists());
+        assert!(corrupted_dir.join("snap-orphan.pma").exists());
+        assert!(corrupted_dir.join("snap-orphan.manifest").exists());
+        assert!(corrupted_dir.join("snap-orphan.tmp").exists());
+    }
 }
 
 /// Result of setting up a NockApp
@@ -691,6 +824,28 @@ struct BootSelection<J> {
     replay_jobs: Vec<Vec<u8>>,
 }
 
+fn order_snapshot_candidates(
+    active_snapshot_id: Option<i64>,
+    ready_snapshots: Vec<ReadySnapshotRecord>,
+) -> Vec<ReadySnapshotRecord> {
+    if let Some(active_snapshot_id) = active_snapshot_id {
+        if let Some(active_idx) = ready_snapshots
+            .iter()
+            .position(|snapshot| snapshot.snapshot_id == active_snapshot_id)
+        {
+            let mut ordered = Vec::with_capacity(ready_snapshots.len());
+            ordered.push(ready_snapshots[active_idx].clone());
+            ordered.extend(
+                ready_snapshots
+                    .into_iter()
+                    .filter(|snapshot| snapshot.snapshot_id != active_snapshot_id),
+            );
+            return ordered;
+        }
+    }
+    ready_snapshots
+}
+
 async fn select_boot_state<J: Jammer>(
     jams_dir: &PathBuf,
     kernel_bytes: &[u8],
@@ -706,6 +861,29 @@ async fn select_boot_state<J: Jammer>(
     };
     let existing_pma = if pma_persist {
         Some(inspect_existing_pma(pma_path_0, pma_path_1, kernel_bytes))
+    } else {
+        None
+    };
+    let mut recovery_event_log = if pma_persist {
+        match crate::event_log::EventLog::open(EventLogConfig {
+            path: event_log_path.clone(),
+        }) {
+            Ok(mut event_log) => {
+                if let Err(err) = cleanup_snapshot_artifacts(
+                    &mut event_log,
+                    pma_path_0
+                        .parent()
+                        .unwrap_or_else(|| std::path::Path::new(".")),
+                ) {
+                    warn!("snapshot cleanup failed during boot: {err}");
+                }
+                Some(event_log)
+            }
+            Err(err) => {
+                warn!("snapshot inspection skipped because event log could not be opened: {err}");
+                None
+            }
+        }
     } else {
         None
     };
@@ -762,119 +940,115 @@ async fn select_boot_state<J: Jammer>(
         Some(ExistingPmaStatus::Valid { .. }) => unreachable!(),
     }
 
-    if pma_persist {
-        match crate::event_log::EventLog::open(EventLogConfig {
-            path: event_log_path.clone(),
-        }) {
-            Ok(mut event_log) => {
-                if let Err(err) = event_log.quick_check() {
-                    return Err(CrownError::Unknown(format!(
-                        "event log quick_check failed during snapshot recovery: {err}"
-                    )));
-                }
-                let event_log_max = event_log
-                    .max_event_num()
+    if let Some(event_log) = recovery_event_log.as_mut() {
+        if let Err(err) = event_log.quick_check() {
+            return Err(CrownError::Unknown(format!(
+                "event log quick_check failed during snapshot recovery: {err}"
+            )));
+        }
+        let event_log_max = event_log
+            .max_event_num()
+            .map_err(|err| {
+                CrownError::Unknown(format!(
+                    "failed to read max event number from event log: {err}"
+                ))
+            })?
+            .unwrap_or(0);
+        let active_snapshot_id = event_log.active_snapshot_id().map_err(|err| {
+            CrownError::Unknown(format!(
+                "failed to read active_snapshot_id from event log: {err}"
+            ))
+        })?;
+        let ready_snapshots = event_log.list_ready_snapshots().map_err(|err| {
+            CrownError::Unknown(format!(
+                "failed to list ready snapshots from event log: {err}"
+            ))
+        })?;
+        for snapshot in order_snapshot_candidates(active_snapshot_id, ready_snapshots) {
+            let replay_entries =
+                event_log
+                    .replay_events_after(snapshot.event_num)
                     .map_err(|err| {
                         CrownError::Unknown(format!(
-                            "failed to read max event number from event log: {err}"
-                        ))
-                    })?
-                    .unwrap_or(0);
-                let ready_snapshots = event_log.list_ready_snapshots().map_err(|err| {
-                    CrownError::Unknown(format!(
-                        "failed to list ready snapshots from event log: {err}"
-                    ))
-                })?;
-                for snapshot in ready_snapshots {
-                    let replay_entries = event_log
-                        .replay_events_after(snapshot.event_num)
-                        .map_err(|err| {
-                            CrownError::Unknown(format!(
-                                "event log continuity check failed from snapshot {} event_num={}: {err}",
-                                snapshot.pma_path, snapshot.event_num
-                            ))
-                        })?;
-                    if snapshot.event_num > event_log_max {
+                    "event log continuity check failed from snapshot {} event_num={}: {err}",
+                    snapshot.pma_path, snapshot.event_num
+                ))
+                    })?;
+            if snapshot.event_num > event_log_max {
+                warn!(
+                    "Snapshot {} event_num={} is ahead of event log max {}; marking failed",
+                    snapshot.pma_path, snapshot.event_num, event_log_max
+                );
+                let _ = event_log.mark_snapshot_failed(snapshot.snapshot_id);
+                continue;
+            }
+            match restore_verified_snapshot(&snapshot, pma_path_0) {
+                Ok(manifest) => {
+                    if manifest.ker_hash != *expected_ker_hash.as_bytes() {
                         warn!(
-                            "Snapshot {} event_num={} is ahead of event log max {}; marking failed",
-                            snapshot.pma_path, snapshot.event_num, event_log_max
+                            "Snapshot {} kernel hash mismatch; marking failed",
+                            snapshot.pma_path
                         );
                         let _ = event_log.mark_snapshot_failed(snapshot.snapshot_id);
                         continue;
                     }
-                    match restore_verified_snapshot(&snapshot, pma_path_0) {
-                        Ok(manifest) => {
-                            if manifest.ker_hash != *expected_ker_hash.as_bytes() {
-                                warn!(
-                                    "Snapshot {} kernel hash mismatch; marking failed",
-                                    snapshot.pma_path
-                                );
-                                let _ = event_log.mark_snapshot_failed(snapshot.snapshot_id);
-                                continue;
-                            }
-                            for stale in [
-                                pma_path_1.clone(),
-                                pma_path_0.with_extension("meta"),
-                                pma_path_1.with_extension("meta"),
-                            ] {
-                                if stale.exists() {
-                                    let _ = std::fs::remove_file(&stale);
-                                }
-                            }
-                            let (saver, checkpoint_summary) = match Saver::<J>::resume(jams_dir)
-                                .await
-                            {
-                                Ok(result) => result,
-                                Err(err) => {
-                                    warn!(
-                                        "checkpoint inspection failed while booting from snapshot; continuing without checkpoint metadata: {err}"
-                                    );
-                                    (Saver::new_empty(jams_dir), None)
-                                }
-                            };
-                            let boot_source = BootSource::Snapshot {
-                                path: PathBuf::from(&snapshot.pma_path),
-                                event_num: snapshot.event_num,
-                            };
-                            match &boot_source {
-                                BootSource::Snapshot { path, event_num } => info!(
-                                    "Boot source: snapshot path={} event_num={}",
-                                    path.display(),
-                                    event_num
-                                ),
-                                _ => unreachable!(),
-                            }
-                            if let Some(summary) = checkpoint_summary.as_ref() {
-                                info!(
-                                    "Checkpoint at {} event_num={} checksum={} is available but skipped because a ready snapshot is authoritative",
-                                    summary.path.display(),
-                                    summary.event_num,
-                                    summary.checksum
-                                );
-                            }
-                            return Ok(BootSelection {
-                                saver,
-                                checkpoint: None,
-                                pma_open_existing: true,
-                                snapshot_manifest: Some(manifest),
-                                replay_jobs: replay_entries
-                                    .into_iter()
-                                    .map(|entry| entry.job_jam)
-                                    .collect(),
-                            });
-                        }
-                        Err(err) => {
-                            warn!(
-                                "Snapshot restore failed for {}: {}; marking snapshot failed",
-                                snapshot.pma_path, err
-                            );
-                            let _ = event_log.mark_snapshot_failed(snapshot.snapshot_id);
+                    let _ = event_log.set_active_snapshot_id(snapshot.snapshot_id);
+                    for stale in [
+                        pma_path_1.clone(),
+                        pma_path_0.with_extension("meta"),
+                        pma_path_1.with_extension("meta"),
+                    ] {
+                        if stale.exists() {
+                            let _ = std::fs::remove_file(&stale);
                         }
                     }
+                    let (saver, checkpoint_summary) = match Saver::<J>::resume(jams_dir).await {
+                        Ok(result) => result,
+                        Err(err) => {
+                            warn!(
+                                "checkpoint inspection failed while booting from snapshot; continuing without checkpoint metadata: {err}"
+                            );
+                            (Saver::new_empty(jams_dir), None)
+                        }
+                    };
+                    let boot_source = BootSource::Snapshot {
+                        path: PathBuf::from(&snapshot.pma_path),
+                        event_num: snapshot.event_num,
+                    };
+                    match &boot_source {
+                        BootSource::Snapshot { path, event_num } => info!(
+                            "Boot source: snapshot path={} event_num={}",
+                            path.display(),
+                            event_num
+                        ),
+                        _ => unreachable!(),
+                    }
+                    if let Some(summary) = checkpoint_summary.as_ref() {
+                        info!(
+                            "Checkpoint at {} event_num={} checksum={} is available but skipped because a ready snapshot is authoritative",
+                            summary.path.display(),
+                            summary.event_num,
+                            summary.checksum
+                        );
+                    }
+                    return Ok(BootSelection {
+                        saver,
+                        checkpoint: None,
+                        pma_open_existing: true,
+                        snapshot_manifest: Some(manifest),
+                        replay_jobs: replay_entries
+                            .into_iter()
+                            .map(|entry| entry.job_jam)
+                            .collect(),
+                    });
                 }
-            }
-            Err(err) => {
-                warn!("snapshot inspection skipped because event log could not be opened: {err}");
+                Err(err) => {
+                    warn!(
+                        "Snapshot restore failed for {}: {}; marking snapshot failed",
+                        snapshot.pma_path, err
+                    );
+                    let _ = event_log.mark_snapshot_failed(snapshot.snapshot_id);
+                }
             }
         }
     }
