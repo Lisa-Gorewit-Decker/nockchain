@@ -51,9 +51,6 @@ pub const EXIT_SIGINT: usize = 130;
 pub const EXIT_SIGQUIT: usize = 131;
 /// SIGTERM: Termination signal from OS or process manager
 pub const EXIT_SIGTERM: usize = 143;
-/// Enable PMA persistence and disable checkpoints.
-pub(crate) const PMA_PERSIST_ENV: &str = "NOCK_PMA_PERSIST";
-
 #[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
 pub enum CheckpointMode {
     #[value(alias = "full", alias = "slab")]

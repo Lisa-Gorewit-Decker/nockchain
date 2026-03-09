@@ -114,6 +114,16 @@ impl<J> Saver<J> {
         )
     }
 
+    pub(crate) fn from_boot_event_num(path: &PathBuf, event_num: u64) -> Self {
+        Self::from_state(
+            path,
+            SaverState {
+                save_to_next: WhichSnapshot::Snapshot0,
+                last_event_num: event_num,
+            },
+        )
+    }
+
     fn from_state(path: &PathBuf, state: SaverState) -> Self {
         let path_0 = path.join("0.chkjam");
         let path_1 = path.join("1.chkjam");

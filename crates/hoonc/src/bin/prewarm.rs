@@ -11,7 +11,7 @@ use nockapp::noun::slab::{NockJammer, NounSlab};
 use nockapp::one_punch::OnePunchWire;
 use nockapp::save::JammedCheckpoint;
 use nockapp::wire::Wire;
-use nockapp::{exit_driver, file_driver, AtomExt};
+use nockapp::{exit_driver, file_driver, AtomExt, CheckpointMode};
 use nockvm::noun::{Atom, D, T};
 use nockvm_macros::tas;
 use tempfile::TempDir;
@@ -38,6 +38,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let mut boot_cli = default_boot_cli(true);
     boot_cli.new = true;
+    boot_cli.checkpoint_mode = CheckpointMode::Original;
 
     let mut nockapp = boot::setup::<NockJammer>(
         hoonc::KERNEL_JAM,

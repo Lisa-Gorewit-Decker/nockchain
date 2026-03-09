@@ -73,18 +73,28 @@ pub const DEFAULT_NOCK_STACK_SIZE: usize = 1 << 27;
 
 #[cfg(test)]
 pub mod test_support {
+    use std::cell::Cell;
     use std::sync::{Mutex, MutexGuard, OnceLock};
 
     use nockvm::mem::NockStack;
 
+    pub struct NativePmaTestGuard {
+        _guard: Option<MutexGuard<'static, ()>>,
+    }
+
     pub struct TestArena {
+        _guard: NativePmaTestGuard,
         stack: NockStack,
     }
 
     impl TestArena {
         pub fn with_words(words: usize) -> Self {
+            let guard = native_pma_test_guard();
             let stack = NockStack::new(words, 0);
-            Self { stack }
+            Self {
+                _guard: guard,
+                stack,
+            }
         }
     }
 
@@ -109,10 +119,34 @@ pub mod test_support {
         }
     }
 
-    pub fn native_pma_test_guard() -> MutexGuard<'static, ()> {
+    thread_local! {
+        static NATIVE_PMA_TEST_GUARD_DEPTH: Cell<usize> = const { Cell::new(0) };
+    }
+
+    impl Drop for NativePmaTestGuard {
+        fn drop(&mut self) {
+            NATIVE_PMA_TEST_GUARD_DEPTH.with(|depth| {
+                let current = depth.get();
+                depth.set(current.saturating_sub(1));
+            });
+        }
+    }
+
+    pub fn native_pma_test_guard() -> NativePmaTestGuard {
         static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-        LOCK.get_or_init(|| Mutex::new(()))
-            .lock()
-            .expect("native PMA test mutex poisoned")
+        let guard = NATIVE_PMA_TEST_GUARD_DEPTH.with(|depth| {
+            let current = depth.get();
+            depth.set(current.saturating_add(1));
+            if current == 0 {
+                Some(
+                    LOCK.get_or_init(|| Mutex::new(()))
+                        .lock()
+                        .unwrap_or_else(|poisoned| poisoned.into_inner()),
+                )
+            } else {
+                None
+            }
+        });
+        NativePmaTestGuard { _guard: guard }
     }
 }
