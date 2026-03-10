@@ -47,6 +47,10 @@ test:
 bench-nockchain-kernel:
 	cargo run --release -p nockchain --bin bench_nockchain_kernel -- --skip-mining
 
+.PHONY: bench-nockchain-checkpoint-block
+bench-nockchain-checkpoint-block:
+	cargo run --release -p nockchain --bin bench_nockchain_checkpoint_block --
+
 .PHONY: test-pma-paging-kernel
 test-pma-paging-kernel:
 	NOCKCHAIN_PMA_PAGING_SKIP_MINING=1 NOCKCHAIN_PMA_PAGING_SKIP_TXS=1 NOCKCHAIN_PMA_PAGING_BLOCKS=250 NOCKCHAIN_PMA_PAGING_BYTES=1073741824 NOCKCHAIN_PMA_PAGING_OUTPUTS=1 cargo test --release --test pma_paging_kernel -- --ignored
