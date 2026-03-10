@@ -34,7 +34,7 @@
   ^-  state:wt
   |^
   |-
-  ?:  ?=(%5 -.old)
+  ?:  ?=(%6 -.old)
     old
   ~>  %slog.[0 'load: State upgrade required']
   ?-  -.old
@@ -121,7 +121,7 @@
     ==
   ::
   ++  state-4-5
-    ^-  state:wt
+    ^-  state-5:wt
     ?>  ?=(%4 -.old)
     ~>  %slog.[0 'upgrade version 4 to 5']
     :*  %5
