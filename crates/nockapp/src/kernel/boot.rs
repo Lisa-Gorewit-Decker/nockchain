@@ -23,17 +23,15 @@ use crate::export::ExportedState;
 use crate::kernel::form::{inspect_existing_pma, ExistingPmaStatus, Kernel, PmaConfig};
 use crate::metrics::NockAppMetrics;
 use crate::noun::slab::{Jammer, NounSlab};
-use crate::save::{SaveableCheckpoint, Saver};
+use crate::save::{CheckpointBootstrapReader, SaveableCheckpoint};
 use crate::snapshot::{cleanup_snapshot_artifacts, restore_verified_snapshot, SnapshotManifest};
 use crate::utils::error::{CrownError, ExternalError};
 use crate::utils::{
     NOCK_STACK_SIZE, NOCK_STACK_SIZE_HUGE, NOCK_STACK_SIZE_LARGE, NOCK_STACK_SIZE_MEDIUM,
     NOCK_STACK_SIZE_SMALL, NOCK_STACK_SIZE_TINY,
 };
-use crate::{default_data_dir, AtomExt, CheckpointMode, NockApp};
+use crate::{default_data_dir, AtomExt, NockApp};
 
-pub const DEFAULT_SAVE_INTERVAL: u64 = 120000;
-const DEFAULT_SAVE_INTERVAL_STR: &str = "120000";
 const DEFAULT_GC_INTERVAL_STR: &str = "none";
 const DEFAULT_ROTATING_SNAPSHOT_INTERVAL_EVENTS: u64 = 64;
 const DEFAULT_ROTATING_SNAPSHOT_INTERVAL_EVENTS_STR: &str = "64";
@@ -132,17 +130,9 @@ pub struct Cli {
 
     #[arg(
         long,
-        help = "Set the save interval for checkpoints (in ms). Use 'none' or '0' to disable periodic saves.",
-        default_value = DEFAULT_SAVE_INTERVAL_STR,
-        value_parser = parse_save_interval
-    )]
-    pub save_interval: Option<u64>,
-
-    #[arg(
-        long,
         help = "Set the PMA GC interval (in ms). Use 'none' or '0' to disable PMA GC.",
         default_value = DEFAULT_GC_INTERVAL_STR,
-        value_parser = parse_save_interval
+        value_parser = parse_optional_u64
     )]
     pub gc_interval: Option<u64>,
 
@@ -150,17 +140,9 @@ pub struct Cli {
         long,
         help = "Set the rotating snapshot interval in events. Use 'none' or '0' to disable rotating snapshots.",
         default_value = DEFAULT_ROTATING_SNAPSHOT_INTERVAL_EVENTS_STR,
-        value_parser = parse_save_interval
+        value_parser = parse_optional_u64
     )]
     pub rotating_snapshot_interval_events: Option<u64>,
-
-    #[arg(
-        long,
-        help = "Periodic checkpoint save mode. Use 'original' for slab-based saves, 'stream' for O_DIRECT streaming, or 'none' to disable periodic checkpointing.",
-        value_enum,
-        default_value_t = CheckpointMode::Disabled
-    )]
-    pub checkpoint_mode: CheckpointMode,
 
     #[arg(long, help = "Control colored output", value_enum, default_value_t = ColorChoice::Auto)]
     pub color: ColorChoice,
@@ -194,11 +176,6 @@ pub struct Cli {
 }
 
 impl Cli {
-    fn normalized_save_interval(&self) -> Option<u64> {
-        self.save_interval
-            .and_then(|value| if value == 0 { None } else { Some(value) })
-    }
-
     fn normalized_gc_interval(&self) -> Option<u64> {
         self.gc_interval
             .and_then(|value| if value == 0 { None } else { Some(value) })
@@ -210,7 +187,7 @@ impl Cli {
     }
 }
 
-fn parse_save_interval(input: &str) -> Result<u64, String> {
+fn parse_optional_u64(input: &str) -> Result<u64, String> {
     let trimmed = input.trim();
 
     if trimmed.eq_ignore_ascii_case("none") {
@@ -218,7 +195,7 @@ fn parse_save_interval(input: &str) -> Result<u64, String> {
     } else {
         let value = trimmed
             .parse::<u64>()
-            .map_err(|e| format!("Invalid save interval '{trimmed}': {e}"))?;
+            .map_err(|e| format!("Invalid value '{trimmed}': {e}"))?;
         Ok(value)
     }
 }
@@ -237,15 +214,15 @@ mod tests {
     use tracing_test::traced_test;
 
     use super::{
-        default_boot_cli, parse_save_interval, select_boot_state, setup_, BootSelection,
-        SetupResult,
-        DEFAULT_ROTATING_SNAPSHOT_INTERVAL_EVENTS,
+        default_boot_cli, parse_optional_u64, select_boot_state, setup_, BootSelection,
+        SetupResult, DEFAULT_ROTATING_SNAPSHOT_INTERVAL_EVENTS,
     };
     use crate::metrics::NockAppMetrics;
     use crate::nockapp::wire::{SystemWire, Wire};
     use crate::noun::slab::{NockJammer, NounSlab};
+    use crate::save::SaveableCheckpoint;
     use crate::test_support::{native_pma_test_guard, TestArena};
-    use crate::{CheckpointMode, NockApp};
+    use crate::NockApp;
 
     fn load_test_jam_bytes() -> Vec<u8> {
         fs::read(
@@ -263,31 +240,21 @@ mod tests {
         slab
     }
 
-    async fn setup_test_app(
-        data_dir: &Path,
-        checkpoint_mode: CheckpointMode,
-    ) -> NockApp<NockJammer> {
-        try_setup_test_app(
-            data_dir,
-            checkpoint_mode,
-            Some(DEFAULT_ROTATING_SNAPSHOT_INTERVAL_EVENTS),
-        )
-        .await
-        .expect("setup boot test app")
+    async fn setup_test_app(data_dir: &Path) -> NockApp<NockJammer> {
+        try_setup_test_app(data_dir, Some(DEFAULT_ROTATING_SNAPSHOT_INTERVAL_EVENTS))
+            .await
+            .expect("setup boot test app")
     }
 
     async fn try_setup_test_app(
         data_dir: &Path,
-        checkpoint_mode: CheckpointMode,
         rotating_snapshot_interval_events: Option<u64>,
     ) -> Result<NockApp<NockJammer>, Box<dyn std::error::Error>> {
         let jam = load_test_jam_bytes();
         let mut cli = default_boot_cli(false);
         cli.data_dir = Some(data_dir.to_path_buf());
-        cli.save_interval = Some(0);
         cli.gc_interval = Some(0);
         cli.rotating_snapshot_interval_events = rotating_snapshot_interval_events;
-        cli.checkpoint_mode = checkpoint_mode;
         Ok(
             match setup_::<NockJammer>(&jam, cli, &[], "boot-test", None).await? {
                 SetupResult::App(app) => app,
@@ -296,19 +263,20 @@ mod tests {
         )
     }
 
+    async fn write_checkpoint_bootstrap_fixture(app: &NockApp<NockJammer>, data_dir: &Path) {
+        let checkpoint: SaveableCheckpoint =
+            app.kernel.checkpoint().await.expect("checkpoint saveable");
+        let jammed = checkpoint.into_jammed_checkpoint::<NockJammer>();
+        let bytes = jammed.encode().expect("encode checkpoint");
+        fs::write(data_dir.join("checkpoints").join("0.chkjam"), bytes)
+            .expect("write checkpoint fixture");
+    }
+
     async fn poke_inc(app: &NockApp<NockJammer>) {
         app.kernel
             .poke(SystemWire.to_wire(), inc_poke())
             .await
             .expect("poke inc");
-    }
-
-    async fn save_app(app: &mut NockApp<NockJammer>) {
-        app.tasks.close();
-        let permit = app.save_mutex.clone().lock_owned().await;
-        app.save(permit).await.expect("save checkpoint");
-        app.tasks.wait().await;
-        app.tasks.reopen();
     }
 
     async fn stop_app(app: &mut NockApp<NockJammer>) {
@@ -415,32 +383,22 @@ ON CONFLICT(key) DO UPDATE SET value = excluded.value
     }
 
     #[test]
-    fn parse_save_interval_none_variants() {
-        assert_eq!(parse_save_interval("none").unwrap(), 0);
-        assert_eq!(parse_save_interval("NoNe").unwrap(), 0);
-        assert_eq!(parse_save_interval("0").unwrap(), 0);
-        assert_eq!(parse_save_interval(" 0 ").unwrap(), 0);
+    fn parse_optional_u64_none_variants() {
+        assert_eq!(parse_optional_u64("none").unwrap(), 0);
+        assert_eq!(parse_optional_u64("NoNe").unwrap(), 0);
+        assert_eq!(parse_optional_u64("0").unwrap(), 0);
+        assert_eq!(parse_optional_u64(" 0 ").unwrap(), 0);
     }
 
     #[test]
-    fn parse_save_interval_positive_values() {
-        assert_eq!(parse_save_interval("1").unwrap(), 1);
-        assert_eq!(parse_save_interval(" 120000 ").unwrap(), 120000);
+    fn parse_optional_u64_positive_values() {
+        assert_eq!(parse_optional_u64("1").unwrap(), 1);
+        assert_eq!(parse_optional_u64(" 120000 ").unwrap(), 120000);
     }
 
     #[test]
-    fn parse_save_interval_rejects_invalid() {
-        assert!(parse_save_interval("abc").is_err());
-    }
-
-    #[test]
-    fn normalized_save_interval_filters_zero() {
-        let mut cli = super::default_boot_cli(false);
-        cli.save_interval = Some(0);
-        assert_eq!(cli.normalized_save_interval(), None);
-
-        cli.save_interval = Some(5000);
-        assert_eq!(cli.normalized_save_interval(), Some(5000));
+    fn parse_optional_u64_rejects_invalid() {
+        assert!(parse_optional_u64("abc").is_err());
     }
 
     #[test]
@@ -472,9 +430,9 @@ ON CONFLICT(key) DO UPDATE SET value = excluded.value
         let temp = TempDir::new().expect("tempdir");
         let data_dir = temp.path().join("bootstrapped-pma");
 
-        let mut first = setup_test_app(&data_dir, CheckpointMode::Original).await;
+        let mut first = setup_test_app(&data_dir).await;
         poke_inc(&first).await;
-        save_app(&mut first).await;
+        write_checkpoint_bootstrap_fixture(&first, &data_dir).await;
         stop_app(&mut first).await;
         drop(first);
         assert_eq!(ready_snapshot_count(&data_dir), 1);
@@ -484,7 +442,7 @@ ON CONFLICT(key) DO UPDATE SET value = excluded.value
         clear_ready_snapshots_for_test(&data_dir);
         clear_pma_files(&data_dir);
 
-        let mut second = setup_test_app(&data_dir, CheckpointMode::Original).await;
+        let mut second = setup_test_app(&data_dir).await;
         assert_eq!(second.kernel.serf.event_number.load(Ordering::SeqCst), 1);
         assert!(
             data_dir.join("pma").join("0.meta").exists()
@@ -508,14 +466,14 @@ ON CONFLICT(key) DO UPDATE SET value = excluded.value
         let temp = TempDir::new().expect("tempdir");
         let data_dir = temp.path().join("skip-corrupt-checkpoint");
 
-        let mut first = setup_test_app(&data_dir, CheckpointMode::Original).await;
+        let mut first = setup_test_app(&data_dir).await;
         poke_inc(&first).await;
-        save_app(&mut first).await;
+        write_checkpoint_bootstrap_fixture(&first, &data_dir).await;
         stop_app(&mut first).await;
         drop(first);
         clear_pma_files(&data_dir);
 
-        let mut second = setup_test_app(&data_dir, CheckpointMode::Original).await;
+        let mut second = setup_test_app(&data_dir).await;
         poke_inc(&second).await;
         assert_eq!(second.kernel.serf.event_number.load(Ordering::SeqCst), 2);
         stop_app(&mut second).await;
@@ -525,7 +483,7 @@ ON CONFLICT(key) DO UPDATE SET value = excluded.value
         fs::write(checkpoints_dir.join("0.chkjam"), b"corrupt checkpoint 0").expect("corrupt chk0");
         fs::write(checkpoints_dir.join("1.chkjam"), b"corrupt checkpoint 1").expect("corrupt chk1");
 
-        let boot_selection: BootSelection<NockJammer> = select_boot_state(
+        let boot_selection: BootSelection = select_boot_state::<NockJammer>(
             &data_dir.join("checkpoints"),
             &load_test_jam_bytes(),
             &data_dir.join("event-log.sqlite3"),
@@ -550,14 +508,13 @@ ON CONFLICT(key) DO UPDATE SET value = excluded.value
         let temp = TempDir::new().expect("tempdir");
         let data_dir = temp.path().join("restore-epoch-snapshot");
 
-        let mut first = setup_test_app(&data_dir, CheckpointMode::Original).await;
+        let mut first = setup_test_app(&data_dir).await;
         poke_inc(&first).await;
-        save_app(&mut first).await;
         stop_app(&mut first).await;
         drop(first);
         clear_pma_files(&data_dir);
 
-        let mut second = setup_test_app(&data_dir, CheckpointMode::Original).await;
+        let mut second = setup_test_app(&data_dir).await;
         assert_eq!(second.kernel.serf.event_number.load(Ordering::SeqCst), 1);
         stop_app(&mut second).await;
         drop(second);
@@ -567,7 +524,7 @@ ON CONFLICT(key) DO UPDATE SET value = excluded.value
         fs::write(checkpoints_dir.join("0.chkjam"), b"corrupt checkpoint 0").expect("corrupt chk0");
         fs::write(checkpoints_dir.join("1.chkjam"), b"corrupt checkpoint 1").expect("corrupt chk1");
 
-        let mut third = setup_test_app(&data_dir, CheckpointMode::Original).await;
+        let mut third = setup_test_app(&data_dir).await;
         assert_eq!(third.kernel.serf.event_number.load(Ordering::SeqCst), 1);
         assert!(data_dir.join("pma").join("0.meta").exists());
         stop_app(&mut third).await;
@@ -583,14 +540,13 @@ ON CONFLICT(key) DO UPDATE SET value = excluded.value
         let temp = TempDir::new().expect("tempdir");
         let data_dir = temp.path().join("replay-after-snapshot-restore");
 
-        let mut first = setup_test_app(&data_dir, CheckpointMode::Original).await;
+        let mut first = setup_test_app(&data_dir).await;
         poke_inc(&first).await;
-        save_app(&mut first).await;
         stop_app(&mut first).await;
         drop(first);
         clear_pma_files(&data_dir);
 
-        let mut second = setup_test_app(&data_dir, CheckpointMode::Original).await;
+        let mut second = setup_test_app(&data_dir).await;
         assert_eq!(second.kernel.serf.event_number.load(Ordering::SeqCst), 1);
         poke_inc(&second).await;
         assert_eq!(second.kernel.serf.event_number.load(Ordering::SeqCst), 2);
@@ -602,7 +558,7 @@ ON CONFLICT(key) DO UPDATE SET value = excluded.value
         fs::write(checkpoints_dir.join("0.chkjam"), b"corrupt checkpoint 0").expect("corrupt chk0");
         fs::write(checkpoints_dir.join("1.chkjam"), b"corrupt checkpoint 1").expect("corrupt chk1");
 
-        let mut third = setup_test_app(&data_dir, CheckpointMode::Original).await;
+        let mut third = setup_test_app(&data_dir).await;
         assert_eq!(third.kernel.serf.event_number.load(Ordering::SeqCst), 2);
         stop_app(&mut third).await;
         drop(third);
@@ -617,14 +573,13 @@ ON CONFLICT(key) DO UPDATE SET value = excluded.value
         let temp = TempDir::new().expect("tempdir");
         let data_dir = temp.path().join("gap-after-snapshot");
 
-        let mut first = setup_test_app(&data_dir, CheckpointMode::Original).await;
+        let mut first = setup_test_app(&data_dir).await;
         poke_inc(&first).await;
-        save_app(&mut first).await;
         stop_app(&mut first).await;
         drop(first);
         clear_pma_files(&data_dir);
 
-        let mut second = setup_test_app(&data_dir, CheckpointMode::Original).await;
+        let mut second = setup_test_app(&data_dir).await;
         poke_inc(&second).await;
         poke_inc(&second).await;
         stop_app(&mut second).await;
@@ -640,16 +595,13 @@ ON CONFLICT(key) DO UPDATE SET value = excluded.value
         fs::write(checkpoints_dir.join("0.chkjam"), b"corrupt checkpoint 0").expect("corrupt chk0");
         fs::write(checkpoints_dir.join("1.chkjam"), b"corrupt checkpoint 1").expect("corrupt chk1");
 
-        let err = match try_setup_test_app(
-            &data_dir,
-            CheckpointMode::Original,
-            Some(DEFAULT_ROTATING_SNAPSHOT_INTERVAL_EVENTS),
-        )
-        .await
-        {
-            Ok(_) => panic!("boot should fail on continuity gap"),
-            Err(err) => err,
-        };
+        let err =
+            match try_setup_test_app(&data_dir, Some(DEFAULT_ROTATING_SNAPSHOT_INTERVAL_EVENTS))
+                .await
+            {
+                Ok(_) => panic!("boot should fail on continuity gap"),
+                Err(err) => err,
+            };
         assert!(err
             .to_string()
             .contains("event log continuity check failed"));
@@ -664,14 +616,13 @@ ON CONFLICT(key) DO UPDATE SET value = excluded.value
         let temp = TempDir::new().expect("tempdir");
         let data_dir = temp.path().join("rotating-snapshot-retention");
 
-        let mut first = setup_test_app(&data_dir, CheckpointMode::Original).await;
+        let mut first = setup_test_app(&data_dir).await;
         poke_inc(&first).await;
-        save_app(&mut first).await;
         stop_app(&mut first).await;
         drop(first);
         clear_pma_files(&data_dir);
 
-        let mut second = try_setup_test_app(&data_dir, CheckpointMode::Original, Some(1))
+        let mut second = try_setup_test_app(&data_dir, Some(1))
             .await
             .expect("setup rotating snapshot retention app");
         poke_inc(&second).await;
@@ -700,14 +651,13 @@ ON CONFLICT(key) DO UPDATE SET value = excluded.value
         let temp = TempDir::new().expect("tempdir");
         let data_dir = temp.path().join("rotating-fallback");
 
-        let mut first = setup_test_app(&data_dir, CheckpointMode::Original).await;
+        let mut first = setup_test_app(&data_dir).await;
         poke_inc(&first).await;
-        save_app(&mut first).await;
         stop_app(&mut first).await;
         drop(first);
         clear_pma_files(&data_dir);
 
-        let mut second = try_setup_test_app(&data_dir, CheckpointMode::Original, Some(1))
+        let mut second = try_setup_test_app(&data_dir, Some(1))
             .await
             .expect("setup rotating fallback app");
         poke_inc(&second).await;
@@ -726,7 +676,7 @@ ON CONFLICT(key) DO UPDATE SET value = excluded.value
         fs::write(checkpoints_dir.join("0.chkjam"), b"corrupt checkpoint 0").expect("corrupt chk0");
         fs::write(checkpoints_dir.join("1.chkjam"), b"corrupt checkpoint 1").expect("corrupt chk1");
 
-        let mut third = setup_test_app(&data_dir, CheckpointMode::Original).await;
+        let mut third = setup_test_app(&data_dir).await;
         assert_eq!(third.kernel.serf.event_number.load(Ordering::SeqCst), 3);
         stop_app(&mut third).await;
         drop(third);
@@ -741,14 +691,13 @@ ON CONFLICT(key) DO UPDATE SET value = excluded.value
         let temp = TempDir::new().expect("tempdir");
         let data_dir = temp.path().join("manifest-only-fallback");
 
-        let mut first = setup_test_app(&data_dir, CheckpointMode::Original).await;
+        let mut first = setup_test_app(&data_dir).await;
         poke_inc(&first).await;
-        save_app(&mut first).await;
         stop_app(&mut first).await;
         drop(first);
         clear_pma_files(&data_dir);
 
-        let mut second = try_setup_test_app(&data_dir, CheckpointMode::Original, Some(1))
+        let mut second = try_setup_test_app(&data_dir, Some(1))
             .await
             .expect("setup manifest-only fallback app");
         poke_inc(&second).await;
@@ -767,7 +716,7 @@ ON CONFLICT(key) DO UPDATE SET value = excluded.value
         fs::write(checkpoints_dir.join("0.chkjam"), b"corrupt checkpoint 0").expect("corrupt chk0");
         fs::write(checkpoints_dir.join("1.chkjam"), b"corrupt checkpoint 1").expect("corrupt chk1");
 
-        let mut third = setup_test_app(&data_dir, CheckpointMode::Original).await;
+        let mut third = setup_test_app(&data_dir).await;
         assert_eq!(third.kernel.serf.event_number.load(Ordering::SeqCst), 3);
         stop_app(&mut third).await;
         drop(third);
@@ -782,14 +731,13 @@ ON CONFLICT(key) DO UPDATE SET value = excluded.value
         let temp = TempDir::new().expect("tempdir");
         let data_dir = temp.path().join("active-snapshot-selection");
 
-        let mut first = setup_test_app(&data_dir, CheckpointMode::Original).await;
+        let mut first = setup_test_app(&data_dir).await;
         poke_inc(&first).await;
-        save_app(&mut first).await;
         stop_app(&mut first).await;
         drop(first);
         clear_pma_files(&data_dir);
 
-        let mut second = try_setup_test_app(&data_dir, CheckpointMode::Original, Some(1))
+        let mut second = try_setup_test_app(&data_dir, Some(1))
             .await
             .expect("setup active snapshot selection app");
         poke_inc(&second).await;
@@ -811,7 +759,7 @@ ON CONFLICT(key) DO UPDATE SET value = excluded.value
         fs::write(checkpoints_dir.join("0.chkjam"), b"corrupt checkpoint 0").expect("corrupt chk0");
         fs::write(checkpoints_dir.join("1.chkjam"), b"corrupt checkpoint 1").expect("corrupt chk1");
 
-        let mut third = setup_test_app(&data_dir, CheckpointMode::Original).await;
+        let mut third = setup_test_app(&data_dir).await;
         assert_eq!(third.kernel.serf.event_number.load(Ordering::SeqCst), 3);
         stop_app(&mut third).await;
         drop(third);
@@ -835,14 +783,13 @@ ON CONFLICT(key) DO UPDATE SET value = excluded.value
         let temp = TempDir::new().expect("tempdir");
         let data_dir = temp.path().join("orphan-snapshot-cleanup");
 
-        let mut first = setup_test_app(&data_dir, CheckpointMode::Original).await;
+        let mut first = setup_test_app(&data_dir).await;
         poke_inc(&first).await;
-        save_app(&mut first).await;
         stop_app(&mut first).await;
         drop(first);
         clear_pma_files(&data_dir);
 
-        let mut second = try_setup_test_app(&data_dir, CheckpointMode::Original, Some(1))
+        let mut second = try_setup_test_app(&data_dir, Some(1))
             .await
             .expect("setup orphan cleanup app");
         poke_inc(&second).await;
@@ -860,7 +807,7 @@ ON CONFLICT(key) DO UPDATE SET value = excluded.value
         fs::write(&orphan_pma_tmp, b"orphan pma tmp").expect("write orphan pma tmp");
         fs::write(&orphan_manifest_tmp, b"orphan manifest tmp").expect("write orphan manifest tmp");
 
-        let boot_selection: BootSelection<NockJammer> = select_boot_state(
+        let boot_selection: BootSelection = select_boot_state::<NockJammer>(
             &data_dir.join("checkpoints"),
             &load_test_jam_bytes(),
             &data_dir.join("event-log.sqlite3"),
@@ -895,8 +842,7 @@ pub enum SetupResult<J> {
     ExportedState,
 }
 
-struct BootSelection<J> {
-    saver: Saver<J>,
+struct BootSelection {
     checkpoint: Option<SaveableCheckpoint>,
     pma_open_existing: bool,
     snapshot_manifest: Option<SnapshotManifest>,
@@ -932,7 +878,7 @@ async fn select_boot_state<J: Jammer>(
     pma_path_0: &PathBuf,
     pma_path_1: &PathBuf,
     metrics: Arc<NockAppMetrics>,
-) -> Result<BootSelection<J>, CrownError<ExternalError>> {
+) -> Result<BootSelection, CrownError<ExternalError>> {
     let expected_ker_hash = {
         let mut hasher = blake3::Hasher::new();
         hasher.update(kernel_bytes);
@@ -966,7 +912,6 @@ async fn select_boot_state<J: Jammer>(
     };
 
     if let Some(ExistingPmaStatus::Valid { path, event_num }) = existing_pma.as_ref() {
-        let saver = Saver::from_boot_event_num(jams_dir, *event_num);
         let boot_source = BootSource::Pma {
             path: path.clone(),
             event_num: *event_num,
@@ -982,7 +927,6 @@ async fn select_boot_state<J: Jammer>(
             _ => unreachable!(),
         }
         return Ok(BootSelection {
-            saver,
             checkpoint: None,
             pma_open_existing: true,
             snapshot_manifest: None,
@@ -1066,7 +1010,6 @@ async fn select_boot_state<J: Jammer>(
                             let _ = std::fs::remove_file(&stale);
                         }
                     }
-                    let saver = Saver::from_boot_event_num(jams_dir, snapshot.event_num);
                     let boot_source = BootSource::Snapshot {
                         path: PathBuf::from(&snapshot.pma_path),
                         event_num: snapshot.event_num,
@@ -1080,7 +1023,6 @@ async fn select_boot_state<J: Jammer>(
                         _ => unreachable!(),
                     }
                     return Ok(BootSelection {
-                        saver,
                         checkpoint: None,
                         pma_open_existing: true,
                         snapshot_manifest: Some(manifest),
@@ -1102,8 +1044,9 @@ async fn select_boot_state<J: Jammer>(
         }
     }
 
-    let (saver, checkpoint_summary) =
-        Saver::<J>::resume(jams_dir).await.map_err(|err| match existing_pma.as_ref() {
+    let checkpoint_reader = CheckpointBootstrapReader::<J>::new(jams_dir.clone());
+    let checkpoint_summary =
+        checkpoint_reader.inspect_latest().await.map_err(|err| match existing_pma.as_ref() {
             Some(ExistingPmaStatus::Invalid { path, reason }) => CrownError::Unknown(format!(
                 "checkpoint bootstrap inspection failed after PMA validation failed for {}: {} ({err})",
                 path.display(),
@@ -1117,7 +1060,8 @@ async fn select_boot_state<J: Jammer>(
         })?;
 
     if let Some(summary) = checkpoint_summary {
-        let checkpoint = Saver::<J>::load_latest::<SaveableCheckpoint>(jams_dir, None)
+        let checkpoint = checkpoint_reader
+            .load_latest(None)
             .await
             .map_err(|err| {
                 CrownError::Unknown(format!(
@@ -1141,7 +1085,6 @@ async fn select_boot_state<J: Jammer>(
             _ => unreachable!(),
         }
         return Ok(BootSelection {
-            saver,
             checkpoint: Some(checkpoint),
             pma_open_existing: false,
             snapshot_manifest: None,
@@ -1155,7 +1098,6 @@ async fn select_boot_state<J: Jammer>(
         _ => unreachable!(),
     }
     Ok(BootSelection {
-        saver,
         checkpoint: None,
         pma_open_existing: false,
         snapshot_manifest: None,
@@ -1165,10 +1107,8 @@ async fn select_boot_state<J: Jammer>(
 
 pub fn default_boot_cli(new: bool) -> Cli {
     Cli {
-        save_interval: Some(DEFAULT_SAVE_INTERVAL),
         gc_interval: None,
         rotating_snapshot_interval_events: Some(DEFAULT_ROTATING_SNAPSHOT_INTERVAL_EVENTS),
-        checkpoint_mode: CheckpointMode::Disabled,
         new,
         trace_opts: Default::default(),
         color: ColorChoice::Auto,
@@ -1399,9 +1339,6 @@ pub async fn setup_<J: Jammer + Send + 'static>(
     debug!("kernel: snapshots directory: {:?}", jams_dir);
     debug!("kernel: event-log path: {:?}", event_log_path);
     info!("NockApp boot cli: {:?}", cli);
-    let save_interval = cli
-        .normalized_save_interval()
-        .map(std::time::Duration::from_millis);
     let gc_interval = cli
         .normalized_gc_interval()
         .map(std::time::Duration::from_millis);
@@ -1417,12 +1354,6 @@ pub async fn setup_<J: Jammer + Send + 'static>(
         info!("Rotating snapshots disabled");
     }
     info!("PMA durability active");
-    let checkpoint_mode = cli.checkpoint_mode;
-    match checkpoint_mode {
-        CheckpointMode::Original => info!("Checkpoint mode: original (slab copy)"),
-        CheckpointMode::Stream => info!("Checkpoint mode: stream (O_DIRECT)"),
-        CheckpointMode::Disabled => info!("Checkpoint mode: disabled"),
-    }
     let pma_path_0 = pma_dir.join("0.pma");
     let pma_path_1 = pma_dir.join("1.pma");
     if cli.new {
@@ -1451,7 +1382,6 @@ pub async fn setup_<J: Jammer + Send + 'static>(
             metrics.clone(),
         )
         .await?;
-        let saver = boot_selection.saver;
         let mut checkpoint = boot_selection.checkpoint;
         let pma_open_existing = boot_selection.pma_open_existing;
         let snapshot_manifest = boot_selection.snapshot_manifest.clone();
@@ -1561,12 +1491,11 @@ pub async fn setup_<J: Jammer + Send + 'static>(
             }
             metrics.replay_apply.add_timing(&replay_start.elapsed());
         }
-        let res: Result<(Kernel<SaveableCheckpoint>, Saver<J>), CrownError<ExternalError>> =
-            Ok((kernel, saver));
+        let res: Result<Kernel<SaveableCheckpoint>, CrownError<ExternalError>> = Ok(kernel);
         res
     };
 
-    let app: NockApp<J> = NockApp::new(kernel_f, save_interval, checkpoint_mode).await?;
+    let app: NockApp<J> = NockApp::new(kernel_f).await?;
 
     if let Some(export_path) = cli.export_state_jam.clone() {
         export_kernel_state(&app.kernel, &export_path).await?;

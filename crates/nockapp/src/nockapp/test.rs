@@ -3,9 +3,9 @@ use std::path::Path;
 
 use tempfile::TempDir;
 
-use super::{CheckpointMode, NockApp};
+use super::NockApp;
 use crate::kernel::form::Kernel;
-use crate::save::{SaveableCheckpoint, Saver};
+use crate::save::SaveableCheckpoint;
 
 fn load_jam_bytes(jam: &str) -> Vec<u8> {
     // Try multiple possible locations for the jam file
@@ -23,31 +23,20 @@ fn load_jam_bytes(jam: &str) -> Vec<u8> {
         .unwrap_or_else(|| panic!("Failed to read {} file from any known location", jam))
 }
 
-pub async fn setup_nockapp_with_interval(
-    jam: &str,
-    save_interval: Option<std::time::Duration>,
-) -> (TempDir, NockApp) {
+pub async fn setup_nockapp(jam: &str) -> (TempDir, NockApp) {
     let temp_dir = TempDir::new().expect("Failed to create temp directory");
-    let temp_dir_path = temp_dir.path().to_path_buf();
     let jam_bytes = load_jam_bytes(jam);
 
     let kernel_f = move |_| async move {
         let kernel = Kernel::load(&jam_bytes, None, vec![], Default::default(), None).await?;
-        Ok::<(Kernel<SaveableCheckpoint>, Saver), crate::CrownError>((
-            kernel,
-            Saver::new_empty(&temp_dir_path),
-        ))
+        Ok::<Kernel<SaveableCheckpoint>, crate::CrownError>(kernel)
     };
     (
         temp_dir,
-        NockApp::new(kernel_f, save_interval, CheckpointMode::Original)
+        NockApp::new(kernel_f)
             .await
             .expect("Could not create NockApp"),
     )
-}
-
-pub async fn setup_nockapp(jam: &str) -> (TempDir, NockApp) {
-    setup_nockapp_with_interval(jam, Some(std::time::Duration::from_secs(1))).await
 }
 
 #[cfg(test)]
@@ -73,32 +62,13 @@ pub mod tests {
     use crate::kernel::form::{Kernel, PmaConfig};
     use crate::nockapp::wire::{SystemWire, Wire};
     use crate::noun::slab::{slab_equality, NockJammer, NounSlab};
-    use crate::save::{SaveableCheckpoint, Saver};
+    use crate::save::{CheckpointBootstrapReader, SaveableCheckpoint};
     use crate::test_support::TestArena;
     use crate::utils::{
         NOCK_STACK_SIZE, NOCK_STACK_SIZE_HUGE, NOCK_STACK_SIZE_LARGE, NOCK_STACK_SIZE_MEDIUM,
         NOCK_STACK_SIZE_SMALL, NOCK_STACK_SIZE_TINY,
     };
     use crate::{NockApp, NounExt};
-
-    async fn save_nockapp(nockapp: &mut NockApp) {
-        nockapp.tasks.close();
-        let permit = nockapp.save_mutex.clone().lock_owned().await;
-        let _ = nockapp.save(permit).await;
-        let _ = nockapp.tasks.wait().await;
-        nockapp.tasks.reopen();
-    }
-
-    // Panics if checkpoint failed to load, only permissible because this is expressly for testing
-    async fn spawn_save_t(nockapp: &mut NockApp, sleep_t: std::time::Duration) {
-        let sleepy_time = tokio::time::sleep(sleep_t);
-        let permit = nockapp.save_mutex.clone().lock_owned().await;
-        let _join_handle = nockapp
-            .save_f(sleepy_time, permit)
-            .await
-            .expect("Failed to spawn nockapp save task");
-        // join_handle.await.expect("Failed to save nockapp").expect("Failed to save nockapp 2");
-    }
 
     fn summarize_samples(label: &str, samples: &[Duration]) -> (f64, f64, f64) {
         if samples.is_empty() {
@@ -132,242 +102,6 @@ pub mod tests {
         (avg_ms, min_ms, max_ms)
     }
 
-    // Test nockapp save
-    // TODO: bump the actual serf event number (can we do a poke to the test kernel?)
-    #[test]
-    #[traced_test]
-    #[cfg_attr(miri, ignore)]
-    fn test_nockapp_save_race_condition() {
-        let _test_arena = TestArena::default();
-        let runtime = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .unwrap_or_else(|err| {
-                panic!(
-                    "Panicked with {err:?} at {}:{} (git sha: {:?})",
-                    file!(),
-                    line!(),
-                    option_env!("GIT_SHA")
-                )
-            });
-        let (temp, mut nockapp) = runtime.block_on(setup_nockapp("test-ker.jam"));
-        assert_eq!(nockapp.kernel.serf.event_number.load(Ordering::SeqCst), 0);
-        // first run
-        runtime.block_on(spawn_save_t(&mut nockapp, Duration::from_millis(1000)));
-        // second run
-        nockapp.kernel.serf.event_number.store(1, Ordering::SeqCst); // we need to set the actual serf event number
-        runtime.block_on(spawn_save_t(&mut nockapp, Duration::from_millis(5000)));
-        // Simulate what the event handlers would be doing and wait for the task tracker to be done
-        nockapp.tasks.close();
-        runtime.block_on(nockapp.tasks.wait());
-        nockapp.tasks.reopen();
-        // Shutdown the runtime immediately
-        runtime.shutdown_timeout(std::time::Duration::from_secs(0));
-
-        let runtime = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .expect("Failed to build runtime");
-
-        let (_, checkpoint_opt) = runtime
-            .block_on(Saver::<NockJammer>::try_load(
-                &temp.path().to_path_buf(),
-                None,
-            ))
-            .expect("Failed trying to load checkpoint");
-        let checkpoint: SaveableCheckpoint = checkpoint_opt.expect("No checkpoint found");
-        info!("checkpoint: {:?}", checkpoint);
-        assert_eq!(checkpoint.event_num, 1);
-    }
-
-    // Test nockapp save
-    // TODO: need a way to grab arvo state from the serf. Probably a serf action
-    #[tokio::test(flavor = "current_thread")]
-    #[traced_test]
-    #[cfg_attr(miri, ignore)]
-    async fn test_nockapp_save() {
-        let _test_arena = TestArena::default();
-        // console_subscriber::init();
-        let (temp, mut nockapp) = setup_nockapp("test-ker.jam").await;
-        let first_checkpoint = nockapp
-            .kernel
-            .checkpoint()
-            .await
-            .expect("Couldn't get kernel checkpoint");
-
-        assert_eq!(nockapp.kernel.serf.event_number.load(Ordering::SeqCst), 0);
-        // Save
-        info!("Saving nockapp");
-        save_nockapp(&mut nockapp).await;
-        // Permit should be dropped
-
-        // A valid checkpoint should exist in one of the jam files
-        let (_, checkpoint_opt) = Saver::<NockJammer>::try_load(&temp.path().to_path_buf(), None)
-            .await
-            .expect("Could not load checkpoint");
-        let checkpoint: SaveableCheckpoint = checkpoint_opt.expect("No checkpoint loaded");
-
-        // Checkpoint event number should be 0
-        assert_eq!(checkpoint.event_num, 0);
-
-        info!("Asserting checkpoint and arvo equality");
-        // Checkpoint kernel should be equal to the saved kernel
-        assert!(slab_equality(&checkpoint.state, &first_checkpoint.state));
-        assert!(slab_equality(&checkpoint.cold, &first_checkpoint.cold));
-    }
-
-    // Test nockapp poke
-    #[tokio::test(flavor = "current_thread")]
-    #[traced_test]
-    #[cfg_attr(miri, ignore)]
-    async fn test_nockapp_poke_save() {
-        let _test_arena = TestArena::default();
-        let (temp, mut nockapp) = setup_nockapp("test-ker.jam").await;
-        assert_eq!(nockapp.kernel.serf.event_number.load(Ordering::SeqCst), 0);
-        let state_before_poke = nockapp
-            .kernel
-            .checkpoint()
-            .await
-            .expect("Can't get kernel state before poke");
-
-        let poke_noun = D(tas!(b"inc"));
-        let poke = {
-            let mut slab = NounSlab::new();
-            let space = NounSpace::empty();
-            slab.copy_into(poke_noun, &space);
-            slab
-        };
-
-        let wire = SystemWire.to_wire();
-        let _ = nockapp.kernel.poke(wire, poke).await.unwrap_or_else(|err| {
-            panic!(
-                "Panicked with {err:?} at {}:{} (git sha: {:?})",
-                file!(),
-                line!(),
-                option_env!("GIT_SHA")
-            )
-        });
-
-        // Save
-        save_nockapp(&mut nockapp).await;
-
-        // A valid checkpoint should exist in one of the jam files
-        let (_, checkpoint_opt) = Saver::<NockJammer>::try_load(&temp.path().to_path_buf(), None)
-            .await
-            .expect("Failed to load checkpoint");
-        let checkpoint: SaveableCheckpoint = checkpoint_opt.expect("No checkpoint");
-
-        // Checkpoint event number should be 1
-        assert!(checkpoint.event_num == 1);
-        let state_after_poke = nockapp
-            .kernel
-            .checkpoint()
-            .await
-            .expect("Failed to get checkpoint after poke");
-
-        assert!(slab_equality(&checkpoint.state, &state_after_poke.state));
-        assert!(slab_equality(&checkpoint.cold, &state_after_poke.cold));
-        assert!(!slab_equality(&checkpoint.state, &state_before_poke.state));
-    }
-
-    #[tokio::test(flavor = "current_thread")]
-    #[traced_test]
-    #[cfg_attr(miri, ignore)]
-    async fn test_nockapp_save_multiple() {
-        let _test_arena = TestArena::default();
-        let (temp, mut nockapp) = setup_nockapp("test-ker.jam").await;
-        assert_eq!(nockapp.kernel.serf.event_number.load(Ordering::SeqCst), 0);
-        let mut stack = NockStack::new(NOCK_STACK_SIZE, 0);
-        let space = stack.noun_space();
-
-        for i in 1..4 {
-            // Poke to increment the state
-            let poke_noun = D(tas!(b"inc"));
-            let poke = {
-                let mut slab = NounSlab::new();
-                let space = NounSpace::empty();
-                slab.copy_into(poke_noun, &space);
-                slab
-            };
-            let wire = SystemWire.to_wire();
-            let _ = nockapp.kernel.poke(wire, poke).await.unwrap_or_else(|err| {
-                panic!(
-                    "Panicked with {err:?} at {}:{} (git sha: {:?})",
-                    file!(),
-                    line!(),
-                    option_env!("GIT_SHA")
-                )
-            });
-
-            // Save
-            save_nockapp(&mut nockapp).await;
-
-            // A valid checkpoint should exist in one of the jam files
-            let (_, checkpoint_opt) =
-                Saver::<NockJammer>::try_load(&temp.path().to_path_buf(), None)
-                    .await
-                    .expect("Failed to load checkpoint");
-            let checkpoint: SaveableCheckpoint = checkpoint_opt.expect("No checkpoint found");
-
-            // Checkpoint event number should be i
-            assert!(checkpoint.event_num == i);
-
-            // Checkpointed state should have been incremented
-            let peek_noun = T(&mut stack, &[D(tas!(b"state")), D(0)]);
-            let peek = {
-                let mut slab = NounSlab::new();
-                slab.copy_into(peek_noun, &space);
-                slab
-            };
-
-            // res should be [~ ~ [%0 val]]
-            let mut res = nockapp.kernel.peek(peek).await.unwrap_or_else(|err| {
-                panic!(
-                    "Panicked with {err:?} at {}:{} (git sha: {:?})",
-                    file!(),
-                    line!(),
-                    option_env!("GIT_SHA")
-                )
-            });
-            let res_space = res.noun_space();
-            res.modify_noun(|r| {
-                let cell = slot(r, 7, &res_space)
-                    .unwrap_or_else(|err| {
-                        panic!(
-                            "Panicked with {err:?} at {}:{} (git sha: {:?})",
-                            file!(),
-                            line!(),
-                            option_env!("GIT_SHA")
-                        )
-                    })
-                    .as_cell()
-                    .unwrap_or_else(|err| {
-                        panic!(
-                            "Panicked with {err:?} at {}:{} (git sha: {:?})",
-                            file!(),
-                            line!(),
-                            option_env!("GIT_SHA")
-                        )
-                    });
-                CellHandle::new(cell, &res_space).tail().noun()
-            });
-
-            let comp = {
-                let mut slab = NounSlab::new();
-                let space = NounSpace::empty();
-                slab.copy_into(D(i), &space);
-                slab
-            };
-
-            assert!(
-                slab_equality(&res, &comp),
-                "res: {:?} != comp: {:?}",
-                res,
-                comp
-            );
-        }
-    }
-
     #[tokio::test(flavor = "current_thread")]
     #[traced_test]
     #[cfg_attr(miri, ignore)]
@@ -387,13 +121,10 @@ pub mod tests {
 
         let checkpoint = if let Some(path) = std::env::var_os("NOCKAPP_PERF_CHECKPOINT_DIR") {
             let path = PathBuf::from(path);
-            let (_saver, checkpoint_opt) =
-                Saver::<NockJammer>::try_load::<SaveableCheckpoint>(&path, None)
-                    .await
-                    .unwrap_or_else(|err| {
-                        panic!("Failed to load checkpoint from {:?}: {err}", path)
-                    });
-            checkpoint_opt
+            CheckpointBootstrapReader::<NockJammer>::new(path.clone())
+                .load_latest(None)
+                .await
+                .unwrap_or_else(|err| panic!("Failed to load checkpoint from {:?}: {err}", path))
         } else {
             None
         };
