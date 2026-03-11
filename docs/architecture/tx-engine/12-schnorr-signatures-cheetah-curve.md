@@ -31,13 +31,14 @@ The extension field is constructed as Fp^6 = Fp[u] where u^6 = 7. Each element i
 
 | Parameter | Value |
 |---|---|
-| Curve equation | E: y² = x³ + x + (u + 395), where u^6 = 7 |
-| Base field | Fp, p = 2^64 − 2^32 + 1 |
-| Scalar field | Fp^6 = Fp[X]/(X^6 − 7) |
+| Curve equation | E: y² = x³ + x + b, where b = 395 + u (see `++b` in `ztd/three.hoon:1472`) |
+| Prime field | Fp, p = 2^64 − 2^32 + 1 (Goldilocks) |
+| Coordinate field | Fp^6 = Fp[u]/(u^6 − 7), each point's (x, y) lives here |
 | Group order | `0x7af2599b3b3f22d0563fbf0f990a37b5327aa72330157722d443623eaed4accf` (~255 bits) |
+| Scalar field | Z/nZ where n = group order (~255 bits) |
 | Security level | ~128 bits (resistant to Pollard-Rho, twist, MOV, cover, decomposition attacks) |
-| Generator | `A_GEN` (predefined constant in `cheetah.rs`) |
-| Identity | `A_ID` (point at infinity, `{x: 0, y: 1, inf: true}`) |
+| Generator | `a-gen` / `A_GEN` (predefined constant in `ztd/three.hoon:1535` / `cheetah.rs:22`) |
+| Identity | `a-id` / `A_ID` (point at infinity: `[f6-zero f6-one %.y]`) |
 
 ### Why Sextic Extension?
 
@@ -133,7 +134,63 @@ pub fn in_curve(&self) -> bool {
 
 Validation checks that `[G_ORDER]P = ∞` — the point has order dividing the group order. This is sufficient because the subgroup has prime order, so any non-identity point with this property is a valid group element.
 
-## Schnorr Signature Types
+## Schnorr Signature Scheme (Authoritative Hoon)
+
+The Schnorr scheme is defined in `hoon/common/ztd/three.hoon` within the `++schnorr` core of the `++cheetah` library.
+
+### Signing (`++sign`, `three.hoon:1628-1661`)
+
+```hoon
+++  sign
+  |=  [sk-as-32-bit-belts=(list belt) m=noun-digest:tip5]
+  ^-  [c=@ux s=@ux]
+```
+
+1. Derive public key: `pubkey = [sk]G`
+2. Compute nonce deterministically: `nonce = trunc-g-order(hash-varlen(pubkey_x || pubkey_y || m || sk_belts))`
+3. Compute commitment point: `R = [nonce]G`
+4. Compute challenge: `chal = trunc-g-order(hash-varlen(R_x || R_y || pubkey_x || pubkey_y || m))`
+5. Compute response: `sig = (nonce + chal · sk) mod g-order`
+6. Return `[chal, sig]`
+
+The nonce is derived deterministically from the secret key and message (like RFC 6979), avoiding the need for a random number generator.
+
+### Verification (`++verify`, `three.hoon:1663-1686`)
+
+```hoon
+++  verify
+  |=  [pubkey=a-pt:curve m=noun-digest:tip5 chal=@ux sig=@ux]
+  ^-  ?
+```
+
+1. Check `0 < chal < g-order` and `0 < sig < g-order`
+2. Recover commitment: `R = [sig]G − [chal]pubkey`
+3. Recompute challenge: `chal' = trunc-g-order(hash-varlen(R_x || R_y || pubkey_x || pubkey_y || m))`
+4. Accept if `chal == chal'`
+
+This is a standard Schnorr verification: if `sig = nonce + chal·sk`, then `[sig]G − [chal]pubkey = [nonce]G + [chal·sk]G − [chal·sk]G = [nonce]G = R`, recovering the original commitment point.
+
+### `trunc-g-order`: Hash-to-Scalar (`three.hoon:1695-1706`)
+
+```hoon
+++  trunc-g-order
+  |=  a=(list belt)
+  (mod (add (snag 0 a) (mul p (snag 1 a)) ...) g-order:curve)
+```
+
+Converts a Tip5 hash output (list of belts) into a scalar in `[0, g-order)` by interpreting the first 4 elements as a base-p number and reducing modulo the group order. This is the bridge between the hash function's Goldilocks output and the elliptic curve's scalar field.
+
+### Batch Verification
+
+```hoon
+++  batch-verify
+  |=  batch=(list [pubkey=a-pt:curve m=noun-digest:tip5 chal=@ux sig=@ux])
+  (levy batch verify)
+```
+
+Currently verifies each signature independently. Schnorr's linearity enables future optimization via randomized batch verification.
+
+## Schnorr Signature Types (Rust Serialization Mirror)
 
 ### SchnorrPubkey
 
@@ -149,12 +206,12 @@ A public key is a point on the Cheetah curve. It derives `NounEncode`/`NounDecod
 ```rust
 // crates/nockchain-types/src/tx_engine/common/mod.rs:30-34
 pub struct SchnorrSignature {
-    pub chal: [Belt; 8],  // Challenge (Fiat-Shamir hash of commitment)
-    pub sig: [Belt; 8],   // Response scalar
+    pub chal: [Belt; 8],  // Challenge scalar as 8 base field elements
+    pub sig: [Belt; 8],   // Response scalar as 8 base field elements
 }
 ```
 
-A signature consists of a challenge and response, each represented as 8 Goldilocks field elements (512 bits). The 8-element representation accommodates the ~255-bit group order with room for the encoding.
+In Hoon, challenge and response are raw `@ux` atoms. The Rust serialization represents each as 8 Goldilocks field elements (512 bits), which accommodates the ~255-bit group order. The `[Belt; 8]` encoding matches how Hoon nouns serialize large integers as sequences of 64-bit words.
 
 ### PkhSignatureEntry
 

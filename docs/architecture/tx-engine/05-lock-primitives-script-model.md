@@ -58,7 +58,7 @@ Pkh is the primary authentication primitive. It requires M Schnorr signatures fr
 | Key type | ECDSA | Schnorr | Schnorr (Cheetah curve) |
 | Hash stores | Single pubkey hash | Tweaked public key | Set of pubkey hashes |
 | Multisig | Separate OP_CHECKMULTISIG | MuSig2 aggregation | Native M-of-N threshold |
-| Reveals | Full public key on spend | Only aggregated key | Only signing pubkeys' hashes |
+| Reveals | Full public key on spend | Only aggregated key | Signing pubkeys + signatures (lock stores only hashes) |
 
 The Pkh primitive uses **public key hashes** rather than public keys directly. The lock commits to `Hash(pubkey)`, and the witness provides `(pubkey, signature)` pairs. The validator:
 1. Checks that `Hash(pubkey)` matches one of the committed hashes
