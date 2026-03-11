@@ -107,3 +107,9 @@ Present
 | [07 — Validation Pipeline](07-transaction-validation-pipeline.md) | End-to-end transaction validation |
 | [08 — Protocol Evolution](08-protocol-evolution.md) | Upgrade mechanics and history |
 | [09 — Noun Encoding](09-noun-encoding-data-layer.md) | Rust↔Hoon bridge via noun serialization |
+| [10 — Zoon Persistent Data Structures](10-zoon-persistent-data-structures.md) | Hash-ordered z-maps and z-sets (cryptographic treaps) |
+| [11 — Tip5 Hash Function](11-tip5-hash-function.md) | Algebraic sponge hash over Goldilocks field |
+| [12 — Schnorr Signatures & Cheetah Curve](12-schnorr-signatures-cheetah-curve.md) | STARK-friendly signatures over Fp^6 extension |
+| [13 — Merkle Trees & Commitments](13-merkle-trees-and-commitments.md) | Merkle proof construction and hashable commitment trees |
+| [14 — Goldilocks Field Arithmetic](14-goldilocks-field-arithmetic.md) | Base and extension field types (ztd one and two) |
+| [15 — ZTD STARK Proof Stack](15-ztd-stark-proof-stack.md) | Full STARK prover hierarchy (ztd three through eight) |
