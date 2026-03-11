@@ -78,16 +78,27 @@ pub struct PkhSignatureEntry {
 }
 ```
 
-The Hoon validation from `tx-engine-1.hoon`:
+The Hoon validation (`tx-engine-1.hoon`, `check:pkh` at line 1656):
 
 ```hoon
-%pkh  (check:pkh +.p form)
+++  check
+  |=  [=form ctx=check-context]
+  ?&  =(m.form ~(wyt z-by pkh.witness.ctx))           :: exactly M signatures provided
+      =(~ (~(dif z-in ~(key z-by pkh.witness.ctx))    :: all pubkey hashes are in the
+               h.form))                                ::   Pkh's permitted set
+      %-  ~(rep z-by pkh.witness.ctx)                  :: each pubkey hashes to its
+      |=  [[h=^hash pk=schnorr-pubkey sig=schnorr-signature] a=?]  :: claimed hash
+      ?&  a  =(h (hash:schnorr-pubkey pk))  ==
+      %-  batch-verify:affine:belt-schnorr:cheetah     :: all signatures are valid
+      (signatures:pkh-signature pkh.witness.ctx sig-hash.ctx)
+  ==
 ```
 
-This checks:
-- Each provided signature corresponds to a pubkey whose hash is in the Pkh's hash set
-- The signature verifies against the sig-hash
-- At least `m` valid signatures exist
+This checks four conditions (AND):
+1. **Exactly** `m` signatures are provided (not "at least" — the count must match precisely)
+2. All provided pubkey hashes are members of the Pkh's permitted hash set
+3. Each provided public key hashes to its declared hash (binding pubkey to commitment)
+4. All signatures pass batch Schnorr verification against the sig-hash via `batch-verify:affine:belt-schnorr:cheetah`
 
 ## Tim: Timelock Constraints
 
@@ -115,11 +126,21 @@ The relative constraints use `origin_page` (the block where the note was created
 
 ### Witness Satisfaction
 
-The `tim` field in the Witness is currently reserved (always 0). Timelock validation is **context-based** — it checks the current block height against the constraints without requiring witness data:
+The `tim` field in the Witness is currently reserved (always 0). Timelock validation is **context-based** — it checks the current block height against the constraints without requiring witness data.
+
+The Hoon validation (`tx-engine-1.hoon`, `check:tim` at line 1741):
 
 ```hoon
-%tim  (check:tim +.p form)
+++  check
+  |=  [=form ctx=check-context]
+  =/  rmin-ok=?  ?~(min.rel.form %.y (gte now.ctx (add since.ctx u.min.rel.form)))
+  =/  rmax-ok=?  ?~(max.rel.form %.y (lte now.ctx (add since.ctx u.max.rel.form)))
+  =/  amin-ok=?  ?~(min.abs.form %.y (gte now.ctx u.min.abs.form))
+  =/  amax-ok=?  ?~(max.abs.form %.y (lte now.ctx u.max.abs.form))
+  &(rmin-ok rmax-ok amin-ok amax-ok)
 ```
+
+Where `now.ctx` is the current block height and `since.ctx` is the note's `origin_page`. Each constraint is optional (`unit`); absent constraints are vacuously satisfied.
 
 ## Hax: Hash Preimage Verification
 
@@ -150,12 +171,26 @@ pub struct HaxPreimage {
 }
 ```
 
-The validator:
-1. For each required hash in the Hax set
-2. Looks up the corresponding preimage in the witness
-3. Hashes the preimage and checks it matches the committed hash
+The Hoon validation (`tx-engine-1.hoon`, `check:hax` at line 1704):
 
-Notably, the preimage values are **jammed nouns** — not raw bytes. This means the preimage can be any structured Nock data (a list, a tree, a complex record), serialized to bytes via Nock's jam encoding.
+```hoon
+++  check
+  |=  [=form ctx=check-context]
+  %-  ~(all z-in form)
+  |=  =^hash
+  =/  preimage  (~(get z-by hax.witness.ctx) hash)
+  ?~  preimage  %|
+  =(hash (hash-noun u.preimage))
+```
+
+For each committed hash in the Hax set:
+1. Look up the preimage in the witness `hax` map (`z-map hash *`)
+2. If no preimage provided, fail
+3. Hash the preimage via `hash-noun` (recursive hashable decomposition of the noun tree) and check it matches the committed hash
+
+The `hash-noun` arm builds a hashable tree from the noun's structure — cells become pairs, atoms become leaves — then hashes via `hash-hashable:tip5`. This is distinct from `hash-noun-varlen` (used in zoon for tree ordering), which uses the Dyck word encoding.
+
+In Hoon, preimage values are arbitrary nouns (`*`). The Rust serialization represents them as **jammed noun bytes** (`bytes::Bytes`) — Nock's binary serialization format — which are cued (decompressed) back to nouns during validation. This means preimages can be any structured Nock data (lists, trees, records), serialized to bytes for transport.
 
 ## Burn: Unspendable Output
 

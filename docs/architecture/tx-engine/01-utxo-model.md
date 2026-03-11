@@ -15,14 +15,14 @@ All note types are defined authoritatively in Hoon (`hoon/common/tx-engine-0.hoo
 The Hoon type definition (authoritative):
 
 ```hoon
-::  from hoon/common/tx-engine-0.hoon
+::  from hoon/common/tx-engine-0.hoon (++nnote, line 1621)
 +$  form
   $:  $:  version=%0
         origin-page=page-number
         =timelock
       ==
     name=nname
-    =lock
+    =sig             :: M-of-N multisig (Hoon type is ++sig, Rust mirrors as Lock)
     =source
     assets=coins
   ==
@@ -43,7 +43,7 @@ A V0 note carries:
 - **origin_page**: the block height at which this note was added to the balance
 - **timelock**: optional absolute/relative constraints on when the note can be spent
 - **name**: the unique identifier (see below)
-- **lock**: M-of-N multisig condition (keys_required + set of Schnorr public keys)
+- **sig**: M-of-N multisig condition (Hoon `++sig` type: `m` + z-set of Schnorr public keys; Rust mirrors as `Lock`)
 - **source**: provenance tracking (hash + coinbase flag)
 - **assets**: value in nicks
 
@@ -116,15 +116,25 @@ The `last` field derives from the source transaction's hash, ensuring uniqueness
 
 ### V0 Lock (Simple M-of-N)
 
+Authoritative Hoon type (`tx-engine-0.hoon:1389`, named `++sig`):
+
+```hoon
++$  form
+  $~  [m=1 pubkeys=*(z-set schnorr-pubkey)]
+  [m=@udD pubkeys=(z-set schnorr-pubkey)]
+```
+
+Rust serialization mirror:
+
 ```rust
-// crates/nockchain-types/src/tx_engine/v0/note.rs:38-44
+// crates/nockchain-types/src/tx_engine/v0/note.rs:39
 pub struct Lock {
-    pub keys_required: u64,         // M
-    pub pubkeys: Vec<SchnorrPubkey>, // N public keys
+    pub keys_required: u64,         // M (Hoon: m=@udD, max 255)
+    pub pubkeys: Vec<SchnorrPubkey>, // N public keys (Hoon: z-set)
 }
 ```
 
-This is analogous to Bitcoin's `OP_CHECKMULTISIG` — a simple threshold scheme requiring M of N Schnorr signatures.
+This is analogous to Bitcoin's `OP_CHECKMULTISIG` — a simple threshold scheme requiring M of N Schnorr signatures. The Hoon type uses a `z-set` (Tip5-ordered persistent set) for pubkeys, ensuring deterministic ordering; the Rust mirror serializes this as a `Vec`.
 
 ### V1 Lock (Lock Tree)
 
