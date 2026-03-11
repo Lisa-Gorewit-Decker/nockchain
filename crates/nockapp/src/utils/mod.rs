@@ -1,4 +1,5 @@
 pub mod bytes;
+pub(crate) mod durability;
 pub mod error;
 pub mod scry;
 pub mod slogger;

@@ -25,6 +25,16 @@ INFLUXDB_VERSION ?= 2.7
 TELEGRAF_VERSION ?= 1.30
 STATSD_HOST ?= telegraf
 STATSD_PORT ?= 8125
+GENESIS_SYNC_RUST_LOG ?= info,nockapp::kernel::form=info,nockapp::kernel::boot=info,nockapp::utils::durability=info
+GENESIS_SYNC_MINIMAL_LOG_FORMAT ?= true
+GENESIS_SYNC_PEER ?=
+GENESIS_SYNC_COMMON_ARGS ?=
+GENESIS_SYNC_EXTRA_ARGS ?=
+GENESIS_SYNC_NODE_CMD ?= cargo run --release --bin nockchain --
+GENESIS_SYNC_DATA_DIR_ON ?= $(CURDIR)/.data.nockchain-sync-fsync-on
+GENESIS_SYNC_DATA_DIR_OFF ?= $(CURDIR)/.data.nockchain-sync-fsync-off
+GENESIS_SYNC_BIND_PORT_ON ?= 31000
+GENESIS_SYNC_BIND_PORT_OFF ?= 31001
 
 .PHONY: build
 build: build-hoon-all build-rust
@@ -115,6 +125,23 @@ docker-nockchain-run:
 docker-metrics:
 	@docker network inspect $(DOCKER_METRICS_NETWORK) >/dev/null 2>&1 || docker network create $(DOCKER_METRICS_NETWORK)
 	docker compose -f $(DOCKER_METRICS_COMPOSE) up -d
+
+.PHONY: run-genesis-sync-fsync-on
+run-genesis-sync-fsync-on:
+	RUST_LOG="$(GENESIS_SYNC_RUST_LOG)" MINIMAL_LOG_FORMAT="$(GENESIS_SYNC_MINIMAL_LOG_FORMAT)" $(GENESIS_SYNC_NODE_CMD) \
+		--new \
+		--data-dir "$(GENESIS_SYNC_DATA_DIR_ON)" \
+		--identity-path "$(GENESIS_SYNC_DATA_DIR_ON)/.nockchain_identity" \
+		--bind "/ip4/0.0.0.0/udp/$(GENESIS_SYNC_BIND_PORT_ON)/quic-v1" $(if $(GENESIS_SYNC_PEER),--peer "$(GENESIS_SYNC_PEER)") $(GENESIS_SYNC_COMMON_ARGS) $(GENESIS_SYNC_EXTRA_ARGS)
+
+.PHONY: run-genesis-sync-fsync-off
+run-genesis-sync-fsync-off:
+	RUST_LOG="$(GENESIS_SYNC_RUST_LOG)" MINIMAL_LOG_FORMAT="$(GENESIS_SYNC_MINIMAL_LOG_FORMAT)" $(GENESIS_SYNC_NODE_CMD) \
+		--new \
+		--disable-fsync \
+		--data-dir "$(GENESIS_SYNC_DATA_DIR_OFF)" \
+		--identity-path "$(GENESIS_SYNC_DATA_DIR_OFF)/.nockchain_identity" \
+		--bind "/ip4/0.0.0.0/udp/$(GENESIS_SYNC_BIND_PORT_OFF)/quic-v1" $(if $(GENESIS_SYNC_PEER),--peer "$(GENESIS_SYNC_PEER)") $(GENESIS_SYNC_COMMON_ARGS) $(GENESIS_SYNC_EXTRA_ARGS)
 
 .PHONY: fmt
 fmt:

@@ -126,6 +126,7 @@ async fn build_nockapp(name: &str) -> Result<(TempDir, NockApp), Box<dyn Error>>
         stack_size: NockStackSize::Medium,
         data_dir: None,
         event_log_path: None,
+        disable_fsync: false,
     };
     TRACING_INIT.call_once(|| boot::init_default_tracing(&cli));
     let app = boot::setup(

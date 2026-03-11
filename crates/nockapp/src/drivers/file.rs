@@ -12,6 +12,7 @@ use crate::nockapp::driver::{make_driver, IODriverFn};
 use crate::nockapp::error::NockAppError;
 use crate::nockapp::wire::{Wire, WireRepr};
 use crate::noun::slab::NounSlab;
+use crate::utils::durability;
 use crate::{AtomExt, IndirectAtomExt};
 
 #[derive(Clone, Debug, NounDecode)]
@@ -53,7 +54,7 @@ async fn prepare_file_write(path: &str, contents: &[u8]) -> std::io::Result<File
 async fn write_then_flush(path: &str, contents: &[u8]) -> std::io::Result<()> {
     debug!("file driver: writing {} bytes to: {}", contents.len(), path);
     let file = prepare_file_write(path, contents).await?;
-    file.sync_all().await
+    durability::sync_all_async(&file, "file_driver_write_fsync", Some(Path::new(path))).await
 }
 
 pub enum FileWire {
@@ -227,7 +228,13 @@ pub fn file() -> IODriverFn {
                     }
 
                     for (idx, path, file) in pending_flushes {
-                        match file.sync_all().await {
+                        match durability::sync_all_async(
+                            &file,
+                            "file_driver_batch_write_fsync",
+                            Some(Path::new(&path)),
+                        )
+                        .await
+                        {
                             Ok(_) => results[idx].success = true,
                             Err(e) => error!("file driver: error flushing path {}: {}", path, e),
                         }

@@ -84,6 +84,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
         stack_size: args.stack_size.clone(),
         data_dir: None,
         event_log_path: None,
+        disable_fsync: false,
     };
     boot::init_default_tracing(&base_cli);
 
@@ -329,6 +330,7 @@ async fn boot_peer(
         stack_size,
         data_dir: Some(data_dir),
         event_log_path: None,
+        disable_fsync: false,
     };
     let hot_state = produce_prover_hot_state();
     boot::setup::<Chaff>(NOCKCHAIN_KERNEL, cli, hot_state.as_slice(), name, None).await

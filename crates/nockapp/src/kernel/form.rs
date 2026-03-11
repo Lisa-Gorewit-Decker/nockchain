@@ -37,8 +37,8 @@ use crate::snapshot::{
     maybe_create_epoch_snapshot, maybe_create_rotating_snapshot, SnapshotManifest,
 };
 use crate::utils::{
-    create_context, current_da, NOCK_STACK_SIZE, NOCK_STACK_SIZE_HUGE, NOCK_STACK_SIZE_LARGE,
-    NOCK_STACK_SIZE_MEDIUM, NOCK_STACK_SIZE_SMALL, NOCK_STACK_SIZE_TINY,
+    create_context, current_da, durability, NOCK_STACK_SIZE, NOCK_STACK_SIZE_HUGE,
+    NOCK_STACK_SIZE_LARGE, NOCK_STACK_SIZE_MEDIUM, NOCK_STACK_SIZE_SMALL, NOCK_STACK_SIZE_TINY,
 };
 use crate::{AtomExt, CrownError, IndirectAtomExt, NounExt, Result, ToBytesExt};
 
@@ -50,6 +50,10 @@ const POKE_AXIS: u64 = 23;
 const SERF_FINISHED_INTERVAL: Duration = Duration::from_millis(100);
 const SERF_THREAD_STACK_SIZE: usize = 256 * 1024 * 1024; // 8MB
 const REPLAY_PRESERVE_BATCH: usize = 64;
+
+fn duration_ms(elapsed: Duration) -> f64 {
+    elapsed.as_secs_f64() * 1000.0
+}
 
 pub struct LoadState {
     pub ker_hash: Hash,
@@ -175,9 +179,7 @@ impl PmaPersistMetadata {
     fn save_to_path(&self, path: &PathBuf) -> std::io::Result<()> {
         let bytes = bincode::encode_to_vec(self, config::standard())
             .map_err(|err| std::io::Error::new(std::io::ErrorKind::Other, err))?;
-        let tmp_path = path.with_extension("tmp");
-        fs::write(&tmp_path, bytes)?;
-        fs::rename(tmp_path, path)?;
+        durability::write_atomic(path, &bytes, "pma_meta_write")?;
         Ok(())
     }
 }
@@ -1001,6 +1003,12 @@ fn serf_loop<C: SerfCheckpoint>(
                         });
                 } else {
                     let cause_noun = cause.copy_to_stack(serf.stack());
+                    let event_num_before = serf.event_num.load(Ordering::SeqCst) + 1;
+                    info!(
+                        event_num = event_num_before,
+                        source = %wire.source,
+                        "poke action start"
+                    );
                     let event_start = Instant::now();
                     let noun_res = serf.poke(wire, cause_noun);
                     let event_elapsed = event_start.elapsed();
@@ -1015,15 +1023,23 @@ fn serf_loop<C: SerfCheckpoint>(
                     };
                     let mut pma_elapsed = None;
                     let mut pma_detail = None;
+                    let mut durable_append_elapsed = None;
+                    let cleanup_start = did_update.then(Instant::now);
                     if did_update {
+                        info!(event_num = event_num_before, "poke cleanup start");
                         let pma_start = Instant::now();
                         unsafe {
                             pma_detail = serf.preserve_event_update_leftovers();
                         }
                         pma_elapsed = Some(pma_start.elapsed());
+                        info!(
+                            event_num = event_num_before,
+                            elapsed_ms = duration_ms(pma_start.elapsed()),
+                            "poke cleanup stage done: preserve_event_update_leftovers"
+                        );
                     }
                     if let Some(durable_event) = durable_event.as_ref() {
-                        serf.append_durable_event(durable_event);
+                        durable_append_elapsed = Some(serf.append_durable_event(durable_event));
                     }
                     let _ = result.send(noun_slab_res).inspect_err(|_e| {
                         debug!("Failed to send poke result from serf thread");
@@ -1061,9 +1077,31 @@ fn serf_loop<C: SerfCheckpoint>(
                     let _ = result_ack.blocking_recv().inspect_err(|_e| {
                         debug!("Failed to receive result ack in serf thread");
                     });
+                    let mut snapshot_stage_elapsed = None;
                     if did_update {
+                        let snapshot_start = Instant::now();
                         serf.maybe_create_rotating_snapshot();
+                        snapshot_stage_elapsed = Some(snapshot_start.elapsed());
+                        info!(
+                            event_num = event_num_before,
+                            elapsed_ms = duration_ms(snapshot_start.elapsed()),
+                            "poke cleanup stage done: rotating_snapshot"
+                        );
                     }
+                    let cleanup_elapsed = cleanup_start.map(|start| start.elapsed());
+                    let poke_total_ms = duration_ms(event_elapsed)
+                        + cleanup_elapsed.map(duration_ms).unwrap_or(0.0);
+                    info!(
+                        event_num = event_num_before,
+                        did_update,
+                        poke_total_ms,
+                        event_eval_ms = duration_ms(event_elapsed),
+                        preserve_ms = pma_elapsed.map(duration_ms),
+                        durable_append_ms = durable_append_elapsed.map(duration_ms),
+                        snapshot_stage_ms = snapshot_stage_elapsed.map(duration_ms),
+                        cleanup_total_ms = cleanup_elapsed.map(duration_ms),
+                        "poke action done"
+                    );
                 };
                 let action_elapsed = action_start.elapsed();
                 if let Some(nockapp_metrics) = &serf.metrics {
@@ -1124,6 +1162,9 @@ fn create_checkpoint<C: SerfCheckpoint>(
     if let Some(pma) = serf.pma.as_ref() {
         if let Err(err) = pma.sync_all() {
             warn!("Failed to msync PMA after checkpoint save: {err}");
+        }
+        if let Err(err) = durability::sync_path_data(pma.path(), "checkpoint_pma_fdatasync") {
+            warn!("Failed to fdatasync PMA after checkpoint save: {err}");
         }
         if let Err(err) = pma.advise_drop_allocated_prefix(4, 5) {
             warn!("Failed to madvise PMA prefix after checkpoint save: {err}");
@@ -2095,30 +2136,51 @@ impl Serf {
         )?)
     }
 
-    fn append_durable_event(&mut self, event: &EventLogEntry) {
+    fn append_durable_event(&mut self, event: &EventLogEntry) -> Duration {
         let Some(event_log) = self.event_log.as_mut() else {
-            return;
+            info!(
+                event_num = event.event_num,
+                "event-log append skipped: event log disabled"
+            );
+            return Duration::from_millis(0);
         };
+        info!(
+            event_num = event.event_num,
+            path = %event_log.path().display(),
+            sqlite_sync_mode = if durability::fsync_disabled() { "OFF" } else { "FULL" },
+            "event-log append start"
+        );
         let start = Instant::now();
         if let Err(err) = event_log.append_event(event) {
             if let Some(metrics) = &self.metrics {
                 metrics.event_log_commit_failures.increment();
             }
+            let elapsed = start.elapsed();
             error!(
-                "event-log commit failed for event_num={} path={}: {}",
-                event.event_num,
-                event_log.path().display(),
-                err
+                event_num = event.event_num,
+                path = %event_log.path().display(),
+                elapsed_ms = duration_ms(elapsed),
+                error = %err,
+                "event-log append failed"
             );
             std::process::abort();
         }
+        let elapsed = start.elapsed();
+        info!(
+            event_num = event.event_num,
+            path = %event_log.path().display(),
+            elapsed_ms = duration_ms(elapsed),
+            "event-log append done"
+        );
         if let Some(metrics) = &self.metrics {
-            metrics.event_log_append.add_timing(&start.elapsed());
+            metrics.event_log_append.add_timing(&elapsed);
         }
+        elapsed
     }
 
     fn ensure_epoch_snapshot(&mut self) {
         if !self.snapshot_creation_enabled {
+            info!("epoch snapshot skipped: creation disabled");
             return;
         }
         let kernel_root_raw = {
@@ -2146,41 +2208,78 @@ impl Serf {
             return;
         };
         let build_start = Instant::now();
-        if let Err(err) = maybe_create_epoch_snapshot(
+        info!(event_num, "epoch snapshot build start");
+        match maybe_create_epoch_snapshot(
             event_log, pma, self.ker_hash, event_num, kernel_root_raw, cold_offset,
         ) {
-            if let Some(metrics) = &self.metrics {
-                metrics.snapshot_build_failures.increment();
+            Ok(created) => {
+                let elapsed = build_start.elapsed();
+                info!(
+                    event_num,
+                    created,
+                    elapsed_ms = duration_ms(elapsed),
+                    "epoch snapshot build done"
+                );
+                if let Some(metrics) = &self.metrics {
+                    metrics.snapshot_build.add_timing(&elapsed);
+                }
             }
-            warn!("epoch snapshot creation failed: {err}");
-        } else if let Some(metrics) = &self.metrics {
-            metrics.snapshot_build.add_timing(&build_start.elapsed());
+            Err(err) => {
+                let elapsed = build_start.elapsed();
+                if let Some(metrics) = &self.metrics {
+                    metrics.snapshot_build_failures.increment();
+                }
+                warn!(
+                    event_num,
+                    elapsed_ms = duration_ms(elapsed),
+                    error = %err,
+                    "epoch snapshot build failed"
+                );
+            }
         }
     }
 
     fn replay_event_jobs(&mut self, jobs: Vec<Vec<u8>>) -> Result<()> {
+        let replay_start = Instant::now();
+        info!(jobs = jobs.len(), "event replay start");
         let mut dirty_since_preserve = false;
         for (idx, job_jam) in jobs.into_iter().enumerate() {
             let job = Noun::cue_bytes_slice(&mut self.context.stack, &job_jam)?;
             let _ = self.do_poke(job, None)?;
             dirty_since_preserve = true;
             if (idx + 1) % REPLAY_PRESERVE_BATCH == 0 {
+                let preserve_start = Instant::now();
                 unsafe {
                     let _ = self.preserve_event_update_leftovers();
                 }
+                info!(
+                    replay_batch_end = idx + 1,
+                    elapsed_ms = duration_ms(preserve_start.elapsed()),
+                    "event replay preserve batch done"
+                );
                 dirty_since_preserve = false;
             }
         }
         if dirty_since_preserve {
+            let preserve_start = Instant::now();
             unsafe {
                 let _ = self.preserve_event_update_leftovers();
             }
+            info!(
+                elapsed_ms = duration_ms(preserve_start.elapsed()),
+                "event replay final preserve done"
+            );
         }
+        info!(
+            elapsed_ms = duration_ms(replay_start.elapsed()),
+            "event replay done"
+        );
         Ok(())
     }
 
     fn maybe_create_rotating_snapshot(&mut self) {
         if !self.snapshot_creation_enabled {
+            info!("rotating snapshot skipped: creation disabled");
             return;
         }
         let kernel_root_raw = {
@@ -2208,16 +2307,39 @@ impl Serf {
             return;
         };
         let build_start = Instant::now();
-        if let Err(err) = maybe_create_rotating_snapshot(
+        info!(
+            event_num,
+            rotating_interval_events = self.rotating_snapshot_interval_events,
+            "rotating snapshot build start"
+        );
+        match maybe_create_rotating_snapshot(
             event_log, pma, self.ker_hash, event_num, kernel_root_raw, cold_offset,
             self.rotating_snapshot_interval_events,
         ) {
-            if let Some(metrics) = &self.metrics {
-                metrics.snapshot_build_failures.increment();
+            Ok(created) => {
+                let elapsed = build_start.elapsed();
+                info!(
+                    event_num,
+                    created,
+                    elapsed_ms = duration_ms(elapsed),
+                    "rotating snapshot build done"
+                );
+                if let Some(metrics) = &self.metrics {
+                    metrics.snapshot_build.add_timing(&elapsed);
+                }
             }
-            warn!("rotating snapshot creation failed: {err}");
-        } else if let Some(metrics) = &self.metrics {
-            metrics.snapshot_build.add_timing(&build_start.elapsed());
+            Err(err) => {
+                let elapsed = build_start.elapsed();
+                if let Some(metrics) = &self.metrics {
+                    metrics.snapshot_build_failures.increment();
+                }
+                warn!(
+                    event_num,
+                    elapsed_ms = duration_ms(elapsed),
+                    error = %err,
+                    "rotating snapshot build failed"
+                );
+            }
         }
     }
 
@@ -2388,6 +2510,21 @@ impl Serf {
         }
     }
 
+    fn sync_pma_data(&self, pma: &Pma) {
+        if let Err(err) = durability::sync_path_data(pma.path(), "poke_cleanup_pma_fdatasync") {
+            warn!(
+                "Failed to fdatasync PMA slab {}: {err}",
+                pma.path().display()
+            );
+        }
+    }
+
+    fn persist_pma_state(&self, pma: &Pma) {
+        pma.persist_metadata();
+        self.sync_pma_data(pma);
+        self.persist_pma_metadata(pma);
+    }
+
     fn maybe_pma_gc(&mut self, mut pma: Pma) -> Pma {
         let Some(gc_state) = self.pma_gc_state.as_ref() else {
             return pma;
@@ -2473,8 +2610,7 @@ impl Serf {
             .stack
             .install_pma_arena(Arc::clone(to_pma.arena()));
         self.pma_meta_path = Some(pma_meta_path(&to_path));
-        to_pma.persist_metadata();
-        self.persist_pma_metadata(&to_pma);
+        self.persist_pma_state(&to_pma);
 
         let to_alloc = to_pma.alloc_offset();
         if let Some(gc_state) = self.pma_gc_state.as_mut() {
@@ -2533,8 +2669,7 @@ impl Serf {
                 self.assert_persistent_state_in_pma(&pma);
             }
 
-            pma.persist_metadata();
-            self.persist_pma_metadata(&pma);
+            self.persist_pma_state(&pma);
 
             pma = self.maybe_pma_gc(pma);
             self.context.stack.reset(0);

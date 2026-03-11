@@ -9,6 +9,8 @@ use diesel::sqlite::SqliteConnection;
 use diesel::{sql_query, OptionalExtension};
 use thiserror::Error;
 
+use crate::utils::durability;
+
 const EVENT_LOG_SCHEMA_VERSION: i64 = 1;
 const ACTIVE_SNAPSHOT_ID_KEY: &str = "active_snapshot_id";
 const SCHEMA_VERSION_KEY: &str = "schema_version";
@@ -446,11 +448,16 @@ impl EventLog {
         conn.batch_execute(
             r#"
 PRAGMA journal_mode = WAL;
-PRAGMA synchronous = FULL;
 PRAGMA temp_store = MEMORY;
 PRAGMA foreign_keys = 1;
 "#,
         )?;
+        let sync_mode = if durability::fsync_disabled() {
+            "OFF"
+        } else {
+            "FULL"
+        };
+        conn.batch_execute(&format!("PRAGMA synchronous = {sync_mode};"))?;
         Ok(())
     }
 

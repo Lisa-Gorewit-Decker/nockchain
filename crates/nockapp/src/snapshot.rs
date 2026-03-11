@@ -2,7 +2,7 @@
 
 use std::collections::{HashMap, HashSet};
 use std::fs::{self, File};
-use std::io::{self, Read, Write};
+use std::io::{self, Read};
 use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -16,6 +16,7 @@ use nockvm::serialization::met0_u64_to_usize;
 use thiserror::Error;
 
 use crate::event_log::{EventLog, EventLogError, ReadySnapshotRecord};
+use crate::utils::durability;
 
 const SNAPSHOT_MANIFEST_MAGIC: u64 = u64::from_le_bytes(*b"SNAPMAN1");
 const SNAPSHOT_MANIFEST_VERSION: u32 = 1;
@@ -226,13 +227,7 @@ impl SnapshotManifest {
 
     pub(crate) fn write_to_path(&self, path: &Path) -> Result<(), SnapshotManifestError> {
         let bytes = self.encode()?;
-        let tmp_path = path.with_extension("tmp");
-        let mut file = File::create(&tmp_path)?;
-        file.write_all(&bytes)?;
-        file.sync_all()?;
-        drop(file);
-        fs::rename(&tmp_path, path)?;
-        sync_parent_dir(path)?;
+        durability::write_atomic(path, &bytes, "snapshot_manifest_write")?;
         Ok(())
     }
 
@@ -461,7 +456,7 @@ fn create_ready_snapshot(
 
     pma.sync_used_data()?;
     pma.sync_trailer()?;
-    pma.sync_file()?;
+    durability::sync_path_data(pma.path(), "snapshot_source_pma_fdatasync")?;
 
     copy_snapshot_file(pma.path(), &tmp_snapshot_pma_path)?;
     replace_file(&tmp_snapshot_pma_path, &snapshot_pma_path)?;
@@ -701,17 +696,7 @@ fn hash_file_prefix(path: &Path, len_bytes: u64) -> Result<HashBytes, io::Error>
 }
 
 fn sync_parent_dir(path: &Path) -> Result<(), io::Error> {
-    #[cfg(unix)]
-    {
-        if let Some(parent) = path.parent() {
-            File::open(parent)?.sync_all()?;
-        }
-    }
-    #[cfg(not(unix))]
-    {
-        let _ = path;
-    }
-    Ok(())
+    durability::sync_parent_dir(path, "snapshot_parent_dir_fsync")
 }
 
 fn copy_snapshot_file(src: &Path, dst: &Path) -> Result<(), io::Error> {
@@ -719,7 +704,8 @@ fn copy_snapshot_file(src: &Path, dst: &Path) -> Result<(), io::Error> {
         fs::create_dir_all(parent)?;
     }
     fs::copy(src, dst)?;
-    File::open(dst)?.sync_all()?;
+    let file = File::open(dst)?;
+    durability::sync_all(&file, "snapshot_file_fsync", Some(dst))?;
     Ok(())
 }
 
@@ -942,7 +928,8 @@ mod tests {
         let root_raw = unsafe { root.as_raw() };
         pma.sync_used_data().expect("sync used");
         pma.sync_trailer().expect("sync trailer");
-        pma.sync_file().expect("sync file");
+        durability::sync_path_data(pma.path(), "snapshot_test_source_fdatasync")
+            .expect("sync file");
         let manifest = SnapshotManifest::new(
             SnapshotKind::Epoch,
             "epoch".to_string(),
@@ -975,7 +962,7 @@ mod tests {
         file.seek(SeekFrom::Start(offset_words * 8))
             .expect("seek pma");
         file.write_all(&value.to_ne_bytes()).expect("write word");
-        file.sync_all().expect("sync file");
+        durability::sync_all(&file, "snapshot_test_file_fsync", None).expect("sync file");
     }
 
     #[test]

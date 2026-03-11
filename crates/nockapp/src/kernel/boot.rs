@@ -27,8 +27,8 @@ use crate::save::{CheckpointBootstrapReader, SaveableCheckpoint};
 use crate::snapshot::{cleanup_snapshot_artifacts, restore_verified_snapshot, SnapshotManifest};
 use crate::utils::error::{CrownError, ExternalError};
 use crate::utils::{
-    NOCK_STACK_SIZE, NOCK_STACK_SIZE_HUGE, NOCK_STACK_SIZE_LARGE, NOCK_STACK_SIZE_MEDIUM,
-    NOCK_STACK_SIZE_SMALL, NOCK_STACK_SIZE_TINY,
+    durability, NOCK_STACK_SIZE, NOCK_STACK_SIZE_HUGE, NOCK_STACK_SIZE_LARGE,
+    NOCK_STACK_SIZE_MEDIUM, NOCK_STACK_SIZE_SMALL, NOCK_STACK_SIZE_TINY,
 };
 use crate::{default_data_dir, AtomExt, NockApp};
 
@@ -157,6 +157,12 @@ pub struct Cli {
     pub data_dir: Option<PathBuf>,
     #[arg(long, help = "Override the SQLite event-log path")]
     pub event_log_path: Option<PathBuf>,
+
+    #[arg(
+        long,
+        help = "Disable all fsync/fdatasync calls (including SQLite FULL-sync durability)"
+    )]
+    pub disable_fsync: bool,
 }
 
 impl Cli {
@@ -1134,6 +1140,7 @@ pub fn default_boot_cli(new: bool) -> Cli {
         stack_size: NockStackSize::Normal,
         data_dir: None,
         event_log_path: None,
+        disable_fsync: false,
     }
 }
 
@@ -1308,6 +1315,7 @@ pub async fn setup_<J: Jammer + Send + 'static>(
     name: &str,
     data_root: Option<PathBuf>,
 ) -> Result<SetupResult<J>, Box<dyn std::error::Error>> {
+    durability::set_fsync_disabled(cli.disable_fsync);
     let nock_test_jets_env = std::env::var("NOCK_TEST_JETS").unwrap_or_default();
     let test_jets = parse_test_jets(nock_test_jets_env.as_str());
     let data_dir = if let Some(explicit_dir) = cli.data_dir.clone() {
@@ -1356,6 +1364,9 @@ pub async fn setup_<J: Jammer + Send + 'static>(
     debug!("kernel: snapshots directory: {:?}", jams_dir);
     debug!("kernel: event-log path: {:?}", event_log_path);
     info!("NockApp boot cli: {:?}", cli);
+    if cli.disable_fsync {
+        warn!("All fsync/fdatasync durability calls are disabled");
+    }
     let gc_interval = cli
         .normalized_gc_interval()
         .map(std::time::Duration::from_millis);
@@ -1496,17 +1507,29 @@ pub async fn setup_<J: Jammer + Send + 'static>(
             let replay_start = std::time::Instant::now();
             let replay_job_count = replay_jobs.len();
             info!(
-                "Replaying {} persisted event(s) after snapshot restore",
-                replay_job_count
+                jobs = replay_job_count,
+                "event replay after snapshot restore start"
             );
             if let Err(err) = kernel.replay_event_jobs(replay_jobs).await {
                 metrics.replay_failures.increment();
+                warn!(
+                    jobs = replay_job_count,
+                    elapsed_ms = replay_start.elapsed().as_secs_f64() * 1000.0,
+                    error = %err,
+                    "event replay after snapshot restore failed"
+                );
                 return Err(err);
             }
             for _ in 0..replay_job_count {
                 metrics.replay_events.increment();
             }
-            metrics.replay_apply.add_timing(&replay_start.elapsed());
+            let elapsed = replay_start.elapsed();
+            metrics.replay_apply.add_timing(&elapsed);
+            info!(
+                jobs = replay_job_count,
+                elapsed_ms = elapsed.as_secs_f64() * 1000.0,
+                "event replay after snapshot restore done"
+            );
         }
         let res: Result<Kernel<SaveableCheckpoint>, CrownError<ExternalError>> = Ok(kernel);
         res
