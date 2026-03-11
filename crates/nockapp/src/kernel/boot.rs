@@ -1,6 +1,7 @@
 #![allow(clippy::items_after_test_module)]
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::Duration;
 
 use chrono;
 use clap::{Args, ColorChoice, Parser, ValueEnum};
@@ -33,8 +34,8 @@ use crate::utils::{
 use crate::{default_data_dir, AtomExt, NockApp};
 
 const DEFAULT_GC_INTERVAL_STR: &str = "none";
-const DEFAULT_ROTATING_SNAPSHOT_INTERVAL_EVENTS: u64 = 64;
-const DEFAULT_ROTATING_SNAPSHOT_INTERVAL_EVENTS_STR: &str = "64";
+const DEFAULT_ROTATING_SNAPSHOT_INTERVAL_EVENT_TIME_SECS: u64 = 300;
+const DEFAULT_ROTATING_SNAPSHOT_INTERVAL_EVENT_TIME_SECS_STR: &str = "300";
 
 const DEFAULT_LOG_FILTER: &str = "info";
 
@@ -122,11 +123,11 @@ pub struct Cli {
 
     #[arg(
         long,
-        help = "Set the rotating snapshot interval in events. Use 'none' or '0' to disable rotating snapshots.",
-        default_value = DEFAULT_ROTATING_SNAPSHOT_INTERVAL_EVENTS_STR,
+        help = "Set the rotating snapshot interval in cumulative event-processing seconds. Use 'none' or '0' to disable rotating snapshots.",
+        default_value = DEFAULT_ROTATING_SNAPSHOT_INTERVAL_EVENT_TIME_SECS_STR,
         value_parser = parse_optional_u64
     )]
-    pub rotating_snapshot_interval_events: Option<u64>,
+    pub rotating_snapshot_interval_event_time: Option<u64>,
 
     #[arg(long, help = "Control colored output", value_enum, default_value_t = ColorChoice::Auto)]
     pub color: ColorChoice,
@@ -171,9 +172,15 @@ impl Cli {
             .and_then(|value| if value == 0 { None } else { Some(value) })
     }
 
-    fn normalized_rotating_snapshot_interval_events(&self) -> Option<u64> {
-        self.rotating_snapshot_interval_events
-            .and_then(|value| if value == 0 { None } else { Some(value) })
+    fn normalized_rotating_snapshot_interval_event_time(&self) -> Option<Duration> {
+        self.rotating_snapshot_interval_event_time
+            .and_then(|value| {
+                if value == 0 {
+                    None
+                } else {
+                    Some(Duration::from_secs(value))
+                }
+            })
     }
 }
 
@@ -210,6 +217,7 @@ mod tests {
     use std::path::Path;
     use std::sync::atomic::Ordering;
     use std::sync::Arc;
+    use std::time::Duration;
 
     use nockvm::noun::{NounSpace, D};
     use nockvm_macros::tas;
@@ -219,7 +227,7 @@ mod tests {
 
     use super::{
         default_boot_cli, parse_optional_u64, select_boot_state, setup_, BootSelection,
-        SetupResult, DEFAULT_ROTATING_SNAPSHOT_INTERVAL_EVENTS,
+        SetupResult, DEFAULT_ROTATING_SNAPSHOT_INTERVAL_EVENT_TIME_SECS,
     };
     use crate::kernel::boot::parse_save_interval;
     use crate::metrics::NockAppMetrics;
@@ -246,20 +254,23 @@ mod tests {
     }
 
     async fn setup_test_app(data_dir: &Path) -> NockApp<NockJammer> {
-        try_setup_test_app(data_dir, Some(DEFAULT_ROTATING_SNAPSHOT_INTERVAL_EVENTS))
-            .await
-            .expect("setup boot test app")
+        try_setup_test_app(
+            data_dir,
+            Some(DEFAULT_ROTATING_SNAPSHOT_INTERVAL_EVENT_TIME_SECS),
+        )
+        .await
+        .expect("setup boot test app")
     }
 
     async fn try_setup_test_app(
         data_dir: &Path,
-        rotating_snapshot_interval_events: Option<u64>,
+        rotating_snapshot_interval_event_time_secs: Option<u64>,
     ) -> Result<NockApp<NockJammer>, Box<dyn std::error::Error>> {
         let jam = load_test_jam_bytes();
         let mut cli = default_boot_cli(false);
         cli.data_dir = Some(data_dir.to_path_buf());
         cli.gc_interval = Some(0);
-        cli.rotating_snapshot_interval_events = rotating_snapshot_interval_events;
+        cli.rotating_snapshot_interval_event_time = rotating_snapshot_interval_event_time_secs;
         Ok(
             match setup_::<NockJammer>(&jam, cli, &[], "boot-test", None).await? {
                 SetupResult::App(app) => app,
@@ -282,6 +293,10 @@ mod tests {
             .poke(SystemWire.to_wire(), inc_poke())
             .await
             .expect("poke inc");
+    }
+
+    async fn wait_for_serf_idle(app: &NockApp<NockJammer>) {
+        app.export().await.expect("export barrier");
     }
 
     async fn stop_app(app: &mut NockApp<NockJammer>) {
@@ -387,6 +402,21 @@ ON CONFLICT(key) DO UPDATE SET value = excluded.value
             .expect("delete active snapshot id");
     }
 
+    fn set_event_processing_duration_for_test(data_dir: &Path, event_num: u64, duration: Duration) {
+        let conn =
+            Connection::open(data_dir.join("event-log.sqlite3")).expect("open event log sqlite");
+        let duration_us =
+            i64::try_from(duration.as_micros()).expect("event processing duration fits in i64");
+        conn.execute(
+            "UPDATE events SET event_processing_duration_us = ?1 WHERE event_num = ?2",
+            (
+                duration_us,
+                i64::try_from(event_num).expect("event num fits in i64"),
+            ),
+        )
+        .expect("update event processing duration");
+    }
+
     #[test]
     fn parse_optional_u64_none_variants() {
         assert_eq!(parse_optional_u64("none").unwrap(), 0);
@@ -417,13 +447,16 @@ ON CONFLICT(key) DO UPDATE SET value = excluded.value
     }
 
     #[test]
-    fn normalized_rotating_snapshot_interval_filters_zero() {
+    fn normalized_rotating_snapshot_interval_event_time_filters_zero() {
         let mut cli = super::default_boot_cli(false);
-        cli.rotating_snapshot_interval_events = Some(0);
-        assert_eq!(cli.normalized_rotating_snapshot_interval_events(), None);
+        cli.rotating_snapshot_interval_event_time = Some(0);
+        assert_eq!(cli.normalized_rotating_snapshot_interval_event_time(), None);
 
-        cli.rotating_snapshot_interval_events = Some(5);
-        assert_eq!(cli.normalized_rotating_snapshot_interval_events(), Some(5));
+        cli.rotating_snapshot_interval_event_time = Some(5);
+        assert_eq!(
+            cli.normalized_rotating_snapshot_interval_event_time(),
+            Some(Duration::from_secs(5))
+        );
     }
 
     #[tokio::test(flavor = "current_thread")]
@@ -628,13 +661,15 @@ ON CONFLICT(key) DO UPDATE SET value = excluded.value
         fs::write(checkpoints_dir.join("0.chkjam"), b"corrupt checkpoint 0").expect("corrupt chk0");
         fs::write(checkpoints_dir.join("1.chkjam"), b"corrupt checkpoint 1").expect("corrupt chk1");
 
-        let err =
-            match try_setup_test_app(&data_dir, Some(DEFAULT_ROTATING_SNAPSHOT_INTERVAL_EVENTS))
-                .await
-            {
-                Ok(_) => panic!("boot should fail on continuity gap"),
-                Err(err) => err,
-            };
+        let err = match try_setup_test_app(
+            &data_dir,
+            Some(DEFAULT_ROTATING_SNAPSHOT_INTERVAL_EVENT_TIME_SECS),
+        )
+        .await
+        {
+            Ok(_) => panic!("boot should fail on continuity gap"),
+            Err(err) => err,
+        };
         assert!(err
             .to_string()
             .contains("event log continuity check failed"));
@@ -651,6 +686,8 @@ ON CONFLICT(key) DO UPDATE SET value = excluded.value
 
         let mut first = setup_test_app(&data_dir).await;
         poke_inc(&first).await;
+        wait_for_serf_idle(&first).await;
+        set_event_processing_duration_for_test(&data_dir, 1, Duration::from_secs(1));
         stop_app(&mut first).await;
         drop(first);
         clear_pma_files(&data_dir);
@@ -660,14 +697,20 @@ ON CONFLICT(key) DO UPDATE SET value = excluded.value
             .expect("setup rotating snapshot retention app");
         poke_inc(&second).await;
         poke_inc(&second).await;
+        wait_for_serf_idle(&second).await;
+        set_event_processing_duration_for_test(&data_dir, 3, Duration::from_secs(1));
+        poke_inc(&second).await;
+        poke_inc(&second).await;
+        wait_for_serf_idle(&second).await;
+        set_event_processing_duration_for_test(&data_dir, 5, Duration::from_secs(1));
         poke_inc(&second).await;
         stop_app(&mut second).await;
         drop(second);
 
         let rotating = ready_rotating_snapshots(&data_dir);
         assert_eq!(rotating.len(), 2);
-        assert_eq!(rotating[0].3, 4);
-        assert_eq!(rotating[1].3, 3);
+        assert_eq!(rotating[0].3, 6);
+        assert_eq!(rotating[1].3, 4);
         assert_eq!(retired_rotating_snapshot_count(&data_dir), 1);
         for (_, pma_path, manifest_path, _) in rotating {
             assert!(Path::new(&pma_path).exists());
@@ -686,6 +729,8 @@ ON CONFLICT(key) DO UPDATE SET value = excluded.value
 
         let mut first = setup_test_app(&data_dir).await;
         poke_inc(&first).await;
+        wait_for_serf_idle(&first).await;
+        set_event_processing_duration_for_test(&data_dir, 1, Duration::from_secs(1));
         stop_app(&mut first).await;
         drop(first);
         clear_pma_files(&data_dir);
@@ -695,7 +740,10 @@ ON CONFLICT(key) DO UPDATE SET value = excluded.value
             .expect("setup rotating fallback app");
         poke_inc(&second).await;
         poke_inc(&second).await;
-        assert_eq!(second.kernel.serf.event_number.load(Ordering::SeqCst), 3);
+        wait_for_serf_idle(&second).await;
+        set_event_processing_duration_for_test(&data_dir, 3, Duration::from_secs(1));
+        poke_inc(&second).await;
+        assert_eq!(second.kernel.serf.event_number.load(Ordering::SeqCst), 4);
         stop_app(&mut second).await;
         drop(second);
 
@@ -710,7 +758,7 @@ ON CONFLICT(key) DO UPDATE SET value = excluded.value
         fs::write(checkpoints_dir.join("1.chkjam"), b"corrupt checkpoint 1").expect("corrupt chk1");
 
         let mut third = setup_test_app(&data_dir).await;
-        assert_eq!(third.kernel.serf.event_number.load(Ordering::SeqCst), 3);
+        assert_eq!(third.kernel.serf.event_number.load(Ordering::SeqCst), 4);
         stop_app(&mut third).await;
         drop(third);
     }
@@ -726,6 +774,8 @@ ON CONFLICT(key) DO UPDATE SET value = excluded.value
 
         let mut first = setup_test_app(&data_dir).await;
         poke_inc(&first).await;
+        wait_for_serf_idle(&first).await;
+        set_event_processing_duration_for_test(&data_dir, 1, Duration::from_secs(1));
         stop_app(&mut first).await;
         drop(first);
         clear_pma_files(&data_dir);
@@ -735,7 +785,10 @@ ON CONFLICT(key) DO UPDATE SET value = excluded.value
             .expect("setup manifest-only fallback app");
         poke_inc(&second).await;
         poke_inc(&second).await;
-        assert_eq!(second.kernel.serf.event_number.load(Ordering::SeqCst), 3);
+        wait_for_serf_idle(&second).await;
+        set_event_processing_duration_for_test(&data_dir, 3, Duration::from_secs(1));
+        poke_inc(&second).await;
+        assert_eq!(second.kernel.serf.event_number.load(Ordering::SeqCst), 4);
         stop_app(&mut second).await;
         drop(second);
 
@@ -750,7 +803,7 @@ ON CONFLICT(key) DO UPDATE SET value = excluded.value
         fs::write(checkpoints_dir.join("1.chkjam"), b"corrupt checkpoint 1").expect("corrupt chk1");
 
         let mut third = setup_test_app(&data_dir).await;
-        assert_eq!(third.kernel.serf.event_number.load(Ordering::SeqCst), 3);
+        assert_eq!(third.kernel.serf.event_number.load(Ordering::SeqCst), 4);
         stop_app(&mut third).await;
         drop(third);
     }
@@ -766,6 +819,8 @@ ON CONFLICT(key) DO UPDATE SET value = excluded.value
 
         let mut first = setup_test_app(&data_dir).await;
         poke_inc(&first).await;
+        wait_for_serf_idle(&first).await;
+        set_event_processing_duration_for_test(&data_dir, 1, Duration::from_secs(1));
         stop_app(&mut first).await;
         drop(first);
         clear_pma_files(&data_dir);
@@ -775,7 +830,10 @@ ON CONFLICT(key) DO UPDATE SET value = excluded.value
             .expect("setup active snapshot selection app");
         poke_inc(&second).await;
         poke_inc(&second).await;
-        assert_eq!(second.kernel.serf.event_number.load(Ordering::SeqCst), 3);
+        wait_for_serf_idle(&second).await;
+        set_event_processing_duration_for_test(&data_dir, 3, Duration::from_secs(1));
+        poke_inc(&second).await;
+        assert_eq!(second.kernel.serf.event_number.load(Ordering::SeqCst), 4);
         stop_app(&mut second).await;
         drop(second);
 
@@ -793,7 +851,7 @@ ON CONFLICT(key) DO UPDATE SET value = excluded.value
         fs::write(checkpoints_dir.join("1.chkjam"), b"corrupt checkpoint 1").expect("corrupt chk1");
 
         let mut third = setup_test_app(&data_dir).await;
-        assert_eq!(third.kernel.serf.event_number.load(Ordering::SeqCst), 3);
+        assert_eq!(third.kernel.serf.event_number.load(Ordering::SeqCst), 4);
         stop_app(&mut third).await;
         drop(third);
 
@@ -818,6 +876,8 @@ ON CONFLICT(key) DO UPDATE SET value = excluded.value
 
         let mut first = setup_test_app(&data_dir).await;
         poke_inc(&first).await;
+        wait_for_serf_idle(&first).await;
+        set_event_processing_duration_for_test(&data_dir, 1, Duration::from_secs(1));
         stop_app(&mut first).await;
         drop(first);
         clear_pma_files(&data_dir);
@@ -1159,7 +1219,9 @@ async fn select_boot_state<J: Jammer>(
 pub fn default_boot_cli(new: bool) -> Cli {
     Cli {
         gc_interval: None,
-        rotating_snapshot_interval_events: Some(DEFAULT_ROTATING_SNAPSHOT_INTERVAL_EVENTS),
+        rotating_snapshot_interval_event_time: Some(
+            DEFAULT_ROTATING_SNAPSHOT_INTERVAL_EVENT_TIME_SECS,
+        ),
         new,
         trace_opts: Default::default(),
         color: ColorChoice::Auto,
@@ -1398,14 +1460,15 @@ pub async fn setup_<J: Jammer + Send + 'static>(
     let gc_interval = cli
         .normalized_gc_interval()
         .map(std::time::Duration::from_millis);
-    let rotating_snapshot_interval_events = cli.normalized_rotating_snapshot_interval_events();
+    let rotating_snapshot_interval_event_time =
+        cli.normalized_rotating_snapshot_interval_event_time();
     if let Some(interval) = gc_interval {
         info!("PMA GC interval duration: {:?}", interval);
     } else {
         info!("PMA GC interval disabled");
     }
-    if let Some(interval) = rotating_snapshot_interval_events {
-        info!("Rotating snapshot interval: {} event(s)", interval);
+    if let Some(interval) = rotating_snapshot_interval_event_time {
+        info!("Rotating snapshot interval event time: {:?}", interval);
     } else {
         info!("Rotating snapshots disabled");
     }
@@ -1449,7 +1512,7 @@ pub async fn setup_<J: Jammer + Send + 'static>(
                 words,
                 open_existing: pma_open_existing,
                 create_snapshots: true,
-                rotating_snapshot_interval_events,
+                rotating_snapshot_interval_event_time,
                 restore_manifest: snapshot_manifest.clone(),
                 gc_interval,
             })

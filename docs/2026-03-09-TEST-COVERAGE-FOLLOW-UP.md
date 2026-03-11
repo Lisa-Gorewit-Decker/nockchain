@@ -20,7 +20,7 @@
 4. Metrics/config assertions.
     We now have more knobs and metrics, but almost no tests that prove they are wired.
     I’d add focused tests for:
-    - --rotating-snapshot-interval-events default, override, and disable behavior
+    - --rotating-snapshot-interval-event-time default, override, and disable behavior
     - active snapshot transitions on fail/retire
     - snapshot/replay metrics increment on the paths we care about
 

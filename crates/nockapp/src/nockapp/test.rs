@@ -145,7 +145,7 @@ pub mod tests {
                     words: pma_words,
                     open_existing: false,
                     create_snapshots: false,
-                    rotating_snapshot_interval_events: None,
+                    rotating_snapshot_interval_event_time: None,
                     restore_manifest: None,
                     gc_interval: None,
                 });
@@ -172,7 +172,7 @@ pub mod tests {
                     words: pma_words,
                     open_existing: false,
                     create_snapshots: false,
-                    rotating_snapshot_interval_events: None,
+                    rotating_snapshot_interval_event_time: None,
                     restore_manifest: None,
                     gc_interval: None,
                 });
@@ -199,7 +199,7 @@ pub mod tests {
                     words: pma_words,
                     open_existing: false,
                     create_snapshots: false,
-                    rotating_snapshot_interval_events: None,
+                    rotating_snapshot_interval_event_time: None,
                     restore_manifest: None,
                     gc_interval: None,
                 });
@@ -226,7 +226,7 @@ pub mod tests {
                     words: pma_words,
                     open_existing: false,
                     create_snapshots: false,
-                    rotating_snapshot_interval_events: None,
+                    rotating_snapshot_interval_event_time: None,
                     restore_manifest: None,
                     gc_interval: None,
                 });
@@ -253,7 +253,7 @@ pub mod tests {
                     words: pma_words,
                     open_existing: false,
                     create_snapshots: false,
-                    rotating_snapshot_interval_events: None,
+                    rotating_snapshot_interval_event_time: None,
                     restore_manifest: None,
                     gc_interval: None,
                 });
@@ -280,7 +280,7 @@ pub mod tests {
                     words: pma_words,
                     open_existing: false,
                     create_snapshots: false,
-                    rotating_snapshot_interval_events: None,
+                    rotating_snapshot_interval_event_time: None,
                     restore_manifest: None,
                     gc_interval: None,
                 });

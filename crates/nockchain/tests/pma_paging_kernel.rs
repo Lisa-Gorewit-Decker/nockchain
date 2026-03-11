@@ -1168,7 +1168,7 @@ async fn build_nockapp(name: &str) -> Result<(TempDir, NockApp, PathBuf), Box<dy
         new: true,
         trace_opts: TraceOpts::default(),
         gc_interval: None,
-        rotating_snapshot_interval_events: None,
+        rotating_snapshot_interval_event_time: None,
         color: clap::ColorChoice::Auto,
         state_jam: None,
         export_state_jam: None,

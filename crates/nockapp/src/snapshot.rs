@@ -4,7 +4,7 @@ use std::collections::{HashMap, HashSet};
 use std::fs::{self, File};
 use std::io::{self, Read};
 use std::path::Path;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use bincode::{config, Decode, Encode};
 use blake3::{Hash, Hasher, OUT_LEN};
@@ -341,9 +341,9 @@ pub(crate) fn maybe_create_rotating_snapshot(
     event_num: u64,
     kernel_root_raw: u64,
     cold_offset: u32,
-    rotating_snapshot_interval_events: Option<u64>,
+    rotating_snapshot_interval_time: Option<Duration>,
 ) -> Result<bool, SnapshotBuildError> {
-    let Some(interval) = rotating_snapshot_interval_events else {
+    let Some(interval) = rotating_snapshot_interval_time else {
         return Ok(false);
     };
     let ready = event_log.list_ready_snapshots()?;
@@ -352,7 +352,11 @@ pub(crate) fn maybe_create_rotating_snapshot(
         .map(|snapshot| snapshot.event_num)
         .max()
         .unwrap_or(0);
-    if event_num <= latest_event || event_num.saturating_sub(latest_event) < interval {
+    if event_num <= latest_event {
+        return Ok(false);
+    }
+    let cumulative_processing_time = event_log.event_processing_time_after(latest_event)?;
+    if cumulative_processing_time < interval {
         return Ok(false);
     }
     let created_at_ms = current_time_ms()?;

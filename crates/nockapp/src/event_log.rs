@@ -1,5 +1,6 @@
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 use diesel::connection::SimpleConnection;
 use diesel::dsl::{max, sql};
@@ -11,7 +12,7 @@ use thiserror::Error;
 
 use crate::utils::durability;
 
-const EVENT_LOG_SCHEMA_VERSION: i64 = 1;
+const EVENT_LOG_SCHEMA_VERSION: i64 = 2;
 const ACTIVE_SNAPSHOT_ID_KEY: &str = "active_snapshot_id";
 const SCHEMA_VERSION_KEY: &str = "schema_version";
 
@@ -22,7 +23,7 @@ CREATE TABLE IF NOT EXISTS meta (
 );
 "#;
 
-const SCHEMA_V1_SQL: &str = r#"
+const SCHEMA_V2_SQL: &str = r#"
 CREATE TABLE IF NOT EXISTS events (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   event_num INTEGER NOT NULL UNIQUE,
@@ -32,6 +33,7 @@ CREATE TABLE IF NOT EXISTS events (
   wire_tags_json TEXT NOT NULL,
   cause_hash BLOB NOT NULL,
   job_hash BLOB NOT NULL,
+  event_processing_duration_us INTEGER NOT NULL DEFAULT 0,
   created_at_ms INTEGER NOT NULL
 );
 
@@ -60,6 +62,11 @@ CREATE INDEX IF NOT EXISTS snapshots_kind_ts_idx ON snapshots(kind, timestamp_ta
 CREATE INDEX IF NOT EXISTS snapshots_event_idx ON snapshots(event_num DESC);
 "#;
 
+const MIGRATE_V1_TO_V2_SQL: &str = r#"
+ALTER TABLE events
+ADD COLUMN event_processing_duration_us INTEGER NOT NULL DEFAULT 0;
+"#;
+
 diesel::table! {
     events (id) {
         id -> BigInt,
@@ -70,6 +77,7 @@ diesel::table! {
         wire_tags_json -> Text,
         cause_hash -> Binary,
         job_hash -> Binary,
+        event_processing_duration_us -> BigInt,
         created_at_ms -> BigInt,
     }
 }
@@ -108,6 +116,7 @@ pub(crate) struct EventLogEntry {
     pub wire_tags_json: String,
     pub cause_hash: Vec<u8>,
     pub job_hash: Vec<u8>,
+    pub event_processing_duration: Duration,
     pub created_at_ms: i64,
 }
 
@@ -153,6 +162,8 @@ pub(crate) enum EventLogError {
     FieldOutOfRange { field: &'static str, value: i64 },
     #[error("integer field {field} out of range for sqlite INTEGER: {value}")]
     IntegerOutOfRange { field: &'static str, value: u64 },
+    #[error("duration field {field} out of range for sqlite INTEGER microseconds: {micros}")]
+    DurationOutOfRange { field: &'static str, micros: u128 },
     #[error("event log quick_check failed: {0}")]
     QuickCheck(String),
     #[error("event sequence gap detected: expected event_num {expected}, found {found}")]
@@ -174,6 +185,7 @@ struct NewEventRow<'a> {
     wire_tags_json: &'a str,
     cause_hash: &'a [u8],
     job_hash: &'a [u8],
+    event_processing_duration_us: i64,
     created_at_ms: i64,
 }
 
@@ -189,6 +201,9 @@ impl<'a> NewEventRow<'a> {
             wire_tags_json: &event.wire_tags_json,
             cause_hash: &event.cause_hash,
             job_hash: &event.job_hash,
+            event_processing_duration_us: sqlite_duration_micros(
+                "event_processing_duration_us", event.event_processing_duration,
+            )?,
             created_at_ms: event.created_at_ms,
         })
     }
@@ -436,6 +451,19 @@ impl EventLog {
         Ok(entries)
     }
 
+    pub(crate) fn event_processing_time_after(
+        &mut self,
+        event_num: u64,
+    ) -> Result<Duration, EventLogError> {
+        let total_micros = sql_query(
+            "SELECT COALESCE(SUM(event_processing_duration_us), 0) AS value FROM events WHERE event_num > ?",
+        )
+        .bind::<BigInt, _>(sqlite_i64("event_num", event_num)?)
+        .get_result::<I64ValueRow>(&mut self.conn)?
+        .value;
+        duration_from_sqlite("event_processing_duration_us", total_micros)
+    }
+
     #[allow(dead_code)]
     pub(crate) fn max_event_num(&mut self) -> Result<Option<u64>, EventLogError> {
         let max_event_num = events::table
@@ -472,7 +500,15 @@ PRAGMA foreign_keys = 1;
         }
         if current_version < 1 {
             conn.transaction(|conn| {
-                conn.batch_execute(SCHEMA_V1_SQL)?;
+                conn.batch_execute(SCHEMA_V2_SQL)?;
+                store_meta_i64(conn, SCHEMA_VERSION_KEY, EVENT_LOG_SCHEMA_VERSION)?;
+                Ok::<(), EventLogError>(())
+            })?;
+            return Ok(());
+        }
+        if current_version < 2 {
+            conn.transaction(|conn| {
+                conn.batch_execute(MIGRATE_V1_TO_V2_SQL)?;
                 store_meta_i64(conn, SCHEMA_VERSION_KEY, EVENT_LOG_SCHEMA_VERSION)?;
                 Ok::<(), EventLogError>(())
             })?;
@@ -570,8 +606,23 @@ fn u32_from_sqlite(field: &'static str, value: i64) -> Result<u32, EventLogError
     u32::try_from(value).map_err(|_| EventLogError::FieldOutOfRange { field, value })
 }
 
+fn sqlite_duration_micros(field: &'static str, value: Duration) -> Result<i64, EventLogError> {
+    let micros = value.as_micros();
+    if micros > i64::MAX as u128 {
+        return Err(EventLogError::DurationOutOfRange { field, micros });
+    }
+    Ok(micros as i64)
+}
+
+fn duration_from_sqlite(field: &'static str, value: i64) -> Result<Duration, EventLogError> {
+    let micros = u64_from_sqlite(field, value)?;
+    Ok(Duration::from_micros(micros))
+}
+
 #[cfg(test)]
 mod tests {
+    use std::time::Duration;
+
     use tempfile::TempDir;
 
     use super::*;
@@ -585,6 +636,7 @@ mod tests {
             wire_tags_json: "[]".to_string(),
             cause_hash: vec![3; 32],
             job_hash: vec![4; 32],
+            event_processing_duration: Duration::from_micros(event_num),
             created_at_ms: 42,
         }
     }
@@ -600,6 +652,11 @@ mod tests {
         log.append_event(&sample_entry(2)).expect("append event 2");
 
         assert_eq!(log.max_event_num().expect("max event num"), Some(2));
+        assert_eq!(
+            log.event_processing_time_after(0)
+                .expect("event processing time after 0"),
+            Duration::from_micros(3)
+        );
     }
 
     #[test]
@@ -651,5 +708,66 @@ mod tests {
                 found: 3
             }
         ));
+    }
+
+    #[test]
+    fn migrates_v1_event_logs_to_duration_tracking() {
+        let temp = TempDir::new().expect("tempdir");
+        let path = temp.path().join("event-log.sqlite3");
+        let mut conn = establish_connection(&path).expect("connect sqlite");
+        conn.batch_execute(CREATE_META_SQL)
+            .expect("create meta table");
+        conn.batch_execute(
+            r#"
+CREATE TABLE events (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  event_num INTEGER NOT NULL UNIQUE,
+  job_jam BLOB NOT NULL,
+  wire_source TEXT NOT NULL,
+  wire_version INTEGER NOT NULL,
+  wire_tags_json TEXT NOT NULL,
+  cause_hash BLOB NOT NULL,
+  job_hash BLOB NOT NULL,
+  created_at_ms INTEGER NOT NULL
+);
+
+CREATE INDEX events_event_num_idx ON events(event_num);
+"#,
+        )
+        .expect("create v1 events table");
+        conn.batch_execute(
+            r#"
+CREATE TABLE snapshots (
+  snapshot_id INTEGER PRIMARY KEY AUTOINCREMENT,
+  kind TEXT NOT NULL CHECK(kind IN ('epoch','rotating')),
+  state TEXT NOT NULL CHECK(state IN ('writing','ready','failed','retired')),
+  event_num INTEGER NOT NULL,
+  pma_path TEXT NOT NULL,
+  manifest_path TEXT NOT NULL,
+  alloc_words INTEGER NOT NULL,
+  kernel_root_raw INTEGER NOT NULL,
+  cold_offset INTEGER NOT NULL,
+  used_blake3 BLOB NOT NULL,
+  structure_blake3 BLOB,
+  created_at_ms INTEGER NOT NULL,
+  activated_at_ms INTEGER,
+  base_snapshot_id INTEGER,
+  timestamp_tag TEXT NOT NULL,
+  UNIQUE(kind, timestamp_tag)
+);
+"#,
+        )
+        .expect("create snapshots table");
+        store_meta_i64(&mut conn, SCHEMA_VERSION_KEY, 1).expect("store schema version 1");
+        drop(conn);
+
+        let mut log = EventLog::open(EventLogConfig { path }).expect("open migrated event log");
+        log.append_event(&sample_entry(1))
+            .expect("append migrated event");
+        assert_eq!(
+            log.event_processing_time_after(0)
+                .expect("event processing time after migration"),
+            Duration::from_micros(1)
+        );
     }
 }

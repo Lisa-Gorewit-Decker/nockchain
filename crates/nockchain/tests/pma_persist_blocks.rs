@@ -119,7 +119,7 @@ async fn build_nockapp(name: &str) -> Result<(TempDir, NockApp), Box<dyn Error>>
         new: true,
         trace_opts: TraceOpts::default(),
         gc_interval: None,
-        rotating_snapshot_interval_events: None,
+        rotating_snapshot_interval_event_time: None,
         color: ColorChoice::Auto,
         state_jam: None,
         export_state_jam: None,

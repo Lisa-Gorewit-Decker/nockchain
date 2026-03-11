@@ -68,7 +68,7 @@ pub struct PmaConfig {
     pub words: usize,
     pub open_existing: bool,
     pub create_snapshots: bool,
-    pub rotating_snapshot_interval_events: Option<u64>,
+    pub rotating_snapshot_interval_event_time: Option<Duration>,
     pub(crate) restore_manifest: Option<SnapshotManifest>,
     pub gc_interval: Option<Duration>,
 }
@@ -501,7 +501,7 @@ impl<C: SerfCheckpoint + Send + 'static> SerfThread<C> {
                     pma_meta_path,
                     pma_gc_state,
                     create_snapshots,
-                    rotating_snapshot_interval_events,
+                    rotating_snapshot_interval_event_time,
                     restore_manifest,
                 ) = match pma {
                     Some(config) => {
@@ -511,7 +511,7 @@ impl<C: SerfCheckpoint + Send + 'static> SerfThread<C> {
                             words,
                             open_existing,
                             create_snapshots,
-                            rotating_snapshot_interval_events,
+                            rotating_snapshot_interval_event_time,
                             restore_manifest,
                             gc_interval,
                         } = config;
@@ -561,7 +561,7 @@ impl<C: SerfCheckpoint + Send + 'static> SerfThread<C> {
                                     PmaGcState::new(paths, active, interval, words)
                                 }),
                                 create_snapshots,
-                                rotating_snapshot_interval_events,
+                                rotating_snapshot_interval_event_time,
                                 restore_manifest,
                             ),
                             Err(err) => {
@@ -613,7 +613,7 @@ impl<C: SerfCheckpoint + Send + 'static> SerfThread<C> {
                     pma_meta_load,
                     pma_gc_state,
                     create_snapshots,
-                    rotating_snapshot_interval_events,
+                    rotating_snapshot_interval_event_time,
                     event_log,
                     checkpoint,
                     &kernel_bytes,
@@ -1025,7 +1025,7 @@ fn serf_loop<C: SerfCheckpoint>(
                     let noun_res = serf.poke(wire, cause_noun);
                     let event_elapsed = event_start.elapsed();
                     let space = serf.context.stack.noun_space();
-                    let (noun_slab_res, did_update, durable_event) = match noun_res {
+                    let (noun_slab_res, did_update, mut durable_event) = match noun_res {
                         Ok(accepted_poke) => {
                             let mut slab = NounSlab::new();
                             slab.copy_into(accepted_poke.effects, &space);
@@ -1033,6 +1033,9 @@ fn serf_loop<C: SerfCheckpoint>(
                         }
                         Err(err) => (Err(err), false, None),
                     };
+                    if let Some(durable_event) = durable_event.as_mut() {
+                        durable_event.event_processing_duration = event_elapsed;
+                    }
                     let mut pma_elapsed = None;
                     let mut pma_detail = None;
                     let mut durable_append_elapsed = None;
@@ -1532,7 +1535,7 @@ pub struct Serf {
     /// Optional GC configuration for PMA slab compaction.
     pma_gc_state: Option<PmaGcState>,
     snapshot_creation_enabled: bool,
-    rotating_snapshot_interval_events: Option<u64>,
+    rotating_snapshot_interval_event_time: Option<Duration>,
     /// Optional append-only event log used as the durability boundary.
     event_log: Option<EventLog>,
     /// Cancellation
@@ -1564,7 +1567,7 @@ impl Serf {
         pma_meta_load: bool,
         pma_gc_state: Option<PmaGcState>,
         snapshot_creation_enabled: bool,
-        rotating_snapshot_interval_events: Option<u64>,
+        rotating_snapshot_interval_event_time: Option<Duration>,
         event_log: Option<EventLog>,
         checkpoint: Option<C>,
         kernel_bytes: &[u8],
@@ -1703,7 +1706,7 @@ impl Serf {
             pma_meta_path,
             pma_gc_state,
             snapshot_creation_enabled,
-            rotating_snapshot_interval_events,
+            rotating_snapshot_interval_event_time,
             event_log,
             event_num,
             cancel_token,
@@ -2135,6 +2138,7 @@ impl Serf {
             wire_tags_json: metadata.wire_tags_json.clone(),
             cause_hash: metadata.cause_hash.clone(),
             job_hash: job_hash.as_bytes().to_vec(),
+            event_processing_duration: Duration::ZERO,
             created_at_ms: metadata.created_at_ms,
         })
     }
@@ -2321,12 +2325,12 @@ impl Serf {
         let build_start = Instant::now();
         info!(
             event_num,
-            rotating_interval_events = self.rotating_snapshot_interval_events,
+            rotating_interval_event_time = ?self.rotating_snapshot_interval_event_time,
             "rotating snapshot build start"
         );
         match maybe_create_rotating_snapshot(
             event_log, pma, self.ker_hash, event_num, kernel_root_raw, cold_offset,
-            self.rotating_snapshot_interval_events,
+            self.rotating_snapshot_interval_event_time,
         ) {
             Ok(created) => {
                 let elapsed = build_start.elapsed();
@@ -2799,7 +2803,7 @@ mod tests {
             pma_meta_path: None,
             pma_gc_state: None,
             snapshot_creation_enabled: false,
-            rotating_snapshot_interval_events: None,
+            rotating_snapshot_interval_event_time: None,
             event_log: None,
             cancel_token,
             event_num: Arc::new(AtomicU64::new(0)),

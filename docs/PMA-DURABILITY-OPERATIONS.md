@@ -24,10 +24,10 @@ These are the main boot flags/operators should know about:
    Overrides the SQLite event log path.
    Default: `data_dir/event-log.sqlite3`
 
-3. `--rotating-snapshot-interval-events`
-   Controls how many accepted events must elapse before a new rotating snapshot is attempted.
+3. `--rotating-snapshot-interval-event-time`
+   Controls how much cumulative accepted event-processing time must elapse before a new rotating snapshot is attempted.
    Use `none` or `0` to disable rotating snapshots.
-   Default: `64`
+   Default: `300` seconds
 
 4. `--data-dir`
    Overrides the root durability directory.
