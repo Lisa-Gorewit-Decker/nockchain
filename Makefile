@@ -129,7 +129,6 @@ docker-metrics:
 .PHONY: run-genesis-sync-fsync-on
 run-genesis-sync-fsync-on:
 	RUST_LOG="$(GENESIS_SYNC_RUST_LOG)" MINIMAL_LOG_FORMAT="$(GENESIS_SYNC_MINIMAL_LOG_FORMAT)" $(GENESIS_SYNC_NODE_CMD) \
-		--new \
 		--data-dir "$(GENESIS_SYNC_DATA_DIR_ON)" \
 		--identity-path "$(GENESIS_SYNC_DATA_DIR_ON)/.nockchain_identity" \
 		--bind "/ip4/0.0.0.0/udp/$(GENESIS_SYNC_BIND_PORT_ON)/quic-v1" $(if $(GENESIS_SYNC_PEER),--peer "$(GENESIS_SYNC_PEER)") $(GENESIS_SYNC_COMMON_ARGS) $(GENESIS_SYNC_EXTRA_ARGS)
@@ -137,7 +136,6 @@ run-genesis-sync-fsync-on:
 .PHONY: run-genesis-sync-fsync-off
 run-genesis-sync-fsync-off:
 	RUST_LOG="$(GENESIS_SYNC_RUST_LOG)" MINIMAL_LOG_FORMAT="$(GENESIS_SYNC_MINIMAL_LOG_FORMAT)" $(GENESIS_SYNC_NODE_CMD) \
-		--new \
 		--disable-fsync \
 		--data-dir "$(GENESIS_SYNC_DATA_DIR_OFF)" \
 		--identity-path "$(GENESIS_SYNC_DATA_DIR_OFF)/.nockchain_identity" \
