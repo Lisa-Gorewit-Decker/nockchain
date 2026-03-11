@@ -539,6 +539,34 @@ ON CONFLICT(key) DO UPDATE SET value = excluded.value
     #[tokio::test(flavor = "current_thread")]
     #[traced_test]
     #[cfg_attr(miri, ignore)]
+    async fn shutdown_flush_rewrites_missing_active_pma_metadata() {
+        let _guard = native_pma_test_guard();
+        let _test_arena = TestArena::default();
+        let temp = TempDir::new().expect("tempdir");
+        let data_dir = temp.path().join("shutdown-rewrites-pma-meta");
+
+        let mut first = setup_test_app(&data_dir).await;
+        poke_inc(&first).await;
+        for meta_name in ["0.meta", "1.meta"] {
+            let meta_path = data_dir.join("pma").join(meta_name);
+            if meta_path.exists() {
+                fs::remove_file(&meta_path).expect("remove active meta before shutdown");
+            }
+            assert!(!meta_path.exists());
+        }
+
+        stop_app(&mut first).await;
+        drop(first);
+
+        assert!(
+            data_dir.join("pma").join("0.meta").exists()
+                || data_dir.join("pma").join("1.meta").exists()
+        );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    #[traced_test]
+    #[cfg_attr(miri, ignore)]
     async fn replays_logged_events_after_snapshot_restore() {
         let _guard = native_pma_test_guard();
         let _test_arena = TestArena::default();

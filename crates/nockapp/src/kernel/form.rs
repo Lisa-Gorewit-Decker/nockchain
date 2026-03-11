@@ -436,8 +436,10 @@ pub enum SerfAction<C> {
         metrics: Arc<NockAppMetrics>,
         result: oneshot::Sender<()>,
     },
-    // Stop the loop
-    Stop,
+    // Flush durable PMA state and stop the loop
+    Stop {
+        result: oneshot::Sender<Result<()>>,
+    },
 }
 
 pub struct SerfThread<C> {
@@ -653,21 +655,27 @@ impl<C> SerfThread<C> {
 
     pub(crate) fn stop(&mut self) -> impl Future<Output = Result<()>> {
         let action_sender = self.action_sender.clone();
-        let cancel_token = self.cancel_token.clone();
         let join_handle = self.handle.take().expect("Serf join handle already taken.");
         let tokio_join_handle = tokio::task::spawn_blocking(move || join_handle.join());
-        self.inhibit.store(true, Ordering::SeqCst);
+        let (result, result_recv) = oneshot::channel();
         async move {
-            cancel_token.cancel();
-            action_sender
-                .send(SerfAction::Stop)
-                .await
-                .expect("Failed to send stop action");
-            match tokio_join_handle.await {
+            if let Err(err) = action_sender.send(SerfAction::Stop { result }).await {
+                let join_res = tokio_join_handle.await;
+                return match join_res {
+                    Ok(Ok(())) => Err(err.into()),
+                    Ok(Err(e)) => Err(CrownError::Unknown(format!("Serf thread panicked: {e:?}"))),
+                    Err(e) => Err(CrownError::JoinError(e)),
+                };
+            }
+
+            let stop_res = result_recv.await?;
+            let join_res = tokio_join_handle.await;
+            match join_res {
                 Ok(Ok(())) => Ok(()),
                 Ok(Err(e)) => Err(CrownError::Unknown(format!("Serf thread panicked: {e:?}"))),
                 Err(e) => Err(CrownError::JoinError(e)),
-            }
+            }?;
+            stop_res
         }
     }
 
@@ -838,7 +846,11 @@ fn serf_loop<C: SerfCheckpoint>(
         };
         let action_start = std::time::Instant::now();
         match action {
-            SerfAction::Stop => {
+            SerfAction::Stop { result } => {
+                let stop_res = serf.flush_pma_state_for_shutdown();
+                let _ = result.send(stop_res).inspect_err(|_err| {
+                    debug!("Failed to send shutdown flush result to dropped channel");
+                });
                 break;
             }
             SerfAction::Export { result } => {
@@ -2475,34 +2487,10 @@ impl Serf {
     }
 
     fn persist_pma_metadata(&self, pma: &Pma) {
-        let Some(meta_path) = self.pma_meta_path.as_ref() else {
-            return;
-        };
-        let space = self.context.stack.noun_space();
-        let kernel_state = self
-            .arvo
-            .in_space(&space)
-            .slot(STATE_AXIS)
-            .map(|handle| handle.noun())
-            .unwrap_or_else(|err| {
-                panic!(
-                    "Panicked with {err:?} at {}:{} (git sha: {:?})",
-                    file!(),
-                    line!(),
-                    option_env!("GIT_SHA")
-                )
-            });
-        let kernel_state_raw = unsafe { kernel_state.as_raw() };
-        let Some(cold_offset) = self.context.cold.pma_offset(pma) else {
-            warn!("PMA metadata update skipped: cold state not in PMA");
-            return;
-        };
-        let event_num = self.event_num.load(Ordering::SeqCst);
-        let pma_base = pma.arena().base_ptr() as u64;
-        let meta = PmaPersistMetadata::new(
-            self.ker_hash, event_num, kernel_state_raw, cold_offset, pma_base,
-        );
-        if let Err(err) = meta.save_to_path(meta_path) {
+        if let Err(err) = self.persist_pma_metadata_strict(pma) {
+            let Some(meta_path) = self.pma_meta_path.as_ref() else {
+                return;
+            };
             warn!(
                 "Failed to persist PMA metadata to {}: {err}",
                 meta_path.display()
@@ -2511,7 +2499,7 @@ impl Serf {
     }
 
     fn sync_pma_data(&self, pma: &Pma) {
-        if let Err(err) = durability::sync_path_data(pma.path(), "poke_cleanup_pma_fdatasync") {
+        if let Err(err) = self.sync_pma_data_strict(pma, "poke_cleanup_pma_fdatasync") {
             warn!(
                 "Failed to fdatasync PMA slab {}: {err}",
                 pma.path().display()
@@ -2523,6 +2511,65 @@ impl Serf {
         pma.persist_metadata();
         self.sync_pma_data(pma);
         self.persist_pma_metadata(pma);
+    }
+
+    fn persist_pma_metadata_strict(&self, pma: &Pma) -> Result<()> {
+        let Some(meta_path) = self.pma_meta_path.as_ref() else {
+            return Ok(());
+        };
+        let space = self.context.stack.noun_space();
+        let kernel_state = self
+            .arvo
+            .in_space(&space)
+            .slot(STATE_AXIS)
+            .map(|handle| handle.noun())
+            .map_err(|err| {
+                CrownError::SaveError(format!(
+                    "failed to resolve kernel root for PMA metadata at {}: {err:?}",
+                    meta_path.display()
+                ))
+            })?;
+        let kernel_state_raw = unsafe { kernel_state.as_raw() };
+        let Some(cold_offset) = self.context.cold.pma_offset(pma) else {
+            return Err(CrownError::SaveError(format!(
+                "failed to persist PMA metadata to {}: cold state not in PMA",
+                meta_path.display()
+            )));
+        };
+        let event_num = self.event_num.load(Ordering::SeqCst);
+        let pma_base = pma.arena().base_ptr() as u64;
+        let meta = PmaPersistMetadata::new(
+            self.ker_hash, event_num, kernel_state_raw, cold_offset, pma_base,
+        );
+        meta.save_to_path(meta_path)?;
+        Ok(())
+    }
+
+    fn sync_pma_data_strict(&self, pma: &Pma, context: &str) -> Result<()> {
+        durability::sync_path_data(pma.path(), context)?;
+        Ok(())
+    }
+
+    fn flush_pma_state_for_shutdown(&self) -> Result<()> {
+        let Some(pma) = self.pma.as_ref() else {
+            return Ok(());
+        };
+        let event_num = self.event_num.load(Ordering::SeqCst);
+        info!(
+            event_num,
+            path = %pma.path().display(),
+            "shutdown PMA flush start"
+        );
+        pma.persist_metadata();
+        pma.sync_all()?;
+        self.sync_pma_data_strict(pma, "shutdown_pma_fdatasync")?;
+        self.persist_pma_metadata_strict(pma)?;
+        info!(
+            event_num,
+            path = %pma.path().display(),
+            "shutdown PMA flush done"
+        );
+        Ok(())
     }
 
     fn maybe_pma_gc(&mut self, mut pma: Pma) -> Pma {

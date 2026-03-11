@@ -566,8 +566,6 @@ impl<J: Jammer + Send + 'static> NockApp<J> {
         }));
     }
 
-    // TODO: We should explicitly kick off a save somehow
-    // TOOD: :>) spawn a task which awaits the signal stream and if there is a SIGINT, then call std::process::exit(1)
     #[instrument(skip_all)]
     async fn handle_exit(&mut self, code: usize) -> Result<NockAppRun, NockAppError> {
         // We should only run handle_exit once, break out if we are already exiting.
