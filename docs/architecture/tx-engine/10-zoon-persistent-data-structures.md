@@ -233,12 +233,14 @@ The `TipHasher` trait abstracts the hash function:
 
 ```rust
 pub trait TipHasher {
-    fn hash_noun_varlen(&self, noun: &Noun) -> [u64; 5];
-    fn hash_ten_cell(&self, a: &[u64; 5], b: &[u64; 5]) -> [u64; 5];
+    fn hash_noun_varlen<A: NounAllocator>(
+        &self, stack: &mut A, a: Noun,
+    ) -> Result<[u64; 5], JetErr>;
+    fn hash_ten_cell(&self, ten: [u64; 10]) -> Result<[u64; 5], JetErr>;
 }
 ```
 
-`DefaultTipHasher` uses Tip5, but the trait allows alternative hashers for testing.
+Note that `hash_ten_cell` takes a single `[u64; 10]` array (the two 5-element digests concatenated), not two separate `[u64; 5]` arrays. `DefaultTipHasher` uses Tip5, but the trait allows alternative hashers for testing.
 
 ## Usage in the Transaction Engine
 

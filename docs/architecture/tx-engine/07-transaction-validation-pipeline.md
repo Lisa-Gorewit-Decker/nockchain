@@ -54,28 +54,27 @@ The `check:lock-merkle-proof` arm verifies:
 1. The spend condition hashes to the correct leaf
 2. The Merkle path from leaf to root is valid (each level combines with the sibling hash)
 3. The computed root matches the lock root in the note's Name
-4. (Post-Bythos) For full proofs: the axis is committed in the hash and `origin-page ≥ bythos-phase`
+4. (Post-Bythos) For full proofs: the axis is committed in the hash and `now ≥ bythos-phase`
 
 #### PKH Signature Check
 
-The `check:pkh` arm verifies:
-1. For each public key hash in the Pkh primitive
-2. Look up the corresponding `PkhSignatureEntry` in the witness
-3. Verify that `Hash(pubkey)` matches the committed hash
-4. Verify the Schnorr signature against the sig-hash
-5. Count at least M valid signatures
+The `check:pkh` arm verifies (all conditions must hold):
+1. **Signature count**: The number of witness PKH entries equals `m` (the M-of-N threshold)
+2. **Permissible keys**: The set of witness pubkey hashes is a subset of the committed hashes (checked via `z-in dif`)
+3. **Hash binding**: Each `Hash(pubkey)` in the witness matches its committed hash (checked via `z-by rep`)
+4. **Batch signature verification**: All Schnorr signatures are verified against the sig-hash in a single batch call via `batch-verify:affine:belt-schnorr:cheetah`
 
 The sig-hash for V1 is computed over the spend's seeds and fee (excluding the witness), ensuring signatures don't circularly depend on themselves.
 
 #### Timelock Check
 
 The `check:tim` arm verifies:
-1. Current page number satisfies absolute constraints:
-   - `page_num ≥ abs.min` (if set)
-   - `page_num ≤ abs.max` (if set)
-2. Current page number satisfies relative constraints (relative to origin page):
-   - `page_num ≥ origin_page + rel.min` (if set)
-   - `page_num ≤ origin_page + rel.max` (if set)
+1. Current page number (`now.ctx`) satisfies absolute constraints:
+   - `now ≥ abs.min` (if set)
+   - `now ≤ abs.max` (if set)
+2. Current page number satisfies relative constraints (relative to `since.ctx`, the note's origin page):
+   - `now ≥ since + rel.min` (if set)
+   - `now ≤ since + rel.max` (if set)
 
 No witness data is needed — timelocks are validated against the block context.
 
@@ -100,10 +99,10 @@ V1 introduces a unified `check-context` structure that bundles all context neede
   |%
   +$  form
     $:  now=page-number        :: current block height
-        origin-page=@          :: when the note was created
+        since=page-number      :: page height of the note (origin page)
         sig-hash=hash          :: sig-hash of the spend (for signature verification)
         =witness               :: the witness data being verified
-        bythos-phase=@         :: bythos activation height
+        bythos-phase=page-number  :: height at which bythos activates
     ==
   ++  check
     |=  [=form lock=hash]
@@ -112,14 +111,14 @@ V1 introduces a unified `check-context` structure that bundles all context neede
 ```
 
 This arm validates a complete spend by:
-1. Checking Bythos compatibility (full proofs only after bythos-phase)
-2. Extracting the spend condition from the lock merkle proof
+1. Checking Bythos compatibility (full proofs only after bythos-phase; gates `%full` LMP format to `now >= bythos-phase`)
+2. Extracting the spend condition from the lock merkle proof (handles both stub 3-tuple and full 4-tuple formats)
 3. Verifying the lock merkle proof against the lock root
-4. Checking each lock primitive in the spend condition:
+4. Checking each lock primitive in the spend condition via `levy` (AND logic):
    - `%tim` → check timelocks against current height
    - `%hax` → check hash preimages
-   - `%pkh` → check Schnorr signatures
-   - `%brn` → always fail
+   - `%pkh` → check Schnorr signatures (with batch verification)
+   - `%brn` → always fail (`%|`)
 
 All checks must pass (AND logic within a spend condition).
 
