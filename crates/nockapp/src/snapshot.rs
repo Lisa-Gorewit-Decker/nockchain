@@ -4,7 +4,7 @@ use std::collections::{HashMap, HashSet};
 use std::fs::{self, File};
 use std::io::{self, Read};
 use std::path::Path;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use bincode::{config, Decode, Encode};
 use blake3::{Hash, Hasher, OUT_LEN};
@@ -14,6 +14,7 @@ use nockvm::pma::{
 };
 use nockvm::serialization::met0_u64_to_usize;
 use thiserror::Error;
+use tracing::info;
 
 use crate::event_log::{EventLog, EventLogError, ReadySnapshotRecord};
 use crate::utils::durability;
@@ -21,6 +22,10 @@ use crate::utils::durability;
 const SNAPSHOT_MANIFEST_MAGIC: u64 = u64::from_le_bytes(*b"SNAPMAN1");
 const SNAPSHOT_MANIFEST_VERSION: u32 = 1;
 type HashBytes = [u8; OUT_LEN];
+
+fn duration_ms(elapsed: Duration) -> f64 {
+    elapsed.as_secs_f64() * 1000.0
+}
 
 #[derive(Clone, Copy, Debug, Encode, Decode, PartialEq, Eq)]
 pub(crate) enum SnapshotKind {
@@ -155,6 +160,30 @@ pub(crate) enum SnapshotCleanupError {
     Io(#[from] io::Error),
 }
 
+#[derive(Debug)]
+pub(crate) enum RotatingSnapshotBuildStatus {
+    NotCreated,
+    Created,
+    CreatedWithCleanupError(SnapshotBuildError),
+}
+
+impl RotatingSnapshotBuildStatus {
+    pub(crate) fn created(&self) -> bool {
+        matches!(
+            self,
+            RotatingSnapshotBuildStatus::Created
+                | RotatingSnapshotBuildStatus::CreatedWithCleanupError(_)
+        )
+    }
+
+    pub(crate) fn cleanup_error(&self) -> Option<&SnapshotBuildError> {
+        match self {
+            RotatingSnapshotBuildStatus::CreatedWithCleanupError(err) => Some(err),
+            _ => None,
+        }
+    }
+}
+
 impl SnapshotManifest {
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn new(
@@ -260,8 +289,30 @@ pub(crate) fn verify_snapshot(
     pma_path: &Path,
     mode: SnapshotVerifyMode,
 ) -> Result<SnapshotVerification, SnapshotVerifyError> {
+    let verify_start = Instant::now();
+    info!(
+        mode = ?mode,
+        manifest_path = ?manifest_path,
+        pma_path = ?pma_path,
+        "snapshot verify start"
+    );
+    let stage_start = Instant::now();
     let manifest = SnapshotManifest::read_from_path(manifest_path)?;
+    info!(
+        mode = ?mode,
+        event_num = manifest.event_num,
+        elapsed_ms = duration_ms(stage_start.elapsed()),
+        "snapshot verify stage done: read_manifest"
+    );
+    let stage_start = Instant::now();
     let file_metadata = Pma::read_file_metadata(pma_path)?;
+    info!(
+        mode = ?mode,
+        event_num = manifest.event_num,
+        elapsed_ms = duration_ms(stage_start.elapsed()),
+        "snapshot verify stage done: read_pma_metadata"
+    );
+    let stage_start = Instant::now();
     if manifest.pma_words != file_metadata.data_words {
         return Err(SnapshotVerifyError::PmaWordsMismatch {
             manifest: manifest.pma_words,
@@ -274,8 +325,21 @@ pub(crate) fn verify_snapshot(
             file: file_metadata.alloc_words,
         });
     }
+    info!(
+        mode = ?mode,
+        event_num = manifest.event_num,
+        elapsed_ms = duration_ms(stage_start.elapsed()),
+        "snapshot verify stage done: validate_file_metadata"
+    );
 
+    let stage_start = Instant::now();
     let used_blake3 = hash_file_prefix(pma_path, file_metadata.alloc_words.saturating_mul(8))?;
+    info!(
+        mode = ?mode,
+        event_num = manifest.event_num,
+        elapsed_ms = duration_ms(stage_start.elapsed()),
+        "snapshot verify stage done: hash_used_prefix"
+    );
     if used_blake3 != manifest.used_blake3 {
         return Err(SnapshotVerifyError::UsedHashMismatch {
             expected: manifest.used_blake3,
@@ -283,6 +347,7 @@ pub(crate) fn verify_snapshot(
         });
     }
 
+    let stage_start = Instant::now();
     let mut reader = PmaDirectReader::from_path(
         pma_path,
         file_metadata.data_words,
@@ -292,20 +357,59 @@ pub(crate) fn verify_snapshot(
             ..PmaDirectJamConfig::default()
         },
     )?;
+    info!(
+        mode = ?mode,
+        event_num = manifest.event_num,
+        elapsed_ms = duration_ms(stage_start.elapsed()),
+        "snapshot verify stage done: open_direct_reader"
+    );
+    let stage_start = Instant::now();
     validate_root_raw(&mut reader, manifest.kernel_root_raw)?;
+    info!(
+        mode = ?mode,
+        event_num = manifest.event_num,
+        elapsed_ms = duration_ms(stage_start.elapsed()),
+        "snapshot verify stage done: validate_root_raw"
+    );
+    let stage_start = Instant::now();
     validate_cold_offset(&mut reader, manifest.cold_offset)?;
+    info!(
+        mode = ?mode,
+        event_num = manifest.event_num,
+        elapsed_ms = duration_ms(stage_start.elapsed()),
+        "snapshot verify stage done: validate_cold_offset"
+    );
 
     let structure_stats = match mode {
         SnapshotVerifyMode::Fast => None,
-        SnapshotVerifyMode::Full => Some(verify_structure(&mut reader, &manifest)?),
+        SnapshotVerifyMode::Full => {
+            let stage_start = Instant::now();
+            let stats = verify_structure(&mut reader, &manifest)?;
+            info!(
+                mode = ?mode,
+                event_num = manifest.event_num,
+                bit_len = stats.bit_len,
+                byte_len = stats.byte_len,
+                elapsed_ms = duration_ms(stage_start.elapsed()),
+                "snapshot verify stage done: verify_structure"
+            );
+            Some(stats)
+        }
     };
 
-    Ok(SnapshotVerification {
+    let verification = SnapshotVerification {
         manifest,
         file_metadata,
         used_blake3,
         structure_stats,
-    })
+    };
+    info!(
+        mode = ?mode,
+        event_num = verification.manifest.event_num,
+        elapsed_ms = duration_ms(verify_start.elapsed()),
+        "snapshot verify done"
+    );
+    Ok(verification)
 }
 
 pub(crate) fn maybe_create_epoch_snapshot(
@@ -341,23 +445,14 @@ pub(crate) fn maybe_create_rotating_snapshot(
     event_num: u64,
     kernel_root_raw: u64,
     cold_offset: u32,
+    cumulative_processing_time: Duration,
     rotating_snapshot_interval_time: Option<Duration>,
-) -> Result<bool, SnapshotBuildError> {
+) -> Result<RotatingSnapshotBuildStatus, SnapshotBuildError> {
     let Some(interval) = rotating_snapshot_interval_time else {
-        return Ok(false);
+        return Ok(RotatingSnapshotBuildStatus::NotCreated);
     };
-    let ready = event_log.list_ready_snapshots()?;
-    let latest_event = ready
-        .iter()
-        .map(|snapshot| snapshot.event_num)
-        .max()
-        .unwrap_or(0);
-    if event_num <= latest_event {
-        return Ok(false);
-    }
-    let cumulative_processing_time = event_log.event_processing_time_after(latest_event)?;
     if cumulative_processing_time < interval {
-        return Ok(false);
+        return Ok(RotatingSnapshotBuildStatus::NotCreated);
     }
     let created_at_ms = current_time_ms()?;
     let timestamp_tag = format!("{created_at_ms:020}-{event_num:020}");
@@ -375,8 +470,11 @@ pub(crate) fn maybe_create_rotating_snapshot(
         cold_offset,
         base_snapshot_id,
     )?;
-    retire_old_rotating_snapshots(event_log).map_err(snapshot_cleanup_into_build)?;
-    Ok(true)
+    if let Err(err) = retire_old_rotating_snapshots(event_log).map_err(snapshot_cleanup_into_build)
+    {
+        return Ok(RotatingSnapshotBuildStatus::CreatedWithCleanupError(err));
+    }
+    Ok(RotatingSnapshotBuildStatus::Created)
 }
 
 pub(crate) fn restore_verified_snapshot(
@@ -462,12 +560,28 @@ fn create_ready_snapshot(
     pma.sync_trailer()?;
     durability::sync_path_data(pma.path(), "snapshot_source_pma_fdatasync")?;
 
+    let copy_start = Instant::now();
     copy_snapshot_file(pma.path(), &tmp_snapshot_pma_path)?;
+    info!(
+        event_num,
+        src = ?pma.path(),
+        dst = ?tmp_snapshot_pma_path,
+        elapsed_ms = duration_ms(copy_start.elapsed()),
+        "snapshot file copy done"
+    );
     replace_file(&tmp_snapshot_pma_path, &snapshot_pma_path)?;
+    let hash_start = Instant::now();
     let used_blake3 = Hash::from_bytes(hash_file_prefix(
         &snapshot_pma_path,
         pma.alloc_offset() as u64 * 8,
     )?);
+    info!(
+        event_num,
+        path = ?snapshot_pma_path,
+        len_bytes = pma.alloc_offset() as u64 * 8,
+        elapsed_ms = duration_ms(hash_start.elapsed()),
+        "snapshot used-range hash done"
+    );
     let manifest = SnapshotManifest::new(
         kind,
         timestamp_tag.clone(),
@@ -483,15 +597,23 @@ fn create_ready_snapshot(
     )?;
     manifest.write_to_path(&snapshot_manifest_path)?;
 
+    let verify_start = Instant::now();
     if let Err(err) = verify_snapshot(
         &snapshot_manifest_path,
         &snapshot_pma_path,
-        SnapshotVerifyMode::Full,
+        SnapshotVerifyMode::Fast,
     ) {
         let _ = fs::remove_file(&snapshot_manifest_path);
         let _ = fs::remove_file(&snapshot_pma_path);
         return Err(err.into());
     }
+    info!(
+        event_num,
+        manifest_path = ?snapshot_manifest_path,
+        pma_path = ?snapshot_pma_path,
+        elapsed_ms = duration_ms(verify_start.elapsed()),
+        "snapshot verify build stage done"
+    );
 
     event_log.insert_ready_snapshot(&ReadySnapshotRecord {
         snapshot_id: 0,
@@ -513,7 +635,9 @@ fn create_ready_snapshot(
 }
 
 fn retire_old_rotating_snapshots(event_log: &mut EventLog) -> Result<(), SnapshotCleanupError> {
+    let retire_start = Instant::now();
     let rotating = event_log.ready_rotating_snapshots()?;
+    let mut retired_count = 0usize;
     for snapshot in rotating.into_iter().skip(2) {
         let pma_path = Path::new(&snapshot.pma_path);
         if pma_path.exists() {
@@ -524,7 +648,13 @@ fn retire_old_rotating_snapshots(event_log: &mut EventLog) -> Result<(), Snapsho
             fs::remove_file(manifest_path)?;
         }
         event_log.retire_snapshot(snapshot.snapshot_id)?;
+        retired_count += 1;
     }
+    info!(
+        retired_count,
+        elapsed_ms = duration_ms(retire_start.elapsed()),
+        "retire old rotating snapshots done"
+    );
     Ok(())
 }
 

@@ -687,9 +687,9 @@ ON CONFLICT(key) DO UPDATE SET value = excluded.value
         let mut first = setup_test_app(&data_dir).await;
         poke_inc(&first).await;
         wait_for_serf_idle(&first).await;
-        set_event_processing_duration_for_test(&data_dir, 1, Duration::from_secs(1));
         stop_app(&mut first).await;
         drop(first);
+        set_event_processing_duration_for_test(&data_dir, 1, Duration::from_secs(1));
         clear_pma_files(&data_dir);
 
         let mut second = try_setup_test_app(&data_dir, Some(1))
@@ -698,14 +698,29 @@ ON CONFLICT(key) DO UPDATE SET value = excluded.value
         poke_inc(&second).await;
         poke_inc(&second).await;
         wait_for_serf_idle(&second).await;
-        set_event_processing_duration_for_test(&data_dir, 3, Duration::from_secs(1));
-        poke_inc(&second).await;
-        poke_inc(&second).await;
-        wait_for_serf_idle(&second).await;
-        set_event_processing_duration_for_test(&data_dir, 5, Duration::from_secs(1));
-        poke_inc(&second).await;
         stop_app(&mut second).await;
         drop(second);
+        set_event_processing_duration_for_test(&data_dir, 3, Duration::from_secs(1));
+        clear_pma_files(&data_dir);
+
+        let mut third = try_setup_test_app(&data_dir, Some(1))
+            .await
+            .expect("setup rotating snapshot retention app after event 3");
+        poke_inc(&third).await;
+        poke_inc(&third).await;
+        wait_for_serf_idle(&third).await;
+        stop_app(&mut third).await;
+        drop(third);
+        set_event_processing_duration_for_test(&data_dir, 5, Duration::from_secs(1));
+        clear_pma_files(&data_dir);
+
+        let mut fourth = try_setup_test_app(&data_dir, Some(1))
+            .await
+            .expect("setup rotating snapshot retention app after event 5");
+        poke_inc(&fourth).await;
+        wait_for_serf_idle(&fourth).await;
+        stop_app(&mut fourth).await;
+        drop(fourth);
 
         let rotating = ready_rotating_snapshots(&data_dir);
         assert_eq!(rotating.len(), 2);
@@ -730,9 +745,9 @@ ON CONFLICT(key) DO UPDATE SET value = excluded.value
         let mut first = setup_test_app(&data_dir).await;
         poke_inc(&first).await;
         wait_for_serf_idle(&first).await;
-        set_event_processing_duration_for_test(&data_dir, 1, Duration::from_secs(1));
         stop_app(&mut first).await;
         drop(first);
+        set_event_processing_duration_for_test(&data_dir, 1, Duration::from_secs(1));
         clear_pma_files(&data_dir);
 
         let mut second = try_setup_test_app(&data_dir, Some(1))
@@ -741,11 +756,19 @@ ON CONFLICT(key) DO UPDATE SET value = excluded.value
         poke_inc(&second).await;
         poke_inc(&second).await;
         wait_for_serf_idle(&second).await;
-        set_event_processing_duration_for_test(&data_dir, 3, Duration::from_secs(1));
-        poke_inc(&second).await;
-        assert_eq!(second.kernel.serf.event_number.load(Ordering::SeqCst), 4);
         stop_app(&mut second).await;
         drop(second);
+        set_event_processing_duration_for_test(&data_dir, 3, Duration::from_secs(1));
+        clear_pma_files(&data_dir);
+
+        let mut third = try_setup_test_app(&data_dir, Some(1))
+            .await
+            .expect("setup rotating fallback app after event 3");
+        poke_inc(&third).await;
+        wait_for_serf_idle(&third).await;
+        assert_eq!(third.kernel.serf.event_number.load(Ordering::SeqCst), 4);
+        stop_app(&mut third).await;
+        drop(third);
 
         let rotating = ready_rotating_snapshots(&data_dir);
         assert_eq!(rotating.len(), 2);
@@ -757,10 +780,10 @@ ON CONFLICT(key) DO UPDATE SET value = excluded.value
         fs::write(checkpoints_dir.join("0.chkjam"), b"corrupt checkpoint 0").expect("corrupt chk0");
         fs::write(checkpoints_dir.join("1.chkjam"), b"corrupt checkpoint 1").expect("corrupt chk1");
 
-        let mut third = setup_test_app(&data_dir).await;
-        assert_eq!(third.kernel.serf.event_number.load(Ordering::SeqCst), 4);
-        stop_app(&mut third).await;
-        drop(third);
+        let mut fourth = setup_test_app(&data_dir).await;
+        assert_eq!(fourth.kernel.serf.event_number.load(Ordering::SeqCst), 4);
+        stop_app(&mut fourth).await;
+        drop(fourth);
     }
 
     #[tokio::test(flavor = "current_thread")]
@@ -775,9 +798,9 @@ ON CONFLICT(key) DO UPDATE SET value = excluded.value
         let mut first = setup_test_app(&data_dir).await;
         poke_inc(&first).await;
         wait_for_serf_idle(&first).await;
-        set_event_processing_duration_for_test(&data_dir, 1, Duration::from_secs(1));
         stop_app(&mut first).await;
         drop(first);
+        set_event_processing_duration_for_test(&data_dir, 1, Duration::from_secs(1));
         clear_pma_files(&data_dir);
 
         let mut second = try_setup_test_app(&data_dir, Some(1))
@@ -786,11 +809,19 @@ ON CONFLICT(key) DO UPDATE SET value = excluded.value
         poke_inc(&second).await;
         poke_inc(&second).await;
         wait_for_serf_idle(&second).await;
-        set_event_processing_duration_for_test(&data_dir, 3, Duration::from_secs(1));
-        poke_inc(&second).await;
-        assert_eq!(second.kernel.serf.event_number.load(Ordering::SeqCst), 4);
         stop_app(&mut second).await;
         drop(second);
+        set_event_processing_duration_for_test(&data_dir, 3, Duration::from_secs(1));
+        clear_pma_files(&data_dir);
+
+        let mut third = try_setup_test_app(&data_dir, Some(1))
+            .await
+            .expect("setup manifest-only fallback app after event 3");
+        poke_inc(&third).await;
+        wait_for_serf_idle(&third).await;
+        assert_eq!(third.kernel.serf.event_number.load(Ordering::SeqCst), 4);
+        stop_app(&mut third).await;
+        drop(third);
 
         let rotating = ready_rotating_snapshots(&data_dir);
         assert_eq!(rotating.len(), 2);
@@ -802,10 +833,10 @@ ON CONFLICT(key) DO UPDATE SET value = excluded.value
         fs::write(checkpoints_dir.join("0.chkjam"), b"corrupt checkpoint 0").expect("corrupt chk0");
         fs::write(checkpoints_dir.join("1.chkjam"), b"corrupt checkpoint 1").expect("corrupt chk1");
 
-        let mut third = setup_test_app(&data_dir).await;
-        assert_eq!(third.kernel.serf.event_number.load(Ordering::SeqCst), 4);
-        stop_app(&mut third).await;
-        drop(third);
+        let mut fourth = setup_test_app(&data_dir).await;
+        assert_eq!(fourth.kernel.serf.event_number.load(Ordering::SeqCst), 4);
+        stop_app(&mut fourth).await;
+        drop(fourth);
     }
 
     #[tokio::test(flavor = "current_thread")]
@@ -820,9 +851,9 @@ ON CONFLICT(key) DO UPDATE SET value = excluded.value
         let mut first = setup_test_app(&data_dir).await;
         poke_inc(&first).await;
         wait_for_serf_idle(&first).await;
-        set_event_processing_duration_for_test(&data_dir, 1, Duration::from_secs(1));
         stop_app(&mut first).await;
         drop(first);
+        set_event_processing_duration_for_test(&data_dir, 1, Duration::from_secs(1));
         clear_pma_files(&data_dir);
 
         let mut second = try_setup_test_app(&data_dir, Some(1))
@@ -831,11 +862,19 @@ ON CONFLICT(key) DO UPDATE SET value = excluded.value
         poke_inc(&second).await;
         poke_inc(&second).await;
         wait_for_serf_idle(&second).await;
-        set_event_processing_duration_for_test(&data_dir, 3, Duration::from_secs(1));
-        poke_inc(&second).await;
-        assert_eq!(second.kernel.serf.event_number.load(Ordering::SeqCst), 4);
         stop_app(&mut second).await;
         drop(second);
+        set_event_processing_duration_for_test(&data_dir, 3, Duration::from_secs(1));
+        clear_pma_files(&data_dir);
+
+        let mut third = try_setup_test_app(&data_dir, Some(1))
+            .await
+            .expect("setup active snapshot selection app after event 3");
+        poke_inc(&third).await;
+        wait_for_serf_idle(&third).await;
+        assert_eq!(third.kernel.serf.event_number.load(Ordering::SeqCst), 4);
+        stop_app(&mut third).await;
+        drop(third);
 
         let rotating = ready_rotating_snapshots(&data_dir);
         assert_eq!(rotating.len(), 2);
@@ -850,10 +889,10 @@ ON CONFLICT(key) DO UPDATE SET value = excluded.value
         fs::write(checkpoints_dir.join("0.chkjam"), b"corrupt checkpoint 0").expect("corrupt chk0");
         fs::write(checkpoints_dir.join("1.chkjam"), b"corrupt checkpoint 1").expect("corrupt chk1");
 
-        let mut third = setup_test_app(&data_dir).await;
-        assert_eq!(third.kernel.serf.event_number.load(Ordering::SeqCst), 4);
-        stop_app(&mut third).await;
-        drop(third);
+        let mut fourth = setup_test_app(&data_dir).await;
+        assert_eq!(fourth.kernel.serf.event_number.load(Ordering::SeqCst), 4);
+        stop_app(&mut fourth).await;
+        drop(fourth);
 
         assert_eq!(
             snapshot_state_for_test(&data_dir, older_snapshot_id),
@@ -877,9 +916,9 @@ ON CONFLICT(key) DO UPDATE SET value = excluded.value
         let mut first = setup_test_app(&data_dir).await;
         poke_inc(&first).await;
         wait_for_serf_idle(&first).await;
-        set_event_processing_duration_for_test(&data_dir, 1, Duration::from_secs(1));
         stop_app(&mut first).await;
         drop(first);
+        set_event_processing_duration_for_test(&data_dir, 1, Duration::from_secs(1));
         clear_pma_files(&data_dir);
 
         let mut second = try_setup_test_app(&data_dir, Some(1))

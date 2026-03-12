@@ -379,6 +379,14 @@ impl EventLog {
             .collect()
     }
 
+    pub(crate) fn latest_ready_snapshot_event_num(&mut self) -> Result<Option<u64>, EventLogError> {
+        let latest_event_num = snapshots::table
+            .filter(snapshots::state.eq("ready"))
+            .select(max(snapshots::event_num))
+            .first::<Option<i64>>(&mut self.conn)?;
+        latest_event_num.map(event_num_from_sqlite).transpose()
+    }
+
     pub(crate) fn mark_snapshot_failed(&mut self, snapshot_id: i64) -> Result<(), EventLogError> {
         diesel::update(snapshots::table.filter(snapshots::snapshot_id.eq(snapshot_id)))
             .set(snapshots::state.eq("failed"))
@@ -688,6 +696,11 @@ mod tests {
         let ready = log.list_ready_snapshots().expect("ready snapshots");
         assert_eq!(ready.len(), 1);
         assert_eq!(ready[0].event_num, 7);
+        assert_eq!(
+            log.latest_ready_snapshot_event_num()
+                .expect("latest ready snapshot event num"),
+            Some(7)
+        );
     }
 
     #[test]

@@ -1055,6 +1055,9 @@ fn serf_loop<C: SerfCheckpoint>(
                     }
                     if let Some(durable_event) = durable_event.as_ref() {
                         durable_append_elapsed = Some(serf.append_durable_event(durable_event));
+                        serf.cumulative_event_processing_time_since_snapshot = serf
+                            .cumulative_event_processing_time_since_snapshot
+                            .saturating_add(durable_event.event_processing_duration);
                     }
                     let _ = result.send(noun_slab_res).inspect_err(|_e| {
                         debug!("Failed to send poke result from serf thread");
@@ -1536,6 +1539,7 @@ pub struct Serf {
     pma_gc_state: Option<PmaGcState>,
     snapshot_creation_enabled: bool,
     rotating_snapshot_interval_event_time: Option<Duration>,
+    cumulative_event_processing_time_since_snapshot: Duration,
     /// Optional append-only event log used as the durability boundary.
     event_log: Option<EventLog>,
     /// Cancellation
@@ -1568,7 +1572,7 @@ impl Serf {
         pma_gc_state: Option<PmaGcState>,
         snapshot_creation_enabled: bool,
         rotating_snapshot_interval_event_time: Option<Duration>,
-        event_log: Option<EventLog>,
+        mut event_log: Option<EventLog>,
         checkpoint: Option<C>,
         kernel_bytes: &[u8],
         constant_hot_state: &[HotEntry],
@@ -1698,6 +1702,31 @@ impl Serf {
             }
         };
 
+        let cumulative_event_processing_time_since_snapshot = if snapshot_creation_enabled
+            && rotating_snapshot_interval_event_time.is_some()
+        {
+            match event_log.as_mut() {
+                Some(event_log) => {
+                    let latest_ready_snapshot_event_num = event_log
+                        .latest_ready_snapshot_event_num()
+                        .unwrap_or_else(|err| {
+                            panic!("serf: failed to load latest ready snapshot event_num: {err}")
+                        })
+                        .unwrap_or(0);
+                    event_log
+                            .event_processing_time_after(latest_ready_snapshot_event_num)
+                            .unwrap_or_else(|err| {
+                                panic!(
+                                    "serf: failed to load cumulative event processing time since latest snapshot: {err}"
+                                )
+                            })
+                }
+                None => Duration::ZERO,
+            }
+        } else {
+            Duration::ZERO
+        };
+
         let mut serf = Self {
             ker_hash,
             arvo,
@@ -1707,6 +1736,7 @@ impl Serf {
             pma_gc_state,
             snapshot_creation_enabled,
             rotating_snapshot_interval_event_time,
+            cumulative_event_processing_time_since_snapshot,
             event_log,
             event_num,
             cancel_token,
@@ -2230,6 +2260,9 @@ impl Serf {
         ) {
             Ok(created) => {
                 let elapsed = build_start.elapsed();
+                if created {
+                    self.cumulative_event_processing_time_since_snapshot = Duration::ZERO;
+                }
                 info!(
                     event_num,
                     created,
@@ -2298,6 +2331,12 @@ impl Serf {
             info!("rotating snapshot skipped: creation disabled");
             return;
         }
+        let Some(interval) = self.rotating_snapshot_interval_event_time else {
+            return;
+        };
+        if self.cumulative_event_processing_time_since_snapshot < interval {
+            return;
+        }
         let kernel_root_raw = {
             let space = self.context.stack.noun_space();
             let kernel_state = self
@@ -2326,23 +2365,42 @@ impl Serf {
         info!(
             event_num,
             rotating_interval_event_time = ?self.rotating_snapshot_interval_event_time,
+            cumulative_event_processing_time_since_snapshot = ?self.cumulative_event_processing_time_since_snapshot,
             "rotating snapshot build start"
         );
         match maybe_create_rotating_snapshot(
             event_log, pma, self.ker_hash, event_num, kernel_root_raw, cold_offset,
+            self.cumulative_event_processing_time_since_snapshot,
             self.rotating_snapshot_interval_event_time,
         ) {
-            Ok(created) => {
+            Ok(status) => {
                 let elapsed = build_start.elapsed();
+                let created = status.created();
+                if created {
+                    self.cumulative_event_processing_time_since_snapshot = Duration::ZERO;
+                }
+                if let Some(metrics) = &self.metrics {
+                    metrics.snapshot_build.add_timing(&elapsed);
+                }
+                if let Some(err) = status.cleanup_error() {
+                    if let Some(metrics) = &self.metrics {
+                        metrics.snapshot_build_failures.increment();
+                    }
+                    warn!(
+                        event_num,
+                        created,
+                        elapsed_ms = duration_ms(elapsed),
+                        error = %err,
+                        "rotating snapshot build completed with cleanup error"
+                    );
+                    return;
+                }
                 info!(
                     event_num,
                     created,
                     elapsed_ms = duration_ms(elapsed),
                     "rotating snapshot build done"
                 );
-                if let Some(metrics) = &self.metrics {
-                    metrics.snapshot_build.add_timing(&elapsed);
-                }
             }
             Err(err) => {
                 let elapsed = build_start.elapsed();
@@ -2804,6 +2862,7 @@ mod tests {
             pma_gc_state: None,
             snapshot_creation_enabled: false,
             rotating_snapshot_interval_event_time: None,
+            cumulative_event_processing_time_since_snapshot: Duration::ZERO,
             event_log: None,
             cancel_token,
             event_num: Arc::new(AtomicU64::new(0)),
