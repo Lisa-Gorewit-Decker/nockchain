@@ -5404,6 +5404,7 @@ dependencies = [
  "ibig",
  "instant-acme",
  "intmap",
+ "libc",
  "libsqlite3-sys",
  "nockvm",
  "nockvm_macros",

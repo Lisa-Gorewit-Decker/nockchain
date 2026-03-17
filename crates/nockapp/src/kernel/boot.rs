@@ -105,7 +105,7 @@ impl From<TraceOpts> for Option<TraceInfo> {
 pub struct Cli {
     #[arg(
         long,
-        help = "Start with a new data directory, removing any existing data",
+        help = "Start with a fresh data directory, aborting if the target already contains data",
         default_value = "false"
     )]
     pub new: bool,
@@ -134,6 +134,7 @@ pub struct Cli {
 
     #[arg(
         long,
+        requires = "new",
         help = "Path to a jam file containing existing kernel state. Supports both JammedCheckpoint and ExportedState formats."
     )]
     pub state_jam: Option<String>,
@@ -219,6 +220,7 @@ mod tests {
     use std::sync::Arc;
     use std::time::Duration;
 
+    use clap::Parser;
     use nockvm::noun::{NounSpace, D};
     use nockvm_macros::tas;
     use rusqlite::Connection;
@@ -457,6 +459,105 @@ ON CONFLICT(key) DO UPDATE SET value = excluded.value
             cli.normalized_rotating_snapshot_interval_event_time(),
             Some(Duration::from_secs(5))
         );
+    }
+
+    #[test]
+    fn state_jam_cli_requires_new() {
+        let err =
+            super::Cli::try_parse_from(["boot-test", "--state-jam", "/tmp/state.jam"]).unwrap_err();
+        assert!(
+            err.to_string().contains("--new"),
+            "expected clap error to mention --new, got: {err}"
+        );
+
+        let parsed =
+            super::Cli::try_parse_from(["boot-test", "--new", "--state-jam", "/tmp/state.jam"])
+                .expect("parse with --new");
+        assert!(parsed.new);
+        assert_eq!(parsed.state_jam.as_deref(), Some("/tmp/state.jam"));
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn setup_rejects_state_jam_without_new_for_programmatic_callers() {
+        let temp = TempDir::new().expect("tempdir");
+        let mut cli = super::default_boot_cli(false);
+        cli.state_jam = Some(temp.path().join("state.jam").display().to_string());
+
+        let err =
+            match setup_::<NockJammer>(&[], cli, &[], "boot-test", Some(temp.path().to_path_buf()))
+                .await
+            {
+                Ok(_) => panic!("setup should reject state_jam without --new"),
+                Err(err) => err,
+            };
+
+        assert!(
+            err.to_string().contains("--state-jam requires --new"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    #[traced_test]
+    async fn setup_rejects_new_when_data_dir_is_nonempty() {
+        let temp = TempDir::new().expect("tempdir");
+        let data_dir = temp.path().join("existing-data-dir");
+        let checkpoints_dir = data_dir.join("checkpoints");
+        let checkpoint_path = checkpoints_dir.join("existing.chkjam");
+        fs::create_dir_all(&checkpoints_dir).expect("create checkpoints dir");
+        fs::write(&checkpoint_path, b"keep").expect("write existing checkpoint");
+
+        let jam = load_test_jam_bytes();
+        let mut cli = super::default_boot_cli(true);
+        cli.data_dir = Some(data_dir.clone());
+        cli.gc_interval = Some(0);
+        cli.rotating_snapshot_interval_event_time =
+            Some(DEFAULT_ROTATING_SNAPSHOT_INTERVAL_EVENT_TIME_SECS);
+
+        let err = match setup_::<NockJammer>(&jam, cli, &[], "boot-test", None).await {
+            Ok(_) => panic!("setup should reject --new for a non-empty data dir"),
+            Err(err) => err,
+        };
+
+        assert!(
+            err.to_string()
+                .contains("--new requires an empty data directory"),
+            "unexpected error: {err}"
+        );
+        assert_eq!(
+            fs::read(&checkpoint_path).expect("read existing checkpoint"),
+            b"keep"
+        );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    #[traced_test]
+    #[cfg_attr(miri, ignore)]
+    async fn setup_allows_new_for_empty_data_dir() {
+        let _guard = native_pma_test_guard();
+        let _test_arena = TestArena::default();
+        let temp = TempDir::new().expect("tempdir");
+        let data_dir = temp.path().join("fresh-empty-dir");
+        fs::create_dir_all(&data_dir).expect("create empty data dir");
+
+        let jam = load_test_jam_bytes();
+        let mut cli = super::default_boot_cli(true);
+        cli.data_dir = Some(data_dir.clone());
+        cli.gc_interval = Some(0);
+        cli.rotating_snapshot_interval_event_time =
+            Some(DEFAULT_ROTATING_SNAPSHOT_INTERVAL_EVENT_TIME_SECS);
+
+        let mut app = match setup_::<NockJammer>(&jam, cli, &[], "boot-test", None)
+            .await
+            .expect("setup should allow --new for an empty data dir")
+        {
+            SetupResult::App(app) => app,
+            SetupResult::ExportedState => panic!("unexpected export"),
+        };
+
+        assert!(data_dir.join("checkpoints").exists());
+        assert!(data_dir.join("pma").exists());
+        stop_app(&mut app).await;
     }
 
     #[tokio::test(flavor = "current_thread")]
@@ -1273,6 +1374,27 @@ pub fn default_boot_cli(new: bool) -> Cli {
     }
 }
 
+fn dir_has_entries(path: &std::path::Path) -> std::io::Result<bool> {
+    if !path.exists() {
+        return Ok(false);
+    }
+
+    if !path.is_dir() {
+        return Ok(true);
+    }
+
+    let mut entries = std::fs::read_dir(path)?;
+    Ok(entries.next().transpose()?.is_some())
+}
+
+fn event_log_sidecar_paths(event_log_path: &std::path::Path) -> [PathBuf; 3] {
+    [
+        event_log_path.to_path_buf(),
+        PathBuf::from(format!("{}-wal", event_log_path.display())),
+        PathBuf::from(format!("{}-shm", event_log_path.display())),
+    ]
+}
+
 /// A minimal event formatter for development mode
 struct MinimalFormatter;
 
@@ -1444,6 +1566,12 @@ pub async fn setup_<J: Jammer + Send + 'static>(
     name: &str,
     data_root: Option<PathBuf>,
 ) -> Result<SetupResult<J>, Box<dyn std::error::Error>> {
+    if cli.state_jam.is_some() && !cli.new {
+        return Err(Box::new(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "--state-jam requires --new",
+        )));
+    }
     durability::set_fsync_disabled(cli.disable_fsync);
     let nock_test_jets_env = std::env::var("NOCK_TEST_JETS").unwrap_or_default();
     let test_jets = parse_test_jets(nock_test_jets_env.as_str());
@@ -1461,6 +1589,38 @@ pub async fn setup_<J: Jammer + Send + 'static>(
         .clone()
         .unwrap_or_else(|| data_dir.join("event-log.sqlite3"));
 
+    if cli.new {
+        if dir_has_entries(&data_dir)? {
+            warn!(
+                path = %data_dir.display(),
+                "Refusing --new because the target data directory already contains data or setup artifacts; use a fresh path or remove it manually"
+            );
+            return Err(Box::new(std::io::Error::new(
+                std::io::ErrorKind::AlreadyExists,
+                format!(
+                    "--new requires an empty data directory, found existing contents at {}",
+                    data_dir.display()
+                ),
+            )));
+        }
+
+        for path in event_log_sidecar_paths(&event_log_path) {
+            if path.exists() {
+                warn!(
+                    path = %path.display(),
+                    "Refusing --new because the target event-log path already exists; use a fresh path or remove it manually"
+                );
+                return Err(Box::new(std::io::Error::new(
+                    std::io::ErrorKind::AlreadyExists,
+                    format!(
+                        "--new requires an unused event-log path, found existing file at {}",
+                        path.display()
+                    ),
+                )));
+            }
+        }
+    }
+
     if !jams_dir.exists() {
         std::fs::create_dir_all(&jams_dir)?;
         debug!("Created jams directory: {:?}", jams_dir);
@@ -1469,23 +1629,6 @@ pub async fn setup_<J: Jammer + Send + 'static>(
     if !pma_dir.exists() {
         std::fs::create_dir_all(&pma_dir)?;
         debug!("Created pma directory: {:?}", pma_dir);
-    }
-
-    if cli.new && jams_dir.exists() {
-        std::fs::remove_dir_all(&jams_dir)?;
-        debug!("Deleted existing checkpoint directory: {:?}", jams_dir);
-    }
-    if cli.new {
-        for path in [
-            event_log_path.clone(),
-            PathBuf::from(format!("{}-wal", event_log_path.display())),
-            PathBuf::from(format!("{}-shm", event_log_path.display())),
-        ] {
-            if path.exists() {
-                std::fs::remove_file(&path)?;
-                debug!("Deleted existing event-log file: {:?}", path);
-            }
-        }
     }
 
     info!("kernel: starting");
@@ -1514,19 +1657,6 @@ pub async fn setup_<J: Jammer + Send + 'static>(
     info!("PMA durability active");
     let pma_path_0 = pma_dir.join("0.pma");
     let pma_path_1 = pma_dir.join("1.pma");
-    if cli.new {
-        for pma_path in [&pma_path_0, &pma_path_1] {
-            if pma_path.exists() {
-                std::fs::remove_file(pma_path)?;
-                debug!("Deleted existing PMA file: {:?}", pma_path);
-            }
-            let meta_path = pma_path.with_extension("meta");
-            if meta_path.exists() {
-                std::fs::remove_file(&meta_path)?;
-                debug!("Deleted existing PMA metadata file: {:?}", meta_path);
-            }
-        }
-    }
     let stack_size = cli.stack_size.clone();
     let trace_opts = cli.trace_opts.clone();
     let event_log_path_for_kernel = event_log_path.clone();

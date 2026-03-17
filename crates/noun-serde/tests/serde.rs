@@ -223,7 +223,7 @@ mod complex_tests {
     use std::collections::HashMap;
     use std::fmt::Debug;
 
-    use nockvm::ext::{make_tas, AtomExt};
+    use nockvm::ext::make_tas;
     use nockvm::noun::{FullDebugCell, Noun, NounAllocator, NounSpace, T};
     use noun_serde::{NounDecode, NounDecodeError, NounEncode};
 

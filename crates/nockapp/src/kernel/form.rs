@@ -104,7 +104,7 @@ impl PmaSlabPaths {
 }
 
 const PMA_PERSIST_MAGIC: u64 = u64::from_le_bytes(*b"PMAPERS1");
-const PMA_PERSIST_VERSION: u32 = 2;
+const PMA_PERSIST_VERSION: u32 = 3;
 
 #[derive(Clone, Encode, Decode, Debug)]
 struct PmaPersistMetadata {
@@ -115,20 +115,13 @@ struct PmaPersistMetadata {
     event_num: u64,
     kernel_state_raw: u64,
     cold_offset: u32,
-    pma_base: u64,
     #[bincode(with_serde)]
     checksum: Hash,
 }
 
 impl PmaPersistMetadata {
-    fn new(
-        ker_hash: Hash,
-        event_num: u64,
-        kernel_state_raw: u64,
-        cold_offset: u32,
-        pma_base: u64,
-    ) -> Self {
-        let checksum = Self::checksum(ker_hash, event_num, kernel_state_raw, cold_offset, pma_base);
+    fn new(ker_hash: Hash, event_num: u64, kernel_state_raw: u64, cold_offset: u32) -> Self {
+        let checksum = Self::checksum(ker_hash, event_num, kernel_state_raw, cold_offset);
         Self {
             magic: PMA_PERSIST_MAGIC,
             version: PMA_PERSIST_VERSION,
@@ -136,24 +129,16 @@ impl PmaPersistMetadata {
             event_num,
             kernel_state_raw,
             cold_offset,
-            pma_base,
             checksum,
         }
     }
 
-    fn checksum(
-        ker_hash: Hash,
-        event_num: u64,
-        kernel_state_raw: u64,
-        cold_offset: u32,
-        pma_base: u64,
-    ) -> Hash {
+    fn checksum(ker_hash: Hash, event_num: u64, kernel_state_raw: u64, cold_offset: u32) -> Hash {
         let mut hasher = Hasher::new();
         hasher.update(ker_hash.as_bytes());
         hasher.update(&event_num.to_le_bytes());
         hasher.update(&kernel_state_raw.to_le_bytes());
         hasher.update(&cold_offset.to_le_bytes());
-        hasher.update(&pma_base.to_le_bytes());
         hasher.finalize()
     }
 
@@ -164,7 +149,6 @@ impl PmaPersistMetadata {
         self.checksum
             == Self::checksum(
                 self.ker_hash, self.event_num, self.kernel_state_raw, self.cold_offset,
-                self.pma_base,
             )
     }
 
@@ -281,17 +265,14 @@ pub(crate) fn inspect_existing_pma(
         };
     }
 
-    match Pma::open_with_base(active_path.clone(), meta.pma_base) {
+    match Pma::open(active_path.clone()) {
         Ok(_) => ExistingPmaStatus::Valid {
             path: active_path,
             event_num: meta.event_num,
         },
         Err(err) => ExistingPmaStatus::Invalid {
             path: active_path,
-            reason: format!(
-                "failed to map PMA at saved base {:#x}: {err}",
-                meta.pma_base
-            ),
+            reason: format!("failed to open PMA: {err}"),
         },
     }
 }
@@ -523,32 +504,9 @@ impl<C: SerfCheckpoint + Send + 'static> SerfThread<C> {
                         };
                         let active_path = paths.path(active).clone();
                         let pma_meta_path = pma_meta_path(&active_path);
-                        let pma_meta_base = if open_existing {
-                            PmaPersistMetadata::load_from_path(&pma_meta_path)
-                                .map(|meta| meta.pma_base)
-                        } else {
-                            None
-                        };
                         let pma_result = if open_existing && active_path.exists() {
                             pma_meta_load = true;
-                            if let Some(base) = pma_meta_base {
-                                match Pma::open_with_base(active_path.clone(), base) {
-                                    Ok(pma) => Ok(pma),
-                                    Err(err) => {
-                                        let _ = init_sender.send(Err(CrownError::Unknown(
-                                            format!(
-                                                "PMA map failed at saved base {:#x}: {err}. To reset, pass --new or delete {} and {}",
-                                                base,
-                                                active_path.display(),
-                                                pma_meta_path.display()
-                                            ),
-                                        )));
-                                        return;
-                                    }
-                                }
-                            } else {
-                                Pma::open(active_path.clone())
-                            }
+                            Pma::open(active_path.clone())
                         } else {
                             pma_meta_load = false;
                             Pma::new(words, active_path.clone())
@@ -565,8 +523,7 @@ impl<C: SerfCheckpoint + Send + 'static> SerfThread<C> {
                                 restore_manifest,
                             ),
                             Err(err) => {
-                                let _ =
-                                    init_sender.send(Err(CrownError::Unknown(err.to_string())));
+                                let _ = init_sender.send(Err(CrownError::Unknown(err.to_string())));
                                 return;
                             }
                         }
@@ -587,15 +544,16 @@ impl<C: SerfCheckpoint + Send + 'static> SerfThread<C> {
                 } else {
                     None
                 };
-                if let (Some(pma), Some(meta_path), Some(manifest)) =
-                    (pma.as_ref(), pma_meta_path.as_ref(), restore_manifest.as_ref())
-                {
+                if let (Some(_pma), Some(meta_path), Some(manifest)) = (
+                    pma.as_ref(),
+                    pma_meta_path.as_ref(),
+                    restore_manifest.as_ref(),
+                ) {
                     let synthesized = PmaPersistMetadata::new(
                         blake3::Hash::from_bytes(manifest.ker_hash),
                         manifest.event_num,
                         manifest.kernel_root_raw,
                         manifest.cold_offset,
-                        pma.arena().base_ptr() as u64,
                     );
                     if let Err(err) = synthesized.save_to_path(meta_path) {
                         let _ = init_sender.send(Err(CrownError::Unknown(format!(
@@ -607,19 +565,9 @@ impl<C: SerfCheckpoint + Send + 'static> SerfThread<C> {
                 }
                 let stack = NockStack::new(nock_stack_size, 0);
                 let serf = Serf::new(
-                    stack,
-                    pma,
-                    pma_meta_path,
-                    pma_meta_load,
-                    pma_gc_state,
-                    create_snapshots,
-                    rotating_snapshot_interval_event_time,
-                    event_log,
-                    checkpoint,
-                    &kernel_bytes,
-                    &constant_hot_state,
-                    test_jets,
-                    trace,
+                    stack, pma, pma_meta_path, pma_meta_load, pma_gc_state, create_snapshots,
+                    rotating_snapshot_interval_event_time, event_log, checkpoint, &kernel_bytes,
+                    &constant_hot_state, test_jets, trace,
                 );
                 let _ = init_sender.send(Ok((serf.event_num.clone(), serf.context.cancel_token())));
                 serf_loop(serf, action_receiver, inhibit_clone, pma_timing_thread);
@@ -1593,15 +1541,7 @@ impl Serf {
         let pma_state = if pma_meta_load && checkpoint.is_none() {
             if let (Some(pma), Some(meta_path)) = (pma.as_ref(), pma_meta_path.as_ref()) {
                 if let Some(meta) = PmaPersistMetadata::load_from_path(meta_path) {
-                    let pma_base = pma.arena().base_ptr() as u64;
-                    if meta.pma_base != pma_base {
-                        warn!(
-                            "PMA metadata base mismatch (metadata: {:#x}, current: {:#x}); ignoring",
-                            meta.pma_base, pma_base
-                        );
-                        reset_pma = true;
-                        None
-                    } else if meta.ker_hash == ker_hash {
+                    if meta.ker_hash == ker_hash {
                         let kernel_state = unsafe { Noun::from_raw(meta.kernel_state_raw) };
                         let cold = unsafe { Cold::from_pma_offset(pma, meta.cold_offset) };
                         Some((kernel_state, cold, meta.event_num))
@@ -2599,10 +2539,7 @@ impl Serf {
             )));
         };
         let event_num = self.event_num.load(Ordering::SeqCst);
-        let pma_base = pma.arena().base_ptr() as u64;
-        let meta = PmaPersistMetadata::new(
-            self.ker_hash, event_num, kernel_state_raw, cold_offset, pma_base,
-        );
+        let meta = PmaPersistMetadata::new(self.ker_hash, event_num, kernel_state_raw, cold_offset);
         meta.save_to_path(meta_path)?;
         Ok(())
     }

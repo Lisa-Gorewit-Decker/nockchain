@@ -45,6 +45,10 @@ build: build-hoon-all build-rust
 build-rust:
 	cargo build --release
 
+.PHONY: contracts-deps
+contracts-deps: ## Install Solidity dependencies for bridge crate
+		$(MAKE) -C crates/bridge/contracts deps
+
 .PHONY: install-cargo-zigbuild
 install-cargo-zigbuild:
 	cargo install --locked cargo-zigbuild

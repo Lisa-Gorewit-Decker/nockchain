@@ -1939,7 +1939,7 @@ fn mincore_bitmap(ptr: *mut u8, len: usize) -> Vec<u8> {
         libc::mincore(
             ptr as *mut libc::c_void,
             len,
-            vec.as_mut_ptr() as *mut libc::c_uchar,
+            vec.as_mut_ptr() as *mut libc::c_char,
         )
     };
     if ret != 0 {

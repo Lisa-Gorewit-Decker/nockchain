@@ -1,8 +1,6 @@
 // TODO: fix stack push in PC
 use std::alloc::{alloc, dealloc, Layout};
 use std::fs::{File, OpenOptions};
-#[cfg(unix)]
-use std::os::unix::io::AsRawFd;
 use std::panic::panic_any;
 use std::path::Path;
 use std::ptr::copy_nonoverlapping;
@@ -13,8 +11,6 @@ use std::{io, mem, ptr};
 
 use either::Either::{self, Left, Right};
 use ibig::Stack;
-#[cfg(unix)]
-use libc;
 use memmap2::{Mmap, MmapMut, MmapOptions};
 use thiserror::Error;
 
@@ -187,19 +183,12 @@ enum MappingKind {
     ReadWrite(MmapMut),
     ReadOnly(Mmap),
     Malloc(MallocMapping),
-    Fixed(FixedMapping),
 }
 
 #[derive(Debug)]
 struct MallocMapping {
     ptr: *mut u8,
     layout: Layout,
-}
-
-#[derive(Debug)]
-struct FixedMapping {
-    ptr: *mut u8,
-    len: usize,
 }
 
 impl MallocMapping {
@@ -218,69 +207,6 @@ impl Drop for MallocMapping {
     fn drop(&mut self) {
         unsafe {
             dealloc(self.ptr, self.layout);
-        }
-    }
-}
-
-impl FixedMapping {
-    #[cfg(unix)]
-    fn map_file_at(file: &File, len: usize, base: *mut u8) -> Result<Self, NewStackError> {
-        if base.is_null() {
-            return Err(NewStackError::MmapFailed(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "null base address for fixed mapping",
-            )));
-        }
-        let page_size = unsafe { libc::sysconf(libc::_SC_PAGESIZE) } as usize;
-        if page_size == 0 || (base as usize) % page_size != 0 {
-            return Err(NewStackError::MmapFailed(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "base address not page-aligned",
-            )));
-        }
-        let fd = file.as_raw_fd();
-        let mut flags = libc::MAP_SHARED;
-        #[cfg(target_os = "linux")]
-        {
-            flags |= libc::MAP_FIXED_NOREPLACE;
-        }
-        #[cfg(not(target_os = "linux"))]
-        {
-            flags |= libc::MAP_FIXED;
-        }
-        let ptr = unsafe {
-            libc::mmap(
-                base as *mut libc::c_void,
-                len,
-                libc::PROT_READ | libc::PROT_WRITE,
-                flags,
-                fd,
-                0,
-            )
-        };
-        if ptr == libc::MAP_FAILED {
-            return Err(NewStackError::MmapFailed(io::Error::last_os_error()));
-        }
-        Ok(FixedMapping {
-            ptr: ptr as *mut u8,
-            len,
-        })
-    }
-
-    #[cfg(not(unix))]
-    fn map_file_at(_file: &File, _len: usize, _base: *mut u8) -> Result<Self, NewStackError> {
-        Err(NewStackError::MmapFailed(io::Error::new(
-            io::ErrorKind::Unsupported,
-            "fixed mapping is not supported on this platform",
-        )))
-    }
-}
-
-impl Drop for FixedMapping {
-    fn drop(&mut self) {
-        #[cfg(unix)]
-        unsafe {
-            libc::munmap(self.ptr as *mut libc::c_void, self.len);
         }
     }
 }
@@ -361,32 +287,6 @@ impl Arena {
             mapped_bytes,
             fd: Some(file),
             mapping: MappingKind::ReadWrite(mapping),
-        }))
-    }
-
-    pub fn open_file_with_base(
-        path: &Path,
-        words: usize,
-        base: *mut u8,
-    ) -> Result<Arc<Self>, NewStackError> {
-        let file = OpenOptions::new()
-            .read(true)
-            .write(true)
-            .open(path)
-            .map_err(NewStackError::FileOpenFailed)?;
-        let file = Arc::new(file);
-        let file_len = file
-            .metadata()
-            .map_err(NewStackError::FileOpenFailed)?
-            .len() as usize;
-        let mapping = FixedMapping::map_file_at(&file, file_len, base)?;
-        let base = mapping.ptr;
-        Ok(Arc::new(Self {
-            base,
-            words,
-            mapped_bytes: file_len,
-            fd: Some(file),
-            mapping: MappingKind::Fixed(mapping),
         }))
     }
 
@@ -2440,6 +2340,7 @@ impl Preserve for AllocationError {
 #[cfg(test)]
 mod test {
     use std::iter::FromIterator;
+    #[cfg(debug_assertions)]
     use std::panic::{catch_unwind, AssertUnwindSafe};
 
     use proptest::prelude::*;

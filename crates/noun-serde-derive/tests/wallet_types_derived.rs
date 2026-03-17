@@ -261,8 +261,6 @@ struct Spend {
 
 #[cfg(test)]
 mod tests {
-    use nockvm::mem::NockStack;
-
     use super::*;
 
     // Expected Atom error, shouldn't this be a cell list?

@@ -221,23 +221,6 @@ impl Pma {
         Ok(pma)
     }
 
-    /// Open an existing PMA file at a fixed base address.
-    pub fn open_with_base(path: PathBuf, base: u64) -> Result<Self, PmaError> {
-        let metadata = Self::read_file_metadata(&path)?;
-        let base_ptr = base as *mut u8;
-        if base_ptr.is_null() {
-            return Err(PmaError::InvalidMetadata("null PMA base".to_string()));
-        }
-        let arena = Arena::open_file_with_base(&path, metadata.data_words as usize, base_ptr)?;
-        let pma = Self {
-            arena,
-            alloc_offset: metadata.alloc_words as usize,
-            path,
-        };
-        pma.persist_metadata();
-        Ok(pma)
-    }
-
     /// Flush the entire PMA mapping to storage.
     pub fn sync_all(&self) -> io::Result<()> {
         #[cfg(unix)]
@@ -464,17 +447,40 @@ impl Pma {
         if len_aligned == 0 {
             return Ok(0);
         }
-        let ret = unsafe {
-            libc::madvise(
-                self.arena.base_ptr() as *mut libc::c_void,
-                len_aligned,
-                libc::MADV_PAGEOUT,
-            )
-        };
+        madvise_drop_file_backed_pages(self.arena.base_ptr() as *mut libc::c_void, len_aligned)?;
+        Ok(len_aligned)
+    }
+}
+
+#[cfg(unix)]
+fn madvise_drop_file_backed_pages(ptr: *mut libc::c_void, len: usize) -> io::Result<()> {
+    #[cfg(target_os = "linux")]
+    {
+        let ret = unsafe { libc::madvise(ptr, len, libc::MADV_PAGEOUT) };
+        if ret == 0 {
+            return Ok(());
+        }
+
+        let err = io::Error::last_os_error();
+        match err.raw_os_error() {
+            Some(libc::EINVAL) | Some(libc::ENOSYS) => {
+                let fallback = unsafe { libc::madvise(ptr, len, libc::MADV_DONTNEED) };
+                if fallback == 0 {
+                    return Ok(());
+                }
+                return Err(io::Error::last_os_error());
+            }
+            _ => return Err(err),
+        }
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    {
+        let ret = unsafe { libc::madvise(ptr, len, libc::MADV_DONTNEED) };
         if ret != 0 {
             return Err(io::Error::last_os_error());
         }
-        Ok(len_aligned)
+        Ok(())
     }
 }
 
@@ -2484,7 +2490,7 @@ mod tests {
 
 #[cfg(all(test, any(target_os = "linux", target_os = "macos")))]
 mod paging_tests {
-    use super::{test_pma_path, Pma};
+    use super::{madvise_drop_file_backed_pages, test_pma_path, Pma};
 
     const SLAB_BYTES: usize = 64 * 1024 * 1024;
     const TOUCH_PAGES: usize = 64;
@@ -2580,37 +2586,8 @@ mod paging_tests {
     }
 
     fn drop_all_pages(ptr: *mut u8, len: usize) {
-        #[cfg(target_os = "linux")]
-        {
-            let ret = unsafe { libc::madvise(ptr as *mut libc::c_void, len, libc::MADV_PAGEOUT) };
-            if ret != 0 {
-                let err = std::io::Error::last_os_error();
-                match err.raw_os_error() {
-                    Some(libc::EINVAL) | Some(libc::ENOSYS) => {
-                        let fallback = unsafe {
-                            libc::madvise(ptr as *mut libc::c_void, len, libc::MADV_DONTNEED)
-                        };
-                        if fallback != 0 {
-                            panic!(
-                                "madvise fallback failed: {}",
-                                std::io::Error::last_os_error()
-                            );
-                        }
-                    }
-                    _ => panic!("madvise(MADV_PAGEOUT) failed: {err}"),
-                }
-            }
-        }
-        #[cfg(target_os = "macos")]
-        {
-            let ret = unsafe { libc::madvise(ptr as *mut libc::c_void, len, libc::MADV_DONTNEED) };
-            if ret != 0 {
-                panic!(
-                    "madvise(MADV_DONTNEED) failed: {}",
-                    std::io::Error::last_os_error()
-                );
-            }
-        }
+        madvise_drop_file_backed_pages(ptr as *mut libc::c_void, len)
+            .expect("failed to advise file-backed PMA pages out");
         std::thread::sleep(std::time::Duration::from_millis(50));
     }
 
@@ -2627,7 +2604,7 @@ mod paging_tests {
             libc::mincore(
                 ptr as *mut libc::c_void,
                 len,
-                vec.as_mut_ptr() as *mut libc::c_uchar,
+                vec.as_mut_ptr() as *mut libc::c_char,
             )
         };
         if ret != 0 {

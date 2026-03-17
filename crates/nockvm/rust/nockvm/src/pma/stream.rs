@@ -2,7 +2,9 @@ use std::alloc::{alloc, dealloc, Layout};
 use std::fs::{File, OpenOptions};
 use std::io;
 #[cfg(unix)]
-use std::os::unix::fs::{FileExt, OpenOptionsExt};
+use std::os::unix::fs::FileExt;
+#[cfg(target_os = "linux")]
+use std::os::unix::fs::OpenOptionsExt;
 #[cfg(target_os = "macos")]
 use std::os::unix::io::AsRawFd;
 use std::path::Path;

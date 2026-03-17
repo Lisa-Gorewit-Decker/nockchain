@@ -39,6 +39,7 @@ gnort = { workspace = true }
 ibig = { workspace = true }
 instant-acme = { workspace = true }
 intmap = { workspace = true }
+libc = { workspace = true }
 libsqlite3-sys = { workspace = true }
 nockvm = { workspace = true }
 nockvm_macros = { workspace = true }

@@ -253,7 +253,7 @@ impl<'a> NewSnapshotRow<'a> {
 struct SnapshotRow {
     snapshot_id: i64,
     kind: String,
-    state: String,
+    _state: String,
     event_num: i64,
     pma_path: String,
     manifest_path: String,
