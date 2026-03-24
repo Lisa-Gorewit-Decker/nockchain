@@ -11,6 +11,7 @@ pub const DEFAULT_FAKENET_POW_LEN: u64 = 2;
 pub const DEFAULT_FAKENET_LOG_DIFFICULTY: u64 = 1;
 pub const FAKENET_V1_PHASE: u64 = 1;
 pub const FAKENET_BYTHOS_PHASE: u64 = 1;
+pub const FAKENET_V2_PHASE: u64 = 1;
 pub const FAKENET_BASE_FEE: u64 = 128;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, NounEncode)]
@@ -77,6 +78,7 @@ pub struct BlockchainConstants {
     pub first_month_coinbase_min: u64,
     pub v1_phase: u64,
     pub bythos_phase: u64,
+    pub v2_phase: u64,
     pub note_data: NoteDataConstraints,
     pub base_fee: u64,
     pub input_fee_divisor: u64,
@@ -100,6 +102,7 @@ impl BlockchainConstants {
     pub const DEFAULT_FIRST_MONTH_COINBASE_MIN: u64 = 4_383;
     pub const DEFAULT_V1_PHASE: u64 = 39_000;
     pub const DEFAULT_BYTHOS_PHASE: u64 = 54_000;
+    pub const DEFAULT_V2_PHASE: u64 = 100_000;
     pub const DEFAULT_NOTE_DATA_MAX_SIZE: u64 = 2_048;
     pub const DEFAULT_NOTE_DATA_MIN_FEE: u64 = 256;
     pub const DEFAULT_BASE_FEE: u64 = 16_384;
@@ -129,6 +132,7 @@ impl BlockchainConstants {
             first_month_coinbase_min: Self::DEFAULT_FIRST_MONTH_COINBASE_MIN,
             v1_phase: Self::DEFAULT_V1_PHASE,
             bythos_phase: Self::DEFAULT_BYTHOS_PHASE,
+            v2_phase: Self::DEFAULT_V2_PHASE,
             note_data: NoteDataConstraints {
                 max_size: Self::DEFAULT_NOTE_DATA_MAX_SIZE,
                 min_fee: Self::DEFAULT_NOTE_DATA_MIN_FEE,
@@ -162,6 +166,11 @@ impl BlockchainConstants {
 
     pub fn with_bythos_phase(mut self, bythos_phase: u64) -> Self {
         self.bythos_phase = bythos_phase;
+        self
+    }
+
+    pub fn with_v2_phase(mut self, v2_phase: u64) -> Self {
+        self.v2_phase = v2_phase;
         self
     }
 
@@ -218,6 +227,7 @@ impl NounEncode for BlockchainConstants {
     fn to_noun<A: NounAllocator>(&self, allocator: &mut A) -> Noun {
         let v1_phase = Atom::new(allocator, self.v1_phase).as_noun();
         let bythos_phase = Atom::new(allocator, self.bythos_phase).as_noun();
+        let v2_phase = Atom::new(allocator, self.v2_phase).as_noun();
         let note_data = self.note_data.to_noun(allocator);
         let base_fee = Atom::new(allocator, self.base_fee).as_noun();
         let input_fee_divisor = Atom::new(allocator, self.input_fee_divisor).as_noun();
@@ -226,7 +236,7 @@ impl NounEncode for BlockchainConstants {
 
         T(
             allocator,
-            &[v1_phase, bythos_phase, note_data, base_fee, input_fee_divisor, v0_constants],
+            &[v1_phase, bythos_phase, v2_phase, note_data, base_fee, input_fee_divisor, v0_constants],
         )
     }
 }
@@ -252,6 +262,7 @@ pub fn fakenet_blockchain_constants(pow_len: u64, target_bex: u64) -> Blockchain
         .with_base_fee(FAKENET_BASE_FEE)
         .with_v1_phase(FAKENET_V1_PHASE)
         .with_bythos_phase(FAKENET_BYTHOS_PHASE)
+        .with_v2_phase(FAKENET_V2_PHASE)
 }
 
 pub fn default_fakenet_blockchain_constants() -> BlockchainConstants {
@@ -338,6 +349,7 @@ mod tests {
         );
         assert_eq!(constants.v1_phase, 39_000, "v1-phase mismatch");
         assert_eq!(constants.bythos_phase, 54_000, "bythos-phase mismatch");
+        assert_eq!(constants.v2_phase, 100_000, "v2-phase mismatch");
         assert_eq!(
             constants.note_data,
             NoteDataConstraints {
@@ -372,6 +384,10 @@ mod tests {
             constants.bythos_phase, FAKENET_BYTHOS_PHASE,
             "bythos-phase mismatch"
         );
+        assert_eq!(
+            constants.v2_phase, FAKENET_V2_PHASE,
+            "v2-phase mismatch"
+        );
     }
 
     #[test]
@@ -398,6 +414,13 @@ mod tests {
         assert_eq!(
             bythos_phase_atom.as_u64().expect("bythos-phase as u64"),
             BlockchainConstants::DEFAULT_BYTHOS_PHASE
+        );
+
+        let rest = rest.tail().as_cell().expect("v2-phase and rest tuple");
+        let v2_phase_atom = rest.head().as_atom().expect("v2-phase should be atom");
+        assert_eq!(
+            v2_phase_atom.as_u64().expect("v2-phase as u64"),
+            BlockchainConstants::DEFAULT_V2_PHASE
         );
 
         let rest = rest.tail().as_cell().expect("note-data and rest tuple");

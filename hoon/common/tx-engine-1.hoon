@@ -10,6 +10,11 @@
 ++  schnorr-seckey  schnorr-seckey:v0
 ++  page-number  page-number:v0
 ++  coins  coins:v0
+::  $token: a named token asset (namespace + amount)
+::
+::  the namespace is an @tas (lowercase ascii, hyphens).
+::  native nicks use the empty namespace %$ (atom 0).
++$  token  (pair @tas @)
 ++  source  source:v0
 ++  tx-id  tx-id:v0
 ++  block-id  block-id:v0
@@ -168,6 +173,8 @@
           ::  activation heights
           v1-phase=39.000
           bythos-phase=54.000
+          ::  v2-phase: height at which token assets (pair @tas @) are accepted
+          v2-phase=100.000
           ::  note data field constraints
           ::    max-size: maximum number of leaves in the data field noun
           ::    min-fee:  minimum fee (in nicks)
@@ -180,6 +187,7 @@
       ==
   $:  v1-phase=@
       bythos-phase=@
+      v2-phase=@
       data=[max-size=@ min-fee=@]
       base-fee=@
       input-fee-divisor=@
@@ -231,6 +239,9 @@
   --
 ::
 :: $nnote. A Nockchain note. A UTXO. (Version 1)
+::
+::  assets is a union: atom = native nicks (coins), cell = named token (pair @tas @).
+::  the cell form is only valid after v2-phase activation height.
 ++  nnote-1
   =<  form
   |%
@@ -240,13 +251,17 @@
       origin-page=page-number
       name=nname
       =note-data
-      assets=coins
+      assets=$@(coins token)
     ==
   ++  based
     |=  =form
     ?&  (based:nname name.form)
         (based:note-data note-data.form)
-        (^based assets.form)
+        ?@  assets.form
+          (^based assets.form)
+        ?&  (^based p.assets.form)
+            (^based q.assets.form)
+        ==
     ==
   ++  hashable
     |=  =form
@@ -255,7 +270,9 @@
         leaf+origin-page.form
         hash+(hash:nname name.form)
         hash+(hash:note-data note-data.form)
-        leaf+assets.form
+        ?@  assets.form
+          leaf+assets.form
+        [leaf+p.assets.form leaf+q.assets.form]
     ==
   ::
   ++  hash
@@ -308,6 +325,9 @@
   --  ::  $note-data
 ::
 ::  $seed: carrier of value from input to output (v1)
+::
+::  gift is a union: atom = native nicks (coins), cell = named token (pair @tas @).
+::  the cell form is only valid after v2-phase activation height.
 ++  seed
   =<  form
   |%
@@ -318,8 +338,8 @@
         lock-root=^hash
         ::  data to store with note
         =note-data
-        ::  asset quantity
-        gift=coins
+        ::  asset value: atom for native nicks, cell [namespace amount] for tokens
+        gift=$@(coins token)
         ::  check that parent hash of every seed is the hash of the parent note
         parent-hash=^hash
     ==
@@ -327,7 +347,7 @@
   ++  new
     |=  $:  output-source=(unit source)
             =lock
-            gift=coins
+            gift=$@(coins token)
             parent-hash=^hash
         ==
     %*  .  *form
@@ -345,7 +365,11 @@
       (based:^hash p.u.output-source.form)
     ?&  based-output-source
         (based:^hash lock-root.form)
-        (^based gift.form)
+        ?@  gift.form
+          (^based gift.form)
+        ?&  (^based p.gift.form)
+            (^based q.gift.form)
+        ==
         (based:^hash parent-hash.form)
     ==
   ::
@@ -354,7 +378,9 @@
     ^-  hashable:tip5
     :^    hash+lock-root.sed
         hash+(hash:note-data note-data.sed)
-      leaf+gift.sed
+      ?@  gift.sed
+        leaf+gift.sed
+      [leaf+p.gift.sed leaf+q.gift.sed]
     hash+parent-hash.sed
   ::
   ++  sig-hashable
@@ -363,7 +389,9 @@
     :*  (hashable-unit:source output-source.sed)
         hash+lock-root.sed
         hash+(hash:note-data note-data.sed)
-        leaf+gift.sed
+        ?@  gift.sed
+          leaf+gift.sed
+        [leaf+p.gift.sed leaf+q.gift.sed]
         hash+parent-hash.sed
     ==
   ::
@@ -454,12 +482,26 @@
   ++  check-gifts-and-fee
     |=  [=form parent=nnote]
     ^-  ?
-    =/  gifts-and-fee=coins
-      %+  add  fee.form
+    =/  parent-assets  assets.parent
+    ?@  parent-assets
+      ::  native nicks: all seed gifts must be atoms, sum + fee == assets
+      =/  gifts-and-fee=coins
+        %+  add  fee.form
+        %+  roll  ~(tap z-in seeds.form)
+        |=  [=seed acc=coins]
+        ?>  ?=(@ gift.seed)
+        (add acc gift.seed)
+      =(gifts-and-fee parent-assets)
+    ::  named token: all seed gifts must match namespace
+    ::  sum of seed amounts == parent amount
+    ::  fee is paid from a separate native-nicks input in the transaction
+    =/  total-gift=@
       %+  roll  ~(tap z-in seeds.form)
-      |=  [=seed acc=coins]
-      (add acc gift.seed)
-    =(gifts-and-fee assets.parent)
+      |=  [=seed acc=@]
+      ?>  ?=(^ gift.seed)
+      ?>  =(p.gift.seed p.parent-assets)
+      (add acc q.gift.seed)
+    =(total-gift q.parent-assets)
   --
 ::
 ++  shares
@@ -1130,6 +1172,10 @@
         [%hax hax]
     ::  it's important that this be the default to break a type loop in the compiler
         [%brn ~]
+    ::  %mnt: mint authority for a named token namespace.
+    ::  token-name must be non-empty @tas (native nicks %$ cannot be minted).
+    ::  only valid after v2-phase activation height.
+        [%mnt token-name=@tas]
     ==
   ++  based
     |=  =form
@@ -1138,6 +1184,7 @@
         %hax  (based:hax +.form)
         %pkh  (based:pkh +.form)
         %brn  %&
+        %mnt  ?&(!=(0 token-name.form) (^based token-name.form))
     ==
   ++  hashable
     |=  =form
@@ -1147,6 +1194,7 @@
         %hax  [leaf+%hax (hashable:hax +.form)]
         %pkh  [leaf+%pkh (hashable:pkh +.form)]
         %brn  [leaf+%brn leaf+~]
+        %mnt  [leaf+%mnt leaf+token-name.form]
     ==
   ++  hash
     |=  =form
@@ -1919,7 +1967,14 @@
         ?^  mchild
           =*  child  u.mchild
           =/  new-seeds=seeds  (~(put z-in seeds.child) sed)
-          =/  new-assets=coins  (add assets.note.child gift.sed)
+          ::  add gift to existing assets, handling both atom (nicks) and cell (token) forms
+          =/  new-assets=$@(coins token)
+            ?@  assets.note.child
+              ?>  ?=(@ gift.sed)
+              (add assets.note.child gift.sed)
+            ?>  ?=(^ gift.sed)
+            ?>  =(p.assets.note.child p.gift.sed)
+            [p.assets.note.child (add q.assets.note.child q.gift.sed)]
           ::  normalize: strip output-source before hashing to ensure consistent
           ::  tree structure
           =/  normalized-seeds=seeds
