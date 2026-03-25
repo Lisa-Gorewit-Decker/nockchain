@@ -86,20 +86,34 @@ Tiers are adjustable via hard fork by changing `blockchain-constants` defaults, 
 A new lock primitive `%mnt` controls token creation with embedded configuration:
 
 ```hoon
+::  $supply-policy: how the token's supply is governed
+::  The policy mode is immutable -- committed at token creation.
++$  supply-policy
+  $%  [%capped cap=@]       ::  hard cap; can only decrease, never removed
+      [%managed cap=@]      ::  issuer-managed cap; can increase or decrease
+      [%unlimited ~]        ::  no supply cap; mint freely
+  ==
+
 +$  mint-config
-  $:  max-supply=@          ::  0 = unlimited; >0 = hard cap
+  $:  supply=supply-policy
       divisibility=@        ::  minimum unit; amounts must be multiples. >=1
   ==
 
 [%mnt token-name=@tas config=mint-config]
 ```
 
+**Token archetypes and their supply policies:**
+
+| Archetype | Policy | Example |
+|-----------|--------|---------|
+| Governance token | `[%capped 10.000.000]` | Fixed supply, mint once, close the mint |
+| Bitcoin-like | `[%capped 21.000.000]` | Hard cap, gradual emission |
+| Stablecoin | `[%managed 1.000.000]` | Issuer raises/lowers cap as reserves change |
+| Reward/utility | `[%unlimited ~]` | Continuous minting, no cap |
+
 - `token-name` must pass `++valid-token-name` (non-empty, 3-32 chars, letter-start, no `--`, not reserved)
 - `divisibility` must be >= 1
-- Config is hashed into the lock root, making it a cryptographic commitment:
-  ```hoon
-  %mnt  [leaf+%mnt leaf+token-name.form leaf+max-supply.config.form leaf+divisibility.config.form]
-  ```
+- Config is hashed into the lock root, making it a cryptographic commitment
 - When a note with a `%mnt` lock for namespace `%foo` is spent, output seeds may contain `[%foo amount]` gifts that exceed the input amount
 - Composes with existing lock primitives (Pkh, Tim, Hax) via AND/OR in spend conditions
 
@@ -119,9 +133,9 @@ A new lock primitive `%mnt` controls token creation with embedded configuration:
 The "current" config for a namespace is the config on the **unspent** `%mnt` note. Config evolves when the `%mnt` note is spent and a successor is created:
 
 ```
-[%mnt %foo max-supply=1M div=100]  -- note A (UTXO)
+[%mnt %foo [%managed cap=1M] div=100]  -- note A (UTXO)
         |  (spend A, create B)
-[%mnt %foo max-supply=500K div=100]  -- note B (new UTXO)
+[%mnt %foo [%managed cap=2M] div=100]  -- note B (stablecoin issuer raises cap)
 ```
 
 ### Transition Rules (protocol-enforced during spend validation)
@@ -130,15 +144,25 @@ The "current" config for a namespace is the config on the **unspent** `%mnt` not
 |-------|-----------|------|
 | `token-name` | Immutable | Must match parent (same namespace) |
 | `divisibility` | Immutable | Must equal parent's divisibility (changing breaks existing amounts) |
-| `max-supply` | Monotonic decrease | Can only decrease or stay same. 0->N is allowed (setting initial cap). N->0 is NOT allowed (can't remove cap). |
+| `supply` policy mode | Immutable | `%capped` stays `%capped`, `%managed` stays `%managed`, etc. |
+| `cap` (when `%capped`) | Monotonic decrease | Can only decrease or stay same. Cannot become 0. |
+| `cap` (when `%managed`) | Free | Issuer can increase or decrease. Cannot become 0 (use `%unlimited` instead). |
+| `%unlimited` | N/A | No cap to change |
+
+**Key difference between `%capped` and `%managed`:** Both enforce the cap at mint time (cumulative supply cannot exceed cap). But `%capped` tokens promise the cap will never increase (monotonic decrease on config transition), while `%managed` tokens allow the issuer to raise the cap via a successor `%mnt` note. Both are fully auditable on-chain -- the full history of cap changes is visible in the UTXO chain.
 
 **Successor detection:** When spending a note whose spend-condition contains `[%mnt ns ...]`, if any output seed's lock contains `[%mnt ns ...]` for the same namespace, validate the config transition.
 
 **No successor = authority expires.** If you spend a `%mnt` note without creating a successor, the minting authority for that namespace is gone. The existing tokens remain valid (they're just notes with `[ns amount]` assets), but no new tokens can be minted. This is a feature -- it enables "close the mint" by simply not creating a successor.
 
-## Max-Supply Enforcement
+## Supply Cap Enforcement
 
-Protocol-enforced. Validators track cumulative minted per namespace in `namespace-supply: (z-map @tas @)`. Each mint operation updates the running total. Reject if `current-supply + new-mint > max-supply` (when `max-supply > 0`). State cost is one atom per namespace -- trivial. Users get cryptographic supply guarantees.
+Protocol-enforced. Validators track cumulative minted per namespace in `namespace-supply: (z-map @tas @)`. Each mint operation updates the running total.
+
+- `%capped` and `%managed`: reject if `current-supply + new-mint > cap`
+- `%unlimited`: no cap check
+- State cost is one atom per namespace -- trivial
+- Users get cryptographic supply guarantees
 
 ## Balance Conservation
 
@@ -154,7 +178,9 @@ All seed gifts must be atoms.
 ```
 With %mnt lock for ns in spend-condition:
   output amounts must be multiples of divisibility
-  total new supply must not exceed max-supply (protocol state)
+  supply cap check (per supply-policy):
+    %capped/%managed: current-supply + new-mint <= cap
+    %unlimited: no check
   fee is paid from a separate native-nicks input
 
 Without %mnt lock (conservation):
@@ -199,7 +225,7 @@ The hashable representation depends on the asset form:
 - **Cell**: `[leaf+p.assets leaf+q.assets]` (pair of leaves)
 
 For `%mnt` lock primitive:
-- `[leaf+%mnt leaf+token-name leaf+max-supply leaf+divisibility]`
+- `[leaf+%mnt leaf+token-name leaf+policy-tag leaf+cap-or-0 leaf+divisibility]`
 
 This ensures hash stability for existing notes while providing deterministic hashing for token notes and mint configs.
 
@@ -227,12 +253,21 @@ Burning nicks to register a namespace creates deflationary pressure and deters n
 
 ### Why embedded mint-config?
 
-Embedding `max-supply` and `divisibility` in the `%mnt` lock primitive (rather than in note-data) means:
+Embedding `supply-policy` and `divisibility` in the `%mnt` lock primitive (rather than in note-data) means:
 - Config is hashed into the lock root -- it's a cryptographic commitment
 - Validators can enforce rules without inspecting opaque note-data
 - Config is immutable per lock-root (changing config = new lock root = new authority)
-- The UTXO chain model gives natural mutability: spend the old authority, create a new one with tighter constraints
+- The UTXO chain model gives natural mutability: spend the old authority, create a new one
 
-### Why protocol-enforced max-supply?
+### Why supply-policy modes?
 
-Application-layer max-supply tracking (wallets/indexers only) means supply caps are just promises. Protocol enforcement (validators track cumulative supply per namespace) gives cryptographic guarantees. The state cost is one atom per namespace -- trivial.
+Different tokens need different supply disciplines:
+- **Governance tokens** need a hard cap that can never increase (`%capped`) -- holders trust the supply commitment
+- **Stablecoins** need elastic supply (`%managed`) -- the issuer must raise the cap as new reserves back more tokens
+- **Reward tokens** need unlimited minting (`%unlimited`) -- no cap overhead
+
+Making the policy mode immutable (committed at creation) while allowing cap changes within the mode's rules gives both flexibility and strong guarantees. A `%capped` token can never become `%managed` -- that promise is cryptographic.
+
+### Why protocol-enforced supply caps?
+
+Application-layer supply tracking (wallets/indexers only) means supply caps are just promises. Protocol enforcement (validators track cumulative supply per namespace) gives cryptographic guarantees. The state cost is one atom per namespace -- trivial.
