@@ -208,6 +208,70 @@ impl NounSpace {
         NounHandle::new(noun, self)
     }
 
+    /// Introduce a fresh generative brand tied to this exact `NounSpace` for the duration of `f`.
+    ///
+    /// This is an experimental proof-of-concept layer that sits alongside the existing unbranded
+    /// `Noun`/`NounHandle` APIs. Code inside the closure can only combine branded handles that came
+    /// from the same branded `NounSpace`.
+    ///
+    /// Valid code continues to type-check within one branded scope:
+    ///
+    /// ```
+    /// use nockvm::mem::NockStack;
+    /// use nockvm::noun::{Cell, D, NounSpace};
+    ///
+    /// let mut stack = NockStack::new(1 << 20, 0);
+    /// let noun = Cell::new(&mut stack, D(1), D(2)).as_noun();
+    /// let space = NounSpace::stack_only(&stack);
+    ///
+    /// space.with_brand(|space| {
+    ///     let cell = space.handle(noun).as_cell().unwrap();
+    ///     assert_eq!(cell.head().as_atom().unwrap().as_u64().unwrap(), 1);
+    ///     assert_eq!(cell.tail().as_atom().unwrap().as_u64().unwrap(), 2);
+    /// });
+    /// ```
+    ///
+    /// Handles from different branded spaces do not type-check together:
+    ///
+    /// ```compile_fail
+    /// use nockvm::mem::NockStack;
+    /// use nockvm::noun::{BrandedNounHandle, BrandedNounSpace, Cell, D, NounSpace};
+    ///
+    /// fn same_space<'space, 'id>(
+    ///     _space: BrandedNounSpace<'space, 'id>,
+    ///     _noun: BrandedNounHandle<'space, 'id>,
+    /// ) {
+    /// }
+    ///
+    /// let mut stack_a = NockStack::new(1 << 20, 0);
+    /// let mut stack_b = NockStack::new(1 << 20, 0);
+    /// let noun_a = Cell::new(&mut stack_a, D(1), D(2)).as_noun();
+    /// let space_a = NounSpace::stack_only(&stack_a);
+    /// let space_b = NounSpace::stack_only(&stack_b);
+    ///
+    /// space_a.with_brand(|space_a| {
+    ///     space_b.with_brand(|space_b| {
+    ///         same_space(space_b, space_a.handle(noun_a));
+    ///     });
+    /// });
+    /// ```
+    ///
+    /// Branded handles also cannot escape the generative scope:
+    ///
+    /// ```compile_fail
+    /// use nockvm::mem::NockStack;
+    /// use nockvm::noun::{Cell, D, NounSpace};
+    ///
+    /// let mut stack = NockStack::new(1 << 20, 0);
+    /// let noun = Cell::new(&mut stack, D(1), D(2)).as_noun();
+    /// let space = NounSpace::stack_only(&stack);
+    ///
+    /// let _escaped = space.with_brand(|space| space.handle(noun));
+    /// ```
+    pub fn with_brand<R>(&self, f: impl for<'id> FnOnce(BrandedNounSpace<'_, 'id>) -> R) -> R {
+        f(BrandedNounSpace::new(self))
+    }
+
     fn assert_stack_epoch(&self) {
         let Some(epoch) = &self.stack_epoch else {
             return;
@@ -284,6 +348,33 @@ impl NounSpace {
             offset_words
         );
         ptr
+    }
+}
+
+mod generative_brand {
+    pub enum Id {}
+}
+
+type Brand<'id> =
+    std::marker::PhantomData<fn(&'id generative_brand::Id) -> &'id generative_brand::Id>;
+
+#[doc(hidden)]
+#[derive(Copy, Clone)]
+pub struct BrandedNounSpace<'space, 'id> {
+    space: &'space NounSpace,
+    _brand: Brand<'id>,
+}
+
+impl<'space, 'id> BrandedNounSpace<'space, 'id> {
+    fn new(space: &'space NounSpace) -> Self {
+        Self {
+            space,
+            _brand: std::marker::PhantomData,
+        }
+    }
+
+    pub fn handle(self, noun: Noun) -> BrandedNounHandle<'space, 'id> {
+        BrandedNounHandle::from_unbranded(NounHandle::new(noun, self.space))
     }
 }
 
@@ -398,6 +489,38 @@ impl<'a> NounHandle<'a> {
         allocated
             .forwarding_pointer(self.space)
             .map(|forwarded| NounHandle::new(forwarded.as_noun(), self.space))
+    }
+}
+
+#[doc(hidden)]
+#[derive(Copy, Clone)]
+pub struct BrandedNounHandle<'space, 'id> {
+    handle: NounHandle<'space>,
+    _brand: Brand<'id>,
+}
+
+impl<'space, 'id> BrandedNounHandle<'space, 'id> {
+    fn from_unbranded(handle: NounHandle<'space>) -> Self {
+        Self {
+            handle,
+            _brand: std::marker::PhantomData,
+        }
+    }
+
+    pub fn repr(self) -> NounRepr {
+        self.handle.repr()
+    }
+
+    pub fn as_atom(self) -> Result<BrandedAtomHandle<'space, 'id>> {
+        self.handle.as_atom().map(BrandedAtomHandle::from_unbranded)
+    }
+
+    pub fn as_cell(self) -> Result<BrandedCellHandle<'space, 'id>> {
+        self.handle.as_cell().map(BrandedCellHandle::from_unbranded)
+    }
+
+    pub fn slot(self, axis: u64) -> Result<Self> {
+        self.handle.slot(axis).map(Self::from_unbranded)
     }
 }
 
@@ -569,6 +692,30 @@ impl<'a> AtomHandle<'a> {
     }
 }
 
+#[doc(hidden)]
+#[derive(Copy, Clone)]
+pub struct BrandedAtomHandle<'space, 'id> {
+    handle: AtomHandle<'space>,
+    _brand: Brand<'id>,
+}
+
+impl<'space, 'id> BrandedAtomHandle<'space, 'id> {
+    fn from_unbranded(handle: AtomHandle<'space>) -> Self {
+        Self {
+            handle,
+            _brand: std::marker::PhantomData,
+        }
+    }
+
+    pub fn as_noun(self) -> BrandedNounHandle<'space, 'id> {
+        BrandedNounHandle::from_unbranded(self.handle.as_noun())
+    }
+
+    pub fn as_u64(self) -> Result<u64> {
+        self.handle.as_u64()
+    }
+}
+
 #[derive(Copy, Clone)]
 pub struct CellHandle<'a> {
     cell: Cell,
@@ -612,6 +759,34 @@ impl<'a> CellHandle<'a> {
     pub unsafe fn set_forwarding_pointer(self, new_me: *const CellMemory) {
         let mut cell = self.cell;
         cell.set_forwarding_pointer(new_me, self.space);
+    }
+}
+
+#[doc(hidden)]
+#[derive(Copy, Clone)]
+pub struct BrandedCellHandle<'space, 'id> {
+    handle: CellHandle<'space>,
+    _brand: Brand<'id>,
+}
+
+impl<'space, 'id> BrandedCellHandle<'space, 'id> {
+    fn from_unbranded(handle: CellHandle<'space>) -> Self {
+        Self {
+            handle,
+            _brand: std::marker::PhantomData,
+        }
+    }
+
+    pub fn as_noun(self) -> BrandedNounHandle<'space, 'id> {
+        BrandedNounHandle::from_unbranded(self.handle.as_noun())
+    }
+
+    pub fn head(self) -> BrandedNounHandle<'space, 'id> {
+        BrandedNounHandle::from_unbranded(self.handle.head())
+    }
+
+    pub fn tail(self) -> BrandedNounHandle<'space, 'id> {
+        BrandedNounHandle::from_unbranded(self.handle.tail())
     }
 }
 
@@ -2609,6 +2784,30 @@ mod tests {
 
         // axis 0 should fail
         assert!(cell.slot(0, &space).is_err());
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore = "memfd_create unsupported in Miri")]
+    fn test_with_brand_valid_usage() {
+        let mut context = init_context();
+        let space = NounSpace::stack_only(&context.stack);
+        let cell = Cell::new(&mut context.stack, D(10), D(20)).as_noun();
+
+        space.with_brand(|space| {
+            let cell = space.handle(cell).as_cell().expect("cell");
+            assert_eq!(
+                cell.head().as_atom().expect("head atom").as_u64().unwrap(),
+                10
+            );
+            assert_eq!(
+                cell.tail().as_atom().expect("tail atom").as_u64().unwrap(),
+                20
+            );
+            assert!(matches!(
+                cell.as_noun().repr(),
+                crate::noun::NounRepr::Cell(_)
+            ));
+        });
     }
 }
 
