@@ -21,9 +21,7 @@ use thiserror::Error;
 
 const CELL_MEM_WORD_SIZE: usize = (size_of::<CellMemory>() + 7) >> 3;
 
-/// A (mostly*) self-contained arena for allocating nouns.
-///
-/// *Nouns may contain references to the PMA, but not other allocation arenas.
+/// A self-contained arena for allocating nouns.
 pub struct NounSlab<J = NockJammer> {
     root: Noun,
     slabs: Vec<(*mut u8, Layout)>,
@@ -229,7 +227,8 @@ impl<J> NounAllocator for NounSlab<J> {
     }
 }
 
-/// # Safety: no noun in this slab references a noun outside the slab, except in the PMA
+/// # Safety: sending a slab across threads relies on the invariant that every noun reachable from
+/// its root is allocated inside the slab.
 unsafe impl Send for NounSlab {}
 
 impl<J> Default for NounSlab<J> {
@@ -278,8 +277,7 @@ impl<J> NounSlab<J> {
         self.copy_into(other.root, &space);
     }
 
-    /// Copy a noun into this slab, only leaving references into the PMA. Set that noun as the root
-    /// noun.
+    /// Copy a noun into this slab and set that noun as the root noun.
     pub fn copy_into(&mut self, copy_root: Noun, space: &NounSpace) -> Noun {
         let mut copied: IntMap<u64, Noun> = IntMap::new();
         // let mut copy_stack = vec![(copy_root, &mut self.root as *mut Noun)];
@@ -344,7 +342,7 @@ impl<J> NounSlab<J> {
         self.root
     }
 
-    /// Copy the root noun from this slab into the given NockStack, only leaving references into the PMA
+    /// Copy the root noun from this slab into the given NockStack.
     ///
     /// Note that this consumes the slab, the slab will be freed after and the root noun returned
     /// referencing the stack. Nouns referencing the slab should not be used past this point.
@@ -420,35 +418,31 @@ impl<J> NounSlab<J> {
 
     /// Set the root of the noun slab.
     ///
-    /// Panics if the given root is not in the noun slab or PMA.
+    /// Panics if the given root is not in the noun slab.
     pub fn set_root(&mut self, root: Noun) {
         if let Ok(allocated) = root.as_allocated() {
             match allocated.as_either() {
                 Either::Left(indirect) => {
-                    if let Some(ptr) = indirect.data_pointer_stack() {
-                        let u8_ptr = ptr as *const u8;
-                        if self.contains_ptr(u8_ptr) {
-                            self.root = root;
-                            return;
-                        }
+                    let Some(ptr) = indirect.data_pointer_stack() else {
                         panic!("Set root of NounSlab to noun from outside slab");
-                    } else {
+                    };
+                    let u8_ptr = ptr as *const u8;
+                    if self.contains_ptr(u8_ptr) {
                         self.root = root;
                         return;
                     }
+                    panic!("Set root of NounSlab to noun from outside slab");
                 }
                 Either::Right(cell) => {
-                    if let Some(ptr) = cell.stack_memory_pointer() {
-                        let u8_ptr = ptr as *const u8;
-                        if self.contains_ptr(u8_ptr) {
-                            self.root = root;
-                            return;
-                        }
+                    let Some(ptr) = cell.stack_memory_pointer() else {
                         panic!("Set root of NounSlab to noun from outside slab");
-                    } else {
+                    };
+                    let u8_ptr = ptr as *const u8;
+                    if self.contains_ptr(u8_ptr) {
                         self.root = root;
                         return;
                     }
+                    panic!("Set root of NounSlab to noun from outside slab");
                 }
             }
         }
@@ -889,10 +883,14 @@ impl Jammer for NockJammer {
 
 #[cfg(test)]
 mod tests {
+    use std::panic::{catch_unwind, AssertUnwindSafe};
+
     use bitvec::prelude::*;
     use ibig::ubig;
-    use nockvm::noun::{D, T};
+    use nockvm::noun::{AllocLocation, NounRepr, D, T};
+    use nockvm::pma::{Pma, PmaCopy};
     use nockvm_macros::tas;
+    use tempfile::TempDir;
 
     use super::*;
     use crate::test_support::TestArena;
@@ -900,6 +898,12 @@ mod tests {
 
     fn install_test_arena() -> TestArena {
         TestArena::default()
+    }
+
+    fn assert_set_root_rejects(root: Noun) {
+        let mut slab: NounSlab = NounSlab::new();
+        let res = catch_unwind(AssertUnwindSafe(|| slab.set_root(root)));
+        assert!(res.is_err(), "set_root should reject roots outside the slab");
     }
     #[test]
     #[cfg_attr(miri, ignore = "memfd_create unsupported in Miri")]
@@ -1185,6 +1189,37 @@ mod tests {
         let mut copy_slab: NounSlab = NounSlab::new();
         let space = slab.noun_space();
         copy_slab.copy_into(test_noun, &space);
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore = "memfd_create unsupported in Miri")]
+    fn test_set_root_rejects_roots_outside_slab() {
+        let mut local_slab: NounSlab = NounSlab::new();
+        let local_root = T(&mut local_slab, &[D(1), D(2)]);
+        local_slab.set_root(local_root);
+        assert!(unsafe { local_slab.root().raw_equals(&local_root) });
+
+        let mut foreign_slab: NounSlab = NounSlab::new();
+        let foreign_root = T(&mut foreign_slab, &[D(3), D(4)]);
+        assert_set_root_rejects(foreign_root);
+
+        let mut stack = install_test_arena();
+        let stack_root = Cell::new(&mut *stack, D(5), D(6)).as_noun();
+        assert_set_root_rejects(stack_root);
+
+        let tempdir = TempDir::new().expect("create temp dir for PMA");
+        let pma_path = tempdir.path().join("set-root-test.pma");
+        let mut pma = Pma::new(1 << 10, pma_path).expect("create test PMA");
+        let mut pma_root = Cell::new(&mut *stack, D(7), D(8)).as_noun();
+        unsafe {
+            pma_root.copy_to_pma(&stack, &mut pma);
+        }
+        let pma_space = NounSpace::pma_only(&pma);
+        assert!(matches!(
+            pma_root.in_space(&pma_space).repr(),
+            NounRepr::Cell(AllocLocation::PmaOffset)
+        ));
+        assert_set_root_rejects(pma_root);
     }
 
     // Fails in Miri
