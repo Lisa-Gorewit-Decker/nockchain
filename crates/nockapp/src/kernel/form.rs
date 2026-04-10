@@ -18,7 +18,7 @@ use nockvm::jets::hot::{HotEntry, URBIT_HOT_STATE};
 use nockvm::jets::nock::util::mook;
 use nockvm::mem::NockStack;
 use nockvm::mug::met3_usize;
-use nockvm::noun::{Atom, Cell, DirectAtom, IndirectAtom, Noun, NounSpace, D, T};
+use nockvm::noun::{Atom, Cell, DirectAtom, IndirectAtom, Noun, D, T};
 use nockvm::pma::{Pma, PmaCopy, PmaCopyFrom};
 use nockvm::trace::{path_to_cord, write_serf_trace_safe};
 use nockvm_macros::tas;
@@ -1912,7 +1912,9 @@ impl Serf {
                     }
                 }
                 Err(goof) => {
-                    return Err(CrownError::KernelError(Some(goof)));
+                    let mut goof_slab = NounSlab::new();
+                    goof_slab.copy_into(goof, &space);
+                    return Err(CrownError::KernelError(Some(goof_slab)));
                 }
             }
         }
@@ -1984,7 +1986,11 @@ impl Serf {
                     durable_event,
                 })
             }
-            Err(goof_crud) => Err(CrownError::KernelError(Some(goof_crud))),
+            Err(goof_crud) => {
+                let mut goof_slab = NounSlab::new();
+                goof_slab.copy_into(goof_crud, &space);
+                Err(CrownError::KernelError(Some(goof_slab)))
+            }
         }
     }
 
@@ -2768,10 +2774,6 @@ impl Serf {
     pub fn poke_bail_noun(&mut self, lud: Noun) -> Noun {
         T(self.stack(), &[D(tas!(b"poke")), D(tas!(b"bail")), lud])
     }
-}
-
-fn slot(noun: Noun, axis: u64, space: &NounSpace) -> Result<Noun> {
-    Ok(noun.in_space(space).slot(axis)?.noun())
 }
 
 #[cfg(test)]

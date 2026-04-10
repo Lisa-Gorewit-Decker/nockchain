@@ -102,10 +102,13 @@ impl<J> NounSlab<J> {
         imports: (Noun, Noun, Noun),
         space: &NounSpace,
     ) {
-        self.copy_into(imports.0, space);
-        self.copy_into(imports.1, space);
-        self.copy_into(imports.2, space);
-        let new_root_base = f(imports, self.root);
+        let old_root = self.root;
+        let imported = (
+            self.copy_into(imports.0, space),
+            self.copy_into(imports.1, space),
+            self.copy_into(imports.2, space),
+        );
+        let new_root_base = f(imported, old_root);
         let new_root = nockvm::noun::T(self, &new_root_base);
         self.set_root(new_root);
     }
@@ -903,7 +906,10 @@ mod tests {
     fn assert_set_root_rejects(root: Noun) {
         let mut slab: NounSlab = NounSlab::new();
         let res = catch_unwind(AssertUnwindSafe(|| slab.set_root(root)));
-        assert!(res.is_err(), "set_root should reject roots outside the slab");
+        assert!(
+            res.is_err(),
+            "set_root should reject roots outside the slab"
+        );
     }
     #[test]
     #[cfg_attr(miri, ignore = "memfd_create unsupported in Miri")]
@@ -1189,6 +1195,76 @@ mod tests {
         let mut copy_slab: NounSlab = NounSlab::new();
         let space = slab.noun_space();
         copy_slab.copy_into(test_noun, &space);
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore = "memfd_create unsupported in Miri")]
+    fn test_modify_with_imports3_uses_imported_nouns_and_preserves_root() {
+        let _test_arena = install_test_arena();
+
+        let mut local_slab: NounSlab = NounSlab::new();
+        let local_root = T(&mut local_slab, &[D(42), D(43)]);
+        local_slab.set_root(local_root);
+
+        let mut foreign_slab: NounSlab = NounSlab::new();
+        let foreign_a = T(&mut foreign_slab, &[D(1), D(2)]);
+        let foreign_b = T(&mut foreign_slab, &[D(3), D(4)]);
+        let foreign_c = T(&mut foreign_slab, &[D(5), D(6)]);
+        foreign_slab.set_root(foreign_c);
+        let foreign_space = foreign_slab.noun_space();
+
+        local_slab.modify_with_imports3(
+            |(import_a, import_b, import_c), root| vec![root, import_a, import_b, import_c, D(0)],
+            (foreign_a, foreign_b, foreign_c),
+            &foreign_space,
+        );
+
+        let local_space = local_slab.noun_space();
+        let elems: Vec<Noun> = unsafe { *local_slab.root() }
+            .in_space(&local_space)
+            .list_iter()
+            .map(|handle| handle.noun())
+            .collect();
+
+        assert_eq!(
+            elems.len(),
+            4,
+            "modified slab should contain root plus 3 imports"
+        );
+        assert!(
+            unsafe { elems[0].raw_equals(&local_root) },
+            "closure should receive the original slab root"
+        );
+        let imported_a_slab: NounSlab = NounSlab::from_noun(elems[1], &local_space);
+        let imported_b_slab: NounSlab = NounSlab::from_noun(elems[2], &local_space);
+        let imported_c_slab: NounSlab = NounSlab::from_noun(elems[3], &local_space);
+        let expected_a_slab: NounSlab = NounSlab::from_noun(foreign_a, &foreign_space);
+        let expected_b_slab: NounSlab = NounSlab::from_noun(foreign_b, &foreign_space);
+        let expected_c_slab: NounSlab = NounSlab::from_noun(foreign_c, &foreign_space);
+        assert!(
+            slab_equality(&imported_a_slab, &expected_a_slab),
+            "first imported noun should match structurally"
+        );
+        assert!(
+            slab_equality(&imported_b_slab, &expected_b_slab),
+            "second imported noun should match structurally"
+        );
+        assert!(
+            slab_equality(&imported_c_slab, &expected_c_slab),
+            "third imported noun should match structurally"
+        );
+        assert!(
+            !unsafe { elems[1].raw_equals(&foreign_a) },
+            "first imported noun should be copied into the destination slab"
+        );
+        assert!(
+            !unsafe { elems[2].raw_equals(&foreign_b) },
+            "second imported noun should be copied into the destination slab"
+        );
+        assert!(
+            !unsafe { elems[3].raw_equals(&foreign_c) },
+            "third imported noun should be copied into the destination slab"
+        );
     }
 
     #[test]

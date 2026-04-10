@@ -1,7 +1,7 @@
 use libp2p::PeerId;
 use nockapp::noun::slab::NounSlab;
 use nockapp::NockAppError;
-use nockvm::noun::{Noun, NounAllocator, NounSpace, D};
+use nockvm::noun::{Noun, NounAllocator, NounHandle, NounSpace, D};
 use nockvm_macros::tas;
 use serde_bytes::ByteBuf;
 
@@ -32,14 +32,14 @@ impl NockchainFact {
         let head = noun.in_space(&space).as_cell()?.head();
 
         if head.eq_bytes(b"heard-block") {
-            let page = noun.in_space(&space).as_cell()?.tail().noun();
-            let block_id = block_id_from_page(page, &space)?;
-            let block_id_str = tip5_hash_to_base58_stack(slab, block_id, &space)?;
+            let page = noun.in_space(&space).as_cell()?.tail();
+            let block_id = block_id_from_page(page)?;
+            let block_id_str = tip5_hash_to_base58_stack(slab, block_id.noun(), block_id.space())?;
             Ok(NockchainFact::HeardBlock(block_id_str, poke_slab))
         } else if head.eq_bytes(b"heard-tx") {
-            let raw_tx = noun.in_space(&space).as_cell()?.tail().noun();
-            let tx_id = tx_id_from_raw_tx(raw_tx, &space)?;
-            let tx_id_str = tip5_hash_to_base58_stack(slab, tx_id, &space)?;
+            let raw_tx = noun.in_space(&space).as_cell()?.tail();
+            let tx_id = tx_id_from_raw_tx(raw_tx)?;
+            let tx_id_str = tip5_hash_to_base58_stack(slab, tx_id.noun(), tx_id.space())?;
             Ok(NockchainFact::HeardTx(tx_id_str, poke_slab))
         } else if head.eq_bytes(b"heard-elders") {
             let elders_noun = noun.in_space(&space).as_cell()?.tail().noun();
@@ -70,41 +70,41 @@ impl NockchainFact {
     }
 }
 
-fn block_id_from_page(page: Noun, space: &NounSpace) -> Result<Noun, NockAppError> {
-    let page_cell = page.in_space(space).as_cell()?;
+fn block_id_from_page<'a>(page: NounHandle<'a>) -> Result<NounHandle<'a>, NockAppError> {
+    let page_cell = page.as_cell()?;
     // page v0: [block-id ...]
     // page v1: [%1 block-id ...]
     match page_cell.head().as_atom() {
         Ok(version_atom) => {
             let version = version_atom.as_u64()?;
             if version == 1 {
-                return Ok(page_cell.tail().as_cell()?.head().noun());
+                return Ok(page_cell.tail().as_cell()?.head());
             }
             return Err(NockAppError::OtherError(format!(
                 "Unsupported page version {}",
                 version
             )));
         }
-        Err(_) => Ok(page_cell.head().noun()),
+        Err(_) => Ok(page_cell.head()),
     }
 }
 
-fn tx_id_from_raw_tx(raw_tx: Noun, space: &NounSpace) -> Result<Noun, NockAppError> {
-    let raw_tx_cell = raw_tx.in_space(space).as_cell()?;
+fn tx_id_from_raw_tx<'a>(raw_tx: NounHandle<'a>) -> Result<NounHandle<'a>, NockAppError> {
+    let raw_tx_cell = raw_tx.as_cell()?;
     // raw-tx v0: [tx-id ...]
     // raw-tx v1: [%1 tx-id ...]
     match raw_tx_cell.head().as_atom() {
         Ok(version_atom) => {
             let version = version_atom.as_u64()?;
             if version == 1 {
-                return Ok(raw_tx_cell.tail().as_cell()?.head().noun());
+                return Ok(raw_tx_cell.tail().as_cell()?.head());
             }
             return Err(NockAppError::OtherError(format!(
                 "Unsupported raw-tx version {}",
                 version
             )));
         }
-        Err(_) => Ok(raw_tx_cell.head().noun()),
+        Err(_) => Ok(raw_tx_cell.head()),
     }
 }
 
@@ -287,6 +287,87 @@ impl NockchainResponse {
         let message_bytebuf = ByteBuf::from(message_bytes.to_vec());
         NockchainResponse::Result {
             message: message_bytebuf,
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use nockapp::utils::make_tas;
+    use nockvm::noun::T;
+
+    use super::*;
+
+    #[test]
+    fn test_block_id_from_page_supports_v0_and_v1() {
+        let mut slab: NounSlab = NounSlab::new();
+        let block_id = T(&mut slab, &[D(1), D(2), D(3), D(4), D(5)]);
+        let v0_page = T(&mut slab, &[block_id, D(99)]);
+        let v1_page = T(&mut slab, &[D(1), block_id, D(99)]);
+        let space = slab.noun_space();
+
+        let v0 = block_id_from_page(v0_page.in_space(&space)).expect("v0 page should decode");
+        let v1 = block_id_from_page(v1_page.in_space(&space)).expect("v1 page should decode");
+
+        assert!(unsafe { v0.noun().raw_equals(&block_id) });
+        assert!(unsafe { v1.noun().raw_equals(&block_id) });
+    }
+
+    #[test]
+    fn test_tx_id_from_raw_tx_supports_v0_and_v1() {
+        let mut slab: NounSlab = NounSlab::new();
+        let tx_id = T(&mut slab, &[D(6), D(7), D(8), D(9), D(10)]);
+        let v0_raw_tx = T(&mut slab, &[tx_id, D(11)]);
+        let v1_raw_tx = T(&mut slab, &[D(1), tx_id, D(11)]);
+        let space = slab.noun_space();
+
+        let v0 = tx_id_from_raw_tx(v0_raw_tx.in_space(&space)).expect("v0 raw-tx should decode");
+        let v1 = tx_id_from_raw_tx(v1_raw_tx.in_space(&space)).expect("v1 raw-tx should decode");
+
+        assert!(unsafe { v0.noun().raw_equals(&tx_id) });
+        assert!(unsafe { v1.noun().raw_equals(&tx_id) });
+    }
+
+    #[test]
+    fn test_from_noun_slab_extracts_v1_block_and_tx_ids() {
+        let mut block_slab: NounSlab = NounSlab::new();
+        let block_id = T(&mut block_slab, &[D(1), D(2), D(3), D(4), D(5)]);
+        let block_page = T(&mut block_slab, &[D(1), block_id, D(0)]);
+        let heard_block_tag = make_tas(&mut block_slab, "heard-block").as_noun();
+        let heard_block = T(&mut block_slab, &[heard_block_tag, block_page]);
+        block_slab.set_root(heard_block);
+        let block_space = block_slab.noun_space();
+        let expected_block_id =
+            tip5_hash_to_base58(block_id, &block_space).expect("block id should encode");
+
+        let parsed_block =
+            NockchainFact::from_noun_slab(&mut block_slab).expect("heard-block should parse");
+        match parsed_block {
+            NockchainFact::HeardBlock(id, poke) => {
+                assert_eq!(id, expected_block_id);
+                let poke_space = poke.noun_space();
+                assert!(unsafe { poke.root().in_space(&poke_space).as_cell().is_ok() });
+            }
+            other => panic!("expected HeardBlock, got {other:?}"),
+        }
+
+        let mut tx_slab: NounSlab = NounSlab::new();
+        let tx_id = T(&mut tx_slab, &[D(6), D(7), D(8), D(9), D(10)]);
+        let raw_tx = T(&mut tx_slab, &[D(1), tx_id, D(0)]);
+        let heard_tx_tag = make_tas(&mut tx_slab, "heard-tx").as_noun();
+        let heard_tx = T(&mut tx_slab, &[heard_tx_tag, raw_tx]);
+        tx_slab.set_root(heard_tx);
+        let tx_space = tx_slab.noun_space();
+        let expected_tx_id = tip5_hash_to_base58(tx_id, &tx_space).expect("tx id should encode");
+
+        let parsed_tx = NockchainFact::from_noun_slab(&mut tx_slab).expect("heard-tx should parse");
+        match parsed_tx {
+            NockchainFact::HeardTx(id, poke) => {
+                assert_eq!(id, expected_tx_id);
+                let poke_space = poke.noun_space();
+                assert!(unsafe { poke.root().in_space(&poke_space).as_cell().is_ok() });
+            }
+            other => panic!("expected HeardTx, got {other:?}"),
         }
     }
 }
