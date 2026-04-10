@@ -1,15 +1,15 @@
 use either::{Left, Right};
-use nockvm::noun::{Noun, NounSpace};
+use nockvm::noun::{Noun, NounHandle, NounSpace};
 
-pub enum ScryResult {
-    BadPath,    // ~
-    Nothing,    // [~ ~]
-    Some(Noun), // [~ ~ foo]
-    Invalid,    // anything that isn't one of the above
+pub enum ScryResult<'a> {
+    BadPath,             // ~
+    Nothing,             // [~ ~]
+    Some(NounHandle<'a>), // [~ ~ foo]
+    Invalid,             // anything that isn't one of the above
 }
 
-impl ScryResult {
-    pub fn from_noun(noun: &Noun, space: &NounSpace) -> ScryResult {
+impl<'a> ScryResult<'a> {
+    pub fn from_noun(noun: &Noun, space: &'a NounSpace) -> ScryResult<'a> {
         match noun.in_space(space).as_either_atom_cell() {
             Left(atom) => {
                 let Ok(direct) = atom.atom().as_direct() else {
@@ -38,7 +38,7 @@ impl ScryResult {
                                 return ScryResult::Invalid;
                             };
                             if tail_head.data() == 0 {
-                                return ScryResult::Some(tail.tail().noun());
+                                return ScryResult::Some(tail.tail());
                             }
                         }
                     }

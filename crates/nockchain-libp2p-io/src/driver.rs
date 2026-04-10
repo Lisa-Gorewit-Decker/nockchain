@@ -1582,7 +1582,8 @@ fn create_scry_response(
             Left(())
         }
         ScryResult::Some(x) => {
-            let nouns = vec![x];
+            let imported = res_slab.copy_into(x.noun(), x.space());
+            let nouns = vec![imported];
             if let Ok(response_noun) = prepend_tas(res_slab, heard_type, nouns) {
                 res_slab.set_root(response_noun);
                 Right(Ok(NockchainResponse::new_response_result(res_slab.jam())))
@@ -1979,6 +1980,68 @@ mod tests {
             assert!(result.is_err());
             drop(slab);
         }
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore = "memfd_create unsupported in Miri")]
+    fn test_create_scry_response_wraps_peek_payload_in_response() {
+        let mut scry_res_slab: NounSlab = NounSlab::new();
+        let payload = T(&mut scry_res_slab, &[D(1), D(2)]);
+        let scry_result = T(&mut scry_res_slab, &[D(0), D(0), payload]);
+        scry_res_slab.set_root(scry_result);
+
+        let scry_space = scry_res_slab.noun_space();
+        match ScryResult::from_noun(unsafe { scry_res_slab.root() }, &scry_space) {
+            ScryResult::Some(found) => {
+                assert!(unsafe { found.noun().raw_equals(&payload) });
+            }
+            _ => panic!("expected Some(payload) scry result"),
+        }
+
+        let mut res_slab = NounSlab::new();
+        let response = create_scry_response(
+            unsafe { scry_res_slab.root() },
+            &scry_space,
+            "heard-block",
+            &mut res_slab,
+        );
+        let Right(Ok(NockchainResponse::Result { message })) = response else {
+            panic!("expected a successful response result");
+        };
+
+        let mut decoded_slab: NounSlab = NounSlab::new();
+        decoded_slab
+            .cue_into(message.into_vec().into())
+            .expect("response jam should decode");
+        let decoded_space = decoded_slab.noun_space();
+        let response_cell = unsafe { decoded_slab.root() }
+            .in_space(&decoded_space)
+            .as_cell()
+            .expect("response root should be a cell");
+        assert!(response_cell.head().eq_bytes(b"heard-block"));
+
+        let payload_cell = response_cell
+            .tail()
+            .as_cell()
+            .expect("heard-block payload should be a cell");
+        assert_eq!(
+            payload_cell
+                .head()
+                .as_atom()
+                .expect("payload head should be an atom")
+                .as_u64()
+                .expect("payload head should fit in u64"),
+            1
+        );
+        assert_eq!(
+            payload_cell
+                .tail()
+                .as_atom()
+                .expect("payload tail should be an atom")
+                .as_u64()
+                .expect("payload tail should fit in u64"),
+            2
+        );
     }
 
     #[test]
