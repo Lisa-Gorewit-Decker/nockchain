@@ -2781,10 +2781,16 @@ mod tests {
     use std::fs;
     use std::path::Path;
 
+    use bytes::Bytes;
     use nockvm::jets::cold::Cold;
     use nockvm::jets::hot::HotEntry;
+    use nockvm::jets::warm::Warm;
+    use tempfile::TempDir;
 
     use super::*;
+
+    const DUMB_KERNEL_JAM: &[u8] =
+        include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../assets/dumb.jam"));
 
     fn dummy_serf() -> Serf {
         let mut stack = NockStack::new(1 << 18, 0);
@@ -2819,6 +2825,147 @@ mod tests {
         Kernel::load(&jam_bytes, None, vec![], TraceOpts::default(), None)
             .await
             .expect("Could not load kernel")
+    }
+
+    fn bench_serf(kernel_bytes: &[u8]) -> Serf {
+        let stack = NockStack::new(NOCK_STACK_SIZE_TINY, 0);
+        Serf::new(
+            stack,
+            None,
+            None,
+            false,
+            None,
+            false,
+            None,
+            None,
+            None::<SaveableCheckpoint>,
+            kernel_bytes,
+            &[],
+            vec![],
+            TraceOpts::default(),
+        )
+    }
+
+    #[derive(Debug)]
+    struct ColdPersistenceBenchReport {
+        first_boot_with_cold_ready: Duration,
+        cold_to_noun: Duration,
+        noun_to_jam: Duration,
+        save_jam_to_disk: Duration,
+        cue_noun_from_disk: Duration,
+        reinject_cued_cold_into_vm: Duration,
+        jam_bytes: usize,
+    }
+
+    impl ColdPersistenceBenchReport {
+        fn print(&self) {
+            println!("cold_state_persistence_bench");
+            println!("  kernel_asset=assets/dumb.jam");
+            println!(
+                "  first_boot_with_cold_ready_ms={:.3}",
+                duration_ms(self.first_boot_with_cold_ready)
+            );
+            println!("  cold_to_noun_ms={:.3}", duration_ms(self.cold_to_noun));
+            println!("  noun_to_jam_ms={:.3}", duration_ms(self.noun_to_jam));
+            println!(
+                "  save_jam_to_disk_ms={:.3}",
+                duration_ms(self.save_jam_to_disk)
+            );
+            println!(
+                "  cue_noun_from_disk_ms={:.3}",
+                duration_ms(self.cue_noun_from_disk)
+            );
+            println!(
+                "  reinject_cued_cold_into_vm_ms={:.3}",
+                duration_ms(self.reinject_cued_cold_into_vm)
+            );
+            println!("  jam_bytes={}", self.jam_bytes);
+        }
+    }
+
+    #[test]
+    #[ignore = "benchmark harness"]
+    #[cfg_attr(miri, ignore)]
+    fn cold_state_noun_jam_persistence_bench() {
+        let boot_start = Instant::now();
+        let mut serf = bench_serf(DUMB_KERNEL_JAM);
+        let first_boot_with_cold_ready = boot_start.elapsed();
+
+        let cold_to_noun_start = Instant::now();
+        let cold_noun = serf.context.cold.into_noun(serf.stack());
+        let cold_to_noun = cold_to_noun_start.elapsed();
+
+        let noun_to_jam_start = Instant::now();
+        let cold_jam = {
+            let space = serf.context.stack.noun_space();
+            NockJammer::jam(cold_noun, &space)
+        };
+        let noun_to_jam = noun_to_jam_start.elapsed();
+
+        let temp_dir = TempDir::new().expect("create temp dir");
+        let cold_jam_path = temp_dir.path().join("cold-state.jam");
+
+        let save_jam_to_disk_start = Instant::now();
+        durability::write_atomic(&cold_jam_path, &cold_jam, "cold_state_bench_write")
+            .expect("persist cold jam");
+        let save_jam_to_disk = save_jam_to_disk_start.elapsed();
+
+        let cue_noun_from_disk_start = Instant::now();
+        let jam_from_disk = Bytes::from(fs::read(&cold_jam_path).expect("read cold jam"));
+        let mut cued_cold_slab: NounSlab = NounSlab::new();
+        let cued_cold_noun = cued_cold_slab
+            .cue_into(jam_from_disk)
+            .expect("cue cold noun");
+        cued_cold_slab.set_root(cued_cold_noun);
+        let cue_noun_from_disk = cue_noun_from_disk_start.elapsed();
+
+        let mut inject_stack = NockStack::new(NOCK_STACK_SIZE_TINY, 0);
+        let inject_cold = Cold::new(&mut inject_stack);
+        let mut inject_context =
+            create_context(inject_stack, URBIT_HOT_STATE, inject_cold, None, vec![]);
+
+        let reinject_cued_cold_into_vm_start = Instant::now();
+        let cued_cold_in_vm = cued_cold_slab.copy_to_stack(&mut inject_context.stack);
+        let space = inject_context.stack.noun_space();
+        let cold_vecs = Cold::from_noun(&mut inject_context.stack, &cued_cold_in_vm, &space)
+            .expect("decode cold noun");
+        let rebuilt_cold = Cold::from_vecs(
+            &mut inject_context.stack,
+            cold_vecs.0,
+            cold_vecs.1,
+            cold_vecs.2,
+        );
+        inject_context.cold = rebuilt_cold;
+        let hot = inject_context.hot;
+        let test_jets = inject_context.test_jets;
+        inject_context.warm = Warm::init(
+            &mut inject_context.stack,
+            &mut inject_context.cold,
+            &hot,
+            &test_jets,
+        );
+        let reinject_cued_cold_into_vm = reinject_cued_cold_into_vm_start.elapsed();
+
+        let reinjected_cold_noun = inject_context.cold.into_noun(&mut inject_context.stack);
+        let reinjected_cold_jam = {
+            let space = inject_context.stack.noun_space();
+            NockJammer::jam(reinjected_cold_noun, &space)
+        };
+        assert!(
+            !reinjected_cold_jam.is_empty(),
+            "re-injected cold state should remain serializable"
+        );
+
+        let report = ColdPersistenceBenchReport {
+            first_boot_with_cold_ready,
+            cold_to_noun,
+            noun_to_jam,
+            save_jam_to_disk,
+            cue_noun_from_disk,
+            reinject_cued_cold_into_vm,
+            jam_bytes: cold_jam.len(),
+        };
+        report.print();
     }
 
     // Convert this to an integration test and feed it the kernel.jam from Choo in CI/CD

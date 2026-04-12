@@ -254,3 +254,92 @@ If the goal is to finish the PMA effort without taking the full branded-handle A
 The recent fixes closed the concrete bugs that were already biting the libp2p, scry, and kernel-error paths. The remaining PMA risk is now concentrated in a smaller set of raw-`Noun` escape hatches.
 
 The codebase is not yet “completely correct” on this axis. The biggest remaining blockers are the raw noun passthrough APIs in `noun-serde`, `cold`, and the math/jetpack list helpers, plus the outright broken `&str -> Noun` constructor.
+
+## Addendum After Commit `7c674ec`
+
+I continued the audit from the committed baseline above and found additional slab-side and math-side escape hatches. I did not modify any Rust code in this pass.
+
+### 8. High: `NounSlab` still has raw-noun constructors/mutators that can install mixed trees
+
+Files:
+- `crates/nockapp/src/noun/slab.rs:88`
+- `crates/nockapp/src/noun/slab.rs:94`
+- `crates/nockapp/src/noun/slab.rs:251`
+- `crates/nockapp/src/noun/slab.rs:425`
+- `crates/nockchain-wallet/src/main.rs:513`
+
+What is wrong:
+- `NounSlab::modify(...)` passes the raw current root into a closure, accepts `Vec<Noun>` back, and builds a fresh tuple in the destination slab without copying any returned nouns first.
+- `NounSlab::modify_noun(...)` accepts a raw `Noun` from the closure and roots it directly.
+- `impl From<[Noun; N]> for NounSlab` builds a fresh root tuple from raw array elements without importing them.
+- `NounSlab::set_root(...)` only checks whether the top-level root pointer lives in the slab. It does not verify that all reachable descendants do. A fresh in-slab cell wrapping foreign children therefore passes validation.
+
+Why this is the same bug family:
+- This recreates the exact mixed-tree / alien-pointer class that `modify_with_imports3(...)` had before the recent fix.
+- The shallow `set_root(...)` validation is the reason these helpers can silently succeed even when descendants still belong to a different arena.
+
+Current reachability:
+- The current `modify(...)` / `modify_noun(...)` call sites I checked appear safe today because they only reuse the slab’s own root or direct atoms.
+- `impl From<[Noun; N]> for NounSlab` is only used in tests right now.
+- The private wallet helper at `crates/nockchain-wallet/src/main.rs:513` repeats the same pattern locally by accepting `args: &[Noun]` and feeding them straight into `T(slab, args)`. Its current callers build those args in the same slab, so I did not flag it as a live crash.
+
+Assessment:
+- High-confidence latent bug source.
+- This is the most important new finding from the continued audit because it leaves the slab API surface able to recreate the same bug family we just fixed.
+
+### 9. Medium-High: public `NounMap` in `slab.rs` stores raw noun keys with no owner
+
+Files:
+- `crates/nockapp/src/noun/slab.rs:553`
+- `crates/nockapp/src/noun/slab.rs:565`
+- `crates/nockapp/src/noun/slab.rs:581`
+
+What is wrong:
+- `NounMap<V>` stores raw `Noun` keys in `Vec<(Noun, V)>`.
+- `insert(...)` and `get(...)` require the caller to provide a `&NounSpace` later when comparing those retained keys.
+- If a caller inserts keys from a temporary slab/stack and keeps the map longer than the owner, the retained keys become dangling or require exactly the kind of after-the-fact provenance reconstruction PMA is trying to eliminate.
+
+Why this is the same bug family:
+- Provenance is discarded at insertion time and reintroduced later by passing a `space` back in.
+- That is the same structural mistake as the other raw-`Noun` container helpers.
+
+Current reachability:
+- I only found internal serialization/backref uses today, where the source noun stays live for the duration of `jam(...)`.
+- I did not find an external production use that is already misbehaving.
+
+Assessment:
+- Latent public API bug.
+- Lower priority than the slab mutators above, but still wrong on the PMA axis.
+
+### 10. Medium-High: `nockchain-math::NounMathExt::uncell()` still downgrades traversal back to raw `[Noun; N]`
+
+Files:
+- `crates/nockchain-math/src/noun_ext.rs:17`
+- `crates/nockchain-math/src/convert.rs:150`
+
+What is wrong:
+- The raw-`Noun` trait variant `NounMathExt::uncell(...)` takes a `space`, traverses with it, and then returns raw `[Noun; N]`.
+- That immediately discards the provenance that was just supplied.
+- The handle-shaped alternative already exists as `NounMathExtHandle::uncell(...)`, but a wide swath of code still uses the raw variant.
+
+Concrete downstream uses I found:
+- `crates/zkvm-jetpack/src/jets/proof_gen_jets.rs:220`
+- `crates/zkvm-jetpack/src/jets/proof_gen_jets.rs:291`
+- `crates/zkvm-jetpack/src/jets/mega_jets.rs:28`
+- `crates/zkvm-jetpack/src/jets/mary_jets.rs:337`
+- `crates/zkvm-jetpack/src/jets/tip5_jets.rs:289`
+- `crates/zkvm-jetpack/src/jets/verifier_jets.rs:335`
+- `crates/nockchain-math/src/zoon/zmap.rs:22`
+- `crates/nockchain-math/src/zoon/zset.rs:17`
+
+Why this is the same bug family:
+- This is tuple-shaped provenance erasure.
+- It is the same underlying mistake already called out for `HoonList`, `HoonMap`, `Vec<Noun>`, and `Option<Noun>` helpers.
+
+Current reachability:
+- The raw nouns returned by `uncell(...)` are currently consumed immediately in the same stack/space in the call sites I checked.
+- I did not prove a present-day crash from these uses alone.
+
+Assessment:
+- Systemic latent hazard.
+- Not as urgent as the slab mutators, but still part of the same remaining PMA blocker set.
