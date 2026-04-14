@@ -33,6 +33,10 @@ impl AtomExt for Atom {
     // NounSpace-dependent helpers moved to NounHandle/AtomHandle.
 }
 
+#[diagnostic::on_unimplemented(
+    message = "`{Self}` cannot implement `IntoNoun` safely",
+    label = "use `IntoSlab` or allocate into a caller-owned allocator"
+)]
 pub trait IntoNoun {
     fn into_noun(self) -> Noun;
 }
@@ -66,22 +70,7 @@ impl IntoNoun for Noun {
         self
     }
 }
-impl IntoNoun for &str {
-    fn into_noun(self) -> Noun {
-        let mut slab: NounSlab = NounSlab::new();
-        let bytes = self.to_bytes().unwrap_or_else(|err| {
-            panic!(
-                "Panicked with {err:?} at {}:{} (git sha: {:?})",
-                file!(),
-                line!(),
-                option_env!("GIT_SHA")
-            )
-        });
-        let contents_atom =
-            <IndirectAtom as IndirectAtomExt>::from_bytes(&mut slab, bytes.as_slice());
-        contents_atom.as_noun()
-    }
-}
+impl !IntoNoun for &str {}
 
 pub trait AsSlabVec {
     fn as_slab_vec(&self, space: &NounSpace) -> Vec<NounSlab>;
@@ -124,7 +113,16 @@ pub trait IntoSlab {
 impl IntoSlab for &str {
     fn into_slab(self) -> NounSlab {
         let mut slab = NounSlab::new();
-        let noun = self.into_noun();
+        let bytes = self.to_bytes().unwrap_or_else(|err| {
+            panic!(
+                "Panicked with {err:?} at {}:{} (git sha: {:?})",
+                file!(),
+                line!(),
+                option_env!("GIT_SHA")
+            )
+        });
+        let noun =
+            <IndirectAtom as IndirectAtomExt>::from_bytes(&mut slab, bytes.as_slice()).as_noun();
         slab.set_root(noun);
         slab
     }
@@ -163,5 +161,29 @@ impl<A: NounAllocator> NounAllocatorExt for A {
             }
         }
         res
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use nockvm::noun::NounAllocator;
+
+    use super::IntoSlab;
+    use crate::test_support::TestArena;
+
+    #[test]
+    fn str_into_slab_allocates_in_destination_slab() {
+        let _test_arena = TestArena::default();
+        let slab = "hello".into_slab();
+        let root = unsafe { *slab.root() };
+        let space = slab.noun_space();
+        let atom = root
+            .in_space(&space)
+            .as_atom()
+            .expect("root should be an atom");
+        let text = atom
+            .into_string()
+            .expect("root atom should decode to utf-8");
+        assert_eq!(text, "hello");
     }
 }

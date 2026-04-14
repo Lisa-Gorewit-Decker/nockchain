@@ -8,17 +8,17 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
-use bincode::{Decode, Encode, config};
+use bincode::{config, Decode, Encode};
 use blake3::{Hash, Hasher};
 use byteorder::{LittleEndian, WriteBytesExt};
 use nockvm::hamt::Hamt;
-use nockvm::interpreter::{self, Error, Mote, NockCancelToken, interpret};
+use nockvm::interpreter::{self, interpret, Error, Mote, NockCancelToken};
 use nockvm::jets::cold::{Cold, Nounable};
 use nockvm::jets::hot::{HotEntry, URBIT_HOT_STATE};
 use nockvm::jets::nock::util::mook;
 use nockvm::mem::NockStack;
 use nockvm::mug::met3_usize;
-use nockvm::noun::{Atom, Cell, D, DirectAtom, IndirectAtom, Noun, T};
+use nockvm::noun::{Atom, Cell, DirectAtom, IndirectAtom, Noun, D, T};
 use nockvm::pma::{Pma, PmaCopy, PmaCopyFrom};
 use nockvm::trace::{path_to_cord, write_serf_trace_safe};
 use nockvm_macros::tas;
@@ -29,16 +29,16 @@ use tracing::{debug, error, info, warn};
 use crate::event_log::{EventLog, EventLogConfig, EventLogEntry};
 use crate::kernel::boot::TraceOpts;
 use crate::metrics::NockAppMetrics;
-use crate::nockapp::wire::{WireRepr, wire_to_noun};
+use crate::nockapp::wire::{wire_to_noun, WireRepr};
 use crate::noun::slab::{Jammer, NockJammer, NounSlab};
 use crate::noun::slam;
 use crate::save::SaveableCheckpoint;
 use crate::snapshot::{
-    SnapshotManifest, maybe_create_epoch_snapshot, maybe_create_rotating_snapshot,
+    maybe_create_epoch_snapshot, maybe_create_rotating_snapshot, SnapshotManifest,
 };
 use crate::utils::{
-    NOCK_STACK_SIZE, NOCK_STACK_SIZE_HUGE, NOCK_STACK_SIZE_LARGE, NOCK_STACK_SIZE_MEDIUM,
-    NOCK_STACK_SIZE_SMALL, NOCK_STACK_SIZE_TINY, create_context, current_da, durability,
+    create_context, current_da, durability, NOCK_STACK_SIZE, NOCK_STACK_SIZE_HUGE,
+    NOCK_STACK_SIZE_LARGE, NOCK_STACK_SIZE_MEDIUM, NOCK_STACK_SIZE_SMALL, NOCK_STACK_SIZE_TINY,
 };
 use crate::{AtomExt, CrownError, IndirectAtomExt, NounExt, Result, ToBytesExt};
 

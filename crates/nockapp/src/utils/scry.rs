@@ -2,10 +2,10 @@ use either::{Left, Right};
 use nockvm::noun::{Noun, NounHandle, NounSpace};
 
 pub enum ScryResult<'a> {
-    BadPath,             // ~
-    Nothing,             // [~ ~]
+    BadPath,              // ~
+    Nothing,              // [~ ~]
     Some(NounHandle<'a>), // [~ ~ foo]
-    Invalid,             // anything that isn't one of the above
+    Invalid,              // anything that isn't one of the above
 }
 
 impl<'a> ScryResult<'a> {
