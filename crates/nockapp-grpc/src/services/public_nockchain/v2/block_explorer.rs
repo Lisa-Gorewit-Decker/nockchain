@@ -1381,10 +1381,20 @@ struct BlockRangeEntryTail {
     tail: PageAndTxs,
 }
 
-#[derive(Debug, Clone, NounDecode)]
+#[derive(Debug, Clone)]
 struct PageAndTxs {
     page: Page,
     txs: Noun,
+}
+
+impl NounDecode for PageAndTxs {
+    fn from_noun(noun: &Noun, space: &NounSpace) -> Result<Self, NounDecodeError> {
+        let cell = noun.in_space(space).as_cell()?;
+        Ok(Self {
+            page: Page::from_noun_handle(&cell.head())?,
+            txs: cell.tail().noun(),
+        })
+    }
 }
 
 impl BlockRangeEntry {
@@ -2038,10 +2048,20 @@ struct FullPageEntryTail {
     tail: FullPageData,
 }
 
-#[derive(Debug, Clone, NounDecode)]
+#[derive(Debug, Clone)]
 struct FullPageData {
     page: FullPageNoun,
     txs: Noun,
+}
+
+impl NounDecode for FullPageData {
+    fn from_noun(noun: &Noun, space: &NounSpace) -> Result<Self, NounDecodeError> {
+        let cell = noun.in_space(space).as_cell()?;
+        Ok(Self {
+            page: FullPageNoun::from_noun_handle(&cell.head())?,
+            txs: cell.tail().noun(),
+        })
+    }
 }
 
 /// Full page structure matching Hoon's page type

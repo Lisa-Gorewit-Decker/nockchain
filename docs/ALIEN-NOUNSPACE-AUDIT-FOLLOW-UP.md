@@ -36,6 +36,8 @@ pub trait IntoNoun: private::IntoNounAllowed {
 
 2. High: noun-serde still has raw-Noun identity encode/decode in crates/noun-serde/src/lib.rs:113. That is still the broadest unsafe provenance-erasure boundary in the tree. The decode side is live today through block-explorer raw fields; the encode side is more latent, but the API is still wrong.
 
+Fixed. Banned NounEncode/NounDecode for Noun.
+
 3. Medium-High: NounSlab can still build mixed trees even after the newer set_root() guard. modify() in crates/nockapp/src/noun/slab.rs:88 and From<[Noun; N]> in crates/nockapp/src/noun/slab.rs:251 feed raw Nouns into T(...), then set_root() only validates the top allocation in crates/nockapp/src/noun/slab.rs:425. So foreign children can still be embedded under a local root cell. I did not find a bad live caller, but this is still areal footgun.
 
 4. Medium-High: jets::cold still treats raw Noun as a decoded payload in crates/nockvm/rust/nockvm/src/jets/cold.rs:932 and crates/nockvm/rust/nockvm/src/jets/cold.rs:1019. This is less urgent than the original audit implied because the live checkpoint restore path first copies saveable.cold into the active stack before Cold::from_noun(...) in crates/nockapp/src/kernel/form.rs:1646. So I do not see a current live mismatch there,but the codec API is still unsafe.

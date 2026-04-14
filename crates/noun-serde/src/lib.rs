@@ -1,3 +1,4 @@
+#![feature(negative_impls)]
 // Allow unwrap in test code - standard practice for test assertions
 #![cfg_attr(test, allow(clippy::unwrap_used))]
 
@@ -109,18 +110,10 @@ impl From<str::Utf8Error> for NounDecodeError {
     }
 }
 
-// Base no-nop implementations for Noun
-impl NounEncode for Noun {
-    fn to_noun<A: NounAllocator>(&self, _allocator: &mut A) -> Noun {
-        *self
-    }
-}
-
-impl NounDecode for Noun {
-    fn from_noun(noun: &Noun, _space: &NounSpace) -> Result<Self, NounDecodeError> {
-        Ok(*noun)
-    }
-}
+// Raw nouns do not carry arena provenance, so noun-serde intentionally does
+// not support identity encode/decode for `Noun`.
+impl !NounEncode for Noun {}
+impl !NounDecode for Noun {}
 
 // Implementations for primitive types
 impl NounEncode for u64 {

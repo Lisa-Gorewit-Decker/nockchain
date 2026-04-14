@@ -2604,7 +2604,7 @@ mod paging_tests {
             libc::mincore(
                 ptr as *mut libc::c_void,
                 len,
-                vec.as_mut_ptr() as *mut libc::c_char,
+                vec.as_mut_ptr().cast(),
             )
         };
         if ret != 0 {

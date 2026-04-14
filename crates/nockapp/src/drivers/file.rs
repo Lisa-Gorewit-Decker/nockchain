@@ -168,8 +168,8 @@ pub fn file() -> IODriverFn {
                     }
                     Err(_) => {
                         let mut poke_slab = NounSlab::new();
-                        let poke_items: Vec<Noun> = vec![D(tas!(b"file")), D(tas!(b"read")), D(0)];
-                        let poke_noun = poke_items.to_noun(&mut poke_slab);
+                        let poke_noun: Noun =
+                            T(&mut poke_slab, &[D(tas!(b"file")), D(tas!(b"read")), D(0)]);
                         poke_slab.set_root(poke_noun);
                         let wire = FileWire::Read.to_wire();
                         handle.poke(wire, poke_slab).await?;
