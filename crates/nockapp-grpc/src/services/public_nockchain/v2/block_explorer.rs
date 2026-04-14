@@ -675,18 +675,22 @@ impl BlockExplorerCache {
             "peek_full_page raw result"
         );
 
-        let opt: Option<Option<Vec<FullPageEntryNoun>>> =
-            NounDecode::from_noun_handle(&result_noun_handle).map_err(|e| {
-                tracing::error!("Failed to decode FullPageEntryNoun list: {:?}", e);
-                NockAppGrpcError::NounDecode(e)
-            })?;
-        let entries = opt.flatten().ok_or(NockAppGrpcError::PeekReturnedNoData)?;
+        let entries = decode_optional_optional_vec_handles(result_noun_handle).map_err(|e| {
+            tracing::error!("Failed to decode full page entry list: {:?}", e);
+            NockAppGrpcError::NounDecode(e)
+        })?;
+        let entries = entries.ok_or(NockAppGrpcError::PeekReturnedNoData)?;
 
         let parsed: Vec<FullPageDetails> = entries
             .into_iter()
             .map(|entry| {
-                let entry_height = entry.height.0 .0;
-                FullPageDetails::from_raw(entry, &space).map_err(|e| {
+                let entry_height = entry
+                    .slot(2)
+                    .ok()
+                    .and_then(|noun| noun.as_atom().ok())
+                    .and_then(|atom| atom.as_u64().ok())
+                    .unwrap_or(u64::MAX);
+                FullPageDetails::from_noun_handle(&entry).map_err(|e| {
                     tracing::error!(
                         height = entry_height,
                         error = %e,
@@ -1010,14 +1014,15 @@ impl BlockExplorerCache {
 
         let result_noun = unsafe { result.root() };
         let space = result.noun_space();
-        let opt: Option<Option<Vec<BlockRangeEntryNoun>>> =
-            NounDecode::from_noun(&result_noun, &space).map_err(NockAppGrpcError::NounDecode)?;
-        let entries = opt.flatten().ok_or(NockAppGrpcError::PeekReturnedNoData)?;
+        let entries = decode_optional_optional_vec_handles(result_noun.in_space(&space))
+            .map_err(NockAppGrpcError::NounDecode)?
+            .ok_or(NockAppGrpcError::PeekReturnedNoData)?;
 
         let mut parsed = Vec::new();
         for entry in entries {
             parsed.push(
-                BlockEntryWithTxs::from_raw(entry, &space).map_err(NockAppGrpcError::NounDecode)?,
+                BlockEntryWithTxs::from_noun_handle(&entry)
+                    .map_err(NockAppGrpcError::NounDecode)?,
             );
         }
 
@@ -1285,8 +1290,8 @@ impl BlockExplorerCache {
 
         // Decode Option<Option<Vec<(height, block-id, page, txs)>>>
         // We need to extract fields from the page and txs
-        let opt: Option<Option<Vec<BlockRangeEntryNoun>>> =
-            NounDecode::from_noun(&result_noun, &space).map_err(|e| {
+        let decoded_entries =
+            decode_optional_optional_vec_handles(result_noun.in_space(&space)).map_err(|e| {
                 // Log detailed noun structure to help diagnose format issues
                 let noun_debug = if result_noun.is_atom() {
                     format!(
@@ -1309,7 +1314,7 @@ impl BlockExplorerCache {
                     "unknown".to_string()
                 };
                 error!(
-                    "Failed to decode BlockRangeEntryNoun list.\n\
+                    "Failed to decode block range entry list.\n\
                      Decode error: {:?}\n\
                      Result noun structure: {}\n\
                      This is likely a Page decoder issue - check tx_ids (z-set vs list), bignum, or coinbase format.",
@@ -1317,14 +1322,14 @@ impl BlockExplorerCache {
                 );
                 NockAppGrpcError::NounDecode(e)})?;
 
-        let outer_some = opt.is_some();
-        let inner_some = opt.as_ref().map(|v| v.is_some()).unwrap_or(false);
+        let outer_some = result_noun.is_cell();
+        let inner_some = decoded_entries.is_some();
         info!(
             outer_some,
             inner_some, "peek_blocks_range decoded outer options"
         );
 
-        let entries = opt.flatten().ok_or_else(|| {
+        let entries = decoded_entries.ok_or_else(|| {
             warn!("peek_blocks_range: opt.flatten() returned None");
             NockAppGrpcError::PeekReturnedNoData
         })?;
@@ -1336,8 +1341,8 @@ impl BlockExplorerCache {
         let entries: Vec<BlockRangeEntry> = entries
             .into_iter()
             .map(|entry| {
-                BlockRangeEntry::from_raw(entry, &space).map_err(|e| {
-                    error!("Failed to convert BlockRangeEntryNoun: {:?}", e);
+                BlockRangeEntry::from_noun_handle(&entry).map_err(|e| {
+                    error!("Failed to convert block range entry: {:?}", e);
                     e
                 })
             })
@@ -1369,46 +1374,81 @@ struct BlockRangeEntry {
     tx_ids: Vec<Hash>,
 }
 
-#[derive(Debug, Clone, NounDecode)]
-struct BlockRangeEntryNoun {
-    height: BlockHeight,
-    tail: BlockRangeEntryTail,
-}
-
-#[derive(Debug, Clone, NounDecode)]
-struct BlockRangeEntryTail {
-    block_id: Hash,
-    tail: PageAndTxs,
-}
-
-#[derive(Debug, Clone)]
-struct PageAndTxs {
-    page: Page,
-    txs: Noun,
-}
-
-impl NounDecode for PageAndTxs {
-    fn from_noun(noun: &Noun, space: &NounSpace) -> Result<Self, NounDecodeError> {
-        let cell = noun.in_space(space).as_cell()?;
-        Ok(Self {
-            page: Page::from_noun_handle(&cell.head())?,
-            txs: cell.tail().noun(),
-        })
+fn decode_option_handle<'a>(
+    noun: NounHandle<'a>,
+) -> Result<Option<NounHandle<'a>>, NounDecodeError> {
+    if let Ok(atom) = noun.as_atom() {
+        if atom.as_u64()? == 0 {
+            return Ok(None);
+        }
+        return Err(NounDecodeError::Custom("Invalid Option encoding".into()));
     }
+
+    let cell = noun.as_cell().map_err(|_| NounDecodeError::ExpectedCell)?;
+    let head = cell
+        .head()
+        .as_atom()
+        .map_err(|_| NounDecodeError::ExpectedAtom)?;
+    if head.as_u64()? != 0 {
+        return Err(NounDecodeError::Custom(
+            "Invalid Option encoding - expected ~".into(),
+        ));
+    }
+    Ok(Some(cell.tail()))
+}
+
+fn decode_vec_handles<'a>(noun: NounHandle<'a>) -> Result<Vec<NounHandle<'a>>, NounDecodeError> {
+    let mut result = Vec::new();
+    let mut current = noun;
+
+    while let Ok(cell) = current.as_cell() {
+        result.push(cell.head());
+        current = cell.tail();
+    }
+
+    let atom = current
+        .as_atom()
+        .map_err(|_| NounDecodeError::ExpectedAtom)?;
+    if atom.as_u64()? != 0 {
+        return Err(NounDecodeError::Custom("Invalid list termination".into()));
+    }
+
+    Ok(result)
+}
+
+fn decode_optional_optional_vec_handles<'a>(
+    noun: NounHandle<'a>,
+) -> Result<Option<Vec<NounHandle<'a>>>, NounDecodeError> {
+    let Some(inner) = decode_option_handle(noun)? else {
+        return Ok(None);
+    };
+    let Some(list) = decode_option_handle(inner)? else {
+        return Ok(None);
+    };
+    Ok(Some(decode_vec_handles(list)?))
 }
 
 impl BlockRangeEntry {
-    fn from_raw(
-        raw: BlockRangeEntryNoun,
-        space: &NounSpace,
-    ) -> std::result::Result<Self, NounDecodeError> {
-        let BlockRangeEntryNoun { height, tail } = raw;
-        let BlockRangeEntryTail { block_id, tail } = tail;
-        let PageAndTxs { page, txs } = tail;
+    fn from_noun_handle(noun: &NounHandle) -> std::result::Result<Self, NounDecodeError> {
+        let cell = noun.as_cell().map_err(|_| NounDecodeError::ExpectedCell)?;
+        let height = BlockHeight::from_noun_handle(&cell.head())?;
+
+        let tail = cell
+            .tail()
+            .as_cell()
+            .map_err(|_| NounDecodeError::ExpectedCell)?;
+        let block_id = Hash::from_noun_handle(&tail.head())?;
+
+        let page_and_txs = tail
+            .tail()
+            .as_cell()
+            .map_err(|_| NounDecodeError::ExpectedCell)?;
+        let page = Page::from_noun_handle(&page_and_txs.head())?;
+        let txs = page_and_txs.tail();
 
         let parent_id = page.parent;
         let timestamp = page.timestamp;
-        let tx_ids = extract_tx_ids_from_map(&txs.in_space(space))?;
+        let tx_ids = extract_tx_ids_from_map(&txs)?;
 
         Ok(Self {
             height: height.0 .0,
@@ -1459,17 +1499,26 @@ struct BlockEntryWithTxs {
 }
 
 impl BlockEntryWithTxs {
-    fn from_raw(
-        raw: BlockRangeEntryNoun,
-        space: &NounSpace,
-    ) -> std::result::Result<Self, NounDecodeError> {
-        let BlockRangeEntryNoun { height, tail } = raw;
-        let BlockRangeEntryTail { block_id, tail } = tail;
-        let PageAndTxs { page, txs } = tail;
+    fn from_noun_handle(noun: &NounHandle) -> std::result::Result<Self, NounDecodeError> {
+        let cell = noun.as_cell().map_err(|_| NounDecodeError::ExpectedCell)?;
+        let height = BlockHeight::from_noun_handle(&cell.head())?;
+
+        let tail = cell
+            .tail()
+            .as_cell()
+            .map_err(|_| NounDecodeError::ExpectedCell)?;
+        let block_id = Hash::from_noun_handle(&tail.head())?;
+
+        let page_and_txs = tail
+            .tail()
+            .as_cell()
+            .map_err(|_| NounDecodeError::ExpectedCell)?;
+        let page = Page::from_noun_handle(&page_and_txs.head())?;
+        let txs = page_and_txs.tail();
 
         let parent_id = page.parent;
         let timestamp = page.timestamp;
-        let txs_full = extract_transactions_from_map(&txs.in_space(space))?;
+        let txs_full = extract_transactions_from_map(&txs)?;
         let tx_ids = txs_full.iter().map(|(hash, _)| hash.clone()).collect();
 
         Ok(Self {
@@ -2035,77 +2084,39 @@ fn lock_summary(lock: &Lock) -> String {
 // Full Page Details - Noun Decoding Types
 // ============================================================================
 
-/// Noun decoder for full page entry
-#[derive(Debug, Clone, NounDecode)]
-struct FullPageEntryNoun {
-    height: BlockHeight,
-    tail: FullPageEntryTail,
-}
-
-#[derive(Debug, Clone, NounDecode)]
-struct FullPageEntryTail {
-    block_id: Hash,
-    tail: FullPageData,
-}
-
-#[derive(Debug, Clone)]
-struct FullPageData {
-    page: FullPageNoun,
-    txs: Noun,
-}
-
-impl NounDecode for FullPageData {
-    fn from_noun(noun: &Noun, space: &NounSpace) -> Result<Self, NounDecodeError> {
-        let cell = noun.in_space(space).as_cell()?;
-        Ok(Self {
-            page: FullPageNoun::from_noun_handle(&cell.head())?,
-            txs: cell.tail().noun(),
-        })
-    }
-}
-
-/// Full page structure matching Hoon's page type
-#[derive(Debug, Clone)]
-struct FullPageNoun {
-    /// For v1: version tag (%1), for v0: this is actually digest
-    version_or_digest: Noun,
-    /// Remaining page fields
-    rest: Noun,
-}
-
-impl NounDecode for FullPageNoun {
-    fn from_noun(noun: &Noun, space: &NounSpace) -> Result<Self, NounDecodeError> {
-        let cell = noun.as_cell()?;
-        Ok(Self {
-            version_or_digest: cell.in_space(space).head().noun(),
-            rest: cell.in_space(space).tail().noun(),
-        })
-    }
-}
-
 impl FullPageDetails {
-    fn from_raw(
-        raw: FullPageEntryNoun,
-        space: &NounSpace,
-    ) -> std::result::Result<Self, NounDecodeError> {
-        let height = raw.height.0 .0;
-        let block_id = raw.tail.block_id;
-        let page = raw.tail.tail.page;
-        let txs_noun = raw.tail.tail.txs;
+    fn from_noun_handle(noun: &NounHandle) -> std::result::Result<Self, NounDecodeError> {
+        let cell = noun.as_cell().map_err(|_| NounDecodeError::ExpectedCell)?;
+        let height = BlockHeight::from_noun_handle(&cell.head())?.0 .0;
+
+        let tail = cell
+            .tail()
+            .as_cell()
+            .map_err(|_| NounDecodeError::ExpectedCell)?;
+        let block_id = Hash::from_noun_handle(&tail.head())?;
+
+        let page_and_txs = tail
+            .tail()
+            .as_cell()
+            .map_err(|_| NounDecodeError::ExpectedCell)?;
+        let page = page_and_txs.head();
+        let txs_noun = page_and_txs.tail();
+
+        let page_cell = page.as_cell().map_err(|_| NounDecodeError::ExpectedCell)?;
+        let version_or_digest = page_cell.head();
+        let rest = page_cell.tail();
 
         // Determine if v0 or v1 page:
         // - v0 page: [digest pow parent ...] where digest is a Hash (cell of 5 Belts)
         // - v1 page: [%1 digest pow parent ...] where %1 is an atom
         // So if head is an atom, it's v1; if head is a cell (Hash), it's v0
-        let head_is_atom = page.version_or_digest.is_atom();
-        let head_is_cell = page.version_or_digest.is_cell();
-        let head_as_u64 = page
-            .version_or_digest
+        let head_is_atom = version_or_digest.is_atom();
+        let head_is_cell = version_or_digest.is_cell();
+        let head_as_u64 = version_or_digest
             .as_atom()
             .ok()
-            .and_then(|a| a.in_space(space).as_u64().ok());
-        let head_as_bytes = page.version_or_digest.as_atom().ok().map(|a| {
-            let atom_handle = a.in_space(space);
+            .and_then(|a| a.as_u64().ok());
+        let head_as_bytes = version_or_digest.as_atom().ok().map(|atom_handle| {
             let bytes = atom_handle.as_ne_bytes();
             format!("{:?} (len={})", bytes, bytes.len())
         });
@@ -2120,11 +2131,9 @@ impl FullPageDetails {
 
         if head_is_atom {
             // v1 page - head is the version tag
-            let version = page
-                .version_or_digest
+            let version = version_or_digest
                 .as_atom()
                 .map_err(|_| NounDecodeError::Custom("Expected atom for version".into()))?
-                .in_space(space)
                 .as_u64()
                 .map_err(|_| NounDecodeError::Custom("Version too large".into()))?;
 
@@ -2134,36 +2143,32 @@ impl FullPageDetails {
                     version
                 )));
             }
-            decode_v1_page(space, height, block_id, page.rest, txs_noun)
+            decode_v1_page(height, block_id, rest, txs_noun)
         } else {
             // v0 page - head is the digest
-            decode_v0_page(
-                space, height, block_id, page.version_or_digest, page.rest, txs_noun,
-            )
+            decode_v0_page(height, block_id, version_or_digest, rest, txs_noun)
         }
     }
 }
 
 fn decode_v0_page(
-    space: &NounSpace,
     height: u64,
     block_id: Hash,
-    digest_noun: Noun,
-    rest: Noun,
-    txs_noun: Noun,
+    digest_noun: NounHandle,
+    rest: NounHandle,
+    txs_noun: NounHandle,
 ) -> Result<FullPageDetails, NounDecodeError> {
     // v0 page: [digest pow parent tx-ids coinbase timestamp epoch-counter target accumulated-work height msg]
-    let _digest = Hash::from_noun(&digest_noun, space)
+    let _digest = Hash::from_noun_handle(&digest_noun)
         .map_err(|e| NounDecodeError::Custom(format!("v0 page digest: {}", e)))?;
 
     let cell = rest
         .as_cell()
         .map_err(|_| NounDecodeError::Custom("v0 page: rest should be cell after digest".into()))?;
-    let (pow_present, pow_raw) = decode_pow(&cell.in_space(space).head())
+    let (pow_present, pow_raw) = decode_pow(&cell.head())
         .map_err(|e| NounDecodeError::Custom(format!("v0 page pow: {}", e)))?;
 
     let cell = cell
-        .in_space(space)
         .tail()
         .as_cell()
         .map_err(|_| NounDecodeError::Custom("v0 page: expected cell after pow".into()))?;
@@ -2230,7 +2235,7 @@ fn decode_v0_page(
 
     let msg = decode_page_msg(&cell.tail())
         .map_err(|e| NounDecodeError::Custom(format!("v0 page msg: {}", e)))?;
-    let tx_ids = extract_tx_ids_from_map(&txs_noun.in_space(space))
+    let tx_ids = extract_tx_ids_from_map(&txs_noun)
         .map_err(|e| NounDecodeError::Custom(format!("v0 page tx_ids: {}", e)))?;
 
     Ok(FullPageDetails {
@@ -2251,21 +2256,20 @@ fn decode_v0_page(
 }
 
 fn decode_v1_page(
-    space: &NounSpace,
     height: u64,
     block_id: Hash,
-    rest: Noun,
-    txs_noun: Noun,
+    rest: NounHandle,
+    txs_noun: NounHandle,
 ) -> Result<FullPageDetails, NounDecodeError> {
+    let _space = rest.space();
     // v1 page (after version tag): [digest pow parent tx-ids coinbase timestamp epoch-counter target accumulated-work height msg]
     let cell = rest
         .as_cell()
         .map_err(|_| NounDecodeError::Custom("v1 page: rest should be cell".into()))?;
-    let _digest = Hash::from_noun_handle(&cell.in_space(space).head())
+    let _digest = Hash::from_noun_handle(&cell.head())
         .map_err(|e| NounDecodeError::Custom(format!("v1 page digest: {}", e)))?;
 
     let cell = cell
-        .in_space(space)
         .tail()
         .as_cell()
         .map_err(|_| NounDecodeError::Custom("v1 page: expected cell after digest".into()))?;
@@ -2339,7 +2343,7 @@ fn decode_v1_page(
 
     let msg = decode_page_msg(&cell.tail())
         .map_err(|e| NounDecodeError::Custom(format!("v1 page msg: {}", e)))?;
-    let tx_ids = extract_tx_ids_from_map(&txs_noun.in_space(space))
+    let tx_ids = extract_tx_ids_from_map(&txs_noun)
         .map_err(|e| NounDecodeError::Custom(format!("v1 page tx_ids: {}", e)))?;
 
     Ok(FullPageDetails {
@@ -2713,8 +2717,8 @@ mod tests {
 
         // Try to decode it
         let space = slab.noun_space();
-        let raw = BlockRangeEntryNoun::from_noun(&entry_noun, &space).expect("decode raw entry");
-        let entry = BlockRangeEntry::from_raw(raw, &space).expect("convert raw entry");
+        let entry = BlockRangeEntry::from_noun_handle(&entry_noun.in_space(&space))
+            .expect("decode block range entry");
 
         assert_eq!(entry.height, 42);
         assert_eq!(entry.block_id, block_id);

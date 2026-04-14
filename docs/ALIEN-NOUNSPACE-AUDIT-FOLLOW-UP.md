@@ -48,6 +48,31 @@ Hamt/Batteries Nounable re-home now. Might want to change Nounable encode to use
 
 5. Medium: the block explorer still explicitly opts back into raw nouns in crates/nockapp-grpc/src/services/public_nockchain/v2/block_explorer.rs:1384 and crates/nockapp-grpc/src/services/public_nockchain/v2/block_explorer.rs:2041, plus the custom FullPageNoun decoder in crates/nockapp-grpc/src/services/public_nockchain/v2/block_explorer.rs:2056. This path is live, but the raw nouns are immediately consumed with the same space, so I’d rank it below the generic noun-serde escape hatch.
 
+- PageAndTxs and FullPageData store raw Noun only so they can immediately call handle-based helpers later with
+  the same space.
+- FullPageNoun also stores raw Noun for version_or_digest and rest, then FullPageDetails::from_raw() immediately
+  re-wraps them with space.
+- Most of the real decoding logic already wants &NounHandle: extract_tx_ids_from_map,
+  extract_transactions_from_map, decode_pow, decode_coinbase, decode_page_msg, etc.
+
+The catch is the trait boundary:
+
+- NounHandle<'a> borrows &'a NounSpace.
+- These types are currently decoded via NounDecode, which is an owned-return API.
+- So changing txs: Noun to txs: NounHandle<'a> means those structs need lifetimes, and then the current
+  #[derive(NounDecode)] path for BlockRangeEntryNoun / FullPageEntryNoun stops fitting cleanly.
+
+So my recommendation is:
+
+- Don’t try to make these existing NounDecode structs hold NounHandles directly.
+- Instead, replace the raw-noun intermediates with local borrowed parser helpers, e.g. PageAndTxsView<'a> /
+  FullPageView<'a>, built from a root NounHandle<'a>.
+- Then parse the entry in one pass from the handle, without ever storing raw Noun subfields.
+
+That would remove the raw-noun escape hatch here and be cleaner than the current setup. It’s a reasonable
+refactor. I’d call it moderate effort, low semantic risk, but it wants a small restructuring of the decode path
+rather than a one-line type change.
+
 6. Medium-Low: the zkvm-jetpack raw Vec<Noun> helpers are still structurally wrong for cross-space use in crates/zkvm-jetpack/src/utils.rs:18 and crates/zkvm-jetpack/src/utils.rs:115. After re-checking the main call sites, they currently look intra-stack jet code, so I’d treat them as hazardous API surface, not the next likely production crash.
 
 7. Medium-Low: the nockchain-math side is now less severe than the audit said. HoonList/HoonMap still store raw Nouns in crates/nockchain-math/src/structs.rs:8, and raw NounMathExt::uncell(space) still exists in crates/nockchain-math/src/convert.rs:150. But HoonMapIter now yields NounHandle in crates/nockchain-math/src/structs.rs:148, and handle-based uncell() exists in crates/nockchain-math/src/convert.rs:196. A lot of downstream decoding has already moved onto the safer handle path.
