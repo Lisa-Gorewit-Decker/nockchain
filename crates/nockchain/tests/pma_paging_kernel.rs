@@ -1935,13 +1935,7 @@ fn mincore_bitmap(ptr: *mut u8, len: usize) -> Vec<u8> {
     );
     let pages = len / page;
     let mut vec = vec![0u8; pages];
-    let ret = unsafe {
-        libc::mincore(
-            ptr as *mut libc::c_void,
-            len,
-            vec.as_mut_ptr().cast(),
-        )
-    };
+    let ret = unsafe { libc::mincore(ptr as *mut libc::c_void, len, vec.as_mut_ptr().cast()) };
     if ret != 0 {
         panic!("mincore failed: {}", std::io::Error::last_os_error());
     }

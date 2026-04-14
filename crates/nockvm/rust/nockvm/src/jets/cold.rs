@@ -1,5 +1,6 @@
 use std::ptr::{copy_nonoverlapping, null_mut};
 
+use intmap::IntMap;
 use tracing::info;
 
 use crate::hamt::Hamt;
@@ -954,6 +955,76 @@ impl<'a> Iterator for NounListIterator<'a> {
     }
 }
 
+fn copy_noun_into_allocator<A: NounAllocator>(
+    stack: &mut A,
+    noun: Noun,
+    space: &NounSpace,
+) -> Noun {
+    let mut copied: IntMap<u64, Noun> = IntMap::new();
+    let mut result = D(0);
+    let mut copy_stack = vec![(noun, std::ptr::addr_of_mut!(result))];
+
+    while let Some((noun, dest)) = copy_stack.pop() {
+        match noun.as_either_direct_allocated() {
+            either::Either::Left(direct) => unsafe {
+                *dest = direct.as_noun();
+            },
+            either::Either::Right(allocated) => match allocated.as_either() {
+                either::Either::Left(indirect) => {
+                    let atom_handle = indirect.as_atom().in_space(space);
+                    let raw_pointer = unsafe { atom_handle.raw_pointer() };
+                    let raw_size = atom_handle.raw_size();
+                    if let Some(copied_noun) = copied.get(raw_pointer as u64) {
+                        unsafe { *dest = *copied_noun };
+                        continue;
+                    }
+
+                    let indirect_mem = unsafe { stack.alloc_indirect(atom_handle.size()) };
+                    unsafe {
+                        copy_nonoverlapping(raw_pointer, indirect_mem, raw_size);
+                    }
+                    let copied_noun = unsafe {
+                        IndirectAtom::from_raw_pointer(indirect_mem)
+                            .as_atom()
+                            .as_noun()
+                    };
+                    copied.insert(raw_pointer as u64, copied_noun);
+                    unsafe { *dest = copied_noun };
+                }
+                either::Either::Right(cell) => {
+                    let cell_handle = cell.in_space(space);
+                    let raw_pointer = unsafe { cell_handle.raw_pointer() };
+                    if let Some(copied_noun) = copied.get(raw_pointer as u64) {
+                        unsafe { *dest = *copied_noun };
+                        continue;
+                    }
+
+                    let cell_mem = unsafe { stack.alloc_cell() };
+                    unsafe {
+                        copy_nonoverlapping(raw_pointer, cell_mem, 1);
+                    }
+                    let copied_noun =
+                        unsafe { crate::noun::Cell::from_raw_pointer(cell_mem).as_noun() };
+                    copied.insert(raw_pointer as u64, copied_noun);
+                    unsafe {
+                        *dest = copied_noun;
+                        copy_stack.push((
+                            cell_handle.tail().noun(),
+                            std::ptr::addr_of_mut!((*cell_mem).tail),
+                        ));
+                        copy_stack.push((
+                            cell_handle.head().noun(),
+                            std::ptr::addr_of_mut!((*cell_mem).head),
+                        ));
+                    }
+                }
+            },
+        }
+    }
+
+    result
+}
+
 #[derive(thiserror::Error, Debug)]
 pub enum FromNounError {
     #[error("Not an atom")]
@@ -991,11 +1062,12 @@ impl Nounable for Atom {
         self.as_noun()
     }
     fn from_noun<A: NounAllocator>(
-        _stack: &mut A,
+        stack: &mut A,
         noun: &Noun,
-        _space: &NounSpace,
+        space: &NounSpace,
     ) -> NounableResult<Self::Target> {
-        noun.atom().ok_or(FromNounError::NotAtom)
+        let copied = copy_noun_into_allocator(stack, *noun, space);
+        copied.as_atom().map_err(|_| FromNounError::NotAtom)
     }
 }
 
@@ -1023,11 +1095,11 @@ impl Nounable for Noun {
     }
 
     fn from_noun<A: NounAllocator>(
-        _stack: &mut A,
+        stack: &mut A,
         noun: &Self,
-        _space: &NounSpace,
+        space: &NounSpace,
     ) -> NounableResult<Self::Target> {
-        Ok(*noun)
+        Ok(copy_noun_into_allocator(stack, *noun, space))
     }
 }
 
@@ -1148,6 +1220,7 @@ impl Nounable for NounList {
     ) -> NounableResult<Self::Target> {
         let mut result = NOUN_LIST_NIL;
         for item in NounListIterator::new(*noun, space) {
+            let item = <Noun as Nounable>::from_noun(stack, &item, space)?;
             let list_mem_ptr: *mut NounListMem = unsafe { stack.alloc_struct(1) };
             unsafe {
                 list_mem_ptr.write(NounListMem {
@@ -1182,8 +1255,8 @@ impl Nounable for Batteries {
         let mut batteries = NO_BATTERIES;
         for item in NounListIterator::new(*noun, space) {
             let cell = item.in_space(space).as_cell()?;
-            let battery = cell.head().noun();
-            let parent_axis = cell.tail().as_atom()?.atom();
+            let battery = <Noun as Nounable>::from_noun(stack, &cell.head().noun(), space)?;
+            let parent_axis = <Atom as Nounable>::from_noun(stack, &cell.tail().noun(), space)?;
             let batteries_mem: *mut BatteriesMem = unsafe { stack.alloc_struct(1) };
             unsafe {
                 batteries_mem.write(BatteriesMem {
@@ -1258,7 +1331,7 @@ impl<T: Nounable + Copy + mem::Preserve> Nounable for Hamt<T> {
         let mut items = Vec::new();
         for item in NounListIterator::new(*noun, space) {
             let cell = item.in_space(space).as_cell()?;
-            let key = cell.head().noun();
+            let key = <Noun as Nounable>::from_noun(stack, &cell.head().noun(), space)?;
             let value = T::from_noun(stack, &cell.tail().noun(), space)?;
             items.push((key, value));
         }
@@ -1550,6 +1623,36 @@ pub(crate) mod test {
         }
     }
 
+    #[test]
+    #[cfg_attr(miri, ignore)]
+    fn hamt_from_noun_rehomes_foreign_keys_and_values() {
+        let mut source = make_test_stack(DEFAULT_STACK_SIZE);
+        let source_space = source.noun_space();
+        let foreign_key = T(&mut source, &[D(10), D(11)]);
+        let foreign_value = T(&mut source, &[D(12), D(13)]);
+        let hamt = super::hamt_from_vec(&mut source, vec![(foreign_key, foreign_value)]);
+        let noun = hamt.into_noun(&mut source);
+
+        let mut dest = make_test_stack(DEFAULT_STACK_SIZE);
+        let decoded: Vec<(Noun, Noun)> =
+            <Hamt<Noun> as Nounable>::from_noun::<NockStack>(&mut dest, &noun, &source_space)
+                .expect("decode hamt from foreign stack");
+
+        assert_eq!(decoded.len(), 1);
+        let dest_space = dest.noun_space();
+        let (decoded_key, decoded_value) = decoded[0];
+        assert!(
+            !unsafe { decoded_key.raw_equals(&foreign_key) },
+            "decoded hamt key should not retain the foreign pointer"
+        );
+        assert!(
+            !unsafe { decoded_value.raw_equals(&foreign_value) },
+            "decoded hamt value should not retain the foreign pointer"
+        );
+        verify_noun_stack_allocated(decoded_key, &dest_space, "decoded hamt key");
+        verify_noun_stack_allocated(decoded_value, &dest_space, "decoded hamt value");
+    }
+
     fn make_batteries_list(stack: &mut NockStack, v: &[u64]) -> BatteriesList {
         let mut batteries_list = BATTERIES_LIST_NIL;
         for &item in v.iter().rev() {
@@ -1676,6 +1779,36 @@ pub(crate) mod test {
 
     #[test]
     #[cfg_attr(miri, ignore)]
+    fn batteries_from_noun_rehomes_foreign_payloads() {
+        let mut source = make_test_stack(DEFAULT_STACK_SIZE);
+        let source_space = source.noun_space();
+        let foreign_battery = T(&mut source, &[D(20), D(21)]);
+        let foreign_axis = Atom::new(&mut source, u64::MAX);
+        let batteries_item = T(&mut source, &[foreign_battery, foreign_axis.as_noun()]);
+        let batteries_noun = T(&mut source, &[batteries_item, D(0)]);
+
+        let mut dest = make_test_stack(DEFAULT_STACK_SIZE);
+        let decoded = Batteries::from_noun(&mut dest, &batteries_noun, &source_space)
+            .expect("decode batteries from foreign stack");
+        unsafe { decoded.assert_in_stack(&dest) };
+
+        let dest_space = dest.noun_space();
+        let (battery_ptr, parent_axis) = decoded.into_iter().next().expect("decoded batteries");
+        let battery = unsafe { *battery_ptr };
+        assert!(
+            !unsafe { battery.raw_equals(&foreign_battery) },
+            "decoded battery should not retain the foreign pointer"
+        );
+        assert!(
+            !unsafe { parent_axis.as_noun().raw_equals(&foreign_axis.as_noun()) },
+            "decoded parent axis should not retain the foreign pointer"
+        );
+        verify_noun_stack_allocated(battery, &dest_space, "decoded battery");
+        verify_noun_stack_allocated(parent_axis.as_noun(), &dest_space, "decoded parent axis");
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore)]
     fn tuple_bidirectional_conversion() {
         let mut stack = make_test_stack(DEFAULT_STACK_SIZE);
         let space = stack.noun_space();
@@ -1724,6 +1857,39 @@ pub(crate) mod test {
         noun_list
     }
 
+    fn make_noun_list_from_nouns(stack: &mut NockStack, nouns: &[Noun]) -> NounList {
+        let mut noun_list = NOUN_LIST_NIL;
+        for &item in nouns.iter().rev() {
+            let noun_list_mem: *mut NounListMem = unsafe { stack.alloc_struct(1) };
+            unsafe {
+                noun_list_mem.write(NounListMem {
+                    element: item,
+                    next: noun_list,
+                });
+            }
+            noun_list = NounList(noun_list_mem);
+        }
+        noun_list
+    }
+
+    fn verify_noun_stack_allocated(noun: Noun, space: &NounSpace, context: &str) {
+        if noun.is_direct() {
+            return;
+        }
+
+        let location = noun.in_space(space).allocated_location();
+        assert!(
+            matches!(location, Some(AllocLocation::Stack)),
+            "{} should be stack-allocated after decode",
+            context
+        );
+
+        if let Ok(cell) = noun.in_space(space).as_cell() {
+            verify_noun_stack_allocated(cell.head().noun(), space, context);
+            verify_noun_stack_allocated(cell.tail().noun(), space, context);
+        }
+    }
+
     #[test]
     #[cfg_attr(miri, ignore)]
     fn noun_list_bidirectional_conversion() {
@@ -1759,6 +1925,32 @@ pub(crate) mod test {
             );
         }
         assert_eq!(item_count, ITEM_COUNT as usize);
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore)]
+    fn noun_list_from_noun_rehomes_foreign_elements() {
+        let mut source = make_test_stack(DEFAULT_STACK_SIZE);
+        let source_space = source.noun_space();
+        let foreign_elem = T(&mut source, &[D(1), D(2)]);
+        let noun = make_noun_list_from_nouns(&mut source, &[foreign_elem]).into_noun(&mut source);
+
+        let mut dest = make_test_stack(DEFAULT_STACK_SIZE);
+        let decoded = NounList::from_noun(&mut dest, &noun, &source_space)
+            .expect("decode noun list from foreign stack");
+        unsafe { decoded.assert_in_stack(&dest) };
+
+        let dest_space = dest.noun_space();
+        let elem_ptr = decoded
+            .into_iter()
+            .next()
+            .expect("decoded noun list element");
+        let elem = unsafe { *elem_ptr };
+        assert!(
+            !unsafe { elem.raw_equals(&foreign_elem) },
+            "decoded element should not retain the foreign pointer"
+        );
+        verify_noun_stack_allocated(elem, &dest_space, "decoded noun list element");
     }
 
     #[test]

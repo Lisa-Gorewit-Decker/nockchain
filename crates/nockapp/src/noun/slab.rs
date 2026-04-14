@@ -1366,7 +1366,11 @@ mod tests {
             .map(|handle| handle.noun())
             .collect();
 
-        assert_eq!(elems.len(), 2, "modified slab should contain 2 list elements");
+        assert_eq!(
+            elems.len(),
+            2,
+            "modified slab should contain 2 list elements"
+        );
         assert!(
             unsafe { elems[0].raw_equals(&local_root) },
             "closure should receive the original slab root"
@@ -1407,7 +1411,11 @@ mod tests {
             .map(|handle| handle.noun())
             .collect();
 
-        assert_eq!(elems.len(), 2, "modified slab should contain 2 list elements");
+        assert_eq!(
+            elems.len(),
+            2,
+            "modified slab should contain 2 list elements"
+        );
         assert!(
             unsafe { elems[0].raw_equals(&local_root) },
             "local root should be preserved"

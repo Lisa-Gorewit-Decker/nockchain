@@ -42,7 +42,9 @@ Fixed. Banned NounEncode/NounDecode for Noun.
 
 Mostly fixed, modify helpers for NounSlab now re-home nouns, mitigates foreign noun pointers in slabs. It's still possible to feed raw foreign Nouns into `T()` and to set_root that.
 
-4. Medium-High: jets::cold still treats raw Noun as a decoded payload in crates/nockvm/rust/nockvm/src/jets/cold.rs:932 and crates/nockvm/rust/nockvm/src/jets/cold.rs:1019. This is less urgent than the original audit implied because the live checkpoint restore path first copies saveable.cold into the active stack before Cold::from_noun(...) in crates/nockapp/src/kernel/form.rs:1646. So I do not see a current live mismatch there,but the codec API is still unsafe.
+4. Medium-High: jets::cold still treats raw Noun as a decoded payload in crates/nockvm/rust/nockvm/src/jets/cold.rs:932 and crates/nockvm/rust/nockvm/src/jets/cold.rs:1019. This is less urgent than the original audit implied because the live checkpoint restore path first copies saveable.cold into the active stack before Cold::from_noun(...) in crates/nockapp/src/kernel/form.rs:1646. So I do not see a current live mismatch there, but the codec API is still unsafe.
+
+Hamt/Batteries Nounable re-home now. Might want to change Nounable encode to use NounSpace/NounHandle.
 
 5. Medium: the block explorer still explicitly opts back into raw nouns in crates/nockapp-grpc/src/services/public_nockchain/v2/block_explorer.rs:1384 and crates/nockapp-grpc/src/services/public_nockchain/v2/block_explorer.rs:2041, plus the custom FullPageNoun decoder in crates/nockapp-grpc/src/services/public_nockchain/v2/block_explorer.rs:2056. This path is live, but the raw nouns are immediately consumed with the same space, so I’d rank it below the generic noun-serde escape hatch.
 
