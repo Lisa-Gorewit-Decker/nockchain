@@ -2789,8 +2789,10 @@ mod tests {
 
     use super::*;
 
-    const DUMB_KERNEL_JAM: &[u8] =
-        include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../assets/dumb.jam"));
+    const DUMB_KERNEL_JAM: &[u8] = include_bytes!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../assets/dumb.jam"
+    ));
 
     fn dummy_serf() -> Serf {
         let mut stack = NockStack::new(1 << 18, 0);
@@ -2846,9 +2848,23 @@ mod tests {
         )
     }
 
+    fn kernel_state_slab_from_serf(serf: &mut Serf) -> NounSlab {
+        let space = serf.context.stack.noun_space();
+        let kernel_state_noun = serf
+            .arvo
+            .in_space(&space)
+            .slot(STATE_AXIS)
+            .map(|handle| handle.noun())
+            .expect("resolve kernel state noun");
+        let mut kernel_state_slab = NounSlab::new();
+        kernel_state_slab.copy_into(kernel_state_noun, &space);
+        kernel_state_slab
+    }
+
     #[derive(Debug)]
     struct ColdPersistenceBenchReport {
         first_boot_with_cold_ready: Duration,
+        load_kernel_state_into_fresh_vm: Duration,
         cold_to_noun: Duration,
         noun_to_jam: Duration,
         save_jam_to_disk: Duration,
@@ -2864,6 +2880,10 @@ mod tests {
             println!(
                 "  first_boot_with_cold_ready_ms={:.3}",
                 duration_ms(self.first_boot_with_cold_ready)
+            );
+            println!(
+                "  load_kernel_state_into_fresh_vm_ms={:.3}",
+                duration_ms(self.load_kernel_state_into_fresh_vm)
             );
             println!("  cold_to_noun_ms={:.3}", duration_ms(self.cold_to_noun));
             println!("  noun_to_jam_ms={:.3}", duration_ms(self.noun_to_jam));
@@ -2890,6 +2910,15 @@ mod tests {
         let boot_start = Instant::now();
         let mut serf = bench_serf(DUMB_KERNEL_JAM);
         let first_boot_with_cold_ready = boot_start.elapsed();
+        let kernel_state_slab = kernel_state_slab_from_serf(&mut serf);
+
+        let mut load_serf = bench_serf(DUMB_KERNEL_JAM);
+        let load_state_noun = kernel_state_slab.copy_to_stack(load_serf.stack());
+        let load_kernel_state_into_fresh_vm_start = Instant::now();
+        let _loaded_arvo = load_serf
+            .load(load_state_noun)
+            .expect("load saved kernel state into fresh vm");
+        let load_kernel_state_into_fresh_vm = load_kernel_state_into_fresh_vm_start.elapsed();
 
         let cold_to_noun_start = Instant::now();
         let cold_noun = serf.context.cold.into_noun(serf.stack());
@@ -2930,19 +2959,13 @@ mod tests {
         let cold_vecs = Cold::from_noun(&mut inject_context.stack, &cued_cold_in_vm, &space)
             .expect("decode cold noun");
         let rebuilt_cold = Cold::from_vecs(
-            &mut inject_context.stack,
-            cold_vecs.0,
-            cold_vecs.1,
-            cold_vecs.2,
+            &mut inject_context.stack, cold_vecs.0, cold_vecs.1, cold_vecs.2,
         );
         inject_context.cold = rebuilt_cold;
         let hot = inject_context.hot;
         let test_jets = inject_context.test_jets;
         inject_context.warm = Warm::init(
-            &mut inject_context.stack,
-            &mut inject_context.cold,
-            &hot,
-            &test_jets,
+            &mut inject_context.stack, &mut inject_context.cold, &hot, &test_jets,
         );
         let reinject_cued_cold_into_vm = reinject_cued_cold_into_vm_start.elapsed();
 
@@ -2958,6 +2981,7 @@ mod tests {
 
         let report = ColdPersistenceBenchReport {
             first_boot_with_cold_ready,
+            load_kernel_state_into_fresh_vm,
             cold_to_noun,
             noun_to_jam,
             save_jam_to_disk,
