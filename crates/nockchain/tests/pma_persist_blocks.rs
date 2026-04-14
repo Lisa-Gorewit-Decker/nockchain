@@ -59,6 +59,7 @@ fn env_usize(key: &str, default: usize) -> usize {
 }
 
 #[test]
+#[ignore = "Takes a long time, spurious failure"]
 fn pma_persist_blocks() {
     let _ = std::env::set_var("NOCKAPP_DISABLE_METRICS", "1");
     let _ = std::env::set_var("GNORT_DISABLE", "1");

@@ -48,6 +48,73 @@ impl<J> NounSlab<J> {
         })
     }
 
+    fn rehome_noun(&mut self, noun: Noun) -> Noun {
+        let mut copied = IntMap::new();
+        self.rehome_noun_inner(noun, &mut copied)
+    }
+
+    fn rehome_noun_inner(&mut self, noun: Noun, copied: &mut IntMap<u64, Noun>) -> Noun {
+        match noun.as_either_direct_allocated() {
+            Either::Left(direct) => direct.as_noun(),
+            Either::Right(allocated) => match allocated.as_either() {
+                Either::Left(indirect) => {
+                    let Some(data_ptr) = indirect.data_pointer_stack() else {
+                        panic!(
+                            "Cannot splice offset-form noun into NounSlab without a source NounSpace"
+                        );
+                    };
+                    if self.contains_ptr(data_ptr as *const u8) {
+                        return noun;
+                    }
+
+                    let src_ptr = unsafe { indirect.to_raw_pointer_stack() };
+                    let src_key = src_ptr as u64;
+                    if let Some(copied_noun) = copied.get(src_key) {
+                        return *copied_noun;
+                    }
+
+                    let size = unsafe { *src_ptr.add(1) as usize };
+                    let new_mem = unsafe { self.alloc_indirect(size) };
+                    unsafe {
+                        copy_nonoverlapping(src_ptr, new_mem, size + 2);
+                    }
+                    let copied_noun =
+                        unsafe { IndirectAtom::from_raw_pointer(new_mem).as_atom().as_noun() };
+                    copied.insert(src_key, copied_noun);
+                    copied_noun
+                }
+                Either::Right(cell) => {
+                    let Some(cell_ptr) = cell.stack_memory_pointer() else {
+                        panic!(
+                            "Cannot splice offset-form noun into NounSlab without a source NounSpace"
+                        );
+                    };
+                    let src_key = cell_ptr as u64;
+                    if let Some(copied_noun) = copied.get(src_key) {
+                        return *copied_noun;
+                    }
+
+                    let source_head = unsafe { (*cell_ptr).head };
+                    let source_tail = unsafe { (*cell_ptr).tail };
+                    let rehomed_head = self.rehome_noun_inner(source_head, copied);
+                    let rehomed_tail = self.rehome_noun_inner(source_tail, copied);
+
+                    if self.contains_ptr(cell_ptr as *const u8)
+                        && unsafe { rehomed_head.raw_equals(&source_head) }
+                        && unsafe { rehomed_tail.raw_equals(&source_tail) }
+                    {
+                        copied.insert(src_key, noun);
+                        return noun;
+                    }
+
+                    let copied_noun = Cell::new(self, rehomed_head, rehomed_tail).as_noun();
+                    copied.insert(src_key, copied_noun);
+                    copied_noun
+                }
+            },
+        }
+    }
+
     pub fn coerce_jammer<I>(mut self) -> NounSlab<I> {
         let slabs = std::mem::take(&mut self.slabs);
         NounSlab {
@@ -87,12 +154,16 @@ impl<J> NounSlab<J> {
 
     pub fn modify<F: FnOnce(Noun) -> Vec<Noun>>(&mut self, f: F) {
         let new_root_base = f(self.root);
-        let new_root = nockvm::noun::T(self, &new_root_base);
+        let rehomed_root_base: Vec<Noun> = new_root_base
+            .into_iter()
+            .map(|noun| self.rehome_noun(noun))
+            .collect();
+        let new_root = nockvm::noun::T(self, &rehomed_root_base);
         self.set_root(new_root);
     }
 
     pub fn modify_noun<F: FnOnce(Noun) -> Noun>(&mut self, f: F) {
-        let new_root = f(self.root);
+        let new_root = self.rehome_noun(f(self.root));
         self.set_root(new_root);
     }
 
@@ -109,7 +180,11 @@ impl<J> NounSlab<J> {
             self.copy_into(imports.2, space),
         );
         let new_root_base = f(imported, old_root);
-        let new_root = nockvm::noun::T(self, &new_root_base);
+        let rehomed_root_base: Vec<Noun> = new_root_base
+            .into_iter()
+            .map(|noun| self.rehome_noun(noun))
+            .collect();
+        let new_root = nockvm::noun::T(self, &rehomed_root_base);
         self.set_root(new_root);
     }
 }
@@ -251,6 +326,7 @@ impl<J> NounSlab<J> {
 impl<const N: usize, J> From<[Noun; N]> for NounSlab<J> {
     fn from(nouns: [Noun; N]) -> Self {
         let mut slab = Self::new();
+        let nouns = nouns.map(|noun| slab.rehome_noun(noun));
         let new_root = nockvm::noun::T(&mut slab, &nouns);
         slab.set_root(new_root);
         slab
@@ -1264,6 +1340,122 @@ mod tests {
         assert!(
             !unsafe { elems[3].raw_equals(&foreign_c) },
             "third imported noun should be copied into the destination slab"
+        );
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore = "memfd_create unsupported in Miri")]
+    fn test_modify_rehomes_foreign_children_into_destination_slab() {
+        let _test_arena = install_test_arena();
+
+        let mut local_slab: NounSlab = NounSlab::new();
+        let local_root = T(&mut local_slab, &[D(42), D(43)]);
+        local_slab.set_root(local_root);
+
+        let mut foreign_slab: NounSlab = NounSlab::new();
+        let foreign_root = T(&mut foreign_slab, &[D(1), D(2)]);
+        foreign_slab.set_root(foreign_root);
+        let foreign_space = foreign_slab.noun_space();
+
+        local_slab.modify(|root| vec![root, foreign_root, D(0)]);
+
+        let local_space = local_slab.noun_space();
+        let elems: Vec<Noun> = unsafe { *local_slab.root() }
+            .in_space(&local_space)
+            .list_iter()
+            .map(|handle| handle.noun())
+            .collect();
+
+        assert_eq!(elems.len(), 2, "modified slab should contain 2 list elements");
+        assert!(
+            unsafe { elems[0].raw_equals(&local_root) },
+            "closure should receive the original slab root"
+        );
+        let imported_slab: NounSlab = NounSlab::from_noun(elems[1], &local_space);
+        let expected_slab: NounSlab = NounSlab::from_noun(foreign_root, &foreign_space);
+        assert!(
+            slab_equality(&imported_slab, &expected_slab),
+            "foreign child should be copied structurally into the destination slab"
+        );
+        assert!(
+            !unsafe { elems[1].raw_equals(&foreign_root) },
+            "foreign child should not retain the foreign slab pointer"
+        );
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore = "memfd_create unsupported in Miri")]
+    fn test_modify_noun_rehomes_mixed_local_root() {
+        let _test_arena = install_test_arena();
+
+        let mut local_slab: NounSlab = NounSlab::new();
+        let local_root = T(&mut local_slab, &[D(42), D(43)]);
+        local_slab.set_root(local_root);
+
+        let mut foreign_slab: NounSlab = NounSlab::new();
+        let foreign_root = T(&mut foreign_slab, &[D(1), D(2)]);
+        foreign_slab.set_root(foreign_root);
+        let foreign_space = foreign_slab.noun_space();
+
+        let mixed_root = T(&mut local_slab, &[local_root, foreign_root, D(0)]);
+        local_slab.modify_noun(|_| mixed_root);
+
+        let local_space = local_slab.noun_space();
+        let elems: Vec<Noun> = unsafe { *local_slab.root() }
+            .in_space(&local_space)
+            .list_iter()
+            .map(|handle| handle.noun())
+            .collect();
+
+        assert_eq!(elems.len(), 2, "modified slab should contain 2 list elements");
+        assert!(
+            unsafe { elems[0].raw_equals(&local_root) },
+            "local root should be preserved"
+        );
+        let imported_slab: NounSlab = NounSlab::from_noun(elems[1], &local_space);
+        let expected_slab: NounSlab = NounSlab::from_noun(foreign_root, &foreign_space);
+        assert!(
+            slab_equality(&imported_slab, &expected_slab),
+            "modify_noun should re-home foreign descendants before setting the root"
+        );
+        assert!(
+            !unsafe { elems[1].raw_equals(&foreign_root) },
+            "foreign child should not retain the foreign slab pointer"
+        );
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore = "memfd_create unsupported in Miri")]
+    fn test_from_array_rehomes_foreign_children_into_destination_slab() {
+        let _test_arena = install_test_arena();
+
+        let mut foreign_slab: NounSlab = NounSlab::new();
+        let foreign_root = T(&mut foreign_slab, &[D(1), D(2)]);
+        foreign_slab.set_root(foreign_root);
+        let foreign_space = foreign_slab.noun_space();
+
+        let slab: NounSlab = [D(7), foreign_root, D(0)].into();
+        let local_space = slab.noun_space();
+        let elems: Vec<Noun> = unsafe { *slab.root() }
+            .in_space(&local_space)
+            .list_iter()
+            .map(|handle| handle.noun())
+            .collect();
+
+        assert_eq!(elems.len(), 2, "slab root should be a 2-element list");
+        assert!(
+            unsafe { elems[0].raw_equals(&D(7)) },
+            "first list element should remain direct"
+        );
+        let imported_slab: NounSlab = NounSlab::from_noun(elems[1], &local_space);
+        let expected_slab: NounSlab = NounSlab::from_noun(foreign_root, &foreign_space);
+        assert!(
+            slab_equality(&imported_slab, &expected_slab),
+            "foreign child should be copied structurally into the destination slab"
+        );
+        assert!(
+            !unsafe { elems[1].raw_equals(&foreign_root) },
+            "foreign child should not retain the foreign slab pointer"
         );
     }
 
