@@ -8,17 +8,17 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
-use bincode::{config, Decode, Encode};
+use bincode::{Decode, Encode, config};
 use blake3::{Hash, Hasher};
 use byteorder::{LittleEndian, WriteBytesExt};
 use nockvm::hamt::Hamt;
-use nockvm::interpreter::{self, interpret, Error, Mote, NockCancelToken};
+use nockvm::interpreter::{self, Error, Mote, NockCancelToken, interpret};
 use nockvm::jets::cold::{Cold, Nounable};
 use nockvm::jets::hot::{HotEntry, URBIT_HOT_STATE};
 use nockvm::jets::nock::util::mook;
 use nockvm::mem::NockStack;
 use nockvm::mug::met3_usize;
-use nockvm::noun::{Atom, Cell, DirectAtom, IndirectAtom, Noun, D, T};
+use nockvm::noun::{Atom, Cell, D, DirectAtom, IndirectAtom, Noun, T};
 use nockvm::pma::{Pma, PmaCopy, PmaCopyFrom};
 use nockvm::trace::{path_to_cord, write_serf_trace_safe};
 use nockvm_macros::tas;
@@ -29,16 +29,16 @@ use tracing::{debug, error, info, warn};
 use crate::event_log::{EventLog, EventLogConfig, EventLogEntry};
 use crate::kernel::boot::TraceOpts;
 use crate::metrics::NockAppMetrics;
-use crate::nockapp::wire::{wire_to_noun, WireRepr};
+use crate::nockapp::wire::{WireRepr, wire_to_noun};
 use crate::noun::slab::{Jammer, NockJammer, NounSlab};
 use crate::noun::slam;
 use crate::save::SaveableCheckpoint;
 use crate::snapshot::{
-    maybe_create_epoch_snapshot, maybe_create_rotating_snapshot, SnapshotManifest,
+    SnapshotManifest, maybe_create_epoch_snapshot, maybe_create_rotating_snapshot,
 };
 use crate::utils::{
-    create_context, current_da, durability, NOCK_STACK_SIZE, NOCK_STACK_SIZE_HUGE,
-    NOCK_STACK_SIZE_LARGE, NOCK_STACK_SIZE_MEDIUM, NOCK_STACK_SIZE_SMALL, NOCK_STACK_SIZE_TINY,
+    NOCK_STACK_SIZE, NOCK_STACK_SIZE_HUGE, NOCK_STACK_SIZE_LARGE, NOCK_STACK_SIZE_MEDIUM,
+    NOCK_STACK_SIZE_SMALL, NOCK_STACK_SIZE_TINY, create_context, current_da, durability,
 };
 use crate::{AtomExt, CrownError, IndirectAtomExt, NounExt, Result, ToBytesExt};
 
@@ -104,10 +104,86 @@ impl PmaSlabPaths {
 }
 
 const PMA_PERSIST_MAGIC: u64 = u64::from_le_bytes(*b"PMAPERS1");
-const PMA_PERSIST_VERSION: u32 = 3;
+const PMA_PERSIST_VERSION: u32 = 4;
+const PMA_PERSIST_VERSION_V3: u32 = 3;
+const SNAPSHOT_UNUSED_COLD_OFFSET: u32 = 0;
 
 #[derive(Clone, Encode, Decode, Debug)]
 struct PmaPersistMetadata {
+    magic: u64,
+    version: u32,
+    #[bincode(with_serde)]
+    ker_hash: Hash,
+    event_num: u64,
+    kernel_state_raw: u64,
+    #[bincode(with_serde)]
+    checksum: Hash,
+}
+
+impl PmaPersistMetadata {
+    fn new(ker_hash: Hash, event_num: u64, kernel_state_raw: u64) -> Self {
+        let checksum = Self::checksum(ker_hash, event_num, kernel_state_raw);
+        Self {
+            magic: PMA_PERSIST_MAGIC,
+            version: PMA_PERSIST_VERSION,
+            ker_hash,
+            event_num,
+            kernel_state_raw,
+            checksum,
+        }
+    }
+
+    fn checksum(ker_hash: Hash, event_num: u64, kernel_state_raw: u64) -> Hash {
+        let mut hasher = Hasher::new();
+        hasher.update(ker_hash.as_bytes());
+        hasher.update(&event_num.to_le_bytes());
+        hasher.update(&kernel_state_raw.to_le_bytes());
+        hasher.finalize()
+    }
+
+    fn validate(&self) -> bool {
+        if self.magic != PMA_PERSIST_MAGIC || self.version != PMA_PERSIST_VERSION {
+            return false;
+        }
+        self.checksum == Self::checksum(self.ker_hash, self.event_num, self.kernel_state_raw)
+    }
+
+    fn load_from_path(path: &PathBuf) -> Option<Self> {
+        let bytes = fs::read(path).ok()?;
+        if let Ok((meta, _)) =
+            bincode::decode_from_slice::<Self, config::Configuration>(&bytes, config::standard())
+        {
+            if meta.validate() {
+                return Some(meta);
+            }
+        }
+
+        let (legacy, _) =
+            bincode::decode_from_slice::<PmaPersistMetadataV3, config::Configuration>(
+                &bytes,
+                config::standard(),
+            )
+            .ok()?;
+        legacy.validate().then_some(Self {
+            magic: legacy.magic,
+            version: PMA_PERSIST_VERSION,
+            ker_hash: legacy.ker_hash,
+            event_num: legacy.event_num,
+            kernel_state_raw: legacy.kernel_state_raw,
+            checksum: Self::checksum(legacy.ker_hash, legacy.event_num, legacy.kernel_state_raw),
+        })
+    }
+
+    fn save_to_path(&self, path: &PathBuf) -> std::io::Result<()> {
+        let bytes = bincode::encode_to_vec(self, config::standard())
+            .map_err(|err| std::io::Error::new(std::io::ErrorKind::Other, err))?;
+        durability::write_atomic(path, &bytes, "pma_meta_write")?;
+        Ok(())
+    }
+}
+
+#[derive(Clone, Encode, Decode, Debug)]
+struct PmaPersistMetadataV3 {
     magic: u64,
     version: u32,
     #[bincode(with_serde)]
@@ -119,20 +195,7 @@ struct PmaPersistMetadata {
     checksum: Hash,
 }
 
-impl PmaPersistMetadata {
-    fn new(ker_hash: Hash, event_num: u64, kernel_state_raw: u64, cold_offset: u32) -> Self {
-        let checksum = Self::checksum(ker_hash, event_num, kernel_state_raw, cold_offset);
-        Self {
-            magic: PMA_PERSIST_MAGIC,
-            version: PMA_PERSIST_VERSION,
-            ker_hash,
-            event_num,
-            kernel_state_raw,
-            cold_offset,
-            checksum,
-        }
-    }
-
+impl PmaPersistMetadataV3 {
     fn checksum(ker_hash: Hash, event_num: u64, kernel_state_raw: u64, cold_offset: u32) -> Hash {
         let mut hasher = Hasher::new();
         hasher.update(ker_hash.as_bytes());
@@ -143,28 +206,13 @@ impl PmaPersistMetadata {
     }
 
     fn validate(&self) -> bool {
-        if self.magic != PMA_PERSIST_MAGIC || self.version != PMA_PERSIST_VERSION {
+        if self.magic != PMA_PERSIST_MAGIC || self.version != PMA_PERSIST_VERSION_V3 {
             return false;
         }
         self.checksum
             == Self::checksum(
                 self.ker_hash, self.event_num, self.kernel_state_raw, self.cold_offset,
             )
-    }
-
-    fn load_from_path(path: &PathBuf) -> Option<Self> {
-        let bytes = fs::read(path).ok()?;
-        let (meta, _) =
-            bincode::decode_from_slice::<Self, config::Configuration>(&bytes, config::standard())
-                .ok()?;
-        meta.validate().then_some(meta)
-    }
-
-    fn save_to_path(&self, path: &PathBuf) -> std::io::Result<()> {
-        let bytes = bincode::encode_to_vec(self, config::standard())
-            .map_err(|err| std::io::Error::new(std::io::ErrorKind::Other, err))?;
-        durability::write_atomic(path, &bytes, "pma_meta_write")?;
-        Ok(())
     }
 }
 
@@ -553,7 +601,6 @@ impl<C: SerfCheckpoint + Send + 'static> SerfThread<C> {
                         blake3::Hash::from_bytes(manifest.ker_hash),
                         manifest.event_num,
                         manifest.kernel_root_raw,
-                        manifest.cold_offset,
                     );
                     if let Err(err) = synthesized.save_to_path(meta_path) {
                         let _ = init_sender.send(Err(CrownError::Unknown(format!(
@@ -1037,8 +1084,8 @@ fn serf_loop<C: SerfCheckpoint>(
                             total_ms,
                             total_alloc_words,
                             total_alloc_mib,
-	                            event_num
-	                        );
+                            event_num
+                        );
                     }
                     let _ = result_ack.blocking_recv().inspect_err(|_e| {
                         debug!("Failed to receive result ack in serf thread");
@@ -1537,14 +1584,22 @@ impl Serf {
         hasher.update(kernel_bytes);
         let ker_hash = hasher.finalize();
 
+        let pma_gc_state = if pma.is_some() && pma_gc_state.is_some() {
+            warn!(
+                "PMA GC disabled: stack-resident cold/warm caches may retain pointers into the active PMA slab"
+            );
+            None
+        } else {
+            pma_gc_state
+        };
+
         let mut reset_pma = false;
         let pma_state = if pma_meta_load && checkpoint.is_none() {
-            if let (Some(pma), Some(meta_path)) = (pma.as_ref(), pma_meta_path.as_ref()) {
+            if let (Some(_pma), Some(meta_path)) = (pma.as_ref(), pma_meta_path.as_ref()) {
                 if let Some(meta) = PmaPersistMetadata::load_from_path(meta_path) {
                     if meta.ker_hash == ker_hash {
                         let kernel_state = unsafe { Noun::from_raw(meta.kernel_state_raw) };
-                        let cold = unsafe { Cold::from_pma_offset(pma, meta.cold_offset) };
-                        Some((kernel_state, cold, meta.event_num))
+                        Some((kernel_state, meta.event_num))
                     } else {
                         warn!(
                             "PMA metadata kernel hash mismatch (metadata: {}, kernel: {}); ignoring",
@@ -1601,9 +1656,9 @@ impl Serf {
                 );
             }
             (Some(ker_state), cold, saveable.event_num)
-        } else if let Some((ker_state, cold, event_num)) = pma_state {
+        } else if let Some((ker_state, event_num)) = pma_state {
             info!("Loaded PMA state at event_num {}", event_num);
-            (Some(ker_state), cold, event_num)
+            (Some(ker_state), Cold::new(&mut stack), event_num)
         } else {
             (None, Cold::new(&mut stack), 0)
         };
@@ -2195,14 +2250,10 @@ impl Serf {
         let (Some(event_log), Some(pma)) = (&mut self.event_log, &self.pma) else {
             return;
         };
-        let Some(cold_offset) = self.context.cold.pma_offset(pma) else {
-            warn!("epoch snapshot skipped: cold state is not in PMA");
-            return;
-        };
         let build_start = Instant::now();
         info!(event_num, "epoch snapshot build start");
         match maybe_create_epoch_snapshot(
-            event_log, pma, self.ker_hash, event_num, kernel_root_raw, cold_offset,
+            event_log, pma, self.ker_hash, event_num, kernel_root_raw, SNAPSHOT_UNUSED_COLD_OFFSET,
         ) {
             Ok(created) => {
                 let elapsed = build_start.elapsed();
@@ -2303,10 +2354,6 @@ impl Serf {
         let (Some(event_log), Some(pma)) = (&mut self.event_log, &self.pma) else {
             return;
         };
-        let Some(cold_offset) = self.context.cold.pma_offset(pma) else {
-            warn!("rotating snapshot skipped: cold state is not in PMA");
-            return;
-        };
         let build_start = Instant::now();
         info!(
             event_num,
@@ -2315,7 +2362,7 @@ impl Serf {
             "rotating snapshot build start"
         );
         match maybe_create_rotating_snapshot(
-            event_log, pma, self.ker_hash, event_num, kernel_root_raw, cold_offset,
+            event_log, pma, self.ker_hash, event_num, kernel_root_raw, SNAPSHOT_UNUSED_COLD_OFFSET,
             self.cumulative_event_processing_time_since_snapshot,
             self.rotating_snapshot_interval_event_time,
         ) {
@@ -2404,93 +2451,40 @@ impl Serf {
         }
     }
 
-    unsafe fn copy_persistent_state_to_pma(
+    unsafe fn copy_durable_state_to_pma(
         &mut self,
         pma: &mut Pma,
         trace_pma: bool,
         detail: Option<&mut PmaCopyDetail>,
     ) {
-        let stack = &mut self.context.stack;
-        if let Some(detail) = detail {
-            Self::copy_segment(
-                "warm",
-                &mut self.context.warm,
-                stack,
-                pma,
-                trace_pma,
-                Some(&mut detail.warm),
-            );
-            Self::copy_segment(
-                "test_jets",
-                &mut self.context.test_jets,
-                stack,
-                pma,
-                trace_pma,
-                Some(&mut detail.test_jets),
-            );
-            Self::copy_segment(
-                "hot",
-                &mut self.context.hot,
-                stack,
-                pma,
-                trace_pma,
-                Some(&mut detail.hot),
-            );
-            Self::copy_segment(
-                "cache",
-                &mut self.context.cache,
-                stack,
-                pma,
-                trace_pma,
-                Some(&mut detail.cache),
-            );
-            Self::copy_segment(
-                "cold",
-                &mut self.context.cold,
-                stack,
-                pma,
-                trace_pma,
-                Some(&mut detail.cold),
-            );
-            Self::copy_segment(
-                "arvo",
-                &mut self.arvo,
-                stack,
-                pma,
-                trace_pma,
-                Some(&mut detail.arvo),
-            );
-        } else {
-            Self::copy_segment("warm", &mut self.context.warm, stack, pma, trace_pma, None);
-            Self::copy_segment(
-                "test_jets", &mut self.context.test_jets, stack, pma, trace_pma, None,
-            );
-            Self::copy_segment("hot", &mut self.context.hot, stack, pma, trace_pma, None);
-            Self::copy_segment(
-                "cache", &mut self.context.cache, stack, pma, trace_pma, None,
-            );
-            Self::copy_segment("cold", &mut self.context.cold, stack, pma, trace_pma, None);
-            Self::copy_segment("arvo", &mut self.arvo, stack, pma, trace_pma, None);
-        }
+        let stack = &self.context.stack;
+        Self::copy_segment(
+            "arvo",
+            &mut self.arvo,
+            stack,
+            pma,
+            trace_pma,
+            detail.map(|detail| &mut detail.arvo),
+        );
     }
 
     #[cfg(feature = "pma-assert")]
-    fn assert_persistent_state_in_pma(&self, pma: &Pma) {
-        self.context.warm.assert_in_pma(pma);
-        self.context.test_jets.assert_in_pma(pma);
-        self.context.hot.assert_in_pma(pma);
-        self.context.cache.assert_in_pma(pma);
-        self.context.cold.assert_in_pma(pma);
+    fn assert_durable_state_in_pma(&self, pma: &Pma) {
         self.arvo.assert_in_pma(pma);
     }
 
-    unsafe fn preserve_persistent_state_in_stack(&mut self) {
+    unsafe fn preserve_runtime_state_in_stack(&mut self) {
         let stack = &mut self.context.stack;
         stack.preserve(&mut self.context.warm);
         stack.preserve(&mut self.context.test_jets);
         stack.preserve(&mut self.context.hot);
         stack.preserve(&mut self.context.cache);
         stack.preserve(&mut self.context.cold);
+    }
+
+    unsafe fn preserve_persistent_state_in_stack(&mut self) {
+        self.preserve_runtime_state_in_stack();
+        let stack = &mut self.context.stack;
         stack.preserve(&mut self.arvo);
     }
 
@@ -2521,7 +2515,7 @@ impl Serf {
         self.persist_pma_metadata(pma);
     }
 
-    fn persist_pma_metadata_strict(&self, pma: &Pma) -> Result<()> {
+    fn persist_pma_metadata_strict(&self, _pma: &Pma) -> Result<()> {
         let Some(meta_path) = self.pma_meta_path.as_ref() else {
             return Ok(());
         };
@@ -2538,14 +2532,8 @@ impl Serf {
                 ))
             })?;
         let kernel_state_raw = unsafe { kernel_state.as_raw() };
-        let Some(cold_offset) = self.context.cold.pma_offset(pma) else {
-            return Err(CrownError::SaveError(format!(
-                "failed to persist PMA metadata to {}: cold state not in PMA",
-                meta_path.display()
-            )));
-        };
         let event_num = self.event_num.load(Ordering::SeqCst);
-        let meta = PmaPersistMetadata::new(self.ker_hash, event_num, kernel_state_raw, cold_offset);
+        let meta = PmaPersistMetadata::new(self.ker_hash, event_num, kernel_state_raw);
         meta.save_to_path(meta_path)?;
         Ok(())
     }
@@ -2698,11 +2686,7 @@ impl Serf {
             let event_num = self.event_num.load(Ordering::SeqCst);
             info!(
                 "stack-usage: used_words={} used_mib={:.3} least_space_words={} total_words={} event_num={}",
-                used_words,
-                used_mib,
-                least_space,
-                total_words,
-                event_num
+                used_words, used_mib, least_space, total_words, event_num
             );
         }
         if self.pma.is_some() {
@@ -2714,17 +2698,17 @@ impl Serf {
             } else {
                 None
             };
-            self.copy_persistent_state_to_pma(&mut pma, trace_pma, detail.as_mut());
+            self.copy_durable_state_to_pma(&mut pma, trace_pma, detail.as_mut());
+            self.preserve_runtime_state_in_stack();
             #[cfg(feature = "pma-assert")]
             {
-                // Enforce: PMA data must not reference the NockStack.
-                self.assert_persistent_state_in_pma(&pma);
+                // Enforce: durable PMA state must not reference the NockStack.
+                self.assert_durable_state_in_pma(&pma);
             }
 
             self.persist_pma_state(&pma);
 
-            pma = self.maybe_pma_gc(pma);
-            self.context.stack.reset(0);
+            self.context.stack.flip_top_frame(0);
             self.pma = Some(pma);
             detail
         } else {
