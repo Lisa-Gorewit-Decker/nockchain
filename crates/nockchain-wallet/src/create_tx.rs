@@ -270,13 +270,22 @@ impl PreparedMigrateV0Notes {
 impl PlannerBlockchainConstantsNoun {
     /// Returns the consensus coinbase relative timelock minimum.
     pub(crate) fn coinbase_timelock_min(&self) -> Result<u64, NockAppError> {
-        let parsed = PlannerV0BlockchainConstantsNoun::from_noun(&self._legacy_constants).map_err(
-            |err| {
+        // _legacy_constants is [v0_constants [asert_fields...]] since asert fields were
+        // appended after v0_constants in BlockchainConstants::to_noun().
+        let v0_noun = self
+            ._legacy_constants
+            .as_cell()
+            .map_err(|err| {
                 NockAppError::OtherError(format!(
                     "wallet blockchain-constants payload missing coinbase timelock min: {err}"
                 ))
-            },
-        )?;
+            })?
+            .head();
+        let parsed = PlannerV0BlockchainConstantsNoun::from_noun(&v0_noun).map_err(|err| {
+            NockAppError::OtherError(format!(
+                "wallet blockchain-constants payload missing coinbase timelock min: {err}"
+            ))
+        })?;
         Ok(parsed.coinbase_timelock_min)
     }
 }
