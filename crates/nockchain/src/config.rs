@@ -1,7 +1,9 @@
+use std::ffi::OsString;
 use std::path::PathBuf;
 use std::time::Duration;
 
-use clap::{value_parser, ArgAction, Args, Parser};
+use clap::{value_parser, ArgAction, Args, CommandFactory, FromArgMatches, Parser};
+use nockapp::kernel::boot::NockStackSize;
 use nockchain_types::tx_engine::common::Hash;
 
 use crate::mining::MiningPkhConfig;
@@ -205,6 +207,51 @@ pub struct NockchainCli {
 }
 
 impl NockchainCli {
+    pub fn parse_with_default_stack_size(default_stack_size: NockStackSize) -> Self {
+        Self::parse_from_with_default_stack_size(std::env::args_os(), default_stack_size)
+    }
+
+    fn parse_from_with_default_stack_size<I, T>(args: I, default_stack_size: NockStackSize) -> Self
+    where
+        I: IntoIterator<Item = T>,
+        T: Into<OsString>,
+    {
+        Self::try_parse_from_with_default_stack_size(args, default_stack_size)
+            .unwrap_or_else(|err| err.exit())
+    }
+
+    fn try_parse_from_with_default_stack_size<I, T>(
+        args: I,
+        default_stack_size: NockStackSize,
+    ) -> Result<Self, clap::Error>
+    where
+        I: IntoIterator<Item = T>,
+        T: Into<OsString>,
+    {
+        let mut matches = Self::command_with_default_stack_size(default_stack_size)
+            .try_get_matches_from(args.into_iter().map(Into::into))?;
+        <Self as FromArgMatches>::from_arg_matches_mut(&mut matches)
+    }
+
+    fn command_with_default_stack_size(default_stack_size: NockStackSize) -> clap::Command {
+        <Self as CommandFactory>::command().mut_arg("stack_size", |arg| {
+            arg.default_value(stack_size_default_arg(default_stack_size))
+        })
+    }
+}
+
+fn stack_size_default_arg(stack_size: NockStackSize) -> &'static str {
+    match stack_size {
+        NockStackSize::Tiny => "tiny",
+        NockStackSize::Small => "small",
+        NockStackSize::Normal => "normal",
+        NockStackSize::Medium => "medium",
+        NockStackSize::Large => "large",
+        NockStackSize::Huge => "huge",
+    }
+}
+
+impl NockchainCli {
     pub fn validate(&self) -> Result<(), String> {
         if self.mine && !(self.mining_pkh.is_some() || self.mining_pkh_adv.is_some()) {
             return Err(
@@ -238,7 +285,7 @@ impl NockchainCli {
 
 #[cfg(test)]
 mod tests {
-    use nockapp::kernel::boot::default_boot_cli;
+    use nockapp::kernel::boot::{default_boot_cli, NockStackSize};
 
     use super::*;
 
@@ -278,6 +325,28 @@ mod tests {
             bind_private_grpc_port: 5555,
             fast_sync: false,
         }
+    }
+
+    #[test]
+    fn default_stack_size_can_be_set_by_binary() {
+        let cli =
+            NockchainCli::parse_from_with_default_stack_size(["nockchain"], NockStackSize::Medium);
+        assert!(matches!(cli.nockapp_cli.stack_size, NockStackSize::Medium));
+    }
+
+    #[test]
+    fn explicit_stack_size_overrides_binary_default() {
+        let cli = NockchainCli::parse_from_with_default_stack_size(
+            ["nockchain", "--stack-size", "normal"],
+            NockStackSize::Medium,
+        );
+        assert!(matches!(cli.nockapp_cli.stack_size, NockStackSize::Normal));
+
+        let cli = NockchainCli::parse_from_with_default_stack_size(
+            ["nockchain", "--stack-size=small"],
+            NockStackSize::Medium,
+        );
+        assert!(matches!(cli.nockapp_cli.stack_size, NockStackSize::Small));
     }
 
     #[test]

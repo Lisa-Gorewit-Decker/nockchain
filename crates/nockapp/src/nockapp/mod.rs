@@ -1,4 +1,5 @@
 // pub(crate) mod actors;
+pub mod artifact;
 pub mod driver;
 pub mod error;
 pub mod export;
