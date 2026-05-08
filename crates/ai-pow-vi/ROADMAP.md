@@ -20,8 +20,9 @@ Shipped so far:
 | `ai-pow-vi/matmul_int8`, `layernorm` | 2 | `a82223a` | Inference-side INT8 matmul; integer LayerNorm. |
 | `ai-pow-vi/ffn` | 2 | `330b294` | SwiGLU forward block. |
 | `ai-pow-vi/attention` | 2 | `73cf097` | Standard + GQA attention: Q/K/V projection, RoPE, causal softmax, V-weighted sum, output projection. |
+| `ai-pow-vi/deltanet` | 2 | TBD | Gated DeltaNet linear-attention recurrence: per-token state matrix update with sigmoid α/β gates, GQA V→QK head mapping. |
 
-Test count: 87 unit + 11 cross-architecture pins, all green on aarch64.
+Test count: 100 unit + 12 cross-architecture pins, all green on aarch64.
 
 ## Phase 2 — remaining (in dependency order)
 
@@ -97,7 +98,7 @@ pub fn attention_forward(
 
 **Cost:** ~500 lines + tests. One commit.
 
-### 2.2 Gated DeltaNet recurrence (`src/deltanet.rs`)
+### ~~2.2 Gated DeltaNet recurrence (`src/deltanet.rs`)~~ ✓ shipped
 
 Qwen 3.6 27B uses 3 DeltaNet blocks for every 1 Attention block (16 hybrid
 blocks total → 64 layers). DeltaNet is a linear-attention variant with a

@@ -14,6 +14,7 @@
 
 use ai_pow_vi::activation_lut::{ActivationKind, ActivationLut};
 use ai_pow_vi::attention::{attention_forward, AttentionScales, AttentionWeights};
+use ai_pow_vi::deltanet::{deltanet_forward, DeltaNetScales, DeltaNetWeights};
 use ai_pow_vi::determinism::{hash_canonical, ARCH_TAG};
 use ai_pow_vi::ffn::{ffn_forward, FfnScales, FfnWeights};
 use ai_pow_vi::layernorm::layernorm;
@@ -352,4 +353,76 @@ fn pin_attention_canonical_output() {
         0x95, 0x10,
     ];
     assert_eq!(actual, expected, "{ARCH_TAG} attention_forward divergence");
+}
+
+#[test]
+fn pin_deltanet_canonical_output() {
+    // Fixture: m=3, hidden=4, num_qk=2, num_v=4, head_dim_qk=2, head_dim_v=2.
+    // 2 V heads per QK head (GQA: v_to_qk(v) = v * num_qk / num_v).
+    // Per-head state is 2*2 = 4 i8; total state is 4*4 = 16 i8.
+    let hidden = 4u32;
+    let num_qk = 2u32;
+    let num_v = 4u32;
+    let hd_qk = 2u32;
+    let hd_v = 2u32;
+    let m = 3u32;
+
+    let weights = DeltaNetWeights {
+        hidden,
+        num_qk_heads: num_qk,
+        num_v_heads: num_v,
+        head_dim_qk: hd_qk,
+        head_dim_v: hd_v,
+        w_q: canonical_input_i8((hidden * num_qk * hd_qk) as usize, 0xa1a1_b2b2_c3c3_d4d4u64),
+        w_k: canonical_input_i8((hidden * num_qk * hd_qk) as usize, 0xe5e5_f6f6_0707_1818u64),
+        w_v: canonical_input_i8((hidden * num_v * hd_v) as usize, 0x2929_3a3a_4b4b_5c5cu64),
+        w_alpha: canonical_input_i8((hidden * num_qk) as usize, 0x6d6d_7e7e_8f8f_90a0u64),
+        w_beta: canonical_input_i8((hidden * num_qk) as usize, 0xb1b1_c2c2_d3d3_e4e4u64),
+        w_o: canonical_input_i8((num_v * hd_v * hidden) as usize, 0xf5f5_0606_1717_2828u64),
+    };
+
+    // Hand-coded "hard sigmoid"-shape LUT: clamp(64 + x/2, 0, 127). Pinned so
+    // the deltanet pin stays stable.
+    let mut sigmoid_bytes = [0u8; 256];
+    for (i, b) in sigmoid_bytes.iter_mut().enumerate() {
+        let x = (i as i32) - 128;
+        let v = (64 + x / 2).clamp(0, 127);
+        *b = v as u8;
+    }
+    let sigmoid_lut = ActivationLut::from_bytes(ActivationKind::SiLU, &sigmoid_bytes).unwrap();
+    let lut_commit = sigmoid_lut.commit();
+    let pinned_lut_commit: [u8; 32] = [
+        0xc7, 0x67, 0xe2, 0x7a, 0xff, 0x30, 0x0f, 0x14, 0x74, 0x79, 0x34, 0xd9, 0xf7, 0xb0, 0x13,
+        0x4c, 0xa7, 0xdc, 0xb2, 0x97, 0xa0, 0xa6, 0xb0, 0x03, 0x4a, 0x87, 0xb6, 0xb4, 0x18, 0x67,
+        0xf2, 0x3b,
+    ];
+    assert_eq!(
+        lut_commit, pinned_lut_commit,
+        "{ARCH_TAG} hard-sigmoid LUT commit divergence"
+    );
+
+    let scales = DeltaNetScales {
+        q: Scale::from_num(1 << (SCALE_DENOM_LOG2 - 4)).unwrap(),
+        k: Scale::from_num(1 << (SCALE_DENOM_LOG2 - 4)).unwrap(),
+        v: Scale::from_num(1 << (SCALE_DENOM_LOG2 - 4)).unwrap(),
+        alpha_logit: Scale::from_num(1 << (SCALE_DENOM_LOG2 - 4)).unwrap(),
+        beta_logit: Scale::from_num(1 << (SCALE_DENOM_LOG2 - 4)).unwrap(),
+        u: Scale::from_num(1 << (SCALE_DENOM_LOG2 - 4)).unwrap(),
+        decay: Scale::from_num(1 << (SCALE_DENOM_LOG2 - 6)).unwrap(),
+        update: Scale::from_num(1 << (SCALE_DENOM_LOG2 - 4)).unwrap(),
+        o: Scale::from_num(1 << (SCALE_DENOM_LOG2 - 4)).unwrap(),
+        proj: Scale::from_num(1 << (SCALE_DENOM_LOG2 - 4)).unwrap(),
+    };
+
+    let input = canonical_input_i8((m * hidden) as usize, 0x9999_aaaa_bbbb_ccccu64);
+    let mut output = vec![0i8; (m * hidden) as usize];
+    deltanet_forward(&input, &weights, scales, &sigmoid_lut, m, &mut output).unwrap();
+    let bytes: Vec<u8> = output.iter().map(|&v| v as u8).collect();
+    let actual = hash_canonical(&bytes);
+    let expected: [u8; 32] = [
+        0xc8, 0xdd, 0xa5, 0x45, 0xba, 0x29, 0xfa, 0xaf, 0x9c, 0x5a, 0x7b, 0xf1, 0xbe, 0xba, 0xc2,
+        0x2f, 0xb2, 0x72, 0x30, 0xf7, 0x24, 0xa9, 0x7c, 0x6e, 0xd8, 0xd7, 0x8d, 0xa9, 0x47, 0x5f,
+        0xa8, 0x93,
+    ];
+    assert_eq!(actual, expected, "{ARCH_TAG} deltanet_forward divergence");
 }
