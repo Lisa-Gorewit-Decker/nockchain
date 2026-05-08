@@ -8,7 +8,7 @@ crate's determinism pins grow with each addition.
 
 ## Status snapshot
 
-Branch: `claude/ai-pow-nockchain-sgfNX`. Latest commit: `f3eafcd`.
+Branch: `claude/ai-pow-nockchain-sgfNX`. Latest commit: `e1d1e1a`.
 
 Shipped so far:
 
@@ -26,7 +26,7 @@ Shipped so far:
 | `ai-pow-vi/forward` + `model` | 2 | `7f24cc4` | Forward-pass driver: embed → run layers 0..target_layer → optional final norm; records each per-layer activation into an `ActivationLog`. Minimal `Model` struct (Phase 2.7 extends with comm_W). |
 | `ai-pow-vi/prompt` | 2 | `0f834d4` | BLAKE3-XOF Fiat-Shamir prompt synthesis: deterministic `(block_commitment, model_id) → Vec<Token>` with reserved-token rejection. |
 | `ai-pow-vi/comm_w` | 2 | `03ecf1b` | Canonical model commitment: weight tile-Merkle root + manifest hash → 32-byte `comm_W`. Sensitive to every weight, scale, eps, LUT byte, and architecture choice. |
-| `ai-pow-vi/proof` + `prover` + `verifier` | 3 | TBD | `ViProof` wire format, `mine_vi` prover, and `verify_vi` (FullReplica mode). Composes synth_prompt → forward_prefix → FFN gate tile-Merkle → FS challenge → tile hardness check → σ spot-checks. |
+| `ai-pow-vi/proof` + `prover` + `verifier` | 3 | `e1d1e1a` | `ViProof` wire format, `mine_vi` prover, and `verify_vi` (FullReplica mode). Composes synth_prompt → forward_prefix → FFN gate tile-Merkle → FS challenge → tile hardness check → σ spot-checks. |
 
 Test count: 174 unit + 17 cross-architecture pins, all green on aarch64.
 
