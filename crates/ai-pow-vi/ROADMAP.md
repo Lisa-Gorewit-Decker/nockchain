@@ -25,9 +25,10 @@ Shipped so far:
 | `ai-pow-vi/layer` | 2 | `cbb543b` | Per-layer composition: `Norm → (Attention\|DeltaNet) → +residual → Norm → FFN → +residual`, with RMSNorm/LayerNorm flavors and shared `LayerContext`. |
 | `ai-pow-vi/forward` + `model` | 2 | `7f24cc4` | Forward-pass driver: embed → run layers 0..target_layer → optional final norm; records each per-layer activation into an `ActivationLog`. Minimal `Model` struct (Phase 2.7 extends with comm_W). |
 | `ai-pow-vi/prompt` | 2 | `0f834d4` | BLAKE3-XOF Fiat-Shamir prompt synthesis: deterministic `(block_commitment, model_id) → Vec<Token>` with reserved-token rejection. |
-| `ai-pow-vi/comm_w` | 2 | TBD | Canonical model commitment: weight tile-Merkle root + manifest hash → 32-byte `comm_W`. Sensitive to every weight, scale, eps, LUT byte, and architecture choice. |
+| `ai-pow-vi/comm_w` | 2 | `03ecf1b` | Canonical model commitment: weight tile-Merkle root + manifest hash → 32-byte `comm_W`. Sensitive to every weight, scale, eps, LUT byte, and architecture choice. |
+| `ai-pow-vi/proof` + `prover` + `verifier` | 3 | TBD | `ViProof` wire format, `mine_vi` prover, and `verify_vi` (FullReplica mode). Composes synth_prompt → forward_prefix → FFN gate tile-Merkle → FS challenge → tile hardness check → σ spot-checks. |
 
-Test count: 157 unit + 16 cross-architecture pins, all green on aarch64.
+Test count: 174 unit + 17 cross-architecture pins, all green on aarch64.
 
 ## Phase 2 — remaining (in dependency order)
 
@@ -389,7 +390,7 @@ real Gemma + Qwen vectors after the rust ops actually match).
 5. Prefix forward to layer 8 ≤ 200 ms on a single CPU core (scalar
    baseline).
 
-## Phase 3 — VI prover and verifier APIs
+## ~~Phase 3 — VI prover and verifier APIs~~ ✓ shipped (FullReplica mode; light-path + federated deferred)
 
 ### 3.1 `ViProof` wire format (`src/proof.rs`)
 

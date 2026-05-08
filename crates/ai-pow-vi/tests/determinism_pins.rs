@@ -24,10 +24,12 @@ use ai_pow_vi::layernorm::layernorm;
 use ai_pow_vi::matmul_int8::matmul_int8;
 use ai_pow_vi::model::{Model, ModelDims};
 use ai_pow_vi::prompt::synth_prompt;
+use ai_pow_vi::prover::{mine_vi, ProverOptions};
 use ai_pow_vi::quant::{rescale_and_requantize, Scale, SCALE_DENOM_LOG2};
 use ai_pow_vi::rmsnorm::{isqrt_floor, rmsnorm, DEFAULT_EPS_Q};
 use ai_pow_vi::rope::{rope_apply, RopeTables, FRACT_BITS as ROPE_FRACT_BITS};
 use ai_pow_vi::softmax::{softmax_int, ExpLut};
+use ai_pow_vi::verifier::{verify_vi, VerifierMode};
 
 fn canonical_input_i8(len: usize, seed: u64) -> Vec<i8> {
     // Deterministic linear-congruential stream over u64; map to i8.
@@ -641,4 +643,124 @@ fn pin_comm_w_canonical_model() {
         0x63, 0x82,
     ];
     assert_eq!(actual, expected, "{ARCH_TAG} comm_w divergence");
+}
+
+#[test]
+fn pin_vi_proof_round_trip_canonical() {
+    // Phase 3 end-to-end: build a small model, run mine_vi to a Some(proof)
+    // with an easy target, then verify it via FullReplica. This pin
+    // verifies that the prover/verifier are byte-stable across architectures
+    // — any drift in any underlying op (matmul, rmsnorm, ffn, attention,
+    // tile_state_hash, merkle_root) would either change the encoded proof
+    // bytes or fail verify, both of which trip this test.
+    let hidden = 4u32;
+    let hu = hidden as usize;
+    let intermediate = 8u32;
+    let iu = intermediate as usize;
+    let seq_len = 4u32;
+
+    let small = Scale::from_num(1 << (SCALE_DENOM_LOG2 - 4)).unwrap();
+    let model = Model {
+        dims: ModelDims {
+            vocab: 16,
+            hidden,
+            seq_len,
+            activation_tile: 2,
+        },
+        embed: canonical_input_i8(16 * hu, 0xfeed_beef_cafe_babe),
+        layers: vec![LayerWeights::Attention {
+            norm1: NormSpec::RmsNorm {
+                gamma: canonical_input_i8(hu, 0x1234_5678_9abc_def0),
+                eps_q: 1,
+                post_scale: small,
+            },
+            attn: AttentionWeights {
+                hidden,
+                num_q_heads: 1,
+                num_kv_heads: 1,
+                head_dim: 2,
+                w_q: canonical_input_i8(hu * 2, 0xa1a1_b2b2_c3c3_d4d4),
+                w_k: canonical_input_i8(hu * 2, 0xe5e5_f6f6_0707_1818),
+                w_v: canonical_input_i8(hu * 2, 0x2929_3a3a_4b4b_5c5c),
+                w_o: canonical_input_i8(2 * hu, 0x6d6d_7e7e_8f8f_90a0),
+            },
+            attn_scales: AttentionScales {
+                q: small,
+                k: small,
+                v: small,
+                score: small,
+                attn_out: small,
+                o: small,
+            },
+            norm2: NormSpec::RmsNorm {
+                gamma: canonical_input_i8(hu, 0xb1b1_c2c2_d3d3_e4e4),
+                eps_q: 1,
+                post_scale: small,
+            },
+            ffn: FfnWeights {
+                hidden,
+                intermediate,
+                w_gate: canonical_input_i8(hu * iu, 0xf5f5_0606_1717_2828),
+                w_up: canonical_input_i8(hu * iu, 0x3939_4a4a_5b5b_6c6c),
+                w_down: canonical_input_i8(iu * hu, 0x7d7d_8e8e_9f9f_a0a0),
+            },
+            ffn_scales: FfnScales {
+                gate: small,
+                up: small,
+                mid: small,
+                down: small,
+            },
+        }],
+        final_norm: None,
+        rope_tables: RopeTables::identity(seq_len, 1),
+        softmax_lut: ExpLut::uniform_test(),
+        sigmoid_lut: ActivationLut::identity(),
+        ffn_activation: ActivationLut::identity(),
+    };
+    let model_id = compute_comm_w(&model);
+    let ctx = LayerContext {
+        rope_tables: &model.rope_tables,
+        softmax_lut: &model.softmax_lut,
+        sigmoid_lut: &model.sigmoid_lut,
+        ffn_activation: &model.ffn_activation,
+    };
+    let target = [0xffu8; 32];
+    let opts = ProverOptions {
+        target_layer: 0,
+        sigma: 3,
+        tile: 2,
+    };
+    let proof = mine_vi(
+        &model, &model_id, &ctx, b"pin-block", b"pin-nonce", &target, opts,
+    )
+    .unwrap()
+    .expect("expected Some on max target");
+
+    // Pin the encoded proof bytes' hash. This is the strongest possible
+    // determinism check: any byte of any commitment, any opening, any path
+    // changes here.
+    let bytes = proof.encode();
+    let actual = hash_canonical(&bytes);
+    let expected: [u8; 32] = [
+        0xc1, 0x13, 0xd1, 0xbc, 0xf8, 0x68, 0x0f, 0x0d, 0xa4, 0x2f, 0x73, 0x43, 0xc4, 0x34, 0x44,
+        0x7c, 0x9d, 0x17, 0xcb, 0x99, 0x8f, 0x08, 0x14, 0x22, 0x13, 0xec, 0x45, 0x85, 0x80, 0x96,
+        0xfc, 0xe3,
+    ];
+    assert_eq!(
+        actual, expected,
+        "{ARCH_TAG} ViProof encoded bytes divergence"
+    );
+
+    // And the proof must verify against itself.
+    verify_vi(
+        &model,
+        &ctx,
+        b"pin-block",
+        b"pin-nonce",
+        &target,
+        &proof,
+        opts,
+        VerifierMode::FullReplica,
+    )
+    .expect("self-verification must succeed");
 }
