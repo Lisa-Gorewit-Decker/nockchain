@@ -28,6 +28,7 @@ pub mod attention;
 pub mod deltanet;
 pub mod determinism;
 pub mod ffn;
+pub mod layer;
 pub mod layernorm;
 pub mod layout;
 pub mod matmul_int8;
@@ -42,6 +43,7 @@ pub use crate::attention::{attention_forward, AttentionScales, AttentionWeights}
 pub use crate::deltanet::{deltanet_forward, DeltaNetScales, DeltaNetWeights};
 pub use crate::determinism::{BitExactOp, ARCH_TAG};
 pub use crate::ffn::{elementwise_mul_i8, ffn_forward, FfnScales, FfnWeights};
+pub use crate::layer::{forward_layer, LayerContext, LayerWeights, NormSpec};
 pub use crate::layernorm::layernorm;
 pub use crate::layout::{BlockKind, ModelFamily, ModelLayout, NormType};
 pub use crate::matmul_int8::{dot_int8, matmul_int8, matmul_int8_requant, requantize_vec};

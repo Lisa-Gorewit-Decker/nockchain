@@ -18,6 +18,7 @@ use ai_pow_vi::attention::{attention_forward, AttentionScales, AttentionWeights}
 use ai_pow_vi::deltanet::{deltanet_forward, DeltaNetScales, DeltaNetWeights};
 use ai_pow_vi::determinism::{hash_canonical, ARCH_TAG};
 use ai_pow_vi::ffn::{ffn_forward, FfnScales, FfnWeights};
+use ai_pow_vi::layer::{forward_layer, LayerContext, LayerWeights, NormSpec};
 use ai_pow_vi::layernorm::layernorm;
 use ai_pow_vi::matmul_int8::matmul_int8;
 use ai_pow_vi::quant::{rescale_and_requantize, Scale, SCALE_DENOM_LOG2};
@@ -456,4 +457,85 @@ fn pin_activation_log_canonical_root() {
         0x10, 0xb8,
     ];
     assert_eq!(actual, expected, "{ARCH_TAG} activation_log divergence");
+}
+
+#[test]
+fn pin_attention_layer_canonical_output() {
+    use ai_pow_vi::rmsnorm::DEFAULT_EPS_Q;
+    use ai_pow_vi::rope::RopeTables;
+    use ai_pow_vi::softmax::ExpLut;
+
+    let hidden = 4u32;
+    let num_q = 1u32;
+    let num_kv = 1u32;
+    let hd = 2u32;
+    let m = 2u32;
+    let hu = hidden as usize;
+
+    let small = Scale::from_num(1 << (SCALE_DENOM_LOG2 - 4)).unwrap();
+    let layer = LayerWeights::Attention {
+        norm1: NormSpec::RmsNorm {
+            gamma: canonical_input_i8(hu, 0xa1a1_b2b2_c3c3_d4d4),
+            eps_q: DEFAULT_EPS_Q,
+            post_scale: small,
+        },
+        attn: AttentionWeights {
+            hidden,
+            num_q_heads: num_q,
+            num_kv_heads: num_kv,
+            head_dim: hd,
+            w_q: canonical_input_i8(hu * (num_q * hd) as usize, 0xe5e5_f6f6_0707_1818),
+            w_k: canonical_input_i8(hu * (num_kv * hd) as usize, 0x2929_3a3a_4b4b_5c5c),
+            w_v: canonical_input_i8(hu * (num_kv * hd) as usize, 0x6d6d_7e7e_8f8f_90a0),
+            w_o: canonical_input_i8((num_q * hd) as usize * hu, 0xb1b1_c2c2_d3d3_e4e4),
+        },
+        attn_scales: AttentionScales {
+            q: small,
+            k: small,
+            v: small,
+            score: small,
+            attn_out: small,
+            o: small,
+        },
+        norm2: NormSpec::RmsNorm {
+            gamma: canonical_input_i8(hu, 0xf5f5_0606_1717_2828),
+            eps_q: DEFAULT_EPS_Q,
+            post_scale: small,
+        },
+        ffn: FfnWeights {
+            hidden,
+            intermediate: hidden * 2,
+            w_gate: canonical_input_i8(hu * (hu * 2), 0x3939_4a4a_5b5b_6c6c),
+            w_up: canonical_input_i8(hu * (hu * 2), 0x7d7d_8e8e_9f9f_a0a0),
+            w_down: canonical_input_i8((hu * 2) * hu, 0xb1b1_c2c2_d3d3_e4e4),
+        },
+        ffn_scales: FfnScales {
+            gate: small,
+            up: small,
+            mid: small,
+            down: small,
+        },
+    };
+
+    let rope_tables = RopeTables::identity(m, hd / 2);
+    let softmax_lut = ExpLut::uniform_test();
+    let sigmoid_lut = ActivationLut::identity();
+    let ffn_act = ActivationLut::identity();
+    let ctx = LayerContext {
+        rope_tables: &rope_tables,
+        softmax_lut: &softmax_lut,
+        sigmoid_lut: &sigmoid_lut,
+        ffn_activation: &ffn_act,
+    };
+    let input = canonical_input_i8((m * hidden) as usize, 0x1234_5678_9abc_def0);
+    let mut output = vec![0i8; (m * hidden) as usize];
+    forward_layer(&input, &layer, &ctx, m, &mut output).unwrap();
+    let bytes: Vec<u8> = output.iter().map(|&v| v as u8).collect();
+    let actual = hash_canonical(&bytes);
+    let expected: [u8; 32] = [
+        0x1c, 0x00, 0xd4, 0x2f, 0x10, 0xcb, 0x80, 0xc8, 0x45, 0x7f, 0x64, 0x95, 0x83, 0x35, 0x50,
+        0x61, 0x0e, 0x6b, 0xb8, 0x27, 0x37, 0xf1, 0x07, 0x65, 0x07, 0x9f, 0xe6, 0x0a, 0xec, 0x66,
+        0x9a, 0xf3,
+    ];
+    assert_eq!(actual, expected, "{ARCH_TAG} attention_layer divergence");
 }

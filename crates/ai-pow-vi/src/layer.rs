@@ -1,0 +1,665 @@
+//! Per-layer composition: `Norm → (Attention | DeltaNet) → +residual → Norm → FFN → +residual`.
+//!
+//! Each transformer block in Gemma 4 31B / Qwen 3.6 27B is one of two
+//! flavors:
+//! - **Attention block** — RMSNorm → multi-head/GQA attention → residual
+//!   add → RMSNorm → SwiGLU FFN → residual add.
+//! - **DeltaNet block** — same shape, attention swapped for gated DeltaNet
+//!   linear-attention recurrence.
+//!
+//! The residual stream stays in i8 with saturating add. Per-token norm
+//! produces an i32 hidden vector that's requantized to i8 before being
+//! fed to the (attn|deltanet) and FFN paths. All quantization scales and
+//! the choice of norm flavor are stored on `LayerWeights`; shared
+//! resources (RoPE tables, softmax LUT, sigmoid LUT, FFN activation LUT)
+//! live on a [`LayerContext`].
+
+use thiserror::Error;
+
+use crate::activation_lut::ActivationLut;
+use crate::attention::{attention_forward, AttentionError, AttentionScales, AttentionWeights};
+use crate::deltanet::{deltanet_forward, DeltaNetError, DeltaNetScales, DeltaNetWeights};
+use crate::ffn::{ffn_forward, FfnError, FfnScales, FfnWeights};
+use crate::layernorm::{layernorm, LayerNormError};
+use crate::quant::{rescale_and_requantize, saturate_i8, Scale};
+use crate::rmsnorm::{rmsnorm, RmsNormError};
+use crate::rope::RopeTables;
+use crate::softmax::ExpLut;
+
+/// Per-layer norm flavor + parameters. Both Gemma and Qwen use RMSNorm in
+/// every position — `LayerNorm` is included so a future model registration
+/// that wants the more general form can plug in without a hard fork.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum NormSpec {
+    RmsNorm {
+        /// Per-channel scale, length `hidden`.
+        gamma: Vec<i8>,
+        /// Integer epsilon added to `sumsq`. Default: `1`.
+        eps_q: i64,
+        /// Rescale norm i32 output back to i8 before downstream ops.
+        post_scale: Scale,
+    },
+    LayerNorm {
+        gamma: Vec<i8>,
+        beta: Vec<i8>,
+        eps_q: i64,
+        post_scale: Scale,
+    },
+}
+
+impl NormSpec {
+    pub fn gamma_len(&self) -> usize {
+        match self {
+            NormSpec::RmsNorm { gamma, .. } => gamma.len(),
+            NormSpec::LayerNorm { gamma, .. } => gamma.len(),
+        }
+    }
+}
+
+/// Tagged-union layer weights: each block either has an attention sublayer
+/// or a DeltaNet sublayer, but always has the same residual structure.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum LayerWeights {
+    Attention {
+        norm1: NormSpec,
+        attn: AttentionWeights,
+        attn_scales: AttentionScales,
+        norm2: NormSpec,
+        ffn: FfnWeights,
+        ffn_scales: FfnScales,
+    },
+    DeltaNet {
+        norm1: NormSpec,
+        dnet: DeltaNetWeights,
+        dnet_scales: DeltaNetScales,
+        norm2: NormSpec,
+        ffn: FfnWeights,
+        ffn_scales: FfnScales,
+    },
+}
+
+/// Shared resources used by every layer in a forward pass. Borrowed for
+/// the duration of one [`forward_layer`] call.
+#[derive(Debug, Clone, Copy)]
+pub struct LayerContext<'a> {
+    /// Required by attention layers; ignored by DeltaNet layers.
+    pub rope_tables: &'a RopeTables,
+    /// Required by attention layers; ignored by DeltaNet layers.
+    pub softmax_lut: &'a ExpLut,
+    /// Required by DeltaNet layers; ignored by attention layers.
+    pub sigmoid_lut: &'a ActivationLut,
+    /// Required by every layer's FFN sublayer.
+    pub ffn_activation: &'a ActivationLut,
+}
+
+#[derive(Debug, Error, PartialEq, Eq)]
+pub enum LayerError {
+    #[error("input length must equal m * hidden")]
+    BadInputLen,
+    #[error("output length must equal m * hidden")]
+    BadOutputLen,
+    #[error("hidden must be > 0")]
+    ZeroHidden,
+    #[error("m must be > 0")]
+    ZeroM,
+    #[error("norm gamma length must equal hidden")]
+    BadNormShape,
+    #[error("rmsnorm: {0}")]
+    Rms(#[from] RmsNormError),
+    #[error("layernorm: {0}")]
+    Ln(#[from] LayerNormError),
+    #[error("attention: {0}")]
+    Attn(#[from] AttentionError),
+    #[error("deltanet: {0}")]
+    Dnet(#[from] DeltaNetError),
+    #[error("ffn: {0}")]
+    Ffn(#[from] FfnError),
+}
+
+/// Apply `norm` independently to each row of `input` (`(m, hidden)` row-major)
+/// and write the i8-requantized result into `output`.
+fn apply_norm_per_token(
+    norm: &NormSpec,
+    input: &[i8],
+    m: u32,
+    hidden: u32,
+    output: &mut [i8],
+) -> Result<(), LayerError> {
+    let mu = m as usize;
+    let hu = hidden as usize;
+    if input.len() != mu * hu {
+        return Err(LayerError::BadInputLen);
+    }
+    if output.len() != mu * hu {
+        return Err(LayerError::BadOutputLen);
+    }
+    if norm.gamma_len() != hu {
+        return Err(LayerError::BadNormShape);
+    }
+
+    let mut acc = vec![0i32; hu];
+    for t in 0..mu {
+        let in_row = &input[t * hu..(t + 1) * hu];
+        match norm {
+            NormSpec::RmsNorm {
+                gamma,
+                eps_q,
+                post_scale,
+            } => {
+                rmsnorm(in_row, gamma, &mut acc, *eps_q)?;
+                let out_row = &mut output[t * hu..(t + 1) * hu];
+                for (a, o) in acc.iter().zip(out_row.iter_mut()) {
+                    *o = rescale_and_requantize(*a, *post_scale);
+                }
+            }
+            NormSpec::LayerNorm {
+                gamma,
+                beta,
+                eps_q,
+                post_scale,
+            } => {
+                if beta.len() != hu {
+                    return Err(LayerError::BadNormShape);
+                }
+                layernorm(in_row, gamma, beta, &mut acc, *eps_q)?;
+                let out_row = &mut output[t * hu..(t + 1) * hu];
+                for (a, o) in acc.iter().zip(out_row.iter_mut()) {
+                    *o = rescale_and_requantize(*a, *post_scale);
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+/// `dst[i] = saturate_i8(dst[i] + addend[i])`.
+fn add_residual_inplace(dst: &mut [i8], addend: &[i8]) {
+    debug_assert_eq!(dst.len(), addend.len());
+    for (d, a) in dst.iter_mut().zip(addend.iter()) {
+        let sum = (*d as i32) + (*a as i32);
+        *d = saturate_i8(sum as i64);
+    }
+}
+
+/// Forward one transformer layer.
+///
+/// `input` is `(m, hidden)` row-major i8; `output` is the same shape.
+///
+/// The per-layer flow is, identically for both block flavors:
+/// ```text
+/// x  = input
+/// y  = sublayer(norm1(x))         # attention or deltanet
+/// x' = saturate_i8(x + y)
+/// y' = ffn(norm2(x'))
+/// out = saturate_i8(x' + y')
+/// ```
+pub fn forward_layer(
+    input: &[i8],
+    layer: &LayerWeights,
+    ctx: &LayerContext,
+    m: u32,
+    output: &mut [i8],
+) -> Result<(), LayerError> {
+    if m == 0 {
+        return Err(LayerError::ZeroM);
+    }
+    let mu = m as usize;
+    // Hidden is determined by the layer's attention/deltanet sublayer.
+    let hidden = match layer {
+        LayerWeights::Attention { attn, .. } => attn.hidden,
+        LayerWeights::DeltaNet { dnet, .. } => dnet.hidden,
+    };
+    if hidden == 0 {
+        return Err(LayerError::ZeroHidden);
+    }
+    let hu = hidden as usize;
+    if input.len() != mu * hu {
+        return Err(LayerError::BadInputLen);
+    }
+    if output.len() != mu * hu {
+        return Err(LayerError::BadOutputLen);
+    }
+
+    // Step 1: norm1(input) → normed1 (i8 per-token-normalized).
+    let mut normed1 = vec![0i8; mu * hu];
+    let (norm1, norm2) = match layer {
+        LayerWeights::Attention { norm1, norm2, .. } => (norm1, norm2),
+        LayerWeights::DeltaNet { norm1, norm2, .. } => (norm1, norm2),
+    };
+    apply_norm_per_token(norm1, input, m, hidden, &mut normed1)?;
+
+    // Step 2: sublayer(normed1) → sub_out.
+    let mut sub_out = vec![0i8; mu * hu];
+    match layer {
+        LayerWeights::Attention {
+            attn, attn_scales, ..
+        } => {
+            attention_forward(
+                &normed1, attn, *attn_scales, ctx.rope_tables, ctx.softmax_lut, m, &mut sub_out,
+            )?;
+        }
+        LayerWeights::DeltaNet {
+            dnet, dnet_scales, ..
+        } => {
+            deltanet_forward(
+                &normed1, dnet, *dnet_scales, ctx.sigmoid_lut, m, &mut sub_out,
+            )?;
+        }
+    }
+    drop(normed1);
+
+    // Step 3: residual1 = input + sub_out (saturating). Reuse sub_out
+    // buffer in place: sub_out[i] += input[i].
+    add_residual_inplace(&mut sub_out, input);
+    let residual1 = sub_out; // rename for clarity
+
+    // Step 4: norm2(residual1) → normed2.
+    let mut normed2 = vec![0i8; mu * hu];
+    apply_norm_per_token(norm2, &residual1, m, hidden, &mut normed2)?;
+
+    // Step 5: ffn(normed2) → ffn_out.
+    let (ffn_w, ffn_scales) = match layer {
+        LayerWeights::Attention {
+            ffn, ffn_scales, ..
+        } => (ffn, *ffn_scales),
+        LayerWeights::DeltaNet {
+            ffn, ffn_scales, ..
+        } => (ffn, *ffn_scales),
+    };
+    let mut ffn_out = vec![0i8; mu * hu];
+    ffn_forward(
+        &normed2, ffn_w, ctx.ffn_activation, ffn_scales, m, &mut ffn_out,
+    )?;
+    drop(normed2);
+
+    // Step 6: output = residual1 + ffn_out (saturating).
+    output.copy_from_slice(&residual1);
+    add_residual_inplace(output, &ffn_out);
+
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::activation_lut::{ActivationKind, ActivationLut};
+    use crate::quant::SCALE_DENOM_LOG2;
+    use crate::rmsnorm::DEFAULT_EPS_Q;
+
+    fn lcg_bytes(len: usize, seed: u64) -> Vec<i8> {
+        let mut s = seed;
+        (0..len)
+            .map(|_| {
+                s = s
+                    .wrapping_mul(6364136223846793005)
+                    .wrapping_add(1442695040888963407);
+                s.wrapping_shr(56) as i8
+            })
+            .collect()
+    }
+
+    fn small_scale() -> Scale {
+        Scale::from_num(1 << (SCALE_DENOM_LOG2 - 4)).unwrap()
+    }
+
+    fn unit_scale() -> Scale {
+        Scale::from_num(1 << SCALE_DENOM_LOG2).unwrap()
+    }
+
+    fn rms_norm(hidden: usize, gamma_seed: u64) -> NormSpec {
+        NormSpec::RmsNorm {
+            gamma: lcg_bytes(hidden, gamma_seed),
+            eps_q: DEFAULT_EPS_Q,
+            post_scale: small_scale(),
+        }
+    }
+
+    fn ln_norm(hidden: usize, gamma_seed: u64, beta_seed: u64) -> NormSpec {
+        NormSpec::LayerNorm {
+            gamma: lcg_bytes(hidden, gamma_seed),
+            beta: lcg_bytes(hidden, beta_seed),
+            eps_q: DEFAULT_EPS_Q,
+            post_scale: small_scale(),
+        }
+    }
+
+    fn build_attn_layer(hidden: u32, num_q: u32, num_kv: u32, hd: u32, seed: u64) -> LayerWeights {
+        use crate::attention::AttentionScales;
+        let hu = hidden as usize;
+        LayerWeights::Attention {
+            norm1: rms_norm(hu, seed),
+            attn: AttentionWeights {
+                hidden,
+                num_q_heads: num_q,
+                num_kv_heads: num_kv,
+                head_dim: hd,
+                w_q: lcg_bytes(hu * (num_q * hd) as usize, seed.wrapping_add(1)),
+                w_k: lcg_bytes(hu * (num_kv * hd) as usize, seed.wrapping_add(2)),
+                w_v: lcg_bytes(hu * (num_kv * hd) as usize, seed.wrapping_add(3)),
+                w_o: lcg_bytes((num_q * hd) as usize * hu, seed.wrapping_add(4)),
+            },
+            attn_scales: AttentionScales {
+                q: small_scale(),
+                k: small_scale(),
+                v: small_scale(),
+                score: small_scale(),
+                attn_out: small_scale(),
+                o: small_scale(),
+            },
+            norm2: rms_norm(hu, seed.wrapping_add(5)),
+            ffn: FfnWeights {
+                hidden,
+                intermediate: hidden * 2,
+                w_gate: lcg_bytes(hu * (hu * 2), seed.wrapping_add(6)),
+                w_up: lcg_bytes(hu * (hu * 2), seed.wrapping_add(7)),
+                w_down: lcg_bytes((hu * 2) * hu, seed.wrapping_add(8)),
+            },
+            ffn_scales: FfnScales {
+                gate: small_scale(),
+                up: small_scale(),
+                mid: small_scale(),
+                down: small_scale(),
+            },
+        }
+    }
+
+    fn build_dnet_layer(hidden: u32, num_qk: u32, num_v: u32, hd: u32, seed: u64) -> LayerWeights {
+        use crate::deltanet::DeltaNetScales;
+        let hu = hidden as usize;
+        LayerWeights::DeltaNet {
+            norm1: rms_norm(hu, seed),
+            dnet: DeltaNetWeights {
+                hidden,
+                num_qk_heads: num_qk,
+                num_v_heads: num_v,
+                head_dim_qk: hd,
+                head_dim_v: hd,
+                w_q: lcg_bytes(hu * (num_qk * hd) as usize, seed.wrapping_add(1)),
+                w_k: lcg_bytes(hu * (num_qk * hd) as usize, seed.wrapping_add(2)),
+                w_v: lcg_bytes(hu * (num_v * hd) as usize, seed.wrapping_add(3)),
+                w_alpha: lcg_bytes(hu * num_qk as usize, seed.wrapping_add(4)),
+                w_beta: lcg_bytes(hu * num_qk as usize, seed.wrapping_add(5)),
+                w_o: lcg_bytes((num_v * hd) as usize * hu, seed.wrapping_add(6)),
+            },
+            dnet_scales: DeltaNetScales {
+                q: small_scale(),
+                k: small_scale(),
+                v: small_scale(),
+                alpha_logit: small_scale(),
+                beta_logit: small_scale(),
+                u: small_scale(),
+                decay: Scale::from_num(1 << (SCALE_DENOM_LOG2 - 6)).unwrap(),
+                update: small_scale(),
+                o: small_scale(),
+                proj: small_scale(),
+            },
+            norm2: rms_norm(hu, seed.wrapping_add(7)),
+            ffn: FfnWeights {
+                hidden,
+                intermediate: hidden * 2,
+                w_gate: lcg_bytes(hu * (hu * 2), seed.wrapping_add(8)),
+                w_up: lcg_bytes(hu * (hu * 2), seed.wrapping_add(9)),
+                w_down: lcg_bytes((hu * 2) * hu, seed.wrapping_add(10)),
+            },
+            ffn_scales: FfnScales {
+                gate: small_scale(),
+                up: small_scale(),
+                mid: small_scale(),
+                down: small_scale(),
+            },
+        }
+    }
+
+    fn ctx<'a>(
+        rope_tables: &'a RopeTables,
+        softmax_lut: &'a ExpLut,
+        sigmoid_lut: &'a ActivationLut,
+        ffn_activation: &'a ActivationLut,
+    ) -> LayerContext<'a> {
+        LayerContext {
+            rope_tables,
+            softmax_lut,
+            sigmoid_lut,
+            ffn_activation,
+        }
+    }
+
+    #[test]
+    fn attention_layer_runs_and_produces_output() {
+        let hidden = 8u32;
+        let m = 3u32;
+        let layer = build_attn_layer(hidden, 2, 1, 4, 0xa1a1);
+        let rope_tables = RopeTables::identity(m, 2);
+        let softmax_lut = ExpLut::uniform_test();
+        let sigmoid_lut = ActivationLut::identity();
+        let ffn_act = ActivationLut::identity();
+        let c = ctx(&rope_tables, &softmax_lut, &sigmoid_lut, &ffn_act);
+        let input = lcg_bytes((m * hidden) as usize, 0xb2b2);
+        let mut output = vec![0i8; (m * hidden) as usize];
+        forward_layer(&input, &layer, &c, m, &mut output).unwrap();
+    }
+
+    #[test]
+    fn deltanet_layer_runs_and_produces_output() {
+        let hidden = 4u32;
+        let m = 3u32;
+        let layer = build_dnet_layer(hidden, 1, 2, 2, 0xc3c3);
+        // DeltaNet ignores rope_tables and softmax_lut.
+        let rope_tables = RopeTables::identity(m, 1);
+        let softmax_lut = ExpLut::uniform_test();
+        let mut sig = [0u8; 256];
+        for (i, b) in sig.iter_mut().enumerate() {
+            let x = (i as i32) - 128;
+            *b = (64 + x / 2).clamp(0, 127) as u8;
+        }
+        let sigmoid_lut = ActivationLut::from_bytes(ActivationKind::SiLU, &sig).unwrap();
+        let ffn_act = ActivationLut::identity();
+        let c = ctx(&rope_tables, &softmax_lut, &sigmoid_lut, &ffn_act);
+        let input = lcg_bytes((m * hidden) as usize, 0xd4d4);
+        let mut output = vec![0i8; (m * hidden) as usize];
+        forward_layer(&input, &layer, &c, m, &mut output).unwrap();
+    }
+
+    #[test]
+    fn determinism_two_calls_match() {
+        let hidden = 4u32;
+        let m = 2u32;
+        let layer = build_attn_layer(hidden, 1, 1, 2, 0xfeed);
+        let rope_tables = RopeTables::identity(m, 1);
+        let softmax_lut = ExpLut::uniform_test();
+        let sigmoid_lut = ActivationLut::identity();
+        let ffn_act = ActivationLut::identity();
+        let c = ctx(&rope_tables, &softmax_lut, &sigmoid_lut, &ffn_act);
+        let input = lcg_bytes((m * hidden) as usize, 0xbeef);
+        let mut a = vec![0i8; (m * hidden) as usize];
+        let mut b = vec![0i8; (m * hidden) as usize];
+        forward_layer(&input, &layer, &c, m, &mut a).unwrap();
+        forward_layer(&input, &layer, &c, m, &mut b).unwrap();
+        assert_eq!(a, b);
+    }
+
+    #[test]
+    fn length_mismatch_rejected() {
+        let layer = build_attn_layer(4, 1, 1, 2, 0x1234);
+        let rope_tables = RopeTables::identity(2, 1);
+        let softmax_lut = ExpLut::uniform_test();
+        let sigmoid_lut = ActivationLut::identity();
+        let ffn_act = ActivationLut::identity();
+        let c = ctx(&rope_tables, &softmax_lut, &sigmoid_lut, &ffn_act);
+
+        let short = vec![0i8; 7];
+        let mut out = vec![0i8; 8];
+        assert_eq!(
+            forward_layer(&short, &layer, &c, 2, &mut out).err(),
+            Some(LayerError::BadInputLen),
+        );
+        let input = vec![0i8; 8];
+        let mut bad = vec![0i8; 5];
+        assert_eq!(
+            forward_layer(&input, &layer, &c, 2, &mut bad).err(),
+            Some(LayerError::BadOutputLen),
+        );
+        assert_eq!(
+            forward_layer(&input, &layer, &c, 0, &mut out).err(),
+            Some(LayerError::ZeroM),
+        );
+    }
+
+    #[test]
+    fn norm_shape_mismatch_rejected() {
+        // Build a layer with norm1.gamma of wrong length.
+        let mut layer = build_attn_layer(4, 1, 1, 2, 0x4444);
+        if let LayerWeights::Attention { norm1, .. } = &mut layer {
+            *norm1 = NormSpec::RmsNorm {
+                gamma: vec![0i8; 3], // wrong: should be hidden=4
+                eps_q: DEFAULT_EPS_Q,
+                post_scale: small_scale(),
+            };
+        }
+        let rope_tables = RopeTables::identity(2, 1);
+        let softmax_lut = ExpLut::uniform_test();
+        let sigmoid_lut = ActivationLut::identity();
+        let ffn_act = ActivationLut::identity();
+        let c = ctx(&rope_tables, &softmax_lut, &sigmoid_lut, &ffn_act);
+        let input = vec![0i8; 8];
+        let mut output = vec![0i8; 8];
+        assert_eq!(
+            forward_layer(&input, &layer, &c, 2, &mut output).err(),
+            Some(LayerError::BadNormShape),
+        );
+    }
+
+    #[test]
+    fn layernorm_flavor_works() {
+        let hidden = 4u32;
+        let m = 2u32;
+        let mut layer = build_attn_layer(hidden, 1, 1, 2, 0x5050);
+        if let LayerWeights::Attention { norm1, .. } = &mut layer {
+            *norm1 = ln_norm(hidden as usize, 0x6060, 0x7070);
+        }
+        let rope_tables = RopeTables::identity(m, 1);
+        let softmax_lut = ExpLut::uniform_test();
+        let sigmoid_lut = ActivationLut::identity();
+        let ffn_act = ActivationLut::identity();
+        let c = ctx(&rope_tables, &softmax_lut, &sigmoid_lut, &ffn_act);
+        let input = lcg_bytes((m * hidden) as usize, 0x8080);
+        let mut output = vec![0i8; (m * hidden) as usize];
+        forward_layer(&input, &layer, &c, m, &mut output).unwrap();
+    }
+
+    #[test]
+    fn residual_dominates_when_sublayers_zero() {
+        // If both sublayer outputs are zero (achievable by zeroing all
+        // weights), the layer reduces to: output = saturate_i8(input + 0
+        // + 0) = input. Norms still apply but they get zeroed by the all-
+        // zero attention weights, so the second residual just passes input.
+        let hidden = 4u32;
+        let m = 2u32;
+        let mut layer = build_attn_layer(hidden, 1, 1, 2, 0x9090);
+        if let LayerWeights::Attention { attn, ffn, .. } = &mut layer {
+            attn.w_q = vec![0i8; attn.w_q.len()];
+            attn.w_k = vec![0i8; attn.w_k.len()];
+            attn.w_v = vec![0i8; attn.w_v.len()];
+            attn.w_o = vec![0i8; attn.w_o.len()];
+            ffn.w_gate = vec![0i8; ffn.w_gate.len()];
+            ffn.w_up = vec![0i8; ffn.w_up.len()];
+            ffn.w_down = vec![0i8; ffn.w_down.len()];
+        }
+        let rope_tables = RopeTables::identity(m, 1);
+        let softmax_lut = ExpLut::uniform_test();
+        let sigmoid_lut = ActivationLut::identity();
+        let ffn_act = ActivationLut::identity();
+        let c = ctx(&rope_tables, &softmax_lut, &sigmoid_lut, &ffn_act);
+        let input = lcg_bytes((m * hidden) as usize, 0xaaaa);
+        let mut output = vec![0i8; (m * hidden) as usize];
+        forward_layer(&input, &layer, &c, m, &mut output).unwrap();
+        assert_eq!(
+            output, input,
+            "with zero sublayer weights, layer is identity"
+        );
+    }
+
+    #[test]
+    fn attention_and_deltanet_layers_produce_distinct_outputs() {
+        let hidden = 4u32;
+        let m = 2u32;
+        let attn_layer = build_attn_layer(hidden, 1, 1, 2, 0xcccc);
+        let dnet_layer = build_dnet_layer(hidden, 1, 1, 2, 0xcccc);
+        let rope_tables = RopeTables::identity(m, 1);
+        let softmax_lut = ExpLut::uniform_test();
+        let mut sig = [0u8; 256];
+        for (i, b) in sig.iter_mut().enumerate() {
+            let x = (i as i32) - 128;
+            *b = (64 + x / 2).clamp(0, 127) as u8;
+        }
+        let sigmoid_lut = ActivationLut::from_bytes(ActivationKind::SiLU, &sig).unwrap();
+        let ffn_act = ActivationLut::identity();
+        let c = ctx(&rope_tables, &softmax_lut, &sigmoid_lut, &ffn_act);
+        let input = lcg_bytes((m * hidden) as usize, 0xdddd);
+        let mut out_attn = vec![0i8; (m * hidden) as usize];
+        let mut out_dnet = vec![0i8; (m * hidden) as usize];
+        forward_layer(&input, &attn_layer, &c, m, &mut out_attn).unwrap();
+        forward_layer(&input, &dnet_layer, &c, m, &mut out_dnet).unwrap();
+        assert_ne!(
+            out_attn, out_dnet,
+            "different sublayer flavors must yield different outputs"
+        );
+    }
+
+    #[test]
+    fn add_residual_saturates() {
+        let mut a = vec![100i8, -100, 50, -50];
+        let b = vec![50i8, -50, -50, 50];
+        add_residual_inplace(&mut a, &b);
+        assert_eq!(
+            a,
+            vec![127, -128, 0, 0],
+            "residual must saturate to i8 range"
+        );
+    }
+
+    #[test]
+    fn norm_per_token_validates_lengths() {
+        // Wrong input length.
+        let norm = rms_norm(4, 0x1234);
+        let mut out = vec![0i8; 8];
+        let bad = vec![0i8; 7];
+        assert_eq!(
+            apply_norm_per_token(&norm, &bad, 2, 4, &mut out).err(),
+            Some(LayerError::BadInputLen),
+        );
+
+        // Wrong output length.
+        let input = vec![0i8; 8];
+        let mut bad_out = vec![0i8; 5];
+        assert_eq!(
+            apply_norm_per_token(&norm, &input, 2, 4, &mut bad_out).err(),
+            Some(LayerError::BadOutputLen),
+        );
+    }
+
+    #[test]
+    fn unit_post_scale_norm_round_trip() {
+        // With post_scale = 1.0 and a constant input, normed = beta_or_zero.
+        let hidden = 8u32;
+        let m = 1u32;
+        let norm = NormSpec::RmsNorm {
+            gamma: vec![32i8; hidden as usize],
+            eps_q: DEFAULT_EPS_Q,
+            post_scale: unit_scale(),
+        };
+        let input = vec![5i8; (m * hidden) as usize];
+        let mut output = vec![0i8; (m * hidden) as usize];
+        apply_norm_per_token(&norm, &input, m, hidden, &mut output).unwrap();
+        // RMSNorm of constant input → output = (constant / rms) * gamma. With
+        // gamma=32 and a uniform constant, the per-channel result is the same
+        // value across channels. We only assert all entries are equal.
+        let first = output[0];
+        for &v in &output {
+            assert_eq!(
+                v, first,
+                "RMSNorm of uniform input must produce uniform output"
+            );
+        }
+    }
+}

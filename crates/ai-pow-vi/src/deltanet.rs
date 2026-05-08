@@ -70,7 +70,7 @@ pub struct DeltaNetWeights {
 /// are more knobs here than for FFN/attention because the recurrent state
 /// update has multiple chained multiplications that each need a scale to
 /// prevent i64 overflow.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct DeltaNetScales {
     /// Q projection: i32 → i8.
     pub q: Scale,
@@ -252,7 +252,7 @@ pub fn deltanet_forward(
     let hdv = hd_v as usize;
     let q_row_stride = nq * hdq;
     let v_row_stride = nv * hdv;
-    let v_per_qk = nv / nq;
+    let _v_per_qk = nv / nq;
 
     if input.len() != mu * hu {
         return Err(DeltaNetError::BadInputLen);

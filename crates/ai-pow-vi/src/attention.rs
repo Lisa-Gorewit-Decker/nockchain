@@ -43,7 +43,7 @@ pub struct AttentionWeights {
 }
 
 /// Per-tensor quantization scales for one attention step.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct AttentionScales {
     /// Requantize Q projection i32 → i8.
     pub q: Scale,

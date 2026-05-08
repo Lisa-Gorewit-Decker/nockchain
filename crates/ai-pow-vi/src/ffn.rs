@@ -41,7 +41,7 @@ pub struct FfnWeights {
 /// Per-tensor quantization scales for one SwiGLU step. Each scale rescales
 /// the i32 accumulator coming out of its matmul (or out of the elementwise
 /// multiply, in `mid_scale`'s case) back to i8.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct FfnScales {
     pub gate: Scale,
     pub up: Scale,
