@@ -23,9 +23,10 @@ Shipped so far:
 | `ai-pow-vi/deltanet` | 2 | `52a6f77` | Gated DeltaNet linear-attention recurrence: per-token state matrix update with sigmoid α/β gates, GQA V→QK head mapping. |
 | `ai-pow-vi/activations` | 2 | `f3eafcd` | Per-layer activation tile-Merkle log: BLAKE3 leaves, root, sibling-path opening + verification. Wraps `ai-pow::commit`. |
 | `ai-pow-vi/layer` | 2 | `cbb543b` | Per-layer composition: `Norm → (Attention\|DeltaNet) → +residual → Norm → FFN → +residual`, with RMSNorm/LayerNorm flavors and shared `LayerContext`. |
-| `ai-pow-vi/forward` + `model` | 2 | TBD | Forward-pass driver: embed → run layers 0..target_layer → optional final norm; records each per-layer activation into an `ActivationLog`. Minimal `Model` struct (Phase 2.7 extends with comm_W). |
+| `ai-pow-vi/forward` + `model` | 2 | `7f24cc4` | Forward-pass driver: embed → run layers 0..target_layer → optional final norm; records each per-layer activation into an `ActivationLog`. Minimal `Model` struct (Phase 2.7 extends with comm_W). |
+| `ai-pow-vi/prompt` | 2 | TBD | BLAKE3-XOF Fiat-Shamir prompt synthesis: deterministic `(block_commitment, model_id) → Vec<Token>` with reserved-token rejection. |
 
-Test count: 140 unit + 14 cross-architecture pins, all green on aarch64.
+Test count: 149 unit + 15 cross-architecture pins, all green on aarch64.
 
 ## Phase 2 — remaining (in dependency order)
 
@@ -263,7 +264,7 @@ Steps:
 
 **Cost:** ~150 lines. One commit.
 
-### 2.6 Prompt synthesis (`src/prompt.rs`)
+### ~~2.6 Prompt synthesis (`src/prompt.rs`)~~ ✓ shipped
 
 ```rust
 pub fn synth_prompt(

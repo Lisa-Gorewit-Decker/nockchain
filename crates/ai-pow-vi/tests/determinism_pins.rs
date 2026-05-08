@@ -21,6 +21,7 @@ use ai_pow_vi::ffn::{ffn_forward, FfnScales, FfnWeights};
 use ai_pow_vi::layer::{forward_layer, LayerContext, LayerWeights, NormSpec};
 use ai_pow_vi::layernorm::layernorm;
 use ai_pow_vi::matmul_int8::matmul_int8;
+use ai_pow_vi::prompt::synth_prompt;
 use ai_pow_vi::quant::{rescale_and_requantize, Scale, SCALE_DENOM_LOG2};
 use ai_pow_vi::rmsnorm::{isqrt_floor, rmsnorm, DEFAULT_EPS_Q};
 use ai_pow_vi::rope::{rope_apply, RopeTables, FRACT_BITS as ROPE_FRACT_BITS};
@@ -538,4 +539,25 @@ fn pin_attention_layer_canonical_output() {
         0x9a, 0xf3,
     ];
     assert_eq!(actual, expected, "{ARCH_TAG} attention_layer divergence");
+}
+
+#[test]
+fn pin_synth_prompt_canonical() {
+    // Generate a 32-token prompt with a fixed (block_commitment, model_id);
+    // pin the byte hash of the resulting `Vec<Token>` (LE-encoded u32).
+    let block = b"ai-pow-vi pin block-commitment v1";
+    let model_id = [0xa5u8; 32];
+    let reserved = vec![0u32, 1u32, 2u32]; // first three reserved.
+    let prompt = synth_prompt(block, &model_id, 32, 256, &reserved).unwrap();
+    let mut bytes = Vec::with_capacity(prompt.len() * 4);
+    for t in &prompt {
+        bytes.extend_from_slice(&t.to_le_bytes());
+    }
+    let actual = hash_canonical(&bytes);
+    let expected: [u8; 32] = [
+        0x28, 0x8d, 0xc2, 0x20, 0xa3, 0x58, 0x9d, 0x3b, 0xca, 0x85, 0x1e, 0x26, 0xea, 0x08, 0xc5,
+        0x5e, 0x48, 0x40, 0x28, 0xcb, 0x94, 0x01, 0xea, 0x2d, 0x96, 0x9c, 0x9b, 0xfc, 0x15, 0x00,
+        0x9f, 0x26,
+    ];
+    assert_eq!(actual, expected, "{ARCH_TAG} synth_prompt divergence");
 }
