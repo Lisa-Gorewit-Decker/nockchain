@@ -16,6 +16,8 @@ use ai_pow_vi::activation_lut::{ActivationKind, ActivationLut};
 use ai_pow_vi::determinism::{hash_canonical, ARCH_TAG};
 use ai_pow_vi::quant::{rescale_and_requantize, Scale, SCALE_DENOM_LOG2};
 use ai_pow_vi::rmsnorm::{isqrt_floor, rmsnorm, DEFAULT_EPS_Q};
+use ai_pow_vi::rope::{rope_apply, RopeTables, FRACT_BITS as ROPE_FRACT_BITS};
+use ai_pow_vi::softmax::{softmax_int, ExpLut};
 
 fn canonical_input_i8(len: usize, seed: u64) -> Vec<i8> {
     // Deterministic linear-congruential stream over u64; map to i8.
@@ -125,4 +127,91 @@ fn pin_rmsnorm_canonical_output() {
         0x9d, 0x67,
     ];
     assert_eq!(actual, expected, "{ARCH_TAG} rmsnorm divergence");
+}
+
+#[test]
+fn pin_softmax_canonical_output() {
+    // Build a hand-coded "decay" LUT (not real exp; just sharp enough to
+    // exercise the integer normalize). 16-position score array; result is
+    // 16 i8 probabilities. Pin both the LUT commit and the softmax output.
+    let mut table = [0i32; 256];
+    for (i, slot) in table.iter_mut().enumerate() {
+        let v = if i < 16 {
+            (1i32 << 16).wrapping_shr(i as u32)
+        } else {
+            0
+        };
+        *slot = v;
+    }
+    let lut = ExpLut { table };
+    let lut_commit = lut.commit();
+    let pinned_lut_commit: [u8; 32] = [
+        0xf3, 0x0a, 0xd8, 0xb0, 0xbf, 0xd6, 0x94, 0x75, 0xce, 0x12, 0x98, 0x96, 0xcf, 0xaf, 0x31,
+        0x52, 0x0b, 0xfe, 0x8e, 0x08, 0x88, 0xaa, 0x2d, 0x83, 0xaa, 0x48, 0xd4, 0x15, 0x52, 0x22,
+        0x26, 0x9f,
+    ];
+    assert_eq!(
+        lut_commit, pinned_lut_commit,
+        "{ARCH_TAG} ExpLut commit divergence"
+    );
+
+    let scores: Vec<i32> = (0..16).map(|i| (i * 3) % 17 - 6).collect();
+    let mut out = vec![0i8; scores.len()];
+    softmax_int(&scores, &lut, &mut out).unwrap();
+    let bytes: Vec<u8> = out.iter().map(|&v| v as u8).collect();
+    let actual = hash_canonical(&bytes);
+    let expected: [u8; 32] = [
+        0xc3, 0x84, 0x25, 0x6f, 0x33, 0x5b, 0xd4, 0x04, 0xfc, 0x9d, 0x9a, 0xe8, 0xaa, 0x9b, 0x95,
+        0xf7, 0xe3, 0xce, 0x9b, 0xe3, 0x9b, 0xc4, 0x8e, 0x5c, 0xfa, 0x98, 0xf8, 0x6f, 0xa5, 0xf1,
+        0x3f, 0xb0,
+    ];
+    assert_eq!(actual, expected, "{ARCH_TAG} softmax_int divergence");
+}
+
+#[test]
+fn pin_rope_canonical_output() {
+    // Hand-built tables: 4 positions × 4 pair-indices. Position 0 is the
+    // identity rotation; positions 1..3 use distinct fixed angles.
+    let mut tables = RopeTables::zeros(4, 4);
+    for j in 0..4 {
+        // Position 0 (identity).
+        tables.cos[j] = 1 << ROPE_FRACT_BITS;
+        tables.sin[j] = 0;
+        // Position 1: 30° (cos≈14189, sin≈8192 in 2^14 fixed-point).
+        tables.cos[4 + j] = 14189;
+        tables.sin[4 + j] = 8192;
+        // Position 2: -45° (cos≈11585, sin≈-11585).
+        tables.cos[8 + j] = 11585;
+        tables.sin[8 + j] = -11585;
+        // Position 3: 90° (cos=0, sin=2^14).
+        tables.cos[12 + j] = 0;
+        tables.sin[12 + j] = 1 << ROPE_FRACT_BITS;
+    }
+    let tables_commit = tables.commit();
+    let pinned_tables_commit: [u8; 32] = [
+        0xc0, 0xe7, 0x42, 0xab, 0xae, 0x43, 0x72, 0x17, 0x90, 0xf2, 0x6a, 0x9b, 0xad, 0x13, 0xaa,
+        0xa0, 0x7a, 0x06, 0x3b, 0x1c, 0x23, 0x13, 0x3e, 0xfa, 0xc1, 0x5f, 0x48, 0x2a, 0xdc, 0x6c,
+        0x80, 0x35,
+    ];
+    assert_eq!(
+        tables_commit, pinned_tables_commit,
+        "{ARCH_TAG} RopeTables commit divergence"
+    );
+
+    // Apply RoPE at each position to the same input vector; concatenate
+    // results and pin their hash.
+    let seed: Vec<i8> = (0..8i8).map(|v| (v * 13 - 50) as i8).collect();
+    let mut all = Vec::with_capacity(8 * 4);
+    for pos in 0..4 {
+        let mut x = seed.clone();
+        rope_apply(&mut x, pos, &tables).unwrap();
+        all.extend_from_slice(&x.iter().map(|&v| v as u8).collect::<Vec<_>>());
+    }
+    let actual = hash_canonical(&all);
+    let expected: [u8; 32] = [
+        0x64, 0xf9, 0xe6, 0x6f, 0x58, 0xdb, 0x2c, 0xb9, 0xd6, 0xf2, 0x5e, 0x5c, 0x38, 0xc9, 0xbb,
+        0x8c, 0x28, 0x41, 0x44, 0x4c, 0x02, 0xee, 0x7e, 0xa4, 0x5c, 0xa8, 0xff, 0xa8, 0xe5, 0xae,
+        0x3d, 0xca,
+    ];
+    assert_eq!(actual, expected, "{ARCH_TAG} rope_apply divergence");
 }
