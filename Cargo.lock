@@ -66,6 +66,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "ai-pow-vi"
+version = "0.1.0"
+dependencies = [
+ "ai-pow",
+ "blake3",
+ "byteorder",
+ "proptest",
+ "thiserror 2.0.18",
+]
+
+[[package]]
 name = "allocator-api2"
 version = "0.2.21"
 source = "registry+https://github.com/rust-lang/crates.io-index"

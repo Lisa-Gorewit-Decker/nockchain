@@ -1,0 +1,14 @@
+[package]
+name = "ai-pow-vi"
+version.workspace = true
+edition.workspace = true
+description = "Verifiable-inference puzzle for Nockchain: deterministic INT8 transformer-layer reference."
+
+[dependencies]
+ai-pow = { path = "../ai-pow" }
+blake3 = { workspace = true }
+thiserror = { workspace = true }
+byteorder = { workspace = true }
+
+[dev-dependencies]
+proptest = { workspace = true }
