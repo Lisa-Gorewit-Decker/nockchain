@@ -15,12 +15,14 @@
 use ai_pow_vi::activation_lut::{ActivationKind, ActivationLut};
 use ai_pow_vi::activations::{ActivationLayout, ActivationLog};
 use ai_pow_vi::attention::{attention_forward, AttentionScales, AttentionWeights};
+use ai_pow_vi::comm_w::compute_comm_w;
 use ai_pow_vi::deltanet::{deltanet_forward, DeltaNetScales, DeltaNetWeights};
 use ai_pow_vi::determinism::{hash_canonical, ARCH_TAG};
 use ai_pow_vi::ffn::{ffn_forward, FfnScales, FfnWeights};
 use ai_pow_vi::layer::{forward_layer, LayerContext, LayerWeights, NormSpec};
 use ai_pow_vi::layernorm::layernorm;
 use ai_pow_vi::matmul_int8::matmul_int8;
+use ai_pow_vi::model::{Model, ModelDims};
 use ai_pow_vi::prompt::synth_prompt;
 use ai_pow_vi::quant::{rescale_and_requantize, Scale, SCALE_DENOM_LOG2};
 use ai_pow_vi::rmsnorm::{isqrt_floor, rmsnorm, DEFAULT_EPS_Q};
@@ -560,4 +562,83 @@ fn pin_synth_prompt_canonical() {
         0x9f, 0x26,
     ];
     assert_eq!(actual, expected, "{ARCH_TAG} synth_prompt divergence");
+}
+
+#[test]
+fn pin_comm_w_canonical_model() {
+    // Tiny canonical Attention-flavored model. Tests that:
+    // 1. comm_W is stable across runs (cross-arch).
+    // 2. The full byte-pipeline (canonical_weight_bytes → tile-Merkle →
+    //    derive_key) gives a fixed 32-byte output for fixed inputs.
+    let hidden = 4u32;
+    let hu = hidden as usize;
+    let small = Scale::from_num(1 << (SCALE_DENOM_LOG2 - 4)).unwrap();
+    let model = Model {
+        dims: ModelDims {
+            vocab: 8,
+            hidden,
+            seq_len: 4,
+            activation_tile: 2,
+        },
+        embed: canonical_input_i8(8 * hu, 0xa1a1_b2b2_c3c3_d4d4),
+        layers: vec![LayerWeights::Attention {
+            norm1: NormSpec::RmsNorm {
+                gamma: canonical_input_i8(hu, 0xe5e5_f6f6_0707_1818),
+                eps_q: 1,
+                post_scale: small,
+            },
+            attn: AttentionWeights {
+                hidden,
+                num_q_heads: 1,
+                num_kv_heads: 1,
+                head_dim: 2,
+                w_q: canonical_input_i8(hu * 2, 0x2929_3a3a_4b4b_5c5c),
+                w_k: canonical_input_i8(hu * 2, 0x6d6d_7e7e_8f8f_90a0),
+                w_v: canonical_input_i8(hu * 2, 0xb1b1_c2c2_d3d3_e4e4),
+                w_o: canonical_input_i8(2 * hu, 0xf5f5_0606_1717_2828),
+            },
+            attn_scales: AttentionScales {
+                q: small,
+                k: small,
+                v: small,
+                score: small,
+                attn_out: small,
+                o: small,
+            },
+            norm2: NormSpec::RmsNorm {
+                gamma: canonical_input_i8(hu, 0x3939_4a4a_5b5b_6c6c),
+                eps_q: 1,
+                post_scale: small,
+            },
+            ffn: FfnWeights {
+                hidden,
+                intermediate: hidden * 2,
+                w_gate: canonical_input_i8(hu * (hu * 2), 0x7d7d_8e8e_9f9f_a0a0),
+                w_up: canonical_input_i8(hu * (hu * 2), 0xb1b1_c2c2_d3d3_e4e4),
+                w_down: canonical_input_i8((hu * 2) * hu, 0xf5f5_0606_1717_2828),
+            },
+            ffn_scales: FfnScales {
+                gate: small,
+                up: small,
+                mid: small,
+                down: small,
+            },
+        }],
+        final_norm: Some(NormSpec::RmsNorm {
+            gamma: canonical_input_i8(hu, 0x9999_aaaa_bbbb_cccc),
+            eps_q: 1,
+            post_scale: small,
+        }),
+        rope_tables: RopeTables::identity(4, 1),
+        softmax_lut: ExpLut::uniform_test(),
+        sigmoid_lut: ActivationLut::identity(),
+        ffn_activation: ActivationLut::identity(),
+    };
+    let actual = compute_comm_w(&model);
+    let expected: [u8; 32] = [
+        0x3a, 0xae, 0x73, 0xea, 0xa5, 0x1e, 0x1b, 0xb2, 0x01, 0x01, 0x31, 0x73, 0xef, 0x88, 0x98,
+        0x01, 0xd0, 0x21, 0x61, 0x53, 0xab, 0x69, 0xab, 0xbc, 0x5b, 0xdf, 0x28, 0xbc, 0xc1, 0x6f,
+        0x63, 0x82,
+    ];
+    assert_eq!(actual, expected, "{ARCH_TAG} comm_w divergence");
 }

@@ -25,6 +25,7 @@
 pub mod activation_lut;
 pub mod activations;
 pub mod attention;
+pub mod comm_w;
 pub mod deltanet;
 pub mod determinism;
 pub mod ffn;
@@ -43,6 +44,7 @@ pub mod softmax;
 pub use crate::activation_lut::{ActivationKind, ActivationLut};
 pub use crate::activations::{verify_opening, ActivationLayout, ActivationLog, ActivationOpening};
 pub use crate::attention::{attention_forward, AttentionScales, AttentionWeights};
+pub use crate::comm_w::{canonical_weight_bytes, compute_comm_w, WEIGHT_TILE_BYTES};
 pub use crate::deltanet::{deltanet_forward, DeltaNetScales, DeltaNetWeights};
 pub use crate::determinism::{BitExactOp, ARCH_TAG};
 pub use crate::ffn::{elementwise_mul_i8, ffn_forward, FfnScales, FfnWeights};

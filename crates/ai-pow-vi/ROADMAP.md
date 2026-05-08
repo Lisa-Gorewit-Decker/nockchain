@@ -24,9 +24,10 @@ Shipped so far:
 | `ai-pow-vi/activations` | 2 | `f3eafcd` | Per-layer activation tile-Merkle log: BLAKE3 leaves, root, sibling-path opening + verification. Wraps `ai-pow::commit`. |
 | `ai-pow-vi/layer` | 2 | `cbb543b` | Per-layer composition: `Norm → (Attention\|DeltaNet) → +residual → Norm → FFN → +residual`, with RMSNorm/LayerNorm flavors and shared `LayerContext`. |
 | `ai-pow-vi/forward` + `model` | 2 | `7f24cc4` | Forward-pass driver: embed → run layers 0..target_layer → optional final norm; records each per-layer activation into an `ActivationLog`. Minimal `Model` struct (Phase 2.7 extends with comm_W). |
-| `ai-pow-vi/prompt` | 2 | TBD | BLAKE3-XOF Fiat-Shamir prompt synthesis: deterministic `(block_commitment, model_id) → Vec<Token>` with reserved-token rejection. |
+| `ai-pow-vi/prompt` | 2 | `0f834d4` | BLAKE3-XOF Fiat-Shamir prompt synthesis: deterministic `(block_commitment, model_id) → Vec<Token>` with reserved-token rejection. |
+| `ai-pow-vi/comm_w` | 2 | TBD | Canonical model commitment: weight tile-Merkle root + manifest hash → 32-byte `comm_W`. Sensitive to every weight, scale, eps, LUT byte, and architecture choice. |
 
-Test count: 149 unit + 15 cross-architecture pins, all green on aarch64.
+Test count: 157 unit + 16 cross-architecture pins, all green on aarch64.
 
 ## Phase 2 — remaining (in dependency order)
 
@@ -287,7 +288,9 @@ tokens.
 
 **Cost:** ~80 lines. One commit (could combine with §2.7).
 
-### 2.7 Model and weights (`src/weights.rs`, `src/model.rs`)
+### ~~2.7 Model and `comm_W` commitment~~ ✓ shipped (sideloaded disk format deferred — `compute_comm_w` is the consensus-critical part)
+
+### Original 2.7 Model and weights (`src/weights.rs`, `src/model.rs`)
 
 ```rust
 pub struct ModelWeights {

@@ -492,7 +492,7 @@ mod tests {
     }
 
     #[test]
-    fn alpha_zero_state_grows_purely_from_beta_kvT() {
+    fn alpha_zero_state_grows_purely_from_beta_kv_t() {
         // With α LUT outputting 0 and β LUT outputting 127 (saturated 1.0),
         // the state update is pure: S_t = S_{t-1} + scale * k_t v_t^T.
         // We verify that calling with m tokens of identical input causes
