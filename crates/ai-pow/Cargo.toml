@@ -1,0 +1,21 @@
+[package]
+name = "ai-pow"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+blake3 = { workspace = true }
+thiserror = { workspace = true }
+rayon = { workspace = true, optional = true }
+
+[dev-dependencies]
+criterion = { workspace = true }
+proptest = { workspace = true }
+
+[features]
+default = []
+parallel = ["dep:rayon"]
+
+[[bench]]
+name = "bench"
+harness = false
