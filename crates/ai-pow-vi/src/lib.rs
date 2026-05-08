@@ -24,7 +24,9 @@
 
 pub mod activation_lut;
 pub mod determinism;
+pub mod layernorm;
 pub mod layout;
+pub mod matmul_int8;
 pub mod quant;
 pub mod rmsnorm;
 pub mod rope;
@@ -32,7 +34,9 @@ pub mod softmax;
 
 pub use crate::activation_lut::{ActivationKind, ActivationLut};
 pub use crate::determinism::{BitExactOp, ARCH_TAG};
+pub use crate::layernorm::layernorm;
 pub use crate::layout::{BlockKind, ModelFamily, ModelLayout, NormType};
+pub use crate::matmul_int8::{dot_int8, matmul_int8, matmul_int8_requant, requantize_vec};
 pub use crate::quant::{rescale_and_requantize, Scale};
 pub use crate::rmsnorm::rmsnorm;
 pub use crate::rope::{rope_apply, RopeTables};

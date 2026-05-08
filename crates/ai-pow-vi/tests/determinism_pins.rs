@@ -14,6 +14,8 @@
 
 use ai_pow_vi::activation_lut::{ActivationKind, ActivationLut};
 use ai_pow_vi::determinism::{hash_canonical, ARCH_TAG};
+use ai_pow_vi::layernorm::layernorm;
+use ai_pow_vi::matmul_int8::matmul_int8;
 use ai_pow_vi::quant::{rescale_and_requantize, Scale, SCALE_DENOM_LOG2};
 use ai_pow_vi::rmsnorm::{isqrt_floor, rmsnorm, DEFAULT_EPS_Q};
 use ai_pow_vi::rope::{rope_apply, RopeTables, FRACT_BITS as ROPE_FRACT_BITS};
@@ -214,4 +216,50 @@ fn pin_rope_canonical_output() {
         0x3d, 0xca,
     ];
     assert_eq!(actual, expected, "{ARCH_TAG} rope_apply divergence");
+}
+
+#[test]
+fn pin_matmul_int8_canonical_output() {
+    // (4, 8) × (8, 4) → 16 i32 outputs. Inputs from the same canonical
+    // LCG used elsewhere; that gives a stable byte stream that exercises
+    // both signs and full i8 range.
+    let m = 4u32;
+    let k = 8u32;
+    let n = 4u32;
+    let a = canonical_input_i8((m * k) as usize, 0xfeed_beef_cafe_babe);
+    let b = canonical_input_i8((k * n) as usize, 0x0123_4567_89ab_cdef);
+    let mut out = vec![0i32; (m * n) as usize];
+    matmul_int8(&a, &b, m, k, n, &mut out).unwrap();
+    let mut bytes: Vec<u8> = Vec::with_capacity(out.len() * 4);
+    for v in &out {
+        bytes.extend_from_slice(&v.to_le_bytes());
+    }
+    let actual = hash_canonical(&bytes);
+    let expected: [u8; 32] = [
+        0xa7, 0x06, 0xdd, 0x54, 0xac, 0x98, 0x38, 0x3c, 0xa8, 0x73, 0x18, 0xe7, 0xf9, 0x4f, 0xe6,
+        0x24, 0x4c, 0x2c, 0xbc, 0x3b, 0x46, 0x08, 0x87, 0x7c, 0x1c, 0xe1, 0x26, 0x83, 0x32, 0x25,
+        0x02, 0x6c,
+    ];
+    assert_eq!(actual, expected, "{ARCH_TAG} matmul_int8 divergence");
+}
+
+#[test]
+fn pin_layernorm_canonical_output() {
+    let hidden = 64;
+    let input = canonical_input_i8(hidden, 0x9999_aaaa_bbbb_cccc);
+    let gamma = canonical_input_i8(hidden, 0x1357_2468_acef_bd13);
+    let beta = canonical_input_i8(hidden, 0x4242_4242_4242_4242);
+    let mut output = vec![0i32; hidden];
+    layernorm(&input, &gamma, &beta, &mut output, DEFAULT_EPS_Q).unwrap();
+    let mut bytes: Vec<u8> = Vec::with_capacity(hidden * 4);
+    for v in &output {
+        bytes.extend_from_slice(&v.to_le_bytes());
+    }
+    let actual = hash_canonical(&bytes);
+    let expected: [u8; 32] = [
+        0x13, 0xcf, 0x8e, 0x09, 0xd1, 0xb4, 0xbd, 0x04, 0x1f, 0x6f, 0x15, 0x37, 0x72, 0x35, 0xed,
+        0x70, 0xa3, 0x1a, 0x93, 0x58, 0x37, 0x49, 0x75, 0xe6, 0xe2, 0x8e, 0x08, 0xe7, 0x12, 0x5c,
+        0x6e, 0x11,
+    ];
+    assert_eq!(actual, expected, "{ARCH_TAG} layernorm divergence");
 }
