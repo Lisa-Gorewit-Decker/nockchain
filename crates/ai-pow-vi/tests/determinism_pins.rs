@@ -14,6 +14,7 @@
 
 use ai_pow_vi::activation_lut::{ActivationKind, ActivationLut};
 use ai_pow_vi::determinism::{hash_canonical, ARCH_TAG};
+use ai_pow_vi::ffn::{ffn_forward, FfnScales, FfnWeights};
 use ai_pow_vi::layernorm::layernorm;
 use ai_pow_vi::matmul_int8::matmul_int8;
 use ai_pow_vi::quant::{rescale_and_requantize, Scale, SCALE_DENOM_LOG2};
@@ -262,4 +263,42 @@ fn pin_layernorm_canonical_output() {
         0x6e, 0x11,
     ];
     assert_eq!(actual, expected, "{ARCH_TAG} layernorm divergence");
+}
+
+#[test]
+fn pin_ffn_canonical_output() {
+    // Small SwiGLU: m=2, hidden=8, intermediate=16. Inputs and weights from
+    // the LCG; identity activation LUT (so we test the matmul + multiply
+    // composition, not the activation curve — that has its own pin).
+    let hidden = 8u32;
+    let intermediate = 16u32;
+    let m = 2u32;
+    let input = canonical_input_i8((m * hidden) as usize, 0xfeedface_deadbeefu64);
+    let w_gate = canonical_input_i8((hidden * intermediate) as usize, 0xa1a1_b2b2_c3c3_d4d4u64);
+    let w_up = canonical_input_i8((hidden * intermediate) as usize, 0xe5e5_f6f6_0707_1818u64);
+    let w_down = canonical_input_i8((intermediate * hidden) as usize, 0x2929_3a3a_4b4b_5c5cu64);
+    let weights = FfnWeights {
+        hidden,
+        intermediate,
+        w_gate,
+        w_up,
+        w_down,
+    };
+    let activation = ActivationLut::identity();
+    let scales = FfnScales {
+        gate: Scale::from_num(1 << (SCALE_DENOM_LOG2 - 6)).unwrap(),
+        up: Scale::from_num(1 << (SCALE_DENOM_LOG2 - 6)).unwrap(),
+        mid: Scale::from_num(1 << (SCALE_DENOM_LOG2 - 4)).unwrap(),
+        down: Scale::from_num(1 << (SCALE_DENOM_LOG2 - 6)).unwrap(),
+    };
+    let mut output = vec![0i8; (m * hidden) as usize];
+    ffn_forward(&input, &weights, &activation, scales, m, &mut output).unwrap();
+    let bytes: Vec<u8> = output.iter().map(|&v| v as u8).collect();
+    let actual = hash_canonical(&bytes);
+    let expected: [u8; 32] = [
+        0x29, 0x5c, 0x41, 0xea, 0xe0, 0x13, 0x48, 0x2f, 0x54, 0xe4, 0x9b, 0xaa, 0x2c, 0x0c, 0xaf,
+        0x1f, 0x9f, 0x2e, 0x4f, 0xd8, 0x79, 0x2e, 0x0e, 0x0e, 0xd2, 0x3c, 0xe0, 0xd6, 0x84, 0xaf,
+        0x26, 0x92,
+    ];
+    assert_eq!(actual, expected, "{ARCH_TAG} ffn_forward divergence");
 }

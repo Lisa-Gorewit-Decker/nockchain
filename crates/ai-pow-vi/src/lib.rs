@@ -24,6 +24,7 @@
 
 pub mod activation_lut;
 pub mod determinism;
+pub mod ffn;
 pub mod layernorm;
 pub mod layout;
 pub mod matmul_int8;
@@ -34,6 +35,7 @@ pub mod softmax;
 
 pub use crate::activation_lut::{ActivationKind, ActivationLut};
 pub use crate::determinism::{BitExactOp, ARCH_TAG};
+pub use crate::ffn::{elementwise_mul_i8, ffn_forward, FfnScales, FfnWeights};
 pub use crate::layernorm::layernorm;
 pub use crate::layout::{BlockKind, ModelFamily, ModelLayout, NormType};
 pub use crate::matmul_int8::{dot_int8, matmul_int8, matmul_int8_requant, requantize_vec};
