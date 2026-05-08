@@ -8,7 +8,7 @@ crate's determinism pins grow with each addition.
 
 ## Status snapshot
 
-Branch: `claude/ai-pow-nockchain-sgfNX`. Latest commit: `330b294`.
+Branch: `claude/ai-pow-nockchain-sgfNX`. Latest commit: `73cf097`.
 
 Shipped so far:
 
@@ -19,7 +19,7 @@ Shipped so far:
 | `ai-pow-vi/softmax`, `rope` | 2 | `efcde4b` | Integer softmax with 256-entry exp LUT; INT16 RoPE tables. |
 | `ai-pow-vi/matmul_int8`, `layernorm` | 2 | `a82223a` | Inference-side INT8 matmul; integer LayerNorm. |
 | `ai-pow-vi/ffn` | 2 | `330b294` | SwiGLU forward block. |
-| `ai-pow-vi/attention` | 2 | TBD | Standard + GQA attention: Q/K/V projection, RoPE, causal softmax, V-weighted sum, output projection. |
+| `ai-pow-vi/attention` | 2 | `73cf097` | Standard + GQA attention: Q/K/V projection, RoPE, causal softmax, V-weighted sum, output projection. |
 
 Test count: 87 unit + 11 cross-architecture pins, all green on aarch64.
 
