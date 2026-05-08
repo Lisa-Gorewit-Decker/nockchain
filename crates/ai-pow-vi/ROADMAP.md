@@ -21,8 +21,9 @@ Shipped so far:
 | `ai-pow-vi/ffn` | 2 | `330b294` | SwiGLU forward block. |
 | `ai-pow-vi/attention` | 2 | `73cf097` | Standard + GQA attention: Q/K/V projection, RoPE, causal softmax, V-weighted sum, output projection. |
 | `ai-pow-vi/deltanet` | 2 | `52a6f77` | Gated DeltaNet linear-attention recurrence: per-token state matrix update with sigmoid α/β gates, GQA V→QK head mapping. |
+| `ai-pow-vi/activations` | 2 | TBD | Per-layer activation tile-Merkle log: BLAKE3 leaves, root, sibling-path opening + verification. Wraps `ai-pow::commit`. |
 
-Test count: 100 unit + 12 cross-architecture pins, all green on aarch64.
+Test count: 112 unit + 13 cross-architecture pins, all green on aarch64.
 
 ## Phase 2 — remaining (in dependency order)
 
@@ -162,7 +163,7 @@ pub fn deltanet_forward(
 **Cost:** ~700 lines. One commit. Bit-exactness against PyTorch may
 require iteration as the reference implementation isn't standard.
 
-### 2.3 Activation Merkle log (`src/activations.rs`)
+### ~~2.3 Activation Merkle log (`src/activations.rs`)~~ ✓ shipped
 
 Wraps `ai-pow`'s tile-Merkle so per-layer activations are committed and
 spot-checkable.

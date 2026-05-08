@@ -13,6 +13,7 @@
 //! reviewable.
 
 use ai_pow_vi::activation_lut::{ActivationKind, ActivationLut};
+use ai_pow_vi::activations::{ActivationLayout, ActivationLog};
 use ai_pow_vi::attention::{attention_forward, AttentionScales, AttentionWeights};
 use ai_pow_vi::deltanet::{deltanet_forward, DeltaNetScales, DeltaNetWeights};
 use ai_pow_vi::determinism::{hash_canonical, ARCH_TAG};
@@ -425,4 +426,34 @@ fn pin_deltanet_canonical_output() {
         0xa8, 0x93,
     ];
     assert_eq!(actual, expected, "{ARCH_TAG} deltanet_forward divergence");
+}
+
+#[test]
+fn pin_activation_log_canonical_root() {
+    // Three-layer log over a small (seq_len=4, hidden=8) tensor with tile=2
+    // (so 2*4 = 8 tiles per layer, padded to 8 leaves — already power of 2).
+    // Concatenate the three layer roots and pin their hash.
+    let layout = ActivationLayout {
+        seq_len: 4,
+        hidden: 8,
+        tile: 2,
+    };
+    let mut log = ActivationLog::new(layout).unwrap();
+    let t0 = canonical_input_i8((4 * 8) as usize, 0xa1a1_b2b2_c3c3_d4d4u64);
+    let t1 = canonical_input_i8((4 * 8) as usize, 0xe5e5_f6f6_0707_1818u64);
+    let t2 = canonical_input_i8((4 * 8) as usize, 0x2929_3a3a_4b4b_5c5cu64);
+    log.record_layer(0, &t0).unwrap();
+    log.record_layer(1, &t1).unwrap();
+    log.record_layer(2, &t2).unwrap();
+    let mut bytes: Vec<u8> = Vec::with_capacity(3 * 32);
+    for r in &log.layer_roots {
+        bytes.extend_from_slice(r);
+    }
+    let actual = hash_canonical(&bytes);
+    let expected: [u8; 32] = [
+        0x43, 0x8f, 0x9c, 0x00, 0x25, 0x61, 0x7b, 0xfa, 0x28, 0xcb, 0xde, 0x85, 0x0a, 0xf8, 0x5d,
+        0x45, 0xe7, 0x71, 0x98, 0x5e, 0x2f, 0xf0, 0x18, 0xd6, 0x6c, 0xe4, 0x4e, 0x53, 0x38, 0x26,
+        0x10, 0xb8,
+    ];
+    assert_eq!(actual, expected, "{ARCH_TAG} activation_log divergence");
 }

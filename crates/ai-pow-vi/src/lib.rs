@@ -23,6 +23,7 @@
 //! Hoon-side jets, and consensus integration. None of those exist yet.
 
 pub mod activation_lut;
+pub mod activations;
 pub mod attention;
 pub mod deltanet;
 pub mod determinism;
@@ -36,6 +37,7 @@ pub mod rope;
 pub mod softmax;
 
 pub use crate::activation_lut::{ActivationKind, ActivationLut};
+pub use crate::activations::{verify_opening, ActivationLayout, ActivationLog, ActivationOpening};
 pub use crate::attention::{attention_forward, AttentionScales, AttentionWeights};
 pub use crate::deltanet::{deltanet_forward, DeltaNetScales, DeltaNetWeights};
 pub use crate::determinism::{BitExactOp, ARCH_TAG};
