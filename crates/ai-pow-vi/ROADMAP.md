@@ -8,7 +8,7 @@ crate's determinism pins grow with each addition.
 
 ## Status snapshot
 
-Branch: `claude/ai-pow-nockchain-sgfNX`. Latest commit: `52a6f77`.
+Branch: `claude/ai-pow-nockchain-sgfNX`. Latest commit: `f3eafcd`.
 
 Shipped so far:
 
@@ -21,7 +21,7 @@ Shipped so far:
 | `ai-pow-vi/ffn` | 2 | `330b294` | SwiGLU forward block. |
 | `ai-pow-vi/attention` | 2 | `73cf097` | Standard + GQA attention: Q/K/V projection, RoPE, causal softmax, V-weighted sum, output projection. |
 | `ai-pow-vi/deltanet` | 2 | `52a6f77` | Gated DeltaNet linear-attention recurrence: per-token state matrix update with sigmoid α/β gates, GQA V→QK head mapping. |
-| `ai-pow-vi/activations` | 2 | TBD | Per-layer activation tile-Merkle log: BLAKE3 leaves, root, sibling-path opening + verification. Wraps `ai-pow::commit`. |
+| `ai-pow-vi/activations` | 2 | `f3eafcd` | Per-layer activation tile-Merkle log: BLAKE3 leaves, root, sibling-path opening + verification. Wraps `ai-pow::commit`. |
 
 Test count: 112 unit + 13 cross-architecture pins, all green on aarch64.
 
