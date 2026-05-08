@@ -8,6 +8,128 @@
 use crate::params::MatmulParams;
 use crate::prng;
 
+/// Per-block noise matrices `(E, F)`. Derived once per `block_commitment`
+/// and reused across all nonce attempts in that block.
+pub struct BlockNoise {
+    pub m: u32,
+    pub k: u32,
+    pub n: u32,
+    pub e: Vec<i8>, // m * k, row-major
+    pub f: Vec<i8>, // k * n, column-major (col j at j*k .. (j+1)*k)
+}
+
+impl BlockNoise {
+    pub fn expand(noise_seed: &[u8; 32], params: &MatmulParams) -> Self {
+        let m = params.m as usize;
+        let k = params.k as usize;
+        let n = params.n as usize;
+        let mut e = vec![0i8; m * k];
+        for i in 0..params.m {
+            let off = (i as usize) * k;
+            prng::expand_e_row(noise_seed, i, params.k, &mut e[off..off + k]);
+        }
+        let mut f = vec![0i8; k * n];
+        for j in 0..params.n {
+            let off = (j as usize) * k;
+            prng::expand_f_col(noise_seed, j, params.k, &mut f[off..off + k]);
+        }
+        Self {
+            m: params.m,
+            k: params.k,
+            n: params.n,
+            e,
+            f,
+        }
+    }
+
+    pub fn e_row(&self, i: u32) -> &[i8] {
+        let k = self.k as usize;
+        let off = (i as usize) * k;
+        &self.e[off..off + k]
+    }
+    pub fn f_col(&self, j: u32) -> &[i8] {
+        let k = self.k as usize;
+        let off = (j as usize) * k;
+        &self.f[off..off + k]
+    }
+}
+
+/// Per-attempt inputs `(A, B)`. Derived from `state = block_commitment ||
+/// nonce`, so they change every nonce.
+pub struct AttemptInputs {
+    pub m: u32,
+    pub k: u32,
+    pub n: u32,
+    pub a: Vec<i8>, // m * k, row-major
+    pub b: Vec<i8>, // k * n, column-major
+}
+
+impl AttemptInputs {
+    pub fn expand(state: &[u8], params: &MatmulParams) -> Self {
+        let m = params.m as usize;
+        let k = params.k as usize;
+        let n = params.n as usize;
+        let mut a = vec![0i8; m * k];
+        for i in 0..params.m {
+            let off = (i as usize) * k;
+            prng::expand_a_row(state, i, params.k, &mut a[off..off + k]);
+        }
+        let mut b = vec![0i8; k * n];
+        for j in 0..params.n {
+            let off = (j as usize) * k;
+            prng::expand_b_col(state, j, params.k, &mut b[off..off + k]);
+        }
+        Self {
+            m: params.m,
+            k: params.k,
+            n: params.n,
+            a,
+            b,
+        }
+    }
+
+    pub fn a_row(&self, i: u32) -> &[i8] {
+        let k = self.k as usize;
+        let off = (i as usize) * k;
+        &self.a[off..off + k]
+    }
+    pub fn b_col(&self, j: u32) -> &[i8] {
+        let k = self.k as usize;
+        let off = (j as usize) * k;
+        &self.b[off..off + k]
+    }
+}
+
+/// Compute one output tile of `(A + E)(B + F)` using a `BlockNoise` cache and
+/// a per-attempt `AttemptInputs`. Returns a row-major `t x t` block of `i32`.
+pub fn compute_tile_split(
+    noise: &BlockNoise,
+    inputs: &AttemptInputs,
+    params: &MatmulParams,
+    tile_i: u32,
+    tile_j: u32,
+) -> Vec<i32> {
+    debug_assert_eq!(noise.m, inputs.m);
+    debug_assert_eq!(noise.k, inputs.k);
+    debug_assert_eq!(noise.n, inputs.n);
+    let t = params.tile as usize;
+    let mut out = vec![0i32; t * t];
+    let row0 = tile_i * params.tile;
+    let col0 = tile_j * params.tile;
+    for di in 0..t {
+        let i = row0 + di as u32;
+        let a_row = inputs.a_row(i);
+        let e_row = noise.e_row(i);
+        for dj in 0..t {
+            let j = col0 + dj as u32;
+            let b_col = inputs.b_col(j);
+            let f_col = noise.f_col(j);
+            out[di * t + dj] = dot_axby(a_row, e_row, b_col, f_col);
+        }
+    }
+    out
+}
+
 /// A full set of expanded matrices for one nonce attempt.
 ///
 /// The prover allocates this once and iterates all output tiles. Memory cost
@@ -149,6 +271,26 @@ fn dot_axby(a: &[i8], e: &[i8], b: &[i8], f: &[i8]) -> i32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn split_path_matches_unified_path() {
+        // The split (BlockNoise + AttemptInputs) and the unified (Matrices)
+        // expansions must produce byte-identical tile outputs at the same
+        // (state, noise_seed, params).
+        let p = MatmulParams::TEST_SMALL;
+        let state = b"hello".to_vec();
+        let seed = [3u8; 32];
+        let noise = BlockNoise::expand(&seed, &p);
+        let inputs = AttemptInputs::expand(&state, &p);
+        let mats = Matrices::expand(&state, &seed, &p);
+        for tile_i in 0..p.row_tiles() {
+            for tile_j in 0..p.col_tiles() {
+                let split = compute_tile_split(&noise, &inputs, &p, tile_i, tile_j);
+                let unified = compute_tile(&mats, &p, tile_i, tile_j);
+                assert_eq!(split, unified, "mismatch at tile ({tile_i}, {tile_j})");
+            }
+        }
+    }
 
     fn naive_full(state: &[u8], seed: &[u8; 32], params: &MatmulParams) -> Vec<i32> {
         let m = params.m as usize;

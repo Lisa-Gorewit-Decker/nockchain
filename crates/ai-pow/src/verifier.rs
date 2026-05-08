@@ -9,7 +9,7 @@
 use thiserror::Error;
 
 use crate::commit::{merkle_recover_root, MerkleError};
-use crate::fiat_shamir::{block_state, challenge_indices, challenge_seed, noise_seed};
+use crate::fiat_shamir::{block_state, challenge_indices, challenge_seed, noise_seed_for_block};
 use crate::matmul::compute_tile_from_slices;
 use crate::params::{MatmulParams, ParamError};
 use crate::prng::{expand_a_row, expand_b_col, expand_e_row, expand_f_col};
@@ -56,7 +56,7 @@ pub fn verify(
     }
 
     let state = block_state(block_commitment, nonce);
-    let n_seed = noise_seed(&state, &tag);
+    let n_seed = noise_seed_for_block(block_commitment, &tag);
     let chal = challenge_seed(&state, &proof.comm_m, &tag);
     let num_tiles = params.num_tiles();
 

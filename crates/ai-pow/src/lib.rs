@@ -19,5 +19,5 @@ pub mod verifier;
 
 pub use crate::params::MatmulParams;
 pub use crate::proof::{MatmulProof, TileOpening};
-pub use crate::prover::{mine, ProverOptions};
+pub use crate::prover::{mine, mine_block, ProverOptions};
 pub use crate::verifier::{verify, VerifyError};

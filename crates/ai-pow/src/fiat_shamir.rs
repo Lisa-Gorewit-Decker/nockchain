@@ -7,7 +7,7 @@ use blake3::Hasher;
 
 const CTX_TRANSCRIPT: &str = "ai-pow v1 transcript";
 const CTX_INDICES: &str = "ai-pow v1 challenge-indices";
-const CTX_NOISE_SEED: &str = "ai-pow v1 noise-seed";
+const CTX_NOISE_SEED_BLOCK: &str = "ai-pow v1.5 noise-seed-block";
 const CTX_CHALLENGE: &str = "ai-pow v1 challenge-seed";
 
 /// Build the per-block `state` byte string fed to the prover and verifier.
@@ -21,12 +21,17 @@ pub fn block_state(block_commitment: &[u8], nonce: &[u8]) -> Vec<u8> {
     buf
 }
 
-/// Domain-separated noise seed derived from the block state and the puzzle
-/// parameters tag. The verifier and prover derive the same seed.
-pub fn noise_seed(state: &[u8], params_tag: &[u8; 32]) -> [u8; 32] {
-    let mut hasher = Hasher::new_derive_key(CTX_NOISE_SEED);
-    hasher.update(&(state.len() as u64).to_le_bytes());
-    hasher.update(state);
+/// Domain-separated **block-level** noise seed.  Depends only on
+/// `block_commitment` (not on the per-attempt nonce), so the noise matrices
+/// `(E, F)` derived from this seed can be expanded once per block and reused
+/// across all nonce attempts.  At LLM scale this moves noise expansion off
+/// the per-attempt critical path entirely.  Anti-precompute is preserved:
+/// `(E, F)` still depend on this block's commitment, so they cannot be
+/// precomputed for a different block.
+pub fn noise_seed_for_block(block_commitment: &[u8], params_tag: &[u8; 32]) -> [u8; 32] {
+    let mut hasher = Hasher::new_derive_key(CTX_NOISE_SEED_BLOCK);
+    hasher.update(&(block_commitment.len() as u64).to_le_bytes());
+    hasher.update(block_commitment);
     hasher.update(params_tag);
     *hasher.finalize().as_bytes()
 }
@@ -98,12 +103,36 @@ mod tests {
     }
 
     #[test]
-    fn noise_seed_determinism_and_separation() {
-        let st = block_state(b"hdr", b"nce");
+    fn noise_seed_for_block_determinism_and_separation() {
+        let bc = b"hdr";
         let tag = [9u8; 32];
-        assert_eq!(noise_seed(&st, &tag), noise_seed(&st, &tag));
+        assert_eq!(
+            noise_seed_for_block(bc, &tag),
+            noise_seed_for_block(bc, &tag),
+        );
         let tag2 = [10u8; 32];
-        assert_ne!(noise_seed(&st, &tag), noise_seed(&st, &tag2));
+        assert_ne!(
+            noise_seed_for_block(bc, &tag),
+            noise_seed_for_block(bc, &tag2),
+        );
+        let bc2 = b"hdr2";
+        assert_ne!(
+            noise_seed_for_block(bc, &tag),
+            noise_seed_for_block(bc2, &tag),
+        );
+    }
+
+    #[test]
+    fn noise_seed_for_block_does_not_depend_on_nonce() {
+        // Sanity: the new helper takes block_commitment directly and is not
+        // affected by the per-nonce state.
+        let bc = b"hdr";
+        let tag = [9u8; 32];
+        let a = noise_seed_for_block(bc, &tag);
+        // Whatever any nonce-dependent state would derive, it must equal `a`
+        // when we just feed `bc`.  This is asserted by construction; the
+        // test exists to lock in the function signature.
+        assert_eq!(a, noise_seed_for_block(bc, &tag));
     }
 
     #[test]

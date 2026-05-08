@@ -1,14 +1,19 @@
-//! Merkle commitment over fixed-size 32-byte leaves.
+//! Merkle commitment over fixed-size 32-byte leaves with sentinel padding.
 //!
-//! Domain-separated BLAKE3 with one context for leaves and another for
-//! internal nodes. The number of leaves must be a power of two (the puzzle
-//! parameters guarantee this for `comm_M`).
+//! Domain-separated BLAKE3 with three contexts: leaves, internal nodes, and
+//! a fixed sentinel for padding non-power-of-two leaf counts up to the next
+//! power of two. Real LLM matmul shapes (e.g. Gemma 4 31B FFN at tile=64
+//! gives 64 × 336 = 21504 tiles) are not power-of-two; padding lets us match
+//! them without changing the tile geometry.
+
+use std::sync::OnceLock;
 
 use blake3::Hasher;
 use thiserror::Error;
 
 const CTX_LEAF: &str = "ai-pow v1 merkle-leaf";
 const CTX_NODE: &str = "ai-pow v1 merkle-node";
+const CTX_SENTINEL: &str = "ai-pow v1 merkle-sentinel";
 
 fn leaf_hash(m: &[u8; 32]) -> [u8; 32] {
     let mut hasher = Hasher::new_derive_key(CTX_LEAF);
@@ -23,27 +28,44 @@ fn node_hash(left: &[u8; 32], right: &[u8; 32]) -> [u8; 32] {
     *hasher.finalize().as_bytes()
 }
 
+/// Sentinel placed at the leaf level for indices past the real leaf count.
+/// Computed once via `derive_key` over an empty input under a dedicated
+/// context, so it can never collide with a real `leaf_hash` output.
+fn sentinel_leaf() -> [u8; 32] {
+    static SENTINEL: OnceLock<[u8; 32]> = OnceLock::new();
+    *SENTINEL.get_or_init(|| {
+        let hasher = Hasher::new_derive_key(CTX_SENTINEL);
+        *hasher.finalize().as_bytes()
+    })
+}
+
 #[derive(Debug, Error, PartialEq, Eq)]
 pub enum MerkleError {
-    #[error("number of leaves must be a power of two")]
-    NotPowerOfTwo,
     #[error("leaves slice is empty")]
     Empty,
     #[error("leaf index out of range")]
     IndexOutOfRange,
+    #[error("path length does not match the padded tree depth")]
+    PathLengthMismatch,
 }
 
-/// Compute the Merkle root of `leaves`. Returns an error if the count is not
-/// a power of two or the slice is empty.
+/// Compute the Merkle root of `leaves`, padding the leaf set to the next
+/// power of two with a fixed sentinel hash. Returns an error if the slice
+/// is empty.
 pub fn merkle_root(leaves: &[[u8; 32]]) -> Result<[u8; 32], MerkleError> {
     let n = leaves.len();
     if n == 0 {
         return Err(MerkleError::Empty);
     }
-    if !n.is_power_of_two() {
-        return Err(MerkleError::NotPowerOfTwo);
+    let padded = n.next_power_of_two();
+    let mut layer: Vec<[u8; 32]> = Vec::with_capacity(padded);
+    for m in leaves {
+        layer.push(leaf_hash(m));
     }
-    let mut layer: Vec<[u8; 32]> = leaves.iter().map(leaf_hash).collect();
+    let sent = sentinel_leaf();
+    while layer.len() < padded {
+        layer.push(sent);
+    }
     while layer.len() > 1 {
         layer = layer
             .chunks_exact(2)
@@ -53,20 +75,24 @@ pub fn merkle_root(leaves: &[[u8; 32]]) -> Result<[u8; 32], MerkleError> {
     Ok(layer[0])
 }
 
-/// Sibling list for the leaf at `idx`, ordered from leaf-level upward.  Each
-/// sibling is the node not on the path from the leaf to the root.
+/// Sibling list for the leaf at `idx`, ordered from leaf-level upward. Each
+/// sibling is the node not on the path from the leaf to the root, possibly
+/// a sentinel if the sibling lies in the padded region.  `idx` must point to
+/// a real leaf (`< leaves.len()`); sentinels are never opened.
 pub fn merkle_path(leaves: &[[u8; 32]], idx: usize) -> Result<Vec<[u8; 32]>, MerkleError> {
     let n = leaves.len();
     if n == 0 {
         return Err(MerkleError::Empty);
     }
-    if !n.is_power_of_two() {
-        return Err(MerkleError::NotPowerOfTwo);
-    }
     if idx >= n {
         return Err(MerkleError::IndexOutOfRange);
     }
+    let padded = n.next_power_of_two();
     let mut layer: Vec<[u8; 32]> = leaves.iter().map(leaf_hash).collect();
+    let sent = sentinel_leaf();
+    while layer.len() < padded {
+        layer.push(sent);
+    }
     let mut path = Vec::new();
     let mut pos = idx;
     while layer.len() > 1 {
@@ -85,8 +111,9 @@ pub fn merkle_path(leaves: &[[u8; 32]], idx: usize) -> Result<Vec<[u8; 32]>, Mer
     Ok(path)
 }
 
-/// Recompute the root from a leaf, its position, and the sibling path.
-/// Returns the recomputed root.  Caller compares against the canonical root.
+/// Recompute the root from a real leaf, its position, and the sibling path.
+/// `num_leaves` is the *unpadded* count; the padded depth is derived
+/// internally. Returns the recomputed root for caller-side comparison.
 pub fn merkle_recover_root(
     leaf: &[u8; 32],
     idx: usize,
@@ -96,15 +123,13 @@ pub fn merkle_recover_root(
     if num_leaves == 0 {
         return Err(MerkleError::Empty);
     }
-    if !num_leaves.is_power_of_two() {
-        return Err(MerkleError::NotPowerOfTwo);
-    }
     if idx >= num_leaves {
         return Err(MerkleError::IndexOutOfRange);
     }
-    let depth = num_leaves.trailing_zeros() as usize;
+    let padded = num_leaves.next_power_of_two();
+    let depth = padded.trailing_zeros() as usize;
     if path.len() != depth {
-        return Err(MerkleError::IndexOutOfRange);
+        return Err(MerkleError::PathLengthMismatch);
     }
     let mut node = leaf_hash(leaf);
     let mut pos = idx;
@@ -140,7 +165,7 @@ mod tests {
     }
 
     #[test]
-    fn round_trip_each_leaf() {
+    fn round_trip_each_leaf_pow2() {
         for n_log in 0..7 {
             let n = 1usize << n_log;
             let leaves = sample_leaves(n);
@@ -149,6 +174,21 @@ mod tests {
                 let path = merkle_path(&leaves, idx).unwrap();
                 let recovered = merkle_recover_root(&leaves[idx], idx, &path, n).unwrap();
                 assert_eq!(root, recovered, "n={n} idx={idx}");
+            }
+        }
+    }
+
+    #[test]
+    fn round_trip_each_leaf_non_pow2() {
+        // Cover several non-power-of-2 leaf counts and every real-leaf index.
+        for &n in &[3usize, 5, 7, 9, 13, 21, 96, 100] {
+            let leaves = sample_leaves(n);
+            let root = merkle_root(&leaves).unwrap();
+            for idx in 0..n {
+                let path = merkle_path(&leaves, idx).unwrap();
+                let recovered = merkle_recover_root(&leaves[idx], idx, &path, n).unwrap();
+                assert_eq!(root, recovered, "n={n} idx={idx}");
+                assert_eq!(path.len(), n.next_power_of_two().trailing_zeros() as usize);
             }
         }
     }
@@ -175,14 +215,32 @@ mod tests {
     }
 
     #[test]
-    fn rejects_non_pow2() {
-        let leaves = sample_leaves(7);
-        assert_eq!(merkle_root(&leaves).err(), Some(MerkleError::NotPowerOfTwo));
-    }
-
-    #[test]
     fn rejects_empty() {
         let leaves: Vec<[u8; 32]> = Vec::new();
         assert_eq!(merkle_root(&leaves).err(), Some(MerkleError::Empty));
+    }
+
+    #[test]
+    fn cannot_open_sentinel_index() {
+        let leaves = sample_leaves(5);
+        assert_eq!(
+            merkle_path(&leaves, 5).err(),
+            Some(MerkleError::IndexOutOfRange),
+        );
+        assert_eq!(
+            merkle_path(&leaves, 7).err(),
+            Some(MerkleError::IndexOutOfRange),
+        );
+    }
+
+    #[test]
+    fn changing_leaf_count_changes_root() {
+        // Padding should make the tree height match `next_power_of_two`, so
+        // adding a real leaf into a previously-sentinel slot changes the root.
+        let leaves5 = sample_leaves(5);
+        let leaves6 = sample_leaves(6);
+        let r5 = merkle_root(&leaves5).unwrap();
+        let r6 = merkle_root(&leaves6).unwrap();
+        assert_ne!(r5, r6);
     }
 }
