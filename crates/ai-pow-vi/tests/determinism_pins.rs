@@ -13,6 +13,7 @@
 //! reviewable.
 
 use ai_pow_vi::activation_lut::{ActivationKind, ActivationLut};
+use ai_pow_vi::attention::{attention_forward, AttentionScales, AttentionWeights};
 use ai_pow_vi::determinism::{hash_canonical, ARCH_TAG};
 use ai_pow_vi::ffn::{ffn_forward, FfnScales, FfnWeights};
 use ai_pow_vi::layernorm::layernorm;
@@ -301,4 +302,54 @@ fn pin_ffn_canonical_output() {
         0x26, 0x92,
     ];
     assert_eq!(actual, expected, "{ARCH_TAG} ffn_forward divergence");
+}
+
+#[test]
+fn pin_attention_canonical_output() {
+    // Fixture: m=4, hidden=8, num_q_heads=2, num_kv_heads=1, head_dim=4.
+    // Identity RoPE (exercises composition, not rotation — rope has its own pin).
+    // Uniform-test ExpLut (softmax has its own pin).
+    let hidden = 8u32;
+    let num_q = 2u32;
+    let num_kv = 1u32;
+    let hd = 4u32;
+    let m = 4u32;
+    let hu = hidden as usize;
+    let qu = (num_q * hd) as usize;
+    let kvu = (num_kv * hd) as usize;
+    let w_q = canonical_input_i8(hu * qu, 0xaa11_bb22_cc33_dd44);
+    let w_k = canonical_input_i8(hu * kvu, 0xee55_ff66_0077_1188);
+    let w_v = canonical_input_i8(hu * kvu, 0x2299_33aa_44bb_55cc);
+    let w_o = canonical_input_i8(qu * hu, 0x66dd_77ee_88ff_990a);
+    let weights = AttentionWeights {
+        hidden,
+        num_q_heads: num_q,
+        num_kv_heads: num_kv,
+        head_dim: hd,
+        w_q,
+        w_k,
+        w_v,
+        w_o,
+    };
+    let scales = AttentionScales {
+        q: Scale::from_num(1 << (SCALE_DENOM_LOG2 - 4)).unwrap(),
+        k: Scale::from_num(1 << (SCALE_DENOM_LOG2 - 4)).unwrap(),
+        v: Scale::from_num(1 << (SCALE_DENOM_LOG2 - 4)).unwrap(),
+        score: Scale::from_num(1 << (SCALE_DENOM_LOG2 - 4)).unwrap(),
+        attn_out: Scale::from_num(1 << (SCALE_DENOM_LOG2 - 4)).unwrap(),
+        o: Scale::from_num(1 << (SCALE_DENOM_LOG2 - 4)).unwrap(),
+    };
+    let rope_tables = RopeTables::identity(m, hd / 2);
+    let lut = ExpLut::uniform_test();
+    let input = canonical_input_i8((m * hidden) as usize, 0xfeed_beef_cafe_babe);
+    let mut output = vec![0i8; (m * hidden) as usize];
+    attention_forward(&input, &weights, scales, &rope_tables, &lut, m, &mut output).unwrap();
+    let bytes: Vec<u8> = output.iter().map(|&v| v as u8).collect();
+    let actual = hash_canonical(&bytes);
+    let expected: [u8; 32] = [
+        0xf3, 0x50, 0x7d, 0x54, 0xe2, 0x72, 0xb0, 0xf4, 0xe4, 0x1f, 0xb2, 0xe6, 0xf2, 0x63, 0x79,
+        0x8a, 0x0f, 0xca, 0x77, 0x1d, 0x83, 0x5e, 0xc0, 0x40, 0x53, 0x86, 0x61, 0x81, 0x58, 0xcd,
+        0x95, 0x10,
+    ];
+    assert_eq!(actual, expected, "{ARCH_TAG} attention_forward divergence");
 }
