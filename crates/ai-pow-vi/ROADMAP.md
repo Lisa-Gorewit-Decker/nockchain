@@ -8,7 +8,7 @@ crate's determinism pins grow with each addition.
 
 ## Status snapshot
 
-Branch: `claude/ai-pow-nockchain-sgfNX`. Latest commit: `73cf097`.
+Branch: `claude/ai-pow-nockchain-sgfNX`. Latest commit: `52a6f77`.
 
 Shipped so far:
 
@@ -20,7 +20,7 @@ Shipped so far:
 | `ai-pow-vi/matmul_int8`, `layernorm` | 2 | `a82223a` | Inference-side INT8 matmul; integer LayerNorm. |
 | `ai-pow-vi/ffn` | 2 | `330b294` | SwiGLU forward block. |
 | `ai-pow-vi/attention` | 2 | `73cf097` | Standard + GQA attention: Q/K/V projection, RoPE, causal softmax, V-weighted sum, output projection. |
-| `ai-pow-vi/deltanet` | 2 | TBD | Gated DeltaNet linear-attention recurrence: per-token state matrix update with sigmoid α/β gates, GQA V→QK head mapping. |
+| `ai-pow-vi/deltanet` | 2 | `52a6f77` | Gated DeltaNet linear-attention recurrence: per-token state matrix update with sigmoid α/β gates, GQA V→QK head mapping. |
 
 Test count: 100 unit + 12 cross-architecture pins, all green on aarch64.
 
