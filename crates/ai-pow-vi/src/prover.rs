@@ -135,7 +135,7 @@ pub fn mine_vi(
     // Compute the full gate matmul into i32. (Phase 4 SIMD jets will
     // tile this and avoid the dense intermediate.)
     let mu = m as usize;
-    let hu = hidden as usize;
+    let _hu = hidden as usize;
     let iu = intermediate as usize;
     let mut gate = vec![0i32; mu * iu];
     matmul_int8(

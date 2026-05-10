@@ -27,8 +27,9 @@ Shipped so far:
 | `ai-pow-vi/prompt` | 2 | `0f834d4` | BLAKE3-XOF Fiat-Shamir prompt synthesis: deterministic `(block_commitment, model_id) → Vec<Token>` with reserved-token rejection. |
 | `ai-pow-vi/comm_w` | 2 | `03ecf1b` | Canonical model commitment: weight tile-Merkle root + manifest hash → 32-byte `comm_W`. Sensitive to every weight, scale, eps, LUT byte, and architecture choice. |
 | `ai-pow-vi/proof` + `prover` + `verifier` | 3 | `e1d1e1a` | `ViProof` wire format, `mine_vi` prover, and `verify_vi` (FullReplica mode). Composes synth_prompt → forward_prefix → FFN gate tile-Merkle → FS challenge → tile hardness check → σ spot-checks. |
+| `ai-pow-vi/oracle/` | 2.8 | TBD | Numpy/blake3 reference implementation + 7 binary fixtures (rescale, matmul, rmsnorm, layernorm, softmax, ffn, synth_prompt). Rust `tests/oracle_op_vectors.rs` loads each fixture and asserts byte-equal Rust output. Cross-implementation determinism check on top of the Rust-only pins. |
 
-Test count: 174 unit + 17 cross-architecture pins, all green on aarch64.
+Test count: 174 unit + 17 pins + 7 oracle cross-impl, all green on aarch64.
 
 ## Phase 2 — remaining (in dependency order)
 
@@ -346,7 +347,7 @@ $NOCKCHAIN_DATA/models/<model_id_hex>/
 
 **Cost:** ~400 lines. One commit.
 
-### 2.8 PyTorch oracle (`oracle/`)
+### ~~2.8 Oracle (`oracle/`)~~ ✓ shipped (numpy reference + 7 fixtures + Rust loader; HF/GGUF skeleton scripts deferred until a real model is converted)
 
 Not consensus code; only run by developers / CI to seed test vectors.
 
