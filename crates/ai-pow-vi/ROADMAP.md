@@ -29,7 +29,7 @@ Shipped so far:
 | `ai-pow-vi/proof` + `prover` + `verifier` | 3 | `e1d1e1a` | `ViProof` wire format, `mine_vi` prover, and `verify_vi` (FullReplica mode). Composes synth_prompt → forward_prefix → FFN gate tile-Merkle → FS challenge → tile hardness check → σ spot-checks. |
 | `ai-pow-vi/oracle/` | 2.8 | `9d87f6a` | Numpy/blake3 reference implementation + 7 binary fixtures (rescale, matmul, rmsnorm, layernorm, softmax, ffn, synth_prompt). Rust `tests/oracle_op_vectors.rs` loads each fixture and asserts byte-equal Rust output. Cross-implementation determinism check on top of the Rust-only pins. |
 | `ai-pow-vi/io` + qwen-mini | 2.9.1, 2.9.5, 2.9.8 | `0225f87` | Disk format (`manifest.bin` / `weights.bin` / `comm_w.hex`), `Model::load`/`save`, numpy forward reference, synthetic Qwen-mini end-to-end Rust test. |
-| `oracle/gguf_reader.py`, `calibrate.py`, `quantize_qwen.py`, `bin/qwen-eval`, `tests/oracle_qwen.rs` | 2.9.2-2.9.4, 2.9.6-2.9.7 | TBD | GGUF dequantize + canonical-name mapping; static + activation-mode scale calibration; quantizer driver that produces a Model directory; gated real-model integration test; `qwen-eval` binary for top-1 next-token agreement. |
+| `oracle/gguf_reader.py`, `calibrate.py`, `quantize_qwen.py`, `bin/qwen-eval`, `tests/oracle_qwen.rs` | 2.9.2-2.9.4, 2.9.6-2.9.7 | latest | GGUF dequantize + canonical-name mapping; static + activation-mode scale calibration; quantizer driver that produces a Model directory; gated real-model integration test; `qwen-eval` binary for top-1 next-token agreement. |
 
 Test count: 184 unit + 17 pins + 7 oracle cross-impl + 4 qwen-mini E2E + 3 quantized-synthetic E2E + 1 gated real-model, all green on aarch64.
 
