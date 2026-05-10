@@ -1,10 +1,17 @@
-//! Phase 2.9.7 — `qwen-eval` accuracy gate.
+//! Phase 2.14 — `vi-eval` multi-architecture accuracy gate.
 //!
-//! Loads an INT8 quantized Qwen-shaped model via [`Model::load`], runs
-//! `forward_prefix` to the final layer + final norm on each prompt in
-//! an eval set, applies a separately-loaded `lm_head` to produce a
-//! logit row, takes `argmax`, and reports top-1 next-token agreement
-//! against a reference set.
+//! Loads an INT8 quantized model (any supported architecture: qwen3_legacy,
+//! qwen35, gemma4) via [`Model::load`], runs `forward_prefix` to the final
+//! layer + final norm on each prompt in an eval set, applies a separately-
+//! loaded `lm_head` to produce a logit row, takes `argmax`, and reports
+//! top-1 next-token agreement against a reference set.
+//!
+//! Renamed from `qwen-eval` in Phase 2.14: the underlying binary was
+//! already arch-agnostic (`Model::load` dispatches via `arch_tag` from
+//! the manifest), but the name was Qwen-specific. Adds an optional
+//! `--arch` flag that, when present, asserts the loaded model's
+//! `arch_tag` matches the user-supplied value — useful when running on
+//! a directory whose name doesn't make the architecture obvious.
 //!
 //! The reference set is a tiny JSON-ish format (one prompt per line, no
 //! brackets):
@@ -23,10 +30,11 @@
 //! Usage:
 //!
 //! ```sh
-//! cargo run -p ai-pow-vi --bin qwen-eval -- \
+//! cargo run -p ai-pow-vi --bin vi-eval -- \
 //!     --model-dir /path/to/quantized \
 //!     --eval     /path/to/eval.jsonl \
-//!     [--lm-head /path/to/lm_head.bin]
+//!     [--lm-head /path/to/lm_head.bin] \
+//!     [--arch    qwen3_legacy|qwen35|gemma4]
 //! ```
 //!
 //! Exit code 0 if every prompt parses and produces a result; the
@@ -118,12 +126,14 @@ struct Args {
     model_dir: PathBuf,
     eval_path: PathBuf,
     lm_head_path: Option<PathBuf>,
+    expected_arch: Option<String>,
 }
 
 fn parse_args() -> Result<Args, String> {
     let mut model_dir = None;
     let mut eval_path = None;
     let mut lm_head_path = None;
+    let mut expected_arch = None;
     let argv: Vec<String> = std::env::args().skip(1).collect();
     let mut i = 0;
     while i < argv.len() {
@@ -146,8 +156,15 @@ fn parse_args() -> Result<Args, String> {
                 ));
                 i += 2;
             }
+            "--arch" => {
+                expected_arch = Some(argv.get(i + 1).ok_or("--arch needs an argument")?.clone());
+                i += 2;
+            }
             "-h" | "--help" => {
-                eprintln!("qwen-eval --model-dir <dir> --eval <jsonl> [--lm-head <bin>]");
+                eprintln!(
+                    "vi-eval --model-dir <dir> --eval <jsonl> \
+                     [--lm-head <bin>] [--arch <name>]"
+                );
                 std::process::exit(0);
             }
             other => return Err(format!("unknown arg: {other}")),
@@ -157,6 +174,7 @@ fn parse_args() -> Result<Args, String> {
         model_dir: model_dir.ok_or("--model-dir required")?,
         eval_path: eval_path.ok_or("--eval required")?,
         lm_head_path,
+        expected_arch,
     })
 }
 
@@ -185,13 +203,35 @@ fn main() -> ExitCode {
             return ExitCode::from(2);
         }
     };
+    let arch_str: String = model
+        .arch_tag
+        .iter()
+        .take_while(|b| **b != 0)
+        .map(|&b| b as char)
+        .collect();
     eprintln!(
-        "loaded model: vocab={} hidden={} seq_len={} num_layers={}",
+        "loaded model: arch={} vocab={} hidden={} seq_len={} num_layers={} feature_flags=0x{:x}",
+        if arch_str.is_empty() {
+            "(unset)".to_string()
+        } else {
+            arch_str.clone()
+        },
         model.dims.vocab,
         model.dims.hidden,
         model.dims.seq_len,
-        model.num_layers()
+        model.num_layers(),
+        model.feature_flags
     );
+
+    if let Some(want) = &args.expected_arch {
+        if arch_str.as_str() != want.as_str() {
+            eprintln!(
+                "error: --arch={} requested but model arch_tag is {:?}",
+                want, arch_str
+            );
+            return ExitCode::from(2);
+        }
+    }
 
     let lm_head_path = args
         .lm_head_path

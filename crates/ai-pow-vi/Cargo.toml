@@ -11,8 +11,8 @@ thiserror = { workspace = true }
 byteorder = { workspace = true }
 
 [[bin]]
-name = "qwen-eval"
-path = "src/bin/qwen_eval.rs"
+name = "vi-eval"
+path = "src/bin/vi_eval.rs"
 
 [dev-dependencies]
 proptest = { workspace = true }
