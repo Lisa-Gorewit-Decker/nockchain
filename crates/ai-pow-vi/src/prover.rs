@@ -120,7 +120,8 @@ pub fn mine_vi(
         LayerWeights::Attention { ffn, .. }
         | LayerWeights::DeltaNet { ffn, .. }
         | LayerWeights::Gemma { ffn, .. }
-        | LayerWeights::QwenStandard { ffn, .. } => (ffn, ffn.hidden, ffn.intermediate),
+        | LayerWeights::QwenStandard { ffn, .. }
+        | LayerWeights::QwenHybridSsm { ffn, .. } => (ffn, ffn.hidden, ffn.intermediate),
     };
     let m = prompt.len() as u32;
     if m % opts.tile != 0 {

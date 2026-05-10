@@ -289,6 +289,59 @@ fn encode_manifest(model: &Model) -> Vec<u8> {
                 buf.extend_from_slice(&ffn_scales.mid.num.to_le_bytes());
                 buf.extend_from_slice(&ffn_scales.down.num.to_le_bytes());
             }
+            LayerWeights::QwenHybridSsm {
+                norm1,
+                num_q_heads,
+                num_kv_heads,
+                head_dim,
+                attn_scales,
+                qk_norm_eps_q,
+                qk_norm_post_scale,
+                num_v_heads,
+                ssm_kernel_size,
+                ssm_norm_eps_q,
+                ssm_norm_post_scale,
+                ssm_scales,
+                norm2,
+                ffn,
+                ffn_scales,
+                ..
+            } => {
+                buf.push(4u8);
+                encode_norm_meta(&mut buf, norm1);
+                buf.extend_from_slice(&ffn.hidden.to_le_bytes());
+                buf.extend_from_slice(&num_q_heads.to_le_bytes());
+                buf.extend_from_slice(&num_kv_heads.to_le_bytes());
+                buf.extend_from_slice(&head_dim.to_le_bytes());
+                buf.extend_from_slice(&attn_scales.q.num.to_le_bytes());
+                buf.extend_from_slice(&attn_scales.k.num.to_le_bytes());
+                buf.extend_from_slice(&attn_scales.v.num.to_le_bytes());
+                buf.extend_from_slice(&attn_scales.score.num.to_le_bytes());
+                buf.extend_from_slice(&attn_scales.attn_out.num.to_le_bytes());
+                buf.extend_from_slice(&attn_scales.o.num.to_le_bytes());
+                buf.extend_from_slice(&qk_norm_eps_q.to_le_bytes());
+                buf.extend_from_slice(&qk_norm_post_scale.num.to_le_bytes());
+                buf.extend_from_slice(&num_v_heads.to_le_bytes());
+                buf.extend_from_slice(&ssm_kernel_size.to_le_bytes());
+                buf.extend_from_slice(&ssm_norm_eps_q.to_le_bytes());
+                buf.extend_from_slice(&ssm_norm_post_scale.num.to_le_bytes());
+                buf.extend_from_slice(&ssm_scales.q.num.to_le_bytes());
+                buf.extend_from_slice(&ssm_scales.k.num.to_le_bytes());
+                buf.extend_from_slice(&ssm_scales.v.num.to_le_bytes());
+                buf.extend_from_slice(&ssm_scales.alpha_logit.num.to_le_bytes());
+                buf.extend_from_slice(&ssm_scales.beta_logit.num.to_le_bytes());
+                buf.extend_from_slice(&ssm_scales.u.num.to_le_bytes());
+                buf.extend_from_slice(&ssm_scales.decay.num.to_le_bytes());
+                buf.extend_from_slice(&ssm_scales.update.num.to_le_bytes());
+                buf.extend_from_slice(&ssm_scales.o.num.to_le_bytes());
+                buf.extend_from_slice(&ssm_scales.proj.num.to_le_bytes());
+                encode_norm_meta(&mut buf, norm2);
+                buf.extend_from_slice(&ffn.intermediate.to_le_bytes());
+                buf.extend_from_slice(&ffn_scales.gate.num.to_le_bytes());
+                buf.extend_from_slice(&ffn_scales.up.num.to_le_bytes());
+                buf.extend_from_slice(&ffn_scales.mid.num.to_le_bytes());
+                buf.extend_from_slice(&ffn_scales.down.num.to_le_bytes());
+            }
         }
     }
 
@@ -417,6 +470,24 @@ enum LayerMeta {
         attn_scales: AttentionScales,
         qk_norm_eps_q: i64,
         qk_norm_post_scale: Scale,
+        norm2: NormMeta,
+        intermediate: u32,
+        ffn_scales: FfnScales,
+    },
+    QwenHybridSsm {
+        norm1: NormMeta,
+        hidden: u32,
+        num_q_heads: u32,
+        num_kv_heads: u32,
+        head_dim: u32,
+        attn_scales: AttentionScales,
+        qk_norm_eps_q: i64,
+        qk_norm_post_scale: Scale,
+        num_v_heads: u32,
+        ssm_kernel_size: u32,
+        ssm_norm_eps_q: i64,
+        ssm_norm_post_scale: Scale,
+        ssm_scales: DeltaNetScales,
         norm2: NormMeta,
         intermediate: u32,
         ffn_scales: FfnScales,
@@ -683,6 +754,72 @@ fn parse_manifest(bytes: &[u8]) -> Result<ParsedManifest, LoadError> {
                     attn_scales,
                     qk_norm_eps_q,
                     qk_norm_post_scale,
+                    norm2,
+                    intermediate,
+                    ffn_scales,
+                });
+            }
+            4 => {
+                let norm1 = parse_norm_meta(&mut c)?;
+                let hidden = c.u32()?;
+                if hidden != dims.hidden {
+                    return Err(LoadError::LayerHiddenMismatch {
+                        layer_idx,
+                        got: hidden,
+                        want: dims.hidden,
+                    });
+                }
+                let num_q_heads = c.u32()?;
+                let num_kv_heads = c.u32()?;
+                let head_dim = c.u32()?;
+                let attn_scales = AttentionScales {
+                    q: Scale::from_num(c.i32()?)?,
+                    k: Scale::from_num(c.i32()?)?,
+                    v: Scale::from_num(c.i32()?)?,
+                    score: Scale::from_num(c.i32()?)?,
+                    attn_out: Scale::from_num(c.i32()?)?,
+                    o: Scale::from_num(c.i32()?)?,
+                };
+                let qk_norm_eps_q = c.i64()?;
+                let qk_norm_post_scale = Scale::from_num(c.i32()?)?;
+                let num_v_heads = c.u32()?;
+                let ssm_kernel_size = c.u32()?;
+                let ssm_norm_eps_q = c.i64()?;
+                let ssm_norm_post_scale = Scale::from_num(c.i32()?)?;
+                let ssm_scales = DeltaNetScales {
+                    q: Scale::from_num(c.i32()?)?,
+                    k: Scale::from_num(c.i32()?)?,
+                    v: Scale::from_num(c.i32()?)?,
+                    alpha_logit: Scale::from_num(c.i32()?)?,
+                    beta_logit: Scale::from_num(c.i32()?)?,
+                    u: Scale::from_num(c.i32()?)?,
+                    decay: Scale::from_num(c.i32()?)?,
+                    update: Scale::from_num(c.i32()?)?,
+                    o: Scale::from_num(c.i32()?)?,
+                    proj: Scale::from_num(c.i32()?)?,
+                };
+                let norm2 = parse_norm_meta(&mut c)?;
+                let intermediate = c.u32()?;
+                let ffn_scales = FfnScales {
+                    gate: Scale::from_num(c.i32()?)?,
+                    up: Scale::from_num(c.i32()?)?,
+                    mid: Scale::from_num(c.i32()?)?,
+                    down: Scale::from_num(c.i32()?)?,
+                };
+                layer_metas.push(LayerMeta::QwenHybridSsm {
+                    norm1,
+                    hidden,
+                    num_q_heads,
+                    num_kv_heads,
+                    head_dim,
+                    attn_scales,
+                    qk_norm_eps_q,
+                    qk_norm_post_scale,
+                    num_v_heads,
+                    ssm_kernel_size,
+                    ssm_norm_eps_q,
+                    ssm_norm_post_scale,
+                    ssm_scales,
                     norm2,
                     intermediate,
                     ffn_scales,
@@ -1088,6 +1225,87 @@ fn parse_one_layer(
                 norm2: n2,
                 ffn: FfnWeights {
                     hidden,
+                    intermediate,
+                    w_gate,
+                    w_up,
+                    w_down,
+                },
+                ffn_scales,
+            })
+        }
+        LayerMeta::QwenHybridSsm {
+            norm1,
+            hidden,
+            num_q_heads,
+            num_kv_heads,
+            head_dim,
+            attn_scales,
+            qk_norm_eps_q,
+            qk_norm_post_scale,
+            num_v_heads,
+            ssm_kernel_size,
+            ssm_norm_eps_q,
+            ssm_norm_post_scale,
+            ssm_scales,
+            norm2,
+            intermediate,
+            ffn_scales,
+        } => {
+            let n1 = materialize_norm(c, &norm1, hu)?;
+            let q_dim = (num_q_heads * head_dim) as usize;
+            let k_dim = (num_kv_heads * head_dim) as usize;
+            let v_dim = (num_kv_heads * head_dim) as usize;
+            let qkv_dim = q_dim + k_dim + v_dim;
+            let attn_qkv_fused = c.take_i8(hu * qkv_dim)?;
+            let attn_gate_dim = q_dim;
+            let attn_gate = c.take_i8(hu * attn_gate_dim)?;
+            let attn_out = c.take_i8(q_dim * hu)?;
+            let hd = head_dim as usize;
+            let q_norm_gamma = c.take_i8(hd)?;
+            let k_norm_gamma = c.take_i8(hd)?;
+            let nv = num_v_heads as usize;
+            let ssm_a = c.take_i8(nv)?;
+            let ssm_alpha = c.take_i8(hu * nv)?;
+            let ssm_beta = c.take_i8(hu * nv)?;
+            let ssm_conv1d = c.take_i8((ssm_kernel_size as usize) * hu)?;
+            let ssm_dt = c.take_i8(nv)?;
+            let ssm_norm_gamma = c.take_i8(hd)?;
+            let ssm_out_dim = (num_v_heads * head_dim) as usize;
+            let ssm_out = c.take_i8(ssm_out_dim * hu)?;
+            let n2 = materialize_norm(c, &norm2, hu)?;
+            let iu = intermediate as usize;
+            let w_gate = c.take_i8(hu * iu)?;
+            let w_up = c.take_i8(hu * iu)?;
+            let w_down = c.take_i8(iu * hu)?;
+            let hidden_u32 = hidden;
+            Ok(LayerWeights::QwenHybridSsm {
+                norm1: n1,
+                attn_qkv_fused,
+                attn_gate,
+                attn_out,
+                num_q_heads,
+                num_kv_heads,
+                head_dim,
+                attn_scales,
+                q_norm_gamma,
+                k_norm_gamma,
+                qk_norm_eps_q,
+                qk_norm_post_scale,
+                ssm_a,
+                ssm_alpha,
+                ssm_beta,
+                ssm_conv1d,
+                ssm_dt,
+                ssm_norm_gamma,
+                ssm_norm_eps_q,
+                ssm_norm_post_scale,
+                ssm_out,
+                num_v_heads,
+                ssm_kernel_size,
+                ssm_scales,
+                norm2: n2,
+                ffn: FfnWeights {
+                    hidden: hidden_u32,
                     intermediate,
                     w_gate,
                     w_up,

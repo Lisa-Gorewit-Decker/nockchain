@@ -174,7 +174,8 @@ fn recomputed_intermediate_tiles(model: &Model, opts: &ProverOptions) -> Result<
         crate::layer::LayerWeights::Attention { ffn, .. }
         | crate::layer::LayerWeights::DeltaNet { ffn, .. }
         | crate::layer::LayerWeights::Gemma { ffn, .. }
-        | crate::layer::LayerWeights::QwenStandard { ffn, .. } => ffn.intermediate,
+        | crate::layer::LayerWeights::QwenStandard { ffn, .. }
+        | crate::layer::LayerWeights::QwenHybridSsm { ffn, .. } => ffn.intermediate,
     };
     Ok(intermediate / opts.tile)
 }

@@ -128,6 +128,7 @@ impl Model {
                 LayerWeights::DeltaNet { dnet, .. } => dnet.hidden,
                 LayerWeights::Gemma { attn, .. } => attn.hidden,
                 LayerWeights::QwenStandard { attn, .. } => attn.hidden,
+                LayerWeights::QwenHybridSsm { ffn, .. } => ffn.hidden,
             };
             if lh != d.hidden {
                 return Err(ModelError::LayerHiddenMismatch {

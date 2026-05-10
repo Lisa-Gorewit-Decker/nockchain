@@ -102,6 +102,68 @@ pub enum LayerWeights {
         ffn: FfnWeights,
         ffn_scales: FfnScales,
     },
+    /// Qwen 3.6 27B hybrid attention + Mamba-SSM block (Phase 2.13).
+    /// Used for blocks `[0, 1, 2, 4, 5, 6, ...]` (48/64) — every block
+    /// not in `[3, 7, 11, ..., 63]`. The pre-attn norm feeds **two**
+    /// parallel paths that are summed before the residual add:
+    /// (a) gated attention with fused QKV and a sigmoid `attn_gate`;
+    /// (b) Mamba SSM with a 1D causal conv, per-token α/β gates, a
+    /// state-transition diagonal `ssm_a`, per-channel `ssm_dt`,
+    /// `ssm_norm`, and a final `ssm_out` projection.
+    ///
+    /// Phase 2.13 ships the variant + disk format so the full Qwen
+    /// 3.6 27B GGUF can be quantized and loaded; the **forward**
+    /// implementation returns `LayerError::HybridSsmNotImplemented`
+    /// so callers can still load + forward-through-attention-only
+    /// blocks. Real SSM math lands in a follow-up.
+    QwenHybridSsm {
+        norm1: NormSpec,
+        // Gated attention path:
+        /// `(hidden, q_dim + k_dim + v_dim)` col-major; sizes derived
+        /// from `num_q_heads`, `num_kv_heads`, `head_dim` (read from
+        /// the GGUF KV at quantization time).
+        attn_qkv_fused: Vec<i8>,
+        /// `(hidden, num_q_heads * head_dim)` per-head attention
+        /// gate (multiplied into the per-head attention output via
+        /// sigmoid).
+        attn_gate: Vec<i8>,
+        /// Output projection: `(num_q_heads * head_dim, hidden)`.
+        attn_out: Vec<i8>,
+        num_q_heads: u32,
+        num_kv_heads: u32,
+        head_dim: u32,
+        attn_scales: AttentionScales,
+        // Per-head Q/K norm (Qwen 3.6 hybrid blocks have these too).
+        q_norm_gamma: Vec<i8>,
+        k_norm_gamma: Vec<i8>,
+        qk_norm_eps_q: i64,
+        qk_norm_post_scale: Scale,
+        // SSM path:
+        /// State-transition diagonal, length `num_v_heads`.
+        ssm_a: Vec<i8>,
+        /// Per-token decay gate projection (hidden, num_v_heads).
+        ssm_alpha: Vec<i8>,
+        /// Per-token update gate projection (hidden, num_v_heads).
+        ssm_beta: Vec<i8>,
+        /// 1D causal conv kernel: `(kernel_size, hidden)`. For Qwen
+        /// the kernel is size 4.
+        ssm_conv1d: Vec<i8>,
+        /// Per-channel time-step bias, length `num_v_heads`.
+        ssm_dt: Vec<i8>,
+        /// Pre-output RMSNorm gamma (length `head_dim`).
+        ssm_norm_gamma: Vec<i8>,
+        ssm_norm_eps_q: i64,
+        ssm_norm_post_scale: Scale,
+        /// Output projection: `(num_v_heads * head_dim, hidden)`.
+        ssm_out: Vec<i8>,
+        num_v_heads: u32,
+        ssm_kernel_size: u32,
+        ssm_scales: DeltaNetScales, // reuse the DeltaNet scale set
+        // Shared parts of the block:
+        norm2: NormSpec,
+        ffn: FfnWeights,
+        ffn_scales: FfnScales,
+    },
     /// Gemma 4 block (Phase 2.11). Same 2-residual structure as
     /// `Attention`, but with four RMS norms per block (pre-attn,
     /// post-attn, pre-ffn, post-ffn), a per-head **QK norm** RMSNorm
@@ -180,6 +242,8 @@ pub enum LayerError {
     ZeroM,
     #[error("norm gamma length must equal hidden")]
     BadNormShape,
+    #[error("QwenHybridSsm forward is Phase 2.13 follow-up; load works but forward does not")]
+    HybridSsmNotImplemented,
     #[error("rmsnorm: {0}")]
     Rms(#[from] RmsNormError),
     #[error("layernorm: {0}")]
@@ -287,13 +351,17 @@ pub fn forward_layer(
     if let LayerWeights::QwenStandard { .. } = layer {
         return forward_qwen_standard_layer(input, layer, ctx, m, output);
     }
+    if let LayerWeights::QwenHybridSsm { .. } = layer {
+        return Err(LayerError::HybridSsmNotImplemented);
+    }
     let mu = m as usize;
     // Hidden is determined by the layer's attention/deltanet sublayer.
     let hidden = match layer {
         LayerWeights::Attention { attn, .. } => attn.hidden,
         LayerWeights::DeltaNet { dnet, .. } => dnet.hidden,
-        LayerWeights::Gemma { .. } => unreachable!(),
-        LayerWeights::QwenStandard { .. } => unreachable!(),
+        LayerWeights::Gemma { .. }
+        | LayerWeights::QwenStandard { .. }
+        | LayerWeights::QwenHybridSsm { .. } => unreachable!(),
     };
     if hidden == 0 {
         return Err(LayerError::ZeroHidden);
@@ -311,7 +379,9 @@ pub fn forward_layer(
     let (norm1, norm2) = match layer {
         LayerWeights::Attention { norm1, norm2, .. } => (norm1, norm2),
         LayerWeights::DeltaNet { norm1, norm2, .. } => (norm1, norm2),
-        LayerWeights::Gemma { .. } | LayerWeights::QwenStandard { .. } => unreachable!(),
+        LayerWeights::Gemma { .. }
+        | LayerWeights::QwenStandard { .. }
+        | LayerWeights::QwenHybridSsm { .. } => unreachable!(),
     };
     apply_norm_per_token(norm1, input, m, hidden, &mut normed1)?;
 
@@ -332,7 +402,9 @@ pub fn forward_layer(
                 &normed1, dnet, *dnet_scales, ctx.sigmoid_lut, m, &mut sub_out,
             )?;
         }
-        LayerWeights::Gemma { .. } | LayerWeights::QwenStandard { .. } => unreachable!(),
+        LayerWeights::Gemma { .. }
+        | LayerWeights::QwenStandard { .. }
+        | LayerWeights::QwenHybridSsm { .. } => unreachable!(),
     }
     drop(normed1);
 
@@ -353,7 +425,9 @@ pub fn forward_layer(
         LayerWeights::DeltaNet {
             ffn, ffn_scales, ..
         } => (ffn, *ffn_scales),
-        LayerWeights::Gemma { .. } | LayerWeights::QwenStandard { .. } => unreachable!(),
+        LayerWeights::Gemma { .. }
+        | LayerWeights::QwenStandard { .. }
+        | LayerWeights::QwenHybridSsm { .. } => unreachable!(),
     };
     let mut ffn_out = vec![0i8; mu * hu];
     ffn_forward(
@@ -1211,6 +1285,131 @@ mod tests {
         let comm = compute_comm_w(&model);
         let loaded = Model::load(&dir, &comm).unwrap();
         assert_eq!(model.layers, loaded.layers);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    fn build_qwen_hybrid_layer(
+        hidden: u32,
+        num_q: u32,
+        num_kv: u32,
+        num_v: u32,
+        head_dim: u32,
+        seed: u64,
+    ) -> LayerWeights {
+        use crate::attention::AttentionScales;
+        use crate::deltanet::DeltaNetScales;
+        let hu = hidden as usize;
+        let hdu = head_dim as usize;
+        let kernel_size = 4u32;
+        let qkv_dim = ((num_q + num_kv + num_kv) * head_dim) as usize;
+        let nv = num_v as usize;
+        LayerWeights::QwenHybridSsm {
+            norm1: rms_norm(hu, seed),
+            attn_qkv_fused: lcg_bytes(hu * qkv_dim, seed.wrapping_add(1)),
+            attn_gate: lcg_bytes(hu * (num_q * head_dim) as usize, seed.wrapping_add(2)),
+            attn_out: lcg_bytes((num_q * head_dim) as usize * hu, seed.wrapping_add(3)),
+            num_q_heads: num_q,
+            num_kv_heads: num_kv,
+            head_dim,
+            attn_scales: AttentionScales {
+                q: small_scale(),
+                k: small_scale(),
+                v: small_scale(),
+                score: small_scale(),
+                attn_out: small_scale(),
+                o: small_scale(),
+            },
+            q_norm_gamma: lcg_bytes(hdu, seed.wrapping_add(4)),
+            k_norm_gamma: lcg_bytes(hdu, seed.wrapping_add(5)),
+            qk_norm_eps_q: DEFAULT_EPS_Q,
+            qk_norm_post_scale: small_scale(),
+            ssm_a: lcg_bytes(nv, seed.wrapping_add(6)),
+            ssm_alpha: lcg_bytes(hu * nv, seed.wrapping_add(7)),
+            ssm_beta: lcg_bytes(hu * nv, seed.wrapping_add(8)),
+            ssm_conv1d: lcg_bytes((kernel_size as usize) * hu, seed.wrapping_add(9)),
+            ssm_dt: lcg_bytes(nv, seed.wrapping_add(10)),
+            ssm_norm_gamma: lcg_bytes(hdu, seed.wrapping_add(11)),
+            ssm_norm_eps_q: DEFAULT_EPS_Q,
+            ssm_norm_post_scale: small_scale(),
+            ssm_out: lcg_bytes((num_v * head_dim) as usize * hu, seed.wrapping_add(12)),
+            num_v_heads: num_v,
+            ssm_kernel_size: kernel_size,
+            ssm_scales: DeltaNetScales {
+                q: small_scale(),
+                k: small_scale(),
+                v: small_scale(),
+                alpha_logit: small_scale(),
+                beta_logit: small_scale(),
+                u: small_scale(),
+                decay: small_scale(),
+                update: small_scale(),
+                o: small_scale(),
+                proj: small_scale(),
+            },
+            norm2: rms_norm(hu, seed.wrapping_add(13)),
+            ffn: FfnWeights {
+                hidden,
+                intermediate: hidden * 2,
+                w_gate: lcg_bytes(hu * (hu * 2), seed.wrapping_add(14)),
+                w_up: lcg_bytes(hu * (hu * 2), seed.wrapping_add(15)),
+                w_down: lcg_bytes((hu * 2) * hu, seed.wrapping_add(16)),
+            },
+            ffn_scales: FfnScales {
+                gate: small_scale(),
+                up: small_scale(),
+                mid: small_scale(),
+                down: small_scale(),
+            },
+        }
+    }
+
+    #[test]
+    fn qwen_hybrid_ssm_loads_but_forward_unimplemented() {
+        use crate::comm_w::compute_comm_w;
+        use crate::model::{Model, ModelDims};
+        let hidden = 8u32;
+        let layer = build_qwen_hybrid_layer(hidden, 2, 1, 3, 4, 0xefef);
+        let model = Model {
+            dims: ModelDims {
+                vocab: 16,
+                hidden,
+                seq_len: 4,
+                activation_tile: 2,
+            },
+            arch_tag: crate::model::arch_tag("qwen35"),
+            feature_flags: 0,
+            embed: lcg_bytes((16 * hidden) as usize, 0xf0f0),
+            layers: vec![layer],
+            final_norm: None,
+            rope_tables: RopeTables::identity(4, 2),
+            softmax_lut: ExpLut::uniform_test(),
+            sigmoid_lut: ActivationLut::identity(),
+            ffn_activation: ActivationLut::identity(),
+        };
+        let dir = std::env::temp_dir().join(format!(
+            "ai_pow_vi_qwen_hybrid_rt_{}_{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        model.save(&dir).unwrap();
+        let comm = compute_comm_w(&model);
+        let loaded = Model::load(&dir, &comm).unwrap();
+        assert_eq!(model.layers, loaded.layers);
+
+        // Forward returns `HybridSsmNotImplemented` (Phase 2.13 follow-up).
+        let rope_tables = RopeTables::identity(2, 2);
+        let softmax_lut = ExpLut::uniform_test();
+        let sigmoid_lut = ActivationLut::identity();
+        let ffn_act = ActivationLut::identity();
+        let c = ctx(&rope_tables, &softmax_lut, &sigmoid_lut, &ffn_act);
+        let input = lcg_bytes((2 * hidden) as usize, 0xc0c0);
+        let mut output = vec![0i8; (2 * hidden) as usize];
+        let result = forward_layer(&input, &loaded.layers[0], &c, 2, &mut output);
+        assert_eq!(result, Err(LayerError::HybridSsmNotImplemented));
         let _ = std::fs::remove_dir_all(&dir);
     }
 

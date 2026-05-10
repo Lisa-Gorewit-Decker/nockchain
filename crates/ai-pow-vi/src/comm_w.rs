@@ -126,6 +126,45 @@ fn append_layer_weights(out: &mut Vec<u8>, layer: &LayerWeights) {
             append_i8s(out, &ffn.w_up);
             append_i8s(out, &ffn.w_down);
         }
+        LayerWeights::QwenHybridSsm {
+            norm1,
+            attn_qkv_fused,
+            attn_gate,
+            attn_out,
+            q_norm_gamma,
+            k_norm_gamma,
+            ssm_a,
+            ssm_alpha,
+            ssm_beta,
+            ssm_conv1d,
+            ssm_dt,
+            ssm_norm_gamma,
+            ssm_out,
+            norm2,
+            ffn,
+            ..
+        } => {
+            // Canonical order for QwenHybridSsm layer bytes:
+            // norm1 → attn_qkv_fused → attn_gate → attn_out → qk_norm gammas →
+            // ssm{a,alpha,beta,conv1d,dt,norm_gamma,out} → norm2 → ffn{gate,up,down}.
+            append_norm_weights(out, norm1);
+            append_i8s(out, attn_qkv_fused);
+            append_i8s(out, attn_gate);
+            append_i8s(out, attn_out);
+            append_i8s(out, q_norm_gamma);
+            append_i8s(out, k_norm_gamma);
+            append_i8s(out, ssm_a);
+            append_i8s(out, ssm_alpha);
+            append_i8s(out, ssm_beta);
+            append_i8s(out, ssm_conv1d);
+            append_i8s(out, ssm_dt);
+            append_i8s(out, ssm_norm_gamma);
+            append_i8s(out, ssm_out);
+            append_norm_weights(out, norm2);
+            append_i8s(out, &ffn.w_gate);
+            append_i8s(out, &ffn.w_up);
+            append_i8s(out, &ffn.w_down);
+        }
         LayerWeights::Gemma {
             norm1,
             attn,
@@ -358,6 +397,59 @@ fn manifest_hash(model: &Model) -> [u8; 32] {
                 append_scale(&mut buf, qk_norm_post_scale);
                 append_norm_meta(&mut buf, norm2);
                 buf.extend_from_slice(&ffn.hidden.to_le_bytes());
+                buf.extend_from_slice(&ffn.intermediate.to_le_bytes());
+                append_scale(&mut buf, &ffn_scales.gate);
+                append_scale(&mut buf, &ffn_scales.up);
+                append_scale(&mut buf, &ffn_scales.mid);
+                append_scale(&mut buf, &ffn_scales.down);
+            }
+            LayerWeights::QwenHybridSsm {
+                norm1,
+                num_q_heads,
+                num_kv_heads,
+                head_dim,
+                attn_scales,
+                qk_norm_eps_q,
+                qk_norm_post_scale,
+                num_v_heads,
+                ssm_kernel_size,
+                ssm_norm_eps_q,
+                ssm_norm_post_scale,
+                ssm_scales,
+                norm2,
+                ffn,
+                ffn_scales,
+                ..
+            } => {
+                buf.push(4u8); // tag: qwen-hybrid-ssm
+                append_norm_meta(&mut buf, norm1);
+                buf.extend_from_slice(&ffn.hidden.to_le_bytes());
+                buf.extend_from_slice(&num_q_heads.to_le_bytes());
+                buf.extend_from_slice(&num_kv_heads.to_le_bytes());
+                buf.extend_from_slice(&head_dim.to_le_bytes());
+                append_scale(&mut buf, &attn_scales.q);
+                append_scale(&mut buf, &attn_scales.k);
+                append_scale(&mut buf, &attn_scales.v);
+                append_scale(&mut buf, &attn_scales.score);
+                append_scale(&mut buf, &attn_scales.attn_out);
+                append_scale(&mut buf, &attn_scales.o);
+                buf.extend_from_slice(&qk_norm_eps_q.to_le_bytes());
+                append_scale(&mut buf, qk_norm_post_scale);
+                buf.extend_from_slice(&num_v_heads.to_le_bytes());
+                buf.extend_from_slice(&ssm_kernel_size.to_le_bytes());
+                buf.extend_from_slice(&ssm_norm_eps_q.to_le_bytes());
+                append_scale(&mut buf, ssm_norm_post_scale);
+                append_scale(&mut buf, &ssm_scales.q);
+                append_scale(&mut buf, &ssm_scales.k);
+                append_scale(&mut buf, &ssm_scales.v);
+                append_scale(&mut buf, &ssm_scales.alpha_logit);
+                append_scale(&mut buf, &ssm_scales.beta_logit);
+                append_scale(&mut buf, &ssm_scales.u);
+                append_scale(&mut buf, &ssm_scales.decay);
+                append_scale(&mut buf, &ssm_scales.update);
+                append_scale(&mut buf, &ssm_scales.o);
+                append_scale(&mut buf, &ssm_scales.proj);
+                append_norm_meta(&mut buf, norm2);
                 buf.extend_from_slice(&ffn.intermediate.to_le_bytes());
                 append_scale(&mut buf, &ffn_scales.gate);
                 append_scale(&mut buf, &ffn_scales.up);
