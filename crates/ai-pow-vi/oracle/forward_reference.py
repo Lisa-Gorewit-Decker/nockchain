@@ -587,6 +587,428 @@ class DeltaNetLayer:
 
 
 @dataclass(frozen=True)
+class QwenStandardLayer:
+    """Phase 2.12 Qwen 3.6 27B standard-attention block. Mirrors
+    `crate::layer::LayerWeights::QwenStandard` field-for-field. Same
+    2-norm residual structure as `AttentionLayer` plus per-head QK norm
+    inside the attention sublayer (no sliding window for Qwen)."""
+
+    norm1: NormSpec
+    attn: AttentionWeights
+    attn_scales: AttentionScales
+    q_norm_gamma: tuple[int, ...]
+    k_norm_gamma: tuple[int, ...]
+    qk_norm_eps_q: int
+    qk_norm_post_scale: R.Scale
+    norm2: NormSpec
+    ffn: FfnWeights
+    ffn_scales: R.FfnScales
+
+
+@dataclass(frozen=True)
+class QwenHybridSsmLayer:
+    """Phase 2.13 Qwen 3.6 27B hybrid attention + Mamba-SSM block.
+    Mirrors `crate::layer::LayerWeights::QwenHybridSsm` field-for-field.
+    The pre-attn norm output feeds two parallel sublayers (gated
+    attention + Mamba SSM) that sum before the residual add."""
+
+    norm1: NormSpec
+    # Gated attention path:
+    attn_qkv_fused: tuple[int, ...]  # (hidden, q_dim + kv_dim + kv_dim) col-major
+    attn_gate: tuple[int, ...]  # (hidden, q_dim) col-major
+    attn_out: tuple[int, ...]  # (q_dim, hidden) col-major
+    num_q_heads: int
+    num_kv_heads: int
+    head_dim: int
+    attn_scales: AttentionScales
+    q_norm_gamma: tuple[int, ...]
+    k_norm_gamma: tuple[int, ...]
+    qk_norm_eps_q: int
+    qk_norm_post_scale: R.Scale
+    # SSM path:
+    ssm_a: tuple[int, ...]  # (num_v_heads,)
+    ssm_alpha: tuple[int, ...]  # (hidden, num_v_heads) col-major
+    ssm_beta: tuple[int, ...]  # (hidden, num_v_heads) col-major
+    ssm_conv1d: tuple[int, ...]  # (kernel_size, hidden) row-major
+    ssm_dt: tuple[int, ...]  # (num_v_heads,)
+    ssm_norm_gamma: tuple[int, ...]  # (head_dim,)
+    ssm_norm_eps_q: int
+    ssm_norm_post_scale: R.Scale
+    ssm_out: tuple[int, ...]  # (num_v_heads * head_dim, hidden) col-major
+    num_v_heads: int
+    ssm_kernel_size: int
+    ssm_scales: DeltaNetScales
+    # Shared parts:
+    norm2: NormSpec
+    ffn: FfnWeights
+    ffn_scales: R.FfnScales
+
+
+def attention_forward_qwen_standard(
+    inp: Sequence[int],
+    weights: AttentionWeights,
+    scales: AttentionScales,
+    rope_tables: RopeTables,
+    softmax_lut: R.ExpLut,
+    q_norm_gamma: Sequence[int],
+    k_norm_gamma: Sequence[int],
+    qk_norm_eps_q: int,
+    qk_norm_post_scale: R.Scale,
+    m: int,
+) -> list[int]:
+    """Mirror of `crate::layer::forward_qwen_standard_layer`'s attention
+    sublayer call: same as `attention_forward_gemma` with
+    `sliding_window=None`."""
+    return attention_forward_gemma(
+        inp, weights, scales, rope_tables, softmax_lut,
+        q_norm_gamma, k_norm_gamma, qk_norm_eps_q, qk_norm_post_scale,
+        sliding_window=None, m=m,
+    )
+
+
+def forward_qwen_standard_layer(
+    inp: Sequence[int],
+    layer: QwenStandardLayer,
+    ctx: LayerContext,
+    m: int,
+) -> list[int]:
+    """Mirror of `crate::layer::forward_qwen_standard_layer`."""
+    hidden = layer.attn.hidden
+
+    # Step 1: norm1.
+    normed1 = apply_norm_per_token(layer.norm1, inp, m, hidden)
+
+    # Step 2: attention with QK norm, no sliding window.
+    sub = attention_forward_qwen_standard(
+        normed1,
+        layer.attn,
+        layer.attn_scales,
+        ctx.rope_tables,
+        ctx.softmax_lut,
+        layer.q_norm_gamma,
+        layer.k_norm_gamma,
+        layer.qk_norm_eps_q,
+        layer.qk_norm_post_scale,
+        m,
+    )
+
+    # Step 3: residual1 = inp + sub.
+    residual1 = list(sub)
+    add_residual_inplace(residual1, inp)
+
+    # Step 4: norm2.
+    normed2 = apply_norm_per_token(layer.norm2, residual1, m, hidden)
+
+    # Step 5: FFN.
+    ffn_out = R.ffn_forward(
+        normed2,
+        layer.ffn.w_gate,
+        layer.ffn.w_up,
+        layer.ffn.w_down,
+        ctx.ffn_activation_bytes,
+        layer.ffn_scales,
+        m,
+        hidden,
+        layer.ffn.intermediate,
+    )
+
+    # Step 6: residual2.
+    out = list(residual1)
+    add_residual_inplace(out, ffn_out)
+    return out
+
+
+def ssm_forward(
+    inp: Sequence[int],
+    hidden: int,
+    m: int,
+    ssm_a: Sequence[int],
+    ssm_alpha: Sequence[int],
+    ssm_beta: Sequence[int],
+    ssm_conv1d: Sequence[int],
+    ssm_dt: Sequence[int],
+    ssm_norm_gamma: Sequence[int],
+    ssm_norm_eps_q: int,
+    ssm_norm_post_scale: R.Scale,
+    ssm_out_w: Sequence[int],
+    num_v_heads: int,
+    head_dim: int,
+    kernel_size: int,
+    scales: DeltaNetScales,
+    sigmoid_lut_bytes: Sequence[int],
+) -> list[int]:
+    """Mirror of `crate::ssm::ssm_forward`. INT8 selective state-space
+    recurrence with depthwise causal 1D conv, per-token α/β gating, and
+    per-V-head RMSNorm before output projection."""
+    nv = num_v_heads
+    hd = head_dim
+    ksz = kernel_size
+    hu = hidden
+
+    # Step 1: depthwise causal 1D conv. Tap k=0 is the current token.
+    x_conv = [0] * (m * hu)
+    for t in range(m):
+        for c in range(hu):
+            acc = 0
+            for k in range(ksz):
+                if t < k:
+                    break  # past-prefix taps zero (causal mask)
+                in_v = inp[(t - k) * hu + c]
+                kw = ssm_conv1d[k * hu + c]
+                acc += in_v * kw
+            acc = max(R.I32_MIN, min(R.I32_MAX, acc))
+            x_conv[t * hu + c] = R.rescale_and_requantize(acc, scales.q)
+
+    # Step 2: α and β projections, both followed by sigmoid LUT.
+    alpha_acc = R.matmul_int8(x_conv, ssm_alpha, m, hu, nv)
+    alpha_i8 = R.requantize_vec(alpha_acc, scales.alpha_logit)
+    alpha_i8 = R.apply_activation_lut(alpha_i8, sigmoid_lut_bytes)
+
+    beta_acc = R.matmul_int8(x_conv, ssm_beta, m, hu, nv)
+    beta_i8 = R.requantize_vec(beta_acc, scales.beta_logit)
+    beta_i8 = R.apply_activation_lut(beta_i8, sigmoid_lut_bytes)
+
+    # Step 3: per-V-head state recurrence. State zero-initialized each call.
+    state = [[0] * hd for _ in range(nv)]
+    y_concat = [0] * (m * nv * hd)
+
+    for t in range(m):
+        for v in range(nv):
+            alpha_v = alpha_i8[t * nv + v]
+            beta_v = beta_i8[t * nv + v]
+            a_v = ssm_a[v]
+            dt_v = ssm_dt[v]
+            # Same `>> 7` semantics as Rust arithmetic shift (preserves sign).
+            decay_factor = R.saturate_i8((alpha_v * a_v) >> 7)
+            update_factor = R.saturate_i8((beta_v * dt_v) >> 7)
+            for d in range(hd):
+                s_old = state[v][d]
+                c = (v * hd + d) % hu
+                xv = x_conv[t * hu + c]
+                decay_term = s_old * decay_factor
+                update_term = update_factor * xv
+                decay_i8 = R.rescale_and_requantize(
+                    max(R.I32_MIN, min(R.I32_MAX, decay_term)), scales.decay
+                )
+                update_i8 = R.rescale_and_requantize(
+                    max(R.I32_MIN, min(R.I32_MAX, update_term)), scales.update
+                )
+                s_new = R.saturate_i8(decay_i8 + update_i8)
+                state[v][d] = s_new
+                y_concat[t * nv * hd + v * hd + d] = s_new
+
+    # Step 4: per-(token, V-head) RMSNorm.
+    for t in range(m):
+        for v in range(nv):
+            off = t * nv * hd + v * hd
+            slot = y_concat[off : off + hd]
+            normed = R.rmsnorm(slot, ssm_norm_gamma, eps_q=ssm_norm_eps_q)
+            for d in range(hd):
+                y_concat[off + d] = R.rescale_and_requantize(
+                    normed[d], ssm_norm_post_scale
+                )
+
+    # Step 5: output projection.
+    return R.matmul_int8_requant(
+        y_concat, ssm_out_w, m, nv * hd, hu, scales.proj
+    )
+
+
+def gated_attention_forward(
+    inp: Sequence[int],
+    attn_qkv_fused: Sequence[int],
+    attn_gate: Sequence[int],
+    attn_out_w: Sequence[int],
+    hidden: int,
+    num_q_heads: int,
+    num_kv_heads: int,
+    head_dim: int,
+    scales: AttentionScales,
+    q_norm_gamma: Sequence[int],
+    k_norm_gamma: Sequence[int],
+    qk_norm_eps_q: int,
+    qk_norm_post_scale: R.Scale,
+    rope_tables: RopeTables,
+    softmax_lut: R.ExpLut,
+    sigmoid_lut_bytes: Sequence[int],
+    m: int,
+) -> list[int]:
+    """Mirror of `crate::layer::gated_attention_forward`. Fused-QKV split
+    + QK norm + RoPE + causal attention + sigmoid `attn_gate` ×
+    attn_inter + `attn_out` projection. No sliding window (Qwen 3.6 doesn't
+    use one in hybrid blocks)."""
+    hu = hidden
+    nq = num_q_heads
+    nkv = num_kv_heads
+    hd = head_dim
+    q_dim = nq * hd
+    kv_dim = nkv * hd
+    total_qkv = q_dim + kv_dim + kv_dim
+
+    # Split fused QKV (column-major: contiguous slice = sub-matrix columns).
+    w_q = attn_qkv_fused[0 : hu * q_dim]
+    w_k = attn_qkv_fused[hu * q_dim : hu * (q_dim + kv_dim)]
+    w_v = attn_qkv_fused[hu * (q_dim + kv_dim) : hu * total_qkv]
+
+    # Q/K/V projections.
+    q_i8 = R.requantize_vec(R.matmul_int8(inp, w_q, m, hu, q_dim), scales.q)
+    k_i8 = R.requantize_vec(R.matmul_int8(inp, w_k, m, hu, kv_dim), scales.k)
+    v_i8 = R.requantize_vec(R.matmul_int8(inp, w_v, m, hu, kv_dim), scales.v)
+
+    # QK norm: per (token, head). Order matches Rust:
+    # outer loop t, inner h-q then h-kv.
+    for t in range(m):
+        for h in range(nq):
+            off = t * q_dim + h * hd
+            slot = q_i8[off : off + hd]
+            normed = R.rmsnorm(slot, q_norm_gamma, eps_q=qk_norm_eps_q)
+            for d in range(hd):
+                q_i8[off + d] = R.rescale_and_requantize(normed[d], qk_norm_post_scale)
+        for h in range(nkv):
+            off = t * kv_dim + h * hd
+            slot = k_i8[off : off + hd]
+            normed = R.rmsnorm(slot, k_norm_gamma, eps_q=qk_norm_eps_q)
+            for d in range(hd):
+                k_i8[off + d] = R.rescale_and_requantize(normed[d], qk_norm_post_scale)
+
+    # RoPE on Q and K.
+    for pos in range(m):
+        for h in range(nq):
+            off = pos * q_dim + h * hd
+            slot = list(q_i8[off : off + hd])
+            rope_apply(slot, pos, rope_tables)
+            q_i8[off : off + hd] = slot
+        for h in range(nkv):
+            off = pos * kv_dim + h * hd
+            slot = list(k_i8[off : off + hd])
+            rope_apply(slot, pos, rope_tables)
+            k_i8[off : off + hd] = slot
+
+    # Per-head causal attention (no sliding window).
+    attn_inter = [0] * (m * q_dim)
+    for i in range(m):
+        for h in range(nq):
+            kv_h = (h * nkv) // nq
+            q_off = i * q_dim + h * hd
+            scores = []
+            for j in range(i + 1):
+                k_off = j * kv_dim + kv_h * hd
+                raw = R.dot_int8(q_i8[q_off : q_off + hd], k_i8[k_off : k_off + hd])
+                scores.append(_scale_score_py(raw, scales.score))
+            probs = R.softmax_int(scores, softmax_lut)
+            ao_off = i * q_dim + h * hd
+            for d in range(hd):
+                acc = 0
+                for j in range(i + 1):
+                    v_off = j * kv_dim + kv_h * hd + d
+                    acc += probs[j] * v_i8[v_off]
+                acc = max(R.I32_MIN, min(R.I32_MAX, acc))
+                attn_inter[ao_off + d] = R.rescale_and_requantize(acc, scales.attn_out)
+
+    # Sigmoid gate: gate_i8 = sigmoid_lut(rescale(input @ attn_gate, scales.q)).
+    gate_acc = R.matmul_int8(inp, attn_gate, m, hu, q_dim)
+    gate_i8 = R.requantize_vec(gate_acc, scales.q)
+    gate_i8 = R.apply_activation_lut(gate_i8, sigmoid_lut_bytes)
+
+    # Element-wise multiply with symmetric half-up rounding by 127.
+    for k in range(m * q_dim):
+        prod = attn_inter[k] * gate_i8[k]
+        abs_v = abs(prod)
+        q = (abs_v + 63) // 127
+        signed = -q if prod < 0 else q
+        attn_inter[k] = max(R.I8_MIN, min(R.I8_MAX, signed))
+
+    # Output projection.
+    return R.matmul_int8_requant(attn_inter, attn_out_w, m, q_dim, hu, scales.o)
+
+
+def forward_qwen_hybrid_ssm_layer(
+    inp: Sequence[int],
+    layer: QwenHybridSsmLayer,
+    ctx: LayerContext,
+    m: int,
+) -> list[int]:
+    """Mirror of `crate::layer::forward_qwen_hybrid_ssm_layer`. Two
+    parallel sublayer paths (gated attention + SSM) summed before the
+    residual add."""
+    hidden = layer.ffn.hidden
+
+    # Step 1: norm1.
+    normed1 = apply_norm_per_token(layer.norm1, inp, m, hidden)
+
+    # Step 2: gated attention path.
+    y_attn = gated_attention_forward(
+        normed1,
+        layer.attn_qkv_fused,
+        layer.attn_gate,
+        layer.attn_out,
+        hidden,
+        layer.num_q_heads,
+        layer.num_kv_heads,
+        layer.head_dim,
+        layer.attn_scales,
+        layer.q_norm_gamma,
+        layer.k_norm_gamma,
+        layer.qk_norm_eps_q,
+        layer.qk_norm_post_scale,
+        ctx.rope_tables,
+        ctx.softmax_lut,
+        ctx.sigmoid_lut_bytes,
+        m,
+    )
+
+    # Step 3: SSM path.
+    y_ssm = ssm_forward(
+        normed1,
+        hidden,
+        m,
+        layer.ssm_a,
+        layer.ssm_alpha,
+        layer.ssm_beta,
+        layer.ssm_conv1d,
+        layer.ssm_dt,
+        layer.ssm_norm_gamma,
+        layer.ssm_norm_eps_q,
+        layer.ssm_norm_post_scale,
+        layer.ssm_out,
+        layer.num_v_heads,
+        layer.head_dim,
+        layer.ssm_kernel_size,
+        layer.ssm_scales,
+        ctx.sigmoid_lut_bytes,
+    )
+
+    # Step 4: y = saturate(y_attn + y_ssm).
+    sub = list(y_attn)
+    add_residual_inplace(sub, y_ssm)
+
+    # Step 5: residual1 = inp + sub.
+    add_residual_inplace(sub, inp)
+    residual1 = sub
+
+    # Step 6: norm2.
+    normed2 = apply_norm_per_token(layer.norm2, residual1, m, hidden)
+
+    # Step 7: FFN.
+    ffn_out = R.ffn_forward(
+        normed2,
+        layer.ffn.w_gate,
+        layer.ffn.w_up,
+        layer.ffn.w_down,
+        ctx.ffn_activation_bytes,
+        layer.ffn_scales,
+        m,
+        hidden,
+        layer.ffn.intermediate,
+    )
+
+    # Step 8: output = residual1 + ffn_out.
+    out = list(residual1)
+    add_residual_inplace(out, ffn_out)
+    return out
+
+
+@dataclass(frozen=True)
 class LayerContext:
     rope_tables: RopeTables
     softmax_lut: R.ExpLut
@@ -596,12 +1018,16 @@ class LayerContext:
 
 def forward_layer(
     inp: Sequence[int],
-    layer,  # AttentionLayer | DeltaNetLayer | GemmaLayer
+    layer,  # AttentionLayer | DeltaNetLayer | GemmaLayer | QwenStandardLayer | QwenHybridSsmLayer
     ctx: LayerContext,
     m: int,
 ) -> list[int]:
     if isinstance(layer, GemmaLayer):
         return forward_gemma_layer(inp, layer, ctx, m)
+    if isinstance(layer, QwenStandardLayer):
+        return forward_qwen_standard_layer(inp, layer, ctx, m)
+    if isinstance(layer, QwenHybridSsmLayer):
+        return forward_qwen_hybrid_ssm_layer(inp, layer, ctx, m)
     if isinstance(layer, AttentionLayer):
         hidden = layer.attn.hidden
     elif isinstance(layer, DeltaNetLayer):

@@ -179,6 +179,72 @@ def encode_manifest(
             buf += _u32(layer.sliding_window if layer.sliding_window is not None else 0)
             buf += _u8(1 if layer.inp_gate is not None else 0)
             buf += _u8(1 if layer.layer_output_scale is not None else 0)
+        elif isinstance(layer, F.QwenStandardLayer):
+            buf += _u8(3)
+            buf += encode_norm_meta(layer.norm1)
+            buf += _u32(layer.attn.hidden) + _u32(layer.attn.num_q_heads)
+            buf += _u32(layer.attn.num_kv_heads) + _u32(layer.attn.head_dim)
+            for s in (
+                layer.attn_scales.q,
+                layer.attn_scales.k,
+                layer.attn_scales.v,
+                layer.attn_scales.score,
+                layer.attn_scales.attn_out,
+                layer.attn_scales.o,
+            ):
+                buf += _i32(s.num)
+            buf += _i64(layer.qk_norm_eps_q)
+            buf += _i32(layer.qk_norm_post_scale.num)
+            buf += encode_norm_meta(layer.norm2)
+            buf += _u32(layer.ffn.intermediate)
+            for s in (
+                layer.ffn_scales.gate,
+                layer.ffn_scales.up,
+                layer.ffn_scales.mid,
+                layer.ffn_scales.down,
+            ):
+                buf += _i32(s.num)
+        elif isinstance(layer, F.QwenHybridSsmLayer):
+            buf += _u8(4)
+            buf += encode_norm_meta(layer.norm1)
+            buf += _u32(layer.ffn.hidden)
+            buf += _u32(layer.num_q_heads) + _u32(layer.num_kv_heads) + _u32(layer.head_dim)
+            for s in (
+                layer.attn_scales.q,
+                layer.attn_scales.k,
+                layer.attn_scales.v,
+                layer.attn_scales.score,
+                layer.attn_scales.attn_out,
+                layer.attn_scales.o,
+            ):
+                buf += _i32(s.num)
+            buf += _i64(layer.qk_norm_eps_q)
+            buf += _i32(layer.qk_norm_post_scale.num)
+            buf += _u32(layer.num_v_heads) + _u32(layer.ssm_kernel_size)
+            buf += _i64(layer.ssm_norm_eps_q)
+            buf += _i32(layer.ssm_norm_post_scale.num)
+            for s in (
+                layer.ssm_scales.q,
+                layer.ssm_scales.k,
+                layer.ssm_scales.v,
+                layer.ssm_scales.alpha_logit,
+                layer.ssm_scales.beta_logit,
+                layer.ssm_scales.u,
+                layer.ssm_scales.decay,
+                layer.ssm_scales.update,
+                layer.ssm_scales.o,
+                layer.ssm_scales.proj,
+            ):
+                buf += _i32(s.num)
+            buf += encode_norm_meta(layer.norm2)
+            buf += _u32(layer.ffn.intermediate)
+            for s in (
+                layer.ffn_scales.gate,
+                layer.ffn_scales.up,
+                layer.ffn_scales.mid,
+                layer.ffn_scales.down,
+            ):
+                buf += _i32(s.num)
         else:
             raise TypeError(type(layer))
     if final_norm is not None:
@@ -260,6 +326,44 @@ def encode_weights(model: F.Model) -> bytes:
                 buf += _i8s(layer.inp_gate)
             if layer.layer_output_scale is not None:
                 buf += _i8s(layer.layer_output_scale)
+        elif isinstance(layer, F.QwenStandardLayer):
+            # Order mirrors crate::comm_w::append_layer_weights QwenStandard
+            # arm: attn(q,k,v,o) → qk_norm gammas → norm2 → ffn(gate,up,down).
+            buf += _i8s(layer.attn.w_q)
+            buf += _i8s(layer.attn.w_k)
+            buf += _i8s(layer.attn.w_v)
+            buf += _i8s(layer.attn.w_o)
+            buf += _i8s(layer.q_norm_gamma)
+            buf += _i8s(layer.k_norm_gamma)
+            buf += _i8s(layer.norm2.gamma)
+            if layer.norm2.beta is not None:
+                buf += _i8s(layer.norm2.beta)
+            buf += _i8s(layer.ffn.w_gate)
+            buf += _i8s(layer.ffn.w_up)
+            buf += _i8s(layer.ffn.w_down)
+        elif isinstance(layer, F.QwenHybridSsmLayer):
+            # Order mirrors crate::comm_w::append_layer_weights QwenHybridSsm
+            # arm: attn_qkv_fused → attn_gate → attn_out → qk_norm gammas →
+            # ssm{a,alpha,beta,conv1d,dt,norm_gamma,out} → norm2 →
+            # ffn(gate,up,down).
+            buf += _i8s(layer.attn_qkv_fused)
+            buf += _i8s(layer.attn_gate)
+            buf += _i8s(layer.attn_out)
+            buf += _i8s(layer.q_norm_gamma)
+            buf += _i8s(layer.k_norm_gamma)
+            buf += _i8s(layer.ssm_a)
+            buf += _i8s(layer.ssm_alpha)
+            buf += _i8s(layer.ssm_beta)
+            buf += _i8s(layer.ssm_conv1d)
+            buf += _i8s(layer.ssm_dt)
+            buf += _i8s(layer.ssm_norm_gamma)
+            buf += _i8s(layer.ssm_out)
+            buf += _i8s(layer.norm2.gamma)
+            if layer.norm2.beta is not None:
+                buf += _i8s(layer.norm2.beta)
+            buf += _i8s(layer.ffn.w_gate)
+            buf += _i8s(layer.ffn.w_up)
+            buf += _i8s(layer.ffn.w_down)
         else:
             raise TypeError(type(layer))
     if model.final_norm is not None:
@@ -450,6 +554,72 @@ def manifest_hash_bytes(model: F.Model, arch_tag: str = "", feature_flags: int =
             buf += _u32(layer.sliding_window if layer.sliding_window is not None else 0)
             buf += _u8(1 if layer.inp_gate is not None else 0)
             buf += _u8(1 if layer.layer_output_scale is not None else 0)
+        elif isinstance(layer, F.QwenStandardLayer):
+            buf += _u8(3)
+            append_norm_meta_for_manifest_hash(buf, layer.norm1)
+            buf += _u32(layer.attn.hidden) + _u32(layer.attn.num_q_heads)
+            buf += _u32(layer.attn.num_kv_heads) + _u32(layer.attn.head_dim)
+            for s in (
+                layer.attn_scales.q,
+                layer.attn_scales.k,
+                layer.attn_scales.v,
+                layer.attn_scales.score,
+                layer.attn_scales.attn_out,
+                layer.attn_scales.o,
+            ):
+                buf += _i32(s.num)
+            buf += _i64(layer.qk_norm_eps_q)
+            buf += _i32(layer.qk_norm_post_scale.num)
+            append_norm_meta_for_manifest_hash(buf, layer.norm2)
+            buf += _u32(layer.ffn.hidden) + _u32(layer.ffn.intermediate)
+            for s in (
+                layer.ffn_scales.gate,
+                layer.ffn_scales.up,
+                layer.ffn_scales.mid,
+                layer.ffn_scales.down,
+            ):
+                buf += _i32(s.num)
+        elif isinstance(layer, F.QwenHybridSsmLayer):
+            buf += _u8(4)
+            append_norm_meta_for_manifest_hash(buf, layer.norm1)
+            buf += _u32(layer.ffn.hidden)
+            buf += _u32(layer.num_q_heads) + _u32(layer.num_kv_heads) + _u32(layer.head_dim)
+            for s in (
+                layer.attn_scales.q,
+                layer.attn_scales.k,
+                layer.attn_scales.v,
+                layer.attn_scales.score,
+                layer.attn_scales.attn_out,
+                layer.attn_scales.o,
+            ):
+                buf += _i32(s.num)
+            buf += _i64(layer.qk_norm_eps_q)
+            buf += _i32(layer.qk_norm_post_scale.num)
+            buf += _u32(layer.num_v_heads) + _u32(layer.ssm_kernel_size)
+            buf += _i64(layer.ssm_norm_eps_q)
+            buf += _i32(layer.ssm_norm_post_scale.num)
+            for s in (
+                layer.ssm_scales.q,
+                layer.ssm_scales.k,
+                layer.ssm_scales.v,
+                layer.ssm_scales.alpha_logit,
+                layer.ssm_scales.beta_logit,
+                layer.ssm_scales.u,
+                layer.ssm_scales.decay,
+                layer.ssm_scales.update,
+                layer.ssm_scales.o,
+                layer.ssm_scales.proj,
+            ):
+                buf += _i32(s.num)
+            append_norm_meta_for_manifest_hash(buf, layer.norm2)
+            buf += _u32(layer.ffn.intermediate)
+            for s in (
+                layer.ffn_scales.gate,
+                layer.ffn_scales.up,
+                layer.ffn_scales.mid,
+                layer.ffn_scales.down,
+            ):
+                buf += _i32(s.num)
         else:
             raise TypeError(type(layer))
     if model.final_norm is not None:

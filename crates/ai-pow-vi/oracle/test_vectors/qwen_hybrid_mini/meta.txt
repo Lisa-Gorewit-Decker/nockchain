@@ -1,0 +1,1 @@
+vocab=16 hidden=8 seq_len=8 activation_tile=2 num_layers=2 target_layer=2 prompt_len=4 arch_tag=qwen35 feature_flags=0x0

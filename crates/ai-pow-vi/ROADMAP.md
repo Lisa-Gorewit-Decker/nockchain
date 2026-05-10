@@ -33,9 +33,10 @@ Shipped so far:
 | `oracle/arch/` registry, manifest v2 (`arch_tag` + `feature_flags`) | 2.10 | `00e969b`, `df486a6` | Architecture registry foundations; per-arch GGUF readers for `qwen3_legacy`, `qwen35`, `gemma4`; manifest v2 with `arch_tag: [u8;16]` and `feature_flags: u64` baked into `comm_W`. |
 | `ai-pow-vi/attention` Gemma extras + `LayerWeights::Gemma` + numpy parity | 2.11 | `1685db1`, `8a269de` | QK norm + sliding-window mask + 4-norm Gemma 4 layer composition with `inp_gate` and `layer_output_scale`; synthetic gemma-mini E2E byte-equal Rust ↔ numpy. |
 | `LayerWeights::QwenStandard` (Qwen 3.6 27B attention-only path) | 2.12 | `72c09ed` | Fused QKV split, per-head QK norm, no sliding window. 16/64 Qwen blocks now run end-to-end (the other 48 hybrid blocks shipped in 2.13). |
-| `ai-pow-vi/ssm` + `LayerWeights::QwenHybridSsm` forward | 2.13 | `73ac70e`, _this commit_ | Real Mamba SSM forward (causal 1D conv + per-token α/β gating + selective state recurrence + per-V-head RMSNorm + output projection) plus inlined gated-attention forward. All 64 Qwen 3.6 27B blocks now run end-to-end. |
+| `ai-pow-vi/ssm` + `LayerWeights::QwenHybridSsm` forward | 2.13 | `73ac70e`, `0d294f0` | Real Mamba SSM forward (causal 1D conv + per-token α/β gating + selective state recurrence + per-V-head RMSNorm + output projection) plus inlined gated-attention forward. All 64 Qwen 3.6 27B blocks now run end-to-end. |
+| `oracle/forward_reference.py` qwen35 + `synthetic_qwen_hybrid_mini` | 2.13.1 | _this commit_ | Numpy parity for `forward_qwen_standard_layer`, `forward_qwen_hybrid_ssm_layer`, `ssm_forward`, `gated_attention_forward`. End-to-end byte-equal Rust ↔ numpy on a 2-layer model with one QwenStandard and one QwenHybridSsm block. |
 
-Test count: 197 unit + 18 pins + 7 oracle cross-impl + 4 qwen-mini E2E + 3 quantized-synthetic E2E + 4 gemma-mini E2E + 5 oracle-arch + 5 qwen-eval-bin + 1 gated real-model, all green on aarch64.
+Test count: 197 unit + 18 pins + 7 oracle cross-impl + 4 qwen-mini E2E + 3 quantized-synthetic E2E + 4 gemma-mini E2E + 4 qwen-hybrid-mini E2E + 5 oracle-arch + 5 qwen-eval-bin + 1 gated real-model, all green on aarch64.
 
 ## Phase 2 — remaining (in dependency order)
 
