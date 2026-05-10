@@ -617,6 +617,181 @@ cargo run -p ai-pow-vi --bin qwen-eval -- \
 Expect ~90 min wall-clock from `ollama pull` to all gates green on a
 modern laptop.
 
+### 2.10 Extensible architecture support: foundations
+
+Phase 2.9 brought up a generic dense-attention path with `qwen3`-style
+tensor names. Real models in the wild use **architecturally different
+transformers**: Gemma 4 (`gemma4`) has QK norm, sliding-window
+attention, per-block input gating, and final logit softcapping; Qwen
+3.6 27B (`qwen35`) is a *hybrid* with 16/64 standard-attention blocks
+interleaved with 48/64 gated-attention-plus-Mamba-SSM blocks. To
+support both — and any future Qwen / Gemma / Llama variant — we move
+to a registry-driven design where each new architecture is a small
+module rather than a fork.
+
+**Foundations (this phase, ~700 lines):**
+
+1. `oracle/arch/__init__.py` — `Architecture` abstract base + global
+   `REGISTRY: dict[str, Architecture]`. Each concrete subclass declares:
+   - `name`: GGUF `general.architecture` value it claims.
+   - `arch_dims(reader) -> ArchDims`: pull per-arch KV fields out of
+     the GGUF metadata.
+   - `block_kind(reader, block_idx) -> BlockKind`: classify each block
+     so the same model can have mixed kinds (qwen35 case).
+   - `tensor_alias_map() -> dict[str, str]`: GGUF tensor name → our
+     canonical name.
+   - `feature_flags() -> set[Feature]`: e.g. `QK_NORM`, `INP_GATE`,
+     `LOGIT_SOFTCAP`, `SLIDING_WINDOW`, `SSM_PARALLEL`, `FUSED_QKV`.
+
+2. `oracle/arch/qwen3_legacy.py` — keep the existing Phase 2.9 path,
+   re-routed through the registry.
+
+3. `oracle/arch/qwen35.py` — name map for Qwen 3.6 27B. Reports
+   `STANDARD-ATTENTION` vs `GATED_ATTN_SSM` per block. Does **not**
+   yet implement SSM forward (deferred to 2.13).
+
+4. `oracle/arch/gemma4.py` — name map for Gemma 4 8B / 31B; sets
+   `feature_flags = {QK_NORM, INP_GATE, POST_FFW_NORM,
+   LOGIT_SOFTCAP, SLIDING_WINDOW_PATTERN}`.
+
+5. **Manifest v2** in `src/io.rs`: add `arch_tag: [u8; 16]` and a
+   `feature_flags: u64` field right after `version`. Loader rejects
+   unsupported feature flags. `comm_W` includes these bytes.
+
+6. **Manifest pin update.** All 17 existing determinism pins refresh
+   to v2 — explicit acknowledgment per the working-conventions note.
+
+**Acceptance:**
+
+- `oracle/gguf_reader.py` reads Qwen 3.6 27B and Gemma 4 8B without
+  errors; emits f32 tensors with canonical names.
+- A new `oracle/tests/test_arch_registry.py` confirms (a) the registry
+  has both architectures, (b) name maps produce the expected canonical
+  keys for a small sample of blocks, (c) feature_flags are surfaced
+  correctly.
+- `tests/oracle_qwen_mini.rs` and `tests/oracle_quantized_synthetic.rs`
+  still pass under the new manifest v2 (with regenerated pins).
+
+### 2.11 Gemma 4 attention extensions
+
+Gemma 4 8B + 31B share the same `gemma4` architecture. After 2.10's
+foundations, this phase implements every Gemma-specific op so the full
+forward can run:
+
+1. **QK norm in `crate::attention`**: a per-head RMSNorm applied to
+   `Q` and `K` after the linear projections, before RoPE. Pinned norm
+   gammas live alongside the Q/K weight tensors.
+
+2. **`GemmaLayer` variant of `LayerWeights`**: carries the 4 norms
+   (`norm1`, `norm2`, `post_ffn_norm`, `output_norm`), the optional
+   `inp_gate` and `layer_output_scale` 1-D tensors, and a `proj`
+   weight for the small per-layer hidden-state down-projection.
+
+3. **Sliding-window attention**: extend `attention_forward` with an
+   `Option<u32> window` parameter. When `Some(w)`, the causal mask
+   is also bounded below by `j >= i - w`. The block kind tag selects
+   between full and sliding attention according to the GGUF
+   `sliding_window_pattern` array.
+
+4. **Final logit softcapping**: in `qwen-eval`, after `lm_head`,
+   apply `logits = tanh(logits / cap) * cap` using a committed tanh
+   LUT (so still INT8-deterministic).
+
+5. **Numpy reference parity** in `oracle/forward_reference.py` for
+   each of the above.
+
+6. **End-to-end real-model fixture**: convert Gemma 4 8B → load via
+   `Model::load` → `forward_prefix` to layer 8 → byte-equal numpy
+   oracle. Then convert Gemma 4 31B (whichever variant the user has
+   pulled) → smoke-test load + 1-layer forward.
+
+**Acceptance gates:**
+
+- `tests/oracle_gemma.rs` (gated `#[ignore]`) passes byte-equal on a
+  64-token prefix for Gemma 4 8B.
+- `qwen-eval` reports ≥ 70% top-1 agreement vs Ollama on a 50-prompt
+  eval set for Gemma 4 8B (loosen vs the Qwen 90% bar because Gemma's
+  bf16-vs-INT8 gap is wider in practice — calibration is harder).
+
+### 2.12 Qwen 3.6 27B attention-only path
+
+Stage 1 of the Qwen hybrid: implement everything except SSM. Pure
+attention blocks become first-class; hybrid blocks return a clear
+"unsupported block kind" error that names which sub-component is
+missing.
+
+1. **Fused QKV splitting** in `gguf_reader`: when a block has
+   `attn_qkv.weight` instead of three separate tensors, split the
+   `(hidden, q_dim + k_dim + v_dim)` matrix into three canonical
+   tensors using the `key_length`, `value_length` KV fields.
+
+2. **`attn_gate` (gated attention)**: add a per-block 1-D gate
+   weight to `AttentionWeights`, default `None`. When present,
+   pre-multiply the attention output by `sigmoid(input @ gate)`
+   per-token, per-head. Numpy + Rust parity.
+
+3. **QK norm shared with Phase 2.11**.
+
+4. **Block-kind dispatch**: a Qwen 3.6 layer is either
+   `QwenStandardAttention` or `QwenHybridSSM`. The latter currently
+   panics with "Phase 2.13 not yet implemented"; the former runs.
+
+5. **Acceptance**: a "Qwen-skip-SSM" mode in `Model::load` that
+   short-circuits the hybrid blocks to identity. Output is **not**
+   semantically meaningful, but `forward_prefix` runs to completion
+   and exercises the full dispatch machinery. Documented as a
+   debugging mode, not a release path.
+
+### 2.13 Mamba SSM block (qwen35 hybrid layers)
+
+The biggest remaining piece. A hybrid block performs *in parallel*:
+
+- Gated attention path (from 2.12).
+- Mamba SSM path: `h_t = A * h_{t-1} + B(x_t) * x_t`,
+  `y_t = C(x_t) * h_t + D * x_t`, plus a 1-D causal conv on `x_t`
+  before the recurrence.
+
+Sub-items:
+
+1. **`crate::ssm` module**: INT8 forward for a single SSM head.
+   State is `head_dim_state × head_dim_v` i8 per V head; updates in
+   i32, requantize to i8 between tokens — same pattern as DeltaNet.
+2. **1-D causal conv (`ssm_conv1d`)**: small kernel (4 here) over
+   the (m, hidden) input; integer, banker-rounded.
+3. **`ssm_alpha`, `ssm_beta`**: per-token, per-head gating via a
+   sigmoid LUT (shared with DeltaNet).
+4. **`ssm_a`, `ssm_dt`**: state-transition constants and per-channel
+   time-step adjustments.
+5. **`QwenHybridSSM` block forward**: combine gated attention and
+   SSM outputs via residual stream.
+6. **Cross-impl byte-equality**: numpy reference matches Rust on a
+   single SSM head + on a full hybrid block fixture.
+
+Acceptance: `forward_prefix` for the real Qwen 3.6 27B over a
+64-token prefix runs to completion and byte-equals the numpy oracle
+end-to-end (not just on pure-attention layers).
+
+### 2.14 Multi-architecture acceptance gate
+
+After 2.10–2.13 land, this is the final integration. Adds:
+
+- `tests/oracle_multi_arch.rs` parameterized over every supported
+  arch + the user's locally-available model(s).
+- ROADMAP "shipped" table grows entries for Qwen 3.6 27B and Gemma 4
+  (8B + 31B), each with their pinned `comm_W` and the model_id_hex
+  that the consensus registry will reference.
+- `qwen-eval` rename → `vi-eval`, with `--arch` flag.
+
+Acceptance gates:
+
+1. Both real models load via `Model::load` with the published
+   `comm_W` from this branch.
+2. `oracle_multi_arch` passes for every architecture × at least one
+   prompt batch.
+3. Top-1 next-token agreement vs Ollama ≥ 90% for Qwen 3.6 27B and
+   ≥ 70% for Gemma 4 (per arch-specific tolerances established in
+   2.11 / 2.12).
+
 ### Phase 2 acceptance gate (re-stated)
 
 1. `cargo test -p ai-pow-vi` green on x86_64 and aarch64 CI.

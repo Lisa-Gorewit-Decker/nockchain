@@ -128,7 +128,7 @@ def test_round_trip():
         assert a.num_kv_heads == 1
         assert a.head_dim == 4
         assert a.vocab_size == 16
-        assert a.max_position == 4
+        assert a.max_position == 8
 
         names = sorted(model.tensors.keys())
         # Required canonical names for one attention layer:

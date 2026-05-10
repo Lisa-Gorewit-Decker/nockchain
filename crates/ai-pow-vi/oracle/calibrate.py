@@ -112,7 +112,7 @@ def static_calibration(
 ) -> dict:
     """Compute weight scales via max-abs/127 and use a flat heuristic
     for every activation scale. Returns a JSON-ready dict."""
-    arch = model.arch
+    arch = model.arch  # ArchDims
     weight_scales: dict[str, int] = {}
     for name, arr in model.tensors.items():
         s = derive_weight_scale(arr)
@@ -197,7 +197,7 @@ def calibrate(
 ) -> dict:
     model = G.read_model(
         gguf_path,
-        arch_prefix=arch_prefix,
+        arch_override=arch_prefix,
         extra_tensor_aliases=extra_tensor_aliases,
     )
     if mode == "static":

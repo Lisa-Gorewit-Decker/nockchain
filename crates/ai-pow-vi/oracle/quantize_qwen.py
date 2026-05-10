@@ -451,7 +451,7 @@ def main(argv: Optional[Iterable[str]] = None) -> int:
     args = p.parse_args(list(argv) if argv is not None else None)
 
     scales = json.loads(open(args.scales).read())
-    gguf_model = G.read_model(args.gguf, arch_prefix=args.arch)
+    gguf_model = G.read_model(args.gguf, arch_override=args.arch)
     model, comm_w = quantize_to_model(
         gguf_model,
         scales,

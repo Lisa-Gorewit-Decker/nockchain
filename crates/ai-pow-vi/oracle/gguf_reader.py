@@ -1,35 +1,15 @@
-"""Phase 2.9.2 — GGUF reader with dequantize + canonical-name mapping.
+"""Phase 2.10 — registry-driven GGUF reader.
 
-Reads a GGUF file (e.g. an Ollama-cached Qwen 3 blob), dequantizes every
-tensor to `np.float32`, and returns a dict keyed by our canonical
-weight names (`embed`, `layer[N].attn.w_q`, etc.).
+Reads any GGUF file whose `general.architecture` is in
+`oracle/arch/REGISTRY` (currently `qwen3`, `qwen35`, `gemma4`),
+dequantizes every tensor to `np.float32`, and emits a dict keyed by
+**canonical** weight names: `embed`, `layer[N].attn.w_q`,
+`layer[N].ssm.w_alpha`, etc.
 
-Linear weights are transposed at read time: GGUF / safetensors store
-them as `(out, in)` row-major (the PyTorch / transformers convention),
-but `crate::matmul_int8` expects `(in, out)` **column-major**. The flat
-i8 buffer that gets written to weights.bin is column-major because
-column j of B lives at the contiguous range `[j*k, j*k + k)`. So we
-transpose to (in, out) and flatten — `arr.T.reshape(-1)` does both at
-once.
-
-Tensor name mapping (extends `TENSOR_NAME_MAP` for new architectures):
-
-    token_embd.weight                 → embed
-    blk.{N}.attn_norm.weight          → layer[N].norm1.gamma
-    blk.{N}.attn_q.weight             → layer[N].attn.w_q
-    blk.{N}.attn_k.weight             → layer[N].attn.w_k
-    blk.{N}.attn_v.weight             → layer[N].attn.w_v
-    blk.{N}.attn_output.weight        → layer[N].attn.w_o
-    blk.{N}.ffn_norm.weight           → layer[N].norm2.gamma
-    blk.{N}.ffn_gate.weight           → layer[N].ffn.w_gate
-    blk.{N}.ffn_up.weight             → layer[N].ffn.w_up
-    blk.{N}.ffn_down.weight           → layer[N].ffn.w_down
-    output_norm.weight                → final_norm.gamma
-    output.weight                     → lm_head      (kept aside; not in Model yet)
-
-DeltaNet-flavored layers add `delta_q`, `delta_k`, `delta_v`,
-`delta_alpha`, `delta_beta`, `delta_o` (names vary by model; pass a
-custom map via `extra_tensor_aliases` to override).
+Drop-in compatible with the Phase 2.9 API: `read_model(path)` still
+works for `qwen3` GGUFs without any caller change. New `qwen35` /
+`gemma4` GGUFs route through their own arch module's name map and
+block-kind classifier.
 """
 
 from __future__ import annotations
@@ -43,49 +23,27 @@ from typing import Iterable, Optional
 import gguf
 import numpy as np
 
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, SCRIPT_DIR)
 
-# Per-block tensor stems we recognize. Maps GGUF stem (after `blk.{N}.`) to
-# canonical sub-name. Caller can extend via `extra_tensor_aliases`.
-DEFAULT_BLOCK_STEMS: dict[str, str] = {
-    "attn_norm.weight": "norm1.gamma",
-    "attn_norm.bias": "norm1.beta",
-    "attn_q.weight": "attn.w_q",
-    "attn_k.weight": "attn.w_k",
-    "attn_v.weight": "attn.w_v",
-    "attn_output.weight": "attn.w_o",
-    "ffn_norm.weight": "norm2.gamma",
-    "ffn_norm.bias": "norm2.beta",
-    "ffn_gate.weight": "ffn.w_gate",
-    "ffn_up.weight": "ffn.w_up",
-    "ffn_down.weight": "ffn.w_down",
-    # DeltaNet (names not yet stable across all models — override via
-    # `extra_tensor_aliases` when bringing up a specific Qwen variant).
-    "delta_q.weight": "dnet.w_q",
-    "delta_k.weight": "dnet.w_k",
-    "delta_v.weight": "dnet.w_v",
-    "delta_alpha.weight": "dnet.w_alpha",
-    "delta_beta.weight": "dnet.w_beta",
-    "delta_o.weight": "dnet.w_o",
-}
+import arch as _arch  # noqa: E402
+from arch import ArchDims, Architecture, BlockKind, Feature  # noqa: E402
 
-DEFAULT_TOPLEVEL: dict[str, str] = {
-    "token_embd.weight": "embed",
-    "output_norm.weight": "final_norm.gamma",
-    "output_norm.bias": "final_norm.beta",
-    "output.weight": "lm_head",  # not yet in Model; preserved for 2.9.7
-}
-
-
-# Linear weights that need (out, in) → (in, out) col-major transpose.
-# Norms (gamma/beta) and the embedding table do not.
-_LINEAR_CANON_NAMES = {
+# Canonical names that are linear weights (need (out, in) row-major
+# storage; gguf stores them in this form already).
+_LINEAR_CANON_SUBSTRINGS = {
     "attn.w_q",
     "attn.w_k",
     "attn.w_v",
     "attn.w_o",
+    "attn.w_qkv",
+    "attn.w_gate",
     "ffn.w_gate",
     "ffn.w_up",
     "ffn.w_down",
+    "ssm.w_alpha",
+    "ssm.w_beta",
+    "ssm.w_out",
     "dnet.w_q",
     "dnet.w_k",
     "dnet.w_v",
@@ -93,220 +51,189 @@ _LINEAR_CANON_NAMES = {
     "dnet.w_beta",
     "dnet.w_o",
     "lm_head",
+    "per_layer_proj",
+    "proj",
 }
 
 
 @dataclass
-class Architecture:
-    """High-level architecture facts pulled from GGUF metadata.
-
-    Not all GGUF writers populate every field; the user can override via
-    constructor kwargs to `read_model`. Only the fields actually used by
-    the quantizer are required.
-    """
-
-    name: str
-    num_layers: int
-    hidden: int
-    intermediate: int
-    num_q_heads: int
-    num_kv_heads: int
-    head_dim: int
-    vocab_size: int
-    rope_theta: float
-    max_position: int
-
-
-@dataclass
 class GgufModel:
-    """Parsed GGUF blob, dequantized and renamed to canonical layout."""
-
-    arch: Architecture
+    arch: ArchDims
+    arch_obj: Architecture
+    block_kinds: list[BlockKind]
     tensors: dict[str, np.ndarray]
-
-
-# -----------------------------------------------------------------------------
-# Public API.
-# -----------------------------------------------------------------------------
-
-
-def read_architecture(reader: gguf.GGUFReader, arch_prefix: Optional[str] = None) -> Architecture:
-    """Pull architecture facts out of a GGUF reader's KV store.
-
-    `arch_prefix` defaults to whatever `general.architecture` says; pass
-    explicitly for unknown / custom architectures.
-    """
-
-    def get_str(key: str) -> str:
-        f = reader.get_field(key)
-        if f is None:
-            raise KeyError(f"GGUF missing required str field {key}")
-        # Strings come back as bytes-of-codepoints in `parts[-1]`.
-        return str(bytes(f.parts[-1]), encoding="utf-8")
-
-    def get_u32(key: str) -> int:
-        f = reader.get_field(key)
-        if f is None:
-            raise KeyError(f"GGUF missing required u32 field {key}")
-        return int(f.parts[-1][0])
-
-    def get_f32(key: str) -> float:
-        f = reader.get_field(key)
-        if f is None:
-            raise KeyError(f"GGUF missing required f32 field {key}")
-        return float(f.parts[-1][0])
-
-    if arch_prefix is None:
-        arch_prefix = get_str("general.architecture")
-
-    num_layers = get_u32(f"{arch_prefix}.block_count")
-    hidden = get_u32(f"{arch_prefix}.embedding_length")
-    intermediate = get_u32(f"{arch_prefix}.feed_forward_length")
-    num_q_heads = get_u32(f"{arch_prefix}.attention.head_count")
-    num_kv_heads = get_u32(f"{arch_prefix}.attention.head_count_kv")
-    # head_dim sometimes implicit (= hidden / num_q_heads).
-    rope_dim = reader.get_field(f"{arch_prefix}.rope.dimension_count")
-    if rope_dim is not None:
-        head_dim = int(rope_dim.parts[-1][0])
-    else:
-        head_dim = hidden // num_q_heads
-    vocab = reader.get_field(f"{arch_prefix}.vocab_size")
-    if vocab is not None:
-        vocab_size = int(vocab.parts[-1][0])
-    else:
-        # Fall back to embed table row count (set later, after tensor scan).
-        vocab_size = 0
-    rope_theta_field = reader.get_field(f"{arch_prefix}.rope.freq_base")
-    rope_theta = (
-        float(rope_theta_field.parts[-1][0]) if rope_theta_field is not None else 10_000.0
-    )
-    max_position_field = reader.get_field(f"{arch_prefix}.context_length")
-    max_position = (
-        int(max_position_field.parts[-1][0]) if max_position_field is not None else 4096
-    )
-
-    return Architecture(
-        name=arch_prefix,
-        num_layers=num_layers,
-        hidden=hidden,
-        intermediate=intermediate,
-        num_q_heads=num_q_heads,
-        num_kv_heads=num_kv_heads,
-        head_dim=head_dim,
-        vocab_size=vocab_size,
-        rope_theta=rope_theta,
-        max_position=max_position,
-    )
+    feature_flags: int
 
 
 def dequantize_tensor(t: gguf.ReaderTensor) -> np.ndarray:
-    """Convert any GGUF-quantized tensor to f32 in its logical shape.
+    """Convert any GGUF-quantized tensor to f32 in PyTorch shape order.
+    GGUF stores shape reversed; we reverse on read.
 
-    GGUF stores `t.shape` in reversed (column-major-like) order vs the
-    PyTorch / safetensors convention. We reverse on read so the returned
-    array matches what HF / Ollama would see for the same tensor.
-    """
+    `t.data` is a uint8 byte buffer for every tensor type. We
+    reinterpret-via-`.view()` rather than cast-via-`asarray` so the
+    bytes are decoded as their actual numerical type rather than 1
+    f32 per raw byte."""
     qtype = t.tensor_type
     target_shape = tuple(int(s) for s in t.shape[::-1])
+    raw = np.asarray(t.data)
     if qtype == gguf.GGMLQuantizationType.F32:
-        return np.asarray(t.data, dtype=np.float32).reshape(target_shape)
+        if raw.dtype != np.float32:
+            raw = raw.view(np.float32)
+        return raw.reshape(target_shape)
     if qtype == gguf.GGMLQuantizationType.F16:
-        return (
-            np.asarray(t.data, dtype=np.float16).astype(np.float32).reshape(target_shape)
-        )
-    # Generic dequantize for the K-quants and Q*_0 / Q*_1 family.
-    deq = gguf.dequantize(np.asarray(t.data), qtype)
+        if raw.dtype != np.float16:
+            raw = raw.view(np.float16)
+        return raw.astype(np.float32).reshape(target_shape)
+    if qtype == gguf.GGMLQuantizationType.BF16:
+        # numpy has no native bf16; reinterpret 2 bytes per element as
+        # uint16, then promote to uint32 and shift left to land in the
+        # upper 16 bits of a float32 (zero mantissa fill).
+        if raw.dtype != np.uint16:
+            raw = raw.view(np.uint16)
+        as_u32 = raw.astype(np.uint32) << 16
+        return as_u32.view(np.float32).reshape(target_shape).copy()
+    # K-quants and Q*_0 / Q*_1 family — generic dequantize path.
+    deq = gguf.dequantize(raw, qtype)
     return deq.astype(np.float32).reshape(target_shape)
 
 
-def map_tensor_name(
-    name: str,
-    block_stems: dict[str, str],
-    toplevel: dict[str, str],
-) -> Optional[tuple[Optional[int], str]]:
-    """Map a GGUF tensor name to (layer_idx_or_None, canonical_subname).
+def _flatten_linear(arr: np.ndarray, canon: str) -> np.ndarray:
+    """Linear weights in our crate are stored column-major as a flat
+    `(in * out)` 1-D buffer: column j at `[j*k, j*k+k)`. GGUF stores
+    them (out, in) row-major. We ravel as-is — that's already
+    column-major for the (in, out) interpretation our matmul wants.
 
-    Returns None for tensors we don't recognize (e.g. tokenizer
-    artifacts that ship inside GGUF but aren't weights).
-    """
-    if name in toplevel:
-        return None, toplevel[name]
-    m = re.match(r"^blk\.(\d+)\.(.+)$", name)
-    if m is None:
-        return None
-    layer_idx = int(m.group(1))
-    stem = m.group(2)
-    if stem in block_stems:
-        return layer_idx, block_stems[stem]
-    return None
-
-
-def transpose_linear_to_col_major(arr: np.ndarray, canon: str) -> np.ndarray:
-    """For canonical names that are linear weights, transpose (out, in) →
-    (in, out) and ravel column-major."""
-    if canon not in _LINEAR_CANON_NAMES:
-        return arr
-    if arr.ndim != 2:
-        raise ValueError(f"linear weight {canon} must be 2D, got shape {arr.shape}")
-    # GGUF/HF: (out, in). Our matmul_int8 wants column-major (in, out)
-    # — column j at [j*k, j*k+k). That is exactly arr stored row-major
-    # if arr.shape == (out, in) and we serialize each row contiguously.
-    # I.e. row j of arr (length in) becomes column j of B. So we just
-    # ravel `arr` in C-order: no transpose needed.
-    return np.ascontiguousarray(arr).ravel()
+    1-D weights (norms, scalars) pass through unchanged."""
+    if any(sub in canon for sub in _LINEAR_CANON_SUBSTRINGS):
+        if arr.ndim != 2:
+            # Some "linear" canonical names are actually 1-D (e.g.
+            # `inp_gate`, `layer_output_scale`); pass through.
+            return arr.ravel()
+        return np.ascontiguousarray(arr).ravel()
+    return arr
 
 
 def read_model(
     path: str,
-    arch_prefix: Optional[str] = None,
+    arch_override: Optional[str] = None,
     extra_tensor_aliases: Optional[dict[str, str]] = None,
 ) -> GgufModel:
-    """Open `path`, read architecture metadata, dequantize every tensor,
-    rename to canonical layout, and return a GgufModel."""
+    """Open `path`, dispatch on architecture, dequantize every tensor,
+    rename to canonical layout."""
     reader = gguf.GGUFReader(path)
-    arch = read_architecture(reader, arch_prefix=arch_prefix)
+    if arch_override is None:
+        arch_str = str(
+            bytes(reader.get_field("general.architecture").parts[-1]), encoding="utf-8"
+        )
+    else:
+        arch_str = arch_override
 
-    block_stems = dict(DEFAULT_BLOCK_STEMS)
-    toplevel = dict(DEFAULT_TOPLEVEL)
-    if extra_tensor_aliases:
-        for k, v in extra_tensor_aliases.items():
-            if k.startswith("blk."):
-                # `blk.{N}.attn_q.weight` form; strip the prefix and number,
-                # leaving stem.
-                m = re.match(r"^blk\.\d+\.(.+)$", k)
-                if m:
-                    block_stems[m.group(1)] = v
-                    continue
-            toplevel[k] = v
+    arch_obj = _arch.get(arch_str)
+    dims = arch_obj.read_dims(reader)
+
+    # Classify each block.
+    block_kinds: list[BlockKind] = [
+        arch_obj.block_kind(reader, i) for i in range(dims.num_layers)
+    ]
+
+    # Build the per-block alias maps once: top-level + default + per-block override.
+    default_block_map = arch_obj.tensor_alias_map()
+    toplevel_map = arch_obj.toplevel_alias_map()
 
     out_tensors: dict[str, np.ndarray] = {}
     embed_rows = None
-    for t in reader.tensors:
-        mapping = map_tensor_name(t.name, block_stems, toplevel)
-        if mapping is None:
-            continue
-        layer_idx, canon = mapping
-        arr = dequantize_tensor(t)
-        if canon == "embed":
-            embed_rows = int(arr.shape[0])
-        out_name = canon if layer_idx is None else f"layer[{layer_idx}].{canon}"
-        out_tensors[out_name] = transpose_linear_to_col_major(arr, canon)
 
-    if arch.vocab_size == 0 and embed_rows is not None:
-        arch = Architecture(
-            name=arch.name,
-            num_layers=arch.num_layers,
-            hidden=arch.hidden,
-            intermediate=arch.intermediate,
-            num_q_heads=arch.num_q_heads,
-            num_kv_heads=arch.num_kv_heads,
-            head_dim=arch.head_dim,
+    if extra_tensor_aliases:
+        for k, v in extra_tensor_aliases.items():
+            if k.startswith("blk."):
+                m = re.match(r"^blk\.(\d+)\.(.+)$", k)
+                if m is not None:
+                    # Per-block extra: applied at lookup time below.
+                    pass  # handled inline
+            else:
+                toplevel_map[k] = v
+
+    for t in reader.tensors:
+        canon: Optional[tuple[Optional[int], str]] = _map_tensor_name(
+            t.name,
+            arch_obj=arch_obj,
+            reader=reader,
+            toplevel_map=toplevel_map,
+            default_block_map=default_block_map,
+            extra=extra_tensor_aliases or {},
+        )
+        if canon is None:
+            continue
+        layer_idx, sub = canon
+        arr = dequantize_tensor(t)
+        if sub == "embed":
+            embed_rows = int(arr.shape[0])
+        out_name = sub if layer_idx is None else f"layer[{layer_idx}].{sub}"
+        out_tensors[out_name] = _flatten_linear(arr, sub)
+
+    if dims.vocab_size == 0 and embed_rows is not None:
+        dims = ArchDims(
+            name=dims.name,
+            num_layers=dims.num_layers,
+            hidden=dims.hidden,
+            intermediate=dims.intermediate,
+            num_q_heads=dims.num_q_heads,
+            num_kv_heads=dims.num_kv_heads,
+            head_dim=dims.head_dim,
+            head_dim_kv=dims.head_dim_kv,
             vocab_size=embed_rows,
-            rope_theta=arch.rope_theta,
-            max_position=arch.max_position,
+            rope_theta=dims.rope_theta,
+            max_position=dims.max_position,
+            sliding_window=dims.sliding_window,
+            extras=dims.extras,
         )
 
-    return GgufModel(arch=arch, tensors=out_tensors)
+    return GgufModel(
+        arch=dims,
+        arch_obj=arch_obj,
+        block_kinds=block_kinds,
+        tensors=out_tensors,
+        feature_flags=arch_obj.feature_flags(),
+    )
+
+
+def _map_tensor_name(
+    name: str,
+    arch_obj: Architecture,
+    reader: gguf.GGUFReader,
+    toplevel_map: dict[str, str],
+    default_block_map: dict[str, str],
+    extra: dict[str, str],
+) -> Optional[tuple[Optional[int], str]]:
+    # Skip multimodal/aux tensors that aren't text-path consensus
+    # weights (vision `v.*`, audio `a.*`, multimodal merger `mm.*`,
+    # multi-token prediction `mtp.*`). Architecture modules can opt
+    # those in later by adding entries to their alias maps.
+    if name.startswith(("v.", "a.", "mm.", "mtp.")):
+        return None
+
+    m = re.match(r"^blk\.(\d+)\.(.+)$", name)
+    if m is None:
+        # Top-level tensor.
+        if name in extra:
+            return None, extra[name]
+        if name in toplevel_map:
+            return None, toplevel_map[name]
+        return None
+
+    layer_idx = int(m.group(1))
+    stem = m.group(2)
+    # Per-block extra override (e.g. extra={"blk.0.custom_q.weight": "attn.w_q"}).
+    block_key = f"blk.{layer_idx}.{stem}"
+    if block_key in extra:
+        return layer_idx, extra[block_key]
+    # Per-block arch override (used by hybrid models like qwen35).
+    overrides = arch_obj.per_block_overrides(reader, layer_idx) or {}
+    if stem in overrides:
+        return layer_idx, overrides[stem]
+    if stem in default_block_map:
+        return layer_idx, default_block_map[stem]
+    return None
 
 
 # -----------------------------------------------------------------------------
@@ -317,18 +244,34 @@ def read_model(
 def main(argv: Optional[Iterable[str]] = None) -> int:
     import argparse
 
-    parser = argparse.ArgumentParser(description=__doc__.split("\n", 1)[0])
-    parser.add_argument("path", help="Path to .gguf file")
-    parser.add_argument("--arch", help="Architecture prefix (default: from GGUF metadata)")
-    parser.add_argument("--list-tensors", action="store_true")
-    args = parser.parse_args(list(argv) if argv is not None else None)
+    p = argparse.ArgumentParser(description=__doc__.split("\n", 1)[0])
+    p.add_argument("path", help="Path to .gguf file")
+    p.add_argument("--arch", help="Override `general.architecture` lookup")
+    p.add_argument("--list-tensors", action="store_true")
+    args = p.parse_args(list(argv) if argv is not None else None)
+    model = read_model(args.path, arch_override=args.arch)
 
-    model = read_model(args.path, arch_prefix=args.arch)
-    print(f"Architecture: {model.arch}")
-    print(f"Total canonical tensors: {len(model.tensors)}")
+    print(f"Architecture: {model.arch.name}")
+    print(f"  num_layers: {model.arch.num_layers}")
+    print(f"  hidden:     {model.arch.hidden}")
+    print(f"  vocab:      {model.arch.vocab_size}")
+    print(f"  num_q/kv heads: {model.arch.num_q_heads}/{model.arch.num_kv_heads}")
+    print(f"  head_dim:   {model.arch.head_dim} (kv={model.arch.head_dim_kv})")
+    print(f"  feature_flags: 0x{model.feature_flags:04x}")
+    if model.feature_flags:
+        active = [f.name for f in Feature if model.feature_flags & f.value]
+        print(f"    set: {active}")
+    block_summary: dict[BlockKind, int] = {}
+    for k in model.block_kinds:
+        block_summary[k] = block_summary.get(k, 0) + 1
+    print("  block kinds:")
+    for k, n in block_summary.items():
+        print(f"    {k.name}: {n}")
+    print(f"  canonical tensors: {len(model.tensors)}")
     if args.list_tensors:
-        for name, arr in sorted(model.tensors.items()):
-            print(f"  {name}: shape={list(arr.shape)} dtype={arr.dtype}")
+        for name in sorted(model.tensors.keys()):
+            arr = model.tensors[name]
+            print(f"    {name}: shape={list(arr.shape)} dtype={arr.dtype}")
     return 0
 
 
