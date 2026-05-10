@@ -717,14 +717,56 @@ def streaming_quantize(
 def main(argv: Optional[Iterable[str]] = None) -> int:
     p = argparse.ArgumentParser(description=__doc__.split("\n", 1)[0])
     p.add_argument("--gguf", required=True)
-    p.add_argument("--scales", required=True, help="path to scales.json from calibrate.py")
+    p.add_argument(
+        "--scales",
+        help="path to scales.json from calibrate.py. If omitted, the "
+        "converter computes weight scales by streaming the GGUF once "
+        "(max(|w|)/127 per tensor) and uses a default activation scale.",
+    )
     p.add_argument("--out", required=True, help="output model directory")
     p.add_argument("--seq-len", type=int, default=4096)
     p.add_argument("--activation-tile", type=int, default=64)
     p.add_argument("--arch", help="architecture prefix override")
+    p.add_argument(
+        "--default-activation-scale",
+        type=int,
+        default=4096,
+        help="numerator for the activation Scale used when no scales.json "
+        "is supplied. 4096 → 0.125 in Scale terms (= 1<<12 / 1<<15). "
+        "Calibrated values from calibrate.py will produce noticeably "
+        "better top-1 accuracy.",
+    )
     args = p.parse_args(list(argv) if argv is not None else None)
 
-    scales = json.loads(open(args.scales).read())
+    if args.scales is not None:
+        scales = json.loads(open(args.scales).read())
+    else:
+        # Auto-compute weight scales via a streaming pass over the GGUF.
+        # Activation scales fall back to a single default; the resulting
+        # model will load and run, but top-1 accuracy will be lower than
+        # with calibrated activation scales.
+        print(
+            "no --scales provided; computing weight scales via streaming "
+            "pass over the GGUF (max(|w|)/127 per tensor). Activation "
+            "scales default to "
+            f"{args.default_activation_scale}/2^15 ≈ "
+            f"{args.default_activation_scale / float(1 << R.SCALE_DENOM_LOG2):.4f}.",
+            file=sys.stderr,
+        )
+        stream = G.open_stream(args.gguf, arch_override=args.arch)
+        weight_scales = compute_weight_scales(stream)
+        scales = {
+            "weight_scales": weight_scales,
+            "activation_scales": {"default": args.default_activation_scale},
+            "norm_eps_q": 1,
+        }
+        print(
+            f"  weight_scales: {len(weight_scales)} tensors. "
+            f"arch={stream.arch.name} num_layers={stream.arch.num_layers} "
+            f"hidden={stream.arch.hidden} vocab={stream.arch.vocab_size}",
+            file=sys.stderr,
+        )
+
     comm_w = streaming_quantize(
         gguf_path=args.gguf,
         scales=scales,
