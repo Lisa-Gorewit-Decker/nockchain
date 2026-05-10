@@ -10,5 +10,9 @@ blake3 = { workspace = true }
 thiserror = { workspace = true }
 byteorder = { workspace = true }
 
+[[bin]]
+name = "qwen-eval"
+path = "src/bin/qwen_eval.rs"
+
 [dev-dependencies]
 proptest = { workspace = true }
