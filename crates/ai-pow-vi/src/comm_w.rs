@@ -193,6 +193,12 @@ fn append_scale(out: &mut Vec<u8>, s: &Scale) {
 /// directly.
 fn manifest_hash(model: &Model) -> [u8; 32] {
     let mut buf: Vec<u8> = Vec::new();
+    // Phase 2.10: arch_tag + feature_flags come first so a model
+    // labeled with a different arch cannot share `comm_W` with one of
+    // a different lineage that happens to have identical dims.
+    buf.extend_from_slice(&model.arch_tag);
+    buf.extend_from_slice(&model.feature_flags.to_le_bytes());
+
     let d = model.dims;
     buf.extend_from_slice(&d.vocab.to_le_bytes());
     buf.extend_from_slice(&d.hidden.to_le_bytes());
@@ -353,6 +359,8 @@ mod tests {
                 seq_len: 4,
                 activation_tile: 2,
             },
+            arch_tag: [0u8; 16],
+            feature_flags: 0,
             embed: lcg_bytes(8 * hu, 0x1111),
             layers: vec![LayerWeights::Attention {
                 norm1: NormSpec::RmsNorm {

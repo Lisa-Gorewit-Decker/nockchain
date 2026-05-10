@@ -268,6 +268,8 @@ mod tests {
                 seq_len,
                 activation_tile: 2,
             },
+            arch_tag: [0u8; 16],
+            feature_flags: 0,
             embed: lcg_bytes((vocab * hidden) as usize, seed.wrapping_add(0xeeee)),
             layers,
             final_norm: Some(NormSpec::RmsNorm {

@@ -29,11 +29,45 @@ pub struct ModelDims {
     pub activation_tile: u32,
 }
 
+/// 16-byte ASCII architecture tag stored verbatim in the manifest and
+/// hashed into `comm_W`. Strings shorter than 16 bytes are zero-padded.
+/// Examples: `b"qwen3\0\0\0\0\0\0\0\0\0\0\0"`, `b"qwen35\0..."`,
+/// `b"gemma4\0..."`. Use [`arch_tag`] to build one from a `&str`.
+pub type ArchTag = [u8; 16];
+
+/// Build an [`ArchTag`] from a string. Truncates at 16 bytes, zero-pads
+/// the remainder. Returns the byte array, never panics.
+pub fn arch_tag(s: &str) -> ArchTag {
+    let mut out = [0u8; 16];
+    let bytes = s.as_bytes();
+    let n = bytes.len().min(16);
+    out[..n].copy_from_slice(&bytes[..n]);
+    out
+}
+
+/// Bitfield of [`crate::Feature`] flags declared by an architecture.
+/// Stored in the manifest and hashed into `comm_W`. A v2 loader rejects
+/// flags it doesn't understand — protects forward-compat by failing
+/// loud rather than silently dropping a required feature.
+pub type FeatureFlags = u64;
+
 /// Model weights + LUTs + tables. Phase 2.7 adds `comm_W` commitment and
 /// load-from-disk; the structural fields here are stable.
+///
+/// Phase 2.10 adds `arch_tag` and `feature_flags` so different
+/// architectures (Qwen 3, Qwen 3.6 27B, Gemma 4, ...) can coexist as
+/// first-class citizens. Both are hashed into `comm_W`.
 #[derive(Debug, Clone)]
 pub struct Model {
     pub dims: ModelDims,
+    /// 16-byte ASCII architecture identifier (e.g. `arch_tag("qwen3")`).
+    /// Default: `[0u8; 16]` for plain legacy models. The loader uses
+    /// this to pick the right block forward implementations.
+    pub arch_tag: ArchTag,
+    /// Bitfield of optional features the model uses (QK_NORM,
+    /// SLIDING_WINDOW, etc.). Must be a subset of what the loader
+    /// understands, or `Model::load` returns `UnsupportedFeatureFlags`.
+    pub feature_flags: FeatureFlags,
     /// `(vocab, hidden)` row-major i8.
     pub embed: Vec<i8>,
     pub layers: Vec<LayerWeights>,
@@ -189,6 +223,8 @@ mod tests {
                 seq_len,
                 activation_tile: tile,
             },
+            arch_tag: [0u8; 16],
+            feature_flags: 0,
             embed: vec![0i8; (vocab * hidden) as usize],
             layers,
             final_norm: Some(NormSpec::RmsNorm {

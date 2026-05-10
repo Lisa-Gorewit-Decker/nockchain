@@ -38,7 +38,7 @@ VEC_DIR = os.path.join(ROOT, "test_vectors", "qwen_mini")
 # -----------------------------------------------------------------------------
 
 MAGIC = b"AIPOWVI1"
-VERSION = 1
+VERSION = 2  # Phase 2.10 — arch_tag + feature_flags follow the version field.
 
 
 def _u8(v: int) -> bytes:
@@ -74,6 +74,12 @@ def encode_norm_meta(norm: F.NormSpec) -> bytes:
 ACTIVATION_KIND_TAG = {"silu": 1, "gelu": 2, "swish": 3, "identity": 0xFF}
 
 
+def _arch_tag(name: str) -> bytes:
+    """Pad an architecture name to 16 bytes with NULs."""
+    b = name.encode()[:16]
+    return b + b"\x00" * (16 - len(b))
+
+
 def encode_manifest(
     dims: F.ModelDims,
     layers: list,
@@ -81,10 +87,14 @@ def encode_manifest(
     rope_tables: F.RopeTables,
     ffn_kind: str,
     sigmoid_kind: str,
+    arch_tag: str = "",
+    feature_flags: int = 0,
 ) -> bytes:
     buf = bytearray()
     buf += MAGIC
     buf += _u32(VERSION)
+    buf += _arch_tag(arch_tag)
+    buf += struct.pack("<Q", feature_flags & 0xFFFFFFFFFFFFFFFF)
     buf += _u32(dims.vocab) + _u32(dims.hidden) + _u32(dims.seq_len) + _u32(dims.activation_tile)
     buf += _u32(len(layers))
     for layer in layers:
@@ -284,9 +294,12 @@ def append_norm_meta_for_manifest_hash(buf: bytearray, norm: F.NormSpec) -> None
     buf += _i32(norm.post_scale.num)
 
 
-def manifest_hash_bytes(model: F.Model) -> bytes:
+def manifest_hash_bytes(model: F.Model, arch_tag: str = "", feature_flags: int = 0) -> bytes:
     """Mirrors crate::comm_w::manifest_hash."""
     buf = bytearray()
+    # Phase 2.10: arch_tag + feature_flags first.
+    buf += _arch_tag(arch_tag)
+    buf += struct.pack("<Q", feature_flags & 0xFFFFFFFFFFFFFFFF)
     d = model.dims
     buf += _u32(d.vocab) + _u32(d.hidden) + _u32(d.seq_len) + _u32(d.activation_tile)
     buf += _u32(len(model.layers))
@@ -353,10 +366,12 @@ def manifest_hash_bytes(model: F.Model) -> bytes:
     return h.digest(length=32)
 
 
-def compute_comm_w(model: F.Model) -> bytes:
+def compute_comm_w(
+    model: F.Model, arch_tag: str = "", feature_flags: int = 0
+) -> bytes:
     weights = encode_weights(model)
     weights_root = weights_merkle_root(weights)
-    manifest = manifest_hash_bytes(model)
+    manifest = manifest_hash_bytes(model, arch_tag=arch_tag, feature_flags=feature_flags)
     h = blake3.blake3(derive_key_context=CTX_COMM_W)
     h.update(weights_root)
     h.update(manifest)

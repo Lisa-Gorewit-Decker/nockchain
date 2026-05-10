@@ -74,7 +74,7 @@ def test_full_pipeline_and_emit_fixture():
         with open(os.path.join(VEC_DIR, "manifest.bin"), "rb") as f:
             head = f.read(12)
         assert head[:8] == b"AIPOWVI1", head[:8]
-        assert struct.unpack("<I", head[8:12])[0] == 1
+        assert struct.unpack("<I", head[8:12])[0] == 2  # Phase 2.10 manifest v2
 
         print(
             f"test_full_pipeline_and_emit_fixture OK "

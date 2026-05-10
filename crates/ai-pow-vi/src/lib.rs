@@ -57,7 +57,7 @@ pub use crate::layer::{forward_layer, LayerContext, LayerWeights, NormSpec};
 pub use crate::layernorm::layernorm;
 pub use crate::layout::{BlockKind, ModelFamily, ModelLayout, NormType};
 pub use crate::matmul_int8::{dot_int8, matmul_int8, matmul_int8_requant, requantize_vec};
-pub use crate::model::{Model, ModelDims, ModelError, Token};
+pub use crate::model::{arch_tag, ArchTag, FeatureFlags, Model, ModelDims, ModelError, Token};
 pub use crate::prompt::{synth_prompt, PromptError};
 pub use crate::proof::{TileOpening, ViProof};
 pub use crate::prover::{mine_vi, ProverError, ProverOptions, FFN_PUZZLE_TILE};

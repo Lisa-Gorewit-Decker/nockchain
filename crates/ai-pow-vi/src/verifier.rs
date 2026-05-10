@@ -236,6 +236,8 @@ mod tests {
                 seq_len,
                 activation_tile: 2,
             },
+            arch_tag: [0u8; 16],
+            feature_flags: 0,
             embed: lcg_bytes(16 * hu, 0xa1a1),
             layers: vec![LayerWeights::Attention {
                 norm1: NormSpec::RmsNorm {

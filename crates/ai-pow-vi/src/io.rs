@@ -34,13 +34,16 @@ use crate::comm_w::{canonical_weight_bytes, compute_comm_w};
 use crate::deltanet::{DeltaNetScales, DeltaNetWeights};
 use crate::ffn::{FfnScales, FfnWeights};
 use crate::layer::{LayerWeights, NormSpec};
-use crate::model::{Model, ModelDims};
+use crate::model::{ArchTag, FeatureFlags, Model, ModelDims};
 use crate::quant::{QuantError, Scale};
 use crate::rope::{RopeError, RopeTables};
 use crate::softmax::{ExpLut, ExpLutError};
 
 const MAGIC: &[u8; 8] = b"AIPOWVI1";
-const VERSION: u32 = 1;
+/// Manifest format version. Bumped to 2 in Phase 2.10 to add
+/// `arch_tag: [u8; 16]` and `feature_flags: u64` immediately after the
+/// version field. Loaders reject mismatched versions.
+const VERSION: u32 = 2;
 
 const MANIFEST_FILENAME: &str = "manifest.bin";
 const WEIGHTS_FILENAME: &str = "weights.bin";
@@ -137,6 +140,10 @@ fn encode_manifest(model: &Model) -> Vec<u8> {
     let mut buf = Vec::with_capacity(256);
     buf.extend_from_slice(MAGIC);
     buf.extend_from_slice(&VERSION.to_le_bytes());
+
+    // v2: arch_tag (16 bytes) + feature_flags (u64 LE).
+    buf.extend_from_slice(&model.arch_tag);
+    buf.extend_from_slice(&model.feature_flags.to_le_bytes());
 
     let d = model.dims;
     buf.extend_from_slice(&d.vocab.to_le_bytes());
@@ -271,6 +278,8 @@ fn activation_kind_from_tag(t: u8) -> ActivationKind {
 /// Intermediate representation: parsed manifest, ready to be paired with
 /// the weights byte stream to construct a Model.
 struct ParsedManifest {
+    arch_tag: ArchTag,
+    feature_flags: FeatureFlags,
     dims: ModelDims,
     layer_metas: Vec<LayerMeta>,
     final_norm: Option<NormMeta>,
@@ -362,6 +371,15 @@ fn parse_manifest(bytes: &[u8]) -> Result<ParsedManifest, LoadError> {
     if version != VERSION {
         return Err(LoadError::UnsupportedVersion(version));
     }
+
+    let arch_tag_bytes = c.take(16)?;
+    let mut arch_tag: ArchTag = [0u8; 16];
+    arch_tag.copy_from_slice(arch_tag_bytes);
+    let ff_bytes = c.take(8)?;
+    let feature_flags = u64::from_le_bytes([
+        ff_bytes[0], ff_bytes[1], ff_bytes[2], ff_bytes[3], ff_bytes[4], ff_bytes[5], ff_bytes[6],
+        ff_bytes[7],
+    ]);
 
     let dims = ModelDims {
         vocab: c.u32()?,
@@ -484,6 +502,8 @@ fn parse_manifest(bytes: &[u8]) -> Result<ParsedManifest, LoadError> {
     }
 
     Ok(ParsedManifest {
+        arch_tag,
+        feature_flags,
         dims,
         layer_metas,
         final_norm,
@@ -542,6 +562,8 @@ impl<'a> WeightCursor<'a> {
 fn parse_weights(parsed: ParsedManifest, bytes: &[u8]) -> Result<Model, LoadError> {
     let mut c = WeightCursor::new(bytes);
     let dims = parsed.dims;
+    let arch_tag = parsed.arch_tag;
+    let feature_flags = parsed.feature_flags;
     let hu = dims.hidden as usize;
 
     // 1. Embed: (vocab, hidden) i8, row-major.
@@ -606,6 +628,8 @@ fn parse_weights(parsed: ParsedManifest, bytes: &[u8]) -> Result<Model, LoadErro
 
     Ok(Model {
         dims,
+        arch_tag,
+        feature_flags,
         embed,
         layers,
         final_norm,
@@ -784,6 +808,8 @@ mod tests {
                 seq_len: 4,
                 activation_tile: 2,
             },
+            arch_tag: [0u8; 16],
+            feature_flags: 0,
             embed: lcg_bytes(8 * hu, 0xa1a1),
             layers: vec![LayerWeights::Attention {
                 norm1: NormSpec::RmsNorm {
@@ -853,6 +879,8 @@ mod tests {
                 seq_len: 4,
                 activation_tile: 2,
             },
+            arch_tag: [0u8; 16],
+            feature_flags: 0,
             embed: lcg_bytes(8 * hu, 0xa1a1),
             layers: vec![LayerWeights::DeltaNet {
                 norm1: NormSpec::LayerNorm {
