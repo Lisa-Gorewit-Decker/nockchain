@@ -343,10 +343,12 @@ pub fn forward_layer(
 }
 
 /// Per-channel multiply-with-scale-and-saturate. `out[i, c] = saturate_i8(
-/// in[i, c] * scale[c] / 127)`. Used for `inp_gate` and
-/// `layer_output_scale` in Gemma 4 (treated as per-dim scaling; the
-/// nominal sigmoid-gate interpretation is baked into the scale values
-/// themselves at quantization time).
+/// round_half_to_nearest_away_from_zero(in[i, c] * scale[c] / 127))`.
+/// Used for `inp_gate` and `layer_output_scale` in Gemma 4.
+///
+/// Symmetric half-up rounding so positive and negative values are
+/// treated identically across Rust (truncating `/`) and Python (floor
+/// `//`) — see Phase 2.11 numpy parity discussion.
 fn apply_channelwise_scale(input: &mut [i8], scale: &[i8], hidden: usize) {
     debug_assert_eq!(input.len() % hidden, 0);
     debug_assert_eq!(scale.len(), hidden);
@@ -354,9 +356,10 @@ fn apply_channelwise_scale(input: &mut [i8], scale: &[i8], hidden: usize) {
     for t in 0..m {
         for c in 0..hidden {
             let v = (input[t * hidden + c] as i32) * (scale[c] as i32);
-            // /127 to interpret scale[c] in [-1, 1]; saturate to i8.
-            let q = (v + 63) / 127; // half-up round
-            input[t * hidden + c] = q.clamp(i8::MIN as i32, i8::MAX as i32) as i8;
+            let abs_v = v.unsigned_abs() as i64;
+            let q = ((abs_v + 63) / 127) as i32;
+            let signed = if v < 0 { -q } else { q };
+            input[t * hidden + c] = signed.clamp(i8::MIN as i32, i8::MAX as i32) as i8;
         }
     }
 }

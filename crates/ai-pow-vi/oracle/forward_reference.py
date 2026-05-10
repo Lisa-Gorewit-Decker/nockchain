@@ -373,6 +373,200 @@ def add_residual_inplace(dst: list[int], addend: Sequence[int]) -> None:
 
 
 @dataclass(frozen=True)
+class GemmaLayer:
+    """Phase 2.11 Gemma 4 transformer block. Mirrors
+    `crate::layer::LayerWeights::Gemma` field-for-field."""
+
+    norm1: NormSpec
+    attn: AttentionWeights
+    attn_scales: AttentionScales
+    q_norm_gamma: tuple[int, ...]
+    k_norm_gamma: tuple[int, ...]
+    qk_norm_eps_q: int
+    qk_norm_post_scale: R.Scale
+    post_attn_norm: NormSpec
+    norm2: NormSpec
+    ffn: FfnWeights
+    ffn_scales: R.FfnScales
+    post_ffn_norm: NormSpec
+    sliding_window: Optional[int]
+    inp_gate: Optional[tuple[int, ...]]
+    layer_output_scale: Optional[tuple[int, ...]]
+
+
+def _scale_score_py(raw: int, scale: R.Scale) -> int:
+    """Mirror of `crate::attention::scale_score`. Used by both
+    standard and Gemma attention forward references."""
+    product = raw * scale.num
+    rounded = R.round_half_to_even_div_pow2(product, R.SCALE_DENOM_LOG2)
+    return max(R.I32_MIN, min(R.I32_MAX, rounded))
+
+
+def attention_forward_gemma(
+    inp: Sequence[int],
+    weights: AttentionWeights,
+    scales: AttentionScales,
+    rope_tables: RopeTables,
+    softmax_lut: R.ExpLut,
+    q_norm_gamma: Sequence[int],
+    k_norm_gamma: Sequence[int],
+    qk_norm_eps_q: int,
+    qk_norm_post_scale: R.Scale,
+    sliding_window: Optional[int],
+    m: int,
+) -> list[int]:
+    """Mirror of `crate::attention::attention_forward_gemma`. Adds
+    QK norm before RoPE + sliding-window mask."""
+    hd = weights.head_dim
+    if hd % 2 != 0:
+        raise ValueError("head_dim must be even")
+    nq = weights.num_q_heads
+    nkv = weights.num_kv_heads
+    hu = weights.hidden
+    q_stride = nq * hd
+    kv_stride = nkv * hd
+
+    # Q/K/V projections.
+    q_i8 = R.requantize_vec(R.matmul_int8(inp, weights.w_q, m, hu, nq * hd), scales.q)
+    k_i8 = R.requantize_vec(R.matmul_int8(inp, weights.w_k, m, hu, nkv * hd), scales.k)
+    v_i8 = R.requantize_vec(R.matmul_int8(inp, weights.w_v, m, hu, nkv * hd), scales.v)
+
+    # QK norm.
+    for t in range(m):
+        for h in range(nq):
+            off = t * q_stride + h * hd
+            slot = q_i8[off : off + hd]
+            normed = R.rmsnorm(slot, q_norm_gamma, eps_q=qk_norm_eps_q)
+            for d in range(hd):
+                q_i8[off + d] = R.rescale_and_requantize(normed[d], qk_norm_post_scale)
+        for h in range(nkv):
+            off = t * kv_stride + h * hd
+            slot = k_i8[off : off + hd]
+            normed = R.rmsnorm(slot, k_norm_gamma, eps_q=qk_norm_eps_q)
+            for d in range(hd):
+                k_i8[off + d] = R.rescale_and_requantize(normed[d], qk_norm_post_scale)
+
+    # RoPE.
+    for pos in range(m):
+        for h in range(nq):
+            off = pos * q_stride + h * hd
+            slot = list(q_i8[off : off + hd])
+            rope_apply(slot, pos, rope_tables)
+            q_i8[off : off + hd] = slot
+        for h in range(nkv):
+            off = pos * kv_stride + h * hd
+            slot = list(k_i8[off : off + hd])
+            rope_apply(slot, pos, rope_tables)
+            k_i8[off : off + hd] = slot
+
+    # Per-head attention with sliding-window mask.
+    attn_out = [0] * (m * q_stride)
+    for i in range(m):
+        if sliding_window is None:
+            j_lo = 0
+        else:
+            j_lo = max(0, i + 1 - sliding_window)
+        for h in range(nq):
+            kv_h = (h * nkv) // nq
+            q_off = i * q_stride + h * hd
+            scores = []
+            for j in range(j_lo, i + 1):
+                k_off = j * kv_stride + kv_h * hd
+                raw = R.dot_int8(q_i8[q_off : q_off + hd], k_i8[k_off : k_off + hd])
+                scores.append(_scale_score_py(raw, scales.score))
+            probs = R.softmax_int(scores, softmax_lut)
+            ao_off = i * q_stride + h * hd
+            for d in range(hd):
+                acc = 0
+                for idx, j in enumerate(range(j_lo, i + 1)):
+                    v_off = j * kv_stride + kv_h * hd + d
+                    acc += probs[idx] * v_i8[v_off]
+                acc = max(R.I32_MIN, min(R.I32_MAX, acc))
+                attn_out[ao_off + d] = R.rescale_and_requantize(acc, scales.attn_out)
+
+    return R.matmul_int8_requant(attn_out, weights.w_o, m, nq * hd, hu, scales.o)
+
+
+def _apply_channelwise_scale(xs: list[int], scale: Sequence[int], hidden: int) -> None:
+    """Mirror of `crate::layer::apply_channelwise_scale`. Symmetric
+    half-up: round(|v|/127) preserving sign."""
+    for t in range(len(xs) // hidden):
+        for c in range(hidden):
+            v = xs[t * hidden + c] * scale[c]
+            abs_v = abs(v)
+            q = (abs_v + 63) // 127
+            signed = -q if v < 0 else q
+            xs[t * hidden + c] = max(R.I8_MIN, min(R.I8_MAX, signed))
+
+
+def forward_gemma_layer(
+    inp: Sequence[int],
+    layer: GemmaLayer,
+    ctx: LayerContext,
+    m: int,
+) -> list[int]:
+    """Mirror of `crate::layer::forward_gemma_layer`."""
+    hidden = layer.attn.hidden
+    # Step 0: input gate (optional).
+    x = list(inp)
+    if layer.inp_gate is not None:
+        _apply_channelwise_scale(x, layer.inp_gate, hidden)
+
+    # Step 1: norm1.
+    normed1 = apply_norm_per_token(layer.norm1, x, m, hidden)
+
+    # Step 2: gemma attention.
+    sub = attention_forward_gemma(
+        normed1,
+        layer.attn,
+        layer.attn_scales,
+        ctx.rope_tables,
+        ctx.softmax_lut,
+        layer.q_norm_gamma,
+        layer.k_norm_gamma,
+        layer.qk_norm_eps_q,
+        layer.qk_norm_post_scale,
+        layer.sliding_window,
+        m,
+    )
+
+    # Step 3: post-attn norm.
+    post_attn = apply_norm_per_token(layer.post_attn_norm, sub, m, hidden)
+
+    # Step 4: residual1.
+    residual1 = list(x)
+    add_residual_inplace(residual1, post_attn)
+
+    # Step 5: norm2.
+    normed2 = apply_norm_per_token(layer.norm2, residual1, m, hidden)
+
+    # Step 6: FFN.
+    ffn_out = R.ffn_forward(
+        normed2,
+        layer.ffn.w_gate,
+        layer.ffn.w_up,
+        layer.ffn.w_down,
+        ctx.ffn_activation_bytes,
+        layer.ffn_scales,
+        m,
+        hidden,
+        layer.ffn.intermediate,
+    )
+
+    # Step 7: post-FFN norm.
+    post_ffn = apply_norm_per_token(layer.post_ffn_norm, ffn_out, m, hidden)
+
+    # Step 8: layer_output_scale (optional).
+    if layer.layer_output_scale is not None:
+        _apply_channelwise_scale(post_ffn, layer.layer_output_scale, hidden)
+
+    # Step 9: residual2.
+    out = list(residual1)
+    add_residual_inplace(out, post_ffn)
+    return out
+
+
+@dataclass(frozen=True)
 class AttentionLayer:
     norm1: NormSpec
     attn: AttentionWeights
@@ -402,10 +596,12 @@ class LayerContext:
 
 def forward_layer(
     inp: Sequence[int],
-    layer,  # AttentionLayer | DeltaNetLayer
+    layer,  # AttentionLayer | DeltaNetLayer | GemmaLayer
     ctx: LayerContext,
     m: int,
 ) -> list[int]:
+    if isinstance(layer, GemmaLayer):
+        return forward_gemma_layer(inp, layer, ctx, m)
     if isinstance(layer, AttentionLayer):
         hidden = layer.attn.hidden
     elif isinstance(layer, DeltaNetLayer):

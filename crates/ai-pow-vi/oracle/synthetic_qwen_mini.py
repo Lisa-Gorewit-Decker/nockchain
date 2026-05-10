@@ -149,6 +149,36 @@ def encode_manifest(
                 layer.ffn_scales.down,
             ):
                 buf += _i32(s.num)
+        elif isinstance(layer, F.GemmaLayer):
+            buf += _u8(2)
+            buf += encode_norm_meta(layer.norm1)
+            buf += _u32(layer.attn.hidden) + _u32(layer.attn.num_q_heads)
+            buf += _u32(layer.attn.num_kv_heads) + _u32(layer.attn.head_dim)
+            for s in (
+                layer.attn_scales.q,
+                layer.attn_scales.k,
+                layer.attn_scales.v,
+                layer.attn_scales.score,
+                layer.attn_scales.attn_out,
+                layer.attn_scales.o,
+            ):
+                buf += _i32(s.num)
+            buf += _i64(layer.qk_norm_eps_q)
+            buf += _i32(layer.qk_norm_post_scale.num)
+            buf += encode_norm_meta(layer.post_attn_norm)
+            buf += encode_norm_meta(layer.norm2)
+            buf += _u32(layer.ffn.intermediate)
+            for s in (
+                layer.ffn_scales.gate,
+                layer.ffn_scales.up,
+                layer.ffn_scales.mid,
+                layer.ffn_scales.down,
+            ):
+                buf += _i32(s.num)
+            buf += encode_norm_meta(layer.post_ffn_norm)
+            buf += _u32(layer.sliding_window if layer.sliding_window is not None else 0)
+            buf += _u8(1 if layer.inp_gate is not None else 0)
+            buf += _u8(1 if layer.layer_output_scale is not None else 0)
         else:
             raise TypeError(type(layer))
     if final_norm is not None:
@@ -184,19 +214,54 @@ def encode_weights(model: F.Model) -> bytes:
             buf += _i8s(layer.attn.w_k)
             buf += _i8s(layer.attn.w_v)
             buf += _i8s(layer.attn.w_o)
-        else:
+            buf += _i8s(layer.norm2.gamma)
+            if layer.norm2.beta is not None:
+                buf += _i8s(layer.norm2.beta)
+            buf += _i8s(layer.ffn.w_gate)
+            buf += _i8s(layer.ffn.w_up)
+            buf += _i8s(layer.ffn.w_down)
+        elif isinstance(layer, F.DeltaNetLayer):
             buf += _i8s(layer.dnet.w_q)
             buf += _i8s(layer.dnet.w_k)
             buf += _i8s(layer.dnet.w_v)
             buf += _i8s(layer.dnet.w_alpha)
             buf += _i8s(layer.dnet.w_beta)
             buf += _i8s(layer.dnet.w_o)
-        buf += _i8s(layer.norm2.gamma)
-        if layer.norm2.beta is not None:
-            buf += _i8s(layer.norm2.beta)
-        buf += _i8s(layer.ffn.w_gate)
-        buf += _i8s(layer.ffn.w_up)
-        buf += _i8s(layer.ffn.w_down)
+            buf += _i8s(layer.norm2.gamma)
+            if layer.norm2.beta is not None:
+                buf += _i8s(layer.norm2.beta)
+            buf += _i8s(layer.ffn.w_gate)
+            buf += _i8s(layer.ffn.w_up)
+            buf += _i8s(layer.ffn.w_down)
+        elif isinstance(layer, F.GemmaLayer):
+            # Order mirrors crate::comm_w::append_layer_weights Gemma arm:
+            # attn(q,k,v,o) → q_norm gamma → k_norm gamma → post_attn_norm →
+            # norm2 → ffn(gate,up,down) → post_ffn_norm → [inp_gate] →
+            # [layer_output_scale].
+            buf += _i8s(layer.attn.w_q)
+            buf += _i8s(layer.attn.w_k)
+            buf += _i8s(layer.attn.w_v)
+            buf += _i8s(layer.attn.w_o)
+            buf += _i8s(layer.q_norm_gamma)
+            buf += _i8s(layer.k_norm_gamma)
+            buf += _i8s(layer.post_attn_norm.gamma)
+            if layer.post_attn_norm.beta is not None:
+                buf += _i8s(layer.post_attn_norm.beta)
+            buf += _i8s(layer.norm2.gamma)
+            if layer.norm2.beta is not None:
+                buf += _i8s(layer.norm2.beta)
+            buf += _i8s(layer.ffn.w_gate)
+            buf += _i8s(layer.ffn.w_up)
+            buf += _i8s(layer.ffn.w_down)
+            buf += _i8s(layer.post_ffn_norm.gamma)
+            if layer.post_ffn_norm.beta is not None:
+                buf += _i8s(layer.post_ffn_norm.beta)
+            if layer.inp_gate is not None:
+                buf += _i8s(layer.inp_gate)
+            if layer.layer_output_scale is not None:
+                buf += _i8s(layer.layer_output_scale)
+        else:
+            raise TypeError(type(layer))
     if model.final_norm is not None:
         buf += _i8s(model.final_norm.gamma)
         if model.final_norm.beta is not None:
@@ -327,7 +392,7 @@ def manifest_hash_bytes(model: F.Model, arch_tag: str = "", feature_flags: int =
                 layer.ffn_scales.down,
             ):
                 buf += _i32(s.num)
-        else:
+        elif isinstance(layer, F.DeltaNetLayer):
             buf += _u8(1)
             append_norm_meta_for_manifest_hash(buf, layer.norm1)
             buf += _u32(layer.dnet.hidden) + _u32(layer.dnet.num_qk_heads)
@@ -355,6 +420,38 @@ def manifest_hash_bytes(model: F.Model, arch_tag: str = "", feature_flags: int =
                 layer.ffn_scales.down,
             ):
                 buf += _i32(s.num)
+        elif isinstance(layer, F.GemmaLayer):
+            buf += _u8(2)
+            append_norm_meta_for_manifest_hash(buf, layer.norm1)
+            buf += _u32(layer.attn.hidden) + _u32(layer.attn.num_q_heads)
+            buf += _u32(layer.attn.num_kv_heads) + _u32(layer.attn.head_dim)
+            for s in (
+                layer.attn_scales.q,
+                layer.attn_scales.k,
+                layer.attn_scales.v,
+                layer.attn_scales.score,
+                layer.attn_scales.attn_out,
+                layer.attn_scales.o,
+            ):
+                buf += _i32(s.num)
+            buf += _i64(layer.qk_norm_eps_q)
+            buf += _i32(layer.qk_norm_post_scale.num)
+            append_norm_meta_for_manifest_hash(buf, layer.post_attn_norm)
+            append_norm_meta_for_manifest_hash(buf, layer.norm2)
+            buf += _u32(layer.ffn.hidden) + _u32(layer.ffn.intermediate)
+            for s in (
+                layer.ffn_scales.gate,
+                layer.ffn_scales.up,
+                layer.ffn_scales.mid,
+                layer.ffn_scales.down,
+            ):
+                buf += _i32(s.num)
+            append_norm_meta_for_manifest_hash(buf, layer.post_ffn_norm)
+            buf += _u32(layer.sliding_window if layer.sliding_window is not None else 0)
+            buf += _u8(1 if layer.inp_gate is not None else 0)
+            buf += _u8(1 if layer.layer_output_scale is not None else 0)
+        else:
+            raise TypeError(type(layer))
     if model.final_norm is not None:
         buf += _u8(1)
         append_norm_meta_for_manifest_hash(buf, model.final_norm)
