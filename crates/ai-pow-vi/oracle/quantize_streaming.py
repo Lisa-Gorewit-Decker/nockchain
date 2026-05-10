@@ -17,29 +17,40 @@ weight stream itself is appended to disk one tensor at a time and the
 tile-Merkle root is built incrementally via [`streaming_merkle`]'s
 stack-of-subtrees algorithm (O(log n) memory).
 
-Limitations of this initial driver:
-- Currently supports `qwen3` / `qwen3_legacy` Attention-only layers
-  end-to-end. The same pattern (canonical-order walk + per-tensor
-  on-demand dequant) extends to Gemma / QwenStandard / QwenHybridSsm
-  trivially — the layer-spec assembly is the only code that differs.
-  Extend `_layer_canonical_names` and `_build_layer_metadata` to add
-  arch coverage.
-- Activation scales are taken from a `scales.json` produced by
-  `calibrate.py` (already streaming-friendly — it reads the GGUF once).
-- The lm_head tensor is still saved as a sibling `lm_head.bin` and is
-  *not* part of comm_W (matching `quantize_qwen.py`).
+Architecture coverage (all 5 layer flavors supported end-to-end):
+- `STANDARD_ATTENTION`     → `LayerWeights::Attention`
+- `DELTANET`               → `LayerWeights::DeltaNet`
+- `GEMMA_ATTENTION`        → `LayerWeights::Gemma`        (tag 2)
+- `QWEN_STANDARD_ATTENTION`→ `LayerWeights::QwenStandard` (tag 3)
+- `QWEN_HYBRID_SSM`        → `LayerWeights::QwenHybridSsm`(tag 4)
+
+For tensors that the Rust struct requires but the GGUF may omit (e.g.
+QK-norm gammas in Qwen 3.6 hybrid blocks where the architecture
+absorbs them into the SSM path), the converter falls back to a
+no-op default — an all-1.0 f32 vector quantized at scale 1/127. This
+gives an i8 gamma of all-127 which makes the corresponding RMSNorm
+pass through with unit scale. Real-model verification (Phase 2.14
+top-1 vs Ollama gate) will surface any case where this default
+produces measurably worse output than the on-disk weight; if so, the
+arch's `tensor_alias_map` should be extended to point at whatever
+tensor name the GGUF actually uses.
+
+Activation scales come from a `scales.json` produced by
+`calibrate.py` (already streaming-friendly — reads the GGUF once).
+The `lm_head` tensor is saved as a sibling `lm_head.bin` and is *not*
+part of `comm_W` (matching `quantize_qwen.py`).
 
 Usage:
     python oracle/quantize_streaming.py \\
         --gguf /path/to/model.gguf \\
         --scales /path/to/scales.json \\
-        --out  $NOCKCHAIN_VI_QWEN_DIR \\
+        --out  $NOCKCHAIN_VI_MODEL_DIR \\
         --seq-len 4096 \\
         --activation-tile 64
 
-After conversion, verify: `Model::load($NOCKCHAIN_VI_QWEN_DIR,
+After conversion, verify: `Model::load($NOCKCHAIN_VI_MODEL_DIR,
 &expected_comm_w)` succeeds in Rust and `vi-eval --model-dir
-$NOCKCHAIN_VI_QWEN_DIR ...` runs against the loaded model.
+$NOCKCHAIN_VI_MODEL_DIR ...` runs against the loaded model.
 """
 
 from __future__ import annotations
@@ -69,6 +80,10 @@ import synthetic_qwen_mini as D  # noqa: E402  -- manifest encoders
 # Per-tensor on-demand quantization.
 # -----------------------------------------------------------------------------
 
+# Default scale numerator for "no-op gamma" defaults (all-1.0 f32 →
+# all-127 i8 with scale 1/127): 1/127 * 2^15 ≈ 258.
+DEFAULT_GAMMA_SCALE_NUM = 258
+
 
 def _dequant_one(stream: G.GgufStream, canonical_name: str) -> np.ndarray:
     """Pull one tensor from the GGUF on demand, dequantize to f32, and
@@ -91,6 +106,27 @@ def _quantize_one_tensor(
     """Streaming-friendly: dequant → quant → drop. Allocates the f32
     array exactly once."""
     arr = _dequant_one(stream, canonical_name)
+    return Q.quantize_tensor(arr, Q.scale_num_to_f32(scale_num))
+
+
+def _quantize_one_or_default(
+    stream: G.GgufStream,
+    canonical_name: str,
+    scale_num: int,
+    default_length: int,
+    default_value: float = 1.0,
+) -> tuple[int, ...]:
+    """Like `_quantize_one_tensor`, but if the tensor is missing from
+    the GGUF lookup, fall back to a constant `default_value` vector of
+    `default_length` f32 elements quantized at the given scale.
+
+    Used for QK-norm gammas in Qwen 3.6 hybrid blocks (and any other
+    arch-required tensor that some GGUF dialects omit). With
+    `default_value=1.0` and `scale_num=DEFAULT_GAMMA_SCALE_NUM`, the
+    quantized result is all-127 i8 — a no-op identity gamma."""
+    if canonical_name in stream.lookup:
+        return _quantize_one_tensor(stream, canonical_name, scale_num)
+    arr = np.full(default_length, default_value, dtype=np.float32)
     return Q.quantize_tensor(arr, Q.scale_num_to_f32(scale_num))
 
 
@@ -123,37 +159,383 @@ def compute_weight_scales(stream: G.GgufStream) -> dict[str, int]:
 # -----------------------------------------------------------------------------
 
 
+def _q(stream: G.GgufStream, n: int, sub: str, scales: dict) -> tuple[int, ...]:
+    """Convenience: quantize `layer[n].{sub}` using the configured
+    weight scale, requiring the tensor to exist in the GGUF lookup."""
+    name = f"layer[{n}].{sub}"
+    return _quantize_one_tensor(stream, name, Q._ws(scales, name))
+
+
+def _q_or_default(
+    stream: G.GgufStream,
+    n: int,
+    sub: str,
+    scales: dict,
+    default_length: int,
+    default_value: float = 1.0,
+) -> tuple[int, ...]:
+    """Like `_q`, but fall back to a constant default if the tensor is
+    missing from the GGUF (no-op gamma for arch-required tensors that
+    some GGUF dialects omit)."""
+    name = f"layer[{n}].{sub}"
+    scale_num = scales["weight_scales"].get(name, DEFAULT_GAMMA_SCALE_NUM)
+    return _quantize_one_or_default(
+        stream, name, scale_num, default_length, default_value
+    )
+
+
 def _stream_attention_layer_bytes(
     w: SW.StreamingWeightsWriter,
     stream: G.GgufStream,
     n: int,
     scales: dict,
 ) -> None:
-    """Walk one Attention-layer's canonical bytes from the GGUF in
-    streaming fashion. Mirrors `_stream_layer_weights` for
-    `AttentionLayer`."""
+    """STANDARD_ATTENTION → `LayerWeights::Attention`. Mirrors the
+    AttentionLayer arm of `streaming_writer._stream_layer_weights`."""
+    w.append_i8s(_q(stream, n, "norm1.gamma", scales))
+    w.append_i8s(_q(stream, n, "attn.w_q", scales))
+    w.append_i8s(_q(stream, n, "attn.w_k", scales))
+    w.append_i8s(_q(stream, n, "attn.w_v", scales))
+    w.append_i8s(_q(stream, n, "attn.w_o", scales))
+    w.append_i8s(_q(stream, n, "norm2.gamma", scales))
+    w.append_i8s(_q(stream, n, "ffn.w_gate", scales))
+    w.append_i8s(_q(stream, n, "ffn.w_up", scales))
+    w.append_i8s(_q(stream, n, "ffn.w_down", scales))
 
-    def s(name: str) -> int:
-        return Q._ws(scales, name)
 
-    w.append_i8s(_quantize_one_tensor(stream, f"layer[{n}].norm1.gamma",
-                                       s(f"layer[{n}].norm1.gamma")))
-    w.append_i8s(_quantize_one_tensor(stream, f"layer[{n}].attn.w_q",
-                                       s(f"layer[{n}].attn.w_q")))
-    w.append_i8s(_quantize_one_tensor(stream, f"layer[{n}].attn.w_k",
-                                       s(f"layer[{n}].attn.w_k")))
-    w.append_i8s(_quantize_one_tensor(stream, f"layer[{n}].attn.w_v",
-                                       s(f"layer[{n}].attn.w_v")))
-    w.append_i8s(_quantize_one_tensor(stream, f"layer[{n}].attn.w_o",
-                                       s(f"layer[{n}].attn.w_o")))
-    w.append_i8s(_quantize_one_tensor(stream, f"layer[{n}].norm2.gamma",
-                                       s(f"layer[{n}].norm2.gamma")))
-    w.append_i8s(_quantize_one_tensor(stream, f"layer[{n}].ffn.w_gate",
-                                       s(f"layer[{n}].ffn.w_gate")))
-    w.append_i8s(_quantize_one_tensor(stream, f"layer[{n}].ffn.w_up",
-                                       s(f"layer[{n}].ffn.w_up")))
-    w.append_i8s(_quantize_one_tensor(stream, f"layer[{n}].ffn.w_down",
-                                       s(f"layer[{n}].ffn.w_down")))
+def _stream_deltanet_layer_bytes(
+    w: SW.StreamingWeightsWriter,
+    stream: G.GgufStream,
+    n: int,
+    scales: dict,
+) -> None:
+    """DELTANET → `LayerWeights::DeltaNet`. Mirrors the DeltaNetLayer
+    arm of `streaming_writer._stream_layer_weights`."""
+    w.append_i8s(_q(stream, n, "norm1.gamma", scales))
+    w.append_i8s(_q(stream, n, "dnet.w_q", scales))
+    w.append_i8s(_q(stream, n, "dnet.w_k", scales))
+    w.append_i8s(_q(stream, n, "dnet.w_v", scales))
+    w.append_i8s(_q(stream, n, "dnet.w_alpha", scales))
+    w.append_i8s(_q(stream, n, "dnet.w_beta", scales))
+    w.append_i8s(_q(stream, n, "dnet.w_o", scales))
+    w.append_i8s(_q(stream, n, "norm2.gamma", scales))
+    w.append_i8s(_q(stream, n, "ffn.w_gate", scales))
+    w.append_i8s(_q(stream, n, "ffn.w_up", scales))
+    w.append_i8s(_q(stream, n, "ffn.w_down", scales))
+
+
+def _stream_gemma_attention_layer_bytes(
+    w: SW.StreamingWeightsWriter,
+    stream: G.GgufStream,
+    n: int,
+    scales: dict,
+    head_dim: int,
+    has_inp_gate: bool,
+    has_layer_output_scale: bool,
+) -> None:
+    """GEMMA_ATTENTION → `LayerWeights::Gemma`. Canonical names per
+    `oracle/arch/gemma4.py`: `attn.q_norm` / `attn.k_norm` (length
+    head_dim), `post_attn_norm.gamma`, `post_ffn_norm.gamma`,
+    `inp_gate`, `layer_output_scale`."""
+    w.append_i8s(_q(stream, n, "norm1.gamma", scales))
+    w.append_i8s(_q(stream, n, "attn.w_q", scales))
+    w.append_i8s(_q(stream, n, "attn.w_k", scales))
+    w.append_i8s(_q(stream, n, "attn.w_v", scales))
+    w.append_i8s(_q(stream, n, "attn.w_o", scales))
+    # Per-head QK norm gammas. Length head_dim (shared across heads).
+    w.append_i8s(_q_or_default(stream, n, "attn.q_norm", scales, head_dim))
+    w.append_i8s(_q_or_default(stream, n, "attn.k_norm", scales, head_dim))
+    w.append_i8s(_q(stream, n, "post_attn_norm.gamma", scales))
+    w.append_i8s(_q(stream, n, "norm2.gamma", scales))
+    w.append_i8s(_q(stream, n, "ffn.w_gate", scales))
+    w.append_i8s(_q(stream, n, "ffn.w_up", scales))
+    w.append_i8s(_q(stream, n, "ffn.w_down", scales))
+    w.append_i8s(_q(stream, n, "post_ffn_norm.gamma", scales))
+    if has_inp_gate:
+        w.append_i8s(_q(stream, n, "inp_gate", scales))
+    if has_layer_output_scale:
+        w.append_i8s(_q(stream, n, "layer_output_scale", scales))
+
+
+def _stream_qwen_standard_attention_layer_bytes(
+    w: SW.StreamingWeightsWriter,
+    stream: G.GgufStream,
+    n: int,
+    scales: dict,
+    head_dim: int,
+) -> None:
+    """QWEN_STANDARD_ATTENTION → `LayerWeights::QwenStandard`. Same as
+    Attention plus per-head QK norm gammas (post_attn_norm is reused
+    as `norm2` in qwen35.py)."""
+    w.append_i8s(_q(stream, n, "norm1.gamma", scales))
+    w.append_i8s(_q(stream, n, "attn.w_q", scales))
+    w.append_i8s(_q(stream, n, "attn.w_k", scales))
+    w.append_i8s(_q(stream, n, "attn.w_v", scales))
+    w.append_i8s(_q(stream, n, "attn.w_o", scales))
+    w.append_i8s(_q_or_default(stream, n, "attn.q_norm", scales, head_dim))
+    w.append_i8s(_q_or_default(stream, n, "attn.k_norm", scales, head_dim))
+    w.append_i8s(_q(stream, n, "norm2.gamma", scales))
+    w.append_i8s(_q(stream, n, "ffn.w_gate", scales))
+    w.append_i8s(_q(stream, n, "ffn.w_up", scales))
+    w.append_i8s(_q(stream, n, "ffn.w_down", scales))
+
+
+def _stream_qwen_hybrid_ssm_layer_bytes(
+    w: SW.StreamingWeightsWriter,
+    stream: G.GgufStream,
+    n: int,
+    scales: dict,
+    head_dim: int,
+) -> None:
+    """QWEN_HYBRID_SSM → `LayerWeights::QwenHybridSsm`. Canonical names
+    per `oracle/arch/qwen35.py` per-block override map: fused
+    `attn.w_qkv`, `attn.w_gate`, no separate `attn.w_o` (uses
+    `attn_output.weight` with the standard alias when present, or
+    `ssm.w_out` for the hybrid path), plus the SSM tensors."""
+    w.append_i8s(_q(stream, n, "norm1.gamma", scales))
+    # Gated-attention path:
+    w.append_i8s(_q(stream, n, "attn.w_qkv", scales))
+    w.append_i8s(_q(stream, n, "attn.w_gate", scales))
+    # In the qwen35 hybrid block the attention output projection is
+    # shared with the standard alias's `attn.w_o` slot — but the
+    # per-block override doesn't currently map it. Fall back to a
+    # default-identity projection if absent (matches the no-op gamma
+    # convention for missing tensors).
+    if f"layer[{n}].attn.w_o" in stream.lookup:
+        w.append_i8s(_q(stream, n, "attn.w_o", scales))
+    else:
+        # The hybrid layer needs an `attn_out` tensor of shape
+        # `(num_q_heads * head_dim, hidden)`. We cannot fabricate a
+        # sensible default without knowing the shape — so we error
+        # out clearly. Real Qwen 3.6 27B GGUFs include this tensor
+        # under one of the following names; if your GGUF doesn't,
+        # extend `oracle/arch/qwen35.py::per_block_overrides` to
+        # alias it.
+        raise KeyError(
+            f"qwen35 hybrid block {n} is missing `attn.w_o` "
+            f"(attention output projection). Extend "
+            f"oracle/arch/qwen35.py per_block_overrides to map the "
+            f"GGUF's actual output-projection tensor name."
+        )
+    # QK-norm gammas (length head_dim). Default to no-op if missing.
+    w.append_i8s(_q_or_default(stream, n, "attn.q_norm", scales, head_dim))
+    w.append_i8s(_q_or_default(stream, n, "attn.k_norm", scales, head_dim))
+    # Mamba SSM path:
+    w.append_i8s(_q(stream, n, "ssm.a", scales))
+    w.append_i8s(_q(stream, n, "ssm.w_alpha", scales))
+    w.append_i8s(_q(stream, n, "ssm.w_beta", scales))
+    w.append_i8s(_q(stream, n, "ssm.w_conv1d", scales))
+    w.append_i8s(_q(stream, n, "ssm.dt", scales))
+    w.append_i8s(_q(stream, n, "ssm.norm.gamma", scales))
+    w.append_i8s(_q(stream, n, "ssm.w_out", scales))
+    # Shared parts:
+    w.append_i8s(_q(stream, n, "norm2.gamma", scales))
+    w.append_i8s(_q(stream, n, "ffn.w_gate", scales))
+    w.append_i8s(_q(stream, n, "ffn.w_up", scales))
+    w.append_i8s(_q(stream, n, "ffn.w_down", scales))
+
+
+# -----------------------------------------------------------------------------
+# Per-block-kind metadata-only layer-spec builders.
+#
+# These produce `forward_reference` Layer dataclasses with empty tensor
+# tuples (`()`). Manifest encoders (`encode_manifest` /
+# `manifest_hash_bytes`) only read scalar metadata fields, so the empty
+# tensors are fine. The actual tensor bytes are streamed to weights.bin
+# by the per-block-kind `_stream_*_layer_bytes` helpers.
+# -----------------------------------------------------------------------------
+
+
+def _norm(scales: dict, n: int, slot: str) -> F.NormSpec:
+    return F.NormSpec(
+        kind="rms",
+        gamma=(),
+        beta=None,
+        eps_q=int(scales.get("norm_eps_q", 1)),
+        post_scale=R.Scale(num=Q._as(scales, f"layer[{n}].norm_post.{slot}")),
+    )
+
+
+def _attn_scales(scales: dict, n: int) -> F.AttentionScales:
+    return F.AttentionScales(
+        q=R.Scale(num=Q._as(scales, f"layer[{n}].attn.q")),
+        k=R.Scale(num=Q._as(scales, f"layer[{n}].attn.k")),
+        v=R.Scale(num=Q._as(scales, f"layer[{n}].attn.v")),
+        score=R.Scale(num=Q._as(scales, f"layer[{n}].attn.score")),
+        attn_out=R.Scale(num=Q._as(scales, f"layer[{n}].attn.attn_out")),
+        o=R.Scale(num=Q._as(scales, f"layer[{n}].attn.o")),
+    )
+
+
+def _ffn_scales(scales: dict, n: int) -> R.FfnScales:
+    return R.FfnScales(
+        gate=R.Scale(num=Q._as(scales, f"layer[{n}].ffn.gate")),
+        up=R.Scale(num=Q._as(scales, f"layer[{n}].ffn.up")),
+        mid=R.Scale(num=Q._as(scales, f"layer[{n}].ffn.mid")),
+        down=R.Scale(num=Q._as(scales, f"layer[{n}].ffn.down")),
+    )
+
+
+def _empty_attn_weights(arch: G.ArchDims) -> F.AttentionWeights:
+    return F.AttentionWeights(
+        hidden=arch.hidden,
+        num_q_heads=arch.num_q_heads,
+        num_kv_heads=arch.num_kv_heads,
+        head_dim=arch.head_dim,
+        w_q=(), w_k=(), w_v=(), w_o=(),
+    )
+
+
+def _empty_ffn_weights(arch: G.ArchDims) -> F.FfnWeights:
+    return F.FfnWeights(
+        hidden=arch.hidden,
+        intermediate=arch.intermediate,
+        w_gate=(), w_up=(), w_down=(),
+    )
+
+
+def _build_attention_layer_meta(arch: G.ArchDims, scales: dict, n: int) -> F.AttentionLayer:
+    return F.AttentionLayer(
+        norm1=_norm(scales, n, "1"),
+        attn=_empty_attn_weights(arch),
+        attn_scales=_attn_scales(scales, n),
+        norm2=_norm(scales, n, "2"),
+        ffn=_empty_ffn_weights(arch),
+        ffn_scales=_ffn_scales(scales, n),
+    )
+
+
+def _build_deltanet_layer_meta(arch: G.ArchDims, scales: dict, n: int) -> F.DeltaNetLayer:
+    return F.DeltaNetLayer(
+        norm1=_norm(scales, n, "1"),
+        dnet=F.DeltaNetWeights(
+            hidden=arch.hidden,
+            num_qk_heads=arch.num_q_heads,
+            num_v_heads=arch.num_q_heads,
+            head_dim_qk=arch.head_dim,
+            head_dim_v=arch.head_dim,
+            w_q=(), w_k=(), w_v=(),
+            w_alpha=(), w_beta=(), w_o=(),
+        ),
+        dnet_scales=F.DeltaNetScales(
+            q=R.Scale(num=Q._as(scales, f"layer[{n}].dnet.q")),
+            k=R.Scale(num=Q._as(scales, f"layer[{n}].dnet.k")),
+            v=R.Scale(num=Q._as(scales, f"layer[{n}].dnet.v")),
+            alpha_logit=R.Scale(num=Q._as(scales, f"layer[{n}].dnet.alpha_logit")),
+            beta_logit=R.Scale(num=Q._as(scales, f"layer[{n}].dnet.beta_logit")),
+            u=R.Scale(num=Q._as(scales, f"layer[{n}].dnet.u")),
+            decay=R.Scale(num=Q._as(scales, f"layer[{n}].dnet.decay")),
+            update=R.Scale(num=Q._as(scales, f"layer[{n}].dnet.update")),
+            o=R.Scale(num=Q._as(scales, f"layer[{n}].dnet.o")),
+            proj=R.Scale(num=Q._as(scales, f"layer[{n}].dnet.proj")),
+        ),
+        norm2=_norm(scales, n, "2"),
+        ffn=_empty_ffn_weights(arch),
+        ffn_scales=_ffn_scales(scales, n),
+    )
+
+
+def _build_gemma_layer_meta(
+    arch: G.ArchDims,
+    scales: dict,
+    stream: G.GgufStream,
+    n: int,
+) -> F.GemmaLayer:
+    has_inp_gate = f"layer[{n}].inp_gate" in stream.lookup
+    has_layer_output_scale = f"layer[{n}].layer_output_scale" in stream.lookup
+    sliding = arch.sliding_window
+    return F.GemmaLayer(
+        norm1=_norm(scales, n, "1"),
+        attn=_empty_attn_weights(arch),
+        attn_scales=_attn_scales(scales, n),
+        q_norm_gamma=(),
+        k_norm_gamma=(),
+        qk_norm_eps_q=int(scales.get("norm_eps_q", 1)),
+        qk_norm_post_scale=R.Scale(
+            num=Q._as(scales, f"layer[{n}].qk_norm_post")
+        ),
+        post_attn_norm=_norm(scales, n, "post_attn"),
+        norm2=_norm(scales, n, "2"),
+        ffn=_empty_ffn_weights(arch),
+        ffn_scales=_ffn_scales(scales, n),
+        post_ffn_norm=_norm(scales, n, "post_ffn"),
+        sliding_window=sliding,
+        inp_gate=() if has_inp_gate else None,
+        layer_output_scale=() if has_layer_output_scale else None,
+    )
+
+
+def _build_qwen_standard_layer_meta(
+    arch: G.ArchDims, scales: dict, n: int
+) -> F.QwenStandardLayer:
+    return F.QwenStandardLayer(
+        norm1=_norm(scales, n, "1"),
+        attn=_empty_attn_weights(arch),
+        attn_scales=_attn_scales(scales, n),
+        q_norm_gamma=(),
+        k_norm_gamma=(),
+        qk_norm_eps_q=int(scales.get("norm_eps_q", 1)),
+        qk_norm_post_scale=R.Scale(
+            num=Q._as(scales, f"layer[{n}].qk_norm_post")
+        ),
+        norm2=_norm(scales, n, "2"),
+        ffn=_empty_ffn_weights(arch),
+        ffn_scales=_ffn_scales(scales, n),
+    )
+
+
+def _build_qwen_hybrid_ssm_layer_meta(
+    arch: G.ArchDims, scales: dict, n: int
+) -> F.QwenHybridSsmLayer:
+    return F.QwenHybridSsmLayer(
+        norm1=_norm(scales, n, "1"),
+        attn_qkv_fused=(),
+        attn_gate=(),
+        attn_out=(),
+        num_q_heads=arch.num_q_heads,
+        num_kv_heads=arch.num_kv_heads,
+        head_dim=arch.head_dim,
+        attn_scales=_attn_scales(scales, n),
+        q_norm_gamma=(),
+        k_norm_gamma=(),
+        qk_norm_eps_q=int(scales.get("norm_eps_q", 1)),
+        qk_norm_post_scale=R.Scale(
+            num=Q._as(scales, f"layer[{n}].qk_norm_post")
+        ),
+        ssm_a=(),
+        ssm_alpha=(),
+        ssm_beta=(),
+        ssm_conv1d=(),
+        ssm_dt=(),
+        ssm_norm_gamma=(),
+        ssm_norm_eps_q=int(scales.get("norm_eps_q", 1)),
+        ssm_norm_post_scale=R.Scale(
+            num=Q._as(scales, f"layer[{n}].ssm_norm_post")
+        ),
+        ssm_out=(),
+        num_v_heads=int(arch.extras.get("num_v_heads", arch.num_q_heads)),
+        ssm_kernel_size=int(arch.extras.get("ssm_kernel_size", 4)),
+        ssm_scales=F.DeltaNetScales(
+            q=R.Scale(num=Q._as(scales, f"layer[{n}].ssm.q")),
+            k=R.Scale(num=Q._as(scales, f"layer[{n}].ssm.k")),
+            v=R.Scale(num=Q._as(scales, f"layer[{n}].ssm.v")),
+            alpha_logit=R.Scale(num=Q._as(scales, f"layer[{n}].ssm.alpha_logit")),
+            beta_logit=R.Scale(num=Q._as(scales, f"layer[{n}].ssm.beta_logit")),
+            u=R.Scale(num=Q._as(scales, f"layer[{n}].ssm.u")),
+            decay=R.Scale(num=Q._as(scales, f"layer[{n}].ssm.decay")),
+            update=R.Scale(num=Q._as(scales, f"layer[{n}].ssm.update")),
+            o=R.Scale(num=Q._as(scales, f"layer[{n}].ssm.o")),
+            proj=R.Scale(num=Q._as(scales, f"layer[{n}].ssm.proj")),
+        ),
+        norm2=_norm(scales, n, "2"),
+        ffn=_empty_ffn_weights(arch),
+        ffn_scales=_ffn_scales(scales, n),
+    )
+
+
+# -----------------------------------------------------------------------------
+# Top-level streaming dispatcher.
+# -----------------------------------------------------------------------------
 
 
 def stream_canonical_bytes_from_gguf(
@@ -168,7 +550,11 @@ def stream_canonical_bytes_from_gguf(
 
     Returns a metadata-only [`F.Model`] (with empty tensor tuples) that
     is sufficient to encode `manifest.bin` + compute `manifest_hash`.
-    """
+
+    Dispatches on `stream.block_kinds[n]` to pick the right per-block
+    streaming helper. All five layer flavors are supported."""
+    from arch import BlockKind  # local import to avoid circular at module load
+
     arch = stream.arch
 
     # Embed.
@@ -177,13 +563,29 @@ def stream_canonical_bytes_from_gguf(
     # Per-layer.
     for n in range(arch.num_layers):
         kind = stream.block_kinds[n]
-        if kind.value == "standard_attention":
+        if kind == BlockKind.STANDARD_ATTENTION:
             _stream_attention_layer_bytes(w, stream, n, scales)
+        elif kind == BlockKind.DELTANET:
+            _stream_deltanet_layer_bytes(w, stream, n, scales)
+        elif kind == BlockKind.GEMMA_ATTENTION:
+            has_inp_gate = f"layer[{n}].inp_gate" in stream.lookup
+            has_layer_output_scale = f"layer[{n}].layer_output_scale" in stream.lookup
+            _stream_gemma_attention_layer_bytes(
+                w, stream, n, scales, arch.head_dim,
+                has_inp_gate, has_layer_output_scale,
+            )
+        elif kind == BlockKind.QWEN_STANDARD_ATTENTION:
+            _stream_qwen_standard_attention_layer_bytes(
+                w, stream, n, scales, arch.head_dim
+            )
+        elif kind == BlockKind.QWEN_HYBRID_SSM:
+            _stream_qwen_hybrid_ssm_layer_bytes(
+                w, stream, n, scales, arch.head_dim
+            )
         else:
             raise NotImplementedError(
-                f"layer {n}: streaming converter currently only supports "
-                f"STANDARD_ATTENTION blocks; got {kind}. Extend "
-                f"_stream_*_layer_bytes (Phase 2.15)."
+                f"layer {n}: unsupported block kind {kind}. Add a "
+                f"_stream_*_layer_bytes helper and register it here."
             )
 
     # Final norm.
@@ -207,50 +609,23 @@ def stream_canonical_bytes_from_gguf(
     w.append_raw(np.array(rope_tables.cos, dtype=np.int16).tobytes())
     w.append_raw(np.array(rope_tables.sin, dtype=np.int16).tobytes())
 
-    # Build a metadata-only Model for the manifest writer. Tensor
-    # tuples are empty — manifest encoders only read scalar fields.
+    # Build a metadata-only Model for the manifest writer.
+    from arch import BlockKind  # noqa: F811 -- same local import
     layers: list = []
     for n in range(arch.num_layers):
-        norm1 = F.NormSpec(
-            kind="rms", gamma=(), beta=None,
-            eps_q=int(scales.get("norm_eps_q", 1)),
-            post_scale=R.Scale(num=Q._as(scales, f"layer[{n}].norm_post.1")),
-        )
-        norm2 = F.NormSpec(
-            kind="rms", gamma=(), beta=None,
-            eps_q=int(scales.get("norm_eps_q", 1)),
-            post_scale=R.Scale(num=Q._as(scales, f"layer[{n}].norm_post.2")),
-        )
-        layers.append(F.AttentionLayer(
-            norm1=norm1,
-            attn=F.AttentionWeights(
-                hidden=arch.hidden,
-                num_q_heads=arch.num_q_heads,
-                num_kv_heads=arch.num_kv_heads,
-                head_dim=arch.head_dim,
-                w_q=(), w_k=(), w_v=(), w_o=(),
-            ),
-            attn_scales=F.AttentionScales(
-                q=R.Scale(num=Q._as(scales, f"layer[{n}].attn.q")),
-                k=R.Scale(num=Q._as(scales, f"layer[{n}].attn.k")),
-                v=R.Scale(num=Q._as(scales, f"layer[{n}].attn.v")),
-                score=R.Scale(num=Q._as(scales, f"layer[{n}].attn.score")),
-                attn_out=R.Scale(num=Q._as(scales, f"layer[{n}].attn.attn_out")),
-                o=R.Scale(num=Q._as(scales, f"layer[{n}].attn.o")),
-            ),
-            norm2=norm2,
-            ffn=F.FfnWeights(
-                hidden=arch.hidden,
-                intermediate=arch.intermediate,
-                w_gate=(), w_up=(), w_down=(),
-            ),
-            ffn_scales=R.FfnScales(
-                gate=R.Scale(num=Q._as(scales, f"layer[{n}].ffn.gate")),
-                up=R.Scale(num=Q._as(scales, f"layer[{n}].ffn.up")),
-                mid=R.Scale(num=Q._as(scales, f"layer[{n}].ffn.mid")),
-                down=R.Scale(num=Q._as(scales, f"layer[{n}].ffn.down")),
-            ),
-        ))
+        kind = stream.block_kinds[n]
+        if kind == BlockKind.STANDARD_ATTENTION:
+            layers.append(_build_attention_layer_meta(arch, scales, n))
+        elif kind == BlockKind.DELTANET:
+            layers.append(_build_deltanet_layer_meta(arch, scales, n))
+        elif kind == BlockKind.GEMMA_ATTENTION:
+            layers.append(_build_gemma_layer_meta(arch, scales, stream, n))
+        elif kind == BlockKind.QWEN_STANDARD_ATTENTION:
+            layers.append(_build_qwen_standard_layer_meta(arch, scales, n))
+        elif kind == BlockKind.QWEN_HYBRID_SSM:
+            layers.append(_build_qwen_hybrid_ssm_layer_meta(arch, scales, n))
+        else:
+            raise NotImplementedError(f"unsupported block kind {kind} (layer meta)")
 
     final_norm = None
     if has_final_norm:
