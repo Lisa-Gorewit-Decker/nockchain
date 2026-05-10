@@ -117,9 +117,9 @@ pub fn mine_vi(
     // 3. Compute FFN gate matmul at target_layer tile by tile.
     let layer = &model.layers[opts.target_layer as usize];
     let (ffn_w, hidden, intermediate) = match layer {
-        LayerWeights::Attention { ffn, .. } | LayerWeights::DeltaNet { ffn, .. } => {
-            (ffn, ffn.hidden, ffn.intermediate)
-        }
+        LayerWeights::Attention { ffn, .. }
+        | LayerWeights::DeltaNet { ffn, .. }
+        | LayerWeights::Gemma { ffn, .. } => (ffn, ffn.hidden, ffn.intermediate),
     };
     let m = prompt.len() as u32;
     if m % opts.tile != 0 {

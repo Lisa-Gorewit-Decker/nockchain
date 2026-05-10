@@ -213,6 +213,49 @@ fn encode_manifest(model: &Model) -> Vec<u8> {
                 buf.extend_from_slice(&ffn_scales.mid.num.to_le_bytes());
                 buf.extend_from_slice(&ffn_scales.down.num.to_le_bytes());
             }
+            LayerWeights::Gemma {
+                norm1,
+                attn,
+                attn_scales,
+                q_norm_gamma: _,
+                k_norm_gamma: _,
+                qk_norm_eps_q,
+                qk_norm_post_scale,
+                post_attn_norm,
+                norm2,
+                ffn,
+                ffn_scales,
+                post_ffn_norm,
+                sliding_window,
+                inp_gate,
+                layer_output_scale,
+            } => {
+                buf.push(2u8);
+                encode_norm_meta(&mut buf, norm1);
+                buf.extend_from_slice(&attn.hidden.to_le_bytes());
+                buf.extend_from_slice(&attn.num_q_heads.to_le_bytes());
+                buf.extend_from_slice(&attn.num_kv_heads.to_le_bytes());
+                buf.extend_from_slice(&attn.head_dim.to_le_bytes());
+                buf.extend_from_slice(&attn_scales.q.num.to_le_bytes());
+                buf.extend_from_slice(&attn_scales.k.num.to_le_bytes());
+                buf.extend_from_slice(&attn_scales.v.num.to_le_bytes());
+                buf.extend_from_slice(&attn_scales.score.num.to_le_bytes());
+                buf.extend_from_slice(&attn_scales.attn_out.num.to_le_bytes());
+                buf.extend_from_slice(&attn_scales.o.num.to_le_bytes());
+                buf.extend_from_slice(&qk_norm_eps_q.to_le_bytes());
+                buf.extend_from_slice(&qk_norm_post_scale.num.to_le_bytes());
+                encode_norm_meta(&mut buf, post_attn_norm);
+                encode_norm_meta(&mut buf, norm2);
+                buf.extend_from_slice(&ffn.intermediate.to_le_bytes());
+                buf.extend_from_slice(&ffn_scales.gate.num.to_le_bytes());
+                buf.extend_from_slice(&ffn_scales.up.num.to_le_bytes());
+                buf.extend_from_slice(&ffn_scales.mid.num.to_le_bytes());
+                buf.extend_from_slice(&ffn_scales.down.num.to_le_bytes());
+                encode_norm_meta(&mut buf, post_ffn_norm);
+                buf.extend_from_slice(&sliding_window.unwrap_or(0).to_le_bytes());
+                buf.push(if inp_gate.is_some() { 1 } else { 0 });
+                buf.push(if layer_output_scale.is_some() { 1 } else { 0 });
+            }
         }
     }
 
@@ -313,6 +356,24 @@ enum LayerMeta {
         norm2: NormMeta,
         intermediate: u32,
         ffn_scales: FfnScales,
+    },
+    Gemma {
+        norm1: NormMeta,
+        hidden: u32,
+        num_q_heads: u32,
+        num_kv_heads: u32,
+        head_dim: u32,
+        attn_scales: AttentionScales,
+        qk_norm_eps_q: i64,
+        qk_norm_post_scale: Scale,
+        post_attn_norm: NormMeta,
+        norm2: NormMeta,
+        intermediate: u32,
+        ffn_scales: FfnScales,
+        post_ffn_norm: NormMeta,
+        sliding_window: u32, // 0 = full causal
+        has_inp_gate: bool,
+        has_layer_output_scale: bool,
     },
 }
 
@@ -479,6 +540,61 @@ fn parse_manifest(bytes: &[u8]) -> Result<ParsedManifest, LoadError> {
                     norm2,
                     intermediate,
                     ffn_scales,
+                });
+            }
+            2 => {
+                let norm1 = parse_norm_meta(&mut c)?;
+                let hidden = c.u32()?;
+                if hidden != dims.hidden {
+                    return Err(LoadError::LayerHiddenMismatch {
+                        layer_idx,
+                        got: hidden,
+                        want: dims.hidden,
+                    });
+                }
+                let num_q_heads = c.u32()?;
+                let num_kv_heads = c.u32()?;
+                let head_dim = c.u32()?;
+                let attn_scales = AttentionScales {
+                    q: Scale::from_num(c.i32()?)?,
+                    k: Scale::from_num(c.i32()?)?,
+                    v: Scale::from_num(c.i32()?)?,
+                    score: Scale::from_num(c.i32()?)?,
+                    attn_out: Scale::from_num(c.i32()?)?,
+                    o: Scale::from_num(c.i32()?)?,
+                };
+                let qk_norm_eps_q = c.i64()?;
+                let qk_norm_post_scale = Scale::from_num(c.i32()?)?;
+                let post_attn_norm = parse_norm_meta(&mut c)?;
+                let norm2 = parse_norm_meta(&mut c)?;
+                let intermediate = c.u32()?;
+                let ffn_scales = FfnScales {
+                    gate: Scale::from_num(c.i32()?)?,
+                    up: Scale::from_num(c.i32()?)?,
+                    mid: Scale::from_num(c.i32()?)?,
+                    down: Scale::from_num(c.i32()?)?,
+                };
+                let post_ffn_norm = parse_norm_meta(&mut c)?;
+                let sliding_window = c.u32()?;
+                let has_inp_gate = c.u8()? != 0;
+                let has_layer_output_scale = c.u8()? != 0;
+                layer_metas.push(LayerMeta::Gemma {
+                    norm1,
+                    hidden,
+                    num_q_heads,
+                    num_kv_heads,
+                    head_dim,
+                    attn_scales,
+                    qk_norm_eps_q,
+                    qk_norm_post_scale,
+                    post_attn_norm,
+                    norm2,
+                    intermediate,
+                    ffn_scales,
+                    post_ffn_norm,
+                    sliding_window,
+                    has_inp_gate,
+                    has_layer_output_scale,
                 });
             }
             _ => return Err(LoadError::UnknownLayerTag(tag)),
@@ -744,6 +860,93 @@ fn parse_one_layer(
                     w_down,
                 },
                 ffn_scales,
+            })
+        }
+        LayerMeta::Gemma {
+            norm1,
+            hidden,
+            num_q_heads,
+            num_kv_heads,
+            head_dim,
+            attn_scales,
+            qk_norm_eps_q,
+            qk_norm_post_scale,
+            post_attn_norm,
+            norm2,
+            intermediate,
+            ffn_scales,
+            post_ffn_norm,
+            sliding_window,
+            has_inp_gate,
+            has_layer_output_scale,
+        } => {
+            // Matches `comm_w.rs::append_layer_weights` for the Gemma
+            // arm: norm1 → attn(q,k,v,o) → qk_norm gammas →
+            // post_attn_norm → norm2 → ffn(gate,up,down) →
+            // post_ffn_norm → [inp_gate] → [layer_output_scale].
+            let n1 = materialize_norm(c, &norm1, hu)?;
+            let q_dim = (num_q_heads * head_dim) as usize;
+            let kv_dim = (num_kv_heads * head_dim) as usize;
+            let w_q = c.take_i8(hu * q_dim)?;
+            let w_k = c.take_i8(hu * kv_dim)?;
+            let w_v = c.take_i8(hu * kv_dim)?;
+            let w_o = c.take_i8(q_dim * hu)?;
+            let hd = head_dim as usize;
+            let q_norm_gamma = c.take_i8(hd)?;
+            let k_norm_gamma = c.take_i8(hd)?;
+            let post_attn = materialize_norm(c, &post_attn_norm, hu)?;
+            let n2 = materialize_norm(c, &norm2, hu)?;
+            let iu = intermediate as usize;
+            let w_gate = c.take_i8(hu * iu)?;
+            let w_up = c.take_i8(hu * iu)?;
+            let w_down = c.take_i8(iu * hu)?;
+            let post_ffn = materialize_norm(c, &post_ffn_norm, hu)?;
+            let inp_gate = if has_inp_gate {
+                Some(c.take_i8(hu)?)
+            } else {
+                None
+            };
+            let layer_output_scale = if has_layer_output_scale {
+                Some(c.take_i8(hu)?)
+            } else {
+                None
+            };
+            let sw_opt = if sliding_window == 0 {
+                None
+            } else {
+                Some(sliding_window)
+            };
+            Ok(LayerWeights::Gemma {
+                norm1: n1,
+                attn: AttentionWeights {
+                    hidden,
+                    num_q_heads,
+                    num_kv_heads,
+                    head_dim,
+                    w_q,
+                    w_k,
+                    w_v,
+                    w_o,
+                },
+                attn_scales,
+                q_norm_gamma,
+                k_norm_gamma,
+                qk_norm_eps_q,
+                qk_norm_post_scale,
+                post_attn_norm: post_attn,
+                norm2: n2,
+                ffn: FfnWeights {
+                    hidden,
+                    intermediate,
+                    w_gate,
+                    w_up,
+                    w_down,
+                },
+                ffn_scales,
+                post_ffn_norm: post_ffn,
+                sliding_window: sw_opt,
+                inp_gate,
+                layer_output_scale,
             })
         }
     }

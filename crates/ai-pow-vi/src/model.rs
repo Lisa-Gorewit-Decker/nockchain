@@ -126,6 +126,7 @@ impl Model {
             let lh = match layer {
                 LayerWeights::Attention { attn, .. } => attn.hidden,
                 LayerWeights::DeltaNet { dnet, .. } => dnet.hidden,
+                LayerWeights::Gemma { attn, .. } => attn.hidden,
             };
             if lh != d.hidden {
                 return Err(ModelError::LayerHiddenMismatch {

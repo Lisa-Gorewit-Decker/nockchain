@@ -47,7 +47,10 @@ pub mod verifier;
 
 pub use crate::activation_lut::{ActivationKind, ActivationLut};
 pub use crate::activations::{verify_opening, ActivationLayout, ActivationLog, ActivationOpening};
-pub use crate::attention::{attention_forward, AttentionScales, AttentionWeights};
+pub use crate::attention::{
+    attention_forward, attention_forward_gemma, AttentionScales, AttentionWeights,
+    GemmaAttentionOpts,
+};
 pub use crate::comm_w::{canonical_weight_bytes, compute_comm_w, WEIGHT_TILE_BYTES};
 pub use crate::deltanet::{deltanet_forward, DeltaNetScales, DeltaNetWeights};
 pub use crate::determinism::{BitExactOp, ARCH_TAG};

@@ -103,6 +103,44 @@ fn append_layer_weights(out: &mut Vec<u8>, layer: &LayerWeights) {
             append_i8s(out, &ffn.w_up);
             append_i8s(out, &ffn.w_down);
         }
+        LayerWeights::Gemma {
+            norm1,
+            attn,
+            q_norm_gamma,
+            k_norm_gamma,
+            post_attn_norm,
+            norm2,
+            ffn,
+            post_ffn_norm,
+            inp_gate,
+            layer_output_scale,
+            ..
+        } => {
+            // Canonical order for Gemma layer bytes (matches Phase 2.11
+            // numpy `encode_weights` in synthetic_qwen_mini.py):
+            // norm1 → attn(q,k,v,o) → qk_norm gammas → post_attn_norm →
+            // norm2 → ffn(gate,up,down) → post_ffn_norm → inp_gate (if
+            // present) → layer_output_scale (if present).
+            append_norm_weights(out, norm1);
+            append_i8s(out, &attn.w_q);
+            append_i8s(out, &attn.w_k);
+            append_i8s(out, &attn.w_v);
+            append_i8s(out, &attn.w_o);
+            append_i8s(out, q_norm_gamma);
+            append_i8s(out, k_norm_gamma);
+            append_norm_weights(out, post_attn_norm);
+            append_norm_weights(out, norm2);
+            append_i8s(out, &ffn.w_gate);
+            append_i8s(out, &ffn.w_up);
+            append_i8s(out, &ffn.w_down);
+            append_norm_weights(out, post_ffn_norm);
+            if let Some(g) = inp_gate {
+                append_i8s(out, g);
+            }
+            if let Some(s) = layer_output_scale {
+                append_i8s(out, s);
+            }
+        }
     }
 }
 
@@ -268,6 +306,53 @@ fn manifest_hash(model: &Model) -> [u8; 32] {
                 append_scale(&mut buf, &ffn_scales.up);
                 append_scale(&mut buf, &ffn_scales.mid);
                 append_scale(&mut buf, &ffn_scales.down);
+            }
+            LayerWeights::Gemma {
+                norm1,
+                attn,
+                attn_scales,
+                q_norm_gamma: _,
+                k_norm_gamma: _,
+                qk_norm_eps_q,
+                qk_norm_post_scale,
+                post_attn_norm,
+                norm2,
+                ffn,
+                ffn_scales,
+                post_ffn_norm,
+                sliding_window,
+                inp_gate,
+                layer_output_scale,
+            } => {
+                buf.push(2u8); // tag: gemma
+                append_norm_meta(&mut buf, norm1);
+                buf.extend_from_slice(&attn.hidden.to_le_bytes());
+                buf.extend_from_slice(&attn.num_q_heads.to_le_bytes());
+                buf.extend_from_slice(&attn.num_kv_heads.to_le_bytes());
+                buf.extend_from_slice(&attn.head_dim.to_le_bytes());
+                append_scale(&mut buf, &attn_scales.q);
+                append_scale(&mut buf, &attn_scales.k);
+                append_scale(&mut buf, &attn_scales.v);
+                append_scale(&mut buf, &attn_scales.score);
+                append_scale(&mut buf, &attn_scales.attn_out);
+                append_scale(&mut buf, &attn_scales.o);
+                // QK-norm metadata: eps_q (i64) + post_scale (Scale).
+                buf.extend_from_slice(&qk_norm_eps_q.to_le_bytes());
+                append_scale(&mut buf, qk_norm_post_scale);
+                append_norm_meta(&mut buf, post_attn_norm);
+                append_norm_meta(&mut buf, norm2);
+                buf.extend_from_slice(&ffn.hidden.to_le_bytes());
+                buf.extend_from_slice(&ffn.intermediate.to_le_bytes());
+                append_scale(&mut buf, &ffn_scales.gate);
+                append_scale(&mut buf, &ffn_scales.up);
+                append_scale(&mut buf, &ffn_scales.mid);
+                append_scale(&mut buf, &ffn_scales.down);
+                append_norm_meta(&mut buf, post_ffn_norm);
+                // Sliding window: 0 = full causal, >0 = window radius.
+                buf.extend_from_slice(&sliding_window.unwrap_or(0).to_le_bytes());
+                // Presence flags for inp_gate and layer_output_scale.
+                buf.push(if inp_gate.is_some() { 1 } else { 0 });
+                buf.push(if layer_output_scale.is_some() { 1 } else { 0 });
             }
         }
     }

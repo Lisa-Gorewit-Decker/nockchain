@@ -17,7 +17,10 @@
 use thiserror::Error;
 
 use crate::activation_lut::ActivationLut;
-use crate::attention::{attention_forward, AttentionError, AttentionScales, AttentionWeights};
+use crate::attention::{
+    attention_forward, attention_forward_gemma, AttentionError, AttentionScales, AttentionWeights,
+    GemmaAttentionOpts,
+};
 use crate::deltanet::{deltanet_forward, DeltaNetError, DeltaNetScales, DeltaNetWeights};
 use crate::ffn::{ffn_forward, FfnError, FfnScales, FfnWeights};
 use crate::layernorm::{layernorm, LayerNormError};
@@ -56,8 +59,9 @@ impl NormSpec {
     }
 }
 
-/// Tagged-union layer weights: each block either has an attention sublayer
-/// or a DeltaNet sublayer, but always has the same residual structure.
+/// Tagged-union layer weights. Each variant carries a structurally
+/// different transformer block — Phase 2.9 ships `Attention` and
+/// `DeltaNet`; Phase 2.11 adds `Gemma` for Gemma 4 8B / 31B.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum LayerWeights {
     Attention {
@@ -75,6 +79,56 @@ pub enum LayerWeights {
         norm2: NormSpec,
         ffn: FfnWeights,
         ffn_scales: FfnScales,
+    },
+    /// Gemma 4 block (Phase 2.11). Same 2-residual structure as
+    /// `Attention`, but with four RMS norms per block (pre-attn,
+    /// post-attn, pre-ffn, post-ffn), a per-head **QK norm** RMSNorm
+    /// applied to Q and K before RoPE, optional sliding-window
+    /// attention, and optional input gating + output scaling. The
+    /// attention sublayer is the same `AttentionWeights` the
+    /// `Attention` variant uses (so the matmul + softmax + V-sum
+    /// machinery is shared).
+    Gemma {
+        /// Pre-attention RMSNorm.
+        norm1: NormSpec,
+        /// Standard MHA/GQA weights. RoPE, causal mask, etc. are
+        /// applied as in [`crate::attention::attention_forward`].
+        attn: AttentionWeights,
+        attn_scales: AttentionScales,
+        /// Per-head RMSNorm gammas applied to Q after the projection
+        /// and before RoPE. Length = `head_dim`. Same gamma is used
+        /// for every Q head (Gemma's published checkpoint shape).
+        q_norm_gamma: Vec<i8>,
+        /// Same for K.
+        k_norm_gamma: Vec<i8>,
+        /// Integer epsilon for the QK norm; default 1.
+        qk_norm_eps_q: i64,
+        /// Post-norm requantize scale for the QK norm output.
+        qk_norm_post_scale: Scale,
+        /// RMSNorm applied to the attention output **before** the
+        /// residual add. Gemma 4's `post_attention_norm`.
+        post_attn_norm: NormSpec,
+        /// Pre-FFN RMSNorm.
+        norm2: NormSpec,
+        /// SwiGLU FFN; same as the other variants.
+        ffn: FfnWeights,
+        ffn_scales: FfnScales,
+        /// RMSNorm applied to the FFN output **before** the residual
+        /// add. Gemma 4's `post_ffw_norm`.
+        post_ffn_norm: NormSpec,
+        /// Sliding-window radius (in tokens). `None` is full causal.
+        /// When `Some(w)`, the attention causal mask is bounded below
+        /// by `j >= i.saturating_sub(w - 1)`.
+        sliding_window: Option<u32>,
+        /// Per-channel input gating; length = `hidden`. Multiplies the
+        /// layer input element-wise (i.e. `x' = saturate(x * gate /
+        /// 127)`). `None` skips the step. Gemma 4 ships this; future
+        /// arches may not.
+        inp_gate: Option<Vec<i8>>,
+        /// Per-channel output scaling applied to the FFN residual
+        /// stream before the second residual add; length = `hidden`.
+        /// `None` skips.
+        layer_output_scale: Option<Vec<i8>>,
     },
 }
 
@@ -203,11 +257,17 @@ pub fn forward_layer(
     if m == 0 {
         return Err(LayerError::ZeroM);
     }
+    // Gemma has a 4-norm structure that doesn't fit the 2-norm template
+    // below; dispatch out early.
+    if let LayerWeights::Gemma { .. } = layer {
+        return forward_gemma_layer(input, layer, ctx, m, output);
+    }
     let mu = m as usize;
     // Hidden is determined by the layer's attention/deltanet sublayer.
     let hidden = match layer {
         LayerWeights::Attention { attn, .. } => attn.hidden,
         LayerWeights::DeltaNet { dnet, .. } => dnet.hidden,
+        LayerWeights::Gemma { .. } => unreachable!(), // handled above
     };
     if hidden == 0 {
         return Err(LayerError::ZeroHidden);
@@ -225,6 +285,7 @@ pub fn forward_layer(
     let (norm1, norm2) = match layer {
         LayerWeights::Attention { norm1, norm2, .. } => (norm1, norm2),
         LayerWeights::DeltaNet { norm1, norm2, .. } => (norm1, norm2),
+        LayerWeights::Gemma { .. } => unreachable!(),
     };
     apply_norm_per_token(norm1, input, m, hidden, &mut normed1)?;
 
@@ -245,6 +306,7 @@ pub fn forward_layer(
                 &normed1, dnet, *dnet_scales, ctx.sigmoid_lut, m, &mut sub_out,
             )?;
         }
+        LayerWeights::Gemma { .. } => unreachable!(),
     }
     drop(normed1);
 
@@ -265,6 +327,7 @@ pub fn forward_layer(
         LayerWeights::DeltaNet {
             ffn, ffn_scales, ..
         } => (ffn, *ffn_scales),
+        LayerWeights::Gemma { .. } => unreachable!(),
     };
     let mut ffn_out = vec![0i8; mu * hu];
     ffn_forward(
@@ -275,6 +338,169 @@ pub fn forward_layer(
     // Step 6: output = residual1 + ffn_out (saturating).
     output.copy_from_slice(&residual1);
     add_residual_inplace(output, &ffn_out);
+
+    Ok(())
+}
+
+/// Per-channel multiply-with-scale-and-saturate. `out[i, c] = saturate_i8(
+/// in[i, c] * scale[c] / 127)`. Used for `inp_gate` and
+/// `layer_output_scale` in Gemma 4 (treated as per-dim scaling; the
+/// nominal sigmoid-gate interpretation is baked into the scale values
+/// themselves at quantization time).
+fn apply_channelwise_scale(input: &mut [i8], scale: &[i8], hidden: usize) {
+    debug_assert_eq!(input.len() % hidden, 0);
+    debug_assert_eq!(scale.len(), hidden);
+    let m = input.len() / hidden;
+    for t in 0..m {
+        for c in 0..hidden {
+            let v = (input[t * hidden + c] as i32) * (scale[c] as i32);
+            // /127 to interpret scale[c] in [-1, 1]; saturate to i8.
+            let q = (v + 63) / 127; // half-up round
+            input[t * hidden + c] = q.clamp(i8::MIN as i32, i8::MAX as i32) as i8;
+        }
+    }
+}
+
+/// Phase 2.11: Gemma-style transformer layer forward.
+///
+/// Composition (one residual stream, four norms):
+/// ```text
+/// x  = (inp_gate.is_some() ? input · inp_gate : input)
+/// y  = post_attn_norm( attention_gemma( norm1(x) ) )   # QK-norm inside attn
+/// x' = saturate_i8(x + y)
+/// y' = post_ffn_norm( ffn( norm2(x') ) )
+/// y' = (layer_output_scale.is_some() ? y' · scale : y')
+/// out = saturate_i8(x' + y')
+/// ```
+fn forward_gemma_layer(
+    input: &[i8],
+    layer: &LayerWeights,
+    ctx: &LayerContext,
+    m: u32,
+    output: &mut [i8],
+) -> Result<(), LayerError> {
+    let (
+        norm1,
+        attn,
+        attn_scales,
+        q_norm_gamma,
+        k_norm_gamma,
+        qk_norm_eps_q,
+        qk_norm_post_scale,
+        post_attn_norm,
+        norm2,
+        ffn,
+        ffn_scales,
+        post_ffn_norm,
+        sliding_window,
+        inp_gate,
+        layer_output_scale,
+    ) = match layer {
+        LayerWeights::Gemma {
+            norm1,
+            attn,
+            attn_scales,
+            q_norm_gamma,
+            k_norm_gamma,
+            qk_norm_eps_q,
+            qk_norm_post_scale,
+            post_attn_norm,
+            norm2,
+            ffn,
+            ffn_scales,
+            post_ffn_norm,
+            sliding_window,
+            inp_gate,
+            layer_output_scale,
+        } => (
+            norm1, attn, attn_scales, q_norm_gamma, k_norm_gamma, *qk_norm_eps_q,
+            *qk_norm_post_scale, post_attn_norm, norm2, ffn, ffn_scales, post_ffn_norm,
+            *sliding_window, inp_gate, layer_output_scale,
+        ),
+        _ => unreachable!("forward_gemma_layer requires LayerWeights::Gemma"),
+    };
+
+    let hidden = attn.hidden;
+    if hidden == 0 {
+        return Err(LayerError::ZeroHidden);
+    }
+    let mu = m as usize;
+    let hu = hidden as usize;
+    if input.len() != mu * hu {
+        return Err(LayerError::BadInputLen);
+    }
+    if output.len() != mu * hu {
+        return Err(LayerError::BadOutputLen);
+    }
+    if q_norm_gamma.len() != attn.head_dim as usize || k_norm_gamma.len() != attn.head_dim as usize
+    {
+        return Err(LayerError::BadNormShape);
+    }
+
+    // Step 0: optional input gating.
+    let mut x = input.to_vec();
+    if let Some(g) = inp_gate {
+        if g.len() != hu {
+            return Err(LayerError::BadNormShape);
+        }
+        apply_channelwise_scale(&mut x, g, hu);
+    }
+
+    // Step 1: norm1(x) → normed1.
+    let mut normed1 = vec![0i8; mu * hu];
+    apply_norm_per_token(norm1, &x, m, hidden, &mut normed1)?;
+
+    // Step 2: gemma attention (with QK norm + sliding window).
+    let mut sub_out = vec![0i8; mu * hu];
+    let opts = GemmaAttentionOpts {
+        q_norm_gamma: Some(q_norm_gamma),
+        k_norm_gamma: Some(k_norm_gamma),
+        qk_norm_eps_q,
+        qk_norm_post_scale,
+        sliding_window,
+    };
+    attention_forward_gemma(
+        &normed1, attn, *attn_scales, ctx.rope_tables, ctx.softmax_lut, opts, m, &mut sub_out,
+    )?;
+    drop(normed1);
+
+    // Step 3: post-attn norm (Gemma's `post_attention_norm`).
+    let mut normed_post_attn = vec![0i8; mu * hu];
+    apply_norm_per_token(post_attn_norm, &sub_out, m, hidden, &mut normed_post_attn)?;
+    drop(sub_out);
+
+    // Step 4: residual1 = x + post-attn (saturating).
+    let mut residual1 = x;
+    add_residual_inplace(&mut residual1, &normed_post_attn);
+    drop(normed_post_attn);
+
+    // Step 5: norm2(residual1) → normed2.
+    let mut normed2 = vec![0i8; mu * hu];
+    apply_norm_per_token(norm2, &residual1, m, hidden, &mut normed2)?;
+
+    // Step 6: FFN.
+    let mut ffn_out = vec![0i8; mu * hu];
+    ffn_forward(
+        &normed2, ffn, ctx.ffn_activation, *ffn_scales, m, &mut ffn_out,
+    )?;
+    drop(normed2);
+
+    // Step 7: post-FFN norm.
+    let mut normed_post_ffn = vec![0i8; mu * hu];
+    apply_norm_per_token(post_ffn_norm, &ffn_out, m, hidden, &mut normed_post_ffn)?;
+    drop(ffn_out);
+
+    // Step 8: optional layer_output_scale (per-channel multiply).
+    if let Some(s) = layer_output_scale {
+        if s.len() != hu {
+            return Err(LayerError::BadNormShape);
+        }
+        apply_channelwise_scale(&mut normed_post_ffn, s, hu);
+    }
+
+    // Step 9: output = residual1 + scaled-post-ffn.
+    output.copy_from_slice(&residual1);
+    add_residual_inplace(output, &normed_post_ffn);
 
     Ok(())
 }
@@ -661,5 +887,143 @@ mod tests {
                 "RMSNorm of uniform input must produce uniform output"
             );
         }
+    }
+
+    fn build_gemma_layer(hidden: u32, num_q: u32, num_kv: u32, hd: u32, seed: u64) -> LayerWeights {
+        use crate::attention::AttentionScales;
+        let hu = hidden as usize;
+        let hdu = hd as usize;
+        LayerWeights::Gemma {
+            norm1: rms_norm(hu, seed),
+            attn: AttentionWeights {
+                hidden,
+                num_q_heads: num_q,
+                num_kv_heads: num_kv,
+                head_dim: hd,
+                w_q: lcg_bytes(hu * (num_q * hd) as usize, seed.wrapping_add(1)),
+                w_k: lcg_bytes(hu * (num_kv * hd) as usize, seed.wrapping_add(2)),
+                w_v: lcg_bytes(hu * (num_kv * hd) as usize, seed.wrapping_add(3)),
+                w_o: lcg_bytes((num_q * hd) as usize * hu, seed.wrapping_add(4)),
+            },
+            attn_scales: AttentionScales {
+                q: small_scale(),
+                k: small_scale(),
+                v: small_scale(),
+                score: small_scale(),
+                attn_out: small_scale(),
+                o: small_scale(),
+            },
+            q_norm_gamma: lcg_bytes(hdu, seed.wrapping_add(5)),
+            k_norm_gamma: lcg_bytes(hdu, seed.wrapping_add(6)),
+            qk_norm_eps_q: DEFAULT_EPS_Q,
+            qk_norm_post_scale: small_scale(),
+            post_attn_norm: rms_norm(hu, seed.wrapping_add(7)),
+            norm2: rms_norm(hu, seed.wrapping_add(8)),
+            ffn: FfnWeights {
+                hidden,
+                intermediate: hidden * 2,
+                w_gate: lcg_bytes(hu * (hu * 2), seed.wrapping_add(9)),
+                w_up: lcg_bytes(hu * (hu * 2), seed.wrapping_add(10)),
+                w_down: lcg_bytes((hu * 2) * hu, seed.wrapping_add(11)),
+            },
+            ffn_scales: FfnScales {
+                gate: small_scale(),
+                up: small_scale(),
+                mid: small_scale(),
+                down: small_scale(),
+            },
+            post_ffn_norm: rms_norm(hu, seed.wrapping_add(12)),
+            sliding_window: None,
+            inp_gate: Some(lcg_bytes(hu, seed.wrapping_add(13))),
+            layer_output_scale: Some(lcg_bytes(hu, seed.wrapping_add(14))),
+        }
+    }
+
+    #[test]
+    fn gemma_layer_full_runs() {
+        let hidden = 8u32;
+        let m = 3u32;
+        let layer = build_gemma_layer(hidden, 2, 1, 4, 0x9090);
+        let rope_tables = RopeTables::identity(m, 2);
+        let softmax_lut = ExpLut::uniform_test();
+        let sigmoid_lut = ActivationLut::identity();
+        let ffn_act = ActivationLut::identity();
+        let c = ctx(&rope_tables, &softmax_lut, &sigmoid_lut, &ffn_act);
+        let input = lcg_bytes((m * hidden) as usize, 0xa1a1);
+        let mut output = vec![0i8; (m * hidden) as usize];
+        forward_layer(&input, &layer, &c, m, &mut output).unwrap();
+    }
+
+    #[test]
+    fn gemma_layer_sliding_window_changes_output() {
+        let hidden = 8u32;
+        let m = 4u32;
+        let mut base = build_gemma_layer(hidden, 2, 1, 4, 0x1111);
+        let mut sw = build_gemma_layer(hidden, 2, 1, 4, 0x1111);
+        if let LayerWeights::Gemma { sliding_window, .. } = &mut sw {
+            *sliding_window = Some(2);
+        }
+        let rope_tables = RopeTables::identity(m, 2);
+        let softmax_lut = ExpLut::uniform_test();
+        let sigmoid_lut = ActivationLut::identity();
+        let ffn_act = ActivationLut::identity();
+        let c = ctx(&rope_tables, &softmax_lut, &sigmoid_lut, &ffn_act);
+        let input = lcg_bytes((m * hidden) as usize, 0x2222);
+        let mut out_base = vec![0i8; (m * hidden) as usize];
+        let mut out_sw = vec![0i8; (m * hidden) as usize];
+        forward_layer(&input, &base, &c, m, &mut out_base).unwrap();
+        forward_layer(&input, &sw, &c, m, &mut out_sw).unwrap();
+        // First token (i=0): both see only itself, so the sliding window
+        // doesn't change anything.
+        assert_eq!(&out_base[..hidden as usize], &out_sw[..hidden as usize]);
+        // For i=3 (m-1=3), base sees [0..=3]; sw sees [2..=3]. Outputs
+        // for position 3 must differ for a non-degenerate model.
+        let row3_base = &out_base[(3 * hidden as usize)..(4 * hidden as usize)];
+        let row3_sw = &out_sw[(3 * hidden as usize)..(4 * hidden as usize)];
+        assert_ne!(
+            row3_base, row3_sw,
+            "sliding window should change late tokens"
+        );
+        let _ = (&mut base, &mut sw); // silence "unused mut" if any
+    }
+
+    #[test]
+    fn gemma_layer_round_trip_through_disk_format() {
+        use crate::comm_w::compute_comm_w;
+        use crate::model::{Model, ModelDims};
+        let hidden = 8u32;
+        let layer = build_gemma_layer(hidden, 2, 1, 4, 0xfeed);
+        let model = Model {
+            dims: ModelDims {
+                vocab: 16,
+                hidden,
+                seq_len: 4,
+                activation_tile: 2,
+            },
+            arch_tag: crate::model::arch_tag("gemma4"),
+            feature_flags: 0,
+            embed: lcg_bytes((16 * hidden) as usize, 0xbeef),
+            layers: vec![layer],
+            final_norm: None,
+            rope_tables: RopeTables::identity(4, 2),
+            softmax_lut: ExpLut::uniform_test(),
+            sigmoid_lut: ActivationLut::identity(),
+            ffn_activation: ActivationLut::identity(),
+        };
+        let dir = std::env::temp_dir().join(format!(
+            "ai_pow_vi_gemma_rt_{}_{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        model.save(&dir).unwrap();
+        let comm = compute_comm_w(&model);
+        let loaded = Model::load(&dir, &comm).unwrap();
+        assert_eq!(model.layers, loaded.layers);
+        assert_eq!(model.arch_tag, loaded.arch_tag);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

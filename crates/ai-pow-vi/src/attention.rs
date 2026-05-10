@@ -21,8 +21,30 @@ use thiserror::Error;
 
 use crate::matmul_int8::{dot_int8, matmul_int8, matmul_int8_requant, requantize_vec, MatmulError};
 use crate::quant::{rescale_and_requantize, round_half_to_even_div_pow2, Scale, SCALE_DENOM_LOG2};
+use crate::rmsnorm::{rmsnorm, RmsNormError};
 use crate::rope::{rope_apply, RopeError, RopeTables};
 use crate::softmax::{softmax_int, ExpLut, SoftmaxError};
+
+/// Phase 2.11 Gemma-attention extras: per-head Q/K RMSNorm + optional
+/// sliding-window mask. Borrowed for the duration of one
+/// [`attention_forward_gemma`] call.
+#[derive(Debug, Clone, Copy)]
+pub struct GemmaAttentionOpts<'a> {
+    /// Per-head Q RMSNorm gamma (length = `head_dim`, applied per
+    /// (token, q_head)). Always `Some` for Gemma; the type leaves it
+    /// optional in case a future arch wants only K-side QK norm.
+    pub q_norm_gamma: Option<&'a [i8]>,
+    /// Same for K (length = `head_dim`, applied per (token, kv_head)).
+    pub k_norm_gamma: Option<&'a [i8]>,
+    /// Integer eps_q for both Q and K norms.
+    pub qk_norm_eps_q: i64,
+    /// Rescale Q/K-norm i32 output back to i8 before RoPE.
+    pub qk_norm_post_scale: Scale,
+    /// Sliding-window radius. `None` is full causal (= `attention_forward`).
+    /// `Some(w)` keeps tokens `[max(0, i + 1 - w) ..= i]` for query
+    /// position `i` (i.e. the last `w` tokens, inclusive of self).
+    pub sliding_window: Option<u32>,
+}
 
 /// Weights for one multi-head / grouped-query attention block. All tensors
 /// are INT8 in column-major layout (each column = one output feature).
@@ -89,6 +111,10 @@ pub enum AttentionError {
     Rope(#[from] RopeError),
     #[error("softmax: {0}")]
     Softmax(#[from] SoftmaxError),
+    #[error("Q/K RMSNorm: {0}")]
+    QkNorm(#[from] RmsNormError),
+    #[error("QK norm gamma length must equal head_dim")]
+    BadQkNormGammaLen,
 }
 
 /// Scale an i32 Q·K dot product into i32 softmax-domain units.
@@ -241,6 +267,209 @@ pub fn attention_forward(
     drop(v_i8);
 
     // Step 8: Output projection — (m, num_q_heads * head_dim) @ W_o → (m, hidden) i8.
+    matmul_int8_requant(
+        &attn_out,
+        &weights.w_o,
+        m,
+        num_q * hd,
+        hidden,
+        scales.o,
+        output,
+    )?;
+
+    Ok(())
+}
+
+/// Phase 2.11 Gemma-flavored attention forward.
+///
+/// Same skeleton as [`attention_forward`], with two additions:
+///
+/// 1. **QK norm** — after Q and K are projected, an RMSNorm is applied
+///    per-head (independently per `(token, head)` slot, gamma shared
+///    across heads), then requantized to i8 before RoPE.
+/// 2. **Sliding window** — when `opts.sliding_window = Some(w)`, the
+///    score range for query position `i` is `[max(0, i+1-w) ..= i]`
+///    rather than `[0 ..= i]`. Tokens further back than `w-1` steps
+///    are masked out entirely.
+///
+/// The rest of the math is identical to `attention_forward`, so the
+/// FFN tile-Merkle puzzle (Phase 3 `mine_vi` / `verify_vi`) works on
+/// Gemma layers exactly as it does on plain Attention layers.
+pub fn attention_forward_gemma(
+    input: &[i8],
+    weights: &AttentionWeights,
+    scales: AttentionScales,
+    rope_tables: &RopeTables,
+    softmax_lut: &ExpLut,
+    opts: GemmaAttentionOpts,
+    m: u32,
+    output: &mut [i8],
+) -> Result<(), AttentionError> {
+    let hidden = weights.hidden;
+    let num_q = weights.num_q_heads;
+    let num_kv = weights.num_kv_heads;
+    let hd = weights.head_dim;
+
+    if hidden == 0 || num_q == 0 || hd == 0 || m == 0 {
+        return Err(AttentionError::ZeroDim);
+    }
+    if num_kv == 0 || num_kv > num_q || num_q % num_kv != 0 {
+        return Err(AttentionError::BadKvHeads);
+    }
+    if hd % 2 != 0 {
+        return Err(AttentionError::HeadDimOdd);
+    }
+    if rope_tables.half_head_dim != hd / 2 {
+        return Err(AttentionError::RopeHalfHeadDimMismatch);
+    }
+    if rope_tables.seq_len < m {
+        return Err(AttentionError::RopeSeqLenTooShort);
+    }
+    let hdu = hd as usize;
+    if let Some(g) = opts.q_norm_gamma {
+        if g.len() != hdu {
+            return Err(AttentionError::BadQkNormGammaLen);
+        }
+    }
+    if let Some(g) = opts.k_norm_gamma {
+        if g.len() != hdu {
+            return Err(AttentionError::BadQkNormGammaLen);
+        }
+    }
+
+    let mu = m as usize;
+    let hu = hidden as usize;
+    let num_qu = num_q as usize;
+    let num_kvu = num_kv as usize;
+    let q_row_stride = num_qu * hdu;
+    let kv_row_stride = num_kvu * hdu;
+
+    if input.len() != mu * hu {
+        return Err(AttentionError::BadInputLen);
+    }
+    if output.len() != mu * hu {
+        return Err(AttentionError::BadOutputLen);
+    }
+    if weights.w_q.len() != hu * q_row_stride {
+        return Err(AttentionError::BadWqLen);
+    }
+    if weights.w_k.len() != hu * kv_row_stride {
+        return Err(AttentionError::BadWkLen);
+    }
+    if weights.w_v.len() != hu * kv_row_stride {
+        return Err(AttentionError::BadWvLen);
+    }
+    if weights.w_o.len() != q_row_stride * hu {
+        return Err(AttentionError::BadWoLen);
+    }
+
+    // Q projection.
+    let mut q_acc = vec![0i32; mu * q_row_stride];
+    matmul_int8(input, &weights.w_q, m, hidden, num_q * hd, &mut q_acc)?;
+    let mut q_i8 = vec![0i8; mu * q_row_stride];
+    requantize_vec(&q_acc, scales.q, &mut q_i8)?;
+    drop(q_acc);
+
+    // K projection.
+    let mut k_acc = vec![0i32; mu * kv_row_stride];
+    matmul_int8(input, &weights.w_k, m, hidden, num_kv * hd, &mut k_acc)?;
+    let mut k_i8 = vec![0i8; mu * kv_row_stride];
+    requantize_vec(&k_acc, scales.k, &mut k_i8)?;
+    drop(k_acc);
+
+    // V projection.
+    let mut v_acc = vec![0i32; mu * kv_row_stride];
+    matmul_int8(input, &weights.w_v, m, hidden, num_kv * hd, &mut v_acc)?;
+    let mut v_i8 = vec![0i8; mu * kv_row_stride];
+    requantize_vec(&v_acc, scales.v, &mut v_i8)?;
+    drop(v_acc);
+
+    // **Phase 2.11 step: QK norm.** Per (token, head): apply RMSNorm
+    // to the `head_dim` slot, then requantize back to i8. Same gamma
+    // is shared across heads (Gemma's published shape).
+    if let Some(gamma) = opts.q_norm_gamma {
+        let mut acc = vec![0i32; hdu];
+        for t in 0..mu {
+            for h in 0..num_qu {
+                let off = t * q_row_stride + h * hdu;
+                rmsnorm(&q_i8[off..off + hdu], gamma, &mut acc, opts.qk_norm_eps_q)?;
+                for (d, &a) in acc.iter().enumerate() {
+                    q_i8[off + d] = rescale_and_requantize(a, opts.qk_norm_post_scale);
+                }
+            }
+        }
+    }
+    if let Some(gamma) = opts.k_norm_gamma {
+        let mut acc = vec![0i32; hdu];
+        for t in 0..mu {
+            for h in 0..num_kvu {
+                let off = t * kv_row_stride + h * hdu;
+                rmsnorm(&k_i8[off..off + hdu], gamma, &mut acc, opts.qk_norm_eps_q)?;
+                for (d, &a) in acc.iter().enumerate() {
+                    k_i8[off + d] = rescale_and_requantize(a, opts.qk_norm_post_scale);
+                }
+            }
+        }
+    }
+
+    // RoPE on Q and K (same as `attention_forward`).
+    for pos in 0..mu {
+        for h in 0..num_qu {
+            let off = pos * q_row_stride + h * hdu;
+            rope_apply(&mut q_i8[off..off + hdu], pos as u32, rope_tables)?;
+        }
+        for h in 0..num_kvu {
+            let off = pos * kv_row_stride + h * hdu;
+            rope_apply(&mut k_i8[off..off + hdu], pos as u32, rope_tables)?;
+        }
+    }
+
+    // Per-head causal attention core with sliding window.
+    let mut attn_out = vec![0i8; mu * q_row_stride];
+    let mut scores_buf = vec![0i32; mu];
+    let mut probs_buf = vec![0i8; mu];
+
+    for i in 0..mu {
+        // Sliding-window lower bound for query position `i`.
+        let j_lo = match opts.sliding_window {
+            Some(w) => {
+                let w = w as usize;
+                (i + 1).saturating_sub(w)
+            }
+            None => 0,
+        };
+        let span = i + 1 - j_lo;
+
+        for h in 0..num_qu {
+            let kv_h = h * num_kvu / num_qu;
+            let q_off = i * q_row_stride + h * hdu;
+
+            // Score against j in [j_lo, i]. Note `scores_buf[0..span]`.
+            for (idx, j) in (j_lo..=i).enumerate() {
+                let k_off = j * kv_row_stride + kv_h * hdu;
+                let raw = dot_int8(&q_i8[q_off..q_off + hdu], &k_i8[k_off..k_off + hdu]);
+                scores_buf[idx] = scale_score(raw, scales.score);
+            }
+
+            softmax_int(&scores_buf[..span], softmax_lut, &mut probs_buf[..span])?;
+
+            let ao_off = i * q_row_stride + h * hdu;
+            for d in 0..hdu {
+                let mut acc = 0i32;
+                for (idx, j) in (j_lo..=i).enumerate() {
+                    let v_off = j * kv_row_stride + kv_h * hdu + d;
+                    acc = acc.wrapping_add((probs_buf[idx] as i32) * (v_i8[v_off] as i32));
+                }
+                attn_out[ao_off + d] = rescale_and_requantize(acc, scales.attn_out);
+            }
+        }
+    }
+
+    drop(q_i8);
+    drop(k_i8);
+    drop(v_i8);
+
+    // Output projection.
     matmul_int8_requant(
         &attn_out,
         &weights.w_o,

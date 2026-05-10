@@ -172,7 +172,8 @@ fn recomputed_intermediate_tiles(model: &Model, opts: &ProverOptions) -> Result<
     let layer = &model.layers[opts.target_layer as usize];
     let intermediate = match layer {
         crate::layer::LayerWeights::Attention { ffn, .. }
-        | crate::layer::LayerWeights::DeltaNet { ffn, .. } => ffn.intermediate,
+        | crate::layer::LayerWeights::DeltaNet { ffn, .. }
+        | crate::layer::LayerWeights::Gemma { ffn, .. } => ffn.intermediate,
     };
     Ok(intermediate / opts.tile)
 }
