@@ -792,6 +792,52 @@ Acceptance gates:
    ≥ 70% for Gemma 4 (per arch-specific tolerances established in
    2.11 / 2.12).
 
+### 2.15 Streaming GGUF reader + streaming quantizer
+
+Real-model GGUFs are large. Phase 2.9's `quantize_qwen.py` calls
+`gguf_reader.read_model()`, which dequantizes **every** tensor to f32
+and holds them all in a dict before quantization begins. For the
+user's local models that's:
+
+| Model | GGUF size | f32 dequant peak |
+|---|---|---|
+| Gemma 4 8B  | 9.6 GB | ~32 GB |
+| Gemma 4 31B | 19 GB  | ~64 GB |
+| Qwen 3.6 27B | 17 GB  | ~55 GB |
+
+Without streaming, the converter OOMs on every laptop. Phase 2.15
+adds:
+
+1. **`oracle/gguf_reader.iter_tensors(path)`** — a generator yielding
+   `(canonical_name, np.ndarray f32)` tuples one tensor at a time.
+   Each ndarray goes out of scope between yields, so peak memory is
+   bounded by the largest single tensor (a few hundred MB for the
+   embed table).
+
+2. **`oracle/quantize_streaming.py`** — driver that:
+   - Walks `iter_tensors()` once to compute per-tensor `max(|w|)/127`
+     weight scales (cheap — just a max-abs reduction).
+   - Walks again to INT8-quantize and **append** to `weights.bin`
+     incrementally via a `BufferedWriter`. The manifest + comm_W stay
+     in RAM (small), but the weights stream straight to disk.
+   - Computes comm_W's tile-Merkle root in a streaming fashion (hash
+     each tile as it's written; combine via a running Merkle).
+
+3. **Memory cap test**: `oracle/tests/test_streaming.py` runs the
+   pipeline on a synthetic 1 GB-equivalent fixture and asserts peak
+   RSS stays below ~500 MB (i.e. far below the dequantized total).
+
+4. **Real-model integration**: documented in `oracle/README_QWEN.md`
+   and `oracle/README_GEMMA.md` — invocation, expected wall-clock,
+   typical peak memory.
+
+Acceptance: Gemma 4 8B converts on a laptop with <2 GB free RAM,
+producing a `manifest.bin` + `weights.bin` directory that
+`Model::load` reads successfully.
+
+Cost: ~500 lines Python (mostly the streaming tile-Merkle and the
+two-pass driver) + ~150 lines of tests.
+
 ### Phase 2 acceptance gate (re-stated)
 
 1. `cargo test -p ai-pow-vi` green on x86_64 and aarch64 CI.

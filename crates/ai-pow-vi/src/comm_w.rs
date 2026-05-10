@@ -103,6 +103,29 @@ fn append_layer_weights(out: &mut Vec<u8>, layer: &LayerWeights) {
             append_i8s(out, &ffn.w_up);
             append_i8s(out, &ffn.w_down);
         }
+        LayerWeights::QwenStandard {
+            norm1,
+            attn,
+            q_norm_gamma,
+            k_norm_gamma,
+            norm2,
+            ffn,
+            ..
+        } => {
+            // Canonical order for QwenStandard layer bytes:
+            // norm1 → attn(q,k,v,o) → qk_norm gammas → norm2 → ffn(gate,up,down).
+            append_norm_weights(out, norm1);
+            append_i8s(out, &attn.w_q);
+            append_i8s(out, &attn.w_k);
+            append_i8s(out, &attn.w_v);
+            append_i8s(out, &attn.w_o);
+            append_i8s(out, q_norm_gamma);
+            append_i8s(out, k_norm_gamma);
+            append_norm_weights(out, norm2);
+            append_i8s(out, &ffn.w_gate);
+            append_i8s(out, &ffn.w_up);
+            append_i8s(out, &ffn.w_down);
+        }
         LayerWeights::Gemma {
             norm1,
             attn,
@@ -299,6 +322,40 @@ fn manifest_hash(model: &Model) -> [u8; 32] {
                 append_scale(&mut buf, &dnet_scales.update);
                 append_scale(&mut buf, &dnet_scales.o);
                 append_scale(&mut buf, &dnet_scales.proj);
+                append_norm_meta(&mut buf, norm2);
+                buf.extend_from_slice(&ffn.hidden.to_le_bytes());
+                buf.extend_from_slice(&ffn.intermediate.to_le_bytes());
+                append_scale(&mut buf, &ffn_scales.gate);
+                append_scale(&mut buf, &ffn_scales.up);
+                append_scale(&mut buf, &ffn_scales.mid);
+                append_scale(&mut buf, &ffn_scales.down);
+            }
+            LayerWeights::QwenStandard {
+                norm1,
+                attn,
+                attn_scales,
+                q_norm_gamma: _,
+                k_norm_gamma: _,
+                qk_norm_eps_q,
+                qk_norm_post_scale,
+                norm2,
+                ffn,
+                ffn_scales,
+            } => {
+                buf.push(3u8); // tag: qwen-standard
+                append_norm_meta(&mut buf, norm1);
+                buf.extend_from_slice(&attn.hidden.to_le_bytes());
+                buf.extend_from_slice(&attn.num_q_heads.to_le_bytes());
+                buf.extend_from_slice(&attn.num_kv_heads.to_le_bytes());
+                buf.extend_from_slice(&attn.head_dim.to_le_bytes());
+                append_scale(&mut buf, &attn_scales.q);
+                append_scale(&mut buf, &attn_scales.k);
+                append_scale(&mut buf, &attn_scales.v);
+                append_scale(&mut buf, &attn_scales.score);
+                append_scale(&mut buf, &attn_scales.attn_out);
+                append_scale(&mut buf, &attn_scales.o);
+                buf.extend_from_slice(&qk_norm_eps_q.to_le_bytes());
+                append_scale(&mut buf, qk_norm_post_scale);
                 append_norm_meta(&mut buf, norm2);
                 buf.extend_from_slice(&ffn.hidden.to_le_bytes());
                 buf.extend_from_slice(&ffn.intermediate.to_le_bytes());

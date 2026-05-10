@@ -127,6 +127,7 @@ impl Model {
                 LayerWeights::Attention { attn, .. } => attn.hidden,
                 LayerWeights::DeltaNet { dnet, .. } => dnet.hidden,
                 LayerWeights::Gemma { attn, .. } => attn.hidden,
+                LayerWeights::QwenStandard { attn, .. } => attn.hidden,
             };
             if lh != d.hidden {
                 return Err(ModelError::LayerHiddenMismatch {

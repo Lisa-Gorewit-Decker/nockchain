@@ -80,6 +80,28 @@ pub enum LayerWeights {
         ffn: FfnWeights,
         ffn_scales: FfnScales,
     },
+    /// Qwen 3.6 27B standard-attention block (Phase 2.12). Same
+    /// 2-norm residual structure as `Attention`, with per-head **QK
+    /// norm** RMSNorm applied to Q and K before RoPE. Used for the
+    /// 16/64 pure-attention blocks of Qwen 3.6 27B (block indices
+    /// `[3, 7, 11, ..., 63]`). The remaining 48 blocks are hybrid
+    /// attention+SSM (`QwenHybridSsm`, Phase 2.13).
+    QwenStandard {
+        norm1: NormSpec,
+        attn: AttentionWeights,
+        attn_scales: AttentionScales,
+        /// Per-head Q-norm RMSNorm gamma (length = `head_dim`).
+        q_norm_gamma: Vec<i8>,
+        /// Per-head K-norm RMSNorm gamma.
+        k_norm_gamma: Vec<i8>,
+        qk_norm_eps_q: i64,
+        qk_norm_post_scale: Scale,
+        /// Pre-FFN RMSNorm (= GGUF `post_attention_norm.weight` —
+        /// applied after the first residual add, before the FFN).
+        norm2: NormSpec,
+        ffn: FfnWeights,
+        ffn_scales: FfnScales,
+    },
     /// Gemma 4 block (Phase 2.11). Same 2-residual structure as
     /// `Attention`, but with four RMS norms per block (pre-attn,
     /// post-attn, pre-ffn, post-ffn), a per-head **QK norm** RMSNorm
@@ -257,17 +279,21 @@ pub fn forward_layer(
     if m == 0 {
         return Err(LayerError::ZeroM);
     }
-    // Gemma has a 4-norm structure that doesn't fit the 2-norm template
-    // below; dispatch out early.
+    // Gemma's 4-norm structure and Qwen-standard's QK-norm variant
+    // don't fit the 2-norm template below; dispatch out early.
     if let LayerWeights::Gemma { .. } = layer {
         return forward_gemma_layer(input, layer, ctx, m, output);
+    }
+    if let LayerWeights::QwenStandard { .. } = layer {
+        return forward_qwen_standard_layer(input, layer, ctx, m, output);
     }
     let mu = m as usize;
     // Hidden is determined by the layer's attention/deltanet sublayer.
     let hidden = match layer {
         LayerWeights::Attention { attn, .. } => attn.hidden,
         LayerWeights::DeltaNet { dnet, .. } => dnet.hidden,
-        LayerWeights::Gemma { .. } => unreachable!(), // handled above
+        LayerWeights::Gemma { .. } => unreachable!(),
+        LayerWeights::QwenStandard { .. } => unreachable!(),
     };
     if hidden == 0 {
         return Err(LayerError::ZeroHidden);
@@ -285,7 +311,7 @@ pub fn forward_layer(
     let (norm1, norm2) = match layer {
         LayerWeights::Attention { norm1, norm2, .. } => (norm1, norm2),
         LayerWeights::DeltaNet { norm1, norm2, .. } => (norm1, norm2),
-        LayerWeights::Gemma { .. } => unreachable!(),
+        LayerWeights::Gemma { .. } | LayerWeights::QwenStandard { .. } => unreachable!(),
     };
     apply_norm_per_token(norm1, input, m, hidden, &mut normed1)?;
 
@@ -306,7 +332,7 @@ pub fn forward_layer(
                 &normed1, dnet, *dnet_scales, ctx.sigmoid_lut, m, &mut sub_out,
             )?;
         }
-        LayerWeights::Gemma { .. } => unreachable!(),
+        LayerWeights::Gemma { .. } | LayerWeights::QwenStandard { .. } => unreachable!(),
     }
     drop(normed1);
 
@@ -327,7 +353,7 @@ pub fn forward_layer(
         LayerWeights::DeltaNet {
             ffn, ffn_scales, ..
         } => (ffn, *ffn_scales),
-        LayerWeights::Gemma { .. } => unreachable!(),
+        LayerWeights::Gemma { .. } | LayerWeights::QwenStandard { .. } => unreachable!(),
     };
     let mut ffn_out = vec![0i8; mu * hu];
     ffn_forward(
@@ -505,6 +531,103 @@ fn forward_gemma_layer(
     output.copy_from_slice(&residual1);
     add_residual_inplace(output, &normed_post_ffn);
 
+    Ok(())
+}
+
+/// Phase 2.12: Qwen 3.6 27B standard-attention layer forward.
+///
+/// Composition (same 2-norm residual structure as `Attention`, but
+/// with QK-norm inside the attention sublayer):
+/// ```text
+/// y  = attention_gemma(norm1(x), q_norm, k_norm, sliding_window=None)
+/// x' = saturate_i8(x + y)
+/// y' = ffn(norm2(x'))
+/// out = saturate_i8(x' + y')
+/// ```
+fn forward_qwen_standard_layer(
+    input: &[i8],
+    layer: &LayerWeights,
+    ctx: &LayerContext,
+    m: u32,
+    output: &mut [i8],
+) -> Result<(), LayerError> {
+    let (
+        norm1,
+        attn,
+        attn_scales,
+        q_norm_gamma,
+        k_norm_gamma,
+        qk_norm_eps_q,
+        qk_norm_post_scale,
+        norm2,
+        ffn,
+        ffn_scales,
+    ) = match layer {
+        LayerWeights::QwenStandard {
+            norm1,
+            attn,
+            attn_scales,
+            q_norm_gamma,
+            k_norm_gamma,
+            qk_norm_eps_q,
+            qk_norm_post_scale,
+            norm2,
+            ffn,
+            ffn_scales,
+        } => (
+            norm1, attn, attn_scales, q_norm_gamma, k_norm_gamma, *qk_norm_eps_q,
+            *qk_norm_post_scale, norm2, ffn, ffn_scales,
+        ),
+        _ => unreachable!("forward_qwen_standard_layer requires QwenStandard"),
+    };
+
+    let hidden = attn.hidden;
+    if hidden == 0 {
+        return Err(LayerError::ZeroHidden);
+    }
+    let mu = m as usize;
+    let hu = hidden as usize;
+    if input.len() != mu * hu {
+        return Err(LayerError::BadInputLen);
+    }
+    if output.len() != mu * hu {
+        return Err(LayerError::BadOutputLen);
+    }
+    if q_norm_gamma.len() != attn.head_dim as usize || k_norm_gamma.len() != attn.head_dim as usize
+    {
+        return Err(LayerError::BadNormShape);
+    }
+
+    let mut normed1 = vec![0i8; mu * hu];
+    apply_norm_per_token(norm1, input, m, hidden, &mut normed1)?;
+
+    let mut sub = vec![0i8; mu * hu];
+    let opts = GemmaAttentionOpts {
+        q_norm_gamma: Some(q_norm_gamma),
+        k_norm_gamma: Some(k_norm_gamma),
+        qk_norm_eps_q,
+        qk_norm_post_scale,
+        sliding_window: None,
+    };
+    attention_forward_gemma(
+        &normed1, attn, *attn_scales, ctx.rope_tables, ctx.softmax_lut, opts, m, &mut sub,
+    )?;
+    drop(normed1);
+
+    add_residual_inplace(&mut sub, input);
+    let residual1 = sub;
+
+    let mut normed2 = vec![0i8; mu * hu];
+    apply_norm_per_token(norm2, &residual1, m, hidden, &mut normed2)?;
+
+    let mut ffn_out = vec![0i8; mu * hu];
+    ffn_forward(
+        &normed2, ffn, ctx.ffn_activation, *ffn_scales, m, &mut ffn_out,
+    )?;
+    drop(normed2);
+
+    output.copy_from_slice(&residual1);
+    add_residual_inplace(output, &ffn_out);
     Ok(())
 }
 
@@ -988,6 +1111,107 @@ mod tests {
             "sliding window should change late tokens"
         );
         let _ = (&mut base, &mut sw); // silence "unused mut" if any
+    }
+
+    fn build_qwen_standard_layer(
+        hidden: u32,
+        num_q: u32,
+        num_kv: u32,
+        hd: u32,
+        seed: u64,
+    ) -> LayerWeights {
+        use crate::attention::AttentionScales;
+        let hu = hidden as usize;
+        let hdu = hd as usize;
+        LayerWeights::QwenStandard {
+            norm1: rms_norm(hu, seed),
+            attn: AttentionWeights {
+                hidden,
+                num_q_heads: num_q,
+                num_kv_heads: num_kv,
+                head_dim: hd,
+                w_q: lcg_bytes(hu * (num_q * hd) as usize, seed.wrapping_add(1)),
+                w_k: lcg_bytes(hu * (num_kv * hd) as usize, seed.wrapping_add(2)),
+                w_v: lcg_bytes(hu * (num_kv * hd) as usize, seed.wrapping_add(3)),
+                w_o: lcg_bytes((num_q * hd) as usize * hu, seed.wrapping_add(4)),
+            },
+            attn_scales: AttentionScales {
+                q: small_scale(),
+                k: small_scale(),
+                v: small_scale(),
+                score: small_scale(),
+                attn_out: small_scale(),
+                o: small_scale(),
+            },
+            q_norm_gamma: lcg_bytes(hdu, seed.wrapping_add(5)),
+            k_norm_gamma: lcg_bytes(hdu, seed.wrapping_add(6)),
+            qk_norm_eps_q: DEFAULT_EPS_Q,
+            qk_norm_post_scale: small_scale(),
+            norm2: rms_norm(hu, seed.wrapping_add(7)),
+            ffn: FfnWeights {
+                hidden,
+                intermediate: hidden * 2,
+                w_gate: lcg_bytes(hu * (hu * 2), seed.wrapping_add(8)),
+                w_up: lcg_bytes(hu * (hu * 2), seed.wrapping_add(9)),
+                w_down: lcg_bytes((hu * 2) * hu, seed.wrapping_add(10)),
+            },
+            ffn_scales: FfnScales {
+                gate: small_scale(),
+                up: small_scale(),
+                mid: small_scale(),
+                down: small_scale(),
+            },
+        }
+    }
+
+    #[test]
+    fn qwen_standard_layer_runs_and_round_trips() {
+        use crate::comm_w::compute_comm_w;
+        use crate::model::{Model, ModelDims};
+        let hidden = 8u32;
+        let m = 3u32;
+        let layer = build_qwen_standard_layer(hidden, 2, 1, 4, 0xc0c0);
+        let rope_tables = RopeTables::identity(m, 2);
+        let softmax_lut = ExpLut::uniform_test();
+        let sigmoid_lut = ActivationLut::identity();
+        let ffn_act = ActivationLut::identity();
+        let c = ctx(&rope_tables, &softmax_lut, &sigmoid_lut, &ffn_act);
+        let input = lcg_bytes((m * hidden) as usize, 0xd1d1);
+        let mut output = vec![0i8; (m * hidden) as usize];
+        forward_layer(&input, &layer, &c, m, &mut output).unwrap();
+
+        // Disk round-trip.
+        let model = Model {
+            dims: ModelDims {
+                vocab: 16,
+                hidden,
+                seq_len: 4,
+                activation_tile: 2,
+            },
+            arch_tag: crate::model::arch_tag("qwen35"),
+            feature_flags: 0,
+            embed: lcg_bytes((16 * hidden) as usize, 0xd2d2),
+            layers: vec![layer],
+            final_norm: None,
+            rope_tables: RopeTables::identity(4, 2),
+            softmax_lut: ExpLut::uniform_test(),
+            sigmoid_lut: ActivationLut::identity(),
+            ffn_activation: ActivationLut::identity(),
+        };
+        let dir = std::env::temp_dir().join(format!(
+            "ai_pow_vi_qwen_std_rt_{}_{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        model.save(&dir).unwrap();
+        let comm = compute_comm_w(&model);
+        let loaded = Model::load(&dir, &comm).unwrap();
+        assert_eq!(model.layers, loaded.layers);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
