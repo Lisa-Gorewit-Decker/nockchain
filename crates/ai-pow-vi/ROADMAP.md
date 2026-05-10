@@ -35,9 +35,10 @@ Shipped so far:
 | `LayerWeights::QwenStandard` (Qwen 3.6 27B attention-only path) | 2.12 | `72c09ed` | Fused QKV split, per-head QK norm, no sliding window. 16/64 Qwen blocks now run end-to-end (the other 48 hybrid blocks shipped in 2.13). |
 | `ai-pow-vi/ssm` + `LayerWeights::QwenHybridSsm` forward | 2.13 | `73ac70e`, `0d294f0` | Real Mamba SSM forward (causal 1D conv + per-token α/β gating + selective state recurrence + per-V-head RMSNorm + output projection) plus inlined gated-attention forward. All 64 Qwen 3.6 27B blocks now run end-to-end. |
 | `oracle/forward_reference.py` qwen35 + `synthetic_qwen_hybrid_mini` | 2.13.1 | `9e32b04` | Numpy parity for `forward_qwen_standard_layer`, `forward_qwen_hybrid_ssm_layer`, `ssm_forward`, `gated_attention_forward`. End-to-end byte-equal Rust ↔ numpy on a 2-layer model with one QwenStandard and one QwenHybridSsm block. |
-| `tests/oracle_multi_arch.rs` + `vi-eval` rename | 2.14 | _this commit_ | Multi-architecture acceptance gate parameterized over qwen3_legacy / qwen35 / gemma4 fixtures: confirms manifest v2 round-trip, arch_tag / feature_flags preservation, byte-equal forward parity, and one-bit comm_W tampering rejection across all archs. `qwen-eval` renamed to `vi-eval` with optional `--arch` assertion flag. Real-model entries (Qwen 3.6 27B, Gemma 4 8B/31B) pending Phase 2.15 streaming converter. |
+| `tests/oracle_multi_arch.rs` + `vi-eval` rename | 2.14 | `6dce0e6` | Multi-architecture acceptance gate parameterized over qwen3_legacy / qwen35 / gemma4 fixtures: confirms manifest v2 round-trip, arch_tag / feature_flags preservation, byte-equal forward parity, and one-bit comm_W tampering rejection across all archs. `qwen-eval` renamed to `vi-eval` with optional `--arch` assertion flag. Real-model entries (Qwen 3.6 27B, Gemma 4 8B/31B) pending Phase 2.15 streaming converter. |
+| `oracle/streaming_merkle.py` + `streaming_writer.py` + `quantize_streaming.py` + `gguf_reader.iter_tensors` | 2.15 | _this commit_ | Streaming GGUF→Model pipeline: stack-of-subtrees Merkle (O(log n) memory), per-tensor on-demand dequant (peak ≈ largest single tensor, ~2 GB for 19 GB GGUFs vs ~64 GB for the materializing path). Byte-equal to the reference path for all 5 layer flavors. Unblocks real-model conversion on a 16 GB laptop. |
 
-Test count: 197 unit + 18 pins + 7 oracle cross-impl + 4 qwen-mini E2E + 3 quantized-synthetic E2E + 4 gemma-mini E2E + 4 qwen-hybrid-mini E2E + 4 oracle-multi-arch + 5 oracle-arch (Python) + 5 vi-eval bin + 1 gated real-model, all green on aarch64.
+Test count: 197 unit + 18 pins + 7 oracle cross-impl + 4 qwen-mini E2E + 3 quantized-synthetic E2E + 4 gemma-mini E2E + 4 qwen-hybrid-mini E2E + 4 oracle-multi-arch + 5 oracle-arch (Python) + 5 vi-eval bin + 11 streaming-merkle + 4 streaming-writer + 3 streaming-quantize + 1 gated real-model, all green on aarch64.
 
 ## Phase 2 — remaining (in dependency order)
 
@@ -798,7 +799,7 @@ Acceptance gates:
    ≥ 70% for Gemma 4 (per arch-specific tolerances established in
    2.11 / 2.12).
 
-### 2.15 Streaming GGUF reader + streaming quantizer
+### ~~2.15 Streaming GGUF reader + streaming quantizer~~ ✓ shipped (Attention-flavored path; Gemma/Qwen-hybrid streaming extensions track the same pattern)
 
 Real-model GGUFs are large. Phase 2.9's `quantize_qwen.py` calls
 `gguf_reader.read_model()`, which dequantizes **every** tensor to f32

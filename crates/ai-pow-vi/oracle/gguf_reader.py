@@ -65,6 +65,130 @@ class GgufModel:
     feature_flags: int
 
 
+@dataclass
+class GgufStream:
+    """Phase 2.15 — streaming-friendly handle to a GGUF file.
+
+    Holds the (cheaply mmapped) reader, architecture metadata, and a
+    pre-built `canonical_name → gguf.ReaderTensor` lookup so callers
+    can iterate tensors lazily and in any order without re-walking the
+    file. Created by `open_stream()`; consumed by
+    `iter_tensors(stream)` for one-tensor-at-a-time dequant or by
+    direct lookup `stream.lookup[name]` for canonical-order writers.
+    """
+
+    reader: gguf.GGUFReader
+    arch: ArchDims
+    arch_obj: Architecture
+    block_kinds: list[BlockKind]
+    feature_flags: int
+    # Maps canonical name (e.g. `embed`, `layer[0].attn.w_q`) to the
+    # underlying GGUF reader-tensor. Any tensor that doesn't appear in
+    # the architecture's alias maps is dropped (vision/audio/multimodal
+    # auxiliaries — see `_map_tensor_name`).
+    lookup: dict[str, "gguf.ReaderTensor"]
+
+
+def open_stream(
+    path: str,
+    arch_override: Optional[str] = None,
+    extra_tensor_aliases: Optional[dict[str, str]] = None,
+) -> GgufStream:
+    """Open a GGUF file and return a [`GgufStream`] handle. No tensors
+    are dequantized here — the cost is only the GGUF index walk, which
+    is O(num_tensors) and a few MB of allocation regardless of file
+    size."""
+    reader = gguf.GGUFReader(path)
+    if arch_override is None:
+        arch_str = str(
+            bytes(reader.get_field("general.architecture").parts[-1]), encoding="utf-8"
+        )
+    else:
+        arch_str = arch_override
+    arch_obj = _arch.get(arch_str)
+    dims = arch_obj.read_dims(reader)
+    block_kinds = [arch_obj.block_kind(reader, i) for i in range(dims.num_layers)]
+
+    default_block_map = arch_obj.tensor_alias_map()
+    toplevel_map = arch_obj.toplevel_alias_map()
+    if extra_tensor_aliases:
+        for k, v in extra_tensor_aliases.items():
+            if not k.startswith("blk."):
+                toplevel_map[k] = v
+
+    lookup: dict[str, "gguf.ReaderTensor"] = {}
+    embed_rows = None
+    for t in reader.tensors:
+        canon = _map_tensor_name(
+            t.name,
+            arch_obj=arch_obj,
+            reader=reader,
+            toplevel_map=toplevel_map,
+            default_block_map=default_block_map,
+            extra=extra_tensor_aliases or {},
+        )
+        if canon is None:
+            continue
+        layer_idx, sub = canon
+        out_name = sub if layer_idx is None else f"layer[{layer_idx}].{sub}"
+        lookup[out_name] = t
+        if sub == "embed":
+            # Track embed rows so we can fill in vocab_size when the
+            # arch left it as 0.
+            embed_rows = int(t.shape[-1])
+    if dims.vocab_size == 0 and embed_rows is not None:
+        dims = ArchDims(
+            name=dims.name,
+            num_layers=dims.num_layers,
+            hidden=dims.hidden,
+            intermediate=dims.intermediate,
+            num_q_heads=dims.num_q_heads,
+            num_kv_heads=dims.num_kv_heads,
+            head_dim=dims.head_dim,
+            head_dim_kv=dims.head_dim_kv,
+            vocab_size=embed_rows,
+            rope_theta=dims.rope_theta,
+            max_position=dims.max_position,
+            sliding_window=dims.sliding_window,
+            extras=dims.extras,
+        )
+    return GgufStream(
+        reader=reader,
+        arch=dims,
+        arch_obj=arch_obj,
+        block_kinds=block_kinds,
+        feature_flags=arch_obj.feature_flags(),
+        lookup=lookup,
+    )
+
+
+def iter_tensors(stream: GgufStream):
+    """Yield `(canonical_name, np.ndarray f32)` one tensor at a time, in
+    GGUF on-disk order. Each yielded ndarray goes out of scope when the
+    next iteration begins, so peak memory is bounded by the largest
+    single tensor (typically the embed table or `lm_head` — a few
+    hundred MB for a 17-19 GB GGUF, vs ~55-64 GB if every tensor were
+    held simultaneously).
+
+    Iteration order is stable across runs but is *not* canonical
+    (Rust-side write order). Callers that need canonical order should
+    walk `stream.lookup[canonical_name]` directly and dequantize on
+    demand."""
+    # Reverse the lookup map for fast on-disk-order traversal: tensor
+    # name → canonical name. Keep only mapped tensors.
+    by_gguf_name = {t.name: c for c, t in stream.lookup.items()}
+    for t in stream.reader.tensors:
+        canon = by_gguf_name.get(t.name)
+        if canon is None:
+            continue
+        arr = dequantize_tensor(t)
+        # Use the same flatten rule the non-streaming `read_model` uses
+        # so streaming and non-streaming consumers see identical shapes.
+        sub = canon.split(".", 1)[-1] if "." in canon else canon
+        yield canon, _flatten_linear(arr, sub)
+        # arr falls out of scope here (caller drops the yielded ref).
+
+
 def dequantize_tensor(t: gguf.ReaderTensor) -> np.ndarray:
     """Convert any GGUF-quantized tensor to f32 in PyTorch shape order.
     GGUF stores shape reversed; we reverse on read.
