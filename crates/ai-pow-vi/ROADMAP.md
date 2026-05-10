@@ -30,8 +30,12 @@ Shipped so far:
 | `ai-pow-vi/oracle/` | 2.8 | `9d87f6a` | Numpy/blake3 reference implementation + 7 binary fixtures (rescale, matmul, rmsnorm, layernorm, softmax, ffn, synth_prompt). Rust `tests/oracle_op_vectors.rs` loads each fixture and asserts byte-equal Rust output. Cross-implementation determinism check on top of the Rust-only pins. |
 | `ai-pow-vi/io` + qwen-mini | 2.9.1, 2.9.5, 2.9.8 | `0225f87` | Disk format (`manifest.bin` / `weights.bin` / `comm_w.hex`), `Model::load`/`save`, numpy forward reference, synthetic Qwen-mini end-to-end Rust test. |
 | `oracle/gguf_reader.py`, `calibrate.py`, `quantize_qwen.py`, `bin/qwen-eval`, `tests/oracle_qwen.rs` | 2.9.2-2.9.4, 2.9.6-2.9.7 | latest | GGUF dequantize + canonical-name mapping; static + activation-mode scale calibration; quantizer driver that produces a Model directory; gated real-model integration test; `qwen-eval` binary for top-1 next-token agreement. |
+| `oracle/arch/` registry, manifest v2 (`arch_tag` + `feature_flags`) | 2.10 | `00e969b`, `df486a6` | Architecture registry foundations; per-arch GGUF readers for `qwen3_legacy`, `qwen35`, `gemma4`; manifest v2 with `arch_tag: [u8;16]` and `feature_flags: u64` baked into `comm_W`. |
+| `ai-pow-vi/attention` Gemma extras + `LayerWeights::Gemma` + numpy parity | 2.11 | `1685db1`, `8a269de` | QK norm + sliding-window mask + 4-norm Gemma 4 layer composition with `inp_gate` and `layer_output_scale`; synthetic gemma-mini E2E byte-equal Rust ↔ numpy. |
+| `LayerWeights::QwenStandard` (Qwen 3.6 27B attention-only path) | 2.12 | `72c09ed` | Fused QKV split, per-head QK norm, no sliding window. 16/64 Qwen blocks now run end-to-end (the other 48 hybrid blocks shipped in 2.13). |
+| `ai-pow-vi/ssm` + `LayerWeights::QwenHybridSsm` forward | 2.13 | `73ac70e`, _this commit_ | Real Mamba SSM forward (causal 1D conv + per-token α/β gating + selective state recurrence + per-V-head RMSNorm + output projection) plus inlined gated-attention forward. All 64 Qwen 3.6 27B blocks now run end-to-end. |
 
-Test count: 184 unit + 17 pins + 7 oracle cross-impl + 4 qwen-mini E2E + 3 quantized-synthetic E2E + 1 gated real-model, all green on aarch64.
+Test count: 197 unit + 18 pins + 7 oracle cross-impl + 4 qwen-mini E2E + 3 quantized-synthetic E2E + 4 gemma-mini E2E + 5 oracle-arch + 5 qwen-eval-bin + 1 gated real-model, all green on aarch64.
 
 ## Phase 2 — remaining (in dependency order)
 
@@ -742,7 +746,7 @@ missing.
    and exercises the full dispatch machinery. Documented as a
    debugging mode, not a release path.
 
-### 2.13 Mamba SSM block (qwen35 hybrid layers)
+### ~~2.13 Mamba SSM block (qwen35 hybrid layers)~~ ✓ shipped (forward; numpy parity deferred to 2.13.1)
 
 The biggest remaining piece. A hybrid block performs *in parallel*:
 

@@ -29,6 +29,7 @@ use ai_pow_vi::quant::{rescale_and_requantize, Scale, SCALE_DENOM_LOG2};
 use ai_pow_vi::rmsnorm::{isqrt_floor, rmsnorm, DEFAULT_EPS_Q};
 use ai_pow_vi::rope::{rope_apply, RopeTables, FRACT_BITS as ROPE_FRACT_BITS};
 use ai_pow_vi::softmax::{softmax_int, ExpLut};
+use ai_pow_vi::ssm::{ssm_forward, SsmOpts};
 use ai_pow_vi::verifier::{verify_vi, VerifierMode};
 
 fn canonical_input_i8(len: usize, seed: u64) -> Vec<i8> {
@@ -432,6 +433,83 @@ fn pin_deltanet_canonical_output() {
         0xa8, 0x93,
     ];
     assert_eq!(actual, expected, "{ARCH_TAG} deltanet_forward divergence");
+}
+
+#[test]
+fn pin_ssm_canonical_output() {
+    // Phase 2.13 Mamba SSM forward determinism pin.
+    // Fixture: m=3, hidden=4, num_v=2, head_dim=2, kernel=3.
+    // Per-V-head state is 2 i8; total state is 4 i8.
+    let hidden = 4u32;
+    let num_v = 2u32;
+    let hd = 2u32;
+    let kernel = 3u32;
+    let m = 3u32;
+
+    let nv = num_v as usize;
+    let hu = hidden as usize;
+    let hdu = hd as usize;
+    let ksz = kernel as usize;
+
+    let ssm_a = canonical_input_i8(nv, 0xa1a1_b2b2_c3c3_d4d4u64);
+    let ssm_alpha = canonical_input_i8(hu * nv, 0xe5e5_f6f6_0707_1818u64);
+    let ssm_beta = canonical_input_i8(hu * nv, 0x2929_3a3a_4b4b_5c5cu64);
+    let ssm_conv1d = canonical_input_i8(ksz * hu, 0x6d6d_7e7e_8f8f_90a0u64);
+    let ssm_dt = canonical_input_i8(nv, 0xb1b1_c2c2_d3d3_e4e4u64);
+    let ssm_norm_gamma = canonical_input_i8(hdu, 0xf5f5_0606_1717_2828u64);
+    let ssm_out = canonical_input_i8(nv * hdu * hu, 0x3939_4a4a_5b5b_6c6cu64);
+
+    // Hard-sigmoid LUT (same shape as the deltanet pin uses, kept locally
+    // here so this test is self-contained).
+    let mut sigmoid_bytes = [0u8; 256];
+    for (i, b) in sigmoid_bytes.iter_mut().enumerate() {
+        let x = (i as i32) - 128;
+        let v = (64 + x / 2).clamp(0, 127);
+        *b = v as u8;
+    }
+    let sigmoid_lut = ActivationLut::from_bytes(ActivationKind::SiLU, &sigmoid_bytes).unwrap();
+
+    let scales = DeltaNetScales {
+        q: Scale::from_num(1 << (SCALE_DENOM_LOG2 - 4)).unwrap(),
+        k: Scale::from_num(1 << (SCALE_DENOM_LOG2 - 4)).unwrap(),
+        v: Scale::from_num(1 << (SCALE_DENOM_LOG2 - 4)).unwrap(),
+        alpha_logit: Scale::from_num(1 << (SCALE_DENOM_LOG2 - 4)).unwrap(),
+        beta_logit: Scale::from_num(1 << (SCALE_DENOM_LOG2 - 4)).unwrap(),
+        u: Scale::from_num(1 << (SCALE_DENOM_LOG2 - 4)).unwrap(),
+        decay: Scale::from_num(1 << (SCALE_DENOM_LOG2 - 4)).unwrap(),
+        update: Scale::from_num(1 << (SCALE_DENOM_LOG2 - 4)).unwrap(),
+        o: Scale::from_num(1 << (SCALE_DENOM_LOG2 - 4)).unwrap(),
+        proj: Scale::from_num(1 << (SCALE_DENOM_LOG2 - 4)).unwrap(),
+    };
+
+    let opts = SsmOpts {
+        ssm_a: &ssm_a,
+        ssm_alpha: &ssm_alpha,
+        ssm_beta: &ssm_beta,
+        ssm_conv1d: &ssm_conv1d,
+        ssm_dt: &ssm_dt,
+        ssm_norm_gamma: &ssm_norm_gamma,
+        ssm_norm_eps_q: DEFAULT_EPS_Q,
+        ssm_norm_post_scale: Scale::from_num(1 << (SCALE_DENOM_LOG2 - 4)).unwrap(),
+        ssm_out: &ssm_out,
+        num_v_heads: num_v,
+        head_dim: hd,
+        kernel_size: kernel,
+        scales,
+        sigmoid_lut: &sigmoid_lut,
+    };
+
+    let input = canonical_input_i8((m * hidden) as usize, 0x9999_aaaa_bbbb_ccccu64);
+    let mut output = vec![0i8; (m * hidden) as usize];
+    ssm_forward(&input, hidden, m, opts, &mut output).unwrap();
+    let bytes: Vec<u8> = output.iter().map(|&v| v as u8).collect();
+    let actual = hash_canonical(&bytes);
+    let expected: [u8; 32] = [
+        0x39, 0xcb, 0x09, 0x20, 0x5d, 0xab, 0xea, 0xaf, 0x01, 0xb5, 0x77, 0xbd, 0xcc, 0x7a, 0xec,
+        0xee, 0x86, 0xde, 0xd4, 0xee, 0xb7, 0xac, 0x9c, 0xd7, 0xe4, 0x8f, 0xd0, 0x1a, 0xa4, 0x53,
+        0x1c, 0x56,
+    ];
+    assert_eq!(actual, expected, "{ARCH_TAG} ssm_forward divergence");
 }
 
 #[test]

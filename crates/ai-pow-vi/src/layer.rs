@@ -24,10 +24,14 @@ use crate::attention::{
 use crate::deltanet::{deltanet_forward, DeltaNetError, DeltaNetScales, DeltaNetWeights};
 use crate::ffn::{ffn_forward, FfnError, FfnScales, FfnWeights};
 use crate::layernorm::{layernorm, LayerNormError};
-use crate::quant::{rescale_and_requantize, saturate_i8, Scale};
+use crate::matmul_int8::{dot_int8, matmul_int8, matmul_int8_requant, requantize_vec};
+use crate::quant::{
+    rescale_and_requantize, round_half_to_even_div_pow2, saturate_i8, Scale, SCALE_DENOM_LOG2,
+};
 use crate::rmsnorm::{rmsnorm, RmsNormError};
-use crate::rope::RopeTables;
-use crate::softmax::ExpLut;
+use crate::rope::{rope_apply, RopeTables};
+use crate::softmax::{softmax_int, ExpLut};
+use crate::ssm::{ssm_forward, SsmError, SsmOpts};
 
 /// Per-layer norm flavor + parameters. Both Gemma and Qwen use RMSNorm in
 /// every position — `LayerNorm` is included so a future model registration
@@ -111,11 +115,12 @@ pub enum LayerWeights {
     /// state-transition diagonal `ssm_a`, per-channel `ssm_dt`,
     /// `ssm_norm`, and a final `ssm_out` projection.
     ///
-    /// Phase 2.13 ships the variant + disk format so the full Qwen
-    /// 3.6 27B GGUF can be quantized and loaded; the **forward**
-    /// implementation returns `LayerError::HybridSsmNotImplemented`
-    /// so callers can still load + forward-through-attention-only
-    /// blocks. Real SSM math lands in a follow-up.
+    /// Phase 2.13 ships the variant, disk format, and forward
+    /// implementation. The forward composes [`crate::ssm::ssm_forward`]
+    /// (Mamba path) with an inlined gated-attention forward (fused QKV
+    /// split + QK norm + RoPE + causal softmax + sigmoid `attn_gate`
+    /// element-wise multiply + `attn_out` projection); the two paths are
+    /// summed before the residual add.
     QwenHybridSsm {
         norm1: NormSpec,
         // Gated attention path:
@@ -242,8 +247,6 @@ pub enum LayerError {
     ZeroM,
     #[error("norm gamma length must equal hidden")]
     BadNormShape,
-    #[error("QwenHybridSsm forward is Phase 2.13 follow-up; load works but forward does not")]
-    HybridSsmNotImplemented,
     #[error("rmsnorm: {0}")]
     Rms(#[from] RmsNormError),
     #[error("layernorm: {0}")]
@@ -254,6 +257,14 @@ pub enum LayerError {
     Dnet(#[from] DeltaNetError),
     #[error("ffn: {0}")]
     Ffn(#[from] FfnError),
+    #[error("ssm: {0}")]
+    Ssm(#[from] SsmError),
+    #[error("matmul: {0}")]
+    Matmul(#[from] crate::matmul_int8::MatmulError),
+    #[error("rope: {0}")]
+    Rope(#[from] crate::rope::RopeError),
+    #[error("softmax: {0}")]
+    Softmax(#[from] crate::softmax::SoftmaxError),
 }
 
 /// Apply `norm` independently to each row of `input` (`(m, hidden)` row-major)
@@ -352,7 +363,7 @@ pub fn forward_layer(
         return forward_qwen_standard_layer(input, layer, ctx, m, output);
     }
     if let LayerWeights::QwenHybridSsm { .. } = layer {
-        return Err(LayerError::HybridSsmNotImplemented);
+        return forward_qwen_hybrid_ssm_layer(input, layer, ctx, m, output);
     }
     let mu = m as usize;
     // Hidden is determined by the layer's attention/deltanet sublayer.
@@ -702,6 +713,382 @@ fn forward_qwen_standard_layer(
 
     output.copy_from_slice(&residual1);
     add_residual_inplace(output, &ffn_out);
+    Ok(())
+}
+
+/// Phase 2.13 part 2: Qwen 3.6 27B hybrid attention + Mamba-SSM block
+/// forward.
+///
+/// The pre-attn norm output feeds **two parallel sublayers** that are
+/// summed before the residual add:
+/// 1. Gated attention with fused QKV split, QK norm, RoPE, causal softmax,
+///    V-weighted sum, sigmoid `attn_gate` element-wise multiply, and
+///    output projection (`attn_out`).
+/// 2. Mamba SSM (1D causal conv + per-token α/β gating + selective state
+///    recurrence + per-V-head RMSNorm + output projection (`ssm_out`)).
+///
+/// Composition (one residual stream, two norms — like the standard
+/// Attention block, but with the parallel-paths sum inside the first
+/// sublayer):
+/// ```text
+/// y_attn = gated_attention(norm1(x))
+/// y_ssm  = ssm_forward(norm1(x))
+/// y      = saturate_i8(y_attn + y_ssm)
+/// x'     = saturate_i8(x + y)
+/// y'     = ffn(norm2(x'))
+/// out    = saturate_i8(x' + y')
+/// ```
+#[allow(clippy::too_many_arguments)]
+fn forward_qwen_hybrid_ssm_layer(
+    input: &[i8],
+    layer: &LayerWeights,
+    ctx: &LayerContext,
+    m: u32,
+    output: &mut [i8],
+) -> Result<(), LayerError> {
+    let (
+        norm1,
+        attn_qkv_fused,
+        attn_gate,
+        attn_out,
+        num_q_heads,
+        num_kv_heads,
+        head_dim,
+        attn_scales,
+        q_norm_gamma,
+        k_norm_gamma,
+        qk_norm_eps_q,
+        qk_norm_post_scale,
+        ssm_a,
+        ssm_alpha,
+        ssm_beta,
+        ssm_conv1d,
+        ssm_dt,
+        ssm_norm_gamma,
+        ssm_norm_eps_q,
+        ssm_norm_post_scale,
+        ssm_out,
+        num_v_heads,
+        ssm_kernel_size,
+        ssm_scales,
+        norm2,
+        ffn,
+        ffn_scales,
+    ) = match layer {
+        LayerWeights::QwenHybridSsm {
+            norm1,
+            attn_qkv_fused,
+            attn_gate,
+            attn_out,
+            num_q_heads,
+            num_kv_heads,
+            head_dim,
+            attn_scales,
+            q_norm_gamma,
+            k_norm_gamma,
+            qk_norm_eps_q,
+            qk_norm_post_scale,
+            ssm_a,
+            ssm_alpha,
+            ssm_beta,
+            ssm_conv1d,
+            ssm_dt,
+            ssm_norm_gamma,
+            ssm_norm_eps_q,
+            ssm_norm_post_scale,
+            ssm_out,
+            num_v_heads,
+            ssm_kernel_size,
+            ssm_scales,
+            norm2,
+            ffn,
+            ffn_scales,
+        } => (
+            norm1, attn_qkv_fused, attn_gate, attn_out, *num_q_heads, *num_kv_heads, *head_dim,
+            *attn_scales, q_norm_gamma, k_norm_gamma, *qk_norm_eps_q, *qk_norm_post_scale, ssm_a,
+            ssm_alpha, ssm_beta, ssm_conv1d, ssm_dt, ssm_norm_gamma, *ssm_norm_eps_q,
+            *ssm_norm_post_scale, ssm_out, *num_v_heads, *ssm_kernel_size, *ssm_scales, norm2, ffn,
+            *ffn_scales,
+        ),
+        _ => unreachable!("forward_qwen_hybrid_ssm_layer requires QwenHybridSsm"),
+    };
+
+    let hidden = ffn.hidden;
+    if hidden == 0 {
+        return Err(LayerError::ZeroHidden);
+    }
+    let mu = m as usize;
+    let hu = hidden as usize;
+    if input.len() != mu * hu {
+        return Err(LayerError::BadInputLen);
+    }
+    if output.len() != mu * hu {
+        return Err(LayerError::BadOutputLen);
+    }
+    if q_norm_gamma.len() != head_dim as usize || k_norm_gamma.len() != head_dim as usize {
+        return Err(LayerError::BadNormShape);
+    }
+
+    // Step 1: norm1(input) → normed1.
+    let mut normed1 = vec![0i8; mu * hu];
+    apply_norm_per_token(norm1, input, m, hidden, &mut normed1)?;
+
+    // Step 2: gated attention path.
+    let mut y_attn = vec![0i8; mu * hu];
+    gated_attention_forward(
+        &normed1, attn_qkv_fused, attn_gate, attn_out, hidden, num_q_heads, num_kv_heads, head_dim,
+        attn_scales, q_norm_gamma, k_norm_gamma, qk_norm_eps_q, qk_norm_post_scale,
+        ctx.rope_tables, ctx.softmax_lut, ctx.sigmoid_lut, m, &mut y_attn,
+    )?;
+
+    // Step 3: SSM path.
+    let mut y_ssm = vec![0i8; mu * hu];
+    let opts = SsmOpts {
+        ssm_a,
+        ssm_alpha,
+        ssm_beta,
+        ssm_conv1d,
+        ssm_dt,
+        ssm_norm_gamma,
+        ssm_norm_eps_q,
+        ssm_norm_post_scale,
+        ssm_out,
+        num_v_heads,
+        head_dim,
+        kernel_size: ssm_kernel_size,
+        scales: ssm_scales,
+        sigmoid_lut: ctx.sigmoid_lut,
+    };
+    ssm_forward(&normed1, hidden, m, opts, &mut y_ssm)?;
+    drop(normed1);
+
+    // Step 4: y = saturate_i8(y_attn + y_ssm).
+    let mut sub_out = y_attn;
+    add_residual_inplace(&mut sub_out, &y_ssm);
+    drop(y_ssm);
+
+    // Step 5: residual1 = input + sub_out.
+    add_residual_inplace(&mut sub_out, input);
+    let residual1 = sub_out;
+
+    // Step 6: norm2(residual1) → normed2.
+    let mut normed2 = vec![0i8; mu * hu];
+    apply_norm_per_token(norm2, &residual1, m, hidden, &mut normed2)?;
+
+    // Step 7: FFN.
+    let mut ffn_out = vec![0i8; mu * hu];
+    ffn_forward(
+        &normed2, ffn, ctx.ffn_activation, ffn_scales, m, &mut ffn_out,
+    )?;
+    drop(normed2);
+
+    // Step 8: output = residual1 + ffn_out (saturating).
+    output.copy_from_slice(&residual1);
+    add_residual_inplace(output, &ffn_out);
+    Ok(())
+}
+
+/// Inlined gated-attention forward used by [`forward_qwen_hybrid_ssm_layer`].
+///
+/// Equivalent to [`crate::attention::attention_forward_gemma`] with
+/// `sliding_window=None`, plus:
+/// - **Fused QKV**: the `(hidden, q_dim + k_dim + v_dim)` `attn_qkv_fused`
+///   matrix is sliced in-place into Q, K, V column-major sub-matrices
+///   (each column is `hidden` bytes; columns 0..q_dim → Q,
+///   q_dim..q_dim+k_dim → K, q_dim+k_dim..total → V).
+/// - **`attn_gate`**: a per-head sigmoid gate computed from `input` and
+///   element-wise multiplied (with banker's rounding through `attn_out`
+///   scale) into the attention output before the final projection.
+///
+/// Inlined rather than punching a "skip output projection / apply gate"
+/// option into [`crate::attention`] because (a) this is the only caller,
+/// and (b) keeping the attention-module API small makes future SIMD jets
+/// easier to drop in.
+#[allow(clippy::too_many_arguments)]
+fn gated_attention_forward(
+    input: &[i8],
+    attn_qkv_fused: &[i8],
+    attn_gate: &[i8],
+    attn_out_w: &[i8],
+    hidden: u32,
+    num_q_heads: u32,
+    num_kv_heads: u32,
+    head_dim: u32,
+    scales: AttentionScales,
+    q_norm_gamma: &[i8],
+    k_norm_gamma: &[i8],
+    qk_norm_eps_q: i64,
+    qk_norm_post_scale: Scale,
+    rope_tables: &RopeTables,
+    softmax_lut: &ExpLut,
+    sigmoid_lut: &ActivationLut,
+    m: u32,
+    output: &mut [i8],
+) -> Result<(), LayerError> {
+    if hidden == 0 || num_q_heads == 0 || head_dim == 0 || m == 0 {
+        return Err(LayerError::ZeroHidden);
+    }
+    if num_kv_heads == 0 || num_kv_heads > num_q_heads || num_q_heads % num_kv_heads != 0 {
+        return Err(LayerError::Attn(AttentionError::BadKvHeads));
+    }
+    if head_dim % 2 != 0 {
+        return Err(LayerError::Attn(AttentionError::HeadDimOdd));
+    }
+    if rope_tables.half_head_dim != head_dim / 2 {
+        return Err(LayerError::Attn(AttentionError::RopeHalfHeadDimMismatch));
+    }
+    if rope_tables.seq_len < m {
+        return Err(LayerError::Attn(AttentionError::RopeSeqLenTooShort));
+    }
+    let mu = m as usize;
+    let hu = hidden as usize;
+    let num_qu = num_q_heads as usize;
+    let num_kvu = num_kv_heads as usize;
+    let hdu = head_dim as usize;
+    let q_dim = num_qu * hdu;
+    let kv_dim = num_kvu * hdu;
+    let total_qkv = q_dim + kv_dim + kv_dim;
+
+    if input.len() != mu * hu {
+        return Err(LayerError::BadInputLen);
+    }
+    if output.len() != mu * hu {
+        return Err(LayerError::BadOutputLen);
+    }
+    if attn_qkv_fused.len() != hu * total_qkv {
+        return Err(LayerError::Attn(AttentionError::BadWqLen));
+    }
+    if attn_gate.len() != hu * q_dim {
+        return Err(LayerError::Attn(AttentionError::BadWqLen));
+    }
+    if attn_out_w.len() != q_dim * hu {
+        return Err(LayerError::Attn(AttentionError::BadWoLen));
+    }
+
+    // Split fused QKV into Q, K, V column-major sub-matrices. Column-major
+    // layout means columns are contiguous, so a contiguous slice of the
+    // fused matrix is a valid column-major sub-matrix.
+    let w_q = &attn_qkv_fused[0..hu * q_dim];
+    let w_k = &attn_qkv_fused[hu * q_dim..hu * (q_dim + kv_dim)];
+    let w_v = &attn_qkv_fused[hu * (q_dim + kv_dim)..hu * total_qkv];
+
+    // Q projection.
+    let mut q_acc = vec![0i32; mu * q_dim];
+    matmul_int8(input, w_q, m, hidden, num_q_heads * head_dim, &mut q_acc)?;
+    let mut q_i8 = vec![0i8; mu * q_dim];
+    requantize_vec(&q_acc, scales.q, &mut q_i8)?;
+    drop(q_acc);
+
+    // K projection.
+    let mut k_acc = vec![0i32; mu * kv_dim];
+    matmul_int8(input, w_k, m, hidden, num_kv_heads * head_dim, &mut k_acc)?;
+    let mut k_i8 = vec![0i8; mu * kv_dim];
+    requantize_vec(&k_acc, scales.k, &mut k_i8)?;
+    drop(k_acc);
+
+    // V projection.
+    let mut v_acc = vec![0i32; mu * kv_dim];
+    matmul_int8(input, w_v, m, hidden, num_kv_heads * head_dim, &mut v_acc)?;
+    let mut v_i8 = vec![0i8; mu * kv_dim];
+    requantize_vec(&v_acc, scales.v, &mut v_i8)?;
+    drop(v_acc);
+
+    // QK norm (per (token, head)). Gemma-style: shared gamma across heads.
+    {
+        let mut acc = vec![0i32; hdu];
+        for t in 0..mu {
+            for h in 0..num_qu {
+                let off = t * q_dim + h * hdu;
+                rmsnorm(&q_i8[off..off + hdu], q_norm_gamma, &mut acc, qk_norm_eps_q)?;
+                for (d, &a) in acc.iter().enumerate() {
+                    q_i8[off + d] = rescale_and_requantize(a, qk_norm_post_scale);
+                }
+            }
+            for h in 0..num_kvu {
+                let off = t * kv_dim + h * hdu;
+                rmsnorm(&k_i8[off..off + hdu], k_norm_gamma, &mut acc, qk_norm_eps_q)?;
+                for (d, &a) in acc.iter().enumerate() {
+                    k_i8[off + d] = rescale_and_requantize(a, qk_norm_post_scale);
+                }
+            }
+        }
+    }
+
+    // RoPE on Q and K.
+    for pos in 0..mu {
+        for h in 0..num_qu {
+            let off = pos * q_dim + h * hdu;
+            rope_apply(&mut q_i8[off..off + hdu], pos as u32, rope_tables)?;
+        }
+        for h in 0..num_kvu {
+            let off = pos * kv_dim + h * hdu;
+            rope_apply(&mut k_i8[off..off + hdu], pos as u32, rope_tables)?;
+        }
+    }
+
+    // Per-head causal attention core (no sliding window for Qwen 3.6).
+    let mut attn_inter = vec![0i8; mu * q_dim];
+    let mut scores_buf = vec![0i32; mu];
+    let mut probs_buf = vec![0i8; mu];
+    for i in 0..mu {
+        for h in 0..num_qu {
+            let kv_h = h * num_kvu / num_qu;
+            let q_off = i * q_dim + h * hdu;
+            for j in 0..=i {
+                let k_off = j * kv_dim + kv_h * hdu;
+                let raw = dot_int8(&q_i8[q_off..q_off + hdu], &k_i8[k_off..k_off + hdu]);
+                // Same scale_score as attention.rs (banker's rounding).
+                let product = (raw as i64) * (scales.score.num as i64);
+                let scaled = round_half_to_even_div_pow2(product, SCALE_DENOM_LOG2)
+                    .clamp(i32::MIN as i64, i32::MAX as i64) as i32;
+                scores_buf[j] = scaled;
+            }
+            softmax_int(&scores_buf[..i + 1], softmax_lut, &mut probs_buf[..i + 1])?;
+            let ao_off = i * q_dim + h * hdu;
+            for d in 0..hdu {
+                let mut acc = 0i32;
+                for j in 0..=i {
+                    let v_off = j * kv_dim + kv_h * hdu + d;
+                    acc = acc.wrapping_add((probs_buf[j] as i32) * (v_i8[v_off] as i32));
+                }
+                attn_inter[ao_off + d] = rescale_and_requantize(acc, scales.attn_out);
+            }
+        }
+    }
+    drop(q_i8);
+    drop(k_i8);
+    drop(v_i8);
+
+    // Per-head sigmoid gate: gate = sigmoid_lut(rescale(input @ attn_gate, scales.q)).
+    // Reuses scales.q for the gate-projection requantize; this is the same
+    // scale convention used elsewhere for "linear-projection-then-LUT".
+    let mut gate_acc = vec![0i32; mu * q_dim];
+    matmul_int8(input, attn_gate, m, hidden, q_dim as u32, &mut gate_acc)?;
+    let mut gate_i8 = vec![0i8; mu * q_dim];
+    requantize_vec(&gate_acc, scales.q, &mut gate_i8)?;
+    sigmoid_lut.apply(&mut gate_i8);
+    drop(gate_acc);
+
+    // Element-wise multiply: gated[i, j] = (attn_inter[i, j] * gate[i, j]) >> 7.
+    // gate is sigmoid LUT output in [0, 127] representing [0, 1]. Multiply
+    // produces i32 in range about [-128 * 127, 127 * 127]; >> 7 brings back
+    // to i8 range. Use saturating clamp to keep determinism crisp.
+    for k in 0..mu * q_dim {
+        let prod = (attn_inter[k] as i32).wrapping_mul(gate_i8[k] as i32);
+        // Symmetric half-up: |v| → (|v|+63)/127 → preserve sign. (Same
+        // pattern apply_channelwise_scale uses; see Phase 2.11 numpy parity
+        // note for why this differs from `>> 7`.)
+        let abs_v = prod.unsigned_abs() as i64;
+        let q = ((abs_v + 63) / 127) as i32;
+        let signed = if prod < 0 { -q } else { q };
+        attn_inter[k] = signed.clamp(i8::MIN as i32, i8::MAX as i32) as i8;
+    }
+    drop(gate_i8);
+
+    // Output projection: (m, q_dim) @ attn_out_w → (m, hidden) i8.
+    matmul_int8_requant(
+        &attn_inter, attn_out_w, m, q_dim as u32, hidden, scales.o, output,
+    )?;
     Ok(())
 }
 
@@ -1364,7 +1751,7 @@ mod tests {
     }
 
     #[test]
-    fn qwen_hybrid_ssm_loads_but_forward_unimplemented() {
+    fn qwen_hybrid_ssm_loads_and_forwards() {
         use crate::comm_w::compute_comm_w;
         use crate::model::{Model, ModelDims};
         let hidden = 8u32;
@@ -1400,17 +1787,65 @@ mod tests {
         let loaded = Model::load(&dir, &comm).unwrap();
         assert_eq!(model.layers, loaded.layers);
 
-        // Forward returns `HybridSsmNotImplemented` (Phase 2.13 follow-up).
+        // Forward now runs end-to-end (Phase 2.13 part 2).
         let rope_tables = RopeTables::identity(2, 2);
         let softmax_lut = ExpLut::uniform_test();
         let sigmoid_lut = ActivationLut::identity();
         let ffn_act = ActivationLut::identity();
         let c = ctx(&rope_tables, &softmax_lut, &sigmoid_lut, &ffn_act);
         let input = lcg_bytes((2 * hidden) as usize, 0xc0c0);
-        let mut output = vec![0i8; (2 * hidden) as usize];
-        let result = forward_layer(&input, &loaded.layers[0], &c, 2, &mut output);
-        assert_eq!(result, Err(LayerError::HybridSsmNotImplemented));
+        let mut a = vec![0i8; (2 * hidden) as usize];
+        let mut b = vec![0i8; (2 * hidden) as usize];
+        forward_layer(&input, &loaded.layers[0], &c, 2, &mut a).unwrap();
+        forward_layer(&input, &loaded.layers[0], &c, 2, &mut b).unwrap();
+        assert_eq!(a, b, "two identical hybrid forward calls must agree");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn qwen_hybrid_ssm_zero_weights_yields_input_passthrough() {
+        // With every sublayer weight zero, both attention and SSM produce
+        // zero outputs; FFN also produces zero; layer reduces to identity
+        // (input passthrough modulo norm scaling, which on zero post-add
+        // preserves input bytes).
+        let hidden = 8u32;
+        let m = 2u32;
+        let mut layer = build_qwen_hybrid_layer(hidden, 2, 1, 3, 4, 0xeeee);
+        if let LayerWeights::QwenHybridSsm {
+            attn_qkv_fused,
+            attn_gate,
+            attn_out,
+            ssm_alpha,
+            ssm_beta,
+            ssm_conv1d,
+            ssm_out,
+            ffn,
+            ..
+        } = &mut layer
+        {
+            attn_qkv_fused.iter_mut().for_each(|x| *x = 0);
+            attn_gate.iter_mut().for_each(|x| *x = 0);
+            attn_out.iter_mut().for_each(|x| *x = 0);
+            ssm_alpha.iter_mut().for_each(|x| *x = 0);
+            ssm_beta.iter_mut().for_each(|x| *x = 0);
+            ssm_conv1d.iter_mut().for_each(|x| *x = 0);
+            ssm_out.iter_mut().for_each(|x| *x = 0);
+            ffn.w_gate.iter_mut().for_each(|x| *x = 0);
+            ffn.w_up.iter_mut().for_each(|x| *x = 0);
+            ffn.w_down.iter_mut().for_each(|x| *x = 0);
+        }
+        let rope_tables = RopeTables::identity(m, 2);
+        let softmax_lut = ExpLut::uniform_test();
+        let sigmoid_lut = ActivationLut::identity();
+        let ffn_act = ActivationLut::identity();
+        let c = ctx(&rope_tables, &softmax_lut, &sigmoid_lut, &ffn_act);
+        let input = lcg_bytes((m * hidden) as usize, 0xdada);
+        let mut output = vec![0i8; (m * hidden) as usize];
+        forward_layer(&input, &layer, &c, m, &mut output).unwrap();
+        assert_eq!(
+            output, input,
+            "with zero sublayer weights, hybrid layer is identity"
+        );
     }
 
     #[test]

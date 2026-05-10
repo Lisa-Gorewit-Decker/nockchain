@@ -43,6 +43,7 @@ pub mod quant;
 pub mod rmsnorm;
 pub mod rope;
 pub mod softmax;
+pub mod ssm;
 pub mod verifier;
 
 pub use crate::activation_lut::{ActivationKind, ActivationLut};
@@ -68,4 +69,5 @@ pub use crate::quant::{rescale_and_requantize, Scale};
 pub use crate::rmsnorm::rmsnorm;
 pub use crate::rope::{rope_apply, RopeTables};
 pub use crate::softmax::{softmax_int, ExpLut};
+pub use crate::ssm::{ssm_forward, SsmError, SsmOpts};
 pub use crate::verifier::{verify_vi, VerifierMode, VerifyError};
