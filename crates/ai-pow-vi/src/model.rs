@@ -6,9 +6,12 @@
 //! Phase 2.7 will extend this with sideloaded loading + `compute_comm_w`,
 //! and the registry will pin `comm_W` per (model_id, family) tuple.
 
+use std::path::Path;
+
 use thiserror::Error;
 
 use crate::activation_lut::ActivationLut;
+use crate::io::{load_model, save_model, LoadError, SaveError};
 use crate::layer::{LayerWeights, NormSpec};
 use crate::rope::RopeTables;
 use crate::softmax::ExpLut;
@@ -103,6 +106,18 @@ impl Model {
 
     pub fn num_layers(&self) -> u32 {
         self.layers.len() as u32
+    }
+
+    /// Serialize the model to `dir` as `manifest.bin` + `weights.bin` +
+    /// `comm_w.hex`. See [`crate::io`] for the disk format.
+    pub fn save(&self, dir: &Path) -> Result<(), SaveError> {
+        save_model(self, dir)
+    }
+
+    /// Load a model from a sideloaded directory. Recomputes `comm_W`
+    /// after parsing and rejects on mismatch with `expected_comm_w`.
+    pub fn load(dir: &Path, expected_comm_w: &[u8; 32]) -> Result<Self, LoadError> {
+        load_model(dir, expected_comm_w)
     }
 }
 

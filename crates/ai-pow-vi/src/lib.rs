@@ -30,6 +30,7 @@ pub mod deltanet;
 pub mod determinism;
 pub mod ffn;
 pub mod forward;
+pub mod io;
 pub mod layer;
 pub mod layernorm;
 pub mod layout;

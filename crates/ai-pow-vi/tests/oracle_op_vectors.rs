@@ -21,25 +21,25 @@ use ai_pow_vi::activation_lut::{ActivationKind, ActivationLut};
 use ai_pow_vi::ffn::{ffn_forward, FfnScales, FfnWeights};
 use ai_pow_vi::layernorm::layernorm;
 use ai_pow_vi::matmul_int8::matmul_int8;
+use ai_pow_vi::prompt::synth_prompt;
 use ai_pow_vi::quant::{rescale_and_requantize, Scale, SCALE_DENOM_LOG2};
 use ai_pow_vi::rmsnorm::{rmsnorm, DEFAULT_EPS_Q};
-use ai_pow_vi::prompt::synth_prompt;
 use ai_pow_vi::softmax::{softmax_int, ExpLut};
 
 fn vectors_dir() -> PathBuf {
     let manifest_dir = std::env::var("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR");
-    PathBuf::from(manifest_dir).join("oracle").join("test_vectors")
+    PathBuf::from(manifest_dir)
+        .join("oracle")
+        .join("test_vectors")
 }
 
 fn read_i8(path: &Path) -> Vec<i8> {
-    let bytes = std::fs::read(path)
-        .unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
+    let bytes = std::fs::read(path).unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
     bytes.into_iter().map(|b| b as i8).collect()
 }
 
 fn read_i32(path: &Path) -> Vec<i32> {
-    let bytes = std::fs::read(path)
-        .unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
+    let bytes = std::fs::read(path).unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
     assert_eq!(bytes.len() % 4, 0, "i32 file len must be multiple of 4");
     bytes
         .chunks_exact(4)
@@ -97,7 +97,10 @@ fn oracle_rescale_sweep_matches() {
         .iter()
         .map(|&v| rescale_and_requantize(v, scale))
         .collect();
-    assert_eq!(actual, expected, "rescale_and_requantize divergence vs oracle");
+    assert_eq!(
+        actual, expected,
+        "rescale_and_requantize divergence vs oracle"
+    );
 }
 
 #[test]
