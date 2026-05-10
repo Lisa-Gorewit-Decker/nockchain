@@ -381,6 +381,240 @@ against the saved activations.
 commits (one for oracle scripts + small synthetic fixture; one for the
 real Gemma + Qwen vectors after the rust ops actually match).
 
+### 2.9 Real-model bring-up: Qwen 3.6 27B end-to-end
+
+Goal: convert a downloaded Qwen 3.6 27B (Ollama GGUF or Hugging Face
+safetensors) into our canonical INT8 layout, load it into a
+[`crate::model::Model`], and produce a real-model fixture that
+`tests/oracle_qwen.rs` byte-compares against the numpy reference. This
+is what unlocks Phase 4 jet calibration and Phase 6 mainnet weight
+distribution; until 2.9 lands, every test runs on synthetic
+LCG-generated weights.
+
+The deliverables decompose into seven commits, each independently
+testable:
+
+#### 2.9.1 Disk format + `Model::load` / `Model::save` (`src/io.rs`)
+
+Sideloaded directory layout:
+
+```
+$NOCKCHAIN_DATA/models/<model_id_hex>/
+  manifest.bin       # ModelManifest: dims, per-layer block kinds, every Scale, eps_q
+  weights.bin        # i8 tensors in `canonical_weight_bytes` order (Phase 2.7)
+  rope.bin           # u32 seq_len || u32 half_head_dim || i16 cos[] || i16 sin[]
+  softmax_lut.bin    # 256 LE i32
+  sigmoid_lut.bin    # 256 i8
+  ffn_lut.bin        # 256 i8
+  comm_w.hex         # 64-char hex of expected comm_W (sanity, not authoritative)
+```
+
+Hand-rolled binary serializer for `ModelManifest` (no serde dependency
+— matches the rest of the crate's "explicit byte stream" style). New API:
+
+```rust
+impl Model {
+    pub fn load(dir: &Path, expected_comm_w: &[u8; 32]) -> Result<Self, LoadError>;
+    pub fn save(&self, dir: &Path) -> Result<(), SaveError>;
+}
+```
+
+`load` recomputes `comm_W` after parsing and aborts on mismatch — this
+is the single chokepoint that protects all downstream code from
+weight-tampering at rest.
+
+**Tests:** synthetic round-trip (save → load → equal model); flipping
+one byte of `weights.bin` trips the comm_W check; a wrong
+`expected_comm_w` argument aborts even if the file is intact.
+
+**Cost:** ~600 lines + tests. One commit.
+
+#### 2.9.2 GGUF reader (`oracle/gguf_reader.py`)
+
+Use the pinned `gguf` Python package (>=0.10) to parse Qwen's GGUF
+file. Dequantize Q4_K_M / Q6_K / Q8_0 to `np.float32` per the
+established llama.cpp formulas. Emit a flat dict keyed by canonical
+tensor names.
+
+Tensor-name mapping (Qwen3-style; extend as needed for the actual
+hybrid block kinds):
+
+| GGUF name                       | Canonical                       |
+|---------------------------------|---------------------------------|
+| `token_embd.weight`             | `embed`                         |
+| `blk.{N}.attn_norm.weight`      | `layer[N].norm1.gamma`          |
+| `blk.{N}.attn_q.weight`         | `layer[N].attn.w_q`             |
+| `blk.{N}.attn_k.weight`         | `layer[N].attn.w_k`             |
+| `blk.{N}.attn_v.weight`         | `layer[N].attn.w_v`             |
+| `blk.{N}.attn_output.weight`    | `layer[N].attn.w_o`             |
+| `blk.{N}.ffn_norm.weight`       | `layer[N].norm2.gamma`          |
+| `blk.{N}.ffn_gate.weight`       | `layer[N].ffn.w_gate`           |
+| `blk.{N}.ffn_up.weight`         | `layer[N].ffn.w_up`             |
+| `blk.{N}.ffn_down.weight`       | `layer[N].ffn.w_down`           |
+| `blk.{N}.delta_q.weight` etc.   | `layer[N].dnet.{q,k,v,alpha,beta,o}` |
+| `output_norm.weight`            | `final_norm.gamma`              |
+
+Linear weights need a column-major transpose (HF/GGUF stores
+`(out, in)`; we want `(in, out)` column-major).
+
+**Tests:** load a tiny synthetic GGUF file (≤10 KB, generated in the
+test) and verify the emitted dict shapes match expectations.
+
+**Cost:** ~400 lines Python.
+
+#### 2.9.3 Activation-scale calibration (`oracle/calibrate.py`)
+
+Per-tensor symmetric INT8 needs activation scales. Approach:
+
+1. Take a calibration set of N=256 short prompts (FineWeb-Edu sample
+   + the 16-token canonical prompts the puzzle uses).
+2. Run a numpy or torch f32 forward over each prompt, tracking
+   `max(abs(activation))` at every quantization point (Q/K/V projection,
+   pre-softmax score, post-softmax probs * V, FFN gate, up, mid, down,
+   each norm post-scale).
+3. Pick `Scale::from_f32(max_abs / 127)` per quantization point and
+   per layer (we keep the per-layer dimension for now — a future
+   tightening can collapse if scales are layer-stable).
+
+Output: `oracle/test_vectors/qwen_3_6_27b/scales.json` consumed by
+`quantize_qwen.py`.
+
+**Tests:** calibrate over the synthetic LCG fixture and verify the
+emitted scales reproduce the existing pin values to ±1 LSB.
+
+**Cost:** ~300 lines Python + ~30 min calibration runtime per model.
+
+#### 2.9.4 INT8 quantizer (`oracle/quantize_qwen.py`)
+
+Driver: pull f32 tensors from `gguf_reader.py`, the calibration
+scales from `calibrate.py`, then:
+
+1. Per-tensor weight scale: `s_w = max(|w|) / 127`.
+2. Quantize: `w_int8 = round(w / s_w).clamp(-128, 127)`.
+3. Build LUTs: SiLU/GeLU table, sigmoid table for DeltaNet α/β,
+   exp table for softmax. All committed inside `comm_W`.
+4. Build RoPE tables in i16 fixed-point at `FRACT_BITS=14`.
+5. Assemble `Model` and call `Model::save(dir)`.
+6. Print computed `comm_W`; user records it for the registry.
+
+**Acceptance:** the emitted directory loads without error via
+`Model::load(dir, &computed_comm_w)`.
+
+**Cost:** ~400 lines Python. One commit, depends on 2.9.1 + 2.9.2 + 2.9.3.
+
+#### 2.9.5 Numpy reference for the full forward (`oracle/forward_prefix_oracle.py`)
+
+Complete the Phase 2.8 skeleton: implement `attention_forward`,
+`deltanet_forward`, `forward_layer`, `forward_prefix` in numpy using
+the existing `reference_ops.py` primitives. Mirrors the Rust
+composition exactly (residual saturation, GQA head mapping, causal
+slicing, etc.).
+
+The activation tile-Merkle (Phase 2.3) commitment uses BLAKE3
+`derive_key` over leaf bytes, same as `crate::activations`. Mirror it
+in Python with the `blake3` module.
+
+**Tests:** run `forward_prefix_oracle` on the small synthetic model
+the determinism pin uses (`pin_attention_layer_canonical_output`) and
+check byte-equality against the Rust output.
+
+**Cost:** ~600 lines Python + ~50 lines Rust test driver.
+
+#### 2.9.6 Real-model fixture + Rust integration test (`tests/oracle_qwen.rs`)
+
+Once 2.9.4 + 2.9.5 land, generate the real fixture:
+
+```
+python oracle/forward_prefix_oracle.py \
+    --model-dir $NOCKCHAIN_VI_QWEN_DIR \
+    --layer 8 \
+    --prompt-seed 0xpin \
+    --out oracle/test_vectors/qwen_3_6_27b_layer_8/
+```
+
+Outputs `input_tokens.bin`, `activations_layer_{0..8}.bin` (each ~30
+MB at full seq_len=4096; reduced for the checked-in fixture by using
+seq_len=64 → ~50 KB total).
+
+`tests/oracle_qwen.rs` is gated `#[ignore]` and takes the model dir
+via `NOCKCHAIN_VI_QWEN_DIR`. CI runs it on a self-hosted box that has
+the model; default cargo test skips it.
+
+**Acceptance:** byte-equal forward to layer 8 over a 64-token prefix.
+
+**Cost:** ~150 lines Rust + the fixture (~50 KB checked in; full real-
+seq_len fixture available via download script, not Git LFS).
+
+#### 2.9.7 Tokenizer adapter + accuracy gate (`tools/qwen-eval/main.rs`)
+
+Optional but high-value for confidence. A Rust binary that:
+
+1. Loads the INT8 Qwen via `Model::load`.
+2. Reads a 100-prompt eval set (e.g. HellaSwag dev or a short slice of
+   FineWeb-Edu) tokenized via the HF Qwen tokenizer (called from
+   Python through a small subprocess wrapper, or via a Rust wrapper
+   like `tokenizers`).
+3. For each prompt, runs `forward_prefix` to the final layer, applies
+   `lm_head` (shipped from 2.9.4), picks `argmax` next token.
+4. Compares against Ollama's response on the same prompt.
+5. Reports top-1 next-token agreement.
+
+INT8 vs Ollama's native bf16 won't match exactly, but on calibrated
+scales we expect ≥ 90% top-1 agreement on natural text. Lower numbers
+indicate calibration drift.
+
+**Cost:** ~250 lines Rust + ~20 min eval runtime per pass.
+
+#### 2.9.8 CI fixture: synthetic Qwen-mini (`oracle/synthetic_qwen_mini.py`)
+
+A 4-layer Qwen-shaped model (hidden=64, num_q=2, num_kv=1, head_dim=4,
+intermediate=128, vocab=32) with deterministic random weights. Runs
+the full `quantize_qwen → save → Model::load → forward_prefix`
+pipeline in < 10s, with no external model download. Lives in CI so
+the conversion path doesn't bit-rot between real-model bring-ups.
+
+**Cost:** ~300 lines Python + ~150 lines Rust integration test.
+
+#### 2.9 acceptance gates
+
+1. `Model::save(dir)` then `Model::load(dir, &expected_comm_w)`
+   round-trips; one-byte file flip aborts the load.
+2. `synthetic_qwen_mini.py` end-to-end pipeline runs in CI in < 10s
+   without external downloads.
+3. `quantize_qwen.py` produces a valid model dir for the real Qwen 3.6
+   27B; `Model::load` succeeds.
+4. `tests/oracle_qwen.rs` (with `NOCKCHAIN_VI_QWEN_DIR` set) is
+   byte-equal to the numpy oracle on a 64-token forward to layer 8.
+5. `tools/qwen-eval` reports ≥ 90% top-1 next-token agreement against
+   Ollama on the chosen 100-prompt eval set. (Loosen to ≥ 80% if
+   calibration needs more work; treat the gap as a backlog item.)
+
+#### 2.9 dev workflow (in `oracle/README_QWEN.md`)
+
+```
+ollama pull qwen3.6:27b              # ≈ 15 GB download
+python oracle/gguf_reader.py \
+    --gguf ~/.ollama/models/blobs/sha256-... \
+    --out /tmp/qwen-f32/
+python oracle/calibrate.py \
+    --weights /tmp/qwen-f32/ \
+    --out oracle/test_vectors/qwen_3_6_27b/scales.json
+python oracle/quantize_qwen.py \
+    --weights /tmp/qwen-f32/ \
+    --scales oracle/test_vectors/qwen_3_6_27b/scales.json \
+    --out $NOCKCHAIN_VI_QWEN_DIR
+python oracle/forward_prefix_oracle.py \
+    --model-dir $NOCKCHAIN_VI_QWEN_DIR --layer 8 \
+    --out oracle/test_vectors/qwen_3_6_27b_layer_8/
+NOCKCHAIN_VI_QWEN_DIR=$NOCKCHAIN_VI_QWEN_DIR \
+    cargo test -p ai-pow-vi --test oracle_qwen -- --ignored
+cargo run -p ai-pow-vi --bin qwen-eval -- \
+    --model-dir $NOCKCHAIN_VI_QWEN_DIR --eval-set evals/hellaswag-100.txt
+```
+
+Expect ~90 min wall-clock from `ollama pull` to all gates green on a
+modern laptop.
+
 ### Phase 2 acceptance gate (re-stated)
 
 1. `cargo test -p ai-pow-vi` green on x86_64 and aarch64 CI.
