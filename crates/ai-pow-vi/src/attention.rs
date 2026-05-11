@@ -235,14 +235,20 @@ pub fn attention_forward(
     drop(v_acc);
 
     // Step 4: RoPE — apply in place to every (pos, head) slot of Q and K.
+    // Length passed is `2 * tables.half_head_dim`, which equals `head_dim`
+    // for plain RoPE tables and `n_rot` for IMROPE tables (whose
+    // `half_head_dim = n_rot/2`). In the IMROPE case the slice covers only
+    // the first n_rot dims of each head; the tail [n_rot, head_dim) is
+    // intentionally left unrotated, matching ggml's qwen35 IMROPE.
+    let rope_slice = 2 * rope_tables.half_head_dim as usize;
     for pos in 0..mu {
         for h in 0..num_qu {
             let off = pos * q_row_stride + h * hdu;
-            rope_apply(&mut q_i8[off..off + hdu], pos as u32, rope_tables)?;
+            rope_apply(&mut q_i8[off..off + rope_slice], pos as u32, rope_tables)?;
         }
         for h in 0..num_kvu {
             let off = pos * kv_row_stride + h * hdu;
-            rope_apply(&mut k_i8[off..off + hdu], pos as u32, rope_tables)?;
+            rope_apply(&mut k_i8[off..off + rope_slice], pos as u32, rope_tables)?;
         }
     }
 
@@ -462,15 +468,19 @@ pub fn attention_forward_gemma(
         }
     }
 
-    // RoPE on Q and K (same as `attention_forward`).
+    // RoPE on Q and K (same as `attention_forward`). Slice length =
+    // `2 * tables.half_head_dim` so plain RoPE covers full head_dim and
+    // IMROPE (whose tables only carry n_rot/2 pairs) covers exactly the
+    // first n_rot dims — leaving the tail unrotated per the qwen35 spec.
+    let rope_slice = 2 * rope_tables.half_head_dim as usize;
     for pos in 0..mu {
         for h in 0..num_qu {
             let off = pos * q_row_stride + h * hdu;
-            rope_apply(&mut q_i8[off..off + hdu], pos as u32, rope_tables)?;
+            rope_apply(&mut q_i8[off..off + rope_slice], pos as u32, rope_tables)?;
         }
         for h in 0..num_kvu {
             let off = pos * kv_row_stride + h * hdu;
-            rope_apply(&mut k_i8[off..off + hdu], pos as u32, rope_tables)?;
+            rope_apply(&mut k_i8[off..off + rope_slice], pos as u32, rope_tables)?;
         }
     }
 

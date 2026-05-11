@@ -1287,27 +1287,34 @@ fn parse_one_layer(
             ffn_scales,
         } => {
             let n1 = materialize_norm(c, &norm1, hu)?;
-            let q_dim = (num_q_heads * head_dim) as usize;
-            let k_dim = (num_kv_heads * head_dim) as usize;
-            let v_dim = (num_kv_heads * head_dim) as usize;
-            let qkv_dim = q_dim + k_dim + v_dim;
-            let attn_qkv_fused = c.take_i8(hu * qkv_dim)?;
-            let attn_gate_dim = q_dim;
-            let attn_gate = c.take_i8(hu * attn_gate_dim)?;
-            let attn_out = c.take_i8(q_dim * hu)?;
-            let hd = head_dim as usize;
-            let q_norm_gamma = c.take_i8(hd)?;
-            let k_norm_gamma = c.take_i8(hd)?;
+            // QwenHybridSsm is the GatedDeltaNet path post-refactor.
+            // num_q_heads / head_dim slots are repurposed as DeltaNet
+            // `num_k_heads` / `head_k`. num_kv_heads is unused (mirrored
+            // to num_k_heads in the converter).
+            let n_k_heads = num_q_heads as usize;
+            let head_k = head_dim as usize;
             let nv = num_v_heads as usize;
-            let ssm_hd = ssm_head_dim as usize;
+            let head_v = ssm_head_dim as usize;
+            let key_dim = n_k_heads * head_k;
+            let value_dim = nv * head_v;
+            let conv_dim = 2 * key_dim + value_dim;
+            let _ = num_kv_heads; // intentionally unused for DeltaNet
+            let attn_qkv_fused = c.take_i8(hu * conv_dim)?;
+            let attn_gate = c.take_i8(hu * value_dim)?;
+            // `attn_out` is a legacy dummy buffer (sized value_dim * hu so the
+            // canonical byte stream length is deterministic); ignored at forward.
+            let attn_out = c.take_i8(value_dim * hu)?;
+            // Likewise, per-head Q/K norm gammas are legacy dummies on the
+            // DeltaNet path (L2-norm is used instead) — sized head_k each.
+            let q_norm_gamma = c.take_i8(head_k)?;
+            let k_norm_gamma = c.take_i8(head_k)?;
             let ssm_a = c.take_i8(nv)?;
             let ssm_alpha = c.take_i8(hu * nv)?;
             let ssm_beta = c.take_i8(hu * nv)?;
-            let ssm_conv1d = c.take_i8((ssm_kernel_size as usize) * hu)?;
+            let ssm_conv1d = c.take_i8((ssm_kernel_size as usize) * conv_dim)?;
             let ssm_dt = c.take_i8(nv)?;
-            let ssm_norm_gamma = c.take_i8(ssm_hd)?;
-            let ssm_out_dim = nv * ssm_hd;
-            let ssm_out = c.take_i8(ssm_out_dim * hu)?;
+            let ssm_norm_gamma = c.take_i8(head_v)?;
+            let ssm_out = c.take_i8(value_dim * hu)?;
             let n2 = materialize_norm(c, &norm2, hu)?;
             let iu = intermediate as usize;
             let w_gate = c.take_i8(hu * iu)?;

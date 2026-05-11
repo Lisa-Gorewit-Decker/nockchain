@@ -1042,15 +1042,17 @@ fn gated_attention_forward(
         }
     }
 
-    // RoPE on Q and K.
+    // RoPE on Q and K. Slice length = 2 * tables.half_head_dim covers
+    // full head_dim for plain RoPE and exactly n_rot dims for IMROPE.
+    let rope_slice = 2 * rope_tables.half_head_dim as usize;
     for pos in 0..mu {
         for h in 0..num_qu {
             let off = pos * q_dim + h * hdu;
-            rope_apply(&mut q_i8[off..off + hdu], pos as u32, rope_tables)?;
+            rope_apply(&mut q_i8[off..off + rope_slice], pos as u32, rope_tables)?;
         }
         for h in 0..num_kvu {
             let off = pos * kv_dim + h * hdu;
-            rope_apply(&mut k_i8[off..off + hdu], pos as u32, rope_tables)?;
+            rope_apply(&mut k_i8[off..off + rope_slice], pos as u32, rope_tables)?;
         }
     }
 
@@ -1220,15 +1222,17 @@ fn gated_attention_inter(
             }
         }
     }
-    // RoPE.
+    // RoPE on Q and K. Slice length = 2 * tables.half_head_dim covers
+    // full head_dim for plain RoPE and exactly n_rot dims for IMROPE.
+    let rope_slice = 2 * rope_tables.half_head_dim as usize;
     for pos in 0..mu {
         for h in 0..num_qu {
             let off = pos * q_dim + h * hdu;
-            rope_apply(&mut q_i8[off..off + hdu], pos as u32, rope_tables)?;
+            rope_apply(&mut q_i8[off..off + rope_slice], pos as u32, rope_tables)?;
         }
         for h in 0..num_kvu {
             let off = pos * kv_dim + h * hdu;
-            rope_apply(&mut k_i8[off..off + hdu], pos as u32, rope_tables)?;
+            rope_apply(&mut k_i8[off..off + rope_slice], pos as u32, rope_tables)?;
         }
     }
     // Attention core.

@@ -46,14 +46,19 @@ pub fn build_rope_tables(seq_len: u32, head_dim: u32, rope_theta: f32) -> RopeTa
 /// columns carry the real IMROPE angles; the rest carry identity.
 pub fn build_imrope_tables(
     seq_len: u32,
-    head_dim: u32,
+    _head_dim: u32,
     n_rot: u32,
     sections: [usize; 4],
     rope_theta: f32,
 ) -> RopeTables {
     let seq_len_us = seq_len as usize;
-    let half_head_dim = (head_dim as usize) / 2;
-    let half_rot = (n_rot as usize) / 2;
+    // Allocate tables sized for the rotated subspace only (n_rot/2 pairs).
+    // This makes `tables.half_head_dim = n_rot/2`, so existing callers that
+    // pass a slice of length `2 * tables.half_head_dim` to `rope_apply`
+    // automatically rotate exactly the first `n_rot` dims and leave the
+    // tail untouched — no IMROPE-specific call site needed.
+    let half_head_dim = (n_rot as usize) / 2;
+    let half_rot = half_head_dim;
     let mut cos = vec![1i16 << FRACT_BITS; seq_len_us * half_head_dim];
     let mut sin = vec![0i16; seq_len_us * half_head_dim];
 
