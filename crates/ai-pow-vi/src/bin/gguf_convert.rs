@@ -317,17 +317,43 @@ struct QwenDims {
     num_kv_heads: u32,
     head_dim: u32,
     rope_theta: f32,
+    /// IMROPE: number of dims to rotate (rest pass through). For Qwen 3.5
+    /// 27B this is 64 (out of head_dim = 256). Falls back to head_dim
+    /// for legacy qwen3 / when the GGUF lacks the metadata.
+    n_rot: u32,
+    /// IMROPE sector lengths `[t, h, w, extra]`. All-zero falls back to
+    /// plain NEOX RoPE for compat with qwen3.
+    rope_sections: [usize; 4],
 }
 
 fn read_qwen35_dims(content: &Content) -> Result<QwenDims, String> {
+    let head_dim = meta_u32(content, "qwen35.attention.key_length", None)?;
+    let n_rot = meta_u32(content, "qwen35.rope.dimension_count", Some(head_dim))?;
+    // Read rope dimension sections array (4 u32s) if present; otherwise zero.
+    let mut rope_sections = [0usize; 4];
+    if let Some(candle_core::quantized::gguf_file::Value::Array(arr)) =
+        content.metadata.get("qwen35.rope.dimension_sections")
+    {
+        for (i, v) in arr.iter().take(4).enumerate() {
+            let n = match v {
+                candle_core::quantized::gguf_file::Value::U32(x) => *x as usize,
+                candle_core::quantized::gguf_file::Value::U64(x) => *x as usize,
+                candle_core::quantized::gguf_file::Value::I32(x) => *x as usize,
+                _ => 0,
+            };
+            rope_sections[i] = n;
+        }
+    }
     Ok(QwenDims {
         hidden: meta_u32(content, "qwen35.embedding_length", None)?,
         intermediate: meta_u32(content, "qwen35.feed_forward_length", None)?,
         num_layers: meta_u32(content, "qwen35.block_count", None)?,
         num_q_heads: meta_u32(content, "qwen35.attention.head_count", None)?,
         num_kv_heads: meta_u32(content, "qwen35.attention.head_count_kv", None)?,
-        head_dim: meta_u32(content, "qwen35.attention.key_length", None)?,
+        head_dim,
         rope_theta: meta_f32(content, "qwen35.rope.freq_base", Some(10_000.0))?,
+        n_rot,
+        rope_sections,
     })
 }
 
@@ -600,7 +626,17 @@ fn convert_qwen35(args: &Args) -> Result<(), String> {
     }
 
     eprintln!("→ rope tables, LUTs");
-    let rope_tables = build_rope_tables(args.seq_len, dims.head_dim, dims.rope_theta);
+    // For qwen35 with non-empty rope_sections metadata, build IMROPE tables
+    // (interleaved multi-axis RoPE on the first `n_rot` dims). All other
+    // archs use plain NEOX RoPE — IMROPE with empty sections falls back to
+    // NEOX, so this is safe for qwen3 too.
+    let rope_tables = ai_pow_vi::rope::build_imrope_tables(
+        args.seq_len,
+        dims.head_dim,
+        dims.n_rot,
+        dims.rope_sections,
+        dims.rope_theta,
+    );
     let softmax_lut = build_softmax_lut();
     let sigmoid_lut = build_sigmoid_lut();
     let ffn_activation = build_silu_lut();

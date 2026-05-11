@@ -21,7 +21,10 @@ use crate::attention::{
     attention_forward, attention_forward_gemma, AttentionError, AttentionScales, AttentionWeights,
     GemmaAttentionOpts,
 };
-use crate::deltanet::{deltanet_forward, DeltaNetError, DeltaNetScales, DeltaNetWeights};
+use crate::deltanet::{
+    deltanet_forward, forward_gated_deltanet_qwen35, DeltaNetError, DeltaNetScales,
+    DeltaNetWeights, GatedDeltaNetOpts, GatedDeltaNetScales,
+};
 use crate::ffn::{ffn_forward, FfnError, FfnScales, FfnWeights};
 use crate::layernorm::{layernorm, LayerNormError};
 use crate::matmul_int8::{dot_int8, matmul_int8, matmul_int8_requant, requantize_vec};

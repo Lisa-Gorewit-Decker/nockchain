@@ -24,6 +24,87 @@ use crate::quant::{round_half_to_even_div_pow2, saturate_i8};
 
 const CTX_ROPE_TABLES: &str = "ai-pow-vi v1 rope-tables";
 
+/// Build standard RoPE tables (NEOX pairing — pair `j` is `(x[j], x[j+half])`)
+/// for the first `n_rot` of `head_dim`. The dims past `n_rot` are unrotated.
+/// `theta_per_pair[j] = base^(-2j / n_rot)`.
+pub fn build_rope_tables(seq_len: u32, head_dim: u32, rope_theta: f32) -> RopeTables {
+    build_imrope_tables(seq_len, head_dim, head_dim, [0; 4], rope_theta)
+}
+
+/// Build IMROPE (interleaved multi-axis RoPE) cos/sin tables matching the
+/// validated f32 reference in `bin/calibrate.rs::apply_imrope_f32`.
+///
+/// For text-only inputs every "axis position" equals the token index `t`,
+/// so the per-pair theta for token `t`, pair index `j` reduces to
+/// `t * base^(-2j / n_rot)`. We still preserve the sector dispatch from
+/// llama.cpp's ggml-cpu ops so multi-axis inputs would work identically.
+/// `sections = [t_sec, h_sec, w_sec, e_sec]` partitions the rotated halves.
+/// Pairs with index `[n_rot/2, head_dim/2)` are unrotated (cos=1, sin=0)
+/// — caller must respect `n_rot` and skip rotating the tail dims.
+///
+/// Returned table dims: `seq_len × (head_dim / 2)`. The first `n_rot / 2`
+/// columns carry the real IMROPE angles; the rest carry identity.
+pub fn build_imrope_tables(
+    seq_len: u32,
+    head_dim: u32,
+    n_rot: u32,
+    sections: [usize; 4],
+    rope_theta: f32,
+) -> RopeTables {
+    let seq_len_us = seq_len as usize;
+    let half_head_dim = (head_dim as usize) / 2;
+    let half_rot = (n_rot as usize) / 2;
+    let mut cos = vec![1i16 << FRACT_BITS; seq_len_us * half_head_dim];
+    let mut sin = vec![0i16; seq_len_us * half_head_dim];
+
+    let scale = (1i64 << FRACT_BITS) as f64;
+    let theta_scale = if n_rot > 0 {
+        (rope_theta as f64).powf(-2.0 / n_rot as f64)
+    } else {
+        1.0
+    };
+    let sect_dims: usize = sections[0] + sections[1] + sections[2] + sections[3];
+
+    for t in 0..seq_len_us {
+        // For text-only inference all axes share the same position t.
+        let mut tt_p = t as f64;
+        let mut th_p = t as f64;
+        let mut tw_p = t as f64;
+        let mut te_p = t as f64;
+        for j in 0..half_rot {
+            let theta = if sect_dims > 0 {
+                let sector = j % sect_dims;
+                if sector % 3 == 0 && sector < 3 * sections[0] {
+                    tt_p
+                } else if sector % 3 == 1 && sector < 3 * sections[1] {
+                    th_p
+                } else if sector % 3 == 2 && sector < 3 * sections[2] {
+                    tw_p
+                } else {
+                    te_p
+                }
+            } else {
+                tt_p
+            };
+            let c = theta.cos();
+            let s = theta.sin();
+            let off = t * half_head_dim + j;
+            cos[off] = (c * scale).round().clamp(i16::MIN as f64, i16::MAX as f64) as i16;
+            sin[off] = (s * scale).round().clamp(i16::MIN as f64, i16::MAX as f64) as i16;
+            tt_p *= theta_scale;
+            th_p *= theta_scale;
+            tw_p *= theta_scale;
+            te_p *= theta_scale;
+        }
+    }
+    RopeTables {
+        seq_len,
+        half_head_dim: half_head_dim as u32,
+        cos,
+        sin,
+    }
+}
+
 /// Number of fractional bits in the INT16 cos/sin representation. With
 /// `FRACT_BITS = 14`, values in `[-1, 1]` map to `i16 ∈ [-16384, 16384]`.
 pub const FRACT_BITS: u32 = 14;
@@ -104,6 +185,67 @@ pub enum RopeError {
     PosOutOfRange,
     #[error("cos / sin tables shape does not match seq_len * half_head_dim")]
     ShapeMismatch,
+}
+
+/// Apply IMROPE in place to `x` (one head, length `head_dim`) using NEOX
+/// pair layout `(x[j], x[j + n_rot/2])`. Only the first `n_rot` dims are
+/// rotated; the rest pass through. Matches the f32 reference in
+/// `bin/calibrate.rs::apply_imrope_f32` modulo INT16 fixed-point rounding.
+pub fn apply_imrope_to_head_i8(
+    x: &mut [i8],
+    pos: u32,
+    n_rot: u32,
+    tables: &RopeTables,
+) -> Result<(), RopeError> {
+    if pos >= tables.seq_len {
+        return Err(RopeError::PosOutOfRange);
+    }
+    let half = (n_rot as usize) / 2;
+    let head_dim = 2 * tables.half_head_dim as usize;
+    if x.len() < head_dim {
+        return Err(RopeError::LenMismatch);
+    }
+    if (n_rot as usize) > head_dim {
+        return Err(RopeError::ShapeMismatch);
+    }
+    let pos_us = pos as usize;
+    let half_head_dim = tables.half_head_dim as usize;
+    for j in 0..half {
+        let off = pos_us * half_head_dim + j;
+        let cos = tables.cos[off] as i64;
+        let sin = tables.sin[off] as i64;
+        let a = x[j] as i64;
+        let b = x[j + half] as i64;
+        let r0 = round_half_to_even_div_pow2(a * cos - b * sin, FRACT_BITS);
+        let r1 = round_half_to_even_div_pow2(a * sin + b * cos, FRACT_BITS);
+        x[j] = saturate_i8(r0);
+        x[j + half] = saturate_i8(r1);
+    }
+    Ok(())
+}
+
+/// Apply IMROPE to a `(m, num_heads, head_dim)` row-major i8 buffer in place.
+pub fn apply_imrope_to_qk_i8(
+    x: &mut [i8],
+    m: u32,
+    num_heads: u32,
+    head_dim: u32,
+    n_rot: u32,
+    tables: &RopeTables,
+) -> Result<(), RopeError> {
+    let mu = m as usize;
+    let nh = num_heads as usize;
+    let hd = head_dim as usize;
+    if x.len() != mu * nh * hd {
+        return Err(RopeError::LenMismatch);
+    }
+    for t in 0..mu {
+        for h in 0..nh {
+            let off = (t * nh + h) * hd;
+            apply_imrope_to_head_i8(&mut x[off..off + hd], t as u32, n_rot, tables)?;
+        }
+    }
+    Ok(())
 }
 
 /// Apply RoPE in place to `x`, length `2 * tables.half_head_dim`, at the

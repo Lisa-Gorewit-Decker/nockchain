@@ -383,6 +383,437 @@ pub fn deltanet_forward(
     Ok(())
 }
 
+// ─────────────────────────────────────────────────────────────────────────
+// Phase 2.13 part 2 — Gated DeltaNet (Qwen 3.5 hybrid block) INT8 forward.
+//
+// This is the INT8 port of `bin/calibrate.rs::forward_hybrid_layer`. It is
+// independent of the legacy DeltaNet algorithm (above), which the older
+// `LayerWeights::DeltaNet` variant uses. The Qwen 3.5 hybrid layers should
+// call `forward_gated_deltanet_qwen35` instead of `ssm_forward`.
+//
+// The recurrent state is kept in f32 inside the loop — i8 would lose too
+// many bits across 64 tokens of multiplicative decay, and the
+// chunkwise-attention literature confirms that fp32 state is the
+// established choice (lower precision diverges quickly). The per-tap
+// scales recorded by the calibrator still describe the *visible* INT8
+// boundaries (Q/K/V projection out, alpha logit, beta logit, conv output,
+// gated norm output, recurrence output, final projection output).
+// ─────────────────────────────────────────────────────────────────────────
+
+/// Gated-DeltaNet INT8 forward inputs. All weight slices are i8 in the
+/// crate's column-major linear-projection convention. The caller owns the
+/// storage; this struct only borrows.
+#[derive(Debug, Clone, Copy)]
+pub struct GatedDeltaNetOpts<'a> {
+    /// `(hidden, conv_dim)` col-major. `conv_dim = 2*num_k_heads*head_k +
+    /// num_v_heads*head_v`. Output layout per token: [Q | K | V].
+    pub w_qkv: &'a [i8],
+    /// `(hidden, num_v_heads * head_v)` col-major — the output gate `z`.
+    pub w_gate: &'a [i8],
+    /// `(hidden, num_v_heads)` col-major — alpha logits.
+    pub w_alpha: &'a [i8],
+    /// `(hidden, num_v_heads)` col-major — beta logits.
+    pub w_beta: &'a [i8],
+    /// `(kernel, conv_dim)` row-major — depthwise causal conv1d weights
+    /// already transposed to k-major (see calibrate.rs note about candle
+    /// returning the GGUF tensor PyTorch-style as `[channels, kernel]`).
+    pub w_conv1d: &'a [i8],
+    /// Per-V-head time-step bias, length `num_v_heads` (i8).
+    pub ssm_dt: &'a [i8],
+    /// Per-V-head transition `-exp(A_log)`, already negated in the GGUF.
+    /// Length `num_v_heads` (i8).
+    pub ssm_a: &'a [i8],
+    /// Pre-output RMSNorm gamma, length `head_v` (i8).
+    pub ssm_norm_gamma: &'a [i8],
+    pub ssm_norm_eps_q: i64,
+    pub ssm_norm_post_scale: Scale,
+    /// Output projection `(num_v_heads * head_v, hidden)` col-major.
+    pub w_out: &'a [i8],
+    pub num_k_heads: u32,
+    pub num_v_heads: u32,
+    pub head_k: u32,
+    pub head_v: u32,
+    pub conv_kernel: u32,
+    pub scales: GatedDeltaNetScales,
+    pub sigmoid_lut: &'a ActivationLut,
+    pub silu_lut: &'a ActivationLut,
+}
+
+/// Per-tap quantization scales for the gated-DeltaNet path. Names match
+/// the tap keys the calibrator emits.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct GatedDeltaNetScales {
+    /// `attn_qkv` projection output requantize.
+    pub qkv: Scale,
+    /// `attn_gate` projection output requantize (then SiLU applied at
+    /// post-norm multiply time, so this is the value passed to silu LUT).
+    pub gate_z: Scale,
+    /// Output of the conv1d + SiLU activation.
+    pub conv_silu: Scale,
+    /// Q/K L2-norm output requantize.
+    pub q_norm: Scale,
+    pub k_norm: Scale,
+    /// Alpha logit projection out (pre-softplus).
+    pub alpha: Scale,
+    /// Beta logit projection out (pre-sigmoid).
+    pub beta: Scale,
+    /// Recurrence output before gated RMSNorm.
+    pub recurrence: Scale,
+    /// Gated-RMSNorm output (post `* silu(z)`).
+    pub gated_norm: Scale,
+    /// Final output projection.
+    pub out: Scale,
+}
+
+/// Dequantize an i8 with a Scale to f32: `x * (scale.num / 2^15) / 127`.
+/// Used at the f32 boundary inside the recurrence.
+#[inline(always)]
+fn deq_i8(x: i8, scale: Scale) -> f32 {
+    // Calibrator records max_abs(activation) and emits scale = max_abs/127
+    // in the 2^15 denominator. So x_recovered = x_i8 * scale.num /
+    // (2^15) ... but the i8 itself is already x_real / scale, where
+    // scale = max_abs/127. We want x_real, so multiply.
+    let s = (scale.num as f32) / ((1u32 << crate::quant::SCALE_DENOM_LOG2) as f32);
+    (x as f32) * s
+}
+
+#[inline(always)]
+fn q_f32_to_i8(x: f32, scale: Scale) -> i8 {
+    let s = (scale.num as f32) / ((1u32 << crate::quant::SCALE_DENOM_LOG2) as f32);
+    if s <= 0.0 {
+        return 0;
+    }
+    let v = (x / s).round();
+    v.clamp(-128.0, 127.0) as i8
+}
+
+#[inline(always)]
+fn silu_f32(x: f32) -> f32 {
+    x / (1.0 + (-x).exp())
+}
+
+#[inline(always)]
+fn sigmoid_f32(x: f32) -> f32 {
+    1.0 / (1.0 + (-x).exp())
+}
+
+#[inline(always)]
+fn softplus_f32(x: f32) -> f32 {
+    if x > 20.0 {
+        x
+    } else {
+        (1.0 + x.exp()).ln()
+    }
+}
+
+/// Full gated-DeltaNet forward, mirroring the validated f32 reference at
+/// `bin/calibrate.rs::forward_hybrid_layer` step-for-step. The state is
+/// f32 inside the recurrence; all projection boundaries quantize back to
+/// i8 with the per-tap scales.
+#[allow(clippy::too_many_arguments)]
+pub fn forward_gated_deltanet_qwen35(
+    input: &[i8],
+    hidden: u32,
+    m: u32,
+    opts: GatedDeltaNetOpts<'_>,
+    output: &mut [i8],
+) -> Result<(), DeltaNetError> {
+    let hu = hidden as usize;
+    let mu = m as usize;
+    let num_k = opts.num_k_heads as usize;
+    let num_v = opts.num_v_heads as usize;
+    let hk = opts.head_k as usize;
+    let hv = opts.head_v as usize;
+    let kk = opts.conv_kernel as usize;
+    if hu == 0 || num_k == 0 || num_v == 0 || hk == 0 || hv == 0 || mu == 0 || kk == 0 {
+        return Err(DeltaNetError::ZeroDim);
+    }
+    if num_v % num_k != 0 {
+        return Err(DeltaNetError::BadVHeads);
+    }
+    let key_dim = num_k * hk;
+    let value_dim = num_v * hv;
+    let conv_dim = 2 * key_dim + value_dim;
+    if input.len() != mu * hu {
+        return Err(DeltaNetError::BadInputLen);
+    }
+    if output.len() != mu * hu {
+        return Err(DeltaNetError::BadOutputLen);
+    }
+    if opts.w_qkv.len() != hu * conv_dim {
+        return Err(DeltaNetError::BadWqLen);
+    }
+    if opts.w_gate.len() != hu * value_dim {
+        return Err(DeltaNetError::BadWvLen);
+    }
+    if opts.w_alpha.len() != hu * num_v {
+        return Err(DeltaNetError::BadWalphaLen);
+    }
+    if opts.w_beta.len() != hu * num_v {
+        return Err(DeltaNetError::BadWbetaLen);
+    }
+    if opts.w_conv1d.len() != kk * conv_dim {
+        return Err(DeltaNetError::BadWvLen);
+    }
+    if opts.ssm_dt.len() != num_v || opts.ssm_a.len() != num_v {
+        return Err(DeltaNetError::BadVHeads);
+    }
+    if opts.w_out.len() != value_dim * hu {
+        return Err(DeltaNetError::BadWoLen);
+    }
+    if opts.ssm_norm_gamma.len() != hv {
+        return Err(DeltaNetError::BadVHeads);
+    }
+
+    // Step 1: attn_qkv projection → conv1d input (i8 via scales.qkv).
+    let mut qkv_acc = vec![0i32; mu * conv_dim];
+    matmul_int8(input, opts.w_qkv, m, hidden, conv_dim as u32, &mut qkv_acc)?;
+    let mut qkv_mixed = vec![0i8; mu * conv_dim];
+    requantize_vec(&qkv_acc, opts.scales.qkv, &mut qkv_mixed)?;
+    drop(qkv_acc);
+
+    // Step 2: attn_gate (z) → i8 via scales.gate_z (then SiLU applied
+    // when multiplied into the gated norm output).
+    let mut z_acc = vec![0i32; mu * value_dim];
+    matmul_int8(input, opts.w_gate, m, hidden, value_dim as u32, &mut z_acc)?;
+    let mut z_i8 = vec![0i8; mu * value_dim];
+    requantize_vec(&z_acc, opts.scales.gate_z, &mut z_i8)?;
+    drop(z_acc);
+
+    // Step 3: alpha / beta projections (per-head logits).
+    let mut alpha_acc = vec![0i32; mu * num_v];
+    matmul_int8(input, opts.w_alpha, m, hidden, num_v as u32, &mut alpha_acc)?;
+    let mut alpha_i8 = vec![0i8; mu * num_v];
+    requantize_vec(&alpha_acc, opts.scales.alpha, &mut alpha_i8)?;
+    drop(alpha_acc);
+
+    let mut beta_acc = vec![0i32; mu * num_v];
+    matmul_int8(input, opts.w_beta, m, hidden, num_v as u32, &mut beta_acc)?;
+    let mut beta_i8 = vec![0i8; mu * num_v];
+    requantize_vec(&beta_acc, opts.scales.beta, &mut beta_i8)?;
+    drop(beta_acc);
+
+    // Step 4: causal depthwise conv1d (kernel kk). Reduction inside one
+    // channel is k=1..kk i.e. tiny — keep in i32, requantize once at the
+    // end via scales.conv_silu after SiLU. Use f32 SiLU on the dequantized
+    // accumulator for parity with the reference; later we re-quantize.
+    let mut conv_out_i8 = vec![0i8; mu * conv_dim];
+    {
+        let qkv_scale_f = (opts.scales.qkv.num as f32) /
+            ((1u32 << crate::quant::SCALE_DENOM_LOG2) as f32);
+        // w_conv1d is INT8 quantized; we need its dequant scale, but it
+        // shares the activation channel — for INT8 i8*i8 conv we can keep
+        // it integer and re-scale at the end. The reference treats the
+        // conv as straight integer accum then SiLU on the scaled value.
+        // We dequantize via the qkv scale only (conv weights are
+        // bit-pattern but their per-channel scale equals 1.0 implicitly
+        // when calibrated). This is the documented INT8-quantization-noise
+        // limit and matches what the calibrator records at the
+        // `conv_silu` tap.
+        for t in 0..mu {
+            for c in 0..conv_dim {
+                let mut acc_i32: i32 = 0;
+                for ki in 0..kk {
+                    let in_t = (t as isize) - (kk as isize - 1) + ki as isize;
+                    if in_t >= 0 {
+                        let w = opts.w_conv1d[ki * conv_dim + c] as i32;
+                        let x = qkv_mixed[(in_t as usize) * conv_dim + c] as i32;
+                        acc_i32 = acc_i32.wrapping_add(w * x);
+                    }
+                }
+                // Dequant to f32 for SiLU; conv weight scale is already
+                // baked into the per-tap conv_silu scale by the
+                // calibrator. The i32 value here has units of i8*i8;
+                // dividing by 127 gives back the i8-scale; multiplying
+                // by qkv_scale gives the f32 activation.
+                let approx_f = (acc_i32 as f32) * qkv_scale_f / 127.0;
+                let v = silu_f32(approx_f);
+                conv_out_i8[t * conv_dim + c] = q_f32_to_i8(v, opts.scales.conv_silu);
+            }
+        }
+    }
+    drop(qkv_mixed);
+
+    // Step 5: split conv output into Q | K | V channel slices and L2-norm
+    // Q and K per (k_head, head_k). Operate in f32 since L2-norm divides
+    // by sqrt(sumsq) — bounded growth on the i8 boundary alone.
+    let conv_silu_scale_f = (opts.scales.conv_silu.num as f32) /
+        ((1u32 << crate::quant::SCALE_DENOM_LOG2) as f32);
+    let mut q_f = vec![0f32; mu * num_v * hk];
+    let mut k_f = vec![0f32; mu * num_v * hk];
+    let mut v_f = vec![0f32; mu * num_v * hv];
+    {
+        // Per-(k_head) L2 norm + Q scaling + K→V broadcast via vh%num_k.
+        let q_scale_f = 1.0 / (hk as f32).sqrt();
+        let eps: f32 = 1e-6;
+        // Decode Q, K, V from conv_out_i8.
+        let mut q_per_k = vec![0f32; mu * num_k * hk];
+        let mut k_per_k = vec![0f32; mu * num_k * hk];
+        for t in 0..mu {
+            let row = t * conv_dim;
+            for kh in 0..num_k {
+                for d in 0..hk {
+                    q_per_k[(t * num_k + kh) * hk + d] =
+                        (conv_out_i8[row + kh * hk + d] as f32) * conv_silu_scale_f / 127.0;
+                    k_per_k[(t * num_k + kh) * hk + d] =
+                        (conv_out_i8[row + key_dim + kh * hk + d] as f32) * conv_silu_scale_f / 127.0;
+                }
+            }
+            for vh in 0..num_v {
+                for d in 0..hv {
+                    v_f[(t * num_v + vh) * hv + d] =
+                        (conv_out_i8[row + 2 * key_dim + vh * hv + d] as f32)
+                            * conv_silu_scale_f / 127.0;
+                }
+            }
+        }
+        // L2-norm per k-head.
+        for t in 0..mu {
+            for kh in 0..num_k {
+                let off = (t * num_k + kh) * hk;
+                let mut sumsq: f32 = 0.0;
+                for d in 0..hk {
+                    sumsq += q_per_k[off + d] * q_per_k[off + d];
+                }
+                let inv = 1.0 / sumsq.sqrt().max(eps);
+                for d in 0..hk {
+                    q_per_k[off + d] *= inv * q_scale_f;
+                }
+                let off2 = (t * num_k + kh) * hk;
+                let mut sumsq2: f32 = 0.0;
+                for d in 0..hk {
+                    sumsq2 += k_per_k[off2 + d] * k_per_k[off2 + d];
+                }
+                let inv2 = 1.0 / sumsq2.sqrt().max(eps);
+                for d in 0..hk {
+                    k_per_k[off2 + d] *= inv2;
+                }
+            }
+        }
+        // Broadcast via vh % num_k (ggml_repeat tile semantics).
+        for t in 0..mu {
+            for vh in 0..num_v {
+                let kh = vh % num_k;
+                let src = (t * num_k + kh) * hk;
+                let dst = (t * num_v + vh) * hk;
+                for d in 0..hk {
+                    q_f[dst + d] = q_per_k[src + d];
+                    k_f[dst + d] = k_per_k[src + d];
+                }
+            }
+        }
+    }
+    drop(conv_out_i8);
+
+    // Step 6: gate_log = softplus(alpha + dt) * ssm_a, beta = sigmoid(beta_logit)
+    let alpha_scale = opts.scales.alpha;
+    let beta_scale = opts.scales.beta;
+    let ssm_dt_f: Vec<f32> = opts.ssm_dt.iter().map(|&x| (x as f32) / 127.0).collect();
+    let ssm_a_f: Vec<f32> = opts.ssm_a.iter().map(|&x| (x as f32) / 127.0).collect();
+    let mut gate_log = vec![0f32; mu * num_v];
+    let mut beta_f = vec![0f32; mu * num_v];
+    for t in 0..mu {
+        for h in 0..num_v {
+            let a = deq_i8(alpha_i8[t * num_v + h], alpha_scale);
+            let b = deq_i8(beta_i8[t * num_v + h], beta_scale);
+            gate_log[t * num_v + h] = softplus_f32(a + ssm_dt_f[h]) * ssm_a_f[h];
+            beta_f[t * num_v + h] = sigmoid_f32(b);
+        }
+    }
+    drop(alpha_i8);
+    drop(beta_i8);
+
+    // Step 7: DeltaNet recurrence per v-head. State S_h shape [hv, hk].
+    let mut state = vec![0f32; hv * hk];
+    let mut rec_out = vec![0f32; mu * num_v * hv];
+    for hh in 0..num_v {
+        for s in state.iter_mut() {
+            *s = 0.0;
+        }
+        for t in 0..mu {
+            let q_off = (t * num_v + hh) * hk;
+            let k_off = (t * num_v + hh) * hk;
+            let v_off = (t * num_v + hh) * hv;
+            let out_off = (t * num_v + hh) * hv;
+            let g = gate_log[t * num_v + hh].exp();
+            let bt = beta_f[t * num_v + hh];
+            for s in state.iter_mut() {
+                *s *= g;
+            }
+            // kv_mem[i] = sum_j S[i, j] * k_t[j]
+            let mut kv_mem = vec![0f32; hv];
+            for i in 0..hv {
+                let row = i * hk;
+                let mut acc_v: f32 = 0.0;
+                for j in 0..hk {
+                    acc_v += state[row + j] * k_f[k_off + j];
+                }
+                kv_mem[i] = acc_v;
+            }
+            // delta = (v_t - kv_mem) * beta
+            for i in 0..hv {
+                let d = (v_f[v_off + i] - kv_mem[i]) * bt;
+                let row = i * hk;
+                for j in 0..hk {
+                    state[row + j] += d * k_f[k_off + j];
+                }
+            }
+            // out[t, hh, :] = S @ q_t
+            for i in 0..hv {
+                let row = i * hk;
+                let mut s: f32 = 0.0;
+                for j in 0..hk {
+                    s += state[row + j] * q_f[q_off + j];
+                }
+                rec_out[out_off + i] = s;
+            }
+        }
+    }
+    drop(q_f);
+    drop(k_f);
+    drop(v_f);
+
+    // Step 8: gated RMSNorm of rec_out by ssm_norm_gamma, then multiply
+    // by silu(z). Both per-(token, v_head, head_v).
+    let z_scale = opts.scales.gate_z;
+    let gamma_f: Vec<f32> = opts.ssm_norm_gamma.iter().map(|&x| (x as f32) / 127.0).collect();
+    let eps: f32 = (opts.ssm_norm_eps_q.max(1) as f32) * 1e-6_f32;
+    let mut gated = vec![0i8; mu * num_v * hv];
+    for t in 0..mu {
+        for h in 0..num_v {
+            let off = (t * num_v + h) * hv;
+            let mut sumsq: f32 = 0.0;
+            for d in 0..hv {
+                sumsq += rec_out[off + d] * rec_out[off + d];
+            }
+            let inv = (sumsq / (hv as f32) + eps).sqrt().recip();
+            for d in 0..hv {
+                let normed = rec_out[off + d] * inv * gamma_f[d];
+                let z = deq_i8(z_i8[off + d], z_scale);
+                let val = normed * silu_f32(z);
+                gated[off + d] = q_f32_to_i8(val, opts.scales.gated_norm);
+            }
+        }
+    }
+    drop(rec_out);
+    drop(z_i8);
+
+    // Step 9: output projection. (m, value_dim) @ w_out → (m, hidden) i8.
+    matmul_int8_requant(
+        &gated,
+        opts.w_out,
+        m,
+        value_dim as u32,
+        hidden,
+        opts.scales.out,
+        output,
+    )?;
+    // Suppress unused-warnings (luts are kept for future LUT-only paths).
+    let _ = opts.sigmoid_lut;
+    let _ = opts.silu_lut;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
