@@ -927,12 +927,16 @@ fn forward_hybrid_layer(
         *v *= q_scale;
     }
 
-    // Broadcast Q, K to num_v_heads (each k-head repeats kv_groups=3 times).
+    // Broadcast Q, K from num_k_heads to num_v_heads. qwen35.cpp uses
+    // `ggml_repeat_4d` which TILES along the head axis (ops.cpp:1720-1736:
+    // `dst[i1*ne01 + k1] = src[k1]`), so v-head `vh` reads k-head
+    // `vh % num_k`, NOT `vh / kv_groups` (which would be repeat_interleave
+    // semantics — wrong for this op).
     let mut q_br = vec![0f32; m * num_v * head_k];
     let mut k_br = vec![0f32; m * num_v * head_k];
     for t in 0..m {
         for vh in 0..num_v {
-            let kh = vh / kv_groups;
+            let kh = vh % num_k;
             let src = (t * num_k + kh) * head_k;
             let dst = (t * num_v + vh) * head_k;
             for d in 0..head_k {
