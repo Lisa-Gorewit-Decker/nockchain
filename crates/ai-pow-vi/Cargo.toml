@@ -10,6 +10,7 @@ blake3 = { workspace = true }
 thiserror = { workspace = true }
 byteorder = { workspace = true }
 candle-core = { version = "0.9", default-features = false, optional = true }
+memmap2 = { workspace = true }
 
 [features]
 default = []

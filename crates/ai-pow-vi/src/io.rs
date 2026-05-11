@@ -30,7 +30,7 @@ use thiserror::Error;
 
 use crate::activation_lut::{ActivationKind, ActivationLut, LutError};
 use crate::attention::{AttentionScales, AttentionWeights};
-use crate::comm_w::{canonical_weight_bytes, compute_comm_w};
+use crate::comm_w::{canonical_weight_bytes, compute_comm_w, compute_comm_w_streaming};
 use crate::deltanet::{DeltaNetScales, DeltaNetWeights};
 use crate::ffn::{FfnScales, FfnWeights};
 use crate::layer::{LayerWeights, NormSpec};
@@ -103,15 +103,33 @@ pub fn save_model(model: &Model, dir: &Path) -> Result<(), SaveError> {
 }
 
 pub fn load_model(dir: &Path, expected_comm_w: &[u8; 32]) -> Result<Model, LoadError> {
-    let manifest = fs::read(dir.join(MANIFEST_FILENAME))
-        .map_err(|e| io_with_path(e, dir.join(MANIFEST_FILENAME)))?;
-    let weights = fs::read(dir.join(WEIGHTS_FILENAME))
-        .map_err(|e| io_with_path(e, dir.join(WEIGHTS_FILENAME)))?;
+    let manifest_path = dir.join(MANIFEST_FILENAME);
+    let weights_path = dir.join(WEIGHTS_FILENAME);
+    let manifest = fs::read(&manifest_path).map_err(|e| io_with_path(e, manifest_path.clone()))?;
 
     let parsed = parse_manifest(&manifest)?;
-    let model = parse_weights(parsed, &weights)?;
 
-    let actual_comm_w = compute_comm_w(&model);
+    // mmap weights.bin instead of reading the whole file into a Vec<u8>.
+    // For a 25 GB Qwen 3.6 27B weights.bin this saves the 25 GB Vec
+    // allocation; the per-layer Vec<i8>s parsed below total ~25 GB, so
+    // peak resident memory drops from ~50 GB to ~25 GB and the load
+    // fits on a 32 GB Mac.
+    let weights_file =
+        fs::File::open(&weights_path).map_err(|e| io_with_path(e, weights_path.clone()))?;
+    // SAFETY: weights.bin is opened read-only and not mutated for the
+    // duration of this load; mmap-ing it as immutable bytes is safe.
+    let mmap = unsafe {
+        memmap2::Mmap::map(&weights_file).map_err(|e| io_with_path(e, weights_path.clone()))?
+    };
+    let model = parse_weights(parsed, &mmap[..])?;
+    drop(mmap);
+    drop(weights_file);
+
+    // Recompute comm_W against the on-disk weights.bin via the streaming
+    // Merkle reducer. Avoids the materializing `compute_comm_w(&model)`
+    // path which builds another 25 GB canonical_weight_bytes Vec<u8>.
+    let actual_comm_w =
+        compute_comm_w_streaming(&weights_path, &model).map_err(LoadError::Io)?;
     if &actual_comm_w != expected_comm_w {
         return Err(LoadError::CommWMismatch);
     }

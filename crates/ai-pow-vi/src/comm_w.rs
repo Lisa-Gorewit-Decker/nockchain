@@ -558,6 +558,162 @@ pub fn compute_comm_w(model: &Model) -> [u8; 32] {
     *hasher.finalize().as_bytes()
 }
 
+/// Stack-of-subtrees streaming tile-Merkle reducer. Used by
+/// [`compute_comm_w_streaming`] to derive `comm_W` from a `weights.bin`
+/// on disk without materializing the full canonical byte stream in RAM
+/// (which would require ~25 GB on Qwen 3.6 27B).
+pub struct StreamingMerkle {
+    stack: Vec<(u32, [u8; 32])>,
+    tile_buf: Vec<u8>,
+    n_leaves: u64,
+    finalized: bool,
+}
+
+impl StreamingMerkle {
+    pub fn new() -> Self {
+        Self {
+            stack: Vec::new(),
+            tile_buf: Vec::with_capacity(WEIGHT_TILE_BYTES),
+            n_leaves: 0,
+            finalized: false,
+        }
+    }
+
+    /// Append a byte chunk. Completed 64-byte tiles are hashed
+    /// incrementally; partial trailing bytes wait in the buffer until
+    /// either filled or `finalize()` runs.
+    pub fn update(&mut self, data: &[u8]) {
+        assert!(!self.finalized, "StreamingMerkle update after finalize");
+        let mut offset = 0;
+        // First, fill the partial buffer if any.
+        if !self.tile_buf.is_empty() {
+            let need = WEIGHT_TILE_BYTES - self.tile_buf.len();
+            let take = need.min(data.len());
+            self.tile_buf.extend_from_slice(&data[..take]);
+            offset = take;
+            if self.tile_buf.len() == WEIGHT_TILE_BYTES {
+                let buf: [u8; WEIGHT_TILE_BYTES] =
+                    self.tile_buf.as_slice().try_into().unwrap();
+                self.tile_buf.clear();
+                self.add_data_leaf(tile_hash(&buf));
+            }
+        }
+        // Then process full tiles directly from `data`.
+        while data.len() - offset >= WEIGHT_TILE_BYTES {
+            let chunk = &data[offset..offset + WEIGHT_TILE_BYTES];
+            let h = tile_hash(chunk);
+            self.add_data_leaf(h);
+            offset += WEIGHT_TILE_BYTES;
+        }
+        // Stash the remainder.
+        if offset < data.len() {
+            self.tile_buf.extend_from_slice(&data[offset..]);
+        }
+    }
+
+    pub fn finalize(mut self) -> [u8; 32] {
+        assert!(!self.finalized, "StreamingMerkle finalize twice");
+        // Flush partial tail with zero padding.
+        if !self.tile_buf.is_empty() {
+            let mut tail = [0u8; WEIGHT_TILE_BYTES];
+            tail[..self.tile_buf.len()].copy_from_slice(&self.tile_buf);
+            self.tile_buf.clear();
+            self.add_data_leaf(tile_hash(&tail));
+        }
+        // Empty input → one all-zero tile leaf (matches non-streaming).
+        if self.n_leaves == 0 {
+            self.add_data_leaf(tile_hash(&[0u8; WEIGHT_TILE_BYTES]));
+        }
+        // Pad with sentinel leaves to next power of two.
+        let mut target = 1u64;
+        while target < self.n_leaves {
+            target *= 2;
+        }
+        let sent = sentinel_leaf();
+        while self.n_leaves < target {
+            self.add_sentinel_leaf(sent);
+        }
+        debug_assert_eq!(self.stack.len(), 1);
+        self.finalized = true;
+        self.stack[0].1
+    }
+
+    fn add_data_leaf(&mut self, leaf_h: [u8; 32]) {
+        self.push_level0(merkle_leaf_hash(&leaf_h));
+        self.n_leaves += 1;
+    }
+
+    fn add_sentinel_leaf(&mut self, sent: [u8; 32]) {
+        self.push_level0(sent);
+        self.n_leaves += 1;
+    }
+
+    fn push_level0(&mut self, h: [u8; 32]) {
+        self.stack.push((0, h));
+        while self.stack.len() >= 2 {
+            let top = self.stack.len() - 1;
+            if self.stack[top].0 != self.stack[top - 1].0 {
+                break;
+            }
+            let (lv, right) = self.stack.pop().unwrap();
+            let (_, left) = self.stack.pop().unwrap();
+            self.stack.push((lv + 1, merkle_node_hash(&left, &right)));
+        }
+    }
+}
+
+impl Default for StreamingMerkle {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+fn merkle_leaf_hash(leaf: &[u8; 32]) -> [u8; 32] {
+    let mut hasher = Hasher::new_derive_key("ai-pow v1 merkle-leaf");
+    hasher.update(leaf);
+    *hasher.finalize().as_bytes()
+}
+
+fn merkle_node_hash(left: &[u8; 32], right: &[u8; 32]) -> [u8; 32] {
+    let mut hasher = Hasher::new_derive_key("ai-pow v1 merkle-node");
+    hasher.update(left);
+    hasher.update(right);
+    *hasher.finalize().as_bytes()
+}
+
+fn sentinel_leaf() -> [u8; 32] {
+    let hasher = Hasher::new_derive_key("ai-pow v1 merkle-sentinel");
+    *hasher.finalize().as_bytes()
+}
+
+/// Compute `comm_W` against an on-disk `weights.bin` (must equal
+/// `canonical_weight_bytes(model)`). Streams the file through a
+/// stack-of-subtrees Merkle so peak RAM is O(log num_tiles) — fits on
+/// a 32 GB Mac even for 25 GB weights.bin where the materializing
+/// `compute_comm_w(&model)` path needs ~50 GB.
+pub fn compute_comm_w_streaming(
+    weights_path: &std::path::Path,
+    model: &Model,
+) -> std::io::Result<[u8; 32]> {
+    use std::io::Read;
+    let mut file = std::fs::File::open(weights_path)?;
+    let mut sm = StreamingMerkle::new();
+    let mut buf = vec![0u8; 16 * 1024 * 1024];
+    loop {
+        let n = file.read(&mut buf)?;
+        if n == 0 {
+            break;
+        }
+        sm.update(&buf[..n]);
+    }
+    let weights_root = sm.finalize();
+    let manifest_root = manifest_hash(model);
+    let mut hasher = Hasher::new_derive_key(CTX_COMM_W);
+    hasher.update(&weights_root);
+    hasher.update(&manifest_root);
+    Ok(*hasher.finalize().as_bytes())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -73,6 +73,7 @@ dependencies = [
  "blake3",
  "byteorder",
  "candle-core",
+ "memmap2",
  "proptest",
  "thiserror 2.0.18",
 ]
