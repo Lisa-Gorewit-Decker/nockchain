@@ -2,234 +2,133 @@
 
 End-goal: `gguf-convert` produces a Qwen 3.5 27B model dir whose `vi-eval` agrees with Ollama 4/4 on `/tmp/qwen_eval.jsonl` (predicting `8160, 8160, 90700, 8160`).
 
-The f32 reference path already gets 4/4 at commit `e689d78`, so this is mechanical translation — not arch exploration.
+The **f32 reference path** already gets 4/4 at commit `e689d78`. The **INT8 path** runs end-to-end without panics but is at **0/4** with quantization-noise-driven predictions (logit magnitudes 55–72k, predictions like `145890, 100, 219132, 15277`).
 
-## State at session end (branch `claude/ai-pow-nockchain-sgfNX`, 5 ahead of origin)
+## State at session end (branch `claude/ai-pow-nockchain-sgfNX`, ahead of origin)
 
 | Commit | Done |
 |---|---|
 | `2d01809` | Phase B.2 — packed Q+gate for std blocks |
-| `8b137fa` | Phase A (initial) — f32 calibrator scaffold, wrong arch |
-| `19f8105` | Real arch in calibrate.rs (IMROPE + GatedDeltaNet + per-layer num_kv + `--verify-top1`) |
-| `e689d78` | K→V broadcast fix (`vh / kv_groups` → `vh % num_k`). **4/4 top-1 vs Ollama.** |
-| `6c55fd6` | INT8 scaffolding — IMROPE in `src/rope.rs`, `forward_gated_deltanet_qwen35` in `src/deltanet.rs`, IMROPE table build in `gguf-convert`. **Not wired into runtime.** |
+| `8b137fa` | Phase A (initial) — f32 calibrator scaffold |
+| `19f8105` | Real arch in calibrate.rs (IMROPE + GatedDeltaNet + per-layer num_kv) |
+| `e689d78` | K→V broadcast fix. **4/4 top-1 vs Ollama** in f32. |
+| `6c55fd6` | INT8 scaffolding — rope IMROPE primitives + deltanet forward |
+| `5f37d88` | Wire `forward_gated_deltanet_qwen35` into runtime; converter rewrite |
+| `b44246b` | Loader byte counts for DeltaNet + IMROPE table sizing fix |
+| `3fd5af8` | Scale tap-name routing fix |
 
-All 246 lib + integration tests still pass.
+All lib + integration tests pass (10 tests `#[ignore]`'d pending the qwen_hybrid_mini fixture regeneration).
 
-Validated scales already on disk: `/tmp/scales_v3.json` — 1539 taps, computed from the 4/4 f32 reference.
+Validated scales on disk: `/tmp/scales_v3.json` — emits OLD slot names with NEW semantics (see calibrate.rs:842-1037 for the exact tap-to-record mapping).
 
 ## What's still wrong
 
-`forward_qwen_hybrid_ssm_layer` in `src/layer.rs` still calls the legacy `gated_attention_forward` + `ssm_forward` path (the Mamba interpretation). `gguf-convert::build_qwen_hybrid_layer` still loads tensors with std-block dims. So the INT8 output is architecturally wrong on the 48 hybrid blocks, producing 0/4 against Ollama.
+INT8 predictions are non-trivial (large logits, vocab-typical token ids) but don't match Ollama's argmax. Three suspects in priority order:
 
-The new `forward_gated_deltanet_qwen35` exists and is correct (it's a step-for-step INT8 port of the validated f32 reference) — but nothing calls it yet, and its `GatedDeltaNetOpts` struct expects a field set that doesn't match what `QwenHybridSsm` currently exposes.
+1. **`forward_gated_deltanet_qwen35` (src/deltanet.rs:514, ~300 lines)** — agent-written port of the f32 reference, never validated end-to-end. The most likely place for residual bugs:
+   - Sign / rounding convention in the recurrence rank-1 update
+   - L2-norm formula (`1/max(sqrt(sumsq), eps)` vs `1/sqrt(sumsq+eps)`)
+   - Q-scaling `1/sqrt(head_k_dim)` applied at the wrong point
+   - K→V broadcast direction (`vh % num_k` not `vh / kv_groups`) inside the i8 forward — fixed in f32 calibrate.rs at `e689d78`; double-check this same fix is present in deltanet.rs
+2. **i8 dequantization of f32-tracked state inside the recurrence** — the agent chose to keep state in f32 between tokens but the i8 boundaries on each side (q, k, v as i8 → f32 → recurrence → f32 → i8 back out) accumulate rounding noise across 64 tokens. May need wider intermediate state or stronger per-tap scales.
+3. **Conv1d output channel split offsets** — the conv1d weight is laid out as `[kernel_outer, channels_inner]` after transpose; verify the channel-split offsets `[0..key_dim) → Q, [key_dim..2*key_dim) → K, [2*key_dim..conv_dim) → V` match the converter's output exactly.
 
-## Step 1 — wire `forward_gated_deltanet_qwen35` into the runtime
+## Step-by-step debugging recipe (next session)
 
-**Files:** `src/layer.rs`.
+### Step A — directly compare i8 vs f32 layer outputs
 
-`forward_qwen_hybrid_ssm_layer` (currently ~200 lines around L749) does:
+Write a tiny test fixture that:
+1. Loads the v7 model dir (`/tmp/qwen35_27b_int8_v7`)
+2. Loads the same Qwen 3.5 27B GGUF
+3. Runs the first prompt through *one* hybrid layer using both:
+   - Our INT8 `forward_qwen_hybrid_ssm_layer` (residual → norm1 → DeltaNet → res1 → norm2 → FFN → output)
+   - The f32 reference's `forward_hybrid_layer` in calibrate.rs
+4. Dequantizes the i8 output to f32 (using the layer's `out` scale)
+5. Computes per-element relative error vs f32
 
-1. RMSNorm (`norm1`)
-2. Legacy attention + SSM scan path (this is what's wrong)
-3. Residual1
-4. RMSNorm (`norm2`)
-5. FFN
-6. Residual2
+Run it for hybrid layers 0, 1, 2 (the first three before the std-layer-3 sees them). Wherever relative error first exceeds ~10%, the bug lives in that step.
 
-Replace step 2 with a single call to `crate::deltanet::forward_gated_deltanet_qwen35` after constructing a `GatedDeltaNetOpts` from the existing struct fields.
+### Step B — drop-in diff one DeltaNet step at a time
 
-Field map (`QwenHybridSsm` → `GatedDeltaNetOpts`):
+Inside `forward_gated_deltanet_qwen35`, after each major operation:
+- attn_qkv matmul
+- attn_gate matmul
+- conv1d + SiLU
+- channel split + L2-norm
+- α / β / gate_log
+- recurrence step
+- gated RMSNorm
+- output projection
 
-| QwenHybridSsm field | Opts field | Notes |
-|---|---|---|
-| `attn_qkv_fused` | `w_qkv` | direct |
-| `attn_gate` | `w_gate` | direct |
-| `ssm_alpha` | `w_alpha` | direct |
-| `ssm_beta` | `w_beta` | direct |
-| `ssm_conv1d` | `w_conv1d` | must already be **kernel-major** (k-outer, c-inner). Currently the converter transposes it; keep that. |
-| `ssm_dt` | `ssm_dt` | direct |
-| `ssm_a` | `ssm_a` | direct |
-| `ssm_norm_gamma` | `ssm_norm_gamma` | direct |
-| `ssm_norm_eps_q` | `ssm_norm_eps_q` | direct |
-| `ssm_norm_post_scale` | `ssm_norm_post_scale` | direct |
-| `ssm_out` | `w_out` | direct |
-| `num_q_heads` (repurposed) | `num_k_heads` | semantic shift — see Step 2 |
-| `num_v_heads` | `num_v_heads` | direct (= 48) |
-| `head_dim` (repurposed) | `head_k` | semantic shift — see Step 2 |
-| `ssm_head_dim` | `head_v` | direct (= 128) |
-| `ssm_kernel_size` | `conv_kernel` | direct (= 4) |
-| `ssm_scales` | adapted → `scales: GatedDeltaNetScales` | see below |
+…dequantize the i8 output to f32 and compare against calibrate.rs's recorded value at that point. The first divergence narrows the bug to one operation. The calibrate.rs file already records max(|x|) per tap which can serve as the sanity oracle.
 
-LUTs (from `LayerContext`):
+### Step C — try f32-state-throughout
 
-| Opts field | Source |
-|---|---|
-| `sigmoid_lut` | `ctx.sigmoid_lut` |
-| `silu_lut` | `ctx.ffn_activation` (it's a SiLU LUT) |
+If quantization noise is the dominant issue, modify `forward_gated_deltanet_qwen35` to keep:
+- q, k, v as f32 (not i8)
+- recurrence state as f32 (already done)
+- everything inside the conv1d and recurrence in f32
+- quantize only at the block boundaries (input from prev layer, output to next layer)
 
-**Scales adapter.** `DeltaNetScales` (10 fields, old Mamba tap names) → `GatedDeltaNetScales` (10 fields, DeltaNet tap names). Build inline at the call site:
+This loses the determinism guarantees but tells you whether the i8 path can match Ollama in principle (it should, since f32 reference does). If even this doesn't match, the bug is structural (not quantization).
 
-```rust
-let scales = GatedDeltaNetScales {
-    qkv:        ssm_scales.q,
-    gate_z:     ssm_scales.v,
-    conv_silu:  ssm_scales.u,
-    q_norm:     ssm_scales.q,  // not separately tracked in old format
-    k_norm:     ssm_scales.k,
-    alpha:      ssm_scales.alpha_logit,
-    beta:       ssm_scales.beta_logit,
-    recurrence: ssm_scales.decay,
-    gated_norm: ssm_scales.o,
-    out:        ssm_scales.proj,
-};
-```
+### Step D — write a forward path test against the v7 fixture
 
-Drop `attn_out`, `attn_scales`, `q_norm_gamma`, `k_norm_gamma`, `qk_norm_eps_q`, `qk_norm_post_scale` from the destructure — they're no longer used in this code path. The struct still has them (existing manifest format), they just go unread.
-
-Delete the `gated_attention_inter` / `gated_attention_forward` / `ssm_forward_inter` / `ssm_forward` calls — those become dead code (keep the function definitions for now since they're public API).
-
-## Step 2 — fix the converter
-
-**Files:** `src/bin/gguf_convert.rs`.
-
-`build_qwen_hybrid_layer` (~L735) currently splits `attn_qkv` using std-block dims (`num_q_heads=24, num_kv_heads=auto, head_dim=256`) and reads tensors with Mamba semantics. Replace with DeltaNet:
+Save the f32 reference's per-layer hidden state from `bin/calibrate.rs` to disk (add a `--dump-layer-outs <dir>` flag — ~30 lines of code). Then write a Rust integration test:
 
 ```rust
-let n_k_heads = meta_u32(content, "qwen35.ssm.group_count", Some(16))? as usize;
-let n_v_heads = meta_u32(content, "qwen35.ssm.time_step_rank", Some(48))? as usize;
-let head_k    = meta_u32(content, "qwen35.ssm.state_size", Some(128))? as usize;
-let head_v    = head_k;  // same in qwen35
-let conv_K    = meta_u32(content, "qwen35.ssm.conv_kernel", Some(4))? as usize;
-let key_dim   = n_k_heads * head_k;
-let value_dim = n_v_heads * head_v;
-let conv_dim  = 2 * key_dim + value_dim;  // 10240 on qwen3.5-27B
-```
-
-Then:
-
-1. **attn_qkv** — read `blk.N.attn_qkv.weight`, expect candle shape `[conv_dim=10240, hidden=5120]`. Direct dequant-quantize.
-2. **attn_gate** — read `blk.N.attn_gate.weight`, expect `[value_dim=6144, hidden=5120]`.
-3. **ssm_conv1d** — read `blk.N.ssm_conv1d.weight`, expect candle shape `[conv_dim=10240, kernel=4]`. **Transpose** to kernel-outer (`w_new[k*conv_dim + c] = w_raw[c*kk + k]`) before quantizing.
-4. **ssm_dt** — try `blk.N.ssm_dt` first; fall back to `blk.N.ssm_dt.bias`. Length `n_v_heads=48`.
-5. **ssm_a** — read `blk.N.ssm_a`. Length 48. **Important**: this is stored as `-exp(A_log)` (already negated). The forward uses it as a multiplier — do not re-negate.
-6. **ssm_alpha** — `blk.N.ssm_alpha.weight`, candle shape `[n_v_heads=48, hidden=5120]`.
-7. **ssm_beta** — `blk.N.ssm_beta.weight`, same shape.
-8. **ssm_norm** — `blk.N.ssm_norm.weight`, length `head_v=128`.
-9. **ssm_out** — `blk.N.ssm_out.weight`, candle shape `[hidden=5120, value_dim=6144]`.
-
-Set the QwenHybridSsm struct fields:
-
-```rust
-num_q_heads:   n_k_heads as u32,   // repurposed
-num_kv_heads:  n_k_heads as u32,   // unused, mirror for clarity
-head_dim:      head_k as u32,      // repurposed
-num_v_heads:   n_v_heads as u32,
-ssm_head_dim:  head_v as u32,
-ssm_kernel_size: conv_K as u32,
-```
-
-**Scales** — replace `dnet_scales_for` to look up new tap names:
-
-```rust
-fn dnet_scales_for(scales: &ScaleSource, n: u32) -> DeltaNetScales {
-    let tap = |sub: &str| format!("layer[{n}].ssm.{sub}");
-    DeltaNetScales {
-        q:           Scale::from_num(scales.get(&tap("qkv"))).unwrap(),
-        k:           Scale::from_num(scales.get(&tap("k_norm"))).unwrap(),
-        v:           Scale::from_num(scales.get(&tap("gate_z"))).unwrap(),
-        alpha_logit: Scale::from_num(scales.get(&tap("alpha"))).unwrap(),
-        beta_logit:  Scale::from_num(scales.get(&tap("beta"))).unwrap(),
-        u:           Scale::from_num(scales.get(&tap("conv_silu"))).unwrap(),
-        decay:       Scale::from_num(scales.get(&tap("recurrence"))).unwrap(),
-        update:      Scale::from_num(scales.get(&tap("recurrence"))).unwrap(),  // share with decay
-        o:           Scale::from_num(scales.get(&tap("gated_norm"))).unwrap(),
-        proj:        Scale::from_num(scales.get(&tap("out"))).unwrap(),
-    }
+let model = Model::load("/tmp/qwen35_27b_int8_v7", &expected_comm_w).unwrap();
+for layer_idx in 0..64 {
+    let actual = forward_through_layer_N(&model, &prompt, layer_idx);
+    let expected = read_f32_dump(format!("layer_{layer_idx}.f32"));
+    let max_relerr = compare_dequant(&actual, &expected, model.layers[layer_idx].out_scale);
+    assert!(max_relerr < 0.20, "layer {layer_idx} max relerr = {max_relerr}");
 }
 ```
 
-The "unused" `attn_qkv`-related fields (`q_norm_gamma`, `k_norm_gamma`, etc) still need to be populated to satisfy the struct; use `default_no_op_gamma_i8` and `Scale::from_num(1).unwrap()` defaults. They'll be ignored at forward time.
+This nails down which layer first diverges.
 
-## Step 3 — fixture: rewrite or `#[ignore]`
+## Step E — regenerate fixtures + clean up
 
-`oracle/synthetic_qwen_hybrid_mini.py` generates a synthetic small-scale model whose manifest + weights + forward output are byte-equal to the Rust forward. The test is `tests/oracle_qwen_hybrid_mini.rs`.
+Once Step A-D narrow the bug and INT8 matches Ollama:
 
-Two paths:
+1. Rewrite `oracle/synthetic_qwen_hybrid_mini.py` to emit the new DeltaNet arithmetic. Update Mamba-era shapes (num_q_heads/head_dim slots now hold DeltaNet num_k_heads/head_k).
+2. Regenerate `oracle/test_vectors/qwen_hybrid_mini/{manifest.bin,weights.bin,comm_w.hex,forward_layer_*.bin}`.
+3. Un-`#[ignore]` the 3 fixture tests + the one in oracle_multi_arch's FIXTURES.
+4. Verify all 246+ tests pass.
 
-**Path A (clean):** rewrite the Python generator's hybrid-block forward to mirror the new DeltaNet arithmetic, regenerate the fixture, byte-equal test passes again. Estimated ~half day of Python work.
+## Key invariants (don't relearn these)
 
-**Path B (fast):** mark `tests/oracle_qwen_hybrid_mini.rs` `#[ignore]` with a TODO note pointing at this plan. Re-enable when Path A lands. Estimated 5 minutes.
-
-Recommend Path B first to unblock the real-Qwen re-eval, Path A as a follow-up.
-
-## Step 4 — refresh pins
-
-`tests/determinism_pins.rs::pin_comm_w_canonical_model` builds a tiny model with one `LayerWeights::Attention` (not Hybrid), so it should NOT be affected.
-
-`oracle/test_vectors/qwen_hybrid_mini/comm_w.hex` will diverge (the fixture's weights + forward change). Regenerate after Path A or delete if Path B.
-
-## Step 5 — build + test
-
-```sh
-cargo build --release -p ai-pow-vi --features gguf-convert --bin gguf-convert --bin vi-eval --bin calibrate
-cargo test -p ai-pow-vi --features gguf-convert 2>&1 | grep "test result"
-```
-
-Expect all current tests to pass (modulo the ignored `oracle_qwen_hybrid_mini` if Path B). If a test fails, the most likely cause is a tensor-shape mismatch in `build_qwen_hybrid_layer` — re-check the candle shape orientation against the GGUF native order (see the conv1d transpose dance in calibrate.rs at line 806).
-
-## Step 6 — re-convert + re-eval
-
-```sh
-# scales already on disk from session: /tmp/scales_v3.json
-mkdir -p /tmp/qwen35_27b_int8_v4
-./target/release/gguf-convert \
-  --gguf "$HOME/.ollama/models/blobs/sha256-83c54730a5fea8a0958598c01617c1419c431e93b33bacf980b49a420c798926" \
-  --out /tmp/qwen35_27b_int8_v4 \
-  --seq-len 64 --activation-tile 64 \
-  --scales /tmp/scales_v3.json
-
-./target/release/vi-eval \
-  --model-dir /tmp/qwen35_27b_int8_v4 \
-  --eval /tmp/qwen_eval.jsonl \
-  --arch qwen35
-```
-
-Wall clock budget: convert ~25 min, vi-eval ~25 min (25 GB BLAKE3 + 4 forwards). Expected `top1_agreement\t4/4\t100.0%`.
-
-If less than 4/4, the most likely failure mode is INT8 quantization noise on a calibration scale that's too tight. Re-run calibrate with a wider prompt set (16–32 prompts) and try again. If 4/4, refresh the qwen_hybrid_mini fixture (Path A) as the follow-up.
-
-## Key invariants (read before touching the code)
-
-1. **Conv1d weight layout.** GGUF native is `[kernel, channels]` (innermost-fastest). Candle returns the dims as `[channels, kernel]` PyTorch-style **but the memory bytes are in PyTorch order**, i.e. `w_raw[c*kk + k]`. The runtime forward expects `w[k*conv_dim + c]`. Transpose ONCE in the converter; do not transpose at the forward.
-2. **`ssm_a` sign.** The GGUF stores `-exp(A_log)` directly. Use it as a multiplier; do not negate.
-3. **`ssm_dt` name.** The Ollama-shipped GGUF uses bare `ssm_dt` (no `.bias`). Newer llama.cpp builds emit `ssm_dt.bias`. Try both with `or_else`.
-4. **K→V broadcast.** `ggml_repeat` tiles (`dst[i*ne + k] = src[k]`), so v-head `vh` reads k-head `vh % num_k`. NOT `vh / kv_groups` — that's repeat-interleave semantics and gives the wrong head assignments (this is the bug that took the f32 reference from 0/4 to 4/4).
-5. **IMROPE.** Rotates only the first `n_rot=64` of each 256-element head. NEOX pairing `(x[j], x[j+n_rot/2])`. Per-pair section dispatch matches `ggml-cpu/ops.cpp:5725`: `sector%3==0 && sector<3*sec[0]` → t, `%3==1 && <3*sec[1]` → h, `%3==2 && <3*sec[2]` → w.
-6. **DeltaNet recurrence state.** Keep in f32 inside the forward (not i8). The multiplicative decay over 64 tokens destroys i8 precision; the i8 quantization happens only at the per-token boundaries (`recurrence` scale).
-7. **Q scaling.** `q *= 1/sqrt(head_k_dim)` applied **once** after L2-norm, before the recurrence. Easy to forget.
-8. **Per-head L2-norm formula.** `1 / max(sqrt(sumsq), eps)`, not `1 / sqrt(sumsq + eps)`. Matches `ggml_l2_norm` exactly.
+1. **GGUF tensor name `ssm_dt`** has no `.bias` suffix in the Ollama-shipped GGUF. Try both with `or_else`.
+2. **`ssm_a`** is stored as `-exp(A_log)` (already negated); use as a multiplier.
+3. **Conv1d weight layout**: candle returns `[channels, kernel]` PyTorch-style with memory `w[c*kk + k]`. Runtime expects kernel-outer `w[k*conv_dim + c]` — transpose ONCE in converter.
+4. **K→V broadcast**: `vh % num_k` (ggml_repeat tiles), NOT `vh / kv_groups`.
+5. **IMROPE tables**: sized `seq_len * (n_rot/2)`, so `tables.half_head_dim = n_rot/2`. Rope_apply slice length = `2 * tables.half_head_dim` covers exactly the rotated subspace.
+6. **Per-head L2-norm**: `1/max(sqrt(sumsq), eps)`, not `1/sqrt(sumsq+eps)`.
+7. **Q scaling**: `q *= 1/sqrt(head_k_dim)` applied ONCE after L2-norm, before the recurrence.
+8. **DeltaNet recurrence state**: keep in f32; not viable in i8 due to 64-step multiplicative decay.
+9. **calibrate.rs tap-name reuse**: records under OLD DeltaNetScales slot names with NEW semantics. See `dnet_scales_for` for the full slot-to-tap map.
 
 ## Reference files
 
-- `/tmp/llama.cpp/src/models/qwen35.cpp` — canonical graph (llama.cpp commit `1ec7ba0`)
-- `/tmp/llama.cpp/src/models/delta-net-base.cpp` — DeltaNet recurrence
+- `/tmp/llama.cpp/src/models/qwen35.cpp` — canonical computation graph
+- `/tmp/llama.cpp/src/models/delta-net-base.cpp` — DeltaNet recurrence reference
 - `/tmp/llama.cpp/ggml/src/ggml-cpu/ops.cpp:5725` — IMROPE dispatch
-- `/tmp/llama.cpp/ggml/src/ggml-cpu/ops.cpp:1693` — `ggml_compute_forward_repeat_f32` (proves tile, not interleave)
-- `crates/ai-pow-vi/src/bin/calibrate.rs` — validated 4/4 f32 reference; treat as the spec
-- `/tmp/scales_v3.json` — validated per-tap scales from the 4/4 reference
-- `/tmp/qwen_eval.jsonl` — 4-prompt Ollama eval set
+- `/tmp/llama.cpp/ggml/src/ggml-cpu/ops.cpp:1693` — `ggml_repeat_f32` (proves tile, not interleave)
+- `crates/ai-pow-vi/src/bin/calibrate.rs` — **validated 4/4 f32 reference**; treat as the spec
+- `/tmp/scales_v3.json` — validated per-tap scales (1539 entries)
+- `/tmp/qwen_eval.jsonl` — 4-prompt Ollama reference set
 - GGUF blob: `~/.ollama/models/blobs/sha256-83c54730a5fea8a0958598c01617c1419c431e93b33bacf980b49a420c798926`
+- Latest converted INT8 model: `/tmp/qwen35_27b_int8_v7/` (comm_W `16e5f2a3...`)
 
 ## Estimated effort
 
 | Step | Effort |
 |---|---|
-| 1. Wire forward | ~1h |
-| 2. Fix converter | ~1.5h |
-| 3. Fixture Path B (ignore) | ~5min |
-| 4. Pins | ~5min |
-| 5. Build + test | ~15min |
-| 6. Convert + eval | ~50min wall, ~15min active |
-| **Subtotal to 4/4** | **~3–4h focused work + ~1h wall-clock** |
-| 3a. Fixture Path A (rewrite) | follow-up, ~half day |
+| A. Per-layer i8 vs f32 diff | 2–3h focused |
+| B. DeltaNet operation-by-operation diff | 1–2h |
+| C. f32-throughout sanity check | 30min |
+| D. Integration test on the v7 fixture | 1h |
+| E. Fixture rewrite | ~half day |
+
+**Honest expected outcome**: B is most likely to surface a concrete bug in `forward_gated_deltanet_qwen35`. Once that's fixed, top-1 should jump to 3/4 or 4/4 (since the f32 reference path is provably correct with the same scales).
