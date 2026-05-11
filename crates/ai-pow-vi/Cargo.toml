@@ -28,5 +28,10 @@ name = "gguf-convert"
 path = "src/bin/gguf_convert.rs"
 required-features = ["gguf-convert"]
 
+[[bin]]
+name = "calibrate"
+path = "src/bin/calibrate.rs"
+required-features = ["gguf-convert"]
+
 [dev-dependencies]
 proptest = { workspace = true }
