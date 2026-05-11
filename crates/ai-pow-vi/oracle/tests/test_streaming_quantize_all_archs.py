@@ -290,6 +290,7 @@ def test_qwen_standard_layer_bytes_match():
     actual = _streaming_layer_bytes_via_helper(
         layer, 0, QS._stream_qwen_standard_attention_layer_bytes,
         layer.attn.head_dim,
+        layer.attn.num_q_heads,
     )
     expected = _reference_layer_bytes(layer)
     assert actual == expected, (

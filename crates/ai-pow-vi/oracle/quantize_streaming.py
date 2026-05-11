@@ -263,12 +263,30 @@ def _stream_qwen_standard_attention_layer_bytes(
     n: int,
     scales: dict,
     head_dim: int,
+    num_q_heads: int,
 ) -> None:
     """QWEN_STANDARD_ATTENTION → `LayerWeights::QwenStandard`. Same as
-    Attention plus per-head QK norm gammas (post_attn_norm is reused
-    as `norm2` in qwen35.py)."""
+    Attention plus per-head QK norm gammas. When the GGUF's attn.w_q
+    has more output heads than our struct allocates (real Qwen 3.6 27B
+    has 48 Q heads per std block but the Rust struct supports up to
+    num_q_heads=24 due to single head_dim convention), truncate the
+    extra heads. Approximate forward output."""
     w.append_i8s(_q(stream, n, "norm1.gamma", scales))
-    w.append_i8s(_q(stream, n, "attn.w_q", scales))
+    # Detect actual num_q in this block's attn.w_q and truncate if needed.
+    # Only meaningful for real GGUF tensors (2-D); flat fixtures skip.
+    q_name = f"layer[{n}].attn.w_q"
+    q_t = stream.lookup[q_name]
+    q_shape = tuple(int(s) for s in q_t.shape)
+    target_q_out = num_q_heads * head_dim
+    if len(q_shape) == 2 and q_shape[-1] != target_q_out:
+        arr = G.dequantize_tensor(q_t)
+        # After reader reversal, arr.shape == (out, in). Truncate out to target.
+        arr = arr[:target_q_out, :]
+        arr = np.ascontiguousarray(arr)
+        scale_num = Q._ws(scales, q_name)
+        w.append_i8s(Q.quantize_tensor(arr.ravel(), Q.scale_num_to_f32(scale_num)))
+    else:
+        w.append_i8s(_q(stream, n, "attn.w_q", scales))
     w.append_i8s(_q(stream, n, "attn.w_k", scales))
     w.append_i8s(_q(stream, n, "attn.w_v", scales))
     w.append_i8s(_q(stream, n, "attn.w_o", scales))
@@ -321,22 +339,30 @@ def _stream_qwen_hybrid_ssm_layer_bytes(
     w.append_i8s(_q(stream, n, "ssm.a", scales))
     w.append_i8s(_q(stream, n, "ssm.w_alpha", scales))
     w.append_i8s(_q(stream, n, "ssm.w_beta", scales))
-    # ssm.w_conv1d may be wider than hidden in real Qwen 3.6 27B
-    # (kernel applied to the QKV-projected channels, not the input
-    # hidden directly). When the row stride doesn't match `hidden`,
-    # truncate to the first `hidden` columns per row.
+    # ssm.w_conv1d. GGUF native shape is (kernel_size, channels) with
+    # channels innermost. After our reader's t.shape[::-1] reversal, the
+    # ndarray returned by dequantize_tensor has shape
+    # `(channels, kernel_size)` and stores values row-major. We want
+    # the Rust struct's `(kernel_size, hidden)` row-major layout
+    # (ssm_conv1d[k * hidden + c]), so we transpose to
+    # `(kernel_size, channels)` then truncate channels to `hidden` if
+    # the real conv is wider (Qwen 3.6 27B: conv applied to
+    # post-QKV-projected channels of width 10240, vs our struct's
+    # 5120 = hidden).
     if f"layer[{n}].ssm.w_conv1d" in stream.lookup:
         conv_t = stream.lookup[f"layer[{n}].ssm.w_conv1d"]
-        conv_shape = tuple(int(s) for s in conv_t.shape)
-        # After gguf_reader's shape-reverse, shape is (kernel_size, channels).
-        # _flatten_linear is NOT applied to ssm.w_conv1d (its canonical
-        # sub-name isn't in _LINEAR_CANON_SUBSTRINGS), so the f32 ndarray
-        # is the raw 2-D tensor.
-        if len(conv_shape) == 2:
-            kernel_size, channels = conv_shape
+        # Raw GGUF shape order is (kernel_size, channels) for this tensor.
+        raw_shape = tuple(int(s) for s in conv_t.shape)
+        if len(raw_shape) == 2:
+            kernel_size = raw_shape[0]
+            channels = raw_shape[-1]
             arr = G.dequantize_tensor(conv_t)
-            if channels != stream.arch.hidden:
+            # arr.shape after reader reversal == (channels, kernel_size).
+            # Transpose → (kernel_size, channels), then truncate.
+            arr = arr.T
+            if channels > stream.arch.hidden:
                 arr = arr[:, : stream.arch.hidden]
+            arr = np.ascontiguousarray(arr)
             scale_num = Q._ws(scales, f"layer[{n}].ssm.w_conv1d")
             w.append_i8s(Q.quantize_tensor(arr.ravel(), Q.scale_num_to_f32(scale_num)))
         else:
@@ -520,15 +546,14 @@ def _build_qwen_hybrid_ssm_layer_meta(
         num_v_heads = int(stream.lookup[ssm_a_name].shape[-1])
     else:
         num_v_heads = int(arch.extras.get("num_v_heads", arch.num_q_heads))
-    # Detect num_kv_heads per-block from attn.w_qkv shape:
-    # qkv_out = q_dim + 2*kv_dim where q_dim = num_q_heads * head_dim.
+    # Detect num_kv_heads per-block from attn.w_qkv shape.
+    # GGUF native shape order is innermost-first, so `t.shape[-1]` is
+    # the outermost dim = output features (for a HF (out, in) matrix).
     qkv_name = f"layer[{n}].attn.w_qkv"
     num_kv_heads = arch.num_kv_heads
     if qkv_name in stream.lookup:
         qkv_shape = tuple(int(s) for s in stream.lookup[qkv_name].shape)
-        # gguf_reader reverses shape on read → (in, out). We get the
-        # raw shape here (before reversal) so the LAST element is `in`.
-        qkv_out = qkv_shape[0]  # out is first in raw GGUF shape
+        qkv_out = qkv_shape[-1]
         q_dim = arch.num_q_heads * arch.head_dim
         kv_total = qkv_out - q_dim
         if kv_total > 0 and kv_total % 2 == 0:
@@ -625,7 +650,7 @@ def stream_canonical_bytes_from_gguf(
             )
         elif kind == BlockKind.QWEN_STANDARD_ATTENTION:
             _stream_qwen_standard_attention_layer_bytes(
-                w, stream, n, scales, arch.head_dim
+                w, stream, n, scales, arch.head_dim, arch.num_q_heads
             )
         elif kind == BlockKind.QWEN_HYBRID_SSM:
             ssm_norm_name = f"layer[{n}].ssm.norm.gamma"

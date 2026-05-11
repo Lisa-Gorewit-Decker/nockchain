@@ -9,10 +9,22 @@ ai-pow = { path = "../ai-pow" }
 blake3 = { workspace = true }
 thiserror = { workspace = true }
 byteorder = { workspace = true }
+candle-core = { version = "0.9", default-features = false, optional = true }
+
+[features]
+default = []
+# Enable the GGUF streaming converter (`gguf-convert` binary). Requires
+# candle-core for GGUF parsing + Q4_K/Q6_K/F16/BF16 SIMD dequant.
+gguf-convert = ["dep:candle-core"]
 
 [[bin]]
 name = "vi-eval"
 path = "src/bin/vi_eval.rs"
+
+[[bin]]
+name = "gguf-convert"
+path = "src/bin/gguf_convert.rs"
+required-features = ["gguf-convert"]
 
 [dev-dependencies]
 proptest = { workspace = true }
