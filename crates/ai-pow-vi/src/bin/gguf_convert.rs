@@ -455,17 +455,30 @@ fn ffn_scales_for(scales: &ScaleSource, n: u32) -> FfnScales {
 
 fn dnet_scales_for(scales: &ScaleSource, n: u32) -> DeltaNetScales {
     let tap = |sub: &str| format!("layer[{n}].ssm.{sub}");
+    // The runtime `forward_qwen_hybrid_ssm_layer` maps these slots through
+    // `GatedDeltaNetScales` for the qwen35 DeltaNet path (see layer.rs).
+    // We populate them from the validated f32 calibrator tap names. Slots:
+    //   q          ← ssm.qkv          (attn_qkv projection)
+    //   v          ← ssm.gate_z       (z output gate projection)
+    //   k          ← ssm.k_norm       (post-L2-norm K)
+    //   u          ← ssm.conv_silu    (conv+SiLU output)
+    //   alpha_logit← ssm.alpha
+    //   beta_logit ← ssm.beta
+    //   decay      ← ssm.recurrence   (per-step recurrence output)
+    //   o          ← ssm.gated_norm
+    //   proj       ← ssm.out
+    // `update` is unused by GatedDeltaNetScales — leave at default.
     DeltaNetScales {
-        q: Scale::from_num(scales.get(&tap("q"))).unwrap(),
-        k: Scale::from_num(scales.get(&tap("k"))).unwrap(),
-        v: Scale::from_num(scales.get(&tap("v"))).unwrap(),
-        alpha_logit: Scale::from_num(scales.get(&tap("alpha_logit"))).unwrap(),
-        beta_logit: Scale::from_num(scales.get(&tap("beta_logit"))).unwrap(),
-        u: Scale::from_num(scales.get(&tap("u"))).unwrap(),
-        decay: Scale::from_num(scales.get(&tap("decay"))).unwrap(),
-        update: Scale::from_num(scales.get(&tap("update"))).unwrap(),
-        o: Scale::from_num(scales.get(&tap("o"))).unwrap(),
-        proj: Scale::from_num(scales.get(&tap("proj"))).unwrap(),
+        q: Scale::from_num(scales.get(&tap("qkv"))).unwrap(),
+        k: Scale::from_num(scales.get(&tap("k_norm"))).unwrap(),
+        v: Scale::from_num(scales.get(&tap("gate_z"))).unwrap(),
+        alpha_logit: Scale::from_num(scales.get(&tap("alpha"))).unwrap(),
+        beta_logit: Scale::from_num(scales.get(&tap("beta"))).unwrap(),
+        u: Scale::from_num(scales.get(&tap("conv_silu"))).unwrap(),
+        decay: Scale::from_num(scales.get(&tap("recurrence"))).unwrap(),
+        update: Scale::from_num(scales.get(&tap("recurrence"))).unwrap(),
+        o: Scale::from_num(scales.get(&tap("gated_norm"))).unwrap(),
+        proj: Scale::from_num(scales.get(&tap("out"))).unwrap(),
     }
 }
 
@@ -774,9 +787,28 @@ fn build_qwen_hybrid_layer(
     dims: &QwenDims,
     scales: &ScaleSource,
 ) -> Result<LayerWeights, String> {
+    // DeltaNet dims (Qwen 3.5 27B):
+    //   num_k_heads = ssm.group_count    = 16
+    //   num_v_heads = ssm.time_step_rank = 48
+    //   head_k_dim  = head_v_dim         = ssm.state_size = 128
+    //   conv_kernel = ssm.conv_kernel    = 4
+    //   key_dim     = num_k_heads * head_k_dim  = 2048
+    //   value_dim   = num_v_heads * head_v_dim  = 6144
+    //   conv_dim    = 2*key_dim + value_dim     = 10240
+    let n_k_heads =
+        meta_u32(content, "qwen35.ssm.group_count", Some(16))? as usize;
+    let n_v_heads =
+        meta_u32(content, "qwen35.ssm.time_step_rank", Some(48))? as usize;
+    let head_k =
+        meta_u32(content, "qwen35.ssm.state_size", Some(128))? as usize;
+    let head_v = head_k; // qwen35 ties them
+    let conv_kernel =
+        meta_u32(content, "qwen35.ssm.conv_kernel", Some(4))? as usize;
+    let key_dim = n_k_heads * head_k;
+    let value_dim = n_v_heads * head_v;
+    let conv_dim = 2 * key_dim + value_dim;
+
     let h = dims.hidden as usize;
-    let hd = dims.head_dim as usize;
-    let nq = dims.num_q_heads as usize;
     let prefix = format!("blk.{n}");
     let norm1_post = scales.get(&format!("layer[{n}].norm_post.1"));
     let norm2_post = scales.get(&format!("layer[{n}].norm_post.2"));
@@ -784,60 +816,64 @@ fn build_qwen_hybrid_layer(
     let ssm_norm_post = scales.get(&format!("layer[{n}].ssm_norm_post"));
 
     let norm1_g = dequant_quantize(content, file, &format!("{prefix}.attn_norm.weight"))?;
-    // Detect num_kv per-block from attn_qkv shape: total = q_dim + 2*kv_dim.
+
+    // attn_qkv: candle shape [conv_dim=10240, hidden=5120], i.e. (out, in).
     let qkv_info = content
         .tensor_infos
         .get(&format!("{prefix}.attn_qkv.weight"))
         .ok_or_else(|| format!("layer {n} hybrid missing attn_qkv.weight"))?;
-    let qkv_shape: Vec<usize> = qkv_info.shape.dims().to_vec();
-    // GGUF native shape: innermost-first. For a (out, in) HF matrix it's (in, out).
-    // After candle's internal handling, `shape.dims()` returns the PyTorch-style
-    // (out, in) order. So qkv_shape[0] = out, [1] = in.
-    let qkv_out = qkv_shape[0];
-    let q_dim = nq * hd;
-    let kv_dim = (qkv_out - q_dim) / 2;
-    let num_kv = (kv_dim / hd) as u32;
+    let qkv_shape = qkv_info.shape.dims();
+    if qkv_shape.len() != 2 || qkv_shape[0] != conv_dim || qkv_shape[1] != h {
+        return Err(format!(
+            "layer {n} hybrid attn_qkv shape {qkv_shape:?} != [conv_dim={conv_dim}, hidden={h}]"
+        ));
+    }
     let attn_qkv = dequant_quantize(content, file, &format!("{prefix}.attn_qkv.weight"))?;
+
+    // attn_gate (z output gate): candle shape [value_dim=6144, hidden=5120].
     let attn_gate = dequant_quantize(content, file, &format!("{prefix}.attn_gate.weight"))?;
-    // attn_out: real Qwen 3.6 hybrid blocks have NO separate attn_output; the
-    // ssm_out projection is shared. We alias ssm_out bytes here.
-    let attn_out = dequant_quantize(content, file, &format!("{prefix}.ssm_out.weight"))?;
-    let q_norm = default_no_op_gamma_i8(hd);
-    let k_norm = default_no_op_gamma_i8(hd);
 
     // SSM tensors.
     let ssm_a = dequant_quantize(content, file, &format!("{prefix}.ssm_a"))?;
-    let num_v = ssm_a.len() as u32;
-    let ssm_alpha = dequant_quantize(content, file, &format!("{prefix}.ssm_alpha.weight"))?;
-    let ssm_beta = dequant_quantize(content, file, &format!("{prefix}.ssm_beta.weight"))?;
-    let ssm_dt = dequant_quantize(content, file, &format!("{prefix}.ssm_dt"))?;
-    let ssm_norm_g = dequant_quantize(content, file, &format!("{prefix}.ssm_norm.weight"))?;
-    let ssm_head_dim = ssm_norm_g.len() as u32;
-    // ssm_conv1d: GGUF native shape is (kernel_size, channels) with
-    // kernel_size innermost. Candle's dims() reverses → (channels,
-    // kernel_size). Data layout in conv_f is (channels, kernel_size)
-    // row-major. We want (kernel_size, hidden) row-major for Rust's
-    // SSM forward, so we transpose AND truncate channels to hidden.
-    let (conv_f, conv_shape) = dequant_to_vec_f32(content, file, &format!("{prefix}.ssm_conv1d.weight"))?;
-    if conv_shape.len() != 2 {
-        return Err(format!("layer {n} hybrid ssm_conv1d has wrong rank: {conv_shape:?}"));
-    }
-    let conv_channels = conv_shape[0];
-    let kernel_size = conv_shape[1];
-    if conv_channels < h {
+    if ssm_a.len() != n_v_heads {
         return Err(format!(
-            "layer {n} hybrid ssm_conv1d channels {} < hidden {}",
-            conv_channels, h
+            "layer {n} hybrid ssm_a len {} != num_v_heads {}",
+            ssm_a.len(),
+            n_v_heads
         ));
     }
-    // Transpose+truncate: out[k * h + c] = conv_f[c * kernel_size + k]
-    let mut conv_truncated = vec![0.0f32; kernel_size * h];
-    for c in 0..h {
-        for k in 0..kernel_size {
-            conv_truncated[k * h + c] = conv_f[c * kernel_size + k];
+    let ssm_alpha = dequant_quantize(content, file, &format!("{prefix}.ssm_alpha.weight"))?;
+    let ssm_beta = dequant_quantize(content, file, &format!("{prefix}.ssm_beta.weight"))?;
+    // Ollama-shipped GGUF uses bare `ssm_dt`; newer llama.cpp emits `ssm_dt.bias`.
+    let ssm_dt = dequant_quantize(content, file, &format!("{prefix}.ssm_dt"))
+        .or_else(|_| dequant_quantize(content, file, &format!("{prefix}.ssm_dt.bias")))?;
+    let ssm_norm_g = dequant_quantize(content, file, &format!("{prefix}.ssm_norm.weight"))?;
+    if ssm_norm_g.len() != head_v {
+        return Err(format!(
+            "layer {n} hybrid ssm_norm len {} != head_v {}",
+            ssm_norm_g.len(),
+            head_v
+        ));
+    }
+
+    // ssm_conv1d: GGUF native [kernel, channels]; candle reports
+    // [channels=conv_dim, kernel] PyTorch-style with memory layout
+    // `w_raw[c * kernel + k]`. The runtime expects kernel-outer
+    // `w[k * conv_dim + c]` — transpose once on load.
+    let (conv_f, conv_shape) =
+        dequant_to_vec_f32(content, file, &format!("{prefix}.ssm_conv1d.weight"))?;
+    if conv_shape.len() != 2 || conv_shape[0] != conv_dim || conv_shape[1] != conv_kernel {
+        return Err(format!(
+            "layer {n} hybrid ssm_conv1d shape {conv_shape:?} != [conv_dim={conv_dim}, kernel={conv_kernel}]"
+        ));
+    }
+    let mut conv_kc = vec![0.0f32; conv_kernel * conv_dim];
+    for c in 0..conv_dim {
+        for k in 0..conv_kernel {
+            conv_kc[k * conv_dim + c] = conv_f[c * conv_kernel + k];
         }
     }
-    let (ssm_conv1d, _) = quantize_with_scale(&conv_truncated);
+    let (ssm_conv1d, _) = quantize_with_scale(&conv_kc);
 
     let ssm_out = dequant_quantize(content, file, &format!("{prefix}.ssm_out.weight"))?;
     let norm2_g = dequant_quantize(content, file, &format!("{prefix}.post_attention_norm.weight"))?;
@@ -845,17 +881,27 @@ fn build_qwen_hybrid_layer(
     let ffn_up = dequant_quantize(content, file, &format!("{prefix}.ffn_up.weight"))?;
     let ffn_down = dequant_quantize(content, file, &format!("{prefix}.ffn_down.weight"))?;
 
+    // attn_out / q_norm / k_norm slots are unused by the DeltaNet runtime
+    // forward but the struct still has them (legacy Mamba-era fields). Fill
+    // with no-op identity values so the canonical manifest bytes are
+    // deterministic.
+    let attn_out_dummy = vec![0i8; value_dim * h];
+    let q_norm_dummy = default_no_op_gamma_i8(head_k);
+    let k_norm_dummy = default_no_op_gamma_i8(head_k);
+
     Ok(LayerWeights::QwenHybridSsm {
         norm1: make_norm_rms(norm1_g, norm1_post),
         attn_qkv_fused: attn_qkv,
         attn_gate,
-        attn_out,
-        num_q_heads: dims.num_q_heads,
-        num_kv_heads: num_kv,
-        head_dim: dims.head_dim,
+        attn_out: attn_out_dummy,
+        // `num_q_heads` is **repurposed** as DeltaNet `num_k_heads`,
+        // `head_dim` as DeltaNet `head_k`. `num_kv_heads` is unused.
+        num_q_heads: n_k_heads as u32,
+        num_kv_heads: n_k_heads as u32,
+        head_dim: head_k as u32,
         attn_scales: attn_scales_for(scales, n),
-        q_norm_gamma: q_norm,
-        k_norm_gamma: k_norm,
+        q_norm_gamma: q_norm_dummy,
+        k_norm_gamma: k_norm_dummy,
         qk_norm_eps_q: DEFAULT_NORM_EPS_Q,
         qk_norm_post_scale: Scale::from_num(qk_norm_post).unwrap(),
         ssm_a,
@@ -867,9 +913,9 @@ fn build_qwen_hybrid_layer(
         ssm_norm_eps_q: DEFAULT_NORM_EPS_Q,
         ssm_norm_post_scale: Scale::from_num(ssm_norm_post).unwrap(),
         ssm_out,
-        num_v_heads: num_v,
-        ssm_head_dim,
-        ssm_kernel_size: kernel_size as u32,
+        num_v_heads: n_v_heads as u32,
+        ssm_head_dim: head_v as u32,
+        ssm_kernel_size: conv_kernel as u32,
         ssm_scales: dnet_scales_for(scales, n),
         norm2: make_norm_rms(norm2_g, norm2_post),
         ffn: FfnWeights {
