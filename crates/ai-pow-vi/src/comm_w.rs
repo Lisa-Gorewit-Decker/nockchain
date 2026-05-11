@@ -395,6 +395,8 @@ fn manifest_hash(model: &Model) -> [u8; 32] {
                 append_scale(&mut buf, &attn_scales.o);
                 buf.extend_from_slice(&qk_norm_eps_q.to_le_bytes());
                 append_scale(&mut buf, qk_norm_post_scale);
+                // Phase B.2: q_has_gate bool.
+                buf.push(if attn.q_has_gate { 1 } else { 0 });
                 append_norm_meta(&mut buf, norm2);
                 buf.extend_from_slice(&ffn.hidden.to_le_bytes());
                 buf.extend_from_slice(&ffn.intermediate.to_le_bytes());
@@ -769,6 +771,7 @@ mod tests {
                     w_k: lcg_bytes(hu * 2, 0x4444),
                     w_v: lcg_bytes(hu * 2, 0x5555),
                     w_o: lcg_bytes(2 * hu, 0x6666),
+                    q_has_gate: false,
                 },
                 attn_scales: AttentionScales {
                     q: small(),

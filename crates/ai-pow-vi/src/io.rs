@@ -300,6 +300,8 @@ fn encode_manifest(model: &Model) -> Vec<u8> {
                 buf.extend_from_slice(&attn_scales.o.num.to_le_bytes());
                 buf.extend_from_slice(&qk_norm_eps_q.to_le_bytes());
                 buf.extend_from_slice(&qk_norm_post_scale.num.to_le_bytes());
+                // Phase B.2: q_has_gate bool (0/1).
+                buf.push(if attn.q_has_gate { 1 } else { 0 });
                 encode_norm_meta(&mut buf, norm2);
                 buf.extend_from_slice(&ffn.intermediate.to_le_bytes());
                 buf.extend_from_slice(&ffn_scales.gate.num.to_le_bytes());
@@ -490,6 +492,7 @@ enum LayerMeta {
         attn_scales: AttentionScales,
         qk_norm_eps_q: i64,
         qk_norm_post_scale: Scale,
+        q_has_gate: bool,
         norm2: NormMeta,
         intermediate: u32,
         ffn_scales: FfnScales,
@@ -758,6 +761,8 @@ fn parse_manifest(bytes: &[u8]) -> Result<ParsedManifest, LoadError> {
                 };
                 let qk_norm_eps_q = c.i64()?;
                 let qk_norm_post_scale = Scale::from_num(c.i32()?)?;
+                // Phase B.2: q_has_gate bool.
+                let q_has_gate = c.u8()? != 0;
                 let norm2 = parse_norm_meta(&mut c)?;
                 let intermediate = c.u32()?;
                 let ffn_scales = FfnScales {
@@ -775,6 +780,7 @@ fn parse_manifest(bytes: &[u8]) -> Result<ParsedManifest, LoadError> {
                     attn_scales,
                     qk_norm_eps_q,
                     qk_norm_post_scale,
+                    q_has_gate,
                     norm2,
                     intermediate,
                     ffn_scales,
@@ -1047,6 +1053,7 @@ fn parse_one_layer(
                     w_k,
                     w_v,
                     w_o,
+                    q_has_gate: false,
                 },
                 attn_scales,
                 norm2: n2,
@@ -1178,6 +1185,7 @@ fn parse_one_layer(
                     w_k,
                     w_v,
                     w_o,
+                    q_has_gate: false,
                 },
                 attn_scales,
                 q_norm_gamma,
@@ -1209,14 +1217,16 @@ fn parse_one_layer(
             attn_scales,
             qk_norm_eps_q,
             qk_norm_post_scale,
+            q_has_gate,
             norm2,
             intermediate,
             ffn_scales,
         } => {
             let n1 = materialize_norm(c, &norm1, hu)?;
             let q_dim = (num_q_heads * head_dim) as usize;
+            let q_proj_dim = if q_has_gate { 2 * q_dim } else { q_dim };
             let kv_dim = (num_kv_heads * head_dim) as usize;
-            let w_q = c.take_i8(hu * q_dim)?;
+            let w_q = c.take_i8(hu * q_proj_dim)?;
             let w_k = c.take_i8(hu * kv_dim)?;
             let w_v = c.take_i8(hu * kv_dim)?;
             let w_o = c.take_i8(q_dim * hu)?;
@@ -1239,6 +1249,7 @@ fn parse_one_layer(
                     w_k,
                     w_v,
                     w_o,
+                    q_has_gate,
                 },
                 attn_scales,
                 q_norm_gamma,
@@ -1420,6 +1431,7 @@ mod tests {
                     w_k: lcg_bytes(hu * 2, 0xd4d4),
                     w_v: lcg_bytes(hu * 2, 0xe5e5),
                     w_o: lcg_bytes(2 * hu, 0xf6f6),
+                    q_has_gate: false,
                 },
                 attn_scales: AttentionScales {
                     q: small(),

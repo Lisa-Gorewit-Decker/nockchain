@@ -339,7 +339,8 @@ fn pin_attention_canonical_output() {
         w_k,
         w_v,
         w_o,
-    };
+    q_has_gate: false,
+};
     let scales = AttentionScales {
         q: Scale::from_num(1 << (SCALE_DENOM_LOG2 - 4)).unwrap(),
         k: Scale::from_num(1 << (SCALE_DENOM_LOG2 - 4)).unwrap(),
@@ -571,6 +572,7 @@ fn pin_attention_layer_canonical_output() {
             w_k: canonical_input_i8(hu * (num_kv * hd) as usize, 0x2929_3a3a_4b4b_5c5c),
             w_v: canonical_input_i8(hu * (num_kv * hd) as usize, 0x6d6d_7e7e_8f8f_90a0),
             w_o: canonical_input_i8((num_q * hd) as usize * hu, 0xb1b1_c2c2_d3d3_e4e4),
+            q_has_gate: false,
         },
         attn_scales: AttentionScales {
             q: small,
@@ -678,6 +680,7 @@ fn pin_comm_w_canonical_model() {
                 w_k: canonical_input_i8(hu * 2, 0x6d6d_7e7e_8f8f_90a0),
                 w_v: canonical_input_i8(hu * 2, 0xb1b1_c2c2_d3d3_e4e4),
                 w_o: canonical_input_i8(2 * hu, 0xf5f5_0606_1717_2828),
+                q_has_gate: false,
             },
             attn_scales: AttentionScales {
                 q: small,
@@ -767,6 +770,7 @@ fn pin_vi_proof_round_trip_canonical() {
                 w_k: canonical_input_i8(hu * 2, 0xe5e5_f6f6_0707_1818),
                 w_v: canonical_input_i8(hu * 2, 0x2929_3a3a_4b4b_5c5c),
                 w_o: canonical_input_i8(2 * hu, 0x6d6d_7e7e_8f8f_90a0),
+                q_has_gate: false,
             },
             attn_scales: AttentionScales {
                 q: small,

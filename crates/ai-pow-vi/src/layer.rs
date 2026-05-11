@@ -577,6 +577,7 @@ fn forward_gemma_layer(
         qk_norm_eps_q,
         qk_norm_post_scale,
         sliding_window,
+        gate_sigmoid_lut: Some(ctx.sigmoid_lut),
     };
     attention_forward_gemma(
         &normed1, attn, *attn_scales, ctx.rope_tables, ctx.softmax_lut, opts, m, &mut sub_out,
@@ -698,6 +699,7 @@ fn forward_qwen_standard_layer(
         qk_norm_eps_q,
         qk_norm_post_scale,
         sliding_window: None,
+        gate_sigmoid_lut: Some(ctx.sigmoid_lut),
     };
     attention_forward_gemma(
         &normed1, attn, *attn_scales, ctx.rope_tables, ctx.softmax_lut, opts, m, &mut sub,
@@ -1367,6 +1369,7 @@ mod tests {
                 w_k: lcg_bytes(hu * (num_kv * hd) as usize, seed.wrapping_add(2)),
                 w_v: lcg_bytes(hu * (num_kv * hd) as usize, seed.wrapping_add(3)),
                 w_o: lcg_bytes((num_q * hd) as usize * hu, seed.wrapping_add(4)),
+                q_has_gate: false,
             },
             attn_scales: AttentionScales {
                 q: small_scale(),
@@ -1708,6 +1711,7 @@ mod tests {
                 w_k: lcg_bytes(hu * (num_kv * hd) as usize, seed.wrapping_add(2)),
                 w_v: lcg_bytes(hu * (num_kv * hd) as usize, seed.wrapping_add(3)),
                 w_o: lcg_bytes((num_q * hd) as usize * hu, seed.wrapping_add(4)),
+                q_has_gate: false,
             },
             attn_scales: AttentionScales {
                 q: small_scale(),
@@ -1812,6 +1816,7 @@ mod tests {
                 w_k: lcg_bytes(hu * (num_kv * hd) as usize, seed.wrapping_add(2)),
                 w_v: lcg_bytes(hu * (num_kv * hd) as usize, seed.wrapping_add(3)),
                 w_o: lcg_bytes((num_q * hd) as usize * hu, seed.wrapping_add(4)),
+                q_has_gate: false,
             },
             attn_scales: AttentionScales {
                 q: small_scale(),

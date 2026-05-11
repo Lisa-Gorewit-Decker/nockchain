@@ -187,7 +187,8 @@ mod tests {
                 w_k: vec![0i8; hu * 2],
                 w_v: vec![0i8; hu * 2],
                 w_o: vec![0i8; 2 * hu],
-            },
+            q_has_gate: false,
+        },
             attn_scales: AttentionScales {
                 q: small(),
                 k: small(),

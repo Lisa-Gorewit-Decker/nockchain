@@ -655,13 +655,25 @@ fn build_qwen_standard_layer(
     let qk_norm_post = scales.get(&format!("layer[{n}].qk_norm_post"));
 
     let norm1_g = dequant_quantize(content, file, &format!("{prefix}.attn_norm.weight"))?;
-    // Q may have more heads in the GGUF than our Rust struct allows; truncate.
-    let w_q = dequant_quantize_truncate_out(
-        content,
-        file,
-        &format!("{prefix}.attn_q.weight"),
-        q_target,
-    )?;
+    // Phase B.2: real Qwen 3.6 27B std blocks pack [Q || gate] in attn_q.weight,
+    // doubling the output dim. Detect and keep the full tensor instead of
+    // truncating away the gate half.
+    let wq_info = content
+        .tensor_infos
+        .get(&format!("{prefix}.attn_q.weight"))
+        .ok_or_else(|| format!("layer {n} std missing attn_q.weight"))?;
+    let wq_out = wq_info.shape.dims()[0];
+    let q_has_gate = if wq_out == 2 * q_target {
+        true
+    } else if wq_out == q_target {
+        false
+    } else {
+        return Err(format!(
+            "layer {n} std attn_q out dim {wq_out} matches neither q_target {q_target} nor 2*q_target {}",
+            2 * q_target
+        ));
+    };
+    let w_q = dequant_quantize(content, file, &format!("{prefix}.attn_q.weight"))?;
     let w_k = dequant_quantize(content, file, &format!("{prefix}.attn_k.weight"))?;
     let w_v = dequant_quantize(content, file, &format!("{prefix}.attn_v.weight"))?;
     let w_o = dequant_quantize(content, file, &format!("{prefix}.attn_output.weight"))?;
@@ -675,9 +687,13 @@ fn build_qwen_standard_layer(
     let ffn_down = dequant_quantize(content, file, &format!("{prefix}.ffn_down.weight"))?;
 
     // Verify shapes match what our struct expects.
-    let want_wq = h * q_target;
+    let want_wq = if q_has_gate { 2 * h * q_target } else { h * q_target };
     if w_q.len() != want_wq {
-        return Err(format!("layer {n} std w_q len {} != hidden*q_target {}", w_q.len(), want_wq));
+        return Err(format!(
+            "layer {n} std w_q len {} != expected {} (q_has_gate={q_has_gate})",
+            w_q.len(),
+            want_wq
+        ));
     }
     let want_wo = q_target * h;
     if w_o.len() != want_wo {
@@ -696,6 +712,7 @@ fn build_qwen_standard_layer(
             w_k,
             w_v,
             w_o,
+            q_has_gate,
         },
         attn_scales: attn_scales_for(scales, n),
         q_norm_gamma: q_norm,

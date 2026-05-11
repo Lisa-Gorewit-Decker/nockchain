@@ -227,6 +227,7 @@ mod tests {
                 w_k: lcg_bytes(hu * 2, seed.wrapping_add(2)),
                 w_v: lcg_bytes(hu * 2, seed.wrapping_add(3)),
                 w_o: lcg_bytes(2 * hu, seed.wrapping_add(4)),
+                q_has_gate: false,
             },
             attn_scales: AttentionScales {
                 q: small(),

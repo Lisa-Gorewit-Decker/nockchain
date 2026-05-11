@@ -44,6 +44,13 @@ pub struct GemmaAttentionOpts<'a> {
     /// `Some(w)` keeps tokens `[max(0, i + 1 - w) ..= i]` for query
     /// position `i` (i.e. the last `w` tokens, inclusive of self).
     pub sliding_window: Option<u32>,
+    /// Phase B.2: sigmoid LUT for the Q-projection gate. When
+    /// `weights.q_has_gate == true`, the Q projection produces a
+    /// `[Q || gate]` per-head buffer; the gate half is passed through
+    /// this LUT and element-wise multiplied into the attention output
+    /// before `w_o`. When `q_has_gate == false`, this field is
+    /// ignored.
+    pub gate_sigmoid_lut: Option<&'a crate::activation_lut::ActivationLut>,
 }
 
 /// Weights for one multi-head / grouped-query attention block. All tensors
@@ -58,10 +65,24 @@ pub struct AttentionWeights {
     pub num_q_heads: u32,
     pub num_kv_heads: u32,
     pub head_dim: u32,
-    pub w_q: Vec<i8>, // (hidden, num_q_heads * head_dim) col-major
+    pub w_q: Vec<i8>, // (hidden, num_q_heads * head_dim * q_proj_factor) col-major
     pub w_k: Vec<i8>, // (hidden, num_kv_heads * head_dim) col-major
     pub w_v: Vec<i8>, // (hidden, num_kv_heads * head_dim) col-major
     pub w_o: Vec<i8>, // (num_q_heads * head_dim, hidden) col-major
+    /// Phase B.2: when true, `w_q` projects to `2 * num_q_heads * head_dim`
+    /// = `[Q (q_dim) || gate (q_dim)]` packed side-by-side per token.
+    /// After Q is used in attention as usual (head_dim), the gate half
+    /// is passed through `sigmoid_lut` and element-wise multiplied
+    /// into the post-attention (m, q_dim) buffer before `w_o` projects
+    /// to hidden. Matches Qwen 3.6 27B's full-attention block in
+    /// `Qwen3NextAttention.forward`:
+    /// ```
+    /// query_states, gate = torch.chunk(q_proj(x).view(B,S,-1,head_dim*2), 2, dim=-1)
+    /// attn_output = attn_output * torch.sigmoid(gate)
+    /// ```
+    /// When false (default), `w_q` projects to `num_q_heads * head_dim`
+    /// and no gate is applied (legacy MHA / GQA / Gemma behavior).
+    pub q_has_gate: bool,
 }
 
 /// Per-tensor quantization scales for one attention step.
@@ -350,7 +371,14 @@ pub fn attention_forward_gemma(
     if output.len() != mu * hu {
         return Err(AttentionError::BadOutputLen);
     }
-    if weights.w_q.len() != hu * q_row_stride {
+    // Phase B.2: when q_has_gate is true, w_q outputs 2x the Q dim
+    // (= [Q || gate] packed per head). Validate accordingly.
+    let q_proj_stride = if weights.q_has_gate {
+        2 * q_row_stride
+    } else {
+        q_row_stride
+    };
+    if weights.w_q.len() != hu * q_proj_stride {
         return Err(AttentionError::BadWqLen);
     }
     if weights.w_k.len() != hu * kv_row_stride {
@@ -364,11 +392,33 @@ pub fn attention_forward_gemma(
     }
 
     // Q projection.
-    let mut q_acc = vec![0i32; mu * q_row_stride];
-    matmul_int8(input, &weights.w_q, m, hidden, num_q * hd, &mut q_acc)?;
-    let mut q_i8 = vec![0i8; mu * q_row_stride];
-    requantize_vec(&q_acc, scales.q, &mut q_i8)?;
+    let mut q_acc = vec![0i32; mu * q_proj_stride];
+    matmul_int8(input, &weights.w_q, m, hidden, q_proj_stride as u32, &mut q_acc)?;
+    let mut q_proj_i8 = vec![0i8; mu * q_proj_stride];
+    requantize_vec(&q_acc, scales.q, &mut q_proj_i8)?;
     drop(q_acc);
+
+    // Phase B.2: if q_has_gate, split [Q || gate] per-head into two
+    // separate buffers. Layout: per-head 2*head_dim where first head_dim
+    // is Q and second is the pre-sigmoid gate logits.
+    let (mut q_i8, gate_logits): (Vec<i8>, Option<Vec<i8>>) = if weights.q_has_gate {
+        let mut q_only = vec![0i8; mu * q_row_stride];
+        let mut gate_only = vec![0i8; mu * q_row_stride];
+        for t in 0..mu {
+            for h in 0..num_qu {
+                let proj_base = t * q_proj_stride + h * 2 * hdu;
+                let out_base = t * q_row_stride + h * hdu;
+                for d in 0..hdu {
+                    q_only[out_base + d] = q_proj_i8[proj_base + d];
+                    gate_only[out_base + d] = q_proj_i8[proj_base + hdu + d];
+                }
+            }
+        }
+        drop(q_proj_i8);
+        (q_only, Some(gate_only))
+    } else {
+        (q_proj_i8, None)
+    };
 
     // K projection.
     let mut k_acc = vec![0i32; mu * kv_row_stride];
@@ -469,6 +519,26 @@ pub fn attention_forward_gemma(
     drop(k_i8);
     drop(v_i8);
 
+    // Phase B.2: if a gate was extracted from q_proj, run it through
+    // the sigmoid LUT and element-wise multiply into the attention
+    // output before o_proj. Matches Qwen 3.6 27B's
+    // `attn_output * torch.sigmoid(gate)`.
+    if let Some(mut gate) = gate_logits {
+        let sigmoid_lut = opts
+            .gate_sigmoid_lut
+            .ok_or(AttentionError::BadQkNormGammaLen)?; // misuse: caller must supply
+        sigmoid_lut.apply(&mut gate);
+        // Symmetric half-up rounding by 127 (same as the hybrid block's
+        // attn_gate composition).
+        for k in 0..attn_out.len() {
+            let prod = (attn_out[k] as i32).wrapping_mul(gate[k] as i32);
+            let abs_v = prod.unsigned_abs() as i64;
+            let q = ((abs_v + 63) / 127) as i32;
+            let signed = if prod < 0 { -q } else { q };
+            attn_out[k] = signed.clamp(i8::MIN as i32, i8::MAX as i32) as i8;
+        }
+    }
+
     // Output projection.
     matmul_int8_requant(
         &attn_out,
@@ -530,6 +600,7 @@ mod tests {
             w_k: lcg_weights(hu * kvu, seed.wrapping_add(1)),
             w_v: lcg_weights(hu * kvu, seed.wrapping_add(2)),
             w_o: lcg_weights(qu * hu, seed.wrapping_add(3)),
+            q_has_gate: false,
         }
     }
 
@@ -884,6 +955,7 @@ mod tests {
             w_k: zero_kv.clone(),
             w_v: zero_kv.clone(),
             w_o: zero_o,
+            q_has_gate: false,
         };
 
         let q_scale = Scale::from_num(1 << (SCALE_DENOM_LOG2 - 4)).unwrap();

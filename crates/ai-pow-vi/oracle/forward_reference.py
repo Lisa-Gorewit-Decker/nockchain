@@ -81,6 +81,10 @@ class AttentionWeights:
     w_k: tuple[int, ...]
     w_v: tuple[int, ...]
     w_o: tuple[int, ...]
+    # Phase B.2: when True, w_q outputs `[Q || gate]` packed per head
+    # (2x q_dim). Used by Qwen 3.6 27B's full-attention block. Defaults
+    # to False (legacy MHA/GQA/Gemma).
+    q_has_gate: bool = False
 
 
 @dataclass(frozen=True)

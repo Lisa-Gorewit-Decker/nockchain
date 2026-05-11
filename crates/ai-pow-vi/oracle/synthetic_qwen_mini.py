@@ -195,6 +195,8 @@ def encode_manifest(
                 buf += _i32(s.num)
             buf += _i64(layer.qk_norm_eps_q)
             buf += _i32(layer.qk_norm_post_scale.num)
+            # Phase B.2: q_has_gate bool.
+            buf += _u8(1 if layer.attn.q_has_gate else 0)
             buf += encode_norm_meta(layer.norm2)
             buf += _u32(layer.ffn.intermediate)
             for s in (
@@ -570,6 +572,8 @@ def manifest_hash_bytes(model: F.Model, arch_tag: str = "", feature_flags: int =
                 buf += _i32(s.num)
             buf += _i64(layer.qk_norm_eps_q)
             buf += _i32(layer.qk_norm_post_scale.num)
+            # Phase B.2: q_has_gate bool.
+            buf += _u8(1 if layer.attn.q_has_gate else 0)
             append_norm_meta_for_manifest_hash(buf, layer.norm2)
             buf += _u32(layer.ffn.hidden) + _u32(layer.ffn.intermediate)
             for s in (
