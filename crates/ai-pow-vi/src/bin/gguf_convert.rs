@@ -52,6 +52,16 @@ struct Args {
     seq_len: u32,
     activation_tile: u32,
     default_activation_scale_num: i32,
+    /// When true, do NOT write manifest.bin / weights.bin / comm_w.hex;
+    /// only emit lm_head.bin into `out`. Lets users add `lm_head.bin`
+    /// to an existing converted model directory without re-running
+    /// the ~25 minute full conversion.
+    lm_head_only: bool,
+    /// When false (default), skip lm_head.bin emission entirely. Useful
+    /// when the GGUF has tied embeddings (output.weight aliases
+    /// token_embd.weight) and the embed tensor already carries the
+    /// classification head.
+    emit_lm_head: bool,
 }
 
 fn parse_args() -> Result<Args, String> {
@@ -60,6 +70,8 @@ fn parse_args() -> Result<Args, String> {
     let mut seq_len = 64u32;
     let mut activation_tile = 64u32;
     let mut default_activation_scale_num = 4096i32;
+    let mut lm_head_only = false;
+    let mut emit_lm_head = true;
     let argv: Vec<String> = std::env::args().skip(1).collect();
     let mut i = 0;
     while i < argv.len() {
@@ -84,8 +96,19 @@ fn parse_args() -> Result<Args, String> {
                 default_activation_scale_num = argv.get(i + 1).ok_or("--default-activation-scale needs arg")?.parse().map_err(|_| "bad --default-activation-scale")?;
                 i += 2;
             }
+            "--lm-head-only" => {
+                lm_head_only = true;
+                emit_lm_head = true;
+                i += 1;
+            }
+            "--no-lm-head" => {
+                emit_lm_head = false;
+                i += 1;
+            }
             "-h" | "--help" => {
-                eprintln!("gguf-convert --gguf <path> --out <dir> [--seq-len N] [--activation-tile N] [--default-activation-scale NUM]");
+                eprintln!(
+                    "gguf-convert --gguf <path> --out <dir> [--seq-len N] [--activation-tile N] \n  [--default-activation-scale NUM] [--lm-head-only] [--no-lm-head]"
+                );
                 std::process::exit(0);
             }
             other => return Err(format!("unknown arg: {other}")),
@@ -97,6 +120,8 @@ fn parse_args() -> Result<Args, String> {
         seq_len,
         activation_tile,
         default_activation_scale_num,
+        lm_head_only,
+        emit_lm_head,
     })
 }
 
@@ -367,6 +392,57 @@ fn default_no_op_gamma_i8(len: usize) -> Vec<i8> {
     vec![127i8; len]
 }
 
+/// Stream-emit `lm_head.bin` to `out_dir`. The lm_head tensor is
+/// dequantized through candle, quantized to i8 via the same
+/// `max(|w|)/127` weight scale convention as the rest of the model,
+/// and written to disk in `(vocab, hidden)` row-major order. Memory
+/// peak is bounded by one tensor at a time (~1.3 GB f32 for Qwen 3.6
+/// 27B's output.weight).
+///
+/// Returns `(true, vocab, hidden)` if the GGUF carries an explicit
+/// `output.weight` tensor; `(false, ...)` if it doesn't (tied
+/// embeddings — caller should fall back to using the embed table as
+/// the lm_head).
+fn emit_lm_head(
+    content: &Content,
+    file: &mut std::fs::File,
+    out_dir: &std::path::Path,
+    expected_hidden: u32,
+) -> Result<bool, String> {
+    let tname = "output.weight";
+    if !content.tensor_infos.contains_key(tname) {
+        eprintln!(
+            "  no output.weight in GGUF; lm_head.bin not emitted (model likely uses tied embeddings)"
+        );
+        return Ok(false);
+    }
+    eprintln!("→ emit_lm_head");
+    let (f, shape) = dequant_to_vec_f32(content, file, tname)?;
+    if shape.len() != 2 {
+        return Err(format!("output.weight has unexpected rank: {shape:?}"));
+    }
+    let (vocab_dim, hidden_dim) = (shape[0], shape[1]);
+    if hidden_dim as u32 != expected_hidden {
+        return Err(format!(
+            "output.weight hidden {} != model hidden {}",
+            hidden_dim, expected_hidden
+        ));
+    }
+    let (i8s, scale_num) = quantize_with_scale(&f);
+    let lm_head_path = out_dir.join("lm_head.bin");
+    let bytes: Vec<u8> = i8s.iter().map(|&v| v as u8).collect();
+    std::fs::write(&lm_head_path, &bytes).map_err(|e| format!("write lm_head.bin: {e}"))?;
+    eprintln!(
+        "  wrote {} ({} bytes, vocab={} hidden={}, scale_num={})",
+        lm_head_path.display(),
+        bytes.len(),
+        vocab_dim,
+        hidden_dim,
+        scale_num,
+    );
+    Ok(true)
+}
+
 fn convert_qwen35(args: &Args) -> Result<(), String> {
     use candle_core::quantized::gguf_file;
     let mut file = std::fs::File::open(&args.gguf).map_err(|e| format!("open gguf: {e}"))?;
@@ -382,6 +458,14 @@ fn convert_qwen35(args: &Args) -> Result<(), String> {
         arch, dims.num_layers, dims.hidden, dims.intermediate,
         dims.num_q_heads, dims.num_kv_heads, dims.head_dim, dims.rope_theta
     );
+
+    // --lm-head-only short-circuit: skip the model conversion entirely
+    // and just emit lm_head.bin into the existing output directory.
+    if args.lm_head_only {
+        std::fs::create_dir_all(&args.out).map_err(|e| format!("mkdir: {e}"))?;
+        emit_lm_head(&content, &mut file, &args.out, dims.hidden)?;
+        return Ok(());
+    }
 
     let act_scale = args.default_activation_scale_num;
     let _ = act_scale;
@@ -447,6 +531,12 @@ fn convert_qwen35(args: &Args) -> Result<(), String> {
     let comm = compute_comm_w(&model);
     std::fs::write(args.out.join("comm_w.hex"), comm.iter().map(|b| format!("{:02x}", b)).collect::<String>()).map_err(|e| format!("write comm_w: {e}"))?;
     eprintln!("comm_W = {}", comm.iter().map(|b| format!("{:02x}", b)).collect::<String>());
+
+    if args.emit_lm_head {
+        emit_lm_head(&content, &mut file, &args.out, dims.hidden)?;
+    } else {
+        eprintln!("--no-lm-head: skipping lm_head.bin emission");
+    }
     Ok(())
 }
 
