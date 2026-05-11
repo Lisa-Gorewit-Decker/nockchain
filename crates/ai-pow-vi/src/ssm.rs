@@ -284,6 +284,137 @@ pub fn ssm_forward(
     Ok(())
 }
 
+/// Phase 2.13.B: per-V-head intermediate buffer (post-norm,
+/// pre-output-projection). Used by `forward_qwen_hybrid_ssm_layer`'s
+/// "single shared output projection" mode (Phase B.1 of the
+/// architectural-fix roadmap): callers sum this with the gated-
+/// attention's per-head buffer and project once via the shared
+/// `ssm.w_out` matrix.
+///
+/// Returns a `(m, num_v_heads * head_dim)` i8 buffer. Skips the
+/// output projection that `ssm_forward` does in its final step.
+pub fn ssm_forward_inter(
+    input: &[i8],
+    hidden: u32,
+    m: u32,
+    opts: SsmOpts,
+) -> Result<Vec<i8>, SsmError> {
+    let num_v = opts.num_v_heads;
+    let hd = opts.head_dim;
+    let k_size = opts.kernel_size;
+    if hidden == 0 || num_v == 0 || hd == 0 || k_size == 0 || m == 0 {
+        return Err(SsmError::ZeroDim);
+    }
+    let mu = m as usize;
+    let hu = hidden as usize;
+    let nv = num_v as usize;
+    let hdu = hd as usize;
+    let ksz = k_size as usize;
+    if input.len() != mu * hu {
+        return Err(SsmError::BadInputLen);
+    }
+    if opts.ssm_a.len() != nv {
+        return Err(SsmError::BadSsmALen);
+    }
+    if opts.ssm_alpha.len() != hu * nv {
+        return Err(SsmError::BadSsmAlphaLen);
+    }
+    if opts.ssm_beta.len() != hu * nv {
+        return Err(SsmError::BadSsmBetaLen);
+    }
+    if opts.ssm_conv1d.len() != ksz * hu {
+        return Err(SsmError::BadSsmConvLen);
+    }
+    if opts.ssm_dt.len() != nv {
+        return Err(SsmError::BadSsmDtLen);
+    }
+    if opts.ssm_norm_gamma.len() != hdu {
+        return Err(SsmError::BadSsmNormGammaLen);
+    }
+
+    // Step 1: depthwise causal 1D conv.
+    let mut x_conv = vec![0i8; mu * hu];
+    for t in 0..mu {
+        for c in 0..hu {
+            let mut acc: i32 = 0;
+            for k in 0..ksz {
+                if t < k {
+                    break;
+                }
+                let in_v = input[(t - k) * hu + c] as i32;
+                let kw = opts.ssm_conv1d[k * hu + c] as i32;
+                acc = acc.wrapping_add(in_v.wrapping_mul(kw));
+            }
+            x_conv[t * hu + c] = rescale_and_requantize(acc, opts.scales.q);
+        }
+    }
+
+    // Step 2: α and β projections.
+    let mut alpha_acc = vec![0i32; mu * nv];
+    matmul_int8(&x_conv, opts.ssm_alpha, m, hidden, num_v, &mut alpha_acc)?;
+    let mut alpha_i8 = vec![0i8; mu * nv];
+    requantize_vec(&alpha_acc, opts.scales.alpha_logit, &mut alpha_i8)?;
+    opts.sigmoid_lut.apply(&mut alpha_i8);
+    drop(alpha_acc);
+
+    let mut beta_acc = vec![0i32; mu * nv];
+    matmul_int8(&x_conv, opts.ssm_beta, m, hidden, num_v, &mut beta_acc)?;
+    let mut beta_i8 = vec![0i8; mu * nv];
+    requantize_vec(&beta_acc, opts.scales.beta_logit, &mut beta_i8)?;
+    opts.sigmoid_lut.apply(&mut beta_i8);
+    drop(beta_acc);
+
+    // Step 3: per-V-head state recurrence.
+    let mut state = vec![0i8; nv * hdu];
+    let mut y_concat = vec![0i8; mu * nv * hdu];
+    for t in 0..mu {
+        for v in 0..nv {
+            let alpha_v = alpha_i8[t * nv + v] as i32;
+            let beta_v = beta_i8[t * nv + v] as i32;
+            let a_v = opts.ssm_a[v] as i32;
+            let dt_v = opts.ssm_dt[v] as i32;
+            let decay_factor = saturate_i8(((alpha_v.wrapping_mul(a_v)) >> 7) as i64) as i32;
+            let update_factor = saturate_i8(((beta_v.wrapping_mul(dt_v)) >> 7) as i64) as i32;
+            for d in 0..hdu {
+                let s_off = v * hdu + d;
+                let s_old = state[s_off] as i32;
+                let c = (v * hdu + d) % hu;
+                let xv = x_conv[t * hu + c] as i32;
+                let decay_term = s_old.wrapping_mul(decay_factor);
+                let update_term = update_factor.wrapping_mul(xv);
+                let decay_i8 = rescale_and_requantize(decay_term, opts.scales.decay) as i32;
+                let update_i8 = rescale_and_requantize(update_term, opts.scales.update) as i32;
+                let s_new = decay_i8.wrapping_add(update_i8);
+                let s_new_i8 = saturate_i8(s_new as i64);
+                state[s_off] = s_new_i8;
+                y_concat[t * nv * hdu + v * hdu + d] = s_new_i8;
+            }
+        }
+    }
+    drop(alpha_i8);
+    drop(beta_i8);
+    drop(x_conv);
+    drop(state);
+
+    // Step 4: per-(token, V-head) RMSNorm.
+    let mut acc = vec![0i32; hdu];
+    for t in 0..mu {
+        for v in 0..nv {
+            let off = t * nv * hdu + v * hdu;
+            rmsnorm(
+                &y_concat[off..off + hdu],
+                opts.ssm_norm_gamma,
+                &mut acc,
+                opts.ssm_norm_eps_q,
+            )?;
+            for (d, &a) in acc.iter().enumerate() {
+                y_concat[off + d] = rescale_and_requantize(a, opts.ssm_norm_post_scale);
+            }
+        }
+    }
+    Ok(y_concat)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
