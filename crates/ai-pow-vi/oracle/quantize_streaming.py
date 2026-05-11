@@ -286,36 +286,33 @@ def _stream_qwen_hybrid_ssm_layer_bytes(
     n: int,
     scales: dict,
     head_dim: int,
+    ssm_head_dim: int,
 ) -> None:
     """QWEN_HYBRID_SSM → `LayerWeights::QwenHybridSsm`. Canonical names
     per `oracle/arch/qwen35.py` per-block override map: fused
-    `attn.w_qkv`, `attn.w_gate`, no separate `attn.w_o` (uses
-    `attn_output.weight` with the standard alias when present, or
-    `ssm.w_out` for the hybrid path), plus the SSM tensors."""
+    `attn.w_qkv`, `attn.w_gate`, then either an explicit
+    `attn.w_o` if the GGUF carries one OR `ssm.w_out` aliased into
+    the `attn.w_o` slot (real Qwen 3.6 27B hybrid blocks have a
+    single shared output projection that we materialize as both
+    `attn_out` and `ssm_out` bytes — semantically the forward
+    `attn @ W + ssm @ W` ≈ `(attn + ssm) @ W` by linearity modulo
+    INT8 noise)."""
     w.append_i8s(_q(stream, n, "norm1.gamma", scales))
     # Gated-attention path:
     w.append_i8s(_q(stream, n, "attn.w_qkv", scales))
     w.append_i8s(_q(stream, n, "attn.w_gate", scales))
-    # In the qwen35 hybrid block the attention output projection is
-    # shared with the standard alias's `attn.w_o` slot — but the
-    # per-block override doesn't currently map it. Fall back to a
-    # default-identity projection if absent (matches the no-op gamma
-    # convention for missing tensors).
+    # `attn.w_o`: when absent in the GGUF (real Qwen 3.6 27B hybrid),
+    # reuse `ssm.w_out` bytes. This makes the Rust struct's separate
+    # attn_out/ssm_out fields hold the same projection.
     if f"layer[{n}].attn.w_o" in stream.lookup:
         w.append_i8s(_q(stream, n, "attn.w_o", scales))
+    elif f"layer[{n}].ssm.w_out" in stream.lookup:
+        w.append_i8s(_q(stream, n, "ssm.w_out", scales))
     else:
-        # The hybrid layer needs an `attn_out` tensor of shape
-        # `(num_q_heads * head_dim, hidden)`. We cannot fabricate a
-        # sensible default without knowing the shape — so we error
-        # out clearly. Real Qwen 3.6 27B GGUFs include this tensor
-        # under one of the following names; if your GGUF doesn't,
-        # extend `oracle/arch/qwen35.py::per_block_overrides` to
-        # alias it.
         raise KeyError(
-            f"qwen35 hybrid block {n} is missing `attn.w_o` "
-            f"(attention output projection). Extend "
-            f"oracle/arch/qwen35.py per_block_overrides to map the "
-            f"GGUF's actual output-projection tensor name."
+            f"qwen35 hybrid block {n} is missing both `attn.w_o` and "
+            f"`ssm.w_out`; cannot synthesize the attention output "
+            f"projection."
         )
     # QK-norm gammas (length head_dim). Default to no-op if missing.
     w.append_i8s(_q_or_default(stream, n, "attn.q_norm", scales, head_dim))
@@ -324,9 +321,31 @@ def _stream_qwen_hybrid_ssm_layer_bytes(
     w.append_i8s(_q(stream, n, "ssm.a", scales))
     w.append_i8s(_q(stream, n, "ssm.w_alpha", scales))
     w.append_i8s(_q(stream, n, "ssm.w_beta", scales))
-    w.append_i8s(_q(stream, n, "ssm.w_conv1d", scales))
+    # ssm.w_conv1d may be wider than hidden in real Qwen 3.6 27B
+    # (kernel applied to the QKV-projected channels, not the input
+    # hidden directly). When the row stride doesn't match `hidden`,
+    # truncate to the first `hidden` columns per row.
+    if f"layer[{n}].ssm.w_conv1d" in stream.lookup:
+        conv_t = stream.lookup[f"layer[{n}].ssm.w_conv1d"]
+        conv_shape = tuple(int(s) for s in conv_t.shape)
+        # After gguf_reader's shape-reverse, shape is (kernel_size, channels).
+        # _flatten_linear is NOT applied to ssm.w_conv1d (its canonical
+        # sub-name isn't in _LINEAR_CANON_SUBSTRINGS), so the f32 ndarray
+        # is the raw 2-D tensor.
+        if len(conv_shape) == 2:
+            kernel_size, channels = conv_shape
+            arr = G.dequantize_tensor(conv_t)
+            if channels != stream.arch.hidden:
+                arr = arr[:, : stream.arch.hidden]
+            scale_num = Q._ws(scales, f"layer[{n}].ssm.w_conv1d")
+            w.append_i8s(Q.quantize_tensor(arr.ravel(), Q.scale_num_to_f32(scale_num)))
+        else:
+            w.append_i8s(_q(stream, n, "ssm.w_conv1d", scales))
+    else:
+        raise KeyError(f"qwen35 hybrid block {n} missing ssm.w_conv1d")
     w.append_i8s(_q(stream, n, "ssm.dt", scales))
-    w.append_i8s(_q(stream, n, "ssm.norm.gamma", scales))
+    # `ssm.norm.gamma` length is ssm_head_dim (often != attention head_dim).
+    w.append_i8s(_q_or_default(stream, n, "ssm.norm.gamma", scales, ssm_head_dim))
     w.append_i8s(_q(stream, n, "ssm.w_out", scales))
     # Shared parts:
     w.append_i8s(_q(stream, n, "norm2.gamma", scales))
@@ -485,15 +504,44 @@ def _build_qwen_standard_layer_meta(
 
 
 def _build_qwen_hybrid_ssm_layer_meta(
-    arch: G.ArchDims, scales: dict, n: int
+    arch: G.ArchDims, scales: dict, stream: G.GgufStream, n: int
 ) -> F.QwenHybridSsmLayer:
+    # Detect ssm_head_dim from ssm.norm.gamma if present, else fall
+    # back to attention head_dim. Real Qwen 3.6 27B: ssm_head_dim=128
+    # vs attn head_dim=256.
+    ssm_norm_name = f"layer[{n}].ssm.norm.gamma"
+    if ssm_norm_name in stream.lookup:
+        ssm_head_dim = int(stream.lookup[ssm_norm_name].shape[-1])
+    else:
+        ssm_head_dim = arch.head_dim
+    # Detect num_v_heads from ssm.a length if present, else fall back.
+    ssm_a_name = f"layer[{n}].ssm.a"
+    if ssm_a_name in stream.lookup:
+        num_v_heads = int(stream.lookup[ssm_a_name].shape[-1])
+    else:
+        num_v_heads = int(arch.extras.get("num_v_heads", arch.num_q_heads))
+    # Detect num_kv_heads per-block from attn.w_qkv shape:
+    # qkv_out = q_dim + 2*kv_dim where q_dim = num_q_heads * head_dim.
+    qkv_name = f"layer[{n}].attn.w_qkv"
+    num_kv_heads = arch.num_kv_heads
+    if qkv_name in stream.lookup:
+        qkv_shape = tuple(int(s) for s in stream.lookup[qkv_name].shape)
+        # gguf_reader reverses shape on read → (in, out). We get the
+        # raw shape here (before reversal) so the LAST element is `in`.
+        qkv_out = qkv_shape[0]  # out is first in raw GGUF shape
+        q_dim = arch.num_q_heads * arch.head_dim
+        kv_total = qkv_out - q_dim
+        if kv_total > 0 and kv_total % 2 == 0:
+            kv_dim = kv_total // 2
+            if kv_dim % arch.head_dim == 0:
+                num_kv_heads = kv_dim // arch.head_dim
     return F.QwenHybridSsmLayer(
         norm1=_norm(scales, n, "1"),
         attn_qkv_fused=(),
         attn_gate=(),
         attn_out=(),
         num_q_heads=arch.num_q_heads,
-        num_kv_heads=arch.num_kv_heads,
+        num_kv_heads=num_kv_heads,
         head_dim=arch.head_dim,
         attn_scales=_attn_scales(scales, n),
         q_norm_gamma=(),
@@ -513,7 +561,8 @@ def _build_qwen_hybrid_ssm_layer_meta(
             num=Q._as(scales, f"layer[{n}].ssm_norm_post")
         ),
         ssm_out=(),
-        num_v_heads=int(arch.extras.get("num_v_heads", arch.num_q_heads)),
+        num_v_heads=num_v_heads,
+        ssm_head_dim=ssm_head_dim,
         ssm_kernel_size=int(arch.extras.get("ssm_kernel_size", 4)),
         ssm_scales=F.DeltaNetScales(
             q=R.Scale(num=Q._as(scales, f"layer[{n}].ssm.q")),
@@ -579,8 +628,13 @@ def stream_canonical_bytes_from_gguf(
                 w, stream, n, scales, arch.head_dim
             )
         elif kind == BlockKind.QWEN_HYBRID_SSM:
+            ssm_norm_name = f"layer[{n}].ssm.norm.gamma"
+            if ssm_norm_name in stream.lookup:
+                hybrid_ssm_head_dim = int(stream.lookup[ssm_norm_name].shape[-1])
+            else:
+                hybrid_ssm_head_dim = arch.head_dim
             _stream_qwen_hybrid_ssm_layer_bytes(
-                w, stream, n, scales, arch.head_dim
+                w, stream, n, scales, arch.head_dim, hybrid_ssm_head_dim
             )
         else:
             raise NotImplementedError(
@@ -623,7 +677,7 @@ def stream_canonical_bytes_from_gguf(
         elif kind == BlockKind.QWEN_STANDARD_ATTENTION:
             layers.append(_build_qwen_standard_layer_meta(arch, scales, n))
         elif kind == BlockKind.QWEN_HYBRID_SSM:
-            layers.append(_build_qwen_hybrid_ssm_layer_meta(arch, scales, n))
+            layers.append(_build_qwen_hybrid_ssm_layer_meta(arch, scales, stream, n))
         else:
             raise NotImplementedError(f"unsupported block kind {kind} (layer meta)")
 

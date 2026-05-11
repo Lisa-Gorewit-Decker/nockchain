@@ -304,6 +304,7 @@ def test_qwen_hybrid_ssm_layer_bytes_match():
     actual = _streaming_layer_bytes_via_helper(
         layer, 0, QS._stream_qwen_hybrid_ssm_layer_bytes,
         layer.head_dim,
+        layer.ssm_head_dim,
     )
     expected = _reference_layer_bytes(layer)
     assert actual == expected, (
@@ -388,7 +389,9 @@ def test_default_gamma_fallback_for_missing_qk_norm():
             tmppath = tf.name
         try:
             with SW.StreamingWeightsWriter(tmppath) as w:
-                QS._stream_qwen_hybrid_ssm_layer_bytes(w, stream, 0, scales, head_dim)
+                QS._stream_qwen_hybrid_ssm_layer_bytes(
+                    w, stream, 0, scales, head_dim, layer.ssm_head_dim
+                )
             with open(tmppath, "rb") as f:
                 bytes_out = f.read()
         finally:

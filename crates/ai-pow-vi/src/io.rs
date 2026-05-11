@@ -298,6 +298,7 @@ fn encode_manifest(model: &Model) -> Vec<u8> {
                 qk_norm_eps_q,
                 qk_norm_post_scale,
                 num_v_heads,
+                ssm_head_dim,
                 ssm_kernel_size,
                 ssm_norm_eps_q,
                 ssm_norm_post_scale,
@@ -322,6 +323,7 @@ fn encode_manifest(model: &Model) -> Vec<u8> {
                 buf.extend_from_slice(&qk_norm_eps_q.to_le_bytes());
                 buf.extend_from_slice(&qk_norm_post_scale.num.to_le_bytes());
                 buf.extend_from_slice(&num_v_heads.to_le_bytes());
+                buf.extend_from_slice(&ssm_head_dim.to_le_bytes());
                 buf.extend_from_slice(&ssm_kernel_size.to_le_bytes());
                 buf.extend_from_slice(&ssm_norm_eps_q.to_le_bytes());
                 buf.extend_from_slice(&ssm_norm_post_scale.num.to_le_bytes());
@@ -484,6 +486,7 @@ enum LayerMeta {
         qk_norm_eps_q: i64,
         qk_norm_post_scale: Scale,
         num_v_heads: u32,
+        ssm_head_dim: u32,
         ssm_kernel_size: u32,
         ssm_norm_eps_q: i64,
         ssm_norm_post_scale: Scale,
@@ -783,6 +786,7 @@ fn parse_manifest(bytes: &[u8]) -> Result<ParsedManifest, LoadError> {
                 let qk_norm_eps_q = c.i64()?;
                 let qk_norm_post_scale = Scale::from_num(c.i32()?)?;
                 let num_v_heads = c.u32()?;
+                let ssm_head_dim = c.u32()?;
                 let ssm_kernel_size = c.u32()?;
                 let ssm_norm_eps_q = c.i64()?;
                 let ssm_norm_post_scale = Scale::from_num(c.i32()?)?;
@@ -816,6 +820,7 @@ fn parse_manifest(bytes: &[u8]) -> Result<ParsedManifest, LoadError> {
                     qk_norm_eps_q,
                     qk_norm_post_scale,
                     num_v_heads,
+                    ssm_head_dim,
                     ssm_kernel_size,
                     ssm_norm_eps_q,
                     ssm_norm_post_scale,
@@ -1243,6 +1248,7 @@ fn parse_one_layer(
             qk_norm_eps_q,
             qk_norm_post_scale,
             num_v_heads,
+            ssm_head_dim,
             ssm_kernel_size,
             ssm_norm_eps_q,
             ssm_norm_post_scale,
@@ -1264,13 +1270,14 @@ fn parse_one_layer(
             let q_norm_gamma = c.take_i8(hd)?;
             let k_norm_gamma = c.take_i8(hd)?;
             let nv = num_v_heads as usize;
+            let ssm_hd = ssm_head_dim as usize;
             let ssm_a = c.take_i8(nv)?;
             let ssm_alpha = c.take_i8(hu * nv)?;
             let ssm_beta = c.take_i8(hu * nv)?;
             let ssm_conv1d = c.take_i8((ssm_kernel_size as usize) * hu)?;
             let ssm_dt = c.take_i8(nv)?;
-            let ssm_norm_gamma = c.take_i8(hd)?;
-            let ssm_out_dim = (num_v_heads * head_dim) as usize;
+            let ssm_norm_gamma = c.take_i8(ssm_hd)?;
+            let ssm_out_dim = nv * ssm_hd;
             let ssm_out = c.take_i8(ssm_out_dim * hu)?;
             let n2 = materialize_norm(c, &norm2, hu)?;
             let iu = intermediate as usize;
@@ -1301,6 +1308,7 @@ fn parse_one_layer(
                 ssm_norm_post_scale,
                 ssm_out,
                 num_v_heads,
+                ssm_head_dim,
                 ssm_kernel_size,
                 ssm_scales,
                 norm2: n2,

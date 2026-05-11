@@ -412,6 +412,7 @@ fn manifest_hash(model: &Model) -> [u8; 32] {
                 qk_norm_eps_q,
                 qk_norm_post_scale,
                 num_v_heads,
+                ssm_head_dim,
                 ssm_kernel_size,
                 ssm_norm_eps_q,
                 ssm_norm_post_scale,
@@ -436,6 +437,7 @@ fn manifest_hash(model: &Model) -> [u8; 32] {
                 buf.extend_from_slice(&qk_norm_eps_q.to_le_bytes());
                 append_scale(&mut buf, qk_norm_post_scale);
                 buf.extend_from_slice(&num_v_heads.to_le_bytes());
+                buf.extend_from_slice(&ssm_head_dim.to_le_bytes());
                 buf.extend_from_slice(&ssm_kernel_size.to_le_bytes());
                 buf.extend_from_slice(&ssm_norm_eps_q.to_le_bytes());
                 append_scale(&mut buf, ssm_norm_post_scale);

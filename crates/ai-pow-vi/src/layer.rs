@@ -159,9 +159,14 @@ pub enum LayerWeights {
         ssm_norm_gamma: Vec<i8>,
         ssm_norm_eps_q: i64,
         ssm_norm_post_scale: Scale,
-        /// Output projection: `(num_v_heads * head_dim, hidden)`.
+        /// Output projection: `(num_v_heads * ssm_head_dim, hidden)`.
         ssm_out: Vec<i8>,
         num_v_heads: u32,
+        /// SSM per-V-head state width. Differs from attention's
+        /// `head_dim` in real Qwen 3.6 27B (attn=256, ssm=128). Set
+        /// equal to `head_dim` for the synthetic-mini fixture and
+        /// any model where the two paths share the same head_dim.
+        ssm_head_dim: u32,
         ssm_kernel_size: u32,
         ssm_scales: DeltaNetScales, // reuse the DeltaNet scale set
         // Shared parts of the block:
@@ -769,6 +774,7 @@ fn forward_qwen_hybrid_ssm_layer(
         ssm_norm_post_scale,
         ssm_out,
         num_v_heads,
+        ssm_head_dim,
         ssm_kernel_size,
         ssm_scales,
         norm2,
@@ -798,6 +804,7 @@ fn forward_qwen_hybrid_ssm_layer(
             ssm_norm_post_scale,
             ssm_out,
             num_v_heads,
+            ssm_head_dim,
             ssm_kernel_size,
             ssm_scales,
             norm2,
@@ -807,8 +814,8 @@ fn forward_qwen_hybrid_ssm_layer(
             norm1, attn_qkv_fused, attn_gate, attn_out, *num_q_heads, *num_kv_heads, *head_dim,
             *attn_scales, q_norm_gamma, k_norm_gamma, *qk_norm_eps_q, *qk_norm_post_scale, ssm_a,
             ssm_alpha, ssm_beta, ssm_conv1d, ssm_dt, ssm_norm_gamma, *ssm_norm_eps_q,
-            *ssm_norm_post_scale, ssm_out, *num_v_heads, *ssm_kernel_size, *ssm_scales, norm2, ffn,
-            *ffn_scales,
+            *ssm_norm_post_scale, ssm_out, *num_v_heads, *ssm_head_dim, *ssm_kernel_size,
+            *ssm_scales, norm2, ffn, *ffn_scales,
         ),
         _ => unreachable!("forward_qwen_hybrid_ssm_layer requires QwenHybridSsm"),
     };
@@ -854,7 +861,7 @@ fn forward_qwen_hybrid_ssm_layer(
         ssm_norm_post_scale,
         ssm_out,
         num_v_heads,
-        head_dim,
+        head_dim: ssm_head_dim,
         kernel_size: ssm_kernel_size,
         scales: ssm_scales,
         sigmoid_lut: ctx.sigmoid_lut,
@@ -1720,6 +1727,7 @@ mod tests {
             ssm_norm_post_scale: small_scale(),
             ssm_out: lcg_bytes((num_v * head_dim) as usize * hu, seed.wrapping_add(12)),
             num_v_heads: num_v,
+            ssm_head_dim: head_dim,
             ssm_kernel_size: kernel_size,
             ssm_scales: DeltaNetScales {
                 q: small_scale(),

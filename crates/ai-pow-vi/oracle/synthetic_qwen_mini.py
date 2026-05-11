@@ -220,7 +220,7 @@ def encode_manifest(
                 buf += _i32(s.num)
             buf += _i64(layer.qk_norm_eps_q)
             buf += _i32(layer.qk_norm_post_scale.num)
-            buf += _u32(layer.num_v_heads) + _u32(layer.ssm_kernel_size)
+            buf += _u32(layer.num_v_heads) + _u32(layer.ssm_head_dim) + _u32(layer.ssm_kernel_size)
             buf += _i64(layer.ssm_norm_eps_q)
             buf += _i32(layer.ssm_norm_post_scale.num)
             for s in (
@@ -595,7 +595,7 @@ def manifest_hash_bytes(model: F.Model, arch_tag: str = "", feature_flags: int =
                 buf += _i32(s.num)
             buf += _i64(layer.qk_norm_eps_q)
             buf += _i32(layer.qk_norm_post_scale.num)
-            buf += _u32(layer.num_v_heads) + _u32(layer.ssm_kernel_size)
+            buf += _u32(layer.num_v_heads) + _u32(layer.ssm_head_dim) + _u32(layer.ssm_kernel_size)
             buf += _i64(layer.ssm_norm_eps_q)
             buf += _i32(layer.ssm_norm_post_scale.num)
             for s in (

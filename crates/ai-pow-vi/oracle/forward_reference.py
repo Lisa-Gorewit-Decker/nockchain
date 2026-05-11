@@ -636,6 +636,7 @@ class QwenHybridSsmLayer:
     ssm_norm_post_scale: R.Scale
     ssm_out: tuple[int, ...]  # (num_v_heads * head_dim, hidden) col-major
     num_v_heads: int
+    ssm_head_dim: int  # per-V-head state width (may differ from attention head_dim)
     ssm_kernel_size: int
     ssm_scales: DeltaNetScales
     # Shared parts:
@@ -972,7 +973,7 @@ def forward_qwen_hybrid_ssm_layer(
         layer.ssm_norm_post_scale,
         layer.ssm_out,
         layer.num_v_heads,
-        layer.head_dim,
+        layer.ssm_head_dim,
         layer.ssm_kernel_size,
         layer.ssm_scales,
         ctx.sigmoid_lut_bytes,

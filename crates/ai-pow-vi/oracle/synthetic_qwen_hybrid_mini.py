@@ -113,6 +113,7 @@ def build_qwen_hybrid_ssm(hidden: int, seed: int) -> F.QwenHybridSsmLayer:
         ssm_norm_post_scale=s,
         ssm_out=tuple(R.canonical_input_i8(nv * hd * hu, seed + 12)),
         num_v_heads=nv,
+        ssm_head_dim=hd,
         ssm_kernel_size=kernel,
         ssm_scales=F.DeltaNetScales(
             q=s, k=s, v=s, alpha_logit=s, beta_logit=s,
