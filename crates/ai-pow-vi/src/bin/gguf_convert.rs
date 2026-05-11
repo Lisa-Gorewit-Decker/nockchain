@@ -62,6 +62,81 @@ struct Args {
     /// token_embd.weight) and the embed tensor already carries the
     /// classification head.
     emit_lm_head: bool,
+    /// Optional path to a `scales.json` overriding the uniform
+    /// `default_activation_scale_num`. Format mirrors the Python
+    /// `oracle/calibrate.py` output:
+    /// ```json
+    /// {
+    ///   "activation_scales": {
+    ///     "default": 4096,
+    ///     "layer[0].attn.q": 64,
+    ///     "layer[0].attn.score": 32,
+    ///     ...
+    ///   }
+    /// }
+    /// ```
+    /// Keys missing from `activation_scales` fall back to `default`
+    /// inside `activation_scales` (if present) or to
+    /// `--default-activation-scale`. Mirrors the lookup pattern of
+    /// `oracle/quantize_qwen.py::_as`.
+    scales_path: Option<PathBuf>,
+}
+
+/// Activation-scale source. Mirrors the Python `scales["activation_scales"]`
+/// dict from `oracle/calibrate.py`: a per-tap key → scale numerator map
+/// with a `default` fallback. When no scales.json is supplied, every
+/// lookup returns the uniform `--default-activation-scale`.
+struct ScaleSource {
+    per_tap: std::collections::HashMap<String, i32>,
+    default_num: i32,
+}
+
+impl ScaleSource {
+    fn uniform(num: i32) -> Self {
+        Self {
+            per_tap: std::collections::HashMap::new(),
+            default_num: num,
+        }
+    }
+
+    fn load(path: &std::path::Path, fallback: i32) -> Result<Self, String> {
+        let body = std::fs::read_to_string(path)
+            .map_err(|e| format!("read {}: {e}", path.display()))?;
+        let json: serde_json::Value =
+            serde_json::from_str(&body).map_err(|e| format!("parse {}: {e}", path.display()))?;
+        let mut per_tap = std::collections::HashMap::new();
+        let mut default_num = fallback;
+        if let Some(obj) = json.get("activation_scales").and_then(|v| v.as_object()) {
+            for (k, v) in obj {
+                if let Some(n) = v.as_i64() {
+                    let n = n.clamp(1, i32::MAX as i64) as i32;
+                    if k == "default" {
+                        default_num = n;
+                    } else {
+                        per_tap.insert(k.clone(), n);
+                    }
+                }
+            }
+        }
+        eprintln!(
+            "loaded scales: {} per-tap entries, default_num={}",
+            per_tap.len(),
+            default_num
+        );
+        Ok(Self {
+            per_tap,
+            default_num,
+        })
+    }
+
+    /// Look up a tap by name; falls back to `default_num` if missing.
+    fn get(&self, tap: &str) -> i32 {
+        self.per_tap.get(tap).copied().unwrap_or(self.default_num)
+    }
+
+    fn default_num(&self) -> i32 {
+        self.default_num
+    }
 }
 
 fn parse_args() -> Result<Args, String> {
@@ -72,6 +147,7 @@ fn parse_args() -> Result<Args, String> {
     let mut default_activation_scale_num = 4096i32;
     let mut lm_head_only = false;
     let mut emit_lm_head = true;
+    let mut scales_path: Option<PathBuf> = None;
     let argv: Vec<String> = std::env::args().skip(1).collect();
     let mut i = 0;
     while i < argv.len() {
@@ -105,9 +181,13 @@ fn parse_args() -> Result<Args, String> {
                 emit_lm_head = false;
                 i += 1;
             }
+            "--scales" => {
+                scales_path = Some(PathBuf::from(argv.get(i + 1).ok_or("--scales needs arg")?));
+                i += 2;
+            }
             "-h" | "--help" => {
                 eprintln!(
-                    "gguf-convert --gguf <path> --out <dir> [--seq-len N] [--activation-tile N] \n  [--default-activation-scale NUM] [--lm-head-only] [--no-lm-head]"
+                    "gguf-convert --gguf <path> --out <dir> [--seq-len N] [--activation-tile N] \n  [--default-activation-scale NUM] [--scales scales.json]\n  [--lm-head-only] [--no-lm-head]"
                 );
                 std::process::exit(0);
             }
@@ -122,6 +202,7 @@ fn parse_args() -> Result<Args, String> {
         default_activation_scale_num,
         lm_head_only,
         emit_lm_head,
+        scales_path,
     })
 }
 
@@ -321,31 +402,44 @@ fn build_softmax_lut() -> ExpLut {
     ExpLut::uniform_test()
 }
 
-fn fixed_attn_scales(num: i32) -> AttentionScales {
+/// Build per-layer `AttentionScales` from the scale source. Each tap
+/// is looked up by its canonical name `layer[N].attn.{q,k,v,score,attn_out,o}`;
+/// missing keys fall back to the source's `default`.
+fn attn_scales_for(scales: &ScaleSource, n: u32) -> AttentionScales {
+    let tap = |sub: &str| format!("layer[{n}].attn.{sub}");
     AttentionScales {
-        q: Scale::from_num(num).unwrap(),
-        k: Scale::from_num(num).unwrap(),
-        v: Scale::from_num(num).unwrap(),
-        score: Scale::from_num(num).unwrap(),
-        attn_out: Scale::from_num(num).unwrap(),
-        o: Scale::from_num(num).unwrap(),
+        q: Scale::from_num(scales.get(&tap("q"))).unwrap(),
+        k: Scale::from_num(scales.get(&tap("k"))).unwrap(),
+        v: Scale::from_num(scales.get(&tap("v"))).unwrap(),
+        score: Scale::from_num(scales.get(&tap("score"))).unwrap(),
+        attn_out: Scale::from_num(scales.get(&tap("attn_out"))).unwrap(),
+        o: Scale::from_num(scales.get(&tap("o"))).unwrap(),
     }
 }
 
-fn fixed_ffn_scales(num: i32) -> FfnScales {
+fn ffn_scales_for(scales: &ScaleSource, n: u32) -> FfnScales {
+    let tap = |sub: &str| format!("layer[{n}].ffn.{sub}");
     FfnScales {
-        gate: Scale::from_num(num).unwrap(),
-        up: Scale::from_num(num).unwrap(),
-        mid: Scale::from_num(num).unwrap(),
-        down: Scale::from_num(num).unwrap(),
+        gate: Scale::from_num(scales.get(&tap("gate"))).unwrap(),
+        up: Scale::from_num(scales.get(&tap("up"))).unwrap(),
+        mid: Scale::from_num(scales.get(&tap("mid"))).unwrap(),
+        down: Scale::from_num(scales.get(&tap("down"))).unwrap(),
     }
 }
 
-fn fixed_dnet_scales(num: i32) -> DeltaNetScales {
-    let s = Scale::from_num(num).unwrap();
+fn dnet_scales_for(scales: &ScaleSource, n: u32) -> DeltaNetScales {
+    let tap = |sub: &str| format!("layer[{n}].ssm.{sub}");
     DeltaNetScales {
-        q: s, k: s, v: s, alpha_logit: s, beta_logit: s,
-        u: s, decay: s, update: s, o: s, proj: s,
+        q: Scale::from_num(scales.get(&tap("q"))).unwrap(),
+        k: Scale::from_num(scales.get(&tap("k"))).unwrap(),
+        v: Scale::from_num(scales.get(&tap("v"))).unwrap(),
+        alpha_logit: Scale::from_num(scales.get(&tap("alpha_logit"))).unwrap(),
+        beta_logit: Scale::from_num(scales.get(&tap("beta_logit"))).unwrap(),
+        u: Scale::from_num(scales.get(&tap("u"))).unwrap(),
+        decay: Scale::from_num(scales.get(&tap("decay"))).unwrap(),
+        update: Scale::from_num(scales.get(&tap("update"))).unwrap(),
+        o: Scale::from_num(scales.get(&tap("o"))).unwrap(),
+        proj: Scale::from_num(scales.get(&tap("proj"))).unwrap(),
     }
 }
 
@@ -467,8 +561,10 @@ fn convert_qwen35(args: &Args) -> Result<(), String> {
         return Ok(());
     }
 
-    let act_scale = args.default_activation_scale_num;
-    let _ = act_scale;
+    let scales = match &args.scales_path {
+        Some(p) => ScaleSource::load(p, args.default_activation_scale_num)?,
+        None => ScaleSource::uniform(args.default_activation_scale_num),
+    };
 
     // Embed.
     eprintln!("→ embed");
@@ -476,10 +572,11 @@ fn convert_qwen35(args: &Args) -> Result<(), String> {
     let vocab = embed.len() as u32 / dims.hidden;
     eprintln!("  vocab = {}", vocab);
 
-    // final_norm.
+    // final_norm. The `final_norm_post` tap controls its post-scale.
     let final_norm = if content.tensor_infos.contains_key("output_norm.weight") {
         let g = dequant_quantize(&content, &mut file, "output_norm.weight")?;
-        Some(make_norm_rms(g, act_scale))
+        let post = scales.get("final_norm_post");
+        Some(make_norm_rms(g, post))
     } else {
         None
     };
@@ -495,9 +592,9 @@ fn convert_qwen35(args: &Args) -> Result<(), String> {
             );
         }
         let layer = if is_std {
-            build_qwen_standard_layer(&content, &mut file, n, &dims, act_scale)?
+            build_qwen_standard_layer(&content, &mut file, n, &dims, &scales)?
         } else {
-            build_qwen_hybrid_layer(&content, &mut file, n, &dims, act_scale)?
+            build_qwen_hybrid_layer(&content, &mut file, n, &dims, &scales)?
         };
         layers.push(layer);
     }
@@ -545,7 +642,7 @@ fn build_qwen_standard_layer(
     file: &mut std::fs::File,
     n: u32,
     dims: &QwenDims,
-    act_scale: i32,
+    scales: &ScaleSource,
 ) -> Result<LayerWeights, String> {
     let h = dims.hidden as usize;
     let hd = dims.head_dim as usize;
@@ -553,6 +650,9 @@ fn build_qwen_standard_layer(
     let nkv = dims.num_kv_heads as usize;
     let q_target = nq * hd;
     let prefix = format!("blk.{n}");
+    let norm1_post = scales.get(&format!("layer[{n}].norm_post.1"));
+    let norm2_post = scales.get(&format!("layer[{n}].norm_post.2"));
+    let qk_norm_post = scales.get(&format!("layer[{n}].qk_norm_post"));
 
     let norm1_g = dequant_quantize(content, file, &format!("{prefix}.attn_norm.weight"))?;
     // Q may have more heads in the GGUF than our Rust struct allows; truncate.
@@ -586,7 +686,7 @@ fn build_qwen_standard_layer(
     }
 
     Ok(LayerWeights::QwenStandard {
-        norm1: make_norm_rms(norm1_g, act_scale),
+        norm1: make_norm_rms(norm1_g, norm1_post),
         attn: AttentionWeights {
             hidden: dims.hidden,
             num_q_heads: dims.num_q_heads,
@@ -597,12 +697,12 @@ fn build_qwen_standard_layer(
             w_v,
             w_o,
         },
-        attn_scales: fixed_attn_scales(act_scale),
+        attn_scales: attn_scales_for(scales, n),
         q_norm_gamma: q_norm,
         k_norm_gamma: k_norm,
         qk_norm_eps_q: DEFAULT_NORM_EPS_Q,
-        qk_norm_post_scale: Scale::from_num(act_scale).unwrap(),
-        norm2: make_norm_rms(norm2_g, act_scale),
+        qk_norm_post_scale: Scale::from_num(qk_norm_post).unwrap(),
+        norm2: make_norm_rms(norm2_g, norm2_post),
         ffn: FfnWeights {
             hidden: dims.hidden,
             intermediate: dims.intermediate,
@@ -610,7 +710,7 @@ fn build_qwen_standard_layer(
             w_up: ffn_up,
             w_down: ffn_down,
         },
-        ffn_scales: fixed_ffn_scales(act_scale),
+        ffn_scales: ffn_scales_for(scales, n),
     })
 }
 
@@ -619,12 +719,16 @@ fn build_qwen_hybrid_layer(
     file: &mut std::fs::File,
     n: u32,
     dims: &QwenDims,
-    act_scale: i32,
+    scales: &ScaleSource,
 ) -> Result<LayerWeights, String> {
     let h = dims.hidden as usize;
     let hd = dims.head_dim as usize;
     let nq = dims.num_q_heads as usize;
     let prefix = format!("blk.{n}");
+    let norm1_post = scales.get(&format!("layer[{n}].norm_post.1"));
+    let norm2_post = scales.get(&format!("layer[{n}].norm_post.2"));
+    let qk_norm_post = scales.get(&format!("layer[{n}].qk_norm_post"));
+    let ssm_norm_post = scales.get(&format!("layer[{n}].ssm_norm_post"));
 
     let norm1_g = dequant_quantize(content, file, &format!("{prefix}.attn_norm.weight"))?;
     // Detect num_kv per-block from attn_qkv shape: total = q_dim + 2*kv_dim.
@@ -689,18 +793,18 @@ fn build_qwen_hybrid_layer(
     let ffn_down = dequant_quantize(content, file, &format!("{prefix}.ffn_down.weight"))?;
 
     Ok(LayerWeights::QwenHybridSsm {
-        norm1: make_norm_rms(norm1_g, act_scale),
+        norm1: make_norm_rms(norm1_g, norm1_post),
         attn_qkv_fused: attn_qkv,
         attn_gate,
         attn_out,
         num_q_heads: dims.num_q_heads,
         num_kv_heads: num_kv,
         head_dim: dims.head_dim,
-        attn_scales: fixed_attn_scales(act_scale),
+        attn_scales: attn_scales_for(scales, n),
         q_norm_gamma: q_norm,
         k_norm_gamma: k_norm,
         qk_norm_eps_q: DEFAULT_NORM_EPS_Q,
-        qk_norm_post_scale: Scale::from_num(act_scale).unwrap(),
+        qk_norm_post_scale: Scale::from_num(qk_norm_post).unwrap(),
         ssm_a,
         ssm_alpha,
         ssm_beta,
@@ -708,13 +812,13 @@ fn build_qwen_hybrid_layer(
         ssm_dt,
         ssm_norm_gamma: ssm_norm_g,
         ssm_norm_eps_q: DEFAULT_NORM_EPS_Q,
-        ssm_norm_post_scale: Scale::from_num(act_scale).unwrap(),
+        ssm_norm_post_scale: Scale::from_num(ssm_norm_post).unwrap(),
         ssm_out,
         num_v_heads: num_v,
         ssm_head_dim,
         ssm_kernel_size: kernel_size as u32,
-        ssm_scales: fixed_dnet_scales(act_scale),
-        norm2: make_norm_rms(norm2_g, act_scale),
+        ssm_scales: dnet_scales_for(scales, n),
+        norm2: make_norm_rms(norm2_g, norm2_post),
         ffn: FfnWeights {
             hidden: dims.hidden,
             intermediate: dims.intermediate,
@@ -722,7 +826,7 @@ fn build_qwen_hybrid_layer(
             w_up: ffn_up,
             w_down: ffn_down,
         },
-        ffn_scales: fixed_ffn_scales(act_scale),
+        ffn_scales: ffn_scales_for(scales, n),
     })
 }
 

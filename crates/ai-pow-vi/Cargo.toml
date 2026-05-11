@@ -11,12 +11,13 @@ thiserror = { workspace = true }
 byteorder = { workspace = true }
 candle-core = { version = "0.9", default-features = false, optional = true }
 memmap2 = { workspace = true }
+serde_json = { workspace = true, optional = true }
 
 [features]
 default = []
 # Enable the GGUF streaming converter (`gguf-convert` binary). Requires
 # candle-core for GGUF parsing + Q4_K/Q6_K/F16/BF16 SIMD dequant.
-gguf-convert = ["dep:candle-core"]
+gguf-convert = ["dep:candle-core", "dep:serde_json"]
 
 [[bin]]
 name = "vi-eval"

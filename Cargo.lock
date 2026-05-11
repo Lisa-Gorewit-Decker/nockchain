@@ -75,6 +75,7 @@ dependencies = [
  "candle-core",
  "memmap2",
  "proptest",
+ "serde_json",
  "thiserror 2.0.18",
 ]
 
