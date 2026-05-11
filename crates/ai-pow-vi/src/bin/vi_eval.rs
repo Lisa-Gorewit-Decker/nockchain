@@ -345,6 +345,18 @@ fn main() -> ExitCode {
             Some(p) => p,
             None => continue,
         };
+        // Print every prediction so a caller can pipe stdout to a top-1
+        // comparison without requiring `expected_top1` to be embedded in
+        // the eval set up front.
+        let top_logit = logits.get(predicted as usize).copied().unwrap_or(i32::MIN);
+        let prompt_str: Vec<String> = row.prompt.iter().map(|t| t.to_string()).collect();
+        println!(
+            "prediction\tline={}\tprompt=[{}]\tpredicted_top1={}\ttop_logit={}",
+            line_no + 1,
+            prompt_str.join(","),
+            predicted,
+            top_logit,
+        );
         if let Some(want) = row.expected_top1 {
             compared += 1;
             if predicted == want {
@@ -355,7 +367,7 @@ fn main() -> ExitCode {
 
     println!("prompts_run\t{total}");
     if compared == 0 {
-        println!("top1_agreement\tn/a (no expected_top1 fields, or no lm_head loaded)");
+        println!("top1_agreement\tn/a (no expected_top1 fields supplied; predictions printed above)");
     } else {
         let pct = 100.0 * (top1_agree as f64) / (compared as f64);
         println!("top1_agreement\t{top1_agree}/{compared}\t{:.1}%", pct);
