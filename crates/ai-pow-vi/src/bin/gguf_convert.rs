@@ -455,30 +455,35 @@ fn ffn_scales_for(scales: &ScaleSource, n: u32) -> FfnScales {
 
 fn dnet_scales_for(scales: &ScaleSource, n: u32) -> DeltaNetScales {
     let tap = |sub: &str| format!("layer[{n}].ssm.{sub}");
-    // The runtime `forward_qwen_hybrid_ssm_layer` maps these slots through
-    // `GatedDeltaNetScales` for the qwen35 DeltaNet path (see layer.rs).
-    // We populate them from the validated f32 calibrator tap names. Slots:
-    //   q          ← ssm.qkv          (attn_qkv projection)
-    //   v          ← ssm.gate_z       (z output gate projection)
-    //   k          ← ssm.k_norm       (post-L2-norm K)
-    //   u          ← ssm.conv_silu    (conv+SiLU output)
-    //   alpha_logit← ssm.alpha
-    //   beta_logit ← ssm.beta
-    //   decay      ← ssm.recurrence   (per-step recurrence output)
-    //   o          ← ssm.gated_norm
-    //   proj       ← ssm.out
-    // `update` is unused by GatedDeltaNetScales — leave at default.
+    // The validated f32 calibrator (calibrate.rs) records the DeltaNet
+    // activations under the OLD DeltaNetScales slot names with NEW
+    // semantics. The runtime layer.rs maps these slots into
+    // GatedDeltaNetScales. Routing (DeltaNetScales slot ← calibrator tap
+    // name ← what the f32 forward records):
+    //   q       ← ssm.q            (qkv_mixed = attn_qkv projection)
+    //   k       ← ssm.k            (post-L2-norm + broadcast K)
+    //   v       ← ssm.v            (post-conv V) [unused at runtime]
+    //   alpha_logit ← ssm.alpha_logit
+    //   beta_logit  ← ssm.beta_logit
+    //   u       ← ssm.u            (post-conv+SiLU)
+    //   decay   ← ssm_norm_post    (repurposed: gated-RMSNorm output)
+    //   update  ← attn.o           (repurposed: final ssm_out projection)
+    //   o       ← ssm.o            (recurrence per-token output)
+    //   proj    ← ssm.proj         (z_full = attn_gate projection; reused name)
+    let layer_tap = |sub: &str| format!("layer[{n}].{sub}");
     DeltaNetScales {
-        q: Scale::from_num(scales.get(&tap("qkv"))).unwrap(),
-        k: Scale::from_num(scales.get(&tap("k_norm"))).unwrap(),
-        v: Scale::from_num(scales.get(&tap("gate_z"))).unwrap(),
-        alpha_logit: Scale::from_num(scales.get(&tap("alpha"))).unwrap(),
-        beta_logit: Scale::from_num(scales.get(&tap("beta"))).unwrap(),
-        u: Scale::from_num(scales.get(&tap("conv_silu"))).unwrap(),
-        decay: Scale::from_num(scales.get(&tap("recurrence"))).unwrap(),
-        update: Scale::from_num(scales.get(&tap("recurrence"))).unwrap(),
-        o: Scale::from_num(scales.get(&tap("gated_norm"))).unwrap(),
-        proj: Scale::from_num(scales.get(&tap("out"))).unwrap(),
+        q: Scale::from_num(scales.get(&tap("q"))).unwrap(),
+        k: Scale::from_num(scales.get(&tap("k"))).unwrap(),
+        v: Scale::from_num(scales.get(&tap("v"))).unwrap(),
+        alpha_logit: Scale::from_num(scales.get(&tap("alpha_logit"))).unwrap(),
+        beta_logit: Scale::from_num(scales.get(&tap("beta_logit"))).unwrap(),
+        u: Scale::from_num(scales.get(&tap("u"))).unwrap(),
+        // Repurposed: holds the gated-RMSNorm output magnitude.
+        decay: Scale::from_num(scales.get(&layer_tap("ssm_norm_post"))).unwrap(),
+        // Repurposed: holds the final ssm_out projection magnitude.
+        update: Scale::from_num(scales.get(&layer_tap("attn.o"))).unwrap(),
+        o: Scale::from_num(scales.get(&tap("o"))).unwrap(),
+        proj: Scale::from_num(scales.get(&tap("proj"))).unwrap(),
     }
 }
 

@@ -877,16 +877,21 @@ fn forward_qwen_hybrid_ssm_layer(
         head_v: ssm_head_dim,
         conv_kernel: ssm_kernel_size,
         scales: GatedDeltaNetScales {
-            qkv: ssm_scales.q,
-            gate_z: ssm_scales.v,
-            conv_silu: ssm_scales.u,
-            q_norm: ssm_scales.q,
-            k_norm: ssm_scales.k,
+            // calibrate.rs reuses the old DeltaNetScales slot names with new
+            // semantics; see dnet_scales_for in gguf_convert.rs for the
+            // tap-name → slot mapping that produces this struct.
+            qkv: ssm_scales.q,           // ssm.q tap (qkv_mixed)
+            gate_z: ssm_scales.proj,     // ssm.proj tap (z_full)
+            conv_silu: ssm_scales.u,     // ssm.u tap (conv+SiLU)
+            // Post-L2-norm Q magnitude isn't recorded separately; ssm.k
+            // (post-L2 K) is at the same magnitude, used as proxy.
+            q_norm: ssm_scales.k,
+            k_norm: ssm_scales.k,        // ssm.k tap
             alpha: ssm_scales.alpha_logit,
             beta: ssm_scales.beta_logit,
-            recurrence: ssm_scales.decay,
-            gated_norm: ssm_scales.o,
-            out: ssm_scales.proj,
+            recurrence: ssm_scales.o,    // ssm.o tap (per-token recurrence out)
+            gated_norm: ssm_scales.decay, // converter puts ssm_norm_post here
+            out: ssm_scales.update,      // converter puts attn.o here
         },
         sigmoid_lut: ctx.sigmoid_lut,
         silu_lut: ctx.ffn_activation,
