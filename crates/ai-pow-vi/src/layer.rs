@@ -840,16 +840,16 @@ fn forward_qwen_hybrid_ssm_layer(
     let mut normed1 = vec![0i8; mu * hu];
     apply_norm_per_token(norm1, input, m, hidden, &mut normed1)?;
 
-    // Step 2: gated attention path.
-    let mut y_attn = vec![0i8; mu * hu];
-    gated_attention_forward(
-        &normed1, attn_qkv_fused, attn_gate, attn_out, hidden, num_q_heads, num_kv_heads, head_dim,
-        attn_scales, q_norm_gamma, k_norm_gamma, qk_norm_eps_q, qk_norm_post_scale,
-        ctx.rope_tables, ctx.softmax_lut, ctx.sigmoid_lut, m, &mut y_attn,
-    )?;
-
-    // Step 3: SSM path.
-    let mut y_ssm = vec![0i8; mu * hu];
+    // Phase B.1: when the gated-attention output dim
+    // (num_q_heads * head_dim) equals the SSM output dim
+    // (num_v_heads * ssm_head_dim) AND attn_out bytes == ssm_out
+    // bytes, we can sum per-head outputs and project once through
+    // the shared `ssm.w_out` matrix — saves one INT8 rounding step.
+    // This matches real Qwen 3.6 27B's "single shared output
+    // projection" architecture.
+    let q_dim = (num_q_heads * head_dim) as usize;
+    let ssm_inter_dim = (num_v_heads * ssm_head_dim) as usize;
+    let use_shared_projection = q_dim == ssm_inter_dim && attn_out == ssm_out;
     let opts = SsmOpts {
         ssm_a,
         ssm_alpha,
@@ -866,13 +866,63 @@ fn forward_qwen_hybrid_ssm_layer(
         scales: ssm_scales,
         sigmoid_lut: ctx.sigmoid_lut,
     };
-    ssm_forward(&normed1, hidden, m, opts, &mut y_ssm)?;
-    drop(normed1);
 
-    // Step 4: y = saturate_i8(y_attn + y_ssm).
-    let mut sub_out = y_attn;
-    add_residual_inplace(&mut sub_out, &y_ssm);
-    drop(y_ssm);
+    let mut sub_out = if use_shared_projection {
+        // Compute attn_inter (m, q_dim) and ssm_inter (m, q_dim);
+        // sum element-wise; project once.
+        let mut attn_inter = gated_attention_inter(
+            &normed1,
+            attn_qkv_fused,
+            attn_gate,
+            hidden,
+            num_q_heads,
+            num_kv_heads,
+            head_dim,
+            attn_scales,
+            q_norm_gamma,
+            k_norm_gamma,
+            qk_norm_eps_q,
+            qk_norm_post_scale,
+            ctx.rope_tables,
+            ctx.softmax_lut,
+            ctx.sigmoid_lut,
+            m,
+        )?;
+        let ssm_inter = crate::ssm::ssm_forward_inter(&normed1, hidden, m, opts)?;
+        // Sum element-wise.
+        for k in 0..attn_inter.len() {
+            attn_inter[k] = saturate_i8((attn_inter[k] as i64) + (ssm_inter[k] as i64));
+        }
+        drop(ssm_inter);
+        drop(normed1);
+        // Single shared output projection via ssm_out (= attn_out).
+        let mut out = vec![0i8; mu * hu];
+        matmul_int8_requant(
+            &attn_inter,
+            ssm_out,
+            m,
+            q_dim as u32,
+            hidden,
+            ssm_scales.proj,
+            &mut out,
+        )?;
+        out
+    } else {
+        // Legacy two-projection path (separate attn_out / ssm_out).
+        let mut y_attn = vec![0i8; mu * hu];
+        gated_attention_forward(
+            &normed1, attn_qkv_fused, attn_gate, attn_out, hidden, num_q_heads, num_kv_heads,
+            head_dim, attn_scales, q_norm_gamma, k_norm_gamma, qk_norm_eps_q,
+            qk_norm_post_scale, ctx.rope_tables, ctx.softmax_lut, ctx.sigmoid_lut, m,
+            &mut y_attn,
+        )?;
+        let mut y_ssm = vec![0i8; mu * hu];
+        ssm_forward(&normed1, hidden, m, opts, &mut y_ssm)?;
+        drop(normed1);
+        add_residual_inplace(&mut y_attn, &y_ssm);
+        drop(y_ssm);
+        y_attn
+    };
 
     // Step 5: residual1 = input + sub_out.
     add_residual_inplace(&mut sub_out, input);
@@ -1097,6 +1147,166 @@ fn gated_attention_forward(
         &attn_inter, attn_out_w, m, q_dim as u32, hidden, scales.o, output,
     )?;
     Ok(())
+}
+
+/// Phase B.1: gated-attention intermediate buffer (post-gate,
+/// pre-output-projection). Returns the `(m, num_q_heads * head_dim)`
+/// i8 buffer. Used by `forward_qwen_hybrid_ssm_layer`'s
+/// "single shared output projection" mode: callers sum this with the
+/// SSM per-head buffer (from `ssm_forward_inter`) and project once
+/// via the shared `ssm.w_out` matrix, matching real Qwen 3.6 27B's
+/// architecture and saving one INT8 rounding step.
+#[allow(clippy::too_many_arguments)]
+fn gated_attention_inter(
+    input: &[i8],
+    attn_qkv_fused: &[i8],
+    attn_gate: &[i8],
+    hidden: u32,
+    num_q_heads: u32,
+    num_kv_heads: u32,
+    head_dim: u32,
+    scales: AttentionScales,
+    q_norm_gamma: &[i8],
+    k_norm_gamma: &[i8],
+    qk_norm_eps_q: i64,
+    qk_norm_post_scale: Scale,
+    rope_tables: &RopeTables,
+    softmax_lut: &ExpLut,
+    sigmoid_lut: &ActivationLut,
+    m: u32,
+) -> Result<Vec<i8>, LayerError> {
+    if hidden == 0 || num_q_heads == 0 || head_dim == 0 || m == 0 {
+        return Err(LayerError::ZeroHidden);
+    }
+    if num_kv_heads == 0 || num_kv_heads > num_q_heads || num_q_heads % num_kv_heads != 0 {
+        return Err(LayerError::Attn(AttentionError::BadKvHeads));
+    }
+    if head_dim % 2 != 0 {
+        return Err(LayerError::Attn(AttentionError::HeadDimOdd));
+    }
+    if rope_tables.half_head_dim != head_dim / 2 {
+        return Err(LayerError::Attn(AttentionError::RopeHalfHeadDimMismatch));
+    }
+    if rope_tables.seq_len < m {
+        return Err(LayerError::Attn(AttentionError::RopeSeqLenTooShort));
+    }
+    let mu = m as usize;
+    let hu = hidden as usize;
+    let num_qu = num_q_heads as usize;
+    let num_kvu = num_kv_heads as usize;
+    let hdu = head_dim as usize;
+    let q_dim = num_qu * hdu;
+    let kv_dim = num_kvu * hdu;
+    let total_qkv = q_dim + kv_dim + kv_dim;
+    if input.len() != mu * hu {
+        return Err(LayerError::BadInputLen);
+    }
+    if attn_qkv_fused.len() != hu * total_qkv {
+        return Err(LayerError::Attn(AttentionError::BadWqLen));
+    }
+    if attn_gate.len() != hu * q_dim {
+        return Err(LayerError::Attn(AttentionError::BadWqLen));
+    }
+    let w_q = &attn_qkv_fused[0..hu * q_dim];
+    let w_k = &attn_qkv_fused[hu * q_dim..hu * (q_dim + kv_dim)];
+    let w_v = &attn_qkv_fused[hu * (q_dim + kv_dim)..hu * total_qkv];
+
+    let mut q_acc = vec![0i32; mu * q_dim];
+    matmul_int8(input, w_q, m, hidden, num_q_heads * head_dim, &mut q_acc)?;
+    let mut q_i8 = vec![0i8; mu * q_dim];
+    requantize_vec(&q_acc, scales.q, &mut q_i8)?;
+    drop(q_acc);
+
+    let mut k_acc = vec![0i32; mu * kv_dim];
+    matmul_int8(input, w_k, m, hidden, num_kv_heads * head_dim, &mut k_acc)?;
+    let mut k_i8 = vec![0i8; mu * kv_dim];
+    requantize_vec(&k_acc, scales.k, &mut k_i8)?;
+    drop(k_acc);
+
+    let mut v_acc = vec![0i32; mu * kv_dim];
+    matmul_int8(input, w_v, m, hidden, num_kv_heads * head_dim, &mut v_acc)?;
+    let mut v_i8 = vec![0i8; mu * kv_dim];
+    requantize_vec(&v_acc, scales.v, &mut v_i8)?;
+    drop(v_acc);
+
+    // QK norm.
+    {
+        let mut acc = vec![0i32; hdu];
+        for t in 0..mu {
+            for h in 0..num_qu {
+                let off = t * q_dim + h * hdu;
+                rmsnorm(&q_i8[off..off + hdu], q_norm_gamma, &mut acc, qk_norm_eps_q)?;
+                for (d, &a) in acc.iter().enumerate() {
+                    q_i8[off + d] = rescale_and_requantize(a, qk_norm_post_scale);
+                }
+            }
+            for h in 0..num_kvu {
+                let off = t * kv_dim + h * hdu;
+                rmsnorm(&k_i8[off..off + hdu], k_norm_gamma, &mut acc, qk_norm_eps_q)?;
+                for (d, &a) in acc.iter().enumerate() {
+                    k_i8[off + d] = rescale_and_requantize(a, qk_norm_post_scale);
+                }
+            }
+        }
+    }
+    // RoPE.
+    for pos in 0..mu {
+        for h in 0..num_qu {
+            let off = pos * q_dim + h * hdu;
+            rope_apply(&mut q_i8[off..off + hdu], pos as u32, rope_tables)?;
+        }
+        for h in 0..num_kvu {
+            let off = pos * kv_dim + h * hdu;
+            rope_apply(&mut k_i8[off..off + hdu], pos as u32, rope_tables)?;
+        }
+    }
+    // Attention core.
+    let mut attn_inter = vec![0i8; mu * q_dim];
+    let mut scores_buf = vec![0i32; mu];
+    let mut probs_buf = vec![0i8; mu];
+    for i in 0..mu {
+        for h in 0..num_qu {
+            let kv_h = h * num_kvu / num_qu;
+            let q_off = i * q_dim + h * hdu;
+            for j in 0..=i {
+                let k_off = j * kv_dim + kv_h * hdu;
+                let raw = dot_int8(&q_i8[q_off..q_off + hdu], &k_i8[k_off..k_off + hdu]);
+                let product = (raw as i64) * (scales.score.num as i64);
+                let scaled = round_half_to_even_div_pow2(product, SCALE_DENOM_LOG2)
+                    .clamp(i32::MIN as i64, i32::MAX as i64) as i32;
+                scores_buf[j] = scaled;
+            }
+            softmax_int(&scores_buf[..i + 1], softmax_lut, &mut probs_buf[..i + 1])?;
+            let ao_off = i * q_dim + h * hdu;
+            for d in 0..hdu {
+                let mut acc = 0i32;
+                for j in 0..=i {
+                    let v_off = j * kv_dim + kv_h * hdu + d;
+                    acc = acc.wrapping_add((probs_buf[j] as i32) * (v_i8[v_off] as i32));
+                }
+                attn_inter[ao_off + d] = rescale_and_requantize(acc, scales.attn_out);
+            }
+        }
+    }
+    drop(q_i8);
+    drop(k_i8);
+    drop(v_i8);
+
+    // Gate.
+    let mut gate_acc = vec![0i32; mu * q_dim];
+    matmul_int8(input, attn_gate, m, hidden, q_dim as u32, &mut gate_acc)?;
+    let mut gate_i8 = vec![0i8; mu * q_dim];
+    requantize_vec(&gate_acc, scales.q, &mut gate_i8)?;
+    sigmoid_lut.apply(&mut gate_i8);
+    drop(gate_acc);
+    for k in 0..mu * q_dim {
+        let prod = (attn_inter[k] as i32).wrapping_mul(gate_i8[k] as i32);
+        let abs_v = prod.unsigned_abs() as i64;
+        let q = ((abs_v + 63) / 127) as i32;
+        let signed = if prod < 0 { -q } else { q };
+        attn_inter[k] = signed.clamp(i8::MIN as i32, i8::MAX as i32) as i8;
+    }
+    Ok(attn_inter)
 }
 
 #[cfg(test)]
