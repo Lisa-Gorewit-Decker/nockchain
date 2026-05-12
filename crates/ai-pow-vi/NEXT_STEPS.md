@@ -52,26 +52,63 @@ The fix is more invasive than the ssm_a one because `matmul_int8_requant` does t
 
 ## Concrete fix path
 
+### The precise math
+
+For a matmul `acc = a_i8 · w_i8` (i32) with rescale to i8:
+
+- `a_real ≈ a_i8 × a_max/127`  (a_max = input activation max, captured by calibrator at the preceding tap)
+- `w_real ≈ w_i8 × w_max/127`  (w_max = weight max, captured at convert time)
+- `out_real = sum a_real × w_real = (a_max × w_max / 127²) × acc`
+- `out_i8 = round(out_real × 127 / out_max) = round(acc × (a_max × w_max) / (127 × out_max))`
+
+For the rescale `out_i8 = round(acc × scale.num / 2^15)` to be correct:
+
+> **`scale.num = (a_max × w_max / (127 × out_max)) × 2^15`**
+
+Or equivalently in Scale arithmetic where each Scale.num encodes `max/127 × 2^15`:
+
+> **`combined.num = (a_scale.num × w_scale.num) / out_scale.num`**
+
+The current implementation stores `scale.num = round(out_max/127 × 2^15)` — i.e., just out_max with no input/weight context. This is correct **only when** `a_max × w_max ≈ out_max²`, which never holds in practice (matmul outputs have variance proportional to sqrt(k), with k = inner dim, so out_max ≫ sqrt(a_max × w_max)).
+
 ### Option A — proper matmul-with-weight-scale (the right way)
 
-Add `w_max_abs` Scale fields to every weight-bearing struct (AttentionWeights, FfnWeights, DeltaNet-related). Modify `matmul_int8_requant` to accept the weight's max_abs and fold it into the rescale: `output_scale_eff = act_scale × w_max_abs`.
+Compute the **combined** scale at convert time and store it (single Scale per matmul output, same wire format size). The runtime forward uses it as-is — no API change to matmul_int8_requant.
 
 Plumb through:
-- `src/attention.rs::AttentionWeights` (add `q_max_abs`, `k_max_abs`, `v_max_abs`, `o_max_abs`)
-- `src/ffn.rs::FfnWeights` (add `gate_max_abs`, `up_max_abs`, `down_max_abs`)
-- `src/layer.rs::QwenHybridSsm` (add `attn_qkv_max_abs`, `attn_gate_max_abs`, `ssm_alpha_max_abs`, `ssm_beta_max_abs`, `ssm_out_max_abs`)
-- `src/matmul_int8.rs::matmul_int8_requant` — accept `w_scale: Scale` parameter; combine with act_scale
-- All matmul call sites — pass the weight's `max_abs`
-- `src/io.rs` + `src/comm_w.rs` — serialize/deserialize new fields
-- `src/bin/gguf_convert.rs` — capture and store every weight's scale_num
+- For each matmul tap, identify its (input_tap, weight_tensor, output_tap) tuple
+- At convert time: `combined_scale.num = (a_scale.num × w_scale.num) / out_scale.num` using the calibrator's `a_max` and `out_max`, and the converter's captured `w_max`
+- Replace the matmul-output activation scale in the manifest with the combined value
+- `src/bin/gguf_convert.rs`: walk every matmul, build the tuple. `dnet_scales_for`, `attn_scales_for`, `ffn_scales_for` all need to know which **input** scale precedes each matmul.
+
+The runtime never needs to know about weight scales individually — they're baked in.
+
+Tap-to-matmul mapping needed:
+| Matmul | Input tap | Output tap | Weight |
+|---|---|---|---|
+| std `w_q` | `norm_post.1` | `attn.q` | attn_q.weight |
+| std `w_k` | `norm_post.1` | `attn.k` | attn_k.weight |
+| std `w_v` | `norm_post.1` | `attn.v` | attn_v.weight |
+| std `w_o` | `attn.attn_out` | `attn.o` | attn_output.weight |
+| ffn `w_gate` | `norm_post.2` | `ffn.gate` | ffn_gate.weight |
+| ffn `w_up` | `norm_post.2` | `ffn.up` | ffn_up.weight |
+| ffn `w_down` | `ffn.mid` | `ffn.down` | ffn_down.weight |
+| hybrid `attn_qkv` | `norm_post.1` | `ssm.q` | attn_qkv.weight |
+| hybrid `attn_gate` | `norm_post.1` | `ssm.proj` | attn_gate.weight |
+| hybrid `ssm_alpha` | `norm_post.1` | `ssm.alpha_logit` | ssm_alpha.weight |
+| hybrid `ssm_beta` | `norm_post.1` | `ssm.beta_logit` | ssm_beta.weight |
+| hybrid conv1d | `ssm.q` | `ssm.u` | ssm_conv1d.weight |
+| hybrid `ssm_out` | `ssm_norm_post` | `attn.o` | ssm_out.weight |
 
 Estimated effort: 4–6h focused work + 22min reconvert + 25min eval.
 
-### Option B — bypass the convention (simpler, less elegant)
+### Option B — bypass via empirical recalibration
 
-Normalize every weight tensor at convert time so `max(|w|) = 1` exactly, then bake the scaling factor into the activation scale that feeds the matmul. E.g., for `attn_qkv @ x`: divide weight by `max_abs(w)`, multiply scale `ssm.qkv` (which represents the output activation max) by `max_abs(w)`. Net effect: matmul output as i32 represents the same f32 value.
+Instead of computing combined scales analytically, modify calibrate.rs to drive an **INT8 forward** (not f32). Each tap's recorded max_abs would then be the i8 output's effective max, baking in whatever convention error the forward has. Re-emit `scales.json` and re-convert.
 
-Estimated effort: 1–2h. But it changes the meaning of the activation scales (they now bake in weight scales), so re-calibration may be needed.
+Caveat: requires the i8 forward to be roughly working first (chicken-and-egg with the convention bug). Could iterate: run i8 → record → re-convert → run i8 → re-record. Each pass takes ~50min. May not converge cleanly.
+
+Estimated effort: 30min to add INT8 forward to calibrate.rs + N × 50min iteration cycles.
 
 ### Step 4 — re-eval
 
