@@ -2,7 +2,7 @@
 
 End-goal: `gguf-convert` produces a Qwen 3.5 27B model dir whose `vi-eval` agrees with Ollama 4/4 on `/tmp/qwen_eval.jsonl` (predicting `8160, 8160, 90700, 8160`).
 
-The **f32 reference path** already gets 4/4 at commit `e689d78`. The **INT8 path** runs end-to-end without panics, produces non-trivial predictions, but is at **0/4** because several weight-tensor scales are dropped in the i8 forward.
+The **f32 reference path** gets 4/4 at commit `e689d78`. The **INT8 path** runs end-to-end without panics, produces non-trivial predictions in reasonable token-id ranges, but is at **0/4** because the matmul convention assumes `max(|w|) ≈ 1` for every weight tensor — true for some weights but not all.
 
 ## State at session end (branch `claude/ai-pow-nockchain-sgfNX`)
 
@@ -16,87 +16,76 @@ The **f32 reference path** already gets 4/4 at commit `e689d78`. The **INT8 path
 | `b44246b` | Loader byte counts for DeltaNet + IMROPE table sizing fix |
 | `3fd5af8` | Scale tap-name routing fix |
 | `d695e5c` | Fix vestigial /127 in deltanet conv-output dequant |
+| `0a35eb2` | Validation: ssm_a × 16 hack (proved weight-scale theory) |
+| `4cdc690` | Per-tensor weight max_abs scales for ssm_a / dt / conv1d / norm |
 
-All lib + integration tests pass (~10 ignored pending qwen_hybrid_mini fixture regen).
+All 246 unit + integration tests pass (~10 ignored pending qwen_hybrid_mini fixture regen).
+
+Latest INT8 model: `/tmp/qwen35_27b_int8_v8/` (comm_W `88a723d6...`).
 
 Validated f32 scales on disk: `/tmp/scales_v3.json` — 1539 taps from the 4/4 f32 reference.
 
-Latest INT8 model: `/tmp/qwen35_27b_int8_v7/` (comm_W `16e5f2a3...`), predictions across reruns:
+## Prediction trajectory across versions
 
-| Prompt | v4-v6 | v7 (scale routing) | v7b (/127 fix) | Expected |
-|---|---|---|---|---|
-| 1 | 1482 | 145890 | **84956** | 8160 |
-| 2 | 96515 | 100 | **232364** | 8160 |
-| 3 | 22822 | 219132 | **3503** | 90700 |
-| 4 | 53523 | 15277 | **327** | 8160 |
+| Prompt | v7 | v7b (/127 fix) | v7c (×16 hack) | v8 (proper scales) | Expected |
+|---|---|---|---|---|---|
+| 1 | 145890 | 84956 | 10271 | 189085 | 8160 |
+| 2 | 100 | 232364 | 96755 | 22382 | 8160 |
+| 3 | 219132 | 3503 | 227 | 86 | 90700 |
+| 4 | 15277 | 327 | 154615 | 1846 | 8160 |
 
-Each fix shifts predictions meaningfully, confirming the changes are flowing through. Magnitude of post-/127-fix tokens is now smaller (matches Ollama's small-token expectation), but argmax is wrong by ~10² positions — typical for a forward path with ~10–30% per-layer cumulative error.
+Predictions are in sensible token-id ranges (86, 1846, 22382, 189085) but still don't match Ollama's exact argmax.
 
-## The remaining gap — dropped weight-tensor scales
+## The remaining gap
 
-The crate's INT8 convention bakes in **`max(|w|) ≈ 1` for every weight tensor** and uses only per-tap *activation* scales. This breaks down for tensors whose true `max(|w|)` is not ~1:
+Per-tensor weight max_abs scales were plumbed for `ssm_a`, `ssm_dt`, `ssm_conv1d`, `ssm_norm_gamma` (commit `4cdc690`). The same dropped-weight-scale issue likely affects:
 
-| Weight tensor | True `max(|w|)` | Off by | Where used |
-|---|---|---|---|
-| `ssm_a` | up to ~16 (`-exp(A_log)` with A_log ∈ log U(0,16)) | up to 16× | gate_log = softplus(α+dt) × ssm_a; affects state decay rate |
-| `ssm_dt` | ~1 (initialized to 1) | ~1× | additive bias to α; small impact |
-| `ssm_norm_gamma` | ~1 (RMSNorm γ) | ~1× | post-recurrence gated norm; small impact |
-| `ssm_conv1d` | varies; typically <1 | up to ~3× | depthwise conv before SiLU; affects Q/K/V conv outputs |
+- `attn_qkv` (5120 × 10240 = 50M params per hybrid layer, large enough that max_abs deviation has real impact)
+- `attn_gate` (5120 × 6144)
+- `ssm_alpha`, `ssm_beta` (small but per-token gates)
+- `ssm_out` (6144 × 5120)
+- All **standard-block** weights (`attn_q`, `attn_k`, `attn_v`, `attn_output`, `ffn_*`) and **FFN** weights in hybrid blocks
 
-The `gguf-convert` code calls `quantize_with_scale` for each, gets back `(i8_bytes, scale_num)`, then discards `scale_num` (line 881 et al). The runtime dequants via `(x as f32) / 127.0`, which only recovers values normalized to `[-1, 1]` instead of `[-max_abs, max_abs]`.
+These go through `matmul_int8_requant`, whose convention bakes in `max(|w|) ≈ 1`. For Q4_K weights typically <1 (~0.1 to 0.5), this causes consistent under-saturation — each i8 only spans a fraction of [-127,127], reducing effective precision by 2–10×.
 
-For `ssm_a` specifically, a 16× error in the gate scalar means `exp(gate_log)` is wildly wrong — either too close to 1 (no decay; state diverges) or too close to 0 (state collapses). This is the largest single source of error.
+The fix is more invasive than the ssm_a one because `matmul_int8_requant` does the scale arithmetic internally; it would need a new variant that accepts a separate `w_max_abs` Scale. Or every matmul weight gets a scale field on its layer struct (significant manifest expansion).
 
 ## Concrete fix path
 
-### Step 1 — store ssm_a, ssm_dt, ssm_norm_gamma as f32 in the manifest
+### Option A — proper matmul-with-weight-scale (the right way)
 
-These are tiny vectors (48 + 48 + 128 = 224 values per hybrid layer × 48 layers = 10,752 f32 ≈ 43 KB extra). Cheaper than wiring per-weight Scale fields, and the dequant becomes a memcpy.
+Add `w_max_abs` Scale fields to every weight-bearing struct (AttentionWeights, FfnWeights, DeltaNet-related). Modify `matmul_int8_requant` to accept the weight's max_abs and fold it into the rescale: `output_scale_eff = act_scale × w_max_abs`.
 
-**Files to edit**:
-- `src/layer.rs`: change `LayerWeights::QwenHybridSsm` field types
-  - `ssm_a: Vec<i8>` → `Vec<f32>`
-  - `ssm_dt: Vec<i8>` → `Vec<f32>`
-  - `ssm_norm_gamma: Vec<i8>` → `Vec<f32>`
-- `src/io.rs`: update `parse_one_layer` and `LayerMeta::QwenHybridSsm` byte counts. Each f32 is 4 bytes vs 1 byte i8. Add a meta byte sequence so the loader knows it's a hybrid-arch (DeltaNet) variant vs legacy Mamba — bump the variant tag.
-- `src/comm_w.rs`: update `canonical_weight_bytes` to serialize as f32 LE bytes for these three fields.
-- `src/bin/gguf_convert.rs::build_qwen_hybrid_layer`: stop calling `dequant_quantize` for these; load via `dequant_to_vec_f32` and store directly.
-- `src/deltanet.rs::forward_gated_deltanet_qwen35`: the `opts.ssm_a / ssm_dt / ssm_norm_gamma` fields become `&[f32]`. Drop the `(x as f32) / 127.0` dequants at lines 711-712 and 785.
+Plumb through:
+- `src/attention.rs::AttentionWeights` (add `q_max_abs`, `k_max_abs`, `v_max_abs`, `o_max_abs`)
+- `src/ffn.rs::FfnWeights` (add `gate_max_abs`, `up_max_abs`, `down_max_abs`)
+- `src/layer.rs::QwenHybridSsm` (add `attn_qkv_max_abs`, `attn_gate_max_abs`, `ssm_alpha_max_abs`, `ssm_beta_max_abs`, `ssm_out_max_abs`)
+- `src/matmul_int8.rs::matmul_int8_requant` — accept `w_scale: Scale` parameter; combine with act_scale
+- All matmul call sites — pass the weight's `max_abs`
+- `src/io.rs` + `src/comm_w.rs` — serialize/deserialize new fields
+- `src/bin/gguf_convert.rs` — capture and store every weight's scale_num
 
-### Step 2 — store ssm_conv1d weight scale
+Estimated effort: 4–6h focused work + 22min reconvert + 25min eval.
 
-`ssm_conv1d` is 4 × 10240 = 40960 i8 bytes per layer. Storing as f32 is 4× bigger but still only ~7.5 MB extra total. Or store the scale alongside:
+### Option B — bypass the convention (simpler, less elegant)
 
-- Add `ssm_conv1d_scale: Scale` to `QwenHybridSsm`
-- Plumb through io.rs / comm_w.rs / gguf_convert.rs (the converter already has the scale; just stop discarding it)
-- In `forward_gated_deltanet_qwen35` line 629, the formula becomes:
-  ```rust
-  // acc_i32 has units of i8_w * i8_x. Convert to f32 via both scales:
-  let w_max_f = (opts.ssm_conv1d_scale.num as f32) / (1<<15) as f32 * 127.0;
-  let approx_f = (acc_i32 as f32) * w_max_f * qkv_scale_f / 127.0;
-  ```
+Normalize every weight tensor at convert time so `max(|w|) = 1` exactly, then bake the scaling factor into the activation scale that feeds the matmul. E.g., for `attn_qkv @ x`: divide weight by `max_abs(w)`, multiply scale `ssm.qkv` (which represents the output activation max) by `max_abs(w)`. Net effect: matmul output as i32 represents the same f32 value.
 
-### Step 3 — regenerate fixtures + un-ignore tests
+Estimated effort: 1–2h. But it changes the meaning of the activation scales (they now bake in weight scales), so re-calibration may be needed.
 
-After Steps 1-2 land, the qwen_hybrid_mini Python generator needs to be rewritten anyway (the manifest format and weight tensor types changed). Then un-`#[ignore]` the 10 tests.
+### Step 4 — re-eval
 
-### Step 4 — re-convert + re-eval
+After either option:
 
 ```sh
-mkdir -p /tmp/qwen35_27b_int8_v8
-./target/release/gguf-convert \
-  --gguf "$HOME/.ollama/models/blobs/sha256-83c54730a5fea8a0958598c01617c1419c431e93b33bacf980b49a420c798926" \
-  --out /tmp/qwen35_27b_int8_v8 \
-  --seq-len 64 --activation-tile 64 \
+./target/release/gguf-convert --gguf $HOME/.ollama/models/blobs/sha256-83c5... \
+  --out /tmp/qwen35_27b_int8_v9 --seq-len 64 --activation-tile 64 \
   --scales /tmp/scales_v3.json
-
-./target/release/vi-eval --model-dir /tmp/qwen35_27b_int8_v8 \
+./target/release/vi-eval --model-dir /tmp/qwen35_27b_int8_v9 \
   --eval /tmp/qwen_eval.jsonl --arch qwen35
 ```
 
-Wall clock: ~22min convert + ~25min vi-eval.
-
-**Expected outcome**: top-1 ≥ 3/4 (likely 4/4 since f32 reference is 4/4 and the only remaining variable is the bounded per-tap quantization noise after fixing weight-scale loss).
+Expected outcome: 3-4/4 top-1 (the f32 reference is 4/4 with these scales, so the only variable is residual quantization noise which should be bounded < 5% per layer).
 
 ## Key invariants (don't relearn these)
 
@@ -108,27 +97,16 @@ Wall clock: ~22min convert + ~25min vi-eval.
 6. **Per-head L2-norm**: `1/max(sqrt(sumsq), eps)`, not `1/sqrt(sumsq+eps)`.
 7. **Q scaling**: `q *= 1/sqrt(head_k_dim)` applied ONCE after L2-norm, before the recurrence.
 8. **DeltaNet recurrence state**: keep in f32; not viable in i8 due to 64-step multiplicative decay.
-9. **i8 dequant convention**: `x_real = x_i8 * (scale.num / 2^15)`. Do NOT multiply or divide by 127 again — the scale numerator already encodes max_abs/127.
+9. **i8 dequant convention**: `x_real = x_i8 * (scale.num / 2^15)` where scale.num = round(max_abs/127 * 2^15). For a weight tensor where max_abs is captured: `max_abs = scale.num * 127 / 2^15`.
 10. **calibrate.rs tap-name reuse**: records under OLD DeltaNetScales slot names with NEW semantics. See `dnet_scales_for` for the full slot-to-tap map.
+11. **Matmul convention**: `matmul_int8_requant(a, b, …, scale, out)` implicitly assumes `max(|b|) ≈ 1`. Weights with `max(|b|) < 1` (typical Q4_K) cause under-saturation in the i8 output. This is the dominant remaining bug.
 
 ## Reference files
 
 - `/tmp/llama.cpp/src/models/qwen35.cpp` — canonical computation graph
-- `/tmp/llama.cpp/src/models/delta-net-base.cpp` — DeltaNet recurrence reference
-- `/tmp/llama.cpp/ggml/src/ggml-cpu/ops.cpp:5725` — IMROPE dispatch
-- `crates/ai-pow-vi/src/bin/calibrate.rs` — **validated 4/4 f32 reference**; treat as the spec
+- `/tmp/llama.cpp/src/models/delta-net-base.cpp` — DeltaNet recurrence
+- `crates/ai-pow-vi/src/bin/calibrate.rs` — **validated 4/4 f32 reference**; treat as spec
 - `/tmp/scales_v3.json` — validated per-tap scales (1539 entries)
 - `/tmp/qwen_eval.jsonl` — 4-prompt Ollama reference set
 - GGUF blob: `~/.ollama/models/blobs/sha256-83c54730a5fea8a0958598c01617c1419c431e93b33bacf980b49a420c798926`
-- Latest INT8 model: `/tmp/qwen35_27b_int8_v7/` (comm_W `16e5f2a3...`)
-
-## Estimated effort
-
-| Step | Effort |
-|---|---|
-| 1. f32-store ssm_a/dt/norm + plumb | 2-3h focused (manifest format bump) |
-| 2. Add ssm_conv1d weight scale | 1h |
-| 3. Regenerate fixtures + un-ignore | ~half day Python |
-| 4. Re-convert + re-eval | ~1h wall, 30min active |
-
-**Honest expected outcome**: Step 1 alone likely jumps top-1 from 0/4 to 2-3/4 (since ssm_a is the largest single error). Step 2 closes the rest. Step 3 is cleanup. Step 4 is the validation.
+- Latest INT8 model: `/tmp/qwen35_27b_int8_v8/` (comm_W `88a723d6...`)
