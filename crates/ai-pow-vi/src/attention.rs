@@ -179,7 +179,9 @@ pub fn attention_forward(
     if hd % 2 != 0 {
         return Err(AttentionError::HeadDimOdd);
     }
-    if rope_tables.half_head_dim != hd / 2 {
+    // Plain RoPE: tables.half_head_dim == hd/2. IMROPE: tables.half_head_dim
+    // = n_rot/2 < hd/2 (rotated subspace is a prefix of head_dim). Accept both.
+    if rope_tables.half_head_dim == 0 || (rope_tables.half_head_dim as usize) > (hd as usize) / 2 {
         return Err(AttentionError::RopeHalfHeadDimMismatch);
     }
     if rope_tables.seq_len < m {
@@ -346,7 +348,9 @@ pub fn attention_forward_gemma(
     if hd % 2 != 0 {
         return Err(AttentionError::HeadDimOdd);
     }
-    if rope_tables.half_head_dim != hd / 2 {
+    // Plain RoPE: tables.half_head_dim == hd/2. IMROPE: tables.half_head_dim
+    // = n_rot/2 < hd/2 (rotated subspace is a prefix of head_dim). Accept both.
+    if rope_tables.half_head_dim == 0 || (rope_tables.half_head_dim as usize) > (hd as usize) / 2 {
         return Err(AttentionError::RopeHalfHeadDimMismatch);
     }
     if rope_tables.seq_len < m {

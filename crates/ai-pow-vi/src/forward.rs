@@ -135,6 +135,24 @@ pub fn forward_prefix(
             *byte = 0;
         }
         log.record_layer(layer_idx + 1, &x_full)?;
+        // Option C i8 self-calibration hook: when AI_POW_VI_DUMP_LAYER_MAGS is
+        // set, append the per-layer max(|i8|) (over the real m*hu rows) to
+        // the named file. One line per layer: `layer_idx max_abs`. Useful
+        // for iterating scales until layer outputs converge toward a target
+        // i8 saturation level (e.g. ≈100).
+        if let Ok(path) = std::env::var("AI_POW_VI_DUMP_LAYER_MAGS") {
+            let mut m_abs: i32 = 0;
+            for &b in &x_full[..mu * hu] {
+                let av = (b as i32).abs();
+                if av > m_abs {
+                    m_abs = av;
+                }
+            }
+            use std::io::Write;
+            if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(&path) {
+                let _ = writeln!(f, "{}\t{}", layer_idx, m_abs);
+            }
+        }
     }
 
     // Step 3: if exiting at the very last layer and the model has a final
