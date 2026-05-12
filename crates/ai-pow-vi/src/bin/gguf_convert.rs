@@ -500,6 +500,18 @@ fn dequant_quantize(
     Ok(i8s)
 }
 
+/// Like `dequant_quantize` but also returns the quantization scale
+/// numerator so callers can stash the original max_abs for runtime
+/// dequant. Used for weight tensors whose magnitude is not ≈ 1.
+fn dequant_quantize_keep_scale(
+    content: &Content,
+    file: &mut std::fs::File,
+    name: &str,
+) -> Result<(Vec<i8>, i32), String> {
+    let (f, _shape) = dequant_to_vec_f32(content, file, name)?;
+    Ok(quantize_with_scale(&f))
+}
+
 /// Like `dequant_quantize` but truncates to first `keep_len` elements
 /// of `axis=0` (which after dequantize is the "out" dim for linear
 /// weights, since shape is `(out, in)`).
@@ -838,8 +850,11 @@ fn build_qwen_hybrid_layer(
     // attn_gate (z output gate): candle shape [value_dim=6144, hidden=5120].
     let attn_gate = dequant_quantize(content, file, &format!("{prefix}.attn_gate.weight"))?;
 
-    // SSM tensors.
-    let ssm_a = dequant_quantize(content, file, &format!("{prefix}.ssm_a"))?;
+    // SSM tensors. Keep weight scales so the runtime can dequant properly
+    // (ssm_a values reach ±16, ssm_norm gammas ≈ 1 etc. — runtime needs
+    // each per-tensor max_abs).
+    let (ssm_a, ssm_a_scale_num) =
+        dequant_quantize_keep_scale(content, file, &format!("{prefix}.ssm_a"))?;
     if ssm_a.len() != n_v_heads {
         return Err(format!(
             "layer {n} hybrid ssm_a len {} != num_v_heads {}",
@@ -850,9 +865,11 @@ fn build_qwen_hybrid_layer(
     let ssm_alpha = dequant_quantize(content, file, &format!("{prefix}.ssm_alpha.weight"))?;
     let ssm_beta = dequant_quantize(content, file, &format!("{prefix}.ssm_beta.weight"))?;
     // Ollama-shipped GGUF uses bare `ssm_dt`; newer llama.cpp emits `ssm_dt.bias`.
-    let ssm_dt = dequant_quantize(content, file, &format!("{prefix}.ssm_dt"))
-        .or_else(|_| dequant_quantize(content, file, &format!("{prefix}.ssm_dt.bias")))?;
-    let ssm_norm_g = dequant_quantize(content, file, &format!("{prefix}.ssm_norm.weight"))?;
+    let (ssm_dt, ssm_dt_scale_num) =
+        dequant_quantize_keep_scale(content, file, &format!("{prefix}.ssm_dt"))
+            .or_else(|_| dequant_quantize_keep_scale(content, file, &format!("{prefix}.ssm_dt.bias")))?;
+    let (ssm_norm_g, ssm_norm_g_scale_num) =
+        dequant_quantize_keep_scale(content, file, &format!("{prefix}.ssm_norm.weight"))?;
     if ssm_norm_g.len() != head_v {
         return Err(format!(
             "layer {n} hybrid ssm_norm len {} != head_v {}",
@@ -878,7 +895,7 @@ fn build_qwen_hybrid_layer(
             conv_kc[k * conv_dim + c] = conv_f[c * conv_kernel + k];
         }
     }
-    let (ssm_conv1d, _) = quantize_with_scale(&conv_kc);
+    let (ssm_conv1d, ssm_conv1d_scale_num) = quantize_with_scale(&conv_kc);
 
     let ssm_out = dequant_quantize(content, file, &format!("{prefix}.ssm_out.weight"))?;
     let norm2_g = dequant_quantize(content, file, &format!("{prefix}.post_attention_norm.weight"))?;
@@ -922,6 +939,10 @@ fn build_qwen_hybrid_layer(
         ssm_head_dim: head_v as u32,
         ssm_kernel_size: conv_kernel as u32,
         ssm_scales: dnet_scales_for(scales, n),
+        ssm_a_weight_max: Scale::from_num(ssm_a_scale_num).unwrap(),
+        ssm_dt_weight_max: Scale::from_num(ssm_dt_scale_num).unwrap(),
+        ssm_conv1d_weight_max: Scale::from_num(ssm_conv1d_scale_num).unwrap(),
+        ssm_norm_gamma_weight_max: Scale::from_num(ssm_norm_g_scale_num).unwrap(),
         norm2: make_norm_rms(norm2_g, norm2_post),
         ffn: FfnWeights {
             hidden: dims.hidden,

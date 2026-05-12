@@ -323,6 +323,10 @@ fn encode_manifest(model: &Model) -> Vec<u8> {
                 ssm_norm_eps_q,
                 ssm_norm_post_scale,
                 ssm_scales,
+                ssm_a_weight_max,
+                ssm_dt_weight_max,
+                ssm_conv1d_weight_max,
+                ssm_norm_gamma_weight_max,
                 norm2,
                 ffn,
                 ffn_scales,
@@ -357,6 +361,10 @@ fn encode_manifest(model: &Model) -> Vec<u8> {
                 buf.extend_from_slice(&ssm_scales.update.num.to_le_bytes());
                 buf.extend_from_slice(&ssm_scales.o.num.to_le_bytes());
                 buf.extend_from_slice(&ssm_scales.proj.num.to_le_bytes());
+                buf.extend_from_slice(&ssm_a_weight_max.num.to_le_bytes());
+                buf.extend_from_slice(&ssm_dt_weight_max.num.to_le_bytes());
+                buf.extend_from_slice(&ssm_conv1d_weight_max.num.to_le_bytes());
+                buf.extend_from_slice(&ssm_norm_gamma_weight_max.num.to_le_bytes());
                 encode_norm_meta(&mut buf, norm2);
                 buf.extend_from_slice(&ffn.intermediate.to_le_bytes());
                 buf.extend_from_slice(&ffn_scales.gate.num.to_le_bytes());
@@ -512,6 +520,10 @@ enum LayerMeta {
         ssm_norm_eps_q: i64,
         ssm_norm_post_scale: Scale,
         ssm_scales: DeltaNetScales,
+        ssm_a_weight_max: Scale,
+        ssm_dt_weight_max: Scale,
+        ssm_conv1d_weight_max: Scale,
+        ssm_norm_gamma_weight_max: Scale,
         norm2: NormMeta,
         intermediate: u32,
         ffn_scales: FfnScales,
@@ -826,6 +838,10 @@ fn parse_manifest(bytes: &[u8]) -> Result<ParsedManifest, LoadError> {
                     o: Scale::from_num(c.i32()?)?,
                     proj: Scale::from_num(c.i32()?)?,
                 };
+                let ssm_a_weight_max = Scale::from_num(c.i32()?)?;
+                let ssm_dt_weight_max = Scale::from_num(c.i32()?)?;
+                let ssm_conv1d_weight_max = Scale::from_num(c.i32()?)?;
+                let ssm_norm_gamma_weight_max = Scale::from_num(c.i32()?)?;
                 let norm2 = parse_norm_meta(&mut c)?;
                 let intermediate = c.u32()?;
                 let ffn_scales = FfnScales {
@@ -849,6 +865,10 @@ fn parse_manifest(bytes: &[u8]) -> Result<ParsedManifest, LoadError> {
                     ssm_norm_eps_q,
                     ssm_norm_post_scale,
                     ssm_scales,
+                    ssm_a_weight_max,
+                    ssm_dt_weight_max,
+                    ssm_conv1d_weight_max,
+                    ssm_norm_gamma_weight_max,
                     norm2,
                     intermediate,
                     ffn_scales,
@@ -1282,6 +1302,10 @@ fn parse_one_layer(
             ssm_norm_eps_q,
             ssm_norm_post_scale,
             ssm_scales,
+            ssm_a_weight_max,
+            ssm_dt_weight_max,
+            ssm_conv1d_weight_max,
+            ssm_norm_gamma_weight_max,
             norm2,
             intermediate,
             ffn_scales,
@@ -1347,6 +1371,10 @@ fn parse_one_layer(
                 ssm_head_dim,
                 ssm_kernel_size,
                 ssm_scales,
+                ssm_a_weight_max,
+                ssm_dt_weight_max,
+                ssm_conv1d_weight_max,
+                ssm_norm_gamma_weight_max,
                 norm2: n2,
                 ffn: FfnWeights {
                     hidden: hidden_u32,

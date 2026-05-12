@@ -172,6 +172,17 @@ pub enum LayerWeights {
         ssm_head_dim: u32,
         ssm_kernel_size: u32,
         ssm_scales: DeltaNetScales, // reuse the DeltaNet scale set
+        // Per-weight `max(|w|)` scales, captured at convert time and
+        // dropped from the standard quant convention (which assumes
+        // every weight tensor has max_abs ≈ 1). Required for the
+        // GatedDeltaNet i8 forward to dequantize ssm_a (up to 16×),
+        // ssm_conv1d (up to 3×), etc back to their true magnitudes.
+        // Set to Scale::from_num(2^15) (= max_abs 1.0) for legacy
+        // mini-fixture layers where the convention is preserved.
+        ssm_a_weight_max: Scale,
+        ssm_dt_weight_max: Scale,
+        ssm_conv1d_weight_max: Scale,
+        ssm_norm_gamma_weight_max: Scale,
         // Shared parts of the block:
         norm2: NormSpec,
         ffn: FfnWeights,
@@ -775,6 +786,10 @@ fn forward_qwen_hybrid_ssm_layer(
         ssm_head_dim,
         ssm_kernel_size,
         ssm_scales,
+        ssm_a_wmax,
+        ssm_dt_wmax,
+        ssm_conv1d_wmax,
+        ssm_norm_gamma_wmax,
         norm2,
         ffn,
         ffn_scales,
@@ -805,6 +820,10 @@ fn forward_qwen_hybrid_ssm_layer(
             ssm_head_dim,
             ssm_kernel_size,
             ssm_scales,
+            ssm_a_weight_max,
+            ssm_dt_weight_max,
+            ssm_conv1d_weight_max,
+            ssm_norm_gamma_weight_max,
             norm2,
             ffn,
             ffn_scales,
@@ -829,6 +848,10 @@ fn forward_qwen_hybrid_ssm_layer(
             *ssm_head_dim,
             *ssm_kernel_size,
             *ssm_scales,
+            *ssm_a_weight_max,
+            *ssm_dt_weight_max,
+            *ssm_conv1d_weight_max,
+            *ssm_norm_gamma_weight_max,
             norm2,
             ffn,
             *ffn_scales,
@@ -895,6 +918,10 @@ fn forward_qwen_hybrid_ssm_layer(
         },
         sigmoid_lut: ctx.sigmoid_lut,
         silu_lut: ctx.ffn_activation,
+        ssm_a_weight_max: ssm_a_wmax,
+        ssm_dt_weight_max: ssm_dt_wmax,
+        ssm_conv1d_weight_max: ssm_conv1d_wmax,
+        ssm_norm_gamma_weight_max: ssm_norm_gamma_wmax,
     };
     let mut sub_out = vec![0i8; mu * hu];
     forward_gated_deltanet_qwen35(&normed1, hidden, m, opts, &mut sub_out)?;
@@ -1934,6 +1961,10 @@ mod tests {
                 o: small_scale(),
                 proj: small_scale(),
             },
+            ssm_a_weight_max: small_scale(),
+            ssm_dt_weight_max: small_scale(),
+            ssm_conv1d_weight_max: small_scale(),
+            ssm_norm_gamma_weight_max: small_scale(),
             norm2: rms_norm(hu, seed.wrapping_add(13)),
             ffn: FfnWeights {
                 hidden,

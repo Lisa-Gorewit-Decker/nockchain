@@ -419,6 +419,10 @@ fn manifest_hash(model: &Model) -> [u8; 32] {
                 ssm_norm_eps_q,
                 ssm_norm_post_scale,
                 ssm_scales,
+                ssm_a_weight_max,
+                ssm_dt_weight_max,
+                ssm_conv1d_weight_max,
+                ssm_norm_gamma_weight_max,
                 norm2,
                 ffn,
                 ffn_scales,
@@ -453,6 +457,10 @@ fn manifest_hash(model: &Model) -> [u8; 32] {
                 append_scale(&mut buf, &ssm_scales.update);
                 append_scale(&mut buf, &ssm_scales.o);
                 append_scale(&mut buf, &ssm_scales.proj);
+                append_scale(&mut buf, ssm_a_weight_max);
+                append_scale(&mut buf, ssm_dt_weight_max);
+                append_scale(&mut buf, ssm_conv1d_weight_max);
+                append_scale(&mut buf, ssm_norm_gamma_weight_max);
                 append_norm_meta(&mut buf, norm2);
                 buf.extend_from_slice(&ffn.intermediate.to_le_bytes());
                 append_scale(&mut buf, &ffn_scales.gate);

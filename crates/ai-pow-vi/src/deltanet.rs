@@ -437,6 +437,14 @@ pub struct GatedDeltaNetOpts<'a> {
     pub scales: GatedDeltaNetScales,
     pub sigmoid_lut: &'a ActivationLut,
     pub silu_lut: &'a ActivationLut,
+    /// `max(|w|)` for ssm_a — captured at convert time so the i8 dequant
+    /// can recover the true magnitudes (up to ~16 for Qwen 3.5 27B's
+    /// `-exp(A_log)` parameterization). The standard quant convention
+    /// assumed max_abs ≈ 1 across all weights.
+    pub ssm_a_weight_max: Scale,
+    pub ssm_dt_weight_max: Scale,
+    pub ssm_conv1d_weight_max: Scale,
+    pub ssm_norm_gamma_weight_max: Scale,
 }
 
 /// Per-tap quantization scales for the gated-DeltaNet path. Names match
@@ -601,15 +609,16 @@ pub fn forward_gated_deltanet_qwen35(
     {
         let qkv_scale_f = (opts.scales.qkv.num as f32) /
             ((1u32 << crate::quant::SCALE_DENOM_LOG2) as f32);
-        // w_conv1d is INT8 quantized; we need its dequant scale, but it
-        // shares the activation channel — for INT8 i8*i8 conv we can keep
-        // it integer and re-scale at the end. The reference treats the
-        // conv as straight integer accum then SiLU on the scaled value.
-        // We dequantize via the qkv scale only (conv weights are
-        // bit-pattern but their per-channel scale equals 1.0 implicitly
-        // when calibrated). This is the documented INT8-quantization-noise
-        // limit and matches what the calibrator records at the
-        // `conv_silu` tap.
+        // w_conv1d is i8-quantized with max_abs = w_conv_max. Each i8 w
+        // represents real_w = (i8 / 127) * w_conv_max. Each i8 x represents
+        // real_x = i8 * (qkv_max / 127) = i8 * qkv_scale_f.
+        // So per-channel real conv accumulator =
+        //   sum_k real_w * real_x = sum_k (i8_w / 127) * w_conv_max * i8_x * qkv_scale_f
+        //                         = (w_conv_max * qkv_scale_f / 127) * sum_k (i8_w * i8_x)
+        //                         = (w_conv_max * qkv_scale_f / 127) * acc_i32.
+        let w_conv_max = (opts.ssm_conv1d_weight_max.num as f32) * 127.0
+            / (1u32 << crate::quant::SCALE_DENOM_LOG2) as f32;
+        let conv_pre_silu_scale = w_conv_max * qkv_scale_f / 127.0;
         for t in 0..mu {
             for c in 0..conv_dim {
                 let mut acc_i32: i32 = 0;
@@ -621,13 +630,8 @@ pub fn forward_gated_deltanet_qwen35(
                         acc_i32 = acc_i32.wrapping_add(w * x);
                     }
                 }
-                // Dequant to f32 for SiLU; conv weight scale is already
-                // baked into the per-tap conv_silu scale by the
-                // calibrator. The i32 value here has units of i8*i8;
-                // dividing by 127 gives back the i8-scale; multiplying
-                // by qkv_scale gives the f32 activation.
-                let approx_f = (acc_i32 as f32) * qkv_scale_f / 127.0;
-                let v = silu_f32(approx_f);
+                let pre_silu_f = (acc_i32 as f32) * conv_pre_silu_scale;
+                let v = silu_f32(pre_silu_f);
                 conv_out_i8[t * conv_dim + c] = q_f32_to_i8(v, opts.scales.conv_silu);
             }
         }
@@ -714,21 +718,15 @@ pub fn forward_gated_deltanet_qwen35(
     // Step 6: gate_log = softplus(alpha + dt) * ssm_a, beta = sigmoid(beta_logit)
     let alpha_scale = opts.scales.alpha;
     let beta_scale = opts.scales.beta;
-    // Per NEXT_STEPS.md: the converter's quantize_with_scale call discards
-    // each weight tensor's max_abs scale, so the raw `(x as f32) / 127.0`
-    // dequant only recovers values in [-1, 1] regardless of the tensor's
-    // true magnitude. For qwen35 ssm_a (= -exp(A_log)) the true max_abs is
-    // up to ~16 (A_log ∈ log U(0, 16)) so the i8 path is up to 16× off
-    // without this scale plumbed through. Approximate fix until the
-    // manifest carries a per-tensor weight scale: scale ssm_a by ~16.
-    // ssm_dt is initialized to ~1 so no compensation needed.
-    let ssm_dt_f: Vec<f32> = opts.ssm_dt.iter().map(|&x| (x as f32) / 127.0).collect();
-    const SSM_A_MAX_ABS_APPROX: f32 = 16.0;
-    let ssm_a_f: Vec<f32> = opts
-        .ssm_a
-        .iter()
-        .map(|&x| (x as f32) / 127.0 * SSM_A_MAX_ABS_APPROX)
-        .collect();
+    // Dequant per-weight-tensor with the converter-captured max_abs scale.
+    // i8 stored as round(real_value * 127 / max_abs); dequant inverts via
+    // (x_i8 / 127) * max_abs. The Scale numerator encodes max_abs/127*2^15,
+    // so max_abs = scale.num * 127 / 2^15.
+    let max_abs = |s: Scale| (s.num as f32) * 127.0 / (1u32 << crate::quant::SCALE_DENOM_LOG2) as f32;
+    let ssm_dt_max = max_abs(opts.ssm_dt_weight_max);
+    let ssm_a_max = max_abs(opts.ssm_a_weight_max);
+    let ssm_dt_f: Vec<f32> = opts.ssm_dt.iter().map(|&x| (x as f32) / 127.0 * ssm_dt_max).collect();
+    let ssm_a_f: Vec<f32> = opts.ssm_a.iter().map(|&x| (x as f32) / 127.0 * ssm_a_max).collect();
     let mut gate_log = vec![0f32; mu * num_v];
     let mut beta_f = vec![0f32; mu * num_v];
     for t in 0..mu {
@@ -795,7 +793,8 @@ pub fn forward_gated_deltanet_qwen35(
     // Step 8: gated RMSNorm of rec_out by ssm_norm_gamma, then multiply
     // by silu(z). Both per-(token, v_head, head_v).
     let z_scale = opts.scales.gate_z;
-    let gamma_f: Vec<f32> = opts.ssm_norm_gamma.iter().map(|&x| (x as f32) / 127.0).collect();
+    let ssm_norm_gamma_max = max_abs(opts.ssm_norm_gamma_weight_max);
+    let gamma_f: Vec<f32> = opts.ssm_norm_gamma.iter().map(|&x| (x as f32) / 127.0 * ssm_norm_gamma_max).collect();
     let eps: f32 = (opts.ssm_norm_eps_q.max(1) as f32) * 1e-6_f32;
     let mut gated = vec![0i8; mu * num_v * hv];
     for t in 0..mu {
