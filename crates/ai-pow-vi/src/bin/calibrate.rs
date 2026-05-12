@@ -316,6 +316,13 @@ struct ScaleAcc {
     /// per-tensor max and saturates downstream i8 outputs (SmoothQuant
     /// Xiao et al. 2022, NVIDIA TensorRT calibration guide).
     samples: HashMap<String, Vec<f32>>,
+    /// Per-tap per-channel running max(|x_j|), keyed by tap name → Vec<f32>
+    /// of length channel_dim. Used by the SmoothQuant offline fold
+    /// (Xiao 2022 §4.2): for each (RMSNorm γ → matmul) pair, picks per-
+    /// channel smoothing factors that migrate activation outliers into
+    /// weights, allowing per-tensor symmetric INT8 to recover accuracy
+    /// without runtime API change.
+    per_channel: HashMap<String, Vec<f32>>,
     /// Quantile to pick (default 0.99999 = 99.999 percentile). 1.0 = raw max.
     percentile: f32,
 }
@@ -324,7 +331,33 @@ impl ScaleAcc {
     fn new(percentile: f32) -> Self {
         Self {
             samples: HashMap::new(),
+            per_channel: HashMap::new(),
             percentile: percentile.clamp(0.0, 1.0),
+        }
+    }
+    /// Update per-channel running max for the given tap. `x` is `(m,
+    /// channel_dim)` row-major; iterates each channel across all m rows
+    /// and updates the running per-channel max(|x_j|).
+    fn record_per_channel(&mut self, tap: &str, x: &[f32], channel_dim: usize) {
+        if x.is_empty() || channel_dim == 0 || x.len() % channel_dim != 0 {
+            return;
+        }
+        let rows = x.len() / channel_dim;
+        let entry = self
+            .per_channel
+            .entry(tap.to_string())
+            .or_insert_with(|| vec![0.0f32; channel_dim]);
+        if entry.len() != channel_dim {
+            return;
+        }
+        for r in 0..rows {
+            let off = r * channel_dim;
+            for j in 0..channel_dim {
+                let av = x[off + j].abs();
+                if av > entry[j] {
+                    entry[j] = av;
+                }
+            }
         }
     }
     fn record(&mut self, tap: &str, x: &[f32]) {
@@ -672,6 +705,7 @@ fn forward_std_layer(
 
     // ── Attention sub-block ──────────────────────────────────────────────
     let normed1 = rms_norm_f32(input, &norm1_g, m, h, dims.eps);
+    acc.record_per_channel(&format!("layer[{n}].norm1.x_pc"), &normed1, h);
     acc.record(&format!("layer[{n}].norm_post.1"), &normed1);
 
     let q_proj = matmul_f32(&normed1, &w_q_f, m, h, q_eff_out);
@@ -766,6 +800,7 @@ fn forward_std_layer(
 
     // ── FFN sub-block ─────────────────────────────────────────────────────
     let normed2 = rms_norm_f32(&residual1, &norm2_g, m, h, dims.eps);
+    acc.record_per_channel(&format!("layer[{n}].norm2.x_pc"), &normed2, h);
     acc.record(&format!("layer[{n}].norm_post.2"), &normed2);
 
     let gate_p = matmul_f32(&normed2, &w_gate_f, m, h, dims.intermediate);
@@ -858,6 +893,7 @@ fn forward_hybrid_layer(
 
     // ── Pre-attention norm ───────────────────────────────────────────────
     let normed1 = rms_norm_f32(input, &norm1_g, m, h, dims.eps);
+    acc.record_per_channel(&format!("layer[{n}].norm1.x_pc"), &normed1, h);
     acc.record(&format!("layer[{n}].norm_post.1"), &normed1);
 
     // qkv_mixed: [m, conv_dim], layout per token: [Q(key_dim) | K(key_dim) | V(value_dim)].
@@ -1067,6 +1103,7 @@ fn forward_hybrid_layer(
 
     // ── FFN sub-block ────────────────────────────────────────────────────
     let normed2 = rms_norm_f32(&residual1, &norm2_g, m, h, dims.eps);
+    acc.record_per_channel(&format!("layer[{n}].norm2.x_pc"), &normed2, h);
     acc.record(&format!("layer[{n}].norm_post.2"), &normed2);
 
     let gate_p = matmul_f32(&normed2, &w_ffn_gate, m, h, dims.intermediate);
@@ -1395,6 +1432,42 @@ fn run() -> Result<(), String> {
     out.push_str("  },\n  \"norm_eps_q\": 1\n}\n");
     std::fs::write(&args.out, out).map_err(|e| format!("write {}: {e}", args.out.display()))?;
     eprintln!("wrote {} ({} taps)", args.out.display(), total);
+
+    // SmoothQuant sidecar: per-channel max for every recorded norm output.
+    // Format: { "tap_name": [f32; channel_dim], ... }. Used by gguf-convert
+    // to fold smoothing factors into RMSNorm gamma + matmul weights at
+    // convert time (Xiao 2022 §4.2 offline fusion).
+    if !acc.per_channel.is_empty() {
+        let pc_path = args.out.with_extension("pc.json");
+        let mut pc_out = String::new();
+        pc_out.push_str("{\n");
+        let mut pc_entries: Vec<(&String, &Vec<f32>)> = acc.per_channel.iter().collect();
+        pc_entries.sort_by(|a, b| a.0.cmp(b.0));
+        for (i, (k, v)) in pc_entries.iter().enumerate() {
+            pc_out.push_str("  \"");
+            pc_out.push_str(k);
+            pc_out.push_str("\": [");
+            for (j, x) in v.iter().enumerate() {
+                if j > 0 {
+                    pc_out.push(',');
+                }
+                pc_out.push_str(&format!("{}", x));
+            }
+            pc_out.push(']');
+            if i + 1 < pc_entries.len() {
+                pc_out.push(',');
+            }
+            pc_out.push('\n');
+        }
+        pc_out.push_str("}\n");
+        std::fs::write(&pc_path, pc_out)
+            .map_err(|e| format!("write {}: {e}", pc_path.display()))?;
+        eprintln!(
+            "wrote {} ({} per-channel taps)",
+            pc_path.display(),
+            pc_entries.len()
+        );
+    }
     Ok(())
 }
 

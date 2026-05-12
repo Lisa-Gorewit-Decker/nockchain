@@ -52,6 +52,18 @@ struct Args {
     seq_len: u32,
     activation_tile: u32,
     default_activation_scale_num: i32,
+    /// Path to a SmoothQuant per-channel JSON (`<scales>.pc.json` from
+    /// calibrate.rs). When set, the converter folds per-channel
+    /// smoothing factors `s_j = max(|X_j|)^α × max(|W_j|)^(1−α)` into
+    /// RMSNorm gammas (γ ← γ / s) and matmul weights (W ← W × s)
+    /// before quantization. Mathematically equivalent to the un-folded
+    /// f32 forward; reduces activation outliers so per-tensor symmetric
+    /// INT8 has less saturation pressure (SmoothQuant, Xiao 2022 §4.2).
+    smoothquant_pc_path: Option<PathBuf>,
+    /// α in SmoothQuant's `s = (|x|^α) × (|w|^(1−α))`. 0.5 is the paper
+    /// default; 0.8 is recommended for transformer activations with
+    /// strong outliers.
+    smoothquant_alpha: f32,
     /// When true, do NOT write manifest.bin / weights.bin / comm_w.hex;
     /// only emit lm_head.bin into `out`. Lets users add `lm_head.bin`
     /// to an existing converted model directory without re-running
@@ -148,6 +160,8 @@ fn parse_args() -> Result<Args, String> {
     let mut lm_head_only = false;
     let mut emit_lm_head = true;
     let mut scales_path: Option<PathBuf> = None;
+    let mut smoothquant_pc_path: Option<PathBuf> = None;
+    let mut smoothquant_alpha: f32 = 0.5;
     let argv: Vec<String> = std::env::args().skip(1).collect();
     let mut i = 0;
     while i < argv.len() {
@@ -185,6 +199,20 @@ fn parse_args() -> Result<Args, String> {
                 scales_path = Some(PathBuf::from(argv.get(i + 1).ok_or("--scales needs arg")?));
                 i += 2;
             }
+            "--smoothquant-pc" => {
+                smoothquant_pc_path = Some(PathBuf::from(
+                    argv.get(i + 1).ok_or("--smoothquant-pc needs arg")?,
+                ));
+                i += 2;
+            }
+            "--smoothquant-alpha" => {
+                smoothquant_alpha = argv
+                    .get(i + 1)
+                    .ok_or("--smoothquant-alpha needs arg")?
+                    .parse()
+                    .map_err(|_| "bad --smoothquant-alpha")?;
+                i += 2;
+            }
             "-h" | "--help" => {
                 eprintln!(
                     "gguf-convert --gguf <path> --out <dir> [--seq-len N] [--activation-tile N] \n  [--default-activation-scale NUM] [--scales scales.json]\n  [--lm-head-only] [--no-lm-head]"
@@ -203,7 +231,112 @@ fn parse_args() -> Result<Args, String> {
         lm_head_only,
         emit_lm_head,
         scales_path,
+        smoothquant_pc_path,
+        smoothquant_alpha,
     })
+}
+
+/// Per-channel SmoothQuant data loaded from `<scales>.pc.json`.
+/// Maps tap name (e.g. "layer[3].norm1.x_pc") to a `Vec<f32>` of length
+/// `hidden`. The build_*_layer helpers compute per-channel smoothing
+/// factors from these maxes plus the captured weight maxes.
+struct SmoothQuantPc {
+    data: std::collections::HashMap<String, Vec<f32>>,
+    alpha: f32,
+}
+
+impl SmoothQuantPc {
+    fn empty(alpha: f32) -> Self {
+        Self {
+            data: std::collections::HashMap::new(),
+            alpha,
+        }
+    }
+    fn load(path: &std::path::Path, alpha: f32) -> Result<Self, String> {
+        let body = std::fs::read_to_string(path)
+            .map_err(|e| format!("read {}: {e}", path.display()))?;
+        let v: serde_json::Value =
+            serde_json::from_str(&body).map_err(|e| format!("parse {}: {e}", path.display()))?;
+        let obj = v.as_object().ok_or("smoothquant-pc not an object")?;
+        let mut data = std::collections::HashMap::new();
+        for (k, val) in obj {
+            let arr = val.as_array().ok_or(format!("{k}: not array"))?;
+            let mut vec = Vec::with_capacity(arr.len());
+            for x in arr {
+                let f = x.as_f64().ok_or(format!("{k}: non-float"))? as f32;
+                vec.push(f);
+            }
+            data.insert(k.clone(), vec);
+        }
+        eprintln!(
+            "loaded smoothquant pc: {} per-channel taps, alpha={alpha}",
+            data.len()
+        );
+        Ok(Self { data, alpha })
+    }
+    fn get(&self, tap: &str) -> Option<&[f32]> {
+        self.data.get(tap).map(|v| v.as_slice())
+    }
+}
+
+/// Compute SmoothQuant per-channel smoothing factor `s_j` for a group of
+/// matmuls that share the same input tap (typically all the projections
+/// fed by one RMSNorm output). `x_pc` is the per-channel input max
+/// `max(|X_j|)` of length `in_dim`. `weights` is a list of f32 weight
+/// arrays each shaped `[out_axis, in_dim]` row-major; we take the
+/// per-input-column max across all of them (so a single `s_j` is shared
+/// across the group, which is what the paper's "fused QKV" recipe does).
+///
+/// Returns `s` of length `in_dim`. `s_j = max(|X_j|)^α * max(|W_j|)^(1−α)`
+/// with epsilon floors to avoid divisions by zero.
+fn smoothquant_factor(x_pc: &[f32], weights: &[(&[f32], usize)], alpha: f32) -> Vec<f32> {
+    let in_dim = x_pc.len();
+    let mut w_pc = vec![0.0f32; in_dim];
+    for (w, out_dim) in weights {
+        // Weights are stored as `[out, in]` row-major (PyTorch).
+        assert_eq!(w.len(), out_dim * in_dim);
+        for o in 0..*out_dim {
+            for j in 0..in_dim {
+                let av = w[o * in_dim + j].abs();
+                if av > w_pc[j] {
+                    w_pc[j] = av;
+                }
+            }
+        }
+    }
+    let eps = 1e-5f32;
+    let mut s = vec![1.0f32; in_dim];
+    for j in 0..in_dim {
+        let xj = x_pc[j].max(eps);
+        let wj = w_pc[j].max(eps);
+        s[j] = xj.powf(alpha) / wj.powf(1.0 - alpha);
+        if !s[j].is_finite() || s[j] <= 0.0 {
+            s[j] = 1.0;
+        }
+    }
+    s
+}
+
+/// Apply SmoothQuant fold to `gamma` (RMSNorm γ, length `in_dim`) and a
+/// matmul weight `W` of shape `[out, in_dim]` row-major. After fold:
+///   γ' = γ / s
+///   W' = W × diag(s)  (each input column j of W multiplied by s[j])
+/// Both happen in-place. Mathematically equivalent to the un-folded
+/// forward: `(γ * normed_x) @ W^T = (γ/s * normed_x) @ (W*s)^T`.
+fn smoothquant_fold_gamma(gamma: &mut [f32], s: &[f32]) {
+    assert_eq!(gamma.len(), s.len());
+    for (g, sj) in gamma.iter_mut().zip(s.iter()) {
+        *g /= sj;
+    }
+}
+fn smoothquant_fold_weight(w: &mut [f32], s: &[f32], in_dim: usize) {
+    assert_eq!(w.len() % in_dim, 0);
+    let out_dim = w.len() / in_dim;
+    for o in 0..out_dim {
+        for j in 0..in_dim {
+            w[o * in_dim + j] *= s[j];
+        }
+    }
 }
 
 /// Dequantize one tensor by name to a flat Vec<f32> with the tensor's
@@ -512,6 +645,39 @@ fn dequant_quantize_keep_scale(
     Ok(quantize_with_scale(&f))
 }
 
+/// Dequantize a tensor, return its f32 form + its inferred (out, in) shape.
+fn dequant_f32(
+    content: &Content,
+    file: &mut std::fs::File,
+    name: &str,
+) -> Result<(Vec<f32>, Vec<usize>), String> {
+    dequant_to_vec_f32(content, file, name)
+}
+
+/// Apply SmoothQuant column-wise fold to a row-major weight tensor of
+/// shape `[out, in_dim]`, then quantize. Optional `s` of length `in_dim`
+/// — `s = None` means no fold.
+fn fold_quantize_weight(
+    w_f: &mut [f32],
+    in_dim: usize,
+    s: Option<&[f32]>,
+) -> (Vec<i8>, i32) {
+    if let Some(s) = s {
+        smoothquant_fold_weight(w_f, s, in_dim);
+    }
+    quantize_with_scale(w_f)
+}
+
+/// Apply SmoothQuant gamma fold (γ /= s) to a 1-D RMSNorm gamma, then
+/// quantize. Optional `s` of length `hidden`.
+fn fold_quantize_gamma(g_f: &mut [f32], s: Option<&[f32]>) -> Vec<i8> {
+    if let Some(s) = s {
+        smoothquant_fold_gamma(g_f, s);
+    }
+    let (i8s, _scale) = quantize_with_scale(g_f);
+    i8s
+}
+
 /// Combine per-matmul scales into the correct rescale factor.
 ///
 /// For a matmul `acc = a_i8 · w_i8` with rescale `out_i8 = acc × scale / 2^15`,
@@ -653,6 +819,14 @@ fn convert_qwen35(args: &Args) -> Result<(), String> {
         None
     };
 
+    // Load SmoothQuant per-channel data if --smoothquant-pc was passed.
+    // Empty when not in use, so the fold helpers below become no-ops.
+    let smoothquant = if let Some(pc_path) = args.smoothquant_pc_path.as_ref() {
+        SmoothQuantPc::load(pc_path, args.smoothquant_alpha)?
+    } else {
+        SmoothQuantPc::empty(args.smoothquant_alpha)
+    };
+
     let mut layers: Vec<LayerWeights> = Vec::with_capacity(dims.num_layers as usize);
     for n in 0..dims.num_layers {
         let is_std = qwen35_block_is_standard(&content, n);
@@ -664,9 +838,9 @@ fn convert_qwen35(args: &Args) -> Result<(), String> {
             );
         }
         let layer = if is_std {
-            build_qwen_standard_layer(&content, &mut file, n, &dims, &scales)?
+            build_qwen_standard_layer(&content, &mut file, n, &dims, &scales, &smoothquant)?
         } else {
-            build_qwen_hybrid_layer(&content, &mut file, n, &dims, &scales)?
+            build_qwen_hybrid_layer(&content, &mut file, n, &dims, &scales, &smoothquant)?
         };
         layers.push(layer);
     }
@@ -725,6 +899,7 @@ fn build_qwen_standard_layer(
     n: u32,
     dims: &QwenDims,
     scales: &ScaleSource,
+    smoothquant: &SmoothQuantPc,
 ) -> Result<LayerWeights, String> {
     let h = dims.hidden as usize;
     let hd = dims.head_dim as usize;
@@ -736,10 +911,10 @@ fn build_qwen_standard_layer(
     let norm2_post = scales.get(&format!("layer[{n}].norm_post.2"));
     let qk_norm_post = scales.get(&format!("layer[{n}].qk_norm_post"));
 
-    let norm1_g = dequant_quantize(content, file, &format!("{prefix}.attn_norm.weight"))?;
-    // Phase B.2: real Qwen 3.6 27B std blocks pack [Q || gate] in attn_q.weight,
-    // doubling the output dim. Detect and keep the full tensor instead of
-    // truncating away the gate half.
+    // Dequantize everything that participates in SmoothQuant fold to f32
+    // first. The fold (γ /= s, W *= s) requires float-precision arithmetic;
+    // we re-quantize to i8 after.
+    let (mut norm1_g_f, _) = dequant_f32(content, file, &format!("{prefix}.attn_norm.weight"))?;
     let wq_info = content
         .tensor_infos
         .get(&format!("{prefix}.attn_q.weight"))
@@ -755,17 +930,60 @@ fn build_qwen_standard_layer(
             2 * q_target
         ));
     };
-    let (w_q, w_q_scale) = dequant_quantize_keep_scale(content, file, &format!("{prefix}.attn_q.weight"))?;
-    let (w_k, w_k_scale) = dequant_quantize_keep_scale(content, file, &format!("{prefix}.attn_k.weight"))?;
-    let (w_v, w_v_scale) = dequant_quantize_keep_scale(content, file, &format!("{prefix}.attn_v.weight"))?;
+    let (mut w_q_f, _) = dequant_f32(content, file, &format!("{prefix}.attn_q.weight"))?;
+    let (mut w_k_f, _) = dequant_f32(content, file, &format!("{prefix}.attn_k.weight"))?;
+    let (mut w_v_f, _) = dequant_f32(content, file, &format!("{prefix}.attn_v.weight"))?;
+    let (mut norm2_g_f, _) =
+        dequant_f32(content, file, &format!("{prefix}.post_attention_norm.weight"))?;
+    let (mut w_gate_f, _) = dequant_f32(content, file, &format!("{prefix}.ffn_gate.weight"))?;
+    let (mut w_up_f, _) = dequant_f32(content, file, &format!("{prefix}.ffn_up.weight"))?;
+
+    // SmoothQuant fold for norm1 → {w_q, w_k, w_v}. All three matmuls
+    // share normed1 as input, so they share a single per-channel s_j.
+    if let Some(x_pc) = smoothquant.get(&format!("layer[{n}].norm1.x_pc")) {
+        let q_out_total = if q_has_gate { 2 * q_target } else { q_target };
+        let s = smoothquant_factor(
+            x_pc,
+            &[
+                (&w_q_f, q_out_total),
+                (&w_k_f, dims.num_kv_heads as usize * hd),
+                (&w_v_f, dims.num_kv_heads as usize * hd),
+            ],
+            smoothquant.alpha,
+        );
+        smoothquant_fold_gamma(&mut norm1_g_f, &s);
+        smoothquant_fold_weight(&mut w_q_f, &s, h);
+        smoothquant_fold_weight(&mut w_k_f, &s, h);
+        smoothquant_fold_weight(&mut w_v_f, &s, h);
+    }
+    // SmoothQuant fold for norm2 → {ffn_gate, ffn_up}.
+    if let Some(x_pc) = smoothquant.get(&format!("layer[{n}].norm2.x_pc")) {
+        let s = smoothquant_factor(
+            x_pc,
+            &[
+                (&w_gate_f, dims.intermediate as usize),
+                (&w_up_f, dims.intermediate as usize),
+            ],
+            smoothquant.alpha,
+        );
+        smoothquant_fold_gamma(&mut norm2_g_f, &s);
+        smoothquant_fold_weight(&mut w_gate_f, &s, h);
+        smoothquant_fold_weight(&mut w_up_f, &s, h);
+    }
+
+    // Quantize all the (possibly folded) tensors.
+    let norm1_g = fold_quantize_gamma(&mut norm1_g_f, None);
+    let (w_q, w_q_scale) = fold_quantize_weight(&mut w_q_f, h, None);
+    let (w_k, w_k_scale) = fold_quantize_weight(&mut w_k_f, h, None);
+    let (w_v, w_v_scale) = fold_quantize_weight(&mut w_v_f, h, None);
     let (w_o, w_o_scale) = dequant_quantize_keep_scale(content, file, &format!("{prefix}.attn_output.weight"))?;
     let q_norm = dequant_quantize(content, file, &format!("{prefix}.attn_q_norm.weight"))
         .unwrap_or_else(|_| default_no_op_gamma_i8(hd));
     let k_norm = dequant_quantize(content, file, &format!("{prefix}.attn_k_norm.weight"))
         .unwrap_or_else(|_| default_no_op_gamma_i8(hd));
-    let norm2_g = dequant_quantize(content, file, &format!("{prefix}.post_attention_norm.weight"))?;
-    let (ffn_gate, ffn_gate_scale) = dequant_quantize_keep_scale(content, file, &format!("{prefix}.ffn_gate.weight"))?;
-    let (ffn_up, ffn_up_scale) = dequant_quantize_keep_scale(content, file, &format!("{prefix}.ffn_up.weight"))?;
+    let norm2_g = fold_quantize_gamma(&mut norm2_g_f, None);
+    let (ffn_gate, ffn_gate_scale) = fold_quantize_weight(&mut w_gate_f, h, None);
+    let (ffn_up, ffn_up_scale) = fold_quantize_weight(&mut w_up_f, h, None);
     let (ffn_down, ffn_down_scale) = dequant_quantize_keep_scale(content, file, &format!("{prefix}.ffn_down.weight"))?;
 
     // Verify shapes match what our struct expects.
@@ -844,6 +1062,7 @@ fn build_qwen_hybrid_layer(
     n: u32,
     dims: &QwenDims,
     scales: &ScaleSource,
+    smoothquant: &SmoothQuantPc,
 ) -> Result<LayerWeights, String> {
     // DeltaNet dims (Qwen 3.5 27B):
     //   num_k_heads = ssm.group_count    = 16
@@ -873,7 +1092,8 @@ fn build_qwen_hybrid_layer(
     let qk_norm_post = scales.get(&format!("layer[{n}].qk_norm_post"));
     let ssm_norm_post = scales.get(&format!("layer[{n}].ssm_norm_post"));
 
-    let norm1_g = dequant_quantize(content, file, &format!("{prefix}.attn_norm.weight"))?;
+    // Dequant tensors that participate in SmoothQuant fold to f32 first.
+    let (mut norm1_g_f, _) = dequant_f32(content, file, &format!("{prefix}.attn_norm.weight"))?;
 
     // attn_qkv: candle shape [conv_dim=10240, hidden=5120], i.e. (out, in).
     let qkv_info = content
@@ -886,12 +1106,9 @@ fn build_qwen_hybrid_layer(
             "layer {n} hybrid attn_qkv shape {qkv_shape:?} != [conv_dim={conv_dim}, hidden={h}]"
         ));
     }
-    let (attn_qkv, attn_qkv_scale_num) =
-        dequant_quantize_keep_scale(content, file, &format!("{prefix}.attn_qkv.weight"))?;
-
+    let (mut attn_qkv_f, _) = dequant_f32(content, file, &format!("{prefix}.attn_qkv.weight"))?;
     // attn_gate (z output gate): candle shape [value_dim=6144, hidden=5120].
-    let (attn_gate, attn_gate_scale_num) =
-        dequant_quantize_keep_scale(content, file, &format!("{prefix}.attn_gate.weight"))?;
+    let (mut attn_gate_f, _) = dequant_f32(content, file, &format!("{prefix}.attn_gate.weight"))?;
 
     // SSM tensors. Keep weight scales so the runtime can dequant properly
     // (ssm_a values reach ±16, ssm_norm gammas ≈ 1 etc. — runtime needs
@@ -905,10 +1122,8 @@ fn build_qwen_hybrid_layer(
             n_v_heads
         ));
     }
-    let (ssm_alpha, ssm_alpha_scale_num) =
-        dequant_quantize_keep_scale(content, file, &format!("{prefix}.ssm_alpha.weight"))?;
-    let (ssm_beta, ssm_beta_scale_num) =
-        dequant_quantize_keep_scale(content, file, &format!("{prefix}.ssm_beta.weight"))?;
+    let (mut ssm_alpha_f, _) = dequant_f32(content, file, &format!("{prefix}.ssm_alpha.weight"))?;
+    let (mut ssm_beta_f, _) = dequant_f32(content, file, &format!("{prefix}.ssm_beta.weight"))?;
     // Ollama-shipped GGUF uses bare `ssm_dt`; newer llama.cpp emits `ssm_dt.bias`.
     let (ssm_dt, ssm_dt_scale_num) =
         dequant_quantize_keep_scale(content, file, &format!("{prefix}.ssm_dt"))
@@ -944,13 +1159,53 @@ fn build_qwen_hybrid_layer(
 
     let (ssm_out, ssm_out_scale_num) =
         dequant_quantize_keep_scale(content, file, &format!("{prefix}.ssm_out.weight"))?;
-    let norm2_g = dequant_quantize(content, file, &format!("{prefix}.post_attention_norm.weight"))?;
-    let (ffn_gate, ffn_gate_scale_num) =
-        dequant_quantize_keep_scale(content, file, &format!("{prefix}.ffn_gate.weight"))?;
-    let (ffn_up, ffn_up_scale_num) =
-        dequant_quantize_keep_scale(content, file, &format!("{prefix}.ffn_up.weight"))?;
+    let (mut norm2_g_f, _) =
+        dequant_f32(content, file, &format!("{prefix}.post_attention_norm.weight"))?;
+    let (mut w_gate_f, _) = dequant_f32(content, file, &format!("{prefix}.ffn_gate.weight"))?;
+    let (mut w_up_f, _) = dequant_f32(content, file, &format!("{prefix}.ffn_up.weight"))?;
     let (ffn_down, ffn_down_scale_num) =
         dequant_quantize_keep_scale(content, file, &format!("{prefix}.ffn_down.weight"))?;
+
+    // SmoothQuant fold for norm1 → {attn_qkv, attn_gate, ssm_alpha, ssm_beta}.
+    if let Some(x_pc) = smoothquant.get(&format!("layer[{n}].norm1.x_pc")) {
+        let s = smoothquant_factor(
+            x_pc,
+            &[
+                (&attn_qkv_f, conv_dim),
+                (&attn_gate_f, value_dim),
+                (&ssm_alpha_f, n_v_heads),
+                (&ssm_beta_f, n_v_heads),
+            ],
+            smoothquant.alpha,
+        );
+        smoothquant_fold_gamma(&mut norm1_g_f, &s);
+        smoothquant_fold_weight(&mut attn_qkv_f, &s, h);
+        smoothquant_fold_weight(&mut attn_gate_f, &s, h);
+        smoothquant_fold_weight(&mut ssm_alpha_f, &s, h);
+        smoothquant_fold_weight(&mut ssm_beta_f, &s, h);
+    }
+    if let Some(x_pc) = smoothquant.get(&format!("layer[{n}].norm2.x_pc")) {
+        let s = smoothquant_factor(
+            x_pc,
+            &[
+                (&w_gate_f, dims.intermediate as usize),
+                (&w_up_f, dims.intermediate as usize),
+            ],
+            smoothquant.alpha,
+        );
+        smoothquant_fold_gamma(&mut norm2_g_f, &s);
+        smoothquant_fold_weight(&mut w_gate_f, &s, h);
+        smoothquant_fold_weight(&mut w_up_f, &s, h);
+    }
+
+    let norm1_g = fold_quantize_gamma(&mut norm1_g_f, None);
+    let (attn_qkv, attn_qkv_scale_num) = fold_quantize_weight(&mut attn_qkv_f, h, None);
+    let (attn_gate, attn_gate_scale_num) = fold_quantize_weight(&mut attn_gate_f, h, None);
+    let (ssm_alpha, ssm_alpha_scale_num) = fold_quantize_weight(&mut ssm_alpha_f, h, None);
+    let (ssm_beta, ssm_beta_scale_num) = fold_quantize_weight(&mut ssm_beta_f, h, None);
+    let norm2_g = fold_quantize_gamma(&mut norm2_g_f, None);
+    let (ffn_gate, ffn_gate_scale_num) = fold_quantize_weight(&mut w_gate_f, h, None);
+    let (ffn_up, ffn_up_scale_num) = fold_quantize_weight(&mut w_up_f, h, None);
 
     // attn_out / q_norm / k_norm slots are unused by the DeltaNet runtime
     // forward but the struct still has them (legacy Mamba-era fields). Fill
