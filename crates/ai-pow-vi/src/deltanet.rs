@@ -649,21 +649,27 @@ pub fn forward_gated_deltanet_qwen35(
         // Decode Q, K, V from conv_out_i8.
         let mut q_per_k = vec![0f32; mu * num_k * hk];
         let mut k_per_k = vec![0f32; mu * num_k * hk];
+        // Dequant convention (matches `deq_i8`):
+        //   x_real = x_i8 * (scale.num / 2^15) = x_i8 * conv_silu_scale_f
+        // The conv_silu_scale_f already encodes max_abs/127; multiplying by
+        // x_i8 (which is in [-127, 127]) reconstructs the f32 value. Do NOT
+        // divide by 127 again — that's a vestigial bug from when the conv
+        // weight scale was assumed implicit.
         for t in 0..mu {
             let row = t * conv_dim;
             for kh in 0..num_k {
                 for d in 0..hk {
                     q_per_k[(t * num_k + kh) * hk + d] =
-                        (conv_out_i8[row + kh * hk + d] as f32) * conv_silu_scale_f / 127.0;
+                        (conv_out_i8[row + kh * hk + d] as f32) * conv_silu_scale_f;
                     k_per_k[(t * num_k + kh) * hk + d] =
-                        (conv_out_i8[row + key_dim + kh * hk + d] as f32) * conv_silu_scale_f / 127.0;
+                        (conv_out_i8[row + key_dim + kh * hk + d] as f32) * conv_silu_scale_f;
                 }
             }
             for vh in 0..num_v {
                 for d in 0..hv {
                     v_f[(t * num_v + vh) * hv + d] =
                         (conv_out_i8[row + 2 * key_dim + vh * hv + d] as f32)
-                            * conv_silu_scale_f / 127.0;
+                            * conv_silu_scale_f;
                 }
             }
         }
