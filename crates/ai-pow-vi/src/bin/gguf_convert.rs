@@ -512,6 +512,22 @@ fn dequant_quantize_keep_scale(
     Ok(quantize_with_scale(&f))
 }
 
+/// Combine per-matmul scales into the correct rescale factor.
+///
+/// For a matmul `acc = a_i8 · w_i8` with rescale `out_i8 = acc × scale / 2^15`,
+/// the correct scale is `(a_max × w_max / (127 × out_max)) × 2^15`. In Scale
+/// arithmetic where each `s.num = (max/127) × 2^15`, this collapses to
+/// `combined.num = (a.num × w.num) / out.num`.
+///
+/// The previous convention stored just `out.num` (= out_max/127 × 2^15),
+/// which is correct only when `a_max × w_max ≈ out_max²` — never true for
+/// real transformer matmuls where `out_max ≫ sqrt(a_max × w_max)`.
+fn combine_scales(a_num: i32, w_num: i32, out_num: i32) -> i32 {
+    let prod = (a_num as i64).saturating_mul(w_num as i64);
+    let result = prod / (out_num.max(1) as i64);
+    result.clamp(1, i32::MAX as i64) as i32
+}
+
 /// Like `dequant_quantize` but truncates to first `keep_len` elements
 /// of `axis=0` (which after dequantize is the "out" dim for linear
 /// weights, since shape is `(out, in)`).
@@ -739,18 +755,18 @@ fn build_qwen_standard_layer(
             2 * q_target
         ));
     };
-    let w_q = dequant_quantize(content, file, &format!("{prefix}.attn_q.weight"))?;
-    let w_k = dequant_quantize(content, file, &format!("{prefix}.attn_k.weight"))?;
-    let w_v = dequant_quantize(content, file, &format!("{prefix}.attn_v.weight"))?;
-    let w_o = dequant_quantize(content, file, &format!("{prefix}.attn_output.weight"))?;
+    let (w_q, w_q_scale) = dequant_quantize_keep_scale(content, file, &format!("{prefix}.attn_q.weight"))?;
+    let (w_k, w_k_scale) = dequant_quantize_keep_scale(content, file, &format!("{prefix}.attn_k.weight"))?;
+    let (w_v, w_v_scale) = dequant_quantize_keep_scale(content, file, &format!("{prefix}.attn_v.weight"))?;
+    let (w_o, w_o_scale) = dequant_quantize_keep_scale(content, file, &format!("{prefix}.attn_output.weight"))?;
     let q_norm = dequant_quantize(content, file, &format!("{prefix}.attn_q_norm.weight"))
         .unwrap_or_else(|_| default_no_op_gamma_i8(hd));
     let k_norm = dequant_quantize(content, file, &format!("{prefix}.attn_k_norm.weight"))
         .unwrap_or_else(|_| default_no_op_gamma_i8(hd));
     let norm2_g = dequant_quantize(content, file, &format!("{prefix}.post_attention_norm.weight"))?;
-    let ffn_gate = dequant_quantize(content, file, &format!("{prefix}.ffn_gate.weight"))?;
-    let ffn_up = dequant_quantize(content, file, &format!("{prefix}.ffn_up.weight"))?;
-    let ffn_down = dequant_quantize(content, file, &format!("{prefix}.ffn_down.weight"))?;
+    let (ffn_gate, ffn_gate_scale) = dequant_quantize_keep_scale(content, file, &format!("{prefix}.ffn_gate.weight"))?;
+    let (ffn_up, ffn_up_scale) = dequant_quantize_keep_scale(content, file, &format!("{prefix}.ffn_up.weight"))?;
+    let (ffn_down, ffn_down_scale) = dequant_quantize_keep_scale(content, file, &format!("{prefix}.ffn_down.weight"))?;
 
     // Verify shapes match what our struct expects.
     let want_wq = if q_has_gate { 2 * h * q_target } else { h * q_target };
@@ -767,6 +783,31 @@ fn build_qwen_standard_layer(
         return Err(format!("layer {n} std w_o len {} != q_target*hidden {}", w_o.len(), want_wo));
     }
 
+    // Combined per-matmul scales (see `combine_scales` doc). The matmul
+    // rescale path expects the i32 accumulator times this single number to
+    // land in i8 range — bakes in the weight max_abs and the input
+    // activation max_abs that the calibrator recorded for the preceding tap.
+    let a_norm1 = scales.get(&format!("layer[{n}].norm_post.1"));
+    let a_attn_out = scales.get(&format!("layer[{n}].attn.attn_out"));
+    let a_norm2 = scales.get(&format!("layer[{n}].norm_post.2"));
+    let a_ffn_mid = scales.get(&format!("layer[{n}].ffn.mid"));
+    let std_attn_scales = AttentionScales {
+        q: Scale::from_num(combine_scales(a_norm1, w_q_scale, scales.get(&format!("layer[{n}].attn.q")))).unwrap(),
+        k: Scale::from_num(combine_scales(a_norm1, w_k_scale, scales.get(&format!("layer[{n}].attn.k")))).unwrap(),
+        v: Scale::from_num(combine_scales(a_norm1, w_v_scale, scales.get(&format!("layer[{n}].attn.v")))).unwrap(),
+        // score = Q · Kᵀ is activation × activation (no weight). Leave as the calibrator's value.
+        score: Scale::from_num(scales.get(&format!("layer[{n}].attn.score"))).unwrap(),
+        attn_out: Scale::from_num(scales.get(&format!("layer[{n}].attn.attn_out"))).unwrap(),
+        o: Scale::from_num(combine_scales(a_attn_out, w_o_scale, scales.get(&format!("layer[{n}].attn.o")))).unwrap(),
+    };
+    let std_ffn_scales = FfnScales {
+        gate: Scale::from_num(combine_scales(a_norm2, ffn_gate_scale, scales.get(&format!("layer[{n}].ffn.gate")))).unwrap(),
+        up: Scale::from_num(combine_scales(a_norm2, ffn_up_scale, scales.get(&format!("layer[{n}].ffn.up")))).unwrap(),
+        // mid = SiLU(gate) · up is activation × activation.
+        mid: Scale::from_num(scales.get(&format!("layer[{n}].ffn.mid"))).unwrap(),
+        down: Scale::from_num(combine_scales(a_ffn_mid, ffn_down_scale, scales.get(&format!("layer[{n}].ffn.down")))).unwrap(),
+    };
+
     Ok(LayerWeights::QwenStandard {
         norm1: make_norm_rms(norm1_g, norm1_post),
         attn: AttentionWeights {
@@ -780,7 +821,7 @@ fn build_qwen_standard_layer(
             w_o,
             q_has_gate,
         },
-        attn_scales: attn_scales_for(scales, n),
+        attn_scales: std_attn_scales,
         q_norm_gamma: q_norm,
         k_norm_gamma: k_norm,
         qk_norm_eps_q: DEFAULT_NORM_EPS_Q,
@@ -793,7 +834,7 @@ fn build_qwen_standard_layer(
             w_up: ffn_up,
             w_down: ffn_down,
         },
-        ffn_scales: ffn_scales_for(scales, n),
+        ffn_scales: std_ffn_scales,
     })
 }
 
@@ -845,10 +886,12 @@ fn build_qwen_hybrid_layer(
             "layer {n} hybrid attn_qkv shape {qkv_shape:?} != [conv_dim={conv_dim}, hidden={h}]"
         ));
     }
-    let attn_qkv = dequant_quantize(content, file, &format!("{prefix}.attn_qkv.weight"))?;
+    let (attn_qkv, attn_qkv_scale_num) =
+        dequant_quantize_keep_scale(content, file, &format!("{prefix}.attn_qkv.weight"))?;
 
     // attn_gate (z output gate): candle shape [value_dim=6144, hidden=5120].
-    let attn_gate = dequant_quantize(content, file, &format!("{prefix}.attn_gate.weight"))?;
+    let (attn_gate, attn_gate_scale_num) =
+        dequant_quantize_keep_scale(content, file, &format!("{prefix}.attn_gate.weight"))?;
 
     // SSM tensors. Keep weight scales so the runtime can dequant properly
     // (ssm_a values reach ±16, ssm_norm gammas ≈ 1 etc. — runtime needs
@@ -862,8 +905,10 @@ fn build_qwen_hybrid_layer(
             n_v_heads
         ));
     }
-    let ssm_alpha = dequant_quantize(content, file, &format!("{prefix}.ssm_alpha.weight"))?;
-    let ssm_beta = dequant_quantize(content, file, &format!("{prefix}.ssm_beta.weight"))?;
+    let (ssm_alpha, ssm_alpha_scale_num) =
+        dequant_quantize_keep_scale(content, file, &format!("{prefix}.ssm_alpha.weight"))?;
+    let (ssm_beta, ssm_beta_scale_num) =
+        dequant_quantize_keep_scale(content, file, &format!("{prefix}.ssm_beta.weight"))?;
     // Ollama-shipped GGUF uses bare `ssm_dt`; newer llama.cpp emits `ssm_dt.bias`.
     let (ssm_dt, ssm_dt_scale_num) =
         dequant_quantize_keep_scale(content, file, &format!("{prefix}.ssm_dt"))
@@ -897,11 +942,15 @@ fn build_qwen_hybrid_layer(
     }
     let (ssm_conv1d, ssm_conv1d_scale_num) = quantize_with_scale(&conv_kc);
 
-    let ssm_out = dequant_quantize(content, file, &format!("{prefix}.ssm_out.weight"))?;
+    let (ssm_out, ssm_out_scale_num) =
+        dequant_quantize_keep_scale(content, file, &format!("{prefix}.ssm_out.weight"))?;
     let norm2_g = dequant_quantize(content, file, &format!("{prefix}.post_attention_norm.weight"))?;
-    let ffn_gate = dequant_quantize(content, file, &format!("{prefix}.ffn_gate.weight"))?;
-    let ffn_up = dequant_quantize(content, file, &format!("{prefix}.ffn_up.weight"))?;
-    let ffn_down = dequant_quantize(content, file, &format!("{prefix}.ffn_down.weight"))?;
+    let (ffn_gate, ffn_gate_scale_num) =
+        dequant_quantize_keep_scale(content, file, &format!("{prefix}.ffn_gate.weight"))?;
+    let (ffn_up, ffn_up_scale_num) =
+        dequant_quantize_keep_scale(content, file, &format!("{prefix}.ffn_up.weight"))?;
+    let (ffn_down, ffn_down_scale_num) =
+        dequant_quantize_keep_scale(content, file, &format!("{prefix}.ffn_down.weight"))?;
 
     // attn_out / q_norm / k_norm slots are unused by the DeltaNet runtime
     // forward but the struct still has them (legacy Mamba-era fields). Fill
@@ -938,7 +987,10 @@ fn build_qwen_hybrid_layer(
         num_v_heads: n_v_heads as u32,
         ssm_head_dim: head_v as u32,
         ssm_kernel_size: conv_kernel as u32,
-        ssm_scales: dnet_scales_for(scales, n),
+        ssm_scales: dnet_scales_for_combined(
+            scales, n, attn_qkv_scale_num, attn_gate_scale_num,
+            ssm_alpha_scale_num, ssm_beta_scale_num, ssm_out_scale_num,
+        ),
         ssm_a_weight_max: Scale::from_num(ssm_a_scale_num).unwrap(),
         ssm_dt_weight_max: Scale::from_num(ssm_dt_scale_num).unwrap(),
         ssm_conv1d_weight_max: Scale::from_num(ssm_conv1d_scale_num).unwrap(),
@@ -951,8 +1003,58 @@ fn build_qwen_hybrid_layer(
             w_up: ffn_up,
             w_down: ffn_down,
         },
-        ffn_scales: ffn_scales_for(scales, n),
+        ffn_scales: {
+            let a_norm2 = scales.get(&format!("layer[{n}].norm_post.2"));
+            let a_ffn_mid = scales.get(&format!("layer[{n}].ffn.mid"));
+            FfnScales {
+                gate: Scale::from_num(combine_scales(a_norm2, ffn_gate_scale_num, scales.get(&format!("layer[{n}].ffn.gate")))).unwrap(),
+                up: Scale::from_num(combine_scales(a_norm2, ffn_up_scale_num, scales.get(&format!("layer[{n}].ffn.up")))).unwrap(),
+                mid: Scale::from_num(scales.get(&format!("layer[{n}].ffn.mid"))).unwrap(),
+                down: Scale::from_num(combine_scales(a_ffn_mid, ffn_down_scale_num, scales.get(&format!("layer[{n}].ffn.down")))).unwrap(),
+            }
+        },
     })
+}
+
+/// Like `dnet_scales_for`, but combines per-matmul weight + input-tap scales
+/// into the manifest's stored Scale (see `combine_scales`). Routing of
+/// calibrator tap names to DeltaNetScales slots matches `dnet_scales_for`.
+fn dnet_scales_for_combined(
+    scales: &ScaleSource,
+    n: u32,
+    w_qkv: i32,
+    w_gate: i32,
+    w_alpha: i32,
+    w_beta: i32,
+    w_ssm_out: i32,
+) -> DeltaNetScales {
+    let tap = |sub: &str| format!("layer[{n}].ssm.{sub}");
+    let a_norm1 = scales.get(&format!("layer[{n}].norm_post.1"));
+    let a_ssm_norm = scales.get(&format!("layer[{n}].ssm_norm_post"));
+    let a_attn_o = scales.get(&format!("layer[{n}].attn.o"));
+    DeltaNetScales {
+        // attn_qkv projection (the qkv_mixed output → ssm.q tap)
+        q: Scale::from_num(combine_scales(a_norm1, w_qkv, scales.get(&tap("q")))).unwrap(),
+        // post-L2 K (no matmul; pure activation transform)
+        k: Scale::from_num(scales.get(&tap("k"))).unwrap(),
+        // V post-conv (no matmul; activation transform)
+        v: Scale::from_num(scales.get(&tap("v"))).unwrap(),
+        // alpha projection → ssm.alpha_logit
+        alpha_logit: Scale::from_num(combine_scales(a_norm1, w_alpha, scales.get(&tap("alpha_logit")))).unwrap(),
+        // beta projection → ssm.beta_logit
+        beta_logit: Scale::from_num(combine_scales(a_norm1, w_beta, scales.get(&tap("beta_logit")))).unwrap(),
+        // conv1d output (depthwise) — handled by deltanet.rs's own dequant
+        // path using ssm_conv1d_weight_max, so no combine needed here.
+        u: Scale::from_num(scales.get(&tap("u"))).unwrap(),
+        // decay slot holds ssm_norm_post (gated-RMSNorm output, no matmul)
+        decay: Scale::from_num(scales.get(&format!("layer[{n}].ssm_norm_post"))).unwrap(),
+        // update slot holds attn.o (final ssm_out projection) — combine
+        update: Scale::from_num(combine_scales(a_ssm_norm, w_ssm_out, a_attn_o)).unwrap(),
+        // o (per-token recurrence output, no matmul)
+        o: Scale::from_num(scales.get(&tap("o"))).unwrap(),
+        // proj slot holds z_full (attn_gate projection) → combine
+        proj: Scale::from_num(combine_scales(a_norm1, w_gate, scales.get(&tap("proj")))).unwrap(),
+    }
 }
 
 fn main() -> ExitCode {
