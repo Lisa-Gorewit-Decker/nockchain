@@ -308,33 +308,56 @@ fn dequant_opt(
 // ─── Tap accumulator ─────────────────────────────────────────────────────────
 
 struct ScaleAcc {
-    inner: HashMap<String, f32>,
+    /// Per-tap reservoir of absolute values. We accumulate all observed
+    /// |x| samples across prompts and tokens so we can pick a high
+    /// percentile (e.g. 99.999%) at finalize time. This is the literature-
+    /// recommended replacement for raw max — transformer activations have
+    /// heavy-tailed distributions where a single outlier dominates the
+    /// per-tensor max and saturates downstream i8 outputs (SmoothQuant
+    /// Xiao et al. 2022, NVIDIA TensorRT calibration guide).
+    samples: HashMap<String, Vec<f32>>,
+    /// Quantile to pick (default 0.99999 = 99.999 percentile). 1.0 = raw max.
+    percentile: f32,
 }
 
 impl ScaleAcc {
-    fn new() -> Self {
+    fn new(percentile: f32) -> Self {
         Self {
-            inner: HashMap::new(),
+            samples: HashMap::new(),
+            percentile: percentile.clamp(0.0, 1.0),
         }
     }
     fn record(&mut self, tap: &str, x: &[f32]) {
         if x.is_empty() {
             return;
         }
-        let mut m: f32 = 0.0;
+        let entry = self.samples.entry(tap.to_string()).or_insert_with(Vec::new);
         for &v in x {
             let av = v.abs();
-            if av > m {
-                m = av;
+            if av > 0.0 {
+                entry.push(av);
             }
         }
-        let e = self.inner.entry(tap.to_string()).or_insert(0.0);
-        if m > *e {
-            *e = m;
-        }
+    }
+    /// Return the percentile-clipped max for a tap, or 0.0 if no samples.
+    fn percentile_max(&self, tap: &str) -> f32 {
+        let v = match self.samples.get(tap) {
+            Some(v) if !v.is_empty() => v,
+            _ => return 0.0,
+        };
+        let mut sorted: Vec<f32> = v.clone();
+        sorted.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+        let idx = ((sorted.len() as f32 - 1.0) * self.percentile).round() as usize;
+        sorted[idx.min(sorted.len() - 1)]
     }
     fn merge_default(&mut self, key: &str, fallback: f32) {
-        self.inner.entry(key.to_string()).or_insert(fallback);
+        if !self.samples.contains_key(key) {
+            // Single-sample reservoir representing the fallback magnitude.
+            self.samples.insert(key.to_string(), vec![fallback]);
+        }
+    }
+    fn all_taps(&self) -> impl Iterator<Item = &String> {
+        self.samples.keys()
     }
 }
 
@@ -1206,7 +1229,11 @@ fn run() -> Result<(), String> {
         None
     };
 
-    let mut acc = ScaleAcc::new();
+    // 99.999 percentile clipping: discards the top 0.001% of outlier
+    // |x| values per tap. Recommended by NVIDIA TensorRT + Speechmatics
+    // for transformer activations whose tails are dominated by 1-in-100k
+    // outliers that bloat the per-tensor max and saturate INT8 forward.
+    let mut acc = ScaleAcc::new(0.99999);
 
     // Per-layer forward.
     for n in 0..dims.num_layers {
@@ -1317,8 +1344,9 @@ fn run() -> Result<(), String> {
 
     // ─── Derive scales and emit JSON ─────────────────────────────────────
     eprintln!(
-        "→ writing scales.json: {} recorded taps",
-        acc.inner.len()
+        "→ writing scales.json: {} recorded taps (percentile={})",
+        acc.samples.len(),
+        acc.percentile
     );
 
     let default_max_abs: f32 = 1.0;
@@ -1344,9 +1372,8 @@ fn run() -> Result<(), String> {
     }
 
     let mut entries: Vec<(String, i32)> = acc
-        .inner
-        .into_iter()
-        .map(|(k, v)| (k, f32_to_scale_num(v)))
+        .all_taps()
+        .map(|k| (k.clone(), f32_to_scale_num(acc.percentile_max(k))))
         .collect();
     entries.sort_by(|a, b| a.0.cmp(&b.0));
 
