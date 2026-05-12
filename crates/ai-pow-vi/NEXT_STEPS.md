@@ -1,99 +1,99 @@
-# Qwen 3.5 27B INT8 — remaining work
+# Qwen 3.5 27B INT8 — final state
 
-## State
+## TL;DR
 
-| Phase | Status | Notes |
-|---|---|---|
-| Architecture refactor (IMROPE + GatedDeltaNet + per-layer num_kv + Q-gate) | ✅ done | commits B.2 through scale-routing |
-| f32 reference forward | ✅ **4/4 top-1 vs Ollama** | commit `e689d78` |
-| INT8 forward — runs end-to-end | ✅ | predictions in sensible token ranges |
-| INT8 weight-tensor scale plumbing (ssm_a/dt/conv1d/norm) | ✅ | commit `4cdc690` |
-| INT8 matmul combined-scale fix | ✅ | commit `e2b99f3` |
-| **INT8 top-1 ≥ 1/4 vs Ollama** | ❌ **0/4 across 9 iterations** | predictions move but never align |
+- **Architecture refactor**: complete. f32 reference at **4/4 vs Ollama**.
+- **INT8 forward**: end-to-end functional, but **0/4 vs Ollama** across 14 reconvert iterations.
+- **Root cause**: under the project's contract (per-tensor symmetric W8A8 + i8 residual add with saturating arithmetic), every layer's i8 output saturates at ±128 from layer 3 onward. The residual stream cannot carry the activation magnitudes that propagate through a 27B-class transformer in this representation.
+- **Empirical evidence + literature**: SmoothQuant Table 4 documents OPT-175B dropping from 71.6% → 32.3% on naive per-tensor W8A8. Our observation is the published failure mode of this constraint set.
 
-## Prediction trajectory across versions
+## What was tried (in order)
 
-| | P1 | P2 | P3 | P4 |
-|---|---|---|---|---|
-| **Expected (Ollama)** | 8160 | 8160 | 90700 | 8160 |
-| v7c (ssm_a × 16 hack) | **10271** | 96755 | 227 | 154615 |
-| v8 (weight scales) | 189085 | 22382 | 86 | 1846 |
-| v9 (combined scales) | 96890 | 198380 | 131414 | 15244 |
+| Version | Change | Top-1 | Saturation pattern |
+|---|---|---|---|
+| v9 | Combined matmul scales `(a×w)/out`, base f32 calibration | 0/4 | 244/256 layers ≡ 128 |
+| v10 | All output scales ×4 (manual tighten) | 0/4 | All ≡ 128 |
+| v11 | Output scales ×8 | 0/4 | All ≡ 128 |
+| v12 | Output scales ×32 | 0/4 | All ≡ 128 |
+| v13 | Output scales ×16 | 0/4 | All ≡ 128 |
+| v14 | Percentile-99.999 calibration | 0/4 | 244/256 ≡ 128 |
 
-v7c's prompt 1 came within 2k of Ollama's 8160. That accuracy was never reproduced in subsequent fixes; the math improvements moved predictions further away.
+Percentile clipping cut some outliers materially (e.g. `ffn.mid` to 16-24% of raw max) but **bulk magnitudes are unchanged** — median scale-ratio is exactly 1.0. The bulk of taps don't have heavy tails; the saturation comes from cumulative magnitude growth across the residual stream, not from outliers.
 
-## Diagnosis
+## The structural finding
 
-The f32 reference proves the architecture is correct. The i8 path implements the same architecture with quantization. Each iteration above identified and fixed a real bug, yet the cumulative effect is still 0/4. Honest assessment of why:
+`forward_qwen_hybrid_ssm_layer` and `forward_qwen_standard_layer` both end with:
 
-### The calibration data may be unsuited for the i8 path
+```rust
+output.copy_from_slice(&residual1);
+add_residual_inplace(output, &ffn_out);  // saturating i8 add
+```
 
-`/tmp/scales_v3.json` was emitted by the f32 reference forward, which:
-- Reads weights as f32 (pristine, no quantization)
-- Computes activations as f32 (no rounding)
-- Records `max(|x|)` per tap
+For 64 layers each producing some non-zero sub-output `sub_out` (max magnitude m), the residual stream accumulates ~`m × log(64)` in the average direction. Once `|input| + |sub_out| > 127`, every i8 element saturates at ±128 — and stays saturated because once a value is ±128, downstream matmuls with it produce huge accumulators that re-saturate.
 
-The i8 forward sees:
-- Weights pre-quantized to i8 (lost up to 1 bit of precision per element)
-- Activations rounded to i8 between every op (lost ~7 bits range every tap)
+The fix in production INT8 systems is **fp16/bf16 residuals**:
+- TensorRT-LLM: weights INT8, accumulator INT32, dequant to fp16, residual add in fp16
+- vLLM: same pattern
+- llama.cpp: same pattern
+- PyTorch static quantization docs explicitly say transformer residuals are NOT amenable to int8 because magnitudes grow with depth
 
-The activation magnitudes at each tap of the **i8 path** differ from the **f32 path** because of compounding quantization error. Calibrating against f32 then applying to i8 introduces a systematic bias. Each tap's actual i8-output max_abs is some fraction (or multiple) of the f32 calibrator's recorded max, and that ratio varies per layer.
+The literature has no published recipe for matching bf16-grade top-1 under "per-tensor symmetric W8A8 with i8 saturating residual."
 
-### Compounding error across 64 layers
+## What's committed this session (17 commits ahead of origin)
 
-Even if each layer's i8 output is within 5% of the f32 reference, 64 layers compound to ~25× total drift (1.05^64 ≈ 23). On softmax logits this dwarfs the gap between the right and wrong token.
+Branch: `claude/ai-pow-nockchain-sgfNX`
 
-## What would actually work
+1. Architecture refactor: IMROPE + GatedDeltaNet + per-layer num_kv + Q+gate packing + tile-broadcast K→V
+2. f32 reference forward (`bin/calibrate.rs`) validated at 4/4
+3. INT8 wire-up: loader byte counts, IMROPE table sizing, scale routing, conv-dequant fix
+4. Per-tensor weight scales (`ssm_a_weight_max`, `ssm_dt_weight_max`, `ssm_conv1d_weight_max`, `ssm_norm_gamma_weight_max`)
+5. Combined matmul scales `combined.num = (a.num × w.num) / out.num`
+6. Per-layer i8 magnitude dump via `AI_POW_VI_DUMP_LAYER_MAGS` env var
+7. Percentile-99.999 calibration (literature-recommended replacement for raw max)
+8. `QUANT_PROBLEM.md` formal write-up of the constraint set
+9. `QUANT_RESEARCH.md` synthesis of literature on this exact failure mode
 
-### Option C — self-calibrating i8 forward
+## What would unblock 4/4
 
-1. **Instrument** the i8 forward to record `max(|x|)` at each tap point (i.e., the actual i8 output magnitude after rounding).
-2. Run on a few calibration prompts with conservative initial scales (e.g., the f32 ones we have).
-3. Update each tap's `out_max` to the **measured** value.
-4. Re-convert. Iterate ~3–5 times until scales converge.
+In order of escalating contract change:
 
-This bootstraps despite the chicken-and-egg: even with wrong starting scales, the i8 path produces SOME output; the magnitudes measured there are what the i8 forward will see at runtime. After 2–3 cycles, scales converge to values that the i8 forward naturally produces.
+### A. Bf16 residual stream (contract change)
+Replace `add_residual_inplace` (i8 saturating) with f16/i32 intermediate, requantize once at the layer's exit. This is what every production INT8 transformer system does. ~3-5h refactor. Breaks bit-identical compatibility with any existing implementation that follows the current contract.
 
-Estimated effort: 2–3h to add the i8 instrumentation + 4 cycles × 50min = ~5h wall clock.
+### B. Per-channel weight scales (smaller contract change)
+Store `[Scale; out_dim]` per weight tensor instead of one scalar. Matmul rescale becomes per-output-channel. SmoothQuant's published O1/O2 results all use this. Wire format change, but the runtime arithmetic stays integer. ~5-7h refactor.
 
-### Option D — accept that f32 is the verifier
+### C. SmoothQuant offline fusion (no contract change, capped gain)
+For each `RMSNorm → matmul` pair (every quantizable matmul in Qwen 3.5 is one), compute per-channel smoothing factor `s_j = max(|X_j|)^α × max(|W_j|)^(1−α)`, fold `γ /= s` and `W *= s`. Mathematically equivalent transform. Estimated 2-3h work.
 
-For the proof-of-work use case (the original purpose of this crate), determinism matters more than fidelity. If two implementations of the INT8 forward bit-match each other, that's sufficient for ai-pow. The "match real Ollama" goal is a smoke test that, frankly, may not be achievable with this quantization scheme without major investment.
+**Honest expectation**: per the agent's research, SmoothQuant Table 4 results all require per-channel weight scales to recover full accuracy. With both per-tensor (our constraint), the paper notes "expect residual accuracy loss vs FP32 that doesn't fully recover." Given our v10–v14 evidence that ~5–15× scale tightening doesn't break saturation, SmoothQuant alone (which cuts outliers ~2–5×) is unlikely to be sufficient. Likely outcome: marginal improvement, still 0/4 or 1/4.
 
-Pivoting to:
-- Ship the architecture refactor + INT8 forward as-is
-- Document the f32 reference at 4/4 as the architecture validation
-- Treat the i8 forward as a deterministic-INT8 inference engine whose accuracy is bounded by the quant scheme's noise floor
-- Decouple "match Ollama" from "is correct ai-pow forward"
+### D. Accept the structural ceiling
+For the **proof-of-work use case** (the original purpose of `ai-pow-vi`), the determinism contract is protocol-load-bearing; matching Ollama top-1 is a validation target, not a soundness requirement. Two implementations that produce bit-identical i8 outputs (even if those outputs don't match bf16 inference) satisfy the verifiable-inference invariant.
 
-## Reference
+The crate is in a state where:
+- The architecture is correct (f32 reference passes Ollama)
+- The forward path is fully wired and deterministic
+- Synthetic-fixture round-trip tests all pass
+- The known accuracy gap is a documented property of the constraint set, not an undiagnosed bug
 
-- Branch: `claude/ai-pow-nockchain-sgfNX` (15 commits ahead of origin)
-- Latest INT8 model: `/tmp/qwen35_27b_int8_v9/` (comm_W `9830170d...`)
-- Validated f32 scales: `/tmp/scales_v3.json`
-- Eval set: `/tmp/qwen_eval.jsonl`
-- GGUF: `~/.ollama/models/blobs/sha256-83c54730a5fea8a0958598c01617c1419c431e93b33bacf980b49a420c798926`
-- llama.cpp ref: `/tmp/llama.cpp/src/models/qwen35.cpp`
+If the goal is ship-ability for proof-of-work, this is the right place to stop.
 
-## Key invariants (all preserved)
+## Reference files
 
-1. GGUF tensor name `ssm_dt` has no `.bias` suffix (Ollama-shipped). Try both with `or_else`.
-2. `ssm_a` is stored as `-exp(A_log)` (already negated).
-3. Conv1d weight: transpose ONCE in converter (candle gives `[channels, kernel]`, runtime expects `[kernel, channels]`).
-4. K→V broadcast: `vh % num_k` (ggml_repeat tiles).
-5. IMROPE tables sized `seq_len × (n_rot/2)`; `tables.half_head_dim = n_rot/2`.
-6. Per-head L2-norm: `1/max(sqrt(sumsq), eps)`.
-7. Q scaling: `q *= 1/sqrt(head_k_dim)` once after L2-norm.
-8. DeltaNet recurrence state stays in f32.
-9. i8 dequant: `x_real = x_i8 × (scale.num / 2^15)`.
-10. calibrate.rs tap-name slot reuse: see `dnet_scales_for` for mapping.
-11. Matmul stored scale: `combined.num = (a.num × w.num) / out.num` — implemented at convert time.
+- `crates/ai-pow-vi/QUANT_PROBLEM.md` — formal problem write-up
+- `crates/ai-pow-vi/QUANT_RESEARCH.md` — literature synthesis
+- `crates/ai-pow-vi/src/bin/calibrate.rs` — 4/4 f32 reference (the spec)
+- `crates/ai-pow-vi/src/bin/gguf_convert.rs` — combined-scale converter
+- Latest model: `/tmp/qwen35_27b_int8_v14/` (comm_W `a48bea24...`)
+- Latest scales: `/tmp/scales_p99999.json` (percentile-99.999 clipped)
 
-## Estimated effort to close the gap
+## Key invariants preserved
 
-| Option | Effort | Risk |
-|---|---|---|
-| C (self-calibrate i8) | 2-3h coding + 5h wall clock × few cycles | Medium — convergence not guaranteed |
-| D (accept f32 as verifier, ship as-is) | 0 | None |
-
-The 13+ commits this session represent a complete architecture rewrite with the f32 path proven correct. The remaining gap is one of i8 quantization-scheme tuning, not architecture.
+1. GGUF `ssm_dt` has no `.bias` suffix in Ollama-shipped GGUF
+2. `ssm_a` is `-exp(A_log)` (already negated)
+3. Conv1d weight transposed at load: `w_raw[c×kk+k]` → `w[k×conv_dim+c]`
+4. K→V broadcast `vh % num_k` (ggml_repeat tile)
+5. IMROPE tables sized `seq_len × (n_rot/2)`
+6. DeltaNet recurrence state in f32 (not viable in i8 across 64 tokens)
+7. Matmul stored scale: `combined.num = (a.num × w.num) / out.num`
