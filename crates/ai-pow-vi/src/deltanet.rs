@@ -714,8 +714,21 @@ pub fn forward_gated_deltanet_qwen35(
     // Step 6: gate_log = softplus(alpha + dt) * ssm_a, beta = sigmoid(beta_logit)
     let alpha_scale = opts.scales.alpha;
     let beta_scale = opts.scales.beta;
+    // Per NEXT_STEPS.md: the converter's quantize_with_scale call discards
+    // each weight tensor's max_abs scale, so the raw `(x as f32) / 127.0`
+    // dequant only recovers values in [-1, 1] regardless of the tensor's
+    // true magnitude. For qwen35 ssm_a (= -exp(A_log)) the true max_abs is
+    // up to ~16 (A_log ∈ log U(0, 16)) so the i8 path is up to 16× off
+    // without this scale plumbed through. Approximate fix until the
+    // manifest carries a per-tensor weight scale: scale ssm_a by ~16.
+    // ssm_dt is initialized to ~1 so no compensation needed.
     let ssm_dt_f: Vec<f32> = opts.ssm_dt.iter().map(|&x| (x as f32) / 127.0).collect();
-    let ssm_a_f: Vec<f32> = opts.ssm_a.iter().map(|&x| (x as f32) / 127.0).collect();
+    const SSM_A_MAX_ABS_APPROX: f32 = 16.0;
+    let ssm_a_f: Vec<f32> = opts
+        .ssm_a
+        .iter()
+        .map(|&x| (x as f32) / 127.0 * SSM_A_MAX_ABS_APPROX)
+        .collect();
     let mut gate_log = vec![0f32; mu * num_v];
     let mut beta_f = vec![0f32; mu * num_v];
     for t in 0..mu {
