@@ -1,21 +1,37 @@
-//! Prover: search for a tile of `(A+E)(B+F)` whose hardness hash falls below
-//! the 256-bit target.
+//! Prover: search for a tile whose keyed BLAKE3 hash of the 512-bit Pearl
+//! tile state `M_{i,j}` falls below the shape-aware target
+//! `2^(256 - b) · r · t^2` (Pearl §4.5).
 //!
-//! Two entry points:
-//! - `mine` — one nonce attempt at a time. The simple Bitcoin-style outer
-//!   loop: caller varies `nonce` and retries.
-//! - `mine_block` — caches the block-level noise `(E, F)` once, then sweeps
-//!   a caller-supplied iterator of nonces. At LLM-scale shapes this saves
-//!   noise-XOF cost (which would otherwise dominate per-attempt time).
+//! The miner supplies the input matrices `A` and `B`. The prover commits
+//! to them via Pearl §4.3 Alg. 2:
+//!  1. `κ = derive_key("kappa", block ‖ params_tag)`
+//!  2. `H_A = MerkleRoot({ row_leaf_hash(A_i, κ) }_i)`
+//!  3. `H_B = MerkleRoot({ col_leaf_hash(B_j, κ) }_j)`
+//!  4. `s_B = derive_key("s_b", κ ‖ H_B)`
+//!  5. `s_A = derive_key("s_a", s_B ‖ H_A)`
+//!
+//! The matmul, noise factors, and per-tile `M` states are computed **once
+//! per block** (independent of nonce). Per nonce, `pow_key = derive_key(
+//! "pow-key", s_A ‖ nonce)` is mixed in and used to re-hash the cached
+//! `M` states. This makes `mine_block` amortize the matmul cost across an
+//! arbitrary number of nonce attempts.
 
 use thiserror::Error;
 
-use crate::commit::{merkle_path, merkle_root, MerkleError};
-use crate::fiat_shamir::{block_state, challenge_indices, challenge_seed, noise_seed_for_block};
-use crate::matmul::{compute_tile_split, AttemptInputs, BlockNoise};
+use crate::commit::{
+    a_row_leaf_hash, b_col_leaf_hash, merkle_path, merkle_root, MerkleError,
+};
+use crate::fiat_shamir::{
+    block_state, challenge_indices, challenge_seed, commitment_key, noise_seed_a, noise_seed_b,
+    pow_key_for_nonce,
+};
+use crate::matmul::{compute_tile, BlockNoise, Matrices, TileState};
 use crate::params::{MatmulParams, ParamError};
 use crate::proof::{MatmulProof, TileOpening};
-use crate::tile_hash::{hash_le_target, tile_hardness_hash, tile_state_hash};
+use crate::tile_hash::{difficulty_target, hash_le_target};
+
+/// Pearl §4.1 input range: `|A|, |B| <= 64`.
+const INPUT_RANGE_MAX: i8 = 64;
 
 #[derive(Debug, Clone, Copy)]
 pub struct ProverOptions {
@@ -36,16 +52,23 @@ pub enum MineError {
     Params(#[from] ParamError),
     #[error("merkle: {0}")]
     Merkle(#[from] MerkleError),
+    #[error("A has wrong length: expected m*k = {expected}, got {actual}")]
+    InputAShape { expected: usize, actual: usize },
+    #[error("B has wrong length: expected n*k = {expected}, got {actual}")]
+    InputBShape { expected: usize, actual: usize },
+    #[error("input entry out of range [-64, 64]: matrix={matrix}, index={index}, value={value}")]
+    InputOutOfRange {
+        matrix: &'static str,
+        index: usize,
+        value: i8,
+    },
 }
 
 /// Compute the 32-byte tag binding a `MatmulParams` instance into the
-/// transcript. Both prover and verifier compute and compare this. The label
-/// is bumped to `v1.5` because Phase 1.5 changes noise derivation from
-/// per-nonce to per-block; an old (`v1`) tag must not validate against the
-/// new code path.
+/// transcript. Both prover and verifier compute and compare this.
 pub fn params_tag(p: &MatmulParams) -> [u8; 32] {
     crate::fiat_shamir::transcript(
-        "matmul-params-v1.5",
+        "matmul-params-v3",
         &[
             &p.m.to_le_bytes(),
             &p.k.to_le_bytes(),
@@ -53,97 +76,194 @@ pub fn params_tag(p: &MatmulParams) -> [u8; 32] {
             &p.noise_rank.to_le_bytes(),
             &p.tile.to_le_bytes(),
             &p.spot_checks.to_le_bytes(),
-            &p.lambda.to_le_bytes(),
+            &p.difficulty_bits.to_le_bytes(),
         ],
     )
 }
 
-/// Run one nonce attempt. Returns `Ok(Some(proof))` if a tile satisfies the
-/// hardness target, `Ok(None)` if no tile does (the caller should retry with
-/// a fresh nonce), or `Err` for parameter / structural problems.
+/// Per-block precomputation: commitments to `A` and `B`, derived seeds,
+/// noise factors, perturbed matrices, all `M_{i,j}` tile states, and the
+/// leaves of `H_A` / `H_B` for opening-path extraction. Independent of
+/// the nonce — built once per `(block_commitment, A, B)` triple.
+pub struct BlockContext<'a> {
+    pub a: &'a [i8],
+    pub b: &'a [i8],
+    pub params: MatmulParams,
+    pub tag: [u8; 32],
+    pub kappa: [u8; 32],
+    pub h_a: [u8; 32],
+    pub h_b: [u8; 32],
+    pub s_a: [u8; 32],
+    pub s_b: [u8; 32],
+    pub h_a_leaves: Vec<[u8; 32]>,
+    pub h_b_leaves: Vec<[u8; 32]>,
+    pub m_states: Vec<TileState>,
+}
+
+impl<'a> BlockContext<'a> {
+    /// Validate inputs and run the full per-block precomputation. Returns
+    /// `Err` only for parameter or shape problems.
+    pub fn build(
+        block_commitment: &[u8],
+        a: &'a [i8],
+        b: &'a [i8],
+        params: &MatmulParams,
+    ) -> Result<Self, MineError> {
+        params.validate()?;
+        let m = params.m as usize;
+        let k = params.k as usize;
+        let n = params.n as usize;
+        if a.len() != m * k {
+            return Err(MineError::InputAShape {
+                expected: m * k,
+                actual: a.len(),
+            });
+        }
+        if b.len() != n * k {
+            return Err(MineError::InputBShape {
+                expected: n * k,
+                actual: b.len(),
+            });
+        }
+        for (idx, &v) in a.iter().enumerate() {
+            if v < -INPUT_RANGE_MAX || v > INPUT_RANGE_MAX {
+                return Err(MineError::InputOutOfRange {
+                    matrix: "A",
+                    index: idx,
+                    value: v,
+                });
+            }
+        }
+        for (idx, &v) in b.iter().enumerate() {
+            if v < -INPUT_RANGE_MAX || v > INPUT_RANGE_MAX {
+                return Err(MineError::InputOutOfRange {
+                    matrix: "B",
+                    index: idx,
+                    value: v,
+                });
+            }
+        }
+
+        let tag = params_tag(params);
+        let kappa = commitment_key(block_commitment, &tag);
+
+        // Row leaves for H_A.
+        let mut h_a_leaves = Vec::with_capacity(m);
+        for i in 0..params.m {
+            let off = (i as usize) * k;
+            h_a_leaves.push(a_row_leaf_hash(&a[off..off + k], &kappa));
+        }
+        let h_a = merkle_root(&h_a_leaves)?;
+
+        // Column leaves for H_B (B is column-major: col j at j*k..(j+1)*k).
+        let mut h_b_leaves = Vec::with_capacity(n);
+        for j in 0..params.n {
+            let off = (j as usize) * k;
+            h_b_leaves.push(b_col_leaf_hash(&b[off..off + k], &kappa));
+        }
+        let h_b = merkle_root(&h_b_leaves)?;
+
+        let s_b = noise_seed_b(&kappa, &h_b);
+        let s_a = noise_seed_a(&s_b, &h_a);
+
+        let noise = BlockNoise::expand(&s_a, &s_b, params);
+        let matrices = Matrices::build(a, b, &noise, params);
+
+        // Pre-compute every tile's M state. These are independent of nonce.
+        let num_tiles = params.num_tiles() as usize;
+        let mut m_states = Vec::with_capacity(num_tiles);
+        for tile_i in 0..params.row_tiles() {
+            for tile_j in 0..params.col_tiles() {
+                m_states.push(compute_tile(&matrices, params, tile_i, tile_j));
+            }
+        }
+
+        Ok(BlockContext {
+            a,
+            b,
+            params: *params,
+            tag,
+            kappa,
+            h_a,
+            h_b,
+            s_a,
+            s_b,
+            h_a_leaves,
+            h_b_leaves,
+            m_states,
+        })
+    }
+}
+
+/// Run one nonce attempt with caller-supplied `A` and `B`. Returns
+/// `Ok(Some(proof))` if a tile satisfies the hardness target, `Ok(None)`
+/// if no tile does, or `Err` for parameter / shape / range problems.
 pub fn mine(
     block_commitment: &[u8],
     nonce: &[u8],
+    a: &[i8],
+    b: &[i8],
     params: &MatmulParams,
-    target: &[u8; 32],
     opts: ProverOptions,
 ) -> Result<Option<MatmulProof>, MineError> {
-    params.validate()?;
-    let tag = params_tag(params);
-    let n_seed = noise_seed_for_block(block_commitment, &tag);
-    let noise = BlockNoise::expand(&n_seed, params);
-    mine_with_cached_noise(block_commitment, nonce, params, target, opts, &noise, &tag)
+    let ctx = BlockContext::build(block_commitment, a, b, params)?;
+    mine_with_context(&ctx, block_commitment, nonce, opts)
 }
 
-/// Run the prover repeatedly over a sequence of nonces, caching the
-/// block-level noise expansion across attempts. Returns the first proof
-/// found or `Ok(None)` if no nonce in the iterator satisfies the target.
+/// Run the prover repeatedly over a sequence of nonces, caching all
+/// per-block computation (commitments, noise, matmul, all tile `M`
+/// states). Returns the first proof found or `Ok(None)` if no nonce in
+/// the iterator satisfies the target.
 pub fn mine_block<I, N>(
     block_commitment: &[u8],
     nonces: I,
+    a: &[i8],
+    b: &[i8],
     params: &MatmulParams,
-    target: &[u8; 32],
     opts: ProverOptions,
 ) -> Result<Option<MatmulProof>, MineError>
 where
     I: IntoIterator<Item = N>,
     N: AsRef<[u8]>,
 {
-    params.validate()?;
-    let tag = params_tag(params);
-    let n_seed = noise_seed_for_block(block_commitment, &tag);
-    let noise = BlockNoise::expand(&n_seed, params);
+    let ctx = BlockContext::build(block_commitment, a, b, params)?;
     for nonce in nonces {
-        if let Some(proof) = mine_with_cached_noise(
-            block_commitment,
-            nonce.as_ref(),
-            params,
-            target,
-            opts,
-            &noise,
-            &tag,
-        )? {
+        if let Some(proof) = mine_with_context(&ctx, block_commitment, nonce.as_ref(), opts)? {
             return Ok(Some(proof));
         }
     }
     Ok(None)
 }
 
-fn mine_with_cached_noise(
+fn mine_with_context(
+    ctx: &BlockContext<'_>,
     block_commitment: &[u8],
     nonce: &[u8],
-    params: &MatmulParams,
-    target: &[u8; 32],
     opts: ProverOptions,
-    noise: &BlockNoise,
-    tag: &[u8; 32],
 ) -> Result<Option<MatmulProof>, MineError> {
+    let params = &ctx.params;
     let state = block_state(block_commitment, nonce);
-    let inputs = AttemptInputs::expand(&state, params);
+    let pow_key = pow_key_for_nonce(&ctx.s_a, nonce);
+    let target = difficulty_target(params);
 
-    // First pass: compute every tile's M_{i,j} hash.
+    // Per-nonce: re-hash every cached M state with the per-nonce pow_key.
     let num_tiles = params.num_tiles() as usize;
     let mut leaves: Vec<[u8; 32]> = Vec::with_capacity(num_tiles);
-    for tile_i in 0..params.row_tiles() {
-        for tile_j in 0..params.col_tiles() {
-            let block = compute_tile_split(noise, &inputs, params, tile_i, tile_j);
-            leaves.push(tile_state_hash(&block));
-        }
+    for state in &ctx.m_states {
+        leaves.push(state.keyed_hash(&pow_key));
     }
 
     let comm_m = merkle_root(&leaves)?;
-    let chal = challenge_seed(&state, &comm_m, tag);
+    let chal = challenge_seed(&state, &comm_m, &ctx.tag);
 
-    // Scan for a tile with hardness hash <= target.
     let mut found: Option<(u32, [u8; 32])> = None;
     for idx in 0..num_tiles as u32 {
-        let (i, j) = params.tile_coords(idx);
-        let hh = tile_hardness_hash(&chal, i, j, &leaves[idx as usize]);
-        if hash_le_target(&hh, target) {
+        let h = &leaves[idx as usize];
+        if hash_le_target(h, &target) {
             match found {
-                None => found = Some((idx, hh)),
-                Some((_, ref best)) if opts.seek_best && &hh < best => {
-                    found = Some((idx, hh));
+                None => found = Some((idx, *h)),
+                Some((_, ref best)) if opts.seek_best && h < best => {
+                    found = Some((idx, *h));
                 }
                 _ => {}
             }
@@ -158,23 +278,63 @@ fn mine_with_cached_noise(
 
     let spot_indices = challenge_indices(&chal, params.spot_checks, num_tiles as u32);
 
-    let (fi, fj) = params.tile_coords(found_idx);
-    let found_path = merkle_path(&leaves, found_idx as usize)?;
+    let found_opening = build_tile_opening(ctx, &leaves, found_idx)?;
     let mut spot = Vec::with_capacity(spot_indices.len());
     for &idx in &spot_indices {
-        let (i, j) = params.tile_coords(idx);
-        let path = merkle_path(&leaves, idx as usize)?;
-        spot.push(TileOpening { i, j, path });
+        spot.push(build_tile_opening(ctx, &leaves, idx)?);
     }
 
     Ok(Some(MatmulProof {
         comm_m,
-        params_tag: *tag,
-        found: TileOpening {
-            i: fi,
-            j: fj,
-            path: found_path,
-        },
+        params_tag: ctx.tag,
+        h_a: ctx.h_a,
+        h_b: ctx.h_b,
+        found: found_opening,
         spot,
     }))
+}
+
+fn build_tile_opening(
+    ctx: &BlockContext<'_>,
+    leaves: &[[u8; 32]],
+    tile_idx: u32,
+) -> Result<TileOpening, MineError> {
+    let params = &ctx.params;
+    let (i, j) = params.tile_coords(tile_idx);
+    let t = params.tile as usize;
+    let k = params.k as usize;
+    let row0 = (i * params.tile) as usize;
+    let col0 = (j * params.tile) as usize;
+
+    let m_path = merkle_path(leaves, tile_idx as usize)?;
+
+    // Row strips of A: t contiguous rows, each k entries.
+    let mut a_rows = Vec::with_capacity(t * k);
+    let mut a_row_paths = Vec::with_capacity(t);
+    for di in 0..t {
+        let global_row = row0 + di;
+        let off = global_row * k;
+        a_rows.extend_from_slice(&ctx.a[off..off + k]);
+        a_row_paths.push(merkle_path(&ctx.h_a_leaves, global_row)?);
+    }
+
+    // Column strips of B: t contiguous columns, each k entries.
+    let mut b_cols = Vec::with_capacity(t * k);
+    let mut b_col_paths = Vec::with_capacity(t);
+    for dj in 0..t {
+        let global_col = col0 + dj;
+        let off = global_col * k;
+        b_cols.extend_from_slice(&ctx.b[off..off + k]);
+        b_col_paths.push(merkle_path(&ctx.h_b_leaves, global_col)?);
+    }
+
+    Ok(TileOpening {
+        i,
+        j,
+        m_path,
+        a_rows,
+        b_cols,
+        a_row_paths,
+        b_col_paths,
+    })
 }

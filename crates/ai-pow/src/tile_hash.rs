@@ -1,37 +1,16 @@
-//! Per-tile hardness hash and 256-bit big-endian target comparison.
+//! Shape-aware difficulty threshold and 256-bit big-endian unsigned compare.
+//!
+//! Pearl §4.5 hardness rule:
+//!
+//!   BLAKE3(M, key = s_a)  <=  2^(256 - b) · r · t_m · t_n
+//!
+//! For square tiles (`t_m = t_n = tile`) this crate computes the right-hand
+//! side as a 256-bit big-endian integer and compares the keyed hash byte-wise.
 
-use blake3::Hasher;
-
-const CTX_TILE_STATE: &str = "ai-pow v1 tile-state";
-const CTX_TILE_HASH: &str = "ai-pow v1 tile-hash";
-
-/// Hash the partial-sum block of an output tile.  The block is the row-major
-/// `tile x tile` array of i32 values; each is serialized little-endian before
-/// hashing.  Returns the 32-byte tile state `M_{i,j}`.
-pub fn tile_state_hash(partial_sum: &[i32]) -> [u8; 32] {
-    let mut hasher = Hasher::new_derive_key(CTX_TILE_STATE);
-    hasher.update(&(partial_sum.len() as u64).to_le_bytes());
-    for &v in partial_sum {
-        hasher.update(&v.to_le_bytes());
-    }
-    *hasher.finalize().as_bytes()
-}
-
-/// 32-byte hardness hash of tile `(i, j)` against the per-block challenge seed.
-/// Block-headers compare this hash to the `target_matmul` atom as a big-endian
-/// 256-bit unsigned integer.
-pub fn tile_hardness_hash(challenge_seed: &[u8; 32], i: u32, j: u32, m_ij: &[u8; 32]) -> [u8; 32] {
-    let mut hasher = Hasher::new_derive_key(CTX_TILE_HASH);
-    hasher.update(challenge_seed);
-    hasher.update(&i.to_le_bytes());
-    hasher.update(&j.to_le_bytes());
-    hasher.update(m_ij);
-    *hasher.finalize().as_bytes()
-}
+use crate::params::MatmulParams;
 
 /// Big-endian unsigned 256-bit comparison: `hash <= target`.
 pub fn hash_le_target(hash: &[u8; 32], target: &[u8; 32]) -> bool {
-    // Both hash and target are interpreted as big-endian 256-bit integers.
     for k in 0..32 {
         match hash[k].cmp(&target[k]) {
             core::cmp::Ordering::Less => return true,
@@ -42,30 +21,69 @@ pub fn hash_le_target(hash: &[u8; 32], target: &[u8; 32]) -> bool {
     true
 }
 
+/// Compute the shape-aware target `2^(256 - b) · r · t^2`, saturating at the
+/// max 256-bit value when the product would exceed it. When `b == 0` the
+/// product is effectively `2^256 · r · t^2`, which always saturates to
+/// `2^256 - 1`. When `b >= 256` and `r · t^2 < 2^b`, the product is `< 1`
+/// and the function returns zero.
+pub fn difficulty_target(params: &MatmulParams) -> [u8; 32] {
+    let r = params.noise_rank as u128;
+    let t = params.tile as u128;
+    let weight = r.saturating_mul(t).saturating_mul(t);
+    target_from_weight(params.difficulty_bits, weight)
+}
+
+/// Build a 256-bit big-endian target representing `floor(weight · 2^(256-b))`,
+/// saturated to `[0, 2^256 - 1]`. The 256-bit number is held as a high-128
+/// half (bits 128..256) and a low-128 half (bits 0..128).
+fn target_from_weight(b: u32, weight: u128) -> [u8; 32] {
+    if weight == 0 {
+        return [0u8; 32];
+    }
+    if b == 0 {
+        // weight * 2^256 always overflows since weight >= 1.
+        return [0xFFu8; 32];
+    }
+    if b >= 256 + 128 {
+        // Even the top bit of `weight` is below position 0.
+        return [0u8; 32];
+    }
+    let shift = 256i32 - b as i32;
+    let (hi, lo): (u128, u128) = if shift >= 128 {
+        let s = (shift - 128) as u32;
+        // Place `weight` in the high half, shifted by `s` bits. Any bits
+        // pushed past position 128 (of the high half) overflow bit 256 of
+        // the full target ⇒ saturate.
+        if s > 0 && (weight >> (128 - s)) != 0 {
+            return [0xFFu8; 32];
+        }
+        let hi = if s == 128 { 0 } else { weight << s };
+        (hi, 0u128)
+    } else if shift > 0 {
+        let s = shift as u32;
+        // weight << s lives in [s..s+128] bits. The low 128 bits of the
+        // result are the low 128 bits of (weight << s), the high 128 bits
+        // are weight >> (128 - s).
+        let lo = if s == 0 { weight } else { weight << s };
+        let hi = if s == 0 { 0 } else { weight >> (128 - s) };
+        (hi, lo)
+    } else {
+        // shift <= 0: weight >> |shift|.
+        let s = (-shift) as u32;
+        if s >= 128 {
+            return [0u8; 32];
+        }
+        (0u128, weight >> s)
+    };
+    let mut out = [0u8; 32];
+    out[..16].copy_from_slice(&hi.to_be_bytes());
+    out[16..].copy_from_slice(&lo.to_be_bytes());
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn tile_state_determinism_and_input_sensitivity() {
-        let a = [1i32, 2, 3, 4];
-        let b = [1i32, 2, 3, 5];
-        assert_eq!(tile_state_hash(&a), tile_state_hash(&a));
-        assert_ne!(tile_state_hash(&a), tile_state_hash(&b));
-    }
-
-    #[test]
-    fn hardness_hash_separation() {
-        let seed = [1u8; 32];
-        let m = [2u8; 32];
-        let h0 = tile_hardness_hash(&seed, 0, 0, &m);
-        let h1 = tile_hardness_hash(&seed, 1, 0, &m);
-        let h2 = tile_hardness_hash(&seed, 0, 1, &m);
-        let h3 = tile_hardness_hash(&[3u8; 32], 0, 0, &m);
-        assert_ne!(h0, h1);
-        assert_ne!(h0, h2);
-        assert_ne!(h0, h3);
-    }
 
     #[test]
     fn target_compare_edges() {
@@ -91,5 +109,66 @@ mod tests {
         d[31] = 0xff;
         assert!(!hash_le_target(&c, &d));
         assert!(hash_le_target(&d, &c));
+    }
+
+    #[test]
+    fn difficulty_b_zero_is_max_target() {
+        let params = MatmulParams::TEST_SMALL;
+        // b = 0 ⇒ every tile passes hardness.
+        let t = difficulty_target(&params);
+        assert_eq!(t, [0xFF; 32]);
+    }
+
+    #[test]
+    fn difficulty_b_huge_is_zero_target() {
+        let mut params = MatmulParams::TEST_SMALL;
+        params.difficulty_bits = 400;
+        let t = difficulty_target(&params);
+        assert_eq!(t, [0u8; 32]);
+    }
+
+    #[test]
+    fn difficulty_target_monotonic_in_b() {
+        // Higher `b` → smaller target.
+        let mut p = MatmulParams::TEST_SMALL;
+        let mut prev: Option<[u8; 32]> = None;
+        for b in [0u32, 1, 8, 16, 64, 128, 200, 256] {
+            p.difficulty_bits = b;
+            let t = difficulty_target(&p);
+            if let Some(prev) = prev {
+                // prev should be >= t.
+                assert!(
+                    !hash_le_target(&prev, &t) || prev == t,
+                    "target at b={b} ({t:?}) should be <= prev ({prev:?})"
+                );
+            }
+            prev = Some(t);
+        }
+    }
+
+    #[test]
+    fn difficulty_target_shape_weighting() {
+        // Higher `r` or `t` at fixed `b` => bigger target (easier).
+        let mut small = MatmulParams::TEST_SMALL;
+        small.difficulty_bits = 128;
+        let small_t = difficulty_target(&small);
+        let mut big = small;
+        big.tile = small.tile * 2;
+        // Won't satisfy validate (tile must divide m,n) — that's fine, we're
+        // testing the threshold function in isolation.
+        let big_t = difficulty_target(&big);
+        assert!(!hash_le_target(&big_t, &small_t) || big_t == small_t);
+    }
+
+    #[test]
+    fn difficulty_b_256_equals_weight() {
+        let mut p = MatmulParams::TEST_SMALL;
+        p.difficulty_bits = 256;
+        // weight = r * t^2 = 4 * 64 = 256
+        let weight = 256u128;
+        let mut expected = [0u8; 32];
+        let bytes = weight.to_be_bytes();
+        expected[32 - 16..].copy_from_slice(&bytes);
+        assert_eq!(difficulty_target(&p), expected);
     }
 }

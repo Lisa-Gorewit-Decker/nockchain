@@ -11,9 +11,11 @@ use std::sync::OnceLock;
 use blake3::Hasher;
 use thiserror::Error;
 
-const CTX_LEAF: &str = "ai-pow v1 merkle-leaf";
-const CTX_NODE: &str = "ai-pow v1 merkle-node";
-const CTX_SENTINEL: &str = "ai-pow v1 merkle-sentinel";
+const CTX_LEAF: &str = "ai-pow v3 merkle-leaf";
+const CTX_NODE: &str = "ai-pow v3 merkle-node";
+const CTX_SENTINEL: &str = "ai-pow v3 merkle-sentinel";
+const CTX_A_ROW_LEAF: &str = "ai-pow v3 a-row-leaf";
+const CTX_B_COL_LEAF: &str = "ai-pow v3 b-col-leaf";
 
 fn leaf_hash(m: &[u8; 32]) -> [u8; 32] {
     let mut hasher = Hasher::new_derive_key(CTX_LEAF);
@@ -25,6 +27,30 @@ fn node_hash(left: &[u8; 32], right: &[u8; 32]) -> [u8; 32] {
     let mut hasher = Hasher::new_derive_key(CTX_NODE);
     hasher.update(left);
     hasher.update(right);
+    *hasher.finalize().as_bytes()
+}
+
+/// Leaf hash for a row of `A` under `H_A` (Pearl §4.3 line 2). Keyed by
+/// `kappa` and domain-separated from `B`-column leaves via a fixed prefix.
+pub fn a_row_leaf_hash(row_bytes: &[i8], kappa: &[u8; 32]) -> [u8; 32] {
+    let mut hasher = Hasher::new_keyed(kappa);
+    hasher.update(CTX_A_ROW_LEAF.as_bytes());
+    hasher.update(&[0u8]); // null terminator separating context from content
+    // SAFETY: i8 and u8 share layout; we only need the raw bits.
+    let bytes: &[u8] =
+        unsafe { core::slice::from_raw_parts(row_bytes.as_ptr() as *const u8, row_bytes.len()) };
+    hasher.update(bytes);
+    *hasher.finalize().as_bytes()
+}
+
+/// Leaf hash for a column of `B` under `H_B` (Pearl §4.3 line 3).
+pub fn b_col_leaf_hash(col_bytes: &[i8], kappa: &[u8; 32]) -> [u8; 32] {
+    let mut hasher = Hasher::new_keyed(kappa);
+    hasher.update(CTX_B_COL_LEAF.as_bytes());
+    hasher.update(&[0u8]);
+    let bytes: &[u8] =
+        unsafe { core::slice::from_raw_parts(col_bytes.as_ptr() as *const u8, col_bytes.len()) };
+    hasher.update(bytes);
     *hasher.finalize().as_bytes()
 }
 
@@ -231,6 +257,25 @@ mod tests {
             merkle_path(&leaves, 7).err(),
             Some(MerkleError::IndexOutOfRange),
         );
+    }
+
+    #[test]
+    fn matrix_leaf_hashes_are_domain_separated() {
+        // A row and a B column with the same byte contents must yield
+        // different leaf hashes (different domain-separation contexts).
+        let row: [i8; 8] = [1, -2, 3, -4, 5, -6, 7, -8];
+        let kappa = [9u8; 32];
+        let r = a_row_leaf_hash(&row, &kappa);
+        let c = b_col_leaf_hash(&row, &kappa);
+        assert_ne!(r, c, "A-row and B-col leaves must be domain-separated");
+        // Determinism.
+        assert_eq!(r, a_row_leaf_hash(&row, &kappa));
+        // Sensitivity to kappa.
+        assert_ne!(a_row_leaf_hash(&row, &[10u8; 32]), r);
+        // Sensitivity to content.
+        let mut other = row;
+        other[0] ^= 1;
+        assert_ne!(a_row_leaf_hash(&other, &kappa), r);
     }
 
     #[test]

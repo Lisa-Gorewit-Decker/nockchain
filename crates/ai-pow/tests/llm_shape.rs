@@ -2,16 +2,12 @@
 //!
 //! Production LLM dimensions are huge (Gemma 4 31B FFN tile count is
 //! 64 × 336 = 21504; padded depth 15) so we exercise small rectangular
-//! shapes that share the relevant structural properties:
-//! - `m != n` (not square),
-//! - `(m / t) * (n / t)` not a power of two,
-//! - tile-Merkle padded to next power of two with a sentinel.
+//! shapes that share the relevant structural properties.
 
 use ai_pow::params::MatmulParams;
 use ai_pow::prover::{mine, ProverOptions};
+use ai_pow::synth::synth_matrices;
 use ai_pow::verifier::verify;
-
-const EASY: [u8; 32] = [0xff; 32];
 
 fn rect_a() -> MatmulParams {
     // (8 row tiles) * (12 col tiles) = 96 tiles, padded to 128.
@@ -19,42 +15,43 @@ fn rect_a() -> MatmulParams {
         m: 64,
         k: 80,
         n: 96,
-        noise_rank: 8,
+        noise_rank: 4,
         tile: 8,
         spot_checks: 4,
-        lambda: 8,
+        difficulty_bits: 0,
     }
 }
 
 fn rect_b() -> MatmulParams {
-    // (12 row tiles) * (10 col tiles) = 120 tiles, padded to 128.
     MatmulParams {
         m: 96,
         k: 80,
         n: 80,
-        noise_rank: 8,
+        noise_rank: 4,
         tile: 8,
         spot_checks: 4,
-        lambda: 8,
+        difficulty_bits: 0,
     }
 }
 
 #[test]
 fn rectangle_round_trip_a() {
     let params = rect_a();
-    let proof = mine(b"hdr", b"nce", &params, &EASY, ProverOptions::default())
+    let (a, b) = synth_matrices(b"ab-seed", &params);
+    let proof = mine(b"hdr", b"nce", &a, &b, &params, ProverOptions::default())
         .unwrap()
         .unwrap();
-    verify(b"hdr", b"nce", &params, &EASY, &proof).unwrap();
+    verify(b"hdr", b"nce", &params, &proof).unwrap();
 }
 
 #[test]
 fn rectangle_round_trip_b() {
     let params = rect_b();
-    let proof = mine(b"hdr", b"nce", &params, &EASY, ProverOptions::default())
+    let (a, b) = synth_matrices(b"ab-seed", &params);
+    let proof = mine(b"hdr", b"nce", &a, &b, &params, ProverOptions::default())
         .unwrap()
         .unwrap();
-    verify(b"hdr", b"nce", &params, &EASY, &proof).unwrap();
+    verify(b"hdr", b"nce", &params, &proof).unwrap();
 }
 
 #[test]
@@ -65,41 +62,49 @@ fn swapping_m_and_n_changes_proof() {
         n: pa.m,
         ..pa
     };
-    let pa_proof = mine(b"hdr", b"nce", &pa, &EASY, ProverOptions::default())
+    let (a_a, b_a) = synth_matrices(b"ab-a", &pa);
+    let (a_b, b_b) = synth_matrices(b"ab-b", &pb);
+    let pa_proof = mine(b"hdr", b"nce", &a_a, &b_a, &pa, ProverOptions::default())
         .unwrap()
         .unwrap();
-    let pb_proof = mine(b"hdr", b"nce", &pb, &EASY, ProverOptions::default())
+    let pb_proof = mine(b"hdr", b"nce", &a_b, &b_b, &pb, ProverOptions::default())
         .unwrap()
         .unwrap();
     assert_ne!(pa_proof, pb_proof);
-    // Cross-verify must reject (different params_tag).
-    let cross = verify(b"hdr", b"nce", &pb, &EASY, &pa_proof);
+    let cross = verify(b"hdr", b"nce", &pb, &pa_proof);
     assert!(cross.is_err());
 }
 
 #[test]
 fn merkle_path_length_is_padded_depth() {
     let params = rect_a();
-    let proof = mine(b"hdr", b"nce", &params, &EASY, ProverOptions::default())
+    let (a, b) = synth_matrices(b"ab-seed", &params);
+    let proof = mine(b"hdr", b"nce", &a, &b, &params, ProverOptions::default())
         .unwrap()
         .unwrap();
     let padded_depth = params.num_tiles().next_power_of_two().trailing_zeros() as usize;
-    assert_eq!(proof.found.path.len(), padded_depth);
+    assert_eq!(proof.found.m_path.len(), padded_depth);
     for opening in &proof.spot {
-        assert_eq!(opening.path.len(), padded_depth);
+        assert_eq!(opening.m_path.len(), padded_depth);
+    }
+    // Row paths reach h_a (over m leaves) and col paths reach h_b (over n leaves).
+    let m_depth = (params.m as u64).next_power_of_two().trailing_zeros() as usize;
+    let n_depth = (params.n as u64).next_power_of_two().trailing_zeros() as usize;
+    for p in &proof.found.a_row_paths {
+        assert_eq!(p.len(), m_depth);
+    }
+    for p in &proof.found.b_col_paths {
+        assert_eq!(p.len(), n_depth);
     }
 }
 
 #[test]
 fn llm_profiles_validate() {
-    // Just confirm the named LLM profiles exist and pass validation. We do
-    // *not* run the prover at LLM scale here — that is left to bench harness.
     MatmulParams::GEMMA_4_31B_FFN.validate().unwrap();
     MatmulParams::QWEN_3_6_27B_FFN.validate().unwrap();
     MatmulParams::llm_ffn(5376, 21504, 4096).validate().unwrap();
     MatmulParams::llm_ffn(5120, 17408, 4096).validate().unwrap();
 
-    // Padded depth at production scale is 15 (next pow2 of 21504).
     assert_eq!(
         MatmulParams::GEMMA_4_31B_FFN
             .num_tiles_padded()

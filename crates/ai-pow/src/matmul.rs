@@ -1,310 +1,381 @@
-//! Tiled INT8 matmul: `C' = (A + E) * (B + F)`.
+//! Pearl-style tiled INT8 matmul with low-rank noise and iterative tile state.
 //!
-//! `A`, `E` are `m x k` row-major INT8.  `B`, `F` are `k x n` column-major
-//! INT8 (each column is contiguous, so a single column of `B` or `F` is a
-//! `k`-byte slice). The accumulator is `i32`; `params.validate()` guarantees
-//! `k * 2^16` fits in `i32`.
+//! Computes `(A + E) * (B + F)` where the noise factors are low-rank:
+//!   `E = E_L · E_R`,  `F = F_L · F_R`
+//! with `E_L ∈ i6^{m×r}`, `E_R ∈ {-1,0,1}^{r×k}` choice matrix,
+//! `F_L ∈ {-1,0,1}^{k×r}` choice matrix, `F_R ∈ i6^{r×n}` (Pearl §4.4).
+//!
+//! The product is computed tile-by-tile in stripes of width `r` along the
+//! `k`-axis (Pearl §4.5 Alg. 4). At each stripe boundary the 16 × `int32`
+//! state `M_{i,j}` is folded with the XOR of all accumulator entries:
+//!
+//!   M[ℓ mod 16] ← (M[ℓ mod 16] ≪ 13) ⊕ X_ℓ
+//!
+//! and the final per-tile state is keyed-BLAKE3-hashed to produce both the
+//! Merkle leaf and the hardness check value (Pearl §4.5 lines 14-16).
+
+use blake3::Hasher;
 
 use crate::params::MatmulParams;
 use crate::prng;
 
-/// Per-block noise matrices `(E, F)`. Derived once per `block_commitment`
-/// and reused across all nonce attempts in that block.
+const CTX_TILE_HASH: &str = "ai-pow v2 tile-hash";
+
+/// Per-block low-rank noise factors. Derived once per `block_commitment`
+/// (via `noise_seed`) and reused across all nonce attempts in that block.
 pub struct BlockNoise {
     pub m: u32,
     pub k: u32,
     pub n: u32,
-    pub e: Vec<i8>, // m * k, row-major
-    pub f: Vec<i8>, // k * n, column-major (col j at j*k .. (j+1)*k)
+    pub r: u32,
+    /// `E_L` row-major: `m × r`. `E_L[i, p] = e_l[i*r + p]`.
+    pub e_l: Vec<i8>,
+    /// Per-column choice positions of `E_R`. `e_r_pos[l] = (p_plus, p_minus)`
+    /// means column `l` of `E_R` has a `+1` at `p_plus` and a `-1` at `p_minus`.
+    pub e_r_pos: Vec<(u32, u32)>,
+    /// `F_R` stored col-major: `n × r` with column `j` at `j*r..(j+1)*r`,
+    /// so `F_R[p, j] = f_r[j*r + p]`.
+    pub f_r: Vec<i8>,
+    /// Per-row choice positions of `F_L`. `f_l_pos[l] = (p_plus, p_minus)`.
+    pub f_l_pos: Vec<(u32, u32)>,
 }
 
 impl BlockNoise {
-    pub fn expand(noise_seed: &[u8; 32], params: &MatmulParams) -> Self {
+    /// Build the noise factors per Pearl Alg. 1: `(E_L, E_R)` are keyed by
+    /// `s_a`, `(F_R, F_L)` are keyed by `s_b`. The two seeds are derived in
+    /// `fiat_shamir.rs` from `(block_commitment, params_tag, H_A, H_B)`.
+    pub fn expand(s_a: &[u8; 32], s_b: &[u8; 32], params: &MatmulParams) -> Self {
         let m = params.m as usize;
         let k = params.k as usize;
         let n = params.n as usize;
-        let mut e = vec![0i8; m * k];
+        let r = params.noise_rank as usize;
+
+        let mut e_l = vec![0i8; m * r];
         for i in 0..params.m {
-            let off = (i as usize) * k;
-            prng::expand_e_row(noise_seed, i, params.k, &mut e[off..off + k]);
+            let off = (i as usize) * r;
+            prng::expand_e_l_row(s_a, i, params.noise_rank, &mut e_l[off..off + r]);
         }
-        let mut f = vec![0i8; k * n];
+        let mut e_r_pos = Vec::with_capacity(k);
+        for l in 0..params.k {
+            e_r_pos.push(prng::e_r_col_positions(s_a, l, params.noise_rank));
+        }
+        let mut f_r = vec![0i8; n * r];
         for j in 0..params.n {
-            let off = (j as usize) * k;
-            prng::expand_f_col(noise_seed, j, params.k, &mut f[off..off + k]);
+            let off = (j as usize) * r;
+            prng::expand_f_r_col(s_b, j, params.noise_rank, &mut f_r[off..off + r]);
         }
+        let mut f_l_pos = Vec::with_capacity(k);
+        for k_idx in 0..params.k {
+            f_l_pos.push(prng::f_l_row_positions(s_b, k_idx, params.noise_rank));
+        }
+
         Self {
             m: params.m,
             k: params.k,
             n: params.n,
-            e,
-            f,
+            r: params.noise_rank,
+            e_l,
+            e_r_pos,
+            f_r,
+            f_l_pos,
         }
     }
 
-    pub fn e_row(&self, i: u32) -> &[i8] {
+    /// Reconstruct row `i` of `E` (length `k`) into `out`.
+    pub fn e_row_into(&self, i: u32, out: &mut [i8]) {
+        let r = self.r as usize;
         let k = self.k as usize;
-        let off = (i as usize) * k;
-        &self.e[off..off + k]
+        debug_assert_eq!(out.len(), k);
+        let row_off = (i as usize) * r;
+        let e_l_row = &self.e_l[row_off..row_off + r];
+        for (l, slot) in out.iter_mut().enumerate() {
+            let (pp, pm) = self.e_r_pos[l];
+            *slot = e_l_row[pp as usize] - e_l_row[pm as usize];
+        }
     }
-    pub fn f_col(&self, j: u32) -> &[i8] {
+
+    /// Reconstruct column `j` of `F` (length `k`) into `out`.
+    pub fn f_col_into(&self, j: u32, out: &mut [i8]) {
+        let r = self.r as usize;
         let k = self.k as usize;
-        let off = (j as usize) * k;
-        &self.f[off..off + k]
+        debug_assert_eq!(out.len(), k);
+        let col_off = (j as usize) * r;
+        let f_r_col = &self.f_r[col_off..col_off + r];
+        for (l, slot) in out.iter_mut().enumerate() {
+            let (pp, pm) = self.f_l_pos[l];
+            *slot = f_r_col[pp as usize] - f_r_col[pm as usize];
+        }
     }
 }
 
-/// Per-attempt inputs `(A, B)`. Derived from `state = block_commitment ||
-/// nonce`, so they change every nonce.
-pub struct AttemptInputs {
-    pub m: u32,
-    pub k: u32,
-    pub n: u32,
-    pub a: Vec<i8>, // m * k, row-major
-    pub b: Vec<i8>, // k * n, column-major
-}
-
-impl AttemptInputs {
-    pub fn expand(state: &[u8], params: &MatmulParams) -> Self {
-        let m = params.m as usize;
-        let k = params.k as usize;
-        let n = params.n as usize;
-        let mut a = vec![0i8; m * k];
-        for i in 0..params.m {
-            let off = (i as usize) * k;
-            prng::expand_a_row(state, i, params.k, &mut a[off..off + k]);
-        }
-        let mut b = vec![0i8; k * n];
-        for j in 0..params.n {
-            let off = (j as usize) * k;
-            prng::expand_b_col(state, j, params.k, &mut b[off..off + k]);
-        }
-        Self {
-            m: params.m,
-            k: params.k,
-            n: params.n,
-            a,
-            b,
-        }
-    }
-
-    pub fn a_row(&self, i: u32) -> &[i8] {
-        let k = self.k as usize;
-        let off = (i as usize) * k;
-        &self.a[off..off + k]
-    }
-    pub fn b_col(&self, j: u32) -> &[i8] {
-        let k = self.k as usize;
-        let off = (j as usize) * k;
-        &self.b[off..off + k]
-    }
-}
-
-/// Compute one output tile of `(A + E)(B + F)` using a `BlockNoise` cache and
-/// a per-attempt `AttemptInputs`. Returns a row-major `t x t` block of `i32`.
-pub fn compute_tile_split(
-    noise: &BlockNoise,
-    inputs: &AttemptInputs,
-    params: &MatmulParams,
-    tile_i: u32,
-    tile_j: u32,
-) -> Vec<i32> {
-    debug_assert_eq!(noise.m, inputs.m);
-    debug_assert_eq!(noise.k, inputs.k);
-    debug_assert_eq!(noise.n, inputs.n);
-    let t = params.tile as usize;
-    let mut out = vec![0i32; t * t];
-    let row0 = tile_i * params.tile;
-    let col0 = tile_j * params.tile;
-    for di in 0..t {
-        let i = row0 + di as u32;
-        let a_row = inputs.a_row(i);
-        let e_row = noise.e_row(i);
-        for dj in 0..t {
-            let j = col0 + dj as u32;
-            let b_col = inputs.b_col(j);
-            let f_col = noise.f_col(j);
-            out[di * t + dj] = dot_axby(a_row, e_row, b_col, f_col);
-        }
-    }
-    out
-}
-
-/// A full set of expanded matrices for one nonce attempt.
-///
-/// The prover allocates this once and iterates all output tiles. Memory cost
-/// is `2 * (m*k + k*n)` bytes; at the production profile (4096^3) this is
-/// 64 MiB total, comfortable on any modern machine.
+/// Per-attempt perturbed matrices `A' = A + E` (row-major) and `B' = B + F`
+/// (column-major). Each entry fits an `i8`: with `|A| <= 64` and `|E| <= 63`
+/// (Pearl §4.1/§4.4), `|A + E| <= 127`. Constructed once per nonce attempt
+/// and reused across all output tiles.
 pub struct Matrices {
     pub m: u32,
     pub k: u32,
     pub n: u32,
-    pub a: Vec<i8>, // m * k, row-major
-    pub e: Vec<i8>, // m * k, row-major
-    pub b: Vec<i8>, // k * n, column-major (col j at j*k .. (j+1)*k)
-    pub f: Vec<i8>, // k * n, column-major
+    /// `A' = A + E`, row-major: row `i` at `i*k..(i+1)*k`.
+    pub a_prime: Vec<i8>,
+    /// `B' = B + F`, column-major: column `j` at `j*k..(j+1)*k`.
+    pub b_prime: Vec<i8>,
 }
 
 impl Matrices {
-    pub fn expand(state: &[u8], noise_seed: &[u8; 32], params: &MatmulParams) -> Self {
+    /// Build `A' = A + E` (row-major) and `B' = B + F` (column-major) from
+    /// caller-supplied input matrices and per-block noise factors.
+    /// `a` is `m * k` row-major; `b` is `n * k` column-major (column `j` at
+    /// `j*k..(j+1)*k`).
+    pub fn build(a: &[i8], b: &[i8], noise: &BlockNoise, params: &MatmulParams) -> Self {
         let m = params.m as usize;
         let k = params.k as usize;
         let n = params.n as usize;
-        let mut a = vec![0i8; m * k];
-        let mut e = vec![0i8; m * k];
+        assert_eq!(a.len(), m * k, "A length mismatch");
+        assert_eq!(b.len(), n * k, "B length mismatch");
+
+        let mut a_prime = vec![0i8; m * k];
+        let mut row_buf_e = vec![0i8; k];
         for i in 0..params.m {
+            noise.e_row_into(i, &mut row_buf_e);
             let off = (i as usize) * k;
-            prng::expand_a_row(state, i, params.k, &mut a[off..off + k]);
-            prng::expand_e_row(noise_seed, i, params.k, &mut e[off..off + k]);
+            for l in 0..k {
+                // |A + E| <= 64 + 63 = 127, fits i8.
+                a_prime[off + l] = (a[off + l] as i16 + row_buf_e[l] as i16) as i8;
+            }
         }
-        let mut b = vec![0i8; k * n];
-        let mut f = vec![0i8; k * n];
+        let mut b_prime = vec![0i8; k * n];
+        let mut col_buf_f = vec![0i8; k];
         for j in 0..params.n {
+            noise.f_col_into(j, &mut col_buf_f);
             let off = (j as usize) * k;
-            prng::expand_b_col(state, j, params.k, &mut b[off..off + k]);
-            prng::expand_f_col(noise_seed, j, params.k, &mut f[off..off + k]);
+            for l in 0..k {
+                b_prime[off + l] = (b[off + l] as i16 + col_buf_f[l] as i16) as i8;
+            }
         }
         Self {
             m: params.m,
             k: params.k,
             n: params.n,
-            a,
-            e,
-            b,
-            f,
+            a_prime,
+            b_prime,
         }
     }
 
-    pub fn a_row(&self, i: u32) -> &[i8] {
+    pub fn a_prime_row(&self, i: u32) -> &[i8] {
         let k = self.k as usize;
         let off = (i as usize) * k;
-        &self.a[off..off + k]
+        &self.a_prime[off..off + k]
     }
-    pub fn e_row(&self, i: u32) -> &[i8] {
-        let k = self.k as usize;
-        let off = (i as usize) * k;
-        &self.e[off..off + k]
-    }
-    pub fn b_col(&self, j: u32) -> &[i8] {
+    pub fn b_prime_col(&self, j: u32) -> &[i8] {
         let k = self.k as usize;
         let off = (j as usize) * k;
-        &self.b[off..off + k]
-    }
-    pub fn f_col(&self, j: u32) -> &[i8] {
-        let k = self.k as usize;
-        let off = (j as usize) * k;
-        &self.f[off..off + k]
+        &self.b_prime[off..off + k]
     }
 }
 
-/// Compute the partial sum of one output tile `(tile_i, tile_j)` of size `t x t`,
-/// returned as a row-major `Vec<i32>` of length `t*t`.
+/// 512-bit per-tile state `M_{i,j}` as 16 `int32` slots (Pearl §4.5).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct TileState(pub [i32; 16]);
+
+impl TileState {
+    pub const fn zero() -> Self {
+        Self([0; 16])
+    }
+
+    /// Fold stripe `step`'s int32-XOR `x` into the rolling state, matching
+    /// Pearl §4.5: `M[step mod 16] ← (M[step mod 16] ≪ 13) ⊕ x`.
+    #[inline]
+    pub fn fold(&mut self, step: u32, x: i32) {
+        let slot = (step as usize) % 16;
+        let rotated = (self.0[slot] as u32).rotate_left(13) as i32;
+        self.0[slot] = rotated ^ x;
+    }
+
+    /// Keyed BLAKE3 hash of the state, used as both the Merkle leaf and the
+    /// hardness check value (Pearl §4.5 line 16).
+    pub fn keyed_hash(&self, pow_key: &[u8; 32]) -> [u8; 32] {
+        let mut hasher = Hasher::new_keyed(pow_key);
+        // Domain-separate from any other `new_keyed` callers in this crate.
+        hasher.update(CTX_TILE_HASH.as_bytes());
+        for v in &self.0 {
+            hasher.update(&v.to_le_bytes());
+        }
+        *hasher.finalize().as_bytes()
+    }
+}
+
+/// Compute one output tile `(tile_i, tile_j)`, stepping in stripes of width
+/// `r` along the `k`-axis and folding each stripe's XOR into the 512-bit
+/// state `M` per Pearl §4.5. Returns the final `M` state; the caller derives
+/// the keyed hash via `TileState::keyed_hash`.
 pub fn compute_tile(
     matrices: &Matrices,
     params: &MatmulParams,
     tile_i: u32,
     tile_j: u32,
-) -> Vec<i32> {
+) -> TileState {
     let t = params.tile as usize;
-    let mut out = vec![0i32; t * t];
-    let row0 = (tile_i * params.tile) as u32;
-    let col0 = (tile_j * params.tile) as u32;
-    for di in 0..t {
-        let i = row0 + di as u32;
-        let a_row = matrices.a_row(i);
-        let e_row = matrices.e_row(i);
-        for dj in 0..t {
-            let j = col0 + dj as u32;
-            let b_col = matrices.b_col(j);
-            let f_col = matrices.f_col(j);
-            out[di * t + dj] = dot_axby(a_row, e_row, b_col, f_col);
+    let r = params.noise_rank as usize;
+    let row0 = (tile_i * params.tile) as usize;
+    let col0 = (tile_j * params.tile) as usize;
+    let steps = params.num_stripes() as usize;
+
+    let mut c_blk = vec![0i32; t * t];
+    let mut state = TileState::zero();
+
+    for step in 0..steps {
+        let lo = step * r;
+        // Inner per-stripe r-wide multiply, accumulated into c_blk.
+        for di in 0..t {
+            let a_row = &matrices.a_prime_row((row0 + di) as u32)[lo..lo + r];
+            for dj in 0..t {
+                let b_col = &matrices.b_prime_col((col0 + dj) as u32)[lo..lo + r];
+                let mut delta: i32 = 0;
+                for l in 0..r {
+                    delta = delta.wrapping_add((a_row[l] as i32) * (b_col[l] as i32));
+                }
+                let idx = di * t + dj;
+                c_blk[idx] = c_blk[idx].wrapping_add(delta);
+            }
         }
+        // Fold the int32-XOR of the running accumulator into M (Pearl §4.5).
+        let mut x: i32 = 0;
+        for &v in &c_blk {
+            x ^= v;
+        }
+        state.fold(step as u32, x);
     }
-    out
+    state
 }
 
-/// Compute one output tile from already-extracted row-tiles and column-tiles.
-/// Used by the verifier, which only re-derives the rows / columns it needs
-/// rather than the full `Matrices`. All four input slices contain `t * k`
-/// INT8s; rows / columns are contiguous in `k`-stride.
+/// Verifier-side compute_tile: same iterative accumulator as `compute_tile`
+/// but takes already-extracted row-strips of `A'` and column-strips of `B'`.
+/// `a_prime_rows` is `t * k` i8s (row-major over the `t` tile rows);
+/// `b_prime_cols` is `t * k` i8s (column-major over the `t` tile columns).
 pub fn compute_tile_from_slices(
-    a_rows: &[i8],
-    e_rows: &[i8],
-    b_cols: &[i8],
-    f_cols: &[i8],
-    tile: u32,
-    k: u32,
-) -> Vec<i32> {
-    let t = tile as usize;
-    let kk = k as usize;
-    debug_assert_eq!(a_rows.len(), t * kk);
-    debug_assert_eq!(e_rows.len(), t * kk);
-    debug_assert_eq!(b_cols.len(), t * kk);
-    debug_assert_eq!(f_cols.len(), t * kk);
-    let mut out = vec![0i32; t * t];
-    for di in 0..t {
-        let a_row = &a_rows[di * kk..(di + 1) * kk];
-        let e_row = &e_rows[di * kk..(di + 1) * kk];
-        for dj in 0..t {
-            let b_col = &b_cols[dj * kk..(dj + 1) * kk];
-            let f_col = &f_cols[dj * kk..(dj + 1) * kk];
-            out[di * t + dj] = dot_axby(a_row, e_row, b_col, f_col);
-        }
-    }
-    out
-}
+    a_prime_rows: &[i8],
+    b_prime_cols: &[i8],
+    params: &MatmulParams,
+) -> TileState {
+    let t = params.tile as usize;
+    let r = params.noise_rank as usize;
+    let k = params.k as usize;
+    debug_assert_eq!(a_prime_rows.len(), t * k);
+    debug_assert_eq!(b_prime_cols.len(), t * k);
+    let steps = params.num_stripes() as usize;
 
-#[inline]
-fn dot_axby(a: &[i8], e: &[i8], b: &[i8], f: &[i8]) -> i32 {
-    debug_assert_eq!(a.len(), e.len());
-    debug_assert_eq!(b.len(), f.len());
-    debug_assert_eq!(a.len(), b.len());
-    let mut acc: i32 = 0;
-    for l in 0..a.len() {
-        let ax = a[l] as i32 + e[l] as i32;
-        let by = b[l] as i32 + f[l] as i32;
-        acc = acc.wrapping_add(ax * by);
+    let mut c_blk = vec![0i32; t * t];
+    let mut state = TileState::zero();
+
+    for step in 0..steps {
+        let lo = step * r;
+        for di in 0..t {
+            let a_row = &a_prime_rows[di * k + lo..di * k + lo + r];
+            for dj in 0..t {
+                let b_col = &b_prime_cols[dj * k + lo..dj * k + lo + r];
+                let mut delta: i32 = 0;
+                for l in 0..r {
+                    delta = delta.wrapping_add((a_row[l] as i32) * (b_col[l] as i32));
+                }
+                let idx = di * t + dj;
+                c_blk[idx] = c_blk[idx].wrapping_add(delta);
+            }
+        }
+        let mut x: i32 = 0;
+        for &v in &c_blk {
+            x ^= v;
+        }
+        state.fold(step as u32, x);
     }
-    acc
+    state
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    fn synth_ab(seed: u8, params: &MatmulParams) -> (Vec<i8>, Vec<i8>) {
+        let m = params.m as usize;
+        let k = params.k as usize;
+        let n = params.n as usize;
+        let mut a = vec![0i8; m * k];
+        let mut b = vec![0i8; n * k];
+        let state = [seed; 16];
+        for i in 0..params.m {
+            let off = (i as usize) * k;
+            prng::expand_a_row(&state, i, params.k, &mut a[off..off + k]);
+        }
+        for j in 0..params.n {
+            let off = (j as usize) * k;
+            prng::expand_b_col(&state, j, params.k, &mut b[off..off + k]);
+        }
+        (a, b)
+    }
+
     #[test]
-    fn split_path_matches_unified_path() {
-        // The split (BlockNoise + AttemptInputs) and the unified (Matrices)
-        // expansions must produce byte-identical tile outputs at the same
-        // (state, noise_seed, params).
-        let p = MatmulParams::TEST_SMALL;
-        let state = b"hello".to_vec();
-        let seed = [3u8; 32];
-        let noise = BlockNoise::expand(&seed, &p);
-        let inputs = AttemptInputs::expand(&state, &p);
-        let mats = Matrices::expand(&state, &seed, &p);
-        for tile_i in 0..p.row_tiles() {
-            for tile_j in 0..p.col_tiles() {
-                let split = compute_tile_split(&noise, &inputs, &p, tile_i, tile_j);
-                let unified = compute_tile(&mats, &p, tile_i, tile_j);
-                assert_eq!(split, unified, "mismatch at tile ({tile_i}, {tile_j})");
+    fn block_noise_e_row_matches_full_product() {
+        // E[i, l] = sum_p E_L[i, p] * E_R[p, l]. With E_R sparse (one +1 at
+        // pp, one -1 at pm), E[i, l] = E_L[i, pp] - E_L[i, pm]. Confirm.
+        let params = MatmulParams::TEST_SMALL;
+        params.validate().unwrap();
+        let s_a = [7u8; 32];
+        let s_b = [8u8; 32];
+        let noise = BlockNoise::expand(&s_a, &s_b, &params);
+        let k = params.k as usize;
+        let r = params.noise_rank as usize;
+
+        let mut e_row = vec![0i8; k];
+        for i in 0..params.m {
+            noise.e_row_into(i, &mut e_row);
+            for l in 0..k {
+                let (pp, pm) = noise.e_r_pos[l];
+                let row_off = (i as usize) * r;
+                let expected = noise.e_l[row_off + pp as usize] - noise.e_l[row_off + pm as usize];
+                assert_eq!(e_row[l], expected);
             }
         }
     }
 
-    fn naive_full(state: &[u8], seed: &[u8; 32], params: &MatmulParams) -> Vec<i32> {
+    #[test]
+    fn perturbed_matrices_fit_i8() {
+        // `|A + E| <= 64 + 63 = 127` should always hold.
+        let params = MatmulParams::TEST_SMALL;
+        let s_a = [3u8; 32];
+        let s_b = [4u8; 32];
+        let noise = BlockNoise::expand(&s_a, &s_b, &params);
+        let (a, b) = synth_ab(7, &params);
+        let m = Matrices::build(&a, &b, &noise, &params);
+        // i8 already constrains [-128, 127]; verify the tighter `|v| <= 127`
+        // bound that follows from |A| <= 64 and |E| <= 63.
+        for &v in &m.a_prime {
+            assert!(v >= -127, "a_prime entry below -127: {v}");
+        }
+        for &v in &m.b_prime {
+            assert!(v >= -127, "b_prime entry below -127: {v}");
+        }
+    }
+
+    fn naive_full_product(
+        a: &[i8],
+        b: &[i8],
+        s_a: &[u8; 32],
+        s_b: &[u8; 32],
+        params: &MatmulParams,
+    ) -> Vec<i32> {
         let m = params.m as usize;
         let n = params.n as usize;
         let k = params.k as usize;
-        let mats = Matrices::expand(state, seed, params);
+        let noise = BlockNoise::expand(s_a, s_b, params);
+        let mats = Matrices::build(a, b, &noise, params);
         let mut out = vec![0i32; m * n];
         for i in 0..m {
+            let a_row = mats.a_prime_row(i as u32);
             for j in 0..n {
+                let b_col = mats.b_prime_col(j as u32);
                 let mut acc: i32 = 0;
                 for l in 0..k {
-                    let ax = mats.a_row(i as u32)[l] as i32 + mats.e_row(i as u32)[l] as i32;
-                    let by = mats.b_col(j as u32)[l] as i32 + mats.f_col(j as u32)[l] as i32;
-                    acc += ax * by;
+                    acc = acc.wrapping_add((a_row[l] as i32) * (b_col[l] as i32));
                 }
                 out[i * n + j] = acc;
             }
@@ -312,23 +383,61 @@ mod tests {
         out
     }
 
+    /// Recompute the final c_blk from the iterative tile loop, side-channeled
+    /// out for cross-checking against the naive full product.
+    fn iterative_tile_c_blk(
+        matrices: &Matrices,
+        params: &MatmulParams,
+        tile_i: u32,
+        tile_j: u32,
+    ) -> Vec<i32> {
+        let t = params.tile as usize;
+        let r = params.noise_rank as usize;
+        let row0 = (tile_i * params.tile) as usize;
+        let col0 = (tile_j * params.tile) as usize;
+        let mut c_blk = vec![0i32; t * t];
+        let steps = params.num_stripes() as usize;
+        for step in 0..steps {
+            let lo = step * r;
+            for di in 0..t {
+                let a_row = &matrices.a_prime_row((row0 + di) as u32)[lo..lo + r];
+                for dj in 0..t {
+                    let b_col = &matrices.b_prime_col((col0 + dj) as u32)[lo..lo + r];
+                    let mut delta: i32 = 0;
+                    for l in 0..r {
+                        delta = delta.wrapping_add((a_row[l] as i32) * (b_col[l] as i32));
+                    }
+                    let idx = di * t + dj;
+                    c_blk[idx] = c_blk[idx].wrapping_add(delta);
+                }
+            }
+        }
+        c_blk
+    }
+
     #[test]
-    fn tile_matches_naive() {
-        let p = MatmulParams::TEST_SMALL;
-        let state = b"hello".to_vec();
-        let seed = [3u8; 32];
-        let full = naive_full(&state, &seed, &p);
-        let mats = Matrices::expand(&state, &seed, &p);
-        let t = p.tile as usize;
-        let n = p.n as usize;
-        for tile_i in 0..p.row_tiles() {
-            for tile_j in 0..p.col_tiles() {
-                let block = compute_tile(&mats, &p, tile_i, tile_j);
+    fn iterative_c_blk_matches_naive_full_product() {
+        let params = MatmulParams::TEST_SMALL;
+        let s_a = [3u8; 32];
+        let s_b = [4u8; 32];
+        let noise = BlockNoise::expand(&s_a, &s_b, &params);
+        let (a, b) = synth_ab(11, &params);
+        let mats = Matrices::build(&a, &b, &noise, &params);
+        let full = naive_full_product(&a, &b, &s_a, &s_b, &params);
+        let t = params.tile as usize;
+        let n = params.n as usize;
+        for tile_i in 0..params.row_tiles() {
+            for tile_j in 0..params.col_tiles() {
+                let block = iterative_tile_c_blk(&mats, &params, tile_i, tile_j);
                 for di in 0..t {
                     for dj in 0..t {
                         let i = tile_i as usize * t + di;
                         let j = tile_j as usize * t + dj;
-                        assert_eq!(block[di * t + dj], full[i * n + j]);
+                        assert_eq!(
+                            block[di * t + dj],
+                            full[i * n + j],
+                            "mismatch at ({tile_i},{tile_j})[{di},{dj}]"
+                        );
                     }
                 }
             }
@@ -337,31 +446,53 @@ mod tests {
 
     #[test]
     fn slice_path_matches_full_path() {
-        let p = MatmulParams::TEST_SMALL;
-        let state = b"hello".to_vec();
-        let seed = [3u8; 32];
-        let mats = Matrices::expand(&state, &seed, &p);
+        let params = MatmulParams::TEST_SMALL;
+        let s_a = [3u8; 32];
+        let s_b = [4u8; 32];
+        let noise = BlockNoise::expand(&s_a, &s_b, &params);
+        let (a, b) = synth_ab(11, &params);
+        let mats = Matrices::build(&a, &b, &noise, &params);
 
         let tile_i = 1u32;
         let tile_j = 2u32;
-        let t = p.tile as u32;
-        let k = p.k as usize;
-        let mut a_rows = vec![0i8; (t as usize) * k];
-        let mut e_rows = vec![0i8; (t as usize) * k];
+        let t = params.tile as usize;
+        let k = params.k as usize;
+        let row0 = (tile_i * params.tile) as usize;
+        let col0 = (tile_j * params.tile) as usize;
+
+        let mut a_rows = vec![0i8; t * k];
         for di in 0..t {
-            let i = tile_i * t + di;
-            a_rows[(di as usize) * k..(di as usize + 1) * k].copy_from_slice(mats.a_row(i));
-            e_rows[(di as usize) * k..(di as usize + 1) * k].copy_from_slice(mats.e_row(i));
+            a_rows[di * k..(di + 1) * k].copy_from_slice(mats.a_prime_row((row0 + di) as u32));
         }
-        let mut b_cols = vec![0i8; (t as usize) * k];
-        let mut f_cols = vec![0i8; (t as usize) * k];
+        let mut b_cols = vec![0i8; t * k];
         for dj in 0..t {
-            let j = tile_j * t + dj;
-            b_cols[(dj as usize) * k..(dj as usize + 1) * k].copy_from_slice(mats.b_col(j));
-            f_cols[(dj as usize) * k..(dj as usize + 1) * k].copy_from_slice(mats.f_col(j));
+            b_cols[dj * k..(dj + 1) * k].copy_from_slice(mats.b_prime_col((col0 + dj) as u32));
         }
-        let from_full = compute_tile(&mats, &p, tile_i, tile_j);
-        let from_slices = compute_tile_from_slices(&a_rows, &e_rows, &b_cols, &f_cols, p.tile, p.k);
+
+        let from_full = compute_tile(&mats, &params, tile_i, tile_j);
+        let from_slices = compute_tile_from_slices(&a_rows, &b_cols, &params);
         assert_eq!(from_full, from_slices);
+    }
+
+    #[test]
+    fn tile_state_fold_depends_on_step_order() {
+        // Two folds into the same slot must depend on order: the rotation
+        // happens between them, so swapping the inputs changes the result.
+        let mut s1 = TileState::zero();
+        let mut s2 = TileState::zero();
+        s1.fold(0, 0x1234_5678);
+        s1.fold(16, 0x0bad_f00d); // back to slot 0 — rotation is applied first
+        s2.fold(0, 0x0bad_f00d);
+        s2.fold(16, 0x1234_5678);
+        assert_ne!(s1, s2);
+    }
+
+    #[test]
+    fn keyed_hash_depends_on_pow_key() {
+        let mut s = TileState::zero();
+        s.fold(0, 0x1234_5678);
+        let h1 = s.keyed_hash(&[1u8; 32]);
+        let h2 = s.keyed_hash(&[2u8; 32]);
+        assert_ne!(h1, h2);
     }
 }

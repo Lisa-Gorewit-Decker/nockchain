@@ -1,38 +1,57 @@
 //! Puzzle parameters.
+//!
+//! Matches Pearl Whitepaper §4.1 (mining configuration) for the in-crate
+//! synthetic-`A,B` setting: the protocol multiplies `(A + E) * (B + F)`
+//! tile-by-tile, with `E = E_L · E_R` and `F = F_L · F_R` of rank
+//! `noise_rank = r` (Pearl §4.4 Alg. 3). The noise rank is also the
+//! accumulator stripe width for the Pearl iterative tile-state update
+//! (Pearl §4.5 Alg. 4), so `r | k` is required.
+//!
+//! Difficulty is expressed in log-bits via `difficulty_bits = b` so the
+//! hardness condition matches Pearl §4.5:
+//!   BLAKE3(M, key = s_a)  <=  2^(256 - b) * r * t_m * t_n
+//! (with square tiles, `t_m = t_n = tile`).
 
 use thiserror::Error;
 
-/// Parameters of a matmul PoUW puzzle.
+/// Parameters of a Pearl-style matmul PoW puzzle.
 ///
-/// The matmul has shape `(m, k) * (k, n) = (m, n)` with INT8 inputs and i32
-/// accumulator. Output tiles are `t x t`.  `noise_rank` is reserved for the
-/// future low-rank decomposition of `E, F`; it is mixed into the Fiat-Shamir
-/// transcript so changing it forces a different puzzle.
+/// Matmul shape is `(m, k) * (k, n) = (m, n)`. Tiles are square `tile x tile`.
+/// `noise_rank` is the rank `r` of the low-rank noise factors **and** the
+/// inner-accumulator stripe width. `difficulty_bits` is Pearl's `b`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct MatmulParams {
     pub m: u32,
     pub k: u32,
     pub n: u32,
+    /// Noise rank `r`. Also the accumulator stripe width. Must satisfy
+    /// `1 <= r <= k` and `r | k`. Pearl §4.8 recommends `16r <= k <= 4r^2`
+    /// for security; this crate does **not** hard-enforce that bound so that
+    /// small test profiles stay valid.
     pub noise_rank: u32,
     pub tile: u32,
     pub spot_checks: u32,
-    pub lambda: u32,
+    /// Logarithmic difficulty `b` (Pearl §4.5). A tile is accepted when
+    /// `BLAKE3(M, key = s_a) <= 2^(256 - b) * r * t^2`. `b = 0` accepts
+    /// every tile; values above 256 reject everything.
+    pub difficulty_bits: u32,
 }
 
 impl MatmulParams {
     /// Default test profile — small enough to run end-to-end in milliseconds.
+    /// Picks `r = 4` so `16r = 64 = k` (Pearl-recommended lower bound).
     pub const TEST_SMALL: Self = Self {
         m: 64,
         k: 64,
         n: 64,
-        noise_rank: 8,
+        noise_rank: 4,
         tile: 8,
         spot_checks: 8,
-        lambda: 8,
+        difficulty_bits: 0,
     };
 
-    /// Production profile from the plan: 4096^3 INT8 matmul, 128-tile,
-    /// 80 spot checks. Use for benches; tests run TEST_SMALL.
+    /// Production profile: 4096^3 INT8 matmul, 128-tile, 80 spot checks.
+    /// `r = 64` so `16r = 1024 <= k = 4096 <= 4r^2 = 16384` (Pearl §4.8 OK).
     pub const PROD: Self = Self {
         m: 4096,
         k: 4096,
@@ -40,11 +59,11 @@ impl MatmulParams {
         noise_rank: 64,
         tile: 128,
         spot_checks: 80,
-        lambda: 80,
+        difficulty_bits: 0,
     };
 
     /// Gemma 4 31B FFN gate / up matmul: `(B=4096, hidden=5376, intermediate=21504)`.
-    /// At 300 TOPS INT8 ≈ 1.5 ms per attempt; same kernel as the model's gate / up.
+    /// `r = 64` works because `64 | 5376`.
     pub const GEMMA_4_31B_FFN: Self = Self {
         m: 4096,
         k: 5376,
@@ -52,11 +71,10 @@ impl MatmulParams {
         noise_rank: 64,
         tile: 64,
         spot_checks: 80,
-        lambda: 80,
+        difficulty_bits: 0,
     };
 
     /// Qwen 3.6 27B FFN gate / up matmul: `(B=4096, hidden=5120, intermediate=17408)`.
-    /// At 300 TOPS INT8 ≈ 1.2 ms per attempt; same kernel as the model's gate / up.
     pub const QWEN_3_6_27B_FFN: Self = Self {
         m: 4096,
         k: 5120,
@@ -64,13 +82,13 @@ impl MatmulParams {
         noise_rank: 64,
         tile: 64,
         spot_checks: 80,
-        lambda: 80,
+        difficulty_bits: 0,
     };
 
     /// Generic LLM-FFN profile builder. `batch_seq` is the M dimension (the
     /// product of mini-batch and sequence length the GEMM kernel sees);
     /// `hidden` and `intermediate` are the two model dimensions for the FFN
-    /// gate / up matmul. Picks `tile = 64` and `sigma = 80`.
+    /// gate / up matmul. Picks `tile = 64`, `r = 64`, `sigma = 80`.
     pub const fn llm_ffn(hidden: u32, intermediate: u32, batch_seq: u32) -> Self {
         Self {
             m: batch_seq,
@@ -79,7 +97,7 @@ impl MatmulParams {
             noise_rank: 64,
             tile: 64,
             spot_checks: 80,
-            lambda: 80,
+            difficulty_bits: 0,
         }
     }
 
@@ -96,14 +114,23 @@ impl MatmulParams {
         if total == 0 {
             return Err(ParamError::ZeroTiles);
         }
-        // No power-of-two requirement: the Merkle tree pads the leaf set to
-        // the next power of two with a fixed sentinel. This lets us match real
-        // LLM matmul shapes whose dimensions are rarely powers of two.
-        // i32 dot product safety: max |A_il + E_il| <= 256, same for B+F.
-        // Per-product bound 256*256 = 2^16, summed k times => k*2^16 must
-        // fit in i32 (< 2^31), i.e. k < 2^15.
-        if self.k == 0 || self.k > (1u32 << 15) {
+        // Pearl §4.8 caps k at 2^16. With `|A| <= 64`, `|E| <= 63`, the per-multiply
+        // bound is (64+63)^2 = 16129 < 2^14, so `k * 16129 < 2^31` holds well past
+        // Pearl's cap. Use Pearl's cap directly.
+        if self.k == 0 || self.k > (1u32 << 16) {
             return Err(ParamError::KOutOfRange);
+        }
+        // Noise rank requirements: 1 <= r <= k and r | k.
+        if self.noise_rank == 0 || self.noise_rank > self.k {
+            return Err(ParamError::NoiseRankOutOfRange);
+        }
+        if self.k % self.noise_rank != 0 {
+            return Err(ParamError::NoiseRankDoesNotDivideK);
+        }
+        // Pearl §4.4: each column of E_R has one +1 and one -1 at two
+        // *distinct* positions; requires r >= 2.
+        if self.noise_rank < 2 {
+            return Err(ParamError::NoiseRankTooSmall);
         }
         if self.spot_checks == 0 {
             return Err(ParamError::ZeroSpotChecks);
@@ -135,6 +162,11 @@ impl MatmulParams {
         let cols = self.col_tiles();
         (idx / cols, idx % cols)
     }
+    /// Number of accumulator stripes per tile (`⌊k / r⌋`). Each stripe folds
+    /// one update into the 512-bit `M` state.
+    pub fn num_stripes(&self) -> u32 {
+        self.k / self.noise_rank
+    }
 }
 
 #[derive(Debug, Error, PartialEq, Eq)]
@@ -145,8 +177,14 @@ pub enum ParamError {
     TileDoesNotDivide,
     #[error("(m/t)*(n/t) must be > 0")]
     ZeroTiles,
-    #[error("k must be in 1..=2^15 to keep dot products in i32 range")]
+    #[error("k must be in 1..=2^16 (Pearl §4.8)")]
     KOutOfRange,
+    #[error("noise_rank must be in 1..=k")]
+    NoiseRankOutOfRange,
+    #[error("noise_rank must divide k")]
+    NoiseRankDoesNotDivideK,
+    #[error("noise_rank must be >= 2 (Pearl §4.4 ChoiceMatrix requires two distinct positions)")]
+    NoiseRankTooSmall,
     #[error("spot_checks must be > 0")]
     ZeroSpotChecks,
     #[error("spot_checks must be <= number of tiles")]
@@ -176,7 +214,7 @@ mod tests {
         assert_eq!(p.validate(), Err(ParamError::TileDoesNotDivide));
 
         p = MatmulParams::TEST_SMALL;
-        p.k = (1 << 15) + 1;
+        p.k = (1 << 16) + 1;
         assert_eq!(p.validate(), Err(ParamError::KOutOfRange));
 
         p = MatmulParams::TEST_SMALL;
@@ -186,6 +224,16 @@ mod tests {
         p = MatmulParams::TEST_SMALL;
         p.spot_checks = p.num_tiles() + 1;
         assert_eq!(p.validate(), Err(ParamError::TooManySpotChecks));
+
+        // Noise rank must divide k.
+        p = MatmulParams::TEST_SMALL;
+        p.noise_rank = 5; // 5 does not divide 64
+        assert_eq!(p.validate(), Err(ParamError::NoiseRankDoesNotDivideK));
+
+        // Noise rank cannot be 1 (ChoiceMatrix needs two distinct positions).
+        p = MatmulParams::TEST_SMALL;
+        p.noise_rank = 1;
+        assert_eq!(p.validate(), Err(ParamError::NoiseRankTooSmall));
     }
 
     #[test]
@@ -200,14 +248,15 @@ mod tests {
     #[test]
     fn rectangular_non_pow2_validates() {
         // (m/t, n/t) = (8, 12) -> 96 tiles; not a power of two.
+        // r = 4 divides k = 64.
         let p = MatmulParams {
             m: 64,
             k: 64,
             n: 96,
-            noise_rank: 8,
+            noise_rank: 4,
             tile: 8,
             spot_checks: 8,
-            lambda: 8,
+            difficulty_bits: 0,
         };
         p.validate().unwrap();
         assert_eq!(p.num_tiles(), 96);
@@ -222,5 +271,12 @@ mod tests {
         assert_eq!(p.num_tiles(), 64 * 336);
         assert!(!p.num_tiles().is_power_of_two());
         assert_eq!(p.num_tiles_padded(), p.num_tiles().next_power_of_two());
+    }
+
+    #[test]
+    fn num_stripes_matches_k_over_r() {
+        let p = MatmulParams::TEST_SMALL;
+        assert_eq!(p.num_stripes(), p.k / p.noise_rank);
+        assert_eq!(MatmulParams::PROD.num_stripes(), 4096 / 64);
     }
 }

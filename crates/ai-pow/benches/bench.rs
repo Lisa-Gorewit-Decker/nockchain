@@ -9,6 +9,7 @@ use std::time::Duration;
 
 use ai_pow::params::MatmulParams;
 use ai_pow::prover::{mine, mine_block, ProverOptions};
+use ai_pow::synth::synth_matrices;
 use ai_pow::verifier::verify;
 use criterion::{criterion_group, criterion_main, Criterion};
 
@@ -24,7 +25,7 @@ fn pick_params() -> MatmulParams {
             noise_rank: 16,
             tile: 32,
             spot_checks: 16,
-            lambda: 16,
+            difficulty_bits: 0,
         },
         _ => MatmulParams::TEST_SMALL,
     }
@@ -32,43 +33,45 @@ fn pick_params() -> MatmulParams {
 
 fn bench_prover(c: &mut Criterion) {
     let params = pick_params();
-    let target = [0xff_u8; 32];
-    c.bench_function("prover.mine.one_attempt", |b| {
-        b.iter(|| mine(b"hdr", b"nce", &params, &target, ProverOptions::default()).unwrap())
+    let (a, b) = synth_matrices(b"bench-ab", &params);
+    c.bench_function("prover.mine.one_attempt", |bencher| {
+        bencher.iter(|| mine(b"hdr", b"nce", &a, &b, &params, ProverOptions::default()).unwrap())
     });
 }
 
 fn bench_verifier(c: &mut Criterion) {
     let params = pick_params();
-    let target = [0xff_u8; 32];
-    let proof = mine(b"hdr", b"nce", &params, &target, ProverOptions::default())
+    let (a, b) = synth_matrices(b"bench-ab", &params);
+    let proof = mine(b"hdr", b"nce", &a, &b, &params, ProverOptions::default())
         .unwrap()
         .unwrap();
-    c.bench_function("verifier.verify", |b| {
-        b.iter(|| verify(b"hdr", b"nce", &params, &target, &proof).unwrap())
+    c.bench_function("verifier.verify", |bencher| {
+        bencher.iter(|| verify(b"hdr", b"nce", &params, &proof).unwrap())
     });
 }
 
 fn bench_mine_block_amortized(c: &mut Criterion) {
-    // Sweep 4 nonces with a target so tight nothing satisfies, so the prover
-    // does all 4 full matmuls and we can compare against 4× `mine.one_attempt`.
-    // The difference is the block-level noise-cache savings.
-    let params = pick_params();
-    let target = [0u8; 32];
-    c.bench_function("prover.mine_block.4_nonces_no_match", |b| {
-        b.iter(|| {
+    // Sweep 4 nonces with a difficulty so tight nothing satisfies, so the
+    // prover does the full per-block precomputation once and the amortized
+    // per-nonce cost is just leaf-rehashing + Merkle build.
+    let mut params = pick_params();
+    params.difficulty_bits = 400;
+    let (a, b) = synth_matrices(b"bench-ab", &params);
+    c.bench_function("prover.mine_block.4_nonces_no_match", |bencher| {
+        bencher.iter(|| {
             mine_block(
                 b"hdr",
                 [b"n1" as &[u8], b"n2", b"n3", b"n4"],
+                &a,
+                &b,
                 &params,
-                &target,
                 ProverOptions::default(),
             )
             .unwrap()
         })
     });
-    c.bench_function("prover.mine.one_attempt_no_match", |b| {
-        b.iter(|| mine(b"hdr", b"n1", &params, &target, ProverOptions::default()).unwrap())
+    c.bench_function("prover.mine.one_attempt_no_match", |bencher| {
+        bencher.iter(|| mine(b"hdr", b"n1", &a, &b, &params, ProverOptions::default()).unwrap())
     });
 }
 
