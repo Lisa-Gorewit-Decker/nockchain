@@ -47,16 +47,16 @@ When Plonky3 doesn't have a direct primitive (e.g. Pearl's
 | 12a | `composite_full_air::eval` — Phase 3-6 chips wired (stark_row, range_tables, i8u8, control, input) | ✅ landed | 9 | 315 unit |
 | 12b | `composite_full_air` — matmul wired via `eval_composite` (BLAKE3, jackpot pending) | ✅ landed | 2 | 317 unit |
 | 12c | `composite_full_air` — BLAKE3 wired via `eval_composite` (jackpot pending) | ✅ landed | 1 | 318 unit |
-| 12d | `composite_full_air` — jackpot wired via `eval_composite`; layout extended with `JACKPOT_X_BITS` + `JACKPOT_SLOT_SEL` | ✅ landed | — | — |
+| 12d | `composite_full_air` — jackpot wired via `eval_composite`; layout extended with `JACKPOT_X_BITS` + `JACKPOT_SLOT_SEL` | ✅ landed | — | 335 unit |
 | 13a | `composite_trace` baseline builder + type surface | ✅ landed | 7 | 325 unit |
 | 13b | `composite_trace` instruction-list compilation: matmul step placement + cumsum threading | ✅ landed | 2 | 330 unit |
 | 13c | `composite_trace` — BLAKE3 hash block placement (jackpot still pending) | ✅ landed | 2 | 332 unit |
-| 13d | `composite_trace` — jackpot step placement + chain threading | ✅ landed | 2 | — |
+| 13d | `composite_trace` — jackpot step placement + chain threading | ✅ landed | 2 | 335 unit |
 | 14a | `composite_proof::{composite_prove, composite_verify}` wrappers + bincode round-trip | ✅ landed | 3 | 328 unit |
 | 14b | LogUp-aware folder swap (proving-side interaction wiring) | ⬜ pending | | |
 | 15 | PROD bench at MIN_STARK_LEN baseline (ignored) | ✅ landed | 1 ignored | 328 unit + 1 ignored |
 
-**Today's cumulative test count: 336 unit + 7 KAT + 4 ignored
+**Today's cumulative test count: 335 unit + 7 KAT + 1 ignored
 PROD bench. Phase 12 + Phase 13 complete: all 10 chips wired into
 the composite AIR; the composite trace supports placing all three
 instruction types (matmul, BLAKE3, jackpot).**
