@@ -149,7 +149,11 @@ pub fn forward_prefix(
                 }
             }
             use std::io::Write;
-            if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(&path) {
+            if let Ok(mut f) = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(&path)
+            {
                 let _ = writeln!(f, "{}\t{}", layer_idx, m_abs);
             }
         }

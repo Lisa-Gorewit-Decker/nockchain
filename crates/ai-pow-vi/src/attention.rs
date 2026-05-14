@@ -76,7 +76,7 @@ pub struct AttentionWeights {
     /// into the post-attention (m, q_dim) buffer before `w_o` projects
     /// to hidden. Matches Qwen 3.6 27B's full-attention block in
     /// `Qwen3NextAttention.forward`:
-    /// ```
+    /// ```text
     /// query_states, gate = torch.chunk(q_proj(x).view(B,S,-1,head_dim*2), 2, dim=-1)
     /// attn_output = attn_output * torch.sigmoid(gate)
     /// ```
@@ -403,7 +403,9 @@ pub fn attention_forward_gemma(
 
     // Q projection.
     let mut q_acc = vec![0i32; mu * q_proj_stride];
-    matmul_int8(input, &weights.w_q, m, hidden, q_proj_stride as u32, &mut q_acc)?;
+    matmul_int8(
+        input, &weights.w_q, m, hidden, q_proj_stride as u32, &mut q_acc,
+    )?;
     let mut q_proj_i8 = vec![0i8; mu * q_proj_stride];
     requantize_vec(&q_acc, scales.q, &mut q_proj_i8)?;
     drop(q_acc);

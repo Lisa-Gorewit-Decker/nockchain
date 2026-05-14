@@ -31,8 +31,6 @@ use ai_pow::fiat_shamir::{block_state, challenge_indices, challenge_seed};
 use ai_pow::tile_hash::hash_le_target;
 use thiserror::Error;
 
-use crate::tile_hash::{tile_hardness_hash, tile_leaf};
-
 use crate::activations::{ActivationLayout, ActivationLog};
 use crate::forward::{forward_prefix, ForwardError};
 use crate::layer::{LayerContext, LayerWeights};
@@ -40,6 +38,7 @@ use crate::matmul_int8::{matmul_int8, MatmulError};
 use crate::model::Model;
 use crate::prompt::{synth_prompt, PromptError};
 use crate::proof::{TileOpening, ViProof};
+use crate::tile_hash::{tile_hardness_hash, tile_leaf};
 
 /// Tile size (rows × cols of the FFN gate output) used for the puzzle.
 /// Same value as `ai-pow::params::MatmulParams` FFN tile, so a future

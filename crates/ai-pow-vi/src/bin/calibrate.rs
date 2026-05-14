@@ -58,7 +58,9 @@ fn parse_args() -> Result<Args, String> {
         match a.as_str() {
             "--gguf" => gguf = Some(PathBuf::from(it.next().ok_or("--gguf requires a value")?)),
             "--prompts" => {
-                prompts = Some(PathBuf::from(it.next().ok_or("--prompts requires a value")?))
+                prompts = Some(PathBuf::from(
+                    it.next().ok_or("--prompts requires a value")?,
+                ))
             }
             "--out" => out = Some(PathBuf::from(it.next().ok_or("--out requires a value")?)),
             "--seq-len-cap" => {
@@ -207,16 +209,12 @@ fn read_qwen35_dims(content: &Content) -> Result<QwenDims, String> {
     let num_q_heads = meta_u32(content, "qwen35.attention.head_count", None)? as usize;
 
     // Per-layer KV head count: array length num_layers.
-    let kv_arr = meta_u32_array(
-        content,
-        "qwen35.attention.head_count_kv",
-        Some(num_layers),
-    )
-    .or_else(|_| -> Result<Vec<u32>, String> {
-        // Fallback: scalar value broadcast to every layer.
-        let s = meta_u32(content, "qwen35.attention.head_count_kv", None)?;
-        Ok(vec![s; num_layers])
-    })?;
+    let kv_arr = meta_u32_array(content, "qwen35.attention.head_count_kv", Some(num_layers))
+        .or_else(|_| -> Result<Vec<u32>, String> {
+            // Fallback: scalar value broadcast to every layer.
+            let s = meta_u32(content, "qwen35.attention.head_count_kv", None)?;
+            Ok(vec![s; num_layers])
+        })?;
     let num_kv_heads: Vec<usize> = kv_arr.into_iter().map(|x| x as usize).collect();
     let num_kv_std = num_kv_heads
         .iter()
@@ -231,10 +229,17 @@ fn read_qwen35_dims(content: &Content) -> Result<QwenDims, String> {
         }
     }
 
-    let n_rot = meta_u32(content, "qwen35.rope.dimension_count", Some(head_dim as u32))? as usize;
+    let n_rot = meta_u32(
+        content,
+        "qwen35.rope.dimension_count",
+        Some(head_dim as u32),
+    )? as usize;
 
-    let eps =
-        meta_f32(content, "qwen35.attention.layer_norm_rms_epsilon", Some(DEFAULT_NORM_EPS))?;
+    let eps = meta_f32(
+        content,
+        "qwen35.attention.layer_norm_rms_epsilon",
+        Some(DEFAULT_NORM_EPS),
+    )?;
 
     let ssm_d_conv = meta_u32(content, "qwen35.ssm.conv_kernel", Some(4))? as usize;
     let ssm_d_state = meta_u32(content, "qwen35.ssm.state_size", Some(128))? as usize;
@@ -242,8 +247,7 @@ fn read_qwen35_dims(content: &Content) -> Result<QwenDims, String> {
     let ssm_n_group = meta_u32(content, "qwen35.ssm.group_count", Some(16))? as usize;
     let ssm_d_inner = meta_u32(content, "qwen35.ssm.inner_size", Some(6144))? as usize;
 
-    let full_attn_interval =
-        meta_u32(content, "qwen35.full_attention_interval", Some(4))? as usize;
+    let full_attn_interval = meta_u32(content, "qwen35.full_attention_interval", Some(4))? as usize;
 
     Ok(QwenDims {
         hidden: meta_u32(content, "qwen35.embedding_length", None)? as usize,
@@ -470,13 +474,7 @@ fn head_rms_norm_f32(
 
 /// ggml-style L2 norm over the last axis: `y = x / max(sqrt(sum_x^2), eps)`.
 /// In-place modify per (row * num_heads + h, head_dim) chunk.
-fn l2_norm_per_head_f32(
-    x: &mut [f32],
-    m: usize,
-    num_heads: usize,
-    head_dim: usize,
-    eps: f32,
-) {
+fn l2_norm_per_head_f32(x: &mut [f32], m: usize, num_heads: usize, head_dim: usize, eps: f32) {
     for row in 0..m {
         for h in 0..num_heads {
             let off = (row * num_heads + h) * head_dim;
@@ -694,10 +692,10 @@ fn forward_std_layer(
     let (w_v_f, _) = dequant_to_vec_f32(content, file, &format!("{prefix}.attn_v.weight"))?;
     let (w_o_f, _) = dequant_to_vec_f32(content, file, &format!("{prefix}.attn_output.weight"))?;
 
-    let q_norm_gamma = dequant_opt(content, file, &format!("{prefix}.attn_q_norm.weight"))
-        .map(|(f, _)| f);
-    let k_norm_gamma = dequant_opt(content, file, &format!("{prefix}.attn_k_norm.weight"))
-        .map(|(f, _)| f);
+    let q_norm_gamma =
+        dequant_opt(content, file, &format!("{prefix}.attn_q_norm.weight")).map(|(f, _)| f);
+    let k_norm_gamma =
+        dequant_opt(content, file, &format!("{prefix}.attn_k_norm.weight")).map(|(f, _)| f);
 
     let (w_gate_f, _) = dequant_to_vec_f32(content, file, &format!("{prefix}.ffn_gate.weight"))?;
     let (w_up_f, _) = dequant_to_vec_f32(content, file, &format!("{prefix}.ffn_up.weight"))?;
@@ -749,32 +747,15 @@ fn forward_std_layer(
     acc.record(&format!("layer[{n}].qk_norm_post"), &k_normed);
 
     apply_imrope_f32(
-        &mut q_normed,
-        m,
-        dims.num_q_heads,
-        dims.head_dim,
-        dims.n_rot,
-        dims.rope_theta,
+        &mut q_normed, m, dims.num_q_heads, dims.head_dim, dims.n_rot, dims.rope_theta,
         dims.rope_sections,
     );
     apply_imrope_f32(
-        &mut k_normed,
-        m,
-        n_kv,
-        dims.head_dim,
-        dims.n_rot,
-        dims.rope_theta,
-        dims.rope_sections,
+        &mut k_normed, m, n_kv, dims.head_dim, dims.n_rot, dims.rope_theta, dims.rope_sections,
     );
 
     let (mut attn_out, max_score, max_attn_out) = attention_core_f32(
-        &q_normed,
-        &k_normed,
-        &v_proj,
-        m,
-        dims.num_q_heads,
-        n_kv,
-        dims.head_dim,
+        &q_normed, &k_normed, &v_proj, m, dims.num_q_heads, n_kv, dims.head_dim,
     );
     {
         let s = vec![max_score];
@@ -883,8 +864,7 @@ fn forward_hybrid_layer(
     let (ssm_a, _) = dequant_to_vec_f32(content, file, &format!("{prefix}.ssm_a"))?;
     let (w_beta, _) = dequant_to_vec_f32(content, file, &format!("{prefix}.ssm_beta.weight"))?;
     let (w_alpha, _) = dequant_to_vec_f32(content, file, &format!("{prefix}.ssm_alpha.weight"))?;
-    let (ssm_norm_g, _) =
-        dequant_to_vec_f32(content, file, &format!("{prefix}.ssm_norm.weight"))?;
+    let (ssm_norm_g, _) = dequant_to_vec_f32(content, file, &format!("{prefix}.ssm_norm.weight"))?;
     let (w_ssm_out, _) = dequant_to_vec_f32(content, file, &format!("{prefix}.ssm_out.weight"))?;
 
     let (w_ffn_gate, _) = dequant_to_vec_f32(content, file, &format!("{prefix}.ffn_gate.weight"))?;
@@ -961,8 +941,7 @@ fn forward_hybrid_layer(
         // K: next key_dim channels.
         for kh in 0..num_k {
             for d in 0..head_k {
-                k_conv[(t * num_k + kh) * head_k + d] =
-                    conv_out[row + key_dim + kh * head_k + d];
+                k_conv[(t * num_k + kh) * head_k + d] = conv_out[row + key_dim + kh * head_k + d];
             }
         }
         // V: last value_dim channels.
@@ -1143,14 +1122,22 @@ fn parse_prompts(path: &std::path::Path, cap: usize) -> Result<Vec<PromptEntry>,
             continue;
         }
         // "prompt" array — first [...] in the line.
-        let lb = line.find('[').ok_or_else(|| format!("line {}: no [", i + 1))?;
-        let rb = line[lb..].find(']').ok_or_else(|| format!("line {}: no ]", i + 1))? + lb;
+        let lb = line
+            .find('[')
+            .ok_or_else(|| format!("line {}: no [", i + 1))?;
+        let rb = line[lb..]
+            .find(']')
+            .ok_or_else(|| format!("line {}: no ]", i + 1))?
+            + lb;
         let inner = &line[lb + 1..rb];
         let toks: Vec<u32> = inner
             .split(',')
             .map(|s| s.trim())
             .filter(|s| !s.is_empty())
-            .map(|s| s.parse::<u32>().map_err(|e| format!("line {} tok: {e}", i + 1)))
+            .map(|s| {
+                s.parse::<u32>()
+                    .map_err(|e| format!("line {} tok: {e}", i + 1))
+            })
             .collect::<Result<_, _>>()?;
         if toks.is_empty() {
             continue;
@@ -1198,7 +1185,9 @@ fn run() -> Result<(), String> {
     let content = Content::read(&mut file).map_err(|e| format!("read gguf: {e}"))?;
     let arch = arch_str_from_content(&content)?;
     if arch != "qwen35" && arch != "qwen3" {
-        return Err(format!("calibrate supports qwen35/qwen3 only; got arch={arch}"));
+        return Err(format!(
+            "calibrate supports qwen35/qwen3 only; got arch={arch}"
+        ));
     }
     let dims = read_qwen35_dims(&content)?;
     eprintln!(
@@ -1234,8 +1223,7 @@ fn run() -> Result<(), String> {
 
     // Embed table (vocab, hidden) → embed once, keep in RAM.
     eprintln!("→ embed");
-    let (embed_f, embed_shape) =
-        dequant_to_vec_f32(&content, &mut file, "token_embd.weight")?;
+    let (embed_f, embed_shape) = dequant_to_vec_f32(&content, &mut file, "token_embd.weight")?;
     let vocab = embed_shape[0];
     if embed_shape[1] != dims.hidden {
         return Err(format!(
@@ -1261,7 +1249,9 @@ fn run() -> Result<(), String> {
     }
     // Embed table is needed again for tied logits in --verify-top1. Keep it
     // around only if we'll use it; otherwise free.
-    let embed_for_lm = if args.verify_top1 { Some(embed_f) } else {
+    let embed_for_lm = if args.verify_top1 {
+        Some(embed_f)
+    } else {
         drop(embed_f);
         None
     };
@@ -1286,9 +1276,8 @@ fn run() -> Result<(), String> {
         if is_std {
             for (pi, acts) in prompt_acts.iter_mut().enumerate() {
                 let m = acts.len() / dims.hidden;
-                let new_acts =
-                    forward_std_layer(n, acts, m, &dims, &content, &mut file, &mut acc)
-                        .map_err(|e| format!("layer {n} prompt {pi}: {e}"))?;
+                let new_acts = forward_std_layer(n, acts, m, &dims, &content, &mut file, &mut acc)
+                    .map_err(|e| format!("layer {n} prompt {pi}: {e}"))?;
                 *acts = new_acts;
             }
         } else {
@@ -1304,10 +1293,8 @@ fn run() -> Result<(), String> {
 
     // Final norm.
     eprintln!("→ final norm");
-    let (final_gamma, _) =
-        dequant_to_vec_f32(&content, &mut file, "output_norm.weight").or_else(|_| {
-            dequant_to_vec_f32(&content, &mut file, "norm.weight")
-        })?;
+    let (final_gamma, _) = dequant_to_vec_f32(&content, &mut file, "output_norm.weight")
+        .or_else(|_| dequant_to_vec_f32(&content, &mut file, "norm.weight"))?;
     for acts in prompt_acts.iter_mut() {
         let m = acts.len() / dims.hidden;
         let n = rms_norm_f32(acts, &final_gamma, m, dims.hidden, dims.eps);
@@ -1319,15 +1306,14 @@ fn run() -> Result<(), String> {
     if args.verify_top1 {
         // Use output.weight if present, else fall back to token_embd.weight
         // (tied embeddings).
-        let (lm_head, lm_shape) =
-            match dequant_to_vec_f32(&content, &mut file, "output.weight") {
-                Ok(t) => t,
-                Err(_) => {
-                    let f = embed_for_lm.ok_or("output.weight absent and embed not cached")?;
-                    let shape = vec![vocab, dims.hidden];
-                    (f, shape)
-                }
-            };
+        let (lm_head, lm_shape) = match dequant_to_vec_f32(&content, &mut file, "output.weight") {
+            Ok(t) => t,
+            Err(_) => {
+                let f = embed_for_lm.ok_or("output.weight absent and embed not cached")?;
+                let shape = vec![vocab, dims.hidden];
+                (f, shape)
+            }
+        };
         let lm_vocab = lm_shape[0];
         if lm_shape[1] != dims.hidden {
             return Err(format!(
@@ -1358,7 +1344,9 @@ fn run() -> Result<(), String> {
             }
             let expected = ent.expected_top1;
             let matched = expected.map(|e| e == best_v).unwrap_or(false);
-            let exp_str = expected.map(|e| e.to_string()).unwrap_or_else(|| "?".into());
+            let exp_str = expected
+                .map(|e| e.to_string())
+                .unwrap_or_else(|| "?".into());
             println!(
                 "verify\tline={}\tpredicted={}\texpected={}\tmatch={}",
                 i + 1,
@@ -1400,9 +1388,7 @@ fn run() -> Result<(), String> {
         acc.merge_default(&format!("layer[{n}].norm_post.1"), default_max_abs);
         acc.merge_default(&format!("layer[{n}].norm_post.2"), default_max_abs);
         acc.merge_default(&format!("layer[{n}].qk_norm_post"), default_max_abs);
-        for k in [
-            "q", "k", "v", "alpha_logit", "beta_logit", "u", "decay", "update", "o", "proj",
-        ] {
+        for k in ["q", "k", "v", "alpha_logit", "beta_logit", "u", "decay", "update", "o", "proj"] {
             acc.merge_default(&format!("layer[{n}].ssm.{k}"), default_max_abs);
         }
         acc.merge_default(&format!("layer[{n}].ssm_norm_post"), default_max_abs);

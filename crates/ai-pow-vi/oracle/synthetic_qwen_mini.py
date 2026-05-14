@@ -390,9 +390,11 @@ def encode_weights(model: F.Model) -> bytes:
 CTX_COMM_W = "ai-pow-vi v1 comm-w"
 CTX_WEIGHT_TILE = "ai-pow-vi v1 weight-tile"
 CTX_MANIFEST = "ai-pow-vi v1 manifest"
-CTX_LEAF = "ai-pow v1 merkle-leaf"
-CTX_NODE = "ai-pow v1 merkle-node"
-CTX_SENTINEL = "ai-pow v1 merkle-sentinel"
+# Must track `ai-pow/src/commit.rs` and `ai-pow-vi/src/comm_w.rs`. The
+# v1 → v3 bump happened during the ai-pow Pearl-alignment work.
+CTX_LEAF = "ai-pow v3 merkle-leaf"
+CTX_NODE = "ai-pow v3 merkle-node"
+CTX_SENTINEL = "ai-pow v3 merkle-sentinel"
 
 WEIGHT_TILE_BYTES = 64
 

@@ -367,7 +367,9 @@ fn main() -> ExitCode {
 
     println!("prompts_run\t{total}");
     if compared == 0 {
-        println!("top1_agreement\tn/a (no expected_top1 fields supplied; predictions printed above)");
+        println!(
+            "top1_agreement\tn/a (no expected_top1 fields supplied; predictions printed above)"
+        );
     } else {
         let pct = 100.0 * (top1_agree as f64) / (compared as f64);
         println!("top1_agreement\t{top1_agree}/{compared}\t{:.1}%", pct);

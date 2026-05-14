@@ -128,8 +128,7 @@ pub fn load_model(dir: &Path, expected_comm_w: &[u8; 32]) -> Result<Model, LoadE
     // Recompute comm_W against the on-disk weights.bin via the streaming
     // Merkle reducer. Avoids the materializing `compute_comm_w(&model)`
     // path which builds another 25 GB canonical_weight_bytes Vec<u8>.
-    let actual_comm_w =
-        compute_comm_w_streaming(&weights_path, &model).map_err(LoadError::Io)?;
+    let actual_comm_w = compute_comm_w_streaming(&weights_path, &model).map_err(LoadError::Io)?;
     if &actual_comm_w != expected_comm_w {
         return Err(LoadError::CommWMismatch);
     }
@@ -436,7 +435,8 @@ fn activation_kind_from_tag(t: u8) -> ActivationKind {
 
 /// Intermediate representation: parsed manifest, ready to be paired with
 /// the weights byte stream to construct a Model.
-struct ParsedManifest {
+#[doc(hidden)]
+pub struct ParsedManifest {
     arch_tag: ArchTag,
     feature_flags: FeatureFlags,
     dims: ModelDims,
@@ -573,6 +573,21 @@ impl<'a> Cursor<'a> {
     fn at_end(&self) -> bool {
         self.pos == self.bytes.len()
     }
+}
+
+/// Test-only re-export: parse a manifest byte stream into the internal
+/// `ParsedManifest`. Used by `tests/recompute_fixture_comm_w.rs` to
+/// refresh stale on-disk `comm_w.hex` snapshots after the `ai-pow`
+/// Merkle-context strings bumped from v1 → v3.
+#[doc(hidden)]
+pub fn parse_manifest_for_test(bytes: &[u8]) -> Result<ParsedManifest, LoadError> {
+    parse_manifest(bytes)
+}
+
+/// Test-only re-export: parse a weights byte stream into a `Model`.
+#[doc(hidden)]
+pub fn parse_weights_for_test(parsed: ParsedManifest, bytes: &[u8]) -> Result<Model, LoadError> {
+    parse_weights(parsed, bytes)
 }
 
 fn parse_manifest(bytes: &[u8]) -> Result<ParsedManifest, LoadError> {

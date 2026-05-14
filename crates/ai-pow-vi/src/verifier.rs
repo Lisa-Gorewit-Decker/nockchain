@@ -19,13 +19,12 @@ use ai_pow::fiat_shamir::{block_state, challenge_indices, challenge_seed};
 use ai_pow::tile_hash::hash_le_target;
 use thiserror::Error;
 
-use crate::tile_hash::tile_hardness_hash;
-
 use crate::comm_w::compute_comm_w;
 use crate::layer::LayerContext;
 use crate::model::Model;
 use crate::proof::{TileOpening, ViProof};
 use crate::prover::{mine_vi, ProverError, ProverOptions};
+use crate::tile_hash::tile_hardness_hash;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum VerifierMode {

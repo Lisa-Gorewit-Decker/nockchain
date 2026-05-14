@@ -35,9 +35,11 @@ import blake3
 
 WEIGHT_TILE_BYTES = 64
 CTX_WEIGHT_TILE = "ai-pow-vi v1 weight-tile"
-CTX_LEAF = "ai-pow v1 merkle-leaf"
-CTX_NODE = "ai-pow v1 merkle-node"
-CTX_SENTINEL = "ai-pow v1 merkle-sentinel"
+# Must track `ai-pow/src/commit.rs` and `ai-pow-vi/src/comm_w.rs`. The
+# v1 → v3 bump happened during the ai-pow Pearl-alignment work.
+CTX_LEAF = "ai-pow v3 merkle-leaf"
+CTX_NODE = "ai-pow v3 merkle-node"
+CTX_SENTINEL = "ai-pow v3 merkle-sentinel"
 
 
 def tile_hash(chunk: bytes) -> bytes:

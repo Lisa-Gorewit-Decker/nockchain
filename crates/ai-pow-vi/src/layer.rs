@@ -828,33 +828,13 @@ fn forward_qwen_hybrid_ssm_layer(
             ffn,
             ffn_scales,
         } => (
-            norm1,
-            attn_qkv_fused,
-            attn_gate,
+            norm1, attn_qkv_fused, attn_gate,
             // `num_q_heads` / `head_dim` are repurposed by the converter to
             // hold the DeltaNet `num_k_heads` / `head_k_dim` for qwen35.
-            *num_q_heads,
-            *head_dim,
-            ssm_a,
-            ssm_alpha,
-            ssm_beta,
-            ssm_conv1d,
-            ssm_dt,
-            ssm_norm_gamma,
-            *ssm_norm_eps_q,
-            *ssm_norm_post_scale,
-            ssm_out,
-            *num_v_heads,
-            *ssm_head_dim,
-            *ssm_kernel_size,
-            *ssm_scales,
-            *ssm_a_weight_max,
-            *ssm_dt_weight_max,
-            *ssm_conv1d_weight_max,
-            *ssm_norm_gamma_weight_max,
-            norm2,
-            ffn,
-            *ffn_scales,
+            *num_q_heads, *head_dim, ssm_a, ssm_alpha, ssm_beta, ssm_conv1d, ssm_dt, ssm_norm_gamma,
+            *ssm_norm_eps_q, *ssm_norm_post_scale, ssm_out, *num_v_heads, *ssm_head_dim,
+            *ssm_kernel_size, *ssm_scales, *ssm_a_weight_max, *ssm_dt_weight_max,
+            *ssm_conv1d_weight_max, *ssm_norm_gamma_weight_max, norm2, ffn, *ffn_scales,
         ),
         _ => unreachable!("forward_qwen_hybrid_ssm_layer requires QwenHybridSsm"),
     };
@@ -903,18 +883,18 @@ fn forward_qwen_hybrid_ssm_layer(
             // calibrate.rs reuses the old DeltaNetScales slot names with new
             // semantics; see dnet_scales_for in gguf_convert.rs for the
             // tap-name → slot mapping that produces this struct.
-            qkv: ssm_scales.q,           // ssm.q tap (qkv_mixed)
-            gate_z: ssm_scales.proj,     // ssm.proj tap (z_full)
-            conv_silu: ssm_scales.u,     // ssm.u tap (conv+SiLU)
+            qkv: ssm_scales.q,       // ssm.q tap (qkv_mixed)
+            gate_z: ssm_scales.proj, // ssm.proj tap (z_full)
+            conv_silu: ssm_scales.u, // ssm.u tap (conv+SiLU)
             // Post-L2-norm Q magnitude isn't recorded separately; ssm.k
             // (post-L2 K) is at the same magnitude, used as proxy.
             q_norm: ssm_scales.k,
-            k_norm: ssm_scales.k,        // ssm.k tap
+            k_norm: ssm_scales.k, // ssm.k tap
             alpha: ssm_scales.alpha_logit,
             beta: ssm_scales.beta_logit,
-            recurrence: ssm_scales.o,    // ssm.o tap (per-token recurrence out)
+            recurrence: ssm_scales.o, // ssm.o tap (per-token recurrence out)
             gated_norm: ssm_scales.decay, // converter puts ssm_norm_post here
-            out: ssm_scales.update,      // converter puts attn.o here
+            out: ssm_scales.update,   // converter puts attn.o here
         },
         sigmoid_lut: ctx.sigmoid_lut,
         silu_lut: ctx.ffn_activation,

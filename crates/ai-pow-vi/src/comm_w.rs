@@ -602,8 +602,7 @@ impl StreamingMerkle {
             self.tile_buf.extend_from_slice(&data[..take]);
             offset = take;
             if self.tile_buf.len() == WEIGHT_TILE_BYTES {
-                let buf: [u8; WEIGHT_TILE_BYTES] =
-                    self.tile_buf.as_slice().try_into().unwrap();
+                let buf: [u8; WEIGHT_TILE_BYTES] = self.tile_buf.as_slice().try_into().unwrap();
                 self.tile_buf.clear();
                 self.add_data_leaf(tile_hash(&buf));
             }
@@ -678,21 +677,33 @@ impl Default for StreamingMerkle {
     }
 }
 
+// These three helpers MUST track the context strings used by
+// `ai_pow::commit::{merkle_root, merkle_path, merkle_recover_root}` —
+// `weights_merkle_root` (the materializing path) routes through
+// `ai_pow::commit::merkle_root`, while `StreamingMerkle::finalize`
+// (the on-disk path used by `compute_comm_w_streaming`) builds the same
+// tree shape inline. If `ai-pow` bumps its `CTX_LEAF`, `CTX_NODE`, or
+// `CTX_SENTINEL` strings, mirror the change here or the two `comm_W`
+// computation paths will diverge silently (the symptom is a
+// `LoadError::CommWMismatch` on every round-trip).
+//
+// Current target: ai-pow v3 (Pearl-aligned). See
+// `crates/ai-pow/src/commit.rs:14-16`.
 fn merkle_leaf_hash(leaf: &[u8; 32]) -> [u8; 32] {
-    let mut hasher = Hasher::new_derive_key("ai-pow v1 merkle-leaf");
+    let mut hasher = Hasher::new_derive_key("ai-pow v3 merkle-leaf");
     hasher.update(leaf);
     *hasher.finalize().as_bytes()
 }
 
 fn merkle_node_hash(left: &[u8; 32], right: &[u8; 32]) -> [u8; 32] {
-    let mut hasher = Hasher::new_derive_key("ai-pow v1 merkle-node");
+    let mut hasher = Hasher::new_derive_key("ai-pow v3 merkle-node");
     hasher.update(left);
     hasher.update(right);
     *hasher.finalize().as_bytes()
 }
 
 fn sentinel_leaf() -> [u8; 32] {
-    let hasher = Hasher::new_derive_key("ai-pow v1 merkle-sentinel");
+    let hasher = Hasher::new_derive_key("ai-pow v3 merkle-sentinel");
     *hasher.finalize().as_bytes()
 }
 

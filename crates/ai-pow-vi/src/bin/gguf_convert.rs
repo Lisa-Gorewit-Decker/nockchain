@@ -37,7 +37,6 @@ use ai_pow_vi::model::{arch_tag, Model, ModelDims};
 use ai_pow_vi::quant::{Scale, SCALE_DENOM_LOG2};
 use ai_pow_vi::rope::RopeTables;
 use ai_pow_vi::softmax::ExpLut;
-
 use candle_core::quantized::gguf_file::Content;
 use candle_core::Device;
 
@@ -112,8 +111,8 @@ impl ScaleSource {
     }
 
     fn load(path: &std::path::Path, fallback: i32) -> Result<Self, String> {
-        let body = std::fs::read_to_string(path)
-            .map_err(|e| format!("read {}: {e}", path.display()))?;
+        let body =
+            std::fs::read_to_string(path).map_err(|e| format!("read {}: {e}", path.display()))?;
         let json: serde_json::Value =
             serde_json::from_str(&body).map_err(|e| format!("parse {}: {e}", path.display()))?;
         let mut per_tap = std::collections::HashMap::new();
@@ -175,15 +174,27 @@ fn parse_args() -> Result<Args, String> {
                 i += 2;
             }
             "--seq-len" => {
-                seq_len = argv.get(i + 1).ok_or("--seq-len needs arg")?.parse().map_err(|_| "bad --seq-len")?;
+                seq_len = argv
+                    .get(i + 1)
+                    .ok_or("--seq-len needs arg")?
+                    .parse()
+                    .map_err(|_| "bad --seq-len")?;
                 i += 2;
             }
             "--activation-tile" => {
-                activation_tile = argv.get(i + 1).ok_or("--activation-tile needs arg")?.parse().map_err(|_| "bad --activation-tile")?;
+                activation_tile = argv
+                    .get(i + 1)
+                    .ok_or("--activation-tile needs arg")?
+                    .parse()
+                    .map_err(|_| "bad --activation-tile")?;
                 i += 2;
             }
             "--default-activation-scale" => {
-                default_activation_scale_num = argv.get(i + 1).ok_or("--default-activation-scale needs arg")?.parse().map_err(|_| "bad --default-activation-scale")?;
+                default_activation_scale_num = argv
+                    .get(i + 1)
+                    .ok_or("--default-activation-scale needs arg")?
+                    .parse()
+                    .map_err(|_| "bad --default-activation-scale")?;
                 i += 2;
             }
             "--lm-head-only" => {
@@ -253,8 +264,8 @@ impl SmoothQuantPc {
         }
     }
     fn load(path: &std::path::Path, alpha: f32) -> Result<Self, String> {
-        let body = std::fs::read_to_string(path)
-            .map_err(|e| format!("read {}: {e}", path.display()))?;
+        let body =
+            std::fs::read_to_string(path).map_err(|e| format!("read {}: {e}", path.display()))?;
         let v: serde_json::Value =
             serde_json::from_str(&body).map_err(|e| format!("parse {}: {e}", path.display()))?;
         let obj = v.as_object().ok_or("smoothquant-pc not an object")?;
@@ -364,7 +375,11 @@ fn dequant_to_vec_f32(
 /// `q = round(x / scale_f32).clamp(-128, 127)`. Matches Python.
 fn quantize_to_i8(arr: &[f32], scale_num: i32) -> Vec<i8> {
     let scale_f32 = (scale_num as f64) / (1u64 << SCALE_DENOM_LOG2) as f64;
-    let scale_f32 = if scale_f32 > 0.0 { scale_f32 } else { 1.0 / 127.0 };
+    let scale_f32 = if scale_f32 > 0.0 {
+        scale_f32
+    } else {
+        1.0 / 127.0
+    };
     arr.iter()
         .map(|&x| {
             let q = (x as f64 / scale_f32).round();
@@ -376,7 +391,11 @@ fn quantize_to_i8(arr: &[f32], scale_num: i32) -> Vec<i8> {
 /// max(|x|) / 127 → scale numerator (in Scale units, num/2^15).
 fn compute_scale_num(arr: &[f32]) -> i32 {
     let max_abs = arr.iter().fold(0.0f32, |acc, &x| acc.max(x.abs()));
-    let scale_f32 = if max_abs <= 0.0 { 1.0 / 127.0 } else { (max_abs / 127.0) as f64 };
+    let scale_f32 = if max_abs <= 0.0 {
+        1.0 / 127.0
+    } else {
+        (max_abs / 127.0) as f64
+    };
     let n = (scale_f32 * (1u64 << SCALE_DENOM_LOG2) as f64).round() as i64;
     n.clamp(1, i32::MAX as i64) as i32
 }
@@ -657,11 +676,7 @@ fn dequant_f32(
 /// Apply SmoothQuant column-wise fold to a row-major weight tensor of
 /// shape `[out, in_dim]`, then quantize. Optional `s` of length `in_dim`
 /// — `s = None` means no fold.
-fn fold_quantize_weight(
-    w_f: &mut [f32],
-    in_dim: usize,
-    s: Option<&[f32]>,
-) -> (Vec<i8>, i32) {
+fn fold_quantize_weight(w_f: &mut [f32], in_dim: usize, s: Option<&[f32]>) -> (Vec<i8>, i32) {
     if let Some(s) = s {
         smoothquant_fold_weight(w_f, s, in_dim);
     }
@@ -711,7 +726,9 @@ fn dequant_quantize_truncate_out(
     }
     let (out_dim, in_dim) = (shape[0], shape[1]);
     if target_out > out_dim {
-        return Err(format!("{name}: target_out {target_out} > actual out {out_dim}"));
+        return Err(format!(
+            "{name}: target_out {target_out} > actual out {out_dim}"
+        ));
     }
     let mut sub = Vec::with_capacity(target_out * in_dim);
     sub.extend_from_slice(&f[0..target_out * in_dim]);
@@ -782,7 +799,9 @@ fn convert_qwen35(args: &Args) -> Result<(), String> {
     let content = gguf_file::Content::read(&mut file).map_err(|e| format!("read gguf: {e}"))?;
     let arch = arch_str_from_content(&content)?;
     if arch != "qwen35" && arch != "qwen3" {
-        return Err(format!("this binary supports qwen35/qwen3 only; got arch={arch}"));
+        return Err(format!(
+            "this binary supports qwen35/qwen3 only; got arch={arch}"
+        ));
     }
     let dims = read_qwen35_dims(&content)?;
     eprintln!(
@@ -851,11 +870,7 @@ fn convert_qwen35(args: &Args) -> Result<(), String> {
     // archs use plain NEOX RoPE — IMROPE with empty sections falls back to
     // NEOX, so this is safe for qwen3 too.
     let rope_tables = ai_pow_vi::rope::build_imrope_tables(
-        args.seq_len,
-        dims.head_dim,
-        dims.n_rot,
-        dims.rope_sections,
-        dims.rope_theta,
+        args.seq_len, dims.head_dim, dims.n_rot, dims.rope_sections, dims.rope_theta,
     );
     let softmax_lut = build_softmax_lut();
     let sigmoid_lut = build_sigmoid_lut();
@@ -882,8 +897,19 @@ fn convert_qwen35(args: &Args) -> Result<(), String> {
     std::fs::create_dir_all(&args.out).map_err(|e| format!("mkdir: {e}"))?;
     model.save(&args.out).map_err(|e| format!("save: {e}"))?;
     let comm = compute_comm_w(&model);
-    std::fs::write(args.out.join("comm_w.hex"), comm.iter().map(|b| format!("{:02x}", b)).collect::<String>()).map_err(|e| format!("write comm_w: {e}"))?;
-    eprintln!("comm_W = {}", comm.iter().map(|b| format!("{:02x}", b)).collect::<String>());
+    std::fs::write(
+        args.out.join("comm_w.hex"),
+        comm.iter()
+            .map(|b| format!("{:02x}", b))
+            .collect::<String>(),
+    )
+    .map_err(|e| format!("write comm_w: {e}"))?;
+    eprintln!(
+        "comm_W = {}",
+        comm.iter()
+            .map(|b| format!("{:02x}", b))
+            .collect::<String>()
+    );
 
     if args.emit_lm_head {
         emit_lm_head(&content, &mut file, &args.out, dims.hidden)?;
@@ -933,8 +959,11 @@ fn build_qwen_standard_layer(
     let (mut w_q_f, _) = dequant_f32(content, file, &format!("{prefix}.attn_q.weight"))?;
     let (mut w_k_f, _) = dequant_f32(content, file, &format!("{prefix}.attn_k.weight"))?;
     let (mut w_v_f, _) = dequant_f32(content, file, &format!("{prefix}.attn_v.weight"))?;
-    let (mut norm2_g_f, _) =
-        dequant_f32(content, file, &format!("{prefix}.post_attention_norm.weight"))?;
+    let (mut norm2_g_f, _) = dequant_f32(
+        content,
+        file,
+        &format!("{prefix}.post_attention_norm.weight"),
+    )?;
     let (mut w_gate_f, _) = dequant_f32(content, file, &format!("{prefix}.ffn_gate.weight"))?;
     let (mut w_up_f, _) = dequant_f32(content, file, &format!("{prefix}.ffn_up.weight"))?;
 
@@ -960,10 +989,7 @@ fn build_qwen_standard_layer(
     if let Some(x_pc) = smoothquant.get(&format!("layer[{n}].norm2.x_pc")) {
         let s = smoothquant_factor(
             x_pc,
-            &[
-                (&w_gate_f, dims.intermediate as usize),
-                (&w_up_f, dims.intermediate as usize),
-            ],
+            &[(&w_gate_f, dims.intermediate as usize), (&w_up_f, dims.intermediate as usize)],
             smoothquant.alpha,
         );
         smoothquant_fold_gamma(&mut norm2_g_f, &s);
@@ -976,7 +1002,8 @@ fn build_qwen_standard_layer(
     let (w_q, w_q_scale) = fold_quantize_weight(&mut w_q_f, h, None);
     let (w_k, w_k_scale) = fold_quantize_weight(&mut w_k_f, h, None);
     let (w_v, w_v_scale) = fold_quantize_weight(&mut w_v_f, h, None);
-    let (w_o, w_o_scale) = dequant_quantize_keep_scale(content, file, &format!("{prefix}.attn_output.weight"))?;
+    let (w_o, w_o_scale) =
+        dequant_quantize_keep_scale(content, file, &format!("{prefix}.attn_output.weight"))?;
     let q_norm = dequant_quantize(content, file, &format!("{prefix}.attn_q_norm.weight"))
         .unwrap_or_else(|_| default_no_op_gamma_i8(hd));
     let k_norm = dequant_quantize(content, file, &format!("{prefix}.attn_k_norm.weight"))
@@ -984,10 +1011,15 @@ fn build_qwen_standard_layer(
     let norm2_g = fold_quantize_gamma(&mut norm2_g_f, None);
     let (ffn_gate, ffn_gate_scale) = fold_quantize_weight(&mut w_gate_f, h, None);
     let (ffn_up, ffn_up_scale) = fold_quantize_weight(&mut w_up_f, h, None);
-    let (ffn_down, ffn_down_scale) = dequant_quantize_keep_scale(content, file, &format!("{prefix}.ffn_down.weight"))?;
+    let (ffn_down, ffn_down_scale) =
+        dequant_quantize_keep_scale(content, file, &format!("{prefix}.ffn_down.weight"))?;
 
     // Verify shapes match what our struct expects.
-    let want_wq = if q_has_gate { 2 * h * q_target } else { h * q_target };
+    let want_wq = if q_has_gate {
+        2 * h * q_target
+    } else {
+        h * q_target
+    };
     if w_q.len() != want_wq {
         return Err(format!(
             "layer {n} std w_q len {} != expected {} (q_has_gate={q_has_gate})",
@@ -998,7 +1030,11 @@ fn build_qwen_standard_layer(
     let want_wo = q_target * h;
     if w_o.len() != want_wo {
         // The real attn_output might be (q_target, hidden) directly = q_target*hidden bytes.
-        return Err(format!("layer {n} std w_o len {} != q_target*hidden {}", w_o.len(), want_wo));
+        return Err(format!(
+            "layer {n} std w_o len {} != q_target*hidden {}",
+            w_o.len(),
+            want_wo
+        ));
     }
 
     // Combined per-matmul scales (see `combine_scales` doc). The matmul
@@ -1010,20 +1046,55 @@ fn build_qwen_standard_layer(
     let a_norm2 = scales.get(&format!("layer[{n}].norm_post.2"));
     let a_ffn_mid = scales.get(&format!("layer[{n}].ffn.mid"));
     let std_attn_scales = AttentionScales {
-        q: Scale::from_num(combine_scales(a_norm1, w_q_scale, scales.get(&format!("layer[{n}].attn.q")))).unwrap(),
-        k: Scale::from_num(combine_scales(a_norm1, w_k_scale, scales.get(&format!("layer[{n}].attn.k")))).unwrap(),
-        v: Scale::from_num(combine_scales(a_norm1, w_v_scale, scales.get(&format!("layer[{n}].attn.v")))).unwrap(),
+        q: Scale::from_num(combine_scales(
+            a_norm1,
+            w_q_scale,
+            scales.get(&format!("layer[{n}].attn.q")),
+        ))
+        .unwrap(),
+        k: Scale::from_num(combine_scales(
+            a_norm1,
+            w_k_scale,
+            scales.get(&format!("layer[{n}].attn.k")),
+        ))
+        .unwrap(),
+        v: Scale::from_num(combine_scales(
+            a_norm1,
+            w_v_scale,
+            scales.get(&format!("layer[{n}].attn.v")),
+        ))
+        .unwrap(),
         // score = Q · Kᵀ is activation × activation (no weight). Leave as the calibrator's value.
         score: Scale::from_num(scales.get(&format!("layer[{n}].attn.score"))).unwrap(),
         attn_out: Scale::from_num(scales.get(&format!("layer[{n}].attn.attn_out"))).unwrap(),
-        o: Scale::from_num(combine_scales(a_attn_out, w_o_scale, scales.get(&format!("layer[{n}].attn.o")))).unwrap(),
+        o: Scale::from_num(combine_scales(
+            a_attn_out,
+            w_o_scale,
+            scales.get(&format!("layer[{n}].attn.o")),
+        ))
+        .unwrap(),
     };
     let std_ffn_scales = FfnScales {
-        gate: Scale::from_num(combine_scales(a_norm2, ffn_gate_scale, scales.get(&format!("layer[{n}].ffn.gate")))).unwrap(),
-        up: Scale::from_num(combine_scales(a_norm2, ffn_up_scale, scales.get(&format!("layer[{n}].ffn.up")))).unwrap(),
+        gate: Scale::from_num(combine_scales(
+            a_norm2,
+            ffn_gate_scale,
+            scales.get(&format!("layer[{n}].ffn.gate")),
+        ))
+        .unwrap(),
+        up: Scale::from_num(combine_scales(
+            a_norm2,
+            ffn_up_scale,
+            scales.get(&format!("layer[{n}].ffn.up")),
+        ))
+        .unwrap(),
         // mid = SiLU(gate) · up is activation × activation.
         mid: Scale::from_num(scales.get(&format!("layer[{n}].ffn.mid"))).unwrap(),
-        down: Scale::from_num(combine_scales(a_ffn_mid, ffn_down_scale, scales.get(&format!("layer[{n}].ffn.down")))).unwrap(),
+        down: Scale::from_num(combine_scales(
+            a_ffn_mid,
+            ffn_down_scale,
+            scales.get(&format!("layer[{n}].ffn.down")),
+        ))
+        .unwrap(),
     };
 
     Ok(LayerWeights::QwenStandard {
@@ -1072,15 +1143,11 @@ fn build_qwen_hybrid_layer(
     //   key_dim     = num_k_heads * head_k_dim  = 2048
     //   value_dim   = num_v_heads * head_v_dim  = 6144
     //   conv_dim    = 2*key_dim + value_dim     = 10240
-    let n_k_heads =
-        meta_u32(content, "qwen35.ssm.group_count", Some(16))? as usize;
-    let n_v_heads =
-        meta_u32(content, "qwen35.ssm.time_step_rank", Some(48))? as usize;
-    let head_k =
-        meta_u32(content, "qwen35.ssm.state_size", Some(128))? as usize;
+    let n_k_heads = meta_u32(content, "qwen35.ssm.group_count", Some(16))? as usize;
+    let n_v_heads = meta_u32(content, "qwen35.ssm.time_step_rank", Some(48))? as usize;
+    let head_k = meta_u32(content, "qwen35.ssm.state_size", Some(128))? as usize;
     let head_v = head_k; // qwen35 ties them
-    let conv_kernel =
-        meta_u32(content, "qwen35.ssm.conv_kernel", Some(4))? as usize;
+    let conv_kernel = meta_u32(content, "qwen35.ssm.conv_kernel", Some(4))? as usize;
     let key_dim = n_k_heads * head_k;
     let value_dim = n_v_heads * head_v;
     let conv_dim = 2 * key_dim + value_dim;
@@ -1126,8 +1193,9 @@ fn build_qwen_hybrid_layer(
     let (mut ssm_beta_f, _) = dequant_f32(content, file, &format!("{prefix}.ssm_beta.weight"))?;
     // Ollama-shipped GGUF uses bare `ssm_dt`; newer llama.cpp emits `ssm_dt.bias`.
     let (ssm_dt, ssm_dt_scale_num) =
-        dequant_quantize_keep_scale(content, file, &format!("{prefix}.ssm_dt"))
-            .or_else(|_| dequant_quantize_keep_scale(content, file, &format!("{prefix}.ssm_dt.bias")))?;
+        dequant_quantize_keep_scale(content, file, &format!("{prefix}.ssm_dt")).or_else(|_| {
+            dequant_quantize_keep_scale(content, file, &format!("{prefix}.ssm_dt.bias"))
+        })?;
     let (ssm_norm_g, ssm_norm_g_scale_num) =
         dequant_quantize_keep_scale(content, file, &format!("{prefix}.ssm_norm.weight"))?;
     if ssm_norm_g.len() != head_v {
@@ -1159,8 +1227,11 @@ fn build_qwen_hybrid_layer(
 
     let (ssm_out, ssm_out_scale_num) =
         dequant_quantize_keep_scale(content, file, &format!("{prefix}.ssm_out.weight"))?;
-    let (mut norm2_g_f, _) =
-        dequant_f32(content, file, &format!("{prefix}.post_attention_norm.weight"))?;
+    let (mut norm2_g_f, _) = dequant_f32(
+        content,
+        file,
+        &format!("{prefix}.post_attention_norm.weight"),
+    )?;
     let (mut w_gate_f, _) = dequant_f32(content, file, &format!("{prefix}.ffn_gate.weight"))?;
     let (mut w_up_f, _) = dequant_f32(content, file, &format!("{prefix}.ffn_up.weight"))?;
     let (ffn_down, ffn_down_scale_num) =
@@ -1187,10 +1258,7 @@ fn build_qwen_hybrid_layer(
     if let Some(x_pc) = smoothquant.get(&format!("layer[{n}].norm2.x_pc")) {
         let s = smoothquant_factor(
             x_pc,
-            &[
-                (&w_gate_f, dims.intermediate as usize),
-                (&w_up_f, dims.intermediate as usize),
-            ],
+            &[(&w_gate_f, dims.intermediate as usize), (&w_up_f, dims.intermediate as usize)],
             smoothquant.alpha,
         );
         smoothquant_fold_gamma(&mut norm2_g_f, &s);
@@ -1243,8 +1311,8 @@ fn build_qwen_hybrid_layer(
         ssm_head_dim: head_v as u32,
         ssm_kernel_size: conv_kernel as u32,
         ssm_scales: dnet_scales_for_combined(
-            scales, n, attn_qkv_scale_num, attn_gate_scale_num,
-            ssm_alpha_scale_num, ssm_beta_scale_num, ssm_out_scale_num,
+            scales, n, attn_qkv_scale_num, attn_gate_scale_num, ssm_alpha_scale_num,
+            ssm_beta_scale_num, ssm_out_scale_num,
         ),
         ssm_a_weight_max: Scale::from_num(ssm_a_scale_num).unwrap(),
         ssm_dt_weight_max: Scale::from_num(ssm_dt_scale_num).unwrap(),
@@ -1262,10 +1330,25 @@ fn build_qwen_hybrid_layer(
             let a_norm2 = scales.get(&format!("layer[{n}].norm_post.2"));
             let a_ffn_mid = scales.get(&format!("layer[{n}].ffn.mid"));
             FfnScales {
-                gate: Scale::from_num(combine_scales(a_norm2, ffn_gate_scale_num, scales.get(&format!("layer[{n}].ffn.gate")))).unwrap(),
-                up: Scale::from_num(combine_scales(a_norm2, ffn_up_scale_num, scales.get(&format!("layer[{n}].ffn.up")))).unwrap(),
+                gate: Scale::from_num(combine_scales(
+                    a_norm2,
+                    ffn_gate_scale_num,
+                    scales.get(&format!("layer[{n}].ffn.gate")),
+                ))
+                .unwrap(),
+                up: Scale::from_num(combine_scales(
+                    a_norm2,
+                    ffn_up_scale_num,
+                    scales.get(&format!("layer[{n}].ffn.up")),
+                ))
+                .unwrap(),
                 mid: Scale::from_num(scales.get(&format!("layer[{n}].ffn.mid"))).unwrap(),
-                down: Scale::from_num(combine_scales(a_ffn_mid, ffn_down_scale_num, scales.get(&format!("layer[{n}].ffn.down")))).unwrap(),
+                down: Scale::from_num(combine_scales(
+                    a_ffn_mid,
+                    ffn_down_scale_num,
+                    scales.get(&format!("layer[{n}].ffn.down")),
+                ))
+                .unwrap(),
             }
         },
     })
@@ -1295,9 +1378,19 @@ fn dnet_scales_for_combined(
         // V post-conv (no matmul; activation transform)
         v: Scale::from_num(scales.get(&tap("v"))).unwrap(),
         // alpha projection → ssm.alpha_logit
-        alpha_logit: Scale::from_num(combine_scales(a_norm1, w_alpha, scales.get(&tap("alpha_logit")))).unwrap(),
+        alpha_logit: Scale::from_num(combine_scales(
+            a_norm1,
+            w_alpha,
+            scales.get(&tap("alpha_logit")),
+        ))
+        .unwrap(),
         // beta projection → ssm.beta_logit
-        beta_logit: Scale::from_num(combine_scales(a_norm1, w_beta, scales.get(&tap("beta_logit")))).unwrap(),
+        beta_logit: Scale::from_num(combine_scales(
+            a_norm1,
+            w_beta,
+            scales.get(&tap("beta_logit")),
+        ))
+        .unwrap(),
         // conv1d output (depthwise) — handled by deltanet.rs's own dequant
         // path using ssm_conv1d_weight_max, so no combine needed here.
         u: Scale::from_num(scales.get(&tap("u"))).unwrap(),

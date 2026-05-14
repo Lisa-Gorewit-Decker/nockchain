@@ -607,8 +607,8 @@ pub fn forward_gated_deltanet_qwen35(
     // accumulator for parity with the reference; later we re-quantize.
     let mut conv_out_i8 = vec![0i8; mu * conv_dim];
     {
-        let qkv_scale_f = (opts.scales.qkv.num as f32) /
-            ((1u32 << crate::quant::SCALE_DENOM_LOG2) as f32);
+        let qkv_scale_f =
+            (opts.scales.qkv.num as f32) / ((1u32 << crate::quant::SCALE_DENOM_LOG2) as f32);
         // w_conv1d is i8-quantized with max_abs = w_conv_max. Each i8 w
         // represents real_w = (i8 / 127) * w_conv_max. Each i8 x represents
         // real_x = i8 * (qkv_max / 127) = i8 * qkv_scale_f.
@@ -641,8 +641,8 @@ pub fn forward_gated_deltanet_qwen35(
     // Step 5: split conv output into Q | K | V channel slices and L2-norm
     // Q and K per (k_head, head_k). Operate in f32 since L2-norm divides
     // by sqrt(sumsq) — bounded growth on the i8 boundary alone.
-    let conv_silu_scale_f = (opts.scales.conv_silu.num as f32) /
-        ((1u32 << crate::quant::SCALE_DENOM_LOG2) as f32);
+    let conv_silu_scale_f =
+        (opts.scales.conv_silu.num as f32) / ((1u32 << crate::quant::SCALE_DENOM_LOG2) as f32);
     let mut q_f = vec![0f32; mu * num_v * hk];
     let mut k_f = vec![0f32; mu * num_v * hk];
     let mut v_f = vec![0f32; mu * num_v * hv];
@@ -672,8 +672,7 @@ pub fn forward_gated_deltanet_qwen35(
             for vh in 0..num_v {
                 for d in 0..hv {
                     v_f[(t * num_v + vh) * hv + d] =
-                        (conv_out_i8[row + 2 * key_dim + vh * hv + d] as f32)
-                            * conv_silu_scale_f;
+                        (conv_out_i8[row + 2 * key_dim + vh * hv + d] as f32) * conv_silu_scale_f;
                 }
             }
         }
@@ -722,11 +721,20 @@ pub fn forward_gated_deltanet_qwen35(
     // i8 stored as round(real_value * 127 / max_abs); dequant inverts via
     // (x_i8 / 127) * max_abs. The Scale numerator encodes max_abs/127*2^15,
     // so max_abs = scale.num * 127 / 2^15.
-    let max_abs = |s: Scale| (s.num as f32) * 127.0 / (1u32 << crate::quant::SCALE_DENOM_LOG2) as f32;
+    let max_abs =
+        |s: Scale| (s.num as f32) * 127.0 / (1u32 << crate::quant::SCALE_DENOM_LOG2) as f32;
     let ssm_dt_max = max_abs(opts.ssm_dt_weight_max);
     let ssm_a_max = max_abs(opts.ssm_a_weight_max);
-    let ssm_dt_f: Vec<f32> = opts.ssm_dt.iter().map(|&x| (x as f32) / 127.0 * ssm_dt_max).collect();
-    let ssm_a_f: Vec<f32> = opts.ssm_a.iter().map(|&x| (x as f32) / 127.0 * ssm_a_max).collect();
+    let ssm_dt_f: Vec<f32> = opts
+        .ssm_dt
+        .iter()
+        .map(|&x| (x as f32) / 127.0 * ssm_dt_max)
+        .collect();
+    let ssm_a_f: Vec<f32> = opts
+        .ssm_a
+        .iter()
+        .map(|&x| (x as f32) / 127.0 * ssm_a_max)
+        .collect();
     let mut gate_log = vec![0f32; mu * num_v];
     let mut beta_f = vec![0f32; mu * num_v];
     for t in 0..mu {
@@ -794,7 +802,11 @@ pub fn forward_gated_deltanet_qwen35(
     // by silu(z). Both per-(token, v_head, head_v).
     let z_scale = opts.scales.gate_z;
     let ssm_norm_gamma_max = max_abs(opts.ssm_norm_gamma_weight_max);
-    let gamma_f: Vec<f32> = opts.ssm_norm_gamma.iter().map(|&x| (x as f32) / 127.0 * ssm_norm_gamma_max).collect();
+    let gamma_f: Vec<f32> = opts
+        .ssm_norm_gamma
+        .iter()
+        .map(|&x| (x as f32) / 127.0 * ssm_norm_gamma_max)
+        .collect();
     let eps: f32 = (opts.ssm_norm_eps_q.max(1) as f32) * 1e-6_f32;
     let mut gated = vec![0i8; mu * num_v * hv];
     for t in 0..mu {
@@ -818,13 +830,7 @@ pub fn forward_gated_deltanet_qwen35(
 
     // Step 9: output projection. (m, value_dim) @ w_out → (m, hidden) i8.
     matmul_int8_requant(
-        &gated,
-        opts.w_out,
-        m,
-        value_dim as u32,
-        hidden,
-        opts.scales.out,
-        output,
+        &gated, opts.w_out, m, value_dim as u32, hidden, opts.scales.out, output,
     )?;
     // Suppress unused-warnings (luts are kept for future LUT-only paths).
     let _ = opts.sigmoid_lut;
