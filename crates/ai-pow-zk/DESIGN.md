@@ -8,9 +8,12 @@ same logical guarantees over a slightly different Plonky3 stack —
 Goldilocks base field, Tip5 sponge for FRI, the upstream
 `p3-blake3-air` for the BLAKE3 sub-circuit.
 
-This document is the **logical plan** + **parameter choices**, in
-service of the actual circuit landing in follow-up commits. Every
-`todo!()` in `src/` corresponds to a section below.
+This document is the **logical plan** + **parameter choices**. The
+current implementation status — which sections are landed vs.
+in-flight — is tracked separately in [`ROADMAP.md`](ROADMAP.md). At
+the time of writing the chip-level work (M5–M8) is landed; the
+composite AIR that ties them together (M9.1 and M10) is the active
+front.
 
 ## 1. Goal
 
