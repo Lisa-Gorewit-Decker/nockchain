@@ -80,19 +80,42 @@ where
     AB: AirBuilder + InteractionBuilder,
 {
     fn eval(&self, builder: &mut AB) {
-        // (1) Delegate all constraints to CompositeFullAir.
+        // (1) Delegate all chip-level constraints to CompositeFullAir.
         <CompositeFullAir as Air<AB>>::eval(&CompositeFullAir, builder);
 
+        // (2) Emit each LogUp bus's table + query interactions via a
+        // per-bus helper. Each helper is self-contained and named
+        // for the bus it serves; adding or removing a bus changes
+        // exactly one call site here. The helpers are in
+        // `bus_emit::*` below.
+        bus_emit::urange8::<AB>(builder);
+        bus_emit::urange13::<AB>(builder);
+        bus_emit::irange7p1::<AB>(builder);
+        bus_emit::irange8::<AB>(builder);
+        bus_emit::i8u8::<AB>(builder);
+        bus_emit::noised_packed::<AB>(builder);
+        bus_emit::cv_routing::<AB>(builder);
+    }
+}
+
+/// Per-bus LogUp emissions. Factored out of
+/// [`CompositeFullAirWithLookups::eval`] so each bus's emission is
+/// a single named, testable unit. All functions take the same
+/// `&mut AB` and call `builder.push_interaction` on the
+/// appropriate bus.
+mod bus_emit {
+    use super::*;
+
+    /// `urange8` bus — u8 range check `[0, 256)`.
+    ///
+    /// Table: (URANGE8_TABLE, −URANGE8_FREQ).
+    /// Queries: UINT8_DATA[0..8] gated by IS_MSG_MAT (when the
+    /// BLAKE3 message buffer is loading matrix bytes, each cell is
+    /// a u8 query).
+    pub fn urange8<AB: AirBuilder + InteractionBuilder>(builder: &mut AB) {
         let main = builder.main();
         let cur = main.current_slice();
         let is_msg_mat: AB::Expr = cur[IS_MSG_MAT].into();
-
-        // ---- (2a) URange8 bus ----
-        //
-        // Table: (URANGE8_TABLE, −URANGE8_FREQ).
-        // Queries: UINT8_DATA[0..8] gated by IS_MSG_MAT (when the
-        // BLAKE3 message buffer is loading matrix bytes, each cell
-        // is a u8 query).
         builder.push_interaction(
             BUS_URANGE8,
             [<AB::Var as Into<AB::Expr>>::into(cur[URANGE8_TABLE])],
@@ -107,13 +130,15 @@ where
                 1,
             );
         }
+    }
 
-        // ---- (2b) URange13 bus ----
-        //
-        // Table: (URANGE13_TABLE, −URANGE13_FREQ).
-        // Queries: MAT_ID_LIMBS[0..2] + AB_ID_LIMBS[0..4]
-        // unconditionally (every row's limb decomposition must
-        // be u13).
+    /// `urange13` bus — u13 range check `[0, 8192)`.
+    ///
+    /// Table: (URANGE13_TABLE, −URANGE13_FREQ).
+    /// Queries: MAT_ID_LIMBS[0..2] + AB_ID_LIMBS[0..4] every row.
+    pub fn urange13<AB: AirBuilder + InteractionBuilder>(builder: &mut AB) {
+        let main = builder.main();
+        let cur = main.current_slice();
         builder.push_interaction(
             BUS_URANGE13,
             [<AB::Var as Into<AB::Expr>>::into(cur[URANGE13_TABLE])],
@@ -136,12 +161,16 @@ where
                 1,
             );
         }
+    }
 
-        // ---- (2c) IRange7P1 bus ----
-        //
-        // Table: (IRANGE7P1_TABLE, −IRANGE7P1_FREQ).
-        // Queries: NOISE_UNPACK[0..8] unconditionally (Pearl's
-        // signed noise bytes ∈ [-64, 64]).
+    /// `irange7p1` bus — i7+1 range check `[-64, 64]`.
+    ///
+    /// Table: (IRANGE7P1_TABLE, −IRANGE7P1_FREQ).
+    /// Queries: NOISE_UNPACK[0..8] every row (Pearl's signed
+    /// noise bytes).
+    pub fn irange7p1<AB: AirBuilder + InteractionBuilder>(builder: &mut AB) {
+        let main = builder.main();
+        let cur = main.current_slice();
         builder.push_interaction(
             BUS_IRANGE7P1,
             [<AB::Var as Into<AB::Expr>>::into(cur[IRANGE7P1_TABLE])],
@@ -156,12 +185,16 @@ where
                 1,
             );
         }
+    }
 
-        // ---- (2d) IRange8 bus ----
-        //
-        // Table: (IRANGE8_TABLE, −IRANGE8_FREQ).
-        // Queries: A_NOISED_UNPACK[0..32] + B_NOISED_UNPACK[0..32]
-        // + MAT_UNPACK[0..8] unconditionally (i8 matrix cells).
+    /// `irange8` bus — i8 range check `[-128, 127]`.
+    ///
+    /// Table: (IRANGE8_TABLE, −IRANGE8_FREQ).
+    /// Queries: A_NOISED_UNPACK[0..32] + B_NOISED_UNPACK[0..32]
+    /// + MAT_UNPACK[0..8] every row (i8 matrix cells).
+    pub fn irange8<AB: AirBuilder + InteractionBuilder>(builder: &mut AB) {
+        let main = builder.main();
+        let cur = main.current_slice();
         builder.push_interaction(
             BUS_IRANGE8,
             [<AB::Var as Into<AB::Expr>>::into(cur[IRANGE8_TABLE])],
@@ -192,16 +225,21 @@ where
                 1,
             );
         }
+    }
 
-        // ---- (2e) I8U8 bus (paired i8 ↔ u8 conversion) ----
-        //
-        // Table: (I8U8_TABLE, −I8U8_FREQ). Each table row holds
-        // pack = signed*256 + unsigned where unsigned =
-        // signed.rem_euclid(256), enumerated across i ∈ [0, 256).
-        // Queries: pair (MAT_UNPACK[i], UINT8_DATA[i]) packed as
-        // signed*256 + unsigned, gated by IS_MSG_MAT (when matrix
-        // bytes are loading into BLAKE3's message buffer the i8
-        // value and its u8 representation must agree).
+    /// `i8u8` bus — paired i8 ↔ u8 conversion.
+    ///
+    /// Table: (I8U8_TABLE, −I8U8_FREQ). Each table row holds
+    /// `pack = signed*256 + unsigned` where unsigned =
+    /// signed.rem_euclid(256).
+    ///
+    /// Queries: `pack = MAT_UNPACK[i]*256 + UINT8_DATA[i]` gated
+    /// by IS_MSG_MAT (the i8 and u8 views of each matrix byte
+    /// must agree).
+    pub fn i8u8<AB: AirBuilder + InteractionBuilder>(builder: &mut AB) {
+        let main = builder.main();
+        let cur = main.current_slice();
+        let is_msg_mat: AB::Expr = cur[IS_MSG_MAT].into();
         let two_fifty_six: AB::Expr =
             <AB::F as p3_field::PrimeCharacteristicRing>::from_u64(256).into();
         builder.push_interaction(
@@ -216,23 +254,19 @@ where
             let pack = signed * two_fifty_six.clone() + unsigned;
             builder.push_interaction(BUS_I8U8, [pack], is_msg_mat.clone(), 1);
         }
+    }
 
-        // ---- (2f) NOISED_PACKED RAM-lookup bus ----
-        //
-        // The cryptographic glue between matmul and BLAKE3: the
-        // bytes the matmul chip reads via A_NOISED / B_NOISED must
-        // come from the canonical NOISED_PACKED table (committed
-        // via the input chip's polyval constraints). LogUp ensures
-        // every matmul read corresponds to a real table entry.
-        //
-        // Table key: (MAT_ID, NOISED_PACKED[0], NOISED_PACKED[1]).
-        // Each row provides one table entry with multiplicity
-        // MAT_FREQ.
-        //
-        // Query side: each matmul-active row queries:
-        //   * (A_ID, A_NOISED[0], A_NOISED[1]) on read A.
-        //   * (B_ID, B_NOISED[0], B_NOISED[1]) on read B.
-        // Both gated by (IS_RESET_CUMSUM + IS_UPDATE_CUMSUM).
+    /// `noised_packed` bus — RAM lookup tying matmul reads to
+    /// the canonical NOISED_PACKED matrix store.
+    ///
+    /// Table key: (MAT_ID, NOISED_PACKED[0..2]) per row, with
+    /// multiplicity MAT_FREQ.
+    /// Queries: per-row (A_ID, A_NOISED[0..2]) and (B_ID,
+    /// B_NOISED[0..2]), each gated by (IS_RESET_CUMSUM +
+    /// IS_UPDATE_CUMSUM).
+    pub fn noised_packed<AB: AirBuilder + InteractionBuilder>(builder: &mut AB) {
+        let main = builder.main();
+        let cur = main.current_slice();
         builder.push_interaction(
             BUS_NOISED_PACKED,
             [
@@ -247,7 +281,6 @@ where
         let matmul_active: AB::Expr =
             <AB::Var as Into<AB::Expr>>::into(cur[IS_RESET_CUMSUM])
                 + <AB::Var as Into<AB::Expr>>::into(cur[IS_UPDATE_CUMSUM]);
-        // A-side read
         builder.push_interaction(
             BUS_NOISED_PACKED,
             [
@@ -258,7 +291,6 @@ where
             matmul_active.clone(),
             1,
         );
-        // B-side read
         builder.push_interaction(
             BUS_NOISED_PACKED,
             [
@@ -269,22 +301,21 @@ where
             matmul_active,
             1,
         );
+    }
 
-        // ---- (2g) CV_ROUTING bus (BLAKE3 chaining-value routing) ----
-        //
-        // Table key: (STARK_ROW_IDX, CV_OUT[0..8]) per row, with
-        // multiplicity CV_OUT_FREQ. Every row publishes its
-        // CV_OUT vector indexed by its STARK_ROW_IDX.
-        //
-        // Query side: rows with IS_CV_IN = 1 emit
-        //   (CV_OR_TWEAK_PREP, CV_IN[0..8])
-        // The CV_OR_TWEAK_PREP cell on these rows holds the
-        // referenced row's STARK_ROW_IDX (not a BLAKE3 tweak —
-        // the dual use is gated by IS_NEW_BLAKE vs IS_CV_IN).
-        //
-        // This enforces that the CV_IN value brought into a hash
-        // chain step actually came from a previously-published
-        // CV_OUT at the claimed row.
+    /// `cv_routing` bus — BLAKE3 chaining-value routing across
+    /// non-adjacent rows.
+    ///
+    /// Table key: (STARK_ROW_IDX, CV_OUT[0..8]), multiplicity
+    /// CV_OUT_FREQ. Every row publishes its CV_OUT.
+    /// Queries: (CV_OR_TWEAK_PREP, CV_IN[0..8]) gated by
+    /// IS_CV_IN. When IS_CV_IN = 1, CV_OR_TWEAK_PREP holds the
+    /// referenced row's STARK_ROW_IDX (the column's dual use as
+    /// a BLAKE3 tweak is gated by IS_NEW_BLAKE instead).
+    pub fn cv_routing<AB: AirBuilder + InteractionBuilder>(builder: &mut AB) {
+        let main = builder.main();
+        let cur = main.current_slice();
+
         let mut table_key: Vec<AB::Expr> = Vec::with_capacity(1 + CV_OUT_LEN);
         table_key.push(cur[STARK_ROW_IDX].into());
         for i in 0..CV_OUT_LEN {
