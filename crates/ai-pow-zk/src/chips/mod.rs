@@ -29,4 +29,5 @@
 //!
 //! [`TestWrapperAir`]: stark_row::tests
 
+pub mod range_table;
 pub mod stark_row;

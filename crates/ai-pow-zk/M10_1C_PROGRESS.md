@@ -32,7 +32,9 @@ When Plonky3 doesn't have a direct primitive (e.g. Pearl's
 | 2 | `composite_layout` base + `TEST_PEARL` + `block_commitment` pin | ✅ landed | 3 | 136 unit |
 | 2.5 | `composite_layout` RAM-lookup column extension | ✅ landed | 3 | 139 unit |
 | 3 | `stark_row_chip` (Pearl `monotonic_increment`) | ✅ landed | 9 | 148 unit |
-| 4 | range-table + input chips (Pearl `urange*` / `irange*` / `i8u8` / `input/`) — uses `p3-lookup` | ⬜ pending | | |
+| 4a | `range_table` chip (URange8/13, IRange7P1/8 generic) | ✅ landed | 15 | 163 unit |
+| 4b | `i8u8` chip (signed↔unsigned conversion table) | ⬜ pending | | |
+| 4c | `input` chip (Pearl `chip/input/`) | ⬜ pending | | |
 | 5 | `control_chip` (Pearl `control_and_matid_packed`) | ⬜ pending | | |
 | 6 | preprocessed-trace generation (Pearl `pearl_preprocess`) | ⬜ pending | | |
 | 7 | BLAKE3 chip — wrap M10.1b vendored chip (Plonky3 primitive preferred) | ⬜ pending | | |
@@ -94,18 +96,39 @@ reused by every subsequent chip's test module.
 
 ### Phase 4 — range tables + input chip (pending)
 
-### Phase 4 — range tables + input chip (pending)
+### Phase 4a — range tables (landed)
 
-Properties to validate:
-  - URANGE8: every `URANGE8_TABLE` row in `0..256`, every reader
-    in-range via LogUp.
-  - URANGE13: every `URANGE13_TABLE` row in `0..8192`.
-  - IRANGE7P1: every `IRANGE7P1_TABLE` row in `-64..=64`.
-  - IRANGE8: every `IRANGE8_TABLE` row in `-128..=127`.
-  - I8U8: `(i8_value, u8_value)` pairs match the two's-complement
-    convention.
-  - INPUT chip: `MAT_UNPACK[i] in [-64, 64]` (IRANGE7P1) and
-    `UINT8_DATA[i] = MAT_UNPACK[i] + 128` when `IS_MSG_MAT` fires.
+Properties validated by the generic `RangeTableChip<COL, MIN, MAX>`
+with four concrete instantiations (`URange8`, `URange13`,
+`IRange7P1`, `IRange8`):
+
+  - ✅ First row equals `MIN`
+    (`prove_and_verify_*_table`, `*_verify_rejects_wrong_first_row`).
+  - ✅ Last row equals `MAX`
+    (`urange8_verify_rejects_wrong_last_row`).
+  - ✅ Transition delta is boolean — column value stays the same
+    or increments by 1
+    (`urange8_verify_rejects_non_boolean_delta`,
+    `irange8_verify_rejects_non_boolean_delta`).
+  - ✅ Combined: column enumerates every integer in `[MIN..=MAX]`
+    by discrete intermediate-value argument
+    (`*_table_fills_correctly`).
+  - ✅ Padding rows past `span` replay `MAX`
+    (`irange7p1_padding_repeats_max`).
+  - ✅ `span()` const helper matches `MAX − MIN + 1`
+    (`*_span_is_*` per chip).
+  - ✅ Production-scale `URANGE13` at 8192 rows
+    (`prove_and_verify_urange13_table`).
+
+Subsequent LogUp lookups (Phase 11) will tie the *consumer* side
+to these tables: every reader's value must appear, with the
+correct multiplicity, in the matching range table. The table's
+own integrity (it really does enumerate `[MIN..=MAX]`) is what
+Phase 4a pins.
+
+### Phase 4b — I8U8 conversion table (pending)
+
+### Phase 4c — input chip (pending)
 
 ### Phase 5-15 (pending)
 
