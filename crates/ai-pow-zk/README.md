@@ -5,16 +5,21 @@ EXPERIMENTAL — a Plonky3 SNARK circuit for the
 Pearl's [`zk-pow`](../../pearl/zk-pow/): wrap the multi-MB plain proof
 in a compact SNARK so it can fit in a block certificate.
 
-**Status:** M1–M11 landed (see [`ROADMAP.md`](ROADMAP.md)). The
-entry points [`prove`] / [`verify`] are wired into a real end-to-end
-Plonky3 pipeline against a **composite tile AIR** that ties the
-matmul accumulator (M6) and the Pearl §4.5 rotate-XOR state update
-(M7) together with a `x = c_out` sign-extension linkage and a
-single-slot state chain. Public inputs are threaded through Plonky3's
-public-values channel — Fiat-Shamir absorption means any mismatch at
-verify-time rejects the proof. PROD profile bench (120-bit provable
-soundness) lands at ~14 ms prove, ~31 ms verify, ~136 KB proof at the
-smallest test shape.
+**Status:** M1–M11 + M10.1a landed (see [`ROADMAP.md`](ROADMAP.md)).
+The entry points [`prove`] / [`verify`] are wired into a real end-
+to-end Plonky3 pipeline against a **composite tile AIR** that ties
+the matmul accumulator (M6) and the Pearl §4.5 rotate-XOR state
+update (M7) together with a `x = c_out` sign-extension linkage and
+a single-slot state chain. Public inputs are threaded through
+Plonky3's public-values channel — Fiat-Shamir absorption means any
+mismatch at verify-time rejects the proof. **M10.1a** binds
+`found_leaf` cryptographically: the trace's terminal tile state is
+exposed as a public value, and the verifier checks
+`BLAKE3-keyed(m_final, pow_key) == public_inputs.found_leaf` out-of-
+band — making the SNARK a proof-of-work *certificate* (no fake
+leaves). PROD profile bench (120-bit provable soundness) lands at
+~5 ms prove, ~18 ms verify, ~136 KB proof at the smallest test
+shape.
 
 ## What works today
 
@@ -48,12 +53,23 @@ FRI), and serializes via bincode. The proof attests that:
    public-values channel must match at verify time. Any tampered
    byte in the public inputs causes a Fiat-Shamir mismatch and
    rejection.
+6. **M10.1a**: the trace's terminal tile-state value `m_final` is
+   exposed as a public-value-bound element. The verifier
+   recomputes `pow_key` from `(block_commitment, nonce, h_a, h_b,
+   params_tag)` via Pearl's commitment chain, hashes the witnessed
+   `m_final` under that key, and rejects if it doesn't equal
+   `public_inputs.found_leaf`. This binds the SNARK to the actual
+   work — an adversary can no longer claim arbitrary easy leaves.
+
+**Still unbound (M10.1b future):** the witness matrices `a_rows` /
+`b_cols` aren't tied to `h_a` / `h_b`. An adversary can run the
+matmul on different matrices and still pass M10.1a as long as their
+resulting leaf is below the difficulty target. The work is bound to
+*some* matmul of the prover's choosing, not specifically the chain-
+pinned one. M10.1b would close this with in-circuit BLAKE3.
 
 **API constraints (MVP):** `noise_rank` must be `2` and
-`k / noise_rank` must be a power of two. AIR-level binding of
-public-input hashes to trace values (e.g. `assert_eq(final_m,
-public_inputs.found_leaf)` once BLAKE3 lands in-circuit) is M10.1 —
-see [`ROADMAP.md`](ROADMAP.md).
+`k / noise_rank` must be a power of two.
 
 ## Module map
 
@@ -110,7 +126,7 @@ list-decoding / capacity-approaching conjecture for FRI soundness.
 cargo test -p ai-pow-zk
 ```
 
-**109 unit tests pass** across ten modules, plus **2 ignored** PROD
+**126 unit tests pass** across eleven modules, plus **2 ignored** PROD
 bench tests:
 
 | Module | # tests |
@@ -118,11 +134,12 @@ bench tests:
 | `circuit` (M1 + M2) | 15 |
 | `witness` (M4) | 14 |
 | `state_chip` (M7) | 14 |
-| `composite_air` (M9.1) | 14 |
+| `composite_air` (M9.1 + M10.1a AIR side) | 15 |
 | `matmul_chip` (M6) | 12 |
 | `public` (M3) | 11 |
 | `input_chip` (M5) | 11 |
-| lib.rs entry-point tests (M9 + M10) | 12 |
+| lib.rs entry-point tests (M9 + M10 + M10.1a) | 19 |
+| `binding` (M10.1a helpers) | 9 |
 | `blake3_air` (M8) | 6 |
 | `tests/prod_bench.rs` (M11, ignored) | 2 |
 
@@ -157,5 +174,6 @@ per-row Merkle paths. At the same point Pearl invokes
 [`blake3_air`]: src/blake3_air.rs
 [`composite_air`]: src/composite_air.rs
 [`composite_air::MatmulTileAir<2>`]: src/composite_air.rs
+[`binding`]: src/binding.rs
 [`prove`]: src/lib.rs
 [`verify`]: src/lib.rs

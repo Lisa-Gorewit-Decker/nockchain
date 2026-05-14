@@ -21,10 +21,11 @@ prove+verify tests through the real Plonky3 FRI stack (TEST profile).
 | **M10** | landed | `lib::{prove, verify}` now use the composite AIR and pass `public_inputs.to_field_elements()` through Plonky3's public-values channel (Fiat-Shamir absorption) | +3 |
 | **M11** | landed | `tests/prod_bench.rs` — `CircuitConfig::PROD` round-trip + tamper detection under 120-bit provable soundness. `#[ignore]`d by default; measured proof size 136 KB at the smallest test shape | 2 |
 | **M12** | deferred | Recursion / compression. Plonky3 doesn't ship a one-step compressor today; see "M12 — recursion strategy" below for the current plan |  |
+| **M10.1a** | landed | Found-leaf binding via exposed `m_final` public value + verifier-side `BLAKE3-keyed(m_final, pow_key) == found_leaf` check. AIR enforces `trace.last_row.m_out == pis[PI_M_FINAL_IDX]`; hash check happens in `verify` outside the SNARK. Closes Attack #1 (fake jackpot) at full cryptographic strength. | +17 |
 | **M9.2** | future | Slot-routing for `step mod 16` (replaces current single-slot regime); selector-gated padding so `num_stripes` can be non-power-of-two; relax `noise_rank` from the const-generic 2 to `{4, 8, …}` via dispatch |  |
-| **M10.1** | future | BLAKE3 binding in-circuit — compose `Blake3SubAir` alongside `MatmulTileAir` so `keyed_hash(M_final) = found_leaf` etc. are constraint-bound, not just Fiat-Shamir-bound |  |
+| **M10.1b** | future | In-circuit BLAKE3 + chunk-Merkle so the witness's `a_rows` / `b_cols` are constraint-bound to the chain-pinned `h_a` / `h_b`. Closes Attacks #2/#3 (matrix substitution), upgrading the SNARK from a hash-only PoW certificate to a true PoUW certificate. Pearl-equivalent (their `pearl_air.rs:91-109` approach with a custom BLAKE3 chip). |  |
 
-**Total tests today:** 111 (109 unit + 2 ignored PROD bench).
+**Total tests today:** 128 (126 unit + 2 ignored PROD bench).
 
 ## M1 — `Tip5Perm` Plonky3 adapter (landed)
 
@@ -250,17 +251,79 @@ already block-fittable for a 1 MiB block budget, so recursion is not
 on the critical path for v1. We revisit when shapes scale up to
 GEMMA / QWEN FFN sizes (M11.1) and proof size grows.
 
+## M10.1a — Found-leaf binding (landed)
+
+Closes the headline security gap from M10's Fiat-Shamir-only binding:
+without M10.1a, an adversary can claim *any* `found_leaf` value
+(including one that trivially passes the difficulty check) and the
+SNARK accepts it. With M10.1a, `found_leaf` must be the BLAKE3-keyed
+hash of the witness's terminal tile-state value under the chain-
+derived `pow_key`.
+
+Two pieces:
+
+1. **AIR side.** [`composite_air::MatmulTileAir`] declares
+   `num_public_values = NUM_PUBLIC_INPUTS + 1 = 43`. The extra slot
+   `PI_M_FINAL_IDX` carries `m_final`. A new last-row constraint
+   `when_last_row().assert_eq(m_out, pis[PI_M_FINAL_IDX])` forces the
+   trace's terminal `m_out` to match what the prover claims.
+
+2. **Verifier side.** [`binding::derive_pow_key`] re-runs Pearl's
+   `kappa → s_B → s_A → pow_key` chain over
+   `(block_commitment, nonce, params_tag, h_a, h_b)` — matches
+   `ai_pow::fiat_shamir` byte-for-byte. [`binding::compute_found_leaf`]
+   then BLAKE3-keyed-hashes the single-slot `M_bytes` under that
+   `pow_key`. `verify` rejects with `VerifyError::FoundLeafMismatch`
+   if it differs from `public_inputs.found_leaf`.
+
+The hash itself runs in plain Rust (out-of-circuit). The *binding* is
+cryptographic: changing `m_final` breaks the AIR's last-row check;
+changing `found_leaf` breaks the verifier's hash check; changing
+anything `pow_key` depends on (`block_commitment`, `nonce`, `h_a`,
+`h_b`, `params_tag`) changes `pow_key` and so changes the expected
+leaf. Replay across blocks fails on `pow_key` divergence.
+
+Doesn't close: matrix substitution attacks (Attacks #2/#3 from the
+security writeup). Those are M10.1b.
+
+## M10.1b — In-circuit BLAKE3 / Merkle bindings (future)
+
+The witness's `a_rows` and `b_cols` are still unbound to the chain-
+pinned `h_a` / `h_b`. An adversary can pick arbitrary `(a, b)`, run
+the matmul on those, and (post-M10.1a) only needs to find a nonce
+where the resulting `m_final` hashes to something below target. That
+*is* a PoW — but it's a hash-search-only PoW, not the matmul-bound
+PoUW Pearl wants. M10.1b restores the PoUW property by constraining
+`a, b` to be the chain-committed matrices.
+
+Pearl's approach (`pearl/zk-pow/src/circuit/pearl_air.rs:91-109` +
+`blake_program.rs`): a custom BLAKE3 chip with per-row selectors,
+constraining `BLAKE3(input_row, key=κ)[i] == public_inputs.HASH_A[i]`
+on the rows where `is_hash_a == 1`. Same pattern for `h_b` and the
+jackpot hash.
+
+Plonky3 path:
+1. **Compose with `Blake3Air`.** Upstream's AIR (M8) computes one
+   BLAKE3 permutation per row, with fixed flag/counter derived from
+   row index. The fixed flags make it awkward for keyed-mode + per-
+   call counter requirements; would need either upstream contribution
+   or a fork.
+2. **Build a Pearl-style flexible BLAKE3 chip.** Hand-author the
+   constraints (Pearl spent meaningful engineering on this).
+3. **Cross-table lookups (logUp).** Use `p3-air-ext` or similar to
+   pull message bytes from the matmul AIR into a separate hash AIR.
+
+All paths are substantial. Capture the design choice when starting
+M10.1b; don't pick blindly. The full task is roughly Pearl's
+`pearl_air.rs` + `blake_program.rs` reimplemented over Plonky3 +
+Goldilocks instead of Plonky2 + Goldilocks — net engineering
+similar to what Pearl already did.
+
 ## Future milestones
 
 - **M9.2.** Multi-slot state routing (step mod 16) and selector-gated
   padding so `num_stripes` doesn't have to be a power of two. Also
   dispatch `STRIPE ∈ {2, 4, 8}` on `params.noise_rank`.
-- **M10.1.** BLAKE3 binding in-circuit — compose `Blake3SubAir`
-  alongside `MatmulTileAir` so the chain `kappa → s_B → s_A →
-  pow_key → found_leaf` (plus per-chunk `h_a` / `h_b`) runs *inside*
-  the SNARK, with constraint-level binding `final_m = found_leaf`.
-  Difficulty check `found_leaf ≤ 2^(256 − b) · r · t^2` stays
-  outside the AIR.
 - **M11.1.** Full-shape benchmarks at miner-realistic matmul shapes
   ([`GEMMA_4_31B_FFN`](../ai-pow/src/params.rs),
   [`QWEN_3_6_27B_FFN`](../ai-pow/src/params.rs)). Likely needs the
