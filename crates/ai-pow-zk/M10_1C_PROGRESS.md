@@ -48,11 +48,12 @@ When Plonky3 doesn't have a direct primitive (e.g. Pearl's
 | 12b | `composite_full_air` — matmul wired via `eval_composite` (BLAKE3, jackpot pending) | ✅ landed | 2 | 317 unit |
 | 12c | `composite_full_air` — BLAKE3 wired via `eval_composite` (jackpot pending) | ✅ landed | 1 | 318 unit |
 | 12d | `composite_full_air` — wire jackpot | ⬜ pending | | |
-| 13 | `composite_trace` (Pearl `pearl_trace`) | ⬜ pending | | |
+| 13a | `composite_trace` baseline builder + type surface | ✅ landed | 7 | 325 unit |
+| 13b | `composite_trace` instruction-list compilation (matmul / blake3 / jackpot blocks) | ⬜ pending | | |
 | 14 | `lib::{prove, verify}` plumbing on composite AIR | ⬜ pending | | |
 | 15 | PROD bench full shape | ⬜ pending | | |
 
-**Today's cumulative test count: 318 unit + 7 KAT + 3 ignored
+**Today's cumulative test count: 325 unit + 7 KAT + 3 ignored
 PROD bench.**
 
 ## Properties validated per phase
@@ -655,6 +656,52 @@ Two options:
 
 Option 1 is cleaner and matches Pearl. Defer to Phase 12d.
 
+### Phase 13a — composite_trace baseline (landed)
+
+`composite_trace.rs` provides the **type surface** for trace
+generation + a minimal baseline-zero builder.
+
+  * `CompositeTrace` — wraps a `RowMajorMatrix<Val>` of size
+    `TOTAL_TRACE_WIDTH × N` ready for proving.
+  * `CompositeTrace::baseline(n)` — fills 4 range tables, I8U8
+    table, STARK_ROW_IDX monotonic; all other columns zero.
+    Panics if `n` is not a power of 2 or below `MIN_STARK_LEN`.
+  * `CompositeTrace::baseline_min()` — convenience: exactly
+    `MIN_STARK_LEN = 8192` rows.
+
+The result verifies end-to-end through `CompositeFullAir`. This
+is the foundation every higher-level builder extends.
+
+Properties validated:
+  * ✅ Shape: `width = TOTAL_TRACE_WIDTH`, `height = n`
+    (`baseline_trace_has_correct_shape`).
+  * ✅ `baseline_min` height = `MIN_STARK_LEN`
+    (`baseline_min_matches_min_stark_len`).
+  * ✅ Baseline verifies through `CompositeFullAir`
+    (`baseline_trace_verifies_through_composite_full_air`).
+  * ✅ 2× MIN_STARK_LEN also verifies
+    (`baseline_larger_than_min_also_verifies`).
+  * ✅ STARK_ROW_IDX is `0, 1, ..., n-1` exactly
+    (`baseline_stark_row_idx_is_monotonic`).
+  * ✅ Panics below MIN_STARK_LEN
+    (`baseline_panics_below_min_stark_len`).
+  * ✅ Panics for non-power-of-two row counts
+    (`baseline_panics_for_non_power_of_two`).
+
+### Phase 13b — composite_trace instruction-list (pending)
+
+Phase 13b would extend `CompositeTrace` with an `Instr` enum
+(MatmulStep, Blake3Hash, JackpotStep, Padding) and a compiler
+that places each instruction into a contiguous block of trace
+rows with CONTROL_PREP / preprocessed columns filled
+consistently. Pearl's `pearl_program.rs` + `pearl_trace.rs` do
+this in ~700 lines combined.
+
+Instruction-list compilation is naturally bundled with Phase 14
+(lookup-aware prover) since the instruction blocks determine
+each row's lookup multiplicities (CV routing, NOISED_PACKED
+queries, etc.).
+
 ### Phase 7+ — scope decision (resolved)
 
 User picked **option 1** (full Pearl one-round-per-row port).
@@ -751,4 +798,5 @@ by the SNARK as a whole:
 | 2026-05-14 | M10.1c Phase 11 lookup design (`composite_lookups`) | `b492465` |
 | 2026-05-14 | M10.1c Phase 12a `composite_full_air` (Phase 3-6 chips) | `253a938` |
 | 2026-05-14 | M10.1c Phase 12b matmul wired via `eval_composite` | `c883c21` |
-| 2026-05-14 | M10.1c Phase 12c BLAKE3 wired via `eval_composite` | (this commit) |
+| 2026-05-14 | M10.1c Phase 12c BLAKE3 wired via `eval_composite` | `17f161d` |
+| 2026-05-14 | M10.1c Phase 13a `composite_trace` baseline builder | (this commit) |
