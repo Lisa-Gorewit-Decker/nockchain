@@ -34,31 +34,34 @@
 //!     Plonky3 absorbs them into the Fiat-Shamir challenger; a
 //!     verifier with a different `PublicInputs` will derive different
 //!     query points and reject.
-//!   * **M10.1a**: the trace's final tile-state value `m_final` is
-//!     exposed as an extra public-value slot and constrained by the
-//!     AIR's last-row check
-//!     `trace.last_row.m_out == pis[PI_M_FINAL_IDX]`. The verifier
-//!     then computes `BLAKE3-keyed(m_final_bytes, pow_key)` *outside*
-//!     the SNARK using [`binding::derive_pow_key`] +
-//!     [`binding::compute_found_leaf`] and checks the result against
-//!     `public_inputs.found_leaf`. This makes the SNARK a real
-//!     proof-of-work *certificate*: an adversary cannot claim an
-//!     arbitrary easy-to-pass jackpot leaf — `found_leaf` must
-//!     actually be the BLAKE3-keyed hash of the witness's terminal
-//!     state under the chain-derived `pow_key`.
+//!   * **M10.1a (out-of-circuit fast path)**: the trace's final
+//!     tile-state value `m_final` is exposed as a public-value-bound
+//!     element. The verifier recomputes `pow_key` via
+//!     [`binding::derive_pow_key`] and `BLAKE3-keyed(m_final_bytes,
+//!     pow_key)` via [`binding::compute_found_leaf`] in plain Rust;
+//!     mismatch → reject before unpacking the heavy hash proof.
+//!   * **M10.1b (in-circuit)**: the same hash relation is also proved
+//!     inside the SNARK. `prove` emits a *second* proof in the
+//!     envelope — a [`found_leaf_air::Blake3FoundLeafAir`] trace that
+//!     constrains BLAKE3 compression on Pearl's `(message = [m_final,
+//!     0, …, 0], key = pow_key, counter = 0, block_len = 64, flags =
+//!     0x1B)` to produce `public_inputs.found_leaf`. Uses the vendored
+//!     [`blake3_chip`] fork of `p3-blake3-air` (upstream's chip
+//!     silently bypasses `flags`, which would diverge from `ai_pow ::
+//!     matmul::TileState::keyed_hash` and break Pearl ↔ Nockchain
+//!     merge-mining). Cross-proof consistency: `m_final` appears in
+//!     both PI vectors so the same value flows through both proofs.
 //!
 //! ## Scope NOT yet bound
 //!
-//!   * **M10.1b: `h_a` / `h_b` matrix bindings.** The witness's
+//!   * **M10.1c: `h_a` / `h_b` matrix bindings.** The witness's
 //!     `a_rows` / `b_cols` are not yet tied to the chain-pinned
 //!     chunk-Merkle roots `h_a` / `h_b`. An adversary still has the
 //!     freedom to pick any `(a, b)` and run the matmul on them —
-//!     they're forced to do *some* matmul + hash work to find a
+//!     post-M10.1b they have to do *some* matmul work to find a
 //!     passing leaf, but not necessarily on the *useful* matrices
-//!     the chain expects. Closing this gap requires either in-circuit
-//!     BLAKE3 (Pearl's `pearl_air.rs:91-109` approach — multi-week
-//!     engineering, see `ROADMAP.md`) or a Merkle-path commit-reveal
-//!     scheme.
+//!     the chain expects. Closing this gap reuses the M10.1b
+//!     vendored chip per-row plus chunk-Merkle path constraints.
 //!   * **M9.2: multi-slot state routing.** The Pearl §4.5
 //!     `step mod 16` slot rotation collapses to single-slot in the
 //!     current AIR — only slot 0 of `M` evolves; slots 1..16 stay
@@ -75,6 +78,7 @@ pub mod blake3_air;
 pub mod blake3_chip;
 pub mod circuit;
 pub mod composite_air;
+pub mod found_leaf_air;
 pub mod input_chip;
 pub mod matmul_chip;
 pub mod params;
@@ -118,10 +122,13 @@ pub struct ZkProof(pub Vec<u8>);
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 struct ZkProofEnvelope {
-    /// Bincode-serialised `p3_uni_stark::Proof<AiPowStarkConfig>`.
+    /// Bincode-serialised composite tile proof (matmul + state + linkage).
     proof_bytes: Vec<u8>,
     /// Claimed final tile-state value (single-slot M9.1 regime).
     m_final: u32,
+    /// Bincode-serialised M10.1b BLAKE3 found-leaf proof (in-circuit
+    /// keyed-mode hash of `[m_final, 0, …, 0]` under `pow_key`).
+    hash_proof_bytes: Vec<u8>,
 }
 
 #[derive(Debug, Error)]
@@ -237,13 +244,60 @@ pub fn prove(
     let proof = p3_uni_stark::prove::<AiPowStarkConfig, _>(&cfg, &air, trace, &pis);
     let proof_bytes = bincode::serde::encode_to_vec(&proof, bincode_standard())
         .map_err(|e| ProveError::Serialize(e.to_string()))?;
+
+    // M10.1b: in-circuit BLAKE3 keyed-mode found-leaf binding.
+    // Build a one-call Pearl-compat trace that hashes
+    // `[m_final, 0, …, 0]` under `pow_key` and yields `found_leaf`,
+    // then prove it through the same `AiPowStarkConfig` with the
+    // 17-element found-leaf public-values vector.
+    let hash_call = build_found_leaf_call(m_final, &pow_key);
+    let hash_pis =
+        found_leaf_air::build_public_values::<Val>(m_final, &pow_key, &public_inputs.found_leaf);
+    let hash_air = found_leaf_air::Blake3FoundLeafAir::new();
+    let hash_trace = blake3_chip::generate_trace_for_calls::<Val>(
+        &[hash_call],
+        CircuitConfig::TEST.log_blowup as usize,
+    );
+    let hash_proof =
+        p3_uni_stark::prove::<AiPowStarkConfig, _>(&cfg, &hash_air, hash_trace, &hash_pis);
+    let hash_proof_bytes = bincode::serde::encode_to_vec(&hash_proof, bincode_standard())
+        .map_err(|e| ProveError::Serialize(e.to_string()))?;
+
     let envelope = ZkProofEnvelope {
         proof_bytes,
         m_final,
+        hash_proof_bytes,
     };
     let envelope_bytes = bincode::serde::encode_to_vec(&envelope, bincode_standard())
         .map_err(|e| ProveError::Serialize(e.to_string()))?;
     Ok(ZkProof(envelope_bytes))
+}
+
+/// Build the `Blake3HashCall` an honest miner produces for the
+/// found-leaf computation: single-block keyed root hash of
+/// `[m_final, 0, …, 0]` (16 × i32 LE) under `pow_key`.
+fn build_found_leaf_call(m_final: u32, pow_key: &[u8; 32]) -> blake3_chip::Blake3HashCall {
+    // BLAKE3 flag bits for a single-block keyed root hash.
+    const CHUNK_START: u32 = 1 << 0;
+    const CHUNK_END: u32 = 1 << 1;
+    const ROOT: u32 = 1 << 3;
+    const KEYED_HASH: u32 = 1 << 4;
+
+    let mut message = [0u32; 16];
+    message[0] = m_final;
+    let mut key = [0u32; 8];
+    for i in 0..8 {
+        let mut b = [0u8; 4];
+        b.copy_from_slice(&pow_key[i * 4..(i + 1) * 4]);
+        key[i] = u32::from_le_bytes(b);
+    }
+    blake3_chip::Blake3HashCall {
+        message,
+        key,
+        counter: 0,
+        block_len: 64,
+        flags: CHUNK_START | CHUNK_END | ROOT | KEYED_HASH,
+    }
 }
 
 /// Verify a [`ZkProof`] against a set of [`PublicInputs`] extracted
@@ -270,9 +324,10 @@ pub fn verify(
         bincode::serde::decode_from_slice(&proof.0, bincode_standard())
             .map_err(|e| VerifyError::Malformed(e.to_string()))?;
 
-    // M10.1a binding check, done *before* unpacking the inner proof:
-    // even if the inner Plonky3 proof would verify, a wrong m_final
-    // can't possibly hash to the claimed found_leaf, so reject early.
+    // M10.1a fast-path: hash check in plain Rust before unpacking the
+    // (large, ~10k-column) BLAKE3 proof. M10.1b's in-circuit proof
+    // below ALSO enforces this cryptographically, but the out-of-
+    // circuit check is faster to fail and gives a clearer error.
     let pow_key = binding::derive_pow_key(block_commitment, nonce, public_inputs);
     let expected_leaf = binding::compute_found_leaf(envelope.m_final, &pow_key);
     if expected_leaf != public_inputs.found_leaf {
@@ -289,7 +344,26 @@ pub fn verify(
     let cfg = circuit::build_stark_config(params, &CircuitConfig::TEST);
     let air = composite_air::MatmulTileAir::<2>::new();
     p3_uni_stark::verify::<AiPowStarkConfig, _>(&cfg, &air, &decoded, &pis)
-        .map_err(|e| VerifyError::Rejected(format!("{e:?}")))
+        .map_err(|e| VerifyError::Rejected(format!("composite: {e:?}")))?;
+
+    // M10.1b: verify the in-circuit BLAKE3 found-leaf proof. The
+    // verifier supplies all three pieces of public data (m_final from
+    // the envelope, pow_key derived above, found_leaf from PIs); the
+    // hash AIR constrains the trace's row-0 inputs/outputs to those
+    // values AND proves real BLAKE3 keyed-mode compression through
+    // them. Sharing `m_final` between the two proofs' public values
+    // links them.
+    let hash_pis = found_leaf_air::build_public_values::<Val>(
+        envelope.m_final, &pow_key, &public_inputs.found_leaf,
+    );
+    let (hash_decoded, _used): (UniStarkProof<AiPowStarkConfig>, usize) =
+        bincode::serde::decode_from_slice(&envelope.hash_proof_bytes, bincode_standard())
+            .map_err(|e| VerifyError::Malformed(e.to_string()))?;
+    let hash_air = found_leaf_air::Blake3FoundLeafAir::new();
+    p3_uni_stark::verify::<AiPowStarkConfig, _>(&cfg, &hash_air, &hash_decoded, &hash_pis)
+        .map_err(|e| VerifyError::Rejected(format!("hash: {e:?}")))?;
+
+    Ok(())
 }
 
 /// Validate the public inputs without requiring a roundtrip through
@@ -773,6 +847,34 @@ mod tests {
         assert!(
             matches!(r, Err(VerifyError::FoundLeafMismatch)),
             "replay across blocks must reject; got {r:?}"
+        );
+    }
+
+    /// M10.1b in-circuit binding: tamper with the hash proof in the
+    /// envelope while leaving the composite proof + M10.1a out-of-
+    /// circuit hash check intact. The out-of-circuit path passes (it
+    /// doesn't read `hash_proof_bytes`), so rejection must come from
+    /// the in-circuit Blake3FoundLeafAir verifier — proves M10.1b's
+    /// hash proof is actually being exercised, not silently skipped.
+    #[test]
+    fn verify_rejects_tampered_hash_proof_bytes() {
+        let p = mvp_params();
+        let w = mvp_witness(&p);
+        let pi = mvp_public_inputs(&p, &w, BC, NONCE);
+        let proof = prove(BC, NONCE, &p, &pi, &w).expect("prove must succeed");
+
+        let (mut envelope, _): (ZkProofEnvelope, usize) =
+            bincode::serde::decode_from_slice(&proof.0, bincode_standard()).unwrap();
+        // Flip a byte in the middle of the hash proof. The composite
+        // proof + m_final stay valid; only the hash leg is broken.
+        let idx = envelope.hash_proof_bytes.len() / 2;
+        envelope.hash_proof_bytes[idx] ^= 0xFF;
+        let tampered_bytes = bincode::serde::encode_to_vec(&envelope, bincode_standard()).unwrap();
+
+        let r = verify(BC, NONCE, &p, &pi, &ZkProof(tampered_bytes));
+        assert!(
+            r.is_err(),
+            "tampered hash proof must reject through the M10.1b in-circuit binding; got {r:?}"
         );
     }
 

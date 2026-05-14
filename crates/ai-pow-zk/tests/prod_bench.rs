@@ -19,10 +19,13 @@
 
 use std::time::Instant;
 
+use ai_pow_zk::blake3_chip::{generate_trace_for_calls, Blake3HashCall};
 use ai_pow_zk::circuit::{build_stark_config, AiPowStarkConfig, CircuitConfig};
 use ai_pow_zk::composite_air::{MatmulTileAir, NUM_AIR_PUBLIC_VALUES, PI_M_FINAL_IDX};
+use ai_pow_zk::found_leaf_air::{build_public_values as build_hash_pis, Blake3FoundLeafAir};
 use ai_pow_zk::params::ZkParams;
-use ai_pow_zk::Val;
+use ai_pow_zk::public::PublicInputs;
+use ai_pow_zk::{binding, Val};
 use p3_field::integers::QuotientMap;
 use p3_uni_stark::{prove, verify};
 
@@ -92,6 +95,69 @@ fn prod_profile_round_trip() {
     assert!(
         proof_bytes.len() > 1024,
         "PROD proof unexpectedly small ({} bytes)",
+        proof_bytes.len()
+    );
+}
+
+/// M10.1b bench: the full found-leaf binding adds a *second* PROD-
+/// profile proof per attempt — the Blake3FoundLeafAir hash proof.
+/// This test measures the combined cost so the integration overhead
+/// is visible (the composite proof is what the `prod_profile_round_trip`
+/// test above already covers).
+#[test]
+#[ignore = "PROD profile is slow; run explicitly with --ignored"]
+fn prod_profile_found_leaf_air_round_trip() {
+    let p = bench_params();
+    let cfg: AiPowStarkConfig = build_stark_config(&p, &CircuitConfig::PROD);
+    let air = Blake3FoundLeafAir::new();
+
+    // Use a fixture (m_final, pow_key) and compute the matching
+    // found_leaf via the M10.1a out-of-circuit helper. The AIR
+    // constrains all three.
+    let m_final: u32 = 0x1234_5678;
+    let pow_key = [0x42u8; 32];
+    let pi = PublicInputs {
+        params_tag: [0; 32],
+        h_a: [0; 32],
+        h_b: [0; 32],
+        comm_m: [0; 32],
+        found_i: 0,
+        found_j: 0,
+        found_leaf: binding::compute_found_leaf(m_final, &pow_key),
+    };
+
+    let mut message = [0u32; 16];
+    message[0] = m_final;
+    let mut key = [0u32; 8];
+    for i in 0..8 {
+        let mut b = [0u8; 4];
+        b.copy_from_slice(&pow_key[i * 4..(i + 1) * 4]);
+        key[i] = u32::from_le_bytes(b);
+    }
+    let calls = vec![Blake3HashCall {
+        message,
+        key,
+        counter: 0,
+        block_len: 64,
+        flags: 0x1B,
+    }];
+    let trace = generate_trace_for_calls::<Val>(&calls, CircuitConfig::PROD.log_blowup as usize);
+    let pis = build_hash_pis::<Val>(m_final, &pow_key, &pi.found_leaf);
+
+    let t0 = Instant::now();
+    let proof = prove::<AiPowStarkConfig, _>(&cfg, &air, trace, &pis);
+    let prove_ms = t0.elapsed().as_millis();
+    let proof_bytes = bincode::serde::encode_to_vec(&proof, bincode::config::standard())
+        .expect("hash proof must serialise");
+
+    let t1 = Instant::now();
+    verify::<AiPowStarkConfig, _>(&cfg, &air, &proof, &pis)
+        .expect("M10.1b in-circuit found-leaf binding must verify at PROD");
+    let verify_ms = t1.elapsed().as_millis();
+
+    eprintln!(
+        "[PROD bench, M10.1b hash leg] prove = {prove_ms} ms | verify = {verify_ms} ms | \
+         proof = {} bytes",
         proof_bytes.len()
     );
 }
