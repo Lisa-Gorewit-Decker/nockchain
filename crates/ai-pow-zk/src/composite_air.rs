@@ -186,6 +186,25 @@ impl<const STRIPE: usize> MatmulTileAir<STRIPE> {
     }
 }
 
+/// Public-values index where the last-row `m_out` is exposed.
+///
+/// The composite AIR's public-values vector is laid out as
+/// `[public_inputs(42 elements) | m_final_slot_0]`. The trace's
+/// last row's `m_out` column is constrained to equal this slot — see
+/// the M10.1a constraint in [`Air::eval`] below. This is what binds
+/// the SNARK's computed final tile state to a verifier-checkable
+/// value; the verifier then computes
+/// `BLAKE3_keyed(m_final_bytes, pow_key)` out-of-band and matches
+/// against `public_inputs.found_leaf`.
+pub const PI_M_FINAL_IDX: usize = crate::public::NUM_PUBLIC_INPUTS;
+
+/// Total length of the public-values vector this AIR consumes.
+///
+/// `42` for the Pearl public inputs (M10) + `1` for the single-slot
+/// `m_final` exposure (M10.1a). Once M9.2 routes the 16-slot state
+/// the second block widens from 1 → 16.
+pub const NUM_AIR_PUBLIC_VALUES: usize = crate::public::NUM_PUBLIC_INPUTS + 1;
+
 impl<F, const STRIPE: usize> BaseAir<F> for MatmulTileAir<STRIPE> {
     fn width(&self) -> usize {
         Self::width()
@@ -193,15 +212,12 @@ impl<F, const STRIPE: usize> BaseAir<F> for MatmulTileAir<STRIPE> {
 
     /// Number of Goldilocks elements in the public-values channel.
     ///
-    /// Matches [`crate::public::NUM_PUBLIC_INPUTS`] = 42: the Pearl
-    /// public-input set (`params_tag`, `h_a`, `h_b`, `comm_m`, two tile
-    /// indices, `found_leaf`) flattened to Goldilocks elements. The
-    /// composite AIR does not currently *constrain* any of them
-    /// (binding the matmul / state values to specific public inputs is
-    /// M9.2+); Plonky3 absorbs them into the Fiat-Shamir challenger so
-    /// any mismatch at verify-time rejects the proof regardless.
+    /// `NUM_PUBLIC_INPUTS (= 42)` for the Pearl public inputs the
+    /// caller wants the SNARK to commit to (M10) plus `1` for the
+    /// `m_final` exposure that the M10.1a verifier-side hash check
+    /// reads back (see [`PI_M_FINAL_IDX`]).
     fn num_public_values(&self) -> usize {
-        crate::public::NUM_PUBLIC_INPUTS
+        NUM_AIR_PUBLIC_VALUES
     }
 
     /// Max degree of any constraint, used to pin FRI's
@@ -316,6 +332,18 @@ impl<AB: AirBuilder, const STRIPE: usize> Air<AB> for MatmulTileAir<STRIPE> {
         builder.when_first_row().assert_zero(m_in);
         let nxt_m_in: AB::Var = nxt[state_start];
         builder.when_transition().assert_eq(m_out, nxt_m_in);
+
+        // =========================================================
+        //  M10.1a: bind last row's m_out to public M_final slot
+        // =========================================================
+        // The trace's terminal tile-state value (single-slot regime)
+        // is forced to equal the public-values entry at
+        // `PI_M_FINAL_IDX`. Combined with the verifier-side hash check
+        // `BLAKE3_keyed(m_final, pow_key) == public_inputs.found_leaf`
+        // this gives Pearl-style found_leaf binding without in-circuit
+        // BLAKE3. See `crate::lib::verify` for the hash side.
+        let m_final_pi = builder.public_values()[PI_M_FINAL_IDX];
+        builder.when_last_row().assert_eq(m_out, m_final_pi);
     }
 }
 
@@ -358,12 +386,28 @@ mod tests {
         }
     }
 
-    /// 42 placeholder public values. The composite AIR declares
-    /// `num_public_values = NUM_PUBLIC_INPUTS = 42` for Fiat-Shamir
-    /// absorption; the tests at this level don't care about the
-    /// actual values — they just need prover and verifier to agree.
-    fn test_public_values() -> Vec<Val> {
-        vec![Val::default(); crate::public::NUM_PUBLIC_INPUTS]
+    /// `NUM_AIR_PUBLIC_VALUES` placeholder public values, with
+    /// `pis[PI_M_FINAL_IDX]` set to the test trace's expected final
+    /// state so the M10.1a last-row constraint
+    /// `trace.last_row.m_out == pis[PI_M_FINAL_IDX]` is satisfied.
+    /// The other 42 PI slots can be anything (they're Fiat-Shamir-
+    /// only at this AIR level; the lib.rs integration tests check the
+    /// hash-binding semantics).
+    fn test_public_values(a: &[i8], b: &[i8]) -> Vec<Val> {
+        let mut pis = vec![Val::default(); NUM_AIR_PUBLIC_VALUES];
+        let m_final = MatmulTileAir::<2>::reference_final_state(a, b);
+        use p3_field::integers::QuotientMap;
+        pis[PI_M_FINAL_IDX] = <Val as QuotientMap<u32>>::from_int(m_final);
+        pis
+    }
+
+    /// Same shape as `test_public_values` but parameterised by STRIPE.
+    fn test_public_values_stripe8(a: &[i8], b: &[i8]) -> Vec<Val> {
+        let mut pis = vec![Val::default(); NUM_AIR_PUBLIC_VALUES];
+        let m_final = MatmulTileAir::<8>::reference_final_state(a, b);
+        use p3_field::integers::QuotientMap;
+        pis[PI_M_FINAL_IDX] = <Val as QuotientMap<u32>>::from_int(m_final);
+        pis
     }
 
     #[test]
@@ -429,7 +473,7 @@ mod tests {
         let cfg = build_stark_config(&test_zk_params(), &CircuitConfig::TEST);
         let air = MatmulTileAir::<2>::new();
         let trace = MatmulTileAir::<2>::generate_trace(&a, &b);
-        let pis = test_public_values();
+        let pis = test_public_values(&a, &b);
         let proof = prove(&cfg, &air, trace, &pis);
         verify(&cfg, &air, &proof, &pis).expect("composite trace must verify");
     }
@@ -442,7 +486,7 @@ mod tests {
         let cfg = build_stark_config(&test_zk_params(), &CircuitConfig::TEST);
         let air = MatmulTileAir::<2>::new();
         let trace = MatmulTileAir::<2>::generate_trace(&a, &b);
-        let pis = test_public_values();
+        let pis = test_public_values(&a, &b);
         let proof = prove(&cfg, &air, trace, &pis);
         verify(&cfg, &air, &proof, &pis).expect("mixed-sign composite trace must verify");
     }
@@ -455,7 +499,7 @@ mod tests {
         let cfg = build_stark_config(&test_zk_params(), &CircuitConfig::TEST);
         let air = MatmulTileAir::<2>::new();
         let trace = MatmulTileAir::<2>::generate_trace(&a, &b);
-        let pis = test_public_values();
+        let pis = test_public_values(&a, &b);
         let proof = prove(&cfg, &air, trace, &pis);
         verify(&cfg, &air, &proof, &pis).expect("negative-accumulator composite trace must verify");
     }
@@ -469,7 +513,7 @@ mod tests {
         let mut trace = MatmulTileAir::<2>::generate_trace(&a, &b);
         // Corrupt c_out of row 0.
         trace.values[1] = i64_to_val(999);
-        let pis = test_public_values();
+        let pis = test_public_values(&a, &b);
         let proof = prove(&cfg, &air, trace, &pis);
         let r = verify(&cfg, &air, &proof, &pis);
         assert!(r.is_err(), "tampered c_out must reject; got {r:?}");
@@ -487,7 +531,7 @@ mod tests {
         // transition without disturbing M6 (we leave c_in/c_out alone).
         let m_in_col = MatmulTileAir::<2>::state_start();
         trace.values[w + m_in_col] = u32_to_val(0xDEAD_BEEF);
-        let pis = test_public_values();
+        let pis = test_public_values(&a, &b);
         let proof = prove(&cfg, &air, trace, &pis);
         let r = verify(&cfg, &air, &proof, &pis);
         assert!(r.is_err(), "broken state chain must reject; got {r:?}");
@@ -506,7 +550,7 @@ mod tests {
         let mut trace = MatmulTileAir::<2>::generate_trace(&a, &b);
         let x_col = MatmulTileAir::<2>::state_start() + 1;
         trace.values[x_col] = u32_to_val(0x1234_5678);
-        let pis = test_public_values();
+        let pis = test_public_values(&a, &b);
         let proof = prove(&cfg, &air, trace, &pis);
         let r = verify(&cfg, &air, &proof, &pis);
         assert!(r.is_err(), "tampered x linkage must reject; got {r:?}");
@@ -529,7 +573,7 @@ mod tests {
                                                      // The transition `next.m_in = cur.m_out` will also fail because
                                                      // row 1's m_in was computed assuming m_in_0 = 0 — that's still
                                                      // a valid first-row violation; we just need any rejection.
-        let pis = test_public_values();
+        let pis = test_public_values(&a, &b);
         let proof = prove(&cfg, &air, trace, &pis);
         let r = verify(&cfg, &air, &proof, &pis);
         assert!(r.is_err(), "nonzero initial m_in must reject; got {r:?}");
@@ -543,9 +587,35 @@ mod tests {
         let cfg = build_stark_config(&test_zk_params(), &CircuitConfig::TEST);
         let air = MatmulTileAir::<8>::new();
         let trace = MatmulTileAir::<8>::generate_trace(&a, &b);
-        let pis = test_public_values();
+        let pis = test_public_values_stripe8(&a, &b);
         let proof = prove(&cfg, &air, trace, &pis);
         verify(&cfg, &air, &proof, &pis).expect("STRIPE=8 composite trace must verify");
+    }
+
+    /// M10.1a binding: tampering with the `m_final` slot of the public
+    /// values without tampering with the trace must reject — the AIR's
+    /// `when_last_row().assert_eq(m_out, pis[PI_M_FINAL_IDX])`
+    /// constraint catches it.
+    #[test]
+    fn verify_rejects_tampered_m_final_public_value() {
+        let a: [i8; 4] = [1, 2, 3, 4];
+        let b: [i8; 4] = [5, 6, 7, 8];
+        let cfg = build_stark_config(&test_zk_params(), &CircuitConfig::TEST);
+        let air = MatmulTileAir::<2>::new();
+        let trace = MatmulTileAir::<2>::generate_trace(&a, &b);
+
+        let pis_honest = test_public_values(&a, &b);
+        let proof = prove(&cfg, &air, trace, &pis_honest);
+
+        let mut pis_tampered = pis_honest.clone();
+        use p3_field::integers::QuotientMap;
+        pis_tampered[PI_M_FINAL_IDX] = <Val as QuotientMap<u32>>::from_int(0xDEAD_BEEF);
+
+        let r = verify(&cfg, &air, &proof, &pis_tampered);
+        assert!(
+            r.is_err(),
+            "tampered m_final public value must be rejected by the AIR; got {r:?}"
+        );
     }
 
     #[test]

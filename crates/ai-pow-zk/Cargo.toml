@@ -19,6 +19,12 @@ thiserror = { workspace = true }
 # wire format stays internal to this crate.
 bincode = { workspace = true, features = ["serde"] }
 serde = { workspace = true, features = ["derive"] }
+# `blake3` is used out-of-circuit by `verify` to derive `pow_key` from
+# the public inputs (kappa → s_B → s_A → pow_key chain, matches
+# `ai-pow::fiat_shamir`) and to compute the keyed-hash check
+# `BLAKE3_keyed(M_final, pow_key) == public_inputs.found_leaf`.
+# The in-circuit BLAKE3 variant is M10.1b — see ROADMAP.md.
+blake3 = { workspace = true }
 
 # Plonky3. The upstream publishes irregularly to crates.io; pin to a
 # git revision here and bump `rev` when the circuit needs newer field /

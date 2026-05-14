@@ -20,11 +20,22 @@
 use std::time::Instant;
 
 use ai_pow_zk::circuit::{build_stark_config, AiPowStarkConfig, CircuitConfig};
-use ai_pow_zk::composite_air::MatmulTileAir;
+use ai_pow_zk::composite_air::{MatmulTileAir, NUM_AIR_PUBLIC_VALUES, PI_M_FINAL_IDX};
 use ai_pow_zk::params::ZkParams;
-use ai_pow_zk::public::NUM_PUBLIC_INPUTS;
 use ai_pow_zk::Val;
+use p3_field::integers::QuotientMap;
 use p3_uni_stark::{prove, verify};
+
+/// Build a placeholder public-values vector for bench traces. The 42
+/// Pearl public-input slots stay zero (Fiat-Shamir-only at this AIR
+/// level) and `pis[PI_M_FINAL_IDX]` is set to the trace's expected
+/// `m_final` so M10.1a's last-row constraint is satisfied.
+fn bench_pis<const STRIPE: usize>(a: &[i8], b: &[i8]) -> Vec<Val> {
+    let mut pis = vec![Val::default(); NUM_AIR_PUBLIC_VALUES];
+    let m_final = MatmulTileAir::<STRIPE>::reference_final_state(a, b);
+    pis[PI_M_FINAL_IDX] = <Val as QuotientMap<u32>>::from_int(m_final);
+    pis
+}
 
 fn bench_params() -> ZkParams {
     // Smallest shape that still exercises the full constraint set:
@@ -56,7 +67,7 @@ fn prod_profile_round_trip() {
         .map(|i| (((i as i32) * 7 - 30) % 64) as i8)
         .collect();
     let trace = MatmulTileAir::<2>::generate_trace(&a, &b);
-    let pis = vec![Val::default(); NUM_PUBLIC_INPUTS];
+    let pis = bench_pis::<2>(&a, &b);
 
     let t0 = Instant::now();
     let proof = prove::<AiPowStarkConfig, _>(&cfg, &air, trace, &pis);
@@ -98,10 +109,9 @@ fn prod_profile_rejects_tampered_witness() {
     let a: Vec<i8> = (0..p.k as usize).map(|i| (i as i8) - 8).collect();
     let b: Vec<i8> = (0..p.k as usize).map(|i| (i as i8) - 6).collect();
     let mut trace = MatmulTileAir::<2>::generate_trace(&a, &b);
-    let pis = vec![Val::default(); NUM_PUBLIC_INPUTS];
+    let pis = bench_pis::<2>(&a, &b);
 
     // Corrupt c_out at row 0 (col 1).
-    use p3_field::integers::QuotientMap;
     trace.values[1] = <Val as QuotientMap<u64>>::from_int(424242);
 
     let proof = prove::<AiPowStarkConfig, _>(&cfg, &air, trace, &pis);

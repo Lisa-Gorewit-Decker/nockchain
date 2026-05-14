@@ -34,24 +34,43 @@
 //!     Plonky3 absorbs them into the Fiat-Shamir challenger; a
 //!     verifier with a different `PublicInputs` will derive different
 //!     query points and reject.
+//!   * **M10.1a**: the trace's final tile-state value `m_final` is
+//!     exposed as an extra public-value slot and constrained by the
+//!     AIR's last-row check
+//!     `trace.last_row.m_out == pis[PI_M_FINAL_IDX]`. The verifier
+//!     then computes `BLAKE3-keyed(m_final_bytes, pow_key)` *outside*
+//!     the SNARK using [`binding::derive_pow_key`] +
+//!     [`binding::compute_found_leaf`] and checks the result against
+//!     `public_inputs.found_leaf`. This makes the SNARK a real
+//!     proof-of-work *certificate*: an adversary cannot claim an
+//!     arbitrary easy-to-pass jackpot leaf — `found_leaf` must
+//!     actually be the BLAKE3-keyed hash of the witness's terminal
+//!     state under the chain-derived `pow_key`.
 //!
 //! ## Scope NOT yet bound
 //!
-//!   * `block_commitment` and `nonce` are accepted but not bound. The
-//!     caller used them upstream to derive the public-input hashes,
-//!     which *are* bound through Fiat-Shamir.
-//!   * AIR-level binding between trace values and public inputs (e.g.
-//!     `final_m = public_inputs.found_leaf`). This requires BLAKE3
-//!     in-circuit composition (M10.1) — see [`blake3_air`] (M8) for
-//!     the upstream sub-AIR that lands next.
-//!   * Multi-slot state routing (`step mod 16`) and non-power-of-two
-//!     `num_stripes` (M9.2). Today, `k / noise_rank` must be a power
-//!     of two and the single-slot regime is fixed.
+//!   * **M10.1b: `h_a` / `h_b` matrix bindings.** The witness's
+//!     `a_rows` / `b_cols` are not yet tied to the chain-pinned
+//!     chunk-Merkle roots `h_a` / `h_b`. An adversary still has the
+//!     freedom to pick any `(a, b)` and run the matmul on them —
+//!     they're forced to do *some* matmul + hash work to find a
+//!     passing leaf, but not necessarily on the *useful* matrices
+//!     the chain expects. Closing this gap requires either in-circuit
+//!     BLAKE3 (Pearl's `pearl_air.rs:91-109` approach — multi-week
+//!     engineering, see `ROADMAP.md`) or a Merkle-path commit-reveal
+//!     scheme.
+//!   * **M9.2: multi-slot state routing.** The Pearl §4.5
+//!     `step mod 16` slot rotation collapses to single-slot in the
+//!     current AIR — only slot 0 of `M` evolves; slots 1..16 stay
+//!     zero. `found_leaf` here hashes `[m_final, 0, …, 0]` (16 × i32);
+//!     a full Pearl miner would have non-zero values in every slot.
+//!     Today, `k / noise_rank` must be a power of two.
 //!
 //! See [`ROADMAP.md`](https://github.com/nockchain/nockchain/blob/master/crates/ai-pow-zk/ROADMAP.md)
 //! for the full milestone list and what's next.
 
 pub mod air;
+pub mod binding;
 pub mod blake3_air;
 pub mod circuit;
 pub mod composite_air;
@@ -63,8 +82,10 @@ pub mod state_chip;
 pub mod witness;
 
 use bincode::config::standard as bincode_standard;
+use p3_field::integers::QuotientMap;
 pub use p3_goldilocks::Goldilocks as Val;
 use p3_uni_stark::Proof as UniStarkProof;
+use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 pub use crate::air::MatmulAir;
@@ -73,11 +94,34 @@ pub use crate::params::ZkParams;
 pub use crate::public::PublicInputs;
 pub use crate::witness::Witness;
 
-/// Bincode-serialized Plonky3 STARK proof. Wire format is internal to
-/// this crate — consumers persist the `Vec<u8>` verbatim and round-trip
-/// it through [`verify`] only.
+/// Bincode-serialised Plonky3 STARK proof + `m_final` envelope.
+///
+/// The composite tile AIR exposes the trace's terminal tile-state
+/// value `m_final` (single-slot M9.1 regime — see M9.2 for the
+/// 16-slot widening) as a public-value-bound element. The prover
+/// transmits both the proof bytes and `m_final` inside this
+/// envelope. The verifier:
+///
+///   1. Recomputes `pow_key` from `(block_commitment, nonce,
+///      public_inputs)` via the [`binding`] helpers.
+///   2. Checks `BLAKE3_keyed(m_final_bytes, pow_key) ==
+///      public_inputs.found_leaf`. Rejects if not.
+///   3. Forwards `m_final` into Plonky3's public-values channel so
+///      the AIR enforces `trace.last_row.m_out == m_final` (see
+///      [`composite_air::PI_M_FINAL_IDX`]).
+///
+/// Wire format is internal to this crate — consumers persist the
+/// `Vec<u8>` verbatim and round-trip it through [`verify`] only.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ZkProof(pub Vec<u8>);
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+struct ZkProofEnvelope {
+    /// Bincode-serialised `p3_uni_stark::Proof<AiPowStarkConfig>`.
+    proof_bytes: Vec<u8>,
+    /// Claimed final tile-state value (single-slot M9.1 regime).
+    m_final: u32,
+}
 
 #[derive(Debug, Error)]
 pub enum ProveError {
@@ -98,6 +142,16 @@ pub enum ProveError {
     /// pending — see the [`crate`]-level docstring.
     #[error("unsupported params: {0}")]
     Unsupported(String),
+    /// The prover-side M10.1a sanity check failed: the trace's
+    /// computed `m_final`, hashed under the derived `pow_key`, does
+    /// not match `public_inputs.found_leaf`. Means the caller asked
+    /// to prove a `found_leaf` value that the witness does not
+    /// actually produce.
+    #[error(
+        "found_leaf binding mismatch: BLAKE3(m_final, pow_key) != public_inputs.found_leaf \
+         (caller asked to prove an inconsistent (witness, found_leaf) pair)"
+    )]
+    FoundLeafMismatch,
 }
 
 #[derive(Debug, Error)]
@@ -117,6 +171,13 @@ pub enum VerifyError {
     /// Parameter shape outside the MVP range supported by [`verify`].
     #[error("unsupported params: {0}")]
     Unsupported(String),
+    /// M10.1a found-leaf binding failed: the proof's `m_final`,
+    /// hashed under the derived `pow_key`, does not equal the
+    /// public-input `found_leaf`. Strong cryptographic rejection —
+    /// signed by the BLAKE3 keyed-hash relation, not by the FRI
+    /// transcript.
+    #[error("found_leaf binding rejected: BLAKE3(m_final, pow_key) != public_inputs.found_leaf")]
+    FoundLeafMismatch,
 }
 
 /// Build a Plonky3 STARK that attests to the existence of a [`Witness`]
@@ -145,8 +206,6 @@ pub fn prove(
     public_inputs: &PublicInputs,
     witness: &Witness,
 ) -> Result<ZkProof, ProveError> {
-    let _ = (block_commitment, nonce);
-
     params.validate().map_err(ProveError::Params)?;
     validate_public_inputs(public_inputs).map_err(ProveError::PublicInputs)?;
     validate_witness_shape(witness, params).map_err(ProveError::Witness)?;
@@ -155,14 +214,35 @@ pub fn prove(
     let k = params.k as usize;
     let a = &witness.a_rows[0..k];
     let b = &witness.b_cols[0..k];
-    let pis = public_inputs.to_field_elements();
+
+    // M10.1a: compute the trace's deterministic terminal state, derive
+    // pow_key the same way `ai_pow::fiat_shamir::pow_key_for_nonce`
+    // does, and hash the single-slot M to get the *expected*
+    // found_leaf. Bail early with a clear error if the caller asked
+    // us to prove an inconsistent (witness, found_leaf) pair.
+    let m_final = composite_air::MatmulTileAir::<2>::reference_final_state(a, b);
+    let pow_key = binding::derive_pow_key(block_commitment, nonce, public_inputs);
+    let expected_leaf = binding::compute_found_leaf(m_final, &pow_key);
+    if expected_leaf != public_inputs.found_leaf {
+        return Err(ProveError::FoundLeafMismatch);
+    }
+
+    let mut pis = public_inputs.to_field_elements();
+    pis.push(<Val as QuotientMap<u32>>::from_int(m_final));
+
     let cfg = circuit::build_stark_config(params, &CircuitConfig::TEST);
     let air = composite_air::MatmulTileAir::<2>::new();
     let trace = composite_air::MatmulTileAir::<2>::generate_trace(a, b);
     let proof = p3_uni_stark::prove::<AiPowStarkConfig, _>(&cfg, &air, trace, &pis);
-    let bytes = bincode::serde::encode_to_vec(&proof, bincode_standard())
+    let proof_bytes = bincode::serde::encode_to_vec(&proof, bincode_standard())
         .map_err(|e| ProveError::Serialize(e.to_string()))?;
-    Ok(ZkProof(bytes))
+    let envelope = ZkProofEnvelope {
+        proof_bytes,
+        m_final,
+    };
+    let envelope_bytes = bincode::serde::encode_to_vec(&envelope, bincode_standard())
+        .map_err(|e| ProveError::Serialize(e.to_string()))?;
+    Ok(ZkProof(envelope_bytes))
 }
 
 /// Verify a [`ZkProof`] against a set of [`PublicInputs`] extracted
@@ -181,17 +261,30 @@ pub fn verify(
     public_inputs: &PublicInputs,
     proof: &ZkProof,
 ) -> Result<(), VerifyError> {
-    let _ = (block_commitment, nonce);
-
     params.validate().map_err(VerifyError::Params)?;
     validate_public_inputs(public_inputs).map_err(VerifyError::PublicInputs)?;
     require_mvp_params(params).map_err(VerifyError::Unsupported)?;
 
-    let (decoded, _used): (UniStarkProof<AiPowStarkConfig>, usize) =
+    let (envelope, _used): (ZkProofEnvelope, usize) =
         bincode::serde::decode_from_slice(&proof.0, bincode_standard())
             .map_err(|e| VerifyError::Malformed(e.to_string()))?;
 
-    let pis = public_inputs.to_field_elements();
+    // M10.1a binding check, done *before* unpacking the inner proof:
+    // even if the inner Plonky3 proof would verify, a wrong m_final
+    // can't possibly hash to the claimed found_leaf, so reject early.
+    let pow_key = binding::derive_pow_key(block_commitment, nonce, public_inputs);
+    let expected_leaf = binding::compute_found_leaf(envelope.m_final, &pow_key);
+    if expected_leaf != public_inputs.found_leaf {
+        return Err(VerifyError::FoundLeafMismatch);
+    }
+
+    let (decoded, _used): (UniStarkProof<AiPowStarkConfig>, usize) =
+        bincode::serde::decode_from_slice(&envelope.proof_bytes, bincode_standard())
+            .map_err(|e| VerifyError::Malformed(e.to_string()))?;
+
+    let mut pis = public_inputs.to_field_elements();
+    pis.push(<Val as QuotientMap<u32>>::from_int(envelope.m_final));
+
     let cfg = circuit::build_stark_config(params, &CircuitConfig::TEST);
     let air = composite_air::MatmulTileAir::<2>::new();
     p3_uni_stark::verify::<AiPowStarkConfig, _>(&cfg, &air, &decoded, &pis)
@@ -321,33 +414,55 @@ mod tests {
         }
     }
 
-    fn mvp_public_inputs() -> PublicInputs {
-        PublicInputs {
+    /// Build the public inputs for a test by mining honestly: compute
+    /// the trace's `m_final` for the witness, derive `pow_key` from
+    /// `(block_commit, nonce, params_tag, h_a, h_b)`, and set
+    /// `found_leaf` to the resulting BLAKE3-keyed hash. This is what
+    /// an honest miner produces and what `prove` / `verify`'s M10.1a
+    /// binding check expects to hold.
+    fn mvp_public_inputs(
+        p: &ZkParams,
+        w: &Witness,
+        block_commit: &[u8],
+        nonce: &[u8],
+    ) -> PublicInputs {
+        let mut pi = PublicInputs {
             params_tag: [7u8; 32],
             h_a: [11u8; 32],
             h_b: [13u8; 32],
             comm_m: [17u8; 32],
             found_i: 0,
             found_j: 0,
-            found_leaf: [19u8; 32],
-        }
+            found_leaf: [0u8; 32], // placeholder, overwritten below
+        };
+        let k = p.k as usize;
+        let m_final = composite_air::MatmulTileAir::<2>::reference_final_state(
+            &w.a_rows[..k],
+            &w.b_cols[..k],
+        );
+        let pow_key = binding::derive_pow_key(block_commit, nonce, &pi);
+        pi.found_leaf = binding::compute_found_leaf(m_final, &pow_key);
+        pi
     }
+
+    const BC: &[u8] = b"block-commit";
+    const NONCE: &[u8] = b"nonce";
 
     #[test]
     fn prove_then_verify_round_trips() {
         let p = mvp_params();
-        let pi = mvp_public_inputs();
         let w = mvp_witness(&p);
-        let proof = prove(b"block-commit", b"nonce", &p, &pi, &w).expect("prove must succeed");
-        verify(b"block-commit", b"nonce", &p, &pi, &proof).expect("verify must succeed");
+        let pi = mvp_public_inputs(&p, &w, BC, NONCE);
+        let proof = prove(BC, NONCE, &p, &pi, &w).expect("prove must succeed");
+        verify(BC, NONCE, &p, &pi, &proof).expect("verify must succeed");
     }
 
     #[test]
     fn proof_bytes_are_nonempty() {
         let p = mvp_params();
-        let pi = mvp_public_inputs();
         let w = mvp_witness(&p);
-        let proof = prove(b"x", b"y", &p, &pi, &w).expect("prove must succeed");
+        let pi = mvp_public_inputs(&p, &w, BC, NONCE);
+        let proof = prove(BC, NONCE, &p, &pi, &w).expect("prove must succeed");
         assert!(!proof.0.is_empty(), "ZkProof must carry bytes");
     }
 
@@ -358,10 +473,10 @@ mod tests {
         // the same witness produce identical bytes — useful for fixture
         // tests downstream.
         let p = mvp_params();
-        let pi = mvp_public_inputs();
         let w = mvp_witness(&p);
-        let proof_a = prove(b"x", b"y", &p, &pi, &w).expect("prove must succeed");
-        let proof_b = prove(b"x", b"y", &p, &pi, &w).expect("prove must succeed");
+        let pi = mvp_public_inputs(&p, &w, BC, NONCE);
+        let proof_a = prove(BC, NONCE, &p, &pi, &w).expect("prove must succeed");
+        let proof_b = prove(BC, NONCE, &p, &pi, &w).expect("prove must succeed");
         assert_eq!(proof_a.0, proof_b.0);
     }
 
@@ -372,15 +487,17 @@ mod tests {
     #[test]
     fn verify_rejects_mismatched_public_inputs() {
         let p = mvp_params();
-        let pi_a = mvp_public_inputs();
         let w = mvp_witness(&p);
-        let proof = prove(b"x", b"y", &p, &pi_a, &w).expect("prove must succeed");
+        let pi_a = mvp_public_inputs(&p, &w, BC, NONCE);
+        let proof = prove(BC, NONCE, &p, &pi_a, &w).expect("prove must succeed");
 
-        // Change one byte in one of the hash fields.
+        // Change one byte in one of the hash fields. This also
+        // perturbs `pow_key` (h_a flows into the chain), so the
+        // M10.1a hash check rejects too — either failure mode is fine.
         let mut pi_b = pi_a.clone();
         pi_b.h_a[0] ^= 0xFF;
 
-        let r = verify(b"x", b"y", &p, &pi_b, &proof);
+        let r = verify(BC, NONCE, &p, &pi_b, &proof);
         assert!(r.is_err(), "verifier must reject mismatched PIs; got {r:?}");
     }
 
@@ -390,14 +507,14 @@ mod tests {
     #[test]
     fn verify_rejects_changed_tile_indices() {
         let p = mvp_params();
-        let pi_a = mvp_public_inputs();
         let w = mvp_witness(&p);
-        let proof = prove(b"x", b"y", &p, &pi_a, &w).expect("prove must succeed");
+        let pi_a = mvp_public_inputs(&p, &w, BC, NONCE);
+        let proof = prove(BC, NONCE, &p, &pi_a, &w).expect("prove must succeed");
 
         let mut pi_b = pi_a.clone();
         pi_b.found_i = 1;
 
-        let r = verify(b"x", b"y", &p, &pi_b, &proof);
+        let r = verify(BC, NONCE, &p, &pi_b, &proof);
         assert!(
             r.is_err(),
             "verifier must reject changed found_i; got {r:?}"
@@ -411,22 +528,35 @@ mod tests {
     #[test]
     fn proof_bytes_differ_when_public_inputs_change() {
         let p = mvp_params();
-        let pi_a = mvp_public_inputs();
         let w = mvp_witness(&p);
+        // Two consistent (pi, m_final) pairs by changing `params_tag`,
+        // which flows through `pow_key` to `found_leaf` so both prove
+        // calls succeed but their public-values vectors differ.
+        let mut pi_a = mvp_public_inputs(&p, &w, BC, NONCE);
+        pi_a.params_tag = [1u8; 32];
+        let pow_a = binding::derive_pow_key(BC, NONCE, &pi_a);
+        let m_final = composite_air::MatmulTileAir::<2>::reference_final_state(
+            &w.a_rows[..p.k as usize],
+            &w.b_cols[..p.k as usize],
+        );
+        pi_a.found_leaf = binding::compute_found_leaf(m_final, &pow_a);
 
         let mut pi_b = pi_a.clone();
-        pi_b.found_leaf[3] ^= 0x01;
+        pi_b.params_tag = [2u8; 32];
+        let pow_b = binding::derive_pow_key(BC, NONCE, &pi_b);
+        pi_b.found_leaf = binding::compute_found_leaf(m_final, &pow_b);
 
-        let proof_a = prove(b"x", b"y", &p, &pi_a, &w).expect("prove must succeed");
-        let proof_b = prove(b"x", b"y", &p, &pi_b, &w).expect("prove must succeed");
+        let proof_a = prove(BC, NONCE, &p, &pi_a, &w).expect("prove must succeed");
+        let proof_b = prove(BC, NONCE, &p, &pi_b, &w).expect("prove must succeed");
         assert_ne!(proof_a.0, proof_b.0);
     }
 
     #[test]
     fn prove_rejects_invalid_params() {
         let mut p = mvp_params();
+        let w_good = mvp_witness(&p);
+        let pi = mvp_public_inputs(&p, &w_good, BC, NONCE);
         p.tile = 0; // breaks tile divisibility
-        let pi = mvp_public_inputs();
         let w = Witness {
             a_rows: vec![],
             b_cols: vec![],
@@ -436,64 +566,228 @@ mod tests {
             f_l_pos: vec![],
             tile_states: vec![],
         };
-        let r = prove(b"x", b"y", &p, &pi, &w);
+        let r = prove(BC, NONCE, &p, &pi, &w);
         assert!(matches!(r, Err(ProveError::Params(_))), "got {r:?}");
     }
 
     #[test]
     fn prove_rejects_witness_shape_mismatch() {
         let p = mvp_params();
-        let pi = mvp_public_inputs();
         let mut w = mvp_witness(&p);
+        let pi = mvp_public_inputs(&p, &w, BC, NONCE);
         w.a_rows.pop(); // length now wrong
-        let r = prove(b"x", b"y", &p, &pi, &w);
+        let r = prove(BC, NONCE, &p, &pi, &w);
         assert!(matches!(r, Err(ProveError::Witness(_))), "got {r:?}");
     }
 
     #[test]
     fn prove_rejects_unsupported_noise_rank() {
         let mut p = mvp_params();
-        p.noise_rank = 4; // outside MVP window
-        let pi = mvp_public_inputs();
         let w = mvp_witness(&p);
-        let r = prove(b"x", b"y", &p, &pi, &w);
+        let pi = mvp_public_inputs(&p, &w, BC, NONCE);
+        p.noise_rank = 4; // outside MVP window
+        let r = prove(BC, NONCE, &p, &pi, &w);
         assert!(matches!(r, Err(ProveError::Unsupported(_))), "got {r:?}");
     }
 
     #[test]
     fn verify_rejects_malformed_bytes() {
         let p = mvp_params();
-        let pi = mvp_public_inputs();
-        // 8 bytes of garbage — not a valid bincode-serialized Proof.
+        let w = mvp_witness(&p);
+        let pi = mvp_public_inputs(&p, &w, BC, NONCE);
+        // 8 bytes of garbage — not a valid bincode-serialized envelope.
         let bad = ZkProof(vec![0xFFu8; 8]);
-        let r = verify(b"x", b"y", &p, &pi, &bad);
+        let r = verify(BC, NONCE, &p, &pi, &bad);
         assert!(matches!(r, Err(VerifyError::Malformed(_))), "got {r:?}");
     }
 
     #[test]
     fn verify_rejects_tampered_proof() {
         let p = mvp_params();
-        let pi = mvp_public_inputs();
         let w = mvp_witness(&p);
-        let mut proof = prove(b"x", b"y", &p, &pi, &w).expect("prove must succeed");
-        // Flip a byte in the middle of the bincode blob. Likely either
-        // deserialization fails (Malformed) or the Plonky3 verifier
-        // rejects (Rejected). Either is fine — we just want non-Ok.
+        let pi = mvp_public_inputs(&p, &w, BC, NONCE);
+        let mut proof = prove(BC, NONCE, &p, &pi, &w).expect("prove must succeed");
+        // Flip a byte somewhere inside the bincode envelope. The
+        // perturbation can hit the proof bytes (→ Plonky3 verifier
+        // or bincode decode error), `m_final` (→ FoundLeafMismatch),
+        // or the envelope framing (→ Malformed). Any non-Ok suffices.
         let idx = proof.0.len() / 2;
         proof.0[idx] ^= 0xFF;
-        let r = verify(b"x", b"y", &p, &pi, &proof);
+        let r = verify(BC, NONCE, &p, &pi, &proof);
         assert!(r.is_err(), "tampered proof must not verify; got {r:?}");
     }
 
     #[test]
     fn verify_rejects_unsupported_noise_rank() {
         let p = mvp_params();
-        let pi = mvp_public_inputs();
         let w = mvp_witness(&p);
-        let proof = prove(b"x", b"y", &p, &pi, &w).expect("prove must succeed");
+        let pi = mvp_public_inputs(&p, &w, BC, NONCE);
+        let proof = prove(BC, NONCE, &p, &pi, &w).expect("prove must succeed");
         // Now verify under different params that fail the MVP gate.
         let p_bad = ZkParams { noise_rank: 4, ..p };
-        let r = verify(b"x", b"y", &p_bad, &pi, &proof);
+        let r = verify(BC, NONCE, &p_bad, &pi, &proof);
         assert!(matches!(r, Err(VerifyError::Unsupported(_))), "got {r:?}");
+    }
+
+    // =====================================================================
+    //  M10.1a found_leaf binding tests
+    // =====================================================================
+
+    /// Cooked-leaf attack: produce a proof, then verify with a PI that
+    /// has a *fake* `found_leaf` (e.g. zeros, simulating an adversary
+    /// claiming an easy-to-pass jackpot). The verifier must reject
+    /// with the explicit `FoundLeafMismatch` variant — the
+    /// cryptographic hash check rejects, independent of the FRI
+    /// transcript.
+    #[test]
+    fn verify_rejects_cooked_found_leaf() {
+        let p = mvp_params();
+        let w = mvp_witness(&p);
+        let pi_honest = mvp_public_inputs(&p, &w, BC, NONCE);
+        let proof = prove(BC, NONCE, &p, &pi_honest, &w).expect("prove must succeed");
+
+        let mut pi_cooked = pi_honest.clone();
+        pi_cooked.found_leaf = [0u8; 32]; // pretend the leaf is all zeros
+
+        let r = verify(BC, NONCE, &p, &pi_cooked, &proof);
+        assert!(
+            matches!(r, Err(VerifyError::FoundLeafMismatch)),
+            "cooked-leaf attack must reject with FoundLeafMismatch; got {r:?}"
+        );
+    }
+
+    /// Prover-side sanity check: the caller asks us to prove a witness
+    /// + public_inputs pair where `found_leaf` doesn't match what the
+    /// witness actually produces. `prove` rejects up-front, saving
+    /// the user a slow FRI run that would never verify anyway.
+    #[test]
+    fn prove_rejects_inconsistent_found_leaf() {
+        let p = mvp_params();
+        let w = mvp_witness(&p);
+        let mut pi = mvp_public_inputs(&p, &w, BC, NONCE);
+        pi.found_leaf[0] ^= 0xFF;
+        let r = prove(BC, NONCE, &p, &pi, &w);
+        assert!(
+            matches!(r, Err(ProveError::FoundLeafMismatch)),
+            "prove must reject mismatched (witness, found_leaf); got {r:?}"
+        );
+    }
+
+    /// Tamper with `m_final` in the envelope without touching the
+    /// inner Plonky3 proof. The verifier's hash check fails first
+    /// (m_final no longer hashes to found_leaf), so we get
+    /// `FoundLeafMismatch` — even though the inner proof bytes were
+    /// never touched.
+    #[test]
+    fn verify_rejects_tampered_m_final_via_hash_check() {
+        let p = mvp_params();
+        let w = mvp_witness(&p);
+        let pi = mvp_public_inputs(&p, &w, BC, NONCE);
+        let proof = prove(BC, NONCE, &p, &pi, &w).expect("prove must succeed");
+
+        // Decode, tamper m_final, re-encode.
+        let (mut envelope, _): (ZkProofEnvelope, usize) =
+            bincode::serde::decode_from_slice(&proof.0, bincode_standard()).unwrap();
+        envelope.m_final = envelope.m_final.wrapping_add(1);
+        let tampered_bytes = bincode::serde::encode_to_vec(&envelope, bincode_standard()).unwrap();
+
+        let r = verify(BC, NONCE, &p, &pi, &ZkProof(tampered_bytes));
+        assert!(
+            matches!(r, Err(VerifyError::FoundLeafMismatch)),
+            "tampered m_final must be caught by the hash check; got {r:?}"
+        );
+    }
+
+    /// If an adversary tampers with `m_final` AND adjusts `found_leaf`
+    /// to match the tampered hash, the verifier-side hash check now
+    /// passes — but the AIR's last-row constraint fails because the
+    /// trace's actual `m_out` no longer equals the public m_final
+    /// slot. So Plonky3 rejects at the FRI / constraint layer.
+    #[test]
+    fn verify_rejects_tampered_m_final_via_air_constraint() {
+        let p = mvp_params();
+        let w = mvp_witness(&p);
+        let pi_honest = mvp_public_inputs(&p, &w, BC, NONCE);
+        let proof = prove(BC, NONCE, &p, &pi_honest, &w).expect("prove must succeed");
+
+        let (mut envelope, _): (ZkProofEnvelope, usize) =
+            bincode::serde::decode_from_slice(&proof.0, bincode_standard()).unwrap();
+        envelope.m_final = envelope.m_final.wrapping_add(1);
+        let tampered_bytes = bincode::serde::encode_to_vec(&envelope, bincode_standard()).unwrap();
+
+        // Adjust the public found_leaf so the hash check would pass.
+        let pow_key = binding::derive_pow_key(BC, NONCE, &pi_honest);
+        let mut pi_match = pi_honest.clone();
+        pi_match.found_leaf = binding::compute_found_leaf(envelope.m_final, &pow_key);
+
+        let r = verify(BC, NONCE, &p, &pi_match, &ZkProof(tampered_bytes));
+        assert!(
+            r.is_err(),
+            "AIR / FRI must catch m_final mismatch even when hash check passes; got {r:?}"
+        );
+        // Specifically should NOT be FoundLeafMismatch (that's what
+        // the adjusted PI was meant to dodge); should be Rejected
+        // (Plonky3 verifier) or Malformed (bincode).
+        assert!(
+            !matches!(r, Err(VerifyError::FoundLeafMismatch)),
+            "hash check should pass; AIR should reject. Got {r:?}"
+        );
+    }
+
+    /// Honest-flow self-consistency: the (pi, m_final, witness) trio
+    /// produced by `mvp_public_inputs` matches what the verifier
+    /// computes. Catches accidental drift between the test fixture
+    /// and the binding-helper implementations.
+    #[test]
+    fn mvp_public_inputs_are_self_consistent() {
+        let p = mvp_params();
+        let w = mvp_witness(&p);
+        let pi = mvp_public_inputs(&p, &w, BC, NONCE);
+        let pow_key = binding::derive_pow_key(BC, NONCE, &pi);
+        let m_final = composite_air::MatmulTileAir::<2>::reference_final_state(
+            &w.a_rows[..p.k as usize],
+            &w.b_cols[..p.k as usize],
+        );
+        assert_eq!(
+            pi.found_leaf,
+            binding::compute_found_leaf(m_final, &pow_key)
+        );
+    }
+
+    /// Pearl-style domain separation: the same witness mined with a
+    /// different `block_commitment` produces a different `pow_key`
+    /// (per `ai_pow::fiat_shamir`), which produces a different
+    /// `found_leaf`. So a proof valid for one block doesn't verify
+    /// for another block's PIs.
+    #[test]
+    fn verify_rejects_different_block_commitment() {
+        let p = mvp_params();
+        let w = mvp_witness(&p);
+        let pi = mvp_public_inputs(&p, &w, b"block-1", NONCE);
+        let proof = prove(b"block-1", NONCE, &p, &pi, &w).expect("prove must succeed");
+
+        // Replay against a different block_commit. pow_key shifts,
+        // so the hash check rejects.
+        let r = verify(b"block-2", NONCE, &p, &pi, &proof);
+        assert!(
+            matches!(r, Err(VerifyError::FoundLeafMismatch)),
+            "replay across blocks must reject; got {r:?}"
+        );
+    }
+
+    /// Same as above but for `nonce` — nonces flow into `pow_key`
+    /// (Pearl's per-nonce key derivation).
+    #[test]
+    fn verify_rejects_different_nonce() {
+        let p = mvp_params();
+        let w = mvp_witness(&p);
+        let pi = mvp_public_inputs(&p, &w, BC, b"nonce-A");
+        let proof = prove(BC, b"nonce-A", &p, &pi, &w).expect("prove must succeed");
+
+        let r = verify(BC, b"nonce-B", &p, &pi, &proof);
+        assert!(
+            matches!(r, Err(VerifyError::FoundLeafMismatch)),
+            "verifier with different nonce must reject; got {r:?}"
+        );
     }
 }

@@ -85,6 +85,7 @@ name = "ai-pow-zk"
 version = "0.1.0-experimental"
 dependencies = [
  "bincode",
+ "blake3",
  "nockchain-math",
  "p3-air",
  "p3-blake3-air",
