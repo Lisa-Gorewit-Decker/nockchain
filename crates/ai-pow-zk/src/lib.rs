@@ -76,6 +76,7 @@ pub mod air;
 pub mod binding;
 pub mod blake3_air;
 pub mod blake3_chip;
+pub mod chips;
 pub mod circuit;
 pub mod composite_air;
 pub mod composite_layout;
