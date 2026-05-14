@@ -47,9 +47,14 @@
 
 use p3_matrix::dense::RowMajorMatrix;
 
+use crate::chips::control::ControlChip;
 use crate::chips::i8u8::I8U8Chip;
+use crate::chips::matmul::compute::{compute_row, CUMSUM_LEN};
 use crate::chips::range_table::{IRange7P1Chip, IRange8Chip, URange13Chip, URange8Chip};
-use crate::composite_layout::{STARK_ROW_IDX, TOTAL_TRACE_WIDTH};
+use crate::composite_layout::{
+    A_NOISED_UNPACK_START, B_NOISED_UNPACK_START, CUMSUM_TILE_START, STARK_ROW_IDX, TILE_D,
+    TILE_H, TOTAL_TRACE_WIDTH,
+};
 use crate::Val;
 
 /// A composite trace ready for proving by
@@ -120,6 +125,108 @@ impl CompositeTrace {
     /// smallest verifiable composite proof shape.
     pub fn baseline_min() -> Self {
         Self::baseline(crate::composite_layout::MIN_STARK_LEN)
+    }
+
+    /// Place a single matmul step at row `row_idx`. The caller is
+    /// responsible for supplying `cumsum_old`, the CUMSUM_TILE
+    /// value entering this step (must equal the previous matmul
+    /// step's `cumsum_new` for the chain to verify).
+    ///
+    /// Returns the resulting `cumsum_new` so the caller can thread
+    /// it into the next step.
+    ///
+    /// This is the *single-row* primitive Phase 13b uses; the
+    /// caller does the threading across rows. A higher-level
+    /// `with_matmul_instrs` builder will land alongside the
+    /// instruction-list compiler.
+    pub fn place_matmul_step(
+        &mut self,
+        row_idx: usize,
+        a: &[[i8; TILE_D]; TILE_H],
+        b: &[[i8; TILE_D]; TILE_H],
+        is_reset: bool,
+        is_update: bool,
+        cumsum_old: &[i32; CUMSUM_LEN],
+    ) -> [i32; CUMSUM_LEN] {
+        use p3_field::integers::QuotientMap;
+
+        assert!(row_idx < self.height(), "row {row_idx} out of bounds");
+
+        // Selector + CONTROL_PREP via control chip's fill_row.
+        // Build the 21-bit selector array, with IS_RESET_CUMSUM
+        // and IS_UPDATE_CUMSUM at their composite-layout positions.
+        let mut selectors = [false; 21];
+        // Index of IS_RESET_CUMSUM = 0 (it's the first selector bit
+        // packed into CONTROL_PREP); index of IS_UPDATE_CUMSUM = 1.
+        // These match composite_layout::SELECTOR_COLS ordering.
+        selectors[0] = is_reset;
+        selectors[1] = is_update;
+
+        let row_start = row_idx * TOTAL_TRACE_WIDTH;
+        let row = &mut self.matrix.values[row_start..row_start + TOTAL_TRACE_WIDTH];
+
+        // Write control + selector + MAT_ID columns.
+        // MAT_ID = 0 (we're not using NOISED_PACKED RAM-lookup yet
+        // — that's Phase 14b's LogUp wiring).
+        ControlChip.fill_row(&selectors, 0, row);
+
+        // Write A / B unpack cells.
+        for i in 0..TILE_H {
+            for d in 0..TILE_D {
+                row[A_NOISED_UNPACK_START + i * TILE_D + d] =
+                    <Val as QuotientMap<i64>>::from_int(a[i][d] as i64);
+                row[B_NOISED_UNPACK_START + i * TILE_D + d] =
+                    <Val as QuotientMap<i64>>::from_int(b[i][d] as i64);
+            }
+        }
+
+        // Write CUMSUM = cumsum_old (the "entering" cumsum).
+        for k in 0..CUMSUM_LEN {
+            row[CUMSUM_TILE_START + k] =
+                <Val as QuotientMap<i64>>::from_int(cumsum_old[k] as i64);
+        }
+
+        // Compute and return the post-step cumsum.
+        compute_row(a, b, cumsum_old, is_reset, is_update)
+    }
+
+    /// Patch the CUMSUM_TILE cells at `row_idx`. Used to thread
+    /// the "exit" cumsum value into the row following the last
+    /// matmul step (so the AIR's cross-row equation
+    /// `nxt.CUMSUM = cur.CUMSUM` is satisfied when the next row is
+    /// not itself an active matmul step).
+    pub fn set_cumsum_row(
+        &mut self,
+        row_idx: usize,
+        cumsum: &[i32; CUMSUM_LEN],
+    ) {
+        use p3_field::integers::QuotientMap;
+        assert!(row_idx < self.height());
+        let base = row_idx * TOTAL_TRACE_WIDTH;
+        for k in 0..CUMSUM_LEN {
+            self.matrix.values[base + CUMSUM_TILE_START + k] =
+                <Val as QuotientMap<i64>>::from_int(cumsum[k] as i64);
+        }
+    }
+
+    /// Bulk-fill CUMSUM_TILE on rows `[from_row, self.height())`
+    /// with `cumsum`. After a matmul-step chain ends at some
+    /// intermediate row, the remaining rows are passthrough
+    /// (selectors all 0) and the AIR's cross-row equation collapses
+    /// to `nxt.CUMSUM = cur.CUMSUM`. So every subsequent row must
+    /// hold the same cumsum value.
+    ///
+    /// `when_transition()` silences the wraparound constraint at
+    /// the very last row, so the trace doesn't need to "close the
+    /// loop" — the last row's cumsum doesn't have to equal row 0's.
+    pub fn fill_cumsum_passthrough(
+        &mut self,
+        from_row: usize,
+        cumsum: &[i32; CUMSUM_LEN],
+    ) {
+        for r in from_row..self.height() {
+            self.set_cumsum_row(r, cumsum);
+        }
     }
 }
 
@@ -201,5 +308,77 @@ mod tests {
             let val = trace.matrix.values[r * TOTAL_TRACE_WIDTH + STARK_ROW_IDX];
             assert_eq!(val.as_canonical_u64(), r as u64);
         }
+    }
+
+    /// Place 3 matmul instructions starting at row 0, then thread
+    /// the final cumsum into row 3 so the cross-row passthrough
+    /// constraint (`cur.CUMSUM = nxt.CUMSUM` when both selectors
+    /// are 0) holds on the boundary.
+    #[test]
+    fn matmul_step_chain_verifies_through_composite_full_air() {
+        use crate::composite_layout::TILE_D;
+
+        let cfg = build_stark_config(&test_zk_params(), &CircuitConfig::TEST_PEARL);
+        let mut trace = CompositeTrace::baseline_min();
+
+        let mut a = [[0i8; TILE_D]; crate::composite_layout::TILE_H];
+        let mut b = [[0i8; TILE_D]; crate::composite_layout::TILE_H];
+        for d in 0..TILE_D {
+            a[0][d] = (d as i8 + 1) % 5;
+            a[1][d] = ((d as i8) * 3) % 7 - 3;
+            b[0][d] = ((d as i8 + 2) % 6) - 3;
+            b[1][d] = ((d as i8 + 3) % 11) - 5;
+        }
+
+        // Step 0: reset.
+        let zero: [i32; CUMSUM_LEN] = [0; CUMSUM_LEN];
+        let after_reset =
+            trace.place_matmul_step(0, &a, &b, /*reset*/ true, /*update*/ false, &zero);
+        // Step 1: update.
+        let after_u1 =
+            trace.place_matmul_step(1, &a, &b, false, true, &after_reset);
+        // Step 2: update.
+        let after_u2 =
+            trace.place_matmul_step(2, &a, &b, false, true, &after_u1);
+        // Thread the final cumsum across all subsequent passthrough
+        // rows. The matmul cross-row constraint silences only at
+        // the trace's very last row (via when_transition), so every
+        // intermediate row must hold the value the chain ended at.
+        trace.fill_cumsum_passthrough(3, &after_u2);
+
+        let proof =
+            prove::<AiPowStarkConfig, _>(&cfg, &CompositeFullAir, trace.matrix, &[]);
+        verify::<AiPowStarkConfig, _>(&cfg, &CompositeFullAir, &proof, &[])
+            .expect("matmul chain must verify through composite_full_air");
+    }
+
+    /// Tamper a matmul step's input — the chain breaks because
+    /// the cross-row cumsum constraint depends on the dot product.
+    #[test]
+    fn matmul_step_chain_rejects_tampered_input() {
+        use crate::composite_layout::TILE_D;
+        let cfg = build_stark_config(&test_zk_params(), &CircuitConfig::TEST_PEARL);
+        let mut trace = CompositeTrace::baseline_min();
+        let a = [[1i8; TILE_D]; crate::composite_layout::TILE_H];
+        let b = [[1i8; TILE_D]; crate::composite_layout::TILE_H];
+
+        let zero: [i32; CUMSUM_LEN] = [0; CUMSUM_LEN];
+        let after_step = trace.place_matmul_step(0, &a, &b, true, false, &zero);
+        trace.fill_cumsum_passthrough(1, &after_step);
+
+        // Tamper row 0's A_NOISED_UNPACK[0]: change from 1 to 2.
+        // The dot product changes, so the constraint
+        // `nxt.CUMSUM = (1+0) * dot + (0) * cur.CUMSUM` rejects.
+        use crate::composite_layout::A_NOISED_UNPACK_START;
+        use p3_field::integers::QuotientMap;
+        let target = 0 * TOTAL_TRACE_WIDTH + A_NOISED_UNPACK_START;
+        trace.matrix.values[target] = <Val as QuotientMap<i64>>::from_int(2);
+
+        let proof =
+            prove::<AiPowStarkConfig, _>(&cfg, &CompositeFullAir, trace.matrix, &[]);
+        assert!(
+            verify::<AiPowStarkConfig, _>(&cfg, &CompositeFullAir, &proof, &[]).is_err(),
+            "tampered matmul input must reject"
+        );
     }
 }

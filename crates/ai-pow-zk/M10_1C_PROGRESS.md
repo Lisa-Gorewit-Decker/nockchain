@@ -49,12 +49,13 @@ When Plonky3 doesn't have a direct primitive (e.g. Pearl's
 | 12c | `composite_full_air` — BLAKE3 wired via `eval_composite` (jackpot pending) | ✅ landed | 1 | 318 unit |
 | 12d | `composite_full_air` — wire jackpot | ⬜ pending | | |
 | 13a | `composite_trace` baseline builder + type surface | ✅ landed | 7 | 325 unit |
-| 13b | `composite_trace` instruction-list compilation (matmul / blake3 / jackpot blocks) | ⬜ pending | | |
+| 13b | `composite_trace` instruction-list compilation: matmul step placement + cumsum threading | ✅ landed | 2 | 330 unit |
+| 13c | `composite_trace` instruction-list — BLAKE3 hash blocks + jackpot | ⬜ pending | | |
 | 14a | `composite_proof::{composite_prove, composite_verify}` wrappers + bincode round-trip | ✅ landed | 3 | 328 unit |
 | 14b | LogUp-aware folder swap (proving-side interaction wiring) | ⬜ pending | | |
 | 15 | PROD bench at MIN_STARK_LEN baseline (ignored) | ✅ landed | 1 ignored | 328 unit + 1 ignored |
 
-**Today's cumulative test count: 328 unit + 7 KAT + 4 ignored
+**Today's cumulative test count: 330 unit + 7 KAT + 4 ignored
 PROD bench.**
 
 ## Properties validated per phase
@@ -689,19 +690,44 @@ Properties validated:
   * ✅ Panics for non-power-of-two row counts
     (`baseline_panics_for_non_power_of_two`).
 
-### Phase 13b — composite_trace instruction-list (pending)
+### Phase 13b — matmul step placement (landed)
 
-Phase 13b would extend `CompositeTrace` with an `Instr` enum
-(MatmulStep, Blake3Hash, JackpotStep, Padding) and a compiler
-that places each instruction into a contiguous block of trace
-rows with CONTROL_PREP / preprocessed columns filled
-consistently. Pearl's `pearl_program.rs` + `pearl_trace.rs` do
-this in ~700 lines combined.
+`CompositeTrace` now supports placing matmul-step instructions
+into specific trace rows with consistent CONTROL_PREP + selector
++ A/B-unpack + CUMSUM fills. The first instruction-list primitive.
 
-Instruction-list compilation is naturally bundled with Phase 14
-(lookup-aware prover) since the instruction blocks determine
-each row's lookup multiplicities (CV routing, NOISED_PACKED
-queries, etc.).
+  * `place_matmul_step(row_idx, &a, &b, is_reset, is_update,
+    &cumsum_old) -> cumsum_new` — writes a single matmul row.
+    Returns the post-step cumsum so the caller can thread the
+    chain.
+  * `set_cumsum_row(row_idx, &cumsum)` — patch one row's
+    CUMSUM_TILE cells.
+  * `fill_cumsum_passthrough(from_row, &cumsum)` — bulk-fill the
+    CUMSUM_TILE for rows `[from_row, height())`. Required because
+    after a matmul step chain ends, every subsequent passthrough
+    row must hold the same cumsum value (the cross-row constraint
+    `nxt.CUMSUM = cur.CUMSUM` fires on every transition except the
+    last via `when_transition`).
+
+Tests added:
+  * ✅ A 3-step matmul chain (reset → update → update) followed
+    by `fill_cumsum_passthrough` over the remaining 8189 rows
+    prove + verifies end-to-end through `CompositeFullAir`
+    (`matmul_step_chain_verifies_through_composite_full_air`).
+  * ✅ Tampering A_NOISED_UNPACK on the first matmul row breaks
+    the dot product and rejects
+    (`matmul_step_chain_rejects_tampered_input`).
+
+### Phase 13c — BLAKE3 hash blocks + jackpot (pending)
+
+Remaining instruction types: `Blake3Hash` (places an 8-row hash
+block with STATE0..STATE3 snapshots, MSG, CV, tweak, CV_OUT) and
+`JackpotStep` (one rotate-XOR-13 row, blocked on Phase 12d's
+column-shape resolution).
+
+Pearl's `pearl_program.rs` + `pearl_trace.rs` do all three
+instruction types in ~700 lines combined. Phase 13c lands the
+remaining ~500.
 
 ### Phase 14a — composite prove/verify wrappers (landed)
 
@@ -867,4 +893,5 @@ by the SNARK as a whole:
 | 2026-05-14 | M10.1c Phase 12c BLAKE3 wired via `eval_composite` | `17f161d` |
 | 2026-05-14 | M10.1c Phase 13a `composite_trace` baseline builder | `6945714` |
 | 2026-05-14 | M10.1c Phase 14a `composite_proof` prove/verify wrappers | `fbbbc18` |
-| 2026-05-14 | M10.1c Phase 15 PROD bench at MIN_STARK_LEN baseline | (this commit) |
+| 2026-05-14 | M10.1c Phase 15 PROD bench at MIN_STARK_LEN baseline | `7a01490` |
+| 2026-05-14 | M10.1c Phase 13b matmul step placement + cumsum threading | (this commit) |
