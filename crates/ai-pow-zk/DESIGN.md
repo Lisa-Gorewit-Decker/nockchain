@@ -142,14 +142,13 @@ LE).
 
 | Public input | Size (Goldilocks elements) | Notes |
 |---|---|---|
-| `params_tag` | 8 | hash of `MatmulParams` (`ai_pow::prover::params_tag`) |
+| `params_tag` | 8 | hash of `MatmulParams` (`ai_pow::prover::params_tag`); already binds `difficulty_bits` and all shape fields, so `b` does not need a separate slot. |
 | `h_a` | 8 | matrix-A chunk-Merkle root |
 | `h_b` | 8 | matrix-B chunk-Merkle root |
 | `comm_m` | 8 | tile-state Merkle root |
 | `found_i`, `found_j` | 2 | tile coordinates |
 | `found_leaf` | 8 | `BLAKE3-keyed(M, pow_key)` |
-| `b` (difficulty bits) | 1 | from `MatmulParams::difficulty_bits` |
-| **Total** | **43** | (compare Pearl's `PublicProofParams::TOTAL`) |
+| **Total** | **42** | pinned in `public::NUM_PUBLIC_INPUTS` |
 
 The verifier binds these via:
 
