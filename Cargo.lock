@@ -84,10 +84,18 @@ dependencies = [
 name = "ai-pow-zk"
 version = "0.1.0-experimental"
 dependencies = [
+ "nockchain-math",
  "p3-air",
- "p3-baby-bear",
+ "p3-blake3-air",
+ "p3-challenger",
+ "p3-commit",
+ "p3-dft",
  "p3-field",
+ "p3-fri",
+ "p3-goldilocks",
  "p3-matrix",
+ "p3-merkle-tree",
+ "p3-symmetric",
  "p3-uni-stark",
  "proptest",
  "thiserror 2.0.18",
@@ -594,7 +602,7 @@ dependencies = [
  "alloy-rlp",
  "alloy-serde",
  "alloy-sol-types",
- "itertools 0.14.0",
+ "itertools 0.13.0",
  "serde",
  "serde_json",
  "serde_with",
@@ -761,7 +769,7 @@ checksum = "e8597d36d546e1dab822345ad563243ec3920e199322cb554ce56c8ef1a1e2e7"
 dependencies = [
  "alloy-json-rpc",
  "alloy-transport",
- "itertools 0.14.0",
+ "itertools 0.13.0",
  "reqwest 0.13.3",
  "serde_json",
  "tower",
@@ -2327,7 +2335,7 @@ dependencies = [
  "clap",
  "criterion-plot",
  "is-terminal",
- "itertools 0.14.0",
+ "itertools 0.10.5",
  "num-traits",
  "once_cell",
  "oorandom",
@@ -2347,7 +2355,7 @@ version = "0.5.0"
 source = "git+https://github.com/vlovich/criterion.rs.git?rev=9b485aece85a3546126b06cc25d33e14aba829b3#9b485aece85a3546126b06cc25d33e14aba829b3"
 dependencies = [
  "cast",
- "itertools 0.14.0",
+ "itertools 0.10.5",
 ]
 
 [[package]]
@@ -2682,7 +2690,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ccc2776f0c61eca1ca32528f85548abd1a4be8fb53d1b21c013e4f18da1e7090"
 dependencies = [
  "data-encoding",
- "syn 2.0.117",
+ "syn 1.0.109",
 ]
 
 [[package]]
@@ -6627,18 +6635,17 @@ dependencies = [
 ]
 
 [[package]]
-name = "p3-baby-bear"
+name = "p3-blake3-air"
 version = "0.5.1"
 source = "git+https://github.com/Plonky3/Plonky3.git#af65376f7e86a683746dd9306377ab347d4c335d"
 dependencies = [
- "p3-challenger",
+ "itertools 0.14.0",
+ "p3-air",
  "p3-field",
- "p3-mds",
- "p3-monty-31",
- "p3-poseidon1",
- "p3-poseidon2",
- "p3-symmetric",
+ "p3-matrix",
+ "p3-maybe-rayon",
  "rand 0.10.1",
+ "tracing",
 ]
 
 [[package]]
@@ -6699,6 +6706,45 @@ dependencies = [
 ]
 
 [[package]]
+name = "p3-fri"
+version = "0.5.1"
+source = "git+https://github.com/Plonky3/Plonky3.git#af65376f7e86a683746dd9306377ab347d4c335d"
+dependencies = [
+ "itertools 0.14.0",
+ "p3-challenger",
+ "p3-commit",
+ "p3-dft",
+ "p3-field",
+ "p3-matrix",
+ "p3-maybe-rayon",
+ "p3-util",
+ "rand 0.10.1",
+ "serde",
+ "spin",
+ "thiserror 2.0.18",
+ "tracing",
+]
+
+[[package]]
+name = "p3-goldilocks"
+version = "0.5.1"
+source = "git+https://github.com/Plonky3/Plonky3.git#af65376f7e86a683746dd9306377ab347d4c335d"
+dependencies = [
+ "num-bigint",
+ "p3-challenger",
+ "p3-dft",
+ "p3-field",
+ "p3-mds",
+ "p3-poseidon1",
+ "p3-poseidon2",
+ "p3-symmetric",
+ "p3-util",
+ "paste",
+ "rand 0.10.1",
+ "serde",
+]
+
+[[package]]
 name = "p3-matrix"
 version = "0.5.1"
 source = "git+https://github.com/Plonky3/Plonky3.git#af65376f7e86a683746dd9306377ab347d4c335d"
@@ -6727,6 +6773,25 @@ dependencies = [
  "p3-symmetric",
  "p3-util",
  "rand 0.10.1",
+]
+
+[[package]]
+name = "p3-merkle-tree"
+version = "0.5.1"
+source = "git+https://github.com/Plonky3/Plonky3.git#af65376f7e86a683746dd9306377ab347d4c335d"
+dependencies = [
+ "itertools 0.14.0",
+ "p3-commit",
+ "p3-field",
+ "p3-matrix",
+ "p3-maybe-rayon",
+ "p3-symmetric",
+ "p3-util",
+ "rand 0.10.1",
+ "serde",
+ "spin",
+ "thiserror 2.0.18",
+ "tracing",
 ]
 
 [[package]]
@@ -7286,7 +7351,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "343d3bd7056eda839b03204e68deff7d1b13aba7af2b2fd16890697274262ee7"
 dependencies = [
  "heck",
- "itertools 0.14.0",
+ "itertools 0.10.5",
  "log",
  "multimap",
  "petgraph",
@@ -7307,7 +7372,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8a56d757972c98b346a9b766e3f02746cde6dd1cd1d1d563472929fdd74bec4d"
 dependencies = [
  "anyhow",
- "itertools 0.14.0",
+ "itertools 0.10.5",
  "proc-macro2",
  "quote",
  "syn 2.0.117",
@@ -7320,7 +7385,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "27c6023962132f4b30eb4c172c91ce92d933da334c59c23cddee82358ddafb0b"
 dependencies = [
  "anyhow",
- "itertools 0.14.0",
+ "itertools 0.10.5",
  "proc-macro2",
  "quote",
  "syn 2.0.117",
@@ -9090,7 +9155,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "32497e9a4c7b38532efcdebeef879707aa9f794296a4f0244f6f69e9bc8574bd"
 dependencies = [
  "fastrand",
- "getrandom 0.4.2",
+ "getrandom 0.3.4",
  "once_cell",
  "rustix 1.1.4",
  "windows-sys 0.61.2",

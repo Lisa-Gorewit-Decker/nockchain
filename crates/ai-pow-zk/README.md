@@ -28,24 +28,35 @@ invokes `zk_prove_plain_proof` (see
 [`pearl/zk-pow/src/api/prove.rs:18`](../../pearl/zk-pow/src/api/prove.rs#L18)),
 `ai-pow` calls into this crate via the `zk` feature flag.
 
-## Dependencies
+## Stack
 
-Pinned to a git revision of [Plonky3](https://github.com/Plonky3/Plonky3)
-in `Cargo.toml` because the upstream publishes irregularly to
-crates.io. Currently pulls in the minimal subset for AIR + uni-STARK
-over BabyBear (`p3-air`, `p3-baby-bear`, `p3-field`, `p3-matrix`,
-`p3-uni-stark`). Add the FRI / Poseidon2 / Merkle / commit / challenger
-sub-crates when wiring real proving:
+Goldilocks base field + Tip5 sponge for FRI + `p3-blake3-air` for the
+BLAKE3 sub-circuit. See [`DESIGN.md`](DESIGN.md) for the per-slot
+rationale, trace column layout, public-input encoding, witness
+shapes, constraint-count estimate, and parameter choices.
 
-- `p3-challenger`
-- `p3-commit`
-- `p3-dft`
-- `p3-fri`
-- `p3-merkle-tree`
-- `p3-poseidon2`
-- `p3-symmetric`
+Pulled in from upstream Plonky3 (`https://github.com/Plonky3/Plonky3`):
+
+- `p3-air` — AIR trait
+- `p3-blake3-air` — BLAKE3 keyed-hash sub-circuit
+- `p3-challenger`, `p3-commit`, `p3-dft`, `p3-fri`, `p3-merkle-tree`,
+  `p3-symmetric` — STARK config plumbing
+- `p3-field` — field arithmetic
+- `p3-goldilocks` — base field
+- `p3-tip5` — FRI sponge
+- `p3-matrix`, `p3-uni-stark` — trace + prover
 
 ## Status
 
-Pre-implementation. Filing this scaffold so the API shape and dependency
-boundaries can land in a separate commit from the circuit logic itself.
+Pre-implementation. Scaffold ships:
+
+- Public entry points (`prove`, `verify`, `ZkParams`, `PublicInputs`,
+  `Witness`, `ZkProof`).
+- AIR struct shapes (`MatmulAir`, `Blake3SubAir`) over Goldilocks.
+- `CircuitConfig` with `TEST` and `PROD` defaults.
+- Wired into `ai-pow` at the Pearl-analog `zk_prove_plain_proof`
+  call site under the `zk` feature flag.
+- `DESIGN.md` with the logical plan + parameter choices.
+
+Every body is currently `todo!()` — the circuit logic lands in
+follow-up commits.
