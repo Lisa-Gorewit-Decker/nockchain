@@ -29,6 +29,7 @@
 //!
 //! [`TestWrapperAir`]: stark_row::tests
 
+pub mod blake3;
 pub mod control;
 pub mod i8u8;
 pub mod input;
