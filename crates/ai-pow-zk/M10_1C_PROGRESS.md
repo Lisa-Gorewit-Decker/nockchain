@@ -33,8 +33,8 @@ When Plonky3 doesn't have a direct primitive (e.g. Pearl's
 | 2.5 | `composite_layout` RAM-lookup column extension | ✅ landed | 3 | 139 unit |
 | 3 | `stark_row_chip` (Pearl `monotonic_increment`) | ✅ landed | 9 | 148 unit |
 | 4a | `range_table` chip (URange8/13, IRange7P1/8 generic) | ✅ landed | 15 | 163 unit |
-| 4b | `i8u8` chip (signed↔unsigned conversion table) | ⬜ pending | | |
-| 4c | `input` chip (Pearl `chip/input/`) | ⬜ pending | | |
+| 4b | `i8u8` chip (signed↔unsigned conversion table) | ✅ landed | 11 | 174 unit |
+| 4c | `input` chip (Pearl `chip/input/`) | ✅ landed | 9 | 183 unit |
 | 5 | `control_chip` (Pearl `control_and_matid_packed`) | ⬜ pending | | |
 | 6 | preprocessed-trace generation (Pearl `pearl_preprocess`) | ⬜ pending | | |
 | 7 | BLAKE3 chip — wrap M10.1b vendored chip (Plonky3 primitive preferred) | ⬜ pending | | |
@@ -126,9 +126,50 @@ correct multiplicity, in the matching range table. The table's
 own integrity (it really does enumerate `[MIN..=MAX]`) is what
 Phase 4a pins.
 
-### Phase 4b — I8U8 conversion table (pending)
+### Phase 4b — I8U8 conversion table (landed)
 
-### Phase 4c — input chip (pending)
+Properties validated:
+  - ✅ AUX column is boolean (`rejects_non_boolean_aux`).
+  - ✅ AUX starts at 0 (`rejects_aux_first_row_nonzero`) and ends
+    at 1 (`rejects_aux_last_row_zero`).
+  - ✅ AUX is monotonic non-decreasing — once it flips to 1 it
+    stays 1 (`rejects_aux_non_monotonic`).
+  - ✅ AUX transitions from 0→1 only when `pack = -1`
+    (`rejects_aux_transition_off_boundary`).
+  - ✅ Pack starts at `−128 × 256 + 128 = −32640`
+    (`rejects_wrong_first_pack`) and ends at `127 × 256 + 127 =
+    32639` (`rejects_wrong_last_pack`).
+  - ✅ Per-transition step is either +257 (standard) or +1 (boundary)
+    (`rejects_wrong_intermediate_pack`).
+  - ✅ Combined: column enumerates all 256 valid `(i8, u8)` pairs
+    by the discrete-step argument (255 transitions × 257 + 1 ×
+    sign-boundary = 65279 = MAX − MIN)
+    (`prove_and_verify_valid_i8u8_table`).
+  - ✅ `fill_row` writes canonical Pearl-pack values
+    (`fill_row_encodes_pearl_pack`).
+
+### Phase 4c — input chip (landed)
+
+Properties validated:
+  - ✅ `NOISE_PACKED_PREP == polyval(NOISE_UNPACK, base = 129)` —
+    forces the preprocessed noise word to equal the polyval of
+    the i7+1 noise bytes (`rejects_wrong_noise_packed_prep`).
+  - ✅ `NOISED_PACKED[i] == polyval(MAT_UNPACK[i*4..(i+1)*4], 256)
+    + polyval(NOISE_UNPACK[i*4..(i+1)*4], 256)` — ties the
+    canonical noised-matrix store to the unpacked bytes
+    (`rejects_wrong_noised_packed`).
+  - ✅ Tampering with MAT_UNPACK while leaving NOISED_PACKED
+    unchanged fails (`rejects_tampered_mat_byte`,
+    `cannot_diverge_mat_from_noised_packed`). **This is the
+    constraint that makes the matmul ↔ BLAKE3 RAM-lookup linkage
+    cryptographically meaningful** — an adversary can't read fake
+    matrix bytes through NOISED_PACKED.
+  - ✅ Boundary noise values `{-64, 64}` are admitted
+    (`handles_boundary_noise_values`).
+  - ✅ Packing bases pinned at 129 (noise) and 256 (matrix)
+    (`noise_packing_base_is_129`, `matrix_packing_base_is_256`).
+  - ✅ `fill_row` matches a hand-computed reference
+    (`fill_row_packs_correctly_simple`).
 
 ### Phase 5-15 (pending)
 

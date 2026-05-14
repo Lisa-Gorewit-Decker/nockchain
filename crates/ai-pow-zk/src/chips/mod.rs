@@ -29,5 +29,7 @@
 //!
 //! [`TestWrapperAir`]: stark_row::tests
 
+pub mod i8u8;
+pub mod input;
 pub mod range_table;
 pub mod stark_row;
