@@ -17,40 +17,44 @@
 //!
 //! ## Scope of the current [`prove`] / [`verify`] entries
 //!
-//! The current entrypoints prove a **single tile-cell matmul** end-to-
-//! end through the [`circuit::AiPowStarkConfig`] STARK stack:
+//! The current entrypoints prove a **single tile cell** end-to-end
+//! through the [`circuit::AiPowStarkConfig`] STARK stack:
 //!
-//!   * The AIR is [`matmul_chip::MatmulCellAir<R>`] (M6) — encodes the
-//!     per-stripe `r`-wide INT8 dot-product accumulator for one `(i, j)`
-//!     cell.
+//!   * The AIR is [`composite_air::MatmulTileAir<2>`] (M9.1) — fuses
+//!     [`matmul_chip::MatmulCellAir`] (M6, per-stripe `r`-wide INT8
+//!     dot-product accumulator) with [`state_chip::StateChipAir`]
+//!     (M7, Pearl §4.5 rotate-XOR-13 state update). Cross-chip
+//!     linkage `x = c_out` is enforced via two's-complement sign
+//!     extension; a single-slot state chain carries across rows.
 //!   * The trace is generated from `witness.a_rows[0..k]` and
 //!     `witness.b_cols[0..k]`, i.e. the first tile-row of `A'` and the
 //!     first tile-column of `B'`.
-//!   * `block_commitment`, `nonce`, and the bulk of `public_inputs` are
-//!     **not yet bound into the proof**. The proof attests that "*some*
-//!     INT8 dot-product accumulator was computed correctly for those
-//!     rows", not that the inputs match Pearl's `h_a`, `h_b`, `comm_m`,
-//!     or `found_leaf`.
+//!   * The 42-element [`PublicInputs`] vector is passed to
+//!     `p3_uni_stark::prove` as the public-values channel (M10).
+//!     Plonky3 absorbs them into the Fiat-Shamir challenger; a
+//!     verifier with a different `PublicInputs` will derive different
+//!     query points and reject.
 //!
-//! What the building-block chips already exist for, but are **not**
-//! composed into the prove/verify entries yet:
+//! ## Scope NOT yet bound
 //!
-//!   * [`input_chip::RangeAir`] (M5) — range checks for the i8 / u13 /
-//!     i32 witness types.
-//!   * [`state_chip::StateChipAir`] (M7) — Pearl §4.5 rotate-XOR-13
-//!     state update.
-//!   * [`blake3_air`] (M8) — keyed BLAKE3 sub-AIR for the public-input
-//!     boundary.
+//!   * `block_commitment` and `nonce` are accepted but not bound. The
+//!     caller used them upstream to derive the public-input hashes,
+//!     which *are* bound through Fiat-Shamir.
+//!   * AIR-level binding between trace values and public inputs (e.g.
+//!     `final_m = public_inputs.found_leaf`). This requires BLAKE3
+//!     in-circuit composition (M10.1) — see [`blake3_air`] (M8) for
+//!     the upstream sub-AIR that lands next.
+//!   * Multi-slot state routing (`step mod 16`) and non-power-of-two
+//!     `num_stripes` (M9.2). Today, `k / noise_rank` must be a power
+//!     of two and the single-slot regime is fixed.
 //!
-//! Composing the four chips into one AIR (with cross-chip linkages
-//! `x = c_out`, `keyed_hash(M) = found_leaf`, etc.) is the next
-//! milestone. The current entry points exist so callers in `ai-pow`
-//! can wire the call sites now and the implementation fills in
-//! independently.
+//! See [`ROADMAP.md`](https://github.com/nockchain/nockchain/blob/master/crates/ai-pow-zk/ROADMAP.md)
+//! for the full milestone list and what's next.
 
 pub mod air;
 pub mod blake3_air;
 pub mod circuit;
+pub mod composite_air;
 pub mod input_chip;
 pub mod matmul_chip;
 pub mod params;
@@ -119,10 +123,21 @@ pub enum VerifyError {
 /// producing [`PublicInputs`] for the given `(block_commitment, nonce,
 /// params)`.
 ///
-/// **Current scope.** See the [`crate`]-level docs. The proof attests
-/// only that the dot-product accumulator for the `(0, 0)` tile cell of
-/// `witness.a_rows` / `witness.b_cols` is computed correctly under the
-/// AIR transition semantics.
+/// **Current scope.** The AIR is the M9.1
+/// [`composite_air::MatmulTileAir<2>`] — it proves both the per-stripe
+/// INT8 dot-product accumulator (M6) and the rotate-XOR-13 tile-state
+/// update (M7) for one `(0, 0)` tile cell, with the `x = c_out` two's-
+/// complement linkage and the single-slot state chain. The 42-element
+/// [`PublicInputs`] are passed through to Plonky3 as the public-values
+/// channel — they're absorbed into the Fiat-Shamir challenger so any
+/// mismatch at verify-time rejects the proof, even though the AIR does
+/// not yet constrain trace values to specific public inputs (that
+/// stronger binding is M9.2+).
+///
+/// `block_commitment` and `nonce` are not yet bound; they're inputs
+/// the caller used upstream to derive the public-input hashes, which
+/// *are* bound. Keeping them in the signature for forward compat with
+/// future Pearl-equivalent bindings.
 pub fn prove(
     block_commitment: &[u8],
     nonce: &[u8],
@@ -140,10 +155,11 @@ pub fn prove(
     let k = params.k as usize;
     let a = &witness.a_rows[0..k];
     let b = &witness.b_cols[0..k];
+    let pis = public_inputs.to_field_elements();
     let cfg = circuit::build_stark_config(params, &CircuitConfig::TEST);
-    let air = matmul_chip::MatmulCellAir::<2>::new();
-    let trace = matmul_chip::MatmulCellAir::<2>::generate_trace(a, b);
-    let proof = p3_uni_stark::prove::<AiPowStarkConfig, _>(&cfg, &air, trace, &[]);
+    let air = composite_air::MatmulTileAir::<2>::new();
+    let trace = composite_air::MatmulTileAir::<2>::generate_trace(a, b);
+    let proof = p3_uni_stark::prove::<AiPowStarkConfig, _>(&cfg, &air, trace, &pis);
     let bytes = bincode::serde::encode_to_vec(&proof, bincode_standard())
         .map_err(|e| ProveError::Serialize(e.to_string()))?;
     Ok(ZkProof(bytes))
@@ -151,6 +167,13 @@ pub fn prove(
 
 /// Verify a [`ZkProof`] against a set of [`PublicInputs`] extracted
 /// from the chain. Mirrors Pearl's `ZKProof::verify`.
+///
+/// The verifier reconstructs the same AIR + STARK config as the
+/// prover, decodes the bincode-serialised Plonky3 proof, and calls
+/// `p3_uni_stark::verify` with `public_inputs.to_field_elements()`.
+/// If the verifier's public inputs differ from those that went into
+/// `prove`, the Fiat-Shamir challenger absorbs different values and
+/// rejection is automatic.
 pub fn verify(
     block_commitment: &[u8],
     nonce: &[u8],
@@ -168,9 +191,10 @@ pub fn verify(
         bincode::serde::decode_from_slice(&proof.0, bincode_standard())
             .map_err(|e| VerifyError::Malformed(e.to_string()))?;
 
+    let pis = public_inputs.to_field_elements();
     let cfg = circuit::build_stark_config(params, &CircuitConfig::TEST);
-    let air = matmul_chip::MatmulCellAir::<2>::new();
-    p3_uni_stark::verify::<AiPowStarkConfig, _>(&cfg, &air, &decoded, &[])
+    let air = composite_air::MatmulTileAir::<2>::new();
+    p3_uni_stark::verify::<AiPowStarkConfig, _>(&cfg, &air, &decoded, &pis)
         .map_err(|e| VerifyError::Rejected(format!("{e:?}")))
 }
 
@@ -222,15 +246,25 @@ fn validate_witness_shape(w: &Witness, p: &ZkParams) -> Result<(), String> {
 
 /// Pin the MVP support window.
 ///
-/// The matmul-cell AIR is parameterised by a const-generic `STRIPE`,
-/// which we currently fix at `2`. Supporting `noise_rank ∈ {4, 8, …}`
-/// is a follow-on; today, `params.noise_rank` must equal `2`.
+/// The composite AIR is parameterised by a const-generic `STRIPE`,
+/// which we currently fix at `2`. The state chain inside
+/// [`composite_air::MatmulTileAir`] additionally requires
+/// `num_stripes = k / noise_rank` to be a power of two (so the trace
+/// height is power-of-two without padding rows that conflict with
+/// the rotate-XOR transition). Supporting other `noise_rank` values
+/// and non-power-of-two stripe counts is M9.2+.
 fn require_mvp_params(p: &ZkParams) -> Result<(), String> {
     if p.noise_rank != 2 {
         return Err(format!(
-            "MVP entry supports noise_rank = 2 only (got {}); compose other \
-             STRIPE values via the chip directly until M9.1",
+            "MVP entry supports noise_rank = 2 only (got {})",
             p.noise_rank
+        ));
+    }
+    let num_stripes = (p.k / p.noise_rank) as usize;
+    if num_stripes == 0 || !num_stripes.is_power_of_two() {
+        return Err(format!(
+            "MVP entry requires k / noise_rank to be a power of two (got k={} r={} → {} stripes)",
+            p.k, p.noise_rank, num_stripes
         ));
     }
     Ok(())
@@ -329,6 +363,63 @@ mod tests {
         let proof_a = prove(b"x", b"y", &p, &pi, &w).expect("prove must succeed");
         let proof_b = prove(b"x", b"y", &p, &pi, &w).expect("prove must succeed");
         assert_eq!(proof_a.0, proof_b.0);
+    }
+
+    /// M10 binding check: a proof produced under `pi_a` must NOT verify
+    /// under a different `pi_b`. Plonky3 absorbs the public values into
+    /// the Fiat-Shamir challenger; differing inputs change the FRI
+    /// query points and the verifier rejects.
+    #[test]
+    fn verify_rejects_mismatched_public_inputs() {
+        let p = mvp_params();
+        let pi_a = mvp_public_inputs();
+        let w = mvp_witness(&p);
+        let proof = prove(b"x", b"y", &p, &pi_a, &w).expect("prove must succeed");
+
+        // Change one byte in one of the hash fields.
+        let mut pi_b = pi_a.clone();
+        pi_b.h_a[0] ^= 0xFF;
+
+        let r = verify(b"x", b"y", &p, &pi_b, &proof);
+        assert!(r.is_err(), "verifier must reject mismatched PIs; got {r:?}");
+    }
+
+    /// Changing the public `found_i` / `found_j` indices must also
+    /// invalidate a proof — full coverage across the 42-element PI
+    /// vector.
+    #[test]
+    fn verify_rejects_changed_tile_indices() {
+        let p = mvp_params();
+        let pi_a = mvp_public_inputs();
+        let w = mvp_witness(&p);
+        let proof = prove(b"x", b"y", &p, &pi_a, &w).expect("prove must succeed");
+
+        let mut pi_b = pi_a.clone();
+        pi_b.found_i = 1;
+
+        let r = verify(b"x", b"y", &p, &pi_b, &proof);
+        assert!(
+            r.is_err(),
+            "verifier must reject changed found_i; got {r:?}"
+        );
+    }
+
+    /// The proof BYTES change when public inputs change. This is the
+    /// prover-side counterpart of the verifier-side mismatch test —
+    /// it confirms that PIs are actually flowing into the prover's
+    /// Fiat-Shamir transcript.
+    #[test]
+    fn proof_bytes_differ_when_public_inputs_change() {
+        let p = mvp_params();
+        let pi_a = mvp_public_inputs();
+        let w = mvp_witness(&p);
+
+        let mut pi_b = pi_a.clone();
+        pi_b.found_leaf[3] ^= 0x01;
+
+        let proof_a = prove(b"x", b"y", &p, &pi_a, &w).expect("prove must succeed");
+        let proof_b = prove(b"x", b"y", &p, &pi_b, &w).expect("prove must succeed");
+        assert_ne!(proof_a.0, proof_b.0);
     }
 
     #[test]
