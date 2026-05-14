@@ -103,6 +103,31 @@ chunk-Merkle path verification (reuses the M10.1b vendored chip).
 | `lib.rs` | **M9 + M10 + M10.1a/b.** Public `prove` / `verify` entries, threading [`PublicInputs`] through Plonky3's public-values channel and producing both proofs in one envelope. |
 | `tests/prod_bench.rs` | **M11.** `#[ignore]`d round-trip under `CircuitConfig::PROD` (120-bit provable soundness). Measures proof size + timing. |
 | `air.rs` | Stub for the eventual full-protocol `MatmulAir` (BLAKE3 + multi-slot routing — M9.2 / M10.1). |
+| [`composite_layout`] | **M10.1c.** Pin the 1378-column composite trace layout (Pearl byte-equivalent). Phases 2–10 each carve out a column block here. |
+| [`composite_full_air`] | **M10.1c.** `CompositeFullAir` — top-level AIR over `TOTAL_TRACE_WIDTH` cols. Calls all 10 chip evals (stark_row + 4 range tables + i8u8 + control + input + matmul + BLAKE3 + jackpot) via per-chip `eval_composite` methods. |
+| [`composite_trace`] | **M10.1c.** `CompositeTrace` — composite-trace builder. Exposes `baseline_min()`, `place_blake3_hash()`, `place_matmul_step()`, `place_jackpot_step()`, and `fill_*_passthrough()` helpers. |
+| [`composite_lookups`] | **M10.1c.** Lookup-bus design + multiplicity calculus. Names the 8 lookup buses and exposes scalar `*_freq` helpers. Proving-side LogUp wiring deferred to Phase 14b. |
+| [`composite_proof`] | **M10.1c.** Lib-level `composite_prove` / `composite_verify` wrappers around `p3-uni-stark`. `#[ignore]`'d `composite_proof_prod_bench` measures the PROD-shape stack. |
+| [`chips::stark_row`] | **M10.1c Phase 3.** Monotonic STARK_ROW_IDX increment. |
+| [`chips::range_table`] | **M10.1c Phase 4a.** Generic `RangeTableChip<COL, MIN, MAX>` with URange8/13, IRange7P1/8 instantiations. |
+| [`chips::i8u8`] | **M10.1c Phase 4b.** i8 ↔ u8 sign-conversion table. |
+| [`chips::input`] | **M10.1c Phase 4c.** NOISE_PACKED_PREP unpacking + NOISED_PACKED = polyval(MAT) + polyval(NOISE) integrity. |
+| [`chips::control`] | **M10.1c Phase 5.** CONTROL_PREP selector-bit unpacking + MAT_ID limb decomposition. |
+| [`chips::blake3`] | **M10.1c Phase 7+8.** Pearl-port BLAKE3 chip: scalar reference (`compress`), per-round AIR primitives (`round_ops` — add3/add2/xor with `is_activated` gating), AIR composition (`round_air` — Blake3State + half_g + verify_round + finalize_blake + verify_init_state), and top-level chip (`chip::Blake3Chip` with selector-gated 8-row hash dispatch). |
+| [`chips::matmul`] | **M10.1c Phase 9.** `MatmulCumsumChip` — cross-row cumsum-update over TILE_H × TILE_D × TILE_H tiles. |
+| [`chips::jackpot`] | **M10.1c Phase 10.** `JackpotChip` — 16-slot rotate-XOR-13 with one-hot routing. |
+
+**M10.1c status (336 unit tests):** all 10 chips wired into
+`CompositeFullAir`; composite trace supports placing matmul +
+BLAKE3 + jackpot instructions; baseline `composite_prove` /
+`composite_verify` round-trip works at `MIN_STARK_LEN`. The
+three-chip integration test `three_chip_integration_verifies`
+exercises all three families simultaneously. Remaining: Phase
+14b (LogUp-aware folder swap to reify cross-chip lookups at
+proof time) and M12 (recursion compression). See
+[`M10_1C_PROGRESS.md`](M10_1C_PROGRESS.md) for the full phase
+breakdown and [`M10_1C_DESIGN.md`](M10_1C_DESIGN.md) for the
+architectural plan.
 
 ## Stack choices
 
