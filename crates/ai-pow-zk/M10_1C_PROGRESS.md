@@ -44,12 +44,13 @@ When Plonky3 doesn't have a direct primitive (e.g. Pearl's
 | 9 | matmul cumsum chip (`MatmulCumsumChip`); RAM-lookup deferred to Phase 11 | ✅ landed | 20 | 274 unit |
 | 10 | jackpot chip (`JackpotChip`; 16-slot rotate-XOR-13) | ✅ landed | 22 | 296 unit |
 | 11 | `composite_lookups` — design + multiplicity calculus (proving-side wiring deferred to Phase 14) | ✅ landed | 10 | 306 unit |
-| 12 | `composite_full_air::eval` (Pearl `pearl_air`) | ⬜ pending | | |
+| 12a | `composite_full_air::eval` — Phase 3-6 chips wired (stark_row, range_tables, i8u8, control, input) | ✅ landed | 9 | 315 unit |
+| 12b | `composite_full_air` — wire Phase 7-10 chips (BLAKE3, matmul, jackpot) | ⬜ pending | | |
 | 13 | `composite_trace` (Pearl `pearl_trace`) | ⬜ pending | | |
 | 14 | `lib::{prove, verify}` plumbing on composite AIR | ⬜ pending | | |
 | 15 | PROD bench full shape | ⬜ pending | | |
 
-**Today's cumulative test count: 306 unit + 7 KAT + 3 ignored
+**Today's cumulative test count: 315 unit + 7 KAT + 3 ignored
 PROD bench.**
 
 ## Properties validated per phase
@@ -537,6 +538,57 @@ generator and the prover plumbing all change together. Phase 11's
 design-level deliverable here is what every downstream phase
 needs to agree on.
 
+### Phase 12a — composite_full_air (Phase 3-6 chips wired) — landed
+
+`composite_full_air.rs` introduces the top-level
+`CompositeFullAir` over `TOTAL_TRACE_WIDTH = 1328` columns. This
+slice wires 8 of the chip-side constraint generators:
+
+  * [`StarkRowChip`](crate::chips::stark_row::StarkRowChip)
+  * [`URange8Chip`](crate::chips::range_table::URange8Chip)
+  * [`URange13Chip`](crate::chips::range_table::URange13Chip)
+  * [`IRange7P1Chip`](crate::chips::range_table::IRange7P1Chip)
+  * [`IRange8Chip`](crate::chips::range_table::IRange8Chip)
+  * [`I8U8Chip`](crate::chips::i8u8::I8U8Chip)
+  * [`ControlChip`](crate::chips::control::ControlChip)
+  * [`InputChip`](crate::chips::input::InputChip)
+
+These all read columns by `composite_layout::*` offsets directly,
+so they slot in via `Chip::default().eval(builder)` calls without
+column-projection wiring.
+
+Properties validated:
+
+  * ✅ Baseline trace at `MIN_STARK_LEN = 8192` rows × 1328 cols
+    verifies (`composite_full_air_baseline_trace_verifies`).
+  * ✅ Range tables, I8U8, STARK_ROW_IDX all filled by their
+    `fill_row` helpers; remaining ~1300 columns are zero
+    (degenerate but constraint-satisfying for the wired chips).
+  * ✅ Tamper detection: STARK_ROW_IDX
+    (`composite_full_air_rejects_bad_row_idx`), range table
+    (`composite_full_air_rejects_bad_range_table`), I8U8 AUX
+    (`composite_full_air_rejects_bad_i8u8_aux`), inconsistent
+    CONTROL_PREP selector bit
+    (`composite_full_air_rejects_inconsistent_control_prep`),
+    inconsistent NOISED_PACKED
+    (`composite_full_air_rejects_inconsistent_noised_packed`).
+  * ✅ Air width matches `TOTAL_TRACE_WIDTH`
+    (`composite_full_air_width_matches_total_trace_width`).
+  * ✅ `MIN_STARK_LEN` anchor — Pearl's pinned minimum trace
+    length passes (`composite_full_air_min_stark_len_anchor`).
+  * ✅ `I8U8_TABLE_SIZE` pinned at 256 (`i8u8_table_size_pinned`).
+
+### Phase 12b — composite_full_air (Phase 7-10 chips) — pending
+
+Remaining wiring: lift `Blake3Chip`, `MatmulCumsumChip`, and
+`JackpotChip`'s eval from their chip-local layouts to free
+functions taking `composite_layout` offsets. Each chip's
+constraints stay the same; only the column-read site changes.
+
+Estimated work: ~3-4 hours of mechanical refactoring + a larger
+integration test that exercises all chips simultaneously on a
+hand-crafted multi-row trace.
+
 ### Phase 7+ — scope decision (resolved)
 
 User picked **option 1** (full Pearl one-round-per-row port).
@@ -630,4 +682,5 @@ by the SNARK as a whole:
 | 2026-05-14 | M10.1c Phase 8c BLAKE3 top-level chip (`chip.rs`) | `105699b` |
 | 2026-05-14 | M10.1c Phase 9 matmul cumsum chip (`chips/matmul`) | `d07b16a` |
 | 2026-05-14 | M10.1c Phase 10 jackpot chip (`chips/jackpot`) | `5e08fa1` |
-| 2026-05-14 | M10.1c Phase 11 lookup design (`composite_lookups`) | (this commit) |
+| 2026-05-14 | M10.1c Phase 11 lookup design (`composite_lookups`) | `b492465` |
+| 2026-05-14 | M10.1c Phase 12a `composite_full_air` (Phase 3-6 chips) | (this commit) |

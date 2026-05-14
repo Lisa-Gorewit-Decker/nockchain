@@ -79,6 +79,7 @@ pub mod blake3_chip;
 pub mod chips;
 pub mod circuit;
 pub mod composite_air;
+pub mod composite_full_air;
 pub mod composite_layout;
 pub mod composite_lookups;
 pub mod composite_preprocess;
