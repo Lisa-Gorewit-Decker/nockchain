@@ -50,10 +50,11 @@ When Plonky3 doesn't have a direct primitive (e.g. Pearl's
 | 12d | `composite_full_air` — wire jackpot | ⬜ pending | | |
 | 13a | `composite_trace` baseline builder + type surface | ✅ landed | 7 | 325 unit |
 | 13b | `composite_trace` instruction-list compilation (matmul / blake3 / jackpot blocks) | ⬜ pending | | |
-| 14 | `lib::{prove, verify}` plumbing on composite AIR | ⬜ pending | | |
+| 14a | `composite_proof::{composite_prove, composite_verify}` wrappers + bincode round-trip | ✅ landed | 3 | 328 unit |
+| 14b | LogUp-aware folder swap (proving-side interaction wiring) | ⬜ pending | | |
 | 15 | PROD bench full shape | ⬜ pending | | |
 
-**Today's cumulative test count: 325 unit + 7 KAT + 3 ignored
+**Today's cumulative test count: 328 unit + 7 KAT + 3 ignored
 PROD bench.**
 
 ## Properties validated per phase
@@ -702,6 +703,45 @@ Instruction-list compilation is naturally bundled with Phase 14
 each row's lookup multiplicities (CV routing, NOISED_PACKED
 queries, etc.).
 
+### Phase 14a — composite prove/verify wrappers (landed)
+
+`composite_proof.rs` exposes lib-level prove/verify wrappers
+around the composite stack:
+
+  * `composite_proof::build_config(params, profile)` —
+    re-export of `circuit::build_stark_config` for ergonomics.
+  * `composite_proof::composite_prove(&config, trace)` —
+    consumes a `CompositeTrace` (Phase 13a) and produces a
+    `Proof<AiPowStarkConfig>`.
+  * `composite_proof::composite_verify(&config, &proof)` —
+    returns `Result<(), CompositeVerificationError>`.
+  * `CompositeVerificationError` alias for the concrete
+    `VerificationError<PcsError<AiPowStarkConfig>>` type.
+
+Properties validated:
+  * ✅ Prove + verify round-trip on the baseline trace
+    (`composite_prove_verify_round_trip`).
+  * ✅ Bincode serialization round-trip: prove → bincode-encode →
+    bincode-decode → verify
+    (`composite_proof_is_serializable`).
+  * ✅ Same config covers proofs at multiple trace sizes
+    (MIN_STARK_LEN and 2× MIN_STARK_LEN)
+    (`composite_proofs_at_two_trace_sizes`).
+
+### Phase 14b — LogUp-aware prover (pending)
+
+Phase 14b swaps `p3-uni-stark`'s folder for one that implements
+`p3-lookup::InteractionBuilder`, turning the Phase 11 lookup
+design into reified constraints. This is the cryptographically
+critical wiring that ties chips together via LogUp; without it
+the composite proof can't enforce e.g. that `A_NOISED` reads
+correspond to actual `NOISED_PACKED` entries.
+
+Practical path: pull `p3-lookup` into `Cargo.toml`, build a
+custom prover that uses `ProverConstraintFolderWithLookups` and
+`VerifierConstraintFolderWithLookups`, add interaction-emission
+to each chip (via the bus helpers in `composite_lookups`).
+
 ### Phase 7+ — scope decision (resolved)
 
 User picked **option 1** (full Pearl one-round-per-row port).
@@ -799,4 +839,5 @@ by the SNARK as a whole:
 | 2026-05-14 | M10.1c Phase 12a `composite_full_air` (Phase 3-6 chips) | `253a938` |
 | 2026-05-14 | M10.1c Phase 12b matmul wired via `eval_composite` | `c883c21` |
 | 2026-05-14 | M10.1c Phase 12c BLAKE3 wired via `eval_composite` | `17f161d` |
-| 2026-05-14 | M10.1c Phase 13a `composite_trace` baseline builder | (this commit) |
+| 2026-05-14 | M10.1c Phase 13a `composite_trace` baseline builder | `6945714` |
+| 2026-05-14 | M10.1c Phase 14a `composite_proof` prove/verify wrappers | (this commit) |

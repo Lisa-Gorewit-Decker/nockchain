@@ -83,6 +83,7 @@ pub mod composite_full_air;
 pub mod composite_layout;
 pub mod composite_lookups;
 pub mod composite_preprocess;
+pub mod composite_proof;
 pub mod composite_trace;
 pub mod found_leaf_air;
 pub mod input_chip;
