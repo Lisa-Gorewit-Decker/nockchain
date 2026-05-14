@@ -62,11 +62,12 @@
 /// in-circuit hash sees the same bytes a Pearl miner hashes.
 pub const BYTES_PER_GOLDILOCKS: usize = 4;
 
-/// Bits per range-table limb. Pearl's `pearl_columns::BITS_PER_LIMB =
-/// 13` because their u13 range table covers MAT_ID bounds. We skip
-/// MAT_ID (no RAM lookups) but keep 13-bit limbs for the limb-style
-/// decomposition of other range-checked values that match Pearl's
-/// budget.
+/// Bits per range-table limb. Matches Pearl's
+/// `pearl_columns::BITS_PER_LIMB = 13` — the u13 range table is
+/// what decomposes `MAT_ID` (RAM-lookup index into `NOISED_PACKED`)
+/// into limbs for range-checking. Production matrices need MAT_ID
+/// values up to `(m + n) × k / BYTES_PER_GOLDILOCKS`, comfortably
+/// within `2^26 = 2 × 13` bits.
 pub const BITS_PER_LIMB: usize = 13;
 
 /// Block-commitment fixed size in bytes. Pinned by M10.1c design (see
@@ -105,11 +106,20 @@ pub const MIN_STARK_LEN: usize = 1 << 13;
 //  `pearl_columns` block. We use a manual const-offset scheme rather
 //  than a macro to keep dependencies tight.
 //
-//  Layout order (offset, width):
-//   range tables    : 11
-//   control flags   : 21
-//   matmul / jackpot data : variable
-//   blake3 round AIR: ~1000
+//  Layout order:
+//    range tables           (11 cols)
+//    control flags          (22 cols incl. CONTROL_PREP)
+//    input chip unpacking   (25 cols: MAT_UNPACK, UINT8_DATA, NOISE_PACKED_PREP, NOISE_UNPACK)
+//    NOISED_PACKED + indexing (12 cols: NOISED_PACKED, MAT_FREQ, MAT_ID, MAT_ID_LIMBS, AB_ID_PREP, AB_ID_LIMBS, A_ID, B_ID)
+//    STARK_ROW_IDX          (1 col)
+//    matmul tile data       (80 cols: A_NOISED, A_NOISED_UNPACK, B_NOISED, B_NOISED_UNPACK)
+//    matmul accumulator     (8 cols: CUMSUM_TILE, CUMSUM_BUFFER)
+//    jackpot state          (56 cols: JACKPOT_MSG, BIT_REG, JACKPOT_IDX)
+//    blake3 buffers         (49 cols: BLAKE3_MSG_BUFFER, CV_OR_TWEAK_PREP, CV_IN, BLAKE3_MSG, BLAKE3_CV)
+//    blake3 round AIR       (1056 cols: BLAKE3_ROUND)
+//    blake3 output          (9 cols: CV_OUT, CV_OUT_FREQ)
+//    ───────────────────────────────────
+//    TOTAL_TRACE_WIDTH      ≈ 1328 cols
 //
 //  All "PREP" columns are PREPROCESSED — committed at setup. Other
 //  columns are part of the main trace, generated per-proof.
@@ -134,13 +144,14 @@ pub const I8U8_FREQ: usize = 10;
 /// Number of range / conversion table columns.
 pub const NUM_RANGE_COLS: usize = 11;
 
-/// Preprocessed control word. Packs the selector bits + (in Pearl,
-/// MAT_ID; we drop that). The composite trace generator emits a
-/// little-endian unpacking constraint over this column.
+/// Preprocessed control word. Packs the selector bits *and* MAT_ID
+/// (the index used for NOISED_PACKED RAM lookups). The composite
+/// trace generator emits a little-endian unpacking constraint over
+/// this column.
 pub const CONTROL_PREP: usize = NUM_RANGE_COLS;
 
 /// Per-chip selector bits (unpacked from `CONTROL_PREP`).
-/// Pearl-mirror minus the MAT_ID / NOISED_PACKED machinery.
+/// Pearl-mirror; matches `pearl_layout.rs:22-42` verbatim.
 pub const IS_RESET_CUMSUM: usize = CONTROL_PREP + 1;
 pub const IS_UPDATE_CUMSUM: usize = IS_RESET_CUMSUM + 1;
 pub const IS_USE_JOB_KEY: usize = IS_UPDATE_CUMSUM + 1;
