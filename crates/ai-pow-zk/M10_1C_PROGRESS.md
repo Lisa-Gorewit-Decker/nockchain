@@ -43,13 +43,13 @@ When Plonky3 doesn't have a direct primitive (e.g. Pearl's
 | 8c | BLAKE3 trace generator + top-level chip eval — `Blake3Chip` | ✅ landed | 10 | 254 unit |
 | 9 | matmul cumsum chip (`MatmulCumsumChip`); RAM-lookup deferred to Phase 11 | ✅ landed | 20 | 274 unit |
 | 10 | jackpot chip (`JackpotChip`; 16-slot rotate-XOR-13) | ✅ landed | 22 | 296 unit |
-| 11 | `composite_lookups` — `p3-lookup` config for all 6+ lookups | ⬜ pending | | |
+| 11 | `composite_lookups` — design + multiplicity calculus (proving-side wiring deferred to Phase 14) | ✅ landed | 10 | 306 unit |
 | 12 | `composite_full_air::eval` (Pearl `pearl_air`) | ⬜ pending | | |
 | 13 | `composite_trace` (Pearl `pearl_trace`) | ⬜ pending | | |
 | 14 | `lib::{prove, verify}` plumbing on composite AIR | ⬜ pending | | |
 | 15 | PROD bench full shape | ⬜ pending | | |
 
-**Today's cumulative test count: 296 unit + 7 KAT + 3 ignored
+**Today's cumulative test count: 306 unit + 7 KAT + 3 ignored
 PROD bench.**
 
 ## Properties validated per phase
@@ -497,6 +497,46 @@ Properties validated:
     (`prove_and_verify_full_slot_pass`).
   - ✅ Chip width pinned at 97 cols (`chip_width_pinned`).
 
+### Phase 11 — composite_lookups design (landed)
+
+`composite_lookups.rs` pins the lookup-bus architecture and the
+multiplicity calculus. The proving-side wiring (switching from
+`p3-uni-stark` to a lookup-aware folder via `p3-lookup`'s
+`InteractionBuilder`) is deferred to Phase 14 because it requires
+swapping out the prover stack, which is a single contained
+refactor downstream.
+
+What this phase delivers:
+
+  - ✅ Bus inventory: 8 named buses (`urange8`, `urange13`,
+    `irange7p1`, `irange8`, `i8u8`, `noised_packed`, `cv_routing`,
+    `stark_row_idx`). Each documents its table chip, queriers, and
+    cryptographic role.
+  - ✅ Multiplicity helpers: `noised_packed_freq`,
+    `cv_out_freq`, `blake3_cv_query_count`,
+    `matmul_noised_packed_query_count`,
+    `blake3_msg_mat_query_count` — used by Phase 13's trace
+    generator to fill `MAT_FREQ` / `CV_OUT_FREQ` etc.
+  - ✅ Bus names pinned as `&'static str` constants
+    (`bus_name_strings_match_documentation`).
+  - ✅ Balance-simulation tests: a 2-hash CV_OUT → CV_IN scenario
+    and a multi-querier `noised_packed` scenario both produce
+    table-side multiplicity equal to total query count
+    (`cv_routing_multi_hash_balance_simulation`,
+    `noised_packed_multi_querier_balance`).
+  - ✅ All 8 bus names pairwise unique
+    (`all_buses_are_pairwise_unique`).
+  - ✅ ALL_BUSES count == 8 (`all_buses_count_matches_design`).
+
+**Why scope was reduced:** `p3-lookup` doesn't ship a drop-in
+`prove`/`verify` wrapper around `p3-uni-stark`; it provides the
+`InteractionBuilder` trait and the `ProverConstraintFolderWithLookups`
+folder, both of which need a custom prover. The cleanest place
+to land that switch is Phase 14, when the composite trace
+generator and the prover plumbing all change together. Phase 11's
+design-level deliverable here is what every downstream phase
+needs to agree on.
+
 ### Phase 7+ — scope decision (resolved)
 
 User picked **option 1** (full Pearl one-round-per-row port).
@@ -589,4 +629,5 @@ by the SNARK as a whole:
 | 2026-05-14 | M10.1c Phase 8b BLAKE3 round-AIR composition (`round_air`) | `f233d0b` |
 | 2026-05-14 | M10.1c Phase 8c BLAKE3 top-level chip (`chip.rs`) | `105699b` |
 | 2026-05-14 | M10.1c Phase 9 matmul cumsum chip (`chips/matmul`) | `d07b16a` |
-| 2026-05-14 | M10.1c Phase 10 jackpot chip (`chips/jackpot`) | (this commit) |
+| 2026-05-14 | M10.1c Phase 10 jackpot chip (`chips/jackpot`) | `5e08fa1` |
+| 2026-05-14 | M10.1c Phase 11 lookup design (`composite_lookups`) | (this commit) |

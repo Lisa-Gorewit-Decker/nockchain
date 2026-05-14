@@ -80,6 +80,7 @@ pub mod chips;
 pub mod circuit;
 pub mod composite_air;
 pub mod composite_layout;
+pub mod composite_lookups;
 pub mod composite_preprocess;
 pub mod found_leaf_air;
 pub mod input_chip;
