@@ -224,7 +224,8 @@ mod tests {
         run_logup(trace, &cfg, n, "heavy", trace_gen_ms, populate_ms)
     }
 
-    /// Shared tail: prove + verify + measure proof size.
+    /// Shared tail: derive PIs, prove + verify + measure proof
+    /// size.
     fn run_logup(
         trace: CompositeTrace,
         cfg: &AiPowStarkConfig,
@@ -233,11 +234,14 @@ mod tests {
         trace_gen_ms: u128,
         populate_ms: u128,
     ) -> BenchResult {
+        let pis =
+            crate::composite_public::CompositePublicInputs::derive_from_trace(&trace).to_vec();
+
         let air = CompositeFullAirWithLookups;
         let instances = vec![StarkInstance {
             air: &air,
             trace: &trace.matrix,
-            public_values: vec![],
+            public_values: pis.clone(),
         }];
 
         let prover_data = ProverData::from_instances(cfg, &instances);
@@ -247,7 +251,7 @@ mod tests {
         let prove_ms = t.elapsed().as_millis();
 
         let t = Instant::now();
-        verify_batch(cfg, &[air], &proof, &[vec![]], &prover_data.common)
+        verify_batch(cfg, &[air], &proof, &[pis], &prover_data.common)
             .expect("bench verify");
         let verify_ms = t.elapsed().as_millis();
 

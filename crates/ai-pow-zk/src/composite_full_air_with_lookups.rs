@@ -73,6 +73,10 @@ impl<F> BaseAir<F> for CompositeFullAirWithLookups {
     fn width(&self) -> usize {
         TOTAL_TRACE_WIDTH
     }
+
+    fn num_public_values(&self) -> usize {
+        crate::composite_public::NUM_PUBLIC_VALUES
+    }
 }
 
 impl<AB> Air<AB> for CompositeFullAirWithLookups
@@ -375,15 +379,30 @@ mod tests {
         config: &AiPowStarkConfig,
         trace: &p3_matrix::dense::RowMajorMatrix<Val>,
     ) -> Result<(), String> {
+        // Derive PIs by reading the trace's last row directly
+        // (avoids requiring a CompositeTrace handle here).
+        use crate::composite_layout::{
+            CUMSUM_TILE_START, JACKPOT_MSG_START, JACKPOT_SIZE,
+        };
+        let total_rows = trace.values.len() / TOTAL_TRACE_WIDTH;
+        let last_base = (total_rows - 1) * TOTAL_TRACE_WIDTH;
+        let mut pis: Vec<Val> = Vec::with_capacity(4 + JACKPOT_SIZE);
+        for i in 0..4 {
+            pis.push(trace.values[last_base + CUMSUM_TILE_START + i]);
+        }
+        for i in 0..JACKPOT_SIZE {
+            pis.push(trace.values[last_base + JACKPOT_MSG_START + i]);
+        }
+
         let air = CompositeFullAirWithLookups;
         let instances = vec![StarkInstance {
             air: &air,
             trace,
-            public_values: vec![],
+            public_values: pis.clone(),
         }];
         let prover_data = ProverData::from_instances(config, &instances);
         let proof = prove_batch(config, &instances, &prover_data);
-        verify_batch(config, &[air], &proof, &[vec![]], &prover_data.common)
+        verify_batch(config, &[air], &proof, &[pis], &prover_data.common)
             .map_err(|e| format!("{:?}", e))
     }
 

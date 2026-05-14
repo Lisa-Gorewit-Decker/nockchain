@@ -913,8 +913,9 @@ mod tests {
     fn baseline_trace_verifies_through_composite_full_air() {
         let cfg = build_stark_config(&test_zk_params(), &CircuitConfig::TEST_PEARL);
         let trace = CompositeTrace::baseline_min();
-        let proof = prove::<AiPowStarkConfig, _>(&cfg, &CompositeFullAir, trace.matrix, &[]);
-        verify::<AiPowStarkConfig, _>(&cfg, &CompositeFullAir, &proof, &[])
+        let pis = crate::composite_public::CompositePublicInputs::derive_from_matrix(&trace.matrix).to_vec();
+        let proof = prove::<AiPowStarkConfig, _>(&cfg, &CompositeFullAir, trace.matrix, &pis);
+        verify::<AiPowStarkConfig, _>(&cfg, &CompositeFullAir, &proof, &pis)
             .expect("baseline trace must verify");
     }
 
@@ -936,8 +937,9 @@ mod tests {
         let cfg = build_stark_config(&test_zk_params(), &CircuitConfig::TEST_PEARL);
         let trace = CompositeTrace::baseline(MIN_STARK_LEN * 2);
         assert_eq!(trace.height(), MIN_STARK_LEN * 2);
-        let proof = prove::<AiPowStarkConfig, _>(&cfg, &CompositeFullAir, trace.matrix, &[]);
-        verify::<AiPowStarkConfig, _>(&cfg, &CompositeFullAir, &proof, &[])
+        let pis = crate::composite_public::CompositePublicInputs::derive_from_matrix(&trace.matrix).to_vec();
+        let proof = prove::<AiPowStarkConfig, _>(&cfg, &CompositeFullAir, trace.matrix, &pis);
+        verify::<AiPowStarkConfig, _>(&cfg, &CompositeFullAir, &proof, &pis)
             .expect("2× baseline must verify");
     }
 
@@ -987,9 +989,10 @@ mod tests {
         // intermediate row must hold the value the chain ended at.
         trace.fill_cumsum_passthrough(3, &after_u2);
 
+        let pis = crate::composite_public::CompositePublicInputs::derive_from_matrix(&trace.matrix).to_vec();
         let proof =
-            prove::<AiPowStarkConfig, _>(&cfg, &CompositeFullAir, trace.matrix, &[]);
-        verify::<AiPowStarkConfig, _>(&cfg, &CompositeFullAir, &proof, &[])
+            prove::<AiPowStarkConfig, _>(&cfg, &CompositeFullAir, trace.matrix, &pis);
+        verify::<AiPowStarkConfig, _>(&cfg, &CompositeFullAir, &proof, &pis)
             .expect("matmul chain must verify through composite_full_air");
     }
 
@@ -1026,9 +1029,10 @@ mod tests {
             assert_eq!(cv_out[i], full[i]);
         }
 
+        let pis = crate::composite_public::CompositePublicInputs::derive_from_matrix(&trace.matrix).to_vec();
         let proof =
-            prove::<AiPowStarkConfig, _>(&cfg, &CompositeFullAir, trace.matrix, &[]);
-        verify::<AiPowStarkConfig, _>(&cfg, &CompositeFullAir, &proof, &[])
+            prove::<AiPowStarkConfig, _>(&cfg, &CompositeFullAir, trace.matrix, &pis);
+        verify::<AiPowStarkConfig, _>(&cfg, &CompositeFullAir, &proof, &pis)
             .expect("BLAKE3 hash block must verify through composite_full_air");
     }
 
@@ -1057,10 +1061,11 @@ mod tests {
         trace.matrix.values[target] =
             <Val as QuotientMap<u64>>::from_int(0xDEAD_BEEFu64);
 
+        let pis = crate::composite_public::CompositePublicInputs::derive_from_matrix(&trace.matrix).to_vec();
         let proof =
-            prove::<AiPowStarkConfig, _>(&cfg, &CompositeFullAir, trace.matrix, &[]);
+            prove::<AiPowStarkConfig, _>(&cfg, &CompositeFullAir, trace.matrix, &pis);
         assert!(
-            verify::<AiPowStarkConfig, _>(&cfg, &CompositeFullAir, &proof, &[]).is_err(),
+            verify::<AiPowStarkConfig, _>(&cfg, &CompositeFullAir, &proof, &pis).is_err(),
             "tampered CV_OUT must reject"
         );
     }
@@ -1082,9 +1087,10 @@ mod tests {
 
         trace.fill_jackpot_passthrough(3, &s3);
 
+        let pis = crate::composite_public::CompositePublicInputs::derive_from_matrix(&trace.matrix).to_vec();
         let proof =
-            prove::<AiPowStarkConfig, _>(&cfg, &CompositeFullAir, trace.matrix, &[]);
-        verify::<AiPowStarkConfig, _>(&cfg, &CompositeFullAir, &proof, &[])
+            prove::<AiPowStarkConfig, _>(&cfg, &CompositeFullAir, trace.matrix, &pis);
+        verify::<AiPowStarkConfig, _>(&cfg, &CompositeFullAir, &proof, &pis)
             .expect("jackpot chain must verify through composite_full_air");
     }
 
@@ -1105,10 +1111,11 @@ mod tests {
         let target = 1 * TOTAL_TRACE_WIDTH + JACKPOT_MSG_START;
         trace.matrix.values[target] = <Val as QuotientMap<u64>>::from_int(0xBEEFu64);
 
+        let pis = crate::composite_public::CompositePublicInputs::derive_from_matrix(&trace.matrix).to_vec();
         let proof =
-            prove::<AiPowStarkConfig, _>(&cfg, &CompositeFullAir, trace.matrix, &[]);
+            prove::<AiPowStarkConfig, _>(&cfg, &CompositeFullAir, trace.matrix, &pis);
         assert!(
-            verify::<AiPowStarkConfig, _>(&cfg, &CompositeFullAir, &proof, &[]).is_err(),
+            verify::<AiPowStarkConfig, _>(&cfg, &CompositeFullAir, &proof, &pis).is_err(),
             "tampered JACKPOT_MSG must reject"
         );
     }
@@ -1172,9 +1179,10 @@ mod tests {
         // For jackpot: rows 12..N hold the post-step-2 state.
         trace.fill_jackpot_passthrough(12, &jackpot_final);
 
+        let pis = crate::composite_public::CompositePublicInputs::derive_from_matrix(&trace.matrix).to_vec();
         let proof =
-            prove::<AiPowStarkConfig, _>(&cfg, &CompositeFullAir, trace.matrix, &[]);
-        verify::<AiPowStarkConfig, _>(&cfg, &CompositeFullAir, &proof, &[])
+            prove::<AiPowStarkConfig, _>(&cfg, &CompositeFullAir, trace.matrix, &pis);
+        verify::<AiPowStarkConfig, _>(&cfg, &CompositeFullAir, &proof, &pis)
             .expect("three-chip composite trace must verify");
     }
 
@@ -1216,9 +1224,10 @@ mod tests {
         // Thread the final cumsum through all subsequent rows.
         trace.fill_cumsum_passthrough(10, &after_update);
 
+        let pis = crate::composite_public::CompositePublicInputs::derive_from_matrix(&trace.matrix).to_vec();
         let proof =
-            prove::<AiPowStarkConfig, _>(&cfg, &CompositeFullAir, trace.matrix, &[]);
-        verify::<AiPowStarkConfig, _>(&cfg, &CompositeFullAir, &proof, &[])
+            prove::<AiPowStarkConfig, _>(&cfg, &CompositeFullAir, trace.matrix, &pis);
+        verify::<AiPowStarkConfig, _>(&cfg, &CompositeFullAir, &proof, &pis)
             .expect("combined BLAKE3 + matmul trace must verify");
     }
 
@@ -1244,10 +1253,11 @@ mod tests {
         let target = 0 * TOTAL_TRACE_WIDTH + A_NOISED_UNPACK_START;
         trace.matrix.values[target] = <Val as QuotientMap<i64>>::from_int(2);
 
+        let pis = crate::composite_public::CompositePublicInputs::derive_from_matrix(&trace.matrix).to_vec();
         let proof =
-            prove::<AiPowStarkConfig, _>(&cfg, &CompositeFullAir, trace.matrix, &[]);
+            prove::<AiPowStarkConfig, _>(&cfg, &CompositeFullAir, trace.matrix, &pis);
         assert!(
-            verify::<AiPowStarkConfig, _>(&cfg, &CompositeFullAir, &proof, &[]).is_err(),
+            verify::<AiPowStarkConfig, _>(&cfg, &CompositeFullAir, &proof, &pis).is_err(),
             "tampered matmul input must reject"
         );
     }

@@ -42,7 +42,7 @@
 //! all selectors are 0, all data columns are 0, control_prep = 0,
 //! mat_id = 0, etc.).
 
-use p3_air::{Air, AirBuilder, BaseAir};
+use p3_air::{Air, AirBuilder, BaseAir, WindowAccess};
 
 use crate::chips::blake3::chip::Blake3Chip;
 use crate::chips::control::ControlChip;
@@ -52,19 +52,31 @@ use crate::chips::jackpot::chip::JackpotChip;
 use crate::chips::matmul::chip::MatmulCumsumChip;
 use crate::chips::range_table::{IRange7P1Chip, IRange8Chip, URange13Chip, URange8Chip};
 use crate::chips::stark_row::StarkRowChip;
-use crate::composite_layout::TOTAL_TRACE_WIDTH;
+use crate::composite_layout::{
+    CUMSUM_TILE_START, JACKPOT_MSG_START, JACKPOT_SIZE, TOTAL_TRACE_WIDTH,
+};
+use crate::composite_public::{NUM_PUBLIC_VALUES, PI_CUMSUM_LEN, PI_CUMSUM_OFFSET, PI_JACKPOT_OFFSET};
 
 /// The M10.1c composite AIR (Phase 12a slice).
 ///
 /// Trace width: [`TOTAL_TRACE_WIDTH`]. The constraint-bearing
 /// chips wired here are Phase 3-6's. Phase 12b adds Phase 7-10's
 /// chips (BLAKE3, matmul, jackpot).
+///
+/// Public inputs ([`NUM_PUBLIC_VALUES`] field elements) bind the
+/// trace's last-row CUMSUM_TILE and JACKPOT_MSG cells, threaded
+/// through the trace via `fill_*_passthrough` helpers. See
+/// [`crate::composite_public::CompositePublicInputs`].
 #[derive(Copy, Clone, Debug, Default)]
 pub struct CompositeFullAir;
 
 impl<F> BaseAir<F> for CompositeFullAir {
     fn width(&self) -> usize {
         TOTAL_TRACE_WIDTH
+    }
+
+    fn num_public_values(&self) -> usize {
+        NUM_PUBLIC_VALUES
     }
 }
 
@@ -108,6 +120,35 @@ impl<AB: AirBuilder> Air<AB> for CompositeFullAir {
         // selector. Phase 14b's LogUp wiring will tie the X_BITS
         // bit-decomposition back to CUMSUM_BUFFER.
         JackpotChip::eval_composite(builder);
+
+        // Public-input binding: on the LAST trace row, assert
+        // CUMSUM_TILE[i] == public_inputs[i] and
+        // JACKPOT_MSG[i] == public_inputs[4 + i]. The trace
+        // generator's fill_*_passthrough helpers ensure these
+        // cells hold the threaded final state.
+        //
+        // Snapshot the PIs and the current-row cells into owned
+        // arrays before opening the `when_last_row()` sub-builder
+        // (which borrows `builder` mutably; can't coexist with the
+        // `public_values()` slice borrow).
+        let pi_cumsum: [AB::PublicVar; PI_CUMSUM_LEN] =
+            core::array::from_fn(|i| builder.public_values()[PI_CUMSUM_OFFSET + i]);
+        let pi_jackpot: [AB::PublicVar; JACKPOT_SIZE] =
+            core::array::from_fn(|i| builder.public_values()[PI_JACKPOT_OFFSET + i]);
+        let main = builder.main();
+        let cur = main.current_slice();
+        let cur_cumsum: [AB::Var; PI_CUMSUM_LEN] =
+            core::array::from_fn(|i| cur[CUMSUM_TILE_START + i]);
+        let cur_jackpot: [AB::Var; JACKPOT_SIZE] =
+            core::array::from_fn(|i| cur[JACKPOT_MSG_START + i]);
+
+        let mut last = builder.when_last_row();
+        for i in 0..PI_CUMSUM_LEN {
+            last.assert_eq(cur_cumsum[i], pi_cumsum[i]);
+        }
+        for i in 0..JACKPOT_SIZE {
+            last.assert_eq(cur_jackpot[i], pi_jackpot[i]);
+        }
     }
 }
 
@@ -181,8 +222,9 @@ mod tests {
     fn composite_full_air_baseline_trace_verifies() {
         let cfg = build_stark_config(&test_zk_params(), &CircuitConfig::TEST_PEARL);
         let trace = build_baseline_trace(MIN_STARK_LEN);
-        let proof = prove::<AiPowStarkConfig, _>(&cfg, &CompositeFullAir, trace, &[]);
-        verify::<AiPowStarkConfig, _>(&cfg, &CompositeFullAir, &proof, &[])
+        let pis = crate::composite_public::CompositePublicInputs::derive_from_matrix(&trace).to_vec();
+        let proof = prove::<AiPowStarkConfig, _>(&cfg, &CompositeFullAir, trace, &pis);
+        verify::<AiPowStarkConfig, _>(&cfg, &CompositeFullAir, &proof, &pis)
             .expect("baseline composite trace must verify");
     }
 
@@ -194,9 +236,10 @@ mod tests {
         // Set row 3's STARK_ROW_IDX to 999 instead of 3.
         let target = 3 * TOTAL_TRACE_WIDTH + STARK_ROW_IDX;
         trace.values[target] = <crate::Val as QuotientMap<u64>>::from_int(999);
-        let proof = prove::<AiPowStarkConfig, _>(&cfg, &CompositeFullAir, trace, &[]);
+        let pis = crate::composite_public::CompositePublicInputs::derive_from_matrix(&trace).to_vec();
+        let proof = prove::<AiPowStarkConfig, _>(&cfg, &CompositeFullAir, trace, &pis);
         assert!(
-            verify::<AiPowStarkConfig, _>(&cfg, &CompositeFullAir, &proof, &[]).is_err(),
+            verify::<AiPowStarkConfig, _>(&cfg, &CompositeFullAir, &proof, &pis).is_err(),
             "tampered STARK_ROW_IDX must reject"
         );
     }
@@ -211,9 +254,10 @@ mod tests {
         use crate::composite_layout::URANGE8_TABLE;
         let target = 1 * TOTAL_TRACE_WIDTH + URANGE8_TABLE;
         trace.values[target] = <crate::Val as QuotientMap<u64>>::from_int(5);
-        let proof = prove::<AiPowStarkConfig, _>(&cfg, &CompositeFullAir, trace, &[]);
+        let pis = crate::composite_public::CompositePublicInputs::derive_from_matrix(&trace).to_vec();
+        let proof = prove::<AiPowStarkConfig, _>(&cfg, &CompositeFullAir, trace, &pis);
         assert!(
-            verify::<AiPowStarkConfig, _>(&cfg, &CompositeFullAir, &proof, &[]).is_err(),
+            verify::<AiPowStarkConfig, _>(&cfg, &CompositeFullAir, &proof, &pis).is_err(),
             "tampered range table must reject"
         );
     }
@@ -228,9 +272,10 @@ mod tests {
         use crate::composite_layout::I8U8_AUX;
         let target = 0 * TOTAL_TRACE_WIDTH + I8U8_AUX;
         trace.values[target] = <crate::Val as QuotientMap<u64>>::from_int(1);
-        let proof = prove::<AiPowStarkConfig, _>(&cfg, &CompositeFullAir, trace, &[]);
+        let pis = crate::composite_public::CompositePublicInputs::derive_from_matrix(&trace).to_vec();
+        let proof = prove::<AiPowStarkConfig, _>(&cfg, &CompositeFullAir, trace, &pis);
         assert!(
-            verify::<AiPowStarkConfig, _>(&cfg, &CompositeFullAir, &proof, &[]).is_err(),
+            verify::<AiPowStarkConfig, _>(&cfg, &CompositeFullAir, &proof, &pis).is_err(),
             "tampered I8U8_AUX must reject"
         );
     }
@@ -247,9 +292,10 @@ mod tests {
         // Flip IS_RESET_CUMSUM on row 0 without updating CONTROL_PREP.
         let target = 0 * TOTAL_TRACE_WIDTH + IS_RESET_CUMSUM;
         trace.values[target] = <crate::Val as QuotientMap<u64>>::from_int(1);
-        let proof = prove::<AiPowStarkConfig, _>(&cfg, &CompositeFullAir, trace, &[]);
+        let pis = crate::composite_public::CompositePublicInputs::derive_from_matrix(&trace).to_vec();
+        let proof = prove::<AiPowStarkConfig, _>(&cfg, &CompositeFullAir, trace, &pis);
         assert!(
-            verify::<AiPowStarkConfig, _>(&cfg, &CompositeFullAir, &proof, &[]).is_err(),
+            verify::<AiPowStarkConfig, _>(&cfg, &CompositeFullAir, &proof, &pis).is_err(),
             "inconsistent CONTROL_PREP must reject"
         );
     }
@@ -265,9 +311,10 @@ mod tests {
         use crate::composite_layout::NOISED_PACKED_START;
         let target = 0 * TOTAL_TRACE_WIDTH + NOISED_PACKED_START;
         trace.values[target] = <crate::Val as QuotientMap<u64>>::from_int(42);
-        let proof = prove::<AiPowStarkConfig, _>(&cfg, &CompositeFullAir, trace, &[]);
+        let pis = crate::composite_public::CompositePublicInputs::derive_from_matrix(&trace).to_vec();
+        let proof = prove::<AiPowStarkConfig, _>(&cfg, &CompositeFullAir, trace, &pis);
         assert!(
-            verify::<AiPowStarkConfig, _>(&cfg, &CompositeFullAir, &proof, &[]).is_err(),
+            verify::<AiPowStarkConfig, _>(&cfg, &CompositeFullAir, &proof, &pis).is_err(),
             "inconsistent NOISED_PACKED must reject"
         );
     }
@@ -292,8 +339,9 @@ mod tests {
             MIN_STARK_LEN * TOTAL_TRACE_WIDTH,
             "trace dimensions"
         );
-        let proof = prove::<AiPowStarkConfig, _>(&cfg, &CompositeFullAir, trace, &[]);
-        verify::<AiPowStarkConfig, _>(&cfg, &CompositeFullAir, &proof, &[])
+        let pis = crate::composite_public::CompositePublicInputs::derive_from_matrix(&trace).to_vec();
+        let proof = prove::<AiPowStarkConfig, _>(&cfg, &CompositeFullAir, trace, &pis);
+        verify::<AiPowStarkConfig, _>(&cfg, &CompositeFullAir, &proof, &pis)
             .expect("min-stark-len trace must verify");
     }
 
@@ -317,9 +365,10 @@ mod tests {
         // constraint forces row 1's CUMSUM = row 0's CUMSUM = 0.
         let target = 1 * TOTAL_TRACE_WIDTH + CUMSUM_TILE_START;
         trace.values[target] = <crate::Val as QuotientMap<u64>>::from_int(42);
-        let proof = prove::<AiPowStarkConfig, _>(&cfg, &CompositeFullAir, trace, &[]);
+        let pis = crate::composite_public::CompositePublicInputs::derive_from_matrix(&trace).to_vec();
+        let proof = prove::<AiPowStarkConfig, _>(&cfg, &CompositeFullAir, trace, &pis);
         assert!(
-            verify::<AiPowStarkConfig, _>(&cfg, &CompositeFullAir, &proof, &[]).is_err(),
+            verify::<AiPowStarkConfig, _>(&cfg, &CompositeFullAir, &proof, &pis).is_err(),
             "tampered CUMSUM_TILE in passthrough mode must reject"
         );
     }
@@ -339,9 +388,10 @@ mod tests {
         const STATE_W: usize = 264;
         let target = 0 * TOTAL_TRACE_WIDTH + BLAKE3_ROUND_START + STATE_W + 4;
         trace.values[target] = <crate::Val as QuotientMap<u64>>::from_int(2);
-        let proof = prove::<AiPowStarkConfig, _>(&cfg, &CompositeFullAir, trace, &[]);
+        let pis = crate::composite_public::CompositePublicInputs::derive_from_matrix(&trace).to_vec();
+        let proof = prove::<AiPowStarkConfig, _>(&cfg, &CompositeFullAir, trace, &pis);
         assert!(
-            verify::<AiPowStarkConfig, _>(&cfg, &CompositeFullAir, &proof, &[]).is_err(),
+            verify::<AiPowStarkConfig, _>(&cfg, &CompositeFullAir, &proof, &pis).is_err(),
             "non-boolean BLAKE3 state bit must reject"
         );
     }
@@ -359,8 +409,9 @@ mod tests {
         use crate::composite_layout::A_NOISED_UNPACK_START;
         let target = 1 * TOTAL_TRACE_WIDTH + A_NOISED_UNPACK_START;
         trace.values[target] = <crate::Val as QuotientMap<i64>>::from_int(100);
-        let proof = prove::<AiPowStarkConfig, _>(&cfg, &CompositeFullAir, trace, &[]);
-        verify::<AiPowStarkConfig, _>(&cfg, &CompositeFullAir, &proof, &[])
+        let pis = crate::composite_public::CompositePublicInputs::derive_from_matrix(&trace).to_vec();
+        let proof = prove::<AiPowStarkConfig, _>(&cfg, &CompositeFullAir, trace, &pis);
+        verify::<AiPowStarkConfig, _>(&cfg, &CompositeFullAir, &proof, &pis)
             .expect("change to A_NOISED_UNPACK in passthrough mode must verify");
     }
 }

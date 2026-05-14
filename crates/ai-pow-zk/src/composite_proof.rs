@@ -25,6 +25,7 @@
 
 use crate::circuit::{build_stark_config, AiPowStarkConfig, CircuitConfig};
 use crate::composite_full_air::CompositeFullAir;
+use crate::composite_public::CompositePublicInputs;
 use crate::composite_trace::CompositeTrace;
 use crate::params::ZkParams;
 
@@ -46,26 +47,35 @@ pub fn build_config(params: &ZkParams, profile: &CircuitConfig) -> AiPowStarkCon
     build_stark_config(params, profile)
 }
 
-/// Prove the composite AIR against a given trace.
+/// Prove the composite AIR against a given trace + public inputs.
 ///
 /// `trace` must be a [`CompositeTrace`] whose internal matrix has
 /// width [`crate::composite_layout::TOTAL_TRACE_WIDTH`] and height
-/// a power of 2 ≥ `MIN_STARK_LEN`. The returned [`Proof`] can be
-/// serialised via [`bincode`] for transport.
+/// a power of 2 ≥ `MIN_STARK_LEN`. `public_inputs` must match the
+/// trace's last-row CUMSUM_TILE / JACKPOT_MSG cells — the AIR
+/// enforces this binding.
+///
+/// The returned [`Proof`] can be serialised via [`bincode`] for
+/// transport.
 pub fn composite_prove(
     config: &AiPowStarkConfig,
     trace: CompositeTrace,
+    public_inputs: &CompositePublicInputs,
 ) -> Proof<AiPowStarkConfig> {
-    prove::<AiPowStarkConfig, _>(config, &CompositeFullAir, trace.matrix, &[])
+    let pis = public_inputs.to_vec();
+    prove::<AiPowStarkConfig, _>(config, &CompositeFullAir, trace.matrix, &pis)
 }
 
-/// Verify a composite proof. Returns `Ok(())` if valid; otherwise
-/// a [`CompositeVerificationError`] describing the failure.
+/// Verify a composite proof against the claimed public inputs.
+/// Returns `Ok(())` if valid; otherwise a
+/// [`CompositeVerificationError`] describing the failure.
 pub fn composite_verify(
     config: &AiPowStarkConfig,
     proof: &Proof<AiPowStarkConfig>,
+    public_inputs: &CompositePublicInputs,
 ) -> Result<(), CompositeVerificationError> {
-    verify::<AiPowStarkConfig, _>(config, &CompositeFullAir, proof, &[])
+    let pis = public_inputs.to_vec();
+    verify::<AiPowStarkConfig, _>(config, &CompositeFullAir, proof, &pis)
 }
 
 #[allow(dead_code)]
@@ -90,9 +100,9 @@ mod tests {
     fn composite_prove_verify_round_trip() {
         let cfg = build_config(&test_zk_params(), &CircuitConfig::TEST_PEARL);
         let trace = CompositeTrace::baseline_min();
-        let proof = composite_prove(&cfg, trace);
-        composite_verify(&cfg, &proof)
-            .expect("composite proof must verify");
+        let pis = CompositePublicInputs::derive_from_trace(&trace);
+        let proof = composite_prove(&cfg, trace, &pis);
+        composite_verify(&cfg, &proof, &pis).expect("composite proof must verify");
     }
 
     #[test]
@@ -105,7 +115,8 @@ mod tests {
 
         let cfg = build_config(&test_zk_params(), &CircuitConfig::TEST_PEARL);
         let trace = CompositeTrace::baseline_min();
-        let proof = composite_prove(&cfg, trace);
+        let pis = CompositePublicInputs::derive_from_trace(&trace);
+        let proof = composite_prove(&cfg, trace, &pis);
 
         let encoded =
             bincode::serde::encode_to_vec(&proof, bincode_standard()).expect("encode");
@@ -114,7 +125,7 @@ mod tests {
             bincode_standard(),
         )
         .expect("decode");
-        composite_verify(&cfg, &decoded).expect("decoded proof verifies");
+        composite_verify(&cfg, &decoded, &pis).expect("decoded proof verifies");
     }
 
     /// Two proofs over baseline traces of different sizes both
@@ -125,13 +136,99 @@ mod tests {
         let cfg = build_config(&test_zk_params(), &CircuitConfig::TEST_PEARL);
 
         let trace_small = CompositeTrace::baseline_min();
-        let p_small = composite_prove(&cfg, trace_small);
-        composite_verify(&cfg, &p_small).expect("small proof");
+        let pis_small = CompositePublicInputs::derive_from_trace(&trace_small);
+        let p_small = composite_prove(&cfg, trace_small, &pis_small);
+        composite_verify(&cfg, &p_small, &pis_small).expect("small proof");
 
         let trace_big =
             CompositeTrace::baseline(crate::composite_layout::MIN_STARK_LEN * 2);
-        let p_big = composite_prove(&cfg, trace_big);
-        composite_verify(&cfg, &p_big).expect("big proof");
+        let pis_big = CompositePublicInputs::derive_from_trace(&trace_big);
+        let p_big = composite_prove(&cfg, trace_big, &pis_big);
+        composite_verify(&cfg, &p_big, &pis_big).expect("big proof");
+    }
+
+    // =================================================================
+    //  Public-input binding tests
+    // =================================================================
+
+    /// Tamper a PI element on the verifier side; verification
+    /// rejects (the AIR's `when_last_row` constraint forces the
+    /// trace's last-row CUMSUM_TILE to match `pis[0..4]`).
+    #[test]
+    fn verify_rejects_wrong_cumsum_pi() {
+        let cfg = build_config(&test_zk_params(), &CircuitConfig::TEST_PEARL);
+        let trace = CompositeTrace::baseline_min();
+        let pis = CompositePublicInputs::derive_from_trace(&trace);
+        let proof = composite_prove(&cfg, trace, &pis);
+
+        let mut bad_pis = pis.clone();
+        bad_pis.cumsum[0] = 42; // baseline has 0 everywhere; 42 is wrong.
+
+        assert!(
+            composite_verify(&cfg, &proof, &bad_pis).is_err(),
+            "wrong CUMSUM PI must reject"
+        );
+    }
+
+    /// Tamper a JACKPOT PI element on the verifier side.
+    #[test]
+    fn verify_rejects_wrong_jackpot_pi() {
+        let cfg = build_config(&test_zk_params(), &CircuitConfig::TEST_PEARL);
+        let trace = CompositeTrace::baseline_min();
+        let pis = CompositePublicInputs::derive_from_trace(&trace);
+        let proof = composite_prove(&cfg, trace, &pis);
+
+        let mut bad_pis = pis.clone();
+        bad_pis.jackpot[5] = 0xDEAD_BEEF;
+
+        assert!(
+            composite_verify(&cfg, &proof, &bad_pis).is_err(),
+            "wrong JACKPOT PI must reject"
+        );
+    }
+
+    /// Build a trace with threaded non-zero cumsum + jackpot;
+    /// PIs derived from it; prove + verify succeeds.
+    #[test]
+    fn prove_verify_with_threaded_state() {
+        let cfg = build_config(&test_zk_params(), &CircuitConfig::TEST_PEARL);
+        let mut trace = CompositeTrace::baseline_min();
+        // Thread a non-zero state through to the last row.
+        trace.fill_cumsum_passthrough(0, &[1, -2, 3, -4]);
+        let jp: [u32; 16] = core::array::from_fn(|i| (i as u32 + 1) * 0x12345);
+        trace.fill_jackpot_passthrough(0, &jp);
+
+        let pis = CompositePublicInputs::derive_from_trace(&trace);
+        assert_eq!(pis.cumsum, [1, -2, 3, -4]);
+        assert_eq!(pis.jackpot, jp);
+
+        let proof = composite_prove(&cfg, trace, &pis);
+        composite_verify(&cfg, &proof, &pis)
+            .expect("threaded-state proof must verify with matching PIs");
+    }
+
+    /// PIs are part of the verification call, so swapping a
+    /// proof's PIs for another proof's still rejects.
+    #[test]
+    fn verify_rejects_pi_substitution_across_proofs() {
+        let cfg = build_config(&test_zk_params(), &CircuitConfig::TEST_PEARL);
+
+        // Proof A: baseline trace + zero PIs.
+        let trace_a = CompositeTrace::baseline_min();
+        let pis_a = CompositePublicInputs::derive_from_trace(&trace_a);
+        let proof_a = composite_prove(&cfg, trace_a, &pis_a);
+
+        // Proof B: threaded state + non-zero PIs.
+        let mut trace_b = CompositeTrace::baseline_min();
+        trace_b.fill_cumsum_passthrough(0, &[1, 1, 1, 1]);
+        let pis_b = CompositePublicInputs::derive_from_trace(&trace_b);
+        let _proof_b = composite_prove(&cfg, trace_b, &pis_b);
+
+        // Verifying proof A against B's PIs must reject.
+        assert!(
+            composite_verify(&cfg, &proof_a, &pis_b).is_err(),
+            "proof A with B's PIs must reject"
+        );
     }
 
     /// PROD-shape bench. Ignored by default — run with
@@ -150,13 +247,14 @@ mod tests {
     fn composite_proof_prod_bench() {
         let cfg = build_config(&test_zk_params(), &CircuitConfig::PROD);
         let trace = CompositeTrace::baseline_min();
+        let pis = CompositePublicInputs::derive_from_trace(&trace);
 
         let t0 = std::time::Instant::now();
-        let proof = composite_prove(&cfg, trace);
+        let proof = composite_prove(&cfg, trace, &pis);
         let prove_ms = t0.elapsed().as_millis();
 
         let t1 = std::time::Instant::now();
-        composite_verify(&cfg, &proof).expect("PROD verify");
+        composite_verify(&cfg, &proof, &pis).expect("PROD verify");
         let verify_ms = t1.elapsed().as_millis();
 
         // Serialise to measure proof size.
