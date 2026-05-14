@@ -784,6 +784,71 @@ mod tests {
         );
     }
 
+    /// Three-chip integration: a BLAKE3 hash (rows 0..7), a 2-step
+    /// matmul chain (rows 8..9), and a 2-step jackpot chain (rows
+    /// 10..11). Each chip family is active on disjoint row
+    /// ranges; the composite AIR enforces all three sets of
+    /// constraints simultaneously. End-to-end verification proves
+    /// the wiring is sound across chip families.
+    #[test]
+    fn three_chip_integration_verifies() {
+        use crate::composite_layout::TILE_D;
+
+        let cfg = build_stark_config(&test_zk_params(), &CircuitConfig::TEST_PEARL);
+        let mut trace = CompositeTrace::baseline_min();
+
+        // (a) BLAKE3 hash at rows 0..7.
+        let cv: [u32; 8] = core::array::from_fn(|i| BLAKE3_IV[i]);
+        let msg: [u32; 16] = core::array::from_fn(|i| (i as u32 + 1) * 0xABCDEF);
+        let tweak = Blake3Tweak {
+            counter_low: 42,
+            counter_high: 0,
+            block_len: 64,
+            flags: 0x1B,
+        };
+        let _ = trace.place_blake3_hash(0, &msg, &cv, &tweak);
+
+        // (b) Matmul step chain at rows 8..9.
+        let mut a = [[0i8; TILE_D]; crate::composite_layout::TILE_H];
+        let mut b = [[0i8; TILE_D]; crate::composite_layout::TILE_H];
+        for d in 0..TILE_D {
+            a[0][d] = (d as i8) - 8;
+            a[1][d] = ((d as i8) * 7) % 11 - 5;
+            b[0][d] = ((d as i8) * 3) % 5 - 2;
+            b[1][d] = ((d as i8) + 5) % 9 - 4;
+        }
+        let zero_cumsum: [i32; CUMSUM_LEN] = [0; CUMSUM_LEN];
+        let cumsum_after_reset =
+            trace.place_matmul_step(8, &a, &b, true, false, &zero_cumsum);
+        let cumsum_final =
+            trace.place_matmul_step(9, &a, &b, false, true, &cumsum_after_reset);
+
+        // (c) Jackpot step chain at rows 10..11. The initial
+        //     jackpot state must be present on every row before
+        //     the first active step (rows 0..9 here) so the
+        //     cross-row passthrough constraint `nxt = cur` holds
+        //     across the row-9 → row-10 boundary.
+        let initial_jackpot: [u32; JACKPOT_SIZE] =
+            core::array::from_fn(|i| 0xDEAD_0000 + i as u32);
+        trace.fill_jackpot_passthrough(0, &initial_jackpot);
+
+        let jackpot_after_step1 =
+            trace.place_jackpot_step(10, &initial_jackpot, 5, 0xCAFE_BABE, true);
+        let jackpot_final =
+            trace.place_jackpot_step(11, &jackpot_after_step1, 12, 0xF00D_F00D, true);
+
+        // (d) Thread both accumulators through the rest of the trace.
+        // For matmul: rows 10..N hold the final cumsum value.
+        trace.fill_cumsum_passthrough(10, &cumsum_final);
+        // For jackpot: rows 12..N hold the post-step-2 state.
+        trace.fill_jackpot_passthrough(12, &jackpot_final);
+
+        let proof =
+            prove::<AiPowStarkConfig, _>(&cfg, &CompositeFullAir, trace.matrix, &[]);
+        verify::<AiPowStarkConfig, _>(&cfg, &CompositeFullAir, &proof, &[])
+            .expect("three-chip composite trace must verify");
+    }
+
     /// Combined trace: a BLAKE3 hash at rows 0..7, then a 2-step
     /// matmul chain at rows 8..10, then passthrough. Tests that
     /// the composite AIR enforces *both* chip families' constraints

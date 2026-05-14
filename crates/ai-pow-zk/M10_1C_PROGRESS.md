@@ -56,10 +56,12 @@ When Plonky3 doesn't have a direct primitive (e.g. Pearl's
 | 14b | LogUp-aware folder swap (proving-side interaction wiring) | ⬜ pending | | |
 | 15 | PROD bench at MIN_STARK_LEN baseline (ignored) | ✅ landed | 1 ignored | 328 unit + 1 ignored |
 
-**Today's cumulative test count: 335 unit + 7 KAT + 1 ignored
+**Today's cumulative test count: 336 unit + 7 KAT + 1 ignored
 PROD bench. Phase 12 + Phase 13 complete: all 10 chips wired into
 the composite AIR; the composite trace supports placing all three
-instruction types (matmul, BLAKE3, jackpot).**
+instruction types (matmul, BLAKE3, jackpot); a three-chip
+integration test exercises all three families simultaneously in
+one trace.**
 
 ## Properties validated per phase
 
