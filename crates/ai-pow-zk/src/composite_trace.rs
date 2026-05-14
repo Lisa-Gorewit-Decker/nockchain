@@ -637,6 +637,50 @@ mod tests {
         );
     }
 
+    /// Combined trace: a BLAKE3 hash at rows 0..7, then a 2-step
+    /// matmul chain at rows 8..10, then passthrough. Tests that
+    /// the composite AIR enforces *both* chip families' constraints
+    /// simultaneously without cross-talk.
+    #[test]
+    fn blake3_then_matmul_combined_verifies() {
+        use crate::composite_layout::TILE_D;
+
+        let cfg = build_stark_config(&test_zk_params(), &CircuitConfig::TEST_PEARL);
+        let mut trace = CompositeTrace::baseline_min();
+
+        // BLAKE3 hash at rows 0..7.
+        let cv: [u32; 8] = core::array::from_fn(|i| BLAKE3_IV[i]);
+        let msg: [u32; 16] = core::array::from_fn(|i| (i as u32 + 1) * 0xCAFE);
+        let tweak = Blake3Tweak {
+            counter_low: 7,
+            counter_high: 0,
+            block_len: 64,
+            flags: 0x1B,
+        };
+        let _ = trace.place_blake3_hash(0, &msg, &cv, &tweak);
+
+        // Matmul at rows 8..9.
+        let mut a = [[0i8; TILE_D]; crate::composite_layout::TILE_H];
+        let mut b = [[0i8; TILE_D]; crate::composite_layout::TILE_H];
+        for d in 0..TILE_D {
+            a[0][d] = (d as i8 + 1) % 7;
+            a[1][d] = ((d as i8) * 2) % 5 - 2;
+            b[0][d] = ((d as i8 + 1) % 3) - 1;
+            b[1][d] = ((d as i8 + 2) % 4) - 1;
+        }
+        let zero: [i32; CUMSUM_LEN] = [0; CUMSUM_LEN];
+        let after_reset = trace.place_matmul_step(8, &a, &b, true, false, &zero);
+        let after_update = trace.place_matmul_step(9, &a, &b, false, true, &after_reset);
+
+        // Thread the final cumsum through all subsequent rows.
+        trace.fill_cumsum_passthrough(10, &after_update);
+
+        let proof =
+            prove::<AiPowStarkConfig, _>(&cfg, &CompositeFullAir, trace.matrix, &[]);
+        verify::<AiPowStarkConfig, _>(&cfg, &CompositeFullAir, &proof, &[])
+            .expect("combined BLAKE3 + matmul trace must verify");
+    }
+
     /// Tamper a matmul step's input — the chain breaks because
     /// the cross-row cumsum constraint depends on the dot product.
     #[test]
