@@ -58,13 +58,15 @@ use crate::chips::i8u8::I8U8Chip;
 use crate::chips::matmul::compute::{compute_row, CUMSUM_LEN};
 use crate::chips::range_table::{IRange7P1Chip, IRange8Chip, URange13Chip, URange8Chip};
 use crate::composite_layout::{
-    AB_ID_LIMBS_LEN, AB_ID_LIMBS_START, A_NOISED_UNPACK_LEN, A_NOISED_UNPACK_START,
-    BIT_REG_START, BLAKE3_CV_START, BLAKE3_MSG_START, BLAKE3_ROUND_START, B_NOISED_UNPACK_LEN,
-    B_NOISED_UNPACK_START, CUMSUM_TILE_START, CV_OR_TWEAK_PREP, CV_OUT_START, I8U8_FREQ,
-    IRANGE7P1_FREQ, IRANGE8_FREQ, IS_MSG_MAT, JACKPOT_MSG_START, JACKPOT_SIZE,
-    JACKPOT_SLOT_SEL_START, JACKPOT_X_BITS_START, MAT_ID_LIMBS_LEN, MAT_ID_LIMBS_START,
-    MAT_UNPACK_LEN, MAT_UNPACK_START, NOISE_UNPACK_LEN, NOISE_UNPACK_START, STARK_ROW_IDX,
-    TILE_D, TILE_H, TOTAL_TRACE_WIDTH, UINT8_DATA_LEN, UINT8_DATA_START, URANGE13_FREQ,
+    AB_ID_LIMBS_LEN, AB_ID_LIMBS_START, A_ID, A_NOISED_START, A_NOISED_UNPACK_LEN,
+    A_NOISED_UNPACK_START, BIT_REG_START, BLAKE3_CV_START, BLAKE3_MSG_START,
+    BLAKE3_ROUND_START, B_ID, B_NOISED_START, B_NOISED_UNPACK_LEN, B_NOISED_UNPACK_START,
+    CUMSUM_TILE_START, CV_OR_TWEAK_PREP, CV_OUT_START, I8U8_FREQ, IRANGE7P1_FREQ,
+    IRANGE8_FREQ, IS_MSG_MAT, IS_RESET_CUMSUM, IS_UPDATE_CUMSUM, JACKPOT_MSG_START,
+    JACKPOT_SIZE, JACKPOT_SLOT_SEL_START, JACKPOT_X_BITS_START, MAT_FREQ, MAT_ID,
+    MAT_ID_LIMBS_LEN, MAT_ID_LIMBS_START, MAT_UNPACK_LEN, MAT_UNPACK_START,
+    NOISED_PACKED_START, NOISE_UNPACK_LEN, NOISE_UNPACK_START, STARK_ROW_IDX, TILE_D,
+    TILE_H, TOTAL_TRACE_WIDTH, UINT8_DATA_LEN, UINT8_DATA_START, URANGE13_FREQ,
     URANGE8_FREQ,
 };
 use crate::Val;
@@ -734,6 +736,72 @@ impl CompositeTrace {
         }
         for v in 256.min(n)..n {
             self.matrix.values[v * TOTAL_TRACE_WIDTH + I8U8_FREQ] = Val::default();
+        }
+
+        // ---- NOISED_PACKED RAM-lookup bus ----
+        //
+        // Table side: row r emits key (MAT_ID[r], NOISED_PACKED[r..r+2]).
+        // Query side: matmul-active row emits keys
+        //   (A_ID[r], A_NOISED[r..r+2])
+        //   (B_ID[r], B_NOISED[r..r+2])
+        // We walk all matmul-active rows, find matching table
+        // rows by key, and increment MAT_FREQ.
+        //
+        // Strategy: build a hashmap (Vec<Val>, row_idx) → first
+        // table row index. For each query, look up the key; if
+        // present, increment MAT_FREQ at that row. Multiple table
+        // rows may share the same key — we route the multiplicity
+        // to the FIRST such row (any choice would work for LogUp
+        // balance as long as the sum across all matching rows
+        // equals the query count, but a single-row assignment
+        // simplifies the trace generator).
+        let mut mat_freq = vec![0u64; n];
+        let mut key_to_first_row: hashbrown::HashMap<(u64, u64, u64), usize> =
+            hashbrown::HashMap::new();
+        for r in 0..n {
+            let base = r * TOTAL_TRACE_WIDTH;
+            let key = (
+                self.matrix.values[base + MAT_ID].as_canonical_u64(),
+                self.matrix.values[base + NOISED_PACKED_START].as_canonical_u64(),
+                self.matrix.values[base + NOISED_PACKED_START + 1].as_canonical_u64(),
+            );
+            key_to_first_row.entry(key).or_insert(r);
+        }
+        for r in 0..n {
+            let base = r * TOTAL_TRACE_WIDTH;
+            let is_reset =
+                self.matrix.values[base + IS_RESET_CUMSUM].as_canonical_u64();
+            let is_update =
+                self.matrix.values[base + IS_UPDATE_CUMSUM].as_canonical_u64();
+            let active = is_reset + is_update;
+            if active == 0 {
+                continue;
+            }
+            // A-side read.
+            let a_key = (
+                self.matrix.values[base + A_ID].as_canonical_u64(),
+                self.matrix.values[base + A_NOISED_START].as_canonical_u64(),
+                self.matrix.values[base + A_NOISED_START + 1].as_canonical_u64(),
+            );
+            if let Some(&tr) = key_to_first_row.get(&a_key) {
+                mat_freq[tr] += active;
+            }
+            // B-side read.
+            let b_key = (
+                self.matrix.values[base + B_ID].as_canonical_u64(),
+                self.matrix.values[base + B_NOISED_START].as_canonical_u64(),
+                self.matrix.values[base + B_NOISED_START + 1].as_canonical_u64(),
+            );
+            if let Some(&tr) = key_to_first_row.get(&b_key) {
+                mat_freq[tr] += active;
+            }
+            // Queries with no matching table key contribute
+            // nothing to MAT_FREQ → bus is unbalanced → LogUp
+            // rejects at proof time.
+        }
+        for r in 0..n {
+            self.matrix.values[r * TOTAL_TRACE_WIDTH + MAT_FREQ] =
+                <Val as QuotientMap<u64>>::from_int(mat_freq[r]);
         }
     }
 

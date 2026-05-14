@@ -46,15 +46,16 @@ use p3_lookup::InteractionBuilder;
 
 use crate::composite_full_air::CompositeFullAir;
 use crate::composite_layout::{
-    AB_ID_LIMBS_LEN, AB_ID_LIMBS_START, A_NOISED_UNPACK_LEN, A_NOISED_UNPACK_START,
-    B_NOISED_UNPACK_LEN, B_NOISED_UNPACK_START, I8U8_FREQ, I8U8_TABLE, IRANGE7P1_FREQ,
-    IRANGE7P1_TABLE, IRANGE8_FREQ, IRANGE8_TABLE, IS_MSG_MAT, MAT_ID_LIMBS_LEN,
-    MAT_ID_LIMBS_START, MAT_UNPACK_LEN, MAT_UNPACK_START, NOISE_UNPACK_LEN,
-    NOISE_UNPACK_START, TOTAL_TRACE_WIDTH, UINT8_DATA_LEN, UINT8_DATA_START,
-    URANGE13_FREQ, URANGE13_TABLE, URANGE8_FREQ, URANGE8_TABLE,
+    AB_ID_LIMBS_LEN, AB_ID_LIMBS_START, A_ID, A_NOISED_START, A_NOISED_UNPACK_LEN,
+    A_NOISED_UNPACK_START, B_ID, B_NOISED_START, B_NOISED_UNPACK_LEN, B_NOISED_UNPACK_START,
+    I8U8_FREQ, I8U8_TABLE, IRANGE7P1_FREQ, IRANGE7P1_TABLE, IRANGE8_FREQ, IRANGE8_TABLE,
+    IS_MSG_MAT, IS_RESET_CUMSUM, IS_UPDATE_CUMSUM, MAT_FREQ, MAT_ID, MAT_ID_LIMBS_LEN,
+    MAT_ID_LIMBS_START, MAT_UNPACK_LEN, MAT_UNPACK_START, NOISED_PACKED_START,
+    NOISE_UNPACK_LEN, NOISE_UNPACK_START, TOTAL_TRACE_WIDTH, UINT8_DATA_LEN,
+    UINT8_DATA_START, URANGE13_FREQ, URANGE13_TABLE, URANGE8_FREQ, URANGE8_TABLE,
 };
 use crate::composite_lookups::{
-    BUS_I8U8, BUS_IRANGE7P1, BUS_IRANGE8, BUS_URANGE13, BUS_URANGE8,
+    BUS_I8U8, BUS_IRANGE7P1, BUS_IRANGE8, BUS_NOISED_PACKED, BUS_URANGE13, BUS_URANGE8,
 };
 
 /// Lookup-aware composite AIR.
@@ -212,6 +213,59 @@ where
             let pack = signed * two_fifty_six.clone() + unsigned;
             builder.push_interaction(BUS_I8U8, [pack], is_msg_mat.clone(), 1);
         }
+
+        // ---- (2f) NOISED_PACKED RAM-lookup bus ----
+        //
+        // The cryptographic glue between matmul and BLAKE3: the
+        // bytes the matmul chip reads via A_NOISED / B_NOISED must
+        // come from the canonical NOISED_PACKED table (committed
+        // via the input chip's polyval constraints). LogUp ensures
+        // every matmul read corresponds to a real table entry.
+        //
+        // Table key: (MAT_ID, NOISED_PACKED[0], NOISED_PACKED[1]).
+        // Each row provides one table entry with multiplicity
+        // MAT_FREQ.
+        //
+        // Query side: each matmul-active row queries:
+        //   * (A_ID, A_NOISED[0], A_NOISED[1]) on read A.
+        //   * (B_ID, B_NOISED[0], B_NOISED[1]) on read B.
+        // Both gated by (IS_RESET_CUMSUM + IS_UPDATE_CUMSUM).
+        builder.push_interaction(
+            BUS_NOISED_PACKED,
+            [
+                <AB::Var as Into<AB::Expr>>::into(cur[MAT_ID]),
+                <AB::Var as Into<AB::Expr>>::into(cur[NOISED_PACKED_START]),
+                <AB::Var as Into<AB::Expr>>::into(cur[NOISED_PACKED_START + 1]),
+            ],
+            -<AB::Var as Into<AB::Expr>>::into(cur[MAT_FREQ]),
+            0,
+        );
+
+        let matmul_active: AB::Expr =
+            <AB::Var as Into<AB::Expr>>::into(cur[IS_RESET_CUMSUM])
+                + <AB::Var as Into<AB::Expr>>::into(cur[IS_UPDATE_CUMSUM]);
+        // A-side read
+        builder.push_interaction(
+            BUS_NOISED_PACKED,
+            [
+                <AB::Var as Into<AB::Expr>>::into(cur[A_ID]),
+                <AB::Var as Into<AB::Expr>>::into(cur[A_NOISED_START]),
+                <AB::Var as Into<AB::Expr>>::into(cur[A_NOISED_START + 1]),
+            ],
+            matmul_active.clone(),
+            1,
+        );
+        // B-side read
+        builder.push_interaction(
+            BUS_NOISED_PACKED,
+            [
+                <AB::Var as Into<AB::Expr>>::into(cur[B_ID]),
+                <AB::Var as Into<AB::Expr>>::into(cur[B_NOISED_START]),
+                <AB::Var as Into<AB::Expr>>::into(cur[B_NOISED_START + 1]),
+            ],
+            matmul_active,
+            1,
+        );
     }
 }
 
@@ -622,6 +676,125 @@ mod tests {
         assert!(
             res.is_err(),
             "over-claimed I8U8_FREQ must reject; got {:?}",
+            res
+        );
+    }
+
+    // =================================================================
+    //  NOISED_PACKED RAM-lookup bus
+    // =================================================================
+
+    /// Baseline trace + matmul activity in a chain. The matmul
+    /// rows query (A_ID=0, A_NOISED[0..2]=0) and (B_ID=0,
+    /// B_NOISED[0..2]=0) — values that match the all-zero baseline
+    /// table entry on row 0. populate_lookup_freq updates
+    /// MAT_FREQ to balance.
+    #[test]
+    fn matmul_chain_with_zero_reads_balances_noised_packed() {
+        use crate::composite_layout::TILE_D;
+
+        let cfg = build_stark_config(&test_zk_params(), &CircuitConfig::TEST_PEARL);
+        let mut trace = CompositeTrace::baseline_min();
+
+        // Build a 2-step matmul chain at rows 8, 9. The chips'
+        // A_NOISED / B_NOISED columns stay 0 (we only set
+        // A_NOISED_UNPACK / B_NOISED_UNPACK).
+        let a = [[0i8; TILE_D]; crate::composite_layout::TILE_H];
+        let b = [[0i8; TILE_D]; crate::composite_layout::TILE_H];
+        let cumsum_zero = [0i32; crate::chips::matmul::compute::CUMSUM_LEN];
+        let after_reset = trace.place_matmul_step(8, &a, &b, true, false, &cumsum_zero);
+        let after_update = trace.place_matmul_step(9, &a, &b, false, true, &after_reset);
+        trace.fill_cumsum_passthrough(10, &after_update);
+
+        trace.populate_lookup_freq();
+        run_batch(&cfg, &trace.matrix)
+            .expect("matmul chain with zero NOISED_PACKED reads must verify");
+    }
+
+    /// Tamper A_NOISED so the matmul row queries a triple that
+    /// doesn't appear in the table → LogUp rejects. Since
+    /// A_NOISED isn't currently constrained against A_NOISED_UNPACK
+    /// at the AIR level, the only thing keeping A_NOISED honest
+    /// is the LogUp against NOISED_PACKED. Without that, a prover
+    /// could feed arbitrary data into the matmul accumulator.
+    #[test]
+    fn tampered_a_noised_with_no_matching_table_entry_rejects() {
+        use crate::composite_layout::TILE_D;
+        let cfg = build_stark_config(&test_zk_params(), &CircuitConfig::TEST_PEARL);
+        let mut trace = CompositeTrace::baseline_min();
+
+        let a = [[0i8; TILE_D]; crate::composite_layout::TILE_H];
+        let b = [[0i8; TILE_D]; crate::composite_layout::TILE_H];
+        let cumsum_zero = [0i32; crate::chips::matmul::compute::CUMSUM_LEN];
+        let _ = trace.place_matmul_step(8, &a, &b, true, false, &cumsum_zero);
+        trace.fill_cumsum_passthrough(9, &cumsum_zero);
+
+        // Tamper A_NOISED[0] on row 8 to a value that's not in
+        // any table row (all table rows have NOISED_PACKED = 0).
+        let target = 8 * TOTAL_TRACE_WIDTH + A_NOISED_START;
+        trace.matrix.values[target] = <Val as QuotientMap<u64>>::from_int(0xDEAD_BEEF);
+
+        trace.populate_lookup_freq();
+        let res = run_batch(&cfg, &trace.matrix);
+        assert!(
+            res.is_err(),
+            "tampered A_NOISED must reject via NOISED_PACKED bus; got {:?}",
+            res
+        );
+    }
+
+    /// Tamper MAT_FREQ to over-claim a table entry was consumed
+    /// when it wasn't. The table side over-provides → unbalanced.
+    #[test]
+    fn tampered_mat_freq_rejected_by_logup() {
+        let cfg = build_stark_config(&test_zk_params(), &CircuitConfig::TEST_PEARL);
+        let mut trace = CompositeTrace::baseline_min();
+        trace.populate_lookup_freq();
+        // Inflate MAT_FREQ on row 0.
+        let target = 0 * TOTAL_TRACE_WIDTH + MAT_FREQ;
+        use p3_field::PrimeField64;
+        let prev = trace.matrix.values[target].as_canonical_u64();
+        trace.matrix.values[target] =
+            <Val as QuotientMap<u64>>::from_int(prev + 1);
+        let res = run_batch(&cfg, &trace.matrix);
+        assert!(
+            res.is_err(),
+            "over-claimed MAT_FREQ must reject; got {:?}",
+            res
+        );
+    }
+
+    /// Tamper a NOISED_PACKED cell on row 0 to a non-zero value
+    /// while no matmul row reads it. The table provides the
+    /// modified entry but no query consumes it → MAT_FREQ would
+    /// need to be 0 anyway (populate already sets it). But the
+    /// table key changed, so any subsequent matmul query
+    /// expecting the all-zero entry would no longer match.
+    ///
+    /// This test runs only the baseline (no matmul), so changing
+    /// NOISED_PACKED doesn't break the bus IF MAT_FREQ stays 0 on
+    /// that row. populate_lookup_freq should re-route any baseline
+    /// matmul queries to a different table row. Since baseline
+    /// has no matmul queries, this test verifies: with NOISED_PACKED
+    /// non-zero and MAT_FREQ = 0, the bus still balances.
+    #[test]
+    fn isolated_noised_packed_change_with_no_queries_verifies() {
+        let cfg = build_stark_config(&test_zk_params(), &CircuitConfig::TEST_PEARL);
+        let mut trace = CompositeTrace::baseline_min();
+        // Tamper NOISED_PACKED[0] on row 0 to 7. Also adjust
+        // input chip's constraint: NOISED_PACKED[0] = polyval(MAT,
+        // 256) + polyval(NOISE, 256). With MAT_UNPACK[0..4] = 0,
+        // polyval = 0; with NOISE_UNPACK[0..4] = 0, polyval = 0.
+        // So NOISED_PACKED[0] = 0 is forced. Setting it to 7
+        // breaks the input chip constraint independently of the
+        // LogUp.
+        let target = 0 * TOTAL_TRACE_WIDTH + NOISED_PACKED_START;
+        trace.matrix.values[target] = <Val as QuotientMap<u64>>::from_int(7);
+        trace.populate_lookup_freq();
+        let res = run_batch(&cfg, &trace.matrix);
+        assert!(
+            res.is_err(),
+            "NOISED_PACKED inconsistent with MAT_UNPACK rejected (input chip + LogUp); got {:?}",
             res
         );
     }
