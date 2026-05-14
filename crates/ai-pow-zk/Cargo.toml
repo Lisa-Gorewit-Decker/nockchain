@@ -45,6 +45,7 @@ itertools = "0.13"
 #     transitions inside the circuit so we don't have to re-prove BLAKE3
 #     by hand.
 p3-air = { git = "https://github.com/Plonky3/Plonky3.git" }
+p3-batch-stark = { git = "https://github.com/Plonky3/Plonky3.git" }
 p3-blake3-air = { git = "https://github.com/Plonky3/Plonky3.git" }
 p3-challenger = { git = "https://github.com/Plonky3/Plonky3.git" }
 p3-commit = { git = "https://github.com/Plonky3/Plonky3.git" }
@@ -52,6 +53,7 @@ p3-dft = { git = "https://github.com/Plonky3/Plonky3.git" }
 p3-field = { git = "https://github.com/Plonky3/Plonky3.git" }
 p3-fri = { git = "https://github.com/Plonky3/Plonky3.git" }
 p3-goldilocks = { git = "https://github.com/Plonky3/Plonky3.git" }
+p3-lookup = { git = "https://github.com/Plonky3/Plonky3.git" }
 p3-matrix = { git = "https://github.com/Plonky3/Plonky3.git" }
 p3-merkle-tree = { git = "https://github.com/Plonky3/Plonky3.git" }
 p3-symmetric = { git = "https://github.com/Plonky3/Plonky3.git" }
