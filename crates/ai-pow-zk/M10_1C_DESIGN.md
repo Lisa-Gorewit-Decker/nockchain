@@ -237,27 +237,139 @@ Phases 11–14 require all chips to exist.
 Plus tests at ~1:1 ratio = **~8,500 total lines** of new Plonky3
 code, spread across 15 phases.
 
-## Decision points to confirm before Phase 2
+## Locked decisions (user-confirmed)
 
-1. **Drop or keep the vendored Blake3KeyedAir?** The Pearl-style
-   chip is narrower and reused per round; the M10.1b chip is wider
-   but already lands. Recommend: **drop** the vendored chip from
-   the lib's public API (move to tests only as a byte-equivalence
-   reference) once the Pearl-style chip lands at parity.
-2. **Same matmul / jackpot chips as M9.1, or rewrite?** Pearl's
-   chip layout is different (uses MAT_ID for RAM lookups). Our
-   M9.1 composite_air's per-row structure is simpler but doesn't
-   fit the composite trace pattern. Recommend: **rewrite** the
-   matmul / jackpot chips Pearl-style so they share the composite
-   trace.
-3. **TEST profile.** Pearl's chip has degree-3 constraints
-   (`constraint_degree() -> 3`). Our TEST profile (log_blowup=1)
-   doesn't admit degree 3. Bump TEST to log_blowup=2 or define
-   a new TEST_M10_1C profile.
-4. **Block_commitment length.** Pearl's `BlockHeader` is fixed
-   size; `block_commitment` in our API is `&[u8]`. Pin a size
-   for the in-circuit `κ` derivation.
+1. **Vendored `Blake3KeyedAir` → reference only.** M10.1b's chip
+   stays in `src/blake3_chip/` and is kept for byte-equivalence
+   KAT testing during M10.1c development. The new Pearl-style
+   chip (one BLAKE3 round per row, ~1k cols) replaces it in the
+   public API. Tests will cross-check the two against each other
+   and against the `blake3` crate.
 
-Open question for the user before Phase 2 begins: **does this scope
-(8.5k lines, multi-session, ~1-2 MB proofs until M12 lands recursion)
-match your expectation?**
+2. **Skip Pearl's RAM-lookup architecture.** Pearl's
+   `NOISED_PACKED` RAM lookup amortizes over millions of tile-cell
+   outputs reusing the same matrix tile (4096² production shape).
+   At our MVP shape (single tile cell, k=16, 8 matmul rows, ≤ 32
+   matrix bytes per matrix), the lookup overhead would dominate
+   the trace-cell cost it's meant to save. Use **inline storage**:
+   matmul rows carry a/b values directly in dedicated columns, as
+   M9.1 does today. RAM lookups become worthwhile when scaling to
+   multi-tile-cell output (M10.2+).
+
+   The cryptographic linkage (matmul a-values ↔ BLAKE3 leaf input
+   bytes) is preserved by a **simpler LogUp lookup**: declare a
+   single virtual table holding the matrix bytes; both the matmul
+   columns and the BLAKE3 leaf input columns pull from it. Same
+   underlying multiset-equality argument, much less column
+   overhead.
+
+3. **New `CircuitConfig::TEST_PEARL` profile.** Pearl-style
+   chips have degree-3 constraints (Pearl pins
+   `constraint_degree() -> 3`). The existing `TEST` profile uses
+   `log_blowup = 1` which only admits degree-2 constraints. Add
+   `TEST_PEARL` with `log_blowup = 2, num_queries = 16, pow_bits =
+   0` — fast for round-trip tests while supporting the M10.1c
+   constraint set. `PROD` (`log_blowup = 3`) already handles
+   degree 3 with comfortable margin.
+
+4. **`block_commitment` pinned to 32 bytes = 8 × u32.** Matches
+   the Tip5 digest size we already use for Merkle commitments.
+   In-circuit κ derivation feeds the 32-byte block_commitment as
+   the first 8 u32s of the BLAKE3 message, with `params_tag` (also
+   32 bytes) as the next 8 u32s. Total 64-byte single-block message;
+   one BLAKE3 compression call. The lib's public API stays
+   `&[u8]` for back-compat, with `prove` / `verify` asserting
+   `block_commitment.len() == 32` up-front.
+
+5. **Recursion deferred.** Plonky3 doesn't ship a recursion ladder.
+   M12 picks up the proof-size compression separately; M10.1c lands
+   at Pearl's pre-recursion baseline (~1-2 MB at production shape).
+
+## Cross-chip linkage: the LogUp lookup that closes the PoUW gap
+
+The single most important LogUp in M10.1c is the matmul ↔ BLAKE3
+binding. Without RAM-lookup complexity, the lookup is:
+
+```text
+  Table T (virtual, declared per matrix):
+    one entry per byte of A (and per byte of B), each entry a
+    tuple (byte_index, byte_value).
+
+  Provers from T:
+    matmul chip — each `a[l]` column at matmul row s contributes
+                  (s*r + l, a_value).
+    blake3 chip — each input-byte column on the h_a-leaf rows
+                  contributes (byte_index_of_message, byte_value).
+
+  LogUp constraint: the two multisets agree on T.
+```
+
+This forces the matmul AIR and the BLAKE3 AIR to read the **same
+underlying bytes** — an adversary can't substitute fake matrices
+in matmul rows while feeding the real matrices to the BLAKE3 leaf
+rows. The lookup is degree-1 in the trace columns (just byte_index
++ byte_value pairs), so the constraint degree budget at
+`log_blowup = 2` accommodates it.
+
+For h_a / h_b we declare two separate virtual tables. Same shape.
+
+## Implementation phases
+
+Direct port of Pearl's structure. Each phase mirrors one of Pearl's
+files / chips and is independently testable.
+
+| Phase | Pearl reference | Plonky3 deliverable | Tests |
+|---|---|---|---|
+| **1** | (this doc) | design + phasing | docs commit |
+| **2** | `pearl_layout.rs` | `composite_layout.rs` (column-layout constants) + `CircuitConfig::TEST_PEARL` + `block_commitment` 32-byte pinning | const-pinning tests |
+| **3** | `chip/monotonic_increment.rs` | `stark_row` chip (`STARK_ROW_IDX` = 0, 1, 2, …) | round-trip prove/verify |
+| **4** | `chip/i8u8.rs`, `chip/{urange8, urange13, irange7p1, irange8}.rs`, `chip/input/` | range-table chips + `INPUT_CHIP` via `p3-lookup` | per-table KAT |
+| **5** | `chip/control_and_matid_packed.rs` (simplified — no MAT_ID) | `control_chip` unpacking selector bits from `CONTROL_PREP` | bitfield round-trip |
+| **6** | `pearl_preprocess.rs` (simplified) | preprocessed-trace generation (control + STARK_ROW_IDX only; no NOISE_PACKED_PREP because we skip RAM lookups) | golden traces |
+| **7** | `chip/blake3/blake3_compress.rs`, `logic.rs`, `blake3_layout.rs` | new `chip/blake3/` (one round per row, ~1k cols) | KAT cross-check vs `blake3` crate AND vs M10.1b reference vendored chip |
+| **8** | `chip/blake3/trace.rs`, `constraints.rs`, `program.rs` | trace gen + constraint eval | per-instruction round trip |
+| **9** | `chip/matmul/{logic, trace, constraints}.rs` (simplified — inline a/b, no MAT_ID) | new matmul chip (refactored from M9.1 to share the composite trace) | tile-correctness tests |
+| **10** | `chip/jackpot/{logic, trace, constraints, helper}.rs` | new jackpot chip (Pearl's name for our state chip) | rotate-XOR-13 tests |
+| **11** | `pearl_stark.rs::lookups` (subset — only range tables + matmul↔blake3 linkage; no RAM lookup) | `p3_lookup`-based lookup configuration | logUp round trip |
+| **12** | `pearl_air.rs` | top-level `composite_full_air.rs::eval` | end-to-end round trip |
+| **13** | `pearl_trace.rs` | top-level `composite_trace.rs` | trace generation per (PublicParams, PrivateParams) |
+| **14** | `pearl_stark.rs::generate_trace` | wire into `lib::prove` / `lib::verify` | full M10.1c integration test |
+| **15** | M11.1 follow-on | PROD bench full shape | report numbers vs Pearl baseline |
+
+Phases 1–10 are independent and can be parallelized.
+Phases 11–14 require all chips to exist.
+
+## Updated sizing estimate (with simplifications)
+
+Skipping RAM lookups + MAT_ID indexing trims the Plonky3 port:
+
+| Pearl file | Lines | Direct port estimate (after simplifications) |
+|---|---|---|
+| `pearl_layout.rs` | 91 | ~80 (no NOISED_PACKED, A_NOISED/B_NOISED, AB_ID, MAT_ID cols) |
+| `pearl_preprocess.rs` | (~250 src) | ~150 (no noise prep) |
+| `pearl_program.rs` | (~400 src) | ~300 |
+| `pearl_trace.rs` | 352 | ~350 |
+| `pearl_stark.rs` | ~250 | ~250 (fewer lookups) |
+| `pearl_air.rs` | 113 | ~120 |
+| `chip/blake3/` | 1,500 | ~1,500 (full port — load-bearing) |
+| `chip/matmul/` | 232 | ~200 (no MAT_ID RAM, simpler) |
+| `chip/jackpot/` | 295 | ~300 |
+| `chip/input/` + range chips + I8U8 | 200 | ~250 |
+| `chip/control_and_matid_packed.rs` | 132 | ~100 (no MAT_ID packing) |
+| `chip/monotonic_increment.rs` | 49 | ~50 |
+| `utils/` | 583 | ~150 |
+| **Total Plonky3 port** | | **~3,800 lines** |
+
+Plus tests at ~1:1 = **~7,500 lines** of new code, spread across
+15 phases. Down from 8,500 thanks to skipping the RAM-lookup
+architecture.
+
+## Performance budget (unchanged from previous draft)
+
+| Metric | Pearl (pre-recursion) | Pearl (post-recursion) | Plonky3 port (M10.1c) | Notes |
+|---|---|---|---|---|
+| Trace width | ~1.3k cols | (recursive) | ~1.2k cols (slightly narrower w/o RAM cols) | one-round-per-row BLAKE3 keeps this narrow |
+| Trace height | ≥ 8192 rows | (recursive) | ≥ 8192 rows | same minimum |
+| Prove time | seconds | ~30 s end-to-end | seconds (target) | similar |
+| Verify time | ms | ~50 ms | ms (target) | similar |
+| Proof size | ~1–2 MB | ~60 KB | ~1–2 MB | **recursion gap → M12** |

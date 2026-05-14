@@ -84,6 +84,30 @@ impl CircuitConfig {
         pow_bits: 0,
         num_queries: 8,
     };
+
+    /// Test profile for the M10.1c Pearl-style composite AIR.
+    ///
+    /// Pearl pins `constraint_degree = 3` (see
+    /// `pearl/zk-pow/src/circuit/pearl_stark.rs:208-210`); the M10.1c
+    /// composite chip set inherits that degree budget because per-chip
+    /// constraints get multiplied by a `is_<chip>` boolean selector
+    /// before firing. Selectors are degree 1; chip-internal constraints
+    /// are degree 2; gated constraints reach degree 3.
+    ///
+    /// `log_blowup = 1` (the standard [`TEST`] profile) only admits
+    /// degree-2 constraints (quotient degree `< 2^log_blowup = 2`).
+    /// `TEST_PEARL` bumps to `log_blowup = 2` so degree-3 constraints
+    /// fit while keeping tests fast.
+    ///
+    /// `num_queries = 16` gives ~16 bits of provable soundness — still
+    /// non-cryptographic, intended for round-trip / tamper-detection
+    /// tests. `PROD` (`log_blowup = 3, num_queries = 80`) handles the
+    /// real 120-bit-soundness PoUW verification.
+    pub const TEST_PEARL: Self = Self {
+        log_blowup: 2,
+        pow_bits: 0,
+        num_queries: 16,
+    };
 }
 
 // =====================================================================
@@ -547,6 +571,23 @@ mod tests {
     #[test]
     fn build_stark_config_test_assembles() {
         let cfg = build_stark_config(&sample_zk_params(), &CircuitConfig::TEST);
+        let _ = cfg.clone();
+    }
+
+    /// M10.1c smoke test: TEST_PEARL profile assembles and admits a
+    /// log_blowup ≥ 2 quotient budget (needed for Pearl's degree-3
+    /// constraints when chip evals are gated by a degree-1 selector).
+    #[test]
+    fn build_stark_config_test_pearl_assembles() {
+        let pearl = CircuitConfig::TEST_PEARL;
+        assert_eq!(pearl.log_blowup, 2);
+        assert_eq!(pearl.pow_bits, 0);
+        assert!(pearl.num_queries >= 8);
+        // quotient_degree ≤ 2^log_blowup, so the budget admits
+        // constraint_degree − 1 = 2 → constraint_degree = 3 (matches
+        // Pearl's `constraint_degree() -> 3`).
+        assert!(1u32 << pearl.log_blowup >= 3 /* degree-3 quotient bound */);
+        let cfg = build_stark_config(&sample_zk_params(), &pearl);
         let _ = cfg.clone();
     }
 

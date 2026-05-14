@@ -78,6 +78,7 @@ pub mod blake3_air;
 pub mod blake3_chip;
 pub mod circuit;
 pub mod composite_air;
+pub mod composite_layout;
 pub mod found_leaf_air;
 pub mod input_chip;
 pub mod matmul_chip;
