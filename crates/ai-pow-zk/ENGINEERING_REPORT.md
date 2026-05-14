@@ -269,7 +269,7 @@ Honest accounting of what's been validated and what hasn't:
 ### What's not yet verified
 
 - **Pearl byte-equivalence at the proof level.** We've verified hash-output bytes match Pearl's encoding (M10.1b vendored BLAKE3 chip and our compress.rs scalar reference). But we haven't actually fed a Pearl-generated trace through our prover or vice versa. The merge-mining claim depends on this; today it rests on careful column-by-column matching of the layout to Pearl's `pearl_layout.rs`.
-- **Soundness of the composite-trace-generator's lookup-freq logic.** `populate_lookup_freq` and `CompositeFullAirWithLookups::eval` must agree on what each cell queries. They were written carefully but not by independent authors; a property test would catch silent drift.
+- ~~**Soundness of the composite-trace-generator's lookup-freq logic.**~~ **Now partially covered.** Pass 1 (commit `68268e2`) added 6 proptests over `prove_batch` + `verify_batch` plus 4 fixed offset-consistency tests. In-range tampers in each bus must verify after `populate_lookup_freq`; out-of-range tampers must reject. The proptests don't catch every drift mode (e.g., synchronized drift between AIR and trace gen) but they catch the common asymmetric case.
 - **PROD bench is just one shape.** A different trace shape (larger, with real activity) might surface a different bottleneck.
 - **A_NOISED ↔ A_NOISED_UNPACK packing relation.** Not currently constrained. The cryptographic burden falls on the `noised_packed` LogUp + range checks.
 - **Public-input binding.** The composite proof currently exposes no public inputs. The downstream caller (the miner / verifier protocol) will need a binding from the composite output to whatever it consumes. This is M10.1d-ish work.
@@ -293,10 +293,10 @@ to agree on conventions but agreement isn't mechanically checked.
 
 For the next session of work I'd prioritize, in order:
 
-1. **Property test the AIR ↔ trace-generator lookup agreement** — catches a whole class of bugs cheaply.
+1. ✅ **Property test the AIR ↔ trace-generator lookup agreement.** Landed Pass 1 (`68268e2`).
 2. **Bench at three trace shapes (8K, 16K, 32K) and three activity levels** — sets a real perf baseline.
 3. **Compress old M9.1 / M10.1b stacks out of the crate** — reduces cognitive load.
-4. **A `BusBinding` trait per chip** — moves bus emissions into the chips where they belong and out of the composite AIR sausage factory.
+4. ✅ **A `BusBinding`-style per-bus factor.** Landed Pass 2 (`1bc1d5e`) as free helpers in `bus_emit::*` rather than a trait; achieves the same legibility.
 
 What I'd *not* prioritize:
 
@@ -306,4 +306,67 @@ What I'd *not* prioritize:
 
 ---
 
-*Report compiled by reading every committed file in `crates/ai-pow-zk/src/` and `crates/ai-pow-zk/M10_1C_*.md` after Phase 14b complete. Specific commits referenced: 2e0c4e9 (LogUp POC), 48c415d / 023f734 / f4360b3 / bb106df / 6d71497 / d767f7f (Phase 14b sub-phases). Test count: 371 unit + 7 KAT + 2 ignored PROD benches.*
+## 9. Pass 1 + Pass 2 outcomes
+
+After this report's initial publication, two refactor passes landed.
+
+### Pass 1 — high-value, low-risk (commit `68268e2`)
+
+**Landed:**
+- **HL1 — Lookup-consistency proptests.** 6 proptests over
+  `CompositeFullAirWithLookups` + `prove_batch`, 4 cases each.
+  In-range tampers on every bus must verify after
+  `populate_lookup_freq`; out-of-range tampers must reject.
+  Covers IRange8, URange8, I8U8, CV_ROUTING in both directions.
+  Catches the silent-drift class where the trace generator's
+  query model diverges from the AIR's emission model.
+- **HL2 — Per-chip offset validation.** 4 fixed tests that pin
+  `COMPOSITE_OFFSETS` for each lookup-aware chip (matmul,
+  blake3, jackpot): every offset slot fits within
+  `TOTAL_TRACE_WIDTH`, and the three chips' column blocks are
+  pairwise disjoint. Catches accidental layout reshuffles.
+
+**Deliberately deferred:**
+- **HL3 — Delete the M9.1 / M10.1b stacks.** On closer inspection
+  this is NOT actually low risk. Those stacks back the public
+  `lib::prove` / `lib::verify` API; removing them is a breaking
+  change. Should land alongside an explicit M10.1c-as-canonical
+  switch (a separate, larger work item).
+
+### Pass 2 — medium-value, medium-risk (commit `1bc1d5e`)
+
+**Landed:**
+- **MM1 — Factor per-bus emissions into `bus_emit::*` helpers.**
+  `CompositeFullAirWithLookups::eval` went from a ~190-line
+  inline sausage factory to a 7-line dispatch. Each bus is now a
+  named, greppable, docstring-bearing unit. Pure code-motion
+  refactor — no behavior change.
+
+**Deliberately deferred with rationale:**
+- **MM2 — Factor `add3_unchecked`'s cubic into two quadratics.**
+  The argument was that gating add3 by `is_activated` pushed the
+  constraint from degree 3 to degree 4, exceeding Pearl's pinned
+  degree-3 budget at TEST_PEARL (`log_blowup=2`). But:
+    1. Plonky3's actual quotient budget at `log_blowup=2` admits
+       constraint degree up to ~5 (formula: `max_deg ≤
+       2^log_blowup + 1`). All 381 tests pass empirically with
+       degree-4 constraints at log_blowup=2.
+    2. The refactor would require adding ~16 aux columns to the
+       BLAKE3 layout (one per half_g call's add3) plus trace
+       generator updates.
+    3. Estimated perf savings: ~1–2% prove time (the cubic
+       constraints are a small fraction of BLAKE3's total
+       constraint surface).
+  The cost/benefit doesn't justify the change now. If a future
+  profile tightens log_blowup, the refactor path is clear.
+
+### Outcome
+
+- **Tests: 381 unit (was 371; +10) + 7 KAT + 2 ignored PROD benches.** No regressions.
+- **Lookup soundness coverage tightened.** Silent-drift class largely caught now.
+- **Code organization in the lookup-emission layer materially improved.**
+- **One report claim revised.** MM2 was framed as worth doing in §4 of this report; closer inspection downgrades that to "valuable only if Plonky3's profile tightens." The original §4 text remains for context; this section is the corrected position.
+
+---
+
+*Report compiled after Phase 14b complete (Phase 14b POC = `2e0c4e9`, sub-phases through `d767f7f`). Refactor passes landed in `68268e2` (Pass 1) and `1bc1d5e` (Pass 2). Test count: 381 unit + 7 KAT + 2 ignored PROD benches at time of latest update.*
