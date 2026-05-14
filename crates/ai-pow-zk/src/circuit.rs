@@ -85,6 +85,42 @@ impl CircuitConfig {
         num_queries: 8,
     };
 
+    /// 120-bit FRI soundness with `log_blowup = 2`, requiring
+    /// **120 queries** to compensate. The LDE is only `4×` trace
+    /// size (cheapest LDE) but the proof is much fatter because
+    /// FRI opens 120 paths.
+    pub const PROD_LB2: Self = Self {
+        log_blowup: 2,
+        pow_bits: 0,
+        num_queries: 120,
+    };
+
+    /// 120-bit FRI soundness with `log_blowup = 4`, requiring
+    /// **60 queries**. LDE is `16×` trace size — bigger Merkle
+    /// commit, fewer openings.
+    pub const PROD_LB4: Self = Self {
+        log_blowup: 4,
+        pow_bits: 0,
+        num_queries: 60,
+    };
+
+    /// 120-bit FRI soundness with `log_blowup = 5`, requiring
+    /// **48 queries**. LDE is `32×` trace size — the prove side
+    /// pays a lot, but the proof is the smallest of the sweep.
+    pub const PROD_LB5: Self = Self {
+        log_blowup: 5,
+        pow_bits: 0,
+        num_queries: 48,
+    };
+
+    /// 120-bit FRI soundness with `log_blowup = 6`, requiring
+    /// **40 queries**. The extreme of the sweep.
+    pub const PROD_LB6: Self = Self {
+        log_blowup: 6,
+        pow_bits: 0,
+        num_queries: 40,
+    };
+
     /// Test profile for the M10.1c Pearl-style composite AIR.
     ///
     /// Pearl pins `constraint_degree = 3` (see

@@ -276,11 +276,9 @@ explicitly remains future work.
 Bench commit `d6065d8` covered §6.1 and §6.2 (trace-generation
 timing + non-baseline shapes). Remaining gaps:
 
-### 6.1 No FRI parameter sensitivity
+### 6.1 No FRI parameter sensitivity ✓ closed
 
-`CircuitConfig::PROD` pins `log_blowup = 3` and `num_queries = 80`. Other points on the (proof size, prove time, soundness) curve are unexplored:
-- `log_blowup = 4, num_queries = 60` — bigger LDE, fewer queries, maybe smaller proof?
-- `log_blowup = 2, num_queries = 120` — smaller LDE, more queries; faster prove, larger proof?
+**Closed by the FRI sweep — see §11.** The full sweep at 120-bit soundness from `log_blowup = 2..6` is in §11; the takeaway is that diminishing-returns sets in past `log_blowup = 4`, and a production retune is a real (not theoretical) lever.
 
 ### 6.2 No memory profiling
 
@@ -466,3 +464,69 @@ For anyone planning around these:
 - **Verify is ~30 ms TEST / ~140 ms PROD across all shapes.** Cheap; not a constraint anywhere.
 
 Memory remained sub-OOM on a 32 GB machine for every bench. Real production miners with 16 GB may need to cap trace length at 16K until we have data.
+
+---
+
+## 11. FRI parameter sweep — closing §6.1
+
+The bench-suite scaffold made the FRI sweep cheap to run. All five points are at **120-bit provable FRI soundness** (`log_blowup · num_queries / 2 = 120`). 8K rows × 1378 cols, single workstation, release build.
+
+### 11.1 The data
+
+Five `CircuitConfig` profiles, baseline and heavy (100 of each activity kind):
+
+| Profile | log_blowup | queries | LDE | Baseline prove | Baseline verify | Baseline proof | Heavy prove | Heavy verify | Heavy proof |
+|---|---|---|---|---|---|---|---|---|---|
+| `PROD_LB2`        | 2 | 120 | 4×   |  26.8 s | 191 ms | 1216 KB |  27.1 s | 191 ms | 2365 KB |
+| `PROD` (current)  | 3 |  80 | 8×   | (54.3 s\*) | (137 ms\*) | (892 KB\*) |  54.0 s | 136 ms | 1650 KB |
+| `PROD_LB4`        | 4 |  60 | 16×  | 107.9 s | 109 ms |  700 KB | 107.3 s | 108 ms | 1293 KB |
+| `PROD_LB5`        | 5 |  48 | 32×  | 214.2 s |  91 ms |  597 KB | 212.7 s |  90 ms | 1079 KB |
+| `PROD_LB6`        | 6 |  40 | 64×  | 418.1 s |  75 ms |  528 KB | 402.7 s |  76 ms |  936 KB |
+
+\* PROD baseline values quoted from §5.1 — the LB=3 baseline is the existing `bench_prod_8k_baseline`; we did not re-run it in the sweep.
+
+The shape of the curve is exactly the textbook prediction: each `log_blowup` increment doubles LDE size (and thus prove time), and the proof shrinks by trading FRI query count for query depth.
+
+### 11.2 What the data shows
+
+1. **Prove time doubles each step.** The ratio is essentially 2.0 every time (27 → 54 → 108 → 214 → 418). The constant is the per-row LDE-commit cost — Plonky3 is doing exactly what you'd expect.
+
+2. **Proof size shrinks sub-linearly.** Baseline: 1216 → 892 → 700 → 597 → 528 KB. Heavy: 2365 → 1650 → 1293 → 1079 → 936 KB. Each step saves ~25% at LB=2→3, then ~20%, then ~15%, then ~13%. **Diminishing returns past LB=4.**
+
+3. **Verify gets faster.** 191 → 136 → 109 → 91 → 75 ms. Fewer FRI queries = fewer hash chains to check. Already cheap, so this isn't a tiebreaker.
+
+4. **Heavy/baseline proof ratio is stable** (~1.8–1.9× across all five points). The "activity doubles proof size" finding (§10.2) is independent of the FRI point.
+
+### 11.3 Cost-of-bandwidth tradeoff
+
+The retune we'd actually consider is **PROD → PROD_LB4**. Quantified:
+
+|  | Current PROD (LB=3) | PROD_LB4 | Delta |
+|---|---|---|---|
+| Prove time            | 54 s    | 108 s   | **+98 %** |
+| Verify time           | 136 ms  | 109 ms  | −20 %     |
+| Proof size (baseline) | 892 KB  | 700 KB  | **−22 %** |
+| Proof size (heavy)    | 1650 KB | 1293 KB | **−22 %** |
+
+The trade is "**2× prove time for 22% smaller proof**". For a chain where a proof is computed once but transmitted/stored forever, that's usually worth it; for a chain where time-to-block dominates, it isn't.
+
+LB=5 and LB=6 are not realistic operating points: 3.5–7 min prove time at 8K rows scales to 14–28 min at 32K, which makes solo miners non-viable.
+
+LB=2 is interesting only as a *test-fast* profile — proof size jumps 36% while prove time only saves ~50%. The MB/s payoff vs. prove time isn't favorable enough to recommend over `TEST_PEARL`.
+
+### 11.4 Recommendation
+
+**Hold PROD at LB=3 for now**, but keep `PROD_LB4` available in the codebase as the next retune target.
+
+The 2× prove-time hit is consequential at production shapes. PROD already runs ~54s at 8K; at full Pearl shapes (32K+) it'd cross 13 minutes per attempt, which compresses miner economics. **A PROD-shape retune should wait for either: (a) data showing on-chain weight is the actual bottleneck, or (b) recursion compression (M12) landing — in which case the wrapped proof size dominates and the outer point matters less.**
+
+Until then, the four `PROD_LB*` profiles stay in `circuit.rs` as a calibrated lever the next operator can pull with one symbol change. The bench infra is permanent (`bench_suite::tests::bench_fri_sweep_*`), so re-validating is `cargo test ... --ignored` and 26 minutes of wall time.
+
+### 11.5 What this changes about §10.3
+
+§10.3 listed the FRI sweep as the next bench-led prioritization candidate. With the sweep done, the next remaining bench-led candidate is **§6.3 (LogUp bus-overhead isolation)** — ablation bench at the bus level. That would tell us whether `cv_routing` (9-element key) is the dominant LogUp cost vs. the four range tables. Still half-day work given the scaffold.
+
+The bigger remaining unknowns are now non-bench items:
+- **§6.6 real-workload bench** — wire `ai-pow`'s plain proof into a `CompositeTrace` and prove that.
+- **#52 h_a/h_b matrix bindings** — the only structural unfinished item in the AIR design.
+- **M12 recursion** — the only lever that could change the proof-size order of magnitude.

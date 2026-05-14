@@ -357,4 +357,83 @@ mod tests {
         let r = run_heavy_at(MIN_STARK_LEN, 100, 100, 100, &CircuitConfig::PROD);
         r.print();
     }
+
+    // =================================================================
+    //  FRI parameter sweep — all at 120-bit provable soundness.
+    //
+    //  Each profile pairs `log_blowup` with `num_queries` so that
+    //  `log_blowup · num_queries / 2 = 120`. The LDE size scales as
+    //  `2^log_blowup × trace`; the proof size scales (roughly) as
+    //  `num_queries × log2(LDE)`. So as log_blowup goes up:
+    //   - prove cost goes UP (bigger LDE to commit)
+    //   - proof size goes DOWN (fewer FRI openings)
+    //
+    //  Goal: identify the operating point that minimizes proof
+    //  size at acceptable prove-time cost.
+    // =================================================================
+
+    #[test]
+    #[ignore = "FRI sweep — log_blowup=2, num_queries=120 @ 8K heavy"]
+    fn bench_fri_sweep_lb2_8k_heavy() {
+        let r = run_heavy_at(MIN_STARK_LEN, 100, 100, 100, &CircuitConfig::PROD_LB2);
+        r.print();
+    }
+
+    #[test]
+    #[ignore = "FRI sweep — log_blowup=3, num_queries=80 (current PROD) @ 8K heavy"]
+    fn bench_fri_sweep_lb3_8k_heavy() {
+        let r = run_heavy_at(MIN_STARK_LEN, 100, 100, 100, &CircuitConfig::PROD);
+        r.print();
+    }
+
+    #[test]
+    #[ignore = "FRI sweep — log_blowup=4, num_queries=60 @ 8K heavy"]
+    fn bench_fri_sweep_lb4_8k_heavy() {
+        let r = run_heavy_at(MIN_STARK_LEN, 100, 100, 100, &CircuitConfig::PROD_LB4);
+        r.print();
+    }
+
+    #[test]
+    #[ignore = "FRI sweep — log_blowup=5, num_queries=48 @ 8K heavy"]
+    fn bench_fri_sweep_lb5_8k_heavy() {
+        let r = run_heavy_at(MIN_STARK_LEN, 100, 100, 100, &CircuitConfig::PROD_LB5);
+        r.print();
+    }
+
+    #[test]
+    #[ignore = "FRI sweep — log_blowup=6, num_queries=40 @ 8K heavy"]
+    fn bench_fri_sweep_lb6_8k_heavy() {
+        let r = run_heavy_at(MIN_STARK_LEN, 100, 100, 100, &CircuitConfig::PROD_LB6);
+        r.print();
+    }
+
+    // Baseline variants too — proof-size scaling without activity.
+
+    #[test]
+    #[ignore = "FRI sweep — log_blowup=2, num_queries=120 @ 8K baseline"]
+    fn bench_fri_sweep_lb2_8k_baseline() {
+        let r = run_baseline_at(MIN_STARK_LEN, &CircuitConfig::PROD_LB2);
+        r.print();
+    }
+
+    #[test]
+    #[ignore = "FRI sweep — log_blowup=4, num_queries=60 @ 8K baseline"]
+    fn bench_fri_sweep_lb4_8k_baseline() {
+        let r = run_baseline_at(MIN_STARK_LEN, &CircuitConfig::PROD_LB4);
+        r.print();
+    }
+
+    #[test]
+    #[ignore = "FRI sweep — log_blowup=5, num_queries=48 @ 8K baseline"]
+    fn bench_fri_sweep_lb5_8k_baseline() {
+        let r = run_baseline_at(MIN_STARK_LEN, &CircuitConfig::PROD_LB5);
+        r.print();
+    }
+
+    #[test]
+    #[ignore = "FRI sweep — log_blowup=6, num_queries=40 @ 8K baseline"]
+    fn bench_fri_sweep_lb6_8k_baseline() {
+        let r = run_baseline_at(MIN_STARK_LEN, &CircuitConfig::PROD_LB6);
+        r.print();
+    }
 }
