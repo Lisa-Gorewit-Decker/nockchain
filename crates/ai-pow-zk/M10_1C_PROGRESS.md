@@ -38,7 +38,9 @@ When Plonky3 doesn't have a direct primitive (e.g. Pearl's
 | 5 | `control_chip` (Pearl `control_and_matid_packed`) | ✅ landed | 11 | 194 unit |
 | 6 | `composite_preprocess` minimal generator | ✅ landed | 6 | 200 unit |
 | 7 | BLAKE3 chip — `compress` + `layout` + `logic` (Pearl scalar + per-round column layout + per-row logic types) | ✅ landed | 21 | 221 unit |
-| 8 | BLAKE3 chip — extend wrapper with multi-round / Merkle linkage | ⬜ pending | | |
+| 8a | BLAKE3 round-AIR primitives — `round_ops::{add3, add2, xor_shift, xor_packed}` | ✅ landed | 15 | 236 unit |
+| 8b | BLAKE3 round-AIR composition — `verify_round`, `finalize_blake`, `verify_init_state` | ⬜ pending | | |
+| 8c | BLAKE3 trace generator + top-level chip eval | ⬜ pending | | |
 | 9 | matmul chip with `NOISED_PACKED` RAM-lookup reads | ⬜ pending | | |
 | 10 | jackpot chip (rotate-XOR-13, Pearl `chip/jackpot/`) | ⬜ pending | | |
 | 11 | `composite_lookups` — `p3-lookup` config for all 6+ lookups | ⬜ pending | | |
@@ -248,6 +250,43 @@ logic proving each row's state evolution. Pearl's
 ~386, `blake3_air.rs` ~356 = ~1300 lines combined. Substantial
 follow-on work.
 
+### Phase 8a — BLAKE3 round-AIR primitives (landed)
+
+Constraint primitives from `pearl/.../blake3_air.rs` ported as
+standalone helpers. Each independently testable.
+
+  - ✅ `add3_unchecked(res, a, b, c)` enforces `res ∈ {a+b+c,
+    a+b+c−2^32, a+b+c−2^33}` (cubic constraint, degree 3).
+    Tests: clean sum accepts, both wrap modes accept, off-by-one
+    rejects, unrelated value rejects.
+  - ✅ `add2_unchecked(res, a, b)` enforces `res ∈ {a+b,
+    a+b−2^32}` (quadratic, degree 2). Tests: clean sum / wrap /
+    wrong sum.
+  - ✅ `xor_32_shift_if(res, a, b_bits, is_activated, shift)` —
+    `res = a XOR (b <<< shift)` with `b` as 32 boolean bits.
+    All 4 G-function rotation amounts tested
+    individually (0, 7, 8, 12, 16) against hand-computed
+    `b.rotate_left(shift)` references. Non-boolean bit rejected.
+    Wrong result rejected.
+  - ✅ `xor_32_packed(a_bits, b_bits)` — direct 32-bit XOR via
+    bit decomposition, no shift, no gating. Returns the packed
+    u32 expression for use in the finalisation row.
+
+Together these primitives are sufficient to implement Pearl's
+`half_g` (4 G-function half-steps per round, 4 rounds per BLAKE3
+hash). Phase 8b composes them into `verify_round` /
+`finalize_blake` / `verify_init_state`.
+
+### Phase 8b/c — BLAKE3 chip AIR composition + trace (pending)
+
+The remaining BLAKE3 work:
+  - `verify_round` (composing 8 `half_g` calls per round).
+  - `finalize_blake` (final XOR + truncate).
+  - `verify_init_state` (initial CV / IV / tweak bits).
+  - Trace generator (mirrors Pearl's two-phase parallel fill).
+  - Top-level chip eval connecting CV_IN / BLAKE3_CV /
+    BLAKE3_MSG / CV_OUT via the round constraints.
+
 ### Phase 7+ — scope decision (resolved)
 
 User picked **option 1** (full Pearl one-round-per-row port).
@@ -335,4 +374,5 @@ by the SNARK as a whole:
 | 2026-05-14 | M10.1c Phase 4b+4c `i8u8` + `input` chips | `2b2ec0a` |
 | 2026-05-14 | M10.1c Phase 5 `control_chip` (CONTROL_PREP + MAT_ID) | `cb49931` |
 | 2026-05-14 | M10.1c Phase 6 `composite_preprocess` minimal | `e221113` |
-| 2026-05-14 | M10.1c Phase 7 BLAKE3 chip foundation (compress + layout + logic) | (this commit) |
+| 2026-05-14 | M10.1c Phase 7 BLAKE3 chip foundation (compress + layout + logic) | `37cdb06` |
+| 2026-05-14 | M10.1c Phase 8a BLAKE3 round-AIR primitives (`round_ops`) | (this commit) |

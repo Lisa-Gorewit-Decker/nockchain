@@ -31,6 +31,7 @@
 pub mod compress;
 pub mod layout;
 pub mod logic;
+pub mod round_ops;
 
 // Phase 8 modules (re-exports staged here for forward-compat):
 //
