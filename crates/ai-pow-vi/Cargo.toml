@@ -1,8 +1,12 @@
 [package]
 name = "ai-pow-vi"
-version.workspace = true
+# Pre-release tag flags this crate as experimental: API surface, on-disk
+# manifest layout, and INT8 numerical contract are all subject to change
+# while the structural-saturation work (see NEXT_STEPS.md) is unresolved.
+version = "0.1.0-experimental"
 edition.workspace = true
-description = "Verifiable-inference puzzle for Nockchain: deterministic INT8 transformer-layer reference."
+description = "EXPERIMENTAL — Verifiable-inference puzzle for Nockchain: deterministic INT8 transformer-layer reference."
+publish = false
 
 [dependencies]
 ai-pow = { path = "../ai-pow" }

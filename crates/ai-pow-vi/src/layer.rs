@@ -34,7 +34,7 @@ use crate::quant::{
 use crate::rmsnorm::{rmsnorm, RmsNormError};
 use crate::rope::{rope_apply, RopeTables};
 use crate::softmax::{softmax_int, ExpLut};
-use crate::ssm::{ssm_forward, SsmError, SsmOpts};
+use crate::ssm::SsmError;
 
 /// Per-layer norm flavor + parameters. Both Gemma and Qwen use RMSNorm in
 /// every position — `LayerNorm` is included so a future model registration

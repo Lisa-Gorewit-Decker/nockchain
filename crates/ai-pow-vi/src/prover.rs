@@ -7,9 +7,11 @@
 //!    `target_layer` (passed in via [`ProverOptions`] for now), recording
 //!    every per-layer activation Merkle root.
 //! 3. Run the FFN gate matmul at `target_layer` tile-by-tile. Each tile
-//!    output (an i32 sub-block) is hashed via [`ai_pow::tile_hash::tile_state_hash`]
-//!    to a 32-byte leaf. The leaves are reduced via [`ai_pow::commit::merkle_root`]
-//!    to produce `comm_M`.
+//!    output (an i32 sub-block) is hashed via [`crate::tile_hash::tile_leaf`]
+//!    — Pearl's rotate-XOR fold (`ai_pow::matmul::TileState::fold`) over
+//!    16-entry stripes of the tile, then `TileState::keyed_hash`. The
+//!    leaves are reduced via [`ai_pow::commit::merkle_root`] to produce
+//!    `comm_M`.
 //! 4. Derive a challenge seed from `(block_commitment, nonce, comm_M, model_id)`.
 //!    For each tile, compute its hardness as
 //!    `BLAKE3(challenge_seed || (i, j) || M_{i,j})`.
@@ -26,8 +28,10 @@
 
 use ai_pow::commit::{merkle_path, merkle_root};
 use ai_pow::fiat_shamir::{block_state, challenge_indices, challenge_seed};
-use ai_pow::tile_hash::{hash_le_target, tile_hardness_hash, tile_state_hash};
+use ai_pow::tile_hash::hash_le_target;
 use thiserror::Error;
+
+use crate::tile_hash::{tile_hardness_hash, tile_leaf};
 
 use crate::activations::{ActivationLayout, ActivationLog};
 use crate::forward::{forward_prefix, ForwardError};
@@ -160,7 +164,7 @@ pub fn mine_vi(
                 let col_off = c * tile_us;
                 block.extend_from_slice(&gate[row_off + col_off..row_off + col_off + tile_us]);
             }
-            leaves.push(tile_state_hash(&block));
+            leaves.push(tile_leaf(&block));
         }
     }
     drop(gate);

@@ -1,12 +1,18 @@
 [package]
 name = "ai-pow"
-version.workspace = true
+version = "0.1.0"
 edition.workspace = true
+description = "Pearl-style INT8 matrix-multiplication proof-of-useful-work puzzle for Nockchain."
+publish = false
 
 [dependencies]
 blake3 = { workspace = true }
 thiserror = { workspace = true }
 rayon = { workspace = true, optional = true }
+# Optional Plonky3 SNARK over the matmul AIR. Disabled by default so the
+# core mining path stays lean; enable `zk` to wrap a plain `MatmulProof`
+# in a Plonky3 STARK at the Pearl-analog point in `prover.rs`.
+ai-pow-zk = { path = "../ai-pow-zk", optional = true }
 
 [dev-dependencies]
 criterion = { workspace = true }
@@ -15,6 +21,7 @@ proptest = { workspace = true }
 [features]
 default = []
 parallel = ["dep:rayon"]
+zk = ["dep:ai-pow-zk"]
 
 [[bench]]
 name = "bench"

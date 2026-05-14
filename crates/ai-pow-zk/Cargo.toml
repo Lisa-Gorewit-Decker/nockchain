@@ -1,0 +1,32 @@
+[package]
+name = "ai-pow-zk"
+# Experimental: the public API surface, AIR layout, and proof byte format
+# are all subject to change while the circuit is being designed.
+version = "0.1.0-experimental"
+edition.workspace = true
+description = "EXPERIMENTAL — Plonky3 SNARK circuit for the ai-pow tiling matmul puzzle."
+publish = false
+
+[dependencies]
+# Intentionally **not** a dep of `ai-pow`. The proving crate
+# (`ai-pow`) is the consumer; making `ai-pow-zk` depend back on it would
+# introduce a cycle. The caller in `ai-pow` constructs `ZkParams` and
+# `Witness` from its own types and passes them across the boundary.
+thiserror = { workspace = true }
+
+# Plonky3. The upstream publishes irregularly to crates.io; pin to a
+# git revision here and bump `rev` when the circuit needs newer field /
+# AIR features. See https://github.com/Plonky3/Plonky3 for releases.
+#
+# When wiring real circuit logic, add the additional plonky3 sub-crates
+# this scaffold doesn't yet pull in:
+#   p3-challenger, p3-commit, p3-dft, p3-fri, p3-merkle-tree,
+#   p3-poseidon2, p3-symmetric, p3-keccak-air (if KECCAK constraints needed).
+p3-air = { git = "https://github.com/Plonky3/Plonky3.git" }
+p3-baby-bear = { git = "https://github.com/Plonky3/Plonky3.git" }
+p3-field = { git = "https://github.com/Plonky3/Plonky3.git" }
+p3-matrix = { git = "https://github.com/Plonky3/Plonky3.git" }
+p3-uni-stark = { git = "https://github.com/Plonky3/Plonky3.git" }
+
+[dev-dependencies]
+proptest = { workspace = true }

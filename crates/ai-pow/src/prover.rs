@@ -284,14 +284,51 @@ fn mine_with_context(
         spot.push(build_tile_opening(ctx, &leaves, idx)?);
     }
 
-    Ok(Some(MatmulProof {
+    let plain_proof = MatmulProof {
         comm_m,
         params_tag: ctx.tag,
         h_a: ctx.h_a,
         h_b: ctx.h_b,
         found: found_opening,
         spot,
-    }))
+    };
+
+    // Pearl-analog ZK wrapping. At this point Pearl's pipeline invokes
+    // `zk_prove_plain_proof` (`pearl/zk-pow/src/api/prove.rs:18`) to
+    // compress the multi-MB `PlainProof` into a ~60 KB Plonky2 STARK.
+    // The `zk` feature swaps that step in here via the `ai-pow-zk`
+    // crate's Plonky3 circuit. The plain proof is still returned: the
+    // caller decides whether to ship the plain witness or the SNARK
+    // (the chain only commits to one of them via the block certificate).
+    //
+    // `ai-pow-zk` is standalone (does not depend back on `ai-pow`), so
+    // the conversion from `MatmulParams` / `MatmulProof` / `BlockNoise`
+    // into the SNARK's own `(ZkParams, PublicInputs, Witness)` happens
+    // right here at the boundary.
+    #[cfg(feature = "zk")]
+    {
+        let zk_params = ai_pow_zk::ZkParams {
+            m: params.m,
+            k: params.k,
+            n: params.n,
+            noise_rank: params.noise_rank,
+            tile: params.tile,
+            difficulty_bits: params.difficulty_bits,
+        };
+        // TODO: extract `PublicInputs` from `plain_proof` once
+        // `TileOpening` carries the keyed-hash leaf explicitly (currently
+        // the leaf is implicit — verifier recomputes it from the strips).
+        // TODO: extract `Witness` from `plain_proof.found` + `ctx.noise`.
+        let _ = (zk_params, &plain_proof, ctx, block_commitment, nonce);
+        // Stub: currently `todo!()` inside `ai-pow-zk::prove`.
+        // Once the circuit is implemented:
+        //   let public_inputs = ai_pow_zk::PublicInputs { ... };
+        //   let witness = ai_pow_zk::Witness { ... };
+        //   let _zk = ai_pow_zk::prove(block_commitment, nonce,
+        //                              &zk_params, &public_inputs, &witness)?;
+    }
+
+    Ok(Some(plain_proof))
 }
 
 fn build_tile_opening(

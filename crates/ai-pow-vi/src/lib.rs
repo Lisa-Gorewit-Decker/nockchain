@@ -44,6 +44,7 @@ pub mod rmsnorm;
 pub mod rope;
 pub mod softmax;
 pub mod ssm;
+pub mod tile_hash;
 pub mod verifier;
 
 pub use crate::activation_lut::{ActivationKind, ActivationLut};

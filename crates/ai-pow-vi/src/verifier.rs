@@ -16,8 +16,10 @@
 
 use ai_pow::commit::{merkle_recover_root, MerkleError};
 use ai_pow::fiat_shamir::{block_state, challenge_indices, challenge_seed};
-use ai_pow::tile_hash::{hash_le_target, tile_hardness_hash};
+use ai_pow::tile_hash::hash_le_target;
 use thiserror::Error;
+
+use crate::tile_hash::tile_hardness_hash;
 
 use crate::comm_w::compute_comm_w;
 use crate::layer::LayerContext;
