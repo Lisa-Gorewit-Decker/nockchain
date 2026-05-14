@@ -50,12 +50,13 @@ When Plonky3 doesn't have a direct primitive (e.g. Pearl's
 | 12d | `composite_full_air` — wire jackpot | ⬜ pending | | |
 | 13a | `composite_trace` baseline builder + type surface | ✅ landed | 7 | 325 unit |
 | 13b | `composite_trace` instruction-list compilation: matmul step placement + cumsum threading | ✅ landed | 2 | 330 unit |
-| 13c | `composite_trace` instruction-list — BLAKE3 hash blocks + jackpot | ⬜ pending | | |
+| 13c | `composite_trace` — BLAKE3 hash block placement (jackpot still pending) | ✅ landed | 2 | 332 unit |
+| 13d | `composite_trace` — jackpot step placement | ⬜ pending | | |
 | 14a | `composite_proof::{composite_prove, composite_verify}` wrappers + bincode round-trip | ✅ landed | 3 | 328 unit |
 | 14b | LogUp-aware folder swap (proving-side interaction wiring) | ⬜ pending | | |
 | 15 | PROD bench at MIN_STARK_LEN baseline (ignored) | ✅ landed | 1 ignored | 328 unit + 1 ignored |
 
-**Today's cumulative test count: 330 unit + 7 KAT + 4 ignored
+**Today's cumulative test count: 332 unit + 7 KAT + 4 ignored
 PROD bench.**
 
 ## Properties validated per phase
@@ -718,16 +719,41 @@ Tests added:
     the dot product and rejects
     (`matmul_step_chain_rejects_tampered_input`).
 
-### Phase 13c — BLAKE3 hash blocks + jackpot (pending)
+### Phase 13c — BLAKE3 hash block placement (landed)
 
-Remaining instruction types: `Blake3Hash` (places an 8-row hash
-block with STATE0..STATE3 snapshots, MSG, CV, tweak, CV_OUT) and
-`JackpotStep` (one rotate-XOR-13 row, blocked on Phase 12d's
-column-shape resolution).
+`CompositeTrace::place_blake3_hash(row_start, &message, &cv_in,
+&tweak) -> cv_out` writes a complete 8-row BLAKE3 compression
+into the composite trace, filling at composite-layout offsets:
 
-Pearl's `pearl_program.rs` + `pearl_trace.rs` do all three
-instruction types in ~700 lines combined. Phase 13c lands the
-remaining ~500.
+  * Rows `row_start..row_start+7` (7 mixing rounds): each row's
+    BLAKE3_ROUND block holds the 4 state snapshots
+    (`INPUT_STATE`, `STATE1`, `STATE2`, `STATE3`) computed from
+    `round_with_snapshots`; BLAKE3_MSG holds the
+    appropriately-permuted message word; BLAKE3_CV holds `cv_in`;
+    CV_OR_TWEAK_PREP holds `pack_tweak(tweak)`. Row 0 also has
+    IS_NEW_BLAKE = 1 (via `ControlChip::fill_row`).
+  * Row `row_start+7` (finalize): STATE0 = round-7 output, STATE1
+    encoded for `finalize_blake`'s "abuse" packing (row2 / row4
+    bit-decomps reuse STATE0.row1 / STATE0.row3). IS_LAST_ROUND = 1.
+    CV_OUT holds the final 8-word BLAKE3 output.
+
+Returns the BLAKE3 output CV so callers can thread it into
+subsequent hashes.
+
+Properties validated:
+  * ✅ A hash block at row 0 of the baseline trace verifies
+    end-to-end through `CompositeFullAir`; the returned CV_OUT
+    matches `compress_full_state` (`blake3_hash_block_at_row_0_verifies`).
+  * ✅ Tampering CV_OUT on the finalize row rejects via
+    `finalize_blake`'s assertion
+    (`blake3_hash_block_rejects_tampered_cv_out`).
+
+### Phase 13d — jackpot step placement (pending)
+
+Blocked on Phase 12d (column-shape mismatch between chip-local
+and composite layouts for V_BITS / X_BITS / SLOT_SEL). Once that
+resolves, `place_jackpot_step(row_idx, slot, x, is_active)` is a
+mechanical port of the chip's `fill_row` to composite positions.
 
 ### Phase 14a — composite prove/verify wrappers (landed)
 
@@ -894,4 +920,5 @@ by the SNARK as a whole:
 | 2026-05-14 | M10.1c Phase 13a `composite_trace` baseline builder | `6945714` |
 | 2026-05-14 | M10.1c Phase 14a `composite_proof` prove/verify wrappers | `fbbbc18` |
 | 2026-05-14 | M10.1c Phase 15 PROD bench at MIN_STARK_LEN baseline | `7a01490` |
-| 2026-05-14 | M10.1c Phase 13b matmul step placement + cumsum threading | (this commit) |
+| 2026-05-14 | M10.1c Phase 13b matmul step placement + cumsum threading | `c63c9e7` |
+| 2026-05-14 | M10.1c Phase 13c BLAKE3 hash block placement | (this commit) |

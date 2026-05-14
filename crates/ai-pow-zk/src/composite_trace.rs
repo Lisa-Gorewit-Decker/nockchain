@@ -47,13 +47,19 @@
 
 use p3_matrix::dense::RowMajorMatrix;
 
+use crate::chips::blake3::chip::pack_tweak;
+use crate::chips::blake3::compress::{
+    blake3_permute_msg, compress_full_state, round_with_snapshots, Blake3Tweak, BLAKE3_IV,
+};
+use crate::chips::blake3::layout::LIMBS_PER_STATE_SNAPSHOT;
 use crate::chips::control::ControlChip;
 use crate::chips::i8u8::I8U8Chip;
 use crate::chips::matmul::compute::{compute_row, CUMSUM_LEN};
 use crate::chips::range_table::{IRange7P1Chip, IRange8Chip, URange13Chip, URange8Chip};
 use crate::composite_layout::{
-    A_NOISED_UNPACK_START, B_NOISED_UNPACK_START, CUMSUM_TILE_START, STARK_ROW_IDX, TILE_D,
-    TILE_H, TOTAL_TRACE_WIDTH,
+    A_NOISED_UNPACK_START, BLAKE3_CV_START, BLAKE3_MSG_START, BLAKE3_ROUND_START,
+    B_NOISED_UNPACK_START, CUMSUM_TILE_START, CV_OR_TWEAK_PREP, CV_OUT_START, STARK_ROW_IDX,
+    TILE_D, TILE_H, TOTAL_TRACE_WIDTH,
 };
 use crate::Val;
 
@@ -209,6 +215,213 @@ impl CompositeTrace {
         }
     }
 
+    /// Place an 8-row BLAKE3 hash compression block starting at
+    /// `row_start`. Writes BLAKE3_ROUND (4 state snapshots),
+    /// BLAKE3_MSG, BLAKE3_CV, CV_OR_TWEAK_PREP, CV_OUT, and the
+    /// IS_NEW_BLAKE / IS_LAST_ROUND selectors at composite-layout
+    /// offsets.
+    ///
+    /// `row_start + 8` must be ≤ `height()`. Returns the BLAKE3
+    /// output CV (8 packed u32s) so the caller can chain it into
+    /// downstream usage (e.g. the next hash's CV_IN).
+    pub fn place_blake3_hash(
+        &mut self,
+        row_start: usize,
+        message: &[u32; 16],
+        cv_in: &[u32; 8],
+        tweak: &Blake3Tweak,
+    ) -> [u32; 8] {
+        use p3_field::integers::QuotientMap;
+
+        assert!(
+            row_start + 8 <= self.height(),
+            "BLAKE3 block needs 8 rows; row_start={row_start}, height={}",
+            self.height()
+        );
+
+        let tweak_packed = pack_tweak(tweak);
+
+        // Run BLAKE3 once to get the final CV_OUT for the finalize
+        // row.
+        let full_state = compress_full_state(
+            cv_in,
+            message,
+            tweak.counter_low,
+            tweak.counter_high as u32,
+            tweak.block_len,
+            tweak.flags,
+        );
+        let cv_out: [u32; 8] = core::array::from_fn(|i| full_state[i]);
+
+        // Per-round permuted messages.
+        let mut round_msgs: Vec<[u32; 16]> = Vec::with_capacity(7);
+        let mut cur_msg = *message;
+        round_msgs.push(cur_msg);
+        for _ in 1..7 {
+            blake3_permute_msg(&mut cur_msg);
+            round_msgs.push(cur_msg);
+        }
+
+        // Initial state at the start of hash: cv ++ IV[0..4] ++ tweak words.
+        let mut state = [0u32; 16];
+        for i in 0..8 {
+            state[i] = cv_in[i];
+        }
+        for i in 0..4 {
+            state[8 + i] = BLAKE3_IV[i];
+        }
+        state[12] = tweak.counter_low;
+        state[13] = tweak.counter_high as u32;
+        state[14] = tweak.block_len;
+        state[15] = tweak.flags;
+
+        // Compute snapshots for the 7 mixing rounds + the
+        // finalize row.
+        let mut current_input_state = state;
+
+        // Helper that writes a 16-word state into the row's 264
+        // BLAKE3_ROUND cells for a specific snapshot slot.
+        fn write_state(row: &mut [Val], snapshot_offset: usize, state: &[u32; 16]) {
+            let dest = &mut row[snapshot_offset..snapshot_offset + LIMBS_PER_STATE_SNAPSHOT];
+            let mut off = 0;
+            for i in 0..4 {
+                dest[off] = <Val as QuotientMap<u64>>::from_int(state[i] as u64);
+                off += 1;
+            }
+            for i in 4..8 {
+                for bit in 0..32 {
+                    dest[off] =
+                        <Val as QuotientMap<u64>>::from_int(((state[i] >> bit) & 1) as u64);
+                    off += 1;
+                }
+            }
+            for i in 8..12 {
+                dest[off] = <Val as QuotientMap<u64>>::from_int(state[i] as u64);
+                off += 1;
+            }
+            for i in 12..16 {
+                for bit in 0..32 {
+                    dest[off] =
+                        <Val as QuotientMap<u64>>::from_int(((state[i] >> bit) & 1) as u64);
+                    off += 1;
+                }
+            }
+            debug_assert_eq!(off, LIMBS_PER_STATE_SNAPSHOT);
+        }
+
+        // For each of the 7 mixing-round rows, run round_with_snapshots
+        // and place the 4 snapshots at BLAKE3_ROUND_START + i * STATE_W.
+        for r in 0..7 {
+            let row_idx = row_start + r;
+            let base = row_idx * TOTAL_TRACE_WIDTH;
+            let row = &mut self.matrix.values[base..base + TOTAL_TRACE_WIDTH];
+
+            let mut s = current_input_state;
+            let snaps = round_with_snapshots(&mut s, &round_msgs[r]);
+
+            write_state(row, BLAKE3_ROUND_START, &current_input_state);
+            write_state(
+                row,
+                BLAKE3_ROUND_START + LIMBS_PER_STATE_SNAPSHOT,
+                &snaps[0],
+            );
+            write_state(
+                row,
+                BLAKE3_ROUND_START + 2 * LIMBS_PER_STATE_SNAPSHOT,
+                &snaps[1],
+            );
+            write_state(
+                row,
+                BLAKE3_ROUND_START + 3 * LIMBS_PER_STATE_SNAPSHOT,
+                &snaps[2],
+            );
+
+            // BLAKE3_MSG (this row's permuted message).
+            for i in 0..16 {
+                row[BLAKE3_MSG_START + i] =
+                    <Val as QuotientMap<u64>>::from_int(round_msgs[r][i] as u64);
+            }
+            // BLAKE3_CV (replicated across all 8 rows).
+            for i in 0..8 {
+                row[BLAKE3_CV_START + i] =
+                    <Val as QuotientMap<u64>>::from_int(cv_in[i] as u64);
+            }
+            // CV_OR_TWEAK_PREP.
+            row[CV_OR_TWEAK_PREP] = <Val as QuotientMap<u64>>::from_int(tweak_packed);
+
+            // Selectors: IS_NEW_BLAKE on row 0.
+            let mut selectors = [false; 21];
+            if r == 0 {
+                selectors[8] = true; // IS_NEW_BLAKE index in SELECTOR_COLS
+            }
+            ControlChip.fill_row(&selectors, 0, row);
+
+            current_input_state = snaps[3];
+        }
+
+        // Finalize row (row_start + 7). STATE0 = final round output,
+        // STATE1 encoded so finalize_blake's "abuse" packing works.
+        let final_input = current_input_state;
+        let mut state1_for_finalize = [0u32; 16];
+        // row1 cells (state[0..4]) — free, set to final_input for cleanness.
+        state1_for_finalize[0] = final_input[0];
+        state1_for_finalize[1] = final_input[1];
+        state1_for_finalize[2] = final_input[2];
+        state1_for_finalize[3] = final_input[3];
+        // row2 bit-decomp slots (state[4..8]) — bits of final_input[0..4].
+        state1_for_finalize[4] = final_input[0];
+        state1_for_finalize[5] = final_input[1];
+        state1_for_finalize[6] = final_input[2];
+        state1_for_finalize[7] = final_input[3];
+        // row3 cells (state[8..12]) — free.
+        state1_for_finalize[8] = final_input[8];
+        state1_for_finalize[9] = final_input[9];
+        state1_for_finalize[10] = final_input[10];
+        state1_for_finalize[11] = final_input[11];
+        // row4 bit-decomp slots (state[12..16]) — bits of final_input[8..12].
+        state1_for_finalize[12] = final_input[8];
+        state1_for_finalize[13] = final_input[9];
+        state1_for_finalize[14] = final_input[10];
+        state1_for_finalize[15] = final_input[11];
+
+        let row_idx = row_start + 7;
+        let base = row_idx * TOTAL_TRACE_WIDTH;
+        let row = &mut self.matrix.values[base..base + TOTAL_TRACE_WIDTH];
+
+        write_state(row, BLAKE3_ROUND_START, &final_input);
+        write_state(
+            row,
+            BLAKE3_ROUND_START + LIMBS_PER_STATE_SNAPSHOT,
+            &state1_for_finalize,
+        );
+        // STATE2 and STATE3 stay zero (the chip's eval doesn't
+        // constrain them on the finalize row).
+
+        // Last-permuted message + CV + tweak.
+        let last_msg = round_msgs[6];
+        for i in 0..16 {
+            row[BLAKE3_MSG_START + i] =
+                <Val as QuotientMap<u64>>::from_int(last_msg[i] as u64);
+        }
+        for i in 0..8 {
+            row[BLAKE3_CV_START + i] =
+                <Val as QuotientMap<u64>>::from_int(cv_in[i] as u64);
+        }
+        row[CV_OR_TWEAK_PREP] = <Val as QuotientMap<u64>>::from_int(tweak_packed);
+
+        // CV_OUT cells (only meaningful on the finalize row).
+        for i in 0..8 {
+            row[CV_OUT_START + i] = <Val as QuotientMap<u64>>::from_int(cv_out[i] as u64);
+        }
+
+        // Selectors: IS_LAST_ROUND on row 7.
+        let mut selectors = [false; 21];
+        selectors[9] = true; // IS_LAST_ROUND index in SELECTOR_COLS
+        ControlChip.fill_row(&selectors, 0, row);
+
+        cv_out
+    }
+
     /// Bulk-fill CUMSUM_TILE on rows `[from_row, self.height())`
     /// with `cumsum`. After a matmul-step chain ends at some
     /// intermediate row, the remaining rows are passthrough
@@ -350,6 +563,78 @@ mod tests {
             prove::<AiPowStarkConfig, _>(&cfg, &CompositeFullAir, trace.matrix, &[]);
         verify::<AiPowStarkConfig, _>(&cfg, &CompositeFullAir, &proof, &[])
             .expect("matmul chain must verify through composite_full_air");
+    }
+
+    /// Place one BLAKE3 hash at row 0 of the baseline trace; the
+    /// composite AIR should still verify (the BLAKE3 chip's
+    /// round / init / finalize constraints all fire correctly on
+    /// the 8-row block, while the remaining 8184 baseline rows
+    /// have all-zero BLAKE3 columns).
+    #[test]
+    fn blake3_hash_block_at_row_0_verifies() {
+        let cfg = build_stark_config(&test_zk_params(), &CircuitConfig::TEST_PEARL);
+        let mut trace = CompositeTrace::baseline_min();
+
+        let cv: [u32; 8] = core::array::from_fn(|i| BLAKE3_IV[i]);
+        let msg: [u32; 16] = core::array::from_fn(|i| (i as u32 + 1) * 0x01020304);
+        let tweak = Blake3Tweak {
+            counter_low: 0,
+            counter_high: 0,
+            block_len: 64,
+            flags: 0x1B,
+        };
+
+        let cv_out = trace.place_blake3_hash(0, &msg, &cv, &tweak);
+        // Sanity: the returned cv_out matches a fresh BLAKE3 run.
+        let full = compress_full_state(
+            &cv,
+            &msg,
+            tweak.counter_low,
+            tweak.counter_high as u32,
+            tweak.block_len,
+            tweak.flags,
+        );
+        for i in 0..8 {
+            assert_eq!(cv_out[i], full[i]);
+        }
+
+        let proof =
+            prove::<AiPowStarkConfig, _>(&cfg, &CompositeFullAir, trace.matrix, &[]);
+        verify::<AiPowStarkConfig, _>(&cfg, &CompositeFullAir, &proof, &[])
+            .expect("BLAKE3 hash block must verify through composite_full_air");
+    }
+
+    /// Tamper the BLAKE3 hash block's CV_OUT — the finalize
+    /// constraint rejects.
+    #[test]
+    fn blake3_hash_block_rejects_tampered_cv_out() {
+        use crate::composite_layout::CV_OUT_START;
+        use p3_field::integers::QuotientMap;
+
+        let cfg = build_stark_config(&test_zk_params(), &CircuitConfig::TEST_PEARL);
+        let mut trace = CompositeTrace::baseline_min();
+
+        let cv: [u32; 8] = core::array::from_fn(|i| BLAKE3_IV[i]);
+        let msg: [u32; 16] = core::array::from_fn(|i| (i as u32 + 1) * 0x01020304);
+        let tweak = Blake3Tweak {
+            counter_low: 0,
+            counter_high: 0,
+            block_len: 64,
+            flags: 0x1B,
+        };
+
+        let _ = trace.place_blake3_hash(0, &msg, &cv, &tweak);
+        // Tamper row 7's CV_OUT[0].
+        let target = 7 * TOTAL_TRACE_WIDTH + CV_OUT_START;
+        trace.matrix.values[target] =
+            <Val as QuotientMap<u64>>::from_int(0xDEAD_BEEFu64);
+
+        let proof =
+            prove::<AiPowStarkConfig, _>(&cfg, &CompositeFullAir, trace.matrix, &[]);
+        assert!(
+            verify::<AiPowStarkConfig, _>(&cfg, &CompositeFullAir, &proof, &[]).is_err(),
+            "tampered CV_OUT must reject"
+        );
     }
 
     /// Tamper a matmul step's input — the chain breaks because
