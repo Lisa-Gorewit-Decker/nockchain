@@ -5,12 +5,16 @@ EXPERIMENTAL — a Plonky3 SNARK circuit for the
 Pearl's [`zk-pow`](../../pearl/zk-pow/): wrap the multi-MB plain proof
 in a compact SNARK so it can fit in a block certificate.
 
-**Status:** M1–M9 landed (see [`ROADMAP.md`](ROADMAP.md)). The entry
-points [`prove`] / [`verify`] are wired into a real end-to-end
-Plonky3 pipeline today, with an MVP-scope AIR (single tile-cell
-matmul). The four building-block chips for the full Pearl protocol
-all exist and are exercised individually; composing them into one
-AIR is the next milestone.
+**Status:** M1–M11 landed (see [`ROADMAP.md`](ROADMAP.md)). The
+entry points [`prove`] / [`verify`] are wired into a real end-to-end
+Plonky3 pipeline against a **composite tile AIR** that ties the
+matmul accumulator (M6) and the Pearl §4.5 rotate-XOR state update
+(M7) together with a `x = c_out` sign-extension linkage and a
+single-slot state chain. Public inputs are threaded through Plonky3's
+public-values channel — Fiat-Shamir absorption means any mismatch at
+verify-time rejects the proof. PROD profile bench (120-bit provable
+soundness) lands at ~14 ms prove, ~31 ms verify, ~136 KB proof at the
+smallest test shape.
 
 ## What works today
 
@@ -25,17 +29,31 @@ let proof = prove(b"block-commit", b"nonce", &p, &pi, &w)?;
 verify(b"block-commit", b"nonce", &p, &pi, &proof)?;
 ```
 
-The MVP `prove` builds a `MatmulCellAir<2>` trace from the first tile
-row of `A'` (`witness.a_rows[0..k]`) and first tile column of `B'`
-(`witness.b_cols[0..k]`) and runs the full Plonky3 STARK pipeline
-through the `AiPowStarkConfig` (Goldilocks + Tip5 sponge + FRI). The
-proof attests that the dot-product accumulator was computed
-correctly under the AIR transition semantics.
+`prove` builds a [`composite_air::MatmulTileAir<2>`] trace from the
+first tile row of `A'` (`witness.a_rows[0..k]`) and first tile column
+of `B'` (`witness.b_cols[0..k]`), runs the full Plonky3 STARK
+pipeline through the `AiPowStarkConfig` (Goldilocks + Tip5 sponge +
+FRI), and serializes via bincode. The proof attests that:
 
-**Not yet bound into the proof:** `block_commitment`, `nonce`, and
-the public-input hashes (`h_a`, `h_b`, `comm_m`, `found_leaf`). The
-chips needed for that binding exist (M5/M7/M8); the cross-chip
-composition into one composite AIR is M9.1.
+1. The per-stripe r-wide INT8 dot-product accumulator is computed
+   correctly (M6).
+2. The rolling 32-bit tile-state value evolves by Pearl §4.5's
+   `m_out = rotate_left_13(m_in) XOR x` rule (M7).
+3. The matmul-output / state-input linkage `x = c_out` holds across
+   sign (two's-complement sign extension; positive *and* negative
+   accumulators).
+4. The state chain carries across rows (`next.m_in = cur.m_out`,
+   first-row `m_in = 0`).
+5. The 42-element [`PublicInputs`] vector that goes into Plonky3's
+   public-values channel must match at verify time. Any tampered
+   byte in the public inputs causes a Fiat-Shamir mismatch and
+   rejection.
+
+**API constraints (MVP):** `noise_rank` must be `2` and
+`k / noise_rank` must be a power of two. AIR-level binding of
+public-input hashes to trace values (e.g. `assert_eq(final_m,
+public_inputs.found_leaf)` once BLAKE3 lands in-circuit) is M10.1 —
+see [`ROADMAP.md`](ROADMAP.md).
 
 ## Module map
 
@@ -49,8 +67,10 @@ composition into one composite AIR is M9.1.
 | [`matmul_chip`] | **M6.** `MatmulCellAir<STRIPE>` — per-stripe `r`-wide INT8 dot-product accumulator for one `(i, j)` tile cell. Width `2 + 2·STRIPE`. Per-row constraint `c_out = c_in + Σ a·b` plus first-row `c_in = 0` and transition carry. |
 | [`state_chip`] | **M7.** `StateChipAir` — Pearl §4.5 rotate-XOR-13 state update primitive: `m_out = rotate_left_13(m_in) XOR x`. Each 32-bit word bit-decomposed; XOR via the boolean identity `a ⊕ b = a + b − 2ab`. Width 67 per row. |
 | [`blake3_air`] | **M8.** Wraps upstream `p3-blake3-air` and integrates it with `AiPowStarkConfig`. Exercised end-to-end with ~10k-column traces. |
-| `lib.rs` | **M9.** Public `prove` / `verify` entries. MVP-scope; see above. |
-| `air.rs` | Composite `MatmulAir` (currently a stub). The four chips above will fold into this for the full Pearl protocol. |
+| [`composite_air`] | **M9.1.** `MatmulTileAir<STRIPE>` — composes M6 + M7 with `x = c_out` sign-extension linkage and a single-slot state chain. The AIR `lib::prove` / `lib::verify` actually use. |
+| `lib.rs` | **M9 + M10.** Public `prove` / `verify` entries, threading [`PublicInputs`] through Plonky3's public-values channel (Fiat-Shamir absorption). |
+| `tests/prod_bench.rs` | **M11.** `#[ignore]`d round-trip under `CircuitConfig::PROD` (120-bit provable soundness). Measures proof size + timing. |
+| `air.rs` | Stub for the eventual full-protocol `MatmulAir` (BLAKE3 + multi-slot routing — M9.2 / M10.1). |
 
 ## Stack choices
 
@@ -90,18 +110,27 @@ list-decoding / capacity-approaching conjecture for FRI soundness.
 cargo test -p ai-pow-zk
 ```
 
-**92 unit tests pass** across nine modules:
+**109 unit tests pass** across ten modules, plus **2 ignored** PROD
+bench tests:
 
 | Module | # tests |
 |---|---|
 | `circuit` (M1 + M2) | 15 |
 | `witness` (M4) | 14 |
 | `state_chip` (M7) | 14 |
+| `composite_air` (M9.1) | 14 |
 | `matmul_chip` (M6) | 12 |
 | `public` (M3) | 11 |
 | `input_chip` (M5) | 11 |
-| lib.rs entry-point tests (M9) | 9 |
+| lib.rs entry-point tests (M9 + M10) | 12 |
 | `blake3_air` (M8) | 6 |
+| `tests/prod_bench.rs` (M11, ignored) | 2 |
+
+To run the PROD bench (slow):
+
+```sh
+cargo test -p ai-pow-zk --test prod_bench --release -- --ignored --nocapture
+```
 
 Each chip's tests include:
 - shape pinning (column widths, padding, OOB panics)
@@ -126,5 +155,7 @@ per-row Merkle paths. At the same point Pearl invokes
 [`matmul_chip`]: src/matmul_chip.rs
 [`state_chip`]: src/state_chip.rs
 [`blake3_air`]: src/blake3_air.rs
+[`composite_air`]: src/composite_air.rs
+[`composite_air::MatmulTileAir<2>`]: src/composite_air.rs
 [`prove`]: src/lib.rs
 [`verify`]: src/lib.rs
