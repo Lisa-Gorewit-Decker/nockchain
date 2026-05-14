@@ -175,82 +175,134 @@ Listed by ratio of (cleanliness gain) / (risk of breakage):
 
 ---
 
-## 5. Suspected performance bottlenecks
+## 5. Measured performance (post-bench commit `d6065d8`)
 
-These are *suspected*. We have one PROD bench at baseline shape; everything else is inference.
+11 benches captured across {TEST_PEARL, PROD} × {8K, 16K, 32K} ×
+{baseline, light, heavy}. Numbers below are wall-clock from one
+run on an Apple M-series workstation (release build).
 
-### 5.1 The PROD bench numbers, again
+### 5.1 The full table
 
-```
-baseline @ MIN_STARK_LEN = 8192 rows × 1378 cols
-                           PROD (no lookups)   PROD (full LogUp)
-prove                      43.3 s              50.9 s
-verify                     119 ms              129 ms
-proof size                 ~683 KB             (not measured under batch-stark)
-```
+| Profile | Rows | Activity | trace_gen | populate | **prove** | verify | **proof** |
+|---|---|---|---|---|---|---|---|
+| TEST_PEARL | 8K | baseline | 6 ms | 4 ms | 27.6 s | 30 ms | 180 KB |
+| TEST_PEARL | 8K | light | 1 ms | 3 ms | 27.5 s | 29 ms | 360 KB |
+| TEST_PEARL | 8K | heavy | 1 ms | 3 ms | 27.7 s | 30 ms | 370 KB |
+| TEST_PEARL | 16K | baseline | 18 ms | 12 ms | 55.1 s | 31 ms | 193 KB |
+| TEST_PEARL | 16K | light | 2 ms | 9 ms | 55.5 s | 31 ms | 373 KB |
+| TEST_PEARL | 16K | heavy | 2 ms | 9 ms | 55.8 s | 31 ms | 383 KB |
+| TEST_PEARL | 32K | baseline | 25 ms | 19 ms | 110.8 s | 32 ms | 208 KB |
+| PROD | 8K | baseline | 6 ms | 3 ms | 54.3 s | 137 ms | 892 KB |
+| PROD | 8K | light | 1 ms | 3 ms | 54.2 s | 138 ms | 1.65 MB |
+| PROD | 8K | heavy | 1 ms | 3 ms | 54.2 s | 138 ms | 1.69 MB |
+| PROD | 16K | baseline | 12 ms | 9 ms | 108.4 s | 145 ms | 963 KB |
 
-For comparison, Pearl's published Plonky2 numbers at production shape are ~60 KB final proof size with recursion. We're 11× larger because (a) no recursion compression yet (deferred to M12), and (b) we're using `p3-uni-stark` / `p3-batch-stark`, not Plonky2.
+### 5.2 What the data says
 
-### 5.2 Hot spots in `prove_batch`
+**Prove time scales linearly with trace size, NOT with activity.**
+TEST_PEARL goes 27.6 s (8K) → 55.1 s (16K) → 110.8 s (32K) at
+baseline. Heavy activity at 8K is 27.7 s vs. baseline's 27.6 s —
+within noise. The prove cost is paying for the LDE + FRI commits
+over `cols × rows × 2^log_blowup` field elements, not for the
+activity. This confirms the suspicion in §5.3 (now removed) that
+the trace is mostly empty and the FRI commits dominate.
 
-Educated guesses, in rough order of suspicion:
+**Proof size is dominated by activity, not trace size.** TEST_PEARL
+8K: 180 KB (baseline) vs. 370 KB (heavy). Roughly 2× from
+activity. Doubling rows only nudges baseline from 180 KB to 193 KB
+to 208 KB — the FRI Merkle paths grow slowly with `log2(rows)`.
+The proof-size jump from baseline → activity comes from FRI
+needing to open more cells where the trace has actual structure
+(the commitment is more entropic when cells aren't zero).
 
-1. **LDE + FRI commits over a 1378-column trace.** The blowup is `2^log_blowup = 8`. So the LDE is 1378 × 8 × 8192 = ~90M field elements. Merkle-committing this is dominated by Tip5 sponge calls. This is where the bulk of the 43–51 s prove time goes.
-2. **Permutation trace generation (LogUp).** 7 buses × N rows × extension-field arithmetic. The 17% overhead from no-lookups to full LogUp is dominated by this.
-3. **Constraint quotient computation.** 1378 cols, max constraint degree 4 (gated `add3_unchecked`) means the quotient polynomial has degree ~3N. Evaluating it on the LDE is ~3N × 8 evaluations. Lots of polynomial multiplication.
-4. **The BLAKE3 round AIR's 16 half_g calls.** Each emits ~5 constraints (add3, xor_shift, add2, xor_shift, plus the booleanity). Times 8192 rows. ~640K constraint evaluations per row of the LDE.
+**Verify is essentially constant per profile.** TEST_PEARL: 29–32 ms
+across all shapes. PROD: 137–145 ms. Verifier cost is `O(num_queries)`
+× a constant per query, independent of trace size.
 
-### 5.3 Why the prove time might surprise
+**TEST_PEARL vs. PROD trade-off.** Prove ~2× slower (log_blowup 3
+vs. 2). Verify ~5× slower (80 queries vs. 16). Proof ~5× bigger.
+These are the costs of going from "fast tests" to "120-bit
+provable soundness."
 
-The trace is **mostly empty.** Baseline has all data columns at zero. Most of the 43 s is paying for cells that are zero. A real workload (say 1000 BLAKE3 hashes + 1000 matmul steps = 8000 active rows of 8192) wouldn't necessarily be much slower — the FRI commits scale with trace size, not with how interesting the cells are.
+**Trace generation is negligible.** `trace_gen` + `populate`
+combined is 5–45 ms across all shapes, vs. 27–110 s prove. Even
+at 32K rows, populate_lookup_freq finishes in 19 ms. This was an
+explicit concern in the original report's §6.1; benched, it's not
+a concern.
 
-**This is something to actually measure.** Section 6 below.
+**Light vs. heavy proof sizes are nearly identical.** TEST_PEARL
+8K: light = 360 KB, heavy = 370 KB. 1 BLAKE3 hash uses the same
+column-block structure as 100 hashes (the bit cells are still
+boolean, the lookups still fire, etc.). The marginal cost of
+*more* activity in the same kind is tiny.
 
-### 5.4 Memory
+### 5.3 Hot spots (now grounded)
 
-8192 × 1378 = ~11M Goldilocks × 8 bytes = ~90 MB main trace. The permutation trace adds ~17M extension-field elements × 16 bytes = ~270 MB. The LDE is 8× both. We're looking at single-digit GB of prover memory for the baseline shape. Big traces (e.g. 16K or 32K rows for a real PoW shape) would push this up linearly.
+1. **LDE + FRI commits over a 1378-column trace.** Confirmed: this is
+   the dominant cost. Prove time scales linearly with rows (the
+   LDE is `cols × rows × 2^log_blowup` cells). At log_blowup 3,
+   the LDE for 8K rows is `1378 × 8 × 8192 = ~90M Goldilocks
+   elements`. Merkle-committing this is dominated by Tip5 sponge
+   calls.
+2. **Permutation trace generation (LogUp).** Confirmed indirectly:
+   prove time for both PROD profiles roughly matches my Phase 14b
+   measurement of "no-lookups vs. full LogUp" overhead (~17%).
+   The LogUp permutation columns are ~17 extension-field columns
+   per row at our bus arity.
+3. **Constraint quotient computation.** Not directly measurable
+   without instrumenting Plonky3. Suspected to be a smaller
+   contributor than (1) and (2) given that activity level doesn't
+   move prove time.
+4. **BLAKE3 round AIR's per-row constraint emissions.** Same as (3):
+   not a wall-clock contributor at our trace shapes.
 
-Memory is *probably* fine on a workstation but could become the limit on commodity miners.
+### 5.4 Memory (still not directly measured)
+
+Estimated bounds, given the benches ran on a workstation with
+~32 GB RAM without OOM:
+
+- 8K rows × 1378 cols × 8 bytes = ~90 MB main trace.
+- ~17 EF cols × 8K rows × 16 bytes = ~2 MB permutation trace.
+- LDE: 8× both → ~720 MB.
+
+Single-digit GB at 32K rows. We never hit a memory wall in the
+benches, so we're at least below ~32 GB at 32K. Profiling memory
+explicitly remains future work.
 
 ---
 
-## 6. Where measurement is thinnest
+## 6. Where measurement is still thinnest
 
-The PROD bench is the only quantitative point we have. Everything else is "tests pass." Specific gaps:
+Bench commit `d6065d8` covered §6.1 and §6.2 (trace-generation
+timing + non-baseline shapes). Remaining gaps:
 
-### 6.1 No trace-generation timing
-
-`populate_lookup_freq` scans every row × every queried column. The hashmaps (for `noised_packed` and `cv_routing`) allocate. We don't know how long this takes vs. the actual proving. A miner that's running this loop wants to know if trace generation is 10% of prove time or 90%.
-
-**What to measure:**
-- `Instant::now()` around the trace-builder calls (place_blake3_hash, place_matmul_step, populate_lookup_freq).
-- Separate from prove + verify.
-
-### 6.2 No bench at non-baseline shapes
-
-- Trace lengths: 8192 (current), 16384, 32768.
-- With real chip activity: 1000 BLAKE3 hashes, 1000 matmul steps, 1000 jackpot rotations.
-- "Empty trace" vs. "fully-occupied trace" comparison.
-
-### 6.3 No FRI parameter sensitivity
+### 6.1 No FRI parameter sensitivity
 
 `CircuitConfig::PROD` pins `log_blowup = 3` and `num_queries = 80`. Other points on the (proof size, prove time, soundness) curve are unexplored:
 - `log_blowup = 4, num_queries = 60` — bigger LDE, fewer queries, maybe smaller proof?
 - `log_blowup = 2, num_queries = 120` — smaller LDE, more queries; faster prove, larger proof?
 
-### 6.4 No memory profiling
+### 6.2 No memory profiling
 
-Whether 4 GB or 16 GB is the threshold for the PROD bench matters for production scaling. `cargo flamegraph` / `dhat` would tell us. Right now we don't know.
+The benches all completed without OOM on a 32 GB workstation, but we don't have a hard upper bound. `cargo flamegraph` / `dhat` would tell us. This matters for commodity miners where 16 GB or 8 GB might be the cap.
 
-### 6.5 LogUp overhead isolation
+### 6.3 LogUp overhead isolation
 
 We know LogUp adds ~17% overhead vs. no lookups. But we don't know how that overhead distributes across the 7 buses. A bus with a 9-element key (`cv_routing`) vs. one with a 1-element key (`urange8`) presumably pays very different per-bus costs. Knowing this would help if we ever want to trim bus arity for performance.
 
-**What to measure:** ablation bench — enable buses one at a time and measure the marginal prove cost.
+**What to measure:** ablation bench — disable buses one at a time and measure the marginal prove cost.
 
-### 6.6 No CI bench tracking
+### 6.4 No CI bench tracking
 
-The bench number is recorded in PROGRESS.md but isn't a tracked artifact. A regression that doubles prove time would only be caught by someone manually re-running the ignored bench. A bench-tracking workflow (criterion + GH Actions) would let us catch perf regressions automatically.
+The bench numbers are now captured in this report but aren't a tracked artifact. A regression that doubles prove time would only be caught by someone manually re-running the ignored benches. A bench-tracking workflow (criterion + GH Actions) would let us catch perf regressions automatically.
+
+### 6.5 No PROD @ 32K
+
+Skipped from the run for time reasons (PROD scales linearly so ~220 s expected). If we ever ship 32K-row proofs, run it.
+
+### 6.6 No "real workload" bench
+
+The benches use synthetic activity (100 of each chip kind). A real PoW workload has specific structural patterns (the matmul chain dominates rows, BLAKE3 hashes have specific tweak/CV chain shapes). The benches probably approximate it well, but we haven't validated against an actual ai-pow puzzle solve.
 
 ---
 
@@ -294,7 +346,7 @@ to agree on conventions but agreement isn't mechanically checked.
 For the next session of work I'd prioritize, in order:
 
 1. ✅ **Property test the AIR ↔ trace-generator lookup agreement.** Landed Pass 1 (`68268e2`).
-2. **Bench at three trace shapes (8K, 16K, 32K) and three activity levels** — sets a real perf baseline.
+2. ✅ **Bench at three trace shapes and three activity levels.** Landed (`d6065d8`). Findings folded into §5 above.
 3. **Compress old M9.1 / M10.1b stacks out of the crate** — reduces cognitive load.
 4. ✅ **A `BusBinding`-style per-bus factor.** Landed Pass 2 (`1bc1d5e`) as free helpers in `bus_emit::*` rather than a trait; achieves the same legibility.
 
@@ -369,4 +421,48 @@ After this report's initial publication, two refactor passes landed.
 
 ---
 
-*Report compiled after Phase 14b complete (Phase 14b POC = `2e0c4e9`, sub-phases through `d767f7f`). Refactor passes landed in `68268e2` (Pass 1) and `1bc1d5e` (Pass 2). Test count: 381 unit + 7 KAT + 2 ignored PROD benches at time of latest update.*
+*Report compiled after Phase 14b complete (Phase 14b POC = `2e0c4e9`, sub-phases through `d767f7f`). Refactor passes landed in `68268e2` (Pass 1) and `1bc1d5e` (Pass 2). Bench suite landed in `d6065d8` with §5 + §6 updated to reflect measured numbers (this update). Test count: 381 unit + 7 KAT + 13 ignored benches.*
+
+---
+
+## 10. Bench-suite landing — three findings that change the next-step list
+
+Before the bench-suite landed (commit `d6065d8`), §5 was inference and §6.1–6.2 listed "no trace-gen timing" and "no non-baseline shapes" as the top measurement gaps. Both are now closed. Three concrete findings emerged:
+
+### 10.1 Prove time scales linearly in rows, not in activity
+
+| Profile | 8K | 16K | 32K |
+|---|---|---|---|
+| TEST_PEARL baseline | 27.6 s | 55.1 s | 110.8 s |
+| PROD baseline | 54.3 s | 108.4 s | (not run) |
+
+Doubling rows doubles prove time. Heavy activity at 8K (~12% of rows occupied) finishes within noise of the same-shape baseline (27.7 s vs. 27.6 s).
+
+**Implication:** the per-row cost is fixed by `cols × 2^log_blowup` regardless of cell content. If we want production-shape proving to be substantially faster, the lever is **either** column reduction (a hard refactor — the 1378 cols are mostly required by Pearl's design) **or** recursion compression (M12 territory). Trace-generator tuning won't move the needle; populate_lookup_freq is sub-50 ms even at 32K rows.
+
+### 10.2 Proof size doubles from baseline to "any activity"
+
+| Profile | 8K baseline | 8K light | 8K heavy |
+|---|---|---|---|
+| TEST_PEARL | 180 KB | 360 KB | 370 KB |
+| PROD | 892 KB | 1.65 MB | 1.69 MB |
+
+The proof-size step from baseline → light is large (~2×); the step from light → heavy is small (~3%). The Merkle path encoding compresses better for all-zero columns; the moment the trace has structure, the FRI openings get fatter.
+
+**Implication:** "real" proofs (any activity) are roughly twice the size of the bench's baseline numbers. PROD baseline 892 KB / activity 1.65 MB is the right rule of thumb. This still beats the original §5.1 estimate (683 KB at PROD baseline — looks like the original bench didn't measure encoded size).
+
+### 10.3 The next prioritization step changes
+
+The original §8 prioritization had benches as item #2. With #2 done, the new top remaining item is **#3: compress old M9.1 / M10.1b stacks out of the crate**. But the bench data also surfaces a new candidate worth adding to the list:
+
+**FRI parameter sensitivity sweep (§6.1).** Now that we have a measurement scaffold, sweeping `(log_blowup, num_queries)` would tell us if a different point on the soundness/cost curve produces a meaningfully smaller proof at PROD. With 1.65 MB at PROD-with-activity, anything saving 25% would matter for block-budget realities. This is a half-day's work given the bench infra exists.
+
+### 10.4 Bench numbers to remember
+
+For anyone planning around these:
+
+- **Baseline floor: 27 s / 180 KB at TEST_PEARL @ 8K.** This is the cheapest M10.1c proof shape.
+- **Production ceiling: ~108 s / ~1 MB at PROD @ 16K baseline; ~1.7 MB with activity.** Linearly worse at larger sizes.
+- **Verify is ~30 ms TEST / ~140 ms PROD across all shapes.** Cheap; not a constraint anywhere.
+
+Memory remained sub-OOM on a 32 GB machine for every bench. Real production miners with 16 GB may need to cap trace length at 16K until we have data.
