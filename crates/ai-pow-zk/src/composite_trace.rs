@@ -61,13 +61,13 @@ use crate::composite_layout::{
     AB_ID_LIMBS_LEN, AB_ID_LIMBS_START, A_ID, A_NOISED_START, A_NOISED_UNPACK_LEN,
     A_NOISED_UNPACK_START, BIT_REG_START, BLAKE3_CV_START, BLAKE3_MSG_START,
     BLAKE3_ROUND_START, B_ID, B_NOISED_START, B_NOISED_UNPACK_LEN, B_NOISED_UNPACK_START,
-    CUMSUM_TILE_START, CV_OR_TWEAK_PREP, CV_OUT_START, I8U8_FREQ, IRANGE7P1_FREQ,
-    IRANGE8_FREQ, IS_MSG_MAT, IS_RESET_CUMSUM, IS_UPDATE_CUMSUM, JACKPOT_MSG_START,
-    JACKPOT_SIZE, JACKPOT_SLOT_SEL_START, JACKPOT_X_BITS_START, MAT_FREQ, MAT_ID,
-    MAT_ID_LIMBS_LEN, MAT_ID_LIMBS_START, MAT_UNPACK_LEN, MAT_UNPACK_START,
-    NOISED_PACKED_START, NOISE_UNPACK_LEN, NOISE_UNPACK_START, STARK_ROW_IDX, TILE_D,
-    TILE_H, TOTAL_TRACE_WIDTH, UINT8_DATA_LEN, UINT8_DATA_START, URANGE13_FREQ,
-    URANGE8_FREQ,
+    CUMSUM_TILE_START, CV_IN_LEN, CV_IN_START, CV_OR_TWEAK_PREP, CV_OUT_FREQ,
+    CV_OUT_LEN, CV_OUT_START, I8U8_FREQ, IRANGE7P1_FREQ, IRANGE8_FREQ, IS_CV_IN,
+    IS_MSG_MAT, IS_RESET_CUMSUM, IS_UPDATE_CUMSUM, JACKPOT_MSG_START, JACKPOT_SIZE,
+    JACKPOT_SLOT_SEL_START, JACKPOT_X_BITS_START, MAT_FREQ, MAT_ID, MAT_ID_LIMBS_LEN,
+    MAT_ID_LIMBS_START, MAT_UNPACK_LEN, MAT_UNPACK_START, NOISED_PACKED_START,
+    NOISE_UNPACK_LEN, NOISE_UNPACK_START, STARK_ROW_IDX, TILE_D, TILE_H,
+    TOTAL_TRACE_WIDTH, UINT8_DATA_LEN, UINT8_DATA_START, URANGE13_FREQ, URANGE8_FREQ,
 };
 use crate::Val;
 
@@ -802,6 +802,51 @@ impl CompositeTrace {
         for r in 0..n {
             self.matrix.values[r * TOTAL_TRACE_WIDTH + MAT_FREQ] =
                 <Val as QuotientMap<u64>>::from_int(mat_freq[r]);
+        }
+
+        // ---- CV_ROUTING bus ----
+        //
+        // Table key: (STARK_ROW_IDX[r], CV_OUT[r][0..8]).
+        // Each row publishes one entry. Queries from rows with
+        // IS_CV_IN=1 emit (CV_OR_TWEAK_PREP[r], CV_IN[r][0..8]).
+        let mut cv_freq = vec![0u64; n];
+        let mut cv_key_to_first_row: hashbrown::HashMap<Vec<u64>, usize> =
+            hashbrown::HashMap::new();
+        for r in 0..n {
+            let base = r * TOTAL_TRACE_WIDTH;
+            let mut key = Vec::with_capacity(1 + CV_OUT_LEN);
+            key.push(self.matrix.values[base + STARK_ROW_IDX].as_canonical_u64());
+            for i in 0..CV_OUT_LEN {
+                key.push(
+                    self.matrix.values[base + CV_OUT_START + i].as_canonical_u64(),
+                );
+            }
+            cv_key_to_first_row.entry(key).or_insert(r);
+        }
+        for r in 0..n {
+            let base = r * TOTAL_TRACE_WIDTH;
+            let is_cv_in =
+                self.matrix.values[base + IS_CV_IN].as_canonical_u64();
+            if is_cv_in == 0 {
+                continue;
+            }
+            let mut query = Vec::with_capacity(1 + CV_IN_LEN);
+            query.push(
+                self.matrix.values[base + CV_OR_TWEAK_PREP].as_canonical_u64(),
+            );
+            for i in 0..CV_IN_LEN {
+                query.push(
+                    self.matrix.values[base + CV_IN_START + i].as_canonical_u64(),
+                );
+            }
+            if let Some(&tr) = cv_key_to_first_row.get(&query) {
+                cv_freq[tr] += is_cv_in;
+            }
+            // No-match queries → unbalanced bus → LogUp rejects.
+        }
+        for r in 0..n {
+            self.matrix.values[r * TOTAL_TRACE_WIDTH + CV_OUT_FREQ] =
+                <Val as QuotientMap<u64>>::from_int(cv_freq[r]);
         }
     }
 

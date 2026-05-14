@@ -48,14 +48,17 @@ use crate::composite_full_air::CompositeFullAir;
 use crate::composite_layout::{
     AB_ID_LIMBS_LEN, AB_ID_LIMBS_START, A_ID, A_NOISED_START, A_NOISED_UNPACK_LEN,
     A_NOISED_UNPACK_START, B_ID, B_NOISED_START, B_NOISED_UNPACK_LEN, B_NOISED_UNPACK_START,
+    CV_IN_LEN, CV_IN_START, CV_OR_TWEAK_PREP, CV_OUT_FREQ, CV_OUT_LEN, CV_OUT_START,
     I8U8_FREQ, I8U8_TABLE, IRANGE7P1_FREQ, IRANGE7P1_TABLE, IRANGE8_FREQ, IRANGE8_TABLE,
-    IS_MSG_MAT, IS_RESET_CUMSUM, IS_UPDATE_CUMSUM, MAT_FREQ, MAT_ID, MAT_ID_LIMBS_LEN,
-    MAT_ID_LIMBS_START, MAT_UNPACK_LEN, MAT_UNPACK_START, NOISED_PACKED_START,
-    NOISE_UNPACK_LEN, NOISE_UNPACK_START, TOTAL_TRACE_WIDTH, UINT8_DATA_LEN,
-    UINT8_DATA_START, URANGE13_FREQ, URANGE13_TABLE, URANGE8_FREQ, URANGE8_TABLE,
+    IS_CV_IN, IS_MSG_MAT, IS_RESET_CUMSUM, IS_UPDATE_CUMSUM, MAT_FREQ, MAT_ID,
+    MAT_ID_LIMBS_LEN, MAT_ID_LIMBS_START, MAT_UNPACK_LEN, MAT_UNPACK_START,
+    NOISED_PACKED_START, NOISE_UNPACK_LEN, NOISE_UNPACK_START, STARK_ROW_IDX,
+    TOTAL_TRACE_WIDTH, UINT8_DATA_LEN, UINT8_DATA_START, URANGE13_FREQ, URANGE13_TABLE,
+    URANGE8_FREQ, URANGE8_TABLE,
 };
 use crate::composite_lookups::{
-    BUS_I8U8, BUS_IRANGE7P1, BUS_IRANGE8, BUS_NOISED_PACKED, BUS_URANGE13, BUS_URANGE8,
+    BUS_CV_ROUTING, BUS_I8U8, BUS_IRANGE7P1, BUS_IRANGE8, BUS_NOISED_PACKED,
+    BUS_URANGE13, BUS_URANGE8,
 };
 
 /// Lookup-aware composite AIR.
@@ -264,6 +267,45 @@ where
                 <AB::Var as Into<AB::Expr>>::into(cur[B_NOISED_START + 1]),
             ],
             matmul_active,
+            1,
+        );
+
+        // ---- (2g) CV_ROUTING bus (BLAKE3 chaining-value routing) ----
+        //
+        // Table key: (STARK_ROW_IDX, CV_OUT[0..8]) per row, with
+        // multiplicity CV_OUT_FREQ. Every row publishes its
+        // CV_OUT vector indexed by its STARK_ROW_IDX.
+        //
+        // Query side: rows with IS_CV_IN = 1 emit
+        //   (CV_OR_TWEAK_PREP, CV_IN[0..8])
+        // The CV_OR_TWEAK_PREP cell on these rows holds the
+        // referenced row's STARK_ROW_IDX (not a BLAKE3 tweak —
+        // the dual use is gated by IS_NEW_BLAKE vs IS_CV_IN).
+        //
+        // This enforces that the CV_IN value brought into a hash
+        // chain step actually came from a previously-published
+        // CV_OUT at the claimed row.
+        let mut table_key: Vec<AB::Expr> = Vec::with_capacity(1 + CV_OUT_LEN);
+        table_key.push(cur[STARK_ROW_IDX].into());
+        for i in 0..CV_OUT_LEN {
+            table_key.push(cur[CV_OUT_START + i].into());
+        }
+        builder.push_interaction(
+            BUS_CV_ROUTING,
+            table_key,
+            -<AB::Var as Into<AB::Expr>>::into(cur[CV_OUT_FREQ]),
+            0,
+        );
+
+        let mut query_key: Vec<AB::Expr> = Vec::with_capacity(1 + CV_IN_LEN);
+        query_key.push(cur[CV_OR_TWEAK_PREP].into());
+        for i in 0..CV_IN_LEN {
+            query_key.push(cur[CV_IN_START + i].into());
+        }
+        builder.push_interaction(
+            BUS_CV_ROUTING,
+            query_key,
+            <AB::Var as Into<AB::Expr>>::into(cur[IS_CV_IN]),
             1,
         );
     }
@@ -795,6 +837,116 @@ mod tests {
         assert!(
             res.is_err(),
             "NOISED_PACKED inconsistent with MAT_UNPACK rejected (input chip + LogUp); got {:?}",
+            res
+        );
+    }
+
+    // =================================================================
+    //  CV_ROUTING bus (BLAKE3 chaining-value routing)
+    // =================================================================
+
+    /// Baseline trace already balances CV_ROUTING: every row
+    /// publishes (STARK_ROW_IDX, CV_OUT) with CV_OUT_FREQ = 0, and
+    /// no row sets IS_CV_IN. populate_lookup_freq leaves
+    /// CV_OUT_FREQ at zero. Verifies.
+    #[test]
+    fn baseline_cv_routing_balances() {
+        let cfg = build_stark_config(&test_zk_params(), &CircuitConfig::TEST_PEARL);
+        let mut trace = CompositeTrace::baseline_min();
+        trace.populate_lookup_freq();
+        run_batch(&cfg, &trace.matrix)
+            .expect("baseline cv_routing must verify");
+    }
+
+    /// Place a CV_IN reference: row 100 reads the CV_OUT
+    /// "published" at row 50. With CV_OUT all zero on row 50
+    /// (baseline), CV_IN must also be all zero on row 100;
+    /// CV_OR_TWEAK_PREP holds the referenced row index = 50.
+    /// populate_lookup_freq increments CV_OUT_FREQ[50].
+    #[test]
+    fn cv_routing_zero_cv_reference_balances() {
+        let cfg = build_stark_config(&test_zk_params(), &CircuitConfig::TEST_PEARL);
+        let mut trace = CompositeTrace::baseline_min();
+
+        // Row 100: IS_CV_IN = 1, CV_OR_TWEAK_PREP = 50,
+        // CV_IN[0..8] = 0 (matches row 50's all-zero CV_OUT).
+        let base = 100 * TOTAL_TRACE_WIDTH;
+        let row = &mut trace.matrix.values[base..base + TOTAL_TRACE_WIDTH];
+        let mut selectors = [false; 21];
+        selectors[7] = true; // IS_CV_IN
+        ControlChip.fill_row(&selectors, 0, row);
+        row[CV_OR_TWEAK_PREP] = <Val as QuotientMap<u64>>::from_int(50);
+        // CV_IN[0..8] left at 0.
+
+        trace.populate_lookup_freq();
+        run_batch(&cfg, &trace.matrix)
+            .expect("cv_routing with zero CV at row 50 must verify");
+    }
+
+    /// Place a CV_IN reference to a NON-EXISTENT row+CV pair:
+    /// (CV_OR_TWEAK_PREP=99999, CV_IN=0). No table row publishes
+    /// this key → LogUp rejects.
+    #[test]
+    fn cv_routing_dangling_reference_rejected() {
+        let cfg = build_stark_config(&test_zk_params(), &CircuitConfig::TEST_PEARL);
+        let mut trace = CompositeTrace::baseline_min();
+
+        let base = 100 * TOTAL_TRACE_WIDTH;
+        let row = &mut trace.matrix.values[base..base + TOTAL_TRACE_WIDTH];
+        let mut selectors = [false; 21];
+        selectors[7] = true; // IS_CV_IN
+        ControlChip.fill_row(&selectors, 0, row);
+        // Reference row 99999 (out of trace) — STARK_ROW_IDX only
+        // goes up to height-1 = 8191.
+        row[CV_OR_TWEAK_PREP] = <Val as QuotientMap<u64>>::from_int(99999);
+
+        trace.populate_lookup_freq();
+        let res = run_batch(&cfg, &trace.matrix);
+        assert!(
+            res.is_err(),
+            "dangling CV reference must reject; got {:?}",
+            res
+        );
+    }
+
+    /// Place a CV_IN reference to row 50 with CV_IN claiming a
+    /// non-zero CV that doesn't match row 50's actual CV_OUT (= 0).
+    /// LogUp rejects (the (50, non-zero) key isn't published).
+    #[test]
+    fn cv_routing_wrong_cv_value_rejected() {
+        let cfg = build_stark_config(&test_zk_params(), &CircuitConfig::TEST_PEARL);
+        let mut trace = CompositeTrace::baseline_min();
+
+        let base = 100 * TOTAL_TRACE_WIDTH;
+        let row = &mut trace.matrix.values[base..base + TOTAL_TRACE_WIDTH];
+        let mut selectors = [false; 21];
+        selectors[7] = true;
+        ControlChip.fill_row(&selectors, 0, row);
+        row[CV_OR_TWEAK_PREP] = <Val as QuotientMap<u64>>::from_int(50);
+        // Claim CV_IN[0] = 12345 (no row published this).
+        row[CV_IN_START] = <Val as QuotientMap<u64>>::from_int(12345);
+
+        trace.populate_lookup_freq();
+        let res = run_batch(&cfg, &trace.matrix);
+        assert!(
+            res.is_err(),
+            "wrong CV value must reject; got {:?}",
+            res
+        );
+    }
+
+    /// Tamper CV_OUT_FREQ to over-claim consumption → reject.
+    #[test]
+    fn tampered_cv_out_freq_rejected_by_logup() {
+        let cfg = build_stark_config(&test_zk_params(), &CircuitConfig::TEST_PEARL);
+        let mut trace = CompositeTrace::baseline_min();
+        trace.populate_lookup_freq();
+        let target = 50 * TOTAL_TRACE_WIDTH + CV_OUT_FREQ;
+        trace.matrix.values[target] = <Val as QuotientMap<u64>>::from_int(1);
+        let res = run_batch(&cfg, &trace.matrix);
+        assert!(
+            res.is_err(),
+            "over-claimed CV_OUT_FREQ must reject; got {:?}",
             res
         );
     }
