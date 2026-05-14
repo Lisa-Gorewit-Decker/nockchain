@@ -38,8 +38,8 @@
 //! width will be a function of this once the chip layout in
 //! `crate::air` is finalized.
 
-use p3_field::PrimeField64;
 use p3_field::integers::QuotientMap;
+use p3_field::PrimeField64;
 use p3_goldilocks::Goldilocks;
 
 use crate::params::ZkParams;
@@ -149,7 +149,11 @@ impl Witness {
         assert_eq!(self.e_r_pos.len(), want.e_r_pos, "e_r_pos length");
         assert_eq!(self.f_r.len(), want.f_r, "f_r length");
         assert_eq!(self.f_l_pos.len(), want.f_l_pos, "f_l_pos length");
-        assert_eq!(self.tile_states.len(), want.tile_states, "tile_states length");
+        assert_eq!(
+            self.tile_states.len(),
+            want.tile_states,
+            "tile_states length"
+        );
 
         let mut out = Vec::with_capacity(field_element_count(params));
         for v in &self.a_rows {
@@ -282,7 +286,10 @@ fn i32_to_goldilocks(v: i32) -> Goldilocks {
 fn take_i8(values: &[Goldilocks], idx: &mut usize) -> Result<i8, DecodeError> {
     let v = values[*idx].as_canonical_u64();
     if v > 0xff {
-        return Err(DecodeError::I8OutOfRange { index: *idx, value: v });
+        return Err(DecodeError::I8OutOfRange {
+            index: *idx,
+            value: v,
+        });
     }
     *idx += 1;
     Ok(v as u8 as i8)
@@ -332,13 +339,18 @@ mod tests {
     fn sample(params: &ZkParams) -> Witness {
         let lens = Witness::expected_lengths(params);
         let i8s = |n: usize, salt: u32| -> Vec<i8> {
-            (0..n).map(|i| ((i as u32).wrapping_mul(salt) as i32 % 256 - 128) as i8).collect()
+            (0..n)
+                .map(|i| ((i as u32).wrapping_mul(salt) as i32 % 256 - 128) as i8)
+                .collect()
         };
         let pairs = |n: usize, salt: u32| -> Vec<(u32, u32)> {
             (0..n)
                 .map(|i| {
                     let r = (i as u32).wrapping_mul(salt);
-                    (r % (params.noise_rank as u32), (r + 1) % (params.noise_rank as u32))
+                    (
+                        r % (params.noise_rank as u32),
+                        (r + 1) % (params.noise_rank as u32),
+                    )
                 })
                 .collect()
         };
@@ -407,7 +419,9 @@ mod tests {
         let lens = Witness::expected_lengths(&p);
         // Build a witness with extreme i8 values at every cell.
         let extreme = |n: usize| -> Vec<i8> {
-            (0..n).map(|i| if i % 2 == 0 { i8::MIN } else { i8::MAX }).collect()
+            (0..n)
+                .map(|i| if i % 2 == 0 { i8::MIN } else { i8::MAX })
+                .collect()
         };
         let w = Witness {
             a_rows: extreme(lens.a_rows),
@@ -504,7 +518,10 @@ mod tests {
         let mut enc = w.to_field_elements(&p);
         enc[first_pos_idx] = <Goldilocks as QuotientMap<u64>>::from_int(1u64 << 32);
         let err = Witness::from_field_elements(&enc, &p).unwrap_err();
-        assert!(matches!(err, DecodeError::U32OutOfRange { .. }), "got {err:?}");
+        assert!(
+            matches!(err, DecodeError::U32OutOfRange { .. }),
+            "got {err:?}"
+        );
     }
 
     #[test]
@@ -513,16 +530,15 @@ mod tests {
         let w = sample(&p);
         // Compute the index of the first tile_state cell.
         let lens = Witness::expected_lengths(&p);
-        let first_state_idx = lens.a_rows
-            + lens.b_cols
-            + lens.e_l
-            + lens.e_r_pos * 2
-            + lens.f_r
-            + lens.f_l_pos * 2;
+        let first_state_idx =
+            lens.a_rows + lens.b_cols + lens.e_l + lens.e_r_pos * 2 + lens.f_r + lens.f_l_pos * 2;
         let mut enc = w.to_field_elements(&p);
         enc[first_state_idx] = <Goldilocks as QuotientMap<u64>>::from_int(1u64 << 32);
         let err = Witness::from_field_elements(&enc, &p).unwrap_err();
-        assert!(matches!(err, DecodeError::I32OutOfRange { .. }), "got {err:?}");
+        assert!(
+            matches!(err, DecodeError::I32OutOfRange { .. }),
+            "got {err:?}"
+        );
     }
 
     #[test]

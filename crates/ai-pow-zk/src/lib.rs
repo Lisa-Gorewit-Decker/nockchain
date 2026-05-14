@@ -52,6 +52,7 @@ pub mod air;
 pub mod blake3_air;
 pub mod circuit;
 pub mod input_chip;
+pub mod matmul_chip;
 pub mod params;
 pub mod public;
 pub mod witness;

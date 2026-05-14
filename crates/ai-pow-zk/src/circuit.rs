@@ -28,7 +28,7 @@ use p3_merkle_tree::MerkleTreeMmcs;
 use p3_symmetric::{
     CryptographicPermutation, PaddingFreeSponge, Permutation, TruncatedPermutation,
 };
-use p3_uni_stark::{StarkConfig, StarkGenericConfig};
+use p3_uni_stark::StarkConfig;
 
 use crate::params::ZkParams;
 
@@ -103,11 +103,11 @@ pub type Tip5Compress = TruncatedPermutation<Tip5Perm, 2, 5, 16>;
 /// hash multiple field elements per call. Tip5 is run lane-by-lane via
 /// the unpacking adapter `impl Permutation<[PackedGl; 16]>` below.
 pub type ValMmcs = MerkleTreeMmcs<
-    /* P */            <Goldilocks as Field>::Packing,
-    /* PW */           <Goldilocks as Field>::Packing,
-    /* H */            Tip5Sponge,
-    /* C */            Tip5Compress,
-    /* N (arity) */    2,
+    /* P */ <Goldilocks as Field>::Packing,
+    /* PW */ <Goldilocks as Field>::Packing,
+    /* H */ Tip5Sponge,
+    /* C */ Tip5Compress,
+    /* N (arity) */ 2,
     /* DIGEST_ELEMS */ 5,
 >;
 
@@ -252,8 +252,9 @@ impl CryptographicPermutation<[Goldilocks; Tip5Perm::WIDTH]> for Tip5Perm {}
 
 #[cfg(target_arch = "aarch64")]
 mod packed_perm {
-    use super::*;
     use p3_goldilocks::PackedGoldilocksNeon;
+
+    use super::*;
 
     impl Permutation<[PackedGoldilocksNeon; Tip5Perm::WIDTH]> for Tip5Perm {
         fn permute_mut(&self, input: &mut [PackedGoldilocksNeon; Tip5Perm::WIDTH]) {
@@ -277,8 +278,9 @@ mod packed_perm {
 
 #[cfg(all(target_arch = "x86_64", target_feature = "avx512f"))]
 mod packed_perm {
-    use super::*;
     use p3_goldilocks::PackedGoldilocksAVX512;
+
+    use super::*;
 
     impl Permutation<[PackedGoldilocksAVX512; Tip5Perm::WIDTH]> for Tip5Perm {
         fn permute_mut(&self, input: &mut [PackedGoldilocksAVX512; Tip5Perm::WIDTH]) {
@@ -306,8 +308,9 @@ mod packed_perm {
     not(target_feature = "avx512f")
 ))]
 mod packed_perm {
-    use super::*;
     use p3_goldilocks::PackedGoldilocksAVX2;
+
+    use super::*;
 
     impl Permutation<[PackedGoldilocksAVX2; Tip5Perm::WIDTH]> for Tip5Perm {
         fn permute_mut(&self, input: &mut [PackedGoldilocksAVX2; Tip5Perm::WIDTH]) {
@@ -438,8 +441,7 @@ mod tests {
         // Plonky3's `Permutation<T>` blanket-implements `permute` from
         // `permute_mut` via `Clone`. Confirm both paths agree.
         let perm = Tip5Perm;
-        let state: [Goldilocks; 16] =
-            from_u64s(&std::array::from_fn(|i| (i as u64) * 17 + 5));
+        let state: [Goldilocks; 16] = from_u64s(&std::array::from_fn(|i| (i as u64) * 17 + 5));
         let via_owned = perm.permute(state);
         let mut via_mut = state;
         perm.permute_mut(&mut via_mut);
@@ -619,14 +621,14 @@ mod tests {
         use p3_symmetric::{PseudoCompressionFunction, TruncatedPermutation};
         let perm = Tip5Perm;
         let compress: TruncatedPermutation<Tip5Perm, 2, 5, 16> = TruncatedPermutation::new(perm);
-        let left: [Goldilocks; 5] = from_u64s(&[10, 20, 30, 40, 50, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0])
-            [..5]
-            .try_into()
-            .unwrap();
-        let right: [Goldilocks; 5] = from_u64s(&[60, 70, 80, 90, 100, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0])
-            [..5]
-            .try_into()
-            .unwrap();
+        let left: [Goldilocks; 5] =
+            from_u64s(&[10, 20, 30, 40, 50, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0])[..5]
+                .try_into()
+                .unwrap();
+        let right: [Goldilocks; 5] =
+            from_u64s(&[60, 70, 80, 90, 100, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0])[..5]
+                .try_into()
+                .unwrap();
         let c1 = compress.compress([left, right]);
         let c2 = compress.compress([left, right]);
         let c1_u64: [u64; 5] = std::array::from_fn(|i| c1[i].as_canonical_u64());

@@ -24,8 +24,8 @@
 //! pins to these exact values; the verifier reads back the same vector
 //! through the standard `p3_uni_stark::verify` signature.
 
-use p3_field::PrimeField64;
 use p3_field::integers::QuotientMap;
+use p3_field::PrimeField64;
 use p3_goldilocks::Goldilocks;
 
 /// Number of Goldilocks public-input elements (see field encoding).
@@ -147,9 +147,7 @@ fn take_hash(values: &[Goldilocks], idx: &mut usize) -> Result<[u8; 32], DecodeE
 /// each as a Goldilocks element, and push onto `out`.
 fn append_hash(out: &mut Vec<Goldilocks>, hash: &[u8; 32]) {
     for chunk_idx in 0..8 {
-        let bytes: [u8; 4] = hash[chunk_idx * 4..(chunk_idx + 1) * 4]
-            .try_into()
-            .unwrap();
+        let bytes: [u8; 4] = hash[chunk_idx * 4..(chunk_idx + 1) * 4].try_into().unwrap();
         let v = u32::from_le_bytes(bytes);
         out.push(u32_to_goldilocks(v));
     }
