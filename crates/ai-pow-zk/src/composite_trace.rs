@@ -58,12 +58,32 @@ use crate::chips::i8u8::I8U8Chip;
 use crate::chips::matmul::compute::{compute_row, CUMSUM_LEN};
 use crate::chips::range_table::{IRange7P1Chip, IRange8Chip, URange13Chip, URange8Chip};
 use crate::composite_layout::{
-    A_NOISED_UNPACK_START, BIT_REG_START, BLAKE3_CV_START, BLAKE3_MSG_START, BLAKE3_ROUND_START,
-    B_NOISED_UNPACK_START, CUMSUM_TILE_START, CV_OR_TWEAK_PREP, CV_OUT_START, JACKPOT_MSG_START,
-    JACKPOT_SIZE, JACKPOT_SLOT_SEL_START, JACKPOT_X_BITS_START, STARK_ROW_IDX, TILE_D, TILE_H,
-    TOTAL_TRACE_WIDTH,
+    AB_ID_LIMBS_LEN, AB_ID_LIMBS_START, A_NOISED_UNPACK_LEN, A_NOISED_UNPACK_START,
+    BIT_REG_START, BLAKE3_CV_START, BLAKE3_MSG_START, BLAKE3_ROUND_START, B_NOISED_UNPACK_LEN,
+    B_NOISED_UNPACK_START, CUMSUM_TILE_START, CV_OR_TWEAK_PREP, CV_OUT_START,
+    IRANGE7P1_FREQ, IRANGE8_FREQ, IS_MSG_MAT, JACKPOT_MSG_START, JACKPOT_SIZE,
+    JACKPOT_SLOT_SEL_START, JACKPOT_X_BITS_START, MAT_ID_LIMBS_LEN, MAT_ID_LIMBS_START,
+    MAT_UNPACK_LEN, MAT_UNPACK_START, NOISE_UNPACK_LEN, NOISE_UNPACK_START, STARK_ROW_IDX,
+    TILE_D, TILE_H, TOTAL_TRACE_WIDTH, UINT8_DATA_LEN, UINT8_DATA_START, URANGE13_FREQ,
+    URANGE8_FREQ,
 };
 use crate::Val;
+
+/// Interpret a Goldilocks field element as a signed integer
+/// (used when scanning trace cells that hold signed values like
+/// i7+1 noise or i8 matrix bytes). Goldilocks' modulus is
+/// `p = 2^64 − 2^32 + 1`. The canonical representation of `-k`
+/// (for small `k`) is `p − k`, so any element above `p / 2`
+/// represents a negative number.
+fn goldilocks_to_signed(raw: u64) -> i64 {
+    // Goldilocks modulus = 18446744069414584321 (2^64 − 2^32 + 1).
+    const GOLDILOCKS_P: u64 = 0xFFFF_FFFF_0000_0001;
+    if raw > GOLDILOCKS_P / 2 {
+        (raw as i128 - GOLDILOCKS_P as i128) as i64
+    } else {
+        raw as i64
+    }
+}
 
 /// A composite trace ready for proving by
 /// [`crate::composite_full_air::CompositeFullAir`].
@@ -518,6 +538,162 @@ impl CompositeTrace {
                 self.matrix.values[base + JACKPOT_MSG_START + i] =
                     <Val as QuotientMap<u64>>::from_int(state[i] as u64);
             }
+        }
+    }
+
+    /// Populate every `*_FREQ` column in the trace so the LogUp
+    /// argument balances when proven via
+    /// [`crate::composite_full_air_with_lookups::CompositeFullAirWithLookups`].
+    ///
+    /// Each lookup bus has a fixed set of "query cells" — trace
+    /// cells whose value is checked against a range/conversion
+    /// table. This routine scans every row, counts how many times
+    /// each table value is queried, and writes the count into the
+    /// corresponding `*_FREQ` column at the row where the table
+    /// holds that value.
+    ///
+    /// The current implementation handles four range buses:
+    ///   * `urange8` — UINT8_DATA[0..8] gated by IS_MSG_MAT.
+    ///   * `urange13` — MAT_ID_LIMBS[0..2] + AB_ID_LIMBS[0..4]
+    ///     unconditionally.
+    ///   * `irange7p1` — NOISE_UNPACK[0..8] unconditionally.
+    ///   * `irange8` — A_NOISED_UNPACK[0..32] +
+    ///     B_NOISED_UNPACK[0..32] + MAT_UNPACK[0..8]
+    ///     unconditionally.
+    ///
+    /// Call this after constructing a trace (baseline + any
+    /// instruction placements) and BEFORE proving via
+    /// `prove_batch`. The LogUp constraints will reject any trace
+    /// where a query cell holds an out-of-range value, regardless
+    /// of how `*_FREQ` is set.
+    pub fn populate_lookup_freq(&mut self) {
+        use p3_field::integers::QuotientMap;
+        use p3_field::PrimeField64;
+
+        let n = self.height();
+
+        // ---- URange8 (u8 ∈ [0, 256)) ----
+        // Queries: UINT8_DATA[0..8] when IS_MSG_MAT = 1.
+        let mut u8_count = [0u64; 256];
+        for r in 0..n {
+            let base = r * TOTAL_TRACE_WIDTH;
+            let is_msg_mat =
+                self.matrix.values[base + IS_MSG_MAT].as_canonical_u64();
+            if is_msg_mat == 1 {
+                for i in 0..UINT8_DATA_LEN {
+                    let v =
+                        self.matrix.values[base + UINT8_DATA_START + i].as_canonical_u64();
+                    if (v as usize) < 256 {
+                        u8_count[v as usize] += 1;
+                    }
+                    // Out-of-range u8 cells are caught by the LogUp
+                    // imbalance at proof time (no table entry to
+                    // consume them).
+                }
+            }
+        }
+        // Write FREQ on rows 0..256 (the URANGE8_TABLE rows). Rows
+        // 256..n have TABLE = 255 (padding); we keep their FREQ at
+        // 0 so they don't double-count.
+        for v in 0..256.min(n) {
+            self.matrix.values[v * TOTAL_TRACE_WIDTH + URANGE8_FREQ] =
+                <Val as QuotientMap<u64>>::from_int(u8_count[v]);
+        }
+        for v in 256.min(n)..n {
+            self.matrix.values[v * TOTAL_TRACE_WIDTH + URANGE8_FREQ] = Val::default();
+        }
+
+        // ---- URange13 (u13 ∈ [0, 8192)) ----
+        // Queries: MAT_ID_LIMBS[0..2] + AB_ID_LIMBS[0..4] every row.
+        let mut u13_count = vec![0u64; 8192];
+        for r in 0..n {
+            let base = r * TOTAL_TRACE_WIDTH;
+            for i in 0..MAT_ID_LIMBS_LEN {
+                let v = self.matrix.values[base + MAT_ID_LIMBS_START + i]
+                    .as_canonical_u64();
+                if (v as usize) < 8192 {
+                    u13_count[v as usize] += 1;
+                }
+            }
+            for i in 0..AB_ID_LIMBS_LEN {
+                let v = self.matrix.values[base + AB_ID_LIMBS_START + i]
+                    .as_canonical_u64();
+                if (v as usize) < 8192 {
+                    u13_count[v as usize] += 1;
+                }
+            }
+        }
+        for v in 0..8192.min(n) {
+            self.matrix.values[v * TOTAL_TRACE_WIDTH + URANGE13_FREQ] =
+                <Val as QuotientMap<u64>>::from_int(u13_count[v]);
+        }
+        for v in 8192.min(n)..n {
+            self.matrix.values[v * TOTAL_TRACE_WIDTH + URANGE13_FREQ] = Val::default();
+        }
+
+        // ---- IRange7P1 (i7+1 ∈ [-64, 64], 129 values) ----
+        // Queries: NOISE_UNPACK[0..8] every row.
+        // Map signed value v → table-row index (v + 64).
+        let mut i7p1_count = [0u64; 129];
+        for r in 0..n {
+            let base = r * TOTAL_TRACE_WIDTH;
+            for i in 0..NOISE_UNPACK_LEN {
+                let raw = self.matrix.values[base + NOISE_UNPACK_START + i]
+                    .as_canonical_u64();
+                let signed = goldilocks_to_signed(raw);
+                if (-64..=64).contains(&signed) {
+                    i7p1_count[(signed + 64) as usize] += 1;
+                }
+            }
+        }
+        for v in 0..129.min(n) {
+            self.matrix.values[v * TOTAL_TRACE_WIDTH + IRANGE7P1_FREQ] =
+                <Val as QuotientMap<u64>>::from_int(i7p1_count[v]);
+        }
+        for v in 129.min(n)..n {
+            self.matrix.values[v * TOTAL_TRACE_WIDTH + IRANGE7P1_FREQ] = Val::default();
+        }
+
+        // ---- IRange8 (i8 ∈ [-128, 127], 256 values) ----
+        // Queries: A_NOISED_UNPACK[0..32] + B_NOISED_UNPACK[0..32]
+        // + MAT_UNPACK[0..8] every row.
+        let mut i8_count = [0u64; 256];
+        let scan_i8_cells = |start: usize, len: usize, dst: &mut [u64; 256], values: &[Val]| {
+            for r in 0..n {
+                let base = r * TOTAL_TRACE_WIDTH;
+                for i in 0..len {
+                    let raw = values[base + start + i].as_canonical_u64();
+                    let signed = goldilocks_to_signed(raw);
+                    if (-128..=127).contains(&signed) {
+                        dst[(signed + 128) as usize] += 1;
+                    }
+                }
+            }
+        };
+        scan_i8_cells(
+            A_NOISED_UNPACK_START,
+            A_NOISED_UNPACK_LEN,
+            &mut i8_count,
+            &self.matrix.values,
+        );
+        scan_i8_cells(
+            B_NOISED_UNPACK_START,
+            B_NOISED_UNPACK_LEN,
+            &mut i8_count,
+            &self.matrix.values,
+        );
+        scan_i8_cells(
+            MAT_UNPACK_START,
+            MAT_UNPACK_LEN,
+            &mut i8_count,
+            &self.matrix.values,
+        );
+        for v in 0..256.min(n) {
+            self.matrix.values[v * TOTAL_TRACE_WIDTH + IRANGE8_FREQ] =
+                <Val as QuotientMap<u64>>::from_int(i8_count[v]);
+        }
+        for v in 256.min(n)..n {
+            self.matrix.values[v * TOTAL_TRACE_WIDTH + IRANGE8_FREQ] = Val::default();
         }
     }
 
