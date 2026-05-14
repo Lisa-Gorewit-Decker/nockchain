@@ -48,6 +48,7 @@
 use p3_matrix::dense::RowMajorMatrix;
 
 use crate::chips::blake3::chip::pack_tweak;
+use crate::chips::jackpot::compute::{apply_jackpot_step, bit_decompose_u32, one_hot_select};
 use crate::chips::blake3::compress::{
     blake3_permute_msg, compress_full_state, round_with_snapshots, Blake3Tweak, BLAKE3_IV,
 };
@@ -57,9 +58,10 @@ use crate::chips::i8u8::I8U8Chip;
 use crate::chips::matmul::compute::{compute_row, CUMSUM_LEN};
 use crate::chips::range_table::{IRange7P1Chip, IRange8Chip, URange13Chip, URange8Chip};
 use crate::composite_layout::{
-    A_NOISED_UNPACK_START, BLAKE3_CV_START, BLAKE3_MSG_START, BLAKE3_ROUND_START,
-    B_NOISED_UNPACK_START, CUMSUM_TILE_START, CV_OR_TWEAK_PREP, CV_OUT_START, STARK_ROW_IDX,
-    TILE_D, TILE_H, TOTAL_TRACE_WIDTH,
+    A_NOISED_UNPACK_START, BIT_REG_START, BLAKE3_CV_START, BLAKE3_MSG_START, BLAKE3_ROUND_START,
+    B_NOISED_UNPACK_START, CUMSUM_TILE_START, CV_OR_TWEAK_PREP, CV_OUT_START, JACKPOT_MSG_START,
+    JACKPOT_SIZE, JACKPOT_SLOT_SEL_START, JACKPOT_X_BITS_START, STARK_ROW_IDX, TILE_D, TILE_H,
+    TOTAL_TRACE_WIDTH,
 };
 use crate::Val;
 
@@ -422,6 +424,103 @@ impl CompositeTrace {
         cv_out
     }
 
+    /// Place one jackpot step at `row_idx`. Updates slot
+    /// `selected_slot` of the 16-slot state via rotate-XOR-13 with
+    /// `x`. `state` is the 16-slot value visible on this row (the
+    /// "old" value entering the step). Returns the post-step
+    /// state.
+    ///
+    /// The caller is responsible for threading the resulting state
+    /// into the next row's JACKPOT_MSG (see
+    /// [`fill_jackpot_passthrough`](Self::fill_jackpot_passthrough)
+    /// for the bulk-fill helper).
+    pub fn place_jackpot_step(
+        &mut self,
+        row_idx: usize,
+        state: &[u32; JACKPOT_SIZE],
+        selected_slot: usize,
+        x: u32,
+        is_active: bool,
+    ) -> [u32; JACKPOT_SIZE] {
+        use p3_field::integers::QuotientMap;
+
+        assert!(row_idx < self.height());
+        assert!(selected_slot < JACKPOT_SIZE);
+
+        let row_start = row_idx * TOTAL_TRACE_WIDTH;
+        let row = &mut self.matrix.values[row_start..row_start + TOTAL_TRACE_WIDTH];
+
+        // Selector + CONTROL_PREP. IS_HASH_JACKPOT is at selector
+        // index 6 in SELECTOR_COLS.
+        let mut selectors = [false; 21];
+        selectors[6] = is_active;
+        ControlChip.fill_row(&selectors, 0, row);
+
+        // JACKPOT_MSG (16 slots).
+        for i in 0..JACKPOT_SIZE {
+            row[JACKPOT_MSG_START + i] =
+                <Val as QuotientMap<u64>>::from_int(state[i] as u64);
+        }
+
+        // V_BITS == bit-decomp of state[selected_slot] when active;
+        // else zeros.
+        let v_bits = if is_active {
+            bit_decompose_u32(state[selected_slot])
+        } else {
+            [0u32; 32]
+        };
+        for k in 0..32 {
+            row[BIT_REG_START + k] = <Val as QuotientMap<u64>>::from_int(v_bits[k] as u64);
+        }
+
+        // X_BITS.
+        let x_bits = if is_active {
+            bit_decompose_u32(x)
+        } else {
+            [0u32; 32]
+        };
+        for k in 0..32 {
+            row[JACKPOT_X_BITS_START + k] =
+                <Val as QuotientMap<u64>>::from_int(x_bits[k] as u64);
+        }
+
+        // SLOT_SEL one-hot.
+        let oh = if is_active {
+            one_hot_select(selected_slot)
+        } else {
+            [0u32; JACKPOT_SIZE]
+        };
+        for i in 0..JACKPOT_SIZE {
+            row[JACKPOT_SLOT_SEL_START + i] =
+                <Val as QuotientMap<u64>>::from_int(oh[i] as u64);
+        }
+
+        // Compute and return the post-step state for the caller
+        // to thread into the next row.
+        apply_jackpot_step(state, selected_slot, x, is_active)
+    }
+
+    /// Bulk-fill JACKPOT_MSG on rows `[from_row, self.height())`
+    /// with `state`. Required because the jackpot chip's
+    /// cross-row constraint collapses to `nxt.JACKPOT_MSG[i] =
+    /// cur.JACKPOT_MSG[i]` for every slot when both selectors are
+    /// 0 (passthrough rows). Every passthrough row must thus hold
+    /// the value the chain ended at.
+    pub fn fill_jackpot_passthrough(
+        &mut self,
+        from_row: usize,
+        state: &[u32; JACKPOT_SIZE],
+    ) {
+        use p3_field::integers::QuotientMap;
+        for r in from_row..self.height() {
+            let base = r * TOTAL_TRACE_WIDTH;
+            for i in 0..JACKPOT_SIZE {
+                self.matrix.values[base + JACKPOT_MSG_START + i] =
+                    <Val as QuotientMap<u64>>::from_int(state[i] as u64);
+            }
+        }
+    }
+
     /// Bulk-fill CUMSUM_TILE on rows `[from_row, self.height())`
     /// with `cumsum`. After a matmul-step chain ends at some
     /// intermediate row, the remaining rows are passthrough
@@ -634,6 +733,54 @@ mod tests {
         assert!(
             verify::<AiPowStarkConfig, _>(&cfg, &CompositeFullAir, &proof, &[]).is_err(),
             "tampered CV_OUT must reject"
+        );
+    }
+
+    /// Place a 3-step jackpot chain at rows 0..2 of the baseline
+    /// trace and thread the final state through the rest. The
+    /// composite AIR enforces the rotate-XOR-13 chain end-to-end.
+    #[test]
+    fn jackpot_step_chain_verifies_through_composite_full_air() {
+        let cfg = build_stark_config(&test_zk_params(), &CircuitConfig::TEST_PEARL);
+        let mut trace = CompositeTrace::baseline_min();
+
+        let initial: [u32; JACKPOT_SIZE] =
+            core::array::from_fn(|i| (i as u32 + 1) * 0xCAFE_BABE);
+
+        let s1 = trace.place_jackpot_step(0, &initial, 0, 0xDEAD_BEEF, true);
+        let s2 = trace.place_jackpot_step(1, &s1, 3, 0xF00D_F00D, true);
+        let s3 = trace.place_jackpot_step(2, &s2, 15, 0x12345_678, true);
+
+        trace.fill_jackpot_passthrough(3, &s3);
+
+        let proof =
+            prove::<AiPowStarkConfig, _>(&cfg, &CompositeFullAir, trace.matrix, &[]);
+        verify::<AiPowStarkConfig, _>(&cfg, &CompositeFullAir, &proof, &[])
+            .expect("jackpot chain must verify through composite_full_air");
+    }
+
+    /// Tamper a JACKPOT_MSG slot mid-chain — the cross-row
+    /// rotate-XOR-13 constraint rejects.
+    #[test]
+    fn jackpot_step_chain_rejects_tampered_msg() {
+        use p3_field::integers::QuotientMap;
+        let cfg = build_stark_config(&test_zk_params(), &CircuitConfig::TEST_PEARL);
+        let mut trace = CompositeTrace::baseline_min();
+
+        let initial: [u32; JACKPOT_SIZE] = [0; JACKPOT_SIZE];
+        let s1 = trace.place_jackpot_step(0, &initial, 0, 0xCAFE, true);
+        trace.fill_jackpot_passthrough(1, &s1);
+
+        // Tamper row 1's JACKPOT_MSG[0] — should equal
+        // rotate_xor_13(0, 0xCAFE) = 0xCAFE, change it to 0xBEEF.
+        let target = 1 * TOTAL_TRACE_WIDTH + JACKPOT_MSG_START;
+        trace.matrix.values[target] = <Val as QuotientMap<u64>>::from_int(0xBEEFu64);
+
+        let proof =
+            prove::<AiPowStarkConfig, _>(&cfg, &CompositeFullAir, trace.matrix, &[]);
+        assert!(
+            verify::<AiPowStarkConfig, _>(&cfg, &CompositeFullAir, &proof, &[]).is_err(),
+            "tampered JACKPOT_MSG must reject"
         );
     }
 

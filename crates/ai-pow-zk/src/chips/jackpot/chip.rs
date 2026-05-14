@@ -75,92 +75,126 @@ impl<F> BaseAir<F> for JackpotChip {
     }
 }
 
-impl<AB: AirBuilder> Air<AB> for JackpotChip {
-    fn eval(&self, builder: &mut AB) {
+/// Column-offset bundle for [`JackpotChip::eval_at`].
+#[derive(Copy, Clone, Debug)]
+pub struct JackpotOffsets {
+    pub jackpot_msg_start: usize,
+    pub v_bits_start: usize,
+    pub x_bits_start: usize,
+    pub slot_sel_start: usize,
+    pub is_active_col: usize,
+}
+
+impl JackpotChip {
+    /// Chip-local offsets.
+    pub const LOCAL_OFFSETS: JackpotOffsets = JackpotOffsets {
+        jackpot_msg_start: cols::JACKPOT_MSG,
+        v_bits_start: cols::V_BITS,
+        x_bits_start: cols::X_BITS,
+        slot_sel_start: cols::SLOT_SEL,
+        is_active_col: cols::IS_ACTIVE,
+    };
+
+    /// Composite-layout offsets. Phase 12d wiring:
+    ///   * `jackpot_msg_start` → `JACKPOT_MSG_START`
+    ///   * `v_bits_start` → `BIT_REG_START` (the bit-decomp slot
+    ///     Pearl uses)
+    ///   * `x_bits_start` → `JACKPOT_X_BITS_START` (extension
+    ///     added in Phase 12d)
+    ///   * `slot_sel_start` → `JACKPOT_SLOT_SEL_START` (extension)
+    ///   * `is_active_col` → `IS_HASH_JACKPOT` (CONTROL_PREP
+    ///     selector bit)
+    pub const COMPOSITE_OFFSETS: JackpotOffsets = JackpotOffsets {
+        jackpot_msg_start: crate::composite_layout::JACKPOT_MSG_START,
+        v_bits_start: crate::composite_layout::BIT_REG_START,
+        x_bits_start: crate::composite_layout::JACKPOT_X_BITS_START,
+        slot_sel_start: crate::composite_layout::JACKPOT_SLOT_SEL_START,
+        is_active_col: crate::composite_layout::IS_HASH_JACKPOT,
+    };
+
+    /// Emit the jackpot chip's constraints at the given column
+    /// offsets.
+    pub fn eval_at<AB: AirBuilder>(builder: &mut AB, off: &JackpotOffsets) {
         let main = builder.main();
         let cur = main.current_slice();
         let nxt = main.next_slice();
 
         // ---- 1. Booleanity ----
-        let is_active_var = cur[cols::IS_ACTIVE];
+        let is_active_var = cur[off.is_active_col];
         builder.assert_bool(is_active_var);
         let is_active: AB::Expr = is_active_var.into();
 
-        for k in 0..cols::SLOT_SEL_LEN {
-            builder.assert_bool(cur[cols::SLOT_SEL + k]);
+        for k in 0..16 {
+            builder.assert_bool(cur[off.slot_sel_start + k]);
         }
-        for k in 0..cols::V_BITS_LEN {
-            builder.assert_bool(cur[cols::V_BITS + k]);
+        for k in 0..32 {
+            builder.assert_bool(cur[off.v_bits_start + k]);
         }
-        for k in 0..cols::X_BITS_LEN {
-            builder.assert_bool(cur[cols::X_BITS + k]);
+        for k in 0..32 {
+            builder.assert_bool(cur[off.x_bits_start + k]);
         }
 
         // ---- 2. Sum of SLOT_SEL == IS_ACTIVE ----
         let mut sel_sum: AB::Expr = <AB::Expr as PrimeCharacteristicRing>::ZERO;
-        for k in 0..cols::SLOT_SEL_LEN {
-            sel_sum = sel_sum + cur[cols::SLOT_SEL + k];
+        for k in 0..16 {
+            sel_sum = sel_sum + cur[off.slot_sel_start + k];
         }
         builder.assert_eq(sel_sum, is_active.clone());
 
         // ---- 3. V_BITS == bit_decompose(JACKPOT_MSG[selected]) ----
-        //
-        // Encoded as: Σ_i SLOT_SEL[i] · JACKPOT_MSG[i] = polyval(V_BITS, 2).
-        // When IS_ACTIVE = 0, both sides are 0 (sel_sum = 0, so the
-        // left side vanishes; V_BITS must also be all-zero — which is
-        // ensured by the trace generator filling padding rows with
-        // zeros — but the constraint itself is satisfied because
-        // both sides are 0).
         let mut selected_msg: AB::Expr = <AB::Expr as PrimeCharacteristicRing>::ZERO;
         for i in 0..JACKPOT_SIZE {
-            let sel: AB::Expr = cur[cols::SLOT_SEL + i].into();
-            let msg: AB::Expr = cur[cols::JACKPOT_MSG + i].into();
+            let sel: AB::Expr = cur[off.slot_sel_start + i].into();
+            let msg: AB::Expr = cur[off.jackpot_msg_start + i].into();
             selected_msg = selected_msg + sel * msg;
         }
-        let v_packed = polyval_bits::<AB>(&cur[cols::V_BITS..cols::V_BITS + 32]);
-        // selected_msg only equals v_packed when IS_ACTIVE = 1;
-        // gate via IS_ACTIVE so passthrough rows can have arbitrary
-        // V_BITS (we still booleancheck V_BITS unconditionally
-        // above, so the only "freedom" is bit pattern).
+        let v_packed = polyval_bits::<AB>(
+            &cur[off.v_bits_start..off.v_bits_start + 32],
+        );
         builder.assert_zero(is_active.clone() * (selected_msg - v_packed.clone()));
 
         // ---- 4. Cross-row rotate-XOR-13 update ----
-        //
-        // Compute polyval(rot13(V_BITS) XOR X_BITS, 2) as an
-        // expression. rot13 is a bit-position permutation:
-        //   bit i of rot13(V) = bit (i - 13 mod 32) of V.
         let mut rotated_xor_packed: AB::Expr =
             <AB::Expr as PrimeCharacteristicRing>::ZERO;
         let two = <AB::F as PrimeCharacteristicRing>::TWO;
         let mut pow: AB::F = <AB::F as PrimeCharacteristicRing>::ONE;
         for i in 0..32 {
             let src_bit_idx = (i + 32 - (LROT_PER_TILE as usize)) % 32;
-            let v_bit: AB::Expr = cur[cols::V_BITS + src_bit_idx].into();
-            let x_bit: AB::Expr = cur[cols::X_BITS + i].into();
-            // XOR via boolean identity: v + x − 2vx.
+            let v_bit: AB::Expr = cur[off.v_bits_start + src_bit_idx].into();
+            let x_bit: AB::Expr = cur[off.x_bits_start + i].into();
             let xor_bit: AB::Expr =
                 v_bit.clone() + x_bit.clone() - x_bit * v_bit * two.clone();
             rotated_xor_packed = rotated_xor_packed + xor_bit * pow.clone();
             pow = pow * two.clone();
         }
 
-        // Cross-row constraint, gated by when_transition (skips the
-        // final wraparound row).
         {
             let mut tb = builder.when_transition();
             for i in 0..JACKPOT_SIZE {
-                let sel_i: AB::Expr = cur[cols::SLOT_SEL + i].into();
-                let cur_msg: AB::Expr = cur[cols::JACKPOT_MSG + i].into();
-                let nxt_msg: AB::Expr = nxt[cols::JACKPOT_MSG + i].into();
+                let sel_i: AB::Expr = cur[off.slot_sel_start + i].into();
+                let cur_msg: AB::Expr = cur[off.jackpot_msg_start + i].into();
+                let nxt_msg: AB::Expr = nxt[off.jackpot_msg_start + i].into();
 
                 let one_minus_sel: AB::Expr =
                     <AB::Expr as PrimeCharacteristicRing>::ONE - sel_i.clone();
-                let rhs = sel_i * rotated_xor_packed.clone()
-                    + one_minus_sel * cur_msg;
+                let rhs =
+                    sel_i * rotated_xor_packed.clone() + one_minus_sel * cur_msg;
 
                 tb.assert_eq(nxt_msg, rhs);
             }
         }
+    }
+
+    /// Composite-layout entry point. Called from
+    /// [`crate::composite_full_air::CompositeFullAir::eval`].
+    pub fn eval_composite<AB: AirBuilder>(builder: &mut AB) {
+        Self::eval_at(builder, &Self::COMPOSITE_OFFSETS);
+    }
+}
+
+impl<AB: AirBuilder> Air<AB> for JackpotChip {
+    fn eval(&self, builder: &mut AB) {
+        JackpotChip::eval_at(builder, &JackpotChip::LOCAL_OFFSETS);
     }
 }
 

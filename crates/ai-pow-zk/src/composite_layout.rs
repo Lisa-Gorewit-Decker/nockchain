@@ -345,9 +345,30 @@ pub const BLAKE3_ROUND_START: usize = BLAKE3_CV_START + BLAKE3_CV_LEN;
 pub const CV_OUT_LEN: usize = 8;
 pub const CV_OUT_START: usize = BLAKE3_ROUND_START + BLAKE3_ROUND_LEN;
 
+// ---- Jackpot chip extensions (Phase 12d) ----
+//
+// The jackpot chip uses three column blocks not present in
+// Pearl's original layout: 32 boolean cells for the rotate-XOR
+// operand's bit decomposition, and 16 boolean cells encoding the
+// active slot as a one-hot indicator. Appended after CV_OUT to
+// preserve all earlier offsets.
+
+/// JACKPOT_X_BITS: 32 boolean cells. Bit-decomposition of the
+/// XOR-fold value `x` consumed by the jackpot chip's rotate-XOR-13
+/// update. Sourced upstream (Phase 14b will tie these via LogUp to
+/// CUMSUM_BUFFER's bit decomposition).
+pub const JACKPOT_X_BITS_START: usize = CV_OUT_START + CV_OUT_LEN;
+pub const JACKPOT_X_BITS_LEN: usize = 32;
+
+/// JACKPOT_SLOT_SEL: 16 boolean cells, one-hot indicator selecting
+/// which slot the current row updates. Sum equals
+/// `IS_HASH_JACKPOT` (1 on an active jackpot row, 0 otherwise).
+pub const JACKPOT_SLOT_SEL_START: usize = JACKPOT_X_BITS_START + JACKPOT_X_BITS_LEN;
+pub const JACKPOT_SLOT_SEL_LEN: usize = 16;
+
 /// CV_OUT_FREQ: 1 col. LogUp multiplicity for the CV-routing
 /// lookup (how many later rows read this row's CV_OUT).
-pub const CV_OUT_FREQ: usize = CV_OUT_START + CV_OUT_LEN;
+pub const CV_OUT_FREQ: usize = JACKPOT_SLOT_SEL_START + JACKPOT_SLOT_SEL_LEN;
 
 // =====================================================================
 //  Total trace width
@@ -390,6 +411,8 @@ mod tests {
     /// downstream would silently diverge.
     #[test]
     fn ram_lookup_column_widths_match_pearl() {
+        assert_eq!(JACKPOT_X_BITS_LEN, 32);
+        assert_eq!(JACKPOT_SLOT_SEL_LEN, 16);
         assert_eq!(MAT_UNPACK_LEN, 8);
         assert_eq!(UINT8_DATA_LEN, 8);
         assert_eq!(NOISE_UNPACK_LEN, 8);
@@ -549,8 +572,18 @@ mod tests {
             ),
             (
                 CV_OUT_START + CV_OUT_LEN,
+                JACKPOT_X_BITS_START,
+                "CV_OUT → JACKPOT_X_BITS",
+            ),
+            (
+                JACKPOT_X_BITS_START + JACKPOT_X_BITS_LEN,
+                JACKPOT_SLOT_SEL_START,
+                "JACKPOT_X_BITS → JACKPOT_SLOT_SEL",
+            ),
+            (
+                JACKPOT_SLOT_SEL_START + JACKPOT_SLOT_SEL_LEN,
                 CV_OUT_FREQ,
-                "CV_OUT → CV_OUT_FREQ",
+                "JACKPOT_SLOT_SEL → CV_OUT_FREQ",
             ),
             (
                 CV_OUT_FREQ + 1,

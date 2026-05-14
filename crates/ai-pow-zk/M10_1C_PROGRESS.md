@@ -47,17 +47,19 @@ When Plonky3 doesn't have a direct primitive (e.g. Pearl's
 | 12a | `composite_full_air::eval` — Phase 3-6 chips wired (stark_row, range_tables, i8u8, control, input) | ✅ landed | 9 | 315 unit |
 | 12b | `composite_full_air` — matmul wired via `eval_composite` (BLAKE3, jackpot pending) | ✅ landed | 2 | 317 unit |
 | 12c | `composite_full_air` — BLAKE3 wired via `eval_composite` (jackpot pending) | ✅ landed | 1 | 318 unit |
-| 12d | `composite_full_air` — wire jackpot | ⬜ pending | | |
+| 12d | `composite_full_air` — jackpot wired via `eval_composite`; layout extended with `JACKPOT_X_BITS` + `JACKPOT_SLOT_SEL` | ✅ landed | — | — |
 | 13a | `composite_trace` baseline builder + type surface | ✅ landed | 7 | 325 unit |
 | 13b | `composite_trace` instruction-list compilation: matmul step placement + cumsum threading | ✅ landed | 2 | 330 unit |
 | 13c | `composite_trace` — BLAKE3 hash block placement (jackpot still pending) | ✅ landed | 2 | 332 unit |
-| 13d | `composite_trace` — jackpot step placement | ⬜ pending | | |
+| 13d | `composite_trace` — jackpot step placement + chain threading | ✅ landed | 2 | — |
 | 14a | `composite_proof::{composite_prove, composite_verify}` wrappers + bincode round-trip | ✅ landed | 3 | 328 unit |
 | 14b | LogUp-aware folder swap (proving-side interaction wiring) | ⬜ pending | | |
 | 15 | PROD bench at MIN_STARK_LEN baseline (ignored) | ✅ landed | 1 ignored | 328 unit + 1 ignored |
 
-**Today's cumulative test count: 332 unit + 7 KAT + 4 ignored
-PROD bench.**
+**Today's cumulative test count: 336 unit + 7 KAT + 4 ignored
+PROD bench. Phase 12 + Phase 13 complete: all 10 chips wired into
+the composite AIR; the composite trace supports placing all three
+instruction types (matmul, BLAKE3, jackpot).**
 
 ## Properties validated per phase
 
@@ -748,12 +750,54 @@ Properties validated:
     `finalize_blake`'s assertion
     (`blake3_hash_block_rejects_tampered_cv_out`).
 
-### Phase 13d — jackpot step placement (pending)
+### Phase 12d — jackpot wired into composite_full_air (landed)
 
-Blocked on Phase 12d (column-shape mismatch between chip-local
-and composite layouts for V_BITS / X_BITS / SLOT_SEL). Once that
-resolves, `place_jackpot_step(row_idx, slot, x, is_active)` is a
-mechanical port of the chip's `fill_row` to composite positions.
+Resolved the chip-local ↔ composite-layout column-shape mismatch
+by extending `composite_layout` with two new column blocks:
+
+  * `JACKPOT_X_BITS` (32 boolean cols) — bit decomposition of the
+    XOR-fold operand. Appended after `CV_OUT` so all earlier
+    offsets stay the same.
+  * `JACKPOT_SLOT_SEL` (16 boolean cols) — one-hot slot selector.
+
+`TOTAL_TRACE_WIDTH` bumps from 1330 → 1378 (within the
+sanity-bound `< 1400`).
+
+`JackpotChip` refactored with `JackpotOffsets`, `LOCAL_OFFSETS`,
+`COMPOSITE_OFFSETS`, `eval_at`, and `eval_composite`. The
+composite mapping:
+
+  * `jackpot_msg_start` → `JACKPOT_MSG_START`
+  * `v_bits_start` → `BIT_REG_START` (Pearl's existing bit-decomp slot)
+  * `x_bits_start` → `JACKPOT_X_BITS_START` (Phase 12d extension)
+  * `slot_sel_start` → `JACKPOT_SLOT_SEL_START` (Phase 12d extension)
+  * `is_active_col` → `IS_HASH_JACKPOT` (CONTROL_PREP selector bit)
+
+`CompositeFullAir::eval` now calls
+`JackpotChip::eval_composite(builder)`. **All 10 chips are now
+wired into the composite AIR.**
+
+### Phase 13d — jackpot step placement (landed)
+
+`CompositeTrace::place_jackpot_step(row_idx, &state, slot, x,
+is_active) -> next_state` writes one jackpot row at composite
+offsets: JACKPOT_MSG (16 slots), BIT_REG (V_BITS bit-decomp of
+selected slot), JACKPOT_X_BITS (bit-decomp of x), JACKPOT_SLOT_SEL
+(one-hot), and IS_HASH_JACKPOT via `ControlChip::fill_row`.
+Returns the post-step state.
+
+`fill_jackpot_passthrough(from_row, &state)` bulk-fills the
+JACKPOT_MSG slots on subsequent rows so the cross-row
+rotate-XOR-13 constraint stays satisfied through the rest of the
+trace.
+
+Properties validated:
+  * ✅ A 3-step jackpot chain (slots 0, 3, 15) followed by
+    passthrough fill verifies end-to-end through
+    `CompositeFullAir` (`jackpot_step_chain_verifies_through_composite_full_air`).
+  * ✅ Tampering JACKPOT_MSG[0] on row 1 (the post-step value of
+    slot 0) rejects via the cross-row rotate-XOR-13 constraint
+    (`jackpot_step_chain_rejects_tampered_msg`).
 
 ### Phase 14a — composite prove/verify wrappers (landed)
 
@@ -921,4 +965,6 @@ by the SNARK as a whole:
 | 2026-05-14 | M10.1c Phase 14a `composite_proof` prove/verify wrappers | `fbbbc18` |
 | 2026-05-14 | M10.1c Phase 15 PROD bench at MIN_STARK_LEN baseline | `7a01490` |
 | 2026-05-14 | M10.1c Phase 13b matmul step placement + cumsum threading | `c63c9e7` |
-| 2026-05-14 | M10.1c Phase 13c BLAKE3 hash block placement | (this commit) |
+| 2026-05-14 | M10.1c Phase 13c BLAKE3 hash block placement | `f1c3425` |
+| 2026-05-14 | M10.1c combined BLAKE3 + matmul trace test | `c99d7c8` |
+| 2026-05-14 | M10.1c Phase 12d + 13d jackpot wiring + placement | (this commit) |

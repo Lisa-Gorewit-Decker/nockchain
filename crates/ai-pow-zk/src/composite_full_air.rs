@@ -48,6 +48,7 @@ use crate::chips::blake3::chip::Blake3Chip;
 use crate::chips::control::ControlChip;
 use crate::chips::i8u8::I8U8Chip;
 use crate::chips::input::InputChip;
+use crate::chips::jackpot::chip::JackpotChip;
 use crate::chips::matmul::chip::MatmulCumsumChip;
 use crate::chips::range_table::{IRange7P1Chip, IRange8Chip, URange13Chip, URange8Chip};
 use crate::chips::stark_row::StarkRowChip;
@@ -100,6 +101,13 @@ impl<AB: AirBuilder> Air<AB> for CompositeFullAir {
         // IS_NEW_BLAKE / IS_LAST_ROUND selector bits (unpacked from
         // CONTROL_PREP by ControlChip).
         Blake3Chip::eval_composite(builder);
+
+        // Jackpot chip (Phase 12d wiring): reads JACKPOT_MSG (16
+        // u32 slots), BIT_REG (V_BITS), JACKPOT_X_BITS, and
+        // JACKPOT_SLOT_SEL. Dispatch driven by IS_HASH_JACKPOT
+        // selector. Phase 14b's LogUp wiring will tie the X_BITS
+        // bit-decomposition back to CUMSUM_BUFFER.
+        JackpotChip::eval_composite(builder);
     }
 }
 
