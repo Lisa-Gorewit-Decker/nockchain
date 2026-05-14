@@ -13,6 +13,12 @@ publish = false
 # introduce a cycle. The caller in `ai-pow` constructs `ZkParams` and
 # `Witness` from its own types and passes them across the boundary.
 thiserror = { workspace = true }
+# `ZkProof` is the on-the-wire serialization of `p3_uni_stark::Proof`.
+# Plonky3 proofs already derive serde, so we just need a serializer.
+# Bincode 2 (`features = ["serde"]`) gives a compact binary blob; the
+# wire format stays internal to this crate.
+bincode = { workspace = true, features = ["serde"] }
+serde = { workspace = true, features = ["derive"] }
 
 # Plonky3. The upstream publishes irregularly to crates.io; pin to a
 # git revision here and bump `rev` when the circuit needs newer field /

@@ -84,6 +84,7 @@ dependencies = [
 name = "ai-pow-zk"
 version = "0.1.0-experimental"
 dependencies = [
+ "bincode",
  "nockchain-math",
  "p3-air",
  "p3-blake3-air",
@@ -98,6 +99,7 @@ dependencies = [
  "p3-symmetric",
  "p3-uni-stark",
  "proptest",
+ "serde",
  "thiserror 2.0.18",
 ]
 
