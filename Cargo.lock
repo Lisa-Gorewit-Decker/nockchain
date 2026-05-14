@@ -86,6 +86,7 @@ version = "0.1.0-experimental"
 dependencies = [
  "bincode",
  "blake3",
+ "itertools 0.13.0",
  "nockchain-math",
  "p3-air",
  "p3-blake3-air",

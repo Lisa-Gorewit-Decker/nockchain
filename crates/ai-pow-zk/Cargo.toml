@@ -25,6 +25,9 @@ serde = { workspace = true, features = ["derive"] }
 # `BLAKE3_keyed(M_final, pow_key) == public_inputs.found_leaf`.
 # The in-circuit BLAKE3 variant is M10.1b — see ROADMAP.md.
 blake3 = { workspace = true }
+# Used by the vendored `p3-blake3-air` source in `src/blake3_chip/`
+# (M10.1b). Constraint logic upstream uses `izip!` for round mixing.
+itertools = "0.13"
 
 # Plonky3. The upstream publishes irregularly to crates.io; pin to a
 # git revision here and bump `rev` when the circuit needs newer field /
