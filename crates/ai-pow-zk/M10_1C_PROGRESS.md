@@ -37,7 +37,7 @@ When Plonky3 doesn't have a direct primitive (e.g. Pearl's
 | 4c | `input` chip (Pearl `chip/input/`) | ✅ landed | 9 | 183 unit |
 | 5 | `control_chip` (Pearl `control_and_matid_packed`) | ✅ landed | 11 | 194 unit |
 | 6 | `composite_preprocess` minimal generator | ✅ landed | 6 | 200 unit |
-| 7 | BLAKE3 chip — wrap M10.1b vendored chip (Plonky3 primitive preferred) | ⬜ pending | | |
+| 7 | BLAKE3 chip — port Pearl's one-round-per-row design (chip/blake3/, ~1500 lines) — see "scope decision" below | ⬜ pending | | |
 | 8 | BLAKE3 chip — extend wrapper with multi-round / Merkle linkage | ⬜ pending | | |
 | 9 | matmul chip with `NOISED_PACKED` RAM-lookup reads | ⬜ pending | | |
 | 10 | jackpot chip (rotate-XOR-13, Pearl `chip/jackpot/`) | ⬜ pending | | |
@@ -148,6 +148,65 @@ Properties validated:
   - ✅ `fill_row` writes canonical Pearl-pack values
     (`fill_row_encodes_pearl_pack`).
 
+### Phase 5 — control chip (landed)
+
+Properties validated:
+  - ✅ All 21 selectors are boolean; non-boolean rejected
+    (`rejects_non_boolean_selector`).
+  - ✅ `CONTROL_PREP = polyval(selectors..., mat_id; base=2)` —
+    mis-matched packing rejects
+    (`rejects_wrong_control_prep_pack`).
+  - ✅ `MAT_ID = limb0 + limb1 << 13` — mismatch rejects
+    (`rejects_mat_id_inconsistent_with_limbs`).
+  - ✅ Cross-consistency: changing a selector column without
+    updating CONTROL_PREP rejects
+    (`rejects_selector_without_control_prep_update`).
+  - ✅ All-zero, all-one, mixed selector patterns + MAT_ID verify
+    (`prove_and_verify_*`).
+  - ✅ `SELECTOR_COLS` indices are pairwise unique
+    (`selector_columns_are_unique`).
+  - ✅ Pack utility matches expected bit layout
+    (`pack_round_trips_zeros`, `pack_sets_correct_bits`).
+
+### Phase 6 — composite_preprocess (landed)
+
+Properties validated:
+  - ✅ `RowDescriptor::padding()` is all-zero (default for padding
+    rows in the trace).
+  - ✅ `fill_preprocessed_row` writes correct values into all 5
+    preprocessed columns (CONTROL_PREP, NOISE_PACKED_PREP,
+    CV_OR_TWEAK_PREP, AB_ID_PREP, STARK_ROW_IDX) from a known
+    descriptor.
+  - ✅ CONTROL_PREP packing matches the control chip's
+    `pack_control_prep` contract byte-for-byte (prover and
+    verifier agree).
+  - ✅ Batch generator `build_preprocessed_columns` agrees with
+    per-row generator on every row.
+  - ✅ STARK_ROW_IDX monotonic across the table.
+  - ✅ MAT_ID limb decomposition matches BITS_PER_LIMB = 13.
+
+### Phase 7+ — scope decision pending
+
+**Realistic scope warning**: Phase 7 (BLAKE3 chip) is the
+single heaviest port — Pearl's `chip/blake3/` is ~1500 lines
+across 7 files. Three viable paths:
+
+  1. **Full Pearl one-round-per-row port** (matches our locked
+     `composite_layout` with `BLAKE3_ROUND_LEN = 1056`). Most
+     work; mirrors Pearl exactly.
+  2. **Wrap M10.1b's vendored chip** (already byte-equivalent
+     to Pearl). Less work; breaks our layout assumption that
+     BLAKE3 lives in `BLAKE3_ROUND_LEN = 1056` cols (vendored
+     chip is ~10k cols).
+  3. **Hybrid: revisit layout**. Bump `BLAKE3_ROUND_LEN` to
+     `NUM_BLAKE3_COLS` (~10k), drop Pearl's per-round
+     interleaving. The composite trace gets ~10× wider but we
+     save ~1500 lines and inherit M10.1b's KAT-verified chip.
+
+The "prefer Plonky3 primitives" preference (recently
+restated by the user) points toward option 2/3. Pick before
+starting Phase 7.
+
 ### Phase 4c — input chip (landed)
 
 Properties validated:
@@ -221,4 +280,8 @@ by the SNARK as a whole:
 | 2026-05-13 | M10.1c design (Plonky3 port of Pearl) | `240ce28` |
 | 2026-05-13 | M10.1c Phase 2 layout + TEST_PEARL | `be53f3b` |
 | 2026-05-13 | M10.1c Phase 2.5 RAM-lookup columns | `571eaf0`, `19a6c47` |
-| 2026-05-14 | M10.1c Phase 3 `stark_row_chip` | (this commit) |
+| 2026-05-14 | M10.1c Phase 3 `stark_row_chip` | `152a6f3` |
+| 2026-05-14 | M10.1c Phase 4a `range_table` (URange8/13, IRange7P1/8) | `2c6e56b` |
+| 2026-05-14 | M10.1c Phase 4b+4c `i8u8` + `input` chips | `2b2ec0a` |
+| 2026-05-14 | M10.1c Phase 5 `control_chip` (CONTROL_PREP + MAT_ID) | `cb49931` |
+| 2026-05-14 | M10.1c Phase 6 `composite_preprocess` minimal | `e221113` |
