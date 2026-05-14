@@ -33,6 +33,7 @@ pub mod blake3;
 pub mod control;
 pub mod i8u8;
 pub mod input;
+pub mod jackpot;
 pub mod matmul;
 pub mod range_table;
 pub mod stark_row;

@@ -42,14 +42,14 @@ When Plonky3 doesn't have a direct primitive (e.g. Pearl's
 | 8b | BLAKE3 round-AIR composition — `Blake3State`, `half_g`, `verify_round`, `finalize_blake`, `verify_init_state` | ✅ landed | 8 | 244 unit |
 | 8c | BLAKE3 trace generator + top-level chip eval — `Blake3Chip` | ✅ landed | 10 | 254 unit |
 | 9 | matmul cumsum chip (`MatmulCumsumChip`); RAM-lookup deferred to Phase 11 | ✅ landed | 20 | 274 unit |
-| 10 | jackpot chip (rotate-XOR-13, Pearl `chip/jackpot/`) | ⬜ pending | | |
+| 10 | jackpot chip (`JackpotChip`; 16-slot rotate-XOR-13) | ✅ landed | 22 | 296 unit |
 | 11 | `composite_lookups` — `p3-lookup` config for all 6+ lookups | ⬜ pending | | |
 | 12 | `composite_full_air::eval` (Pearl `pearl_air`) | ⬜ pending | | |
 | 13 | `composite_trace` (Pearl `pearl_trace`) | ⬜ pending | | |
 | 14 | `lib::{prove, verify}` plumbing on composite AIR | ⬜ pending | | |
 | 15 | PROD bench full shape | ⬜ pending | | |
 
-**Today's cumulative test count: 274 unit + 7 KAT + 3 ignored
+**Today's cumulative test count: 296 unit + 7 KAT + 3 ignored
 PROD bench.**
 
 ## Properties validated per phase
@@ -438,6 +438,65 @@ inside this chip once we know the polyval base Pearl uses for i8
 packing; the RAM lookup requires the composite-level LogUp wiring
 that's the focus of Phase 11.
 
+### Phase 10 — jackpot chip (landed)
+
+`chips/jackpot/` ports Pearl's 16-slot tile-state rotate-XOR-13
+update from `chip/jackpot/jackpot_air.rs`. The single-slot
+primitive has been validated since M9.1 by `state_chip.rs`; this
+phase wraps it with one-hot slot-routing so it can update any of
+16 state slots per row.
+
+**`compute.rs`** — scalar reference. Pinned at `LROT_PER_TILE = 13`
+and `JACKPOT_SIZE = 16`. Validated:
+  - ✅ `rotate_xor_13(0, 0) = 0` (`rotate_xor_13_zero_zero_is_zero`).
+  - ✅ `rotate_xor_13(0, x) = x` (`rotate_xor_13_zero_x_is_x`).
+  - ✅ `rotate_xor_13` matches `v.rotate_left(13) ^ x`
+    (`rotate_xor_13_matches_definition`).
+  - ✅ Avalanche on `rotate_xor_13`: 1-bit input change ⇒ 1-bit
+    output change (`rotate_xor_13_avalanche`).
+  - ✅ `apply_jackpot_step` only touches the selected slot
+    (`apply_jackpot_step_only_touches_selected_slot`).
+  - ✅ `apply_jackpot_step(is_active = false)` is a no-op
+    (`apply_jackpot_step_inactive_preserves_state`).
+  - ✅ `one_hot_select(i)` returns the i-th unit vector
+    (`one_hot_select_returns_unit_vector`).
+  - ✅ `bit_decompose_u32` round-trips
+    (`bit_decompose_round_trips`).
+  - ✅ Multi-step chain is deterministic (regression anchor).
+
+**`chip.rs`** — AIR over a chip-local 97-col layout. Constraints:
+  1. **Booleanity** on SLOT_SEL, V_BITS, X_BITS, IS_ACTIVE (every
+     bit cell satisfies `b(1−b) = 0`).
+  2. **One-hot SLOT_SEL sum** = IS_ACTIVE — exactly one slot
+     selected when active; all zero when inactive.
+  3. **V_BITS = bit_decompose(JACKPOT_MSG[selected])** — encoded as
+     `Σ_i SLOT_SEL[i]·JACKPOT_MSG[i] = polyval(V_BITS, 2)`, gated
+     by IS_ACTIVE. Degree 2.
+  4. **Cross-row rotate-XOR-13**: for each slot `i`,
+     `next.JACKPOT_MSG[i] = SLOT_SEL[i]·polyval(rot13(V_BITS) XOR
+     X_BITS, 2) + (1 − SLOT_SEL[i])·cur.JACKPOT_MSG[i]`. Gated by
+     `when_transition()`. Degree 3.
+
+Properties validated:
+  - ✅ 4-step active chain verifies end-to-end
+    (`prove_and_verify_4_step_chain`).
+  - ✅ Pass-through rows (IS_ACTIVE = 0) leave state unchanged
+    (`prove_and_verify_passthrough_row`).
+  - ✅ Tamper: JACKPOT_MSG cell
+    (`verify_rejects_tampered_jackpot_msg`), V_BITS bit
+    (`verify_rejects_wrong_v_bits`), X_BITS bit
+    (`verify_rejects_tampered_x_bits`), non-boolean SLOT_SEL
+    (`verify_rejects_non_boolean_slot_sel`).
+  - ✅ Two slots simultaneously selected rejected
+    (`verify_rejects_multiple_slots_selected`).
+  - ✅ Active row without selection (IS_ACTIVE = 1 but
+    SLOT_SEL all-zero) rejected
+    (`verify_rejects_active_without_selection`).
+  - ✅ Missing rotation rejected (`verify_rejects_unrotated_value`).
+  - ✅ 32-row "rotate every slot once" stress test
+    (`prove_and_verify_full_slot_pass`).
+  - ✅ Chip width pinned at 97 cols (`chip_width_pinned`).
+
 ### Phase 7+ — scope decision (resolved)
 
 User picked **option 1** (full Pearl one-round-per-row port).
@@ -529,4 +588,5 @@ by the SNARK as a whole:
 | 2026-05-14 | M10.1c Phase 8a BLAKE3 round-AIR primitives (`round_ops`) | `bc546b0` |
 | 2026-05-14 | M10.1c Phase 8b BLAKE3 round-AIR composition (`round_air`) | `f233d0b` |
 | 2026-05-14 | M10.1c Phase 8c BLAKE3 top-level chip (`chip.rs`) | `105699b` |
-| 2026-05-14 | M10.1c Phase 9 matmul cumsum chip (`chips/matmul`) | (this commit) |
+| 2026-05-14 | M10.1c Phase 9 matmul cumsum chip (`chips/matmul`) | `d07b16a` |
+| 2026-05-14 | M10.1c Phase 10 jackpot chip (`chips/jackpot`) | (this commit) |
