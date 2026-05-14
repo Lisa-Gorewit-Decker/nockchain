@@ -33,17 +33,22 @@
 use p3_air::AirBuilder;
 use p3_field::PrimeCharacteristicRing;
 
-/// Constrain `res ∈ {a+b+c, a+b+c − 2^32, a+b+c − 2^33}`. Mirrors
+/// Constrain `res ∈ {a+b+c, a+b+c − 2^32, a+b+c − 2^33}` when
+/// `is_activated = 1`; vacuous when `is_activated = 0`. Mirrors
 /// Pearl's `add3_unchecked` (`blake3_air.rs:286-302`).
 ///
-/// Degree 3 (encoded as `diff · (diff − 2^32) · (diff − 2^33) = 0`,
-/// where `diff = (a + b + c) − res`).
+/// Ungated, the cubic `diff · (diff − 2^32) · (diff − 2^33) = 0`
+/// is degree 3. Gated, it's `is_activated · diff · (diff − 2^32)
+/// · (diff − 2^33) = 0` — degree 4. Pass `AB::Expr::ONE` to recover
+/// the original degree-3 unconditional form when the caller has
+/// no row-level gating to apply.
 pub fn add3_unchecked<AB: AirBuilder>(
     builder: &mut AB,
     res: AB::Expr,
     a: AB::Expr,
     b: AB::Expr,
     c: AB::Expr,
+    is_activated: AB::Expr,
 ) {
     let sum = a + b + c;
     let two_pow_32 = <AB::F as PrimeCharacteristicRing>::from_u64(1u64 << 32);
@@ -51,19 +56,27 @@ pub fn add3_unchecked<AB: AirBuilder>(
     let diff: AB::Expr = sum - res;
     let diff_1: AB::Expr = diff.clone() - two_pow_32;
     let diff_2: AB::Expr = diff.clone() - two_pow_33;
-    builder.assert_zero(diff * diff_1 * diff_2);
+    builder.assert_zero(is_activated * diff * diff_1 * diff_2);
 }
 
-/// Constrain `res ∈ {a+b, a+b − 2^32}`. Mirrors Pearl's
+/// Constrain `res ∈ {a+b, a+b − 2^32}` when `is_activated = 1`;
+/// vacuous when `is_activated = 0`. Mirrors Pearl's
 /// `add2_unchecked` (`blake3_air.rs:304-317`).
 ///
-/// Degree 2: `diff · (diff − 2^32) = 0`.
-pub fn add2_unchecked<AB: AirBuilder>(builder: &mut AB, res: AB::Expr, a: AB::Expr, b: AB::Expr) {
+/// Gated form is degree 3 (1 + 2). Pass `AB::Expr::ONE` to recover
+/// the degree-2 unconditional form.
+pub fn add2_unchecked<AB: AirBuilder>(
+    builder: &mut AB,
+    res: AB::Expr,
+    a: AB::Expr,
+    b: AB::Expr,
+    is_activated: AB::Expr,
+) {
     let sum = a + b;
     let two_pow_32 = <AB::F as PrimeCharacteristicRing>::from_u64(1u64 << 32);
     let diff: AB::Expr = sum - res;
     let diff_1: AB::Expr = diff.clone() - two_pow_32;
-    builder.assert_zero(diff * diff_1);
+    builder.assert_zero(is_activated * diff * diff_1);
 }
 
 /// XOR-and-rotate constraint: `res = a XOR (b <<< shift)` when
@@ -202,7 +215,14 @@ mod tests {
             let b = AB::Expr::from(cur[1]);
             let c = AB::Expr::from(cur[2]);
             let res = AB::Expr::from(cur[3]);
-            add3_unchecked(builder, res, a, b, c);
+            add3_unchecked(
+                builder,
+                res,
+                a,
+                b,
+                c,
+                <AB::Expr as PrimeCharacteristicRing>::ONE,
+            );
         }
     }
 
@@ -299,7 +319,13 @@ mod tests {
             let a = AB::Expr::from(cur[0]);
             let b = AB::Expr::from(cur[1]);
             let res = AB::Expr::from(cur[2]);
-            add2_unchecked(builder, res, a, b);
+            add2_unchecked(
+                builder,
+                res,
+                a,
+                b,
+                <AB::Expr as PrimeCharacteristicRing>::ONE,
+            );
         }
     }
 

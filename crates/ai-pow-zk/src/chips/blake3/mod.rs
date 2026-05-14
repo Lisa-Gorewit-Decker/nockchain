@@ -28,6 +28,7 @@
 //! single-block keyed-root case. See `tests/blake3_compress_kat.rs`
 //! and the in-module tests in [`compress`].
 
+pub mod chip;
 pub mod compress;
 pub mod layout;
 pub mod logic;

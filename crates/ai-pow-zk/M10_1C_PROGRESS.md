@@ -40,7 +40,7 @@ When Plonky3 doesn't have a direct primitive (e.g. Pearl's
 | 7 | BLAKE3 chip — `compress` + `layout` + `logic` (Pearl scalar + per-round column layout + per-row logic types) | ✅ landed | 21 | 221 unit |
 | 8a | BLAKE3 round-AIR primitives — `round_ops::{add3, add2, xor_shift, xor_packed}` | ✅ landed | 15 | 236 unit |
 | 8b | BLAKE3 round-AIR composition — `Blake3State`, `half_g`, `verify_round`, `finalize_blake`, `verify_init_state` | ✅ landed | 8 | 244 unit |
-| 8c | BLAKE3 trace generator + top-level chip eval | ⬜ pending | | |
+| 8c | BLAKE3 trace generator + top-level chip eval — `Blake3Chip` | ✅ landed | 10 | 254 unit |
 | 9 | matmul chip with `NOISED_PACKED` RAM-lookup reads | ⬜ pending | | |
 | 10 | jackpot chip (rotate-XOR-13, Pearl `chip/jackpot/`) | ⬜ pending | | |
 | 11 | `composite_lookups` — `p3-lookup` config for all 6+ lookups | ⬜ pending | | |
@@ -49,7 +49,7 @@ When Plonky3 doesn't have a direct primitive (e.g. Pearl's
 | 14 | `lib::{prove, verify}` plumbing on composite AIR | ⬜ pending | | |
 | 15 | PROD bench full shape | ⬜ pending | | |
 
-**Today's cumulative test count: 244 unit + 7 KAT + 3 ignored
+**Today's cumulative test count: 254 unit + 7 KAT + 3 ignored
 PROD bench.**
 
 ## Properties validated per phase
@@ -324,15 +324,62 @@ Properties validated:
     sentinel cells into row1/row2/row3/row4 buckets
     (`blake3_state_from_slice_pins_layout`).
 
-### Phase 8c — BLAKE3 trace generator + top-level chip eval (pending)
+### Phase 8c — BLAKE3 trace generator + top-level chip eval (landed)
 
-The remaining BLAKE3 work:
-  - Trace generator (mirrors Pearl's two-phase parallel fill).
-  - Top-level chip eval connecting CV_IN / BLAKE3_CV /
-    BLAKE3_MSG / CV_OUT via the round constraints + the 8-row
-    grouping (one BLAKE3 compression per 8 trace rows).
-  - Selector-gated round / init / finalize transitions:
-    `is_new_blake`, `is_finalize_row`, `next_is_same_blake`.
+`chips/blake3/chip.rs` ties Phase 8a + 8b together into a complete
+chip:
+
+  - ✅ `Blake3Chip` — ZST AIR implementing `Air<AB>` over Pearl's
+    8-row-per-hash layout. Per-row dispatch driven by two boolean
+    selector columns: `is_new_blake` (row 0 of each hash) and
+    `is_last_round` (row 7 = finalize). Booleanity asserted
+    unconditionally.
+  - ✅ Cross-row round: `verify_round` runs inside
+    `builder.when_transition()` (skips the absolute last trace
+    row) AND gated by `is_round_active = 1 − is_last_round`
+    (skips per-hash finalize rows). The gating extends down into
+    `add3_unchecked` / `add2_unchecked` (these now take an
+    `is_activated` parameter — the **gating fix from the
+    multi-hash test**) so the cubic / quadratic add constraints
+    silence cleanly at hash boundaries.
+  - ✅ `verify_init_state` fires on row 0 of each hash, tying
+    `STATE0` to `(cv_in, IV, packed_tweak)`.
+  - ✅ `finalize_blake` fires on row 7 of each hash, computing
+    feed-forward XOR and asserting `CV_OUT[i] == out[i]`.
+  - ✅ `Blake3Chip::fill_one_hash` builds all 8 rows from a single
+    (msg, cv_in, tweak) tuple via `round_with_snapshots`.
+  - ✅ `pack_tweak` packs `(counter_low, counter_high[0..16],
+    flags[0..8], block_len[0..7])` into the 63-bit form
+    `verify_init_state` expects.
+
+Properties validated:
+  - ✅ `fill_one_hash` writes the correct selector pattern across
+    8 rows (`fill_one_hash_writes_full_rows`).
+  - ✅ `CV_OUT` matches `compress_full_state`'s output for
+    arbitrary inputs (`cv_out_matches_compress_full_state`).
+  - ✅ End-to-end prove + verify of one 8-row BLAKE3 trace
+    (`prove_and_verify_one_hash`).
+  - ✅ End-to-end prove + verify of two 8-row hashes in a 16-row
+    trace, validating the boundary gating at the row 7 → row 8
+    transition (`prove_and_verify_two_hashes`).
+  - ✅ Tamper detection: wrong CV_OUT
+    (`verify_rejects_wrong_cv_out`), wrong initial CV cell
+    (`verify_rejects_wrong_initial_cv_row1_cell`), wrong
+    intermediate state (`verify_rejects_wrong_intermediate_state`),
+    non-boolean selector
+    (`verify_rejects_non_boolean_is_new_blake`).
+  - ✅ `pack_tweak` bit layout pinned at u64 positions [0:32],
+    [32:48], [48:56], [56:63] (`pack_tweak_round_trips`,
+    `pack_tweak_zero_returns_zero`).
+
+**Constraint degree increase:** with `add3_unchecked` now gated by
+`is_activated`, its max degree rose from 3 to 4. Within
+`CircuitConfig::TEST_PEARL`'s `log_blowup = 2` budget (max
+constraint degree ≤ 5 by Plonky3's quotient formula). Pearl's
+own circuit stays at degree 3 by leveraging a stricter row
+schedule; we trade that off for cleaner chip-internal logic. If
+Phase 12's composite AIR needs the degree-3 ceiling back, we can
+factor each cubic into two quadratics via an intermediate column.
 
 ### Phase 7+ — scope decision (resolved)
 
@@ -423,4 +470,5 @@ by the SNARK as a whole:
 | 2026-05-14 | M10.1c Phase 6 `composite_preprocess` minimal | `e221113` |
 | 2026-05-14 | M10.1c Phase 7 BLAKE3 chip foundation (compress + layout + logic) | `37cdb06` |
 | 2026-05-14 | M10.1c Phase 8a BLAKE3 round-AIR primitives (`round_ops`) | `bc546b0` |
-| 2026-05-14 | M10.1c Phase 8b BLAKE3 round-AIR composition (`round_air`) | (this commit) |
+| 2026-05-14 | M10.1c Phase 8b BLAKE3 round-AIR composition (`round_air`) | `f233d0b` |
+| 2026-05-14 | M10.1c Phase 8c BLAKE3 top-level chip (`chip.rs`) | (this commit) |

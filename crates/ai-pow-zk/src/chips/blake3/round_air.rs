@@ -177,9 +177,17 @@ pub fn half_g<AB: AirBuilder>(
 ) {
     let (rot_1, rot_2) = if flag { (8usize, 7usize) } else { (16, 12) };
 
-    // 1. expected_a = a + polyval(b, 2) + m (unchecked mod 2^32).
+    // 1. expected_a = a + polyval(b, 2) + m (unchecked mod 2^32),
+    //    gated by is_activated.
     let b_packed = polyval_bits::<AB>(b);
-    add3_unchecked::<AB>(builder, expected_a.into(), a.into(), b_packed, m);
+    add3_unchecked::<AB>(
+        builder,
+        expected_a.into(),
+        a.into(),
+        b_packed,
+        m,
+        is_activated.clone(),
+    );
 
     // 2. expected_a = d XOR expected_d.rotate_left(rot_1).
     let d_exprs = bits_to_exprs::<AB>(d);
@@ -192,9 +200,16 @@ pub fn half_g<AB: AirBuilder>(
         rot_1,
     );
 
-    // 3. expected_c = c + polyval(expected_d, 2) (unchecked mod 2^32).
+    // 3. expected_c = c + polyval(expected_d, 2) (unchecked mod 2^32),
+    //    gated by is_activated.
     let expected_d_packed = polyval_bits::<AB>(expected_d);
-    add2_unchecked::<AB>(builder, expected_c.into(), c.into(), expected_d_packed);
+    add2_unchecked::<AB>(
+        builder,
+        expected_c.into(),
+        c.into(),
+        expected_d_packed,
+        is_activated.clone(),
+    );
 
     // 4. expected_c = b XOR expected_b.rotate_left(rot_2).
     let b_exprs = bits_to_exprs::<AB>(b);
