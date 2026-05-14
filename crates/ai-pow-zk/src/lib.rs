@@ -55,6 +55,7 @@ pub mod input_chip;
 pub mod matmul_chip;
 pub mod params;
 pub mod public;
+pub mod state_chip;
 pub mod witness;
 
 // Re-export the concrete field choices so consumers (and the AIR /
