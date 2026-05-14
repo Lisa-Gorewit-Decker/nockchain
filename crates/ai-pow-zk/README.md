@@ -5,21 +5,30 @@ EXPERIMENTAL — a Plonky3 SNARK circuit for the
 Pearl's [`zk-pow`](../../pearl/zk-pow/): wrap the multi-MB plain proof
 in a compact SNARK so it can fit in a block certificate.
 
-**Status:** M1–M11 + M10.1a landed (see [`ROADMAP.md`](ROADMAP.md)).
-The entry points [`prove`] / [`verify`] are wired into a real end-
-to-end Plonky3 pipeline against a **composite tile AIR** that ties
-the matmul accumulator (M6) and the Pearl §4.5 rotate-XOR state
-update (M7) together with a `x = c_out` sign-extension linkage and
-a single-slot state chain. Public inputs are threaded through
-Plonky3's public-values channel — Fiat-Shamir absorption means any
-mismatch at verify-time rejects the proof. **M10.1a** binds
-`found_leaf` cryptographically: the trace's terminal tile state is
-exposed as a public value, and the verifier checks
-`BLAKE3-keyed(m_final, pow_key) == public_inputs.found_leaf` out-of-
-band — making the SNARK a proof-of-work *certificate* (no fake
-leaves). PROD profile bench (120-bit provable soundness) lands at
-~5 ms prove, ~18 ms verify, ~136 KB proof at the smallest test
-shape.
+**Status:** M1–M11 + M10.1a + M10.1b landed (see
+[`ROADMAP.md`](ROADMAP.md)). The entry points [`prove`] / [`verify`]
+are wired into a real end-to-end Plonky3 pipeline that produces
+*two* proofs in one envelope:
+
+1. **Composite tile proof** (M9.1) — matmul accumulator (M6) +
+   Pearl §4.5 rotate-XOR state update (M7) with `x = c_out` sign-
+   extension linkage and a single-slot state chain.
+2. **In-circuit BLAKE3 keyed-hash proof** (M10.1b) — proves
+   `BLAKE3-keyed([m_final, 0, …, 0], pow_key) == found_leaf` in-
+   circuit via a Pearl-compat vendored fork of `p3-blake3-air`
+   (`src/blake3_chip/`). Byte-equivalent to
+   `blake3::Hasher::new_keyed(...)`, so Pearl ↔ Nockchain
+   merge-mining holds.
+
+Public inputs are threaded through Plonky3's public-values channel
+(M10) and a separate 17-element vector binds the hash proof's
+inputs/outputs. The M10.1a out-of-circuit hash check stays as a
+fast-path before unpacking the heavy hash proof.
+
+PROD-profile bench (120-bit provable soundness) at the smallest
+test shape: composite ≈ 9 ms prove / 23 ms verify / 136 KB; hash
+leg ≈ 84 ms prove / 364 ms verify / 3.6 MB; combined ≈ 93 ms / 387
+ms / 3.7 MB.
 
 ## What works today
 
@@ -53,20 +62,25 @@ FRI), and serializes via bincode. The proof attests that:
    public-values channel must match at verify time. Any tampered
    byte in the public inputs causes a Fiat-Shamir mismatch and
    rejection.
-6. **M10.1a**: the trace's terminal tile-state value `m_final` is
-   exposed as a public-value-bound element. The verifier
-   recomputes `pow_key` from `(block_commitment, nonce, h_a, h_b,
-   params_tag)` via Pearl's commitment chain, hashes the witnessed
-   `m_final` under that key, and rejects if it doesn't equal
-   `public_inputs.found_leaf`. This binds the SNARK to the actual
-   work — an adversary can no longer claim arbitrary easy leaves.
+6. **M10.1a (out-of-circuit fast path)**: the trace's terminal
+   tile-state value `m_final` is exposed as a public-value-bound
+   element. The verifier recomputes `pow_key` from
+   `(block_commitment, nonce, h_a, h_b, params_tag)` via Pearl's
+   commitment chain and rejects if `BLAKE3-keyed(m_final, pow_key)`
+   doesn't equal `public_inputs.found_leaf` — a cheap plain-Rust
+   check that fails before unpacking the heavy hash proof.
+7. **M10.1b (in-circuit)**: the same `BLAKE3-keyed(m_final, pow_key)
+   = found_leaf` relation is also proved *inside* the SNARK via the
+   vendored `Blake3FoundLeafAir`. Both proofs must verify and share
+   the same `m_final` value across their public-value vectors.
 
-**Still unbound (M10.1b future):** the witness matrices `a_rows` /
+**Still unbound (M10.1c future):** the witness matrices `a_rows` /
 `b_cols` aren't tied to `h_a` / `h_b`. An adversary can run the
-matmul on different matrices and still pass M10.1a as long as their
+matmul on different matrices and still pass M10.1b as long as the
 resulting leaf is below the difficulty target. The work is bound to
 *some* matmul of the prover's choosing, not specifically the chain-
-pinned one. M10.1b would close this with in-circuit BLAKE3.
+pinned one. M10.1c closes this with per-row in-circuit BLAKE3 +
+chunk-Merkle path verification (reuses the M10.1b vendored chip).
 
 **API constraints (MVP):** `noise_rank` must be `2` and
 `k / noise_rank` must be a power of two.
@@ -83,8 +97,10 @@ pinned one. M10.1b would close this with in-circuit BLAKE3.
 | [`matmul_chip`] | **M6.** `MatmulCellAir<STRIPE>` — per-stripe `r`-wide INT8 dot-product accumulator for one `(i, j)` tile cell. Width `2 + 2·STRIPE`. Per-row constraint `c_out = c_in + Σ a·b` plus first-row `c_in = 0` and transition carry. |
 | [`state_chip`] | **M7.** `StateChipAir` — Pearl §4.5 rotate-XOR-13 state update primitive: `m_out = rotate_left_13(m_in) XOR x`. Each 32-bit word bit-decomposed; XOR via the boolean identity `a ⊕ b = a + b − 2ab`. Width 67 per row. |
 | [`blake3_air`] | **M8.** Wraps upstream `p3-blake3-air` and integrates it with `AiPowStarkConfig`. Exercised end-to-end with ~10k-column traces. |
-| [`composite_air`] | **M9.1.** `MatmulTileAir<STRIPE>` — composes M6 + M7 with `x = c_out` sign-extension linkage and a single-slot state chain. The AIR `lib::prove` / `lib::verify` actually use. |
-| `lib.rs` | **M9 + M10.** Public `prove` / `verify` entries, threading [`PublicInputs`] through Plonky3's public-values channel (Fiat-Shamir absorption). |
+| [`blake3_chip`] | **M10.1b.** Vendored fork of `p3-blake3-air` patched to populate the `flags` column (upstream leaves it all-zero, which silently disables BLAKE3 keyed mode). Byte-equivalent to `blake3::Hasher::new_keyed(...)` — see [`tests/blake3_chip_kat.rs`](tests/blake3_chip_kat.rs). |
+| [`composite_air`] | **M9.1.** `MatmulTileAir<STRIPE>` — composes M6 + M7 with `x = c_out` sign-extension linkage and a single-slot state chain. The AIR `lib::prove` / `lib::verify` use for the composite proof. |
+| [`found_leaf_air`] | **M10.1b.** `Blake3FoundLeafAir` wraps `blake3_chip` and adds public-input bindings for `(m_final, pow_key, found_leaf)` plus pinned constants `(counter, block_len, flags) = (0, 64, 0x1B)`. The hash AIR `lib::prove` / `lib::verify` use. |
+| `lib.rs` | **M9 + M10 + M10.1a/b.** Public `prove` / `verify` entries, threading [`PublicInputs`] through Plonky3's public-values channel and producing both proofs in one envelope. |
 | `tests/prod_bench.rs` | **M11.** `#[ignore]`d round-trip under `CircuitConfig::PROD` (120-bit provable soundness). Measures proof size + timing. |
 | `air.rs` | Stub for the eventual full-protocol `MatmulAir` (BLAKE3 + multi-slot routing — M9.2 / M10.1). |
 
@@ -126,22 +142,24 @@ list-decoding / capacity-approaching conjecture for FRI soundness.
 cargo test -p ai-pow-zk
 ```
 
-**126 unit tests pass** across eleven modules, plus **2 ignored** PROD
-bench tests:
+**133 unit tests + 7 integration KAT pass** across twelve modules,
+plus **3 ignored** PROD bench tests:
 
 | Module | # tests |
 |---|---|
 | `circuit` (M1 + M2) | 15 |
+| lib.rs entry-point tests (M9 + M10 + M10.1a/b) | 20 |
 | `witness` (M4) | 14 |
 | `state_chip` (M7) | 14 |
 | `composite_air` (M9.1 + M10.1a AIR side) | 15 |
 | `matmul_chip` (M6) | 12 |
 | `public` (M3) | 11 |
 | `input_chip` (M5) | 11 |
-| lib.rs entry-point tests (M9 + M10 + M10.1a) | 19 |
 | `binding` (M10.1a helpers) | 9 |
+| `found_leaf_air` (M10.1b in-circuit binding) | 6 |
 | `blake3_air` (M8) | 6 |
-| `tests/prod_bench.rs` (M11, ignored) | 2 |
+| `tests/blake3_chip_kat.rs` (M10.1b KAT vs `blake3` crate) | 7 |
+| `tests/prod_bench.rs` (M11, ignored) | 3 |
 
 To run the PROD bench (slow):
 
@@ -175,5 +193,7 @@ per-row Merkle paths. At the same point Pearl invokes
 [`composite_air`]: src/composite_air.rs
 [`composite_air::MatmulTileAir<2>`]: src/composite_air.rs
 [`binding`]: src/binding.rs
+[`blake3_chip`]: src/blake3_chip/
+[`found_leaf_air`]: src/found_leaf_air.rs
 [`prove`]: src/lib.rs
 [`verify`]: src/lib.rs

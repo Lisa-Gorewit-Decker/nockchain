@@ -22,10 +22,11 @@ prove+verify tests through the real Plonky3 FRI stack (TEST profile).
 | **M11** | landed | `tests/prod_bench.rs` — `CircuitConfig::PROD` round-trip + tamper detection under 120-bit provable soundness. `#[ignore]`d by default; measured proof size 136 KB at the smallest test shape | 2 |
 | **M12** | deferred | Recursion / compression. Plonky3 doesn't ship a one-step compressor today; see "M12 — recursion strategy" below for the current plan |  |
 | **M10.1a** | landed | Found-leaf binding via exposed `m_final` public value + verifier-side `BLAKE3-keyed(m_final, pow_key) == found_leaf` check. AIR enforces `trace.last_row.m_out == pis[PI_M_FINAL_IDX]`; hash check happens in `verify` outside the SNARK. Closes Attack #1 (fake jackpot) at full cryptographic strength. | +17 |
+| **M10.1b** | landed | **In-circuit** Pearl-compat BLAKE3 keyed-mode found-leaf binding. Vendored `p3-blake3-air` into `src/blake3_chip/` and patched the trace generator to populate `flags` (so the chip computes real keyed BLAKE3, byte-equivalent to `blake3::Hasher::new_keyed` — required for Pearl ↔ Nockchain merge-mining). `Blake3FoundLeafAir` wraps that chip and pins row-0 `(message, key, output)` to public values. `lib::prove` produces a *second* proof in the envelope; `lib::verify` runs both proofs through the same `AiPowStarkConfig`. The M10.1a out-of-circuit hash check stays as a fast-path. | +14 (6 found_leaf_air + 7 blake3_chip KAT + 1 lib tamper) |
 | **M9.2** | future | Slot-routing for `step mod 16` (replaces current single-slot regime); selector-gated padding so `num_stripes` can be non-power-of-two; relax `noise_rank` from the const-generic 2 to `{4, 8, …}` via dispatch |  |
-| **M10.1b** | future | In-circuit BLAKE3 + chunk-Merkle so the witness's `a_rows` / `b_cols` are constraint-bound to the chain-pinned `h_a` / `h_b`. Closes Attacks #2/#3 (matrix substitution), upgrading the SNARK from a hash-only PoW certificate to a true PoUW certificate. Pearl-equivalent (their `pearl_air.rs:91-109` approach with a custom BLAKE3 chip). |  |
+| **M10.1c** | future | Per-row in-circuit BLAKE3 + chunk-Merkle so the witness's `a_rows` / `b_cols` are constraint-bound to the chain-pinned `h_a` / `h_b`. Closes Attacks #2/#3 (matrix substitution), upgrading the SNARK from a hash-only PoW certificate to a true PoUW certificate. Reuses the M10.1b vendored chip but needs per-row keyed hashes + Merkle path AIR. |  |
 
-**Total tests today:** 128 (126 unit + 2 ignored PROD bench).
+**Total tests today:** 152 (133 unit + 7 BLAKE3 KAT + 9 binding + 3 ignored PROD bench).
 
 ## M1 — `Tip5Perm` Plonky3 adapter (landed)
 
@@ -286,38 +287,74 @@ leaf. Replay across blocks fails on `pow_key` divergence.
 Doesn't close: matrix substitution attacks (Attacks #2/#3 from the
 security writeup). Those are M10.1b.
 
-## M10.1b — In-circuit BLAKE3 / Merkle bindings (future)
+## M10.1b — In-circuit Pearl-compat keyed BLAKE3 (landed)
 
-The witness's `a_rows` and `b_cols` are still unbound to the chain-
-pinned `h_a` / `h_b`. An adversary can pick arbitrary `(a, b)`, run
-the matmul on those, and (post-M10.1a) only needs to find a nonce
-where the resulting `m_final` hashes to something below target. That
-*is* a PoW — but it's a hash-search-only PoW, not the matmul-bound
-PoUW Pearl wants. M10.1b restores the PoUW property by constraining
-`a, b` to be the chain-committed matrices.
+Move the M10.1a out-of-circuit hash check INTO the SNARK while
+preserving Pearl byte-compat (so Pearl ↔ Nockchain merge-mining
+holds — miners can share matmul work between the two protocols).
 
-Pearl's approach (`pearl/zk-pow/src/circuit/pearl_air.rs:91-109` +
-`blake_program.rs`): a custom BLAKE3 chip with per-row selectors,
-constraining `BLAKE3(input_row, key=κ)[i] == public_inputs.HASH_A[i]`
-on the rows where `is_hash_a == 1`. Same pattern for `h_b` and the
-jackpot hash.
+**Constraint:** the in-circuit hash function must produce
+byte-equivalent output to `blake3::Hasher::new_keyed(...)` for the
+single-block keyed root case. Diverging the hash would break merge-
+mining.
 
-Plonky3 path:
-1. **Compose with `Blake3Air`.** Upstream's AIR (M8) computes one
-   BLAKE3 permutation per row, with fixed flag/counter derived from
-   row index. The fixed flags make it awkward for keyed-mode + per-
-   call counter requirements; would need either upstream contribution
-   or a fork.
-2. **Build a Pearl-style flexible BLAKE3 chip.** Hand-author the
-   constraints (Pearl spent meaningful engineering on this).
-3. **Cross-table lookups (logUp).** Use `p3-air-ext` or similar to
-   pull message bytes from the matmul AIR into a separate hash AIR.
+**Two-piece implementation:**
 
-All paths are substantial. Capture the design choice when starting
-M10.1b; don't pick blindly. The full task is roughly Pearl's
-`pearl_air.rs` + `blake_program.rs` reimplemented over Plonky3 +
-Goldilocks instead of Plonky2 + Goldilocks — net engineering
-similar to what Pearl already did.
+1. **`src/blake3_chip/`** — vendored fork of `p3-blake3-air`
+   (Plonky3 @ af65376, MIT / Apache-2.0). Upstream's AIR already
+   references `local.flags` correctly as `initial_row_3[3]`, but its
+   trace generator never populates the column (leaves all-zero) AND
+   hard-codes `state[3][3] = 0` in the scalar mirror — silently
+   computing BLAKE3-compression-with-flags-0 instead of real keyed-
+   mode BLAKE3. The vendored copy patches both:
+     * `row.flags` is now written from a `flags: u32` parameter.
+     * `state[3][3]` is initialised from `flags` (not `0`).
+     * New `Blake3HashCall` struct + `generate_trace_for_calls` API
+       expose `(counter, block_len, flags)` per row (upstream ties
+       them to row index / `num_rows`).
+     * Renamed `Blake3Air` → `Blake3KeyedAir` so the fork boundary
+       is obvious at call sites.
+
+   KAT tests (`tests/blake3_chip_kat.rs`, 7 tests) confirm
+   byte-equivalence: the chip's scalar reference output matches the
+   `blake3` crate's `Hasher::new_keyed` for all-zero / random /
+   Pearl-tile-state inputs, and ai-pow-zk's M10.1a out-of-circuit
+   `binding::compute_found_leaf` produces the same hash.
+
+2. **`src/found_leaf_air.rs`** — `Blake3FoundLeafAir` wraps the
+   vendored chip and adds public-input binding constraints on row 0:
+   message[0] = `m_final` PI, message[1..16] = 0, chaining values =
+   `pow_key` PIs, outputs = `found_leaf` PIs, plus pinned constants
+   `counter = 0`, `block_len = 64`, `flags = 0x1B`. 17 public values
+   total (`m_final | pow_key | found_leaf`).
+
+   6 dedicated tests cover honest verify, tampered PIs at each slot,
+   and the diagnostic case where a prover tries `flags = 0` (the
+   upstream-broken value) — must reject.
+
+**Integration in `lib::{prove, verify}`:**
+
+`ZkProof` envelope grows to carry both the composite tile proof and
+the BLAKE3 hash proof. `prove` builds both traces and produces both
+proofs. `verify` runs the fast M10.1a out-of-circuit hash check
+(cheap, plain BLAKE3 in Rust), then unpacks and verifies both
+proofs through the same `AiPowStarkConfig`. Cross-proof consistency
+comes from sharing `m_final` between the two PI vectors (verifier
+builds both PI vectors from the same envelope `m_final`).
+
+**Cost:** the BLAKE3 chip is ~10k columns wide, so the hash proof
+is heavier than the composite proof. PROD-profile measurements
+(release, smallest test shape):
+
+| Proof | Prove | Verify | Bytes |
+|---|---|---|---|
+| Composite (M9.1 + M10.1a) | ~9 ms | ~23 ms | ~136 KB |
+| Hash leg (M10.1b) | ~84 ms | ~364 ms | ~3.6 MB |
+| **Combined** | **~93 ms** | **~387 ms** | **~3.7 MB** |
+
+The hash leg dominates. M11.1 (full-shape benchmarks) will need to
+explore whether folding the hash into the composite AIR (one wider
+trace instead of two proofs) is cheaper.
 
 ## Future milestones
 
