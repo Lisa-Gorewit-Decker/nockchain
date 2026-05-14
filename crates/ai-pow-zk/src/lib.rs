@@ -73,6 +73,7 @@
 //! for the full milestone list and what's next.
 
 pub mod air;
+pub mod bench_suite;
 pub mod binding;
 pub mod blake3_air;
 pub mod blake3_chip;
