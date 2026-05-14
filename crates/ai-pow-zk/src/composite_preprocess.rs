@@ -40,7 +40,7 @@
 
 use crate::chips::control::{ControlChip, NUM_SELECTORS};
 use crate::composite_layout::{
-    AB_ID_PREP, BITS_PER_LIMB, CONTROL_PREP, CV_OR_TWEAK_PREP, NOISE_PACKED_PREP, STARK_ROW_IDX,
+    AB_ID_PREP, CONTROL_PREP, CV_OR_TWEAK_PREP, NOISE_PACKED_PREP, STARK_ROW_IDX,
 };
 use crate::Val;
 
@@ -129,14 +129,13 @@ pub fn build_preprocessed_columns(program: &[RowDescriptor], total_rows: usize) 
 
 #[cfg(test)]
 mod tests {
-    use p3_field::integers::QuotientMap;
     use p3_field::PrimeField64;
 
     use super::*;
     use crate::chips::control::NUM_SELECTORS;
     use crate::composite_layout::{
-        AB_ID_PREP, CONTROL_PREP, CV_OR_TWEAK_PREP, NOISE_PACKED_PREP, STARK_ROW_IDX,
-        TOTAL_TRACE_WIDTH,
+        AB_ID_PREP, BITS_PER_LIMB, CONTROL_PREP, CV_OR_TWEAK_PREP, NOISE_PACKED_PREP,
+        STARK_ROW_IDX, TOTAL_TRACE_WIDTH,
     };
 
     #[test]
