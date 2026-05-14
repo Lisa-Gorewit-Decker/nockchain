@@ -47,14 +47,14 @@ use p3_lookup::InteractionBuilder;
 use crate::composite_full_air::CompositeFullAir;
 use crate::composite_layout::{
     AB_ID_LIMBS_LEN, AB_ID_LIMBS_START, A_NOISED_UNPACK_LEN, A_NOISED_UNPACK_START,
-    B_NOISED_UNPACK_LEN, B_NOISED_UNPACK_START, IRANGE7P1_FREQ, IRANGE7P1_TABLE,
-    IRANGE8_FREQ, IRANGE8_TABLE, IS_MSG_MAT, MAT_ID_LIMBS_LEN, MAT_ID_LIMBS_START,
-    MAT_UNPACK_LEN, MAT_UNPACK_START, NOISE_UNPACK_LEN, NOISE_UNPACK_START,
-    TOTAL_TRACE_WIDTH, UINT8_DATA_LEN, UINT8_DATA_START, URANGE13_FREQ, URANGE13_TABLE,
-    URANGE8_FREQ, URANGE8_TABLE,
+    B_NOISED_UNPACK_LEN, B_NOISED_UNPACK_START, I8U8_FREQ, I8U8_TABLE, IRANGE7P1_FREQ,
+    IRANGE7P1_TABLE, IRANGE8_FREQ, IRANGE8_TABLE, IS_MSG_MAT, MAT_ID_LIMBS_LEN,
+    MAT_ID_LIMBS_START, MAT_UNPACK_LEN, MAT_UNPACK_START, NOISE_UNPACK_LEN,
+    NOISE_UNPACK_START, TOTAL_TRACE_WIDTH, UINT8_DATA_LEN, UINT8_DATA_START,
+    URANGE13_FREQ, URANGE13_TABLE, URANGE8_FREQ, URANGE8_TABLE,
 };
 use crate::composite_lookups::{
-    BUS_IRANGE7P1, BUS_IRANGE8, BUS_URANGE13, BUS_URANGE8,
+    BUS_I8U8, BUS_IRANGE7P1, BUS_IRANGE8, BUS_URANGE13, BUS_URANGE8,
 };
 
 /// Lookup-aware composite AIR.
@@ -188,6 +188,30 @@ where
                 1,
             );
         }
+
+        // ---- (2e) I8U8 bus (paired i8 ↔ u8 conversion) ----
+        //
+        // Table: (I8U8_TABLE, −I8U8_FREQ). Each table row holds
+        // pack = signed*256 + unsigned where unsigned =
+        // signed.rem_euclid(256), enumerated across i ∈ [0, 256).
+        // Queries: pair (MAT_UNPACK[i], UINT8_DATA[i]) packed as
+        // signed*256 + unsigned, gated by IS_MSG_MAT (when matrix
+        // bytes are loading into BLAKE3's message buffer the i8
+        // value and its u8 representation must agree).
+        let two_fifty_six: AB::Expr =
+            <AB::F as p3_field::PrimeCharacteristicRing>::from_u64(256).into();
+        builder.push_interaction(
+            BUS_I8U8,
+            [<AB::Var as Into<AB::Expr>>::into(cur[I8U8_TABLE])],
+            -<AB::Var as Into<AB::Expr>>::into(cur[I8U8_FREQ]),
+            0,
+        );
+        for i in 0..MAT_UNPACK_LEN.min(UINT8_DATA_LEN) {
+            let signed: AB::Expr = cur[MAT_UNPACK_START + i].into();
+            let unsigned: AB::Expr = cur[UINT8_DATA_START + i].into();
+            let pack = signed * two_fifty_six.clone() + unsigned;
+            builder.push_interaction(BUS_I8U8, [pack], is_msg_mat.clone(), 1);
+        }
     }
 }
 
@@ -251,26 +275,48 @@ mod tests {
         run_batch(&cfg, &trace.matrix).expect("baseline must verify with LogUp");
     }
 
-    /// Place a single u8 query at row 0: set UINT8_DATA[0] = 42,
-    /// IS_MSG_MAT = 1 (via ControlChip::fill_row, selector index
-    /// 10). populate_lookup_freq scans the trace and writes
-    /// URANGE8_FREQ.
+    /// Place a single "matrix message byte" at row 0: set
+    /// MAT_UNPACK[0] / UINT8_DATA[0] to a consistent (i8, u8)
+    /// pair, IS_MSG_MAT = 1, NOISED_PACKED[0] consistent with the
+    /// input chip's `polyval(MAT, 256) + polyval(NOISE, 256)`
+    /// constraint.
+    ///
+    /// The argument `u8_value` is the unsigned byte. The
+    /// corresponding signed i8 view is `u8_value` if `< 128`
+    /// else `u8_value - 256` (two's complement). With this
+    /// helper, all wired lookup buses balance for the placed row:
+    ///   - URange8 query on UINT8_DATA[0] = u8_value
+    ///   - IRange8 query on MAT_UNPACK[0] = i8_view
+    ///   - I8U8 query on the packed pair (matches valid table entry)
     fn place_urange8_query(
         trace: &mut CompositeTrace,
         row_idx: usize,
-        value: u32,
+        u8_value: u32,
     ) {
         assert!(row_idx < trace.height());
+        assert!(u8_value < 256);
         let base = row_idx * TOTAL_TRACE_WIDTH;
         let row = &mut trace.matrix.values[base..base + TOTAL_TRACE_WIDTH];
 
-        // Selector: IS_MSG_MAT at SELECTOR_COLS index 10.
         let mut selectors = [false; 21];
-        selectors[10] = true;
+        selectors[10] = true; // IS_MSG_MAT
         ControlChip.fill_row(&selectors, 0, row);
 
-        // UINT8_DATA[0] = value (other UINT8_DATA cells stay 0).
-        row[UINT8_DATA_START] = <Val as QuotientMap<u64>>::from_int(value as u64);
+        // i8 view of u8: 0..127 → 0..127; 128..255 → -128..-1.
+        let signed: i64 = if u8_value < 128 {
+            u8_value as i64
+        } else {
+            u8_value as i64 - 256
+        };
+
+        row[crate::composite_layout::MAT_UNPACK_START] =
+            <Val as QuotientMap<i64>>::from_int(signed);
+        row[UINT8_DATA_START] = <Val as QuotientMap<u64>>::from_int(u8_value as u64);
+        // Input chip: NOISED_PACKED[0] = polyval(MAT_UNPACK[0..4],
+        // 256) = MAT_UNPACK[0] (since [1..4] are 0). NOISE_UNPACK
+        // is 0 so polyval(NOISE, 256) = 0.
+        row[crate::composite_layout::NOISED_PACKED_START] =
+            <Val as QuotientMap<i64>>::from_int(signed);
     }
 
     #[test]
@@ -502,6 +548,82 @@ mod tests {
         trace.populate_lookup_freq();
         run_batch(&cfg, &trace.matrix)
             .expect("in-range i8 A_NOISED_UNPACK values must verify");
+    }
+
+    // =================================================================
+    //  I8U8 paired i8↔u8 conversion bus
+    // =================================================================
+
+    /// Place a valid (i8, u8) pair on row 0 with IS_MSG_MAT=1
+    /// using place_urange8_query, which sets MAT_UNPACK[0],
+    /// UINT8_DATA[0], and NOISED_PACKED[0] consistently. The
+    /// I8U8 bus's table row for pack = 42*256+42 is at row
+    /// (42 + 128) = 170. populate_lookup_freq increments
+    /// I8U8_FREQ[170] to balance.
+    #[test]
+    fn valid_i8u8_pair_balances_via_logup() {
+        let cfg = build_stark_config(&test_zk_params(), &CircuitConfig::TEST_PEARL);
+        let mut trace = CompositeTrace::baseline_min();
+        place_urange8_query(&mut trace, 0, 42);
+        trace.populate_lookup_freq();
+        run_batch(&cfg, &trace.matrix).expect("valid (42, 42) pair must verify");
+    }
+
+    /// Place a valid NEGATIVE (i8, u8) pair: u8 = 255 → signed = -1.
+    /// I8U8 table row = -1 + 128 = 127. populate_lookup_freq
+    /// updates I8U8_FREQ[127] to balance.
+    #[test]
+    fn valid_negative_i8u8_pair_balances() {
+        let cfg = build_stark_config(&test_zk_params(), &CircuitConfig::TEST_PEARL);
+        let mut trace = CompositeTrace::baseline_min();
+        place_urange8_query(&mut trace, 0, 255);
+        trace.populate_lookup_freq();
+        run_batch(&cfg, &trace.matrix)
+            .expect("valid (-1, 255) pair must verify");
+    }
+
+    /// **Cryptographically critical test.** Place a valid (42, 42)
+    /// pair via place_urange8_query (which sets NOISED_PACKED
+    /// consistently), then tamper UINT8_DATA[0] to 43. The packed
+    /// value 42*256+43 = 10795 is not in the I8U8 table (which
+    /// only contains valid signed/rem_euclid pairs), so LogUp
+    /// rejects. This is the constraint that ensures matrix bytes
+    /// can't be inconsistently presented as i8 vs. u8 — essential
+    /// for the merge-mining byte-equivalence with Pearl.
+    #[test]
+    fn inconsistent_i8u8_pair_rejected_by_logup() {
+        let cfg = build_stark_config(&test_zk_params(), &CircuitConfig::TEST_PEARL);
+        let mut trace = CompositeTrace::baseline_min();
+        place_urange8_query(&mut trace, 0, 42);
+        // Tamper UINT8_DATA[0] from 42 to 43 (inconsistent with
+        // MAT_UNPACK[0] which is still 42).
+        let target = 0 * TOTAL_TRACE_WIDTH + UINT8_DATA_START;
+        trace.matrix.values[target] = <Val as QuotientMap<u64>>::from_int(43);
+        trace.populate_lookup_freq();
+        let res = run_batch(&cfg, &trace.matrix);
+        assert!(
+            res.is_err(),
+            "inconsistent (i8, u8) pair (42, 43) must reject; got {:?}",
+            res
+        );
+    }
+
+    /// Tamper I8U8_FREQ AFTER populate → reject.
+    #[test]
+    fn tampered_i8u8_freq_rejected_by_logup() {
+        let cfg = build_stark_config(&test_zk_params(), &CircuitConfig::TEST_PEARL);
+        let mut trace = CompositeTrace::baseline_min();
+        trace.populate_lookup_freq();
+        // Inflate I8U8_FREQ at row 128 (the table entry for pair
+        // (0, 0)) from 0 to 1.
+        let target = 128 * TOTAL_TRACE_WIDTH + crate::composite_layout::I8U8_FREQ;
+        trace.matrix.values[target] = <Val as QuotientMap<u64>>::from_int(1);
+        let res = run_batch(&cfg, &trace.matrix);
+        assert!(
+            res.is_err(),
+            "over-claimed I8U8_FREQ must reject; got {:?}",
+            res
+        );
     }
 
     /// Tamper URANGE13_FREQ AFTER populate (over-claim) → reject.

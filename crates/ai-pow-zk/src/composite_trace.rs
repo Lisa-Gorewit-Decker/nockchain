@@ -60,7 +60,7 @@ use crate::chips::range_table::{IRange7P1Chip, IRange8Chip, URange13Chip, URange
 use crate::composite_layout::{
     AB_ID_LIMBS_LEN, AB_ID_LIMBS_START, A_NOISED_UNPACK_LEN, A_NOISED_UNPACK_START,
     BIT_REG_START, BLAKE3_CV_START, BLAKE3_MSG_START, BLAKE3_ROUND_START, B_NOISED_UNPACK_LEN,
-    B_NOISED_UNPACK_START, CUMSUM_TILE_START, CV_OR_TWEAK_PREP, CV_OUT_START,
+    B_NOISED_UNPACK_START, CUMSUM_TILE_START, CV_OR_TWEAK_PREP, CV_OUT_START, I8U8_FREQ,
     IRANGE7P1_FREQ, IRANGE8_FREQ, IS_MSG_MAT, JACKPOT_MSG_START, JACKPOT_SIZE,
     JACKPOT_SLOT_SEL_START, JACKPOT_X_BITS_START, MAT_ID_LIMBS_LEN, MAT_ID_LIMBS_START,
     MAT_UNPACK_LEN, MAT_UNPACK_START, NOISE_UNPACK_LEN, NOISE_UNPACK_START, STARK_ROW_IDX,
@@ -694,6 +694,46 @@ impl CompositeTrace {
         }
         for v in 256.min(n)..n {
             self.matrix.values[v * TOTAL_TRACE_WIDTH + IRANGE8_FREQ] = Val::default();
+        }
+
+        // ---- I8U8 paired i8↔u8 bus ----
+        // Queries (gated by IS_MSG_MAT): for i in 0..MIN(MAT_UNPACK, UINT8_DATA),
+        // pack = signed*256 + unsigned. Table entries enumerate
+        // (signed, signed.rem_euclid(256)) for signed ∈ [-128, 127].
+        // The table row for a valid pair is at row (signed + 128).
+        let mut i8u8_count = vec![0u64; 256];
+        let pair_len = MAT_UNPACK_LEN.min(UINT8_DATA_LEN);
+        for r in 0..n {
+            let base = r * TOTAL_TRACE_WIDTH;
+            let is_msg_mat =
+                self.matrix.values[base + IS_MSG_MAT].as_canonical_u64();
+            if is_msg_mat != 1 {
+                continue;
+            }
+            for i in 0..pair_len {
+                let signed_raw =
+                    self.matrix.values[base + MAT_UNPACK_START + i].as_canonical_u64();
+                let signed = goldilocks_to_signed(signed_raw);
+                let unsigned = self.matrix.values[base + UINT8_DATA_START + i]
+                    .as_canonical_u64();
+                // The valid pair condition: unsigned == signed.rem_euclid(256).
+                let expected_unsigned = (signed.rem_euclid(256)) as u64;
+                if (-128..=127).contains(&signed) && unsigned == expected_unsigned {
+                    let row_idx = (signed + 128) as usize;
+                    i8u8_count[row_idx] += 1;
+                }
+                // Inconsistent (i8, u8) pairs (e.g. signed=42,
+                // unsigned=43) have a pack value that's not in
+                // the table at all. LogUp catches them at proof
+                // time.
+            }
+        }
+        for v in 0..256.min(n) {
+            self.matrix.values[v * TOTAL_TRACE_WIDTH + I8U8_FREQ] =
+                <Val as QuotientMap<u64>>::from_int(i8u8_count[v]);
+        }
+        for v in 256.min(n)..n {
+            self.matrix.values[v * TOTAL_TRACE_WIDTH + I8U8_FREQ] = Val::default();
         }
     }
 
