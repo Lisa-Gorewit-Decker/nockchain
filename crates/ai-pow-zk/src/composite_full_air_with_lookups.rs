@@ -1075,4 +1075,294 @@ mod tests {
             res
         );
     }
+
+    // =================================================================
+    //  Property tests — AIR ↔ trace-generator lookup agreement
+    // =================================================================
+    //
+    // Catch the silent-drift class: any random in-range tamper should
+    // verify via populate_lookup_freq, any random out-of-range tamper
+    // should reject. We pick query cells that are NOT otherwise
+    // constrained by chip-level equations on the targeted row, so the
+    // rejection (or acceptance) is isolated to the LogUp argument.
+    //
+    // Case counts are kept small (proptest default is 256) because
+    // each case runs a full prove_batch + verify_batch (~25 s at
+    // TEST_PEARL). Sweep is bounded by the ProptestConfig::cases.
+    use proptest::prelude::*;
+
+    proptest::proptest! {
+        #![proptest_config(ProptestConfig {
+            cases: 4,
+            .. ProptestConfig::default()
+        })]
+
+        /// IRange8 bus: random in-range i8 placed in A_NOISED_UNPACK[0]
+        /// on a passthrough row (all selectors = 0, so no other chip's
+        /// constraint reads it). populate_lookup_freq updates
+        /// IRANGE8_FREQ correctly → balances.
+        #[test]
+        fn prop_a_noised_unpack_inrange_verifies(v in -128i64..=127i64) {
+            let cfg = build_stark_config(&test_zk_params(), &CircuitConfig::TEST_PEARL);
+            let mut trace = CompositeTrace::baseline_min();
+            let target = 0 * TOTAL_TRACE_WIDTH
+                + crate::composite_layout::A_NOISED_UNPACK_START;
+            trace.matrix.values[target] = <Val as QuotientMap<i64>>::from_int(v);
+            trace.populate_lookup_freq();
+            run_batch(&cfg, &trace.matrix)
+                .expect("in-range i8 must verify");
+        }
+
+        /// IRange8 bus: random out-of-i8-range value placed in
+        /// A_NOISED_UNPACK[0]. The query (value, +1) has no matching
+        /// table entry → unbalanced → reject.
+        #[test]
+        fn prop_a_noised_unpack_outofrange_rejects(
+            v in proptest::sample::select(vec![-1000i64, -200, 128, 200, 1000, 12345])
+        ) {
+            let cfg = build_stark_config(&test_zk_params(), &CircuitConfig::TEST_PEARL);
+            let mut trace = CompositeTrace::baseline_min();
+            let target = 0 * TOTAL_TRACE_WIDTH
+                + crate::composite_layout::A_NOISED_UNPACK_START;
+            trace.matrix.values[target] = <Val as QuotientMap<i64>>::from_int(v);
+            trace.populate_lookup_freq();
+            let res = run_batch(&cfg, &trace.matrix);
+            prop_assert!(
+                res.is_err(),
+                "out-of-range i8 ({}) must reject; got {:?}",
+                v, res
+            );
+        }
+
+        /// URange8 bus (gated): place a valid u8 query at row 0 via
+        /// place_urange8_query. Should always verify regardless of
+        /// the chosen u8 value.
+        #[test]
+        fn prop_urange8_valid_query_verifies(v in 0u32..256) {
+            let cfg = build_stark_config(&test_zk_params(), &CircuitConfig::TEST_PEARL);
+            let mut trace = CompositeTrace::baseline_min();
+            place_urange8_query(&mut trace, 0, v);
+            trace.populate_lookup_freq();
+            run_batch(&cfg, &trace.matrix)
+                .expect("valid u8 query must verify");
+        }
+
+        /// I8U8 bus: inconsistent (i8, u8) pair where unsigned ≠
+        /// signed.rem_euclid(256) → no matching table entry → reject.
+        /// We force inconsistency by setting MAT_UNPACK[0] = 0 and
+        /// UINT8_DATA[0] = nonzero.
+        #[test]
+        fn prop_inconsistent_i8u8_pair_rejects(u in 1u32..256) {
+            let cfg = build_stark_config(&test_zk_params(), &CircuitConfig::TEST_PEARL);
+            let mut trace = CompositeTrace::baseline_min();
+
+            let base = 0 * TOTAL_TRACE_WIDTH;
+            let row = &mut trace.matrix.values[base..base + TOTAL_TRACE_WIDTH];
+            let mut selectors = [false; 21];
+            selectors[10] = true; // IS_MSG_MAT
+            ControlChip.fill_row(&selectors, 0, row);
+            // MAT_UNPACK[0] = 0; UINT8_DATA[0] = u. For u != 0,
+            // the pack value 0*256 + u = u corresponds to table
+            // entry (signed=0, unsigned=0) only when u=0. Any u>0
+            // is inconsistent.
+            row[crate::composite_layout::MAT_UNPACK_START] =
+                <Val as QuotientMap<i64>>::from_int(0);
+            row[UINT8_DATA_START] = <Val as QuotientMap<u64>>::from_int(u as u64);
+
+            trace.populate_lookup_freq();
+            let res = run_batch(&cfg, &trace.matrix);
+            prop_assert!(
+                res.is_err(),
+                "inconsistent (0, {}) pair must reject; got {:?}",
+                u, res
+            );
+        }
+
+        /// CV_ROUTING bus: query at random row references a random
+        /// CV_OR_TWEAK_PREP value. If the referenced row's CV_OUT is
+        /// all-zero (baseline) AND the CV_IN cells are all-zero, the
+        /// query (ref_row, 0, 0, ..., 0) matches a table entry, so
+        /// populate_lookup_freq balances it → verifies. If we set a
+        /// nonzero CV_IN cell, the key changes and the table doesn't
+        /// have it → rejects.
+        #[test]
+        fn prop_cv_routing_valid_reference_verifies(
+            row_idx in 100u64..200,
+            ref_row in 0u64..200
+        ) {
+            let cfg = build_stark_config(&test_zk_params(), &CircuitConfig::TEST_PEARL);
+            let mut trace = CompositeTrace::baseline_min();
+            let base = (row_idx as usize) * TOTAL_TRACE_WIDTH;
+            let row = &mut trace.matrix.values[base..base + TOTAL_TRACE_WIDTH];
+            let mut selectors = [false; 21];
+            selectors[7] = true; // IS_CV_IN
+            ControlChip.fill_row(&selectors, 0, row);
+            row[CV_OR_TWEAK_PREP] = <Val as QuotientMap<u64>>::from_int(ref_row);
+            // CV_IN stays at 0; the referenced row's CV_OUT is 0; the
+            // query matches the table → balance.
+            trace.populate_lookup_freq();
+            run_batch(&cfg, &trace.matrix)
+                .expect("valid CV reference must verify");
+        }
+
+        /// CV_ROUTING bus: query with NONZERO CV_IN[0] → key doesn't
+        /// match any published CV_OUT (all zero in baseline) →
+        /// rejects.
+        #[test]
+        fn prop_cv_routing_nonzero_cv_rejects(
+            cv_value in 1u64..1_000_000
+        ) {
+            let cfg = build_stark_config(&test_zk_params(), &CircuitConfig::TEST_PEARL);
+            let mut trace = CompositeTrace::baseline_min();
+            let base = 100 * TOTAL_TRACE_WIDTH;
+            let row = &mut trace.matrix.values[base..base + TOTAL_TRACE_WIDTH];
+            let mut selectors = [false; 21];
+            selectors[7] = true;
+            ControlChip.fill_row(&selectors, 0, row);
+            row[CV_OR_TWEAK_PREP] = <Val as QuotientMap<u64>>::from_int(50);
+            row[CV_IN_START] = <Val as QuotientMap<u64>>::from_int(cv_value);
+            trace.populate_lookup_freq();
+            let res = run_batch(&cfg, &trace.matrix);
+            prop_assert!(
+                res.is_err(),
+                "nonzero CV ({}) for ref_row=50 must reject; got {:?}",
+                cv_value, res
+            );
+        }
+    }
+
+    // =================================================================
+    //  Per-chip offset consistency (HL2)
+    // =================================================================
+    //
+    // Confirm each chip's LOCAL_OFFSETS and COMPOSITE_OFFSETS are
+    // internally consistent — column slots fit within their
+    // respective layouts and don't overlap. Catches the silent-drift
+    // class where someone adds a column block but forgets to update
+    // the per-chip COMPOSITE_OFFSETS.
+
+    #[test]
+    fn matmul_composite_offsets_fit_within_total_trace_width() {
+        use crate::chips::matmul::chip::MatmulCumsumChip;
+        use crate::composite_layout::{TILE_D, TILE_H, TOTAL_TRACE_WIDTH};
+        let off = MatmulCumsumChip::COMPOSITE_OFFSETS;
+        // A_UNPACK + B_UNPACK each cover TILE_H × TILE_D cells.
+        let a_end = off.a_unpack_start + TILE_H * TILE_D;
+        let b_end = off.b_unpack_start + TILE_H * TILE_D;
+        let cumsum_end = off.cumsum_start + TILE_H * TILE_H;
+        assert!(a_end <= TOTAL_TRACE_WIDTH);
+        assert!(b_end <= TOTAL_TRACE_WIDTH);
+        assert!(cumsum_end <= TOTAL_TRACE_WIDTH);
+        assert!(off.is_reset_col < TOTAL_TRACE_WIDTH);
+        assert!(off.is_update_col < TOTAL_TRACE_WIDTH);
+    }
+
+    #[test]
+    fn blake3_composite_offsets_fit_within_total_trace_width() {
+        use crate::chips::blake3::chip::Blake3Chip;
+        use crate::chips::blake3::layout::LIMBS_PER_STATE_SNAPSHOT;
+        use crate::composite_layout::TOTAL_TRACE_WIDTH;
+        let off = Blake3Chip::COMPOSITE_OFFSETS;
+        // 4 state snapshots × 264 cells.
+        let state_end = off.state_start + 4 * LIMBS_PER_STATE_SNAPSHOT;
+        assert!(state_end <= TOTAL_TRACE_WIDTH);
+        assert!(off.msg_start + 16 <= TOTAL_TRACE_WIDTH);
+        assert!(off.cv_start + 8 <= TOTAL_TRACE_WIDTH);
+        assert!(off.cv_out_start + 8 <= TOTAL_TRACE_WIDTH);
+        assert!(off.tweak_col < TOTAL_TRACE_WIDTH);
+        assert!(off.is_new_blake_col < TOTAL_TRACE_WIDTH);
+        assert!(off.is_last_round_col < TOTAL_TRACE_WIDTH);
+    }
+
+    #[test]
+    fn jackpot_composite_offsets_fit_within_total_trace_width() {
+        use crate::chips::jackpot::chip::JackpotChip;
+        use crate::composite_layout::{JACKPOT_SIZE, TOTAL_TRACE_WIDTH};
+        let off = JackpotChip::COMPOSITE_OFFSETS;
+        assert!(off.jackpot_msg_start + JACKPOT_SIZE <= TOTAL_TRACE_WIDTH);
+        assert!(off.v_bits_start + 32 <= TOTAL_TRACE_WIDTH);
+        assert!(off.x_bits_start + 32 <= TOTAL_TRACE_WIDTH);
+        assert!(off.slot_sel_start + JACKPOT_SIZE <= TOTAL_TRACE_WIDTH);
+        assert!(off.is_active_col < TOTAL_TRACE_WIDTH);
+    }
+
+    /// Composite-offsets blocks for the three lookup-aware chips
+    /// must not overlap each other on shared cells (with the
+    /// expected exception of the BIT_REG-as-V_BITS overlap for
+    /// jackpot — that's by design).
+    #[test]
+    fn chip_composite_blocks_dont_unexpectedly_overlap() {
+        use crate::chips::blake3::chip::Blake3Chip;
+        use crate::chips::blake3::layout::LIMBS_PER_STATE_SNAPSHOT;
+        use crate::chips::jackpot::chip::JackpotChip;
+        use crate::chips::matmul::chip::MatmulCumsumChip;
+        use crate::composite_layout::{JACKPOT_SIZE, TILE_D, TILE_H};
+
+        let mat = MatmulCumsumChip::COMPOSITE_OFFSETS;
+        let bl = Blake3Chip::COMPOSITE_OFFSETS;
+        let jp = JackpotChip::COMPOSITE_OFFSETS;
+
+        // Matmul's A_UNPACK [start, start + TILE_H * TILE_D).
+        let mat_a = (mat.a_unpack_start, mat.a_unpack_start + TILE_H * TILE_D);
+        let mat_b = (mat.b_unpack_start, mat.b_unpack_start + TILE_H * TILE_D);
+        let mat_cumsum = (mat.cumsum_start, mat.cumsum_start + TILE_H * TILE_H);
+
+        // BLAKE3's STATE block [start, start + 4 * 264).
+        let bl_state = (bl.state_start, bl.state_start + 4 * LIMBS_PER_STATE_SNAPSHOT);
+        let bl_msg = (bl.msg_start, bl.msg_start + 16);
+        let bl_cv = (bl.cv_start, bl.cv_start + 8);
+        let bl_cv_out = (bl.cv_out_start, bl.cv_out_start + 8);
+
+        // Jackpot's blocks.
+        let jp_msg = (jp.jackpot_msg_start, jp.jackpot_msg_start + JACKPOT_SIZE);
+        let jp_x = (jp.x_bits_start, jp.x_bits_start + 32);
+        let jp_sel = (jp.slot_sel_start, jp.slot_sel_start + JACKPOT_SIZE);
+
+        let disjoint =
+            |a: (usize, usize), b: (usize, usize)| a.1 <= b.0 || b.1 <= a.0;
+
+        // Matmul vs. BLAKE3 vs. Jackpot — pairwise disjoint.
+        for (an, a) in [
+            ("mat_a", mat_a),
+            ("mat_b", mat_b),
+            ("mat_cumsum", mat_cumsum),
+        ] {
+            for (bn, b) in [
+                ("bl_state", bl_state),
+                ("bl_msg", bl_msg),
+                ("bl_cv", bl_cv),
+                ("bl_cv_out", bl_cv_out),
+            ] {
+                assert!(
+                    disjoint(a, b),
+                    "matmul block {an}={:?} overlaps blake3 block {bn}={:?}",
+                    a,
+                    b
+                );
+            }
+            for (bn, b) in [("jp_msg", jp_msg), ("jp_x", jp_x), ("jp_sel", jp_sel)] {
+                assert!(
+                    disjoint(a, b),
+                    "matmul block {an}={:?} overlaps jackpot block {bn}={:?}",
+                    a,
+                    b
+                );
+            }
+        }
+        for (an, a) in [
+            ("bl_state", bl_state),
+            ("bl_msg", bl_msg),
+            ("bl_cv", bl_cv),
+            ("bl_cv_out", bl_cv_out),
+        ] {
+            for (bn, b) in [("jp_msg", jp_msg), ("jp_x", jp_x), ("jp_sel", jp_sel)] {
+                assert!(
+                    disjoint(a, b),
+                    "blake3 block {an}={:?} overlaps jackpot block {bn}={:?}",
+                    a,
+                    b
+                );
+            }
+        }
+    }
 }
