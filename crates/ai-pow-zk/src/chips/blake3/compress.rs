@@ -128,6 +128,98 @@ pub fn round(s: &mut [u32; 16], m: &[u32; 16]) {
     g(s, 3, 4, 9, 14, m[14], m[15]);
 }
 
+/// Apply one full round and return all 4 intermediate state
+/// snapshots (state1, state2, state3, state_after_round). Mirrors
+/// Pearl's `compute_blake3_round` in `trace.rs:223-281`. Used by the
+/// round-AIR tests + the trace generator (Phase 8c) to populate the
+/// 4 state snapshots per row.
+///
+/// `s` is the input state; after this call `s` holds the output
+/// state. The returned array's last entry equals the new `s`.
+#[inline]
+pub fn round_with_snapshots(s: &mut [u32; 16], m: &[u32; 16]) -> [[u32; 16]; 4] {
+    let mut snapshots = [[0u32; 16]; 4];
+
+    // Column half round 1 (no rotation in indices, msg[0,2,4,6]).
+    for i in 0..4 {
+        let (a, b, c, d) = half_g_scalar(s[i], s[4 + i], s[8 + i], s[12 + i], m[2 * i], false);
+        s[i] = a;
+        s[4 + i] = b;
+        s[8 + i] = c;
+        s[12 + i] = d;
+    }
+    snapshots[0] = *s;
+
+    // Column half round 2 (msg[1,3,5,7]).
+    for i in 0..4 {
+        let (a, b, c, d) =
+            half_g_scalar(s[i], s[4 + i], s[8 + i], s[12 + i], m[2 * i + 1], true);
+        s[i] = a;
+        s[4 + i] = b;
+        s[8 + i] = c;
+        s[12 + i] = d;
+    }
+    snapshots[1] = *s;
+
+    // Diagonal half round 1 (msg[8,10,12,14]).
+    for i in 0..4 {
+        let (a, b, c, d) = half_g_scalar(
+            s[i],
+            s[4 + (i + 1) % 4],
+            s[8 + (i + 2) % 4],
+            s[12 + (i + 3) % 4],
+            m[8 + 2 * i],
+            false,
+        );
+        s[i] = a;
+        s[4 + (i + 1) % 4] = b;
+        s[8 + (i + 2) % 4] = c;
+        s[12 + (i + 3) % 4] = d;
+    }
+    snapshots[2] = *s;
+
+    // Diagonal half round 2 (msg[9,11,13,15]).
+    for i in 0..4 {
+        let (a, b, c, d) = half_g_scalar(
+            s[i],
+            s[4 + (i + 1) % 4],
+            s[8 + (i + 2) % 4],
+            s[12 + (i + 3) % 4],
+            m[8 + 2 * i + 1],
+            true,
+        );
+        s[i] = a;
+        s[4 + (i + 1) % 4] = b;
+        s[8 + (i + 2) % 4] = c;
+        s[12 + (i + 3) % 4] = d;
+    }
+    snapshots[3] = *s;
+
+    snapshots
+}
+
+/// Scalar half-G computation. Mirrors Pearl's `half_quarter_round`
+/// in `trace.rs:178-185`. `flag = false` uses rotation amounts
+/// (16, 12); `flag = true` uses (8, 7).
+///
+/// Returns `(a', b', c', d')` — the four new state words.
+#[inline]
+pub fn half_g_scalar(
+    mut a: u32,
+    mut b: u32,
+    mut c: u32,
+    mut d: u32,
+    m: u32,
+    is_second_half: bool,
+) -> (u32, u32, u32, u32) {
+    let (rot_1, rot_2) = if is_second_half { (8, 7) } else { (16, 12) };
+    a = a.wrapping_add(b).wrapping_add(m);
+    d = (d ^ a).rotate_right(rot_1);
+    c = c.wrapping_add(d);
+    b = (b ^ c).rotate_right(rot_2);
+    (a, b, c, d)
+}
+
 /// Full BLAKE3 compression: 7 mixing rounds + final feed-forward
 /// XOR. Returns the 16-word state (32 bytes of hash output in the
 /// first 8 words; the remaining 8 are XORed back into the chaining
