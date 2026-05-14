@@ -51,6 +51,7 @@
 pub mod air;
 pub mod blake3_air;
 pub mod circuit;
+pub mod input_chip;
 pub mod params;
 pub mod public;
 pub mod witness;
@@ -58,7 +59,6 @@ pub mod witness;
 // Re-export the concrete field choices so consumers (and the AIR /
 // circuit modules) don't have to re-import Plonky3 crates directly.
 pub use p3_goldilocks::Goldilocks as Val;
-
 use thiserror::Error;
 
 pub use crate::air::MatmulAir;
