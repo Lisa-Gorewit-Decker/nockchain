@@ -133,4 +133,45 @@ mod tests {
         let p_big = composite_prove(&cfg, trace_big);
         composite_verify(&cfg, &p_big).expect("big proof");
     }
+
+    /// PROD-shape bench. Ignored by default — run with
+    /// `cargo test --release composite_proof_prod_bench -- --ignored --nocapture`.
+    ///
+    /// Measures prove + verify wall-clock for the baseline trace
+    /// at MIN_STARK_LEN under [`CircuitConfig::PROD`] (`log_blowup
+    /// = 3`, `num_queries = 80` — 120 bits of provable FRI
+    /// soundness). The baseline trace has no chip activity, so
+    /// this bench is a structural ceiling: real proofs with
+    /// matmul / BLAKE3 activity will take longer because the
+    /// dot-product / round constraints actually evaluate to
+    /// non-trivial polynomials.
+    #[test]
+    #[ignore = "PROD bench — expensive; run with --ignored"]
+    fn composite_proof_prod_bench() {
+        let cfg = build_config(&test_zk_params(), &CircuitConfig::PROD);
+        let trace = CompositeTrace::baseline_min();
+
+        let t0 = std::time::Instant::now();
+        let proof = composite_prove(&cfg, trace);
+        let prove_ms = t0.elapsed().as_millis();
+
+        let t1 = std::time::Instant::now();
+        composite_verify(&cfg, &proof).expect("PROD verify");
+        let verify_ms = t1.elapsed().as_millis();
+
+        // Serialise to measure proof size.
+        use bincode::config::standard as bincode_standard;
+        let bytes = bincode::serde::encode_to_vec(&proof, bincode_standard())
+            .expect("encode");
+        let proof_bytes = bytes.len();
+
+        println!(
+            "ai-pow-zk PROD bench (composite baseline @ MIN_STARK_LEN = {} rows × {} cols):",
+            crate::composite_layout::MIN_STARK_LEN,
+            crate::composite_layout::TOTAL_TRACE_WIDTH
+        );
+        println!("  prove    : {prove_ms} ms");
+        println!("  verify   : {verify_ms} ms");
+        println!("  proof    : {proof_bytes} bytes");
+    }
 }

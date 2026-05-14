@@ -52,9 +52,9 @@ When Plonky3 doesn't have a direct primitive (e.g. Pearl's
 | 13b | `composite_trace` instruction-list compilation (matmul / blake3 / jackpot blocks) | ⬜ pending | | |
 | 14a | `composite_proof::{composite_prove, composite_verify}` wrappers + bincode round-trip | ✅ landed | 3 | 328 unit |
 | 14b | LogUp-aware folder swap (proving-side interaction wiring) | ⬜ pending | | |
-| 15 | PROD bench full shape | ⬜ pending | | |
+| 15 | PROD bench at MIN_STARK_LEN baseline (ignored) | ✅ landed | 1 ignored | 328 unit + 1 ignored |
 
-**Today's cumulative test count: 328 unit + 7 KAT + 3 ignored
+**Today's cumulative test count: 328 unit + 7 KAT + 4 ignored
 PROD bench.**
 
 ## Properties validated per phase
@@ -742,6 +742,32 @@ custom prover that uses `ProverConstraintFolderWithLookups` and
 `VerifierConstraintFolderWithLookups`, add interaction-emission
 to each chip (via the bus helpers in `composite_lookups`).
 
+### Phase 15 — PROD bench at baseline shape (landed)
+
+`composite_proof_prod_bench` (in `composite_proof::tests`) runs
+`composite_prove` + `composite_verify` under
+[`CircuitConfig::PROD`] (`log_blowup = 3`, `num_queries = 80` —
+120 bits of provable FRI soundness) at the baseline trace shape
+(`MIN_STARK_LEN = 8192` rows × `TOTAL_TRACE_WIDTH` cols).
+`#[ignore]` so the regular `cargo test` doesn't pay the prove
+cost. Run with:
+
+```sh
+cargo test -p ai-pow-zk --release --lib composite_proof_prod_bench -- --ignored --nocapture
+```
+
+Measured one-shot (Apple Silicon, release build):
+  * prove   : 43.3 s
+  * verify  : 119 ms
+  * proof   : ~683 KB (uncompressed)
+
+These numbers are the **structural ceiling** for the baseline
+trace (no chip activity). Real proofs with matmul / BLAKE3
+activity will scale up because the constraint polynomials become
+non-trivial. Proof size will also drop dramatically once
+recursion compression lands (deferred to M12 per the original
+M10.1c design — Plonky3 doesn't ship a compressor yet).
+
 ### Phase 7+ — scope decision (resolved)
 
 User picked **option 1** (full Pearl one-round-per-row port).
@@ -840,4 +866,5 @@ by the SNARK as a whole:
 | 2026-05-14 | M10.1c Phase 12b matmul wired via `eval_composite` | `c883c21` |
 | 2026-05-14 | M10.1c Phase 12c BLAKE3 wired via `eval_composite` | `17f161d` |
 | 2026-05-14 | M10.1c Phase 13a `composite_trace` baseline builder | `6945714` |
-| 2026-05-14 | M10.1c Phase 14a `composite_proof` prove/verify wrappers | (this commit) |
+| 2026-05-14 | M10.1c Phase 14a `composite_proof` prove/verify wrappers | `fbbbc18` |
+| 2026-05-14 | M10.1c Phase 15 PROD bench at MIN_STARK_LEN baseline | (this commit) |
