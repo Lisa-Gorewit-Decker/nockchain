@@ -19,8 +19,6 @@ use blake3::Hasher;
 use crate::params::MatmulParams;
 use crate::prng;
 
-const CTX_TILE_HASH: &str = "ai-pow v2 tile-hash";
-
 /// Per-block low-rank noise factors. Derived once per `block_commitment`
 /// (via `noise_seed`) and reused across all nonce attempts in that block.
 pub struct BlockNoise {
@@ -194,10 +192,13 @@ impl TileState {
 
     /// Keyed BLAKE3 hash of the state, used as both the Merkle leaf and the
     /// hardness check value (Pearl §4.5 line 16).
+    ///
+    /// Byte-equivalent to Pearl's `compute_jackpot_hash(jackpot, key)`
+    /// (pearl/zk-pow/src/api/proof_utils.rs:1077-1081): hashes exactly
+    /// 64 bytes (16 × `u32` little-endian) under the keyed BLAKE3 mode
+    /// with `pow_key` as the key. No context prefix.
     pub fn keyed_hash(&self, pow_key: &[u8; 32]) -> [u8; 32] {
         let mut hasher = Hasher::new_keyed(pow_key);
-        // Domain-separate from any other `new_keyed` callers in this crate.
-        hasher.update(CTX_TILE_HASH.as_bytes());
         for v in &self.0 {
             hasher.update(&v.to_le_bytes());
         }

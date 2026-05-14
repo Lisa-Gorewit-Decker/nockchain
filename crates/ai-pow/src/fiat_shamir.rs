@@ -21,9 +21,6 @@ use blake3::Hasher;
 
 const CTX_TRANSCRIPT: &str = "ai-pow v3 transcript";
 const CTX_INDICES: &str = "ai-pow v3 challenge-indices";
-const CTX_KAPPA: &str = "ai-pow v3 commitment-key kappa";
-const CTX_S_B: &str = "ai-pow v3 noise-seed s_B";
-const CTX_S_A: &str = "ai-pow v3 noise-seed s_A";
 const CTX_POW_KEY: &str = "ai-pow v3 pow-key";
 const CTX_CHALLENGE: &str = "ai-pow v3 challenge-seed";
 
@@ -37,34 +34,37 @@ pub fn block_state(block_commitment: &[u8], nonce: &[u8]) -> Vec<u8> {
     buf
 }
 
-/// `κ`: Pearl §4.3, the commitment-hash key. Depends only on
-/// `block_commitment` and `params_tag` (NOT on the nonce, NOT on the
-/// miner-supplied `A, B`). This is the key used for the matrix-row and
-/// matrix-column leaf hashes feeding `H_A` and `H_B`.
+/// `κ` (Pearl `compute_job_key`,
+/// `pearl/zk-pow/src/ffi/mine.rs:156-161`): unkeyed BLAKE3 over the
+/// concatenation of `block_commitment` and `params_tag`. Pearl uses
+/// `header.to_bytes() || config.to_bytes()`; we accept the two parts as
+/// separate slices but feed them into BLAKE3 in flat order (no length
+/// prefix) to match Pearl exactly.
 pub fn commitment_key(block_commitment: &[u8], params_tag: &[u8; 32]) -> [u8; 32] {
-    let mut hasher = Hasher::new_derive_key(CTX_KAPPA);
-    hasher.update(&(block_commitment.len() as u64).to_le_bytes());
+    let mut hasher = Hasher::new();
     hasher.update(block_commitment);
     hasher.update(params_tag);
     *hasher.finalize().as_bytes()
 }
 
-/// `s_B`: noise seed for `F = F_L · F_R`. Pearl §4.3 line 4.
-/// Binds `F` to `(block, params, B)` via `κ` and `H_B`.
+/// `s_B` (Pearl `compute_commitment_hash` line 4,
+/// `pearl/zk-pow/src/ffi/mine.rs:167-170`): unkeyed BLAKE3 of the 64-byte
+/// concatenation `κ ‖ H_B`.
 pub fn noise_seed_b(kappa: &[u8; 32], h_b: &[u8; 32]) -> [u8; 32] {
-    let mut hasher = Hasher::new_derive_key(CTX_S_B);
-    hasher.update(kappa);
-    hasher.update(h_b);
-    *hasher.finalize().as_bytes()
+    let mut input = [0u8; 64];
+    input[..32].copy_from_slice(kappa);
+    input[32..].copy_from_slice(h_b);
+    *Hasher::new().update(&input).finalize().as_bytes()
 }
 
-/// `s_A`: noise seed for `E = E_L · E_R` AND base for `pow_key`. Pearl §4.3
-/// line 5. Binds `E` to `(block, params, A, B)` via `s_B` and `H_A`.
+/// `s_A` (Pearl `compute_commitment_hash` line 5,
+/// `pearl/zk-pow/src/ffi/mine.rs:172-175`): unkeyed BLAKE3 of the 64-byte
+/// concatenation `s_B ‖ H_A`.
 pub fn noise_seed_a(s_b: &[u8; 32], h_a: &[u8; 32]) -> [u8; 32] {
-    let mut hasher = Hasher::new_derive_key(CTX_S_A);
-    hasher.update(s_b);
-    hasher.update(h_a);
-    *hasher.finalize().as_bytes()
+    let mut input = [0u8; 64];
+    input[..32].copy_from_slice(s_b);
+    input[32..].copy_from_slice(h_a);
+    *Hasher::new().update(&input).finalize().as_bytes()
 }
 
 /// Per-nonce `pow_key` used as the BLAKE3 key for `BLAKE3(M_{i,j},

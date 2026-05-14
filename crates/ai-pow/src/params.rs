@@ -132,6 +132,12 @@ impl MatmulParams {
         if self.noise_rank < 2 {
             return Err(ParamError::NoiseRankTooSmall);
         }
+        // Pearl's permutation generator uses `rank_mask = r - 1` as a bitmask;
+        // this is only well-formed for `r` a power of two
+        // (`pearl/zk-pow/src/circuit/pearl_noise.rs:107`).
+        if !self.noise_rank.is_power_of_two() {
+            return Err(ParamError::NoiseRankNotPowerOfTwo);
+        }
         if self.spot_checks == 0 {
             return Err(ParamError::ZeroSpotChecks);
         }
@@ -185,6 +191,8 @@ pub enum ParamError {
     NoiseRankDoesNotDivideK,
     #[error("noise_rank must be >= 2 (Pearl §4.4 ChoiceMatrix requires two distinct positions)")]
     NoiseRankTooSmall,
+    #[error("noise_rank must be a power of two (Pearl permutation bitmask requirement)")]
+    NoiseRankNotPowerOfTwo,
     #[error("spot_checks must be > 0")]
     ZeroSpotChecks,
     #[error("spot_checks must be <= number of tiles")]
