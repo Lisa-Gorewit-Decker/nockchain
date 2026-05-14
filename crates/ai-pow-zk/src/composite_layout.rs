@@ -20,7 +20,7 @@
 //! | Phase | Module |
 //! |---|---|
 //! | 3 | `stark_row_chip` (Pearl's `monotonic_increment.rs`) |
-//! | 4 | `input_chip`, `i8u8_chip`, range chips |
+//! | 4 | `chips::input`, `chips::i8u8`, `chips::range_table` |
 //! | 5 | `control_chip` (Pearl's `control_and_matid_packed.rs`) |
 //! | 6 | preprocessed-trace generation |
 //! | 7-8 | `blake3` chip (one round per row) |

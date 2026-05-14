@@ -1,27 +1,22 @@
 //! Lib-level prove/verify wrappers for the M10.1c composite AIR.
 //!
 //! Wraps [`p3_uni_stark::prove`] / [`p3_uni_stark::verify`] with
-//! the M10.1c composite stack (config + AIR + trace + public
-//! inputs) so callers don't have to assemble it manually.
+//! the composite stack (config + AIR + trace + public inputs) so
+//! callers don't have to assemble it manually.
 //!
-//! This is Phase 14's **structural** deliverable. Phase 14's full
-//! deliverable also includes switching to a lookup-aware folder
-//! (LogUp interactions reified at proof time); that's bundled
-//! with the instruction-list compiler (Phase 13b) and lands
-//! together when both are ready.
+//! For the LogUp-enforced variant (cross-chip lookups reified at
+//! proof time), see [`crate::composite_full_air_with_lookups`] +
+//! `p3-batch-stark`'s `prove_batch` / `verify_batch` — wrapped
+//! similarly in `bench_suite` and the tests there.
 //!
 //! ## Public-input shape
 //!
-//! Currently the composite proof carries **no public inputs** —
-//! the baseline trace shape is fully determined by `TOTAL_TRACE_WIDTH
-//! × N`. Phase 13b will add public inputs for:
-//!   * The instruction list's terminal CV (post-finalize hash).
-//!   * The terminal CUMSUM_TILE (matmul accumulator).
-//!   * The terminal JACKPOT_MSG (jackpot state).
-//!
-//! These will be bound to specific trace cells via the existing
-//! [`crate::public::PublicInputs`] machinery once the instruction
-//! compiler lands.
+//! [`CompositePublicInputs`] — 20 field elements: 4 i32 final
+//! CUMSUM_TILE + 16 u32 final JACKPOT_MSG, bound by the AIR on
+//! the trace's last row. See
+//! [`crate::composite_public`] for the layout and the
+//! `CompositePublicInputs::derive_from_trace` helper that snapshots
+//! the values from a generated trace.
 
 use crate::circuit::{build_stark_config, AiPowStarkConfig, CircuitConfig};
 use crate::composite_full_air::CompositeFullAir;

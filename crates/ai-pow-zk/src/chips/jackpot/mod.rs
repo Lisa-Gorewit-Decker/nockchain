@@ -24,9 +24,9 @@
 //!
 //! ## Single-slot primitive
 //!
-//! The single-slot rotate-XOR-13 is already validated by
-//! [`crate::state_chip`] (M9.1). This chip generalizes it to the
-//! 16-slot routed variant.
+//! The single-slot rotate-XOR-13 is the elementary operation
+//! Pearl threads through 16 state slots. This chip's AIR adds
+//! the one-hot SLOT_SEL routing on top.
 
 pub mod chip;
 pub mod compute;

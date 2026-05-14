@@ -1,11 +1,9 @@
 //! BLAKE3 chip for the M10.1c composite AIR.
 //!
 //! Port of `pearl/zk-pow/src/circuit/chip/blake3/` — Pearl's
-//! one-round-per-row BLAKE3 chip. Compared to M10.1b's vendored
-//! `crate::blake3_chip` (one full hash per row, ~10k cols), this
-//! chip spreads one BLAKE3 compression across 8 trace rows × ~1k
-//! cols, which is the layout the composite AIR is sized for
-//! (`composite_layout::BLAKE3_ROUND_LEN = 1056`).
+//! one-round-per-row BLAKE3 chip. Spreads one BLAKE3 compression
+//! across 8 trace rows × ~1k cols, matching the composite AIR's
+//! BLAKE3_ROUND block (`composite_layout::BLAKE3_ROUND_LEN = 1056`).
 //!
 //! ## Module layout (mirrors Pearl's `chip/blake3/`)
 //!
@@ -22,11 +20,9 @@
 //! ## Pearl byte-equivalence (validated)
 //!
 //! [`compress::blake3_compress`] produces the same output as
-//! [`crate::blake3_chip::reference_compression_output`] (our
-//! M10.1b vendored chip's scalar reference) AND as
 //! `blake3::Hasher::new_keyed(...).update(...).finalize()` for the
-//! single-block keyed-root case. See `tests/blake3_compress_kat.rs`
-//! and the in-module tests in [`compress`].
+//! single-block keyed-root case. See the
+//! `matches_blake3_crate_keyed` test in [`compress`] for the KAT.
 
 pub mod chip;
 pub mod compress;

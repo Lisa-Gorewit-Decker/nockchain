@@ -9,7 +9,7 @@
 //! ```
 //!
 //! Pearl uses `LROT_PER_TILE = 13` (matching the BLAKE3 G-function
-//! rotation constants and the existing `crate::state_chip::ROT`).
+//! rotation constants).
 
 use crate::composite_layout::{JACKPOT_SIZE, LROT_PER_TILE};
 

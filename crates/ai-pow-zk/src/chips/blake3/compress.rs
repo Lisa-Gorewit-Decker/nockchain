@@ -6,14 +6,10 @@
 //!
 //!   * `blake3::Hasher::new_keyed(...).update(...).finalize()` for
 //!     the single-block keyed-root case (verified by tests below).
-//!   * `crate::blake3_chip::reference_compression_output` (our
-//!     M10.1b vendored chip's reference, verified by KAT tests).
 //!
-//! ## Why we re-port instead of reusing the vendored chip
+//! ## Why this lives here
 //!
-//! M10.1b's `blake3_chip::reference_compression_output` is correct
-//! and tested but lives inside the vendored chip's namespace. The
-//! Pearl-style one-round-per-row AIR (Phase 8) needs the
+//! The Pearl-style one-round-per-row AIR (Phase 8) needs the
 //! compression function decomposed at the **per-round** level (one
 //! invocation of `g!` per row, message permutation between rounds,
 //! state snapshots before/after each round). Pearl's
@@ -291,7 +287,6 @@ pub fn blake3_compress(msg: &[u8; 64], cv_in: &[u8; 32], tweak: Blake3Tweak) -> 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::blake3_chip::{reference_compression_output, Blake3HashCall};
 
     /// Pearl's own permutation test: applying the permutation to
     /// `[0, 1, ..., 15]` yields `BLAKE3_MSG_PERMUTATION` itself.
@@ -329,57 +324,12 @@ mod tests {
         assert_eq!(t.flags, 0);
     }
 
-    /// Cross-check against M10.1b vendored chip's reference output.
-    /// Both should compute the BLAKE3 compression function
-    /// identically.
-    #[test]
-    fn matches_m10_1b_vendored_chip() {
-        // Use specific keyed-root flags (Pearl's standard for h_a / h_b / found_leaf).
-        const FLAGS_ROOT_KEYED: u32 = (1 << 0) | (1 << 1) | (1 << 3) | (1 << 4); // CHUNK_START | CHUNK_END | ROOT | KEYED_HASH
-
-        let key: [u8; 32] = core::array::from_fn(|i| ((i as u32 * 17 + 3) & 0xff) as u8);
-        let msg: [u8; 64] = core::array::from_fn(|i| ((i as u32 * 31 + 7) & 0xff) as u8);
-
-        // Our Pearl-style port.
-        let pearl_out = blake3_compress(
-            &msg,
-            &key,
-            Blake3Tweak {
-                counter_low: 0,
-                counter_high: 0,
-                block_len: 64,
-                flags: FLAGS_ROOT_KEYED,
-            },
-        );
-
-        // M10.1b vendored chip's reference.
-        let mut message = [0u32; 16];
-        for i in 0..16 {
-            message[i] =
-                u32::from_le_bytes([msg[i * 4], msg[i * 4 + 1], msg[i * 4 + 2], msg[i * 4 + 3]]);
-        }
-        let mut key_words = [0u32; 8];
-        for i in 0..8 {
-            key_words[i] =
-                u32::from_le_bytes([key[i * 4], key[i * 4 + 1], key[i * 4 + 2], key[i * 4 + 3]]);
-        }
-        let vendored_out = reference_compression_output(Blake3HashCall {
-            message,
-            key: key_words,
-            counter: 0,
-            block_len: 64,
-            flags: FLAGS_ROOT_KEYED,
-        });
-        let mut vendored_bytes = [0u8; 32];
-        for i in 0..8 {
-            vendored_bytes[i * 4..i * 4 + 4].copy_from_slice(&vendored_out[i].to_le_bytes());
-        }
-
-        assert_eq!(
-            pearl_out, vendored_bytes,
-            "Pearl-port scalar BLAKE3 must match M10.1b vendored chip"
-        );
-    }
+    // Note: a `matches_m10_1b_vendored_chip` test existed previously
+    // to cross-check this Pearl-port scalar BLAKE3 against the
+    // legacy M10.1b vendored chip. With the legacy stacks retired
+    // the chip is gone; the `matches_blake3_crate_keyed` test below
+    // is now the canonical KAT — it cross-checks against the
+    // upstream `blake3` crate, which is the same source of truth.
 
     /// Cross-check against the `blake3` crate itself in keyed mode.
     /// This anchors the merge-mining compat guarantee — an honest

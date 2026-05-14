@@ -87,7 +87,6 @@ dependencies = [
  "bincode",
  "blake3",
  "hashbrown 0.15.5",
- "itertools 0.13.0",
  "nockchain-math",
  "p3-air",
  "p3-batch-stark",

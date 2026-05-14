@@ -106,7 +106,7 @@ mod tests {
         }
     }
 
-    /// Test parameters mirroring `composite_air::test_zk_params` but
+    /// Test parameters for the chip's standalone test trace, kept
     /// at MIN_STARK_LEN-sized traces (matches the composite-layout
     /// minimum height; ensures the chip works at production-shape
     /// row count).

@@ -5,220 +5,181 @@ EXPERIMENTAL — a Plonky3 SNARK circuit for the
 Pearl's [`zk-pow`](../../pearl/zk-pow/): wrap the multi-MB plain proof
 in a compact SNARK so it can fit in a block certificate.
 
-**Status:** M1–M11 + M10.1a + M10.1b landed (see
-[`ROADMAP.md`](ROADMAP.md)). The entry points [`prove`] / [`verify`]
-are wired into a real end-to-end Plonky3 pipeline that produces
-*two* proofs in one envelope:
+**Status:** M10.1c is the canonical pipeline. A full composite AIR
+mirroring Pearl's design, with all 7 LogUp buses enforced at proof
+time via `p3-batch-stark`, public-input binding on the trace's last
+row, and a multi-shape / multi-activity bench suite.
 
-1. **Composite tile proof** (M9.1) — matmul accumulator (M6) +
-   Pearl §4.5 rotate-XOR state update (M7) with `x = c_out` sign-
-   extension linkage and a single-slot state chain.
-2. **In-circuit BLAKE3 keyed-hash proof** (M10.1b) — proves
-   `BLAKE3-keyed([m_final, 0, …, 0], pow_key) == found_leaf` in-
-   circuit via a Pearl-compat vendored fork of `p3-blake3-air`
-   (`src/blake3_chip/`). Byte-equivalent to
-   `blake3::Hasher::new_keyed(...)`, so Pearl ↔ Nockchain
-   merge-mining holds.
+The earlier M9.1 (composite tile AIR) and M10.1b (in-circuit
+BLAKE3 keyed-hash) stacks have been retired — see
+[`ENGINEERING_REPORT.md`](ENGINEERING_REPORT.md) for the why and
+[`M10_1C_PROGRESS.md`](M10_1C_PROGRESS.md) for the phase-by-phase
+history.
 
-Public inputs are threaded through Plonky3's public-values channel
-(M10) and a separate 17-element vector binds the hash proof's
-inputs/outputs. The M10.1a out-of-circuit hash check stays as a
-fast-path before unpacking the heavy hash proof.
-
-PROD-profile bench (120-bit provable soundness) at the smallest
-test shape: composite ≈ 9 ms prove / 23 ms verify / 136 KB; hash
-leg ≈ 84 ms prove / 364 ms verify / 3.6 MB; combined ≈ 93 ms / 387
-ms / 3.7 MB.
+**272 unit tests + 13 ignored benches passing.** Latest PROD bench
+(commit `d6065d8`): ~50 s prove / ~140 ms verify / ~890 KB
+baseline (~1.65 MB with activity) at `MIN_STARK_LEN = 8192` rows ×
+1378 cols, 120-bit provable FRI soundness.
 
 ## What works today
 
 ```rust
-use ai_pow_zk::{prove, verify, ZkParams, PublicInputs, Witness};
+use ai_pow_zk::{
+    composite_prove, composite_verify,
+    CircuitConfig, CompositePublicInputs, CompositeTrace, ZkParams,
+    composite_proof::build_config,
+};
 
-let p   = ZkParams { m: 8, k: 16, n: 8, noise_rank: 2, tile: 2, difficulty_bits: 0 };
-let pi  = PublicInputs { /* … */ };
-let w   = Witness   { /* … */ };
+let params  = ZkParams { m: 8, k: 16, n: 8, noise_rank: 2, tile: 2, difficulty_bits: 0 };
+let config  = build_config(&params, &CircuitConfig::PROD);
 
-let proof = prove(b"block-commit", b"nonce", &p, &pi, &w)?;
-verify(b"block-commit", b"nonce", &p, &pi, &proof)?;
+// 1. Build the composite trace. Place instructions via
+//    place_blake3_hash / place_matmul_step / place_jackpot_step;
+//    use the fill_*_passthrough helpers to thread the final
+//    state to the last row.
+let mut trace = CompositeTrace::baseline_min();
+// ... (place activity here) ...
+trace.populate_lookup_freq();  // only needed when proving with
+                               // CompositeFullAirWithLookups
+
+// 2. Derive the public-input vector from the trace's last row.
+let pis = CompositePublicInputs::derive_from_trace(&trace);
+
+// 3. Prove + verify.
+let proof = composite_prove(&config, trace, &pis);
+composite_verify(&config, &proof, &pis)?;
 ```
 
-`prove` builds a [`composite_air::MatmulTileAir<2>`] trace from the
-first tile row of `A'` (`witness.a_rows[0..k]`) and first tile column
-of `B'` (`witness.b_cols[0..k]`), runs the full Plonky3 STARK
-pipeline through the `AiPowStarkConfig` (Goldilocks + Tip5 sponge +
-FRI), and serializes via bincode. The proof attests that:
+`composite_prove` builds a [`composite_full_air::CompositeFullAir`]
+trace from the per-row column layout in [`composite_layout`], runs
+the full Plonky3 STARK pipeline through [`circuit::AiPowStarkConfig`]
+(Goldilocks + Tip5 sponge + FRI), and serializes via bincode.
 
-1. The per-stripe r-wide INT8 dot-product accumulator is computed
-   correctly (M6).
-2. The rolling 32-bit tile-state value evolves by Pearl §4.5's
-   `m_out = rotate_left_13(m_in) XOR x` rule (M7).
-3. The matmul-output / state-input linkage `x = c_out` holds across
-   sign (two's-complement sign extension; positive *and* negative
-   accumulators).
-4. The state chain carries across rows (`next.m_in = cur.m_out`,
-   first-row `m_in = 0`).
-5. The 42-element [`PublicInputs`] vector that goes into Plonky3's
-   public-values channel must match at verify time. Any tampered
-   byte in the public inputs causes a Fiat-Shamir mismatch and
-   rejection.
-6. **M10.1a (out-of-circuit fast path)**: the trace's terminal
-   tile-state value `m_final` is exposed as a public-value-bound
-   element. The verifier recomputes `pow_key` from
-   `(block_commitment, nonce, h_a, h_b, params_tag)` via Pearl's
-   commitment chain and rejects if `BLAKE3-keyed(m_final, pow_key)`
-   doesn't equal `public_inputs.found_leaf` — a cheap plain-Rust
-   check that fails before unpacking the heavy hash proof.
-7. **M10.1b (in-circuit)**: the same `BLAKE3-keyed(m_final, pow_key)
-   = found_leaf` relation is also proved *inside* the SNARK via the
-   vendored `Blake3FoundLeafAir`. Both proofs must verify and share
-   the same `m_final` value across their public-value vectors.
+For LogUp-enforced cross-chip lookups (the cryptographically
+complete form), wrap with `prove_batch` / `verify_batch` from
+`p3-batch-stark` against [`composite_full_air_with_lookups::CompositeFullAirWithLookups`].
+See the `bench_suite` module for the full pattern.
 
-**Still unbound (M10.1c future):** the witness matrices `a_rows` /
-`b_cols` aren't tied to `h_a` / `h_b`. An adversary can run the
-matmul on different matrices and still pass M10.1b as long as the
-resulting leaf is below the difficulty target. The work is bound to
-*some* matmul of the prover's choosing, not specifically the chain-
-pinned one. M10.1c closes this with per-row in-circuit BLAKE3 +
-chunk-Merkle path verification (reuses the M10.1b vendored chip).
+The proof attests that:
 
-**API constraints (MVP):** `noise_rank` must be `2` and
-`k / noise_rank` must be a power of two.
+1. **Matmul cumsum** evolves correctly per row, gated by
+   `IS_RESET_CUMSUM` / `IS_UPDATE_CUMSUM` selectors (`chips::matmul`).
+2. **BLAKE3 hash compressions** are performed correctly when
+   placed in 8-row blocks (`chips::blake3`).
+3. **Jackpot state** evolves via rotate-XOR-13 with one-hot slot
+   routing (`chips::jackpot`).
+4. **Cell range checks** for u8 / u13 / i7+1 / i8 are enforced via
+   LogUp (`urange8`, `urange13`, `irange7p1`, `irange8` buses).
+5. **i8 ↔ u8 conversion** consistency on matrix bytes (`i8u8` bus).
+6. **NOISED_PACKED RAM lookup** — matmul A/B reads come from the
+   canonical matrix store (`noised_packed` bus). Merge-mining
+   byte-equivalence anchor.
+7. **BLAKE3 CV routing** across non-adjacent rows (`cv_routing` bus).
+8. The trace's last-row CUMSUM_TILE and JACKPOT_MSG match the
+   claimed `CompositePublicInputs`.
+
+## What's still unbound
+
+- **`h_a` / `h_b` matrix bindings.** The witness's matrix entries
+  aren't yet tied to chain-pinned chunk-Merkle roots. An adversary
+  can still pick any `(a, b)` and run the matmul on them. Multi-
+  week deferred work — task #52.
+- **Final CV_OUT in public inputs.** The composite trace doesn't
+  yet thread "current CV" forward to the last row. Add when
+  downstream protocols need the final hash output.
+- **Recursion compression (M12).** Plonky3 doesn't ship a
+  compressor yet; deferred per design. PROD proofs are currently
+  ~900 KB baseline / ~1.65 MB with activity. Recursion would
+  target Pearl's ~60 KB.
 
 ## Module map
 
 | Module | Role |
 |---|---|
-| [`circuit`] | Plonky3 `StarkConfig` factory. Pins the cryptographic stack — Goldilocks base field, `BinomialExtensionField<Goldilocks, 2>` for FRI challenges, `MerkleTreeMmcs` over the in-repo Tip5 sponge, `TwoAdicFriPcs`, `DuplexChallenger`. `CircuitConfig::PROD` targets 120 bits of **provable** FRI soundness (`80 queries · log_blowup 3 / 2 = 120`) — we do **not** rely on the list-decoding / capacity-approaching conjecture. `TEST` profile uses `log_blowup=1, num_queries=8, pow_bits=0` for fast round-trips. |
+| [`circuit`] | Plonky3 `StarkConfig` factory. Pins Goldilocks + Tip5 sponge + FRI parameters per profile. `CircuitConfig::PROD` targets 120-bit provable FRI soundness (`80 queries · log_blowup 3 / 2`). |
 | [`params`] | `ZkParams` mirror of `MatmulParams` (keeps this crate standalone — no back-dep on `ai-pow`). |
-| [`public`] | `PublicInputs` ↔ `Vec<Goldilocks>` codec. 42 elements: 4 × 8 hashes + 2 × `u32` (tile coords) + 8 (`found_leaf`). |
-| [`witness`] | Private `Witness` ↔ `Vec<Goldilocks>` codec for `a_rows`, `b_cols`, `e_l`, `e_r_pos`, `f_r`, `f_l_pos`, `tile_states`. |
-| [`input_chip`] | **M5.** `RangeAir<BITS>` — bit-decomposition range checks for u8 / u13 / i7 / i8 / i32 witness types. Plonky3 has no built-in range primitive; we use the standard boolean-bits + recomposition trick. |
-| [`matmul_chip`] | **M6.** `MatmulCellAir<STRIPE>` — per-stripe `r`-wide INT8 dot-product accumulator for one `(i, j)` tile cell. Width `2 + 2·STRIPE`. Per-row constraint `c_out = c_in + Σ a·b` plus first-row `c_in = 0` and transition carry. |
-| [`state_chip`] | **M7.** `StateChipAir` — Pearl §4.5 rotate-XOR-13 state update primitive: `m_out = rotate_left_13(m_in) XOR x`. Each 32-bit word bit-decomposed; XOR via the boolean identity `a ⊕ b = a + b − 2ab`. Width 67 per row. |
-| [`blake3_air`] | **M8.** Wraps upstream `p3-blake3-air` and integrates it with `AiPowStarkConfig`. Exercised end-to-end with ~10k-column traces. |
-| [`blake3_chip`] | **M10.1b.** Vendored fork of `p3-blake3-air` patched to populate the `flags` column (upstream leaves it all-zero, which silently disables BLAKE3 keyed mode). Byte-equivalent to `blake3::Hasher::new_keyed(...)` — see [`tests/blake3_chip_kat.rs`](tests/blake3_chip_kat.rs). |
-| [`composite_air`] | **M9.1.** `MatmulTileAir<STRIPE>` — composes M6 + M7 with `x = c_out` sign-extension linkage and a single-slot state chain. The AIR `lib::prove` / `lib::verify` use for the composite proof. |
-| [`found_leaf_air`] | **M10.1b.** `Blake3FoundLeafAir` wraps `blake3_chip` and adds public-input bindings for `(m_final, pow_key, found_leaf)` plus pinned constants `(counter, block_len, flags) = (0, 64, 0x1B)`. The hash AIR `lib::prove` / `lib::verify` use. |
-| `lib.rs` | **M9 + M10 + M10.1a/b.** Public `prove` / `verify` entries, threading [`PublicInputs`] through Plonky3's public-values channel and producing both proofs in one envelope. |
-| `tests/prod_bench.rs` | **M11.** `#[ignore]`d round-trip under `CircuitConfig::PROD` (120-bit provable soundness). Measures proof size + timing. |
-| `air.rs` | Stub for the eventual full-protocol `MatmulAir` (BLAKE3 + multi-slot routing — M9.2 / M10.1). |
-| [`composite_layout`] | **M10.1c.** Pin the 1378-column composite trace layout (Pearl byte-equivalent). Phases 2–10 each carve out a column block here. |
-| [`composite_full_air`] | **M10.1c.** `CompositeFullAir` — top-level AIR over `TOTAL_TRACE_WIDTH` cols. Calls all 10 chip evals (stark_row + 4 range tables + i8u8 + control + input + matmul + BLAKE3 + jackpot) via per-chip `eval_composite` methods. |
-| [`composite_trace`] | **M10.1c.** `CompositeTrace` — composite-trace builder. Exposes `baseline_min()`, `place_blake3_hash()`, `place_matmul_step()`, `place_jackpot_step()`, and `fill_*_passthrough()` helpers. |
-| [`composite_lookups`] | **M10.1c.** Lookup-bus design + multiplicity calculus. Names the 8 lookup buses and exposes scalar `*_freq` helpers. Proving-side LogUp wiring deferred to Phase 14b. |
-| [`composite_proof`] | **M10.1c.** Lib-level `composite_prove` / `composite_verify` wrappers around `p3-uni-stark`. `#[ignore]`'d `composite_proof_prod_bench` measures the PROD-shape stack. |
-| [`chips::stark_row`] | **M10.1c Phase 3.** Monotonic STARK_ROW_IDX increment. |
-| [`chips::range_table`] | **M10.1c Phase 4a.** Generic `RangeTableChip<COL, MIN, MAX>` with URange8/13, IRange7P1/8 instantiations. |
-| [`chips::i8u8`] | **M10.1c Phase 4b.** i8 ↔ u8 sign-conversion table. |
-| [`chips::input`] | **M10.1c Phase 4c.** NOISE_PACKED_PREP unpacking + NOISED_PACKED = polyval(MAT) + polyval(NOISE) integrity. |
-| [`chips::control`] | **M10.1c Phase 5.** CONTROL_PREP selector-bit unpacking + MAT_ID limb decomposition. |
-| [`chips::blake3`] | **M10.1c Phase 7+8.** Pearl-port BLAKE3 chip: scalar reference (`compress`), per-round AIR primitives (`round_ops` — add3/add2/xor with `is_activated` gating), AIR composition (`round_air` — Blake3State + half_g + verify_round + finalize_blake + verify_init_state), and top-level chip (`chip::Blake3Chip` with selector-gated 8-row hash dispatch). |
-| [`chips::matmul`] | **M10.1c Phase 9.** `MatmulCumsumChip` — cross-row cumsum-update over TILE_H × TILE_D × TILE_H tiles. |
-| [`chips::jackpot`] | **M10.1c Phase 10.** `JackpotChip` — 16-slot rotate-XOR-13 with one-hot routing. |
-
-**M10.1c status (336 unit tests):** all 10 chips wired into
-`CompositeFullAir`; composite trace supports placing matmul +
-BLAKE3 + jackpot instructions; baseline `composite_prove` /
-`composite_verify` round-trip works at `MIN_STARK_LEN`. The
-three-chip integration test `three_chip_integration_verifies`
-exercises all three families simultaneously. Remaining: Phase
-14b (LogUp-aware folder swap to reify cross-chip lookups at
-proof time) and M12 (recursion compression). See
-[`M10_1C_PROGRESS.md`](M10_1C_PROGRESS.md) for the full phase
-breakdown and [`M10_1C_DESIGN.md`](M10_1C_DESIGN.md) for the
-architectural plan.
+| [`composite_layout`] | The 1378-column composite trace layout (Pearl byte-equivalent). All per-chip column blocks anchored here. |
+| [`composite_full_air`] | `CompositeFullAir` — top-level AIR over `TOTAL_TRACE_WIDTH` cols. Calls all 10 chip evals via per-chip `eval_composite` methods. Public-input binding on the trace's last row. |
+| [`composite_full_air_with_lookups`] | `CompositeFullAirWithLookups` — same AIR + 7 LogUp bus emissions in a `bus_emit::*` submodule. Used with `p3-batch-stark`'s `prove_batch` / `verify_batch`. |
+| [`composite_trace`] | `CompositeTrace` — composite-trace builder. `place_blake3_hash`, `place_matmul_step`, `place_jackpot_step`, `fill_*_passthrough`, `populate_lookup_freq`. |
+| [`composite_public`] | `CompositePublicInputs` — typed 20-element PI vector (4 i32 cumsum + 16 u32 jackpot). `derive_from_trace` snapshots the trace's last row. |
+| [`composite_proof`] | Lib-level `composite_prove` / `composite_verify` wrappers around `p3-uni-stark`. |
+| [`composite_lookups`] | Lookup-bus design + multiplicity calculus. Names the 7 LogUp buses (`urange8`, `urange13`, `irange7p1`, `irange8`, `i8u8`, `noised_packed`, `cv_routing`). |
+| [`composite_preprocess`] | Preprocessed-trace generation (CONTROL_PREP / NOISE_PACKED_PREP / CV_OR_TWEAK_PREP / AB_ID_PREP / STARK_ROW_IDX). |
+| [`composite_lookup_proof`] | Standalone POC AIR demonstrating the `p3-batch-stark` LogUp integration pattern. Useful as a teaching example. |
+| [`bench_suite`] | Multi-shape, multi-activity benches at TEST_PEARL and PROD profiles. All `#[ignore]`'d. |
+| [`chips::stark_row`] | Monotonic STARK_ROW_IDX increment. |
+| [`chips::range_table`] | Generic `RangeTableChip<COL, MIN, MAX>` with URange8/13, IRange7P1/8 instantiations. |
+| [`chips::i8u8`] | i8 ↔ u8 sign-conversion table. |
+| [`chips::input`] | `NOISE_PACKED_PREP` unpacking + `NOISED_PACKED = polyval(MAT) + polyval(NOISE)` integrity. |
+| [`chips::control`] | `CONTROL_PREP` selector-bit unpacking + MAT_ID limb decomposition. |
+| [`chips::blake3`] | Pearl-port BLAKE3 chip: scalar reference (`compress`), per-round AIR primitives (`round_ops`), AIR composition (`round_air`), and top-level chip (`chip::Blake3Chip` with selector-gated 8-row hash dispatch). |
+| [`chips::matmul`] | `MatmulCumsumChip` — cross-row cumsum-update over TILE_H × TILE_D × TILE_H tiles. |
+| [`chips::jackpot`] | `JackpotChip` — 16-slot rotate-XOR-13 with one-hot routing. |
 
 ## Stack choices
 
-Goldilocks base field + Tip5 sponge for FRI + `p3-blake3-air` for the
-BLAKE3 sub-circuit. See [`DESIGN.md`](DESIGN.md) for the per-slot
-rationale, trace column layout, public-input encoding, witness
-shapes, and parameter choices.
+Goldilocks base field + Tip5 sponge for FRI + `p3-uni-stark` /
+`p3-batch-stark` for the proving pipeline. See
+[`DESIGN.md`](DESIGN.md) for per-slot rationale and
+[`ENGINEERING_REPORT.md`](ENGINEERING_REPORT.md) for the
+post-Phase-14b architectural review.
 
-Pulled in from upstream Plonky3 (`https://github.com/Plonky3/Plonky3`):
+Plonky3 dependencies (`https://github.com/Plonky3/Plonky3`):
 
 - `p3-air` — AIR trait
-- `p3-blake3-air` — BLAKE3 sub-AIR
+- `p3-batch-stark` — LogUp-enforced batched-AIR prover
+- `p3-blake3-air` — upstream BLAKE3 sub-AIR (used by `chips::blake3` for cross-checks)
 - `p3-challenger`, `p3-commit`, `p3-dft`, `p3-fri`, `p3-merkle-tree`,
   `p3-symmetric` — STARK config plumbing
 - `p3-field`, `p3-goldilocks` — field arithmetic and base field
+- `p3-lookup` — LogUp / interaction-builder trait
 - `p3-matrix`, `p3-uni-stark` — trace + prover
 
 Tip5: not upstream. We re-use Nockchain's in-repo
 [`nockchain_math::tip5`](../nockchain-math/src/tip5/) (7-round
-variant, `STATE_SIZE=16`, `RATE=10`, `CAPACITY=6`, `DIGEST=5`) via a
-`Tip5Perm` adapter in [`src/circuit.rs`](src/circuit.rs).
+parameter set) as the FRI sponge.
 
 ## Security parameters
 
-| Profile | `log_blowup` | `num_queries` | `pow_bits` | Provable soundness |
-|---|---|---|---|---|
-| `TEST` | 1 | 8 | 0 | ≤ 4 bits (fast round-trip only) |
-| `PROD` | 3 | 80 | 0 | **120 bits** (`80 · 3 / 2`) |
-
-The soundness math uses the **unique-decoding** regime (provable):
-`num_queries · log_blowup / 2` bits. We do **not** rely on the
-list-decoding / capacity-approaching conjecture for FRI soundness.
+- **`CircuitConfig::PROD`**: `log_blowup = 3`, `num_queries = 80` →
+  `80 · 3 / 2 = 120` bits provable FRI soundness. Bench: ~50 s
+  prove / ~140 ms verify / ~900 KB baseline / ~1.65 MB with
+  activity at `MIN_STARK_LEN = 8192` rows × 1378 cols.
+- **`CircuitConfig::TEST_PEARL`**: `log_blowup = 2`, `num_queries = 16`
+  → ~12 bits provable soundness. For fast test round-trips only;
+  not production-grade.
 
 ## Tests
 
 ```sh
-cargo test -p ai-pow-zk
+cargo test -p ai-pow-zk --lib
 ```
 
-**133 unit tests + 7 integration KAT pass** across twelve modules,
-plus **3 ignored** PROD bench tests:
-
-| Module | # tests |
-|---|---|
-| `circuit` (M1 + M2) | 15 |
-| lib.rs entry-point tests (M9 + M10 + M10.1a/b) | 20 |
-| `witness` (M4) | 14 |
-| `state_chip` (M7) | 14 |
-| `composite_air` (M9.1 + M10.1a AIR side) | 15 |
-| `matmul_chip` (M6) | 12 |
-| `public` (M3) | 11 |
-| `input_chip` (M5) | 11 |
-| `binding` (M10.1a helpers) | 9 |
-| `found_leaf_air` (M10.1b in-circuit binding) | 6 |
-| `blake3_air` (M8) | 6 |
-| `tests/blake3_chip_kat.rs` (M10.1b KAT vs `blake3` crate) | 7 |
-| `tests/prod_bench.rs` (M11, ignored) | 3 |
-
-To run the PROD bench (slow):
+Runs 272 unit tests in ~4 min including the LogUp proptests.
+13 benches are `#[ignore]`'d by default — run individually:
 
 ```sh
-cargo test -p ai-pow-zk --test prod_bench --release -- --ignored --nocapture
+cargo test -p ai-pow-zk --release --lib bench_suite::tests::bench_prod_8k_baseline -- \
+    --ignored --nocapture
 ```
 
-Each chip's tests include:
-- shape pinning (column widths, padding, OOB panics)
-- end-to-end prove + verify through the real FRI stack on the `TEST` profile
-- tamper detection — flipping a single trace cell or proof byte
-  must cause `verify` to reject
+The 7 KAT tests in `chips/blake3/compress.rs` cross-check our
+Pearl-port scalar BLAKE3 against `blake3::Hasher::new_keyed` to
+anchor merge-mining compat.
 
 ## Where this fits in the `ai-pow` flow
 
-`ai-pow`'s `mine` produces a plain
-[`MatmulProof`](../ai-pow/src/proof.rs) containing strip data +
-per-row Merkle paths. At the same point Pearl invokes
-`zk_prove_plain_proof` (see
-[`pearl/zk-pow/src/api/prove.rs:18`](../../pearl/zk-pow/src/api/prove.rs#L18)),
-`ai-pow` calls into this crate via the `zk` feature flag.
+`ai-pow-zk` is downstream of `ai-pow`'s `MatmulProof` / plain
+proof. The plan is for `ai-pow` to construct a `CompositeTrace`
+from a verified plain proof + place the corresponding instructions
+into specific rows, then call `composite_prove` to produce the
+compact SNARK that gets transmitted in the block certificate.
 
-[`circuit`]: src/circuit.rs
-[`params`]: src/params.rs
-[`public`]: src/public.rs
-[`witness`]: src/witness.rs
-[`input_chip`]: src/input_chip.rs
-[`matmul_chip`]: src/matmul_chip.rs
-[`state_chip`]: src/state_chip.rs
-[`blake3_air`]: src/blake3_air.rs
-[`composite_air`]: src/composite_air.rs
-[`composite_air::MatmulTileAir<2>`]: src/composite_air.rs
-[`binding`]: src/binding.rs
-[`blake3_chip`]: src/blake3_chip/
-[`found_leaf_air`]: src/found_leaf_air.rs
-[`prove`]: src/lib.rs
-[`verify`]: src/lib.rs
+The `composite_prove` / `composite_verify` API is the boundary;
+neither crate sees the other's types past `ZkParams` +
+`CompositeTrace` + `CompositePublicInputs`.
+
+Today the integration is one-directional — `ai-pow-zk` exposes the
+API; `ai-pow` hasn't yet been updated to actually call it. The
+`prover.rs` in `ai-pow` has a stub comment marking the call site.
