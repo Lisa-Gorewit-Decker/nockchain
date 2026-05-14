@@ -45,12 +45,13 @@ When Plonky3 doesn't have a direct primitive (e.g. Pearl's
 | 10 | jackpot chip (`JackpotChip`; 16-slot rotate-XOR-13) | ✅ landed | 22 | 296 unit |
 | 11 | `composite_lookups` — design + multiplicity calculus (proving-side wiring deferred to Phase 14) | ✅ landed | 10 | 306 unit |
 | 12a | `composite_full_air::eval` — Phase 3-6 chips wired (stark_row, range_tables, i8u8, control, input) | ✅ landed | 9 | 315 unit |
-| 12b | `composite_full_air` — wire Phase 7-10 chips (BLAKE3, matmul, jackpot) | ⬜ pending | | |
+| 12b | `composite_full_air` — matmul wired via `eval_composite` (BLAKE3, jackpot pending) | ✅ landed | 2 | 317 unit |
+| 12c | `composite_full_air` — wire BLAKE3 + jackpot | ⬜ pending | | |
 | 13 | `composite_trace` (Pearl `pearl_trace`) | ⬜ pending | | |
 | 14 | `lib::{prove, verify}` plumbing on composite AIR | ⬜ pending | | |
 | 15 | PROD bench full shape | ⬜ pending | | |
 
-**Today's cumulative test count: 315 unit + 7 KAT + 3 ignored
+**Today's cumulative test count: 317 unit + 7 KAT + 3 ignored
 PROD bench.**
 
 ## Properties validated per phase
@@ -578,16 +579,43 @@ Properties validated:
     length passes (`composite_full_air_min_stark_len_anchor`).
   * ✅ `I8U8_TABLE_SIZE` pinned at 256 (`i8u8_table_size_pinned`).
 
-### Phase 12b — composite_full_air (Phase 7-10 chips) — pending
+### Phase 12b — matmul wired into composite_full_air (landed)
 
-Remaining wiring: lift `Blake3Chip`, `MatmulCumsumChip`, and
-`JackpotChip`'s eval from their chip-local layouts to free
-functions taking `composite_layout` offsets. Each chip's
-constraints stay the same; only the column-read site changes.
+Refactor `MatmulCumsumChip` to expose:
 
-Estimated work: ~3-4 hours of mechanical refactoring + a larger
-integration test that exercises all chips simultaneously on a
-hand-crafted multi-row trace.
+  - `MatmulOffsets` struct bundling A_UNPACK / B_UNPACK / CUMSUM /
+    selector column offsets.
+  - `MatmulCumsumChip::LOCAL_OFFSETS` (chip-local) and
+    `COMPOSITE_OFFSETS` (mapped to `composite_layout::*` constants).
+  - `MatmulCumsumChip::eval_at(builder, &offsets)` — the shared
+    constraint generator parameterized over offsets.
+  - `MatmulCumsumChip::eval_composite(builder)` — called from
+    `CompositeFullAir::eval`.
+
+`CompositeFullAir::eval` now also calls
+`MatmulCumsumChip::eval_composite(builder)`. The existing
+`Air<AB>::eval` impl delegates to `eval_at(builder, &LOCAL_OFFSETS)`,
+so chip-local tests are unchanged.
+
+Properties validated (cumsum in composite-trace context):
+  - ✅ Tampering CUMSUM_TILE on row 1 (with selectors all 0)
+    rejects, because the gated update collapses to `next.CUMSUM = cur.CUMSUM`
+    (`composite_full_air_rejects_changed_cumsum_without_selectors`).
+  - ✅ Changing A_NOISED_UNPACK on row 1 in passthrough mode
+    (both selectors 0) STILL verifies, since the dot product term
+    is multiplied by `(0 + 0) = 0`. Confirms gating actually
+    silences (`composite_full_air_accepts_changed_a_unpack_in_passthrough`).
+
+### Phase 12c — composite_full_air (BLAKE3 + jackpot) — pending
+
+Remaining wiring: lift `Blake3Chip` and `JackpotChip`'s eval to
+parameterized `eval_at` functions taking `composite_layout`
+offsets. BLAKE3 has the most column-mapping plumbing (5 state
+snapshots, msg, cv, tweak, cv_out, selectors). Jackpot's chip
+local layout uses 32-bit V_BITS / X_BITS / 16-cell SLOT_SEL that
+don't cleanly map onto composite's BIT_REG / JACKPOT_IDX widths —
+either reshape the chip's expected layout or extend
+`composite_layout` to accommodate the chip's contract.
 
 ### Phase 7+ — scope decision (resolved)
 
@@ -683,4 +711,5 @@ by the SNARK as a whole:
 | 2026-05-14 | M10.1c Phase 9 matmul cumsum chip (`chips/matmul`) | `d07b16a` |
 | 2026-05-14 | M10.1c Phase 10 jackpot chip (`chips/jackpot`) | `5e08fa1` |
 | 2026-05-14 | M10.1c Phase 11 lookup design (`composite_lookups`) | `b492465` |
-| 2026-05-14 | M10.1c Phase 12a `composite_full_air` (Phase 3-6 chips) | (this commit) |
+| 2026-05-14 | M10.1c Phase 12a `composite_full_air` (Phase 3-6 chips) | `253a938` |
+| 2026-05-14 | M10.1c Phase 12b matmul wired via `eval_composite` | (this commit) |

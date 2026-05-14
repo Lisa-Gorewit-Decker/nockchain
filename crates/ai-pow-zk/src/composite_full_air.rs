@@ -47,6 +47,7 @@ use p3_air::{Air, AirBuilder, BaseAir};
 use crate::chips::control::ControlChip;
 use crate::chips::i8u8::I8U8Chip;
 use crate::chips::input::InputChip;
+use crate::chips::matmul::chip::MatmulCumsumChip;
 use crate::chips::range_table::{IRange7P1Chip, IRange8Chip, URange13Chip, URange8Chip};
 use crate::chips::stark_row::StarkRowChip;
 use crate::composite_layout::TOTAL_TRACE_WIDTH;
@@ -85,6 +86,12 @@ impl<AB: AirBuilder> Air<AB> for CompositeFullAir {
         // Input chip: NOISE_PACKED_PREP unpacking + NOISED_PACKED
         // = polyval(MAT, 256) + polyval(NOISE, 256) integrity.
         InputChip.eval(builder);
+
+        // Matmul cumsum-update chip (Phase 12b wiring): reads
+        // A_NOISED_UNPACK / B_NOISED_UNPACK / CUMSUM_TILE /
+        // IS_RESET_CUMSUM / IS_UPDATE_CUMSUM at composite-layout
+        // offsets.
+        MatmulCumsumChip::eval_composite(builder);
     }
 }
 
@@ -278,5 +285,44 @@ mod tests {
     #[test]
     fn i8u8_table_size_pinned() {
         assert_eq!(I8U8_TABLE_SIZE, 256);
+    }
+
+    /// Tamper a CUMSUM_TILE cell — the matmul cumsum-update
+    /// constraint (gated by IS_RESET_CUMSUM + IS_UPDATE_CUMSUM)
+    /// becomes `next = (0 + 0) * dot + (1 - 0) * cur = cur`, so
+    /// any cross-row change to CUMSUM_TILE rejects.
+    #[test]
+    fn composite_full_air_rejects_changed_cumsum_without_selectors() {
+        let cfg = build_stark_config(&test_zk_params(), &CircuitConfig::TEST_PEARL);
+        let mut trace = build_baseline_trace(MIN_STARK_LEN);
+        use crate::composite_layout::CUMSUM_TILE_START;
+        // Set CUMSUM_TILE[0] on row 1 to 42 while row 0 is still 0.
+        // With both selectors zero (passthrough mode), the matmul
+        // constraint forces row 1's CUMSUM = row 0's CUMSUM = 0.
+        let target = 1 * TOTAL_TRACE_WIDTH + CUMSUM_TILE_START;
+        trace.values[target] = <crate::Val as QuotientMap<u64>>::from_int(42);
+        let proof = prove::<AiPowStarkConfig, _>(&cfg, &CompositeFullAir, trace, &[]);
+        assert!(
+            verify::<AiPowStarkConfig, _>(&cfg, &CompositeFullAir, &proof, &[]).is_err(),
+            "tampered CUMSUM_TILE in passthrough mode must reject"
+        );
+    }
+
+    /// Tamper an A_NOISED_UNPACK cell *without* setting either
+    /// matmul selector. Since both selectors are 0, the dot
+    /// product term is multiplied by `(is_reset + is_update) = 0`
+    /// and the change has no effect. The constraint stays
+    /// satisfied — this test is a regression anchor confirming
+    /// the gating actually silences correctly.
+    #[test]
+    fn composite_full_air_accepts_changed_a_unpack_in_passthrough() {
+        let cfg = build_stark_config(&test_zk_params(), &CircuitConfig::TEST_PEARL);
+        let mut trace = build_baseline_trace(MIN_STARK_LEN);
+        use crate::composite_layout::A_NOISED_UNPACK_START;
+        let target = 1 * TOTAL_TRACE_WIDTH + A_NOISED_UNPACK_START;
+        trace.values[target] = <crate::Val as QuotientMap<i64>>::from_int(100);
+        let proof = prove::<AiPowStarkConfig, _>(&cfg, &CompositeFullAir, trace, &[]);
+        verify::<AiPowStarkConfig, _>(&cfg, &CompositeFullAir, &proof, &[])
+            .expect("change to A_NOISED_UNPACK in passthrough mode must verify");
     }
 }

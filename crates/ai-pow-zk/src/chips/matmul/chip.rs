@@ -90,60 +90,100 @@ impl<F> BaseAir<F> for MatmulCumsumChip {
     }
 }
 
-impl<AB: AirBuilder> Air<AB> for MatmulCumsumChip {
-    fn eval(&self, builder: &mut AB) {
+/// Column-offset bundle for [`MatmulCumsumChip::eval_at`]. The
+/// chip's eval body operates on **arbitrary** offsets so it can
+/// be reused both standalone (chip-local layout via
+/// [`cols`]) and as part of the composite AIR.
+#[derive(Copy, Clone, Debug)]
+pub struct MatmulOffsets {
+    pub a_unpack_start: usize,
+    pub b_unpack_start: usize,
+    pub cumsum_start: usize,
+    pub is_reset_col: usize,
+    pub is_update_col: usize,
+}
+
+impl MatmulCumsumChip {
+    /// Chip-local offsets — used by [`MatmulCumsumChip::eval`].
+    pub const LOCAL_OFFSETS: MatmulOffsets = MatmulOffsets {
+        a_unpack_start: cols::A_UNPACK,
+        b_unpack_start: cols::B_UNPACK,
+        cumsum_start: cols::CUMSUM,
+        is_reset_col: cols::IS_RESET_CUMSUM,
+        is_update_col: cols::IS_UPDATE_CUMSUM,
+    };
+
+    /// Composite-trace offsets (Phase 12b wiring). Reads cells
+    /// at `composite_layout::*` positions.
+    pub const COMPOSITE_OFFSETS: MatmulOffsets = MatmulOffsets {
+        a_unpack_start: crate::composite_layout::A_NOISED_UNPACK_START,
+        b_unpack_start: crate::composite_layout::B_NOISED_UNPACK_START,
+        cumsum_start: crate::composite_layout::CUMSUM_TILE_START,
+        is_reset_col: crate::composite_layout::IS_RESET_CUMSUM,
+        is_update_col: crate::composite_layout::IS_UPDATE_CUMSUM,
+    };
+
+    /// Emit the cumsum-update constraints at the given column
+    /// offsets. Reads selectors, A/B unpack cells, and CUMSUM
+    /// cells; emits booleanity + cross-row equality constraints.
+    pub fn eval_at<AB: AirBuilder>(builder: &mut AB, off: &MatmulOffsets) {
         let main = builder.main();
         let cur = main.current_slice();
         let nxt = main.next_slice();
 
         // ---- Selector reads + boolean checks ----
-        let is_reset_var = cur[cols::IS_RESET_CUMSUM];
-        let is_update_var = cur[cols::IS_UPDATE_CUMSUM];
+        let is_reset_var = cur[off.is_reset_col];
+        let is_update_var = cur[off.is_update_col];
         let is_reset: AB::Expr = is_reset_var.into();
         let is_update: AB::Expr = is_update_var.into();
         builder.assert_bool(is_reset_var);
         builder.assert_bool(is_update_var);
 
         // ---- Tile dot product (degree 2) ----
-        //
-        // For each (i, j) cell, compute sum_d(A_UNPACK[i, d] *
-        // B_UNPACK[j, d]) as an AB::Expr.
         let mut dot: [AB::Expr; CUMSUM_LEN] =
             core::array::from_fn(|_| <AB::Expr as PrimeCharacteristicRing>::ZERO);
         for i in 0..TILE_H {
             for j in 0..TILE_H {
                 let mut acc: AB::Expr = <AB::Expr as PrimeCharacteristicRing>::ZERO;
                 for d in 0..TILE_D {
-                    let a_cell: AB::Expr = cur[cols::A_UNPACK + i * TILE_D + d].into();
-                    let b_cell: AB::Expr = cur[cols::B_UNPACK + j * TILE_D + d].into();
+                    let a_cell: AB::Expr = cur[off.a_unpack_start + i * TILE_D + d].into();
+                    let b_cell: AB::Expr = cur[off.b_unpack_start + j * TILE_D + d].into();
                     acc = acc + a_cell * b_cell;
                 }
                 dot[i * TILE_H + j] = acc;
             }
         }
 
-        // ---- Cumsum update constraint, cross-row ----
-        //
-        //   nxt[CUMSUM[k]] == (is_reset + is_update) * dot[k] + (1 - is_reset) * cur[CUMSUM[k]]
-        //
-        // Wrapped in when_transition() so the last row's wrap-around
-        // doesn't fire.
+        // ---- Cross-row cumsum update ----
         {
             let mut tb = builder.when_transition();
             for k in 0..CUMSUM_LEN {
-                let cur_cumsum: AB::Expr = cur[cols::CUMSUM + k].into();
-                let nxt_cumsum: AB::Expr = nxt[cols::CUMSUM + k].into();
+                let cur_cumsum: AB::Expr = cur[off.cumsum_start + k].into();
+                let nxt_cumsum: AB::Expr = nxt[off.cumsum_start + k].into();
 
                 let one_minus_reset: AB::Expr =
                     <AB::Expr as PrimeCharacteristicRing>::ONE - is_reset.clone();
                 let reset_plus_update: AB::Expr = is_reset.clone() + is_update.clone();
 
-                let rhs = reset_plus_update * dot[k].clone()
-                    + one_minus_reset * cur_cumsum;
+                let rhs =
+                    reset_plus_update * dot[k].clone() + one_minus_reset * cur_cumsum;
 
                 tb.assert_eq(nxt_cumsum, rhs);
             }
         }
+    }
+
+    /// Composite-layout entry point: equivalent to
+    /// `eval_at(builder, &COMPOSITE_OFFSETS)`. Called from
+    /// [`crate::composite_full_air::CompositeFullAir::eval`].
+    pub fn eval_composite<AB: AirBuilder>(builder: &mut AB) {
+        Self::eval_at(builder, &Self::COMPOSITE_OFFSETS);
+    }
+}
+
+impl<AB: AirBuilder> Air<AB> for MatmulCumsumChip {
+    fn eval(&self, builder: &mut AB) {
+        MatmulCumsumChip::eval_at(builder, &MatmulCumsumChip::LOCAL_OFFSETS);
     }
 }
 
