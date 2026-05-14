@@ -46,12 +46,13 @@ When Plonky3 doesn't have a direct primitive (e.g. Pearl's
 | 11 | `composite_lookups` — design + multiplicity calculus (proving-side wiring deferred to Phase 14) | ✅ landed | 10 | 306 unit |
 | 12a | `composite_full_air::eval` — Phase 3-6 chips wired (stark_row, range_tables, i8u8, control, input) | ✅ landed | 9 | 315 unit |
 | 12b | `composite_full_air` — matmul wired via `eval_composite` (BLAKE3, jackpot pending) | ✅ landed | 2 | 317 unit |
-| 12c | `composite_full_air` — wire BLAKE3 + jackpot | ⬜ pending | | |
+| 12c | `composite_full_air` — BLAKE3 wired via `eval_composite` (jackpot pending) | ✅ landed | 1 | 318 unit |
+| 12d | `composite_full_air` — wire jackpot | ⬜ pending | | |
 | 13 | `composite_trace` (Pearl `pearl_trace`) | ⬜ pending | | |
 | 14 | `lib::{prove, verify}` plumbing on composite AIR | ⬜ pending | | |
 | 15 | PROD bench full shape | ⬜ pending | | |
 
-**Today's cumulative test count: 317 unit + 7 KAT + 3 ignored
+**Today's cumulative test count: 318 unit + 7 KAT + 3 ignored
 PROD bench.**
 
 ## Properties validated per phase
@@ -606,16 +607,53 @@ Properties validated (cumsum in composite-trace context):
     is multiplied by `(0 + 0) = 0`. Confirms gating actually
     silences (`composite_full_air_accepts_changed_a_unpack_in_passthrough`).
 
-### Phase 12c — composite_full_air (BLAKE3 + jackpot) — pending
+### Phase 12c — BLAKE3 wired into composite_full_air (landed)
 
-Remaining wiring: lift `Blake3Chip` and `JackpotChip`'s eval to
-parameterized `eval_at` functions taking `composite_layout`
-offsets. BLAKE3 has the most column-mapping plumbing (5 state
-snapshots, msg, cv, tweak, cv_out, selectors). Jackpot's chip
-local layout uses 32-bit V_BITS / X_BITS / 16-cell SLOT_SEL that
-don't cleanly map onto composite's BIT_REG / JACKPOT_IDX widths —
-either reshape the chip's expected layout or extend
-`composite_layout` to accommodate the chip's contract.
+Refactor `Blake3Chip` analogously to `MatmulCumsumChip`:
+
+  - `Blake3Offsets` bundles state-snapshot block start + msg + cv +
+    tweak + cv_out + 2 selector columns.
+  - `LOCAL_OFFSETS` (chip-local cols) and `COMPOSITE_OFFSETS`
+    (`composite_layout::BLAKE3_ROUND_START` + `BLAKE3_MSG_START` +
+    `BLAKE3_CV_START` + `CV_OR_TWEAK_PREP` + `CV_OUT_START` +
+    `IS_NEW_BLAKE` + `IS_LAST_ROUND`).
+  - `eval_at(builder, &offsets)` — shared constraint generator.
+  - `eval_composite(builder)` — convenience wrapper.
+
+`CompositeFullAir::eval` now also calls
+`Blake3Chip::eval_composite(builder)`. The existing chip-local
+tests are unchanged.
+
+CV mapping decision: read CV from `BLAKE3_CV_START` (the value
+"ready for BLAKE3" on this row) rather than `CV_IN_START` (which
+is the value pulled in from a previous hash via LogUp). When the
+LogUp wiring lands in Phase 14, `BLAKE3_CV` will be constrained
+equal to `CV_IN` on rows that consume an external CV.
+
+Properties validated:
+  - ✅ Baseline trace (all selectors zero) still verifies — all
+    BLAKE3 dispatch silences cleanly (`composite_full_air_baseline_trace_verifies`).
+  - ✅ Non-boolean BLAKE3 state bit rejects regardless of
+    selectors — booleanity in `xor_32_shift_if` fires
+    unconditionally (`composite_full_air_rejects_non_boolean_blake3_state_bit`).
+
+### Phase 12d — composite_full_air (jackpot) — pending
+
+Jackpot wiring is held by a column-shape mismatch:
+
+  * Chip-local layout has `V_BITS[32]`, `X_BITS[32]`, `SLOT_SEL[16]`,
+    `IS_ACTIVE[1]`.
+  * Composite layout has `BIT_REG[32]` (one 32-bit bit-decomp slot)
+    and `JACKPOT_IDX[8]` (8 cols, one-hot store/load indicators —
+    NOT 16-slot selector).
+
+Two options:
+  1. **Reshape the chip** to use BIT_REG + JACKPOT_IDX's contract
+     (compact, more like Pearl).
+  2. **Extend composite_layout** to accommodate the chip-local
+     16-slot select + dedicated X_BITS.
+
+Option 1 is cleaner and matches Pearl. Defer to Phase 12d.
 
 ### Phase 7+ — scope decision (resolved)
 
@@ -712,4 +750,5 @@ by the SNARK as a whole:
 | 2026-05-14 | M10.1c Phase 10 jackpot chip (`chips/jackpot`) | `5e08fa1` |
 | 2026-05-14 | M10.1c Phase 11 lookup design (`composite_lookups`) | `b492465` |
 | 2026-05-14 | M10.1c Phase 12a `composite_full_air` (Phase 3-6 chips) | `253a938` |
-| 2026-05-14 | M10.1c Phase 12b matmul wired via `eval_composite` | (this commit) |
+| 2026-05-14 | M10.1c Phase 12b matmul wired via `eval_composite` | `c883c21` |
+| 2026-05-14 | M10.1c Phase 12c BLAKE3 wired via `eval_composite` | (this commit) |

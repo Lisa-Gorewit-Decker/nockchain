@@ -106,15 +106,66 @@ impl<F> BaseAir<F> for Blake3Chip {
     }
 }
 
-impl<AB: AirBuilder> Air<AB> for Blake3Chip {
-    fn eval(&self, builder: &mut AB) {
+/// Column-offset bundle for [`Blake3Chip::eval_at`]. Lets the
+/// same eval body work over both the chip-local layout and the
+/// composite layout.
+#[derive(Copy, Clone, Debug)]
+pub struct Blake3Offsets {
+    /// Offset of the row's first state snapshot (4 contiguous
+    /// snapshots × 264 cells = 1056 cells starting here).
+    pub state_start: usize,
+    /// Offset of the BLAKE3 message (16 packed u32 words).
+    pub msg_start: usize,
+    /// Offset of the CV (8 packed u32 words).
+    pub cv_start: usize,
+    /// Offset of the packed tweak column.
+    pub tweak_col: usize,
+    /// Offset of the row's CV_OUT (8 packed u32 words).
+    pub cv_out_start: usize,
+    /// Column of the IS_NEW_BLAKE selector.
+    pub is_new_blake_col: usize,
+    /// Column of the IS_LAST_ROUND selector.
+    pub is_last_round_col: usize,
+}
+
+impl Blake3Chip {
+    /// Chip-local offsets. Used by [`Blake3Chip::eval`].
+    pub const LOCAL_OFFSETS: Blake3Offsets = Blake3Offsets {
+        state_start: cols::STATE0,
+        msg_start: cols::MSG,
+        cv_start: cols::CV_IN,
+        tweak_col: cols::TWEAK,
+        cv_out_start: cols::CV_OUT,
+        is_new_blake_col: cols::IS_NEW_BLAKE,
+        is_last_round_col: cols::IS_LAST_ROUND,
+    };
+
+    /// Composite-trace offsets. Maps each of the chip's column
+    /// blocks onto `composite_layout::*` positions. Note we read
+    /// CV from `BLAKE3_CV_START` (the value "ready for BLAKE3"
+    /// on this row) rather than `CV_IN_START` (the value pulled
+    /// in from a previous hash via LogUp).
+    pub const COMPOSITE_OFFSETS: Blake3Offsets = Blake3Offsets {
+        state_start: crate::composite_layout::BLAKE3_ROUND_START,
+        msg_start: crate::composite_layout::BLAKE3_MSG_START,
+        cv_start: crate::composite_layout::BLAKE3_CV_START,
+        tweak_col: crate::composite_layout::CV_OR_TWEAK_PREP,
+        cv_out_start: crate::composite_layout::CV_OUT_START,
+        is_new_blake_col: crate::composite_layout::IS_NEW_BLAKE,
+        is_last_round_col: crate::composite_layout::IS_LAST_ROUND,
+    };
+
+    /// Emit the BLAKE3 chip's constraints at the given column
+    /// offsets. The constraint logic is identical to the
+    /// chip-local case; only the column read positions change.
+    pub fn eval_at<AB: AirBuilder>(builder: &mut AB, off: &Blake3Offsets) {
         let main = builder.main();
         let cur = main.current_slice();
         let nxt = main.next_slice();
 
         // ---- Selector reads + boolean checks ----
-        let is_new_blake_var = cur[cols::IS_NEW_BLAKE];
-        let is_last_round_var = cur[cols::IS_LAST_ROUND];
+        let is_new_blake_var = cur[off.is_new_blake_col];
+        let is_last_round_var = cur[off.is_last_round_col];
         let is_new_blake: AB::Expr = is_new_blake_var.into();
         let is_last_round: AB::Expr = is_last_round_var.into();
 
@@ -122,12 +173,15 @@ impl<AB: AirBuilder> Air<AB> for Blake3Chip {
         builder.assert_bool(is_new_blake_var);
         builder.assert_bool(is_last_round_var);
 
-        // ---- State slicing (cur row supplies states[0..3]; next row supplies states[4]) ----
-        let s0_cells = &cur[cols::STATE0..cols::STATE0 + cols::STATE_W];
-        let s1_cells = &cur[cols::STATE1..cols::STATE1 + cols::STATE_W];
-        let s2_cells = &cur[cols::STATE2..cols::STATE2 + cols::STATE_W];
-        let s3_cells = &cur[cols::STATE3..cols::STATE3 + cols::STATE_W];
-        let s4_cells = &nxt[cols::STATE0..cols::STATE0 + cols::STATE_W];
+        // ---- State slicing ----
+        let state_w = cols::STATE_W;
+        let s0_cells = &cur[off.state_start..off.state_start + state_w];
+        let s1_cells = &cur[off.state_start + state_w..off.state_start + 2 * state_w];
+        let s2_cells =
+            &cur[off.state_start + 2 * state_w..off.state_start + 3 * state_w];
+        let s3_cells =
+            &cur[off.state_start + 3 * state_w..off.state_start + 4 * state_w];
+        let s4_cells = &nxt[off.state_start..off.state_start + state_w];
 
         let s0 = Blake3State::from_slice(s0_cells);
         let s1 = Blake3State::from_slice(s1_cells);
@@ -137,9 +191,9 @@ impl<AB: AirBuilder> Air<AB> for Blake3Chip {
         let states = [s0, s1, s2, s3, s4];
 
         // ---- Message + CV_IN + Tweak ----
-        let msg: Vec<AB::Expr> = (0..16).map(|i| cur[cols::MSG + i].into()).collect();
-        let cv_in: Vec<AB::Expr> = (0..8).map(|i| cur[cols::CV_IN + i].into()).collect();
-        let tweak: AB::Expr = cur[cols::TWEAK].into();
+        let msg: Vec<AB::Expr> = (0..16).map(|i| cur[off.msg_start + i].into()).collect();
+        let cv_in: Vec<AB::Expr> = (0..8).map(|i| cur[off.cv_start + i].into()).collect();
+        let tweak: AB::Expr = cur[off.tweak_col].into();
 
         // ---- Round constraint, gated by !is_last_round ----
         //
@@ -174,9 +228,21 @@ impl<AB: AirBuilder> Air<AB> for Blake3Chip {
 
         // CV_OUT[i] == out[i] when is_last_round = 1.
         for i in 0..8 {
-            let cv_out_cell: AB::Expr = cur[cols::CV_OUT + i].into();
+            let cv_out_cell: AB::Expr = cur[off.cv_out_start + i].into();
             builder.assert_zero(is_last_round.clone() * (out[i].clone() - cv_out_cell));
         }
+    }
+
+    /// Composite-layout entry point. Called from
+    /// [`crate::composite_full_air::CompositeFullAir::eval`].
+    pub fn eval_composite<AB: AirBuilder>(builder: &mut AB) {
+        Self::eval_at(builder, &Self::COMPOSITE_OFFSETS);
+    }
+}
+
+impl<AB: AirBuilder> Air<AB> for Blake3Chip {
+    fn eval(&self, builder: &mut AB) {
+        Blake3Chip::eval_at(builder, &Blake3Chip::LOCAL_OFFSETS);
     }
 }
 

@@ -44,6 +44,7 @@
 
 use p3_air::{Air, AirBuilder, BaseAir};
 
+use crate::chips::blake3::chip::Blake3Chip;
 use crate::chips::control::ControlChip;
 use crate::chips::i8u8::I8U8Chip;
 use crate::chips::input::InputChip;
@@ -92,6 +93,13 @@ impl<AB: AirBuilder> Air<AB> for CompositeFullAir {
         // IS_RESET_CUMSUM / IS_UPDATE_CUMSUM at composite-layout
         // offsets.
         MatmulCumsumChip::eval_composite(builder);
+
+        // BLAKE3 chip (Phase 12c wiring): reads BLAKE3_ROUND (4
+        // state snapshots), BLAKE3_MSG, BLAKE3_CV, CV_OR_TWEAK_PREP,
+        // CV_OUT at composite-layout offsets. Dispatch driven by
+        // IS_NEW_BLAKE / IS_LAST_ROUND selector bits (unpacked from
+        // CONTROL_PREP by ControlChip).
+        Blake3Chip::eval_composite(builder);
     }
 }
 
@@ -305,6 +313,28 @@ mod tests {
         assert!(
             verify::<AiPowStarkConfig, _>(&cfg, &CompositeFullAir, &proof, &[]).is_err(),
             "tampered CUMSUM_TILE in passthrough mode must reject"
+        );
+    }
+
+    /// Tamper a BLAKE3 state bit (in STATE1.row2) — the BLAKE3
+    /// round constraint asserts boolean bits in every state
+    /// snapshot via xor_32_shift_if's `assert_bool` calls.
+    /// Setting a row2 cell to 2 violates booleanity, regardless of
+    /// selectors.
+    #[test]
+    fn composite_full_air_rejects_non_boolean_blake3_state_bit() {
+        let cfg = build_stark_config(&test_zk_params(), &CircuitConfig::TEST_PEARL);
+        let mut trace = build_baseline_trace(MIN_STARK_LEN);
+        use crate::composite_layout::BLAKE3_ROUND_START;
+        // STATE1.row2[0] starts at offset BLAKE3_ROUND_START +
+        // STATE_W + 4 (= STATE1 cells 4..36 hold row2[0]'s bits).
+        const STATE_W: usize = 264;
+        let target = 0 * TOTAL_TRACE_WIDTH + BLAKE3_ROUND_START + STATE_W + 4;
+        trace.values[target] = <crate::Val as QuotientMap<u64>>::from_int(2);
+        let proof = prove::<AiPowStarkConfig, _>(&cfg, &CompositeFullAir, trace, &[]);
+        assert!(
+            verify::<AiPowStarkConfig, _>(&cfg, &CompositeFullAir, &proof, &[]).is_err(),
+            "non-boolean BLAKE3 state bit must reject"
         );
     }
 
