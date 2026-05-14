@@ -41,7 +41,7 @@ When Plonky3 doesn't have a direct primitive (e.g. Pearl's
 | 8a | BLAKE3 round-AIR primitives — `round_ops::{add3, add2, xor_shift, xor_packed}` | ✅ landed | 15 | 236 unit |
 | 8b | BLAKE3 round-AIR composition — `Blake3State`, `half_g`, `verify_round`, `finalize_blake`, `verify_init_state` | ✅ landed | 8 | 244 unit |
 | 8c | BLAKE3 trace generator + top-level chip eval — `Blake3Chip` | ✅ landed | 10 | 254 unit |
-| 9 | matmul chip with `NOISED_PACKED` RAM-lookup reads | ⬜ pending | | |
+| 9 | matmul cumsum chip (`MatmulCumsumChip`); RAM-lookup deferred to Phase 11 | ✅ landed | 20 | 274 unit |
 | 10 | jackpot chip (rotate-XOR-13, Pearl `chip/jackpot/`) | ⬜ pending | | |
 | 11 | `composite_lookups` — `p3-lookup` config for all 6+ lookups | ⬜ pending | | |
 | 12 | `composite_full_air::eval` (Pearl `pearl_air`) | ⬜ pending | | |
@@ -49,7 +49,7 @@ When Plonky3 doesn't have a direct primitive (e.g. Pearl's
 | 14 | `lib::{prove, verify}` plumbing on composite AIR | ⬜ pending | | |
 | 15 | PROD bench full shape | ⬜ pending | | |
 
-**Today's cumulative test count: 254 unit + 7 KAT + 3 ignored
+**Today's cumulative test count: 274 unit + 7 KAT + 3 ignored
 PROD bench.**
 
 ## Properties validated per phase
@@ -381,6 +381,63 @@ schedule; we trade that off for cleaner chip-internal logic. If
 Phase 12's composite AIR needs the degree-3 ceiling back, we can
 factor each cubic into two quadratics via an intermediate column.
 
+### Phase 9 — matmul cumsum chip (landed)
+
+`chips/matmul/` ports Pearl's tile-accumulator update. Two
+submodules:
+
+**`compute.rs`** — scalar reference for the matmul row update.
+Properties validated:
+  - ✅ `tile_dot(a, b)` computes `sum_d(a[d] * b[d])` over
+    `TILE_D = 16` i8 elements. Tested on simple ramps, signed
+    cancellation, zero operands, and extreme `[127, 127]` cases
+    (`tile_dot_simple`, `tile_dot_signs`, `tile_dot_zero_when_either_zero`,
+    `tile_dot_extreme_values`).
+  - ✅ `tile_dot_block(a, b)` returns the full `TILE_H × TILE_H`
+    block in row-major order (`tile_dot_block_indexing`).
+  - ✅ `apply_cumsum_update` implements Pearl's reset / update /
+    pass-through semantics exactly
+    (`apply_cumsum_reset_overrides`, `apply_cumsum_update_accumulates`,
+    `apply_cumsum_passthrough_when_both_off`).
+  - ✅ End-to-end `compute_row` chains reset → update producing
+    `2 × dot` (`compute_row_end_to_end_reset_then_update`).
+  - ✅ `CUMSUM_LEN = 4 = TILE_H²` pinned
+    (`cumsum_len_matches_tile_h_squared`).
+
+**`chip.rs`** — AIR + trace generator. The constraint is a single
+per-row equality applied to each of the 4 cumsum cells:
+```
+  next.CUMSUM[k] = (is_reset + is_update) · dot[k]
+                 + (1 − is_reset) · cur.CUMSUM[k]
+```
+gated by `builder.when_transition()` (so the wraparound from the
+last row doesn't fire). Booleanity checks on both selectors
+unconditional. Constraint degree 3.
+
+Properties validated:
+  - ✅ 4-step (reset, update, update, update) chain verifies
+    end-to-end (`prove_and_verify_4_step_chain`).
+  - ✅ Pass-through row (both selectors 0) preserves CUMSUM
+    (`prove_and_verify_passthrough_row`).
+  - ✅ Extreme i8 values `[−128, 127]` produce correct cumsum
+    chain (`prove_and_verify_extreme_values`).
+  - ✅ Tamper detection: cumsum cell
+    (`verify_rejects_tampered_cumsum`), A_UNPACK cell
+    (`verify_rejects_tampered_a_cell`), B_UNPACK cell
+    (`verify_rejects_tampered_b_cell`), non-boolean is_reset
+    (`verify_rejects_non_boolean_is_reset`), non-boolean is_update
+    (`verify_rejects_non_boolean_is_update`).
+  - ✅ Trace padded to next power-of-2 row count
+    (`build_trace_pads_to_power_of_two`).
+  - ✅ Chip width pinned at 71 cols (`chip_width_pinned`).
+
+**Deferred to Phase 11:** the `A_NOISED ↔ A_NOISED_UNPACK` (and B)
+packing-consistency constraint and the `NOISED_PACKED` RAM-lookup
+read (LogUp on `MAT_ID = A_ID`). The packing constraint can land
+inside this chip once we know the polyval base Pearl uses for i8
+packing; the RAM lookup requires the composite-level LogUp wiring
+that's the focus of Phase 11.
+
 ### Phase 7+ — scope decision (resolved)
 
 User picked **option 1** (full Pearl one-round-per-row port).
@@ -471,4 +528,5 @@ by the SNARK as a whole:
 | 2026-05-14 | M10.1c Phase 7 BLAKE3 chip foundation (compress + layout + logic) | `37cdb06` |
 | 2026-05-14 | M10.1c Phase 8a BLAKE3 round-AIR primitives (`round_ops`) | `bc546b0` |
 | 2026-05-14 | M10.1c Phase 8b BLAKE3 round-AIR composition (`round_air`) | `f233d0b` |
-| 2026-05-14 | M10.1c Phase 8c BLAKE3 top-level chip (`chip.rs`) | (this commit) |
+| 2026-05-14 | M10.1c Phase 8c BLAKE3 top-level chip (`chip.rs`) | `105699b` |
+| 2026-05-14 | M10.1c Phase 9 matmul cumsum chip (`chips/matmul`) | (this commit) |
