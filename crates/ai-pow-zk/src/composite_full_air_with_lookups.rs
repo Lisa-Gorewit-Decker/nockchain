@@ -935,6 +935,110 @@ mod tests {
         );
     }
 
+    // =================================================================
+    //  End-to-end integration: real chip activity through ALL buses
+    // =================================================================
+
+    /// Build a composite trace with:
+    ///   - A real BLAKE3 hash compression at rows 0..7,
+    ///   - A 2-step matmul chain at rows 8..9,
+    ///   - A jackpot rotate-XOR-13 step at row 10.
+    /// All 7 LogUp buses fire across the relevant rows; the
+    /// trace generator must produce a trace that balances every
+    /// bus AND satisfies every chip's constraints. This is the
+    /// regression anchor confirming the whole prover stack works.
+    #[test]
+    fn three_chip_activity_with_all_lookups_verifies() {
+        use crate::chips::blake3::compress::{Blake3Tweak, BLAKE3_IV};
+        use crate::composite_layout::TILE_D;
+
+        let cfg = build_stark_config(&test_zk_params(), &CircuitConfig::TEST_PEARL);
+        let mut trace = CompositeTrace::baseline_min();
+
+        // (a) BLAKE3 hash at rows 0..7.
+        let cv: [u32; 8] = core::array::from_fn(|i| BLAKE3_IV[i]);
+        let msg: [u32; 16] = core::array::from_fn(|i| (i as u32 + 1) * 0xABCDEF);
+        let tweak = Blake3Tweak {
+            counter_low: 42,
+            counter_high: 0,
+            block_len: 64,
+            flags: 0x1B,
+        };
+        let _cv_out = trace.place_blake3_hash(0, &msg, &cv, &tweak);
+
+        // (b) Matmul step chain at rows 8..9. A/B unpack cells
+        // stay zero (so IRange8 queries balance via FREQ[128]).
+        let a = [[0i8; TILE_D]; crate::composite_layout::TILE_H];
+        let b = [[0i8; TILE_D]; crate::composite_layout::TILE_H];
+        let zero_cumsum =
+            [0i32; crate::chips::matmul::compute::CUMSUM_LEN];
+        let after_reset = trace.place_matmul_step(8, &a, &b, true, false, &zero_cumsum);
+        let after_update =
+            trace.place_matmul_step(9, &a, &b, false, true, &after_reset);
+        trace.fill_cumsum_passthrough(10, &after_update);
+
+        // (c) Jackpot step at row 10. Initial state is all-zero
+        // so cross-row passthrough on rows 0..9 holds trivially
+        // (already at zero from baseline).
+        let initial_jackpot =
+            [0u32; crate::composite_layout::JACKPOT_SIZE];
+        let _jackpot_after =
+            trace.place_jackpot_step(10, &initial_jackpot, 0, 0xDEAD_BEEF, true);
+        trace.fill_jackpot_passthrough(
+            11,
+            &crate::chips::jackpot::compute::apply_jackpot_step(
+                &initial_jackpot,
+                0,
+                0xDEAD_BEEF,
+                true,
+            ),
+        );
+
+        // (d) Populate every *_FREQ column from the trace.
+        trace.populate_lookup_freq();
+
+        // (e) Prove + verify via p3-batch-stark.
+        run_batch(&cfg, &trace.matrix)
+            .expect("three-chip activity with all LogUp buses must verify");
+    }
+
+    /// **PROD bench with LogUp enabled.** Run the full
+    /// CompositeFullAirWithLookups under PROD profile (log_blowup
+    /// = 3, num_queries = 80 → 120-bit provable FRI soundness).
+    /// Ignored by default; run with --ignored.
+    #[test]
+    #[ignore = "PROD bench — expensive; run with --ignored"]
+    fn composite_full_air_with_lookups_prod_bench() {
+        let cfg = build_stark_config(&test_zk_params(), &CircuitConfig::PROD);
+        let mut trace = CompositeTrace::baseline_min();
+        trace.populate_lookup_freq();
+
+        let air = CompositeFullAirWithLookups;
+        let instances = vec![StarkInstance {
+            air: &air,
+            trace: &trace.matrix,
+            public_values: vec![],
+        }];
+
+        let t0 = std::time::Instant::now();
+        let prover_data = ProverData::from_instances(&cfg, &instances);
+        let proof = prove_batch(&cfg, &instances, &prover_data);
+        let prove_ms = t0.elapsed().as_millis();
+
+        let t1 = std::time::Instant::now();
+        verify_batch(&cfg, &[air], &proof, &[vec![]], &prover_data.common)
+            .expect("PROD verify with LogUp");
+        let verify_ms = t1.elapsed().as_millis();
+
+        println!(
+            "ai-pow-zk PROD bench WITH LogUp (baseline @ MIN_STARK_LEN = {} rows × {} cols, 7 buses):",
+            crate::composite_layout::MIN_STARK_LEN,
+            TOTAL_TRACE_WIDTH
+        );
+        println!("  prove    : {prove_ms} ms");
+        println!("  verify   : {verify_ms} ms");
+    }
+
     /// Tamper CV_OUT_FREQ to over-claim consumption → reject.
     #[test]
     fn tampered_cv_out_freq_rejected_by_logup() {
