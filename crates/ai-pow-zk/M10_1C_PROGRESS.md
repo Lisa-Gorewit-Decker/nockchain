@@ -35,7 +35,7 @@ When Plonky3 doesn't have a direct primitive (e.g. Pearl's
 | 4a | `range_table` chip (URange8/13, IRange7P1/8 generic) | ✅ landed | 15 | 163 unit |
 | 4b | `i8u8` chip (signed↔unsigned conversion table) | ✅ landed | 11 | 174 unit |
 | 4c | `input` chip (Pearl `chip/input/`) | ✅ landed | 9 | 183 unit |
-| 5 | `control_chip` (Pearl `control_and_matid_packed`) | ⬜ pending | | |
+| 5 | `control_chip` (Pearl `control_and_matid_packed`) | ✅ landed | 11 | 194 unit |
 | 6 | preprocessed-trace generation (Pearl `pearl_preprocess`) | ⬜ pending | | |
 | 7 | BLAKE3 chip — wrap M10.1b vendored chip (Plonky3 primitive preferred) | ⬜ pending | | |
 | 8 | BLAKE3 chip — extend wrapper with multi-round / Merkle linkage | ⬜ pending | | |
