@@ -55,6 +55,7 @@ build-kernels:
     - |
       nix develop -c bash -c '
         set -euo pipefail
+        export HOONC_FLAGS="--ephemeral"
         make update-hoonc
         make assets/dumb.jam
         make assets/miner.jam
