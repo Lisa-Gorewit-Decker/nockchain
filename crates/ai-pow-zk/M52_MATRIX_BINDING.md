@@ -227,31 +227,71 @@ bytes are in `BLAKE3_MSG` and the matmul reads bytes from
 the same matrix — an adversary could hash matrix X and run matmul
 on matrix Y, and both proofs verify.
 
-Options:
-- **4a.** Extend the existing `noised_packed` LogUp bus so the
-  BLAKE3 chip's matrix-byte reads emit queries to the same bus
-  the matmul reads from. This binds "the bytes hashed at position
-  (i, j)" to "the bytes matmul reads at position (i, j)" via
-  multiplicities.
-- **4b.** Add a parallel `matrix_bytes` bus dedicated to BLAKE3 ↔
-  matmul cross-binding. Cleaner separation, more columns.
+### Where the binding lives in the design
 
-4a is preferred (fewer LogUp buses; reuses existing infra). The
-implementation requires:
-1. The `chips::input` chip already emits `noised_packed` reads on
-   matmul-active rows. The BLAKE3 chip needs to *also* emit reads
-   on `IS_MSG_MAT == 1` rows (when the BLAKE3 message buffer is
-   loading matrix bytes).
-2. Verify the multiplicities sum correctly: each matrix cell is
-   read once by matmul AND once by hashing, so the table's frequency
-   column needs to grow accordingly.
-3. Make sure `IS_MSG_MAT` actually fires on matrix-hash rows. Today
-   `place_matrix_hash` writes BLAKE3_MSG with matrix bytes but does
-   not set `IS_MSG_MAT` (the LogUp bus emission is gated by it).
-   Need to extend `place_blake3_hash_with_selectors` to optionally
-   set the message-source selector too, or set it in the trace
-   generator's prep step.
+The existing `noised_packed` LogUp bus is **already designed for
+this**:
 
-Concrete soundness gap captured: the existing 6 tests show H_A is
-correctly bound to whatever bytes get hashed, but those bytes are
-unconstrained vs. the matmul. Step 4 closes that.
+> `noised_packed` | `input` chip (NOISED_PACKED) | `matmul` (A_NOISED via A_ID; B_NOISED via B_ID), `blake3` (UINT8_DATA when IS_MSG_MAT) | per-row matrix bytes
+> — `composite_lookups.rs:25`
+
+So the LogUp infrastructure for "BLAKE3 reads matrix bytes via
+NOISED_PACKED, just like matmul does" is in place. The gap is in
+the **trace generator** — `place_matrix_hash` currently writes
+`BLAKE3_MSG` with raw 16 u32 words but does NOT:
+1. Pre-populate `NOISED_PACKED` slots (per-row polyval packing of
+   4 i8 mat bytes + 4 i8 noise bytes into 1 Goldilocks cell, via
+   the input chip's `MAT_UNPACK` / `NOISE_UNPACK` columns).
+2. Set `IS_MSG_MAT = 1` on the matrix-hash rows.
+3. Mirror the BLAKE3_MSG bytes into `UINT8_DATA` (the LogUp query
+   column).
+4. Update `populate_lookup_freq` to count the additional queries.
+
+### Sub-plan for step 4
+
+| # | Sub-step | Files touched |
+|---|---|---|
+| 4.1 | New helper `place_matrix_bytes_into_noised_packed` that takes the matrix byte array + starting `mat_id` and populates MAT_UNPACK / NOISE_UNPACK / NOISED_PACKED for the rows that will host matrix-hash compressions | `composite_trace.rs` + (preprocessed-trace updates in `composite_preprocess.rs`) |
+| 4.2 | Modify `place_matrix_hash` to ALSO write UINT8_DATA on matrix-hash rows and set IS_MSG_MAT in the row's selectors | `composite_trace.rs` |
+| 4.3 | Extend `populate_lookup_freq` to bump the NOISED_PACKED bus frequency for each matrix-hash row | `composite_trace.rs` |
+| 4.4 | Soundness test: prove a trace with `place_matrix_hash_a` placed on a matrix X, then **tamper one byte in X** post-hash but leave NOISED_PACKED intact. The LogUp balance must fail. | `composite_trace.rs` tests |
+| 4.5 | Soundness test: prove a trace where BLAKE3 hashes matrix X but NOISED_PACKED is populated with matrix Y. The LogUp balance must fail. | `composite_trace.rs` tests |
+
+Multiplicity arithmetic — for a single matrix-hash row:
+- Each NOISED_PACKED row produces 1 cell.
+- BLAKE3 reads 4 i8 mat bytes via UINT8_DATA → multiplicity +1
+  for the cell that packed those bytes.
+- Matmul (if also active on that row) reads → +2 (A_ID + B_ID).
+- Table side: `noised_packed_freq(n_matmul_reads, n_msg_reads)`
+  already exists in `composite_lookups.rs:141`. Just needs to be
+  driven correctly from the matrix-hash flow.
+
+### Why this isn't done in step 3
+
+Step 3 demonstrates the AIR happily proves matrix-hash blocks
+when there's no cross-binding requirement (the BLAKE3 chip's
+per-row constraints are satisfied because UINT8_DATA stays zero
+and IS_MSG_MAT stays zero, so the BLAKE3↔UINT8_DATA consistency
+check is vacuous). Step 4 turns IS_MSG_MAT on and requires the
+NOISED_PACKED table to actually exist for the hashed bytes.
+
+## Session log (2026-05-14)
+
+**Commits landed:**
+- `08d0d37` M52 roadmap doc
+- `e8e5920` FRI parameter sweep (separate from M52)
+- `d5b77c7` M52 steps 1-2 — PI plumbing + selector-gated AIR binding (275 tests)
+- `dfa5a9f` M52 step 3 — `place_matrix_hash_a` / `place_matrix_hash_b` byte-equivalent to `blake3::Hasher::new_keyed` (303 tests)
+- `6f592c4` M52 roadmap — mark 1-3 landed, document step 4
+
+**Test gains:**
+- +9 tests for M52 (3 PI plumbing + 6 chunk-Merkle generator)
+- Steps 1-3 deliver: HASH_A / HASH_B in PIs, selector-gated AIR
+  binding, BLAKE3 chunk-Merkle trace generation, end-to-end
+  prove+verify with matrix-hash in trace, PI-tamper rejection.
+
+**Outstanding soundness gap:** Without step 4, an adversary can
+freely choose what bytes the BLAKE3 chip hashes vs. what the
+matmul reads. Step 4 closes this via the existing `noised_packed`
+LogUp bus (machinery already in place, just needs trace-generator
+wire-up).
