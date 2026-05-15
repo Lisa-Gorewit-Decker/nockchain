@@ -55,8 +55,9 @@ use crate::chips::range_table::{IRange7P1Chip, IRange8Chip, URange13Chip, URange
 use crate::chips::stark_row::StarkRowChip;
 use crate::composite_layout::{
     BLAKE3_MSG_START, CUMSUM_TILE_START, CV_IN_LEN, CV_IN_START, CV_OUT_LEN, CV_OUT_START,
-    IS_HASH_A, IS_HASH_B, IS_HASH_JACKPOT, IS_MSG_MAT, IS_USE_COMMITMENT_HASH, IS_USE_JOB_KEY,
-    JACKPOT_MSG_START, JACKPOT_SIZE, TOTAL_TRACE_WIDTH, UINT8_DATA_LEN, UINT8_DATA_START,
+    IS_HASH_A, IS_HASH_B, IS_HASH_JACKPOT, IS_MSG_MAT, IS_NEW_BLAKE, IS_USE_COMMITMENT_HASH,
+    IS_USE_JOB_KEY, JACKPOT_MSG_START, JACKPOT_SIZE, TOTAL_TRACE_WIDTH, UINT8_DATA_LEN,
+    UINT8_DATA_START,
 };
 use crate::composite_public::{
     NUM_PUBLIC_VALUES, PI_COMMITMENT_HASH_OFFSET, PI_CUMSUM_LEN, PI_CUMSUM_OFFSET,
@@ -220,13 +221,25 @@ impl<AB: AirBuilder> Air<AB> for CompositeFullAir {
         // MAT_UNPACK (what the buses bind) and matrix Y in
         // BLAKE3_MSG (what actually gets hashed into HASH_A).
         //
-        // UINT8_DATA is 8 u8 cells = 2 BLAKE3 message words. On an
-        // IS_MSG_MAT row, each word equals the base-256 little-
-        // endian recomposition of its 4 UINT8_DATA bytes — the
-        // same byte order BLAKE3 uses (`u32::from_le_bytes`).
-        // Vacuous when IS_MSG_MAT = 0 (every current trace; the
-        // F1 integration path sets it).
+        // Gate: IS_MSG_MAT · IS_NEW_BLAKE. `IS_MSG_MAT` alone is
+        // *overloaded* — the i8u8 / urange8 / noised_packed bus
+        // emissions reuse it to mean "UINT8_DATA holds matrix
+        // bytes for range/conversion checking," on rows that are
+        // NOT blake3 compression rows (BLAKE3_MSG = 0 there).
+        // Gating C3 on bare IS_MSG_MAT wrongly forces those
+        // data-validation rows to also satisfy
+        // BLAKE3_MSG = base256(UINT8_DATA). The extra IS_NEW_BLAKE
+        // factor restricts C3 to a blake3 compression's round-0
+        // row (its unpermuted message), which is exactly where a
+        // matrix-leaf message must equal the matrix-byte view —
+        // and is never set by the i8u8-bus tests. `place_blake3_hash`
+        // sets IS_NEW_BLAKE on row 0 of every block; the F1
+        // matrix-leaf path additionally sets IS_MSG_MAT there.
+        // Round 0 is the unpermuted message, so word j = LE bytes
+        // 4j..4j+4 — the same order `u32::from_le_bytes` uses.
+        // Vacuous on every current trace (no row has both set).
         let cur_is_msg_mat: AB::Var = cur[IS_MSG_MAT];
+        let cur_is_new_blake: AB::Var = cur[IS_NEW_BLAKE];
         let cur_uint8: [AB::Var; UINT8_DATA_LEN] =
             core::array::from_fn(|i| cur[UINT8_DATA_START + i]);
         let base256 = <AB::F as PrimeCharacteristicRing>::from_i32(256);
@@ -241,7 +254,9 @@ impl<AB: AirBuilder> Air<AB> for CompositeFullAir {
             }
             let cur_msg_word: AB::Var = cur[BLAKE3_MSG_START + j];
             builder.assert_zero(
-                cur_is_msg_mat.into() * (cur_msg_word.into() - recomposed),
+                cur_is_msg_mat.into()
+                    * cur_is_new_blake.into()
+                    * (cur_msg_word.into() - recomposed),
             );
         }
 

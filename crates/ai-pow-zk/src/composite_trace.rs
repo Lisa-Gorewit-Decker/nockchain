@@ -1760,7 +1760,7 @@ mod tests {
     /// what makes that path sound.)
     #[test]
     fn c3_rejects_is_msg_mat_row_with_mismatched_blake_msg() {
-        use crate::composite_layout::{IS_MSG_MAT, UINT8_DATA_START};
+        use crate::composite_layout::{IS_MSG_MAT, IS_NEW_BLAKE, UINT8_DATA_START};
         use p3_field::integers::QuotientMap;
 
         let cfg = build_stark_config(&test_zk_params(), &CircuitConfig::TEST_PEARL);
@@ -1768,9 +1768,14 @@ mod tests {
         let mut trace = CompositeTrace::baseline_min();
         let r = 5usize;
         let base = r * TOTAL_TRACE_WIDTH;
-        // IS_MSG_MAT = 1 but BLAKE3_MSG stays 0 while UINT8_DATA[0]
-        // = 7 ⇒ base256(UINT8_DATA[0..4]) = 7 ≠ 0 ⇒ C3 fails.
+        // C3 gate is IS_MSG_MAT · IS_NEW_BLAKE. Set both, BLAKE3_MSG
+        // stays 0 while UINT8_DATA[0] = 7 ⇒ base256(UINT8_DATA[0..4])
+        // = 7 ≠ 0 ⇒ C3 fails. (Bare IS_MSG_MAT without IS_NEW_BLAKE
+        // is the i8u8/range bus data-validation case — C3 vacuous
+        // there, which is what restores the 6 LogUp tests.)
         trace.matrix.values[base + IS_MSG_MAT] =
+            <Val as QuotientMap<u64>>::from_int(1);
+        trace.matrix.values[base + IS_NEW_BLAKE] =
             <Val as QuotientMap<u64>>::from_int(1);
         trace.matrix.values[base + UINT8_DATA_START] =
             <Val as QuotientMap<u64>>::from_int(7);
