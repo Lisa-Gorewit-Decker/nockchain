@@ -379,20 +379,10 @@ mod tests {
         config: &AiPowStarkConfig,
         trace: &p3_matrix::dense::RowMajorMatrix<Val>,
     ) -> Result<(), String> {
-        // Derive PIs by reading the trace's last row directly
-        // (avoids requiring a CompositeTrace handle here).
-        use crate::composite_layout::{
-            CUMSUM_TILE_START, JACKPOT_MSG_START, JACKPOT_SIZE,
-        };
-        let total_rows = trace.values.len() / TOTAL_TRACE_WIDTH;
-        let last_base = (total_rows - 1) * TOTAL_TRACE_WIDTH;
-        let mut pis: Vec<Val> = Vec::with_capacity(4 + JACKPOT_SIZE);
-        for i in 0..4 {
-            pis.push(trace.values[last_base + CUMSUM_TILE_START + i]);
-        }
-        for i in 0..JACKPOT_SIZE {
-            pis.push(trace.values[last_base + JACKPOT_MSG_START + i]);
-        }
+        // Derive PIs via the centralized helper — picks up CUMSUM_TILE
+        // and JACKPOT_MSG from the last row plus HASH_A / HASH_B from
+        // their selector rows (zero for baseline traces).
+        let pis: Vec<Val> = crate::composite_public::CompositePublicInputs::derive_from_matrix(trace).to_vec();
 
         let air = CompositeFullAirWithLookups;
         let instances = vec![StarkInstance {

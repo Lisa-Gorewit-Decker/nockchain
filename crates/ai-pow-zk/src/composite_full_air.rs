@@ -53,9 +53,13 @@ use crate::chips::matmul::chip::MatmulCumsumChip;
 use crate::chips::range_table::{IRange7P1Chip, IRange8Chip, URange13Chip, URange8Chip};
 use crate::chips::stark_row::StarkRowChip;
 use crate::composite_layout::{
-    CUMSUM_TILE_START, JACKPOT_MSG_START, JACKPOT_SIZE, TOTAL_TRACE_WIDTH,
+    CUMSUM_TILE_START, CV_OUT_LEN, CV_OUT_START, IS_HASH_A, IS_HASH_B, JACKPOT_MSG_START,
+    JACKPOT_SIZE, TOTAL_TRACE_WIDTH,
 };
-use crate::composite_public::{NUM_PUBLIC_VALUES, PI_CUMSUM_LEN, PI_CUMSUM_OFFSET, PI_JACKPOT_OFFSET};
+use crate::composite_public::{
+    NUM_PUBLIC_VALUES, PI_CUMSUM_LEN, PI_CUMSUM_OFFSET, PI_HASH_A_OFFSET, PI_HASH_B_OFFSET,
+    PI_JACKPOT_OFFSET,
+};
 
 /// The M10.1c composite AIR (Phase 12a slice).
 ///
@@ -121,26 +125,49 @@ impl<AB: AirBuilder> Air<AB> for CompositeFullAir {
         // bit-decomposition back to CUMSUM_BUFFER.
         JackpotChip::eval_composite(builder);
 
-        // Public-input binding: on the LAST trace row, assert
-        // CUMSUM_TILE[i] == public_inputs[i] and
-        // JACKPOT_MSG[i] == public_inputs[4 + i]. The trace
-        // generator's fill_*_passthrough helpers ensure these
-        // cells hold the threaded final state.
+        // Public-input binding.
+        //
+        // CUMSUM_TILE and JACKPOT_MSG bind on the LAST row via the
+        // `fill_*_passthrough` helpers. HASH_A and HASH_B bind on
+        // whichever row sets `IS_HASH_A` / `IS_HASH_B` (selector-
+        // gated, fires once per matrix when a real `place_matrix_
+        // hash_*` block is in the trace; vacuous for baseline
+        // traces with no hash activity).
         //
         // Snapshot the PIs and the current-row cells into owned
-        // arrays before opening the `when_last_row()` sub-builder
-        // (which borrows `builder` mutably; can't coexist with the
+        // arrays before opening sub-builders (the sub-builder
+        // borrows `builder` mutably; can't coexist with the
         // `public_values()` slice borrow).
         let pi_cumsum: [AB::PublicVar; PI_CUMSUM_LEN] =
             core::array::from_fn(|i| builder.public_values()[PI_CUMSUM_OFFSET + i]);
         let pi_jackpot: [AB::PublicVar; JACKPOT_SIZE] =
             core::array::from_fn(|i| builder.public_values()[PI_JACKPOT_OFFSET + i]);
+        let pi_hash_a: [AB::PublicVar; CV_OUT_LEN] =
+            core::array::from_fn(|i| builder.public_values()[PI_HASH_A_OFFSET + i]);
+        let pi_hash_b: [AB::PublicVar; CV_OUT_LEN] =
+            core::array::from_fn(|i| builder.public_values()[PI_HASH_B_OFFSET + i]);
         let main = builder.main();
         let cur = main.current_slice();
         let cur_cumsum: [AB::Var; PI_CUMSUM_LEN] =
             core::array::from_fn(|i| cur[CUMSUM_TILE_START + i]);
         let cur_jackpot: [AB::Var; JACKPOT_SIZE] =
             core::array::from_fn(|i| cur[JACKPOT_MSG_START + i]);
+        let cur_is_hash_a: AB::Var = cur[IS_HASH_A];
+        let cur_is_hash_b: AB::Var = cur[IS_HASH_B];
+        let cur_cv_out: [AB::Var; CV_OUT_LEN] =
+            core::array::from_fn(|i| cur[CV_OUT_START + i]);
+
+        // Selector-gated per-row binding (fires on every row but
+        // only constrains when `is_hash_*` = 1).
+        for i in 0..CV_OUT_LEN {
+            // is_hash_a · (cv_out[i] - pi_hash_a[i]) = 0
+            builder.assert_zero(
+                cur_is_hash_a.into() * (cur_cv_out[i].into() - pi_hash_a[i].into()),
+            );
+            builder.assert_zero(
+                cur_is_hash_b.into() * (cur_cv_out[i].into() - pi_hash_b[i].into()),
+            );
+        }
 
         let mut last = builder.when_last_row();
         for i in 0..PI_CUMSUM_LEN {

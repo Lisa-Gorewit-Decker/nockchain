@@ -242,8 +242,7 @@ impl CompositeTrace {
     /// Place an 8-row BLAKE3 hash compression block starting at
     /// `row_start`. Writes BLAKE3_ROUND (4 state snapshots),
     /// BLAKE3_MSG, BLAKE3_CV, CV_OR_TWEAK_PREP, CV_OUT, and the
-    /// IS_NEW_BLAKE / IS_LAST_ROUND selectors at composite-layout
-    /// offsets.
+    /// IS_LAST_ROUND selector on the finalize row.
     ///
     /// `row_start + 8` must be ≤ `height()`. Returns the BLAKE3
     /// output CV (8 packed u32s) so the caller can chain it into
@@ -254,6 +253,23 @@ impl CompositeTrace {
         message: &[u32; 16],
         cv_in: &[u32; 8],
         tweak: &Blake3Tweak,
+    ) -> [u32; 8] {
+        self.place_blake3_hash_with_selectors(row_start, message, cv_in, tweak, &[])
+    }
+
+    /// Variant of [`place_blake3_hash`] that ORs additional
+    /// selector indices into the finalize-row CONTROL_PREP. Used
+    /// by `place_matrix_hash_a` / `place_matrix_hash_b` to set
+    /// `IS_HASH_A` / `IS_HASH_B` on the chunk-Merkle root row.
+    /// `extra_selectors_on_finalize` indexes into `SELECTOR_COLS`
+    /// (so `IS_HASH_A` = 4, `IS_HASH_B` = 5).
+    pub fn place_blake3_hash_with_selectors(
+        &mut self,
+        row_start: usize,
+        message: &[u32; 16],
+        cv_in: &[u32; 8],
+        tweak: &Blake3Tweak,
+        extra_selectors_on_finalize: &[usize],
     ) -> [u32; 8] {
         use p3_field::integers::QuotientMap;
 
@@ -438,9 +454,13 @@ impl CompositeTrace {
             row[CV_OUT_START + i] = <Val as QuotientMap<u64>>::from_int(cv_out[i] as u64);
         }
 
-        // Selectors: IS_LAST_ROUND on row 7.
+        // Selectors: IS_LAST_ROUND on row 7, plus any extras the
+        // caller requested (e.g. IS_HASH_A on the matrix-hash root).
         let mut selectors = [false; 21];
         selectors[9] = true; // IS_LAST_ROUND index in SELECTOR_COLS
+        for &idx in extra_selectors_on_finalize {
+            selectors[idx] = true;
+        }
         ControlChip.fill_row(&selectors, 0, row);
 
         cv_out
