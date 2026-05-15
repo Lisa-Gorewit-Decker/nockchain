@@ -306,6 +306,39 @@ either (a) a new bus, or (b) BLAKE3 rows asserting `NOISE_UNPACK = 0`
 so that `NOISED_PACKED[i] = polyval(MAT_UNPACK[..])` becomes the
 plain-byte polyval.
 
+### Deeper subtlety in approach 4-B
+
+If we add a BLAKE3-side query gated by `IS_MSG_MAT`, BLAKE3-hash
+rows have `NOISE_UNPACK = 0` so `NOISED_PACKED = polyval(MAT_UNPACK)`
+(plain bytes). For LogUp to balance, *some* row needs to publish a
+matching table entry. Two sub-options:
+
+- **Self-referential** — the BLAKE3-hash row is its own table
+  entry with `MAT_FREQ = 1`. Locally balanced. But this doesn't
+  actually bind BLAKE3 reads to matmul reads, since matmul rows
+  use *noised* values and never match the BLAKE3 plain entries.
+- **Separate plain-store rows** — the input chip emits one table
+  row per matrix byte block with `NOISE_UNPACK = 0` (plain entry)
+  AND one with the actual noise (matmul entry). Both BLAKE3 and
+  matmul query their respective entries via shared `MAT_ID`. The
+  binding works because the *same* preprocessed matrix bytes
+  source both entries.
+
+The second is the right design but adds preprocessed-trace
+complexity (`composite_preprocess.rs`, `chips::input`).
+
+### Design call needed before implementing 4-B
+
+Open question:
+
+> Should the input chip emit "plain" and "noised" store entries
+> on separate rows (4-B), or adopt 4-A (new dedicated
+> `plain_matrix_bytes` bus) for clarity?
+
+Both options are viable; 4-A is cleaner separation, 4-B reuses
+existing infrastructure. Until this is decided, step 4 stays
+specified-but-not-implemented in this session.
+
 ### Why this isn't done in step 3
 
 Step 3 demonstrates the AIR happily proves matrix-hash blocks
