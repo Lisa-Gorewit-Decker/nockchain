@@ -309,6 +309,36 @@ mod tests {
         assert_ne!(a_row_leaf_hash(&other, &kappa), r);
     }
 
+    /// M52 step 5: `matrix_commitment` is byte-equivalent to
+    /// `blake3::Hasher::new_keyed(&κ).update(pad(matrix)).finalize()`,
+    /// the same digest `ai-pow-zk::CompositeTrace::place_matrix_hash_a`
+    /// computes inside the SNARK. This anchors the plain-side
+    /// `BlockContext::h_a_chunk` to what the SNARK will bind as
+    /// public input `HASH_A`.
+    #[test]
+    fn matrix_commitment_byte_equivalent_to_blake3_keyed() {
+        // Multi-chunk case (4 KiB = 4 chunks).
+        let matrix: Vec<u8> = (0..4096).map(|i| ((i * 31 + 7) & 0xFF) as u8).collect();
+        let kappa = [0xA5u8; 32];
+        let got = matrix_commitment(&matrix, &kappa);
+        let expected =
+            *Hasher::new_keyed(&kappa).update(&matrix).finalize().as_bytes();
+        assert_eq!(got, expected, "multi-chunk byte-equivalence");
+
+        // Sub-chunk padding case (500 bytes → padded to 1024).
+        let matrix2: Vec<u8> = (0..500).map(|i| (i as u8).wrapping_mul(13)).collect();
+        let mut padded = matrix2.clone();
+        padded.resize(1024, 0);
+        let got2 = matrix_commitment(&matrix2, &kappa);
+        let expected2 =
+            *Hasher::new_keyed(&kappa).update(&padded).finalize().as_bytes();
+        assert_eq!(got2, expected2, "sub-chunk pad byte-equivalence");
+
+        // Domain separation: changing κ changes the digest.
+        let got_diff_kappa = matrix_commitment(&matrix, &[0xA6u8; 32]);
+        assert_ne!(got, got_diff_kappa);
+    }
+
     #[test]
     fn changing_leaf_count_changes_root() {
         // Padding should make the tree height match `next_power_of_two`, so

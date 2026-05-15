@@ -43,6 +43,13 @@ pub struct MatmulProof {
     pub h_a: [u8; 32],
     /// Pearl §4.3 `H_B`: BLAKE3-Merkle root over the columns of `B`.
     pub h_b: [u8; 32],
+    /// M52 step 5: chunk-Merkle `BLAKE3(pad(A_row_major), key=κ)`.
+    /// The commitment shape the `ai-pow-zk` SNARK binds to as
+    /// public input `HASH_A`. Distinct from `h_a` (row-Merkle,
+    /// used for spot-check opening) — they coexist.
+    pub h_a_chunk: [u8; 32],
+    /// M52 step 5: chunk-Merkle commitment for matrix B.
+    pub h_b_chunk: [u8; 32],
     pub found: TileOpening,
     pub spot: Vec<TileOpening>,
 }
@@ -75,6 +82,8 @@ impl MatmulProof {
         out.extend_from_slice(&self.params_tag);
         out.extend_from_slice(&self.h_a);
         out.extend_from_slice(&self.h_b);
+        out.extend_from_slice(&self.h_a_chunk);
+        out.extend_from_slice(&self.h_b_chunk);
         encode_opening(&self.found, &mut out);
         out.extend_from_slice(&(self.spot.len() as u32).to_le_bytes());
         for s in &self.spot {
@@ -89,6 +98,8 @@ impl MatmulProof {
         let params_tag = take_arr32(&mut cur)?;
         let h_a = take_arr32(&mut cur)?;
         let h_b = take_arr32(&mut cur)?;
+        let h_a_chunk = take_arr32(&mut cur)?;
+        let h_b_chunk = take_arr32(&mut cur)?;
         let found = decode_opening(&mut cur)?;
         let n = take_u32(&mut cur)?;
         if n > MAX_SPOT {
@@ -106,6 +117,8 @@ impl MatmulProof {
             params_tag,
             h_a,
             h_b,
+            h_a_chunk,
+            h_b_chunk,
             found,
             spot,
         })
@@ -243,6 +256,8 @@ mod tests {
             params_tag: [2u8; 32],
             h_a: [3u8; 32],
             h_b: [4u8; 32],
+            h_a_chunk: [8u8; 32],
+            h_b_chunk: [9u8; 32],
             found: sample_opening(5),
             spot: vec![sample_opening(6), sample_opening(7)],
         }
@@ -284,6 +299,8 @@ mod tests {
         bytes.extend_from_slice(&[0u8; 32]); // params_tag
         bytes.extend_from_slice(&[0u8; 32]); // h_a
         bytes.extend_from_slice(&[0u8; 32]); // h_b
+        bytes.extend_from_slice(&[0u8; 32]); // h_a_chunk
+        bytes.extend_from_slice(&[0u8; 32]); // h_b_chunk
         bytes.extend_from_slice(&0u32.to_le_bytes()); // i
         bytes.extend_from_slice(&0u32.to_le_bytes()); // j
         bytes.extend_from_slice(&u32::MAX.to_le_bytes()); // m_path len

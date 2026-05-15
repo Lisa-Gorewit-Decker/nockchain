@@ -93,6 +93,16 @@ pub struct BlockContext<'a> {
     pub kappa: [u8; 32],
     pub h_a: [u8; 32],
     pub h_b: [u8; 32],
+    /// M52 step 5: chunk-Merkle BLAKE3 keyed-hash of `pad(A)` —
+    /// the commitment shape the `ai-pow-zk` SNARK binds to as
+    /// public input `HASH_A`. Distinct from `h_a` (per-row
+    /// Merkle, used for spot-check opening) — both coexist so
+    /// the plain-side spot-check protocol AND the SNARK PI
+    /// binding work without conflict.
+    pub h_a_chunk: [u8; 32],
+    /// M52 step 5: chunk-Merkle commitment for matrix B
+    /// (column-major bytes), analogous to `h_a_chunk`.
+    pub h_b_chunk: [u8; 32],
     pub s_a: [u8; 32],
     pub s_b: [u8; 32],
     pub h_a_leaves: Vec<[u8; 32]>,
@@ -163,6 +173,18 @@ impl<'a> BlockContext<'a> {
         }
         let h_b = merkle_root(&h_b_leaves)?;
 
+        // M52 step 5: chunk-Merkle commitments for SNARK PI binding.
+        // BLAKE3 keyed-hash of pad(A_row_major) and pad(B_col_major).
+        // i8 and u8 share layout; reinterpret without copying.
+        let a_bytes: &[u8] = unsafe {
+            core::slice::from_raw_parts(a.as_ptr() as *const u8, a.len())
+        };
+        let b_bytes: &[u8] = unsafe {
+            core::slice::from_raw_parts(b.as_ptr() as *const u8, b.len())
+        };
+        let h_a_chunk = crate::commit::matrix_commitment(a_bytes, &kappa);
+        let h_b_chunk = crate::commit::matrix_commitment(b_bytes, &kappa);
+
         let s_b = noise_seed_b(&kappa, &h_b);
         let s_a = noise_seed_a(&s_b, &h_a);
 
@@ -186,6 +208,8 @@ impl<'a> BlockContext<'a> {
             kappa,
             h_a,
             h_b,
+            h_a_chunk,
+            h_b_chunk,
             s_a,
             s_b,
             h_a_leaves,
@@ -289,6 +313,8 @@ fn mine_with_context(
         params_tag: ctx.tag,
         h_a: ctx.h_a,
         h_b: ctx.h_b,
+        h_a_chunk: ctx.h_a_chunk,
+        h_b_chunk: ctx.h_b_chunk,
         found: found_opening,
         spot,
     };
