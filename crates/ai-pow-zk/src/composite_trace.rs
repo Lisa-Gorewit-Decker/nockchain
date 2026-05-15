@@ -972,30 +972,46 @@ impl CompositeTrace {
             let is_update =
                 self.matrix.values[base + IS_UPDATE_CUMSUM].as_canonical_u64();
             let active = is_reset + is_update;
-            if active == 0 {
-                continue;
+            if active > 0 {
+                // A-side read.
+                let a_key = (
+                    self.matrix.values[base + A_ID].as_canonical_u64(),
+                    self.matrix.values[base + A_NOISED_START].as_canonical_u64(),
+                    self.matrix.values[base + A_NOISED_START + 1].as_canonical_u64(),
+                );
+                if let Some(&tr) = key_to_first_row.get(&a_key) {
+                    mat_freq[tr] += active;
+                }
+                // B-side read.
+                let b_key = (
+                    self.matrix.values[base + B_ID].as_canonical_u64(),
+                    self.matrix.values[base + B_NOISED_START].as_canonical_u64(),
+                    self.matrix.values[base + B_NOISED_START + 1].as_canonical_u64(),
+                );
+                if let Some(&tr) = key_to_first_row.get(&b_key) {
+                    mat_freq[tr] += active;
+                }
+                // Queries with no matching table key contribute
+                // nothing to MAT_FREQ → bus is unbalanced → LogUp
+                // rejects at proof time.
             }
-            // A-side read.
-            let a_key = (
-                self.matrix.values[base + A_ID].as_canonical_u64(),
-                self.matrix.values[base + A_NOISED_START].as_canonical_u64(),
-                self.matrix.values[base + A_NOISED_START + 1].as_canonical_u64(),
-            );
-            if let Some(&tr) = key_to_first_row.get(&a_key) {
-                mat_freq[tr] += active;
+
+            // M52 step 4-B: BLAKE3-side query (gated by IS_MSG_MAT).
+            // The row's own (MAT_ID, NOISED_PACKED) is the lookup
+            // key — self-referential, so the matching table row is
+            // this same row.
+            let is_msg_mat =
+                self.matrix.values[base + IS_MSG_MAT].as_canonical_u64();
+            if is_msg_mat == 1 {
+                let key = (
+                    self.matrix.values[base + MAT_ID].as_canonical_u64(),
+                    self.matrix.values[base + NOISED_PACKED_START].as_canonical_u64(),
+                    self.matrix.values[base + NOISED_PACKED_START + 1].as_canonical_u64(),
+                );
+                if let Some(&tr) = key_to_first_row.get(&key) {
+                    mat_freq[tr] += 1;
+                }
             }
-            // B-side read.
-            let b_key = (
-                self.matrix.values[base + B_ID].as_canonical_u64(),
-                self.matrix.values[base + B_NOISED_START].as_canonical_u64(),
-                self.matrix.values[base + B_NOISED_START + 1].as_canonical_u64(),
-            );
-            if let Some(&tr) = key_to_first_row.get(&b_key) {
-                mat_freq[tr] += active;
-            }
-            // Queries with no matching table key contribute
-            // nothing to MAT_FREQ → bus is unbalanced → LogUp
-            // rejects at proof time.
         }
         for r in 0..n {
             self.matrix.values[r * TOTAL_TRACE_WIDTH + MAT_FREQ] =

@@ -265,9 +265,16 @@ mod bus_emit {
     ///
     /// Table key: (MAT_ID, NOISED_PACKED[0..2]) per row, with
     /// multiplicity MAT_FREQ.
-    /// Queries: per-row (A_ID, A_NOISED[0..2]) and (B_ID,
-    /// B_NOISED[0..2]), each gated by (IS_RESET_CUMSUM +
-    /// IS_UPDATE_CUMSUM).
+    /// Queries:
+    /// * matmul-side (gated by IS_RESET_CUMSUM + IS_UPDATE_CUMSUM):
+    ///   (A_ID, A_NOISED[0..2]) and (B_ID, B_NOISED[0..2]).
+    /// * BLAKE3-side (gated by IS_MSG_MAT): (MAT_ID, NOISED_PACKED[0..2])
+    ///   — the row's own key. When the BLAKE3 chip reads matrix
+    ///   bytes (M52 step 4-B), the row also serves as a "plain"
+    ///   table entry: NOISE_UNPACK = 0 ⇒ NOISED_PACKED = polyval(MAT_UNPACK).
+    ///   This binds the bytes BLAKE3 absorbs to the canonical
+    ///   matrix store. Self-referential — locally balances at
+    ///   MAT_FREQ = 1.
     pub fn noised_packed<AB: AirBuilder + InteractionBuilder>(builder: &mut AB) {
         let main = builder.main();
         let cur = main.current_slice();
@@ -303,6 +310,25 @@ mod bus_emit {
                 <AB::Var as Into<AB::Expr>>::into(cur[B_NOISED_START + 1]),
             ],
             matmul_active,
+            1,
+        );
+
+        // M52 step 4-B: BLAKE3-side query. Gated by IS_MSG_MAT.
+        // The row's own (MAT_ID, NOISED_PACKED) is the lookup key —
+        // self-referential. Combined with NOISE_UNPACK = 0 on
+        // matrix-hash rows, this means NOISED_PACKED encodes plain
+        // matrix bytes, binding BLAKE3's absorb stream to the
+        // canonical matrix store. MAT_FREQ on these rows = 1 to
+        // balance the self-query.
+        let blake_msg_mat: AB::Expr = cur[IS_MSG_MAT].into();
+        builder.push_interaction(
+            BUS_NOISED_PACKED,
+            [
+                <AB::Var as Into<AB::Expr>>::into(cur[MAT_ID]),
+                <AB::Var as Into<AB::Expr>>::into(cur[NOISED_PACKED_START]),
+                <AB::Var as Into<AB::Expr>>::into(cur[NOISED_PACKED_START + 1]),
+            ],
+            blake_msg_mat,
             1,
         );
     }
