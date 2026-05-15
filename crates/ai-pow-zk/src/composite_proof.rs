@@ -73,6 +73,90 @@ pub fn composite_verify(
     verify::<AiPowStarkConfig, _>(config, &CompositeFullAir, proof, &pis)
 }
 
+/// Encode the 8×u32 `HASH_JACKPOT` PI as a 32-byte little-endian
+/// u256, byte-identical to a BLAKE3 digest (`bytes[4i..4i+4] =
+/// word[i].to_le_bytes()`). Matches the encoding M52's
+/// `place_matrix_hash` uses (CV_OUT word i = LE u32 of digest
+/// bytes 4i..4i+4), so the inverse reconstructs the digest.
+pub fn hash_jackpot_le_bytes(hash_jackpot: &[u32; 8]) -> [u8; 32] {
+    let mut out = [0u8; 32];
+    for i in 0..8 {
+        out[i * 4..i * 4 + 4].copy_from_slice(&hash_jackpot[i].to_le_bytes());
+    }
+    out
+}
+
+/// 256-bit unsigned `hash <= target`, both little-endian 32-byte.
+/// Identical comparison to `ai-pow::tile_hash::hash_le_target` —
+/// kept local so `ai-pow-zk` stays standalone.
+fn le_u256_le(hash: &[u8; 32], target: &[u8; 32]) -> bool {
+    for k in (0..32).rev() {
+        match hash[k].cmp(&target[k]) {
+            core::cmp::Ordering::Less => return true,
+            core::cmp::Ordering::Greater => return false,
+            core::cmp::Ordering::Equal => continue,
+        }
+    }
+    true
+}
+
+/// Error from [`composite_verify_pow`]: either the STARK proof is
+/// invalid, or it is valid but the proven `HASH_JACKPOT` does not
+/// clear the difficulty target.
+#[derive(Debug)]
+pub enum PowVerifyError {
+    /// The underlying STARK proof failed verification.
+    Stark(CompositeVerificationError),
+    /// STARK valid, but `HASH_JACKPOT > target` (tile not a winner).
+    DifficultyNotMet,
+}
+
+impl core::fmt::Display for PowVerifyError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            PowVerifyError::Stark(e) => write!(f, "stark verification failed: {e:?}"),
+            PowVerifyError::DifficultyNotMet => {
+                write!(f, "HASH_JACKPOT does not clear the difficulty target")
+            }
+        }
+    }
+}
+
+impl std::error::Error for PowVerifyError {}
+
+/// C2 — full proof-of-work verification.
+///
+/// Pearl's Layer-0 STARK does **not** enforce the difficulty
+/// inequality `BLAKE3(M, key=s_a) ≤ target` in-circuit; it is
+/// checked outside (block validation / higher recursion layers,
+/// see `pearl_circuit.rs`). `ai-pow-zk` is a single STARK with no
+/// recursion layers, so this wrapper performs the Pearl-equivalent
+/// check after STARK verification, against the **bound**
+/// `HASH_JACKPOT` public input (C4). Soundness rests on
+/// HASH_JACKPOT being a selector-gated bound PI — the verifier
+/// compares the *proven* tile-state keyed hash against `target`,
+/// not an unconstrained claim. An in-AIR 256-bit comparator was
+/// considered and rejected: it is strictly more than Pearl does
+/// at Layer-0, costs a dedicated chip, and recursion (M12) would
+/// absorb the external check anyway.
+///
+/// `target` is the 32-byte little-endian difficulty bound
+/// (`ai-pow::tile_hash::difficulty_target` produces it).
+pub fn composite_verify_pow(
+    config: &AiPowStarkConfig,
+    proof: &Proof<AiPowStarkConfig>,
+    public_inputs: &CompositePublicInputs,
+    target: &[u8; 32],
+) -> Result<(), PowVerifyError> {
+    composite_verify(config, proof, public_inputs).map_err(PowVerifyError::Stark)?;
+    let hj = hash_jackpot_le_bytes(&public_inputs.hash_jackpot);
+    if le_u256_le(&hj, target) {
+        Ok(())
+    } else {
+        Err(PowVerifyError::DifficultyNotMet)
+    }
+}
+
 #[allow(dead_code)]
 fn _suppress_unused_val_import(_v: Val<AiPowStarkConfig>) {}
 
@@ -98,6 +182,67 @@ mod tests {
         let pis = CompositePublicInputs::derive_from_trace(&trace);
         let proof = composite_prove(&cfg, trace, &pis);
         composite_verify(&cfg, &proof, &pis).expect("composite proof must verify");
+    }
+
+    #[test]
+    fn hash_jackpot_le_bytes_is_blake3_digest_order() {
+        // word i ↦ bytes[4i..4i+4] little-endian — the inverse of
+        // M52's `u32::from_le_bytes([digest[4i..4i+4]])`.
+        let hj: [u32; 8] = [
+            0x04030201, 0x08070605, 0x0C0B0A09, 0x100F0E0D,
+            0xEFBEADDE, 0xCEFAEDFE, 0xBEBAFECA, 0x78563412,
+        ];
+        let bytes = hash_jackpot_le_bytes(&hj);
+        assert_eq!(&bytes[0..4], &[0x01, 0x02, 0x03, 0x04]);
+        assert_eq!(&bytes[28..32], &[0x12, 0x34, 0x56, 0x78]);
+        // Round-trip back to words (the place_matrix_hash encoding).
+        let back: [u32; 8] = core::array::from_fn(|i| {
+            u32::from_le_bytes([
+                bytes[i * 4], bytes[i * 4 + 1], bytes[i * 4 + 2], bytes[i * 4 + 3],
+            ])
+        });
+        assert_eq!(back, hj);
+    }
+
+    #[test]
+    fn c2_difficulty_check_pass_and_fail() {
+        let cfg = build_config(&test_zk_params(), &CircuitConfig::TEST_PEARL);
+        let trace = CompositeTrace::baseline_min();
+        // Baseline trace: no IS_HASH_JACKPOT row ⇒ hash_jackpot = 0.
+        let pis = CompositePublicInputs::derive_from_trace(&trace);
+        assert_eq!(pis.hash_jackpot, [0u32; 8]);
+        let proof = composite_prove(&cfg, trace, &pis);
+
+        // hash_jackpot = 0 (all-zero LE u256). Any non-zero target
+        // ⇒ 0 ≤ target ⇒ PoW check passes.
+        let easy_target = [0xFFu8; 32];
+        composite_verify_pow(&cfg, &proof, &pis, &easy_target)
+            .expect("zero HASH_JACKPOT clears a max target");
+
+        // Hardest possible target: 0. 0 ≤ 0 ⇒ still passes (equality).
+        let zero_target = [0u8; 32];
+        composite_verify_pow(&cfg, &proof, &pis, &zero_target)
+            .expect("0 ≤ 0 is a pass (>= comparison is inclusive)");
+
+        // Tamper the PI hash_jackpot so it's large, with a tiny
+        // target ⇒ DifficultyNotMet (and STARK still verifies since
+        // baseline has no IS_HASH_JACKPOT row, so the binding
+        // constraint is vacuous and hash_jackpot is unconstrained).
+        let mut big = pis.clone();
+        big.hash_jackpot = [0xFFFF_FFFF; 8]; // max u256
+        let big_proof = {
+            let trace2 = CompositeTrace::baseline_min();
+            composite_prove(&cfg, trace2, &big)
+        };
+        let tiny_target = {
+            let mut t = [0u8; 32];
+            t[0] = 1; // value = 1
+            t
+        };
+        match composite_verify_pow(&cfg, &big_proof, &big, &tiny_target) {
+            Err(PowVerifyError::DifficultyNotMet) => {}
+            other => panic!("expected DifficultyNotMet, got {other:?}"),
+        }
     }
 
     #[test]

@@ -70,7 +70,10 @@ pub use p3_goldilocks::Goldilocks as Val;
 pub use crate::circuit::{AiPowStarkConfig, CircuitConfig};
 pub use crate::composite_full_air::CompositeFullAir;
 pub use crate::composite_full_air_with_lookups::CompositeFullAirWithLookups;
-pub use crate::composite_proof::{composite_prove, composite_verify, CompositeVerificationError};
+pub use crate::composite_proof::{
+    composite_prove, composite_verify, composite_verify_pow, hash_jackpot_le_bytes,
+    CompositeVerificationError, PowVerifyError,
+};
 pub use crate::composite_public::CompositePublicInputs;
 pub use crate::composite_trace::CompositeTrace;
 pub use crate::params::ZkParams;
