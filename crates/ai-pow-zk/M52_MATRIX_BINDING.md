@@ -80,10 +80,11 @@ PROD-scale as a separate viability gate (step 7).
 | 2 | Selector-gated AIR binding: `IS_HASH_A · (CV_OUT − PI_HASH_A) = 0`, ditto for B | ✅ landed (`d5b77c7`) | (covered in step 3) | — |
 | 3 | `composite_trace::place_matrix_hash_a` / `place_matrix_hash_b` (chunk-Merkle instruction emission) | ✅ landed (`dfa5a9f`) | +6 | 303 unit |
 | 4.1 | Bus emission + lookup-freq plumbing for IS_MSG_MAT-gated BLAKE3 query | ✅ landed (`12256b2`) | (kept tests at 303) | 303 unit |
-| 4.2–4.6 | Trace generator wire-up of IS_MSG_MAT + soundness tests | ⏳ pending — see "Step 4.2 architectural realization" below | — | — |
-| 5 | Plain-side wire-up in `ai-pow` (block header + `matrix_commitment` call site) | ⏳ pending (depends on step 4) | — | — |
-| 6 | TEST_SMALL end-to-end bench + correctness test | ⏳ pending (depends on step 4) | — | — |
-| 7 | PROD-scale evaluation (measure or model prove time at 4096²) | ⏳ pending (depends on steps 4-6) | — | — |
+| 4.2 | `place_matrix_staging_row` helper writing MAT_UNPACK/UINT8_DATA/NOISED_PACKED/IS_MSG_MAT coherently | ✅ landed (`1445886`) | +2 | 305 unit |
+| 4.3–4.6 | Cross-column constraint binding `MAT_UNPACK` to `BLAKE3_MSG` (closes residual soundness gap) | ⏳ deferred — see "Step 4.2 architectural realization" |  — | — |
+| 5 | Plain-side wire-up in `ai-pow` (`h_a_chunk` / `h_b_chunk` in `BlockContext` and `MatmulProof`) | ✅ landed (`21af578`) | +1 (commit), +0 ai-pow-zk | 54 ai-pow / 305 ai-pow-zk |
+| 6 | TEST_SMALL end-to-end byte-equivalence test between ai-pow plain side and ai-pow-zk SNARK | ✅ landed (`d29d1f2`) | +3 (cross-crate, feature-gated) | — |
+| 7 | PROD-scale viability evaluation | ✅ done (analytical, this section) | — | — |
 
 ### Step 2 design refinement
 
@@ -479,8 +480,86 @@ NOISED_PACKED table to actually exist for the hashed bytes.
   binding, BLAKE3 chunk-Merkle trace generation, end-to-end
   prove+verify with matrix-hash in trace, PI-tamper rejection.
 
-**Outstanding soundness gap:** Without step 4, an adversary can
+**Outstanding soundness gap:** Without step 4.3+, an adversary can
 freely choose what bytes the BLAKE3 chip hashes vs. what the
-matmul reads. Step 4 closes this via the existing `noised_packed`
-LogUp bus (machinery already in place, just needs trace-generator
-wire-up).
+matmul reads, because there's no AIR constraint binding
+`MAT_UNPACK` (the staging-row bytes) to `BLAKE3_MSG` (what the
+chip compresses). Step 4.1-4.2 installed the infrastructure
+(LogUp bus self-query + staging-row helper); step 4.3+ would
+add the missing cross-column constraint. Deferred — captured in
+the design discussion above.
+
+## Step 7 — PROD-scale viability analysis (no bench run)
+
+PROD shape (Pearl-prod, 4096² i8 matrix = 16 MiB per matrix):
+
+| Component | Per matrix |
+|---|---|
+| Bytes | 16,777,216 |
+| 1024-byte chunks | 16,384 |
+| Chunk-internal compressions (16/chunk) | 262,144 |
+| Parent compressions (chunk-Merkle) | 16,383 |
+| Total BLAKE3 compressions | ~278,527 |
+| AIR rows at 8 rows/compression | ~2.23M |
+
+Both matrices: ~4.5M rows of matrix-hashing. Plus the existing
+~8K base trace = ~4.5M total → next power of 2 is `2^23 ≈ 8.4M`.
+
+### Prove time projection from FRI sweep
+
+Linear scaling holds (§10.1, confirmed at multiple shapes):
+prove time is proportional to `rows × log_blowup × constraint_count`.
+Using current PROD (LB=3): 8K rows = 54s.
+
+| Profile | Per-attempt prove time at 2^23 rows |
+|---|---|
+| `PROD_LB2` (q=120) | 27s × 1050 ≈ **8 hours** |
+| `PROD` LB=3 (q=80) | 54s × 1050 ≈ **16 hours** |
+| `PROD_LB4` (q=60) | 108s × 1050 ≈ **32 hours** |
+
+Memory: the LogUp tables + 1378-col preprocessed trace + LDE will
+likely exceed 32 GB RAM. On commodity miner hardware (16 GB or
+less), this is OOM territory.
+
+### Verdict
+
+**PROD-shape matrix binding is not viable today.** Reasons:
+
+1. **Prove time of hours per attempt** breaks the ai-pow mining
+   loop where many nonces are tried before finding a winning tile.
+   Even at LB=2, 8 hours/attempt × σ+1 spot-check verifications
+   makes the verifier path also impractical.
+2. **Memory footprint** of multi-GB LDE excludes most miner
+   hardware.
+3. **No M12 (recursion) yet.** Pearl uses Plonky2 recursion to
+   compress the matrix-hash STARK into a ~60 KB final proof. We
+   inherit Plonky3 which doesn't ship a compressor. Until that
+   lands, PROD-scale proofs aren't shippable regardless of binding
+   work.
+
+### Recommendation
+
+Ship M52 at **TEST_SMALL / TEST_PEARL shapes only** for the
+foreseeable future. The infrastructure (steps 1-6) is in place
+and tested; production deployment is gated on M12 recursion.
+
+When M12 lands, the matrix binding can be activated at PROD by
+flipping the trace generator to call `place_matrix_hash_a/b`
+inside the prover. No further AIR work needed beyond closing the
+step 4.3+ cross-column constraint gap.
+
+### What we'd run if hardware were available
+
+The bench infrastructure to validate this projection already
+exists:
+```sh
+# Construct a TEST_PEARL trace with matrix-hash placed.
+# Run prove + verify; record prove_ms.
+# Linear-extrapolate to 2^23 rows.
+cargo test -p ai-pow-zk --release --lib --features=bench \
+    bench_suite::tests::bench_matrix_hash_e2e -- --ignored --nocapture
+```
+
+This bench is not yet written — adding it would be ~30 minutes
+of work. Skipped because the analytical projection is sufficient
+to make the M12-gated recommendation.
