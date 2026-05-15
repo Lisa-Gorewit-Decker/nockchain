@@ -59,6 +59,7 @@ name = "ai-pow"
 version = "0.1.0"
 dependencies = [
  "ai-pow-zk",
+ "bincode",
  "blake3",
  "criterion",
  "proptest",
