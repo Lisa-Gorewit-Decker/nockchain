@@ -57,8 +57,8 @@ fn main() {
     use ai_pow::tile_hash::difficulty_target;
     use ai_pow_zk::composite_proof::build_config;
     use ai_pow_zk::{
-        composite_prove, composite_verify_pow, CircuitConfig, CompositePublicInputs,
-        CompositeTrace, ZkParams,
+        composite_prove_pinned, composite_verify_pow_pinned, CircuitConfig,
+        CompositePublicInputs, CompositeTrace, ZkParams,
     };
 
     let seed = std::env::var("F1_SEED").unwrap_or_else(|_| "f1-harness-v1".to_string());
@@ -167,12 +167,12 @@ fn main() {
     for _ in 0..iters {
         let trace_i = build_trace();
         let t = Instant::now();
-        let proof = composite_prove(&cfg, trace_i, &pis);
+        let (proof, program) = composite_prove_pinned(&cfg, trace_i, &pis);
         prove_ms_total += t.elapsed().as_millis();
 
         let t = Instant::now();
-        composite_verify_pow(&cfg, &proof, &pis, &target)
-            .expect("STARK valid + HASH_JACKPOT(=0) clears target");
+        composite_verify_pow_pinned(&cfg, &program, &proof, &pis, &target)
+            .expect("pinned STARK valid + HASH_JACKPOT clears target");
         verify_ms_total += t.elapsed().as_millis();
 
         proof_bytes = bincode::serde::encode_to_vec(

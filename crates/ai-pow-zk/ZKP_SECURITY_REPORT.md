@@ -31,7 +31,25 @@ directly and calls `p3_uni_stark::prove`.
 
 ### CRIT-1 — selector-gated PI bindings are not enforced to fire → PoW forgeable
 
-**Severity: Critical (PoW soundness ≈ 0 bits as wired).**
+**Severity: Critical. STATUS: RESOLVED 2026-05-15 (commit
+`9ec529e`).** Fixed by `CompositeFullAirPinned`: the 5 program
+columns (`CONTROL_PREP` + the `*_PREP` set) are committed as a
+p3-uni-stark **preprocessed trace** in the verifying key, with an
+unconditional per-row constraint `main[col] == preprocessed[k]`.
+`CONTROL_PREP` pins all 21 selectors + `MAT_ID` via the control
+chip's existing packing constraint, so the C1/C3/C4 bindings can
+no longer be vacated. The verifier rebuilds the canonical program
+from the trusted shape (never from the proof). Production path
+(`ai-pow::zk_bridge` → `mine()` gate) and the F1 harness use
+`composite_{prove,verify_pow}_pinned`. Exhaustive adversarial
+regression `composite_proof::tests::crit1_*` (4/4): the
+zeroed-selector forged-winning-PoW proof is **rejected** vs the
+canonical VK; tampering any program column is rejected; a forged
+`HASH_JACKPOT` fails the now-live C4 binding even with the
+correct program. The original analysis below is retained as the
+rationale.
+
+**Original severity: Critical (PoW soundness ≈ 0 bits as wired).**
 
 The chain-anchoring / commitment public inputs are bound by
 *selector-gated* constraints in `composite_full_air.rs`:
@@ -262,13 +280,21 @@ above.
 
 ## Bottom line
 
-The cryptography is solid (~120-bit provable FRI, sound
-Fiat-Shamir as applied, lossless commitment encoding). The
-*circuit-level enforcement* is not: every chain/commitment
-binding added in C1–C4 is gated by a selector the prover
-controls and nothing forces to fire, and there is no preprocessed
-program commitment — so a malicious prover forges a winning
-proof with zero work. This is a single, well-localized root
-cause (no verifier-fixed program) with a clean fix
-(`preprocessed_trace()`), but until it lands the SNARK must be
-treated as **not PoW-sound**.
+**Updated 2026-05-15: CRIT-1 RESOLVED.** The cryptography was
+already solid (~120-bit provable FRI, sound Fiat-Shamir as
+applied, lossless commitment encoding); the gap was circuit-level
+enforcement (no verifier-fixed program ⇒ selector-gated C1/C3/C4
+bindings vacatable ⇒ forge a winning proof with zero work). Fixed
+by committing the program columns as a preprocessed trace
+(`CompositeFullAirPinned`, commit `9ec529e`) — the single,
+well-localized root cause with the clean fix anticipated here.
+The production path now proves/verifies against a verifier-fixed
+program; the `crit1_*` adversarial suite confirms the forgery is
+rejected. **Remaining open items: HIGH-2** (HASH_JACKPOT still
+hashes an all-zero `JACKPOT_MSG` — the C4 binding is now sound
+but attests a constant, not the matmul; the real tile-state fold
+is the matmul→jackpot interleave), **MED-3** (document the
+`target`-derivation obligation; now actionable since CRIT-1
+landed), and the 7-round-Tip5 review. With CRIT-1 closed the
+SNARK is PoW-sound *for the statement it proves*; HIGH-2 is what
+makes that statement the *useful-work* statement.

@@ -222,27 +222,25 @@ Remaining:
 3. **P1, P3, P5, P6** — PROD-scale (M12-gated), per-bus LogUp
    ablation, real-workload bench, FRI retune. P2/P4 have infra.
 
-> ⚠️ **SOUNDNESS CORRECTION (2026-05-15, supersedes the summary
-> below).** A security audit (`ZKP_SECURITY_REPORT.md`, the
-> authority on this question) found **CRIT-1**: the C1/C3/C4
-> public-input bindings are gated by *prover-controlled*
-> selectors that nothing forces to fire, and `CompositeFullAir`
-> declares **no preprocessed trace**, so there is no
-> verifier-fixed program. A malicious prover can zero every
-> selector and forge a winning proof with **no work**. The
-> statement "C1–C4 resolved / no soundness gap" is true only of
-> the *constraints' correctness* and the *honest-prover* path —
-> it is **false against a malicious prover**. Treat the SNARK as
-> NOT PoW-sound until CRIT-1 (implement `preprocessed_trace()`)
-> lands. CUMSUM/JACKPOT (unconditional `when_last_row`) are the
-> only soundly-bound PIs. See the report for the exploit,
-> bits-of-security accounting, and remediation.
+> ✅ **CRIT-1 RESOLVED (2026-05-15, commit `9ec529e`).** The
+> earlier banner here flagged that the C1/C3/C4 bindings were
+> vacatable by a malicious prover (no verifier-fixed program).
+> Fixed: `CompositeFullAirPinned` commits the program columns
+> (`CONTROL_PREP` + `*_PREP`) as a p3-uni-stark preprocessed
+> trace with an unconditional `main[col]==preprocessed[k]`
+> constraint; `CONTROL_PREP` pins all 21 selectors via the
+> control-chip packing. Production (`ai-pow::zk_bridge` →
+> `mine()` gate) + F1 harness use `composite_*_pinned`. The
+> `crit1_*` adversarial suite (4/4) proves the zeroed-selector
+> forged-winning-PoW is rejected vs the canonical VK.
+> `ZKP_SECURITY_REPORT.md` is the authority and is updated to
+> STATUS: RESOLVED.
 
-The (honest-prover / constraint-correctness) summary: C1–C4
-constraints are correct and the F1 bridge wires them on a real
-solve. C1 ties κ / `s_a`; C3 binds matrix bytes; C4 binds the
-jackpot keyed-hash; C2 checks difficulty against that hash —
-**all conditional on the selectors firing, which is not enforced
-(CRIT-1).** Also-open: HIGH-2 (HASH_JACKPOT hashes all-zero
-`JACKPOT_MSG` → attests a constant, not the work), recursion
-(M12), production-hardening (P1/P3/P5/P6).
+Post-CRIT-1 summary: C1–C4 bindings are now **enforced** against
+a malicious prover (program-pinned). C1 ties κ / `s_a`; C3 binds
+matrix bytes; C4 binds the jackpot keyed-hash; C2 checks
+difficulty against that hash. **Remaining: HIGH-2** — HASH_JACKPOT
+hashes an all-zero `JACKPOT_MSG`, so the (now-sound) C4 binding
+attests a constant, not the matmul; the real tile-state fold is
+the matmul→jackpot interleave. Plus MED-3 (`target`-derivation
+doc), recursion (M12), production-hardening (P1/P3/P5/P6).

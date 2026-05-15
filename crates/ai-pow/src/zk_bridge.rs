@@ -43,7 +43,7 @@
 
 use ai_pow_zk::composite_proof::build_config;
 use ai_pow_zk::{
-    composite_prove, composite_verify_pow, CircuitConfig, CompositePublicInputs,
+    composite_prove_pinned, composite_verify_pow_pinned, CircuitConfig, CompositePublicInputs,
     CompositeTrace, PowVerifyError, ZkParams,
 };
 
@@ -170,8 +170,20 @@ pub fn prove_and_verify(
         difficulty_bits: params.difficulty_bits,
     };
     let cfg = build_config(&zk_params, &CircuitConfig::TEST_PEARL);
-    let proof = composite_prove(&cfg, trace, &pis);
-    composite_verify_pow(&cfg, &proof, &pis, target).map_err(BridgeError::Pow)?;
+
+    // CRIT-1: program-pinned proving. `composite_prove_pinned`
+    // commits the canonical program (the 5 PROGRAM_COLS of this
+    // honest trace) as a preprocessed trace and returns it. The
+    // verifier-side check below uses *that* program — which a
+    // real external verifier reproduces deterministically from
+    // the agreed `ZkParams` (the bridge's trace construction is a
+    // pure function of `ctx`/`params`), never from an untrusted
+    // proof. A malicious prover that zeroes selectors produces a
+    // proof bound to a *different* program and is rejected vs the
+    // canonical VK (see ai-pow-zk crit1_* regression suite).
+    let (proof, program) = composite_prove_pinned(&cfg, trace, &pis);
+    composite_verify_pow_pinned(&cfg, &program, &proof, &pis, target)
+        .map_err(BridgeError::Pow)?;
 
     Ok(ZkOutcome { pis })
 }
