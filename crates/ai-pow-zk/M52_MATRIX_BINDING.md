@@ -327,17 +327,85 @@ matching table entry. Two sub-options:
 The second is the right design but adds preprocessed-trace
 complexity (`composite_preprocess.rs`, `chips::input`).
 
-### Design call needed before implementing 4-B
+### Design decision: 4-B (ratified 2026-05-14)
 
-Open question:
+User selected 4-B over 4-A. Input chip emits paired table rows
+(plain + noised) per matrix byte block, sharing `MAT_ID`. BLAKE3
+queries the plain entry, matmul queries the noised entry.
 
-> Should the input chip emit "plain" and "noised" store entries
-> on separate rows (4-B), or adopt 4-A (new dedicated
-> `plain_matrix_bytes` bus) for clarity?
+### Precise implementation for 4-B
 
-Both options are viable; 4-A is cleaner separation, 4-B reuses
-existing infrastructure. Until this is decided, step 4 stays
-specified-but-not-implemented in this session.
+**MAT_ID space partitioning.** Reserve MAT_ID ranges:
+- `MAT_ID ∈ [0, N_A)`: matrix-A noised entries (one row per
+  4-i8-byte block of A's bytes; current behavior).
+- `MAT_ID ∈ [N_A, 2·N_A)`: matrix-A plain entries (same matrix
+  bytes, NOISE_UNPACK = 0). New rows.
+- `MAT_ID ∈ [2·N_A, 2·N_A + N_B)`: matrix-B noised.
+- `MAT_ID ∈ [2·N_A + N_B, 2·N_A + 2·N_B)`: matrix-B plain.
+
+Where `N_A = ceil(|A| / 4)` and `N_B = ceil(|B| / 4)` are the
+counts of 4-byte blocks.
+
+**Input chip change.** No new constraints needed — the existing
+`NOISED_PACKED[i] = polyval(MAT_UNPACK[..]) + polyval(NOISE_UNPACK[..])`
+already handles plain entries (NOISE_UNPACK = 0 ⇒ NOISED_PACKED
+= polyval(MAT_UNPACK)). The chip just needs trace rows that
+populate this configuration.
+
+**Preprocessor change.** `composite_preprocess.rs` emits one
+plain row per matrix byte block with `NOISE_UNPACK = 0` and the
+plain-bytes-only NOISED_PACKED value, alongside the existing
+noised row.
+
+**Bus emission change (`composite_full_air_with_lookups.rs`).**
+Add a BLAKE3-side query gated by `IS_MSG_MAT`:
+```rust
+let is_msg_mat: AB::Expr = cur[IS_MSG_MAT].into();
+builder.push_interaction(
+    BUS_NOISED_PACKED,
+    [MAT_ID, NOISED_PACKED[0], NOISED_PACKED[1]],
+    is_msg_mat,
+    1,
+);
+```
+
+**Trace generator change (`composite_trace.rs`).** Extend
+`place_matrix_hash` so each matrix-hash row:
+- Sets MAT_UNPACK to the next 8 i8 mat bytes.
+- Sets NOISE_UNPACK = 0.
+- Sets NOISED_PACKED = polyval(MAT_UNPACK).
+- Sets MAT_ID = the plain-entry MAT_ID for these bytes.
+- Sets IS_MSG_MAT = 1 (additional selector beyond IS_LAST_ROUND
+  and IS_HASH_*).
+- Sets UINT8_DATA to the i8↔u8 conversion of MAT_UNPACK.
+
+This means `place_blake3_hash_with_selectors` needs to accept
+matrix bytes that get pushed into MAT_UNPACK/UINT8_DATA across
+the 8-row block (16 i8 bytes per BLAKE3 message — split across
+multiple rows? Need to check the layout).
+
+**Wait — IS_MSG_MAT is per-row, not per-block.** The current
+BLAKE3 chip places one compression per 8 rows. Each row has its
+own MAT_UNPACK + UINT8_DATA. Pearl's design (matching pearl_program.rs)
+distributes the 16-msg-word over multiple rows of the 8-row block,
+specifically the `MessageType::MatrixLeaf` rows. Need to read
+the BLAKE3 chip's MSG_BUFFER staging logic.
+
+**Implementation guard rail.** Land the input-chip-side changes
++ preprocessor + bus emission first; the trace generator wire-up
+in step 4.4 is the load-bearing piece. Tests 4.5 and 4.6 are the
+soundness validation that the binding actually works.
+
+### Why step 4 won't land in this session
+
+- Each sub-step requires careful, AIR-soundness-affecting code.
+- The MAT_UNPACK-per-row distribution mechanism inside the
+  BLAKE3 chip needs verification (does the existing chip's
+  IS_MSG_MAT firing logic match what `place_matrix_hash` would
+  need?).
+- 4-6 hours of focused engineering minimum, plus test debugging.
+- Better to commit the 3 landed steps + this detailed plan and
+  resume fresh.
 
 ### Why this isn't done in step 3
 
