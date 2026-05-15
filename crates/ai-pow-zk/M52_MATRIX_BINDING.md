@@ -76,9 +76,9 @@ PROD-scale as a separate viability gate (step 7).
 
 | # | Step | Status | Tests added | Cumulative |
 |---|---|---|---|---|
-| 1 | Extend `CompositePublicInputs` with `HASH_A` / `HASH_B` (16 Goldilocks) | ✅ landed | +4 | 276 unit |
-| 2 | Selector-gated AIR binding: `IS_HASH_A · (CV_OUT − PI_HASH_A) = 0`, ditto for B | ⏳ pending | — | — |
-| 3 | `composite_trace::place_matrix_hash_a` / `place_matrix_hash_b` (chunk-Merkle instruction emission) | ⏳ pending | — | — |
+| 1 | Extend `CompositePublicInputs` with `HASH_A` / `HASH_B` (16 Goldilocks) | ✅ landed (`d5b77c7`) | +3 | 275 unit |
+| 2 | Selector-gated AIR binding: `IS_HASH_A · (CV_OUT − PI_HASH_A) = 0`, ditto for B | ✅ landed (`d5b77c7`) | (covered in step 3) | — |
+| 3 | `composite_trace::place_matrix_hash_a` / `place_matrix_hash_b` (chunk-Merkle instruction emission) | ✅ landed (`dfa5a9f`) | +6 | 303 unit |
 | 4 | Cross-chip binding — BLAKE3 absorbs from `noised_packed` LogUp bus | ⏳ pending | — | — |
 | 5 | Plain-side wire-up in `ai-pow` (block header + `matrix_commitment` call site) | ⏳ pending | — | — |
 | 6 | TEST_SMALL end-to-end bench + correctness test | ⏳ pending | — | — |
@@ -209,16 +209,49 @@ set selectors[IS_HASH_A_INDEX] = true on root_row
 | TEST_PEARL-ish (4 chunks) | 4 | 512 | 24 | 536 |
 | PROD (16 MiB) | 16384 | 16K·16·8 ≈ 2.1M | (16K−1)·8 ≈ 131K | ~2.2M |
 
-### Open detail (for step 3 implementation)
+### Resolved detail (landed in step 3)
 
-The current `place_blake3_hash` API sets `selectors[9] = true`
-(IS_LAST_ROUND) but no other selectors. We need to either extend
-the API with `extra_selectors: &[usize]` or expose a small
-post-hook helper that ORs in `IS_HASH_A` on the chosen row. The
-selector packing in `CONTROL_PREP` must also be updated coherently
-(otherwise the control chip's "selector ≡ packed bits" constraint
-rejects the row).
+`place_blake3_hash` now has a sibling `place_blake3_hash_with_selectors`
+that ORs caller-supplied selector indices into the finalize-row
+CONTROL_PREP packing. The chunk-Merkle root compression passes
+`&[4]` (IS_HASH_A) or `&[5]` (IS_HASH_B); every other compression
+passes `&[]`. The `ControlChip.fill_row` helper computes the
+packed bits coherently, so the control chip's "selector ≡ packed
+bits" constraint is satisfied automatically.
 
-The cleanest fix: thread an optional `extra_selectors` parameter
-through `place_blake3_hash`. Only the root parent compression
-needs it; everything else is `&[]`.
+## Step 4 plan (next session)
+
+**Cross-chip binding.** Today the BLAKE3 chip hashes whatever
+bytes are in `BLAKE3_MSG` and the matmul reads bytes from
+`A_NOISED_UNPACK` / `B_NOISED_UNPACK`. Nothing forces them to be
+the same matrix — an adversary could hash matrix X and run matmul
+on matrix Y, and both proofs verify.
+
+Options:
+- **4a.** Extend the existing `noised_packed` LogUp bus so the
+  BLAKE3 chip's matrix-byte reads emit queries to the same bus
+  the matmul reads from. This binds "the bytes hashed at position
+  (i, j)" to "the bytes matmul reads at position (i, j)" via
+  multiplicities.
+- **4b.** Add a parallel `matrix_bytes` bus dedicated to BLAKE3 ↔
+  matmul cross-binding. Cleaner separation, more columns.
+
+4a is preferred (fewer LogUp buses; reuses existing infra). The
+implementation requires:
+1. The `chips::input` chip already emits `noised_packed` reads on
+   matmul-active rows. The BLAKE3 chip needs to *also* emit reads
+   on `IS_MSG_MAT == 1` rows (when the BLAKE3 message buffer is
+   loading matrix bytes).
+2. Verify the multiplicities sum correctly: each matrix cell is
+   read once by matmul AND once by hashing, so the table's frequency
+   column needs to grow accordingly.
+3. Make sure `IS_MSG_MAT` actually fires on matrix-hash rows. Today
+   `place_matrix_hash` writes BLAKE3_MSG with matrix bytes but does
+   not set `IS_MSG_MAT` (the LogUp bus emission is gated by it).
+   Need to extend `place_blake3_hash_with_selectors` to optionally
+   set the message-source selector too, or set it in the trace
+   generator's prep step.
+
+Concrete soundness gap captured: the existing 6 tests show H_A is
+correctly bound to whatever bytes get hashed, but those bytes are
+unconstrained vs. the matmul. Step 4 closes that.
