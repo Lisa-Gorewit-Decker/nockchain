@@ -466,6 +466,184 @@ impl CompositeTrace {
         cv_out
     }
 
+    /// Place a BLAKE3 keyed chunk-Merkle commitment over
+    /// `matrix_bytes` into the trace, starting at `row_start`.
+    /// Mirrors `crates/ai-pow/src/commit.rs::matrix_commitment`
+    /// byte-for-byte:
+    ///   `H_A = BLAKE3(pad_to_chunk_boundary(A_bytes), key=κ)`.
+    ///
+    /// `selector_idx` is the position in `SELECTOR_COLS` to set on
+    /// the chunk-Merkle root row (use `4` for `IS_HASH_A`, `5` for
+    /// `IS_HASH_B`). The convenience wrappers
+    /// [`place_matrix_hash_a`](Self::place_matrix_hash_a) and
+    /// [`place_matrix_hash_b`](Self::place_matrix_hash_b) hide
+    /// this index.
+    ///
+    /// Returns `(next_row, root_cv)`: the row immediately after
+    /// the last placed BLAKE3 block, and the 8-u32 commitment that
+    /// matches `matrix_commitment(matrix_bytes, key)`. The caller
+    /// must ensure `self.height() >= next_row`.
+    pub fn place_matrix_hash(
+        &mut self,
+        row_start: usize,
+        matrix_bytes: &[u8],
+        key: &[u8; 32],
+        selector_idx: usize,
+    ) -> (usize, [u32; 8]) {
+        // BLAKE3 standard flag bits.
+        const F_CHUNK_START: u32 = 1 << 0;
+        const F_CHUNK_END: u32 = 1 << 1;
+        const F_PARENT: u32 = 1 << 2;
+        const F_ROOT: u32 = 1 << 3;
+        const F_KEYED_HASH: u32 = 1 << 4;
+        const BLAKE3_CHUNK_LEN: usize = 1024;
+        const BLAKE3_BLOCK_LEN: usize = 64;
+
+        // Pad input to a multiple of CHUNK_LEN (matches
+        // ai-pow/src/commit.rs::pad_to_chunk_boundary).
+        let mut padded = matrix_bytes.to_vec();
+        let pad_to = padded.len().div_ceil(BLAKE3_CHUNK_LEN) * BLAKE3_CHUNK_LEN;
+        padded.resize(pad_to.max(BLAKE3_CHUNK_LEN), 0);
+        let num_chunks = padded.len() / BLAKE3_CHUNK_LEN;
+
+        // Key as 8 LE u32 words.
+        let key_words: [u32; 8] = core::array::from_fn(|i| {
+            u32::from_le_bytes([key[i * 4], key[i * 4 + 1], key[i * 4 + 2], key[i * 4 + 3]])
+        });
+
+        let mut row = row_start;
+        let mut chunk_cvs: Vec<[u32; 8]> = Vec::with_capacity(num_chunks);
+
+        // CHUNK LAYER — for each chunk, 16 keyed BLAKE3 compressions.
+        for c in 0..num_chunks {
+            let mut chunk_cv = key_words;
+            for b in 0..16 {
+                let block_off = c * BLAKE3_CHUNK_LEN + b * BLAKE3_BLOCK_LEN;
+                let block_bytes = &padded[block_off..block_off + BLAKE3_BLOCK_LEN];
+                let message: [u32; 16] = core::array::from_fn(|i| {
+                    u32::from_le_bytes([
+                        block_bytes[i * 4],
+                        block_bytes[i * 4 + 1],
+                        block_bytes[i * 4 + 2],
+                        block_bytes[i * 4 + 3],
+                    ])
+                });
+
+                let mut flags = F_KEYED_HASH;
+                if b == 0 {
+                    flags |= F_CHUNK_START;
+                }
+                if b == 15 {
+                    flags |= F_CHUNK_END;
+                }
+                let is_single_chunk_root = num_chunks == 1 && b == 15;
+                if is_single_chunk_root {
+                    flags |= F_ROOT;
+                }
+
+                let tweak = Blake3Tweak {
+                    counter_low: c as u32,
+                    counter_high: (c >> 32) as u16,
+                    block_len: BLAKE3_BLOCK_LEN as u32,
+                    flags,
+                };
+
+                let extras: &[usize] = if is_single_chunk_root {
+                    core::slice::from_ref(&selector_idx)
+                } else {
+                    &[]
+                };
+                chunk_cv = self.place_blake3_hash_with_selectors(
+                    row,
+                    &message,
+                    &chunk_cv,
+                    &tweak,
+                    extras,
+                );
+                row += 8;
+            }
+            chunk_cvs.push(chunk_cv);
+        }
+
+        // PARENT LAYER — binary-tree reduce. Promote unpaired CVs
+        // (BLAKE3 spec for non-power-of-2 chunk counts).
+        while chunk_cvs.len() > 1 {
+            let is_top_layer = chunk_cvs.len() == 2;
+            let mut next: Vec<[u32; 8]> = Vec::with_capacity((chunk_cvs.len() + 1) / 2);
+            let mut i = 0;
+            while i + 1 < chunk_cvs.len() {
+                let left = chunk_cvs[i];
+                let right = chunk_cvs[i + 1];
+                let mut message = [0u32; 16];
+                for j in 0..8 {
+                    message[j] = left[j];
+                    message[8 + j] = right[j];
+                }
+
+                let is_root_parent = is_top_layer && i + 2 == chunk_cvs.len();
+                let mut flags = F_KEYED_HASH | F_PARENT;
+                if is_root_parent {
+                    flags |= F_ROOT;
+                }
+                let tweak = Blake3Tweak {
+                    counter_low: 0,
+                    counter_high: 0,
+                    block_len: BLAKE3_BLOCK_LEN as u32,
+                    flags,
+                };
+
+                let extras: &[usize] = if is_root_parent {
+                    core::slice::from_ref(&selector_idx)
+                } else {
+                    &[]
+                };
+                let parent_cv = self.place_blake3_hash_with_selectors(
+                    row,
+                    &message,
+                    &key_words,
+                    &tweak,
+                    extras,
+                );
+                next.push(parent_cv);
+                row += 8;
+                i += 2;
+            }
+            if i < chunk_cvs.len() {
+                next.push(chunk_cvs[i]); // promote unpaired CV
+            }
+            chunk_cvs = next;
+        }
+
+        let root_cv = chunk_cvs[0];
+        (row, root_cv)
+    }
+
+    /// Convenience: keyed chunk-Merkle for matrix A. Sets
+    /// `IS_HASH_A = 1` on the root row, binding the computed
+    /// digest to public input `PI_HASH_A` (see
+    /// [`composite_public`]).
+    pub fn place_matrix_hash_a(
+        &mut self,
+        row_start: usize,
+        matrix_bytes: &[u8],
+        key: &[u8; 32],
+    ) -> (usize, [u32; 8]) {
+        // 4 = IS_HASH_A position in SELECTOR_COLS (see chips::control).
+        self.place_matrix_hash(row_start, matrix_bytes, key, 4)
+    }
+
+    /// Convenience: keyed chunk-Merkle for matrix B. Sets
+    /// `IS_HASH_B = 1` on the root row.
+    pub fn place_matrix_hash_b(
+        &mut self,
+        row_start: usize,
+        matrix_bytes: &[u8],
+        key: &[u8; 32],
+    ) -> (usize, [u32; 8]) {
+        // 5 = IS_HASH_B position in SELECTOR_COLS.
+        self.place_matrix_hash(row_start, matrix_bytes, key, 5)
+    }
+
     /// Place one jackpot step at `row_idx`. Updates slot
     /// `selected_slot` of the 16-slot state via rotate-XOR-13 with
     /// `x`. `state` is the 16-slot value visible on this row (the
@@ -1280,5 +1458,185 @@ mod tests {
             verify::<AiPowStarkConfig, _>(&cfg, &CompositeFullAir, &proof, &pis).is_err(),
             "tampered matmul input must reject"
         );
+    }
+
+    /// `place_matrix_hash` produces the same 32-byte digest as
+    /// `blake3::Hasher::new_keyed(&kappa).update(&padded).finalize()`
+    /// — byte-equivalent to `ai-pow::commit::matrix_commitment`.
+    /// Tested at TEST_SMALL shape (4 KiB matrix = 4 chunks +
+    /// 3 parents = 67 BLAKE3 instructions = 536 trace rows).
+    #[test]
+    fn place_matrix_hash_byte_equivalent_to_blake3_keyed() {
+        const MATRIX_BYTES: usize = 4096; // 4 KiB → 4 chunks → multi-chunk path.
+        let mut matrix = vec![0u8; MATRIX_BYTES];
+        for (i, b) in matrix.iter_mut().enumerate() {
+            *b = ((i * 31 + 7) & 0xFF) as u8; // deterministic but non-trivial
+        }
+        let key = [0xA5u8; 32];
+
+        // Reference: standard BLAKE3 keyed-hash on the (already
+        // chunk-aligned) byte stream.
+        let mut hasher = blake3::Hasher::new_keyed(&key);
+        hasher.update(&matrix);
+        let expected = *hasher.finalize().as_bytes();
+        let expected_words: [u32; 8] = core::array::from_fn(|i| {
+            u32::from_le_bytes([
+                expected[i * 4],
+                expected[i * 4 + 1],
+                expected[i * 4 + 2],
+                expected[i * 4 + 3],
+            ])
+        });
+
+        // Place into a CompositeTrace and compare.
+        let mut trace = CompositeTrace::baseline_min();
+        let (next_row, root_cv) = trace.place_matrix_hash_a(0, &matrix, &key);
+
+        assert_eq!(
+            root_cv, expected_words,
+            "place_matrix_hash_a must match blake3::Hasher::new_keyed(...).finalize()"
+        );
+        // 4 chunks × 16 blocks + 3 parents = 67 instructions × 8 rows = 536.
+        assert_eq!(next_row, 4 * 16 * 8 + 3 * 8);
+    }
+
+    /// Single-chunk path: 1 KiB input → 1 chunk → 16 blocks, no
+    /// parents. The chunk's last block carries the ROOT flag.
+    #[test]
+    fn place_matrix_hash_single_chunk() {
+        let matrix = vec![0x55u8; 1024];
+        let key = [0x33u8; 32];
+
+        let expected = *blake3::Hasher::new_keyed(&key)
+            .update(&matrix)
+            .finalize()
+            .as_bytes();
+        let expected_words: [u32; 8] = core::array::from_fn(|i| {
+            u32::from_le_bytes([
+                expected[i * 4],
+                expected[i * 4 + 1],
+                expected[i * 4 + 2],
+                expected[i * 4 + 3],
+            ])
+        });
+
+        let mut trace = CompositeTrace::baseline_min();
+        let (next_row, root_cv) = trace.place_matrix_hash_b(0, &matrix, &key);
+        assert_eq!(root_cv, expected_words);
+        assert_eq!(next_row, 16 * 8); // 16 blocks × 8 rows, no parents
+    }
+
+    /// `place_matrix_hash` must pad sub-chunk inputs out to the
+    /// next 1024-byte boundary (matches `pad_to_chunk_boundary`).
+    #[test]
+    fn place_matrix_hash_pads_to_chunk_boundary() {
+        let matrix = vec![0xCCu8; 500]; // not a multiple of 1024
+        let key = [0x77u8; 32];
+
+        // Reference: pad matrix to 1024 then hash.
+        let mut padded = matrix.clone();
+        padded.resize(1024, 0);
+        let expected = *blake3::Hasher::new_keyed(&key)
+            .update(&padded)
+            .finalize()
+            .as_bytes();
+        let expected_words: [u32; 8] = core::array::from_fn(|i| {
+            u32::from_le_bytes([
+                expected[i * 4],
+                expected[i * 4 + 1],
+                expected[i * 4 + 2],
+                expected[i * 4 + 3],
+            ])
+        });
+
+        let mut trace = CompositeTrace::baseline_min();
+        let (_, root_cv) = trace.place_matrix_hash_a(0, &matrix, &key);
+        assert_eq!(root_cv, expected_words);
+    }
+
+    /// End-to-end: place a small matrix hash via
+    /// `place_matrix_hash_a`, derive PIs (including `HASH_A`),
+    /// prove + verify. Validates that the BLAKE3 chip's per-row
+    /// constraints accept the chunk-Merkle instruction sequence
+    /// AND that the new selector-gated PI binding fires
+    /// correctly.
+    #[test]
+    fn place_matrix_hash_full_air_prove_and_verify() {
+        let matrix = vec![0x11u8; 1024]; // single-chunk: 128 trace rows
+        let key = [0x99u8; 32];
+
+        let mut trace = CompositeTrace::baseline_min();
+        trace.place_matrix_hash_a(0, &matrix, &key);
+
+        let cfg = build_stark_config(&test_zk_params(), &CircuitConfig::TEST_PEARL);
+        let pis = crate::composite_public::CompositePublicInputs::derive_from_matrix(&trace.matrix).to_vec();
+        let proof = prove::<AiPowStarkConfig, _>(&cfg, &CompositeFullAir, trace.matrix, &pis);
+        verify::<AiPowStarkConfig, _>(&cfg, &CompositeFullAir, &proof, &pis)
+            .expect("composite proof with matrix hash must verify");
+    }
+
+    /// Tampering with `PI_HASH_A` must make verify reject. This
+    /// exercises the selector-gated binding constraint from step 2.
+    #[test]
+    fn full_air_rejects_tampered_hash_a_pi() {
+        let matrix = vec![0xABu8; 1024];
+        let key = [0xCDu8; 32];
+
+        let mut trace = CompositeTrace::baseline_min();
+        trace.place_matrix_hash_a(0, &matrix, &key);
+
+        let cfg = build_stark_config(&test_zk_params(), &CircuitConfig::TEST_PEARL);
+        let mut pis = crate::composite_public::CompositePublicInputs::derive_from_matrix(&trace.matrix);
+        // Flip a bit in HASH_A — should make the PI binding fail.
+        pis.hash_a[0] ^= 1;
+        let pis_vec = pis.to_vec();
+
+        let proof = prove::<AiPowStarkConfig, _>(&cfg, &CompositeFullAir, trace.matrix, &pis_vec);
+        assert!(
+            verify::<AiPowStarkConfig, _>(&cfg, &CompositeFullAir, &proof, &pis_vec).is_err(),
+            "tampered HASH_A PI must be rejected"
+        );
+    }
+
+    /// After `place_matrix_hash_a`, the root row has
+    /// `IS_HASH_A = 1` and `CV_OUT` matches the digest. The
+    /// centralized `CompositePublicInputs::derive_from_matrix`
+    /// surfaces it.
+    #[test]
+    fn place_matrix_hash_sets_is_hash_a_selector() {
+        use crate::composite_layout::{IS_HASH_A, IS_HASH_B};
+        use p3_field::PrimeField64;
+
+        let matrix = vec![0x42u8; 1024];
+        let key = [0x88u8; 32];
+
+        let mut trace = CompositeTrace::baseline_min();
+        let (_, root_cv) = trace.place_matrix_hash_a(0, &matrix, &key);
+
+        // Scan for the IS_HASH_A=1 row.
+        let mut found_a = None;
+        let mut count_a = 0;
+        let mut count_b = 0;
+        let height = trace.height();
+        for r in 0..height {
+            let base = r * TOTAL_TRACE_WIDTH;
+            if trace.matrix.values[base + IS_HASH_A].as_canonical_u64() == 1 {
+                found_a = Some(r);
+                count_a += 1;
+            }
+            if trace.matrix.values[base + IS_HASH_B].as_canonical_u64() == 1 {
+                count_b += 1;
+            }
+        }
+        assert_eq!(count_a, 1, "exactly one IS_HASH_A row");
+        assert_eq!(count_b, 0, "no IS_HASH_B set");
+
+        let pis = crate::composite_public::CompositePublicInputs::derive_from_matrix(&trace.matrix);
+        assert_eq!(pis.hash_a, root_cv);
+        assert_eq!(pis.hash_b, [0u32; 8]);
+
+        // The IS_HASH_A=1 row should be the last block of the
+        // single chunk: row 15 of the 16-block chunk → 15 × 8 + 7 = 127.
+        assert_eq!(found_a, Some(127));
     }
 }
