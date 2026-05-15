@@ -222,11 +222,27 @@ Remaining:
 3. **P1, P3, P5, P6** — PROD-scale (M12-gated), per-bus LogUp
    ablation, real-workload bench, FRI retune. P2/P4 have infra.
 
-The honest one-line summary: **C1–C4 are all resolved; the SNARK
-proves the proof-of-work statement, is anchored to a real block,
-and is wired into the production `mine()` path.** C1 ties it to
-this block's κ / `s_a`; C3 binds the matrix bytes; C4 binds the
-jackpot keyed-hash; C2 checks difficulty against that bound hash.
-No remaining *soundness/binding* gap. What's left is fidelity
-(real tile-state fold into the C4 hash — the binding already
-holds), recursion (M12), and production-hardening (P1/P3/P5/P6).
+> ⚠️ **SOUNDNESS CORRECTION (2026-05-15, supersedes the summary
+> below).** A security audit (`ZKP_SECURITY_REPORT.md`, the
+> authority on this question) found **CRIT-1**: the C1/C3/C4
+> public-input bindings are gated by *prover-controlled*
+> selectors that nothing forces to fire, and `CompositeFullAir`
+> declares **no preprocessed trace**, so there is no
+> verifier-fixed program. A malicious prover can zero every
+> selector and forge a winning proof with **no work**. The
+> statement "C1–C4 resolved / no soundness gap" is true only of
+> the *constraints' correctness* and the *honest-prover* path —
+> it is **false against a malicious prover**. Treat the SNARK as
+> NOT PoW-sound until CRIT-1 (implement `preprocessed_trace()`)
+> lands. CUMSUM/JACKPOT (unconditional `when_last_row`) are the
+> only soundly-bound PIs. See the report for the exploit,
+> bits-of-security accounting, and remediation.
+
+The (honest-prover / constraint-correctness) summary: C1–C4
+constraints are correct and the F1 bridge wires them on a real
+solve. C1 ties κ / `s_a`; C3 binds matrix bytes; C4 binds the
+jackpot keyed-hash; C2 checks difficulty against that hash —
+**all conditional on the selectors firing, which is not enforced
+(CRIT-1).** Also-open: HIGH-2 (HASH_JACKPOT hashes all-zero
+`JACKPOT_MSG` → attests a constant, not the work), recursion
+(M12), production-hardening (P1/P3/P5/P6).
