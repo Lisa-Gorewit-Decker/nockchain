@@ -44,6 +44,7 @@
 
 use p3_air::{Air, AirBuilder, BaseAir, WindowAccess};
 use p3_field::PrimeCharacteristicRing;
+use p3_matrix::Matrix;
 
 use crate::chips::blake3::chip::Blake3Chip;
 use crate::chips::control::ControlChip;
@@ -85,6 +86,112 @@ impl<F> BaseAir<F> for CompositeFullAir {
 
     fn num_public_values(&self) -> usize {
         NUM_PUBLIC_VALUES
+    }
+}
+
+/// The five "program / setup" columns. Pinning these to a
+/// verifier-committed preprocessed trace makes the entire
+/// instruction schedule + noise verifier-fixed:
+/// `CONTROL_PREP` pins all 21 selectors **and** `MAT_ID` (the
+/// control chip already enforces `CONTROL_PREP == pack(selectors,
+/// mat_id)`), so a malicious prover can no longer zero selectors
+/// to vacate the C1/C3/C4 bindings (ZKP_SECURITY_REPORT CRIT-1).
+pub const PROGRAM_COLS: [usize; 5] = [
+    crate::composite_layout::CONTROL_PREP,
+    crate::composite_layout::NOISE_PACKED_PREP,
+    crate::composite_layout::CV_OR_TWEAK_PREP,
+    crate::composite_layout::AB_ID_PREP,
+    crate::composite_layout::STARK_ROW_IDX,
+];
+
+/// Extract the [`PROGRAM_COLS`] from a full trace into a
+/// `len(PROGRAM_COLS)`-wide row-major matrix — the canonical
+/// "program" for that shape. The honest prover and the verifier
+/// each build this from the *canonical* trace for the agreed
+/// `ZkParams` (never from an untrusted proof); the
+/// `CompositeFullAirPinned` constraints then force the prover's
+/// in-trace `*_PREP` columns to equal it.
+pub fn extract_program(
+    trace: &p3_matrix::dense::RowMajorMatrix<crate::Val>,
+) -> p3_matrix::dense::RowMajorMatrix<crate::Val> {
+    let n = trace.values.len() / TOTAL_TRACE_WIDTH;
+    let w = PROGRAM_COLS.len();
+    let mut v = Vec::with_capacity(n * w);
+    for r in 0..n {
+        let base = r * TOTAL_TRACE_WIDTH;
+        for &c in &PROGRAM_COLS {
+            v.push(trace.values[base + c]);
+        }
+    }
+    p3_matrix::dense::RowMajorMatrix::new(v, w)
+}
+
+/// Program-pinned composite AIR (ZKP_SECURITY_REPORT CRIT-1 fix).
+///
+/// Same constraints as [`CompositeFullAir`] **plus** an
+/// unconditional per-row equality tying each [`PROGRAM_COLS`]
+/// main-trace cell to the corresponding column of a
+/// verifier-committed *preprocessed* trace. With the preprocessed
+/// commitment fixed in the verifying key (independently rebuilt
+/// by the verifier from `ZkParams`), the prover cannot choose the
+/// selector schedule, so the selector-gated C1/C3/C4 bindings are
+/// forced live. This is the production AIR (used by
+/// `ai-pow::zk_bridge` / the `mine()` gate); the unit
+/// [`CompositeFullAir`] remains a constraint-logic test harness.
+#[derive(Clone)]
+pub struct CompositeFullAirPinned {
+    preprocessed: std::sync::Arc<p3_matrix::dense::RowMajorMatrix<crate::Val>>,
+}
+
+impl CompositeFullAirPinned {
+    /// Build from the canonical program matrix (see
+    /// [`extract_program`]). `program.width()` must equal
+    /// `PROGRAM_COLS.len()`.
+    pub fn new(program: p3_matrix::dense::RowMajorMatrix<crate::Val>) -> Self {
+        assert_eq!(
+            program.width(),
+            PROGRAM_COLS.len(),
+            "program matrix must have exactly PROGRAM_COLS columns"
+        );
+        Self {
+            preprocessed: std::sync::Arc::new(program),
+        }
+    }
+}
+
+impl BaseAir<crate::Val> for CompositeFullAirPinned {
+    fn width(&self) -> usize {
+        TOTAL_TRACE_WIDTH
+    }
+    fn num_public_values(&self) -> usize {
+        NUM_PUBLIC_VALUES
+    }
+    fn preprocessed_width(&self) -> usize {
+        PROGRAM_COLS.len()
+    }
+    fn preprocessed_trace(&self) -> Option<p3_matrix::dense::RowMajorMatrix<crate::Val>> {
+        Some((*self.preprocessed).clone())
+    }
+}
+
+impl<AB: AirBuilder<F = crate::Val>> Air<AB> for CompositeFullAirPinned {
+    fn eval(&self, builder: &mut AB) {
+        // All base constraints (chips + selector-gated PI bindings).
+        <CompositeFullAir as Air<AB>>::eval(&CompositeFullAir, builder);
+
+        // CRIT-1 program pin: main[PROGRAM_COLS[k]] == preprocessed[k]
+        // on every row, unconditionally. Snapshot both rows before
+        // opening the mutable assert (can't hold the window borrows
+        // across builder.assert_*).
+        let main = builder.main();
+        let m_cur = main.current_slice();
+        let m: [AB::Var; 5] = core::array::from_fn(|k| m_cur[PROGRAM_COLS[k]]);
+        let prep = builder.preprocessed();
+        let p_cur = prep.current_slice();
+        let p: [AB::Var; 5] = core::array::from_fn(|k| p_cur[k]);
+        for k in 0..PROGRAM_COLS.len() {
+            builder.assert_eq(m[k], p[k]);
+        }
     }
 }
 

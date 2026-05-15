@@ -68,11 +68,14 @@ pub mod params;
 pub use p3_goldilocks::Goldilocks as Val;
 
 pub use crate::circuit::{AiPowStarkConfig, CircuitConfig};
-pub use crate::composite_full_air::CompositeFullAir;
+pub use crate::composite_full_air::{
+    extract_program, CompositeFullAir, CompositeFullAirPinned,
+};
 pub use crate::composite_full_air_with_lookups::CompositeFullAirWithLookups;
 pub use crate::composite_proof::{
-    composite_prove, composite_verify, composite_verify_pow, hash_jackpot_le_bytes,
-    CompositeVerificationError, PowVerifyError,
+    composite_prove, composite_prove_pinned, composite_setup, composite_verify,
+    composite_verify_pinned, composite_verify_pow, composite_verify_pow_pinned,
+    hash_jackpot_le_bytes, CompositeVerificationError, PowVerifyError,
 };
 pub use crate::composite_public::CompositePublicInputs;
 pub use crate::composite_trace::CompositeTrace;

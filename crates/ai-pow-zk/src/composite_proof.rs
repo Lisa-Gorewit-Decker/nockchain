@@ -19,13 +19,17 @@
 //! the values from a generated trace.
 
 use crate::circuit::{build_stark_config, AiPowStarkConfig, CircuitConfig};
-use crate::composite_full_air::CompositeFullAir;
+use crate::composite_full_air::{extract_program, CompositeFullAir, CompositeFullAirPinned};
 use crate::composite_public::CompositePublicInputs;
 use crate::composite_trace::CompositeTrace;
 use crate::params::ZkParams;
 
 use p3_commit::Pcs;
-use p3_uni_stark::{prove, verify, Proof, StarkGenericConfig, Val, VerificationError};
+use p3_uni_stark::{
+    prove, prove_with_preprocessed, setup_preprocessed, verify, verify_with_preprocessed,
+    PreprocessedProverData, PreprocessedVerifierKey, Proof, StarkGenericConfig, Val,
+    VerificationError,
+};
 
 /// Concrete type of the verification error for the composite AIR.
 /// Equivalent to `VerificationError<PcsError<AiPowStarkConfig>>`.
@@ -157,6 +161,101 @@ pub fn composite_verify_pow(
     }
 }
 
+// ───────────────────────────────────────────────────────────────
+//  CRIT-1: program-pinned prove / verify (ZKP_SECURITY_REPORT)
+//
+//  The unit `composite_prove`/`composite_verify` above prove the
+//  *unpinned* `CompositeFullAir` — a malicious prover can zero
+//  every selector and forge a winning proof (no preprocessed
+//  commitment ⇒ no verifier-fixed program). The pinned API below
+//  commits the 5 PROGRAM_COLS as a *preprocessed* trace whose
+//  commitment goes in the verifying key; the AIR forces the
+//  prover's in-trace `*_PREP` cells to equal it. The verifier
+//  rebuilds the canonical program from the trusted shape (never
+//  from the proof) — see `ai-pow::zk_bridge`. This is the
+//  production path.
+// ───────────────────────────────────────────────────────────────
+
+type Program = p3_matrix::dense::RowMajorMatrix<Val<AiPowStarkConfig>>;
+
+fn program_degree_bits(program: &Program) -> usize {
+    use p3_matrix::Matrix;
+    let h = program.height();
+    assert!(h.is_power_of_two(), "trace height must be a power of two");
+    h.trailing_zeros() as usize
+}
+
+/// Commit a program matrix as a preprocessed trace, returning the
+/// reusable prover data + verifying key. Deterministic in
+/// `program`: prover and verifier independently arrive at the
+/// same commitment iff they use the same canonical program.
+pub fn composite_setup(
+    config: &AiPowStarkConfig,
+    program: &Program,
+) -> (
+    PreprocessedProverData<AiPowStarkConfig>,
+    PreprocessedVerifierKey<AiPowStarkConfig>,
+) {
+    let air = CompositeFullAirPinned::new(program.clone());
+    setup_preprocessed(config, &air, program_degree_bits(program))
+        .expect("CompositeFullAirPinned always has preprocessed columns")
+}
+
+/// Program-pinned prove. Derives the canonical program from the
+/// (honest) trace's `*_PREP` columns, commits it, and proves.
+/// Returns the proof **and** the program — the caller hands the
+/// program to the verifier *out of band from a trusted source*
+/// (params), never lets the verifier take it from the proof.
+pub fn composite_prove_pinned(
+    config: &AiPowStarkConfig,
+    trace: CompositeTrace,
+    public_inputs: &CompositePublicInputs,
+) -> (Proof<AiPowStarkConfig>, Program) {
+    let program = extract_program(&trace.matrix);
+    let air = CompositeFullAirPinned::new(program.clone());
+    let (pp, _vk) = composite_setup(config, &program);
+    let pis = public_inputs.to_vec();
+    let proof = prove_with_preprocessed(config, &air, trace.matrix, &pis, Some(&pp));
+    (proof, program)
+}
+
+/// Program-pinned verify. `program` MUST be the canonical program
+/// for the agreed `ZkParams`, rebuilt by the verifier from the
+/// trusted shape — never extracted from the prover's proof. The
+/// preprocessed commitment in the derived VK pins the prover's
+/// selector schedule; a forged trace whose `*_PREP` columns
+/// differ fails the in-AIR equality (CRIT-1 closed).
+pub fn composite_verify_pinned(
+    config: &AiPowStarkConfig,
+    program: &Program,
+    proof: &Proof<AiPowStarkConfig>,
+    public_inputs: &CompositePublicInputs,
+) -> Result<(), CompositeVerificationError> {
+    let air = CompositeFullAirPinned::new(program.clone());
+    let (_pp, vk) = composite_setup(config, program);
+    let pis = public_inputs.to_vec();
+    verify_with_preprocessed(config, &air, proof, &pis, Some(&vk))
+}
+
+/// Program-pinned full PoW verify: pinned STARK verify + the C2
+/// difficulty check against the bound `HASH_JACKPOT`.
+pub fn composite_verify_pow_pinned(
+    config: &AiPowStarkConfig,
+    program: &Program,
+    proof: &Proof<AiPowStarkConfig>,
+    public_inputs: &CompositePublicInputs,
+    target: &[u8; 32],
+) -> Result<(), PowVerifyError> {
+    composite_verify_pinned(config, program, proof, public_inputs)
+        .map_err(PowVerifyError::Stark)?;
+    let hj = hash_jackpot_le_bytes(&public_inputs.hash_jackpot);
+    if le_u256_le(&hj, target) {
+        Ok(())
+    } else {
+        Err(PowVerifyError::DifficultyNotMet)
+    }
+}
+
 #[allow(dead_code)]
 fn _suppress_unused_val_import(_v: Val<AiPowStarkConfig>) {}
 
@@ -182,6 +281,156 @@ mod tests {
         let pis = CompositePublicInputs::derive_from_trace(&trace);
         let proof = composite_prove(&cfg, trace, &pis);
         composite_verify(&cfg, &proof, &pis).expect("composite proof must verify");
+    }
+
+    // ───────────── CRIT-1 malicious-prover regression suite ─────────────
+    //
+    // ZKP_SECURITY_REPORT CRIT-1: a malicious prover can zero every
+    // selector to vacate the C1/C3/C4 PI bindings and forge a
+    // winning proof with no work. These tests assert the
+    // program-pinned API closes that: a proof only verifies against
+    // the *canonical* program's verifying key (rebuilt by the
+    // verifier from the trusted shape, never from the proof).
+
+    /// Build a representative honest/canonical trace: matrix-hash
+    /// A/B (C3) + key-pin rows (C1) + final jackpot-hash block
+    /// (C4). Mirrors `ai-pow::zk_bridge`'s construction. Returns
+    /// the trace; `extract_program` of it is the canonical program.
+    fn honest_trace() -> CompositeTrace {
+        let kappa = [0xA5u8; 32];
+        let jk: [u32; 8] = core::array::from_fn(|i| 0xC0FE_0000 + i as u32);
+        let ch: [u32; 8] = core::array::from_fn(|i| 0x5EED_0000 + i as u32);
+        let a = vec![0x11u8; 1024];
+        let b = vec![0x22u8; 1024];
+        let mut t = CompositeTrace::baseline_min();
+        let h = t.height();
+        let (n1, _) = t.place_matrix_hash_a(0, &a, &kappa);
+        let (mh_end, _) = t.place_matrix_hash_b(n1, &b, &kappa);
+        t.place_key_pin_row(mh_end + 1, false, &jk);
+        t.place_key_pin_row(mh_end + 2, true, &ch);
+        // jackpot-hash keyed by COMMITMENT_HASH (= `ch` words).
+        t.place_jackpot_hash_block(h - 8, &[0u32; 16], &ch);
+        t
+    }
+
+    /// Honest pinned round-trip verifies; the difficulty check is
+    /// real (a 0 target rejects the non-zero keyed digest).
+    #[test]
+    fn crit1_honest_pinned_roundtrip() {
+        let cfg = build_config(&test_zk_params(), &CircuitConfig::TEST_PEARL);
+        let trace = honest_trace();
+        let canonical = extract_program(&trace.matrix);
+        let pis = CompositePublicInputs::derive_from_trace(&trace);
+        assert_ne!(pis.hash_jackpot, [0u32; 8], "C4 digest non-vacuous");
+
+        let (proof, prog) = composite_prove_pinned(&cfg, trace, &pis);
+        assert_eq!(prog.values, canonical.values, "prover program == canonical");
+
+        composite_verify_pinned(&cfg, &canonical, &proof, &pis)
+            .expect("honest pinned proof must verify against canonical program");
+        composite_verify_pow_pinned(&cfg, &canonical, &proof, &pis, &[0xFFu8; 32])
+            .expect("clears an easy target");
+        // Hardest target 0: BLAKE3(0,key) > 0 ⇒ difficulty not met.
+        match composite_verify_pow_pinned(&cfg, &canonical, &proof, &pis, &[0u8; 32]) {
+            Err(PowVerifyError::DifficultyNotMet) => {}
+            other => panic!("expected DifficultyNotMet, got {other:?}"),
+        }
+    }
+
+    /// THE CRIT-1 exploit, now blocked. A malicious prover submits
+    /// an all-zero-selector trace (no matmul, no hashing, no work)
+    /// with a forged winning `HASH_JACKPOT = 0`. It is
+    /// self-consistent against its *own* (all-zero) program, but
+    /// the verifier uses the **canonical** program's VK — the
+    /// preprocessed commitment differs, so verification fails.
+    #[test]
+    fn crit1_zeroed_selector_forgery_rejected() {
+        let cfg = build_config(&test_zk_params(), &CircuitConfig::TEST_PEARL);
+
+        // Canonical program the honest verifier trusts.
+        let canonical = extract_program(&honest_trace().matrix);
+
+        // Malicious: baseline (all selectors 0) + forged zero PIs
+        // (HASH_JACKPOT = 0 ≤ any target).
+        let evil = CompositeTrace::baseline_min();
+        let forged = CompositePublicInputs::zero();
+        let (evil_proof, evil_prog) = composite_prove_pinned(&cfg, evil, &forged);
+        assert_ne!(
+            evil_prog.values, canonical.values,
+            "attacker's program differs from canonical"
+        );
+
+        // Self-consistent against the attacker's own program
+        // (the AIR is satisfied for an all-zero schedule) — this
+        // is exactly why pinning to a *trusted* program matters.
+        composite_verify_pinned(&cfg, &evil_prog, &evil_proof, &forged)
+            .expect("attacker proof is self-consistent vs its own program");
+
+        // Against the canonical (trusted) program: REJECTED.
+        assert!(
+            composite_verify_pinned(&cfg, &canonical, &evil_proof, &forged).is_err(),
+            "CRIT-1: forged proof must fail against the canonical program VK"
+        );
+        assert!(
+            composite_verify_pow_pinned(
+                &cfg, &canonical, &evil_proof, &forged, &[0xFFu8; 32]
+            )
+            .is_err(),
+            "CRIT-1: forged winning PoW must be rejected"
+        );
+    }
+
+    /// Tampering any PROGRAM_COL in an otherwise-honest trace
+    /// changes the prover's committed program; verification
+    /// against the canonical program rejects it.
+    #[test]
+    fn crit1_tampered_program_col_rejected() {
+        use crate::composite_full_air::PROGRAM_COLS;
+        use crate::composite_layout::TOTAL_TRACE_WIDTH;
+        use p3_field::integers::QuotientMap;
+        use p3_field::PrimeField64;
+
+        let cfg = build_config(&test_zk_params(), &CircuitConfig::TEST_PEARL);
+        let canonical = extract_program(&honest_trace().matrix);
+
+        for &col in &PROGRAM_COLS {
+            let mut t = honest_trace();
+            // Tamper this program column on a mid-trace row.
+            let r = 50usize;
+            let cur = t.matrix.values
+                [r * TOTAL_TRACE_WIDTH + col]
+                .as_canonical_u64();
+            t.matrix.values[r * TOTAL_TRACE_WIDTH + col] =
+                <Val<AiPowStarkConfig> as QuotientMap<u64>>::from_int(
+                    cur.wrapping_add(1),
+                );
+            let pis = CompositePublicInputs::derive_from_matrix(&t.matrix);
+            let (proof, _) = composite_prove_pinned(&cfg, t, &pis);
+            assert!(
+                composite_verify_pinned(&cfg, &canonical, &proof, &pis).is_err(),
+                "tampered PROGRAM_COL {col} must be rejected vs canonical program"
+            );
+        }
+    }
+
+    /// Even with the *correct* canonical program, a prover cannot
+    /// forge `HASH_JACKPOT`: with selectors pinned, IS_HASH_JACKPOT
+    /// fires on the jackpot-hash row and the C4 binding forces
+    /// CV_OUT == PI_HASH_JACKPOT (the real non-zero keyed digest),
+    /// so a swapped-to-zero PI violates the constraint.
+    #[test]
+    fn crit1_forged_hash_jackpot_with_canonical_program_rejected() {
+        let cfg = build_config(&test_zk_params(), &CircuitConfig::TEST_PEARL);
+        let trace = honest_trace();
+        let canonical = extract_program(&trace.matrix);
+        let mut pis = CompositePublicInputs::derive_from_trace(&trace);
+        pis.hash_jackpot = [0u32; 8]; // forge a trivially-winning value
+
+        let (proof, _) = composite_prove_pinned(&cfg, trace, &pis);
+        assert!(
+            composite_verify_pinned(&cfg, &canonical, &proof, &pis).is_err(),
+            "CRIT-1: forged HASH_JACKPOT must fail the C4 binding under the pinned program"
+        );
     }
 
     #[test]
