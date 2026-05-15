@@ -644,6 +644,108 @@ impl CompositeTrace {
         self.place_matrix_hash(row_start, matrix_bytes, key, 5)
     }
 
+    /// M52 step 4.2 — write the "matrix staging" cells on `row_idx`.
+    ///
+    /// Pearl's BLAKE3 chip loads matrix bytes via the staging buffer
+    /// across multiple rows; each load-row sets `IS_MSG_MAT = 1` and
+    /// publishes 8 i8 matrix bytes into `MAT_UNPACK` plus the u8
+    /// view into `UINT8_DATA`. With `NOISE_UNPACK = 0`, the input
+    /// chip's `NOISED_PACKED = polyval(MAT_UNPACK) + polyval(NOISE_UNPACK)`
+    /// constraint collapses to plain-byte polyval. The row's
+    /// `(MAT_ID, NOISED_PACKED)` becomes the canonical "plain" entry
+    /// the noised_packed LogUp bus's BLAKE3-side query (step 4.1)
+    /// self-references.
+    ///
+    /// Returns the 2 polyval-packed Goldilocks values written into
+    /// `NOISED_PACKED[0..2]` — useful for cross-row consistency
+    /// checks in tests.
+    ///
+    /// Constraints satisfied by this write (all are existing
+    /// per-row chip constraints, no new AIR work in this helper):
+    /// - URange8 on UINT8_DATA[0..8] when IS_MSG_MAT=1 (bytes ∈ [0, 256))
+    /// - IRange8 on MAT_UNPACK[0..8] (signed bytes ∈ [-128, 127])
+    /// - i8u8 bus: MAT_UNPACK[i] (i8) ↔ UINT8_DATA[i] (u8) when IS_MSG_MAT=1
+    /// - Input chip: NOISED_PACKED[i] = polyval(MAT_UNPACK[..]) + polyval(NOISE_UNPACK[..])
+    /// - noised_packed bus self-query (step 4.1): MAT_FREQ on this row balances the query
+    ///
+    /// **Open soundness gap (out of step 4.2 scope):** there is
+    /// not yet an AIR constraint binding `MAT_UNPACK` on staging
+    /// rows to the corresponding bytes of `BLAKE3_MSG` (or
+    /// `BLAKE3_MSG_BUFFER`) on the compression row. Until that
+    /// constraint lands, an adversary can put different bytes in
+    /// `BLAKE3_MSG` from `MAT_UNPACK` on the same row. The staging
+    /// columns are populated correctly here; the cross-column
+    /// binding is the next step.
+    pub fn place_matrix_staging_row(
+        &mut self,
+        row_idx: usize,
+        bytes: &[i8; 8],
+        mat_id: u32,
+    ) -> [u64; 2] {
+        use crate::composite_layout::{
+            MAT_UNPACK_LEN, MAT_UNPACK_START, NOISED_PACKED_LEN, NOISED_PACKED_START,
+            NOISE_UNPACK_LEN, NOISE_UNPACK_START, UINT8_DATA_LEN, UINT8_DATA_START,
+        };
+        use p3_field::integers::QuotientMap;
+
+        assert!(
+            row_idx < self.height(),
+            "row_idx {row_idx} out of bounds (height = {})",
+            self.height()
+        );
+        assert_eq!(MAT_UNPACK_LEN, 8);
+        assert_eq!(UINT8_DATA_LEN, 8);
+        assert_eq!(NOISE_UNPACK_LEN, 8);
+        assert_eq!(NOISED_PACKED_LEN, 2);
+
+        let base = row_idx * TOTAL_TRACE_WIDTH;
+        let row = &mut self.matrix.values[base..base + TOTAL_TRACE_WIDTH];
+
+        // MAT_UNPACK: signed i8 bytes (canonical encoding into Goldilocks).
+        for i in 0..MAT_UNPACK_LEN {
+            row[MAT_UNPACK_START + i] =
+                <Val as QuotientMap<i64>>::from_int(bytes[i] as i64);
+        }
+        // UINT8_DATA: u8 view of the same bytes.
+        for i in 0..UINT8_DATA_LEN {
+            row[UINT8_DATA_START + i] =
+                <Val as QuotientMap<u64>>::from_int((bytes[i] as u8) as u64);
+        }
+        // NOISE_UNPACK: zero on plain-byte rows.
+        for i in 0..NOISE_UNPACK_LEN {
+            row[NOISE_UNPACK_START + i] = Val::default();
+        }
+        // NOISED_PACKED = polyval(MAT_UNPACK, base=256) + polyval(NOISE_UNPACK=0).
+        // Two cells: bytes 0..4 and bytes 4..8.
+        // i8 -> i64 preserves sign; the input chip's constraint uses
+        // the same canonical Goldilocks encoding.
+        let mut packs = [0i64; NOISED_PACKED_LEN];
+        for cell in 0..NOISED_PACKED_LEN {
+            let mut acc: i64 = 0;
+            let mut mult: i64 = 1;
+            for j in 0..4 {
+                acc += (bytes[cell * 4 + j] as i64) * mult;
+                mult *= 256;
+            }
+            packs[cell] = acc;
+            row[NOISED_PACKED_START + cell] = <Val as QuotientMap<i64>>::from_int(acc);
+        }
+
+        // Selectors: IS_MSG_MAT = 1 (index 10 in SELECTOR_COLS).
+        // Coexists with whatever IS_LAST_ROUND / IS_HASH_* the
+        // caller's other writes set; the control chip's
+        // `fill_row` overwrites CONTROL_PREP + selector cells +
+        // MAT_ID + MAT_ID_LIMBS coherently from a single source
+        // of truth, so callers must NOT mix this with
+        // `place_blake3_hash_*` on the same row. Staging rows
+        // should be distinct from compression rows.
+        let mut selectors = [false; 21];
+        selectors[10] = true; // IS_MSG_MAT
+        ControlChip.fill_row(&selectors, mat_id, row);
+
+        [packs[0] as u64, packs[1] as u64]
+    }
+
     /// Place one jackpot step at `row_idx`. Updates slot
     /// `selected_slot` of the 16-slot state via rotate-XOR-13 with
     /// `x`. `state` is the 16-slot value visible on this row (the
@@ -1589,6 +1691,44 @@ mod tests {
         let proof = prove::<AiPowStarkConfig, _>(&cfg, &CompositeFullAir, trace.matrix, &pis);
         verify::<AiPowStarkConfig, _>(&cfg, &CompositeFullAir, &proof, &pis)
             .expect("composite proof with matrix hash must verify");
+    }
+
+    /// M52 step 4.2: staging-row helper writes coherent
+    /// (MAT_UNPACK, UINT8_DATA, NOISE_UNPACK=0, NOISED_PACKED,
+    /// MAT_ID, IS_MSG_MAT=1, CONTROL_PREP) and the FullAir
+    /// (URange8/IRange8/i8u8/input chip/noised_packed bus all
+    /// gated on it) accepts the trace end-to-end.
+    #[test]
+    fn place_matrix_staging_row_prove_and_verify() {
+        let mut trace = CompositeTrace::baseline_min();
+        let bytes: [i8; 8] = [1, -2, 3, -4, 5, -6, 7, -8];
+        let _packs = trace.place_matrix_staging_row(5, &bytes, 0);
+
+        let cfg = build_stark_config(&test_zk_params(), &CircuitConfig::TEST_PEARL);
+        let pis =
+            crate::composite_public::CompositePublicInputs::derive_from_matrix(&trace.matrix)
+                .to_vec();
+        let proof = prove::<AiPowStarkConfig, _>(&cfg, &CompositeFullAir, trace.matrix, &pis);
+        verify::<AiPowStarkConfig, _>(&cfg, &CompositeFullAir, &proof, &pis)
+            .expect("staging row must satisfy all per-row chip constraints");
+    }
+
+    /// Two staging rows with distinct `mat_id` and distinct
+    /// byte content also verify, exercising the input chip's
+    /// per-row polyval constraint with non-trivial data.
+    #[test]
+    fn place_matrix_staging_two_rows_prove_and_verify() {
+        let mut trace = CompositeTrace::baseline_min();
+        trace.place_matrix_staging_row(3, &[10, 20, 30, 40, -1, -2, -3, -4], 0);
+        trace.place_matrix_staging_row(7, &[100, -100, 50, -50, 25, -25, 12, -12], 1);
+
+        let cfg = build_stark_config(&test_zk_params(), &CircuitConfig::TEST_PEARL);
+        let pis =
+            crate::composite_public::CompositePublicInputs::derive_from_matrix(&trace.matrix)
+                .to_vec();
+        let proof = prove::<AiPowStarkConfig, _>(&cfg, &CompositeFullAir, trace.matrix, &pis);
+        verify::<AiPowStarkConfig, _>(&cfg, &CompositeFullAir, &proof, &pis)
+            .expect("two staging rows must verify");
     }
 
     /// Tampering with `PI_HASH_A` must make verify reject. This
