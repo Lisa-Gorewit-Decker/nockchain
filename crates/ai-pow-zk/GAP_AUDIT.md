@@ -159,20 +159,27 @@ or M12 lands. See `ENGINEERING_REPORT.md` §11.
 
 ## Prioritized remaining work
 
-**C1–C4 resolved 2026-05-15.** Remaining:
+**C1–C4 resolved 2026-05-15. F1 substrate + profiling infra
+landed 2026-05-15** (`d87fd10`): `crates/ai-pow/examples/f1_harness.rs`
+is the instrumented cross-crate fixture (real solve → SNARK,
+byte-equivalence-asserted), `scripts/profile_f1.sh` +
+`PROFILING.md` cover samply / peak-RSS (P2) / CI-bench wiring
+(P4). Remaining:
 
-1. **F1** (real ai-pow→SNARK integration) — 🟠 now the critical
-   path. The `MatmulProof → CompositeTrace` builder that places
-   the matmul / jackpot / blake3 / matrix-hash instructions from
-   a verified plain proof, with IS_HASH_JACKPOT / IS_USE_JOB_KEY /
-   IS_USE_COMMITMENT_HASH / IS_MSG_MAT on the right (genuine
-   compression) rows so the C1–C4 constraints fire end-to-end.
-   The stub at `prover.rs:334-355` is still a no-op with stale
-   comments — clean those up.
+1. **F1 deep** — 🟠 the critical path. The harness exercises the
+   matrix-binding + prove/verify pipeline but NOT the faithful
+   `MatmulProof → CompositeTrace` jackpot→blake3 instruction
+   chain that makes `HASH_JACKPOT` / `JOB_KEY` /
+   `COMMITMENT_HASH` non-zero PIs (so C1/C4 are vacuous in the
+   harness today). Build that chain with the C1–C4 selectors on
+   genuine compression rows; extend the harness to assert the
+   now-non-vacuous bindings. The stub at `prover.rs:334-355` is
+   still a no-op with stale comments — clean up.
 2. **F2 / M12** (recursion) — 🟠 biggest production lever;
    separate track.
-3. **P1–P6** — 🟠/🟡 PROD-scale (M12-gated) + observability;
-   parallelizable, low risk.
+3. **P1, P3, P5, P6** — 🟠/🟡 PROD-scale (M12-gated), per-bus
+   LogUp ablation, real-workload bench (once F1 deep lands),
+   FRI retune. P2/P4 now have infra; wire P4 into CI when ready.
 
 The honest one-line summary: **the SNARK now proves the
 proof-of-work statement.** C1+C4 anchor it to the block
