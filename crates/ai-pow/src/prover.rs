@@ -331,27 +331,29 @@ fn mine_with_context(
     // the conversion from `MatmulParams` / `MatmulProof` / `BlockNoise`
     // into the SNARK's own `(ZkParams, PublicInputs, Witness)` happens
     // right here at the boundary.
+    // F1 integration (was a no-op stub). Under the `zk` feature,
+    // build the `ai-pow-zk` composite trace from this block's
+    // context, prove it, and PoW-verify it against the real
+    // difficulty target. This makes the SNARK a genuine proof of
+    // work for *this* block: anchored to κ / s_a via C1, the
+    // matrix bytes bound via C3 (HASH_A / HASH_B), checked against
+    // `target` via C2. See `crate::zk_bridge` for the precise
+    // binding inventory and the documented C4 (HASH_JACKPOT)
+    // blocker.
+    //
+    // The SNARK is currently produced + validated as a hard
+    // correctness gate; its bytes are not yet threaded into
+    // `MatmulProof` (that is a block-certificate format change,
+    // out of F1 scope — the chain layer decides plain-vs-SNARK
+    // transport). A bridge failure here is an integration bug,
+    // not a recoverable mining condition, so it panics under the
+    // opt-in `zk` feature rather than silently degrading.
     #[cfg(feature = "zk")]
     {
-        let zk_params = ai_pow_zk::ZkParams {
-            m: params.m,
-            k: params.k,
-            n: params.n,
-            noise_rank: params.noise_rank,
-            tile: params.tile,
-            difficulty_bits: params.difficulty_bits,
-        };
-        // TODO: extract `PublicInputs` from `plain_proof` once
-        // `TileOpening` carries the keyed-hash leaf explicitly (currently
-        // the leaf is implicit — verifier recomputes it from the strips).
-        // TODO: extract `Witness` from `plain_proof.found` + `ctx.noise`.
-        let _ = (zk_params, &plain_proof, ctx, block_commitment, nonce);
-        // Stub: currently `todo!()` inside `ai-pow-zk::prove`.
-        // Once the circuit is implemented:
-        //   let public_inputs = ai_pow_zk::PublicInputs { ... };
-        //   let witness = ai_pow_zk::Witness { ... };
-        //   let _zk = ai_pow_zk::prove(block_commitment, nonce,
-        //                              &zk_params, &public_inputs, &witness)?;
+        // `target` is already in scope (computed for the tile scan).
+        let _zk = crate::zk_bridge::prove_and_verify(ctx, params, &target)
+            .expect("F1 zk bridge: prove + pow-verify must succeed for a found tile");
+        let _ = (block_commitment, nonce);
     }
 
     Ok(Some(plain_proof))

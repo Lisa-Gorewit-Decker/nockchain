@@ -90,29 +90,59 @@ fn main() {
     let ctx =
         BlockContext::build(block_commitment, &a, &b, &params).expect("BlockContext build");
 
-    // 3. Build the composite trace: matrix-hash A then B.
-    let t = Instant::now();
+    // Helpers: 32-byte → 8 LE u32 words.
+    let words = |b: &[u8; 32]| -> [u32; 8] {
+        core::array::from_fn(|i| {
+            u32::from_le_bytes([b[i * 4], b[i * 4 + 1], b[i * 4 + 2], b[i * 4 + 3]])
+        })
+    };
+
+    // Build the composite trace exactly as the F1 bridge does:
+    // matrix-hash A/B (C3) + key-pin rows for JOB_KEY=κ and
+    // COMMITMENT_HASH=s_a (C1). Encapsulated as a closure so the
+    // per-iteration prove loop rebuilds an identical trace.
     let a_bytes: Vec<u8> = a.iter().map(|&v| v as u8).collect();
     let b_bytes: Vec<u8> = b.iter().map(|&v| v as u8).collect();
-    let mut trace = CompositeTrace::baseline_min();
-    let (next, _root_a) = trace.place_matrix_hash_a(0, &a_bytes, &ctx.kappa);
-    let (_end, _root_b) = trace.place_matrix_hash_b(next, &b_bytes, &ctx.kappa);
+    let kappa_w = words(&ctx.kappa);
+    let s_a_w = words(&ctx.s_a);
+    let build_trace = || -> CompositeTrace {
+        let mut tr = CompositeTrace::baseline_min();
+        let (n1, _) = tr.place_matrix_hash_a(0, &a_bytes, &ctx.kappa);
+        let (mh_end, _) = tr.place_matrix_hash_b(n1, &b_bytes, &ctx.kappa);
+        tr.place_key_pin_row(mh_end + 1, false, &kappa_w); // JOB_KEY = κ
+        tr.place_key_pin_row(mh_end + 2, true, &s_a_w); // COMMITMENT_HASH = s_a
+        tr
+    };
+
+    let t = Instant::now();
+    let trace = build_trace();
     let trace_gen_ms = t.elapsed().as_millis();
 
-    // 4. Derive PIs and assert the cross-crate byte-equivalence
-    //    anchor: SNARK HASH_A PI == ai-pow h_a_chunk.
+    // Derive PIs and assert the non-vacuous C1 + C3 bindings:
+    // HASH_A/HASH_B == BlockContext chunk commitments, and
+    // JOB_KEY/COMMITMENT_HASH == the real block's κ / s_a.
     let pis = CompositePublicInputs::derive_from_trace(&trace);
-    let expect_a: [u32; 8] = core::array::from_fn(|i| {
-        u32::from_le_bytes([
-            ctx.h_a_chunk[i * 4],
-            ctx.h_a_chunk[i * 4 + 1],
-            ctx.h_a_chunk[i * 4 + 2],
-            ctx.h_a_chunk[i * 4 + 3],
-        ])
-    });
     assert_eq!(
-        pis.hash_a, expect_a,
-        "SNARK HASH_A PI must byte-equal ai-pow BlockContext.h_a_chunk"
+        pis.hash_a,
+        words(&ctx.h_a_chunk),
+        "C3: SNARK HASH_A PI must byte-equal BlockContext.h_a_chunk"
+    );
+    assert_eq!(
+        pis.hash_b,
+        words(&ctx.h_b_chunk),
+        "C3: SNARK HASH_B PI must byte-equal BlockContext.h_b_chunk"
+    );
+    assert_eq!(
+        pis.job_key, kappa_w,
+        "C1: SNARK JOB_KEY PI must equal the block's κ"
+    );
+    assert_eq!(
+        pis.commitment_hash, s_a_w,
+        "C1: SNARK COMMITMENT_HASH PI must equal the block's s_a"
+    );
+    assert_eq!(
+        pis.hash_jackpot, [0u32; 8],
+        "C4 documented blocker: HASH_JACKPOT still zero (Pearl interleave pending)"
     );
 
     // 5. Prove + PoW-verify (C2: against the real difficulty target).
@@ -131,12 +161,7 @@ fn main() {
     let mut verify_ms_total = 0u128;
     let mut proof_bytes = 0usize;
     for _ in 0..iters {
-        let trace_i = {
-            let mut tr = CompositeTrace::baseline_min();
-            let (n2, _) = tr.place_matrix_hash_a(0, &a_bytes, &ctx.kappa);
-            tr.place_matrix_hash_b(n2, &b_bytes, &ctx.kappa);
-            tr
-        };
+        let trace_i = build_trace();
         let t = Instant::now();
         let proof = composite_prove(&cfg, trace_i, &pis);
         prove_ms_total += t.elapsed().as_millis();
@@ -158,7 +183,8 @@ fn main() {
         "f1_harness shape=TEST_SMALL seed={seed} iters={iters} \
          mine_ms={mine_ms} trace_gen_ms={trace_gen_ms} \
          prove_ms={} verify_ms={} proof_bytes={proof_bytes} \
-         num_pis={} plain_h_a_chunk_ok=true",
+         num_pis={} c1_job_key_ok=true c1_commitment_ok=true \
+         c3_hash_ab_ok=true c4_hash_jackpot=vacuous",
         prove_ms_total / iters as u128,
         verify_ms_total / iters as u128,
         pis.to_vec().len(),

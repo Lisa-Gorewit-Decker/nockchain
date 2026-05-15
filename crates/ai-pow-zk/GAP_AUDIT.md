@@ -159,36 +159,54 @@ or M12 lands. See `ENGINEERING_REPORT.md` §11.
 
 ## Prioritized remaining work
 
-**C1–C4 resolved 2026-05-15. F1 substrate + profiling infra
-landed 2026-05-15** (`d87fd10`): `crates/ai-pow/examples/f1_harness.rs`
-is the instrumented cross-crate fixture (real solve → SNARK,
-byte-equivalence-asserted), `scripts/profile_f1.sh` +
-`PROFILING.md` cover samply / peak-RSS (P2) / CI-bench wiring
-(P4). Remaining:
+**C1–C4 resolved 2026-05-15. F1 integration landed 2026-05-15.**
+`crates/ai-pow/src/zk_bridge.rs` builds a `CompositeTrace` from a
+real `BlockContext` and `composite_prove` + `composite_verify_pow`s
+it; the historical no-op stub at `prover.rs:334-355` is replaced
+by a real call (a hard correctness gate under the `zk` feature —
+every `mine()` now also produces + PoW-verifies a SNARK). The
+F1 harness + `scripts/profile_f1.sh` + `PROFILING.md` (samply /
+peak-RSS P2 / CI-bench P4) remain the instrumentation substrate.
 
-1. **F1 deep** — 🟠 the critical path. The harness exercises the
-   matrix-binding + prove/verify pipeline but NOT the faithful
-   `MatmulProof → CompositeTrace` jackpot→blake3 instruction
-   chain that makes `HASH_JACKPOT` / `JOB_KEY` /
-   `COMMITMENT_HASH` non-zero PIs (so C1/C4 are vacuous in the
-   harness today). Build that chain with the C1–C4 selectors on
-   genuine compression rows; extend the harness to assert the
-   now-non-vacuous bindings. The stub at `prover.rs:334-355` is
-   still a no-op with stale comments — clean up.
+**Bound non-vacuously on a real solve (zk_bridge):**
+- **C1** — `JOB_KEY` = κ and `COMMITMENT_HASH` = `s_a` via
+  `CompositeTrace::place_key_pin_row` (key-pin rows: `CV_IN` =
+  the chain-pinned key, no other chip activity, only the C1
+  selector-gated constraint live). Asserted == `BlockContext`.
+- **C3** — `HASH_A` / `HASH_B` = chunk-Merkle of A/B keyed by κ,
+  asserted byte-equal to `commit::matrix_commitment`.
+- **C2** — `composite_verify_pow` checks the bound `HASH_JACKPOT`
+  vs the real `difficulty_target`.
+
+Remaining:
+
+1. **C4 / HASH_JACKPOT — the residual blocker.** Still zero.
+   Root cause (now precisely characterized): in the composite
+   layout `IS_HASH_JACKPOT` is multiplexed as the jackpot chip's
+   `is_active` (M10.1c phase-12d, `chips/jackpot/chip.rs:112`),
+   and the jackpot eval enforces `Σ slot_sel == is_active`
+   (`chip.rs:142`). So an `IS_HASH_JACKPOT=1` row is *forced* to
+   be a genuine jackpot rotate-XOR-13 step — it cannot also be a
+   clean BLAKE3 finalize emitting `HASH_JACKPOT` in `CV_OUT`. A
+   faithful binding requires Pearl's per-row jackpot+blake3
+   *co-activation*: the last jackpot step row also carries the
+   BLAKE3 finalize whose `CV_OUT` = `BLAKE3(JACKPOT_MSG,
+   key=COMMITMENT_HASH)` (`pearl_program.rs::structure_jackpot_blake`
+   + the interleaved `structure_matmul_in_stark` schedule). That
+   is the Pearl program-compilation port — a bounded but distinct
+   architectural workstream. With `HASH_JACKPOT=0`, C2 clears any
+   target: the difficulty *mechanism* runs, its *binding to a
+   winning tile* awaits this.
 2. **F2 / M12** (recursion) — 🟠 biggest production lever;
    separate track.
-3. **P1, P3, P5, P6** — 🟠/🟡 PROD-scale (M12-gated), per-bus
-   LogUp ablation, real-workload bench (once F1 deep lands),
-   FRI retune. P2/P4 now have infra; wire P4 into CI when ready.
+3. **P1, P3, P5, P6** — PROD-scale (M12-gated), per-bus LogUp
+   ablation, real-workload bench, FRI retune. P2/P4 have infra.
 
-The honest one-line summary: **the SNARK now proves the
-proof-of-work statement.** C1+C4 anchor it to the block
-(JOB_KEY / COMMITMENT_HASH) and bind the tile-state hash
-(HASH_JACKPOT); C2 enforces the difficulty inequality against
-that bound hash (Pearl-faithfully, verifier-side); C3 closes the
-matrix-binding chain so the hashed bytes equal the committed
-matrix. The remaining gap is **F1** — wiring a verified plain
-proof into a `CompositeTrace` so these constraints fire on a real
-solve (today they're proven correct in form + by targeted/negative
-tests, but no end-to-end "real puzzle → SNARK" path exists yet).
-Everything else is production-hardening.
+The honest one-line summary: **the SNARK proves the
+proof-of-work statement and is now anchored to a real block.**
+C1 ties it to this block's κ / `s_a`; C3 binds the matrix bytes;
+C2 checks difficulty against the bound hash; the integration is
+wired into the production `mine()` path. The single remaining
+soundness item is C4 (HASH_JACKPOT) — blocked on the
+IS_HASH_JACKPOT-multiplexing → Pearl per-row interleave, precisely
+specified above. Everything else is production-hardening.

@@ -34,6 +34,11 @@ pub mod synth;
 pub mod tile_hash;
 pub mod verifier;
 
+/// F1 integration: `MatmulProof` → `ai-pow-zk` `CompositeTrace`.
+/// Only compiled with the `zk` feature (pulls in `ai-pow-zk`).
+#[cfg(feature = "zk")]
+pub mod zk_bridge;
+
 pub use crate::params::MatmulParams;
 pub use crate::proof::{MatmulProof, TileOpening};
 pub use crate::prover::{mine, mine_block, BlockContext, MineError, ProverOptions};

@@ -644,6 +644,40 @@ impl CompositeTrace {
         self.place_matrix_hash(row_start, matrix_bytes, key, 5)
     }
 
+    /// F1 (C1) — place a "key-pin" row binding the chain-pinned
+    /// BLAKE3 key into `CV_IN`.
+    ///
+    /// `kind = false` → `IS_USE_JOB_KEY` (binds `PI_JOB_KEY` = κ).
+    /// `kind = true`  → `IS_USE_COMMITMENT_HASH` (binds
+    /// `PI_COMMITMENT_HASH` = `s_a` noise seed).
+    ///
+    /// The row carries no blake3 / jackpot / matmul activity, so
+    /// only the C1 selector-gated constraint
+    /// `IS_USE_* · (CV_IN[i] − PI_*[i]) = 0` is live on it (and
+    /// the control chip's CONTROL_PREP packing). This is what
+    /// anchors the SNARK to a specific block — without it the
+    /// proof is unbounded. Encapsulates the CV_IN / ControlChip
+    /// internals so `ai-pow`'s F1 bridge stays on the public API.
+    pub fn place_key_pin_row(&mut self, row_idx: usize, commitment: bool, cv_in: &[u32; 8]) {
+        use crate::composite_layout::CV_IN_START;
+        use p3_field::integers::QuotientMap;
+
+        assert!(
+            row_idx < self.height(),
+            "key-pin row_idx {row_idx} out of bounds (height {})",
+            self.height()
+        );
+        let base = row_idx * TOTAL_TRACE_WIDTH;
+        let row = &mut self.matrix.values[base..base + TOTAL_TRACE_WIDTH];
+        for i in 0..8 {
+            row[CV_IN_START + i] = <Val as QuotientMap<u64>>::from_int(cv_in[i] as u64);
+        }
+        let mut sel = [false; 21];
+        // SELECTOR_COLS: idx 2 = IS_USE_JOB_KEY, idx 3 = IS_USE_COMMITMENT_HASH.
+        sel[if commitment { 3 } else { 2 }] = true;
+        ControlChip.fill_row(&sel, 0, row);
+    }
+
     /// M52 step 4.2 — write the "matrix staging" cells on `row_idx`.
     ///
     /// Pearl's BLAKE3 chip loads matrix bytes via the staging buffer
@@ -1888,6 +1922,61 @@ mod tests {
             pis.commitment_hash, commit,
             "COMMITMENT_HASH from IS_USE_COMMITMENT_HASH row"
         );
+    }
+
+    /// F1-deep make-or-break: a "key-pin" row (IS_USE_JOB_KEY = 1,
+    /// CV_IN_START = κ, no blake/jackpot activity) must prove +
+    /// verify, with the C1 binding firing non-vacuously. If this
+    /// holds, JOB_KEY / COMMITMENT_HASH can be made real PIs
+    /// without the full Pearl per-row interleave.
+    #[test]
+    fn c1_key_pin_row_proves_and_verifies() {
+        use crate::chips::control::ControlChip;
+        use crate::composite_layout::CV_IN_START;
+        use p3_field::integers::QuotientMap;
+
+        let mut trace = CompositeTrace::baseline_min();
+
+        // Row 5: IS_USE_JOB_KEY = 1 (SELECTOR_COLS idx 2), CV_IN = κ.
+        let jk: [u32; 8] = core::array::from_fn(|i| 0xC0FE_0000 + i as u32);
+        let r1 = 5usize;
+        let b1 = r1 * TOTAL_TRACE_WIDTH;
+        {
+            let row = &mut trace.matrix.values[b1..b1 + TOTAL_TRACE_WIDTH];
+            for i in 0..8 {
+                row[CV_IN_START + i] =
+                    <Val as QuotientMap<u64>>::from_int(jk[i] as u64);
+            }
+            let mut sel = [false; 21];
+            sel[2] = true; // IS_USE_JOB_KEY
+            ControlChip.fill_row(&sel, 0, row);
+        }
+
+        // Row 9: IS_USE_COMMITMENT_HASH = 1 (idx 3), CV_IN = s_a.
+        let ch: [u32; 8] = core::array::from_fn(|i| 0x5EED_0000 + i as u32);
+        let r2 = 9usize;
+        let b2 = r2 * TOTAL_TRACE_WIDTH;
+        {
+            let row = &mut trace.matrix.values[b2..b2 + TOTAL_TRACE_WIDTH];
+            for i in 0..8 {
+                row[CV_IN_START + i] =
+                    <Val as QuotientMap<u64>>::from_int(ch[i] as u64);
+            }
+            let mut sel = [false; 21];
+            sel[3] = true; // IS_USE_COMMITMENT_HASH
+            ControlChip.fill_row(&sel, 0, row);
+        }
+
+        let cfg = build_stark_config(&test_zk_params(), &CircuitConfig::TEST_PEARL);
+        let pis =
+            crate::composite_public::CompositePublicInputs::derive_from_matrix(&trace.matrix);
+        assert_eq!(pis.job_key, jk);
+        assert_eq!(pis.commitment_hash, ch);
+        let pv = pis.to_vec();
+        let proof =
+            prove::<AiPowStarkConfig, _>(&cfg, &CompositeFullAir, trace.matrix, &pv);
+        verify::<AiPowStarkConfig, _>(&cfg, &CompositeFullAir, &proof, &pv)
+            .expect("key-pin row must prove+verify (C1 non-vacuous, tractable)");
     }
 
     /// After `place_matrix_hash_a`, the root row has
