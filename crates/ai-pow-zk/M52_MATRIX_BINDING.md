@@ -227,44 +227,84 @@ bytes are in `BLAKE3_MSG` and the matmul reads bytes from
 the same matrix — an adversary could hash matrix X and run matmul
 on matrix Y, and both proofs verify.
 
-### Where the binding lives in the design
+### Design issue discovered: the existing bus binds the wrong thing
 
-The existing `noised_packed` LogUp bus is **already designed for
-this**:
+Documentation in `composite_lookups.rs:25` says the
+`noised_packed` bus has BLAKE3 as a querier ("blake3 (UINT8_DATA
+when IS_MSG_MAT)"). On closer inspection, the **bus emission code
+in `composite_full_air_with_lookups.rs::bus_emit::noised_packed`
+(lines 271-308) only emits matmul-side queries**. The BLAKE3
+querier is documented intent, not implemented.
 
-> `noised_packed` | `input` chip (NOISED_PACKED) | `matmul` (A_NOISED via A_ID; B_NOISED via B_ID), `blake3` (UINT8_DATA when IS_MSG_MAT) | per-row matrix bytes
-> — `composite_lookups.rs:25`
+More fundamentally, the **bus key is `(MAT_ID, NOISED_PACKED[0],
+NOISED_PACKED[1])`** — the *noised* matrix bytes (matrix + noise
+packed via polyval). But BLAKE3 hashes **plain matrix bytes**
+(no noise added). Putting the two on the same bus requires
+re-derivation of noise on the BLAKE3 side or a different
+binding scheme.
 
-So the LogUp infrastructure for "BLAKE3 reads matrix bytes via
-NOISED_PACKED, just like matmul does" is in place. The gap is in
-the **trace generator** — `place_matrix_hash` currently writes
-`BLAKE3_MSG` with raw 16 u32 words but does NOT:
-1. Pre-populate `NOISED_PACKED` slots (per-row polyval packing of
-   4 i8 mat bytes + 4 i8 noise bytes into 1 Goldilocks cell, via
-   the input chip's `MAT_UNPACK` / `NOISE_UNPACK` columns).
-2. Set `IS_MSG_MAT = 1` on the matrix-hash rows.
-3. Mirror the BLAKE3_MSG bytes into `UINT8_DATA` (the LogUp query
-   column).
-4. Update `populate_lookup_freq` to count the additional queries.
+The bus is actually called "noised_packed" because it binds the
+noised store. Plain matrix bytes (what BLAKE3 hashes) live in
+`MAT_UNPACK` (8 i8 cells per row, no noise), which today binds
+to `UINT8_DATA` via the `i8u8` bus when `IS_MSG_MAT = 1` — but
+that's a row-local constraint, not a cross-row matrix-store
+binding.
 
-### Sub-plan for step 4
+### Two viable approaches for step 4
+
+**4-A. Add a `plain_matrix_bytes` LogUp bus.** Key shape:
+`(MAT_ID, polyval(MAT_UNPACK[0..4]), polyval(MAT_UNPACK[4..8]))`.
+The `input` chip's existing constraint `NOISED_PACKED[i] =
+polyval(MAT_UNPACK) + polyval(NOISE_UNPACK)` means we can derive
+`polyval(MAT_UNPACK[..])` per row. Both matmul and BLAKE3 query
+this bus with their `(MAT_ID, mat_bytes)` views. The table is
+emitted by the input-chip rows that load the canonical store
+(one entry per matrix-data row).
+
+**4-B. Repurpose `noised_packed` with a derived value.** The
+BLAKE3 chip's row already has `MAT_UNPACK` (matrix bytes, since
+BLAKE3 absorbs plain bytes), `NOISE_UNPACK` (zero on BLAKE3 rows
+— no noise injected), and the polyval-pack relationship still
+holds: `NOISED_PACKED[i] = polyval(MAT_UNPACK[..]) + polyval(0..)
+= polyval(MAT_UNPACK[..])`. On BLAKE3 rows, `NOISED_PACKED`
+*equals* the plain-byte polyval. So if we have BLAKE3 rows query
+`(MAT_ID, NOISED_PACKED[0], NOISED_PACKED[1])` with
+`NOISE_UNPACK = 0`, they get plain-byte semantics. The matmul
+rows already query the same shape but with noise mixed in.
+**Distinct table rows for "noised" vs. "plain" entries** (matmul
+queries one, BLAKE3 the other) — both come from a canonical
+input-chip-populated store.
+
+4-B is cheaper (no new bus). It requires: per-row NOISE_UNPACK is
+zero on BLAKE3-hash rows, the input chip's preprocessed-store
+rows for matrix-A include both a "noised" entry (matmul reads)
+and a "plain" entry (BLAKE3 reads), differentiated by an extra
+flag column or by MAT_ID range partitioning.
+
+### Sub-plan for step 4 (approach 4-B selected)
 
 | # | Sub-step | Files touched |
 |---|---|---|
-| 4.1 | New helper `place_matrix_bytes_into_noised_packed` that takes the matrix byte array + starting `mat_id` and populates MAT_UNPACK / NOISE_UNPACK / NOISED_PACKED for the rows that will host matrix-hash compressions | `composite_trace.rs` + (preprocessed-trace updates in `composite_preprocess.rs`) |
-| 4.2 | Modify `place_matrix_hash` to ALSO write UINT8_DATA on matrix-hash rows and set IS_MSG_MAT in the row's selectors | `composite_trace.rs` |
-| 4.3 | Extend `populate_lookup_freq` to bump the NOISED_PACKED bus frequency for each matrix-hash row | `composite_trace.rs` |
-| 4.4 | Soundness test: prove a trace with `place_matrix_hash_a` placed on a matrix X, then **tamper one byte in X** post-hash but leave NOISED_PACKED intact. The LogUp balance must fail. | `composite_trace.rs` tests |
-| 4.5 | Soundness test: prove a trace where BLAKE3 hashes matrix X but NOISED_PACKED is populated with matrix Y. The LogUp balance must fail. | `composite_trace.rs` tests |
+| 4.0 | **Design ratification** — confirm approach 4-B (reuse `noised_packed` with NOISE_UNPACK=0 on BLAKE3 rows) over 4-A (new bus). 4-B requires distinct table rows for "noised" vs. "plain" matrix entries, differentiated by NOISE_UNPACK value or MAT_ID range. | — |
+| 4.1 | Add BLAKE3-side query in `bus_emit::noised_packed`: when `IS_MSG_MAT = 1`, emit `(MAT_ID, NOISED_PACKED[0], NOISED_PACKED[1])` query with multiplicity 1. Update `composite_lookups::noised_packed_freq` to accept `n_blake_reads` as a third input. | `composite_full_air_with_lookups.rs`, `composite_lookups.rs` |
+| 4.2 | New trace helper: on each matrix-hash row, write matrix bytes into `MAT_UNPACK`, zeros into `NOISE_UNPACK`, compute `NOISED_PACKED = polyval(MAT_UNPACK)`, set `MAT_ID` to a unique per-row matrix-byte index, mirror to `UINT8_DATA` via i8↔u8 conversion, set `IS_MSG_MAT = 1`. | `composite_trace.rs` |
+| 4.3 | Preprocessed-trace update: emit table-side rows for plain-byte entries (one per matrix byte block) alongside the noised entries. | `composite_preprocess.rs`, `chips/input.rs` |
+| 4.4 | Extend `populate_lookup_freq` to count BLAKE3-side queries per matrix-hash row. | `composite_trace.rs` |
+| 4.5 | Soundness test: prove a trace with `place_matrix_hash_a` on matrix X, tamper one byte in X post-hash but leave NOISED_PACKED intact. LogUp balance must fail. | `composite_trace.rs` tests |
+| 4.6 | Soundness test: BLAKE3 hashes matrix X but NOISED_PACKED is populated with matrix Y. LogUp balance must fail. | `composite_trace.rs` tests |
 
-Multiplicity arithmetic — for a single matrix-hash row:
-- Each NOISED_PACKED row produces 1 cell.
-- BLAKE3 reads 4 i8 mat bytes via UINT8_DATA → multiplicity +1
-  for the cell that packed those bytes.
-- Matmul (if also active on that row) reads → +2 (A_ID + B_ID).
-- Table side: `noised_packed_freq(n_matmul_reads, n_msg_reads)`
-  already exists in `composite_lookups.rs:141`. Just needs to be
-  driven correctly from the matrix-hash flow.
+### Why step 4 expanded vs. the initial scope
+
+Initial scope assumed the `noised_packed` bus already accepted
+BLAKE3-side queries (per the comment in `composite_lookups.rs:25`).
+Reading the emission code (`composite_full_air_with_lookups.rs:271-308`)
+revealed only matmul-side queries are emitted; BLAKE3 querying is
+documented intent, not implemented. Also the bus key is over
+*noised* bytes (mat + noise polyval-packed), while BLAKE3 hashes
+plain matrix bytes — so straight reuse doesn't work without
+either (a) a new bus, or (b) BLAKE3 rows asserting `NOISE_UNPACK = 0`
+so that `NOISED_PACKED[i] = polyval(MAT_UNPACK[..])` becomes the
+plain-byte polyval.
 
 ### Why this isn't done in step 3
 
