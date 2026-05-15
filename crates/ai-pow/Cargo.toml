@@ -17,6 +17,8 @@ ai-pow-zk = { path = "../ai-pow-zk", optional = true }
 [dev-dependencies]
 criterion = { workspace = true }
 proptest = { workspace = true }
+# Used by examples/f1_harness.rs to measure encoded proof size.
+bincode = { workspace = true, features = ["serde"] }
 
 [features]
 default = []
