@@ -79,10 +79,11 @@ PROD-scale as a separate viability gate (step 7).
 | 1 | Extend `CompositePublicInputs` with `HASH_A` / `HASH_B` (16 Goldilocks) | ✅ landed (`d5b77c7`) | +3 | 275 unit |
 | 2 | Selector-gated AIR binding: `IS_HASH_A · (CV_OUT − PI_HASH_A) = 0`, ditto for B | ✅ landed (`d5b77c7`) | (covered in step 3) | — |
 | 3 | `composite_trace::place_matrix_hash_a` / `place_matrix_hash_b` (chunk-Merkle instruction emission) | ✅ landed (`dfa5a9f`) | +6 | 303 unit |
-| 4 | Cross-chip binding — BLAKE3 absorbs from `noised_packed` LogUp bus | ⏳ pending | — | — |
-| 5 | Plain-side wire-up in `ai-pow` (block header + `matrix_commitment` call site) | ⏳ pending | — | — |
-| 6 | TEST_SMALL end-to-end bench + correctness test | ⏳ pending | — | — |
-| 7 | PROD-scale evaluation (measure or model prove time at 4096²) | ⏳ pending | — | — |
+| 4.1 | Bus emission + lookup-freq plumbing for IS_MSG_MAT-gated BLAKE3 query | ✅ landed (`12256b2`) | (kept tests at 303) | 303 unit |
+| 4.2–4.6 | Trace generator wire-up of IS_MSG_MAT + soundness tests | ⏳ pending — see "Step 4.2 architectural realization" below | — | — |
+| 5 | Plain-side wire-up in `ai-pow` (block header + `matrix_commitment` call site) | ⏳ pending (depends on step 4) | — | — |
+| 6 | TEST_SMALL end-to-end bench + correctness test | ⏳ pending (depends on step 4) | — | — |
+| 7 | PROD-scale evaluation (measure or model prove time at 4096²) | ⏳ pending (depends on steps 4-6) | — | — |
 
 ### Step 2 design refinement
 
@@ -396,16 +397,63 @@ the BLAKE3 chip's MSG_BUFFER staging logic.
 in step 4.4 is the load-bearing piece. Tests 4.5 and 4.6 are the
 soundness validation that the binding actually works.
 
-### Why step 4 won't land in this session
+### Step 4.1 landed (`12256b2`)
 
-- Each sub-step requires careful, AIR-soundness-affecting code.
-- The MAT_UNPACK-per-row distribution mechanism inside the
-  BLAKE3 chip needs verification (does the existing chip's
-  IS_MSG_MAT firing logic match what `place_matrix_hash` would
-  need?).
-- 4-6 hours of focused engineering minimum, plus test debugging.
-- Better to commit the 3 landed steps + this detailed plan and
-  resume fresh.
+Added the IS_MSG_MAT-gated BLAKE3 query in
+`bus_emit::noised_packed` plus the matching MAT_FREQ bump in
+`populate_lookup_freq`. The plumbing is in place; safe by
+construction since IS_MSG_MAT remains 0 throughout existing
+traces (303 tests still pass).
+
+### Step 4.2 architectural realization
+
+`place_matrix_hash` currently writes the entire 64-byte BLAKE3
+message directly into `BLAKE3_MSG[0..16]` per row. Pearl's
+design instead uses a staging buffer (`BLAKE3_MSG_BUFFER`) where
+`data_source = MessageDataType::Matrix { dword_offset }` loads
+matrix bytes 4 at a time across multiple rows, with `IS_MSG_MAT`
+firing on the load rows.
+
+Our current `place_blake3_hash` skips this staging pattern. To
+fire `IS_MSG_MAT` and hit the new bus query (step 4.1), we have
+two options:
+
+- **4.2-staging.** Refactor `place_blake3_hash` to use the
+  matrix-staging buffer pattern Pearl's chip supports. Each
+  BLAKE3 compression hashing matrix bytes becomes more than
+  8 rows — the message is loaded across the additional rows
+  via `IS_MSG_MAT`. Bigger refactor; closer to Pearl-port.
+- **4.2-sidecar.** Per matrix-hash BLAKE3 block, add a separate
+  "binding row" *outside* the 8-row block that sets
+  `IS_MSG_MAT = 1`, `MAT_UNPACK = 8 matrix bytes`, `NOISE_UNPACK = 0`,
+  `NOISED_PACKED = polyval(MAT_UNPACK)`, plus a matching
+  `UINT8_DATA` and `MAT_ID`. The row does nothing else (no
+  matmul-active, no BLAKE3-active). It only exists to publish
+  the (mat_id, plain_polyval) table entry that BOTH the BLAKE3
+  chip (if it queried) AND matmul would query. **But** — the
+  BLAKE3 chip doesn't currently emit a query against
+  noised_packed for its message bytes, so even with sidecar
+  rows, BLAKE3 isn't bound to them. So sidecar alone isn't
+  enough — needs constraint glue.
+
+This is a deeper-than-anticipated refactor of how matrix bytes
+flow through the chip. The honest engineering call: step 4
+proper requires reading `pearl/zk-pow/src/circuit/chip/blake3/`
+end-to-end to understand the matrix-staging pattern, then
+deciding whether to port it or build a simpler bespoke binding.
+Not a same-day finish from this state.
+
+### Why steps 5-7 can't be tackled until step 4 lands
+
+- Step 5 (ai-pow plain-side) computes H_A and stuffs it into the
+  block header. Without step 4, the SNARK isn't actually bound
+  to the bytes that produce H_A, so the plain-side artifact has
+  no cryptographic meaning to attest to.
+- Step 6 (TEST_SMALL end-to-end test) is the validation that
+  step 4 actually works. Useless to write before step 4 lands.
+- Step 7 (PROD-scale viability) is a benchmarking task that
+  measures the full pipeline. Only meaningful once steps 4-6
+  are in.
 
 ### Why this isn't done in step 3
 
