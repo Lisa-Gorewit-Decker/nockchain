@@ -711,6 +711,18 @@ impl CompositeTrace {
             row[UINT8_DATA_START + i] =
                 <Val as QuotientMap<u64>>::from_int((bytes[i] as u8) as u64);
         }
+        // NOTE (C3): the IS_MSG_MAT-gated constraint in
+        // composite_full_air binds `BLAKE3_MSG[0..2]` to
+        // `base256(UINT8_DATA[0..8])`. `BLAKE3_MSG` is owned by
+        // the blake3 chip (constrained on every row vs. round
+        // state), so it can only carry matrix bytes on a genuine
+        // compression row — not on a separate staging row. This
+        // helper therefore does NOT write BLAKE3_MSG; the M52 4.2
+        // "separate staging row" model is superseded by C3, which
+        // requires IS_MSG_MAT to live on actual matrix-leaf
+        // compression rows (the F1 integration path). The column
+        // writes below (MAT_UNPACK/UINT8_DATA/NOISED_PACKED) are
+        // still exercised by the derivation tests.
         // NOISE_UNPACK: zero on plain-byte rows.
         for i in 0..NOISE_UNPACK_LEN {
             row[NOISE_UNPACK_START + i] = Val::default();
@@ -1693,42 +1705,85 @@ mod tests {
             .expect("composite proof with matrix hash must verify");
     }
 
-    /// M52 step 4.2: staging-row helper writes coherent
-    /// (MAT_UNPACK, UINT8_DATA, NOISE_UNPACK=0, NOISED_PACKED,
-    /// MAT_ID, IS_MSG_MAT=1, CONTROL_PREP) and the FullAir
-    /// (URange8/IRange8/i8u8/input chip/noised_packed bus all
-    /// gated on it) accepts the trace end-to-end.
+    /// M52 step 4.2 (superseded by C3): `place_matrix_staging_row`
+    /// writes coherent MAT_UNPACK / UINT8_DATA / NOISE_UNPACK=0 /
+    /// NOISED_PACKED / MAT_ID / IS_MSG_MAT / CONTROL_PREP. C3
+    /// revealed the "separate staging row" model is not provable
+    /// (BLAKE3_MSG is blake3-chip-owned, so IS_MSG_MAT must live
+    /// on real compression rows — the F1 integration path), so
+    /// this is now a column-write derivation check rather than a
+    /// full prove+verify.
     #[test]
-    fn place_matrix_staging_row_prove_and_verify() {
+    fn place_matrix_staging_row_writes_expected_columns() {
+        use crate::composite_layout::{
+            IS_MSG_MAT, MAT_ID, NOISED_PACKED_START, NOISE_UNPACK_START, UINT8_DATA_START,
+        };
+        use p3_field::integers::QuotientMap;
+        use p3_field::PrimeField64;
+
         let mut trace = CompositeTrace::baseline_min();
         let bytes: [i8; 8] = [1, -2, 3, -4, 5, -6, 7, -8];
-        let _packs = trace.place_matrix_staging_row(5, &bytes, 0);
+        let packs = trace.place_matrix_staging_row(5, &bytes, 42);
 
-        let cfg = build_stark_config(&test_zk_params(), &CircuitConfig::TEST_PEARL);
-        let pis =
-            crate::composite_public::CompositePublicInputs::derive_from_matrix(&trace.matrix)
-                .to_vec();
-        let proof = prove::<AiPowStarkConfig, _>(&cfg, &CompositeFullAir, trace.matrix, &pis);
-        verify::<AiPowStarkConfig, _>(&cfg, &CompositeFullAir, &proof, &pis)
-            .expect("staging row must satisfy all per-row chip constraints");
+        let base = 5 * TOTAL_TRACE_WIDTH;
+        let v = &trace.matrix.values;
+        assert_eq!(v[base + IS_MSG_MAT].as_canonical_u64(), 1);
+        assert_eq!(v[base + MAT_ID].as_canonical_u64(), 42);
+        for i in 0..8 {
+            assert_eq!(
+                v[base + UINT8_DATA_START + i].as_canonical_u64(),
+                bytes[i] as u8 as u64
+            );
+            assert_eq!(v[base + NOISE_UNPACK_START + i].as_canonical_u64(), 0);
+        }
+        // NOISED_PACKED = polyval(MAT_UNPACK, 256) with NOISE=0.
+        let expect_np0 = <Val as QuotientMap<i64>>::from_int(packs[0] as i64);
+        assert_eq!(
+            v[base + NOISED_PACKED_START].as_canonical_u64(),
+            expect_np0.as_canonical_u64()
+        );
     }
 
-    /// Two staging rows with distinct `mat_id` and distinct
-    /// byte content also verify, exercising the input chip's
-    /// per-row polyval constraint with non-trivial data.
+    /// C3: the IS_MSG_MAT-gated cross-column constraint
+    /// `IS_MSG_MAT · (BLAKE3_MSG[j] − base256(UINT8_DATA[4j..4j+4])) = 0`
+    /// rejects a trace where a row claims IS_MSG_MAT but its
+    /// hashed message word does not equal the matrix-byte view
+    /// the i8u8 / noised_packed buses bind. This is the residual
+    /// soundness gap (M52 step 4.3+): without it an adversary
+    /// hashes matrix Y while the buses bind matrix X.
+    ///
+    /// Negative test: a hand-crafted row with IS_MSG_MAT=1,
+    /// UINT8_DATA != 0, BLAKE3_MSG = 0 violates C3 ⇒ verify must
+    /// reject. (The consistent+globally-valid positive case needs
+    /// IS_MSG_MAT on a real blake3 compression row carrying
+    /// matrix bytes — the F1 integration path; C3's constraint is
+    /// what makes that path sound.)
     #[test]
-    fn place_matrix_staging_two_rows_prove_and_verify() {
-        let mut trace = CompositeTrace::baseline_min();
-        trace.place_matrix_staging_row(3, &[10, 20, 30, 40, -1, -2, -3, -4], 0);
-        trace.place_matrix_staging_row(7, &[100, -100, 50, -50, 25, -25, 12, -12], 1);
+    fn c3_rejects_is_msg_mat_row_with_mismatched_blake_msg() {
+        use crate::composite_layout::{IS_MSG_MAT, UINT8_DATA_START};
+        use p3_field::integers::QuotientMap;
 
         let cfg = build_stark_config(&test_zk_params(), &CircuitConfig::TEST_PEARL);
+
+        let mut trace = CompositeTrace::baseline_min();
+        let r = 5usize;
+        let base = r * TOTAL_TRACE_WIDTH;
+        // IS_MSG_MAT = 1 but BLAKE3_MSG stays 0 while UINT8_DATA[0]
+        // = 7 ⇒ base256(UINT8_DATA[0..4]) = 7 ≠ 0 ⇒ C3 fails.
+        trace.matrix.values[base + IS_MSG_MAT] =
+            <Val as QuotientMap<u64>>::from_int(1);
+        trace.matrix.values[base + UINT8_DATA_START] =
+            <Val as QuotientMap<u64>>::from_int(7);
+
         let pis =
             crate::composite_public::CompositePublicInputs::derive_from_matrix(&trace.matrix)
                 .to_vec();
-        let proof = prove::<AiPowStarkConfig, _>(&cfg, &CompositeFullAir, trace.matrix, &pis);
-        verify::<AiPowStarkConfig, _>(&cfg, &CompositeFullAir, &proof, &pis)
-            .expect("two staging rows must verify");
+        let proof =
+            prove::<AiPowStarkConfig, _>(&cfg, &CompositeFullAir, trace.matrix, &pis);
+        assert!(
+            verify::<AiPowStarkConfig, _>(&cfg, &CompositeFullAir, &proof, &pis).is_err(),
+            "C3 must reject an IS_MSG_MAT row whose BLAKE3_MSG != base256(UINT8_DATA)"
+        );
     }
 
     /// Tampering with `PI_HASH_A` must make verify reject. This
