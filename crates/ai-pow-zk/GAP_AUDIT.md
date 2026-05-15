@@ -180,23 +180,37 @@ peak-RSS P2 / CI-bench P4) remain the instrumentation substrate.
 
 Remaining:
 
-1. **C4 / HASH_JACKPOT — the residual blocker.** Still zero.
-   Root cause (now precisely characterized): in the composite
-   layout `IS_HASH_JACKPOT` is multiplexed as the jackpot chip's
-   `is_active` (M10.1c phase-12d, `chips/jackpot/chip.rs:112`),
-   and the jackpot eval enforces `Σ slot_sel == is_active`
-   (`chip.rs:142`). So an `IS_HASH_JACKPOT=1` row is *forced* to
-   be a genuine jackpot rotate-XOR-13 step — it cannot also be a
-   clean BLAKE3 finalize emitting `HASH_JACKPOT` in `CV_OUT`. A
-   faithful binding requires Pearl's per-row jackpot+blake3
-   *co-activation*: the last jackpot step row also carries the
-   BLAKE3 finalize whose `CV_OUT` = `BLAKE3(JACKPOT_MSG,
-   key=COMMITMENT_HASH)` (`pearl_program.rs::structure_jackpot_blake`
-   + the interleaved `structure_matmul_in_stark` schedule). That
-   is the Pearl program-compilation port — a bounded but distinct
-   architectural workstream. With `HASH_JACKPOT=0`, C2 clears any
-   target: the difficulty *mechanism* runs, its *binding to a
-   winning tile* awaits this.
+1. **C4 / HASH_JACKPOT — the residual blocker (root cause
+   empirically confirmed 2026-05-15).** Still zero. Two stacked
+   obstacles:
+   - **(a) Selector multiplexing.** `IS_HASH_JACKPOT` is the
+     jackpot chip's `is_active` (`chips/jackpot/chip.rs:112`) and
+     the eval enforces `Σ slot_sel == is_active` (`chip.rs:142`),
+     so an `IS_HASH_JACKPOT=1` row is forced to be a genuine
+     jackpot step. *Solvable*: co-locate a degenerate jackpot
+     step on the BLAKE3 finalize row, placed as the trace's last
+     8 rows so the jackpot `when_transition` is vacuous there
+     (mirrors Pearl `structure_jackpot_blake`). A
+     `place_jackpot_hash_block` helper doing exactly this was
+     built and the jackpot-side constraints check out.
+   - **(b) Deeper blocker — empirically confirmed.** A
+     standalone `place_blake3_hash_with_selectors` block only
+     verifies when **contiguous from row 0**. The bisect test
+     `bisect_blake_block_at_trace_end_no_jackpot` showed a bare
+     blake block (no jackpot, no extra selectors) at
+     `row_start = height-8` *and* at a mid-trace row 100 both
+     fail `OodEvaluationMismatch`, while the same machinery from
+     row 0 (`place_matrix_hash_*`) verifies. So the composite
+     AIR's blake3 chip does not admit a blake compression that
+     is not row-0-contiguous — and Pearl places the jackpot-blake
+     at `num_rows − 8` (trace-terminal). C4 therefore needs
+     **blake3-chip surgery** (admit a blake block at an arbitrary
+     / trace-terminal row offset — likely a leading-boundary
+     transition-gating issue), not trace-generator wiring. This
+     was attempted in-session; the unsound scaffolding was
+     reverted rather than shipped. With `HASH_JACKPOT=0`, C2
+     clears any target: the difficulty *mechanism* runs, its
+     *binding to a winning tile* awaits the chip fix.
 2. **F2 / M12** (recursion) — 🟠 biggest production lever;
    separate track.
 3. **P1, P3, P5, P6** — PROD-scale (M12-gated), per-bus LogUp
