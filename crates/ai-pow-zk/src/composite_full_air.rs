@@ -53,12 +53,14 @@ use crate::chips::matmul::chip::MatmulCumsumChip;
 use crate::chips::range_table::{IRange7P1Chip, IRange8Chip, URange13Chip, URange8Chip};
 use crate::chips::stark_row::StarkRowChip;
 use crate::composite_layout::{
-    CUMSUM_TILE_START, CV_OUT_LEN, CV_OUT_START, IS_HASH_A, IS_HASH_B, JACKPOT_MSG_START,
-    JACKPOT_SIZE, TOTAL_TRACE_WIDTH,
+    CUMSUM_TILE_START, CV_IN_LEN, CV_IN_START, CV_OUT_LEN, CV_OUT_START, IS_HASH_A, IS_HASH_B,
+    IS_HASH_JACKPOT, IS_USE_COMMITMENT_HASH, IS_USE_JOB_KEY, JACKPOT_MSG_START, JACKPOT_SIZE,
+    TOTAL_TRACE_WIDTH,
 };
 use crate::composite_public::{
-    NUM_PUBLIC_VALUES, PI_CUMSUM_LEN, PI_CUMSUM_OFFSET, PI_HASH_A_OFFSET, PI_HASH_B_OFFSET,
-    PI_JACKPOT_OFFSET,
+    NUM_PUBLIC_VALUES, PI_COMMITMENT_HASH_OFFSET, PI_CUMSUM_LEN, PI_CUMSUM_OFFSET,
+    PI_HASH_A_OFFSET, PI_HASH_B_OFFSET, PI_HASH_JACKPOT_OFFSET, PI_JACKPOT_OFFSET,
+    PI_JOB_KEY_OFFSET,
 };
 
 /// The M10.1c composite AIR (Phase 12a slice).
@@ -146,6 +148,13 @@ impl<AB: AirBuilder> Air<AB> for CompositeFullAir {
             core::array::from_fn(|i| builder.public_values()[PI_HASH_A_OFFSET + i]);
         let pi_hash_b: [AB::PublicVar; CV_OUT_LEN] =
             core::array::from_fn(|i| builder.public_values()[PI_HASH_B_OFFSET + i]);
+        // C1/C4 — Pearl Layer-0 canonical bindings.
+        let pi_job_key: [AB::PublicVar; CV_IN_LEN] =
+            core::array::from_fn(|i| builder.public_values()[PI_JOB_KEY_OFFSET + i]);
+        let pi_commitment_hash: [AB::PublicVar; CV_IN_LEN] =
+            core::array::from_fn(|i| builder.public_values()[PI_COMMITMENT_HASH_OFFSET + i]);
+        let pi_hash_jackpot: [AB::PublicVar; CV_OUT_LEN] =
+            core::array::from_fn(|i| builder.public_values()[PI_HASH_JACKPOT_OFFSET + i]);
         let main = builder.main();
         let cur = main.current_slice();
         let cur_cumsum: [AB::Var; PI_CUMSUM_LEN] =
@@ -154,18 +163,47 @@ impl<AB: AirBuilder> Air<AB> for CompositeFullAir {
             core::array::from_fn(|i| cur[JACKPOT_MSG_START + i]);
         let cur_is_hash_a: AB::Var = cur[IS_HASH_A];
         let cur_is_hash_b: AB::Var = cur[IS_HASH_B];
+        let cur_is_hash_jackpot: AB::Var = cur[IS_HASH_JACKPOT];
+        let cur_is_use_job_key: AB::Var = cur[IS_USE_JOB_KEY];
+        let cur_is_use_commitment_hash: AB::Var = cur[IS_USE_COMMITMENT_HASH];
         let cur_cv_out: [AB::Var; CV_OUT_LEN] =
             core::array::from_fn(|i| cur[CV_OUT_START + i]);
+        let cur_cv_in: [AB::Var; CV_IN_LEN] =
+            core::array::from_fn(|i| cur[CV_IN_START + i]);
 
-        // Selector-gated per-row binding (fires on every row but
-        // only constrains when `is_hash_*` = 1).
+        // Selector-gated per-row PI binding (fires on every row but
+        // only constrains when the selector = 1).
+        //
+        // HASH_A / HASH_B / HASH_JACKPOT bind the BLAKE3 `CV_OUT`
+        // on their producing rows (Pearl `pearl_circuit.rs:20-22`
+        // constraints b + d). JOB_KEY / COMMITMENT_HASH bind the
+        // BLAKE3 `CV_IN` (the chain-pinned key) on rows that use
+        // them as the compression key — this ties the entire proof
+        // to the block-header-derived κ and the `s_a` noise seed,
+        // making it a proof *of work for this block* rather than an
+        // unanchored "some matmul happened" statement.
         for i in 0..CV_OUT_LEN {
-            // is_hash_a · (cv_out[i] - pi_hash_a[i]) = 0
             builder.assert_zero(
                 cur_is_hash_a.into() * (cur_cv_out[i].into() - pi_hash_a[i].into()),
             );
             builder.assert_zero(
                 cur_is_hash_b.into() * (cur_cv_out[i].into() - pi_hash_b[i].into()),
+            );
+            // C4: IS_HASH_JACKPOT · (CV_OUT[i] − PI_HASH_JACKPOT[i]) = 0
+            builder.assert_zero(
+                cur_is_hash_jackpot.into()
+                    * (cur_cv_out[i].into() - pi_hash_jackpot[i].into()),
+            );
+        }
+        for i in 0..CV_IN_LEN {
+            // C1: IS_USE_JOB_KEY · (CV_IN[i] − PI_JOB_KEY[i]) = 0
+            builder.assert_zero(
+                cur_is_use_job_key.into() * (cur_cv_in[i].into() - pi_job_key[i].into()),
+            );
+            // C1: IS_USE_COMMITMENT_HASH · (CV_IN[i] − PI_COMMITMENT_HASH[i]) = 0
+            builder.assert_zero(
+                cur_is_use_commitment_hash.into()
+                    * (cur_cv_in[i].into() - pi_commitment_hash[i].into()),
             );
         }
 

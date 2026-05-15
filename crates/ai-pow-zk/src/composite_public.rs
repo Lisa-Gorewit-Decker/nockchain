@@ -32,8 +32,9 @@
 //!   downstream protocol needs the final hash output.
 
 use crate::composite_layout::{
-    CUMSUM_TILE_START, CV_OUT_LEN, CV_OUT_START, IS_HASH_A, IS_HASH_B, JACKPOT_MSG_START,
-    JACKPOT_SIZE, TOTAL_TRACE_WIDTH,
+    CUMSUM_TILE_START, CV_IN_LEN, CV_IN_START, CV_OUT_LEN, CV_OUT_START, IS_HASH_A, IS_HASH_B,
+    IS_HASH_JACKPOT, IS_USE_COMMITMENT_HASH, IS_USE_JOB_KEY, JACKPOT_MSG_START, JACKPOT_SIZE,
+    TOTAL_TRACE_WIDTH,
 };
 use crate::composite_trace::CompositeTrace;
 use crate::Val;
@@ -43,7 +44,19 @@ use p3_field::PrimeField64;
 use serde::{Deserialize, Serialize};
 
 /// Number of field elements in the public-input vector.
-pub const NUM_PUBLIC_VALUES: usize = 4 + JACKPOT_SIZE + 2 * CV_OUT_LEN; // 36
+///
+/// Layout (Pearl Layer-0 STARK canonical set + our M10.1c
+/// cumsum/jackpot passthrough kept for backward-compat):
+/// `cumsum(4) + jackpot(16) + hash_a(8) + hash_b(8) +
+///  job_key(8) + commitment_hash(8) + hash_jackpot(8)` = 60.
+///
+/// `job_key`, `commitment_hash`, `hash_jackpot` mirror Pearl's
+/// `pearl_layout::{JOB_KEY, COMMITMENT_HASH, HASH_JACKPOT}`
+/// (`pearl_circuit.rs:12-22`). They tie the proof to the
+/// chain-pinned block-header key + noise seed and bind the
+/// tile-state keyed hash — without them the SNARK proves correct
+/// sub-computations but not a *proof of work*.
+pub const NUM_PUBLIC_VALUES: usize = 4 + JACKPOT_SIZE + 5 * CV_OUT_LEN; // 60
 
 /// PI layout offsets (within the `Vec<Val>` of length
 /// [`NUM_PUBLIC_VALUES`]).
@@ -55,6 +68,20 @@ pub const PI_HASH_A_OFFSET: usize = PI_JACKPOT_OFFSET + PI_JACKPOT_LEN;
 pub const PI_HASH_A_LEN: usize = CV_OUT_LEN; // 8 u32 words
 pub const PI_HASH_B_OFFSET: usize = PI_HASH_A_OFFSET + PI_HASH_A_LEN;
 pub const PI_HASH_B_LEN: usize = CV_OUT_LEN;
+/// Pearl `JOB_KEY` = BLAKE3(block-header ‖ mining-config) = κ.
+/// Bound to `CV_IN` on rows where `IS_USE_JOB_KEY = 1`.
+pub const PI_JOB_KEY_OFFSET: usize = PI_HASH_B_OFFSET + PI_HASH_B_LEN;
+pub const PI_JOB_KEY_LEN: usize = CV_IN_LEN;
+/// Pearl `COMMITMENT_HASH` = `s_a` noise seed. Bound to `CV_IN`
+/// on rows where `IS_USE_COMMITMENT_HASH = 1`.
+pub const PI_COMMITMENT_HASH_OFFSET: usize = PI_JOB_KEY_OFFSET + PI_JOB_KEY_LEN;
+pub const PI_COMMITMENT_HASH_LEN: usize = CV_IN_LEN;
+/// Pearl `HASH_JACKPOT` = BLAKE3(JACKPOT_MSG, key=COMMITMENT_HASH)
+/// — the tile-state keyed hash compared against the difficulty
+/// target. Bound to `CV_OUT` on the row where
+/// `IS_HASH_JACKPOT = 1`.
+pub const PI_HASH_JACKPOT_OFFSET: usize = PI_COMMITMENT_HASH_OFFSET + PI_COMMITMENT_HASH_LEN;
+pub const PI_HASH_JACKPOT_LEN: usize = CV_OUT_LEN;
 
 /// Typed view of the public inputs the composite AIR commits to.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -70,6 +97,17 @@ pub struct CompositePublicInputs {
     /// BLAKE3 keyed-hash of `pad(B_col_major)` — Pearl §4.3
     /// matrix-B commitment.
     pub hash_b: [u32; PI_HASH_B_LEN],
+    /// Pearl `JOB_KEY` (κ): chain-pinned BLAKE3(block-header ‖
+    /// mining-config). Bound to `CV_IN` on `IS_USE_JOB_KEY` rows.
+    pub job_key: [u32; PI_JOB_KEY_LEN],
+    /// Pearl `COMMITMENT_HASH` (`s_a` noise seed). Bound to
+    /// `CV_IN` on `IS_USE_COMMITMENT_HASH` rows.
+    pub commitment_hash: [u32; PI_COMMITMENT_HASH_LEN],
+    /// Pearl `HASH_JACKPOT` = BLAKE3(JACKPOT_MSG,
+    /// key=COMMITMENT_HASH) — the tile-state keyed hash that the
+    /// difficulty target is compared against. Bound to `CV_OUT`
+    /// on the `IS_HASH_JACKPOT` row.
+    pub hash_jackpot: [u32; PI_HASH_JACKPOT_LEN],
 }
 
 impl Default for CompositePublicInputs {
@@ -86,6 +124,9 @@ impl CompositePublicInputs {
             jackpot: [0; JACKPOT_SIZE],
             hash_a: [0; PI_HASH_A_LEN],
             hash_b: [0; PI_HASH_B_LEN],
+            job_key: [0; PI_JOB_KEY_LEN],
+            commitment_hash: [0; PI_COMMITMENT_HASH_LEN],
+            hash_jackpot: [0; PI_HASH_JACKPOT_LEN],
         }
     }
 
@@ -103,6 +144,15 @@ impl CompositePublicInputs {
             out.push(<Val as QuotientMap<u64>>::from_int(v as u64));
         }
         for &v in &self.hash_b {
+            out.push(<Val as QuotientMap<u64>>::from_int(v as u64));
+        }
+        for &v in &self.job_key {
+            out.push(<Val as QuotientMap<u64>>::from_int(v as u64));
+        }
+        for &v in &self.commitment_hash {
+            out.push(<Val as QuotientMap<u64>>::from_int(v as u64));
+        }
+        for &v in &self.hash_jackpot {
             out.push(<Val as QuotientMap<u64>>::from_int(v as u64));
         }
         debug_assert_eq!(out.len(), NUM_PUBLIC_VALUES);
@@ -134,35 +184,45 @@ impl CompositePublicInputs {
             matrix.values[last_base + JACKPOT_MSG_START + i].as_canonical_u64() as u32
         });
 
-        let hash_a = read_cv_at_selector(matrix, n, IS_HASH_A);
-        let hash_b = read_cv_at_selector(matrix, n, IS_HASH_B);
+        let hash_a = read_cv_at_selector(matrix, n, IS_HASH_A, CV_OUT_START);
+        let hash_b = read_cv_at_selector(matrix, n, IS_HASH_B, CV_OUT_START);
+        let hash_jackpot = read_cv_at_selector(matrix, n, IS_HASH_JACKPOT, CV_OUT_START);
+        let job_key = read_cv_at_selector(matrix, n, IS_USE_JOB_KEY, CV_IN_START);
+        let commitment_hash =
+            read_cv_at_selector(matrix, n, IS_USE_COMMITMENT_HASH, CV_IN_START);
 
         Self {
             cumsum,
             jackpot,
             hash_a,
             hash_b,
+            job_key,
+            commitment_hash,
+            hash_jackpot,
         }
     }
 }
 
 /// Scan the trace for the (at most one) row where `selector_col`
-/// equals 1, and read `CV_OUT[0..8]` from that row. Returns
-/// zeros if no such row is found (baseline trace).
+/// equals 1, and read 8 CV words starting at `cv_start` from that
+/// row (`CV_OUT_START` for hash outputs, `CV_IN_START` for the
+/// JOB_KEY / COMMITMENT_HASH key inputs). Returns zeros if no
+/// such row is found (baseline trace).
 ///
-/// The AIR enforces uniqueness of the activating row via the
-/// control chip's selector-bit aggregation; here we just take the
-/// first match for derivation correctness.
+/// The selector-gated AIR constraint enforces the bound value
+/// equals the PI on every firing row; the trace generator places
+/// exactly one such row per matrix in production.
 fn read_cv_at_selector(
     matrix: &p3_matrix::dense::RowMajorMatrix<Val>,
     n: usize,
     selector_col: usize,
+    cv_start: usize,
 ) -> [u32; CV_OUT_LEN] {
     for r in 0..n {
         let base = r * TOTAL_TRACE_WIDTH;
         if matrix.values[base + selector_col].as_canonical_u64() == 1 {
             return core::array::from_fn(|i| {
-                matrix.values[base + CV_OUT_START + i].as_canonical_u64() as u32
+                matrix.values[base + cv_start + i].as_canonical_u64() as u32
             });
         }
     }
@@ -228,8 +288,7 @@ mod tests {
         let pis = CompositePublicInputs {
             cumsum: [10, 20, 30, 40],
             jackpot: core::array::from_fn(|i| 100 + i as u32),
-            hash_a: [0; PI_HASH_A_LEN],
-            hash_b: [0; PI_HASH_B_LEN],
+            ..CompositePublicInputs::zero()
         };
         let v = pis.to_vec();
         use p3_field::PrimeField64;
@@ -251,9 +310,7 @@ mod tests {
     fn negative_cumsum_round_trips() {
         let pis = CompositePublicInputs {
             cumsum: [-1, -1000, i32::MIN, i32::MAX],
-            jackpot: [0; JACKPOT_SIZE],
-            hash_a: [0; PI_HASH_A_LEN],
-            hash_b: [0; PI_HASH_B_LEN],
+            ..CompositePublicInputs::zero()
         };
         let v = pis.to_vec();
         use p3_field::PrimeField64;
@@ -271,23 +328,27 @@ mod tests {
 
     #[test]
     fn num_public_values_includes_hash_slots() {
-        // 4 cumsum + 16 jackpot + 8 hash_a + 8 hash_b = 36.
-        assert_eq!(NUM_PUBLIC_VALUES, 36);
+        // 4 cumsum + 16 jackpot + 8 hash_a + 8 hash_b
+        // + 8 job_key + 8 commitment_hash + 8 hash_jackpot = 60.
+        assert_eq!(NUM_PUBLIC_VALUES, 60);
         assert_eq!(PI_HASH_A_OFFSET, 20);
         assert_eq!(PI_HASH_B_OFFSET, 28);
+        assert_eq!(PI_JOB_KEY_OFFSET, 36);
+        assert_eq!(PI_COMMITMENT_HASH_OFFSET, 44);
+        assert_eq!(PI_HASH_JACKPOT_OFFSET, 52);
         assert_eq!(PI_HASH_A_LEN, 8);
         assert_eq!(PI_HASH_B_LEN, 8);
+        assert_eq!(PI_HASH_JACKPOT_LEN, 8);
     }
 
     #[test]
     fn hash_a_b_round_trip_via_to_vec() {
         let pis = CompositePublicInputs {
-            cumsum: [0; 4],
-            jackpot: [0; JACKPOT_SIZE],
             hash_a: [0x01020304, 0x05060708, 0x090A0B0C, 0x0D0E0F10,
                      0xDEADBEEF, 0xFEEDFACE, 0xCAFEBABE, 0x12345678],
             hash_b: [0x11111111, 0x22222222, 0x33333333, 0x44444444,
                      0x55555555, 0x66666666, 0x77777777, 0x88888888],
+            ..CompositePublicInputs::zero()
         };
         let v = pis.to_vec();
         use p3_field::PrimeField64;

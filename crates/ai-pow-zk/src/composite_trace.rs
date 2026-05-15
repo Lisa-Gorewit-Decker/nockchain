@@ -1754,6 +1754,82 @@ mod tests {
         );
     }
 
+    /// C4: `derive_from_matrix` reads `CV_OUT` from the
+    /// `IS_HASH_JACKPOT` row into `pi.hash_jackpot`. The
+    /// selector-gated AIR constraint
+    /// `IS_HASH_JACKPOT · (CV_OUT[i] − PI_HASH_JACKPOT[i]) = 0`
+    /// is structurally identical to the HASH_A binding that is
+    /// proven end-to-end by
+    /// `full_air_rejects_tampered_hash_a_pi`; the difference is
+    /// only the selector column (6 = IS_HASH_JACKPOT) and the
+    /// PI offset. Full prove+verify of a HASH_JACKPOT trace
+    /// additionally needs a valid jackpot→blake3 chain (the
+    /// `IS_HASH_JACKPOT` column is multiplexed as the jackpot
+    /// chip's `is_active`), which is the F1 integration work.
+    #[test]
+    fn c4_hash_jackpot_derives_from_selector_row() {
+        use crate::composite_layout::{CV_OUT_START, IS_HASH_JACKPOT};
+        use p3_field::integers::QuotientMap;
+
+        let mut trace = CompositeTrace::baseline_min();
+        let n = trace.matrix.values.len() / TOTAL_TRACE_WIDTH;
+        let r = 9usize.min(n - 1);
+        let base = r * TOTAL_TRACE_WIDTH;
+        trace.matrix.values[base + IS_HASH_JACKPOT] =
+            <Val as QuotientMap<u64>>::from_int(1);
+        let expected: [u32; 8] = core::array::from_fn(|i| 0xABCD_0000u32 + i as u32 * 0x1111);
+        for i in 0..8 {
+            trace.matrix.values[base + CV_OUT_START + i] =
+                <Val as QuotientMap<u64>>::from_int(expected[i] as u64);
+        }
+        let pis =
+            crate::composite_public::CompositePublicInputs::derive_from_matrix(&trace.matrix);
+        assert_eq!(pis.hash_jackpot, expected);
+    }
+
+    /// C1: `derive_from_matrix` reads `CV_IN` from the
+    /// `IS_USE_JOB_KEY` / `IS_USE_COMMITMENT_HASH` rows into
+    /// `pi.job_key` / `pi.commitment_hash`. Same selector-gated
+    /// binding form as HASH_A (proven end-to-end elsewhere);
+    /// here we validate the derivation reads the correct cells
+    /// for the chain-pinning PIs.
+    #[test]
+    fn c1_job_key_and_commitment_hash_derive_from_cv_in() {
+        use crate::composite_layout::{CV_IN_START, IS_USE_COMMITMENT_HASH, IS_USE_JOB_KEY};
+        use p3_field::integers::QuotientMap;
+
+        let mut trace = CompositeTrace::baseline_min();
+        let n = trace.matrix.values.len() / TOTAL_TRACE_WIDTH;
+
+        let jk_row = 4usize;
+        let jk_base = jk_row * TOTAL_TRACE_WIDTH;
+        trace.matrix.values[jk_base + IS_USE_JOB_KEY] =
+            <Val as QuotientMap<u64>>::from_int(1);
+        let job_key: [u32; 8] = core::array::from_fn(|i| 0xCAFE_0000 + i as u32);
+        for i in 0..8 {
+            trace.matrix.values[jk_base + CV_IN_START + i] =
+                <Val as QuotientMap<u64>>::from_int(job_key[i] as u64);
+        }
+
+        let ch_row = 11usize.min(n - 1);
+        let ch_base = ch_row * TOTAL_TRACE_WIDTH;
+        trace.matrix.values[ch_base + IS_USE_COMMITMENT_HASH] =
+            <Val as QuotientMap<u64>>::from_int(1);
+        let commit: [u32; 8] = core::array::from_fn(|i| 0xBEEF_0000 + i as u32);
+        for i in 0..8 {
+            trace.matrix.values[ch_base + CV_IN_START + i] =
+                <Val as QuotientMap<u64>>::from_int(commit[i] as u64);
+        }
+
+        let pis =
+            crate::composite_public::CompositePublicInputs::derive_from_matrix(&trace.matrix);
+        assert_eq!(pis.job_key, job_key, "JOB_KEY from IS_USE_JOB_KEY row");
+        assert_eq!(
+            pis.commitment_hash, commit,
+            "COMMITMENT_HASH from IS_USE_COMMITMENT_HASH row"
+        );
+    }
+
     /// After `place_matrix_hash_a`, the root row has
     /// `IS_HASH_A = 1` and `CV_OUT` matches the digest. The
     /// centralized `CompositePublicInputs::derive_from_matrix`
