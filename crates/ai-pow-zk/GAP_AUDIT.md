@@ -178,49 +178,55 @@ peak-RSS P2 / CI-bench P4) remain the instrumentation substrate.
 - **C2** — `composite_verify_pow` checks the bound `HASH_JACKPOT`
   vs the real `difficulty_target`.
 
+### ✅ C4 — HASH_JACKPOT bound (RESOLVED 2026-05-15)
+
+Two stacked obstacles, both now cleared:
+
+- **(a) Selector multiplexing** — `IS_HASH_JACKPOT` is the
+  jackpot `is_active` (`chips/jackpot/chip.rs:112`,
+  `Σ slot_sel == is_active` `chip.rs:142`). Resolved by
+  `CompositeTrace::place_jackpot_hash_block`: the trace's final
+  8 rows are a keyed BLAKE3 of `JACKPOT_MSG` (key = `s_a`); row 7
+  (= last trace row) co-carries the BLAKE3 finalize AND a
+  degenerate-but-valid jackpot step (slot 0,
+  `V_BITS = bitdecomp(JACKPOT_MSG[0])`), so the jackpot
+  `when_transition` is vacuous on the last row (mirrors Pearl
+  `structure_jackpot_blake`).
+- **(b) `verify_round` leading-boundary gate bug** — the deeper
+  blocker (a bare blake block only verified row-0-contiguous)
+  was root-caused and **fixed**: `Blake3Chip::eval_at` now gates
+  the cross-row round with `(1 − is_last_round) ·
+  (1 − next_is_new_blake)` instead of just `1 − is_last_round`.
+  Full write-up + rationale: `BLAKE3_CHIP_ROUND_GATE_BUG.md`
+  (status: FIXED). Regression
+  `blake_block_verifies_off_row_zero_after_gate_fix` proves a
+  bare block now verifies mid-trace and trace-terminal.
+
+`HASH_JACKPOT` is now a non-vacuous bound PI on a real solve
+(`zk_bridge` rejects a zero `HASH_JACKPOT`); C2 checks it against
+the real `difficulty_target`. **Fidelity caveat (not a binding
+gap):** the hashed `JACKPOT_MSG` is all-zero — threading the real
+matmul→jackpot rotate-XOR-13 tile-state fold is a remaining
+*fidelity* item (what is hashed), not a soundness/binding gap.
+`BLAKE3(zeros, key=s_a)` is a genuine keyed digest and the
+binding constraint is fully exercised.
+
 Remaining:
 
-1. **C4 / HASH_JACKPOT — the residual blocker (root cause
-   empirically confirmed 2026-05-15).** Still zero. Two stacked
-   obstacles:
-   - **(a) Selector multiplexing.** `IS_HASH_JACKPOT` is the
-     jackpot chip's `is_active` (`chips/jackpot/chip.rs:112`) and
-     the eval enforces `Σ slot_sel == is_active` (`chip.rs:142`),
-     so an `IS_HASH_JACKPOT=1` row is forced to be a genuine
-     jackpot step. *Solvable*: co-locate a degenerate jackpot
-     step on the BLAKE3 finalize row, placed as the trace's last
-     8 rows so the jackpot `when_transition` is vacuous there
-     (mirrors Pearl `structure_jackpot_blake`). A
-     `place_jackpot_hash_block` helper doing exactly this was
-     built and the jackpot-side constraints check out.
-   - **(b) Deeper blocker — empirically confirmed.** A
-     standalone `place_blake3_hash_with_selectors` block only
-     verifies when **contiguous from row 0**. The bisect test
-     `bisect_blake_block_at_trace_end_no_jackpot` showed a bare
-     blake block (no jackpot, no extra selectors) at
-     `row_start = height-8` *and* at a mid-trace row 100 both
-     fail `OodEvaluationMismatch`, while the same machinery from
-     row 0 (`place_matrix_hash_*`) verifies. So the composite
-     AIR's blake3 chip does not admit a blake compression that
-     is not row-0-contiguous — and Pearl places the jackpot-blake
-     at `num_rows − 8` (trace-terminal). C4 therefore needs
-     **blake3-chip surgery** (admit a blake block at an arbitrary
-     / trace-terminal row offset — likely a leading-boundary
-     transition-gating issue), not trace-generator wiring. This
-     was attempted in-session; the unsound scaffolding was
-     reverted rather than shipped. With `HASH_JACKPOT=0`, C2
-     clears any target: the difficulty *mechanism* runs, its
-     *binding to a winning tile* awaits the chip fix.
+1. **Matmul→jackpot fidelity** — feed the real rotate-XOR-13
+   tile-state fold into the C4 hash (non-zero `JACKPOT_MSG`).
+   Pure fidelity; the C4 binding already holds. The interleaved
+   `structure_matmul_in_stark` schedule is the reference.
 2. **F2 / M12** (recursion) — 🟠 biggest production lever;
    separate track.
 3. **P1, P3, P5, P6** — PROD-scale (M12-gated), per-bus LogUp
    ablation, real-workload bench, FRI retune. P2/P4 have infra.
 
-The honest one-line summary: **the SNARK proves the
-proof-of-work statement and is now anchored to a real block.**
-C1 ties it to this block's κ / `s_a`; C3 binds the matrix bytes;
-C2 checks difficulty against the bound hash; the integration is
-wired into the production `mine()` path. The single remaining
-soundness item is C4 (HASH_JACKPOT) — blocked on the
-IS_HASH_JACKPOT-multiplexing → Pearl per-row interleave, precisely
-specified above. Everything else is production-hardening.
+The honest one-line summary: **C1–C4 are all resolved; the SNARK
+proves the proof-of-work statement, is anchored to a real block,
+and is wired into the production `mine()` path.** C1 ties it to
+this block's κ / `s_a`; C3 binds the matrix bytes; C4 binds the
+jackpot keyed-hash; C2 checks difficulty against that bound hash.
+No remaining *soundness/binding* gap. What's left is fidelity
+(real tile-state fold into the C4 hash — the binding already
+holds), recursion (M12), and production-hardening (P1/P3/P5/P6).

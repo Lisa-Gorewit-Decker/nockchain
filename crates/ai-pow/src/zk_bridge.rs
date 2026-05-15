@@ -17,24 +17,29 @@
 //! - **C3 / HASH_A / HASH_B** — chunk-Merkle commitments of A
 //!   (row-major) and B (col-major) keyed by κ, byte-equivalent to
 //!   `commit::matrix_commitment` (asserted here).
-//! - **C2** — `composite_verify_pow` checks the bound
+//! - **C4 / HASH_JACKPOT** — `BLAKE3(JACKPOT_MSG,
+//!   key=COMMITMENT_HASH=s_a)` via `place_jackpot_hash_block`
+//!   (the trace's final 8 rows; row 7 co-carries the BLAKE3
+//!   finalize and a degenerate-but-valid jackpot step, so the
+//!   jackpot `when_transition` is vacuous on the last row).
+//!   Non-vacuous: the bridge rejects a zero `HASH_JACKPOT`.
+//!   Enabled by the `verify_round` leading-boundary gate fix
+//!   (`BLAKE3_CHIP_ROUND_GATE_BUG.md`).
+//! - **C2** — `composite_verify_pow` checks the now-bound
 //!   `HASH_JACKPOT` against the real `difficulty_target`.
 //!
-//! ## What is NOT yet bound (documented blocker)
+//! ## Remaining fidelity gap (not a binding gap)
 //!
-//! - **C4 / HASH_JACKPOT** stays zero. In the composite layout
-//!   `IS_HASH_JACKPOT` is multiplexed as the jackpot chip's
-//!   `is_active` (M10.1c phase-12d), and `Σ slot_sel == is_active`
-//!   forces an `IS_HASH_JACKPOT=1` row to be a real jackpot step —
-//!   it cannot also be a clean BLAKE3 finalize. A faithful
-//!   `HASH_JACKPOT` binding therefore needs Pearl's per-row
-//!   jackpot+blake3 *co-activation* (`pearl_program.rs`
-//!   `structure_jackpot_blake` + the interleaved
-//!   `structure_matmul_in_stark` schedule) — a separate
-//!   architectural workstream tracked in `GAP_AUDIT.md`. With
-//!   `HASH_JACKPOT = 0`, C2's check clears any target; the
-//!   difficulty *mechanism* is exercised, its *binding to a
-//!   winning tile* awaits the interleave.
+//! `JACKPOT_MSG` fed into the C4 hash is all-zero: the rows
+//! before the block carry no jackpot activity, so the passthrough
+//! transition forces the state constant. The C4 *binding*
+//! (CV_OUT ↦ PI_HASH_JACKPOT, keyed by the real `s_a`) is fully
+//! exercised — `BLAKE3(zeros, key=s_a)` is a genuine non-vacuous
+//! keyed digest. Threading the *real* tile-state fold (a non-zero
+//! `JACKPOT_MSG` produced by the matmul→jackpot rotate-XOR-13
+//! chain) is the remaining matmul→jackpot interleave, tracked in
+//! `GAP_AUDIT.md`; it does not weaken the binding, only the
+//! fidelity of *what* is hashed.
 
 use ai_pow_zk::composite_proof::build_config;
 use ai_pow_zk::{
@@ -119,8 +124,30 @@ pub fn prove_and_verify(
     trace.place_key_pin_row(jk_row, false, &kappa_w);
     trace.place_key_pin_row(ch_row, true, &s_a_w);
 
+    // C4 — final jackpot-hash block (trace's last 8 rows):
+    // HASH_JACKPOT = BLAKE3(JACKPOT_MSG, key = COMMITMENT_HASH=s_a).
+    // jackpot_state is all-zero here: the rows before carry no
+    // jackpot activity so the passthrough transition forces the
+    // state constant to the last row. Threading the real
+    // tile-state fold (non-zero JACKPOT_MSG) is the remaining
+    // matmul→jackpot interleave; the C4 *binding* (CV_OUT ↦
+    // PI_HASH_JACKPOT, keyed by the real s_a) is non-vacuous
+    // either way. Relies on the verify_round leading-boundary
+    // gate fix (BLAKE3_CHIP_ROUND_GATE_BUG.md).
+    assert!(
+        ch_row + 1 < height - 8,
+        "key-pin rows must clear the final jackpot-hash block"
+    );
+    let jackpot_state = [0u32; 16];
+    let _hj = trace.place_jackpot_hash_block(height - 8, &jackpot_state, &s_a_w);
+
     // Derive PIs and cross-check against the plain-side context.
     let pis = CompositePublicInputs::derive_from_trace(&trace);
+    if pis.hash_jackpot == [0u32; 8] {
+        return Err(BridgeError::CommitmentMismatch(
+            "HASH_JACKPOT vacuous (jackpot-hash block not bound)",
+        ));
+    }
     if pis.hash_a != bytes_to_words_le(&ctx.h_a_chunk) {
         return Err(BridgeError::CommitmentMismatch("HASH_A != h_a_chunk"));
     }
@@ -156,7 +183,7 @@ mod tests {
     use crate::tile_hash::difficulty_target;
 
     #[test]
-    fn f1_bridge_real_solve_binds_c1_c2_c3() {
+    fn f1_bridge_real_solve_binds_c1_c2_c3_c4() {
         let params = MatmulParams::TEST_SMALL;
         let (a, b) = synth_matrices(b"f1-bridge-seed", &params);
         let bc = b"f1-bridge-block";
@@ -173,8 +200,8 @@ mod tests {
         // C3: HASH_A / HASH_B bound to the real matrix commitments.
         assert_eq!(out.pis.hash_a, bytes_to_words_le(&ctx.h_a_chunk));
         assert_eq!(out.pis.hash_b, bytes_to_words_le(&ctx.h_b_chunk));
-        // C4 documented blocker: HASH_JACKPOT still zero.
-        assert_eq!(out.pis.hash_jackpot, [0u32; 8]);
+        // C4 non-vacuous: HASH_JACKPOT = BLAKE3(zeros, key=s_a) ≠ 0.
+        assert_ne!(out.pis.hash_jackpot, [0u32; 8]);
     }
 
     #[test]

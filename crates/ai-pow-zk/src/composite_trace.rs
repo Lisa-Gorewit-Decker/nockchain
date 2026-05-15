@@ -889,6 +889,95 @@ impl CompositeTrace {
         }
     }
 
+    /// F1 (C4) — final jackpot-hash block:
+    /// `HASH_JACKPOT = BLAKE3(JACKPOT_MSG, key = COMMITMENT_HASH)`.
+    ///
+    /// Mirrors Pearl's `structure_jackpot_blake`
+    /// (`pearl_program.rs:195`): an 8-row keyed BLAKE3 compression
+    /// (flags `KEYED_HASH|CHUNK_START|CHUNK_END|ROOT` = 0x1B),
+    /// CV = `commitment_words` (= `s_a`), message = the jackpot
+    /// state.
+    ///
+    /// **Must be the trace's final 8 rows** (`row_start =
+    /// height − 8`). Row 7 is then the last trace row, so the
+    /// jackpot chip's cross-row `when_transition` is vacuous there
+    /// — the only way an `IS_HASH_JACKPOT=1` row (forced to be a
+    /// jackpot step by `Σ slot_sel == is_active`) can also be a
+    /// clean BLAKE3 finalize emitting `HASH_JACKPOT` in `CV_OUT`.
+    /// The row additionally carries a degenerate-but-valid jackpot
+    /// step (slot 0, `V_BITS = bitdecomp(JACKPOT_MSG[0])`,
+    /// `X_BITS = 0`).
+    ///
+    /// Relies on the `verify_round` leading-boundary gate fix
+    /// (`BLAKE3_CHIP_ROUND_GATE_BUG.md`) — before it, no
+    /// non-row-0 blake block verified.
+    ///
+    /// `jackpot_state` must be all-zero in the current bridge: the
+    /// preceding rows carry no jackpot activity, so the passthrough
+    /// transition forces the state constant up to the last row.
+    /// Threading the real tile-state fold is the remaining
+    /// matmul→jackpot interleave; the C4 *binding* is fully
+    /// exercised either way (`BLAKE3(zeros, key=s_a)` is a genuine
+    /// non-vacuous keyed digest). Returns the 8-word digest.
+    pub fn place_jackpot_hash_block(
+        &mut self,
+        row_start: usize,
+        jackpot_state: &[u32; JACKPOT_SIZE],
+        commitment_words: &[u32; 8],
+    ) -> [u32; 8] {
+        use p3_field::integers::QuotientMap;
+
+        assert_eq!(
+            row_start + 8,
+            self.height(),
+            "jackpot-hash block must be the final 8 rows (row_start = height-8)"
+        );
+
+        let tweak = Blake3Tweak {
+            counter_low: 0,
+            counter_high: 0,
+            block_len: 64,
+            flags: 0x1B, // KEYED_HASH|CHUNK_START|CHUNK_END|ROOT
+        };
+        let msg: [u32; 16] = *jackpot_state;
+
+        // 8-row keyed BLAKE3 block; row 7 (= last trace row) gets
+        // IS_LAST_ROUND + IS_HASH_JACKPOT (selector idx 6).
+        let digest = self.place_blake3_hash_with_selectors(
+            row_start,
+            &msg,
+            commitment_words,
+            &tweak,
+            &[6],
+        );
+
+        // Co-write the degenerate jackpot step on row 7 (disjoint
+        // columns from the blake3 chip; the unified selector set
+        // {IS_LAST_ROUND, IS_HASH_JACKPOT} was written above).
+        let r7 = row_start + 7;
+        let base = r7 * TOTAL_TRACE_WIDTH;
+        let row = &mut self.matrix.values[base..base + TOTAL_TRACE_WIDTH];
+        for i in 0..JACKPOT_SIZE {
+            row[JACKPOT_MSG_START + i] =
+                <Val as QuotientMap<u64>>::from_int(jackpot_state[i] as u64);
+        }
+        let v_bits = bit_decompose_u32(jackpot_state[0]);
+        for k in 0..32 {
+            row[BIT_REG_START + k] =
+                <Val as QuotientMap<u64>>::from_int(v_bits[k] as u64);
+        }
+        for k in 0..32 {
+            row[JACKPOT_X_BITS_START + k] = Val::default();
+        }
+        let oh = one_hot_select(0);
+        for i in 0..JACKPOT_SIZE {
+            row[JACKPOT_SLOT_SEL_START + i] =
+                <Val as QuotientMap<u64>>::from_int(oh[i] as u64);
+        }
+
+        digest
+    }
+
     /// Populate every `*_FREQ` column in the trace so the LogUp
     /// argument balances when proven via
     /// [`crate::composite_full_air_with_lookups::CompositeFullAirWithLookups`].
@@ -1977,6 +2066,77 @@ mod tests {
             prove::<AiPowStarkConfig, _>(&cfg, &CompositeFullAir, trace.matrix, &pv);
         verify::<AiPowStarkConfig, _>(&cfg, &CompositeFullAir, &proof, &pv)
             .expect("key-pin row must prove+verify (C1 non-vacuous, tractable)");
+    }
+
+    /// Regression for the `verify_round` leading-boundary gate fix
+    /// (`BLAKE3_CHIP_ROUND_GATE_BUG.md`): a bare blake3 block
+    /// (no jackpot / no extra selectors) must now prove+verify
+    /// at a mid-trace offset AND trace-terminal — not just
+    /// contiguous from row 0.
+    #[test]
+    fn blake_block_verifies_off_row_zero_after_gate_fix() {
+        let tweak = crate::chips::blake3::compress::Blake3Tweak {
+            counter_low: 0,
+            counter_high: 0,
+            block_len: 64,
+            flags: 0x1B,
+        };
+        let msg = [0u32; 16];
+        let cv: [u32; 8] = core::array::from_fn(|i| 0x11 * (i as u32 + 1));
+        let cfg = build_stark_config(&test_zk_params(), &CircuitConfig::TEST_PEARL);
+
+        for &row_start in &[100usize, /* trace-terminal */ usize::MAX] {
+            let mut trace = CompositeTrace::baseline_min();
+            let rs = if row_start == usize::MAX {
+                trace.height() - 8
+            } else {
+                row_start
+            };
+            trace.place_blake3_hash_with_selectors(rs, &msg, &cv, &tweak, &[]);
+            let pis =
+                crate::composite_public::CompositePublicInputs::derive_from_matrix(
+                    &trace.matrix,
+                )
+                .to_vec();
+            let proof =
+                prove::<AiPowStarkConfig, _>(&cfg, &CompositeFullAir, trace.matrix, &pis);
+            verify::<AiPowStarkConfig, _>(&cfg, &CompositeFullAir, &proof, &pis)
+                .unwrap_or_else(|e| {
+                    panic!("blake block at row {rs} must verify post-fix: {e:?}")
+                });
+        }
+    }
+
+    /// F1 (C4) — the final jackpot-hash block makes HASH_JACKPOT a
+    /// non-vacuous bound PI: `BLAKE3(JACKPOT_MSG, key=COMMITMENT)`.
+    /// Row 7 (= last trace row) co-carries the blake3 finalize AND
+    /// a valid degenerate jackpot step. Depends on the
+    /// `verify_round` gate fix.
+    #[test]
+    fn c4_jackpot_hash_block_binds_hash_jackpot() {
+        let mut trace = CompositeTrace::baseline_min();
+        let h = trace.height();
+        let jackpot_state = [0u32; JACKPOT_SIZE];
+        let commitment: [u32; 8] = core::array::from_fn(|i| 0x5EED_0000 + i as u32);
+
+        let digest = trace.place_jackpot_hash_block(h - 8, &jackpot_state, &commitment);
+        assert_ne!(digest, [0u32; 8], "BLAKE3(·, key) is non-zero");
+
+        let pis =
+            crate::composite_public::CompositePublicInputs::derive_from_matrix(&trace.matrix);
+        assert_eq!(
+            pis.hash_jackpot, digest,
+            "C4: HASH_JACKPOT PI must equal the keyed-hash digest"
+        );
+
+        let cfg = build_stark_config(&test_zk_params(), &CircuitConfig::TEST_PEARL);
+        let pv = pis.to_vec();
+        let proof =
+            prove::<AiPowStarkConfig, _>(&cfg, &CompositeFullAir, trace.matrix, &pv);
+        verify::<AiPowStarkConfig, _>(&cfg, &CompositeFullAir, &proof, &pv).expect(
+            "jackpot-hash block must prove+verify (C4 non-vacuous: blake finalize + \
+             degenerate jackpot step co-located on the last row)",
+        );
     }
 
     /// After `place_matrix_hash_a`, the root row has

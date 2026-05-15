@@ -1,8 +1,14 @@
 # BLAKE3 chip: `verify_round` leading-boundary gate bug
 
-**Status:** open, latent (does not break any current shipping
-path), but **blocks C4 / HASH_JACKPOT and F1-deep completion**.
-Diagnosed 2026-05-15 by code reading + bisect.
+**Status: FIXED 2026-05-15.** Gate changed to
+`(1 − is_last_round) · (1 − next_is_new_blake)` in
+`Blake3Chip::eval_at`. Bare blake blocks now prove+verify at
+mid-trace (row 100) and trace-terminal (`height − 8`), not just
+row-0-contiguous (regression test
+`blake_block_verifies_off_row_zero_after_gate_fix`). This
+unblocked C4 / HASH_JACKPOT and F1-deep. Diagnosed 2026-05-15 by
+code reading + bisect; the analysis below is retained as the
+rationale.
 
 ## One-sentence statement
 

@@ -99,18 +99,22 @@ fn main() {
 
     // Build the composite trace exactly as the F1 bridge does:
     // matrix-hash A/B (C3) + key-pin rows for JOB_KEY=κ and
-    // COMMITMENT_HASH=s_a (C1). Encapsulated as a closure so the
-    // per-iteration prove loop rebuilds an identical trace.
+    // COMMITMENT_HASH=s_a (C1) + final jackpot-hash block (C4:
+    // HASH_JACKPOT = BLAKE3(JACKPOT_MSG, key=s_a)). Encapsulated
+    // as a closure so the per-iteration prove loop rebuilds an
+    // identical trace.
     let a_bytes: Vec<u8> = a.iter().map(|&v| v as u8).collect();
     let b_bytes: Vec<u8> = b.iter().map(|&v| v as u8).collect();
     let kappa_w = words(&ctx.kappa);
     let s_a_w = words(&ctx.s_a);
     let build_trace = || -> CompositeTrace {
         let mut tr = CompositeTrace::baseline_min();
+        let h = tr.height();
         let (n1, _) = tr.place_matrix_hash_a(0, &a_bytes, &ctx.kappa);
         let (mh_end, _) = tr.place_matrix_hash_b(n1, &b_bytes, &ctx.kappa);
         tr.place_key_pin_row(mh_end + 1, false, &kappa_w); // JOB_KEY = κ
         tr.place_key_pin_row(mh_end + 2, true, &s_a_w); // COMMITMENT_HASH = s_a
+        tr.place_jackpot_hash_block(h - 8, &[0u32; 16], &s_a_w); // C4
         tr
     };
 
@@ -140,9 +144,9 @@ fn main() {
         pis.commitment_hash, s_a_w,
         "C1: SNARK COMMITMENT_HASH PI must equal the block's s_a"
     );
-    assert_eq!(
+    assert_ne!(
         pis.hash_jackpot, [0u32; 8],
-        "C4 documented blocker: HASH_JACKPOT still zero (Pearl interleave pending)"
+        "C4: SNARK HASH_JACKPOT must be the non-vacuous keyed digest"
     );
 
     // 5. Prove + PoW-verify (C2: against the real difficulty target).
@@ -184,7 +188,7 @@ fn main() {
          mine_ms={mine_ms} trace_gen_ms={trace_gen_ms} \
          prove_ms={} verify_ms={} proof_bytes={proof_bytes} \
          num_pis={} c1_job_key_ok=true c1_commitment_ok=true \
-         c3_hash_ab_ok=true c4_hash_jackpot=vacuous",
+         c3_hash_ab_ok=true c4_hash_jackpot_ok=true",
         prove_ms_total / iters as u128,
         verify_ms_total / iters as u128,
         pis.to_vec().len(),

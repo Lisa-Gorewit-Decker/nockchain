@@ -195,20 +195,39 @@ impl Blake3Chip {
         let cv_in: Vec<AB::Expr> = (0..8).map(|i| cur[off.cv_start + i].into()).collect();
         let tweak: AB::Expr = cur[off.tweak_col].into();
 
-        // ---- Round constraint, gated by !is_last_round ----
+        // ---- Round constraint gate ----
         //
-        // Disable on the finalize row so the (wrap-around) next row
-        // doesn't break the chain. Disable on the LAST overall trace
-        // row via when_transition() to skip the wraparound.
-        let is_round_active: AB::Expr =
-            <AB::Expr as PrimeCharacteristicRing>::ONE - is_last_round.clone();
+        // `verify_round` is a CROSS-ROW constraint: `states[4]` is
+        // the next row's STATE0 and it asserts
+        // `next.STATE0 == Round(this row's STATE0..3, this msg)`.
+        // It must fire only when this row→next row is a genuine
+        // intra-blake round step, i.e. BOTH:
+        //
+        //   (1) this row is not the finalize row   : 1 − is_last_round
+        //   (2) the next row continues the same hash: 1 − next_is_new_blake
+        //
+        // Factor (1) alone (the historical gate) wrongly left the
+        // round ACTIVE on the non-blake row immediately preceding a
+        // blake block (`is_last_round = 0` there), demanding
+        // `next.STATE0 == Round(that row's state)` — which a fresh
+        // blake init STATE0 cannot satisfy. That made a block only
+        // verifiable when contiguous from trace row 0 (no leading
+        // boundary). Factor (2) disables the round at that leading
+        // boundary because the next row is `is_new_blake = 1`. See
+        // `BLAKE3_CHIP_ROUND_GATE_BUG.md`. Factor (1) is KEPT so the
+        // trailing boundary (finalize → following row) stays
+        // disabled exactly as before. `verify_init_state`
+        // (gated by `is_new_blake`) independently pins the block's
+        // first-row STATE0, so dropping the leading round link does
+        // not unconstrain it.
+        let next_is_new_blake: AB::Expr = nxt[off.is_new_blake_col].into();
+        let is_round_active: AB::Expr = (<AB::Expr as PrimeCharacteristicRing>::ONE
+            - is_last_round.clone())
+            * (<AB::Expr as PrimeCharacteristicRing>::ONE - next_is_new_blake);
 
         // verify_round only makes sense across two consecutive rows,
-        // so guard with when_transition().
+        // so guard with when_transition() (skips the last trace row).
         {
-            // Build a sub-builder that fires only on transition rows
-            // (every row except the LAST). Inside, we gate further
-            // by is_round_active.
             let mut tb = builder.when_transition();
             verify_round::<_>(&mut tb, &states, &msg, is_round_active);
         }
