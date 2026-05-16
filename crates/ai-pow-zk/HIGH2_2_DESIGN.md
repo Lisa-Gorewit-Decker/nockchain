@@ -913,6 +913,52 @@ micro-tile (`CUMSUM_TILE_LEN=4`, §4.0). Two sub-pieces:
 and the (already-built, tested) FoldChip — the clean interface
 the §4.0 decision was designed around.
 
+#### 4.C.4-S §6(b) spike results — geometry & row-ordering DE-RISKED (2026-05-16)
+
+Per user direction ("matmul-row placement spike; exhaustively
+test after each sweep"). The two hardest §6(b) unknowns from the
+"what would it take to finish" evaluation are now **resolved &
+tested** (`ai_pow::zk_bridge` tests, `--features zk`):
+
+- **GATE 1 — subtile-sweep geometry (`adf766a`).** The §4.0
+  geometry "mismatch" (in-circuit `2×2×16` micro-tile vs the plain
+  `t·t=64`-cell stripe accumulator, `MatmulParams::TEST_SMALL`:
+  `t=8, r=4, k=64`) is a *solved, tested reduction*: sweeping ONLY
+  the in-circuit primitive `compute_row`, stripe-major over
+  `(t/TILE_H)²=16` sub-blocks × `num_stripes=16` stripes with the
+  `r=4`-wide stripe zero-padded into `TILE_D=16`, reproduces
+  `compute_tile_trace(...).x_steps` **bit-for-bit** (all 4 grid
+  corners + interior) and `TileState::from_x_steps(swept)==M`.
+- **GATE 2 — composite-AIR validity (`57b7cf9`).** The 256-row
+  sweep placed via `place_matmul_step` as a **single continuous
+  cumsum chain** with `is_reset` only on each 16-row sub-block
+  run's first row **verifies through the unit `CompositeFullAir`**
+  (tile (0,0) + far corner). Key analysis (validated on real
+  data, in the exact area the prior multi-day bug lived): the
+  matmul chip's always-on `when_transition` recurrence
+  `nxt=(is_reset+is_update)·cur.dot+(1−is_reset)·cur.CUMSUM` is
+  satisfied because every transition is `nxt==compute_row(cur)` by
+  construction *and* the run-boundary carry into a reset row is
+  discarded by the `(1−is_reset)=0` term — so 16 concatenated
+  sub-block chains are chip-valid as one threaded chain. The
+  per-stripe ⊕ of the *placed-trace* accumulator snapshots ==
+  `compute_tile_trace`'s `x_steps`. Row budget `256 ≪ 8192`.
+
+**Precisely-characterized remaining §6(b)+§4.E work** (now on a
+de-risked foundation): sub-block `sb`'s accumulator *after stripe
+`step`* lives at row `sb·16+step` (a non-adjacent set of 16 rows
+per stripe). So the X_STEP binding is a **per-stripe ⊕-reduction
+over 16 non-adjacent rows' CUMSUM == `FOLD_XSTEP[step]`** — a
+cross-row argument (LogUp bus, or a co-located running-XOR
+reduction column pinned by the §6(a) `CONTROL_PREP` schedule
+pattern), *not* a single-row read. Plus: production
+`prove_and_verify` wiring (place the sweep + the reduction on the
+honest path) and Route-A batch-stark validation, then bind the
+MED-3-derived `(tile_i,tile_j)` (resolved contract,
+`zk_bridge::tile_ij`) to the swept accumulator's `row0/col0`
+offsets. The arithmetic, the geometry, and the matmul-chip
+interaction are no longer unknowns.
+
 #### 4.C.5 Soundness once §4.C lands
 
 With the binding live on the pinned path: an adversary cannot
