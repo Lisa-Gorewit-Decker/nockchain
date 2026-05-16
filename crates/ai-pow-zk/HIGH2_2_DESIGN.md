@@ -20,13 +20,47 @@
 | §4.B↔plain byte-equivalence — FoldChip reproduces the real folded `TileState M` for every tile of a genuine `BlockContext` solve; keyed-hash of chip output == plain PoW digest (the `high2_2_byte_equiv_plain` half of §7) | ✅ done | `2964c32` |
 | §4.A FoldChip composite wiring + `place_fold_chain` — FOLD_* layout block, `FoldChip::eval_composite` in `CompositeFullAir`, `CompositeTrace::place_fold_chain` | ✅ structurally landed (`e6c9c84`); unit-correct (`high2_2_fold_chain_in_composite_unit` ✓) | `e6c9c84` |
 | §4.A blocking bug — pre-existing JackpotChip `JACKPOT_MSG` RAM recurrence ungated by `is_active` (forbade non-zero `JACKPOT_MSG`; latent ∵ all tests used zero msg) | ✅ **FIXED** — gate recurrence by `is_active` (`chips/jackpot/chip.rs`); validated incl. `high2_2_fold_chain_pinned_logup` (the §4.A bridge shape via Route-A), no `crit1_*`/`high2_*`/`routea_*` regression. See §4.A "FIXED". |
-| §4.A bridge real-fold-chain (zk_bridge un-revert ⇒ `JACKPOT_MSG`=real M) | ⬜ un-revert + ai-pow zk e2e (now unblocked by the fix) |
+| §4.A bridge real-fold-chain (zk_bridge ⇒ `JACKPOT_MSG`=real folded `M`) | ✅ **DONE & e2e-validated** (`37f5c0f`): full `cargo test -p ai-pow --features zk` `CARGO_EXIT=0`, `end_to_end` 13/0 (every `mine()` via real-M Route-A), `zk_bridge` 19/0 (`f1_bridge_real_solve` with non-zero `M`), lib 64/0 |
 | §4.D keystone — generalised to `JACKPOT_MSG[0..16] == FOLD_STATE` (last row) | ✅ landed; gate-green with zero-fold (`composite_proof::tests:: 18/0`) | `e6c9c84` |
 | §4.C.4 accumulator→`X_STEP` reduction (`XStepChip`) + composed `XStep→Fold` pipeline byte-equivalent to plain | ✅ done, 6/0 + zk_bridge 5/5 | `290af68`, `c78ae67` |
 | §4.C committed-matrix *binding* — **Route A: chosen, spiked, productionised & WIRED** (§4.C.10): production API `composite_*_pinned_logup` + exhaustive `routea_*` 4/4; `zk_bridge`(mine() gate)+`f1_harness` switched to it; spike removed; 3-tier entrypoint doc. ~1.23x cost. | ✅ binding complete & wired; §4.A non-vacuity is the separate remaining workstream (#97) |
-| §4.E tile-index binding / MED-3 | ⬜ remaining |
-| §6 CRIT-1 program extends to matmul+fold schedule | ⬜ remaining |
-| §7 real-difficulty end-to-end + byte-equivalence + docs flip | ⬜ remaining |
+| §4.E tile-index binding / MED-3 | ⬜ remaining (soundness hardening) |
+| §6 CRIT-1 program extends to matmul+fold schedule (+ the §4.C `X_STEP`↔committed-accumulator binding) | ⬜ remaining — **the final useful-work-soundness item** (see "Remaining soundness scope" below) |
+| §7 real-difficulty end-to-end + byte-equivalence + docs flip | 🟡 byte-equivalence ✅ (`high2_2_xstep_fold_pipeline_byte_equiv_plain`); real-M e2e ✅ (`end_to_end` 13/0); docs flip ⬜ |
+
+### Current state (2026-05-16)
+
+**HIGH-2.2's headline goal is achieved & validated:** the
+*honest* prover now attests the **real folded `TileState M`**
+end-to-end through the production proving path — `zk_bridge`
+(`mine()` gate) places the real solved tile's matmul→fold chain
+via `place_fold_chain`, the §4.D keystone binds last-row
+`JACKPOT_MSG == FOLD_STATE == M`, C4 hashes it
+(`HASH_JACKPOT = BLAKE3(M, key=s_a)`, byte-equivalent to the
+plain miner), C2 checks difficulty. Full `cargo test -p ai-pow
+--features zk` green. The pre-existing latent JackpotChip bug
+that blocked any non-zero `JACKPOT_MSG` is fixed.
+
+**Remaining soundness scope (§6 + §4.C `X_STEP` residual):**
+the per-stripe `X_STEP` fed to the FoldChip is *placed by the
+honest bridge* but not yet **in-circuit bound** to the matmul
+accumulator (the `XStepChip` is byte-equiv-proven standalone but
+not composite-wired to force `X_STEP ← ⊕CUMSUM_TILE ← committed
+A/B`), and the fold/matmul **schedule** (`FOLD_IS_FOLD` /
+`FOLD_SLOT_SEL` / stripe→slot) is not CRIT-1-pinned. So a
+*malicious* prover could supply a fabricated `X_STEP`/schedule
+→ fabricated `M` → forged `HASH_JACKPOT`. Soundness is
+**meanwhile held by CRIT-1 + the keystone** (the *proof* still
+can't be forged against the canonical program; the open gap is
+that the attacker isn't yet *forced* to do the real matmul for
+`X_STEP`). Closing it = wire `XStepChip` into the composite AIR
+binding `X_STEP ← CUMSUM_TILE` (Route-A `noised_packed` already
+binds `CUMSUM_TILE`'s inputs to the committed matrices) **and**
+pin the schedule in `CONTROL_PREP` (NOT a wide preprocessed
+block — the §4.C.8 ~10x trap). This is the precisely-scoped
+final useful-work-soundness item; it is invasive
+(composite-layout + CRIT-1 program) and should be its own
+focused effort, not rushed.
 
 **Precise residual boundary.** The fold *math* is done and
 proven (FoldChip ≡ `from_x_steps` ≡ Pearl §4.5). What remains is
