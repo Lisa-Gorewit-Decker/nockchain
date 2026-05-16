@@ -331,6 +331,78 @@ mod tests {
         }
     }
 
+    /// HIGH-2.2 capstone: the full useful-work *computation*
+    /// chain composed across both ai-pow-zk chips —
+    /// real tile accumulator ─XStepChip→ x_steps ─FoldChip→ M —
+    /// must equal the plain `TileState M` (== `BlockContext.m_states`)
+    /// for every tile, and keyed-BLAKE3 of that M == the plain PoW
+    /// digest. Proves XStepChip and FoldChip compose
+    /// byte-equivalently end-to-end. The only HIGH-2.2 item beyond
+    /// this is the in-AIR *binding* of the accumulator inputs to
+    /// the CRIT-1-pinned HASH_A (§4.C Route-C composite step).
+    #[test]
+    fn high2_2_xstep_fold_pipeline_byte_equiv_plain() {
+        use crate::matmul::{compute_tile_trace, BlockNoise, Matrices, TileState};
+        use ai_pow_zk::chips::fold::{build_trace as fold_trace, final_state};
+        use ai_pow_zk::chips::xstep::{build_trace as xstep_trace, xsteps};
+
+        let params = MatmulParams::TEST_SMALL;
+        let (a, b) = synth_matrices(b"high2_2-pipeline", &params);
+        let ctx = BlockContext::build(b"high2_2-pipe-blk", &a, &b, &params).expect("ctx");
+        let noise = BlockNoise::expand(&ctx.s_a, &ctx.s_b, &params);
+        let mats = Matrices::build(ctx.a, ctx.b, &noise, &params);
+
+        let t = params.tile as usize;
+        let r = params.noise_rank as usize;
+        let steps = params.num_stripes() as usize;
+        let col_tiles = params.col_tiles();
+
+        for tile_i in 0..params.row_tiles() {
+            for tile_j in 0..col_tiles {
+                let tr = compute_tile_trace(&mats, &params, tile_i, tile_j);
+                let row0 = (tile_i * params.tile) as usize;
+                let col0 = (tile_j * params.tile) as usize;
+
+                let mut c_blk = vec![0i32; t * t];
+                let mut per_stripe: Vec<Vec<i32>> = Vec::with_capacity(steps);
+                for step in 0..steps {
+                    let lo = step * r;
+                    for di in 0..t {
+                        let a_row = &mats.a_prime_row((row0 + di) as u32)[lo..lo + r];
+                        for dj in 0..t {
+                            let b_col = &mats.b_prime_col((col0 + dj) as u32)[lo..lo + r];
+                            let mut d: i32 = 0;
+                            for l in 0..r {
+                                d = d.wrapping_add((a_row[l] as i32) * (b_col[l] as i32));
+                            }
+                            c_blk[di * t + dj] = c_blk[di * t + dj].wrapping_add(d);
+                        }
+                    }
+                    per_stripe.push(c_blk.clone());
+                }
+
+                // XStepChip: accumulator → x_steps.
+                let xs_u32 = xsteps(&xstep_trace(&per_stripe));
+                let xs_i32: Vec<i32> = xs_u32.iter().map(|&x| x as i32).collect();
+                // FoldChip: x_steps → M.
+                let m = final_state(&fold_trace(&xs_i32));
+
+                let idx = (tile_i * col_tiles + tile_j) as usize;
+                let want: [u32; 16] = core::array::from_fn(|i| tr.state.0[i] as u32);
+                assert_eq!(m, want, "composed pipeline M @({tile_i},{tile_j})");
+                let bc: [u32; 16] = core::array::from_fn(|i| ctx.m_states[idx].0[i] as u32);
+                assert_eq!(m, bc, "pipeline M != BlockContext.m_states[{idx}]");
+
+                let m_i32: [i32; 16] = core::array::from_fn(|i| m[i] as i32);
+                assert_eq!(
+                    TileState(m_i32).keyed_hash(&ctx.s_a),
+                    tr.state.keyed_hash(&ctx.s_a),
+                    "keyed BLAKE3 of pipeline M != plain PoW digest"
+                );
+            }
+        }
+    }
+
     #[test]
     fn f1_bridge_rejects_tampered_target() {
         // HASH_JACKPOT = 0 clears any target ≥ 0, so a 0 target
