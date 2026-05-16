@@ -20,7 +20,8 @@
 | §4.B↔plain byte-equivalence — FoldChip reproduces the real folded `TileState M` for every tile of a genuine `BlockContext` solve; keyed-hash of chip output == plain PoW digest (the `high2_2_byte_equiv_plain` half of §7) | ✅ done | `2964c32` |
 | §4.A trace placement — `place_matmul_tile` / `X_STEP` rows wired into `zk_bridge`+`f1_harness` from a real `BlockContext` solve | ⬜ remaining (composite-layout integration) |
 | §4.D keystone — generalise to `JACKPOT_MSG[0..16] == FOLD_STATE` | ⬜ remaining (needs §4.A wiring) |
-| §4.C committed-matrix binding — **research/design done** (§4.C.0–4.C.7: the real gap is unifying CRIT-1 pinning with the LogUp, which lives only in `…WithLookups`, not the pinned path; 3 routes, recommend Route C; noise scoped out); implementation remaining | 🟡 designed, impl ⬜ |
+| §4.C.4 accumulator→`X_STEP` reduction (`XStepChip`) + composed `XStep→Fold` pipeline byte-equivalent to plain | ✅ done, 6/0 + zk_bridge 5/5 | `290af68`, `c78ae67` |
+| §4.C committed-matrix *binding* — designed (§4.C.0–4.C.8); naive Route C (PROGRAM_COLS 5→69) **empirically cost-prohibitive (~22 min, 10x), reverted**; cost-aware redesign (C2 gated-equality, co-land with §4.A) specified | 🟡 core done; binding designed, impl ⬜ |
 | §4.E tile-index binding / MED-3 | ⬜ remaining |
 | §6 CRIT-1 program extends to matmul+fold schedule | ⬜ remaining |
 | §7 real-difficulty end-to-end + byte-equivalence + docs flip | ⬜ remaining |
@@ -524,6 +525,64 @@ column the binding's soundness rests on.
 6. Wire FoldChip + §4.D keystone; §7 end-to-end at real
    difficulty; doc + `ZKP_SECURITY_REPORT.md` flip (note the
    §4.C.2 noise residual).
+
+#### 4.C.8 Empirical result: naive Route C is cost-prohibitive (2026-05-15)
+
+**Done & landed (route-independent core):** §4.C.4 `XStepChip`
+(`chips/xstep.rs`, commit `290af68`) — 6/0 self-contained tests +
+cross-crate parity (`zk_bridge::high2_2_xstepchip_byte_equiv_plain_x_steps`)
++ the composed `XStep→Fold` pipeline capstone
+(`high2_2_xstep_fold_pipeline_byte_equiv_plain`, `c78ae67`):
+the entire useful-work *computation* chain (real committed
+matrices → accumulator → `X_STEP` → fold → `M` → keyed-BLAKE3 ==
+plain PoW digest) is proven byte-equivalent end-to-end.
+
+**Naive Route C tried and REVERTED.** Extending `PROGRAM_COLS`
+5 → 69 (append `A_NOISED_UNPACK` ‖ `B_NOISED_UNPACK`) is the
+mechanically-least-invasive binding and is *correct*, but it was
+measured **cost-prohibitive**: the preprocessed trace is
+committed + FRI'd at full trace height (`MIN_STARK_LEN` = 8192)
+every `composite_setup`, twice per test, so the composite_proof
+suite blew from fast to **~22 min CPU (10x+ prover regression)**.
+This is precisely the §4.C.7-step-2 risk, now empirically
+confirmed. Compounding it: the binding is **vacuous in the
+shipping path today** — `zk_bridge` places no matmul rows until
+§4.A, so the 64 pinned columns are all-zero and buy nothing yet.
+"Least invasive" must include *not* shipping a 10x prover
+blow-up to close a currently-vacuous binding. Reverted to the 5
+CRIT-1 anchors; finding recorded here.
+
+**Cost-aware Route C redesign (for the §4.A co-landing):** the
+expense is pinning 64 cols × *all 8192 rows*; the matmul inputs
+are non-zero on only the few real matmul rows. Options to make
+Route C affordable, to be implemented *together with* §4.A
+(when real matmul rows exist) and *measured*:
+
+- **C1 — narrow preprocessed block.** Pin only a compact
+  `MATMUL_PIN` column group whose width is the per-row matmul
+  input (`2·TILE_H·TILE_D`), not the full
+  `A/B_NOISED_UNPACK` span, and only where the schedule places
+  matmul rows; elsewhere the canonical program is 0 (free to
+  commit — constant columns are cheap in FRI but the *width*
+  still costs; quantify).
+- **C2 — selector-gated equality, not a preprocessed column.**
+  Keep `PROGRAM_COLS` at 5; add an in-AIR constraint
+  `IS_MATMUL · (A_NOISED_UNPACK − <bound source>) = 0` where the
+  bound source is a *single* already-pinned anchor (e.g. derive
+  the expected matmul slice from `AB_ID_PREP`, which is already
+  in `PROGRAM_COLS`, via the existing C3/`NOISED_PACKED`
+  relation). No preprocessed widening at all — collapses §4.C
+  into a gated equality + §6 schedule pinning. **Most promising;
+  re-evaluate vs Route B.**
+- **C3 — accept the cost only at PROD with a smaller
+  `MIN_STARK_LEN`/blowup, measured.**
+
+**Net §4.C status:** route-independent core done + proven
+byte-equivalent; the *binding* is designed, its naive form
+empirically rejected on cost, and a cost-aware redesign (C2
+preferred) is specified to co-land with §4.A. Soundness
+unaffected throughout (CRIT-1 + keystone hold; the binding is a
+useful-work-fidelity strengthening, not a forgery fix).
 
 ### 4.D Keystone generalisation
 

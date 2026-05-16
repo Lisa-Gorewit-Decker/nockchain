@@ -96,6 +96,18 @@ impl<F> BaseAir<F> for CompositeFullAir {
 /// control chip already enforces `CONTROL_PREP == pack(selectors,
 /// mat_id)`), so a malicious prover can no longer zero selectors
 /// to vacate the C1/C3/C4 bindings (ZKP_SECURITY_REPORT CRIT-1).
+// HIGH-2.2 §4.C Route C (naive form) — REVERTED. Extending this
+// to pin `A_NOISED_UNPACK`/`B_NOISED_UNPACK` is mechanically the
+// least-invasive binding, but it widens the *preprocessed* trace
+// 5 → 69 columns, committed + FRI'd at full trace height every
+// `composite_setup`. Empirically pathological: the composite_proof
+// suite went from fast to ~22 min CPU (a 10x+ prover blow-up),
+// and the binding is *vacuous* in the shipping path anyway
+// (`zk_bridge` places no matmul rows until §4.A). The
+// cost-aware redesign (pin only matmul rows via a gated/narrow
+// preprocessed block, co-landed + measured with §4.A) is in
+// `HIGH2_2_DESIGN.md` §4.C.8. Keeping `PROGRAM_COLS` at the 5
+// CRIT-1 anchors until then.
 pub const PROGRAM_COLS: [usize; 5] = [
     crate::composite_layout::CONTROL_PREP,
     crate::composite_layout::NOISE_PACKED_PREP,
