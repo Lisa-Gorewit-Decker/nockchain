@@ -406,6 +406,83 @@ mod tests {
         composite_verify(&cfg, &proof, &pis).expect("composite proof must verify");
     }
 
+    /// HIGH-2.2 §4.A repro: a baseline trace + a real fold chain
+    /// must satisfy the (unit) composite AIR — isolates the
+    /// FoldChip-in-composite OodEvaluationMismatch the e2e hit,
+    /// fast (unit `composite_prove`, no batch-stark / pinning).
+    #[test]
+    fn high2_2_fold_chain_in_composite_unit() {
+        let cfg = build_config(&test_zk_params(), &CircuitConfig::TEST_PEARL);
+        let mut trace = CompositeTrace::baseline_min();
+        // Small non-trivial x_steps placed mid-trace; FOLD_STATE
+        // propagates to the last row.
+        let xs: Vec<i32> = (0..16i32)
+            .map(|i| i.wrapping_mul(0x0151_5151) ^ 0x33)
+            .collect();
+        let _m = trace.place_fold_chain(64, &xs);
+        let pis = CompositePublicInputs::derive_from_trace(&trace);
+        let proof = composite_prove(&cfg, trace, &pis);
+        composite_verify(&cfg, &proof, &pis)
+            .expect("baseline + real fold chain must satisfy the composite AIR");
+    }
+
+    /// HIGH-2.2 §4.A repro (pinned+LogUp layer): isolate whether
+    /// the §4.D keystone / CRIT-1 pin / Route-A batch-stark is
+    /// what the zk_bridge e2e tripped (the unit variant above
+    /// passes). Mirrors the bridge trace shape: fold chain →
+    /// JACKPOT_MSG = final M (so the keystone holds) →
+    /// jackpot-hash block, proven via the production
+    /// `*_pinned_logup` path.
+    // KNOWN-FAILING repro of the §4.A bug (kept for the fix).
+    // Unit `composite_prove` + a real fold chain PASSES
+    // (`high2_2_fold_chain_in_composite_unit`), but the same
+    // trace through the production Route-A batch-stark path fails
+    // `OodEvaluationMismatch { index: Some(0) }` — even though
+    // the §4.D keystone *data* precondition (last-row
+    // JACKPOT_MSG == FOLD_STATE == M) is asserted holding here.
+    // ⇒ a FoldChip↔batch-stark (pinned+LogUp) interaction with
+    // non-zero FOLD columns. `#[ignore]` until debugged so the
+    // suite stays green; run explicitly to iterate on the fix.
+    #[test]
+    #[ignore = "HIGH-2.2 §4.A: FoldChip non-zero path fails under batch-stark; see HIGH2_2_DESIGN.md §4.A"]
+    fn high2_2_fold_chain_pinned_logup() {
+        use crate::composite_layout::TOTAL_TRACE_WIDTH;
+        use p3_field::integers::QuotientMap;
+
+        let cfg = build_config(&test_zk_params(), &CircuitConfig::TEST_PEARL);
+        let ch: [u32; 8] = core::array::from_fn(|i| 0x5EED_0000 + i as u32);
+        let mut trace = CompositeTrace::baseline_min();
+        let h = trace.height();
+        let xs: Vec<i32> = (0..16i32)
+            .map(|i| i.wrapping_mul(0x0151_5151) ^ 0x33)
+            .collect();
+        let m = trace.place_fold_chain(64, &xs);
+        // Keystone needs last-row JACKPOT_MSG == FOLD_STATE = M.
+        // place_jackpot_hash_block writes JACKPOT_MSG[h-1] = m.
+        let _ = trace.place_jackpot_hash_block(h - 8, &m, &ch);
+        // FOLD_STATE on the jackpot-block rows is already M
+        // (place_fold_chain propagated it). Sanity: last-row
+        // JACKPOT_MSG == FOLD_STATE.
+        let last = (h - 1) * TOTAL_TRACE_WIDTH;
+        for s in 0..16 {
+            let jm = trace.matrix.values
+                [last + crate::composite_layout::JACKPOT_MSG_START + s];
+            let fs = trace.matrix.values
+                [last + crate::composite_layout::FOLD_STATE_START + s];
+            assert_eq!(
+                jm,
+                <Val<AiPowStarkConfig> as QuotientMap<u64>>::from_int(m[s] as u64),
+                "JACKPOT_MSG[{s}] != M"
+            );
+            assert_eq!(jm, fs, "keystone precondition: JACKPOT_MSG[{s}] != FOLD_STATE[{s}]");
+        }
+        let pis = CompositePublicInputs::derive_from_trace(&trace);
+        let canonical = extract_program(&trace.matrix);
+        let (proof, _) = composite_prove_pinned_logup(&cfg, trace, &pis);
+        composite_verify_pinned_logup(&cfg, &canonical, &proof, &pis)
+            .expect("fold chain + keystone + jackpot must verify under Route-A");
+    }
+
     // ───────────── CRIT-1 malicious-prover regression suite ─────────────
     //
     // ZKP_SECURITY_REPORT CRIT-1: a malicious prover can zero every

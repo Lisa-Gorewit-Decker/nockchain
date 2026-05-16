@@ -18,8 +18,9 @@
 | §4.0 geometry finding — chip is a 2×2×16 micro-tile, *not* the `t×t` accumulator; FoldChip binds a per-stripe scalar `X_STEP` | ✅ recorded | `08485ea` |
 | §4.B FoldChip — standalone AIR, Pearl §4.5 rotl13-XOR, Option B2; 9/0 self-contained tests (correctness + 5 adversarial) | ✅ done | `8cbbbeb` |
 | §4.B↔plain byte-equivalence — FoldChip reproduces the real folded `TileState M` for every tile of a genuine `BlockContext` solve; keyed-hash of chip output == plain PoW digest (the `high2_2_byte_equiv_plain` half of §7) | ✅ done | `2964c32` |
-| §4.A trace placement — `place_matmul_tile` / `X_STEP` rows wired into `zk_bridge`+`f1_harness` from a real `BlockContext` solve | ⬜ remaining (composite-layout integration) |
-| §4.D keystone — generalise to `JACKPOT_MSG[0..16] == FOLD_STATE` | ⬜ remaining (needs §4.A wiring) |
+| §4.A FoldChip composite wiring + `place_fold_chain` — FOLD_* layout block, `FoldChip::eval_composite` in `CompositeFullAir`, `CompositeTrace::place_fold_chain` | ✅ structurally landed (`e6c9c84`); unit-correct (`high2_2_fold_chain_in_composite_unit` ✓) | `e6c9c84` |
+| §4.A bridge real-fold-chain (zk_bridge places real solved tile's chain ⇒ `JACKPOT_MSG`=real M) | 🔴 **KNOWN BUG, reverted to keep prod green** — fails `OodEvaluationMismatch` only via the Route-A batch-stark path with non-zero FOLD (unit path ✓; §4.D keystone *data* precond verified holding). Repro: `high2_2_fold_chain_pinned_logup` (`#[ignore]`). See §4.A below. | reverted |
+| §4.D keystone — generalised to `JACKPOT_MSG[0..16] == FOLD_STATE` (last row) | ✅ landed; gate-green with zero-fold (`composite_proof::tests:: 18/0`) | `e6c9c84` |
 | §4.C.4 accumulator→`X_STEP` reduction (`XStepChip`) + composed `XStep→Fold` pipeline byte-equivalent to plain | ✅ done, 6/0 + zk_bridge 5/5 | `290af68`, `c78ae67` |
 | §4.C committed-matrix *binding* — **Route A: chosen, spiked, productionised & WIRED** (§4.C.10): production API `composite_*_pinned_logup` + exhaustive `routea_*` 4/4; `zk_bridge`(mine() gate)+`f1_harness` switched to it; spike removed; 3-tier entrypoint doc. ~1.23x cost. | ✅ binding complete & wired; §4.A non-vacuity is the separate remaining workstream (#97) |
 | §4.E tile-index binding / MED-3 | ⬜ remaining |
@@ -216,6 +217,58 @@ verbatim for the bridge. `place_matmul_tile` (§4.A) and the
 `X_STEP` derivation (§4.C) replace it; the genuinely hard part of
 HIGH-2.2 is now precisely §4.C (committed-bytes → accumulator →
 `X_STEP`), not the fold.
+
+### 4.A — STATUS 2026-05-16: structurally landed, one localized bug
+
+**Landed (`e6c9c84`):** `composite_layout` FOLD_* block
+(appended; no existing offset shifts), `FoldChip::eval_composite`
+wired into `CompositeFullAir::eval`, §4.D keystone generalised to
+last-row `JACKPOT_MSG[0..16] == FOLD_STATE[0..16]`,
+`CompositeTrace::place_fold_chain(row_start, x_steps) -> [u32;16]`.
+
+**Validated:**
+- `composite_proof::tests::high2_2_fold_chain_in_composite_unit`
+  ✓ — baseline + a real fold chain satisfies the **unit**
+  `CompositeFullAir` (FoldChip-in-composite + `place_fold_chain`
+  are constraint-correct).
+- Structural gate `composite_proof::tests:: 18/0` (crit1_* /
+  high2_* / routea_* + roundtrip) green with the +98-col trace,
+  FoldChip wired, and the new keystone — i.e. **zero-fold**
+  traces and the keystone-with-FOLD_STATE are sound.
+
+**Known bug (precisely localized; bridge reverted to zero-jackpot
+so production `mine()` stays green):** the *same* baseline +
+real-fold-chain trace, taken through the **production Route-A
+batch-stark path** (`composite_prove_pinned_logup` /
+`composite_verify_pinned_logup`), fails
+`OodEvaluationMismatch { index: Some(0) }` —
+`high2_2_fold_chain_pinned_logup` (`#[ignore]`d, kept as the
+repro). The §4.D keystone *data* precondition is **verified
+holding** in that repro (asserted: last-row
+`JACKPOT_MSG == FOLD_STATE == M`, and `place_jackpot_hash_block`
+writes `JACKPOT_MSG = M`). So it is **not** a keystone
+data/PI mismatch nor a FoldChip per-row constraint violation
+(unit path passes; debug `check_constraints` would panic
+per-row otherwise). It is a polynomial-identity failure
+introduced **only** by the batch-stark pinned+LogUp prover when
+FOLD columns are non-zero — i.e. a FoldChip↔batch-stark
+boundary / quotient-degree / ZK-padding / permutation-trace
+interaction. `routea_honest_roundtrip` (same prover, **zero**
+FOLD) passes; the unit uni-stark prover with non-zero FOLD
+passes; only their *intersection* fails.
+
+**Next step for the fix (focused):** run
+`high2_2_fold_chain_pinned_logup` under
+`p3-batch-stark`'s debug `check_constraints` to confirm
+per-row satisfaction, then inspect (a) the FoldChip transition
+constraint **degree** (the `is_fold·(res_sel − acc)` term is
+degree 3; `res_sel = Σ sel·nxt_state`) vs the batch-stark
+quotient-chunk config, and (b) FoldChip behaviour on the
+batch-stark ZK-padding / permutation rows beyond the placed
+chain (the `when_transition` / `when_first_row` boundaries with
+the larger committed domain). The fold *math* and the keystone
+*data path* are proven; this is a prover-layer integration bug,
+not a design flaw.
 
 ### 4.A Honest matmul-step trace placement
 
