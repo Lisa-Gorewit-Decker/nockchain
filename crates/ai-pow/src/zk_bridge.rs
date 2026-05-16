@@ -136,29 +136,42 @@ pub fn prove_and_verify(
     trace.place_key_pin_row(jk_row, false, &kappa_w);
     trace.place_key_pin_row(ch_row, true, &s_a_w);
 
-    // HIGH-2.2 §4.A — REVERTED to the zero-jackpot path (keeps
-    // production `mine()` green). The real-fold-chain wiring
-    // (`place_fold_chain` from the solved tile's `x_steps` →
-    // `JACKPOT_MSG = real TileState M`) is *unit-correct*
-    // (`composite_proof::tests::high2_2_fold_chain_in_composite_unit`
-    // passes), but proving it through the production Route-A
-    // batch-stark path fails `OodEvaluationMismatch`
-    // (`high2_2_fold_chain_pinned_logup`, #[ignore]'d): a
-    // localized FoldChip↔batch-stark interaction with non-zero
-    // FOLD columns (the §4.D keystone *data* precondition is
-    // verified holding — JACKPOT_MSG == FOLD_STATE == M). Until
-    // that's debugged, the bridge places the all-zero jackpot
-    // state: the C4 binding (CV_OUT ↦ PI_HASH_JACKPOT, keyed by
-    // the real s_a) is fully exercised — `BLAKE3(0, key=s_a)` is
-    // a genuine non-vacuous keyed digest; only *what* is hashed
-    // (real M vs zeros) awaits the fix. Status:
-    // `crates/ai-pow-zk/HIGH2_2_DESIGN.md` §4.A.
+    // HIGH-2.2 §4.A — place the **real** solved tile's
+    // matmul→fold chain so `JACKPOT_MSG` = the genuine
+    // `TileState M`. (Re-enabled now that the pre-existing
+    // JackpotChip bug — the `JACKPOT_MSG` RAM recurrence ungated
+    // by `is_active`, which forbade a non-zero `JACKPOT_MSG` —
+    // is fixed; `ai-pow-zk` `high2_2_fold_chain_pinned_logup`,
+    // exactly this trace shape via Route-A, now verifies.)
+    // Reconstruct the noised matrices the same way
+    // `BlockContext::build` does (it exposes the seeds, not the
+    // matrices), take the attested tile's per-stripe `x_steps`,
+    // and fold them via `place_fold_chain`. The §4.D keystone
+    // binds last-row `JACKPOT_MSG == FOLD_STATE`, so
+    // `HASH_JACKPOT = BLAKE3(real M, key=s_a)` is the genuine
+    // PoW digest — byte-equivalent to the plain miner (proven by
+    // `zk_bridge::tests::high2_2_xstep_fold_pipeline_byte_equiv_plain`).
+    // Tile (0,0) is attested here; binding the specific *found*
+    // tile index is §4.E (does not change the binding).
+    let noise = crate::matmul::BlockNoise::expand(&ctx.s_a, &ctx.s_b, params);
+    let mats = crate::matmul::Matrices::build(ctx.a, ctx.b, &noise, params);
+    let tile_trace = crate::matmul::compute_tile_trace(&mats, params, 0, 0);
+    let fold_start = mh_end + 3;
+    assert!(
+        fold_start + tile_trace.x_steps.len() < height - 8,
+        "fold chain + jackpot block must fit: fold_start={fold_start} \
+         stripes={} height={height}",
+        tile_trace.x_steps.len()
+    );
+    let real_m = trace.place_fold_chain(fold_start, &tile_trace.x_steps);
+
+    // C4 — final jackpot-hash block (trace's last 8 rows):
+    // HASH_JACKPOT = BLAKE3(JACKPOT_MSG = real M, key = s_a).
     assert!(
         ch_row + 1 < height - 8,
         "key-pin rows must clear the final jackpot-hash block"
     );
-    let jackpot_state = [0u32; 16];
-    let _hj = trace.place_jackpot_hash_block(height - 8, &jackpot_state, &s_a_w);
+    let _hj = trace.place_jackpot_hash_block(height - 8, &real_m, &s_a_w);
 
     // Derive PIs and cross-check against the plain-side context.
     let pis = CompositePublicInputs::derive_from_trace(&trace);
