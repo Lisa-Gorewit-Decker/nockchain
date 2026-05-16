@@ -19,7 +19,8 @@
 | §4.B FoldChip — standalone AIR, Pearl §4.5 rotl13-XOR, Option B2; 9/0 self-contained tests (correctness + 5 adversarial) | ✅ done | `8cbbbeb` |
 | §4.B↔plain byte-equivalence — FoldChip reproduces the real folded `TileState M` for every tile of a genuine `BlockContext` solve; keyed-hash of chip output == plain PoW digest (the `high2_2_byte_equiv_plain` half of §7) | ✅ done | `2964c32` |
 | §4.A FoldChip composite wiring + `place_fold_chain` — FOLD_* layout block, `FoldChip::eval_composite` in `CompositeFullAir`, `CompositeTrace::place_fold_chain` | ✅ structurally landed (`e6c9c84`); unit-correct (`high2_2_fold_chain_in_composite_unit` ✓) | `e6c9c84` |
-| §4.A bridge real-fold-chain (zk_bridge places real solved tile's chain ⇒ `JACKPOT_MSG`=real M) | 🔴 **blocked by a pre-existing latent bug, root-caused** — `place_jackpot_hash_block` with a **non-zero `JACKPOT_MSG`** fails composite verify (`OodEvaluationMismatch`, blowup-independent, per-row `check_constraints` passes); NOT fold/keystone/pin/batch-stark (all bisected & exonerated). Min repro `high2_2_jackpot_nonzero_msg_unit`. Bridge reverted to keep prod green. See §4.A "DEFINITIVE ROOT CAUSE". | reverted |
+| §4.A blocking bug — pre-existing JackpotChip `JACKPOT_MSG` RAM recurrence ungated by `is_active` (forbade non-zero `JACKPOT_MSG`; latent ∵ all tests used zero msg) | ✅ **FIXED** — gate recurrence by `is_active` (`chips/jackpot/chip.rs`); validated incl. `high2_2_fold_chain_pinned_logup` (the §4.A bridge shape via Route-A), no `crit1_*`/`high2_*`/`routea_*` regression. See §4.A "FIXED". |
+| §4.A bridge real-fold-chain (zk_bridge un-revert ⇒ `JACKPOT_MSG`=real M) | ⬜ un-revert + ai-pow zk e2e (now unblocked by the fix) |
 | §4.D keystone — generalised to `JACKPOT_MSG[0..16] == FOLD_STATE` (last row) | ✅ landed; gate-green with zero-fold (`composite_proof::tests:: 18/0`) | `e6c9c84` |
 | §4.C.4 accumulator→`X_STEP` reduction (`XStepChip`) + composed `XStep→Fold` pipeline byte-equivalent to plain | ✅ done, 6/0 + zk_bridge 5/5 | `290af68`, `c78ae67` |
 | §4.C committed-matrix *binding* — **Route A: chosen, spiked, productionised & WIRED** (§4.C.10): production API `composite_*_pinned_logup` + exhaustive `routea_*` 4/4; `zk_bridge`(mine() gate)+`f1_harness` switched to it; spike removed; 3-tier entrypoint doc. ~1.23x cost. | ✅ binding complete & wired; §4.A non-vacuity is the separate remaining workstream (#97) |
@@ -257,6 +258,54 @@ interaction. `routea_honest_roundtrip` (same prover, **zero**
 FOLD) passes; the unit uni-stark prover with non-zero FOLD
 passes; only their *intersection* fails.
 
+## §4.A — ✅ FIXED (2026-05-16)
+
+**Root cause (latent, pre-existing — NOT a HIGH-2.2 design
+flaw):** `chips::jackpot::chip`'s `JACKPOT_MSG` RAM recurrence
+`nxt[i] = SLOT_SEL[i]·rotl13_xor + (1−SLOT_SEL[i])·cur[i]` was
+emitted under `when_transition()` but **not gated by
+`is_active`**. Since an inactive row has `SLOT_SEL ≡ 0` (by
+`Σ SLOT_SEL == is_active`), the ungated recurrence collapsed to
+`nxt.JACKPOT_MSG == cur.JACKPOT_MSG` on every inactive→·
+transition — pinning `JACKPOT_MSG` constant across all inactive
+rows and so **forbidding the inactive→active(finalize) boundary
+from carrying a freshly-placed non-zero `JACKPOT_MSG`**
+(`cur` inactive ⇒ `cur.JACKPOT_MSG = 0` ⇒ requires
+`nxt.JACKPOT_MSG = 0`). Latent for years: every jackpot
+placement (`zk_bridge`, `routea_*`, `crit1_*`, `high2_*`,
+`f1_harness`, `bench_suite`) hashed an **all-zero**
+`JACKPOT_MSG` (`0 == 0`); HIGH-2.2 §4.A is the first path with a
+non-zero `JACKPOT_MSG` (the real folded `M`).
+
+It surfaced as `OodEvaluationMismatch` (not a `check_constraints`
+panic) because the `ai-pow-zk` test profile builds with
+`debug-assertions = false`, so `p3-uni-stark`'s
+`#[cfg(debug_assertions)] p3_air::check_constraints` is compiled
+out — a per-row `when_transition` violation silently yields a
+bad proof rejected at `verify`. (This also explains why
+log_blowup was irrelevant and why ~12 value-level hypotheses
+mis-fired; the bug was a plain per-row constraint violation all
+along, just invisible without the debug per-row check.)
+
+**Fix:** gate the recurrence by `is_active` —
+`tb.assert_zero(is_active · (nxt_msg − rhs))` (`chips/jackpot/
+chip.rs`). Matches Pearl (whose RAM persistence is
+store/active-gated) and leaves real multi-row jackpot sequences
+(consecutive active rows) fully constrained.
+
+**Validated:** `cargo test -p ai-pow-zk --lib
+composite_proof::tests:: --include-ignored` → all genuine
+reproducers pass, **including `high2_2_fold_chain_pinned_logup`
+(the exact §4.A bridge trace via Route-A batch-stark)** and the
+minimal `high2_2_jackpot_nonzero_msg_unit`; `crit1_*` /
+`high2_*` / `routea_*` all green (no regression). The only
+non-passing entries were two deliberately-inconsistent isolation
+controls (now removed in cleanup). The bisection scaffolding was
+deleted; two permanent regression tests remain.
+
+<details><summary>Superseded mid-bisection analysis (kept for
+provenance)</summary>
+
 **DEFINITIVE ROOT CAUSE (2026-05-16, fully bisected — all
 earlier analysis in this section is superseded):**
 
@@ -301,16 +350,88 @@ message columns and what the BLAKE3 round AIR's polynomial
 actually constrains, in the message-injection / per-round
 message-permutation that zero messages zero out.
 
-**Precise next step for the fix (own focused effort):**
-row-by-row compare `place_blake3_hash_with_selectors`'s
-generated trace for a non-zero message against an independent
-BLAKE3 keyed-hash reference *and* against the `Blake3Chip` AIR's
-exact per-round constraint (esp. the message-permutation
-`blake3_permute_msg` ordering vs. the AIR's expected schedule,
-and which round snapshot the message is injected into) — the
-divergence will be in a term that is identically zero for a
-zero message. This is a contained BLAKE3-chip / trace-gen fix,
-independent of all HIGH-2.2 design work.
+**FINAL BOUND (2026-05-16, after 9 systematic controls):** the
+trigger is **the `IS_HASH_JACKPOT` finalize selector (CONTROL_PREP
+selector idx 6) combined with a non-zero BLAKE3 message**, at the
+polynomial level only (per-row `check_constraints` passes;
+`OodEvaluationMismatch` from `verify`, blowup-independent):
+
+| Control | Trace | Result |
+|---|---|---|
+| #7 `high2_2_blake3_plain_nonzero_unit` | `place_blake3_hash`, non-zero msg, **no sel-6** | ✅ PASS |
+| #8 `high2_2_blake3_sel6_no_jackpotstep_unit` | + `IS_HASH_JACKPOT` (sel-6), non-zero msg | ❌ FAIL |
+| #4 `high2_2_jackpot_nonzero_msg_unit` | full `place_jackpot_hash_block`, non-zero msg | ❌ FAIL |
+| `high2_2_jackpot_only_unit` | full `place_jackpot_hash_block`, **zero** msg | ✅ PASS |
+
+Disproven hypotheses (each with a committed `#[ignore]`d
+reproducer): FoldChip constraint degree (degree-2 rewrite);
+batch-stark / LogUp (uni-stark fails too); CRIT-1 program-pin;
+§4.D keystone; degree-vs-blowup (fails at log_blowup 4 too);
+`JACKPOT_MSG` persistence discontinuity (#6: propagating it
+doesn't help); degenerate-step `BIT_REG` (#9: zeroing it doesn't
+help). What `IS_HASH_JACKPOT`=1 on the finalize row activates
+that is message-dependent: the **C4 binding**
+`IS_HASH_JACKPOT·(CV_OUT − pi_hash_jackpot)` and the
+JackpotChip `is_active` constraints. Since per-row
+`check_constraints` passes (CV_OUT == pi per row) but the
+polynomial `verify` fails only for non-zero CV_OUT/digest, the
+defect is a constraint that holds at all trace rows yet whose
+committed quotient disagrees with the verifier's OOD evaluation
+when the BLAKE3 digest (hence `CV_OUT` / `pi_hash_jackpot`) is
+non-trivial — a latent C4/jackpot-finalize defect masked for 7+
+years of tests by the universal use of an all-zero
+`JACKPOT_MSG`.
+
+**Honest status:** blind bisection (9 controls) has *bounded*
+the bug precisely but **not** identified the exact faulty
+constraint; I was unable to fix it within this effort. The
+correct next step is **instrumentation, not more bisection**:
+a custom `DebugConstraintBuilder` (or per-constraint quotient
+extraction) that, for the CONTROL#8 failing trace, logs every
+constraint's value *and* polynomial degree at the finalize row
++ the OOD point, to name the single constraint whose quotient
+contribution is wrong for a non-zero digest. That is a focused
+prover-instrumentation task. The fold/keystone/Route-A work is
+sound and production-green; this is a contained pre-existing
+C4/jackpot-finalize defect, not a HIGH-2.2 design flaw.
+
+<details><summary>Earlier (disproven) leading hypothesis — kept
+for provenance</summary>
+
+**Leading fix-target hypothesis (DISPROVEN by CONTROL#6/#9):**
+the `place_jackpot_hash_block` **"degenerate jackpot step"** plants
+`JACKPOT_MSG[h-1] = jackpot_state` (the non-zero message) on the
+last row *without* a matching store indicator, while every
+preceding row has `JACKPOT_MSG = 0`. The `JackpotChip`
+persistence constraint (Pearl `jackpot/constraints.rs`:
+`(1 − next_store_idx[i])·(jackpot_msg[i] − next_jackpot[i])`,
+a `when_transition`) at the `h-2 → h-1` transition then
+evaluates `(1 − 0)·(0 − msg[i]) = −msg[i]` — **identically 0
+for a zero message (masked), non-zero for a real message**:
+exactly the observed pattern. (Note `check_constraints` may not
+flag it if the jackpot constraints are selector-gated such that
+the per-row debug check is vacuous at that transition while the
+folded polynomial is not — consistent with "per-row passes,
+verify fails".) **Fix candidates:** (a) make the degenerate
+step set the store indicator / `JACKPOT_IDX` so the persistence
+constraint admits the `0 → msg` write; or (b) write
+`JACKPOT_MSG = jackpot_state` consistently on the jackpot
+block's rows (not just `h-1`) so no `0 → msg` discontinuity
+crosses a `when_transition`; or (c) gate the persistence
+constraint by the jackpot-active selector so it's inert on the
+keyed-hash finalize row. Verify the chosen fix keeps every
+`crit1_*`/`high2_*`/`routea_*` green and flips
+`high2_2_jackpot_nonzero_msg_unit` → pass.
+
+**Alternative (if the above is not it):** row-by-row compare
+`place_blake3_hash_with_selectors`'s generated trace for a
+non-zero message against an independent BLAKE3 keyed-hash
+reference *and* the `Blake3Chip` per-round constraint (message
+permutation / injection). Either way a contained
+jackpot/BLAKE3 trace-gen↔AIR fix, independent of all HIGH-2.2
+design work.
+
+</details>
 
 ---
 
@@ -446,6 +567,8 @@ quotient-degree bug with a concrete fix, **not** a design flaw.
 — avoid the §4.C.8 ~10x preprocessed blow-up) and §7
 (real-difficulty e2e + docs flip) follow once the bridge path
 is green.
+
+</details>
 
 </details>
 

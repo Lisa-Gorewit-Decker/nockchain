@@ -406,49 +406,45 @@ mod tests {
         composite_verify(&cfg, &proof, &pis).expect("composite proof must verify");
     }
 
-    /// HIGH-2.2 §4.A repro: a baseline trace + a real fold chain
-    /// must satisfy the (unit) composite AIR — isolates the
-    /// FoldChip-in-composite OodEvaluationMismatch the e2e hit,
-    /// fast (unit `composite_prove`, no batch-stark / pinning).
+    // ───── HIGH-2.2 §4.A regression: non-zero JACKPOT_MSG ─────
+    //
+    // A latent JackpotChip bug (the JACKPOT_MSG RAM recurrence
+    // `nxt = SLOT_SEL·rotl13_xor + (1−SLOT_SEL)·cur` was
+    // `when_transition` but **not** gated by `is_active`) forced
+    // JACKPOT_MSG constant across all inactive rows, so the
+    // inactive→active(finalize) boundary forbade a freshly-placed
+    // non-zero JACKPOT_MSG. Latent for years because every
+    // jackpot placement hashed an all-zero JACKPOT_MSG (0 == 0);
+    // surfaced by HIGH-2.2 §4.A (the first non-zero JACKPOT_MSG —
+    // the real folded `M`). Fixed by gating the recurrence with
+    // `is_active` (`chips::jackpot::chip`). These two tests pin
+    // the fix; bisection scaffolding removed post-fix.
+
+    /// `place_jackpot_hash_block` with a **non-zero** message
+    /// must satisfy the (unit) composite AIR — the minimal
+    /// regression for the JackpotChip `is_active`-gating fix.
     #[test]
-    fn high2_2_fold_chain_in_composite_unit() {
+    fn high2_2_jackpot_nonzero_msg_unit() {
         let cfg = build_config(&test_zk_params(), &CircuitConfig::TEST_PEARL);
+        let ch: [u32; 8] = core::array::from_fn(|i| 0x5EED_0000 + i as u32);
+        let msg: [u32; 16] = core::array::from_fn(|i| 0xABCD_0001u32.wrapping_mul(i as u32 + 1));
         let mut trace = CompositeTrace::baseline_min();
-        // Small non-trivial x_steps placed mid-trace; FOLD_STATE
-        // propagates to the last row.
-        let xs: Vec<i32> = (0..16i32)
-            .map(|i| i.wrapping_mul(0x0151_5151) ^ 0x33)
-            .collect();
-        let _m = trace.place_fold_chain(64, &xs);
+        let h = trace.height();
+        let _ = trace.place_jackpot_hash_block(h - 8, &msg, &ch);
         let pis = CompositePublicInputs::derive_from_trace(&trace);
         let proof = composite_prove(&cfg, trace, &pis);
         composite_verify(&cfg, &proof, &pis)
-            .expect("baseline + real fold chain must satisfy the composite AIR");
+            .expect("non-zero-message jackpot block must verify (JackpotChip is_active gate)");
     }
 
-    /// HIGH-2.2 §4.A repro (pinned+LogUp layer): isolate whether
-    /// the §4.D keystone / CRIT-1 pin / Route-A batch-stark is
-    /// what the zk_bridge e2e tripped (the unit variant above
-    /// passes). Mirrors the bridge trace shape: fold chain →
-    /// JACKPOT_MSG = final M (so the keystone holds) →
-    /// jackpot-hash block, proven via the production
-    /// `*_pinned_logup` path.
-    // KNOWN-FAILING §4.A repro (kept for the fix). A real fold
-    // chain + keystone + jackpot, via the Route-A batch-stark
-    // path, fails `OodEvaluationMismatch { index: Some(0) }`.
-    // The unit `composite_prove` path (no pin/keystone/LogUp)
-    // PASSES with the same trace (`*_in_composite_unit`), and
-    // the §4.D keystone *data* precond is asserted holding.
-    // The degree-3→2 FoldChip rewrite (FOLD_XOR_OUT) did NOT
-    // fix it — **hypothesis disproven**: the cause is NOT
-    // FoldChip constraint degree. It is isolated to the
-    // pinned/keystone/LogUp(batch-stark) layer with non-zero
-    // FOLD. Next bisection: a uni-stark *pinned* (keystone, no
-    // LogUp) variant to split keystone/program-pin vs the
-    // batch-stark LogUp layer. `#[ignore]` so the suite stays
-    // green. See HIGH2_2_DESIGN.md §4.A.
+    /// HIGH-2.2 §4.A end-to-end regression via the production
+    /// Route-A path: a real fold chain → `JACKPOT_MSG` = the
+    /// folded `TileState M` (non-zero) → §4.D keystone →
+    /// jackpot-hash, proven/verified through
+    /// `composite_*_pinned_logup` (CRIT-1 pin + `noised_packed`
+    /// LogUp via batch-stark). This is exactly the trace shape
+    /// `ai-pow::zk_bridge` builds for the real-`M` bridge.
     #[test]
-    #[ignore = "HIGH-2.2 §4.A: batch-stark pinned+LogUp + non-zero FOLD fails; degree hypothesis disproven; see HIGH2_2_DESIGN.md §4.A"]
     fn high2_2_fold_chain_pinned_logup() {
         use crate::composite_layout::TOTAL_TRACE_WIDTH;
         use p3_field::integers::QuotientMap;
@@ -461,12 +457,8 @@ mod tests {
             .map(|i| i.wrapping_mul(0x0151_5151) ^ 0x33)
             .collect();
         let m = trace.place_fold_chain(64, &xs);
-        // Keystone needs last-row JACKPOT_MSG == FOLD_STATE = M.
-        // place_jackpot_hash_block writes JACKPOT_MSG[h-1] = m.
         let _ = trace.place_jackpot_hash_block(h - 8, &m, &ch);
-        // FOLD_STATE on the jackpot-block rows is already M
-        // (place_fold_chain propagated it). Sanity: last-row
-        // JACKPOT_MSG == FOLD_STATE.
+        // Keystone precondition: last-row JACKPOT_MSG == FOLD_STATE == M.
         let last = (h - 1) * TOTAL_TRACE_WIDTH;
         for s in 0..16 {
             let jm = trace.matrix.values
@@ -484,170 +476,7 @@ mod tests {
         let canonical = extract_program(&trace.matrix);
         let (proof, _) = composite_prove_pinned_logup(&cfg, trace, &pis);
         composite_verify_pinned_logup(&cfg, &canonical, &proof, &pis)
-            .expect("fold chain + keystone + jackpot must verify under Route-A");
-    }
-
-    /// HIGH-2.2 §4.A bisection #2: fold chain + jackpot block via
-    /// the **unit** `composite_prove` (`CompositeFullAir` — NO
-    /// program-pin, NO §4.D keystone, NO LogUp). Splits the
-    /// remaining locus:
-    ///   - FAILS ⇒ base `CompositeFullAir` fold↔jackpot (or
-    ///     last-row PI-binding) interaction — bug is in a base
-    ///     chip / the base `when_last_row` JACKPOT_MSG↔PI bind.
-    ///   - PASSES ⇒ fault is specifically the CRIT-1 program-pin
-    ///     or the §4.D keystone with non-zero last-row
-    ///     FOLD_STATE/JACKPOT_MSG.
-    /// CONTROL (bisection #3): `place_jackpot_hash_block` ALONE
-    /// in a minimal trace (baseline + jackpot, **no fold, no
-    /// key-pin, no matrix-hash**) via unit `composite_prove`.
-    /// The passing jackpot case (`routea_honest`) has key-pin +
-    /// matrix-hash scaffolding; `*_fold_chain_jackpot_unit` had
-    /// neither — so "fold×jackpot" was never cleanly isolated.
-    ///   - FAILS ⇒ the bug is the jackpot block needing
-    ///     scaffolding (NOT a fold interaction); fix is the
-    ///     bridge/repro trace shape, not FoldChip.
-    ///   - PASSES ⇒ confirms the fold×jackpot interaction.
-    #[test]
-    fn high2_2_jackpot_only_unit() {
-        let cfg = build_config(&test_zk_params(), &CircuitConfig::TEST_PEARL);
-        let ch: [u32; 8] = core::array::from_fn(|i| 0x5EED_0000 + i as u32);
-        let mut trace = CompositeTrace::baseline_min();
-        let h = trace.height();
-        let _ = trace.place_jackpot_hash_block(h - 8, &[0u32; 16], &ch);
-        let pis = CompositePublicInputs::derive_from_trace(&trace);
-        let proof = composite_prove(&cfg, trace, &pis);
-        composite_verify(&cfg, &proof, &pis)
-            .expect("CONTROL: jackpot block alone (minimal, no fold/scaffolding)");
-    }
-
-    /// CONTROL #4 (decisive): `place_jackpot_hash_block` with a
-    /// **non-zero** 16-word message — NO fold chain. Every
-    /// shipping/test jackpot placement uses `&[0u32;16]`; the
-    /// fold repro is the first with a non-zero message (`&m`).
-    /// RESULT: **FAILED** `OodEvaluationMismatch` (also fails at
-    /// log_blowup=4, see `*_lb4`). ⇒ DEFINITIVE root cause:
-    /// `place_jackpot_hash_block` / the BLAKE3 keyed-hash with a
-    /// **non-zero message** fails composite verify (per-row
-    /// `check_constraints` passes; the polynomial verify fails;
-    /// not a degree/blowup issue). The fold chain, §4.D
-    /// keystone, CRIT-1 pin, and batch-stark are ALL exonerated:
-    /// a pre-existing latent bug — every shipping/test jackpot
-    /// placement used `&[0u32;16]`; HIGH-2.2 is just the first to
-    /// need a non-zero `JACKPOT_MSG`. `#[ignore]` (known-failing
-    /// reproducer); see HIGH2_2_DESIGN.md §4.A.
-    #[test]
-    #[ignore = "pre-existing: place_jackpot_hash_block non-zero msg fails composite verify; HIGH2_2_DESIGN §4.A"]
-    fn high2_2_jackpot_nonzero_msg_unit() {
-        let cfg = build_config(&test_zk_params(), &CircuitConfig::TEST_PEARL);
-        let ch: [u32; 8] = core::array::from_fn(|i| 0x5EED_0000 + i as u32);
-        let msg: [u32; 16] = core::array::from_fn(|i| 0xABCD_0001u32.wrapping_mul(i as u32 + 1));
-        let mut trace = CompositeTrace::baseline_min();
-        let h = trace.height();
-        let _ = trace.place_jackpot_hash_block(h - 8, &msg, &ch);
-        let pis = CompositePublicInputs::derive_from_trace(&trace);
-        let proof = composite_prove(&cfg, trace, &pis);
-        composite_verify(&cfg, &proof, &pis)
-            .expect("CONTROL#4: jackpot block with NON-ZERO message (no fold)");
-    }
-
-    /// CONTROL #5: identical to #4 but with `PROD_LB4`
-    /// (log_blowup = 4, 16× LDE) instead of `TEST_PEARL`
-    /// (log_blowup = 2). If this PASSES while #4 FAILS, the §4.A
-    /// bug is a composite-AIR constraint whose true degree
-    /// exceeds what log_blowup=2 supports — zero-valued (thus
-    /// masked) for the all-zero messages every prior test used,
-    /// non-zero only with a real `JACKPOT_MSG`. Fix is then
-    /// either a degree reduction in the offending chip or a
-    /// blowup bump (TEST_PEARL/PROD use 2/3).
-    /// RESULT: **FAILED** at log_blowup=4 too ⇒ NOT a
-    /// degree-vs-blowup issue; the non-zero-message jackpot bug
-    /// is blowup-independent. `#[ignore]` (reproducer).
-    #[test]
-    #[ignore = "pre-existing: non-zero-msg jackpot fails at lb4 too (blowup-independent); HIGH2_2_DESIGN §4.A"]
-    fn high2_2_jackpot_nonzero_msg_lb4() {
-        let cfg = build_config(&test_zk_params(), &CircuitConfig::PROD_LB4);
-        let ch: [u32; 8] = core::array::from_fn(|i| 0x5EED_0000 + i as u32);
-        let msg: [u32; 16] = core::array::from_fn(|i| 0xABCD_0001u32.wrapping_mul(i as u32 + 1));
-        let mut trace = CompositeTrace::baseline_min();
-        let h = trace.height();
-        let _ = trace.place_jackpot_hash_block(h - 8, &msg, &ch);
-        let pis = CompositePublicInputs::derive_from_trace(&trace);
-        let proof = composite_prove(&cfg, trace, &pis);
-        composite_verify(&cfg, &proof, &pis)
-            .expect("CONTROL#5: non-zero-message jackpot at log_blowup=4");
-    }
-
-    /// RESULT (2026-05-16): **FAILED** `OodEvaluationMismatch
-    /// { index: None }`. ⇒ the §4.A bug is a **base
-    /// `CompositeFullAir` constraint interaction between the fold
-    /// chain and the jackpot-hash block** — independent of the
-    /// program-pin, §4.D keystone, batch-stark, LogUp, and
-    /// FoldChip degree (all ruled out by bisection). Each alone
-    /// passes (`high2_2_fold_chain_in_composite_unit` ✓; every
-    /// shipping jackpot-block test ✓); only *together* they
-    /// fail. `place_jackpot_hash_block` does not overwrite
-    /// FOLD_* (verified). Next step (HIGH2_2_DESIGN §4.A): run
-    /// this trace under uni-stark **debug `check_constraints`**
-    /// to name the exact failing row/constraint. `#[ignore]` so
-    /// the suite stays green.
-    #[test]
-    #[ignore = "HIGH-2.2 §4.A: base fold↔jackpot constraint interaction; needs debug check_constraints; see HIGH2_2_DESIGN.md §4.A"]
-    fn high2_2_fold_chain_jackpot_unit() {
-        let cfg = build_config(&test_zk_params(), &CircuitConfig::TEST_PEARL);
-        let ch: [u32; 8] = core::array::from_fn(|i| 0x5EED_0000 + i as u32);
-        let mut trace = CompositeTrace::baseline_min();
-        let h = trace.height();
-        let xs: Vec<i32> = (0..16i32)
-            .map(|i| i.wrapping_mul(0x0151_5151) ^ 0x33)
-            .collect();
-        let m = trace.place_fold_chain(64, &xs);
-        let _ = trace.place_jackpot_hash_block(h - 8, &m, &ch);
-        let pis = CompositePublicInputs::derive_from_trace(&trace);
-        let proof = composite_prove(&cfg, trace, &pis);
-        composite_verify(&cfg, &proof, &pis).expect(
-            "BISECTION#2: fold + jackpot via unit CompositeFullAir (no pin/keystone)",
-        );
-    }
-
-    /// HIGH-2.2 §4.A bisection: same fold-chain+keystone+jackpot
-    /// trace, proven via the **uni-stark pinned** path
-    /// (`composite_prove_pinned` / `composite_verify_pinned`) —
-    /// the §4.D keystone + CRIT-1 program-pin **without**
-    /// batch-stark / LogUp. Splits the failing layer:
-    ///   - this PASSES + `*_pinned_logup` FAILS ⇒ bug is the
-    ///     batch-stark LogUp layer.
-    ///   - this FAILS ⇒ bug is the §4.D keystone / program-pin
-    ///     (independent of batch-stark).
-    /// RESULT (2026-05-16): **FAILED** `OodEvaluationMismatch`.
-    /// ⇒ the §4.A bug is **not** batch-stark/LogUp-specific
-    /// (uni-stark pinned fails too) and **not** FoldChip
-    /// constraint degree (the degree-2 rewrite didn't help).
-    /// Locus narrowed to **(fold chain + jackpot block) under
-    /// the pinned path** (CompositeFullAir + program-pin + §4.D
-    /// keystone); the unit `composite_prove` + fold-only path
-    /// passes. Next bisection (documented, HIGH2_2_DESIGN.md
-    /// §4.A): unit `composite_prove` + fold + jackpot (no
-    /// pin/keystone) to split a base fold↔jackpot interaction
-    /// from a keystone/program-pin one. `#[ignore]` so the suite
-    /// stays green.
-    #[test]
-    #[ignore = "HIGH-2.2 §4.A: (fold+jackpot)×pinned uni-stark fails; not degree/not batch-stark; see HIGH2_2_DESIGN.md §4.A"]
-    fn high2_2_fold_chain_pinned_unistark() {
-        let cfg = build_config(&test_zk_params(), &CircuitConfig::TEST_PEARL);
-        let ch: [u32; 8] = core::array::from_fn(|i| 0x5EED_0000 + i as u32);
-        let mut trace = CompositeTrace::baseline_min();
-        let h = trace.height();
-        let xs: Vec<i32> = (0..16i32)
-            .map(|i| i.wrapping_mul(0x0151_5151) ^ 0x33)
-            .collect();
-        let m = trace.place_fold_chain(64, &xs);
-        let _ = trace.place_jackpot_hash_block(h - 8, &m, &ch);
-        let pis = CompositePublicInputs::derive_from_trace(&trace);
-        let canonical = extract_program(&trace.matrix);
-        let (proof, _) = composite_prove_pinned(&cfg, trace, &pis);
-        composite_verify_pinned(&cfg, &canonical, &proof, &pis).expect(
-            "BISECTION: fold chain + keystone + program-pin (uni-stark, no LogUp)",
-        );
+            .expect("real fold chain + keystone + jackpot must verify under Route-A");
     }
 
     // ───────────── CRIT-1 malicious-prover regression suite ─────────────

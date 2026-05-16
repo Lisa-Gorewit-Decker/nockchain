@@ -169,6 +169,27 @@ impl JackpotChip {
         }
 
         {
+            // The JACKPOT_MSG RAM recurrence
+            //   nxt[i] = SLOT_SEL[i]·rotl13_xor + (1−SLOT_SEL[i])·cur[i]
+            // is only meaningful while the jackpot is *active*
+            // (`is_active` = IS_HASH_JACKPOT). It MUST be gated by
+            // `is_active`: an inactive row has SLOT_SEL ≡ 0 (by
+            // the `Σ SLOT_SEL == is_active` constraint above), so
+            // ungated it would force `nxt.JACKPOT_MSG ==
+            // cur.JACKPOT_MSG` on every inactive→* transition —
+            // i.e. JACKPOT_MSG pinned constant across all
+            // inactive rows. That makes the inactive→active
+            // boundary forbid the active row from carrying a
+            // freshly-placed JACKPOT_MSG: with `cur` inactive
+            // (JACKPOT_MSG = 0) it requires `nxt.JACKPOT_MSG = 0`.
+            // Latent for years because every jackpot placement
+            // hashed an all-zero JACKPOT_MSG (0 == 0); surfaced
+            // by HIGH-2.2 §4.A, the first non-zero JACKPOT_MSG
+            // (the real folded `M`). Gating by `is_active`
+            // matches Pearl (whose RAM persistence is store/
+            // active-gated) and leaves real multi-row jackpot
+            // sequences — where consecutive rows are active —
+            // fully constrained.
             let mut tb = builder.when_transition();
             for i in 0..JACKPOT_SIZE {
                 let sel_i: AB::Expr = cur[off.slot_sel_start + i].into();
@@ -180,7 +201,7 @@ impl JackpotChip {
                 let rhs =
                     sel_i * rotated_xor_packed.clone() + one_minus_sel * cur_msg;
 
-                tb.assert_eq(nxt_msg, rhs);
+                tb.assert_zero(is_active.clone() * (nxt_msg - rhs));
             }
         }
     }
