@@ -31,6 +31,7 @@
 
 pub mod blake3;
 pub mod control;
+pub mod fold;
 pub mod i8u8;
 pub mod input;
 pub mod jackpot;
