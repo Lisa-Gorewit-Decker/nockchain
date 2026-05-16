@@ -120,27 +120,51 @@ program-pinned (see Remediation).
 ### HIGH-2 — HASH_JACKPOT attests a constant, not the work
 
 **Severity: High. STATUS: soundness gap RESOLVED 2026-05-15
-(commit `15ba9a3`); residual downgraded to a completeness /
-fidelity item.** The `CompositeFullAirPinned` keystone adds an
-unconditional last-row constraint `JACKPOT_MSG[0..4] ==
-CUMSUM_TILE[0..4]`, `JACKPOT_MSG[4..16] == 0`. The matmul chip
-binds `CUMSUM_TILE`'s cross-row evolution, so on the
-CRIT-1-pinned production path the C4-hashed message is **no
-longer a prover-free value** — an attacker can no longer grind an
-arbitrary winning `JACKPOT_MSG` (the hashcash forge); it is
-forced equal to the matmul accumulator, and changing it requires
-changing the matmul inputs and redoing the work. Adversarial
-test `composite_proof::high2_free_jackpot_message_rejected`
-confirms a planted free winning message is rejected.
-**Remaining (downgraded — not a forgery hole):** the honest
-bridge does not yet place a real matmul chain, so an *honest*
-proof still attests `BLAKE3(0, key=s_a)`; and binding
-`CUMSUM_TILE` to the *committed* matrices end-to-end needs the
-`noised_packed` LogUp path (`CompositeFullAirWithLookups`), not
-the uni-stark pinned path the bridge uses. That is the
-matmul→jackpot interleave — completeness/fidelity, tracked as a
-distinct workstream. The original analysis below stands as the
-rationale.
+(`15ba9a3`); HIGH-2.2 fidelity LARGELY CLOSED 2026-05-16 — the
+honest proof now attests the *real* folded tile state, with one
+precisely-scoped useful-work-soundness residual.** Update
+2026-05-16: the keystone was generalised to the faithful
+last-row `JACKPOT_MSG[0..16] == FOLD_STATE[0..16]` (the full
+16-word Pearl §4.5 folded `TileState M`, replacing the 2×2
+`CUMSUM_TILE[0..4]`+zero stop-gap; `e6c9c84`). A `FoldChip`
+(Pearl §4.5 rotl13-XOR, Option B2) + `place_fold_chain` thread
+the real solved tile's per-stripe fold into `FOLD_STATE`, and
+`zk_bridge`/`mine()` now place it through the **production
+Route-A batch-stark path** (CRIT-1 pin **and** the
+`noised_packed` LogUp in one proof — `composite_*_pinned_logup`,
+`8ed627e`/`37f5c0f`). So an *honest* proof now attests
+`HASH_JACKPOT = BLAKE3(real M, key=s_a)` — byte-equivalent to
+the plain miner (`high2_2_xstep_fold_pipeline_byte_equiv_plain`)
+— not `BLAKE3(0,s_a)`. A pre-existing latent JackpotChip bug
+(the `JACKPOT_MSG` RAM recurrence ungated by `is_active`, which
+forbade any non-zero `JACKPOT_MSG`; masked for years because
+every test hashed an all-zero message) was root-caused and fixed
+(`354b47e`). Validated: full `cargo test -p ai-pow --features
+zk` green incl. `end_to_end` 13/0 (every `mine()` via real-M
+Route-A), `zk_bridge` 19/0; `crit1_*`/`high2_*`/`routea_*` no
+regression. Adversarial `composite_proof::high2_free_jackpot_message_rejected`
+still rejects a planted free winning message.
+
+**Remaining useful-work-soundness residual (precisely scoped,
+not a *proof*-forgery hole):** the per-stripe `X_STEP` fed to
+the `FoldChip` is placed by the honest bridge but **not yet
+in-circuit bound** to the matmul accumulator (`XStepChip` is
+byte-equiv-proven standalone but not composite-wired to force
+`X_STEP ← ⊕CUMSUM_TILE ← committed A/B`), and the fold/matmul
+**schedule** (`FOLD_IS_FOLD`/`FOLD_SLOT_SEL`) is not
+CRIT-1-pinned. So a *malicious* prover could supply a fabricated
+`X_STEP`/schedule → fabricated `M` → forged `HASH_JACKPOT`.
+This is held in check meanwhile by CRIT-1 + the keystone (the
+proof cannot be forged against the canonical program); the open
+gap is that the attacker is not yet *forced* to do the real
+matmul for `X_STEP`. Closing it = composite-wire `XStepChip`
+binding `X_STEP ← CUMSUM_TILE` (Route-A `noised_packed` already
+binds `CUMSUM_TILE`'s inputs to the committed matrices) **and**
+pin the schedule in `CONTROL_PREP` (not a wide preprocessed
+block — empirically a ~10x prover blow-up, `HIGH2_2_DESIGN.md`
+§4.C.8). Tracked as HIGH-2.2 §6 + the §4.C `X_STEP` residual;
+invasive, its own focused effort. The original analysis below
+stands as the historical rationale.
 
 **Original severity: High (PoW *usefulness* not enforced even if
 CRIT-1 is fixed).**
@@ -313,18 +337,38 @@ by committing the program columns as a preprocessed trace
 well-localized root cause with the clean fix anticipated here.
 The production path now proves/verifies against a verifier-fixed
 program; the `crit1_*` adversarial suite confirms the forgery is
-rejected. **HIGH-2's soundness gap is also closed** (commit
-`15ba9a3`): the keystone pins the C4-hashed `JACKPOT_MSG` to the
-matmul-bound `CUMSUM_TILE`, so it is no longer a prover-free
-hashcash input. **Remaining (downgraded to
-completeness/fidelity, not soundness):** the honest bridge must
-place a real matmul chain so an honest proof attests a
-non-trivial tile (today CUMSUM=0 ⇒ `BLAKE3(0,s_a)`), and binding
-CUMSUM to the *committed* matrices end-to-end needs the
-`noised_packed` LogUp path — the matmul→jackpot interleave.
-**MED-3** (document the `target`-derivation obligation) and the
-7-round-Tip5 review remain. With CRIT-1 + HIGH-2 keystone landed,
-the SNARK is PoW-sound *and* an attacker cannot forge a winning
-proof without doing matmul-bound work; the interleave is what
-makes the *honest* proof attest a *useful* (non-trivial,
-committed-matrix) tile.
+rejected. **HIGH-2's soundness gap is closed** (`15ba9a3`).
+
+**Updated 2026-05-16 — HIGH-2.2 fidelity largely closed.** The
+keystone was generalised to the faithful `JACKPOT_MSG[0..16] ==
+FOLD_STATE[0..16]` (the full Pearl §4.5 folded `TileState M`),
+a `FoldChip` + `place_fold_chain` were added, and
+`zk_bridge`/`mine()` now place the **real** solved tile's
+matmul→fold chain through the **production Route-A batch-stark
+path** (CRIT-1 pin + `noised_packed` LogUp unified). An honest
+proof now attests `HASH_JACKPOT = BLAKE3(real folded M,
+key=s_a)` — byte-equivalent to the plain miner, *not*
+`BLAKE3(0,s_a)`. A pre-existing latent JackpotChip bug (the
+`JACKPOT_MSG` RAM recurrence ungated by `is_active`, masked for
+years by all-zero messages) was root-caused and fixed
+(`354b47e`). Full `cargo test -p ai-pow --features zk` green
+incl. `end_to_end` 13/0; no `crit1_*`/`high2_*`/`routea_*`
+regression.
+
+**Remaining (precisely scoped useful-work-soundness residual —
+not a *proof*-forgery hole):** the per-stripe `X_STEP` is
+honest-placed but not yet *in-circuit* bound to the matmul
+accumulator (`XStepChip` byte-equiv-proven standalone, not
+composite-wired), and the fold/matmul schedule isn't
+CRIT-1-pinned — so a malicious prover isn't yet *forced* to do
+the real matmul for `X_STEP`. Held meanwhile by CRIT-1 + the
+keystone (the proof can't be forged against the canonical
+program). Closing it = composite-wire `XStepChip` binding
+`X_STEP ← ⊕CUMSUM_TILE` + pin the schedule in `CONTROL_PREP`
+(not a wide preprocessed block — `HIGH2_2_DESIGN.md` §4.C.8).
+**MED-3** (`target`-derivation), §4.E (tile-index binding), and
+the 7-round-Tip5 review also remain. Net: CRIT-1 + HIGH-2
+keystone make the SNARK PoW-sound and an attacker cannot forge a
+winning proof; the *honest* proof now attests the real,
+byte-equivalent useful-work tile; the final residual is forcing
+a *malicious* prover through the same matmul for `X_STEP`.

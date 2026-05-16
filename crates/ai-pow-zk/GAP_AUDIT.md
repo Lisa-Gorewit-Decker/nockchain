@@ -240,16 +240,28 @@ Post-CRIT-1 + HIGH-2-keystone summary: C1–C4 bindings are
 **enforced** against a malicious prover (program-pinned, CRIT-1).
 C1 ties κ / `s_a`; C3 binds matrix bytes; C4 binds the jackpot
 keyed-hash; C2 checks difficulty against that hash. **HIGH-2
-soundness gap RESOLVED** (commit `15ba9a3`): the
-`CompositeFullAirPinned` keystone pins last-row
-`JACKPOT_MSG[0..4] == CUMSUM_TILE[0..4]` (+ `[4..16]==0`), so the
-C4-hashed message is the matmul-bound accumulator, not a
-prover-free hashcash input (adversarial test
-`high2_free_jackpot_message_rejected`). **Remaining (downgraded
-to completeness/fidelity, not a forgery hole):** the honest
-bridge must place a real matmul chain (today CUMSUM=0 ⇒ honest
-proof attests `BLAKE3(0,s_a)`), and binding CUMSUM to the
-*committed* matrices end-to-end needs the `noised_packed` LogUp
-path — the matmul→jackpot interleave. Plus MED-3
-(`target`-derivation doc), recursion (M12), production-hardening
-(P1/P3/P5/P6).
+soundness gap RESOLVED** (`15ba9a3`). **HIGH-2.2 fidelity
+LARGELY CLOSED 2026-05-16:** keystone generalised to
+`JACKPOT_MSG[0..16] == FOLD_STATE[0..16]` (full Pearl §4.5
+folded `TileState M`); a `FoldChip` + `place_fold_chain` +
+`zk_bridge`/`mine()` now place the **real** solved tile's
+matmul→fold chain via the production **Route-A batch-stark**
+path (CRIT-1 pin + `noised_packed` LogUp unified) ⇒ an honest
+proof attests `BLAKE3(real M, s_a)`, byte-equivalent to the
+plain miner (not `BLAKE3(0,s_a)`). A pre-existing latent
+JackpotChip bug (the `JACKPOT_MSG` RAM recurrence ungated by
+`is_active`, masked for years by all-zero messages) was
+root-caused & fixed (`354b47e`). Full `cargo test -p ai-pow
+--features zk` green incl. `end_to_end` 13/0; no
+`crit1_*`/`high2_*`/`routea_*` regression. **Remaining (precise
+useful-work-soundness residual, not a *proof*-forgery hole):**
+the per-stripe `X_STEP` is honest-placed but not yet *in-circuit*
+bound to the matmul accumulator (`XStepChip` byte-equiv-proven
+standalone, not composite-wired), and the fold/matmul schedule
+isn't CRIT-1-pinned — a malicious prover isn't yet *forced* to
+do the real matmul for `X_STEP` (held meanwhile by CRIT-1 +
+keystone). Closing it = composite-wire `XStepChip` binding
+`X_STEP ← ⊕CUMSUM_TILE` + pin the schedule in `CONTROL_PREP`
+(not a wide preprocessed block — `HIGH2_2_DESIGN.md` §4.C.8).
+Plus §4.E (tile-index), MED-3 (`target`-derivation doc),
+recursion (M12), production-hardening (P1/P3/P5/P6).
