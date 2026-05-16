@@ -21,7 +21,7 @@
 | §4.A trace placement — `place_matmul_tile` / `X_STEP` rows wired into `zk_bridge`+`f1_harness` from a real `BlockContext` solve | ⬜ remaining (composite-layout integration) |
 | §4.D keystone — generalise to `JACKPOT_MSG[0..16] == FOLD_STATE` | ⬜ remaining (needs §4.A wiring) |
 | §4.C.4 accumulator→`X_STEP` reduction (`XStepChip`) + composed `XStep→Fold` pipeline byte-equivalent to plain | ✅ done, 6/0 + zk_bridge 5/5 | `290af68`, `c78ae67` |
-| §4.C committed-matrix *binding* — designed (§4.C.0–4.C.8); naive Route C (PROGRAM_COLS 5→69) **empirically cost-prohibitive (~22 min, 10x), reverted**; cost-aware redesign (C2 gated-equality, co-land with §4.A) specified | 🟡 core done; binding designed, impl ⬜ |
+| §4.C committed-matrix *binding* — designed (§4.C.0–4.C.9); naive Route C **cost-prohibitive, reverted** (§4.C.8); **Route B ELIMINATED** (uni-stark single-phase, §4.C.9); **Route A confirmed feasible & ~½ pre-built** (batch-stark supports preprocessed+LogUp; WithLookups+prove_batch exist). Live fork: A (prover-cost spike) vs C2 (needs §4.A) | 🟡 core done; binding A-or-C2, impl ⬜ |
 | §4.E tile-index binding / MED-3 | ⬜ remaining |
 | §6 CRIT-1 program extends to matmul+fold schedule | ⬜ remaining |
 | §7 real-difficulty end-to-end + byte-equivalence + docs flip | ⬜ remaining |
@@ -444,9 +444,14 @@ Three implementation routes, with trade-offs:
   §4.C into §6 (program extension) + a pinned equality, at the
   cost of a wider preprocessed trace.
 
-**Recommendation: prototype Route C first.** It reuses the
-exact CRIT-1 preprocessed-pinning machinery already shipped and
-audited (`9ec529e`), needs **no** new prover stack and **no**
+> **SUPERSEDED by §4.C.8 (naive C cost-rejected) and §4.C.9
+> (B eliminated, A confirmed feasible). The live fork is A vs
+> C2 — read §4.C.9 for the current recommendation.** The
+> original text below is kept for provenance.
+
+**Recommendation (original): prototype Route C first.** It reuses
+the exact CRIT-1 preprocessed-pinning machinery already shipped
+and audited (`9ec529e`), needs **no** new prover stack and **no**
 LogUp soundness re-analysis, and the matmul schedule being
 fixed makes the per-row `MAT_ID` a constant — so a direct
 preprocessed-equality binding is sound by the same argument
@@ -457,6 +462,8 @@ the general fallback. Decide after a one-day spike confirming
 (ii) the preprocessed-trace width blow-up of Route C
 (`num_matmul_rows × A_NOISED_UNPACK_LEN` extra preprocessed
 cells — quantify against `MIN_STARK_LEN` and FRI cost).
+[Update: (i) answered YES and (ii) measured prohibitive — see
+§4.C.8/§4.C.9.]
 
 #### 4.C.4 Accumulator → `X_STEP` reduction (new constraint)
 
@@ -583,6 +590,85 @@ empirically rejected on cost, and a cost-aware redesign (C2
 preferred) is specified to co-land with §4.A. Soundness
 unaffected throughout (CRIT-1 + keystone hold; the binding is a
 useful-work-fidelity strengthening, not a forgery fix).
+
+#### 4.C.9 Route B evaluated — ELIMINATED; Route A feasibility confirmed (2026-05-15)
+
+Route B was "an in-AIR permutation / grand-product multiset
+binding on the **uni-stark** prover (no preprocessed widening,
+no batch-stark)." Evaluated against the pinned p3 rev `6de5cba`:
+
+**Finding 1 — Route B is infeasible on uni-stark.**
+`p3-uni-stark::prove_with_preprocessed` is strictly
+**single-phase**: it commits (preprocessed + main), observes the
+commitment, draws *one* constraint/quotient challenge, then
+quotient + FRI (`uni-stark/src/prover.rs:151–206`). There is
+**no second committed-trace round** and **no
+post-main-commitment challenge** exposed to an in-trace column.
+A sound multiset-permutation / grand-product argument
+fundamentally requires a running-product (or LogUp fraction)
+column accumulated over a verifier challenge drawn *after* the
+data is committed. On uni-stark the prover would have to commit
+that column before the challenge exists ⇒ the argument is
+unsound (the prover can pre-cook the product). So Route B as
+specified **cannot be built** here. Any randomized cross-row
+multiset binding necessarily lives in a multi-phase prover.
+
+**Finding 2 — that multi-phase prover already exists, with
+preprocessed support: Route A is feasible and largely
+pre-built.** `p3-batch-stark::prove_batch`
+(`batch-stark/src/prover.rs:88`) is exactly multi-phase:
+commit main+preprocessed → draw lookup challenges → generate &
+commit permutation traces → quotient. It takes **per-instance
+preprocessed widths** *and* lookups/permutation **together**
+(`preprocessed_widths`, `generate_permutation`,
+`InteractionSymbolicBuilder`; `check_constraints` takes both
+`preprocessed` and `permutation`/`permutation_challenges`). This
+answers the open §4.C.7 Route-A gate: **YES, batch-stark
+supports a preprocessed/verifier-fixed trace simultaneously with
+the LogUp argument.** Moreover `ai-pow-zk` *already* has
+`CompositeFullAirWithLookups` (the `noised_packed` LogUp emitted
+via `InteractionBuilder`) and *already* drives it through
+`prove_batch`/`verify_batch` in `bench_suite.rs`. So the LogUp
+binding is implemented and provable today; productionising it is
+(a) add the CRIT-1 program-pin constraints to
+`CompositeFullAirWithLookups` (it already shares
+`CompositeFullAir::eval`; add the same preprocessed-equality the
+pinned AIR uses) and (b) switch the production
+`composite_prove_pinned` / `zk_bridge` path from
+`uni-stark::prove_with_preprocessed` to
+`batch-stark::prove_batch`.
+
+**Revised route landscape (B removed):**
+
+| Route | Prover | Binding | Status |
+|---|---|---|---|
+| **A** | batch-stark (multi-phase) | `noised_packed` LogUp + CRIT-1 preprocessed pin, unified | **Feasible, ~½ pre-built** (WithLookups + prove_batch exist; needs the program-pin added + production switch). The principled end state. |
+| ~~B~~ | ~~uni-stark~~ | ~~in-AIR permutation~~ | **ELIMINATED** — uni-stark is single-phase; no sound randomized argument possible. |
+| **C2** | uni-stark (unchanged) | deterministic schedule-fixed gated equality `IS_MATMUL·(A_NOISED_UNPACK − bound) = 0`, no preprocessed widening | Viable but **needs §4.A** (the fixed matmul↔C3 schedule must exist for `bound` to be well-defined); no prover migration. |
+
+**Recommendation.** The real fork is now **A vs C2**, not B.
+Route A is the cryptographically-cleanest and is already
+half-built (the audited `noised_packed` LogUp + a working
+`prove_batch` path in `bench_suite`), but it migrates the
+*production* proof system uni-stark → batch-stark (a real,
+testable but non-trivial swap touching `composite_prove_pinned`,
+`composite_verify_*`, `zk_bridge`, the CRIT-1 `crit1_*` suite,
+and proof-size/perf). Route C2 keeps the prover but defers into
+§4.A and is only a deterministic (non-randomized) binding.
+**Suggested:** spike Route A by adding the program-pin to
+`CompositeFullAirWithLookups` and proving it via `prove_batch`
+on the existing bench harness (no production switch yet) to
+measure prover cost vs the uni-stark baseline; if acceptable,
+Route A becomes the §4.C binding and subsumes what B/C wanted.
+This spike is self-contained and testable without the §4.A
+composite surgery.
+
+**Net:** Route B is conclusively out (single-phase uni-stark
+limitation, evidence-cited). Route A is confirmed feasible and
+mostly pre-existing — the recommended binding, pending a
+prover-cost spike. Route C2 remains the no-prover-migration
+fallback, gated on §4.A. The §4.C *computation* core
+(XStepChip + pipeline) stands, byte-equivalent to plain.
 
 ### 4.D Keystone generalisation
 
