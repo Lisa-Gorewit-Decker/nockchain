@@ -61,7 +61,7 @@ use crate::composite_layout::{
     AB_ID_LIMBS_LEN, AB_ID_LIMBS_START, A_ID, A_NOISED_START, A_NOISED_UNPACK_LEN,
     A_NOISED_UNPACK_START, BIT_REG_START, BLAKE3_CV_START, BLAKE3_MSG_START,
     BLAKE3_ROUND_START, B_ID, B_NOISED_START, B_NOISED_UNPACK_LEN, B_NOISED_UNPACK_START,
-    CUMSUM_TILE_START, CV_IN_LEN, CV_IN_START, CV_OR_TWEAK_PREP, CV_OUT_FREQ,
+    CONTROL_PREP, CUMSUM_TILE_START, CV_IN_LEN, CV_IN_START, CV_OR_TWEAK_PREP, CV_OUT_FREQ,
     CV_OUT_LEN, CV_OUT_START, I8U8_FREQ, IRANGE7P1_FREQ, IRANGE8_FREQ, IS_CV_IN,
     IS_MSG_MAT, IS_RESET_CUMSUM, IS_UPDATE_CUMSUM, JACKPOT_MSG_START, JACKPOT_SIZE,
     JACKPOT_SLOT_SEL_START, JACKPOT_X_BITS_START, MAT_FREQ, MAT_ID, MAT_ID_LIMBS_LEN,
@@ -1017,6 +1017,22 @@ impl CompositeTrace {
             let x = x_steps[t] as u32;
             let base = (row_start + t) * TOTAL_TRACE_WIDTH;
             let row = &mut self.matrix.values[base..base + TOTAL_TRACE_WIDTH];
+            // HIGH-2.2 §6 — pin this row's fold schedule into the
+            // CRIT-1 CONTROL_PREP. Reset the control cells (selectors
+            // = 0, MAT_ID = 0 — fold rows carry no other control
+            // activity) then write the fold-extended pack so
+            // `ControlChip`'s `CONTROL_PREP == polyval(.., is_fold,
+            // slot)` holds and `extract_program` lifts the schedule
+            // into the verifier-fixed canonical program.
+            ControlChip.fill_row(&[false; crate::chips::control::NUM_SELECTORS], 0, row);
+            row[CONTROL_PREP] = <Val as QuotientMap<u64>>::from_int(
+                ControlChip::pack_control_prep_full(
+                    &[false; crate::chips::control::NUM_SELECTORS],
+                    0,
+                    true,
+                    slot as u8,
+                ),
+            );
             row[FOLD_IS_FOLD] = <Val as QuotientMap<u64>>::from_int(1);
             row[FOLD_SLOT_SEL_START + slot] = <Val as QuotientMap<u64>>::from_int(1);
             set_u32(row, FOLD_XSTEP, x);

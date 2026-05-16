@@ -624,10 +624,44 @@ mod tests {
                 CV_OUT_FREQ,
                 "JACKPOT_SLOT_SEL → CV_OUT_FREQ",
             ),
+            // HIGH-2.2 §4.B — the FoldChip block, appended after the
+            // last Pearl-mirrored column (`CV_OUT_FREQ`). Must remain
+            // contiguous through to `TOTAL_TRACE_WIDTH`.
+            (CV_OUT_FREQ + 1, FOLD_IS_FOLD, "CV_OUT_FREQ → FOLD_IS_FOLD"),
             (
-                CV_OUT_FREQ + 1,
+                FOLD_IS_FOLD + 1,
+                FOLD_SLOT_SEL_START,
+                "FOLD_IS_FOLD → FOLD_SLOT_SEL",
+            ),
+            (
+                FOLD_SLOT_SEL_START + FOLD_SLOT_SEL_LEN,
+                FOLD_XSTEP,
+                "FOLD_SLOT_SEL → FOLD_XSTEP",
+            ),
+            (
+                FOLD_XSTEP + 1,
+                FOLD_XSTEP_BITS_START,
+                "FOLD_XSTEP → FOLD_XSTEP_BITS",
+            ),
+            (
+                FOLD_XSTEP_BITS_START + FOLD_XSTEP_BITS_LEN,
+                FOLD_STATE_START,
+                "FOLD_XSTEP_BITS → FOLD_STATE",
+            ),
+            (
+                FOLD_STATE_START + FOLD_STATE_LEN,
+                FOLD_MCUR_BITS_START,
+                "FOLD_STATE → FOLD_MCUR_BITS",
+            ),
+            (
+                FOLD_MCUR_BITS_START + FOLD_MCUR_BITS_LEN,
+                FOLD_XOR_OUT,
+                "FOLD_MCUR_BITS → FOLD_XOR_OUT",
+            ),
+            (
+                FOLD_XOR_OUT + 1,
                 TOTAL_TRACE_WIDTH,
-                "CV_OUT_FREQ → TOTAL_TRACE_WIDTH",
+                "FOLD_XOR_OUT → TOTAL_TRACE_WIDTH",
             ),
         ];
         for &(end, next, name) in checkpoints {
@@ -635,20 +669,24 @@ mod tests {
         }
     }
 
-    /// TOTAL_TRACE_WIDTH ≈ Pearl's pinned width (~1300 cols). The
-    /// number is dominated by `BLAKE3_ROUND_LEN = 1056` — the per-
-    /// round AIR — which is the bulk of any row regardless of which
-    /// chip is active.
+    /// TOTAL_TRACE_WIDTH ≈ Pearl's pinned width (~1300 cols) plus
+    /// the HIGH-2.2 §4.B FoldChip block (+99 cols). The number is
+    /// dominated by `BLAKE3_ROUND_LEN = 1056` — the per-round AIR —
+    /// which is the bulk of any row regardless of which chip is
+    /// active. The FoldChip block (FOLD_IS_FOLD..=FOLD_XOR_OUT) is
+    /// the only HIGH-2.2 addition; §6 pins its *schedule* into the
+    /// existing CONTROL_PREP rather than widening the trace.
     #[test]
     fn total_trace_width_in_pearl_ballpark() {
-        // Sanity: trace is at least 1200 cols (BLAKE3 round dominates)
-        // and at most 1400 cols (no accidental column explosion).
+        // Sanity: ≥ 1200 cols (BLAKE3 round dominates) and ≤ 1600
+        // (Pearl-mirrored ≈1378 + FoldChip's 99 = 1477; bound has
+        // headroom but still catches an accidental column explosion).
         assert!(
             TOTAL_TRACE_WIDTH > 1200,
             "TOTAL_TRACE_WIDTH suspiciously small: {TOTAL_TRACE_WIDTH}"
         );
         assert!(
-            TOTAL_TRACE_WIDTH < 1400,
+            TOTAL_TRACE_WIDTH < 1600,
             "TOTAL_TRACE_WIDTH suspiciously large: {TOTAL_TRACE_WIDTH} — check for unintended column duplication"
         );
     }

@@ -56,11 +56,11 @@ use p3_air::{AirBuilder, WindowAccess};
 use p3_field::PrimeCharacteristicRing;
 
 use crate::composite_layout::{
-    BITS_PER_LIMB, CONTROL_PREP, IS_CV_IN, IS_DUMP_CUMSUM_BUFFER, IS_HASH_A, IS_HASH_B,
-    IS_HASH_JACKPOT, IS_LAST_ROUND, IS_LOAD, IS_MSG_AUX_DATA, IS_MSG_CV, IS_MSG_JACKPOT,
-    IS_MSG_MAT, IS_NEW_BLAKE, IS_RESET_CUMSUM, IS_SHIFT3, IS_STORE0, IS_STORE1, IS_STORE2,
-    IS_UPDATE_CUMSUM, IS_USE_COMMITMENT_HASH, IS_USE_JOB_KEY, IS_XOR, MAT_ID,
-    MAT_ID_LIMBS_START,
+    BITS_PER_LIMB, CONTROL_PREP, FOLD_IS_FOLD, FOLD_SLOT_SEL_LEN, FOLD_SLOT_SEL_START, IS_CV_IN,
+    IS_DUMP_CUMSUM_BUFFER, IS_HASH_A, IS_HASH_B, IS_HASH_JACKPOT, IS_LAST_ROUND, IS_LOAD,
+    IS_MSG_AUX_DATA, IS_MSG_CV, IS_MSG_JACKPOT, IS_MSG_MAT, IS_NEW_BLAKE, IS_RESET_CUMSUM,
+    IS_SHIFT3, IS_STORE0, IS_STORE1, IS_STORE2, IS_UPDATE_CUMSUM, IS_USE_COMMITMENT_HASH,
+    IS_USE_JOB_KEY, IS_XOR, MAT_ID, MAT_ID_LIMBS_START,
 };
 
 /// 21 selector bits in canonical Pearl pack order. See
@@ -77,6 +77,19 @@ const SELECTOR_COLS: [usize; 21] = [
 
 /// Number of selector bits packed into CONTROL_PREP.
 pub const NUM_SELECTORS: usize = SELECTOR_COLS.len();
+
+/// Bit-width `MAT_ID` occupies inside the `CONTROL_PREP` polyval
+/// (2 × `BITS_PER_LIMB` = 26 bits, just past the 21 selectors).
+pub const MAT_ID_BITS: usize = 2 * BITS_PER_LIMB;
+
+/// HIGH-2.2 §6 — bit offset of `FOLD_IS_FOLD` inside `CONTROL_PREP`
+/// (immediately after the 21 selectors + 26-bit `MAT_ID`).
+pub const FOLD_IS_FOLD_BIT: usize = NUM_SELECTORS + MAT_ID_BITS; // 47
+/// HIGH-2.2 §6 — bit offset of the 4-bit fold-slot index
+/// (`stripe % 16`) inside `CONTROL_PREP`.
+pub const FOLD_SLOT_BIT: usize = FOLD_IS_FOLD_BIT + 1; // 48
+/// Number of bits the fold-slot index occupies (`0..=15`).
+pub const FOLD_SLOT_BITS: usize = 4;
 
 #[derive(Debug, Default, Clone, Copy)]
 pub struct ControlChip;
@@ -121,14 +134,67 @@ impl ControlChip {
         // After 21 selectors, mat_id contributes at coefficient 2^21.
         // Pearl uses `eval.polyval(&[selectors, mat_id], 2)` so mat_id
         // sits at the position after the last selector.
-        acc = acc + mat_id_expr * pow;
+        acc = acc + mat_id_expr * pow.clone();
+
+        // HIGH-2.2 §6 — pin the FoldChip *schedule* into CONTROL_PREP.
+        //
+        // `CONTROL_PREP` is a CRIT-1 PROGRAM_COL (verifier-fixed via
+        // the preprocessed commitment). Packing `FOLD_IS_FOLD` and the
+        // fold-slot index here makes the *fold schedule* (which rows
+        // fold, into which of the 16 slots) verifier-fixed too — a
+        // malicious prover can no longer fabricate a fold schedule to
+        // forge `M`. Placed *after* the 21 selectors + 26-bit MAT_ID:
+        // `FOLD_IS_FOLD` at bit 2^47, the 4-bit slot at bit 2^48
+        // (max packed value < 2^52 ≪ Goldilocks p). On every non-fold
+        // row `FOLD_IS_FOLD = 0` and all `FOLD_SLOT_SEL = 0`, so the
+        // added term is exactly 0 and CONTROL_PREP is *byte-identical*
+        // to the pre-§6 packing — no existing trace changes.
+        //
+        // SLOT_SEL booleanity / one-hot (`Σ == FOLD_IS_FOLD`) is
+        // enforced by `FoldChip`, which `CompositeFullAir::eval`
+        // always wires alongside this chip; here we only need
+        // `FOLD_IS_FOLD` boolean for the pack term to be well-formed.
+        let two_pow_mat_id =
+            <AB::F as PrimeCharacteristicRing>::from_u32(1u32 << MAT_ID_BITS);
+        pow = pow * two_pow_mat_id; // pow = 2^(21+26) = 2^47
+
+        let is_fold: AB::Var = cur[FOLD_IS_FOLD];
+        builder.assert_bool(is_fold);
+        acc = acc + is_fold * pow.clone(); // 2^47
+        pow = pow * two.clone(); // 2^48
+
+        let mut slot_idx: AB::Expr = <AB::Expr as PrimeCharacteristicRing>::ZERO;
+        for s in 0..FOLD_SLOT_SEL_LEN {
+            let w = <AB::F as PrimeCharacteristicRing>::from_u32(s as u32);
+            slot_idx = slot_idx + cur[FOLD_SLOT_SEL_START + s] * w;
+        }
+        acc = acc + slot_idx * pow; // 2^48 (4-bit slot ⇒ bits 48..52)
+
         builder.assert_eq(control_prep, acc);
     }
 
     /// Pack 21 selector bits + a MAT_ID into a single Goldilocks
     /// element. Used to construct the preprocessed `CONTROL_PREP`
-    /// value for testing / trace generation.
+    /// value for testing / trace generation. Equivalent to
+    /// [`Self::pack_control_prep_full`] with no fold activity
+    /// (`is_fold = false`, `fold_slot = 0`) — byte-identical to the
+    /// pre-HIGH-2.2-§6 packing for every non-fold row.
     pub fn pack_control_prep(selectors: &[bool; NUM_SELECTORS], mat_id: u32) -> u64 {
+        Self::pack_control_prep_full(selectors, mat_id, false, 0)
+    }
+
+    /// HIGH-2.2 §6 — pack 21 selectors + MAT_ID **plus** the
+    /// FoldChip schedule (`is_fold` at bit 2^47, the 4-bit
+    /// `fold_slot` at bit 2^48) into one Goldilocks element. The
+    /// `CompositeFullAirPinned` CRIT-1 pin then makes the fold
+    /// schedule verifier-fixed. `fold_slot` must be `< 16`.
+    pub fn pack_control_prep_full(
+        selectors: &[bool; NUM_SELECTORS],
+        mat_id: u32,
+        is_fold: bool,
+        fold_slot: u8,
+    ) -> u64 {
+        debug_assert!((fold_slot as usize) < FOLD_SLOT_SEL_LEN, "fold_slot out of range");
         let mut packed: u64 = 0;
         for (i, &b) in selectors.iter().enumerate() {
             if b {
@@ -136,6 +202,8 @@ impl ControlChip {
             }
         }
         packed |= (mat_id as u64) << NUM_SELECTORS;
+        packed |= (is_fold as u64) << FOLD_IS_FOLD_BIT;
+        packed |= ((fold_slot as u64) & ((1u64 << FOLD_SLOT_BITS) - 1)) << FOLD_SLOT_BIT;
         packed
     }
 
@@ -346,5 +414,145 @@ mod tests {
         for &c in SELECTOR_COLS.iter() {
             assert!(seen.insert(c), "duplicate column index {c}");
         }
+    }
+
+    // ============================================================
+    //  HIGH-2.2 §6 — fold schedule pinned into CONTROL_PREP
+    // ============================================================
+
+    use crate::composite_layout::{FOLD_IS_FOLD, FOLD_SLOT_SEL_START};
+
+    /// Make row `r` of an otherwise non-fold trace a fold row into
+    /// `slot`, with CONTROL_PREP packing `(is_fold=1, slot)` —
+    /// exactly what `place_fold_chain` writes.
+    fn make_fold_row(trace: &mut RowMajorMatrix<Val>, r: usize, slot: usize, consistent: bool) {
+        let base = r * TOTAL_TRACE_WIDTH;
+        trace.values[base + FOLD_IS_FOLD] = <Val as QuotientMap<u64>>::from_int(1);
+        trace.values[base + FOLD_SLOT_SEL_START + slot] =
+            <Val as QuotientMap<u64>>::from_int(1);
+        let packed_slot = if consistent { slot } else { (slot + 1) % 16 };
+        trace.values[base + CONTROL_PREP] = <Val as QuotientMap<u64>>::from_int(
+            ControlChip::pack_control_prep_full(
+                &[false; NUM_SELECTORS],
+                0,
+                true,
+                packed_slot as u8,
+            ),
+        );
+    }
+
+    /// `FOLD_IS_FOLD_BIT` / `FOLD_SLOT_BIT` sit immediately past the
+    /// 21 selectors + 26-bit MAT_ID and never collide with them.
+    #[test]
+    fn fold_pack_bit_layout_is_disjoint() {
+        assert_eq!(MAT_ID_BITS, 26);
+        assert_eq!(FOLD_IS_FOLD_BIT, 47);
+        assert_eq!(FOLD_SLOT_BIT, 48);
+        // Max packed value (all selectors + max mat_id + fold) stays
+        // well under Goldilocks p (~2^63.99): top bit < 52.
+        assert!(FOLD_SLOT_BIT + FOLD_SLOT_BITS <= 52);
+    }
+
+    /// No fold activity ⇒ CONTROL_PREP byte-identical to the
+    /// pre-§6 packing (zero blast radius for every non-fold row).
+    #[test]
+    fn non_fold_pack_is_unchanged() {
+        let mut s = [false; NUM_SELECTORS];
+        s[3] = true;
+        s[15] = true;
+        let old = {
+            // The historical pack: selectors then mat_id << 21, no
+            // fold bits.
+            let mut p = 0u64;
+            for (i, &b) in s.iter().enumerate() {
+                if b {
+                    p |= 1u64 << i;
+                }
+            }
+            p |= (0x1234u64) << NUM_SELECTORS;
+            p
+        };
+        assert_eq!(ControlChip::pack_control_prep(&s, 0x1234), old);
+        assert_eq!(
+            ControlChip::pack_control_prep_full(&s, 0x1234, false, 0),
+            old
+        );
+    }
+
+    /// A fold row whose CONTROL_PREP is consistent with
+    /// FOLD_IS_FOLD / FOLD_SLOT_SEL verifies (positive).
+    #[test]
+    fn fold_schedule_consistent_control_prep_verifies() {
+        let cfg = build_stark_config(&test_zk_params(), &CircuitConfig::TEST_PEARL);
+        let air = ControlOnlyAir;
+        let s = [false; NUM_SELECTORS];
+        let mut trace = build_uniform_trace(16, &s, 0);
+        make_fold_row(&mut trace, 4, 5, true);
+        make_fold_row(&mut trace, 9, 0, true);
+        make_fold_row(&mut trace, 12, 15, true);
+        let proof = prove::<AiPowStarkConfig, _>(&cfg, &air, trace, &[]);
+        verify::<AiPowStarkConfig, _>(&cfg, &air, &proof, &[])
+            .expect("consistent fold-row CONTROL_PREP must verify");
+    }
+
+    /// Adversary fabricates a fold schedule (FOLD_IS_FOLD /
+    /// FOLD_SLOT_SEL set) but CONTROL_PREP still holds the non-fold
+    /// (zero-fold) packing ⇒ `CONTROL_PREP == polyval(.., is_fold,
+    /// slot)` is violated.
+    #[test]
+    fn fold_is_fold_without_control_prep_rejected() {
+        let cfg = build_stark_config(&test_zk_params(), &CircuitConfig::TEST_PEARL);
+        let air = ControlOnlyAir;
+        let s = [false; NUM_SELECTORS];
+        let mut trace = build_uniform_trace(16, &s, 0);
+        let base = 6 * TOTAL_TRACE_WIDTH;
+        // FOLD_IS_FOLD = 1, slot 7 selected, but CONTROL_PREP left
+        // at the build_uniform_trace value (no fold bits).
+        trace.values[base + FOLD_IS_FOLD] = <Val as QuotientMap<u64>>::from_int(1);
+        trace.values[base + FOLD_SLOT_SEL_START + 7] =
+            <Val as QuotientMap<u64>>::from_int(1);
+        let proof = prove::<AiPowStarkConfig, _>(&cfg, &air, trace, &[]);
+        assert!(
+            verify::<AiPowStarkConfig, _>(&cfg, &air, &proof, &[]).is_err(),
+            "fabricated fold schedule with stale CONTROL_PREP must reject"
+        );
+    }
+
+    /// CONTROL_PREP packs a *different* slot than FOLD_SLOT_SEL ⇒
+    /// the slot-index term of the polyval mismatches ⇒ reject. This
+    /// is the core §6 soundness property: the fold slot is
+    /// verifier-fixed.
+    #[test]
+    fn fold_slot_mismatch_rejected() {
+        let cfg = build_stark_config(&test_zk_params(), &CircuitConfig::TEST_PEARL);
+        let air = ControlOnlyAir;
+        let s = [false; NUM_SELECTORS];
+        let mut trace = build_uniform_trace(16, &s, 0);
+        make_fold_row(&mut trace, 8, 5, false); // SLOT_SEL=5, CONTROL_PREP packs 6
+        let proof = prove::<AiPowStarkConfig, _>(&cfg, &air, trace, &[]);
+        assert!(
+            verify::<AiPowStarkConfig, _>(&cfg, &air, &proof, &[]).is_err(),
+            "fold slot ≠ CONTROL_PREP-packed slot must reject"
+        );
+    }
+
+    /// CONTROL_PREP claims is_fold but FOLD_IS_FOLD column is 0 ⇒
+    /// reject (a prover cannot silently drop a scheduled fold).
+    #[test]
+    fn control_prep_claims_fold_but_column_zero_rejected() {
+        let cfg = build_stark_config(&test_zk_params(), &CircuitConfig::TEST_PEARL);
+        let air = ControlOnlyAir;
+        let s = [false; NUM_SELECTORS];
+        let mut trace = build_uniform_trace(16, &s, 0);
+        let base = 10 * TOTAL_TRACE_WIDTH;
+        trace.values[base + CONTROL_PREP] = <Val as QuotientMap<u64>>::from_int(
+            ControlChip::pack_control_prep_full(&[false; NUM_SELECTORS], 0, true, 3),
+        );
+        // FOLD_IS_FOLD / FOLD_SLOT_SEL left at 0.
+        let proof = prove::<AiPowStarkConfig, _>(&cfg, &air, trace, &[]);
+        assert!(
+            verify::<AiPowStarkConfig, _>(&cfg, &air, &proof, &[]).is_err(),
+            "CONTROL_PREP claiming a fold the columns don't perform must reject"
+        );
     }
 }

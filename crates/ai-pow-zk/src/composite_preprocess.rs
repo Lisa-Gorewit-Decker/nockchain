@@ -65,6 +65,12 @@ pub struct RowDescriptor {
     /// Packed `(A_ID, B_ID)` for matmul tile loads (Phase 9). For
     /// non-matmul rows, set to 0.
     pub ab_id: u64,
+    /// HIGH-2.2 §6 — 1 on a FoldChip fold row (pinned into
+    /// `CONTROL_PREP` at bit 2^47). For non-fold rows, `false`.
+    pub is_fold: bool,
+    /// HIGH-2.2 §6 — fold slot index (`stripe % 16`, pinned into
+    /// `CONTROL_PREP` at bit 2^48). For non-fold rows, `0`.
+    pub fold_slot: u8,
 }
 
 impl RowDescriptor {
@@ -76,6 +82,8 @@ impl RowDescriptor {
             noise_packed: 0,
             cv_or_tweak: 0,
             ab_id: 0,
+            is_fold: false,
+            fold_slot: 0,
         }
     }
 }
@@ -89,8 +97,14 @@ impl RowDescriptor {
 pub fn fill_preprocessed_row(row_idx: usize, desc: &RowDescriptor, row: &mut [Val]) {
     use p3_field::integers::QuotientMap;
 
-    // CONTROL_PREP: pack selectors + mat_id.
-    let control_prep = ControlChip::pack_control_prep(&desc.selectors, desc.mat_id);
+    // CONTROL_PREP: pack selectors + mat_id + (HIGH-2.2 §6) the
+    // FoldChip schedule (is_fold, slot).
+    let control_prep = ControlChip::pack_control_prep_full(
+        &desc.selectors,
+        desc.mat_id,
+        desc.is_fold,
+        desc.fold_slot,
+    );
     row[CONTROL_PREP] = <Val as QuotientMap<u64>>::from_int(control_prep);
 
     // NOISE_PACKED_PREP, CV_OR_TWEAK_PREP, AB_ID_PREP: direct.
@@ -115,7 +129,12 @@ pub fn build_preprocessed_columns(program: &[RowDescriptor], total_rows: usize) 
         } else {
             RowDescriptor::padding()
         };
-        let control_prep = ControlChip::pack_control_prep(&desc.selectors, desc.mat_id);
+        let control_prep = ControlChip::pack_control_prep_full(
+            &desc.selectors,
+            desc.mat_id,
+            desc.is_fold,
+            desc.fold_slot,
+        );
         out.push([
             <Val as QuotientMap<u64>>::from_int(control_prep),
             <Val as QuotientMap<i64>>::from_int(desc.noise_packed),
@@ -160,6 +179,7 @@ mod tests {
             noise_packed: 1234,
             cv_or_tweak: 99,
             ab_id: 0xDEAD,
+            ..RowDescriptor::padding()
         };
         fill_preprocessed_row(17, &desc, &mut row);
 
@@ -207,6 +227,7 @@ mod tests {
                 noise_packed: -77,
                 cv_or_tweak: 4,
                 ab_id: 5,
+                ..RowDescriptor::padding()
             },
             RowDescriptor {
                 selectors: [false; NUM_SELECTORS],
@@ -214,6 +235,7 @@ mod tests {
                 noise_packed: 0,
                 cv_or_tweak: 0,
                 ab_id: 0,
+                ..RowDescriptor::padding()
             },
         ];
         let total_rows = 4;
