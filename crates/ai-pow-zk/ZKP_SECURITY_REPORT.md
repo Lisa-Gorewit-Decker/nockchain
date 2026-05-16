@@ -145,26 +145,54 @@ Route-A), `zk_bridge` 19/0; `crit1_*`/`high2_*`/`routea_*` no
 regression. Adversarial `composite_proof::high2_free_jackpot_message_rejected`
 still rejects a planted free winning message.
 
-**Remaining useful-work-soundness residual (precisely scoped,
-not a *proof*-forgery hole):** the per-stripe `X_STEP` fed to
-the `FoldChip` is placed by the honest bridge but **not yet
-in-circuit bound** to the matmul accumulator (`XStepChip` is
-byte-equiv-proven standalone but not composite-wired to force
-`X_STEP ← ⊕CUMSUM_TILE ← committed A/B`), and the fold/matmul
-**schedule** (`FOLD_IS_FOLD`/`FOLD_SLOT_SEL`) is not
-CRIT-1-pinned. So a *malicious* prover could supply a fabricated
-`X_STEP`/schedule → fabricated `M` → forged `HASH_JACKPOT`.
-This is held in check meanwhile by CRIT-1 + the keystone (the
-proof cannot be forged against the canonical program); the open
-gap is that the attacker is not yet *forced* to do the real
-matmul for `X_STEP`. Closing it = composite-wire `XStepChip`
-binding `X_STEP ← CUMSUM_TILE` (Route-A `noised_packed` already
-binds `CUMSUM_TILE`'s inputs to the committed matrices) **and**
-pin the schedule in `CONTROL_PREP` (not a wide preprocessed
-block — empirically a ~10x prover blow-up, `HIGH2_2_DESIGN.md`
-§4.C.8). Tracked as HIGH-2.2 §6 + the §4.C `X_STEP` residual;
-invasive, its own focused effort. The original analysis below
-stands as the historical rationale.
+**§6(a) fold-schedule pin — RESOLVED 2026-05-16 (`aa82ce3`).**
+The fold/matmul *schedule* (`FOLD_IS_FOLD` + the 4-bit fold-slot
+index `stripe%16`) is now packed into the CRIT-1-pinned
+`CONTROL_PREP` polyval (bits `2^47`/`2^48`, past the 21 selectors
++ 26-bit `MAT_ID`) and `ControlChip` asserts the extended pack;
+`place_fold_chain` writes it and `extract_program` lifts it into
+the verifier-rebuilt canonical program. **Which rows fold, and
+into which of the 16 slots, is now verifier-fixed** — a malicious
+prover can no longer fabricate a fold schedule. Done *without*
+widening the preprocessed trace (avoids the §4.C.8 ~10x trap; it
+reuses the existing pinned column, and `is_fold=0/slot=0`
+contributes exactly 0 so every non-fold row's `CONTROL_PREP` is
+byte-identical — zero blast radius). Exhaustively tested
+(`chips::control::tests` +6: positive + slot-mismatch /
+stale-`CONTROL_PREP` / claimed-but-absent-fold rejects +
+bit-layout + zero-blast-radius) and e2e-validated (ai-pow-zk lib
+322/0 incl. `high2_2_fold_chain_pinned_logup`/`routea_*`/`crit1_*`;
+ai-pow `--features zk` green: lib 64/0, `end_to_end` 13/0,
+`adversarial` 19/0; byte-equivalence preserved).
+
+**Remaining useful-work-soundness residual — §6(b) + §4.E, one
+*entangled* item (precisely scoped, not a *proof*-forgery
+hole):** the per-stripe `X_STEP` fed to the `FoldChip` is placed
+by the honest bridge but **not yet in-circuit bound** to the
+matmul accumulator (`XStepChip` is byte-equiv-proven standalone
+but not composite-wired to force `X_STEP ← ⊕CUMSUM_TILE ←
+committed A/B`; the matmul subtile-sweep rows are not placed on
+the honest path). Because nothing in-circuit yet ties the digest
+to a *specific tile's committed-matrix accumulator*, the attested
+`(tile_i,tile_j)` (§4.E) **cannot be soundly bound independently**
+— a free tile/`X_STEP` PI would be vacuous. So §6(b) and §4.E are
+the *same* cryptographic-core binding and land together,
+reconciled with **MED-3** (verifier-side tile derivation). A
+*malicious* prover could meanwhile supply a fabricated `X_STEP`
+→ fabricated `M` → forged `HASH_JACKPOT`; held in check by CRIT-1
++ the keystone + §6(a) (the proof cannot be forged against the
+canonical program and the fold schedule is verifier-fixed); the
+open gap is only that the attacker is not yet *forced* to do the
+real matmul for `X_STEP`/the tile. Closing it = place the matmul
+subtile-sweep rows on the honest path, composite-wire `XStepChip`
+to force `FOLD_XSTEP == ⊕CUMSUM_TILE` per stripe (Route-A
+`noised_packed` already binds `CUMSUM_TILE`'s inputs to the
+committed matrices), and bind `(tile_i,tile_j)` to that
+accumulator's offsets per MED-3 — *not* a wide preprocessed block
+(§4.C.8 ~10x trap; the §6(a) schedule pin already demonstrates
+the cheap CONTROL_PREP-reuse pattern). Tracked as HIGH-2.2
+§6(b)+§4.E; invasive, its own focused effort. The original
+analysis below stands as the historical rationale.
 
 **Original severity: High (PoW *usefulness* not enforced even if
 CRIT-1 is fixed).**
@@ -355,20 +383,38 @@ years by all-zero messages) was root-caused and fixed
 incl. `end_to_end` 13/0; no `crit1_*`/`high2_*`/`routea_*`
 regression.
 
+**Updated 2026-05-16 — §6(a) fold-schedule pin landed
+(`aa82ce3`).** The fold/matmul schedule (`FOLD_IS_FOLD` + 4-bit
+fold-slot) is now packed into the CRIT-1-pinned `CONTROL_PREP`
+and asserted by `ControlChip`; `place_fold_chain` writes it and
+`extract_program` lifts it — **which rows fold, into which slot,
+is verifier-fixed**. Done by reusing the existing pinned column
+(no preprocessed-width blow-up — the §4.C.8 trap is avoided; zero
+blast radius for non-fold rows). +6 exhaustive ControlChip tests;
+e2e-validated (ai-pow-zk lib 322/0; ai-pow `--features zk` green).
+
 **Remaining (precisely scoped useful-work-soundness residual —
-not a *proof*-forgery hole):** the per-stripe `X_STEP` is
-honest-placed but not yet *in-circuit* bound to the matmul
-accumulator (`XStepChip` byte-equiv-proven standalone, not
-composite-wired), and the fold/matmul schedule isn't
-CRIT-1-pinned — so a malicious prover isn't yet *forced* to do
-the real matmul for `X_STEP`. Held meanwhile by CRIT-1 + the
-keystone (the proof can't be forged against the canonical
-program). Closing it = composite-wire `XStepChip` binding
-`X_STEP ← ⊕CUMSUM_TILE` + pin the schedule in `CONTROL_PREP`
-(not a wide preprocessed block — `HIGH2_2_DESIGN.md` §4.C.8).
-**MED-3** (`target`-derivation), §4.E (tile-index binding), and
+not a *proof*-forgery hole) — §6(b) + §4.E, one entangled
+item:** the per-stripe `X_STEP` is honest-placed but not yet
+*in-circuit* bound to the matmul accumulator (`XStepChip`
+byte-equiv-proven standalone, not composite-wired; the matmul
+subtile-sweep rows aren't placed on the honest path). Because
+nothing in-circuit yet ties the digest to a *specific tile's*
+committed-matrix accumulator, the attested `(tile_i,tile_j)`
+(§4.E) cannot be soundly bound on its own — a free tile/`X_STEP`
+PI would be vacuous — so §6(b) and §4.E are the same binding and
+land together, reconciled with **MED-3** (verifier-side tile
+derivation). Held meanwhile by CRIT-1 + the keystone + §6(a)
+(the proof can't be forged against the canonical program and the
+fold schedule is verifier-fixed). Closing it = place the matmul
+subtile-sweep rows + composite-wire `XStepChip` to force
+`FOLD_XSTEP == ⊕CUMSUM_TILE` + bind `(tile_i,tile_j)` to that
+accumulator per MED-3 (not a wide preprocessed block —
+`HIGH2_2_DESIGN.md` §4.C.8; §6(a) demonstrates the cheap
+CONTROL_PREP-reuse pattern). **MED-3** (`target`-derivation) and
 the 7-round-Tip5 review also remain. Net: CRIT-1 + HIGH-2
-keystone make the SNARK PoW-sound and an attacker cannot forge a
-winning proof; the *honest* proof now attests the real,
-byte-equivalent useful-work tile; the final residual is forcing
-a *malicious* prover through the same matmul for `X_STEP`.
+keystone + §6(a) make the SNARK PoW-sound, the fold schedule
+verifier-fixed, and an attacker cannot forge a winning proof; the
+*honest* proof attests the real, byte-equivalent useful-work
+tile; the final residual is forcing a *malicious* prover through
+the same matmul for `X_STEP`/the tile.

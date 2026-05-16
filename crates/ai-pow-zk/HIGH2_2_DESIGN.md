@@ -24,8 +24,8 @@
 | §4.D keystone — generalised to `JACKPOT_MSG[0..16] == FOLD_STATE` (last row) | ✅ landed; gate-green with zero-fold (`composite_proof::tests:: 18/0`) | `e6c9c84` |
 | §4.C.4 accumulator→`X_STEP` reduction (`XStepChip`) + composed `XStep→Fold` pipeline byte-equivalent to plain | ✅ done, 6/0 + zk_bridge 5/5 | `290af68`, `c78ae67` |
 | §4.C committed-matrix *binding* — **Route A: chosen, spiked, productionised & WIRED** (§4.C.10): production API `composite_*_pinned_logup` + exhaustive `routea_*` 4/4; `zk_bridge`(mine() gate)+`f1_harness` switched to it; spike removed; 3-tier entrypoint doc. ~1.23x cost. | ✅ binding complete & wired; §4.A non-vacuity is the separate remaining workstream (#97) |
-| §4.E tile-index binding / MED-3 | ⬜ remaining (soundness hardening) |
-| §6 CRIT-1 program extends to matmul+fold schedule (+ the §4.C `X_STEP`↔committed-accumulator binding) | ⬜ remaining — **the final useful-work-soundness item** (see "Remaining soundness scope" below) |
+| §6(a) CRIT-1 program extends to the **fold schedule** — `FOLD_IS_FOLD` + 4-bit slot packed into the pinned `CONTROL_PREP` polyval (NOT a wide preprocessed block; §4.C.8 trap avoided) | ✅ **done & e2e-validated** (`aa82ce3`): ControlChip +6 tests (positive + 4 adversarial + zero-blast-radius); `place_fold_chain` writes it, `extract_program` lifts it; ai-pow-zk lib 322/0 incl. `high2_2_fold_chain_pinned_logup`/`routea_*`/`crit1_*`; ai-pow `--features zk` green (lib 64/0, `end_to_end` 13/0) |
+| §6(b) + §4.E — **entangled** residual: bind `X_STEP ← ⊕CUMSUM_TILE ← committed A/B` *and* the attested `(tile_i,tile_j)` to the same in-circuit matmul accumulator; reconcile tile derivation with MED-3 | ⬜ remaining — the single cryptographic-core item (see "Remaining soundness scope"). Cannot be soundly closed independently of placing the matmul subtile-sweep rows (§4.C.4); a free tile/X_STEP PI without that tie is vacuous. Meanwhile soundness held by CRIT-1 + keystone + §6(a). |
 | §7 real-difficulty end-to-end + byte-equivalence + docs flip | 🟡 byte-equivalence ✅ (`high2_2_xstep_fold_pipeline_byte_equiv_plain`); real-M e2e ✅ (`end_to_end` 13/0); docs flip ⬜ |
 
 ### Current state (2026-05-16)
@@ -41,26 +41,56 @@ plain miner), C2 checks difficulty. Full `cargo test -p ai-pow
 --features zk` green. The pre-existing latent JackpotChip bug
 that blocked any non-zero `JACKPOT_MSG` is fixed.
 
-**Remaining soundness scope (§6 + §4.C `X_STEP` residual):**
-the per-stripe `X_STEP` fed to the FoldChip is *placed by the
-honest bridge* but not yet **in-circuit bound** to the matmul
-accumulator (the `XStepChip` is byte-equiv-proven standalone but
-not composite-wired to force `X_STEP ← ⊕CUMSUM_TILE ← committed
-A/B`), and the fold/matmul **schedule** (`FOLD_IS_FOLD` /
-`FOLD_SLOT_SEL` / stripe→slot) is not CRIT-1-pinned. So a
-*malicious* prover could supply a fabricated `X_STEP`/schedule
-→ fabricated `M` → forged `HASH_JACKPOT`. Soundness is
-**meanwhile held by CRIT-1 + the keystone** (the *proof* still
-can't be forged against the canonical program; the open gap is
-that the attacker isn't yet *forced* to do the real matmul for
-`X_STEP`). Closing it = wire `XStepChip` into the composite AIR
-binding `X_STEP ← CUMSUM_TILE` (Route-A `noised_packed` already
-binds `CUMSUM_TILE`'s inputs to the committed matrices) **and**
-pin the schedule in `CONTROL_PREP` (NOT a wide preprocessed
-block — the §4.C.8 ~10x trap). This is the precisely-scoped
-final useful-work-soundness item; it is invasive
-(composite-layout + CRIT-1 program) and should be its own
-focused effort, not rushed.
+**§6(a) — fold schedule pinned (DONE, `aa82ce3`).** The
+fold/matmul *schedule* `FOLD_IS_FOLD` + the 4-bit fold-slot index
+(`stripe % 16`) are now packed into the CRIT-1-pinned
+`CONTROL_PREP` polyval (bits `2^47` / `2^48`, immediately past the
+21 selectors + 26-bit `MAT_ID`) and `ControlChip` asserts the
+extended pack. `CONTROL_PREP` is a `PROGRAM_COL`, so
+`CompositeFullAirPinned` + the verifier-rebuilt canonical program
+now make **which rows fold and into which slot verifier-fixed** —
+a malicious prover can no longer fabricate a fold schedule. Done
+*without* widening the preprocessed trace (the §4.C.8 ~10x trap is
+avoided: it reuses the existing pinned column; `is_fold=0/slot=0`
+contributes exactly 0 so every non-fold row's `CONTROL_PREP` is
+byte-identical to before — zero blast radius). Exhaustively tested
+(ControlChip +6: positive + slot-mismatch / stale-`CONTROL_PREP` /
+claimed-but-absent-fold rejects + bit-layout + zero-blast-radius)
+and e2e-validated (ai-pow-zk lib 322/0; ai-pow `--features zk`
+green).
+
+**Remaining soundness scope — §6(b) + §4.E, one *entangled*
+residual.** What is still *not* in-circuit bound: the per-stripe
+`X_STEP` fed to the FoldChip is *placed by the honest bridge* but
+not forced to equal `⊕CUMSUM_TILE`, and the matmul subtile-sweep
+rows that would make `CUMSUM_TILE` the real `t×t` accumulator of
+the committed `A/B` for the attested tile are **not placed on the
+honest path** (`zk_bridge` places none; `place_fold_chain` takes
+prover-supplied `x_steps`). Consequently the attested
+`(tile_i,tile_j)` (§4.E) cannot be *soundly* bound independently:
+nothing in-circuit yet ties the hashed digest to a *specific
+tile's committed-matrix accumulator*, so adding a free
+`tile_i/tile_j` public input would be **vacuous security theatre**
+(a malicious prover supplying fabricated `x_steps` can set any
+tile PI). §6(b) (`X_STEP ← ⊕CUMSUM_TILE ← committed A/B`, via the
+§4.C.4 subtile sweep + XOR tree) and §4.E (tile↔accumulator) are
+therefore **the same cryptographic-core binding** and must land
+together. Closing it = place the matmul subtile-sweep rows on the
+honest path, composite-wire `XStepChip` to force
+`FOLD_XSTEP == ⊕CUMSUM_TILE` per stripe (Route-A `noised_packed`
+already binds `CUMSUM_TILE`'s inputs to the committed matrices),
+and bind `(tile_i,tile_j)` to *that* accumulator's
+row/col offsets — reconciled with **MED-3**'s block-context tile
+derivation (MED-3 documents how the verifier obtains the claimed
+`(tile_i,tile_j)`; HIGH-2.2 must consume that, not invent a free
+PI). This is the documented multi-day item (§4.C.4 — "the
+dominant new width"); it is invasive (composite-layout +
+matmul-row placement + CRIT-1 program) and is its own focused
+effort, not rushed. Soundness **meanwhile held by CRIT-1 + the
+keystone + §6(a)** (the *proof* still can't be forged against the
+canonical program, and the fold schedule is now verifier-fixed;
+the open gap is only that the attacker isn't yet *forced* to do
+the real matmul for `X_STEP`/the tile).
 
 **Precise residual boundary.** The fold *math* is done and
 proven (FoldChip ≡ `from_x_steps` ≡ Pearl §4.5). What remains is
@@ -1163,13 +1193,31 @@ selector), placed in `CompositeFullAirPinned` only; the unit
 ### 4.E Tile-index / target-derivation (MED-3 interplay)
 
 The chosen `(tile_i, tile_j)` and the difficulty `target`
-(`difficulty_target(&params)`) are currently external. HIGH-2.2
+(`difficulty_target(&params)`) are currently external
+(`zk_bridge::prove_and_verify` hard-codes tile `(0,0)`). HIGH-2.2
 should bind *which* tile is being attested (so a prover cannot
-solve an easy tile and claim a hard one) — minimally by adding
-the tile index to the pinned program/PI set, or by the
-block-context derivation MED-3 will document. Track the precise
-obligation with MED-3; HIGH-2.2 must at least not regress it and
-should expose `tile_i/tile_j` as bound inputs.
+solve an easy tile and claim a hard one).
+
+**Status (2026-05-16): §4.E is entangled with §6(b) — see
+"Remaining soundness scope".** A standalone `tile_i/tile_j`
+public input is **not** a sound closure on its own: nothing
+in-circuit yet ties the hashed digest to a *specific tile's
+committed-matrix accumulator* (the honest bridge places no matmul
+subtile-sweep rows; `place_fold_chain` consumes prover-supplied
+`x_steps`), so a free tile PI would be vacuous — a malicious
+prover with fabricated `x_steps` can set any tile PI. The
+meaningful binding requires §6(b)/§4.C.4 (place the subtile-sweep
+rows; force `FOLD_XSTEP == ⊕CUMSUM_TILE` of the committed `A/B`)
+and *then* binding `(tile_i,tile_j)` to that accumulator's
+row/col offsets. **MED-3 reconciliation:** MED-3 documents how
+the *verifier* derives the claimed `(tile_i,tile_j)` from the
+block context; HIGH-2.2 must consume MED-3's derivation as the
+verifier-supplied input bound to the in-circuit accumulator —
+**not** introduce an independent free PI. Until §6(b) lands,
+HIGH-2.2 does not regress MED-3 (the attested tile is the honest
+bridge's choice; soundness held by CRIT-1 + keystone + §6(a)),
+and the precise obligation is tracked jointly with §6(b) as the
+one entangled cryptographic-core residual.
 
 ---
 
