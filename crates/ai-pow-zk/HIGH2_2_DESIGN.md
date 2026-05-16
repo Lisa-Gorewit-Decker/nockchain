@@ -21,7 +21,7 @@
 | §4.A trace placement — `place_matmul_tile` / `X_STEP` rows wired into `zk_bridge`+`f1_harness` from a real `BlockContext` solve | ⬜ remaining (composite-layout integration) |
 | §4.D keystone — generalise to `JACKPOT_MSG[0..16] == FOLD_STATE` | ⬜ remaining (needs §4.A wiring) |
 | §4.C.4 accumulator→`X_STEP` reduction (`XStepChip`) + composed `XStep→Fold` pipeline byte-equivalent to plain | ✅ done, 6/0 + zk_bridge 5/5 | `290af68`, `c78ae67` |
-| §4.C committed-matrix *binding* — **Route A CHOSEN & spiked** (§4.C.10, `7c0cf3e`): `CompositeFullAirWithLookupsPinned` proves CRIT-1 pin + `noised_packed` LogUp together via batch-stark; CRIT-1 forgery rejected; **~1.23x** cost (vs naive C's ~10x). B eliminated, naive C rejected, C2 superseded. | 🟢 mechanism proven; production switch + §4.A co-req remain |
+| §4.C committed-matrix *binding* — **Route A CHOSEN, spiked & productionised** (§4.C.10): `7c0cf3e` spike (~1.23x vs naive C's ~10x); `697cc0e` production API `composite_*_pinned_logup` + exhaustive `routea_*` suite (4/4: honest+PoW, zeroed-selector forgery, tampered-PROGRAM_COL ×5, HIGH-2 keystone — all under batch-stark). B eliminated, naive C rejected, C2 superseded. | 🟢 production-grade + adversarially tested; caller switch (zk_bridge/f1_harness) + §4.A non-vacuity remain |
 | §4.E tile-index binding / MED-3 | ⬜ remaining |
 | §6 CRIT-1 program extends to matmul+fold schedule | ⬜ remaining |
 | §7 real-difficulty end-to-end + byte-equivalence + docs flip | ⬜ remaining |
@@ -711,17 +711,30 @@ final:
 | ~~C naive~~ (PROGRAM_COLS 5→69) | ❌ rejected (§4.C.8, ~10x) |
 | C2 (uni-stark gated equality) | superseded by A (no longer needed) |
 
-**Remaining to fully close §4.C (production, beyond the spike):**
-(1) switch the production path — `composite_prove_pinned` /
-`composite_verify_pow_pinned` / `zk_bridge` / `f1_harness` —
-from `uni-stark::prove_with_preprocessed` to
-`batch-stark::prove_batch` over `CompositeFullAirWithLookupsPinned`
-(carry the `crit1_*` / `high2_*` suites across); (2) the
-`noised_packed` binding only becomes *non-vacuous* once §4.A
+**Production API + exhaustive suite landed (`697cc0e`).**
+`composite_proof` now exposes `composite_prove_pinned_logup` /
+`composite_verify_pinned_logup` / `composite_verify_pow_pinned_logup`
+(batch-stark over `CompositeFullAirWithLookupsPinned`; verifier
+rebuilds the canonical preprocessed commitment witness-free via
+`ProverData::from_airs_and_degrees` — same CRIT-1 trust model).
+Exhaustive adversarial suite `composite_proof::tests::routea_*`
+(**4/4 green, 137 s**): honest roundtrip + C2 PoW target
+sensitivity; zeroed-selector forgery rejected vs canonical;
+tampered PROGRAM_COL rejected for **all 5** cols; HIGH-2
+free-jackpot keystone holds — all under batch-stark. 334
+existing lib tests untouched. **The §4.C binding mechanism is
+now production-grade and exhaustively adversarially tested.**
+
+**Remaining to fully close §4.C end-to-end (integration, not
+research):** (1) switch the *callers* — `zk_bridge` (the
+`mine()` gate) and `f1_harness` — from the uni-stark
+`composite_*_pinned` to the new `*_pinned_logup` (the
+`ai-pow`-side `end_to_end` suite must move with it); (2) the
+`noised_packed` binding is non-vacuous only once **§4.A**
 places real matmul rows whose `A_NOISED`/`B_NOISED` reads hit
-the canonical store — so end-to-end §4.C closure co-requires
-§4.A. The *mechanism* (Route A) is now proven, sound, and
-cheap; what remains is integration, not research.
+the canonical store — so the *useful-work* end-to-end closure
+co-requires §4.A. Route A itself is proven, sound, cheap
+(~1.23x), and now a tested production API.
 
 ### 4.D Keystone generalisation
 
