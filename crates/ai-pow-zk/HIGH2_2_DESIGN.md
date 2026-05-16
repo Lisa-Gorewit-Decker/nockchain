@@ -290,20 +290,44 @@ re-narrowed by bisection (the analysis below is superseded):**
   under the pinned `when_last_row` selector. The base
   `CompositeFullAir` `when_last_row` JACKPOT_MSG↔PI binding is
   also exercised with non-zero values here for the first time.
-- **Next bisection (precise, cheap, documented for the fix):**
-  add a unit `composite_prove` (no pin/keystone) test with
-  **fold chain + jackpot block together** — if it FAILS, it's a
-  base `CompositeFullAir` fold↔jackpot (or last-row PI-binding)
-  interaction; if it PASSES, the fault is specifically the
-  CRIT-1 program-pin or the §4.D keystone with non-zero
-  last-row FOLD_STATE/JACKPOT_MSG. Then instrument the failing
-  `when_last_row` / pin constraint directly.
+- **Bisection #2 DONE (`high2_2_fold_chain_jackpot_unit`):**
+  unit `composite_prove` (`CompositeFullAir`, **no**
+  pin/keystone/LogUp) + fold chain + jackpot block →
+  **FAILED** `OodEvaluationMismatch { index: None }`.
+  ⇒ **the bug is a base `CompositeFullAir` constraint
+  interaction between the fold chain and the jackpot-hash
+  block.** Every contributing layer is now ruled out:
+  FoldChip degree (degree-2 rewrite didn't help), batch-stark /
+  LogUp (uni-stark fails too), CRIT-1 program-pin and the §4.D
+  keystone (this repro has none and still fails). Fold-chain
+  alone ✓; jackpot-block alone (every shipping test) ✓; only
+  *together* ✗. `place_jackpot_hash_block` does **not**
+  overwrite the FOLD_* columns (source-verified).
+
+- **Precise next step for the fix:** run the
+  `high2_2_fold_chain_jackpot_unit` trace under **uni-stark
+  debug `check_constraints`** (debug builds evaluate every
+  constraint per row and panic naming the first violated one) —
+  this names the exact failing chip/row instead of the opaque
+  `OodEvaluationMismatch`. Prime suspects given the
+  localization: (a) FoldChip's `when_transition` at the
+  fold-chain↔propagation or propagation↔jackpot-block
+  boundaries with the jackpot block's selector activity; (b) a
+  base chip whose `when_transition`/`when_last_row` now sees
+  non-zero FOLD-propagated rows colliding with the jackpot
+  block's last-8-row writes; (c) the base `when_last_row`
+  JACKPOT_MSG↔PI binding exercised with non-zero JACKPOT_MSG
+  for the first time *while* FOLD_STATE is also non-zero.
 
 Status: §4.A FoldChip composite wiring + degree-2 rewrite +
-keystone are landed and non-regressing (suite green with the two
-repros `#[ignore]`d); the real-M bridge path is blocked on this
-one precisely-localized, reproducible constraint-interaction bug.
-Production stays green (bridge reverted, `5b2adfe`).
+keystone are landed and non-regressing (full
+`crit1_*`/`high2_*`/`routea_*` 19/0; the 3 fold-chain bisection
+repros `#[ignore]`d, one passing). The real-M bridge path is
+blocked on this **one fully-bisected, reproducible base
+constraint-interaction bug** (fold-chain × jackpot-block in
+`CompositeFullAir`); the next action is the named-constraint
+debug run above. Production stays green (bridge reverted,
+`5b2adfe`); §6/§7 follow the bridge fix.
 
 ---
 

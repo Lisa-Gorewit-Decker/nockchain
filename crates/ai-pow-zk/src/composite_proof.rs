@@ -487,6 +487,48 @@ mod tests {
             .expect("fold chain + keystone + jackpot must verify under Route-A");
     }
 
+    /// HIGH-2.2 §4.A bisection #2: fold chain + jackpot block via
+    /// the **unit** `composite_prove` (`CompositeFullAir` — NO
+    /// program-pin, NO §4.D keystone, NO LogUp). Splits the
+    /// remaining locus:
+    ///   - FAILS ⇒ base `CompositeFullAir` fold↔jackpot (or
+    ///     last-row PI-binding) interaction — bug is in a base
+    ///     chip / the base `when_last_row` JACKPOT_MSG↔PI bind.
+    ///   - PASSES ⇒ fault is specifically the CRIT-1 program-pin
+    ///     or the §4.D keystone with non-zero last-row
+    ///     FOLD_STATE/JACKPOT_MSG.
+    /// RESULT (2026-05-16): **FAILED** `OodEvaluationMismatch
+    /// { index: None }`. ⇒ the §4.A bug is a **base
+    /// `CompositeFullAir` constraint interaction between the fold
+    /// chain and the jackpot-hash block** — independent of the
+    /// program-pin, §4.D keystone, batch-stark, LogUp, and
+    /// FoldChip degree (all ruled out by bisection). Each alone
+    /// passes (`high2_2_fold_chain_in_composite_unit` ✓; every
+    /// shipping jackpot-block test ✓); only *together* they
+    /// fail. `place_jackpot_hash_block` does not overwrite
+    /// FOLD_* (verified). Next step (HIGH2_2_DESIGN §4.A): run
+    /// this trace under uni-stark **debug `check_constraints`**
+    /// to name the exact failing row/constraint. `#[ignore]` so
+    /// the suite stays green.
+    #[test]
+    #[ignore = "HIGH-2.2 §4.A: base fold↔jackpot constraint interaction; needs debug check_constraints; see HIGH2_2_DESIGN.md §4.A"]
+    fn high2_2_fold_chain_jackpot_unit() {
+        let cfg = build_config(&test_zk_params(), &CircuitConfig::TEST_PEARL);
+        let ch: [u32; 8] = core::array::from_fn(|i| 0x5EED_0000 + i as u32);
+        let mut trace = CompositeTrace::baseline_min();
+        let h = trace.height();
+        let xs: Vec<i32> = (0..16i32)
+            .map(|i| i.wrapping_mul(0x0151_5151) ^ 0x33)
+            .collect();
+        let m = trace.place_fold_chain(64, &xs);
+        let _ = trace.place_jackpot_hash_block(h - 8, &m, &ch);
+        let pis = CompositePublicInputs::derive_from_trace(&trace);
+        let proof = composite_prove(&cfg, trace, &pis);
+        composite_verify(&cfg, &proof, &pis).expect(
+            "BISECTION#2: fold + jackpot via unit CompositeFullAir (no pin/keystone)",
+        );
+    }
+
     /// HIGH-2.2 §4.A bisection: same fold-chain+keystone+jackpot
     /// trace, proven via the **uni-stark pinned** path
     /// (`composite_prove_pinned` / `composite_verify_pinned`) —
