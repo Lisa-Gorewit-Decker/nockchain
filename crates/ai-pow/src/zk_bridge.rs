@@ -216,6 +216,65 @@ mod tests {
         assert_ne!(out.pis.hash_jackpot, [0u32; 8]);
     }
 
+    /// HIGH-2.2 §4.B↔plain byte-equivalence (the
+    /// `high2_2_byte_equiv_plain` half of §7's test plan).
+    ///
+    /// `ai-pow-zk`'s `FoldChip` must reproduce the *real* folded
+    /// `TileState M` — the exact 16×u32 the plain miner hashes —
+    /// for tiles of a genuine `BlockContext` solve, and feeding
+    /// that chip output through the same keyed BLAKE3 must yield
+    /// the byte-identical PoW digest. This is the cross-crate
+    /// parity that `ai-pow-zk`'s own tests cannot assert (it must
+    /// not depend on `ai-pow`); `ai-pow` → `ai-pow-zk` under the
+    /// `zk` feature is the legal direction.
+    #[test]
+    fn high2_2_foldchip_byte_equiv_plain_tilestate() {
+        use crate::matmul::{compute_tile_trace, BlockNoise, Matrices};
+        use ai_pow_zk::chips::fold::{build_trace, final_state};
+
+        let params = MatmulParams::TEST_SMALL;
+        let (a, b) = synth_matrices(b"high2_2-byteequiv", &params);
+        let ctx = BlockContext::build(b"high2_2-blk", &a, &b, &params).expect("ctx");
+
+        // Reconstruct the same noised matrices BlockContext built
+        // internally (it exposes the seeds, not the matrices).
+        let noise = BlockNoise::expand(&ctx.s_a, &ctx.s_b, &params);
+        let mats = Matrices::build(ctx.a, ctx.b, &noise, &params);
+        let col_tiles = params.col_tiles();
+
+        for tile_i in 0..params.row_tiles() {
+            for tile_j in 0..col_tiles {
+                let tr = compute_tile_trace(&mats, &params, tile_i, tile_j);
+
+                // Sanity: our reconstruction == BlockContext's own
+                // per-tile compute (the value the real solve uses).
+                let idx = (tile_i * col_tiles + tile_j) as usize;
+                assert_eq!(
+                    tr.state, ctx.m_states[idx],
+                    "reconstructed tile != BlockContext.m_states[{idx}]"
+                );
+
+                // FoldChip reproduces M bit-for-bit (u32 view).
+                let chip = final_state(&build_trace(&tr.x_steps));
+                let want: [u32; 16] = core::array::from_fn(|i| tr.state.0[i] as u32);
+                assert_eq!(
+                    chip, want,
+                    "FoldChip final state != real TileState M @({tile_i},{tile_j})"
+                );
+
+                // …and the chip output, keyed-hashed, == the exact
+                // PoW digest the plain side computes (C4 anchor).
+                let chip_words_i32: [i32; 16] = core::array::from_fn(|i| chip[i] as i32);
+                let chip_state = crate::matmul::TileState(chip_words_i32);
+                assert_eq!(
+                    chip_state.keyed_hash(&ctx.s_a),
+                    tr.state.keyed_hash(&ctx.s_a),
+                    "keyed BLAKE3 of FoldChip output != plain PoW digest @({tile_i},{tile_j})"
+                );
+            }
+        }
+    }
+
     #[test]
     fn f1_bridge_rejects_tampered_target() {
         // HASH_JACKPOT = 0 clears any target ≥ 0, so a 0 target
