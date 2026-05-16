@@ -371,13 +371,44 @@ pub const JACKPOT_SLOT_SEL_LEN: usize = 16;
 pub const CV_OUT_FREQ: usize = JACKPOT_SLOT_SEL_START + JACKPOT_SLOT_SEL_LEN;
 
 // =====================================================================
+//  HIGH-2.2 §4.A/§4.D — FoldChip composite block (Option B2)
+//
+//  Appended *after* all Pearl-mirrored columns (the standing
+//  invariant is that our SNARK is deliberately NOT trace-byte-
+//  equivalent to Pearl — only the mineable unit of work is;
+//  HIGH2_2_DESIGN.md §9.5). Appending here shifts no existing
+//  offset (every column above is fixed); only TOTAL_TRACE_WIDTH
+//  grows. The FoldChip is a pure function of the per-stripe
+//  X_STEP sequence (§4.0), so this block carries exactly its
+//  standalone columns at composite offsets.
+// =====================================================================
+
+/// 1 = active fold row, 0 = passthrough/padding.
+pub const FOLD_IS_FOLD: usize = CV_OUT_FREQ + 1;
+/// One-hot slot selector (Σ == FOLD_IS_FOLD); slot = stripe % 16.
+pub const FOLD_SLOT_SEL_START: usize = FOLD_IS_FOLD + 1;
+pub const FOLD_SLOT_SEL_LEN: usize = JACKPOT_SIZE; // 16
+/// Per-stripe X_STEP value (u32 reinterpretation of the i32 fold
+/// input — Pearl §4.5 `x_ℓ`).
+pub const FOLD_XSTEP: usize = FOLD_SLOT_SEL_START + FOLD_SLOT_SEL_LEN;
+/// 32 LE bits of FOLD_XSTEP.
+pub const FOLD_XSTEP_BITS_START: usize = FOLD_XSTEP + 1;
+pub const FOLD_XSTEP_BITS_LEN: usize = 32;
+/// 16-word fold state entering this row (`M_cur`), u32 each.
+pub const FOLD_STATE_START: usize = FOLD_XSTEP_BITS_START + FOLD_XSTEP_BITS_LEN;
+pub const FOLD_STATE_LEN: usize = JACKPOT_SIZE; // 16
+/// 32 LE bits of the currently addressed slot (`M_cur[slot]`).
+pub const FOLD_MCUR_BITS_START: usize = FOLD_STATE_START + FOLD_STATE_LEN;
+pub const FOLD_MCUR_BITS_LEN: usize = 32;
+
+// =====================================================================
 //  Total trace width
 // =====================================================================
 
 /// Total trace width: pinned end-of-layout cursor. Phases 3+ extend
 /// chip-internal sub-columns but must not exceed this without bumping
 /// the constant.
-pub const TOTAL_TRACE_WIDTH: usize = CV_OUT_FREQ + 1;
+pub const TOTAL_TRACE_WIDTH: usize = FOLD_MCUR_BITS_START + FOLD_MCUR_BITS_LEN;
 
 #[cfg(test)]
 mod tests {

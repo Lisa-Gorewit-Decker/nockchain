@@ -67,6 +67,8 @@ use crate::composite_layout::{
     JACKPOT_SLOT_SEL_START, JACKPOT_X_BITS_START, MAT_FREQ, MAT_ID, MAT_ID_LIMBS_LEN,
     MAT_ID_LIMBS_START, MAT_UNPACK_LEN, MAT_UNPACK_START, NOISED_PACKED_START,
     NOISE_UNPACK_LEN, NOISE_UNPACK_START, STARK_ROW_IDX, TILE_D, TILE_H,
+    FOLD_IS_FOLD, FOLD_MCUR_BITS_START, FOLD_SLOT_SEL_START, FOLD_STATE_START,
+    FOLD_XSTEP, FOLD_XSTEP_BITS_START,
     TOTAL_TRACE_WIDTH, UINT8_DATA_LEN, UINT8_DATA_START, URANGE13_FREQ, URANGE8_FREQ,
 };
 use crate::Val;
@@ -976,6 +978,66 @@ impl CompositeTrace {
         }
 
         digest
+    }
+
+    /// HIGH-2.2 §4.A: place the Pearl §4.5 rotl13-XOR fold chain
+    /// for a real solved tile's per-stripe `x_steps` (from
+    /// `ai-pow::matmul::compute_tile_trace`) into the FOLD_*
+    /// composite block, starting at `row_start`. Row `row_start+t`
+    /// folds `x_steps[t]` into slot `t % 16`; `FOLD_STATE` then
+    /// propagates unchanged (FoldChip passthrough) so **every row
+    /// from the chain's end through the last trace row carries the
+    /// final `TileState M`** — which the §4.D keystone binds to
+    /// the last-row `JACKPOT_MSG`. Returns the final `M` (16 u32)
+    /// so the caller feeds it to `place_jackpot_hash_block` as the
+    /// hashed message (⇒ `HASH_JACKPOT = BLAKE3(M, key=s_a)`, the
+    /// real PoW digest). Mirrors `chips::fold::build_trace` at
+    /// composite offsets.
+    pub fn place_fold_chain(&mut self, row_start: usize, x_steps: &[i32]) -> [u32; 16] {
+        use p3_field::integers::QuotientMap;
+        let len = x_steps.len();
+        let h = self.height();
+        assert!(
+            !x_steps.is_empty() && row_start + len < h,
+            "fold chain ({len}) must fit before the last row: row_start={row_start}, height={h}"
+        );
+
+        let set_u32 = |row: &mut [Val], at: usize, v: u32| {
+            row[at] = <Val as QuotientMap<u64>>::from_int(v as u64);
+        };
+        let set_bits = |row: &mut [Val], at: usize, v: u32| {
+            for i in 0..32 {
+                row[at + i] = <Val as QuotientMap<u64>>::from_int(((v >> i) & 1) as u64);
+            }
+        };
+
+        let mut m = [0u32; 16];
+        for t in 0..len {
+            let slot = t % 16;
+            let x = x_steps[t] as u32;
+            let base = (row_start + t) * TOTAL_TRACE_WIDTH;
+            let row = &mut self.matrix.values[base..base + TOTAL_TRACE_WIDTH];
+            row[FOLD_IS_FOLD] = <Val as QuotientMap<u64>>::from_int(1);
+            row[FOLD_SLOT_SEL_START + slot] = <Val as QuotientMap<u64>>::from_int(1);
+            set_u32(row, FOLD_XSTEP, x);
+            set_bits(row, FOLD_XSTEP_BITS_START, x);
+            for s in 0..16 {
+                set_u32(row, FOLD_STATE_START + s, m[s]);
+            }
+            set_bits(row, FOLD_MCUR_BITS_START, m[slot]);
+            m[slot] = m[slot].rotate_left(13) ^ x;
+        }
+        // Propagate the final state through every remaining row
+        // (incl. the jackpot-hash block) so the last row — where
+        // the §4.D keystone reads it — carries `M`.
+        for r in (row_start + len)..h {
+            let base = r * TOTAL_TRACE_WIDTH;
+            let row = &mut self.matrix.values[base..base + TOTAL_TRACE_WIDTH];
+            for s in 0..16 {
+                set_u32(row, FOLD_STATE_START + s, m[s]);
+            }
+        }
+        m
     }
 
     /// Populate every `*_FREQ` column in the trace so the LogUp

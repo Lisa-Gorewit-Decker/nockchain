@@ -205,44 +205,40 @@ impl<AB: AirBuilder<F = crate::Val>> Air<AB> for CompositeFullAirPinned {
             builder.assert_eq(m[k], p[k]);
         }
 
-        // HIGH-2 keystone: bind the C4-hashed jackpot message to
-        // the matmul-bound accumulator. On the last trace row (=
-        // the canonical jackpot-hash block's finalize row, where
-        // `place_jackpot_hash_block` puts JACKPOT_MSG = the hashed
-        // message and the matmul chain threads its final
-        // CUMSUM_TILE), force
-        //   JACKPOT_MSG[0..4] == CUMSUM_TILE[0..4]   (the 4 = TILE_H²
-        //                                             accumulator cells)
-        //   JACKPOT_MSG[4..16] == 0
+        // HIGH-2.2 §4.D keystone (generalised): bind the C4-hashed
+        // jackpot message to the **full folded TileState M**. On
+        // the last trace row force
+        //   JACKPOT_MSG[0..16] == FOLD_STATE[0..16]
         // unconditionally (a fixed boundary predicate, not a
-        // prover selector — sound exactly like the cumsum/jackpot
-        // PI binding). The matmul chip binds CUMSUM_TILE to
-        // A_NOISED·B_NOISED → noised_packed/C3 → the committed
-        // matrices (HASH_A, now CRIT-1-pinned). Hence
-        // HASH_JACKPOT = BLAKE3(CUMSUM ‖ 0, key=s_a) is a function
-        // of the *real matmul*, not a prover-free value: an
-        // attacker can no longer grind a free JACKPOT_MSG for
-        // hashcash; changing it requires changing the (committed)
-        // matrices and redoing the matmul. Residual (tracked
-        // separately): this binds the *final accumulator*, not the
-        // per-stripe rotate-XOR-13 transcript (Pearl §4.5
-        // step-binding) — a fidelity/strengthening item, not the
-        // HIGH-2 "attests a constant" soundness gap, which this
-        // closes. Only meaningful on the pinned production path;
-        // the unit `CompositeFullAir` keeps cumsum/jackpot as
-        // independent PIs for the constraint-logic test harness.
+        // prover selector). `FoldChip` (wired in
+        // `CompositeFullAir::eval`) constrains FOLD_STATE to be
+        // the Pearl §4.5 rotl13-XOR fold of the per-stripe X_STEP
+        // sequence; the last row therefore carries the real
+        // `TileState M` (the honest bridge places the real solved
+        // tile's fold chain — §4.A). Hence HASH_JACKPOT =
+        // BLAKE3(M, key=s_a) is the genuine PoW digest, not a
+        // prover-free constant nor the 2×2 micro-accumulator
+        // stop-gap this replaces (which only pinned 4 of 16 words
+        // and zeroed the rest — §4.0). Honest traces with no fold
+        // activity have JACKPOT_MSG = FOLD_STATE = 0 ⇒ 0 == 0
+        // holds; a planted free JACKPOT_MSG (FOLD_STATE = 0) is
+        // still rejected. Residual: X_STEP↔matmul-accumulator
+        // binding (XStepChip-in-composite + subtile sweep) — the
+        // §4.C noised_packed Route-A binds the matmul *inputs*;
+        // full step-transcript binding is the precisely-scoped
+        // remaining item. Pinned production path only; the unit
+        // `CompositeFullAir` keeps independent PIs for the
+        // constraint-logic harness.
         let main2 = builder.main();
         let c2 = main2.current_slice();
-        let cs: [AB::Var; PI_CUMSUM_LEN] =
-            core::array::from_fn(|i| c2[CUMSUM_TILE_START + i]);
+        let fs: [AB::Var; JACKPOT_SIZE] = core::array::from_fn(|i| {
+            c2[crate::composite_layout::FOLD_STATE_START + i]
+        });
         let jm: [AB::Var; JACKPOT_SIZE] =
             core::array::from_fn(|i| c2[JACKPOT_MSG_START + i]);
         let mut last = builder.when_last_row();
-        for i in 0..PI_CUMSUM_LEN {
-            last.assert_eq(jm[i], cs[i]);
-        }
-        for i in PI_CUMSUM_LEN..JACKPOT_SIZE {
-            last.assert_zero(jm[i]);
+        for i in 0..JACKPOT_SIZE {
+            last.assert_eq(jm[i], fs[i]);
         }
     }
 }
@@ -287,6 +283,15 @@ impl<AB: AirBuilder> Air<AB> for CompositeFullAir {
         // selector. Phase 14b's LogUp wiring will tie the X_BITS
         // bit-decomposition back to CUMSUM_BUFFER.
         JackpotChip::eval_composite(builder);
+
+        // FoldChip (HIGH-2.2 §4.B/§4.A): Pearl §4.5 rotl13-XOR
+        // fold over the FOLD_* composite block. A pure function
+        // of the per-stripe X_STEP sequence (§4.0, Option B2).
+        // All-zero FOLD columns satisfy it vacuously, so traces
+        // with no fold activity are unaffected; the §4.D keystone
+        // (in CompositeFullAirPinned) binds JACKPOT_MSG to the
+        // last-row FOLD_STATE.
+        crate::chips::fold::FoldChip::eval_composite(builder);
 
         // Public-input binding.
         //

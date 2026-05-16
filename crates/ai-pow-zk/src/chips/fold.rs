@@ -95,8 +95,25 @@ impl FoldChip {
         mcur_bits: cols::MCUR_BITS,
     };
 
+    /// Composite-trace offsets (HIGH-2.2 §4.A/§4.D wiring) — the
+    /// FoldChip's columns at their `composite_layout` positions.
+    pub const COMPOSITE_OFFSETS: FoldOffsets = FoldOffsets {
+        is_fold: crate::composite_layout::FOLD_IS_FOLD,
+        slot_sel: crate::composite_layout::FOLD_SLOT_SEL_START,
+        xstep: crate::composite_layout::FOLD_XSTEP,
+        xstep_bits: crate::composite_layout::FOLD_XSTEP_BITS_START,
+        fold_state: crate::composite_layout::FOLD_STATE_START,
+        mcur_bits: crate::composite_layout::FOLD_MCUR_BITS_START,
+    };
+
+    /// Composite-layout entry point: `eval_at(builder,
+    /// &COMPOSITE_OFFSETS)`. Called from `CompositeFullAir::eval`.
+    pub fn eval_composite<AB: AirBuilder>(builder: &mut AB) {
+        Self::eval_at(builder, &Self::COMPOSITE_OFFSETS);
+    }
+
     /// Emit the fold constraints at the given column offsets.
-    pub fn eval_at<AB: AirBuilder<F = Val>>(builder: &mut AB, off: &FoldOffsets) {
+    pub fn eval_at<AB: AirBuilder>(builder: &mut AB, off: &FoldOffsets) {
         let two = <AB::F as PrimeCharacteristicRing>::TWO;
 
         // ---- Per-row structural constraints ----
@@ -123,8 +140,8 @@ impl FoldChip {
             for i in 0..cols::XSTEP_BITS_LEN {
                 let bit = cur[off.xstep_bits + i];
                 builder.assert_bool(bit);
-                x_acc = x_acc + bit.into() * pow;
-                pow = pow * two;
+                x_acc = x_acc + bit.into() * pow.clone();
+                pow = pow * two.clone();
             }
             builder.assert_eq(cur[off.xstep].into(), x_acc);
 
@@ -139,8 +156,8 @@ impl FoldChip {
             for i in 0..cols::MCUR_BITS_LEN {
                 let bit = cur[off.mcur_bits + i];
                 builder.assert_bool(bit);
-                m_acc = m_acc + bit.into() * pow_m;
-                pow_m = pow_m * two;
+                m_acc = m_acc + bit.into() * pow_m.clone();
+                pow_m = pow_m * two.clone();
             }
             let mut sel_val: AB::Expr = <AB::Expr as PrimeCharacteristicRing>::ZERO;
             for s in 0..cols::SLOT_SEL_LEN {
