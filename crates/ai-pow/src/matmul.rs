@@ -204,6 +204,41 @@ impl TileState {
         }
         *hasher.finalize().as_bytes()
     }
+
+    /// Replay a per-stripe `x` sequence into a fresh state.
+    ///
+    /// This is the *defining property* the ZK FoldChip (HIGH-2.2)
+    /// must reproduce: the final `M` is a pure function of the
+    /// `x_steps` sequence alone, via Pearl §4.5
+    /// `M[step % 16] ← rotl13(M[step % 16]) ⊕ x_steps[step]`.
+    /// Nothing else (matrix layout, accumulator geometry) enters
+    /// once the sequence is fixed — so the circuit only has to
+    /// bind `x_steps`, not re-derive the fold.
+    pub fn from_x_steps(x_steps: &[i32]) -> Self {
+        let mut s = Self::zero();
+        for (step, &x) in x_steps.iter().enumerate() {
+            s.fold(step as u32, x);
+        }
+        s
+    }
+}
+
+/// Per-stripe trace of one tile's accumulate-and-fold.
+///
+/// `compute_tile` only returns the final folded `TileState`; the
+/// HIGH-2.2 bridge and every FoldChip test need the intermediate
+/// `x_ℓ` values (Pearl §4.5) the fold consumes, since those — not
+/// the raw `t·t` accumulator — are what the circuit binds. The
+/// invariant `TileState::from_x_steps(&trace.x_steps) ==
+/// trace.state` holds by construction.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TileTrace {
+    /// `x_steps[step]` = int32-XOR of the full `t·t` accumulator
+    /// after stripe `step` (the value folded into `M`).
+    /// `len() == params.num_stripes()`.
+    pub x_steps: Vec<i32>,
+    /// Final folded state — identical to `compute_tile`'s return.
+    pub state: TileState,
 }
 
 /// Compute one output tile `(tile_i, tile_j)`, stepping in stripes of width
@@ -216,6 +251,18 @@ pub fn compute_tile(
     tile_i: u32,
     tile_j: u32,
 ) -> TileState {
+    compute_tile_trace(matrices, params, tile_i, tile_j).state
+}
+
+/// [`compute_tile`] that also returns the per-stripe `x` sequence
+/// (Pearl §4.5). The `.state` field is bit-identical to
+/// `compute_tile`'s return; `compute_tile` delegates here.
+pub fn compute_tile_trace(
+    matrices: &Matrices,
+    params: &MatmulParams,
+    tile_i: u32,
+    tile_j: u32,
+) -> TileTrace {
     let t = params.tile as usize;
     let r = params.noise_rank as usize;
     let row0 = (tile_i * params.tile) as usize;
@@ -224,6 +271,7 @@ pub fn compute_tile(
 
     let mut c_blk = vec![0i32; t * t];
     let mut state = TileState::zero();
+    let mut x_steps = Vec::with_capacity(steps);
 
     for step in 0..steps {
         let lo = step * r;
@@ -245,9 +293,10 @@ pub fn compute_tile(
         for &v in &c_blk {
             x ^= v;
         }
+        x_steps.push(x);
         state.fold(step as u32, x);
     }
-    state
+    TileTrace { x_steps, state }
 }
 
 /// Verifier-side compute_tile: same iterative accumulator as `compute_tile`
@@ -259,6 +308,17 @@ pub fn compute_tile_from_slices(
     b_prime_cols: &[i8],
     params: &MatmulParams,
 ) -> TileState {
+    compute_tile_trace_from_slices(a_prime_rows, b_prime_cols, params).state
+}
+
+/// [`compute_tile_from_slices`] that also returns the per-stripe
+/// `x` sequence. `.state` is bit-identical to
+/// `compute_tile_from_slices`'s return; that fn delegates here.
+pub fn compute_tile_trace_from_slices(
+    a_prime_rows: &[i8],
+    b_prime_cols: &[i8],
+    params: &MatmulParams,
+) -> TileTrace {
     let t = params.tile as usize;
     let r = params.noise_rank as usize;
     let k = params.k as usize;
@@ -268,6 +328,7 @@ pub fn compute_tile_from_slices(
 
     let mut c_blk = vec![0i32; t * t];
     let mut state = TileState::zero();
+    let mut x_steps = Vec::with_capacity(steps);
 
     for step in 0..steps {
         let lo = step * r;
@@ -287,9 +348,10 @@ pub fn compute_tile_from_slices(
         for &v in &c_blk {
             x ^= v;
         }
+        x_steps.push(x);
         state.fold(step as u32, x);
     }
-    state
+    TileTrace { x_steps, state }
 }
 
 #[cfg(test)]
@@ -495,5 +557,126 @@ mod tests {
         let h1 = s.keyed_hash(&[1u8; 32]);
         let h2 = s.keyed_hash(&[2u8; 32]);
         assert_ne!(h1, h2);
+    }
+
+    // ---- HIGH-2.2 §4.A: per-stripe x-sequence reference ----
+
+    /// `compute_tile_trace().state` must be bit-identical to
+    /// `compute_tile()` for every tile/seed, and `x_steps` must
+    /// have exactly `num_stripes` entries. This is the contract
+    /// the refactor (compute_tile delegating to the trace
+    /// variant) must preserve.
+    #[test]
+    fn tile_trace_state_matches_compute_tile() {
+        let params = MatmulParams::TEST_SMALL;
+        let n_stripes = params.num_stripes() as usize;
+        for seed in [1u8, 7, 200] {
+            let s_a = [seed; 32];
+            let s_b = [seed ^ 0x5a; 32];
+            let noise = BlockNoise::expand(&s_a, &s_b, &params);
+            let (a, b) = synth_ab(seed, &params);
+            let mats = Matrices::build(&a, &b, &noise, &params);
+            for tile_i in 0..params.row_tiles() {
+                for tile_j in 0..params.col_tiles() {
+                    let tr = compute_tile_trace(&mats, &params, tile_i, tile_j);
+                    let st = compute_tile(&mats, &params, tile_i, tile_j);
+                    assert_eq!(tr.state, st, "trace.state vs compute_tile @({tile_i},{tile_j}) seed={seed}");
+                    assert_eq!(tr.x_steps.len(), n_stripes, "x_steps length");
+                }
+            }
+        }
+    }
+
+    /// The slice-path trace agrees with the full-path trace
+    /// (both `x_steps` and `state`) for the same tile, and each
+    /// `.state` matches its non-trace twin.
+    #[test]
+    fn tile_trace_slice_path_agrees_with_full_path() {
+        let params = MatmulParams::TEST_SMALL;
+        let noise = BlockNoise::expand(&[3u8; 32], &[4u8; 32], &params);
+        let (a, b) = synth_ab(11, &params);
+        let mats = Matrices::build(&a, &b, &noise, &params);
+
+        let (tile_i, tile_j) = (1u32, 2u32);
+        let t = params.tile as usize;
+        let k = params.k as usize;
+        let row0 = (tile_i * params.tile) as usize;
+        let col0 = (tile_j * params.tile) as usize;
+        let mut a_rows = vec![0i8; t * k];
+        for di in 0..t {
+            a_rows[di * k..(di + 1) * k].copy_from_slice(mats.a_prime_row((row0 + di) as u32));
+        }
+        let mut b_cols = vec![0i8; t * k];
+        for dj in 0..t {
+            b_cols[dj * k..(dj + 1) * k].copy_from_slice(mats.b_prime_col((col0 + dj) as u32));
+        }
+
+        let full = compute_tile_trace(&mats, &params, tile_i, tile_j);
+        let sliced = compute_tile_trace_from_slices(&a_rows, &b_cols, &params);
+        assert_eq!(full.x_steps, sliced.x_steps, "x_steps full vs slice");
+        assert_eq!(full.state, sliced.state, "state full vs slice");
+        assert_eq!(full.state, compute_tile(&mats, &params, tile_i, tile_j));
+        assert_eq!(sliced.state, compute_tile_from_slices(&a_rows, &b_cols, &params));
+    }
+
+    /// The defining FoldChip invariant: `state` is a *pure
+    /// function of the `x_steps` sequence alone*. Replaying the
+    /// sequence through `from_x_steps` must reproduce `state`
+    /// exactly, for every tile. If this ever fails, the circuit
+    /// cannot bind `x_steps` and skip re-deriving the accumulator.
+    #[test]
+    fn from_x_steps_is_pure_function_of_sequence() {
+        let params = MatmulParams::TEST_SMALL;
+        let noise = BlockNoise::expand(&[9u8; 32], &[10u8; 32], &params);
+        let (a, b) = synth_ab(42, &params);
+        let mats = Matrices::build(&a, &b, &noise, &params);
+        for tile_i in 0..params.row_tiles() {
+            for tile_j in 0..params.col_tiles() {
+                let tr = compute_tile_trace(&mats, &params, tile_i, tile_j);
+                assert_eq!(
+                    TileState::from_x_steps(&tr.x_steps),
+                    tr.state,
+                    "from_x_steps must reconstruct state @({tile_i},{tile_j})"
+                );
+            }
+        }
+    }
+
+    /// `from_x_steps` must implement exactly Pearl §4.5
+    /// `M[step%16] = rotl13(M[step%16]) ^ x` — verified against an
+    /// independent manual re-derivation (not via `fold`), so a
+    /// bug in `fold` and `from_x_steps` can't mask each other.
+    #[test]
+    fn from_x_steps_matches_manual_rotl13_fold() {
+        let xs: Vec<i32> = (0..40i32)
+            .map(|i| i.wrapping_mul(0x9E37_79B1u32 as i32) ^ (i << 7))
+            .collect();
+        let mut m = [0i32; 16];
+        for (step, &x) in xs.iter().enumerate() {
+            let slot = step % 16;
+            m[slot] = ((m[slot] as u32).rotate_left(13) as i32) ^ x;
+        }
+        assert_eq!(TileState::from_x_steps(&xs), TileState(m));
+    }
+
+    /// Guard against a degenerate reference: a real solve's
+    /// `x_steps` must not be all-zero or all-equal, otherwise a
+    /// trivial/forged FoldChip could satisfy the binding. (At
+    /// `difficulty_bits=0` every tile clears, but the *sequence*
+    /// must still be non-trivial.)
+    #[test]
+    fn x_steps_are_nontrivial_on_a_real_tile() {
+        let params = MatmulParams::TEST_SMALL;
+        let noise = BlockNoise::expand(&[5u8; 32], &[6u8; 32], &params);
+        let (a, b) = synth_ab(123, &params);
+        let mats = Matrices::build(&a, &b, &noise, &params);
+        let tr = compute_tile_trace(&mats, &params, 0, 0);
+        assert!(tr.x_steps.iter().any(|&x| x != 0), "x_steps all zero");
+        let first = tr.x_steps[0];
+        assert!(
+            tr.x_steps.iter().any(|&x| x != first),
+            "x_steps all identical — fold would be a fixed permutation"
+        );
+        assert_ne!(tr.state, TileState::zero(), "folded state is zero");
     }
 }
