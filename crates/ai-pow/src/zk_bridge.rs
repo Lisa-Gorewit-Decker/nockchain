@@ -275,6 +275,62 @@ mod tests {
         }
     }
 
+    /// HIGH-2.2 §4.C.4 cross-crate parity: feeding the *real*
+    /// per-stripe `t·t` accumulator (running `c_blk`, reconstructed
+    /// exactly as `compute_tile` does) into ai-pow-zk's `XStepChip`
+    /// must reproduce `compute_tile_trace`'s `x_steps` bit-for-bit.
+    /// This ties the reduction chip to the genuine Pearl §4.5
+    /// per-stripe `x` values for real tiles — the parity ai-pow-zk
+    /// cannot assert itself (no ai-pow dep).
+    #[test]
+    fn high2_2_xstepchip_byte_equiv_plain_x_steps() {
+        use crate::matmul::{compute_tile_trace, BlockNoise, Matrices};
+        use ai_pow_zk::chips::xstep::{build_trace, xsteps};
+
+        let params = MatmulParams::TEST_SMALL;
+        let (a, b) = synth_matrices(b"high2_2-xstep", &params);
+        let ctx = BlockContext::build(b"high2_2-xstep-blk", &a, &b, &params).expect("ctx");
+        let noise = BlockNoise::expand(&ctx.s_a, &ctx.s_b, &params);
+        let mats = Matrices::build(ctx.a, ctx.b, &noise, &params);
+
+        let t = params.tile as usize;
+        let r = params.noise_rank as usize;
+        let steps = params.num_stripes() as usize;
+
+        for (tile_i, tile_j) in [(0u32, 0u32), (1, 2), (2, 1)] {
+            let tr = compute_tile_trace(&mats, &params, tile_i, tile_j);
+            let row0 = (tile_i * params.tile) as usize;
+            let col0 = (tile_j * params.tile) as usize;
+
+            // Running c_blk snapshot after each stripe — exactly
+            // compute_tile's accumulation, so ⊕snapshot == x_steps.
+            let mut c_blk = vec![0i32; t * t];
+            let mut per_stripe: Vec<Vec<i32>> = Vec::with_capacity(steps);
+            for step in 0..steps {
+                let lo = step * r;
+                for di in 0..t {
+                    let a_row = &mats.a_prime_row((row0 + di) as u32)[lo..lo + r];
+                    for dj in 0..t {
+                        let b_col = &mats.b_prime_col((col0 + dj) as u32)[lo..lo + r];
+                        let mut delta: i32 = 0;
+                        for l in 0..r {
+                            delta = delta.wrapping_add((a_row[l] as i32) * (b_col[l] as i32));
+                        }
+                        c_blk[di * t + dj] = c_blk[di * t + dj].wrapping_add(delta);
+                    }
+                }
+                per_stripe.push(c_blk.clone());
+            }
+
+            let chip = xsteps(&build_trace(&per_stripe));
+            let want: Vec<u32> = tr.x_steps.iter().map(|&x| x as u32).collect();
+            assert_eq!(
+                chip, want,
+                "XStepChip x_steps != compute_tile_trace.x_steps @({tile_i},{tile_j})"
+            );
+        }
+    }
+
     #[test]
     fn f1_bridge_rejects_tampered_target() {
         // HASH_JACKPOT = 0 clears any target ≥ 0, so a 0 target
