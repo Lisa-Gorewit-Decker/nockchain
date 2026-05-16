@@ -257,18 +257,58 @@ interaction. `routea_honest_roundtrip` (same prover, **zero**
 FOLD) passes; the unit uni-stark prover with non-zero FOLD
 passes; only their *intersection* fails.
 
-**Next step for the fix (focused):** run
-`high2_2_fold_chain_pinned_logup` under
-`p3-batch-stark`'s debug `check_constraints` to confirm
-per-row satisfaction, then inspect (a) the FoldChip transition
-constraint **degree** (the `is_fold·(res_sel − acc)` term is
-degree 3; `res_sel = Σ sel·nxt_state`) vs the batch-stark
-quotient-chunk config, and (b) FoldChip behaviour on the
-batch-stark ZK-padding / permutation rows beyond the placed
-chain (the `when_transition` / `when_first_row` boundaries with
-the larger committed domain). The fold *math* and the keystone
-*data path* are proven; this is a prover-layer integration bug,
-not a design flaw.
+**Root-cause hypothesis (strong; 2026-05-16):** FoldChip's
+transition emits a **degree-3** constraint —
+`is_fold · (res_sel − acc)` where
+`res_sel = Σ_s sel[s]·nxt_state[s]` is degree 2 and `is_fold`
+adds degree 1 (via `xor_32_shift_if(tb, res_sel, …, is_fold,
+…)`). The composite AIR's other degree-3 constraint (matmul
+`(is_reset+is_update)·dot`) is only ever exercised with **zero**
+values by every shipping/test trace (`routea_honest` etc. place
+*no* matmul rows and *no* fold rows). So the fold-chain test is
+the **first trace in which a degree-3 constraint takes non-zero
+values**, and it fails *only* under `p3-batch-stark`
+(`composite_prove_pinned_logup`) while passing under
+`p3-uni-stark` (`composite_prove`) — i.e. batch-stark's
+quotient-chunk degree handling
+(`get_log_num_quotient_chunks`) does not accommodate a non-zero
+degree-3 constraint that uni-stark does. Zero-valued degree-3
+contributes a zero quotient regardless of chunk count, which is
+why every prior batch-stark test (zero FOLD/matmul) passed.
+
+**Fix plan (concrete, next session):**
+1. Confirm: run `high2_2_fold_chain_pinned_logup` under
+   `p3-batch-stark` debug `check_constraints` (per-row should
+   PASS — confirming it's a polynomial/quotient-degree issue,
+   not a row violation) and print the batch-stark
+   `log_num_quotient_chunks` vs the symbolic max degree.
+2. Preferred fix — **reduce FoldChip's transition to degree
+   ≤ 2**: add one `FOLD_XOR_OUT` column (the 32-bit XOR result),
+   constrain `FOLD_XOR_OUT == acc` (degree 2: the `a+b−2ab`
+   bit recomposition) as its own row constraint, then bind
+   `Σ_s sel[s]·nxt_state[s] == is_fold · FOLD_XOR_OUT` (degree
+   2: `sel·nxt` and `is_fold·FOLD_XOR_OUT` are both deg-2). This
+   removes the deg-1×deg-2 product. Update `chips::fold`
+   (LOCAL+COMPOSITE offsets, `build_trace`, the 9 standalone
+   tests), `composite_layout` (+1 FOLD col), `place_fold_chain`.
+3. Alternative — raise the composite STARK config's quotient
+   degree so batch-stark allocates enough chunks for degree 3
+   (smaller code change but also re-tunes the matmul deg-3 path;
+   measure prover-cost impact).
+4. Re-validate: `high2_2_fold_chain_in_composite_unit` (must
+   stay ✓), un-`#[ignore]` `high2_2_fold_chain_pinned_logup`
+   (must go ✓), the `routea_*`/`crit1_*`/`high2_*` structural
+   gate, then re-wire the §4.A bridge (un-revert zk_bridge) and
+   the full `ai-pow --features zk` e2e.
+
+The fold *math*, the FoldChip per-row constraints, and the §4.D
+keystone *data path* are all proven correct (unit + standalone +
+asserted preconditions); this is a contained prover-layer
+quotient-degree bug with a concrete fix, **not** a design flaw.
+§6 (pin the fold schedule in CONTROL_PREP, not new PROGRAM_COLS
+— avoid the §4.C.8 ~10x preprocessed blow-up) and §7
+(real-difficulty e2e + docs flip) follow once the bridge path
+is green.
 
 ### 4.A Honest matmul-step trace placement
 
