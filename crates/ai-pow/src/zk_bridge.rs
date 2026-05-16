@@ -25,26 +25,38 @@
 //!   Non-vacuous: the bridge rejects a zero `HASH_JACKPOT`.
 //!   Enabled by the `verify_round` leading-boundary gate fix
 //!   (`BLAKE3_CHIP_ROUND_GATE_BUG.md`).
-//! - **C2** — `composite_verify_pow` checks the now-bound
-//!   `HASH_JACKPOT` against the real `difficulty_target`.
+//! - **C2** — the difficulty check on the bound `HASH_JACKPOT`
+//!   vs the real `difficulty_target`.
 //!
-//! ## Remaining fidelity gap (not a binding gap)
+//! ## Entrypoint (production)
 //!
-//! `JACKPOT_MSG` fed into the C4 hash is all-zero: the rows
-//! before the block carry no jackpot activity, so the passthrough
-//! transition forces the state constant. The C4 *binding*
-//! (CV_OUT ↦ PI_HASH_JACKPOT, keyed by the real `s_a`) is fully
-//! exercised — `BLAKE3(zeros, key=s_a)` is a genuine non-vacuous
-//! keyed digest. Threading the *real* tile-state fold (a non-zero
-//! `JACKPOT_MSG` produced by the matmul→jackpot rotate-XOR-13
-//! chain) is the remaining matmul→jackpot interleave, tracked in
-//! `GAP_AUDIT.md`; it does not weaken the binding, only the
-//! fidelity of *what* is hashed.
+//! Proving/verifying goes through `ai-pow-zk`'s **Route A**
+//! family `composite_prove_pinned_logup` /
+//! `composite_verify_pow_pinned_logup` (batch-stark): CRIT-1
+//! program-pin **and** the `noised_packed`/range LogUp enforced
+//! in one proof. The verifier rebuilds the canonical program
+//! from the trusted `ctx`/`params` (never the proof). See
+//! `ai_pow_zk::composite_proof` (entrypoint tier table) and
+//! `crates/ai-pow-zk/HIGH2_2_DESIGN.md` §4.C.
+//!
+//! ## Remaining fidelity gap (not a binding gap) — HIGH-2.2 §4.A
+//!
+//! `JACKPOT_MSG` fed into the C4 hash is all-zero: no matmul /
+//! jackpot rows are placed, so the passthrough transition forces
+//! the state constant and the `noised_packed` *matmul-input*
+//! binding has no queries to bind. The C4 *binding* (CV_OUT ↦
+//! PI_HASH_JACKPOT, keyed by the real `s_a`) is fully exercised —
+//! `BLAKE3(zeros, key=s_a)` is a genuine non-vacuous keyed
+//! digest. Threading the *real* tile-state fold (the
+//! matmul→`X_STEP`→rotl13-XOR chain so `JACKPOT_MSG` = the real
+//! `TileState M`) is HIGH-2.2 §4.A; it does not weaken any
+//! binding, only the fidelity of *what* is hashed. Design +
+//! status: `crates/ai-pow-zk/HIGH2_2_DESIGN.md`.
 
 use ai_pow_zk::composite_proof::build_config;
 use ai_pow_zk::{
-    composite_prove_pinned, composite_verify_pow_pinned, CircuitConfig, CompositePublicInputs,
-    CompositeTrace, PowVerifyError, ZkParams,
+    composite_prove_pinned_logup, composite_verify_pow_pinned_logup, CircuitConfig,
+    CompositePublicInputs, CompositeTrace, PowVerifyError, ZkParams,
 };
 
 use crate::params::MatmulParams;
@@ -171,18 +183,19 @@ pub fn prove_and_verify(
     };
     let cfg = build_config(&zk_params, &CircuitConfig::TEST_PEARL);
 
-    // CRIT-1: program-pinned proving. `composite_prove_pinned`
-    // commits the canonical program (the 5 PROGRAM_COLS of this
-    // honest trace) as a preprocessed trace and returns it. The
-    // verifier-side check below uses *that* program — which a
-    // real external verifier reproduces deterministically from
-    // the agreed `ZkParams` (the bridge's trace construction is a
-    // pure function of `ctx`/`params`), never from an untrusted
-    // proof. A malicious prover that zeroes selectors produces a
-    // proof bound to a *different* program and is rejected vs the
-    // canonical VK (see ai-pow-zk crit1_* regression suite).
-    let (proof, program) = composite_prove_pinned(&cfg, trace, &pis);
-    composite_verify_pow_pinned(&cfg, &program, &proof, &pis, target)
+    // HIGH-2.2 §4.C Route A: program-pinned proving **with the
+    // cross-chip LogUp enforced** (batch-stark). `*_pinned_logup`
+    // commits the canonical program (CRIT-1) AND the
+    // `noised_packed`/range LogUp in one proof, so the matmul
+    // `A_NOISED`/`B_NOISED` reads are bound to the C3/`HASH_A`
+    // canonical store. The verifier rebuilds the canonical
+    // program from the trusted shape — a pure function of
+    // `ctx`/`params`, never the proof; a zeroed-selector forge is
+    // bound to a different program and rejected vs the canonical
+    // VK (ai-pow-zk `routea_*` regression suite). Cost ≈ 1.23x
+    // the uni-stark pinned path (HIGH2_2_DESIGN.md §4.C.10).
+    let (proof, program) = composite_prove_pinned_logup(&cfg, trace, &pis);
+    composite_verify_pow_pinned_logup(&cfg, &program, &proof, &pis, target)
         .map_err(BridgeError::Pow)?;
 
     Ok(ZkOutcome { pis })

@@ -4,8 +4,8 @@
 //! This is the substrate the GAP_AUDIT recommends: a genuine
 //! cross-crate path (real matrices → real κ → SNARK binds the
 //! chunk-Merkle commitment → real difficulty target →
-//! `composite_verify_pow`) that doubles as the profiling /
-//! benchmarking fixture. It is deliberately deterministic and
+//! `composite_verify_pow_pinned_logup`) that doubles as the
+//! profiling / benchmarking fixture. It is deterministic and
 //! emits one machine-readable metrics line.
 //!
 //! ## What it exercises (today)
@@ -13,22 +13,26 @@
 //! - `ai-pow` real solve: `mine` at `TEST_SMALL` (difficulty_bits
 //!   = 0 ⇒ a tile always clears), proving the puzzle path runs.
 //! - `BlockContext` → `h_a_chunk` / `h_b_chunk` (M52 step 5).
-//! - `ai-pow-zk` `place_matrix_hash_a` / `_b` into a
-//!   `CompositeTrace` (the C3 matrix-binding path).
-//! - `composite_prove` + `composite_verify_pow` against the real
-//!   `difficulty_target` (C2).
-//! - Hard assertion: the SNARK's derived `HASH_A` PI byte-equals
-//!   `BlockContext::h_a_chunk` — the Pearl-byte-equivalent
-//!   "unit of work" anchor.
+//! - `ai-pow-zk` matrix-hash A/B + C1 key-pins + C4 jackpot-hash
+//!   into a `CompositeTrace`.
+//! - **HIGH-2.2 §4.C Route A**: `composite_prove_pinned_logup` +
+//!   `composite_verify_pow_pinned_logup` (batch-stark — CRIT-1
+//!   program-pin **and** the `noised_packed`/range LogUp) against
+//!   the real `difficulty_target` (C2).
+//! - Hard assertions (non-vacuous): `HASH_A`/`HASH_B` byte-equal
+//!   `BlockContext::h_a_chunk`/`h_b_chunk` (C3); `JOB_KEY`/
+//!   `COMMITMENT_HASH` == the block's κ / s_a (C1);
+//!   `HASH_JACKPOT` is the non-zero keyed digest (C4).
 //!
-//! ## What it does NOT yet exercise (deep F1, tracked separately)
+//! ## What it does NOT yet exercise (tracked separately — §4.A)
 //!
-//! The faithful jackpot→blake3 instruction chain that would make
-//! `HASH_JACKPOT` / `JOB_KEY` / `COMMITMENT_HASH` non-zero PIs.
-//! Those PIs are zero here (no such rows placed), so the C1/C4
-//! bindings are vacuous and `composite_verify_pow` clears any
-//! target. This is honest: the harness measures the matrix-
-//! binding + prove/verify pipeline, which is what's wired.
+//! No real matmul rows are placed, so the `noised_packed`
+//! *matmul-input* binding has no queries to bind (the LogUp
+//! still balances; CRIT-1 + the C1/C3/C4 PI bindings are live
+//! and asserted). Placing the real solved tile's matmul→fold
+//! chain (so `JACKPOT_MSG` = the real `TileState M` and the
+//! `noised_packed` binding bites) is HIGH-2.2 §4.A — see
+//! `crates/ai-pow-zk/HIGH2_2_DESIGN.md`.
 //!
 //! ## Running
 //!
@@ -57,7 +61,7 @@ fn main() {
     use ai_pow::tile_hash::difficulty_target;
     use ai_pow_zk::composite_proof::build_config;
     use ai_pow_zk::{
-        composite_prove_pinned, composite_verify_pow_pinned, CircuitConfig,
+        composite_prove_pinned_logup, composite_verify_pow_pinned_logup, CircuitConfig,
         CompositePublicInputs, CompositeTrace, ZkParams,
     };
 
@@ -167,12 +171,12 @@ fn main() {
     for _ in 0..iters {
         let trace_i = build_trace();
         let t = Instant::now();
-        let (proof, program) = composite_prove_pinned(&cfg, trace_i, &pis);
+        let (proof, program) = composite_prove_pinned_logup(&cfg, trace_i, &pis);
         prove_ms_total += t.elapsed().as_millis();
 
         let t = Instant::now();
-        composite_verify_pow_pinned(&cfg, &program, &proof, &pis, &target)
-            .expect("pinned STARK valid + HASH_JACKPOT clears target");
+        composite_verify_pow_pinned_logup(&cfg, &program, &proof, &pis, &target)
+            .expect("pinned+LogUp STARK valid + HASH_JACKPOT clears target");
         verify_ms_total += t.elapsed().as_millis();
 
         proof_bytes = bincode::serde::encode_to_vec(

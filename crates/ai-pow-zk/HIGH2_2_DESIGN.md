@@ -21,7 +21,7 @@
 | §4.A trace placement — `place_matmul_tile` / `X_STEP` rows wired into `zk_bridge`+`f1_harness` from a real `BlockContext` solve | ⬜ remaining (composite-layout integration) |
 | §4.D keystone — generalise to `JACKPOT_MSG[0..16] == FOLD_STATE` | ⬜ remaining (needs §4.A wiring) |
 | §4.C.4 accumulator→`X_STEP` reduction (`XStepChip`) + composed `XStep→Fold` pipeline byte-equivalent to plain | ✅ done, 6/0 + zk_bridge 5/5 | `290af68`, `c78ae67` |
-| §4.C committed-matrix *binding* — **Route A CHOSEN, spiked & productionised** (§4.C.10): `7c0cf3e` spike (~1.23x vs naive C's ~10x); `697cc0e` production API `composite_*_pinned_logup` + exhaustive `routea_*` suite (4/4: honest+PoW, zeroed-selector forgery, tampered-PROGRAM_COL ×5, HIGH-2 keystone — all under batch-stark). B eliminated, naive C rejected, C2 superseded. | 🟢 production-grade + adversarially tested; caller switch (zk_bridge/f1_harness) + §4.A non-vacuity remain |
+| §4.C committed-matrix *binding* — **Route A: chosen, spiked, productionised & WIRED** (§4.C.10): production API `composite_*_pinned_logup` + exhaustive `routea_*` 4/4; `zk_bridge`(mine() gate)+`f1_harness` switched to it; spike removed; 3-tier entrypoint doc. ~1.23x cost. | ✅ binding complete & wired; §4.A non-vacuity is the separate remaining workstream (#97) |
 | §4.E tile-index binding / MED-3 | ⬜ remaining |
 | §6 CRIT-1 program extends to matmul+fold schedule | ⬜ remaining |
 | §7 real-difficulty end-to-end + byte-equivalence + docs flip | ⬜ remaining |
@@ -725,16 +725,28 @@ free-jackpot keystone holds — all under batch-stark. 334
 existing lib tests untouched. **The §4.C binding mechanism is
 now production-grade and exhaustively adversarially tested.**
 
-**Remaining to fully close §4.C end-to-end (integration, not
-research):** (1) switch the *callers* — `zk_bridge` (the
-`mine()` gate) and `f1_harness` — from the uni-stark
-`composite_*_pinned` to the new `*_pinned_logup` (the
-`ai-pow`-side `end_to_end` suite must move with it); (2) the
-`noised_packed` binding is non-vacuous only once **§4.A**
-places real matmul rows whose `A_NOISED`/`B_NOISED` reads hit
-the canonical store — so the *useful-work* end-to-end closure
-co-requires §4.A. Route A itself is proven, sound, cheap
-(~1.23x), and now a tested production API.
+**Caller integration DONE.** `ai-pow::zk_bridge::prove_and_verify`
+(the `mine()` gate) and `f1_harness` now call
+`composite_prove_pinned_logup` / `composite_verify_pow_pinned_logup`
+— production proving is the Route-A batch-stark path. The
+throwaway `route_a_spike` module was removed (superseded by the
+production `routea_*` suite; its cost datum is recorded above).
+`composite_proof`'s module doc now carries the **three-tier
+entrypoint table** (unpinned dev / uni-stark `*_pinned` no-LogUp
+harness / **`*_pinned_logup` = production**), and `zk_bridge` /
+`f1_harness` headers point at it. The uni-stark `*_pinned`
+family is retained (documented) as the lighter no-LogUp variant
+that backs the `crit1_*`/`high2_*` constraint-logic suite — not
+deleted (still-used, valuable regression coverage).
+
+**Only remaining for *useful-work* end-to-end closure:** the
+`noised_packed` binding is non-vacuous only once **§4.A** places
+real matmul rows whose `A_NOISED`/`B_NOISED` reads hit the
+canonical store (today the bridge places none, so the LogUp
+balances trivially and CRIT-1 + C1/C3/C4 are the live bindings).
+Route A is proven, sound, cheap (~1.23x), a tested production
+API, **and now the wired production path**. §4.C-binding is
+complete; §4.A is the distinct remaining workstream (#97).
 
 ### 4.D Keystone generalisation
 

@@ -1,13 +1,26 @@
-//! Lib-level prove/verify wrappers for the M10.1c composite AIR.
+//! Lib-level prove/verify wrappers for the composite AIR.
 //!
-//! Wraps [`p3_uni_stark::prove`] / [`p3_uni_stark::verify`] with
-//! the composite stack (config + AIR + trace + public inputs) so
-//! callers don't have to assemble it manually.
+//! ## Entrypoints — three tiers (pick by use case)
 //!
-//! For the LogUp-enforced variant (cross-chip lookups reified at
-//! proof time), see [`crate::composite_full_air_with_lookups`] +
-//! `p3-batch-stark`'s `prove_batch` / `verify_batch` — wrapped
-//! similarly in `bench_suite` and the tests there.
+//! | Family | AIR | Prover | Use |
+//! |---|---|---|---|
+//! | [`composite_prove`] / [`composite_verify`] | `CompositeFullAir` (unpinned) | uni-stark | unit / constraint-logic dev only — **not sound for PoW** (CRIT-1: a prover can zero selectors) |
+//! | [`composite_prove_pinned`] / [`composite_verify_pinned`] / [`composite_verify_pow_pinned`] | `CompositeFullAirPinned` | uni-stark | CRIT-1 program-pinned, **no LogUp**. Lighter; backs the `crit1_*` / `high2_*` constraint-logic regression suite. Not the production path (matmul reads unbound — §4.C). |
+//! | [`composite_prove_pinned_logup`] / [`composite_verify_pinned_logup`] / [`composite_verify_pow_pinned_logup`] | `CompositeFullAirWithLookupsPinned` | **batch-stark** | ★ **PRODUCTION ENTRYPOINT** (HIGH-2.2 §4.C Route A). CRIT-1 program-pin **and** the `noised_packed`/range/i8u8/cv-routing LogUp enforced in one proof. Used by [`ai-pow::zk_bridge`] (the `mine()` gate) and `f1_harness`. ≈1.23x the uni-stark pinned cost. |
+//!
+//! New production callers should use the **`*_pinned_logup`**
+//! family. The uni-stark `*_pinned` family is retained as the
+//! lighter no-LogUp variant + the home of the CRIT-1/HIGH-2
+//! constraint-logic adversarial suite. The unpinned
+//! `composite_prove`/`verify` is dev-only and PoW-unsound.
+//!
+//! ## CRIT-1 trust model (all `*_pinned*` families)
+//!
+//! The verifier rebuilds the canonical `program` from the
+//! trusted per-block shape (a pure function of `ctx`/`params`),
+//! **never** from the proof, and checks the proof against that
+//! program's preprocessed commitment. A forged trace whose
+//! program differs is rejected. See `ai-pow::zk_bridge`.
 //!
 //! ## Public-input shape
 //!
@@ -201,11 +214,16 @@ pub fn composite_setup(
         .expect("CompositeFullAirPinned always has preprocessed columns")
 }
 
-/// Program-pinned prove. Derives the canonical program from the
-/// (honest) trace's `*_PREP` columns, commits it, and proves.
-/// Returns the proof **and** the program — the caller hands the
-/// program to the verifier *out of band from a trusted source*
-/// (params), never lets the verifier take it from the proof.
+/// Program-pinned prove (uni-stark, **no LogUp** — lighter
+/// variant + the `crit1_*`/`high2_*` constraint-logic harness).
+/// **Production should call [`composite_prove_pinned_logup`]**
+/// (Route A) so the `noised_packed` matrix binding is enforced.
+///
+/// Derives the canonical program from the (honest) trace's
+/// `*_PREP` columns, commits it, and proves. Returns the proof
+/// **and** the program — the caller hands the program to the
+/// verifier *out of band from a trusted source* (params), never
+/// lets the verifier take it from the proof.
 pub fn composite_prove_pinned(
     config: &AiPowStarkConfig,
     trace: CompositeTrace,
