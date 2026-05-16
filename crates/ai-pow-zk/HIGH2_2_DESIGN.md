@@ -1,7 +1,7 @@
 # HIGH-2.2 — Honest matmul→fold→C4-hash chain: problem space & design
 
-> **Status:** DESIGN (not started). Implementation tracked as task
-> HIGH-2.2 / #95.
+> **Status:** IN PROGRESS. Implementation tracked as tasks
+> #97–#103.
 > **Class:** completeness / fidelity. **Not** a soundness or
 > forgery hole — that part of HIGH-2 (the "C4 hashes a
 > prover-free constant") was closed by the keystone, commit
@@ -9,6 +9,35 @@
 > **Authoritative neighbors:** `ZKP_SECURITY_REPORT.md` (HIGH-2
 > section + Bottom line), `GAP_AUDIT.md` (post-CRIT-1 + keystone
 > summary), memory `ai_pow_zk_crypto_gaps`.
+
+### Progress (2026-05-15)
+
+| Step | State | Commit |
+|---|---|---|
+| §4.A reference — `compute_tile_trace` / `TileTrace` / `TileState::from_x_steps` (per-stripe `x` sequence; `M` proven a pure function of it) | ✅ done, 11/0 tests | `08485ea` |
+| §4.0 geometry finding — chip is a 2×2×16 micro-tile, *not* the `t×t` accumulator; FoldChip binds a per-stripe scalar `X_STEP` | ✅ recorded | `08485ea` |
+| §4.B FoldChip — standalone AIR, Pearl §4.5 rotl13-XOR, Option B2; 9/0 self-contained tests (correctness + 5 adversarial) | ✅ done | `8cbbbeb` |
+| §4.A trace placement — `place_matmul_tile` / `X_STEP` rows wired into `zk_bridge`+`f1_harness` from a real `BlockContext` solve | ⬜ remaining (composite-layout integration) |
+| §4.D keystone — generalise to `JACKPOT_MSG[0..16] == FOLD_STATE` | ⬜ remaining (needs §4.A wiring) |
+| §4.C committed-matrix binding — `X_STEP` ⟵ committed `A/B` via `noised_packed` LogUp (**the multi-day cryptographic core**) | ⬜ remaining |
+| §4.E tile-index binding / MED-3 | ⬜ remaining |
+| §6 CRIT-1 program extends to matmul+fold schedule | ⬜ remaining |
+| §7 real-difficulty end-to-end + byte-equivalence + docs flip | ⬜ remaining |
+
+**Precise residual boundary.** The fold *math* is done and
+proven (FoldChip ≡ `from_x_steps` ≡ Pearl §4.5). What remains is
+**composite-AIR integration** (allocating `FOLD_STATE`/`X_STEP`
+columns without widening `TOTAL_TRACE_WIDTH`, wiring `FoldChip`
+into `CompositeFullAir`/`Pinned`, extending the CRIT-1
+preprocessed program) plus the **cryptographic core §4.C**:
+binding the placed `X_STEP` sequence to the committed `A/B` bytes
+in-circuit (committed bytes → noised matrices → `t×t`
+accumulator → per-stripe XOR). §4.C is the documented multi-day
+item; until it lands, an honest prover can place the *real* `M`
+(so it can clear real difficulty) but a malicious prover is not
+yet *forced* to — that gap is still covered for soundness by the
+existing keystone + CRIT-1 (the proof still can't be forged; it
+just isn't yet the *useful-work* statement end-to-end).
 
 ---
 
