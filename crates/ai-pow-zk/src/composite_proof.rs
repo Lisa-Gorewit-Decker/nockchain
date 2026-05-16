@@ -433,6 +433,48 @@ mod tests {
         );
     }
 
+    /// HIGH-2: the C4-hashed `JACKPOT_MSG` is no longer
+    /// prover-free — the pinned AIR forces last-row
+    /// `JACKPOT_MSG[0..4] == CUMSUM_TILE[0..4]` (matmul-bound) and
+    /// `JACKPOT_MSG[4..16] == 0`. An attacker who grinds an
+    /// arbitrary winning jackpot message (the old hashcash attack,
+    /// no matmul) is rejected: the planted message no longer
+    /// equals the bound accumulator.
+    #[test]
+    fn high2_free_jackpot_message_rejected() {
+        use crate::composite_layout::{JACKPOT_MSG_START, TOTAL_TRACE_WIDTH};
+        use p3_field::integers::QuotientMap;
+
+        let cfg = build_config(&test_zk_params(), &CircuitConfig::TEST_PEARL);
+
+        // Honest baseline: CUMSUM = 0, JACKPOT_MSG = 0 on the last
+        // row ⇒ keystone holds (0 == 0); HASH_JACKPOT =
+        // BLAKE3(0, key=s_a), a fixed value the attacker cannot
+        // grind. Sanity: verifies.
+        let ok = honest_trace();
+        let canonical = extract_program(&ok.matrix);
+        let pis_ok = CompositePublicInputs::derive_from_trace(&ok);
+        let (p_ok, _) = composite_prove_pinned(&cfg, ok, &pis_ok);
+        composite_verify_pinned(&cfg, &canonical, &p_ok, &pis_ok)
+            .expect("zero-CUMSUM honest trace satisfies the HIGH-2 keystone");
+
+        // Attack: plant a "winning" free jackpot message on the
+        // last row while CUMSUM stays 0 — exactly the pre-HIGH-2
+        // hashcash forge (no matmul). Keystone JACKPOT_MSG ==
+        // CUMSUM is violated ⇒ must be rejected.
+        let mut evil = honest_trace();
+        let h = evil.height();
+        let last = (h - 1) * TOTAL_TRACE_WIDTH;
+        evil.matrix.values[last + JACKPOT_MSG_START] =
+            <Val<AiPowStarkConfig> as QuotientMap<u64>>::from_int(0xDEAD_BEEFu64);
+        let pis_evil = CompositePublicInputs::derive_from_matrix(&evil.matrix);
+        let (p_evil, _) = composite_prove_pinned(&cfg, evil, &pis_evil);
+        assert!(
+            composite_verify_pinned(&cfg, &canonical, &p_evil, &pis_evil).is_err(),
+            "HIGH-2: a free (non-CUMSUM) jackpot message must be rejected"
+        );
+    }
+
     #[test]
     fn hash_jackpot_le_bytes_is_blake3_digest_order() {
         // word i ↦ bytes[4i..4i+4] little-endian — the inverse of

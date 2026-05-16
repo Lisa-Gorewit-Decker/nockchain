@@ -192,6 +192,46 @@ impl<AB: AirBuilder<F = crate::Val>> Air<AB> for CompositeFullAirPinned {
         for k in 0..PROGRAM_COLS.len() {
             builder.assert_eq(m[k], p[k]);
         }
+
+        // HIGH-2 keystone: bind the C4-hashed jackpot message to
+        // the matmul-bound accumulator. On the last trace row (=
+        // the canonical jackpot-hash block's finalize row, where
+        // `place_jackpot_hash_block` puts JACKPOT_MSG = the hashed
+        // message and the matmul chain threads its final
+        // CUMSUM_TILE), force
+        //   JACKPOT_MSG[0..4] == CUMSUM_TILE[0..4]   (the 4 = TILE_H²
+        //                                             accumulator cells)
+        //   JACKPOT_MSG[4..16] == 0
+        // unconditionally (a fixed boundary predicate, not a
+        // prover selector — sound exactly like the cumsum/jackpot
+        // PI binding). The matmul chip binds CUMSUM_TILE to
+        // A_NOISED·B_NOISED → noised_packed/C3 → the committed
+        // matrices (HASH_A, now CRIT-1-pinned). Hence
+        // HASH_JACKPOT = BLAKE3(CUMSUM ‖ 0, key=s_a) is a function
+        // of the *real matmul*, not a prover-free value: an
+        // attacker can no longer grind a free JACKPOT_MSG for
+        // hashcash; changing it requires changing the (committed)
+        // matrices and redoing the matmul. Residual (tracked
+        // separately): this binds the *final accumulator*, not the
+        // per-stripe rotate-XOR-13 transcript (Pearl §4.5
+        // step-binding) — a fidelity/strengthening item, not the
+        // HIGH-2 "attests a constant" soundness gap, which this
+        // closes. Only meaningful on the pinned production path;
+        // the unit `CompositeFullAir` keeps cumsum/jackpot as
+        // independent PIs for the constraint-logic test harness.
+        let main2 = builder.main();
+        let c2 = main2.current_slice();
+        let cs: [AB::Var; PI_CUMSUM_LEN] =
+            core::array::from_fn(|i| c2[CUMSUM_TILE_START + i]);
+        let jm: [AB::Var; JACKPOT_SIZE] =
+            core::array::from_fn(|i| c2[JACKPOT_MSG_START + i]);
+        let mut last = builder.when_last_row();
+        for i in 0..PI_CUMSUM_LEN {
+            last.assert_eq(jm[i], cs[i]);
+        }
+        for i in PI_CUMSUM_LEN..JACKPOT_SIZE {
+            last.assert_zero(jm[i]);
+        }
     }
 }
 
