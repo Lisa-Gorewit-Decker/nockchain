@@ -21,7 +21,7 @@
 | §4.A trace placement — `place_matmul_tile` / `X_STEP` rows wired into `zk_bridge`+`f1_harness` from a real `BlockContext` solve | ⬜ remaining (composite-layout integration) |
 | §4.D keystone — generalise to `JACKPOT_MSG[0..16] == FOLD_STATE` | ⬜ remaining (needs §4.A wiring) |
 | §4.C.4 accumulator→`X_STEP` reduction (`XStepChip`) + composed `XStep→Fold` pipeline byte-equivalent to plain | ✅ done, 6/0 + zk_bridge 5/5 | `290af68`, `c78ae67` |
-| §4.C committed-matrix *binding* — designed (§4.C.0–4.C.9); naive Route C **cost-prohibitive, reverted** (§4.C.8); **Route B ELIMINATED** (uni-stark single-phase, §4.C.9); **Route A confirmed feasible & ~½ pre-built** (batch-stark supports preprocessed+LogUp; WithLookups+prove_batch exist). Live fork: A (prover-cost spike) vs C2 (needs §4.A) | 🟡 core done; binding A-or-C2, impl ⬜ |
+| §4.C committed-matrix *binding* — **Route A CHOSEN & spiked** (§4.C.10, `7c0cf3e`): `CompositeFullAirWithLookupsPinned` proves CRIT-1 pin + `noised_packed` LogUp together via batch-stark; CRIT-1 forgery rejected; **~1.23x** cost (vs naive C's ~10x). B eliminated, naive C rejected, C2 superseded. | 🟢 mechanism proven; production switch + §4.A co-req remain |
 | §4.E tile-index binding / MED-3 | ⬜ remaining |
 | §6 CRIT-1 program extends to matmul+fold schedule | ⬜ remaining |
 | §7 real-difficulty end-to-end + byte-equivalence + docs flip | ⬜ remaining |
@@ -669,6 +669,59 @@ mostly pre-existing — the recommended binding, pending a
 prover-cost spike. Route C2 remains the no-prover-migration
 fallback, gated on §4.A. The §4.C *computation* core
 (XStepChip + pipeline) stands, byte-equivalent to plain.
+
+#### 4.C.10 Route-A spike result — VIABLE, SOUND, ~1.23x (2026-05-16)
+
+Per user direction ("attempt Route A"). Implemented
+`CompositeFullAirWithLookupsPinned`
+(`composite_full_air_with_lookups.rs`, commit `7c0cf3e`): it
+composes the CRIT-1 program-pin + HIGH-2 keystone (delegating to
+`CompositeFullAirPinned`) with every `noised_packed`/range LogUp
+bus emission, proven via `p3-batch-stark::prove_batch`.
+Preprocessed rides the standard `BaseAir::preprocessed_trace()`
+API that `ProverData::from_instances` reads automatically — the
+*same* mechanism the uni-stark pinned AIR uses, so **no
+preprocessed-width blow-up** (the §4.C.8 trap is avoided
+entirely; the program stays the 5 CRIT-1 anchors, the binding
+comes from the LogUp permutation argument, not a wide
+preprocessed trace).
+
+Self-contained spike (no production switch), both tests green:
+
+- **`route_a_honest_roundtrip_and_cost`** — CRIT-1 program-pin
+  **and** every LogUp bus enforced together in one
+  `prove_batch`/`verify_batch`. **Route A is viable.**
+- **`route_a_crit1_forgery_rejected`** — a zeroed-selector
+  forgery is self-consistent vs its own program but **REJECTED**
+  vs the canonical program's preprocessed commitment under
+  batch-stark. **CRIT-1 soundness holds under Route A.**
+- **Measured prover cost:** `prove_batch(pinned+LogUp) = 26621
+  ms` vs uni-stark pinned baseline `21693 ms` ⇒ **≈1.23x**.
+  Versus naive Route C's ~10x / 22-min blow-up (§4.C.8), this is
+  entirely acceptable.
+
+**Decision: Route A is the §4.C binding.** The §4.C.9 open
+prover-cost question is conclusively answered. Route table
+final:
+
+| Route | Verdict |
+|---|---|
+| **A** (batch-stark: CRIT-1 pin + `noised_packed` LogUp unified) | ✅ **CHOSEN** — viable, CRIT-1-sound, ~1.23x; spike `7c0cf3e` |
+| ~~B~~ (uni-stark in-AIR permutation) | ❌ eliminated (§4.C.9, single-phase) |
+| ~~C naive~~ (PROGRAM_COLS 5→69) | ❌ rejected (§4.C.8, ~10x) |
+| C2 (uni-stark gated equality) | superseded by A (no longer needed) |
+
+**Remaining to fully close §4.C (production, beyond the spike):**
+(1) switch the production path — `composite_prove_pinned` /
+`composite_verify_pow_pinned` / `zk_bridge` / `f1_harness` —
+from `uni-stark::prove_with_preprocessed` to
+`batch-stark::prove_batch` over `CompositeFullAirWithLookupsPinned`
+(carry the `crit1_*` / `high2_*` suites across); (2) the
+`noised_packed` binding only becomes *non-vacuous* once §4.A
+places real matmul rows whose `A_NOISED`/`B_NOISED` reads hit
+the canonical store — so end-to-end §4.C closure co-requires
+§4.A. The *mechanism* (Route A) is now proven, sound, and
+cheap; what remains is integration, not research.
 
 ### 4.D Keystone generalisation
 
