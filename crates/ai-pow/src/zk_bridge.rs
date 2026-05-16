@@ -557,4 +557,127 @@ mod tests {
         assert_eq!(tile_ij(nt, &params), None);
         assert_eq!(tile_ij(nt + 7, &params), None);
     }
+
+    // ============================================================
+    //  §6(b) SPIKE — matmul-row placement / §4.0 subtile-sweep
+    //  GEOMETRY (pure arithmetic; no composite proving yet — the
+    //  first "test after each sweep" gate). Validates that the
+    //  in-circuit 2×2×16 micro-tile chip primitive (`compute_row`),
+    //  swept over the (t/2)² sub-blocks × `num_stripes` stripes
+    //  with the r-wide stripe zero-padded into TILE_D, reproduces
+    //  `compute_tile_trace`'s per-stripe `x_steps` bit-for-bit —
+    //  i.e. `FOLD_XSTEP[step]` can be forced == ⊕(swept CUMSUM).
+    // ============================================================
+
+    /// Stripe-major sweep of the in-circuit micro-tile primitive
+    /// over one tile, returning the per-stripe XOR scalar sequence
+    /// (the value the FoldChip consumes). Mirrors
+    /// `compute_tile_trace`'s loop using ONLY
+    /// `ai_pow_zk::chips::matmul::compute::compute_row`.
+    fn swept_micro_tile_x_steps(
+        mats: &crate::matmul::Matrices,
+        params: &MatmulParams,
+        tile_i: u32,
+        tile_j: u32,
+    ) -> Vec<i32> {
+        use ai_pow_zk::chips::matmul::compute::{compute_row, CUMSUM_LEN};
+        use ai_pow_zk::composite_layout::{TILE_D, TILE_H};
+
+        let t = params.tile as usize;
+        let r = params.noise_rank as usize;
+        let steps = params.num_stripes() as usize;
+        assert!(t % TILE_H == 0, "tile must tile into TILE_H sub-blocks");
+        assert!(r <= TILE_D, "stripe width must fit one micro-step (zero-pad)");
+        let n_sb = t / TILE_H; // sub-blocks per axis
+        let row0 = (tile_i * params.tile) as usize;
+        let col0 = (tile_j * params.tile) as usize;
+
+        // One micro-tile accumulator per (sbi,sbj) sub-block.
+        let mut cumsum = vec![[0i32; CUMSUM_LEN]; n_sb * n_sb];
+        let mut x_steps = Vec::with_capacity(steps);
+
+        for step in 0..steps {
+            let lo = step * r;
+            for sbi in 0..n_sb {
+                for sbj in 0..n_sb {
+                    // 2×16 a / b micro-blocks: r real lanes + zero pad.
+                    let mut a_blk = [[0i8; TILE_D]; TILE_H];
+                    let mut b_blk = [[0i8; TILE_D]; TILE_H];
+                    for di in 0..TILE_H {
+                        let arow = mats.a_prime_row((row0 + sbi * TILE_H + di) as u32);
+                        a_blk[di][..r].copy_from_slice(&arow[lo..lo + r]);
+                    }
+                    for dj in 0..TILE_H {
+                        let bcol = mats.b_prime_col((col0 + sbj * TILE_H + dj) as u32);
+                        b_blk[dj][..r].copy_from_slice(&bcol[lo..lo + r]);
+                    }
+                    let sb = sbi * n_sb + sbj;
+                    let is_reset = step == 0;
+                    let is_update = step > 0;
+                    cumsum[sb] =
+                        compute_row(&a_blk, &b_blk, &cumsum[sb], is_reset, is_update);
+                }
+            }
+            // ⊕ over ALL t·t accumulator cells (XOR is order-free, so
+            // the sub-block layout vs plain c_blk layout is irrelevant).
+            let mut x = 0i32;
+            for c in &cumsum {
+                for &v in c {
+                    x ^= v;
+                }
+            }
+            x_steps.push(x);
+        }
+        x_steps
+    }
+
+    /// SPIKE GATE 1 — the §4.0 sweep arithmetic equals
+    /// `compute_tile_trace`'s `x_steps` for a spread of tiles of a
+    /// genuine `BlockContext` solve (TEST_SMALL: t=8, r=4, k=64 ⇒
+    /// 16 stripes × (8/2)²=16 sub-blocks = 256 micro-steps/tile).
+    /// If this holds, the honest bridge can place 256 real
+    /// `place_matmul_step` rows whose ⊕CUMSUM == the FoldChip's
+    /// per-stripe X_STEP — the core of §6(b).
+    #[test]
+    fn high2_2_spike_subtile_sweep_matches_compute_tile_trace() {
+        use crate::matmul::{compute_tile_trace, BlockNoise, Matrices};
+
+        let params = MatmulParams::TEST_SMALL;
+        let (a, b) = synth_matrices(b"spike-sweep-seed", &params);
+        let ctx = BlockContext::build(b"spike-sweep-blk", &a, &b, &params).expect("ctx");
+        let noise = BlockNoise::expand(&ctx.s_a, &ctx.s_b, &params);
+        let mats = Matrices::build(ctx.a, ctx.b, &noise, &params);
+
+        // Exhaustive over a representative tile spread incl. corners
+        // of the 8×8 tile grid.
+        let rt = params.row_tiles();
+        let ct = params.col_tiles();
+        for &(ti, tj) in &[
+            (0u32, 0u32),
+            (0, ct - 1),
+            (rt - 1, 0),
+            (rt - 1, ct - 1),
+            (3, 5),
+            (rt / 2, ct / 2),
+        ] {
+            let want = compute_tile_trace(&mats, &params, ti, tj).x_steps;
+            let got = swept_micro_tile_x_steps(&mats, &params, ti, tj);
+            assert_eq!(
+                got.len(),
+                params.num_stripes() as usize,
+                "x_steps length must equal num_stripes"
+            );
+            assert_eq!(
+                got, want,
+                "subtile-sweep x_steps != compute_tile_trace @({ti},{tj})"
+            );
+            // And the FoldChip over the swept x_steps must reproduce
+            // the real TileState M (closing the loop to §4.B).
+            assert_eq!(
+                crate::matmul::TileState::from_x_steps(&got),
+                compute_tile_trace(&mats, &params, ti, tj).state,
+                "TileState::from_x_steps(swept) != real M @({ti},{tj})"
+            );
+        }
+    }
 }
