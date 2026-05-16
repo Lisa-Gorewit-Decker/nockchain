@@ -119,8 +119,31 @@ program-pinned (see Remediation).
 
 ### HIGH-2 — HASH_JACKPOT attests a constant, not the work
 
-**Severity: High (PoW *usefulness* not enforced even if CRIT-1 is
-fixed).**
+**Severity: High. STATUS: soundness gap RESOLVED 2026-05-15
+(commit `15ba9a3`); residual downgraded to a completeness /
+fidelity item.** The `CompositeFullAirPinned` keystone adds an
+unconditional last-row constraint `JACKPOT_MSG[0..4] ==
+CUMSUM_TILE[0..4]`, `JACKPOT_MSG[4..16] == 0`. The matmul chip
+binds `CUMSUM_TILE`'s cross-row evolution, so on the
+CRIT-1-pinned production path the C4-hashed message is **no
+longer a prover-free value** — an attacker can no longer grind an
+arbitrary winning `JACKPOT_MSG` (the hashcash forge); it is
+forced equal to the matmul accumulator, and changing it requires
+changing the matmul inputs and redoing the work. Adversarial
+test `composite_proof::high2_free_jackpot_message_rejected`
+confirms a planted free winning message is rejected.
+**Remaining (downgraded — not a forgery hole):** the honest
+bridge does not yet place a real matmul chain, so an *honest*
+proof still attests `BLAKE3(0, key=s_a)`; and binding
+`CUMSUM_TILE` to the *committed* matrices end-to-end needs the
+`noised_packed` LogUp path (`CompositeFullAirWithLookups`), not
+the uni-stark pinned path the bridge uses. That is the
+matmul→jackpot interleave — completeness/fidelity, tracked as a
+distinct workstream. The original analysis below stands as the
+rationale.
+
+**Original severity: High (PoW *usefulness* not enforced even if
+CRIT-1 is fixed).**
 
 `zk_bridge::prove_and_verify` and `place_jackpot_hash_block` hash
 an **all-zero** `JACKPOT_MSG`: `HASH_JACKPOT = BLAKE3(0,
@@ -290,11 +313,18 @@ by committing the program columns as a preprocessed trace
 well-localized root cause with the clean fix anticipated here.
 The production path now proves/verifies against a verifier-fixed
 program; the `crit1_*` adversarial suite confirms the forgery is
-rejected. **Remaining open items: HIGH-2** (HASH_JACKPOT still
-hashes an all-zero `JACKPOT_MSG` — the C4 binding is now sound
-but attests a constant, not the matmul; the real tile-state fold
-is the matmul→jackpot interleave), **MED-3** (document the
-`target`-derivation obligation; now actionable since CRIT-1
-landed), and the 7-round-Tip5 review. With CRIT-1 closed the
-SNARK is PoW-sound *for the statement it proves*; HIGH-2 is what
-makes that statement the *useful-work* statement.
+rejected. **HIGH-2's soundness gap is also closed** (commit
+`15ba9a3`): the keystone pins the C4-hashed `JACKPOT_MSG` to the
+matmul-bound `CUMSUM_TILE`, so it is no longer a prover-free
+hashcash input. **Remaining (downgraded to
+completeness/fidelity, not soundness):** the honest bridge must
+place a real matmul chain so an honest proof attests a
+non-trivial tile (today CUMSUM=0 ⇒ `BLAKE3(0,s_a)`), and binding
+CUMSUM to the *committed* matrices end-to-end needs the
+`noised_packed` LogUp path — the matmul→jackpot interleave.
+**MED-3** (document the `target`-derivation obligation) and the
+7-round-Tip5 review remain. With CRIT-1 + HIGH-2 keystone landed,
+the SNARK is PoW-sound *and* an attacker cannot forge a winning
+proof without doing matmul-bound work; the interleave is what
+makes the *honest* proof attest a *useful* (non-trivial,
+committed-matrix) tile.

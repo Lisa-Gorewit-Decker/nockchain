@@ -236,11 +236,20 @@ Remaining:
 > `ZKP_SECURITY_REPORT.md` is the authority and is updated to
 > STATUS: RESOLVED.
 
-Post-CRIT-1 summary: C1–C4 bindings are now **enforced** against
-a malicious prover (program-pinned). C1 ties κ / `s_a`; C3 binds
-matrix bytes; C4 binds the jackpot keyed-hash; C2 checks
-difficulty against that hash. **Remaining: HIGH-2** — HASH_JACKPOT
-hashes an all-zero `JACKPOT_MSG`, so the (now-sound) C4 binding
-attests a constant, not the matmul; the real tile-state fold is
-the matmul→jackpot interleave. Plus MED-3 (`target`-derivation
-doc), recursion (M12), production-hardening (P1/P3/P5/P6).
+Post-CRIT-1 + HIGH-2-keystone summary: C1–C4 bindings are
+**enforced** against a malicious prover (program-pinned, CRIT-1).
+C1 ties κ / `s_a`; C3 binds matrix bytes; C4 binds the jackpot
+keyed-hash; C2 checks difficulty against that hash. **HIGH-2
+soundness gap RESOLVED** (commit `15ba9a3`): the
+`CompositeFullAirPinned` keystone pins last-row
+`JACKPOT_MSG[0..4] == CUMSUM_TILE[0..4]` (+ `[4..16]==0`), so the
+C4-hashed message is the matmul-bound accumulator, not a
+prover-free hashcash input (adversarial test
+`high2_free_jackpot_message_rejected`). **Remaining (downgraded
+to completeness/fidelity, not a forgery hole):** the honest
+bridge must place a real matmul chain (today CUMSUM=0 ⇒ honest
+proof attests `BLAKE3(0,s_a)`), and binding CUMSUM to the
+*committed* matrices end-to-end needs the `noised_packed` LogUp
+path — the matmul→jackpot interleave. Plus MED-3
+(`target`-derivation doc), recursion (M12), production-hardening
+(P1/P3/P5/P6).
