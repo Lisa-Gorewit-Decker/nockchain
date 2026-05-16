@@ -680,4 +680,142 @@ mod tests {
             );
         }
     }
+
+    /// Place the sub-block-major subtile sweep for one tile into a
+    /// `CompositeTrace` via the public `place_matmul_step`
+    /// primitive, threading a SINGLE continuous cumsum chain
+    /// (chip-valid: every transition is `nxt == compute_row(cur)`)
+    /// with `is_reset` only on each 16-row sub-block run's first
+    /// row (so the run-boundary carry is discarded by the
+    /// `(1−is_reset)` term — the row-ordering analysis under
+    /// HIGH-2.2 §6(b)). Returns `(rows_used, acc_after, final)`
+    /// where `acc_after[sb][step]` is sub-block `sb`'s accumulator
+    /// *after* stripe `step`.
+    #[allow(clippy::type_complexity)]
+    fn place_subtile_sweep(
+        trace: &mut CompositeTrace,
+        mats: &crate::matmul::Matrices,
+        params: &MatmulParams,
+        tile_i: u32,
+        tile_j: u32,
+        row_start: usize,
+    ) -> (usize, Vec<Vec<[i32; 4]>>, [i32; 4]) {
+        use ai_pow_zk::chips::matmul::compute::CUMSUM_LEN;
+        use ai_pow_zk::composite_layout::{TILE_D, TILE_H};
+
+        let t = params.tile as usize;
+        let r = params.noise_rank as usize;
+        let steps = params.num_stripes() as usize;
+        let n_sb = t / TILE_H;
+        let row0 = (tile_i * params.tile) as usize;
+        let col0 = (tile_j * params.tile) as usize;
+
+        let mut acc_after = vec![vec![[0i32; CUMSUM_LEN]; steps]; n_sb * n_sb];
+        let mut carry = [0i32; CUMSUM_LEN]; // continuous threaded chain
+        let mut row = row_start;
+        for sbi in 0..n_sb {
+            for sbj in 0..n_sb {
+                let sb = sbi * n_sb + sbj;
+                for step in 0..steps {
+                    let lo = step * r;
+                    let mut a_blk = [[0i8; TILE_D]; TILE_H];
+                    let mut b_blk = [[0i8; TILE_D]; TILE_H];
+                    for di in 0..TILE_H {
+                        let arow = mats.a_prime_row((row0 + sbi * TILE_H + di) as u32);
+                        a_blk[di][..r].copy_from_slice(&arow[lo..lo + r]);
+                    }
+                    for dj in 0..TILE_H {
+                        let bcol = mats.b_prime_col((col0 + sbj * TILE_H + dj) as u32);
+                        b_blk[dj][..r].copy_from_slice(&bcol[lo..lo + r]);
+                    }
+                    let is_reset = step == 0;
+                    let is_update = step > 0;
+                    // Thread the single continuous chain: cumsum_old
+                    // = the prior row's returned cumsum_new. `carry`
+                    // entering a run's reset row is discarded by the
+                    // chip's `(1−is_reset)` term (analysis §6(b)).
+                    let new = trace.place_matmul_step(
+                        row, &a_blk, &b_blk, is_reset, is_update, &carry,
+                    );
+                    acc_after[sb][step] = new;
+                    carry = new;
+                    row += 1;
+                }
+            }
+        }
+        (row - row_start, acc_after, carry)
+    }
+
+    /// SPIKE GATE 2 — the 256-row sub-block-major sweep places into
+    /// a `CompositeTrace` and **verifies through the unit
+    /// `CompositeFullAir`** (the matmul chip's always-on
+    /// `when_transition` recurrence is satisfied by the single
+    /// threaded chain with per-run resets — validates the
+    /// row-ordering analysis on real data), and the per-stripe ⊕
+    /// of the *placed* accumulator snapshots still equals
+    /// `compute_tile_trace`'s `x_steps` (the §6(b) binding target
+    /// is materialized in the real trace).
+    #[test]
+    fn high2_2_spike_subtile_sweep_verifies_in_composite() {
+        use crate::matmul::{compute_tile_trace, BlockNoise, Matrices};
+        use ai_pow_zk::composite_proof::build_config;
+        use ai_pow_zk::{composite_prove, composite_verify, CircuitConfig, ZkParams};
+
+        let params = MatmulParams::TEST_SMALL;
+        let (a, b) = synth_matrices(b"spike-gate2-seed", &params);
+        let ctx = BlockContext::build(b"spike-gate2-blk", &a, &b, &params).expect("ctx");
+        let noise = BlockNoise::expand(&ctx.s_a, &ctx.s_b, &params);
+        let mats = Matrices::build(ctx.a, ctx.b, &noise, &params);
+
+        let zk = ZkParams {
+            m: params.m,
+            k: params.k,
+            n: params.n,
+            noise_rank: params.noise_rank,
+            tile: params.tile,
+            difficulty_bits: params.difficulty_bits,
+        };
+        let cfg = build_config(&zk, &CircuitConfig::TEST_PEARL);
+
+        for &(ti, tj) in &[(0u32, 0u32), (params.row_tiles() - 1, params.col_tiles() - 1)] {
+            let mut trace = CompositeTrace::baseline_min();
+            let (rows_used, acc_after, final_cs) =
+                place_subtile_sweep(&mut trace, &mats, &params, ti, tj, 0);
+
+            // Row budget: 16 sub-blocks × 16 stripes = 256 ≪ 8192.
+            assert_eq!(rows_used, 256, "expected 16·16 micro-steps");
+            assert!(rows_used < trace.height(), "sweep must fit MIN_STARK_LEN");
+
+            // Passthrough the final accumulator to the trace end so
+            // the always-on matmul recurrence is satisfied past the
+            // sweep (the last row silences via when_transition).
+            trace.fill_cumsum_passthrough(rows_used, &final_cs);
+
+            // The §6(b) binding target materialized in the *placed*
+            // trace: ⊕ over all sub-blocks of the accumulator after
+            // stripe `step` == compute_tile_trace's x_steps.
+            let steps = params.num_stripes() as usize;
+            let want = compute_tile_trace(&mats, &params, ti, tj).x_steps;
+            for step in 0..steps {
+                let mut x = 0i32;
+                for sb_acc in &acc_after {
+                    for &v in &sb_acc[step] {
+                        x ^= v;
+                    }
+                }
+                assert_eq!(
+                    x, want[step],
+                    "placed-trace ⊕CUMSUM != x_steps @({ti},{tj}) step {step}"
+                );
+            }
+
+            // The matmul chip's cross-row recurrence holds for the
+            // real swept schedule end-to-end.
+            let pis = CompositePublicInputs::derive_from_trace(&trace);
+            let proof = composite_prove(&cfg, trace, &pis);
+            composite_verify(&cfg, &proof, &pis).unwrap_or_else(|e| {
+                panic!("subtile sweep must verify through CompositeFullAir @({ti},{tj}): {e:?}")
+            });
+        }
+    }
 }
