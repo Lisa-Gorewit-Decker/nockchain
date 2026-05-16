@@ -17,6 +17,7 @@
 | §4.A reference — `compute_tile_trace` / `TileTrace` / `TileState::from_x_steps` (per-stripe `x` sequence; `M` proven a pure function of it) | ✅ done, 11/0 tests | `08485ea` |
 | §4.0 geometry finding — chip is a 2×2×16 micro-tile, *not* the `t×t` accumulator; FoldChip binds a per-stripe scalar `X_STEP` | ✅ recorded | `08485ea` |
 | §4.B FoldChip — standalone AIR, Pearl §4.5 rotl13-XOR, Option B2; 9/0 self-contained tests (correctness + 5 adversarial) | ✅ done | `8cbbbeb` |
+| §4.B↔plain byte-equivalence — FoldChip reproduces the real folded `TileState M` for every tile of a genuine `BlockContext` solve; keyed-hash of chip output == plain PoW digest (the `high2_2_byte_equiv_plain` half of §7) | ✅ done | `2964c32` |
 | §4.A trace placement — `place_matmul_tile` / `X_STEP` rows wired into `zk_bridge`+`f1_harness` from a real `BlockContext` solve | ⬜ remaining (composite-layout integration) |
 | §4.D keystone — generalise to `JACKPOT_MSG[0..16] == FOLD_STATE` | ⬜ remaining (needs §4.A wiring) |
 | §4.C committed-matrix binding — `X_STEP` ⟵ committed `A/B` via `noised_packed` LogUp (**the multi-day cryptographic core**) | ⬜ remaining |
