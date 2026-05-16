@@ -497,6 +497,86 @@ mod tests {
     ///   - PASSES ⇒ fault is specifically the CRIT-1 program-pin
     ///     or the §4.D keystone with non-zero last-row
     ///     FOLD_STATE/JACKPOT_MSG.
+    /// CONTROL (bisection #3): `place_jackpot_hash_block` ALONE
+    /// in a minimal trace (baseline + jackpot, **no fold, no
+    /// key-pin, no matrix-hash**) via unit `composite_prove`.
+    /// The passing jackpot case (`routea_honest`) has key-pin +
+    /// matrix-hash scaffolding; `*_fold_chain_jackpot_unit` had
+    /// neither — so "fold×jackpot" was never cleanly isolated.
+    ///   - FAILS ⇒ the bug is the jackpot block needing
+    ///     scaffolding (NOT a fold interaction); fix is the
+    ///     bridge/repro trace shape, not FoldChip.
+    ///   - PASSES ⇒ confirms the fold×jackpot interaction.
+    #[test]
+    fn high2_2_jackpot_only_unit() {
+        let cfg = build_config(&test_zk_params(), &CircuitConfig::TEST_PEARL);
+        let ch: [u32; 8] = core::array::from_fn(|i| 0x5EED_0000 + i as u32);
+        let mut trace = CompositeTrace::baseline_min();
+        let h = trace.height();
+        let _ = trace.place_jackpot_hash_block(h - 8, &[0u32; 16], &ch);
+        let pis = CompositePublicInputs::derive_from_trace(&trace);
+        let proof = composite_prove(&cfg, trace, &pis);
+        composite_verify(&cfg, &proof, &pis)
+            .expect("CONTROL: jackpot block alone (minimal, no fold/scaffolding)");
+    }
+
+    /// CONTROL #4 (decisive): `place_jackpot_hash_block` with a
+    /// **non-zero** 16-word message — NO fold chain. Every
+    /// shipping/test jackpot placement uses `&[0u32;16]`; the
+    /// fold repro is the first with a non-zero message (`&m`).
+    /// RESULT: **FAILED** `OodEvaluationMismatch` (also fails at
+    /// log_blowup=4, see `*_lb4`). ⇒ DEFINITIVE root cause:
+    /// `place_jackpot_hash_block` / the BLAKE3 keyed-hash with a
+    /// **non-zero message** fails composite verify (per-row
+    /// `check_constraints` passes; the polynomial verify fails;
+    /// not a degree/blowup issue). The fold chain, §4.D
+    /// keystone, CRIT-1 pin, and batch-stark are ALL exonerated:
+    /// a pre-existing latent bug — every shipping/test jackpot
+    /// placement used `&[0u32;16]`; HIGH-2.2 is just the first to
+    /// need a non-zero `JACKPOT_MSG`. `#[ignore]` (known-failing
+    /// reproducer); see HIGH2_2_DESIGN.md §4.A.
+    #[test]
+    #[ignore = "pre-existing: place_jackpot_hash_block non-zero msg fails composite verify; HIGH2_2_DESIGN §4.A"]
+    fn high2_2_jackpot_nonzero_msg_unit() {
+        let cfg = build_config(&test_zk_params(), &CircuitConfig::TEST_PEARL);
+        let ch: [u32; 8] = core::array::from_fn(|i| 0x5EED_0000 + i as u32);
+        let msg: [u32; 16] = core::array::from_fn(|i| 0xABCD_0001u32.wrapping_mul(i as u32 + 1));
+        let mut trace = CompositeTrace::baseline_min();
+        let h = trace.height();
+        let _ = trace.place_jackpot_hash_block(h - 8, &msg, &ch);
+        let pis = CompositePublicInputs::derive_from_trace(&trace);
+        let proof = composite_prove(&cfg, trace, &pis);
+        composite_verify(&cfg, &proof, &pis)
+            .expect("CONTROL#4: jackpot block with NON-ZERO message (no fold)");
+    }
+
+    /// CONTROL #5: identical to #4 but with `PROD_LB4`
+    /// (log_blowup = 4, 16× LDE) instead of `TEST_PEARL`
+    /// (log_blowup = 2). If this PASSES while #4 FAILS, the §4.A
+    /// bug is a composite-AIR constraint whose true degree
+    /// exceeds what log_blowup=2 supports — zero-valued (thus
+    /// masked) for the all-zero messages every prior test used,
+    /// non-zero only with a real `JACKPOT_MSG`. Fix is then
+    /// either a degree reduction in the offending chip or a
+    /// blowup bump (TEST_PEARL/PROD use 2/3).
+    /// RESULT: **FAILED** at log_blowup=4 too ⇒ NOT a
+    /// degree-vs-blowup issue; the non-zero-message jackpot bug
+    /// is blowup-independent. `#[ignore]` (reproducer).
+    #[test]
+    #[ignore = "pre-existing: non-zero-msg jackpot fails at lb4 too (blowup-independent); HIGH2_2_DESIGN §4.A"]
+    fn high2_2_jackpot_nonzero_msg_lb4() {
+        let cfg = build_config(&test_zk_params(), &CircuitConfig::PROD_LB4);
+        let ch: [u32; 8] = core::array::from_fn(|i| 0x5EED_0000 + i as u32);
+        let msg: [u32; 16] = core::array::from_fn(|i| 0xABCD_0001u32.wrapping_mul(i as u32 + 1));
+        let mut trace = CompositeTrace::baseline_min();
+        let h = trace.height();
+        let _ = trace.place_jackpot_hash_block(h - 8, &msg, &ch);
+        let pis = CompositePublicInputs::derive_from_trace(&trace);
+        let proof = composite_prove(&cfg, trace, &pis);
+        composite_verify(&cfg, &proof, &pis)
+            .expect("CONTROL#5: non-zero-message jackpot at log_blowup=4");
+    }
+
     /// RESULT (2026-05-16): **FAILED** `OodEvaluationMismatch
     /// { index: None }`. ⇒ the §4.A bug is a **base
     /// `CompositeFullAir` constraint interaction between the fold

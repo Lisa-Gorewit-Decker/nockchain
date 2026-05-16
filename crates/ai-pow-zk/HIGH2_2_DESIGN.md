@@ -19,7 +19,7 @@
 | §4.B FoldChip — standalone AIR, Pearl §4.5 rotl13-XOR, Option B2; 9/0 self-contained tests (correctness + 5 adversarial) | ✅ done | `8cbbbeb` |
 | §4.B↔plain byte-equivalence — FoldChip reproduces the real folded `TileState M` for every tile of a genuine `BlockContext` solve; keyed-hash of chip output == plain PoW digest (the `high2_2_byte_equiv_plain` half of §7) | ✅ done | `2964c32` |
 | §4.A FoldChip composite wiring + `place_fold_chain` — FOLD_* layout block, `FoldChip::eval_composite` in `CompositeFullAir`, `CompositeTrace::place_fold_chain` | ✅ structurally landed (`e6c9c84`); unit-correct (`high2_2_fold_chain_in_composite_unit` ✓) | `e6c9c84` |
-| §4.A bridge real-fold-chain (zk_bridge places real solved tile's chain ⇒ `JACKPOT_MSG`=real M) | 🔴 **KNOWN BUG, reverted to keep prod green** — fails `OodEvaluationMismatch` only via the Route-A batch-stark path with non-zero FOLD (unit path ✓; §4.D keystone *data* precond verified holding). Repro: `high2_2_fold_chain_pinned_logup` (`#[ignore]`). See §4.A below. | reverted |
+| §4.A bridge real-fold-chain (zk_bridge places real solved tile's chain ⇒ `JACKPOT_MSG`=real M) | 🔴 **blocked by a pre-existing latent bug, root-caused** — `place_jackpot_hash_block` with a **non-zero `JACKPOT_MSG`** fails composite verify (`OodEvaluationMismatch`, blowup-independent, per-row `check_constraints` passes); NOT fold/keystone/pin/batch-stark (all bisected & exonerated). Min repro `high2_2_jackpot_nonzero_msg_unit`. Bridge reverted to keep prod green. See §4.A "DEFINITIVE ROOT CAUSE". | reverted |
 | §4.D keystone — generalised to `JACKPOT_MSG[0..16] == FOLD_STATE` (last row) | ✅ landed; gate-green with zero-fold (`composite_proof::tests:: 18/0`) | `e6c9c84` |
 | §4.C.4 accumulator→`X_STEP` reduction (`XStepChip`) + composed `XStep→Fold` pipeline byte-equivalent to plain | ✅ done, 6/0 + zk_bridge 5/5 | `290af68`, `c78ae67` |
 | §4.C committed-matrix *binding* — **Route A: chosen, spiked, productionised & WIRED** (§4.C.10): production API `composite_*_pinned_logup` + exhaustive `routea_*` 4/4; `zk_bridge`(mine() gate)+`f1_harness` switched to it; spike removed; 3-tier entrypoint doc. ~1.23x cost. | ✅ binding complete & wired; §4.A non-vacuity is the separate remaining workstream (#97) |
@@ -257,7 +257,67 @@ interaction. `routea_honest_roundtrip` (same prover, **zero**
 FOLD) passes; the unit uni-stark prover with non-zero FOLD
 passes; only their *intersection* fails.
 
-**UPDATE 2026-05-16 — degree hypothesis DISPROVEN; locus
+**DEFINITIVE ROOT CAUSE (2026-05-16, fully bisected — all
+earlier analysis in this section is superseded):**
+
+The §4.A `OodEvaluationMismatch` is **not** a HIGH-2.2 design
+flaw and **not** in the fold path. It is a **pre-existing
+latent bug: `CompositeTrace::place_jackpot_hash_block` (→ the
+BLAKE3 keyed-hash chip) fails composite verify whenever
+`JACKPOT_MSG` is non-zero.** Minimal reproducer
+`composite_proof::tests::high2_2_jackpot_nonzero_msg_unit`
+(`#[ignore]`): `baseline_min` + `place_jackpot_hash_block(h-8,
+&non_zero_msg, &ch)` — **no fold chain, no keystone, no CRIT-1
+pin, no batch-stark, unit `composite_prove`** — fails
+`OodEvaluationMismatch { index: None }`.
+
+Bisection chain (all `#[ignore]`d reproducers kept):
+| Trace | Result |
+|---|---|
+| baseline + fold-only (`high2_2_fold_chain_in_composite_unit`) | ✅ pass |
+| baseline + jackpot, **zero** msg (`high2_2_jackpot_only_unit`) | ✅ pass |
+| baseline + jackpot, **non-zero** msg (`*_nonzero_msg_unit`) | ❌ **FAIL** |
+| ditto at log_blowup=4 (`*_nonzero_msg_lb4`) | ❌ FAIL (⇒ not degree/blowup) |
+| baseline + fold + jackpot non-zero (`*_fold_chain_jackpot_unit`) | ❌ FAIL (same cause) |
+
+Why latent: **every shipping/test jackpot placement uses
+`&[0u32;16]`** (`zk_bridge`, `routea_*`, `crit1_*`, `high2_*`,
+`f1_harness` all hashed an all-zero `JACKPOT_MSG`). A zero
+message makes the BLAKE3 message-injection terms vanish, masking
+the bug. HIGH-2.2 §4.A is simply the first code path that needs
+a *non-zero* `JACKPOT_MSG` (the real folded `M`), so it surfaced
+a dormant defect in the BLAKE3-keyed-hash trace-gen/chip.
+
+Signature: per-row `p3_air::check_constraints` (run by
+`prove` under `cargo test`'s debug-assertions) **passes** — the
+trace satisfies every constraint at every row — but the
+polynomial `verify` fails `OodEvaluationMismatch`, at both
+log_blowup 2 and 4. That points at a constraint that holds at
+all trace rows but whose committed quotient disagrees with the
+verifier's out-of-domain evaluation only when the message words
+are non-zero: i.e. a discrepancy between what
+`place_blake3_hash_with_selectors` writes into the round-state /
+message columns and what the BLAKE3 round AIR's polynomial
+actually constrains, in the message-injection / per-round
+message-permutation that zero messages zero out.
+
+**Precise next step for the fix (own focused effort):**
+row-by-row compare `place_blake3_hash_with_selectors`'s
+generated trace for a non-zero message against an independent
+BLAKE3 keyed-hash reference *and* against the `Blake3Chip` AIR's
+exact per-round constraint (esp. the message-permutation
+`blake3_permute_msg` ordering vs. the AIR's expected schedule,
+and which round snapshot the message is injected into) — the
+divergence will be in a term that is identically zero for a
+zero message. This is a contained BLAKE3-chip / trace-gen fix,
+independent of all HIGH-2.2 design work.
+
+---
+
+<details><summary>Earlier (superseded) bisection notes — degree
+& fold×jackpot hypotheses, kept for provenance</summary>
+
+**Degree hypothesis DISPROVEN; locus
 re-narrowed by bisection (the analysis below is superseded):**
 
 - Implemented the degree-2 fix (added `FOLD_XOR_OUT`, split the
@@ -386,6 +446,8 @@ quotient-degree bug with a concrete fix, **not** a design flaw.
 — avoid the §4.C.8 ~10x preprocessed blow-up) and §7
 (real-difficulty e2e + docs flip) follow once the bridge path
 is green.
+
+</details>
 
 </details>
 
