@@ -44,7 +44,7 @@
 use p3_air::{Air, AirBuilder, BaseAir, WindowAccess};
 use p3_lookup::InteractionBuilder;
 
-use crate::composite_full_air::CompositeFullAir;
+use crate::composite_full_air::{CompositeFullAir, CompositeFullAirPinned};
 use crate::composite_layout::{
     AB_ID_LIMBS_LEN, AB_ID_LIMBS_START, A_ID, A_NOISED_START, A_NOISED_UNPACK_LEN,
     A_NOISED_UNPACK_START, B_ID, B_NOISED_START, B_NOISED_UNPACK_LEN, B_NOISED_UNPACK_START,
@@ -92,6 +92,82 @@ where
         // for the bus it serves; adding or removing a bus changes
         // exactly one call site here. The helpers are in
         // `bus_emit::*` below.
+        bus_emit::urange8::<AB>(builder);
+        bus_emit::urange13::<AB>(builder);
+        bus_emit::irange7p1::<AB>(builder);
+        bus_emit::irange8::<AB>(builder);
+        bus_emit::i8u8::<AB>(builder);
+        bus_emit::noised_packed::<AB>(builder);
+        bus_emit::cv_routing::<AB>(builder);
+    }
+}
+
+/// HIGH-2.2 §4.C **Route A**: CRIT-1 program-pin **and** the
+/// `noised_packed` LogUp, unified in one batch-stark AIR.
+///
+/// `CompositeFullAirWithLookups` enforces the bus interactions
+/// but is *unpinned* (a malicious prover can pick the program);
+/// `CompositeFullAirPinned` pins the program but is uni-stark
+/// (no LogUp). This composes both: it delegates to
+/// [`CompositeFullAirPinned`] (= `CompositeFullAir` constraints +
+/// CRIT-1 preprocessed program-pin + the HIGH-2 keystone) and
+/// then emits every LogUp bus. Proven via `p3-batch-stark`
+/// (`prove_batch`), whose multi-phase prover supports a
+/// preprocessed/verifier-fixed trace *and* the permutation
+/// argument simultaneously (HIGH2_2_DESIGN.md §4.C.9). The
+/// `noised_packed` bus then binds the matmul `A_NOISED`/`B_NOISED`
+/// reads to the canonical `NOISED_PACKED` store (C3-tied to the
+/// CRIT-1-pinned `HASH_A`/`HASH_B`) — closing §4.C with **no**
+/// preprocessed-width blow-up (the §4.C.8 cost trap).
+///
+/// Preprocessed exposure rides the standard
+/// `BaseAir::preprocessed_trace()` API that batch-stark's
+/// `ProverData::from_instances` reads automatically (same
+/// mechanism the uni-stark `CompositeFullAirPinned` uses).
+#[derive(Clone)]
+pub struct CompositeFullAirWithLookupsPinned {
+    inner: CompositeFullAirPinned,
+}
+
+impl CompositeFullAirWithLookupsPinned {
+    /// Build from the canonical program matrix (see
+    /// `composite_full_air::extract_program`).
+    pub fn new(program: p3_matrix::dense::RowMajorMatrix<crate::Val>) -> Self {
+        Self {
+            inner: CompositeFullAirPinned::new(program),
+        }
+    }
+}
+
+impl BaseAir<crate::Val> for CompositeFullAirWithLookupsPinned {
+    fn width(&self) -> usize {
+        TOTAL_TRACE_WIDTH
+    }
+    fn num_public_values(&self) -> usize {
+        crate::composite_public::NUM_PUBLIC_VALUES
+    }
+    fn preprocessed_width(&self) -> usize {
+        BaseAir::<crate::Val>::preprocessed_width(&self.inner)
+    }
+    fn preprocessed_trace(
+        &self,
+    ) -> Option<p3_matrix::dense::RowMajorMatrix<crate::Val>> {
+        BaseAir::<crate::Val>::preprocessed_trace(&self.inner)
+    }
+}
+
+impl<AB> Air<AB> for CompositeFullAirWithLookupsPinned
+where
+    AB: AirBuilder<F = crate::Val> + InteractionBuilder,
+{
+    fn eval(&self, builder: &mut AB) {
+        // (1) CompositeFullAir constraints + CRIT-1 program-pin +
+        //     HIGH-2 keystone (one CompositeFullAir::eval inside).
+        <CompositeFullAirPinned as Air<AB>>::eval(&self.inner, builder);
+
+        // (2) Cross-chip LogUp interactions — identical to
+        //     CompositeFullAirWithLookups, now enforced *under the
+        //     pinned program* (Route A's whole point).
         bus_emit::urange8::<AB>(builder);
         bus_emit::urange13::<AB>(builder);
         bus_emit::irange7p1::<AB>(builder);
@@ -1430,5 +1506,142 @@ mod tests {
                 );
             }
         }
+    }
+}
+
+/// HIGH-2.2 §4.C Route-A spike (self-contained, no production
+/// switch). Validates that the CRIT-1 program-pin and the
+/// `noised_packed` LogUp can be enforced **together** under
+/// `p3-batch-stark`, that the CRIT-1 forgery is still rejected
+/// under that prover, and measures prove cost vs the uni-stark
+/// pinned baseline (the §4.C.9 open question).
+#[cfg(test)]
+mod route_a_spike {
+    use super::CompositeFullAirWithLookupsPinned;
+    use crate::circuit::{build_stark_config, CircuitConfig};
+    use crate::composite_full_air::extract_program;
+    use crate::composite_proof::{composite_prove_pinned, composite_verify_pinned};
+    use crate::composite_public::CompositePublicInputs;
+    use crate::composite_trace::CompositeTrace;
+    use crate::params::ZkParams;
+
+    use p3_batch_stark::{prove_batch, verify_batch, ProverData, StarkInstance};
+    use std::time::Instant;
+
+    fn params() -> ZkParams {
+        ZkParams { m: 8, k: 16, n: 8, noise_rank: 2, tile: 2, difficulty_bits: 0 }
+    }
+
+    /// Honest trace: C3 matrix-hash A/B + C1 key-pins + C4
+    /// jackpot-hash, then `populate_lookup_freq` so the LogUp
+    /// buses balance (required by the batch-stark argument).
+    fn honest_trace() -> CompositeTrace {
+        let kappa = [0xA5u8; 32];
+        let jk: [u32; 8] = core::array::from_fn(|i| 0xC0FE_0000 + i as u32);
+        let ch: [u32; 8] = core::array::from_fn(|i| 0x5EED_0000 + i as u32);
+        let a = vec![0x11u8; 1024];
+        let b = vec![0x22u8; 1024];
+        let mut t = CompositeTrace::baseline_min();
+        let h = t.height();
+        let (n1, _) = t.place_matrix_hash_a(0, &a, &kappa);
+        let (mh_end, _) = t.place_matrix_hash_b(n1, &b, &kappa);
+        t.place_key_pin_row(mh_end + 1, false, &jk);
+        t.place_key_pin_row(mh_end + 2, true, &ch);
+        t.place_jackpot_hash_block(h - 8, &[0u32; 16], &ch);
+        t.populate_lookup_freq();
+        t
+    }
+
+    /// Honest round-trip: `prove_batch` / `verify_batch` through
+    /// the pinned-with-lookups AIR — CRIT-1 program-pin **and**
+    /// every `noised_packed`/range LogUp enforced in one proof.
+    /// Also times it against the uni-stark pinned baseline.
+    #[test]
+    fn route_a_honest_roundtrip_and_cost() {
+        let cfg = build_stark_config(&params(), &CircuitConfig::TEST_PEARL);
+        let trace = honest_trace();
+        let canonical = extract_program(&trace.matrix);
+        let pis = CompositePublicInputs::derive_from_trace(&trace).to_vec();
+
+        let air = CompositeFullAirWithLookupsPinned::new(canonical.clone());
+        let instances = vec![StarkInstance {
+            air: &air,
+            trace: &trace.matrix,
+            public_values: pis.clone(),
+        }];
+        let pd = ProverData::from_instances(&cfg, &instances);
+
+        let t = Instant::now();
+        let proof = prove_batch(&cfg, &instances, &pd);
+        let route_a_ms = t.elapsed().as_millis();
+
+        verify_batch(&cfg, &[air], &proof, &[pis.clone()], &pd.common)
+            .expect("Route A: pinned + LogUp honest proof must verify");
+
+        // Uni-stark pinned baseline on the same honest trace, for
+        // the §4.C.9 prover-cost comparison.
+        let pis_s = CompositePublicInputs::derive_from_trace(&honest_trace());
+        let t = Instant::now();
+        let (sproof, sprog) = composite_prove_pinned(&cfg, honest_trace(), &pis_s);
+        let uni_ms = t.elapsed().as_millis();
+        composite_verify_pinned(&cfg, &sprog, &sproof, &pis_s)
+            .expect("uni-stark pinned baseline verifies");
+
+        println!(
+            "ROUTE-A SPIKE: prove_batch(pinned+LogUp)={route_a_ms} ms  \
+             vs uni-stark pinned baseline={uni_ms} ms  \
+             (ratio≈{:.2}x)",
+            route_a_ms as f64 / uni_ms.max(1) as f64
+        );
+    }
+
+    /// CRIT-1 still holds under batch-stark + LogUp: a zeroed-
+    /// selector forgery (its own all-zero program) is
+    /// self-consistent but REJECTED against the canonical
+    /// program's preprocessed commitment.
+    #[test]
+    fn route_a_crit1_forgery_rejected() {
+        let cfg = build_stark_config(&params(), &CircuitConfig::TEST_PEARL);
+
+        let canonical = extract_program(&honest_trace().matrix);
+        let air_c = CompositeFullAirWithLookupsPinned::new(canonical);
+
+        // Attacker: all-zero-selector baseline + forged zero PIs,
+        // LogUp-balanced so prove_batch produces a (self-
+        // consistent) proof vs its own program.
+        let mut evil = CompositeTrace::baseline_min();
+        evil.populate_lookup_freq();
+        let evil_prog = extract_program(&evil.matrix);
+        let forged = CompositePublicInputs::zero().to_vec();
+        let air_e = CompositeFullAirWithLookupsPinned::new(evil_prog);
+
+        let inst_e = vec![StarkInstance {
+            air: &air_e,
+            trace: &evil.matrix,
+            public_values: forged.clone(),
+        }];
+        let pd_e = ProverData::from_instances(&cfg, &inst_e);
+        let proof_e = prove_batch(&cfg, &inst_e, &pd_e);
+
+        // Self-consistent vs its own program.
+        verify_batch(&cfg, &[air_e], &proof_e, &[forged.clone()], &pd_e.common)
+            .expect("evil proof is self-consistent vs its own program");
+
+        // Against the canonical program's preprocessed
+        // commitment: REJECTED (CRIT-1 holds under Route A).
+        let honest = honest_trace();
+        let canonical2 = extract_program(&honest.matrix);
+        let air_c2 = CompositeFullAirWithLookupsPinned::new(canonical2);
+        let pis_c = CompositePublicInputs::derive_from_trace(&honest).to_vec();
+        let inst_c = vec![StarkInstance {
+            air: &air_c2,
+            trace: &honest.matrix,
+            public_values: pis_c,
+        }];
+        let pd_c = ProverData::from_instances(&cfg, &inst_c);
+        assert!(
+            verify_batch(&cfg, &[air_c], &proof_e, &[forged], &pd_c.common).is_err(),
+            "CRIT-1 under Route A: forged proof must fail vs canonical program"
+        );
     }
 }

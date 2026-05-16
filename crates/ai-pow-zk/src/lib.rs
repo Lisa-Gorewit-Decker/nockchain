@@ -71,7 +71,9 @@ pub use crate::circuit::{AiPowStarkConfig, CircuitConfig};
 pub use crate::composite_full_air::{
     extract_program, CompositeFullAir, CompositeFullAirPinned,
 };
-pub use crate::composite_full_air_with_lookups::CompositeFullAirWithLookups;
+pub use crate::composite_full_air_with_lookups::{
+    CompositeFullAirWithLookups, CompositeFullAirWithLookupsPinned,
+};
 pub use crate::composite_proof::{
     composite_prove, composite_prove_pinned, composite_setup, composite_verify,
     composite_verify_pinned, composite_verify_pow, composite_verify_pow_pinned,
