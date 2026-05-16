@@ -20,7 +20,7 @@
 | §4.B↔plain byte-equivalence — FoldChip reproduces the real folded `TileState M` for every tile of a genuine `BlockContext` solve; keyed-hash of chip output == plain PoW digest (the `high2_2_byte_equiv_plain` half of §7) | ✅ done | `2964c32` |
 | §4.A trace placement — `place_matmul_tile` / `X_STEP` rows wired into `zk_bridge`+`f1_harness` from a real `BlockContext` solve | ⬜ remaining (composite-layout integration) |
 | §4.D keystone — generalise to `JACKPOT_MSG[0..16] == FOLD_STATE` | ⬜ remaining (needs §4.A wiring) |
-| §4.C committed-matrix binding — `X_STEP` ⟵ committed `A/B` via `noised_packed` LogUp (**the multi-day cryptographic core**) | ⬜ remaining |
+| §4.C committed-matrix binding — **research/design done** (§4.C.0–4.C.7: the real gap is unifying CRIT-1 pinning with the LogUp, which lives only in `…WithLookups`, not the pinned path; 3 routes, recommend Route C; noise scoped out); implementation remaining | 🟡 designed, impl ⬜ |
 | §4.E tile-index binding / MED-3 | ⬜ remaining |
 | §6 CRIT-1 program extends to matmul+fold schedule | ⬜ remaining |
 | §7 real-difficulty end-to-end + byte-equivalence + docs flip | ⬜ remaining |
@@ -311,30 +311,219 @@ ambiguity as long as the 32-bit decomposition is the single
 source of truth (assert `Σ bit_i·2ⁱ == CUMSUM_TILE[k]` in the
 field with the standard 32-bit reconstruction).
 
-### 4.C Committed-matrix end-to-end binding
+### 4.C Committed-matrix end-to-end binding — RESEARCH (the cryptographic core)
 
-**Problem.** `A_NOISED_UNPACK` / `B_NOISED_UNPACK` feeding the
-matmul chip are not yet provably the C3-committed, CRIT-1-fixed
-matrix bytes — only internally consistent.
+> This is the load-bearing, multi-day sub-item. The fold math
+> (§4.A/§4.B) is done; §4.C is what makes the bound message
+> provably a function of the *committed* matrices rather than
+> prover-chosen accumulator inputs. Researched 2026-05-15 against
+> the actual ai-pow-zk + Pearl source; conclusions below.
 
-**Design.** Route the matmul chip's `A_NOISED_UNPACK` /
-`B_NOISED_UNPACK` inputs onto the existing `noised_packed` LogUp
-bus (M52 4.1) so the same bytes that feed `HASH_A`/`HASH_B`
-(C3: `IS_MSG_MAT·IS_NEW_BLAKE·(BLAKE3_MSG − base256(UINT8_DATA))`)
-also feed the accumulator. Because `HASH_A`/`HASH_B` are
-CRIT-1-pinned PIs, this closes the loop:
+#### 4.C.0 The precise problem (sharper than the original sketch)
+
+The original sketch said "route `A/B_NOISED_UNPACK` onto the
+existing `noised_packed` LogUp bus." Reading the code shows the
+real situation is one level deeper:
+
+- The `noised_packed` LogUp **is implemented** — but only in
+  `composite_full_air_with_lookups.rs`
+  (`CompositeFullAirWithLookups`, Phase 14b), via
+  `p3_lookup::InteractionBuilder::push_interaction` and the
+  `p3-batch-stark` interaction prover. `bus_emit::noised_packed`
+  binds the matmul chip's per-row `A_NOISED`/`B_NOISED` (indexed
+  by `A_ID`/`B_ID`) to the canonical `NOISED_PACKED` RAM store.
+- The **production proven path does not use that AIR.**
+  `composite_prove_pinned` → `CompositeFullAirPinned` →
+  `prove_with_preprocessed` over `CompositeFullAir` (plain
+  `p3-uni-stark`, **no interactions**). So on the pinned path
+  `A_NOISED_UNPACK`/`B_NOISED_UNPACK` are *unconstrained relative
+  to the committed matrices* — the matmul chip will compute the
+  accumulator against whatever the prover writes there.
+
+So §4.C is not "add a bus." It is: **make the CRIT-1
+program-pinned production proof also enforce the `noised_packed`
+(and its supporting i8u8 / range) interactions** — i.e. unify
+two prover stacks that today are mutually exclusive
+(`prove_with_preprocessed`/uni-stark for CRIT-1 vs
+`prove_batch`+interactions/batch-stark for LogUp). That
+unification is the genuine difficulty.
+
+#### 4.C.1 What must be bound, and what is already there
+
+Target statement: the `t·t`-cell accumulator the FoldChip's
+`X_STEP` sequence is reduced from must be the dot-products of
+the **committed** `A`,`B`. The existing chain, once the LogUp is
+live on the pinned path:
 
 ```
-committed A,B ─C3→ HASH_A/HASH_B (pinned PI)
-            └─noised_packed bus→ A/B_NOISED_UNPACK ─MatmulCumsumChip→ CUMSUM
-                                                   ─FoldChip→ M
-                                                   ─keystone→ JACKPOT_MSG
-                                                   ─C4→ HASH_JACKPOT ─C2→ difficulty
+HASH_A / HASH_B  (CRIT-1-pinned PIs)
+   │  C3  (composite_full_air.rs §"C3", already in the pinned AIR):
+   │      IS_MSG_MAT·IS_NEW_BLAKE·(BLAKE3_MSG − base256(UINT8_DATA)) = 0
+   ▼
+NOISED_PACKED  (canonical store; InputChip enforces, already pinned:
+   │            NOISED_PACKED = polyval(MAT_UNPACK,256)+polyval(NOISE_UNPACK,256),
+   │            NOISE_PACKED_PREP = polyval(NOISE_UNPACK,129))
+   │  noised_packed LogUp on MAT_ID / A_ID / B_ID   ← THE MISSING LINK on the pinned path
+   ▼
+A_NOISED / B_NOISED → A_NOISED_UNPACK / B_NOISED_UNPACK
+   │  MatmulCumsumChip (already pinned): 2×2×16 dot → CUMSUM_TILE
+   ▼
+per-stripe accumulator → X_STEP  ← NEW reduction constraint (§4.C.4)
+   │  FoldChip (§4.B, done)
+   ▼
+FOLD_STATE → JACKPOT_MSG (§4.D keystone) → C4 → HASH_JACKPOT → C2 difficulty
 ```
 
-After 4.C, an attacker cannot substitute a cheaper matrix to make
-the fold land on a winning `M`: changing A/B changes `HASH_A`/
-`HASH_B`, which are verifier-fixed.
+Everything except the two ◀-marked links is already enforced on
+the pinned path. C3 and InputChip are already in
+`CompositeFullAir::eval` (hence in `Pinned`). The only gaps are
+(a) the `noised_packed` LogUp not being live on the pinned path,
+and (b) the accumulator→`X_STEP` reduction.
+
+#### 4.C.2 Noise scoping (resolves a major open question)
+
+`NOISE_PACKED_PREP` is a **preprocessed** column and `InputChip`
+ties `NOISED_PACKED = pack(MAT_UNPACK) + pack(NOISE_UNPACK)`.
+`HASH_A`/`HASH_B` commit the **clean** matrix (BlockContext:
+`matrix_commitment(a_bytes, kappa)` over clean i8→u8 bytes), and
+C3 binds the *clean* `MAT_UNPACK` to it. The **noise is
+program-fixed (VK/preprocessed)**, not prover-chosen, and its
+derivation from the seeds `s_a`/`s_b` (Pearl `pearl_noise.rs`:
+keyed-BLAKE3 uniform matrix + permutation/choice matrices) is
+**not proven in-AIR** today.
+
+**Decision (Pearl-faithful, recorded):** §4.C binds the *clean
+committed* matrix into the accumulator and treats "the
+preprocessed `NOISE_UNPACK` equals `f(s_a, s_b)`" as a separate,
+explicitly out-of-scope **noise-derivation obligation** — the
+same external/preprocessed scoping class as C2-difficulty-
+external and MED-3-target-external. It is its own (larger) work
+item, *not* part of HIGH-2.2. Without it, an adversary who could
+choose the preprocessed noise is *already* excluded by CRIT-1
+(the preprocessed trace is verifier-fixed), so program-pinning
+the noise columns (§6) is the actual safeguard; proving
+`noise == f(seeds)` in-AIR is a strengthening, not a HIGH-2.2
+blocker. **This must be stated as residual in
+`ZKP_SECURITY_REPORT.md` when HIGH-2.2 closes.**
+
+#### 4.C.3 The core challenge: unifying CRIT-1 pinning with LogUp
+
+Three implementation routes, with trade-offs:
+
+- **Route A — preprocessed + interactions in one prover.** Add
+  the CRIT-1 program-pin constraints + a preprocessed trace to
+  `CompositeFullAirWithLookups`, and prove via a prover stack
+  that supports *both* preprocessed columns and interactions.
+  Cleanest end state; **feasibility hinges on whether
+  `p3-batch-stark` (the interaction prover) supports a
+  preprocessed/verifier-fixed trace.** First implementation step
+  is to confirm that capability in the pinned p3 revision
+  (`6de5cba`). If yes, this is the route.
+- **Route B — fold the binding into uni-stark without LogUp.**
+  Replace the `noised_packed` *lookup* with an in-AIR
+  *equality/permutation* argument that lives in plain
+  `p3-uni-stark` (the prover CRIT-1 already uses). E.g. a
+  grand-product/permutation constraint that the multiset of
+  `(MAT_ID, A_NOISED)` matmul reads equals the multiset of
+  `(row, NOISED_PACKED)` table entries — implementable as
+  auxiliary columns + a running-product column under
+  `prove_with_preprocessed`. Heavier per-row but stays on one
+  prover; no batch-stark dependency. Fallback if Route A's
+  preprocessed support is absent.
+- **Route C — narrow direct binding (no general RAM lookup).**
+  The matmul schedule is fixed (CRIT-1/§6), so each matmul row's
+  `(A_ID,B_ID)` is a *known constant* per row. Then
+  `A_NOISED_UNPACK` can be tied to `NOISED_PACKED` by **direct
+  preprocessed equality**: the program (preprocessed trace)
+  carries, per matmul row, the committed `NOISED_PACKED` slice
+  for that row's fixed `MAT_ID`, and a pinned constraint forces
+  `A_NOISED_UNPACK == preprocessed slice`. No lookup at all —
+  the binding rides entirely on the CRIT-1 preprocessed
+  mechanism that already exists and is audited. This collapses
+  §4.C into §6 (program extension) + a pinned equality, at the
+  cost of a wider preprocessed trace.
+
+**Recommendation: prototype Route C first.** It reuses the
+exact CRIT-1 preprocessed-pinning machinery already shipped and
+audited (`9ec529e`), needs **no** new prover stack and **no**
+LogUp soundness re-analysis, and the matmul schedule being
+fixed makes the per-row `MAT_ID` a constant — so a direct
+preprocessed-equality binding is sound by the same argument
+CRIT-1 already relies on. Route A is the "right" long-term shape
+if batch-stark has (or gains) preprocessed support; Route B is
+the general fallback. Decide after a one-day spike confirming
+(i) batch-stark preprocessed support (Route A gate) and
+(ii) the preprocessed-trace width blow-up of Route C
+(`num_matmul_rows × A_NOISED_UNPACK_LEN` extra preprocessed
+cells — quantify against `MIN_STARK_LEN` and FRI cost).
+
+#### 4.C.4 Accumulator → `X_STEP` reduction (new constraint)
+
+`X_STEP[step] = ⊕` over **all `t·t`** accumulator cells (Pearl
+§4.5 `x_ℓ`), but `MatmulCumsumChip` only maintains a 2×2
+micro-tile (`CUMSUM_TILE_LEN=4`, §4.0). Two sub-pieces:
+
+1. **Subtile sweep.** Per stripe, the fixed schedule (CRIT-1/§6)
+   sweeps the `(t/2)²` 2×2 sub-blocks (Pearl's
+   `pearl_program.rs` subtile loop), each addressing its
+   `NOISED_PACKED` rows via `MAT_ID`. A per-stripe running XOR
+   accumulator column folds each sub-block's 4 i32 cells in as
+   they are produced.
+2. **XOR tree.** Reduce the stripe's accumulator cells to one
+   32-bit `X_STEP`: bit-decompose each i32 cell (reuse the
+   range/bit buses + the `xor_32_shift_if`-style XOR gadget the
+   FoldChip already uses), pairwise-XOR to a single 32-bit
+   value, expose it as the FoldChip's `X_STEP` input. Cost is
+   `O(t²·32)` boolean cells per stripe — the dominant new width;
+   quantify and prefer aliasing BLAKE3 bit-scratch on disjoint
+   rows (the schedule keeps matmul/fold rows off compression
+   rows).
+
+`X_STEP` is the single hand-off scalar between this reduction
+and the (already-built, tested) FoldChip — the clean interface
+the §4.0 decision was designed around.
+
+#### 4.C.5 Soundness once §4.C lands
+
+With the binding live on the pinned path: an adversary cannot
+put matrix *X* in the accumulator inputs and matrix *Y* in
+`HASH_A` — `A_NOISED`/`B_NOISED` are bound (Route A/B lookup, or
+Route C preprocessed equality) to `NOISED_PACKED`, whose clean
+component is C3-bound to `HASH_A`/`HASH_B`, which are
+CRIT-1-pinned PIs. The full chain
+`committed A,B → accumulator → X_STEP → FoldChip → JACKPOT_MSG →
+C4 → HASH_JACKPOT → C2` is then closed, eliminating HIGH-2.2's
+useful-work forgeability residual. **Remaining residual after
+§4.C:** the noise-derivation obligation (§4.C.2) — explicitly
+out of scope, tracked separately, and not a forgery hole because
+the noise columns are CRIT-1-pinned.
+
+#### 4.C.6 Interaction with CRIT-1 / §6 (must not be overlooked)
+
+If Route A/B (LogUp / permutation) is taken, the multiplicity /
+`*_FREQ` columns and the `MAT_ID`/`A_ID`/`B_ID` index columns are
+prover-influenced and **must themselves be part of the CRIT-1
+preprocessed program** (else a prover games multiplicities or
+re-points indices). Route C sidesteps this (no multiplicities;
+the binding *is* preprocessed). Either way, §6 (program
+extension) is a hard prerequisite and must enumerate every
+column the binding's soundness rests on.
+
+#### 4.C.7 Concrete next steps (for the dedicated session)
+
+1. Spike: does `p3-batch-stark` @ `6de5cba` support a
+   preprocessed/verifier-fixed trace? (Route A gate.)
+2. Quantify Route C preprocessed-width blow-up vs `MIN_STARK_LEN`
+   / FRI cost.
+3. Pick Route (recommend C unless the spike makes A cheap).
+4. Implement the accumulator→`X_STEP` reduction (§4.C.4) — this
+   is route-independent and can land first, tested standalone
+   like the FoldChip (against `compute_tile_trace`'s `x_steps`).
+5. Implement the chosen binding route; extend §6 program to
+   cover every soundness-bearing column.
+6. Wire FoldChip + §4.D keystone; §7 end-to-end at real
+   difficulty; doc + `ZKP_SECURITY_REPORT.md` flip (note the
+   §4.C.2 noise residual).
 
 ### 4.D Keystone generalisation
 
