@@ -211,26 +211,55 @@ knowledge of `s_a` (which is public-derivable). Documented in
 `GAP_AUDIT.md` as a "fidelity" item — from a security standpoint
 it is a PoW-soundness gap and should be labelled as such.
 
-### MED-3 — difficulty check is out-of-circuit and out-of-transcript
+### MED-3 — difficulty check is out-of-circuit and out-of-transcript — ✅ RESOLVED 2026-05-16
 
-**Severity: Medium (conditional soundness).**
+**Severity: Medium (conditional soundness). STATUS: RESOLVED
+(`prove_and_verify_for_block` hardened entrypoint + derivation
+contract; both preconditions now met).**
 
-`composite_verify_pow` checks `HASH_JACKPOT ≤ target` *after*
-STARK verification, in plain Rust, with `target` a
-verifier-supplied argument. `target` is **not** absorbed into the
-Fiat-Shamir transcript and **not** an AIR public input. This is
-Pearl-Layer-0-faithful (difficulty is external by design) and is
-*not itself* a Fiat-Shamir weakness — but it makes C2 soundness
-conditional on two things the SNARK does not enforce: (i)
-`HASH_JACKPOT` is genuinely bound (broken by CRIT-1), and (ii)
-the verifier independently derives the correct chain-pinned
-`target` (a caller obligation; if a caller passes an attacker-
-influenced `target`, difficulty is meaningless). Acceptable as a
-design choice **only** once CRIT-1 is fixed and the
-target-derivation obligation is documented at the call site
-(today the only call site, `prover.rs`, uses
-`difficulty_target(params)` — fine, but the public
-`composite_verify_pow` API takes an arbitrary `&[u8;32]`).
+`composite_verify_pow*` checks `HASH_JACKPOT ≤ target` *after*
+STARK verification, in plain Rust (Pearl-Layer-0-faithful:
+difficulty is external by design — *not* a Fiat-Shamir weakness).
+Soundness of the bound was conditional on two things the SNARK
+does not enforce: **(i)** `HASH_JACKPOT` genuinely bound, and
+**(ii)** the verifier independently derives the correct
+chain-pinned `target`.
+
+- **(i) is closed by CRIT-1** (RESOLVED `15ba9a3`; `HASH_JACKPOT`
+  is a selector-gated bound PI on the verifier-fixed program).
+- **(ii) is closed by the MED-3 hardening (`aa82ce3`-series):**
+  the production entrypoint is now
+  `ai_pow::zk_bridge::prove_and_verify_for_block(ctx, params)`,
+  which **derives `target = difficulty_target(params)` itself**
+  from the chain-pinned `MatmulParams` (a pure deterministic
+  function of `noise_rank`/`tile`/`difficulty_bits`) and never
+  accepts a counterparty-supplied target. `prover.rs` (the only
+  production call site) uses it. The low-level
+  `prove_and_verify(.., target)` / `composite_verify_pow*` remain
+  the *unhardened primitives*, doc-commented with the MED-3
+  obligation (retained for tests that deliberately inject a
+  non-chain target).
+
+**Verifier-side derivation contract (the §4.E consumable):**
+
+```text
+target            = difficulty_target(params)                 // pure fn of chain-pinned params
+(tile_i, tile_j)  = (found_idx / col_tiles, found_idx % col_tiles)
+valid iff           found_idx < params.num_tiles()
+verifier checks     tile_i < params.row_tiles() ∧ tile_j < params.col_tiles()
+```
+
+`found_idx` is the miner's winning linear tile index into
+`BlockContext::m_states` (`mine_with_context`). All of
+`row_tiles()/col_tiles()/num_tiles()` are pure functions of the
+chain-pinned `params`. Exposed as `ai_pow::zk_bridge::tile_ij`
+(returns `None` out of range ⇒ verifier rejects). HIGH-2.2 §4.E
+binds *this* verifier-recomputed value to the in-circuit matmul
+accumulator (the §6(b) work) — it is **not** a free prover PI.
+Tests: `med3_prove_and_verify_for_block_roundtrips_and_derives_target`,
+`med3_tile_ij_derivation_and_bounds` (ai-pow `--features zk`,
+lib 66/0; full e2e green incl. `end_to_end` 13/0 via the hardened
+path).
 
 ### INFO-4 — `noised_packed` self-query binds nothing on the matrix path
 
@@ -268,7 +297,9 @@ provide.
   the FS transform faithfully proves a statement that is too weak
   (this is the FS-level restatement of CRIT-1).
 - **C2 `target` is outside the transcript** (MED-3) — a
-  deliberate, documented externality, not an FS flaw.
+  deliberate, documented externality, not an FS flaw; **RESOLVED**
+  by the `prove_and_verify_for_block` hardened entrypoint
+  (verifier re-derives `target` from chain-pinned params).
 
 Conclusion: Fiat-Shamir is **sound as applied**; the soundness
 problem is in *what statement* is being proven (CRIT-1), not in
@@ -341,11 +372,14 @@ above.
 2. **HIGH-2 — feed the real tile-state fold into `JACKPOT_MSG`**
    (matmul→jackpot rotate-XOR-13 interleave) so `HASH_JACKPOT`
    commits to the actual work, not `BLAKE3(0, key=s_a)`.
-3. **MED-3 — document the `target` derivation obligation** on the
-   public `composite_verify_pow` API (verifier MUST derive
-   `target` from chain-pinned params; never accept a
-   counterparty-supplied target), or bind a `difficulty_bits`
-   PI into the AIR and derive `target` from it in-verifier.
+3. **MED-3 — ✅ DONE 2026-05-16.** Resolved via the hardened
+   `ai_pow::zk_bridge::prove_and_verify_for_block` entrypoint
+   (re-derives `target = difficulty_target(params)` internally;
+   the verifier never accepts a counterparty target) + the
+   doc-commented MED-3 obligation on the unhardened
+   `composite_verify_pow*` primitive + the `tile_ij` derivation
+   contract §4.E consumes. `prover.rs` uses the hardened path; see
+   the §MED-3 section above.
 4. Independent review of the **7-round Tip5** variant's
    cryptographic margin (it underpins both Fiat-Shamir and the
    Merkle MMCS; a weakness there is systemic).
@@ -403,16 +437,18 @@ nothing in-circuit yet ties the digest to a *specific tile's*
 committed-matrix accumulator, the attested `(tile_i,tile_j)`
 (§4.E) cannot be soundly bound on its own — a free tile/`X_STEP`
 PI would be vacuous — so §6(b) and §4.E are the same binding and
-land together, reconciled with **MED-3** (verifier-side tile
-derivation). Held meanwhile by CRIT-1 + the keystone + §6(a)
+land together, consuming **MED-3**'s now-resolved verifier-side
+derivation contract (`prove_and_verify_for_block` + `tile_ij`).
+Held meanwhile by CRIT-1 + the keystone + §6(a)
 (the proof can't be forged against the canonical program and the
 fold schedule is verifier-fixed). Closing it = place the matmul
 subtile-sweep rows + composite-wire `XStepChip` to force
 `FOLD_XSTEP == ⊕CUMSUM_TILE` + bind `(tile_i,tile_j)` to that
-accumulator per MED-3 (not a wide preprocessed block —
-`HIGH2_2_DESIGN.md` §4.C.8; §6(a) demonstrates the cheap
-CONTROL_PREP-reuse pattern). **MED-3** (`target`-derivation) and
-the 7-round-Tip5 review also remain. Net: CRIT-1 + HIGH-2
+accumulator per the MED-3 contract (not a wide preprocessed
+block — `HIGH2_2_DESIGN.md` §4.C.8; §6(a) demonstrates the cheap
+CONTROL_PREP-reuse pattern). **MED-3 is ✅ RESOLVED**
+(`prove_and_verify_for_block`); the 7-round-Tip5 review still
+remains. Net: CRIT-1 + HIGH-2
 keystone + §6(a) make the SNARK PoW-sound, the fold schedule
 verifier-fixed, and an attacker cannot forge a winning proof; the
 *honest* proof attests the real, byte-equivalent useful-work

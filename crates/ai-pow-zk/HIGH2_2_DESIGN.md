@@ -25,7 +25,8 @@
 | §4.C.4 accumulator→`X_STEP` reduction (`XStepChip`) + composed `XStep→Fold` pipeline byte-equivalent to plain | ✅ done, 6/0 + zk_bridge 5/5 | `290af68`, `c78ae67` |
 | §4.C committed-matrix *binding* — **Route A: chosen, spiked, productionised & WIRED** (§4.C.10): production API `composite_*_pinned_logup` + exhaustive `routea_*` 4/4; `zk_bridge`(mine() gate)+`f1_harness` switched to it; spike removed; 3-tier entrypoint doc. ~1.23x cost. | ✅ binding complete & wired; §4.A non-vacuity is the separate remaining workstream (#97) |
 | §6(a) CRIT-1 program extends to the **fold schedule** — `FOLD_IS_FOLD` + 4-bit slot packed into the pinned `CONTROL_PREP` polyval (NOT a wide preprocessed block; §4.C.8 trap avoided) | ✅ **done & e2e-validated** (`aa82ce3`): ControlChip +6 tests (positive + 4 adversarial + zero-blast-radius); `place_fold_chain` writes it, `extract_program` lifts it; ai-pow-zk lib 322/0 incl. `high2_2_fold_chain_pinned_logup`/`routea_*`/`crit1_*`; ai-pow `--features zk` green (lib 64/0, `end_to_end` 13/0) |
-| §6(b) + §4.E — **entangled** residual: bind `X_STEP ← ⊕CUMSUM_TILE ← committed A/B` *and* the attested `(tile_i,tile_j)` to the same in-circuit matmul accumulator; reconcile tile derivation with MED-3 | ⬜ remaining — the single cryptographic-core item (see "Remaining soundness scope"). Cannot be soundly closed independently of placing the matmul subtile-sweep rows (§4.C.4); a free tile/X_STEP PI without that tie is vacuous. Meanwhile soundness held by CRIT-1 + keystone + §6(a). |
+| MED-3 — verifier-side `target` + `(tile_i,tile_j)` derivation contract (§4.E prerequisite) | ✅ **done & e2e-validated** (`ai_pow::zk_bridge::prove_and_verify_for_block` re-derives `target` from chain-pinned params; `tile_ij` derivation contract; unhardened primitives doc-commented; `prover.rs` on hardened path). +2 tests; ai-pow `--features zk` lib 66/0, e2e green |
+| §6(b) + §4.E binding — **entangled** residual: bind `X_STEP ← ⊕CUMSUM_TILE ← committed A/B` *and* the MED-3-derived `(tile_i,tile_j)` to the same in-circuit matmul accumulator | ⬜ remaining — the single cryptographic-core item (see "Remaining soundness scope"). MED-3 contract now resolved & consumable; still cannot be soundly closed independently of placing the matmul subtile-sweep rows (§4.C.4) — a free tile/X_STEP PI without that tie is vacuous. Meanwhile soundness held by CRIT-1 + keystone + §6(a). |
 | §7 real-difficulty end-to-end + byte-equivalence + docs flip | 🟡 byte-equivalence ✅ (`high2_2_xstep_fold_pipeline_byte_equiv_plain`); real-M e2e ✅ (`end_to_end` 13/0); docs flip ⬜ |
 
 ### Current state (2026-05-16)
@@ -1198,26 +1199,41 @@ The chosen `(tile_i, tile_j)` and the difficulty `target`
 should bind *which* tile is being attested (so a prover cannot
 solve an easy tile and claim a hard one).
 
-**Status (2026-05-16): §4.E is entangled with §6(b) — see
-"Remaining soundness scope".** A standalone `tile_i/tile_j`
-public input is **not** a sound closure on its own: nothing
+**MED-3 derivation contract — ✅ RESOLVED 2026-05-16.** The
+verifier-side derivation §4.E must consume is now concrete and
+tested:
+
+```text
+target            = difficulty_target(params)                 // ai_pow::tile_hash, pure fn of chain params
+(tile_i, tile_j)  = ai_pow::zk_bridge::tile_ij(found_idx, params)
+                  = (found_idx / col_tiles, found_idx % col_tiles), or None if found_idx ≥ num_tiles()
+production verify = ai_pow::zk_bridge::prove_and_verify_for_block(ctx, params)  // derives target itself
+```
+
+`prove_and_verify_for_block` re-derives `target` from chain-pinned
+`params` (never accepts a counterparty target — MED-3 (ii)
+closed; CRIT-1 closed (i)). `tile_ij` is the single source of
+truth for the verifier-recomputed/checked tile coordinates.
+`prover.rs` uses the hardened path; the unhardened primitives are
+doc-commented with the obligation. See `ZKP_SECURITY_REPORT.md`
+§MED-3.
+
+**Status (2026-05-16): §4.E's *binding* is still entangled with
+§6(b) — see "Remaining soundness scope".** MED-3 gives §4.E the
+verifier-derivation contract, but a standalone `tile_i/tile_j`
+public input is still **not** a sound closure on its own: nothing
 in-circuit yet ties the hashed digest to a *specific tile's
 committed-matrix accumulator* (the honest bridge places no matmul
 subtile-sweep rows; `place_fold_chain` consumes prover-supplied
-`x_steps`), so a free tile PI would be vacuous — a malicious
-prover with fabricated `x_steps` can set any tile PI. The
-meaningful binding requires §6(b)/§4.C.4 (place the subtile-sweep
-rows; force `FOLD_XSTEP == ⊕CUMSUM_TILE` of the committed `A/B`)
-and *then* binding `(tile_i,tile_j)` to that accumulator's
-row/col offsets. **MED-3 reconciliation:** MED-3 documents how
-the *verifier* derives the claimed `(tile_i,tile_j)` from the
-block context; HIGH-2.2 must consume MED-3's derivation as the
-verifier-supplied input bound to the in-circuit accumulator —
-**not** introduce an independent free PI. Until §6(b) lands,
-HIGH-2.2 does not regress MED-3 (the attested tile is the honest
-bridge's choice; soundness held by CRIT-1 + keystone + §6(a)),
-and the precise obligation is tracked jointly with §6(b) as the
-one entangled cryptographic-core residual.
+`x_steps`), so a free tile PI would be vacuous. The meaningful
+binding requires §6(b)/§4.C.4 (place the subtile-sweep rows;
+force `FOLD_XSTEP == ⊕CUMSUM_TILE` of the committed `A/B`) and
+*then* binding the MED-3-derived `(tile_i,tile_j)` to that
+accumulator's row/col offsets. Until §6(b) lands, HIGH-2.2 does
+not regress MED-3 (MED-3 itself is resolved; the attested tile is
+the honest bridge's choice; soundness held by CRIT-1 + keystone +
+§6(a)), and the §4.E *binding* obligation is tracked jointly with
+§6(b) as the one entangled cryptographic-core residual.
 
 ---
 
@@ -1344,10 +1360,12 @@ requested.
   arithmetic — the existing `MatmulCumsumChip` already handles
   the 32-bit accumulator domain; FoldChip must consume the same
   representation, not re-range to a different modulus.
-- **Open:** does tile-index binding (4.E) belong in HIGH-2.2 or
-  is it cleaner to land MED-3 first and have HIGH-2.2 consume its
-  derivation? Decision deferred to start-of-implementation; does
-  not block 4.A–4.D.
+- **Resolved (2026-05-16):** MED-3 was landed first (the user's
+  directive) — `prove_and_verify_for_block` + the `tile_ij`
+  derivation contract. §4.E now consumes MED-3's verifier-derived
+  `(tile_i,tile_j)`; the remaining §4.E work is purely the
+  in-circuit *binding* of that value to the accumulator (entangled
+  with §6(b)).
 
 ---
 

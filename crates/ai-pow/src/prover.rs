@@ -350,8 +350,12 @@ fn mine_with_context(
     // opt-in `zk` feature rather than silently degrading.
     #[cfg(feature = "zk")]
     {
-        // `target` is already in scope (computed for the tile scan).
-        let _zk = crate::zk_bridge::prove_and_verify(ctx, params, &target)
+        // MED-3: use the hardened entrypoint — it re-derives the
+        // difficulty target from chain-pinned `params` internally
+        // (never accepts a counterparty-supplied target). The local
+        // `target` (computed for the plain tile scan) is *not* passed
+        // through; the bridge recomputes the identical value.
+        let _zk = crate::zk_bridge::prove_and_verify_for_block(ctx, params)
             .expect("F1 zk bridge: prove + pow-verify must succeed for a found tile");
         let _ = (block_commitment, nonce);
     }

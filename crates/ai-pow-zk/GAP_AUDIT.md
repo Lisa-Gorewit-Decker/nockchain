@@ -273,13 +273,17 @@ nothing in-circuit yet ties the digest to a *specific tile's*
 committed-matrix accumulator, the attested `(tile_i,tile_j)`
 (§4.E) can't be soundly bound on its own — a free tile/`X_STEP`
 PI would be vacuous — so §6(b) and §4.E are the same binding and
-land together, reconciled with **MED-3** (verifier-side tile
-derivation). A malicious prover isn't yet *forced* to do the
-real matmul for `X_STEP`/the tile (held meanwhile by CRIT-1 +
+land together, consuming **MED-3**'s now-resolved verifier-side
+derivation contract. A malicious prover isn't yet *forced* to do
+the real matmul for `X_STEP`/the tile (held meanwhile by CRIT-1 +
 keystone + §6(a)). Closing it = place the matmul subtile-sweep
 rows + composite-wire `XStepChip` to force
 `FOLD_XSTEP == ⊕CUMSUM_TILE` + bind `(tile_i,tile_j)` to that
-accumulator per MED-3 (not a wide preprocessed block —
-`HIGH2_2_DESIGN.md` §4.C.8; §6(a) shows the cheap
-CONTROL_PREP-reuse pattern). Plus MED-3 (`target`-derivation
-doc), recursion (M12), production-hardening (P1/P3/P5/P6).
+accumulator per the MED-3 contract (not a wide preprocessed
+block — `HIGH2_2_DESIGN.md` §4.C.8; §6(a) shows the cheap
+CONTROL_PREP-reuse pattern). **MED-3 ✅ RESOLVED 2026-05-16**
+(`ai_pow::zk_bridge::prove_and_verify_for_block` re-derives
+`target` from chain-pinned params; `tile_ij` derivation contract;
+unhardened primitive doc-commented; ai-pow `--features zk` lib
+66/0, e2e green). Plus recursion (M12),
+production-hardening (P1/P3/P5/P6).

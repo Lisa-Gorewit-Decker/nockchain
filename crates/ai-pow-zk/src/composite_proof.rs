@@ -159,6 +159,21 @@ impl std::error::Error for PowVerifyError {}
 ///
 /// `target` is the 32-byte little-endian difficulty bound
 /// (`ai-pow::tile_hash::difficulty_target` produces it).
+///
+/// ## MED-3 obligation (caller-enforced)
+///
+/// `target` is **not** absorbed into the Fiat-Shamir transcript and
+/// **not** an AIR public input (Pearl-Layer-0-faithful: difficulty
+/// is external by design). This wrapper is therefore the
+/// *unhardened primitive*: the difficulty bound is only meaningful
+/// if the caller passes a `target` it **derived itself from the
+/// chain-pinned params** (`difficulty_target(params)`) and never a
+/// counterparty-supplied value. CRIT-1 (fixed) guarantees the other
+/// precondition — `HASH_JACKPOT` is a genuinely bound PI.
+/// Production callers MUST go through the MED-3-hardened
+/// `ai_pow::zk_bridge::prove_and_verify_for_block`, which recomputes
+/// the target internally so it cannot be forged. See
+/// `ZKP_SECURITY_REPORT.md` §MED-3.
 pub fn composite_verify_pow(
     config: &AiPowStarkConfig,
     proof: &Proof<AiPowStarkConfig>,

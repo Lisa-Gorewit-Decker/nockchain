@@ -106,6 +106,22 @@ fn bytes_to_words_le(b: &[u8; 32]) -> [u32; 8] {
 /// This is the F1 integration point — the real replacement for
 /// the historical no-op `#[cfg(feature = "zk")]` stub in
 /// `prover.rs`.
+///
+/// ## MED-3 — `target` is a trust-bearing argument (primitive)
+///
+/// This is the **low-level primitive**: it accepts an arbitrary
+/// `target`. Difficulty (`HASH_JACKPOT ≤ target`) is checked
+/// out-of-circuit / out-of-transcript (Pearl-Layer-0-faithful), so
+/// soundness of the difficulty bound is *conditional* on the
+/// verifier deriving the correct chain-pinned `target` itself —
+/// it must **never** accept a counterparty-supplied target. CRIT-1
+/// (now fixed) closes the other MED-3 precondition (`HASH_JACKPOT`
+/// genuinely bound). Production code MUST therefore call
+/// [`prove_and_verify_for_block`] (which derives
+/// `target = difficulty_target(params)` internally and cannot be
+/// passed a forged target); this primitive is retained only for
+/// tests that deliberately inject a non-chain target. See
+/// `crates/ai-pow-zk/ZKP_SECURITY_REPORT.md` §MED-3.
 pub fn prove_and_verify(
     ctx: &BlockContext<'_>,
     params: &MatmulParams,
@@ -219,6 +235,52 @@ pub fn prove_and_verify(
         .map_err(BridgeError::Pow)?;
 
     Ok(ZkOutcome { pis })
+}
+
+/// MED-3-hardened production entrypoint. Derives the difficulty
+/// `target` itself from the **chain-pinned** `params`
+/// (`difficulty_target(params)` — a pure, deterministic function of
+/// `noise_rank` / `tile` / `difficulty_bits`, all part of the
+/// block's mining config) and delegates to [`prove_and_verify`].
+///
+/// Because the target is recomputed from params and never taken as
+/// an argument, a caller (or counterparty) **cannot** influence the
+/// difficulty bound — closing MED-3 precondition (ii). Combined
+/// with CRIT-1 (precondition (i): `HASH_JACKPOT` genuinely bound)
+/// the out-of-circuit difficulty check is sound. This is the only
+/// entrypoint production / `mine()` should use.
+pub fn prove_and_verify_for_block(
+    ctx: &BlockContext<'_>,
+    params: &MatmulParams,
+) -> Result<ZkOutcome, BridgeError> {
+    let target = crate::tile_hash::difficulty_target(params);
+    prove_and_verify(ctx, params, &target)
+}
+
+/// MED-3 / HIGH-2.2 §4.E — the **verifier-side derivation contract**
+/// for the attested tile index. The winning tile is the miner's
+/// linear tile index `found_idx` into `BlockContext::m_states`
+/// (`mine_with_context`); it decomposes to grid coordinates as
+///
+/// ```text
+///   tile_i = found_idx / col_tiles      tile_j = found_idx % col_tiles
+/// ```
+///
+/// where `col_tiles = params.col_tiles()` and the index is valid
+/// iff `found_idx < params.num_tiles()` — all pure functions of the
+/// chain-pinned `params`. The verifier MUST bounds-check
+/// `tile_i < params.row_tiles()` and `tile_j < params.col_tiles()`.
+/// `(tile_i, tile_j)` is therefore a **verifier-recomputable /
+/// verifier-checked** value, *not* a free prover public input;
+/// HIGH-2.2 §4.E binds *this* value to the in-circuit matmul
+/// accumulator (the §6(b) work). Returns `None` for an
+/// out-of-range index (the verifier rejects).
+pub fn tile_ij(found_idx: u32, params: &MatmulParams) -> Option<(u32, u32)> {
+    if found_idx >= params.num_tiles() {
+        return None;
+    }
+    let col_tiles = params.col_tiles();
+    Some((found_idx / col_tiles, found_idx % col_tiles))
 }
 
 #[cfg(test)]
@@ -449,5 +511,50 @@ mod tests {
         let ctx = BlockContext::build(b"blk", &a, &b, &params).expect("ctx");
         let max_target = [0xFFu8; 32];
         assert!(prove_and_verify(&ctx, &params, &max_target).is_ok());
+    }
+
+    /// MED-3: the hardened entrypoint round-trips a real solve and
+    /// derives *exactly* `difficulty_target(params)` internally (so
+    /// it is byte-for-byte the primitive's chain-pinned target — no
+    /// counterparty-supplied target is possible).
+    #[test]
+    fn med3_prove_and_verify_for_block_roundtrips_and_derives_target() {
+        let params = MatmulParams::TEST_SMALL;
+        let (a, b) = synth_matrices(b"med3-seed", &params);
+        let ctx = BlockContext::build(b"med3-blk", &a, &b, &params).expect("ctx");
+
+        // Hardened path: no target argument.
+        let hardened = prove_and_verify_for_block(&ctx, &params)
+            .expect("MED-3 hardened entrypoint must prove + pow-verify");
+
+        // It must be equivalent to the primitive invoked with the
+        // chain-derived target (same PIs).
+        let target = difficulty_target(&params);
+        let primitive = prove_and_verify(&ctx, &params, &target)
+            .expect("primitive with chain target must also succeed");
+        assert_eq!(hardened.pis, primitive.pis);
+    }
+
+    /// MED-3 / §4.E: the verifier-side tile-index derivation
+    /// contract — `found_idx → (idx/col_tiles, idx%col_tiles)` over
+    /// the whole valid range, `None` past `num_tiles()` (the bound
+    /// the verifier rejects on).
+    #[test]
+    fn med3_tile_ij_derivation_and_bounds() {
+        let params = MatmulParams::TEST_SMALL;
+        let rt = params.row_tiles();
+        let ct = params.col_tiles();
+        let nt = params.num_tiles();
+        assert_eq!(nt, rt * ct);
+
+        for idx in 0..nt {
+            let (ti, tj) = tile_ij(idx, &params).expect("in-range index must decompose");
+            assert!(ti < rt && tj < ct, "decomposed coords must be in grid");
+            // Round-trips back to the linear index.
+            assert_eq!(ti * ct + tj, idx);
+        }
+        // Out-of-range ⇒ verifier rejects.
+        assert_eq!(tile_ij(nt, &params), None);
+        assert_eq!(tile_ij(nt + 7, &params), None);
     }
 }
