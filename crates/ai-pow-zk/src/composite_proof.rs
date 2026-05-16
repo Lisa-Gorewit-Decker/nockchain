@@ -256,6 +256,111 @@ pub fn composite_verify_pow_pinned(
     }
 }
 
+// ───────────────────────────────────────────────────────────────
+//  HIGH-2.2 §4.C Route A: pinned + LogUp production prove/verify
+//
+//  The uni-stark `composite_*_pinned` above enforce the CRIT-1
+//  program-pin but NOT the cross-chip LogUp — so the matmul
+//  `A_NOISED`/`B_NOISED` reads are unbound vs the C3/HASH_A
+//  canonical store (§4.C gap). These prove/verify the
+//  `CompositeFullAirWithLookupsPinned` AIR via `p3-batch-stark`,
+//  which enforces the CRIT-1 pin AND the `noised_packed`
+//  (+ range / i8u8 / cv-routing) LogUp simultaneously. Spike
+//  measured ~1.23x the uni-stark pinned prover cost
+//  (HIGH2_2_DESIGN.md §4.C.10), vs naive Route C's ~10x.
+//
+//  Same CRIT-1 trust model: the verifier rebuilds the canonical
+//  `program` from the trusted per-block `ctx` (never from the
+//  proof), derives the preprocessed commitment from it via
+//  `ProverData::from_airs_and_degrees` (witness-free — needs only
+//  the program + the public trace height), and checks the proof
+//  against that.
+// ───────────────────────────────────────────────────────────────
+
+/// Route-A pinned prove. `trace` is LogUp-balanced here
+/// (`populate_lookup_freq`) so the bus argument closes. Returns
+/// the batch proof + the canonical program (handed to the
+/// verifier out-of-band from a trusted source, never via the
+/// proof — identical CRIT-1 discipline to `composite_prove_pinned`).
+pub fn composite_prove_pinned_logup(
+    config: &AiPowStarkConfig,
+    mut trace: CompositeTrace,
+    public_inputs: &CompositePublicInputs,
+) -> (p3_batch_stark::BatchProof<AiPowStarkConfig>, Program) {
+    use p3_batch_stark::{prove_batch, ProverData, StarkInstance};
+
+    trace.populate_lookup_freq();
+    let program = extract_program(&trace.matrix);
+    let air = crate::composite_full_air_with_lookups::CompositeFullAirWithLookupsPinned::new(
+        program.clone(),
+    );
+    let pvs = public_inputs.to_vec();
+    let instances = vec![StarkInstance {
+        air: &air,
+        trace: &trace.matrix,
+        public_values: pvs,
+    }];
+    let pd = ProverData::from_instances(config, &instances);
+    let proof = prove_batch(config, &instances, &pd);
+    (proof, program)
+}
+
+/// Verifier-side `CommonData` for the canonical `program` —
+/// rebuilt witness-free from the program + its (public) height.
+fn logup_common_for(
+    config: &AiPowStarkConfig,
+    program: &Program,
+) -> p3_batch_stark::ProverData<AiPowStarkConfig> {
+    use p3_batch_stark::ProverData;
+    let air = crate::composite_full_air_with_lookups::CompositeFullAirWithLookupsPinned::new(
+        program.clone(),
+    );
+    let log_ext_db = program_degree_bits(program) + config.is_zk() as usize;
+    ProverData::from_airs_and_degrees(config, std::slice::from_ref(&air), &[log_ext_db])
+}
+
+/// Route-A pinned verify. `program` MUST be the canonical program
+/// the verifier rebuilds from the trusted shape (never from the
+/// proof) — exactly as `composite_verify_pinned`.
+pub fn composite_verify_pinned_logup(
+    config: &AiPowStarkConfig,
+    program: &Program,
+    proof: &p3_batch_stark::BatchProof<AiPowStarkConfig>,
+    public_inputs: &CompositePublicInputs,
+) -> Result<(), CompositeVerificationError> {
+    use p3_batch_stark::verify_batch;
+    let air = crate::composite_full_air_with_lookups::CompositeFullAirWithLookupsPinned::new(
+        program.clone(),
+    );
+    let pd = logup_common_for(config, program);
+    verify_batch(
+        config,
+        std::slice::from_ref(&air),
+        proof,
+        &[public_inputs.to_vec()],
+        &pd.common,
+    )
+}
+
+/// Route-A pinned full PoW verify: pinned+LogUp STARK verify +
+/// the C2 difficulty check against the bound `HASH_JACKPOT`.
+pub fn composite_verify_pow_pinned_logup(
+    config: &AiPowStarkConfig,
+    program: &Program,
+    proof: &p3_batch_stark::BatchProof<AiPowStarkConfig>,
+    public_inputs: &CompositePublicInputs,
+    target: &[u8; 32],
+) -> Result<(), PowVerifyError> {
+    composite_verify_pinned_logup(config, program, proof, public_inputs)
+        .map_err(PowVerifyError::Stark)?;
+    let hj = hash_jackpot_le_bytes(&public_inputs.hash_jackpot);
+    if le_u256_le(&hj, target) {
+        Ok(())
+    } else {
+        Err(PowVerifyError::DifficultyNotMet)
+    }
+}
+
 #[allow(dead_code)]
 fn _suppress_unused_val_import(_v: Val<AiPowStarkConfig>) {}
 
@@ -472,6 +577,125 @@ mod tests {
         assert!(
             composite_verify_pinned(&cfg, &canonical, &p_evil, &pis_evil).is_err(),
             "HIGH-2: a free (non-CUMSUM) jackpot message must be rejected"
+        );
+    }
+
+    // ───────── HIGH-2.2 §4.C Route-A production suite ─────────
+    //
+    // The CRIT-1 / HIGH-2 adversarial regressions, re-run against
+    // the batch-stark pinned+LogUp path (`*_pinned_logup`). These
+    // prove the production Route-A binding keeps CRIT-1 soundness
+    // and the HIGH-2 keystone *while additionally enforcing the
+    // noised_packed/range LogUp*. (The noised_packed *matmul-input*
+    // binding is non-vacuous only once §4.A places real matmul
+    // rows — HIGH2_2_DESIGN.md §4.C.10; not overclaimed here.)
+
+    /// Honest pinned+LogUp round-trip verifies; the C2 difficulty
+    /// check is real (0 target rejects the non-zero keyed digest,
+    /// an all-FF target clears it).
+    #[test]
+    fn routea_honest_roundtrip_and_pow() {
+        let cfg = build_config(&test_zk_params(), &CircuitConfig::TEST_PEARL);
+        let trace = honest_trace();
+        let canonical = extract_program(&trace.matrix);
+        let pis = CompositePublicInputs::derive_from_trace(&trace);
+        assert_ne!(pis.hash_jackpot, [0u32; 8], "C4 digest non-vacuous");
+
+        let (proof, prog) = composite_prove_pinned_logup(&cfg, trace, &pis);
+        assert_eq!(prog.values, canonical.values, "prover program == canonical");
+
+        composite_verify_pinned_logup(&cfg, &canonical, &proof, &pis)
+            .expect("Route-A honest pinned+LogUp proof must verify");
+        composite_verify_pow_pinned_logup(&cfg, &canonical, &proof, &pis, &[0xFFu8; 32])
+            .expect("clears an easy target");
+        match composite_verify_pow_pinned_logup(&cfg, &canonical, &proof, &pis, &[0u8; 32]) {
+            Err(PowVerifyError::DifficultyNotMet) => {}
+            other => panic!("expected DifficultyNotMet, got {other:?}"),
+        }
+    }
+
+    /// CRIT-1 under Route A: a zeroed-selector forgery is
+    /// self-consistent vs its own program but REJECTED vs the
+    /// canonical program's preprocessed commitment.
+    #[test]
+    fn routea_crit1_zeroed_selector_forgery_rejected() {
+        let cfg = build_config(&test_zk_params(), &CircuitConfig::TEST_PEARL);
+        let canonical = extract_program(&honest_trace().matrix);
+
+        let evil = CompositeTrace::baseline_min();
+        let forged = CompositePublicInputs::zero();
+        let (evil_proof, evil_prog) = composite_prove_pinned_logup(&cfg, evil, &forged);
+        assert_ne!(evil_prog.values, canonical.values);
+
+        composite_verify_pinned_logup(&cfg, &evil_prog, &evil_proof, &forged)
+            .expect("evil proof self-consistent vs its own program");
+        assert!(
+            composite_verify_pinned_logup(&cfg, &canonical, &evil_proof, &forged).is_err(),
+            "CRIT-1 under Route A: forged proof must fail vs canonical program"
+        );
+        assert!(
+            composite_verify_pow_pinned_logup(
+                &cfg, &canonical, &evil_proof, &forged, &[0xFFu8; 32]
+            )
+            .is_err(),
+            "CRIT-1 under Route A: forged winning PoW rejected"
+        );
+    }
+
+    /// Tampering any PROGRAM_COL is rejected vs the canonical
+    /// program under Route A (full coverage of all PROGRAM_COLS).
+    #[test]
+    fn routea_crit1_tampered_program_col_rejected() {
+        use crate::composite_full_air::PROGRAM_COLS;
+        use crate::composite_layout::TOTAL_TRACE_WIDTH;
+        use p3_field::integers::QuotientMap;
+        use p3_field::PrimeField64;
+
+        let cfg = build_config(&test_zk_params(), &CircuitConfig::TEST_PEARL);
+        let canonical = extract_program(&honest_trace().matrix);
+
+        for &col in &PROGRAM_COLS {
+            let mut t = honest_trace();
+            let r = 50usize;
+            let cur =
+                t.matrix.values[r * TOTAL_TRACE_WIDTH + col].as_canonical_u64();
+            t.matrix.values[r * TOTAL_TRACE_WIDTH + col] =
+                <Val<AiPowStarkConfig> as QuotientMap<u64>>::from_int(cur.wrapping_add(1));
+            let pis = CompositePublicInputs::derive_from_matrix(&t.matrix);
+            let (proof, _) = composite_prove_pinned_logup(&cfg, t, &pis);
+            assert!(
+                composite_verify_pinned_logup(&cfg, &canonical, &proof, &pis).is_err(),
+                "Route A: tampered PROGRAM_COL {col} must be rejected vs canonical"
+            );
+        }
+    }
+
+    /// HIGH-2 keystone holds under Route A: a free (non-CUMSUM)
+    /// winning jackpot message is rejected.
+    #[test]
+    fn routea_high2_free_jackpot_message_rejected() {
+        use crate::composite_layout::{JACKPOT_MSG_START, TOTAL_TRACE_WIDTH};
+        use p3_field::integers::QuotientMap;
+
+        let cfg = build_config(&test_zk_params(), &CircuitConfig::TEST_PEARL);
+
+        let ok = honest_trace();
+        let canonical = extract_program(&ok.matrix);
+        let pis_ok = CompositePublicInputs::derive_from_trace(&ok);
+        let (p_ok, _) = composite_prove_pinned_logup(&cfg, ok, &pis_ok);
+        composite_verify_pinned_logup(&cfg, &canonical, &p_ok, &pis_ok)
+            .expect("zero-CUMSUM honest trace satisfies the keystone under Route A");
+
+        let mut evil = honest_trace();
+        let h = evil.height();
+        let last = (h - 1) * TOTAL_TRACE_WIDTH;
+        evil.matrix.values[last + JACKPOT_MSG_START] =
+            <Val<AiPowStarkConfig> as QuotientMap<u64>>::from_int(0xDEAD_BEEFu64);
+        let pis_evil = CompositePublicInputs::derive_from_matrix(&evil.matrix);
+        let (p_evil, _) = composite_prove_pinned_logup(&cfg, evil, &pis_evil);
+        assert!(
+            composite_verify_pinned_logup(&cfg, &canonical, &p_evil, &pis_evil).is_err(),
+            "HIGH-2 under Route A: free jackpot message must be rejected"
         );
     }
 

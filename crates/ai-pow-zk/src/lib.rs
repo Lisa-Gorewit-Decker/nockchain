@@ -75,8 +75,9 @@ pub use crate::composite_full_air_with_lookups::{
     CompositeFullAirWithLookups, CompositeFullAirWithLookupsPinned,
 };
 pub use crate::composite_proof::{
-    composite_prove, composite_prove_pinned, composite_setup, composite_verify,
-    composite_verify_pinned, composite_verify_pow, composite_verify_pow_pinned,
+    composite_prove, composite_prove_pinned, composite_prove_pinned_logup, composite_setup,
+    composite_verify, composite_verify_pinned, composite_verify_pinned_logup,
+    composite_verify_pow, composite_verify_pow_pinned, composite_verify_pow_pinned_logup,
     hash_jackpot_le_bytes, CompositeVerificationError, PowVerifyError,
 };
 pub use crate::composite_public::CompositePublicInputs;
