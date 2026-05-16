@@ -36,7 +36,6 @@ use p3_air::{Air, AirBuilder, BaseAir, WindowAccess};
 use p3_field::PrimeCharacteristicRing;
 use p3_matrix::dense::RowMajorMatrix;
 
-use super::blake3::round_ops::xor_32_shift_if;
 use crate::Val;
 
 /// Pearl §4.5 left-rotation amount (`LROT_PER_TILE`).
@@ -66,7 +65,11 @@ pub mod cols {
     /// (`M_cur[slot]`) — the operand `xor_32_shift_if` rotates.
     pub const MCUR_BITS: usize = FOLD_STATE + FOLD_STATE_LEN; // 66
     pub const MCUR_BITS_LEN: usize = 32;
-    pub const ROW_W: usize = MCUR_BITS + MCUR_BITS_LEN; // 98
+    /// Materialised `XSTEP ⊕ rotl13(M_cur[slot])` (u32) — keeps
+    /// the fold transition degree ≤ 2 (see `composite_layout::
+    /// FOLD_XOR_OUT` / HIGH2_2_DESIGN §4.A).
+    pub const XOR_OUT: usize = MCUR_BITS + MCUR_BITS_LEN; // 98
+    pub const ROW_W: usize = XOR_OUT + 1; // 99
 }
 
 /// Zero-sized chip type.
@@ -83,6 +86,7 @@ pub struct FoldOffsets {
     pub xstep_bits: usize,
     pub fold_state: usize,
     pub mcur_bits: usize,
+    pub xor_out: usize,
 }
 
 impl FoldChip {
@@ -93,6 +97,7 @@ impl FoldChip {
         xstep_bits: cols::XSTEP_BITS,
         fold_state: cols::FOLD_STATE,
         mcur_bits: cols::MCUR_BITS,
+        xor_out: cols::XOR_OUT,
     };
 
     /// Composite-trace offsets (HIGH-2.2 §4.A/§4.D wiring) — the
@@ -104,6 +109,7 @@ impl FoldChip {
         xstep_bits: crate::composite_layout::FOLD_XSTEP_BITS_START,
         fold_state: crate::composite_layout::FOLD_STATE_START,
         mcur_bits: crate::composite_layout::FOLD_MCUR_BITS_START,
+        xor_out: crate::composite_layout::FOLD_XOR_OUT,
     };
 
     /// Composite-layout entry point: `eval_at(builder,
@@ -165,6 +171,29 @@ impl FoldChip {
                     + cur[off.slot_sel + s].into() * cur[off.fold_state + s].into();
             }
             builder.assert_eq(m_acc, sel_val);
+
+            // Materialise the fold's XOR result into FOLD_XOR_OUT
+            // (degree 2 — the `2·a·b` term), so the cross-row
+            // selected-slot binding below stays degree 2 instead
+            // of degree 3 (§4.A root cause: batch-stark rejects a
+            // non-zero degree-3 constraint that uni-stark
+            // accepts). `xor_out == Σ_p (xstep_bits[p] ⊕
+            // mcur_bits[(p+19) mod 32])·2^p`, i.e. `XSTEP ⊕
+            // (M_cur[slot] <<< 13)`. Unconditional: on non-fold
+            // rows xstep_bits = mcur_bits = 0 ⇒ xor_out = 0.
+            let mut xacc: AB::Expr = <AB::Expr as PrimeCharacteristicRing>::ZERO;
+            let mut powx2: AB::F = <AB::F as PrimeCharacteristicRing>::ONE;
+            for p in 0..32 {
+                let a = cur[off.xstep_bits + p];
+                let b = cur[off.mcur_bits + (p + 32 - LROT) % 32];
+                // a XOR b = a + b - 2ab (a, b boolean-checked above).
+                let two_ab: AB::Expr =
+                    a.into() * b.into() * <AB::F as PrimeCharacteristicRing>::TWO;
+                let xor_bit: AB::Expr = a.into() + b.into() - two_ab;
+                xacc = xacc + xor_bit * powx2.clone();
+                powx2 = powx2 * two.clone();
+            }
+            builder.assert_eq(cur[off.xor_out].into(), xacc);
         }
 
         // ---- Boundary: first row state is zero ----
@@ -183,21 +212,19 @@ impl FoldChip {
         // Other slots:    M_next[s]    = M_cur[s]
         {
             // Snapshot owned arrays before opening the sub-builder.
-            let (xstep_bits, mcur_bits, sel, cur_state, is_fold): (
-                [AB::Expr; 32],
-                [AB::Var; 32],
+            let (sel, cur_state, is_fold, xor_out): (
                 [AB::Var; cols::SLOT_SEL_LEN],
                 [AB::Var; cols::FOLD_STATE_LEN],
+                AB::Expr,
                 AB::Expr,
             ) = {
                 let main = builder.main();
                 let cur = main.current_slice();
                 (
-                    core::array::from_fn(|i| cur[off.xstep_bits + i].into()),
-                    core::array::from_fn(|i| cur[off.mcur_bits + i]),
                     core::array::from_fn(|s| cur[off.slot_sel + s]),
                     core::array::from_fn(|s| cur[off.fold_state + s]),
                     cur[off.is_fold].into(),
+                    cur[off.xor_out].into(),
                 )
             };
             let nxt_state: [AB::Var; cols::FOLD_STATE_LEN] = {
@@ -208,15 +235,18 @@ impl FoldChip {
 
             let mut tb = builder.when_transition();
 
-            // Selected next slot value: Σ_s SLOT_SEL[s]·M_next[s].
-            // On a fold row exactly one SLOT_SEL is 1, so this is
-            // M_next[slot]; `xor_32_shift_if` (gated by IS_FOLD)
-            // forces it to X_STEP XOR (M_cur[slot] <<< 13).
+            // Selected slot binding (degree 2): on a fold row
+            // exactly one SLOT_SEL is 1, so Σ_s SLOT_SEL[s]·
+            // M_next[s] = M_next[slot]; force it to
+            // is_fold·FOLD_XOR_OUT (= X_STEP ⊕ rotl13(M_cur[slot])
+            // on fold rows, 0 otherwise). `sel·nxt` and
+            // `is_fold·xor_out` are both degree 2 — the deg-3
+            // `is_fold·(res_sel − acc)` form is gone (§4.A fix).
             let mut res_sel: AB::Expr = <AB::Expr as PrimeCharacteristicRing>::ZERO;
             for s in 0..cols::FOLD_STATE_LEN {
                 res_sel = res_sel + sel[s].into() * nxt_state[s].into();
             }
-            xor_32_shift_if(&mut tb, res_sel, &xstep_bits, &mcur_bits, is_fold, LROT);
+            tb.assert_eq(res_sel, is_fold * xor_out);
 
             // Non-selected slots pass through unchanged. When
             // IS_FOLD = 0 every SLOT_SEL is 0, so all 16 slots pass
@@ -289,8 +319,9 @@ pub fn build_trace(x_steps: &[i32]) -> RowMajorMatrix<Val> {
             set_u32(row, cols::FOLD_STATE + s, m[s]);
         }
         set_bits(row, cols::MCUR_BITS, m[slot]);
-
-        m[slot] = rotl13_xor(m[slot], x);
+        let folded = rotl13_xor(m[slot], x); // = XSTEP ⊕ rotl13(M_cur[slot])
+        set_u32(row, cols::XOR_OUT, folded);
+        m[slot] = folded;
     }
 
     // Rows [len, n): final state, all selectors 0 ⇒ full

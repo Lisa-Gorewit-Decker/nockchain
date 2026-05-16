@@ -257,6 +257,59 @@ interaction. `routea_honest_roundtrip` (same prover, **zero**
 FOLD) passes; the unit uni-stark prover with non-zero FOLD
 passes; only their *intersection* fails.
 
+**UPDATE 2026-05-16 — degree hypothesis DISPROVEN; locus
+re-narrowed by bisection (the analysis below is superseded):**
+
+- Implemented the degree-2 fix (added `FOLD_XOR_OUT`, split the
+  deg-3 transition into two deg-2 constraints). FoldChip
+  standalone **9/0**, `high2_2_fold_chain_in_composite_unit`
+  **✓**, and the full `crit1_*`/`high2_*`/`routea_*` suite
+  **19/0** (no regression from the new column). **But
+  `high2_2_fold_chain_pinned_logup` still fails
+  `OodEvaluationMismatch`** ⇒ FoldChip constraint *degree was
+  not the cause*. (The degree-2 rewrite is kept anyway — valid
+  hygiene, fully tested.)
+- Bisection `high2_2_fold_chain_pinned_unistark` (same
+  fold+jackpot trace, **uni-stark** pinned: §4.D keystone +
+  CRIT-1 program-pin, *no* LogUp/batch-stark) **also FAILS**
+  `OodEvaluationMismatch` ⇒ the bug is **not** batch-stark- or
+  LogUp-specific either.
+- **Established locus:** `composite_prove` (unit
+  `CompositeFullAir`, no pin/keystone) + fold chain **passes**;
+  adding the **jackpot-hash block *and* the pinned layer**
+  (program-pin + §4.D keystone) makes it fail under *both*
+  uni-stark and batch-stark. So it is a constraint interaction
+  between **(fold-chain FOLD_STATE propagation) × (jackpot-hash
+  block on the last rows) × (the pinned program-pin / §4.D
+  keystone)** — not the prover backend, not FoldChip degree.
+- **Likely suspect:** the §4.D keystone reads `FOLD_STATE` on
+  the **last row**, which is *also* the
+  `place_jackpot_hash_block` finalize row, and this is the
+  first trace with **non-zero last-row `JACKPOT_MSG`** *and* a
+  non-zero `FOLD_STATE` propagated through the jackpot block
+  under the pinned `when_last_row` selector. The base
+  `CompositeFullAir` `when_last_row` JACKPOT_MSG↔PI binding is
+  also exercised with non-zero values here for the first time.
+- **Next bisection (precise, cheap, documented for the fix):**
+  add a unit `composite_prove` (no pin/keystone) test with
+  **fold chain + jackpot block together** — if it FAILS, it's a
+  base `CompositeFullAir` fold↔jackpot (or last-row PI-binding)
+  interaction; if it PASSES, the fault is specifically the
+  CRIT-1 program-pin or the §4.D keystone with non-zero
+  last-row FOLD_STATE/JACKPOT_MSG. Then instrument the failing
+  `when_last_row` / pin constraint directly.
+
+Status: §4.A FoldChip composite wiring + degree-2 rewrite +
+keystone are landed and non-regressing (suite green with the two
+repros `#[ignore]`d); the real-M bridge path is blocked on this
+one precisely-localized, reproducible constraint-interaction bug.
+Production stays green (bridge reverted, `5b2adfe`).
+
+---
+
+<details><summary>Superseded degree-3 hypothesis (kept for
+provenance)</summary>
+
 **Root-cause hypothesis (strong; 2026-05-16):** FoldChip's
 transition emits a **degree-3** constraint —
 `is_fold · (res_sel − acc)` where
@@ -309,6 +362,8 @@ quotient-degree bug with a concrete fix, **not** a design flaw.
 — avoid the §4.C.8 ~10x preprocessed blow-up) and §7
 (real-difficulty e2e + docs flip) follow once the bridge path
 is green.
+
+</details>
 
 ### 4.A Honest matmul-step trace placement
 

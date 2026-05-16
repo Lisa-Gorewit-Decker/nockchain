@@ -68,7 +68,7 @@ use crate::composite_layout::{
     MAT_ID_LIMBS_START, MAT_UNPACK_LEN, MAT_UNPACK_START, NOISED_PACKED_START,
     NOISE_UNPACK_LEN, NOISE_UNPACK_START, STARK_ROW_IDX, TILE_D, TILE_H,
     FOLD_IS_FOLD, FOLD_MCUR_BITS_START, FOLD_SLOT_SEL_START, FOLD_STATE_START,
-    FOLD_XSTEP, FOLD_XSTEP_BITS_START,
+    FOLD_XOR_OUT, FOLD_XSTEP, FOLD_XSTEP_BITS_START,
     TOTAL_TRACE_WIDTH, UINT8_DATA_LEN, UINT8_DATA_START, URANGE13_FREQ, URANGE8_FREQ,
 };
 use crate::Val;
@@ -1025,7 +1025,9 @@ impl CompositeTrace {
                 set_u32(row, FOLD_STATE_START + s, m[s]);
             }
             set_bits(row, FOLD_MCUR_BITS_START, m[slot]);
-            m[slot] = m[slot].rotate_left(13) ^ x;
+            let folded = m[slot].rotate_left(13) ^ x;
+            set_u32(row, FOLD_XOR_OUT, folded);
+            m[slot] = folded;
         }
         // Propagate the final state through every remaining row
         // (incl. the jackpot-hash block) so the last row — where

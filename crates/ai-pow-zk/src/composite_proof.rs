@@ -433,18 +433,22 @@ mod tests {
     /// JACKPOT_MSG = final M (so the keystone holds) →
     /// jackpot-hash block, proven via the production
     /// `*_pinned_logup` path.
-    // KNOWN-FAILING repro of the §4.A bug (kept for the fix).
-    // Unit `composite_prove` + a real fold chain PASSES
-    // (`high2_2_fold_chain_in_composite_unit`), but the same
-    // trace through the production Route-A batch-stark path fails
-    // `OodEvaluationMismatch { index: Some(0) }` — even though
-    // the §4.D keystone *data* precondition (last-row
-    // JACKPOT_MSG == FOLD_STATE == M) is asserted holding here.
-    // ⇒ a FoldChip↔batch-stark (pinned+LogUp) interaction with
-    // non-zero FOLD columns. `#[ignore]` until debugged so the
-    // suite stays green; run explicitly to iterate on the fix.
+    // KNOWN-FAILING §4.A repro (kept for the fix). A real fold
+    // chain + keystone + jackpot, via the Route-A batch-stark
+    // path, fails `OodEvaluationMismatch { index: Some(0) }`.
+    // The unit `composite_prove` path (no pin/keystone/LogUp)
+    // PASSES with the same trace (`*_in_composite_unit`), and
+    // the §4.D keystone *data* precond is asserted holding.
+    // The degree-3→2 FoldChip rewrite (FOLD_XOR_OUT) did NOT
+    // fix it — **hypothesis disproven**: the cause is NOT
+    // FoldChip constraint degree. It is isolated to the
+    // pinned/keystone/LogUp(batch-stark) layer with non-zero
+    // FOLD. Next bisection: a uni-stark *pinned* (keystone, no
+    // LogUp) variant to split keystone/program-pin vs the
+    // batch-stark LogUp layer. `#[ignore]` so the suite stays
+    // green. See HIGH2_2_DESIGN.md §4.A.
     #[test]
-    #[ignore = "HIGH-2.2 §4.A: FoldChip non-zero path fails under batch-stark; see HIGH2_2_DESIGN.md §4.A"]
+    #[ignore = "HIGH-2.2 §4.A: batch-stark pinned+LogUp + non-zero FOLD fails; degree hypothesis disproven; see HIGH2_2_DESIGN.md §4.A"]
     fn high2_2_fold_chain_pinned_logup() {
         use crate::composite_layout::TOTAL_TRACE_WIDTH;
         use p3_field::integers::QuotientMap;
@@ -481,6 +485,47 @@ mod tests {
         let (proof, _) = composite_prove_pinned_logup(&cfg, trace, &pis);
         composite_verify_pinned_logup(&cfg, &canonical, &proof, &pis)
             .expect("fold chain + keystone + jackpot must verify under Route-A");
+    }
+
+    /// HIGH-2.2 §4.A bisection: same fold-chain+keystone+jackpot
+    /// trace, proven via the **uni-stark pinned** path
+    /// (`composite_prove_pinned` / `composite_verify_pinned`) —
+    /// the §4.D keystone + CRIT-1 program-pin **without**
+    /// batch-stark / LogUp. Splits the failing layer:
+    ///   - this PASSES + `*_pinned_logup` FAILS ⇒ bug is the
+    ///     batch-stark LogUp layer.
+    ///   - this FAILS ⇒ bug is the §4.D keystone / program-pin
+    ///     (independent of batch-stark).
+    /// RESULT (2026-05-16): **FAILED** `OodEvaluationMismatch`.
+    /// ⇒ the §4.A bug is **not** batch-stark/LogUp-specific
+    /// (uni-stark pinned fails too) and **not** FoldChip
+    /// constraint degree (the degree-2 rewrite didn't help).
+    /// Locus narrowed to **(fold chain + jackpot block) under
+    /// the pinned path** (CompositeFullAir + program-pin + §4.D
+    /// keystone); the unit `composite_prove` + fold-only path
+    /// passes. Next bisection (documented, HIGH2_2_DESIGN.md
+    /// §4.A): unit `composite_prove` + fold + jackpot (no
+    /// pin/keystone) to split a base fold↔jackpot interaction
+    /// from a keystone/program-pin one. `#[ignore]` so the suite
+    /// stays green.
+    #[test]
+    #[ignore = "HIGH-2.2 §4.A: (fold+jackpot)×pinned uni-stark fails; not degree/not batch-stark; see HIGH2_2_DESIGN.md §4.A"]
+    fn high2_2_fold_chain_pinned_unistark() {
+        let cfg = build_config(&test_zk_params(), &CircuitConfig::TEST_PEARL);
+        let ch: [u32; 8] = core::array::from_fn(|i| 0x5EED_0000 + i as u32);
+        let mut trace = CompositeTrace::baseline_min();
+        let h = trace.height();
+        let xs: Vec<i32> = (0..16i32)
+            .map(|i| i.wrapping_mul(0x0151_5151) ^ 0x33)
+            .collect();
+        let m = trace.place_fold_chain(64, &xs);
+        let _ = trace.place_jackpot_hash_block(h - 8, &m, &ch);
+        let pis = CompositePublicInputs::derive_from_trace(&trace);
+        let canonical = extract_program(&trace.matrix);
+        let (proof, _) = composite_prove_pinned(&cfg, trace, &pis);
+        composite_verify_pinned(&cfg, &canonical, &proof, &pis).expect(
+            "BISECTION: fold chain + keystone + program-pin (uni-stark, no LogUp)",
+        );
     }
 
     // ───────────── CRIT-1 malicious-prover regression suite ─────────────

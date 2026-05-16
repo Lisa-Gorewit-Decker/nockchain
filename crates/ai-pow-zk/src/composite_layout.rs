@@ -400,6 +400,14 @@ pub const FOLD_STATE_LEN: usize = JACKPOT_SIZE; // 16
 /// 32 LE bits of the currently addressed slot (`M_cur[slot]`).
 pub const FOLD_MCUR_BITS_START: usize = FOLD_STATE_START + FOLD_STATE_LEN;
 pub const FOLD_MCUR_BITS_LEN: usize = 32;
+/// Materialised XOR result `X_STEP ⊕ rotl13(M_cur[slot])` (u32).
+/// Splitting the fold's `is_fold·(Σ sel·nxt − acc)` (degree 3)
+/// into `FOLD_XOR_OUT == acc` (deg 2) + `Σ sel·nxt ==
+/// is_fold·FOLD_XOR_OUT` (deg 2) keeps every FoldChip constraint
+/// ≤ degree 2 — required for the batch-stark quotient (§4.A
+/// root cause; the deg-3 form failed only there, with non-zero
+/// FOLD values).
+pub const FOLD_XOR_OUT: usize = FOLD_MCUR_BITS_START + FOLD_MCUR_BITS_LEN;
 
 // =====================================================================
 //  Total trace width
@@ -408,7 +416,7 @@ pub const FOLD_MCUR_BITS_LEN: usize = 32;
 /// Total trace width: pinned end-of-layout cursor. Phases 3+ extend
 /// chip-internal sub-columns but must not exceed this without bumping
 /// the constant.
-pub const TOTAL_TRACE_WIDTH: usize = FOLD_MCUR_BITS_START + FOLD_MCUR_BITS_LEN;
+pub const TOTAL_TRACE_WIDTH: usize = FOLD_XOR_OUT + 1;
 
 #[cfg(test)]
 mod tests {
