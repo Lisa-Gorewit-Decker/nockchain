@@ -8,6 +8,28 @@
 > review. Verdict + corrections at the end; the G3 spec has been
 > annotated with an AUDIT-CORRECTIONS banner pointing here.
 
+> **Decision (2026-05-17).** If G3c proceeds on the
+> `Plonky3-recursion` library, we will **vendor it into this repo**
+> (pinned/forked, audit-stable, Plonky3-rev aligned to ai-pow-zk —
+> resolving F2) and **add Tip5 support to the vendored copy,
+> arithmetizing the canonical `nockchain-math::tip5` permutation**
+> (a `tip5-circuit-air` analogous to `poseidon2-circuit-air` +
+> `CircuitChallenger` Tip5 arms + `PermConfig::Tip5` MMCS + CTL
+> wiring). This selects audit remediation **R1b** (keep Tip5
+> everywhere; extend the recursion lib) over **R1a** (migrate
+> Layer-0 to Poseidon2): the Layer-0 `AiPowStarkConfig` is
+> **unchanged**, so the existing 120-bit Tip5 FRI soundness
+> analysis (`ai_pow_zk_fri_sweep`) is **preserved, not
+> invalidated**. The Tip5 circuit-AIR MUST source its
+> constants/round structure from `nockchain-math::tip5` (single
+> source of truth) and be guarded by a cross-test asserting the
+> in-circuit AIR ≡ native `nockchain_math::tip5::permute` on
+> random inputs (a re-implemented hash that subtly differs = silent
+> recursion unsoundness — the primary R1b risk). This is intent,
+> not yet executed; gated by the prerequisites below; the G4 Pearl
+> interim stays authoritative until the vendored+extended stack is
+> audited (F7).
+
 **Bottom line.** The G3 *logic* (segment + carry-chain induction +
 per-segment CRIT-1 + count/order pinning ⇒ equivalent to the
 monolith) is sound and *implementable* on a recursion library of
@@ -69,32 +91,34 @@ field switch") are **factually wrong**. A recursive verifier must
 arithmetize *exactly the hash the inner proof used* for FS +
 Merkle. The reference cannot verify a Tip5 proof at all.
 
-**Remediations (pick one; both are large, soundness-critical
-prerequisites — not part of G3c proper).**
-- **R1a (recommended): migrate the Layer-0 `AiPowStarkConfig` to
-  Poseidon2-over-Goldilocks (W8/RATE4)** — challenger *and*
-  `ValMmcs` — so the reference recursion verifier applies
-  directly. Consequence: this changes the base proving system for
-  **all of ai-pow-zk** (CRIT-1, every chip, the §6(b) stack just
-  landed); the existing **120-bit FRI soundness analysis
-  (`ai_pow_zk_fri_sweep`) is invalidated and must be re-derived
-  for Poseidon2** (different sponge rate/capacity ⇒ different
-  query/grinding budget); full regression re-run. It also changes
-  the byte-equivalence anchor only if Tip5 were part of the
-  *mineable unit* — it is **not** (the mineable unit is the plain
-  `TileState`/`keyed_hash`, BLAKE3-keyed; Tip5 is only the
-  STARK's FRI/Merkle/FS hash), so the merge-mining invariant is
-  preserved. Still: a deep, audited migration.
-- **R1b: add Tip5 to the recursion stack** — a Tip5 circuit-AIR
-  (analogous to `poseidon2-circuit-air/`) + `CircuitChallenger`
-  Tip5 arms + CTL wiring. Large new in-circuit-crypto surface
-  that **itself needs cryptographic audit** (a wrong Tip5
-  arithmetization = silent recursion-soundness break). Higher
-  risk than R1a; only justified if Tip5 must stay (it need not —
-  see R1a).
+**Remediation — CHOSEN: R1b (per the Decision above).**
+- **R1b (CHOSEN): vendor the recursion lib and add Tip5 to the
+  vendored copy** — a `tip5-circuit-air` arithmetizing the
+  canonical `nockchain-math::tip5` permutation (constants/round
+  structure sourced from `nockchain-math`, single source of
+  truth), `CircuitChallenger` Tip5 arms, `PermConfig::Tip5` MMCS,
+  CTL wiring. Layer-0 `AiPowStarkConfig` stays Tip5 ⇒ the base
+  proving system and the **120-bit Tip5 FRI analysis
+  (`ai_pow_zk_fri_sweep`) are preserved, not invalidated**, and
+  the just-landed §6(b)/G1+G2 stack is untouched. Cost: a new
+  in-circuit-crypto surface that **itself needs cryptographic
+  audit**; the dominant risk is an in-circuit Tip5 that subtly
+  differs from native `permute` (silent recursion unsoundness),
+  mitigated by sourcing from `nockchain-math` + a mandatory
+  cross-test (in-circuit AIR ≡ `nockchain_math::tip5::permute`).
+- **R1a (REJECTED): migrate Layer-0 to Poseidon2-over-Goldilocks**
+  — would let the reference apply directly, but changes the base
+  proving system for **all of ai-pow-zk** and **invalidates the
+  120-bit FRI soundness analysis** (must re-derive for Poseidon2)
+  + full re-validation of the entire stack. Rejected as
+  higher-blast-radius than R1b; the merge-mining invariant is
+  unaffected either way (Tip5 is the STARK FRI/Merkle/FS hash,
+  *not* the mineable unit — that is the plain BLAKE3-keyed
+  `TileState`).
 
-**Net:** G3c is gated on R1a (or R1b). The spec must stop
-asserting Tip5-for-recursion.
+**Net:** G3c is gated on R1b (vendor + Tip5-circuit-AIR). The
+spec must stop asserting Tip5-was-chosen-for-recursion; the
+*intent* is now to *make* it true in the vendored copy.
 
 ---
 
@@ -117,13 +141,14 @@ the reference verifier. Spec §10/§14 ("confirm
 recursion-friendliness at impl") understated this to a footnote;
 it is a hard prerequisite.
 
-**Remediation.** Align Plonky3 revs (upgrade ai-pow-zk to
-`56952503…`, or rebase the recursion fork onto `6de5cba`). Either
-is a dependency migration with **regression risk to the entire
-ai-pow-zk stack including the just-landed §6(b)/G1+G2** — re-run
-the full `ai-pow-zk --lib` + `ai-pow --features zk` suites after.
-Sequence this *before* any R1a/R1b work so the migration is
-done once.
+**Remediation (subsumed by the vendor Decision).** Vendoring the
+recursion lib into this repo means **we own and pin its Plonky3
+rev inside the vendored tree**, aligned to ai-pow-zk's rev (or
+vice-versa) as a one-time migration with **regression risk to the
+entire ai-pow-zk stack including the just-landed §6(b)/G1+G2** —
+re-run the full `ai-pow-zk --lib` + `ai-pow --features zk` suites
+after. Sequence this *before* the R1b Tip5 work so the migration
+is done once, on the vendored copy.
 
 ---
 
@@ -346,8 +371,8 @@ original spec):
 
 | # | Prerequisite | From finding | Class |
 |---|---|---|---|
-| P0 | Align Plonky3 rev (ai-pow-zk ↔ recursion fork) + full regression | F2 | dependency migration |
-| P1 | Migrate Layer-0 `AiPowStarkConfig` to Poseidon2-Goldilocks (challenger + MMCS); **re-derive the FRI soundness budget** for Poseidon2; full re-validation | F1, F6 | base-system change, soundness-critical |
+| P0 | **Vendor `Plonky3-recursion` into the repo** (pinned/forked), Plonky3 rev aligned to ai-pow-zk inside the vendored tree; full regression | F2, F7 | one-time dependency migration |
+| P1 | **Add `tip5-circuit-air` to the vendored copy** arithmetizing `nockchain-math::tip5` (constants from `nockchain-math`, single source of truth) + `CircuitChallenger`/MMCS Tip5 arms + mandatory cross-test (in-circuit ≡ native `permute`). Layer-0 stays Tip5; the 120-bit FRI sweep is **preserved**. (R1b chosen; R1a rejected.) | F1 | new in-circuit-crypto, soundness-critical, needs crypto audit |
 | P2 | Confirm `CompositeFullAirWithLookupsPinned` is periodic-free | F9 | compatibility gate |
 | P3 | G3c built **batch-stark path only**, with a guard against the uni path and the `unsafe_*` FRI ctor | F5, F8 | implementation constraint |
 | P4 | Build + **red-team** the bespoke recursion-node glue: `PROGRAM_ROOT` per-segment CRIT-1 binding (F3) and the cross-child carry/adjacency/anchor stitch (F4), with adversarial tests mirroring `crit1_*` one layer up | F3, F4 | the soundness core of G3c |
