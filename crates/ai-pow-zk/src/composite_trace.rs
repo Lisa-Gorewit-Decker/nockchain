@@ -673,6 +673,282 @@ impl CompositeTrace {
         self.place_matrix_hash(row_start, matrix_bytes, key, 5)
     }
 
+    /// P-B.2.2 — Pearl §4.6 **strip opening**. Recompute the
+    /// committed BLAKE3 chunk-Merkle root from ONLY the
+    /// contiguous chunk range `[c0, c1)` of the (padded) matrix
+    /// plus the off-range authentication siblings — instead of
+    /// re-hashing the whole matrix ([`place_matrix_hash`]). The
+    /// recomputed root is bound to `PI_HASH_A`/`PI_HASH_B` by the
+    /// **unchanged** C3 constraint
+    /// (`IS_HASH_A/B · (CV_OUT − PI) = 0`): same soundness model,
+    /// `O((c1-c0)·1024)` rows instead of `O(|matrix|)`.
+    ///
+    /// * `strip_bytes` — witness bytes of chunks `[c0, c1)`
+    ///   (contiguous, length `(c1-c0)·1024`); the in-circuit
+    ///   leaf layer hashes these, binding the revealed strip.
+    /// * `auth_siblings` — off-range subtree-root CVs from
+    ///   [`crate::blake3_tree::open_strip`], in the post-order
+    ///   the true BLAKE3 tree consumes them (a wrong sibling ⇒
+    ///   wrong root ⇒ C3 reject — BLAKE3 collision resistance).
+    /// * `num_chunks` — total chunks of the *full padded* matrix
+    ///   (the tree shape; verifier-fixed from params — P-B.2.3).
+    /// * `selector_idx` — `4` = `IS_HASH_A`, `5` = `IS_HASH_B`
+    ///   (set on the recomputed-root compression's finalize row).
+    ///
+    /// Every placed BLAKE3 leaf/parent compression is
+    /// byte-identical to the one [`place_matrix_hash`] would
+    /// place for that node (P-B.2.0: pairwise ≡ true tree), so
+    /// the recomputed root equals `commit::matrix_commitment` of
+    /// the full matrix for honest inputs.
+    pub fn place_matrix_strip_opening(
+        &mut self,
+        row_start: usize,
+        strip_bytes: &[u8],
+        c0: usize,
+        c1: usize,
+        num_chunks: usize,
+        auth_siblings: &[crate::blake3_tree::AuthSibling],
+        kappa: &[u8; 32],
+        selector_idx: usize,
+    ) -> (usize, [u32; 8]) {
+        assert!(
+            c0 < c1 && c1 <= num_chunks,
+            "range [{c0},{c1}) out of 0..{num_chunks}"
+        );
+        assert_eq!(
+            strip_bytes.len(),
+            (c1 - c0) * 1024,
+            "strip_bytes must be exactly (c1-c0)*1024"
+        );
+        let key_words: [u32; 8] = core::array::from_fn(|i| {
+            u32::from_le_bytes([
+                kappa[i * 4],
+                kappa[i * 4 + 1],
+                kappa[i * 4 + 2],
+                kappa[i * 4 + 3],
+            ])
+        });
+        let mut row = row_start;
+        if num_chunks == 1 {
+            assert!(
+                c0 == 0 && c1 == 1 && auth_siblings.is_empty(),
+                "lone chunk: must open the single chunk, no siblings"
+            );
+            let cv = self.place_leaf_chunk(
+                &mut row,
+                &strip_bytes[0..1024],
+                0,
+                &key_words,
+                true,
+                selector_idx,
+            );
+            return (row, cv);
+        }
+        let mut si = 0usize;
+        let root = self.fold_strip(
+            &mut row,
+            0,
+            num_chunks,
+            c0,
+            c1,
+            strip_bytes,
+            auth_siblings,
+            &mut si,
+            &key_words,
+            true,
+            selector_idx,
+        );
+        assert_eq!(
+            si,
+            auth_siblings.len(),
+            "unconsumed authentication siblings"
+        );
+        (row, root)
+    }
+
+    /// Place the 16-compression keyed BLAKE3 chunk-hash of one
+    /// 1024-byte chunk (global `chunk_index` ⇒ counter tweak),
+    /// byte-identical to [`place_matrix_hash`]'s chunk layer.
+    fn place_leaf_chunk(
+        &mut self,
+        row: &mut usize,
+        chunk_bytes: &[u8],
+        chunk_index: u64,
+        key_words: &[u32; 8],
+        single_chunk_root: bool,
+        selector_idx: usize,
+    ) -> [u32; 8] {
+        const F_CHUNK_START: u32 = 1 << 0;
+        const F_CHUNK_END: u32 = 1 << 1;
+        const F_ROOT: u32 = 1 << 3;
+        const F_KEYED_HASH: u32 = 1 << 4;
+        let mut cv = *key_words;
+        for b in 0..16 {
+            let blk = &chunk_bytes[b * 64..b * 64 + 64];
+            let message: [u32; 16] = core::array::from_fn(|i| {
+                u32::from_le_bytes([
+                    blk[i * 4],
+                    blk[i * 4 + 1],
+                    blk[i * 4 + 2],
+                    blk[i * 4 + 3],
+                ])
+            });
+            let mut flags = F_KEYED_HASH;
+            if b == 0 {
+                flags |= F_CHUNK_START;
+            }
+            if b == 15 {
+                flags |= F_CHUNK_END;
+            }
+            let is_root = single_chunk_root && b == 15;
+            if is_root {
+                flags |= F_ROOT;
+            }
+            let tweak = Blake3Tweak {
+                counter_low: chunk_index as u32,
+                counter_high: (chunk_index >> 32) as u16,
+                block_len: 64,
+                flags,
+            };
+            let extras: &[usize] = if is_root {
+                core::slice::from_ref(&selector_idx)
+            } else {
+                &[]
+            };
+            cv = self.place_blake3_hash_with_selectors(*row, &message, &cv, &tweak, extras);
+            *row += 8;
+        }
+        cv
+    }
+
+    /// Place one keyed BLAKE3 PARENT compression of `left‖right`
+    /// (byte-identical to [`place_matrix_hash`]'s parent layer).
+    fn place_parent(
+        &mut self,
+        row: &mut usize,
+        left: &[u32; 8],
+        right: &[u32; 8],
+        key_words: &[u32; 8],
+        is_root: bool,
+        selector_idx: usize,
+    ) -> [u32; 8] {
+        const F_PARENT: u32 = 1 << 2;
+        const F_ROOT: u32 = 1 << 3;
+        const F_KEYED_HASH: u32 = 1 << 4;
+        let mut message = [0u32; 16];
+        for j in 0..8 {
+            message[j] = left[j];
+            message[8 + j] = right[j];
+        }
+        let mut flags = F_KEYED_HASH | F_PARENT;
+        if is_root {
+            flags |= F_ROOT;
+        }
+        let tweak = Blake3Tweak {
+            counter_low: 0,
+            counter_high: 0,
+            block_len: 64,
+            flags,
+        };
+        let extras: &[usize] = if is_root {
+            core::slice::from_ref(&selector_idx)
+        } else {
+            &[]
+        };
+        let cv = self.place_blake3_hash_with_selectors(*row, &message, key_words, &tweak, extras);
+        *row += 8;
+        cv
+    }
+
+    /// True-BLAKE3-tree fold mirroring
+    /// [`crate::blake3_tree`]'s `fold_opening`: subtree fully
+    /// outside `[c0,c1)` ⇒ consume one witness sibling (no rows);
+    /// fully inside ⇒ recompute from leaf bytes; straddling ⇒
+    /// split at `left_len` and recurse. Sibling order is the
+    /// post-order `crate::blake3_tree::open_strip` produces.
+    #[allow(clippy::too_many_arguments)]
+    fn fold_strip(
+        &mut self,
+        row: &mut usize,
+        lo: usize,
+        hi: usize,
+        c0: usize,
+        c1: usize,
+        strip_bytes: &[u8],
+        sibs: &[crate::blake3_tree::AuthSibling],
+        si: &mut usize,
+        key_words: &[u32; 8],
+        is_root: bool,
+        selector_idx: usize,
+    ) -> [u32; 8] {
+        if hi <= c0 || lo >= c1 {
+            let s = &sibs[*si];
+            *si += 1;
+            assert!(
+                s.lo == lo && s.hi == hi,
+                "auth sibling range ({},{}) != node ({lo},{hi})",
+                s.lo,
+                s.hi
+            );
+            return core::array::from_fn(|i| {
+                u32::from_le_bytes([
+                    s.cv[i * 4],
+                    s.cv[i * 4 + 1],
+                    s.cv[i * 4 + 2],
+                    s.cv[i * 4 + 3],
+                ])
+            });
+        }
+        if c0 <= lo && hi <= c1 {
+            return self.subtree_inside(
+                row, lo, hi, c0, strip_bytes, key_words, is_root, selector_idx,
+            );
+        }
+        let mid = lo + crate::blake3_tree::left_len((hi - lo) as u64) as usize;
+        let l = self.fold_strip(
+            row, lo, mid, c0, c1, strip_bytes, sibs, si, key_words, false, selector_idx,
+        );
+        let r = self.fold_strip(
+            row, mid, hi, c0, c1, strip_bytes, sibs, si, key_words, false, selector_idx,
+        );
+        self.place_parent(row, &l, &r, key_words, is_root, selector_idx)
+    }
+
+    /// Recompute a fully-opened subtree's true-tree root from the
+    /// witness strip bytes (leaf chunk hashes + parents).
+    #[allow(clippy::too_many_arguments)]
+    fn subtree_inside(
+        &mut self,
+        row: &mut usize,
+        lo: usize,
+        hi: usize,
+        c0: usize,
+        strip_bytes: &[u8],
+        key_words: &[u32; 8],
+        is_root: bool,
+        selector_idx: usize,
+    ) -> [u32; 8] {
+        if hi - lo == 1 {
+            let off = (lo - c0) * 1024;
+            // num_chunks > 1 in this path ⇒ a leaf is never the
+            // root (the lone-chunk case is handled before fold).
+            return self.place_leaf_chunk(
+                row,
+                &strip_bytes[off..off + 1024],
+                lo as u64,
+                key_words,
+                false,
+                selector_idx,
+            );
+        }
+        let mid = lo + crate::blake3_tree::left_len((hi - lo) as u64) as usize;
+        let l = self
+            .subtree_inside(row, lo, mid, c0, strip_bytes, key_words, false, selector_idx);
+        let r = self
+            .subtree_inside(row, mid, hi, c0, strip_bytes, key_words, false, selector_idx);
+        self.place_parent(row, &l, &r, key_words, is_root, selector_idx)
+    }
+
     /// F1 (C1) — place a "key-pin" row binding the chain-pinned
     /// BLAKE3 key into `CV_IN`.
     ///
@@ -2652,5 +2928,186 @@ mod tests {
         // The IS_HASH_A=1 row should be the last block of the
         // single chunk: row 15 of the 16-block chunk → 15 × 8 + 7 = 127.
         assert_eq!(found_a, Some(127));
+    }
+
+    // ─────────────── P-B.2.2: strip opening ───────────────
+
+    fn b32_to_words(b: &[u8; 32]) -> [u32; 8] {
+        core::array::from_fn(|i| {
+            u32::from_le_bytes([b[i * 4], b[i * 4 + 1], b[i * 4 + 2], b[i * 4 + 3]])
+        })
+    }
+
+    /// **Core honest-equivalence (in-circuit).** For many
+    /// `(num_chunks, c0, c1)` — incl. non-power-of-two trees,
+    /// the full range, boundary-straddling ranges, and the
+    /// lone-chunk case — `place_matrix_strip_opening` recomputes
+    /// **exactly** the root `place_matrix_hash` produces for the
+    /// whole matrix, which is real `blake3::Hasher::new_keyed`
+    /// (= `commit::matrix_commitment`). Pure (no prove) ⇒ fast.
+    #[test]
+    fn strip_opening_root_equals_full_matrix_hash() {
+        let key: [u8; 32] = core::array::from_fn(|i| (i as u8) ^ 0x5A);
+        for &nc in &[1usize, 2, 3, 5, 8, 13] {
+            let raw: Vec<u8> = (0..nc * 1024)
+                .map(|i| ((i.wrapping_mul(2654435761)) ^ (i >> 4)) as u8)
+                .collect();
+            // Reference roots: full in-circuit hash + blake3.
+            let full_root = {
+                let mut t = CompositeTrace::baseline_min();
+                t.place_matrix_hash_a(0, &raw, &key).1
+            };
+            let blake = b32_to_words(
+                blake3::Hasher::new_keyed(&key)
+                    .update(&raw)
+                    .finalize()
+                    .as_bytes(),
+            );
+            assert_eq!(full_root, blake, "sanity: full hash == blake3 @ {nc}");
+
+            for c0 in 0..nc {
+                for c1 in (c0 + 1)..=nc {
+                    let (_opened, sibs) =
+                        crate::blake3_tree::open_strip(&raw, &key, c0, c1);
+                    let strip_bytes = &raw[c0 * 1024..c1 * 1024];
+                    let mut t = CompositeTrace::baseline_min();
+                    let (_n, strip_root) = t.place_matrix_strip_opening(
+                        0,
+                        strip_bytes,
+                        c0,
+                        c1,
+                        nc,
+                        &sibs,
+                        &key,
+                        4, // IS_HASH_A
+                    );
+                    assert_eq!(
+                        strip_root, full_root,
+                        "strip [{c0},{c1}) of {nc} chunks != committed root"
+                    );
+                }
+            }
+        }
+    }
+
+    /// **Positive AIR.** A strip opening verifies through the
+    /// composite AIR, with the recomputed root bound to
+    /// `PI_HASH_A` by the unchanged C3 constraint — and that PI
+    /// equals the real full-matrix commitment.
+    #[test]
+    fn strip_opening_full_air_prove_and_verify() {
+        let key = [0x99u8; 32];
+        let nc = 4usize;
+        let raw: Vec<u8> = (0..nc * 1024).map(|i| (i * 7 + 1) as u8).collect();
+        let (c0, c1) = (1usize, 3usize);
+        let (_o, sibs) = crate::blake3_tree::open_strip(&raw, &key, c0, c1);
+
+        let mut trace = CompositeTrace::baseline_min();
+        let (_n, root) = trace.place_matrix_strip_opening(
+            0,
+            &raw[c0 * 1024..c1 * 1024],
+            c0,
+            c1,
+            nc,
+            &sibs,
+            &key,
+            4,
+        );
+        let committed = b32_to_words(
+            blake3::Hasher::new_keyed(&key)
+                .update(&raw)
+                .finalize()
+                .as_bytes(),
+        );
+        assert_eq!(root, committed, "opened root must be the real commitment");
+
+        let cfg = build_stark_config(&test_zk_params(), &CircuitConfig::TEST_PEARL);
+        let pis = crate::composite_public::CompositePublicInputs::derive_from_matrix(
+            &trace.matrix,
+        );
+        assert_eq!(pis.hash_a, committed, "C3 PI bound to the commitment");
+        let pis_vec = pis.to_vec();
+        let proof =
+            prove::<AiPowStarkConfig, _>(&cfg, &CompositeFullAir, trace.matrix, &pis_vec);
+        verify::<AiPowStarkConfig, _>(&cfg, &CompositeFullAir, &proof, &pis_vec)
+            .expect("strip opening must verify through the composite AIR");
+    }
+
+    /// **Adversarial — the §4.6 soundness statement.** Opening a
+    /// *tampered* strip while the verifier holds the genuine
+    /// committed `PI_HASH_A` ⇒ recomputed root ≠ commitment ⇒ C3
+    /// rejects (BLAKE3 collision resistance). Same for a forged
+    /// authentication sibling.
+    #[test]
+    fn strip_opening_rejects_tampered_strip_or_sibling() {
+        let key = [0x2Au8; 32];
+        let nc = 8usize; // non-trivial tree ⇒ ≥1 auth sibling
+        let raw: Vec<u8> = (0..nc * 1024).map(|i| (i ^ 0xA5) as u8).collect();
+        let (c0, c1) = (3usize, 5usize);
+        let committed = b32_to_words(
+            blake3::Hasher::new_keyed(&key)
+                .update(&raw)
+                .finalize()
+                .as_bytes(),
+        );
+        let cfg = build_stark_config(&test_zk_params(), &CircuitConfig::TEST_PEARL);
+
+        // (a) tampered strip byte.
+        {
+            let (_o, sibs) = crate::blake3_tree::open_strip(&raw, &key, c0, c1);
+            let mut strip = raw[c0 * 1024..c1 * 1024].to_vec();
+            strip[10] ^= 1;
+            let mut trace = CompositeTrace::baseline_min();
+            trace.place_matrix_strip_opening(0, &strip, c0, c1, nc, &sibs, &key, 4);
+            let mut pis = crate::composite_public::CompositePublicInputs::derive_from_matrix(
+                &trace.matrix,
+            );
+            pis.hash_a = committed; // verifier holds the true commitment
+            let pis_vec = pis.to_vec();
+            let proof = prove::<AiPowStarkConfig, _>(
+                &cfg,
+                &CompositeFullAir,
+                trace.matrix,
+                &pis_vec,
+            );
+            assert!(
+                verify::<AiPowStarkConfig, _>(&cfg, &CompositeFullAir, &proof, &pis_vec)
+                    .is_err(),
+                "tampered strip must fail the C3 commitment binding"
+            );
+        }
+        // (b) forged authentication sibling.
+        {
+            let (_o, mut sibs) = crate::blake3_tree::open_strip(&raw, &key, c0, c1);
+            assert!(!sibs.is_empty(), "expected auth siblings for this range");
+            sibs[0].cv[0] ^= 0x80;
+            let mut trace = CompositeTrace::baseline_min();
+            trace.place_matrix_strip_opening(
+                0,
+                &raw[c0 * 1024..c1 * 1024],
+                c0,
+                c1,
+                nc,
+                &sibs,
+                &key,
+                4,
+            );
+            let mut pis = crate::composite_public::CompositePublicInputs::derive_from_matrix(
+                &trace.matrix,
+            );
+            pis.hash_a = committed;
+            let pis_vec = pis.to_vec();
+            let proof = prove::<AiPowStarkConfig, _>(
+                &cfg,
+                &CompositeFullAir,
+                trace.matrix,
+                &pis_vec,
+            );
+            assert!(
+                verify::<AiPowStarkConfig, _>(&cfg, &CompositeFullAir, &proof, &pis_vec)
+                    .is_err(),
+                "forged auth sibling must fail the C3 commitment binding"
+            );
+        }
     }
 }

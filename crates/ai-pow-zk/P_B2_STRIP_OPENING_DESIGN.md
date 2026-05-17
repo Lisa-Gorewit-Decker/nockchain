@@ -472,10 +472,20 @@ pure off-circuit property checkable before any AIR change):
   `place_matrix_hash_equals_true_tree_and_blake3_all_counts` /
   `…_large_nonpow2` *are* the equivalence gate. Net: the
   honest full-matrix root was already exact for all shapes.
-- **P-B.2.2 — `place_matrix_strip_opening`.** Leaf layer over
-  the opened chunk range + auth fold using the walker +
-  witness siblings; `IS_HASH_A/B` on the recomputed-root row.
-  Unit + Route-A + adversarial.
+- **P-B.2.2 — ✅ DONE 2026-05-17** (`composite_trace.rs`
+  `place_matrix_strip_opening` + `fold_strip`/`subtree_inside`/
+  `place_leaf_chunk`/`place_parent`). Leaf layer over only the
+  opened chunk range + true-BLAKE3-tree auth fold (witness
+  siblings injected as parent message halves); `IS_HASH_A/B` on
+  the recomputed-root compression ⇒ **reuses the UNCHANGED C3
+  `IS_HASH_A·(CV_OUT−PI)=0` binding (no AIR change)**. Tests:
+  in-circuit honest-equivalence (strip root == full
+  `place_matrix_hash` root == `blake3::Hasher` for
+  `nc∈{1,2,3,5,8,13}` × **all** ranges incl. lone-chunk &
+  non-pow2); positive AIR prove/verify (PI bound to the real
+  commitment); adversarial — tampered strip byte **and** forged
+  auth sibling each ⇒ C3 reject (the §4.6 soundness statement).
+  *Trace-helper only; bridge wiring is P-B.2.4.*
 - **P-B.2.3 — verifier-fixed schedule (D3-A)** from
   `(params,tile_i,tile_j)`; extend `extract_program`/the
   pin-rebuild; crit1_* still reject forged schedules.
