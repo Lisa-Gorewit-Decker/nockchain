@@ -1,5 +1,17 @@
 # M-S2 — G3a + G3b Implementation Design (boundary-predicate parameterization + segment schedule)
 
+> **⚠️ UNDER ARCHITECTURE REVIEW (2026-05-17).** A Pearl
+> implementation+paper evaluation
+> (`M_S2_PEARL_EVALUATION.md`) found that **Pearl does NOT
+> segment** — it caps parameters (`k ≤ 2¹⁶`, `k(h+w) ≤ 2²²`) so
+> one tile = one STARK, and recurses only *vertically* for
+> compression. The carry-vector segmentation this document
+> designs has no Pearl precedent and may be unnecessary
+> (decision α/β/γ pending — see the evaluation §5). D1–D6 below
+> are the locked decisions *for the G3 path*; whether to pursue
+> the G3 path at all is the open question. Do not start coding
+> G3a until α/β/γ is resolved.
+>
 > **Status:** DESIGN COMPLETE — **decisions D1–D6 LOCKED
 > 2026-05-17** (maintainer-approved). Implementation not started;
 > this is now the implementation-ready, fully-decided design.
