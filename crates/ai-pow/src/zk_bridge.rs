@@ -91,12 +91,17 @@ pub struct Layer0RowBudget {
 }
 
 impl Layer0RowBudget {
-    /// 8 rows per BLAKE3 compression; 16 compressions per 1024-byte
-    /// chunk + a binary parent layer (≈ one 8-row block per internal
-    /// node) ⇒ ≈ `136·num_chunks` rows for an `n`-byte input.
-    fn mhash_rows(n_bytes: u64) -> u64 {
-        let num_chunks = n_bytes.div_ceil(1024).max(1);
-        num_chunks * 136
+    /// P-B.2.4 — **strip-opening** cost for one matrix side: the
+    /// attested tile's `t·k`-byte strip is `⌈t·k/1024⌉` (+≤1
+    /// boundary) BLAKE3 leaf chunks × 16 compressions × 8 rows,
+    /// plus the authentication-path parents (≤ leaf-count + a
+    /// log-depth spine, 8 rows each) + slack. **`O(t·k)`,
+    /// independent of the full matrix size** — vs the old
+    /// `O(|matrix|)` full re-hash (`136·⌈|M|/1024⌉`). This is the
+    /// production one-tile-one-STARK unblocker.
+    fn strip_mhash_rows(t: u64, k: u64) -> u64 {
+        let strip_chunks = (t * k).div_ceil(1024).max(1) + 1; // +1: boundary straddle
+        strip_chunks * 136 + 2048 // leaves·(16·8) + parents/path + slack
     }
 
     /// Total Layer-0 rows the construction needs (pre power-of-two
@@ -115,29 +120,33 @@ impl Layer0RowBudget {
     }
 
     /// Does the whole construction fit one Pearl-§4.8-bounded STARK
-    /// (`≤ PEARL_TRACE_BOUND = 2²²`)? This is the γ go/no-go: P-A
-    /// bounds the *sweep*; this exposes whether the *matrix-hash*
-    /// (the actual blocker) also fits.
+    /// (`≤ PEARL_TRACE_BOUND = 2²²`)? After P-B.2.4 (strip-opening)
+    /// this is **true for every in-§4.8-envelope params set**
+    /// (incl. the real Llama-3.1-8B INT GEMMs) — the matrix-hash is
+    /// no longer the blocker.
     pub fn fits_one_stark(&self) -> bool {
         (self.required_trace_len() as u64) <= crate::params::PEARL_TRACE_BOUND
     }
 }
 
 /// Decomposed Layer-0 row budget for `prove_and_verify_tiled` on
-/// `params` (full-matrix-hash + attested-tile sweep). Pure function
-/// of the geometry — the analytic half of the γ measurement.
+/// `params` (P-B.2.4 **strip-opening** of the attested tile +
+/// the §6(b) sweep). Pure function of the geometry.
 pub fn expected_layer0_rows(params: &MatmulParams) -> Layer0RowBudget {
     let t = params.tile as u64;
     let r = params.noise_rank as u64;
+    let k = params.k as u64;
     let num_stripes = params.num_stripes() as u64;
-    // Bridge geometry: a_bytes = m·k, b_bytes = k·n (i8→u8, 1 B ea).
-    let a_len = params.m as u64 * params.k as u64;
-    let b_len = params.k as u64 * params.n as u64;
     // §6(b)-G1+G2 sweep: (t/2)² sub-blocks · num_stripes · ⌈r/16⌉.
     let sweep = (t / 2) * (t / 2) * num_stripes * r.div_ceil(16);
+    // P-B.2.4: each side opens only the attested tile's t·k-byte
+    // strip (Pearl §4.6), NOT the whole matrix ⇒ O(t·k), size-
+    // independent. `tile_chunk_range` is the verifier-fixed
+    // schedule (P-B.2.3).
+    let strip = Layer0RowBudget::strip_mhash_rows(t, k);
     Layer0RowBudget {
-        mhash_a: Layer0RowBudget::mhash_rows(a_len),
-        mhash_b: Layer0RowBudget::mhash_rows(b_len),
+        mhash_a: strip,
+        mhash_b: strip,
         sweep,
         // M-S1 producer store: `enumerate_noised_chunks` de-dups to
         // the tile working set — every 8-i8 sub-window of the t·k
@@ -248,19 +257,60 @@ pub fn prove_and_verify_tiled(
     // of the fixed `MIN_STARK_LEN`. For sub-envelope test profiles
     // (e.g. TEST_SMALL) the budget rounds back up to `MIN_STARK_LEN`
     // so behaviour is bit-identical to the prior `baseline_min()`;
-    // PROD-class params grow the trace (and the decomposed
-    // `Layer0RowBudget` makes the full-matrix-hash blowup explicit
-    // rather than a silent over-run).
+    // PROD-class params grow the trace modestly (P-B.2.4: the
+    // matrix side is now an O(t·k) strip opening, not the
+    // O(|matrix|) full re-hash).
     let budget = expected_layer0_rows(params);
     let mut trace = CompositeTrace::baseline(budget.required_trace_len());
     let height = trace.height();
 
-    // C3 / HASH_A / HASH_B — chunk-Merkle of A (row-major) and
-    // B (col-major), keyed by κ.
+    // C3 / HASH_A / HASH_B — **Pearl §4.6 strip opening**
+    // (P-B.2.4): instead of re-hashing all of A (row-major) and B
+    // (col-major) in-circuit (O(|matrix|) ≫ one STARK at PROD —
+    // the P-B blocker), open ONLY the attested tile's `t·k`-byte
+    // committed plain strips and authenticate them to the
+    // off-circuit full-matrix commitment via the BLAKE3 tree.
+    // `ctx.h_a_chunk`/`h_b_chunk` (= `matrix_commitment(full)`)
+    // stay the bound PI; the recomputed root authenticates to it
+    // (P-B.2.0/2.2). `tile_chunk_range` is the verifier-fixed
+    // schedule (P-B.2.3) — a pure fn of public params + the
+    // attested tile, so the prover cannot open a cheaper region.
+    // O(t·k), size-independent ⇒ one tile = one STARK.
+    use ai_pow_zk::blake3_tree::{open_strip, pad_to_chunk_boundary, tile_chunk_range};
     let a_bytes: Vec<u8> = ctx.a.iter().map(|&v| v as u8).collect();
     let b_bytes: Vec<u8> = ctx.b.iter().map(|&v| v as u8).collect();
-    let (next, _root_a) = trace.place_matrix_hash_a(0, &a_bytes, &ctx.kappa);
-    let (mh_end, _root_b) = trace.place_matrix_hash_b(next, &b_bytes, &ctx.kappa);
+    let tt = params.tile as usize;
+    let kk = params.k as usize;
+    // A row-major (m rows × k): tile_i's `t` rows, span t·k.
+    let a_pad = pad_to_chunk_boundary(&a_bytes);
+    let (ca0, ca1, a_nc) =
+        tile_chunk_range(tile_i as usize, tt, kk, a_bytes.len());
+    let (_oa, a_sibs) = open_strip(&a_bytes, &ctx.kappa, ca0, ca1);
+    let (next, _root_a) = trace.place_matrix_strip_opening(
+        0,
+        &a_pad[ca0 * 1024..ca1 * 1024],
+        ca0,
+        ca1,
+        a_nc,
+        &a_sibs,
+        &ctx.kappa,
+        4, // IS_HASH_A
+    );
+    // B col-major (n cols × k, col j at j·k): tile_j's `t` cols.
+    let b_pad = pad_to_chunk_boundary(&b_bytes);
+    let (cb0, cb1, b_nc) =
+        tile_chunk_range(tile_j as usize, tt, kk, b_bytes.len());
+    let (_ob, b_sibs) = open_strip(&b_bytes, &ctx.kappa, cb0, cb1);
+    let (mh_end, _root_b) = trace.place_matrix_strip_opening(
+        next,
+        &b_pad[cb0 * 1024..cb1 * 1024],
+        cb0,
+        cb1,
+        b_nc,
+        &b_sibs,
+        &ctx.kappa,
+        5, // IS_HASH_B
+    );
 
     // C1 — key-pin rows binding JOB_KEY = κ and
     // COMMITMENT_HASH = s_a. Placed well clear of the matrix-hash
@@ -1223,47 +1273,45 @@ mod tests {
         assert!(b.fits_one_stark());
     }
 
-    /// **The P-B go/no-go finding, pinned as a test.** At PROD scale
-    /// the full-matrix chunk-Merkle *alone* dwarfs the §6(b) sweep
-    /// and pushes the Layer-0 trace past Pearl's one-STARK bound
-    /// (`2²²`). Conclusion: P-A bounds the *sweep* (✓), but the
-    /// current full-matrix-hash construction is the real scale
-    /// blocker — the Pearl-faithful remedy is §4.6 strip-opening
-    /// (commitment = public input, in-circuit Merkle-path opening of
-    /// only the attested tile's strips), scoped as P-B.2. See
-    /// HIGH2_2_DESIGN §4.C.4-G3 P-B.
+    /// **P-B.2.4 resolution (pinned).** P-B found the *full-matrix*
+    /// chunk-Merkle was the one-STARK blocker (≈4.5M rows ≫ 2²² at
+    /// PROD). With the §4.6 strip-opening swap, the matrix side is
+    /// now `O(t·k)` (size-independent) and **every in-§4.8-envelope
+    /// params set — incl. the real Llama-3.1-8B INT GEMMs — fits
+    /// one STARK** (`fits_one_stark()` flips true: the production
+    /// unblocker). The matrix-hash no longer dominates the sweep.
     #[test]
-    fn prod_matrix_hash_is_the_scale_blocker() {
+    fn prod_strip_opening_fits_one_stark() {
         for p in [
             MatmulParams::PROD,
             MatmulParams::GEMMA_4_31B_FFN,
             MatmulParams::QWEN_3_6_27B_FFN,
+            MatmulParams::LLAMA_3_1_8B_GATE_UP,
+            MatmulParams::LLAMA_3_1_8B_DOWN,
         ] {
             let b = expected_layer0_rows(&p);
-            // The full-matrix chunk-Merkle ALONE exceeds Pearl's
-            // one-STARK bound (2²²) — the decisive P-B finding —
-            // and dominates the §6(b) matmul sweep.
             assert!(
-                b.mhash_a + b.mhash_b > crate::params::PEARL_TRACE_BOUND,
-                "{p:?}: matrix-hash {}+{} unexpectedly ≤ 2²² — re-check finding",
+                b.fits_one_stark(),
+                "{p:?}: must fit one STARK after strip-opening \
+                 (total {} > 2²²)",
+                b.total()
+            );
+            // The matrix side is now O(t·k), NOT O(|matrix|): for
+            // PROD it is ≪ the old 4.46M full-matrix rows.
+            assert!(
+                b.mhash_a + b.mhash_b < crate::params::PEARL_TRACE_BOUND / 2,
+                "{p:?}: strip mhash {}+{} should be ≪ 2²²",
                 b.mhash_a,
                 b.mhash_b
             );
-            assert!(
-                b.mhash_a + b.mhash_b > b.sweep,
-                "{p:?}: matrix-hash should dominate the sweep"
-            );
-            assert!(
-                !b.fits_one_stark(),
-                "{p:?}: unexpectedly fits one STARK (total {} ≤ 2²²) — \
-                 re-check the P-B finding",
-                b.total()
-            );
         }
-        // Concretely for PROD: ≈ 4.5M rows, ≫ 2²² = 4.19M.
+        // Concretely PROD: strip = ⌈t·k/1024⌉ chunks, NOT m·k/1024.
         let prod = expected_layer0_rows(&MatmulParams::PROD);
-        assert_eq!(prod.mhash_a, (4096u64 * 4096 / 1024) * 136); // 16384·136
-        assert!(prod.total() > crate::params::PEARL_TRACE_BOUND);
+        let t = MatmulParams::PROD.tile as u64;
+        let k = MatmulParams::PROD.k as u64;
+        let strip_chunks = (t * k).div_ceil(1024) + 1;
+        assert_eq!(prod.mhash_a, strip_chunks * 136 + 2048);
+        assert!(prod.total() <= crate::params::PEARL_TRACE_BOUND);
     }
 
     /// Conversely, the **§6(b) sweep alone** (the matmul truth P-A

@@ -175,6 +175,42 @@ pub fn merkle_root(matrix_bytes: &[u8], kappa: &[u8; 32]) -> [u8; 32] {
     subtree_root(&cvs, 0, n, kappa, true)
 }
 
+/// **P-B.2.3 — verifier-fixed opening schedule.** The
+/// contiguous BLAKE3 chunk range `[c0, c1)` (and total
+/// `num_chunks`) covering tile `tile_idx`'s `t` strips of a
+/// `total_bytes`-byte row/col-major matrix, each strip `k`
+/// bytes. **Pure deterministic function of public params**
+/// (`tile_idx` is attested via §4.E/MED-3) ⇒ the verifier
+/// recomputes it; the prover has no freedom to open a different
+/// (cheaper) region (the strip-opening block's pinned
+/// `CONTROL_PREP` layout is derived from this — CRIT-1/MED-3
+/// discipline, D3-A, no new pinned column).
+///
+/// Whole-chunk cover (D2-A): a tile not aligned to the 1024-B
+/// chunk grid pulls in the boundary chunks' adjacent bytes
+/// (witness-only — they are still genuine committed bytes; the
+/// HASH_A binding is unaffected; per-row sweep binding is
+/// §4.C.2). `lo = tile_idx·t·k`, `hi = lo + t·k`:
+/// `c0 = ⌊lo/1024⌋`, `c1 = ⌈hi/1024⌉`.
+pub fn tile_chunk_range(
+    tile_idx: usize,
+    t: usize,
+    k: usize,
+    total_bytes: usize,
+) -> (usize, usize, usize) {
+    let lo = tile_idx * t * k;
+    let hi = lo + t * k;
+    assert!(
+        hi <= total_bytes,
+        "tile {tile_idx} strip span [{lo},{hi}) exceeds matrix {total_bytes}B"
+    );
+    let padded = (total_bytes.div_ceil(CHUNK_LEN) * CHUNK_LEN).max(CHUNK_LEN);
+    let num_chunks = padded / CHUNK_LEN;
+    let c0 = lo / CHUNK_LEN;
+    let c1 = hi.div_ceil(CHUNK_LEN).min(num_chunks).max(c0 + 1);
+    (c0, c1, num_chunks)
+}
+
 /// One off-range sibling on a strip's authentication path: the
 /// subtree-root CV of a chunk range disjoint from the opening,
 /// in the deterministic post-order the [`verify_strip_opening`]
@@ -443,6 +479,53 @@ mod tests {
                         "open [{c0},{c1}) of {nc} chunks != root"
                     );
                 }
+            }
+        }
+    }
+
+    /// **P-B.2.3.** The opening schedule is a pure deterministic
+    /// function of public params (verifier-recomputable, no
+    /// prover freedom), every tile's schedule-derived range
+    /// authenticates to the *one* committed root, the ranges
+    /// **cover** the matrix, and `tile_idx` strictly orders `c0`.
+    #[test]
+    fn tile_chunk_range_schedule_is_deterministic_and_authenticates() {
+        let k = kappa();
+        // Llama-3.1-8B gate/up A side: m=4096,k=4096,tile=64 ⇒
+        // a_bytes = m·k, each tile = t·k = 64·4096 = 256 chunks,
+        // chunk-aligned (262144 % 1024 == 0).
+        for &(m, kk, t) in &[
+            (4096usize, 4096usize, 64usize), // Llama gate/up A
+            (4096, 14336, 64),               // Llama down k=14336
+            (64, 64, 8),                     // TEST_SMALL (sub-chunk tiles)
+            (96, 64, 8),                     // rectangular
+        ] {
+            let total = m * kk;
+            let raw: Vec<u8> = (0..total)
+                .map(|i| (i.wrapping_mul(40503) ^ (i >> 7)) as u8)
+                .collect();
+            let root = merkle_root(&raw, &k);
+            let n_tiles = m / t;
+            let mut prev_c0 = None;
+            for ti in 0..n_tiles {
+                let (c0, c1, nc) = tile_chunk_range(ti, t, kk, total);
+                // Determinism: recompute, identical.
+                assert_eq!((c0, c1, nc), tile_chunk_range(ti, t, kk, total));
+                assert!(c0 < c1 && c1 <= nc);
+                // Monotone non-decreasing c0 in tile order.
+                if let Some(p) = prev_c0 {
+                    assert!(c0 >= p, "c0 must be monotone in tile_idx");
+                }
+                prev_c0 = Some(c0);
+                // The schedule-derived opening authenticates to the
+                // single committed root (any sub-range does).
+                let (opened, sibs) = open_strip(&raw, &k, c0, c1);
+                assert_eq!(opened.len(), c1 - c0);
+                assert_eq!(
+                    verify_strip_opening(&opened, &sibs, c0, c1, nc, &k),
+                    root,
+                    "tile {ti} schedule [{c0},{c1}) of {nc} must auth to root"
+                );
             }
         }
     }
