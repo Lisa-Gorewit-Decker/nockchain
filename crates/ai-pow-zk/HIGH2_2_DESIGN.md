@@ -1990,6 +1990,14 @@ Route-A regression.
 > roadmap from *here* to "production with arbitrary useful
 > inference loads". Three independent tracks; production needs
 > all three — the bulk of work to date is Track A only.
+>
+> **For the end-to-end production *sequence* targeting the real
+> shipped model (`Llama-3.1-8B-Instruct-pearl`), incl. the
+> phased critical path (P-B.2.3 → P-B.2.4 → §4.C.2 → P-C),
+> byte-equivalence reconciliation, the INT-only/FP8 scoping, and
+> the (vague) vLLM + consensus integration: see
+> `PRODUCTION_ROADMAP.md`** — the execution wrapper that ties
+> this Track-A table together with Tracks B/C and correctness.
 
 **Done & validated (the foundation).** C1–C4, CRIT-1 (program
 pin), HIGH-2 keystone, MED-3 (verifier-derived target/tile),
