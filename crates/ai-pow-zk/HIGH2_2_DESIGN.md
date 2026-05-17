@@ -1114,10 +1114,53 @@ actually does:
   bound breaks nothing — every preset is ≤ 2²²). Result: every
   legal PROD puzzle provably fits **one** Layer-0 trace —
   segmentation is *defined away*.
-- **P-B** — raise the Layer-0 trace ceiling from
-  `MIN_STARK_LEN = 2¹³` toward Pearl's `≤ 2²²`, and **measure**
-  the single-big-trace prover cost at the cap (the go/no-go
-  datum; p3-uni/batch-stark already supports arbitrary `2^k`).
+- **P-B — ✅ LANDED 2026-05-17 (`crates/ai-pow/src/zk_bridge.rs`).**
+  Params-driven Layer-0 sizing (the faithful analogue of Pearl's
+  `degree_bits()`): `prove_and_verify_tiled` now sizes the trace
+  via `expected_layer0_rows(params).required_trace_len()`
+  (= `total.next_power_of_two().max(MIN_STARK_LEN)`) instead of
+  the fixed `baseline_min()`. Sub-envelope test profiles round
+  back up to `MIN_STARK_LEN` ⇒ **bit-identical to before, zero
+  regression**; PROD-class params grow the trace, and the
+  **decomposed `Layer0RowBudget`** (`mhash_a`, `mhash_b`,
+  `sweep`, `store`, `fixed`) makes the scale blocker explicit.
+
+  **Go/no-go finding (the γ measurement — pinned as tests
+  `prod_matrix_hash_is_the_scale_blocker` /
+  `prod_sweep_alone_fits_one_stark`):**
+  - **The full-matrix chunk-Merkle is the blocker, NOT the
+    matmul.** It re-hashes *all* of A and B in-circuit:
+    `≈ 136·⌈|M|/1024⌉` rows per matrix. PROD (4096²): `mhash_a +
+    mhash_b ≈ 4.46M` rows — **alone exceeding Pearl's one-STARK
+    bound `2²² = 4.19M`** (GEMMA/QWEN: ≈ 14–18M, far worse).
+  - **The §6(b) sweep — the matmul truth P-A guarantees — fits
+    one STARK fine.** PROD sweep+store+fixed ≈ `next_pow2(1.18M)
+    = 2²¹ ≤ 2²²`.
+  - **Empirical prover cost** (`pb_prover_cost_scaling`, this
+    dev box, parallel + `target-cpu=native`): **≈ 450 µs/row,
+    linear** across 2¹³→2¹⁶ (3.7 s → 29.6 s). Projections: a
+    full `2²²` trace ≈ **~31 min/proof**; the PROD sweep-only
+    `2²¹` ≈ **~16 min** (feasible — amortized, SNARK only on a
+    win, Pearl Remark 2.3; prod HW/Track-B optimizes further);
+    the current full-matrix-hash `~2²³` ≈ **~63 min** AND past
+    `2²²`.
+  - **Conclusion / Pearl-faithful remedy → P-B.2 (next):** P-A
+    proves the *matmul sweep* is one-STARK-bounded; P-B's
+    measurement isolates that the **in-circuit full-matrix
+    re-hash is what breaks one-STARK at PROD**. Pearl never does
+    this — Pearl §4.6: the commitment `HASH_A/HASH_B` is a
+    **public input** (computed once off-circuit / by the chain),
+    and the circuit proves only the attested tile's revealed
+    strips against it via in-circuit **Merkle authentication
+    paths** (≈ `2t strips · log₂(num_chunks) · 8` rows ≈ a few
+    thousand — negligible). That collapses `mhash_*` and brings
+    the whole proof into the sweep-dominated `~2²¹` regime.
+    **P-B.2 = replace the bridge's full-matrix `place_matrix_hash`
+    with §4.6 commitment-as-PI + tile-strip Merkle-path opening**
+    — the remaining work to make PROD genuinely one-tile-one-STARK
+    (scoped as the next Pearl-faithful milestone; M-S1's
+    `noised_packed` store already binds the swept strips, so this
+    is the matrix-hash side only).
 - **P-C** — vertical recursion *for the ≤65KB on-chain
   certificate only* (Pearl §4.7 / §5.1), reusing the M-S3/M-S4
   recursion+Tip5 substrate but **dropping** all of G3's
@@ -1967,7 +2010,8 @@ tie).**
 | Milestone | Feature / guarantee it adds | Depends on |
 |---|---|---|
 | **M-S1 · §4.C sweep-input binding non-vacuous** — ✅ **LANDED & validated 2026-05-17** (design + landing record: **§4.C.11**). Pack-link + whole-micro-tile chunked `noised_packed` query + pure producer store + chunked `populate_lookup_freq`; value-as-key (`A_ID=B_ID=0`) so no per-row id / no CONTROL_PREP change. Route-A green (parallel + debug-assertions-ON), adversarial **I2** `high2_2_swept_tile_not_in_store_rejects` rejects, `ai-pow-zk --lib` 335/0/22, `ai-pow --features zk` green incl. MED-3 bridge roundtrip. | Upgraded "fold of *a* matmul" → "fold of *the declared store's* matmul". **Inflection I2 reached.** Remaining §4.C tie: store ↔ committed `HASH_A` = **§4.C.2** (noise derivation), the precise documented residual. | DONE |
-| **M-S2 · P-A + P-B (Pearl-faithful PROD path)** — *replaces the deferred G3a/G3b milestone per the 2026-05-17 γ decision; eval: `M_S2_PEARL_EVALUATION.md`, G3 design retained for the beyond-Pearl-envelope case: `M_S2_G3AB_DESIGN.md`* | **P-A:** adopt Pearl §4.8 param caps as the verifier-enforced PROD envelope (`k ≤ 2¹⁶`, `k(h+w) ≤ 2²²`, `r ∈ {2⁵..2¹⁰}`, `64\|k`) ⇒ every legal PROD puzzle fits ONE Layer-0 trace (segmentation *defined away*). **P-B:** raise the Layer-0 ceiling `2¹³ → ≤ 2²²` & **measure** single-big-trace prover cost (the go/no-go datum). Matmul-truth becomes **zero-gap per tile, exactly like Pearl**. | none — Pearl-faithful, M-S1 done & independent; **doable now** |
+| **M-S2 · P-A + P-B (Pearl-faithful PROD path)** — ✅ **LANDED 2026-05-17** (eval: `M_S2_PEARL_EVALUATION.md`; G3 design retained for the beyond-Pearl-envelope case: `M_S2_G3AB_DESIGN.md`) | **P-A ✅:** Pearl §4.8 envelope in `MatmulParams` — universal `k(h+w) ≤ 2²²` one-STARK bound in `validate()` (auto-enforced via `verify`/`prover`) + `validate_prod_envelope()` consensus rule. **P-B ✅:** params-driven trace sizing (`expected_layer0_rows` ≈ Pearl `degree_bits`) + go/no-go measured (≈450 µs/row linear). **Finding:** the §6(b) matmul *sweep* is one-STARK-bounded (PROD ≈ 2²¹ ✓, P-A holds); the **full-matrix in-circuit re-hash is the blocker** (PROD `mhash` ≈ 4.46M > 2²²) ⇒ **P-B.2** next. Zero regression (sub-envelope profiles bit-identical). | DONE |
+| **M-S2.2 · P-B.2 — §4.6 strip-opening matrix-hash** (replace the bridge's full-matrix `place_matrix_hash` with: `HASH_A/HASH_B` = public-input commitment computed off-circuit, + in-circuit Merkle-path opening of only the attested tile's `2t` strips, ≈ few-K rows) | Collapses the `mhash` term ⇒ the **whole** PROD proof enters the sweep-dominated `~2²¹` regime ⇒ genuinely **one tile = one STARK** (Pearl §4.6 faithful). The last gap to Pearl-parity PROD matmul-truth. M-S1's `noised_packed` store already binds the swept strips, so this is matrix-hash-side only. | M-S2 (P-A/P-B) done |
 | **M-S3 · P0 vendor Plonky3-recursion** + align Plonky3 rev in the vendored tree | Audit-stable, owned recursion substrate for the **vertical certificate compression** (P-C), resolves F2/F7. | reference (cloned) |
 | **M-S4 · P1 `tip5-circuit-air`** from `nockchain-math::tip5` + Tip5 challenger/MMCS arms + native≡in-circuit cross-test | The recursion verifier can verify our **Tip5** Layer-0 proofs at all; Layer-0 unchanged ⇒ the 120-bit FRI sweep preserved. | M-S3 |
 | **M-S5 · P-C vertical-recursion certificate** (Pearl §4.7/§5.1: compress *one* Layer-0 proof to a ≤65KB on-chain cert; 3-layer vertical recursion, NOT segment-aggregation) | Succinct on-chain PoUW certificate at PROD scale, **zero probabilistic gap, parity with Pearl** (no `Γ`/`PROGRAM_ROOT`/adjacency surface — that is the deferred G3c only). **Inflection I3.** | M-S2,3,4 |

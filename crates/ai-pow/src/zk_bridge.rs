@@ -62,6 +62,94 @@ use ai_pow_zk::{
 use crate::params::MatmulParams;
 use crate::prover::BlockContext;
 
+// ───────────────────────── P-B (γ Pearl-faithful) ─────────────────────────
+//
+// Params-driven Layer-0 trace sizing + the single-big-trace
+// go/no-go estimator. Pearl sizes its STARK to the computation
+// (`pearl_program.rs::degree_bits = expected_num_rows
+// .next_power_of_two().max(MIN_STARK_LEN)`); we do the faithful
+// analogue here. Crucially this *decomposes* the row budget so the
+// γ "measure → go/no-go" question is answerable analytically: it
+// shows the **full-matrix chunk-Merkle dominates** at PROD scale
+// (≈ `num_chunks·136` rows per matrix, `num_chunks = ⌈|M|/1024⌉`),
+// not the §6(b) matmul sweep. See HIGH2_2_DESIGN §4.C.4-G3 P-B.
+
+/// Per-block Layer-0 row budget for the `prove_and_verify_tiled`
+/// construction, decomposed so the scale blocker is visible.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Layer0RowBudget {
+    /// Keyed chunk-Merkle of the full A matrix (`m·k` bytes).
+    pub mhash_a: u64,
+    /// Keyed chunk-Merkle of the full B matrix (`k·n` bytes).
+    pub mhash_b: u64,
+    /// §6(b) sub-block-major matmul sweep over the attested tile.
+    pub sweep: u64,
+    /// `noised_packed` producer store (M-S1), conservative bound.
+    pub store: u64,
+    /// Fold chain + key-pin + jackpot-hash + slack.
+    pub fixed: u64,
+}
+
+impl Layer0RowBudget {
+    /// 8 rows per BLAKE3 compression; 16 compressions per 1024-byte
+    /// chunk + a binary parent layer (≈ one 8-row block per internal
+    /// node) ⇒ ≈ `136·num_chunks` rows for an `n`-byte input.
+    fn mhash_rows(n_bytes: u64) -> u64 {
+        let num_chunks = n_bytes.div_ceil(1024).max(1);
+        num_chunks * 136
+    }
+
+    /// Total Layer-0 rows the construction needs (pre power-of-two
+    /// padding).
+    pub fn total(&self) -> u64 {
+        self.mhash_a + self.mhash_b + self.sweep + self.store + self.fixed
+    }
+
+    /// The Layer-0 trace length to allocate: `total`, rounded up to
+    /// a power of two, floored at `MIN_STARK_LEN` (the Pearl
+    /// `degree_bits` analogue).
+    pub fn required_trace_len(&self) -> usize {
+        (self.total() as usize)
+            .next_power_of_two()
+            .max(ai_pow_zk::composite_layout::MIN_STARK_LEN)
+    }
+
+    /// Does the whole construction fit one Pearl-§4.8-bounded STARK
+    /// (`≤ PEARL_TRACE_BOUND = 2²²`)? This is the γ go/no-go: P-A
+    /// bounds the *sweep*; this exposes whether the *matrix-hash*
+    /// (the actual blocker) also fits.
+    pub fn fits_one_stark(&self) -> bool {
+        (self.required_trace_len() as u64) <= crate::params::PEARL_TRACE_BOUND
+    }
+}
+
+/// Decomposed Layer-0 row budget for `prove_and_verify_tiled` on
+/// `params` (full-matrix-hash + attested-tile sweep). Pure function
+/// of the geometry — the analytic half of the γ measurement.
+pub fn expected_layer0_rows(params: &MatmulParams) -> Layer0RowBudget {
+    let t = params.tile as u64;
+    let r = params.noise_rank as u64;
+    let num_stripes = params.num_stripes() as u64;
+    // Bridge geometry: a_bytes = m·k, b_bytes = k·n (i8→u8, 1 B ea).
+    let a_len = params.m as u64 * params.k as u64;
+    let b_len = params.k as u64 * params.n as u64;
+    // §6(b)-G1+G2 sweep: (t/2)² sub-blocks · num_stripes · ⌈r/16⌉.
+    let sweep = (t / 2) * (t / 2) * num_stripes * r.div_ceil(16);
+    Layer0RowBudget {
+        mhash_a: Layer0RowBudget::mhash_rows(a_len),
+        mhash_b: Layer0RowBudget::mhash_rows(b_len),
+        sweep,
+        // M-S1 producer store: `enumerate_noised_chunks` de-dups to
+        // the tile working set — every 8-i8 sub-window of the t·k
+        // A-strips + t·k B-strips ⇒ ≤ 2·(t·k)/8 = t·k/4 distinct
+        // chunks (a *sound* upper bound; the actual de-duplicated
+        // set is ≤ this).
+        store: (t.saturating_mul(params.k as u64)) / 4 + 1,
+        // key-pin (3) + fold chain (num_stripes) + jackpot (8) + slack.
+        fixed: 3 + num_stripes + 8 + 16,
+    }
+}
+
 /// Outcome of a successful F1 bridge run.
 pub struct ZkOutcome {
     /// The derived public inputs the proof commits to. Callers
@@ -155,7 +243,16 @@ pub fn prove_and_verify_tiled(
     tile_i: u32,
     tile_j: u32,
 ) -> Result<ZkOutcome, BridgeError> {
-    let mut trace = CompositeTrace::baseline_min();
+    // P-B (γ Pearl-faithful): size the Layer-0 trace from `params`
+    // — the faithful analogue of Pearl's `degree_bits()` — instead
+    // of the fixed `MIN_STARK_LEN`. For sub-envelope test profiles
+    // (e.g. TEST_SMALL) the budget rounds back up to `MIN_STARK_LEN`
+    // so behaviour is bit-identical to the prior `baseline_min()`;
+    // PROD-class params grow the trace (and the decomposed
+    // `Layer0RowBudget` makes the full-matrix-hash blowup explicit
+    // rather than a silent over-run).
+    let budget = expected_layer0_rows(params);
+    let mut trace = CompositeTrace::baseline(budget.required_trace_len());
     let height = trace.height();
 
     // C3 / HASH_A / HASH_B — chunk-Merkle of A (row-major) and
@@ -1102,6 +1199,120 @@ mod tests {
             composite_verify(&cfg, &proof, &pis).unwrap_or_else(|e| {
                 panic!("§6(b)-G1+G2 chain must verify @({ti},{tj}): {e:?}")
             });
+        }
+    }
+
+    // ───────────────── P-B: trace sizing + go/no-go ─────────────────
+
+    /// Sub-envelope test profiles round back up to `MIN_STARK_LEN`,
+    /// so P-B's params-driven sizing is **bit-identical** to the
+    /// prior `baseline_min()` for them (zero regression — this is
+    /// why the whole `ai-pow --features zk` suite stays green).
+    #[test]
+    fn test_small_sizing_is_min_stark_len() {
+        let b = expected_layer0_rows(&MatmulParams::TEST_SMALL);
+        assert!(
+            b.total() < ai_pow_zk::composite_layout::MIN_STARK_LEN as u64,
+            "TEST_SMALL total {} should be < MIN_STARK_LEN",
+            b.total()
+        );
+        assert_eq!(
+            b.required_trace_len(),
+            ai_pow_zk::composite_layout::MIN_STARK_LEN
+        );
+        assert!(b.fits_one_stark());
+    }
+
+    /// **The P-B go/no-go finding, pinned as a test.** At PROD scale
+    /// the full-matrix chunk-Merkle *alone* dwarfs the §6(b) sweep
+    /// and pushes the Layer-0 trace past Pearl's one-STARK bound
+    /// (`2²²`). Conclusion: P-A bounds the *sweep* (✓), but the
+    /// current full-matrix-hash construction is the real scale
+    /// blocker — the Pearl-faithful remedy is §4.6 strip-opening
+    /// (commitment = public input, in-circuit Merkle-path opening of
+    /// only the attested tile's strips), scoped as P-B.2. See
+    /// HIGH2_2_DESIGN §4.C.4-G3 P-B.
+    #[test]
+    fn prod_matrix_hash_is_the_scale_blocker() {
+        for p in [
+            MatmulParams::PROD,
+            MatmulParams::GEMMA_4_31B_FFN,
+            MatmulParams::QWEN_3_6_27B_FFN,
+        ] {
+            let b = expected_layer0_rows(&p);
+            // The full-matrix chunk-Merkle ALONE exceeds Pearl's
+            // one-STARK bound (2²²) — the decisive P-B finding —
+            // and dominates the §6(b) matmul sweep.
+            assert!(
+                b.mhash_a + b.mhash_b > crate::params::PEARL_TRACE_BOUND,
+                "{p:?}: matrix-hash {}+{} unexpectedly ≤ 2²² — re-check finding",
+                b.mhash_a,
+                b.mhash_b
+            );
+            assert!(
+                b.mhash_a + b.mhash_b > b.sweep,
+                "{p:?}: matrix-hash should dominate the sweep"
+            );
+            assert!(
+                !b.fits_one_stark(),
+                "{p:?}: unexpectedly fits one STARK (total {} ≤ 2²²) — \
+                 re-check the P-B finding",
+                b.total()
+            );
+        }
+        // Concretely for PROD: ≈ 4.5M rows, ≫ 2²² = 4.19M.
+        let prod = expected_layer0_rows(&MatmulParams::PROD);
+        assert_eq!(prod.mhash_a, (4096u64 * 4096 / 1024) * 136); // 16384·136
+        assert!(prod.total() > crate::params::PEARL_TRACE_BOUND);
+    }
+
+    /// Conversely, the **§6(b) sweep alone** (the matmul truth P-A
+    /// guarantees) is comfortably within one STARK for PROD —
+    /// isolating that the matrix-hash, not the matmul, is what
+    /// needs the §4.6 fix.
+    #[test]
+    fn prod_sweep_alone_fits_one_stark() {
+        let b = expected_layer0_rows(&MatmulParams::PROD);
+        let sweep_only = (b.sweep + b.store + b.fixed)
+            .next_power_of_two()
+            .max(ai_pow_zk::composite_layout::MIN_STARK_LEN as u64);
+        assert!(
+            sweep_only <= crate::params::PEARL_TRACE_BOUND,
+            "PROD sweep-only {sweep_only} should fit 2²² (P-A holds)"
+        );
+    }
+
+    /// Prover-cost scaling measurement (the empirical half of the γ
+    /// go/no-go — calibrates the analytic projection to the cap).
+    /// Heavy; `#[ignore]` by default. Run:
+    /// `cargo test -p ai-pow --features zk pb_prover_cost_scaling
+    ///  -- --ignored --nocapture`.
+    #[test]
+    #[ignore = "measurement harness — opt-in (heavy)"]
+    fn pb_prover_cost_scaling() {
+        use ai_pow_zk::composite_proof::build_config;
+        use ai_pow_zk::{composite_prove, CircuitConfig, ZkParams};
+        use std::time::Instant;
+
+        let zk = ZkParams {
+            m: 64,
+            k: 64,
+            n: 64,
+            noise_rank: 4,
+            tile: 8,
+            difficulty_bits: 0,
+        };
+        let cfg = build_config(&zk, &CircuitConfig::TEST_PEARL);
+        let min = ai_pow_zk::composite_layout::MIN_STARK_LEN;
+        eprintln!("rows,prove_ms,us_per_row");
+        for shift in 0..=3 {
+            let n = min << shift; // 2^13 .. 2^16
+            let trace = CompositeTrace::baseline(n);
+            let pis = CompositePublicInputs::derive_from_trace(&trace);
+            let t0 = Instant::now();
+            let _ = composite_prove(&cfg, trace, &pis);
+            let ms = t0.elapsed().as_secs_f64() * 1e3;
+            eprintln!("{n},{ms:.1},{:.3}", ms * 1e3 / n as f64);
         }
     }
 }
