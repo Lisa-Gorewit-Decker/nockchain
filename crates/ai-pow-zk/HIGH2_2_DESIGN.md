@@ -977,6 +977,99 @@ MED-3-derived `(tile_i,tile_j)` (resolved contract,
 offsets. The arithmetic, the geometry, and the matmul-chip
 interaction are no longer unknowns.
 
+#### 4.C.4-G §6(b) production generalization — DESIGN (2026-05-16)
+
+§6(b) is closed & validated for the **primary mining geometry**
+(`num_stripes ≤ 16`, `r ≤ TILE_D`, sweep fits one Layer-0 STARK —
+TEST_SMALL / the headline e2e). Three orthogonal sub-problems
+separate "everything else" from a single fixed assumption; this
+section designs each.
+
+**Grounded scale (why this is three problems, not one).** The
+direct in-circuit sweep is
+`(t/TILE_H)² · num_stripes · ⌈r/TILE_D⌉` matmul micro-steps for
+the attested tile (`TILE_H=2`, `TILE_D=16`):
+
+| params | t | r | num_stripes=k/r | sub-blocks=(t/2)² | C=⌈r/16⌉ | sweep rows |
+|---|---|---|---|---|---|---|
+| TEST_SMALL | 8 | 4 | 16 | 16 | 1 | 256 ✅ fits |
+| llm rect (`llm_shape`) | 8 | 4 | 20 | 16 | 1 | 320 — fits, needs only **G2** |
+| PROD | 128 | 64 | 64 | 4096 | 4 | ≈ 2²⁰ — needs **G1+G2+G3** |
+
+PROD also chunk-Merkle-hashes 4096×4096 i8 matrices (~2¹⁸ BLAKE3
+rows for A alone), so a **single** Layer-0 STARK already cannot
+hold a PROD proof *regardless of §6(b)* — PROD is inherently a
+recursion/segmentation (M12) workload. Hence the design splits:
+
+**G1 — inner-dimension chunking (`r > TILE_D`).** Each stripe's
+`r`-wide dot is covered by `C = ⌈r/TILE_D⌉` accumulating
+micro-steps over disjoint `≤TILE_D`-wide lane chunks. Per
+sub-block: row 0 `is_reset`, all subsequent `(stripe,chunk)` rows
+`is_update` (the matmul chip's existing reset/update recurrence
+already sums chunks into the same `c_blk` cell and continues
+accumulating across stripes — no chip change). `StripeXorChip`
+`SX_IS_ACTIVE=1` only on each stripe's **last** chunk (lane =
+stripe index), where `CUMSUM` = the post-stripe accumulator. Pure
+trace-generation extension to `place_useful_work_chain`; relaxes
+the current `assert!(r ≤ TILE_D)`. Cost ×C rows.
+
+**G2 — `num_stripes` lanes (single-STARK params).** Replace the
+`STATE_LEN = 16 = JACKPOT_SIZE` conflation (the FoldChip's
+M-slots are Pearl-fixed at 16 and are a *different* concept from
+per-stripe lanes) with a dedicated `STRIPE_MAX` (≥ max single-
+STARK `k/r`; choose 64 for headroom incl. PROD-per-segment).
+`StripeXorChip`: `SX_XR[STRIPE_MAX]`, `SX_LANE_SEL[STRIPE_MAX]`
+(≈ +96 cols). The §6(b) keystone today indexes `SX_XR` via
+`FOLD_SLOT_SEL` (= `step % 16`) which only equals the stripe for
+`num_stripes ≤ 16`; generalize by adding a per-fold-row
+`FOLD_STRIPE_SEL` (stripe one-hot, set by `place_fold_chain`) and
+binding `Σ_{s<STRIPE_MAX} FOLD_STRIPE_SEL[s]·(FOLD_XSTEP −
+SX_XR[s]) == 0`. `FOLD_STRIPE_SEL` must be **schedule-pinned**
+(§4.C.6) — extend the §6(a) `CONTROL_PREP` pack with a
+`⌈log2 STRIPE_MAX⌉ = 6`-bit stripe index (the §6(a) pattern,
+NOT a wide preprocessed block — §4.C.8) and recompute the
+one-hot in-circuit. With G1+G2, **`sx_bound` is universally
+`true`** for all single-STARK params (the legacy gate / its
+documented residual disappears for `llm_shape` and any
+`num_stripes ≤ STRIPE_MAX` params). Implementable & exhaustively
+testable now (rect ≈ 320 rows ≪ 8192) — the concrete next
+integration to retire residual #107(1).
+
+**G3 — segmentation / recursion (true PROD, M12-coupled).** When
+`commitment + sweep rows > one Layer-0 height budget`, the
+Layer-0 STARK proves a bounded **segment**; `SX_XR` and the
+matmul `CUMSUM` become public **carry-in / carry-out** values
+(the segment hand-off). M12 recursion verifies each segment proof
+and that `segment[k].carry_out == segment[k+1].carry_in`, the
+first segment's carry-in is the zero boundary, and the final
+segment's `SX_XR` feeds the fold. The §6(b) per-row constraints
+are **unchanged**; only the StripeXor/CUMSUM first-row (carry-in)
+and last-row (carry-out PI) boundary predicates are
+parameterized — exactly the keystone-style boundary swap. This
+preserves the §6(b) binding with **zero probabilistic gap** and
+is the principled PROD path; it lands with M12, not before.
+
+**G4 — Pearl-faithful interim (until G3/M12), the scoped
+externality.** Until segmentation lands, PROD-scale matmul-truth
+is carried by the **external spot-check protocol**
+(`MatmulProof.spot`, Pearl §4.8: the verifier recomputes
+`params.spot_checks` random tiles and checks them against the
+committed M states) **plus** the C3 commitment binding — exactly
+the Pearl-Layer-0 design philosophy already adopted for
+difficulty/C2 (**MED-3**) and the original C1 over-statement. The
+SNARK binds commitment + fold + block-anchor; the spot-check
+protocol bounds the cheating probability. This is a deliberate,
+documented scoped externality, **not** a forgery hole (CRIT-1 +
+keystone + §6(a) hold unconditionally; §6(b) holds in-circuit for
+every params set that fits one Layer-0 once G1+G2 land).
+
+**Ordering.** G1+G2 are single-STARK, implementable and
+exhaustively testable immediately (retires residual #107(1) for
+all `num_stripes ≤ STRIPE_MAX` params, dropping the `sx_bound`
+legacy gate there). G3 is the M12 interface (designed here,
+implemented with recursion). G4 is the precise interim scoping
+(documentation), analogous to MED-3.
+
 #### 4.C.5 Soundness once §4.C lands
 
 With the binding live on the pinned path: an adversary cannot
