@@ -1,15 +1,22 @@
 # P-B.2 — Pearl §4.6 Strip-Opening Matrix-Hash (implementation design)
 
-> **Status:** DESIGN COMPLETE — **decisions D1–D4 LOCKED
-> 2026-05-17** (maintainer-approved, all recommended): **D1 =
-> A** (true BLAKE3 largest-pow2-left tree + realign
-> `place_matrix_hash`; also fixes the latent non-pow2 fidelity
-> gap) · **D2 = A** (whole 1024-B chunks covering the tile span)
-> · **D3 = A** (verifier-recompute the opening schedule via the
-> CRIT-1/MED-3 discipline; no new pinned column) · **D4 = A**
-> (staged P-B.2.0→.4, off-circuit honest-equivalence KAT as the
-> pre-AIR gate). The body already assumes exactly this path;
-> implementation-ready. Implementation not started.
+> **Status:** **P-B.2.0 ✅ LANDED 2026-05-17**
+> (`crates/ai-pow-zk/src/blake3_tree.rs`). Decisions D1–D4
+> locked (all recommended). **D1 finding — the "latent
+> pre-existing fidelity gap" hypothesis is DISPROVEN by
+> P-B.2.0's exhaustive KAT:** `place_matrix_hash`'s bottom-up
+> *pair-adjacent / promote-odd* parent reduction is
+> **structurally identical to BLAKE3's largest-pow2-left tree
+> for every chunk count** (pow2 *and* non-pow2, verified
+> in-circuit 1..=31 + 100, and walker-vs-`blake3::Hasher`
+> through 1000). ⇒ **D1-A's "realign `place_matrix_hash`" is a
+> no-op**, and **P-B.2.1 collapses into P-B.2.0** (it *is* the
+> equivalence verification). Remaining: D2/D3/D4 as locked. The
+> body's D1 §4 / §8 plan are corrected accordingly below.
+> **D1=A** (true tree confirmed already in place — no realign) ·
+> **D2=A** (whole 1024-B chunks) · **D3=A** (verifier-recompute
+> schedule via CRIT-1/MED-3, no new column) · **D4=A** (staged,
+> KAT-first — KAT done).
 > **Goal:** make the Pearl-faithful PROD path genuinely
 > *one-tile-one-STARK* by removing the only remaining
 > one-STARK blocker that P-B's measurement isolated — the
@@ -174,7 +181,27 @@ first one scale.)
 
 ---
 
-## 4. BLAKE3 chunk-tree shape — the central correctness risk (D1)
+## 4. BLAKE3 chunk-tree shape — D1 (RESOLVED by P-B.2.0)
+
+> **⚠️ RESOLVED 2026-05-17.** This section originally framed the
+> tree shape as "the central correctness risk" and hypothesised
+> a *latent pre-existing fidelity gap* in `place_matrix_hash`
+> for non-power-of-two chunk counts. **P-B.2.0's exhaustive KAT
+> disproved that hypothesis.** `place_matrix_hash`'s bottom-up
+> pair-adjacent/promote-odd reduction **is** BLAKE3's
+> largest-pow2-left tree — they coincide for **all** chunk
+> counts, not just powers of two (a structural identity:
+> bottom-up left-complete pairing ≡ top-down maximal-perfect-
+> left split). Verified in-circuit for `1..=31` and `100`
+> chunks, and walker-vs-`blake3::Hasher` through `1000`, all
+> bit-identical (`blake3_tree.rs` tests
+> `place_matrix_hash_equals_true_tree_and_blake3_all_counts`,
+> `…_large_nonpow2`, `merkle_root_matches_blake3_keyed_all_chunk_counts`).
+> ⇒ **There is NO gap; `place_matrix_hash` needs no realignment;
+> D1-A's realign step is a no-op and P-B.2.1 = P-B.2.0's
+> equivalence verification (already done).** The analysis below
+> is retained for the historical rationale; "risk" → "resolved
+> property".
 
 `commit::matrix_commitment` uses **real `blake3::Hasher`**,
 whose internal tree is **not** a naïve left-leaning pairwise
@@ -426,17 +453,25 @@ debug-assertions hazard surface).
 Unlike M-S1, P-B.2 is **stageable** (honest-equivalence is a
 pure off-circuit property checkable before any AIR change):
 
-- **P-B.2.0 — BLAKE3 true-tree walker (off-circuit).** A pure
-  `blake3_chunk_tree(num_chunks)` + `auth_path(c0,c1,
-  num_chunks)` returning the parent schedule + sibling
-  positions. KAT: re-derive `blake3::Hasher` root from
-  leaf-CVs + the walker, for many shapes incl. non-pow2.
-  *No circuit change.* Gate: bit-identical to `blake3::Hasher`.
-- **P-B.2.1 — realign `place_matrix_hash` to the true tree
-  (D1-A).** Swap the pairwise loop for the walker; honest
-  full-matrix root now exact for all shapes. Gate: KAT #1 +
-  full `ai-pow-zk --lib` + Route-A (no PI change for pow2;
-  corrected for non-pow2).
+- **P-B.2.0 — ✅ DONE 2026-05-17** (`blake3_tree.rs`). Pure
+  off-circuit module: `left_len`, `chunk_cv`/`parent_cv`
+  (replicate `place_matrix_hash`'s primitive via the KAT'd
+  `blake3_compress`), `merkle_root` (== `blake3::Hasher`),
+  `open_strip`/`verify_strip_opening` (the §4.6 primitive
+  P-B.2.2 mirrors). KAT bit-identical to `blake3::Hasher` for
+  chunk counts `{1..17, 31, 32, 33, 100, 1000}`; strip-opening
+  recomputes the root for every contiguous range; adversarial
+  tamper rejects. *No circuit change.* **Plus: subsumes
+  P-B.2.1** — proved in-circuit `place_matrix_hash` already ==
+  the true tree == `blake3::Hasher` for all counts `1..=31`,
+  `100`.
+- **P-B.2.1 — ✅ SUBSUMED by P-B.2.0 (no-op).** The latent-gap
+  hypothesis was disproven (§4): `place_matrix_hash`'s pairwise
+  loop *is* BLAKE3's tree for all chunk counts, so no realign
+  is needed. P-B.2.0's
+  `place_matrix_hash_equals_true_tree_and_blake3_all_counts` /
+  `…_large_nonpow2` *are* the equivalence gate. Net: the
+  honest full-matrix root was already exact for all shapes.
 - **P-B.2.2 — `place_matrix_strip_opening`.** Leaf layer over
   the opened chunk range + auth fold using the walker +
   witness siblings; `IS_HASH_A/B` on the recomputed-root row.

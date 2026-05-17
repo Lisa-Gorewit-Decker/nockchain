@@ -52,6 +52,7 @@
 //!   compressor yet; deferred per the original M10.1c design.
 
 pub mod bench_suite;
+pub mod blake3_tree;
 pub mod chips;
 pub mod circuit;
 pub mod composite_full_air;
