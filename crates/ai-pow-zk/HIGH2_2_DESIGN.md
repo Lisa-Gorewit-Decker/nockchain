@@ -1087,10 +1087,32 @@ parameterized.
 **Pearl-faithful PROD path (P-A/P-B/P-C — the chosen γ path,
 replaces the immediate M-S2/G3 milestone).** Match what Pearl
 actually does:
-- **P-A** — adopt Pearl §4.8's parameter caps as the ai-pow-zk
-  PROD envelope (`k ≤ 2¹⁶`, `k(h+w) ≤ 2²²`, `r ∈ {2⁵..2¹⁰}`,
-  `64 | k`, bounded-3-D-AP tile shapes), verifier-enforced.
-  Every legal PROD puzzle then fits **one** Layer-0 trace —
+- **P-A — ✅ LANDED 2026-05-17 (`crates/ai-pow/src/params.rs`).**
+  Adopt Pearl §4.8's parameter caps as the ai-pow-zk PROD
+  envelope, split into two verifier-enforced layers:
+  - `MatmulParams::validate()` now enforces the **universal**
+    Pearl §4.8 trace bound `k·(h+w) ≤ 2²²` (square tiles ⇒
+    `k·2·tile ≤ 2²²`, const `PEARL_TRACE_BOUND`,
+    `ParamError::TraceBoundExceeded`). This is THE
+    one-tile-one-STARK guarantee and holds for **every**
+    accepted puzzle (test *and* prod) — it is *why*
+    segmentation (G3) is unnecessary. Already wired:
+    `verifier::verify` + `prover` call `validate()`, so an
+    un-provable puzzle is now rejected at the verifier.
+  - New `MatmulParams::validate_prod_envelope()` = the §4.8
+    **security** caps (`m,n ≤ 2²⁴`, `r ∈ {2⁵..2¹⁰}`,
+    `16r ≤ k ≤ 4r²`, `64 | k`, `h·w ≥ 32`) layered on
+    `validate()` — the **consensus admission rule** (the future
+    M-C1 block-admission calls it). In-crate sub-envelope test
+    profiles (`TEST_SMALL`, `r=4`) intentionally pass
+    `validate()` but **not** `validate_prod_envelope()`; this
+    test/consensus split is by design.
+  Tests: all prod/LLM presets satisfy the envelope; the
+  **envelope ⇒ one-STARK** theorem is property-tested over the
+  whole §4.8 security band; each cap has a targeted reject test;
+  `ai-pow --lib` + `--features zk` green (the new universal
+  bound breaks nothing — every preset is ≤ 2²²). Result: every
+  legal PROD puzzle provably fits **one** Layer-0 trace —
   segmentation is *defined away*.
 - **P-B** — raise the Layer-0 trace ceiling from
   `MIN_STARK_LEN = 2¹³` toward Pearl's `≤ 2²²`, and **measure**
