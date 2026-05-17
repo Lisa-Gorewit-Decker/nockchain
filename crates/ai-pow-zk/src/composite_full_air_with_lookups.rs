@@ -131,10 +131,20 @@ pub struct CompositeFullAirWithLookupsPinned {
 
 impl CompositeFullAirWithLookupsPinned {
     /// Build from the canonical program matrix (see
-    /// `composite_full_air::extract_program`).
+    /// `composite_full_air::extract_program`) with the §6(b)
+    /// keystone enabled (production / `num_stripes ≤ 16`).
     pub fn new(program: p3_matrix::dense::RowMajorMatrix<crate::Val>) -> Self {
+        Self::new_with(program, true)
+    }
+
+    /// Build with an explicit §6(b)-keystone flag (verifier-set
+    /// from trusted params; see [`CompositeFullAirPinned::new_with`]).
+    pub fn new_with(
+        program: p3_matrix::dense::RowMajorMatrix<crate::Val>,
+        sx_bound: bool,
+    ) -> Self {
         Self {
-            inner: CompositeFullAirPinned::new(program),
+            inner: CompositeFullAirPinned::new_with(program, sx_bound),
         }
     }
 }

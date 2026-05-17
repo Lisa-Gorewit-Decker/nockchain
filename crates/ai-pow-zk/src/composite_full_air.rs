@@ -153,13 +153,34 @@ pub fn extract_program(
 #[derive(Clone)]
 pub struct CompositeFullAirPinned {
     preprocessed: std::sync::Arc<p3_matrix::dense::RowMajorMatrix<crate::Val>>,
+    /// HIGH-2.2 §6(b) — emit the `FOLD_XSTEP == SX_XR[stripe]`
+    /// keystone. **Verifier-set from the trusted block params**
+    /// (`num_stripes ≤ StripeXor STATE_LEN = 16`), never from the
+    /// proof, so it is as sound as CRIT-1: a malicious prover
+    /// cannot turn the binding off for a params set the verifier
+    /// runs it for. `false` only for the `num_stripes > 16` legacy
+    /// path (rectangular / PROD), where the §6(b) malicious-prover
+    /// binding is the documented residual (wider-register
+    /// generalization) and the StripeXor sweep is not placed.
+    sx_bound: bool,
 }
 
 impl CompositeFullAirPinned {
     /// Build from the canonical program matrix (see
-    /// [`extract_program`]). `program.width()` must equal
-    /// `PROGRAM_COLS.len()`.
+    /// [`extract_program`]) with the §6(b) keystone **enabled**
+    /// (the production / `num_stripes ≤ 16` path). `program.width()`
+    /// must equal `PROGRAM_COLS.len()`.
     pub fn new(program: p3_matrix::dense::RowMajorMatrix<crate::Val>) -> Self {
+        Self::new_with(program, true)
+    }
+
+    /// Build with an explicit §6(b)-keystone flag. `sx_bound`
+    /// MUST be derived by the verifier from the trusted block
+    /// params (`num_stripes ≤ 16`), never from the proof.
+    pub fn new_with(
+        program: p3_matrix::dense::RowMajorMatrix<crate::Val>,
+        sx_bound: bool,
+    ) -> Self {
         assert_eq!(
             program.width(),
             PROGRAM_COLS.len(),
@@ -167,6 +188,7 @@ impl CompositeFullAirPinned {
         );
         Self {
             preprocessed: std::sync::Arc::new(program),
+            sx_bound,
         }
     }
 }
@@ -261,20 +283,22 @@ impl<AB: AirBuilder<F = crate::Val>> Air<AB> for CompositeFullAirPinned {
         // only — the unit `CompositeFullAir` keeps `FOLD_XSTEP`
         // free so the ~300 constraint-logic tests stay untouched
         // (identical scoping to the §4.D keystone above).
-        let main3 = builder.main();
-        let c3 = main3.current_slice();
-        let fx: AB::Var = c3[crate::composite_layout::FOLD_XSTEP];
-        let sel: [AB::Var; JACKPOT_SIZE] = core::array::from_fn(|s| {
-            c3[crate::composite_layout::FOLD_SLOT_SEL_START + s]
-        });
-        let xr: [AB::Var; JACKPOT_SIZE] = core::array::from_fn(|s| {
-            c3[crate::composite_layout::SX_XR_START + s]
-        });
-        let mut bind: AB::Expr = <AB::Expr as PrimeCharacteristicRing>::ZERO;
-        for s in 0..JACKPOT_SIZE {
-            bind = bind + sel[s].into() * (fx.into() - xr[s].into());
+        if self.sx_bound {
+            let main3 = builder.main();
+            let c3 = main3.current_slice();
+            let fx: AB::Var = c3[crate::composite_layout::FOLD_XSTEP];
+            let sel: [AB::Var; JACKPOT_SIZE] = core::array::from_fn(|s| {
+                c3[crate::composite_layout::FOLD_SLOT_SEL_START + s]
+            });
+            let xr: [AB::Var; JACKPOT_SIZE] = core::array::from_fn(|s| {
+                c3[crate::composite_layout::SX_XR_START + s]
+            });
+            let mut bind: AB::Expr = <AB::Expr as PrimeCharacteristicRing>::ZERO;
+            for s in 0..JACKPOT_SIZE {
+                bind = bind + sel[s].into() * (fx.into() - xr[s].into());
+            }
+            builder.assert_zero(bind);
         }
-        builder.assert_zero(bind);
     }
 }
 

@@ -317,15 +317,31 @@ pub fn composite_verify_pow_pinned(
 /// proof — identical CRIT-1 discipline to `composite_prove_pinned`).
 pub fn composite_prove_pinned_logup(
     config: &AiPowStarkConfig,
+    trace: CompositeTrace,
+    public_inputs: &CompositePublicInputs,
+) -> (p3_batch_stark::BatchProof<AiPowStarkConfig>, Program) {
+    composite_prove_pinned_logup_sx(config, trace, public_inputs, true)
+}
+
+/// [`composite_prove_pinned_logup`] with an explicit HIGH-2.2
+/// §6(b) keystone flag. `sx_bound` MUST be derived by the
+/// verifier from the trusted block params (`num_stripes ≤ 16`),
+/// never from the proof. `true` = production / TEST_SMALL path;
+/// `false` = `num_stripes > 16` legacy path (rectangular / PROD),
+/// the documented §6(b) wider-register residual.
+pub fn composite_prove_pinned_logup_sx(
+    config: &AiPowStarkConfig,
     mut trace: CompositeTrace,
     public_inputs: &CompositePublicInputs,
+    sx_bound: bool,
 ) -> (p3_batch_stark::BatchProof<AiPowStarkConfig>, Program) {
     use p3_batch_stark::{prove_batch, ProverData, StarkInstance};
 
     trace.populate_lookup_freq();
     let program = extract_program(&trace.matrix);
-    let air = crate::composite_full_air_with_lookups::CompositeFullAirWithLookupsPinned::new(
+    let air = crate::composite_full_air_with_lookups::CompositeFullAirWithLookupsPinned::new_with(
         program.clone(),
+        sx_bound,
     );
     let pvs = public_inputs.to_vec();
     let instances = vec![StarkInstance {
@@ -343,10 +359,12 @@ pub fn composite_prove_pinned_logup(
 fn logup_common_for(
     config: &AiPowStarkConfig,
     program: &Program,
+    sx_bound: bool,
 ) -> p3_batch_stark::ProverData<AiPowStarkConfig> {
     use p3_batch_stark::ProverData;
-    let air = crate::composite_full_air_with_lookups::CompositeFullAirWithLookupsPinned::new(
+    let air = crate::composite_full_air_with_lookups::CompositeFullAirWithLookupsPinned::new_with(
         program.clone(),
+        sx_bound,
     );
     let log_ext_db = program_degree_bits(program) + config.is_zk() as usize;
     ProverData::from_airs_and_degrees(config, std::slice::from_ref(&air), &[log_ext_db])
@@ -361,11 +379,24 @@ pub fn composite_verify_pinned_logup(
     proof: &p3_batch_stark::BatchProof<AiPowStarkConfig>,
     public_inputs: &CompositePublicInputs,
 ) -> Result<(), CompositeVerificationError> {
+    composite_verify_pinned_logup_sx(config, program, proof, public_inputs, true)
+}
+
+/// [`composite_verify_pinned_logup`] with an explicit §6(b)
+/// keystone flag (verifier-set from trusted params).
+pub fn composite_verify_pinned_logup_sx(
+    config: &AiPowStarkConfig,
+    program: &Program,
+    proof: &p3_batch_stark::BatchProof<AiPowStarkConfig>,
+    public_inputs: &CompositePublicInputs,
+    sx_bound: bool,
+) -> Result<(), CompositeVerificationError> {
     use p3_batch_stark::verify_batch;
-    let air = crate::composite_full_air_with_lookups::CompositeFullAirWithLookupsPinned::new(
+    let air = crate::composite_full_air_with_lookups::CompositeFullAirWithLookupsPinned::new_with(
         program.clone(),
+        sx_bound,
     );
-    let pd = logup_common_for(config, program);
+    let pd = logup_common_for(config, program, sx_bound);
     verify_batch(
         config,
         std::slice::from_ref(&air),
@@ -384,7 +415,21 @@ pub fn composite_verify_pow_pinned_logup(
     public_inputs: &CompositePublicInputs,
     target: &[u8; 32],
 ) -> Result<(), PowVerifyError> {
-    composite_verify_pinned_logup(config, program, proof, public_inputs)
+    composite_verify_pow_pinned_logup_sx(config, program, proof, public_inputs, target, true)
+}
+
+/// [`composite_verify_pow_pinned_logup`] with an explicit §6(b)
+/// keystone flag. `sx_bound` MUST be derived by the verifier from
+/// the trusted block params (`num_stripes ≤ 16`), never the proof.
+pub fn composite_verify_pow_pinned_logup_sx(
+    config: &AiPowStarkConfig,
+    program: &Program,
+    proof: &p3_batch_stark::BatchProof<AiPowStarkConfig>,
+    public_inputs: &CompositePublicInputs,
+    target: &[u8; 32],
+    sx_bound: bool,
+) -> Result<(), PowVerifyError> {
+    composite_verify_pinned_logup_sx(config, program, proof, public_inputs, sx_bound)
         .map_err(PowVerifyError::Stark)?;
     let hj = hash_jackpot_le_bytes(&public_inputs.hash_jackpot);
     if le_u256_le(&hj, target) {

@@ -55,7 +55,7 @@
 
 use ai_pow_zk::composite_proof::build_config;
 use ai_pow_zk::{
-    composite_prove_pinned_logup, composite_verify_pow_pinned_logup, CircuitConfig,
+    composite_prove_pinned_logup_sx, composite_verify_pow_pinned_logup_sx, CircuitConfig,
     CompositePublicInputs, CompositeTrace, PowVerifyError, ZkParams,
 };
 
@@ -152,34 +152,79 @@ pub fn prove_and_verify(
     trace.place_key_pin_row(jk_row, false, &kappa_w);
     trace.place_key_pin_row(ch_row, true, &s_a_w);
 
-    // HIGH-2.2 §4.A — place the **real** solved tile's
-    // matmul→fold chain so `JACKPOT_MSG` = the genuine
-    // `TileState M`. (Re-enabled now that the pre-existing
-    // JackpotChip bug — the `JACKPOT_MSG` RAM recurrence ungated
-    // by `is_active`, which forbade a non-zero `JACKPOT_MSG` —
-    // is fixed; `ai-pow-zk` `high2_2_fold_chain_pinned_logup`,
-    // exactly this trace shape via Route-A, now verifies.)
-    // Reconstruct the noised matrices the same way
-    // `BlockContext::build` does (it exposes the seeds, not the
-    // matrices), take the attested tile's per-stripe `x_steps`,
-    // and fold them via `place_fold_chain`. The §4.D keystone
-    // binds last-row `JACKPOT_MSG == FOLD_STATE`, so
-    // `HASH_JACKPOT = BLAKE3(real M, key=s_a)` is the genuine
-    // PoW digest — byte-equivalent to the plain miner (proven by
-    // `zk_bridge::tests::high2_2_xstep_fold_pipeline_byte_equiv_plain`).
-    // Tile (0,0) is attested here; binding the specific *found*
-    // tile index is §4.E (does not change the binding).
+    // HIGH-2.2 §6(b) — place the **real** solved tile's full
+    // useful-work chain: the sub-block-major matmul sweep over the
+    // committed-matrix tile strips + the co-located StripeXor
+    // reduction (`place_useful_work_chain`), then fold the
+    // chip-reduced per-stripe `x_steps`. The composite AIR now
+    // *forces* the chain
+    //   committed A/B → CUMSUM (matmul chip) →
+    //   SX_IN (== nxt.CUMSUM) → SX_XR (StripeXor) →
+    //   FOLD_XSTEP (§6(b) keystone) → FoldChip → FOLD_STATE →
+    //   §4.D keystone → JACKPOT_MSG → C4 → HASH_JACKPOT → C2
+    // so a *malicious* prover can no longer fabricate `x_steps` —
+    // it must do the real matmul. Reconstruct the noised matrices
+    // the same way `BlockContext::build` does (it exposes the
+    // seeds), then extract the attested tile's `t·k` row/col
+    // strips. `HASH_JACKPOT = BLAKE3(real M, key=s_a)` is the
+    // genuine PoW digest, byte-equivalent to the plain miner
+    // (`high2_2_xstep_fold_pipeline_byte_equiv_plain`). Tile (0,0)
+    // is attested; threading the specific *found* tile + binding
+    // its index is §4.E (does not change this binding).
     let noise = crate::matmul::BlockNoise::expand(&ctx.s_a, &ctx.s_b, params);
     let mats = crate::matmul::Matrices::build(ctx.a, ctx.b, &noise, params);
-    let tile_trace = crate::matmul::compute_tile_trace(&mats, params, 0, 0);
-    let fold_start = mh_end + 3;
-    assert!(
-        fold_start + tile_trace.x_steps.len() < height - 8,
-        "fold chain + jackpot block must fit: fold_start={fold_start} \
-         stripes={} height={height}",
-        tile_trace.x_steps.len()
-    );
-    let real_m = trace.place_fold_chain(fold_start, &tile_trace.x_steps);
+    let (tile_i, tile_j) = (0u32, 0u32);
+    let t = params.tile as usize;
+    let r = params.noise_rank as usize;
+    let num_stripes = params.num_stripes() as usize;
+    // `t·k` row-major A-strips / col-major B-strips for the tile
+    // (the `compute_tile_from_slices` layout).
+    let a_strips: Vec<i8> = (0..t as u32)
+        .flat_map(|di| mats.a_prime_row(tile_i * params.tile + di).to_vec())
+        .collect();
+    let b_strips: Vec<i8> = (0..t as u32)
+        .flat_map(|dj| mats.b_prime_col(tile_j * params.tile + dj).to_vec())
+        .collect();
+    // §6(b) `StripeXorChip` has `STATE_LEN = 16` per-stripe lanes
+    // (= `JACKPOT_SIZE`). For `num_stripes ≤ 16` (TEST_SMALL and
+    // the e2e/headline mining path: `k/r = 64/4 = 16`) the full
+    // useful-work chain is placed and the malicious-prover binding
+    // is live. For `num_stripes > 16` (e.g. the rectangular
+    // `llm_shape` params, `k/r = 20`, and PROD `k/r = 64`) the
+    // StripeXor register would need `num_stripes` lanes + a
+    // per-fold-row stripe selector — a scoped width generalization
+    // (STATE_LEN → ≥ max(k/r); the "dominant new width" the design
+    // anticipated). Until that lands, those params take the legacy
+    // `compute_tile_trace` → `place_fold_chain` path (the honest
+    // real `M` is still attested and byte-equivalent; the §6(b)
+    // *malicious-prover* binding is the documented residual for
+    // `num_stripes > 16`). Soundness meanwhile held by CRIT-1 +
+    // §4.D keystone + §6(a) for all params.
+    const SX_STATE_LEN: usize = 16;
+    let real_m = if num_stripes <= SX_STATE_LEN {
+        let sweep_rows = (t / 2) * (t / 2) * num_stripes;
+        let sweep_start = mh_end + 3;
+        let fold_start = sweep_start + sweep_rows + 4;
+        assert!(
+            fold_start + num_stripes < height - 8,
+            "useful-work sweep + fold + jackpot must fit: sweep_start={sweep_start} \
+             sweep_rows={sweep_rows} stripes={num_stripes} height={height}"
+        );
+        let (_rows_used, x_steps) = trace
+            .place_useful_work_chain(sweep_start, &a_strips, &b_strips, t, r, num_stripes);
+        let xs: Vec<i32> = x_steps[..num_stripes].iter().map(|&u| u as i32).collect();
+        trace.place_fold_chain(fold_start, &xs)
+    } else {
+        let tile_trace = crate::matmul::compute_tile_trace(&mats, params, tile_i, tile_j);
+        let fold_start = mh_end + 3;
+        assert!(
+            fold_start + tile_trace.x_steps.len() < height - 8,
+            "fold chain + jackpot block must fit: fold_start={fold_start} \
+             stripes={} height={height}",
+            tile_trace.x_steps.len()
+        );
+        trace.place_fold_chain(fold_start, &tile_trace.x_steps)
+    };
 
     // C4 — final jackpot-hash block (trace's last 8 rows):
     // HASH_JACKPOT = BLAKE3(JACKPOT_MSG = real M, key = s_a).
@@ -230,8 +275,13 @@ pub fn prove_and_verify(
     // bound to a different program and rejected vs the canonical
     // VK (ai-pow-zk `routea_*` regression suite). Cost ≈ 1.23x
     // the uni-stark pinned path (HIGH2_2_DESIGN.md §4.C.10).
-    let (proof, program) = composite_prove_pinned_logup(&cfg, trace, &pis);
-    composite_verify_pow_pinned_logup(&cfg, &program, &proof, &pis, target)
+    // §6(b) keystone is live iff the full useful-work chain was
+    // placed (num_stripes ≤ StripeXor STATE_LEN). `sx_bound` is
+    // derived here from the trusted `params` — the verifier-side
+    // value, never the proof — so it is as sound as CRIT-1.
+    let sx_bound = num_stripes <= SX_STATE_LEN;
+    let (proof, program) = composite_prove_pinned_logup_sx(&cfg, trace, &pis, sx_bound);
+    composite_verify_pow_pinned_logup_sx(&cfg, &program, &proof, &pis, target, sx_bound)
         .map_err(BridgeError::Pow)?;
 
     Ok(ZkOutcome { pis })
