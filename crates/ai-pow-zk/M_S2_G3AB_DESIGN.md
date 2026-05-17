@@ -1,6 +1,15 @@
 # M-S2 — G3a + G3b Implementation Design (boundary-predicate parameterization + segment schedule)
 
-> **Status:** DESIGN (2026-05-17). Implementation not started.
+> **Status:** DESIGN COMPLETE — **decisions D1–D6 LOCKED
+> 2026-05-17** (maintainer-approved). Implementation not started;
+> this is now the implementation-ready, fully-decided design.
+> **Locked path:** D1 = flat `Γ` as PIs · D2 = useful-work+fold
+> only (`mhash` identity-carried) · D3 = hybrid pin
+> (CONTROL_PREP bits/one-hots + dedicated `SEGMENT_IDX` col) ·
+> D4 = arbitrary-row cuts, staged (aligned first) · D5 = BLAKE3
+> `program_root`/`block_anchor` · D6 = keep `STARK_ROW_IDX`
+> per-segment-local + new `GLOBAL_ROW` in `Γ`. See §10 for the
+> full table; the body already assumes these.
 > **Upstream contract (authoritative where it conflicts):**
 > `G3_RECURSION_AGGREGATION.md` §4 (carry vector `Γ`), §5
 > (aggregation tree — G3c only), §6 (`PROGRAM_ROOT`), §12
@@ -567,10 +576,10 @@ parallel default-on) **and** a `-C debug-assertions=on` pass.
 | **D5** | `block_anchor`/`program_root` hash | BLAKE3 (have the chip, C3-consistent) · Tip5/Poseidon2 (recursion-friendly now) | **BLAKE3** (defer recursion-hash to G3c/M-S4 per the audit) |
 | **D6** | `row_idx` re-basing | A: keep `STARK_ROW_IDX` local + new `GLOBAL_ROW` in `Γ` · B: re-base `STARK_ROW_IDX` per segment | **A** — isolates CRIT-1/CV-routing (the M-S1-class hazard) |
 
-D1–D4 materially shape the G3c interface and the implementation
-plan and are surfaced to the maintainer. D5/D6 are recommended
-defaults (verifiable from the codebase) and will be taken as
-above unless overridden.
+**ALL LOCKED 2026-05-17 (maintainer-approved): D1=A · D2=A ·
+D3=Hybrid · D4=A(staged) · D5=BLAKE3 · D6=A.** The body of this
+document already assumes exactly this path; no option branches
+remain open. Implementation proceeds per §11.
 
 ---
 
