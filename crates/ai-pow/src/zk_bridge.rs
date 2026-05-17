@@ -231,13 +231,32 @@ pub fn prove_and_verify_tiled(
     // (HIGH2_2_DESIGN §4.C.4-G3: segmentation/M12 — the residual,
     // not a forgery hole; soundness held by CRIT-1 + §4.D + §6(a)).
     let sweep_rows = (t / 2) * (t / 2) * num_stripes * r.div_ceil(16);
+    // HIGH-2.2 §4.C.11 / M-S1 — the `noised_packed` producer store:
+    // one row per *distinct* swept 8-i8 micro-tile chunk. The
+    // chunked whole-micro-tile matmul query
+    // (`bus_emit::noised_packed`) is balanced only if every consumed
+    // chunk is a multiset member of this declared store, so the
+    // §6(b) sweep's A/B inputs are now *bound* (not free). Computed
+    // up-front (pure, cheap vs. proving) so its size enters the
+    // fit budget. (Store ↔ committed `HASH_A` is the §4.C.2
+    // residual, separately scoped.)
+    let store_chunks =
+        CompositeTrace::enumerate_noised_chunks(&a_strips, &b_strips, t, r, num_stripes);
+    let n_store = store_chunks.len();
     let sweep_fits = num_stripes <= ai_pow_zk::composite_layout::STRIPE_MAX
-        && mh_end + 3 + sweep_rows + 4 + num_stripes < height - 8;
+        && mh_end + 3 + sweep_rows + n_store + 4 + num_stripes < height - 8;
     let real_m = if sweep_fits {
         let sweep_start = mh_end + 3;
-        let fold_start = sweep_start + sweep_rows + 4;
-        let (_rows_used, x_steps) = trace
+        let (rows_used, x_steps) = trace
             .place_useful_work_chain(sweep_start, &a_strips, &b_strips, t, r, num_stripes);
+        // Store rows live in the post-sweep passthrough region
+        // (place AFTER the sweep so its SX/CUMSUM passthrough on
+        // `[sweep_start+rows_used, h)` is already written — this
+        // only adds the disjoint MAT_UNPACK/NOISED_PACKED/CONTROL
+        // columns); the fold chain follows them.
+        let store_start = sweep_start + rows_used;
+        let placed = trace.place_noised_store(store_start, &store_chunks, 0);
+        let fold_start = store_start + placed + 4;
         let xs: Vec<i32> = x_steps[..num_stripes].iter().map(|&u| u as i32).collect();
         trace.place_fold_chain(fold_start, &xs)
     } else {

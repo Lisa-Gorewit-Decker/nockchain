@@ -204,13 +204,23 @@ PROD** (`k/r = 64`, chunked sweep ≈ 2²⁰ ≫ one Layer-0): legacy
 path, §6(b) keystone gated **off** via `sx_bound` — a value the
 *verifier* derives from trusted params/height, never the proof
 (as sound as CRIT-1). Closing it = **G3** (segmentation + M12
-recursion). (2) deep tile↔committed-store: that the swept
-`A_NOISED`/`B_NOISED` are the block's *committed* rows/cols
-reduces to the §4.C `noised_packed`-non-vacuity on sweep rows
-(`place_matmul_step` sets `MAT_ID = 0` — §4.C.10). Both tracked
-jointly; soundness meanwhile held by CRIT-1 + keystone + §6(a) +
-§6(b) (live for every single-Layer-0 params set). The original
-analysis below stands as the historical rationale.
+recursion). (2) deep tile↔committed-store: **M-S1 ✅ RESOLVED
+2026-05-17** — the §4.C `noised_packed` query is now
+whole-micro-tile (chunked over all `A_NOISED_LEN`/`B_NOISED_LEN`
+cells) and the swept `A_NOISED`/`B_NOISED` are multiset-bound
+(LogUp) to a declared producer store; adversarial **I2**
+(`high2_2_swept_tile_not_in_store_rejects`) rejects a swept tile
+∉ store, so a matrix-swap *on the sweep* is impossible. The
+remaining tie is the **single precise residual §4.C.2** (store
+↔ committed `HASH_A` via noise derivation — *not* a forgery
+hole: the swept work is pinned to what the prover declared in
+the proof, and CRIT-1/§4.D/§6 hold independently). Validated:
+Route-A green (parallel + debug-assertions-ON), `ai-pow-zk
+--lib` 335/0/22, `ai-pow --features zk` green incl. MED-3 bridge
+roundtrip. Both tracked jointly; soundness meanwhile held by
+CRIT-1 + keystone + §6(a) + §6(b) + M-S1 (live for every
+single-Layer-0 params set). The original analysis below stands
+as the historical rationale.
 
 **Original severity: High (PoW *usefulness* not enforced even if
 CRIT-1 is fixed).**
@@ -464,10 +474,14 @@ also ✅ RESOLVED (`prove_and_verify_for_block`).
 PROD** (`k/r = 64`, chunked sweep ≈ 2²⁰ ≫ one Layer-0): legacy
 path, §6(b) keystone gated off via the verifier-set `sx_bound`
 (sound as CRIT-1); closing it = **G3** (segmentation + M12
-recursion, designed §4.C.4-G3). (2) deep tile↔committed-store ≡
-§4.C `noised_packed`-non-vacuity on sweep rows. Plus the
-7-round-Tip5 review. Net: CRIT-1 + HIGH-2 keystone + §6(a) +
-§6(b) make the SNARK PoW-sound, the fold schedule verifier-fixed,
+recursion, designed §4.C.4-G3). (2) deep tile↔committed-store:
+**M-S1 ✅ RESOLVED 2026-05-17** (§4.C `noised_packed`
+whole-micro-tile non-vacuity — sweep A/B multiset-bound to a
+declared store, adversarial I2 rejects swap-on-sweep); residual
+narrowed to **§4.C.2** (store ↔ `HASH_A` noise derivation). Plus
+the 7-round-Tip5 review. Net: CRIT-1 + HIGH-2 keystone + §6(a) +
+§6(b) + M-S1 make the SNARK PoW-sound, the fold schedule
+verifier-fixed,
 and — for every single-Layer-0 params set — a *malicious* prover
 is now forced through the real matmul for `X_STEP`; the *honest*
 proof attests the real, byte-equivalent solved tile.

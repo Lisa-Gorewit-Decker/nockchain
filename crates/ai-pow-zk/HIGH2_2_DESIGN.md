@@ -1350,23 +1350,27 @@ sequence of independently-shippable steps — the "M-S1.1 landable
 now" framing was the over-optimistic part, now empirically
 disproven.
 
-**Progress (2026-05-17, fix-forward per user directive — NOT
-reverting on regression).** Step 1 (pack-link) is **landed &
-validated in isolation**; the rest is the documented continuation.
-**Route-A status: `high2_2_fold_chain_pinned_logup` is RED** —
-expected and disclosed: the pack-link makes `A_NOISED` non-zero on
-§6(b) sweep rows, which the *existing* `noised_packed` bus matmul
-query consumes with no producer ⇒ LogUp unbalanced. This is the
-empirically-established coupling; per the user's "don't revert,
-move forward to completion" directive the pack-link stays and the
-producer/widen/freq (steps 2-4) are the forward work to
-re-balance Route-A. **Not** a claim of completion — M-S1 is
-in-progress; soundness meanwhile held by CRIT-1 + keystone +
-§6(a) + §6(b) (which do not depend on this bus).
+**Progress (2026-05-17, fix-forward per user directive — LANDED
+& exhaustively validated).** The atomic landing closed Route-A
+**green**: the pack-link makes `A_NOISED` provably the dot
+inputs, the matmul query was widened to the **whole micro-tile**
+(all `A_NOISED_LEN`/`B_NOISED_LEN` cells, chunked into
+`A_NOISED_LEN/2` + `B_NOISED_LEN/2` 2-cell sub-queries), and a
+pure producer store re-balances the bus. The §6(b) sweep's A/B
+inputs are now **non-vacuously bound** (LogUp multiset) to a
+declared canonical store — proven by the adversarial I2 test
+(`high2_2_swept_tile_not_in_store_rejects`: a swept tile that is
+NOT the published store leaves the bus unbalanced ⇒ Route-A
+rejects). This upgrades "fold of *a* matmul" → "fold of *the
+declared store's* matmul". **Residual (precise, separately
+scoped): store ↔ committed-`HASH_A` is §4.C.2** (the
+noise-derivation tie binding the producer's `a_prime`/`b_prime`
+to the CRIT-1-pinned plain `A`/`B`); M-S1 does not pin the store
+to `HASH_A`, so a prover may still declare *a* store — it just
+can no longer sweep anything other than what it declared.
 
-**Atomic landing (one Route-A-valid change; sub-parts still
-unit-testable in isolation; Route-A green only once steps 2-4
-re-balance the bus):**
+**Atomic landing (one Route-A-valid change — all parts LANDED &
+green together):**
 
 1. **Pack-link constraint** — ✅ LANDED & validated:
    `A_NOISED[c] == polyval(A_NOISED_UNPACK[4c..4c+4], 256)` ∀
@@ -1374,33 +1378,54 @@ re-balance the bus):**
    vacuous off matmul rows. `place_matmul_step` writes the packed
    cells. Unit `CompositeFullAir` green (incl. debug-assertions-ON
    via `high2_2_useful_work_chain_unit`); adversarial
-   `matmul_pack_link_rejects_inconsistent_a_noised` green
-   (`A_NOISED ≠ pack(A_NOISED_UNPACK)` rejects). Makes the
-   bus-side packed value provably the dot inputs (closes §4.C.11
-   finding 2). Breaks Route-A until step 2-4 (by construction).
-2. **Producer** — publish the noised `a_prime`/`b_prime` tile
-   strips as canonical `(A_ID, NOISED_PACKED)` store entries
-   (reconcile with / extend the M52 chunk-Merkle producer so the
-   *same* committed bytes feed both `HASH_A` and the matmul
-   store).
-3. **Bus + freq** — `A_ID`/`B_ID` address the
-   per-(sub-block,stripe,chunk) store entry; widen the matmul
-   query to all `A_NOISED_LEN` cells (not the 8-i8 prefix);
-   `populate_lookup_freq` accounts `MAT_FREQ` for **every** sweep
-   read so the bus balances.
-4. **CRIT-1 pin** — `A_ID`/`B_ID` per sweep row verifier-fixed
-   (extend the §6(a)/G2 `CONTROL_PREP`/`AB_ID_PREP` schedule pin).
-5. **Exhaustive validation** — unit gate + full Route-A
-   (`high2_2_fold_chain_pinned_logup` + new
-   `high2_2_committed_matmul_input_bound`) + §6(b) suite +
-   `ai-pow --features zk`; **adversarial: swept matrices ≠ the
-   committed `BlockContext` A/B must reject** (the I2 acceptance
-   test); debug-assertions-ON at each step.
+   `matmul_pack_link_rejects_inconsistent_a_noised` green.
+2. **Whole-micro-tile bus query** — ✅ LANDED:
+   `bus_emit::noised_packed` emits `A_NOISED_LEN/2` A + `B_…/2`
+   B 2-cell chunk sub-queries per matmul-active row (was a single
+   2-cell prefix query — the prior vacuity). Each chunk
+   `(A_ID, A_NOISED[2j], A_NOISED[2j+1])` is a value-as-key
+   multiset lookup (`A_ID`/`B_ID = 0`, the constant store
+   namespace; the *chunk value* is the discriminant).
+3. **Producer store** — ✅ LANDED:
+   `CompositeTrace::place_noised_store_row` (pure table entry —
+   identical column writes to `place_matrix_staging_row` but
+   `IS_MSG_MAT = 0`, so no self-query / no blake3-chip
+   `BLAKE3_MSG` assertion) + `enumerate_noised_chunks`
+   (deterministic, de-duplicated, byte-mirrors the sweep's
+   `a_blk`/`b_blk`) + `place_noised_store` (one row per distinct
+   swept chunk). The ungated table side
+   (`(MAT_ID, NOISED_PACKED) × -MAT_FREQ` on every row) means a
+   pure producer needs no selector. M52 plain-byte keys cannot
+   unbalance: `populate_lookup_freq` routes ALL freq for a key to
+   its first row, so a collision just concentrates `-MAT_FREQ`
+   there (still net-zero).
+4. **`populate_lookup_freq`** — ✅ LANDED: chunked A/B accounting
+   mirrors the emission (`A_NOISED_LEN/2` + `B_…/2` keys per
+   matmul row). Coverage net `noised_store_covers_every_swept_chunk`
+   guards against enumerator↔sweep index drift.
+5. **CRIT-1 / `A_ID` pin** — value-as-key with `A_ID = B_ID = 0`
+   needs no per-row id column: store rows are no-op-program
+   passthrough rows (CONTROL_PREP unchanged vs. the prior
+   all-passthrough region), so the verifier's witness-free
+   canonical-program rebuild is unaffected. The store *data*
+   lives in non-pinned witness columns — exactly the §4.C.2
+   residual boundary.
+6. **Exhaustive validation** — ✅ ALL GREEN:
+   `ai-pow-zk --lib` 335 pass / 0 fail / 22 ign (parallel);
+   Route-A `high2_2_fold_chain_pinned_logup` green (parallel +
+   debug-assertions-ON); unit `high2_2_useful_work_chain_unit`;
+   coverage `noised_store_covers_every_swept_chunk`; **adversarial
+   I2 `high2_2_swept_tile_not_in_store_rejects`** (rejects);
+   `ai-pow --features zk` all green incl. MED-3 bridge roundtrip
+   (`med3_prove_and_verify_for_block_roundtrips_and_derives_target`,
+   real params through the store-wired `prove_and_verify_tiled`).
 
-Soundness meanwhile: CRIT-1 + keystone + §6(a) + §6(b) hold
-(tree is green at the reverted state); M-S1 upgrades "fold of
-*a* matmul" → "fold of *the committed block's* matmul". It is an
-atomic multi-day landing — its own focused effort, not rushed.
+Soundness: CRIT-1 + keystone + §6(a) + §6(b) hold AND the §6(b)
+sweep inputs are now multiset-bound to a declared store (M-S1).
+Remaining to full §4.C: §4.C.2 (store ↔ `HASH_A` noise
+derivation) — the precise, documented residual; not a forgery
+hole (the swept work is still pinned to *something* the prover
+committed to in the proof, and CRIT-1/§4.D/§6 hold independently).
 
 #### 4.C.5 Soundness once §4.C lands
 
@@ -1849,16 +1874,20 @@ pin), HIGH-2 keystone, MED-3 (verifier-derived target/tile),
 §4.A–§4.D, §4.C Route-A, §6(a) (fold-schedule pin), **§6(b)
 G1+G2** (X_STEP↔CUMSUM↔fold forced in-circuit for *every
 single-Layer-0 params set* — TEST_SMALL **and** rectangular
-LLM-FFN `llm_shape`), §4.E (attest the real tile). Byte-identical
+LLM-FFN `llm_shape`), §4.E (attest the real tile), **M-S1** (§4.C
+sweep-input ↔ declared-store multiset binding, non-vacuous —
+adversarial I2 rejects a swept tile ∉ store). Byte-identical
 to the plain Pearl miner throughout. **Guarantee today: for any
 shape that fits one Layer-0 STARK, a malicious prover *must* do
-the real committed-matrix matmul.**
+the real matmul over the noised tile it declared in the store
+(store ↔ committed `HASH_A` = §4.C.2, the one remaining §4.C
+tie).**
 
 ### Track A — cryptographic soundness at arbitrary scale
 
 | Milestone | Feature / guarantee it adds | Depends on |
 |---|---|---|
-| **M-S1 · §4.C sweep-input binding non-vacuous** — the §4.C **cryptographic core** (full design + increment plan: **§4.C.11**). Bind the §6(b) matmul-sweep inputs to the committed `HASH_A`/`HASH_B` store; requires a NEW pack-link (`A_NOISED↔A_NOISED_UNPACK`, absent today), full 8-cell bus coverage, the noised producer, `A_ID`/`B_ID` CRIT-1 pin. | Upgrades "fold of *a* matmul" → "fold of *the committed block's* matmul". **Inflection I2.** Scale-independent & highest-*value*, but the **multi-day §4.C core, not cheap** (code audit 2026-05-17 corrected the earlier "cheap" framing). | none (independent of G3); M-S1.1 unblocked & zero-regression |
+| **M-S1 · §4.C sweep-input binding non-vacuous** — ✅ **LANDED & validated 2026-05-17** (design + landing record: **§4.C.11**). Pack-link + whole-micro-tile chunked `noised_packed` query + pure producer store + chunked `populate_lookup_freq`; value-as-key (`A_ID=B_ID=0`) so no per-row id / no CONTROL_PREP change. Route-A green (parallel + debug-assertions-ON), adversarial **I2** `high2_2_swept_tile_not_in_store_rejects` rejects, `ai-pow-zk --lib` 335/0/22, `ai-pow --features zk` green incl. MED-3 bridge roundtrip. | Upgraded "fold of *a* matmul" → "fold of *the declared store's* matmul". **Inflection I2 reached.** Remaining §4.C tie: store ↔ committed `HASH_A` = **§4.C.2** (noise derivation), the precise documented residual. | DONE |
 | **M-S2 · G3a + G3b** (boundary-predicate parameterization; segment schedule; `canonical_segment_program`/`PROGRAM_ROOT`) | Multi-segment-capable Layer-0 + the verifier-recomputable segmentation/program-root substrate. `N=1` ≡ today (zero regression). | none — Layer-0-only, hash/rev-agnostic; **doable now** |
 | **M-S3 · P0 vendor Plonky3-recursion** + align Plonky3 rev in the vendored tree | Audit-stable, owned recursion substrate (resolves F2/F7). | reference (cloned) |
 | **M-S4 · P1 `tip5-circuit-air`** from `nockchain-math::tip5` + Tip5 challenger/MMCS arms + native≡in-circuit cross-test | The recursion verifier can verify our **Tip5** Layer-0 proofs at all; Layer-0 unchanged ⇒ the 120-bit FRI sweep preserved. | M-S3 |
@@ -1886,11 +1915,15 @@ the real committed-matrix matmul.**
 
 - **I1 — PASSED:** single-Layer-0 §6(b) → honest-fidelity becomes
   *malicious-prover-forced* for bounded shapes.
-- **I2 — M-S1:** the bound matmul becomes *the committed block's*
-  matmul (closes matrix-swap on the sweep). Scale-free and
-  highest-*value*, but the multi-day §4.C **core** (the codebase
-  lacks even the `A_NOISED↔A_NOISED_UNPACK` pack-link) — see
-  §4.C.11. *Not* the "cheap" item the pre-audit framing implied.
+- **I2 — M-S1 ✅ REACHED (2026-05-17):** the bound matmul is now
+  *the prover's declared-store* matmul — the §6(b) sweep inputs
+  are multiset-bound (LogUp) to a canonical producer store, so a
+  matrix-swap *on the sweep* is impossible (adversarial I2 test
+  rejects). Scale-free. The matmul-swap surface is reduced to the
+  store ↔ committed-`HASH_A` tie = **§4.C.2** (noise derivation),
+  the single precise residual to full §4.C. See §4.C.11 for the
+  landing record. *Was* the multi-day §4.C core (the pre-audit
+  "cheap" framing was wrong); now landed.
 - **I3 — M-S5:** bounded → *arbitrary/production scale* with zero
   probabilistic gap (strictly > Pearl). Below I3, PROD = G4
   (parity with Pearl, not stronger).

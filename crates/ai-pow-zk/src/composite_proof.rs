@@ -574,8 +574,20 @@ mod tests {
             trace.place_useful_work_chain(sweep_start, &a_prime, &b_prime, t, r, num_stripes);
         assert_eq!(rows_used, (t / 2) * (t / 2) * num_stripes); // 16·16 = 256
 
+        // M-S1 (§4.C.11) — place the `noised_packed` producer store
+        // so the now-chunked whole-micro-tile A/B matmul query
+        // (`bus_emit::noised_packed`, `A_NOISED_LEN/2` + `B_…/2`
+        // sub-queries per matmul-active row) is a multiset of a
+        // declared canonical store. Without it the bus is
+        // unbalanced and Route-A rejects (this is the binding).
+        let store_chunks = CompositeTrace::enumerate_noised_chunks(
+            &a_prime, &b_prime, t, r, num_stripes,
+        );
+        let store_start = sweep_start + rows_used;
+        let n_store = trace.place_noised_store(store_start, &store_chunks, 0);
+
         let xs: Vec<i32> = x_steps[..num_stripes].iter().map(|&u| u as i32).collect();
-        let fold_start = sweep_start + rows_used + 4;
+        let fold_start = store_start + n_store + 4;
         let m = trace.place_fold_chain(fold_start, &xs);
         let _ = trace.place_jackpot_hash_block(h - 8, &m, &ch);
 
@@ -619,6 +631,142 @@ mod tests {
         let (proof, _) = composite_prove_pinned_logup(&cfg, trace, &pis);
         composite_verify_pinned_logup(&cfg, &canonical, &proof, &pis).expect(
             "full §6(b) useful-work chain + keystones must verify under Route-A",
+        );
+    }
+
+    /// M-S1 (§4.C.11) coverage net: the producer store from
+    /// `enumerate_noised_chunks` must contain **every** distinct
+    /// 2-cell chunk key the `place_useful_work_chain` sweep writes
+    /// into `A_NOISED`/`B_NOISED`. Guards against drift between the
+    /// enumerator's index math and the sweep's `a_blk`/`b_blk`
+    /// construction (they are duplicated, not shared).
+    #[test]
+    fn noised_store_covers_every_swept_chunk() {
+        use crate::composite_layout::{
+            A_NOISED_LEN, A_NOISED_START, B_NOISED_LEN, B_NOISED_START,
+            IS_RESET_CUMSUM, IS_UPDATE_CUMSUM, TOTAL_TRACE_WIDTH,
+        };
+        use p3_field::integers::QuotientMap;
+        use p3_field::PrimeField64;
+
+        let (t, k, r, num_stripes) = (8usize, 64usize, 4usize, 16usize);
+        let a_prime: Vec<i8> = (0..(t * k) as i32)
+            .map(|i| (i.wrapping_mul(7) ^ (i >> 3)) as i8)
+            .collect();
+        let b_prime: Vec<i8> = (0..(t * k) as i32)
+            .map(|i| (i.wrapping_mul(5) ^ (i << 1) ^ 0x2A) as i8)
+            .collect();
+
+        let mut trace = CompositeTrace::baseline_min();
+        let (rows_used, _xs) =
+            trace.place_useful_work_chain(8, &a_prime, &b_prime, t, r, num_stripes);
+
+        // Store key set: pack each enumerated 8-i8 chunk the way
+        // `place_matmul_step` packs `A_NOISED` (base-256 polyval of
+        // each 4-i8 half), in the canonical Goldilocks encoding.
+        let chunks = CompositeTrace::enumerate_noised_chunks(
+            &a_prime, &b_prime, t, r, num_stripes,
+        );
+        let pack = |b: &[i8]| -> u64 {
+            let mut acc = 0i64;
+            let mut p = 1i64;
+            for &x in b {
+                acc += x as i64 * p;
+                p *= 256;
+            }
+            <Val<AiPowStarkConfig> as QuotientMap<i64>>::from_int(acc)
+                .as_canonical_u64()
+        };
+        let mut store: std::collections::HashSet<(u64, u64)> =
+            std::collections::HashSet::new();
+        for c in &chunks {
+            store.insert((pack(&c[0..4]), pack(&c[4..8])));
+        }
+
+        // Every matmul-active row's A/B chunk keys must be in the
+        // store.
+        for row in 8..8 + rows_used {
+            let base = row * TOTAL_TRACE_WIDTH;
+            let active = trace.matrix.values[base + IS_RESET_CUMSUM]
+                .as_canonical_u64()
+                + trace.matrix.values[base + IS_UPDATE_CUMSUM].as_canonical_u64();
+            if active == 0 {
+                continue;
+            }
+            for j in 0..(A_NOISED_LEN / 2) {
+                let key = (
+                    trace.matrix.values[base + A_NOISED_START + 2 * j]
+                        .as_canonical_u64(),
+                    trace.matrix.values[base + A_NOISED_START + 2 * j + 1]
+                        .as_canonical_u64(),
+                );
+                assert!(store.contains(&key), "A chunk {j}@row {row} ∉ store");
+            }
+            for j in 0..(B_NOISED_LEN / 2) {
+                let key = (
+                    trace.matrix.values[base + B_NOISED_START + 2 * j]
+                        .as_canonical_u64(),
+                    trace.matrix.values[base + B_NOISED_START + 2 * j + 1]
+                        .as_canonical_u64(),
+                );
+                assert!(store.contains(&key), "B chunk {j}@row {row} ∉ store");
+            }
+        }
+    }
+
+    /// M-S1 (§4.C.11) **adversarial I2**: the §6(b) sweep input is
+    /// genuinely *bound* to the declared `noised_packed` store. A
+    /// prover that sweeps a tile whose noised micro-tiles are NOT
+    /// the published store (here: store built from the canonical
+    /// `a_prime`/`b_prime`, but the sweep run on a *different*,
+    /// cheaper tile) leaves the bus unbalanced ⇒ Route-A MUST
+    /// reject. (This is the non-vacuity proof for the whole-
+    /// micro-tile binding; store ↔ committed-matrix `HASH_A` is the
+    /// separately-scoped §4.C.2 residual.)
+    #[test]
+    fn high2_2_swept_tile_not_in_store_rejects() {
+        let cfg = build_config(&test_zk_params(), &CircuitConfig::TEST_PEARL);
+        let ch: [u32; 8] = core::array::from_fn(|i| 0x5EED_0000 + i as u32);
+        let mut trace = CompositeTrace::baseline_min();
+        let h = trace.height();
+
+        let (t, k, r, num_stripes) = (8usize, 64usize, 4usize, 16usize);
+        let a_canon: Vec<i8> = (0..(t * k) as i32)
+            .map(|i| (i.wrapping_mul(7) ^ (i >> 3)) as i8)
+            .collect();
+        let b_canon: Vec<i8> = (0..(t * k) as i32)
+            .map(|i| (i.wrapping_mul(5) ^ (i << 1) ^ 0x2A) as i8)
+            .collect();
+        // The tile actually swept differs from the published store
+        // (a "cheaper"/forged tile the prover would prefer).
+        let a_evil: Vec<i8> = a_canon.iter().map(|&v| v ^ 0x5A).collect();
+        let b_evil: Vec<i8> = b_canon.iter().map(|&v| v ^ 0x33).collect();
+
+        let sweep_start = 8;
+        let (rows_used, x_steps) = trace.place_useful_work_chain(
+            sweep_start, &a_evil, &b_evil, t, r, num_stripes,
+        );
+        // Store published from the CANONICAL tile (≠ swept tile).
+        let store_chunks = CompositeTrace::enumerate_noised_chunks(
+            &a_canon, &b_canon, t, r, num_stripes,
+        );
+        let store_start = sweep_start + rows_used;
+        let n_store = trace.place_noised_store(store_start, &store_chunks, 0);
+
+        let xs: Vec<i32> =
+            x_steps[..num_stripes].iter().map(|&u| u as i32).collect();
+        let fold_start = store_start + n_store + 4;
+        let m = trace.place_fold_chain(fold_start, &xs);
+        let _ = trace.place_jackpot_hash_block(h - 8, &m, &ch);
+
+        let pis = CompositePublicInputs::derive_from_trace(&trace);
+        let canonical = extract_program(&trace.matrix);
+        let (proof, _) = composite_prove_pinned_logup(&cfg, trace, &pis);
+        let res = composite_verify_pinned_logup(&cfg, &canonical, &proof, &pis);
+        assert!(
+            res.is_err(),
+            "swept tile ∉ declared noised store MUST reject \
+             (LogUp unbalanced), got Ok"
         );
     }
 

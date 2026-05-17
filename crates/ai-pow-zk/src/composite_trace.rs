@@ -745,6 +745,44 @@ impl CompositeTrace {
         bytes: &[i8; 8],
         mat_id: u32,
     ) -> [u64; 2] {
+        self.write_noised_row(row_idx, bytes, mat_id, true)
+    }
+
+    /// M-S1 (§4.C.11) — place ONE pure `noised_packed` **producer**
+    /// (table) row: identical column writes to
+    /// [`place_matrix_staging_row`] (MAT_UNPACK / UINT8_DATA /
+    /// NOISE_UNPACK = 0 / NOISED_PACKED = polyval, satisfying the
+    /// input chip) **but with `IS_MSG_MAT = 0`** — so it issues NO
+    /// self-query and triggers NO BLAKE3-side / i8u8 / urange8
+    /// interaction. It only *supplies* the multiset entry
+    /// `(MAT_ID, NOISED_PACKED[0..2])` (table side is ungated:
+    /// every row publishes ×`-MAT_FREQ`). `populate_lookup_freq`
+    /// sets `MAT_FREQ` to the count of matmul A/B chunk queries
+    /// that hit this key. This is the canonical store the §6(b)
+    /// sweep's whole-micro-tile A/B input is bound to. (Crucially
+    /// NOT `IS_MSG_MAT = 1`: that would assert the blake3-chip
+    /// `BLAKE3_MSG == base256(UINT8_DATA)` relation on a
+    /// non-compression row — see the C3 note in
+    /// `place_matrix_staging_row`.)
+    pub fn place_noised_store_row(
+        &mut self,
+        row_idx: usize,
+        bytes: &[i8; 8],
+        mat_id: u32,
+    ) -> [u64; 2] {
+        self.write_noised_row(row_idx, bytes, mat_id, false)
+    }
+
+    /// Shared column-writer for the two `noised_packed` table-row
+    /// helpers. `is_msg_mat` selects staging (BLAKE3 absorb /
+    /// self-query, `true`) vs. pure producer (`false`).
+    fn write_noised_row(
+        &mut self,
+        row_idx: usize,
+        bytes: &[i8; 8],
+        mat_id: u32,
+        is_msg_mat: bool,
+    ) -> [u64; 2] {
         use crate::composite_layout::{
             MAT_UNPACK_LEN, MAT_UNPACK_START, NOISED_PACKED_LEN, NOISED_PACKED_START,
             NOISE_UNPACK_LEN, NOISE_UNPACK_START, UINT8_DATA_LEN, UINT8_DATA_START,
@@ -815,7 +853,7 @@ impl CompositeTrace {
         // `place_blake3_hash_*` on the same row. Staging rows
         // should be distinct from compression rows.
         let mut selectors = [false; 21];
-        selectors[10] = true; // IS_MSG_MAT
+        selectors[10] = is_msg_mat; // IS_MSG_MAT
         ControlChip.fill_row(&selectors, mat_id, row);
 
         [packs[0] as u64, packs[1] as u64]
@@ -1262,6 +1300,113 @@ impl CompositeTrace {
         (rows_used, xr)
     }
 
+    /// M-S1 (§4.C.11) — enumerate the **distinct** 8-i8 micro-tile
+    /// chunks the [`place_useful_work_chain`] sweep consumes, in
+    /// first-seen (deterministic) order.
+    ///
+    /// Mirrors the sweep's `a_blk`/`b_blk` construction
+    /// **byte-for-byte** (same `(sbi,sbj,step,chunk)` nest, same
+    /// `rr/cc/c0/w` index math, same zero-pad). Each
+    /// `place_matmul_step` row writes `A_NOISED[c] = pack4(a_blk,c)`
+    /// where flat lane `f = 4c+j` maps to `a_blk[f/TILE_D][f%TILE_D]`;
+    /// the `noised_packed` bus query splits the `A_NOISED_LEN`
+    /// packed cells into `A_NOISED_LEN/2` 2-cell chunks, i.e. the
+    /// 8-i8 sub-vectors `a_blk_flat[8j .. 8j+8]`. The producer store
+    /// must publish exactly these so every swept chunk is a
+    /// multiset member (else LogUp rejects). De-duplicated to the
+    /// working-set size (≪ `sweep_rows`); zero-pad chunks collapse
+    /// to the single all-zero key.
+    ///
+    /// `(a, b)` chunks are interleaved per matmul row in sweep
+    /// order so the store layout is itself deterministic and
+    /// bit-identical across serial/parallel builds.
+    pub fn enumerate_noised_chunks(
+        a_prime_rows: &[i8],
+        b_prime_cols: &[i8],
+        t: usize,
+        r: usize,
+        num_stripes: usize,
+    ) -> Vec<[i8; 8]> {
+        let chunks = r.div_ceil(TILE_D).max(1);
+        let k = if t == 0 { 0 } else { a_prime_rows.len() / t };
+        let n_sb = t / TILE_H;
+        let n_chunk = A_NOISED_LEN / 2; // 2 packed cells = 8 i8 each
+
+        let mut seen: hashbrown::HashSet<[i8; 8]> = hashbrown::HashSet::new();
+        let mut out: Vec<[i8; 8]> = Vec::new();
+        let push = |blk: &[[i8; TILE_D]; TILE_H],
+                    seen: &mut hashbrown::HashSet<[i8; 8]>,
+                    out: &mut Vec<[i8; 8]>| {
+            for jc in 0..n_chunk {
+                let mut bytes = [0i8; 8];
+                for (m, slot) in bytes.iter_mut().enumerate() {
+                    let f = jc * 8 + m;
+                    *slot = blk[f / TILE_D][f % TILE_D];
+                }
+                if seen.insert(bytes) {
+                    out.push(bytes);
+                }
+            }
+        };
+
+        for sbi in 0..n_sb {
+            for sbj in 0..n_sb {
+                for step in 0..num_stripes {
+                    let lo = step * r;
+                    for chunk in 0..chunks {
+                        let c0 = chunk * TILE_D;
+                        let w = (r - c0).min(TILE_D);
+                        let mut a_blk = [[0i8; TILE_D]; TILE_H];
+                        let mut b_blk = [[0i8; TILE_D]; TILE_H];
+                        for di in 0..TILE_H {
+                            let rr = (sbi * TILE_H + di) * k + lo + c0;
+                            a_blk[di][..w].copy_from_slice(&a_prime_rows[rr..rr + w]);
+                        }
+                        for dj in 0..TILE_H {
+                            let cc = (sbj * TILE_H + dj) * k + lo + c0;
+                            b_blk[dj][..w].copy_from_slice(&b_prime_cols[cc..cc + w]);
+                        }
+                        push(&a_blk, &mut seen, &mut out);
+                        push(&b_blk, &mut seen, &mut out);
+                    }
+                }
+            }
+        }
+        out
+    }
+
+    /// M-S1 (§4.C.11) — place the `noised_packed` producer store:
+    /// one pure table row ([`place_noised_store_row`], `MAT_ID =
+    /// mat_id`, no `IS_MSG_MAT`) per distinct swept chunk from
+    /// [`enumerate_noised_chunks`]. `mat_id` MUST equal the
+    /// `A_ID`/`B_ID` the matmul rows carry (currently `0`, the
+    /// value-as-key namespace). Call AFTER `place_useful_work_chain`
+    /// (so the SX/CUMSUM passthrough on `[row_start, h)` is already
+    /// written — this only adds the disjoint MAT_UNPACK /
+    /// NOISED_PACKED / CONTROL columns on top) and BEFORE the fold
+    /// chain (store rows must not overlap it). Returns the number of
+    /// store rows placed (= distinct chunk count). `MAT_FREQ` is set
+    /// later by [`Self::populate_lookup_freq`].
+    pub fn place_noised_store(
+        &mut self,
+        row_start: usize,
+        chunks: &[[i8; 8]],
+        mat_id: u32,
+    ) -> usize {
+        assert!(
+            row_start + chunks.len() < self.height(),
+            "noised store [{row_start}, {}+{}) must fit before the last row \
+             (height {})",
+            row_start,
+            chunks.len(),
+            self.height()
+        );
+        for (i, c) in chunks.iter().enumerate() {
+            self.place_noised_store_row(row_start + i, c, mat_id);
+        }
+        chunks.len()
+    }
+
     /// Populate every `*_FREQ` column in the trace so the LogUp
     /// argument balances when proven via
     /// [`crate::composite_full_air_with_lookups::CompositeFullAirWithLookups`].
@@ -1494,23 +1639,32 @@ impl CompositeTrace {
                 self.matrix.values[base + IS_UPDATE_CUMSUM].as_canonical_u64();
             let active = is_reset + is_update;
             if active > 0 {
-                // A-side read.
-                let a_key = (
-                    self.matrix.values[base + A_ID].as_canonical_u64(),
-                    self.matrix.values[base + A_NOISED_START].as_canonical_u64(),
-                    self.matrix.values[base + A_NOISED_START + 1].as_canonical_u64(),
-                );
-                if let Some(&tr) = key_to_first_row.get(&a_key) {
-                    mat_freq[tr] += active;
+                // M-S1 (§4.C.11) — one query per 2-cell chunk so
+                // the WHOLE micro-tile A/B input is bound (mirrors
+                // the `bus_emit::noised_packed` chunked emission).
+                let a_id = self.matrix.values[base + A_ID].as_canonical_u64();
+                for j in 0..(A_NOISED_LEN / 2) {
+                    let a_key = (
+                        a_id,
+                        self.matrix.values[base + A_NOISED_START + 2 * j].as_canonical_u64(),
+                        self.matrix.values[base + A_NOISED_START + 2 * j + 1]
+                            .as_canonical_u64(),
+                    );
+                    if let Some(&tr) = key_to_first_row.get(&a_key) {
+                        mat_freq[tr] += active;
+                    }
                 }
-                // B-side read.
-                let b_key = (
-                    self.matrix.values[base + B_ID].as_canonical_u64(),
-                    self.matrix.values[base + B_NOISED_START].as_canonical_u64(),
-                    self.matrix.values[base + B_NOISED_START + 1].as_canonical_u64(),
-                );
-                if let Some(&tr) = key_to_first_row.get(&b_key) {
-                    mat_freq[tr] += active;
+                let b_id = self.matrix.values[base + B_ID].as_canonical_u64();
+                for j in 0..(B_NOISED_LEN / 2) {
+                    let b_key = (
+                        b_id,
+                        self.matrix.values[base + B_NOISED_START + 2 * j].as_canonical_u64(),
+                        self.matrix.values[base + B_NOISED_START + 2 * j + 1]
+                            .as_canonical_u64(),
+                    );
+                    if let Some(&tr) = key_to_first_row.get(&b_key) {
+                        mat_freq[tr] += active;
+                    }
                 }
                 // Queries with no matching table key contribute
                 // nothing to MAT_FREQ → bus is unbalanced → LogUp

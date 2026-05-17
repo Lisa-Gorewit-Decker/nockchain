@@ -287,7 +287,17 @@ contract). **Remaining (scoped, not a forgery hole):** (1) **true
 PROD** (`k/r=64`, chunked sweep ≈ 2²⁰ ≫ one Layer-0) — legacy
 path, §6(b) keystone gated off via the verifier-set `sx_bound`
 (sound as CRIT-1); closing it = **G3** (segmentation + M12,
-designed §4.C.4-G3). (2) deep tile↔committed-store ≡ §4.C
-`noised_packed`-non-vacuity on sweep rows (`place_matmul_step`
-sets `MAT_ID=0`). Plus 7-round-Tip5 review, recursion (M12),
+designed §4.C.4-G3). (2) **M-S1 ✅ RESOLVED 2026-05-17** — §4.C
+sweep-input non-vacuity: pack-link + whole-micro-tile chunked
+`noised_packed` query + pure producer store bind the §6(b) sweep
+A/B inputs to a declared canonical store (LogUp multiset);
+adversarial **I2** `high2_2_swept_tile_not_in_store_rejects`
+rejects a swept tile ∉ store; Route-A green (parallel +
+debug-assertions-ON), `ai-pow-zk --lib` 335/0/22, `ai-pow
+--features zk` green incl. MED-3 bridge roundtrip. The deep
+tile↔committed-store tie now reduces to the **single precise
+residual §4.C.2** (store ↔ `HASH_A` noise derivation; not a
+forgery hole — the swept work is pinned to what the prover
+declared, and CRIT-1/§4.D/§6 hold independently). Plus
+7-round-Tip5 review, recursion (M12),
 production-hardening (P1/P3/P5/P6).

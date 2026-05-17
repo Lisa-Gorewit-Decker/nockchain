@@ -375,29 +375,47 @@ mod bus_emit {
             0,
         );
 
+        // M-S1 (§4.C.11) — bind the WHOLE micro-tile A/B input
+        // (all `A_NOISED_LEN` packed cells = 32 i8), not just the
+        // first 2-cell chunk. With the pack-link
+        // (`A_NOISED[c] == polyval(A_NOISED_UNPACK)`) each 2-cell
+        // chunk is provably the dot inputs; emit one query per
+        // 2-cell chunk so every consumed chunk must be a member of
+        // the canonical producer store (multiset binding,
+        // value-as-key — `A_ID`/`B_ID` are the constant store
+        // namespace, the chunk *value* is the discriminant). The
+        // producer (`place_noised_store`) publishes the block's
+        // `a_prime`/`b_prime` chunks with `MAT_FREQ` multiplicity;
+        // `populate_lookup_freq` accounts these queries. A swept
+        // chunk ∉ the store ⇒ no table key ⇒ LogUp unbalanced ⇒
+        // reject. (Store ↔ plain-A `HASH_A` is the §4.C.2 residual.)
         let matmul_active: AB::Expr =
             <AB::Var as Into<AB::Expr>>::into(cur[IS_RESET_CUMSUM])
                 + <AB::Var as Into<AB::Expr>>::into(cur[IS_UPDATE_CUMSUM]);
-        builder.push_interaction(
-            BUS_NOISED_PACKED,
-            [
-                <AB::Var as Into<AB::Expr>>::into(cur[A_ID]),
-                <AB::Var as Into<AB::Expr>>::into(cur[A_NOISED_START]),
-                <AB::Var as Into<AB::Expr>>::into(cur[A_NOISED_START + 1]),
-            ],
-            matmul_active.clone(),
-            1,
-        );
-        builder.push_interaction(
-            BUS_NOISED_PACKED,
-            [
-                <AB::Var as Into<AB::Expr>>::into(cur[B_ID]),
-                <AB::Var as Into<AB::Expr>>::into(cur[B_NOISED_START]),
-                <AB::Var as Into<AB::Expr>>::into(cur[B_NOISED_START + 1]),
-            ],
-            matmul_active,
-            1,
-        );
+        for j in 0..(crate::composite_layout::A_NOISED_LEN / 2) {
+            builder.push_interaction(
+                BUS_NOISED_PACKED,
+                [
+                    <AB::Var as Into<AB::Expr>>::into(cur[A_ID]),
+                    <AB::Var as Into<AB::Expr>>::into(cur[A_NOISED_START + 2 * j]),
+                    <AB::Var as Into<AB::Expr>>::into(cur[A_NOISED_START + 2 * j + 1]),
+                ],
+                matmul_active.clone(),
+                1,
+            );
+        }
+        for j in 0..(crate::composite_layout::B_NOISED_LEN / 2) {
+            builder.push_interaction(
+                BUS_NOISED_PACKED,
+                [
+                    <AB::Var as Into<AB::Expr>>::into(cur[B_ID]),
+                    <AB::Var as Into<AB::Expr>>::into(cur[B_NOISED_START + 2 * j]),
+                    <AB::Var as Into<AB::Expr>>::into(cur[B_NOISED_START + 2 * j + 1]),
+                ],
+                matmul_active.clone(),
+                1,
+            );
+        }
 
         // M52 step 4-B: BLAKE3-side query. Gated by IS_MSG_MAT.
         // The row's own (MAT_ID, NOISED_PACKED) is the lookup key —

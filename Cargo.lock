@@ -6808,6 +6808,9 @@ dependencies = [
 name = "p3-maybe-rayon"
 version = "0.5.1"
 source = "git+https://github.com/Plonky3/Plonky3.git#6de5cba7c429dd89a219a3ac9849dd27b901af0e"
+dependencies = [
+ "rayon",
+]
 
 [[package]]
 name = "p3-mds"
