@@ -452,28 +452,90 @@ mod tests {
             .expect("non-zero-message jackpot block must verify (JackpotChip is_active gate)");
     }
 
-    /// HIGH-2.2 §4.A end-to-end regression via the production
-    /// Route-A path: a real fold chain → `JACKPOT_MSG` = the
-    /// folded `TileState M` (non-zero) → §4.D keystone →
-    /// jackpot-hash, proven/verified through
-    /// `composite_*_pinned_logup` (CRIT-1 pin + `noised_packed`
-    /// LogUp via batch-stark). This is exactly the trace shape
-    /// `ai-pow::zk_bridge` builds for the real-`M` bridge.
+    /// HIGH-2.2 §6(b) fast unit gate — the full useful-work chain
+    /// placement satisfies the base `CompositeFullAir` (matmul
+    /// sweep recurrence + StripeXor transport + `SX_IN ==
+    /// nxt.CUMSUM_TILE` cross-chip binding + FoldChip), proven via
+    /// the cheap unit prover. Isolates witness/chip-wiring bugs in
+    /// seconds before the ~minutes Route-A pinned path below. (The
+    /// Pinned §4.D/§6(b) keystones are exercised by
+    /// `high2_2_fold_chain_pinned_logup`.)
+    #[test]
+    fn high2_2_useful_work_chain_unit() {
+        let cfg = build_config(&test_zk_params(), &CircuitConfig::TEST_PEARL);
+        let ch: [u32; 8] = core::array::from_fn(|i| 0x1234_0000 + i as u32);
+        let mut trace = CompositeTrace::baseline_min();
+        let h = trace.height();
+        let (t, _k, r, num_stripes) = (8usize, 64usize, 4usize, 16usize);
+        let a_prime: Vec<i8> = (0..(t * 64) as i32)
+            .map(|i| (i.wrapping_mul(7) ^ (i >> 3)) as i8)
+            .collect();
+        let b_prime: Vec<i8> = (0..(t * 64) as i32)
+            .map(|i| (i.wrapping_mul(5) ^ (i << 1) ^ 0x2A) as i8)
+            .collect();
+        let (rows_used, x_steps) =
+            trace.place_useful_work_chain(8, &a_prime, &b_prime, t, r, num_stripes);
+        let xs: Vec<i32> = x_steps[..num_stripes].iter().map(|&u| u as i32).collect();
+        let m = trace.place_fold_chain(8 + rows_used + 4, &xs);
+        let _ = trace.place_jackpot_hash_block(h - 8, &m, &ch);
+        let pis = CompositePublicInputs::derive_from_trace(&trace);
+        let proof = composite_prove(&cfg, trace, &pis);
+        composite_verify(&cfg, &proof, &pis)
+            .expect("§6(b) useful-work chain must verify through unit CompositeFullAir");
+    }
+
+    /// HIGH-2.2 §6(b) end-to-end regression via the production
+    /// Route-A path: the **full useful-work chain** —
+    /// `place_useful_work_chain` (sub-block-major matmul sweep +
+    /// co-located StripeXor reduction) → `place_fold_chain` driven
+    /// by the chip-reduced `x_steps` → `JACKPOT_MSG` = folded
+    /// `TileState M` → §4.D + §6(b) keystones → jackpot-hash,
+    /// proven/verified through `composite_*_pinned_logup` (CRIT-1
+    /// pin + `noised_packed` LogUp via batch-stark). Exercises every
+    /// new §6(b) constraint together — the matmul cross-row
+    /// recurrence over the 256-row sweep, the StripeXor transport,
+    /// the `SX_IN == nxt.CUMSUM_TILE` cross-chip binding, and the
+    /// Pinned `FOLD_XSTEP == SX_XR[stripe]` keystone — through the
+    /// batch-stark prover (the debug-assertions-OFF hazard surface).
+    /// `a_prime`/`b_prime` are synthetic i8 strips: `ai-pow-zk` must
+    /// not depend on `ai-pow`, and the chip math is self-consistent
+    /// (cross-crate parity vs `compute_tile_trace` is asserted from
+    /// the `ai-pow` side — GATEs 1/3).
     #[test]
     fn high2_2_fold_chain_pinned_logup() {
-        use crate::composite_layout::TOTAL_TRACE_WIDTH;
+        use crate::composite_layout::{
+            FOLD_SLOT_SEL_START, FOLD_XSTEP, SX_XR_START, TOTAL_TRACE_WIDTH,
+        };
         use p3_field::integers::QuotientMap;
+        use p3_field::PrimeField64;
 
         let cfg = build_config(&test_zk_params(), &CircuitConfig::TEST_PEARL);
         let ch: [u32; 8] = core::array::from_fn(|i| 0x5EED_0000 + i as u32);
         let mut trace = CompositeTrace::baseline_min();
         let h = trace.height();
-        let xs: Vec<i32> = (0..16i32)
-            .map(|i| i.wrapping_mul(0x0151_5151) ^ 0x33)
+
+        // Synthetic tile strips matching the e2e geometry
+        // (MatmulParams::TEST_SMALL: t=8, k=64, r=4, num_stripes=16).
+        let (t, k, r, num_stripes) = (8usize, 64usize, 4usize, 16usize);
+        let a_prime: Vec<i8> = (0..(t * k) as i32)
+            .map(|i| (i.wrapping_mul(7) ^ (i >> 3)) as i8)
             .collect();
-        let m = trace.place_fold_chain(64, &xs);
+        let b_prime: Vec<i8> = (0..(t * k) as i32)
+            .map(|i| (i.wrapping_mul(5) ^ (i << 1) ^ 0x2A) as i8)
+            .collect();
+
+        let sweep_start = 8;
+        let (rows_used, x_steps) =
+            trace.place_useful_work_chain(sweep_start, &a_prime, &b_prime, t, r, num_stripes);
+        assert_eq!(rows_used, (t / 2) * (t / 2) * num_stripes); // 16·16 = 256
+
+        let xs: Vec<i32> = x_steps[..num_stripes].iter().map(|&u| u as i32).collect();
+        let fold_start = sweep_start + rows_used + 4;
+        let m = trace.place_fold_chain(fold_start, &xs);
         let _ = trace.place_jackpot_hash_block(h - 8, &m, &ch);
-        // Keystone precondition: last-row JACKPOT_MSG == FOLD_STATE == M.
+
+        // §4.D keystone precondition: last-row JACKPOT_MSG ==
+        // FOLD_STATE == M.
         let last = (h - 1) * TOTAL_TRACE_WIDTH;
         for s in 0..16 {
             let jm = trace.matrix.values
@@ -485,13 +547,34 @@ mod tests {
                 <Val<AiPowStarkConfig> as QuotientMap<u64>>::from_int(m[s] as u64),
                 "JACKPOT_MSG[{s}] != M"
             );
-            assert_eq!(jm, fs, "keystone precondition: JACKPOT_MSG[{s}] != FOLD_STATE[{s}]");
+            assert_eq!(jm, fs, "§4.D precondition: JACKPOT_MSG[{s}] != FOLD_STATE[{s}]");
         }
+        // §6(b) keystone precondition: every fold row's FOLD_XSTEP
+        // equals the StripeXor register lane for its stripe.
+        for step in 0..num_stripes {
+            let base = (fold_start + step) * TOTAL_TRACE_WIDTH;
+            let fx = trace.matrix.values[base + FOLD_XSTEP].as_canonical_u64();
+            // one-hot slot = stripe (num_stripes ≤ STATE_LEN ⇒ 1:1).
+            let mut slot = usize::MAX;
+            for s in 0..16 {
+                if trace.matrix.values[base + FOLD_SLOT_SEL_START + s]
+                    .as_canonical_u64()
+                    == 1
+                {
+                    slot = s;
+                }
+            }
+            assert_eq!(slot, step % 16, "fold slot != stripe");
+            let xr = trace.matrix.values[base + SX_XR_START + slot].as_canonical_u64();
+            assert_eq!(fx, xr, "§6(b) precondition: FOLD_XSTEP != SX_XR @stripe {step}");
+        }
+
         let pis = CompositePublicInputs::derive_from_trace(&trace);
         let canonical = extract_program(&trace.matrix);
         let (proof, _) = composite_prove_pinned_logup(&cfg, trace, &pis);
-        composite_verify_pinned_logup(&cfg, &canonical, &proof, &pis)
-            .expect("real fold chain + keystone + jackpot must verify under Route-A");
+        composite_verify_pinned_logup(&cfg, &canonical, &proof, &pis).expect(
+            "full §6(b) useful-work chain + keystones must verify under Route-A",
+        );
     }
 
     // ───────────── CRIT-1 malicious-prover regression suite ─────────────

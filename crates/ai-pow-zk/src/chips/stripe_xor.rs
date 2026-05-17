@@ -212,7 +212,17 @@ impl StripeXorChip {
             }
             builder.assert_eq(sel_sum, cur[off.is_active].into());
 
-            // Each IN cell == Σ IN_BITS[c][i]·2^i (bits boolean).
+            // Each IN cell is the **signed i32** matmul accumulator
+            // value (the matmul chip stores `CUMSUM` via
+            // `QuotientMap<i64>`, so the §6(b) `SX_IN ==
+            // nxt.CUMSUM_TILE` binding must use the same signed
+            // field encoding). IN_BITS is the 32-bit two's-complement
+            // pattern; the signed value is
+            //   Σ_{i<32} bit_i·2^i  −  bit_31·2^32
+            // (= unsigned u32 reinterpretation minus 2^32 when the
+            // sign bit is set). The XOR below uses the raw bit
+            // pattern, so it is sign-agnostic and unaffected.
+            let two_pow_32 = <AB::F as PrimeCharacteristicRing>::from_u64(1u64 << 32);
             for c in 0..IN_LEN {
                 let mut recon: AB::Expr = <AB::Expr as PrimeCharacteristicRing>::ZERO;
                 let mut pow: AB::F = <AB::F as PrimeCharacteristicRing>::ONE;
@@ -222,7 +232,9 @@ impl StripeXorChip {
                     recon = recon + bit.into() * pow.clone();
                     pow = pow * two.clone();
                 }
-                builder.assert_eq(cur[off.in_cells + c].into(), recon);
+                let sign: AB::Expr =
+                    cur[off.in_bits + c * 32 + 31].into() * two_pow_32.clone();
+                builder.assert_eq(cur[off.in_cells + c].into(), recon - sign);
             }
 
             // XR_SEL_BITS must be the bit-decomposition of the
@@ -390,7 +402,9 @@ pub fn build_trace(events: &[(usize, [i32; IN_LEN])]) -> RowMajorMatrix<Val> {
         let mut xin = 0u32;
         for c in 0..IN_LEN {
             let u = in4[c] as u32;
-            row[cols::IN + c] = <Val as QuotientMap<u64>>::from_int(u as u64);
+            // Signed i32 cell (matches the matmul CUMSUM encoding);
+            // IN_BITS is the two's-complement pattern.
+            row[cols::IN + c] = <Val as QuotientMap<i64>>::from_int(in4[c] as i64);
             set_bits(row, cols::IN_BITS + c * 32, u);
             xin ^= u;
         }
