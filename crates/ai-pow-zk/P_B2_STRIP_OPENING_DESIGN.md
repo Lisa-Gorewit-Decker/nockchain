@@ -1,6 +1,15 @@
 # P-B.2 — Pearl §4.6 Strip-Opening Matrix-Hash (implementation design)
 
-> **Status:** DESIGN (2026-05-17). Implementation not started.
+> **Status:** DESIGN COMPLETE — **decisions D1–D4 LOCKED
+> 2026-05-17** (maintainer-approved, all recommended): **D1 =
+> A** (true BLAKE3 largest-pow2-left tree + realign
+> `place_matrix_hash`; also fixes the latent non-pow2 fidelity
+> gap) · **D2 = A** (whole 1024-B chunks covering the tile span)
+> · **D3 = A** (verifier-recompute the opening schedule via the
+> CRIT-1/MED-3 discipline; no new pinned column) · **D4 = A**
+> (staged P-B.2.0→.4, off-circuit honest-equivalence KAT as the
+> pre-AIR gate). The body already assumes exactly this path;
+> implementation-ready. Implementation not started.
 > **Goal:** make the Pearl-faithful PROD path genuinely
 > *one-tile-one-STARK* by removing the only remaining
 > one-STARK blocker that P-B's measurement isolated — the
@@ -463,10 +472,12 @@ vertical certificate).
 | **D3** | Opening-schedule pin | A: verifier-recompute from public `(params,tile_i,tile_j)` via the existing CRIT-1/CONTROL_PREP discipline (no new column) · B: dedicated pinned `OPEN_SCHED` column | **A** |
 | **D4** | Landing | Staged P-B.2.0→.4 with the off-circuit honest-equivalence KAT as the pre-AIR gate · vs one-shot | **Staged** (KAT first; each stage Route-A+debug-assertions-ON) |
 
-D1 is the load-bearing fork (it also fixes a **pre-existing
-latent fidelity gap** in `place_matrix_hash` for non-power-of-
-two chunk counts — independently worth doing). D2/D3/D4 have
-clear recommended defaults.
+**ALL LOCKED 2026-05-17 (maintainer-approved): D1=A · D2=A ·
+D3=A · D4=A.** No option branches remain open; the body assumes
+this path. D1=A additionally fixes a **pre-existing latent
+fidelity gap** in `place_matrix_hash` for non-power-of-two
+chunk counts (independently worth doing). Implementation
+proceeds per §8 (staged P-B.2.0→.4, KAT-first).
 
 ---
 
