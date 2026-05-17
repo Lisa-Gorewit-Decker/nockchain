@@ -410,13 +410,57 @@ pub const FOLD_MCUR_BITS_LEN: usize = 32;
 pub const FOLD_XOR_OUT: usize = FOLD_MCUR_BITS_START + FOLD_MCUR_BITS_LEN;
 
 // =====================================================================
+//  HIGH-2.2 §6(b) — StripeXorChip composite block
+//
+//  Cross-row transport that reduces the sub-block-major matmul
+//  sweep's per-row accumulator-after-step to the per-stripe
+//  `x_steps` scalars (a `STATE_LEN`-lane carried XOR register),
+//  binding `FOLD_XSTEP` to the committed-matrix accumulator. Mirror
+//  of `chips::stripe_xor::cols` at composite offsets (appended after
+//  the FoldChip block; shifts no existing offset). This is the
+//  "dominant new width" the design anticipated (~294 cols) — main
+//  trace only, NOT preprocessed (the §4.C.8 ~10x trap is about
+//  preprocessed width; the schedule is pinned via the §6(a)
+//  CONTROL_PREP pattern, not a wide preprocessed block).
+// =====================================================================
+
+/// 1 = active stripe-XOR fold row, 0 = padding/passthrough.
+pub const SX_IS_ACTIVE: usize = FOLD_XOR_OUT + 1;
+/// One-hot stripe-lane selector (`Σ == SX_IS_ACTIVE`).
+pub const SX_LANE_SEL_START: usize = SX_IS_ACTIVE + 1;
+pub const SX_LANE_SEL_LEN: usize = JACKPOT_SIZE; // 16 = STATE_LEN
+/// The 4 accumulator cells folded this row (= the matmul
+/// accumulator-after-step; bound cross-row to `nxt.CUMSUM_TILE`).
+pub const SX_IN_START: usize = SX_LANE_SEL_START + SX_LANE_SEL_LEN;
+pub const SX_IN_LEN: usize = 4;
+/// 32 LE bits per `SX_IN` cell.
+pub const SX_IN_BITS_START: usize = SX_IN_START + SX_IN_LEN;
+pub const SX_IN_BITS_LEN: usize = SX_IN_LEN * 32; // 128
+/// `STATE_LEN`-lane register entering this row.
+pub const SX_XR_START: usize = SX_IN_BITS_START + SX_IN_BITS_LEN;
+pub const SX_XR_LEN: usize = JACKPOT_SIZE; // 16
+/// 32 LE bits of the selected lane value.
+pub const SX_XR_SEL_BITS_START: usize = SX_XR_START + SX_XR_LEN;
+pub const SX_XR_SEL_BITS_LEN: usize = 32;
+/// New selected-lane value (`= XR[lane] ⊕ ⊕SX_IN`).
+pub const SX_NEW_SEL: usize = SX_XR_SEL_BITS_START + SX_XR_SEL_BITS_LEN;
+/// 32 LE bits of `SX_NEW_SEL`.
+pub const SX_NEW_SEL_BITS_START: usize = SX_NEW_SEL + 1;
+pub const SX_NEW_SEL_BITS_LEN: usize = 32;
+/// `QBITS = 2` parity-quotient bits per output bit position.
+pub const SX_Q_BITS_START: usize = SX_NEW_SEL_BITS_START + SX_NEW_SEL_BITS_LEN;
+pub const SX_Q_BITS_LEN: usize = 32 * 2;
+/// End-of-StripeXor cursor.
+pub const SX_END: usize = SX_Q_BITS_START + SX_Q_BITS_LEN;
+
+// =====================================================================
 //  Total trace width
 // =====================================================================
 
 /// Total trace width: pinned end-of-layout cursor. Phases 3+ extend
 /// chip-internal sub-columns but must not exceed this without bumping
 /// the constant.
-pub const TOTAL_TRACE_WIDTH: usize = FOLD_XOR_OUT + 1;
+pub const TOTAL_TRACE_WIDTH: usize = SX_END;
 
 #[cfg(test)]
 mod tests {
@@ -658,10 +702,49 @@ mod tests {
                 FOLD_XOR_OUT,
                 "FOLD_MCUR_BITS → FOLD_XOR_OUT",
             ),
+            // HIGH-2.2 §6(b) — StripeXorChip block, appended after
+            // the FoldChip block; contiguous to TOTAL_TRACE_WIDTH.
+            (FOLD_XOR_OUT + 1, SX_IS_ACTIVE, "FOLD_XOR_OUT → SX_IS_ACTIVE"),
             (
-                FOLD_XOR_OUT + 1,
+                SX_IS_ACTIVE + 1,
+                SX_LANE_SEL_START,
+                "SX_IS_ACTIVE → SX_LANE_SEL",
+            ),
+            (
+                SX_LANE_SEL_START + SX_LANE_SEL_LEN,
+                SX_IN_START,
+                "SX_LANE_SEL → SX_IN",
+            ),
+            (SX_IN_START + SX_IN_LEN, SX_IN_BITS_START, "SX_IN → SX_IN_BITS"),
+            (
+                SX_IN_BITS_START + SX_IN_BITS_LEN,
+                SX_XR_START,
+                "SX_IN_BITS → SX_XR",
+            ),
+            (
+                SX_XR_START + SX_XR_LEN,
+                SX_XR_SEL_BITS_START,
+                "SX_XR → SX_XR_SEL_BITS",
+            ),
+            (
+                SX_XR_SEL_BITS_START + SX_XR_SEL_BITS_LEN,
+                SX_NEW_SEL,
+                "SX_XR_SEL_BITS → SX_NEW_SEL",
+            ),
+            (
+                SX_NEW_SEL + 1,
+                SX_NEW_SEL_BITS_START,
+                "SX_NEW_SEL → SX_NEW_SEL_BITS",
+            ),
+            (
+                SX_NEW_SEL_BITS_START + SX_NEW_SEL_BITS_LEN,
+                SX_Q_BITS_START,
+                "SX_NEW_SEL_BITS → SX_Q_BITS",
+            ),
+            (
+                SX_Q_BITS_START + SX_Q_BITS_LEN,
                 TOTAL_TRACE_WIDTH,
-                "FOLD_XOR_OUT → TOTAL_TRACE_WIDTH",
+                "SX_Q_BITS → TOTAL_TRACE_WIDTH",
             ),
         ];
         for &(end, next, name) in checkpoints {
@@ -673,20 +756,25 @@ mod tests {
     /// the HIGH-2.2 §4.B FoldChip block (+99 cols). The number is
     /// dominated by `BLAKE3_ROUND_LEN = 1056` — the per-round AIR —
     /// which is the bulk of any row regardless of which chip is
-    /// active. The FoldChip block (FOLD_IS_FOLD..=FOLD_XOR_OUT) is
-    /// the only HIGH-2.2 addition; §6 pins its *schedule* into the
-    /// existing CONTROL_PREP rather than widening the trace.
+    /// active. HIGH-2.2 additions: the FoldChip block
+    /// (FOLD_IS_FOLD..=FOLD_XOR_OUT, +99) and the §6(b)
+    /// StripeXorChip block (SX_IS_ACTIVE..SX_END, +294 — the
+    /// "dominant new width" the design anticipated). §6(a) pins the
+    /// fold *schedule* into the existing CONTROL_PREP rather than
+    /// widening the trace; the StripeXor block is main-trace only
+    /// (NOT preprocessed — the §4.C.8 trap is preprocessed width).
     #[test]
     fn total_trace_width_in_pearl_ballpark() {
-        // Sanity: ≥ 1200 cols (BLAKE3 round dominates) and ≤ 1600
-        // (Pearl-mirrored ≈1378 + FoldChip's 99 = 1477; bound has
-        // headroom but still catches an accidental column explosion).
+        // Sanity: ≥ 1200 cols (BLAKE3 round dominates) and ≤ 2000
+        // (Pearl-mirrored ≈1378 + FoldChip 99 + StripeXor 294 =
+        // 1771; bound has headroom but still catches an accidental
+        // column explosion).
         assert!(
             TOTAL_TRACE_WIDTH > 1200,
             "TOTAL_TRACE_WIDTH suspiciously small: {TOTAL_TRACE_WIDTH}"
         );
         assert!(
-            TOTAL_TRACE_WIDTH < 1600,
+            TOTAL_TRACE_WIDTH < 2000,
             "TOTAL_TRACE_WIDTH suspiciously large: {TOTAL_TRACE_WIDTH} — check for unintended column duplication"
         );
     }

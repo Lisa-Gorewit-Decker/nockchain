@@ -137,6 +137,59 @@ impl StripeXorChip {
         q_bits: cols::Q_BITS,
     };
 
+    /// Composite-trace offsets (HIGH-2.2 §6(b) wiring) — the
+    /// StripeXorChip's columns at their `composite_layout`
+    /// positions.
+    pub const COMPOSITE_OFFSETS: StripeXorOffsets = StripeXorOffsets {
+        is_active: crate::composite_layout::SX_IS_ACTIVE,
+        lane_sel: crate::composite_layout::SX_LANE_SEL_START,
+        in_cells: crate::composite_layout::SX_IN_START,
+        in_bits: crate::composite_layout::SX_IN_BITS_START,
+        xr: crate::composite_layout::SX_XR_START,
+        xr_sel_bits: crate::composite_layout::SX_XR_SEL_BITS_START,
+        new_sel: crate::composite_layout::SX_NEW_SEL,
+        new_sel_bits: crate::composite_layout::SX_NEW_SEL_BITS_START,
+        q_bits: crate::composite_layout::SX_Q_BITS_START,
+    };
+
+    /// Composite-layout entry point: the chip-internal XOR
+    /// transport **plus** the cross-chip binding that ties each
+    /// active row's `SX_IN` to the matmul chip's
+    /// accumulator-*after*-step. The matmul chip forces
+    /// `nxt.CUMSUM_TILE == compute_row(cur)` on every transition,
+    /// so binding `SX_IN[k] == nxt.CUMSUM_TILE[k]` makes `SX_IN`
+    /// exactly the genuine swept accumulator — closing
+    /// `committed A/B → CUMSUM → SX_IN → XR → FOLD_XSTEP`. Vacuous
+    /// on every non-stripe-xor row (`SX_IS_ACTIVE = 0`), so all
+    /// existing traces (all-zero SX columns) are unaffected.
+    pub fn eval_composite<AB: AirBuilder>(builder: &mut AB) {
+        Self::eval_at(builder, &Self::COMPOSITE_OFFSETS);
+
+        // SX_IN ← matmul accumulator-after-step (cross-row, gated).
+        let off = &Self::COMPOSITE_OFFSETS;
+        let (is_active, in_cells): (AB::Expr, [AB::Var; IN_LEN]) = {
+            let main = builder.main();
+            let cur = main.current_slice();
+            (
+                cur[off.is_active].into(),
+                core::array::from_fn(|k| cur[off.in_cells + k]),
+            )
+        };
+        let nxt_cumsum: [AB::Var; IN_LEN] = {
+            let main = builder.main();
+            let nxt = main.next_slice();
+            core::array::from_fn(|k| {
+                nxt[crate::composite_layout::CUMSUM_TILE_START + k]
+            })
+        };
+        let mut tb = builder.when_transition();
+        for k in 0..IN_LEN {
+            tb.assert_zero(
+                is_active.clone() * (in_cells[k].into() - nxt_cumsum[k].into()),
+            );
+        }
+    }
+
     /// Emit the stripe-XOR constraints at the given offsets.
     pub fn eval_at<AB: AirBuilder>(builder: &mut AB, off: &StripeXorOffsets) {
         let two = <AB::F as PrimeCharacteristicRing>::TWO;

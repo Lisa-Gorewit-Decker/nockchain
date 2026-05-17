@@ -293,6 +293,17 @@ impl<AB: AirBuilder> Air<AB> for CompositeFullAir {
         // last-row FOLD_STATE.
         crate::chips::fold::FoldChip::eval_composite(builder);
 
+        // StripeXorChip (HIGH-2.2 §6(b)): cross-row transport that
+        // XOR-reduces the sub-block-major matmul sweep's per-row
+        // accumulator-after-step into a per-stripe register, and
+        // binds SX_IN to the matmul chip's `nxt.CUMSUM_TILE`
+        // (`committed A/B → CUMSUM → SX_IN → XR`). All-zero SX
+        // columns satisfy it vacuously, so traces with no
+        // stripe-xor activity are unaffected; the §6(b) keystone
+        // (in CompositeFullAirPinned) binds FOLD_XSTEP to the
+        // final XR lane.
+        crate::chips::stripe_xor::StripeXorChip::eval_composite(builder);
+
         // Public-input binding.
         //
         // CUMSUM_TILE and JACKPOT_MSG bind on the LAST row via the
