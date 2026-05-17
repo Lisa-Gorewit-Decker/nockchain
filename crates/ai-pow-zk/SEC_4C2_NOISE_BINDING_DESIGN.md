@@ -1,9 +1,24 @@
 # §4.C.2 / Phase-A3 — store ↔ committed-plain-strip noise-derivation binding (design)
 
-> **Status:** DESIGN (2026-05-17). The last open §4.C soundness
-> tie and Phase-A3 of `PRODUCTION_ROADMAP.md`. Milestone-scale
-> (comparable to M-S1) ⇒ design + **staged, KAT-first** landing
-> (the P-B.2.0 discipline that paid off).
+> **Status:** DESIGN — **CORRECTED 2026-05-17 (A3.0 finding).**
+> The original §3 proposed a heavy in-circuit BLAKE3-keyed
+> noise **sub-AIR ("B2")**. **That is Pearl-unfaithful and
+> unnecessary.** Pearl whitepaper §4.7 explicitly does NOT
+> re-derive the noise in-circuit — *"the zk-prover and verifier
+> agree on the plaintext noise … extend the AIR with
+> preprocessed columns."* ai-pow-zk **already has exactly this**:
+> `NOISE_PACKED_PREP` is one of the 5 CRIT-1 PROGRAM_COLS
+> (verifier-pinned preprocessed), and `chips/input.rs` already
+> enforces `NOISE_PACKED_PREP == polyval(NOISE_UNPACK,129)` **and**
+> `NOISED_PACKED == polyval(MAT_UNPACK,256)+polyval(NOISE_UNPACK,256)`
+> *unconditionally on every row*. ⇒ §4.C.2 reuses CRIT-1 +
+> InputChip + C3 + the (A3.0-proven) `noise_ref` — **no new
+> sub-AIR**. The corrected design is §3′ below; the original §3
+> is struck through (kept for rationale). This is the same
+> KAT-first re-grounding win as P-B.2.0's D1.
+> The last open §4.C soundness tie and Phase-A3 of
+> `PRODUCTION_ROADMAP.md`. Staged, KAT-first (P-B.2.0
+> discipline).
 > **Predecessors (done):** M-S1 (sweep ↔ declared `noised_packed`
 > store), A1/P-B.2.3 (verifier-fixed opening schedule), A2/P-B.2.4
 > (strip-opening binds the *plain* tile strips to
@@ -100,7 +115,87 @@ bindings:
   `NOISE_UNPACK[·] = E_L[i,pp_l] − E_L[i,pm_l]`. This is the
   hard, genuinely new part.
 
-## 3. B2 — the noise-derivation sub-AIR (the milestone core)
+## 3′. CORRECTED design — Pearl §4.7 preprocessed noise (no sub-AIR)
+
+The InputChip (`chips/input.rs::eval`, every row, unconditional):
+
+```
+(1) NOISE_PACKED_PREP == polyval(NOISE_UNPACK[0..8], base=129)
+(2) NOISED_PACKED[i]  == polyval(MAT_UNPACK[4i..],256)
+                       + polyval(NOISE_UNPACK[4i..],256)        i∈{0,1}
+```
+
+`NOISE_PACKED_PREP` ∈ the 5 CRIT-1 PROGRAM_COLS — the verifier
+rebuilds it witness-free from the trusted shape
+(`composite_preprocess::fill_preprocessed_row` ←
+`RowDescriptor.noise_packed`). (1) ⇒ `NOISE_UNPACK` is *forced*
+to the verifier-pinned noise (polyval-129 is injective over the
+range-checked i7 bytes). So:
+
+**§4.C.2 = three wirings, all on existing mechanisms:**
+
+- **W1 (verifier-pinned noise).** The canonical-program
+  reconstruction sets, for each M-S1 store row, `noise_packed =
+  polyval(noise_chunk,129)` where `noise_chunk` is the Pearl
+  noise for that chunk's matrix positions, computed by the
+  verifier via **`noise_ref`** (A3.0, proven byte-equivalent to
+  `BlockNoise`; a pure public fn of the C1-pinned `s_a`/`s_b` +
+  params). InputChip (1) then forces the prover's
+  `NOISE_UNPACK` to equal it.
+- **W2 (store decomposition).** M-S1 store rows change from
+  `MAT_UNPACK=a′, NOISE_UNPACK=0` to `MAT_UNPACK=committed
+  plain, NOISE_UNPACK=pinned noise`. InputChip (2) then makes
+  `NOISED_PACKED = plain + noise = a′` — **the same
+  `NOISED_PACKED` value as today**, so M-S1's
+  `enumerate_noised_chunks`/`MAT_FREQ` LogUp still balances
+  (only the MAT/NOISE split changes, not the packed value).
+- **W3 = B1 (plain ↔ HASH_A).** Bind `MAT_UNPACK` (now the
+  plain bytes) to the A2 strip-opening leaf bytes via the
+  **existing C3** `IS_MSG_MAT·(BLAKE3_MSG[j] −
+  base256(UINT8_DATA))=0` (the M52 mechanism) — make the
+  store rows the strip-opening leaf rows (`IS_MSG_MAT=1`,
+  `MAT_UNPACK=plain`).
+
+Net chain (all forced in-circuit, zero gap): committed A/B
+─C3/strip-opening(A2)→ plain ─InputChip(2)→ `NOISED_PACKED =
+plain + noise` ; noise ─InputChip(1)→ `NOISE_PACKED_PREP`
+─CRIT-1 pin← verifier `noise_ref(s_a)` ─C1← `s_a` ; M-S1 ⇒
+sweep ⊆ store(`NOISED_PACKED`). ⇒ the swept matmul is provably
+over `noise(committed A,B)`.
+
+**Staged landing (corrected, KAT-first):**
+- **A3.0 ✅** `noise_ref` + cross-crate KAT (done).
+- **A3.1** verifier/program side: `RowDescriptor`/
+  `composite_preprocess` + the bridge compute & pin
+  `NOISE_PACKED_PREP` for store rows via `noise_ref`
+  (deterministic from the A1 `tile_chunk_range` schedule +
+  s_a/s_b). KAT: pinned == `noise_ref` per row.
+- **A3.2** bridge store rewiring W2 + W3 (store rows =
+  strip-opening leaves, `MAT_UNPACK=plain`,
+  `NOISE_UNPACK=noise`); InputChip closes `NOISED_PACKED=a′`.
+- **A3.3** Route-A + adversarial: a store whose noise ≠
+  `noise_ref(s_a)` (forced by the CRIT-1 pin) or whose
+  `MAT_UNPACK` ≠ the committed strip (C3) must reject; full
+  `ai-pow-zk --lib` + `ai-pow --features zk`;
+  debug-assertions-ON; §4.C end-to-end, zero gap.
+
+Far lighter than the struck-through §3 (no BLAKE3-keyed PRNG
+sub-AIR, no select-subtract chip, no new LogUp): it is
+*wiring + verifier-side noise reconstruction*, reusing CRIT-1 /
+InputChip / C3. Still soundness-critical & invasive (CRIT-1
+program reconstruction is the PoW-soundness linchpin) ⇒ staged
+with Route-A + debug-assertions-ON at each step.
+
+---
+
+## 3. ~~B2 — the noise-derivation sub-AIR~~ (SUPERSEDED by §3′)
+
+> Struck through — the in-circuit PRNG sub-AIR is **not**
+> needed (Pearl §4.7 uses preprocessed noise; see §3′). Kept
+> for the rationale of why the relation has the
+> select-subtract form.
+
+### ~~B2~~ (the milestone core)
 
 Mirror, in-circuit, `prng.rs`'s `pearl_random_hash` /
 `fill_uniform_row` / `pearl_permutation_pair`:
