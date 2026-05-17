@@ -1797,8 +1797,42 @@ Adversarial (must reject):
   generalised keystone.
 
 Full regression gate before commit: `cargo test -p ai-pow-zk
---lib` (expect 295+ green) and `cargo test -p ai-pow --features
+--lib` (expect 330+ green) and `cargo test -p ai-pow --features
 zk` (the pinned mine-gate end-to-end suite).
+
+### Dev-loop performance (the two Plonky3 levers)
+
+Plonky3's prover hot paths (Goldilocks/Tip5 field arithmetic, the
+Tip5 permutation, DFT, Merkle) are gated behind CPU vector
+instructions and optional rayon parallelism that **rustc/Cargo do
+not enable by default** (Plonky3 README §"Benchmarks" / §"CPU
+features"). Both are deterministic — vectorized/data-parallel
+with index-ordered reduction ⇒ **bit-identical proofs** (no
+byte-equivalence / soundness / Fiat-Shamir impact):
+
+1. **`parallel` feature — now default-on** for `ai-pow-zk`
+   (`[features] default = ["parallel"]` → `p3-{dft,uni-stark,
+   batch-stark}/parallel` → `p3-maybe-rayon`). No flag needed;
+   `--no-default-features` for a serial comparison.
+2. **`RUSTFLAGS="-Ctarget-cpu=native"`** — emits AVX/NEON for the
+   field/Tip5/DFT kernels. Cannot be a Cargo feature; pass via
+   env (or a `.cargo/config.toml [build] rustflags`, a
+   maintainer/portability decision — non-portable binaries
+   workspace-wide, so left to env by default).
+
+Recommended dev-loop commands:
+
+```
+RUSTFLAGS="-Ctarget-cpu=native" cargo test -p ai-pow-zk --lib -- <filter>
+# per-row check_constraints hazard pass (the debug-assertions-OFF trap):
+RUSTFLAGS="-Ctarget-cpu=native -C debug-assertions=on" cargo test -p ai-pow-zk --lib -- <filter>
+```
+
+Measured: a prover-bound unit test
+(`high2_2_useful_work_chain_unit`) went **≈32 s → ≈3.8 s (~8–9×,
+~10 cores)** with both levers, proof still verifying. This is the
+primary accelerator for the M-S1 fix-forward loop and the full
+Route-A regression.
 
 ---
 

@@ -66,5 +66,30 @@ p3-uni-stark = { git = "https://github.com/Plonky3/Plonky3.git" }
 # surfaces.
 nockchain-math = { workspace = true }
 
+[features]
+# Rayon-parallel prover (Plonky3 README §"Benchmarks"/"CPU
+# features"). Forwards to the p3 `parallel` features (DFT +
+# uni/batch STARK → `p3-maybe-rayon/parallel`). Data-parallel with
+# deterministic, index-ordered reduction ⇒ proofs are
+# **bit-identical** to a serial build — byte-equivalence /
+# soundness / the Fiat-Shamir transcript are unaffected, so
+# enabling it by **default** does NOT change consensus behaviour
+# (only the number of threads). Empirically ≈9× on prover-bound
+# tests. Disable with `--no-default-features` for an apples-to-
+# apples serial comparison if ever needed.
+#
+# The other big lever is a rustc flag (cannot be a Cargo feature):
+#   RUSTFLAGS="-Ctarget-cpu=native"            # AVX/NEON hot paths
+#   RUSTFLAGS="-Ctarget-cpu=native -C debug-assertions=on"  # +per-row check
+# Plonky3's field/Tip5/DFT paths need AVX/NEON, which rustc does
+# not emit by default (README §"CPU features"). See the dev-loop
+# note in `HIGH2_2_DESIGN.md`.
+default = ["parallel"]
+parallel = [
+    "p3-dft/parallel",
+    "p3-uni-stark/parallel",
+    "p3-batch-stark/parallel",
+]
+
 [dev-dependencies]
 proptest = { workspace = true }
