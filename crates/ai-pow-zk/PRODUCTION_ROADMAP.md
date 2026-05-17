@@ -70,6 +70,28 @@ vague — external). Phase E is cross-cutting.
 
 ### Phase A — close the SNARK at real-model scale (ai-pow-zk; critical path)
 
+> **Status 2026-05-17.** **A1 ✅** (`3629444`,
+> `tile_chunk_range`). **A2 ✅ — the production unblocker, fully
+> landed & validated** (`3629444`): bridge swapped to
+> strip-opening at the A1 schedule; `fits_one_stark()` flips
+> **true for Llama-3.1-8B** (and PROD/GEMMA/QWEN); full
+> `ai-pow --features zk` 0-failed across every binary incl.
+> `end_to_end` + MED-3 roundtrip through the swap; zero
+> regression. **A3:** A3.0 ✅ (`4c6b3e8`, `noise_ref` +
+> cross-crate KAT == `BlockNoise`) + a **major design
+> correction** (`5cf8e51`): §4.C.2 is Pearl-§4.7 *preprocessed
+> noise* (reuse the existing CRIT-1 `NOISE_PACKED_PREP` +
+> InputChip + C3 + `noise_ref`), **not** an in-circuit PRNG
+> sub-AIR — far lighter & correctly scoped. **A3.1–A3.3
+> remain**: milestone-class invasive (reworks M-S1's
+> value-deduped store → position-addressed; CRIT-1 program
+> reconstruction is the PoW-soundness linchpin) — staged,
+> KAT-first, Route-A + debug-assertions-ON, **not rushed**
+> (standing don't-rush-invasive-soundness constraint). The
+> production-critical unblocker (A2) is done; A3 is the §4.C
+> soundness-completion residual (not a forgery hole — CRIT-1 +
+> §4.D + §6 + M-S1 + A2 hold). Detail: `SEC_4C2_NOISE_BINDING_DESIGN.md`.
+
 | # | Item | Depends | Exit gate |
 |---|---|---|---|
 | **A1** | **P-B.2.3** — verifier-fixed opening schedule: `(c0,c1,num_chunks, auth-tree)` a pure deterministic function of `(params,tile_i,tile_j)`, recomputed by the verifier via the CRIT-1/MED-3 discipline (no new pinned column, D3-A). | P-B.2.2 ✅ | A `crit1_*`-style adversarial test: an opening located off the attested tile (cheaper/zero region) fails the pinned-schedule check; the schedule is byte-reproducible from public params. |
