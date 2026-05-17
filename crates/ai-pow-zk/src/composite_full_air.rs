@@ -263,38 +263,46 @@ impl<AB: AirBuilder<F = crate::Val>> Air<AB> for CompositeFullAirPinned {
             last.assert_eq(jm[i], fs[i]);
         }
 
-        // HIGH-2.2 §6(b) keystone — bind the FoldChip's per-stripe
-        // `FOLD_XSTEP` to the StripeXorChip register lane for that
-        // stripe. On a fold row exactly one `FOLD_SLOT_SEL[s]` is 1
-        // (slot = stripe index, 1:1 for the shipping
-        // `num_stripes ≤ STATE_LEN`), so
-        //   Σ_s FOLD_SLOT_SEL[s]·(FOLD_XSTEP − SX_XR[s]) == 0
-        // forces `FOLD_XSTEP == SX_XR[stripe]`. `SX_XR` is the
-        // final register (propagated by the StripeXor passthrough
-        // through every post-sweep row, incl. the fold rows), which
-        // `StripeXorChip` constrains to be the XOR-reduction of the
-        // matmul accumulator-after-step (bound via `SX_IN ==
-        // nxt.CUMSUM_TILE` to the committed-matrix sweep). This
-        // closes the useful-work chain
-        //   committed A/B → CUMSUM → SX_IN → XR → FOLD_XSTEP →
-        //   FoldChip → FOLD_STATE → keystone → JACKPOT_MSG → C4.
-        // Degree 2 (one-hot · linear). Vacuous off fold rows
-        // (`FOLD_SLOT_SEL` all 0 ⇒ 0 == 0). Pinned production path
-        // only — the unit `CompositeFullAir` keeps `FOLD_XSTEP`
-        // free so the ~300 constraint-logic tests stay untouched
-        // (identical scoping to the §4.D keystone above).
+        // HIGH-2.2 §6(b)/§6(b)-G2 keystone — bind the FoldChip's
+        // per-stripe `FOLD_XSTEP` to the StripeXorChip register
+        // lane for *that stripe*. The fold row carries a one-hot
+        // `FOLD_STRIPE_SEL` (Σ == FOLD_IS_FOLD, enforced by
+        // `FoldChip::eval_composite`) whose 6-bit index is pinned
+        // into `CONTROL_PREP` by `ControlChip` (CRIT-1) — so the
+        // selected lane is **verifier-fixed**, for *any*
+        // `num_stripes ≤ STRIPE_MAX` (not just the old
+        // `slot = stripe % 16 == stripe` ⇔ `num_stripes ≤ 16`
+        // coincidence). Then
+        //   Σ_{s<STRIPE_MAX} FOLD_STRIPE_SEL[s]·(FOLD_XSTEP − SX_XR[s]) = 0
+        // forces `FOLD_XSTEP == SX_XR[stripe]`. `SX_XR` is the final
+        // register (propagated by the StripeXor passthrough through
+        // every post-sweep row, incl. the fold rows), constrained
+        // by `StripeXorChip` to be the XOR-reduction of the matmul
+        // accumulator-after-step (bound via `SX_IN ==
+        // nxt.CUMSUM_TILE` to the committed-matrix sweep). Closes
+        //   committed A/B → CUMSUM → SX_IN → SX_XR → FOLD_XSTEP →
+        //   FoldChip → FOLD_STATE → §4.D keystone → JACKPOT_MSG → C4
+        // for every single-Layer-0 params set. Degree 2 (one-hot ·
+        // linear); vacuous off fold rows (`FOLD_STRIPE_SEL` all 0).
+        // Pinned production path only — the unit `CompositeFullAir`
+        // keeps `FOLD_XSTEP` free so the ~300 constraint-logic
+        // tests stay untouched (identical scoping to §4.D). With
+        // G1+G2 `sx_bound` is `true` for all `num_stripes ≤
+        // STRIPE_MAX`; the flag remains for the G3/PROD-segment
+        // boundary case.
         if self.sx_bound {
+            use crate::composite_layout::STRIPE_MAX;
             let main3 = builder.main();
             let c3 = main3.current_slice();
             let fx: AB::Var = c3[crate::composite_layout::FOLD_XSTEP];
-            let sel: [AB::Var; JACKPOT_SIZE] = core::array::from_fn(|s| {
-                c3[crate::composite_layout::FOLD_SLOT_SEL_START + s]
+            let sel: [AB::Var; STRIPE_MAX] = core::array::from_fn(|s| {
+                c3[crate::composite_layout::FOLD_STRIPE_SEL_START + s]
             });
-            let xr: [AB::Var; JACKPOT_SIZE] = core::array::from_fn(|s| {
+            let xr: [AB::Var; STRIPE_MAX] = core::array::from_fn(|s| {
                 c3[crate::composite_layout::SX_XR_START + s]
             });
             let mut bind: AB::Expr = <AB::Expr as PrimeCharacteristicRing>::ZERO;
-            for s in 0..JACKPOT_SIZE {
+            for s in 0..STRIPE_MAX {
                 bind = bind + sel[s].into() * (fx.into() - xr[s].into());
             }
             builder.assert_zero(bind);

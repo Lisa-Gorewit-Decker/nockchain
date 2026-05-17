@@ -56,7 +56,8 @@ use p3_air::{AirBuilder, WindowAccess};
 use p3_field::PrimeCharacteristicRing;
 
 use crate::composite_layout::{
-    BITS_PER_LIMB, CONTROL_PREP, FOLD_IS_FOLD, FOLD_SLOT_SEL_LEN, FOLD_SLOT_SEL_START, IS_CV_IN,
+    BITS_PER_LIMB, CONTROL_PREP, FOLD_IS_FOLD, FOLD_SLOT_SEL_LEN, FOLD_SLOT_SEL_START,
+    FOLD_STRIPE_SEL_LEN, FOLD_STRIPE_SEL_START, IS_CV_IN,
     IS_DUMP_CUMSUM_BUFFER, IS_HASH_A, IS_HASH_B, IS_HASH_JACKPOT, IS_LAST_ROUND, IS_LOAD,
     IS_MSG_AUX_DATA, IS_MSG_CV, IS_MSG_JACKPOT, IS_MSG_MAT, IS_NEW_BLAKE, IS_RESET_CUMSUM,
     IS_SHIFT3, IS_STORE0, IS_STORE1, IS_STORE2, IS_UPDATE_CUMSUM, IS_USE_COMMITMENT_HASH,
@@ -90,6 +91,16 @@ pub const FOLD_IS_FOLD_BIT: usize = NUM_SELECTORS + MAT_ID_BITS; // 47
 pub const FOLD_SLOT_BIT: usize = FOLD_IS_FOLD_BIT + 1; // 48
 /// Number of bits the fold-slot index occupies (`0..=15`).
 pub const FOLD_SLOT_BITS: usize = 4;
+
+/// HIGH-2.2 §6(b)-G2 — bit offset of the 6-bit fold-**stripe**
+/// index (`0..=STRIPE_MAX-1`, `STRIPE_MAX = 64`) inside
+/// `CONTROL_PREP`. Pinning it makes the keystone's
+/// `FOLD_XSTEP == SX_XR[stripe]` lane selection verifier-fixed for
+/// `num_stripes > 16` (where the 4-bit fold-slot ≠ stripe). Top
+/// packed bit `52 + 6 = 58 < 64` ⇒ well under Goldilocks p.
+pub const FOLD_STRIPE_BIT: usize = FOLD_SLOT_BIT + FOLD_SLOT_BITS; // 52
+/// Number of bits the fold-stripe index occupies (`0..=63`).
+pub const FOLD_STRIPE_BITS: usize = 6;
 
 #[derive(Debug, Default, Clone, Copy)]
 pub struct ControlChip;
@@ -168,7 +179,23 @@ impl ControlChip {
             let w = <AB::F as PrimeCharacteristicRing>::from_u32(s as u32);
             slot_idx = slot_idx + cur[FOLD_SLOT_SEL_START + s] * w;
         }
-        acc = acc + slot_idx * pow; // 2^48 (4-bit slot ⇒ bits 48..52)
+        acc = acc + slot_idx * pow.clone(); // 2^48 (4-bit slot ⇒ 48..52)
+
+        // HIGH-2.2 §6(b)-G2 — pin the 6-bit fold-**stripe** index
+        // (the keystone's `SX_XR[stripe]` lane selector, needed for
+        // `num_stripes > 16` where slot ≠ stripe) at bit 2^52.
+        // `FOLD_STRIPE_SEL` booleanity / one-hot (`Σ == FOLD_IS_FOLD`)
+        // is enforced by `FoldChip`; zero on non-fold rows ⇒ zero
+        // blast radius (CONTROL_PREP byte-identical there).
+        let two_pow_slot =
+            <AB::F as PrimeCharacteristicRing>::from_u32(1u32 << FOLD_SLOT_BITS);
+        pow = pow * two_pow_slot; // pow = 2^52
+        let mut stripe_idx: AB::Expr = <AB::Expr as PrimeCharacteristicRing>::ZERO;
+        for s in 0..FOLD_STRIPE_SEL_LEN {
+            let w = <AB::F as PrimeCharacteristicRing>::from_u32(s as u32);
+            stripe_idx = stripe_idx + cur[FOLD_STRIPE_SEL_START + s] * w;
+        }
+        acc = acc + stripe_idx * pow; // 2^52 (6-bit stripe ⇒ 52..58)
 
         builder.assert_eq(control_prep, acc);
     }
@@ -177,24 +204,32 @@ impl ControlChip {
     /// element. Used to construct the preprocessed `CONTROL_PREP`
     /// value for testing / trace generation. Equivalent to
     /// [`Self::pack_control_prep_full`] with no fold activity
-    /// (`is_fold = false`, `fold_slot = 0`) — byte-identical to the
-    /// pre-HIGH-2.2-§6 packing for every non-fold row.
+    /// (`is_fold = false`, `fold_slot = 0`, `fold_stripe = 0`) —
+    /// byte-identical to the pre-HIGH-2.2-§6 packing for every
+    /// non-fold row.
     pub fn pack_control_prep(selectors: &[bool; NUM_SELECTORS], mat_id: u32) -> u64 {
-        Self::pack_control_prep_full(selectors, mat_id, false, 0)
+        Self::pack_control_prep_full(selectors, mat_id, false, 0, 0)
     }
 
-    /// HIGH-2.2 §6 — pack 21 selectors + MAT_ID **plus** the
-    /// FoldChip schedule (`is_fold` at bit 2^47, the 4-bit
-    /// `fold_slot` at bit 2^48) into one Goldilocks element. The
-    /// `CompositeFullAirPinned` CRIT-1 pin then makes the fold
-    /// schedule verifier-fixed. `fold_slot` must be `< 16`.
+    /// HIGH-2.2 §6 / §6(b)-G2 — pack 21 selectors + MAT_ID **plus**
+    /// the FoldChip schedule (`is_fold` at 2^47, the 4-bit
+    /// `fold_slot` at 2^48, the 6-bit `fold_stripe` at 2^52) into
+    /// one Goldilocks element. The `CompositeFullAirPinned` CRIT-1
+    /// pin then makes the fold schedule **and** the keystone's
+    /// stripe-lane selector verifier-fixed. `fold_slot < 16`,
+    /// `fold_stripe < 64`; top packed bit 57 ≪ Goldilocks p.
     pub fn pack_control_prep_full(
         selectors: &[bool; NUM_SELECTORS],
         mat_id: u32,
         is_fold: bool,
         fold_slot: u8,
+        fold_stripe: u8,
     ) -> u64 {
         debug_assert!((fold_slot as usize) < FOLD_SLOT_SEL_LEN, "fold_slot out of range");
+        debug_assert!(
+            (fold_stripe as usize) < FOLD_STRIPE_SEL_LEN,
+            "fold_stripe out of range"
+        );
         let mut packed: u64 = 0;
         for (i, &b) in selectors.iter().enumerate() {
             if b {
@@ -204,6 +239,8 @@ impl ControlChip {
         packed |= (mat_id as u64) << NUM_SELECTORS;
         packed |= (is_fold as u64) << FOLD_IS_FOLD_BIT;
         packed |= ((fold_slot as u64) & ((1u64 << FOLD_SLOT_BITS) - 1)) << FOLD_SLOT_BIT;
+        packed |=
+            ((fold_stripe as u64) & ((1u64 << FOLD_STRIPE_BITS) - 1)) << FOLD_STRIPE_BIT;
         packed
     }
 
@@ -420,15 +457,19 @@ mod tests {
     //  HIGH-2.2 §6 — fold schedule pinned into CONTROL_PREP
     // ============================================================
 
-    use crate::composite_layout::{FOLD_IS_FOLD, FOLD_SLOT_SEL_START};
+    use crate::composite_layout::{FOLD_IS_FOLD, FOLD_SLOT_SEL_START, FOLD_STRIPE_SEL_START};
 
     /// Make row `r` of an otherwise non-fold trace a fold row into
-    /// `slot`, with CONTROL_PREP packing `(is_fold=1, slot)` —
-    /// exactly what `place_fold_chain` writes.
+    /// `slot` (stripe = `slot`, the `num_stripes ≤ 16` 1:1 case),
+    /// with CONTROL_PREP packing `(is_fold=1, slot, stripe)` —
+    /// exactly what `place_fold_chain` writes. `consistent=false`
+    /// packs a *different* slot to exercise the §6 mismatch reject.
     fn make_fold_row(trace: &mut RowMajorMatrix<Val>, r: usize, slot: usize, consistent: bool) {
         let base = r * TOTAL_TRACE_WIDTH;
         trace.values[base + FOLD_IS_FOLD] = <Val as QuotientMap<u64>>::from_int(1);
         trace.values[base + FOLD_SLOT_SEL_START + slot] =
+            <Val as QuotientMap<u64>>::from_int(1);
+        trace.values[base + FOLD_STRIPE_SEL_START + slot] =
             <Val as QuotientMap<u64>>::from_int(1);
         let packed_slot = if consistent { slot } else { (slot + 1) % 16 };
         trace.values[base + CONTROL_PREP] = <Val as QuotientMap<u64>>::from_int(
@@ -437,20 +478,22 @@ mod tests {
                 0,
                 true,
                 packed_slot as u8,
+                slot as u8, // fold_stripe (consistent with the one-hot)
             ),
         );
     }
 
-    /// `FOLD_IS_FOLD_BIT` / `FOLD_SLOT_BIT` sit immediately past the
-    /// 21 selectors + 26-bit MAT_ID and never collide with them.
+    /// `FOLD_IS_FOLD_BIT` / `FOLD_SLOT_BIT` / `FOLD_STRIPE_BIT` sit
+    /// immediately past the 21 selectors + 26-bit MAT_ID and never
+    /// collide; top packed bit stays ≪ Goldilocks p.
     #[test]
     fn fold_pack_bit_layout_is_disjoint() {
         assert_eq!(MAT_ID_BITS, 26);
         assert_eq!(FOLD_IS_FOLD_BIT, 47);
         assert_eq!(FOLD_SLOT_BIT, 48);
-        // Max packed value (all selectors + max mat_id + fold) stays
-        // well under Goldilocks p (~2^63.99): top bit < 52.
-        assert!(FOLD_SLOT_BIT + FOLD_SLOT_BITS <= 52);
+        assert_eq!(FOLD_STRIPE_BIT, 52);
+        // top bit = 52 + 6 = 58 < 64 ⇒ well under Goldilocks p.
+        assert!(FOLD_STRIPE_BIT + FOLD_STRIPE_BITS <= 60);
     }
 
     /// No fold activity ⇒ CONTROL_PREP byte-identical to the
@@ -474,7 +517,7 @@ mod tests {
         };
         assert_eq!(ControlChip::pack_control_prep(&s, 0x1234), old);
         assert_eq!(
-            ControlChip::pack_control_prep_full(&s, 0x1234, false, 0),
+            ControlChip::pack_control_prep_full(&s, 0x1234, false, 0, 0),
             old
         );
     }
@@ -536,6 +579,34 @@ mod tests {
         );
     }
 
+    /// §6(b)-G2 core soundness: the keystone's `SX_XR[stripe]` lane
+    /// is verifier-fixed — a `FOLD_STRIPE_SEL` one-hot that
+    /// disagrees with the CONTROL_PREP-packed 6-bit stripe index
+    /// must reject (a malicious prover cannot re-point the lane).
+    #[test]
+    fn fold_stripe_mismatch_rejected() {
+        let cfg = build_stark_config(&test_zk_params(), &CircuitConfig::TEST_PEARL);
+        let air = ControlOnlyAir;
+        let s = [false; NUM_SELECTORS];
+        let mut trace = build_uniform_trace(16, &s, 0);
+        let base = 8 * TOTAL_TRACE_WIDTH;
+        trace.values[base + FOLD_IS_FOLD] = <Val as QuotientMap<u64>>::from_int(1);
+        trace.values[base + FOLD_SLOT_SEL_START + 5] =
+            <Val as QuotientMap<u64>>::from_int(1);
+        // One-hot says stripe = 5 …
+        trace.values[base + FOLD_STRIPE_SEL_START + 5] =
+            <Val as QuotientMap<u64>>::from_int(1);
+        // … but CONTROL_PREP packs stripe = 7.
+        trace.values[base + CONTROL_PREP] = <Val as QuotientMap<u64>>::from_int(
+            ControlChip::pack_control_prep_full(&[false; NUM_SELECTORS], 0, true, 5, 7),
+        );
+        let proof = prove::<AiPowStarkConfig, _>(&cfg, &air, trace, &[]);
+        assert!(
+            verify::<AiPowStarkConfig, _>(&cfg, &air, &proof, &[]).is_err(),
+            "fold stripe ≠ CONTROL_PREP-packed stripe must reject"
+        );
+    }
+
     /// CONTROL_PREP claims is_fold but FOLD_IS_FOLD column is 0 ⇒
     /// reject (a prover cannot silently drop a scheduled fold).
     #[test]
@@ -546,9 +617,9 @@ mod tests {
         let mut trace = build_uniform_trace(16, &s, 0);
         let base = 10 * TOTAL_TRACE_WIDTH;
         trace.values[base + CONTROL_PREP] = <Val as QuotientMap<u64>>::from_int(
-            ControlChip::pack_control_prep_full(&[false; NUM_SELECTORS], 0, true, 3),
+            ControlChip::pack_control_prep_full(&[false; NUM_SELECTORS], 0, true, 3, 3),
         );
-        // FOLD_IS_FOLD / FOLD_SLOT_SEL left at 0.
+        // FOLD_IS_FOLD / FOLD_SLOT_SEL / FOLD_STRIPE_SEL left at 0.
         let proof = prove::<AiPowStarkConfig, _>(&cfg, &air, trace, &[]);
         assert!(
             verify::<AiPowStarkConfig, _>(&cfg, &air, &proof, &[]).is_err(),

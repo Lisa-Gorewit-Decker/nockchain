@@ -424,11 +424,18 @@ pub const FOLD_XOR_OUT: usize = FOLD_MCUR_BITS_START + FOLD_MCUR_BITS_LEN;
 //  CONTROL_PREP pattern, not a wide preprocessed block).
 // =====================================================================
 
+/// HIGH-2.2 §6(b)-G2 — per-stripe lane count (`STRIPE_MAX`),
+/// decoupled from the FoldChip's Pearl-fixed 16 M-slots
+/// (`JACKPOT_SIZE`). Covers every single-Layer-0 params set
+/// (rectangular `llm_shape` `k/r = 20`; PROD-per-segment
+/// `k/r = 64`). MUST equal `chips::stripe_xor::STATE_LEN`.
+pub const STRIPE_MAX: usize = 64;
+
 /// 1 = active stripe-XOR fold row, 0 = padding/passthrough.
 pub const SX_IS_ACTIVE: usize = FOLD_XOR_OUT + 1;
 /// One-hot stripe-lane selector (`Σ == SX_IS_ACTIVE`).
 pub const SX_LANE_SEL_START: usize = SX_IS_ACTIVE + 1;
-pub const SX_LANE_SEL_LEN: usize = JACKPOT_SIZE; // 16 = STATE_LEN
+pub const SX_LANE_SEL_LEN: usize = STRIPE_MAX;
 /// The 4 accumulator cells folded this row (= the matmul
 /// accumulator-after-step; bound cross-row to `nxt.CUMSUM_TILE`).
 pub const SX_IN_START: usize = SX_LANE_SEL_START + SX_LANE_SEL_LEN;
@@ -436,9 +443,9 @@ pub const SX_IN_LEN: usize = 4;
 /// 32 LE bits per `SX_IN` cell.
 pub const SX_IN_BITS_START: usize = SX_IN_START + SX_IN_LEN;
 pub const SX_IN_BITS_LEN: usize = SX_IN_LEN * 32; // 128
-/// `STATE_LEN`-lane register entering this row.
+/// `STRIPE_MAX`-lane register entering this row.
 pub const SX_XR_START: usize = SX_IN_BITS_START + SX_IN_BITS_LEN;
-pub const SX_XR_LEN: usize = JACKPOT_SIZE; // 16
+pub const SX_XR_LEN: usize = STRIPE_MAX;
 /// 32 LE bits of the selected lane value.
 pub const SX_XR_SEL_BITS_START: usize = SX_XR_START + SX_XR_LEN;
 pub const SX_XR_SEL_BITS_LEN: usize = 32;
@@ -454,13 +461,32 @@ pub const SX_Q_BITS_LEN: usize = 32 * 2;
 pub const SX_END: usize = SX_Q_BITS_START + SX_Q_BITS_LEN;
 
 // =====================================================================
+//  HIGH-2.2 §6(b)-G2 — per-fold-row stripe selector
+//
+//  The §6(b) keystone binds `FOLD_XSTEP == SX_XR[stripe]`. The
+//  FoldChip's `FOLD_SLOT_SEL` addresses M-slot `stripe % 16` (16
+//  wide) — only equal to the stripe for `num_stripes ≤ 16`. This
+//  one-hot (set by `place_fold_chain`, summing to `FOLD_IS_FOLD`,
+//  with its 6-bit index pinned into `CONTROL_PREP` via the §6(a)
+//  pattern) is the verifier-fixed `stripe` selector the keystone
+//  uses. Appended after the SX block (shifts no existing offset).
+// =====================================================================
+
+/// Per-fold-row one-hot stripe selector (`Σ == FOLD_IS_FOLD`);
+/// its 6-bit index is CRIT-1-pinned in `CONTROL_PREP` (§6(a)).
+pub const FOLD_STRIPE_SEL_START: usize = SX_END;
+pub const FOLD_STRIPE_SEL_LEN: usize = STRIPE_MAX;
+/// End-of-FOLD_STRIPE_SEL cursor.
+pub const FOLD_STRIPE_SEL_END: usize = FOLD_STRIPE_SEL_START + FOLD_STRIPE_SEL_LEN;
+
+// =====================================================================
 //  Total trace width
 // =====================================================================
 
 /// Total trace width: pinned end-of-layout cursor. Phases 3+ extend
 /// chip-internal sub-columns but must not exceed this without bumping
 /// the constant.
-pub const TOTAL_TRACE_WIDTH: usize = SX_END;
+pub const TOTAL_TRACE_WIDTH: usize = FOLD_STRIPE_SEL_END;
 
 #[cfg(test)]
 mod tests {
@@ -743,8 +769,13 @@ mod tests {
             ),
             (
                 SX_Q_BITS_START + SX_Q_BITS_LEN,
+                FOLD_STRIPE_SEL_START,
+                "SX_Q_BITS → FOLD_STRIPE_SEL",
+            ),
+            (
+                FOLD_STRIPE_SEL_START + FOLD_STRIPE_SEL_LEN,
                 TOTAL_TRACE_WIDTH,
-                "SX_Q_BITS → TOTAL_TRACE_WIDTH",
+                "FOLD_STRIPE_SEL → TOTAL_TRACE_WIDTH",
             ),
         ];
         for &(end, next, name) in checkpoints {
@@ -765,16 +796,17 @@ mod tests {
     /// (NOT preprocessed — the §4.C.8 trap is preprocessed width).
     #[test]
     fn total_trace_width_in_pearl_ballpark() {
-        // Sanity: ≥ 1200 cols (BLAKE3 round dominates) and ≤ 2000
-        // (Pearl-mirrored ≈1378 + FoldChip 99 + StripeXor 294 =
-        // 1771; bound has headroom but still catches an accidental
+        // Sanity: ≥ 1200 cols (BLAKE3 round dominates) and ≤ 2200
+        // (Pearl-mirrored ≈1378 + FoldChip 99 + StripeXor block
+        // with STRIPE_MAX=64 lanes + FOLD_STRIPE_SEL 64 ≈ 1931;
+        // bound has headroom but still catches an accidental
         // column explosion).
         assert!(
             TOTAL_TRACE_WIDTH > 1200,
             "TOTAL_TRACE_WIDTH suspiciously small: {TOTAL_TRACE_WIDTH}"
         );
         assert!(
-            TOTAL_TRACE_WIDTH < 2000,
+            TOTAL_TRACE_WIDTH < 2200,
             "TOTAL_TRACE_WIDTH suspiciously large: {TOTAL_TRACE_WIDTH} — check for unintended column duplication"
         );
     }

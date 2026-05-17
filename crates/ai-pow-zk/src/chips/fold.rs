@@ -113,9 +113,27 @@ impl FoldChip {
     };
 
     /// Composite-layout entry point: `eval_at(builder,
-    /// &COMPOSITE_OFFSETS)`. Called from `CompositeFullAir::eval`.
+    /// &COMPOSITE_OFFSETS)` **plus** the §6(b)-G2 per-fold-row
+    /// stripe-selector well-formedness (composite-only — the
+    /// standalone FoldChip has no stripe selector). Each
+    /// `FOLD_STRIPE_SEL[s]` is boolean and `Σ == FOLD_IS_FOLD`
+    /// (one-hot on fold rows, all-zero off them), so the 6-bit
+    /// stripe index `ControlChip` pins into `CONTROL_PREP` (CRIT-1)
+    /// faithfully addresses exactly one `SX_XR` lane in the §6(b)
+    /// keystone. Called from `CompositeFullAir::eval`.
     pub fn eval_composite<AB: AirBuilder>(builder: &mut AB) {
         Self::eval_at(builder, &Self::COMPOSITE_OFFSETS);
+
+        let main = builder.main();
+        let cur = main.current_slice();
+        let is_fold = cur[crate::composite_layout::FOLD_IS_FOLD];
+        let mut sum: AB::Expr = <AB::Expr as PrimeCharacteristicRing>::ZERO;
+        for s in 0..crate::composite_layout::FOLD_STRIPE_SEL_LEN {
+            let sel = cur[crate::composite_layout::FOLD_STRIPE_SEL_START + s];
+            builder.assert_bool(sel);
+            sum = sum + sel.into();
+        }
+        builder.assert_eq(sum, is_fold.into());
     }
 
     /// Emit the fold constraints at the given column offsets.

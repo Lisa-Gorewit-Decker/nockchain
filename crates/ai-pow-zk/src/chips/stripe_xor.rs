@@ -60,10 +60,16 @@ use p3_matrix::dense::RowMajorMatrix;
 
 use crate::Val;
 
-/// Number of stripe lanes = `JACKPOT_SIZE` = Pearl §4.5 fold slots
-/// = `num_stripes` for the shipping params (`k/r`). A shorter
-/// stripe schedule simply leaves the unused high lanes at 0.
-pub const STATE_LEN: usize = 16;
+/// HIGH-2.2 §6(b)-G2 — number of per-stripe lanes
+/// (`STRIPE_MAX`). **Decoupled from the FoldChip's Pearl-fixed 16
+/// M-slots** (`JACKPOT_SIZE`): a tile has `num_stripes = k/r`
+/// per-stripe `X_STEP`s, and the fold consumes each distinctly
+/// (folding into M-slot `stripe % 16`), so the XOR register needs
+/// one lane *per stripe*, not per M-slot. 64 covers every
+/// single-Layer-0 params set (rectangular `llm_shape` `k/r = 20`;
+/// PROD `k/r = 64`). A shorter schedule leaves the unused high
+/// lanes at 0.
+pub const STATE_LEN: usize = 64;
 /// Accumulator cells folded per row (the in-circuit micro-tile's
 /// `CUMSUM_TILE_LEN`).
 pub const IN_LEN: usize = 4;
@@ -499,7 +505,11 @@ mod tests {
     #[test]
     fn final_register_matches_reference_and_verifies() {
         let c = cfg();
-        for (n_sb, n_stripes) in [(1usize, 4usize), (16, 16), (4, 8), (16, 1)] {
+        // Incl. the §6(b)-G2 cases: num_stripes > 16 (rect-shaped
+        // `k/r = 20`) and the full STRIPE_MAX = 64 (PROD-per-segment).
+        for (n_sb, n_stripes) in
+            [(1usize, 4usize), (16, 16), (4, 8), (16, 1), (4, 20), (8, 64), (1, 64)]
+        {
             let raw = lcg(0xABCD ^ (n_sb as u64), n_sb * n_stripes * IN_LEN);
             let mut events = Vec::new();
             for sb in 0..n_sb {

@@ -69,8 +69,9 @@ use crate::composite_layout::{
     NOISE_UNPACK_LEN, NOISE_UNPACK_START, STARK_ROW_IDX, TILE_D, TILE_H,
     FOLD_IS_FOLD, FOLD_MCUR_BITS_START, FOLD_SLOT_SEL_START, FOLD_STATE_START,
     FOLD_XOR_OUT, FOLD_XSTEP, FOLD_XSTEP_BITS_START,
-    SX_IN_BITS_START, SX_IN_START, SX_IS_ACTIVE, SX_LANE_SEL_START, SX_NEW_SEL,
-    SX_NEW_SEL_BITS_START, SX_Q_BITS_START, SX_XR_SEL_BITS_START, SX_XR_START,
+    FOLD_STRIPE_SEL_START, STRIPE_MAX, SX_IN_BITS_START, SX_IN_START, SX_IS_ACTIVE,
+    SX_LANE_SEL_START, SX_NEW_SEL, SX_NEW_SEL_BITS_START, SX_Q_BITS_START,
+    SX_XR_SEL_BITS_START, SX_XR_START,
     TOTAL_TRACE_WIDTH, UINT8_DATA_LEN, UINT8_DATA_START, URANGE13_FREQ, URANGE8_FREQ,
 };
 use crate::Val;
@@ -1003,6 +1004,11 @@ impl CompositeTrace {
             !x_steps.is_empty() && row_start + len < h,
             "fold chain ({len}) must fit before the last row: row_start={row_start}, height={h}"
         );
+        assert!(
+            len <= STRIPE_MAX,
+            "fold chain length {len} exceeds STRIPE_MAX={STRIPE_MAX} \
+             (§6(b)-G2 per-stripe lanes); needs segmentation (G3)"
+        );
 
         let set_u32 = |row: &mut [Val], at: usize, v: u32| {
             row[at] = <Val as QuotientMap<u64>>::from_int(v as u64);
@@ -1033,10 +1039,14 @@ impl CompositeTrace {
                     0,
                     true,
                     slot as u8,
+                    t as u8, // §6(b)-G2: the stripe index (= fold-row t)
                 ),
             );
             row[FOLD_IS_FOLD] = <Val as QuotientMap<u64>>::from_int(1);
             row[FOLD_SLOT_SEL_START + slot] = <Val as QuotientMap<u64>>::from_int(1);
+            // §6(b)-G2: per-fold-row stripe one-hot (the keystone's
+            // SX_XR lane selector; its 6-bit index pinned above).
+            row[FOLD_STRIPE_SEL_START + t] = <Val as QuotientMap<u64>>::from_int(1);
             set_u32(row, FOLD_XSTEP, x);
             set_bits(row, FOLD_XSTEP_BITS_START, x);
             for s in 0..16 {
@@ -1090,18 +1100,24 @@ impl CompositeTrace {
         t: usize,
         r: usize,
         num_stripes: usize,
-    ) -> (usize, [u32; 16]) {
+    ) -> (usize, [u32; STRIPE_MAX]) {
         use p3_field::integers::QuotientMap;
         assert!(t % TILE_H == 0, "tile must split into TILE_H sub-blocks");
-        assert!(r <= TILE_D, "stripe width must fit one micro-step");
-        assert!(num_stripes <= 16, "StripeXor has 16 lanes (STATE_LEN)");
+        assert!(
+            num_stripes <= STRIPE_MAX,
+            "num_stripes {num_stripes} > STRIPE_MAX={STRIPE_MAX} (§6(b)-G2); \
+             larger needs segmentation (G3)"
+        );
+        // §6(b)-G1: an `r`-wide stripe dot is covered by
+        // `C = ⌈r/TILE_D⌉` accumulating TILE_D-wide micro-steps.
+        let chunks = r.div_ceil(TILE_D).max(1);
         let k = if t == 0 { 0 } else { a_prime_rows.len() / t };
         assert_eq!(a_prime_rows.len(), t * k, "a_prime_rows must be t·k");
         assert_eq!(b_prime_cols.len(), t * k, "b_prime_cols must be t·k");
         let n_sb = t / TILE_H;
         let h = self.height();
         assert!(
-            row_start + n_sb * n_sb * num_stripes < h,
+            row_start + n_sb * n_sb * num_stripes * chunks < h,
             "useful-work sweep must fit before the last row"
         );
 
@@ -1111,78 +1127,95 @@ impl CompositeTrace {
             }
         };
 
-        let mut xr = [0u32; 16];
+        let mut xr = [0u32; STRIPE_MAX];
         let mut carry = [0i32; CUMSUM_LEN];
         let mut row = row_start;
         for sbi in 0..n_sb {
             for sbj in 0..n_sb {
                 for step in 0..num_stripes {
                     let lo = step * r;
-                    let mut a_blk = [[0i8; TILE_D]; TILE_H];
-                    let mut b_blk = [[0i8; TILE_D]; TILE_H];
-                    for di in 0..TILE_H {
-                        let rr = (sbi * TILE_H + di) * k;
-                        a_blk[di][..r].copy_from_slice(&a_prime_rows[rr + lo..rr + lo + r]);
-                    }
-                    for dj in 0..TILE_H {
-                        let cc = (sbj * TILE_H + dj) * k;
-                        b_blk[dj][..r].copy_from_slice(&b_prime_cols[cc + lo..cc + lo + r]);
-                    }
-                    let is_reset = step == 0;
-                    let is_update = step > 0;
-                    let cumsum_new = self.place_matmul_step(
-                        row, &a_blk, &b_blk, is_reset, is_update, &carry,
-                    );
+                    for chunk in 0..chunks {
+                        // §6(b)-G1: this chunk covers stripe lanes
+                        // [c·TILE_D, min((c+1)·TILE_D, r)); the rest
+                        // of the TILE_D-wide micro-dot is zero-pad.
+                        let c0 = chunk * TILE_D;
+                        let w = (r - c0).min(TILE_D);
+                        let mut a_blk = [[0i8; TILE_D]; TILE_H];
+                        let mut b_blk = [[0i8; TILE_D]; TILE_H];
+                        for di in 0..TILE_H {
+                            let rr = (sbi * TILE_H + di) * k + lo + c0;
+                            a_blk[di][..w].copy_from_slice(&a_prime_rows[rr..rr + w]);
+                        }
+                        for dj in 0..TILE_H {
+                            let cc = (sbj * TILE_H + dj) * k + lo + c0;
+                            b_blk[dj][..w].copy_from_slice(&b_prime_cols[cc..cc + w]);
+                        }
+                        // is_reset only on the sub-block's very first
+                        // micro-step; all chunks (within a stripe and
+                        // across stripes) accumulate into the same
+                        // c_blk cell via is_update (matches
+                        // `compute_tile_trace`'s `c_blk[idx] += Σδ`).
+                        let is_reset = step == 0 && chunk == 0;
+                        let is_update = !is_reset;
+                        let cumsum_new = self.place_matmul_step(
+                            row, &a_blk, &b_blk, is_reset, is_update, &carry,
+                        );
 
-                    // Co-locate the StripeXor active row (mirrors
-                    // `chips::stripe_xor::build_trace`'s witness at
-                    // composite offsets). `SX_IN` = this step's
-                    // accumulator-after-step; `eval_composite` binds
-                    // it to `nxt.CUMSUM_TILE` (= the matmul-chip-
-                    // forced value), and `nxt.CUMSUM` is exactly
-                    // `cumsum_new` (threaded as the next row's
-                    // `cumsum_old`, or the passthrough tail).
-                    let base = row * TOTAL_TRACE_WIDTH;
-                    let rs = &mut self.matrix.values[base..base + TOTAL_TRACE_WIDTH];
-                    rs[SX_IS_ACTIVE] = <Val as QuotientMap<u64>>::from_int(1);
-                    rs[SX_LANE_SEL_START + step] =
-                        <Val as QuotientMap<u64>>::from_int(1);
-                    let mut xin = 0u32;
-                    for c in 0..CUMSUM_LEN {
-                        let u = cumsum_new[c] as u32;
-                        // Signed i32 cell — matches the matmul
-                        // CUMSUM encoding so the §6(b)
-                        // `SX_IN == nxt.CUMSUM_TILE` binding holds;
-                        // SX_IN_BITS is the two's-complement pattern.
-                        rs[SX_IN_START + c] =
-                            <Val as QuotientMap<i64>>::from_int(cumsum_new[c] as i64);
-                        set_bits(rs, SX_IN_BITS_START + c * 32, u);
-                        xin ^= u;
-                    }
-                    for s in 0..16 {
-                        rs[SX_XR_START + s] =
-                            <Val as QuotientMap<u64>>::from_int(xr[s] as u64);
-                    }
-                    let sel_val = xr[step];
-                    set_bits(rs, SX_XR_SEL_BITS_START, sel_val);
-                    let new_sel = sel_val ^ xin;
-                    rs[SX_NEW_SEL] =
-                        <Val as QuotientMap<u64>>::from_int(new_sel as u64);
-                    set_bits(rs, SX_NEW_SEL_BITS_START, new_sel);
-                    for i in 0..32 {
-                        let mut col_sum: u32 = (sel_val >> i) & 1;
-                        for c in 0..CUMSUM_LEN {
-                            col_sum += (cumsum_new[c] as u32 >> i) & 1;
+                        let base = row * TOTAL_TRACE_WIDTH;
+                        let rs =
+                            &mut self.matrix.values[base..base + TOTAL_TRACE_WIDTH];
+                        // SX_XR register entering this row (every
+                        // sweep row carries it for the StripeXor
+                        // passthrough; only the stripe's *last* chunk
+                        // is an active fold row).
+                        for s in 0..STRIPE_MAX {
+                            rs[SX_XR_START + s] =
+                                <Val as QuotientMap<u64>>::from_int(xr[s] as u64);
                         }
-                        let q = (col_sum - ((new_sel >> i) & 1)) / 2;
-                        for b in 0..2 {
-                            rs[SX_Q_BITS_START + i * 2 + b] =
-                                <Val as QuotientMap<u64>>::from_int(((q >> b) & 1) as u64);
+                        if chunk == chunks - 1 {
+                            // Stripe complete ⇒ `cumsum_new` is the
+                            // accumulator-after-stripe-`step`. Fold it
+                            // into lane = `step`. `SX_IN` = cumsum_new
+                            // (= nxt.CUMSUM_TILE — the matmul-chip-
+                            // forced value the keystone binds).
+                            rs[SX_IS_ACTIVE] =
+                                <Val as QuotientMap<u64>>::from_int(1);
+                            rs[SX_LANE_SEL_START + step] =
+                                <Val as QuotientMap<u64>>::from_int(1);
+                            let mut xin = 0u32;
+                            for c in 0..CUMSUM_LEN {
+                                let u = cumsum_new[c] as u32;
+                                rs[SX_IN_START + c] =
+                                    <Val as QuotientMap<i64>>::from_int(
+                                        cumsum_new[c] as i64,
+                                    );
+                                set_bits(rs, SX_IN_BITS_START + c * 32, u);
+                                xin ^= u;
+                            }
+                            let sel_val = xr[step];
+                            set_bits(rs, SX_XR_SEL_BITS_START, sel_val);
+                            let new_sel = sel_val ^ xin;
+                            rs[SX_NEW_SEL] =
+                                <Val as QuotientMap<u64>>::from_int(new_sel as u64);
+                            set_bits(rs, SX_NEW_SEL_BITS_START, new_sel);
+                            for i in 0..32 {
+                                let mut col_sum: u32 = (sel_val >> i) & 1;
+                                for c in 0..CUMSUM_LEN {
+                                    col_sum += (cumsum_new[c] as u32 >> i) & 1;
+                                }
+                                let q = (col_sum - ((new_sel >> i) & 1)) / 2;
+                                for b in 0..2 {
+                                    rs[SX_Q_BITS_START + i * 2 + b] =
+                                        <Val as QuotientMap<u64>>::from_int(
+                                            ((q >> b) & 1) as u64,
+                                        );
+                                }
+                            }
+                            xr[step] = new_sel;
                         }
+                        carry = cumsum_new;
+                        row += 1;
                     }
-                    xr[step] = new_sel;
-                    carry = cumsum_new;
-                    row += 1;
                 }
             }
         }
@@ -1191,13 +1224,13 @@ impl CompositeTrace {
         // nxt==cur once both selectors are 0).
         self.fill_cumsum_passthrough(row, &carry);
         // StripeXor register passthrough: SX_IS_ACTIVE = 0 on every
-        // post-sweep row ⇒ all 16 lanes pass through, so the final
-        // register reaches the fold rows + the last row where the
-        // §6(b) keystone reads it.
+        // post-sweep row ⇒ all STRIPE_MAX lanes pass through, so the
+        // final register reaches the fold rows + the last row where
+        // the §6(b) keystone reads it.
         for rr in row..h {
             let base = rr * TOTAL_TRACE_WIDTH;
             let rs = &mut self.matrix.values[base..base + TOTAL_TRACE_WIDTH];
-            for s in 0..16 {
+            for s in 0..STRIPE_MAX {
                 rs[SX_XR_START + s] =
                     <Val as QuotientMap<u64>>::from_int(xr[s] as u64);
             }

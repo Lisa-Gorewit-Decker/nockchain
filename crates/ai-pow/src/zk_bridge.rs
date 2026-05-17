@@ -219,31 +219,23 @@ pub fn prove_and_verify_tiled(
     let b_strips: Vec<i8> = (0..t as u32)
         .flat_map(|dj| mats.b_prime_col(tile_j * params.tile + dj).to_vec())
         .collect();
-    // §6(b) `StripeXorChip` has `STATE_LEN = 16` per-stripe lanes
-    // (= `JACKPOT_SIZE`). For `num_stripes ≤ 16` (TEST_SMALL and
-    // the e2e/headline mining path: `k/r = 64/4 = 16`) the full
-    // useful-work chain is placed and the malicious-prover binding
-    // is live. For `num_stripes > 16` (e.g. the rectangular
-    // `llm_shape` params, `k/r = 20`, and PROD `k/r = 64`) the
-    // StripeXor register would need `num_stripes` lanes + a
-    // per-fold-row stripe selector — a scoped width generalization
-    // (STATE_LEN → ≥ max(k/r); the "dominant new width" the design
-    // anticipated). Until that lands, those params take the legacy
-    // `compute_tile_trace` → `place_fold_chain` path (the honest
-    // real `M` is still attested and byte-equivalent; the §6(b)
-    // *malicious-prover* binding is the documented residual for
-    // `num_stripes > 16`). Soundness meanwhile held by CRIT-1 +
-    // §4.D keystone + §6(a) for all params.
-    const SX_STATE_LEN: usize = 16;
-    let real_m = if num_stripes <= SX_STATE_LEN {
-        let sweep_rows = (t / 2) * (t / 2) * num_stripes;
+    // HIGH-2.2 §6(b)+G1+G2: `StripeXorChip` now has
+    // `STRIPE_MAX = 64` per-stripe lanes and `place_useful_work_chain`
+    // chunks the `r`-wide stripe dot into `⌈r/TILE_D⌉` accumulating
+    // micro-steps, so the full malicious-prover binding covers
+    // **every params set with `num_stripes ≤ STRIPE_MAX` whose
+    // sweep fits one Layer-0 STARK** — TEST_SMALL (`k/r = 16`) *and*
+    // the rectangular `llm_shape` shapes (`k/r = 20`). Only true
+    // PROD (`k/r = 64` but sweep ≈ 2²⁰ rows ≫ one STARK) still takes
+    // the legacy `compute_tile_trace → place_fold_chain` path
+    // (HIGH2_2_DESIGN §4.C.4-G3: segmentation/M12 — the residual,
+    // not a forgery hole; soundness held by CRIT-1 + §4.D + §6(a)).
+    let sweep_rows = (t / 2) * (t / 2) * num_stripes * r.div_ceil(16);
+    let sweep_fits = num_stripes <= ai_pow_zk::composite_layout::STRIPE_MAX
+        && mh_end + 3 + sweep_rows + 4 + num_stripes < height - 8;
+    let real_m = if sweep_fits {
         let sweep_start = mh_end + 3;
         let fold_start = sweep_start + sweep_rows + 4;
-        assert!(
-            fold_start + num_stripes < height - 8,
-            "useful-work sweep + fold + jackpot must fit: sweep_start={sweep_start} \
-             sweep_rows={sweep_rows} stripes={num_stripes} height={height}"
-        );
         let (_rows_used, x_steps) = trace
             .place_useful_work_chain(sweep_start, &a_strips, &b_strips, t, r, num_stripes);
         let xs: Vec<i32> = x_steps[..num_stripes].iter().map(|&u| u as i32).collect();
@@ -309,11 +301,13 @@ pub fn prove_and_verify_tiled(
     // bound to a different program and rejected vs the canonical
     // VK (ai-pow-zk `routea_*` regression suite). Cost ≈ 1.23x
     // the uni-stark pinned path (HIGH2_2_DESIGN.md §4.C.10).
-    // §6(b) keystone is live iff the full useful-work chain was
-    // placed (num_stripes ≤ StripeXor STATE_LEN). `sx_bound` is
-    // derived here from the trusted `params` — the verifier-side
-    // value, never the proof — so it is as sound as CRIT-1.
-    let sx_bound = num_stripes <= SX_STATE_LEN;
+    // §6(b)/G1+G2 keystone is live iff the full useful-work chain
+    // was placed (`sweep_fits`: num_stripes ≤ STRIPE_MAX and the
+    // chunked sweep fits one Layer-0). `sweep_fits` is a pure
+    // function of the trusted `params`/height — the verifier-side
+    // value, never the proof — so it is as sound as CRIT-1. Only
+    // true PROD (G3/M12) takes the legacy path with sx_bound=false.
+    let sx_bound = sweep_fits;
     let (proof, program) = composite_prove_pinned_logup_sx(&cfg, trace, &pis, sx_bound);
     composite_verify_pow_pinned_logup_sx(&cfg, &program, &proof, &pis, target, sx_bound)
         .map_err(BridgeError::Pow)?;
@@ -1004,6 +998,91 @@ mod tests {
             for s in steps..16 {
                 assert_eq!(reg[s], 0, "unused lane {s} must be 0");
             }
+        }
+    }
+
+    /// HIGH-2.2 §6(b)-G1+G2 — the generalized `place_useful_work_chain`
+    /// reproduces `compute_tile_trace`'s `x_steps` and verifies
+    /// through the composite AIR for params that exercise **both**
+    /// G1 (`r = 32 > TILE_D = 16` ⇒ `⌈r/16⌉ = 2` accumulating
+    /// inner-chunks per stripe) **and** G2 (`num_stripes = k/r =
+    /// 1024/32 = 32 > 16` ⇒ the STRIPE_MAX-lane register +
+    /// FOLD_STRIPE_SEL keystone). This is the case the legacy path
+    /// could not bind; G1+G2 close it for any single-Layer-0 tile.
+    #[test]
+    fn high2_2_g1g2_chunked_and_wide_stripes() {
+        use crate::matmul::{compute_tile_trace, BlockNoise, Matrices};
+        use ai_pow_zk::composite_proof::build_config;
+        use ai_pow_zk::{composite_prove, composite_verify, CircuitConfig, ZkParams};
+
+        let params = MatmulParams {
+            m: 8,
+            k: 1024,
+            n: 8,
+            noise_rank: 32, // r > TILE_D ⇒ G1 chunking (chunks=2)
+            tile: 4,
+            spot_checks: 2,
+            difficulty_bits: 0,
+        };
+        params.validate().expect("g1g2 params valid");
+        let num_stripes = params.num_stripes() as usize; // 32 > 16 ⇒ G2
+        assert_eq!(num_stripes, 32);
+        assert_eq!((params.noise_rank as usize).div_ceil(16), 2); // G1 chunks
+
+        let (a, b) = synth_matrices(b"g1g2-seed", &params);
+        let ctx = BlockContext::build(b"g1g2-blk", &a, &b, &params).expect("ctx");
+        let noise = BlockNoise::expand(&ctx.s_a, &ctx.s_b, &params);
+        let mats = Matrices::build(ctx.a, ctx.b, &noise, &params);
+        let zk = ZkParams {
+            m: params.m,
+            k: params.k,
+            n: params.n,
+            noise_rank: params.noise_rank,
+            tile: params.tile,
+            difficulty_bits: params.difficulty_bits,
+        };
+        let cfg = build_config(&zk, &CircuitConfig::TEST_PEARL);
+
+        let t = params.tile as usize;
+        let r = params.noise_rank as usize;
+        for &(ti, tj) in &[(0u32, 0u32), (params.row_tiles() - 1, params.col_tiles() - 1)] {
+            let a_strips: Vec<i8> = (0..t as u32)
+                .flat_map(|di| mats.a_prime_row(ti * params.tile + di).to_vec())
+                .collect();
+            let b_strips: Vec<i8> = (0..t as u32)
+                .flat_map(|dj| mats.b_prime_col(tj * params.tile + dj).to_vec())
+                .collect();
+
+            let mut trace = CompositeTrace::baseline_min();
+            let (rows_used, x_steps) = trace
+                .place_useful_work_chain(8, &a_strips, &b_strips, t, r, num_stripes);
+            // (t/2)² sub-blocks · num_stripes · ⌈r/16⌉ chunks.
+            assert_eq!(rows_used, (t / 2) * (t / 2) * num_stripes * 2);
+
+            // Cross-crate parity: the chunked, wide-lane sweep ⊕
+            // == the reference per-stripe x_steps, bit-for-bit.
+            let want = compute_tile_trace(&mats, &params, ti, tj).x_steps;
+            for step in 0..num_stripes {
+                assert_eq!(
+                    x_steps[step], want[step] as u32,
+                    "§6(b)-G1+G2 x_steps mismatch @({ti},{tj}) step {step}"
+                );
+            }
+
+            let xs: Vec<i32> = x_steps[..num_stripes].iter().map(|&u| u as i32).collect();
+            let m = trace.place_fold_chain(8 + rows_used + 4, &xs);
+            let ch: [u32; 8] = core::array::from_fn(|i| 0x9E37_0000 + i as u32);
+            let h = trace.height();
+            let _ = trace.place_jackpot_hash_block(h - 8, &m, &ch);
+
+            // The full G1+G2 chain verifies through the composite
+            // AIR (matmul chunked sweep recurrence + StripeXor
+            // 64-lane transport + SX_IN==nxt.CUMSUM binding + Fold).
+            let pis = CompositePublicInputs::derive_from_trace(&trace);
+            let proof = composite_prove(&cfg, trace, &pis);
+            composite_verify(&cfg, &proof, &pis).unwrap_or_else(|e| {
+                panic!("§6(b)-G1+G2 chain must verify @({ti},{tj}): {e:?}")
+            });
         }
     }
 }

@@ -71,6 +71,10 @@ pub struct RowDescriptor {
     /// HIGH-2.2 §6 — fold slot index (`stripe % 16`, pinned into
     /// `CONTROL_PREP` at bit 2^48). For non-fold rows, `0`.
     pub fold_slot: u8,
+    /// HIGH-2.2 §6(b)-G2 — fold stripe index (`0..STRIPE_MAX`,
+    /// pinned into `CONTROL_PREP` at bit 2^52 — the keystone's
+    /// SX_XR lane selector). For non-fold rows, `0`.
+    pub fold_stripe: u8,
 }
 
 impl RowDescriptor {
@@ -84,6 +88,7 @@ impl RowDescriptor {
             ab_id: 0,
             is_fold: false,
             fold_slot: 0,
+            fold_stripe: 0,
         }
     }
 }
@@ -97,13 +102,14 @@ impl RowDescriptor {
 pub fn fill_preprocessed_row(row_idx: usize, desc: &RowDescriptor, row: &mut [Val]) {
     use p3_field::integers::QuotientMap;
 
-    // CONTROL_PREP: pack selectors + mat_id + (HIGH-2.2 §6) the
-    // FoldChip schedule (is_fold, slot).
+    // CONTROL_PREP: pack selectors + mat_id + (HIGH-2.2 §6/§6(b)-G2)
+    // the FoldChip schedule (is_fold, slot, stripe).
     let control_prep = ControlChip::pack_control_prep_full(
         &desc.selectors,
         desc.mat_id,
         desc.is_fold,
         desc.fold_slot,
+        desc.fold_stripe,
     );
     row[CONTROL_PREP] = <Val as QuotientMap<u64>>::from_int(control_prep);
 
@@ -134,6 +140,7 @@ pub fn build_preprocessed_columns(program: &[RowDescriptor], total_rows: usize) 
             desc.mat_id,
             desc.is_fold,
             desc.fold_slot,
+            desc.fold_stripe,
         );
         out.push([
             <Val as QuotientMap<u64>>::from_int(control_prep),
