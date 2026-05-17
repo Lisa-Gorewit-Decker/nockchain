@@ -371,6 +371,57 @@ impl<AB: AirBuilder> Air<AB> for CompositeFullAir {
         // final XR lane.
         crate::chips::stripe_xor::StripeXorChip::eval_composite(builder);
 
+        // M-S1 (§4.C.11) — matmul-input pack-link. On every matmul
+        // row (`IS_RESET_CUMSUM + IS_UPDATE_CUMSUM`) the packed
+        // `A_NOISED[c]` / `B_NOISED[c]` cells equal the base-256
+        // polyval of the 4 i8 `*_NOISED_UNPACK` lanes they cover
+        // (same encoding `InputChip` uses for `NOISED_PACKED`). The
+        // `BUS_MATMUL_INPUT` LogUp binds the packed `A_NOISED`/
+        // `B_NOISED` cells to the canonical producer store; the
+        // `MatmulCumsumChip` dot multiplies the *unpack* lanes.
+        // This link makes them provably the same value (§4.C.11
+        // finding 2). Degree 2 (gate · linear); vacuous off matmul
+        // rows ⇒ zero regression.
+        {
+            use crate::composite_layout::{
+                A_NOISED_LEN, A_NOISED_START, A_NOISED_UNPACK_START, B_NOISED_LEN,
+                B_NOISED_START, B_NOISED_UNPACK_START, IS_RESET_CUMSUM, IS_UPDATE_CUMSUM,
+            };
+            const N: usize = 8;
+            debug_assert_eq!(A_NOISED_LEN, N);
+            debug_assert_eq!(B_NOISED_LEN, N);
+            let (is_reset, is_update): (AB::Var, AB::Var);
+            let a_p: [AB::Var; N];
+            let b_p: [AB::Var; N];
+            let a_u: [AB::Var; 4 * N];
+            let b_u: [AB::Var; 4 * N];
+            {
+                let main = builder.main();
+                let cur = main.current_slice();
+                is_reset = cur[IS_RESET_CUMSUM];
+                is_update = cur[IS_UPDATE_CUMSUM];
+                a_p = core::array::from_fn(|c| cur[A_NOISED_START + c]);
+                b_p = core::array::from_fn(|c| cur[B_NOISED_START + c]);
+                a_u = core::array::from_fn(|i| cur[A_NOISED_UNPACK_START + i]);
+                b_u = core::array::from_fn(|i| cur[B_NOISED_UNPACK_START + i]);
+            }
+            let matmul_active: AB::Expr = is_reset.into() + is_update.into();
+            let b256 = <AB::F as PrimeCharacteristicRing>::from_i32(256);
+            for (packed, unpack) in [(&a_p, &a_u), (&b_p, &b_u)] {
+                for c in 0..N {
+                    let mut recon: AB::Expr =
+                        <AB::Expr as PrimeCharacteristicRing>::ZERO;
+                    let mut pow: AB::F = <AB::F as PrimeCharacteristicRing>::ONE;
+                    for d in 0..4 {
+                        recon = recon + unpack[c * 4 + d] * pow.clone();
+                        pow = pow * b256.clone();
+                    }
+                    let diff: AB::Expr = packed[c].into() - recon;
+                    builder.assert_zero(matmul_active.clone() * diff);
+                }
+            }
+        }
+
         // Public-input binding.
         //
         // CUMSUM_TILE and JACKPOT_MSG bind on the LAST row via the

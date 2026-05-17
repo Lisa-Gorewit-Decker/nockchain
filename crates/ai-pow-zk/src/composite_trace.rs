@@ -58,9 +58,10 @@ use crate::chips::i8u8::I8U8Chip;
 use crate::chips::matmul::compute::{compute_row, CUMSUM_LEN};
 use crate::chips::range_table::{IRange7P1Chip, IRange8Chip, URange13Chip, URange8Chip};
 use crate::composite_layout::{
-    AB_ID_LIMBS_LEN, AB_ID_LIMBS_START, A_ID, A_NOISED_START, A_NOISED_UNPACK_LEN,
-    A_NOISED_UNPACK_START, BIT_REG_START, BLAKE3_CV_START, BLAKE3_MSG_START,
-    BLAKE3_ROUND_START, B_ID, B_NOISED_START, B_NOISED_UNPACK_LEN, B_NOISED_UNPACK_START,
+    AB_ID_LIMBS_LEN, AB_ID_LIMBS_START, A_ID, A_NOISED_LEN, A_NOISED_START,
+    A_NOISED_UNPACK_LEN, A_NOISED_UNPACK_START, BIT_REG_START, BLAKE3_CV_START,
+    BLAKE3_MSG_START, BLAKE3_ROUND_START, B_ID, B_NOISED_LEN, B_NOISED_START,
+    B_NOISED_UNPACK_LEN, B_NOISED_UNPACK_START,
     CONTROL_PREP, CUMSUM_TILE_START, CV_IN_LEN, CV_IN_START, CV_OR_TWEAK_PREP, CV_OUT_FREQ,
     CV_OUT_LEN, CV_OUT_START, I8U8_FREQ, IRANGE7P1_FREQ, IRANGE8_FREQ, IS_CV_IN,
     IS_MSG_MAT, IS_RESET_CUMSUM, IS_UPDATE_CUMSUM, JACKPOT_MSG_START, JACKPOT_SIZE,
@@ -213,6 +214,29 @@ impl CompositeTrace {
                 row[B_NOISED_UNPACK_START + i * TILE_D + d] =
                     <Val as QuotientMap<i64>>::from_int(b[i][d] as i64);
             }
+        }
+
+        // M-S1 — the pack-link trace side: write packed A_NOISED /
+        // B_NOISED = base-256 polyval of the 4 i8 unpack lanes each
+        // covers (the encoding `InputChip`/`BUS_MATMUL_INPUT` use).
+        // Flat lane f = blk[f/TILE_D][f%TILE_D]; cell c packs
+        // [4c, 4c+4). Required so the CompositeFullAir pack-link
+        // holds on matmul rows (else §6(b) sweep rows violate it).
+        let pack4 = |blk: &[[i8; TILE_D]; TILE_H], c: usize| -> i64 {
+            let mut acc: i64 = 0;
+            let mut pow: i64 = 1;
+            for j in 0..4 {
+                let f = c * 4 + j;
+                acc += (blk[f / TILE_D][f % TILE_D] as i64) * pow;
+                pow *= 256;
+            }
+            acc
+        };
+        for c in 0..A_NOISED_LEN {
+            row[A_NOISED_START + c] = <Val as QuotientMap<i64>>::from_int(pack4(a, c));
+        }
+        for c in 0..B_NOISED_LEN {
+            row[B_NOISED_START + c] = <Val as QuotientMap<i64>>::from_int(pack4(b, c));
         }
 
         // Write CUMSUM = cumsum_old (the "entering" cumsum).
@@ -1970,6 +1994,41 @@ mod tests {
         assert!(
             verify::<AiPowStarkConfig, _>(&cfg, &CompositeFullAir, &proof, &pis).is_err(),
             "tampered matmul input must reject"
+        );
+    }
+
+    /// M-S1 (§4.C.11) pack-link acceptance: a matmul row whose
+    /// packed `A_NOISED` cell ≠ the base-256 polyval of its
+    /// `A_NOISED_UNPACK` lanes must reject. Tampering only the
+    /// *packed* cell (dot / unpack / cumsum intact) isolates the
+    /// new pack-link — in the unit `CompositeFullAir` it is the
+    /// sole reader of `A_NOISED_START`, so this proves it ties the
+    /// store-bound packed value to the dot inputs (without it the
+    /// §4.C committed-store binding would not constrain the matmul).
+    #[test]
+    fn matmul_pack_link_rejects_inconsistent_a_noised() {
+        use crate::composite_layout::{A_NOISED_START, TILE_D};
+        use p3_field::integers::QuotientMap;
+        let cfg = build_stark_config(&test_zk_params(), &CircuitConfig::TEST_PEARL);
+        let mut trace = CompositeTrace::baseline_min();
+        let a = [[3i8; TILE_D]; crate::composite_layout::TILE_H];
+        let b = [[5i8; TILE_D]; crate::composite_layout::TILE_H];
+        let zero: [i32; CUMSUM_LEN] = [0; CUMSUM_LEN];
+        let after = trace.place_matmul_step(0, &a, &b, true, false, &zero);
+        trace.fill_cumsum_passthrough(1, &after);
+        // Corrupt ONLY packed A_NOISED[0] ⇒ ≠ polyval(unpack[0..4]).
+        let target = 0 * TOTAL_TRACE_WIDTH + A_NOISED_START;
+        trace.matrix.values[target] =
+            <Val as QuotientMap<i64>>::from_int(0xDEAD);
+        let pis = crate::composite_public::CompositePublicInputs::derive_from_matrix(
+            &trace.matrix,
+        )
+        .to_vec();
+        let proof =
+            prove::<AiPowStarkConfig, _>(&cfg, &CompositeFullAir, trace.matrix, &pis);
+        assert!(
+            verify::<AiPowStarkConfig, _>(&cfg, &CompositeFullAir, &proof, &pis).is_err(),
+            "A_NOISED ≠ pack(A_NOISED_UNPACK) on a matmul row must reject"
         );
     }
 

@@ -1350,15 +1350,34 @@ sequence of independently-shippable steps — the "M-S1.1 landable
 now" framing was the over-optimistic part, now empirically
 disproven.
 
-**Atomic landing (one Route-A-valid change; sub-parts still
-unit-testable in isolation but committed together once Route-A
-balances):**
+**Progress (2026-05-17, fix-forward per user directive — NOT
+reverting on regression).** Step 1 (pack-link) is **landed &
+validated in isolation**; the rest is the documented continuation.
+**Route-A status: `high2_2_fold_chain_pinned_logup` is RED** —
+expected and disclosed: the pack-link makes `A_NOISED` non-zero on
+§6(b) sweep rows, which the *existing* `noised_packed` bus matmul
+query consumes with no producer ⇒ LogUp unbalanced. This is the
+empirically-established coupling; per the user's "don't revert,
+move forward to completion" directive the pack-link stays and the
+producer/widen/freq (steps 2-4) are the forward work to
+re-balance Route-A. **Not** a claim of completion — M-S1 is
+in-progress; soundness meanwhile held by CRIT-1 + keystone +
+§6(a) + §6(b) (which do not depend on this bus).
 
-1. **Pack-link constraint** — `A_NOISED[c] ==
-   polyval(A_NOISED_UNPACK[4c..4c+4], 256)` ∀ `c<A_NOISED_LEN`
-   (and B), gated by `matmul_active`, degree ≤ 2, vacuous off
-   matmul rows (validated: unit + adversarial green).
-   `place_matmul_step` writes the packed cells.
+**Atomic landing (one Route-A-valid change; sub-parts still
+unit-testable in isolation; Route-A green only once steps 2-4
+re-balance the bus):**
+
+1. **Pack-link constraint** — ✅ LANDED & validated:
+   `A_NOISED[c] == polyval(A_NOISED_UNPACK[4c..4c+4], 256)` ∀
+   `c<A_NOISED_LEN` (and B), gated by `matmul_active`, degree ≤ 2,
+   vacuous off matmul rows. `place_matmul_step` writes the packed
+   cells. Unit `CompositeFullAir` green (incl. debug-assertions-ON
+   via `high2_2_useful_work_chain_unit`); adversarial
+   `matmul_pack_link_rejects_inconsistent_a_noised` green
+   (`A_NOISED ≠ pack(A_NOISED_UNPACK)` rejects). Makes the
+   bus-side packed value provably the dot inputs (closes §4.C.11
+   finding 2). Breaks Route-A until step 2-4 (by construction).
 2. **Producer** — publish the noised `a_prime`/`b_prime` tile
    strips as canonical `(A_ID, NOISED_PACKED)` store entries
    (reconcile with / extend the M52 chunk-Merkle producer so the
