@@ -263,24 +263,31 @@ radius for non-fold rows). +6 exhaustive ControlChip tests
 Full `cargo test -p ai-pow --features zk` green incl.
 `end_to_end` 13/0; ai-pow-zk lib 322/0 incl.
 `high2_2_fold_chain_pinned_logup`/`routea_*`/`crit1_*`; no
-regression. **§6(b) ✅ CLOSED for the primary mining geometry +
-§4.E ✅ DONE 2026-05-16** (`072d840`/`c63fbc1`/`69e420d`/`e7f59f7`):
+regression. **§6(b) ✅ CLOSED for every single-Layer-0 params set
++ §4.E ✅ DONE 2026-05-16**
+(`072d840`/`c63fbc1`/`69e420d`/`e7f59f7`/`010ccd3`):
 `X_STEP` is now in-circuit forced to `⊕` the real `t×t`
 committed-matrix accumulator — `place_useful_work_chain`
 (sub-block-major matmul sweep + co-located `StripeXorChip`) +
 `SX_IN == nxt.CUMSUM_TILE` binding + Pinned
 `FOLD_XSTEP == SX_XR[stripe]` keystone, so **a malicious prover
-must do the real matmul** for `num_stripes ≤ 16` (TEST_SMALL /
-the headline e2e). The bridge attests the *actual solved tile*
-via MED-3 `tile_ij`. Validated end-to-end (ai-pow-zk lib 331/0;
-ai-pow `--features zk` lib 70/0, `end_to_end` 13/0,
-byte-equivalence preserved). **MED-3 ✅ RESOLVED**
+must do the real matmul**. **G1+G2 (`010ccd3`)** generalized it
+beyond TEST_SMALL: G1 chunks the `r`-wide dot (`⌈r/TILE_D⌉`
+micro-steps, `r > 16`); G2 widens StripeXor to `STRIPE_MAX = 64`
+lanes + a `CONTROL_PREP`-pinned 6-bit fold-stripe index +
+`FOLD_STRIPE_SEL` keystone — so the rectangular LLM-FFN
+`llm_shape` shapes (`k/r = 20`) now run the full §6(b) binding.
+The bridge attests the *actual solved tile* via MED-3 `tile_ij`.
+Validated end-to-end (ai-pow-zk lib 332/0; ai-pow `--features zk`
+lib 71/0, `end_to_end` 13/0, **`llm_shape` 5/0 via §6(b)**,
+byte-equivalence preserved; `high2_2_g1g2_chunked_and_wide_stripes`
+debug-assertions-ON clean). **MED-3 ✅ RESOLVED**
 (`prove_and_verify_for_block` re-derives `target`; `tile_ij`
-contract). **Remaining (scoped, not a forgery hole):** (1)
-`num_stripes > 16` (rect / PROD `k/r=64`) — legacy path, §6(b)
-keystone gated off via the verifier-set `sx_bound` (sound as
-CRIT-1); needs a wider StripeXor register + per-fold-row stripe
-selector. (2) deep tile↔committed-store ≡ §4.C
+contract). **Remaining (scoped, not a forgery hole):** (1) **true
+PROD** (`k/r=64`, chunked sweep ≈ 2²⁰ ≫ one Layer-0) — legacy
+path, §6(b) keystone gated off via the verifier-set `sx_bound`
+(sound as CRIT-1); closing it = **G3** (segmentation + M12,
+designed §4.C.4-G3). (2) deep tile↔committed-store ≡ §4.C
 `noised_packed`-non-vacuity on sweep rows (`place_matmul_step`
 sets `MAT_ID=0`). Plus 7-round-Tip5 review, recursion (M12),
 production-hardening (P1/P3/P5/P6).

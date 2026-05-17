@@ -26,9 +26,10 @@
 | §4.C committed-matrix *binding* — **Route A: chosen, spiked, productionised & WIRED** (§4.C.10): production API `composite_*_pinned_logup` + exhaustive `routea_*` 4/4; `zk_bridge`(mine() gate)+`f1_harness` switched to it; spike removed; 3-tier entrypoint doc. ~1.23x cost. | ✅ binding complete & wired; §4.A non-vacuity is the separate remaining workstream (#97) |
 | §6(a) CRIT-1 program extends to the **fold schedule** — `FOLD_IS_FOLD` + 4-bit slot packed into the pinned `CONTROL_PREP` polyval (NOT a wide preprocessed block; §4.C.8 trap avoided) | ✅ **done & e2e-validated** (`aa82ce3`): ControlChip +6 tests (positive + 4 adversarial + zero-blast-radius); `place_fold_chain` writes it, `extract_program` lifts it; ai-pow-zk lib 322/0 incl. `high2_2_fold_chain_pinned_logup`/`routea_*`/`crit1_*`; ai-pow `--features zk` green (lib 64/0, `end_to_end` 13/0) |
 | MED-3 — verifier-side `target` + `(tile_i,tile_j)` derivation contract (§4.E prerequisite) | ✅ **done & e2e-validated** (`ai_pow::zk_bridge::prove_and_verify_for_block` re-derives `target` from chain-pinned params; `tile_ij` derivation contract; unhardened primitives doc-commented; `prover.rs` on hardened path). +2 tests; ai-pow `--features zk` lib 66/0, e2e green |
-| §6(b) — bind `FOLD_XSTEP ← ⊕CUMSUM_TILE ← committed A/B` in-circuit (StripeXorChip + sub-block-major sweep + Pinned keystone) | ✅ **done & e2e-validated for the primary mining geometry** (`num_stripes ≤ 16`: TEST_SMALL / the headline e2e). `place_useful_work_chain` + `StripeXorChip` + `SX_IN==nxt.CUMSUM` binding + Pinned `FOLD_XSTEP==SX_XR[stripe]` keystone; `chips::stripe_xor` 8/0, `high2_2_useful_work_chain_unit`, `high2_2_fold_chain_pinned_logup` (full chain via Route-A) ; ai-pow-zk lib 331/0; ai-pow `--features zk` green (lib 70/0, end_to_end 13/0). A *malicious* prover is now forced through the real matmul for `X_STEP`. Commits `072d840`/`c63fbc1`/`69e420d`. |
+| §6(b) — bind `FOLD_XSTEP ← ⊕CUMSUM_TILE ← committed A/B` in-circuit (StripeXorChip + sub-block-major sweep + Pinned keystone) | ✅ **done & e2e-validated for every single-Layer-0 params set** — TEST_SMALL **and** the rectangular LLM-FFN `llm_shape` shapes (G1+G2, `010ccd3`). `place_useful_work_chain` + `StripeXorChip` + `SX_IN==nxt.CUMSUM` binding + Pinned `FOLD_XSTEP==SX_XR[stripe]` keystone; ai-pow-zk lib 332/0; ai-pow `--features zk` green (lib 71/0, `end_to_end` 13/0, **`llm_shape` 5/0 now via §6(b)**). A *malicious* prover is forced through the real matmul for `X_STEP`. Commits `072d840`/`c63fbc1`/`69e420d`/`010ccd3`. |
 | §4.E — attest the **actual solved tile** | ✅ **done** (`e7f59f7`): `prove_and_verify_for_block(ctx,params,found_idx)` decomposes via the MED-3 `tile_ij` contract; `high2_2_attests_real_solved_tile` (4 indices incl. corners, each byte-identical to the plain digest for *that* tile). All tiles share `difficulty_target(params)` so the index is not a PoW-soundness req; attesting the real tile is the substantive deliverable. |
-| §6(b)/§4.E residual — `num_stripes > 16` (rect/PROD) wider StripeXor register + per-fold-row stripe selector; deep tile↔committed-store ≡ §4.C `noised_packed`-non-vacuity on sweep rows | ⬜ remaining (scoped, **not** a PoW-forgery hole): for `num_stripes > 16` the bridge takes the legacy path, the §6(b) keystone is `sx_bound=false` (verifier-set from trusted params, sound). Soundness held by CRIT-1 + keystone + §6(a); §6(b) live for the primary path. |
+| §6(b)-G1+G2 — generalize to all single-Layer-0 params (`r > TILE_D` chunking; `num_stripes ≤ STRIPE_MAX=64` lanes + pinned `FOLD_STRIPE_SEL`) | ✅ **done** (`010ccd3`): StripeXorChip `STATE_LEN=64`, `place_useful_work_chain` chunks `⌈r/TILE_D⌉`, ControlChip pins a 6-bit stripe index, keystone binds via `FOLD_STRIPE_SEL`. `high2_2_g1g2_chunked_and_wide_stripes` (r=32/num_stripes=32, debug-assertions ON) + `llm_shape` 5/0 via §6(b). `sx_bound = sweep_fits`. |
+| §6(b)-G3 + §4.C residual — true PROD (`k/r=64`, sweep ≈ 2²⁰ ≫ one Layer-0) needs segmentation/M12; deep tile↔committed-store ≡ §4.C `noised_packed`-non-vacuity on sweep rows | ⬜ remaining (scoped, **not** a PoW-forgery hole): true-PROD takes the legacy path, §6(b) keystone `sx_bound=false` (verifier-set from trusted params, sound). G3 = M12-coupled (designed §4.C.4-G3). Soundness held by CRIT-1 + keystone + §6(a) + §6(b) for every single-Layer-0 params set. |
 | §7 real-difficulty end-to-end + byte-equivalence + docs flip | 🟡 byte-equivalence ✅ (`high2_2_xstep_fold_pipeline_byte_equiv_plain`); real-M e2e ✅ (`end_to_end` 13/0); docs flip ⬜ |
 
 ### Current state (2026-05-16)
@@ -62,8 +63,10 @@ claimed-but-absent-fold rejects + bit-layout + zero-blast-radius)
 and e2e-validated (ai-pow-zk lib 322/0; ai-pow `--features zk`
 green).
 
-**§6(b) — CLOSED for the primary mining geometry (DONE,
-`072d840`/`c63fbc1`/`69e420d`).** The per-stripe `X_STEP` fed to
+**§6(b) — CLOSED for every single-Layer-0 params set (DONE,
+`072d840`/`c63fbc1`/`69e420d`/`010ccd3`; G1+G2 generalized it
+beyond the primary geometry to the rectangular LLM-FFN
+`llm_shape` shapes).** The per-stripe `X_STEP` fed to
 the FoldChip is now **in-circuit forced** to equal the XOR of the
 real `t×t` committed-matrix accumulator:
 `CompositeTrace::place_useful_work_chain` places the sub-block-
@@ -89,27 +92,37 @@ index is not a PoW-soundness requirement; attesting a real tile's
 genuine fold is the substantive deliverable —
 `high2_2_attests_real_solved_tile`).
 
+**G1+G2 — DONE (`010ccd3`), extending §6(b) to all single-Layer-0
+params.** `StripeXorChip` `STATE_LEN = STRIPE_MAX = 64`;
+`place_useful_work_chain` chunks the `r`-wide stripe dot into
+`⌈r/TILE_D⌉` accumulating micro-steps (G1, `r > 16`); a 6-bit
+fold-stripe index is pinned into `CONTROL_PREP` (§6(a) pattern)
+and the keystone binds `FOLD_XSTEP == SX_XR[stripe]` via the
+pinned one-hot `FOLD_STRIPE_SEL` (G2, `num_stripes ≤ 64`). The
+rectangular LLM-FFN `llm_shape` shapes (`k/r = 20`) now run the
+**full §6(b) binding** (`llm_shape` 5/0 via §6(b);
+`high2_2_g1g2_chunked_and_wide_stripes` r=32/num_stripes=32
+debug-assertions-ON clean). `sx_bound = sweep_fits`.
+
 **Remaining (scoped; NOT a PoW-forgery hole).** Two tied items:
-(1) **`num_stripes > 16`** (rectangular `llm_shape`, PROD `k/r =
-64`): `StripeXorChip` has `STATE_LEN = 16` per-stripe lanes, so
-those params take the legacy `compute_tile_trace →
+(1) **true PROD** (`k/r = 64`, but the chunked sweep ≈ 2²⁰ rows
+≫ one Layer-0 STARK): takes the legacy `compute_tile_trace →
 place_fold_chain` path with the §6(b) keystone gated **off** via
 `sx_bound` — a value the *verifier* derives from the trusted
-block params (`num_stripes ≤ 16`), never from the proof, so it is
-as sound as CRIT-1 (a malicious prover cannot turn the binding
-off for a params set the verifier runs it for). Closing it = a
-wider StripeXor register (`STATE_LEN ≥ max k/r`) + a per-fold-row
-stripe selector (the "dominant new width" the design
-anticipated). (2) **deep tile↔committed-store**: that the
-swept `A_NOISED`/`B_NOISED` are the *block's committed* A/B
-rows/cols reduces to the §4.C `noised_packed`-non-vacuity on
-sweep rows (`place_matmul_step` sets `MAT_ID = 0` / emits no
-`noised_packed` query — §4.C.10). Both are tracked jointly.
-Soundness **meanwhile held by CRIT-1 + the keystone + §6(a) +
-§6(b)** (the proof can't be forged against the canonical
-program, the fold schedule is verifier-fixed, and for the
-primary geometry the attacker *is* now forced through the real
-matmul for `X_STEP`).
+block params/height, never from the proof, so it is as sound as
+CRIT-1 (a malicious prover cannot turn the binding off for a
+params set the verifier runs it for). Closing it = **G3**
+(segmentation + M12 recursion: `SX_XR`/`CUMSUM` as public
+carry-in/out; designed in §4.C.4-G3). (2) **deep
+tile↔committed-store**: that the swept `A_NOISED`/`B_NOISED` are
+the *block's committed* A/B rows/cols reduces to the §4.C
+`noised_packed`-non-vacuity on sweep rows (`place_matmul_step`
+sets `MAT_ID = 0` / emits no `noised_packed` query — §4.C.10).
+Both are tracked jointly. Soundness **meanwhile held by CRIT-1 +
+the keystone + §6(a) + §6(b)** (the proof can't be forged
+against the canonical program, the fold schedule is
+verifier-fixed, and for **every single-Layer-0 params set** the
+attacker *is* now forced through the real matmul for `X_STEP`).
 
 **Precise residual boundary.** The fold *math* is done and
 proven (FoldChip ≡ `from_x_steps` ≡ Pearl §4.5). What remains is
@@ -1063,12 +1076,24 @@ documented scoped externality, **not** a forgery hole (CRIT-1 +
 keystone + §6(a) hold unconditionally; §6(b) holds in-circuit for
 every params set that fits one Layer-0 once G1+G2 land).
 
-**Ordering.** G1+G2 are single-STARK, implementable and
-exhaustively testable immediately (retires residual #107(1) for
-all `num_stripes ≤ STRIPE_MAX` params, dropping the `sx_bound`
-legacy gate there). G3 is the M12 interface (designed here,
-implemented with recursion). G4 is the precise interim scoping
-(documentation), analogous to MED-3.
+**Ordering / status.** **G1+G2 — ✅ DONE & exhaustively tested
+(`010ccd3`).** StripeXorChip `STATE_LEN = STRIPE_MAX = 64`;
+`place_useful_work_chain` chunks the `r`-wide dot into
+`⌈r/TILE_D⌉` accumulating micro-steps; `ControlChip` pins a 6-bit
+fold-stripe index into `CONTROL_PREP` (bit 2^52, §6(a) pattern);
+the keystone binds `FOLD_XSTEP == SX_XR[stripe]` via the pinned
+one-hot `FOLD_STRIPE_SEL` for any `num_stripes ≤ STRIPE_MAX`.
+`sx_bound = sweep_fits` (verifier-derived from trusted params).
+Validated: `high2_2_g1g2_chunked_and_wide_stripes` (r=32 ⇒
+chunks=2, num_stripes=32 — `x_steps == compute_tile_trace`
+bit-for-bit + composite verify, debug-assertions ON clean);
+`chips::stripe_xor` 8/0 incl. num_stripes∈{20,64}; control
+`fold_stripe_mismatch_rejected`; ai-pow-zk lib 332/0; ai-pow
+`--features zk` green incl. **`llm_shape` 5/0 now through §6(b)**.
+The `sx_bound` legacy gate now fires only for true PROD. **G3** is
+the M12 interface (designed in §4.C.4-G3, implemented with
+recursion). **G4** is the precise interim scoping (documentation),
+analogous to MED-3 — in force only for true-PROD until G3.
 
 #### 4.C.5 Soundness once §4.C lands
 

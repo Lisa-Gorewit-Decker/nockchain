@@ -165,10 +165,12 @@ bit-layout + zero-blast-radius) and e2e-validated (ai-pow-zk lib
 ai-pow `--features zk` green: lib 64/0, `end_to_end` 13/0,
 `adversarial` 19/0; byte-equivalence preserved).
 
-**§6(b) — ✅ CLOSED for the primary mining geometry (DONE
-2026-05-16, `072d840`/`c63fbc1`/`69e420d`).** The per-stripe
-`X_STEP` fed to the `FoldChip` is now **in-circuit forced** to
-equal the XOR of the real `t×t` committed-matrix accumulator.
+**§6(b) — ✅ CLOSED for every single-Layer-0 params set (DONE
+2026-05-16, `072d840`/`c63fbc1`/`69e420d`; **G1+G2** `010ccd3`
+generalized it to the rectangular LLM-FFN `llm_shape` shapes).**
+The per-stripe `X_STEP` fed to the `FoldChip` is now **in-circuit
+forced** to equal the XOR of the real `t×t` committed-matrix
+accumulator.
 `CompositeTrace::place_useful_work_chain` places the sub-block-
 major matmul sweep + a co-located `StripeXorChip` reduction; the
 matmul chip forces `nxt.CUMSUM == compute_row(cur)`,
@@ -188,18 +190,26 @@ solved tile* via the MED-3 `tile_ij` contract
 `difficulty_target(params)` so the index is not a PoW-soundness
 requirement.
 
-**Remaining (scoped; NOT a *proof*-forgery hole).** (1)
-`num_stripes > 16` (rectangular / PROD `k/r = 64`): `StripeXorChip`
-has 16 per-stripe lanes, so those params take the legacy path with
-the §6(b) keystone gated **off** via `sx_bound` — a value the
-*verifier* derives from the trusted block params, never the proof
-(as sound as CRIT-1). Closing it = a wider register + a
-per-fold-row stripe selector (the "dominant new width"). (2) deep
-tile↔committed-store: that the swept `A_NOISED`/`B_NOISED` are the
-block's *committed* rows/cols reduces to the §4.C
-`noised_packed`-non-vacuity on sweep rows (`place_matmul_step`
-sets `MAT_ID = 0` — §4.C.10). Both tracked jointly; soundness
-meanwhile held by CRIT-1 + keystone + §6(a) + §6(b). The original
+**G1+G2 — ✅ DONE (`010ccd3`):** `StripeXorChip` `STATE_LEN =
+STRIPE_MAX = 64`; `place_useful_work_chain` chunks the `r`-wide
+dot into `⌈r/TILE_D⌉` micro-steps (G1); a 6-bit fold-stripe index
+is pinned into `CONTROL_PREP` and the keystone binds via
+`FOLD_STRIPE_SEL` (G2). The rectangular LLM-FFN `llm_shape`
+(`k/r = 20`) now runs the full §6(b) binding (`llm_shape` 5/0 via
+§6(b); `high2_2_g1g2_chunked_and_wide_stripes`). `sx_bound =
+sweep_fits`.
+
+**Remaining (scoped; NOT a *proof*-forgery hole).** (1) **true
+PROD** (`k/r = 64`, chunked sweep ≈ 2²⁰ ≫ one Layer-0): legacy
+path, §6(b) keystone gated **off** via `sx_bound` — a value the
+*verifier* derives from trusted params/height, never the proof
+(as sound as CRIT-1). Closing it = **G3** (segmentation + M12
+recursion). (2) deep tile↔committed-store: that the swept
+`A_NOISED`/`B_NOISED` are the block's *committed* rows/cols
+reduces to the §4.C `noised_packed`-non-vacuity on sweep rows
+(`place_matmul_step` sets `MAT_ID = 0` — §4.C.10). Both tracked
+jointly; soundness meanwhile held by CRIT-1 + keystone + §6(a) +
+§6(b) (live for every single-Layer-0 params set). The original
 analysis below stands as the historical rationale.
 
 **Original severity: High (PoW *usefulness* not enforced even if
@@ -442,20 +452,22 @@ committed-matrix accumulator: `place_useful_work_chain` (matmul
 sub-block-major sweep + co-located `StripeXorChip`) + the
 `SX_IN == nxt.CUMSUM_TILE` binding + the Pinned
 `FOLD_XSTEP == SX_XR[stripe]` keystone — **a malicious prover
-must do the real matmul** (`num_stripes ≤ 16`: TEST_SMALL / the
-headline e2e). The bridge attests the *actual solved tile* via
-MED-3 `tile_ij`. End-to-end green (ai-pow-zk lib 331/0; ai-pow
-`--features zk` lib 70/0, `end_to_end` 13/0; byte-equivalence
-preserved). MED-3 also ✅ RESOLVED (`prove_and_verify_for_block`).
+must do the real matmul** for **every single-Layer-0 params set**
+(TEST_SMALL *and*, via **G1+G2** `010ccd3`, the rectangular
+LLM-FFN `llm_shape` shapes). The bridge attests the *actual
+solved tile* via MED-3 `tile_ij`. End-to-end green (ai-pow-zk lib
+332/0; ai-pow `--features zk` lib 71/0, `end_to_end` 13/0,
+**`llm_shape` 5/0 via §6(b)**; byte-equivalence preserved). MED-3
+also ✅ RESOLVED (`prove_and_verify_for_block`).
 
-**Remaining (scoped; NOT a *proof*-forgery hole).** (1)
-`num_stripes > 16` (rect / PROD): legacy path, §6(b) keystone
-gated off via the verifier-set `sx_bound` (sound as CRIT-1);
-needs a wider StripeXor register + per-fold-row stripe selector.
-(2) deep tile↔committed-store ≡ §4.C `noised_packed`-non-vacuity
-on sweep rows. Plus the 7-round-Tip5 review. Net: CRIT-1 + HIGH-2
-keystone + §6(a) + §6(b) make the SNARK PoW-sound, the fold
-schedule verifier-fixed, and — for the primary mining geometry —
-a *malicious* prover is now forced through the real matmul for
-`X_STEP`; the *honest* proof attests the real, byte-equivalent
-solved tile.
+**Remaining (scoped; NOT a *proof*-forgery hole).** (1) **true
+PROD** (`k/r = 64`, chunked sweep ≈ 2²⁰ ≫ one Layer-0): legacy
+path, §6(b) keystone gated off via the verifier-set `sx_bound`
+(sound as CRIT-1); closing it = **G3** (segmentation + M12
+recursion, designed §4.C.4-G3). (2) deep tile↔committed-store ≡
+§4.C `noised_packed`-non-vacuity on sweep rows. Plus the
+7-round-Tip5 review. Net: CRIT-1 + HIGH-2 keystone + §6(a) +
+§6(b) make the SNARK PoW-sound, the fold schedule verifier-fixed,
+and — for every single-Layer-0 params set — a *malicious* prover
+is now forced through the real matmul for `X_STEP`; the *honest*
+proof attests the real, byte-equivalent solved tile.
