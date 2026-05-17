@@ -1048,19 +1048,18 @@ documented residual disappears for `llm_shape` and any
 testable now (rect ≈ 320 rows ≪ 8192) — the concrete next
 integration to retire residual #107(1).
 
-**G3 — segmentation / recursion (true PROD, M12-coupled).** When
-`commitment + sweep rows > one Layer-0 height budget`, the
-Layer-0 STARK proves a bounded **segment**; `SX_XR` and the
-matmul `CUMSUM` become public **carry-in / carry-out** values
-(the segment hand-off). M12 recursion verifies each segment proof
-and that `segment[k].carry_out == segment[k+1].carry_in`, the
-first segment's carry-in is the zero boundary, and the final
-segment's `SX_XR` feeds the fold. The §6(b) per-row constraints
-are **unchanged**; only the StripeXor/CUMSUM first-row (carry-in)
-and last-row (carry-out PI) boundary predicates are
-parameterized — exactly the keystone-style boundary swap. This
-preserves the §6(b) binding with **zero probabilistic gap** and
-is the principled PROD path; it lands with M12, not before.
+**G3 — segmentation / recursion (true PROD, M12-coupled) —
+DETAILED DESIGN (2026-05-16).** See **§4.C.4-G3** below for the
+full design (segment model, carry vector, boundary-predicate
+parameterization, the M12 recursion obligations, the soundness
+theorem, the new attack surface, and the G3a/G3b/G3c phasing).
+Summary: the Layer-0 STARK proves a bounded **segment**; the
+threaded registers become public **carry-in / carry-out**; an
+M12 recursion verifies every segment proof + the carry chaining +
+per-segment CRIT-1 program + segment count/order, with **zero
+probabilistic gap** (strictly stronger than Pearl's spot-checks).
+The §6(b) per-row constraints are **unchanged** — only boundary
+predicates are parameterized. Lands with M12.
 
 **G4 — Pearl-faithful interim (until G3/M12), the scoped
 externality.** Until segmentation lands, PROD-scale matmul-truth
@@ -1094,6 +1093,171 @@ The `sx_bound` legacy gate now fires only for true PROD. **G3** is
 the M12 interface (designed in §4.C.4-G3, implemented with
 recursion). **G4** is the precise interim scoping (documentation),
 analogous to MED-3 — in force only for true-PROD until G3.
+
+#### 4.C.4-G3 §6(b) PROD segmentation + M12 recursion — DETAILED DESIGN (2026-05-16)
+
+**Why segmentation is mandatory for true PROD (grounded).** PROD
+= `m=k=n=4096, tile=128, r=64`. One attested tile's §6(b) sweep
+is `(t/TILE_H)² · num_stripes · ⌈r/TILE_D⌉ = 64² · 64 · 4 ≈
+2²⁰` micro-step rows. Independently, the C3 chunk-Merkle of the
+two `4096×4096` i8 matrices is ≈ `2 · 16384` 1 KiB leaves +
+tree ≈ `2²⁰` BLAKE3 rows. A single Goldilocks Layer-0 STARK at
+≈ several · 2²⁰ rows × ≈1900 cols is multi-gigabyte / hours —
+infeasible. **PROD is inherently a recursion workload regardless
+of §6(b)**; G3 is the project's instantiation of Pearl's
+Layer-0 + aggregation architecture (M12).
+
+**Segment model.** The global canonical PROD computation is the
+(huge) trace `T` = `matrix-hash A ‖ matrix-hash B ‖ key-pin ‖
+useful-work sweep ‖ fold ‖ jackpot-hash`. Fix
+`S = MAX_SEGMENT_ROWS` (a power of two chosen from Layer-0
+economics, e.g. `2¹⁸`). Partition `T` into `N = ⌈rows(params)/S⌉`
+contiguous `S`-row segments `T_0 … T_{N-1}`. `rows(params)` and
+hence `N` and each segment's `[k·S,(k+1)·S)` row range are a
+**pure function of the chain-pinned params** (matrix dims → hash
+rows; `tile`/`r`/`k` → sweep rows) — the verifier derives the
+segmentation independently, exactly like the §6(a) schedule pin.
+Each `T_k` is a normal `TOTAL_TRACE_WIDTH × S` composite trace
+proved by the **same** `CompositeFullAirWithLookupsPinned` (the
+AIR is *not* forked); only **boundary predicates** and **which
+keystones fire** are parameterized by the segment's role.
+
+**Carry vector `Γ` (the segment hand-off, public IO).** Exactly
+the cross-row-stateful registers, exposed as Layer-0 public
+inputs at each boundary:
+
+```text
+Γ = { CUMSUM_TILE[4]          (matmul accumulator, sub-block-major chain)
+      SX_XR[STRIPE_MAX=64]    (StripeXor per-stripe XOR register)
+      FOLD_STATE[16]          (FoldChip M, if the fold spans a boundary)
+      MERKLE_A, MERKLE_B      (running chunk-Merkle CV/node-stack of the
+                               C3 hash, if a matrix-hash spans a boundary)
+      STARK_ROW_IDX_end       (monotonic-counter continuity) }
+```
+
+`Γ` is ≈ 90 field elements — a small per-boundary PI vector. The
+canonical pinned **program is per-segment**: the verifier rebuilds
+`program_k = canonical(params, k)` witness-free from the trusted
+shape **and the segment index `k`** (`k` is pinned into the
+segment's program/PI so segments cannot be permuted/duplicated).
+
+**Boundary-predicate parameterization (the only AIR change).**
+Every §6(b) (and matmul / Fold / BLAKE3 / keystone) *per-row*
+constraint is **byte-identical** to the single-STARK case. Only
+the boundary predicates are swapped, gated by a verifier-fixed
+per-segment descriptor `(is_first, is_final, Γ_in)`:
+
+- StripeXor `when_first_row: SX_XR == 0` → `SX_XR == Γ_in.SX_XR`
+  (`Γ_in = 0` iff `is_first`). Same swap for the matmul
+  `CUMSUM` and FoldChip `FOLD_STATE` first-row predicates.
+- Each segment's last row exposes `Γ_out = {…}` as public
+  outputs (`when_last_row: out_PI == register`).
+- The §4.D + §6(b) keystones + the C2/HASH_JACKPOT difficulty
+  binding fire **only on `is_final`'s last row** (identical
+  scoping to the existing `sx_bound` / last-row predicates —
+  this is the keystone-style boundary swap, now also indexed by
+  segment role). A sub-block run / chunk run / fold chain split
+  by a boundary is *transparent*: the matmul recurrence is local
+  (`nxt == compute_row(cur)`), the `is_reset` schedule is the
+  global pinned schedule (unaffected by where `S` falls), and
+  the split is absorbed by `CUMSUM`/`SX_XR` carry — no special
+  boundary case in the chips.
+
+**M12 recursion obligations.** A recursion circuit (verify a
+Layer-0 batch-stark proof inside a STARK; the M12 workstream)
+that, for the `N` segment proofs of a PROD block:
+
+1. **Verifies** each segment's Layer-0 proof against
+   `program_k = canonical(params, k)` (per-segment CRIT-1 — the
+   verifier rebuilds it from trusted shape; `k` pinned so a
+   wrong-index or reordered program is rejected).
+2. **Chains the carry:** `Γ_out(k) == Γ_in(k+1)` for all
+   `k < N-1` (field-element equality of the ≈90-wide vector).
+3. **Anchors the ends:** `Γ_in(0) ==` the canonical zero/initial
+   boundary; the final segment's `Γ`/last row produces
+   `HASH_JACKPOT`, the §4.D+§6(b) keystones hold there, and C2
+   (`HASH_JACKPOT ≤ target`, target = MED-3
+   `difficulty_target(params)`) is checked.
+4. **Pins the count/shape:** `N == num_segments(params)` and each
+   `program_k` is the canonical one for `(params, k)` — so a
+   prover cannot drop the sweep segments, duplicate cheap
+   segments, or reorder.
+5. **Aggregates** to one succinct proof (binary aggregation tree,
+   `O(log N)` depth — standard).
+
+**Soundness theorem (zero probabilistic gap).** Segmenting the
+single canonical trace `T` into contiguous `S`-row blocks: each
+`T_k` satisfies the composite AIR for `program_k` with first-row
+predicate `register == Γ_in(k)` and exposes
+`Γ_out(k) = lastrow(register)`. Layer-0 soundness ⇒ each segment
+proof attests this for its verifier-fixed `program_k` and the
+claimed `Γ` PIs (which are Fiat-Shamir-bound STARK public IO,
+*not* free). The recursion enforces (2)+(3)+(4). By induction the
+concatenation `T_0‖…‖T_{N-1}` is *exactly* a single trace
+satisfying the full composite AIR + §4.D/§6(b) keystones + C2 —
+**identical soundness to the single-STARK §6(b)**, with the
+*additional* recursion-enforced guarantees that the segments are
+the right count, order, and per-segment program. Unlike G4's
+spot-checks there is **no probabilistic gap** — G3 is strictly
+stronger than Pearl's shipped soundness.
+
+**New attack surface G3 introduces (and the recursion closes).**
+(a) *Segment drop/duplicate/reorder* → closed by `program_k`
+pinning `k` + `N == num_segments(params)` + carry chaining (a
+dropped sweep segment breaks `Γ_out==Γ_in`). (b) *Carry forgery*
+→ `Γ` are FS-bound Layer-0 public IO, equality-checked by the
+recursion. (c) *Wrong per-segment program* → per-segment CRIT-1
+(verifier rebuilds `canonical(params,k)`). (d) *Mixed-block
+splice* (segments from different blocks) → the per-segment
+program/PI is anchored to the block via the existing C1
+`JOB_KEY/COMMITMENT_HASH` PIs, carried/checked across segments.
+
+**Orthogonality.** G3 preserves the §4.C `noised_packed` LogUp
+*per segment* (batch-stark within a segment, unchanged); it does
+**not** fix the §4.C-non-vacuity-on-sweep deep
+tile↔committed-store residual — that is independent and tracked
+jointly (#108). MED-3 (difficulty derivation) and the §6(a)
+schedule pin are unchanged (the latter generalizes to per-segment
+programs). G4 (Pearl spot-check externality) is the documented
+interim for true-PROD matmul-truth **until G3 lands**; once G3
+lands the spot-check externality for matmul-truth is *removed*
+(G3 supersedes it).
+
+**Alternative axis (noted, not the primary path).** A more
+compact matmul argument (sumcheck/GKR-style, or a Freivalds
+random-combination check) could cut the `2²⁰` enumeration itself
+rather than segment it. That is a *different argument* with its
+own (re-)validation and soundness surface; the recommended G3 is
+**segmentation of the already-validated §6(b) enumeration**
+(minimal new soundness surface, reuses the exhaustively-tested
+StripeXor/matmul/Fold chips verbatim, Pearl-architecture-aligned).
+The compact-argument route is recorded as a future optimization
+axis, gated behind G3 shipping first.
+
+**Phasing.**
+
+- **G3a — boundary-predicate parameterization (M12-independent,
+  implementable & testable now).** Add the verifier-fixed
+  per-segment descriptor `(is_first, is_final, Γ_in)` and swap
+  the StripeXor/matmul/Fold first-row + last-row predicates and
+  the keystone gating to read it. Default = single segment
+  (`is_first ∧ is_final`, `Γ_in = 0`) ⇒ **bit-identical to
+  today, zero regression**. Test: artificially split a small
+  TEST_SMALL sweep into 2 segments, thread `Γ` by hand, prove
+  each segment + assert `Γ_out(0)==Γ_in(1)` and the
+  concatenation's final `HASH_JACKPOT` equals the single-segment
+  one. This delivers a *multi-segment-capable Layer-0* before
+  M12.
+- **G3b — segment-schedule derivation (M12-independent).**
+  `num_segments(params)` + per-segment `program_k` + the
+  `k`-pinned per-segment program (extend the §6(a) `CONTROL_PREP`
+  pattern with a segment-index field, or a dedicated 1-column
+  pinned `SEGMENT_IDX`). Verifier rebuilds `canonical(params,k)`.
+- **G3c — the M12 recursion verifier + aggregation.** Recursive
+  Layer-0-proof verification + the obligations (1)–(5). This is
+  the heavy, recursion-stack-dependent part (the M12 workstream
+  proper); G3a+G3b make Layer-0 G3-ready so G3c is purely the
+  recursion.
 
 #### 4.C.5 Soundness once §4.C lands
 
