@@ -679,4 +679,73 @@ mod tests {
         );
         assert_ne!(tr.state, TileState::zero(), "folded state is zero");
     }
+
+    /// **§4.C.2 / A3.0 — the decisive cross-crate byte-equivalence
+    /// KAT.** `ai_pow_zk::noise_ref` (the off-circuit spec the
+    /// in-circuit B2 sub-AIR will reproduce) must equal *this*
+    /// crate's `BlockNoise` (itself written Pearl-byte-equivalent)
+    /// bit-for-bit, over every `(i,l)`/`(l,j)` — i.e. the value
+    /// `a_prime[i,l] − A[i,l]` (and `b_prime`). `ai-pow-zk` cannot
+    /// depend on `ai-pow`, so the equivalence is asserted here
+    /// (this crate may depend on `ai-pow-zk`, `--features zk`).
+    #[cfg(feature = "zk")]
+    #[test]
+    fn noise_ref_byte_equivalent_to_block_noise() {
+        use crate::prng;
+        let s_a = [0x11u8; 32];
+        let s_b = [0xEEu8; 32];
+        // A few real/representative geometries (r a power of two,
+        // r|k per §4.8/validate). m,n kept small; r/k are what
+        // drive the noise streams.
+        for &(m, k, n, r) in &[
+            (8u32, 64u32, 8u32, 4u32),     // TEST_SMALL-shaped
+            (4, 128, 4, 32),               // r=2^5 (§4.8 floor)
+            (4, 256, 4, 64),               // r=2^6 (Llama r)
+            (2, 512, 2, 128),              // larger r, multi-chunk row
+        ] {
+            let params = MatmulParams {
+                m, k, n, noise_rank: r, tile: 2,
+                spot_checks: 1, difficulty_bits: 0,
+            };
+            let noise = BlockNoise::expand(&s_a, &s_b, &params);
+            let mut e_row = vec![0i8; k as usize];
+            for i in 0..m {
+                noise.e_row_into(i, &mut e_row);
+                for l in 0..k {
+                    assert_eq!(
+                        e_row[l as usize],
+                        ai_pow_zk::noise_ref::e_value(&s_a, i, l, r),
+                        "E[{i},{l}] r={r} k={k}: noise_ref != BlockNoise"
+                    );
+                }
+            }
+            let mut f_col = vec![0i8; k as usize];
+            for j in 0..n {
+                noise.f_col_into(j, &mut f_col);
+                for l in 0..k {
+                    assert_eq!(
+                        f_col[l as usize],
+                        ai_pow_zk::noise_ref::f_value(&s_b, l, j, r),
+                        "F[{l},{j}] r={r}: noise_ref != BlockNoise"
+                    );
+                }
+            }
+            // And the composed a_prime / b_prime (A + E):
+            let a: Vec<i8> = (0..(m * k) as i32).map(|x| (x % 64) as i8).collect();
+            let b: Vec<i8> = (0..(k * n) as i32).map(|x| ((x * 3) % 64) as i8).collect();
+            let mats = Matrices::build(&a, &b, &noise, &params);
+            for i in 0..m {
+                for l in 0..k {
+                    let want = (a[(i * k + l) as usize] as i16
+                        + ai_pow_zk::noise_ref::e_value(&s_a, i, l, r) as i16)
+                        as i8;
+                    assert_eq!(
+                        mats.a_prime[(i * k + l) as usize], want,
+                        "a_prime[{i},{l}] != A + noise_ref::e_value"
+                    );
+                }
+            }
+            let _ = prng::SEED_LABEL_A; // (pin the shared label origin)
+        }
+    }
 }

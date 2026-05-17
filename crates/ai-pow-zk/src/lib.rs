@@ -64,6 +64,7 @@ pub mod composite_preprocess;
 pub mod composite_proof;
 pub mod composite_public;
 pub mod composite_trace;
+pub mod noise_ref;
 pub mod params;
 
 pub use p3_goldilocks::Goldilocks as Val;
