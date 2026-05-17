@@ -383,6 +383,34 @@ mod tests {
         );
     }
 
+    /// **Real shipped-model scale.** `Llama-3.1-8B-Instruct-pearl`
+    /// `up_proj`/`down_proj` weight = `4096·14336 = 58 720 256`
+    /// int8 bytes ⇒ **57 344 BLAKE3 chunks** (= 0b1110…0, very
+    /// much *not* a power of two — the actual production
+    /// non-pow2 count, vs the ≤1000 swept above). The true-tree
+    /// walker is still bit-identical to real `blake3::Hasher` at
+    /// this scale ⇒ the structural identity (and hence
+    /// `place_matrix_hash`'s correctness) holds for the genuine
+    /// vLLM-plugin workload, not just toy sizes.
+    #[test]
+    fn walker_matches_blake3_at_llama_3_1_8b_weight_scale() {
+        let k = kappa();
+        let nc = (4096usize * 14336) / CHUNK_LEN; // 57_344
+        assert_eq!(nc, 57_344);
+        assert!(!nc.is_power_of_two());
+        let raw = bytes(nc * CHUNK_LEN);
+        let want: [u8; 32] = *blake3::Hasher::new_keyed(&k)
+            .update(&raw) // already a chunk multiple
+            .finalize()
+            .as_bytes();
+        assert_eq!(
+            merkle_root(&raw, &k),
+            want,
+            "walker != blake3::Hasher at the real Llama-3.1-8B \
+             weight scale (57 344 chunks)"
+        );
+    }
+
     /// The authenticated strip opening recomputes exactly the
     /// committed root for every contiguous chunk range — incl.
     /// boundary-straddling ranges and non-power-of-two trees

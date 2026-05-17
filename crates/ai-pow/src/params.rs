@@ -128,6 +128,44 @@ impl MatmulParams {
         difficulty_bits: 0,
     };
 
+    /// **Real shipped Pearl-certified model** —
+    /// `pearl-ai/Llama-3.1-8B-Instruct-pearl` (run via the Pearl
+    /// vLLM mining plugin; `~/Dev/Llama-3.1-8B-Instruct-pearl`).
+    /// `hidden_size = 4096`, `intermediate_size = 14336`, 32
+    /// layers; `quant_method = "pearl"` (group_1 weights **7-bit
+    /// int**, activations 7-bit per-token ⇒ Pearl §4.1's
+    /// `[−64,64]` int regime). These are the two binding FFN
+    /// GEMMs the miner actually proves (the largest committed
+    /// weights, ≈58.7M params = 57 344 BLAKE3 chunks each — far
+    /// past any synthetic preset; this is the real P-B.2
+    /// motivation). Both satisfy [`validate_prod_envelope`] with
+    /// `r = 64`. (`q/o_proj` k=n=4096, `kv_proj` n=1024 are
+    /// strictly smaller and also in-envelope.)
+    pub const LLAMA_3_1_8B_GATE_UP: Self = Self {
+        m: 4096,
+        k: 4096, // hidden_size
+        n: 14336, // intermediate_size
+        noise_rank: 64,
+        tile: 64,
+        spot_checks: 80,
+        difficulty_bits: 0,
+    };
+
+    /// `Llama-3.1-8B-Instruct-pearl` `down_proj`: the **largest
+    /// `k`** mineable GEMM (`k = intermediate_size = 14336`) — the
+    /// binding Pearl §4.8 case for this model (`16r ≤ k ≤ 4r²`
+    /// with `r = 64` ⇒ `1024 ≤ 14336 ≤ 16384` ✓; `64 | 14336` ✓;
+    /// `k·2·tile = 1 835 008 ≤ 2²²` ✓).
+    pub const LLAMA_3_1_8B_DOWN: Self = Self {
+        m: 4096,
+        k: 14336, // intermediate_size
+        n: 4096, // hidden_size
+        noise_rank: 64,
+        tile: 64,
+        spot_checks: 80,
+        difficulty_bits: 0,
+    };
+
     /// Generic LLM-FFN profile builder. `batch_seq` is the M dimension (the
     /// product of mini-batch and sequence length the GEMM kernel sees);
     /// `hidden` and `intermediate` are the two model dimensions for the FFN
@@ -416,6 +454,10 @@ mod tests {
             MatmulParams::GEMMA_4_31B_FFN,
             MatmulParams::QWEN_3_6_27B_FFN,
             MatmulParams::llm_ffn(4096, 11008, 4096),
+            // Real shipped Pearl-certified model (the production
+            // target, not a synthetic guess).
+            MatmulParams::LLAMA_3_1_8B_GATE_UP,
+            MatmulParams::LLAMA_3_1_8B_DOWN,
         ] {
             p.validate_prod_envelope()
                 .unwrap_or_else(|e| panic!("{p:?} not in §4.8 envelope: {e}"));
