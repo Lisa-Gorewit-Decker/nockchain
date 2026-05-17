@@ -1677,30 +1677,83 @@ zk` (the pinned mine-gate end-to-end suite).
 
 ---
 
-## 7. Sequencing
+## 7. Road to production (current; supersedes the original sequencing)
 
-1. **4.A** `place_matmul_tile` + wire real strips from
-   `BlockContext`; CUMSUM evolves to the real accumulator on the
-   honest path (keystone still `[0..4]`/`[4..16]==0`, so
-   `JACKPOT_MSG` must now carry the accumulator — interim).
-2. **4.B** `FoldChip` + `FOLD_STATE`; unit tests vs
-   `TileState::fold` / `compute_tile`.
-3. **4.D** generalise the keystone to `JACKPOT_MSG ==
-   FOLD_STATE` (16 slots).
-4. **4.C** route accumulator inputs onto the `noised_packed` bus;
-   end-to-end committed-matrix adversarial tests.
-5. **4.E** bind tile index / reconcile with MED-3.
-6. CRIT-1 program: extend `extract_program` /
-   `composite_setup` to cover the matmul+fold schedule; confirm
-   the canonical VK rebuilds it from shape only.
-7. Docs: flip HIGH-2 from "soundness resolved / fidelity
-   residual" to **fully resolved** in
-   `ZKP_SECURITY_REPORT.md`, `GAP_AUDIT.md`, memory.
+> The original §7 (4.A→4.E→CRIT-1→docs) is **fully executed**
+> (see the Progress table + §4.C.4-G/-G3). This is the live
+> roadmap from *here* to "production with arbitrary useful
+> inference loads". Three independent tracks; production needs
+> all three — the bulk of work to date is Track A only.
 
-Each step is independently testable and commits with the
-`Co-Authored-By: Claude Opus 4.7 (1M context)
-<noreply@anthropic.com>` trailer; push only when explicitly
-requested.
+**Done & validated (the foundation).** C1–C4, CRIT-1 (program
+pin), HIGH-2 keystone, MED-3 (verifier-derived target/tile),
+§4.A–§4.D, §4.C Route-A, §6(a) (fold-schedule pin), **§6(b)
+G1+G2** (X_STEP↔CUMSUM↔fold forced in-circuit for *every
+single-Layer-0 params set* — TEST_SMALL **and** rectangular
+LLM-FFN `llm_shape`), §4.E (attest the real tile). Byte-identical
+to the plain Pearl miner throughout. **Guarantee today: for any
+shape that fits one Layer-0 STARK, a malicious prover *must* do
+the real committed-matrix matmul.**
+
+### Track A — cryptographic soundness at arbitrary scale
+
+| Milestone | Feature / guarantee it adds | Depends on |
+|---|---|---|
+| **M-S1 · §4.C sweep-input binding non-vacuous** (bind the §6(b) matmul-sweep `A_NOISED`/`B_NOISED` to the C3/`HASH_A`/`HASH_B` committed store on the *sweep* rows — `place_matmul_step` today sets `MAT_ID=0` / emits no `noised_packed` query) | Upgrades "fold of *a* matmul" → "fold of *the committed block's* matmul". **Inflection I2.** Scale-independent, high-value — do early. | none (independent of G3) |
+| **M-S2 · G3a + G3b** (boundary-predicate parameterization; segment schedule; `canonical_segment_program`/`PROGRAM_ROOT`) | Multi-segment-capable Layer-0 + the verifier-recomputable segmentation/program-root substrate. `N=1` ≡ today (zero regression). | none — Layer-0-only, hash/rev-agnostic; **doable now** |
+| **M-S3 · P0 vendor Plonky3-recursion** + align Plonky3 rev in the vendored tree | Audit-stable, owned recursion substrate (resolves F2/F7). | reference (cloned) |
+| **M-S4 · P1 `tip5-circuit-air`** from `nockchain-math::tip5` + Tip5 challenger/MMCS arms + native≡in-circuit cross-test | The recursion verifier can verify our **Tip5** Layer-0 proofs at all; Layer-0 unchanged ⇒ the 120-bit FRI sweep preserved. | M-S3 |
+| **M-S5 · G3c** recursion verifier + aggregation + bespoke P4 glue (`PROGRAM_ROOT` per-segment CRIT-1 + cross-child carry/adjacency/anchor stitch) + P3/P5 (batch-only, no `unsafe_*` ctor, proven-ε_FRI per-layer params) | §6(b) binding at **arbitrary / production scale, zero probabilistic gap** (strictly stronger than Pearl). **Inflection I3.** | M-S2,3,4 |
+| **M-S6 · Independent crypto audit** of (a) the 7-round Tip5 variant (now also in-circuit), (b) the vendored+extended recursion stack, (c) the P4 glue | Removes the "experimental/unaudited" gate. **Inflection I4.** Until done, **G4** (Pearl §4.8 spot-check externality = *parity with Pearl*) is authoritative for PROD-scale matmul-truth. | M-S5 |
+
+### Track B — prover economics
+
+| Milestone | Feature / guarantee | Depends on |
+|---|---|---|
+| **M-P1 · PROD-scale profiling & economics** (segment ≈2²⁰ + chunk-Merkle ≈2²⁰; parallel segment proving; recursion scheduling/memory; bench at real FFN shapes — GAP_AUDIT P1/P3/P5/P6) | The prover is *economically mineable* at production loads, not merely sound. Co-gates **I4**. | M-S5 (for the recursion cost), partial now |
+
+### Track C — consensus & useful-work-economics integration
+
+| Milestone | Feature / guarantee | Depends on |
+|---|---|---|
+| **M-C1 · Block-certificate format** — make the aggregate root proof + PIs the consensus artifact (today the plain `MatmulProof` is the cert and the SNARK is an out-of-band correctness gate) | The chain actually *consumes* the ZKP. **Inflection I-consensus.** | M-S5 |
+| **M-C2 · Chain-wire MED-3 derivation** — the node feeds chain-pinned params (header → `difficulty_target`/`tile_ij`/`PROGRAM_ROOT`) into `verify_pow_aggregate` | The verifier-side derivation is consensus-enforced, not test-only. | M-C1 |
+| **M-C3 · Merge-mining dual-accept** — same mineable unit accepted by Nockchain *and* Pearl once PoW difficulty is hit (byte-equivalence already preserved; the dual cert/verify path is the integration) | Honors the standing merge-mining invariant in production. | M-C1 |
+| **M-U1 · Useful-work sourcing / marketplace** — *who* supplies A,B (real model weights/activations), how the network agrees a load is genuine inference vs adversarial busywork, pricing, anti-grief | Turns "a correct-matmul proof" into **arbitrary *useful inference* loads**. **Inflection I5** — largely *outside* the ZKP; the defining milestone for the user's actual phrasing. | protocol/econ design |
+| **M-U2 · Fidelity envelope** — characterize which inference workloads the low-rank-noised INT8 tiled matmul faithfully serves (error budget; which models/layers; the requester de-noises via known seeds) | Bounds & specifies the "arbitrary" in "arbitrary useful inference". | M-U1 |
+| **M-U3 · Result delivery & consumer trust** — the de-noised result reaches the inference consumer with a cheap attestation derived from the PoW aggregate | The useful output is actually *usable & trusted* by the requester. | M-C1, M-U2 |
+
+### Inflection points (qualitative thresholds)
+
+- **I1 — PASSED:** single-Layer-0 §6(b) → honest-fidelity becomes
+  *malicious-prover-forced* for bounded shapes.
+- **I2 — M-S1:** the bound matmul becomes *the committed block's*
+  matmul (closes matrix-swap on the sweep). Cheap, scale-free —
+  the highest value-per-effort remaining soundness item.
+- **I3 — M-S5:** bounded → *arbitrary/production scale* with zero
+  probabilistic gap (strictly > Pearl). Below I3, PROD = G4
+  (parity with Pearl, not stronger).
+- **I4 — M-S6 + M-P1:** experimental → *consensus-deployable*
+  (audited + economical + base proving system frozen). **The
+  production gate.**
+- **I-consensus — M-C1/M-C2:** the ZKP becomes the consensus
+  artifact rather than an out-of-band gate.
+- **I5 — M-U1:** "correct-matmul proof" → "*arbitrary useful
+  inference* economy". The defining inflection for the headline
+  goal; mostly a protocol/economic layer the ZKP enables but
+  does not itself provide.
+
+### Cross-cutting integration seams
+
+Vendored-recursion ↔ ai-pow-zk Plonky3 rev; `nockchain-math::tip5`
+as the *single* Tip5 source (native + in-circuit, cross-tested);
+`composite_proof` Route-A ↔ G3a `SegmentPI` boundary predicates;
+`PROGRAM_ROOT(params)` / `difficulty_target` / `tile_ij` ↔ the
+node's block-context derivation (MED-3 discipline → consensus);
+aggregate root proof ↔ block-certificate ↔ merge-mining
+dual-accept; PoW aggregate ↔ useful-result delivery channel.
+None of these seams are wired yet; M-S1 + M-S2 are unblocked and
+independent of all the others.
 
 ---
 
