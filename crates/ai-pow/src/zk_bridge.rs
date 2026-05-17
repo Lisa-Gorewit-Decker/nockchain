@@ -1363,4 +1363,90 @@ mod tests {
             eprintln!("{n},{ms:.1},{:.3}", ms * 1e3 / n as f64);
         }
     }
+
+    /// **§4.C.2 / A3.1 gate (the verifier-recomputable W1/W2
+    /// data, KAT-validated; no AIR change).** For the real
+    /// bridge geometry, every distinct `noised_packed` store
+    /// chunk decomposes as `committed_plain + noise`, where
+    /// `noise` is **exactly** `ai_pow_zk::noise_ref` of the
+    /// C1-pinned `s_a`/`s_b` at the chunk's deterministic
+    /// tile-strip source `(lane,l)`. This is precisely what
+    /// A3.2 will write to the store rows
+    /// (`MAT_UNPACK=plain`, `NOISE_UNPACK=noise`) and pin into
+    /// `NOISE_PACKED_PREP` — de-risked off-circuit first (the
+    /// P-B.2.0 discipline).
+    #[test]
+    fn sec_4c2_store_chunks_decompose_as_committed_plus_noise_ref() {
+        use crate::matmul::{BlockNoise, Matrices};
+        use crate::synth::synth_matrices;
+        use ai_pow_zk::composite_trace::CompositeTrace;
+
+        for params in [
+            MatmulParams::TEST_SMALL,
+            // a second, distinct geometry (rectangular, r=4|k).
+            MatmulParams { m: 16, k: 64, n: 24, noise_rank: 4, tile: 8,
+                spot_checks: 2, difficulty_bits: 0 },
+        ] {
+            params.validate().unwrap();
+            let (a, b) = synth_matrices(b"sec4c2-a3.1", &params);
+            let ctx = BlockContext::build(b"sec4c2-blk", &a, &b, &params)
+                .expect("ctx");
+            let noise = BlockNoise::expand(&ctx.s_a, &ctx.s_b, &params);
+            let mats = Matrices::build(ctx.a, ctx.b, &noise, &params);
+            let (t, r, k) = (
+                params.tile as usize,
+                params.noise_rank,
+                params.k as usize,
+            );
+            let num_stripes = params.num_stripes() as usize;
+            let (ti, tj) = (0u32, 0u32);
+            let a_strips: Vec<i8> = (0..t as u32)
+                .flat_map(|di| mats.a_prime_row(ti * params.tile + di).to_vec())
+                .collect();
+            let b_strips: Vec<i8> = (0..t as u32)
+                .flat_map(|dj| mats.b_prime_col(tj * params.tile + dj).to_vec())
+                .collect();
+            let srcs = CompositeTrace::enumerate_noised_chunks_with_src(
+                &a_strips, &b_strips, t, r as usize, num_stripes,
+            );
+            assert!(!srcs.is_empty());
+            for s in &srcs {
+                for m in 0..8 {
+                    match s.src[m] {
+                        None => assert_eq!(
+                            s.bytes[m], 0,
+                            "zero-pad byte must be 0"
+                        ),
+                        Some((lane, l)) => {
+                            let (plain, nz) = if s.side_a {
+                                let i = ti * params.tile + lane;
+                                (
+                                    ctx.a[(i as usize) * k + l as usize],
+                                    ai_pow_zk::noise_ref::e_value(
+                                        &ctx.s_a, i, l, r,
+                                    ),
+                                )
+                            } else {
+                                let j = tj * params.tile + lane;
+                                (
+                                    // B is column-major: col j at j*k.
+                                    ctx.b[(j as usize) * k + l as usize],
+                                    ai_pow_zk::noise_ref::f_value(
+                                        &ctx.s_b, l, j, r,
+                                    ),
+                                )
+                            };
+                            assert_eq!(
+                                s.bytes[m],
+                                (plain as i16 + nz as i16) as i8,
+                                "chunk byte != committed_plain + \
+                                 noise_ref @ side_a={} lane={lane} l={l}",
+                                s.side_a
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    }
 }

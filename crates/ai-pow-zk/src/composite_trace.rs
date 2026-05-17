@@ -93,6 +93,20 @@ fn goldilocks_to_signed(raw: u64) -> i64 {
     }
 }
 
+/// §4.C.2 / A3.1 — a distinct `noised_packed` store chunk plus
+/// the deterministic tile-strip source of each of its 8 bytes
+/// (the verifier-recomputable map from a store row to its
+/// `(plain, noise)` decomposition). `side_a`: this chunk is an
+/// A-strip (`true`) or B-strip (`false`) micro-tile window;
+/// `src[m] = Some((lane, l))` (lane = row-in-tile for A /
+/// col-in-tile for B; `l` = `k`-column) or `None` (zero-pad).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct NoisedChunkSrc {
+    pub bytes: [i8; 8],
+    pub side_a: bool,
+    pub src: [Option<(u32, u32)>; 8],
+}
+
 /// A composite trace ready for proving by
 /// [`crate::composite_full_air::CompositeFullAir`].
 #[derive(Clone, Debug)]
@@ -1644,6 +1658,87 @@ impl CompositeTrace {
                         }
                         push(&a_blk, &mut seen, &mut out);
                         push(&b_blk, &mut seen, &mut out);
+                    }
+                }
+            }
+        }
+        out
+    }
+
+    /// §4.C.2 / A3.1 — like [`enumerate_noised_chunks`] but also
+    /// returns, per distinct chunk, **which tile-strip position
+    /// each byte came from** (`side` = A/B; `src[m] =
+    /// Some((lane, l))` where `lane` = row-in-tile for A /
+    /// col-in-tile for B and `l` = the `k`-column, or `None` for
+    /// a zero-pad byte). This is the *deterministic
+    /// verifier-recomputable* map a store row needs to know its
+    /// `(plain, noise)` decomposition: `plain = committed[lane@tile,l]`,
+    /// `noise = noise_ref::{e,f}_value(s, ·)`, and
+    /// `chunk[m] == plain + noise` (Pearl `a′ = A + E`). De-dup is
+    /// by chunk *value*, recording the **first** source — sound,
+    /// because identical `a′` bytes contribute identically to the
+    /// dot regardless of origin (§4.C.2 binds the multiset of
+    /// swept values ⊆ `noise(committed)`).
+    pub fn enumerate_noised_chunks_with_src(
+        a_prime_rows: &[i8],
+        b_prime_cols: &[i8],
+        t: usize,
+        r: usize,
+        num_stripes: usize,
+    ) -> Vec<NoisedChunkSrc> {
+        let chunks = r.div_ceil(TILE_D).max(1);
+        let k = if t == 0 { 0 } else { a_prime_rows.len() / t };
+        let n_sb = t / TILE_H;
+        let n_chunk = A_NOISED_LEN / 2;
+
+        let mut seen: hashbrown::HashSet<[i8; 8]> = hashbrown::HashSet::new();
+        let mut out: Vec<NoisedChunkSrc> = Vec::new();
+        // `lane_base` = sub-block-major row/col-in-tile of blk[*][0];
+        // `col0 = lo + c0`; width `w`. side: true=A,false=B.
+        let mut push = |blk: &[[i8; TILE_D]; TILE_H],
+                        side_a: bool,
+                        lane_base: usize,
+                        col0: usize,
+                        w: usize,
+                        seen: &mut hashbrown::HashSet<[i8; 8]>,
+                        out: &mut Vec<NoisedChunkSrc>| {
+            for jc in 0..n_chunk {
+                let mut bytes = [0i8; 8];
+                let mut src = [None; 8];
+                for m in 0..8 {
+                    let f = jc * 8 + m;
+                    let di = f / TILE_D;
+                    let col = f % TILE_D;
+                    bytes[m] = blk[di][col];
+                    if col < w {
+                        src[m] = Some(((lane_base + di) as u32, (col0 + col) as u32));
+                    }
+                }
+                if seen.insert(bytes) {
+                    out.push(NoisedChunkSrc { bytes, side_a, src });
+                }
+            }
+        };
+
+        for sbi in 0..n_sb {
+            for sbj in 0..n_sb {
+                for step in 0..num_stripes {
+                    let lo = step * r;
+                    for chunk in 0..chunks {
+                        let c0 = chunk * TILE_D;
+                        let w = (r - c0).min(TILE_D);
+                        let mut a_blk = [[0i8; TILE_D]; TILE_H];
+                        let mut b_blk = [[0i8; TILE_D]; TILE_H];
+                        for di in 0..TILE_H {
+                            let rr = (sbi * TILE_H + di) * k + lo + c0;
+                            a_blk[di][..w].copy_from_slice(&a_prime_rows[rr..rr + w]);
+                        }
+                        for dj in 0..TILE_H {
+                            let cc = (sbj * TILE_H + dj) * k + lo + c0;
+                            b_blk[dj][..w].copy_from_slice(&b_prime_cols[cc..cc + w]);
+                        }
+                        push(&a_blk, true, sbi * TILE_H, lo + c0, w, &mut seen, &mut out);
+                        push(&b_blk, false, sbj * TILE_H, lo + c0, w, &mut seen, &mut out);
                     }
                 }
             }
