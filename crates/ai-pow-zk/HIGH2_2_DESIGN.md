@@ -1325,44 +1325,63 @@ sweep row  → (NEW pack-link)  → A_NOISED_UNPACK/B_NOISED_UNPACK
 Today the arrow "`A_NOISED ↔ A_NOISED_UNPACK`" and the arrow
 "committed store → A_NOISED on sweep rows" are both **absent**.
 
-**Implementation increments (each independently testable;
-integrate + clean per the standing goal).**
+**⚠️ Empirical finding (2026-05-17) — the increments are NOT
+independently Route-A-landable; M-S1 is one atomic landing.**
+M-S1.1 (the pack-link) was implemented and tested: it is
+per-row-correct and **passes the unit `CompositeFullAir`**
+(incl. debug-assertions-ON) and its adversarial test. But the
+full regression caught a **Route-A (production) regression**:
+`high2_2_fold_chain_pinned_logup` fails at verify. Root cause —
+the pack-link *forces* `A_NOISED` non-zero on the §6(b) sweep
+rows (`A_NOISED == pack(A_NOISED_UNPACK) ≠ 0`); the **pre-existing
+`noised_packed` LogUp query** on every `matmul_active` row then
+consumes `(A_ID, A_NOISED[0..2])` with no producer supplying
+those keys ⇒ **the LogUp bus no longer balances** ⇒ Route-A
+rejects. The unit AIR has no LogUp so it passed; only the
+production Route-A path exposes it. Therefore M-S1.1's
+trace-side (writing real `A_NOISED`) is *coupled* to M-S1.3
+(producer) + M-S1.4 (`A_ID` pin) + `populate_lookup_freq` via the
+bus: **they must land atomically as one Route-A-valid change.**
+The change was **reverted to green** (no half-wired state); the
+pack-link constraint + its adversarial test are correct and are
+re-applied as part of the atomic landing below. This confirms
+§4.C.11's headline: M-S1 is the multi-day §4.C **core**, not a
+sequence of independently-shippable steps — the "M-S1.1 landable
+now" framing was the over-optimistic part, now empirically
+disproven.
 
-1. **M-S1.1 — the pack-link constraint.** On `matmul_active`
-   rows, add `A_NOISED[c] == polyval(A_NOISED_UNPACK[4c..4c+4],
-   256)` for `c in 0..A_NOISED_LEN` (and B). Reuses the
-   `InputChip`/§4.C base-256 polyval shape; degree ≤ 2; gated by
-   `IS_RESET_CUMSUM+IS_UPDATE_CUMSUM` so it is **vacuous off
-   matmul rows ⇒ zero regression** (all-zero baseline satisfies
-   `0 == polyval(0)`). Adversarial test: a matmul row with
-   `A_NOISED ≠ pack(A_NOISED_UNPACK)` must reject. This makes the
-   bus-bound value provably the dot inputs — the prerequisite for
-   every later increment; landable now, no producer changes.
-2. **M-S1.2 — widen the matmul bus query to all 8 cells** (or
-   emit `A_NOISED_LEN/2` keyed sub-queries) so the *whole* A/B
-   micro-tile input is bound, not an 8-i8 prefix; `A_ID`/`B_ID`
-   address the per-(sub-block,stripe,chunk) store entry.
-3. **M-S1.3 — producer.** Publish the noised `a_prime`/`b_prime`
-   tile strips as canonical `(A_ID, NOISED_PACKED)` store entries
+**Atomic landing (one Route-A-valid change; sub-parts still
+unit-testable in isolation but committed together once Route-A
+balances):**
+
+1. **Pack-link constraint** — `A_NOISED[c] ==
+   polyval(A_NOISED_UNPACK[4c..4c+4], 256)` ∀ `c<A_NOISED_LEN`
+   (and B), gated by `matmul_active`, degree ≤ 2, vacuous off
+   matmul rows (validated: unit + adversarial green).
+   `place_matmul_step` writes the packed cells.
+2. **Producer** — publish the noised `a_prime`/`b_prime` tile
+   strips as canonical `(A_ID, NOISED_PACKED)` store entries
    (reconcile with / extend the M52 chunk-Merkle producer so the
    *same* committed bytes feed both `HASH_A` and the matmul
-   store); `populate_lookup_freq` accounts `MAT_FREQ` for all
-   sweep reads.
-4. **M-S1.4 — CRIT-1 pin** `A_ID`/`B_ID` per sweep row (extend
-   the §6(a)/G2 `CONTROL_PREP`/`AB_ID_PREP` schedule pin); the
-   verifier rebuilds them from trusted params.
-5. **M-S1.5 — exhaustive validation.** Full Route-A
-   (`high2_2_fold_chain_pinned_logup` + a new
-   `high2_2_committed_matmul_input_bound`), unit gate, the §6(b)
-   suite, `ai-pow --features zk` regression; **adversarial:
-   swept matrices ≠ the committed `BlockContext` A/B must
-   reject** (the I2 acceptance test). Debug-assertions-ON pass at
-   each step (the OodEvaluationMismatch hazard).
+   store).
+3. **Bus + freq** — `A_ID`/`B_ID` address the
+   per-(sub-block,stripe,chunk) store entry; widen the matmul
+   query to all `A_NOISED_LEN` cells (not the 8-i8 prefix);
+   `populate_lookup_freq` accounts `MAT_FREQ` for **every** sweep
+   read so the bus balances.
+4. **CRIT-1 pin** — `A_ID`/`B_ID` per sweep row verifier-fixed
+   (extend the §6(a)/G2 `CONTROL_PREP`/`AB_ID_PREP` schedule pin).
+5. **Exhaustive validation** — unit gate + full Route-A
+   (`high2_2_fold_chain_pinned_logup` + new
+   `high2_2_committed_matmul_input_bound`) + §6(b) suite +
+   `ai-pow --features zk`; **adversarial: swept matrices ≠ the
+   committed `BlockContext` A/B must reject** (the I2 acceptance
+   test); debug-assertions-ON at each step.
 
-Soundness meanwhile: CRIT-1 + keystone + §6(a) + §6(b) hold;
-M-S1 upgrades "fold of *a* matmul" → "fold of *the committed
-block's* matmul". M-S1.1 is the unblocked, zero-regression first
-step and is begun next.
+Soundness meanwhile: CRIT-1 + keystone + §6(a) + §6(b) hold
+(tree is green at the reverted state); M-S1 upgrades "fold of
+*a* matmul" → "fold of *the committed block's* matmul". It is an
+atomic multi-day landing — its own focused effort, not rushed.
 
 #### 4.C.5 Soundness once §4.C lands
 
