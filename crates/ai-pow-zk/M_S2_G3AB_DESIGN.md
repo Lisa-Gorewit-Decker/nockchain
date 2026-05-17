@@ -1,16 +1,19 @@
 # M-S2 — G3a + G3b Implementation Design (boundary-predicate parameterization + segment schedule)
 
-> **⚠️ UNDER ARCHITECTURE REVIEW (2026-05-17).** A Pearl
-> implementation+paper evaluation
-> (`M_S2_PEARL_EVALUATION.md`) found that **Pearl does NOT
-> segment** — it caps parameters (`k ≤ 2¹⁶`, `k(h+w) ≤ 2²²`) so
-> one tile = one STARK, and recurses only *vertically* for
+> **⛔ DEFERRED (2026-05-17, maintainer γ decision).** A Pearl
+> implementation+paper evaluation (`M_S2_PEARL_EVALUATION.md`)
+> established that **Pearl does NOT segment** — it caps
+> parameters (§4.8: `k ≤ 2¹⁶`, `k(h+w) ≤ 2²²`) so one tile = one
+> STARK, and recurses only *vertically* for ≤65KB-cert
 > compression. The carry-vector segmentation this document
-> designs has no Pearl precedent and may be unnecessary
-> (decision α/β/γ pending — see the evaluation §5). D1–D6 below
-> are the locked decisions *for the G3 path*; whether to pursue
-> the G3 path at all is the open question. Do not start coding
-> G3a until α/β/γ is resolved.
+> designs has **no Pearl precedent**. **Track-A PROD now pursues
+> the Pearl-faithful P-A/P-B/P-C path** (param caps + raised
+> Layer-0 ceiling + vertical-recursion certificate;
+> `HIGH2_2_DESIGN.md` §7). **This G3a/G3b/G3c design is
+> preserved but DEFERRED** — implement *only if* a concrete load
+> **beyond Pearl's `k = 2¹⁶` envelope** is ever required. Do not
+> start coding G3a. D1–D6 below remain the locked decisions *for
+> the G3 path should it ever be revived*.
 >
 > **Status:** DESIGN COMPLETE — **decisions D1–D6 LOCKED
 > 2026-05-17** (maintainer-approved). Implementation not started;

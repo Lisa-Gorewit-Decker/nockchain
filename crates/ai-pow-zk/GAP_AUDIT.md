@@ -48,8 +48,13 @@ in the current code; do not re-report them:
 ties the proof to *this block's* header-derived κ and `s_a`
 noise seed — the proof is now anchored, not unbounded.
 `comm_m` / found-tile membership stays external (Pearl Layer-0
-does the same; also consistent with ai-pow's existing
-spot-check protocol).
+does the same — difficulty/membership *are* external by design
+in Pearl, MED-3-faithful). *[Note 2026-05-17: an earlier clause
+here cited "ai-pow's existing spot-check protocol" — that
+mechanism (`MatmulProof.spot`/`params.spot_checks`) is
+**test-only scaffolding, never a production path** (maintainer);
+it is not a soundness argument and is a cleanup candidate. See
+`M_S2_PEARL_EVALUATION.md`.]*
 
 ### ✅ C4 — HASH_JACKPOT bound (RESOLVED, `a6f8480`)
 
@@ -284,10 +289,17 @@ byte-equivalence preserved; `high2_2_g1g2_chunked_and_wide_stripes`
 debug-assertions-ON clean). **MED-3 ✅ RESOLVED**
 (`prove_and_verify_for_block` re-derives `target`; `tile_ij`
 contract). **Remaining (scoped, not a forgery hole):** (1) **true
-PROD** (`k/r=64`, chunked sweep ≈ 2²⁰ ≫ one Layer-0) — legacy
-path, §6(b) keystone gated off via the verifier-set `sx_bound`
-(sound as CRIT-1); closing it = **G3** (segmentation + M12,
-designed §4.C.4-G3). (2) **M-S1 ✅ RESOLVED 2026-05-17** — §4.C
+PROD** (`k/r=64`, chunked sweep ≈ 2²⁰ ≫ *today's* `MIN_STARK_LEN
+= 2¹³` Layer-0) — legacy path, §6(b) keystone gated off via the
+verifier-set `sx_bound` (sound as CRIT-1); closing it = **the
+Pearl-faithful P-A/P-B/P-C path** (adopt Pearl §4.8 param caps so
+one tile = one STARK + raise the Layer-0 ceiling toward Pearl's
+`≤2²²` + vertical-recursion certificate — `M_S2_PEARL_EVALUATION.md`,
+maintainer γ decision 2026-05-17). *[Corrected: this previously
+said "closing it = G3 (segmentation+M12)"; G3 carry-segmentation
+has no Pearl precedent and is **deferred** — Pearl caps params so
+it never segments. No production spot-check exists
+(`MatmulProof.spot` is test-only).]* (2) **M-S1 ✅ RESOLVED 2026-05-17** — §4.C
 sweep-input non-vacuity: pack-link + whole-micro-tile chunked
 `noised_packed` query + pure producer store bind the §6(b) sweep
 A/B inputs to a declared canonical store (LogUp multiset);

@@ -859,26 +859,53 @@ stack; G3c is purely the recursion circuit.
 
 ## 13. Relationship to Pearl; what changes vs the G4 interim
 
-Pearl's protocol is *already* Layer-0 + recursion/aggregation
-(Pearl proves bounded work and aggregates; matmul-truth at scale
-rests on the §4.8 spot-check protocol — probabilistic, external).
-G3 is the faithful instantiation of that architecture for
-`ai-pow-zk`, with one upgrade: because each segment carries the
-*full* §6(b) in-circuit binding (`X_STEP ← ⊕CUMSUM ← committed
-A/B`) and the recursion stitches it deterministically, the
-aggregate proves the matmul **with zero probabilistic gap** —
-*strictly stronger* than Pearl's spot-checks.
+> **⚠️ CORRECTED 2026-05-17 — `M_S2_PEARL_EVALUATION.md` is
+> authoritative here.** The original text below claimed Pearl
+> "aggregates" and "matmul-truth at scale rests on Pearl's §4.8
+> spot-check," and that G3 is "the faithful instantiation of
+> Pearl's architecture, strictly stronger than Pearl's
+> spot-checks." **All of that is factually wrong** and is
+> replaced by the corrected paragraph. (The rest of this
+> document's G3 design — the carry chain, soundness theorem,
+> no-trusted-setup, G3a/G3b — remains internally valid as a
+> *novel, beyond-Pearl-envelope* design; only the Pearl
+> *relationship* was misstated.)
 
-- **Until G3c lands:** true-PROD takes the legacy path, the §6(b)
-  keystone gated off via the verifier-set `sx_bound`; matmul-truth
-  for PROD is carried by **G4** (the Pearl §4.8 spot-check
-  externality + C3 commitment) — *parity with Pearl*, a documented
-  scoped externality analogous to MED-3, **not** a forgery hole
-  (CRIT-1 + §4.D keystone + §6(a) + §6(b)-for-single-Layer-0 hold
-  unconditionally).
-- **When G3c lands:** the spot-check externality for *matmul
-  truth* is **removed** (G3 supersedes it); difficulty (MED-3)
-  stays Pearl-Layer-0-faithfully external.
+**Corrected.** Pearl does **NOT** segment and has **NO** matmul
+spot-check. Pearl proves the **whole opened tile** in **one**
+STARK, with parameters *capped* (whitepaper §4.8: `k ≤ 2¹⁶`,
+`k(h+w) ≤ 2²²`, `r ≤ 2¹⁰`, `64 | k`) precisely so a single tile
+always fits one STARK; its recursion (§4.7) is **vertical
+3-layer proof-compression** to a ≤65KB certificate, *not*
+horizontal segment-aggregation. There is **no carry vector, no
+PROGRAM_ROOT-across-segments, and no spot-check** in Pearl;
+Pearl's per-tile matmul truth is **already zero-gap** within the
+caps (gap is `ε_FRI` only). Therefore:
+
+- **G3 (this document) is a *novel* architecture with no Pearl
+  precedent.** It buys matmul truth for per-tile `k` *beyond*
+  Pearl's `2¹⁶` cap, at the cost of the
+  `Γ`/carry-stitch/`PROGRAM_ROOT`/adjacency/G3c soundness
+  surface. It is NOT "the faithful instantiation of Pearl."
+- **Maintainer decision 2026-05-17 (γ):** Track-A PROD pursues
+  the **Pearl-faithful path** instead — adopt Pearl's §4.8
+  param caps + raise the Layer-0 trace ceiling (≤ ~2²²) +
+  vertical-recursion certificate. **G3 is DEFERRED**, pursued
+  only if a load beyond Pearl's `k = 2¹⁶` envelope is required.
+  See `M_S2_PEARL_EVALUATION.md` §4–5.
+- **G4 interim is ai-pow's OWN spot-check**, *not* Pearl's:
+  `MatmulProof.spot` + `params.spot_checks` (= 80 PROD;
+  `crates/ai-pow/src/proof.rs:54`, `params.rs:33`) — recompute
+  `spot_checks` **random** tiles vs. committed M + C3. Pearl
+  §4.8 = param caps; Pearl §4.6 = *one* opened tile's strips;
+  Pearl per-tile = zero-gap. ai-pow's random-sample spot-check
+  is therefore **weaker than Pearl, NOT parity**. Still not a
+  forgery hole (CRIT-1 + §4.D + §6(a) + §6(b)-single-Layer-0 +
+  M-S1 hold unconditionally).
+- **When the Pearl-faithful path lands** (P-B/P-C), the
+  ai-pow spot-check interim for *matmul truth* is **removed**
+  (the raised-ceiling single-tile SNARK is zero-gap, like
+  Pearl); difficulty (MED-3) stays faithfully external.
 - **Orthogonal:** G3 preserves the §4.C `noised_packed` LogUp
   *per segment*; it does **not** fix the deep
   tile↔committed-store §4.C-non-vaciety residual (#108) — that is

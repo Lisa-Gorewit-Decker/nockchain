@@ -191,12 +191,15 @@ Pearl's paper + impl:
    parity with Pearl, authoritative for PROD until G3c."* —
    **Conflates three distinct things** (verified in code):
    - **ai-pow's** `MatmulProof.spot: Vec<TileOpening>` +
-     `params.spot_checks` (`proof.rs:54`, `params.rs:33` — 8
-     test / **80 PROD**) is *ai-pow's own* plain (non-SNARK)
-     probabilistic light-verification: reveal `spot_checks`
-     **random** tile openings, verifier recomputes them. It is
-     real and is the actual G4 interim mechanism — but it is
-     **ai-pow's design, not Pearl's**.
+     `params.spot_checks` (`proof.rs:54`, `params.rs:33`) exists
+     in code but is **TEST-ONLY scaffolding — never used in
+     production** (maintainer, 2026-05-17). So there is **no
+     production "spot-check interim" at all**: the "G4 = Pearl
+     §4.8 spot-check, parity with Pearl, authoritative for PROD"
+     framing is doubly void — it is neither Pearl's nor a
+     production mechanism. `MatmulProof.spot`/`params.spot_checks`
+     is a **cleanup candidate** (mark test-only or remove for
+     clarity).
    - Pearl whitepaper **§4.8 = "Supported PoW Parameters"**
      (parameter caps), *not* a spot-check.
    - Pearl whitepaper **§4.6** reveals the **single opened
@@ -251,9 +254,13 @@ than G3a/G3b/G3c:
   stitch / `PROGRAM_ROOT`-across-tree / adjacency surface**
   (the G3c bespoke glue the audit `G3_RECURSION_AUDIT.md` flags
   as the riskiest, unaudited part).
-- **G4 stays** as the documented interim for *anything outside
-  the caps* — but reframed correctly: it is *parameter
-  restriction*, not a "Pearl spot-check."
+- **"G4" is retired as a production concept.** There is **no
+  production spot-check** (`MatmulProof.spot` is test-only). The
+  honest statement: until P-B *measures* single-big-trace
+  provability, true-PROD (`k/r=64`) matmul-truth is an
+  **unvalidated assumption**, not a fallback-protected interim.
+  Anything *outside* the §4.8 caps is simply **out of the PROD
+  envelope** (parameter restriction), not "spot-checked."
 
 **Trade-off.** M-S2/G3 buys matmul-truth for **arbitrarily
 large per-tile `k`** (beyond Pearl's `k ≤ 2¹⁶`). If ai-pow-zk
@@ -266,9 +273,21 @@ actually do.**
 
 ---
 
-## 5. Decision surfaced to the maintainer
+## 5. Decision — RESOLVED 2026-05-17
 
-The pivotal question is **which scaling architecture Track-A
+> **DECIDED (maintainer, 2026-05-17): (γ) Hybrid.** Track-A PROD
+> pursues the **Pearl-faithful P-A + P-B** path now; **G3a/G3b/
+> G3c are fully designed but DEFERRED** (`M_S2_G3AB_DESIGN.md`
+> retained), pursued only if a concrete load **beyond Pearl's
+> `k = 2¹⁶` envelope** is ever required. The §3 doc-family
+> factual corrections were applied 2026-05-17 (focused pass).
+> Additional maintainer note: `MatmulProof.spot` /
+> `params.spot_checks` is **test-only and never used in
+> production** — flagged as a cleanup candidate. The roadmap
+> (`HIGH2_2_DESIGN.md` §7 Track A) now lists M-S2 = P-A+P-B,
+> M-S5 = P-C (vertical certificate), and G3 as deferred.
+
+The pivotal question was **which scaling architecture Track-A
 should pursue**, now that we know Pearl does *not* segment:
 
 - **(α) Proceed with M-S2/G3 as designed** (carry-vector

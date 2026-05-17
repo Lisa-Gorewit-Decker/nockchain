@@ -1048,32 +1048,75 @@ documented residual disappears for `llm_shape` and any
 testable now (rect ≈ 320 rows ≪ 8192) — the concrete next
 integration to retire residual #107(1).
 
-**G3 — segmentation / recursion (true PROD, M12-coupled) —
-DETAILED DESIGN (2026-05-16).** See **§4.C.4-G3** below for the
-full design (segment model, carry vector, boundary-predicate
-parameterization, the M12 recursion obligations, the soundness
-theorem, the new attack surface, and the G3a/G3b/G3c phasing).
-Summary: the Layer-0 STARK proves a bounded **segment**; the
-threaded registers become public **carry-in / carry-out**; an
-M12 recursion verifies every segment proof + the carry chaining +
-per-segment CRIT-1 program + segment count/order, with **zero
-probabilistic gap** (strictly stronger than Pearl's spot-checks).
-The §6(b) per-row constraints are **unchanged** — only boundary
-predicates are parameterized. Lands with M12.
+> **⚠️ CORRECTION (2026-05-17) — `M_S2_PEARL_EVALUATION.md` is
+> authoritative on the Pearl relationship.** A Pearl
+> implementation+paper evaluation established: **Pearl does NOT
+> segment and has NO matmul spot-check.** Pearl caps params
+> (whitepaper §4.8: `k ≤ 2¹⁶`, `k(h+w) ≤ 2²²`, `r ≤ 2¹⁰`) so one
+> opened tile = one STARK, and recurses only *vertically* for
+> ≤65KB-certificate compression (§4.7); its per-tile matmul
+> truth is **already zero-gap** within those caps. The phrases
+> below "*strictly stronger than Pearl's spot-checks*", "*G4 =
+> Pearl §4.8 spot-check*", and "*Pearl-faithful interim
+> spot-check*" are **inaccurate** and corrected in-place below.
+> **Maintainer decision 2026-05-17 (γ):** Track-A PROD pursues
+> the **Pearl-faithful path P-A/P-B** (param caps + raised
+> Layer-0 ceiling + cost measurement); **G3 segmentation is
+> fully designed but DEFERRED** (pursued only if a load beyond
+> Pearl's `k = 2¹⁶` envelope is ever required). See
+> `M_S2_PEARL_EVALUATION.md` §4–5.
 
-**G4 — Pearl-faithful interim (until G3/M12), the scoped
-externality.** Until segmentation lands, PROD-scale matmul-truth
-is carried by the **external spot-check protocol**
-(`MatmulProof.spot`, Pearl §4.8: the verifier recomputes
-`params.spot_checks` random tiles and checks them against the
-committed M states) **plus** the C3 commitment binding — exactly
-the Pearl-Layer-0 design philosophy already adopted for
-difficulty/C2 (**MED-3**) and the original C1 over-statement. The
-SNARK binds commitment + fold + block-anchor; the spot-check
-protocol bounds the cheating probability. This is a deliberate,
-documented scoped externality, **not** a forgery hole (CRIT-1 +
-keystone + §6(a) hold unconditionally; §6(b) holds in-circuit for
-every params set that fits one Layer-0 once G1+G2 land).
+**G3 — segmentation / recursion (DESIGNED, DEFERRED per the
+2026-05-17 γ decision; only needed beyond Pearl's `k ≤ 2¹⁶`
+envelope).** See **§4.C.4-G3** below + `M_S2_G3AB_DESIGN.md` for
+the full design (segment model, carry vector, boundary-predicate
+parameterization, the M12 recursion obligations, the soundness
+theorem, the attack surface, and the G3a/G3b/G3c phasing).
+Summary: the Layer-0 STARK proves a bounded **segment**; threaded
+registers become public **carry-in / carry-out**; an M12
+recursion verifies every segment proof + carry chaining +
+per-segment CRIT-1 program + segment count/order. This is a
+**novel architecture with no Pearl precedent** (Pearl proves the
+whole opened tile in one STARK); it buys matmul truth for
+per-tile `k` *beyond* Pearl's `2¹⁶` cap, at the cost of the
+`Γ`/carry-stitch/`PROGRAM_ROOT`-across-tree/adjacency soundness
+surface (`G3_RECURSION_AUDIT.md` P0–P6). The §6(b) per-row
+constraints are unchanged — only boundary predicates are
+parameterized.
+
+**Pearl-faithful PROD path (P-A/P-B/P-C — the chosen γ path,
+replaces the immediate M-S2/G3 milestone).** Match what Pearl
+actually does:
+- **P-A** — adopt Pearl §4.8's parameter caps as the ai-pow-zk
+  PROD envelope (`k ≤ 2¹⁶`, `k(h+w) ≤ 2²²`, `r ∈ {2⁵..2¹⁰}`,
+  `64 | k`, bounded-3-D-AP tile shapes), verifier-enforced.
+  Every legal PROD puzzle then fits **one** Layer-0 trace —
+  segmentation is *defined away*.
+- **P-B** — raise the Layer-0 trace ceiling from
+  `MIN_STARK_LEN = 2¹³` toward Pearl's `≤ 2²²`, and **measure**
+  the single-big-trace prover cost at the cap (the go/no-go
+  datum; p3-uni/batch-stark already supports arbitrary `2^k`).
+- **P-C** — vertical recursion *for the ≤65KB on-chain
+  certificate only* (Pearl §4.7 / §5.1), reusing the M-S3/M-S4
+  recursion+Tip5 substrate but **dropping** all of G3's
+  `Γ`/carry/`PROGRAM_ROOT`/adjacency machinery.
+
+**G4 — interim until P-B/P-C, via ai-pow's OWN spot-check (NOT
+Pearl's).** Until the raised-ceiling single-tile path + cert
+land, PROD-scale matmul-truth is carried by **ai-pow's own**
+probabilistic light-verification — `MatmulProof.spot:
+Vec<TileOpening>` + `params.spot_checks` (= 80 PROD;
+`crates/ai-pow/src/proof.rs:54`, `params.rs:33`): the verifier
+recomputes `spot_checks` **random** tiles vs. the committed M
+states — **plus** the C3 commitment binding. This is **ai-pow's
+design, not Pearl's** (Pearl §4.8 = param caps; Pearl §4.6
+reveals one opened tile's strips; Pearl's per-tile truth is
+zero-gap, so ai-pow's random-sample spot-check is *weaker than
+Pearl, not parity*). It remains a deliberate, documented scoped
+externality, **not** a forgery hole (CRIT-1 + keystone + §6(a)
+hold unconditionally; §6(b) holds in-circuit for every params
+set that fits one Layer-0 once G1+G2 land; M-S1 binds the sweep
+inputs to a declared store).
 
 **Ordering / status.** **G1+G2 — ✅ DONE & exhaustively tested
 (`010ccd3`).** StripeXorChip `STATE_LEN = STRIPE_MAX = 64`;
@@ -1215,9 +1258,15 @@ concatenation `T_0‖…‖T_{N-1}` is *exactly* a single trace
 satisfying the full composite AIR + §4.D/§6(b) keystones + C2 —
 **identical soundness to the single-STARK §6(b)**, with the
 *additional* recursion-enforced guarantees that the segments are
-the right count, order, and per-segment program. Unlike G4's
-spot-checks there is **no probabilistic gap** — G3 is strictly
-stronger than Pearl's shipped soundness.
+the right count, order, and per-segment program. Zero
+probabilistic gap (`ε_FRI` only). *[CORRECTED 2026-05-17: the
+original here claimed "strictly stronger than Pearl's shipped
+soundness." That is wrong — Pearl's per-tile SNARK is **already
+zero-gap** within its §4.8 param caps; G3 is not "stronger than
+Pearl," it is a **different (novel) architecture** that extends
+the zero-gap guarantee to per-tile `k` beyond Pearl's `2¹⁶`
+cap. See `M_S2_PEARL_EVALUATION.md`. G3 is DEFERRED per the γ
+decision.]*
 
 **New attack surface G3 introduces (and the recursion closes).**
 (a) *Segment drop/duplicate/reorder* → closed by `program_k`
@@ -1236,10 +1285,18 @@ program/PI is anchored to the block via the existing C1
 tile↔committed-store residual — that is independent and tracked
 jointly (#108). MED-3 (difficulty derivation) and the §6(a)
 schedule pin are unchanged (the latter generalizes to per-segment
-programs). G4 (Pearl spot-check externality) is the documented
-interim for true-PROD matmul-truth **until G3 lands**; once G3
-lands the spot-check externality for matmul-truth is *removed*
-(G3 supersedes it).
+programs). *[CORRECTED 2026-05-17: "G4 (Pearl spot-check
+externality)" is a misnomer. (i) Pearl has **no** spot-check
+(Pearl §4.8 = param caps; per-tile truth is zero-gap). (ii)
+ai-pow's `MatmulProof.spot`/`params.spot_checks` is **test-only
+scaffolding — never used in production** (maintainer,
+2026-05-17). So there is **no production spot-check interim** at
+all: until the Pearl-faithful P-B/P-C lands, true-PROD
+matmul-truth simply rests on the unmeasured assumption that a
+single big trace is provable — which P-B will *measure*. The
+production target is the zero-gap single-tile SNARK, not any
+spot-check. `MatmulProof.spot` is a cleanup candidate (mark
+test-only / remove). See `M_S2_PEARL_EVALUATION.md`.]*
 
 **Alternative axis (noted, not the primary path).** A more
 compact matmul argument (sumcheck/GKR-style, or a Freivalds
@@ -1888,11 +1945,12 @@ tie).**
 | Milestone | Feature / guarantee it adds | Depends on |
 |---|---|---|
 | **M-S1 · §4.C sweep-input binding non-vacuous** — ✅ **LANDED & validated 2026-05-17** (design + landing record: **§4.C.11**). Pack-link + whole-micro-tile chunked `noised_packed` query + pure producer store + chunked `populate_lookup_freq`; value-as-key (`A_ID=B_ID=0`) so no per-row id / no CONTROL_PREP change. Route-A green (parallel + debug-assertions-ON), adversarial **I2** `high2_2_swept_tile_not_in_store_rejects` rejects, `ai-pow-zk --lib` 335/0/22, `ai-pow --features zk` green incl. MED-3 bridge roundtrip. | Upgraded "fold of *a* matmul" → "fold of *the declared store's* matmul". **Inflection I2 reached.** Remaining §4.C tie: store ↔ committed `HASH_A` = **§4.C.2** (noise derivation), the precise documented residual. | DONE |
-| **M-S2 · G3a + G3b** (boundary-predicate parameterization; segment schedule; `canonical_segment_program`/`PROGRAM_ROOT`) — **implementation design + maintainer decisions: `M_S2_G3AB_DESIGN.md`** (2026-05-17; D1–D6 surfaced) | Multi-segment-capable Layer-0 + the verifier-recomputable segmentation/program-root substrate. `N=1` ≡ today (zero regression). | none — Layer-0-only, hash/rev-agnostic; **doable now**; M-S1 done & independent |
-| **M-S3 · P0 vendor Plonky3-recursion** + align Plonky3 rev in the vendored tree | Audit-stable, owned recursion substrate (resolves F2/F7). | reference (cloned) |
+| **M-S2 · P-A + P-B (Pearl-faithful PROD path)** — *replaces the deferred G3a/G3b milestone per the 2026-05-17 γ decision; eval: `M_S2_PEARL_EVALUATION.md`, G3 design retained for the beyond-Pearl-envelope case: `M_S2_G3AB_DESIGN.md`* | **P-A:** adopt Pearl §4.8 param caps as the verifier-enforced PROD envelope (`k ≤ 2¹⁶`, `k(h+w) ≤ 2²²`, `r ∈ {2⁵..2¹⁰}`, `64\|k`) ⇒ every legal PROD puzzle fits ONE Layer-0 trace (segmentation *defined away*). **P-B:** raise the Layer-0 ceiling `2¹³ → ≤ 2²²` & **measure** single-big-trace prover cost (the go/no-go datum). Matmul-truth becomes **zero-gap per tile, exactly like Pearl**. | none — Pearl-faithful, M-S1 done & independent; **doable now** |
+| **M-S3 · P0 vendor Plonky3-recursion** + align Plonky3 rev in the vendored tree | Audit-stable, owned recursion substrate for the **vertical certificate compression** (P-C), resolves F2/F7. | reference (cloned) |
 | **M-S4 · P1 `tip5-circuit-air`** from `nockchain-math::tip5` + Tip5 challenger/MMCS arms + native≡in-circuit cross-test | The recursion verifier can verify our **Tip5** Layer-0 proofs at all; Layer-0 unchanged ⇒ the 120-bit FRI sweep preserved. | M-S3 |
-| **M-S5 · G3c** recursion verifier + aggregation + bespoke P4 glue (`PROGRAM_ROOT` per-segment CRIT-1 + cross-child carry/adjacency/anchor stitch) + P3/P5 (batch-only, no `unsafe_*` ctor, proven-ε_FRI per-layer params) | §6(b) binding at **arbitrary / production scale, zero probabilistic gap** (strictly stronger than Pearl). **Inflection I3.** | M-S2,3,4 |
-| **M-S6 · Independent crypto audit** of (a) the 7-round Tip5 variant (now also in-circuit), (b) the vendored+extended recursion stack, (c) the P4 glue | Removes the "experimental/unaudited" gate. **Inflection I4.** Until done, **G4** (Pearl §4.8 spot-check externality = *parity with Pearl*) is authoritative for PROD-scale matmul-truth. | M-S5 |
+| **M-S5 · P-C vertical-recursion certificate** (Pearl §4.7/§5.1: compress *one* Layer-0 proof to a ≤65KB on-chain cert; 3-layer vertical recursion, NOT segment-aggregation) | Succinct on-chain PoUW certificate at PROD scale, **zero probabilistic gap, parity with Pearl** (no `Γ`/`PROGRAM_ROOT`/adjacency surface — that is the deferred G3c only). **Inflection I3.** | M-S2,3,4 |
+| **M-S6 · Independent crypto audit** of (a) the 7-round Tip5 variant (now also in-circuit), (b) the vendored+extended recursion stack | Removes the "experimental/unaudited" gate. **Inflection I4.** | M-S5 |
+| **(deferred) G3a/G3b/G3c** — carry-vector segmentation + recursive *aggregation* | Matmul truth for per-tile `k` **beyond Pearl's `2¹⁶` cap** (strictly more ambitious than Pearl). Pursued **only if** a concrete load past the Pearl envelope is required. Design preserved in `M_S2_G3AB_DESIGN.md`. | deferred (γ decision) |
 
 ### Track B — prover economics
 
@@ -1924,9 +1982,15 @@ tie).**
   the single precise residual to full §4.C. See §4.C.11 for the
   landing record. *Was* the multi-day §4.C core (the pre-audit
   "cheap" framing was wrong); now landed.
-- **I3 — M-S5:** bounded → *arbitrary/production scale* with zero
-  probabilistic gap (strictly > Pearl). Below I3, PROD = G4
-  (parity with Pearl, not stronger).
+- **I3 — M-S5 (P-C):** bounded → *production scale* with zero
+  probabilistic gap, **at parity with Pearl** (Pearl's per-tile
+  SNARK is already zero-gap within its §4.8 caps; the
+  Pearl-faithful P-A/P-B/P-C reaches the same — *not* "strictly
+  stronger than Pearl," corrected 2026-05-17). Below I3 there is
+  **no production fallback** — `MatmulProof.spot` is test-only
+  (NOT a PROD mechanism); P-B must *measure* single-big-trace
+  provability. ("Beyond-Pearl-envelope" / `k > 2¹⁶` is the
+  deferred G3 axis, not I3.)
 - **I4 — M-S6 + M-P1:** experimental → *consensus-deployable*
   (audited + economical + base proving system frozen). **The
   production gate.**

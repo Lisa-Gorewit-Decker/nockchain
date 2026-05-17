@@ -203,8 +203,15 @@ sweep_fits`.
 PROD** (`k/r = 64`, chunked sweep ≈ 2²⁰ ≫ one Layer-0): legacy
 path, §6(b) keystone gated **off** via `sx_bound` — a value the
 *verifier* derives from trusted params/height, never the proof
-(as sound as CRIT-1). Closing it = **G3** (segmentation + M12
-recursion). (2) deep tile↔committed-store: **M-S1 ✅ RESOLVED
+(as sound as CRIT-1). Closing it = **the Pearl-faithful
+P-A/P-B/P-C path** (Pearl §4.8 param caps so one tile = one
+STARK + raise the Layer-0 ceiling + vertical-recursion cert;
+maintainer γ decision 2026-05-17 — `M_S2_PEARL_EVALUATION.md`).
+*[Corrected: previously "G3 (segmentation + M12)"; Pearl caps
+params and never segments, so G3 carry-segmentation is
+**deferred** to the beyond-Pearl-envelope case only. No
+production spot-check exists — `MatmulProof.spot` is test-only.]*
+(2) deep tile↔committed-store: **M-S1 ✅ RESOLVED
 2026-05-17** — the §4.C `noised_packed` query is now
 whole-micro-tile (chunked over all `A_NOISED_LEN`/`B_NOISED_LEN`
 cells) and the swept `A_NOISED`/`B_NOISED` are multiset-bound
@@ -473,8 +480,13 @@ also ✅ RESOLVED (`prove_and_verify_for_block`).
 **Remaining (scoped; NOT a *proof*-forgery hole).** (1) **true
 PROD** (`k/r = 64`, chunked sweep ≈ 2²⁰ ≫ one Layer-0): legacy
 path, §6(b) keystone gated off via the verifier-set `sx_bound`
-(sound as CRIT-1); closing it = **G3** (segmentation + M12
-recursion, designed §4.C.4-G3). (2) deep tile↔committed-store:
+(sound as CRIT-1); closing it = **the Pearl-faithful
+P-A/P-B/P-C path** (param caps + raised Layer-0 ceiling +
+vertical-recursion cert; γ decision 2026-05-17,
+`M_S2_PEARL_EVALUATION.md`). *[Corrected: was "G3 (segmentation
++ M12)"; Pearl never segments — G3 deferred to beyond-Pearl-`k`.
+`MatmulProof.spot` is test-only, not a PROD fallback.]* (2) deep
+tile↔committed-store:
 **M-S1 ✅ RESOLVED 2026-05-17** (§4.C `noised_packed`
 whole-micro-tile non-vacuity — sweep A/B multiset-bound to a
 declared store, adversarial I2 rejects swap-on-sweep); residual
