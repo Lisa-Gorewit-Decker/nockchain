@@ -1277,6 +1277,93 @@ axis, gated behind G3 shipping first.
   proper); G3a+G3b make Layer-0 G3-ready so G3c is purely the
   recursion.
 
+#### 4.C.11 M-S1 — completing the matmul-input↔committed-store binding (DESIGN, 2026-05-17)
+
+Track-A milestone **M-S1** ("§4.C sweep-input binding
+non-vacuous", roadmap §7 / inflection **I2**). A code audit
+(2026-05-17) found M-S1 is **the §4.C cryptographic core**, not a
+localized tweak — the roadmap's "cheap, highest value-per-effort"
+framing was over-optimistic on *effort* (the *value/scale-freedom*
+stands; it is a multi-day build). Grounded findings:
+
+- **Granularity.** `BYTES_PER_GOLDILOCKS = 4` ⇒
+  `A_NOISED_LEN = TILE_H·TILE_D/4 = 8` packed cells (each =
+  `polyval(4 i8, base 256)`); `A_NOISED_UNPACK_LEN = 32` i8 lanes
+  (what `MatmulCumsumChip`'s dot multiplies). The `noised_packed`
+  LogUp query (`composite_full_air_with_lookups::bus_emit::
+  noised_packed`) binds only `A_NOISED_START[0..2]` — **2 of 8
+  cells** (the module doc: this bus is a "proof-of-pattern"
+  partial wiring, not a complete matmul-input commitment).
+- **Missing pack-link (the core gap).** `MatmulCumsumChip::eval`
+  constrains only the dot over `A_NOISED_UNPACK`/`B_NOISED_UNPACK`
+  + the cumsum recurrence. **No constraint ties
+  `A_NOISED_UNPACK` (dot inputs) to `A_NOISED[0..8]` (the
+  bus-bound packed cells).** So even a hypothetical non-vacuous
+  matmul row's committed-store binding (on `A_NOISED`) does *not*
+  constrain what the dot actually multiplies. This decoupling —
+  not the sweep `MAT_ID=0` — is the deepest part of the gap.
+- **Producer mismatch.** M52 (`place_matrix_hash_*`) publishes
+  *plain-byte* `NOISED_PACKED` entries for the BLAKE3-side
+  self-query (M52 explicitly excluded low-rank noise). The matmul
+  side needs the **noised** matrix (`a_prime`/`b_prime` = matrix
+  + low-rank noise, per `InputChip`'s
+  `NOISED_PACKED = polyval(MAT)+polyval(NOISE)`) published as
+  canonical store entries, addressed by `A_ID`/`B_ID`, with
+  `MAT_FREQ` multiplicities accounting for **every** sweep read
+  (the 256-row sub-block-major × chunked sweep).
+- **CRIT-1 (§4.C.6).** `A_ID`/`B_ID`/`MAT_FREQ` feeding the bus
+  must be verifier-fixed (`AB_ID_PREP`/`CONTROL_PREP` are already
+  `PROGRAM_COLS`; the §6(a)/G2 schedule-pin pattern extends to
+  the per-sweep-row `A_ID`/`B_ID`).
+
+**Target chain (what M-S1 must close).**
+`committed A,B  → (C3/HASH_A,HASH_B + M52 chunk-Merkle)
+→ canonical NOISED_PACKED store  → (noised_packed LogUp, A_ID/B_ID,
+CRIT-1-pinned, MAT_FREQ)  → A_NOISED[0..8]/B_NOISED[0..8] on each
+sweep row  → (NEW pack-link)  → A_NOISED_UNPACK/B_NOISED_UNPACK
+→ (MatmulCumsumChip dot)  → CUMSUM  → (§6(b))  → … → C2`.
+Today the arrow "`A_NOISED ↔ A_NOISED_UNPACK`" and the arrow
+"committed store → A_NOISED on sweep rows" are both **absent**.
+
+**Implementation increments (each independently testable;
+integrate + clean per the standing goal).**
+
+1. **M-S1.1 — the pack-link constraint.** On `matmul_active`
+   rows, add `A_NOISED[c] == polyval(A_NOISED_UNPACK[4c..4c+4],
+   256)` for `c in 0..A_NOISED_LEN` (and B). Reuses the
+   `InputChip`/§4.C base-256 polyval shape; degree ≤ 2; gated by
+   `IS_RESET_CUMSUM+IS_UPDATE_CUMSUM` so it is **vacuous off
+   matmul rows ⇒ zero regression** (all-zero baseline satisfies
+   `0 == polyval(0)`). Adversarial test: a matmul row with
+   `A_NOISED ≠ pack(A_NOISED_UNPACK)` must reject. This makes the
+   bus-bound value provably the dot inputs — the prerequisite for
+   every later increment; landable now, no producer changes.
+2. **M-S1.2 — widen the matmul bus query to all 8 cells** (or
+   emit `A_NOISED_LEN/2` keyed sub-queries) so the *whole* A/B
+   micro-tile input is bound, not an 8-i8 prefix; `A_ID`/`B_ID`
+   address the per-(sub-block,stripe,chunk) store entry.
+3. **M-S1.3 — producer.** Publish the noised `a_prime`/`b_prime`
+   tile strips as canonical `(A_ID, NOISED_PACKED)` store entries
+   (reconcile with / extend the M52 chunk-Merkle producer so the
+   *same* committed bytes feed both `HASH_A` and the matmul
+   store); `populate_lookup_freq` accounts `MAT_FREQ` for all
+   sweep reads.
+4. **M-S1.4 — CRIT-1 pin** `A_ID`/`B_ID` per sweep row (extend
+   the §6(a)/G2 `CONTROL_PREP`/`AB_ID_PREP` schedule pin); the
+   verifier rebuilds them from trusted params.
+5. **M-S1.5 — exhaustive validation.** Full Route-A
+   (`high2_2_fold_chain_pinned_logup` + a new
+   `high2_2_committed_matmul_input_bound`), unit gate, the §6(b)
+   suite, `ai-pow --features zk` regression; **adversarial:
+   swept matrices ≠ the committed `BlockContext` A/B must
+   reject** (the I2 acceptance test). Debug-assertions-ON pass at
+   each step (the OodEvaluationMismatch hazard).
+
+Soundness meanwhile: CRIT-1 + keystone + §6(a) + §6(b) hold;
+M-S1 upgrades "fold of *a* matmul" → "fold of *the committed
+block's* matmul". M-S1.1 is the unblocked, zero-regression first
+step and is begun next.
+
 #### 4.C.5 Soundness once §4.C lands
 
 With the binding live on the pinned path: an adversary cannot
@@ -1699,7 +1786,7 @@ the real committed-matrix matmul.**
 
 | Milestone | Feature / guarantee it adds | Depends on |
 |---|---|---|
-| **M-S1 · §4.C sweep-input binding non-vacuous** (bind the §6(b) matmul-sweep `A_NOISED`/`B_NOISED` to the C3/`HASH_A`/`HASH_B` committed store on the *sweep* rows — `place_matmul_step` today sets `MAT_ID=0` / emits no `noised_packed` query) | Upgrades "fold of *a* matmul" → "fold of *the committed block's* matmul". **Inflection I2.** Scale-independent, high-value — do early. | none (independent of G3) |
+| **M-S1 · §4.C sweep-input binding non-vacuous** — the §4.C **cryptographic core** (full design + increment plan: **§4.C.11**). Bind the §6(b) matmul-sweep inputs to the committed `HASH_A`/`HASH_B` store; requires a NEW pack-link (`A_NOISED↔A_NOISED_UNPACK`, absent today), full 8-cell bus coverage, the noised producer, `A_ID`/`B_ID` CRIT-1 pin. | Upgrades "fold of *a* matmul" → "fold of *the committed block's* matmul". **Inflection I2.** Scale-independent & highest-*value*, but the **multi-day §4.C core, not cheap** (code audit 2026-05-17 corrected the earlier "cheap" framing). | none (independent of G3); M-S1.1 unblocked & zero-regression |
 | **M-S2 · G3a + G3b** (boundary-predicate parameterization; segment schedule; `canonical_segment_program`/`PROGRAM_ROOT`) | Multi-segment-capable Layer-0 + the verifier-recomputable segmentation/program-root substrate. `N=1` ≡ today (zero regression). | none — Layer-0-only, hash/rev-agnostic; **doable now** |
 | **M-S3 · P0 vendor Plonky3-recursion** + align Plonky3 rev in the vendored tree | Audit-stable, owned recursion substrate (resolves F2/F7). | reference (cloned) |
 | **M-S4 · P1 `tip5-circuit-air`** from `nockchain-math::tip5` + Tip5 challenger/MMCS arms + native≡in-circuit cross-test | The recursion verifier can verify our **Tip5** Layer-0 proofs at all; Layer-0 unchanged ⇒ the 120-bit FRI sweep preserved. | M-S3 |
@@ -1728,8 +1815,10 @@ the real committed-matrix matmul.**
 - **I1 — PASSED:** single-Layer-0 §6(b) → honest-fidelity becomes
   *malicious-prover-forced* for bounded shapes.
 - **I2 — M-S1:** the bound matmul becomes *the committed block's*
-  matmul (closes matrix-swap on the sweep). Cheap, scale-free —
-  the highest value-per-effort remaining soundness item.
+  matmul (closes matrix-swap on the sweep). Scale-free and
+  highest-*value*, but the multi-day §4.C **core** (the codebase
+  lacks even the `A_NOISED↔A_NOISED_UNPACK` pack-link) — see
+  §4.C.11. *Not* the "cheap" item the pre-audit framing implied.
 - **I3 — M-S5:** bounded → *arbitrary/production scale* with zero
   probabilistic gap (strictly > Pearl). Below I3, PROD = G4
   (parity with Pearl, not stronger).
