@@ -355,7 +355,10 @@ fn mine_with_context(
         // (never accepts a counterparty-supplied target). The local
         // `target` (computed for the plain tile scan) is *not* passed
         // through; the bridge recomputes the identical value.
-        let _zk = crate::zk_bridge::prove_and_verify_for_block(ctx, params)
+        // HIGH-2.2 §4.E: attest the *actual* solved tile
+        // (`found_idx`, the winning linear index from the scan
+        // above), not a hard-coded (0,0).
+        let _zk = crate::zk_bridge::prove_and_verify_for_block(ctx, params, found_idx)
             .expect("F1 zk bridge: prove + pow-verify must succeed for a found tile");
         let _ = (block_commitment, nonce);
     }

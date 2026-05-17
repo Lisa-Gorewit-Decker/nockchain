@@ -127,6 +127,34 @@ pub fn prove_and_verify(
     params: &MatmulParams,
     target: &[u8; 32],
 ) -> Result<ZkOutcome, BridgeError> {
+    // Tile (0,0): the existing binding/regression tests use
+    // `difficulty_bits = 0` (every tile clears `target`), so the
+    // attested tile is irrelevant to what they assert. Real
+    // mining attests the *found* tile via
+    // [`prove_and_verify_for_block`] → [`prove_and_verify_tiled`].
+    prove_and_verify_tiled(ctx, params, target, 0, 0)
+}
+
+/// HIGH-2.2 §4.E — attest the **actual solved tile**
+/// `(tile_i, tile_j)` rather than a hard-coded `(0,0)`. All tiles
+/// of a block share `difficulty_target(params)` (the work is
+/// finding *any* tile whose keyed digest clears it — Pearl's
+/// protocol), so binding the *index* is not a PoW-soundness
+/// requirement; what matters is that the SNARK attests a **real**
+/// tile's genuine committed-matrix fold (the §6(b) chain), at the
+/// tile the plain miner actually cleared. The remaining deep
+/// tile↔committed-store binding (a prover proving a tile whose
+/// strips are not the block's committed A/B rows/cols) reduces to
+/// the §4.C `noised_packed`-non-vacuity-on-sweep-rows residual
+/// (place_matmul_step sets `MAT_ID = 0`, emits no `noised_packed`
+/// query — HIGH2_2_DESIGN §4.C.10), tracked jointly.
+pub fn prove_and_verify_tiled(
+    ctx: &BlockContext<'_>,
+    params: &MatmulParams,
+    target: &[u8; 32],
+    tile_i: u32,
+    tile_j: u32,
+) -> Result<ZkOutcome, BridgeError> {
     let mut trace = CompositeTrace::baseline_min();
     let height = trace.height();
 
@@ -173,7 +201,13 @@ pub fn prove_and_verify(
     // its index is §4.E (does not change this binding).
     let noise = crate::matmul::BlockNoise::expand(&ctx.s_a, &ctx.s_b, params);
     let mats = crate::matmul::Matrices::build(ctx.a, ctx.b, &noise, params);
-    let (tile_i, tile_j) = (0u32, 0u32);
+    assert!(
+        tile_i < params.row_tiles() && tile_j < params.col_tiles(),
+        "attested tile ({tile_i},{tile_j}) out of grid \
+         {}×{}",
+        params.row_tiles(),
+        params.col_tiles()
+    );
     let t = params.tile as usize;
     let r = params.noise_rank as usize;
     let num_stripes = params.num_stripes() as usize;
@@ -297,14 +331,20 @@ pub fn prove_and_verify(
 /// an argument, a caller (or counterparty) **cannot** influence the
 /// difficulty bound — closing MED-3 precondition (ii). Combined
 /// with CRIT-1 (precondition (i): `HASH_JACKPOT` genuinely bound)
-/// the out-of-circuit difficulty check is sound. This is the only
+/// the out-of-circuit difficulty check is sound. `found_idx` is the
+/// miner's winning linear tile index (`mine_with_context`); it is
+/// decomposed via the MED-3 [`tile_ij`] contract and the **actual
+/// solved tile** is attested (HIGH-2.2 §4.E). This is the only
 /// entrypoint production / `mine()` should use.
 pub fn prove_and_verify_for_block(
     ctx: &BlockContext<'_>,
     params: &MatmulParams,
+    found_idx: u32,
 ) -> Result<ZkOutcome, BridgeError> {
     let target = crate::tile_hash::difficulty_target(params);
-    prove_and_verify(ctx, params, &target)
+    let (tile_i, tile_j) = tile_ij(found_idx, params)
+        .expect("found_idx must be a valid tile index for these params");
+    prove_and_verify_tiled(ctx, params, &target, tile_i, tile_j)
 }
 
 /// MED-3 / HIGH-2.2 §4.E — the **verifier-side derivation contract**
@@ -573,16 +613,52 @@ mod tests {
         let (a, b) = synth_matrices(b"med3-seed", &params);
         let ctx = BlockContext::build(b"med3-blk", &a, &b, &params).expect("ctx");
 
-        // Hardened path: no target argument.
-        let hardened = prove_and_verify_for_block(&ctx, &params)
+        // Hardened path: no target argument; found_idx 0 = tile
+        // (0,0), matching the primitive's default tile so the PIs
+        // are directly comparable.
+        let hardened = prove_and_verify_for_block(&ctx, &params, 0)
             .expect("MED-3 hardened entrypoint must prove + pow-verify");
 
         // It must be equivalent to the primitive invoked with the
-        // chain-derived target (same PIs).
+        // chain-derived target (same PIs, same tile).
         let target = difficulty_target(&params);
         let primitive = prove_and_verify(&ctx, &params, &target)
             .expect("primitive with chain target must also succeed");
         assert_eq!(hardened.pis, primitive.pis);
+    }
+
+    /// HIGH-2.2 §4.E: the bridge attests the **actual solved
+    /// tile** (not a hard-coded (0,0)). For a spread of winning
+    /// indices the full §6(b) chain proves+pow-verifies, and the
+    /// bound `HASH_JACKPOT` is byte-identical to the plain miner's
+    /// `BLAKE3(compute_tile(tile_i,tile_j) fold, key=s_a)` for
+    /// *that* tile — and distinct tiles give distinct digests
+    /// (proving the index is genuinely threaded, not constant).
+    #[test]
+    fn high2_2_attests_real_solved_tile() {
+        let params = MatmulParams::TEST_SMALL; // k/r = 16 ⇒ §6(b) live
+        let (a, b) = synth_matrices(b"hi22-4e-seed", &params);
+        let ctx = BlockContext::build(b"hi22-4e-blk", &a, &b, &params).expect("ctx");
+
+        let nt = params.num_tiles();
+        let mut digests = std::collections::HashSet::new();
+        for &found_idx in &[0u32, 5, nt / 2, nt - 1] {
+            let (ti, tj) = tile_ij(found_idx, &params).expect("valid idx");
+            let out = prove_and_verify_for_block(&ctx, &params, found_idx)
+                .unwrap_or_else(|e| panic!("§4.E: tile ({ti},{tj}) must prove+verify: {e}"));
+
+            // Byte-equivalence to the plain solve for THIS tile.
+            let want = ctx.m_states[found_idx as usize].keyed_hash(&ctx.s_a);
+            assert_eq!(
+                ai_pow_zk::hash_jackpot_le_bytes(&out.pis.hash_jackpot),
+                want,
+                "§4.E: SNARK HASH_JACKPOT != plain digest @tile ({ti},{tj})"
+            );
+            assert!(
+                digests.insert(want),
+                "distinct tiles must give distinct digests (idx {found_idx})"
+            );
+        }
     }
 
     /// MED-3 / §4.E: the verifier-side tile-index derivation
