@@ -1,0 +1,574 @@
+//! Stripe-XOR transport chip — HIGH-2.2 §6(b) cross-row binding.
+//!
+//! ## What it proves
+//!
+//! The matmul sub-block-major sweep (HIGH-2.2 §6(b) spike GATE 2)
+//! produces, for each `(sub_block sb, stripe step)`, a 4-cell
+//! `CUMSUM` accumulator-after-step. Pearl §4.5's per-stripe scalar
+//! is `x_steps[step] = ⊕` over **all** `t·t` accumulator cells
+//! after stripe `step` — i.e. the XOR, across every sub-block, of
+//! that sub-block's 4 accumulator cells at stripe `step`.
+//!
+//! Because the sweep is sub-block-major, the 16 sub-blocks'
+//! accumulator-after-`step` values land on 16 **non-adjacent**
+//! rows. This chip is the cross-row transport that reduces them to
+//! the per-stripe scalar without a lookup bus: a carried
+//! `STATE_LEN`-lane i32 register `XR`, where row `r` folds its
+//! 4-cell input `IN` into the lane selected by a one-hot
+//! `LANE_SEL` (the stripe index, schedule-pinned in the composite
+//! via the §6(a) `CONTROL_PREP` pattern):
+//!
+//! ```text
+//!   XR_next[lane] = XR[lane] ⊕ IN[0] ⊕ IN[1] ⊕ IN[2] ⊕ IN[3]
+//!   XR_next[s]    = XR[s]                              (s ≠ lane)
+//!   first row:    XR == 0
+//! ```
+//!
+//! After every sub-block has been folded, `XR[step]` holds
+//! `x_steps[step]` (XOR is associative/commutative, so the
+//! sub-block-major visitation order is irrelevant). The composite
+//! wiring (§6(b) next step) feeds `IN` from the swept `CUMSUM`
+//! cells and binds the final `XR[step]` to the FoldChip's
+//! `FOLD_XSTEP[step]`.
+//!
+//! ## Why per-bit parity, not a lookup
+//!
+//! XOR is not field-native. Each output bit is the parity (sum
+//! mod 2) of the 5 contributing bits (`XR[lane]` + the 4 `IN`
+//! cells) at that position. We enforce
+//!
+//! ```text
+//!   XR[lane]_bit[i] + Σ_{c<4} IN_bit[c][i]  ==  NEW_bit[i] + 2·Q[i]
+//! ```
+//!
+//! with `NEW_bit[i]` boolean and `Q[i]` range-bounded by a
+//! `QBITS`-bit decomposition (column sum ≤ 5 ⇒ `Q ≤ 2`, so
+//! `QBITS = 2` is a safe bound). Every constraint is degree ≤ 2
+//! and lives in plain `p3-uni-stark` — the same audited gadget
+//! shape as [`crate::chips::xstep`] / the FoldChip's rotl13-XOR.
+//!
+//! Self-contained: `ai-pow-zk` must NOT depend on `ai-pow`
+//! (dependency cycle). The reference is a local hand-rolled
+//! XOR-by-lane fold; cross-crate parity vs
+//! `ai-pow::matmul::compute_tile_trace`'s real `x_steps` is
+//! asserted from the `ai-pow` side under the `zk` feature (the
+//! legal direction), exactly like the FoldChip / XStepChip.
+
+use p3_air::{Air, AirBuilder, BaseAir, WindowAccess};
+use p3_field::PrimeCharacteristicRing;
+use p3_matrix::dense::RowMajorMatrix;
+
+use crate::Val;
+
+/// Number of stripe lanes = `JACKPOT_SIZE` = Pearl §4.5 fold slots
+/// = `num_stripes` for the shipping params (`k/r`). A shorter
+/// stripe schedule simply leaves the unused high lanes at 0.
+pub const STATE_LEN: usize = 16;
+/// Accumulator cells folded per row (the in-circuit micro-tile's
+/// `CUMSUM_TILE_LEN`).
+pub const IN_LEN: usize = 4;
+/// Quotient bound bits: per output bit the column sum is at most
+/// `1 (XR lane) + IN_LEN (= 4) = 5`, so `Q ≤ 2`; 2 bits (0..3) is
+/// a safe bound.
+pub const QBITS: usize = 2;
+
+/// Chip-local column offsets.
+pub mod cols {
+    use super::{IN_LEN, QBITS, STATE_LEN};
+
+    /// 1 = active fold row, 0 = padding/passthrough.
+    pub const IS_ACTIVE: usize = 0;
+    /// One-hot lane selector (`Σ == IS_ACTIVE`).
+    pub const LANE_SEL: usize = IS_ACTIVE + 1;
+    pub const LANE_SEL_LEN: usize = STATE_LEN;
+    /// The `IN_LEN` accumulator cells folded this row (u32 view of
+    /// the i32 `CUMSUM`).
+    pub const IN: usize = LANE_SEL + LANE_SEL_LEN;
+    /// 32 LE bits per `IN` cell.
+    pub const IN_BITS: usize = IN + IN_LEN;
+    pub const IN_BITS_LEN: usize = IN_LEN * 32;
+    /// `STATE_LEN`-lane register *entering* this row.
+    pub const XR: usize = IN_BITS + IN_BITS_LEN;
+    pub const XR_LEN: usize = STATE_LEN;
+    /// 32 LE bits of the *selected* lane value
+    /// (`Σ_s LANE_SEL[s]·XR[s]`).
+    pub const XR_SEL_BITS: usize = XR + XR_LEN;
+    pub const XR_SEL_BITS_LEN: usize = 32;
+    /// The new value for the selected lane (`= XR[lane] ⊕ ⊕IN`).
+    pub const NEW_SEL: usize = XR_SEL_BITS + XR_SEL_BITS_LEN;
+    /// 32 LE bits of `NEW_SEL`.
+    pub const NEW_SEL_BITS: usize = NEW_SEL + 1;
+    pub const NEW_SEL_BITS_LEN: usize = 32;
+    /// `QBITS` parity-quotient bits per output bit position.
+    pub const Q_BITS: usize = NEW_SEL_BITS + NEW_SEL_BITS_LEN;
+    pub const Q_BITS_LEN: usize = 32 * QBITS;
+    pub const ROW_W: usize = Q_BITS + Q_BITS_LEN;
+}
+
+/// Zero-sized chip type.
+#[derive(Debug, Default, Clone, Copy)]
+pub struct StripeXorChip;
+
+/// Column-offset bundle so the eval body runs both standalone and
+/// (later) at composite-layout offsets.
+#[derive(Copy, Clone, Debug)]
+pub struct StripeXorOffsets {
+    pub is_active: usize,
+    pub lane_sel: usize,
+    pub in_cells: usize,
+    pub in_bits: usize,
+    pub xr: usize,
+    pub xr_sel_bits: usize,
+    pub new_sel: usize,
+    pub new_sel_bits: usize,
+    pub q_bits: usize,
+}
+
+impl StripeXorChip {
+    pub const LOCAL_OFFSETS: StripeXorOffsets = StripeXorOffsets {
+        is_active: cols::IS_ACTIVE,
+        lane_sel: cols::LANE_SEL,
+        in_cells: cols::IN,
+        in_bits: cols::IN_BITS,
+        xr: cols::XR,
+        xr_sel_bits: cols::XR_SEL_BITS,
+        new_sel: cols::NEW_SEL,
+        new_sel_bits: cols::NEW_SEL_BITS,
+        q_bits: cols::Q_BITS,
+    };
+
+    /// Emit the stripe-XOR constraints at the given offsets.
+    pub fn eval_at<AB: AirBuilder>(builder: &mut AB, off: &StripeXorOffsets) {
+        let two = <AB::F as PrimeCharacteristicRing>::TWO;
+
+        // ---- Per-row structural constraints ----
+        {
+            let main = builder.main();
+            let cur = main.current_slice();
+
+            let is_active = cur[off.is_active];
+            builder.assert_bool(is_active);
+
+            // LANE_SEL: each boolean, Σ == IS_ACTIVE (one-hot on
+            // active rows, all-zero on padding).
+            let mut sel_sum: AB::Expr = <AB::Expr as PrimeCharacteristicRing>::ZERO;
+            for s in 0..cols::LANE_SEL_LEN {
+                let sel = cur[off.lane_sel + s];
+                builder.assert_bool(sel);
+                sel_sum = sel_sum + sel.into();
+            }
+            builder.assert_eq(sel_sum, cur[off.is_active].into());
+
+            // Each IN cell == Σ IN_BITS[c][i]·2^i (bits boolean).
+            for c in 0..IN_LEN {
+                let mut recon: AB::Expr = <AB::Expr as PrimeCharacteristicRing>::ZERO;
+                let mut pow: AB::F = <AB::F as PrimeCharacteristicRing>::ONE;
+                for i in 0..32 {
+                    let bit = cur[off.in_bits + c * 32 + i];
+                    builder.assert_bool(bit);
+                    recon = recon + bit.into() * pow.clone();
+                    pow = pow * two.clone();
+                }
+                builder.assert_eq(cur[off.in_cells + c].into(), recon);
+            }
+
+            // XR_SEL_BITS must be the bit-decomposition of the
+            // selected lane's XR value:
+            //   Σ XR_SEL_BITS[i]·2^i == Σ_s LANE_SEL[s]·XR[s]
+            let mut sel_recon: AB::Expr = <AB::Expr as PrimeCharacteristicRing>::ZERO;
+            let mut powx: AB::F = <AB::F as PrimeCharacteristicRing>::ONE;
+            for i in 0..32 {
+                let bit = cur[off.xr_sel_bits + i];
+                builder.assert_bool(bit);
+                sel_recon = sel_recon + bit.into() * powx.clone();
+                powx = powx * two.clone();
+            }
+            let mut sel_val: AB::Expr = <AB::Expr as PrimeCharacteristicRing>::ZERO;
+            for s in 0..cols::XR_LEN {
+                sel_val =
+                    sel_val + cur[off.lane_sel + s].into() * cur[off.xr + s].into();
+            }
+            builder.assert_eq(sel_recon, sel_val);
+
+            // NEW_SEL == Σ NEW_SEL_BITS[i]·2^i (bits boolean).
+            let mut new_recon: AB::Expr = <AB::Expr as PrimeCharacteristicRing>::ZERO;
+            let mut pown: AB::F = <AB::F as PrimeCharacteristicRing>::ONE;
+            for i in 0..32 {
+                let bit = cur[off.new_sel_bits + i];
+                builder.assert_bool(bit);
+                new_recon = new_recon + bit.into() * pown.clone();
+                pown = pown * two.clone();
+            }
+            builder.assert_eq(cur[off.new_sel].into(), new_recon);
+
+            // Per output bit i: parity of the 5 contributing bits
+            // (selected XR lane + the IN_LEN input cells) ==
+            // NEW_SEL_BITS[i] + 2·Q[i], Q range-bounded.
+            for i in 0..32 {
+                let mut col_sum: AB::Expr = cur[off.xr_sel_bits + i].into();
+                for c in 0..IN_LEN {
+                    col_sum = col_sum + cur[off.in_bits + c * 32 + i].into();
+                }
+                let mut q: AB::Expr = <AB::Expr as PrimeCharacteristicRing>::ZERO;
+                let mut powq: AB::F = <AB::F as PrimeCharacteristicRing>::ONE;
+                for b in 0..QBITS {
+                    let qbit = cur[off.q_bits + i * QBITS + b];
+                    builder.assert_bool(qbit);
+                    q = q + qbit.into() * powq.clone();
+                    powq = powq * two.clone();
+                }
+                let nbit = cur[off.new_sel_bits + i];
+                builder.assert_eq(col_sum, nbit.into() + q * two.clone());
+            }
+        }
+
+        // ---- Boundary: first row register is zero ----
+        {
+            let main = builder.main();
+            let cur = main.current_slice();
+            let mut fr = builder.when_first_row();
+            for s in 0..cols::XR_LEN {
+                fr.assert_zero(cur[off.xr + s]);
+            }
+        }
+
+        // ---- Cross-row register update ----
+        //
+        //   XR_next[lane] = NEW_SEL          (= XR[lane] ⊕ ⊕IN)
+        //   XR_next[s]    = XR[s]            (s ≠ lane; incl. all
+        //                                     lanes on padding rows)
+        {
+            let (sel, cur_xr, new_sel): (
+                [AB::Var; cols::LANE_SEL_LEN],
+                [AB::Var; cols::XR_LEN],
+                AB::Expr,
+            ) = {
+                let main = builder.main();
+                let cur = main.current_slice();
+                (
+                    core::array::from_fn(|s| cur[off.lane_sel + s]),
+                    core::array::from_fn(|s| cur[off.xr + s]),
+                    cur[off.new_sel].into(),
+                )
+            };
+            let nxt_xr: [AB::Var; cols::XR_LEN] = {
+                let main = builder.main();
+                let nxt = main.next_slice();
+                core::array::from_fn(|s| nxt[off.xr + s])
+            };
+
+            let mut tb = builder.when_transition();
+
+            // Selected lane: Σ_s LANE_SEL[s]·XR_next[s] == NEW_SEL
+            // (on an active row exactly one LANE_SEL is 1; on a
+            // padding row the sum is 0 and NEW_SEL recomposes 0).
+            let mut res_sel: AB::Expr = <AB::Expr as PrimeCharacteristicRing>::ZERO;
+            for s in 0..cols::XR_LEN {
+                res_sel = res_sel + sel[s].into() * nxt_xr[s].into();
+            }
+            tb.assert_eq(res_sel, new_sel);
+
+            // Non-selected lanes pass through unchanged. On a
+            // padding row every LANE_SEL is 0 ⇒ all lanes pass
+            // through ⇒ the final register propagates to the last
+            // row (where the §6(b) binding reads it).
+            for s in 0..cols::XR_LEN {
+                let one_minus_sel: AB::Expr =
+                    <AB::Expr as PrimeCharacteristicRing>::ONE - sel[s].into();
+                let diff: AB::Expr = nxt_xr[s].into() - cur_xr[s].into();
+                tb.assert_zero(one_minus_sel * diff);
+            }
+        }
+    }
+}
+
+impl<F> BaseAir<F> for StripeXorChip {
+    fn width(&self) -> usize {
+        cols::ROW_W
+    }
+}
+
+impl<AB: AirBuilder<F = Val>> Air<AB> for StripeXorChip {
+    fn eval(&self, builder: &mut AB) {
+        StripeXorChip::eval_at(builder, &StripeXorChip::LOCAL_OFFSETS);
+    }
+}
+
+/// Reference fold (XOR of each row's 4 `IN` cells into its lane),
+/// matching the sub-block-major sweep reduction. `events` is the
+/// visitation order `(lane, [i32; IN_LEN])`.
+pub fn ref_stripe_xor(events: &[(usize, [i32; IN_LEN])]) -> [u32; STATE_LEN] {
+    let mut xr = [0u32; STATE_LEN];
+    for &(lane, in4) in events {
+        let mut x = 0u32;
+        for &v in &in4 {
+            x ^= v as u32;
+        }
+        xr[lane] ^= x;
+    }
+    xr
+}
+
+/// Build a standalone trace from a visitation sequence
+/// `(lane, [i32; IN_LEN])`. One active row per event; padded to
+/// the next power of two (≥ 4). The final register propagates
+/// through the padding rows so the last row carries it.
+pub fn build_trace(events: &[(usize, [i32; IN_LEN])]) -> RowMajorMatrix<Val> {
+    use p3_field::integers::QuotientMap;
+
+    assert!(!events.is_empty(), "events must be non-empty");
+    let n = (events.len() + 1).next_power_of_two().max(4);
+    let mut flat = vec![Val::default(); n * cols::ROW_W];
+
+    let set_bits = |row: &mut [Val], at: usize, v: u32| {
+        for i in 0..32 {
+            row[at + i] = <Val as QuotientMap<u64>>::from_int(((v >> i) & 1) as u64);
+        }
+    };
+
+    let mut xr = [0u32; STATE_LEN];
+    for (idx, &(lane, in4)) in events.iter().enumerate() {
+        assert!(lane < STATE_LEN, "lane out of range");
+        let row = &mut flat[idx * cols::ROW_W..(idx + 1) * cols::ROW_W];
+
+        row[cols::IS_ACTIVE] = <Val as QuotientMap<u64>>::from_int(1);
+        row[cols::LANE_SEL + lane] = <Val as QuotientMap<u64>>::from_int(1);
+
+        let mut xin = 0u32;
+        for c in 0..IN_LEN {
+            let u = in4[c] as u32;
+            row[cols::IN + c] = <Val as QuotientMap<u64>>::from_int(u as u64);
+            set_bits(row, cols::IN_BITS + c * 32, u);
+            xin ^= u;
+        }
+        // Register state entering this row.
+        for s in 0..STATE_LEN {
+            row[cols::XR + s] = <Val as QuotientMap<u64>>::from_int(xr[s] as u64);
+        }
+        let sel_val = xr[lane];
+        set_bits(row, cols::XR_SEL_BITS, sel_val);
+        let new_sel = sel_val ^ xin;
+        row[cols::NEW_SEL] = <Val as QuotientMap<u64>>::from_int(new_sel as u64);
+        set_bits(row, cols::NEW_SEL_BITS, new_sel);
+
+        // Q[i] = (XR_sel_bit[i] + Σ_c IN_bit[c][i] − NEW_bit[i]) / 2.
+        for i in 0..32 {
+            let mut col_sum: u32 = (sel_val >> i) & 1;
+            for c in 0..IN_LEN {
+                col_sum += (in4[c] as u32 >> i) & 1;
+            }
+            let q = (col_sum - ((new_sel >> i) & 1)) / 2;
+            for b in 0..QBITS {
+                row[cols::Q_BITS + i * QBITS + b] =
+                    <Val as QuotientMap<u64>>::from_int(((q >> b) & 1) as u64);
+            }
+        }
+
+        xr[lane] = new_sel;
+    }
+
+    // Padding rows: register passthrough (all selectors 0).
+    for idx in events.len()..n {
+        let row = &mut flat[idx * cols::ROW_W..(idx + 1) * cols::ROW_W];
+        for s in 0..STATE_LEN {
+            row[cols::XR + s] = <Val as QuotientMap<u64>>::from_int(xr[s] as u64);
+        }
+    }
+
+    RowMajorMatrix::new(flat, cols::ROW_W)
+}
+
+/// Read the final `STATE_LEN`-lane register from a built trace's
+/// last row (the value the §6(b) composite binding reads).
+pub fn final_register(trace: &RowMajorMatrix<Val>) -> [u32; STATE_LEN] {
+    use p3_field::PrimeField64;
+    let h = trace.values.len() / cols::ROW_W;
+    let base = (h - 1) * cols::ROW_W;
+    core::array::from_fn(|s| trace.values[base + cols::XR + s].as_canonical_u64() as u32)
+}
+
+#[cfg(test)]
+mod tests {
+    //! Exhaustive standalone tests. Self-contained: `ai-pow-zk`
+    //! must NOT depend on `ai-pow`. The cross-crate parity vs
+    //! `compute_tile_trace`'s real per-stripe `x_steps` (over the
+    //! sub-block-major sweep) is asserted from the `ai-pow` side
+    //! under the `zk` feature (HIGH-2.2 §6(b)).
+
+    use super::*;
+    use crate::circuit::{build_stark_config, AiPowStarkConfig, CircuitConfig};
+    use crate::params::ZkParams;
+
+    use p3_field::integers::QuotientMap;
+    use p3_uni_stark::{prove, verify};
+
+    fn cfg() -> AiPowStarkConfig {
+        build_stark_config(
+            &ZkParams {
+                m: 8,
+                k: 16,
+                n: 8,
+                noise_rank: 2,
+                tile: 2,
+                difficulty_bits: 0,
+            },
+            &CircuitConfig::TEST_PEARL,
+        )
+    }
+
+    fn lcg(seed: u64, n: usize) -> Vec<i32> {
+        let mut s = seed;
+        (0..n)
+            .map(|_| {
+                s = s.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+                (s >> 32) as i32
+            })
+            .collect()
+    }
+
+    /// Sub-block-major visitation: for each of `n_sb` sub-blocks,
+    /// fold all `n_stripes` stripes (lane = stripe index). The
+    /// final register must equal the reference and verify.
+    #[test]
+    fn final_register_matches_reference_and_verifies() {
+        let c = cfg();
+        for (n_sb, n_stripes) in [(1usize, 4usize), (16, 16), (4, 8), (16, 1)] {
+            let raw = lcg(0xABCD ^ (n_sb as u64), n_sb * n_stripes * IN_LEN);
+            let mut events = Vec::new();
+            for sb in 0..n_sb {
+                for step in 0..n_stripes {
+                    let base = (sb * n_stripes + step) * IN_LEN;
+                    let in4: [i32; IN_LEN] =
+                        core::array::from_fn(|k| raw[base + k]);
+                    events.push((step, in4));
+                }
+            }
+            let trace = build_trace(&events);
+            assert_eq!(
+                final_register(&trace),
+                ref_stripe_xor(&events),
+                "n_sb={n_sb} n_stripes={n_stripes}: register vs reference"
+            );
+            let proof = prove::<AiPowStarkConfig, _>(&c, &StripeXorChip, trace, &[]);
+            verify::<AiPowStarkConfig, _>(&c, &StripeXorChip, &proof, &[])
+                .unwrap_or_else(|e| panic!("honest stripe-xor trace must verify: {e:?}"));
+        }
+    }
+
+    /// Independent re-derivation: XOR-by-lane via explicit per-bit
+    /// parity (guards a shared bug between build_trace and chip).
+    #[test]
+    fn matches_manual_bit_parity() {
+        let n_sb = 16;
+        let n_stripes = 16;
+        let raw = lcg(7, n_sb * n_stripes * IN_LEN);
+        let mut events = Vec::new();
+        let mut want = [0u32; STATE_LEN];
+        for sb in 0..n_sb {
+            for step in 0..n_stripes {
+                let base = (sb * n_stripes + step) * IN_LEN;
+                let in4: [i32; IN_LEN] = core::array::from_fn(|k| raw[base + k]);
+                for &v in &in4 {
+                    want[step] ^= v as u32;
+                }
+                events.push((step, in4));
+            }
+        }
+        assert_eq!(final_register(&build_trace(&events)), want);
+    }
+
+    fn honest() -> RowMajorMatrix<Val> {
+        let raw = lcg(99, 16 * 16 * IN_LEN);
+        let mut events = Vec::new();
+        for sb in 0..16 {
+            for step in 0..16 {
+                let base = (sb * 16 + step) * IN_LEN;
+                events.push((step, core::array::from_fn(|k| raw[base + k])));
+            }
+        }
+        build_trace(&events)
+    }
+
+    #[test]
+    fn rejects_tampered_register() {
+        let c = cfg();
+        let mut t = honest();
+        let h = t.values.len() / cols::ROW_W;
+        // Corrupt lane 0 one row before the end.
+        t.values[(h - 2) * cols::ROW_W + cols::XR] =
+            <Val as QuotientMap<u64>>::from_int(0xDEAD_BEEF);
+        let p = prove::<AiPowStarkConfig, _>(&c, &StripeXorChip, t, &[]);
+        assert!(
+            verify::<AiPowStarkConfig, _>(&c, &StripeXorChip, &p, &[]).is_err(),
+            "tampered XR must reject"
+        );
+    }
+
+    #[test]
+    fn rejects_nonzero_first_row_register() {
+        let c = cfg();
+        let mut t = honest();
+        t.values[cols::XR + 3] = <Val as QuotientMap<u64>>::from_int(1);
+        let p = prove::<AiPowStarkConfig, _>(&c, &StripeXorChip, t, &[]);
+        assert!(
+            verify::<AiPowStarkConfig, _>(&c, &StripeXorChip, &p, &[]).is_err(),
+            "non-zero initial register must reject"
+        );
+    }
+
+    #[test]
+    fn rejects_tampered_new_sel_without_bits() {
+        let c = cfg();
+        let mut t = honest();
+        t.values[2 * cols::ROW_W + cols::NEW_SEL] =
+            <Val as QuotientMap<u64>>::from_int(0x7);
+        let p = prove::<AiPowStarkConfig, _>(&c, &StripeXorChip, t, &[]);
+        assert!(
+            verify::<AiPowStarkConfig, _>(&c, &StripeXorChip, &p, &[]).is_err(),
+            "NEW_SEL inconsistent with its bits must reject"
+        );
+    }
+
+    #[test]
+    fn rejects_double_lane_selection() {
+        let c = cfg();
+        let mut t = honest();
+        // A second LANE_SEL bit on row 1 ⇒ Σ == IS_ACTIVE violated.
+        t.values[1 * cols::ROW_W + cols::LANE_SEL + 9] =
+            <Val as QuotientMap<u64>>::from_int(1);
+        let p = prove::<AiPowStarkConfig, _>(&c, &StripeXorChip, t, &[]);
+        assert!(
+            verify::<AiPowStarkConfig, _>(&c, &StripeXorChip, &p, &[]).is_err(),
+            "two active LANE_SEL bits must reject"
+        );
+    }
+
+    #[test]
+    fn rejects_out_of_range_q_bit() {
+        let c = cfg();
+        let mut t = honest();
+        t.values[cols::Q_BITS] = <Val as QuotientMap<u64>>::from_int(2);
+        let p = prove::<AiPowStarkConfig, _>(&c, &StripeXorChip, t, &[]);
+        assert!(
+            verify::<AiPowStarkConfig, _>(&c, &StripeXorChip, &p, &[]).is_err(),
+            "non-boolean Q bit must reject"
+        );
+    }
+
+    #[test]
+    fn rejects_lane_passthrough_violation() {
+        let c = cfg();
+        let mut t = honest();
+        // Mutate a non-selected lane across a transition: change
+        // the final register on the last row only ⇒ the prior
+        // transition's passthrough (nxt==cur for s≠lane) breaks.
+        let h = t.values.len() / cols::ROW_W;
+        t.values[(h - 1) * cols::ROW_W + cols::XR + 5] =
+            <Val as QuotientMap<u64>>::from_int(0x1234);
+        let p = prove::<AiPowStarkConfig, _>(&c, &StripeXorChip, t, &[]);
+        assert!(
+            verify::<AiPowStarkConfig, _>(&c, &StripeXorChip, &p, &[]).is_err(),
+            "non-selected-lane mutation must break passthrough"
+        );
+    }
+}

@@ -818,4 +818,66 @@ mod tests {
             });
         }
     }
+
+    /// SPIKE GATE 3 — the route-independent §6(b) core
+    /// (`StripeXorChip`) reduces the **real** sub-block-major
+    /// sweep's per-row accumulator-after-step to
+    /// `compute_tile_trace`'s `x_steps` bit-for-bit. Visitation is
+    /// sub-block-major (`for sb { for step { fold acc_after[sb][step]
+    /// into lane=step } }`); XOR is order-free so the final
+    /// `STATE_LEN`-lane register equals the per-stripe XOR scalars.
+    /// `final_register(build_trace(..))` exercises the chip's
+    /// witness generator; the chip's STARK correctness
+    /// (`constraints ⇔ build_trace`) is proven in `ai-pow-zk`'s own
+    /// `chips::stripe_xor` suite (the legal-direction split).
+    #[test]
+    fn high2_2_spike_stripe_xor_reduces_swept_to_x_steps() {
+        use crate::matmul::{compute_tile_trace, BlockNoise, Matrices};
+        use ai_pow_zk::chips::stripe_xor::{
+            build_trace as sx_build, final_register, ref_stripe_xor, IN_LEN,
+        };
+
+        let params = MatmulParams::TEST_SMALL;
+        let (a, b) = synth_matrices(b"spike-gate3-seed", &params);
+        let ctx = BlockContext::build(b"spike-gate3-blk", &a, &b, &params).expect("ctx");
+        let noise = BlockNoise::expand(&ctx.s_a, &ctx.s_b, &params);
+        let mats = Matrices::build(ctx.a, ctx.b, &noise, &params);
+        let steps = params.num_stripes() as usize;
+
+        for &(ti, tj) in &[
+            (0u32, 0u32),
+            (params.row_tiles() - 1, params.col_tiles() - 1),
+            (2, 5),
+        ] {
+            let mut trace = CompositeTrace::baseline_min();
+            let (_rows, acc_after, _final) =
+                place_subtile_sweep(&mut trace, &mats, &params, ti, tj, 0);
+
+            // Sub-block-major visitation: lane = stripe index.
+            let mut events: Vec<(usize, [i32; IN_LEN])> = Vec::new();
+            for sb_acc in &acc_after {
+                for (step, cells) in sb_acc.iter().enumerate() {
+                    events.push((step, *cells));
+                }
+            }
+
+            let want = compute_tile_trace(&mats, &params, ti, tj).x_steps;
+            let reg = final_register(&sx_build(&events));
+            let refr = ref_stripe_xor(&events);
+            for step in 0..steps {
+                assert_eq!(
+                    reg[step], want[step] as u32,
+                    "StripeXorChip register != x_steps @({ti},{tj}) step {step}"
+                );
+                assert_eq!(
+                    refr[step], want[step] as u32,
+                    "ref_stripe_xor != x_steps @({ti},{tj}) step {step}"
+                );
+            }
+            // Unused high lanes (step ≥ num_stripes) stay 0.
+            for s in steps..16 {
+                assert_eq!(reg[s], 0, "unused lane {s} must be 0");
+            }
+        }
+    }
 }
