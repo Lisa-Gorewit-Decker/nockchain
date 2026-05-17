@@ -1,5 +1,43 @@
 # HIGH-2.2 §6(b)-G3 — Proof Recursion & Aggregation: Detailed Design Spec
 
+> ## ⚠️ AUDIT CORRECTIONS (2026-05-17) — read first
+>
+> An audit of this spec against the `Plonky3-recursion` reference
+> implementation (**`G3_RECURSION_AUDIT.md`** — authoritative
+> over this document where they conflict) found the G3 *logic*
+> sound but **four premises false or materially understated**:
+>
+> - **F1 (BLOCKER): the Tip5 claims are FALSE.** §1.3/§3.2/§3.3/
+>   §14 assert "Tip5 was chosen for recursion / same Goldilocks +
+>   Tip5, no field switch." The reference recursive verifier
+>   arithmetizes **only Poseidon1/Poseidon2** (panics otherwise);
+>   Tip5 is absent. Our Layer-0 (`circuit.rs`) uses Tip5 for the
+>   challenger **and** the MMCS, so G3c is gated on migrating the
+>   Layer-0 config to **Poseidon2-Goldilocks** (+ re-deriving the
+>   FRI soundness budget) — *not* a detail.
+> - **F3 (CRITICAL): the library does NOT pin the inner program/
+>   VK.** §5.2/§6 (`PROGRAM_ROOT`) describe intent correctly but
+>   the binding is **bespoke constraints we must add** on
+>   prover-supplied PI targets — the API provides none. Omitting
+>   it silently re-opens CRIT-1 one layer up.
+> - **F4 (CRITICAL): 2-to-1 aggregation binds NO cross-child
+>   relation.** §5.3's carry stitch / span adjacency / anchor
+>   equality are **hand-written `connect()` glue we own**; the
+>   unified API used naïvely yields a verifying-but-unsound
+>   aggregator.
+> - **F6 (HIGH): §8.3's `ε_stark` must use a *proven* FRI bound**,
+>   not the discredited `queries×blowup` heuristic; pin params
+>   per layer; never `pow_bits = 0`.
+>
+> Plus: Plonky3 rev mismatch (F2, blocker), batch-stark path only
+> (F5), periodic-free check (F9), forbid the `unsafe_*` FRI ctor
+> (F8), and the reference is **unaudited** so the G4 Pearl-
+> faithful interim is authoritative until G3c **and** the
+> recursion stack are audited (F7). Revised prerequisites P0–P6 +
+> the unaffected/validated parts: see `G3_RECURSION_AUDIT.md` §3.
+> The carry-chain induction (§8.2), depth=log N, additive error,
+> no-trusted-setup, and the G3a/G3b substrate **stand**.
+
 > **Status (2026-05-17): DESIGN.** This is the authoritative,
 > implementation-ready spec for the recursion/aggregation layer
 > (the "M12" workstream) that lets the §6(b) useful-work binding

@@ -1097,12 +1097,22 @@ analogous to MED-3 — in force only for true-PROD until G3.
 #### 4.C.4-G3 §6(b) PROD segmentation + M12 recursion — DETAILED DESIGN (2026-05-16)
 
 > **The full implementation-ready recursion/aggregation spec is
-> `crates/ai-pow-zk/G3_RECURSION_AGGREGATION.md`** (high-level
-> conceptual model → the recursion primitive → carry vector →
-> aggregation tree → `PROGRAM_ROOT` CRIT-1-across-tree → FS/domain
-> separation → soundness theorem & error budget → API → edge
-> cases → G3a/G3b/G3c acceptance criteria). This subsection is the
-> in-design-doc summary; that document is authoritative for G3.
+> `crates/ai-pow-zk/G3_RECURSION_AGGREGATION.md`** (conceptual
+> model → recursion primitive → carry vector → aggregation tree →
+> `PROGRAM_ROOT` → soundness theorem → API → G3a/G3b/G3c).
+> **It has been audited against the `Plonky3-recursion` reference
+> — see `crates/ai-pow-zk/G3_RECURSION_AUDIT.md`, AUTHORITATIVE
+> where they conflict.** The audit found the G3 logic sound but
+> the spec wrong/optimistic on four points (F1 hash: our Layer-0
+> is Tip5, the reference arithmetizes only Poseidon2 → Layer-0
+> must migrate to Poseidon2-Goldilocks first; F2 Plonky3-rev
+> mismatch; F3 inner program/VK not pinned by the lib — bespoke
+> CRIT-1-across-tree glue; F4 aggregation binds no cross-child
+> relation — the carry stitch is bespoke `connect` glue). G3c is
+> gated on prerequisites **P0–P6** (audit §3); **G3a/G3b are
+> unaffected and implementable now**; the G4 Pearl interim is
+> authoritative until G3c **and** the (currently unaudited)
+> recursion stack are audited.
 
 **Why segmentation is mandatory for true PROD (grounded).** PROD
 = `m=k=n=4096, tile=128, r=64`. One attested tile's §6(b) sweep
