@@ -163,16 +163,51 @@ plain + noise` ; noise ─InputChip(1)→ `NOISE_PACKED_PREP`
 sweep ⊆ store(`NOISED_PACKED`). ⇒ the swept matmul is provably
 over `noise(committed A,B)`.
 
+> **⚠️ A3.2 CORE FINDING (2026-05-17) — the real reason §4.C.2
+> is the multi-session hard residual.** W1 needs the verifier
+> to pin `NOISE_PACKED_PREP` per store row **witness-free** (the
+> CRIT-1 program is rebuilt from public data only). But M-S1's
+> store is **value-deduplicated from the witness `a′`**
+> (`enumerate_noised_chunks`) — so the store-row ↔ `(i,l)` map
+> (hence each row's `noise_ref` noise *and* its committed plain
+> bytes) is **NOT recomputable from public params alone**.
+> A3.1 produced the *prover-side* map (`…_with_src`, KAT-proven)
+> but the *verifier* cannot reproduce a value-deduped layout.
+> ⇒ A3.2 must first **rework the M-S1 store into a
+> position-addressed, params-deterministic schedule** (row `k`
+> ↔ a fixed `(tile, lane, l)` derived purely from
+> `params`/`tile_i,j` — like the A1 `tile_chunk_range`
+> discipline — so the verifier recomputes the row layout, and
+> `NOISE_PACKED_PREP` via `noise_ref`, with no witness; the
+> committed plain side comes through B1/C3 from the
+> strip-opening leaves). This is M-S1-magnitude soundness-
+> linchpin work and warrants its own design pass + staged
+> landing; it is **not** the lighter "just wiring" the bullets
+> below implied. Soundness meanwhile: CRIT-1 + §4.D + §6 + M-S1
+> + A2 hold (§4.C.2 is the documented residual, not a forgery
+> hole).
+
 **Staged landing (corrected, KAT-first):**
-- **A3.0 ✅** `noise_ref` + cross-crate KAT (done).
-- **A3.1** verifier/program side: `RowDescriptor`/
-  `composite_preprocess` + the bridge compute & pin
-  `NOISE_PACKED_PREP` for store rows via `noise_ref`
-  (deterministic from the A1 `tile_chunk_range` schedule +
-  s_a/s_b). KAT: pinned == `noise_ref` per row.
-- **A3.2** bridge store rewiring W2 + W3 (store rows =
-  strip-opening leaves, `MAT_UNPACK=plain`,
-  `NOISE_UNPACK=noise`); InputChip closes `NOISED_PACKED=a′`.
+- **A3.0 ✅** `noise_ref` + cross-crate KAT (done, `4c6b3e8`).
+- **A3.1 ✅** prover-side per-store-row `(plain,noise)` map +
+  cross-crate KAT (`enumerate_noised_chunks_with_src`,
+  `NoisedChunkSrc`; every store chunk == committed_plain +
+  `noise_ref` byte-for-byte; `79f748d`). No AIR change.
+- **A3.2a (next) — position-addressed store schedule.** Replace
+  M-S1's value-deduped `enumerate_noised_chunks` store layout
+  with a params/tile-deterministic one so the verifier can
+  recompute row→`(tile,lane,l)` (and thus `NOISE_PACKED_PREP`)
+  witness-free. Must keep M-S1's LogUp balance
+  (`NOISED_PACKED` multiset unchanged) and re-validate Route-A.
+- **A3.2b** W1+W2 wiring: program/`RowDescriptor`
+  reconstruction pins `NOISE_PACKED_PREP = polyval(noise_ref
+  noise,129)` per (now params-deterministic) store row; store
+  rows write `MAT_UNPACK=plain`, `NOISE_UNPACK=noise`
+  (InputChip closes `NOISED_PACKED=plain+noise=a′`).
+- **A3.2c = W3/B1** store rows ↔ strip-opening leaves via C3
+  (`MAT_UNPACK` = the committed plain bytes the A2 leaf layer
+  hashed), bridging the 1024-B-plain-chunk vs 8-i8-noised-window
+  granularity gap.
 - **A3.3** Route-A + adversarial: a store whose noise ≠
   `noise_ref(s_a)` (forced by the CRIT-1 pin) or whose
   `MAT_UNPACK` ≠ the committed strip (C3) must reject; full
