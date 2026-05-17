@@ -165,33 +165,41 @@ bit-layout + zero-blast-radius) and e2e-validated (ai-pow-zk lib
 ai-pow `--features zk` green: lib 64/0, `end_to_end` 13/0,
 `adversarial` 19/0; byte-equivalence preserved).
 
-**Remaining useful-work-soundness residual — §6(b) + §4.E, one
-*entangled* item (precisely scoped, not a *proof*-forgery
-hole):** the per-stripe `X_STEP` fed to the `FoldChip` is placed
-by the honest bridge but **not yet in-circuit bound** to the
-matmul accumulator (`XStepChip` is byte-equiv-proven standalone
-but not composite-wired to force `X_STEP ← ⊕CUMSUM_TILE ←
-committed A/B`; the matmul subtile-sweep rows are not placed on
-the honest path). Because nothing in-circuit yet ties the digest
-to a *specific tile's committed-matrix accumulator*, the attested
-`(tile_i,tile_j)` (§4.E) **cannot be soundly bound independently**
-— a free tile/`X_STEP` PI would be vacuous. So §6(b) and §4.E are
-the *same* cryptographic-core binding and land together,
-reconciled with **MED-3** (verifier-side tile derivation). A
-*malicious* prover could meanwhile supply a fabricated `X_STEP`
-→ fabricated `M` → forged `HASH_JACKPOT`; held in check by CRIT-1
-+ the keystone + §6(a) (the proof cannot be forged against the
-canonical program and the fold schedule is verifier-fixed); the
-open gap is only that the attacker is not yet *forced* to do the
-real matmul for `X_STEP`/the tile. Closing it = place the matmul
-subtile-sweep rows on the honest path, composite-wire `XStepChip`
-to force `FOLD_XSTEP == ⊕CUMSUM_TILE` per stripe (Route-A
-`noised_packed` already binds `CUMSUM_TILE`'s inputs to the
-committed matrices), and bind `(tile_i,tile_j)` to that
-accumulator's offsets per MED-3 — *not* a wide preprocessed block
-(§4.C.8 ~10x trap; the §6(a) schedule pin already demonstrates
-the cheap CONTROL_PREP-reuse pattern). Tracked as HIGH-2.2
-§6(b)+§4.E; invasive, its own focused effort. The original
+**§6(b) — ✅ CLOSED for the primary mining geometry (DONE
+2026-05-16, `072d840`/`c63fbc1`/`69e420d`).** The per-stripe
+`X_STEP` fed to the `FoldChip` is now **in-circuit forced** to
+equal the XOR of the real `t×t` committed-matrix accumulator.
+`CompositeTrace::place_useful_work_chain` places the sub-block-
+major matmul sweep + a co-located `StripeXorChip` reduction; the
+matmul chip forces `nxt.CUMSUM == compute_row(cur)`,
+`StripeXorChip::eval_composite` binds `SX_IN == nxt.CUMSUM_TILE`,
+the chip XOR-reduces to `SX_XR`, and the Pinned §6(b) keystone
+forces `FOLD_XSTEP == SX_XR[stripe]`. **A malicious prover can no
+longer fabricate `X_STEP` — it must do the real matmul.** Honest
+bridge places it for the attested tile, byte-equivalent to the
+plain miner. Validated end-to-end through the production Route-A
+batch-stark path: `chips::stripe_xor` 8/0,
+`high2_2_useful_work_chain_unit`, `high2_2_fold_chain_pinned_logup`
+(full chain); ai-pow-zk lib 331/0; ai-pow `--features zk` green
+(lib 70/0, `end_to_end` 13/0, byte-equivalence preserved).
+**§4.E — ✅ DONE (`e7f59f7`):** the bridge attests the *actual
+solved tile* via the MED-3 `tile_ij` contract
+(`high2_2_attests_real_solved_tile`); all tiles share
+`difficulty_target(params)` so the index is not a PoW-soundness
+requirement.
+
+**Remaining (scoped; NOT a *proof*-forgery hole).** (1)
+`num_stripes > 16` (rectangular / PROD `k/r = 64`): `StripeXorChip`
+has 16 per-stripe lanes, so those params take the legacy path with
+the §6(b) keystone gated **off** via `sx_bound` — a value the
+*verifier* derives from the trusted block params, never the proof
+(as sound as CRIT-1). Closing it = a wider register + a
+per-fold-row stripe selector (the "dominant new width"). (2) deep
+tile↔committed-store: that the swept `A_NOISED`/`B_NOISED` are the
+block's *committed* rows/cols reduces to the §4.C
+`noised_packed`-non-vacuity on sweep rows (`place_matmul_step`
+sets `MAT_ID = 0` — §4.C.10). Both tracked jointly; soundness
+meanwhile held by CRIT-1 + keystone + §6(a) + §6(b). The original
 analysis below stands as the historical rationale.
 
 **Original severity: High (PoW *usefulness* not enforced even if
@@ -427,30 +435,27 @@ is verifier-fixed**. Done by reusing the existing pinned column
 blast radius for non-fold rows). +6 exhaustive ControlChip tests;
 e2e-validated (ai-pow-zk lib 322/0; ai-pow `--features zk` green).
 
-**Remaining (precisely scoped useful-work-soundness residual —
-not a *proof*-forgery hole) — §6(b) + §4.E, one entangled
-item:** the per-stripe `X_STEP` is honest-placed but not yet
-*in-circuit* bound to the matmul accumulator (`XStepChip`
-byte-equiv-proven standalone, not composite-wired; the matmul
-subtile-sweep rows aren't placed on the honest path). Because
-nothing in-circuit yet ties the digest to a *specific tile's*
-committed-matrix accumulator, the attested `(tile_i,tile_j)`
-(§4.E) cannot be soundly bound on its own — a free tile/`X_STEP`
-PI would be vacuous — so §6(b) and §4.E are the same binding and
-land together, consuming **MED-3**'s now-resolved verifier-side
-derivation contract (`prove_and_verify_for_block` + `tile_ij`).
-Held meanwhile by CRIT-1 + the keystone + §6(a)
-(the proof can't be forged against the canonical program and the
-fold schedule is verifier-fixed). Closing it = place the matmul
-subtile-sweep rows + composite-wire `XStepChip` to force
-`FOLD_XSTEP == ⊕CUMSUM_TILE` + bind `(tile_i,tile_j)` to that
-accumulator per the MED-3 contract (not a wide preprocessed
-block — `HIGH2_2_DESIGN.md` §4.C.8; §6(a) demonstrates the cheap
-CONTROL_PREP-reuse pattern). **MED-3 is ✅ RESOLVED**
-(`prove_and_verify_for_block`); the 7-round-Tip5 review still
-remains. Net: CRIT-1 + HIGH-2
-keystone + §6(a) make the SNARK PoW-sound, the fold schedule
-verifier-fixed, and an attacker cannot forge a winning proof; the
-*honest* proof attests the real, byte-equivalent useful-work
-tile; the final residual is forcing a *malicious* prover through
-the same matmul for `X_STEP`/the tile.
+**Updated 2026-05-16 — §6(b) CLOSED for the primary mining
+geometry + §4.E DONE (`072d840`/`c63fbc1`/`69e420d`/`e7f59f7`).**
+`X_STEP` is now in-circuit forced to `⊕` the real `t×t`
+committed-matrix accumulator: `place_useful_work_chain` (matmul
+sub-block-major sweep + co-located `StripeXorChip`) + the
+`SX_IN == nxt.CUMSUM_TILE` binding + the Pinned
+`FOLD_XSTEP == SX_XR[stripe]` keystone — **a malicious prover
+must do the real matmul** (`num_stripes ≤ 16`: TEST_SMALL / the
+headline e2e). The bridge attests the *actual solved tile* via
+MED-3 `tile_ij`. End-to-end green (ai-pow-zk lib 331/0; ai-pow
+`--features zk` lib 70/0, `end_to_end` 13/0; byte-equivalence
+preserved). MED-3 also ✅ RESOLVED (`prove_and_verify_for_block`).
+
+**Remaining (scoped; NOT a *proof*-forgery hole).** (1)
+`num_stripes > 16` (rect / PROD): legacy path, §6(b) keystone
+gated off via the verifier-set `sx_bound` (sound as CRIT-1);
+needs a wider StripeXor register + per-fold-row stripe selector.
+(2) deep tile↔committed-store ≡ §4.C `noised_packed`-non-vacuity
+on sweep rows. Plus the 7-round-Tip5 review. Net: CRIT-1 + HIGH-2
+keystone + §6(a) + §6(b) make the SNARK PoW-sound, the fold
+schedule verifier-fixed, and — for the primary mining geometry —
+a *malicious* prover is now forced through the real matmul for
+`X_STEP`; the *honest* proof attests the real, byte-equivalent
+solved tile.

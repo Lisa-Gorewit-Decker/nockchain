@@ -263,27 +263,24 @@ radius for non-fold rows). +6 exhaustive ControlChip tests
 Full `cargo test -p ai-pow --features zk` green incl.
 `end_to_end` 13/0; ai-pow-zk lib 322/0 incl.
 `high2_2_fold_chain_pinned_logup`/`routea_*`/`crit1_*`; no
-regression. **Remaining (precise useful-work-soundness residual,
-not a *proof*-forgery hole) — §6(b) + §4.E, one entangled
-item:** the per-stripe `X_STEP` is honest-placed but not yet
-*in-circuit* bound to the matmul accumulator (`XStepChip`
-byte-equiv-proven standalone, not composite-wired; the matmul
-subtile-sweep rows aren't placed on the honest path). Because
-nothing in-circuit yet ties the digest to a *specific tile's*
-committed-matrix accumulator, the attested `(tile_i,tile_j)`
-(§4.E) can't be soundly bound on its own — a free tile/`X_STEP`
-PI would be vacuous — so §6(b) and §4.E are the same binding and
-land together, consuming **MED-3**'s now-resolved verifier-side
-derivation contract. A malicious prover isn't yet *forced* to do
-the real matmul for `X_STEP`/the tile (held meanwhile by CRIT-1 +
-keystone + §6(a)). Closing it = place the matmul subtile-sweep
-rows + composite-wire `XStepChip` to force
-`FOLD_XSTEP == ⊕CUMSUM_TILE` + bind `(tile_i,tile_j)` to that
-accumulator per the MED-3 contract (not a wide preprocessed
-block — `HIGH2_2_DESIGN.md` §4.C.8; §6(a) shows the cheap
-CONTROL_PREP-reuse pattern). **MED-3 ✅ RESOLVED 2026-05-16**
-(`ai_pow::zk_bridge::prove_and_verify_for_block` re-derives
-`target` from chain-pinned params; `tile_ij` derivation contract;
-unhardened primitive doc-commented; ai-pow `--features zk` lib
-66/0, e2e green). Plus recursion (M12),
+regression. **§6(b) ✅ CLOSED for the primary mining geometry +
+§4.E ✅ DONE 2026-05-16** (`072d840`/`c63fbc1`/`69e420d`/`e7f59f7`):
+`X_STEP` is now in-circuit forced to `⊕` the real `t×t`
+committed-matrix accumulator — `place_useful_work_chain`
+(sub-block-major matmul sweep + co-located `StripeXorChip`) +
+`SX_IN == nxt.CUMSUM_TILE` binding + Pinned
+`FOLD_XSTEP == SX_XR[stripe]` keystone, so **a malicious prover
+must do the real matmul** for `num_stripes ≤ 16` (TEST_SMALL /
+the headline e2e). The bridge attests the *actual solved tile*
+via MED-3 `tile_ij`. Validated end-to-end (ai-pow-zk lib 331/0;
+ai-pow `--features zk` lib 70/0, `end_to_end` 13/0,
+byte-equivalence preserved). **MED-3 ✅ RESOLVED**
+(`prove_and_verify_for_block` re-derives `target`; `tile_ij`
+contract). **Remaining (scoped, not a forgery hole):** (1)
+`num_stripes > 16` (rect / PROD `k/r=64`) — legacy path, §6(b)
+keystone gated off via the verifier-set `sx_bound` (sound as
+CRIT-1); needs a wider StripeXor register + per-fold-row stripe
+selector. (2) deep tile↔committed-store ≡ §4.C
+`noised_packed`-non-vacuity on sweep rows (`place_matmul_step`
+sets `MAT_ID=0`). Plus 7-round-Tip5 review, recursion (M12),
 production-hardening (P1/P3/P5/P6).
