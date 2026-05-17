@@ -1096,6 +1096,14 @@ analogous to MED-3 — in force only for true-PROD until G3.
 
 #### 4.C.4-G3 §6(b) PROD segmentation + M12 recursion — DETAILED DESIGN (2026-05-16)
 
+> **The full implementation-ready recursion/aggregation spec is
+> `crates/ai-pow-zk/G3_RECURSION_AGGREGATION.md`** (high-level
+> conceptual model → the recursion primitive → carry vector →
+> aggregation tree → `PROGRAM_ROOT` CRIT-1-across-tree → FS/domain
+> separation → soundness theorem & error budget → API → edge
+> cases → G3a/G3b/G3c acceptance criteria). This subsection is the
+> in-design-doc summary; that document is authoritative for G3.
+
 **Why segmentation is mandatory for true PROD (grounded).** PROD
 = `m=k=n=4096, tile=128, r=64`. One attested tile's §6(b) sweep
 is `(t/TILE_H)² · num_stripes · ⌈r/TILE_D⌉ = 64² · 64 · 4 ≈
