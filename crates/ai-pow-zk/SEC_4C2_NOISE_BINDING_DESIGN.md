@@ -1,5 +1,24 @@
 # §4.C.2 / Phase-A3 — store ↔ committed-plain-strip noise-derivation binding (design)
 
+> **PROGRESS 2026-05-17:** A3.0/A3.1/A3.2a/**A3.2b all DONE &
+> validated** — the §4.C.2 **noise tie is closed** (store
+> `NOISE_UNPACK` forced to `noise_ref` of the C1-public seed via
+> InputChip + the CRIT-1 `NOISE_PACKED_PREP` pin; `ai-pow-zk
+> --lib` 351/0/22, `ai-pow --features zk` all-binaries 0-failed,
+> MED-3 roundtrip green through the split store). **Maintainer
+> decision (hybrid):** the remaining **plain tie (B1)** ships as
+> **c-mset interim now → c-exact scoped as the zero-gap
+> completion** (§7 staged plan; §3′ c-exact/c-mset). c-mset is a
+> new M-S1-pattern LogUp bus (store `MAT_UNPACK` ⊆ committed-
+> plain windows) — **soundness-critical + invasive ⇒ staged,
+> KAT-first, not rushed (R1)**; it is itself ≈M-S1-magnitude
+> (M-S1's one bus took a long staged arc). c-exact (position-
+> exact, zero-gap) is the documented Phase-A3 residual after
+> c-mset. Soundness meanwhile: CRIT-1 + §4.D + §6 + M-S1 + A2 +
+> the A3.2b noise pin hold; §4.C.2 with A3.2b is already
+> *strictly stronger than pre-A3* (store noise = public-seed
+> Pearl noise, not prover-chosen) and **not a forgery hole**.
+>
 > **Status:** DESIGN — **CORRECTED 2026-05-17 (A3.0 finding).**
 > The original §3 proposed a heavy in-circuit BLAKE3-keyed
 > noise **sub-AIR ("B2")**. **That is Pearl-unfaithful and
@@ -237,11 +256,40 @@ over `noise(committed A,B)`.
   be rushed**; (c-mset) is a legitimate validated *interim*
   with a precise residual if needed. The decision (c-exact now
   vs c-mset-interim→c-exact) is surfaced to the maintainer.
-- **A3.3** Route-A + adversarial: a store whose noise ≠
-  `noise_ref(s_a)` (forced by the CRIT-1 pin) or whose
-  `MAT_UNPACK` ≠ the committed strip (C3) must reject; full
-  `ai-pow-zk --lib` + `ai-pow --features zk`;
-  debug-assertions-ON; §4.C end-to-end, zero gap.
+- **A3.2c (B1 plain tie) — c-mset interim, staged (maintainer
+  hybrid decision; ≈M-S1-magnitude new LogUp bus ⇒ R1 staged,
+  not rushed):**
+  - **c-mset.0** off-circuit/KAT de-risk (the M-S1 coverage-net
+    / P-B.2.0 discipline): against the real bridge geometry,
+    the strip-opening's committed-plain byte-window multiset ⊇
+    the store `MAT_UNPACK` window multiset (the property the
+    bus enforces) — no AIR change.
+  - **c-mset.1** add `BUS_PLAIN`: strip-opening leaf rows
+    *publish* committed-plain 8-byte windows; store rows
+    *query* `MAT_UNPACK`. AIR `push_interaction` + bus const.
+  - **c-mset.2** `populate_lookup_freq` accounting for the new
+    bus (producer freq); honest balance.
+  - **c-mset.3** Route-A + debug-assertions-ON + adversarial: a
+    store `MAT_UNPACK` ∉ the committed-plain multiset rejects;
+    full `ai-pow-zk --lib` + `ai-pow --features zk`. (The
+    LogUp-coupling / unit≠Route-A hazard — M-S1 lesson — gates
+    every sub-step.)
+  After c-mset: §4.C.2 = "every swept `a′` = (some committed
+  plain window) + (the store row's position-pinned Pearl
+  noise)" — strictly stronger than pre-A3, **not a forgery
+  hole**; plain-side position-exactness is the **precise
+  documented residual** (c-exact).
+- **A3.2c (B1) — c-exact (zero-gap completion; the Phase-A3
+  residual after c-mset).** Co-locate store rows onto the
+  strip-opening leaf compression rows so the existing C3 binds
+  `MAT_UNPACK` to the *exact* committed plain bytes ∈ `HASH_A`
+  (the 1024-B-chunk ↔ 8-i8-window granularity bridge — the
+  long-flagged §4.C.2 core difficulty). Its own staged effort
+  (R1); closes the c-mset residual ⇒ true zero-gap §4.C.2.
+- **A3.3** final gate: full `ai-pow-zk --lib` + `ai-pow
+  --features zk` + debug-assertions-ON; §4.C end-to-end
+  (committed → noise → store → M-S1 sweep → fold → digest);
+  docs/`ZKP_SECURITY_REPORT`/`GAP_AUDIT` flip.
 
 Far lighter than the struck-through §3 (no BLAKE3-keyed PRNG
 sub-AIR, no select-subtract chip, no new LogUp): it is

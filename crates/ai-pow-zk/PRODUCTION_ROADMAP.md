@@ -80,17 +80,26 @@ vague — external). Phase E is cross-cutting.
 > regression. **A3:** A3.0 ✅ (`4c6b3e8`, `noise_ref` +
 > cross-crate KAT == `BlockNoise`) + a **major design
 > correction** (`5cf8e51`): §4.C.2 is Pearl-§4.7 *preprocessed
-> noise* (reuse the existing CRIT-1 `NOISE_PACKED_PREP` +
-> InputChip + C3 + `noise_ref`), **not** an in-circuit PRNG
-> sub-AIR — far lighter & correctly scoped. **A3.1–A3.3
-> remain**: milestone-class invasive (reworks M-S1's
-> value-deduped store → position-addressed; CRIT-1 program
-> reconstruction is the PoW-soundness linchpin) — staged,
-> KAT-first, Route-A + debug-assertions-ON, **not rushed**
-> (standing don't-rush-invasive-soundness constraint). The
-> production-critical unblocker (A2) is done; A3 is the §4.C
-> soundness-completion residual (not a forgery hole — CRIT-1 +
-> §4.D + §6 + M-S1 + A2 hold). Detail: `SEC_4C2_NOISE_BINDING_DESIGN.md`.
+> noise* (reuse CRIT-1 `NOISE_PACKED_PREP` + InputChip + C3 +
+> `noise_ref`), **not** a PRNG sub-AIR. **A3.1 ✅** (`79f748d`
+> per-row decomp KAT), **A3.2a ✅** (`41a7005` position-
+> addressed witness-free store layout — the conceptual core
+> blocker, solved), **A3.2b ✅** (`5a37c8e` split store: §4.C.2
+> **noise tie CLOSED** — store noise forced to `noise_ref` of
+> the C1-public seed; `ai-pow-zk --lib` 351/0/22, `ai-pow
+> --features zk` all-binaries 0-failed incl. end_to_end +
+> MED-3). **Remaining = B1 (the *plain* tie):** maintainer
+> **hybrid** decision — **c-mset interim** (new M-S1-pattern
+> LogUp bus: store `MAT_UNPACK` ⊆ committed-plain windows;
+> ≈M-S1-magnitude ⇒ staged, KAT-first, **not rushed** per
+> `~/.claude/CLAUDE.md` R1) **→ c-exact** (co-locate store onto
+> strip-opening leaves via C3; position-exact, zero-gap)
+> scoped as the Phase-A3 residual. §4.C.2-with-A3.2b is already
+> strictly stronger than pre-A3 and **not a forgery hole**
+> (CRIT-1 + §4.D + §6 + M-S1 + A2 + the noise pin hold). The
+> production-critical unblocker (A2) is done. Detail +
+> c-mset.0–3 / c-exact staged plan:
+> `SEC_4C2_NOISE_BINDING_DESIGN.md`.
 
 | # | Item | Depends | Exit gate |
 |---|---|---|---|
