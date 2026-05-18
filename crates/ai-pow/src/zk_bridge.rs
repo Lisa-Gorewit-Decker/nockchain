@@ -594,9 +594,51 @@ pub(crate) fn prove_and_verify_tiled_tamper<F: FnOnce(&mut CompositeTrace)>(
     // co-located leaf row's committed plain here, after the PI
     // checks, so the only defect is the tampered cell.
     tamper(&mut trace);
-    let (proof, program) = composite_prove_pinned_logup_sx(&cfg, trace, &pis, sx_bound);
-    composite_verify_pow_pinned_logup_sx(&cfg, &program, &proof, &pis, target, sx_bound)
+    let (proof, prover_program) =
+        composite_prove_pinned_logup_sx(&cfg, trace, &pis, sx_bound);
+    // Phase A-CR · CR.6 — CRIT-1 made first-class on the
+    // production-faithful path. On the **16|r co-location path**
+    // (Pearl §4.8 is *always* 16|r ⇒ this is the production /
+    // mineable path) the verifier rebuilds the canonical program
+    // **params-pure** from the trusted block public (`zk_params`
+    // + the C1-pinned κ/s_a/s_b + the MED-3-attested tile), NEVER
+    // the prover's. This closes the latent "bridge passes the
+    // prover's program to verify" weakness: soundness rests on
+    // the Phase A-CR §5 KAT (`canonical_program ==
+    // extract_program(honest_trace)` bit-for-bit on every row ×
+    // all 12 PROGRAM_COLS of the real P16(16|r) trace) — honest
+    // proofs still verify (identical preprocessed commitment),
+    // any forged trace whose any PROGRAM_COL ≠ the params-pure
+    // canonical fails the in-AIR pin vs the canonical VK.
+    // Non-16|r is the documented A3.2b **test** geometry whose
+    // separate-store row count is data-dependent — explicitly out
+    // of the params-pure / `canonical_program` scope (it panics
+    // the 16|r assert); it retains the prior extract-of-reference
+    // discipline (the `crit1_*`/`routea_*` regression — already
+    // "strictly-stronger-than-pre-A3, not a forgery hole" per the
+    // §4.C.2 verdict). `coloc` is the verifier-side
+    // `noise_rank % 16 == 0`, never the proof.
+    if coloc {
+        let bp = ai_pow_zk::canonical::BlockPublic {
+            tile_i,
+            tile_j,
+            kappa: ctx.kappa,
+            s_a: ctx.s_a,
+            s_b: ctx.s_b,
+        };
+        let canonical = ai_pow_zk::canonical::canonical_program(
+            &zk_params, &bp, height,
+        );
+        composite_verify_pow_pinned_logup_sx(
+            &cfg, &canonical, &proof, &pis, target, sx_bound,
+        )
         .map_err(BridgeError::Pow)?;
+    } else {
+        composite_verify_pow_pinned_logup_sx(
+            &cfg, &prover_program, &proof, &pis, target, sx_bound,
+        )
+        .map_err(BridgeError::Pow)?;
+    }
 
     Ok(ZkOutcome { pis })
 }
@@ -2907,6 +2949,93 @@ mod tests {
             skipped_coloc > 0,
             "P16 (16|r) must have co-located leaf round-0 rows \
              (else CR.4a's skip is vacuous — co-location inactive?)"
+        );
+    }
+
+    /// **Phase A-CR · CR.6 — the verify-path flip is sound
+    /// (CRIT-1 first-class).** The bridge now verifies against
+    /// `canonical_program(zk_params, BlockPublic)` — recomputed
+    /// params-pure by the verifier — NOT the prover's
+    /// `extract_program`. This test proves the soundness gain in
+    /// isolation: an honest control verifies, then a trace whose
+    /// **`NOISE_PACKED_PREP+1`** (a PROGRAM_COL that is canonically
+    /// 0 on a `Pad` row and carries *no* other AIR constraint
+    /// there — `g = IS_MSG_MAT·IS_NEW_BLAKE = 0` ⇒ the §4.C.2
+    /// producer/InputChip constraints are gated off) is set
+    /// non-zero. The prover's `extract_program` lifts the tampered
+    /// value and the prover commits to it (its own in-AIR pin
+    /// `main == preproc` still holds prover-side), but the
+    /// verifier's VK commits to the **canonical** program (0
+    /// there) ⇒ the proof's preprocessed opening cannot match the
+    /// canonical commitment ⇒ rejected. Pre-CR.6 (verify against
+    /// the prover's program) this forge would have *verified* —
+    /// the exact latent weakness CR.6 closes.
+    #[test]
+    fn cr6_verify_uses_canonical_not_prover_program_rejects_forge() {
+        use crate::synth::synth_matrices;
+        use ai_pow_zk::canonical::{row_schedule, RowClass};
+        use ai_pow_zk::composite_layout::{
+            NOISE_PACKED_PREP, TOTAL_TRACE_WIDTH,
+        };
+        use ai_pow_zk::params::ZkParams;
+
+        let params = MatmulParams {
+            m: 16, k: 64, n: 16, noise_rank: 16, tile: 8,
+            spot_checks: 2, difficulty_bits: 0,
+        };
+        params.validate().unwrap();
+        let (a, b) = synth_matrices(b"cr6-forge", &params);
+        let ctx = BlockContext::build(b"cr6-forge-blk", &a, &b, &params)
+            .expect("ctx");
+        let target = crate::tile_hash::difficulty_target(&params);
+        let (tile_i, tile_j) = (0u32, 0u32);
+
+        // Honest control: CR.6 canonical-VK verify still accepts a
+        // genuine proof (the §5 KAT equivalence, end-to-end).
+        prove_and_verify_tiled_tamper(
+            &ctx, &params, &target, tile_i, tile_j, |_| {},
+        )
+        .expect(
+            "CR.6: an honest proof must still verify against the \
+             verifier's params-pure canonical program",
+        );
+
+        // Forge: bump NOISE_PACKED_PREP+1 on the first Pad row.
+        let zk = ZkParams {
+            m: params.m, k: params.k, n: params.n,
+            noise_rank: params.noise_rank, tile: params.tile,
+            difficulty_bits: params.difficulty_bits,
+        };
+        let res = prove_and_verify_tiled_tamper(
+            &ctx, &params, &target, tile_i, tile_j,
+            |t: &mut CompositeTrace| {
+                let zero = ai_pow_zk::Val::default();
+                let h = t.height();
+                let sched = row_schedule(&zk, tile_i, tile_j, h);
+                let pad = (0..h)
+                    .find(|&r| sched[r] == RowClass::Pad)
+                    .expect("P16 schedule has a Pad row");
+                let cell =
+                    pad * TOTAL_TRACE_WIDTH + NOISE_PACKED_PREP + 1;
+                // A known-nonzero Val (≠ the canonical 0) without
+                // naming p3_field: lift any nonzero trace cell.
+                let nz = *t
+                    .matrix
+                    .values
+                    .iter()
+                    .find(|&&v| v != zero)
+                    .expect("trace has a nonzero cell");
+                // Canonically 0 here; no other AIR constraint binds
+                // it on a Pad row ⇒ the ONLY defect is
+                // prover_program ≠ canonical.
+                t.matrix.values[cell] = nz;
+            },
+        );
+        assert!(
+            res.is_err(),
+            "CR.6: a trace whose PROGRAM_COL ≠ the params-pure \
+             canonical MUST be rejected by the canonical-VK verify \
+             (pre-CR.6 this forge verified — the closed weakness)"
         );
     }
 }
