@@ -23,6 +23,8 @@
 //! change in CR.0.**
 
 use crate::blake3_tree::{strip_opening_rows, tile_chunk_range};
+use crate::chips::blake3::chip::pack_tweak;
+use crate::chips::blake3::compress::Blake3Tweak;
 use crate::chips::control::NUM_SELECTORS;
 use crate::composite_layout::{TILE_D, TILE_H};
 use crate::composite_preprocess::{build_preprocessed_columns, RowDescriptor};
@@ -220,12 +222,68 @@ pub struct BlockPublic {
 ///   (idx 3); `mat_id=0`, all other PROGRAM_COLS zero. (The
 ///   pinned PI κ/s_a lives in `CV_IN`, a chip column, *not* a
 ///   PROGRAM_COL ⇒ the descriptor is `bp`-independent.)
-/// - CR.3 `JackpotHash` · CR.4 `StripOpenA/B` (incl. the 8
-///   co-located noise sub-slice pins via `noise_ref`, the
-///   §4.C.2/b2 core) · CR.5 `Sweep`/`Fold` — **residual** (each
-///   gated by its own `== extract` KAT).
+/// - **CR.3 (landed): `JackpotHash`** — witness-free; the final
+///   8-row keyed-BLAKE3 block (`place_jackpot_hash_block` →
+///   `place_blake3_hash_with_selectors`). Every row:
+///   `CV_OR_TWEAK_PREP = pack_tweak(JACKPOT_TWEAK)` (the
+///   *params-pure constant* `{counter=0, block_len=64,
+///   flags=0x1B}` — the hashed M/key are CV columns, not
+///   PROGRAM_COLS); mat_id=0; row 0 → IS_NEW_BLAKE (idx 8); row
+///   7 → IS_LAST_ROUND (idx 9) + IS_HASH_JACKPOT (idx 6).
+/// - CR.4 `StripOpenA/B` (incl. the 8 co-located noise sub-slice
+///   pins via `noise_ref`, the §4.C.2/b2 core) · CR.5
+///   `Sweep`/`Fold` — **residual** (each gated by its own
+///   `== extract` KAT).
 pub fn is_class_canonical(class: RowClass) -> bool {
-    matches!(class, RowClass::Pad | RowClass::KeyPin)
+    matches!(
+        class,
+        RowClass::Pad | RowClass::KeyPin | RowClass::JackpotHash
+    )
+}
+
+/// `pack_tweak` of the final jackpot-hash block's tweak — the
+/// params-pure constant `Blake3Tweak { counter_low: 0,
+/// counter_high: 0, block_len: 64, flags: 0x1B }`
+/// (KEYED_HASH|CHUNK_START|CHUNK_END|ROOT) that
+/// `place_jackpot_hash_block` hard-codes. Witness-independent.
+pub(crate) fn jackpot_tweak_packed() -> u64 {
+    pack_tweak(&Blake3Tweak {
+        counter_low: 0,
+        counter_high: 0,
+        block_len: 64,
+        flags: 0x1B,
+    })
+}
+
+/// Params-pure PROGRAM_COL descriptor for offset `j` (0..8)
+/// within an 8-row BLAKE3 compression block — the *one* schedule
+/// `place_blake3_hash_with_selectors` writes: every row carries
+/// `CV_OR_TWEAK_PREP = tweak_packed` and `mat_id = 0`; row 0 sets
+/// `IS_NEW_BLAKE` (SELECTOR_COLS idx 8); row 7 (finalize) sets
+/// `IS_LAST_ROUND` (idx 9) plus `finalize_extra`. Shared by CR.3
+/// `JackpotHash` and (CR.4) `StripOpen*` — they differ *only* in
+/// the tweak and the finalize-extra selectors (+ CR.4's
+/// co-located leaf noise sub-slice pins, layered on top).
+fn blake3_block_descriptor(
+    j: usize,
+    tweak_packed: u64,
+    finalize_extra: &[usize],
+) -> RowDescriptor {
+    let mut selectors = [false; NUM_SELECTORS];
+    if j == 0 {
+        selectors[8] = true; // IS_NEW_BLAKE
+    }
+    if j == 7 {
+        selectors[9] = true; // IS_LAST_ROUND
+        for &idx in finalize_extra {
+            selectors[idx] = true;
+        }
+    }
+    RowDescriptor {
+        selectors,
+        cv_or_tweak: tweak_packed,
+        ..RowDescriptor::padding()
+    }
 }
 
 /// **Phase A-CR — the params-pure canonical program.** Builds the
@@ -296,7 +354,16 @@ fn row_descriptor(
             }
             RowDescriptor { selectors, ..RowDescriptor::padding() }
         }
-        // CR.3–CR.5 residual — placeholder, fenced by
+        RowClass::JackpotHash => {
+            // CR.3: the final 8-row keyed-BLAKE3 block at
+            // `jpot_start`. Params-pure constant tweak; finalize
+            // extra = IS_HASH_JACKPOT (SELECTOR_COLS idx 6, the
+            // `place_jackpot_hash_block` `&[6]`).
+            let j = row_idx - layout.jpot_start;
+            debug_assert!(j < 8, "jackpot block is 8 rows");
+            blake3_block_descriptor(j, jackpot_tweak_packed(), &[6])
+        }
+        // CR.4–CR.5 residual — placeholder, fenced by
         // `is_class_canonical` (never trusted until CR.6).
         _ => RowDescriptor::padding(),
     }
@@ -351,14 +418,16 @@ mod tests {
         use p3_field::PrimeField64;
         use p3_matrix::Matrix;
 
-        // is_class_canonical fence: CR.1+CR.2 ⇒ {Pad, KeyPin}.
+        // is_class_canonical fence: CR.1–CR.3 ⇒ {Pad, KeyPin,
+        // JackpotHash}.
         assert!(is_class_canonical(RowClass::Pad));
         assert!(is_class_canonical(RowClass::KeyPin));
+        assert!(is_class_canonical(RowClass::JackpotHash));
         for c in [
             RowClass::StripOpenA, RowClass::StripOpenB,
-            RowClass::Sweep, RowClass::Fold, RowClass::JackpotHash,
+            RowClass::Sweep, RowClass::Fold,
         ] {
-            assert!(!is_class_canonical(c), "{c:?} not canonical until CR.3+");
+            assert!(!is_class_canonical(c), "{c:?} not canonical until CR.4+");
         }
 
         let p = p16();
@@ -437,6 +506,64 @@ mod tests {
                 prog.values[row * w + (w - 1)].as_canonical_u64(),
                 row as u64,
                 "key-pin row {row} STARK_ROW_IDX"
+            );
+        }
+    }
+
+    #[test]
+    fn cr3_canonical_program_jackpot_block_is_exact() {
+        use crate::chips::control::ControlChip;
+        use crate::composite_full_air::PROGRAM_COLS;
+        use p3_field::PrimeField64;
+
+        let p = p16();
+        let len = 1 << 13;
+        let l = schedule_layout(&p, 0, 0, len);
+        let prog = canonical_program(&p, &bp0(), len);
+        let w = PROGRAM_COLS.len();
+        let tw = jackpot_tweak_packed();
+        assert_ne!(tw, 0, "jackpot tweak packs non-zero (flags=0x1B)");
+
+        // All 8 rows [jpot_start, len) are JackpotHash.
+        for j in 0..8 {
+            let row = l.jpot_start + j;
+            assert_eq!(l.class_of(row), RowClass::JackpotHash);
+            let mut sel = [false; NUM_SELECTORS];
+            if j == 0 {
+                sel[8] = true; // IS_NEW_BLAKE
+            }
+            if j == 7 {
+                sel[9] = true; // IS_LAST_ROUND
+                sel[6] = true; // IS_HASH_JACKPOT
+            }
+            let want_cp = ControlChip::pack_control_prep_full(
+                &sel, 0, false, 0, 0, 0,
+            );
+            // PROGRAM_COLS: [0]=CONTROL_PREP, [1..9]=NOISE×8,
+            // [9]=CV_OR_TWEAK_PREP, [10]=AB_ID, [11]=STARK_ROW_IDX.
+            assert_eq!(
+                prog.values[row * w].as_canonical_u64(), want_cp,
+                "jackpot row j={j} CONTROL_PREP"
+            );
+            for c in 1..9 {
+                assert_eq!(
+                    prog.values[row * w + c].as_canonical_u64(), 0,
+                    "jackpot row j={j} NOISE_PACKED_PREP[{}] must be 0",
+                    c - 1
+                );
+            }
+            assert_eq!(
+                prog.values[row * w + 9].as_canonical_u64(), tw,
+                "jackpot row j={j} CV_OR_TWEAK_PREP == jackpot tweak"
+            );
+            assert_eq!(
+                prog.values[row * w + 10].as_canonical_u64(), 0,
+                "jackpot row j={j} AB_ID_PREP must be 0"
+            );
+            assert_eq!(
+                prog.values[row * w + 11].as_canonical_u64(),
+                row as u64,
+                "jackpot row j={j} STARK_ROW_IDX"
             );
         }
     }
