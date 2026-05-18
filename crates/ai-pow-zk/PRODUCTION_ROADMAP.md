@@ -102,10 +102,18 @@ vague — external). Phase E is cross-cutting.
 > producer-isolation decision — strictly dominates c-mset).
 > c-mset.0/.1a retained as the de-risk + the
 > contiguity/`16|r`-alignment evidence c-exact reuses. Staged
-> KAT-first plan **cx.0→cx.3** (next step = **cx.0**, no AIR
-> change); recommended mechanism = a CRIT-1-pinned per-row
-> word-offset (the proven §6(a) CONTROL_PREP pattern, zero new
-> columns). §4.C.2-with-A3.2b is already strictly stronger than
+> KAT-first plan **cx.0→cx.3 → A3.3**. **cx.0 ✅ DONE &
+> validated** (`2bbf4cd`): KAT proved every position-addressed
+> store row binds — via the exact C3 identity at a witness-free
+> `(chunk,block,word_off)` leaf address — to the exact committed
+> bytes ∈ `HASH_A` (r=16 + r=32). **Next = cx.1** (first
+> invasive AIR stage): generalize the proven C3 to a
+> CRIT-1-pinned per-row word-offset via the proven §6(b)/G2
+> `FOLD_STRIPE_SEL` pattern (CONTROL_PREP index + 8-wide
+> one-hot block; zero *preprocessed*-width, zero-blast at
+> `o=0`); §6(a)/§6(b)/G2-scale ⇒ multi-commit, per-sub-stage
+> validated cx.1a→cx.1c (R1, not rushed).
+> §4.C.2-with-A3.2b is already strictly stronger than
 > pre-A3 and **not a forgery hole** (CRIT-1 + §4.D + §6 + M-S1
 > + A2 + the noise pin hold). The production-critical unblocker
 > (A2) is done. Full comparison + c-exact design + cx.0–cx.3:

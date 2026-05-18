@@ -21,8 +21,14 @@
 > cx.0–cx.3 plan). c-mset.0/.1a are **retained** as the de-risk
 > that justified the decision and establishes the
 > contiguity/`16|r`-alignment facts c-exact reuses (the
-> P-B.2.0/D1 pattern). **Next concrete step = cx.0** (KAT-first
-> de-risk, no AIR change; §8.3). Soundness meanwhile: CRIT-1 + §4.D + §6 +
+> P-B.2.0/D1 pattern). **cx.0 ✅ DONE & validated** (`2bbf4cd`):
+> KAT proved every position-addressed store row binds, via the
+> exact C3 identity at a witness-free `(chunk,block,word_off)`
+> leaf address, to the exact committed bytes ∈ `HASH_A` (r=16 +
+> r=32). **Next = cx.1** (first invasive AIR stage — generalize
+> the proven C3 to a CRIT-1-pinned word-offset; §6(b)/G2-scale,
+> per-sub-stage validated cx.1a→cx.1c; §8.3). Not to be rushed
+> (R1). Soundness meanwhile: CRIT-1 + §4.D + §6 +
 > M-S1 + A2 + the A3.2b noise pin hold; §4.C.2 with A3.2b is
 > already *strictly stronger than pre-A3* (store noise =
 > public-seed Pearl noise, not prover-chosen) and **not a
@@ -470,7 +476,7 @@ ABANDON the c-mset `BUS_PLAIN` bus; pursue c-exact**
 | Soundness | swept `a′` ∈ {committed windows} + pinned noise — *membership* | swept `a′` = committed byte at the *exact* strip position + noise — *position-exact* |
 | Residual | plain-side position-exactness (documented gap) | **none** — true zero-gap §4.C.2 |
 | New trace surface | new `BUS_PLAIN` + `PLAIN_FREQ` col + producer-row isolation | reuses the **existing, proven C3** binding; no new bus / FREQ col |
-| CRIT-1 pinned-program impact | unavoidable (FREQ width **or** new selector **or** tweak-decode constraint) | C3 already exists; impact = a small CONTROL_PREP-pinned word-offset (the **proven §6(a) pattern, zero new columns**) |
+| CRIT-1 pinned-program impact | unavoidable (FREQ width **or** new selector **or** tweak-decode constraint) | C3 already exists/proven; impact = a `CONTROL_PREP`-pinned word-offset + an 8-wide word-pair one-hot main-trace block (the **proven §6(b)/G2 `FOLD_STRIPE_SEL` pattern**): **zero *preprocessed*-width** (§4.C.8 trap avoided) + **zero-blast at `o=0`**; no new bus / FREQ / permutation |
 | `16|r` geometry | bus only balances `16|r`; needs a new `P16` Route-A geometry | same `16|r` alignment is *exploited* (store window == leaf word-pair) — c-mset.1a's positive finding is **reused** |
 | LogUp-coupling risk (M-S1 unit≠Route-A) | present (new bus + `populate_lookup_freq`) | **absent** — C3 is a per-row algebraic identity, no permutation argument |
 | Effort | M-S1-magnitude (new bus arc) **+** the open decision | M-S1-magnitude (the granularity bridge) **−** LogUp/freq risk |
@@ -498,15 +504,20 @@ sub-position. Mechanisms:
   `UINT8_DATA=8`. Co-locate each store row onto the leaf
   compression whose 64-byte block contains its window; add a
   CRIT-1-pinned per-row word-offset `o ∈ {0,2,…,14}` so C3
-  binds `BLAKE3_MSG[o+j]` (not fixed j∈{0,1}). `o` is folded
-  into `CONTROL_PREP` exactly like §6(a)'s fold-slot / G2's
-  fold-stripe (**proven pattern, NO new column, no
-  preprocessed-width ripple**); it is a pure function of the
-  A3.2a position-addressed store layout (`noised_store_layout`)
-  + the A1 `tile_chunk_range` schedule ⇒ verifier-recomputable
-  witness-free (the CRIT-1 discipline already in place).
-  Position-exact by construction; reuses the *proven* C3 +
-  *proven* §6(a) pin; no bus, no FREQ, no permutation.
+  binds `BLAKE3_MSG[o+j]` (not fixed j∈{0,1}). Selection uses
+  the **proven §6(b)/G2 `FOLD_STRIPE_SEL` pattern**: an 8-wide
+  word-pair one-hot main-trace block whose index is folded into
+  `CONTROL_PREP` (like §6(a)'s fold-slot / G2's fold-stripe) —
+  **zero *preprocessed*-width ripple** (§4.C.8 trap avoided) and
+  **zero-blast at `o=0`** (reduces bit-identically to today's
+  C3); it does add an 8-col main-trace block
+  (`TOTAL_TRACE_WIDTH` change → layout asserts + Route-A
+  baselines). `o` is a pure function of the A3.2a
+  position-addressed store layout (`noised_store_layout`) + the
+  A1 `tile_chunk_range` schedule ⇒ verifier-recomputable
+  witness-free (cx.0-validated; the CRIT-1 discipline already in
+  place). Position-exact by construction; reuses the *proven*
+  C3 + *proven* §6(b)/G2 pin; no bus, no FREQ, no permutation.
 - **(E2) widen C3 to 64.** `UINT8_DATA` 8→64, C3 over all 16
   words. One leaf row binds all 64 bytes; heavier width ripple
   than E1.
@@ -516,20 +527,57 @@ sub-position. Mechanisms:
 
 ### 8.3 Staged KAT-first plan (R1; the next concrete step is cx.0)
 
-- **cx.0** (KAT-first de-risk; **no AIR change**) — pure Rust on
-  a `16|r` geometry: every A3.2a position-addressed store row
-  maps to a **unique `(chunk, block-in-chunk, word-offset)`** of
-  the strip-opening, the committed bytes at that exact leaf
-  sub-position == the store row's plain `MAT_UNPACK` == `a′ −
-  noise_ref`, **and** `BLAKE3_MSG[o+j] == base256(committed
-  window)` (the exact C3 identity). Extends c-mset.0/.1a from
-  *contiguity/alignment* to the *exact (block,offset) address +
-  C3 pack*. The gate before any AIR change.
-- **cx.1** generalize C3 to the pinned word-offset
-  (`pack_control_prep_full` + ControlChip assert +
-  `extract_program` lift — the §6(a)/G2 mechanism); unit +
-  adversarial (stale / forged / claimed-absent offset reject),
-  debug-assertions-ON.
+- **cx.0 ✅ DONE & validated 2026-05-17 (`2bbf4cd`)** — KAT-first
+  de-risk, **no AIR change**
+  (`sec_4c2_cx0_store_binds_exact_committed_leaf_subposition_via_c3`):
+  for every A3.2a **position-addressed** store row
+  (`enumerate_noised_chunks_positioned`) on a `16|r` geometry
+  (r=16 single-chunk **and** r=32 multi-chunk, tile (0,0)):
+  (1) `idx = lane_g·k+l0` is 8-aligned ∈ the opened strip ⇒ a
+  **unique** leaf address `(chunk, block, even word_off)`;
+  (2) `a_pad[idx..idx+8]` (the exact bytes that leaf hashed into
+  `HASH_A`) == store plain `MAT_UNPACK` == `a′ − noise_ref`;
+  (3) the **exact C3 identity** `BLAKE3_MSG[word_off+j] ==
+  base256(plain[4j..4j+4])` holds at that address;
+  (4) `(side, src)` (hence the address / `o`) is reproduced by
+  the params-pure `noised_store_layout` skeleton (no `a′`) ⇒
+  **verifier-recomputable witness-free**. The whole c-exact
+  mechanism's premise is validated before any AIR change.
+- **cx.1 (next; the first invasive AIR stage — its own staged
+  arc, R1).** Generalize C3 from the **fixed** word indices
+  `{0,1}` (today `composite_full_air.rs:539-554`,
+  `BLAKE3_MSG[j]`) to a verifier-pinned per-row word-offset `o`.
+  **Correction to §8.2:** like the proven §6(b)/G2
+  `FOLD_STRIPE_SEL` precedent this needs *both* a CONTROL_PREP
+  index pin **and an 8-wide word-pair one-hot main-trace block**
+  (`BLAKE3_MSG[o+j] = Σ_p MSG_PAIR_SEL[p]·BLAKE3_MSG[2p+j]`,
+  `Σ_p MSG_PAIR_SEL[p] = IS_MSG_MAT·IS_NEW_BLAKE`, the one-hot ↔
+  pinned-index consistency constrained) — a `TOTAL_TRACE_WIDTH`
+  change (rippling to every `composite_layout` assert + every
+  Route-A baseline). It is **zero *preprocessed*-width** (the
+  §4.C.8 trap is avoided exactly as §6(a)/G2; the pinned offset
+  folds into the existing `CONTROL_PREP` polyval) and
+  **zero-blast at `o=0`** (reduces bit-identically to today's
+  C3 ⇒ all existing traces unchanged — the §6(a) discipline).
+  Sub-stages, each validated+committed (R1):
+  - **cx.1a** design the `CONTROL_PREP` offset field placement
+    (next free bit past §6(a) 2^47/2^48 + G2 2^52) +
+    `MSG_PAIR_SEL[8]` layout, against the actual
+    `pack_control_prep_full`/`ControlChip`/`extract_program`
+    code; no behavior change.
+  - **cx.1b** add `MSG_PAIR_SEL[8]` + generalized C3 in the
+    **unit `CompositeFullAir`** only, zero-blast at `o=0`; the
+    ~300 unit tests + `crit1_*`/`high2_*`/`routea_*` stay green
+    (byte-identical); +exhaustive one-hot/offset unit tests.
+  - **cx.1c** pin `o` in `CONTROL_PREP`
+    (`pack_control_prep_full` + `ControlChip::eval` assert +
+    `extract_program` lift — the §6(a)/G2 mechanism); adversarial
+    (stale / forged / claimed-absent offset reject);
+    `crit1_*` still rejects forgeries with the extended pack;
+    debug-assertions-ON.
+  Each sub-stage: targeted + `crit1_*`/`routea_*` + `ai-pow
+  --features zk` + debug-assertions-ON gate (the M-S1 lesson:
+  unit-AIR green ≠ Route-A green; debug-assertions-OFF hazard).
 - **cx.2** co-locate store rows onto leaf compression rows
   (`place_matrix_strip_opening`/bridge): the store row *is* the
   leaf round-0 row with `IS_MSG_MAT=1`, `UINT8_DATA` = its
@@ -546,5 +594,11 @@ sub-position. Mechanisms:
 Soundness meanwhile unchanged: CRIT-1 + §4.D + §6 + M-S1 + A2 +
 the A3.2b noise pin hold; §4.C.2-with-A3.2b is already strictly
 stronger than pre-A3 and **not a forgery hole**. c-exact is its
-own staged effort (R1) — the next action is **cx.0 only**, not a
-rushed AIR change.
+own staged effort (R1). **STATUS: cx.0 ✅ DONE & validated
+(`2bbf4cd`).** Next = **cx.1** (the first invasive AIR stage —
+generalize the *proven* C3 + the CRIT-1-pinned `CONTROL_PREP`
+program + an 8-wide one-hot block; §6(a)/§6(b)/G2-scale,
+multi-commit, per-sub-stage validated cx.1a→cx.1c). Per R1 it is
+**not** to be rushed in one pass — each sub-stage lands only when
+correct + exhaustively gated (unit + `crit1_*`/`routea_*` +
+`ai-pow --features zk` + debug-assertions-ON).
