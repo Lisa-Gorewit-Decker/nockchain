@@ -606,3 +606,195 @@ fn b1_1_gemma_c_real_weight_mineable_unit_end_to_end() {
         "real vs synthetic Gemma B ⇒ different commitment"
     );
 }
+
+// ── B1.1 (Llama-3.3-70B) — the largest published Pearl model ────
+//
+// `~/Dev/Llama-3.3-70B-Instruct-pearl` (`LlamaForCausalLM`;
+// hidden=8192, intermediate=28672, 80 layers — the largest k/n
+// of the three). Same `quant_method:"pearl"` split (group_1
+// INT7 per-channel = o/gate/up_proj + late-layer qkv mined;
+// group_0 FP8 = down_proj + early qkv, out). **15-shard**
+// safetensors + index; layer-0 `gate_proj` is in shard
+// `model-00001-of-00015.safetensors`. Third real production
+// model: largest dims + most-sharded layout.
+//
+// `LLAMA70B_MODEL_DIR` overrides; soft-skips if absent (135 GB —
+// CI-safe). Offsets anchored to an independent Python oracle.
+
+const L70B_ST_HEADER_LEN: u64 = 7_200;
+const L70B_GATE0_DATA_OFFSET: u64 = 3_142_234_112;
+const L70B_K: usize = 8192; // hidden_size = the real contraction dim
+const L70B_ORACLE_ROW0_HEAD: [i8; 8] = [-8, -4, 1, 0, 0, 0, 2, -5];
+const L70B_ORACLE_ROW63_TAIL: [i8; 8] = [0, -7, 5, 4, -8, -8, -1, -6];
+const L70B_ORACLE_MIN: i8 = -61;
+const L70B_ORACLE_MAX: i8 = 61;
+const L70B_ORACLE_SUM: i64 = -9_661;
+
+fn l70b_shard1() -> Option<std::path::PathBuf> {
+    let dir = std::env::var("LLAMA70B_MODEL_DIR").unwrap_or_else(|_| {
+        format!(
+            "{}/Dev/Llama-3.3-70B-Instruct-pearl",
+            std::env::var("HOME").unwrap_or_default()
+        )
+    });
+    let p = std::path::Path::new(&dir)
+        .join("model-00001-of-00015.safetensors");
+    p.exists().then_some(p)
+}
+
+/// First `TILE_OUT` out-channels of layer-0 `mlp.gate_proj.weight`
+/// (I8 `[28672, 8192]`) from shard 1 — `TILE_OUT × L70B_K`.
+/// Absolute offset = `8 + header_len + tensor_data_offset`.
+fn read_real_l70b_gate_proj_tile(path: &std::path::Path) -> Vec<i8> {
+    use std::io::{Read, Seek, SeekFrom};
+    let mut f = std::fs::File::open(path).expect("open l70b shard1");
+    let mut len8 = [0u8; 8];
+    f.read_exact(&mut len8).expect("read header len");
+    let hdr_len = u64::from_le_bytes(len8);
+    assert_eq!(
+        hdr_len, L70B_ST_HEADER_LEN,
+        "Llama-70B shard1 header length changed — model differs from \
+         the recorded Python oracle; regenerate"
+    );
+    let abs = 8 + hdr_len + L70B_GATE0_DATA_OFFSET;
+    f.seek(SeekFrom::Start(abs)).expect("seek tile");
+    let mut raw = vec![0u8; TILE_OUT * L70B_K];
+    f.read_exact(&mut raw).expect("read tile bytes");
+    raw.into_iter().map(|b| b as i8).collect()
+}
+
+fn l70b_one_tile() -> MatmulParams {
+    let p = MatmulParams {
+        m: 64,
+        k: L70B_K as u32, // 8192 = the real Llama-70B contraction dim
+        n: 64,
+        noise_rank: 64, // 64 | 8192 (= 128)
+        tile: 64,
+        spot_checks: 1,
+        difficulty_bits: 0,
+    };
+    p.validate().expect("l70b one-tile params valid");
+    p
+}
+
+/// **B1.1-L70B a — integrity anchor.** The reader reproduces the
+/// independent Python ground truth bit-for-bit on the largest,
+/// most-sharded real model (15 shards; layer-0 gate_proj in
+/// shard 1). Must pass before the others are meaningful (R1).
+#[test]
+fn b1_1_l70b_a_safetensors_reader_matches_python_oracle() {
+    let Some(p) = l70b_shard1() else {
+        eprintln!("SKIP b1_1_l70b_a: Llama-70B absent (LLAMA70B_MODEL_DIR)");
+        return;
+    };
+    let tile = read_real_l70b_gate_proj_tile(&p);
+    assert_eq!(tile.len(), TILE_OUT * L70B_K);
+    assert_eq!(&tile[..8], &L70B_ORACLE_ROW0_HEAD, "row0 head ≠ oracle");
+    assert_eq!(
+        &tile[63 * L70B_K + L70B_K - 8..63 * L70B_K + L70B_K],
+        &L70B_ORACLE_ROW63_TAIL,
+        "row63 tail ≠ oracle"
+    );
+    assert_eq!(*tile.iter().min().unwrap(), L70B_ORACLE_MIN);
+    assert_eq!(*tile.iter().max().unwrap(), L70B_ORACLE_MAX);
+    assert_eq!(
+        tile.iter().map(|&v| v as i64).sum::<i64>(),
+        L70B_ORACLE_SUM,
+        "tile sum ≠ oracle (reader offset/stride wrong)"
+    );
+}
+
+/// **B1.1-L70B b — B2 contract on the REAL Llama-70B weights.**
+/// Real `gate_proj` int7 ∈ Pearl `[−64,64]`; `quant::extract`
+/// accepts it; B2.1 bit-lossless on real Llama-70B data.
+#[test]
+fn b1_1_l70b_b_real_weights_satisfy_pearl_int7_and_b2_lossless() {
+    use ai_pow::quant::{extract, int_matmul, QuantizedGemm};
+    let Some(p) = l70b_shard1() else {
+        eprintln!("SKIP b1_1_l70b_b: Llama-70B absent");
+        return;
+    };
+    let wq = read_real_l70b_gate_proj_tile(&p); // [out=64, in=8192]
+    for &v in &wq {
+        assert!(
+            (-64..=64).contains(&(v as i32)),
+            "real Llama-70B weight {v} ∉ Pearl type-0 [-64,64]"
+        );
+    }
+    let (tok, k, out) = (8usize, L70B_K, TILE_OUT);
+    let xq: Vec<i8> =
+        (0..tok * k).map(|i| ((i * 23 + 9) % 127 - 63) as i8).collect();
+    let qg = QuantizedGemm {
+        tokens: tok,
+        in_dim: k,
+        out_dim: out,
+        xq: xq.clone(),
+        wq: wq.clone(),
+        s_x: vec![0.011; tok],
+        s_w: vec![0.019; out],
+    };
+    let op = extract(&qg).expect("real Llama-70B int7 ⇒ in-domain");
+    let mined = int_matmul(&op);
+    let mut want = vec![0i32; tok * out];
+    for t in 0..tok {
+        for o in 0..out {
+            let mut s = 0i32;
+            for l in 0..k {
+                s += xq[t * k + l] as i32 * wq[o * k + l] as i32;
+            }
+            want[t * out + o] = s;
+        }
+    }
+    assert_eq!(
+        mined, want,
+        "B2 bit-lossless must hold on the REAL Llama-70B weights"
+    );
+}
+
+/// **B1.1-L70B c — full audited pipeline on the REAL Llama-70B
+/// weights at the real μ** (`k=8192, r=64, tile=64`).
+/// `BlockContext::build` on `B = the real gate_proj tile`
+/// succeeds, deterministic, weight-sensitive,
+/// `H_B == matrix_commitment(real bytes)`.
+#[test]
+fn b1_1_l70b_c_real_weight_mineable_unit_end_to_end() {
+    use ai_pow::commit::matrix_commitment;
+    use ai_pow::fiat_shamir::commitment_key;
+    use ai_pow::prover::{params_tag, BlockContext};
+    let Some(p) = l70b_shard1() else {
+        eprintln!("SKIP b1_1_l70b_c: Llama-70B absent");
+        return;
+    };
+    let real_b = read_real_l70b_gate_proj_tile(&p); // n·k col-major (n=64,k=8192)
+    let mp = l70b_one_tile();
+    let a: Vec<i8> = (0..(mp.m as usize) * L70B_K)
+        .map(|i| ((i * 7 + 4) % 127 - 63) as i8)
+        .collect();
+
+    let hdr = b"b1.1-l70b-block-header";
+    let ctx = BlockContext::build(hdr, &a, &real_b, &mp)
+        .expect("ai-pow must mine the real Llama-70B weights at real μ");
+    let ctx2 = BlockContext::build(hdr, &a, &real_b, &mp).unwrap();
+    assert_eq!(ctx.h_b_chunk, ctx2.h_b_chunk);
+    assert_eq!(ctx.s_a, ctx2.s_a);
+    assert_eq!(
+        ctx.m_states.iter().map(|s| s.keyed_hash(&ctx.s_a)).collect::<Vec<_>>(),
+        ctx2.m_states.iter().map(|s| s.keyed_hash(&ctx2.s_a)).collect::<Vec<_>>(),
+        "mineable unit must be deterministic on the real Llama-70B weights"
+    );
+    let kappa = commitment_key(hdr, &params_tag(&mp));
+    let b_bytes: Vec<u8> = real_b.iter().map(|&v| v as u8).collect();
+    assert_eq!(
+        ctx.h_b_chunk,
+        matrix_commitment(&b_bytes, &kappa),
+        "H_B_chunk of the real Llama-70B weights == Pearl §4.6 chunk-Merkle"
+    );
+    let synth_b: Vec<i8> = (0..(mp.n as usize) * L70B_K)
+        .map(|i| ((i * 31 + 6) % 127 - 63) as i8)
+        .collect();
+    let ctx_s = BlockContext::build(hdr, &a, &synth_b, &mp).unwrap();
+    assert_ne!(
+        ctx.h_b_chunk, ctx_s.h_b_chunk,
+        "real vs synthetic Llama-70B B ⇒ different commitment"
+    );
+}
