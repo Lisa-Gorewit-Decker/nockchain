@@ -53,6 +53,7 @@
 
 pub mod bench_suite;
 pub mod blake3_tree;
+pub mod canonical;
 pub mod chips;
 pub mod circuit;
 pub mod composite_full_air;

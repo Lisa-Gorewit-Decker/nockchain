@@ -2508,4 +2508,195 @@ mod tests {
              whole-block C3 binds it to HASH_A)"
         );
     }
+
+    /// **Phase A-CR · CR.0b — the params-pure row schedule matches
+    /// the real bridge trace.** The CRIT-1 reconstruction-hardening
+    /// linchpin: `canonical_program` (CR.1+) is built from
+    /// `ai_pow_zk::canonical::row_schedule`, which assigns each row
+    /// a `RowClass` from `(ZkParams, tile_i, tile_j, trace_len)`
+    /// alone — *no witness*. This KAT proves that schedule
+    /// reproduces the **real `P16`(16|r) bridge trace**'s layout,
+    /// by validating its params-pure region boundaries against the
+    /// trace's *unambiguous* selector anchors (captured via the
+    /// no-tamper seam, so the honest proof still verifies):
+    ///   - **A/B split + `mh_end`** (the `strip_opening_rows` /
+    ///     `tile_chunk_range` arithmetic, CR.0a): the unique
+    ///     `IS_HASH_A` root row is a `StripOpenA` row, `IS_HASH_B`
+    ///     a `StripOpenB` row; the two `IS_USE_*` key-pin rows are
+    ///     exactly the schedule's `KeyPin` rows (pins `na+nb`).
+    ///   - **sweep formula + `num_stripes`**: the `FOLD_IS_FOLD`
+    ///     row set equals the schedule's `Fold` set (pins
+    ///     `fold_start = mh_end+3 + sweep_rows + 4`).
+    ///   - **co-location**: every `IS_MSG_MAT` producer row is a
+    ///     `StripOpen*` row (the leaf round-0 rows ARE the M-S1
+    ///     producers — the §4.C.2 c-exact invariant), and ≥1 exists.
+    ///   - **jackpot / no-misclass**: `IS_HASH_JACKPOT` rows are
+    ///     `JackpotHash`; no live anchor lands on a `Pad` row.
+    /// A wrong `strip_opening_rows`/sweep/coloc offset ⇒ an anchor
+    /// falls in the wrong class ⇒ this fails. **No verify-path
+    /// change (CR.0).**
+    #[test]
+    fn cr0_row_schedule_matches_real_bridge_trace() {
+        use crate::synth::synth_matrices;
+        use ai_pow_zk::canonical::{row_schedule, RowClass};
+        use ai_pow_zk::composite_layout::{
+            FOLD_IS_FOLD, IS_HASH_A, IS_HASH_B, IS_HASH_JACKPOT,
+            IS_MSG_MAT, IS_USE_COMMITMENT_HASH, IS_USE_JOB_KEY,
+            TOTAL_TRACE_WIDTH,
+        };
+        use ai_pow_zk::params::ZkParams;
+        use std::cell::RefCell;
+
+        let params = MatmulParams {
+            m: 16, k: 64, n: 16, noise_rank: 16, tile: 8,
+            spot_checks: 2, difficulty_bits: 0,
+        };
+        params.validate().unwrap();
+        assert_eq!(params.noise_rank % 16, 0, "P16 must be 16|r ⇒ coloc");
+        let (a, b) = synth_matrices(b"cr0-sched", &params);
+        let ctx = BlockContext::build(b"cr0-sched-blk", &a, &b, &params)
+            .expect("ctx");
+        let target = crate::tile_hash::difficulty_target(&params);
+        // The seam's explicit attested tile (CR.0 takes the same
+        // (tile_i,tile_j); production derives it MED-3 via tile_ij).
+        let (tile_i, tile_j) = (0u32, 0u32);
+
+        // Capture the unambiguous per-row anchors via the NO-TAMPER
+        // seam (closure is a pure observer ⇒ honest proof still
+        // verifies — also re-confirms the P16 g=1 roundtrip).
+        let rows: RefCell<Vec<[bool; 7]>> = RefCell::new(Vec::new());
+        prove_and_verify_tiled_tamper(
+            &ctx, &params, &target, tile_i, tile_j,
+            |t: &mut CompositeTrace| {
+                let zero = ai_pow_zk::Val::default();
+                let h = t.height();
+                let mut v = rows.borrow_mut();
+                v.reserve(h);
+                let nz = |t: &CompositeTrace, base: usize, c: usize| {
+                    t.matrix.values[base + c] != zero
+                };
+                for r in 0..h {
+                    let base = r * TOTAL_TRACE_WIDTH;
+                    v.push([
+                        nz(t, base, IS_USE_JOB_KEY),
+                        nz(t, base, IS_USE_COMMITMENT_HASH),
+                        nz(t, base, IS_HASH_A),
+                        nz(t, base, IS_HASH_B),
+                        nz(t, base, IS_MSG_MAT),
+                        nz(t, base, FOLD_IS_FOLD),
+                        nz(t, base, IS_HASH_JACKPOT),
+                    ]);
+                }
+            },
+        )
+        .expect("honest P16 g=1 (no tamper) must prove + pow-verify");
+
+        let rows = rows.into_inner();
+        let h = rows.len();
+        assert!(h >= 8, "captured a non-empty trace");
+
+        let zk = ZkParams {
+            m: params.m, k: params.k, n: params.n,
+            noise_rank: params.noise_rank, tile: params.tile,
+            difficulty_bits: params.difficulty_bits,
+        };
+        let sched = row_schedule(&zk, tile_i, tile_j, h);
+        assert_eq!(sched.len(), h);
+        let ( jk, ch, ha, hb, mm, fo, jp ) = (0, 1, 2, 3, 4, 5, 6);
+
+        // (1) Key-pin: the two IS_USE_* rows are EXACTLY the
+        // schedule's two KeyPin rows (⇒ pins mh_end = na+nb, the
+        // CR.0a strip_opening_rows arithmetic on both sides).
+        let kp: Vec<usize> = (0..h)
+            .filter(|&r| sched[r] == RowClass::KeyPin)
+            .collect();
+        assert_eq!(kp.len(), 2, "schedule has exactly two KeyPin rows");
+        assert!(rows[kp[0]][jk], "JOB_KEY on schedule's 1st KeyPin row");
+        assert!(rows[kp[1]][ch], "COMMITMENT_HASH on 2nd KeyPin row");
+        assert_eq!(
+            (0..h).filter(|&r| rows[r][jk]).collect::<Vec<_>>(),
+            vec![kp[0]],
+            "IS_USE_JOB_KEY is unique and exactly at the schedule's spot"
+        );
+        assert_eq!(
+            (0..h).filter(|&r| rows[r][ch]).collect::<Vec<_>>(),
+            vec![kp[1]],
+            "IS_USE_COMMITMENT_HASH unique and exactly at schedule's spot"
+        );
+
+        // (2) Strip-opening A/B split: the unique HASH_A root row is
+        // StripOpenA, the unique HASH_B root row is StripOpenB
+        // (⇒ pins `na`, the per-side strip_opening_rows boundary).
+        let ha_rows: Vec<usize> = (0..h).filter(|&r| rows[r][ha]).collect();
+        let hb_rows: Vec<usize> = (0..h).filter(|&r| rows[r][hb]).collect();
+        assert_eq!(ha_rows.len(), 1, "exactly one HASH_A root");
+        assert_eq!(hb_rows.len(), 1, "exactly one HASH_B root");
+        assert_eq!(
+            sched[ha_rows[0]], RowClass::StripOpenA,
+            "HASH_A root must fall in the schedule's StripOpenA region"
+        );
+        assert_eq!(
+            sched[hb_rows[0]], RowClass::StripOpenB,
+            "HASH_B root must fall in the schedule's StripOpenB region"
+        );
+
+        // (3) Sweep formula + num_stripes: FOLD_IS_FOLD row set ==
+        // schedule's Fold set (⇒ pins fold_start = mh_end+3 +
+        // sweep_rows + 4, hence the §6(b) sweep_rows formula).
+        let fold_actual: Vec<usize> =
+            (0..h).filter(|&r| rows[r][fo]).collect();
+        let fold_sched: Vec<usize> = (0..h)
+            .filter(|&r| sched[r] == RowClass::Fold)
+            .collect();
+        assert_eq!(
+            fold_actual, fold_sched,
+            "FOLD_IS_FOLD rows must be exactly the schedule's Fold rows"
+        );
+        assert_eq!(
+            fold_sched.len(),
+            (params.k / params.noise_rank) as usize,
+            "Fold count == num_stripes"
+        );
+
+        // (4) Co-location (§4.C.2 c-exact invariant): every
+        // IS_MSG_MAT producer row is a strip-opening row, and ≥1
+        // exists (co-location is actually active on P16).
+        let mm_rows: Vec<usize> = (0..h).filter(|&r| rows[r][mm]).collect();
+        assert!(
+            !mm_rows.is_empty(),
+            "co-location must be active on P16 (IS_MSG_MAT rows exist)"
+        );
+        for r in mm_rows {
+            assert!(
+                matches!(
+                    sched[r],
+                    RowClass::StripOpenA | RowClass::StripOpenB
+                ),
+                "co-located producer row {r} must be a StripOpen* row \
+                 (the leaf round-0 rows ARE the M-S1 producers), \
+                 got {:?}",
+                sched[r]
+            );
+        }
+
+        // (5) Jackpot + no-misclassification: every IS_HASH_JACKPOT
+        // row is JackpotHash; no live anchor lands on a Pad row.
+        for r in 0..h {
+            if rows[r][jp] {
+                assert_eq!(
+                    sched[r], RowClass::JackpotHash,
+                    "IS_HASH_JACKPOT row {r} must be JackpotHash"
+                );
+            }
+            if rows[r][jk] || rows[r][ch] || rows[r][ha]
+                || rows[r][hb] || rows[r][fo]
+            {
+                assert_ne!(
+                    sched[r], RowClass::Pad,
+                    "a live anchor at row {r} must not be \
+                     misclassified as Pad by the schedule"
+                );
+            }
+        }
+    }
 }
