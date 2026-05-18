@@ -180,3 +180,196 @@ fn linear_layer(state: &[u64; 16]) -> [u64; 16] {
 
     result
 }
+
+/// C2.0 — the Tip5 soundness oracle, frozen.
+///
+/// This module is the *normative bit-for-bit reference* the C2
+/// `tip5-circuit-air` (in the separate, vendored Plonky3-recursion
+/// workspace) must reproduce exactly, or the recursion verifier would
+/// accept forged Layer-0 proofs. It does two soundness-critical things:
+///
+///  1. **L-table identity** — proves `LOOKUP_TABLE[b] == ((b+1)^3 - 1)
+///     mod 257` for every byte `b` (the paper's split-and-lookup map L,
+///     ePrint 2023/107 §2.2), that L is a bijection on `0..256`, and the
+///     paper's fixed points (0, 255). This anchors *which* 256-row table
+///     the AIR's lookup argument must embed.
+///  2. **Golden KAT freeze** — emits a versioned, dependency-free text
+///     fixture (`crates/ai-pow-zk/tests/fixtures/tip5_golden_kat.txt`)
+///     holding the private constant tables (`LOOKUP_TABLE`,
+///     `ROUND_CONSTANTS`, the AIR's precomputed `rc[i][j] = (RC·2^64) mod
+///     p`, the circulant MDS first row) and `(input,output)` vectors of
+///     `permute` over edge cases + seeded pseudo-random states. Both this
+///     crate and `tip5-circuit-air` pin to this *same committed file*:
+///     here we assert it still matches live `permute`/consts (so it can
+///     never silently drift from the oracle); there the AIR is asserted
+///     bit-identical to it. That closes the cross-workspace soundness
+///     loop without `tip5-circuit-air` depending on `nockchain-math`.
+///
+/// Set `REGEN_TIP5_KAT=1` to (re)write the fixture; otherwise the test
+/// is read-only and *fails on any drift* between the committed fixture
+/// and live `permute`/constants.
+#[cfg(test)]
+mod c2_kat {
+    use super::*;
+
+    /// Goldilocks prime, as the oracle uses it (`belt::PRIME`).
+    const P: u128 = 18446744069414584321;
+    /// 2^64, the Montgomery factor applied to round constants in `permute`.
+    const R_U128: u128 = 1u128 << 64;
+
+    /// The paper's L: identifying {0..255} ⊂ F_257, x ↦ (x+1)^3 − 1.
+    fn l_map(b: u16) -> u16 {
+        let x = (b as u32 + 1) % 257;
+        ((((x * x % 257) * x % 257) + 257 - 1) % 257) as u16
+    }
+
+    #[test]
+    fn l_table_identity_bijection_fixed_points() {
+        // 1. LOOKUP_TABLE[b] == ((b+1)^3 - 1) mod 257, ∀ b∈0..256.
+        for b in 0u16..256 {
+            let got = LOOKUP_TABLE[b as usize] as u16;
+            let want = l_map(b);
+            assert_eq!(
+                got, want,
+                "L-table mismatch at b={b}: table={got}, (x+1)^3-1 mod257={want}"
+            );
+            assert!(want < 256, "L({b})={want} not a byte — table type is [u8;256]");
+        }
+        // 2. Bijection on bytes: all 256 values distinct (a permutation).
+        let mut seen = [false; 256];
+        for &v in LOOKUP_TABLE.iter() {
+            assert!(!seen[v as usize], "LOOKUP_TABLE not a bijection: dup {v}");
+            seen[v as usize] = true;
+        }
+        // 3. Paper's fixed points representable as bytes (0 and 255;
+        //    256≡−1 mod 257 is the non-byte third fixed point).
+        assert_eq!(LOOKUP_TABLE[0], 0, "L(0) must be 0");
+        assert_eq!(LOOKUP_TABLE[255], 255, "L(255) must be 255");
+    }
+
+    /// `((RC as u128) * 2^64) % p` — the per-(round,lane) constant the
+    /// AIR embeds (exactly `permute`'s `r_cons`).
+    fn rc_precomp(rc_raw: u64) -> u64 {
+        (((rc_raw as u128) * R_U128) % P) as u64
+    }
+
+    /// Deterministic xorshift64* — frozen so vectors never change.
+    fn xs(state: &mut u64) -> u64 {
+        let mut x = *state;
+        x ^= x >> 12;
+        x ^= x << 25;
+        x ^= x >> 27;
+        *state = x;
+        (x.wrapping_mul(0x2545F4914F6CDD1D)) % (P as u64)
+    }
+
+    /// The frozen set of permutation inputs (edge cases + seeded prng),
+    /// chosen to exercise: zero, byte-patterned split lanes, the §4.6
+    /// canonical-decomposition boundary (p−1, values straddling 2^64
+    /// limbs), x^7 on small/large lanes, and round-coupling (double
+    /// permute is added separately).
+    fn golden_inputs() -> Vec<[u64; 16]> {
+        let p_minus_1 = (P as u64) - 1; // 0xffffffff00000000
+        let mut v: Vec<[u64; 16]> = vec![
+            [0u64; 16],
+            [1u64; 16],
+            core::array::from_fn(|i| i as u64),
+            [p_minus_1; 16],
+            core::array::from_fn(|i| if i % 2 == 0 { 0 } else { p_minus_1 }),
+            // byte-patterned split lanes (distinct per-byte L lookups)
+            {
+                let mut s = [0u64; 16];
+                s[0] = 0x0001_0203_0405_0607;
+                s[1] = 0x08090A0B0C0D0E0F;
+                s[2] = 0xF0E0_D0C0_B0A0_9080;
+                s[3] = 0x7FFF_FFFF_FFFF_FFFE;
+                for j in 4..16 {
+                    s[j] = (j as u64) * 0x1111_1111;
+                }
+                s
+            },
+            // power lanes near boundaries
+            core::array::from_fn(|i| if i < 4 { 0x00FF_00FF_00FF_00FF } else { p_minus_1 - i as u64 }),
+        ];
+        let mut seed = 0x1234_5678_9ABC_DEF0u64;
+        for _ in 0..10 {
+            v.push(core::array::from_fn(|_| xs(&mut seed)));
+        }
+        v
+    }
+
+    fn join(xs: impl IntoIterator<Item = u64>) -> String {
+        xs.into_iter().map(|x| x.to_string()).collect::<Vec<_>>().join(" ")
+    }
+
+    fn build_fixture() -> String {
+        let mut out = String::new();
+        out.push_str("# tip5 golden KAT v1 — generated from nockchain_math::tip5::permute (7-round)\n");
+        out.push_str("# soundness oracle for C2 tip5-circuit-air; L-table = ((b+1)^3-1) mod 257 (verified)\n");
+        out.push_str(&format!("P {}\n", P));
+        out.push_str(&format!("LOOKUP {}\n", join(LOOKUP_TABLE.iter().map(|&b| b as u64))));
+        out.push_str(&format!("ROUND_CONSTANTS {}\n", join(ROUND_CONSTANTS.iter().copied())));
+        out.push_str(&format!(
+            "RC_PRECOMP {}\n",
+            join(ROUND_CONSTANTS.iter().map(|&rc| rc_precomp(rc)))
+        ));
+        out.push_str(&format!(
+            "MDS_ROW0 {}\n",
+            join(MDS_MATRIX_I64[0].iter().map(|&m| m as u64))
+        ));
+        let inputs = golden_inputs();
+        // include a double-permute vector to catch round-coupling errors
+        let mut vectors: Vec<([u64; 16], [u64; 16])> = Vec::new();
+        for inp in &inputs {
+            let mut s = *inp;
+            permute(&mut s);
+            vectors.push((*inp, s));
+        }
+        {
+            let mut s = inputs[2];
+            permute(&mut s);
+            let once = s;
+            permute(&mut s);
+            // store as IN=once-permuted, OUT=twice — a chained KAT
+            vectors.push((once, s));
+        }
+        out.push_str(&format!("NVEC {}\n", vectors.len()));
+        for (inp, outp) in &vectors {
+            out.push_str(&format!("IN {}\n", join(inp.iter().copied())));
+            out.push_str(&format!("OUT {}\n", join(outp.iter().copied())));
+        }
+        out
+    }
+
+    #[test]
+    fn golden_kat_frozen_matches_live_permute() {
+        // sanity: rc_precomp matches permute's exact r_cons formula
+        for i in 0..NUM_ROUNDS {
+            for j in 0..STATE_SIZE {
+                let rc = ROUND_CONSTANTS[i * STATE_SIZE + j];
+                let expect = (((rc as u128) * R) % PRIME_128) as u64;
+                assert_eq!(rc_precomp(rc), expect, "rc_precomp != permute r_cons");
+            }
+        }
+        let expected = build_fixture();
+        let dir = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../ai-pow-zk/tests/fixtures"
+        );
+        let path = format!("{dir}/tip5_golden_kat.txt");
+        let regen = std::env::var("REGEN_TIP5_KAT").is_ok();
+        let on_disk = std::fs::read_to_string(&path);
+        if regen || on_disk.is_err() {
+            std::fs::create_dir_all(dir).expect("create fixtures dir");
+            std::fs::write(&path, &expected).expect("write golden KAT fixture");
+            eprintln!("C2.0: wrote golden KAT fixture -> {path}");
+        }
+        let committed = std::fs::read_to_string(&path).expect("read golden KAT fixture");
+        assert_eq!(
+            committed, expected,
+            "tip5 golden KAT fixture drifted from live permute/constants — \
+             the C2 soundness oracle changed; re-validate tip5-circuit-air \
+             and run with REGEN_TIP5_KAT=1 only if the change is intended"
+        );
+    }
+}
