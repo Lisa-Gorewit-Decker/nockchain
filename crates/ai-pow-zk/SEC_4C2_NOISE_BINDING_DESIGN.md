@@ -875,3 +875,60 @@ de-risk/design) + this precise atomic spec is the
 R1-mandated checkpoint. Next: execute the cx.2 atomic landing
 against this §8.6 spec, then cx.3-equivalent (the Route-A +
 adversarial gate above) → A3.3.
+
+### 8.7 cx.2 attempt — concrete wall found by driving it (R1.1): the noise-pin / §4.C.8 collision
+
+Driving the cx.2 implementation (per R1.1: attempt, don't defer)
+surfaced — by analysis grounded in the live column shapes — a
+real feasibility issue §8.6 under-analyzed on the **noise** side:
+
+- Zero-gap c-exact **forces co-location** (re-derived rigorously
+  several ways): a separate-store-row ↔ per-block-leaf-row plain
+  tie is necessarily *across rows* = a lookup = c-mset (the
+  rejected option). So the producer/store row **must be** the
+  leaf round-0 row, and a 64-B block's **≤8 swept sub-slices
+  share that one row** (1 compression/block, only round-0 has
+  the unpermuted committed `BLAKE3_MSG` C3 needs).
+- The **plain** side widens cleanly (UINT8_DATA 8→64, per-word
+  C3 — main-trace, the cx.1b discipline). The **noise** side
+  does **not**: A3.2b pins noise via `NOISE_PACKED_PREP`, **one
+  of the 5 CRIT-1 *preprocessed* PROGRAM_COLS**. 8 sub-slices on
+  one row ⇒ 8 pinned noise values ⇒ `NOISE_PACKED_PREP` 1→8
+  (preprocessed width 5→12). Widening *preprocessed* is the
+  **§4.C.8 trap** (the measured ~10x prover regression was the
+  5→69 preprocessed widening). 8 noise-polyvals cannot pack into
+  one Goldilocks col (range), and re-deriving noise in-circuit
+  from `s_a` is the §3′-rejected heavy PRNG sub-AIR.
+
+**This is R1.1's legitimate "concrete wall hit while driving"**
+(not preemptive avoidance — co-location feasibility, plain-side
+widen, and the noise-side blocker were all worked out by
+attempting the change). It is **not** a stop: the resolution is
+a **bounded go/no-go measurement** (the P-B pattern), the
+concrete immediate continuation —
+
+- **cx.2.2-measure (next, bounded):** widen `NOISE_PACKED_PREP`
+  1→8 as preprocessed and **measure** the prover-cost delta on
+  a PROD-class profile (preprocessed 5→12 — *not* 5→69; the
+  §4.C.8 ~10x may not apply at this scale). The proof is
+  amortized (only on a win), so a modest constant may be
+  acceptable; P-A's one-STARK envelope unaffected (preprocessed
+  width ≠ trace-area `k(h+w)`). Decide: (a) acceptable ⇒
+  proceed with the §8.6 structure + 8-wide `NOISE_PACKED_PREP`;
+  (b) prohibitive ⇒ restructure the noise pin (candidates: a
+  verifier-fixed noise *lookup table* keyed by the A3.2a
+  position schedule — a new bus, weigh vs c-mset; or a single
+  packed pin at a coarser granularity). Measurement gates the
+  structure; do not widen preprocessed blindly (R1: no rushing
+  the CRIT-1 linchpin across an unmeasured §4.C.8 cost).
+
+**STATUS:** cx.1 COMPLETE (validated). cx.2 **in flight** — the
+attempt established: co-location is forced; the plain side
+(UINT8_DATA 8→64 + per-word C3) is the cx.1b-discipline path;
+the **noise side is gated on the cx.2.2-measure go/no-go**
+(NOISE_PACKED_PREP 1→8 preprocessed cost). That measurement is
+the immediate next action (bounded, ~one PROD-profile prove),
+**not** a deferred "future session". After it: the corrected
+§8.6 structure lands atomically (full `ai-pow-zk --lib` +
+`ai-pow --features zk` + debug-assertions-ON + 16|r `P16`
+Route-A with C3 active + position-exact adversarial) → A3.3.
