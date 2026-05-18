@@ -1605,4 +1605,176 @@ mod tests {
             }
         }
     }
+
+    /// **§4.C.2 / A3.2c c-mset.1a — KAT-first de-risk at the exact
+    /// `BUS_PLAIN` AIR key (no AIR change).** c-mset.0 validated
+    /// the *abstract* byte membership (store plain == committed at
+    /// contiguous positions inside the hashed span) but explicitly
+    /// `continue`d past zero-pad and never checked the property is
+    /// expressible as a *balancing LogUp bus* between the
+    /// strip-opening leaf rows and the store rows. This KAT carries
+    /// the P-B.2.0 / c-mset.0 discipline to the precise key the
+    /// `BUS_PLAIN` AIR would emit:
+    ///   * **Producer** = the strip-opening leaf-chunk round-0
+    ///     (`IS_NEW_BLAKE`) rows' *unpermuted* `BLAKE3_MSG` — 16
+    ///     u32-LE words = the 64 committed bytes of each hashed
+    ///     block — split into the 8 disjoint 8-byte word-pair
+    ///     windows `(BLAKE3_MSG[2j], BLAKE3_MSG[2j+1])`, j∈0..8,
+    ///     over the opened strip `[c0,c1)` (the only chunks that
+    ///     get leaf rows; off-range subtrees are auth-sibling CVs,
+    ///     not published — and c-mset.0 already proved every store
+    ///     window lies in `[c0·1024, c1·1024)`).
+    ///   * **Consumer** = each store row's plain 8-byte
+    ///     `MAT_UNPACK` window, packed identically (u32-LE of its
+    ///     `UINT8_DATA` u8 view = `polyval(.,256)` per 4 bytes).
+    ///
+    /// Decisive de-risk: is `consumer ⊆ producer` (the exact LogUp
+    /// balance premise) at *this* key? **FINDING (validated here):
+    /// YES iff `16 | r`** — then every store window is 8 *dense*
+    /// contiguous committed bytes, 8-aligned in the row/col-major
+    /// matrix (`i·k + l0` with `k, step·r, chunk·16, {0,8}` all
+    /// multiples of 8), so it equals exactly one producer
+    /// word-pair. Pearl §4.8 pins `r ∈ {2⁵..2¹⁰}` (every value a
+    /// multiple of 16) ⇒ **production is always clean**.
+    /// `TEST_SMALL` (`r=4`, `16∤4`) is **not**: its windows carry a
+    /// zero-pad tail (`col ≥ w`) with no committed counterpart, so
+    /// the naive bus does *not* balance there. This is the precise
+    /// residual scoping c-mset.1b: the AIR emission must be
+    /// `16|r`-gated and Route-A-validated on a `16|r` §6(b)-live
+    /// single-STARK geometry, **not** `TEST_SMALL`.
+    #[test]
+    fn sec_4c2_cmset1a_air_key_producer_superset_of_store_iff_16_divides_r() {
+        use crate::matmul::{BlockNoise, Matrices};
+        use crate::synth::synth_matrices;
+        use ai_pow_zk::blake3_tree::{pad_to_chunk_boundary, tile_chunk_range};
+        use ai_pow_zk::composite_trace::CompositeTrace;
+        use std::collections::HashSet;
+
+        // The exact 8-byte BUS_PLAIN key (2 u32-LE words = the
+        // producer's BLAKE3_MSG word-pair = the consumer's
+        // polyval(UINT8_DATA[0..4]) / polyval(UINT8_DATA[4..8])).
+        fn key8(b: &[u8]) -> (u32, u32) {
+            (
+                u32::from_le_bytes([b[0], b[1], b[2], b[3]]),
+                u32::from_le_bytes([b[4], b[5], b[6], b[7]]),
+            )
+        }
+        // Producer key SET: every 8-aligned word-pair window the
+        // strip-opening leaf rows expose over `[c0,c1)·1024`.
+        fn producer_set(pad: &[u8], c0: usize, c1: usize) -> HashSet<(u32, u32)> {
+            let mut s = HashSet::new();
+            let (lo, hi) = (c0 * 1024, c1 * 1024);
+            let mut off = lo;
+            while off + 8 <= hi {
+                s.insert(key8(&pad[off..off + 8]));
+                off += 8;
+            }
+            s
+        }
+
+        // For `params`: build the real bridge geometry; return
+        // (A-side ⊆, B-side ⊆) of consumer-in-producer.
+        let check = |params: MatmulParams| -> (bool, bool) {
+            params.validate().unwrap();
+            let (a, b) = synth_matrices(b"sec4c2-cmset1a", &params);
+            let ctx = BlockContext::build(b"sec4c2-cmset1a-blk", &a, &b, &params)
+                .expect("ctx");
+            let noise = BlockNoise::expand(&ctx.s_a, &ctx.s_b, &params);
+            let mats = Matrices::build(ctx.a, ctx.b, &noise, &params);
+            let (t, r, k) = (
+                params.tile as usize,
+                params.noise_rank as usize,
+                params.k as usize,
+            );
+            let num_stripes = params.num_stripes() as usize;
+            let (ti, tj) = (0u32, 0u32);
+            let a_strips: Vec<i8> = (0..t as u32)
+                .flat_map(|di| mats.a_prime_row(ti * params.tile + di).to_vec())
+                .collect();
+            let b_strips: Vec<i8> = (0..t as u32)
+                .flat_map(|dj| mats.b_prime_col(tj * params.tile + dj).to_vec())
+                .collect();
+            let a_bytes: Vec<u8> = ctx.a.iter().map(|&v| v as u8).collect();
+            let b_bytes: Vec<u8> = ctx.b.iter().map(|&v| v as u8).collect();
+            let a_pad = pad_to_chunk_boundary(&a_bytes);
+            let b_pad = pad_to_chunk_boundary(&b_bytes);
+            let (ca0, ca1, _) =
+                tile_chunk_range(ti as usize, t, k, a_bytes.len());
+            let (cb0, cb1, _) =
+                tile_chunk_range(tj as usize, t, k, b_bytes.len());
+            let prod_a = producer_set(&a_pad, ca0, ca1);
+            let prod_b = producer_set(&b_pad, cb0, cb1);
+
+            let srcs = CompositeTrace::enumerate_noised_chunks_with_src(
+                &a_strips, &b_strips, t, r, num_stripes,
+            );
+            assert!(!srcs.is_empty());
+            let (mut a_ok, mut b_ok) = (true, true);
+            for s in &srcs {
+                // The store row's plain 8-byte window exactly as
+                // `write_noised_row_split` lays it out: real byte =
+                // committed plain at src; src=None ⇒ 0 (zero-pad).
+                let mut win = [0u8; 8];
+                let mut all_pad = true;
+                for m in 0..8 {
+                    if let Some((lane, l)) = s.src[m] {
+                        all_pad = false;
+                        let lane_g = (if s.side_a { ti } else { tj })
+                            * params.tile
+                            + lane;
+                        let pad = if s.side_a { &a_pad } else { &b_pad };
+                        win[m] = pad[lane_g as usize * k + l as usize];
+                    }
+                }
+                if all_pad {
+                    continue; // canonical all-zero key; balances trivially
+                }
+                let kk = key8(&win);
+                if s.side_a {
+                    a_ok &= prod_a.contains(&kk);
+                } else {
+                    b_ok &= prod_b.contains(&kk);
+                }
+            }
+            (a_ok, b_ok)
+        };
+
+        // POSITIVE — 16|r geometries: every store window is a
+        // strip-opening producer member ⇒ BUS_PLAIN honest-balances.
+        for p in [
+            // single-chunk tile, r=16; §6(b)-live single-STARK class
+            // (num_stripes = k/r = 4 ≤ STRIPE_MAX).
+            MatmulParams {
+                m: 16, k: 64, n: 16, noise_rank: 16, tile: 8,
+                spot_checks: 2, difficulty_bits: 0,
+            },
+            // multi-chunk tile (t·k = 2048 = 2 chunks), r=32.
+            MatmulParams {
+                m: 32, k: 128, n: 32, noise_rank: 32, tile: 16,
+                spot_checks: 2, difficulty_bits: 0,
+            },
+        ] {
+            let (a_ok, b_ok) = check(p);
+            assert!(
+                a_ok && b_ok,
+                "16|r (r={}): every store window must be a \
+                 strip-opening producer member (BUS_PLAIN honest \
+                 balance premise)",
+                p.noise_rank
+            );
+        }
+
+        // NEGATIVE (the precise residual) — TEST_SMALL r=4 (16∤4):
+        // store windows carry a zero-pad tail with no committed
+        // counterpart ⇒ consumer ⊄ producer. This is *why*
+        // c-mset.1b's emission must be 16|r-gated and Route-A
+        // validated on a 16|r geometry (Pearl is always 16|r).
+        let (a_ok_s, b_ok_s) = check(MatmulParams::TEST_SMALL);
+        assert!(
+            !(a_ok_s && b_ok_s),
+            "TEST_SMALL (r=4, 16∤r): naive BUS_PLAIN must NOT \
+             balance (zero-pad-tail residual) — documents the \
+             16|r constraint c-mset.1b is gated on"
+        );
+    }
 }
