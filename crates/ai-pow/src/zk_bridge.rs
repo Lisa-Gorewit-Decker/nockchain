@@ -252,6 +252,26 @@ pub fn prove_and_verify_tiled(
     tile_i: u32,
     tile_j: u32,
 ) -> Result<ZkOutcome, BridgeError> {
+    prove_and_verify_tiled_tamper(ctx, params, target, tile_i, tile_j, |_| {})
+}
+
+/// Test seam for the §4.C.2 c-exact **position-exact
+/// adversarial**. Identical to [`prove_and_verify_tiled`] except
+/// `tamper` runs on the fully-built trace **after** PI derivation
+/// + the PI cross-checks but **before** the prove — so any
+/// rejection is attributable solely to the in-AIR constraints on
+/// the tampered cells (e.g. a co-located leaf row's committed
+/// plain ≠ the bytes BLAKE3 hashed ⇒ the cx.2-c3 whole-block C3
+/// rejects). Production callers go through the no-op wrapper
+/// above; `tamper` is never anything but `|_| {}` outside tests.
+pub(crate) fn prove_and_verify_tiled_tamper<F: FnOnce(&mut CompositeTrace)>(
+    ctx: &BlockContext<'_>,
+    params: &MatmulParams,
+    target: &[u8; 32],
+    tile_i: u32,
+    tile_j: u32,
+    tamper: F,
+) -> Result<ZkOutcome, BridgeError> {
     // P-B (γ Pearl-faithful): size the Layer-0 trace from `params`
     // — the faithful analogue of Pearl's `degree_bits()` — instead
     // of the fixed `MIN_STARK_LEN`. For sub-envelope test profiles
@@ -569,6 +589,11 @@ pub fn prove_and_verify_tiled(
     // value, never the proof — so it is as sound as CRIT-1. Only
     // true PROD (G3/M12) takes the legacy path with sx_bound=false.
     let sx_bound = sweep_fits;
+    // §4.C.2 c-exact position-exact adversarial seam: no-op in
+    // production (the wrapper passes `|_| {}`); a test tampers a
+    // co-located leaf row's committed plain here, after the PI
+    // checks, so the only defect is the tampered cell.
+    tamper(&mut trace);
     let (proof, program) = composite_prove_pinned_logup_sx(&cfg, trace, &pis, sx_bound);
     composite_verify_pow_pinned_logup_sx(&cfg, &program, &proof, &pis, target, sx_bound)
         .map_err(BridgeError::Pow)?;
@@ -2399,6 +2424,88 @@ mod tests {
         assert!(
             out.pis.hash_a.iter().any(|&w| w != 0),
             "HASH_A PI must be the real committed-matrix commitment"
+        );
+    }
+
+    /// **§4.C.2 c-exact cx.2 — the position-exact adversarial.**
+    /// The soundness statement of the g=1 co-location flip: on a
+    /// 16|r `P16` *real bridge trace*, a co-located leaf round-0
+    /// row's committed-plain `UINT8_DATA` is bound (cx.2-c3
+    /// whole-block C3, g=1) to `BLAKE3_MSG` — the bytes the
+    /// strip-opening hashed into `HASH_A`. Tampering one such byte
+    /// to ≠ the committed byte (after PI derivation + the PI
+    /// cross-checks, so PIs/`HASH_A` are unchanged and the *only*
+    /// defect is the tampered committed-plain cell) MUST make the
+    /// proof reject. This is the end-to-end proof that the §4.C.2
+    /// plain tie is position-exact (a prover cannot swap the
+    /// committed plain a co-located producer's `a′` derives from).
+    #[test]
+    fn sec_4c2_cx2_g1_p16_position_exact_adversarial_rejects() {
+        use crate::synth::synth_matrices;
+        use ai_pow_zk::composite_layout::{
+            IS_MSG_MAT, TOTAL_TRACE_WIDTH, UINT8_DATA_START,
+        };
+
+        let params = MatmulParams {
+            m: 16, k: 64, n: 16, noise_rank: 16, tile: 8,
+            spot_checks: 2, difficulty_bits: 0,
+        };
+        params.validate().unwrap();
+        let (a, b) = synth_matrices(b"cx2g1-adv", &params);
+        let ctx = BlockContext::build(b"cx2g1-adv-blk", &a, &b, &params)
+            .expect("ctx");
+        let target = crate::tile_hash::difficulty_target(&params);
+
+        // Honest control: the seam is a no-op ⇒ must verify.
+        prove_and_verify_tiled_tamper(&ctx, &params, &target, 0, 0, |_| {})
+            .expect("honest P16 g=1 (no tamper) must prove + pow-verify");
+
+        // Adversarial: flip the committed-plain UINT8_DATA[0] on
+        // the FIRST co-located leaf round-0 row (IS_MSG_MAT=1, ⇒
+        // g=1, C3 active). Keep it a valid u8 (urange8 ok) so the
+        // rejection is the §4.C.2 plain tie, not a range check.
+        let res = prove_and_verify_tiled_tamper(
+            &ctx, &params, &target, 0, 0,
+            |t: &mut CompositeTrace| {
+                let zero = ai_pow_zk::Val::default();
+                let h = t.height();
+                for r in 0..h {
+                    let base = r * TOTAL_TRACE_WIDTH;
+                    // IS_MSG_MAT ≠ 0 ⇒ a co-located leaf round-0
+                    // row (only those set it on the coloc bridge
+                    // path; g = IS_MSG_MAT·IS_NEW_BLAKE = 1).
+                    if t.matrix.values[base + IS_MSG_MAT] != zero {
+                        let v0 = t.matrix.values[base + UINT8_DATA_START];
+                        // Swap in a *different* committed-plain
+                        // sibling byte: still a valid u8 (urange8
+                        // ok) but ≠ the byte BLAKE3 hashed ⇒ the
+                        // cx.2-c3 whole-block C3 (∈ HASH_A) rejects.
+                        for off in 1..64 {
+                            let vo =
+                                t.matrix.values[base + UINT8_DATA_START + off];
+                            if vo != v0 {
+                                t.matrix.values[base + UINT8_DATA_START] = vo;
+                                return;
+                            }
+                        }
+                        panic!(
+                            "co-located leaf block has 64 identical \
+                             committed-plain bytes — pick another seed"
+                        );
+                    }
+                }
+                panic!(
+                    "no co-located leaf row (IS_MSG_MAT≠0) on the P16 \
+                     bridge trace — the cx.2 g=1 adversarial would be \
+                     vacuous (co-location not active?)"
+                );
+            },
+        );
+        assert!(
+            res.is_err(),
+            "§4.C.2 position-exact: a tampered committed-plain byte \
+             on a co-located leaf round-0 row MUST be rejected (the \
+             whole-block C3 binds it to HASH_A)"
         );
     }
 }
