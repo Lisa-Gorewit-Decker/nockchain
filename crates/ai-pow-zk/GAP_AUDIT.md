@@ -240,6 +240,25 @@ Remaining:
 > forged-winning-PoW is rejected vs the canonical VK.
 > `ZKP_SECURITY_REPORT.md` is the authority and is updated to
 > STATUS: RESOLVED.
+>
+> ✅ **CRIT-1 made FIRST-CLASS — Phase A-CR (2026-05-18,
+> `3671702`..`2a9a18d`).** The verifier's canonical program is
+> no longer `extract_program` of a prover-derived reference
+> trace: it is a witness-free, params-pure
+> `ai_pow_zk::canonical::canonical_program` (one params-pure row
+> schedule → per-row `RowDescriptor`, CR.1–CR.5 covering **all
+> 12 PROGRAM_COLS, every row**, incl. the §4.C.2 co-located 8
+> `NOISE_PACKED_PREP` noise pins via `noise_ref`). On the
+> production-faithful **16|r** path (Pearl §4.8 always 16|r) the
+> bridge verifies against the verifier-rebuilt canonical program,
+> never the prover's (CR.6). KAT-anchored: the §5 cross-crate KAT
+> proves `canonical_program == extract_program(honest_trace)`
+> bit-for-bit on every row × 12 PROGRAM_COLS of the real
+> P16(16|r) trace; adversarial `cr6_*` proves a non-canonical
+> PROGRAM_COL is rejected (pre-CR.6 it verified). **Subsumes the
+> §4.C.2 "b2" item.** Non-16|r = documented A3.2b test path,
+> retains the prior `crit1_*`/`routea_*` discipline.
+> `CANONICAL_PROGRAM_DESIGN.md` §7 is the authoritative status.
 
 Post-CRIT-1 + HIGH-2-keystone summary: C1–C4 bindings are
 **enforced** against a malicious prover (program-pinned, CRIT-1).

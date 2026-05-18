@@ -194,12 +194,13 @@ RowMajorMatrix<Val>` (12-wide = PROGRAM_COLS); per row:
 `row_descriptor` → existing `build_preprocessed_columns` packing.
 `is_class_canonical(class)` fences which classes are exact +
 `==extract`-validated; the §5 KAT asserts only those rows. The
-verify path is unchanged through CR.5 (dead w.r.t. prove/verify).
+**Phase A-CR is COMPLETE (CR.0–CR.7, 2026-05-18).**
 
-**DONE + validated + committed (each: canonical unit + the
+**DONE + validated + committed (each stage: canonical unit + the
 cross-crate §5 KAT `canonical_program == extract_program(real
-P16(16|r) trace)` on the canonical classes, all 12 PROGRAM_COLS,
-+ `cr0` regression + full `ai-pow-zk --lib` additive):**
+P16(16|r) trace)` on the then-canonical classes, all 12
+PROGRAM_COLS, + `cr0`/`cr4a` regression + full `ai-pow-zk --lib`
+additive):**
 
 - **CR.0a** (`3671702`) — `blake3_tree::strip_opening_rows`
   (params-pure; mirrors `fold_strip`'s leaf/parent recursion).
@@ -215,10 +216,39 @@ P16(16|r) trace)` on the canonical classes, all 12 PROGRAM_COLS,
 - **CR.3** (`395782f`) — **JackpotHash** + the shared
   `blake3_block_descriptor` + `jackpot_tweak_packed` (const
   tweak `{0,0,64,0x1B}`).
+- **CR.4a** (`9c8ddc7`) — `strip_blocks` walker
+  (mirrors `fold_strip`/`subtree_inside`/`place_leaf_chunk`) +
+  per-block leaf/parent/root tweak + `IS_HASH_A/B` finalize
+  selector; targeted KAT on non-co-located StripOpen* rows.
+- **CR.4b+CR.4c** (`64e75e1`) — co-located leaf round-0
+  `IS_MSG_MAT` + the **8 `NOISE_PACKED_PREP` pins** =
+  `polyval(noise_ref(s_a/s_b at p=chunk·1024+b·64+g),129)` (the
+  §4.C.2/b2 core; `RowDescriptor.noise_packed_hi:[i64;7]` added
+  additively). §5 KAT now covers all StripOpen* incl the
+  co-located noise pins, real ctx s_a/s_b.
+- **CR.5** (`9beee44`) — **Sweep/Fold**; `row_descriptor` match
+  exhaustive, `is_class_canonical ≡ true` (every class). §5 KAT
+  asserts `== extract_program(real P16)` on **EVERY row × all
+  12 PROGRAM_COLS**.
+- **CR.6** (`2a9a18d`) — **flipped the verify path** (the
+  soundness linchpin). 16|r path: bridge verifies vs the
+  verifier-rebuilt `canonical_program`, never the prover's.
+  Coloc-gated (the full regression caught the unconditional-flip
+  break on 4 non-16|r tests ⇒ R1: no half-landed invasive
+  change; non-16|r retains prior extract-of-reference).
+  Adversarial `cr6_*` (non-canonical PROGRAM_COL rejected).
+  Gated: ai-pow-zk --lib 358/0/22 (crit1_*/routea_* incl);
+  ai-pow zk --lib 93/0/1 + integration bins 0 FAILED;
+  debug-assertions-ON honest 16|r roundtrip + cr1 §5 per-row
+  clean (negative tests panic-detect at prove-time —
+  pre-existing `*_rejects_*` convention).
+- **CR.7** — this doc + `ZKP_SECURITY_REPORT`/`GAP_AUDIT`
+  CRIT-1 flipped to "first-class params-pure reconstruction";
+  §4.C.2 b2 subsumed.
 
-`is_class_canonical` ⇒ {Pad, KeyPin, JackpotHash}. CR.4+ is the
-**precise actionable residual** below (R1: the §4.C.2/b2 core is
-soundness-critical-invasive — staged, KAT-first, NOT rushed).
+`is_class_canonical ≡ true` (every `RowClass`). The historical
+sub-staging plan (CR.4a/b/c, CR.5, CR.6, CR.7) is retained below
+as the implementation record.
 
 ### CR.4 — StripOpenA/B (the §4.C.2/b2 core; sub-staged)
 

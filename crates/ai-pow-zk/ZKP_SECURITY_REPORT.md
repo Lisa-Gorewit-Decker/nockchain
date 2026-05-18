@@ -49,6 +49,41 @@ canonical VK; tampering any program column is rejected; a forged
 correct program. The original analysis below is retained as the
 rationale.
 
+**Phase A-CR — CRIT-1 reconstruction made first-class
+(2026-05-18, commits `3671702`..`2a9a18d`).** The verifier's
+canonical program was previously obtained by
+`extract_program(&trace)` of a *reference honest trace* — sound
+under the `crit1_*` adversarial discipline, but the production
+bridge (`zk_bridge`) handed the prover-derived program straight
+to verify (a latent "verifier re-runs the prover" coupling). It
+is now a **witness-free, params-pure, independently-auditable
+`ai_pow_zk::canonical::canonical_program(&ZkParams,
+&BlockPublic, trace_len)`**: one params-pure row schedule
+(`schedule_layout`/`RowClass`) → per-row `RowDescriptor` (CR.1
+Pad · CR.2 KeyPin · CR.3 JackpotHash · CR.4 StripOpenA/B incl.
+the §4.C.2 co-located 8 `NOISE_PACKED_PREP` pins via `noise_ref`
+· CR.5 Sweep/Fold) → the existing packing — covering **all 12
+PROGRAM_COLS, every row**. On the **production-faithful 16|r
+co-location path** (Pearl §4.8 is *always* 16|r) the bridge now
+verifies against `canonical_program` rebuilt by the verifier
+from the trusted block public (`zk_params` + the C1-pinned
+κ/s_a/s_b + the MED-3-attested tile), **never** the prover's
+(CR.6). Soundness is KAT-anchored: the cross-crate §5 migration
+KAT proves `canonical_program == extract_program(honest_trace)`
+**bit-for-bit on every row × all 12 PROGRAM_COLS of the real
+P16(16|r) trace**, so honest proofs still verify and any forged
+PROGRAM_COL ≠ the params-pure canonical fails the in-AIR pin vs
+the canonical VK (adversarial `cr6_verify_uses_canonical_not
+_prover_program_rejects_forge`: a non-canonical PROGRAM_COL is
+rejected — pre-CR.6 it verified). This **subsumes the §4.C.2
+"b2" item** (the store-noise pin is now one part of the
+first-class reconstruction). Non-16|r is the documented A3.2b
+**test** geometry (data-dependent separate-store; out of the
+params-pure scope) — it retains the prior extract-of-reference
++ `crit1_*`/`routea_*` discipline (already
+strictly-stronger-than-pre-A3, not a forgery hole). Authoritative
+design + staged plan + KATs: `CANONICAL_PROGRAM_DESIGN.md`.
+
 **Original severity: Critical (PoW soundness ≈ 0 bits as wired).**
 
 The chain-anchoring / commitment public inputs are bound by
