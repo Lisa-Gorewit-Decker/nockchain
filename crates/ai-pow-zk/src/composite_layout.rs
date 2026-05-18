@@ -270,15 +270,24 @@ pub const NOISED_PACKED_LEN: usize = 16;
 pub const NOISED_PACKED_WIN: usize = 2;
 pub const NOISED_PACKED_START: usize = NOISE_UNPACK_START + NOISE_UNPACK_LEN;
 
-/// MAT_FREQ: 1 col. Number of times this NOISED_PACKED row is read
-/// across the matmul + BLAKE3 consumers. LogUp multiplicities.
+/// MAT_FREQ. **§4.C.2 c-exact (cx.2/X1):** widened 1→8 — one
+/// `noised_packed` table-side multiplicity per 8-byte sub-slice
+/// of a co-located leaf round-0 row (the row is the M-S1
+/// producer for all 8 of its block's sub-slices, so it publishes
+/// 8 keys, each with its own `MAT_FREQ`). Consumers use
+/// `MAT_FREQ` (= cell 0) until the cx.2 g=1 activation ⇒ the 7
+/// added cols are zero-default/unused, byte-identical
+/// (zero-blast — the cx.1b-layout discipline).
 pub const MAT_FREQ: usize = NOISED_PACKED_START + NOISED_PACKED_LEN;
+/// Number of `MAT_FREQ` cols (cx.2/X1: 8 sub-slice freqs/row;
+/// was 1).
+pub const MAT_FREQ_LEN: usize = 8;
 
 // ---- MAT_ID and AB_ID indexing ----
 
 /// MAT_ID: 1 col. Compact identifier of this row's matrix position
 /// in NOISED_PACKED. Derived from `CONTROL_PREP`.
-pub const MAT_ID: usize = MAT_FREQ + 1;
+pub const MAT_ID: usize = MAT_FREQ + MAT_FREQ_LEN;
 
 /// MAT_ID_LIMBS: 2 cols. Range check for MAT_ID via two 13-bit
 /// limbs (since `BITS_PER_LIMB = 13`, 2 limbs cover values up to
@@ -657,7 +666,7 @@ mod tests {
                 MAT_FREQ,
                 "NOISED_PACKED → MAT_FREQ",
             ),
-            (MAT_FREQ + 1, MAT_ID, "MAT_FREQ → MAT_ID"),
+            (MAT_FREQ + MAT_FREQ_LEN, MAT_ID, "MAT_FREQ → MAT_ID"),
             (MAT_ID + 1, MAT_ID_LIMBS_START, "MAT_ID → MAT_ID_LIMBS"),
             (
                 MAT_ID_LIMBS_START + MAT_ID_LIMBS_LEN,
