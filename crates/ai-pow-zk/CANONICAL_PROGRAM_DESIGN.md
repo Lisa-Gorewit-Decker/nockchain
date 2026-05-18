@@ -185,33 +185,108 @@ all classes match.
 | **D-CR3** | Migration | per-row-class staged with the §5 `canonical==extract` KAT as the gate, flip verify last · vs one-shot | **staged** (R1) |
 | **D-CR4** | §4.C.2 coordination | Phase A ships §4.C.2 on **b1** (now); Phase A-CR subsumes the noise pin into b2 (this milestone) — b1's in-circuit/store wiring (W2/W3) is reused; only *how the verifier obtains canonical `NOISE_PACKED_PREP`* changes (extract-of-reference → params-pure) | confirmed by the §4.C.2 verdict — do **not** double-implement; b1 first, b2 here |
 
-## 7. Staged landing plan
+## 7. Staged landing plan + LIVE STATUS (2026-05-18)
 
-- **CR.0** — extract the single params-pure **row schedule**
-  (`RowClass` per row from params + `block_public`), shared by
-  the bridge trace generator and `canonical_program`. KAT:
-  schedule(params) reproduces the bridge's actual row layout
-  (incl. A1 `tile_chunk_range`, A3.2a `noised_store_layout`).
-  *No verify-path change.*
-- **CR.1..CR.5** — `canonical_program` per row class
-  (CONTROL_PREP/CV/AB_ID/ROW_IDX classes, then the §4.C.2 store
-  `NOISE_PACKED_PREP` via `noise_ref`), each gated by §5
-  `canonical==extract(honest)` for that class + full
-  `ai-pow-zk --lib`.
-- **CR.6** — flip the verify path: VK = commitment to
-  `canonical_program(params, block_public)`; `prove_and_verify`
-  verifies against it (not the prover-passed program). Route-A +
-  the full `crit1_*` suite + new adversarial: a trace whose any
-  PROGRAM_COL (esp. store `NOISE_PACKED_PREP`) ≠ the params-pure
-  canonical is rejected; `ai-pow --features zk` all-green;
-  debug-assertions-ON.
-- **CR.7** — docs/audit flip: `ZKP_SECURITY_REPORT`/`GAP_AUDIT`
-  CRIT-1 upgraded from "extract-of-reference + adversarial
-  discipline" to "first-class params-pure reconstruction";
-  §4.C.2 b2 marked subsumed.
+Module: `ai_pow_zk::canonical` (`crates/ai-pow-zk/src/canonical.rs`).
+`canonical_program(&ZkParams, &BlockPublic, trace_len) ->
+RowMajorMatrix<Val>` (12-wide = PROGRAM_COLS); per row:
+`schedule_layout` (the ONE boundary source) → `class_of` →
+`row_descriptor` → existing `build_preprocessed_columns` packing.
+`is_class_canonical(class)` fences which classes are exact +
+`==extract`-validated; the §5 KAT asserts only those rows. The
+verify path is unchanged through CR.5 (dead w.r.t. prove/verify).
+
+**DONE + validated + committed (each: canonical unit + the
+cross-crate §5 KAT `canonical_program == extract_program(real
+P16(16|r) trace)` on the canonical classes, all 12 PROGRAM_COLS,
++ `cr0` regression + full `ai-pow-zk --lib` additive):**
+
+- **CR.0a** (`3671702`) — `blake3_tree::strip_opening_rows`
+  (params-pure; mirrors `fold_strip`'s leaf/parent recursion).
+- **CR.0b** (`fdde985`) — `row_schedule` + cross-crate KAT vs
+  the real P16 trace (KeyPin pins `mh_end=na+nb`, HASH_A/B roots
+  pin `na`, FOLD set pins `sweep_rows`+`num_stripes`, every
+  `IS_MSG_MAT` producer ∈ StripOpen*).
+- **CR.1** (`3c24fe0`) — `canonical_program`+`BlockPublic`
+  scaffolding + **Pad** class + the staged §5 cross-crate KAT.
+- **CR.2** (`aec1a4e`) — **KeyPin** + the `ScheduleLayout`
+  single-source refactor (one struct consumed by `row_schedule`
+  AND `row_descriptor`).
+- **CR.3** (`395782f`) — **JackpotHash** + the shared
+  `blake3_block_descriptor` + `jackpot_tweak_packed` (const
+  tweak `{0,0,64,0x1B}`).
+
+`is_class_canonical` ⇒ {Pad, KeyPin, JackpotHash}. CR.4+ is the
+**precise actionable residual** below (R1: the §4.C.2/b2 core is
+soundness-critical-invasive — staged, KAT-first, NOT rushed).
+
+### CR.4 — StripOpenA/B (the §4.C.2/b2 core; sub-staged)
+
+`place_matrix_strip_opening` → recursive `fold_strip` (row counts
+already mirrored by `strip_opening_rows`) → `place_leaf_chunk`
+(16 BLAKE3 compressions / 1024-byte chunk) + parent (auth-fold)
+BLAKE3 blocks. Each block is 8 rows ⇒ reuse
+`blake3_block_descriptor`. The traversal is params-pure: chunk
+range from A1 `tile_chunk_range(tile, t, k, {m,n}*k)`, leaf/parent
+shape from the same recursion as `strip_opening_rows`.
+
+- **CR.4a** — params-pure traversal emitting, per StripOpen* row,
+  its block kind + tweak + finalize-extra:
+  - leaf-chunk block `b`∈0..16 of global `chunk_index` (from
+    `tile_chunk_range`): tweak `counter_low=chunk_index`,
+    `block_len=64`, `flags = F_KEYED_HASH | F_CHUNK_START(b==0)
+    | F_CHUNK_END(b==15) | F_ROOT(single-chunk-root)`;
+  - parent block: `flags = F_KEYED_HASH | F_PARENT |
+    F_ROOT(root-parent)`;
+  - root row finalize-extra = `selector_idx` (4 `IS_HASH_A`
+    A-side / 5 `IS_HASH_B` B-side); root-parent extras per
+    `place_matrix_strip_opening` (`extras` at line ~638).
+  Gate **non-co-located first** (`noise_strip=None`, A3.2b
+  shape) to validate the pure BLAKE3 schedule before noise.
+- **CR.4b** — co-located leaf round-0 rows: add `IS_MSG_MAT`
+  (SELECTOR_COLS idx 10) + CONTROL_PREP `msg_pair` + per-row
+  `mat_id`, leaf F_CHUNK_* tweak. KAT on the real P16(16|r)
+  co-located trace (selectors/CONTROL_PREP only).
+- **CR.4c** (hardest) — the 8 `NOISE_PACKED_PREP[0..7]` pins on
+  each co-located leaf round-0 row =
+  `polyval(noise_ref(bp.s_a/s_b at the leaf block's (i,l)), 129)`
+  per sub-slice, via the cx.2-coloc.0-validated
+  (chunk,block,sub-slice)→matrix-position→`noise_ref` map
+  (`e_value` A row-major / `f_value` B col-major; pad p≥len→0;
+  see `zk_bridge.rs` `a_noise_strip`/`b_noise_strip`). This is
+  the b2 closure (verifier obtains canonical `NOISE_PACKED_PREP`
+  params-pure, not extract-of-reference). KAT: §5 on the real
+  P16 co-located trace.
+
+### CR.5 — Sweep/Fold
+
+§6(b)-G1/G2 sweep schedule + FoldChip rows' CONTROL_PREP
+(`is_fold`/`fold_slot`/`fold_stripe`), `mat_id`, `ab_id`;
+KAT-gated. After this `is_class_canonical` = every class.
+
+### CR.6 — flip the verify path (R1 soundness linchpin)
+
+VK = commitment to `canonical_program(params, bp)`;
+`prove_and_verify` verifies against it (not the prover-passed
+program). Wire `BlockPublic` from `ctx` (real
+κ/s_a/s_b/tile_i/tile_j). Gate: Route-A + full `crit1_*` +
+`-C debug-assertions=on` + a NEW adversarial (a trace whose any
+PROGRAM_COL — esp. co-located `NOISE_PACKED_PREP` — ≠ the
+params-pure canonical is rejected) + `ai-pow --features zk`
+all-green. The actual soundness fix (closes the latent
+"bridge passes prover's program to verify").
+
+### CR.7 — docs/audit flip
+
+`ZKP_SECURITY_REPORT`/`GAP_AUDIT` CRIT-1: "extract-of-reference
++ adversarial discipline" → "first-class params-pure
+reconstruction"; §4.C.2 b2 marked subsumed.
 
 Each stage: commit per validated stage; honest status + precise
-residual (R1); `Plonky3-recursion/` untracked.
+residual (R1); `Plonky3-recursion/` untracked. **CR.6 is the
+soundness linchpin — full R1 staged discipline (KAT-first,
+Route-A + crit1_* + debug-assertions-ON + adversarial before
+the flip); never rush it to satisfy a hook.**
 
 ## 8. Risks
 
