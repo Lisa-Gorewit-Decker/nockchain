@@ -57,8 +57,8 @@ use crate::chips::stark_row::StarkRowChip;
 use crate::composite_layout::{
     BLAKE3_MSG_START, CUMSUM_TILE_START, CV_IN_LEN, CV_IN_START, CV_OUT_LEN, CV_OUT_START,
     IS_HASH_A, IS_HASH_B, IS_HASH_JACKPOT, IS_MSG_MAT, IS_NEW_BLAKE, IS_USE_COMMITMENT_HASH,
-    IS_USE_JOB_KEY, JACKPOT_MSG_START, JACKPOT_SIZE, TOTAL_TRACE_WIDTH, UINT8_DATA_LEN,
-    UINT8_DATA_START,
+    IS_USE_JOB_KEY, JACKPOT_MSG_START, JACKPOT_SIZE, MSG_PAIR_SEL_LEN, MSG_PAIR_SEL_START,
+    TOTAL_TRACE_WIDTH, UINT8_DATA_LEN, UINT8_DATA_START,
 };
 use crate::composite_public::{
     NUM_PUBLIC_VALUES, PI_COMMITMENT_HASH_OFFSET, PI_CUMSUM_LEN, PI_CUMSUM_OFFSET,
@@ -531,26 +531,61 @@ impl<AB: AirBuilder> Air<AB> for CompositeFullAir {
         // Round 0 is the unpermuted message, so word j = LE bytes
         // 4j..4j+4 — the same order `u32::from_le_bytes` uses.
         // Vacuous on every current trace (no row has both set).
+        //
+        // §4.C.2 c-exact (cx.1b-constraints) — generalize C3 from
+        // the FIXED message words {0,1} to a verifier-pinned word-
+        // PAIR `p`. cx.0 (`2bbf4cd`) proved each co-located store
+        // window lives at leaf message words `(2p, 2p+1)`,
+        // `p = word_off/2 ∈ 0..8`, at a witness-free address.
+        // `MSG_PAIR_SEL[0..8]` is a per-row one-hot; the C3 gate
+        // `g = IS_MSG_MAT · IS_NEW_BLAKE` is unchanged. Constraints:
+        //   (i)   MSG_PAIR_SEL[p] boolean,
+        //   (ii)  Σ_p MSG_PAIR_SEL[p] == g   (exactly one pair iff
+        //         the C3 gate is live; 0 elsewhere),
+        //   (iii) Σ_p MSG_PAIR_SEL[p]·(BLAKE3_MSG[2p+j] −
+        //         recomposed_j) = 0, j∈{0,1}.
+        // (i)+(ii) ⇒ when g=1 exactly one pair selected; cx.1c
+        // pins *which* p in CONTROL_PREP so the prover cannot
+        // choose it (a forged p ⇒ Σ≠pinned ⇒ reject). All three
+        // are degree ≤2 (≤ the prior degree-3 C3). ZERO-BLAST:
+        // every current trace has g=0 and MSG_PAIR_SEL=0 (default)
+        // ⇒ (i) 0∈{0,1} ✓, (ii) 0==0 ✓, (iii) 0 ✓ — byte-identical
+        // to the prior (vacuous) C3. Note (iii) is written
+        // `Σ sel·(msg−recomposed)`, NOT `Σ sel·msg − recomposed`:
+        // the former is vacuous when all sel=0 (g=0), the latter
+        // would wrongly force recomposed==0 on every g=0 row.
         let cur_is_msg_mat: AB::Var = cur[IS_MSG_MAT];
         let cur_is_new_blake: AB::Var = cur[IS_NEW_BLAKE];
+        let c3_gate: AB::Expr = cur_is_msg_mat.into() * cur_is_new_blake.into();
+        // (i) booleanity + (ii) Σ MSG_PAIR_SEL == g.
+        let mut pair_sum: AB::Expr = <AB::Expr as PrimeCharacteristicRing>::ZERO;
+        for p in 0..MSG_PAIR_SEL_LEN {
+            let sel: AB::Var = cur[MSG_PAIR_SEL_START + p];
+            builder.assert_bool(sel);
+            pair_sum = pair_sum + sel.into();
+        }
+        builder.assert_zero(pair_sum - c3_gate);
+        // (iii) the selected word-pair == the matrix-byte view.
         let cur_uint8: [AB::Var; UINT8_DATA_LEN] =
             core::array::from_fn(|i| cur[UINT8_DATA_START + i]);
         let base256 = <AB::F as PrimeCharacteristicRing>::from_i32(256);
         for j in 0..(UINT8_DATA_LEN / 4) {
-            // word_j = Σ_{b=0..4} UINT8_DATA[4j+b] · 256^b
-            // (base-256 LE, the order BLAKE3 uses for u32::from_le_bytes).
+            // recomposed_j = Σ_{b<4} UINT8_DATA[4j+b]·256^b
+            // (base-256 LE, the order BLAKE3 uses for from_le_bytes).
             let mut recomposed: AB::Expr = <AB::Expr as PrimeCharacteristicRing>::ZERO;
             let mut pow: AB::F = <AB::F as PrimeCharacteristicRing>::ONE;
             for b in 0..4 {
                 recomposed = recomposed + cur_uint8[4 * j + b] * pow.clone();
                 pow = pow * base256.clone();
             }
-            let cur_msg_word: AB::Var = cur[BLAKE3_MSG_START + j];
-            builder.assert_zero(
-                cur_is_msg_mat.into()
-                    * cur_is_new_blake.into()
-                    * (cur_msg_word.into() - recomposed),
-            );
+            // Σ_p MSG_PAIR_SEL[p] · (BLAKE3_MSG[2p+j] − recomposed).
+            let mut acc: AB::Expr = <AB::Expr as PrimeCharacteristicRing>::ZERO;
+            for p in 0..MSG_PAIR_SEL_LEN {
+                let sel: AB::Var = cur[MSG_PAIR_SEL_START + p];
+                let msg_word: AB::Var = cur[BLAKE3_MSG_START + 2 * p + j];
+                acc = acc + sel.into() * (msg_word.into() - recomposed.clone());
+            }
+            builder.assert_zero(acc);
         }
 
         let mut last = builder.when_last_row();

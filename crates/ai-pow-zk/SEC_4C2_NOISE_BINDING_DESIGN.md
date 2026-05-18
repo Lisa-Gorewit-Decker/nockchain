@@ -656,11 +656,20 @@ stay green with no value change.
   contiguity checkpoint. *No constraint.* Provably zero-blast
   (8 zero-default cols). Gate: `composite_layout` tests + a
   representative composite prove/verify unchanged.
-- **cx.1b-constraints** — generalized C3 + `MSG_PAIR_SEL`
-  boolean + `Σ = g`, in the **unit `CompositeFullAir`** only,
-  zero-blast at `p=0`. Gate: full `ai-pow-zk --lib` (incl.
-  `crit1_*`/`routea_*`) + `ai-pow --features zk` +
-  debug-assertions-ON, all byte-identical.
+- **cx.1b-constraints ✅ DONE & validated 2026-05-17** —
+  generalized C3 (`composite_full_air.rs`): `MSG_PAIR_SEL[p]`
+  boolean + `Σ_p MSG_PAIR_SEL[p] == g` + `Σ_p
+  MSG_PAIR_SEL[p]·(BLAKE3_MSG[2p+j] − recomposed_j) = 0`
+  (degree ≤2, *lower* than the prior deg-3 C3). Validated:
+  full `ai-pow-zk --lib` **351/0/22** (byte-identical baseline,
+  incl. `crit1_*`/`routea_*`/the C3 negative test — which now
+  rejects via the Σ==g constraint); `ai-pow --features zk`
+  **85/0/1** (real bridge / MED-3 / §4.C.2 KATs);
+  debug-assertions-ON: **all positive composite tests pass
+  per-row** (zero-blast at `check_constraints` granularity) —
+  the `*_rejects_*` negatives panic under debug-assertions-ON
+  by pre-existing design (place violating rows; documented
+  M-S1/§6(b) profile behavior, not a cx.1 regression).
 - **cx.1c** — `CONTROL_PREP` pin (`pack_control_prep_full` +
   `ControlChip` + `RowDescriptor` + `extract_program`) + the
   pinned AIR (`CompositeFullAirPinned`); adversarial
