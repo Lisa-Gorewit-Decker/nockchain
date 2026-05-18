@@ -22,6 +22,7 @@ use super::block_explorer::BlockExplorerCache;
 use super::cache::{
     AddressBalanceCache, DEFAULT_PAGE_BYTES, DEFAULT_PAGE_SIZE, MAX_PAGE_BYTES, MAX_PAGE_SIZE,
 };
+use super::ip_blocklist::{blocklist_layer, IpBlocklist};
 use super::metrics::{init_metrics, NockchainGrpcApiMetrics};
 use crate::error::{NockAppGrpcError, Result};
 use crate::pb::common::v1::{Acknowledged, ErrorCode, ErrorStatus};
@@ -175,7 +176,13 @@ impl PublicNockchainGrpcServer {
             self.metrics.clone(),
         ));
 
+        // Reject blocked client IPs (from the front proxy's x-forwarded-for)
+        // before requests reach any service. Configured via the
+        // NOCKCHAIN_API_IP_BLOCKLIST env var on top of compiled-in defaults.
+        let blocklist = IpBlocklist::from_env_and_defaults();
+
         Server::builder()
+            .layer(blocklist_layer(blocklist, self.metrics.clone()))
             .add_service(health_service)
             .add_service(reflection_service_v1)
             .add_service(nockchain_api)

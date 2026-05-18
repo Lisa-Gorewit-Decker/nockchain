@@ -16,7 +16,7 @@ use intmap::IntMap;
 use libc;
 use smallvec::SmallVec;
 use thiserror::Error;
-use tracing::info;
+use tracing::debug;
 
 use crate::ext::noun_equality;
 use crate::mem::{word_size_of, Arena, NewStackError, NockStack};
@@ -689,7 +689,7 @@ impl PmaCopy for Noun {
             if trace_noun && (steps & 0x3fff == 0) {
                 let now = Instant::now();
                 if now.duration_since(last_progress).as_millis() >= 2000 {
-                    info!(
+                    debug!(
                         "pma-copy: noun progress: steps={}, elapsed_ms={}",
                         steps,
                         trace_start.elapsed().as_millis()
@@ -799,7 +799,7 @@ impl PmaCopy for Noun {
         }
 
         if trace_noun {
-            info!(
+            debug!(
                 "pma-copy: noun done: steps={}, elapsed_ms={}",
                 steps,
                 trace_start.elapsed().as_millis()

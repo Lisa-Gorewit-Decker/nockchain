@@ -83,7 +83,7 @@ fn stack_free_gap_trim_enabled() -> bool {
 }
 
 fn log_preserve_component(event_num: u64, component: &'static str, elapsed: Duration) {
-    info!(
+    debug!(
         event_num,
         component,
         elapsed_ms = duration_ms(elapsed),
@@ -92,7 +92,7 @@ fn log_preserve_component(event_num: u64, component: &'static str, elapsed: Dura
 }
 
 fn log_pma_preserve_component(event_num: u64, component: &'static str, segment: PmaCopySegment) {
-    info!(
+    debug!(
         event_num,
         component,
         elapsed_ms = duration_ms(segment.elapsed),
@@ -1144,7 +1144,7 @@ fn serf_loop<C: SerfCheckpoint>(
                 } else {
                     let cause_noun = cause.copy_to_stack(serf.stack());
                     let event_num_before = serf.event_num.load(Ordering::SeqCst) + 1;
-                    info!(
+                    debug!(
                         event_num = event_num_before,
                         source = %wire.source,
                         "poke action start"
@@ -1175,13 +1175,13 @@ fn serf_loop<C: SerfCheckpoint>(
                             .saturating_add(durable_event.event_processing_duration);
                     }
                     if did_update {
-                        info!(event_num = event_num_before, "poke cleanup start");
+                        debug!(event_num = event_num_before, "poke cleanup start");
                         let pma_start = Instant::now();
                         unsafe {
                             pma_detail = serf.preserve_event_update_leftovers();
                         }
                         pma_elapsed = Some(pma_start.elapsed());
-                        info!(
+                        debug!(
                             event_num = event_num_before,
                             elapsed_ms = duration_ms(pma_start.elapsed()),
                             "poke cleanup stage done: preserve_event_update_leftovers"
@@ -1228,7 +1228,7 @@ fn serf_loop<C: SerfCheckpoint>(
                         let snapshot_start = Instant::now();
                         serf.maybe_create_rotating_snapshot();
                         snapshot_stage_elapsed = Some(snapshot_start.elapsed());
-                        info!(
+                        debug!(
                             event_num = event_num_before,
                             elapsed_ms = duration_ms(snapshot_start.elapsed()),
                             "poke cleanup stage done: rotating_snapshot"
@@ -1237,7 +1237,7 @@ fn serf_loop<C: SerfCheckpoint>(
                     let cleanup_elapsed = cleanup_start.map(|start| start.elapsed());
                     let poke_total_ms = duration_ms(event_elapsed)
                         + cleanup_elapsed.map(duration_ms).unwrap_or(0.0);
-                    info!(
+                    debug!(
                         event_num = event_num_before,
                         did_update,
                         poke_total_ms,
@@ -2343,13 +2343,13 @@ impl Serf {
 
     fn append_durable_event(&mut self, event: &EventLogEntry) -> Duration {
         let Some(event_log) = self.event_log.as_mut() else {
-            info!(
+            debug!(
                 event_num = event.event_num,
                 "event-log append skipped: event log disabled"
             );
             return Duration::from_millis(0);
         };
-        info!(
+        debug!(
             event_num = event.event_num,
             path = %event_log.path().display(),
             sqlite_sync_mode = if durability::fsync_disabled() { "OFF" } else { "FULL" },
@@ -2371,7 +2371,7 @@ impl Serf {
             std::process::abort();
         }
         let elapsed = start.elapsed();
-        info!(
+        debug!(
             event_num = event.event_num,
             path = %event_log.path().display(),
             elapsed_ms = duration_ms(elapsed),
@@ -2385,7 +2385,7 @@ impl Serf {
 
     fn ensure_epoch_snapshot(&mut self) {
         if !self.snapshot_creation_enabled {
-            info!("epoch snapshot skipped: creation disabled");
+            debug!("epoch snapshot skipped: creation disabled");
             return;
         }
         let kernel_root_raw = {
@@ -2466,7 +2466,7 @@ impl Serf {
                 unsafe {
                     let _ = self.preserve_event_update_leftovers();
                 }
-                info!(
+                debug!(
                     replay_batch_end = idx + 1,
                     elapsed_ms = duration_ms(preserve_start.elapsed()),
                     "event replay preserve batch done"
@@ -2479,7 +2479,7 @@ impl Serf {
             unsafe {
                 let _ = self.preserve_event_update_leftovers();
             }
-            info!(
+            debug!(
                 elapsed_ms = duration_ms(preserve_start.elapsed()),
                 "event replay final preserve done"
             );
@@ -2532,7 +2532,7 @@ impl Serf {
 
     fn maybe_create_rotating_snapshot(&mut self) {
         if !self.snapshot_creation_enabled {
-            info!("rotating snapshot skipped: creation disabled");
+            debug!("rotating snapshot skipped: creation disabled");
             return;
         }
         let Some(interval) = self.rotating_snapshot_interval_event_time else {
@@ -2645,7 +2645,7 @@ impl Serf {
         segment: Option<&mut PmaCopySegment>,
     ) -> PmaCopySegment {
         if trace_pma {
-            info!("pma-copy: {label}");
+            debug!("pma-copy: {label}");
         }
         let before = pma.alloc_offset();
         let start = Instant::now();
@@ -2955,7 +2955,7 @@ impl Serf {
         let mut runtime_segments = unsafe { self.copy_runtime_state_from_pma(&pma, &mut to_pma) };
         runtime_segments.arvo = arvo_segment;
 
-        info!(
+        debug!(
             "pma-gc: copy timings: arvo_ms={} warm_ms={} test_jets_ms={} hot_ms={} cache_ms={} cold_ms={} arvo_alloc_words={} warm_alloc_words={} test_jets_alloc_words={} hot_alloc_words={} cache_alloc_words={} cold_alloc_words={}",
             runtime_segments.arvo.elapsed.as_millis(),
             runtime_segments.warm.elapsed.as_millis(),
@@ -2983,7 +2983,7 @@ impl Serf {
             PMA_GC_DROP_ALLOCATED_PREFIX_NUMERATOR, PMA_GC_DROP_ALLOCATED_PREFIX_DENOMINATOR,
         ) {
             Ok(advised_bytes) => {
-                info!(
+                debug!(
                     event_num,
                     path = %to_pma.path().display(),
                     advised_bytes,
@@ -3061,7 +3061,7 @@ impl Serf {
             .advise_free_gap(NOCK_STACK_FREE_GAP_TRIM_THRESHOLD_WORDS)
         {
             Ok(advice) if advice.advised_bytes > 0 => {
-                info!(
+                debug!(
                     event_num,
                     free_gap_words = advice.free_gap_words,
                     free_gap_mib = words_to_mib(advice.free_gap_words),
