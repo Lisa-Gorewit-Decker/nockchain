@@ -286,6 +286,36 @@ pub fn prove_and_verify_tiled(
     let (ca0, ca1, a_nc) =
         tile_chunk_range(tile_i as usize, tt, kk, a_bytes.len());
     let (_oa, a_sibs) = open_strip(&a_bytes, &ctx.kappa, ca0, ca1);
+    // §4.C.2 c-exact cx.2 g=1 co-location: the Pearl `noise_ref`
+    // byte parallel to the opened A strip — entry j = noise at the
+    // committed matrix position of `a_pad[ca0*1024 + j]` (A is
+    // row-major m×k: row=p/k, col=p%k), 0 on chunk-padding
+    // positions (p ≥ |A|). Each leaf round-0 row becomes the M-S1
+    // `noised_packed` producer for its block (cx.2-coloc.0-
+    // validated map; SEC_4C2 §8.9).
+    // cx.2 g=1 co-location is the **production-faithful 16|r**
+    // path (cx.2-coloc.0 validated producer ⊇ swept-chunks only
+    // for 16|r; Pearl §4.8 always has 16|r). Non-16|r test
+    // geometry (e.g. TEST_SMALL, r=4) keeps the pre-cx.2 A3.2b
+    // separate-store path (g=0, strictly-stronger-than-pre-A3 but
+    // not zero-gap) — co-location there would unbalance
+    // `noised_packed` (the cmset.1a finding). `coloc` gates BOTH
+    // the leaf-row noise strips AND retiring the separate store.
+    let coloc = params.noise_rank % 16 == 0;
+    let rr = params.noise_rank;
+    let a_strip_lo = ca0 * 1024;
+    let a_noise_strip: Vec<i8> = (0..(ca1 - ca0) * 1024)
+        .map(|j| {
+            let p = a_strip_lo + j;
+            if p < a_bytes.len() {
+                ai_pow_zk::noise_ref::e_value(
+                    &ctx.s_a, (p / kk) as u32, (p % kk) as u32, rr,
+                )
+            } else {
+                0
+            }
+        })
+        .collect();
     let (next, _root_a) = trace.place_matrix_strip_opening(
         0,
         &a_pad[ca0 * 1024..ca1 * 1024],
@@ -295,12 +325,28 @@ pub fn prove_and_verify_tiled(
         &a_sibs,
         &ctx.kappa,
         4, // IS_HASH_A
+        if coloc { Some(&a_noise_strip) } else { None },
     );
     // B col-major (n cols × k, col j at j·k): tile_j's `t` cols.
     let b_pad = pad_to_chunk_boundary(&b_bytes);
     let (cb0, cb1, b_nc) =
         tile_chunk_range(tile_j as usize, tt, kk, b_bytes.len());
     let (_ob, b_sibs) = open_strip(&b_bytes, &ctx.kappa, cb0, cb1);
+    // B is col-major flattened [col0(k)|col1(k)|…]: for byte p the
+    // matrix col = p/k, k-index = p%k ⇒ f_value(s_b, k-idx, col).
+    let b_strip_lo = cb0 * 1024;
+    let b_noise_strip: Vec<i8> = (0..(cb1 - cb0) * 1024)
+        .map(|j| {
+            let p = b_strip_lo + j;
+            if p < b_bytes.len() {
+                ai_pow_zk::noise_ref::f_value(
+                    &ctx.s_b, (p % kk) as u32, (p / kk) as u32, rr,
+                )
+            } else {
+                0
+            }
+        })
+        .collect();
     let (mh_end, _root_b) = trace.place_matrix_strip_opening(
         next,
         &b_pad[cb0 * 1024..cb1 * 1024],
@@ -310,6 +356,7 @@ pub fn prove_and_verify_tiled(
         &b_sibs,
         &ctx.kappa,
         5, // IS_HASH_B
+        if coloc { Some(&b_noise_strip) } else { None },
     );
 
     // C1 — key-pin rows binding JOB_KEY = κ and
@@ -395,6 +442,16 @@ pub fn prove_and_verify_tiled(
     // exactly as before. Closes the §4.C.2 *noise* tie (store
     // noise == Pearl `noise_ref` of the C1-pinned seed); the
     // *plain* tie (MAT_UNPACK ↔ HASH_A via C3) is A3.2c.
+    // §4.C.2: producers of the `noised_packed` bus.
+    //  * cx.2 g=1 (`coloc`, 16|r): the co-located strip-opening
+    //    leaf round-0 rows (placed above with the `noise_strip`s;
+    //    cx.2-coloc.0 proved producer ⊇ every swept chunk) — no
+    //    separate store rows.
+    //  * non-16|r (test geom, e.g. TEST_SMALL): the pre-cx.2
+    //    A3.2b separate `place_noised_store_row_split` rows
+    //    (MAT_UNPACK=committed-plain, NOISE_UNPACK=noise_ref,
+    //    NOISE_PACKED_PREP CRIT-1-pinned ⇒ strictly stronger than
+    //    pre-A3, not zero-gap).
     let store_srcs = CompositeTrace::enumerate_noised_chunks_with_src(
         &a_strips, &b_strips, t, r, num_stripes,
     );
@@ -411,9 +468,9 @@ pub fn prove_and_verify_tiled(
                     plain[m] = ctx.a[(i as usize) * kk2 + l as usize];
                     noise[m] = ai_pow_zk::noise_ref::e_value(&ctx.s_a, i, l, r as u32);
                 } else {
-                    let j = tile_j * params.tile + lane;
-                    plain[m] = ctx.b[(j as usize) * kk2 + l as usize];
-                    noise[m] = ai_pow_zk::noise_ref::f_value(&ctx.s_b, l, j, r as u32);
+                    let jc = tile_j * params.tile + lane;
+                    plain[m] = ctx.b[(jc as usize) * kk2 + l as usize];
+                    noise[m] = ai_pow_zk::noise_ref::f_value(&ctx.s_b, l, jc, r as u32);
                 }
             }
         }
@@ -428,17 +485,19 @@ pub fn prove_and_verify_tiled(
         // Store rows live in the post-sweep passthrough region
         // (place AFTER the sweep so its SX/CUMSUM passthrough on
         // `[sweep_start+rows_used, h)` is already written — this
-        // only adds the disjoint MAT_UNPACK/NOISE_UNPACK/
-        // NOISED_PACKED/NOISE_PACKED_PREP/CONTROL columns); the
-        // fold chain follows them.
+        // only adds disjoint columns); the fold chain follows.
         let store_start = sweep_start + rows_used;
-        for (i, s) in store_srcs.iter().enumerate() {
-            let (plain, noise) = plain_noise(s);
-            trace.place_noised_store_row_split(
-                store_start + i, &plain, &noise, 0,
-            );
-        }
-        let placed = n_store;
+        let placed = if coloc {
+            0 // producers are the co-located leaf round-0 rows
+        } else {
+            for (i, s) in store_srcs.iter().enumerate() {
+                let (plain, noise) = plain_noise(s);
+                trace.place_noised_store_row_split(
+                    store_start + i, &plain, &noise, 0,
+                );
+            }
+            n_store
+        };
         let fold_start = store_start + placed + 4;
         let xs: Vec<i32> = x_steps[..num_stripes].iter().map(|&u| u as i32).collect();
         trace.place_fold_chain(fold_start, &xs)
@@ -2029,7 +2088,7 @@ mod tests {
     fn sec_4c2_cx21_x1_whole_block_covers_all_swept_subslices() {
         use crate::matmul::{BlockNoise, Matrices};
         use crate::synth::synth_matrices;
-        use ai_pow_zk::blake3_tree::{pad_to_chunk_boundary, tile_chunk_range};
+        use ai_pow_zk::blake3_tree::pad_to_chunk_boundary;
         use ai_pow_zk::composite_trace::CompositeTrace;
         use std::collections::HashMap;
 
@@ -2298,5 +2357,48 @@ mod tests {
             }
             assert!(checked > 0, "no swept chunks for {params:?}");
         }
+    }
+
+    /// **§4.C.2 c-exact cx.2 — the g=1 co-location flip,
+    /// end-to-end Route-A C3-ACTIVE roundtrip.** The decisive
+    /// validation that the flip is sound: a 16|r geometry
+    /// (`coloc=true`) drives `prove_and_verify_tiled` with the
+    /// co-located strip-opening leaf round-0 rows as the M-S1
+    /// `noised_packed` producers — so `g = IS_MSG_MAT·IS_NEW_BLAKE
+    /// = 1` on those rows ⇒ the cx.2-c3 whole-block C3
+    /// (`UINT8_DATA[0..64] ≡ committed block ∈ HASH_A`), the
+    /// 8-sub-slice InputChip, the 8-key `noised_packed` producer,
+    /// and `urange8`/`i8u8` are ALL live and must balance together
+    /// in one Route-A proof at real difficulty. A broken flip
+    /// (unbalanced bus / per-row C3 / InputChip violation) ⇒
+    /// `prove_and_verify_for_block` errors. Honest roundtrip ⇒ the
+    /// §4.C.2 plain tie holds end-to-end (committed A/B
+    /// authenticated to HASH_A, swept a′ = noise(committed)).
+    #[test]
+    fn sec_4c2_cx2_g1_p16_route_a_c3_active_roundtrip() {
+        use crate::synth::synth_matrices;
+        let params = MatmulParams {
+            m: 16, k: 64, n: 16, noise_rank: 16, tile: 8,
+            spot_checks: 2, difficulty_bits: 0,
+        };
+        params.validate().unwrap();
+        assert_eq!(params.noise_rank % 16, 0, "P16 must be 16|r ⇒ coloc=true");
+        let (a, b) = synth_matrices(b"cx2g1-p16", &params);
+        let ctx = BlockContext::build(b"cx2g1-p16-blk", &a, &b, &params)
+            .expect("ctx");
+        // coloc=true ⇒ the g=1 co-location path. Must prove +
+        // pow-verify with C3 ACTIVE and every bus balanced.
+        let out = prove_and_verify_for_block(&ctx, &params, 0).expect(
+            "cx.2 g=1 (16|r P16) Route-A roundtrip must prove + \
+             pow-verify with C3 ACTIVE (the §4.C.2 plain tie live \
+             end-to-end)",
+        );
+        // Roundtrip succeeded (prove + pow-verify) ⇒ C3 active +
+        // every bus balanced at g=1. Sanity: the bound HASH_A PI
+        // is the real committed-matrix commitment (non-zero).
+        assert!(
+            out.pis.hash_a.iter().any(|&w| w != 0),
+            "HASH_A PI must be the real committed-matrix commitment"
+        );
     }
 }

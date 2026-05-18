@@ -724,6 +724,12 @@ impl CompositeTrace {
         auth_siblings: &[crate::blake3_tree::AuthSibling],
         kappa: &[u8; 32],
         selector_idx: usize,
+        // §4.C.2 c-exact cx.2 g=1: `Some` ⇒ the Pearl `noise_ref`
+        // byte parallel to `strip_bytes` (same length); each leaf
+        // round-0 row becomes the M-S1 `noised_packed` producer
+        // for its block (SEC_4C2 §8.9). `None` ⇒ pre-cx.2
+        // hash-only behaviour (g=0, zero-blast).
+        noise_strip: Option<&[i8]>,
     ) -> (usize, [u32; 8]) {
         assert!(
             c0 < c1 && c1 <= num_chunks,
@@ -734,6 +740,13 @@ impl CompositeTrace {
             (c1 - c0) * 1024,
             "strip_bytes must be exactly (c1-c0)*1024"
         );
+        if let Some(n) = noise_strip {
+            assert_eq!(
+                n.len(),
+                strip_bytes.len(),
+                "noise_strip must be parallel to strip_bytes"
+            );
+        }
         let key_words: [u32; 8] = core::array::from_fn(|i| {
             u32::from_le_bytes([
                 kappa[i * 4],
@@ -755,6 +768,7 @@ impl CompositeTrace {
                 &key_words,
                 true,
                 selector_idx,
+                noise_strip.map(|n| &n[0..1024]),
             );
             return (row, cv);
         }
@@ -771,6 +785,7 @@ impl CompositeTrace {
             &key_words,
             true,
             selector_idx,
+            noise_strip,
         );
         assert_eq!(
             si,
@@ -783,6 +798,7 @@ impl CompositeTrace {
     /// Place the 16-compression keyed BLAKE3 chunk-hash of one
     /// 1024-byte chunk (global `chunk_index` ⇒ counter tweak),
     /// byte-identical to [`place_matrix_hash`]'s chunk layer.
+    #[allow(clippy::too_many_arguments)]
     fn place_leaf_chunk(
         &mut self,
         row: &mut usize,
@@ -791,7 +807,21 @@ impl CompositeTrace {
         key_words: &[u32; 8],
         single_chunk_root: bool,
         selector_idx: usize,
+        // §4.C.2 c-exact cx.2 g=1 co-location: when `Some`, the
+        // Pearl `noise_ref` byte for each position of this chunk,
+        // parallel to `chunk_bytes` (0 on chunk-padding positions;
+        // precomputed by the bridge per the cx.2-coloc.0-validated
+        // (chunk,block,sub-slice)→matrix-position→noise_ref map).
+        // Each leaf round-0 row then becomes the M-S1
+        // `noised_packed` producer for its 64-byte block's 8
+        // sub-slices (the X1 design, SEC_4C2 §8.6/§8.9).
+        noise_chunk: Option<&[i8]>,
     ) -> [u32; 8] {
+        use crate::composite_layout::{
+            MAT_UNPACK_START, MSG_PAIR_SEL_START, NOISED_PACKED_START,
+            NOISE_PACKED_PREP, NOISE_UNPACK_START, UINT8_DATA_START,
+        };
+        use p3_field::integers::QuotientMap;
         const F_CHUNK_START: u32 = 1 << 0;
         const F_CHUNK_END: u32 = 1 << 1;
         const F_ROOT: u32 = 1 << 3;
@@ -829,8 +859,74 @@ impl CompositeTrace {
             } else {
                 &[]
             };
-            cv = self.place_blake3_hash_with_selectors(*row, &message, &cv, &tweak, extras);
+            let cr = *row; // the round-0 (IS_NEW_BLAKE) row of this block
+            cv = self.place_blake3_hash_with_selectors(cr, &message, &cv, &tweak, extras);
             *row += 8;
+
+            // §4.C.2 c-exact cx.2 g=1 co-location. On the round-0
+            // row: the unpermuted BLAKE3_MSG holds this block's 64
+            // committed plain bytes (∈ HASH_A via cx.2-c3
+            // whole-block C3). Make the row the M-S1 producer for
+            // its 8 sub-slices: write MAT_UNPACK/UINT8_DATA =
+            // committed plain, NOISE_UNPACK = noise_ref,
+            // NOISED_PACKED = a′ = plain+noise (InputChip-8),
+            // NOISE_PACKED_PREP[s] = polyval(noise_s,129) (the
+            // CRIT-1 pin), IS_MSG_MAT=1 (⇒ g=1), MSG_PAIR_SEL[0]=1
+            // (cx.1b Σ==g; vestigial under X1's whole-block C3),
+            // CONTROL_PREP msg_pair=0 (cx.1c pin). The blake3
+            // columns (disjoint) stay intact.
+            if let Some(nz) = noise_chunk {
+                let nblk = &nz[b * 64..b * 64 + 64];
+                let base = cr * TOTAL_TRACE_WIDTH;
+                for s in 0..8 {
+                    // NOISE_PACKED_PREP[s] = Σ_{m<8} noise·129^m.
+                    let mut npp: i64 = 0;
+                    let mut pw: i64 = 1;
+                    for m in 0..8 {
+                        let pl = blk[s * 8 + m] as i8;
+                        let no = nblk[s * 8 + m];
+                        let ap = pl.wrapping_add(no);
+                        let g = s * 8 + m;
+                        self.matrix.values[base + MAT_UNPACK_START + g] =
+                            <Val as QuotientMap<i64>>::from_int(pl as i64);
+                        self.matrix.values[base + UINT8_DATA_START + g] =
+                            <Val as QuotientMap<u64>>::from_int((pl as u8) as u64);
+                        self.matrix.values[base + NOISE_UNPACK_START + g] =
+                            <Val as QuotientMap<i64>>::from_int(no as i64);
+                        npp += (no as i64) * pw;
+                        pw *= crate::chips::input::NOISE_PACKING_BASE as i64;
+                        let _ = ap;
+                    }
+                    self.matrix.values[base + NOISE_PACKED_PREP + s] =
+                        <Val as QuotientMap<i64>>::from_int(npp);
+                    // NOISED_PACKED[2s+c] = Σ_{j<4}(plain+noise)·256^j.
+                    for c in 0..2 {
+                        let mut acc: i64 = 0;
+                        let mut mult: i64 = 1;
+                        for j in 0..4 {
+                            let pl = blk[s * 8 + c * 4 + j] as i8 as i64;
+                            let no = nblk[s * 8 + c * 4 + j] as i64;
+                            acc += (pl + no) * mult;
+                            mult *= 256;
+                        }
+                        self.matrix.values[base + NOISED_PACKED_START + 2 * s + c] =
+                            <Val as QuotientMap<i64>>::from_int(acc);
+                    }
+                }
+                // IS_MSG_MAT (idx 10) + IS_NEW_BLAKE (idx 8) +
+                // CONTROL_PREP(msg_pair=0, MAT_ID=0). Re-fill the
+                // control cells (disjoint from the blake3 block).
+                let mut sel = [false; 21];
+                sel[8] = true; // IS_NEW_BLAKE (preserve the blake3 selector)
+                sel[10] = true; // IS_MSG_MAT ⇒ g = 1
+                ControlChip.fill_row(
+                    &sel,
+                    0,
+                    &mut self.matrix.values[base..base + TOTAL_TRACE_WIDTH],
+                );
+                self.matrix.values[base + MSG_PAIR_SEL_START] =
+                    <Val as QuotientMap<u64>>::from_int(1);
+            }
         }
         cv
     }
@@ -894,6 +990,7 @@ impl CompositeTrace {
         key_words: &[u32; 8],
         is_root: bool,
         selector_idx: usize,
+        noise_strip: Option<&[i8]>,
     ) -> [u32; 8] {
         if hi <= c0 || lo >= c1 {
             let s = &sibs[*si];
@@ -916,14 +1013,17 @@ impl CompositeTrace {
         if c0 <= lo && hi <= c1 {
             return self.subtree_inside(
                 row, lo, hi, c0, strip_bytes, key_words, is_root, selector_idx,
+                noise_strip,
             );
         }
         let mid = lo + crate::blake3_tree::left_len((hi - lo) as u64) as usize;
         let l = self.fold_strip(
             row, lo, mid, c0, c1, strip_bytes, sibs, si, key_words, false, selector_idx,
+            noise_strip,
         );
         let r = self.fold_strip(
             row, mid, hi, c0, c1, strip_bytes, sibs, si, key_words, false, selector_idx,
+            noise_strip,
         );
         self.place_parent(row, &l, &r, key_words, is_root, selector_idx)
     }
@@ -941,6 +1041,7 @@ impl CompositeTrace {
         key_words: &[u32; 8],
         is_root: bool,
         selector_idx: usize,
+        noise_strip: Option<&[i8]>,
     ) -> [u32; 8] {
         if hi - lo == 1 {
             let off = (lo - c0) * 1024;
@@ -953,13 +1054,16 @@ impl CompositeTrace {
                 key_words,
                 false,
                 selector_idx,
+                noise_strip.map(|n| &n[off..off + 1024]),
             );
         }
         let mid = lo + crate::blake3_tree::left_len((hi - lo) as u64) as usize;
-        let l = self
-            .subtree_inside(row, lo, mid, c0, strip_bytes, key_words, false, selector_idx);
-        let r = self
-            .subtree_inside(row, mid, hi, c0, strip_bytes, key_words, false, selector_idx);
+        let l = self.subtree_inside(
+            row, lo, mid, c0, strip_bytes, key_words, false, selector_idx, noise_strip,
+        );
+        let r = self.subtree_inside(
+            row, mid, hi, c0, strip_bytes, key_words, false, selector_idx, noise_strip,
+        );
         self.place_parent(row, &l, &r, key_words, is_root, selector_idx)
     }
 
@@ -3235,6 +3339,7 @@ mod tests {
                         &sibs,
                         &key,
                         4, // IS_HASH_A
+                        None, // hash-only (pre-cx.2; g=0)
                     );
                     assert_eq!(
                         strip_root, full_root,
@@ -3267,6 +3372,7 @@ mod tests {
             &sibs,
             &key,
             4,
+            None, // hash-only (pre-cx.2; g=0)
         );
         let committed = b32_to_words(
             blake3::Hasher::new_keyed(&key)
@@ -3313,7 +3419,7 @@ mod tests {
             let mut strip = raw[c0 * 1024..c1 * 1024].to_vec();
             strip[10] ^= 1;
             let mut trace = CompositeTrace::baseline_min();
-            trace.place_matrix_strip_opening(0, &strip, c0, c1, nc, &sibs, &key, 4);
+            trace.place_matrix_strip_opening(0, &strip, c0, c1, nc, &sibs, &key, 4, None);
             let mut pis = crate::composite_public::CompositePublicInputs::derive_from_matrix(
                 &trace.matrix,
             );
@@ -3346,6 +3452,7 @@ mod tests {
                 &sibs,
                 &key,
                 4,
+                None,
             );
             let mut pis = crate::composite_public::CompositePublicInputs::derive_from_matrix(
                 &trace.matrix,
