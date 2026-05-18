@@ -23,6 +23,7 @@
 //! change in CR.0.**
 
 use crate::blake3_tree::{strip_opening_rows, tile_chunk_range};
+use crate::chips::control::NUM_SELECTORS;
 use crate::composite_layout::{TILE_D, TILE_H};
 use crate::composite_preprocess::{build_preprocessed_columns, RowDescriptor};
 use crate::params::ZkParams;
@@ -71,12 +72,75 @@ pub fn row_schedule(
     tile_j: u32,
     trace_len: usize,
 ) -> Vec<RowClass> {
+    let l = schedule_layout(params, tile_i, tile_j, trace_len);
+    (0..trace_len).map(|r| l.class_of(r)).collect()
+}
+
+/// CR.0 — the single params-pure source of truth for the bridge's
+/// region boundaries (16|r co-location path). `row_schedule`
+/// **and** `canonical_program`'s per-row `row_descriptor` both
+/// derive from this *one* layout (the CR.0 invariant: there is
+/// one schedule, not two constructions ⇒ no prover/verifier
+/// divergence). All offsets are params-pure (CR.0a
+/// `strip_opening_rows` + A1 `tile_chunk_range` + the §6(b) sweep
+/// formula + the 16|r co-located store=0 + fold/jackpot offsets).
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct ScheduleLayout {
+    /// A-side strip-opening row count (`[0, na)` = StripOpenA).
+    pub na: usize,
+    /// End of strip-opening (`[na, mh_end)` = StripOpenB; row
+    /// `mh_end` is the Pad gap).
+    pub mh_end: usize,
+    /// First §6(b) sweep row (`mh_end + 3`).
+    pub sweep_start: usize,
+    /// One past the last sweep row (`sweep_start + sweep_rows`).
+    pub store_start: usize,
+    /// First FoldChip row (`store_start + 4`; 16|r ⇒ 0 separate
+    /// store rows).
+    pub fold_start: usize,
+    /// One past the last fold row (`fold_start + num_stripes`).
+    pub fold_end: usize,
+    /// First jackpot-hash row (`trace_len - 8`).
+    pub jpot_start: usize,
+}
+
+impl ScheduleLayout {
+    /// The [`RowClass`] of `row_idx` (the *one* classification).
+    pub fn class_of(&self, r: usize) -> RowClass {
+        if r < self.na {
+            RowClass::StripOpenA
+        } else if r < self.mh_end {
+            RowClass::StripOpenB
+        } else if r == self.mh_end + 1 || r == self.mh_end + 2 {
+            RowClass::KeyPin
+        } else if (self.sweep_start..self.store_start).contains(&r) {
+            RowClass::Sweep
+        } else if (self.fold_start..self.fold_end).contains(&r) {
+            RowClass::Fold
+        } else if r >= self.jpot_start {
+            RowClass::JackpotHash
+        } else {
+            RowClass::Pad
+        }
+    }
+}
+
+/// Compute the [`ScheduleLayout`] from public data only. Panics
+/// on non-16|r (the documented A3.2b test path — out of the
+/// params-pure / `canonical_program` scope; Pearl §4.8 is always
+/// 16|r).
+pub(crate) fn schedule_layout(
+    params: &ZkParams,
+    tile_i: u32,
+    tile_j: u32,
+    trace_len: usize,
+) -> ScheduleLayout {
     assert_eq!(
         params.noise_rank % 16,
         0,
-        "row_schedule is params-pure only on the 16|r co-location \
-         path (Pearl §4.8 is always 16|r); non-16|r is the \
-         documented A3.2b test path"
+        "schedule_layout is params-pure only on the 16|r \
+         co-location path (Pearl §4.8 is always 16|r); non-16|r \
+         is the documented A3.2b test path"
     );
     let t = params.tile as usize;
     let k = params.k as usize;
@@ -113,25 +177,10 @@ pub fn row_schedule(
     );
     let jpot_start = trace_len - 8;
 
-    let mut sched = vec![RowClass::Pad; trace_len];
-    for (r_idx, c) in sched.iter_mut().enumerate() {
-        *c = if r_idx < na {
-            RowClass::StripOpenA
-        } else if r_idx < mh_end {
-            RowClass::StripOpenB
-        } else if r_idx == mh_end + 1 || r_idx == mh_end + 2 {
-            RowClass::KeyPin
-        } else if (sweep_start..store_start).contains(&r_idx) {
-            RowClass::Sweep
-        } else if (fold_start..fold_end).contains(&r_idx) {
-            RowClass::Fold
-        } else if r_idx >= jpot_start {
-            RowClass::JackpotHash
-        } else {
-            RowClass::Pad
-        };
+    ScheduleLayout {
+        na, mh_end, sweep_start, store_start, fold_start, fold_end,
+        jpot_start,
     }
-    sched
 }
 
 /// Verifier-known per-block public inputs that, with `params`,
@@ -165,12 +214,18 @@ pub struct BlockPublic {
 /// - **CR.1 (landed): `Pad`** — witness-free, exactly
 ///   [`RowDescriptor::padding`] (all PROGRAM_COLS zero except
 ///   `STARK_ROW_IDX = row_idx`).
-/// - CR.2 `KeyPin` · CR.3 `JackpotHash` · CR.4 `StripOpenA/B`
-///   (incl. the 8 co-located noise sub-slice pins via
-///   `noise_ref`, the §4.C.2/b2 core) · CR.5 `Sweep`/`Fold` —
-///   **residual** (each gated by its own `== extract` KAT).
+/// - **CR.2 (landed): `KeyPin`** — witness-free; the two
+///   `place_key_pin_row` rows: `mh_end+1` → `IS_USE_JOB_KEY`
+///   (SELECTOR_COLS idx 2), `mh_end+2` → `IS_USE_COMMITMENT_HASH`
+///   (idx 3); `mat_id=0`, all other PROGRAM_COLS zero. (The
+///   pinned PI κ/s_a lives in `CV_IN`, a chip column, *not* a
+///   PROGRAM_COL ⇒ the descriptor is `bp`-independent.)
+/// - CR.3 `JackpotHash` · CR.4 `StripOpenA/B` (incl. the 8
+///   co-located noise sub-slice pins via `noise_ref`, the
+///   §4.C.2/b2 core) · CR.5 `Sweep`/`Fold` — **residual** (each
+///   gated by its own `== extract` KAT).
 pub fn is_class_canonical(class: RowClass) -> bool {
-    matches!(class, RowClass::Pad)
+    matches!(class, RowClass::Pad | RowClass::KeyPin)
 }
 
 /// **Phase A-CR — the params-pure canonical program.** Builds the
@@ -197,10 +252,9 @@ pub fn canonical_program(
     bp: &BlockPublic,
     trace_len: usize,
 ) -> RowMajorMatrix<Val> {
-    let sched = row_schedule(params, bp.tile_i, bp.tile_j, trace_len);
-    let program: Vec<RowDescriptor> = sched
-        .iter()
-        .map(|&class| row_descriptor(class, params, bp))
+    let l = schedule_layout(params, bp.tile_i, bp.tile_j, trace_len);
+    let program: Vec<RowDescriptor> = (0..trace_len)
+        .map(|r| row_descriptor(r, l.class_of(r), &l, params, bp))
         .collect();
     let rows = build_preprocessed_columns(&program, trace_len);
     let w = rows.first().map(|r| r.len()).unwrap_or(0);
@@ -208,23 +262,41 @@ pub fn canonical_program(
     RowMajorMatrix::new(flat, w)
 }
 
-/// Params-pure per-row descriptor for a [`RowClass`]. CR.1: only
-/// `Pad` is exact (`RowDescriptor::padding`); not-yet-canonical
-/// classes return the same neutral placeholder — fenced by
-/// [`is_class_canonical`] / the staged §5 KAT (NOT a soundness
-/// claim; see [`canonical_program`]). CR.2–CR.5 replace each arm
-/// with its params-pure construction (`KeyPin` from `bp.kappa`/
-/// `bp.s_a`; `StripOpen*` co-located leaf rows' 8 noise sub-slice
-/// pins from `noise_ref(bp.s_a/s_b)`; the §6(b) `Sweep`/`Fold`
-/// schedule), each landed behind its own `== extract` gate.
+/// Params-pure per-row descriptor for a row. CR.1 `Pad` +
+/// CR.2 `KeyPin` are exact; not-yet-canonical classes return the
+/// neutral placeholder — fenced by [`is_class_canonical`] / the
+/// staged §5 KAT (NOT a soundness claim; see [`canonical_program`]).
+/// CR.3–CR.5 replace each arm with its params-pure construction
+/// (`StripOpen*` co-located leaf rows' 8 noise sub-slice pins from
+/// `noise_ref(bp.s_a/s_b)`, the §4.C.2/b2 core; the §6(b)
+/// `Sweep`/`Fold` schedule), each landed behind its own
+/// `== extract` gate.
 fn row_descriptor(
+    row_idx: usize,
     class: RowClass,
+    layout: &ScheduleLayout,
     _params: &ZkParams,
     _bp: &BlockPublic,
 ) -> RowDescriptor {
     match class {
         RowClass::Pad => RowDescriptor::padding(),
-        // CR.2–CR.5 residual — placeholder, fenced by
+        RowClass::KeyPin => {
+            // CR.2: `place_key_pin_row` sets exactly one selector
+            // and `mat_id=0`; row mh_end+1 = JOB_KEY (SELECTOR_COLS
+            // idx 2), mh_end+2 = COMMITMENT_HASH (idx 3). The
+            // pinned PI (κ / s_a) is written to `CV_IN` — a chip
+            // column, not a PROGRAM_COL — so the canonical
+            // descriptor is `bp`-independent.
+            let mut selectors = [false; NUM_SELECTORS];
+            if row_idx == layout.mh_end + 1 {
+                selectors[2] = true; // IS_USE_JOB_KEY
+            } else {
+                debug_assert_eq!(row_idx, layout.mh_end + 2);
+                selectors[3] = true; // IS_USE_COMMITMENT_HASH
+            }
+            RowDescriptor { selectors, ..RowDescriptor::padding() }
+        }
+        // CR.3–CR.5 residual — placeholder, fenced by
         // `is_class_canonical` (never trusted until CR.6).
         _ => RowDescriptor::padding(),
     }
@@ -279,14 +351,14 @@ mod tests {
         use p3_field::PrimeField64;
         use p3_matrix::Matrix;
 
-        // is_class_canonical fence: CR.1 ⇒ exactly {Pad}.
+        // is_class_canonical fence: CR.1+CR.2 ⇒ {Pad, KeyPin}.
         assert!(is_class_canonical(RowClass::Pad));
+        assert!(is_class_canonical(RowClass::KeyPin));
         for c in [
             RowClass::StripOpenA, RowClass::StripOpenB,
-            RowClass::KeyPin, RowClass::Sweep, RowClass::Fold,
-            RowClass::JackpotHash,
+            RowClass::Sweep, RowClass::Fold, RowClass::JackpotHash,
         ] {
-            assert!(!is_class_canonical(c), "{c:?} not canonical until CR.2+");
+            assert!(!is_class_canonical(c), "{c:?} not canonical until CR.3+");
         }
 
         let p = p16();
@@ -319,6 +391,54 @@ mod tests {
             );
         }
         assert!(saw_pad, "P16 schedule has Pad rows");
+    }
+
+    #[test]
+    fn cr2_canonical_program_keypin_rows_are_exact() {
+        use crate::chips::control::ControlChip;
+        use crate::composite_full_air::PROGRAM_COLS;
+        use p3_field::PrimeField64;
+
+        let p = p16();
+        let len = 1 << 13;
+        let l = schedule_layout(&p, 0, 0, len);
+        let prog = canonical_program(&p, &bp0(), len);
+        let w = PROGRAM_COLS.len();
+
+        // Expected CONTROL_PREP for each key-pin row: exactly one
+        // selector set (JOB_KEY idx 2 at mh_end+1, COMMITMENT_HASH
+        // idx 3 at mh_end+2), mat_id=0, no fold/msg_pair.
+        for (row, sel_idx) in
+            [(l.mh_end + 1, 2usize), (l.mh_end + 2, 3usize)]
+        {
+            assert_eq!(l.class_of(row), RowClass::KeyPin);
+            let mut sel = [false; NUM_SELECTORS];
+            sel[sel_idx] = true;
+            let want_cp = ControlChip::pack_control_prep_full(
+                &sel, 0, false, 0, 0, 0,
+            );
+            // PROGRAM_COLS[0] = CONTROL_PREP.
+            assert_eq!(
+                prog.values[row * w].as_canonical_u64(),
+                want_cp,
+                "key-pin row {row} CONTROL_PREP must pack only \
+                 SELECTOR_COLS idx {sel_idx}"
+            );
+            // Cols 1..11 (noise×8, CV, AB_ID) zero; col 11
+            // (STARK_ROW_IDX) = row.
+            for c in 1..w - 1 {
+                assert_eq!(
+                    prog.values[row * w + c].as_canonical_u64(),
+                    0,
+                    "key-pin row {row} col {c} must be 0"
+                );
+            }
+            assert_eq!(
+                prog.values[row * w + (w - 1)].as_canonical_u64(),
+                row as u64,
+                "key-pin row {row} STARK_ROW_IDX"
+            );
+        }
     }
 
     #[test]
