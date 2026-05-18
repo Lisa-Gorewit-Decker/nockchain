@@ -948,3 +948,57 @@ one-STARK trace-area envelope is unaffected — preproc width ≠
 The §8.7 open measurement is closed. CRIT-1 soundness intact:
 `routea_crit1_tampered_program_col_rejected` ✓ with the 12-wide
 preprocessed pin.
+
+### 8.9 cx.2 g=1 co-location flip — design + cx.2-coloc.0 de-risk (validated)
+
+The zero-blast foundation is complete (cx.2-layout/c3/pcols/
+mat-input/matfreq/bus — 6 validated commits; the full X1
+machinery present & inert at g=0). The remaining single
+irreducibly-atomic step (the g=1 flip) is now **designed +
+KAT-first de-risked** (the cx.0/cx.2.1 discipline; "design and
+validate the next step"):
+
+**Trace-gen design.** `place_matrix_strip_opening` gains a
+co-location context `{seed: &[u8;32] (s_a|s_b), k, r, side}`;
+threaded through `fold_strip`/`subtree_inside` to
+`place_leaf_chunk`. For each leaf compression's **round-0 row**
+`cr` (where `IS_NEW_BLAKE=1`, holding the unpermuted 64-byte
+block in `BLAKE3_MSG`), after placing the compression, write:
+`IS_MSG_MAT=1` (⇒ g=1); `MAT_UNPACK[0..64]/UINT8_DATA[0..64] =
+the block's committed bytes` (i8/u8 — the bytes it already
+hashes; cx.2-c3 whole-block C3 binds these ∈ `HASH_A`);
+`NOISE_UNPACK[0..64] = noise_ref` at each byte's matrix
+position (A row-major `row=p/k,col=p%k`→`e_value`; B col-major
+`col=p/k,kidx=p%k`→`f_value`); `NOISED_PACKED[0..16] = a′`
+(InputChip-8 then holds non-vacuously); `NOISE_PACKED_PREP[0..8]
+= polyval(noise_subslice,129)` (the CRIT-1 pin; `extract_program`
+lifts it from the honest trace — verifier-recompute-from-params
+is the separate Phase-A-CR item); `MSG_PAIR_SEL[0]=1` +
+`CONTROL_PREP msg_pair=0` (satisfy cx.1b-(ii)/cx.1c — vestigial
+under X1's whole-block C3). Re-write `CONTROL_PREP`/selectors on
+`cr` as `{IS_NEW_BLAKE, IS_MSG_MAT}` + `pack_control_prep_full(..
+msg_pair=0)`. Bridge (`prove_and_verify_tiled`) passes the
+context for the A (`s_a`,row-major) and B (`s_b`,col-major)
+strip-openings and **retires the separate
+`place_noised_store_*`** (the leaf rows are now the producers).
+
+**cx.2-coloc.0 (DONE & validated — `sec_4c2_cx2coloc0_leaf_
+producer_superset_and_noise_pin`).** Off-circuit, no
+AIR/trace-gen change, real bridge geometry (16|r: r=16
+single-chunk + r=32 multi-chunk): **(P1)** the
+opened-leaf-block sub-slice producer set ⊇ every distinct
+M-S1-swept `a′` chunk (`enumerate_noised_chunks_positioned`)
+⇒ the `noised_packed` LogUp stays balanced once the producer
+moves onto the leaf rows; **(P2)** each sub-slice
+`NOISE_PACKED_PREP = polyval(noise_ref,129)` is well-formed &
+bounded (`< 2^60 ≪ p`). §4.C.2 family 6/6 green.
+
+**Status.** The g=1 flip is designed + its two load-bearing
+premises validated KAT-first. It remains the single
+non-decomposable Route-A-valid landing (the M-S1-class atomic
+core — per the documented M-S1 precedent a focused
+multi-iteration effort with the debug-assertions-OFF hazard).
+Next focused effort: implement the cx.2-coloc trace-gen +
+bridge per the above → full `ai-pow-zk` + `ai-pow zk` +
+debug-assertions-ON + 16|r `P16` Route-A C3-active +
+position-exact adversarial → A3.3 → §4.C.2 **ZERO-GAP**.

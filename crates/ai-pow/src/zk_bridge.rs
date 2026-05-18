@@ -2149,4 +2149,154 @@ mod tests {
             );
         }
     }
+
+    /// **§4.C.2 c-exact cx.2-coloc.0 — KAT-first de-risk of the
+    /// g=1 co-location flip (no AIR / trace-gen change).** The
+    /// remaining (single, irreducibly-atomic) cx.2 step makes the
+    /// strip-opening leaf round-0 rows the M-S1 `noised_packed`
+    /// producers: per leaf block of the opened chunk range
+    /// `[c0,c1)` (tile (0,0)), per 8-byte sub-slice, the row
+    /// carries `a′ = committed_plain + noise_ref` (committed via
+    /// the cx.2-c3 whole-block C3 ∈ `HASH_A`; noise via the
+    /// CRIT-1-pinned `NOISE_PACKED_PREP[s] =
+    /// polyval(noise_subslice,129)`), and publishes the 8 bus
+    /// keys. This validates, BEFORE the trace-gen change, the two
+    /// premises the flip relies on, against the **real bridge
+    /// geometry** (16|r — the production-faithful path; the
+    /// cx.0/cx.2.1 KAT-first discipline):
+    ///   (P1) **producer ⊇ consumer** at the `noised_packed`
+    ///        bus-key level: every distinct M-S1-swept `a′`
+    ///        8-chunk (`enumerate_noised_chunks_positioned`, the
+    ///        consumer) is some opened-leaf-block sub-slice's
+    ///        `a′` (the producer) ⇒ the bus stays balanced once
+    ///        the producer moves onto the leaf rows.
+    ///   (P2) per sub-slice `NOISE_PACKED_PREP[s] =
+    ///        polyval(noise_ref-subslice,129)` is well-formed and
+    ///        bounded (the InputChip-eqn1 / CRIT-1-pin value the
+    ///        co-located row must carry).
+    #[test]
+    fn sec_4c2_cx2coloc0_leaf_producer_superset_and_noise_pin() {
+        use crate::matmul::{BlockNoise, Matrices};
+        use crate::synth::synth_matrices;
+        use ai_pow_zk::blake3_tree::{pad_to_chunk_boundary, tile_chunk_range};
+        use ai_pow_zk::composite_trace::CompositeTrace;
+        use std::collections::HashSet;
+
+        const NPB: i64 = 129; // NOISE_PACKING_BASE
+
+        for params in [
+            MatmulParams {
+                m: 16, k: 64, n: 16, noise_rank: 16, tile: 8,
+                spot_checks: 2, difficulty_bits: 0,
+            },
+            MatmulParams {
+                m: 32, k: 128, n: 32, noise_rank: 32, tile: 16,
+                spot_checks: 2, difficulty_bits: 0,
+            },
+        ] {
+            params.validate().unwrap();
+            assert_eq!(params.noise_rank % 16, 0, "cx.2-coloc.0 requires 16|r");
+            let (a, b) = synth_matrices(b"sec4c2-cx2coloc0", &params);
+            let ctx = BlockContext::build(b"sec4c2-cx2coloc0-blk", &a, &b, &params)
+                .expect("ctx");
+            let noise = BlockNoise::expand(&ctx.s_a, &ctx.s_b, &params);
+            let mats = Matrices::build(ctx.a, ctx.b, &noise, &params);
+            let (t, r, k) = (
+                params.tile as usize,
+                params.noise_rank as usize,
+                params.k as usize,
+            );
+            let num_stripes = params.num_stripes() as usize;
+            let (ti, tj) = (0u32, 0u32);
+            let a_strips: Vec<i8> = (0..t as u32)
+                .flat_map(|di| mats.a_prime_row(ti * params.tile + di).to_vec())
+                .collect();
+            let b_strips: Vec<i8> = (0..t as u32)
+                .flat_map(|dj| mats.b_prime_col(tj * params.tile + dj).to_vec())
+                .collect();
+            let a_bytes: Vec<u8> = ctx.a.iter().map(|&v| v as u8).collect();
+            let b_bytes: Vec<u8> = ctx.b.iter().map(|&v| v as u8).collect();
+            let a_pad = pad_to_chunk_boundary(&a_bytes);
+            let b_pad = pad_to_chunk_boundary(&b_bytes);
+            let (ca0, ca1, _) =
+                tile_chunk_range(ti as usize, t, k, a_bytes.len());
+            let (cb0, cb1, _) =
+                tile_chunk_range(tj as usize, t, k, b_bytes.len());
+
+            // Build the leaf-row producer set (per side) over the
+            // opened chunk range: every 8-byte sub-slice's a′ =
+            // committed_plain + noise_ref; also (P2) check the
+            // sub-slice NOISE_PACKED_PREP is well-formed.
+            let build_producer = |pad: &[u8], c0: usize, c1: usize,
+                                  real_len: usize, side_a: bool|
+             -> HashSet<[i8; 8]> {
+                let mut set = HashSet::new();
+                let mut off = c0 * 1024;
+                let hi = c1 * 1024;
+                while off + 8 <= hi {
+                    let mut ap = [0i8; 8];
+                    let mut npp: i64 = 0;
+                    let mut pw: i64 = 1;
+                    for m in 0..8 {
+                        let p = off + m;
+                        let (plain, nz) = if p < real_len {
+                            let plain = pad[p] as i8;
+                            let nz = if side_a {
+                                ai_pow_zk::noise_ref::e_value(
+                                    &ctx.s_a, (p / k) as u32, (p % k) as u32,
+                                    r as u32,
+                                )
+                            } else {
+                                // B is col-major flattened [col0(k)|col1(k)|..]
+                                ai_pow_zk::noise_ref::f_value(
+                                    &ctx.s_b, (p % k) as u32, (p / k) as u32,
+                                    r as u32,
+                                )
+                            };
+                            (plain, nz)
+                        } else {
+                            (0i8, 0i8) // chunk padding ⇒ a′ = 0
+                        };
+                        ap[m] = plain.wrapping_add(nz);
+                        npp += (nz as i64) * pw;
+                        pw *= NPB;
+                    }
+                    // (P2): the CRIT-1-pinned per-sub-slice noise
+                    // pack must fit i64 / Goldilocks comfortably
+                    // (|nz|≤64, 64·129^7 ≈ 3e16 ≪ p).
+                    assert!(
+                        npp.unsigned_abs() < (1u64 << 60),
+                        "NOISE_PACKED_PREP sub-slice pack out of range"
+                    );
+                    set.insert(ap);
+                    off += 8;
+                }
+                set
+            };
+            let prod_a = build_producer(&a_pad, ca0, ca1, a_bytes.len(), true);
+            let prod_b = build_producer(&b_pad, cb0, cb1, b_bytes.len(), false);
+
+            // Consumer: the distinct M-S1-swept a′ 8-chunks
+            // (positioned layout; the noised_packed bus queries).
+            let pos = CompositeTrace::enumerate_noised_chunks_positioned(
+                &a_strips, &b_strips, t, r, num_stripes,
+            );
+            let mut checked = 0usize;
+            for s in &pos {
+                // (P1): every swept a′ chunk is published by some
+                // opened-leaf-block sub-slice ⇒ noised_packed
+                // balances when the producer is the leaf rows.
+                let set = if s.side_a { &prod_a } else { &prod_b };
+                assert!(
+                    set.contains(&s.bytes),
+                    "swept a′ chunk {:?} (side_a={}) not in the \
+                     opened-leaf-block producer set — noised_packed \
+                     would unbalance after co-location",
+                    s.bytes, s.side_a
+                );
+                checked += 1;
+            }
+            assert!(checked > 0, "no swept chunks for {params:?}");
+        }
+    }
 }
