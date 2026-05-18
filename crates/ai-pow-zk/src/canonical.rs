@@ -242,18 +242,22 @@ pub struct BlockPublic {
 ///   (the §4.C.2/b2 core — verifier obtains canonical noise
 ///   params-pure, not extract-of-reference; **`bp.s_a/s_b`
 ///   dependent**).
-/// - CR.5 `Sweep`/`Fold` — **residual** (its own `== extract`
-///   KAT). After CR.5, `is_class_canonical` = every class ⇒ CR.6
-///   may flip the verify path (R1 linchpin).
-pub fn is_class_canonical(class: RowClass) -> bool {
-    matches!(
-        class,
-        RowClass::Pad
-            | RowClass::KeyPin
-            | RowClass::JackpotHash
-            | RowClass::StripOpenA
-            | RowClass::StripOpenB
-    )
+/// - **CR.5 (landed): `Sweep`/`Fold`** — params-pure §6(b)
+///   schedule. Sweep (`place_useful_work_chain`→
+///   `place_matmul_step`): per the nested (sbi,sbj,step,chunk)
+///   loop, IS_RESET_CUMSUM (idx 0) on each sub-block's first
+///   micro-step else IS_UPDATE_CUMSUM (idx 1). Fold
+///   (`place_fold_chain`): CONTROL_PREP packs is_fold=1,
+///   fold_slot=offset%16, fold_stripe=offset.
+///
+/// **`is_class_canonical` = EVERY class ⇒ CR.6 may flip the
+/// verify path (the R1 soundness linchpin: VK commits to
+/// `canonical_program`; gate Route-A + crit1_* +
+/// debug-assertions-ON + a new adversarial before the flip).**
+pub fn is_class_canonical(_class: RowClass) -> bool {
+    // CR.0–CR.5: every RowClass is reconstructed params-pure and
+    // `== extract_program(real P16(16|r) trace)`-validated.
+    true
 }
 
 /// `pack_tweak` of the final jackpot-hash block's tweak — the
@@ -655,9 +659,40 @@ fn row_descriptor(
             debug_assert!(j < 8, "jackpot block is 8 rows");
             blake3_block_descriptor(j, jackpot_tweak_packed(), &[6])
         }
-        // CR.4–CR.5 residual — placeholder, fenced by
-        // `is_class_canonical` (never trusted until CR.6).
-        _ => RowDescriptor::padding(),
+        RowClass::Sweep => {
+            // CR.5: §6(b) sweep (`place_useful_work_chain` →
+            // `place_matmul_step`). Row order is the nested
+            // (sbi, sbj, step, chunk) loop; each row sets exactly
+            // IS_RESET_CUMSUM (SELECTOR_COLS idx 0) on the
+            // sub-block's first micro-step (step==0 && chunk==0)
+            // else IS_UPDATE_CUMSUM (idx 1); mat_id=0, no
+            // fold/msg_pair, no NOISE/CV/AB. num_stripes = k/r;
+            // chunks = ⌈r/TILE_D⌉ (§6(b)-G1).
+            let r = params.noise_rank as usize;
+            let num_stripes = params.k as usize / r;
+            let chunks = r.div_ceil(TILE_D).max(1);
+            let per = num_stripes * chunks;
+            let within = (row_idx - layout.sweep_start) % per;
+            let step = within / chunks;
+            let chunk = within % chunks;
+            let is_reset = step == 0 && chunk == 0;
+            let mut selectors = [false; NUM_SELECTORS];
+            selectors[if is_reset { 0 } else { 1 }] = true;
+            RowDescriptor { selectors, ..RowDescriptor::padding() }
+        }
+        RowClass::Fold => {
+            // CR.5: `place_fold_chain` row `offset` (0..num_stripes)
+            // — no selectors; CONTROL_PREP packs is_fold=1,
+            // fold_slot = offset%16, fold_stripe = offset (§6(b)-G2
+            // SX_XR lane). mat_id=0; FOLD_* are chip columns.
+            let offset = row_idx - layout.fold_start;
+            RowDescriptor {
+                is_fold: true,
+                fold_slot: (offset % 16) as u8,
+                fold_stripe: offset as u8,
+                ..RowDescriptor::padding()
+            }
+        }
     }
 }
 
@@ -710,16 +745,13 @@ mod tests {
         use p3_field::PrimeField64;
         use p3_matrix::Matrix;
 
-        // is_class_canonical fence: CR.1–CR.4 ⇒ {Pad, KeyPin,
-        // JackpotHash, StripOpenA, StripOpenB}.
+        // is_class_canonical fence: CR.0–CR.5 ⇒ EVERY class.
         for c in [
             RowClass::Pad, RowClass::KeyPin, RowClass::JackpotHash,
             RowClass::StripOpenA, RowClass::StripOpenB,
+            RowClass::Sweep, RowClass::Fold,
         ] {
-            assert!(is_class_canonical(c), "{c:?} canonical by CR.4");
-        }
-        for c in [RowClass::Sweep, RowClass::Fold] {
-            assert!(!is_class_canonical(c), "{c:?} not canonical until CR.5");
+            assert!(is_class_canonical(c), "{c:?} canonical by CR.5");
         }
 
         let p = p16();
