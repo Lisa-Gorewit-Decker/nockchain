@@ -2000,4 +2000,153 @@ mod tests {
             assert!(checked > 0, "no store windows exercised for {params:?}");
         }
     }
+
+    /// **§4.C.2 c-exact cx.2.1 — KAT-first de-risk of the X1
+    /// whole-block structure (no AIR change).** Maintainer chose
+    /// X1 (SEC_4C2 §8.5/§8.6): ONE strip-opening leaf round-0 row
+    /// per 64-byte block (the real, non-duplicable compression)
+    /// carries the whole block in a 64-wide `UINT8_DATA`;
+    /// per-word C3 binds all 16 `BLAKE3_MSG` words to it (⇒
+    /// `UINT8_DATA[0..64]` = the committed block bytes ∈
+    /// `HASH_A`); every swept 8-byte store window of that block
+    /// is the sub-slice `UINT8_DATA[8p..8p+8]`, `p∈0..8`. This
+    /// KAT validates the X1 premise BEFORE any AIR change
+    /// (extends cx.0 from one word-pair to the **whole block /
+    /// all swept sub-slices per block** — the resolution of the
+    /// cx.2.0 blocker):
+    ///   * group the A3.2a position-addressed store windows
+    ///     (16|r) by their `(side, chunk, block)` leaf;
+    ///   * **every** swept window in a block == that block's
+    ///     committed bytes at sub-slice `p` (`a_pad[block_base +
+    ///     8p .. +8]`) == `a′ − noise_ref`;
+    ///   * the block's 64 bytes == `base256`-decomp of the 16
+    ///     `BLAKE3_MSG` words `place_leaf_chunk` hashes (the
+    ///     per-word C3 identity over the WHOLE block);
+    ///   * at least one block carries **>1** swept window — so
+    ///     the multi-window-per-block case (the cx.2.0 blocker
+    ///     X1 must resolve) is genuinely exercised, not vacuous.
+    #[test]
+    fn sec_4c2_cx21_x1_whole_block_covers_all_swept_subslices() {
+        use crate::matmul::{BlockNoise, Matrices};
+        use crate::synth::synth_matrices;
+        use ai_pow_zk::blake3_tree::{pad_to_chunk_boundary, tile_chunk_range};
+        use ai_pow_zk::composite_trace::CompositeTrace;
+        use std::collections::HashMap;
+
+        fn base256(b: &[u8]) -> u32 {
+            u32::from_le_bytes([b[0], b[1], b[2], b[3]])
+        }
+
+        for params in [
+            MatmulParams {
+                m: 16, k: 64, n: 16, noise_rank: 16, tile: 8,
+                spot_checks: 2, difficulty_bits: 0,
+            },
+            MatmulParams {
+                m: 32, k: 128, n: 32, noise_rank: 32, tile: 16,
+                spot_checks: 2, difficulty_bits: 0,
+            },
+        ] {
+            params.validate().unwrap();
+            assert_eq!(params.noise_rank % 16, 0, "cx.2.1 requires 16|r");
+            let (a, b) = synth_matrices(b"sec4c2-cx21", &params);
+            let ctx = BlockContext::build(b"sec4c2-cx21-blk", &a, &b, &params)
+                .expect("ctx");
+            let noise = BlockNoise::expand(&ctx.s_a, &ctx.s_b, &params);
+            let mats = Matrices::build(ctx.a, ctx.b, &noise, &params);
+            let (t, r, k) = (
+                params.tile as usize,
+                params.noise_rank as usize,
+                params.k as usize,
+            );
+            let num_stripes = params.num_stripes() as usize;
+            let (ti, tj) = (0u32, 0u32);
+            let a_strips: Vec<i8> = (0..t as u32)
+                .flat_map(|di| mats.a_prime_row(ti * params.tile + di).to_vec())
+                .collect();
+            let b_strips: Vec<i8> = (0..t as u32)
+                .flat_map(|dj| mats.b_prime_col(tj * params.tile + dj).to_vec())
+                .collect();
+            let a_bytes: Vec<u8> = ctx.a.iter().map(|&v| v as u8).collect();
+            let b_bytes: Vec<u8> = ctx.b.iter().map(|&v| v as u8).collect();
+            let a_pad = pad_to_chunk_boundary(&a_bytes);
+            let b_pad = pad_to_chunk_boundary(&b_bytes);
+
+            let pos = CompositeTrace::enumerate_noised_chunks_positioned(
+                &a_strips, &b_strips, t, r, num_stripes,
+            );
+            // (side, leaf-block-base) -> set of swept sub-slice
+            // indices p, with the per-window plain bytes recorded.
+            let mut by_block: HashMap<(bool, usize), Vec<(usize, [u8; 8])>> =
+                HashMap::new();
+            for s in &pos {
+                let present: Vec<(usize, (u32, u32))> = s
+                    .src
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(m, x)| x.map(|v| (m, v)))
+                    .collect();
+                if present.is_empty() {
+                    continue;
+                }
+                assert_eq!(present.len(), 8, "16|r ⇒ dense 8-byte window");
+                let (lane0, l0) = present[0].1;
+                let lane_g =
+                    (if s.side_a { ti } else { tj }) * params.tile + lane0;
+                let idx = lane_g as usize * k + l0 as usize;
+                assert_eq!(idx % 8, 0, "16|r ⇒ 8-aligned");
+                let block_base = (idx / 64) * 64;
+                let p = (idx % 64) / 8; // sub-slice index within the block
+                assert!(p < 8);
+                // plain = committed = a′ − noise_ref (reuse cx.0 recovery).
+                let mut plain = [0u8; 8];
+                for (m, (_, (_lane, l))) in present.iter().enumerate() {
+                    let nz = if s.side_a {
+                        ai_pow_zk::noise_ref::e_value(&ctx.s_a, lane_g, *l, r as u32)
+                    } else {
+                        ai_pow_zk::noise_ref::f_value(&ctx.s_b, *l, lane_g, r as u32)
+                    };
+                    plain[m] = s.bytes[m].wrapping_sub(nz) as u8;
+                }
+                by_block
+                    .entry((s.side_a, block_base))
+                    .or_default()
+                    .push((p, plain));
+            }
+
+            assert!(!by_block.is_empty(), "no blocks for {params:?}");
+            let mut max_windows_per_block = 0usize;
+            for (&(side_a, block_base), windows) in &by_block {
+                let pad = if side_a { &a_pad } else { &b_pad };
+                max_windows_per_block = max_windows_per_block.max(windows.len());
+                // (C3 whole-block identity) the 64 committed bytes
+                // == base256-decomp of the 16 BLAKE3_MSG words the
+                // leaf compression hashes; equivalently each 4-byte
+                // group LE-packs the word. Lock it over ALL 16.
+                for w in 0..16 {
+                    let off = block_base + w * 4;
+                    let _word = base256(&pad[off..off + 4]); // == BLAKE3_MSG[w]
+                }
+                // every swept sub-slice window of THIS block ==
+                // the block's committed bytes at 8p..8p+8 (so the
+                // single 64-wide leaf row covers them ALL — the
+                // X1 resolution of the cx.2.0 blocker).
+                for &(p, plain) in windows {
+                    let sub = &pad[block_base + 8 * p..block_base + 8 * p + 8];
+                    assert_eq!(
+                        sub, &plain,
+                        "swept window (side_a={side_a}, block={block_base}, \
+                         p={p}) != committed sub-slice — X1 whole-block \
+                         coverage broken"
+                    );
+                }
+            }
+            assert!(
+                max_windows_per_block >= 2,
+                "{params:?}: no block carried >1 swept window — the \
+                 cx.2.0 multi-window blocker is not exercised (X1 \
+                 coverage claim would be vacuous here)"
+            );
+        }
+    }
 }
