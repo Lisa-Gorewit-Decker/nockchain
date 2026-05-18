@@ -46,8 +46,8 @@ use p3_air::{AirBuilder, WindowAccess};
 use p3_field::PrimeCharacteristicRing;
 
 use crate::composite_layout::{
-    BYTES_PER_GOLDILOCKS, MAT_UNPACK_LEN, MAT_UNPACK_START, NOISED_PACKED_LEN, NOISED_PACKED_START,
-    NOISE_PACKED_PREP, NOISE_UNPACK_LEN, NOISE_UNPACK_START,
+    BYTES_PER_GOLDILOCKS, MAT_UNPACK_LEN, MAT_UNPACK_START, NOISED_PACKED_START,
+    NOISED_PACKED_WIN, NOISE_PACKED_PREP, NOISE_UNPACK_START, NOISE_UNPACK_WIN,
 };
 
 /// Noise-element range: `[-64, 64]` has 129 values, so the packing
@@ -86,11 +86,16 @@ impl InputChip {
         let mat_unpack: Vec<AB::Var> = (0..MAT_UNPACK_LEN)
             .map(|i| cur[MAT_UNPACK_START + i])
             .collect();
-        let noise_unpack: Vec<AB::Var> = (0..NOISE_UNPACK_LEN)
+        // §4.C.2 cx.2/X1: the column blocks are widened (UINT8_DATA/
+        // NOISE_UNPACK 8→64, NOISED_PACKED 2→16) but until the cx.2
+        // atomic activation the InputChip integrity constraint
+        // operates over the unchanged 8-byte window / 2-cell
+        // (`*_WIN`) ⇒ byte-identical (zero-blast).
+        let noise_unpack: Vec<AB::Var> = (0..NOISE_UNPACK_WIN)
             .map(|i| cur[NOISE_UNPACK_START + i])
             .collect();
         let noise_packed_prep: AB::Var = cur[NOISE_PACKED_PREP];
-        let noised_packed: Vec<AB::Var> = (0..NOISED_PACKED_LEN)
+        let noised_packed: Vec<AB::Var> = (0..NOISED_PACKED_WIN)
             .map(|i| cur[NOISED_PACKED_START + i])
             .collect();
 
@@ -101,7 +106,7 @@ impl InputChip {
         // 2. For each NOISED_PACKED cell i, NOISED_PACKED[i] ==
         //      polyval(MAT_UNPACK[i*4..(i+1)*4], 256)
         //    + polyval(NOISE_UNPACK[i*4..(i+1)*4], 256).
-        for i in 0..NOISED_PACKED_LEN {
+        for i in 0..NOISED_PACKED_WIN {
             let mat_chunk = &mat_unpack[i * BYTES_PER_GOLDILOCKS..(i + 1) * BYTES_PER_GOLDILOCKS];
             let noise_chunk =
                 &noise_unpack[i * BYTES_PER_GOLDILOCKS..(i + 1) * BYTES_PER_GOLDILOCKS];
@@ -122,8 +127,10 @@ impl InputChip {
             row[MAT_UNPACK_START + i] =
                 <crate::Val as QuotientMap<i32>>::from_int(mat_bytes[i] as i32);
         }
-        // NOISE_UNPACK: 8 i7 values.
-        for i in 0..NOISE_UNPACK_LEN {
+        // NOISE_UNPACK: 8 i7 values (the active window; cx.2/X1
+        // widened the block to 64 but fill_row writes the 8-byte
+        // window — zero-blast until activation).
+        for i in 0..NOISE_UNPACK_WIN {
             row[NOISE_UNPACK_START + i] =
                 <crate::Val as QuotientMap<i32>>::from_int(noise_bytes[i] as i32);
         }
@@ -138,7 +145,7 @@ impl InputChip {
 
         // NOISED_PACKED: per-chunk sum of polyval(mat_chunk, 256) +
         // polyval(noise_chunk, 256).
-        for i in 0..NOISED_PACKED_LEN {
+        for i in 0..NOISED_PACKED_WIN {
             let mut mat_packed: i64 = 0;
             let mut noise_p: i64 = 0;
             let mut p256: i64 = 1;

@@ -199,10 +199,20 @@ pub const NUM_CONTROL_COLS: usize = 22;
 pub const MAT_UNPACK_LEN: usize = 8;
 pub const MAT_UNPACK_START: usize = CONTROL_PREP + NUM_CONTROL_COLS;
 
-/// UINT8_DATA: 8 u8 elements. When `IS_MSG_MAT` fires, these are
-/// the i7 → u8 conversions of `MAT_UNPACK`; otherwise auxiliary
-/// data feeding the BLAKE3 message buffer.
-pub const UINT8_DATA_LEN: usize = 8;
+/// UINT8_DATA. **§4.C.2 c-exact (cx.2/X1):** widened 8→64 so a
+/// strip-opening leaf round-0 row carries its whole 64-byte
+/// committed block (per-word C3 binds all 16 `BLAKE3_MSG` words
+/// to it ⇒ `UINT8_DATA[0..64]` ≡ the committed block ∈ `HASH_A`;
+/// each swept store window is the 8-byte sub-slice
+/// `UINT8_DATA[8p..8p+8]`). Until the cx.2 activation lands,
+/// every existing consumer operates over the **8-byte window**
+/// [`UINT8_DATA_WIN`] (= the pre-cx.2 width) ⇒ the 56 added
+/// columns are zero-default and behaviour is byte-identical
+/// (the cx.1b-layout zero-blast discipline).
+pub const UINT8_DATA_LEN: usize = 64;
+/// The active 8-byte window of `UINT8_DATA` consumers use until
+/// the cx.2/X1 atomic activation (the pre-cx.2 `UINT8_DATA_LEN`).
+pub const UINT8_DATA_WIN: usize = 8;
 pub const UINT8_DATA_START: usize = MAT_UNPACK_START + MAT_UNPACK_LEN;
 
 /// NOISE_PACKED_PREP: 1 preprocessed col. Noise associated with the
@@ -210,9 +220,14 @@ pub const UINT8_DATA_START: usize = MAT_UNPACK_START + MAT_UNPACK_LEN;
 /// `pearl_layout.rs:51`.
 pub const NOISE_PACKED_PREP: usize = UINT8_DATA_START + UINT8_DATA_LEN;
 
-/// NOISE_UNPACK: 8 i7 elements. Decomposes `NOISE_PACKED_PREP` for
-/// the matmul tile additions.
-pub const NOISE_UNPACK_LEN: usize = 8;
+/// NOISE_UNPACK. **§4.C.2 c-exact (cx.2/X1):** widened 8→64 so a
+/// co-located leaf round-0 row carries its block's per-position
+/// `noise_ref` for all 8 sub-slices. Consumers use the 8-byte
+/// window [`NOISE_UNPACK_WIN`] until the cx.2 activation
+/// (zero-blast: 56 added cols zero-default).
+pub const NOISE_UNPACK_LEN: usize = 64;
+/// The active 8-byte `NOISE_UNPACK` window until cx.2/X1 activation.
+pub const NOISE_UNPACK_WIN: usize = 8;
 pub const NOISE_UNPACK_START: usize = NOISE_PACKED_PREP + 1;
 
 // ---- NOISED_PACKED: canonical noised-matrix data table ----
@@ -223,7 +238,16 @@ pub const NOISE_UNPACK_START: usize = NOISE_PACKED_PREP + 1;
 /// `IS_MSG_MAT` → `UINT8_DATA` after i8↔u8 conversion). This is
 /// the cryptographic glue forcing matmul and BLAKE3 to see the
 /// same bytes.
-pub const NOISED_PACKED_LEN: usize = 2;
+/// **§4.C.2 c-exact (cx.2/X1):** widened 2→16 (2 packed cells ×
+/// 8 sub-slices) so the co-located leaf round-0 row is the M-S1
+/// `noised_packed` producer for every swept 8-byte sub-slice of
+/// its block, reusing M-S1's *exact* 2-cell packing per
+/// sub-slice (avoids any i8/u8 bus-key reconciliation).
+/// Consumers use the 2-cell window [`NOISED_PACKED_WIN`] until
+/// cx.2 activation (zero-blast: 14 added cols zero-default).
+pub const NOISED_PACKED_LEN: usize = 16;
+/// The active 2-cell `NOISED_PACKED` window until cx.2/X1 activation.
+pub const NOISED_PACKED_WIN: usize = 2;
 pub const NOISED_PACKED_START: usize = NOISE_UNPACK_START + NOISE_UNPACK_LEN;
 
 /// MAT_FREQ: 1 col. Number of times this NOISED_PACKED row is read
@@ -552,9 +576,12 @@ mod tests {
         assert_eq!(JACKPOT_X_BITS_LEN, 32);
         assert_eq!(JACKPOT_SLOT_SEL_LEN, 16);
         assert_eq!(MAT_UNPACK_LEN, 8);
-        assert_eq!(UINT8_DATA_LEN, 8);
-        assert_eq!(NOISE_UNPACK_LEN, 8);
-        assert_eq!(NOISED_PACKED_LEN, 2);
+        assert_eq!(UINT8_DATA_LEN, 64); // cx.2/X1 (was 8); window = UINT8_DATA_WIN
+        assert_eq!(UINT8_DATA_WIN, 8);
+        assert_eq!(NOISE_UNPACK_LEN, 64); // cx.2/X1 (was 8)
+        assert_eq!(NOISE_UNPACK_WIN, 8);
+        assert_eq!(NOISED_PACKED_LEN, 16); // cx.2/X1 (was 2)
+        assert_eq!(NOISED_PACKED_WIN, 2);
         assert_eq!(MAT_ID_LIMBS_LEN, 2);
         assert_eq!(AB_ID_LIMBS_LEN, 4);
         assert_eq!(A_NOISED_LEN, 8); // TILE_H × TILE_D / 4

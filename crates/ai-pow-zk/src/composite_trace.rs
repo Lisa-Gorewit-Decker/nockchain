@@ -67,13 +67,13 @@ use crate::composite_layout::{
     IS_MSG_MAT, IS_RESET_CUMSUM, IS_UPDATE_CUMSUM, JACKPOT_MSG_START, JACKPOT_SIZE,
     JACKPOT_SLOT_SEL_START, JACKPOT_X_BITS_START, MAT_FREQ, MAT_ID, MAT_ID_LIMBS_LEN,
     MAT_ID_LIMBS_START, MAT_UNPACK_LEN, MAT_UNPACK_START, NOISED_PACKED_START,
-    NOISE_UNPACK_LEN, NOISE_UNPACK_START, STARK_ROW_IDX, TILE_D, TILE_H,
+    NOISE_UNPACK_WIN, NOISE_UNPACK_START, STARK_ROW_IDX, TILE_D, TILE_H,
     FOLD_IS_FOLD, FOLD_MCUR_BITS_START, FOLD_SLOT_SEL_START, FOLD_STATE_START,
     FOLD_XOR_OUT, FOLD_XSTEP, FOLD_XSTEP_BITS_START,
     FOLD_STRIPE_SEL_START, STRIPE_MAX, SX_IN_BITS_START, SX_IN_START, SX_IS_ACTIVE,
     SX_LANE_SEL_START, SX_NEW_SEL, SX_NEW_SEL_BITS_START, SX_Q_BITS_START,
     SX_XR_SEL_BITS_START, SX_XR_START,
-    TOTAL_TRACE_WIDTH, UINT8_DATA_LEN, UINT8_DATA_START, URANGE13_FREQ, URANGE8_FREQ,
+    TOTAL_TRACE_WIDTH, UINT8_DATA_WIN, UINT8_DATA_START, URANGE13_FREQ, URANGE8_FREQ,
 };
 use crate::Val;
 
@@ -1123,9 +1123,9 @@ impl CompositeTrace {
         is_msg_mat: bool,
     ) -> [u64; 2] {
         use crate::composite_layout::{
-            MAT_UNPACK_LEN, MAT_UNPACK_START, NOISED_PACKED_LEN, NOISED_PACKED_START,
-            NOISE_PACKED_PREP, NOISE_UNPACK_LEN, NOISE_UNPACK_START, UINT8_DATA_LEN,
-            UINT8_DATA_START,
+            MAT_UNPACK_LEN, MAT_UNPACK_START, NOISED_PACKED_START, NOISED_PACKED_WIN,
+            NOISE_PACKED_PREP, NOISE_UNPACK_START, NOISE_UNPACK_WIN, UINT8_DATA_START,
+            UINT8_DATA_WIN,
         };
         use p3_field::integers::QuotientMap;
 
@@ -1134,10 +1134,14 @@ impl CompositeTrace {
             "row_idx {row_idx} out of bounds (height = {})",
             self.height()
         );
+        // §4.C.2 cx.2/X1: the blocks are widened (UINT8_DATA/
+        // NOISE_UNPACK 8→64, NOISED_PACKED 2→16); the split-store
+        // writer operates on the 8-byte window / 2-cell (`*_WIN`)
+        // until the cx.2 atomic activation ⇒ byte-identical.
         assert_eq!(MAT_UNPACK_LEN, 8);
-        assert_eq!(UINT8_DATA_LEN, 8);
-        assert_eq!(NOISE_UNPACK_LEN, 8);
-        assert_eq!(NOISED_PACKED_LEN, 2);
+        assert_eq!(UINT8_DATA_WIN, 8);
+        assert_eq!(NOISE_UNPACK_WIN, 8);
+        assert_eq!(NOISED_PACKED_WIN, 2);
 
         let base = row_idx * TOTAL_TRACE_WIDTH;
         let row = &mut self.matrix.values[base..base + TOTAL_TRACE_WIDTH];
@@ -1151,7 +1155,7 @@ impl CompositeTrace {
                 <Val as QuotientMap<u64>>::from_int((plain[i] as u8) as u64);
         }
         // NOISE_UNPACK: the Pearl `noise_ref` bytes.
-        for i in 0..NOISE_UNPACK_LEN {
+        for i in 0..NOISE_UNPACK_WIN {
             row[NOISE_UNPACK_START + i] =
                 <Val as QuotientMap<i64>>::from_int(noise[i] as i64);
         }
@@ -1167,8 +1171,8 @@ impl CompositeTrace {
         row[NOISE_PACKED_PREP] = <Val as QuotientMap<i64>>::from_int(npp);
         // NOISED_PACKED[cell] = polyval(plain[4c..],256)
         //                     + polyval(noise[4c..],256)  (= a′).
-        let mut packs = [0i64; NOISED_PACKED_LEN];
-        for cell in 0..NOISED_PACKED_LEN {
+        let mut packs = [0i64; NOISED_PACKED_WIN];
+        for cell in 0..NOISED_PACKED_WIN {
             let mut acc: i64 = 0;
             let mut mult: i64 = 1;
             for j in 0..4 {
@@ -1954,7 +1958,7 @@ impl CompositeTrace {
             let is_msg_mat =
                 self.matrix.values[base + IS_MSG_MAT].as_canonical_u64();
             if is_msg_mat == 1 {
-                for i in 0..UINT8_DATA_LEN {
+                for i in 0..UINT8_DATA_WIN {
                     let v =
                         self.matrix.values[base + UINT8_DATA_START + i].as_canonical_u64();
                     if (v as usize) < 256 {
@@ -2011,7 +2015,7 @@ impl CompositeTrace {
         let mut i7p1_count = [0u64; 129];
         for r in 0..n {
             let base = r * TOTAL_TRACE_WIDTH;
-            for i in 0..NOISE_UNPACK_LEN {
+            for i in 0..NOISE_UNPACK_WIN {
                 let raw = self.matrix.values[base + NOISE_UNPACK_START + i]
                     .as_canonical_u64();
                 let signed = goldilocks_to_signed(raw);
@@ -2076,7 +2080,7 @@ impl CompositeTrace {
         // (signed, signed.rem_euclid(256)) for signed ∈ [-128, 127].
         // The table row for a valid pair is at row (signed + 128).
         let mut i8u8_count = vec![0u64; 256];
-        let pair_len = MAT_UNPACK_LEN.min(UINT8_DATA_LEN);
+        let pair_len = MAT_UNPACK_LEN.min(UINT8_DATA_WIN);
         for r in 0..n {
             let base = r * TOTAL_TRACE_WIDTH;
             let is_msg_mat =

@@ -58,7 +58,7 @@ use crate::composite_layout::{
     BLAKE3_MSG_START, CUMSUM_TILE_START, CV_IN_LEN, CV_IN_START, CV_OUT_LEN, CV_OUT_START,
     IS_HASH_A, IS_HASH_B, IS_HASH_JACKPOT, IS_MSG_MAT, IS_NEW_BLAKE, IS_USE_COMMITMENT_HASH,
     IS_USE_JOB_KEY, JACKPOT_MSG_START, JACKPOT_SIZE, MSG_PAIR_SEL_LEN, MSG_PAIR_SEL_START,
-    TOTAL_TRACE_WIDTH, UINT8_DATA_LEN, UINT8_DATA_START,
+    TOTAL_TRACE_WIDTH, UINT8_DATA_START, UINT8_DATA_WIN,
 };
 use crate::composite_public::{
     NUM_PUBLIC_VALUES, PI_COMMITMENT_HASH_OFFSET, PI_CUMSUM_LEN, PI_CUMSUM_OFFSET,
@@ -566,10 +566,13 @@ impl<AB: AirBuilder> Air<AB> for CompositeFullAir {
         }
         builder.assert_zero(pair_sum - c3_gate);
         // (iii) the selected word-pair == the matrix-byte view.
-        let cur_uint8: [AB::Var; UINT8_DATA_LEN] =
+        // §4.C.2 cx.2/X1: UINT8_DATA widened 8→64; until the cx.2
+        // atomic activation the generalized C3 (cx.1b) binds the
+        // 8-byte window only ⇒ byte-identical (zero-blast).
+        let cur_uint8: [AB::Var; UINT8_DATA_WIN] =
             core::array::from_fn(|i| cur[UINT8_DATA_START + i]);
         let base256 = <AB::F as PrimeCharacteristicRing>::from_i32(256);
-        for j in 0..(UINT8_DATA_LEN / 4) {
+        for j in 0..(UINT8_DATA_WIN / 4) {
             // recomposed_j = Σ_{b<4} UINT8_DATA[4j+b]·256^b
             // (base-256 LE, the order BLAKE3 uses for from_le_bytes).
             let mut recomposed: AB::Expr = <AB::Expr as PrimeCharacteristicRing>::ZERO;
