@@ -2699,4 +2699,102 @@ mod tests {
             }
         }
     }
+
+    /// **Phase A-CR · CR.1 — the §5 migration safety net (staged).**
+    /// `ai_pow_zk::canonical::canonical_program` (params-pure, no
+    /// witness) must equal `extract_program(honest_trace)`
+    /// bit-for-bit on **every row of every `is_class_canonical`
+    /// class** (CR.1: `Pad`), across all 12 PROGRAM_COLS, on the
+    /// REAL `P16`(16|r) bridge trace. This is the §5 gate that, per
+    /// row class, fences the eventual CR.6 verify-path flip: when
+    /// every class is canonical and this KAT is all-green, the VK
+    /// can commit to `canonical_program` instead of
+    /// extract-of-reference (the CRIT-1 reconstruction-hardening
+    /// soundness fix). The honest trace verifies under the current
+    /// CRIT-1 (extract-of-reference) ⇒ its main-side PROGRAM_COLS
+    /// (`extract_program`) ARE the trusted canonical program ⇒ a
+    /// params-pure divergence on a canonical class fails here
+    /// BEFORE trust (the P-B.2.0 KAT-first discipline). Widens with
+    /// CR.2–CR.5. **No verify-path change (CR.1).**
+    #[test]
+    fn cr1_canonical_program_eq_extract_on_canonical_classes() {
+        use crate::synth::synth_matrices;
+        use ai_pow_zk::canonical::{
+            canonical_program, is_class_canonical, row_schedule,
+            BlockPublic,
+        };
+        use ai_pow_zk::composite_full_air::extract_program;
+        use ai_pow_zk::params::ZkParams;
+        use std::cell::RefCell;
+
+        let params = MatmulParams {
+            m: 16, k: 64, n: 16, noise_rank: 16, tile: 8,
+            spot_checks: 2, difficulty_bits: 0,
+        };
+        params.validate().unwrap();
+        let (a, b) = synth_matrices(b"cr1-eq-extract", &params);
+        let ctx = BlockContext::build(b"cr1-eq-extract-blk", &a, &b, &params)
+            .expect("ctx");
+        let target = crate::tile_hash::difficulty_target(&params);
+        let (tile_i, tile_j) = (0u32, 0u32);
+
+        // Capture extract_program of the FULL real honest P16
+        // trace via the no-tamper seam (honest proof still verifies
+        // ⇒ its main-side PROGRAM_COLS ARE the trusted canonical
+        // program under current CRIT-1). Run extract_program inside
+        // the closure (where `&t.matrix` is in scope) so ai-pow
+        // need not name the p3_matrix type.
+        let cap: RefCell<Option<(Vec<ai_pow_zk::Val>, usize)>> =
+            RefCell::new(None);
+        prove_and_verify_tiled_tamper(
+            &ctx, &params, &target, tile_i, tile_j,
+            |t: &mut CompositeTrace| {
+                let e = extract_program(&t.matrix);
+                *cap.borrow_mut() = Some((e.values, t.height()));
+            },
+        )
+        .expect("honest P16 g=1 (no tamper) must prove + pow-verify");
+        let (ext_vals, h) = cap.into_inner().expect("captured trace");
+        let w = extract_program_width();
+        assert_eq!(ext_vals.len(), h * w, "extract is h×12");
+
+        let zk = ZkParams {
+            m: params.m, k: params.k, n: params.n,
+            noise_rank: params.noise_rank, tile: params.tile,
+            difficulty_bits: params.difficulty_bits,
+        };
+        // Pad rows ignore bp; CR.2+ wires the real κ/s_a/s_b.
+        let bp = BlockPublic {
+            tile_i, tile_j, kappa: [0u8; 32],
+            s_a: [0u8; 32], s_b: [0u8; 32],
+        };
+        let canon = canonical_program(&zk, &bp, h);
+        assert_eq!(canon.values.len(), ext_vals.len());
+
+        let sched = row_schedule(&zk, tile_i, tile_j, h);
+        let mut checked = 0usize;
+        for (r, &class) in sched.iter().enumerate() {
+            if !is_class_canonical(class) {
+                continue;
+            }
+            for c in 0..w {
+                assert_eq!(
+                    canon.values[r * w + c],
+                    ext_vals[r * w + c],
+                    "CR.1 §5: canonical_program ≠ \
+                     extract_program at row {r} ({class:?}) col {c}"
+                );
+            }
+            checked += 1;
+        }
+        assert!(
+            checked > 0,
+            "P16 has ≥1 canonical-class (Pad) row to validate"
+        );
+    }
+
+    /// PROGRAM_COLS width (12) — `extract_program`'s row stride.
+    fn extract_program_width() -> usize {
+        ai_pow_zk::composite_full_air::PROGRAM_COLS.len()
+    }
 }

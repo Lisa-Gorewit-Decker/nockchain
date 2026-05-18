@@ -24,7 +24,10 @@
 
 use crate::blake3_tree::{strip_opening_rows, tile_chunk_range};
 use crate::composite_layout::{TILE_D, TILE_H};
+use crate::composite_preprocess::{build_preprocessed_columns, RowDescriptor};
 use crate::params::ZkParams;
+use crate::Val;
+use p3_matrix::dense::RowMajorMatrix;
 
 /// Coarse per-row class — the CR.0 granularity (the bridge's
 /// top-level row regions). CR.1..CR.5 refine the
@@ -131,6 +134,102 @@ pub fn row_schedule(
     sched
 }
 
+/// Verifier-known per-block public inputs that, with `params`,
+/// fully determine the canonical program (no witness). The
+/// MED-3-attested tile, the C1-pinned BLAKE3 key/seeds. `hash_a`
+/// / `hash_b` (the strip-opening roots) are *PI-bound*, not
+/// PROGRAM_COLS, so they are not needed to build `RowDescriptor`s
+/// — included in the design's `BlockPublic` for completeness but
+/// omitted here until a class needs them.
+#[derive(Debug, Clone, Copy)]
+pub struct BlockPublic {
+    /// MED-3-attested A-side tile row index.
+    pub tile_i: u32,
+    /// MED-3-attested B-side tile col index.
+    pub tile_j: u32,
+    /// C1-pinned keyed-BLAKE3 key κ (JOB_KEY).
+    pub kappa: [u8; 32],
+    /// C1-pinned A-side public seed s_a (COMMITMENT_HASH; the
+    /// `noise_ref` seed for the §4.C.2/b2 store-noise pin).
+    pub s_a: [u8; 32],
+    /// C1-pinned B-side public seed s_b.
+    pub s_b: [u8; 32],
+}
+
+/// Phase A-CR — which [`RowClass`]es `canonical_program` already
+/// reconstructs **params-pure and `== extract_program`-validated**
+/// (the §5 staged-migration gate set). CR.6 (verify-path flip) is
+/// permitted only once this is *every* class. Staged per
+/// `CANONICAL_PROGRAM_DESIGN.md` §7 (R1 discipline).
+///
+/// - **CR.1 (landed): `Pad`** — witness-free, exactly
+///   [`RowDescriptor::padding`] (all PROGRAM_COLS zero except
+///   `STARK_ROW_IDX = row_idx`).
+/// - CR.2 `KeyPin` · CR.3 `JackpotHash` · CR.4 `StripOpenA/B`
+///   (incl. the 8 co-located noise sub-slice pins via
+///   `noise_ref`, the §4.C.2/b2 core) · CR.5 `Sweep`/`Fold` —
+///   **residual** (each gated by its own `== extract` KAT).
+pub fn is_class_canonical(class: RowClass) -> bool {
+    matches!(class, RowClass::Pad)
+}
+
+/// **Phase A-CR — the params-pure canonical program.** Builds the
+/// `trace_len × PROGRAM_COLS.len()` preprocessed matrix the CRIT-1
+/// pin commits to, from public data **only** (`params` + the
+/// attested/pinned `BlockPublic` + the params-pure `trace_len`) —
+/// *no witness*. Per row: `row_schedule` (CR.0) → [`RowClass`] →
+/// a params-pure [`RowDescriptor`] → the existing
+/// [`build_preprocessed_columns`] packing (the *one* shared
+/// schedule + the *one* packing — no prover/verifier divergence).
+///
+/// **Staged (R1 / §7).** Classes in [`is_class_canonical`] are
+/// reconstructed exactly; all others currently fall back to
+/// [`RowDescriptor::padding`] — a deliberate, KAT-fenced
+/// *placeholder*, NOT a soundness claim. The §5 KAT
+/// (`canonical_program == extract_program(honest_trace)`) asserts
+/// equality **only on `is_class_canonical` rows**, widening as
+/// CR.2–CR.5 land. **The verify path is NOT flipped to this until
+/// CR.6, gated on every class canonical + the full KAT/Route-A/
+/// crit1_*/debug-assertions-ON suite** (the soundness linchpin —
+/// R1). Until then this is dead w.r.t. prove/verify.
+pub fn canonical_program(
+    params: &ZkParams,
+    bp: &BlockPublic,
+    trace_len: usize,
+) -> RowMajorMatrix<Val> {
+    let sched = row_schedule(params, bp.tile_i, bp.tile_j, trace_len);
+    let program: Vec<RowDescriptor> = sched
+        .iter()
+        .map(|&class| row_descriptor(class, params, bp))
+        .collect();
+    let rows = build_preprocessed_columns(&program, trace_len);
+    let w = rows.first().map(|r| r.len()).unwrap_or(0);
+    let flat: Vec<Val> = rows.into_iter().flatten().collect();
+    RowMajorMatrix::new(flat, w)
+}
+
+/// Params-pure per-row descriptor for a [`RowClass`]. CR.1: only
+/// `Pad` is exact (`RowDescriptor::padding`); not-yet-canonical
+/// classes return the same neutral placeholder — fenced by
+/// [`is_class_canonical`] / the staged §5 KAT (NOT a soundness
+/// claim; see [`canonical_program`]). CR.2–CR.5 replace each arm
+/// with its params-pure construction (`KeyPin` from `bp.kappa`/
+/// `bp.s_a`; `StripOpen*` co-located leaf rows' 8 noise sub-slice
+/// pins from `noise_ref(bp.s_a/s_b)`; the §6(b) `Sweep`/`Fold`
+/// schedule), each landed behind its own `== extract` gate.
+fn row_descriptor(
+    class: RowClass,
+    _params: &ZkParams,
+    _bp: &BlockPublic,
+) -> RowDescriptor {
+    match class {
+        RowClass::Pad => RowDescriptor::padding(),
+        // CR.2–CR.5 residual — placeholder, fenced by
+        // `is_class_canonical` (never trusted until CR.6).
+        _ => RowDescriptor::padding(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -165,6 +264,61 @@ mod tests {
             s.iter().filter(|&&c| c == RowClass::Fold).count();
         assert_eq!(nfold, (p.k / p.noise_rank) as usize, "fold = num_stripes");
         assert!(nsweep > 0 && s.contains(&RowClass::StripOpenB));
+    }
+
+    fn bp0() -> BlockPublic {
+        BlockPublic {
+            tile_i: 0, tile_j: 0, kappa: [0u8; 32],
+            s_a: [0u8; 32], s_b: [0u8; 32],
+        }
+    }
+
+    #[test]
+    fn cr1_canonical_program_pad_rows_are_exact_padding_pack() {
+        use crate::composite_full_air::PROGRAM_COLS;
+        use p3_field::PrimeField64;
+        use p3_matrix::Matrix;
+
+        // is_class_canonical fence: CR.1 ⇒ exactly {Pad}.
+        assert!(is_class_canonical(RowClass::Pad));
+        for c in [
+            RowClass::StripOpenA, RowClass::StripOpenB,
+            RowClass::KeyPin, RowClass::Sweep, RowClass::Fold,
+            RowClass::JackpotHash,
+        ] {
+            assert!(!is_class_canonical(c), "{c:?} not canonical until CR.2+");
+        }
+
+        let p = p16();
+        let len = 1 << 13;
+        let prog = canonical_program(&p, &bp0(), len);
+        assert_eq!(prog.height(), len);
+        assert_eq!(prog.width(), PROGRAM_COLS.len(), "12-wide");
+
+        let sched = row_schedule(&p, 0, 0, len);
+        let w = PROGRAM_COLS.len();
+        let mut saw_pad = false;
+        for (r, &class) in sched.iter().enumerate() {
+            if class != RowClass::Pad {
+                continue;
+            }
+            saw_pad = true;
+            // Pad row: all PROGRAM_COLS zero except STARK_ROW_IDX
+            // (== PROGRAM_COLS[11], the monotonic row counter).
+            for c in 0..w - 1 {
+                assert_eq!(
+                    prog.values[r * w + c].as_canonical_u64(),
+                    0,
+                    "Pad row {r} col {c} must be 0"
+                );
+            }
+            assert_eq!(
+                prog.values[r * w + (w - 1)].as_canonical_u64(),
+                r as u64,
+                "Pad row {r} STARK_ROW_IDX must be row_idx"
+            );
+        }
+        assert!(saw_pad, "P16 schedule has Pad rows");
     }
 
     #[test]
