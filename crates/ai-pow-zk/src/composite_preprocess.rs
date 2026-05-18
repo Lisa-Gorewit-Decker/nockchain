@@ -75,6 +75,11 @@ pub struct RowDescriptor {
     /// pinned into `CONTROL_PREP` at bit 2^52 — the keystone's
     /// SX_XR lane selector). For non-fold rows, `0`.
     pub fold_stripe: u8,
+    /// §4.C.2 c-exact (cx.1c) — C3 message word-pair index `p`
+    /// (`0..8`, pinned into `CONTROL_PREP` at bit 2^58 — the
+    /// generalized-C3 leaf word-pair selector). For
+    /// non-C3-leaf rows, `0`.
+    pub msg_pair: u8,
 }
 
 impl RowDescriptor {
@@ -89,6 +94,7 @@ impl RowDescriptor {
             is_fold: false,
             fold_slot: 0,
             fold_stripe: 0,
+            msg_pair: 0,
         }
     }
 }
@@ -110,6 +116,7 @@ pub fn fill_preprocessed_row(row_idx: usize, desc: &RowDescriptor, row: &mut [Va
         desc.is_fold,
         desc.fold_slot,
         desc.fold_stripe,
+        desc.msg_pair,
     );
     row[CONTROL_PREP] = <Val as QuotientMap<u64>>::from_int(control_prep);
 
@@ -141,6 +148,7 @@ pub fn build_preprocessed_columns(program: &[RowDescriptor], total_rows: usize) 
             desc.is_fold,
             desc.fold_slot,
             desc.fold_stripe,
+            desc.msg_pair,
         );
         out.push([
             <Val as QuotientMap<u64>>::from_int(control_prep),

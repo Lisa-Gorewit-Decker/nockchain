@@ -594,14 +594,21 @@ sub-position. Mechanisms:
 Soundness meanwhile unchanged: CRIT-1 + §4.D + §6 + M-S1 + A2 +
 the A3.2b noise pin hold; §4.C.2-with-A3.2b is already strictly
 stronger than pre-A3 and **not a forgery hole**. c-exact is its
-own staged effort (R1). **STATUS: cx.0 ✅ DONE & validated
-(`2bbf4cd`).** Next = **cx.1** (the first invasive AIR stage —
-generalize the *proven* C3 + the CRIT-1-pinned `CONTROL_PREP`
-program + an 8-wide one-hot block; §6(a)/§6(b)/G2-scale,
-multi-commit, per-sub-stage validated cx.1a→cx.1c). Per R1 it is
-**not** to be rushed in one pass — each sub-stage lands only when
-correct + exhaustively gated (unit + `crit1_*`/`routea_*` +
-`ai-pow --features zk` + debug-assertions-ON).
+own staged effort (R1). **STATUS: cx.0 ✅ (`2bbf4cd`) ·
+cx.1a+cx.1b-layout ✅ (`449ae8f`) · cx.1b-constraints ✅
+(`1bb2058`) · cx.1c ✅ (2026-05-18) — cx.1 COMPLETE.** The
+generalized C3 is live and its leaf word-pair is CRIT-1
+verifier-fixed (the prover cannot choose it); all zero-blast
+(every current trace `g=0`, `MSG_PAIR_SEL=0` ⇒ byte-identical).
+**Next = cx.2** (co-locate the M-S1 store rows onto the
+strip-opening leaf round-0 rows so the generalized C3 actually
+binds the real store — the integration step; `IS_MSG_MAT=1` on
+those rows ⇒ `g=1` ⇒ C3 ACTIVE, no longer zero-blast → its own
+staged effort with the position-exact adversarial + 16|r
+Route-A at cx.3) → **cx.3** → **A3.3**. Per R1 each sub-stage
+lands only when correct + exhaustively gated (unit +
+`crit1_*`/`routea_*` + `ai-pow --features zk` +
+debug-assertions-ON).
 
 ### 8.4 cx.1a — concrete design (grounded in the live code)
 
@@ -670,9 +677,22 @@ stay green with no value change.
   the `*_rejects_*` negatives panic under debug-assertions-ON
   by pre-existing design (place violating rows; documented
   M-S1/§6(b) profile behavior, not a cx.1 regression).
-- **cx.1c** — `CONTROL_PREP` pin (`pack_control_prep_full` +
-  `ControlChip` + `RowDescriptor` + `extract_program`) + the
-  pinned AIR (`CompositeFullAirPinned`); adversarial
-  (stale/forged/claimed-absent `msg_pair` reject); `crit1_*`
-  still rejects forgeries with the extended pack;
-  debug-assertions-ON.
+- **cx.1c ✅ DONE & validated 2026-05-18** — `CONTROL_PREP`
+  pin: `MSG_PAIR_BIT=58`/`MSG_PAIR_BITS=3`,
+  `pack_control_prep_full(.., msg_pair)`, `ControlChip::eval`
+  `+ pair_idx·2^58` (`pair_idx = Σ_p MSG_PAIR_SEL[p]·p`),
+  `RowDescriptor.msg_pair`. `extract_program` lifts
+  `CONTROL_PREP` unchanged (a PROGRAM_COL) ⇒ the word-pair is
+  CRIT-1 verifier-fixed automatically once packed. Validated:
+  control chips **19/0** (new `msg_pair_mismatch_rejected` — a
+  `MSG_PAIR_SEL` one-hot ≠ the `CONTROL_PREP`-packed `msg_pair`
+  rejects = "prover cannot re-point C3"; all §6(a)/G2 pins green;
+  `non_fold_pack_is_unchanged` = zero-blast); full `ai-pow-zk
+  --lib` **352/0/22** (+1; `routea_crit1_tampered_program_col_
+  rejected` ✓ — CRIT-1 still rejects forgeries with the
+  extended pack); `ai-pow --features zk` **85/0/1** (MED-3 /
+  real bridge / §4.C.2 KATs); debug-assertions-ON positive
+  (`composite_full_air_baseline_trace_verifies`,
+  `fold_schedule_consistent_control_prep_verifies`) per-row
+  clean. **⇒ cx.1 COMPLETE: the generalized C3's leaf
+  word-pair is verifier-fixed; the prover cannot choose it.**

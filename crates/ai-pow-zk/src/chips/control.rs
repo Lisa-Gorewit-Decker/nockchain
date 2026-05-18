@@ -57,7 +57,7 @@ use p3_field::PrimeCharacteristicRing;
 
 use crate::composite_layout::{
     BITS_PER_LIMB, CONTROL_PREP, FOLD_IS_FOLD, FOLD_SLOT_SEL_LEN, FOLD_SLOT_SEL_START,
-    FOLD_STRIPE_SEL_LEN, FOLD_STRIPE_SEL_START, IS_CV_IN,
+    FOLD_STRIPE_SEL_LEN, FOLD_STRIPE_SEL_START, MSG_PAIR_SEL_LEN, MSG_PAIR_SEL_START, IS_CV_IN,
     IS_DUMP_CUMSUM_BUFFER, IS_HASH_A, IS_HASH_B, IS_HASH_JACKPOT, IS_LAST_ROUND, IS_LOAD,
     IS_MSG_AUX_DATA, IS_MSG_CV, IS_MSG_JACKPOT, IS_MSG_MAT, IS_NEW_BLAKE, IS_RESET_CUMSUM,
     IS_SHIFT3, IS_STORE0, IS_STORE1, IS_STORE2, IS_UPDATE_CUMSUM, IS_USE_COMMITMENT_HASH,
@@ -101,6 +101,18 @@ pub const FOLD_SLOT_BITS: usize = 4;
 pub const FOLD_STRIPE_BIT: usize = FOLD_SLOT_BIT + FOLD_SLOT_BITS; // 52
 /// Number of bits the fold-stripe index occupies (`0..=63`).
 pub const FOLD_STRIPE_BITS: usize = 6;
+
+/// §4.C.2 c-exact (cx.1c) — bit offset of the 3-bit C3 message
+/// word-**pair** index `p` (`0..=7`) inside `CONTROL_PREP`,
+/// immediately after G2's 6-bit fold-stripe (top fold-stripe
+/// bit 57). cx.0/cx.1b: the generalized C3 binds
+/// `BLAKE3_MSG[2p+j]`; pinning `p` here makes *which* leaf
+/// word-pair C3 binds verifier-fixed (a malicious prover cannot
+/// re-point C3 to a convenient pair). Top packed bit
+/// `58 + 3 − 1 = 60 ≪ 64` ⇒ Goldilocks-safe.
+pub const MSG_PAIR_BIT: usize = FOLD_STRIPE_BIT + FOLD_STRIPE_BITS; // 58
+/// Number of bits the C3 word-pair index occupies (`0..=7`).
+pub const MSG_PAIR_BITS: usize = 3;
 
 #[derive(Debug, Default, Clone, Copy)]
 pub struct ControlChip;
@@ -195,7 +207,27 @@ impl ControlChip {
             let w = <AB::F as PrimeCharacteristicRing>::from_u32(s as u32);
             stripe_idx = stripe_idx + cur[FOLD_STRIPE_SEL_START + s] * w;
         }
-        acc = acc + stripe_idx * pow; // 2^52 (6-bit stripe ⇒ 52..58)
+        acc = acc + stripe_idx * pow.clone(); // 2^52 (6-bit stripe ⇒ 52..58)
+
+        // §4.C.2 c-exact (cx.1c) — pin the 3-bit C3 message
+        // word-pair index `p` at bit 2^58. The generalized C3
+        // (cx.1b, `composite_full_air`) binds `BLAKE3_MSG[2p+j]`
+        // and enforces `MSG_PAIR_SEL` booleanity + `Σ == g`; this
+        // pack makes `p = Σ_p MSG_PAIR_SEL[p]·p` verifier-fixed
+        // via the CRIT-1 `CONTROL_PREP` pin, so the prover cannot
+        // re-point C3 to a convenient leaf word-pair. Zero on
+        // every current trace (`MSG_PAIR_SEL` all 0 ⇒ +0,
+        // `CONTROL_PREP` byte-identical) — the §6(a)/G2
+        // zero-blast property.
+        let two_pow_stripe =
+            <AB::F as PrimeCharacteristicRing>::from_u32(1u32 << FOLD_STRIPE_BITS);
+        pow = pow * two_pow_stripe; // pow = 2^58
+        let mut pair_idx: AB::Expr = <AB::Expr as PrimeCharacteristicRing>::ZERO;
+        for p in 0..MSG_PAIR_SEL_LEN {
+            let w = <AB::F as PrimeCharacteristicRing>::from_u32(p as u32);
+            pair_idx = pair_idx + cur[MSG_PAIR_SEL_START + p] * w;
+        }
+        acc = acc + pair_idx * pow; // 2^58 (3-bit pair ⇒ 58..61)
 
         builder.assert_eq(control_prep, acc);
     }
@@ -204,31 +236,39 @@ impl ControlChip {
     /// element. Used to construct the preprocessed `CONTROL_PREP`
     /// value for testing / trace generation. Equivalent to
     /// [`Self::pack_control_prep_full`] with no fold activity
-    /// (`is_fold = false`, `fold_slot = 0`, `fold_stripe = 0`) —
-    /// byte-identical to the pre-HIGH-2.2-§6 packing for every
-    /// non-fold row.
+    /// (`is_fold = false`, `fold_slot = 0`, `fold_stripe = 0`,
+    /// `msg_pair = 0`) — byte-identical to the pre-HIGH-2.2-§6
+    /// packing for every non-fold / non-C3-leaf row.
     pub fn pack_control_prep(selectors: &[bool; NUM_SELECTORS], mat_id: u32) -> u64 {
-        Self::pack_control_prep_full(selectors, mat_id, false, 0, 0)
+        Self::pack_control_prep_full(selectors, mat_id, false, 0, 0, 0)
     }
 
     /// HIGH-2.2 §6 / §6(b)-G2 — pack 21 selectors + MAT_ID **plus**
     /// the FoldChip schedule (`is_fold` at 2^47, the 4-bit
-    /// `fold_slot` at 2^48, the 6-bit `fold_stripe` at 2^52) into
-    /// one Goldilocks element. The `CompositeFullAirPinned` CRIT-1
-    /// pin then makes the fold schedule **and** the keystone's
-    /// stripe-lane selector verifier-fixed. `fold_slot < 16`,
-    /// `fold_stripe < 64`; top packed bit 57 ≪ Goldilocks p.
+    /// `fold_slot` at 2^48, the 6-bit `fold_stripe` at 2^52)
+    /// **and** the §4.C.2 c-exact 3-bit C3 word-pair index
+    /// `msg_pair` at 2^58 into one Goldilocks element. The
+    /// `CompositeFullAirPinned` CRIT-1 pin then makes the fold
+    /// schedule, the keystone's stripe-lane selector **and** the
+    /// C3 leaf word-pair verifier-fixed. `fold_slot < 16`,
+    /// `fold_stripe < 64`, `msg_pair < 8`; top packed bit 60 ≪
+    /// Goldilocks p.
     pub fn pack_control_prep_full(
         selectors: &[bool; NUM_SELECTORS],
         mat_id: u32,
         is_fold: bool,
         fold_slot: u8,
         fold_stripe: u8,
+        msg_pair: u8,
     ) -> u64 {
         debug_assert!((fold_slot as usize) < FOLD_SLOT_SEL_LEN, "fold_slot out of range");
         debug_assert!(
             (fold_stripe as usize) < FOLD_STRIPE_SEL_LEN,
             "fold_stripe out of range"
+        );
+        debug_assert!(
+            (msg_pair as usize) < MSG_PAIR_SEL_LEN,
+            "msg_pair out of range"
         );
         let mut packed: u64 = 0;
         for (i, &b) in selectors.iter().enumerate() {
@@ -241,6 +281,8 @@ impl ControlChip {
         packed |= ((fold_slot as u64) & ((1u64 << FOLD_SLOT_BITS) - 1)) << FOLD_SLOT_BIT;
         packed |=
             ((fold_stripe as u64) & ((1u64 << FOLD_STRIPE_BITS) - 1)) << FOLD_STRIPE_BIT;
+        packed |=
+            ((msg_pair as u64) & ((1u64 << MSG_PAIR_BITS) - 1)) << MSG_PAIR_BIT;
         packed
     }
 
@@ -479,6 +521,7 @@ mod tests {
                 true,
                 packed_slot as u8,
                 slot as u8, // fold_stripe (consistent with the one-hot)
+                0,          // msg_pair (not a C3-leaf row)
             ),
         );
     }
@@ -517,7 +560,7 @@ mod tests {
         };
         assert_eq!(ControlChip::pack_control_prep(&s, 0x1234), old);
         assert_eq!(
-            ControlChip::pack_control_prep_full(&s, 0x1234, false, 0, 0),
+            ControlChip::pack_control_prep_full(&s, 0x1234, false, 0, 0, 0),
             old
         );
     }
@@ -598,12 +641,40 @@ mod tests {
             <Val as QuotientMap<u64>>::from_int(1);
         // … but CONTROL_PREP packs stripe = 7.
         trace.values[base + CONTROL_PREP] = <Val as QuotientMap<u64>>::from_int(
-            ControlChip::pack_control_prep_full(&[false; NUM_SELECTORS], 0, true, 5, 7),
+            ControlChip::pack_control_prep_full(&[false; NUM_SELECTORS], 0, true, 5, 7, 0),
         );
         let proof = prove::<AiPowStarkConfig, _>(&cfg, &air, trace, &[]);
         assert!(
             verify::<AiPowStarkConfig, _>(&cfg, &air, &proof, &[]).is_err(),
             "fold stripe ≠ CONTROL_PREP-packed stripe must reject"
+        );
+    }
+
+    /// §4.C.2 c-exact (cx.1c) core soundness: the generalized
+    /// C3's leaf word-pair is verifier-fixed — a `MSG_PAIR_SEL`
+    /// one-hot that disagrees with the `CONTROL_PREP`-packed
+    /// 3-bit pair index must reject (a malicious prover cannot
+    /// re-point C3 to a convenient leaf word-pair). Mirrors the
+    /// proven §6(b)/G2 `fold_stripe_mismatch_rejected` pattern.
+    #[test]
+    fn msg_pair_mismatch_rejected() {
+        use crate::composite_layout::MSG_PAIR_SEL_START;
+        let cfg = build_stark_config(&test_zk_params(), &CircuitConfig::TEST_PEARL);
+        let air = ControlOnlyAir;
+        let s = [false; NUM_SELECTORS];
+        let mut trace = build_uniform_trace(16, &s, 0);
+        let base = 8 * TOTAL_TRACE_WIDTH;
+        // One-hot says C3 word-pair = 2 …
+        trace.values[base + MSG_PAIR_SEL_START + 2] =
+            <Val as QuotientMap<u64>>::from_int(1);
+        // … but CONTROL_PREP packs msg_pair = 5 (no fold activity).
+        trace.values[base + CONTROL_PREP] = <Val as QuotientMap<u64>>::from_int(
+            ControlChip::pack_control_prep_full(&[false; NUM_SELECTORS], 0, false, 0, 0, 5),
+        );
+        let proof = prove::<AiPowStarkConfig, _>(&cfg, &air, trace, &[]);
+        assert!(
+            verify::<AiPowStarkConfig, _>(&cfg, &air, &proof, &[]).is_err(),
+            "C3 word-pair ≠ CONTROL_PREP-packed msg_pair must reject"
         );
     }
 
@@ -617,7 +688,7 @@ mod tests {
         let mut trace = build_uniform_trace(16, &s, 0);
         let base = 10 * TOTAL_TRACE_WIDTH;
         trace.values[base + CONTROL_PREP] = <Val as QuotientMap<u64>>::from_int(
-            ControlChip::pack_control_prep_full(&[false; NUM_SELECTORS], 0, true, 3, 3),
+            ControlChip::pack_control_prep_full(&[false; NUM_SELECTORS], 0, true, 3, 3, 0),
         );
         // FOLD_IS_FOLD / FOLD_SLOT_SEL / FOLD_STRIPE_SEL left at 0.
         let proof = prove::<AiPowStarkConfig, _>(&cfg, &air, trace, &[]);
