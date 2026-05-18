@@ -383,13 +383,42 @@ pub fn prove_and_verify_tiled(
     // chunked whole-micro-tile matmul query
     // (`bus_emit::noised_packed`) is balanced only if every consumed
     // chunk is a multiset member of this declared store, so the
-    // §6(b) sweep's A/B inputs are now *bound* (not free). Computed
-    // up-front (pure, cheap vs. proving) so its size enters the
-    // fit budget. (Store ↔ committed `HASH_A` is the §4.C.2
-    // residual, separately scoped.)
-    let store_chunks =
-        CompositeTrace::enumerate_noised_chunks(&a_strips, &b_strips, t, r, num_stripes);
-    let n_store = store_chunks.len();
+    // §6(b) sweep's A/B inputs are now *bound* (not free). §4.C.2
+    // / A3.2b (b1): each store row carries the explicit
+    // `(plain, noise)` split — `MAT_UNPACK = committed-plain`
+    // (`ctx.a`/`ctx.b` at the chunk's tile-strip src — A3.1
+    // `enumerate_noised_chunks_with_src`), `NOISE_UNPACK =
+    // noise_ref(s_a/s_b)`, `NOISE_PACKED_PREP = polyval(noise,
+    // 129)` (CRIT-1-pinned ⇒ the prover cannot choose the noise).
+    // `NOISED_PACKED = plain+noise = a′` is unchanged ⇒ M-S1's
+    // `noised_packed` LogUp / `populate_lookup_freq` balance
+    // exactly as before. Closes the §4.C.2 *noise* tie (store
+    // noise == Pearl `noise_ref` of the C1-pinned seed); the
+    // *plain* tie (MAT_UNPACK ↔ HASH_A via C3) is A3.2c.
+    let store_srcs = CompositeTrace::enumerate_noised_chunks_with_src(
+        &a_strips, &b_strips, t, r, num_stripes,
+    );
+    let n_store = store_srcs.len();
+    let kk2 = params.k as usize;
+    let plain_noise = |s: &ai_pow_zk::composite_trace::NoisedChunkSrc|
+        -> ([i8; 8], [i8; 8]) {
+        let mut plain = [0i8; 8];
+        let mut noise = [0i8; 8];
+        for m in 0..8 {
+            if let Some((lane, l)) = s.src[m] {
+                if s.side_a {
+                    let i = tile_i * params.tile + lane;
+                    plain[m] = ctx.a[(i as usize) * kk2 + l as usize];
+                    noise[m] = ai_pow_zk::noise_ref::e_value(&ctx.s_a, i, l, r as u32);
+                } else {
+                    let j = tile_j * params.tile + lane;
+                    plain[m] = ctx.b[(j as usize) * kk2 + l as usize];
+                    noise[m] = ai_pow_zk::noise_ref::f_value(&ctx.s_b, l, j, r as u32);
+                }
+            }
+        }
+        (plain, noise)
+    };
     let sweep_fits = num_stripes <= ai_pow_zk::composite_layout::STRIPE_MAX
         && mh_end + 3 + sweep_rows + n_store + 4 + num_stripes < height - 8;
     let real_m = if sweep_fits {
@@ -399,10 +428,17 @@ pub fn prove_and_verify_tiled(
         // Store rows live in the post-sweep passthrough region
         // (place AFTER the sweep so its SX/CUMSUM passthrough on
         // `[sweep_start+rows_used, h)` is already written — this
-        // only adds the disjoint MAT_UNPACK/NOISED_PACKED/CONTROL
-        // columns); the fold chain follows them.
+        // only adds the disjoint MAT_UNPACK/NOISE_UNPACK/
+        // NOISED_PACKED/NOISE_PACKED_PREP/CONTROL columns); the
+        // fold chain follows them.
         let store_start = sweep_start + rows_used;
-        let placed = trace.place_noised_store(store_start, &store_chunks, 0);
+        for (i, s) in store_srcs.iter().enumerate() {
+            let (plain, noise) = plain_noise(s);
+            trace.place_noised_store_row_split(
+                store_start + i, &plain, &noise, 0,
+            );
+        }
+        let placed = n_store;
         let fold_start = store_start + placed + 4;
         let xs: Vec<i32> = x_steps[..num_stripes].iter().map(|&u| u as i32).collect();
         trace.place_fold_chain(fold_start, &xs)

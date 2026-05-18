@@ -1063,6 +1063,31 @@ impl CompositeTrace {
         self.write_noised_row(row_idx, bytes, mat_id, false)
     }
 
+    /// §4.C.2 / A3.2b — place a pure `noised_packed` producer row
+    /// with an explicit `(plain, noise)` decomposition (W2): the
+    /// store row carries `MAT_UNPACK = plain` (the committed-matrix
+    /// bytes — B1/C3 ties these to `HASH_A`), `NOISE_UNPACK =
+    /// noise` (the Pearl `noise_ref` bytes), and
+    /// `NOISE_PACKED_PREP = polyval(noise, 129)` (the CRIT-1-pinned
+    /// preprocessed noise; InputChip forces `NOISE_PACKED_PREP ==
+    /// polyval(NOISE_UNPACK,129)` so the prover cannot deviate).
+    /// `NOISED_PACKED = polyval(plain) + polyval(noise) = a′`
+    /// (since `a′ = plain + noise` fits i8 with **no wrap**,
+    /// `|A+E| ≤ 127`) — i.e. **the same `NOISED_PACKED` value the
+    /// value-keyed M-S1 store published**, so M-S1's
+    /// `noised_packed` LogUp balances unchanged; only the
+    /// MAT/NOISE split + `NOISE_PACKED_PREP` change. Returns the
+    /// 2 packed `NOISED_PACKED` cells.
+    pub fn place_noised_store_row_split(
+        &mut self,
+        row_idx: usize,
+        plain: &[i8; 8],
+        noise: &[i8; 8],
+        mat_id: u32,
+    ) -> [u64; 2] {
+        self.write_noised_row_split(row_idx, plain, noise, mat_id, false)
+    }
+
     /// Shared column-writer for the two `noised_packed` table-row
     /// helpers. `is_msg_mat` selects staging (BLAKE3 absorb /
     /// self-query, `true`) vs. pure producer (`false`).
@@ -1073,9 +1098,34 @@ impl CompositeTrace {
         mat_id: u32,
         is_msg_mat: bool,
     ) -> [u64; 2] {
+        // Single-byte (no-noise) path: NOISE_UNPACK=0 ⇒
+        // NOISE_PACKED_PREP=polyval([0;8],129)=0 (== the baseline
+        // default), NOISED_PACKED=polyval(bytes)+0 — bit-identical
+        // to the pre-A3.2b behaviour.
+        self.write_noised_row_split(row_idx, bytes, &[0i8; 8], mat_id, is_msg_mat)
+    }
+
+    /// §4.C.2 / A3.2b — the `(plain, noise)`-split column writer
+    /// (W1/W2). `MAT_UNPACK = plain`, `UINT8_DATA = u8(plain)`,
+    /// `NOISE_UNPACK = noise`, `NOISED_PACKED[cell] =
+    /// polyval(plain[4c..],256) + polyval(noise[4c..],256)` (= a′,
+    /// since `a′ = plain+noise` fits i8 with no wrap), and
+    /// `NOISE_PACKED_PREP = polyval(noise[0..8],129)` so the
+    /// InputChip's `NOISE_PACKED_PREP == polyval(NOISE_UNPACK,129)`
+    /// holds and the CRIT-1 pin fixes the noise. `write_noised_row`
+    /// is `noise = 0` (M-S1's prior behaviour, unchanged).
+    fn write_noised_row_split(
+        &mut self,
+        row_idx: usize,
+        plain: &[i8; 8],
+        noise: &[i8; 8],
+        mat_id: u32,
+        is_msg_mat: bool,
+    ) -> [u64; 2] {
         use crate::composite_layout::{
             MAT_UNPACK_LEN, MAT_UNPACK_START, NOISED_PACKED_LEN, NOISED_PACKED_START,
-            NOISE_UNPACK_LEN, NOISE_UNPACK_START, UINT8_DATA_LEN, UINT8_DATA_START,
+            NOISE_PACKED_PREP, NOISE_UNPACK_LEN, NOISE_UNPACK_START, UINT8_DATA_LEN,
+            UINT8_DATA_START,
         };
         use p3_field::integers::QuotientMap;
 
@@ -1092,58 +1142,48 @@ impl CompositeTrace {
         let base = row_idx * TOTAL_TRACE_WIDTH;
         let row = &mut self.matrix.values[base..base + TOTAL_TRACE_WIDTH];
 
-        // MAT_UNPACK: signed i8 bytes (canonical encoding into Goldilocks).
+        // MAT_UNPACK: the committed-plain i8 bytes (B1/C3 ties
+        // these to HASH_A); UINT8_DATA: their u8 view.
         for i in 0..MAT_UNPACK_LEN {
             row[MAT_UNPACK_START + i] =
-                <Val as QuotientMap<i64>>::from_int(bytes[i] as i64);
-        }
-        // UINT8_DATA: u8 view of the same bytes.
-        for i in 0..UINT8_DATA_LEN {
+                <Val as QuotientMap<i64>>::from_int(plain[i] as i64);
             row[UINT8_DATA_START + i] =
-                <Val as QuotientMap<u64>>::from_int((bytes[i] as u8) as u64);
+                <Val as QuotientMap<u64>>::from_int((plain[i] as u8) as u64);
         }
-        // NOTE (C3): the IS_MSG_MAT-gated constraint in
-        // composite_full_air binds `BLAKE3_MSG[0..2]` to
-        // `base256(UINT8_DATA[0..8])`. `BLAKE3_MSG` is owned by
-        // the blake3 chip (constrained on every row vs. round
-        // state), so it can only carry matrix bytes on a genuine
-        // compression row — not on a separate staging row. This
-        // helper therefore does NOT write BLAKE3_MSG; the M52 4.2
-        // "separate staging row" model is superseded by C3, which
-        // requires IS_MSG_MAT to live on actual matrix-leaf
-        // compression rows (the F1 integration path). The column
-        // writes below (MAT_UNPACK/UINT8_DATA/NOISED_PACKED) are
-        // still exercised by the derivation tests.
-        // NOISE_UNPACK: zero on plain-byte rows.
+        // NOISE_UNPACK: the Pearl `noise_ref` bytes.
         for i in 0..NOISE_UNPACK_LEN {
-            row[NOISE_UNPACK_START + i] = Val::default();
+            row[NOISE_UNPACK_START + i] =
+                <Val as QuotientMap<i64>>::from_int(noise[i] as i64);
         }
-        // NOISED_PACKED = polyval(MAT_UNPACK, base=256) + polyval(NOISE_UNPACK=0).
-        // Two cells: bytes 0..4 and bytes 4..8.
-        // i8 -> i64 preserves sign; the input chip's constraint uses
-        // the same canonical Goldilocks encoding.
+        // NOISE_PACKED_PREP = polyval(NOISE_UNPACK, base=129) — the
+        // CRIT-1-pinned preprocessed noise (InputChip eqn 1).
+        // |noise|≤63, 63·129^7 ≈ 2.9e16 ≪ i64::MAX & ≪ Goldilocks p.
+        let mut npp: i64 = 0;
+        let mut pw: i64 = 1;
+        for &nb in noise.iter() {
+            npp += (nb as i64) * pw;
+            pw *= crate::chips::input::NOISE_PACKING_BASE as i64;
+        }
+        row[NOISE_PACKED_PREP] = <Val as QuotientMap<i64>>::from_int(npp);
+        // NOISED_PACKED[cell] = polyval(plain[4c..],256)
+        //                     + polyval(noise[4c..],256)  (= a′).
         let mut packs = [0i64; NOISED_PACKED_LEN];
         for cell in 0..NOISED_PACKED_LEN {
             let mut acc: i64 = 0;
             let mut mult: i64 = 1;
             for j in 0..4 {
-                acc += (bytes[cell * 4 + j] as i64) * mult;
+                acc += (plain[cell * 4 + j] as i64 + noise[cell * 4 + j] as i64) * mult;
                 mult *= 256;
             }
             packs[cell] = acc;
             row[NOISED_PACKED_START + cell] = <Val as QuotientMap<i64>>::from_int(acc);
         }
 
-        // Selectors: IS_MSG_MAT = 1 (index 10 in SELECTOR_COLS).
-        // Coexists with whatever IS_LAST_ROUND / IS_HASH_* the
-        // caller's other writes set; the control chip's
-        // `fill_row` overwrites CONTROL_PREP + selector cells +
-        // MAT_ID + MAT_ID_LIMBS coherently from a single source
-        // of truth, so callers must NOT mix this with
-        // `place_blake3_hash_*` on the same row. Staging rows
-        // should be distinct from compression rows.
+        // Selectors + CONTROL_PREP + MAT_ID (single source of
+        // truth; do NOT mix with place_blake3_hash_* on the same
+        // row). IS_MSG_MAT at SELECTOR_COLS idx 10.
         let mut selectors = [false; 21];
-        selectors[10] = is_msg_mat; // IS_MSG_MAT
+        selectors[10] = is_msg_mat;
         ControlChip.fill_row(&selectors, mat_id, row);
 
         [packs[0] as u64, packs[1] as u64]
