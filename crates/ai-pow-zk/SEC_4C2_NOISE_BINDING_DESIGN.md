@@ -1002,3 +1002,59 @@ Next focused effort: implement the cx.2-coloc trace-gen +
 bridge per the above → full `ai-pow-zk` + `ai-pow zk` +
 debug-assertions-ON + 16|r `P16` Route-A C3-active +
 position-exact adversarial → A3.3 → §4.C.2 **ZERO-GAP**.
+
+### 8.10 cx.2 g=1 co-location flip — LANDED & validated (`5109852`)
+
+The single irreducibly-atomic g=1 flip is **implemented,
+16|r-gated, and exhaustively validated**. The §4.C.2 c-exact
+plain tie is **LIVE end-to-end on the production-faithful 16|r
+path**:
+
+- `place_matrix_strip_opening`/`fold_strip`/`subtree_inside`/
+  `place_leaf_chunk` thread `Option<&[i8]> noise_strip`; each
+  co-located leaf round-0 row gets `IS_MSG_MAT=1` (⇒ g=1) + the
+  8 sub-slices (committed plain→`MAT_UNPACK`/`UINT8_DATA[0..64]`,
+  `noise_ref`→`NOISE_UNPACK[0..64]`, a′→`NOISED_PACKED[0..16]`,
+  `polyval(noise_s,129)`→`NOISE_PACKED_PREP[0..8]`,
+  `MSG_PAIR_SEL[0]=1`, `CONTROL_PREP msg_pair=0`).
+- bridge: per-strip `noise_ref` precompute (A row-major / B
+  col-major, pad→0); `coloc = (r % 16 == 0)` — 16|r ⇒ leaf rows
+  are the M-S1 producers (separate `place_noised_store_*`
+  retired); non-16|r ⇒ pre-cx.2 A3.2b separate-store path
+  (TEST_SMALL etc.; co-location only honest-balances 16|r —
+  cmset.1a/cx.2-coloc.0; Pearl §4.8 is always 16|r).
+
+**Validated:** the **decisive**
+`sec_4c2_cx2_g1_p16_route_a_c3_active_roundtrip` — 16|r `P16`
+`prove_and_verify_for_block` proves + pow-verifies at real
+difficulty with **C3 ACTIVE (g=1)** (co-located producers +
+whole-block C3 + InputChip-8 + 8-key `noised_packed` + sweep all
+balance end-to-end; `HASH_A` = the real committed-matrix
+commitment). `ai-pow-zk --lib` 352/0/22 (g=0/None path intact);
+`ai-pow --features zk` 88/0/1 (P16 g=1 + non-16|r A3.2b +
+§4.C.2 family 6/6); **debug-assertions-ON P16 g=1 roundtrip
+per-row clean** (the M-S1 debug-assertions-OFF hazard CLOSED for
+the honest g=1 path). The C3-active-**reject** mechanism (tamper
+the committed-plain `UINT8_DATA` view on a g=1 row ⇒ whole-block
+C3 rejects) is validated by `c3_rejects_is_msg_mat_row_with_
+mismatched_blake_msg` (passes under cx.2-c3's whole-block C3 in
+every 352/0/22 run).
+
+**Net (§4.C.2 on 16|r):** committed A/B ∈ `HASH_A` via the
+active whole-block C3 + strip-opening; swept a′ = noise(committed)
+via the leaf-row `noised_packed` producers (cx.2-coloc.0
+producer⊇consumer); noise = `noise_ref(public s_a)` via the
+CRIT-1 `NOISE_PACKED_PREP` pin. **The §4.C.2 plain tie is
+closed end-to-end on the production path.**
+
+**Precise residual to formally flip the §4.C.2 ZERO-GAP claim
+in `ZKP_SECURITY_REPORT`/`GAP_AUDIT` (not yet asserted — no
+premature/fake completion, R1):** a **cx.2-bridge-specific
+position-exact adversarial** — tamper a co-located `P16` leaf
+row's committed plain in the *actual bridge trace* and assert
+`prove_and_verify_for_block` rejects (the constraint-level
+reject is already validated generically via `c3_rejects_*`;
+this is end-to-end hardening). Then A3.3: docs/`ZKP_SECURITY_
+REPORT`/`GAP_AUDIT` flip → §4.C.2 **ZERO-GAP** (16|r); non-16|r
+remains the documented A3.2b strictly-stronger-than-pre-A3
+state. Soundness held throughout (CRIT-1+§4.D+§6+M-S1+A2+A3.2b).
