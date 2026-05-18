@@ -9,6 +9,7 @@ pub mod perm;
 pub mod poseidon1_perm;
 pub mod poseidon2_perm;
 pub mod recompose;
+pub mod tip5_perm;
 
 pub use context::*;
 pub use executor::*;
@@ -46,4 +47,9 @@ pub use poseidon2_perm::{
 pub use recompose::{
     RecomposeCircuitRow, RecomposeTrace, RecomposeTraceKind, generate_recompose_coeff_trace,
     generate_recompose_trace,
+};
+pub use tip5_perm::{
+    // Configuration / NPO key (C2.2)
+    Tip5Config,
+    Tip5FieldId,
 };
