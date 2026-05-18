@@ -166,6 +166,20 @@ R1.**
 
 ### Phase B — byte-equivalence & correctness vs Pearl for this model
 
+> **Authoritative plan: `PHASE_B_DESIGN.md`.** Verified state
+> 2026-05-18: `crates/ai-pow/PEARL_COMPARISON.md` D1–D4 are
+> CLOSED and `pearl_compat_fixtures` S0–S9 is **11/0/0 green** —
+> but vs a *vendored copy of Pearl's reference functions* at
+> *generic* shapes, **not** Pearl's real miner for the shipped
+> model `μ`. So the real residual is narrow: B1 = lift the
+> oracle to Pearl's real miner at the real preset (B1.0 the
+> Pearl-independent scale de-risk; B1.1/B1.2 gated on the
+> Pearl-side golden artifact, the longest-lead external
+> dependency — Risk-1/DB-1); B2 = the quant-extraction contract;
+> B3 = machine-enforced INT-only scoping. The precise
+> (D5/D6-normalized) byte-equivalence claim is in
+> `PEARL_COMPARISON.md` "Byte-equivalence claim (precise)".
+
 | # | Item | Depends | Exit gate |
 |---|---|---|---|
 | **B1** | Pearl **reference vectors**: obtain/derive golden `(κ, s_a, s_b, E/F, one tile digest)` from Pearl's miner for this model's mining config `μ`; assert `ai-pow` (`prng.rs`/`commit.rs`/`matmul`/fold) is **bit-identical**. | — (parallel to A) | Byte-identical on the Pearl reference vectors (today only self-consistency vs ai-pow's own plain path is tested). |

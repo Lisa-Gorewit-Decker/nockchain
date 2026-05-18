@@ -25,12 +25,57 @@ commitment (chunk-Merkle), and the difficulty target encoding. Given identical
 inputs at every protocol boundary, our crate and Pearl produce identical bytes,
 verified by 11 fixture-based unit tests in `tests/pearl_compat_fixtures.rs`.
 
-The only remaining behavioral difference (D6) is the search loop: Pearl has
-no per-attempt nonce — each `(block, A, B)` is one attempt. Our crate
-introduces a `pow_key = derive_key("pow-key", s_A ‖ nonce)` extension so the
-matmul + noise factors can be amortized across many nonce retries. This is
-intentional and does not affect Pearl-direction byte compatibility for any
-single attempt.
+> **Oracle scope (honest qualification — the Phase B gap).** Those
+> 11 tests assert byte-equality against `tests/fixtures/pearl.rs`,
+> which `tests/gen_fixtures.rs` captured from a **vendored copy of
+> Pearl's reference functions** at **hand-picked generic shapes**.
+> That is byte-equivalence to *our transcription of the Pearl
+> spec*, not yet to **Pearl's real miner running the shipped
+> `pearl-ai/Llama-3.1-8B-Instruct-pearl` config `μ`**. Closing
+> that delta (golden vectors from the real miner at the real
+> preset) is Phase B / B1; the quant-extraction contract is B2;
+> INT-only scoping is B3. See `crates/ai-pow-zk/PHASE_B_DESIGN.md`.
+
+## Byte-equivalence claim (precise — D5/D6-normalized)
+
+State this exactly; the unqualified "byte-equivalent to Pearl" is
+**false**. The precise, test-backed claim is:
+
+> **Given identical `(κ, s_a, s_b, A, B)` and the same tile
+> index**, `ai-pow` and Pearl produce the **bit-identical
+> *mineable unit*** — the §4.4 low-rank noise `(E, F)`, the
+> per-stripe fold value `X`, the §4.5 iterative `TileState`
+> (16×u32 LE), the keyed-BLAKE3 jackpot **message**, and the
+> §4.3/§4.6 `H_A`/`H_B` chunk-Merkle roots and the §4.8
+> difficulty target — **byte for byte**.
+>
+> They differ **only by deliberate Nockchain extension**, never
+> in the unit of work:
+> - **D5 (key, not hash).** The jackpot hash *function* is
+>   byte-identical (`s6_jackpot_hash_matches_pearl`); Pearl keys
+>   it with `a_noise_seed`, Nockchain with `pow_key =
+>   derive_key("pow-key", s_A ‖ nonce)`. The divergence is the
+>   *key argument*, not the hashing.
+> - **D6 (search loop).** Pearl varies `A/B` per attempt with no
+>   nonce; Nockchain sweeps a Bitcoin-style nonce and amortizes
+>   the matmul/noise. Both are valid PoUW search loops; a single
+>   attempt's unit of work is identical.
+>
+> Equivalently: normalize the key/nonce out (use Pearl's
+> `a_noise_seed` as the key, fix one attempt) ⇒ **every protocol
+> boundary is byte-identical** — the S0–S9 invariant. The merge-
+> mining contract (a tile that clears Pearl's difficulty clears
+> Nockchain's, and vice versa, for the shared `(κ,s_a,s_b,A,B)`)
+> rests exactly on this normalized identity.
+
+Test anchors: the *mineable unit* primitives are pinned by
+`pearl_compat_fixtures::{s4_noise_reconstruction, s5_tile_loop_
+jackpot, s6_jackpot_hash, s8_matrix_merkle_root, s9_difficulty_
+target}`; the ai-pow↔ai-pow-zk SNARK-side commitment identity by
+`m52_unit_of_work_byte_equiv`. The key/nonce normalization (D5/D6)
+is *by construction* — `keyed_hash` takes the key as an argument,
+so feeding Pearl's key reproduces Pearl's digest bit-for-bit
+(`s6`).
 
 ## Byte-level divergence inventory
 
