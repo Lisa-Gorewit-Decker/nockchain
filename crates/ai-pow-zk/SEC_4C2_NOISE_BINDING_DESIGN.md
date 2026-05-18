@@ -199,15 +199,44 @@ over `noise(committed A,B)`.
   recompute row→`(tile,lane,l)` (and thus `NOISE_PACKED_PREP`)
   witness-free. Must keep M-S1's LogUp balance
   (`NOISED_PACKED` multiset unchanged) and re-validate Route-A.
-- **A3.2b** W1+W2 wiring: program/`RowDescriptor`
-  reconstruction pins `NOISE_PACKED_PREP = polyval(noise_ref
-  noise,129)` per (now params-deterministic) store row; store
-  rows write `MAT_UNPACK=plain`, `NOISE_UNPACK=noise`
-  (InputChip closes `NOISED_PACKED=plain+noise=a′`).
-- **A3.2c = W3/B1** store rows ↔ strip-opening leaves via C3
-  (`MAT_UNPACK` = the committed plain bytes the A2 leaf layer
-  hashed), bridging the 1024-B-plain-chunk vs 8-i8-noised-window
-  granularity gap.
+- **A3.2b ✅ DONE 2026-05-17 (b1).** `write_noised_row_split` +
+  `place_noised_store_row_split`; bridge places the store via
+  the A3.1 `enumerate_noised_chunks_with_src` decomposition
+  (`MAT_UNPACK=ctx.a/b plain`, `NOISE_UNPACK=noise_ref(s_a/s_b)`,
+  `NOISE_PACKED_PREP=polyval(noise,129)`). `a′=plain+noise` fits
+  i8 no-wrap ⇒ `NOISED_PACKED` unchanged ⇒ M-S1 LogUp balanced.
+  InputChip eqn1 + the CRIT-1 `NOISE_PACKED_PREP` pin ⇒ **the
+  store noise is forced to Pearl `noise_ref` of the C1-public
+  seed — the prover cannot choose it**. MED-3 bridge roundtrip
+  green through the full split-store path; §4.C.2 decomposition
+  KAT green. **The §4.C.2 *noise* tie is closed.**
+- **A3.2c = W3/B1 — the remaining §4.C.2 piece (the *plain*
+  tie); not yet implemented.** Two forms, different
+  soundness/cost (FINDING 2026-05-17):
+  - **(c-exact) — co-location (position-exact, zero-gap).** Make
+    the store rows *be* the strip-opening leaf compression rows
+    so the existing C3 (`IS_MSG_MAT·IS_NEW_BLAKE·(BLAKE3_MSG[j]−
+    base256(UINT8_DATA))`) binds `MAT_UNPACK` to the exact
+    committed plain bytes that leaf hashed into `HASH_A`.
+    Requires aligning the 8-i8 store window to a leaf
+    compression's 64-byte `BLAKE3_MSG` across the
+    1024-B-chunk ↔ 8-i8-window granularity gap — **the
+    M-S1-magnitude core difficulty §4.C.2 has always been
+    flagged for.** This is the zero-gap target.
+  - **(c-mset) — LogUp multiset (tractable, structurally
+    weaker).** A new bus: strip-opening leaves *publish* the
+    committed plain byte-windows; store rows *query* their
+    `MAT_UNPACK` ⊆ that multiset (mirrors M-S1's own pattern).
+    Far more tractable (well-trodden in this codebase) but
+    binds *membership*, not *position*: with the A3.2b
+    position-pinned noise it yields "every swept `a′` = (some
+    committed plain window) + (the position's Pearl noise)" —
+    strictly stronger than today, but **not plain-side
+    position-exact** (a documented residual vs "zero gap").
+  Per R1, (c-exact) is the correct end state and is **not to
+  be rushed**; (c-mset) is a legitimate validated *interim*
+  with a precise residual if needed. The decision (c-exact now
+  vs c-mset-interim→c-exact) is surfaced to the maintainer.
 - **A3.3** Route-A + adversarial: a store whose noise ≠
   `noise_ref(s_a)` (forced by the CRIT-1 pin) or whose
   `MAT_UNPACK` ≠ the committed strip (C3) must reject; full
