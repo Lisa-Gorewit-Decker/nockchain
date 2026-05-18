@@ -151,11 +151,25 @@ impl MatmulParams {
         difficulty_bits: 0,
     };
 
-    /// `Llama-3.1-8B-Instruct-pearl` `down_proj`: the **largest
-    /// `k`** mineable GEMM (`k = intermediate_size = 14336`) — the
-    /// binding Pearl §4.8 case for this model (`16r ≤ k ≤ 4r²`
-    /// with `r = 64` ⇒ `1024 ≤ 14336 ≤ 16384` ✓; `64 | 14336` ✓;
-    /// `k·2·tile = 1 835 008 ≤ 2²²` ✓).
+    /// `Llama-3.1-8B-Instruct-pearl` `down_proj` **shape**
+    /// (`k = intermediate_size = 14336`, the largest-`k` GEMM).
+    ///
+    /// ⚠️ **NOT consensus-mineable for this model.** Per the
+    /// verified `config.json`, `down_proj` is in **group_0
+    /// (FP8 block[128,128])** — Pearl §4.1 type-0 is INT only and
+    /// the FP PoUW is unshipped (§1.1), so this layer is **out of
+    /// production scope** (Phase B / B3; the
+    /// [`LlamaFfnLayer::DownProj`] guard rejects it via
+    /// [`ParamError::Fp8LayerNotMineable`]). This preset is
+    /// retained **only as a §4.8 trace-bound *sizing reference***
+    /// (the binding largest-`k` envelope-math case: `16r ≤ k ≤
+    /// 4r²` with `r = 64` ⇒ `1024 ≤ 14336 ≤ 16384` ✓; `64 |
+    /// 14336` ✓; `k·2·tile = 1 835 008 ≤ 2²²` ✓) — it is a valid
+    /// `validate_prod_envelope` *shape*, but mining it for this
+    /// model would prove an FP8 layer, which production must not
+    /// do. The mineable group_1 INT7 GEMMs are
+    /// [`LLAMA_3_1_8B_GATE_UP`](Self::LLAMA_3_1_8B_GATE_UP) +
+    /// `o_proj`/late-`qkv` (see [`LlamaFfnLayer`]).
     pub const LLAMA_3_1_8B_DOWN: Self = Self {
         m: 4096,
         k: 14336, // intermediate_size
@@ -318,6 +332,139 @@ impl MatmulParams {
     }
 }
 
+// ───────────────────────────────────────────────────────────────
+//  Phase B / B3 — INT-only production scoping (machine-enforced)
+//
+//  `pearl-ai/Llama-3.1-8B-Instruct-pearl` `config.json`
+//  `quantization_config` (verified 2026-05-18) has two
+//  `config_groups`:
+//
+//    group_1  int-quantized, 7-bit, weights per-CHANNEL /
+//             activations per-TOKEN — targets:
+//               re:.*self_attn\.o_proj$
+//               re:.*\.gate_proj$
+//               re:.*\.up_proj$
+//               re:model\.layers\.(1[6-9]|2[0-9]|3[01])\.self_attn\.[qkv]_proj$
+//    group_0  float-quantized, FP8 block[128,128] — targets:
+//               re:.*\.down_proj$
+//               re:model\.layers\.([0-9]|1[0-5])\.self_attn\.[qkv]_proj$
+//
+//  Pearl whitepaper §4.1 fixes matmul-accumulate **type-0 = INT
+//  only** (`[−64,64]`, int32 accumulate); §1.1 defers an FP PoUW
+//  to an UNSHIPPED upgrade. ⇒ production mines group_1's INT7
+//  GEMMs ONLY; group_0 (FP8) is a documented production
+//  limitation, machine-enforced here (DB-3(a) /
+//  `PHASE_B_DESIGN.md` §3/§7). This is the in-repo admission
+//  guard mirroring `validate_prod_envelope`; the vLLM plugin
+//  (Phase D, external) is the operational filter on top.
+// ───────────────────────────────────────────────────────────────
+
+/// The model's `quantization_config` group for a layer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum QuantGroup {
+    /// group_1 — INT7 (Pearl §4.1 type-0 `[−64,64]` int regime).
+    /// **Mineable.**
+    Int7Mined,
+    /// group_0 — FP8 block-quantized. **Not mineable** until
+    /// Pearl ships its FP PoUW (§1.1, unshipped).
+    Fp8Deferred,
+}
+
+/// The Llama-3.1-8B mining-relevant linear layers, classified by
+/// the verified `config.json` regex targets. `layer_idx ∈ 0..32`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LlamaFfnLayer {
+    /// `mlp.gate_proj` — group_1 INT7 (mined). [K=4096, N=14336].
+    GateProj,
+    /// `mlp.up_proj` — group_1 INT7 (mined). [K=4096, N=14336].
+    UpProj,
+    /// `self_attn.o_proj` — group_1 INT7 (mined). [K=4096, N=4096].
+    OProj,
+    /// `self_attn.{q,k,v}_proj` at `layer_idx` — group depends on
+    /// the layer index (16..=31 ⇒ group_1 INT7 mined; 0..=15 ⇒
+    /// group_0 FP8 deferred), per the config regexes.
+    AttnQkv { layer_idx: u32, which: QkvProj },
+    /// `mlp.down_proj` — **group_0 FP8 (deferred — NOT mined)**.
+    /// [K=14336, N=4096]. The `LLAMA_3_1_8B_DOWN` preset is this
+    /// layer's *shape* (kept only for §4.8 trace-bound sizing
+    /// math); it is **not** consensus-mineable for this model.
+    DownProj,
+}
+
+/// `q`/`k`/`v` projection selector (for `AttnQkv`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum QkvProj {
+    Q,
+    K,
+    V,
+}
+
+impl LlamaFfnLayer {
+    /// The `quantization_config` group, faithful to the verified
+    /// `config.json` regex targets. `gate/up/o_proj` are always
+    /// group_1; `down_proj` always group_0; attention `qkv` is
+    /// group_1 iff `layer_idx ∈ 16..=31` else group_0.
+    pub fn quant_group(&self) -> QuantGroup {
+        match self {
+            LlamaFfnLayer::GateProj
+            | LlamaFfnLayer::UpProj
+            | LlamaFfnLayer::OProj => QuantGroup::Int7Mined,
+            LlamaFfnLayer::DownProj => QuantGroup::Fp8Deferred,
+            LlamaFfnLayer::AttnQkv { layer_idx, .. } => {
+                if (16..=31).contains(layer_idx) {
+                    QuantGroup::Int7Mined
+                } else {
+                    QuantGroup::Fp8Deferred
+                }
+            }
+        }
+    }
+
+    /// `true` iff this layer is mined in production (group_1 INT7).
+    pub fn is_mineable(&self) -> bool {
+        self.quant_group() == QuantGroup::Int7Mined
+    }
+
+    /// The mineable [`MatmulParams`] for this layer, or
+    /// [`ParamError::Fp8LayerNotMineable`] if it is group_0 (FP8).
+    /// **This is the B3 machine guard:** a caller that tries to
+    /// mine an FP8 layer is rejected here, in-repo, before any
+    /// proving. Shapes: `hidden=4096`, `intermediate=14336`,
+    /// GQA `q=4096`, `k=v=1024` (8 KV heads × 128); `M` =
+    /// `batch_seq` (the GEMM's batched-token dimension). Returned
+    /// params are `validate_prod_envelope`-valid.
+    pub fn mineable_matmul_params(
+        &self,
+        batch_seq: u32,
+    ) -> Result<MatmulParams, ParamError> {
+        if self.quant_group() == QuantGroup::Fp8Deferred {
+            return Err(ParamError::Fp8LayerNotMineable);
+        }
+        // group_1 INT7 mined GEMMs (hidden=4096, intermediate=14336).
+        let (k, n) = match self {
+            LlamaFfnLayer::GateProj | LlamaFfnLayer::UpProj => (4096, 14336),
+            LlamaFfnLayer::OProj => (4096, 4096),
+            LlamaFfnLayer::AttnQkv { which, .. } => match which {
+                QkvProj::Q => (4096, 4096),
+                QkvProj::K | QkvProj::V => (4096, 1024),
+            },
+            // Unreachable: DownProj is Fp8Deferred (rejected above).
+            LlamaFfnLayer::DownProj => unreachable!("down_proj is FP8"),
+        };
+        let p = MatmulParams {
+            m: batch_seq,
+            k,
+            n,
+            noise_rank: 64,
+            tile: 64,
+            spot_checks: 80,
+            difficulty_bits: 0,
+        };
+        p.validate_prod_envelope()?;
+        Ok(p)
+    }
+}
+
 #[derive(Debug, Error, PartialEq, Eq)]
 pub enum ParamError {
     #[error("tile size must be > 0")]
@@ -352,6 +499,11 @@ pub enum ParamError {
     ZeroSpotChecks,
     #[error("spot_checks must be <= number of tiles")]
     TooManySpotChecks,
+    #[error(
+        "layer is in the FP8 quant group (Pearl §4.1 type-0 is INT only; \
+         the FP PoUW is unshipped — Pearl whitepaper §1.1): not mineable"
+    )]
+    Fp8LayerNotMineable,
 }
 
 #[cfg(test)]
@@ -606,5 +758,110 @@ mod tests {
             assert!(p.validate_prod_envelope().is_ok());
             assert!(p.validate().is_ok());
         }
+    }
+
+    // ── Phase B / B3 — INT-only production scoping ──────────────
+
+    /// Quant-group classification is faithful to the verified
+    /// `config.json` regex targets (incl. the layer-16 boundary).
+    #[test]
+    fn b3_quant_group_classification_matches_config() {
+        use QkvProj::*;
+        // group_1 INT7 (always mined): gate/up/o_proj.
+        for l in [
+            LlamaFfnLayer::GateProj,
+            LlamaFfnLayer::UpProj,
+            LlamaFfnLayer::OProj,
+        ] {
+            assert_eq!(l.quant_group(), QuantGroup::Int7Mined);
+            assert!(l.is_mineable());
+        }
+        // group_0 FP8 (never mined): down_proj.
+        assert_eq!(
+            LlamaFfnLayer::DownProj.quant_group(),
+            QuantGroup::Fp8Deferred
+        );
+        assert!(!LlamaFfnLayer::DownProj.is_mineable());
+        // Attention qkv: 0..=15 ⇒ FP8 (group_0); 16..=31 ⇒ INT7
+        // (group_1). Spot-check the exact regex boundary.
+        for (idx, want) in [
+            (0u32, QuantGroup::Fp8Deferred),
+            (15, QuantGroup::Fp8Deferred),
+            (16, QuantGroup::Int7Mined),
+            (31, QuantGroup::Int7Mined),
+        ] {
+            for which in [Q, K, V] {
+                let l = LlamaFfnLayer::AttnQkv { layer_idx: idx, which };
+                assert_eq!(
+                    l.quant_group(),
+                    want,
+                    "layer {idx} {which:?} group"
+                );
+            }
+        }
+    }
+
+    /// **B3 machine guard (adversarial):** mining an FP8 (group_0)
+    /// layer is rejected in-repo before any proving.
+    #[test]
+    fn b3_fp8_layers_are_rejected_by_the_guard() {
+        use QkvProj::*;
+        assert_eq!(
+            LlamaFfnLayer::DownProj.mineable_matmul_params(4096),
+            Err(ParamError::Fp8LayerNotMineable),
+        );
+        for idx in [0u32, 7, 15] {
+            for which in [Q, K, V] {
+                assert_eq!(
+                    LlamaFfnLayer::AttnQkv { layer_idx: idx, which }
+                        .mineable_matmul_params(4096),
+                    Err(ParamError::Fp8LayerNotMineable),
+                    "early-layer {idx} {which:?} qkv is FP8 ⇒ rejected"
+                );
+            }
+        }
+    }
+
+    /// Mined group_1 layers yield `validate_prod_envelope`-valid
+    /// params; gate/up match the `LLAMA_3_1_8B_GATE_UP` shape.
+    #[test]
+    fn b3_mined_layers_are_envelope_valid() {
+        use QkvProj::*;
+        let bs = 4096;
+        for l in [
+            LlamaFfnLayer::GateProj,
+            LlamaFfnLayer::UpProj,
+            LlamaFfnLayer::OProj,
+            LlamaFfnLayer::AttnQkv { layer_idx: 16, which: Q },
+            LlamaFfnLayer::AttnQkv { layer_idx: 31, which: K },
+            LlamaFfnLayer::AttnQkv { layer_idx: 20, which: V },
+        ] {
+            let p = l
+                .mineable_matmul_params(bs)
+                .unwrap_or_else(|e| panic!("{l:?} must mine: {e}"));
+            assert!(
+                p.validate_prod_envelope().is_ok(),
+                "{l:?} params must be envelope-valid"
+            );
+        }
+        let gu = LlamaFfnLayer::GateProj
+            .mineable_matmul_params(bs)
+            .unwrap();
+        assert_eq!(
+            (gu.k, gu.n),
+            (
+                MatmulParams::LLAMA_3_1_8B_GATE_UP.k,
+                MatmulParams::LLAMA_3_1_8B_GATE_UP.n
+            ),
+            "gate_proj shape == LLAMA_3_1_8B_GATE_UP"
+        );
+        // down_proj's SHAPE is still a valid §4.8 sizing reference
+        // (the doc'd retained use) even though it is not mineable.
+        assert!(
+            MatmulParams::LLAMA_3_1_8B_DOWN
+                .validate_prod_envelope()
+                .is_ok(),
+            "DOWN preset stays a valid envelope-sizing shape"
+        );
     }
 }
