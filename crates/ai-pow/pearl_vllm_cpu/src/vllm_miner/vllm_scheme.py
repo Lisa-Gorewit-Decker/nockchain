@@ -57,7 +57,7 @@ class PearlScheme(CompressedTensorsScheme):
     @override
     @classmethod
     def get_min_capability(cls) -> int:
-        return 9  # Hopper and up (required for pearl GEMM)
+        return 0  # CPU fork: no Hopper floor (CPU pearl_gemm reimpl)
 
     @override
     def create_weights(

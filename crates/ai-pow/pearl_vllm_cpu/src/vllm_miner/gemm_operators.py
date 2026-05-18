@@ -2,7 +2,7 @@ import torch
 from miner_base.commitment_hash import CommitmentHasher
 from miner_base.gpu_matmul_config import GPUMatmulConfigFactory
 from miner_utils import get_logger
-from pearl_gemm import (
+from .pearl_gemm_cpu import (
     commitment_hash_from_merkle_roots,
     gemm,
     get_host_signal_sync_size,

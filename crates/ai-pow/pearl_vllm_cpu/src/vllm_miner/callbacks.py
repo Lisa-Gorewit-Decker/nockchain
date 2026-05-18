@@ -3,7 +3,7 @@ from dataclasses import dataclass
 import torch
 from miner_utils import get_logger
 from pearl_gateway.comm.dataclasses import CommitmentHash, MiningJob, OpenedBlockInfo
-from pearl_gemm import HostSignalStatus, extract_indices, get_host_signal_header
+from .pearl_gemm_cpu import HostSignalStatus, extract_indices, get_host_signal_header
 
 from .config import config
 from .mining_state import (

@@ -1,5 +1,5 @@
 import torch
-from pearl_gemm import quantize
+from .pearl_gemm_cpu import quantize
 
 from .mining_state import get_async_manager
 

@@ -4,7 +4,7 @@ from miner_base.async_loop_manager import AsyncLoopManager
 from miner_base.settings import MinerSettings
 from miner_utils import get_logger
 from pearl_gateway.config import MinerRpcConfig
-from pearl_gemm import HostSignalHeaderPinnedPool
+from .pearl_gemm_cpu import HostSignalHeaderPinnedPool
 
 from .config import config
 

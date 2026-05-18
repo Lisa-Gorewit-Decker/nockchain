@@ -138,3 +138,27 @@ commitment_hash_from_merkle_roots = _mining_stub("commitment_hash_from_merkle_ro
 make_pow_target_tensor = _mining_stub("make_pow_target_tensor")
 get_host_signal_sync_size = _mining_stub("get_host_signal_sync_size")
 get_required_scratchpad_bytes = _mining_stub("get_required_scratchpad_bytes")
+extract_indices = _mining_stub("extract_indices")
+get_host_signal_header = _mining_stub("get_host_signal_header")
+
+
+class HostSignalStatus:  # mining host-signal enum stub (unused on inference path)
+    IDLE = 0
+    PENDING = 1
+    DONE = 2
+
+
+class HostSignalHeaderPinnedPool:  # mining pinned-pool stub (no-op)
+    def __init__(self, *_a, **_k):
+        raise _MiningNotPorted(
+            "HostSignalHeaderPinnedPool: pinned-pool is mining-only; "
+            "the inference fork never constructs it (no_mining=True)."
+        )
+
+
+__all__ += [
+    "extract_indices",
+    "get_host_signal_header",
+    "HostSignalStatus",
+    "HostSignalHeaderPinnedPool",
+]

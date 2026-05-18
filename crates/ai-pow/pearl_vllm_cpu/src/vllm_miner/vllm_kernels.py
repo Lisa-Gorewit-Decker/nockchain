@@ -66,31 +66,21 @@ class PearlKernel(Int8ScaledMMLinearKernel):
 
     @classmethod
     def get_min_capability(cls) -> int:
-        # Pearl GEMM kernels require Hopper or newer
-        return 9
+        # CPU fork: no compute-capability floor (was 9/Hopper for
+        # the CUDA pearl_gemm). See PEARL_VLLM_CPU_FORK_DESIGN.md.
+        return 0
 
     @override
     @classmethod
     def can_implement(cls, c: Int8ScaledMMLinearLayerConfig) -> tuple[bool, str | None]:
-        if not current_platform.is_cuda():
-            return False, "PearlKernel requires running on CUDA."
+        # CPU fork: pearl_gemm_cpu runs on CPU (was: require CUDA).
         return True, None
 
     @override
     @classmethod
     def is_supported(cls, compute_capability: int | None = None) -> tuple[bool, str | None]:
-        """Check if PearlKernel is supported on the current hardware."""
-        if compute_capability is None:
-            if not current_platform.is_cuda():
-                return False, "PearlKernel requires CUDA."
-            compute_capability = current_platform.get_device_capability()[0]
-
-        if compute_capability < cls.get_min_capability():
-            return (
-                False,
-                f"PearlKernel requires compute capability >= {cls.get_min_capability()}, got {compute_capability}.",
-            )
-
+        """CPU fork: always supported (the CUDA / Hopper gate is
+        removed; the CPU pearl_gemm reimpl is hardware-agnostic)."""
         return True, None
 
     @override
