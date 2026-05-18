@@ -58,7 +58,7 @@ use crate::composite_layout::{
     BLAKE3_MSG_START, CUMSUM_TILE_START, CV_IN_LEN, CV_IN_START, CV_OUT_LEN, CV_OUT_START,
     IS_HASH_A, IS_HASH_B, IS_HASH_JACKPOT, IS_MSG_MAT, IS_NEW_BLAKE, IS_USE_COMMITMENT_HASH,
     IS_USE_JOB_KEY, JACKPOT_MSG_START, JACKPOT_SIZE, MSG_PAIR_SEL_LEN, MSG_PAIR_SEL_START,
-    TOTAL_TRACE_WIDTH, UINT8_DATA_START, UINT8_DATA_WIN,
+    TOTAL_TRACE_WIDTH, UINT8_DATA_LEN, UINT8_DATA_START,
 };
 use crate::composite_public::{
     NUM_PUBLIC_VALUES, PI_COMMITMENT_HASH_OFFSET, PI_CUMSUM_LEN, PI_CUMSUM_OFFSET,
@@ -564,31 +564,42 @@ impl<AB: AirBuilder> Air<AB> for CompositeFullAir {
             builder.assert_bool(sel);
             pair_sum = pair_sum + sel.into();
         }
-        builder.assert_zero(pair_sum - c3_gate);
-        // (iii) the selected word-pair == the matrix-byte view.
-        // §4.C.2 cx.2/X1: UINT8_DATA widened 8→64; until the cx.2
-        // atomic activation the generalized C3 (cx.1b) binds the
-        // 8-byte window only ⇒ byte-identical (zero-blast).
-        let cur_uint8: [AB::Var; UINT8_DATA_WIN] =
-            core::array::from_fn(|i| cur[UINT8_DATA_START + i]);
+        builder.assert_zero(pair_sum - c3_gate.clone());
+        // (iii) §4.C.2 c-exact cx.2/X1 — **whole-block** C3.
+        // X1 (SEC_4C2 §8.6): the strip-opening leaf round-0 row
+        // carries its entire 64-byte committed block in the
+        // widened `UINT8_DATA[0..64]`; bind **every** one of the
+        // 16 `BLAKE3_MSG` words to it (not a `MSG_PAIR_SEL`-
+        // selected pair — that was cx.1b's interim window-bind).
+        // ⇒ `UINT8_DATA[0..64]` ≡ the committed block ∈ `HASH_A`
+        // (every swept 8-byte sub-slice of the block is therefore
+        // covered by this one row — the resolution of the cx.2.0
+        // multiplicity blocker). `MSG_PAIR_SEL` / cx.1c's
+        // `CONTROL_PREP` pin survive (above + ControlChip) as the
+        // verifier-fixed *sub-slice address* the co-located M-S1
+        // `noised_packed` producer uses at the activation stage —
+        // not the C3 binding.
+        //   g·(BLAKE3_MSG[w] − Σ_{b<4} UINT8_DATA[4w+b]·256^b)=0,
+        //   w ∈ 0..16  (degree 3 = the pre-cx.1b C3 degree).
+        // ZERO-BLAST: g = IS_MSG_MAT·IS_NEW_BLAKE = 0 on every
+        // current trace (nothing co-locates yet) ⇒ all 16 terms
+        // ×g = 0 ⇒ vacuous, byte-identical. Activation flips g=1
+        // on the co-located leaf rows (its own staged landing).
         let base256 = <AB::F as PrimeCharacteristicRing>::from_i32(256);
-        for j in 0..(UINT8_DATA_WIN / 4) {
-            // recomposed_j = Σ_{b<4} UINT8_DATA[4j+b]·256^b
-            // (base-256 LE, the order BLAKE3 uses for from_le_bytes).
+        for w in 0..(UINT8_DATA_LEN / 4) {
+            // recomposed_w = Σ_{b<4} UINT8_DATA[4w+b]·256^b
+            // (base-256 LE, the order BLAKE3 from_le_bytes uses).
             let mut recomposed: AB::Expr = <AB::Expr as PrimeCharacteristicRing>::ZERO;
             let mut pow: AB::F = <AB::F as PrimeCharacteristicRing>::ONE;
             for b in 0..4 {
-                recomposed = recomposed + cur_uint8[4 * j + b] * pow.clone();
+                recomposed =
+                    recomposed + cur[UINT8_DATA_START + 4 * w + b] * pow.clone();
                 pow = pow * base256.clone();
             }
-            // Σ_p MSG_PAIR_SEL[p] · (BLAKE3_MSG[2p+j] − recomposed).
-            let mut acc: AB::Expr = <AB::Expr as PrimeCharacteristicRing>::ZERO;
-            for p in 0..MSG_PAIR_SEL_LEN {
-                let sel: AB::Var = cur[MSG_PAIR_SEL_START + p];
-                let msg_word: AB::Var = cur[BLAKE3_MSG_START + 2 * p + j];
-                acc = acc + sel.into() * (msg_word.into() - recomposed.clone());
-            }
-            builder.assert_zero(acc);
+            let msg_word: AB::Var = cur[BLAKE3_MSG_START + w];
+            builder.assert_zero(
+                c3_gate.clone() * (msg_word.into() - recomposed),
+            );
         }
 
         let mut last = builder.when_last_row();
