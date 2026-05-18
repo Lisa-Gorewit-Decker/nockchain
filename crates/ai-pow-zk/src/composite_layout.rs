@@ -480,13 +480,42 @@ pub const FOLD_STRIPE_SEL_LEN: usize = STRIPE_MAX;
 pub const FOLD_STRIPE_SEL_END: usize = FOLD_STRIPE_SEL_START + FOLD_STRIPE_SEL_LEN;
 
 // =====================================================================
+//  §4.C.2 c-exact (cx.1) — per-row BLAKE3 message word-pair selector
+//
+//  c-exact co-locates the M-S1 store rows onto the strip-opening
+//  leaf-chunk round-0 rows so the *proven* C3 binds `MAT_UNPACK`
+//  to the EXACT committed bytes ∈ `HASH_A`. cx.0 (KAT, `2bbf4cd`)
+//  proved each store window lives at leaf message word-pair
+//  `(2p, 2p+1)`, `p = word_off/2 ∈ 0..8`, at a witness-free
+//  address. This one-hot selects that pair so the generalized C3
+//  binds `BLAKE3_MSG[2p+j]` (not the fixed words {0,1}); its
+//  3-bit index `p` is CRIT-1-pinned in `CONTROL_PREP` (the proven
+//  §6(b)/G2 `FOLD_STRIPE_SEL` pattern). Appended after
+//  `FOLD_STRIPE_SEL` (shifts no existing offset); main-trace only
+//  (NOT preprocessed — the §4.C.8 trap is preprocessed width).
+//  Zero-default ⇒ `Σ MSG_PAIR_SEL = 0` and `pair_idx = 0` on
+//  every existing trace ⇒ generalized C3 vacuous + `CONTROL_PREP`
+//  byte-identical (the §6(a) zero-blast property; cx.1b-layout
+//  here adds only the zero columns — no constraint yet).
+// =====================================================================
+
+/// Per-(matrix-leaf round-0) one-hot BLAKE3 message word-pair
+/// selector for the generalized C3 (`Σ == IS_MSG_MAT·IS_NEW_BLAKE`,
+/// enforced by `CompositeFullAir` at cx.1b-constraints); its 3-bit
+/// index is CRIT-1-pinned in `CONTROL_PREP` at cx.1c.
+pub const MSG_PAIR_SEL_START: usize = FOLD_STRIPE_SEL_END;
+pub const MSG_PAIR_SEL_LEN: usize = 8;
+/// End-of-MSG_PAIR_SEL cursor.
+pub const MSG_PAIR_SEL_END: usize = MSG_PAIR_SEL_START + MSG_PAIR_SEL_LEN;
+
+// =====================================================================
 //  Total trace width
 // =====================================================================
 
 /// Total trace width: pinned end-of-layout cursor. Phases 3+ extend
 /// chip-internal sub-columns but must not exceed this without bumping
 /// the constant.
-pub const TOTAL_TRACE_WIDTH: usize = FOLD_STRIPE_SEL_END;
+pub const TOTAL_TRACE_WIDTH: usize = MSG_PAIR_SEL_END;
 
 #[cfg(test)]
 mod tests {
@@ -774,8 +803,13 @@ mod tests {
             ),
             (
                 FOLD_STRIPE_SEL_START + FOLD_STRIPE_SEL_LEN,
+                MSG_PAIR_SEL_START,
+                "FOLD_STRIPE_SEL → MSG_PAIR_SEL",
+            ),
+            (
+                MSG_PAIR_SEL_START + MSG_PAIR_SEL_LEN,
                 TOTAL_TRACE_WIDTH,
-                "FOLD_STRIPE_SEL → TOTAL_TRACE_WIDTH",
+                "MSG_PAIR_SEL → TOTAL_TRACE_WIDTH",
             ),
         ];
         for &(end, next, name) in checkpoints {

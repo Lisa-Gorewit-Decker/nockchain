@@ -602,3 +602,68 @@ multi-commit, per-sub-stage validated cx.1a→cx.1c). Per R1 it is
 **not** to be rushed in one pass — each sub-stage lands only when
 correct + exhaustively gated (unit + `crit1_*`/`routea_*` +
 `ai-pow --features zk` + debug-assertions-ON).
+
+### 8.4 cx.1a — concrete design (grounded in the live code)
+
+**Current C3** (`composite_full_air.rs:539-554`), gate
+`g = IS_MSG_MAT·IS_NEW_BLAKE`:
+`g·(BLAKE3_MSG[j] − Σ_{b<4} UINT8_DATA[4j+b]·256^b) = 0`, j∈{0,1}
+— **fixed** message words {0,1}. cx.0 proved the store window
+lives at words `(2p, 2p+1)`, `p = word_off/2 ∈ 0..8`.
+
+**Generalized C3 (cx.1):** introduce an 8-wide one-hot
+`MSG_PAIR_SEL[0..8]` (the proven §6(b)/G2 `FOLD_STRIPE_SEL`
+shape). For j∈{0,1}:
+`g·( (Σ_{p<8} MSG_PAIR_SEL[p]·BLAKE3_MSG[2p+j]) − Σ_b
+UINT8_DATA[4j+b]·256^b ) = 0`, plus `MSG_PAIR_SEL[p]` boolean
+and `Σ_p MSG_PAIR_SEL[p] = g` (so exactly one pair is selected
+iff the C3 gate is live; degree stays ≤3 = today's C3 degree).
+
+**Pin (cx.1c):** pair index `p = Σ_p MSG_PAIR_SEL[p]·p` folded
+into `CONTROL_PREP` at the next free bit past G2's
+`FOLD_STRIPE_BIT(52)+FOLD_STRIPE_BITS(6)=58`:
+`MSG_PAIR_BIT = 58`, `MSG_PAIR_BITS = 3` (p∈0..8) ⇒ top packed
+bit 60 ≪ 64 (Goldilocks-safe). `pack_control_prep_full` gains a
+`msg_pair: u8` arg (`pack |= (p&7)<<58`); `ControlChip::eval`
+adds `acc += pair_idx·2^58` (mirroring `stripe_idx·2^52`);
+`extract_program` already lifts `CONTROL_PREP` (a PROGRAM_COL) ⇒
+the offset is CRIT-1-pinned automatically once packed.
+`RowDescriptor` gains `msg_pair: u8` (default 0).
+
+**Layout (cx.1b-layout):** append after `FOLD_STRIPE_SEL_END`
+(shifts no existing offset — exactly how `FOLD_STRIPE_SEL` was
+appended after `SX_END`):
+`MSG_PAIR_SEL_START = FOLD_STRIPE_SEL_END`,
+`MSG_PAIR_SEL_LEN = 8`, `TOTAL_TRACE_WIDTH = MSG_PAIR_SEL_END`.
+Update the one `layout_offsets_are_contiguous` checkpoint
+(`FOLD_STRIPE_SEL → TOTAL_TRACE_WIDTH` becomes
+`FOLD_STRIPE_SEL → MSG_PAIR_SEL` + `MSG_PAIR_SEL →
+TOTAL_TRACE_WIDTH`); `total_trace_width_in_pearl_ballpark`
+(<2200) still holds (~1939).
+
+**Zero-blast proof.** Today **no row** has `g=1` (C3 comment
+`:533` — "Vacuous on every current trace"). New columns
+`MSG_PAIR_SEL` default 0 ⇒ `Σ MSG_PAIR_SEL = 0 = g` ✓ (the
+new one-hot constraint holds), generalized-C3 is vacuous
+(`g=0`) exactly as today, and `pair_idx = 0` ⇒ `CONTROL_PREP`
+gains `+0` ⇒ **byte-identical** for every existing trace (the
+§6(a) zero-blast argument). ⇒ the ~300 unit tests +
+`crit1_*`/`high2_*`/`routea_*` + `ai-pow --features zk` must
+stay green with no value change.
+
+**Sub-stage split (each landed only when its gate is green):**
+- **cx.1b-layout** — the additive 8-col block + width + the
+  contiguity checkpoint. *No constraint.* Provably zero-blast
+  (8 zero-default cols). Gate: `composite_layout` tests + a
+  representative composite prove/verify unchanged.
+- **cx.1b-constraints** — generalized C3 + `MSG_PAIR_SEL`
+  boolean + `Σ = g`, in the **unit `CompositeFullAir`** only,
+  zero-blast at `p=0`. Gate: full `ai-pow-zk --lib` (incl.
+  `crit1_*`/`routea_*`) + `ai-pow --features zk` +
+  debug-assertions-ON, all byte-identical.
+- **cx.1c** — `CONTROL_PREP` pin (`pack_control_prep_full` +
+  `ControlChip` + `RowDescriptor` + `extract_program`) + the
+  pinned AIR (`CompositeFullAirPinned`); adversarial
+  (stale/forged/claimed-absent `msg_pair` reject); `crit1_*`
+  still rejects forgeries with the extended pack;
+  debug-assertions-ON.
