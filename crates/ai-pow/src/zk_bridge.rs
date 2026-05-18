@@ -1492,4 +1492,117 @@ mod tests {
             }
         }
     }
+
+    /// **§4.C.2 / A3.2c c-mset.0 (off-circuit de-risk; no AIR
+    /// change).** The B1 plain tie ships as a LogUp multiset bus
+    /// (store `MAT_UNPACK` ⊆ the committed-plain windows the A2
+    /// strip-opening hashes ∈ `HASH_A`). This KAT proves the
+    /// bus's honest-balance + producer-granularity premise
+    /// against the *real* bridge geometry: every store row's
+    /// plain `MAT_UNPACK` is a **contiguous 8-byte window of the
+    /// exact committed bytes the strip-opening hashed** for the
+    /// attested tile (within `[c0,c1)·1024`). So the bus producer
+    /// = contiguous 8-byte windows of the strip-opening's hashed
+    /// plain bytes; every store query is a member ⇒ honest
+    /// balance. (The M-S1 coverage-net / P-B.2.0 KAT-first
+    /// discipline, applied to c-mset before any bus AIR.)
+    #[test]
+    fn sec_4c2_cmset0_store_plain_is_contiguous_window_of_strip_opening() {
+        use crate::matmul::{BlockNoise, Matrices};
+        use crate::synth::synth_matrices;
+        use ai_pow_zk::blake3_tree::{pad_to_chunk_boundary, tile_chunk_range};
+        use ai_pow_zk::composite_trace::CompositeTrace;
+
+        for params in [
+            MatmulParams::TEST_SMALL,
+            MatmulParams { m: 16, k: 64, n: 24, noise_rank: 4, tile: 8,
+                spot_checks: 2, difficulty_bits: 0 },
+        ] {
+            params.validate().unwrap();
+            let (a, b) = synth_matrices(b"sec4c2-cmset0", &params);
+            let ctx = BlockContext::build(b"sec4c2-cmset0-blk", &a, &b, &params)
+                .expect("ctx");
+            let noise = BlockNoise::expand(&ctx.s_a, &ctx.s_b, &params);
+            let mats = Matrices::build(ctx.a, ctx.b, &noise, &params);
+            let (t, r, k) = (params.tile as usize, params.noise_rank,
+                params.k as usize);
+            let num_stripes = params.num_stripes() as usize;
+            let (ti, tj) = (0u32, 0u32);
+            let a_strips: Vec<i8> = (0..t as u32)
+                .flat_map(|di| mats.a_prime_row(ti * params.tile + di).to_vec())
+                .collect();
+            let b_strips: Vec<i8> = (0..t as u32)
+                .flat_map(|dj| mats.b_prime_col(tj * params.tile + dj).to_vec())
+                .collect();
+            // The exact committed bytes the A2 strip-opening hashes
+            // (the producer's byte source), per side.
+            let a_bytes: Vec<u8> = ctx.a.iter().map(|&v| v as u8).collect();
+            let b_bytes: Vec<u8> = ctx.b.iter().map(|&v| v as u8).collect();
+            let a_pad = pad_to_chunk_boundary(&a_bytes);
+            let b_pad = pad_to_chunk_boundary(&b_bytes);
+            let (ca0, ca1, _) =
+                tile_chunk_range(ti as usize, t, k, a_bytes.len());
+            let (cb0, cb1, _) =
+                tile_chunk_range(tj as usize, t, k, b_bytes.len());
+
+            let srcs = CompositeTrace::enumerate_noised_chunks_with_src(
+                &a_strips, &b_strips, t, r as usize, num_stripes,
+            );
+            assert!(!srcs.is_empty());
+            for s in &srcs {
+                // A store window's bytes are 8 contiguous columns
+                // of ONE strip lane (enumerate splits a chunk into
+                // di-fixed 8-col windows) ⇒ a contiguous run in
+                // the row/col-major committed matrix.
+                let present: Vec<(u32, u32)> =
+                    s.src.iter().filter_map(|x| *x).collect();
+                if present.is_empty() {
+                    continue; // all zero-pad
+                }
+                let (lane0, l0) = present[0];
+                for (m, &(lane, l)) in present.iter().enumerate() {
+                    assert_eq!(lane, lane0, "window spans one lane");
+                    assert_eq!(
+                        l, l0 + m as u32,
+                        "window is contiguous in the committed matrix"
+                    );
+                }
+                // The contiguous run lies inside the strip-opening's
+                // hashed chunk span, and the store plain bytes equal
+                // those exact committed bytes.
+                let (pad, c0, c1, lane_g) = if s.side_a {
+                    (&a_pad, ca0, ca1, ti * params.tile + lane0)
+                } else {
+                    (&b_pad, cb0, cb1, tj * params.tile + lane0)
+                };
+                let idx = lane_g as usize * k + l0 as usize;
+                assert!(
+                    idx >= c0 * 1024 && idx + present.len() <= c1 * 1024,
+                    "store window [{idx},{}) outside strip-opening \
+                     hashed span [{},{})",
+                    idx + present.len(),
+                    c0 * 1024,
+                    c1 * 1024,
+                );
+                for (m, &(_, _)) in present.iter().enumerate() {
+                    // committed byte (∈ HASH_A via the strip-opening)
+                    // == the store row's plain MAT_UNPACK byte.
+                    assert_eq!(
+                        pad[idx + m] as i8, s.bytes[m].wrapping_sub(
+                            // plain = a′ − noise; recover via the
+                            // A3.1-proven decomposition.
+                            if s.side_a {
+                                ai_pow_zk::noise_ref::e_value(
+                                    &ctx.s_a, lane_g, l0 + m as u32, r as u32)
+                            } else {
+                                ai_pow_zk::noise_ref::f_value(
+                                    &ctx.s_b, l0 + m as u32, lane_g, r as u32)
+                            }
+                        ),
+                        "store plain byte != committed (strip-opening) byte"
+                    );
+                }
+            }
+        }
+    }
 }
