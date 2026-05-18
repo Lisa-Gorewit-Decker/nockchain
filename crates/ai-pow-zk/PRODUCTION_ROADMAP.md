@@ -100,7 +100,42 @@ vague — external). Phase E is cross-cutting.
 
 After Phase A: the Nockchain SNARK soundly proves a real
 Llama-8B INT-GEMM tile's committed-matrix matmul→fold→digest in
-**one** Layer-0 STARK, Pearl-faithfully.
+**one** Layer-0 STARK, Pearl-faithfully (§4.C.2 shipped on
+**b1** — sound, no weaker than any existing PROGRAM_COL pin).
+
+### Phase A-CR — first-class params-pure `canonical_program` (CRIT-1 reconstruction hardening; subsumes §4.C.2-b2)
+
+> Full design + decisions D-CR1..4 + staged plan CR.0..7:
+> **`CANONICAL_PROGRAM_DESIGN.md`**. Sequenced **after Phase A,
+> before Phase B proper.** Promotes the verifier's
+> canonical-program reconstruction from *"`extract_program` of a
+> reference honest trace"* (today: the bridge passes the
+> prover-extracted program to verify; "verifier rebuilds from
+> `ZkParams`" is only the `crit1_*` design intent) to a
+> **witness-free, params-pure, isolation-auditable
+> `canonical_program(params, block_public)`** for all 5
+> PROGRAM_COLS. §4.C.2's store-row `NOISE_PACKED_PREP =
+> polyval(noise_ref(s_a),129)` becomes one part of it (b2,
+> subsuming Phase-A's b1 noise pin — b1's in-circuit/store
+> wiring is reused; only *how the verifier obtains canonical
+> noise* changes). Removes a latent CRIT-1 fragility
+> system-wide and builds the witness-free params→program/VK
+> reconstruction **Phase C (P-C) / M-C1 require regardless**.
+
+| # | Item | Depends | Exit gate |
+|---|---|---|---|
+| **CR.0** | The single params-pure **row schedule** (`RowClass` per row from params + `block_public`), shared by the bridge trace generator *and* `canonical_program` (one source of truth — eliminates the prover/verifier shared-bug class). | Phase A (A1/A3.2a schedules) | `schedule(params)` reproduces the bridge's actual row layout (incl. `tile_chunk_range`, `noised_store_layout`); no verify-path change. |
+| **CR.1–CR.5** | `canonical_program` per row class (CONTROL_PREP/CV/AB_ID/ROW_IDX, then store `NOISE_PACKED_PREP` via `noise_ref`). | CR.0; §4.C.2-b1 (Phase A) | Per class, `canonical_program == extract_program(honest_trace)` **bit-for-bit** (Llama-8B + TEST_SMALL + rectangular) **and** vs hand-computed expected PROGRAM_COLS for small geometries; full `ai-pow-zk --lib`. |
+| **CR.6** | Flip the verify path: VK = commitment to `canonical_program(params, block_public)`; `prove_and_verify` verifies against it (not the prover-passed program). | CR.1–5 | Route-A + full `crit1_*` + new adversarial (any PROGRAM_COL — esp. store `NOISE_PACKED_PREP` — ≠ params-pure canonical ⇒ reject); `ai-pow --features zk` all-green; debug-assertions-ON. |
+| **CR.7** | Docs/audit flip (`ZKP_SECURITY_REPORT`/`GAP_AUDIT` CRIT-1 → first-class reconstruction; §4.C.2-b2 marked subsumed). | CR.6 | Security docs reflect the upgraded CRIT-1 model. |
+
+After Phase A-CR: every PROGRAM_COL (incl. §4.C.2 store noise)
+is verifier-fixed by a witness-free params-pure function; the
+CRIT-1 latent "extract-of-reference" fragility is removed
+system-wide; the params→program/VK primitive Phase C needs
+exists. **The most soundness-sensitive milestone in the
+codebase — staged/KAT-first/not-rushed per `~/.claude/CLAUDE.md`
+R1.**
 
 ### Phase B — byte-equivalence & correctness vs Pearl for this model
 
@@ -116,7 +151,7 @@ Llama-8B INT-GEMM tile's committed-matrix matmul→fold→digest in
 |---|---|---|---|
 | **C1** | **M-S3** — vendor `Plonky3-recursion` + align the Plonky3 rev in the vendored tree. | — | Audit-stable owned recursion substrate (P0/F2/F7 resolved). |
 | **C2** | **M-S4** — `tip5-circuit-air` from `nockchain-math::tip5` + Tip5 challenger/MMCS arms; native≡in-circuit cross-test. | C1 | The recursion verifier can verify our Tip5 Layer-0 proofs; the 120-bit FRI sweep preserved. |
-| **C3** | **P-C / M-S5** — vertical-recursion ≤65 KB certificate (Pearl §4.7/§5.1 faithful — compress *one* Layer-0 proof; **no** G3 `Γ`/aggregation). | Phase A, C2 | A real Llama-8B INT-tile proof compresses to a ≤65 KB cert that verifies; `N=1` ≡ the single proof (accept/reject parity). |
+| **C3** | **P-C / M-S5** — vertical-recursion ≤65 KB certificate (Pearl §4.7/§5.1 faithful — compress *one* Layer-0 proof; **no** G3 `Γ`/aggregation). | Phase A, **Phase A-CR** (reuses the witness-free `canonical_program`/VK reconstruction), C2 | A real Llama-8B INT-tile proof compresses to a ≤65 KB cert that verifies; `N=1` ≡ the single proof (accept/reject parity). |
 | **C4** | **M-S6** — independent crypto audit: 7-round Tip5 (now in-circuit) + the vendored/extended recursion stack. | C3 | Removes the "experimental/unaudited" gate. |
 
 ### Phase D — integration (deliberately vague; external to ai-pow-zk)
@@ -142,26 +177,39 @@ Llama-8B INT-GEMM tile's committed-matrix matmul→fold→digest in
 ## 3. Critical path & minimal production cut
 
 ```
-A1 → A2 → A3            (SNARK sound & one-STARK at model scale)
-B1 → B2 (∥ A) → B3      (byte-equiv + INT-only scoping)
+A1 → A2 → A3 (b1)                       (SNARK sound & one-STARK at model scale)
         ↘
-          C1 → C2 → C3 → C4   (succinct cert + audit)
-                         ↘
-                           D1, D2 (vLLM + consensus — external)
+          CR.0 → CR.1‥5 → CR.6 → CR.7   (params-pure canonical_program; subsumes §4.C.2-b2)
+                              ↘
+B1 → B2 (∥ A) → B3 ───────────┤         (byte-equiv + INT-only scoping)
+                              ↘
+                                C1 → C2 → C3 → C4   (succinct cert + audit;
+                                                     C3 reuses CR canonical_program)
+                                             ↘
+                                               D1, D2 (vLLM + consensus — external)
 ```
 
 - **Minimal "this model's INT GEMMs mine soundly with a
-  Nockchain SNARK"** = **Phase A + Phase B**. A2 is the hard
-  unblocker; without it the SNARK cannot prove the model at all.
+  Nockchain SNARK"** = **Phase A** (incl. §4.C.2 on b1). A2 is
+  the hard unblocker; without it the SNARK cannot prove the
+  model at all.
+- **Phase A-CR** sits **after Phase A, before Phase B proper**:
+  it upgrades CRIT-1's verifier reconstruction to first-class
+  params-pure (subsuming §4.C.2-b2) — a soundness-foundation
+  hardening that Phase C's P-C/M-C1 *require* regardless (no
+  prover trace there).
 - **Consensus-grade production** = + **Phase C** (succinct,
-  audited cert) + **Phase D** (vLLM extraction + chain
-  consumption).
-- Phases B and C-prereqs (C1/C2) can proceed in parallel with A;
-  C3 and the Phase-D integration are last.
+  audited cert — C3 builds on Phase A-CR's `canonical_program`)
+  + **Phase D** (vLLM extraction + chain consumption).
+- Phase B (byte-equiv) is independent of A/A-CR and may run in
+  parallel; C1/C2 (vendor recursion / Tip5-AIR) likewise; C3
+  depends on Phase A-CR.
 
 **Inflections:** A2 = SNARK can mine the real model (one-STARK).
-A3 = full §4.C zero-gap soundness. C3 = succinct consensus
-artifact. C4 = audit gate cleared.
+A3 = full §4.C zero-gap soundness (b1). **A-CR/CR.6 = CRIT-1
+verifier reconstruction is first-class params-pure
+(witness-free), latent fragility removed system-wide.** C3 =
+succinct consensus artifact. C4 = audit gate cleared.
 
 ---
 
@@ -188,6 +236,9 @@ artifact. C4 = audit gate cleared.
 - Track-A milestone table & inflections: `HIGH2_2_DESIGN.md` §7.
 - Why no segmentation (γ): `M_S2_PEARL_EVALUATION.md`.
 - P-B.2.x design + decisions D1–D4: `P_B2_STRIP_OPENING_DESIGN.md`.
+- §4.C.2 (Phase A, b1): `SEC_4C2_NOISE_BINDING_DESIGN.md`.
+- **Phase A-CR (params-pure `canonical_program`; subsumes
+  §4.C.2-b2): `CANONICAL_PROGRAM_DESIGN.md`.**
 - G3 (deferred): `M_S2_G3AB_DESIGN.md`.
 - Real model facts: `pearl_real_production_model` memory;
   `~/Dev/Llama-3.1-8B-Instruct-pearl/config.json`.
