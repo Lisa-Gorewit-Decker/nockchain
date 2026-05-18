@@ -88,27 +88,28 @@ vague — external). Phase E is cross-cutting.
 > **noise tie CLOSED** — store noise forced to `noise_ref` of
 > the C1-public seed; `ai-pow-zk --lib` 351/0/22, `ai-pow
 > --features zk` all-binaries 0-failed incl. end_to_end +
-> MED-3). **Remaining = B1 (the *plain* tie):** maintainer
-> **hybrid** decision — **c-mset interim** (new M-S1-pattern
-> LogUp bus: store `MAT_UNPACK` ⊆ committed-plain windows;
-> ≈M-S1-magnitude ⇒ staged, KAT-first, **not rushed** per
-> `~/.claude/CLAUDE.md` R1) **→ c-exact** (co-locate store onto
-> strip-opening leaves via C3; position-exact, zero-gap)
-> scoped as the Phase-A3 residual. **c-mset.0 ✅ + c-mset.1a ✅
-> DONE** (`2c2d7c6`): KAT-first de-risk at the exact `BUS_PLAIN`
-> AIR key proved `consumer ⊆ producer` (LogUp balance premise)
-> holds **iff `16|r`** — production is always `16|r` (Pearl
-> §4.8); `TEST_SMALL` r=4 is not (proven negative). **Residual
-> = c-mset.1b/.2/.3** (`16|r`-gated emission + Route-A on a
-> `16|r` §6(b)-live single-STARK geometry `P16`, not
-> `TEST_SMALL`); **one open maintainer decision** — the
-> producer-row-isolation mechanism (dedicated selector vs
-> in-AIR tweak-flag decode; both touch the CRIT-1-pinned
-> program). §4.C.2-with-A3.2b is already strictly stronger than
+> MED-3). **Remaining = B1 (the *plain* tie). DECISION
+> 2026-05-17 (maintainer): done via c-exact — the c-mset
+> `BUS_PLAIN` bus is ABANDONED.** c-mset shipped only as the
+> KAT-first de-risk arc: **c-mset.0 ✅ + c-mset.1a ✅**
+> (`2c2d7c6`) proved `consumer ⊆ producer` holds **iff `16|r`**
+> (Pearl always `16|r`; `TEST_SMALL` r=4 proven negative) **and**
+> that the bus needs invasive CRIT-1-program producer-row gating
+> regardless. ⇒ maintainer chose **c-exact** (co-locate store
+> onto strip-opening leaf rows; the *proven* C3 binds
+> `MAT_UNPACK` to the exact committed bytes ∈ `HASH_A`;
+> position-exact zero-gap; no new bus/FREQ/permutation, no open
+> producer-isolation decision — strictly dominates c-mset).
+> c-mset.0/.1a retained as the de-risk + the
+> contiguity/`16|r`-alignment evidence c-exact reuses. Staged
+> KAT-first plan **cx.0→cx.3** (next step = **cx.0**, no AIR
+> change); recommended mechanism = a CRIT-1-pinned per-row
+> word-offset (the proven §6(a) CONTROL_PREP pattern, zero new
+> columns). §4.C.2-with-A3.2b is already strictly stronger than
 > pre-A3 and **not a forgery hole** (CRIT-1 + §4.D + §6 + M-S1
 > + A2 + the noise pin hold). The production-critical unblocker
-> (A2) is done. Detail + c-mset.0/.1a/.1b/.2/.3 / c-exact
-> staged plan: `SEC_4C2_NOISE_BINDING_DESIGN.md`.
+> (A2) is done. Full comparison + c-exact design + cx.0–cx.3:
+> `SEC_4C2_NOISE_BINDING_DESIGN.md` §8.
 
 | # | Item | Depends | Exit gate |
 |---|---|---|---|

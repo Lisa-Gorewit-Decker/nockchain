@@ -1606,6 +1606,17 @@ mod tests {
         }
     }
 
+    /// **STATUS 2026-05-17: the c-mset `BUS_PLAIN` bus was
+    /// ABANDONED (maintainer) in favour of c-exact** — *this KAT
+    /// is retained* as the de-risk that justified that decision
+    /// (it proved the bus needs invasive CRIT-1-program gating
+    /// *and* only honest-balances `16|r`) and that establishes
+    /// the contiguity / `16|r`-word-alignment facts **c-exact
+    /// directly reuses** for its position-exact C3 binding (the
+    /// P-B.2.0/D1 KAT-first pattern). It is NOT dead code: it
+    /// still validates a true, c-exact-relevant property. See
+    /// `SEC_4C2_NOISE_BINDING_DESIGN.md` §8.
+    ///
     /// **§4.C.2 / A3.2c c-mset.1a — KAT-first de-risk at the exact
     /// `BUS_PLAIN` AIR key (no AIR change).** c-mset.0 validated
     /// the *abstract* byte membership (store plain == committed at
