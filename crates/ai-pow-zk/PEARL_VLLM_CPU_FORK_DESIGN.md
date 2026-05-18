@@ -178,6 +178,59 @@ faithful-core validation, so it lands first (R1: de-risk +
 validate the part whose correctness matters before the part
 whose *feasibility* is the open risk).
 
+## 5b. OUTCOME — V1–V5 COMPLETE (2026-05-18)
+
+**The Phase-D end-to-end smoke PASSED on the M2 Max (zero
+CUDA).** Commits `d7ac209` (V1) · `fab5f2f` (V2) · `79db92f`
+(V3+V4) · `33b4915` (V5).
+
+- **V1** ✅ vendored + design.
+- **V2** ✅ `pearl_gemm_cpu` (quantize+gemm) 4/4 vs the audited
+  `ai_pow::quant` spec **on the real Llama-3.1-8B tile**.
+- **V3** ✅ vLLM built from source + imports on macOS-arm64 CPU
+  (`0.21.1rc1…cpu`). The Risk-1 crux *passed*; Risk-2 reduced
+  (vLLM ships `kernels/linear/scaled_mm/cpu.py`).
+- **V4** ✅ fork loads + `register("pearl")` against real
+  vLLM-CPU 0.21 (CUDA/Hopper gates stripped; compat stubs;
+  `pearl_gemm` redirected). No registration-path API drift.
+- **V5** ✅ **real prompt → real `Llama-3.1-8B-Instruct-pearl`
+  forward on vLLM-CPU → captured the first mined group_1 INT7
+  GEMM's REAL activation** `A(64,4096) int8` × `B(4096,4096)
+  int8` (|A|max=63 |B|max=62 ∈ Pearl `[−64,64]`); integer
+  accumulate == the audited `ai_pow::quant` Σ A·B.T relation,
+  bit-exact.
+
+Six real blockers, each fixed honestly (full list:
+`33b4915`): 0.20→0.21 `LLM()` kwarg drift; macOS
+spawn-multiprocessing (`__main__` guard +
+`VLLM_ENABLE_V1_MULTIPROCESSING=0`); `mining_state` rewritten
+inert (engine-init touched it); CPU OOM
+(`gpu_memory_utilization=0.45`); **group_0 FP8** — vLLM-CPU has
+*no* FP8 ScaledMM kernel and its int8 CPU kernel is **x86-only**
+(`CPUInt8ScaledMMLinearKernel` requires `CpuArchEnum.X86`), so
+the un-mined FP8 layers were routed to a new
+`PearlFp8CpuScheme` (CPU dequant + `F.linear`) to let the
+forward reach the mined INT7 GEMMs; capture moved into
+`pearl_gemm_cpu.gemm` (env-gated) because vLLM-CPU runs the
+model in a `WorkerProc` subprocess.
+
+**Findings / caveats (honest):**
+- Our `PearlKernel` does the INT7 matmul itself
+  (`pearl_gemm_cpu`), so it **bypasses** vLLM's x86-only CPU
+  scaled-mm — the mined path works on Apple Silicon.
+- group_0 FP8 dequant is *approximate* (not mined,
+  B3-scoped-out) ⇒ the generated **text is garbage** — expected
+  and acceptable; the mined-layer activation is still a real
+  forward-pass tensor.
+- Scope unchanged: the kernels are our audited-faithful CPU
+  reimpl, **not** Pearl's CUDA kernel; **no new
+  byte-equivalence evidence** (B2.2 + V2-real-tile + B1.1
+  already cover that). V5's value is the **integration smoke**:
+  the full real-prompt → real-model → INT7-mined-activation →
+  audited-relation plumbing runs on Apple-Silicon CPU.
+- 31B/70B remain CPU-impractical (memory/time); 8B is the
+  tractable smallest model (as targeted).
+
 ## 6. Cross-references
 
 - `crates/ai-pow/pearl_vllm_cpu/` — the vendored fork.
