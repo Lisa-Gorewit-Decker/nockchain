@@ -127,5 +127,24 @@ class PearlConfig(CompressedTensorsConfig):
                 mining_enabled=False,
             )
 
+        # group_0 FP8 (float-quantized 8-bit; down_proj + early
+        # qkv — NOT mined, B3-scoped-out). vLLM-CPU has no FP8
+        # ScaledMM kernel; route to the CPU dequant scheme so the
+        # forward can traverse these layers to reach the mined
+        # INT7 GEMMs. See pearl_fp8_cpu / PEARL_VLLM_CPU_FORK_DESIGN.
+        if (
+            weight_quant is not None
+            and weight_quant.num_bits == 8
+            and str(getattr(weight_quant, "type", "")).lower().endswith("float")
+        ):
+            from .pearl_fp8_cpu import PearlFp8CpuScheme
+
+            _LOGGER.debug(f"group_0 FP8 (CPU dequant) for {layer_name}")
+            is_static = input_quant is not None and not input_quant.dynamic
+            return PearlFp8CpuScheme(
+                weight_quant=weight_quant,
+                is_static_input_scheme=is_static,
+            )
+
         # Fall back to parent's implementation for all other schemes
         return super()._get_scheme_from_parts(weight_quant, input_quant, format, layer_name)

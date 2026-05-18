@@ -28,7 +28,18 @@ this fork's only value is a Phase-D integration smoke.
 
 from __future__ import annotations
 
+import os
+
 import torch
+
+# V5 capture hook (Phase-D smoke). When `PEARL_V5_CAPTURE=<path>`
+# is set, the FIRST `gemm` call (the first mined / quantized GEMM
+# of the forward) atomically writes its `(A,B,A_scales,B_scales)`
+# to `<path>`, then computes normally. Lives IN the package so it
+# runs inside whatever process executes the GEMM (vLLM-CPU runs
+# the model in a WorkerProc subprocess that imports `vllm_miner`,
+# not the caller's script).
+_V5_DONE = False
 
 __all__ = [
     "quantize",
@@ -102,6 +113,25 @@ def gemm(
     ``ai_pow::quant::int_matmul`` proves bit-lossless. Tile sizes
     are ignored (correctness-only CPU path).
     """
+    global _V5_DONE
+    _cap = os.environ.get("PEARL_V5_CAPTURE")
+    if _cap and not _V5_DONE:
+        _V5_DONE = True
+        tmp = _cap + f".{os.getpid()}.tmp"
+        try:
+            torch.save(
+                {
+                    "A": A.detach().cpu().clone(),
+                    "B": B.detach().cpu().clone(),
+                    "sa": A_scales.detach().cpu().clone(),
+                    "sb": B_scales.detach().cpu().clone(),
+                },
+                tmp,
+            )
+            os.replace(tmp, _cap)  # atomic publish
+        except Exception:  # never break the forward on capture
+            pass
+
     acc = A.to(torch.int64) @ B.to(torch.int64).t()    # exact int32-domain accumulate
     out = acc.to(torch.float32) * A_scales.reshape(-1, 1).to(torch.float32) \
         * B_scales.reshape(1, -1).to(torch.float32)
