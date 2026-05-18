@@ -218,16 +218,41 @@ cells) and the swept `A_NOISED`/`B_NOISED` are multiset-bound
 (LogUp) to a declared producer store; adversarial **I2**
 (`high2_2_swept_tile_not_in_store_rejects`) rejects a swept tile
 ∉ store, so a matrix-swap *on the sweep* is impossible. The
-remaining tie is the **single precise residual §4.C.2** (store
-↔ committed `HASH_A` via noise derivation — *not* a forgery
-hole: the swept work is pinned to what the prover declared in
-the proof, and CRIT-1/§4.D/§6 hold independently). Validated:
-Route-A green (parallel + debug-assertions-ON), `ai-pow-zk
---lib` 335/0/22, `ai-pow --features zk` green incl. MED-3 bridge
-roundtrip. Both tracked jointly; soundness meanwhile held by
-CRIT-1 + keystone + §6(a) + §6(b) + M-S1 (live for every
-single-Layer-0 params set). The original analysis below stands
-as the historical rationale.
+remaining tie was **§4.C.2** (store ↔ committed `HASH_A` via
+noise derivation).
+
+**§4.C.2 ✅ RESOLVED 2026-05-18 — ZERO-GAP on the
+production-faithful 16|r path (c-exact).** A3.0–A3.2b closed the
+*noise* tie (store `NOISE_UNPACK` forced to `noise_ref` of the
+C1-public seed via InputChip + the CRIT-1 `NOISE_PACKED_PREP`
+pin). The *plain* tie is now closed by **c-exact**: cx.1
+(generalized C3 + CRIT-1 word-pair pin) + cx.2 (the X1
+co-location flip — the strip-opening leaf round-0 rows are the
+M-S1 `noised_packed` producers; the whole-block C3 binds their
+`UINT8_DATA[0..64]` to `BLAKE3_MSG` ∈ `HASH_A`). End-to-end +
+**position-exact adversarially** validated on a real 16|r `P16`
+bridge trace: the honest roundtrip proves + pow-verifies at real
+difficulty with C3 ACTIVE
+(`sec_4c2_cx2_g1_p16_route_a_c3_active_roundtrip`), and tampering
+a co-located leaf row's committed-plain byte is **rejected**
+(`sec_4c2_cx2_g1_p16_position_exact_adversarial_rejects`) — a
+prover cannot swap the committed plain a producer's `a′` derives
+from. Net (16|r): committed A/B ∈ `HASH_A` (position-exact);
+swept `a′` = `noise(committed)`; noise = `noise_ref(public
+s_a)`. **Pearl §4.8 always has 16|r**, so the production path is
+zero-gap. Non-16|r *test* geometry (e.g. `TEST_SMALL`, r=4)
+remains the A3.2b separate-store path — strictly stronger than
+pre-A3, *not* a forgery hole (co-location only honest-balances
+16|r; the documented residual is test-only). Validated:
+`ai-pow-zk --lib` 352/0/22 (g=0 path, `crit1_*`/`routea_*`),
+`ai-pow --features zk` 89/0/1 (P16 g=1 roundtrip + the
+position-exact adversarial + non-16|r A3.2b + the §4.C.2 KAT
+family), debug-assertions-ON P16 g=1 per-row clean (M-S1
+hazard closed for the honest g=1 path). Detail:
+`SEC_4C2_NOISE_BINDING_DESIGN.md` §8. Soundness throughout held
+by CRIT-1 + keystone + §6(a) + §6(b) + M-S1 + A2 + the A3.2b
+noise pin. The original analysis below stands as the historical
+rationale.
 
 **Original severity: High (PoW *usefulness* not enforced even if
 CRIT-1 is fixed).**
@@ -489,8 +514,15 @@ vertical-recursion cert; γ decision 2026-05-17,
 tile↔committed-store:
 **M-S1 ✅ RESOLVED 2026-05-17** (§4.C `noised_packed`
 whole-micro-tile non-vacuity — sweep A/B multiset-bound to a
-declared store, adversarial I2 rejects swap-on-sweep); residual
-narrowed to **§4.C.2** (store ↔ `HASH_A` noise derivation). Plus
+declared store, adversarial I2 rejects swap-on-sweep);
+**§4.C.2 ✅ RESOLVED 2026-05-18 — ZERO-GAP on the 16|r
+production path** (c-exact: A3.0–A3.2b noise tie + cx.1/cx.2
+plain tie; the co-located strip-opening leaf rows are the M-S1
+producers, whole-block C3 binds their committed plain ∈
+`HASH_A`, end-to-end + position-exact adversarially validated on
+real `P16`; Pearl §4.8 is always 16|r; non-16|r test geometry =
+the documented A3.2b strictly-stronger-than-pre-A3 state, not a
+forgery hole). Plus
 the 7-round-Tip5 review. Net: CRIT-1 + HIGH-2 keystone + §6(a) +
 §6(b) + M-S1 make the SNARK PoW-sound, the fold schedule
 verifier-fixed,

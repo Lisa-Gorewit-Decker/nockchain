@@ -1,5 +1,27 @@
 # §4.C.2 / Phase-A3 — store ↔ committed-plain-strip noise-derivation binding (design)
 
+> **✅ §4.C.2 RESOLVED 2026-05-18 — ZERO-GAP on the
+> production-faithful 16|r path (c-exact; A3.3 flipped).** The
+> noise tie (A3.0–A3.2b) + the plain tie (cx.1 generalized C3 +
+> CRIT-1 word-pair pin; cx.2 the X1 g=1 co-location flip — the
+> strip-opening leaf round-0 rows are the M-S1 `noised_packed`
+> producers, the whole-block C3 binds their committed
+> `UINT8_DATA[0..64]` to `BLAKE3_MSG` ∈ `HASH_A`) are both
+> closed. End-to-end + **position-exact adversarially**
+> validated on a real 16|r `P16` bridge trace (honest roundtrip
+> proves+pow-verifies at real difficulty with C3 ACTIVE; a
+> tampered co-located committed-plain byte is rejected).
+> `ai-pow-zk --lib` 352/0/22, `ai-pow --features zk` 89/0/1,
+> debug-assertions-ON P16 g=1 per-row clean. Pearl §4.8 is
+> always 16|r ⇒ production is zero-gap; non-16|r *test* geometry
+> remains the A3.2b separate-store path (strictly stronger than
+> pre-A3, *not* a forgery hole). ~11 validated commits
+> (cx.0–cx.2.1, the cx.2 zero-blast foundation
+> layout/c3/pcols/mat-input/matfreq/bus, the g=1 flip, the
+> position-exact adversarial). Full record: §8 (§8.1–§8.10).
+> The original design narrative below is the historical
+> rationale.
+>
 > **PROGRESS 2026-05-17:** A3.0/A3.1/A3.2a/**A3.2b all DONE &
 > validated** — the §4.C.2 **noise tie is closed** (store
 > `NOISE_UNPACK` forced to `noise_ref` of the C1-public seed via

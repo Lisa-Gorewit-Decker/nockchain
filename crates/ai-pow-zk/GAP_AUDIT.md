@@ -306,10 +306,26 @@ A/B inputs to a declared canonical store (LogUp multiset);
 adversarial **I2** `high2_2_swept_tile_not_in_store_rejects`
 rejects a swept tile ∉ store; Route-A green (parallel +
 debug-assertions-ON), `ai-pow-zk --lib` 335/0/22, `ai-pow
---features zk` green incl. MED-3 bridge roundtrip. The deep
-tile↔committed-store tie now reduces to the **single precise
-residual §4.C.2** (store ↔ `HASH_A` noise derivation; not a
-forgery hole — the swept work is pinned to what the prover
-declared, and CRIT-1/§4.D/§6 hold independently). Plus
+--features zk` green incl. MED-3 bridge roundtrip.
+**§4.C.2 ✅ RESOLVED 2026-05-18 — ZERO-GAP on the
+production-faithful 16|r path (c-exact).** A3.0–A3.2b closed the
+*noise* tie (store `NOISE_UNPACK` = `noise_ref(C1 seed)` via
+InputChip + the CRIT-1 `NOISE_PACKED_PREP` pin); the *plain* tie
+is closed by cx.1 (generalized C3 + CRIT-1 word-pair pin) + cx.2
+(the X1 g=1 co-location flip — the strip-opening leaf round-0
+rows are the M-S1 `noised_packed` producers; the whole-block C3
+binds their `UINT8_DATA[0..64]` to `BLAKE3_MSG` ∈ `HASH_A`).
+End-to-end + position-exact adversarially validated on a real
+16|r `P16` bridge trace
+(`sec_4c2_cx2_g1_p16_route_a_c3_active_roundtrip` proves +
+pow-verifies at real difficulty with C3 ACTIVE;
+`sec_4c2_cx2_g1_p16_position_exact_adversarial_rejects` — a
+tampered co-located committed-plain byte is rejected). Pearl
+§4.8 is always 16|r ⇒ the production path is zero-gap; non-16|r
+*test* geometry remains the A3.2b separate-store path (strictly
+stronger than pre-A3, not a forgery hole). Validated:
+`ai-pow-zk --lib` 352/0/22, `ai-pow --features zk` 89/0/1,
+debug-assertions-ON P16 g=1 per-row clean. Detail:
+`SEC_4C2_NOISE_BINDING_DESIGN.md` §8. Plus
 7-round-Tip5 review, recursion (M12),
 production-hardening (P1/P3/P5/P6).
