@@ -2763,10 +2763,11 @@ mod tests {
             noise_rank: params.noise_rank, tile: params.tile,
             difficulty_bits: params.difficulty_bits,
         };
-        // Pad rows ignore bp; CR.2+ wires the real κ/s_a/s_b.
+        // CR.4c: co-located StripOpen noise pins depend on the
+        // C1-pinned s_a/s_b ⇒ wire the REAL block public.
         let bp = BlockPublic {
-            tile_i, tile_j, kappa: [0u8; 32],
-            s_a: [0u8; 32], s_b: [0u8; 32],
+            tile_i, tile_j, kappa: ctx.kappa,
+            s_a: ctx.s_a, s_b: ctx.s_b,
         };
         let canon = canonical_program(&zk, &bp, h);
         assert_eq!(canon.values.len(), ext_vals.len());
@@ -2866,9 +2867,10 @@ mod tests {
             noise_rank: params.noise_rank, tile: params.tile,
             difficulty_bits: params.difficulty_bits,
         };
+        // Real block public (CR.4c co-located noise pins).
         let bp = BlockPublic {
-            tile_i, tile_j, kappa: [0u8; 32],
-            s_a: [0u8; 32], s_b: [0u8; 32],
+            tile_i, tile_j, kappa: ctx.kappa,
+            s_a: ctx.s_a, s_b: ctx.s_b,
         };
         let canon = canonical_program(&zk, &bp, h);
         let sched = row_schedule(&zk, tile_i, tile_j, h);

@@ -26,6 +26,8 @@ use crate::blake3_tree::{left_len, strip_opening_rows, tile_chunk_range};
 use crate::chips::blake3::chip::pack_tweak;
 use crate::chips::blake3::compress::Blake3Tweak;
 use crate::chips::control::NUM_SELECTORS;
+use crate::chips::input::NOISE_PACKING_BASE;
+use crate::noise_ref::{e_value, f_value};
 use crate::composite_layout::{TILE_D, TILE_H};
 use crate::composite_preprocess::{build_preprocessed_columns, RowDescriptor};
 use crate::params::ZkParams;
@@ -230,14 +232,27 @@ pub struct BlockPublic {
 ///   flags=0x1B}` — the hashed M/key are CV columns, not
 ///   PROGRAM_COLS); mat_id=0; row 0 → IS_NEW_BLAKE (idx 8); row
 ///   7 → IS_LAST_ROUND (idx 9) + IS_HASH_JACKPOT (idx 6).
-/// - CR.4 `StripOpenA/B` (incl. the 8 co-located noise sub-slice
-///   pins via `noise_ref`, the §4.C.2/b2 core) · CR.5
-///   `Sweep`/`Fold` — **residual** (each gated by its own
-///   `== extract` KAT).
+/// - **CR.4 (landed): `StripOpenA/B`** — params-pure
+///   strip-opening: CR.4a the `strip_blocks` walker (mirrors
+///   `fold_strip`/`subtree_inside`/`place_leaf_chunk`) +
+///   per-block leaf/parent/root tweak + `IS_HASH_A/B` finalize
+///   selector; CR.4b co-located leaf round-0 `IS_MSG_MAT` (idx
+///   10); CR.4c the 8 `NOISE_PACKED_PREP[0..8]` pins =
+///   `polyval(noise_ref(bp.s_a/s_b at p=chunk·1024+b·64+g), 129)`
+///   (the §4.C.2/b2 core — verifier obtains canonical noise
+///   params-pure, not extract-of-reference; **`bp.s_a/s_b`
+///   dependent**).
+/// - CR.5 `Sweep`/`Fold` — **residual** (its own `== extract`
+///   KAT). After CR.5, `is_class_canonical` = every class ⇒ CR.6
+///   may flip the verify path (R1 linchpin).
 pub fn is_class_canonical(class: RowClass) -> bool {
     matches!(
         class,
-        RowClass::Pad | RowClass::KeyPin | RowClass::JackpotHash
+        RowClass::Pad
+            | RowClass::KeyPin
+            | RowClass::JackpotHash
+            | RowClass::StripOpenA
+            | RowClass::StripOpenB
     )
 }
 
@@ -437,15 +452,20 @@ const F_ROOT: u32 = 1 << 3;
 const F_KEYED_HASH: u32 = 1 << 4;
 
 /// Params-pure PROGRAM_COL descriptor for offset `j`∈0..8 of a
-/// strip-opening block (CR.4a: the pure-BLAKE3 schedule —
-/// tweak + selectors; the co-located leaf round-0 `IS_MSG_MAT` +
-/// 8 `NOISE_PACKED_PREP` pins are layered by CR.4b/CR.4c). The
-/// tweak/flags are params-pure (`place_leaf_chunk` /
-/// `place_parent`): leaf → `counter = chunk_index`, `flags =
-/// F_KEYED_HASH | F_CHUNK_START(b==0) | F_CHUNK_END(b==15) |
-/// F_ROOT(single-chunk-root&&b==15)`; parent → `F_KEYED_HASH |
-/// F_PARENT | F_ROOT(is_root)`; the root block's finalize row
-/// gets the `IS_HASH_A/B` extra (`selector_idx`).
+/// strip-opening block. CR.4a: the pure-BLAKE3 schedule (tweak +
+/// selectors). **CR.4b:** on the 16|r co-location path every
+/// *leaf* block's round-0 row (`j==0`) is additionally the M-S1
+/// `noised_packed` producer — `place_leaf_chunk` re-fills its
+/// control cells with `{IS_NEW_BLAKE, IS_MSG_MAT}` (SELECTOR_COLS
+/// idx 8 + 10), `mat_id=0`, `msg_pair=0` (the cx.1c pin). The 8
+/// `NOISE_PACKED_PREP` pins on those rows are CR.4c. Parent
+/// blocks are never co-located. The tweak/flags are params-pure
+/// (`place_leaf_chunk`/`place_parent`): leaf → `counter =
+/// chunk_index`, `flags = F_KEYED_HASH | F_CHUNK_START(b==0) |
+/// F_CHUNK_END(b==15) | F_ROOT(single-chunk-root&&b==15)`; parent
+/// → `F_KEYED_HASH | F_PARENT | F_ROOT(is_root)`; the root
+/// block's finalize row gets the `IS_HASH_A/B` extra
+/// (`selector_idx`).
 fn strip_row_descriptor(
     spec: StripBlock,
     j: usize,
@@ -492,7 +512,68 @@ fn strip_row_descriptor(
     };
     let extra: &[usize] =
         if is_root { core::slice::from_ref(&selector_idx) } else { &[] };
-    blake3_block_descriptor(j, pack_tweak(&tweak), extra)
+    let mut desc = blake3_block_descriptor(j, pack_tweak(&tweak), extra);
+    // CR.4b: co-located leaf round-0 producer row (16|r path —
+    // `row_schedule` guarantees 16|r, and `place_leaf_chunk`
+    // co-locates every leaf block's round-0 row when noise is
+    // present). Adds IS_MSG_MAT (idx 10) on top of the round-0
+    // IS_NEW_BLAKE (idx 8) already set by `blake3_block_descriptor`;
+    // mat_id/msg_pair stay 0. Parent blocks are never co-located.
+    if matches!(spec, StripBlock::Leaf { .. }) && j == 0 {
+        desc.selectors[10] = true; // IS_MSG_MAT ⇒ g = 1
+    }
+    desc
+}
+
+/// **CR.4c — the §4.C.2/b2 core.** Params-pure
+/// `NOISE_PACKED_PREP[0..8]` for a co-located leaf round-0 row
+/// (block `b` of leaf chunk `chunk_index`, A-side ⇒ `e_value`/
+/// `s_a`/`|A|=m·k`; B-side ⇒ `f_value`/`s_b`/`|B|=n·k`). Mirrors
+/// `place_leaf_chunk` exactly: for sub-slice `s`, `pin[s] =
+/// Σ_{m<8} noise[s·8+m] · NOISE_PACKING_BASE^m`, where the strip
+/// byte position is `p = chunk_index·1024 + b·64 + (s·8+m)`
+/// (the bridge's `a_strip_lo + j` collapses to this since
+/// `strip_lo = c0·1024` and `j` is chunk-`c0`-relative), and
+/// `noise = noise_ref(seed, …) if p < |M| else 0` (chunk
+/// padding). Witness-free: only `bp.s_a/s_b` + params.
+fn coloc_leaf_noise_pins(
+    side_a: bool,
+    chunk_index: u64,
+    b: usize,
+    params: &ZkParams,
+    bp: &BlockPublic,
+) -> [i64; 8] {
+    let k = params.k as usize;
+    let r = params.noise_rank;
+    let limit = if side_a {
+        params.m as usize * k
+    } else {
+        params.n as usize * k
+    };
+    let mut pins = [0i64; 8];
+    for (s, pin) in pins.iter_mut().enumerate() {
+        let mut npp: i64 = 0;
+        let mut pw: i64 = 1;
+        for mm in 0..8 {
+            let p = chunk_index as usize * 1024 + b * 64 + s * 8 + mm;
+            let no: i8 = if p < limit {
+                if side_a {
+                    // A row-major m×k: row=p/k, col=p%k.
+                    e_value(&bp.s_a, (p / k) as u32, (p % k) as u32, r)
+                } else {
+                    // B col-major n×k: col=p/k, k-idx=p%k ⇒
+                    // f_value(s_b, k-idx, col).
+                    f_value(&bp.s_b, (p % k) as u32, (p / k) as u32, r)
+                }
+            } else {
+                0
+            };
+            npp += (no as i64) * pw;
+            pw *= NOISE_PACKING_BASE as i64;
+        }
+        *pin = npp;
+    }
+    pins
 }
 
 /// Params-pure per-row descriptor for a row. CR.1 `Pad` +
@@ -509,31 +590,45 @@ fn row_descriptor(
     class: RowClass,
     layout: &ScheduleLayout,
     sp: &StripPlan,
-    _params: &ZkParams,
-    _bp: &BlockPublic,
+    params: &ZkParams,
+    bp: &BlockPublic,
 ) -> RowDescriptor {
     match class {
         RowClass::Pad => RowDescriptor::padding(),
         RowClass::StripOpenA | RowClass::StripOpenB => {
-            // CR.4a: the pure-BLAKE3 strip-opening schedule. The
-            // region is a flat sequence of 8-row blocks (sibling
-            // subtrees consume 0 rows); A-side selector_idx = 4
-            // (IS_HASH_A), B-side = 5 (IS_HASH_B). The co-located
-            // leaf round-0 IS_MSG_MAT + 8 NOISE_PACKED_PREP pins
-            // are layered by CR.4b/CR.4c.
-            let (offset, blocks, selector_idx) =
-                if class == RowClass::StripOpenA {
-                    (row_idx, &sp.blocks_a, 4usize)
-                } else {
-                    (row_idx - layout.na, &sp.blocks_b, 5usize)
-                };
+            // CR.4a: pure-BLAKE3 schedule (flat 8-row blocks;
+            // sibling subtrees → 0 rows). A selector_idx=4
+            // (IS_HASH_A), B=5 (IS_HASH_B). CR.4b: co-located leaf
+            // round-0 IS_MSG_MAT. CR.4c: the 8 NOISE_PACKED_PREP
+            // pins = polyval(noise_ref(s_a/s_b at the leaf
+            // (i,l)),129) — the §4.C.2/b2 core.
+            let side_a = class == RowClass::StripOpenA;
+            let (offset, blocks, selector_idx) = if side_a {
+                (row_idx, &sp.blocks_a, 4usize)
+            } else {
+                (row_idx - layout.na, &sp.blocks_b, 5usize)
+            };
             let block = offset / 8;
             let j = offset % 8;
             debug_assert!(
                 block < blocks.len(),
                 "strip row offset {offset} past block list"
             );
-            strip_row_descriptor(blocks[block], j, selector_idx)
+            let spec = blocks[block];
+            let mut desc = strip_row_descriptor(spec, j, selector_idx);
+            // CR.4c: layer the 8 noise sub-slice pins onto the
+            // co-located leaf round-0 producer rows (16|r path).
+            if let StripBlock::Leaf { chunk_index, b, .. } = spec {
+                if j == 0 {
+                    let pins = coloc_leaf_noise_pins(
+                        side_a, chunk_index, b, params, bp,
+                    );
+                    desc.noise_packed = pins[0];
+                    desc.noise_packed_hi
+                        .copy_from_slice(&pins[1..8]);
+                }
+            }
+            desc
         }
         RowClass::KeyPin => {
             // CR.2: `place_key_pin_row` sets exactly one selector
@@ -615,16 +710,16 @@ mod tests {
         use p3_field::PrimeField64;
         use p3_matrix::Matrix;
 
-        // is_class_canonical fence: CR.1–CR.3 ⇒ {Pad, KeyPin,
-        // JackpotHash}.
-        assert!(is_class_canonical(RowClass::Pad));
-        assert!(is_class_canonical(RowClass::KeyPin));
-        assert!(is_class_canonical(RowClass::JackpotHash));
+        // is_class_canonical fence: CR.1–CR.4 ⇒ {Pad, KeyPin,
+        // JackpotHash, StripOpenA, StripOpenB}.
         for c in [
+            RowClass::Pad, RowClass::KeyPin, RowClass::JackpotHash,
             RowClass::StripOpenA, RowClass::StripOpenB,
-            RowClass::Sweep, RowClass::Fold,
         ] {
-            assert!(!is_class_canonical(c), "{c:?} not canonical until CR.4+");
+            assert!(is_class_canonical(c), "{c:?} canonical by CR.4");
+        }
+        for c in [RowClass::Sweep, RowClass::Fold] {
+            assert!(!is_class_canonical(c), "{c:?} not canonical until CR.5");
         }
 
         let p = p16();

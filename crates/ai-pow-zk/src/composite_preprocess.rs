@@ -56,9 +56,16 @@ pub struct RowDescriptor {
     /// Matrix-tile index used by the matmul chip's RAM lookup
     /// (Phase 9). For non-matmul rows, set to 0.
     pub mat_id: u32,
-    /// Preprocessed noise word (Phase 4c's input-chip
-    /// `NOISE_PACKED_PREP` value). For non-matrix rows, set to 0.
+    /// Preprocessed noise word — `NOISE_PACKED_PREP[0]` (sub-slice
+    /// 0). For non-matrix rows, 0.
     pub noise_packed: i64,
+    /// §4.C.2 c-exact cx.2-pcols — the 7 *additional* co-located
+    /// leaf-row noise sub-slice pins `NOISE_PACKED_PREP[1..8]`
+    /// (sub-slice `s` ⇒ `noise_packed_hi[s-1]`). 0 on every
+    /// non-co-located row (zero-blast / pre-cx.2 byte-identical).
+    /// Phase A-CR CR.4c reconstructs these params-pure
+    /// (`polyval(noise_ref(s_a/s_b at the leaf (i,l)), 129)`).
+    pub noise_packed_hi: [i64; 7],
     /// CV-routing index or BLAKE3 tweak (Phase 7+). For non-BLAKE3
     /// rows, set to 0.
     pub cv_or_tweak: u64,
@@ -89,6 +96,7 @@ impl RowDescriptor {
             selectors: [false; NUM_SELECTORS],
             mat_id: 0,
             noise_packed: 0,
+            noise_packed_hi: [0; 7],
             cv_or_tweak: 0,
             ab_id: 0,
             is_fold: false,
@@ -120,8 +128,12 @@ pub fn fill_preprocessed_row(row_idx: usize, desc: &RowDescriptor, row: &mut [Va
     );
     row[CONTROL_PREP] = <Val as QuotientMap<u64>>::from_int(control_prep);
 
-    // NOISE_PACKED_PREP, CV_OR_TWEAK_PREP, AB_ID_PREP: direct.
+    // NOISE_PACKED_PREP[0..8], CV_OR_TWEAK_PREP, AB_ID_PREP: direct.
     row[NOISE_PACKED_PREP] = <Val as QuotientMap<i64>>::from_int(desc.noise_packed);
+    for s in 0..7 {
+        row[NOISE_PACKED_PREP + 1 + s] =
+            <Val as QuotientMap<i64>>::from_int(desc.noise_packed_hi[s]);
+    }
     row[CV_OR_TWEAK_PREP] = <Val as QuotientMap<u64>>::from_int(desc.cv_or_tweak);
     row[AB_ID_PREP] = <Val as QuotientMap<u64>>::from_int(desc.ab_id);
 
@@ -156,11 +168,13 @@ pub fn build_preprocessed_columns(program: &[RowDescriptor], total_rows: usize) 
         // pin (the A3.2b store-row value); the 7 added sub-slice
         // pins are 0 until the cx.2 co-location activation
         // (zero-blast).
-        let z = <Val as QuotientMap<u64>>::from_int(0);
+        let hi = desc.noise_packed_hi;
+        let q = |v: i64| <Val as QuotientMap<i64>>::from_int(v);
         out.push([
             <Val as QuotientMap<u64>>::from_int(control_prep),
-            <Val as QuotientMap<i64>>::from_int(desc.noise_packed),
-            z, z, z, z, z, z, z,
+            q(desc.noise_packed),
+            q(hi[0]), q(hi[1]), q(hi[2]), q(hi[3]), q(hi[4]), q(hi[5]),
+            q(hi[6]),
             <Val as QuotientMap<u64>>::from_int(desc.cv_or_tweak),
             <Val as QuotientMap<u64>>::from_int(desc.ab_id),
             <Val as QuotientMap<u64>>::from_int(row_idx as u64),
