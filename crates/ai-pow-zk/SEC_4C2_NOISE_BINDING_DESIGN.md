@@ -777,3 +777,101 @@ across this fork. Next once decided: cx.2.1 (the chosen
 structure's KAT de-risk) → cx.2.2 (trace-gen in
 `place_matrix_strip_opening`/bridge) → cx.3 (16|r `P16`
 Route-A + position-exact adversarial) → A3.3.
+
+### 8.6 X1 — precise in-circuit design + the atomic-landing constraint (cx.2 spec)
+
+Maintainer decision: **X1** (performance/§8.4: ~+3% global width,
+flat height/degree, lowest soundness risk). cx.2.1 (`b36fd44`)
+validated the X1 whole-block premise on real 16|r geometry
+(every swept window = its block's committed sub-slice =
+`a′−noise_ref`; 64 block bytes = the 16 `BLAKE3_MSG` words;
+`max_windows_per_block ≥ 2` ⇒ the cx.2.0 blocker is genuinely
+resolved, non-vacuously).
+
+**Why X1 forces co-location (settled).** A per-window M-S1 store
+row and a per-block leaf row tied *across rows* is exactly a
+LogUp bus = c-mset (rejected). Zero-gap ⇒ the store producer
+and the C3-bound committed bytes must be the **same row**. So
+under X1 the **leaf round-0 row (1/block, the real
+non-duplicable compression) is the M-S1 `noised_packed`
+producer for every swept 8-byte sub-slice of its block.**
+
+**The X1 binding chain (all in-circuit, one row per block):**
+```
+strip-opening leaf round-0 row B (IS_NEW_BLAKE=1, IS_MSG_MAT=1):
+  BLAKE3_MSG[0..16]  = the 64 committed plain bytes of block B
+                       → hashed → … → HASH_A  (strip-opening, A2)
+  C3 (per-word, all 16 w, gated g=IS_MSG_MAT·IS_NEW_BLAKE):
+     BLAKE3_MSG[w] == base256(UINT8_DATA[4w..4w+4])
+  ⇒ UINT8_DATA[0..64] ≡ committed plain block B  ∈ HASH_A
+  NOISE_UNPACK[0..64] = noise_ref(s_a/s_b) for block B's positions
+                        (A3.2b discipline, widened 8→64)
+  NOISE_PACKED_PREP    = polyval(NOISE_UNPACK,129)  (CRIT-1-pinned;
+                        InputChip eqn1 forces it ⇒ noise = public
+                        seed's, prover cannot choose — A3.2b)
+  per swept sub-slice p∈0..8 of block B:
+     NOISED_PACKED_p = polyval(plain[8p..8p+8]) + polyval(noise[..])
+                     = a′  (InputChip eqn2, widened)
+     noised_packed bus: publish (MAT_ID, NOISED_PACKED_p) ×−FREQ
+  M-S1 sweep query (unchanged) ⊆ these published a′ keys
+```
+Net (zero-gap §4.C.2): swept `a′` —M-S1 bus→ a published
+sub-slice key —InputChip→ `plain ∈ UINT8_DATA` + `noise` ;
+`plain` —per-word C3→ `BLAKE3_MSG` —strip-opening→ `HASH_A` ;
+`noise` —InputChip eqn1 + CRIT-1 `NOISE_PACKED_PREP`→
+`noise_ref(public s_a)`. Every swept input is provably
+`noise(the committed, HASH_A-authenticated A/B)`. **No bus
+beyond M-S1's existing one; no shadow rows; no permutation
+added.** cx.1c's `MSG_PAIR_SEL`/`msg_pair` pin is retained as
+the per-published-key sub-slice address (which 8 bytes of the
+64 a given `noised_packed` emission covers), now over
+`UINT8_DATA` not the word-pair.
+
+**This is an M-S1-class ATOMIC change (the documented M-S1
+lesson — `ai_pow_zk_crypto_gaps` memory).** It simultaneously
+touches, and must balance together under Route-A +
+debug-assertions-ON in **one** landing (incremental ⇒
+unit≠Route-A failure, exactly M-S1):
+- `composite_layout`: `UINT8_DATA` 8→64 (+ `NOISE_UNPACK` 8→64),
+  width/offsets/contiguity asserts (~+112 cols; still <2200).
+- `chips/input` (InputChip): `NOISED_PACKED` /
+  `NOISE_PACKED_PREP` eqns over 64 (8 sub-slices/row) not 8.
+- C3 (`composite_full_air`): per-word over all 16 (the X1 form;
+  cx.1b's `MSG_PAIR_SEL` Σ-select → whole-block bind).
+- `bus_emit::{urange8,i8u8,noised_packed}`: loops 8→64 / the
+  leaf row as multi-sub-slice `noised_packed` producer.
+- `composite_trace`: `place_matrix_strip_opening` /
+  `place_leaf_chunk` co-locate the split-store columns
+  (`UINT8_DATA`/`NOISE_UNPACK`/`NOISED_PACKED`/`NOISE_PACKED_PREP`/
+  `MAT_FREQ` + `IS_MSG_MAT=1` + `MSG_PAIR_SEL` + the
+  `CONTROL_PREP` `msg_pair`) onto each leaf round-0 row;
+  retire the separate `place_noised_store_*` rows.
+- `composite_preprocess`/CRIT-1 program rebuild: the
+  position-addressed (A3.2a) per-block noise/`msg_pair` schedule
+  reconstructed witness-free.
+- `populate_lookup_freq`: `noised_packed` (multi-key/leaf-row) +
+  `urange8` (64) + `i8u8` re-accounted; honest balance.
+- bridge `prove_and_verify_tiled`: row-budget (store rows
+  retired into leaf rows) + the §6(b) sweep still fits one
+  STARK.
+
+**Gate (one landing):** full `ai-pow-zk --lib` (incl.
+`crit1_*`/`routea_*`) + `ai-pow --features zk` (MED-3 / real
+bridge) + debug-assertions-ON + a **16|r §6(b)-live single-STARK
+Route-A** roundtrip (`P16`, cx.2.1-confirmed) that exercises C3
+**active** (`g=1`) end-to-end + the **position-exact
+adversarial**: a store window whose plain ≠ the committed leaf
+sub-slice ⇒ C3 reject (= the zero-gap soundness statement).
+Then **A3.3**: docs / `ZKP_SECURITY_REPORT` / `GAP_AUDIT` flip
+→ §4.C.2 **ZERO-GAP**.
+
+**STATUS:** cx.1 COMPLETE + cx.2.0/cx.2.1 de-risked & designed
+(8 validated commits). cx.2 is the **M-S1-class atomic
+integration** — its own focused atomic effort (the M-S1
+precedent: such LogUp-coupled §4.C trace-side changes land
+atomically, never incrementally). Per R1 not to be rushed at
+the tail of a session; the validated subset (cx.1 + the X1
+de-risk/design) + this precise atomic spec is the
+R1-mandated checkpoint. Next: execute the cx.2 atomic landing
+against this §8.6 spec, then cx.3-equivalent (the Route-A +
+adversarial gate above) → A3.3.
