@@ -28,6 +28,7 @@ pub mod fiat_shamir;
 pub mod matmul;
 pub mod params;
 pub mod prng;
+pub mod quant;
 pub mod proof;
 pub mod prover;
 pub mod synth;
