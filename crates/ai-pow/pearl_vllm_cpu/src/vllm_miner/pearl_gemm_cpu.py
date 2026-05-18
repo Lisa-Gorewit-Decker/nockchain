@@ -138,6 +138,49 @@ def gemm(
     C.copy_(out.to(C.dtype))
 
 
+def fp8_block_dequant(
+    weight: torch.Tensor,
+    weight_scale: torch.Tensor,
+    block: tuple[int, int] | list[int] | None,
+    out_dtype: torch.dtype,
+) -> torch.Tensor:
+    """Canonical compressed-tensors / vLLM **FP8 weight dequant**
+    for the production models' group_0 layers (`float-quantized`,
+    symmetric). Pure (no vLLM import) so it is unit-testable in
+    isolation. `weight` is `[O, I]` (`torch.float8_e4m3fn` for the
+    shipped models); `weight_scale` is one of:
+
+      * scalar / numel 1                → per-tensor;
+      * shape `[O]` or `[O, 1]`         → per-(out-)channel;
+      * shape `[O//b0, I//b1]`          → **block** (`block=[b0,b1]`).
+
+    Block dequant is the *verbatim* vLLM formula
+    (`fp8_utils.requant_weight_ue8m0_inplace`'s dequant step):
+    `repeat_interleave(scale, b0, 0)` then `(.., b1, 1)`, crop to
+    `[O, I]`, multiply by `weight.float()`. Since Pearl's plugin
+    delegates FP8 to vLLM (`PearlConfig` → `super()`), this *is*
+    the authoritative reference (FP8 is NOT a Pearl-protocol op —
+    see PEARL_FP8_SCOPING.md).
+    """
+    w = weight.to(torch.float32)
+    s = weight_scale.to(torch.float32)
+    O, I = w.shape
+    if s.numel() == 1:
+        wd = w * s.reshape(())
+    elif s.shape == (O, 1) or (s.dim() == 1 and s.numel() == O):
+        wd = w * s.reshape(O, 1)
+    else:
+        if block is not None:
+            b0, b1 = int(block[0]), int(block[1])
+        else:  # infer from the scale grid
+            b0 = -(-O // s.shape[0])
+            b1 = -(-I // s.shape[1])
+        se = torch.repeat_interleave(s, b0, dim=0)
+        se = torch.repeat_interleave(se, b1, dim=1)[:O, :I]
+        wd = w * se
+    return wd.to(out_dtype).contiguous()
+
+
 def int_accumulate(A: torch.Tensor, B: torch.Tensor) -> torch.Tensor:
     """The bare mined integer accumulate ``A @ B.T`` (int64-exact)
     — the K-CPU-2 cross-check handle vs ``ai_pow::quant``."""

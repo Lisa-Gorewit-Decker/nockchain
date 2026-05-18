@@ -43,22 +43,19 @@ class PearlFp8CpuScheme(CompressedTensorsW8A16Fp8):
 
     @staticmethod
     def _dequant(layer: torch.nn.Module, out_dtype: torch.dtype) -> torch.Tensor:
-        w = layer.weight.data.to(torch.float32)          # fp8 → f32
-        s = layer.weight_scale.data.to(torch.float32)
-        O, I = w.shape
-        if s.numel() == 1:                                # per-tensor
-            wd = w * s
-        elif s.shape == (O, 1) or s.numel() == O:         # per-(out-)channel
-            wd = w * s.reshape(O, 1)
-        else:                                             # block [b0,b1]
-            bs = getattr(layer, "weight_block_size", None) or [
-                (O + s.shape[0] - 1) // s.shape[0],
-                (I + s.shape[1] - 1) // s.shape[1],
-            ]
-            b0, b1 = int(bs[0]), int(bs[1])
-            se = s.repeat_interleave(b0, 0).repeat_interleave(b1, 1)[:O, :I]
-            wd = w * se
-        return wd.to(out_dtype).contiguous()
+        # Delegates to the canonical, vLLM-free, unit-tested
+        # `fp8_block_dequant` (verbatim vLLM block formula —
+        # tests/test_pearl_fp8_cpu.py validates it bit-for-bit
+        # against the canonical reference + an independent
+        # nested-loop ref + the REAL shipped model's FP8 weights).
+        from .pearl_gemm_cpu import fp8_block_dequant
+
+        return fp8_block_dequant(
+            layer.weight.data,
+            layer.weight_scale.data,
+            getattr(layer, "weight_block_size", None),
+            out_dtype,
+        )
 
     def process_weights_after_loading(self, layer: torch.nn.Module) -> None:
         if getattr(self, "linear_kernel", None) is not None:

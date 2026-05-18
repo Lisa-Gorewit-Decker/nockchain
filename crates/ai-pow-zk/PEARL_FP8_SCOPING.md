@@ -151,6 +151,16 @@ to the exact-INT layers).
   CPU, Pearl's own "FP8 = ordinary inference, not PoUW"
   behaviour. It is explicitly **not** a mined/proven path and
   carries no soundness weight (V5 / `PEARL_VLLM_CPU_FORK_DESIGN`).
+  Its dequant (`pearl_gemm_cpu.fp8_block_dequant`, vLLM-free) is
+  now **test-proven canonical**: `tests/test_pearl_fp8_cpu.py`
+  (8/8) validates it bit-for-bit against the **verbatim vLLM
+  block-FP8 formula** (`fp8_utils.py`), an **independent
+  nested-loop spec**, torch-core's `float8_e4m3fn` codec, and the
+  **real shipped Llama-3.1-8B `down_proj` FP8 weights** (anchored
+  to a Python ground truth). So the FP8-layer numerics are
+  faithful to what Pearl's GPU stack computes; it is *not* a
+  source of soundness/byte-equivalence error (and never could
+  be — FP8 is outside the proven scope).
 - **Byte-equivalence is unaffected.** Phase B's "mineable unit
   byte-identical to Pearl" claim is about the INT7 mined GEMMs;
   FP8 layers are not part of the mineable unit on either side,
