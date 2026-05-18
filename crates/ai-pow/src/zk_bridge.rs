@@ -1788,4 +1788,216 @@ mod tests {
              16|r constraint c-mset.1b is gated on"
         );
     }
+
+    /// **§4.C.2 / c-exact cx.0 — KAT-first de-risk (no AIR
+    /// change).** The maintainer chose c-exact over the c-mset
+    /// bus (`SEC_4C2_NOISE_BINDING_DESIGN.md` §8): co-locate the
+    /// store rows onto the strip-opening leaf rows so the
+    /// **proven C3** (`IS_MSG_MAT·IS_NEW_BLAKE·(BLAKE3_MSG[w] −
+    /// base256(UINT8_DATA[4j..4j+4]))=0`, generalized to a
+    /// CRIT-1-pinned per-row word-offset `o`, the §6(a)/G2
+    /// pattern) binds `MAT_UNPACK` to the **exact** committed
+    /// bytes ∈ `HASH_A` — position-exact, zero-gap. cx.0
+    /// validates the mechanism's premise BEFORE any AIR change
+    /// (the P-B.2.0/c-mset.0 KAT-first discipline), against the
+    /// A3.2a **position-addressed** store layout
+    /// (`enumerate_noised_chunks_positioned` — params-pure, the
+    /// layout c-exact's verifier-recomputable `o` is a function
+    /// of). For every position-addressed store row on a `16|r`
+    /// geometry (tile (0,0)), with `idx = lane_g·k + l0` its
+    /// row/col-major committed byte offset:
+    ///   1. **unique leaf address** — `idx` is 8-aligned and ∈
+    ///      the opened strip `[c0·1024,c1·1024)` ⇒ a unique
+    ///      `(chunk=idx/1024, block=(idx%1024)/64,
+    ///      word_off=(idx%64)/4)`, `word_off` even ⇒ the store
+    ///      window == leaf message words `(word_off,word_off+1)`.
+    ///   2. **position-exact tie** — `a_pad[idx..idx+8]` (the
+    ///      exact bytes that leaf hashed into `HASH_A`) == the
+    ///      store row's plain `MAT_UNPACK` == `a′ − noise_ref`.
+    ///   3. **exact C3 identity** — `BLAKE3_MSG[word_off+j] ==
+    ///      base256(plain[4j..4j+4])`, j∈{0,1}, where
+    ///      `BLAKE3_MSG[w]=u32_le(a_pad[chunk·1024+block·64+
+    ///      w·4..])` is exactly what `place_leaf_chunk` hashes —
+    ///      the generalized-C3 binding cx.1 enforces in-AIR.
+    ///   4. **witness-free** — `(side, src)` (hence the leaf
+    ///      address / `o`) is reproduced by the params-pure
+    ///      `noised_store_layout(t,r,num_stripes,k)` skeleton
+    ///      (no `a′` values) ⇒ verifier recomputes `o` with no
+    ///      witness (the CRIT-1 / A1 / A3.2a discipline).
+    /// Extends c-mset.0/.1a (contiguity / `16|r` alignment) to
+    /// the exact `(block,word-offset)` address + the C3 pack.
+    #[test]
+    fn sec_4c2_cx0_store_binds_exact_committed_leaf_subposition_via_c3() {
+        use crate::matmul::{BlockNoise, Matrices};
+        use crate::synth::synth_matrices;
+        use ai_pow_zk::blake3_tree::{pad_to_chunk_boundary, tile_chunk_range};
+        use ai_pow_zk::composite_trace::CompositeTrace;
+
+        fn base256(b: &[u8]) -> u32 {
+            u32::from_le_bytes([b[0], b[1], b[2], b[3]])
+        }
+
+        for params in [
+            MatmulParams {
+                m: 16, k: 64, n: 16, noise_rank: 16, tile: 8,
+                spot_checks: 2, difficulty_bits: 0,
+            },
+            MatmulParams {
+                m: 32, k: 128, n: 32, noise_rank: 32, tile: 16,
+                spot_checks: 2, difficulty_bits: 0,
+            },
+        ] {
+            params.validate().unwrap();
+            assert_eq!(params.noise_rank % 16, 0, "cx.0 requires 16|r");
+            let (a, b) = synth_matrices(b"sec4c2-cx0", &params);
+            let ctx = BlockContext::build(b"sec4c2-cx0-blk", &a, &b, &params)
+                .expect("ctx");
+            let noise = BlockNoise::expand(&ctx.s_a, &ctx.s_b, &params);
+            let mats = Matrices::build(ctx.a, ctx.b, &noise, &params);
+            let (t, r, k) = (
+                params.tile as usize,
+                params.noise_rank as usize,
+                params.k as usize,
+            );
+            let num_stripes = params.num_stripes() as usize;
+            let (ti, tj) = (0u32, 0u32);
+            let a_strips: Vec<i8> = (0..t as u32)
+                .flat_map(|di| mats.a_prime_row(ti * params.tile + di).to_vec())
+                .collect();
+            let b_strips: Vec<i8> = (0..t as u32)
+                .flat_map(|dj| mats.b_prime_col(tj * params.tile + dj).to_vec())
+                .collect();
+            let a_bytes: Vec<u8> = ctx.a.iter().map(|&v| v as u8).collect();
+            let b_bytes: Vec<u8> = ctx.b.iter().map(|&v| v as u8).collect();
+            let a_pad = pad_to_chunk_boundary(&a_bytes);
+            let b_pad = pad_to_chunk_boundary(&b_bytes);
+            let (ca0, ca1, _) =
+                tile_chunk_range(ti as usize, t, k, a_bytes.len());
+            let (cb0, cb1, _) =
+                tile_chunk_range(tj as usize, t, k, b_bytes.len());
+
+            // A3.2a position-addressed store (NOT value-deduped) —
+            // the layout c-exact's verifier-recomputable word-
+            // offset is a pure function of.
+            let pos = CompositeTrace::enumerate_noised_chunks_positioned(
+                &a_strips, &b_strips, t, r, num_stripes,
+            );
+            // (4) witness-free: the params-pure skeleton (no a′
+            // values) reproduces the exact (side, src) sequence ⇒
+            // the leaf address / o is verifier-recomputable.
+            let skel =
+                CompositeTrace::noised_store_layout(t, r, num_stripes, k);
+            assert_eq!(skel.len(), pos.len(), "skeleton length mismatch");
+            for (sk, p) in skel.iter().zip(pos.iter()) {
+                assert_eq!(sk.0, p.side_a, "skeleton side mismatch");
+                assert_eq!(
+                    sk.1, p.src,
+                    "skeleton src (leaf address) must be witness-free"
+                );
+            }
+
+            let mut checked = 0usize;
+            for s in &pos {
+                let present: Vec<(usize, (u32, u32))> = s
+                    .src
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(m, x)| x.map(|v| (m, v)))
+                    .collect();
+                if present.is_empty() {
+                    continue; // none for 16|r (no zero-pad windows)
+                }
+                assert_eq!(
+                    present.len(),
+                    8,
+                    "16|r store window must be 8 dense real bytes"
+                );
+                let (lane0, l0) = present[0].1;
+                for (m, (_, (lane, l))) in present.iter().enumerate() {
+                    assert_eq!(*lane, lane0, "window spans one lane");
+                    assert_eq!(*l, l0 + m as u32, "window contiguous");
+                }
+                let lane_g =
+                    (if s.side_a { ti } else { tj }) * params.tile + lane0;
+                let (pad, c0, c1) = if s.side_a {
+                    (&a_pad, ca0, ca1)
+                } else {
+                    (&b_pad, cb0, cb1)
+                };
+                let idx = lane_g as usize * k + l0 as usize;
+                // (1) unique leaf address.
+                assert_eq!(
+                    idx % 8,
+                    0,
+                    "16|r ⇒ store window 8-aligned in committed matrix"
+                );
+                assert!(
+                    idx >= c0 * 1024 && idx + 8 <= c1 * 1024,
+                    "store window [{idx},{}) outside opened strip [{},{})",
+                    idx + 8,
+                    c0 * 1024,
+                    c1 * 1024
+                );
+                let chunk = idx / 1024;
+                let block = (idx % 1024) / 64;
+                let word_off = (idx % 64) / 4;
+                assert_eq!(
+                    word_off % 2,
+                    0,
+                    "8-aligned ⇒ even word-offset (a leaf word-pair)"
+                );
+                assert!(
+                    (idx % 64) + 8 <= 64,
+                    "8-byte window stays within one 64-byte leaf block"
+                );
+                let blk_base = chunk * 1024 + block * 64;
+                assert_eq!(
+                    blk_base + word_off * 4,
+                    idx,
+                    "leaf word-pair base != store window byte offset"
+                );
+                // (2) position-exact: committed bytes at the exact
+                // leaf sub-position == store plain == a′ − noise_ref.
+                let mut plain = [0u8; 8];
+                for (m, (_, (lane_b, l))) in present.iter().enumerate() {
+                    let nz = if s.side_a {
+                        ai_pow_zk::noise_ref::e_value(
+                            &ctx.s_a, lane_g, *l, r as u32,
+                        )
+                    } else {
+                        ai_pow_zk::noise_ref::f_value(
+                            &ctx.s_b, *l, lane_g, r as u32,
+                        )
+                    };
+                    let _ = lane_b;
+                    let pl = s.bytes[m].wrapping_sub(nz) as u8;
+                    plain[m] = pl;
+                    assert_eq!(
+                        pad[idx + m],
+                        pl,
+                        "committed leaf byte != store plain (a′−noise_ref)"
+                    );
+                }
+                // (3) exact C3 identity at the leaf address.
+                for j in 0..2usize {
+                    let w = word_off + j;
+                    let msg_word =
+                        base256(&pad[blk_base + w * 4..blk_base + w * 4 + 4]);
+                    assert_eq!(
+                        msg_word,
+                        base256(&plain[4 * j..4 * j + 4]),
+                        "C3 identity fails at leaf (chunk={chunk}, \
+                         block={block}, word={w})"
+                    );
+                    assert_eq!(
+                        blk_base + w * 4,
+                        idx + 4 * j,
+                        "leaf word address != store window byte offset"
+                    );
+                }
+                checked += 1;
+            }
+            assert!(checked > 0, "no store windows exercised for {params:?}");
+        }
+    }
 }
