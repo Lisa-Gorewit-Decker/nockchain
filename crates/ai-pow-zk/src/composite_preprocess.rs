@@ -132,7 +132,7 @@ pub fn fill_preprocessed_row(row_idx: usize, desc: &RowDescriptor, row: &mut [Va
 /// Convenience: build a full per-row preprocessed table for a
 /// program of length `program.len()`, padded to `total_rows`. Pads
 /// with [`RowDescriptor::padding`] entries.
-pub fn build_preprocessed_columns(program: &[RowDescriptor], total_rows: usize) -> Vec<[Val; 5]> {
+pub fn build_preprocessed_columns(program: &[RowDescriptor], total_rows: usize) -> Vec<[Val; 12]> {
     use p3_field::integers::QuotientMap;
     assert!(total_rows >= program.len(), "total_rows < program length");
     let mut out = Vec::with_capacity(total_rows);
@@ -150,9 +150,17 @@ pub fn build_preprocessed_columns(program: &[RowDescriptor], total_rows: usize) 
             desc.fold_stripe,
             desc.msg_pair,
         );
+        // cx.2-pcols: PROGRAM_COLS order = [CONTROL_PREP,
+        // NOISE_PACKED_PREP+0..8, CV_OR_TWEAK_PREP, AB_ID_PREP,
+        // STARK_ROW_IDX] (12). `desc.noise_packed` is the cell-0
+        // pin (the A3.2b store-row value); the 7 added sub-slice
+        // pins are 0 until the cx.2 co-location activation
+        // (zero-blast).
+        let z = <Val as QuotientMap<u64>>::from_int(0);
         out.push([
             <Val as QuotientMap<u64>>::from_int(control_prep),
             <Val as QuotientMap<i64>>::from_int(desc.noise_packed),
+            z, z, z, z, z, z, z,
             <Val as QuotientMap<u64>>::from_int(desc.cv_or_tweak),
             <Val as QuotientMap<u64>>::from_int(desc.ab_id),
             <Val as QuotientMap<u64>>::from_int(row_idx as u64),
@@ -260,23 +268,30 @@ mod tests {
         // Row 0: matches the first program entry.
         let mut row0 = vec![Val::default(); TOTAL_TRACE_WIDTH];
         fill_preprocessed_row(0, &program[0], &mut row0);
+        // cx.2-pcols: PROGRAM_COLS is 12 — [0]=CONTROL_PREP,
+        // [1]=NOISE_PACKED_PREP cell 0, [2..9]=the 7 added
+        // sub-slice pins (0 until co-location), [9]=CV_OR_TWEAK_PREP,
+        // [10]=AB_ID_PREP, [11]=STARK_ROW_IDX.
         assert_eq!(out[0][0], row0[CONTROL_PREP]);
         assert_eq!(out[0][1], row0[NOISE_PACKED_PREP]);
-        assert_eq!(out[0][2], row0[CV_OR_TWEAK_PREP]);
-        assert_eq!(out[0][3], row0[AB_ID_PREP]);
-        assert_eq!(out[0][4], row0[STARK_ROW_IDX]);
+        for k in 2..9 {
+            assert_eq!(out[0][k].as_canonical_u64(), 0);
+        }
+        assert_eq!(out[0][9], row0[CV_OR_TWEAK_PREP]);
+        assert_eq!(out[0][10], row0[AB_ID_PREP]);
+        assert_eq!(out[0][11], row0[STARK_ROW_IDX]);
 
         // Row 1: matches the second program entry (all zero).
         assert_eq!(out[1][0].as_canonical_u64(), 0);
-        assert_eq!(out[1][4].as_canonical_u64(), 1);
+        assert_eq!(out[1][11].as_canonical_u64(), 1);
 
         // Row 2 & 3: padding (all zero except STARK_ROW_IDX).
         for r in 2..total_rows {
             assert_eq!(out[r][0].as_canonical_u64(), 0);
             assert_eq!(out[r][1].as_canonical_u64(), 0);
-            assert_eq!(out[r][2].as_canonical_u64(), 0);
-            assert_eq!(out[r][3].as_canonical_u64(), 0);
-            assert_eq!(out[r][4].as_canonical_u64(), r as u64);
+            assert_eq!(out[r][9].as_canonical_u64(), 0);
+            assert_eq!(out[r][10].as_canonical_u64(), 0);
+            assert_eq!(out[r][11].as_canonical_u64(), r as u64);
         }
     }
 
@@ -286,7 +301,8 @@ mod tests {
         let program = vec![RowDescriptor::padding(); 4];
         let out = build_preprocessed_columns(&program, 8);
         for r in 0..8 {
-            assert_eq!(out[r][4].as_canonical_u64(), r as u64);
+            // cx.2-pcols: STARK_ROW_IDX is PROGRAM_COLS[11].
+            assert_eq!(out[r][11].as_canonical_u64(), r as u64);
         }
     }
 

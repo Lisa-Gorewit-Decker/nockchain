@@ -108,9 +108,26 @@ impl<F> BaseAir<F> for CompositeFullAir {
 // preprocessed block, co-landed + measured with §4.A) is in
 // `HIGH2_2_DESIGN.md` §4.C.8. Keeping `PROGRAM_COLS` at the 5
 // CRIT-1 anchors until then.
-pub const PROGRAM_COLS: [usize; 5] = [
+// §4.C.2 c-exact (cx.2-pcols/X1): `NOISE_PACKED_PREP` widened
+// 1→8 (one `polyval(noise_subslice,129)` per co-located leaf
+// block sub-slice) ⇒ PROGRAM_COLS 5→12. Order MUST match the
+// preprocessed column order (`extract_program` iterates this;
+// the pin asserts `main[PROGRAM_COLS[k]] == preproc[k]`;
+// `build_preprocessed_columns` emits in this order). The 7 added
+// `NOISE_PACKED_PREP+1..8` cols are zero while `g = IS_MSG_MAT·
+// IS_NEW_BLAKE = 0` everywhere (no co-location yet) ⇒ byte-
+// identical CRIT-1 pin (zero-blast); the cx.2 activation flips
+// them live on the co-located leaf rows.
+pub const PROGRAM_COLS: [usize; 12] = [
     crate::composite_layout::CONTROL_PREP,
     crate::composite_layout::NOISE_PACKED_PREP,
+    crate::composite_layout::NOISE_PACKED_PREP + 1,
+    crate::composite_layout::NOISE_PACKED_PREP + 2,
+    crate::composite_layout::NOISE_PACKED_PREP + 3,
+    crate::composite_layout::NOISE_PACKED_PREP + 4,
+    crate::composite_layout::NOISE_PACKED_PREP + 5,
+    crate::composite_layout::NOISE_PACKED_PREP + 6,
+    crate::composite_layout::NOISE_PACKED_PREP + 7,
     crate::composite_layout::CV_OR_TWEAK_PREP,
     crate::composite_layout::AB_ID_PREP,
     crate::composite_layout::STARK_ROW_IDX,
@@ -219,10 +236,13 @@ impl<AB: AirBuilder<F = crate::Val>> Air<AB> for CompositeFullAirPinned {
         // across builder.assert_*).
         let main = builder.main();
         let m_cur = main.current_slice();
-        let m: [AB::Var; 5] = core::array::from_fn(|k| m_cur[PROGRAM_COLS[k]]);
+        // cx.2-pcols: PROGRAM_COLS is 12 (NOISE_PACKED_PREP 1→8);
+        // collect into Vecs (no fixed [_;5]) so the pin tracks
+        // PROGRAM_COLS.len() automatically.
+        let m: Vec<AB::Var> = PROGRAM_COLS.iter().map(|&c| m_cur[c]).collect();
         let prep = builder.preprocessed();
         let p_cur = prep.current_slice();
-        let p: [AB::Var; 5] = core::array::from_fn(|k| p_cur[k]);
+        let p: Vec<AB::Var> = (0..PROGRAM_COLS.len()).map(|k| p_cur[k]).collect();
         for k in 0..PROGRAM_COLS.len() {
             builder.assert_eq(m[k], p[k]);
         }

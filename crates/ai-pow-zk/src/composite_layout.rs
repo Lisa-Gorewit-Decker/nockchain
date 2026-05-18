@@ -215,10 +215,20 @@ pub const UINT8_DATA_LEN: usize = 64;
 pub const UINT8_DATA_WIN: usize = 8;
 pub const UINT8_DATA_START: usize = MAT_UNPACK_START + MAT_UNPACK_LEN;
 
-/// NOISE_PACKED_PREP: 1 preprocessed col. Noise associated with the
-/// matrix entry packed in this row. Mirrors Pearl
-/// `pearl_layout.rs:51`.
+/// NOISE_PACKED_PREP: **§4.C.2 c-exact (cx.2-pcols/X1):** widened
+/// 1→8 preprocessed cols (one `polyval(noise_subslice,129)` per
+/// 8-byte sub-slice). On a co-located strip-opening leaf round-0
+/// row the verifier pins all 8 sub-slices' noise (the A3.2b
+/// discipline, per-block); `NOISE_PACKED_PREP` (= the START
+/// index) keeps the cell-0 semantics every current consumer uses
+/// (InputChip eqn1, the A3.2b store row), so the 7 added cols are
+/// zero-default while `g = IS_MSG_MAT·IS_NEW_BLAKE = 0`
+/// everywhere (no co-location yet) ⇒ byte-identical (zero-blast).
+/// Mirrors Pearl `pearl_layout.rs:51`.
 pub const NOISE_PACKED_PREP: usize = UINT8_DATA_START + UINT8_DATA_LEN;
+/// Number of `NOISE_PACKED_PREP` preprocessed cols (cx.2/X1: 8
+/// sub-slice pins per co-located leaf block; was 1).
+pub const NOISE_PACKED_PREP_LEN: usize = 8;
 
 /// NOISE_UNPACK. **§4.C.2 c-exact (cx.2/X1):** widened 8→64 so a
 /// co-located leaf round-0 row carries its block's per-position
@@ -228,7 +238,7 @@ pub const NOISE_PACKED_PREP: usize = UINT8_DATA_START + UINT8_DATA_LEN;
 pub const NOISE_UNPACK_LEN: usize = 64;
 /// The active 8-byte `NOISE_UNPACK` window until cx.2/X1 activation.
 pub const NOISE_UNPACK_WIN: usize = 8;
-pub const NOISE_UNPACK_START: usize = NOISE_PACKED_PREP + 1;
+pub const NOISE_UNPACK_START: usize = NOISE_PACKED_PREP + NOISE_PACKED_PREP_LEN;
 
 // ---- NOISED_PACKED: canonical noised-matrix data table ----
 
@@ -622,7 +632,7 @@ mod tests {
                 "UINT8_DATA → NOISE_PACKED_PREP",
             ),
             (
-                NOISE_PACKED_PREP + 1,
+                NOISE_PACKED_PREP + NOISE_PACKED_PREP_LEN,
                 NOISE_UNPACK_START,
                 "NOISE_PACKED_PREP → NOISE_UNPACK",
             ),

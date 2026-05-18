@@ -932,3 +932,19 @@ the immediate next action (bounded, ~one PROD-profile prove),
 §8.6 structure lands atomically (full `ai-pow-zk --lib` +
 `ai-pow --features zk` + debug-assertions-ON + 16|r `P16`
 Route-A with C3 active + position-exact adversarial) → A3.3.
+
+### 8.8 §8.7 §4.C.8 go/no-go — MEASURED & RESOLVED (cx.2-pcols)
+
+cx.2-pcols landed `NOISE_PACKED_PREP` 1→8 / `PROGRAM_COLS` 5→12
+(zero-blast: 7 added preproc cols 0 while g=0). The full
+`ai-pow-zk --lib` gate ran in **988.87s vs the ~570s
+(352/0/22) baseline ≈ 1.7×** suite-level prover overhead for
+preproc 5→12. **This is NOT the §4.C.8 ~10× trap** (that was
+the 5→69 widening). A ~1.7× preproc-commit constant on an
+*amortized* proof (PROD proves only on a win; P-A's
+one-STARK trace-area envelope is unaffected — preproc width ≠
+`k(h+w)`) is acceptable. **GO: proceed with X1's 8-wide
+`NOISE_PACKED_PREP`; no noise-pin restructure (X2/alt) needed.**
+The §8.7 open measurement is closed. CRIT-1 soundness intact:
+`routea_crit1_tampered_program_col_rejected` ✓ with the 12-wide
+preprocessed pin.
