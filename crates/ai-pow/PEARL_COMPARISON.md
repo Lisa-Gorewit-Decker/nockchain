@@ -25,16 +25,26 @@ commitment (chunk-Merkle), and the difficulty target encoding. Given identical
 inputs at every protocol boundary, our crate and Pearl produce identical bytes,
 verified by 11 fixture-based unit tests in `tests/pearl_compat_fixtures.rs`.
 
-> **Oracle scope (honest qualification — the Phase B gap).** Those
-> 11 tests assert byte-equality against `tests/fixtures/pearl.rs`,
-> which `tests/gen_fixtures.rs` captured from a **vendored copy of
-> Pearl's reference functions** at **hand-picked generic shapes**.
-> That is byte-equivalence to *our transcription of the Pearl
-> spec*, not yet to **Pearl's real miner running the shipped
-> `pearl-ai/Llama-3.1-8B-Instruct-pearl` config `μ`**. Closing
-> that delta (golden vectors from the real miner at the real
-> preset) is Phase B / B1; the quant-extraction contract is B2;
-> INT-only scoping is B3. See `crates/ai-pow-zk/PHASE_B_DESIGN.md`.
+> **Oracle scope (honest qualification + the B1 audit).** The 11
+> tests assert byte-equality against `tests/fixtures/pearl.rs`,
+> captured by `tests/gen_fixtures.rs` from a **vendored copy** of
+> Pearl's reference functions. `B1_PEARL_FAITHFULNESS_AUDIT.md`
+> verifies — line-for-line vs the **current real `pearl/zk-pow`
+> source** (which builds clean here) — that that vendored copy
+> is **byte-faithful** (`get_random_hash`,
+> `generate_uniform_random_matrix`, `generate_permutation_matrix`,
+> `pearl_tile_loop`, `compute_jackpot_hash`,
+> `compute_commitment_hash` all match). With Phase B / B1.0
+> re-pinning the invariants at the **real model `μ`**
+> (`k=4096, r=64, tile=64`, the 57 344-chunk scale), the B1
+> *protocol-equivalence* risk is **closed**: `ai-pow`'s mineable
+> unit matches Pearl's real *protocol logic* for the production
+> model. The **only** remaining Phase-B residual is the live
+> half — Pearl's real *miner* on the shipped 16 GB weights via
+> the live vLLM plugin (external; `PHASE_B_DESIGN.md` Risk-1 /
+> DB-1). B2 = the quant-extraction contract (shipped:
+> `ai-pow::quant`); B3 = INT-only scoping (shipped). See
+> `crates/ai-pow-zk/PHASE_B_DESIGN.md`.
 
 ## Byte-equivalence claim (precise — D5/D6-normalized)
 

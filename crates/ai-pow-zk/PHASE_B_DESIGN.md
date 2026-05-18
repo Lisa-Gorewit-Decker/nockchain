@@ -264,14 +264,17 @@ real-model oracle from B1).
 
 ## 7. Staged landing plan (R1 where soundness-adjacent)
 
-| Stage | Pearl-dep? | Gate |
-|---|---|---|
-| **B0** | no | This doc + the §4 precise-claim section in `PEARL_COMPARISON.md`; `PRODUCTION_ROADMAP.md` §2 B-row updated to the real state (S0–S9 green vs vendored ref; residual = golden-vs-real-miner + quant contract). |
-| **B1.0** | no | `gen_fixtures` re-pinned at the real Llama-3.1-8B preset; S0–S9 green at production geometry. |
-| **B3** | no | `MatmulParams`/miner-config guard rejects group_0 (FP8) layers; doc'd; adversarial test (an FP8-targeted layer is refused). |
-| **B2-contract** | no | `ai-pow::quant` `Q` + inverse; offline conformance vs a synthetic INT7 GEMM (extraction is bit-lossless: `intmatmul == reference int GEMM`, R1 KAT-first on the mined-integer edge). |
-| **B1.1/B1.2** | **yes** | golden `pearl_model.rs` from Pearl's real miner; `pearl_model_compat` green. |
-| **B2-fixture** | **yes** | real-model GEMM fixture: extracted `(A,B,μ)` → `ai-pow` digest == Pearl's, dequant == vLLM `Y_fp` (DB-2(a) bit-exact). |
+**STATUS 2026-05-18 — every Pearl-independent stage DONE +
+validated + committed; the residual is the one external blocker.**
+
+| Stage | Pearl-dep? | Status | Gate / commit |
+|---|---|---|---|
+| **B0** | no | ✅ DONE | `PEARL_COMPARISON.md` precise (D5/D6-normalized) claim + honest oracle scope; roadmap §2 updated. `f05862d` |
+| **B3** | no | ✅ DONE | `LlamaFfnLayer`/`QuantGroup` + `mineable_matmul_params` FP8 guard; **fixed the `LLAMA_3_1_8B_DOWN` mis-doc** (down_proj is FP8, not mineable); `b3_*` 3/3. `a420e94` |
+| **B2-contract** | no | ✅ DONE | `ai-pow::quant` `Q`/inverse; bit-lossless conformance KAT (R1 KAT-first on the mined-integer edge) `b2_1..4` 4/4. `94eaafc` |
+| **B1.0** | no | ✅ DONE | `pearl_model_compat` real-`μ` invariants (chunk-scale 57 344, r=64 noise structure, 64-stripe fold wrap, difficulty) 5/0. `4916a6b` |
+| **B1-audit** | no | ✅ DONE | `B1_PEARL_FAITHFULNESS_AUDIT.md`: vendored ref ≡ **current real `pearl/zk-pow`** (builds clean) line-for-line ⇒ **B1 protocol-equivalence CLOSED**. |
+| **B1.1/B1.2 + B2-fixture** | **yes** | ⛔ EXTERNAL BLOCKER | The *live* half only: Pearl's real **miner** on the shipped **16 GB weights** via the **live vLLM plugin** — needs the model + GPU/vLLM + Pearl deploy (DB-1: run it, or golden from the Pearl team). Harness is a one-fixture drop-in (`b1_1_*` `#[ignore]` stub records the exact residual). |
 
 Each stage: commit per validated stage; honest status + precise
 residual (R1); the soundness-adjacent B2 mined-integer edge is

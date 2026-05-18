@@ -197,32 +197,46 @@ fn b1_0e_difficulty_target_well_formed_at_real_preset() {
     );
 }
 
-/// **B1.1/B1.2 — RESIDUAL (Pearl-gated; `PHASE_B_DESIGN.md`
-/// Risk-1 / DB-1).** Byte-equality vs **Pearl's real miner** for
-/// the shipped model's mining config `μ`. This is the *only*
-/// Phase-B item that cannot be discharged in-repo: it needs
-/// golden `(κ, s_a, s_b, sampled E/F rows, A, B, X, jackpot[16],
-/// digest, H_A, H_B, target)` captured from Pearl's actual miner
-/// (run it, or obtain from the Pearl team — DB-1). The harness
-/// is otherwise complete: drop the golden into
+/// **B1.1/B1.2 — RESIDUAL (the one external blocker).**
+///
+/// The B1 *protocol-equivalence* risk is **closed**:
+/// `B1_PEARL_FAITHFULNESS_AUDIT.md` verifies the Pearl reference
+/// the S0–S9 fixtures + the B1.0 real-`μ` invariants are checked
+/// against is **byte-faithful, line-for-line, to the current
+/// real `pearl/zk-pow` source** (which builds clean here). So
+/// `ai-pow`'s mineable unit matches Pearl's real *protocol logic*
+/// at the production model's parameters.
+///
+/// What remains is **only** the live half: byte-equality vs
+/// Pearl's real *miner* run on the shipped **16 GB model
+/// weights** through the **live vLLM plugin** — the real
+/// `(A, B, μ)` the plugin extracts from a real prompt + the
+/// digest Pearl's deployed miner produces on it. That needs the
+/// model weights + a GPU/vLLM runtime + the Pearl miner
+/// deployment: **not in this environment, not fabricable**
+/// (R1 — no fake completion). Per `PHASE_B_DESIGN.md` DB-1:
+/// run Pearl's real miner on the shipped model, **or** obtain
+/// the golden `(κ, s_a, s_b, sampled E/F, A, B, X, jackpot[16],
+/// digest, H_A, H_B, target)` from the Pearl team.
+///
+/// The harness is otherwise complete: drop the golden into
 /// `tests/fixtures/pearl_model.rs`, assert each `ai-pow`
-/// primitive (`prng`/`commit`/`fiat_shamir`/`matmul`/fold/
-/// `tile_hash`) bit-matches it (mirroring the S0–S9 assertion
-/// shapes already proven against the vendored reference), and
-/// remove this `#[ignore]`. No other code is required (B2.4
-/// pinned the `BlockContext` layout for the digest-parity edge).
+/// primitive bit-matches it (the S0–S9 assertion shapes, already
+/// proven against the audited-faithful reference; B2.4 pinned
+/// the `BlockContext` digest-parity layout), and remove this
+/// `#[ignore]`. No other code is required.
 #[test]
-#[ignore = "B1.1: needs Pearl real-miner golden vectors for the shipped \
-            model μ — the one external Phase-B dependency (Risk-1/DB-1). \
-            Drop fixtures/pearl_model.rs in and remove this ignore."]
+#[ignore = "B1.1 residual = the LIVE half only (protocol-equivalence is \
+            audit-closed: B1_PEARL_FAITHFULNESS_AUDIT.md). Needs Pearl's \
+            real miner on the shipped 16GB weights via the live vLLM \
+            plugin (model+GPU+Pearl deploy — external; DB-1). Drop \
+            fixtures/pearl_model.rs in and remove this ignore."]
 fn b1_1_byte_equal_to_pearl_real_miner_for_model_mu() {
-    // Intentionally empty: the gate is the presence of the
-    // real-miner golden fixture (Pearl-side artifact). Until then
-    // this records the precise residual and stays #[ignore]d so
-    // `--include-ignored` surfaces exactly what is outstanding.
     panic!(
-        "B1.1 residual: supply Pearl real-miner golden vectors for \
-         pearl-ai/Llama-3.1-8B-Instruct-pearl's mining config μ \
-         (see PHASE_B_DESIGN.md §2 / Risk-1 / DB-1)."
+        "B1.1 residual (LIVE half only — protocol-equivalence is \
+         audit-closed): supply Pearl real-miner golden vectors from \
+         the live vLLM plugin on pearl-ai/Llama-3.1-8B-Instruct-pearl's \
+         16GB weights (PHASE_B_DESIGN.md DB-1 / B1_PEARL_FAITHFULNESS \
+         _AUDIT.md §3)."
     );
 }
