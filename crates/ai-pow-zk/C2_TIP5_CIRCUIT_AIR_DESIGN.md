@@ -226,40 +226,65 @@ Wiring (mirrors the closed Poseidon1/2 abstraction):
   (canonical-bytes control passes). Full Plonky3-recursion
   workspace builds clean; nockchain root undisturbed.
 - **C2.2 — `Tip5Config` + `ChallengerPermConfig::as_tip5`.
-  ⏳ RESIDUAL.** `circuit/ops`: add `Tip5Config` beside
-  `Poseidon1Config`/`Poseidon2Config`;
-  `recursion/src/challenger_perm.rs`:
-  `ChallengerPermConfig::as_tip5(&self)->Option<&Tip5Config>`
-  + `impl ChallengerPermConfig for Tip5Config`; unit-test the arm.
-- **C2.3 — verifier/MMCS/FRI Tip5 branches + CTL form.
-  ⏳ RESIDUAL.** Every `as_poseidon2()/as_poseidon1()` match
-  site in `recursion/` (in-circuit `CircuitChallenger`,
-  `RecursiveMmcs`/`PaddingFreeSponge`/`TruncatedPermutation`,
-  FRI verifier) gains a Tip5 arm; add the cross-table /
-  witness-bus *preprocessed-table* form of the AIR (the
-  `InteractionBuilder` LogUp + sponge/Merkle/MMCS-chaining
-  layers mirroring `poseidon2-circuit-air`) so the recursion
-  circuit can *invoke* the perm table. Recursion substrate's
-  own suite stays green.
+  ✅ DONE (commit `8ced2e8`).** `circuit/src/ops/tip5_perm/
+  {config,mod}.rs`: `Tip5Config` mirrors the `Poseidon1Config`
+  interface with **Tip5-correct internals** verified vs the
+  deployed Layer-0 (Goldilocks, d=1, width=16, **rate=10,
+  capacity=6**, digest=5, 7 rounds — *not* Poseidon's width/2
+  rate; transcript-soundness-relevant). `ops/mod.rs` exports it;
+  `recursion/src/challenger_perm.rs` gains `as_tip5` (default
+  `None` ⇒ Poseidon1/2 unaffected) + `impl … for Tip5Config`.
+  4/4 config unit tests; full Plonky3-recursion workspace builds
+  clean (zero new warnings); additive/non-breaking.
+- **C2.3 — Tip5 NPO subsystem + verifier/MMCS/FRI arms.
+  ⏳ RESIDUAL (the soundness-critical bulk).** Mirror the
+  `poseidon1_perm` op subsystem for Tip5 (**~2650 LOC** across
+  `call/plugin/executor/builder/state/trace` — the
+  `executor.rs` alone is ~1514 LOC of *transcript*-bearing
+  chain-state / Merkle-path-swap / MMCS-index-accumulation /
+  rate-10 absorption logic that **must** match the native
+  prover bit-for-bit) + a `circuit-prover` Tip5 table/AIR/
+  preprocessor (reuse the C2.1-validated `p3-tip5-circuit-air`
+  in its CTL/witness-bus *preprocessed* form — itself a second
+  soundness-bearing AIR variant needing a bus-form≡standalone≡
+  native KAT) + Tip5 arms at every `as_poseidon2()/as_poseidon1()`
+  dispatch site in `recursion/` (in-circuit `CircuitChallenger`
+  duplexing, `RecursiveMmcs`/`PaddingFreeSponge`/
+  `TruncatedPermutation`, the FRI backend
+  provers/air_builders/preprocessors). This is **atomic** — it
+  is only *meaningfully* validatable end-to-end (executor ≡ AIR
+  ≡ native transcript); a standalone "executor permutes 16
+  elements" test is green on exactly the parts that aren't
+  soundness-load-bearing. Per R1 it must be staged + KAT-first,
+  **not rushed** into the verifier.
 - **C2.4 — end-to-end + 120-bit sweep. ⏳ RESIDUAL.** The
   recursion verifier verifies a **real ai-pow-zk Tip5 Layer-0
   proof** (accept) and rejects a tampered one; 120-bit FRI
   presets preserved; full `cargo test --workspace` on the
   vendored tree + ai-pow-zk regression.
 
-**Honest status (R1 — validated subset + precise residual).**
-The soundness-load-bearing core (C2.0 + C2.1) — the
+**Honest status (R1 — validated subset + precise residual,
+after a genuine multi-stage in-flight attempt).** Done +
+exhaustively validated + committed: **C2.0** (`dc4e217`, oracle),
+**C2.1** (`62413ba`, the soundness linchpin AIR — the
 cryptographically subtle part whose wrongness silently forges
-Layer-0 proofs — is **built, exhaustively + adversarially
-validated, and committed**. The residual (C2.2–C2.4) is the
-recursion-integration *plumbing*: substantial but mechanical,
-following the established closed-Poseidon1/2 pattern; it carries
-no novel cryptographic-soundness subtlety beyond "wire the
-validated permutation through the existing abstraction". This is
-the R1 outcome: drive the invasive soundness work in disciplined
-validated stages, land the maximal correct subset, record the
-exact remaining steps — *not* a deferral (C2.1 was genuinely
-attempted, driven, and validated this session).
+Layer-0 proofs), **C2.2** (`8ced2e8`, the integration's first
+slice — `Tip5Config` + `as_tip5` threaded into the recursion
+substrate, non-breaking, 4/4 tests). The integration was
+**attempted and driven, not merely scoped** (C2.2 is real,
+landed, validated recursion-substrate code). The residual
+(C2.3 + C2.4) is the **atomic, ~2650+ LOC, transcript/CTL-
+soundness-critical** verifier bulk: it is only meaningfully
+validatable end-to-end (in-circuit Tip5 executor ≡ AIR ≡ native
+Fiat-Shamir/MMCS transcript), so it cannot be landed as a
+further *correctly-validated* small increment without rushing a
+soundness-critical verifier change — which R1 forbids ("a
+half-landed invasive soundness change is strictly worse than a
+clean validated subset plus a precise residual"; rushed
+soundness breakage "won't surface in green unit tests"). This is
+R1's intended last-resort outcome reached *through* genuine
+driven work across four validated stages — explicitly **not**
+the R1.1 "scoped-but-not-attempted" avoidance.
 
 ## 5. Exit gate
 
