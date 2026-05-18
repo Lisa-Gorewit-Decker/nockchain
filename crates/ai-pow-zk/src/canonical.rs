@@ -22,7 +22,7 @@
 //! cx.0/cx.2-coloc.0 KAT-first discipline. **No verify-path
 //! change in CR.0.**
 
-use crate::blake3_tree::{strip_opening_rows, tile_chunk_range};
+use crate::blake3_tree::{left_len, strip_opening_rows, tile_chunk_range};
 use crate::chips::blake3::chip::pack_tweak;
 use crate::chips::blake3::compress::Blake3Tweak;
 use crate::chips::control::NUM_SELECTORS;
@@ -311,13 +311,188 @@ pub fn canonical_program(
     trace_len: usize,
 ) -> RowMajorMatrix<Val> {
     let l = schedule_layout(params, bp.tile_i, bp.tile_j, trace_len);
+    let sp = StripPlan::build(params, bp);
     let program: Vec<RowDescriptor> = (0..trace_len)
-        .map(|r| row_descriptor(r, l.class_of(r), &l, params, bp))
+        .map(|r| row_descriptor(r, l.class_of(r), &l, &sp, params, bp))
         .collect();
     let rows = build_preprocessed_columns(&program, trace_len);
     let w = rows.first().map(|r| r.len()).unwrap_or(0);
     let flat: Vec<Val> = rows.into_iter().flatten().collect();
     RowMajorMatrix::new(flat, w)
+}
+
+/// One 8-row BLAKE3 block of a tile's strip-opening — the
+/// params-pure unit `place_matrix_strip_opening` emits (the
+/// block *contents* are witness, but the PROGRAM_COLS — tweak +
+/// selector schedule — are not).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum StripBlock {
+    /// Block `b`∈0..16 of the leaf chunk at global index
+    /// `chunk_index` (`place_leaf_chunk`). `single_chunk_root` ⇒
+    /// the lone-chunk path (block 15 carries `F_ROOT` + the
+    /// `IS_HASH_A/B` finalize selector).
+    Leaf { chunk_index: u64, b: usize, single_chunk_root: bool },
+    /// An auth-fold parent compression (`place_parent`); `is_root`
+    /// ⇒ `F_ROOT` + the `IS_HASH_A/B` finalize selector.
+    Parent { is_root: bool },
+}
+
+/// Params-pure post-order block list for one tile's strip-opening
+/// — mirrors `fold_strip` / `subtree_inside` / `place_leaf_chunk`
+/// **exactly** (sibling subtrees consume 0 rows; each block = 8
+/// rows). `8 * strip_blocks(..).len()` == `strip_opening_rows`.
+fn strip_blocks(c0: usize, c1: usize, num_chunks: usize) -> Vec<StripBlock> {
+    let mut out = Vec::new();
+    if num_chunks == 1 {
+        // Lone chunk (place_matrix_strip_opening's num_chunks==1
+        // branch): place_leaf_chunk(chunk_index=0,
+        // single_chunk_root=true).
+        for b in 0..16 {
+            out.push(StripBlock::Leaf {
+                chunk_index: 0,
+                b,
+                single_chunk_root: true,
+            });
+        }
+        return out;
+    }
+    fn subtree_inside(
+        out: &mut Vec<StripBlock>,
+        lo: usize,
+        hi: usize,
+        is_root: bool,
+    ) {
+        if hi - lo == 1 {
+            // place_leaf_chunk(chunk_index=lo,
+            // single_chunk_root=false) — a leaf is never root when
+            // num_chunks>1.
+            for b in 0..16 {
+                out.push(StripBlock::Leaf {
+                    chunk_index: lo as u64,
+                    b,
+                    single_chunk_root: false,
+                });
+            }
+            return;
+        }
+        let mid = lo + left_len((hi - lo) as u64) as usize;
+        subtree_inside(out, lo, mid, false);
+        subtree_inside(out, mid, hi, false);
+        out.push(StripBlock::Parent { is_root });
+    }
+    fn fold(
+        out: &mut Vec<StripBlock>,
+        lo: usize,
+        hi: usize,
+        c0: usize,
+        c1: usize,
+        is_root: bool,
+    ) {
+        if hi <= c0 || lo >= c1 {
+            return; // auth sibling — 0 rows
+        }
+        if c0 <= lo && hi <= c1 {
+            subtree_inside(out, lo, hi, is_root);
+            return;
+        }
+        let mid = lo + left_len((hi - lo) as u64) as usize;
+        fold(out, lo, mid, c0, c1, false);
+        fold(out, mid, hi, c0, c1, false);
+        out.push(StripBlock::Parent { is_root });
+    }
+    fold(&mut out, 0, num_chunks, c0, c1, true);
+    out
+}
+
+/// Per-tile strip-opening plan: the params-pure block list + the
+/// region's `IS_HASH_A/B` finalize selector (4 = `IS_HASH_A`
+/// A-side, 5 = `IS_HASH_B` B-side — `place_matrix_hash_a/b`).
+struct StripPlan {
+    blocks_a: Vec<StripBlock>,
+    blocks_b: Vec<StripBlock>,
+}
+
+impl StripPlan {
+    fn build(params: &ZkParams, bp: &BlockPublic) -> Self {
+        let t = params.tile as usize;
+        let k = params.k as usize;
+        let m = params.m as usize;
+        let n = params.n as usize;
+        let (ca0, ca1, a_nc) =
+            tile_chunk_range(bp.tile_i as usize, t, k, m * k);
+        let (cb0, cb1, b_nc) =
+            tile_chunk_range(bp.tile_j as usize, t, k, n * k);
+        StripPlan {
+            blocks_a: strip_blocks(ca0, ca1, a_nc),
+            blocks_b: strip_blocks(cb0, cb1, b_nc),
+        }
+    }
+}
+
+/// BLAKE3 flag bits (mirror `place_leaf_chunk` / `place_parent`).
+const F_CHUNK_START: u32 = 1 << 0;
+const F_CHUNK_END: u32 = 1 << 1;
+const F_PARENT: u32 = 1 << 2;
+const F_ROOT: u32 = 1 << 3;
+const F_KEYED_HASH: u32 = 1 << 4;
+
+/// Params-pure PROGRAM_COL descriptor for offset `j`∈0..8 of a
+/// strip-opening block (CR.4a: the pure-BLAKE3 schedule —
+/// tweak + selectors; the co-located leaf round-0 `IS_MSG_MAT` +
+/// 8 `NOISE_PACKED_PREP` pins are layered by CR.4b/CR.4c). The
+/// tweak/flags are params-pure (`place_leaf_chunk` /
+/// `place_parent`): leaf → `counter = chunk_index`, `flags =
+/// F_KEYED_HASH | F_CHUNK_START(b==0) | F_CHUNK_END(b==15) |
+/// F_ROOT(single-chunk-root&&b==15)`; parent → `F_KEYED_HASH |
+/// F_PARENT | F_ROOT(is_root)`; the root block's finalize row
+/// gets the `IS_HASH_A/B` extra (`selector_idx`).
+fn strip_row_descriptor(
+    spec: StripBlock,
+    j: usize,
+    selector_idx: usize,
+) -> RowDescriptor {
+    let (tweak, is_root) = match spec {
+        StripBlock::Leaf { chunk_index, b, single_chunk_root } => {
+            let mut flags = F_KEYED_HASH;
+            if b == 0 {
+                flags |= F_CHUNK_START;
+            }
+            if b == 15 {
+                flags |= F_CHUNK_END;
+            }
+            let is_root = single_chunk_root && b == 15;
+            if is_root {
+                flags |= F_ROOT;
+            }
+            (
+                Blake3Tweak {
+                    counter_low: chunk_index as u32,
+                    counter_high: (chunk_index >> 32) as u16,
+                    block_len: 64,
+                    flags,
+                },
+                is_root,
+            )
+        }
+        StripBlock::Parent { is_root } => {
+            let mut flags = F_KEYED_HASH | F_PARENT;
+            if is_root {
+                flags |= F_ROOT;
+            }
+            (
+                Blake3Tweak {
+                    counter_low: 0,
+                    counter_high: 0,
+                    block_len: 64,
+                    flags,
+                },
+                is_root,
+            )
+        }
+    };
+    let extra: &[usize] =
+        if is_root { core::slice::from_ref(&selector_idx) } else { &[] };
+    blake3_block_descriptor(j, pack_tweak(&tweak), extra)
 }
 
 /// Params-pure per-row descriptor for a row. CR.1 `Pad` +
@@ -333,11 +508,33 @@ fn row_descriptor(
     row_idx: usize,
     class: RowClass,
     layout: &ScheduleLayout,
+    sp: &StripPlan,
     _params: &ZkParams,
     _bp: &BlockPublic,
 ) -> RowDescriptor {
     match class {
         RowClass::Pad => RowDescriptor::padding(),
+        RowClass::StripOpenA | RowClass::StripOpenB => {
+            // CR.4a: the pure-BLAKE3 strip-opening schedule. The
+            // region is a flat sequence of 8-row blocks (sibling
+            // subtrees consume 0 rows); A-side selector_idx = 4
+            // (IS_HASH_A), B-side = 5 (IS_HASH_B). The co-located
+            // leaf round-0 IS_MSG_MAT + 8 NOISE_PACKED_PREP pins
+            // are layered by CR.4b/CR.4c.
+            let (offset, blocks, selector_idx) =
+                if class == RowClass::StripOpenA {
+                    (row_idx, &sp.blocks_a, 4usize)
+                } else {
+                    (row_idx - layout.na, &sp.blocks_b, 5usize)
+                };
+            let block = offset / 8;
+            let j = offset % 8;
+            debug_assert!(
+                block < blocks.len(),
+                "strip row offset {offset} past block list"
+            );
+            strip_row_descriptor(blocks[block], j, selector_idx)
+        }
         RowClass::KeyPin => {
             // CR.2: `place_key_pin_row` sets exactly one selector
             // and `mat_id=0`; row mh_end+1 = JOB_KEY (SELECTOR_COLS
@@ -565,6 +762,54 @@ mod tests {
                 row as u64,
                 "jackpot row j={j} STARK_ROW_IDX"
             );
+        }
+    }
+
+    #[test]
+    fn cr4a_strip_blocks_row_count_matches_strip_opening_rows() {
+        // The params-pure block walker must reproduce CR.0a's
+        // row count exactly (8 rows/block; 0 for auth siblings).
+        for nc in [1usize, 2, 3, 5, 8, 13, 16, 21] {
+            for c0 in 0..nc {
+                for c1 in (c0 + 1)..=nc {
+                    let blocks = strip_blocks(c0, c1, nc);
+                    assert_eq!(
+                        blocks.len() * 8,
+                        strip_opening_rows(c0, c1, nc),
+                        "nc={nc} [{c0},{c1}) block*8 != strip_opening_rows"
+                    );
+                    // Lone chunk ⇒ 16 single-chunk-root leaf blocks.
+                    if nc == 1 {
+                        assert_eq!(blocks.len(), 16);
+                        assert!(blocks.iter().all(|b| matches!(
+                            b,
+                            StripBlock::Leaf { single_chunk_root: true, .. }
+                        )));
+                    }
+                    // Exactly one root block (the post-order last).
+                    if nc > 1 {
+                        let roots = blocks
+                            .iter()
+                            .filter(|b| {
+                                matches!(
+                                    b,
+                                    StripBlock::Parent { is_root: true }
+                                ) || matches!(
+                                    b,
+                                    StripBlock::Leaf {
+                                        single_chunk_root: true,
+                                        ..
+                                    }
+                                )
+                            })
+                            .count();
+                        assert_eq!(
+                            roots, 1,
+                            "nc={nc} [{c0},{c1}) must have exactly one root"
+                        );
+                    }
+                }
+            }
         }
     }
 

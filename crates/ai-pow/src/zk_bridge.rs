@@ -2797,4 +2797,114 @@ mod tests {
     fn extract_program_width() -> usize {
         ai_pow_zk::composite_full_air::PROGRAM_COLS.len()
     }
+
+    /// **Phase A-CR · CR.4a — the pure-BLAKE3 strip-opening
+    /// schedule.** `canonical_program`'s StripOpenA/B descriptor
+    /// (the params-pure `strip_blocks` walker mirroring
+    /// `fold_strip`/`subtree_inside`/`place_leaf_chunk` +
+    /// per-block leaf/parent/root tweak + `IS_HASH_A/B` finalize
+    /// selector) must equal `extract_program(honest_trace)`
+    /// bit-for-bit on every StripOpen* row of the REAL P16(16|r)
+    /// trace that is **NOT a co-located leaf round-0 row**
+    /// (`IS_MSG_MAT == 0`). Those co-located rows additionally
+    /// carry `IS_MSG_MAT` + the 8 `NOISE_PACKED_PREP` pins (CR.4b/
+    /// CR.4c) and are validated there; here they are *skipped* so
+    /// CR.4a's pure-BLAKE3 schedule is gated against the real
+    /// trace in isolation (KAT-first, P-B.2.0 discipline). A wrong
+    /// chunk-counter / flag / root-selector ⇒ a non-co-located
+    /// strip row diverges ⇒ this fails. **No verify-path change.**
+    #[test]
+    fn cr4a_strip_open_pure_blake3_schedule_eq_extract() {
+        use crate::synth::synth_matrices;
+        use ai_pow_zk::canonical::{
+            canonical_program, row_schedule, BlockPublic, RowClass,
+        };
+        use ai_pow_zk::composite_full_air::extract_program;
+        use ai_pow_zk::composite_layout::{
+            IS_MSG_MAT, TOTAL_TRACE_WIDTH,
+        };
+        use ai_pow_zk::params::ZkParams;
+        use std::cell::RefCell;
+
+        let params = MatmulParams {
+            m: 16, k: 64, n: 16, noise_rank: 16, tile: 8,
+            spot_checks: 2, difficulty_bits: 0,
+        };
+        params.validate().unwrap();
+        let (a, b) = synth_matrices(b"cr4a-strip", &params);
+        let ctx = BlockContext::build(b"cr4a-strip-blk", &a, &b, &params)
+            .expect("ctx");
+        let target = crate::tile_hash::difficulty_target(&params);
+        let (tile_i, tile_j) = (0u32, 0u32);
+
+        // Capture extract_program + per-row IS_MSG_MAT of the real
+        // honest P16 trace (no-tamper seam ⇒ still verifies).
+        let cap: RefCell<Option<(Vec<ai_pow_zk::Val>, Vec<bool>, usize)>> =
+            RefCell::new(None);
+        prove_and_verify_tiled_tamper(
+            &ctx, &params, &target, tile_i, tile_j,
+            |t: &mut CompositeTrace| {
+                let zero = ai_pow_zk::Val::default();
+                let h = t.height();
+                let e = extract_program(&t.matrix);
+                let mm: Vec<bool> = (0..h)
+                    .map(|r| {
+                        t.matrix.values
+                            [r * TOTAL_TRACE_WIDTH + IS_MSG_MAT]
+                            != zero
+                    })
+                    .collect();
+                *cap.borrow_mut() = Some((e.values, mm, h));
+            },
+        )
+        .expect("honest P16 g=1 (no tamper) must prove + pow-verify");
+        let (ext_vals, is_mm, h) = cap.into_inner().expect("trace");
+        let w = extract_program_width();
+
+        let zk = ZkParams {
+            m: params.m, k: params.k, n: params.n,
+            noise_rank: params.noise_rank, tile: params.tile,
+            difficulty_bits: params.difficulty_bits,
+        };
+        let bp = BlockPublic {
+            tile_i, tile_j, kappa: [0u8; 32],
+            s_a: [0u8; 32], s_b: [0u8; 32],
+        };
+        let canon = canonical_program(&zk, &bp, h);
+        let sched = row_schedule(&zk, tile_i, tile_j, h);
+
+        let (mut checked_pure, mut skipped_coloc) = (0usize, 0usize);
+        for (r, &class) in sched.iter().enumerate() {
+            if !matches!(
+                class,
+                RowClass::StripOpenA | RowClass::StripOpenB
+            ) {
+                continue;
+            }
+            if is_mm[r] {
+                // Co-located leaf round-0 row — CR.4b/CR.4c.
+                skipped_coloc += 1;
+                continue;
+            }
+            for c in 0..w {
+                assert_eq!(
+                    canon.values[r * w + c],
+                    ext_vals[r * w + c],
+                    "CR.4a: canonical ≠ extract at non-co-located \
+                     StripOpen row {r} ({class:?}) col {c}"
+                );
+            }
+            checked_pure += 1;
+        }
+        assert!(
+            checked_pure > 0,
+            "P16 must have non-co-located StripOpen rows (the \
+             7 mixing rounds + finalize + parent blocks)"
+        );
+        assert!(
+            skipped_coloc > 0,
+            "P16 (16|r) must have co-located leaf round-0 rows \
+             (else CR.4a's skip is vacuous — co-location inactive?)"
+        );
+    }
 }
