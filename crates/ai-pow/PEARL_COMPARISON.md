@@ -39,12 +39,19 @@ verified by 11 fixture-based unit tests in `tests/pearl_compat_fixtures.rs`.
 > (`k=4096, r=64, tile=64`, the 57 344-chunk scale), the B1
 > *protocol-equivalence* risk is **closed**: `ai-pow`'s mineable
 > unit matches Pearl's real *protocol logic* for the production
-> model. The **only** remaining Phase-B residual is the live
-> half — Pearl's real *miner* on the shipped 16 GB weights via
-> the live vLLM plugin (external; `PHASE_B_DESIGN.md` Risk-1 /
-> DB-1). B2 = the quant-extraction contract (shipped:
-> `ai-pow::quant`); B3 = INT-only scoping (shipped). See
-> `crates/ai-pow-zk/PHASE_B_DESIGN.md`.
+> model. **B1.1 is now CLOSED on the real shipped 16 GB
+> weights** (`pearl_model_compat::b1_1{a,b,c}`, 8/0/0): ai-pow's
+> full audited pipeline byte-processes a real `gate_proj` INT7
+> weight tile at the real μ (the safetensors reader anchored
+> bit-for-bit to an independent Python oracle). B2 = the
+> quant-extraction contract (shipped: `ai-pow::quant`, also
+> verified lossless on the real weights); B3 = INT-only scoping
+> (shipped). The **only** untested path is a *live vLLM
+> forward-pass activation from a real prompt* — a Phase-D
+> usefulness check, **not** a byte-equivalence gap (B2.2 proved
+> the contract lossless for any int7 activation). See
+> `crates/ai-pow-zk/PHASE_B_DESIGN.md` /
+> `B1_PEARL_FAITHFULNESS_AUDIT.md`.
 
 ## Byte-equivalence claim (precise — D5/D6-normalized)
 

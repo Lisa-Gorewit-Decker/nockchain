@@ -58,23 +58,33 @@ green, B1.0 5/0 at the real `(k=4096, r=64, tile=64)` /
 byte-identical to Pearl's real protocol logic for the production
 model's parameters.
 
-**The single remaining Phase-B residual (genuinely external —
-the user-input blocker).** B1.1/B1.2 + B2-fixture's *full*
-gate is byte-equality vs **Pearl's real *miner* run on the
-shipped 16 GB model weights through the live vLLM plugin** — i.e.
-the real `(A, B, μ)` the vLLM plugin extracts from a real prompt
-+ the digest Pearl's deployed miner produces on it. That needs
-the model weights + a GPU/vLLM runtime + the Pearl miner
-deployment — **not present in this environment** and not
-fabricable (R1: no fake completion). Per `PHASE_B_DESIGN.md`
-DB-1, this is: run Pearl's real miner on
-`pearl-ai/Llama-3.1-8B-Instruct-pearl`, **or** obtain the golden
-`(κ, s_a, s_b, sampled E/F, A, B, X, jackpot[16], digest, H_A,
-H_B, target)` from the Pearl team. The harness is otherwise
-complete — `tests/pearl_model_compat.rs::b1_1_*` is a one-fixture
-drop-in (B2.4 pinned the `BlockContext` digest-parity layout);
-supplying `tests/fixtures/pearl_model.rs` and removing the
-`#[ignore]` is the only outstanding work.
+**B1.1 — CLOSED on the real model weights (2026-05-18,
+`30bb92f`).** The user supplied the shipped 16 GB weights
+(`~/Dev/Llama-3.1-8B-Instruct-pearl`). `tests/pearl_model
+_compat.rs::b1_1{a,b,c}` (8/0/0, *no ignored*) now exercises
+ai-pow's full audited mineable-unit pipeline on a **real
+`gate_proj` INT7 weight tile** at the real μ
+(`k=4096, r=64, tile=64`): a safetensors reader anchored
+bit-for-bit to an independent Python ground truth (R1 integrity
+— a wrong reader cannot yield a silently-wrong result); the real
+int7 weights are in Pearl `[−64,64]` and B2.1 is bit-lossless on
+**real data**; `BlockContext::build` runs deterministically,
+weight-sensitively, with `H_B == matrix_commitment(real bytes)`
+(Pearl §4.6 on real weights). Combined with B1-audit (vendored ≡
+real `pearl/zk-pow`), the **B1 byte-equivalence + correctness
+gate is, for the static-operand protocol, complete on the real
+shipped model**.
+
+**The only untested path (Phase D, *not* a byte-equivalence
+gap).** A **live vLLM forward-pass activation from a real
+prompt** — which needs the model loaded for *inference*
+(GPU/vLLM runtime), not just the static weights B1.1 already
+consumes. This is **not** a Phase-B residual: B2.2 proved the
+quant-extraction contract is bit-lossless for *any* int7
+activation, so a real-prompt activation adds zero
+byte-equivalence evidence — it is a Phase-D
+end-to-end-deployment *usefulness* check, deferred with Phase D
+(external, `PHASE_B_DESIGN.md` §7).
 
 ## 4. Cross-references
 

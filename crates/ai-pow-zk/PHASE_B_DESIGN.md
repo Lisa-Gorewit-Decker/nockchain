@@ -274,7 +274,11 @@ validated + committed; the residual is the one external blocker.**
 | **B2-contract** | no | ✅ DONE | `ai-pow::quant` `Q`/inverse; bit-lossless conformance KAT (R1 KAT-first on the mined-integer edge) `b2_1..4` 4/4. `94eaafc` |
 | **B1.0** | no | ✅ DONE | `pearl_model_compat` real-`μ` invariants (chunk-scale 57 344, r=64 noise structure, 64-stripe fold wrap, difficulty) 5/0. `4916a6b` |
 | **B1-audit** | no | ✅ DONE | `B1_PEARL_FAITHFULNESS_AUDIT.md`: vendored ref ≡ **current real `pearl/zk-pow`** (builds clean) line-for-line ⇒ **B1 protocol-equivalence CLOSED**. |
-| **B1.1/B1.2 + B2-fixture** | **yes** | ⛔ EXTERNAL BLOCKER | The *live* half only: Pearl's real **miner** on the shipped **16 GB weights** via the **live vLLM plugin** — needs the model + GPU/vLLM + Pearl deploy (DB-1: run it, or golden from the Pearl team). Harness is a one-fixture drop-in (`b1_1_*` `#[ignore]` stub records the exact residual). |
+| **B1.1 (real weights)** | no¹ | ✅ DONE | User supplied the shipped 16 GB weights. `pearl_model_compat::b1_1{a,b,c}` (8/0/0, **no ignored**): a safetensors reader anchored bit-for-bit to an independent Python oracle (R1 integrity); the real `gate_proj` int7 weights ∈ Pearl `[−64,64]` + B2.1 lossless on **real data**; `BlockContext::build` runs ai-pow's full audited pipeline on the **real weight tile** at the real μ (det., weight-sensitive, `H_B == matrix_commitment(real bytes)`). `30bb92f` |
+| **B2-fixture / live-vLLM** | **yes** | ⚠ Phase-D (B2.2-covered) | The *only* untested path: a **live vLLM forward-pass activation from a real prompt** (needs the model loaded for inference + GPU/vLLM, not just static weights). This is **not a byte-equivalence gap** — B2.2 proved the quant contract is bit-lossless for *any* int7 activation; it is a Phase-D end-to-end-deployment *usefulness* verification, deferred with Phase D (external). |
+
+¹ B1.1 needed the static weights (now present), not a GPU/vLLM
+runtime; the live forward pass is the Phase-D row below.
 
 Each stage: commit per validated stage; honest status + precise
 residual (R1); the soundness-adjacent B2 mined-integer edge is

@@ -166,19 +166,23 @@ R1.**
 
 ### Phase B — byte-equivalence & correctness vs Pearl for this model
 
-> **Authoritative plan: `PHASE_B_DESIGN.md`.** Verified state
-> 2026-05-18: `crates/ai-pow/PEARL_COMPARISON.md` D1–D4 are
-> CLOSED and `pearl_compat_fixtures` S0–S9 is **11/0/0 green** —
-> but vs a *vendored copy of Pearl's reference functions* at
-> *generic* shapes, **not** Pearl's real miner for the shipped
-> model `μ`. So the real residual is narrow: B1 = lift the
-> oracle to Pearl's real miner at the real preset (B1.0 the
-> Pearl-independent scale de-risk; B1.1/B1.2 gated on the
-> Pearl-side golden artifact, the longest-lead external
-> dependency — Risk-1/DB-1); B2 = the quant-extraction contract;
-> B3 = machine-enforced INT-only scoping. The precise
-> (D5/D6-normalized) byte-equivalence claim is in
-> `PEARL_COMPARISON.md` "Byte-equivalence claim (precise)".
+> **Authoritative plan: `PHASE_B_DESIGN.md`. STATUS 2026-05-18 —
+> Phase B byte-equivalence + correctness gate COMPLETE on the
+> real shipped model.** B0 (precise D5/D6 claim) ✅, B3
+> (INT-only machine guard; fixed the `LLAMA_3_1_8B_DOWN` FP8
+> mis-doc) ✅, B2-contract (`ai-pow::quant`, bit-lossless, R1) ✅,
+> B1.0 (real-μ scale invariants) ✅, **B1-audit** (vendored ref ≡
+> current real `pearl/zk-pow`, line-for-line) ✅, **B1.1** (user
+> supplied the 16 GB weights ⇒ ai-pow's full audited pipeline
+> byte-processes the **real `gate_proj` INT7 weights** at the
+> real μ; reader anchored to an independent Python oracle) ✅.
+> `pearl_compat_fixtures` 11/0/0, `pearl_model_compat` 8/0/0,
+> `quant` 4/4, `b3_*` 3/3. The **only** untested path is a *live
+> vLLM forward-pass activation from a real prompt* — a Phase-D
+> end-to-end-usefulness check, **not** a byte-equivalence gap
+> (B2.2: the contract is lossless for any int7 activation).
+> Commits `f05862d`..`30bb92f`. Precise (D5/D6-normalized) claim
+> + audit: `PEARL_COMPARISON.md` / `B1_PEARL_FAITHFULNESS_AUDIT.md`.
 
 | # | Item | Depends | Exit gate |
 |---|---|---|---|
