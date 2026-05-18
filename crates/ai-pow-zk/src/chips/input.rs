@@ -46,8 +46,9 @@ use p3_air::{AirBuilder, WindowAccess};
 use p3_field::PrimeCharacteristicRing;
 
 use crate::composite_layout::{
-    BYTES_PER_GOLDILOCKS, MAT_UNPACK_LEN, MAT_UNPACK_START, NOISED_PACKED_START,
-    NOISED_PACKED_WIN, NOISE_PACKED_PREP, NOISE_UNPACK_START, NOISE_UNPACK_WIN,
+    BYTES_PER_GOLDILOCKS, MAT_UNPACK_LEN, MAT_UNPACK_START, MAT_UNPACK_WIN,
+    NOISED_PACKED_LEN, NOISED_PACKED_START, NOISED_PACKED_WIN, NOISE_PACKED_PREP,
+    NOISE_PACKED_PREP_LEN, NOISE_UNPACK_LEN, NOISE_UNPACK_START, NOISE_UNPACK_WIN,
 };
 
 /// Noise-element range: `[-64, 64]` has 129 values, so the packing
@@ -83,30 +84,41 @@ impl InputChip {
         let main = builder.main();
         let cur = main.current_slice();
 
+        // §4.C.2 c-exact (cx.2-mat-input/X1): the blocks are
+        // widened (MAT_UNPACK/NOISE_UNPACK 8→64, NOISED_PACKED
+        // 2→16, NOISE_PACKED_PREP 1→8). InputChip integrity now
+        // covers all **8 sub-slices** of a (co-located) leaf
+        // round-0 row's 64-byte block — *unconditionally* (not
+        // gated). ZERO-BLAST: on every current trace the added
+        // cells are 0, so each added sub-slice's eqn is
+        // `0 == polyval(0,·) (+ polyval(0,·))` ⇒ holds, and the
+        // CRIT-1 `NOISE_PACKED_PREP[1..8]` pin is `0==0`;
+        // sub-slice 0 / cell 0..2 are the pre-cx.2 constraints
+        // unchanged ⇒ byte-identical. Reuses M-S1's *exact*
+        // polyval packing ×8 (no i8/u8 reconciliation).
         let mat_unpack: Vec<AB::Var> = (0..MAT_UNPACK_LEN)
             .map(|i| cur[MAT_UNPACK_START + i])
             .collect();
-        // §4.C.2 cx.2/X1: the column blocks are widened (UINT8_DATA/
-        // NOISE_UNPACK 8→64, NOISED_PACKED 2→16) but until the cx.2
-        // atomic activation the InputChip integrity constraint
-        // operates over the unchanged 8-byte window / 2-cell
-        // (`*_WIN`) ⇒ byte-identical (zero-blast).
-        let noise_unpack: Vec<AB::Var> = (0..NOISE_UNPACK_WIN)
+        let noise_unpack: Vec<AB::Var> = (0..NOISE_UNPACK_LEN)
             .map(|i| cur[NOISE_UNPACK_START + i])
             .collect();
-        let noise_packed_prep: AB::Var = cur[NOISE_PACKED_PREP];
-        let noised_packed: Vec<AB::Var> = (0..NOISED_PACKED_WIN)
+        let noised_packed: Vec<AB::Var> = (0..NOISED_PACKED_LEN)
             .map(|i| cur[NOISED_PACKED_START + i])
             .collect();
 
-        // 1. NOISE_PACKED_PREP == polyval(NOISE_UNPACK, base=129).
-        let noise_repacked = Self::polyval::<AB>(&noise_unpack, NOISE_PACKING_BASE);
-        builder.assert_eq(noise_packed_prep, noise_repacked);
+        // 1. Per 8-byte sub-slice s: NOISE_PACKED_PREP[s] ==
+        //    polyval(NOISE_UNPACK[8s..8s+8], base=129).
+        const SUBSLICE: usize = 8;
+        for s in 0..NOISE_PACKED_PREP_LEN {
+            let chunk = &noise_unpack[s * SUBSLICE..s * SUBSLICE + SUBSLICE];
+            let repacked = Self::polyval::<AB>(chunk, NOISE_PACKING_BASE);
+            builder.assert_eq(cur[NOISE_PACKED_PREP + s], repacked);
+        }
 
-        // 2. For each NOISED_PACKED cell i, NOISED_PACKED[i] ==
-        //      polyval(MAT_UNPACK[i*4..(i+1)*4], 256)
-        //    + polyval(NOISE_UNPACK[i*4..(i+1)*4], 256).
-        for i in 0..NOISED_PACKED_WIN {
+        // 2. For each NOISED_PACKED cell i (2 per sub-slice ×8 =
+        //    16): NOISED_PACKED[i] == polyval(MAT_UNPACK[4i..],256)
+        //    + polyval(NOISE_UNPACK[4i..],256).
+        for i in 0..NOISED_PACKED_LEN {
             let mat_chunk = &mat_unpack[i * BYTES_PER_GOLDILOCKS..(i + 1) * BYTES_PER_GOLDILOCKS];
             let noise_chunk =
                 &noise_unpack[i * BYTES_PER_GOLDILOCKS..(i + 1) * BYTES_PER_GOLDILOCKS];
@@ -122,8 +134,10 @@ impl InputChip {
     pub fn fill_row(&self, mat_bytes: &[i8; 8], noise_bytes: &[i8; 8], row: &mut [crate::Val]) {
         use p3_field::integers::QuotientMap;
 
-        // MAT_UNPACK: 8 i7 values.
-        for i in 0..MAT_UNPACK_LEN {
+        // MAT_UNPACK: the 8-byte window (cx.2/X1 widened the
+        // block to 64; fill_row writes the window — the added
+        // cols are 0 until co-location, zero-blast).
+        for i in 0..MAT_UNPACK_WIN {
             row[MAT_UNPACK_START + i] =
                 <crate::Val as QuotientMap<i32>>::from_int(mat_bytes[i] as i32);
         }

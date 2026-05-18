@@ -195,8 +195,18 @@ pub const NUM_CONTROL_COLS: usize = 22;
 
 // ---- Matrix-byte unpacking ----
 
-/// MAT_UNPACK: 8 i7 elements. Matches Pearl's `MAT_UNPACK: 8`.
-pub const MAT_UNPACK_LEN: usize = 8;
+/// MAT_UNPACK. **§4.C.2 c-exact (cx.2/X1):** widened 8→64 — the
+/// i8 committed-plain view of a co-located leaf round-0 row's
+/// whole 64-byte block (mirrors `UINT8_DATA`'s u8 view), so
+/// `InputChip`'s `NOISED_PACKED = polyval(MAT_UNPACK) +
+/// polyval(NOISE_UNPACK)` extends to all 8 sub-slices reusing
+/// M-S1's *exact* packing (no i8/u8 reconciliation). Consumers
+/// use the 8-byte window [`MAT_UNPACK_WIN`] until the cx.2
+/// activation ⇒ 56 added cols zero-default, byte-identical
+/// (the cx.1b-layout zero-blast discipline).
+pub const MAT_UNPACK_LEN: usize = 64;
+/// The active 8-byte `MAT_UNPACK` window until cx.2/X1 activation.
+pub const MAT_UNPACK_WIN: usize = 8;
 pub const MAT_UNPACK_START: usize = CONTROL_PREP + NUM_CONTROL_COLS;
 
 /// UINT8_DATA. **§4.C.2 c-exact (cx.2/X1):** widened 8→64 so a
@@ -585,7 +595,8 @@ mod tests {
     fn ram_lookup_column_widths_match_pearl() {
         assert_eq!(JACKPOT_X_BITS_LEN, 32);
         assert_eq!(JACKPOT_SLOT_SEL_LEN, 16);
-        assert_eq!(MAT_UNPACK_LEN, 8);
+        assert_eq!(MAT_UNPACK_LEN, 64); // cx.2/X1 (was 8); window = MAT_UNPACK_WIN
+        assert_eq!(MAT_UNPACK_WIN, 8);
         assert_eq!(UINT8_DATA_LEN, 64); // cx.2/X1 (was 8); window = UINT8_DATA_WIN
         assert_eq!(UINT8_DATA_WIN, 8);
         assert_eq!(NOISE_UNPACK_LEN, 64); // cx.2/X1 (was 8)

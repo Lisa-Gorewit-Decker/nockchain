@@ -51,7 +51,7 @@ use crate::composite_layout::{
     CV_IN_LEN, CV_IN_START, CV_OR_TWEAK_PREP, CV_OUT_FREQ, CV_OUT_LEN, CV_OUT_START,
     I8U8_FREQ, I8U8_TABLE, IRANGE7P1_FREQ, IRANGE7P1_TABLE, IRANGE8_FREQ, IRANGE8_TABLE,
     IS_CV_IN, IS_MSG_MAT, IS_RESET_CUMSUM, IS_UPDATE_CUMSUM, MAT_FREQ, MAT_ID,
-    MAT_ID_LIMBS_LEN, MAT_ID_LIMBS_START, MAT_UNPACK_LEN, MAT_UNPACK_START,
+    MAT_ID_LIMBS_LEN, MAT_ID_LIMBS_START, MAT_UNPACK_WIN, MAT_UNPACK_START,
     NOISED_PACKED_START, NOISE_UNPACK_START, NOISE_UNPACK_WIN, STARK_ROW_IDX,
     TOTAL_TRACE_WIDTH, UINT8_DATA_START, UINT8_DATA_WIN, URANGE13_FREQ, URANGE13_TABLE,
     URANGE8_FREQ, URANGE8_TABLE,
@@ -307,7 +307,7 @@ mod bus_emit {
                 1,
             );
         }
-        for i in 0..MAT_UNPACK_LEN {
+        for i in 0..MAT_UNPACK_WIN {
             builder.push_interaction(
                 BUS_IRANGE8,
                 [<AB::Var as Into<AB::Expr>>::into(cur[MAT_UNPACK_START + i])],
@@ -338,7 +338,7 @@ mod bus_emit {
             -<AB::Var as Into<AB::Expr>>::into(cur[I8U8_FREQ]),
             0,
         );
-        for i in 0..MAT_UNPACK_LEN.min(UINT8_DATA_WIN) {
+        for i in 0..MAT_UNPACK_WIN.min(UINT8_DATA_WIN) {
             let signed: AB::Expr = cur[MAT_UNPACK_START + i].into();
             let unsigned: AB::Expr = cur[UINT8_DATA_START + i].into();
             let pack = signed * two_fifty_six.clone() + unsigned;
