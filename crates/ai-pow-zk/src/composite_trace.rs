@@ -1746,6 +1746,102 @@ impl CompositeTrace {
         out
     }
 
+    /// §4.C.2 / A3.2a — the **position-addressed, params-
+    /// deterministic** store layout: one [`NoisedChunkSrc`] per
+    /// sweep-read position, in sub-block-major schedule order,
+    /// **with no value de-duplication**. Unlike
+    /// [`enumerate_noised_chunks_with_src`] (value-deduped, so
+    /// the row↔`(i,l)` map needs the witness), the `(side_a, src)`
+    /// layout here is a **pure function of `(t, r, num_stripes,
+    /// k)`** — the byte *values* depend on `a′/b′` but the
+    /// *positions* do not — so the CRIT-1 program rebuild can
+    /// reconstruct each store row's `(i,l)` (hence its
+    /// `noise_ref` noise / `NOISE_PACKED_PREP`) **witness-free**.
+    /// This is what unblocks W1 (verifier-pinned noise) for
+    /// §4.C.2. M-S1's LogUp still balances with the resulting
+    /// duplicate producer rows (`populate_lookup_freq` routes a
+    /// key's freq to its first row; dupes carry `MAT_FREQ=0`) —
+    /// the dedup was only a row-count optimization.
+    pub fn enumerate_noised_chunks_positioned(
+        a_prime_rows: &[i8],
+        b_prime_cols: &[i8],
+        t: usize,
+        r: usize,
+        num_stripes: usize,
+    ) -> Vec<NoisedChunkSrc> {
+        let chunks = r.div_ceil(TILE_D).max(1);
+        let k = if t == 0 { 0 } else { a_prime_rows.len() / t };
+        let n_sb = t / TILE_H;
+        let n_chunk = A_NOISED_LEN / 2;
+        let mut out: Vec<NoisedChunkSrc> = Vec::new();
+        let mut push = |blk: &[[i8; TILE_D]; TILE_H],
+                        side_a: bool,
+                        lane_base: usize,
+                        col0: usize,
+                        w: usize,
+                        out: &mut Vec<NoisedChunkSrc>| {
+            for jc in 0..n_chunk {
+                let mut bytes = [0i8; 8];
+                let mut src = [None; 8];
+                for m in 0..8 {
+                    let f = jc * 8 + m;
+                    let (di, col) = (f / TILE_D, f % TILE_D);
+                    bytes[m] = blk[di][col];
+                    if col < w {
+                        src[m] = Some(((lane_base + di) as u32, (col0 + col) as u32));
+                    }
+                }
+                out.push(NoisedChunkSrc { bytes, side_a, src });
+            }
+        };
+        for sbi in 0..n_sb {
+            for sbj in 0..n_sb {
+                for step in 0..num_stripes {
+                    let lo = step * r;
+                    for chunk in 0..chunks {
+                        let c0 = chunk * TILE_D;
+                        let w = (r - c0).min(TILE_D);
+                        let mut a_blk = [[0i8; TILE_D]; TILE_H];
+                        let mut b_blk = [[0i8; TILE_D]; TILE_H];
+                        for di in 0..TILE_H {
+                            let rr = (sbi * TILE_H + di) * k + lo + c0;
+                            a_blk[di][..w].copy_from_slice(&a_prime_rows[rr..rr + w]);
+                        }
+                        for dj in 0..TILE_H {
+                            let cc = (sbj * TILE_H + dj) * k + lo + c0;
+                            b_blk[dj][..w].copy_from_slice(&b_prime_cols[cc..cc + w]);
+                        }
+                        push(&a_blk, true, sbi * TILE_H, lo + c0, w, &mut out);
+                        push(&b_blk, false, sbj * TILE_H, lo + c0, w, &mut out);
+                    }
+                }
+            }
+        }
+        out
+    }
+
+    /// §4.C.2 / A3.2a — the verifier-recomputable store **layout
+    /// skeleton**: the `(side_a, src)` of every positioned store
+    /// row, as a **pure function of `(t, r, num_stripes, k)`**
+    /// (no `a′/b′` values). The CRIT-1 program rebuild calls this
+    /// (with `k` from public params) to reconstruct each store
+    /// row's `(i,l)` — hence its pinned `NOISE_PACKED_PREP` via
+    /// `noise_ref` — **witness-free**. Identical ordering to
+    /// [`enumerate_noised_chunks_positioned`]; only `bytes` are
+    /// omitted (they are the witness).
+    pub fn noised_store_layout(
+        t: usize,
+        r: usize,
+        num_stripes: usize,
+        k: usize,
+    ) -> Vec<(bool, [Option<(u32, u32)>; 8])> {
+        let zeros = vec![0i8; t * k];
+        Self::enumerate_noised_chunks_positioned(&zeros, &zeros, t, r, num_stripes)
+            .into_iter()
+            .map(|c| (c.side_a, c.src))
+            .collect()
+    }
+
     /// M-S1 (§4.C.11) — place the `noised_packed` producer store:
     /// one pure table row ([`place_noised_store_row`], `MAT_ID =
     /// mat_id`, no `IS_MSG_MAT`) per distinct swept chunk from

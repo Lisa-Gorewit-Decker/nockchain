@@ -1406,9 +1406,16 @@ mod tests {
             let b_strips: Vec<i8> = (0..t as u32)
                 .flat_map(|dj| mats.b_prime_col(tj * params.tile + dj).to_vec())
                 .collect();
-            let srcs = CompositeTrace::enumerate_noised_chunks_with_src(
+            // Validate the decomposition over BOTH the value-deduped
+            // map (A3.1) AND the position-addressed, witness-free
+            // layout (A3.2a) — the latter is what the verifier
+            // recomputes to pin NOISE_PACKED_PREP per store row.
+            let mut srcs = CompositeTrace::enumerate_noised_chunks_with_src(
                 &a_strips, &b_strips, t, r as usize, num_stripes,
             );
+            srcs.extend(CompositeTrace::enumerate_noised_chunks_positioned(
+                &a_strips, &b_strips, t, r as usize, num_stripes,
+            ));
             assert!(!srcs.is_empty());
             for s in &srcs {
                 for m in 0..8 {

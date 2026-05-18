@@ -714,6 +714,64 @@ mod tests {
         }
     }
 
+    /// §4.C.2 / A3.2a: the positioned store layout is a **pure
+    /// function of `(t,r,num_stripes,k)`** — the `(side_a,src)`
+    /// skeleton is identical for *any* `a′/b′` byte filling, so
+    /// the CRIT-1 program rebuild can reconstruct each store
+    /// row's `(i,l)` (hence its pinned noise) **witness-free**
+    /// (the W1 unblocker). And it is consistent with M-S1: every
+    /// value-deduped `enumerate_noised_chunks` chunk appears as
+    /// some positioned row's bytes (so the LogUp producer set is
+    /// unchanged — dedup was only a row-count optimization).
+    #[test]
+    fn a3_2a_positioned_store_layout_is_witness_free_and_consistent() {
+        let (t, k, r, num_stripes) = (8usize, 64usize, 4usize, 16usize);
+        let mk = |salt: i32| -> Vec<i8> {
+            (0..(t * k) as i32)
+                .map(|i| (i.wrapping_mul(7).wrapping_add(salt) ^ (i >> 3)) as i8)
+                .collect()
+        };
+        // Two unrelated byte fillings of the same geometry.
+        let (a1, b1) = (mk(0), mk(0x11));
+        let (a2, b2) = (mk(0x5A), mk(0x77));
+
+        let p1 = CompositeTrace::enumerate_noised_chunks_positioned(
+            &a1, &b1, t, r, num_stripes,
+        );
+        let p2 = CompositeTrace::enumerate_noised_chunks_positioned(
+            &a2, &b2, t, r, num_stripes,
+        );
+        assert_eq!(p1.len(), p2.len(), "layout length is params-fixed");
+        assert!(!p1.is_empty());
+        for (c1, c2) in p1.iter().zip(p2.iter()) {
+            // Positions/sides identical (witness-free); only bytes
+            // differ between the two fillings.
+            assert_eq!(c1.side_a, c2.side_a);
+            assert_eq!(c1.src, c2.src);
+        }
+        // The witness-free skeleton matches the positioned layout.
+        let skel = CompositeTrace::noised_store_layout(t, r, num_stripes, k);
+        assert_eq!(skel.len(), p1.len());
+        for (s, c) in skel.iter().zip(p1.iter()) {
+            assert_eq!(*s, (c.side_a, c.src));
+        }
+
+        // M-S1 consistency: every deduped store chunk is some
+        // positioned row's bytes (producer set unchanged).
+        let deduped =
+            CompositeTrace::enumerate_noised_chunks(&a1, &b1, t, r, num_stripes);
+        let positioned_bytes: std::collections::HashSet<[i8; 8]> =
+            p1.iter().map(|c| c.bytes).collect();
+        for ch in &deduped {
+            assert!(
+                positioned_bytes.contains(ch),
+                "deduped store chunk missing from positioned layout"
+            );
+        }
+        // Positioned ⊇ deduped (no dedup ⇒ ≥ as many rows).
+        assert!(p1.len() >= deduped.len());
+    }
+
     /// M-S1 (§4.C.11) **adversarial I2**: the §6(b) sweep input is
     /// genuinely *bound* to the declared `noised_packed` store. A
     /// prover that sweeps a tile whose noised micro-tiles are NOT
