@@ -364,16 +364,31 @@ mod bus_emit {
     pub fn noised_packed<AB: AirBuilder + InteractionBuilder>(builder: &mut AB) {
         let main = builder.main();
         let cur = main.current_slice();
-        builder.push_interaction(
-            BUS_NOISED_PACKED,
-            [
-                <AB::Var as Into<AB::Expr>>::into(cur[MAT_ID]),
-                <AB::Var as Into<AB::Expr>>::into(cur[NOISED_PACKED_START]),
-                <AB::Var as Into<AB::Expr>>::into(cur[NOISED_PACKED_START + 1]),
-            ],
-            -<AB::Var as Into<AB::Expr>>::into(cur[MAT_FREQ]),
-            0,
-        );
+        // §4.C.2 c-exact (cx.2-bus/X1): the producer (table) side
+        // publishes **8 sub-slice keys** per row — a co-located
+        // strip-opening leaf round-0 row is the M-S1 `noised_packed`
+        // producer for every swept 8-byte sub-slice of its 64-byte
+        // block: key s = (MAT_ID, NOISED_PACKED[2s], NOISED_PACKED
+        // [2s+1]) × −MAT_FREQ[s], s∈0..8 (the cx.2-matfreq /
+        // cx.2-layout widths). ZERO-BLAST: on every current trace
+        // NOISED_PACKED[2..16]=0 and MAT_FREQ[1..8]=0, so s=0 is
+        // byte-identical to the pre-cx.2 single emission and
+        // s=1..7 are (MAT_ID,0,0)×−0 = no-ops ⇒ the bus balance is
+        // unchanged. The g=1 co-location landing fills the
+        // sub-slices live; `populate_lookup_freq` accounts each
+        // sub-slice's `MAT_FREQ[s]`.
+        for s in 0..crate::composite_layout::MAT_FREQ_LEN {
+            builder.push_interaction(
+                BUS_NOISED_PACKED,
+                [
+                    <AB::Var as Into<AB::Expr>>::into(cur[MAT_ID]),
+                    <AB::Var as Into<AB::Expr>>::into(cur[NOISED_PACKED_START + 2 * s]),
+                    <AB::Var as Into<AB::Expr>>::into(cur[NOISED_PACKED_START + 2 * s + 1]),
+                ],
+                -<AB::Var as Into<AB::Expr>>::into(cur[MAT_FREQ + s]),
+                0,
+            );
+        }
 
         // M-S1 (§4.C.11) — bind the WHOLE micro-tile A/B input
         // (all `A_NOISED_LEN` packed cells = 32 i8), not just the

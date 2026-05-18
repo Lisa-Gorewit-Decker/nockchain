@@ -2131,17 +2131,34 @@ impl CompositeTrace {
         // balance as long as the sum across all matching rows
         // equals the query count, but a single-row assignment
         // simplifies the trace generator).
-        let mut mat_freq = vec![0u64; n];
-        let mut key_to_first_row: hashbrown::HashMap<(u64, u64, u64), usize> =
+        // §4.C.2 c-exact (cx.2-bus/X1): per-(row, sub-slice)
+        // accounting — the producer publishes 8 sub-slice keys
+        // per row (key s = (MAT_ID, NOISED_PACKED[2s..2s+2]) ×
+        // −MAT_FREQ[s]); a query's freq routes to the FIRST
+        // (row, sub-slice) carrying that key value. ZERO-BLAST:
+        // on current traces sub-slice 0 = the M-S1 store value
+        // (unchanged routing) and sub-slices 1..7 = (MAT_ID,0,0)
+        // ⇒ MAT_FREQ[1..8]=0 / ×0 no-ops; the all-zero key may
+        // route to an earlier (row, s) but LogUp balance is
+        // routing-invariant (Σ producer −freq + Σ query +1 = 0
+        // per key for any single-(row,s) assignment).
+        let fl = crate::composite_layout::MAT_FREQ_LEN; // 8
+        let mut mat_freq = vec![0u64; n * fl];
+        let mut key_to_first_row: hashbrown::HashMap<(u64, u64, u64), (usize, usize)> =
             hashbrown::HashMap::new();
         for r in 0..n {
             let base = r * TOTAL_TRACE_WIDTH;
-            let key = (
-                self.matrix.values[base + MAT_ID].as_canonical_u64(),
-                self.matrix.values[base + NOISED_PACKED_START].as_canonical_u64(),
-                self.matrix.values[base + NOISED_PACKED_START + 1].as_canonical_u64(),
-            );
-            key_to_first_row.entry(key).or_insert(r);
+            let mat_id = self.matrix.values[base + MAT_ID].as_canonical_u64();
+            for s in 0..fl {
+                let key = (
+                    mat_id,
+                    self.matrix.values[base + NOISED_PACKED_START + 2 * s]
+                        .as_canonical_u64(),
+                    self.matrix.values[base + NOISED_PACKED_START + 2 * s + 1]
+                        .as_canonical_u64(),
+                );
+                key_to_first_row.entry(key).or_insert((r, s));
+            }
         }
         for r in 0..n {
             let base = r * TOTAL_TRACE_WIDTH;
@@ -2162,8 +2179,8 @@ impl CompositeTrace {
                         self.matrix.values[base + A_NOISED_START + 2 * j + 1]
                             .as_canonical_u64(),
                     );
-                    if let Some(&tr) = key_to_first_row.get(&a_key) {
-                        mat_freq[tr] += active;
+                    if let Some(&(tr, ts)) = key_to_first_row.get(&a_key) {
+                        mat_freq[tr * fl + ts] += active;
                     }
                 }
                 let b_id = self.matrix.values[base + B_ID].as_canonical_u64();
@@ -2174,8 +2191,8 @@ impl CompositeTrace {
                         self.matrix.values[base + B_NOISED_START + 2 * j + 1]
                             .as_canonical_u64(),
                     );
-                    if let Some(&tr) = key_to_first_row.get(&b_key) {
-                        mat_freq[tr] += active;
+                    if let Some(&(tr, ts)) = key_to_first_row.get(&b_key) {
+                        mat_freq[tr * fl + ts] += active;
                     }
                 }
                 // Queries with no matching table key contribute
@@ -2195,14 +2212,16 @@ impl CompositeTrace {
                     self.matrix.values[base + NOISED_PACKED_START].as_canonical_u64(),
                     self.matrix.values[base + NOISED_PACKED_START + 1].as_canonical_u64(),
                 );
-                if let Some(&tr) = key_to_first_row.get(&key) {
-                    mat_freq[tr] += 1;
+                if let Some(&(tr, ts)) = key_to_first_row.get(&key) {
+                    mat_freq[tr * fl + ts] += 1;
                 }
             }
         }
         for r in 0..n {
-            self.matrix.values[r * TOTAL_TRACE_WIDTH + MAT_FREQ] =
-                <Val as QuotientMap<u64>>::from_int(mat_freq[r]);
+            for s in 0..fl {
+                self.matrix.values[r * TOTAL_TRACE_WIDTH + MAT_FREQ + s] =
+                    <Val as QuotientMap<u64>>::from_int(mat_freq[r * fl + s]);
+            }
         }
 
         // ---- CV_ROUTING bus ----
