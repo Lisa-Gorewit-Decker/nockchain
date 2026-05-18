@@ -409,3 +409,200 @@ fn b1_1c_real_weight_mineable_unit_end_to_end() {
         "real vs synthetic B ⇒ different commitment (weight-sensitive)"
     );
 }
+
+// ── B1.1 (Gemma) — a SECOND real Pearl model ────────────────────
+//
+// `~/Dev/Gemma-4-31B-it-pearl` (`Gemma4ForConditionalGeneration`,
+// model_type `gemma4`; hidden=5376, intermediate=21504, 60
+// layers — matches `MatmulParams::GEMMA_4_31B_FFN`). Same
+// `quant_method:"pearl"` split: group_1 (INT7 per-channel —
+// gate/up/o_proj, the mined Linears) / group_0 (FP8 — q/k/v/qkv
+// + down_proj, out of scope). A *single* 31 GB
+// `model.safetensors` (one header, not sharded). This
+// corroborates Phase B on a second, architecturally-different
+// real production model at its own real μ (k=5376, n=21504).
+//
+// Set `GEMMA_MODEL_DIR` to override; soft-skips if absent
+// (62 GB — CI-safe). Offsets anchored to an independent Python
+// ground truth (R1 — no silently-wrong "golden").
+
+const GEMMA_ST_HEADER_LEN: u64 = 222_920;
+const GEMMA_GATE0_DATA_OFFSET: u64 = 16_312_434_392;
+const GEMMA_K: usize = 5376; // hidden_size = the real contraction dim
+const GEMMA_ORACLE_ROW0_HEAD: [i8; 8] = [-3, 10, 6, -1, -4, -1, -1, -3];
+const GEMMA_ORACLE_ROW63_TAIL: [i8; 8] = [5, -2, 2, -1, 1, -3, 5, -2];
+const GEMMA_ORACLE_MIN: i8 = -61;
+const GEMMA_ORACLE_MAX: i8 = 61;
+const GEMMA_ORACLE_SUM: i64 = 14_361;
+
+fn gemma_model_file() -> Option<std::path::PathBuf> {
+    let dir = std::env::var("GEMMA_MODEL_DIR").unwrap_or_else(|_| {
+        format!(
+            "{}/Dev/Gemma-4-31B-it-pearl",
+            std::env::var("HOME").unwrap_or_default()
+        )
+    });
+    let p = std::path::Path::new(&dir).join("model.safetensors");
+    p.exists().then_some(p)
+}
+
+/// First `TILE_OUT` out-channels of Gemma layer-0
+/// `mlp.gate_proj.weight` (I8 `[21504, 5376]`) — `TILE_OUT ×
+/// GEMMA_K`. Absolute offset = `8 + header_len + tensor_data
+/// _offset` (single-file safetensors).
+fn read_real_gemma_gate_proj_tile(path: &std::path::Path) -> Vec<i8> {
+    use std::io::{Read, Seek, SeekFrom};
+    let mut f = std::fs::File::open(path).expect("open gemma safetensors");
+    let mut len8 = [0u8; 8];
+    f.read_exact(&mut len8).expect("read header len");
+    let hdr_len = u64::from_le_bytes(len8);
+    assert_eq!(
+        hdr_len, GEMMA_ST_HEADER_LEN,
+        "Gemma safetensors header length changed — model differs from \
+         the recorded Python oracle; regenerate"
+    );
+    let abs = 8 + hdr_len + GEMMA_GATE0_DATA_OFFSET;
+    f.seek(SeekFrom::Start(abs)).expect("seek tile");
+    let mut raw = vec![0u8; TILE_OUT * GEMMA_K];
+    f.read_exact(&mut raw).expect("read tile bytes");
+    raw.into_iter().map(|b| b as i8).collect()
+}
+
+fn gemma_one_tile() -> MatmulParams {
+    let p = MatmulParams {
+        m: 64,
+        k: GEMMA_K as u32, // 5376 = the real Gemma contraction dim
+        n: 64,
+        noise_rank: 64, // 64 | 5376 (= 84)
+        tile: 64,
+        spot_checks: 1,
+        difficulty_bits: 0,
+    };
+    p.validate().expect("gemma one-tile params valid");
+    p
+}
+
+/// **B1.1-Gemma a — integrity anchor.** The reader reproduces
+/// the independent Python ground truth bit-for-bit on the second
+/// real model (single-file safetensors, different header/offset/
+/// K). Must pass before the others are meaningful (R1).
+#[test]
+fn b1_1_gemma_a_safetensors_reader_matches_python_oracle() {
+    let Some(p) = gemma_model_file() else {
+        eprintln!("SKIP b1_1_gemma_a: Gemma model absent (GEMMA_MODEL_DIR)");
+        return;
+    };
+    let tile = read_real_gemma_gate_proj_tile(&p);
+    assert_eq!(tile.len(), TILE_OUT * GEMMA_K);
+    assert_eq!(&tile[..8], &GEMMA_ORACLE_ROW0_HEAD, "row0 head ≠ oracle");
+    assert_eq!(
+        &tile[63 * GEMMA_K + GEMMA_K - 8..63 * GEMMA_K + GEMMA_K],
+        &GEMMA_ORACLE_ROW63_TAIL,
+        "row63 tail ≠ oracle"
+    );
+    assert_eq!(*tile.iter().min().unwrap(), GEMMA_ORACLE_MIN);
+    assert_eq!(*tile.iter().max().unwrap(), GEMMA_ORACLE_MAX);
+    assert_eq!(
+        tile.iter().map(|&v| v as i64).sum::<i64>(),
+        GEMMA_ORACLE_SUM,
+        "tile sum ≠ oracle (reader offset/stride wrong)"
+    );
+}
+
+/// **B1.1-Gemma b — B2 quant contract on the REAL Gemma
+/// weights.** The real Gemma `gate_proj` int7 tile is in Pearl
+/// `[−64,64]`, `quant::extract` accepts it, and the mined
+/// integer matmul is bit-lossless on real Gemma data — B2.1 on
+/// a second real model.
+#[test]
+fn b1_1_gemma_b_real_weights_satisfy_pearl_int7_and_b2_lossless() {
+    use ai_pow::quant::{extract, int_matmul, QuantizedGemm};
+    let Some(p) = gemma_model_file() else {
+        eprintln!("SKIP b1_1_gemma_b: Gemma model absent");
+        return;
+    };
+    let wq = read_real_gemma_gate_proj_tile(&p); // [out=64, in=5376]
+    for &v in &wq {
+        assert!(
+            (-64..=64).contains(&(v as i32)),
+            "real Gemma weight {v} ∉ Pearl type-0 [-64,64]"
+        );
+    }
+    let (tok, k, out) = (8usize, GEMMA_K, TILE_OUT);
+    let xq: Vec<i8> =
+        (0..tok * k).map(|i| ((i * 29 + 3) % 127 - 63) as i8).collect();
+    let qg = QuantizedGemm {
+        tokens: tok,
+        in_dim: k,
+        out_dim: out,
+        xq: xq.clone(),
+        wq: wq.clone(),
+        s_x: vec![0.013; tok],
+        s_w: vec![0.017; out],
+    };
+    let op = extract(&qg).expect("real Gemma int7 ⇒ in-domain");
+    let mined = int_matmul(&op);
+    let mut want = vec![0i32; tok * out];
+    for t in 0..tok {
+        for o in 0..out {
+            let mut s = 0i32;
+            for l in 0..k {
+                s += xq[t * k + l] as i32 * wq[o * k + l] as i32;
+            }
+            want[t * out + o] = s;
+        }
+    }
+    assert_eq!(
+        mined, want,
+        "B2 bit-lossless must hold on the REAL Gemma weights"
+    );
+}
+
+/// **B1.1-Gemma c — ai-pow's full audited pipeline on the REAL
+/// Gemma weights at the real μ** (`k=5376, r=64, tile=64`).
+/// `BlockContext::build` on `B = the real Gemma gate_proj tile`
+/// succeeds, is deterministic, weight-sensitive, with
+/// `H_B == matrix_commitment(real bytes)`. "ai-pow mines a
+/// second real production model's weights", end-to-end.
+#[test]
+fn b1_1_gemma_c_real_weight_mineable_unit_end_to_end() {
+    use ai_pow::commit::matrix_commitment;
+    use ai_pow::fiat_shamir::commitment_key;
+    use ai_pow::prover::{params_tag, BlockContext};
+    let Some(p) = gemma_model_file() else {
+        eprintln!("SKIP b1_1_gemma_c: Gemma model absent");
+        return;
+    };
+    let real_b = read_real_gemma_gate_proj_tile(&p); // n·k col-major (n=64,k=5376)
+    let mp = gemma_one_tile();
+    let a: Vec<i8> = (0..(mp.m as usize) * GEMMA_K)
+        .map(|i| ((i * 11 + 2) % 127 - 63) as i8)
+        .collect();
+
+    let hdr = b"b1.1-gemma-block-header";
+    let ctx = BlockContext::build(hdr, &a, &real_b, &mp)
+        .expect("ai-pow must mine the real Gemma weights at real μ");
+    let ctx2 = BlockContext::build(hdr, &a, &real_b, &mp).unwrap();
+    assert_eq!(ctx.h_b_chunk, ctx2.h_b_chunk);
+    assert_eq!(ctx.s_a, ctx2.s_a);
+    assert_eq!(
+        ctx.m_states.iter().map(|s| s.keyed_hash(&ctx.s_a)).collect::<Vec<_>>(),
+        ctx2.m_states.iter().map(|s| s.keyed_hash(&ctx2.s_a)).collect::<Vec<_>>(),
+        "mineable unit must be deterministic on the real Gemma weights"
+    );
+    let kappa = commitment_key(hdr, &params_tag(&mp));
+    let b_bytes: Vec<u8> = real_b.iter().map(|&v| v as u8).collect();
+    assert_eq!(
+        ctx.h_b_chunk,
+        matrix_commitment(&b_bytes, &kappa),
+        "H_B_chunk of the real Gemma weights == Pearl §4.6 chunk-Merkle"
+    );
+    let synth_b: Vec<i8> = (0..(mp.n as usize) * GEMMA_K)
+        .map(|i| ((i * 19 + 5) % 127 - 63) as i8)
+        .collect();
+    let ctx_s = BlockContext::build(hdr, &a, &synth_b, &mp).unwrap();
+    assert_ne!(
+        ctx.h_b_chunk, ctx_s.h_b_chunk,
+        "real vs synthetic Gemma B ⇒ different commitment"
+    );
+}
