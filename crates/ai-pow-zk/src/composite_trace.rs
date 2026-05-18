@@ -3330,7 +3330,7 @@ mod tests {
                         crate::blake3_tree::open_strip(&raw, &key, c0, c1);
                     let strip_bytes = &raw[c0 * 1024..c1 * 1024];
                     let mut t = CompositeTrace::baseline_min();
-                    let (_n, strip_root) = t.place_matrix_strip_opening(
+                    let (n, strip_root) = t.place_matrix_strip_opening(
                         0,
                         strip_bytes,
                         c0,
@@ -3344,6 +3344,16 @@ mod tests {
                     assert_eq!(
                         strip_root, full_root,
                         "strip [{c0},{c1}) of {nc} chunks != committed root"
+                    );
+                    // Phase A-CR (CR.0): the params-pure row count
+                    // matches the actual placement, for every
+                    // (nc, c0, c1) — `row_schedule`/`canonical_
+                    // program` rely on this for the strip-opening
+                    // A/B regions.
+                    assert_eq!(
+                        n,
+                        crate::blake3_tree::strip_opening_rows(c0, c1, nc),
+                        "strip_opening_rows({c0},{c1},{nc}) != placed rows"
                     );
                 }
             }

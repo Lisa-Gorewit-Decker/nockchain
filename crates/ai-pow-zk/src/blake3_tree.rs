@@ -211,6 +211,46 @@ pub fn tile_chunk_range(
     (c0, c1, num_chunks)
 }
 
+/// **Phase A-CR (CR.0).** The number of trace rows
+/// [`crate::composite_trace::CompositeTrace::place_matrix_strip_opening`]
+/// consumes for the opening of `[c0,c1)` within `num_chunks`
+/// total chunks — a **pure function of `(c0,c1,num_chunks)`**
+/// (verifier-fixed from `(params, tile_i/j)` via
+/// [`tile_chunk_range`]; no witness). It mirrors `place_matrix_
+/// strip_opening`'s fold *exactly*: 8 rows per BLAKE3
+/// compression; a fully-inside leaf chunk = 16 compressions; a
+/// fully-outside subtree = an auth sibling (0 rows); a straddling
+/// node = recurse L+R then +1 parent compression; the lone-chunk
+/// case = 16 compressions. This is the params-pure row-count the
+/// CR.0 schedule (and `canonical_program`) needs for the
+/// strip-opening A/B regions. KAT'd `== place_matrix_strip_
+/// opening`'s actual row advance.
+pub fn strip_opening_rows(c0: usize, c1: usize, num_chunks: usize) -> usize {
+    assert!(c0 < c1 && c1 <= num_chunks, "range [{c0},{c1}) out of 0..{num_chunks}");
+    // Fully-recomputed subtree [lo,hi) ⊆ [c0,c1): leaves = 16
+    // compressions each; internal node = +1 parent compression.
+    fn inside(lo: usize, hi: usize) -> usize {
+        if hi - lo == 1 {
+            return 16;
+        }
+        let mid = lo + left_len((hi - lo) as u64) as usize;
+        inside(lo, mid) + inside(mid, hi) + 1
+    }
+    // The fold over the full tree [lo,hi) opening [c0,c1).
+    fn fold(lo: usize, hi: usize, c0: usize, c1: usize) -> usize {
+        if hi <= c0 || lo >= c1 {
+            return 0; // auth sibling — no rows
+        }
+        if c0 <= lo && hi <= c1 {
+            return inside(lo, hi);
+        }
+        let mid = lo + left_len((hi - lo) as u64) as usize;
+        fold(lo, mid, c0, c1) + fold(mid, hi, c0, c1) + 1
+    }
+    let compressions = if num_chunks == 1 { 16 } else { fold(0, num_chunks, c0, c1) };
+    compressions * 8
+}
+
 /// One off-range sibling on a strip's authentication path: the
 /// subtree-root CV of a chunk range disjoint from the opening,
 /// in the deterministic post-order the [`verify_strip_opening`]
