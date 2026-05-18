@@ -94,12 +94,21 @@ vague — external). Phase E is cross-cutting.
 > ≈M-S1-magnitude ⇒ staged, KAT-first, **not rushed** per
 > `~/.claude/CLAUDE.md` R1) **→ c-exact** (co-locate store onto
 > strip-opening leaves via C3; position-exact, zero-gap)
-> scoped as the Phase-A3 residual. §4.C.2-with-A3.2b is already
-> strictly stronger than pre-A3 and **not a forgery hole**
-> (CRIT-1 + §4.D + §6 + M-S1 + A2 + the noise pin hold). The
-> production-critical unblocker (A2) is done. Detail +
-> c-mset.0–3 / c-exact staged plan:
-> `SEC_4C2_NOISE_BINDING_DESIGN.md`.
+> scoped as the Phase-A3 residual. **c-mset.0 ✅ + c-mset.1a ✅
+> DONE** (`2c2d7c6`): KAT-first de-risk at the exact `BUS_PLAIN`
+> AIR key proved `consumer ⊆ producer` (LogUp balance premise)
+> holds **iff `16|r`** — production is always `16|r` (Pearl
+> §4.8); `TEST_SMALL` r=4 is not (proven negative). **Residual
+> = c-mset.1b/.2/.3** (`16|r`-gated emission + Route-A on a
+> `16|r` §6(b)-live single-STARK geometry `P16`, not
+> `TEST_SMALL`); **one open maintainer decision** — the
+> producer-row-isolation mechanism (dedicated selector vs
+> in-AIR tweak-flag decode; both touch the CRIT-1-pinned
+> program). §4.C.2-with-A3.2b is already strictly stronger than
+> pre-A3 and **not a forgery hole** (CRIT-1 + §4.D + §6 + M-S1
+> + A2 + the noise pin hold). The production-critical unblocker
+> (A2) is done. Detail + c-mset.0/.1a/.1b/.2/.3 / c-exact
+> staged plan: `SEC_4C2_NOISE_BINDING_DESIGN.md`.
 
 | # | Item | Depends | Exit gate |
 |---|---|---|---|

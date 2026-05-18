@@ -14,10 +14,22 @@
 > KAT-first, not rushed (R1)**; it is itself ≈M-S1-magnitude
 > (M-S1's one bus took a long staged arc). c-exact (position-
 > exact, zero-gap) is the documented Phase-A3 residual after
-> c-mset. Soundness meanwhile: CRIT-1 + §4.D + §6 + M-S1 + A2 +
-> the A3.2b noise pin hold; §4.C.2 with A3.2b is already
-> *strictly stronger than pre-A3* (store noise = public-seed
-> Pearl noise, not prover-chosen) and **not a forgery hole**.
+> c-mset. **c-mset.0 ✅ + c-mset.1a ✅ DONE & validated**
+> (`2c2d7c6`): the KAT-first de-risk at the *exact `BUS_PLAIN`
+> AIR key* proved `consumer ⊆ producer` (the LogUp balance
+> premise) holds **iff `16|r`** (production is always `16|r` per
+> Pearl §4.8; `TEST_SMALL` r=4 is not — proven negative). This
+> converts the c-mset.1 sketch into an exact validated spec;
+> **residual = c-mset.1b/.2/.3** (`16|r`-gated emission +
+> Route-A on a `16|r` §6(b)-live single-STARK geometry, not
+> `TEST_SMALL`), with one **open maintainer decision** (the
+> producer-row-isolation mechanism — new selector vs in-AIR
+> tweak-flag decode; both touch the CRIT-1-pinned program; see
+> §3′ c-mset.1b). Soundness meanwhile: CRIT-1 + §4.D + §6 +
+> M-S1 + A2 + the A3.2b noise pin hold; §4.C.2 with A3.2b is
+> already *strictly stronger than pre-A3* (store noise =
+> public-seed Pearl noise, not prover-chosen) and **not a
+> forgery hole**.
 >
 > **Status:** DESIGN — **CORRECTED 2026-05-17 (A3.0 finding).**
 > The original §3 proposed a heavy in-circuit BLAKE3-keyed
@@ -259,19 +271,64 @@ over `noise(committed A,B)`.
 - **A3.2c (B1 plain tie) — c-mset interim, staged (maintainer
   hybrid decision; ≈M-S1-magnitude new LogUp bus ⇒ R1 staged,
   not rushed):**
-  - **c-mset.0** off-circuit/KAT de-risk (the M-S1 coverage-net
+  - **c-mset.0 ✅** off-circuit/KAT de-risk (the M-S1 coverage-net
     / P-B.2.0 discipline): against the real bridge geometry,
-    the strip-opening's committed-plain byte-window multiset ⊇
-    the store `MAT_UNPACK` window multiset (the property the
-    bus enforces) — no AIR change.
-  - **c-mset.1** add `BUS_PLAIN`: strip-opening leaf rows
-    *publish* committed-plain 8-byte windows; store rows
-    *query* `MAT_UNPACK`. AIR `push_interaction` + bus const.
+    every store `MAT_UNPACK` window's *real bytes* == committed
+    plain at contiguous positions inside the hashed span
+    (`5436f89`). Necessary but — as c-mset.1a showed — **not
+    sufficient** for a balancing bus (it `continue`d past
+    zero-pad).
+  - **c-mset.1a ✅ DONE 2026-05-17 (`2c2d7c6`)** — KAT-first
+    de-risk at the **exact `BUS_PLAIN` AIR key** (no AIR change;
+    the P-B.2.0/c-mset.0 discipline carried one level deeper):
+    - **Producer** = strip-opening leaf-chunk **round-0
+      (`IS_NEW_BLAKE`)** rows' *unpermuted* `BLAKE3_MSG` (16
+      u32-LE words = the 64 committed bytes of each hashed
+      block; rows 1..7/finalize hold the *permuted* schedule —
+      must NOT be read), split into the 8 disjoint word-pair
+      windows `(BLAKE3_MSG[2j], BLAKE3_MSG[2j+1])`, j∈0..8,
+      over the opened strip `[c0,c1)` only.
+    - **Consumer** = store-row plain `MAT_UNPACK` window, packed
+      identically (u32-LE of `UINT8_DATA` = `polyval(.,256)` per
+      4 bytes).
+    - **Validated FINDING:** `consumer ⊆ producer` (the exact
+      LogUp balance premise) holds **iff `16 | r`** — then every
+      store window is 8 *dense* contiguous committed bytes,
+      8-aligned in the row/col-major matrix, == one producer
+      word-pair. Pearl §4.8 pins `r ∈ {2⁵..2¹⁰}` (every value a
+      multiple of 16) ⇒ **production is always clean**;
+      `TEST_SMALL` (`r=4`) is **not** (zero-pad tail, no
+      committed counterpart — proven by the test's negative
+      assertion). POSITIVE validated on `r=16` (single-chunk)
+      **and** `r=32` (multi-chunk) §6(b)-live single-STARK
+      geometries.
+  - **c-mset.1b (next; residual)** add `BUS_PLAIN` const +
+    `PLAIN_FREQ` column + `push_interaction`: producer on the
+    strip-opening leaf-chunk round-0 rows; consumer on store
+    rows. **Emission `16|r`-gated** (params-derived, the
+    existing PROD-gating discipline — Pearl is always `16|r`;
+    `TEST_SMALL` r=4 stays inert so its Route-A tests are
+    untouched). **OPEN MAINTAINER DECISION (soundness-AIR
+    shape):** the producer must fire *only* on matrix-leaf-chunk
+    round-0 rows, never on parent compressions (message =
+    `left‖right` CVs, not committed bytes) or C2/C4/jackpot
+    BLAKE3. No existing selector isolates this. Options, both
+    invasive to the **CRIT-1-pinned program**: (i) a dedicated
+    selector set by `place_leaf_chunk` on leaf round-0 rows
+    (new `SELECTOR_COL` ⇒ width/preprocessed/CRIT-1-rebuild/all
+    layout-assert/all Route-A-baseline ripple); (ii) decode the
+    BLAKE3 tweak flags (`F_CHUNK_START & F_KEYED_HASH &
+    !F_PARENT`) from the packed `CV_OR_TWEAK_PREP` in-AIR (no
+    width change; adds tweak-decode constraint logic to the
+    pinned program). Decision required before the AIR change.
   - **c-mset.2** `populate_lookup_freq` accounting for the new
-    bus (producer freq); honest balance.
-  - **c-mset.3** Route-A + debug-assertions-ON + adversarial: a
-    store `MAT_UNPACK` ∉ the committed-plain multiset rejects;
-    full `ai-pow-zk --lib` + `ai-pow --features zk`. (The
+    bus (producer `PLAIN_FREQ`); honest balance.
+  - **c-mset.3** Route-A on a **`16|r` §6(b)-live single-STARK
+    geometry** (`P16 = {m:16,k:64,n:16,noise_rank:16,tile:8}` —
+    c-mset.1a-confirmed §6(b)-live & single-STARK; **NOT**
+    `TEST_SMALL`) + debug-assertions-ON + adversarial (a store
+    `MAT_UNPACK` ∉ the committed-plain multiset rejects); full
+    `ai-pow-zk --lib` + `ai-pow --features zk`. (The
     LogUp-coupling / unit≠Route-A hazard — M-S1 lesson — gates
     every sub-step.)
   After c-mset: §4.C.2 = "every swept `a′` = (some committed
