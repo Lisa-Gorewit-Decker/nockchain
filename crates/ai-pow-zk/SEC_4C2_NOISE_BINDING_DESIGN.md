@@ -696,3 +696,84 @@ stay green with no value change.
   `fold_schedule_consistent_control_prep_verifies`) per-row
   clean. **⇒ cx.1 COMPLETE: the generalized C3's leaf
   word-pair is verifier-fixed; the prover cannot choose it.**
+
+### 8.5 cx.2.0 — structural de-risk FINDING (no AIR/trace-gen change)
+
+Grounding cx.2 (co-locate the M-S1 store rows onto the
+strip-opening leaf round-0 rows so the generalized C3 binds the
+real store) in the live code surfaced — *before* any invasive
+trace-gen change, the R1 KAT-first discipline — two facts:
+
+1. **The `noised_packed` LogUp interaction is NOT the blocker.**
+   Co-location sets `IS_MSG_MAT=1` on the store/leaf row ⇒ the
+   M52 BLAKE3-side self-query fires
+   (`composite_full_air_with_lookups::bus_emit::noised_packed`,
+   `populate_lookup_freq` §2186-2197 `if is_msg_mat==1`). This
+   is **already modelled** (the M52 self-referential pattern:
+   the row both publishes `(MAT_ID,NOISED_PACKED)×−MAT_FREQ` and
+   self-queries `×+1`; `key_to_first_row` routing balances it).
+   No new freq logic needed.
+
+2. **THE BLOCKER (the long-flagged granularity core
+   difficulty, now concrete).** `place_leaf_chunk` places
+   **exactly one** BLAKE3 compression — one round-0
+   (`IS_NEW_BLAKE`) row — per 64-byte block; it **cannot be
+   duplicated** (the strip-opening fold expects the exact
+   compression sequence — duplicating breaks the BLAKE3 tree ⇒
+   the recomputed root ≠ `HASH_A`). But a 64-byte block holds
+   **up to 8** distinct swept store windows
+   (`p = (idx%64)/8 ∈ 0..8`), and the generalized C3 binds
+   **one** 8-byte `UINT8_DATA` window per row (the
+   `CONTROL_PREP`-pinned `msg_pair`). ⇒ naive
+   1-store-row-per-leaf co-location leaves **≤7 swept windows
+   per block with no C3-binding row**. C3 would bind only one
+   window per block; the rest of the sweep stays plain-unbound.
+
+⇒ cx.2 is **not** a mechanical "co-locate"; it needs a
+structural decision (a genuine design fork — surface to the
+maintainer, the c-mset.1a→decision pattern):
+
+- **(X1) Widen `UINT8_DATA` 8→64 + per-word C3 on the single
+  leaf round-0 row.** One row/block carries all 64 committed
+  bytes; generalized C3 binds all 16 message words to the
+  64-wide `UINT8_DATA`. M-S1 store windows for that block are
+  8-byte sub-slices of that row's `UINT8_DATA` (an intra-row
+  read, no extra rows). Heaviest width ripple
+  (`UINT8_DATA` + dependents + i8u8/urange8 bus emissions all
+  8→64) but **structurally clean** (1 row/block, the real
+  compression; binds the *entire* hashed block ⇒ every swept
+  window in it is covered). Likely the correct end state.
+- **(X2) Multi-row block: 1 real compression row + ≤7
+  "shadow" C3-only rows** carrying the same block's
+  `BLAKE3_MSG` (for C3's `base256` recomposition) but
+  `IS_NEW_BLAKE=0` (no compression, no hash-chain
+  perturbation) and a per-row `msg_pair`. Needs C3's gate
+  decoupled from `IS_NEW_BLAKE` (a new "C3-active" pin) +
+  binding the shadow rows' `BLAKE3_MSG` to the real
+  compression row's (else the prover forges shadow message
+  words) — re-introduces an intra-block indirection ≈ the
+  c-mset complexity c-exact was chosen to avoid.
+- **(X3) Restrict the M-S1 store to ≤1 window per leaf
+  block** (coarsen the sweep-chunk↔store granularity to
+  64-byte). Changes M-S1's established 8-byte chunking ⇒
+  re-opens M-S1's noised_packed balance (high regression
+  surface). Disfavoured.
+
+**Recommendation: X1** (widen `UINT8_DATA` to 64) — the only
+option that is both structurally clean (1 row/block = the real
+compression, binds the whole hashed block) and free of a new
+intra-block indirection. Its cost is a known, mechanical width
+ripple (the cx.1b-layout discipline, at larger scale), staged
++ zero-blast-able (default still binds the same bytes).
+
+**STATUS: cx.1 COMPLETE & exhaustively validated (cx.0/cx.1a/
+cx.1b-layout/cx.1b-constraints/cx.1c, 5 commits).** cx.2 is
+**blocked on the X1/X2/X3 maintainer decision** (a soundness-
+structural fork uncovered by the KAT-first de-risk, exactly as
+intended — *before* an invasive trace-gen change). Per R1 this
+is the validated-subset + precise-residual + surfaced-decision
+stop; cx.2's trace-gen integration is **not** to be rushed
+across this fork. Next once decided: cx.2.1 (the chosen
+structure's KAT de-risk) → cx.2.2 (trace-gen in
+`place_matrix_strip_opening`/bridge) → cx.3 (16|r `P16`
+Route-A + position-exact adversarial) → A3.3.
