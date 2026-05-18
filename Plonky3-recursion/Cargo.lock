@@ -1243,6 +1243,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "p3-tip5-circuit-air"
+version = "0.1.0"
+dependencies = [
+ "p3-air",
+ "p3-field",
+ "p3-goldilocks",
+ "p3-matrix",
+ "p3-test-utils",
+ "p3-uni-stark",
+]
+
+[[package]]
 name = "p3-uni-stark"
 version = "0.5.1"
 source = "git+https://github.com/Plonky3/Plonky3.git?rev=6de5cba7c429dd89a219a3ac9849dd27b901af0e#6de5cba7c429dd89a219a3ac9849dd27b901af0e"

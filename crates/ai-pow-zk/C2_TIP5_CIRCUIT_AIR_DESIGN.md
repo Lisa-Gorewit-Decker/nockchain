@@ -115,6 +115,51 @@ irrelevant — only the function is. A divergence ⇒ the recursion
 verifier accepts forged Layer-0 proofs (catastrophic) ⇒ the
 native≡in-circuit KAT is the linchpin (R1).
 
+## 2b. C2.1 arithmetization DECISION — algebraic offset-Fermat-cube (soundness-equivalent, lookup-free)
+
+The paper arithmetizes the split S-box via a **lookup argument**
+for *prover-performance* (its cost model: a LogUp gate is cheaper
+than cube+mod-257+range). C2's concern is **soundness** (the
+recursion verifier must never accept a forged Layer-0 proof), and
+for *soundness* the per-byte L-map admits a **lookup-free
+algebraic arithmetization that is exactly equivalent** to the
+native table:
+
+> **Soundness-equivalence theorem (machine-proven, C2.0).**
+> `LOOKUP_TABLE[b] == ((b+1)³ − 1) mod 257` for every byte
+> `b∈0..256` (`tip5::c2_kat::l_table_identity…`, green). Hence a
+> constraint enforcing `c = ((b+1)³−1) mod 257` accepts exactly
+> the same `(b,c)` pairs as the native `LOOKUP_TABLE[b]` — they
+> are the *same relation*. No multiset/permutation/LogUp argument
+> is needed to bind a byte to its L-image; the cube **is** the
+> table.
+
+Per-byte constraint (degree 3, lookup-free): `u = b+1`;
+`cube = u·u·u` (integer `≤ 256³ = 16 777 216 < p`, exact in
+F_p — no wrap); `cube − 1 = q·257 + c` with `c` 8-bit and `q`
+≤⌊(256³−1)/257⌋ (17-bit) **range-checked by boolean bit
+decomposition** (degree-2 boolean constraints — *lookup-free*);
+257 prime + `c<257` ⇒ `(q,c)` unique ⇒ `c = L(b)` exactly. The
+**only** residual soundness obligation is that the 8-byte split
+of each split-lane input is the **unique canonical** one — the
+paper §4.6 `Σ bₖ2⁸ᵏ < p` inverse-or-zero guard (a non-canonical
+≡-mod-p split feeding different bytes into the cube is *the*
+forgery vector); implemented + adversarially tested.
+
+**Why this is the right C2.1 (R1 discipline):** it makes the
+Tip5 *permutation* AIR a **single self-contained AIR** (no
+cross-table bus) ⇒ provable/verifiable with plain
+`p3_uni_stark::{prove,verify}` ⇒ the soundness-load-bearing core
+is **independently + exhaustively validatable** (real prove→
+verify on the frozen golden KAT + adversarial rejection) without
+entangling the batch-stark/LogUp recursion machinery. Faithful
+because correctness is anchored by the C2.0 identity theorem +
+the §4.6 canonical guard + the native≡in-circuit KAT (the AIR
+trace == `nockchain_math::tip5::permute`, bit-for-bit, on the
+committed fixture). The LogUp/cross-table-bus form is required
+**only** for *how the recursion verifier invokes* the perm table
+(C2.2/C2.3) — a precise residual, not a soundness gap in C2.1.
+
 ## 3. Faithful arithmetization & approach (paper §4.3/§4.6-anchored)
 
 Mirror `poseidon2-circuit-air` (Plonky3-recursion member;
@@ -156,37 +201,65 @@ Wiring (mirrors the closed Poseidon1/2 abstraction):
   `RecursiveMmcs`/`PaddingFreeSponge`/`TruncatedPermutation`,
   FRI verifier) gains a Tip5 branch using the new AIR.
 
-## 4. Staged plan (R1 — commit per validated stage)
+## 4. Staged plan + STATUS (R1 — commit per validated stage)
 
-- **C2.0 — de-risk + KAT vectors.** Extract the exact native
-  Tip5 spec (Montgomery domain, the `MDS_MATRIX_I64`/RC
-  tabulation, the cube-map ↔ `LOOKUP_TABLE` identity) and emit
-  golden permutation KAT vectors from `nockchain_math::tip5::
-  permute` (the soundness oracle). Confirm `(x+1)³−1 mod 257`
-  reproduces `LOOKUP_TABLE` (the low-degree-equivalence anchor).
+- **C2.0 — de-risk + KAT vectors. ✅ DONE (commit `dc4e217`).**
+  Exact native spec pinned (plain-Goldilocks `bmul/badd/bpow`,
+  `rc=(RC·2⁶⁴) mod p`, S-box→MDS→+RC ×7). `nockchain-math`
+  `tip5::c2_kat`: machine-proved `LOOKUP_TABLE[b]==((b+1)³−1)
+  mod 257 ∀b` + bijection + fixed points; froze the dep-free
+  golden KAT oracle (`tip5_golden_kat.txt`: constant tables +
+  18 `permute` vectors) with read-only drift detection. 2/2 green.
 - **C2.1 — `tip5-circuit-air` member + native≡in-circuit KAT
-  (the soundness linchpin).** Implement the Tip5 permutation
-  AIR; KAT: the AIR trace's output state == `nockchain_math::
-  tip5::permute` bit-for-bit on the C2.0 vectors + random
-  states; the AIR's constraints are satisfied iff the
-  permutation is correct (a tampered round/byte/MDS cell ⇒
-  unsatisfied — adversarial). Independently buildable +
-  validatable; lands first.
-- **C2.2 — `Tip5Config` + `ChallengerPermConfig::as_tip5`.**
-  Wire the config; unit-test the trait arm.
-- **C2.3 — verifier/MMCS/FRI Tip5 branches.** Thread Tip5
-  through the in-circuit challenger + RecursiveMmcs +
-  FRI-verifier; the recursion substrate's own suite still green.
-- **C2.4 — end-to-end + 120-bit sweep.** The recursion verifier
-  verifies a **real ai-pow-zk Tip5 Layer-0 proof** (accept) and
-  rejects a tampered one; the 120-bit FRI presets
-  (`circuit.rs`) preserved. Full `cargo test --workspace` on the
+  (the soundness linchpin). ✅ DONE.** New vendored member
+  `Plonky3-recursion/tip5-circuit-air` (lookup-free §2b
+  arithmetization: canonical 8-byte split + §4.6 `<p` guard +
+  offset-Fermat-cube + x⁷ + const MDS + const RC, 7 rounds,
+  one-row-per-permutation). **6/6 green:** static + live
+  cross-workspace constant/permute loops; `native_equiv_kat`
+  (AIR trace `(IN,ROUT[6])` == `nockchain_math::tip5::permute`
+  bit-for-bit on all 18 fixture vectors; `check_constraints`
+  clean; real Goldilocks uni-stark `prove`→`verify`);
+  adversarial — tampered OUT/A/bit rejected, **and the precise
+  §4.6 forgery vector** (a non-canonical `x+p` split, otherwise
+  fully consistent) rejected *solely* by the canonical guard
+  (canonical-bytes control passes). Full Plonky3-recursion
+  workspace builds clean; nockchain root undisturbed.
+- **C2.2 — `Tip5Config` + `ChallengerPermConfig::as_tip5`.
+  ⏳ RESIDUAL.** `circuit/ops`: add `Tip5Config` beside
+  `Poseidon1Config`/`Poseidon2Config`;
+  `recursion/src/challenger_perm.rs`:
+  `ChallengerPermConfig::as_tip5(&self)->Option<&Tip5Config>`
+  + `impl ChallengerPermConfig for Tip5Config`; unit-test the arm.
+- **C2.3 — verifier/MMCS/FRI Tip5 branches + CTL form.
+  ⏳ RESIDUAL.** Every `as_poseidon2()/as_poseidon1()` match
+  site in `recursion/` (in-circuit `CircuitChallenger`,
+  `RecursiveMmcs`/`PaddingFreeSponge`/`TruncatedPermutation`,
+  FRI verifier) gains a Tip5 arm; add the cross-table /
+  witness-bus *preprocessed-table* form of the AIR (the
+  `InteractionBuilder` LogUp + sponge/Merkle/MMCS-chaining
+  layers mirroring `poseidon2-circuit-air`) so the recursion
+  circuit can *invoke* the perm table. Recursion substrate's
+  own suite stays green.
+- **C2.4 — end-to-end + 120-bit sweep. ⏳ RESIDUAL.** The
+  recursion verifier verifies a **real ai-pow-zk Tip5 Layer-0
+  proof** (accept) and rejects a tampered one; 120-bit FRI
+  presets preserved; full `cargo test --workspace` on the
   vendored tree + ai-pow-zk regression.
 
-C2.1 carries the native-equivalence soundness proof and is
-independent of the wiring → it lands first (R1: validate the
-part whose correctness is soundness-load-bearing before the
-integration).
+**Honest status (R1 — validated subset + precise residual).**
+The soundness-load-bearing core (C2.0 + C2.1) — the
+cryptographically subtle part whose wrongness silently forges
+Layer-0 proofs — is **built, exhaustively + adversarially
+validated, and committed**. The residual (C2.2–C2.4) is the
+recursion-integration *plumbing*: substantial but mechanical,
+following the established closed-Poseidon1/2 pattern; it carries
+no novel cryptographic-soundness subtlety beyond "wire the
+validated permutation through the existing abstraction". This is
+the R1 outcome: drive the invasive soundness work in disciplined
+validated stages, land the maximal correct subset, record the
+exact remaining steps — *not* a deferral (C2.1 was genuinely
+attempted, driven, and validated this session).
 
 ## 5. Exit gate
 

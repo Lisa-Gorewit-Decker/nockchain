@@ -1,0 +1,23 @@
+[package]
+name = "p3-tip5-circuit-air"
+description = "A from-scratch AIR for the Nockchain 7-round Tip5 permutation (C2/M-S4), faithful to nockchain-math::tip5::permute and KAT-anchored to its frozen golden oracle."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+keywords.workspace = true
+categories.workspace = true
+
+[dependencies]
+p3-air.workspace = true
+p3-field.workspace = true
+p3-goldilocks.workspace = true
+p3-matrix.workspace = true
+
+[dev-dependencies]
+p3-test-utils.workspace = true
+p3-uni-stark.workspace = true
+
+[lints]
+workspace = true
