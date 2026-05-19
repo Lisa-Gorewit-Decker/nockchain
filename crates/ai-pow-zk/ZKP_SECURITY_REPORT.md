@@ -242,6 +242,20 @@ path, §6(b) keystone gated **off** via `sx_bound` — a value the
 P-A/P-B/P-C path** (Pearl §4.8 param caps so one tile = one
 STARK + raise the Layer-0 ceiling + vertical-recursion cert;
 maintainer γ decision 2026-05-17 — `M_S2_PEARL_EVALUATION.md`).
+*[2026-05-19, recursion-milestone scope — NOT the
+MAT_UNPACK-binding "C3": the recursion milestone **C3/M-S5**
+("vertical-recursion cert") was **re-scoped** to the
+soundness-correct **≥120-bit** cert (LANDED + independently
+re-validated; honest real sizes L1≈2.69 MB / L2≈1.79 MB; every
+chain link ≥120-bit; all 5 inner sweep profiles accept +
+tamper-reject; fenced linchpin byte-identical). The **≤65 KB**
+size target is **carved out → deferred M-S5b** (a substrate
+addition not in the current `Plonky3-recursion`; §14 proved
+≤65 KB unreachable at any real ≥120-bit tier — only at the
+~5-bit testing tier, a soundness trade the maintainer rejected).
+Earlier "≤65 KB" wording is the deferred M-S5b target, not a C3
+acceptance gate. See `C3_OUTER_CERT_DESIGN.md` §13.2/§14/§15,
+`PRODUCTION_ROADMAP.md` C3/M-S5b.]*
 *[Corrected: previously "G3 (segmentation + M12)"; Pearl caps
 params and never segments, so G3 carry-segmentation is
 **deferred** to the beyond-Pearl-envelope case only. No

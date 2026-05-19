@@ -743,7 +743,7 @@ fn tip5_layer0_outer_cert_lb6() {
 // ---------------------------------------------------------------------
 
 #[test]
-#[ignore = "C3/#124 M-S5 ≤65KB residual: actual D=2 Tip5-L0 cert ~117KB, ORTHOGONAL & fix-independent to the (landed, validated) DT-4 soundness fix — see C3_OUTER_CERT_DESIGN.md §13.1; remove #[ignore] when the cert-size residual is closed"]
+#[ignore = "DEFERRED terminal-compression milestone (≤65KB), NOT C3/M-S5: C3/M-S5 is RE-SCOPED to the soundness-correct ≥120-bit vertical-recursion cert (LANDED — see test_tip5_layer0_compression.rs c3_stage_a/b/c_* and C3_OUTER_CERT_DESIGN.md §13.2/§14). The ≤65KB size bar (actual D=2 Tip5-L0 cert ~117KB, ORTHOGONAL & fix-independent to the DT-4 soundness fix) is now a SEPARATE future terminal-compression milestone (size-targeted SNARK/STARK-to-SNARK wrap / proof-folding / smaller AIR); the EXACT unrelaxed `serialized_len <= 65_536` assert below is preserved verbatim and stays #[ignore]d until that deferred milestone closes it"]
 fn tip5_layer0_outer_cert_size_residual() {
     // Measure the serialized PROD `BatchStarkProof` length and assert
     // the EXACT unrelaxed ≤65 KB M-S5 bar. Also print the measured

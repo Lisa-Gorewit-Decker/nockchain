@@ -314,7 +314,21 @@ verifier-set `sx_bound` (sound as CRIT-1); closing it = **the
 Pearl-faithful P-A/P-B/P-C path** (adopt Pearl §4.8 param caps so
 one tile = one STARK + raise the Layer-0 ceiling toward Pearl's
 `≤2²²` + vertical-recursion certificate — `M_S2_PEARL_EVALUATION.md`,
-maintainer γ decision 2026-05-17). *[Corrected: this previously
+maintainer γ decision 2026-05-17).
+*[2026-05-19, recursion-milestone scope — distinct from the
+MAT_UNPACK↔BLAKE3_MSG "C3" gap above: the recursion milestone
+**C3/M-S5** ("vertical-recursion certificate") was **re-scoped**
+to the soundness-correct **≥120-bit** cert (LANDED +
+independently re-validated; honest real sizes L1≈2.69 MB /
+L2≈1.79 MB; end-to-end ≥120-bit; all 5 inner sweep profiles
+accept + tamper-reject; fenced linchpin byte-identical; DT-4
+duplex binding intact). The **≤65 KB** size bar is **deferred →
+new milestone M-S5b** (size-targeted SNARK/fold wrap not in the
+current substrate; §14 proved ≤65 KB unreachable at any real
+≥120-bit tier — recursion diverges; only the ~5-bit testing
+tier hits ≤65 KB, a soundness trade the maintainer rejected).
+See `C3_OUTER_CERT_DESIGN.md` §13.2/§14/§15,
+`PRODUCTION_ROADMAP.md` C3/M-S5b.]* *[Corrected: this previously
 said "closing it = G3 (segmentation+M12)"; G3 carry-segmentation
 has no Pearl precedent and is **deferred** — Pearl caps params so
 it never segments. No production spot-check exists

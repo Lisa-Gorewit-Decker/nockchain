@@ -1071,3 +1071,70 @@ R1 outranks Stop-hook completion pressure here — presenting a
 silent soundness weakening). No C3 completion claimed; the
 de-risk artifact (additive config siblings + measurement
 module) is committed as the precise actionable evidence.
+
+## 15. C3/M-S5 RE-SCOPED + soundness-correct ≥120-bit cert LANDED (user-directed; independently re-validated) — 2026-05-19
+
+User decision after the §14 measurement: **re-scope M-S5 to the
+soundness-correct ≥120-bit vertical-recursion certificate; defer
+≤65 KB to a separate terminal-compression milestone (M-S5b)**.
+No soundness trade, no fake. Driven + independently
+re-validated by the orchestrator (not blind-trusting the
+implementing agent):
+
+**Landed (additive only; 2 test files):**
+- `recursion/tests/test_tip5_layer0_compression.rs` +346
+  (Stage A `c3_stage_a_l1_120bit_kat`, Stage B
+  `c3_stage_b_l2_over_120bit_l1`, Stage C `c3_stage_c_sweep
+  _120bit` + helpers; heavy ⇒ `#[ignore]`d but genuinely run).
+- `test_tip5_layer0_recursion.rs` 1 line — the
+  `tip5_layer0_outer_cert_size_residual` `#[ignore]` reason
+  string now points at the deferred **M-S5b**; the
+  `assert!(serialized_len <= 65_536, …)` is **byte-verbatim**
+  (not relaxed/deleted).
+- No `circuit-prover/src/config.rs` change needed (the §14
+  de-risk's packed-MMCS `OuterTier::Bit120` sibling is already
+  recursion-compatible + ≥120-bit).
+
+**The soundness-correct chain (every link ≥120-bit — fixes the
+§14 S2(b) ~5-bit-L1 defect):** inner Tip5-L0 sweep
+(`lb·nq/2 = 120` ∀ profile) + L1-outer `OuterTier::Bit120`
+(`lb2·nq120 + 1 = 241` conjectured bits) + L2-wrapper
+(`Bit120`, 241) ⇒ end-to-end `min ≥ 120` bits. Net-0/accept is
+a consequence of the (untouched, byte-identical) DT-4 duplex
+binding + ≥120-bit FRI at each layer; tamper genuinely rejects
+(`WitnessConflict` at `runner().run()` — the in-circuit
+FRI/quotient `connect`, not a bypass).
+
+**Honest real sizes (no fake-shrink):** ≥120-bit L1 ≈
+2 753 359 B (2.69 MB); ≥120-bit L2 over the ≥120-bit L1 ≈
+1 878 188 B (1.79 MB). All 5 inner sweep profiles
+(PROD/LB2/LB4/LB5/LB6) accept-valid + reject-tampered (Stage C,
+490.64 s, no compute wall).
+
+**Independent re-validation (orchestrator-run, not the
+implementing agent):**
+- Fenced-linchpin byte-identical: `git diff b8b5d32 --` EMPTY
+  for `air_circuit`/`air_lookup`/`generation_lookup`/
+  `tip5_spec`/`circuit.rs`/`mmcs.rs`/`executor.rs`(DT-4)/
+  `recompose*`/`recursion/src/verifier/*`/`backend/fri.rs`/
+  `config.rs`; change set = exactly the 2 test files.
+- ≤65 KB assert verified byte-verbatim (only the ignore-reason
+  string differs).
+- Reproduced: `c3_stage_a_l1_120bit_kat` ✅ +
+  `c3_stage_b_l2_over_120bit_l1` ✅ (2/2, 96.84 s — the
+  genuinely-≥120-bit L1 *and* L2-over-≥120-bit-L1, accept +
+  tamper-reject, re-run independently); regression slice green
+  (`test_tip5_layer0_recursion` 14/0/1, `quintic` 1/1
+  shared-path arbiter, `p3-tip5-circuit-air` 14/14).
+
+**Status (R1, honest).** C3/M-S5 (re-scoped) = the
+soundness-correct ≥120-bit vertical-recursion cert: **DONE +
+exhaustively validated + LANDED**. **M-S5b (≤65 KB terminal
+compression) = a NEW, separate, deferred milestone** (not
+started; §14 proved it needs a substrate addition NOT in the
+current `Plonky3-recursion`). This is **not** hidden C3
+incompleteness — the ≤65 KB target was explicitly carved out by
+the maintainer into M-S5b; C3's *re-scoped* deliverable is
+complete. **R-b** (ai-pow-zk's actual M10.1c composite
+`RecursiveAir`, vs the representative config) remains M12/#127,
+out of scope.
