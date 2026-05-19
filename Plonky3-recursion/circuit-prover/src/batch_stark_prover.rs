@@ -797,9 +797,23 @@ where
     }
 }
 
-/// Const-generic dispatch for [`BatchStarkProver::register_tip5_table`]:
-/// Tip5 is Goldilocks D=1 only, so only `D == 1` is implemented (mirror
-/// of `RegisterPoseidon1ForExt`, single arm).
+/// Const-generic dispatch for [`BatchStarkProver::register_tip5_table`].
+///
+/// Tip5 is the deployed Goldilocks **base-field** (`d == 1`) permutation,
+/// but the recursion verifier circuit operates over the STARK *challenge*
+/// field (`BinomialExtensionField<Goldilocks, 2>`), so it is packed in a
+/// `D == 2` circuit (the ai-pow-zk Layer-0 case — mirror of the Poseidon1
+/// D=1-in-D≥2 path, `RegisterPoseidon1ForExt<{1,2,4,5}>`).
+///
+/// `D == 1` is the standalone base-field Tip5 (`test_tip5_lookups`);
+/// `D == 2` is the Layer-0 recursion verifier circuit. Both register the
+/// *same* [`tip5::Tip5Prover`]: its `TableProver` impl already provides
+/// `batch_instance_d2` (via `impl_table_prover_batch_instances_from_base!`,
+/// which transmutes the D=2 traces back to base-field and delegates to the
+/// validated `batch_instance_base`), and the committed-preprocessed
+/// override carries the D-correct witness-index scaling from the
+/// (already-present) `Tip5Preprocessor` D=2 arm. No constraint / `tip5_l`
+/// bus / single-row design is touched.
 #[doc(hidden)]
 pub trait RegisterTip5ForExt<const D: usize, SC>
 where
@@ -809,6 +823,21 @@ where
 }
 
 impl<SC> RegisterTip5ForExt<1, SC> for ()
+where
+    SC: StarkGenericConfig + 'static + Send + Sync,
+    Val<SC>: StarkField,
+    SymbolicExpressionExt<Val<SC>, SC::Challenge>:
+        Algebra<SymbolicExpression<Val<SC>>> + Algebra<SC::Challenge>,
+{
+    fn register_tip5(prover: &mut BatchStarkProver<SC>, config: Tip5Config) {
+        prover.register_table_prover(Box::new(tip5::Tip5Prover::new(
+            config,
+            ConstraintProfile::Standard,
+        )));
+    }
+}
+
+impl<SC> RegisterTip5ForExt<2, SC> for ()
 where
     SC: StarkGenericConfig + 'static + Send + Sync,
     Val<SC>: StarkField,

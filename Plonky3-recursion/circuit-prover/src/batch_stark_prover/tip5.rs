@@ -287,8 +287,20 @@ where
         let (main_g, l_prep_g) = generate_tip5_circuit_main(&zero_inputs);
         let height = main_g.height();
 
+        // `idx_scale = 1`, NOT `D`. The `input_indices` / `output_
+        // indices` reconstructed just above are read from `resolved`
+        // (== the circuit-emitted `prep_base`), which the circuit's
+        // `generate_preprocessed_columns::<D>()` has **already**
+        // D-scaled — that is precisely why `out_wid = idx / D` (above)
+        // recovers the witness id, identical to the validated
+        // `poseidon1_preprocess_for_prover` / `recompose` paths, which
+        // likewise edit the already-scaled `prep_base` in place and
+        // never re-scale. Re-applying `D` here would *double-scale*
+        // every CTL index (a no-op at D=1 — why this stayed latent —
+        // but a `× D` corruption of the `WitnessChecks` bus at D≥2,
+        // surfacing as the C2.4 Layer-0 `["0","0"]` net-mult mismatch).
         let mut full =
-            build_tip5_circuit_preprocessed::<F>(&l_prep_g, &rows, height, D as u32);
+            build_tip5_circuit_preprocessed::<F>(&l_prep_g, &rows, height, 1);
 
         // Overwrite the per-perm-row `out_ctl` columns with the
         // resolved signed multiplicities (the assembler wrote raw
@@ -360,6 +372,59 @@ where
         _lanes: usize,
         _constraint_profile: ConstraintProfile,
     ) -> Option<(CircuitTableAir<SC, 1>, usize)> {
+        let suffix = op_type.as_str().strip_prefix("tip5_perm/")?;
+        let _config = Tip5Config::from_variant_name(suffix)?;
+
+        let air = Tip5CircuitAir::<Val<SC>>::new_with_preprocessed(prep_base.to_vec(), min_height);
+
+        let num_rows = if prep_base.is_empty() {
+            0
+        } else {
+            prep_base.len() / TIP5_CIRCUIT_PREP_WIDTH
+        };
+        let padded = num_rows
+            .max(1)
+            .next_power_of_two()
+            .max(min_height.next_power_of_two());
+        let degree = log2_ceil_usize(padded);
+
+        Some((
+            CircuitTableAir::Dynamic(DynamicAirEntry::new(Box::new(air))),
+            degree,
+        ))
+    }
+}
+
+impl<SC> NpoAirBuilder<SC, 2> for Tip5AirBuilder<2>
+where
+    SC: StarkGenericConfig + 'static + Send + Sync,
+    Val<SC>: StarkField,
+    SymbolicExpressionExt<Val<SC>, SC::Challenge>:
+        Algebra<SymbolicExpression<Val<SC>>> + Algebra<SC::Challenge>,
+{
+    /// Faithful mirror of the D=1 `try_build`. Tip5 is Goldilocks
+    /// base-field only; the `Tip5CircuitAir` (`tip5_l` LogUp bus + x⁷
+    /// algebraic constraints + the `WitnessChecks` `[idx, value]` CTL)
+    /// operates over base `Val<SC>` columns and its interaction
+    /// structure is **circuit-extension-degree independent** — unlike
+    /// Poseidon1's `Bus1`/`Bus5` witness-dimension variants, the Tip5
+    /// AIR pushes the *same* `WitnessChecks` interactions for any
+    /// circuit `D`. The D=2 witness-index scaling is carried entirely
+    /// by the committed preprocessed produced by the (already-present)
+    /// `Tip5Preprocessor` `PreprocessedColumns<BinomialExtensionField<
+    /// Goldilocks, 2>, 2>` arm (`out_wid = idx / D`), which *replaces*
+    /// the prover's regenerated preprocessed (`air_with_committed_
+    /// preprocessed`). Hence the AIR built here is byte-identical to
+    /// the D=1 case; only the `CircuitTableAir<SC, 2>` wrapper differs.
+    /// No constraint / bus / single-row design is altered.
+    fn try_build(
+        &self,
+        op_type: &NpoTypeId,
+        prep_base: &[Val<SC>],
+        min_height: usize,
+        _lanes: usize,
+        _constraint_profile: ConstraintProfile,
+    ) -> Option<(CircuitTableAir<SC, 2>, usize)> {
         let suffix = op_type.as_str().strip_prefix("tip5_perm/")?;
         let _config = Tip5Config::from_variant_name(suffix)?;
 

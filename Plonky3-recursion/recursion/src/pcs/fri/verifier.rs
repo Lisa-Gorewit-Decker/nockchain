@@ -77,7 +77,17 @@ where
 /// For D=4-style configs, adjacent lifted coordinates are packed into one extension element via
 /// [`pack_lifted_to_ext`]. For D=1 width-16 configs over a high-degree challenge extension, the
 /// inner hash absorbs one base element per rate slot (lifted scalars); cap rows must **not** be
-/// packed, so each row has `rate_ext` targets matching the D=1 per-base MMCS hash path.
+/// packed, so each row has `digest_ext` targets matching the D=1 per-base MMCS hash path.
+///
+/// A Merkle commitment-cap entry is one **digest**, so rows are chunked
+/// by [`PermConfig::digest_ext`], not `rate_ext`. For Poseidon1/2
+/// `digest_ext == rate_ext` (the `PaddingFreeSponge<_, _, RATE, RATE>`
+/// convention), so this is a no-op for every existing caller. For the
+/// deployed ai-pow-zk Layer-0 Tip5 the digest (5) ≠ rate (10) —
+/// `PaddingFreeSponge<Tip5Perm, 16, 10, 5>` /
+/// `TruncatedPermutation<Tip5Perm, 2, 5, 16>` — so the cap row length
+/// must follow the digest, exactly as the C2.3-validated
+/// `verify_batch_circuit` Tip5 path (5-element cap entries) expects.
 fn commitment_cap_rows_from_lifted<F, EF>(
     builder: &mut CircuitBuilder<EF>,
     perm_config: PermConfig,
@@ -87,17 +97,17 @@ where
     F: Field,
     EF: ExtensionField<F> + BasedVectorSpace<F>,
 {
-    let rate_ext = perm_config.rate_ext();
+    let digest_ext = perm_config.digest_ext();
     if perm_config.d() == 1 && EF::DIMENSION > 1 {
         debug_assert_eq!(
-            lifted.len() % rate_ext,
+            lifted.len() % digest_ext,
             0,
-            "lifted cap length should be a multiple of rate_ext"
+            "lifted cap length should be a multiple of digest_ext"
         );
-        lifted.chunks(rate_ext).map(|c| c.to_vec()).collect()
+        lifted.chunks(digest_ext).map(|c| c.to_vec()).collect()
     } else {
         let packed = pack_lifted_to_ext::<F, EF>(builder, lifted);
-        packed.chunks(rate_ext).map(|c| c.to_vec()).collect()
+        packed.chunks(digest_ext).map(|c| c.to_vec()).collect()
     }
 }
 

@@ -377,6 +377,89 @@ reconstruct Tip5 Fiat-Shamir + Merkle-MMCS in-circuit, validated
 against the native oracle; wiring that into a full Layer-0
 end-to-end recursion proof + the 120-bit sweep is C2.4.
 
+## 2c.C2.4 — real Tip5 Layer-0 end-to-end recursion verify + 120-bit sweep (CORE DONE, independently re-validated 2026-05-19)
+
+User-directed C2.4. **Done & validated:** the vendored recursion
+verifier, **in-circuit**, soundly verifies a **real proof
+produced under the *exact* ai-pow-zk Tip5 Layer-0 `StarkConfig`**
+(`Val=Goldilocks`, `Challenge=BinomialExtensionField<Goldilocks,
+2>`, `PaddingFreeSponge<Tip5Perm,16,10,5>`,
+`TruncatedPermutation<Tip5Perm,2,5,16>`,
+`MerkleTreeMmcs<F::Packing,…,2,5>`,
+`DuplexChallenger<Goldilocks,Tip5Perm,16,10>`,
+`TwoAdicFriPcs` — byte-identical to `crates/ai-pow-zk/src/
+circuit.rs`, replicated in-workspace via `p3-tip5-circuit-air::
+Tip5Perm` since C1 forbids depending on `ai-pow-zk`), across the
+**full 120-bit FRI sweep** (PROD{lb3,nq80}, LB2{2,120},
+LB4{4,60}, LB5{5,48}, LB6{6,40} — each `nq·lb/2=120`),
+**accepting valid and rejecting tampered**. The cross-row
+sponge/Merkle "binding" *is* the generic `verify_p3_uni_proof_
+circuit` recompute (FRI low-degree fold-chain + the L5-validated
+Tip5 challenger/MMCS reconstruction) — established fact: it is
+*not* extra Tip5CircuitAir constraints (poseidon's real-proof
+recursion-verify works identically; the poseidon multi-row
+chain constraints are the *MMCS-internal-hashing* mode, not the
+verify-a-real-proof mode). Test `recursion/tests/test_tip5_
+layer0_recursion.rs` (7): 5 sweep accepts + 2 genuine
+tamper-rejects (corrupt an opened OOD trace value of the *real*
+proof ⇒ `runner().run()` Err; fails loudly if accepted) — the
+same mechanism as `fibonacci.rs::test_tampered_ood_evaluation`.
+Genuine narrow shared-file fix: `recursion/src/pcs/fri/
+verifier.rs::commitment_cap_rows_from_lifted` chunks Merkle cap
+rows by `digest_ext` not `rate_ext` (Poseidon no-op since
+`digest_ext==rate_ext`; required for Tip5 digest 5≠rate 10 —
+same latent-conflation class as the L5 `digest_ext` fix).
+
+**R1 independent re-validation (not trusting the agent):**
+validated-core diff vs `259dd6f` = **air_lookup/air_circuit/
+generation_lookup/tip5_spec/generation/air byte-for-byte
+unchanged**; only `perm.rs` +158 (additive packed
+`Permutation<[Goldilocks::Packing;16]>` adapter + a packed≡scalar
+KAT). Reviewed the test (exact Layer-0 aliases, real binding,
+genuine tamper), the `digest_ext` diff (narrow, Poseidon-no-op).
+Re-ran the **full Plonky3-recursion workspace green, no
+regression**: `test_tip5_layer0_recursion` 7/7,
+`p3-tip5-circuit-air` 14/14, `test_tip5_lookups` 2/2,
+`challenger_transcript` 46, `p3_recursion` 32 (incl. 5 Tip5
+MMCS + tamper), poseidon1/2 10/10, circuit 358, circuit-prover
+40.
+
+**Honest residual (precisely scoped, genuinely attempted,
+NOT faked):**
+- **R-a — the OUTER recursive STARK *certificate* of the Tip5
+  Layer-0 verifier circuit** (`prove_all_tables`/
+  `verify_all_tables` of that circuit). Blocked by a concrete
+  correctness wall: the verifier circuit is over D=2 (the Layer-0
+  challenge extension) but Tip5 is a D=1 base-perm, and the
+  C2.3/L5-**validated** `Tip5CircuitAir` `WitnessChecks` CTL is
+  hardcoded to the 2-element D=1 tuple `[idx,value]` (at D=2 →
+  an orphaned net-mult mismatch vs the D-padded producers).
+  Fixing it = making that *validated* CTL D-aware (poseidon1's
+  `eval_interactions<…,WITNESS_EXT_D>` padded-tuple pattern) +
+  a circuit-prover `witness_bus_dim(2)` for any D=1-perm-in-D=2
+  — an **invasive change to the soundness linchpin requiring
+  re-validation of C2.3/L5**, which R1 forbids rushing. The
+  agent genuinely drove it (packed adapter, `digest_ext`,
+  `Tip5AirBuilder<2>`, `RegisterTip5ForExt<2>`, idx_scale fix,
+  `LiftTip5`) and stopped at the wall, linchpin intact (diff-
+  verified). **This is exactly milestone C3 / #124** (the
+  vertical-recursion ≤65 KB certificate).
+- **R-b — ai-pow-zk's *actual* M10.1c composite `RecursiveAir`**
+  (this gate proves a representative `FibonacciAir` under the
+  *exact* Layer-0 `StarkConfig`; the established recursion-test
+  pattern). Bridging the real composite AIR across the C1
+  ai-pow-zk↔recursion decoupling is **M12-adjacent**, explicitly
+  out of C2.4 scope.
+
+C2.4's core — *the recursion verifier soundly verifies a real
+ai-pow-zk Tip5 Layer-0 proof end-to-end (the cross-row
+sponge/Merkle/FRI forgery binding) across the 120-bit sweep,
+accept + tamper-reject* — is **done and validated**. The outer
+recursive certificate (R-a = C3/#124) and the actual composite
+AIR (R-b = M12) are the precise next milestones; both are
+genuinely soundness-critical-invasive (R1: staged, KAT-first,
+re-validated — not rushed at the tail of this work).
+
 - **L1** — `Tip5PermLookupAir` + generation: per round, per split
   lane: 8 `b` + 8 `c` byte cols; recompose `Σ bₖ2⁸ᵏ = sbox_in[t]`;
   §4.6 `inv` guard; `A[t]=Σ cₖ2⁸ᵏ`; power lanes `x2,x3,A=x3·x3·x`;
