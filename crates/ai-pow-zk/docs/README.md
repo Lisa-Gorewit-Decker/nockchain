@@ -20,7 +20,7 @@ recent commit that touched it).
 | [`2026-05-13_DESIGN.md`](2026-05-13_DESIGN.md) | 2026-05-13 | 2026-05-13 | Base AIR / per-slot design. |
 | [`2026-05-15_PROFILING.md`](2026-05-15_PROFILING.md) | 2026-05-15 | 2026-05-15 | Profiling (samply / peak-RSS) methodology. |
 
-## Recursion substrate — C1–C3 / M-S3–M-S5
+## Recursion substrate — C1–C4 / M-S3–M-S6
 
 | Document | Created | Last updated | What it is |
 |---|---|---|---|
@@ -28,6 +28,8 @@ recent commit that touched it).
 | [`2026-05-18_C2_TIP5_CIRCUIT_AIR_DESIGN.md`](2026-05-18_C2_TIP5_CIRCUIT_AIR_DESIGN.md) | 2026-05-18 | 2026-05-19 | C2/M-S4 — Tip5 circuit AIR + challenger/MMCS; C2.0–C2.4 + R-a. |
 | [`2026-05-18_C2_TIP5_AIR_DEGREE_WIDTH_TRADEOFF.md`](2026-05-18_C2_TIP5_AIR_DEGREE_WIDTH_TRADEOFF.md) | 2026-05-18 | 2026-05-18 | Degree-4 vs width tradeoff for the Tip5 AIR. |
 | [`2026-05-19_C3_OUTER_CERT_DESIGN.md`](2026-05-19_C3_OUTER_CERT_DESIGN.md) | 2026-05-19 | 2026-05-19 | C3/M-S5 — outer recursive cert; DT-1→DT-4, the ≥120-bit re-scope (§13.2/§14/§15). |
+| [`2026-05-19_M_S5B_TERMINAL_COMPRESSION_DESIGN.md`](2026-05-19_M_S5B_TERMINAL_COMPRESSION_DESIGN.md) | 2026-05-19 | 2026-05-19 | **M-S5b / P-C2** — design + KAT-first de-risk plan for the ≤65 KB terminal compression of the ≥120-bit M-S5 cert (deferred from C3; no invasive code landed). |
+| [`2026-05-19_C4_AUDIT_READINESS.md`](2026-05-19_C4_AUDIT_READINESS.md) | 2026-05-19 | 2026-05-19 | **C4 / M-S6** — independent crypto audit readiness package: threat model, soundness-claim index, recursion-stack inventory, KAT/adversarial-test catalogue, known residuals. |
 
 ## Soundness bindings & AIR
 
