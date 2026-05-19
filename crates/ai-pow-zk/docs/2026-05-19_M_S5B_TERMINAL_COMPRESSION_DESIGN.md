@@ -252,28 +252,33 @@ scale roughly linearly with `nq`).
 
 ### 1.4.C Implications for the path tree
 
-The recalibration shifts the path-feasibility analysis in §2:
+The recalibration shifts the path-feasibility analysis in §2.
+**Empirical confirmation (2026-05-19, after Stage 1/2 landed —
+see `2026-05-19_PROOF_SIZE_RECALIBRATION_MEASUREMENTS.md` §2):**
 
-- **C3 (LANDED) needs no parameter change.** `lb=2, nq=120` is
-  comfortably above 80 unconditional under the paper's bound.
-  Touching it is not a soundness requirement.
-- **Path B becomes more viable on its own.** At 80
-  unconditional, FRI shrinks ~50 % vs legacy ≥120-conjectured;
-  combined with a Path-B verifier-AIR narrowing (`opened_values`
-  reduction 2–4× from column-count drop + degree-drop), L2
-  could plausibly reach the **low hundreds of KB** range —
-  still over 65 KB, but the gap to Path A tightens
-  significantly.
-- **Path A may become optional.** If Path B's measurements
-  (§3.2 S1) show L2 ≤ 65 KB at the new bar, the SNARK wrap
-  (Path A) is no longer required; the audit surface shrinks
-  to the Path-B verifier-AIR diff. **This is the most
-  audit-friendly outcome** — keep all crypto inside the
-  Plonky3 substrate, no new pairing curve.
-- **Path C / Path D** are unchanged in *necessity* but Path C
-  becomes less attractive (its main advantage was the
-  guaranteed small final proof; if Path B alone hits ≤65 KB,
-  Path C's vendoring cost no longer pays).
+- **C3 (LANDED) was re-parametrized** (not "no change" as
+  initially predicted). The maintainer's directive *"Move all
+  plonky3 parameter choices lower to meet the 80 bit floor"*
+  was applied (`0334943` + `f54ae81`): PROD now `(lb=3, nq=30)`,
+  LB-sweep nq's halved-to-thirded across the board, outer-cert
+  config `goldilocks_tip5_120bit` now `(lb=2, nq=42, pow=1+1)`.
+  Soundness chain at the inner Tip5-L0 cert + L1 + L2 = MIN(90,
+  85, 85) ≥ 80 unconditional Johnson per IACR ePrint 2025/2055
+  Theorem 1.5 (validated `c3_stage_a` + `c3_stage_b` PASS).
+- **L1/L2 sizes shrank ~3×** (real measurement, not projection):
+  L1 from 2.69 MB to 961 KB; L2 from 1.79 MB to 618 KB.
+- **Path B's reach to ≤65 KB tightened** to a ~9.5× target
+  (was ~27×).
+- **Stacked recursion confirmed dead** (S3(ii) measurement):
+  L3 > L2 at the new bar by ~32 KB. Adding more layers does
+  not close the gap; the verifier-circuit ~40 KB fixed floor
+  dominates once inner size drops to ~500 KB.
+- **Path A may still become optional** *if* Path B's S1 work
+  attacks the verifier-circuit floor (Poseidon2-W8 +
+  recompose-table + in-circuit FRI fold-chain), not just FRI
+  proof bytes.
+- **Path C / Path D** unchanged in necessity; same caveat about
+  the floor applies to D.
 
 ### 1.4.D What the audit (C4) must confirm
 

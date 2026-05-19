@@ -28,8 +28,9 @@ recent commit that touched it).
 | [`2026-05-18_C2_TIP5_CIRCUIT_AIR_DESIGN.md`](2026-05-18_C2_TIP5_CIRCUIT_AIR_DESIGN.md) | 2026-05-18 | 2026-05-19 | C2/M-S4 — Tip5 circuit AIR + challenger/MMCS; C2.0–C2.4 + R-a. |
 | [`2026-05-18_C2_TIP5_AIR_DEGREE_WIDTH_TRADEOFF.md`](2026-05-18_C2_TIP5_AIR_DEGREE_WIDTH_TRADEOFF.md) | 2026-05-18 | 2026-05-18 | Degree-4 vs width tradeoff for the Tip5 AIR. |
 | [`2026-05-19_C3_OUTER_CERT_DESIGN.md`](2026-05-19_C3_OUTER_CERT_DESIGN.md) | 2026-05-19 | 2026-05-19 | C3/M-S5 — outer recursive cert; DT-1→DT-4, the ≥120-bit re-scope (§13.2/§14/§15). |
-| [`2026-05-19_M_S5B_TERMINAL_COMPRESSION_DESIGN.md`](2026-05-19_M_S5B_TERMINAL_COMPRESSION_DESIGN.md) | 2026-05-19 | 2026-05-19 | **M-S5b / P-C2** — design + KAT-first de-risk plan for the ≤65 KB terminal compression of the ≥120-bit M-S5 cert (deferred from C3; no invasive code landed). |
-| [`2026-05-19_C4_AUDIT_READINESS.md`](2026-05-19_C4_AUDIT_READINESS.md) | 2026-05-19 | 2026-05-19 | **C4 / M-S6** — independent crypto audit readiness package: threat model, soundness-claim index, recursion-stack inventory, KAT/adversarial-test catalogue, known residuals. |
+| [`2026-05-19_M_S5B_TERMINAL_COMPRESSION_DESIGN.md`](2026-05-19_M_S5B_TERMINAL_COMPRESSION_DESIGN.md) | 2026-05-19 | 2026-05-19 | **M-S5b / P-C2** — design + KAT-first de-risk plan for the ≤65 KB terminal compression of the M-S5 cert (deferred from C3). §1.4 records the 2026-05-19 recalibration to ≥80-bit unconditional Johnson radius (IACR ePrint 2025/2055 Theorem 1.5). |
+| [`2026-05-19_C4_AUDIT_READINESS.md`](2026-05-19_C4_AUDIT_READINESS.md) | 2026-05-19 | 2026-05-19 | **C4 / M-S6** — audit readiness package: threat model, soundness-claim index, recursion-stack inventory, KAT/adversarial-test catalogue, known residuals. |
+| [`2026-05-19_PROOF_SIZE_RECALIBRATION_MEASUREMENTS.md`](2026-05-19_PROOF_SIZE_RECALIBRATION_MEASUREMENTS.md) | 2026-05-19 | 2026-05-19 | Empirical proof-size + parameter-choice measurements at the new ≥80-bit unconditional Johnson floor — real Stage A/B/C + S3(ii) numbers (L2 = 618 KB vs pre-recalibration 1.79 MB; L3 > L2 ⇒ stacked recursion confirmed-dead). |
 
 ## Soundness bindings & AIR
 

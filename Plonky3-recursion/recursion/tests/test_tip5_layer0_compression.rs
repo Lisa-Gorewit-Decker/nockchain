@@ -1526,8 +1526,8 @@ fn c3_stage_c_sweep_120bit() {
         assert_120bit_l2_tamper_rejects(&format!("C3-StageC-{}", p.name), p);
 
         eprintln!(
-            "[C3 STAGE C — {}] inner={} conj.bits (≥120) | ≥120-bit L1 = \
-             {l1_b} B ({:.2} KB) | ≥120-bit L2 = {l2_b} B ({:.2} KB) | \
+            "[C3 STAGE C — {}] inner={} bits (Johnson, ≥80) | L1 = \
+             {l1_b} B ({:.2} KB) | L2 = {l2_b} B ({:.2} KB) | \
              ACCEPT ✅ tamper-REJECT ✅",
             p.name,
             inner_sbits,
@@ -1538,24 +1538,26 @@ fn c3_stage_c_sweep_120bit() {
     }
 
     eprintln!(
-        "\n================ C3 STAGE C — soundness-correct ≥120-bit \
-         vertical-recursion cert, inner Tip5-L0 sweep ================"
+        "\n================ C3 STAGE C — soundness-correct ≥80-bit-\
+         unconditional-Johnson vertical-recursion cert (IACR ePrint \
+         2025/2055 Theorem 1.5), inner Tip5-L0 sweep ================"
     );
     eprintln!(
-        "OuterTier::Bit120 = {sbits} conjectured FRI bits (≥120) at BOTH \
-         L1-outer and L2; inner Tip5-L0 every profile ≥120."
+        "OuterTier::Bit120 = {sbits} bits unconditional Johnson (≥80) at \
+         BOTH L1-outer and L2; inner Tip5-L0 every profile ≥80 bits Johnson."
     );
     for (name, l1_b, l2_b) in &results {
         eprintln!(
-            "  {name:>4} : ≥120-bit L1 = {l1_b:>9} B ({:>7.2} KB) | \
-             ≥120-bit L2 = {l2_b:>9} B ({:>7.2} KB)  [ACCEPT ✅ tamper ✗]",
+            "  {name:>4} : L1 = {l1_b:>9} B ({:>7.2} KB) | L2 = {l2_b:>9} B \
+             ({:>7.2} KB)  [ACCEPT ✅ tamper ✗]",
             *l1_b as f64 / 1024.0,
             *l2_b as f64 / 1024.0,
         );
     }
     eprintln!(
-        "All {} inner profiles: ≥120-bit L2 over ≥120-bit L1 ACCEPTS valid \
-         + REJECTS tampered. Chain = MIN over links ≥120 bits.",
+        "All {} inner profiles: ≥80-bit-Johnson L2 over ≥80-bit-Johnson L1 \
+         ACCEPTS valid + REJECTS tampered. Chain = MIN over links ≥80 bits \
+         unconditional.",
         results.len()
     );
     eprintln!(
