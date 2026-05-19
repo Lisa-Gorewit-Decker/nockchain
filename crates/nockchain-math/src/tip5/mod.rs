@@ -265,8 +265,7 @@ mod c2_kat {
 
     /// The frozen set of permutation inputs — broad, deterministic, and
     /// targeted at each constraint component of the in-circuit Tip5 AIR
-    /// per the authoritative Tip5 paper (IACR ePrint 2023/107,
-    /// `2023-107.pdf`):
+    /// per the authoritative Tip5 paper (IACR ePrint 2023/107):
     ///
     /// * **§2.2 split-and-lookup S-box** (`S`, the 4 split lanes; the
     ///   `L`-map `(x+1)^3−1 mod 257` with fixed points 0, 255): all-zero

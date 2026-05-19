@@ -42,8 +42,8 @@ Layer-0 Tip5 (`nockchain_math::tip5`) is **7-round**
 build the Tip5 permutation AIR from scratch, faithful to the
 7-round `nockchain_math::tip5::permute`, with a native≡in-circuit
 KAT as the soundness anchor.** The **construction reference is
-the authoritative Tip5 paper** (ePrint 2023/107, `2023-107.pdf`,
-added to the repo this session — §2), which normatively specifies
+the authoritative Tip5 paper** (IACR ePrint 2023/107 — §2 of this
+doc), which normatively specifies
 the arithmetization; the **single bit-for-bit oracle is
 `nockchain_math::tip5::permute`** (7-round, the exact Goldilocks
 semantics the deployed Layer-0 proofs use; the paper's N=5 is the
@@ -53,9 +53,9 @@ divergence ⇒ the recursion verifier accepts forged proofs
 
 ## 2. Authoritative spec (Tip5 paper, ePrint 2023/107) + exact native semantics
 
-**Authoritative source:** `2023-107.pdf` (IACR ePrint 2023/107,
+**Authoritative source:** IACR ePrint 2023/107,
 *"The Tip5 Hash Function for Recursive STARKs"*, Szepieniec et
-al.) — the normative design **and** arithmetization (Tip5 is
+al. — the normative design **and** arithmetization (Tip5 is
 arithmetization-oriented; the paper specifies the AET/AIR at
 length, §4). Read in full this session.
 
@@ -686,7 +686,7 @@ a blocker; it is a reason to stage.
 
 ## 7. Cross-references
 
-- `2023-107.pdf` (IACR ePrint 2023/107 — **authoritative Tip5
+- IACR ePrint 2023/107 (**authoritative Tip5
   paper**, the normative construction/arithmetization reference,
   §4 AET/AIR);
   `crates/nockchain-math/src/tip5/mod.rs` + `belt.rs` (the

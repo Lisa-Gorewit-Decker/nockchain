@@ -2,7 +2,7 @@
 
 A Pearl-style proof-of-useful-work matrix-multiplication puzzle for
 Nockchain. The crate implements the `(A + E)(B + F)` tiled matmul puzzle
-from the Pearl Whitepaper (`Pearl_Whitepaper.pdf` at the repo root)
+from the Pearl Whitepaper (cited by name; PDF not in repo)
 end-to-end: low-rank noise generation, tile-by-tile mining with an
 iterative 512-bit accumulator state, shape-aware difficulty thresholds,
 and a replication-style verifier.

@@ -9,3 +9,9 @@ target
 assets/*.jam
 !crates/nockapp/test-jams
 keys.export
+
+# Reference papers (cite by name only in docs; the PDFs themselves are
+# not in the repo per maintainer directive 2026-05-19). Auditors are
+# expected to obtain the papers via their citations (ePrint IDs, arXiv,
+# venue, etc.).
+*.pdf

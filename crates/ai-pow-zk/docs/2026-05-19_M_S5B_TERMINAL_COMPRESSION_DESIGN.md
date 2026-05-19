@@ -48,7 +48,7 @@ Produce a verifying **terminal compression** of the LANDED
    anchored on the **Johnson-radius proximity-gap bound now
    proven** by Ben-Sasson, Carmon, Habock, Kopparty, Saraf,
    *"On Proximity Gaps for Reed–Solomon Codes"*
-   (`2025-2055.pdf`, Nov 2025) — specifically Theorem 1.5 +
+   (IACR ePrint 2025/2055, Nov 2025) — specifically Theorem 1.5 +
    §1.3.2's "linear dependence on *n*" unlocking proven
    security at Johnson distances. The 2026-05-19 maintainer
    decision recalibrates the M-S5b soundness floor from the
@@ -103,7 +103,7 @@ Produce a verifying **terminal compression** of the LANDED
   trade — it is a paper-grounded re-anchoring (§1.4) that
   *raises* the floor from "conjectured" to "proven" while
   permitting smaller-FRI parameters at the same bar.
-- **Stay at or inside the Johnson radius.** §8 of `2025-2055.pdf`
+- **Stay at or inside the Johnson radius.** §8 of IACR ePrint 2025/2055
   ("Attacks on STARKs near the list decoding radius") + §1.4
   negative results show that pushing into the list-decoding
   regime *beyond* the Johnson radius is genuinely unsafe — the
@@ -204,7 +204,7 @@ maintainer re-calibrated M-S5b (and the full Phase-C target by
 extension) to **≥80 bits unconditional, anchored on the
 Johnson-radius bound now *proven* by Ben-Sasson, Carmon,
 Habock, Kopparty, Saraf, "On Proximity Gaps for Reed–Solomon
-Codes" (`2025-2055.pdf`, Nov 2025)**.
+Codes" (IACR ePrint 2025/2055, Nov 2025)**.
 
 The argument:
 
@@ -223,7 +223,7 @@ The argument:
 - **"Without relying on conjectures."** The maintainer
   explicitly disallowed conjecture-grounded soundness for
   M-S5b. Previously this would have forced the unique-decoding
-  bound (heavy penalty); now `2025-2055.pdf` Theorem 1.5 +
+  bound (heavy penalty); now IACR ePrint 2025/2055 Theorem 1.5 +
   §1.3.2 make the **Johnson radius bound proven**, with
   linear-in-n loss instead of the prior O(n²). The paper's
   own framing (§1.3.2, verbatim): "The new result unlocks
@@ -241,7 +241,7 @@ exact analysis, the ballpark mapping is:
 
 | Bar | Rough parameter target | Notes |
 |---|---|---|
-| Current C3 chain (LANDED) | `lb=2, nq=120` | ≥120 conjectured bits (legacy framing) ⇒ **≥120 bits proven** under Johnson radius via `2025-2055.pdf` Theorem 1.5 (well above the new floor) |
+| Current C3 chain (LANDED) | `lb=2, nq=120` | ≥120 conjectured bits (legacy framing) ⇒ **≥120 bits proven** under Johnson radius via IACR ePrint 2025/2055 Theorem 1.5 (well above the new floor) |
 | New M-S5b floor | `lb·nq ≈ 80` (e.g., `lb=2, nq=40` or `lb=3, nq=27`) | ≥80 bits proven under Johnson radius |
 | Old "≥120-conjectured M-S5b" sizing (now superseded) | `lb·nq ≈ 240` (i.e., `lb=2, nq=120`) | superseded — was over-engineered for per-block cadence |
 
@@ -388,7 +388,7 @@ decider proof are typically 1–10 KB).
 
 ### 2.D Path D — Plonky2-style "narrow" recursive STARK (Pearl §5.1 mirror)
 
-**Idea.** Pearl's spec (`Pearl_Whitepaper.pdf` §4.7/§5.1) reaches
+**Idea.** Pearl's spec (Pearl Whitepaper §4.7/§5.1) reaches
 their own small consensus proof using Plonky2's recursion —
 which is a STARK over a smaller field (Goldilocks like ours) but
 with a *carefully tuned* verifier-circuit (compact gate set,
@@ -484,7 +484,7 @@ choice empirically.
 
 | Stage | What it commits | Invasive to linchpin? | Cumulative substrate addition? |
 |---|---|---|---|
-| **S(−1)** | Paper-grounded `(lb, nq, pow_bits) → unconditional bits` mapping for our Plonky3-recursion FRI variant under `2025-2055.pdf` Theorem 1.5; verify γ < J(δ)−η at every M-S5 link | No (analysis only) | No |
+| **S(−1)** | Paper-grounded `(lb, nq, pow_bits) → unconditional bits` mapping for our Plonky3-recursion FRI variant under IACR ePrint 2025/2055 Theorem 1.5; verify γ < J(δ)−η at every M-S5 link | No (analysis only) | No |
 | **S0** | Path-A KAT-first prototype (toy Goldilocks STARK SNARK-wrap) in an excluded workspace — **demoted from primary path to fallback prototype after §1.4.C reframing** | No | No |
 | **S1** | L2 verifier AIR column-count audit + Path-B reduction map at the new ≥80-unconditional bar; **L2 size estimate at the new FRI parameters** | No (read-only) | No |
 | **S2** | Path-C / Sonobe KAT-first prototype, IF maintainer chooses to evaluate after S1 | No | No |
@@ -494,7 +494,7 @@ choice empirically.
 ### 3.0.A S(−1) — Paper-grounded soundness analysis (the new prerequisite)
 
 **Goal.** Concretize the §1.4 abstract bar (≥80 unconditional
-bits under `2025-2055.pdf` Theorem 1.5) into the **exact
+bits under IACR ePrint 2025/2055 Theorem 1.5) into the **exact
 parameter map** for our `Plonky3-recursion/recursion/src/backend/fri.rs`
 FRI variant. This is analytical / written-out work; no code
 edit.
@@ -750,7 +750,7 @@ recommended sequence:
 
 1. **S(−1) — paper-grounded soundness analysis** (~1–2 days):
    committed soundness-analysis note grounding our FRI
-   parameters in `2025-2055.pdf` Theorem 1.5 + Johnson-radius
+   parameters in IACR ePrint 2025/2055 Theorem 1.5 + Johnson-radius
    bound; per-layer ≥80-unconditional table.
 2. **S1 — Path-B reduction map** (~2–3 days): committed audit
    doc with the decision-branch verdict at ≥80 unconditional.
@@ -804,7 +804,7 @@ begins:
 
 - **Soundness-bar anchor paper (the §1.4 foundation):**
   Ben-Sasson, Carmon, Habock, Kopparty, Saraf, *"On Proximity
-  Gaps for Reed–Solomon Codes"* (`2025-2055.pdf`, Nov 2025).
+  Gaps for Reed–Solomon Codes"* (IACR ePrint 2025/2055, Nov 2025).
   Theorem 1.5 + §1.3.2 (Johnson-radius proven, linear-in-n
   loss). §1.4 negative results + §8 attacks (beyond-Johnson
   unsafe).
@@ -822,7 +822,7 @@ begins:
 - **Roadmap:** `2026-05-17_PRODUCTION_ROADMAP.md` Phase C row
   M-S5b.
 - **Pearl §4.7/§5.1** — origin of the ≤65 KB target:
-  `2026-05-17_M_S2_PEARL_EVALUATION.md`; `Pearl_Whitepaper.pdf`.
+  `2026-05-17_M_S2_PEARL_EVALUATION.md`; Pearl Whitepaper.
 - **R1 / R1.1 discipline:** `~/.claude/CLAUDE.md` R1, R1.1.
 
 ---
@@ -832,7 +832,7 @@ begins:
 `tip5_layer0_outer_cert_size_residual` (currently `#[ignore]`d
 with reason pointing at this milestone) un-`#[ignore]`s and
 passes on the **real M-S5 cert at ≥80 unconditional bits**
-(Johnson-radius bound from `2025-2055.pdf`) at
+(Johnson-radius bound from IACR ePrint 2025/2055) at
 `serialized_len ≤ 65_536`, accompanied by:
 
 1. An **accept + tamper-reject pair** at the M-S5b layer (the

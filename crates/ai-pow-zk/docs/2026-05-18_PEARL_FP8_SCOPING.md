@@ -6,8 +6,8 @@
 > production models' **group_0 FP8** layers: what Pearl's
 > protocol *and shipped code* actually do with them, and the
 > exact, defensible scope boundary for the Nockchain ai-pow /
-> ai-pow-zk side. Sources: Pearl whitepaper (`Pearl_Whitepaper.pdf`
-> §1.1, §3.1, §4.1, §4.2, §4.8), Pearl reference code
+> ai-pow-zk side. Sources: Pearl Whitepaper
+> §1.1, §3.1, §4.1, §4.2, §4.8, Pearl reference code
 > (`pearl/zk-pow`, `pearl/miner/vllm-miner` @ pearl ref
 > `3be33a59`), the shipped model configs.
 
@@ -197,7 +197,7 @@ matching Pearl."*
 
 ## 6. Cross-references
 
-- `Pearl_Whitepaper.pdf` §1.1/§3.1/§4.1/§4.2/§4.8;
+- Pearl Whitepaper §1.1/§3.1/§4.1/§4.2/§4.8;
   `pearl/zk-pow/src`, `pearl/miner/vllm-miner/src/vllm_miner/
   vllm_config.py` @ pearl ref `3be33a59`.
 - `2026-05-17_PRODUCTION_ROADMAP.md` §0 (INT-only scoping), Phase B B3.

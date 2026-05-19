@@ -20,11 +20,11 @@
 
 - **Academic paper:** Komargodski & Weinstein, *Proofs of
   Useful Work from Arbitrary Matrix Multiplication*
-  (arXiv:2504.09971v4) — `2504.09971v4.pdf`. Read: abstract,
-  §1–2 (PoUW model), §6 (Encode/Decode instantiations), Remarks
-  2.1–2.3, App. B (Poisson process).
+  (arXiv:2504.09971). Read: abstract, §1–2 (PoUW model),
+  §6 (Encode/Decode instantiations), Remarks 2.1–2.3,
+  App. B (Poisson process).
 - **Pearl whitepaper:** *Pearl // whitepaper* (Pearl Research
-  Labs) — `Pearl_Whitepaper.pdf`. Read: §3 (PoUW Overview),
+  Labs). Read: §3 (PoUW Overview),
   §3.1.1–3.1.5, §4.1–4.8 (implementation, **§4.8 Supported PoW
   Parameters**), §5.1 (block structure).
 - **Pearl implementation:** `pearl/zk-pow/src/circuit/*`
@@ -325,7 +325,7 @@ ai-pow-zk's target vs. Pearl parity), which is the maintainer's.
 - Pearl whitepaper §3.1.3–3.1.5 (per-tile open), **§4.8
   (Supported PoW Parameters — the real §4.8)**, §4.7 (Plonky2 +
   vertical 3-layer recursion <60KB), §5.1 (≤65KB certificate).
-- arXiv:2504.09971v4 Remarks 2.1 (per-block independence), 2.3
+- Komargodski & Weinstein (arXiv:2504.09971) Remarks 2.1 (per-block independence), 2.3
   (SNARK only on win, amortized).
 - Pearl impl: `pearl/zk-pow/src/circuit/pearl_program.rs:36-57`,
   `pearl_circuit.rs` (single inner STARK proof, vertical

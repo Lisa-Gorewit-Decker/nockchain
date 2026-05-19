@@ -327,7 +327,10 @@ mod tests {
     }
 
     // =================================================================
-    //  PROD-profile benches (120-bit provable FRI soundness).
+    //  PROD-profile benches (≥80-bit unconditional FRI soundness at
+    //  the Johnson radius — paper IACR ePrint 2025/2055 Theorem 1.5;
+    //  2026-05-19 recalibration from the pre-paper 120-bit
+    //  unique-decoding framing).
     // =================================================================
 
     #[test]
@@ -359,12 +362,14 @@ mod tests {
     }
 
     // =================================================================
-    //  FRI parameter sweep — all at 120-bit provable soundness.
+    //  FRI parameter sweep — all at ≥80-bit unconditional Johnson-
+    //  radius soundness (paper IACR ePrint 2025/2055 Theorem 1.5).
     //
     //  Each profile pairs `log_blowup` with `num_queries` so that
-    //  `log_blowup · num_queries / 2 = 120`. The LDE size scales as
-    //  `2^log_blowup × trace`; the proof size scales (roughly) as
-    //  `num_queries × log2(LDE)`. So as log_blowup goes up:
+    //  `log_blowup · num_queries ≥ 80` (~90 bits each for margin).
+    //  The LDE size scales as `2^log_blowup × trace`; the proof
+    //  size scales (roughly) as `num_queries × log2(LDE)`. So as
+    //  log_blowup goes up:
     //   - prove cost goes UP (bigger LDE to commit)
     //   - proof size goes DOWN (fewer FRI openings)
     //
@@ -373,35 +378,35 @@ mod tests {
     // =================================================================
 
     #[test]
-    #[ignore = "FRI sweep — log_blowup=2, num_queries=120 @ 8K heavy"]
+    #[ignore = "FRI sweep — log_blowup=2, num_queries=45 @ 8K heavy (≥80-bit Johnson)"]
     fn bench_fri_sweep_lb2_8k_heavy() {
         let r = run_heavy_at(MIN_STARK_LEN, 100, 100, 100, &CircuitConfig::PROD_LB2);
         r.print();
     }
 
     #[test]
-    #[ignore = "FRI sweep — log_blowup=3, num_queries=80 (current PROD) @ 8K heavy"]
+    #[ignore = "FRI sweep — log_blowup=3, num_queries=30 (current PROD) @ 8K heavy (≥80-bit Johnson)"]
     fn bench_fri_sweep_lb3_8k_heavy() {
         let r = run_heavy_at(MIN_STARK_LEN, 100, 100, 100, &CircuitConfig::PROD);
         r.print();
     }
 
     #[test]
-    #[ignore = "FRI sweep — log_blowup=4, num_queries=60 @ 8K heavy"]
+    #[ignore = "FRI sweep — log_blowup=4, num_queries=23 @ 8K heavy (≥80-bit Johnson)"]
     fn bench_fri_sweep_lb4_8k_heavy() {
         let r = run_heavy_at(MIN_STARK_LEN, 100, 100, 100, &CircuitConfig::PROD_LB4);
         r.print();
     }
 
     #[test]
-    #[ignore = "FRI sweep — log_blowup=5, num_queries=48 @ 8K heavy"]
+    #[ignore = "FRI sweep — log_blowup=5, num_queries=18 @ 8K heavy (≥80-bit Johnson)"]
     fn bench_fri_sweep_lb5_8k_heavy() {
         let r = run_heavy_at(MIN_STARK_LEN, 100, 100, 100, &CircuitConfig::PROD_LB5);
         r.print();
     }
 
     #[test]
-    #[ignore = "FRI sweep — log_blowup=6, num_queries=40 @ 8K heavy"]
+    #[ignore = "FRI sweep — log_blowup=6, num_queries=15 @ 8K heavy (≥80-bit Johnson)"]
     fn bench_fri_sweep_lb6_8k_heavy() {
         let r = run_heavy_at(MIN_STARK_LEN, 100, 100, 100, &CircuitConfig::PROD_LB6);
         r.print();
@@ -410,28 +415,28 @@ mod tests {
     // Baseline variants too — proof-size scaling without activity.
 
     #[test]
-    #[ignore = "FRI sweep — log_blowup=2, num_queries=120 @ 8K baseline"]
+    #[ignore = "FRI sweep — log_blowup=2, num_queries=45 @ 8K baseline (≥80-bit Johnson)"]
     fn bench_fri_sweep_lb2_8k_baseline() {
         let r = run_baseline_at(MIN_STARK_LEN, &CircuitConfig::PROD_LB2);
         r.print();
     }
 
     #[test]
-    #[ignore = "FRI sweep — log_blowup=4, num_queries=60 @ 8K baseline"]
+    #[ignore = "FRI sweep — log_blowup=4, num_queries=23 @ 8K baseline (≥80-bit Johnson)"]
     fn bench_fri_sweep_lb4_8k_baseline() {
         let r = run_baseline_at(MIN_STARK_LEN, &CircuitConfig::PROD_LB4);
         r.print();
     }
 
     #[test]
-    #[ignore = "FRI sweep — log_blowup=5, num_queries=48 @ 8K baseline"]
+    #[ignore = "FRI sweep — log_blowup=5, num_queries=18 @ 8K baseline (≥80-bit Johnson)"]
     fn bench_fri_sweep_lb5_8k_baseline() {
         let r = run_baseline_at(MIN_STARK_LEN, &CircuitConfig::PROD_LB5);
         r.print();
     }
 
     #[test]
-    #[ignore = "FRI sweep — log_blowup=6, num_queries=40 @ 8K baseline"]
+    #[ignore = "FRI sweep — log_blowup=6, num_queries=15 @ 8K baseline (≥80-bit Johnson)"]
     fn bench_fri_sweep_lb6_8k_baseline() {
         let r = run_baseline_at(MIN_STARK_LEN, &CircuitConfig::PROD_LB6);
         r.print();

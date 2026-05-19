@@ -41,39 +41,56 @@ pub type Val = Goldilocks;
 
 /// Configuration knobs for the Plonky3 STARK over the matmul AIR.
 ///
-/// Security model: **provable** FRI soundness only. Each query gives
-/// `log_blowup / 2` bits of soundness in the worst case (unique-
-/// decoding radius regime). The `PROD` profile targets 120 bits
-/// provable: `num_queries · log_blowup / 2 = 80 · 3 / 2 = 120`.
+/// Security model: **unconditional / provable** FRI soundness, anchored
+/// on the Johnson-radius proximity-gap bound *proven* by Ben-Sasson,
+/// Carmon, Habock, Kopparty, Saraf, *"On Proximity Gaps for Reed–
+/// Solomon Codes"* (`IACR ePrint 2025/2055`, Nov 2025, Theorem 1.5 + §1.3.2).
+/// Under that bound each query gives roughly `log_blowup` bits of
+/// **unconditional** soundness at the Johnson radius (the prior
+/// `log_blowup / 2` was the strictly-classical unique-decoding bound;
+/// the paper closes that gap). The `PROD` profile targets ~90 bits
+/// unconditional: `num_queries · log_blowup = 30 · 3 = 90`,
+/// comfortably above the 2026-05-19 maintainer-set 80-bit floor (see
+/// `crates/ai-pow-zk/docs/2026-05-19_M_S5B_TERMINAL_COMPRESSION_DESIGN.md`
+/// §1.4 for the bar's rationale + 2.5-min block-cadence argument).
+/// Proximity testing stays at γ < J(δ)−η (Johnson radius, never
+/// beyond — the paper's §8 attacks confirm beyond-Johnson is unsafe).
 #[derive(Debug, Clone, Copy)]
 pub struct CircuitConfig {
     /// Log2 of the FRI blowup factor. The committed evaluation domain
     /// is `2^log_blowup` times the trace length. `PROD = 3` → rate
-    /// `1/8`, which gives `log_blowup / 2 = 1.5` bits of provable
-    /// soundness per query in the unique-decoding regime.
+    /// `1/8`, which gives roughly `log_blowup = 3` bits of
+    /// unconditional soundness per query at the Johnson radius (paper
+    /// Theorem 1.5).
     pub log_blowup: u32,
     /// FRI PoW grinding bits at the challenger. We don't use
     /// grinding; soundness comes entirely from query count and rate.
     /// Always `0` for both `PROD` and `TEST`.
     pub pow_bits: u32,
-    /// Number of FRI queries. Provable soundness:
-    /// `num_queries · log_blowup / 2` bits. `PROD = 80` at
-    /// `log_blowup = 3` → 120 bits provable.
+    /// Number of FRI queries. Unconditional soundness (Johnson radius,
+    /// paper Theorem 1.5): `num_queries · log_blowup` bits.
+    /// `PROD = 30` at `log_blowup = 3` → 90 bits unconditional (≥ 80
+    /// floor with ~10-bit margin to absorb the paper's constants).
     pub num_queries: u32,
 }
 
 impl CircuitConfig {
-    /// Production defaults. Targets **120 bits of provable FRI
-    /// soundness** with no grinding (`pow_bits = 0`).
+    /// Production defaults. Targets **≥ 80 bits unconditional FRI
+    /// soundness** at the Johnson radius (paper Theorem 1.5) with no
+    /// grinding (`pow_bits = 0`), with ~10-bit margin.
     ///
-    /// Provable soundness: `num_queries · log_blowup / 2 = 80 · 3 / 2
-    /// = 120` bits. We do not rely on the list-decoding / capacity-
-    /// approaching conjecture; the bound here holds against any
-    /// malicious prover in the standard unique-decoding regime.
+    /// Unconditional soundness at Johnson: `num_queries · log_blowup
+    /// = 30 · 3 = 90` bits. The 2026-05-19 maintainer recalibration
+    /// lowered this from the pre-paper `lb · nq / 2 = 120` (classical
+    /// unique-decoding) framing — the paper's Theorem 1.5 makes the
+    /// Johnson bound *proven*, so we don't pay the 2× unique-decoding
+    /// penalty for unconditional security. Per-block PoW at 2.5-min
+    /// cadence does not need a 120/128-bit margin (see
+    /// `docs/2026-05-19_M_S5B_TERMINAL_COMPRESSION_DESIGN.md` §1.4).
     pub const PROD: Self = Self {
         log_blowup: 3,
         pow_bits: 0,
-        num_queries: 80,
+        num_queries: 30,
     };
 
     /// Small profile for unit tests once the circuit is real.
@@ -85,40 +102,43 @@ impl CircuitConfig {
         num_queries: 8,
     };
 
-    /// 120-bit FRI soundness with `log_blowup = 2`, requiring
-    /// **120 queries** to compensate. The LDE is only `4×` trace
-    /// size (cheapest LDE) but the proof is much fatter because
-    /// FRI opens 120 paths.
+    /// ≥ 80-bit unconditional FRI soundness with `log_blowup = 2`,
+    /// requiring **45 queries** (`2 · 45 = 90` bits Johnson-provable,
+    /// ~10-bit margin). The LDE is only `4×` trace size (cheapest
+    /// LDE) but the proof is the fattest of the sweep because FRI
+    /// opens 45 paths.
     pub const PROD_LB2: Self = Self {
         log_blowup: 2,
         pow_bits: 0,
-        num_queries: 120,
+        num_queries: 45,
     };
 
-    /// 120-bit FRI soundness with `log_blowup = 4`, requiring
-    /// **60 queries**. LDE is `16×` trace size — bigger Merkle
-    /// commit, fewer openings.
+    /// ≥ 80-bit unconditional FRI soundness with `log_blowup = 4`,
+    /// requiring **23 queries** (`4 · 23 = 92` bits Johnson-provable).
+    /// LDE is `16×` trace size — bigger Merkle commit, fewer openings.
     pub const PROD_LB4: Self = Self {
         log_blowup: 4,
         pow_bits: 0,
-        num_queries: 60,
+        num_queries: 23,
     };
 
-    /// 120-bit FRI soundness with `log_blowup = 5`, requiring
-    /// **48 queries**. LDE is `32×` trace size — the prove side
-    /// pays a lot, but the proof is the smallest of the sweep.
+    /// ≥ 80-bit unconditional FRI soundness with `log_blowup = 5`,
+    /// requiring **18 queries** (`5 · 18 = 90` bits Johnson-provable).
+    /// LDE is `32×` trace size — the prove side pays a lot, but the
+    /// proof is among the smallest of the sweep.
     pub const PROD_LB5: Self = Self {
         log_blowup: 5,
         pow_bits: 0,
-        num_queries: 48,
+        num_queries: 18,
     };
 
-    /// 120-bit FRI soundness with `log_blowup = 6`, requiring
-    /// **40 queries**. The extreme of the sweep.
+    /// ≥ 80-bit unconditional FRI soundness with `log_blowup = 6`,
+    /// requiring **15 queries** (`6 · 15 = 90` bits Johnson-provable).
+    /// The extreme of the sweep.
     pub const PROD_LB6: Self = Self {
         log_blowup: 6,
         pow_bits: 0,
-        num_queries: 40,
+        num_queries: 15,
     };
 
     /// Test profile for the M10.1c Pearl-style composite AIR.
@@ -135,10 +155,11 @@ impl CircuitConfig {
     /// `TEST_PEARL` bumps to `log_blowup = 2` so degree-3 constraints
     /// fit while keeping tests fast.
     ///
-    /// `num_queries = 16` gives ~16 bits of provable soundness — still
-    /// non-cryptographic, intended for round-trip / tamper-detection
-    /// tests. `PROD` (`log_blowup = 3, num_queries = 80`) handles the
-    /// real 120-bit-soundness PoUW verification.
+    /// `num_queries = 16` gives ~32 bits of Johnson-provable soundness
+    /// (`2 · 16 = 32`) — still non-cryptographic, intended for
+    /// round-trip / tamper-detection tests. `PROD` (`log_blowup = 3,
+    /// num_queries = 30`) handles the real ≥80-bit unconditional PoUW
+    /// verification (paper Theorem 1.5).
     pub const TEST_PEARL: Self = Self {
         log_blowup: 2,
         pow_bits: 0,
@@ -581,18 +602,47 @@ mod tests {
 
     #[test]
     fn circuit_config_constants_are_well_formed() {
-        // PROD targets 120 bits of provable FRI soundness with no
-        // grinding: 80 queries × log_blowup 3 / 2 = 120.
+        // PROD targets ≥80 bits unconditional FRI soundness at the
+        // Johnson radius (IACR ePrint 2025/2055 Theorem 1.5) with no grinding:
+        // 30 queries × log_blowup 3 = 90 bits, ≥80 floor with ~10-bit
+        // margin. (Pre-2026-05-19 was lb·nq/2 = 120 classical
+        // unique-decoding; paper closes that gap.)
         let prod = CircuitConfig::PROD;
         assert_eq!(prod.log_blowup, 3);
-        assert_eq!(prod.num_queries, 80);
+        assert_eq!(prod.num_queries, 30);
         assert_eq!(prod.pow_bits, 0);
-        assert_eq!(prod.num_queries * prod.log_blowup / 2, 120);
+        let johnson_bits = prod.num_queries * prod.log_blowup;
+        assert_eq!(johnson_bits, 90);
+        assert!(
+            johnson_bits >= 80,
+            "PROD must meet the 80-bit unconditional floor"
+        );
         // TEST is just for speed; sanity checks only.
         let test = CircuitConfig::TEST;
         assert!(test.log_blowup >= 1);
         assert!(test.num_queries >= 1);
         assert_eq!(test.pow_bits, 0);
+    }
+
+    /// Each `PROD_LBn` profile must meet the ≥80-bit unconditional
+    /// Johnson-radius floor (paper Theorem 1.5).
+    #[test]
+    fn prod_sweep_profiles_meet_80bit_johnson_floor() {
+        for (name, cfg) in [
+            ("PROD", CircuitConfig::PROD),
+            ("PROD_LB2", CircuitConfig::PROD_LB2),
+            ("PROD_LB4", CircuitConfig::PROD_LB4),
+            ("PROD_LB5", CircuitConfig::PROD_LB5),
+            ("PROD_LB6", CircuitConfig::PROD_LB6),
+        ] {
+            let bits = cfg.num_queries * cfg.log_blowup;
+            assert!(
+                bits >= 80,
+                "{name}: johnson_bits = lb·nq = {}·{} = {} < 80",
+                cfg.log_blowup, cfg.num_queries, bits
+            );
+            assert_eq!(cfg.pow_bits, 0, "{name}: pow_bits must be 0 (no grinding)");
+        }
     }
 
     #[test]
@@ -678,15 +728,18 @@ mod tests {
 
     #[test]
     fn build_stark_config_provable_soundness_at_prod() {
-        // Sanity assertion of the security claim: log_blowup × num_queries / 2 = 120.
+        // Sanity assertion of the security claim: log_blowup ·
+        // num_queries = 90 bits unconditional at Johnson radius
+        // (paper IACR ePrint 2025/2055 Theorem 1.5), ≥80-bit floor.
         // (We can't read FRI params back through the PCS — see
         // `build_stark_config_accepts_custom_knobs` for the rationale —
         // so verify the math directly on `CircuitConfig::PROD` which
         // is what gets fed into `build_stark_config`.)
         let prod = CircuitConfig::PROD;
         let _ = build_stark_config(&sample_zk_params(), &prod);
-        let provable_bits = (prod.log_blowup * prod.num_queries / 2) as usize;
-        assert_eq!(provable_bits, 120);
+        let johnson_bits = (prod.log_blowup * prod.num_queries) as usize;
+        assert_eq!(johnson_bits, 90);
+        assert!(johnson_bits >= 80, "PROD must meet the 80-bit floor");
     }
 
     #[test]

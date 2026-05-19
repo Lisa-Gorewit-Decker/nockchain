@@ -2,14 +2,18 @@
 
 # C4 / M-S6 — independent crypto audit: readiness package
 
-> **Status (R1, honest).** This document is the **internal
-> readiness package** for the C4/M-S6 milestone (`#125` —
-> independent crypto audit of the ai-pow / ai-pow-zk soundness
-> stack). C4 itself is, by construction, **external** — an audit
-> report is produced by independent cryptographers consuming the
-> shipped code + the artifacts indexed here. This doc therefore
-> **does not** claim to perform the audit; it claims to make the
-> audit *startable* by an external party with no prior context.
+> **Status (R1, honest).** This document is the **readiness
+> package** for the C4/M-S6 milestone (`#125` — independent crypto
+> audit of the ai-pow / ai-pow-zk soundness stack).
+>
+> **Audience (clarified 2026-05-19).** The team performs this
+> audit ourselves; **people other than us will also audit the
+> code.** This package is written so that both audiences can use
+> the same artifacts — claim index, threat model, KAT catalogue,
+> adversarial-test inventory, residuals. The team is not making
+> any commitment about who those other auditors will be, what
+> their scope is, or when they will deliver; that is outside what
+> this document controls.
 >
 > What this delivers: (a) a threat model + audit scope, (b) the
 > soundness-claim index (every claim → exact files / commits /
@@ -18,6 +22,11 @@
 > explicit known-residuals list (no hidden gaps), (f) an
 > audit-readiness checklist with a small honest set of items
 > still to ship before the audit begins.
+>
+> **Reference papers are cited by name** (title, authors, IACR
+> ePrint / arXiv ID); the PDFs themselves are **not** in the
+> repository (`.gitignore`d 2026-05-19). Anyone reading this
+> document obtains the papers from their published venues.
 >
 > **Authoritative cross-refs:** `2026-05-17_PRODUCTION_ROADMAP.md`
 > Phase C row C4; `2026-05-15_ZKP_SECURITY_REPORT.md` (the
@@ -32,8 +41,8 @@
 
 ## 0. Purpose & how to use this document
 
-An external auditor opening this repository for the first time
-should be able to:
+Anyone opening this repository to audit it (the team in-house;
+anyone else who chooses to review the code) should be able to:
 
 1. Read this doc § 1 + § 2 to fix **scope** and **threat model**.
 2. Walk § 3's soundness-claim index, each row of which is a
@@ -104,7 +113,7 @@ mining the real shipped `Llama-3.1-8B-Instruct-pearl` model
 per-link soundness floor is **≥80 bits unconditional**,
 anchored on the Johnson-radius proximity-gap bound *proven* by
 Ben-Sasson, Carmon, Habock, Kopparty, Saraf, *"On Proximity
-Gaps for Reed–Solomon Codes"* (`2025-2055.pdf`, Nov 2025,
+Gaps for Reed–Solomon Codes"* (IACR ePrint 2025/2055, Nov 2025,
 Theorem 1.5 + §1.3.2). Rationale: per-block PoW that resets
 every 2.5 min does not need the 120/128-bit margin that
 defends long-horizon attacks; 80 unconditional bits in a 150 s
@@ -134,7 +143,7 @@ The audit should *also* assess:
 - **The paper-grounded soundness map.** Verify
   `(lb, nq, pow_bits) → unconditional bits at Johnson radius`
   for our specific Plonky3-recursion FRI variant under
-  `2025-2055.pdf` Theorem 1.5. Confirm γ < J(δ)−η at every
+  IACR ePrint 2025/2055 Theorem 1.5. Confirm γ < J(δ)−η at every
   M-S5 link (the paper's §8 attacks confirm beyond-Johnson is
   unsafe).
 - **Knowledge soundness** (extractability) — not just
@@ -160,10 +169,10 @@ The audit should *also* assess:
 | **A-TILE** | Wins a *cheaper* tile than attested | MED-3: verifier-derived `(tile_i, tile_j)` |
 | **A-MAT** | Forges by supplying a different committed matrix than `HASH_A`/`HASH_B` | M52 matrix binding |
 | **A-CHAIN** | Forges the recursion chain (claims a valid inner that isn't) | C2.4 in-circuit Tip5 Layer-0 verify + C3 ≥120-bit outer cert |
-| **A-SOUND** | Exploits a sub-≥80-unconditional configuration | Every FRI tier in M-S5 is ≥ 80 unconditional under the `2025-2055.pdf` Theorem 1.5 Johnson-radius bound (LANDED `lb=2, nq=120` is well above 80 unconditional; §15 of C3 doc + §1.3 above) |
-| **A-FRI** | Exploits a FRI commitment-scheme weakness | Standard Plonky3 FRI (audited upstream); we use established parameters; **proximity testing stays at γ < J(δ)−η** (Johnson radius, never beyond — `2025-2055.pdf` §8 attacks avoided) |
+| **A-SOUND** | Exploits a sub-≥80-unconditional configuration | Every FRI tier in M-S5 is ≥ 80 unconditional under the IACR ePrint 2025/2055 Theorem 1.5 Johnson-radius bound (LANDED `lb=2, nq=120` is well above 80 unconditional; §15 of C3 doc + §1.3 above) |
+| **A-FRI** | Exploits a FRI commitment-scheme weakness | Standard Plonky3 FRI (audited upstream); we use established parameters; **proximity testing stays at γ < J(δ)−η** (Johnson radius, never beyond — IACR ePrint 2025/2055 §8 attacks avoided) |
 | **A-LDR** (new) | Pushes proximity testing beyond Johnson radius into the list-decoding regime where the paper's negative results + §8 attacks live | M-S5 chain audited to ensure no layer exceeds Johnson radius; M-S5b's S(−1) prerequisite (per the M-S5b design doc §3.0.A) will produce an explicit per-layer γ vs J(δ)−η table |
-| **A-HASH** | Exploits Tip5 / BLAKE3 weakness | Tip5: KAT-anchored to spec (paper `2023-107.pdf`); BLAKE3: as-published |
+| **A-HASH** | Exploits Tip5 / BLAKE3 weakness | Tip5: KAT-anchored to spec (paper IACR ePrint 2023/107); BLAKE3: as-published |
 
 ### 2.2 What is **not** mitigated by this audit alone
 
@@ -236,7 +245,7 @@ backs it → status)`.
 | **C2 L5** | In-circuit Tip5 challenger duplexing + MMCS path bit-for-bit vs native | `2026-05-18_C2_TIP5_CIRCUIT_AIR_DESIGN.md` § 2c L5 | bit-for-bit KAT vs native (commit `259dd6f`) | ✅ landed |
 | **C2.4** | Real Tip5 Layer-0 end-to-end recursion verify + 120-bit FRI sweep | `2026-05-18_C2_TIP5_CIRCUIT_AIR_DESIGN.md` § 2c.C2.4 | `recursion/tests/test_tip5_layer0_recursion.rs` accept + tamper-reject across the sweep (commit `fb0bd32`) | ✅ landed |
 | **C2.4 R-a** | `WitnessChecks` CTL D=1 byte-identical re-validated; D-aware infrastructure landed | `2026-05-19_C3_OUTER_CERT_DESIGN.md` (the C2.4 R-a tail context) | D=1 byte-identical re-validation; D=5 quintic arbiter (commit `632cb8c`) | ✅ landed |
-| **C3 / M-S5 ≥120-bit cert** | Soundness-correct ≥120-bit vertical-recursion cert (every chain link ≥120 conj. bits ⇒ end-to-end `min ≥ 120` conjectured **= comfortably ≥ 80 unconditional under `2025-2055.pdf` Theorem 1.5 Johnson-radius bound**, the new maintainer floor; see §1.3) | `2026-05-19_C3_OUTER_CERT_DESIGN.md` § 13.2 + § 15 | `test_tip5_layer0_compression.rs::c3_stage_a_l1_120bit_kat` + `c3_stage_b_l2_over_120bit_l1` + `c3_stage_c_sweep_120bit` (accept + 5 inner sweep profiles tamper-reject) | ✅ landed (commits `259cab2`, prior `14116b0`); independently re-validated by orchestrator |
+| **C3 / M-S5 ≥120-bit cert** | Soundness-correct ≥120-bit vertical-recursion cert (every chain link ≥120 conj. bits ⇒ end-to-end `min ≥ 120` conjectured **= comfortably ≥ 80 unconditional under IACR ePrint 2025/2055 Theorem 1.5 Johnson-radius bound**, the new maintainer floor; see §1.3) | `2026-05-19_C3_OUTER_CERT_DESIGN.md` § 13.2 + § 15 | `test_tip5_layer0_compression.rs::c3_stage_a_l1_120bit_kat` + `c3_stage_b_l2_over_120bit_l1` + `c3_stage_c_sweep_120bit` (accept + 5 inner sweep profiles tamper-reject) | ✅ landed (commits `259cab2`, prior `14116b0`); independently re-validated by orchestrator |
 | **DT-4 duplex binding** | Merkle-swap slot↔idx desync fix: capture pre-swap `bus_state` for `!has_ctl_output` perms; net-0 duplex binding | `2026-05-19_C3_OUTER_CERT_DESIGN.md` § 13 | `Plonky3-recursion/circuit/src/ops/tip5_perm/executor.rs` (commit `14116b0`); tamper-reject via `WitnessConflict` at `runner().run()` | ✅ landed (non-fenced executor edit; zero multiplicity changed; Merkle-root binding bit-for-bit untouched) |
 
 ### 3.6 ENV / P-A — production envelope
@@ -312,7 +321,7 @@ Tip5).
 The Tip5 permutation AIR (`Plonky3-recursion/tip5-circuit-air/`)
 implements a 7-round permutation **identical bit-for-bit** to
 `nockchain_math::tip5::permute` over Goldilocks⁸, instantiated
-per the Tip5 paper (ePrint `2023-107.pdf`) §4.3/§4.6.
+per the Tip5 paper (ePrint IACR ePrint 2023/107) §4.3/§4.6.
 
 Components:
 
@@ -478,7 +487,7 @@ Before the auditor begins, confirm:
       validated commits; precise residuals — `~/.claude/CLAUDE.md`
       R1/R1.1).
 - [x] **Soundness bar paper-grounded** (≥80 unconditional under
-      `2025-2055.pdf` Theorem 1.5 Johnson-radius bound; §1.3).
+      IACR ePrint 2025/2055 Theorem 1.5 Johnson-radius bound; §1.3).
 - [ ] **Per-layer `γ < J(δ)−η` table produced** (M-S5b's S(−1)
       prerequisite — `2026-05-19_M_S5B_TERMINAL_COMPRESSION_DESIGN.md`
       §3.0.A; not a blocker for the audit to *begin* but
@@ -528,8 +537,8 @@ audit can begin on the in-scope items as listed.
 | vLLM CPU fork design | `2026-05-18_PEARL_VLLM_CPU_FORK_DESIGN.md` |
 | G3 (deferred) | `2026-05-17_M_S2_G3AB_DESIGN.md` |
 | Pearl 3-layer recursion (origin of ≤65 KB target) | `2026-05-17_M_S2_PEARL_EVALUATION.md` |
-| **Soundness-bar anchor paper** (Johnson-radius proven; §1.3) | `2025-2055.pdf` — Ben-Sasson, Carmon, Habock, Kopparty, Saraf, *"On Proximity Gaps for Reed–Solomon Codes"* (Nov 2025; Theorem 1.5 + §1.3.2 + §8 attacks) |
-| Tip5 paper (5.A round constants + §4.3/§4.6) | `2023-107.pdf` |
+| **Soundness-bar anchor paper** (Johnson-radius proven; §1.3) | IACR ePrint 2025/2055 — Ben-Sasson, Carmon, Habock, Kopparty, Saraf, *"On Proximity Gaps for Reed–Solomon Codes"* (Nov 2025; Theorem 1.5 + §1.3.2 + §8 attacks) |
+| Tip5 paper (5.A round constants + §4.3/§4.6) | IACR ePrint 2023/107 |
 | Earlier roadmap (superseded) | `2026-05-13_ROADMAP.md` |
 | Earlier flaws audit (resolved) | `2026-05-13_FLAWS.md` |
 | BLAKE3 chip bug writeup | `2026-05-15_BLAKE3_CHIP_ROUND_GATE_BUG.md` |
@@ -546,17 +555,22 @@ derived from git.
 
 ## 12. Definition of done — when C4 / M-S6 is closed
 
-This package is "ready for audit." **C4 / M-S6 closes when**
-the external audit report is delivered and:
+This package is "ready for audit." **C4 / M-S6 closes when:**
 
-1. The auditor's findings have been triaged.
-2. Any new soundness gaps are tracked in
+1. The team's in-house audit has independently walked the
+   soundness-claim index (§ 3), reproduced every KAT (§ 6),
+   exercised every adversarial test (§ 7), and produced an
+   in-house audit log recording either "claim defensible per
+   evidence X" or "open finding routed to
+   `2026-05-15_GAP_AUDIT.md` with R1 residual."
+2. Any soundness gaps surfaced (by us or by anyone else
+   auditing the code) are tracked in
    `2026-05-15_GAP_AUDIT.md` with the same R1 discipline
    (validated subset + precise residual per finding).
 3. The "experimental / unaudited" gate is removed from the
    recursion stack per the roadmap exit gate.
 
-Until the external report exists and items 1–3 are honest, C4
-is **in progress**. This document being committed flips
-`#125` from `pending` to `in_progress` (audit readiness stage),
-not `completed`.
+Until items 1–3 are all honestly green, C4 is **in progress**.
+This document being committed flips `#125` from `pending` to
+`in_progress` (audit-readiness + start-of-in-house-audit
+stage), not `completed`.
