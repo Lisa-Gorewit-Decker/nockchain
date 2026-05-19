@@ -459,6 +459,33 @@ NOT faked):**
   design-doc-first (#129) before any fenced-linchpin-adjacent
   implementation. **C2 (#123) is complete and validated; the
   outer certificate is the distinct C3/#124 milestone.**
+
+  > **CORRECTION 2026-05-19 (C3 outer-cert implementation attempt;
+  > supersedes the recompose-coeff diagnosis in the paragraph
+  > above — `C3_OUTER_CERT_DESIGN.md` §7).** The DT-1 #129
+  > recompose-coeff root cause is **empirically FALSIFIED**. The
+  > actual orphaned witness on a real PROD outer cert (`wid 11468`,
+  > tuple idx `22936`, net **+1**, single location) is **NOT a
+  > `recompose/coeff` coeff and NOT a `verify_p3_uni_proof_circuit`
+  > computed-vs-Hint coeff** at all: op-level tracing shows its
+  > creator is a **Tip5-perm OUTPUT limb** and its sole reader a
+  > **Tip5-perm INPUT limb** (the recursion challenger/MMCS duplex
+  > chains Tip5 perms) — a Tip5-perm-output↔perm-input
+  > `WitnessChecks` producer/consumer mismatch **at D=2**. Path
+  > (i)/1d (register decompose coeffs) leaves this orphan untouched
+  > and, generalized to cover all 974 coeff slots, instead
+  > **double-produces** the 960 `Op::Alu(MulAdd)` select-path
+  > coeffs (ALU table + recompose both produce) — strictly worse,
+  > R1-forbidden to land. The real R-a-tail is the **Tip5/D=2
+  > perm-chain CTL** inside fenced-linchpin / `verify_p3_uni_proof_
+  > circuit` / Tip5-preprocessor (`idx_scale` already the C2.4-R-a
+  > D≥2 fix). **Nothing landed; worktree byte-identical to
+  > baseline; full Plonky3-recursion gate re-run green** (7/7 D=1
+  > Tip5 Layer-0, 14/14 p3-tip5-circuit-air, 2/2 test_tip5_lookups,
+  > 46 challenger_transcript, 32 p3_recursion, quintic 1/1,
+  > poseidon/recompose unperturbed). DT-1 #129 must be **re-opened**
+  > with the corrected (Tip5 perm-chain D=2) root cause before any
+  > C3 landing. R-a-tail/C3/#124 **remains open, not faked.**
 - **R-b — ai-pow-zk's *actual* M10.1c composite `RecursiveAir`**
   (this gate proves a representative `FibonacciAir` under the
   *exact* Layer-0 `StarkConfig`; the established recursion-test

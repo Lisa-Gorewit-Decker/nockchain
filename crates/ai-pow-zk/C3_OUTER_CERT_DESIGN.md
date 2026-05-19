@@ -1,6 +1,20 @@
 # C3 / #124 — DT-1 design: D=2 Tip5 outer-cert recompose-coeff producer balancing
 
-> **Status:** DESIGN (DT-1, #129; 2026-05-19). The C3/M-S5 enabler.
+> **Status:** DESIGN SUPERSEDED — root cause **empirically
+> FALSIFIED** by the 2026-05-19 implementation attempt (see **§7**).
+> The DT-1 §1/§2 mechanics survey misidentifies the orphan as a
+> `recompose/coeff` producer-gating issue; the genuine orphan is a
+> **Tip5-perm output↔input `WitnessChecks` D=2 mismatch** (C2.4
+> R-a-tail), inside fenced-linchpin territory. **Path-(i)/1d as
+> written does NOT fix C3/#124 — do not re-attempt it.** C3.0
+> premise (recompose==x binding) is moot for this orphan (it is not
+> a recompose coeff). C3.1/C3.2 **NOT done, NOT faked** — nothing
+> landed; the worktree is byte-identical to baseline and the full
+> gate is green. R1 residual = the corrected root cause in §7.
+> Original DESIGN text (§0–§6) retained verbatim below for the
+> audit trail; it is now **historical / incorrect on the cause**.
+>
+> _(orig.)_ DESIGN (DT-1, #129; 2026-05-19). The C3/M-S5 enabler.
 > Governed by R1: this touches fenced-linchpin-*adjacent* shared
 > wiring (the recompose-coeff producer / `hint_output_wids`
 > semantics), so it is **design + soundness-argument first**, then
@@ -219,3 +233,119 @@ byte-identical); tasks #124 (C3, blocked by #129=this),
 `c2-tip5-circuit-air`. Validated reference path:
 `fibonacci_batch_stark_prover_quintic.rs` (poseidon2 D=1-in-D=5
 outer cert — the producer-balance mechanism this mirrors).
+
+## 7. C3.0–C3.2 implementation attempt (2026-05-19) — R1 residual: DT-1 root-cause empirically FALSIFIED; NOT landed; NO fake completion
+
+> **Status: ATTEMPTED + DRIVEN this session (R1.1-compliant), hit a
+> concrete correctness wall. Path-(i)/1d as specified does NOT fix
+> the orphan; the genuine orphan is NOT a recompose-coeff. Nothing
+> landed in `Plonky3-recursion` (worktree byte-identical to the
+> C3-design baseline); the full workspace gate remains green. This
+> is the R1 validated-subset (= the *clean baseline*, since no
+> partial soundness change is safe to land) + this precise
+> residual. The DT-1 §1/§2 mechanics survey is empirically wrong on
+> the orphan's source — do not re-attempt path-(i)/1d as written.**
+
+### 7.1 What was done (independent re-reproduction; R1 discipline)
+
+- **Reproduced the exact documented failure** on a real PROD Tip5
+  Layer-0 verifier circuit via a new
+  `prove_all_tables`/`verify_all_tables` outer-cert harness
+  (`config::goldilocks_tip5`, D=2 challenge field, Tip5 NPO D=1,
+  recompose `split_coeff_tables=true`, the validated quintic
+  pattern): `WitnessChecks` global-sum orphan, tuple
+  `["22936","10485455180627170985","0"]` net **+1**, ONE location
+  `instance 3 / lookup 241 / row 292`. `22936 = wid 11468 × D(2)`.
+- **Implemented path-(i)/1d** exactly per §3: new
+  `PreprocessedColumns::computed_decompose_coeffs`, populated in
+  `circuit.rs`, OR-ed into the `recompose.rs:345` predicate, with
+  the O1 Const/Public exclusion.
+- **Empirically traced** every `recompose/coeff` coeff witness +
+  the specific orphan wids to their defining/reading ops (the §2
+  escalation-gate premise check, done by independent re-derivation,
+  not trusting the doc).
+
+### 7.2 The concrete wall (empirically established, decisive)
+
+The DT-1 §1/§2 premise is **"the orphan is a `recompose/coeff`
+base-coeff whose producer is gated off because it is an
+`ExtDecompositionHint` (`push_unconstrained`) output ∉
+`hint_output_wids`."** Direct op-level tracing of the **actual**
+orphaned witness (`wid 11468`, idx `22936`) shows this is **false**:
+
+- `wid 11468`: `ext_reads = 1`, `in hint_output_wids = false`, **not
+  a `recompose/coeff` input at all** (`computed_decompose_coeffs`
+  membership = false even after the fix). Its **creator** is
+  `op[10576] = NPO(tip5_perm/goldilocks_w16_r7) OUTPUT`; its **sole
+  reader** is `op[10577] = NPO(tip5_perm/goldilocks_w16_r7) INPUT`,
+  `tip5_dup_flag = false`. ⇒ It is a **Tip5-perm-output →
+  Tip5-perm-input chain** witness (the recursion challenger/MMCS
+  duplex chains Tip5 perms), **not** a decompose/recompose coeff.
+  The orphan having a *single* location = a lone Tip5 output-limb
+  **producer** push (`+ext_reads = +1`) whose matching Tip5
+  input-limb **consumer** push never cancels it (a producer/consumer
+  tuple-shape or idx mismatch at D=2 between the two Tip5 perm
+  instances) — squarely the **C2.4 R-a-tail** Tip5/D=2
+  `WitnessChecks` accounting residual.
+- The literal path-(i)/1d set (`ExtDecompositionHint` outputs) is
+  also too narrow even *for* recompose coeffs: of 974 PROD
+  `recompose/coeff` coeff slots only **14** are `ExtDecompositionHint`
+  outputs; **960** are `select(b,tc,sc)` results the optimizer fuses
+  into computed `Op::Alu(MulAdd)` outputs (the Merkle-path/challenger
+  select-provenance branch of `decompose_ext_to_base_coeffs`). A
+  faithful generalization (register the recompose-coeff NPO's own
+  input wids) **does** cover all 974 — but those Alu-out coeffs are
+  **already produced by the ALU table**, so adding a recompose
+  producer **double-produces** them (verified: it converts the
+  original lone Tip5 orphan into a *new* `wid 11429` Alu-vs-recompose
+  double-production orphan — strictly **worse**, which R1 forbids
+  landing).
+
+**Conclusion (no fake):** the genuine C3/#124 orphan is the
+**Tip5-perm output↔input `WitnessChecks` producer/consumer
+mismatch at D=2** inside the fenced Tip5 circuit-AIR `eval`
+(`tip5-circuit-air/src/air_circuit.rs`) and/or the
+`verify_p3_uni_proof_circuit` Tip5-perm-chain wiring and/or the
+Tip5 prover preprocessor idx accounting (`circuit-prover/.../
+tip5.rs`, whose `idx_scale = 1` is *already* the C2.4-R-a
+deliberate D≥2 fix and is byte-identical-validated — re-touching it
+regresses C2.4 R-a). **All three are inside the task's hard-ruled
+no-edit set** (fenced linchpin / `verify_p3_uni_proof_circuit` /
+AIR `eval`). The DT-1 recommended fix (path-(i)/1d) targets a
+mechanism (`recompose-coeff` producer gating) that is **not** the
+cause and **cannot** close this orphan. This is **not** the §2
+recompose-coeff escalation case (no producer-emitting coeff is
+unbound) — it is a **misdiagnosis in the DT-1 mechanics survey
+itself**.
+
+### 7.3 Disposition (R1 / R1.1)
+
+- **Landed: nothing.** The `Plonky3-recursion` worktree is
+  **byte-identical** to the C3-design baseline (`circuit.rs`,
+  `recompose.rs`, `executor.rs`, `circuit_builder.rs`, the test
+  file — all reverted). No half-landed invasive soundness change.
+- **Re-validated green (post-revert, independent re-run):** full
+  `cargo test --workspace` — `test_tip5_layer0_recursion` **7/7**
+  (original D=1, byte-identical), `p3-tip5-circuit-air` **14/14**,
+  `test_tip5_lookups` **2/2**, `challenger_transcript` **46**,
+  `p3_recursion` **32**, `p3_circuit` **358**, `p3_circuit_prover`
+  **40**, `fibonacci_batch_stark_prover_quintic` **1/1**, recompose
+  + poseidon1/2 unperturbed; **zero failures**.
+- **Precise residual (exact remaining work, why, where):** C3/#124
+  is blocked on the **C2.4 R-a-tail**: the Tip5-perm output-limb
+  *producer* and input-limb *consumer* `WitnessChecks` tuples must
+  cancel at D=2 for a perm-output-feeds-perm-input chain. Closing
+  it requires a soundness-critical edit to **fenced-linchpin**
+  territory (the Tip5 circuit-AIR `eval` interaction emission, or
+  the `verify_p3_uni_proof_circuit` Tip5 challenger/MMCS perm-chain
+  decompose wiring, or the Tip5 prover preprocessor's D-scaling),
+  each of which the current task hard-rules forbid and each of
+  which demands its own design + soundness argument + KAT-first +
+  full re-validation (it is **not** a localized bookkeeping mirror
+  of the validated quintic path — the quintic path has no
+  perm-output→perm-input D=2 chain). **DT-1 must be re-opened**
+  with the corrected root cause (Tip5 perm-chain D=2 CTL, *not*
+  recompose-coeff `hint_output_wids`) before any C3 landing.
+- **R-b unchanged:** ai-pow-zk's actual M10.1c composite
+  `RecursiveAir` (vs the representative `FibonacciAir` under the
+  exact Layer-0 config) remains M12/#127, explicitly out of scope.
