@@ -721,3 +721,96 @@ op-trace/debug-confirmed, not source-inferred):**
    D=2 outer cert accept+tamper+sweep+≤65 KB), per-stage full
    re-validation. M12/#127-adjacent. DT-2 (Edit A) carries
    forward as the verified-necessary partial advance.
+
+## 12. DT-4 diagnosis — DEBUG-CONFIRMED: the +1 is a D=2 EF→base VALUE divergence (NOT bookkeeping); fix surface = non-fenced executor/lift (2026-05-19)
+
+Drove the DT-4 diagnosis (Edit A applied; real D=2 debug-lookups
+run; op-level `t.operations` dump; both `with_debug_lookups`
+*and* the production `verify_all_tables` path). This is the
+**first debug-CONFIRMED** characterization (prior §8/§10 were
+source-inferred and falsified) and it refutes 2(i)–(iv) of the
+§11.1 plan.
+
+**Confirmed ledger @ idx 22936, D=2 PROD** (instance 3 = Tip5
+NPO; `wid 11468`):
+- perm-A `OUTPUT_LIMB[0]` SEND **+1** `[22936, V1=
+  10485455180627170985, 0]` row 292
+- perm-B `INPUT_LIMB[0]` RECEIVE **−1** `[22936, V2=
+  2007669758051029367, 0]` row 293
+
+Same idx (Edit A worked — namespace consistent; no idx-11468
+Tip5 residue, only a benign Alu-internal ±1 pair), mult
+magnitude exactly 1 each (count resolver `tip5.rs:429-443`
+correct), **but different VALUES** ⇒ two non-cancelling multiset
+tuples. Globally the WitnessChecks multiset sums to 0 (the
++1/+1/−1/−1 across orphan pairs incl. wid 19476) but splits
+into 4 non-cancelling tuples; `check_lookups` lex-sorts and
+panics on the first = the established `["22936",V1,"0"] +1,
+inst 3, lookup 241, row 292`. Production `verify_all_tables`
+independently rejects the same (genuine `ext_degree==2`).
+
+**Root cause (op-trace CONFIRMED, raw `t.operations`).** The
+duplex idx-wiring is correct (perm-B `in_idx` == perm-A
+`out_idx` == 11468..11472). But the **(idx,value) pairing
+diverges already in `t.operations` (executor-side)**: perm-A
+(op 36) records output `V1 = base_Tip5(coord-0-projected
+inputs)` while perm-B (op 37) records input `V2` = the EF
+`LiftTip5` value the circuit witness actually holds (==
+`ctx.get_witness`, == the clean perms' value). `LiftTip5`
+(base-Tip5 on coord-0, re-embed coord-0 only) is **lossy on EF
+coord-1**: the base-trace recompute in
+`generate_tip5_circuit_main` round-trips perms whose coord-1 is
+zero (the "clean" pairs cancel) but diverges for those with
+non-zero coord-1 (perm-A-out value ≠ the witnessed value
+perm-B reads). ⇒ a genuine **D=2 EF→base value-materialization
+inconsistency**, *upstream* of all of (a) AIR `eval`
+(`air_circuit.rs:330-357`, faithful), (b) `verify_p3` (no
+emission here — inst 3 only), (c) the `tip5.rs:429-443` count
+resolver (count correct). 2(i) count, 2(ii) idx-split, 2(iii)
+CAP-lane, 2(iv) double-producer — **all refuted by the run**.
+
+**Owning surface = non-fenced Tip5 D=2 executor/lift
+EF→base materialization** (`circuit/src/ops/tip5_perm/
+executor.rs` + `LiftTip5` + `generate_tip5_trace::<Challenge>`
+/ the base recompute in `generate_tip5_circuit_main`). Does
+**NOT** require editing fenced `air_circuit.rs`/
+`Tip5PermLookupAir`/`tip5_l`/`tip5_spec`/`generation_lookup`/
+`verify_p3_uni_proof_circuit`/`recompose*`/`circuit.rs`. The
+prover preprocessor (c) and AIR (a) faithfully transcribe
+whatever `t.operations` already contains; the orphan is baked
+in before they run.
+
+### 12.1 DT-4 fix (soundness constraint + the precise residual)
+
+**Soundness (R1-critical — the agent's explicit forgery
+warning).** The +1 is a real value inconsistency, NOT a
+miscount. A bookkeeping patch (zero one side's multiplicity)
+would **hide an unbound value ⇒ a Tip5-duplex forgery hole** —
+strictly forbidden. The fix must make net-0 a **consequence of
+the duplex binding**: perm-A's recorded base output value must
+equal the EF `LiftTip5` value the circuit witness carries (==
+what perm-B reads via `ctx.get_witness`), so perm-A-out and
+perm-B-in carry the *identical* value and the multiset cancels
+*because* the Tip5 x⁷/`tip5_l` + challenger/MMCS binding holds
+— not because a count was nulled.
+
+**Fix direction (debug-confirmed surface; exact line
+UNVERIFIED — first impl step).** Make the executor derive the
+perm-A output trace value from the **resolved circuit witness
+it writes** (the value perm-B will read), not an independent
+base recompute of a lossily coord-0-projected `input_values`.
+**UNVERIFIED (must pin before editing — one targeted EF-witness
+trace, per R1 KAT-first; do NOT infer, §10 fell to exactly
+that):** (1) whether the divergence enters at the executor
+`ctx.get_witness` EF→base projection (`executor.rs:~408`) vs
+the `generate_tip5_circuit_main` base recompute; (2) whether a
+complementary `LiftTip5`/`generate_tip5_trace::<Challenge>`
+faithfulness fix is needed so *all* perms (not only
+coord-1-zero) round-trip. Pin (1)+(2) by a targeted trace
+(dump full EF witness 11468 + op-36 true EF inputs) as DT-4
+impl step 1, THEN the minimal non-fenced edit, THEN the §10/§11
+staged gate **G1** D=1 byte-identical / **G2** quintic+poseidon
++ full-workspace no-regress / **G3** D=2 outer cert
+balances+accept+**tamper-reject**+sweep+**≤65 KB**, per-stage
+full re-validation. Falsify-and-escalate (no weaken/no fake) on
+any gate fail. DT-2/Edit A carries forward verified-necessary.
