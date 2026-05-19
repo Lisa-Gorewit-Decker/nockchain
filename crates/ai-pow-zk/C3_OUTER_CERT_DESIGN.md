@@ -814,3 +814,120 @@ staged gate **G1** D=1 byte-identical / **G2** quintic+poseidon
 balances+accept+**tamper-reject**+sweep+**≤65 KB**, per-stage
 full re-validation. Falsify-and-escalate (no weaken/no fake) on
 any gate fail. DT-2/Edit A carries forward verified-necessary.
+
+## 13. DT-4 DRIVEN — SOUNDNESS CLOSING-FIX SOLVED + EXHAUSTIVELY VALIDATED; C3 blocked SOLELY by the orthogonal, fix-independent M-S5 ≤65 KB (2026-05-19)
+
+Drove DT-4 (Edit A + Step-1 debug-pin + the non-fenced fix +
+the full staged gate), worktree-isolated. Outcome: **the C3
+WitnessChecks duplex-binding closing-fix is correct, complete,
+and exhaustively validated.** The §12 root cause was itself
+**partly inferred and the run REFUTED its mechanism** — DT-4's
+debug-pin is the authoritative truth:
+
+**Step-1 PIN (debug-CONFIRMED; §12's "`LiftTip5` lossy on EF
+coord-1" is EMPIRICALLY REFUTED).** Every EF coord in the run
+is `[x,0]` (coord-1 always 0 — no lossy EF→base projection).
+The actual mechanism is a **merkle-swap slot↔idx desync**:
+`apply_merkle_swap` (`circuit/src/ops/tip5_perm/executor.rs:
+152-159`) exchanges digest halves `[0,5)↔[5,10)` by the
+runtime `mmcs_bit`, but `build_trace_row`/`preprocess_ctl`
+record `input_indices` from the **static pre-swap** slot order
+while `input_values` is the **post-swap** state. For a leaf-
+compress perm (CTL inputs in `[0,5)`, `out_ctl` all false) with
+`mmcs_bit=1`, the bus INPUT tuple becomes `(idx=wid 11468,
+value=sibling V2)` — a value wid 11468 does not hold — so it
+cannot cancel perm-A's `(idx=wid 11468, value=V1)`. Run
+classification (1920 merkle perms): 400 leaf-with-CTL-in/
+`out_ctl=false` (**the desync class**), 1120 chained-only
+(bus-neutral), 400 `out_ctl=true` w/ no CTL inputs (no
+input-desync); the risky "leaf CTL-in + `out_ctl=true`" class
+= **0** occurrences. Pinned values: perm-A op144/op36 →
+`V1=10485455180627170985`; perm-B op145/op37 `resolved_in[0]
+=V2=2007669758051029367`, `resolved_in[5]=V1` (swap moved wid
+11468 slot 0→5). No `LiftTip5`/`generate_tip5_trace::<Challenge
+>` faithfulness fix needed.
+
+**The validated non-fenced fix (recipe — recorded so it is NOT
+re-derived).** In `execute_mmcs`, for `!has_ctl_output(outputs)`
+perms, record the **pre-swap** state into the trace row
+(`build_trace_row(&bus_state)` with the pre-swap `bus_state`)
+while `exec`/`write_outputs`/chain-update still use the
+**post-swap** state. ⇒ perm-B's INPUT_LIMB carries
+`get_witness(inputs[i])` (= V1 = perm-A's bound challenger
+output) ⇒ the multiset cancels **because the duplex `connect` +
+verbatim `Tip5PermLookupAir` x⁷/`tip5_l` constraints +
+challenger/MMCS recompute bind it** — net-0 as a *consequence
+of binding*, **no multiplicity changed**. Merkle-root binding
+(`update_chain_state` = `exec(post-swap)`, carried forward,
+`connect`-ed to the claimed root by the final `out_ctl=true`
+perm, `circuit/src/ops/mmcs.rs:108-196`) is **bit-for-bit
+untouched**. Edits limited to non-fenced executor + Edit A; no
+`air_circuit.rs`/`Tip5PermLookupAir`/`tip5_l`/`tip5_spec`/
+`generation_lookup`/`verify_p3`/`recompose*`/`circuit.rs`
+/count-resolver edits; no relaxed/stub/ignore.
+
+**Gate (driven, full re-run):**
+- **G1 D=1 byte-identical — PASS:** orig 7 `test_tip5_layer0`
+  7/7, `test_tip5_lookups` 2/2, `p3-tip5-circuit-air` 14/14,
+  `challenger_transcript` 46/46, `p3_recursion` 32/32.
+- **G2 no-regression — PASS:** `fibonacci_batch_stark_prover
+  _quintic` 1/1 (shared-path arbiter), poseidon1/2 10/10;
+  29/30 workspace binaries 0-fail (only the 5 new accept tests
+  fail — *solely* at the ≤65 KB assertion, not on soundness).
+- **G3 soundness — PASS (orphan CLOSED):** D=2
+  `verify_all_tables` **ACCEPTS on ALL 5 sweep profiles**
+  (PROD/LB2/LB4/LB5/LB6); tamper-reject **PASS** (in-circuit
+  `WitnessConflict`); baseline-revert re-confirms the pre-fix
+  rejection (the global-sum check is live, genuinely
+  `ext_degree==2`, not bypassed).
+- **G3 size — FAIL (the SOLE blocker; fix-INDEPENDENT,
+  orthogonal):** serialized `BatchStarkProof` = PROD 119866 /
+  LB2 119929 / LB4 119758 / LB5 119735 / LB6 118355 bytes
+  (115.58–117.12 KB) vs the 66560-byte (≤65 KB) M-S5 budget —
+  **~52 KB over on every profile**. Independent of DT-4 (a
+  function of D=2 batch-STARK table heights + FRI
+  `log_blowup`/`num_queries`/Merkle-depth over the full Tip5
+  Layer-0 verifier circuit; DT-4 changes only `input_values`,
+  not heights/table-count/FRI; §9's attempt serialized a
+  same-class size). The ≤65 KB assertion was **NOT relaxed**;
+  per the hard rule the soundness edit was reverted to
+  byte-identical baseline (executor.rs == baseline; orig 7 7/7
+  post-revert; baseline D=2 orphan re-confirmed rejecting).
+
+**Status (R1, honest — NO fake completion).** The C3
+*soundness closing-fix* is **DONE + exhaustively validated**
+(debug-pinned, non-fenced, soundness-argued, G1/G2/G3-soundness
+green on all 5 sweeps + tamper-reject). **C3/#124 is NOT done**
+— it is blocked **solely** by the orthogonal, fix-independent
+**M-S5 ≤65 KB** size target (~117 KB actual). Nothing landed
+(clean baseline; only Edit A + the unrelaxed G3 harness
+uncommitted). DT-2/Edit A carries forward verified-necessary.
+
+### 13.1 Precise actionable residual — the M-S5 ≤65 KB size (orthogonal to DT-4)
+
+C3's *soundness* is solved (recipe above). The remaining
+milestone gap is purely **certificate size**: the D=2 Tip5
+Layer-0 verifier batch-STARK serializes to ~116–117 KB under
+every sweep profile, ~52 KB over the M-S5 ≤65 KB target. This
+is **not a `WitnessChecks`/soundness problem** and no
+DT-class change touches it. Two actionable directions (each
+its own design + gate; M12/#127-adjacent):
+1. **Re-derive / re-scope the M-S5 ≤65 KB budget against the
+   *actual* Tip5 Layer-0 verifier circuit.** The 65 KB figure
+   may have been set against a smaller/different proven AIR;
+   confirm what circuit + FRI params it was derived for vs the
+   ~117 KB inherent size of *this* full verifier circuit at
+   D=2 across the 120-bit sweep.
+2. **Certificate-size reduction**: FRI parameter retune
+   targeting serialized size (vs the current 120-bit-soundness
+   sweep), recursion/proof folding, or proving a smaller AIR —
+   none affecting the DT-4 soundness fix (which is independent
+   and ready to re-apply via the recorded recipe).
+
+Carry forward verbatim so the next attempt does NOT re-derive:
+**Edit A (DT-2) verified-necessary**; the **debug-pinned root
+cause = merkle-swap slot↔idx desync** (NOT EF-coord-1-lossy,
+NOT recompose-coeff, NOT a count); and the **validated
+non-fenced pre-swap-bus-state fix recipe + soundness argument**
+(§13). **R-b** (ai-pow-zk's actual M10.1c composite
+`RecursiveAir`) remains M12/#127, out of scope.
