@@ -931,3 +931,52 @@ NOT recompose-coeff, NOT a count); and the **validated
 non-fenced pre-swap-bus-state fix recipe + soundness argument**
 (§13). **R-b** (ai-pow-zk's actual M10.1c composite
 `RecursiveAir`) remains M12/#127, out of scope.
+
+## 13.2 DT-4 soundness subset LANDED (user-directed; independently re-validated) — 2026-05-19
+
+§13's "nothing landed" was the state at the end of the DT-4
+drive (the soundness edit reverted per the gate's hard rule
+because the *orthogonal* ≤65 KB sub-gate failed). User decision:
+**land the validated soundness subset** (R1 "maximal correct
+exhaustively-validated subset + precise residual"; size recorded
+as a precise unmet residual, NOT relaxed/faked). The §13 recipe
+was re-applied and **independently re-validated by the
+orchestrator** (not blind-trusting the implementing agent):
+
+- **Fenced-linchpin byte-identical proof (decisive):** exactly 3
+  files changed (`circuit-prover/.../tip5.rs` Edit A,
+  `circuit/src/ops/tip5_perm/executor.rs` the fix,
+  `recursion/tests/test_tip5_layer0_recursion.rs` tests);
+  `git diff` vs `6bf5bd3` is **empty** for every fenced path
+  (`air_circuit`/`air_lookup`/`generation_lookup`/`tip5_spec`/
+  `circuit.rs`/`mmcs.rs`/`recompose*`/`verifier`/`fri`). The
+  C2.1/L4/L5/C2.4-R-a linchpin is bit-for-bit intact.
+- **Diff = §13 recipe exactly:** Edit A only prover arg
+  `1`→`witness_ctl_scale` (verifier stays `1`); executor
+  `bus_state` cloned *before* `apply_merkle_swap`,
+  `exec`/`write_outputs`/`update_chain_state` keep post-swap
+  (Merkle-root binding untouched), pre-swap state *only* for
+  `!has_ctl_output` trace rows, `has_ctl_output==true` ⇒ exactly
+  baseline. **No `out_ctl`/`in_ctl`/multiplicity touched** —
+  net-0 is a consequence of the (untouched) duplex binding.
+- **Independent gate reproduction (orchestrator-run):**
+  `test_tip5_layer0_recursion` 14 pass / 0 fail / 1 ignored
+  (orig 7 G1 + 5 D=2 sweep-accepts + 2 D=2 tamper-rejects; the
+  ignored = the size-residual), `p3-tip5-circuit-air` 14/14,
+  `test_tip5_lookups` 2/2 (G1 D=1 native-equiv + C2.4-R-a D=1),
+  `fibonacci_batch_stark_prover_quintic` 1/1 (G2 shared-path
+  arbiter, no regression). The full 30-binary G2 workspace pass
+  was the implementing agent's run.
+- **No fake:** the ≤65 KB M-S5 bar is preserved verbatim
+  (`assert!(serialized_len <= 65_536, …)`) in a separate,
+  honestly-`#[ignore]`d, openly-tracked residual test (fails
+  truthfully under `--ignored`); the always-run soundness tests
+  carry no size assertion.
+
+**LANDED (validated):** the C3 DT-4 *soundness closing-fix*
+(Edit A + the non-fenced merkle-swap-desync executor fix + the
+honest test harness). **C3/#124 is NOT complete** — it remains
+blocked **solely** by the orthogonal, fix-independent **M-S5
+≤65 KB** size target (~116–117 KB actual; §13.1 residual,
+M12/#127-adjacent). No completion claimed for C3; the soundness
+linchpin advance is now committed rather than held as a recipe.

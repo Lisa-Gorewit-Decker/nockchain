@@ -215,16 +215,31 @@ impl Tip5Prover {
         let matrix = p3_matrix::dense::RowMajorMatrix::new(main_vals, width);
 
         // 2. Full preprocessed (L-table ++ per-row CTL) at the same
-        //    height. `idx_scale = 1` ALWAYS (not `D`): the Tip5
-        //    witness-index D-scaling is applied by the `Tip5Preprocessor`
-        //    (`out_wid = idx / D`) which then *replaces* this via
-        //    `air_with_committed_preprocessed` — re-scaling here would
-        //    double-scale every CTL index (the original C2.4 bug; see
-        //    `tip5_preprocess_for_prover`'s `idx_scale` note). The AIR's
-        //    `WITNESS_EXT_D` tuple D-padding (NOT the index value) is
-        //    what carries the bus-dim, exactly as poseidon1.
-        let prep =
-            build_tip5_circuit_preprocessed::<Val<SC>>(&l_prep_g, &t.operations, height, 1);
+        //    height. `idx_scale = witness_ctl_scale` (= circuit D), NOT
+        //    a fixed `1` (DT-2, C3_OUTER_CERT_DESIGN.md §8). The Tip5
+        //    *prover* path feeds `t.operations` whose
+        //    `input/output_indices` are the **UNSCALED** `wid.0`
+        //    (`circuit/src/ops/tip5_perm/executor.rs:272,283`), so this
+        //    `× D` is the *first* (and only) scaling — it places the
+        //    prover producer onto the single canonical D-scaled
+        //    `WitnessId::base_field_index = wid.0·D` namespace every
+        //    other table (poseidon1/2, recompose, the Tip5
+        //    verifier/committed prep) already uses. D=1 ⇒
+        //    `witness_ctl_scale == 1` ⇒ byte-identical to the prior
+        //    fixed `1` (why this stayed latent through C2.4-R-a's D=1
+        //    gate). This is NOT the line-495 *verifier* call: there the
+        //    `resolved` rows are *already* D-scaled, so it correctly
+        //    stays `1` (re-scaling there would double-scale — the C2.4
+        //    `idx_scale` note is correct *for line 495* and was
+        //    mis-applied to this prover call, whose rows are unscaled).
+        //    The AIR's `WITNESS_EXT_D` tuple D-padding (NOT the index
+        //    value) still carries the bus-dim, exactly as poseidon1.
+        let prep = build_tip5_circuit_preprocessed::<Val<SC>>(
+            &l_prep_g,
+            &t.operations,
+            height,
+            witness_ctl_scale,
+        );
 
         // Prover-side AIR with the circuit-D-matched `WITNESS_EXT_D`
         // (mirror of poseidon1's `poseidon_d1_witness_bus_dim`-selected

@@ -78,6 +78,21 @@ impl Tip5PermExecutor {
         !slot.is_empty()
     }
 
+    /// Whether any of the first `rate` output slots is CTL-exposed on
+    /// the `WitnessChecks` bus (a single wid). Exactly the predicate
+    /// `build_trace_row` uses to set `out_ctl[i]` / `preprocess_ctl`
+    /// uses for `out_idx`. Used by `execute_mmcs` to detect the
+    /// chained-only / leaf-compress merkle perms (no CTL output) whose
+    /// trace row must carry the **pre-merkle-swap** bus state
+    /// (C3_OUTER_CERT_DESIGN.md §13).
+    #[inline]
+    fn has_ctl_output(&self, outputs: &[Vec<WitnessId>]) -> bool {
+        outputs
+            .iter()
+            .take(self.config.rate())
+            .any(|o| Self::limb_ctl_enabled(o))
+    }
+
     /// Build the initial permutation state vector. Mirrors
     /// `Poseidon1PermExecutor::init_chain_state`.
     ///
@@ -497,10 +512,48 @@ impl Tip5PermExecutor {
         let mut state = self.init_chain_state(chain_output.map(|v| v.as_slice()), ctx)?;
         self.fill_sibling_data(&mut state, private_inputs);
         self.apply_witness_values(&mut state, inputs, ctx)?;
+
+        // C3_OUTER_CERT_DESIGN.md §13 (DT-4, debug-confirmed) — fix the
+        // merkle-swap slot↔idx desync that orphaned the D≥2 outer-cert
+        // `WitnessChecks` global-sum. `apply_merkle_swap` exchanges the
+        // digest halves `[0,digest)`↔`[digest,2·digest)` by the runtime
+        // `mmcs_bit`, but `build_trace_row` / `preprocess_ctl` record
+        // `input_indices` from the **static pre-swap** slot order. With
+        // the post-swap state in the trace row, slot `i`'s recorded
+        // `input_indices[i] = wid.0` (pre-swap) is paired with
+        // `input_values[i]` (post-swap, = the *sibling* value at slot
+        // `i` after a `mmcs_bit==1` swap). For a chained-only /
+        // leaf-compress merkle perm (no CTL output: it feeds only the
+        // running digest, not the witness bus) that perm's INPUT_LIMB
+        // bus tuple then becomes `(idx = wid, value = sibling)` — a
+        // value that wid does not hold — so it cannot cancel the
+        // upstream perm-A OUTPUT_LIMB producer `(idx = wid, value =
+        // get_witness(wid))`, leaving the observed lone +1 at
+        // `idx = wid·D`. Recording the **pre-swap** `bus_state` makes
+        // perm-B's INPUT_LIMB carry `get_witness(inputs[i])` (= perm-A's
+        // challenger/MMCS-bound output), so the multiset cancels
+        // *because* the duplex `connect` + verbatim
+        // `Tip5PermLookupAir` x⁷/`tip5_l` constraints + the
+        // challenger/MMCS recompute bind it — net-0 as a *consequence
+        // of the binding*, NO multiplicity changed. `exec` /
+        // `write_outputs` / `update_chain_state` (the Merkle-root
+        // binding, untouched in `mmcs.rs`) all keep using the
+        // **post-swap** state, so the native compression / root chain
+        // is bit-for-bit unchanged. Only the desync class
+        // (`!has_ctl_output`: leaf/chained merkle perms) takes the
+        // pre-swap row; CTL-output perms keep the post-swap row exactly
+        // as before (their output is the bus value, no input-side
+        // desync).
+        let bus_state = state.clone();
         self.apply_merkle_swap(&mut state, mmcs_bit);
 
         let output = exec(&state);
-        let row = self.build_trace_row(inputs, outputs, &state);
+        let trace_state = if self.has_ctl_output(outputs) {
+            &state
+        } else {
+            &bus_state
+        };
+        let row = self.build_trace_row(inputs, outputs, trace_state);
         self.write_outputs(outputs, &output, ctx)?;
         self.update_chain_state(ctx, output, row);
         Ok(())
