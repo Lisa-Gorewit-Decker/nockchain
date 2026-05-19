@@ -609,3 +609,115 @@ debug-run-only (not source-confirmable); robust to either way —
 the responsible site (`recompose.rs:345-350`) and the fix
 (scoped `hint_output_wids` carve-out) are unchanged, the gate
 is the arbiter.
+
+## 11. DT-2+DT-3 driven — §10 DT-3 premise EMPIRICALLY FALSIFIED by op-trace; corrected root cause (triply confirmed); nothing landed (2026-05-19)
+
+Drove **Edit A (DT-2 prover-label D-scale) + Edit B (DT-3
+`hint_output_wids` carve-out)** exactly per §10, worktree-
+isolated, full staged gate, reviewed line-by-line + gate
+re-run + reverted-and-re-reproduced before recording. The
+debug-run resolved the §10 **UNVERIFIED** carry-forward — and
+**falsified the DT-3 premise**:
+
+- **G1 D=1 byte-identical — PASS.** orig 7 `test_tip5_layer0`
+  7/7, `p3-tip5-circuit-air` 14/14, `test_tip5_lookups` 2/2,
+  `challenger_transcript` 46/46, `p3_recursion` 32/32,
+  `p3_circuit` 354, `p3_circuit_prover` 40. Edit B required an
+  **empirically-forced precise-scoping refinement** (collector
+  must skip `op_type.starts_with("recompose")` — `recompose.rs:
+  180,185` *also* call `register_non_primitive_output_index`
+  per-coeff; without the skip, a recompose-*sole* coeff
+  (wid 971: `op[120] Hint OUT → op[121] recompose/coeff IN →
+  op[130] tip5_perm IN`) was over-excluded ⇒ net −1
+  missing-producer at `["1942"=971·D2,p−1,"0"]` — the §10
+  PRECISE-SCOPING-RULE violation, caught + fixed; G1 then held).
+- **G2 blast-radius — PASS, no regression.** poseidon1/2
+  10/10, **`fibonacci_batch_stark_prover_quintic` 1/1** (the
+  other `set_recompose_coeff_ctl_for_decompose_links(true)`
+  caller — NOT regressed), recompose proptests, full
+  `cargo test --workspace` 0-fail except the new D=2 tests.
+  ⇒ **Edit A (DT-2) is verified necessary + correct** (no
+  double-scale; quintic green) and **Edit B (DT-3) does not
+  break the shared path** — DT-2's namespace fix is a sound
+  partial advance.
+- **G3 C3 — FAILS ⇒ candidate FALSIFIED.** All 5 sweep
+  profiles: D=2 `prove_all_tables` SUCCEEDS (genuine
+  `ext_degree==2`), `verify_all_tables` REJECTS
+  `GlobalCumulativeMismatch: WitnessChecks`. Debug delta =
+  the **same** `["22936","10485455180627170985","0"] net +1,
+  instance 3 (Tip5 NPO), lookup 241, row 292`.
+
+**Decisive op-trace (resolves §10 UNVERIFIED; falsifies the
+DT-3 premise).** wid 11468 = `op[10576] NPO tip5_perm OUTPUT
+(out_hit) → op[10577] NPO tip5_perm INPUT (in_hit)` — **ZERO
+Hint provenance, ZERO recompose/coeff involvement**. It is a
+pure **Tip5 perm-A-output → perm-B-input duplex-chain
+witness**, NOT a `connect`/DSU-merged decompose coeff. ⇒ §10's
+"+1 = duplicate `recompose/coeff` phantom creator from a
+hint-output merged onto a perm wid, closed by the
+`recompose.rs:345` `hint_output_wids` carve-out" is
+**empirically false on the real orphan**: the
+`recompose.rs:345-350` gate Edit B modifies is **never
+evaluated for wid 11468**. DT-3 is *structurally incapable* of
+closing this orphan. (The earlier §10 ledger inferred the
+connect/DSU/hint-merge from source alone; the debug op-trace
+shows that inference does not hold for the actual orphan — the
+gate, not the source-reasoning, is the arbiter, as R1 requires.)
+
+**Corrected root cause (TRIPLY confirmed: §7.2 op-trace, §9
+DT-2 result, §11 DT-2+DT-3 run).** The +1 is the **C2.4
+R-a-tail**: a Tip5 **perm-A-out creator vs perm-B-in consumer
+`WitnessChecks` multiplicity mismatch at D=2** — the Tip5
+duplex chain's output→input link does not net to 0 at D≥2.
+Located in one of three sites, **all soundness-critical**:
+(a) the Tip5 circuit-AIR `eval` WitnessChecks emission
+(`tip5-circuit-air/src/air_circuit.rs:330-357`, fenced),
+(b) `verify_p3_uni_proof_circuit`'s Tip5 challenger/MMCS
+perm-chain decompose wiring (fenced forgery-binding linchpin),
+or (c) the Tip5 **prover preprocessor**'s perm-A-out/perm-B-in
+`out_ctl`/`in_ctl` D-scaling reconciliation
+(`circuit-prover/src/batch_stark_prover/tip5.rs:429-443` — the
+*least-fenced*, prover-side, where DT-2/Edit A already lives).
+Disposition (R1): genuine in-flight attempt #3 → concrete wall
++ design empirically falsified. Validated subset already landed
+= C2.0–C2.4-core + R-a (D=1, byte-identical, fenced linchpin
+intact); **nothing new safe to land** (no partial soundness
+change here is safe ⇒ the clean byte-identical baseline IS the
+R1 validated outcome). Reverted byte-identical (`git diff
+--stat` empty, file hashes == baseline, workspace green
+post-revert). No weakening, no fake, no stubs/ignores.
+
+### 11.1 Precise actionable residual — DT-4 (corrected; the §10/DT-3 design is SPENT/falsified)
+
+C3/#124's closing fix = DT-2 (Edit A, **keep — verified
+necessary**) **+** a soundness-faithful reconciliation of the
+Tip5 perm-A-out→perm-B-in duplex `WitnessChecks` multiplicity
+at D=2. **DT-4 must (R1 KAT-first, before ANY fenced edit; the
+§10 reasoning-only ledger was falsified — DT-4 must be
+op-trace/debug-confirmed, not source-inferred):**
+1. From a real D=2 debug-lookups run, build the op-level
+   producer/consumer ledger for wid 11468 (`op[10576]` tip5
+   perm-A OUT, `op[10577]` tip5 perm-B IN) across the Tip5
+   AIR `eval` emission (`air_circuit.rs:330-357`), the Tip5
+   prover preprocessor `out_ctl`/`in_ctl` resolution
+   (`tip5.rs:429-443`, DT-2-scaled), and `verify_p3_uni_proof
+   _circuit`'s Tip5 perm-chain wiring — pin the exact +1
+   off-by-one and which of (a)/(b)/(c) owns it.
+2. Prefer the **least-fenced** surface: (c) the prover
+   preprocessor (where Edit A already is) — can the perm-A-out
+   creator-mult vs perm-B-in consumer-mult be reconciled at
+   D=2 in the preprocessor accounting (mirroring how poseidon's
+   preprocessor handles its perm-chain) WITHOUT touching the
+   fenced AIR `eval` / `verify_p3`? If not, (a) then (b), each
+   with its own soundness argument (the duplex link MUST stay
+   bound by the Tip5 x⁷/`tip5_l` constraints + challenger/MMCS
+   recompute — net-0 must be the *consequence* of the binding,
+   not a bookkeeping patch that hides an unbound value).
+3. Note: the validated quintic path has **no** perm-output→
+   perm-input D=2 chain, so this is **NOT** a mechanical mirror
+   of a validated mechanism — it needs its own design +
+   soundness proof + KAT-first + the §10 staged gate
+   (G1 byte-identical / G2 quintic+poseidon no-regress / G3
+   D=2 outer cert accept+tamper+sweep+≤65 KB), per-stage full
+   re-validation. M12/#127-adjacent. DT-2 (Edit A) carries
+   forward as the verified-necessary partial advance.
