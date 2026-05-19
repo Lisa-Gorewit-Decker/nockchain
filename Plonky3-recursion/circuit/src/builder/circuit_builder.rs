@@ -1682,6 +1682,41 @@ where
         self.pop_scope();
         Ok(output_exprs)
     }
+
+    /// Tip5 challenger permutation (base field, D=1, width 16, rate
+    /// 10). Faithful mirror of `add_poseidon1_perm_for_challenger_base`
+    /// with the deployed Tip5 sponge geometry: the first `RATE` (10)
+    /// state slots are CTL-verified (`out_ctl = [true; 10]`); the
+    /// remaining 6 capacity slots are returned but not CTL-verified
+    /// (they are constrained by the Tip5 permutation and carried by
+    /// the executor's sponge chain, exactly like the Poseidon1 D=1
+    /// challenger path).
+    ///
+    /// `inputs` is 16 slots: `Some(expr)` for CTL-verified rate
+    /// values, `None` for chain-inherited / zero capacity per
+    /// `new_start`.
+    pub fn add_tip5_perm_for_challenger_base(
+        &mut self,
+        config: crate::ops::Tip5Config,
+        new_start: bool,
+        inputs: [Option<ExprId>; 16],
+    ) -> Result<[ExprId; 16], CircuitBuilderError> {
+        self.push_scope("tip5_perm_for_challenger_base");
+
+        let (_op_id, outputs) = self.add_tip5_perm(&crate::ops::Tip5PermCall {
+            config,
+            new_start,
+            inputs,
+            out_ctl: [true; 10],
+            return_all_outputs: true,
+        })?;
+
+        let output_exprs: [ExprId; 16] =
+            core::array::from_fn(|i| outputs[i].expect("output should exist"));
+
+        self.pop_scope();
+        Ok(output_exprs)
+    }
 }
 
 /// Witness hint for extension field decomposition.

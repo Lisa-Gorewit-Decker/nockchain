@@ -16,7 +16,7 @@ use crate::types::{ExprId, NonPrimitiveOpId, WitnessId};
 pub enum NonPrimitiveOpParams<F> {
     Poseidon2Perm { new_start: bool, merkle_path: bool },
     Poseidon1Perm { new_start: bool, merkle_path: bool },
-    Tip5Perm { new_start: bool },
+    Tip5Perm { new_start: bool, merkle_path: bool },
     Unconstrained { executor: Box<dyn HintExecutor<F>> },
     Recompose,
 }
@@ -44,10 +44,13 @@ impl<F> NonPrimitiveOpParams<F> {
         }
     }
 
-    /// Return the `new_start` flag if this is a Tip5 permutation.
-    pub const fn as_tip5_perm(&self) -> Option<bool> {
+    /// Return the `(new_start, merkle_path)` flags if this is a Tip5 permutation.
+    pub const fn as_tip5_perm(&self) -> Option<(bool, bool)> {
         match self {
-            Self::Tip5Perm { new_start } => Some(*new_start),
+            Self::Tip5Perm {
+                new_start,
+                merkle_path,
+            } => Some((*new_start, *merkle_path)),
             _ => None,
         }
     }
@@ -75,8 +78,12 @@ impl<F: Field> Clone for NonPrimitiveOpParams<F> {
                 new_start: *new_start,
                 merkle_path: *merkle_path,
             },
-            Self::Tip5Perm { new_start } => Self::Tip5Perm {
+            Self::Tip5Perm {
+                new_start,
+                merkle_path,
+            } => Self::Tip5Perm {
                 new_start: *new_start,
+                merkle_path: *merkle_path,
             },
             Self::Unconstrained { executor } => Self::Unconstrained {
                 executor: executor.boxed(),

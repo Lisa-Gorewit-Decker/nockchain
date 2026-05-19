@@ -77,6 +77,14 @@ pub enum CircuitBuilderError {
     #[error("Tip5 config mismatch: expected {expected}, got {got}")]
     Tip5ConfigMismatch { expected: String, got: String },
 
+    /// Merkle-path Tip5 rows require a direction bit.
+    #[error("Tip5Perm merkle_path=true requires mmcs_bit")]
+    Tip5MerkleMissingMmcsBit,
+
+    /// Non-merkle Tip5 rows should not have mmcs_bit set.
+    #[error("Tip5Perm merkle_path=false must not have mmcs_bit (it has no effect)")]
+    Tip5NonMerkleWithMmcsBit,
+
     /// Requested bit length exceeds the maximum allowed for binary decomposition.
     #[error("Too many bits for binary decomposition: expected at most {expected}, got {n_bits}")]
     BinaryDecompositionTooManyBits { expected: usize, n_bits: usize },

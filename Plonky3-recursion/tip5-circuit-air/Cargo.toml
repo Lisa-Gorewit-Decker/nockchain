@@ -15,6 +15,7 @@ p3-field.workspace = true
 p3-goldilocks.workspace = true
 p3-lookup.workspace = true
 p3-matrix.workspace = true
+p3-symmetric.workspace = true
 
 [dev-dependencies]
 p3-test-utils.workspace = true

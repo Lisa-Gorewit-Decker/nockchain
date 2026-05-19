@@ -310,6 +310,73 @@ Tip5 (rate-10 `DuplexChallenger`/`PaddingFreeSponge`/
 work; the hard soundness-binding kernel (Tip5 ⇒ batch-stark CTL)
 is now done and validated.
 
+## 2c.L5 — in-circuit challenger duplexing + MMCS path (DONE, independently re-validated 2026-05-19)
+
+User-directed ("implement the in-circuit challenger duplexing +
+MMCS path for Tip5"). A faithful Poseidon1-D1 mirror → Tip5
+(Goldilocks, width 16, **rate 10, capacity 6, digest 5**,
+7-round), so the recursion verifier reconstructs the Tip5
+Fiat-Shamir transcript + Merkle-MMCS path in-circuit:
+
+- `p3-tip5-circuit-air::Tip5Perm` — new in-workspace
+  `Permutation<[Goldilocks;16]>`/`CryptographicPermutation`
+  adapter over the validated `tip5_spec::permute` (the recursion
+  workspace cannot depend on `ai-pow-zk`; this is the single
+  native reference oracle). **Validated-core diff = +2 lib.rs
+  lines only; `air_lookup/air_circuit/generation_lookup/
+  tip5_spec` byte-for-byte unchanged.**
+- `circuit/src/ops/perm.rs`: `PermConfig` (the closed
+  challenger/MMCS perm enum the Explore wrongly called
+  "trait-based/free") gains a `Tip5(Tip5Config)` arm + every
+  match (`d/rate/rate_ext/width_ext/digest_ext/npo_type_id→
+  tip5_perm`, `PermCall`/private-data dispatch).
+- **`digest_ext` (the genuine soundness-relevant non-1:1):** all
+  Poseidon configs have digest == rate, so the MMCS verifier
+  conflated digest width with `rate_ext`. Tip5 has digest 5 ≠
+  rate 10 (`PaddingFreeSponge<Tip5Perm,16,10,5>`,
+  `TruncatedPermutation<Tip5Perm,2,5,16>`). Added
+  `digest_ext()` to all three configs (`= rate_ext()` for
+  Poseidon1/2 ⇒ **byte-identical**, verified by full poseidon
+  regression; `= 5` for Tip5) and threaded it through
+  `circuit/ops/mmcs.rs` (sibling `[digest_ext,2·digest_ext)`,
+  capacity zeroed, digest-wide CTL/root) + `recursion/pcs/
+  mmcs.rs` leaf-squeeze (native `OUT`).
+- Tip5 merkle/MMCS executor+call+builder+plugin+state path;
+  `add_tip5_perm_for_challenger_base`; `duplexing_base_tip5` +
+  `as_tip5()` arm + `new_goldilocks_tip5_base()`.
+
+**Independently re-validated (R1 — not trusting the agent):**
+diffed the validated core (additive-only); reviewed
+`perm.rs`/`PermConfig::Tip5`/`digest_ext` numerics
+(Poseidon=`rate_ext`, Tip5=5) by hand; re-ran the full
+Plonky3-recursion workspace **green, no regression** —
+poseidon1/2 10/10, `challenger_transcript` **46** (old 42 +
+**4 new `goldilocks_d1_tip5`**: observe/sample, partial-absorb,
+multi-round, observe-after-sample — each asserts the in-circuit
+challenger == native `DuplexChallenger<Goldilocks,Tip5Perm,16,
+10>` **bit-for-bit** via `connect`+`runner().run()`),
+`p3_recursion` **32** (+**5 `tip5_mmcs_test`**: small/8x3/
+multi-height/cap-height vs native `MerkleTreeMmcs<…
+PaddingFreeSponge<Tip5Perm,16,10,5>,TruncatedPermutation<Tip5
+Perm,2,5,16>…>`, + **tamper-fails** = flip a sibling-digest
+limb ⇒ `panic!` if accepted), C2.3 gate 2/2, validated core
+**13/13**.
+
+**Honest scope (no fake completion).** This proves the in-circuit
+Tip5 challenger duplexing **and** MMCS-path reconstruction are
+**bit-for-bit equal to the native `DuplexChallenger`/
+`MerkleTreeMmcs`** — by the *exact same runner-based mechanism*
+the existing poseidon1/2 challenger+MMCS tests use (verified, not
+weaker). It does **not** add the *batch-STARK cross-row
+sponge-chain forgery binding* (the single-row `Tip5CircuitAir`
+pre-resolves state in the executor; the multi-row chain/swap/
+mmcs-accumulator AIR constraints + a D=1 `PcsRecursionBackend`
+so the `fri.rs` dispatch sites are reachable for Tip5 are the
+**C2.4 residual**). Net: the recursion verifier can now
+reconstruct Tip5 Fiat-Shamir + Merkle-MMCS in-circuit, validated
+against the native oracle; wiring that into a full Layer-0
+end-to-end recursion proof + the 120-bit sweep is C2.4.
+
 - **L1** — `Tip5PermLookupAir` + generation: per round, per split
   lane: 8 `b` + 8 `c` byte cols; recompose `Σ bₖ2⁸ᵏ = sbox_in[t]`;
   §4.6 `inv` guard; `A[t]=Σ cₖ2⁸ᵏ`; power lanes `x2,x3,A=x3·x3·x`;

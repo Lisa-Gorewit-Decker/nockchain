@@ -13,7 +13,7 @@
 use alloc::vec;
 use alloc::vec::Vec;
 
-use p3_circuit::ops::{Poseidon1Config, Poseidon2Config};
+use p3_circuit::ops::{Poseidon1Config, Poseidon2Config, Tip5Config};
 use p3_circuit::{CircuitBuilder, CircuitBuilderError};
 use p3_field::{ExtensionField, PrimeField64};
 
@@ -104,6 +104,7 @@ impl<const WIDTH: usize, const RATE: usize, C: ChallengerPermConfig>
 
         let p2_config = self.config.as_poseidon2().copied();
         let p1_config = self.config.as_poseidon1().copied();
+        let tip5_config = self.config.as_tip5().copied();
 
         // 1. Overwrite state[0..n] with inputs (NOT XOR, matches native)
         for (i, val) in self.input_buffer.drain(..).enumerate() {
@@ -124,6 +125,9 @@ impl<const WIDTH: usize, const RATE: usize, C: ChallengerPermConfig>
             } else {
                 self.duplexing_ext_p1::<BF, EF>(circuit, cfg);
             }
+        } else if let Some(cfg) = tip5_config {
+            // Tip5 is base-field only (D=1) by construction.
+            self.duplexing_base_tip5(circuit, cfg);
         } else {
             panic!("unsupported challenger permutation");
         }
@@ -220,6 +224,31 @@ impl<const WIDTH: usize, const RATE: usize, C: ChallengerPermConfig>
         self.state = outputs.to_vec();
     }
 
+    /// Tip5 D=1 duplexing (Goldilocks, width 16, rate 10). Faithful
+    /// mirror of [`Self::duplexing_base_p1`], specialised to the
+    /// deployed Tip5 sponge geometry: the first `RATE` (10) slots are
+    /// CTL-verified each permutation (so the in-circuit transcript is
+    /// bus-bound to the same values the native
+    /// `DuplexChallenger<Goldilocks, Tip5Perm, 16, 10>` absorbs /
+    /// squeezes); the 6 capacity slots are carried by the Tip5 NPO
+    /// executor's sponge chain (`None` here), exactly as Poseidon1
+    /// D=1 carries its capacity.
+    fn duplexing_base_tip5<EF>(&mut self, circuit: &mut CircuitBuilder<EF>, tip5_config: Tip5Config)
+    where
+        EF: p3_field::Field,
+    {
+        let new_start = !self.duplexed_once;
+        let inputs: [Option<Target>; 16] =
+            core::array::from_fn(|i| if i < RATE { Some(self.state[i]) } else { None });
+        self.duplexed_once = true;
+
+        let outputs = circuit
+            .add_tip5_perm_for_challenger_base(tip5_config, new_start, inputs)
+            .expect("tip5 base permutation should succeed");
+
+        self.state = outputs.to_vec();
+    }
+
     /// Poseidon1 D>=2 duplexing.
     fn duplexing_ext_p1<BF, EF>(
         &mut self,
@@ -301,6 +330,17 @@ impl CircuitChallenger<8, 4, Poseidon1Config> {
     /// Create a Poseidon1 challenger with Goldilocks D2 Width8 configuration.
     pub const fn new_goldilocks_poseidon1() -> Self {
         Self::new(Poseidon1Config::GOLDILOCKS_D2_W8)
+    }
+}
+
+impl CircuitChallenger<16, 10, Tip5Config> {
+    /// Create a Tip5 challenger with the deployed Goldilocks D=1
+    /// width-16 rate-10 configuration. This is the in-circuit
+    /// counterpart of the native
+    /// `DuplexChallenger<Goldilocks, Tip5Perm, 16, 10>` used by
+    /// ai-pow-zk Layer-0 Fiat-Shamir.
+    pub const fn new_goldilocks_tip5_base() -> Self {
+        Self::new(Tip5Config::GOLDILOCKS_W16)
     }
 }
 

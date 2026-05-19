@@ -109,9 +109,21 @@ impl Tip5Config {
         self.rate_ext() + self.capacity_ext()
     }
 
-    /// Digest length (5).
+    /// Digest length in base elements (5).
     pub const fn digest(self) -> usize {
         self.digest
+    }
+
+    /// MMCS digest length in extension elements. Tip5 is `d == 1`, so
+    /// this equals the base digest (5). Native
+    /// `PaddingFreeSponge<Tip5Perm,16,10,5>` squeezes 5 and
+    /// `TruncatedPermutation<Tip5Perm,2,5,16>` compresses two
+    /// 5-element digests — i.e. digest (5) ≠ rate (10), unlike
+    /// Poseidon where digest == rate. The `PermConfig`-generic MMCS
+    /// uses this so the in-circuit leaf squeeze / sibling-compress
+    /// geometry matches native bit-for-bit.
+    pub const fn digest_ext(self) -> usize {
+        self.digest / self.d
     }
 
     /// Tip5 round count (7).

@@ -161,9 +161,16 @@ where
         final_outputs = maybe_outputs;
     }
 
+    // Squeeze the digest: native `PaddingFreeSponge<P, WIDTH, RATE,
+    // OUT>` returns `state[0..OUT]`. For Poseidon `OUT == RATE` so
+    // `digest_ext == rate_ext` and this is byte-identical to the
+    // prior `take(rate_ext)`; for Tip5 the deployed digest is 5
+    // (`PaddingFreeSponge<Tip5Perm,16,10,5>`), so only the first 5
+    // rate slots are the leaf digest.
+    let digest_ext = permutation_config.digest_ext();
     final_outputs
         .into_iter()
-        .take(rate_ext)
+        .take(digest_ext)
         .map(|o| o.ok_or(CircuitBuilderError::MissingOutput))
         .collect()
 }
@@ -193,7 +200,7 @@ where
     if permutation_config.d() == 1 && ext_degree > 1 {
         if ext_elements.is_empty() {
             let zero = circuit.define_const(EF::ZERO);
-            return Ok(vec![zero; permutation_config.rate_ext()]);
+            return Ok(vec![zero; permutation_config.digest_ext()]);
         }
         let mut base_coeffs: Vec<Target> = Vec::with_capacity(ext_elements.len() * ext_degree);
         for &t in ext_elements {
@@ -213,7 +220,7 @@ where
     let width_ext = permutation_config.width_ext();
     if ext_elements.is_empty() {
         let zero = circuit.define_const(EF::ZERO);
-        return Ok(vec![zero; rate_ext]);
+        return Ok(vec![zero; permutation_config.digest_ext()]);
     }
 
     let zero = circuit.define_const(EF::ZERO);
@@ -259,9 +266,12 @@ where
         final_outputs = maybe_outputs;
     }
 
+    // Squeeze the digest (`state[0..OUT]`); `digest_ext == rate_ext`
+    // for Poseidon (byte-identical), 5 for the deployed Tip5.
+    let digest_ext = permutation_config.digest_ext();
     final_outputs
         .into_iter()
-        .take(rate_ext)
+        .take(digest_ext)
         .map(|o| o.ok_or(CircuitBuilderError::MissingOutput))
         .collect()
 }
@@ -1773,5 +1783,280 @@ mod test {
             3, // 4 rows, 3 columns
         );
         test_lifted_openings(vec![mat0, mat1, mat2, mat3, mat4]);
+    }
+}
+
+/// In-circuit Tip5 MMCS-path soundness gate (C2.3 / M-S4).
+///
+/// Builds a native `MerkleTreeMmcs<Goldilocks, _,
+/// PaddingFreeSponge<Tip5Perm,16,10,5>,
+/// TruncatedPermutation<Tip5Perm,2,5,16>, 2, 5>` (the deployed
+/// ai-pow-zk Layer-0 MMCS), commits real matrices, opens a real
+/// batch, and reconstructs the verification **in-circuit** via the
+/// `PermConfig::Tip5`-routed `verify_batch_circuit` /
+/// `add_mmcs_verify`. The computed Merkle root is `connect`-bound to
+/// the native commitment cap, so `runner().run()` returns `Err`
+/// (WitnessConflict on the root witness) iff the in-circuit
+/// leaf-sponge / sibling-compress digest differs from native by even
+/// one element — a green positive test is therefore a bit-for-bit
+/// equality proof, and the negative test asserts a tampered proof
+/// is *rejected* (must not silently accept).
+#[cfg(test)]
+mod tip5_mmcs_test {
+    use alloc::vec;
+    use alloc::vec::Vec;
+
+    use itertools::Itertools;
+    use p3_circuit::CircuitBuilder;
+    use p3_circuit::ops::{
+        PermConfig, Tip5Config, Tip5Goldilocks, generate_recompose_trace, generate_tip5_trace,
+        perm_private_data,
+    };
+    use p3_commit::Mmcs;
+    use p3_field::PrimeCharacteristicRing;
+    use p3_goldilocks::Goldilocks;
+    use p3_matrix::Matrix;
+    use p3_matrix::dense::{DenseMatrix, RowMajorMatrix};
+    use p3_merkle_tree::MerkleTreeMmcs;
+    use p3_symmetric::{PaddingFreeSponge, TruncatedPermutation};
+    use p3_tip5_circuit_air::Tip5Perm;
+    use p3_util::log2_ceil_usize;
+    use rand::SeedableRng;
+    use rand::rngs::SmallRng;
+
+    use super::verify_batch_circuit;
+
+    type F = Goldilocks;
+
+    // Deployed ai-pow-zk Layer-0 Tip5 sponge geometry.
+    const WIDTH: usize = 16;
+    const RATE: usize = 10;
+    const DIGEST_ELEMS: usize = 5;
+
+    type Tip5Hash = PaddingFreeSponge<Tip5Perm, WIDTH, RATE, DIGEST_ELEMS>;
+    type Tip5Compress = TruncatedPermutation<Tip5Perm, 2, DIGEST_ELEMS, WIDTH>;
+    // `P = PW = Goldilocks` (the trivial WIDTH=1 `PackedValue`):
+    // `Tip5Perm` is the in-workspace `Permutation<[Goldilocks;16]>`
+    // adapter and is not SIMD-packed, so we instantiate the native
+    // `MerkleTreeMmcs` over the scalar field exactly like ai-pow-zk's
+    // Layer-0 (its Tip5 hashing is also scalar).
+    type Tip5Mmcs = MerkleTreeMmcs<F, F, Tip5Hash, Tip5Compress, 2, DIGEST_ELEMS>;
+
+    fn make_mmcs(cap_height: usize) -> Tip5Mmcs {
+        let hash = Tip5Hash::new(Tip5Perm);
+        let compress = Tip5Compress::new(Tip5Perm);
+        Tip5Mmcs::new(hash, compress, cap_height)
+    }
+
+    /// Open *every* leaf of a committed batch, reconstruct the MMCS
+    /// verification in-circuit through the Tip5 NPO, and require the
+    /// computed root to equal the native commitment cap (bit-for-bit
+    /// via `add_mmcs_verify`'s `connect` + `runner().run()`).
+    fn run_all_openings(mats: Vec<RowMajorMatrix<F>>, cap_height: usize) {
+        let mmcs = make_mmcs(cap_height);
+        let dimensions = mats.iter().map(DenseMatrix::dimensions).collect_vec();
+
+        let max_height = dimensions
+            .iter()
+            .map(|d| d.height)
+            .max()
+            .expect("non-empty batch");
+        let log_max_height = log2_ceil_usize(max_height);
+
+        let (commit, prover_data) = mmcs.commit(mats);
+
+        for index in 0..max_height {
+            let mut builder = CircuitBuilder::<F>::new();
+            let permutation_config: PermConfig = Tip5Config::GOLDILOCKS_W16.into();
+            builder.enable_tip5_perm::<Tip5Goldilocks, _>(
+                generate_tip5_trace::<F, Tip5Goldilocks>,
+                Tip5Perm,
+            );
+            builder.enable_recompose::<F>(generate_recompose_trace::<F, F>);
+
+            let batch_opening = mmcs.open_batch(index, &prover_data);
+
+            let directions = (0..log_max_height)
+                .map(|k| index >> k & 1 == 1)
+                .collect_vec();
+
+            // D=1 Goldilocks: opened values are direct base targets
+            // (no extension packing — "lifted == base").
+            let openings: Vec<Vec<_>> = batch_opening
+                .opened_values
+                .iter()
+                .map(|values| values.iter().map(|_| builder.public_input()).collect_vec())
+                .collect();
+
+            let directions_expr = builder.alloc_public_inputs(log_max_height, "directions");
+
+            // Cap entries are 5-element Tip5 digests, fed directly.
+            let cap_len = commit.num_roots();
+            let cap_exprs: Vec<Vec<_>> = (0..cap_len)
+                .map(|_| {
+                    (0..DIGEST_ELEMS)
+                        .map(|_| builder.public_input())
+                        .collect_vec()
+                })
+                .collect();
+
+            let permutation_mmcs_ops = verify_batch_circuit::<F, F>(
+                &mut builder,
+                permutation_config,
+                &cap_exprs,
+                &dimensions,
+                &directions_expr,
+                &openings,
+                None,
+            )
+            .unwrap();
+
+            let circuit = builder.build().unwrap();
+            let mut runner = circuit.runner();
+
+            let mut public_inputs: Vec<F> = batch_opening
+                .opened_values
+                .iter()
+                .flat_map(|values| values.iter().copied())
+                .collect();
+            public_inputs.extend(directions.iter().map(|&b| F::from_bool(b)));
+            for entry in commit.roots() {
+                public_inputs.extend(entry.iter().copied());
+            }
+            runner.set_public_inputs(&public_inputs).unwrap();
+
+            // Siblings: D=1 ⇒ each base digest element is one EF (=F)
+            // sibling element; the executor places them in the second
+            // digest slot `[5,10)` (native TruncatedPermutation).
+            let siblings: Vec<Vec<F>> = batch_opening
+                .opening_proof
+                .iter()
+                .map(|digest| digest.to_vec())
+                .collect_vec();
+
+            for (&op_id, sibling) in permutation_mmcs_ops.iter().zip(siblings) {
+                runner
+                    .set_private_data(op_id, perm_private_data(permutation_config, sibling))
+                    .unwrap();
+            }
+
+            runner
+                .run()
+                .expect("in-circuit Tip5 MMCS root must equal native MerkleTreeMmcs cap");
+        }
+    }
+
+    #[test]
+    fn tip5_mmcs_verify_small_2x4() {
+        let mat = RowMajorMatrix::new((0..8).map(|i| F::from_u32(i as u32)).collect_vec(), 4);
+        run_all_openings(vec![mat], 0);
+    }
+
+    #[test]
+    fn tip5_mmcs_verify_8x3() {
+        let mut rng = SmallRng::seed_from_u64(0xC2_3_7);
+        let mat = RowMajorMatrix::<F>::rand(&mut rng, 8, 3);
+        run_all_openings(vec![mat], 0);
+    }
+
+    #[test]
+    fn tip5_mmcs_verify_multi_height() {
+        let mut rng = SmallRng::seed_from_u64(42);
+        let mat_tall = RowMajorMatrix::<F>::rand(&mut rng, 8, 2);
+        let mat_short = RowMajorMatrix::<F>::rand(&mut rng, 4, 3);
+        run_all_openings(vec![mat_tall, mat_short], 0);
+    }
+
+    #[test]
+    fn tip5_mmcs_verify_with_cap_height() {
+        let mut rng = SmallRng::seed_from_u64(99);
+        let mat = RowMajorMatrix::<F>::rand(&mut rng, 8, 3);
+        run_all_openings(vec![mat], 1);
+    }
+
+    /// Negative: a tampered Merkle proof (one sibling limb flipped)
+    /// must make the in-circuit computed root differ from the native
+    /// cap, so `runner().run()` rejects (it must NOT silently accept).
+    #[test]
+    fn tip5_mmcs_verify_tampered_proof_fails() {
+        let mmcs = make_mmcs(0);
+        let mut rng = SmallRng::seed_from_u64(1);
+        let mats = (0..4)
+            .map(|_| RowMajorMatrix::<F>::rand(&mut rng, 8, 1))
+            .collect_vec();
+        let dimensions = mats.iter().map(DenseMatrix::dimensions).collect_vec();
+
+        let (commit, prover_data) = mmcs.commit(mats);
+
+        let index = 3;
+        let log_max_height = 3;
+
+        let mut builder = CircuitBuilder::<F>::new();
+        let permutation_config: PermConfig = Tip5Config::GOLDILOCKS_W16.into();
+        builder.enable_tip5_perm::<Tip5Goldilocks, _>(
+            generate_tip5_trace::<F, Tip5Goldilocks>,
+            Tip5Perm,
+        );
+        builder.enable_recompose::<F>(generate_recompose_trace::<F, F>);
+
+        let mut batch_opening = mmcs.open_batch(index, &prover_data);
+        // Tamper: flip one limb of the first sibling digest.
+        batch_opening.opening_proof[0][0] += F::ONE;
+
+        let openings: Vec<Vec<_>> = batch_opening
+            .opened_values
+            .iter()
+            .map(|values| values.iter().map(|_| builder.public_input()).collect_vec())
+            .collect();
+        let directions_expr = builder.alloc_public_inputs(log_max_height, "directions");
+        let cap_exprs: Vec<Vec<_>> = vec![
+            (0..DIGEST_ELEMS)
+                .map(|_| builder.public_input())
+                .collect_vec(),
+        ];
+
+        let permutation_mmcs_ops = verify_batch_circuit::<F, F>(
+            &mut builder,
+            permutation_config,
+            &cap_exprs,
+            &dimensions,
+            &directions_expr,
+            &openings,
+            None,
+        )
+        .unwrap();
+
+        let circuit = builder.build().unwrap();
+        let mut runner = circuit.runner();
+
+        let directions = (0..log_max_height).map(|k| index >> k & 1 == 1);
+        let mut public_inputs: Vec<F> = batch_opening
+            .opened_values
+            .iter()
+            .flat_map(|values| values.iter().copied())
+            .collect();
+        public_inputs.extend(directions.map(F::from_bool));
+        for entry in commit.roots() {
+            public_inputs.extend(entry.iter().copied());
+        }
+        runner.set_public_inputs(&public_inputs).unwrap();
+
+        let siblings: Vec<Vec<F>> = batch_opening
+            .opening_proof
+            .iter()
+            .map(|digest| digest.to_vec())
+            .collect_vec();
+        for (&op_id, sibling) in permutation_mmcs_ops.iter().zip(siblings) {
+            runner
+                .set_private_data(op_id, perm_private_data(permutation_config, sibling))
+                .unwrap();
+        }
+
+        // The tampered sibling makes the computed root disagree with
+        // the native cap ⇒ the root `connect` must fail.
+        match runner.run() {
+            Err(_) => { /* correctly rejected */ }
+            Ok(_) => panic!("tampered Tip5 MMCS proof was silently accepted"),
+        }
     }
 }

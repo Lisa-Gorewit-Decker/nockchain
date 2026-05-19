@@ -1254,6 +1254,7 @@ dependencies = [
  "p3-goldilocks",
  "p3-lookup",
  "p3-matrix",
+ "p3-symmetric",
  "p3-test-utils",
  "p3-uni-stark",
 ]

@@ -1,8 +1,11 @@
 //! Tip5 circuit plugin — [`NpoCircuitPlugin`] implementation (C2.3).
 //!
-//! Faithful mechanical mirror of `Poseidon1CircuitPlugin`, reduced to
-//! the Tip5 D=1 non-merkle path (`validate_io_counts(.., merkle=false)`,
-//! no `mmcs_bit`).
+//! Faithful mechanical mirror of `Poseidon1CircuitPlugin` for the D=1
+//! path: it lowers both the non-merkle base layout and the merkle /
+//! MMCS layout (`config.lower_inputs(.., merkle)` chooses the flat
+//! `width` slots vs the `width_ext` limb slots + mmcs_index_sum +
+//! mmcs_bit tail), constructing the executor with the resolved
+//! `merkle_path` flag from the per-op params.
 
 use alloc::boxed::Box;
 
@@ -54,7 +57,7 @@ impl<F: Field> NpoCircuitPlugin<F> for Tip5CircuitPlugin<F> {
             ctx.ensure_witness_id(*expr_id);
         }
 
-        let new_start = data
+        let (new_start, merkle_path) = data
             .params
             .as_ref()
             .and_then(|p| p.as_tip5_perm())
@@ -63,10 +66,13 @@ impl<F: Field> NpoCircuitPlugin<F> for Tip5CircuitPlugin<F> {
             })?;
 
         let config = self.tip5_config;
-        // Tip5 is non-merkle by construction.
-        config.validate_io_counts(data.input_exprs.len(), data.output_exprs.len(), false)?;
+        config.validate_io_counts(
+            data.input_exprs.len(),
+            data.output_exprs.len(),
+            merkle_path,
+        )?;
 
-        let inputs_widx = config.lower_inputs(&data.input_exprs, ctx, false)?;
+        let inputs_widx = config.lower_inputs(&data.input_exprs, ctx, merkle_path)?;
         let outputs_widx = ctx.lower_expr_slots(&data.output_exprs, "Tip5Perm", "output")?;
 
         Ok(Op::NonPrimitiveOpWithExecutor {
@@ -76,6 +82,7 @@ impl<F: Field> NpoCircuitPlugin<F> for Tip5CircuitPlugin<F> {
                 data.op_type.clone(),
                 config,
                 new_start,
+                merkle_path,
             )),
             op_id: data.op_id,
         })

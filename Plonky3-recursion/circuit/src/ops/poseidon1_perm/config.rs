@@ -194,6 +194,19 @@ impl Poseidon1Config {
         self.rate_ext() + self.capacity_ext()
     }
 
+    /// MMCS digest length in extension elements.
+    ///
+    /// Poseidon convention: the Merkle digest equals the sponge rate
+    /// (native `PaddingFreeSponge<P, WIDTH, RATE, RATE>` /
+    /// `TruncatedPermutation<P, 2, RATE, WIDTH>` with `2·RATE ==
+    /// WIDTH`). Exposed explicitly so the `PermConfig`-generic MMCS
+    /// code can be digest-correct for permutations whose digest ≠ rate
+    /// (e.g. Tip5: digest 5, rate 10); for Poseidon this is identical
+    /// to `rate_ext()`, so no Poseidon behaviour changes.
+    pub const fn digest_ext(self) -> usize {
+        self.rate_ext()
+    }
+
     /// Check that input and output counts match this config's expected layout.
     ///
     /// - For D=1: `add_poseidon1_perm` always supplies `width_ext + 2` input slots (MMCS slots may

@@ -33,6 +33,7 @@ mod air_circuit;
 mod air_lookup;
 mod generation;
 mod generation_lookup;
+mod perm;
 mod tip5_spec;
 
 pub use air::{Tip5PermAir, tip5_perm_air_width};
@@ -44,6 +45,7 @@ pub use air_circuit::{
 pub use air_lookup::{TABLE_ROWS, Tip5PermLookupAir, tip5_lookup_air_width};
 pub use generation::generate_trace_rows;
 pub use generation_lookup::generate_lookup_trace;
+pub use perm::Tip5Perm;
 pub use tip5_spec::{
     LOOKUP_TABLE, MDS_FIRST_ROW, NUM_ROUNDS, NUM_SPLIT_AND_LOOKUP, P_GOLDILOCKS, ROUND_CONSTANTS,
     STATE_SIZE, mds_matrix, permute, rc_precomp,

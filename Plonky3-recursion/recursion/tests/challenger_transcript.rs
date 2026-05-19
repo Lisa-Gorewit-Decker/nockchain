@@ -1841,3 +1841,181 @@ mod goldilocks_d2_poseidon1 {
             .expect("Goldilocks D2 Poseidon1 multiple rounds should match native");
     }
 }
+
+// ============================================================================
+// Goldilocks D=1 Tip5, WIDTH=16, RATE=10 (recursively verify a native
+// Tip5 DuplexChallenger transcript — the deployed ai-pow-zk Layer-0
+// Fiat-Shamir permutation). C2.3 / M-S4.
+//
+// This is the *soundness gate* for the in-circuit Tip5 challenger: the
+// in-circuit `CircuitChallenger<16,10,Tip5Config>` sampled outputs are
+// `connect`-bound to the native `DuplexChallenger<Goldilocks,
+// Tip5Perm, 16, 10>` values, and `runner().run()` returns `Err`
+// (WitnessConflict) iff any sampled value differs — so a green test is
+// a bit-for-bit transcript-equality proof, exactly like the Poseidon1
+// D=1 modules above. Mirrors `koala_bear_d1_poseidon1`.
+// ============================================================================
+
+mod goldilocks_d1_tip5 {
+    use p3_challenger::DuplexChallenger;
+    use p3_circuit::ops::{Tip5Config, Tip5Goldilocks, generate_tip5_trace};
+    use p3_field::PrimeCharacteristicRing;
+    use p3_goldilocks::Goldilocks;
+    use p3_tip5_circuit_air::Tip5Perm;
+
+    use super::*;
+
+    type F = Goldilocks;
+    const WIDTH: usize = 16;
+    const RATE: usize = 10;
+
+    fn setup_circuit() -> CircuitBuilder<F> {
+        let mut circuit = CircuitBuilder::<F>::new();
+        circuit.enable_tip5_perm::<Tip5Goldilocks, _>(
+            generate_tip5_trace::<F, Tip5Goldilocks>,
+            Tip5Perm,
+        );
+        circuit.enable_recompose::<F>(generate_recompose_trace::<F, F>);
+        circuit
+    }
+
+    const fn new_challenger() -> CircuitChallenger<WIDTH, RATE, Tip5Config> {
+        CircuitChallenger::new_goldilocks_tip5_base()
+    }
+
+    /// One full rate absorption + sample (covers exactly-RATE absorb,
+    /// the boundary that triggers `duplexing`).
+    #[test]
+    fn test_goldilocks_d1_tip5_observe_sample() {
+        let mut native = DuplexChallenger::<F, _, WIDTH, RATE>::new(Tip5Perm);
+        let mut circuit = setup_circuit();
+        let mut cc = new_challenger();
+
+        for i in 0..RATE {
+            let val = F::from_u64(i as u64 + 1);
+            native.observe(val);
+            let t = circuit.define_const(val);
+            RecursiveChallenger::<F, F>::observe(&mut cc, &mut circuit, t);
+        }
+
+        let native_s: F = native.sample();
+        let circuit_s = RecursiveChallenger::<F, F>::sample(&mut cc, &mut circuit);
+        let expected = circuit.define_const(native_s);
+        circuit.connect(circuit_s, expected);
+
+        circuit
+            .build()
+            .expect("circuit should build")
+            .runner()
+            .run()
+            .expect("Goldilocks D1 Tip5 observe/sample should match native");
+    }
+
+    /// Partial absorption (fewer than RATE observes) then sample —
+    /// exercises the sample-side `duplexing` with a partially filled
+    /// input buffer (overwrite-mode absorb).
+    #[test]
+    fn test_goldilocks_d1_tip5_partial_absorption() {
+        let mut native = DuplexChallenger::<F, _, WIDTH, RATE>::new(Tip5Perm);
+        let mut circuit = setup_circuit();
+        let mut cc = new_challenger();
+
+        // Only 3 observes (< RATE=10): forces a sample-triggered duplex.
+        for i in 0..3u64 {
+            let val = F::from_u64(7 * i + 13);
+            native.observe(val);
+            let t = circuit.define_const(val);
+            RecursiveChallenger::<F, F>::observe(&mut cc, &mut circuit, t);
+        }
+
+        let ns: F = native.sample();
+        let cs = RecursiveChallenger::<F, F>::sample(&mut cc, &mut circuit);
+        let exp = circuit.define_const(ns);
+        circuit.connect(cs, exp);
+
+        circuit
+            .build()
+            .expect("circuit should build")
+            .runner()
+            .run()
+            .expect("Goldilocks D1 Tip5 partial absorption should match native");
+    }
+
+    /// Multiple absorb→sample rounds: exercises the sponge chain
+    /// (`new_start=false` continuations carrying the full 16-element
+    /// state, incl. the 6 capacity slots) across several permutations.
+    #[test]
+    fn test_goldilocks_d1_tip5_multiple_rounds() {
+        let mut native = DuplexChallenger::<F, _, WIDTH, RATE>::new(Tip5Perm);
+        let mut circuit = setup_circuit();
+        let mut cc = new_challenger();
+
+        for round in 0..3u64 {
+            for i in 0..RATE {
+                let val = F::from_u64(round * 100 + i as u64 + 1);
+                native.observe(val);
+                let t = circuit.define_const(val);
+                RecursiveChallenger::<F, F>::observe(&mut cc, &mut circuit, t);
+            }
+            let ns: F = native.sample();
+            let cs = RecursiveChallenger::<F, F>::sample(&mut cc, &mut circuit);
+            let exp = circuit.define_const(ns);
+            circuit.connect(cs, exp);
+        }
+
+        circuit
+            .build()
+            .expect("circuit should build")
+            .runner()
+            .run()
+            .expect("Goldilocks D1 Tip5 multiple rounds should match native");
+    }
+
+    /// Observe-after-sample: a sample drains the output buffer, then a
+    /// further observe must invalidate it and re-absorb (matches
+    /// native `DuplexChallenger` buffer semantics) — several
+    /// interleaved samples pin the whole transcript.
+    #[test]
+    fn test_goldilocks_d1_tip5_observe_after_sample() {
+        let mut native = DuplexChallenger::<F, _, WIDTH, RATE>::new(Tip5Perm);
+        let mut circuit = setup_circuit();
+        let mut cc = new_challenger();
+
+        // Initial absorb + first sample.
+        for i in 0..RATE {
+            let val = F::from_u64(i as u64 + 2);
+            native.observe(val);
+            let t = circuit.define_const(val);
+            RecursiveChallenger::<F, F>::observe(&mut cc, &mut circuit, t);
+        }
+        let ns1: F = native.sample();
+        let cs1 = RecursiveChallenger::<F, F>::sample(&mut cc, &mut circuit);
+        let e1 = circuit.define_const(ns1);
+        circuit.connect(cs1, e1);
+
+        // Observe after sample (invalidates the output buffer), then
+        // sample twice more.
+        for i in 0..4u64 {
+            let val = F::from_u64(1000 + i);
+            native.observe(val);
+            let t = circuit.define_const(val);
+            RecursiveChallenger::<F, F>::observe(&mut cc, &mut circuit, t);
+        }
+        let ns2: F = native.sample();
+        let cs2 = RecursiveChallenger::<F, F>::sample(&mut cc, &mut circuit);
+        let e2 = circuit.define_const(ns2);
+        circuit.connect(cs2, e2);
+
+        let ns3: F = native.sample();
+        let cs3 = RecursiveChallenger::<F, F>::sample(&mut cc, &mut circuit);
+        let e3 = circuit.define_const(ns3);
+        circuit.connect(cs3, e3);
+
+        circuit
+            .build()
+            .expect("circuit should build")
+            .runner()
+            .run()
+            .expect("Goldilocks D1 Tip5 observe-after-sample should match native");
+    }
+}

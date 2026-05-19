@@ -11,14 +11,24 @@ use crate::CircuitBuilderError;
 use crate::builder::CircuitBuilder;
 use crate::ops::poseidon1_perm::{Poseidon1Config, Poseidon1PermCall, Poseidon1PermPrivateData};
 use crate::ops::poseidon2_perm::{Poseidon2Config, Poseidon2PermCall, Poseidon2PermPrivateData};
+use crate::ops::tip5_perm::call::Tip5PermCallMmcs;
+use crate::ops::tip5_perm::{Tip5Config, Tip5PermPrivateData};
 use crate::ops::{NpoPrivateData, NpoTypeId};
 use crate::types::{ExprId, NonPrimitiveOpId};
 
-/// Challenger/MMCS permutation config: either Poseidon1 or Poseidon2.
+/// Challenger/MMCS permutation config: Poseidon1, Poseidon2, or Tip5.
+///
+/// Closed enum consumed by the in-circuit challenger AND
+/// `recursion/src/pcs/mmcs.rs` (via `.d()/.rate()/.rate_ext()/
+/// .width_ext()/.npo_type_id()`). The `Tip5` arm is the deployed
+/// ai-pow-zk Layer-0 hash (Goldilocks D=1, width 16, rate 10,
+/// capacity 6, digest 5, 7-round); its arms mirror the Poseidon1 D=1
+/// arms exactly with Tip5 numbers (rate 10, capacity 6).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum PermConfig {
     Poseidon1(Poseidon1Config),
     Poseidon2(Poseidon2Config),
+    Tip5(Tip5Config),
 }
 
 impl PermConfig {
@@ -30,10 +40,15 @@ impl PermConfig {
         Self::Poseidon2(c)
     }
 
+    pub const fn tip5(c: Tip5Config) -> Self {
+        Self::Tip5(c)
+    }
+
     pub const fn d(self) -> usize {
         match self {
             Self::Poseidon1(c) => c.d(),
             Self::Poseidon2(c) => c.d(),
+            Self::Tip5(c) => c.d(),
         }
     }
 
@@ -41,6 +56,7 @@ impl PermConfig {
         match self {
             Self::Poseidon1(c) => c.rate(),
             Self::Poseidon2(c) => c.rate(),
+            Self::Tip5(c) => c.rate(),
         }
     }
 
@@ -48,6 +64,7 @@ impl PermConfig {
         match self {
             Self::Poseidon1(c) => c.rate_ext(),
             Self::Poseidon2(c) => c.rate_ext(),
+            Self::Tip5(c) => c.rate_ext(),
         }
     }
 
@@ -55,20 +72,48 @@ impl PermConfig {
         match self {
             Self::Poseidon1(c) => c.width_ext(),
             Self::Poseidon2(c) => c.width_ext(),
+            Self::Tip5(c) => c.width_ext(),
+        }
+    }
+
+    /// MMCS digest length in extension elements.
+    ///
+    /// For Poseidon1/2 this equals `rate_ext()` (the Poseidon
+    /// convention: `PaddingFreeSponge<_, _, RATE, RATE>` /
+    /// `TruncatedPermutation<_, 2, RATE, WIDTH>`). For Tip5 it is the
+    /// deployed digest 5 (native
+    /// `PaddingFreeSponge<Tip5Perm,16,10,5>` /
+    /// `TruncatedPermutation<Tip5Perm,2,5,16>` — digest ≠ rate). The
+    /// `PermConfig`-generic MMCS uses this for every *digest* width
+    /// (leaf squeeze length, sibling-compress digest placement, root
+    /// length); Poseidon callers are unaffected since `digest_ext ==
+    /// rate_ext` there.
+    pub const fn digest_ext(self) -> usize {
+        match self {
+            Self::Poseidon1(c) => c.digest_ext(),
+            Self::Poseidon2(c) => c.digest_ext(),
+            Self::Tip5(c) => c.digest_ext(),
         }
     }
 
     pub const fn as_poseidon1(self) -> Option<Poseidon1Config> {
         match self {
             Self::Poseidon1(c) => Some(c),
-            Self::Poseidon2(_) => None,
+            Self::Poseidon2(_) | Self::Tip5(_) => None,
         }
     }
 
     pub const fn as_poseidon2(self) -> Option<Poseidon2Config> {
         match self {
             Self::Poseidon2(c) => Some(c),
-            Self::Poseidon1(_) => None,
+            Self::Poseidon1(_) | Self::Tip5(_) => None,
+        }
+    }
+
+    pub const fn as_tip5(self) -> Option<Tip5Config> {
+        match self {
+            Self::Tip5(c) => Some(c),
+            Self::Poseidon1(_) | Self::Poseidon2(_) => None,
         }
     }
 
@@ -77,6 +122,7 @@ impl PermConfig {
         match self {
             Self::Poseidon1(c) => NpoTypeId::poseidon1_perm(c),
             Self::Poseidon2(c) => NpoTypeId::poseidon2_perm(c),
+            Self::Tip5(c) => NpoTypeId::tip5_perm(c),
         }
     }
 }
@@ -90,6 +136,12 @@ impl From<Poseidon1Config> for PermConfig {
 impl From<Poseidon2Config> for PermConfig {
     fn from(c: Poseidon2Config) -> Self {
         Self::Poseidon2(c)
+    }
+}
+
+impl From<Tip5Config> for PermConfig {
+    fn from(c: Tip5Config) -> Self {
+        Self::Tip5(c)
     }
 }
 
@@ -114,6 +166,7 @@ pub fn perm_private_data<F: 'static + Send + Sync>(
     match cfg.into() {
         PermConfig::Poseidon1(_) => NpoPrivateData::new(Poseidon1PermPrivateData { sibling }),
         PermConfig::Poseidon2(_) => NpoPrivateData::new(Poseidon2PermPrivateData { sibling }),
+        PermConfig::Tip5(_) => NpoPrivateData::new(Tip5PermPrivateData { sibling }),
     }
 }
 
@@ -136,6 +189,16 @@ impl<F: Field> CircuitBuilder<F> {
                 mmcs_index_sum: call.mmcs_index_sum,
             }),
             PermConfig::Poseidon2(config) => self.add_poseidon2_perm(&Poseidon2PermCall {
+                config,
+                new_start: call.new_start,
+                merkle_path: call.merkle_path,
+                mmcs_bit: call.mmcs_bit,
+                inputs: call.inputs.clone(),
+                out_ctl: call.out_ctl.clone(),
+                return_all_outputs: call.return_all_outputs,
+                mmcs_index_sum: call.mmcs_index_sum,
+            }),
+            PermConfig::Tip5(config) => self.add_tip5_perm_mmcs(&Tip5PermCallMmcs {
                 config,
                 new_start: call.new_start,
                 merkle_path: call.merkle_path,

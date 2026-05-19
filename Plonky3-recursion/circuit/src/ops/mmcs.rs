@@ -87,7 +87,15 @@ impl<F: Field> CircuitBuilder<F> {
     ) -> Result<Vec<NonPrimitiveOpId>, CircuitBuilderError> {
         let permutation_config: PermConfig = permutation_config.into();
         let width_ext = permutation_config.width_ext();
-        let rate_ext = permutation_config.rate_ext();
+        // MMCS digest width. For Poseidon `digest_ext == rate_ext`
+        // (and `2·rate_ext == width_ext`), so every site below is
+        // byte-identical to the prior rate-based code. For Tip5
+        // `digest_ext` is the deployed digest 5 (≠ rate 10), so the
+        // running digest occupies `[0, digest_ext)`, the sibling
+        // `[digest_ext, 2·digest_ext)`, and the upper state
+        // `[2·digest_ext, width_ext)` is zero — exactly native
+        // `TruncatedPermutation<Tip5Perm,2,5,16>`.
+        let digest_ext = permutation_config.digest_ext();
         let mut op_ids = Vec::with_capacity(openings_expr.len());
         let mut output = vec![None; width_ext];
         let zero = self.define_const(F::ZERO);
@@ -104,8 +112,8 @@ impl<F: Field> CircuitBuilder<F> {
 
             if !is_first && !row_digest.is_empty() {
                 let mut inputs = vec![None; width_ext];
-                for (j, &d) in row_digest.iter().take(rate_ext).enumerate() {
-                    inputs[rate_ext + j] = Some(d);
+                for (j, &d) in row_digest.iter().take(digest_ext).enumerate() {
+                    inputs[digest_ext + j] = Some(d);
                 }
                 let _ = self.add_perm(
                     permutation_config,
@@ -114,7 +122,7 @@ impl<F: Field> CircuitBuilder<F> {
                         merkle_path: true,
                         mmcs_bit: Some(zero),
                         inputs,
-                        out_ctl: vec![false; rate_ext],
+                        out_ctl: vec![false; digest_ext],
                         return_all_outputs: false,
                         mmcs_index_sum: None,
                     },
@@ -123,7 +131,7 @@ impl<F: Field> CircuitBuilder<F> {
 
             let mut inputs = vec![None; width_ext];
             if is_first {
-                for (j, &d) in row_digest.iter().take(rate_ext).enumerate() {
+                for (j, &d) in row_digest.iter().take(digest_ext).enumerate() {
                     inputs[j] = Some(d);
                 }
             }
@@ -134,7 +142,7 @@ impl<F: Field> CircuitBuilder<F> {
                     merkle_path: true,
                     mmcs_bit: Some(*direction),
                     inputs,
-                    out_ctl: vec![is_final; rate_ext],
+                    out_ctl: vec![is_final; digest_ext],
                     return_all_outputs: false,
                     mmcs_index_sum: None,
                 },
@@ -146,8 +154,8 @@ impl<F: Field> CircuitBuilder<F> {
         if has_tail {
             let tail = &openings_expr[directions_expr.len()];
             let mut inputs = vec![None; width_ext];
-            for (j, &t) in tail.iter().take(rate_ext).enumerate() {
-                inputs[rate_ext + j] = Some(t);
+            for (j, &t) in tail.iter().take(digest_ext).enumerate() {
+                inputs[digest_ext + j] = Some(t);
             }
             let (_, tail_output) = self.add_perm(
                 permutation_config,
@@ -156,7 +164,7 @@ impl<F: Field> CircuitBuilder<F> {
                     merkle_path: true,
                     mmcs_bit: Some(zero),
                     inputs,
-                    out_ctl: vec![true; rate_ext],
+                    out_ctl: vec![true; digest_ext],
                     return_all_outputs: false,
                     mmcs_index_sum: None,
                 },
@@ -166,7 +174,7 @@ impl<F: Field> CircuitBuilder<F> {
 
         let output = output
             .into_iter()
-            .take(rate_ext)
+            .take(digest_ext)
             .map(|x| {
                 x.ok_or_else(|| CircuitBuilderError::MalformedNonPrimitiveOutputs {
                     op_id: *op_ids.last().unwrap(),
