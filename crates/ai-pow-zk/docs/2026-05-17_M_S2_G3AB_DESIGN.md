@@ -3,7 +3,7 @@
 # M-S2 — G3a + G3b Implementation Design (boundary-predicate parameterization + segment schedule)
 
 > **⛔ DEFERRED (2026-05-17, maintainer γ decision).** A Pearl
-> implementation+paper evaluation (`M_S2_PEARL_EVALUATION.md`)
+> implementation+paper evaluation (`2026-05-17_M_S2_PEARL_EVALUATION.md`)
 > established that **Pearl does NOT segment** — it caps
 > parameters (§4.8: `k ≤ 2¹⁶`, `k(h+w) ≤ 2²²`) so one tile = one
 > STARK, and recurses only *vertically* for ≤65KB-cert
@@ -11,7 +11,7 @@
 > designs has **no Pearl precedent**. **Track-A PROD now pursues
 > the Pearl-faithful P-A/P-B/P-C path** (param caps + raised
 > Layer-0 ceiling + vertical-recursion certificate;
-> `HIGH2_2_DESIGN.md` §7). **This G3a/G3b/G3c design is
+> `2026-05-15_HIGH2_2_DESIGN.md` §7). **This G3a/G3b/G3c design is
 > preserved but DEFERRED** — implement *only if* a concrete load
 > **beyond Pearl's `k = 2¹⁶` envelope** is ever required. Do not
 > start coding G3a. D1–D6 below remain the locked decisions *for
@@ -28,11 +28,11 @@
 > per-segment-local + new `GLOBAL_ROW` in `Γ`. See §10 for the
 > full table; the body already assumes these.
 > **Upstream contract (authoritative where it conflicts):**
-> `G3_RECURSION_AGGREGATION.md` §4 (carry vector `Γ`), §5
+> `2026-05-17_G3_RECURSION_AGGREGATION.md` §4 (carry vector `Γ`), §5
 > (aggregation tree — G3c only), §6 (`PROGRAM_ROOT`), §12
-> (G3a/G3b/G3c acceptance criteria); `G3_RECURSION_AUDIT.md`
+> (G3a/G3b/G3c acceptance criteria); `2026-05-17_G3_RECURSION_AUDIT.md`
 > (P0–P6 — all gate **G3c**, none gate G3a/G3b);
-> `HIGH2_2_DESIGN.md` §4.C.4-G3 / §4.C.11.
+> `2026-05-15_HIGH2_2_DESIGN.md` §4.C.4-G3 / §4.C.11.
 > **This document** is the concrete, code-level implementation
 > design for **G3a + G3b only** (the M12-independent, Layer-0-only
 > substrate) and surfaces the decisions the maintainer must make
@@ -129,7 +129,7 @@ continuity. Soundness meanwhile held by CRIT-1 + §4.D keystone +
 
 ## 2. The carry vector `Γ` — exact composition for G3a
 
-Per `G3_RECURSION_AGGREGATION.md` §4.1, a register is in `Γ` iff
+Per `2026-05-17_G3_RECURSION_AGGREGATION.md` §4.1, a register is in `Γ` iff
 its first-row value depends on the previous segment. The full
 production `Γ`:
 
@@ -340,7 +340,7 @@ designs:
 - **D1-A — flat `Γ` as public values (~+170 PIs).** Append
   `gamma_in` (85) + `gamma_out` (85) to the PI vector
   (`NUM_PUBLIC_VALUES 60 → ~230`). Matches
-  `G3_RECURSION_AGGREGATION.md` §4.1 ("equality is ≈130
+  `2026-05-17_G3_RECURSION_AGGREGATION.md` §4.1 ("equality is ≈130
   `assert_eq`s in the recursion node" — i.e. `Γ` travels flat
   between layers). G3c reads/equates flat `Γ` directly. Simple,
   no extra in-circuit hashing, no hash-choice coupling. Cost:
@@ -633,16 +633,16 @@ asked; `Plonky3-recursion/` stays git-untracked; never bake
 
 After M-S2: **M-S3** (P0 vendor Plonky3-recursion) → **M-S4**
 (P1 `tip5-circuit-air`) → **M-S5** (G3c — the recursion verifier;
-gated on P0–P6) per `HIGH2_2_DESIGN.md` §7 Track A.
+gated on P0–P6) per `2026-05-15_HIGH2_2_DESIGN.md` §7 Track A.
 
 ---
 
 ## 12. Cross-references
 
-- Upstream contract: `G3_RECURSION_AGGREGATION.md` §4, §6, §12.
+- Upstream contract: `2026-05-17_G3_RECURSION_AGGREGATION.md` §4, §6, §12.
 - Audit (P0–P6, all gate **G3c** only):
-  `G3_RECURSION_AUDIT.md`.
-- Roadmap & inflections: `HIGH2_2_DESIGN.md` §7 Track A
+  `2026-05-17_G3_RECURSION_AUDIT.md`.
+- Roadmap & inflections: `2026-05-15_HIGH2_2_DESIGN.md` §7 Track A
   (M-S2 row), §4.C.4-G3, §4.C.11 (M-S1 — done).
 - §6(a) pinning pattern this reuses: `chips/control.rs`
   `pack_control_prep_full` (FOLD_IS_FOLD@47 / fold_slot@48 /
@@ -650,4 +650,4 @@ gated on P0–P6) per `HIGH2_2_DESIGN.md` §7 Track A.
 - PI ABI: `composite_public.rs` (`NUM_PUBLIC_VALUES = 60`,
   `PI_*_OFFSET`).
 - M-S1 (predecessor, done): commit `3feae98`,
-  `HIGH2_2_DESIGN.md` §4.C.11.
+  `2026-05-15_HIGH2_2_DESIGN.md` §4.C.11.

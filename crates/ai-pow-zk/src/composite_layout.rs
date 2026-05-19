@@ -4,7 +4,7 @@
 //! column set is mirrored, including Pearl's `NOISED_PACKED` /
 //! `A_NOISED` / `B_NOISED` / `MAT_ID` machinery for the matrix-tile
 //! RAM lookups. The lookups are essential for production-scale
-//! matmul (see `M10_1C_DESIGN.md` decision 2 — without them, large
+//! matmul (see `2026-05-14_M10_1C_DESIGN.md` decision 2 — without them, large
 //! matrices would force per-row inline duplication of matrix bytes
 //! that scales with the number of output tile cells rather than the
 //! matrix size).
@@ -71,7 +71,7 @@ pub const BYTES_PER_GOLDILOCKS: usize = 4;
 pub const BITS_PER_LIMB: usize = 13;
 
 /// Block-commitment fixed size in bytes. Pinned by M10.1c design (see
-/// `M10_1C_DESIGN.md` decision 4): 32 bytes = 8 × `u32` LE, matching
+/// `2026-05-14_M10_1C_DESIGN.md` decision 4): 32 bytes = 8 × `u32` LE, matching
 /// the Tip5 digest size we use elsewhere for Merkle commitments. The
 /// in-circuit κ derivation hashes `block_commitment ‖ params_tag` (32
 /// + 32 = 64 bytes = one BLAKE3 block, single compression call).
@@ -429,7 +429,7 @@ pub const CV_OUT_FREQ: usize = JACKPOT_SLOT_SEL_START + JACKPOT_SLOT_SEL_LEN;
 //  Appended *after* all Pearl-mirrored columns (the standing
 //  invariant is that our SNARK is deliberately NOT trace-byte-
 //  equivalent to Pearl — only the mineable unit of work is;
-//  HIGH2_2_DESIGN.md §9.5). Appending here shifts no existing
+//  2026-05-15_HIGH2_2_DESIGN.md §9.5). Appending here shifts no existing
 //  offset (every column above is fixed); only TOTAL_TRACE_WIDTH
 //  grows. The FoldChip is a pure function of the per-stripe
 //  X_STEP sequence (§4.0), so this block carries exactly its

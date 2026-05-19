@@ -200,11 +200,11 @@ matching Pearl."*
 - `Pearl_Whitepaper.pdf` §1.1/§3.1/§4.1/§4.2/§4.8;
   `pearl/zk-pow/src`, `pearl/miner/vllm-miner/src/vllm_miner/
   vllm_config.py` @ pearl ref `3be33a59`.
-- `PRODUCTION_ROADMAP.md` §0 (INT-only scoping), Phase B B3.
+- `2026-05-17_PRODUCTION_ROADMAP.md` §0 (INT-only scoping), Phase B B3.
 - `crates/ai-pow/src/params.rs` (`QuantGroup`/`LlamaFfnLayer`
-  B3 guard); `PEARL_COMPARISON.md`;
-  `PHASE_B_DESIGN.md` (Phase B complete);
-  `PEARL_VLLM_CPU_FORK_DESIGN.md` (`PearlFp8CpuScheme` =
+  B3 guard); `2026-05-13_PEARL_COMPARISON.md`;
+  `2026-05-18_PHASE_B_DESIGN.md` (Phase B complete);
+  `2026-05-18_PEARL_VLLM_CPU_FORK_DESIGN.md` (`PearlFp8CpuScheme` =
   un-mined forward enabler).
 - `pearl_real_production_model` / `phase_b_pearl_byte_equiv` /
   `pearl_vllm_cpu_fork` memory.

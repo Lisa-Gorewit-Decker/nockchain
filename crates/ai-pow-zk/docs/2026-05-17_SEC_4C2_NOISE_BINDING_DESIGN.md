@@ -75,14 +75,14 @@
 > is struck through (kept for rationale). This is the same
 > KAT-first re-grounding win as P-B.2.0's D1.
 > The last open §4.C soundness tie and Phase-A3 of
-> `PRODUCTION_ROADMAP.md`. Staged, KAT-first (P-B.2.0
+> `2026-05-17_PRODUCTION_ROADMAP.md`. Staged, KAT-first (P-B.2.0
 > discipline).
 > **Predecessors (done):** M-S1 (sweep ↔ declared `noised_packed`
 > store), A1/P-B.2.3 (verifier-fixed opening schedule), A2/P-B.2.4
 > (strip-opening binds the *plain* tile strips to
 > `HASH_A`/`HASH_B`).
-> **Cross-refs:** `P_B2_STRIP_OPENING_DESIGN.md`,
-> `PRODUCTION_ROADMAP.md` Phase A, `ai_pow_zk_crypto_gaps`
+> **Cross-refs:** `2026-05-17_P_B2_STRIP_OPENING_DESIGN.md`,
+> `2026-05-17_PRODUCTION_ROADMAP.md` Phase A, `ai_pow_zk_crypto_gaps`
 > memory, `crates/ai-pow/src/{matmul.rs,prng.rs}` (the
 > noise reference this must mirror byte-for-byte).
 
@@ -469,7 +469,7 @@ debug-assertions-ON; `Plonky3-recursion/` untracked.
   base256(UINT8_DATA))` binding (`composite_full_air`).
 - M-S1 store: `composite_trace::place_noised_store_row` /
   `enumerate_noised_chunks`.
-- Roadmap: `PRODUCTION_ROADMAP.md` Phase A3; `HIGH2_2_DESIGN.md`
+- Roadmap: `2026-05-17_PRODUCTION_ROADMAP.md` Phase A3; `2026-05-15_HIGH2_2_DESIGN.md`
   §7 / §4.C.11.
 
 ---

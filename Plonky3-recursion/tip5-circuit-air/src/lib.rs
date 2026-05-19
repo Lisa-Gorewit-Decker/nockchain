@@ -21,7 +21,7 @@
 //! unique *canonical* one (paper §4.6) — is enforced by an
 //! inverse-or-zero `< p` guard and adversarially tested.
 //!
-//! See `crates/ai-pow-zk/docs/C2_TIP5_CIRCUIT_AIR_DESIGN.md` for the full
+//! See `crates/ai-pow-zk/docs/2026-05-18_C2_TIP5_CIRCUIT_AIR_DESIGN.md` for the full
 //! design and soundness argument.
 
 #![no_std]

@@ -8,7 +8,7 @@ single instrumented cross-crate fixture: a real `ai-pow` solve at
 `composite_verify_pow`, with a hard byte-equivalence assertion
 tying the SNARK's `HASH_A` PI to `ai-pow`'s `BlockContext.h_a_chunk`.
 It is the substrate every profiling / benchmarking recipe targets
-(per `GAP_AUDIT.md` — instrumentation is non-negotiable F1 scope,
+(per `2026-05-15_GAP_AUDIT.md` — instrumentation is non-negotiable F1 scope,
 not a follow-on).
 
 ## TL;DR
@@ -60,7 +60,7 @@ Reading the trace for bottlenecks:
 - The hot stack is almost entirely under `composite_prove`. Drill
   into it; expect FRI commit (LDE + Merkle) and quotient
   evaluation to dominate — that is the `rows × log_blowup`
-  cost the FRI sweep (`ENGINEERING_REPORT.md §11`) quantifies.
+  cost the FRI sweep (`2026-05-14_ENGINEERING_REPORT.md §11`) quantifies.
 - `place_matrix_hash_*` shows up under `trace_gen`; if it's
   material at `TEST_SMALL` it will be catastrophic at PROD
   (M52 step 7) — a useful early-warning signal.

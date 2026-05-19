@@ -12,7 +12,7 @@
 > feasible narrow form is the multi-interaction shared bus
 > (degree ≈3–4, B=4, + O(#lookups·D) aux EF cols). The
 > performance analysis is being **rewritten on that bus-form
-> basis** (`C2_TIP5_CIRCUIT_AIR_DESIGN.md` §2c, L4). The §1–§6
+> basis** (`2026-05-18_C2_TIP5_CIRCUIT_AIR_DESIGN.md` §2c, L4). The §1–§6
 > figures below are kept only as the lookup-free baseline.
 
 > **Status:** DESIGN (2026-05-18). A study of widening the
@@ -218,7 +218,7 @@ focuses effort on the FRI sweep + the C2.3 lookup range-check.
 
 ## 7. Cross-references
 
-`C2_TIP5_CIRCUIT_AIR_DESIGN.md` (§2b lookup-free arithmetization,
+`2026-05-18_C2_TIP5_CIRCUIT_AIR_DESIGN.md` (§2b lookup-free arithmetization,
 C2.3 residual = the LogUp/CTL form that actually collapses the
 range-check width); `crates/ai-pow-zk/src/circuit.rs` (FRI profiles,
 the `quotient degree < 2^log_blowup` rule, the

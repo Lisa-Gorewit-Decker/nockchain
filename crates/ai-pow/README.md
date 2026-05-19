@@ -41,7 +41,7 @@ What `ai-pow` deliberately does **not** include:
 ## Pearl alignment
 
 Cross-implementation byte-equivalence against the Pearl upstream is
-tracked in [`PEARL_COMPARISON.md`](docs/PEARL_COMPARISON.md). Every
+tracked in [`2026-05-13_PEARL_COMPARISON.md`](docs/2026-05-13_PEARL_COMPARISON.md). Every
 load-bearing protocol surface has a captured Pearl byte-fixture in
 `tests/fixtures/pearl.rs`, exercised by `tests/pearl_compat_fixtures.rs`:
 
@@ -78,8 +78,8 @@ comparison; the Pearl ISC license is reproduced verbatim at
 | `src/proof.rs` | `MatmulProof`, `TileOpening`, encode / decode |
 | `src/synth.rs` | Deterministic `(A, B)` test synthesis |
 | `tests/` | End-to-end, adversarial, soundness simulation, LLM-shape, Pearl-compat fixtures |
-| `docs/FLAWS.md` | The Pearl-spec audit that drove the v2 → v3 redesign |
-| `docs/PEARL_COMPARISON.md` | Divergence inventory + closure tracking |
+| `docs/2026-05-13_FLAWS.md` | The Pearl-spec audit that drove the v2 → v3 redesign |
+| `docs/2026-05-13_PEARL_COMPARISON.md` | Divergence inventory + closure tracking |
 
 ## Tests
 

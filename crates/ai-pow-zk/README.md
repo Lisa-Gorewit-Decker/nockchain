@@ -12,8 +12,8 @@ row, and a multi-shape / multi-activity bench suite.
 
 The earlier M9.1 (composite tile AIR) and M10.1b (in-circuit
 BLAKE3 keyed-hash) stacks have been retired — see
-[`ENGINEERING_REPORT.md`](docs/ENGINEERING_REPORT.md) for the why and
-[`M10_1C_PROGRESS.md`](docs/M10_1C_PROGRESS.md) for the phase-by-phase
+[`2026-05-14_ENGINEERING_REPORT.md`](docs/2026-05-14_ENGINEERING_REPORT.md) for the why and
+[`2026-05-14_M10_1C_PROGRESS.md`](docs/2026-05-14_M10_1C_PROGRESS.md) for the phase-by-phase
 history.
 
 **272 unit tests + 13 ignored benches passing.** Latest PROD bench
@@ -121,8 +121,8 @@ The proof attests that:
 
 Goldilocks base field + Tip5 sponge for FRI + `p3-uni-stark` /
 `p3-batch-stark` for the proving pipeline. See
-[`DESIGN.md`](docs/DESIGN.md) for per-slot rationale and
-[`ENGINEERING_REPORT.md`](docs/ENGINEERING_REPORT.md) for the
+[`2026-05-13_DESIGN.md`](docs/2026-05-13_DESIGN.md) for per-slot rationale and
+[`2026-05-14_ENGINEERING_REPORT.md`](docs/2026-05-14_ENGINEERING_REPORT.md) for the
 post-Phase-14b architectural review.
 
 Plonky3 dependencies (`https://github.com/Plonky3/Plonky3`):

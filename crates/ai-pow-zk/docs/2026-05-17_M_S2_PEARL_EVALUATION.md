@@ -12,7 +12,7 @@
 > *vertical* proof-compression. This is a material finding: it
 > means M-S2/G3 is solving a scaling problem Pearl *designed
 > away*, and several premises in the G3 doc family
-> (`G3_RECURSION_AGGREGATION.md`, `HIGH2_2_DESIGN.md` §4.C.4-G3,
+> (`2026-05-17_G3_RECURSION_AGGREGATION.md`, `2026-05-15_HIGH2_2_DESIGN.md` §4.C.4-G3,
 > the "G4 = Pearl §4.8 spot-check" framing) are inaccurate and
 > need correction. A decision is surfaced at the end.
 
@@ -164,17 +164,17 @@ bet), **G3 is unnecessary** — adopt §4. If ai-pow-zk's per-row
 width makes a 2²² single trace economically infeasible where
 Pearl's is not, G3 (or a different segmentation) is justified —
 but that case must be **measured**, not assumed (it currently is
-assumed: `HIGH2_2_DESIGN.md` §4.C.4-G3 has no prover-cost
+assumed: `2026-05-15_HIGH2_2_DESIGN.md` §4.C.4-G3 has no prover-cost
 measurement for the single-big-trace alternative).
 
 ---
 
 ## 3. Inaccuracies in the current doc family (must correct)
 
-These statements, repeated across `G3_RECURSION_AGGREGATION.md`
-§13, `M_S2_G3AB_DESIGN.md` §0/§13, `HIGH2_2_DESIGN.md`
-§4.C.4-G3 / §13, and the M-S1-era `GAP_AUDIT.md` /
-`ZKP_SECURITY_REPORT.md` "G4" framing, are **contradicted** by
+These statements, repeated across `2026-05-17_G3_RECURSION_AGGREGATION.md`
+§13, `2026-05-17_M_S2_G3AB_DESIGN.md` §0/§13, `2026-05-15_HIGH2_2_DESIGN.md`
+§4.C.4-G3 / §13, and the M-S1-era `2026-05-15_GAP_AUDIT.md` /
+`2026-05-15_ZKP_SECURITY_REPORT.md` "G4" framing, are **contradicted** by
 Pearl's paper + impl:
 
 1. *"Pearl's protocol is already Layer-0 + recursion/aggregation
@@ -254,7 +254,7 @@ than G3a/G3b/G3c:
   segments). This still needs the vendored recursion + Tip5/
   Poseidon2 work (P0–P6) but **drops the entire `Γ` / carry
   stitch / `PROGRAM_ROOT`-across-tree / adjacency surface**
-  (the G3c bespoke glue the audit `G3_RECURSION_AUDIT.md` flags
+  (the G3c bespoke glue the audit `2026-05-17_G3_RECURSION_AUDIT.md` flags
   as the riskiest, unaudited part).
 - **"G4" is retired as a production concept.** There is **no
   production spot-check** (`MatmulProof.spot` is test-only). The
@@ -279,14 +279,14 @@ actually do.**
 
 > **DECIDED (maintainer, 2026-05-17): (γ) Hybrid.** Track-A PROD
 > pursues the **Pearl-faithful P-A + P-B** path now; **G3a/G3b/
-> G3c are fully designed but DEFERRED** (`M_S2_G3AB_DESIGN.md`
+> G3c are fully designed but DEFERRED** (`2026-05-17_M_S2_G3AB_DESIGN.md`
 > retained), pursued only if a concrete load **beyond Pearl's
 > `k = 2¹⁶` envelope** is ever required. The §3 doc-family
 > factual corrections were applied 2026-05-17 (focused pass).
 > Additional maintainer note: `MatmulProof.spot` /
 > `params.spot_checks` is **test-only and never used in
 > production** — flagged as a cleanup candidate. The roadmap
-> (`HIGH2_2_DESIGN.md` §7 Track A) now lists M-S2 = P-A+P-B,
+> (`2026-05-15_HIGH2_2_DESIGN.md` §7 Track A) now lists M-S2 = P-A+P-B,
 > M-S5 = P-C (vertical certificate), and G3 as deferred.
 
 The pivotal question was **which scaling architecture Track-A
@@ -331,8 +331,8 @@ ai-pow-zk's target vs. Pearl parity), which is the maintainer's.
   `pearl_circuit.rs` (single inner STARK proof, vertical
   recursion), `chip/jackpot/constraints.rs:85-87`.
 - Affected ai-pow-zk docs to correct (§3):
-  `G3_RECURSION_AGGREGATION.md` §13, `M_S2_G3AB_DESIGN.md`
-  §0/§13, `HIGH2_2_DESIGN.md` §4.C.4-G3/§7/§13, `GAP_AUDIT.md`
-  + `ZKP_SECURITY_REPORT.md` (the "G4 = Pearl §4.8 spot-check"
+  `2026-05-17_G3_RECURSION_AGGREGATION.md` §13, `2026-05-17_M_S2_G3AB_DESIGN.md`
+  §0/§13, `2026-05-15_HIGH2_2_DESIGN.md` §4.C.4-G3/§7/§13, `2026-05-15_GAP_AUDIT.md`
+  + `2026-05-15_ZKP_SECURITY_REPORT.md` (the "G4 = Pearl §4.8 spot-check"
   lines), and the `ai_pow_zk_crypto_gaps` memory.
 - M-S1 (done, independent): commit `3feae98`.

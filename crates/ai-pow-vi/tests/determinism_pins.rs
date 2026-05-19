@@ -537,7 +537,7 @@ fn pin_activation_log_canonical_root() {
     let actual = hash_canonical(&bytes);
     // Refreshed: ai-pow merkle contexts bumped from v1 → v3 during the
     // Pearl alignment work, which cascades into every leaf / node hash in
-    // ai-pow-vi's tile-Merkle activation log. See PEARL_COMPARISON.md.
+    // ai-pow-vi's tile-Merkle activation log. See 2026-05-13_PEARL_COMPARISON.md.
     let expected: [u8; 32] = [
         0x24, 0x45, 0x8d, 0xac, 0xe9, 0x7b, 0x33, 0x40, 0x6b, 0x22, 0xe3, 0x12, 0xb3, 0x19, 0x0e,
         0x2f, 0xcd, 0x8a, 0xca, 0x64, 0xb3, 0x81, 0xc1, 0x88, 0xbe, 0x61, 0x94, 0xec, 0x10, 0x57,
@@ -725,7 +725,7 @@ fn pin_comm_w_canonical_model() {
     let actual = compute_comm_w(&model);
     // Refreshed: ai-pow merkle contexts bumped from v1 → v3 during the
     // Pearl alignment work, which cascades into the weight tile-Merkle
-    // root inside compute_comm_w. See PEARL_COMPARISON.md.
+    // root inside compute_comm_w. See 2026-05-13_PEARL_COMPARISON.md.
     let expected: [u8; 32] = [
         0xb7, 0x7c, 0xc6, 0x69, 0xcf, 0x04, 0x08, 0x73, 0x0b, 0x53, 0x8b, 0x63, 0xda, 0xc6, 0xd9,
         0x9a, 0x78, 0x46, 0x8f, 0x84, 0xfd, 0x35, 0x5a, 0xfd, 0x91, 0xc6, 0xed, 0x01, 0x16, 0xff,
@@ -837,7 +837,7 @@ fn pin_vi_proof_round_trip_canonical() {
     // the underlying tile-Merkle commits also use the v3 contexts now —
     // both cascade into the encoded proof bytes. Additionally, the
     // ai-pow-vi tile leaf is now `TileState::keyed_hash` (no context
-    // prefix) instead of the v1 `tile_state_hash`. See PEARL_COMPARISON.md.
+    // prefix) instead of the v1 `tile_state_hash`. See 2026-05-13_PEARL_COMPARISON.md.
     let expected: [u8; 32] = [
         0x4f, 0x9f, 0xf3, 0xc4, 0xef, 0x69, 0x83, 0xac, 0xea, 0xfb, 0xc2, 0x8c, 0x85, 0xcf, 0x94,
         0xa6, 0x43, 0xa9, 0xa6, 0xc6, 0xde, 0xf8, 0xbc, 0x00, 0x44, 0xb8, 0xcf, 0xd7, 0x6e, 0x59,

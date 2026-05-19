@@ -2,7 +2,7 @@
 
 # G3 Recursion — Security Audit: my design spec vs the Plonky3-recursion reference
 
-> **Status (2026-05-17): AUDIT.** Reviews `G3_RECURSION_AGGREGATION.md`
+> **Status (2026-05-17): AUDIT.** Reviews `2026-05-17_G3_RECURSION_AGGREGATION.md`
 > (my G3 design) against the reference implementation at
 > `Plonky3-recursion/` (origin `github.com/Plonky3/Plonky3-recursion`,
 > a *fixed recursive verifier* for Plonky3 uni-/batch-STARK over
@@ -47,7 +47,7 @@ audited**, not merely until code-complete.
 
 ## 1. What was reviewed
 
-- My spec: `crates/ai-pow-zk/G3_RECURSION_AGGREGATION.md` (all
+- My spec: `crates/ai-pow-zk/2026-05-17_G3_RECURSION_AGGREGATION.md` (all
   sections, esp. §3 recursion primitive, §5 aggregation tree, §6
   `PROGRAM_ROOT`, §8 soundness/error budget, §14 parameters).
 - Reference: `Plonky3-recursion/` — `recursion/src/{verifier,
@@ -85,7 +85,7 @@ Severity: **BLOCKER** (G3c cannot proceed until resolved) ·
   *fixed* (Goldilocks `WIDTH=8,RATE=4`; 32-bit `16,8`)
   (`book/src/advanced_topics/soundness.md:78-80`).
 
-**Impact on the spec.** `G3_RECURSION_AGGREGATION.md` §1.3, §3.2
+**Impact on the spec.** `2026-05-17_G3_RECURSION_AGGREGATION.md` §1.3, §3.2
 ("**Tip5 was chosen for recursion**… the recursion cost is
 dominated by in-circuit Tip5"), §3.3 cost model, and §14
 ("recursion field: same Goldilocks + Tip5… self-similar, no
@@ -390,20 +390,20 @@ setup claims **stand**.
 
 ## 4. Corrections applied to the design docs
 
-- `G3_RECURSION_AGGREGATION.md`: prepended an
+- `2026-05-17_G3_RECURSION_AGGREGATION.md`: prepended an
   **AUDIT-CORRECTIONS** banner pointing here; the Tip5
   assertions (§1.3/§3.2/§3.3/§14) and the "API stitches the
   carry / pins the program" implications (§5.2/§5.3/§6) are now
   flagged as superseded by F1/F3/F4; §8.3's `ε_stark` is flagged
   to use a proven FRI bound (F6).
-- `HIGH2_2_DESIGN.md` §4.C.4-G3: pointer updated to cite this
+- `2026-05-15_HIGH2_2_DESIGN.md` §4.C.4-G3: pointer updated to cite this
   audit as a gating prerequisite list for G3c.
 - Task **#108** + memory `ai_pow_zk_crypto_gaps`: residual scope
   re-stated with P0–P6.
 
 ## 5. Cross-references
 
-- My spec: `G3_RECURSION_AGGREGATION.md` (annotated).
+- My spec: `2026-05-17_G3_RECURSION_AGGREGATION.md` (annotated).
 - Reference: `Plonky3-recursion/` —
   `recursion/src/challenger/circuit.rs:97-129` (hash/panic),
   `pcs/fri/params.rs:8-72` (FRI params / unsafe ctor),
@@ -418,7 +418,7 @@ setup claims **stand**.
 - Ours: `crates/ai-pow-zk/src/circuit.rs:10-13,165-191` (Tip5
   config), `crates/ai-pow-zk/Cargo.toml:45-58` (Plonky3 pin),
   `composite_proof.rs` (batch-stark Route-A), CRIT-1 / MED-3
-  discipline in `ZKP_SECURITY_REPORT.md`.
+  discipline in `2026-05-15_ZKP_SECURITY_REPORT.md`.
 - Task **#108**; memory `ai_pow_zk_crypto_gaps`,
   `ai_pow_zk_fri_sweep` (the Tip5 FRI budget P1 invalidates).
 ```

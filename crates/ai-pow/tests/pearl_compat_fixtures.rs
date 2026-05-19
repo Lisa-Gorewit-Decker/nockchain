@@ -4,7 +4,7 @@
 //! (the vendored generator); re-run that test with `--include-ignored
 //! --nocapture` if Pearl protocol changes upstream.
 //!
-//! Coverage maps to `PEARL_COMPARISON.md`:
+//! Coverage maps to `2026-05-13_PEARL_COMPARISON.md`:
 //!
 //!   * **S0** (lock-in) — Pearl protocol constants we share.
 //!   * **S1** (D3) — `get_random_hash` byte stream. **#[ignore]**: our PRNG
@@ -67,7 +67,7 @@ fn s0_protocol_constants_match_pearl() {
 //
 // Pearl PRNG = BLAKE3-keyed(message=[index_LE @ prepend_index*4 ..; seed @
 // 32..64], key=key). Our PRNG = derive_key(context).update(seed).update(idx).
-// Different byte streams ⇒ flagged divergence (D3 in PEARL_COMPARISON.md).
+// Different byte streams ⇒ flagged divergence (D3 in 2026-05-13_PEARL_COMPARISON.md).
 // The fixtures are still useful even while divergent: once D3 is closed by
 // switching our PRNG, removing `#[ignore]` will lock in byte-equivalence.
 

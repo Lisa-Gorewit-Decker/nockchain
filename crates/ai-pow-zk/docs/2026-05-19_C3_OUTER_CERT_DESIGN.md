@@ -207,7 +207,7 @@ edit, and the regression gate cleanly discharges O1/O2.
   (O2), full workspace still green. The ≤65 KB certificate-size
   check (the M-S5 target) is asserted here.
 - **C3.3 — honest status + docs/memory + commit.** Update
-  `C2_TIP5_CIRCUIT_AIR_DESIGN.md`/this doc/memory; close #124.
+  `2026-05-18_C2_TIP5_CIRCUIT_AIR_DESIGN.md`/this doc/memory; close #124.
   R-b (actual M10.1c composite AIR) remains M12/#127.
 
 Each stage: independent re-reproduction (not trusting any agent),
@@ -228,7 +228,7 @@ is verified (no producer-emitting coeff is otherwise unbound).
 
 ## 6. Cross-references
 
-`C2_TIP5_CIRCUIT_AIR_DESIGN.md` §2c.C2.4 (R-a landed, this is the
+`2026-05-18_C2_TIP5_CIRCUIT_AIR_DESIGN.md` §2c.C2.4 (R-a landed, this is the
 remaining wall); commit `632cb8c` (WITNESS_EXT_D-aware CTL, D=1
 byte-identical); tasks #124 (C3, blocked by #129=this),
 #127 (D2/M12 = R-b composite-AIR bridge); memory

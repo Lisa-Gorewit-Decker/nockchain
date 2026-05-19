@@ -4,7 +4,7 @@
 
 Live document tracking the implementation of in-circuit matrix
 commitments via BLAKE3 chunk-Merkle (Pearl-byte-equivalent), the
-deepest gap identified in `ENGINEERING_REPORT.md §6` / task #52.
+deepest gap identified in `2026-05-14_ENGINEERING_REPORT.md §6` / task #52.
 
 Update rule: every commit that lands a step updates this file in
 the same commit. Decisions and rationale captured inline so future

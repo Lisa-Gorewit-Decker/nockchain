@@ -84,7 +84,7 @@ impl Tip5PermExecutor {
     /// uses for `out_idx`. Used by `execute_mmcs` to detect the
     /// chained-only / leaf-compress merkle perms (no CTL output) whose
     /// trace row must carry the **pre-merkle-swap** bus state
-    /// (C3_OUTER_CERT_DESIGN.md §13).
+    /// (2026-05-19_C3_OUTER_CERT_DESIGN.md §13).
     #[inline]
     fn has_ctl_output(&self, outputs: &[Vec<WitnessId>]) -> bool {
         outputs
@@ -513,7 +513,7 @@ impl Tip5PermExecutor {
         self.fill_sibling_data(&mut state, private_inputs);
         self.apply_witness_values(&mut state, inputs, ctx)?;
 
-        // C3_OUTER_CERT_DESIGN.md §13 (DT-4, debug-confirmed) — fix the
+        // 2026-05-19_C3_OUTER_CERT_DESIGN.md §13 (DT-4, debug-confirmed) — fix the
         // merkle-swap slot↔idx desync that orphaned the D≥2 outer-cert
         // `WitnessChecks` global-sum. `apply_merkle_swap` exchanges the
         // digest halves `[0,digest)`↔`[digest,2·digest)` by the runtime

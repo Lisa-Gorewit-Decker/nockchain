@@ -5,7 +5,7 @@
 > ## ⚠️ AUDIT CORRECTIONS (2026-05-17) — read first
 >
 > An audit of this spec against the `Plonky3-recursion` reference
-> implementation (**`G3_RECURSION_AUDIT.md`** — authoritative
+> implementation (**`2026-05-17_G3_RECURSION_AUDIT.md`** — authoritative
 > over this document where they conflict) found the G3 *logic*
 > sound but **four premises false or materially understated**:
 >
@@ -36,14 +36,14 @@
 > (F8), and the reference is **unaudited** so the G4 Pearl-
 > faithful interim is authoritative until G3c **and** the
 > recursion stack are audited (F7). Revised prerequisites P0–P6 +
-> the unaffected/validated parts: see `G3_RECURSION_AUDIT.md` §3.
+> the unaffected/validated parts: see `2026-05-17_G3_RECURSION_AUDIT.md` §3.
 > The carry-chain induction (§8.2), depth=log N, additive error,
 > no-trusted-setup, and the G3a/G3b substrate **stand**.
 
 > **Status (2026-05-17): DESIGN.** This is the authoritative,
 > implementation-ready spec for the recursion/aggregation layer
 > (the "M12" workstream) that lets the §6(b) useful-work binding
-> scale to true PROD. It expands `HIGH2_2_DESIGN.md §4.C.4-G3`.
+> scale to true PROD. It expands `2026-05-15_HIGH2_2_DESIGN.md §4.C.4-G3`.
 > §6(b) is already **closed in-circuit for every single-Layer-0
 > params set** (G1+G2, commits `010ccd3`/`604f974`); G3 removes the
 > "fits one STARK" restriction with **zero probabilistic gap**.
@@ -595,7 +595,7 @@ recursion node's challenges derive from *its* commitments + *its*
   squeezing its own challenges (the child proof and its asserted
   claim are jointly bound).
 - **Soundness of FS as applied** is inherited from the existing
-  analysis (`ZKP_SECURITY_REPORT.md` "Fiat-Shamir soundness":
+  analysis (`2026-05-15_ZKP_SECURITY_REPORT.md` "Fiat-Shamir soundness":
   upstream `p3-uni-stark`/`p3-batch-stark` observe commitments +
   PIs into the duplex sponge before drawing challenges). G3 adds
   *only* the layer tag + the `Γ`/span/program-root fields to the
@@ -861,7 +861,7 @@ stack; G3c is purely the recursion circuit.
 
 ## 13. Relationship to Pearl; what changes vs the G4 interim
 
-> **⚠️ CORRECTED 2026-05-17 — `M_S2_PEARL_EVALUATION.md` is
+> **⚠️ CORRECTED 2026-05-17 — `2026-05-17_M_S2_PEARL_EVALUATION.md` is
 > authoritative here.** The original text below claimed Pearl
 > "aggregates" and "matmul-truth at scale rests on Pearl's §4.8
 > spot-check," and that G3 is "the faithful instantiation of
@@ -894,7 +894,7 @@ caps (gap is `ε_FRI` only). Therefore:
   param caps + raise the Layer-0 trace ceiling (≤ ~2²²) +
   vertical-recursion certificate. **G3 is DEFERRED**, pursued
   only if a load beyond Pearl's `k = 2¹⁶` envelope is required.
-  See `M_S2_PEARL_EVALUATION.md` §4–5.
+  See `2026-05-17_M_S2_PEARL_EVALUATION.md` §4–5.
 - **G4 interim is ai-pow's OWN spot-check**, *not* Pearl's:
   `MatmulProof.spot` + `params.spot_checks` (= 80 PROD;
   `crates/ai-pow/src/proof.rs:54`, `params.rs:33`) — recompute
@@ -930,11 +930,11 @@ caps (gap is `ε_FRI` only). Therefore:
 
 ## 15. Cross-references
 
-- `HIGH2_2_DESIGN.md` §4.C.4-G (G1–G4 overview), §4.C.4-G3
+- `2026-05-15_HIGH2_2_DESIGN.md` §4.C.4-G (G1–G4 overview), §4.C.4-G3
   (summary that points here), §4.C.10 (Route-A), §6(a)
   (`CONTROL_PREP` schedule pin — the pattern G3b extends),
   "Remaining soundness scope".
-- `ZKP_SECURITY_REPORT.md` — CRIT-1 (program pin G6 extends),
+- `2026-05-15_ZKP_SECURITY_REPORT.md` — CRIT-1 (program pin G6 extends),
   MED-3 (verifier-recomputation discipline G3 reuses),
   Fiat-Shamir soundness (§7 inherits).
 - `composite_proof.rs` — `composite_prove_pinned_logup_sx` /

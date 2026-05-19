@@ -40,8 +40,8 @@
 //!
 //! M10.1c is the canonical pipeline. Earlier M9.1 / M10.1b prototypes
 //! were retired once M10.1c had full LogUp + PI binding + bench data.
-//! See `ENGINEERING_REPORT.md` for the architectural review and bench
-//! numbers; `M10_1C_PROGRESS.md` for the phase-by-phase history.
+//! See `2026-05-14_ENGINEERING_REPORT.md` for the architectural review and bench
+//! numbers; `2026-05-14_M10_1C_PROGRESS.md` for the phase-by-phase history.
 //!
 //! ## What's not yet bound
 //!

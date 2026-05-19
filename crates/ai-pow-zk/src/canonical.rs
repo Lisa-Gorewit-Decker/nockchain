@@ -1,6 +1,6 @@
 //! Phase A-CR — params-pure `canonical_program` (CRIT-1
 //! reconstruction hardening). Design + decisions D-CR1..4 +
-//! staged plan CR.0..7: `CANONICAL_PROGRAM_DESIGN.md`.
+//! staged plan CR.0..7: `2026-05-17_CANONICAL_PROGRAM_DESIGN.md`.
 //!
 //! **CR.0 (this module so far): the single params-pure row
 //! schedule.** [`row_schedule`] assigns each trace row a
@@ -213,7 +213,7 @@ pub struct BlockPublic {
 /// reconstructs **params-pure and `== extract_program`-validated**
 /// (the §5 staged-migration gate set). CR.6 (verify-path flip) is
 /// permitted only once this is *every* class. Staged per
-/// `CANONICAL_PROGRAM_DESIGN.md` §7 (R1 discipline).
+/// `2026-05-17_CANONICAL_PROGRAM_DESIGN.md` §7 (R1 discipline).
 ///
 /// - **CR.1 (landed): `Pad`** — witness-free, exactly
 ///   [`RowDescriptor::padding`] (all PROGRAM_COLS zero except

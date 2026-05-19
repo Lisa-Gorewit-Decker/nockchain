@@ -16,7 +16,7 @@
 //! accumulator and the (done, tested) `FoldChip`
 //! (`M[slot] = rotl13(M[slot]) ⊕ X_STEP`).
 //!
-//! Per `HIGH2_2_DESIGN.md` §4.C.7 this reduction is
+//! Per `2026-05-15_HIGH2_2_DESIGN.md` §4.C.7 this reduction is
 //! **route-independent** (it does not depend on whether the
 //! committed-matrix binding uses Route A/B/C), so it lands and is
 //! tested standalone first, exactly like the FoldChip.

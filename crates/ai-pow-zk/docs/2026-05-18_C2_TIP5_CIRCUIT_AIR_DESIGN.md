@@ -464,7 +464,7 @@ NOT faked):**
 
   > **CORRECTION 2026-05-19 (C3 outer-cert implementation attempt;
   > supersedes the recompose-coeff diagnosis in the paragraph
-  > above — `C3_OUTER_CERT_DESIGN.md` §7).** The DT-1 #129
+  > above — `2026-05-19_C3_OUTER_CERT_DESIGN.md` §7).** The DT-1 #129
   > recompose-coeff root cause is **empirically FALSIFIED**. The
   > actual orphaned witness on a real PROD outer cert (`wid 11468`,
   > tuple idx `22936`, net **+1**, single location) is **NOT a
@@ -698,5 +698,5 @@ a blocker; it is a reason to stage.
   presets).
 - `Plonky3-recursion/poseidon2-circuit-air/` (AIR template),
   `recursion/src/challenger_perm.rs` (the closed abstraction to
-  extend); `C1_RECURSION_VENDOR_DESIGN.md`,
+  extend); `2026-05-18_C1_RECURSION_VENDOR_DESIGN.md`,
   `c1_recursion_substrate` memory.

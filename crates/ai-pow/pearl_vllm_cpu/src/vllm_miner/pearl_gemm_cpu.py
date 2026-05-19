@@ -1,7 +1,7 @@
 """CPU reimplementation of the Pearl ``pearl_gemm`` CUDA extension.
 
 Phase-D / integration fork (see
-``crates/ai-pow-zk/docs/PEARL_VLLM_CPU_FORK_DESIGN.md``). Provides the
+``crates/ai-pow-zk/docs/2026-05-18_PEARL_VLLM_CPU_FORK_DESIGN.md``). Provides the
 exact symbol set the vendored plugin imports from ``pearl_gemm``:
 
   * ``quantize``      — symmetric per-token int quant (faithful)
@@ -20,7 +20,7 @@ exact symbol set the vendored plugin imports from ``pearl_gemm``:
 
 **Honest scope (R1).** This is OUR reimplementation,
 faithful-by-construction to the B1-audited Pearl spec
-(``crates/ai-pow/docs/B1_PEARL_FAITHFULNESS_AUDIT.md``,
+(``crates/ai-pow/docs/2026-05-18_B1_PEARL_FAITHFULNESS_AUDIT.md``,
 ``ai_pow::quant``). It is NOT Pearl's CUDA kernel. B2.2 already
 proved the quant contract bit-lossless for any int7 activation;
 this fork's only value is a Phase-D integration smoke.
@@ -160,7 +160,7 @@ def fp8_block_dequant(
     `[O, I]`, multiply by `weight.float()`. Since Pearl's plugin
     delegates FP8 to vLLM (`PearlConfig` → `super()`), this *is*
     the authoritative reference (FP8 is NOT a Pearl-protocol op —
-    see PEARL_FP8_SCOPING.md).
+    see 2026-05-18_PEARL_FP8_SCOPING.md).
     """
     w = weight.to(torch.float32)
     s = weight_scale.to(torch.float32)

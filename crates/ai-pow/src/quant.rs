@@ -28,7 +28,7 @@
 //! KAT** (Pearl-independent). The *live* extraction is Phase D's
 //! vLLM plugin (external); the Pearl-digest-parity fixture
 //! (B2-fixture) is the one Pearl-side-gated residual — see
-//! `crates/ai-pow-zk/docs/PHASE_B_DESIGN.md` §3/§7.
+//! `crates/ai-pow-zk/docs/2026-05-18_PHASE_B_DESIGN.md` §3/§7.
 //!
 //! **Soundness-adjacent (R1, KAT-first):** B2's "the mined
 //! integers equal what Pearl mines" touches the *mined integer
@@ -185,7 +185,7 @@ mod tests {
 
     /// A deterministic synthetic int7 GEMM (stand-in for a real
     /// vLLM capture — the B2-fixture residual swaps in the real
-    /// model's operands + Pearl's digest, see PHASE_B_DESIGN.md).
+    /// model's operands + Pearl's digest, see 2026-05-18_PHASE_B_DESIGN.md).
     fn synth_int7_gemm(m: usize, k: usize, n: usize, seed: u64) -> QuantizedGemm {
         let mut st = seed | 1;
         let mut nx = || {

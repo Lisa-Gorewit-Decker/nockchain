@@ -150,7 +150,7 @@ leading boundary AND is at the end). The C4 binding
 `HASH_JACKPOT = BLAKE3(JACKPOT_MSG, key=COMMITMENT_HASH)` requires
 exactly such an end-placed block (so the jackpot chip's
 `when_transition` is vacuous on its last row — see
-`GAP_AUDIT.md §C4` obstacle (a)). Until this gate bug is fixed, no
+`2026-05-15_GAP_AUDIT.md §C4` obstacle (a)). Until this gate bug is fixed, no
 end-placed or mid-placed blake block verifies, so `HASH_JACKPOT`
 cannot be made a non-vacuous bound PI.
 

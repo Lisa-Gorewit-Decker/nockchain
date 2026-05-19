@@ -216,7 +216,7 @@ impl Tip5Prover {
 
         // 2. Full preprocessed (L-table ++ per-row CTL) at the same
         //    height. `idx_scale = witness_ctl_scale` (= circuit D), NOT
-        //    a fixed `1` (DT-2, C3_OUTER_CERT_DESIGN.md §8). The Tip5
+        //    a fixed `1` (DT-2, 2026-05-19_C3_OUTER_CERT_DESIGN.md §8). The Tip5
         //    *prover* path feeds `t.operations` whose
         //    `input/output_indices` are the **UNSCALED** `wid.0`
         //    (`circuit/src/ops/tip5_perm/executor.rs:272,283`), so this

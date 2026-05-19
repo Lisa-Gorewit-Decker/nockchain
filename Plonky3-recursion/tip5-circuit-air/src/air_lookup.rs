@@ -24,7 +24,7 @@
 //! reconciliation in a real STARK — that needs the Tip5 NPO
 //! subsystem + circuit-prover table registration (the
 //! `test_poseidon2_ctl_lookups` machinery). Not faked here; see
-//! `C2_TIP5_CIRCUIT_AIR_DESIGN.md` §2c.
+//! `2026-05-18_C2_TIP5_CIRCUIT_AIR_DESIGN.md` §2c.
 //!
 //! This **replaces the ≈7168-column boolean range-check core** of
 //! the lookup-free [`crate::Tip5PermAir`] with **2 columns per byte**

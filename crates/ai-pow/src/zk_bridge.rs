@@ -24,7 +24,7 @@
 //!   jackpot `when_transition` is vacuous on the last row).
 //!   Non-vacuous: the bridge rejects a zero `HASH_JACKPOT`.
 //!   Enabled by the `verify_round` leading-boundary gate fix
-//!   (`BLAKE3_CHIP_ROUND_GATE_BUG.md`).
+//!   (`2026-05-15_BLAKE3_CHIP_ROUND_GATE_BUG.md`).
 //! - **C2** — the difficulty check on the bound `HASH_JACKPOT`
 //!   vs the real `difficulty_target`.
 //!
@@ -37,7 +37,7 @@
 //! in one proof. The verifier rebuilds the canonical program
 //! from the trusted `ctx`/`params` (never the proof). See
 //! `ai_pow_zk::composite_proof` (entrypoint tier table) and
-//! `crates/ai-pow-zk/docs/HIGH2_2_DESIGN.md` §4.C.
+//! `crates/ai-pow-zk/docs/2026-05-15_HIGH2_2_DESIGN.md` §4.C.
 //!
 //! ## Remaining fidelity gap (not a binding gap) — HIGH-2.2 §4.A
 //!
@@ -51,7 +51,7 @@
 //! matmul→`X_STEP`→rotl13-XOR chain so `JACKPOT_MSG` = the real
 //! `TileState M`) is HIGH-2.2 §4.A; it does not weaken any
 //! binding, only the fidelity of *what* is hashed. Design +
-//! status: `crates/ai-pow-zk/docs/HIGH2_2_DESIGN.md`.
+//! status: `crates/ai-pow-zk/docs/2026-05-15_HIGH2_2_DESIGN.md`.
 
 use ai_pow_zk::composite_proof::build_config;
 use ai_pow_zk::{
@@ -218,7 +218,7 @@ fn bytes_to_words_le(b: &[u8; 32]) -> [u32; 8] {
 /// `target = difficulty_target(params)` internally and cannot be
 /// passed a forged target); this primitive is retained only for
 /// tests that deliberately inject a non-chain target. See
-/// `crates/ai-pow-zk/docs/ZKP_SECURITY_REPORT.md` §MED-3.
+/// `crates/ai-pow-zk/docs/2026-05-15_ZKP_SECURITY_REPORT.md` §MED-3.
 pub fn prove_and_verify(
     ctx: &BlockContext<'_>,
     params: &MatmulParams,
@@ -581,7 +581,7 @@ pub(crate) fn prove_and_verify_tiled_tamper<F: FnOnce(&mut CompositeTrace)>(
     // `ctx`/`params`, never the proof; a zeroed-selector forge is
     // bound to a different program and rejected vs the canonical
     // VK (ai-pow-zk `routea_*` regression suite). Cost ≈ 1.23x
-    // the uni-stark pinned path (HIGH2_2_DESIGN.md §4.C.10).
+    // the uni-stark pinned path (2026-05-15_HIGH2_2_DESIGN.md §4.C.10).
     // §6(b)/G1+G2 keystone is live iff the full useful-work chain
     // was placed (`sweep_fits`: num_stripes ≤ STRIPE_MAX and the
     // chunked sweep fits one Layer-0). `sweep_fits` is a pure
@@ -1741,7 +1741,7 @@ mod tests {
     /// directly reuses** for its position-exact C3 binding (the
     /// P-B.2.0/D1 KAT-first pattern). It is NOT dead code: it
     /// still validates a true, c-exact-relevant property. See
-    /// `SEC_4C2_NOISE_BINDING_DESIGN.md` §8.
+    /// `2026-05-17_SEC_4C2_NOISE_BINDING_DESIGN.md` §8.
     ///
     /// **§4.C.2 / A3.2c c-mset.1a — KAT-first de-risk at the exact
     /// `BUS_PLAIN` AIR key (no AIR change).** c-mset.0 validated
@@ -1917,7 +1917,7 @@ mod tests {
 
     /// **§4.C.2 / c-exact cx.0 — KAT-first de-risk (no AIR
     /// change).** The maintainer chose c-exact over the c-mset
-    /// bus (`SEC_4C2_NOISE_BINDING_DESIGN.md` §8): co-locate the
+    /// bus (`2026-05-17_SEC_4C2_NOISE_BINDING_DESIGN.md` §8): co-locate the
     /// store rows onto the strip-opening leaf rows so the
     /// **proven C3** (`IS_MSG_MAT·IS_NEW_BLAKE·(BLAKE3_MSG[w] −
     /// base256(UINT8_DATA[4j..4j+4]))=0`, generalized to a

@@ -14,7 +14,7 @@
 #
 # Env passthrough: F1_SEED (matrix synth seed).
 #
-# See crates/ai-pow-zk/docs/PROFILING.md for how to read the output.
+# See crates/ai-pow-zk/docs/2026-05-15_PROFILING.md for how to read the output.
 
 set -euo pipefail
 

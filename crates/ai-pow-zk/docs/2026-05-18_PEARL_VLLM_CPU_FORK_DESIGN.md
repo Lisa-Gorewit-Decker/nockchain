@@ -236,11 +236,11 @@ model in a `WorkerProc` subprocess.
 ## 6. Cross-references
 
 - `crates/ai-pow/pearl_vllm_cpu/` — the vendored fork.
-- `crates/ai-pow/PEARL_COMPARISON.md`,
-  `B1_PEARL_FAITHFULNESS_AUDIT.md` — the audited Pearl spec the
+- `crates/ai-pow/2026-05-13_PEARL_COMPARISON.md`,
+  `2026-05-18_B1_PEARL_FAITHFULNESS_AUDIT.md` — the audited Pearl spec the
   CPU kernels must match.
 - `crates/ai-pow/src/quant.rs` (`ai_pow::quant`) — the
   bit-lossless contract (K-CPU-2 cross-check oracle).
-- `PHASE_B_DESIGN.md` — Phase B (complete); this is Phase-D.
+- `2026-05-18_PHASE_B_DESIGN.md` — Phase B (complete); this is Phase-D.
 - Upstream: `pearl/miner/vllm-miner`, `pearl/miner/{miner-base,
   miner-utils,pearl-gemm}` @ pearl ref `3be33a59`.

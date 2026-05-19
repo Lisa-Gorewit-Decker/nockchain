@@ -15,7 +15,7 @@ reads (``quantization_fast_math``, ``skip_block_submission``,
 pool. No gateway, no threads, no CUDA. The faithful mining /
 noisy-GEMM / commitment path lives in Rust ``ai_pow`` /
 the B1-audited reference — out of scope for this fork
-(``no_mining=True``). See PEARL_VLLM_CPU_FORK_DESIGN.md.
+(``no_mining=True``). See 2026-05-18_PEARL_VLLM_CPU_FORK_DESIGN.md.
 """
 
 from __future__ import annotations

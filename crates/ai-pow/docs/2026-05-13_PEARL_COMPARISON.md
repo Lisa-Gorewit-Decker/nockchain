@@ -30,7 +30,7 @@ verified by 11 fixture-based unit tests in `tests/pearl_compat_fixtures.rs`.
 > **Oracle scope (honest qualification + the B1 audit).** The 11
 > tests assert byte-equality against `tests/fixtures/pearl.rs`,
 > captured by `tests/gen_fixtures.rs` from a **vendored copy** of
-> Pearl's reference functions. `B1_PEARL_FAITHFULNESS_AUDIT.md`
+> Pearl's reference functions. `2026-05-18_B1_PEARL_FAITHFULNESS_AUDIT.md`
 > verifies — line-for-line vs the **current real `pearl/zk-pow`
 > source** (which builds clean here) — that that vendored copy
 > is **byte-faithful** (`get_random_hash`,
@@ -52,8 +52,8 @@ verified by 11 fixture-based unit tests in `tests/pearl_compat_fixtures.rs`.
 > forward-pass activation from a real prompt* — a Phase-D
 > usefulness check, **not** a byte-equivalence gap (B2.2 proved
 > the contract lossless for any int7 activation). See
-> `crates/ai-pow-zk/PHASE_B_DESIGN.md` /
-> `B1_PEARL_FAITHFULNESS_AUDIT.md`.
+> `crates/ai-pow-zk/2026-05-18_PHASE_B_DESIGN.md` /
+> `2026-05-18_B1_PEARL_FAITHFULNESS_AUDIT.md`.
 
 ## Byte-equivalence claim (precise — D5/D6-normalized)
 

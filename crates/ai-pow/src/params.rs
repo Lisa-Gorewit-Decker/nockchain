@@ -17,7 +17,7 @@
 //! The Pearl whitepaper §4.8 ("Supported PoW Parameters") *caps* the
 //! mining parameters so that **one opened tile's proof always fits a
 //! single STARK** — Pearl deliberately never segments (see
-//! `crates/ai-pow-zk/docs/M_S2_PEARL_EVALUATION.md`). We adopt that
+//! `crates/ai-pow-zk/docs/2026-05-17_M_S2_PEARL_EVALUATION.md`). We adopt that
 //! envelope here, split into two layers:
 //!
 //! * [`MatmulParams::validate`] enforces the **universal** Pearl §4.8
@@ -222,7 +222,7 @@ impl MatmulParams {
         // Pearl-faithful reason segmentation (G3) is unnecessary.
         // Holds for every accepted puzzle (test and production); the
         // §4.8 *security* caps are layered on in
-        // `validate_prod_envelope`. See `M_S2_PEARL_EVALUATION.md`.
+        // `validate_prod_envelope`. See `2026-05-17_M_S2_PEARL_EVALUATION.md`.
         if self.pearl_trace_bound() > PEARL_TRACE_BOUND {
             return Err(ParamError::TraceBoundExceeded);
         }
@@ -279,7 +279,7 @@ impl MatmulParams {
     ///
     /// Within this envelope Pearl proves one opened tile in a single
     /// STARK — which is exactly why the Pearl-faithful PROD path
-    /// needs no segmentation (`M_S2_PEARL_EVALUATION.md`).
+    /// needs no segmentation (`2026-05-17_M_S2_PEARL_EVALUATION.md`).
     pub fn validate_prod_envelope(&self) -> Result<(), ParamError> {
         self.validate()?;
         if self.m > PEARL_MN_MAX || self.n > PEARL_MN_MAX {
@@ -354,7 +354,7 @@ impl MatmulParams {
 //  to an UNSHIPPED upgrade. ⇒ production mines group_1's INT7
 //  GEMMs ONLY; group_0 (FP8) is a documented production
 //  limitation, machine-enforced here (DB-3(a) /
-//  `PHASE_B_DESIGN.md` §3/§7). This is the in-repo admission
+//  `2026-05-18_PHASE_B_DESIGN.md` §3/§7). This is the in-repo admission
 //  guard mirroring `validate_prod_envelope`; the vLLM plugin
 //  (Phase D, external) is the operational filter on top.
 // ───────────────────────────────────────────────────────────────

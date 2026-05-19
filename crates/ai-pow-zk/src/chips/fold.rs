@@ -5,7 +5,7 @@
 //!
 //! The fold is a **pure function of a per-stripe `X_STEP`
 //! sequence** (see `ai-pow::matmul::TileState::from_x_steps` and
-//! `HIGH2_2_DESIGN.md` §4.0). Row `t` (0-indexed) is the fold of
+//! `2026-05-15_HIGH2_2_DESIGN.md` §4.0). Row `t` (0-indexed) is the fold of
 //! stripe `t` into slot `t mod 16`:
 //!
 //! ```text
@@ -25,7 +25,7 @@
 //! `CUMSUM_BUFFER`, no `SHIFT3` back-shift compensation) — those
 //! exist in Pearl only to service its concurrent scheduling, and
 //! our SNARKs are deliberately not trace-byte-equivalent to Pearl
-//! (`HIGH2_2_DESIGN.md` §9.5). The XOR+rotate core reuses the
+//! (`2026-05-15_HIGH2_2_DESIGN.md` §9.5). The XOR+rotate core reuses the
 //! audited `blake3::round_ops::xor_32_shift_if` gadget.
 //!
 //! The accumulator → `X_STEP` reduction and its binding to the

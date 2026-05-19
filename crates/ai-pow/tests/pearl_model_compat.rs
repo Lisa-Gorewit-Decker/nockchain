@@ -17,12 +17,12 @@
 //!   * **B1.1/B1.2 (residual, Pearl-gated — see the `b1_1_*`
 //!     stub):** the *byte-equality* assertions vs **Pearl's real
 //!     miner** for this model's mining config `μ`. Blocked on the
-//!     Pearl-side golden artifact (`PHASE_B_DESIGN.md` Risk-1 /
+//!     Pearl-side golden artifact (`2026-05-18_PHASE_B_DESIGN.md` Risk-1 /
 //!     DB-1); wired so the only remaining work is dropping in
 //!     `fixtures/pearl_model.rs` and removing the stub's
 //!     `#[ignore]`.
 //!
-//! Authoritative plan: `crates/ai-pow-zk/docs/PHASE_B_DESIGN.md`.
+//! Authoritative plan: `crates/ai-pow-zk/docs/2026-05-18_PHASE_B_DESIGN.md`.
 
 use ai_pow::commit::{padded_chunk_len, CHUNK_LEN};
 use ai_pow::matmul::{compute_tile_from_slices, BlockNoise};
@@ -200,7 +200,7 @@ fn b1_0e_difficulty_target_well_formed_at_real_preset() {
 // ── B1.1 — ai-pow byte-processes the REAL model weights ─────────
 //
 // The B1 *protocol-equivalence* risk is audit-closed
-// (`B1_PEARL_FAITHFULNESS_AUDIT.md`: vendored ref ≡ current real
+// (`2026-05-18_B1_PEARL_FAITHFULNESS_AUDIT.md`: vendored ref ≡ current real
 // `pearl/zk-pow`, line-for-line). With the real shipped weights
 // now available (`~/Dev/Llama-3.1-8B-Instruct-pearl`, set
 // `PEARL_MODEL_DIR` to override), B1.1 exercises ai-pow's full
@@ -221,7 +221,7 @@ fn b1_0e_difficulty_target_well_formed_at_real_preset() {
 /// [14336,4096]); the file's safetensors JSON-header length and
 /// the tensor's data offset. If the model file changes upstream,
 /// the header-length assertion fails fast (regenerate via the
-/// `python3` snippet in `B1_PEARL_FAITHFULNESS_AUDIT.md`).
+/// `python3` snippet in `2026-05-18_B1_PEARL_FAITHFULNESS_AUDIT.md`).
 const ST_HEADER_LEN: u64 = 36_688;
 const GATE0_DATA_OFFSET: u64 = 2_512_125_952;
 const ORACLE_ROW0_HEAD: [i8; 8] = [-23, -10, -2, -1, 11, 5, -5, -35];
@@ -259,7 +259,7 @@ fn read_real_gate_proj_tile(path: &std::path::Path) -> Vec<i8> {
         hdr_len, ST_HEADER_LEN,
         "safetensors header length changed — model file differs from \
          the recorded Python oracle; regenerate (see \
-         B1_PEARL_FAITHFULNESS_AUDIT.md)"
+         2026-05-18_B1_PEARL_FAITHFULNESS_AUDIT.md)"
     );
     let abs = 8 + hdr_len + GATE0_DATA_OFFSET;
     f.seek(SeekFrom::Start(abs)).expect("seek tile");

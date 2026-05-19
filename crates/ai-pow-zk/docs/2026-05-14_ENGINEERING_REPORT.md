@@ -40,7 +40,7 @@ superseded.
 - **Test counts:** 371 unit + 7 KAT + 2 ignored PROD benches.
 - **PROD bench at baseline:** ~51 s prove / 129 ms verify, 1378 cols × 8192 rows, log_blowup=3, 80 queries (120-bit provable FRI soundness).
 
-The crate's `README.md`, `M10_1C_DESIGN.md`, and `M10_1C_PROGRESS.md` cover the per-phase landing in detail. This report is the engineering-perspective layer on top.
+The crate's `README.md`, `2026-05-14_M10_1C_DESIGN.md`, and `2026-05-14_M10_1C_PROGRESS.md` cover the per-phase landing in detail. This report is the engineering-perspective layer on top.
 
 ---
 
@@ -110,11 +110,11 @@ In rough order of how much they bit me during implementation:
 
 Each piece independently passes ~10 KAT-style and tamper tests, but the interactions are subtle:
 
-- **5 state snapshots vs. 4-snapshot column layout.** Pearl's layout has 4 snapshots per row but `verify_round` needs 5 (input + 3 intermediate + output). The 5th is the *next* row's input. That puts every BLAKE3 round constraint inside `when_transition()` and creates a boundary problem at the end of an 8-row hash block: row 7's round constraint would otherwise try to chain row 7 (finalize) into row 8 (next hash's init). Gating by `(1 - is_last_round)` fixes it but only after `add3_unchecked` learned to take `is_activated`. This is documented in `M10_1C_PROGRESS.md` Phase 8b.
+- **5 state snapshots vs. 4-snapshot column layout.** Pearl's layout has 4 snapshots per row but `verify_round` needs 5 (input + 3 intermediate + output). The 5th is the *next* row's input. That puts every BLAKE3 round constraint inside `when_transition()` and creates a boundary problem at the end of an 8-row hash block: row 7's round constraint would otherwise try to chain row 7 (finalize) into row 8 (next hash's init). Gating by `(1 - is_last_round)` fixes it but only after `add3_unchecked` learned to take `is_activated`. This is documented in `2026-05-14_M10_1C_PROGRESS.md` Phase 8b.
 - **Finalize's "abuse" trick.** `finalize_blake` reuses `STATE1.row2` / `row4` as bit decompositions of `STATE0.row1` / `row3`. The trace generator has to write the same value into two semantically-different slots. Easy to get wrong; one regression test (`blake3_state_from_slice_pins_layout`) anchors the layout.
 - **Half-G ordering vs. Pearl's per-G ordering.** `round_with_snapshots` applies the 16 half-G steps as 4 sub-phases × 4 column-positions, while Pearl's reference `round` does 8 G calls each containing 2 half-G steps. The intermediate snapshots differ; only the final state matches. Our `compress.rs::round_with_snapshots` is the canonical source; the AIR consumes its snapshot order.
 
-If something breaks here in the future, the relevant `M10_1C_PROGRESS.md` entries and the in-module tests should be the first stop.
+If something breaks here in the future, the relevant `2026-05-14_M10_1C_PROGRESS.md` entries and the in-module tests should be the first stop.
 
 ### 3.2 `populate_lookup_freq` (~250 lines)
 

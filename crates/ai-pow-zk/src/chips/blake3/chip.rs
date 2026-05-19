@@ -214,7 +214,7 @@ impl Blake3Chip {
         // verifiable when contiguous from trace row 0 (no leading
         // boundary). Factor (2) disables the round at that leading
         // boundary because the next row is `is_new_blake = 1`. See
-        // `BLAKE3_CHIP_ROUND_GATE_BUG.md`. Factor (1) is KEPT so the
+        // `2026-05-15_BLAKE3_CHIP_ROUND_GATE_BUG.md`. Factor (1) is KEPT so the
         // trailing boundary (finalize → following row) stays
         // disabled exactly as before. `verify_init_state`
         // (gated by `is_new_blake`) independently pins the block's

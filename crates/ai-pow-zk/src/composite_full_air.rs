@@ -106,7 +106,7 @@ impl<F> BaseAir<F> for CompositeFullAir {
 // (`zk_bridge` places no matmul rows until §4.A). The
 // cost-aware redesign (pin only matmul rows via a gated/narrow
 // preprocessed block, co-landed + measured with §4.A) is in
-// `HIGH2_2_DESIGN.md` §4.C.8. Keeping `PROGRAM_COLS` at the 5
+// `2026-05-15_HIGH2_2_DESIGN.md` §4.C.8. Keeping `PROGRAM_COLS` at the 5
 // CRIT-1 anchors until then.
 // §4.C.2 c-exact (cx.2-pcols/X1): `NOISE_PACKED_PREP` widened
 // 1→8 (one `polyval(noise_subslice,129)` per co-located leaf

@@ -221,7 +221,7 @@ pub fn build_stark_config(_params: &ZkParams, config: &CircuitConfig) -> AiPowSt
         log_final_poly_len: 0,
         max_log_arity: 1, // binary folding
         num_queries: config.num_queries as usize,
-        // We intentionally hold pow_bits == 0 (DESIGN.md §7); both PoW
+        // We intentionally hold pow_bits == 0 (2026-05-13_DESIGN.md §7); both PoW
         // tiers in `FriParameters` come from the same knob.
         commit_proof_of_work_bits: config.pow_bits as usize,
         query_proof_of_work_bits: config.pow_bits as usize,

@@ -67,7 +67,7 @@ class PearlKernel(Int8ScaledMMLinearKernel):
     @classmethod
     def get_min_capability(cls) -> int:
         # CPU fork: no compute-capability floor (was 9/Hopper for
-        # the CUDA pearl_gemm). See PEARL_VLLM_CPU_FORK_DESIGN.md.
+        # the CUDA pearl_gemm). See 2026-05-18_PEARL_VLLM_CPU_FORK_DESIGN.md.
         return 0
 
     @override

@@ -2,7 +2,7 @@
 layers — faithful to the **canonical vLLM block-FP8 formula** and
 to the **real shipped Pearl model's FP8 weights**.
 
-Framing (PEARL_FP8_SCOPING.md): Pearl-the-protocol has NO FP8
+Framing (2026-05-18_PEARL_FP8_SCOPING.md): Pearl-the-protocol has NO FP8
 (zk-pow is INT-only); Pearl's plugin delegates FP8 to vLLM's
 stock `CompressedTensorsW8A16Fp8`. So the authoritative oracle is
 (1) vLLM's own block-FP8 dequant — verbatim

@@ -31,7 +31,7 @@ blake3 = { workspace = true }
 # git revision here and bump `rev` when the circuit needs newer field /
 # AIR features. See https://github.com/Plonky3/Plonky3 for releases.
 #
-# Stack choice (see DESIGN.md for rationale):
+# Stack choice (see 2026-05-13_DESIGN.md for rationale):
 #   * Goldilocks base field (2^64 − 2^32 + 1) — Plonky3-native, matches
 #     Pearl's choice, friendly for 32-bit ops the BLAKE3 sub-AIR needs.
 #   * BinomialExtensionField<Goldilocks, 2> for FRI challenges (degree 2).
@@ -83,7 +83,7 @@ nockchain-math = { workspace = true }
 #   RUSTFLAGS="-Ctarget-cpu=native -C debug-assertions=on"  # +per-row check
 # Plonky3's field/Tip5/DFT paths need AVX/NEON, which rustc does
 # not emit by default (README §"CPU features"). See the dev-loop
-# note in `HIGH2_2_DESIGN.md`.
+# note in `2026-05-15_HIGH2_2_DESIGN.md`.
 default = ["parallel"]
 parallel = [
     "p3-dft/parallel",

@@ -679,7 +679,7 @@ fn outer_cert_layer0(
 /// the ≤65 KB M-S5 bar is asserted SEPARATELY in the dedicated,
 /// honestly-`#[ignore]`d, NOT-relaxed `..._size_residual` test below
 /// — the size milestone is an explicit open residual (orthogonal &
-/// fix-independent to this soundness fix; C3_OUTER_CERT_DESIGN.md
+/// fix-independent to this soundness fix; 2026-05-19_C3_OUTER_CERT_DESIGN.md
 /// §13.1), so it must NOT gate the soundness suite. NO weakening: the
 /// real ≤65 KB assert is preserved verbatim in that test and still
 /// runs (and honestly FAILS) under `cargo test -- --ignored`.
@@ -729,7 +729,7 @@ fn tip5_layer0_outer_cert_lb6() {
 //  NOT-relaxed, openly-tracked RESIDUAL test. The soundness fix (DT-4)
 //  is landed + fully validated by the always-run accept + tamper tests
 //  above; the ≤65 KB size milestone is ORTHOGONAL and fix-independent
-//  (C3_OUTER_CERT_DESIGN.md §13.1 — actual D=2 Tip5-L0 cert ~117 KB,
+//  (2026-05-19_C3_OUTER_CERT_DESIGN.md §13.1 — actual D=2 Tip5-L0 cert ~117 KB,
 //  a function of D=2 batch-STARK table heights + FRI params over the
 //  full verifier circuit, NOT of `WitnessChecks`). This test holds the
 //  EXACT, UNRELAXED ≤65 KB assertion (`serialized_len <= 65_536` real
@@ -743,7 +743,7 @@ fn tip5_layer0_outer_cert_lb6() {
 // ---------------------------------------------------------------------
 
 #[test]
-#[ignore = "DEFERRED terminal-compression milestone (≤65KB), NOT C3/M-S5: C3/M-S5 is RE-SCOPED to the soundness-correct ≥120-bit vertical-recursion cert (LANDED — see test_tip5_layer0_compression.rs c3_stage_a/b/c_* and C3_OUTER_CERT_DESIGN.md §13.2/§14). The ≤65KB size bar (actual D=2 Tip5-L0 cert ~117KB, ORTHOGONAL & fix-independent to the DT-4 soundness fix) is now a SEPARATE future terminal-compression milestone (size-targeted SNARK/STARK-to-SNARK wrap / proof-folding / smaller AIR); the EXACT unrelaxed `serialized_len <= 65_536` assert below is preserved verbatim and stays #[ignore]d until that deferred milestone closes it"]
+#[ignore = "DEFERRED terminal-compression milestone (≤65KB), NOT C3/M-S5: C3/M-S5 is RE-SCOPED to the soundness-correct ≥120-bit vertical-recursion cert (LANDED — see test_tip5_layer0_compression.rs c3_stage_a/b/c_* and 2026-05-19_C3_OUTER_CERT_DESIGN.md §13.2/§14). The ≤65KB size bar (actual D=2 Tip5-L0 cert ~117KB, ORTHOGONAL & fix-independent to the DT-4 soundness fix) is now a SEPARATE future terminal-compression milestone (size-targeted SNARK/STARK-to-SNARK wrap / proof-folding / smaller AIR); the EXACT unrelaxed `serialized_len <= 65_536` assert below is preserved verbatim and stays #[ignore]d until that deferred milestone closes it"]
 fn tip5_layer0_outer_cert_size_residual() {
     // Measure the serialized PROD `BatchStarkProof` length and assert
     // the EXACT unrelaxed ≤65 KB M-S5 bar. Also print the measured
@@ -769,7 +769,7 @@ fn tip5_layer0_outer_cert_size_residual() {
         serialized_len <= 65_536,
         "M-S5: serialized PROD BatchStarkProof is {serialized_len} bytes, exceeding the \
          ≤65 KB (65_536-byte) certificate-size budget — open residual, NOT relaxed \
-         (C3_OUTER_CERT_DESIGN.md §13.1)"
+         (2026-05-19_C3_OUTER_CERT_DESIGN.md §13.1)"
     );
 }
 

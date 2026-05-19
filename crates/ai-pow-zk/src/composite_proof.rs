@@ -173,7 +173,7 @@ impl std::error::Error for PowVerifyError {}
 /// Production callers MUST go through the MED-3-hardened
 /// `ai_pow::zk_bridge::prove_and_verify_for_block`, which recomputes
 /// the target internally so it cannot be forged. See
-/// `ZKP_SECURITY_REPORT.md` §MED-3.
+/// `2026-05-15_ZKP_SECURITY_REPORT.md` §MED-3.
 pub fn composite_verify_pow(
     config: &AiPowStarkConfig,
     proof: &Proof<AiPowStarkConfig>,
@@ -300,7 +300,7 @@ pub fn composite_verify_pow_pinned(
 //  which enforces the CRIT-1 pin AND the `noised_packed`
 //  (+ range / i8u8 / cv-routing) LogUp simultaneously. Spike
 //  measured ~1.23x the uni-stark pinned prover cost
-//  (HIGH2_2_DESIGN.md §4.C.10), vs naive Route C's ~10x.
+//  (2026-05-15_HIGH2_2_DESIGN.md §4.C.10), vs naive Route C's ~10x.
 //
 //  Same CRIT-1 trust model: the verifier rebuilds the canonical
 //  `program` from the trusted per-block `ctx` (never from the
@@ -1028,7 +1028,7 @@ mod tests {
     // and the HIGH-2 keystone *while additionally enforcing the
     // noised_packed/range LogUp*. (The noised_packed *matmul-input*
     // binding is non-vacuous only once §4.A places real matmul
-    // rows — HIGH2_2_DESIGN.md §4.C.10; not overclaimed here.)
+    // rows — 2026-05-15_HIGH2_2_DESIGN.md §4.C.10; not overclaimed here.)
 
     /// Honest pinned+LogUp round-trip verifies; the C2 difficulty
     /// check is real (0 target rejects the non-zero keyed digest,

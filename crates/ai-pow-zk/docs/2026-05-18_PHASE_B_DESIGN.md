@@ -3,7 +3,7 @@
 # Phase B — byte-equivalence & correctness vs Pearl for the production model
 
 > **Status:** DESIGN (2026-05-18). Roadmap milestone
-> `PRODUCTION_ROADMAP.md` §2 "Phase B"; sequenced **independent
+> `2026-05-17_PRODUCTION_ROADMAP.md` §2 "Phase B"; sequenced **independent
 > of / parallel to Phase A & Phase A-CR** (both now COMPLETE).
 > Phase B is the **correctness gate**: it does *not* touch SNARK
 > soundness (that is Phase A/A-CR) — it certifies that, for the
@@ -11,10 +11,10 @@
 > **bit-identical to Pearl's actual miner**, and that the vLLM
 > plugin's quantized-GEMM → Pearl-`(A,B,μ)` extraction is
 > correct and useful.
-> **Authoritative cross-refs:** `crates/ai-pow/PEARL_COMPARISON.md`
+> **Authoritative cross-refs:** `crates/ai-pow/2026-05-13_PEARL_COMPARISON.md`
 > (the D1–D6 byte-divergence inventory + the S0–S9 fixture
 > harness — the substrate this phase extends),
-> `PRODUCTION_ROADMAP.md` §0/§2/§4, the `pearl_real_production_model`
+> `2026-05-17_PRODUCTION_ROADMAP.md` §0/§2/§4, the `pearl_real_production_model`
 > memory, `~/Dev/Llama-3.1-8B-Instruct-pearl/config.json`.
 > Governed by `~/.claude/CLAUDE.md` R1 for the one
 > soundness-adjacent edge (B2's "equals what Pearl *mines*"
@@ -51,7 +51,7 @@ Plonky3 stack (Phase A/A-CR), *not* Pearl's Plonky2 proof.
 
 ## 1. The precise gap (what is *actually* left)
 
-`PEARL_COMPARISON.md`'s inventory states D1–D4 **CLOSED** and the
+`2026-05-13_PEARL_COMPARISON.md`'s inventory states D1–D4 **CLOSED** and the
 `tests/pearl_compat_fixtures.rs` S0–S9 suite is **green with no
 `#[ignore]`** (verified 2026-05-18: `11 passed; 0 failed; 0
 ignored`). But that green is **against `tests/fixtures/pearl.rs`
@@ -217,7 +217,7 @@ Phase B must make the byte-equivalence claim **exact**, because
 > nonce and amortizes. Both are valid PoUW search loops; the
 > *unit of work* is identical.
 
-Deliverable: a `PEARL_COMPARISON.md` "Byte-equivalence claim
+Deliverable: a `2026-05-13_PEARL_COMPARISON.md` "Byte-equivalence claim
 (precise)" section stating exactly the above, and a test
 `mineable_unit_byte_equiv_modulo_key` that asserts the jackpot
 **message** + `(E,F,X,M,H_A,H_B,target)` are byte-identical when
@@ -234,7 +234,7 @@ real-model oracle from B1).
 | **DB-1** | B1.1 golden-vector **source** | (a) run Pearl's real miner ourselves on the shipped model; (b) request golden vectors from the Pearl team; (c) vendor Pearl's miner into `gen_fixtures` at the real `μ` (still "our understanding", not the real miner) | **(a) if a Pearl miner build is runnable here; else (b)**. (c) is only a stronger B1.0, not a true B1.1 — it does not discharge Risk-1. Secure this **early** (longest-lead item). |
 | **DB-2** | Quant tolerance for B2.2 "usefulness" | (a) **bit-exact** `intmatmul == vLLM's integer GEMM` (extraction adds zero error — the strong, checkable claim); (b) fp tolerance on the dequantized output | **(a)** — the honest claim is "we mine *exactly the integers vLLM already computed*". The model's INT7 error is the model's, not ours; asserting (a) makes B2 a clean bit-equality, not a fuzzy numeric gate. (b) only as a secondary sanity. |
 | **DB-3** | B3 enforcement point | (a) `MatmulParams`/miner-config validation rejects FP8-targeted layers; (b) the vLLM plugin filters (external) | **(a) as the machine-checked guard** (consensus-adjacent: mirrors `validate_prod_envelope`), **+(b)** as the operational filter. (a) is in-repo and testable now. |
-| **DB-4** | Doc home | (a) extend `PEARL_COMPARISON.md`; (b) this new doc is authoritative | **(a) for the divergence inventory + the precise claim** (it already owns D1–D6); this doc owns the Phase-B *plan*; `PRODUCTION_ROADMAP.md` §2 stays the index. |
+| **DB-4** | Doc home | (a) extend `2026-05-13_PEARL_COMPARISON.md`; (b) this new doc is authoritative | **(a) for the divergence inventory + the precise claim** (it already owns D1–D6); this doc owns the Phase-B *plan*; `2026-05-17_PRODUCTION_ROADMAP.md` §2 stays the index. |
 
 ---
 
@@ -271,11 +271,11 @@ validated + committed; the residual is the one external blocker.**
 
 | Stage | Pearl-dep? | Status | Gate / commit |
 |---|---|---|---|
-| **B0** | no | ✅ DONE | `PEARL_COMPARISON.md` precise (D5/D6-normalized) claim + honest oracle scope; roadmap §2 updated. `f05862d` |
+| **B0** | no | ✅ DONE | `2026-05-13_PEARL_COMPARISON.md` precise (D5/D6-normalized) claim + honest oracle scope; roadmap §2 updated. `f05862d` |
 | **B3** | no | ✅ DONE | `LlamaFfnLayer`/`QuantGroup` + `mineable_matmul_params` FP8 guard; **fixed the `LLAMA_3_1_8B_DOWN` mis-doc** (down_proj is FP8, not mineable); `b3_*` 3/3. `a420e94` |
 | **B2-contract** | no | ✅ DONE | `ai-pow::quant` `Q`/inverse; bit-lossless conformance KAT (R1 KAT-first on the mined-integer edge) `b2_1..4` 4/4. `94eaafc` |
 | **B1.0** | no | ✅ DONE | `pearl_model_compat` real-`μ` invariants (chunk-scale 57 344, r=64 noise structure, 64-stripe fold wrap, difficulty) 5/0. `4916a6b` |
-| **B1-audit** | no | ✅ DONE | `B1_PEARL_FAITHFULNESS_AUDIT.md`: vendored ref ≡ **current real `pearl/zk-pow`** (builds clean) line-for-line ⇒ **B1 protocol-equivalence CLOSED**. |
+| **B1-audit** | no | ✅ DONE | `2026-05-18_B1_PEARL_FAITHFULNESS_AUDIT.md`: vendored ref ≡ **current real `pearl/zk-pow`** (builds clean) line-for-line ⇒ **B1 protocol-equivalence CLOSED**. |
 | **B1.1 (real weights)** | no¹ | ✅ DONE | User supplied the shipped 16 GB weights. `pearl_model_compat::b1_1{a,b,c}`: a safetensors reader anchored bit-for-bit to an independent Python oracle (R1 integrity); the real `gate_proj` int7 weights ∈ Pearl `[−64,64]` + B2.1 lossless on **real data**; `BlockContext::build` runs ai-pow's full audited pipeline on the **real weight tile** at the real μ (det., weight-sensitive, `H_B == matrix_commitment(real bytes)`). `30bb92f` |
 | **B1.1 (all 3 models)** | no¹ | ✅ DONE | **Corroborated on ALL THREE published Pearl models**, spanning 2 architectures / 3 contraction dims / 1·2·15-shard layouts: Llama-3.1-8B (2-shard, k=4096; `30bb92f`), Gemma-4-31B (single-file 31 GB, gemma4, k=5376; `db3e193`), Llama-3.3-70B (15-shard 135 GB, k=8192, the largest; `9f6d97d`). Each: `b1_1_<m>_{a,b,c}` — reader anchored to its own independent Python oracle, real int7 ∈ Pearl `[−64,64]` + B2.1 lossless on real data, full audited pipeline at the real μ (det., weight-sensitive, `H_B == matrix_commitment`). `pearl_model_compat` **14/0/0**. |
 | **B2-fixture / live-vLLM** | **yes** | ⚠ Phase-D (B2.2-covered) | The *only* untested path: a **live vLLM forward-pass activation from a real prompt** (needs the model loaded for inference + GPU/vLLM, not just static weights). This is **not a byte-equivalence gap** — B2.2 proved the quant contract is bit-lossless for *any* int7 activation; it is a Phase-D end-to-end-deployment *usefulness* verification, deferred with Phase D (external). |
@@ -299,10 +299,10 @@ for the production model.
 
 ## 8. Cross-references
 
-- `crates/ai-pow/PEARL_COMPARISON.md` — D1–D6 inventory, S0–S9
+- `crates/ai-pow/2026-05-13_PEARL_COMPARISON.md` — D1–D6 inventory, S0–S9
   harness, `gen_fixtures`/`fixtures/pearl.rs` provenance.
-- `PRODUCTION_ROADMAP.md` §0 (model), §2 Phase B, §4 (risks).
-- `CANONICAL_PROGRAM_DESIGN.md` — Phase A-CR (COMPLETE; the
+- `2026-05-17_PRODUCTION_ROADMAP.md` §0 (model), §2 Phase B, §4 (risks).
+- `2026-05-17_CANONICAL_PROGRAM_DESIGN.md` — Phase A-CR (COMPLETE; the
   soundness foundation Phase B sits beside, not on).
 - `pearl_real_production_model` memory; `~/Dev/Llama-3.1-8B-
   Instruct-pearl/config.json` (the verified quant config).

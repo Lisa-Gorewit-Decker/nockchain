@@ -1414,7 +1414,7 @@ impl CompositeTrace {
     /// `X_BITS = 0`).
     ///
     /// Relies on the `verify_round` leading-boundary gate fix
-    /// (`BLAKE3_CHIP_ROUND_GATE_BUG.md`) — before it, no
+    /// (`2026-05-15_BLAKE3_CHIP_ROUND_GATE_BUG.md`) — before it, no
     /// non-row-0 blake block verified.
     ///
     /// `jackpot_state` must be all-zero in the current bridge: the
@@ -3177,7 +3177,7 @@ mod tests {
     }
 
     /// Regression for the `verify_round` leading-boundary gate fix
-    /// (`BLAKE3_CHIP_ROUND_GATE_BUG.md`): a bare blake3 block
+    /// (`2026-05-15_BLAKE3_CHIP_ROUND_GATE_BUG.md`): a bare blake3 block
     /// (no jackpot / no extra selectors) must now prove+verify
     /// at a mid-trace offset AND trace-terminal — not just
     /// contiguous from row 0.

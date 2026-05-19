@@ -16,7 +16,7 @@ HASH_JACKPOT, JOB_KEY, COMMITMENT_HASH) are gated by
 prover-controlled selectors that nothing forces to fire. This is
 a **critical** soundness break, not a fidelity nit. It
 supersedes the optimistic "C1–C4 resolved, no soundness gap"
-line in `GAP_AUDIT.md` on the malicious-prover question (the C1–C4
+line in `2026-05-15_GAP_AUDIT.md` on the malicious-prover question (the C1–C4
 *constraints* are correct; they are *not enforced*).
 
 ## Threat model
@@ -84,7 +84,7 @@ first-class reconstruction). Non-16|r is the documented A3.2b
 params-pure scope) — it retains the prior extract-of-reference
 + `crit1_*`/`routea_*` discipline (already
 strictly-stronger-than-pre-A3, not a forgery hole). Authoritative
-design + staged plan + KATs: `CANONICAL_PROGRAM_DESIGN.md`.
+design + staged plan + KATs: `2026-05-17_CANONICAL_PROGRAM_DESIGN.md`.
 
 **Original severity: Critical (PoW soundness ≈ 0 bits as wired).**
 
@@ -243,7 +243,7 @@ path, §6(b) keystone gated **off** via `sx_bound` — a value the
 (as sound as CRIT-1). Closing it = **the Pearl-faithful
 P-A/P-B/P-C path** (Pearl §4.8 param caps so one tile = one
 STARK + raise the Layer-0 ceiling + vertical-recursion cert;
-maintainer γ decision 2026-05-17 — `M_S2_PEARL_EVALUATION.md`).
+maintainer γ decision 2026-05-17 — `2026-05-17_M_S2_PEARL_EVALUATION.md`).
 *[2026-05-19, recursion-milestone scope — NOT the
 MAT_UNPACK-binding "C3": the recursion milestone **C3/M-S5**
 ("vertical-recursion cert") was **re-scoped** to the
@@ -256,8 +256,8 @@ addition not in the current `Plonky3-recursion`; §14 proved
 ≤65 KB unreachable at any real ≥120-bit tier — only at the
 ~5-bit testing tier, a soundness trade the maintainer rejected).
 Earlier "≤65 KB" wording is the deferred M-S5b target, not a C3
-acceptance gate. See `C3_OUTER_CERT_DESIGN.md` §13.2/§14/§15,
-`PRODUCTION_ROADMAP.md` C3/M-S5b.]*
+acceptance gate. See `2026-05-19_C3_OUTER_CERT_DESIGN.md` §13.2/§14/§15,
+`2026-05-17_PRODUCTION_ROADMAP.md` C3/M-S5b.]*
 *[Corrected: previously "G3 (segmentation + M12)"; Pearl caps
 params and never segments, so G3 carry-segmentation is
 **deferred** to the beyond-Pearl-envelope case only. No
@@ -300,7 +300,7 @@ pre-A3, *not* a forgery hole (co-location only honest-balances
 position-exact adversarial + non-16|r A3.2b + the §4.C.2 KAT
 family), debug-assertions-ON P16 g=1 per-row clean (M-S1
 hazard closed for the honest g=1 path). Detail:
-`SEC_4C2_NOISE_BINDING_DESIGN.md` §8. Soundness throughout held
+`2026-05-17_SEC_4C2_NOISE_BINDING_DESIGN.md` §8. Soundness throughout held
 by CRIT-1 + keystone + §6(a) + §6(b) + M-S1 + A2 + the A3.2b
 noise pin. The original analysis below stands as the historical
 rationale.
@@ -319,7 +319,7 @@ rotate-XOR-13 tile-state fold that *should* feed `JACKPOT_MSG`
 (Pearl §4.5; the matmul→jackpot interleave) is not wired. Until
 it is, the SNARK does not prove proof-of-*work*; it proves
 knowledge of `s_a` (which is public-derivable). Documented in
-`GAP_AUDIT.md` as a "fidelity" item — from a security standpoint
+`2026-05-15_GAP_AUDIT.md` as a "fidelity" item — from a security standpoint
 it is a PoW-soundness gap and should be labelled as such.
 
 ### MED-3 — difficulty check is out-of-circuit and out-of-transcript — ✅ RESOLVED 2026-05-16
@@ -494,7 +494,7 @@ above.
 4. Independent review of the **7-round Tip5** variant's
    cryptographic margin (it underpins both Fiat-Shamir and the
    Merkle MMCS; a weakness there is systemic).
-5. Update `GAP_AUDIT.md`: the "no remaining soundness/binding
+5. Update `2026-05-15_GAP_AUDIT.md`: the "no remaining soundness/binding
    gap" summary is incorrect against a malicious prover until
    CRIT-1 lands; this report is the authority on that question.
 
@@ -559,7 +559,7 @@ path, §6(b) keystone gated off via the verifier-set `sx_bound`
 (sound as CRIT-1); closing it = **the Pearl-faithful
 P-A/P-B/P-C path** (param caps + raised Layer-0 ceiling +
 vertical-recursion cert; γ decision 2026-05-17,
-`M_S2_PEARL_EVALUATION.md`). *[Corrected: was "G3 (segmentation
+`2026-05-17_M_S2_PEARL_EVALUATION.md`). *[Corrected: was "G3 (segmentation
 + M12)"; Pearl never segments — G3 deferred to beyond-Pearl-`k`.
 `MatmulProof.spot` is test-only, not a PROD fallback.]* (2) deep
 tile↔committed-store:

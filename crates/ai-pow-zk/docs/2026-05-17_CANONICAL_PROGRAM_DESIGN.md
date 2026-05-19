@@ -4,8 +4,8 @@
 
 > **Status:** DESIGN (2026-05-17). New roadmap milestone,
 > sequenced **after Phase A, before Phase B proper**
-> (`PRODUCTION_ROADMAP.md` §2). This is "b2" from the §4.C.2
-> decision (`SEC_4C2_NOISE_BINDING_DESIGN.md`) **promoted to
+> (`2026-05-17_PRODUCTION_ROADMAP.md` §2). This is "b2" from the §4.C.2
+> decision (`2026-05-17_SEC_4C2_NOISE_BINDING_DESIGN.md`) **promoted to
 > its true scope**: a CRIT-1-wide upgrade of the verifier's
 > canonical-program reconstruction from *"`extract_program` of a
 > reference honest trace"* to a **witness-free, params-pure,
@@ -19,9 +19,9 @@
 > soundness-critical invasive work; staged; validated subset +
 > precise residual). This is the **most soundness-sensitive
 > surface in the codebase** (the CRIT-1 PoW-forgery linchpin).
-> **Cross-refs:** `SEC_4C2_NOISE_BINDING_DESIGN.md` (§4.C.2 /
-> b1), `P_B2_STRIP_OPENING_DESIGN.md` (A1 `tile_chunk_range`),
-> A3.2a `noised_store_layout`, `ZKP_SECURITY_REPORT.md` CRIT-1,
+> **Cross-refs:** `2026-05-17_SEC_4C2_NOISE_BINDING_DESIGN.md` (§4.C.2 /
+> b1), `2026-05-17_P_B2_STRIP_OPENING_DESIGN.md` (A1 `tile_chunk_range`),
+> A3.2a `noised_store_layout`, `2026-05-15_ZKP_SECURITY_REPORT.md` CRIT-1,
 > `composite_proof.rs` (`composite_setup`, `extract_program`,
 > `crit1_*`), `noise_ref` (A3.0).
 
@@ -357,9 +357,9 @@ params→program/VK reconstruction Phase C needs anyway.
 
 ## 10. Cross-references
 
-- §4.C.2 / b1 (shipped in Phase A): `SEC_4C2_NOISE_BINDING_DESIGN.md`.
+- §4.C.2 / b1 (shipped in Phase A): `2026-05-17_SEC_4C2_NOISE_BINDING_DESIGN.md`.
 - A1 schedule: `blake3_tree::tile_chunk_range`
-  (`P_B2_STRIP_OPENING_DESIGN.md`).
+  (`2026-05-17_P_B2_STRIP_OPENING_DESIGN.md`).
 - A3.2a witness-free store layout:
   `composite_trace::noised_store_layout`.
 - Noise spec: `noise_ref` (A3.0; cross-crate KAT == `BlockNoise`).
@@ -367,6 +367,6 @@ params→program/VK reconstruction Phase C needs anyway.
   (`composite_setup`/`extract_program`/`crit1_*`),
   `composite_preprocess.rs`, `composite_full_air.rs`
   (`CompositeFullAirPinned`, `PROGRAM_COLS`).
-- Roadmap: `PRODUCTION_ROADMAP.md` §2 Phase A-CR, §3 critical
-  path; `HIGH2_2_DESIGN.md` §7.
+- Roadmap: `2026-05-17_PRODUCTION_ROADMAP.md` §2 Phase A-CR, §3 critical
+  path; `2026-05-15_HIGH2_2_DESIGN.md` §7.
 - Governing rule: `~/.claude/CLAUDE.md` R1.

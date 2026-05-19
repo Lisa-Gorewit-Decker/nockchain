@@ -130,6 +130,6 @@ substrate at ai-pow-zk's Plonky3 rev — ready for C2.
 
 - `Plonky3-recursion/` (vendored tree); `crates/ai-pow-zk/
   Cargo.toml` + root `Cargo.lock` (`6de5cba…` fixed point).
-- `PRODUCTION_ROADMAP.md` §2 Phase C (C1 gates C2/C3/C4).
-- `PEARL_VLLM_CPU_FORK_DESIGN.md` (vendoring-as-`exclude`d-tree
+- `2026-05-17_PRODUCTION_ROADMAP.md` §2 Phase C (C1 gates C2/C3/C4).
+- `2026-05-18_PEARL_VLLM_CPU_FORK_DESIGN.md` (vendoring-as-`exclude`d-tree
   precedent: `pearl/`).

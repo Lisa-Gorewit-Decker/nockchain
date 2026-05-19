@@ -123,7 +123,7 @@ separate question gated on protocol-level contract changes; see
 | `src/bin/calibrate.rs` | Static + activation-mode scale calibration driver |
 | `oracle/` | Python reference (forward, GGUF reader, calibration, multi-arch fixtures) |
 | `tests/` | Unit, oracle cross-impl, qwen-mini / gemma-mini / qwen-hybrid-mini E2E, multi-arch acceptance, streaming-converter parity |
-| `ROADMAP.md` | Phase-2 / 3 work log with per-commit status snapshot |
+| `2026-05-13_ROADMAP.md` | Phase-2 / 3 work log with per-commit status snapshot |
 | `NEXT_STEPS.md` | Latest empirical state and structural-saturation analysis |
 | `QUANT_PROBLEM.md`, `QUANT_RESEARCH.md` | Quantization problem statement + external literature survey |
 
@@ -153,4 +153,4 @@ end-to-end integration tests. As of latest commit:
   6 streaming-quantize all-archs
 - 1 gated real-model test (requires GGUF fixtures)
 
-All green on aarch64; see `ROADMAP.md` for the per-commit breakdown.
+All green on aarch64; see `2026-05-13_ROADMAP.md` for the per-commit breakdown.

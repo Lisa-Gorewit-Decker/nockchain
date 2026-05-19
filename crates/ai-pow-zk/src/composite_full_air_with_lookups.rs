@@ -114,7 +114,7 @@ where
 /// then emits every LogUp bus. Proven via `p3-batch-stark`
 /// (`prove_batch`), whose multi-phase prover supports a
 /// preprocessed/verifier-fixed trace *and* the permutation
-/// argument simultaneously (HIGH2_2_DESIGN.md §4.C.9). The
+/// argument simultaneously (2026-05-15_HIGH2_2_DESIGN.md §4.C.9). The
 /// `noised_packed` bus then binds the matmul `A_NOISED`/`B_NOISED`
 /// reads to the canonical `NOISED_PACKED` store (C3-tied to the
 /// CRIT-1-pinned `HASH_A`/`HASH_B`) — closing §4.C with **no**

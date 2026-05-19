@@ -27,8 +27,8 @@
 > envelope + universal `k(h+w)≤2²²` bound), P-B (`2e91b21`,
 > params-driven sizing + the go/no-go finding). M-S1 (`3feae98`,
 > `noised_packed` store binding the *swept* strips).
-> **Authoritative context:** `M_S2_PEARL_EVALUATION.md`
-> (Pearl §4.6/§4.7/§4.8), `HIGH2_2_DESIGN.md` §4.C.4-G3 P-B.
+> **Authoritative context:** `2026-05-17_M_S2_PEARL_EVALUATION.md`
+> (Pearl §4.6/§4.7/§4.8), `2026-05-15_HIGH2_2_DESIGN.md` §4.C.4-G3 P-B.
 
 ---
 
@@ -532,13 +532,13 @@ proceeds per §8 (staged P-B.2.0→.4, KAT-first).
 
 - Pearl §4.6 (Block Opening Proof), §4.3 (A row-major / B
   col-major → small openings), §4.7 (zkSNARK hides revealed
-  strips): `M_S2_PEARL_EVALUATION.md` §1.
+  strips): `2026-05-17_M_S2_PEARL_EVALUATION.md` §1.
 - Current binding: `composite_trace.rs::place_matrix_hash`
   (chunk+parent layers), `composite_full_air.rs:482`
   (`IS_HASH_A·(CV_OUT−PI)=0`), `composite_public.rs`
   (`PI_HASH_A/B`), `commit.rs::matrix_commitment` /
   `pad_to_chunk_boundary`.
-- P-B finding & cost model: `HIGH2_2_DESIGN.md` §4.C.4-G3 P-B;
+- P-B finding & cost model: `2026-05-15_HIGH2_2_DESIGN.md` §4.C.4-G3 P-B;
   `zk_bridge.rs::expected_layer0_rows` / `Layer0RowBudget`.
 - Composition residual: §4.C.2 (store ↔ plain via noise
   derivation) — `ai_pow_zk_crypto_gaps` memory; **independent

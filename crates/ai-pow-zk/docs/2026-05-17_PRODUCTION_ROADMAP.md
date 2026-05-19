@@ -8,10 +8,10 @@
 > this is the ordered execution wrapper that ties the SNARK
 > (Track A), economics (Track B), correctness, and integration
 > (Track C) together.
-> **Authoritative cross-refs:** `HIGH2_2_DESIGN.md` §7 (Track-A
-> milestone table), `M_S2_PEARL_EVALUATION.md` (γ decision —
-> Pearl doesn't segment), `P_B2_STRIP_OPENING_DESIGN.md`
-> (P-B.2.x), `M_S2_G3AB_DESIGN.md` (G3 — deferred).
+> **Authoritative cross-refs:** `2026-05-15_HIGH2_2_DESIGN.md` §7 (Track-A
+> milestone table), `2026-05-17_M_S2_PEARL_EVALUATION.md` (γ decision —
+> Pearl doesn't segment), `2026-05-17_P_B2_STRIP_OPENING_DESIGN.md`
+> (P-B.2.x), `2026-05-17_M_S2_G3AB_DESIGN.md` (G3 — deferred).
 
 ---
 
@@ -119,7 +119,7 @@ vague — external). Phase E is cross-cutting.
 > pre-A3 and **not a forgery hole** (CRIT-1 + §4.D + §6 + M-S1
 > + A2 + the noise pin hold). The production-critical unblocker
 > (A2) is done. Full comparison + c-exact design + cx.0–cx.3:
-> `SEC_4C2_NOISE_BINDING_DESIGN.md` §8.
+> `2026-05-17_SEC_4C2_NOISE_BINDING_DESIGN.md` §8.
 
 | # | Item | Depends | Exit gate |
 |---|---|---|---|
@@ -135,7 +135,7 @@ Llama-8B INT-GEMM tile's committed-matrix matmul→fold→digest in
 ### Phase A-CR — first-class params-pure `canonical_program` (CRIT-1 reconstruction hardening; subsumes §4.C.2-b2)
 
 > Full design + decisions D-CR1..4 + staged plan CR.0..7:
-> **`CANONICAL_PROGRAM_DESIGN.md`**. Sequenced **after Phase A,
+> **`2026-05-17_CANONICAL_PROGRAM_DESIGN.md`**. Sequenced **after Phase A,
 > before Phase B proper.** Promotes the verifier's
 > canonical-program reconstruction from *"`extract_program` of a
 > reference honest trace"* (today: the bridge passes the
@@ -168,7 +168,7 @@ R1.**
 
 ### Phase B — byte-equivalence & correctness vs Pearl for this model
 
-> **Authoritative plan: `PHASE_B_DESIGN.md`. STATUS 2026-05-18 —
+> **Authoritative plan: `2026-05-18_PHASE_B_DESIGN.md`. STATUS 2026-05-18 —
 > Phase B byte-equivalence + correctness gate COMPLETE on the
 > real shipped model.** B0 (precise D5/D6 claim) ✅, B3
 > (INT-only machine guard; fixed the `LLAMA_3_1_8B_DOWN` FP8
@@ -184,7 +184,7 @@ R1.**
 > end-to-end-usefulness check, **not** a byte-equivalence gap
 > (B2.2: the contract is lossless for any int7 activation).
 > Commits `f05862d`..`30bb92f`. Precise (D5/D6-normalized) claim
-> + audit: `PEARL_COMPARISON.md` / `B1_PEARL_FAITHFULNESS_AUDIT.md`.
+> + audit: `2026-05-13_PEARL_COMPARISON.md` / `2026-05-18_B1_PEARL_FAITHFULNESS_AUDIT.md`.
 
 | # | Item | Depends | Exit gate |
 |---|---|---|---|
@@ -198,7 +198,7 @@ R1.**
 |---|---|---|---|
 | **C1** | **M-S3** — vendor `Plonky3-recursion` + align the Plonky3 rev in the vendored tree. | — | Audit-stable owned recursion substrate (P0/F2/F7 resolved). |
 | **C2** | **M-S4** — `tip5-circuit-air` from `nockchain-math::tip5` + Tip5 challenger/MMCS arms; native≡in-circuit cross-test. | C1 | The recursion verifier can verify our Tip5 Layer-0 proofs; the 120-bit FRI sweep preserved. |
-| **C3** | **P-C / M-S5 — RE-SCOPED 2026-05-19** (user decision): soundness-correct **≥120-bit** vertical-recursion certificate (Pearl §4.7/§5.1 faithful — compress *one* Layer-0 proof; **no** G3 `Γ`/aggregation). The ≤65 KB *size* target is **carved out → M-S5b (deferred)** — measurement (§14) proved ≤65 KB is unreachable at any real ≥120-bit tier with the current `Plonky3-recursion` substrate (recursion *diverges*; ≤65 KB only at the ~5-bit testing tier — a soundness trade the maintainer rejected). | Phase A, **Phase A-CR**, C2 | **✅ LANDED + independently re-validated** — genuinely ≥120-bit at *every* chain link (inner Tip5-L0 sweep 120-bit + L1-outer `OuterTier::Bit120` 241-bit + L2 241-bit ⇒ `min ≥ 120`); honest real sizes L1 ≈ 2.69 MB, L2 ≈ 1.79 MB; **all 5** inner sweep profiles accept-valid + reject-tampered; fenced linchpin byte-identical; DT-4 duplex binding intact. See `C3_OUTER_CERT_DESIGN.md` §13.2/§14/§15 + `test_tip5_layer0_compression.rs::c3_stage_a/b/c_*`. |
+| **C3** | **P-C / M-S5 — RE-SCOPED 2026-05-19** (user decision): soundness-correct **≥120-bit** vertical-recursion certificate (Pearl §4.7/§5.1 faithful — compress *one* Layer-0 proof; **no** G3 `Γ`/aggregation). The ≤65 KB *size* target is **carved out → M-S5b (deferred)** — measurement (§14) proved ≤65 KB is unreachable at any real ≥120-bit tier with the current `Plonky3-recursion` substrate (recursion *diverges*; ≤65 KB only at the ~5-bit testing tier — a soundness trade the maintainer rejected). | Phase A, **Phase A-CR**, C2 | **✅ LANDED + independently re-validated** — genuinely ≥120-bit at *every* chain link (inner Tip5-L0 sweep 120-bit + L1-outer `OuterTier::Bit120` 241-bit + L2 241-bit ⇒ `min ≥ 120`); honest real sizes L1 ≈ 2.69 MB, L2 ≈ 1.79 MB; **all 5** inner sweep profiles accept-valid + reject-tampered; fenced linchpin byte-identical; DT-4 duplex binding intact. See `2026-05-19_C3_OUTER_CERT_DESIGN.md` §13.2/§14/§15 + `test_tip5_layer0_compression.rs::c3_stage_a/b/c_*`. |
 | **M-S5b** | **P-C2 — DEFERRED (new, carved from M-S5)**: ≤65 KB terminal compression of the ≥120-bit M-S5 cert — a size-targeted STARK→SNARK wrap / genuine proof-folding / smaller proven AIR (Pearl's Layer-2-equivalent), **not in the current substrate** (the honest ≥120-bit cert is inherently multi-MB; §14). | C3 (M-S5), substrate addition | A ≤65 KB cert *at ≥120-bit soundness* verifies; the byte-verbatim `serialized_len ≤ 65_536` residual test (`test_tip5_layer0_recursion.rs`) un-`#[ignore]`s and passes. **Status: deferred / not started.** |
 | **C4** | **M-S6** — independent crypto audit: 7-round Tip5 (now in-circuit) + the vendored/extended recursion stack. | C3 | Removes the "experimental/unaudited" gate. |
 
@@ -217,7 +217,7 @@ R1.**
   memory at the one-STARK ceiling.
 - **G3 — deferred, not on this path.** This model is inside
   Pearl's `k≤2¹⁶` §4.8 envelope, so carry-vector segmentation is
-  *unnecessary*; revive `M_S2_G3AB_DESIGN.md` only if a future
+  *unnecessary*; revive `2026-05-17_M_S2_G3AB_DESIGN.md` only if a future
   workload exceeds the envelope.
 
 ---
@@ -281,14 +281,14 @@ succinct consensus artifact. C4 = audit gate cleared.
 
 ## 5. Cross-references
 
-- Track-A milestone table & inflections: `HIGH2_2_DESIGN.md` §7.
-- Why no segmentation (γ): `M_S2_PEARL_EVALUATION.md`.
-- P-B.2.x design + decisions D1–D4: `P_B2_STRIP_OPENING_DESIGN.md`.
-- §4.C.2 (Phase A, b1): `SEC_4C2_NOISE_BINDING_DESIGN.md`.
+- Track-A milestone table & inflections: `2026-05-15_HIGH2_2_DESIGN.md` §7.
+- Why no segmentation (γ): `2026-05-17_M_S2_PEARL_EVALUATION.md`.
+- P-B.2.x design + decisions D1–D4: `2026-05-17_P_B2_STRIP_OPENING_DESIGN.md`.
+- §4.C.2 (Phase A, b1): `2026-05-17_SEC_4C2_NOISE_BINDING_DESIGN.md`.
 - **Phase A-CR (params-pure `canonical_program`; subsumes
-  §4.C.2-b2): `CANONICAL_PROGRAM_DESIGN.md`.**
-- G3 (deferred): `M_S2_G3AB_DESIGN.md`.
+  §4.C.2-b2): `2026-05-17_CANONICAL_PROGRAM_DESIGN.md`.**
+- G3 (deferred): `2026-05-17_M_S2_G3AB_DESIGN.md`.
 - Real model facts: `pearl_real_production_model` memory;
   `~/Dev/Llama-3.1-8B-Instruct-pearl/config.json`.
 - §4.C soundness thread: `ai_pow_zk_crypto_gaps` memory;
-  `ZKP_SECURITY_REPORT.md`, `GAP_AUDIT.md`.
+  `2026-05-15_ZKP_SECURITY_REPORT.md`, `2026-05-15_GAP_AUDIT.md`.
