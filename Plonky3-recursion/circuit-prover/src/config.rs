@@ -237,25 +237,33 @@ pub fn goldilocks_tip5() -> GoldilocksConfig {
     StarkConfig::new(pcs, challenger)
 }
 
-/// **ADDITIVE (C3 measurement/de-risk only)** — Goldilocks Tip5
-/// outer-cert config at a **≥120-bit-equivalent FRI tier**.
+/// **ADDITIVE (C3 / M-S5 vertical-recursion cert)** — Goldilocks
+/// Tip5 outer-cert config at the **≥80-bit unconditional FRI tier**
+/// (Johnson radius; paper Ben-Sasson, Carmon, Habock, Kopparty,
+/// Saraf, *"On Proximity Gaps for Reed–Solomon Codes"*, IACR ePrint
+/// 2025/2055, Theorem 1.5 + §1.3.2).
 ///
 /// Byte-identical to [`goldilocks_tip5`] (same `Poseidon2Goldilocks<8>`
 /// seed-1 perm, same `PaddingFreeSponge`/`TruncatedPermutation`, same
 /// `MerkleTreeMmcs` cap height 3, same DFT, same `log_blowup = 2`,
 /// `max_log_arity = 1`, `log_final_poly_len = 0`) **except the FRI
-/// `num_queries`**: 120 (vs `new_testing`'s 2). The ethSTARK
-/// conjectured soundness is `log_blowup · num_queries +
-/// query_pow_bits = 2·120 + 1 = 241` bits — well past the ≥120-bit
-/// bar, and matching the inner Tip5-L0 sweep's `num_queries ·
-/// log_blowup / 2 == 120` convention (here `120 · 2 / 2 == 120`).
-/// `commit/query_proof_of_work_bits` stay `1` (the `new_testing`
-/// value `goldilocks_tip5` already uses) so the *only* lever vs the
-/// ~5-bit tier is `num_queries`, for an apples-to-apples size
-/// comparison. `max_log_arity` is kept at the `new_testing` value
-/// (`1`, binary folding) here for the same reason; the high-arity
-/// size lever is measured separately. This builder is purely
-/// additive and does **not** modify [`goldilocks_tip5`].
+/// `num_queries`**: 42 (vs `new_testing`'s 2). Unconditional Johnson
+/// soundness ≈ `log_blowup · num_queries + query_pow_bits =
+/// 2 · 42 + 1 = 85` bits — comfortably above the 2026-05-19
+/// maintainer-set 80-bit floor (per-block PoW at 2.5-min cadence
+/// does not need the 120/128-bit long-horizon margin; see
+/// `crates/ai-pow-zk/docs/2026-05-19_M_S5B_TERMINAL_COMPRESSION_DESIGN.md`
+/// § 1.4). The function name `goldilocks_tip5_120bit` is retained
+/// for cross-reference stability with the C3 LANDED commits
+/// (`14116b0` / `259cab2`) and the test harness; the new bar is the
+/// soundness floor it actually meets after the 2026-05-19
+/// recalibration. `commit/query_proof_of_work_bits` stay `1` (the
+/// `new_testing` value `goldilocks_tip5` already uses).
+/// `max_log_arity` is kept at the `new_testing` value (`1`, binary
+/// folding); the high-arity size lever is measured separately. This
+/// builder is purely additive and does **not** modify
+/// [`goldilocks_tip5`]. Proximity testing stays at γ < J(δ)−η
+/// (Johnson radius, never beyond — paper §8 attacks avoided).
 #[inline]
 pub fn goldilocks_tip5_120bit() -> GoldilocksConfig {
     use rand::SeedableRng;
@@ -266,16 +274,17 @@ pub fn goldilocks_tip5_120bit() -> GoldilocksConfig {
     let val_mmcs = MerkleTreeMmcs::new(hash, compress, 3);
     let challenge_mmcs = ExtensionMmcs::new(val_mmcs.clone());
     let dft = Radix2DitParallel::default();
-    // Same tier as `goldilocks_tip5` (`new_testing` ⇒ log_blowup = 2,
-    // pow_bits = 1, max_log_arity = 1, log_final_poly_len = 0) but
-    // `num_queries = 120` ⇒ conjectured soundness 2·120 + 1 = 241 bits
-    // (≥120). Built explicitly (not via `new_testing`, which hardcodes
-    // num_queries = 2) to raise *only* num_queries.
+    // ≥80-bit unconditional Johnson-radius soundness (paper IACR
+    // ePrint 2025/2055 Theorem 1.5): log_blowup · num_queries +
+    // query_pow_bits = 2 · 42 + 1 = 85 bits, ≥80 floor.
+    // Pre-2026-05-19 was num_queries = 120 (241 conjectured / 120
+    // unique-decoding-provable); the paper makes Johnson proven
+    // ⇒ ~halve num_queries at the same proven security.
     let fri_params = FriParameters {
         log_blowup: 2,
         log_final_poly_len: 0,
         max_log_arity: 1,
-        num_queries: 120,
+        num_queries: 42,
         commit_proof_of_work_bits: 1,
         query_proof_of_work_bits: 1,
         mmcs: challenge_mmcs,
@@ -286,16 +295,20 @@ pub fn goldilocks_tip5_120bit() -> GoldilocksConfig {
 }
 
 /// **ADDITIVE (C3 S3 size-lever measurement only)** — Goldilocks
-/// Tip5 outer-cert config at the **same ≥120-bit FRI soundness** as
-/// [`goldilocks_tip5_120bit`] but with **high-arity folding**
-/// (`max_log_arity = 3`) and a non-trivial final polynomial
-/// (`log_final_poly_len = 2`). These two levers are
-/// **soundness-neutral**: conjectured soundness depends only on
-/// `log_blowup · num_queries + query_pow_bits` (unchanged at
-/// `2·120 + 1 = 241` bits); higher arity / earlier FRI stop only
-/// reshape the proof to fewer, fatter commit-phase steps. Purely
-/// additive; does not modify [`goldilocks_tip5`] or
-/// [`goldilocks_tip5_120bit`].
+/// Tip5 outer-cert config at the **same ≥80-bit unconditional
+/// Johnson-radius FRI soundness** as [`goldilocks_tip5_120bit`] but
+/// with **high-arity folding** (`max_log_arity = 3`) and a
+/// non-trivial final polynomial (`log_final_poly_len = 2`). These
+/// two levers are **soundness-neutral**: unconditional Johnson
+/// soundness depends only on `log_blowup · num_queries +
+/// query_pow_bits` (unchanged at `2 · 42 + 1 = 85` bits); higher
+/// arity / earlier FRI stop only reshape the proof to fewer,
+/// fatter commit-phase steps. Purely additive; does not modify
+/// [`goldilocks_tip5`] or [`goldilocks_tip5_120bit`]. The function
+/// name retains `120bit` for cross-reference stability per the
+/// C3 LANDED commits; the new bar is ≥80 unconditional after the
+/// 2026-05-19 recalibration (paper IACR ePrint 2025/2055 Theorem
+/// 1.5).
 #[inline]
 pub fn goldilocks_tip5_120bit_higharity() -> GoldilocksConfig {
     use rand::SeedableRng;
@@ -310,7 +323,7 @@ pub fn goldilocks_tip5_120bit_higharity() -> GoldilocksConfig {
         log_blowup: 2,
         log_final_poly_len: 2,
         max_log_arity: 3,
-        num_queries: 120,
+        num_queries: 42,
         commit_proof_of_work_bits: 1,
         query_proof_of_work_bits: 1,
         mmcs: challenge_mmcs,

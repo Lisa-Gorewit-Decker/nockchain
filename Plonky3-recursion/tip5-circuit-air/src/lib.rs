@@ -5,7 +5,7 @@
 //! spec, KAT-anchored — *not* a port of any legacy AIR).
 //!
 //! * **Construction reference:** the authoritative Tip5 paper (IACR
-//!   ePrint 2023/107, `2023-107.pdf` in the nockchain repo).
+//!   ePrint 2023/107).
 //! * **Bit-for-bit soundness oracle:** `nockchain_math::tip5::permute`
 //!   (7-round), frozen into the committed golden KAT fixture
 //!   `crates/ai-pow-zk/tests/fixtures/tip5_golden_kat.txt` (C2.0).

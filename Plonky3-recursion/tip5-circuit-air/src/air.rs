@@ -141,7 +141,7 @@ impl<AB: AirBuilder> Air<AB> for Tip5PermAir {
         let mds = mds_matrix();
         let two32_minus_1 = fe((1u64 << 32) - 1);
 
-        // Tip5 paper = IACR ePrint 2023/107 (`2023-107.pdf`). One
+        // Tip5 paper = IACR ePrint 2023/107. One
         // round = S-box layer (§2.2) → linear MDS layer (§2.3) → round
         // constants (§2.4), iterated NUM_ROUNDS=7 times (§2.1).
         for r in 0..NUM_ROUNDS {

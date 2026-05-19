@@ -137,17 +137,25 @@ struct SweepProfile {
     num_queries: usize,
 }
 
-/// PROD point of the ai-pow-zk 120-bit Tip5-L0 sweep (the residual
-/// test's PROD). Same `make_layer0_config` as the landed test.
-const PROD: SweepProfile = SweepProfile { name: "PROD", log_blowup: 3, num_queries: 80 };
+/// PROD point of the ai-pow-zk ≥80-bit unconditional Tip5-L0 sweep
+/// (the residual test's PROD). Same `make_layer0_config` as the
+/// landed test. (Pre-2026-05-19 was nq=80 at 120 unique-decoding-
+/// provable bits; new bar is ≥80 unconditional Johnson-radius per
+/// IACR ePrint 2025/2055 Theorem 1.5.)
+const PROD: SweepProfile = SweepProfile { name: "PROD", log_blowup: 3, num_queries: 30 };
 
 /// FRI tier for the recursion-compatible `OuterCfg` (the L1/L2/L3
-/// prover config). `(a)` 5-bit == `goldilocks_tip5()`'s `new_testing`
-/// (lb=2, nq=2, pow=1,1 ⇒ 2·2+1 = 5 conjectured bits). `(b)` 120-bit
-/// == `goldilocks_tip5_120bit()` (lb=2, nq=120 ⇒ 2·120+1 = 241 bits).
-/// `(b-hi)` 120-bit high-arity (same soundness, max_log_arity=3,
-/// log_final_poly_len=2). These mirror the `config.rs` siblings
-/// EXACTLY but over the packed (recursion-compatible) MMCS.
+/// prover config). `(a)` ~5-bit == `goldilocks_tip5()`'s
+/// `new_testing` (lb=2, nq=2, pow=1,1 ⇒ 2·2+1 = 5 conjectured bits;
+/// TEST tier). `(b)` ≥80-bit unconditional ==
+/// `goldilocks_tip5_120bit()` (lb=2, nq=42, pow=1,1 ⇒ 2·42+1 = 85
+/// bits unconditional at Johnson radius — IACR ePrint 2025/2055
+/// Theorem 1.5). `(b-hi)` same soundness with high-arity folding
+/// (max_log_arity=3, log_final_poly_len=2). The tier names retain
+/// "Bit120" for cross-reference stability with the C3 LANDED commits;
+/// the new bar is ≥80 unconditional after the 2026-05-19
+/// recalibration. These mirror the `config.rs` siblings EXACTLY but
+/// over the packed (recursion-compatible) MMCS.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum OuterTier {
     FiveBit,
@@ -169,10 +177,11 @@ impl OuterTier {
         match self {
             // == config::goldilocks_tip5() = FriParameters::new_testing
             OuterTier::FiveBit => (2, 0, 1, 2, 1, 1),
-            // == config::goldilocks_tip5_120bit()
-            OuterTier::Bit120 => (2, 0, 1, 120, 1, 1),
-            // == config::goldilocks_tip5_120bit_higharity()
-            OuterTier::Bit120HighArity => (2, 2, 3, 120, 1, 1),
+            // == config::goldilocks_tip5_120bit() — name retained for
+            // cross-ref; new bar is ≥80 unconditional Johnson (2·42+1=85).
+            OuterTier::Bit120 => (2, 0, 1, 42, 1, 1),
+            // == config::goldilocks_tip5_120bit_higharity() — same.
+            OuterTier::Bit120HighArity => (2, 2, 3, 42, 1, 1),
         }
     }
 }
@@ -1245,28 +1254,37 @@ fn build_l2_proof(
 // #####################################################################
 
 /// The mandatory inner Tip5-L0 sweep profiles for Stage C (each is a
-/// genuine ai-pow-zk 120-bit point: `log_blowup · num_queries / 2 ==
-/// 120` conjectured bits). PROD + LB4 are the mandatory pair; LB2 /
-/// LB5 / LB6 are run additionally if compute permits.
-const SWEEP_PROD: SweepProfile = SweepProfile { name: "PROD", log_blowup: 3, num_queries: 80 };
-const SWEEP_LB2: SweepProfile = SweepProfile { name: "LB2", log_blowup: 2, num_queries: 120 };
-const SWEEP_LB4: SweepProfile = SweepProfile { name: "LB4", log_blowup: 4, num_queries: 60 };
-const SWEEP_LB5: SweepProfile = SweepProfile { name: "LB5", log_blowup: 5, num_queries: 48 };
-const SWEEP_LB6: SweepProfile = SweepProfile { name: "LB6", log_blowup: 6, num_queries: 40 };
+/// genuine ai-pow-zk ≥80-bit unconditional Johnson-radius point:
+/// `log_blowup · num_queries ≥ 80` bits — IACR ePrint 2025/2055
+/// Theorem 1.5). PROD + LB4 are the mandatory pair; LB2 / LB5 / LB6
+/// are run additionally if compute permits. (Pre-2026-05-19 these
+/// were `lb·nq/2 = 120` in the classical unique-decoding framing;
+/// the paper makes Johnson proven ⇒ ~halve `nq` at the same proven
+/// security.)
+const SWEEP_PROD: SweepProfile = SweepProfile { name: "PROD", log_blowup: 3, num_queries: 30 };
+const SWEEP_LB2: SweepProfile = SweepProfile { name: "LB2", log_blowup: 2, num_queries: 45 };
+const SWEEP_LB4: SweepProfile = SweepProfile { name: "LB4", log_blowup: 4, num_queries: 23 };
+const SWEEP_LB5: SweepProfile = SweepProfile { name: "LB5", log_blowup: 5, num_queries: 18 };
+const SWEEP_LB6: SweepProfile = SweepProfile { name: "LB6", log_blowup: 6, num_queries: 15 };
 
-/// Conjectured FRI soundness bits of `OuterTier::Bit120` from its FRI
-/// params (`log_blowup · num_queries + query_pow_bits`). Asserted ≥120
-/// in every stage so the soundness claim is argued from the config
-/// actually used, not assumed.
+/// Unconditional FRI soundness bits of `OuterTier::Bit120` at the
+/// Johnson radius from its FRI params (`log_blowup · num_queries +
+/// query_pow_bits`). Asserted ≥80 in every stage so the soundness
+/// claim is argued from the config actually used, not assumed.
+/// (Function name retains `bit120` for cross-reference stability;
+/// the bar it now meets is ≥80 unconditional Johnson — IACR ePrint
+/// 2025/2055 Theorem 1.5.)
 fn bit120_conjectured_soundness() -> usize {
     let (lb, _lfp, _mla, nq, _cp, qp) = OuterTier::Bit120.fri();
     lb * nq + qp
 }
 
-/// Conjectured FRI soundness bits of an inner Tip5-L0 sweep profile
-/// (ai-pow-zk convention: `log_blowup · num_queries / 2`).
+/// Unconditional FRI soundness bits of an inner Tip5-L0 sweep
+/// profile at the Johnson radius (`log_blowup · num_queries` — the
+/// paper Theorem 1.5 framing; pre-2026-05-19 this was
+/// `log_blowup · num_queries / 2`, the unique-decoding framing).
 const fn inner_conjectured_soundness(p: SweepProfile) -> usize {
-    p.log_blowup * p.num_queries / 2
+    p.log_blowup * p.num_queries
 }
 
 /// **STAGE A — soundness-correct ≥120-bit L1 (KAT-first).**
@@ -1290,15 +1308,16 @@ const fn inner_conjectured_soundness(p: SweepProfile) -> usize {
 fn c3_stage_a_l1_120bit_kat() {
     let sbits = bit120_conjectured_soundness();
     assert!(
-        sbits >= 120,
-        "Stage A precondition: OuterTier::Bit120 conjectured FRI soundness \
-         must be ≥120 bits, got {sbits}"
+        sbits >= 80,
+        "Stage A precondition: OuterTier::Bit120 unconditional Johnson-radius \
+         FRI soundness (IACR ePrint 2025/2055 Theorem 1.5) must be ≥80 \
+         bits, got {sbits}"
     );
     let inner_sbits = inner_conjectured_soundness(SWEEP_PROD);
     assert!(
-        inner_sbits >= 120,
-        "Stage A precondition: inner Tip5-L0 PROD conjectured soundness \
-         must be ≥120 bits, got {inner_sbits}"
+        inner_sbits >= 80,
+        "Stage A precondition: inner Tip5-L0 PROD unconditional Johnson-\
+         radius soundness must be ≥80 bits, got {inner_sbits}"
     );
 
     // ACCEPT: honest ≥120-bit L1 builds, runs, prove_all_tables, AND
@@ -1345,13 +1364,14 @@ fn c3_stage_a_l1_120bit_kat() {
     }
 
     eprintln!(
-        "\n[C3 STAGE A RESULT] soundness-correct ≥120-bit L1 (packed-MMCS, \
-         recursion-compatible OuterCfg == config::goldilocks_tip5_120bit() \
-         FRI: log_blowup=2 num_queries=120 pow=1/1 max_log_arity=1 \
-         log_final_poly_len=0 ⇒ {sbits} conjectured FRI bits ≥120; inner \
-         Tip5-L0 PROD = {inner_sbits} conjectured bits ≥120)\n  serialized \
-         ≥120-bit L1 BatchStarkProof = {l1_bytes} B ({:.2} KB) — ACCEPT ✅, \
-         tamper-REJECT ✅\n",
+        "\n[C3 STAGE A RESULT] soundness-correct ≥80-bit-unconditional-Johnson L1 \
+         (packed-MMCS, recursion-compatible OuterCfg == \
+         config::goldilocks_tip5_120bit() FRI: log_blowup=2 num_queries=42 \
+         pow=1/1 max_log_arity=1 log_final_poly_len=0 ⇒ {sbits} bits \
+         unconditional Johnson per IACR ePrint 2025/2055 Theorem 1.5, ≥80 \
+         floor; inner Tip5-L0 PROD = {inner_sbits} bits unconditional \
+         Johnson, ≥80)\n  serialized L1 BatchStarkProof = {l1_bytes} B \
+         ({:.2} KB) — ACCEPT ✅, tamper-REJECT ✅\n",
         l1_bytes as f64 / 1024.0,
     );
 }
@@ -1435,9 +1455,9 @@ fn assert_120bit_l2_tamper_rejects(label: &str, inner: SweepProfile) {
 #[ignore = "C3/M-S5 DELIVERABLE (VERY heavy ~many min, ≥120-bit L2 over ≥120-bit L1): Stage B — the genuinely-≥120-bit vertical-recursion cert (accept + tamper-reject + real size)"]
 fn c3_stage_b_l2_over_120bit_l1() {
     let sbits = bit120_conjectured_soundness();
-    assert!(sbits >= 120, "Stage B: Bit120 conjectured soundness {sbits} < 120");
+    assert!(sbits >= 80, "Stage B: Bit120 conjectured soundness {sbits} < 80");
     let inner_sbits = inner_conjectured_soundness(SWEEP_PROD);
-    assert!(inner_sbits >= 120, "Stage B: inner PROD soundness {inner_sbits} < 120");
+    assert!(inner_sbits >= 80, "Stage B: inner PROD soundness {inner_sbits} < 80");
 
     let (l1_bytes, l2_bytes) = build_120bit_l2_over_120bit_l1("C3-StageB-PROD", SWEEP_PROD)
         .expect("Stage B: the genuinely-≥120-bit L2 over a ≥120-bit L1 must ACCEPT");
@@ -1446,15 +1466,16 @@ fn c3_stage_b_l2_over_120bit_l1() {
 
     let (lb, lfp, mla, nq, cp, qp) = OuterTier::Bit120.fri();
     eprintln!(
-        "\n[C3 STAGE B RESULT — THE SOUNDNESS-CORRECT ≥120-bit VERTICAL-\
-         RECURSION CERT]\n  inner Tip5-L0 = PROD (log_blowup={} num_queries={} \
-         ⇒ {inner_sbits} conjectured bits ≥120)\n  L1-outer = ≥120-bit \
+        "\n[C3 STAGE B RESULT — THE SOUNDNESS-CORRECT ≥80-bit-UNCONDITIONAL-\
+         JOHNSON VERTICAL-RECURSION CERT (IACR ePrint 2025/2055 Theorem 1.5)]\n  \
+         inner Tip5-L0 = PROD (log_blowup={} num_queries={} ⇒ {inner_sbits} \
+         bits unconditional Johnson, ≥80)\n  L1-outer = ≥80-bit-Johnson \
          (log_blowup={lb} num_queries={nq} pow={cp}/{qp} max_log_arity={mla} \
-         log_final_poly_len={lfp} ⇒ {sbits} conjectured bits ≥120)\n  \
-         L2-wrapper = ≥120-bit (same {sbits}-bit OuterTier::Bit120)\n  \
-         ⇒ soundness chain = MIN(≥120, ≥120, ≥120) ≥ 120 bits at EVERY \
-         link\n  serialized ≥120-bit L1 = {l1_bytes} B ({:.2} KB)\n  \
-         serialized ≥120-bit L2 (THE CERT) = {l2_bytes} B ({:.2} KB)\n  \
+         log_final_poly_len={lfp} ⇒ {sbits} bits unconditional Johnson, ≥80)\n  \
+         L2-wrapper = ≥80-bit-Johnson (same {sbits}-bit OuterTier::Bit120)\n  \
+         ⇒ soundness chain = MIN({inner_sbits}, {sbits}, {sbits}) ≥ 80 bits \
+         unconditional at EVERY link\n  serialized L1 = {l1_bytes} B \
+         ({:.2} KB)\n  serialized L2 (THE CERT) = {l2_bytes} B ({:.2} KB)\n  \
          ACCEPT ✅  tamper-REJECT ✅\n",
         SWEEP_PROD.log_blowup,
         SWEEP_PROD.num_queries,
@@ -1475,7 +1496,7 @@ fn c3_stage_b_l2_over_120bit_l1() {
 #[ignore = "C3/M-S5 DELIVERABLE (EXTREMELY heavy, 5× ≥120-bit-L2-over-≥120-bit-L1): Stage C — harden the soundness-correct ≥120-bit cert across the inner Tip5-L0 sweep (PROD+LB4 mandatory; all 5) × {accept,tamper-reject}"]
 fn c3_stage_c_sweep_120bit() {
     let sbits = bit120_conjectured_soundness();
-    assert!(sbits >= 120, "Stage C: Bit120 conjectured soundness {sbits} < 120");
+    assert!(sbits >= 80, "Stage C: Bit120 conjectured soundness {sbits} < 80");
 
     // PROD + LB4 mandatory; LB2/LB5/LB6 additional (all genuine
     // ≥120-bit inner points). All run genuinely; no stub.
@@ -1485,8 +1506,8 @@ fn c3_stage_c_sweep_120bit() {
     for p in profiles {
         let inner_sbits = inner_conjectured_soundness(p);
         assert!(
-            inner_sbits >= 120,
-            "Stage C: inner {} conjectured soundness {inner_sbits} < 120",
+            inner_sbits >= 80,
+            "Stage C: inner {} conjectured soundness {inner_sbits} < 80",
             p.name
         );
 
