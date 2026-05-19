@@ -40,24 +40,64 @@
 //! the established recursion-test pattern); the *config* is exactly
 //! ai-pow-zk's Layer-0 `StarkConfig`.
 //!
-//! RESIDUAL — NOT done, NOT faked (precisely scoped):
-//!  (R-a) Outer `prove_all_tables` / `verify_all_tables` of the *Tip5
-//!        Layer-0 verifier circuit*. The verifier circuit is over the
-//!        challenge field `BinomialExtensionField<Goldilocks, 2>`
-//!        (D=2), but Tip5 is intrinsically a D=1 (base-Goldilocks)
-//!        permutation. Proving that circuit needs the circuit-prover's
-//!        `WitnessChecks` cross-table CTL to emit a `witness_bus_dim
-//!        = D` tuple for a D=1 perm in a D≥2 circuit. The workspace
-//!        only supports witness-bus-dim ∈ {1 (base), 5 (quintic)} for
-//!        *any* D=1 perm (`poseidon_d1_witness_bus_dim`: `2 => None`);
-//!        `Tip5CircuitAir`'s `WitnessChecks` push is hardcoded to the
-//!        2-element D=1 tuple `[idx, value]`. Making it D-aware
-//!        (mirroring Poseidon1's `eval_interactions<…, WITNESS_EXT_D>`
-//!        padded tuple) plus a `witness_bus_dim(2)` is an invasive
-//!        change to the *validated* `tip5-circuit-air` cross-table CTL
-//!        binding — a soundness linchpin the task hard-rules NOT to
-//!        alter, and a circuit-prover-wide D=1-perm-in-D=2 gap that is
-//!        M12-adjacent. State, do not fake.
+//! ── C2.4 R-a — VALIDATED SUBSET LANDED + PRECISE RESIDUAL (R1) ──────
+//!
+//! LANDED + EXHAUSTIVELY VALIDATED this session (the maximal correct
+//! subset of R-a — the `WITNESS_EXT_D` D-aware `WitnessChecks` CTL):
+//!  * `tip5-circuit-air/src/air_circuit.rs`: `Tip5CircuitAir` now
+//!    carries `const WITNESS_EXT_D: usize = 1`; the two
+//!    `WitnessChecks` pushes emit the D-padded tuple
+//!    `[idx, value, ZERO×(WITNESS_EXT_D − 1)]` — a **faithful,
+//!    line-by-line mirror** of the validated
+//!    `p3_poseidon1_circuit_air` / `p3_poseidon2_circuit_air`
+//!    `eval_interactions<…, const WITNESS_EXT_D>` D=1-perm-in-D≥2
+//!    pattern (perm `D == 1` ⇒ one value coord + `WITNESS_EXT_D − 1`
+//!    zeros). **HARD invariant verified:** at `WITNESS_EXT_D == 1`
+//!    the pad loop runs zero times ⇒ the emitted tuple is
+//!    byte-identical to the prior `[idx, value]`; the *entire*
+//!    existing D=1 gate is byte-identical-green (the 7 tests below +
+//!    `test_tip5_lookups` 2/2 — the D=1 batch-STARK `WitnessChecks`
+//!    multiset gate, which would orphan on any tuple-arity change —
+//!    + `p3-tip5-circuit-air` 14/14 + poseidon1/2 unchanged).
+//!  * `circuit-prover/.../tip5.rs`: `tip5_witness_bus_dim`
+//!    (`{1,2,5}`), per-D `batch_instance_dN`, and D-aware
+//!    `batch_air_from_table_entry` / `air_with_committed_preprocessed`
+//!    / `Tip5AirBuilder<{1,2}>` — faithful mirror of poseidon1's
+//!    `poseidon_d1_witness_bus_dim`-selected AIR dispatch. The D=2
+//!    path now constructs `Tip5CircuitAir<_, 2>` and emits the
+//!    correct 3-wide `[idx, value, 0]` tuple (empirically confirmed:
+//!    the residual imbalance below is over 3-wide tuples — the old
+//!    2-wide hard-coding is fixed and the linchpin re-validated).
+//!
+//! RESIDUAL — NOT done, NOT faked (precise concrete wall, genuinely
+//! hit in-flight this session AFTER driving the invasive change):
+//!  (R-a-tail) The OUTER `prove_all_tables`/`verify_all_tables` of the
+//!        *Tip5 Layer-0 verifier circuit* still fails the D=2
+//!        cross-table `WitnessChecks` multiset balance with an
+//!        orphaned net ±1 over correctly-3-wide tuples. Root cause
+//!        traced (line-by-line): the D=2 recompose-**coeff** producer
+//!        (`circuit-prover/.../recompose.rs`) sets a base-coeff's
+//!        producer multiplicity to `ext_reads[coeff_wid]` **only when
+//!        `coeff_wid ∈ preprocessed.hint_output_wids`** (= `Op::Hint`
+//!        outputs). In the validated poseidon2 D=1-in-D=5 quintic
+//!        outer-cert (`fibonacci_batch_stark_prover_quintic.rs`) every
+//!        perm-input base coeff is hint-derived, so it balances. The
+//!        Tip5 *uni-stark* Layer-0 verifier (`verify_p3_uni_proof_
+//!        circuit`) wires some Tip5-input base coeffs via computed
+//!        (non-`Hint`) witnesses ⇒ recompose-coeff produces `+0`
+//!        while the (now correctly D-padded) Tip5 input send still
+//!        consumes `−1` ⇒ orphan. Closing it requires changing
+//!        EITHER the recursion verifier's Tip5-input decompose
+//!        wiring (`verify_p3_uni_proof_circuit`, a fenced
+//!        soundness-linchpin the task hard-rules NOT to alter) OR the
+//!        shared `RecomposePreprocessor`/`hint_output_wids` producer
+//!        semantics (shared with the validated poseidon1/2 paths —
+//!        an invasive change requiring full re-validation of those
+//!        linchpins, which R1 forbids rushing). Both are strictly
+//!        outside this task's scoped change (AIR D-padding +
+//!        `tip5_witness_bus_dim`, which IS landed + D=1-validated)
+//!        and inside fenced linchpin code. State, do not fake — this
+//!        is the milestone-C3/#124 vertical-recursion certificate.
 //!  (R-b) Recursively verifying ai-pow-zk's *actual M10.1c composite
 //!        `RecursiveAir`* proof (vs this representative `FibonacciAir`)
 //!        across the C1 ai-pow-zk↔recursion workspace decoupling —
@@ -65,7 +105,9 @@
 //!
 //! What IS landed and validated end-to-end: the recursion verifier
 //! soundly verifies the *exact* ai-pow-zk Layer-0 Tip5 `StarkConfig`
-//! in-circuit across the full 120-bit sweep, accept + tamper-reject.
+//! in-circuit across the full 120-bit sweep, accept + tamper-reject;
+//! AND the `WitnessChecks` CTL is now faithfully `WITNESS_EXT_D`-aware
+//! with the D=1 linchpin byte-identical-re-validated.
 
 mod common;
 
@@ -243,10 +285,32 @@ enum Outcome {
 /// `tamper`, one opened OOD trace value of the *real* Layer-0 proof is
 /// corrupted before in-circuit verification (mirror
 /// `fibonacci.rs::test_tampered_ood_evaluation`).
-fn verify_layer0_in_circuit(
+/// The fully-built Tip5 Layer-0 verifier circuit plus everything
+/// needed to run it (runner inputs + the MMCS op ids + the real
+/// Layer-0 `proof`). Shared verbatim by the original `runner().run()`
+/// gate (`verify_layer0_in_circuit`) and the new outer recursive
+/// STARK certificate gate (`outer_cert_layer0`) so the circuit under
+/// both is **bit-identical**.
+struct BuiltLayer0Circuit {
+    circuit: p3_circuit::Circuit<Challenge>,
+    public_inputs: Vec<Challenge>,
+    private_inputs: Vec<Challenge>,
+    mmcs_op_ids: Vec<p3_circuit::NonPrimitiveOpId>,
+    proof: p3_uni_stark::Proof<Tip5Layer0Config>,
+}
+
+/// Build the Tip5 Layer-0 recursive-verification circuit for
+/// `profile`. When `tamper`, one opened OOD trace value of the
+/// *real* Layer-0 proof is corrupted before in-circuit verification
+/// (mirror `fibonacci.rs::test_tampered_ood_evaluation`). This is the
+/// exact circuit construction that was previously inline in
+/// `verify_layer0_in_circuit`; extracting it changes nothing about
+/// the circuit (the original 7 tests still drive the identical
+/// bytes).
+fn build_layer0_verifier_circuit(
     profile: SweepProfile,
     tamper: bool,
-) -> Result<Outcome, VerificationError> {
+) -> Result<BuiltLayer0Circuit, VerificationError> {
     let config = make_layer0_config(profile);
     let (trace, pis, air) = fibonacci_setup();
 
@@ -314,9 +378,30 @@ fn verify_layer0_in_circuit(
     )?;
 
     let circuit = circuit_builder.build()?;
-    let mut runner = circuit.runner();
-
     let (public_inputs, private_inputs) = verifier_inputs.pack_values(&pis, &proof, &None);
+
+    Ok(BuiltLayer0Circuit {
+        circuit,
+        public_inputs,
+        private_inputs,
+        mmcs_op_ids,
+        proof,
+    })
+}
+
+fn verify_layer0_in_circuit(
+    profile: SweepProfile,
+    tamper: bool,
+) -> Result<Outcome, VerificationError> {
+    let BuiltLayer0Circuit {
+        circuit,
+        public_inputs,
+        private_inputs,
+        mmcs_op_ids,
+        proof,
+    } = build_layer0_verifier_circuit(profile, tamper)?;
+
+    let mut runner = circuit.runner();
     runner
         .set_public_inputs(&public_inputs)
         .map_err(VerificationError::Circuit)?;

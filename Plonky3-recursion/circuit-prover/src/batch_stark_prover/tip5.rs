@@ -28,6 +28,7 @@
 //!   (Tip5 has none).
 
 use alloc::boxed::Box;
+use alloc::format;
 use alloc::string::String;
 use alloc::vec::Vec;
 
@@ -55,15 +56,92 @@ use super::{NonPrimitiveTableEntry, TablePacking};
 use crate::common::{CircuitTableAir, NpoAirBuilder, NpoPreprocessor};
 use crate::config::StarkField;
 use crate::constraint_profile::ConstraintProfile;
-use crate::impl_table_prover_batch_instances_from_base;
 
-impl<SC> BatchAir<SC> for Tip5CircuitAir<Val<SC>>
+impl<SC, const WITNESS_EXT_D: usize> BatchAir<SC> for Tip5CircuitAir<Val<SC>, WITNESS_EXT_D>
 where
     SC: StarkGenericConfig + Send + Sync,
     Val<SC>: StarkField,
     SymbolicExpressionExt<Val<SC>, SC::Challenge>:
         Algebra<SymbolicExpression<Val<SC>>> + Algebra<SC::Challenge>,
 {
+}
+
+/// Returns the witness-bus dimension for the D=1 Tip5 perm given the
+/// circuit's extension degree, or `None` if the scale is unsupported.
+///
+/// **Faithful mirror** of
+/// `batch_stark_prover/poseidon1.rs::poseidon_d1_witness_bus_dim`,
+/// with the **one** documented non-1:1 deviation: Tip5 must also
+/// support scale `2` (`2 => Some(2)`). The deployed Tip5 Layer-0
+/// recursion verifier circuit is over the STARK *challenge* field
+/// `BinomialExtensionField<Goldilocks, 2>` (circuit `D == 2`) while
+/// Tip5 is intrinsically a D=1 base-Goldilocks permutation, so the
+/// `WitnessChecks` cross-table CTL must emit a `WITNESS_EXT_D == 2`
+/// D-padded tuple to match the recompose / witness-bus producers in
+/// that circuit. Poseidon1's table is BabyBear/KoalaBear-quintic
+/// shaped (`{1, 5}`, `2 => None`) — it never hosts a D=1 perm in a
+/// D=2 circuit, so it has no `2` arm; Tip5 does (this is exactly the
+/// C2.4 Layer-0 gap). Scale `1` (standalone base-field Tip5) and
+/// scale `5` (kept for full mirror parity with poseidon1's quintic
+/// witness-bus) are preserved verbatim.
+#[inline]
+const fn tip5_witness_bus_dim(witness_ctl_scale: u32) -> Option<u32> {
+    match witness_ctl_scale {
+        1 => Some(1),
+        2 => Some(2),
+        5 => Some(5),
+        _ => None,
+    }
+}
+
+/// Build the Tip5 circuit AIR with the `WITNESS_EXT_D` const generic
+/// resolved from the **circuit's** extension degree, boxed into a
+/// `DynamicAirEntry`.
+///
+/// This is the Tip5 analogue of poseidon1's
+/// `air_wrapper_for_config_with_preprocessed` runtime→const dispatch
+/// (poseidon1 selects `Bus1`/`Bus5` AIR type variants that differ
+/// *only* in `WITNESS_EXT_D`; Tip5 selects `Tip5CircuitAir<_, 1>` /
+/// `<_, 2>` / `<_, 5>` likewise). The `tip5_l` LogUp bus, the x⁷
+/// algebraic constraints, the verifier-fixed 256-row L-table, and the
+/// preprocessed `in_idx/in_ctl/out_idx/out_ctl` layout are **identical
+/// across all three** — only the `WitnessChecks` tuple D-padding
+/// (`[idx, value, ZERO×(WITNESS_EXT_D − 1)]`) differs, exactly as in
+/// the validated poseidon1 D=1-in-D≥2 pattern. Returns `None` for an
+/// unsupported witness-bus scale (mirrors poseidon1's `?` on
+/// `poseidon_d1_witness_bus_dim`).
+fn tip5_air_entry_for_witness_dim<SC>(
+    committed_prep: Vec<Val<SC>>,
+    min_height: usize,
+    circuit_extension_degree: u32,
+) -> Option<DynamicAirEntry<SC>>
+where
+    SC: StarkGenericConfig + 'static + Send + Sync,
+    Val<SC>: StarkField,
+    SymbolicExpressionExt<Val<SC>, SC::Challenge>:
+        Algebra<SymbolicExpression<Val<SC>>> + Algebra<SC::Challenge>,
+{
+    match tip5_witness_bus_dim(circuit_extension_degree)? {
+        1 => Some(DynamicAirEntry::new(Box::new(Tip5CircuitAir::<
+            Val<SC>,
+            1,
+        >::new_with_preprocessed(
+            committed_prep, min_height
+        )))),
+        2 => Some(DynamicAirEntry::new(Box::new(Tip5CircuitAir::<
+            Val<SC>,
+            2,
+        >::new_with_preprocessed(
+            committed_prep, min_height
+        )))),
+        5 => Some(DynamicAirEntry::new(Box::new(Tip5CircuitAir::<
+            Val<SC>,
+            5,
+        >::new_with_preprocessed(
+            committed_prep, min_height
+        )))),
+        _ => unreachable!("tip5_witness_bus_dim only returns 1, 2 or 5"),
+    }
 }
 
 /// Per-op preprocessed CTL row width registered by the Tip5 NPO
@@ -95,11 +173,18 @@ impl Tip5Prover {
     /// committed-preprocessed override (`air_with_committed_preprocessed`)
     /// then replaces the preprocessed with the `Tip5Preprocessor`
     /// output so the debug lookup check / verifier binding agree.
+    ///
+    /// `witness_ctl_scale` is the circuit's extension degree; the
+    /// prover-side AIR is built with the matching `WITNESS_EXT_D` so
+    /// its emitted `WitnessChecks` interactions match the recompose /
+    /// witness-bus producers in a D≥2 circuit (faithful mirror of
+    /// poseidon1's `poseidon_d1_witness_bus_dim`-selected AIR).
     fn batch_instance_base<SC>(
         &self,
         _config: &SC,
         packing: &TablePacking,
         traces: &Traces<Val<SC>>,
+        witness_ctl_scale: u32,
     ) -> Option<BatchTableInstance<SC>>
     where
         SC: StarkGenericConfig + 'static + Send + Sync,
@@ -130,15 +215,25 @@ impl Tip5Prover {
         let matrix = p3_matrix::dense::RowMajorMatrix::new(main_vals, width);
 
         // 2. Full preprocessed (L-table ++ per-row CTL) at the same
-        //    height. (`idx_scale = 1`: base-field circuit, D == 1.)
+        //    height. `idx_scale = 1` ALWAYS (not `D`): the Tip5
+        //    witness-index D-scaling is applied by the `Tip5Preprocessor`
+        //    (`out_wid = idx / D`) which then *replaces* this via
+        //    `air_with_committed_preprocessed` — re-scaling here would
+        //    double-scale every CTL index (the original C2.4 bug; see
+        //    `tip5_preprocess_for_prover`'s `idx_scale` note). The AIR's
+        //    `WITNESS_EXT_D` tuple D-padding (NOT the index value) is
+        //    what carries the bus-dim, exactly as poseidon1.
         let prep =
             build_tip5_circuit_preprocessed::<Val<SC>>(&l_prep_g, &t.operations, height, 1);
 
-        let air = Tip5CircuitAir::<Val<SC>>::new_with_preprocessed(prep, min_height);
+        // Prover-side AIR with the circuit-D-matched `WITNESS_EXT_D`
+        // (mirror of poseidon1's `poseidon_d1_witness_bus_dim`-selected
+        // `Bus1`/`Bus5` AIR). Returns `None` for an unsupported scale.
+        let air = tip5_air_entry_for_witness_dim::<SC>(prep, min_height, witness_ctl_scale)?;
 
         Some(BatchTableInstance {
             op_type,
-            air: DynamicAirEntry::new(Box::new(air)),
+            air,
             trace: matrix,
             public_values: Vec::new(),
             rows,
@@ -158,22 +253,108 @@ where
         self.tip5_op_type()
     }
 
-    impl_table_prover_batch_instances_from_base!(batch_instance_base);
+    // Per-D dispatch — **faithful mirror** of poseidon1's explicit
+    // per-`CF` `batch_instance_dN` (NOT
+    // `impl_table_prover_batch_instances_from_base!`, which erases the
+    // field and so cannot communicate the circuit's witness-bus
+    // scale). poseidon1 derives `witness_ctl_scale = CF::DIMENSION`;
+    // here the dimension is the **compile-time constant `N`** of each
+    // `batch_instance_dN` method (d1 ⇒ scale 1, d2 ⇒ scale 2) — the
+    // identical value, with no extension-field trait bound needed (the
+    // Tip5 trace is always base-Goldilocks; only the circuit's scale
+    // varies). The base traces are recovered with the same
+    // `transmute_traces` erasure the old macro used. D=1 (standalone
+    // base) and D=2 (Goldilocks Layer-0 recursion verifier) are the
+    // only deployed Tip5 paths.
+    fn batch_instance_d1(
+        &self,
+        config: &SC,
+        packing: &TablePacking,
+        traces: &Traces<Val<SC>>,
+    ) -> Option<BatchTableInstance<SC>> {
+        self.batch_instance_base::<SC>(config, packing, traces, 1)
+    }
+
+    fn batch_instance_d2(
+        &self,
+        config: &SC,
+        packing: &TablePacking,
+        traces: &Traces<BinomialExtensionField<Val<SC>, 2>>,
+    ) -> Option<BatchTableInstance<SC>> {
+        // Tip5 trace is base-Goldilocks regardless of circuit D; erase
+        // the D=2 extension trace exactly as the old macro did, and
+        // pass the statically-known circuit scale (2).
+        let base_traces: &Traces<Val<SC>> = unsafe { transmute_traces(traces) };
+        self.batch_instance_base::<SC>(config, packing, base_traces, 2)
+    }
+
+    // D∈{4,6,8}: Tip5 is never hosted in a D≥4 circuit (the only
+    // deployed Tip5 paths are standalone base-field D=1 and the
+    // Goldilocks Layer-0 recursion verifier D=2). `tip5_witness_bus_dim`
+    // returns `None` for scales 4/6/8, so a `batch_instance_base`
+    // dispatch would yield `None` regardless — returning `None`
+    // directly is behaviourally identical and is exactly the
+    // `Poseidon1ProverD2` faithful pattern (its d4/d6/d8 are `None`
+    // because that prover's perm only supports the D=2 scale). This
+    // also avoids requiring an unnecessary `BinomiallyExtendable<{4,
+    // 6,8}>` bound on the generic `SC` (the old erasing macro hid the
+    // field via `transmute_traces`; we keep that exact effect — no
+    // base instance is producible for these scales).
+    fn batch_instance_d4(
+        &self,
+        _config: &SC,
+        _packing: &TablePacking,
+        _traces: &Traces<BinomialExtensionField<Val<SC>, 4>>,
+    ) -> Option<BatchTableInstance<SC>> {
+        None
+    }
+
+    fn batch_instance_d6(
+        &self,
+        _config: &SC,
+        _packing: &TablePacking,
+        _traces: &Traces<BinomialExtensionField<Val<SC>, 6>>,
+    ) -> Option<BatchTableInstance<SC>> {
+        None
+    }
+
+    fn batch_instance_d8(
+        &self,
+        _config: &SC,
+        _packing: &TablePacking,
+        _traces: &Traces<BinomialExtensionField<Val<SC>, 8>>,
+    ) -> Option<BatchTableInstance<SC>> {
+        None
+    }
 
     fn batch_air_from_table_entry(
         &self,
         _config: &SC,
         _degree: usize,
-        _circuit_extension_degree: u32,
+        circuit_extension_degree: u32,
         _table_entry: &NonPrimitiveTableEntry<SC>,
     ) -> Result<DynamicAirEntry<SC>, String> {
         // Interaction structure (tip5_l bus + 16 input sends + 10
         // output receives, kind-gated) is preprocessed-value
-        // independent; the committed preprocessed binding is carried
-        // in `common.preprocessed`. Mirror `RecomposeProver`: rebuild
-        // with empty preprocessed.
-        let air = Tip5CircuitAir::<Val<SC>>::new_with_preprocessed(Vec::new(), 1);
-        Ok(DynamicAirEntry::new(Box::new(air)))
+        // independent EXCEPT for the `WitnessChecks` tuple D-padding,
+        // which MUST match the circuit's extension degree (otherwise
+        // the verifier reconstructs a different-arity bus tuple than
+        // the prover committed → orphaned net-multiplicity; this is
+        // exactly the C2.4 Layer-0 `["0","0"]` mismatch). Rebuild with
+        // empty preprocessed and the circuit-D-matched `WITNESS_EXT_D`
+        // — a faithful mirror of poseidon1's
+        // `batch_air_from_table_entry` →
+        // `wrapper_from_config_with_preprocessed(_, _,
+        // circuit_extension_degree)`.
+        tip5_air_entry_for_witness_dim::<SC>(Vec::new(), 1, circuit_extension_degree).ok_or_else(
+            || {
+                format!(
+                    "unsupported witness bus dimension {circuit_extension_degree} for Tip5 \
+                     config {:?}",
+                    self.config
+                )
+            },
+        )
     }
 
     fn air_with_committed_preprocessed(
@@ -181,10 +362,17 @@ where
         committed_prep: Vec<Val<SC>>,
         min_height: usize,
         _lanes: usize,
-        _circuit_extension_degree: u32,
+        circuit_extension_degree: u32,
     ) -> Option<DynamicAirEntry<SC>> {
-        let air = Tip5CircuitAir::<Val<SC>>::new_with_preprocessed(committed_prep, min_height);
-        Some(DynamicAirEntry::new(Box::new(air)))
+        // D-aware committed-preprocessed AIR — mirror of poseidon1's
+        // `air_with_committed_preprocessed` →
+        // `wrapper_from_config_with_preprocessed(committed_prep,
+        // min_height, circuit_extension_degree)`.
+        tip5_air_entry_for_witness_dim::<SC>(
+            committed_prep,
+            min_height,
+            circuit_extension_degree,
+        )
     }
 }
 
@@ -375,7 +563,13 @@ where
         let suffix = op_type.as_str().strip_prefix("tip5_perm/")?;
         let _config = Tip5Config::from_variant_name(suffix)?;
 
-        let air = Tip5CircuitAir::<Val<SC>>::new_with_preprocessed(prep_base.to_vec(), min_height);
+        // D=1 circuit ⇒ `WITNESS_EXT_D = 1`. The pad loop runs zero
+        // times ⇒ the emitted `WitnessChecks` tuples are byte-identical
+        // to the pre-R-a `[idx, value]` (the HARD D=1 invariant).
+        let air = Tip5CircuitAir::<Val<SC>, 1>::new_with_preprocessed(
+            prep_base.to_vec(),
+            min_height,
+        );
 
         let num_rows = if prep_base.is_empty() {
             0
@@ -402,21 +596,24 @@ where
     SymbolicExpressionExt<Val<SC>, SC::Challenge>:
         Algebra<SymbolicExpression<Val<SC>>> + Algebra<SC::Challenge>,
 {
-    /// Faithful mirror of the D=1 `try_build`. Tip5 is Goldilocks
-    /// base-field only; the `Tip5CircuitAir` (`tip5_l` LogUp bus + x⁷
-    /// algebraic constraints + the `WitnessChecks` `[idx, value]` CTL)
-    /// operates over base `Val<SC>` columns and its interaction
-    /// structure is **circuit-extension-degree independent** — unlike
-    /// Poseidon1's `Bus1`/`Bus5` witness-dimension variants, the Tip5
-    /// AIR pushes the *same* `WitnessChecks` interactions for any
-    /// circuit `D`. The D=2 witness-index scaling is carried entirely
-    /// by the committed preprocessed produced by the (already-present)
-    /// `Tip5Preprocessor` `PreprocessedColumns<BinomialExtensionField<
-    /// Goldilocks, 2>, 2>` arm (`out_wid = idx / D`), which *replaces*
-    /// the prover's regenerated preprocessed (`air_with_committed_
-    /// preprocessed`). Hence the AIR built here is byte-identical to
-    /// the D=1 case; only the `CircuitTableAir<SC, 2>` wrapper differs.
-    /// No constraint / bus / single-row design is altered.
+    /// Faithful mirror of the D=1 `try_build`, with the `WitnessChecks`
+    /// CTL D-padded to the **circuit's** extension degree (`D == 2`):
+    /// the AIR is built as `Tip5CircuitAir<_, WITNESS_EXT_D = 2>`, so
+    /// each input-send / output-receive emits `[idx, value, ZERO]`
+    /// (the perm is D=1, so one value coordinate + `WITNESS_EXT_D − 1`
+    /// zeros). This is the **C2.4 R-a fix** and the faithful mirror of
+    /// poseidon1's `poseidon_d1_witness_bus_dim`-selected
+    /// `Bus1`/`Bus5` AIR-type dispatch (a D=1 perm in a D≥2 circuit
+    /// must D-pad its CTL tuple to match the recompose / witness-bus
+    /// producers, which push `1 + D`-wide tuples — see
+    /// `recompose_air.rs`'s coeff-lookup `[idx, value, ZERO×(D−1)]`).
+    /// The prior code pushed the un-padded 2-element `[idx, value]`
+    /// here, which orphaned the net-multiplicity at D=2 (the
+    /// `["0","0"]` Layer-0 mismatch). The `tip5_l` LogUp bus, the x⁷
+    /// algebraic constraints, the verifier-fixed 256-row L-table, and
+    /// the preprocessed `in_idx/in_ctl/out_idx/out_ctl` layout are
+    /// **unchanged** — only the CTL tuple arity is now circuit-D-aware,
+    /// exactly as the validated poseidon1 D=1-in-D≥2 pattern.
     fn try_build(
         &self,
         op_type: &NpoTypeId,
@@ -428,7 +625,11 @@ where
         let suffix = op_type.as_str().strip_prefix("tip5_perm/")?;
         let _config = Tip5Config::from_variant_name(suffix)?;
 
-        let air = Tip5CircuitAir::<Val<SC>>::new_with_preprocessed(prep_base.to_vec(), min_height);
+        // D=2 circuit ⇒ `WITNESS_EXT_D = 2`: emit `[idx, value, ZERO]`.
+        let air = Tip5CircuitAir::<Val<SC>, 2>::new_with_preprocessed(
+            prep_base.to_vec(),
+            min_height,
+        );
 
         let num_rows = if prep_base.is_empty() {
             0

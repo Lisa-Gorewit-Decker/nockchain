@@ -30,7 +30,7 @@
 use alloc::vec::Vec;
 
 use p3_air::{Air, AirBuilder, BaseAir, WindowAccess};
-use p3_field::Field;
+use p3_field::{Field, PrimeCharacteristicRing};
 use p3_goldilocks::Goldilocks;
 use p3_lookup::builder::InteractionBuilder;
 use p3_matrix::dense::RowMajorMatrix;
@@ -174,8 +174,24 @@ pub fn generate_tip5_circuit_main(
 /// `tip5_l` LogUp bus + algebraic constraints + verifier-fixed L-table,
 /// reused verbatim) with the `WitnessChecks` cross-table CTL on the
 /// permutation rows.
+/// `WITNESS_EXT_D` is the **circuit's** witness-bus extension degree
+/// (1 for the standalone base-field Tip5 circuit; 2 for the D=2
+/// Goldilocks-challenge Layer-0 recursion verifier circuit; 5 kept
+/// for mirror parity with Poseidon1's quintic witness-bus). Tip5 is
+/// an intrinsically D=1 (base-Goldilocks) permutation, so each CTL
+/// limb's value is a *single* base element; the `WitnessChecks` bus
+/// tuple is D-padded to `[idx, value, ZERO×(WITNESS_EXT_D − 1)]` so
+/// it matches the recompose/witness-bus producers in a D≥2 circuit —
+/// a faithful mirror of `p3_poseidon1_circuit_air`'s
+/// `eval_interactions<…, const WITNESS_EXT_D>` D-padding (there each
+/// limb pushes `D` value coordinates then `WITNESS_EXT_D − D` zeros;
+/// for Tip5 the perm `D == 1`, so the value contributes exactly one
+/// coordinate and the pad is `WITNESS_EXT_D − 1`). The default `= 1`
+/// keeps every existing `Tip5CircuitAir<F>` reference byte-identical
+/// (the pad loop runs zero times ⇒ the emitted tuple is exactly the
+/// previous `[idx, value]`).
 #[derive(Debug, Clone)]
-pub struct Tip5CircuitAir<F> {
+pub struct Tip5CircuitAir<F, const WITNESS_EXT_D: usize = 1> {
     inner: Tip5PermLookupAir<F>,
     /// Full preprocessed (L-table ++ CTL), row-major
     /// `TIP5_CIRCUIT_PREP_WIDTH` wide.
@@ -183,7 +199,7 @@ pub struct Tip5CircuitAir<F> {
     min_height: usize,
 }
 
-impl<F: Field> Tip5CircuitAir<F> {
+impl<F: Field, const WITNESS_EXT_D: usize> Tip5CircuitAir<F, WITNESS_EXT_D> {
     /// Construct from the full circuit preprocessed flat vector.
     ///
     /// The first `L_PREP_WIDTH` columns of every row are the L-table
@@ -228,7 +244,7 @@ impl<F: Field> Tip5CircuitAir<F> {
     }
 }
 
-impl<F: Field> BaseAir<F> for Tip5CircuitAir<F> {
+impl<F: Field, const WITNESS_EXT_D: usize> BaseAir<F> for Tip5CircuitAir<F, WITNESS_EXT_D> {
     fn width(&self) -> usize {
         tip5_lookup_air_width()
     }
@@ -272,7 +288,7 @@ impl<F: Field> BaseAir<F> for Tip5CircuitAir<F> {
     }
 }
 
-impl<AB> Air<AB> for Tip5CircuitAir<AB::F>
+impl<AB, const WITNESS_EXT_D: usize> Air<AB> for Tip5CircuitAir<AB::F, WITNESS_EXT_D>
 where
     AB: AirBuilder + InteractionBuilder,
     AB::F: Field,
@@ -296,26 +312,49 @@ where
         let kind: AB::Expr = local[tip5_kind_col()].into();
         let cbase = L_PREP_WIDTH;
 
-        // Input limb SENDS: `[idx, value]`, multiplicity
-        // `-(in_ctl * kind)`. `kind` (boolean, asserted by the inner
-        // AIR) zeroes the bus contribution on L-table / padding rows.
+        // Input limb SENDS: `[idx, value, ZERO×(WITNESS_EXT_D − 1)]`,
+        // multiplicity `-(in_ctl * kind)`. `kind` (boolean, asserted by
+        // the inner AIR) zeroes the bus contribution on L-table /
+        // padding rows. The tuple is D-padded to `WITNESS_EXT_D + 1`
+        // exactly as `p3_poseidon1_circuit_air::eval_interactions`
+        // (input limb sends): `push(idx)`, then the perm's `D` value
+        // coordinates, then `WITNESS_EXT_D − D` zeros. Tip5's perm
+        // `D == 1`, so the value contributes a single coordinate and
+        // the pad count is `WITNESS_EXT_D − 1`. At `WITNESS_EXT_D == 1`
+        // the pad loop runs zero times ⇒ the emitted tuple is
+        // byte-identical to the previous `[idx, value]`.
         for i in 0..TIP5_WIDTH {
             let idx: AB::Expr = pre[cbase + CTL_IN_IDX + i].into();
             let in_ctl: AB::Expr = pre[cbase + CTL_IN_CTL + i].into();
             let value: AB::Expr = local[tip5_in_col(i)].into();
             let mult = in_ctl * kind.clone();
-            builder.push_interaction("WitnessChecks", alloc::vec![idx, value], -mult, 1);
+            let mut input_idx_limb: Vec<AB::Expr> = Vec::with_capacity(WITNESS_EXT_D + 1);
+            input_idx_limb.push(idx);
+            input_idx_limb.push(value);
+            for _ in 0..(WITNESS_EXT_D - 1) {
+                input_idx_limb.push(AB::Expr::ZERO);
+            }
+            builder.push_interaction("WitnessChecks", input_idx_limb, -mult, 1);
         }
 
-        // Rate output limb RECEIVES: `[idx, value]`, multiplicity
-        // `out_ctl * kind` (the resolved per-witness read count is
-        // baked into `out_ctl` by the preprocessor; `kind` gates rows).
+        // Rate output limb RECEIVES: `[idx, value, ZERO×(WITNESS_EXT_D
+        // − 1)]`, multiplicity `out_ctl * kind` (the resolved
+        // per-witness read count is baked into `out_ctl` by the
+        // preprocessor; `kind` gates rows). Same D-padding as the
+        // poseidon1 output-limb receives (`push(idx)`, `D` value
+        // coords, `WITNESS_EXT_D − D` zeros; Tip5 perm `D == 1`).
         for i in 0..TIP5_RATE {
             let idx: AB::Expr = pre[cbase + CTL_OUT_IDX + i].into();
             let out_ctl: AB::Expr = pre[cbase + CTL_OUT_CTL + i].into();
             let value: AB::Expr = local[tip5_out_col(i)].into();
             let mult = out_ctl * kind.clone();
-            builder.push_interaction("WitnessChecks", alloc::vec![idx, value], mult, 1);
+            let mut output_idx_limb: Vec<AB::Expr> = Vec::with_capacity(WITNESS_EXT_D + 1);
+            output_idx_limb.push(idx);
+            output_idx_limb.push(value);
+            for _ in 0..(WITNESS_EXT_D - 1) {
+                output_idx_limb.push(AB::Expr::ZERO);
+            }
+            builder.push_interaction("WitnessChecks", output_idx_limb, mult, 1);
         }
     }
 }

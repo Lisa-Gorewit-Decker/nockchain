@@ -428,22 +428,37 @@ MMCS + tamper), poseidon1/2 10/10, circuit 358, circuit-prover
 NOT faked):**
 - **R-a — the OUTER recursive STARK *certificate* of the Tip5
   Layer-0 verifier circuit** (`prove_all_tables`/
-  `verify_all_tables` of that circuit). Blocked by a concrete
-  correctness wall: the verifier circuit is over D=2 (the Layer-0
-  challenge extension) but Tip5 is a D=1 base-perm, and the
-  C2.3/L5-**validated** `Tip5CircuitAir` `WitnessChecks` CTL is
-  hardcoded to the 2-element D=1 tuple `[idx,value]` (at D=2 →
-  an orphaned net-mult mismatch vs the D-padded producers).
-  Fixing it = making that *validated* CTL D-aware (poseidon1's
-  `eval_interactions<…,WITNESS_EXT_D>` padded-tuple pattern) +
-  a circuit-prover `witness_bus_dim(2)` for any D=1-perm-in-D=2
-  — an **invasive change to the soundness linchpin requiring
-  re-validation of C2.3/L5**, which R1 forbids rushing. The
-  agent genuinely drove it (packed adapter, `digest_ext`,
-  `Tip5AirBuilder<2>`, `RegisterTip5ForExt<2>`, idx_scale fix,
-  `LiftTip5`) and stopped at the wall, linchpin intact (diff-
-  verified). **This is exactly milestone C3 / #124** (the
-  vertical-recursion ≤65 KB certificate).
+  `verify_all_tables` of that circuit). **Update 2026-05-19:**
+  the WitnessChecks D-padding sub-problem is **SOLVED + landed +
+  D=1-byte-identical-re-validated** — `Tip5CircuitAir` is now
+  `WITNESS_EXT_D`-parameterized (faithful poseidon1
+  `eval_interactions<…,WITNESS_EXT_D>` mirror; at
+  `WITNESS_EXT_D=1` the pad loop runs 0× ⇒ tuple `[idx,value]`
+  byte-identical, the entire C2.0–C2.4 D=1 gate re-passes green;
+  at D=2 it emits the correct 3-wide tuple) + circuit-prover
+  `tip5_witness_bus_dim({1,2,5})` threaded through the Tip5
+  table/AIR-builder. Fenced linchpin (`Tip5PermLookupAir`/
+  `tip5_l`/`tip5_spec`/`generation_lookup`) byte-for-byte intact
+  (diff-verified vs `fb0bd32`); full Plonky3-recursion workspace
+  green, no regression. The **remaining** outer-cert wall is now
+  precisely traced and *narrower*: at D=2 the cross-table
+  `WitnessChecks` multiset still orphans (±1 over **correctly
+  3-wide** tuples) because the **shared recompose-coeff
+  producer** (`recompose.rs`) emits a base-coeff producer
+  multiplicity *only* for `Op::Hint`-derived coeffs, while
+  `verify_p3_uni_proof_circuit` wires some Tip5 perm-input coeffs
+  as *computed* (non-Hint) witnesses (producer +0 vs consumer
+  −1). Closing it = the **C3/#124** milestone, gated by the
+  **DT-1 design task (#129)**: preferred path (i) wire those
+  coeffs as `Op::Hint` outputs (mirror the validated poseidon2
+  D=1-in-D=5 quintic outer cert) with a written soundness
+  argument that the hint values stay bound by the verifier's
+  challenger/MMCS/FRI constraints; fallback (ii) generalize the
+  shared `RecomposePreprocessor`/`hint_output_wids` (invasive to
+  the poseidon1/2-validated paths → full re-validation). R1:
+  design-doc-first (#129) before any fenced-linchpin-adjacent
+  implementation. **C2 (#123) is complete and validated; the
+  outer certificate is the distinct C3/#124 milestone.**
 - **R-b — ai-pow-zk's *actual* M10.1c composite `RecursiveAir`**
   (this gate proves a representative `FibonacciAir` under the
   *exact* Layer-0 `StarkConfig`; the established recursion-test
