@@ -1,5 +1,18 @@
 # C2 — Tip5 AIR degree↔width tradeoff (split to degree 4) + relative performance
 
+> **⚠ SUPERSEDED (2026-05-18).** This analysed the *lookup-free*
+> `Tip5PermAir` (7604 cols, deg 3) and concluded "the real lever is
+> the lookup table". That lever was then taken: `Tip5PermLookupAir`
+> drops the main width to **886**. But it surfaced a new dominant
+> factor this doc did not model — the **LogUp gadget's own
+> constraint degree** (`1 + Σ tuple degrees`): the as-committed
+> single 225-tuple interaction is degree ≈226 (FRI-infeasible). The
+> feasible narrow form is the multi-interaction shared bus
+> (degree ≈3–4, B=4, + O(#lookups·D) aux EF cols). The
+> performance analysis is being **rewritten on that bus-form
+> basis** (`C2_TIP5_CIRCUIT_AIR_DESIGN.md` §2c, L4). The §1–§6
+> figures below are kept only as the lookup-free baseline.
+
 > **Status:** DESIGN (2026-05-18). A study of widening the
 > `tip5-circuit-air` AIR to cap constraint degree, with exact
 > per-variant width and a prover-cost analysis. No code change yet —

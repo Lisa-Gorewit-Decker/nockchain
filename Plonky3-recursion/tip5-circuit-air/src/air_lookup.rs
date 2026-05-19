@@ -1,7 +1,32 @@
-//! Lookup-table Tip5 permutation AIR (the narrow, paper-faithful
-//! form — Tip5 paper IACR ePrint 2023/107 §4.7: a Hash table that
-//! *looks up* the split-and-lookup S-box `L` in a 256-row Lookup
-//! table via a LogUp argument).
+//! Lookup-table Tip5 permutation AIR (narrow split-S-box encoding).
+//!
+//! ⚠ **KNOWN-FLAWED INTERMEDIATE (do not ship / do not prove via
+//! batch-stark as-is).** This file pushes **one
+//! `push_local_interaction` with all `7·4·8 = 224` byte-query tuples
+//! + 1 table tuple per row**. `LogUpGadget::constraint_degree`
+//! (`p3-lookup/src/logup.rs:339`) for one interaction is
+//! `1 + Σ_tuples(elem degree)` — here `1 + 225 ≈ **226**`, which is
+//! FRI-infeasible (`log_blowup ≥ 8`). [`BaseAir::max_constraint_
+//! degree`] below reports only the *hand-written algebraic*
+//! constraints; it deliberately does **not** model the LogUp
+//! gadget's own (degree-226) constraint — see the note there.
+//!
+//! What the `tests` here *do* validate (correctly, standalone): the
+//! generated trace is bit-for-bit `nockchain_math::tip5::permute`
+//! (native-equivalence), the algebraic constraints hold, and the
+//! LogUp **value** identity (`Σ = 0`) holds / breaks on tamper. They
+//! do **not** validate STARK-feasibility of the LogUp constraint.
+//!
+//! The feasible low-degree narrow form is the **multi-interaction
+//! shared bus** (Tip5 paper §4.7 Hash⟷Lookup table; the
+//! poseidon1-circuit-air `WitnessChecks` pattern — many small
+//! `push_interaction` calls, one aux column each, low degree), which
+//! is the C2.3 recursion-integration path. This module is retained
+//! only as the native-equivalence column-layout reference while that
+//! bus form is built; see `C2_TIP5_CIRCUIT_AIR_DESIGN.md` §2c.
+//!
+//! Tip5 paper IACR ePrint 2023/107 §4.7: a Hash table that *looks
+//! up* the split-and-lookup S-box `L` in a 256-row Lookup table.
 //!
 //! This **replaces the ≈7168-column boolean range-check core** of
 //! the lookup-free [`crate::Tip5PermAir`] with **2 columns per byte**
@@ -138,8 +163,16 @@ impl<F: p3_field::Field> BaseAir<F> for Tip5PermLookupAir<F> {
         ))
     }
     fn max_constraint_degree(&self) -> Option<usize> {
-        // kind-gated guard / x⁷ closer reach degree 4 (same FRI tier
-        // as the degree-3 lookup-free AIR: log_blowup=2, B=4).
+        // ⚠ This is the max degree of the *hand-written algebraic*
+        // constraints only (the kind-gated guard / x⁷ closer reach
+        // degree 4). It deliberately does NOT model the LogUp
+        // gadget's own constraint, which for this file's single
+        // 225-tuple `push_local_interaction` is degree ≈ 226
+        // (`LogUpGadget::constraint_degree = 1 + Σ tuple degrees`) —
+        // FRI-infeasible. Returning a value here would falsely imply
+        // the AIR is provable at B=4; it is not, until the lookup is
+        // restructured to the multi-interaction bus form (C2.3). See
+        // the module-level ⚠ note.
         Some(4)
     }
 }

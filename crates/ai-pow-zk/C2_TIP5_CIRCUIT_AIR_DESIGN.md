@@ -194,26 +194,53 @@ unchanged. The C2.0 identity theorem still anchors *which* table
 KAT-first; the validated lookup-free `Tip5PermAir` is kept as a
 cross-oracle until the lookup form passes the **entire** gate):
 
-**STATUS: L1+L2 DONE & VALIDATED (2026-05-18).** `Tip5PermLookupAir`
-(`air_lookup.rs`) + `generate_lookup_trace` (`generation_lookup.rs`):
-**886 columns vs 7604 — 8.6× narrower** (`width_is_dramatically
-_narrower`, printed). Native-equivalence: lookup-AIR trace
-`(IN,ROUT[6])` == `nockchain_math::tip5::permute` bit-for-bit on
-all **315 fixture vectors + 2048 random** (`lookup_air_equals
-_native_spec`); `check_constraints` clean against the **verifier-
-fixed preprocessed 256-row L-table**; LogUp accumulator **exactly
-0** for honest. Adversarial (`lookup_air_adversarial`): tampered
-S-box image `c` ⇒ accumulator ≠ 0; tampered `ROUT` ⇒ constraints
-fail; §4.6 non-canonical `x+p` split ⇒ guard fires. Full crate
-10/10 (7 lookup-free cross-oracle + 3 lookup-table); whole
-Plonky3-recursion workspace builds clean. *Honest scope:* L2
-validates the lookup AIR's correctness + the lookup-mechanism
-soundness *standalone* (the Plonky3 `RangeCheckAir` pattern:
-`check_constraints` + explicit LogUp-accumulator==0). A real
-`p3-batch-stark` prove→verify that *runs* the LogUp permutation
-argument is the **C2.3 recursion-integration path** (batch-stark/
-CTL machinery) — still the genuine residual, correctly not faked
-here. The lookup-free `Tip5PermAir` is retained as a redundant
+**STATUS — L1 column-layout DONE; L2 PARTIAL + a DEGREE FLAW
+FOUND & CORRECTED (2026-05-18).** `Tip5PermLookupAir`
+(`air_lookup.rs`) + `generate_lookup_trace`: **886 main columns
+vs 7604** — the column width *is* ≈8.6× smaller, and
+native-equivalence is real (lookup-AIR trace `(IN,ROUT[6])` ==
+`nockchain_math::tip5::permute` bit-for-bit on **315 fixture +
+2048 random**; algebraic `check_constraints` clean against the
+verifier-fixed preprocessed L-table; LogUp **value** accumulator
+exactly 0 honest / ≠0 on tampered `c`; ROUT-tamper & §4.6
+non-canonical rejected; crate 10/10).
+
+**BUT — the single-interaction LogUp is FRI-infeasible (degree
+≈226).** `air_lookup.rs::eval` pushes one `push_local_interaction`
+with all `7·4·8 = 224` byte-query tuples + 1 table tuple per row.
+`LogUpGadget::constraint_degree` (`p3-lookup/src/logup.rs:339`)
+for one interaction is `1 + Σ_tuples(elem degree) = 1 + 225 ≈
+226` ⇒ needs `log_blowup ≥ 8`; at that blowup the "narrow" AIR is
+~7× *worse* than the lookup-free one. So:
+
+- `BaseAir::max_constraint_degree = Some(4)` is **only the
+  hand-written algebraic constraints**; it does *not* model the
+  LogUp gadget's degree-226 constraint (now documented as such in
+  `air_lookup.rs`, with a module-level ⚠).
+- L2's `check_constraints` runs only the algebraic constraints
+  (not the LogUp gadget); the explicit accumulator test validates
+  the lookup **value** (`Σ=0`), not STARK-feasibility. So L2
+  proves native-equivalence + the lookup *relation* is sound, but
+  **not** that this is a provable low-degree STARK. It is not, as
+  structured.
+- Root cause: batching 224 lookups into one interaction is the
+  wrong LogUp use. The feasible low-degree narrow form is the
+  **multi-interaction shared bus** (Tip5 paper §4.7
+  Hash⟷Lookup-table; the poseidon1-circuit-air `WitnessChecks`
+  pattern: many small `push_interaction` calls, one aux column
+  each, low degree) — which *is* the C2.3 path. `Tip5PermLookupAir`
+  is retained only as the native-equivalence column-layout
+  reference while the **bus form (L4)** is built.
+
+**L4 (next, user-directed "restructure to bus form"):** replace
+the single 225-tuple interaction with per-byte interactions on a
+shared bus (each ≤2 elements ⇒ degree ≈2–3, one aux EF column
+each; the table side provides via the same bus). Width ≈ 886 main
++ O(#byte-lookups·D) aux EF cols; max degree ≈3–4 (B=4 tier).
+Re-run the full native-equivalence + adversarial + a
+**feasible-degree** LogUp gate (incl. an actual `p3-batch-stark`
+prove→verify that runs the permutation argument). Staged per R1;
+the lookup-free `Tip5PermAir` is retained as a redundant
 native-equivalence cross-oracle (R1).
 
 - **L1** — `Tip5PermLookupAir` + generation: per round, per split
