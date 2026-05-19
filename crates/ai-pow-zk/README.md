@@ -19,7 +19,31 @@ history.
 **272 unit tests + 13 ignored benches passing.** Latest PROD bench
 (commit `d6065d8`): ~50 s prove / ~140 ms verify / ~890 KB
 baseline (~1.65 MB with activity) at `MIN_STARK_LEN = 8192` rows ×
-1378 cols, 120-bit provable FRI soundness.
+1378 cols, 120-bit provable FRI soundness. *(Note: as of 2026-05-19
+the FRI parameter floor was recalibrated to **≥80 bits
+unconditional at the Johnson radius** — see "Open lines of work"
+below; benches will be re-measured at the new bar.)*
+
+## Open lines of work
+
+These are the **active in-flight residuals**. Each row points to
+the design / status doc that owns it.
+
+| Open work | Doc (in [`docs/`](docs/)) | Status |
+|---|---|---|
+| **Production roadmap** (the index of every milestone) | [`2026-05-17_PRODUCTION_ROADMAP.md`](docs/2026-05-17_PRODUCTION_ROADMAP.md) | Live |
+| **M-S5b / P-C2** — ≤65 KB terminal compression of the M-S5 cert | [`2026-05-19_M_S5B_TERMINAL_COMPRESSION_DESIGN.md`](docs/2026-05-19_M_S5B_TERMINAL_COMPRESSION_DESIGN.md) | Design + KAT-first de-risk plan landed; S1 (Path B verifier-AIR reduction map) is the next deliverable. Empirical post-recalibration L2 = ~618 KB → ~9.5× over 65 KB. |
+| **C4 / M-S6** — independent crypto audit | [`2026-05-19_C4_AUDIT_READINESS.md`](docs/2026-05-19_C4_AUDIT_READINESS.md) | Readiness package landed (threat model + soundness-claim index + KAT/adversarial catalogue + known residuals). Team in-house audit walk is the next deliverable; people other than us will also audit. |
+| **Proof-size + parameter-choice measurements** (the post-recalibration source of truth) | [`2026-05-19_PROOF_SIZE_RECALIBRATION_MEASUREMENTS.md`](docs/2026-05-19_PROOF_SIZE_RECALIBRATION_MEASUREMENTS.md) | Stage A/B/C + S3(ii) measured; L2 = 618 KB; L3 > L2 ⇒ stacked recursion confirmed-dead at the new ≥80-Johnson bar. |
+| **C3 / M-S5** vertical-recursion cert — historical record + DT-4 fix | [`2026-05-19_C3_OUTER_CERT_DESIGN.md`](docs/2026-05-19_C3_OUTER_CERT_DESIGN.md) | LANDED (the ≥120-bit version; subsequently re-parametrized to ≥80-Johnson in commits `0334943` / `f54ae81`). |
+| **Soundness/security report** | [`2026-05-15_ZKP_SECURITY_REPORT.md`](docs/2026-05-15_ZKP_SECURITY_REPORT.md) | Live |
+| **Gap inventory** | [`2026-05-15_GAP_AUDIT.md`](docs/2026-05-15_GAP_AUDIT.md) | Live — new C4 findings (in-house + external) route here per R1 |
+| **R-b / M12 / `#127`** — composite `RecursiveAir` (replaces representative `FibonacciAir`) | [`2026-05-14_M10_1C_DESIGN.md`](docs/2026-05-14_M10_1C_DESIGN.md) | Deferred milestone |
+
+The [`docs/`](docs/) directory has the full categorized index in
+[`docs/README.md`](docs/README.md) — start there for the broader
+context (status reports, AIR designs, M52 / Phase A-CR / §4.C.2 /
+Pearl byte-equivalence / C1–C3 recursion substrate / Phase B etc.).
 
 ## What works today
 
@@ -80,6 +104,9 @@ The proof attests that:
 
 ## What's still unbound
 
+(See the "Open lines of work" table above for the doc-pointer
+form. This subsection is the in-narrative description.)
+
 - **`h_a` / `h_b` matrix bindings.** The witness's matrix entries
   aren't yet tied to chain-pinned chunk-Merkle roots. An adversary
   can still pick any `(a, b)` and run the matmul on them. Multi-
@@ -87,10 +114,12 @@ The proof attests that:
 - **Final CV_OUT in public inputs.** The composite trace doesn't
   yet thread "current CV" forward to the last row. Add when
   downstream protocols need the final hash output.
-- **Recursion compression (M12).** Plonky3 doesn't ship a
-  compressor yet; deferred per design. PROD proofs are currently
-  ~900 KB baseline / ~1.65 MB with activity. Recursion would
-  target Pearl's ~60 KB.
+- **Recursion compression (M-S5b / #131).** A vertical-recursion
+  cert lands at ~618 KB L2 at the new ≥80-Johnson bar (Stage B
+  measured); the ≤65 KB target remains deferred to M-S5b — see
+  [`docs/2026-05-19_M_S5B_TERMINAL_COMPRESSION_DESIGN.md`](docs/2026-05-19_M_S5B_TERMINAL_COMPRESSION_DESIGN.md)
+  for the path tree (Path B verifier-AIR floor-attack now primary;
+  stacked recursion confirmed-dead).
 
 ## Module map
 

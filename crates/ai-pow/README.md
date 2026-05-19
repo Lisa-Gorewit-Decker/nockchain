@@ -11,6 +11,30 @@ This is **Phase 1** of the AI-PoW track. Phase 2 (`crates/ai-pow-vi`)
 extends the same primitives to a verifiable-inference puzzle on real LLM
 weights.
 
+## Open lines of work
+
+The **active in-flight residuals** on the ai-pow side. Each row
+points to the design / status doc that owns it. Pearl-byte-
+equivalence on the *mineable unit* is the byte-equiv anchor for
+the SNARK side (`ai-pow-zk`); open ai-pow-side residuals are
+primarily Pearl-reference + quant-extraction.
+
+| Open work | Doc (in [`docs/`](docs/)) | Status |
+|---|---|---|
+| **Pearl divergence inventory** (the primary closure tracker) | [`2026-05-13_PEARL_COMPARISON.md`](docs/2026-05-13_PEARL_COMPARISON.md) | Live |
+| **Pearl-spec audit** that drove the v2 → v3 redesign | [`2026-05-13_FLAWS.md`](docs/2026-05-13_FLAWS.md) | Live (historical) |
+| **Phase B1.1 Pearl-faithfulness audit** — vendored reference ≡ real pearl/zk-pow line-for-line + real 16 GB weights byte-process | [`2026-05-18_B1_PEARL_FAITHFULNESS_AUDIT.md`](docs/2026-05-18_B1_PEARL_FAITHFULNESS_AUDIT.md) | COMPLETE on the real shipped model (see Phase-B in roadmap) |
+| **B1 — Pearl reference vectors** from Pearl's miner (golden `(κ, s_a, s_b, E/F, tile digest)` to bit-anchor `ai-pow` against Pearl) | (planned; see roadmap Phase B1 in [`../ai-pow-zk/docs/2026-05-17_PRODUCTION_ROADMAP.md`](../ai-pow-zk/docs/2026-05-17_PRODUCTION_ROADMAP.md)) | Open — needs Pearl-side artifacts |
+| **B2 — Quant-extraction contract** for the vLLM plugin's INT7/INT8 → Pearl type-0 `[−64,64]` int8 `(A,B,μ)` mapping | same roadmap Phase B2 | Open — needs Pearl-side artifacts |
+| **Production roadmap** (where Phase B / D1 / D2 / FP8 are scoped) | [`../ai-pow-zk/docs/2026-05-17_PRODUCTION_ROADMAP.md`](../ai-pow-zk/docs/2026-05-17_PRODUCTION_ROADMAP.md) | Live (lives in ai-pow-zk's docs but covers ai-pow too) |
+
+The downstream SNARK side (`ai-pow-zk`) has its own open lines
+of work tracker — see [`../ai-pow-zk/README.md#open-lines-of-work`](../ai-pow-zk/README.md#open-lines-of-work)
+for M-S5b / C4 / measurements / etc.
+
+The [`docs/`](docs/) directory has the full categorized index in
+[`docs/README.md`](docs/README.md).
+
 ## Scope
 
 What `ai-pow` provides:
