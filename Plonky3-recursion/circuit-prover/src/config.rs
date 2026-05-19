@@ -237,6 +237,89 @@ pub fn goldilocks_tip5() -> GoldilocksConfig {
     StarkConfig::new(pcs, challenger)
 }
 
+/// **ADDITIVE (C3 measurement/de-risk only)** — Goldilocks Tip5
+/// outer-cert config at a **≥120-bit-equivalent FRI tier**.
+///
+/// Byte-identical to [`goldilocks_tip5`] (same `Poseidon2Goldilocks<8>`
+/// seed-1 perm, same `PaddingFreeSponge`/`TruncatedPermutation`, same
+/// `MerkleTreeMmcs` cap height 3, same DFT, same `log_blowup = 2`,
+/// `max_log_arity = 1`, `log_final_poly_len = 0`) **except the FRI
+/// `num_queries`**: 120 (vs `new_testing`'s 2). The ethSTARK
+/// conjectured soundness is `log_blowup · num_queries +
+/// query_pow_bits = 2·120 + 1 = 241` bits — well past the ≥120-bit
+/// bar, and matching the inner Tip5-L0 sweep's `num_queries ·
+/// log_blowup / 2 == 120` convention (here `120 · 2 / 2 == 120`).
+/// `commit/query_proof_of_work_bits` stay `1` (the `new_testing`
+/// value `goldilocks_tip5` already uses) so the *only* lever vs the
+/// ~5-bit tier is `num_queries`, for an apples-to-apples size
+/// comparison. `max_log_arity` is kept at the `new_testing` value
+/// (`1`, binary folding) here for the same reason; the high-arity
+/// size lever is measured separately. This builder is purely
+/// additive and does **not** modify [`goldilocks_tip5`].
+#[inline]
+pub fn goldilocks_tip5_120bit() -> GoldilocksConfig {
+    use rand::SeedableRng;
+    let mut rng = rand::rngs::SmallRng::seed_from_u64(1);
+    let perm = p3_goldilocks::Poseidon2Goldilocks::<8>::new_from_rng_128(&mut rng);
+    let hash = PaddingFreeSponge::<_, 8, 4, 4>::new(perm.clone());
+    let compress = TruncatedPermutation::<_, COMPRESS_ARITY, 4, 8>::new(perm.clone());
+    let val_mmcs = MerkleTreeMmcs::new(hash, compress, 3);
+    let challenge_mmcs = ExtensionMmcs::new(val_mmcs.clone());
+    let dft = Radix2DitParallel::default();
+    // Same tier as `goldilocks_tip5` (`new_testing` ⇒ log_blowup = 2,
+    // pow_bits = 1, max_log_arity = 1, log_final_poly_len = 0) but
+    // `num_queries = 120` ⇒ conjectured soundness 2·120 + 1 = 241 bits
+    // (≥120). Built explicitly (not via `new_testing`, which hardcodes
+    // num_queries = 2) to raise *only* num_queries.
+    let fri_params = FriParameters {
+        log_blowup: 2,
+        log_final_poly_len: 0,
+        max_log_arity: 1,
+        num_queries: 120,
+        commit_proof_of_work_bits: 1,
+        query_proof_of_work_bits: 1,
+        mmcs: challenge_mmcs,
+    };
+    let pcs = TwoAdicFriPcs::new(dft, val_mmcs, fri_params);
+    let challenger = DuplexChallenger::new(perm);
+    StarkConfig::new(pcs, challenger)
+}
+
+/// **ADDITIVE (C3 S3 size-lever measurement only)** — Goldilocks
+/// Tip5 outer-cert config at the **same ≥120-bit FRI soundness** as
+/// [`goldilocks_tip5_120bit`] but with **high-arity folding**
+/// (`max_log_arity = 3`) and a non-trivial final polynomial
+/// (`log_final_poly_len = 2`). These two levers are
+/// **soundness-neutral**: conjectured soundness depends only on
+/// `log_blowup · num_queries + query_pow_bits` (unchanged at
+/// `2·120 + 1 = 241` bits); higher arity / earlier FRI stop only
+/// reshape the proof to fewer, fatter commit-phase steps. Purely
+/// additive; does not modify [`goldilocks_tip5`] or
+/// [`goldilocks_tip5_120bit`].
+#[inline]
+pub fn goldilocks_tip5_120bit_higharity() -> GoldilocksConfig {
+    use rand::SeedableRng;
+    let mut rng = rand::rngs::SmallRng::seed_from_u64(1);
+    let perm = p3_goldilocks::Poseidon2Goldilocks::<8>::new_from_rng_128(&mut rng);
+    let hash = PaddingFreeSponge::<_, 8, 4, 4>::new(perm.clone());
+    let compress = TruncatedPermutation::<_, COMPRESS_ARITY, 4, 8>::new(perm.clone());
+    let val_mmcs = MerkleTreeMmcs::new(hash, compress, 3);
+    let challenge_mmcs = ExtensionMmcs::new(val_mmcs.clone());
+    let dft = Radix2DitParallel::default();
+    let fri_params = FriParameters {
+        log_blowup: 2,
+        log_final_poly_len: 2,
+        max_log_arity: 3,
+        num_queries: 120,
+        commit_proof_of_work_bits: 1,
+        query_proof_of_work_bits: 1,
+        mmcs: challenge_mmcs,
+    };
+    let pcs = TwoAdicFriPcs::new(dft, val_mmcs, fri_params);
+    let challenger = DuplexChallenger::new(perm);
+    StarkConfig::new(pcs, challenger)
+}
+
 /// Type alias for BabyBear STARK configuration.
 pub type BabyBearConfig =
     Config<BabyBear, Poseidon2BabyBear<16>, Poseidon2BabyBear<16>, 16, 16, 8, 8, 8, 4>;

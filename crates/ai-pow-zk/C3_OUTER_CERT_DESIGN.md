@@ -980,3 +980,94 @@ blocked **solely** by the orthogonal, fix-independent **M-S5
 ≤65 KB** size target (~116–117 KB actual; §13.1 residual,
 M12/#127-adjacent). No completion claimed for C3; the soundness
 linchpin advance is now committed rather than held as a recipe.
+
+## 14. C3 size de-risk — DECISIVE MEASUREMENT (user-directed "measure both tiers first"; 2026-05-19)
+
+The "vertical-recursion ≤65 KB" milestone is Pearl §4.7/§5.1
+*compression*; the landed ~117 KB cert is the Pearl-"Layer-1"
+recursive STARK. **Critical finding (source-verified):** that
+cert's *outer/wrapper* FRI tier is `config::goldilocks_tip5()`
+= `FriParameters::new_testing` (log_blowup=2, num_queries=2,
+pow=1) ≈ **~5 conjectured FRI bits** — chosen only because
+lb=2 is the min that proves the degree-4 Tip5 AIR. The *inner*
+Tip5-L0 proof is the genuine 120-bit sweep; the recursive
+**wrapper is ~5-bit** (orthogonal to, and not a regression of,
+the validated DT-4 WitnessChecks duplex binding). User chose
+to measure the size/soundness tradeoff at both tiers before
+deciding. Additive-only de-risk (new `config::goldilocks_tip5
+_120bit*` siblings — `goldilocks_tip5()` byte-identical; new
+`recursion/tests/test_tip5_layer0_compression.rs`, all heavy
+tests `#[ignore]`d but genuinely run); fenced linchpin
+byte-identical vs `14116b0`; orchestrator-reproduced gate green
+(test_tip5_layer0 14/0/1, quintic 1/1, p3-tip5-circuit-air
+14/14). All numbers are real `prove_all_tables`+`postcard`
+(no fabrication; every tamper path genuinely rejects).
+
+**S0.b — L1 PROD `BatchStarkProof` byte breakdown (119 866 B
+total, == landed residual figure):** `opened_values` (OOD
+poly evals) **65 466 B / 54.6 %** (the dominant term — table
+count × cols at D=2, *independent of FRI query count*);
+`opening_proof` (FRI) 44 592 B / 37.2 %; `global_lookup_data`
+8 464 B / 7.1 %; commitments 912 B; rest <0.3 %. Hypothesis
+"FRI dominates" **partially refuted** — OOD opens dominate,
+not FRI.
+
+**S1 — L2 mechanism end-to-end works** (accept + tamper-reject
+via `verify_p3_batch_proof_circuit`, the validated quintic
+template) BUT the L2 verifier circuit has a **~40 KB fixed
+floor** (Poseidon2-W8 + recompose + in-circuit FRI fold-chain)
+*independent of inner size* ⇒ recursion is net-negative until
+the inner ≫ 40 KB.
+
+**S2 — L2 over the REAL ~117 KB Tip5-L0 cert, both tiers
+(real, accept+tamper-reject ✅ both):**
+| tier | L2 serialized | vs 65 536 B |
+|---|--:|--:|
+| (a) ~5-bit (`goldilocks_tip5`, lb2/nq2/pow1 ⇒ ~5 bits) | **45 513 B (44.4 KB)** | **≤65 KB ✅** |
+| (b) ≥120-bit (`goldilocks_tip5_120bit`, lb2/nq120/pow1 ⇒ 241 conj. bits) | **1 475 156 B (1.44 MB)** | 22× over ✗ |
+
+**S3 — levers at ≥120-bit (real):** high-arity
+(max_log_arity=3, lfp=2, *same 241-bit*) → 1 144 308 B (still
+17× over); **L3** over L2 → 1 769 913 B (**L3 > L2 — recursion
+DIVERGES** at ≥120-bit: each layer's 120-query FRI + full
+re-proven verifier-circuit OOD opens exceed the inner it
+wraps).
+
+**Decisive conclusion (exact bytes).** ≤65 KB is reachable
+**only at the ~5-bit testing tier** (L2(a)=45 513 B). At any
+real ≥120-bit tier the existing substrate **cannot** reach
+≤65 KB at any measured depth/config (17–27× over; depth makes
+it *worse*). Reaching ≤65 KB at ≥120-bit requires a **substrate
+addition** (size-targeted terminal compression — a real
+SNARK/STARK-to-SNARK wrap with small constant proof, a smaller
+proven AIR, or genuine proof-folding — none in the current
+`Plonky3-recursion`; M12/#127-adjacent), OR re-scoping the
+M-S5 ≤65 KB budget against this circuit's inherent ≥120-bit
+size.
+
+**Additional decisive substrate residual (verified).** The
+landed `p3_circuit_prover::config::GoldilocksConfig` uses an
+**unpacked** `MerkleTreeMmcs<Goldilocks,…>`, but
+`verify_p3_batch_proof_circuit` requires
+`MerkleTreeMmcs<F::Packing,…>`; on aarch64-neon
+`Goldilocks::Packing ≠ Goldilocks` ⇒ the landed-config cert is
+**type-incompatible** with the recursion verifier. S2/S3 used a
+packed-MMCS, FRI-tier-identical, cap-0 substitute (verified
+byte-faithful: S0.b total == landed 119 866 B; soundness-
+neutral — SIMD packing changes only the hasher impl, not
+committed values/Merkle structure). A recursion-compatible
+packed-MMCS `GoldilocksConfig` (or making the recursion
+verifier accept the unpacked config) is a **prerequisite for
+ANY production L2 landing**, independent of the tier decision.
+
+**Status (R1, honest).** C3 soundness closing-fix remains
+DONE+validated+landed (`14116b0`); the ≤65 KB target is now
+**proven to require either an explicit ~5-bit-wrapper soundness
+trade OR a major out-of-scope substrate build OR an M-S5
+budget re-scope** — a soundness/milestone-scope decision that
+is the user's (R1: soundness trades require explicit sign-off;
+R1 outranks Stop-hook completion pressure here — presenting a
+~5-bit cert as "C3 ≤65 KB done" would be fake completion +
+silent soundness weakening). No C3 completion claimed; the
+de-risk artifact (additive config siblings + measurement
+module) is committed as the precise actionable evidence.
