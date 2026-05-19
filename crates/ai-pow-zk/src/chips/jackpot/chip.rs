@@ -1,5 +1,10 @@
 //! Jackpot AIR — 16-slot rotate-XOR-13 chip.
 //!
+//! **Pearl ISC.** This file is derived from Pearl source code
+//! (Copyright (c) 2025-2026 Pearl Research Labs; 2015-2016 The Decred
+//! developers); see `crates/ai-pow-zk/LICENSE-PEARL` for the full
+//! permission notice.
+//!
 //! Port of `pearl/zk-pow/src/circuit/chip/jackpot/jackpot_air.rs`.
 //! Each row updates exactly one slot of a 16-slot state register
 //! via the rotate-XOR-13 primitive.

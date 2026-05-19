@@ -1,6 +1,11 @@
 //! BLAKE3 scalar compression — reference function the BLAKE3 chip
 //! AIR (Phase 8) proves correct.
 //!
+//! **Pearl ISC.** This file is derived from Pearl source code
+//! (Copyright (c) 2025-2026 Pearl Research Labs; 2015-2016 The Decred
+//! developers); see `crates/ai-pow-zk/LICENSE-PEARL` for the full
+//! permission notice.
+//!
 //! Port of `pearl/zk-pow/src/circuit/chip/blake3/blake3_compress.rs`.
 //! Byte-equivalent to:
 //!

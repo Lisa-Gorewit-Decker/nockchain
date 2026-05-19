@@ -1,5 +1,10 @@
 //! BLAKE3 chip for the M10.1c composite AIR.
 //!
+//! **Pearl ISC.** This file is derived from Pearl source code
+//! (Copyright (c) 2025-2026 Pearl Research Labs; 2015-2016 The Decred
+//! developers); see `crates/ai-pow-zk/LICENSE-PEARL` for the full
+//! permission notice.
+//!
 //! Port of `pearl/zk-pow/src/circuit/chip/blake3/` — Pearl's
 //! one-round-per-row BLAKE3 chip. Spreads one BLAKE3 compression
 //! across 8 trace rows × ~1k cols, matching the composite AIR's

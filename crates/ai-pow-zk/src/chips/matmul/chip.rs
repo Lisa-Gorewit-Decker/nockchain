@@ -1,5 +1,10 @@
 //! Matmul AIR — enforces the tile-accumulator update.
 //!
+//! **Pearl ISC.** This file is derived from Pearl source code
+//! (Copyright (c) 2025-2026 Pearl Research Labs; 2015-2016 The Decred
+//! developers); see `crates/ai-pow-zk/LICENSE-PEARL` for the full
+//! permission notice.
+//!
 //! Port of Pearl's `pearl/zk-pow/src/circuit/chip/matmul/
 //! compute_cumsum.rs` constraint. One constraint per `(i, j)` cell
 //! in `CUMSUM_TILE`, asserting the reset / update / pass-through

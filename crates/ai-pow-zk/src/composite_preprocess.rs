@@ -1,5 +1,10 @@
 //! Preprocessed-trace generation for the M10.1c composite AIR.
 //!
+//! **Pearl ISC.** This file is derived from Pearl source code
+//! (Copyright (c) 2025-2026 Pearl Research Labs; 2015-2016 The Decred
+//! developers); see `crates/ai-pow-zk/LICENSE-PEARL` for the full
+//! permission notice.
+//!
 //! Port of `pearl/zk-pow/src/circuit/pearl_preprocess.rs`,
 //! simplified to the minimum we need for the chip wiring landed in
 //! Phases 2–5. Pearl's full preprocessor is tied to a multi-

@@ -1,5 +1,10 @@
 //! Jackpot chip — 16-slot rotate-XOR-13 tile-state evolution.
 //!
+//! **Pearl ISC.** This file is derived from Pearl source code
+//! (Copyright (c) 2025-2026 Pearl Research Labs; 2015-2016 The Decred
+//! developers); see `crates/ai-pow-zk/LICENSE-PEARL` for the full
+//! permission notice.
+//!
 //! Port of `pearl/zk-pow/src/circuit/chip/jackpot/` — Pearl's
 //! per-tile state update from §4.5 of the Pearl whitepaper.
 //!

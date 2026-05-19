@@ -1,6 +1,11 @@
 //! Top-level BLAKE3 chip — selector-gated dispatch of Phase 8a/b
 //! primitives across an 8-row hash instruction.
 //!
+//! **Pearl ISC.** This file is derived from Pearl source code
+//! (Copyright (c) 2025-2026 Pearl Research Labs; 2015-2016 The Decred
+//! developers); see `crates/ai-pow-zk/LICENSE-PEARL` for the full
+//! permission notice.
+//!
 //! Port of `pearl/zk-pow/src/circuit/chip/blake3/blake3_air.rs` —
 //! the chip-level `eval` that wires `verify_init_state`,
 //! `verify_round`, and `finalize_blake` to per-row selector bits.

@@ -1,5 +1,10 @@
 //! Scalar reference for Pearl's 16-slot rotate-XOR-13 update.
 //!
+//! **Pearl ISC.** This file is derived from Pearl source code
+//! (Copyright (c) 2025-2026 Pearl Research Labs; 2015-2016 The Decred
+//! developers); see `crates/ai-pow-zk/LICENSE-PEARL` for the full
+//! permission notice.
+//!
 //! Port of `pearl/zk-pow/src/circuit/chip/jackpot/` arithmetic.
 //! Each row applies one of two operations:
 //!

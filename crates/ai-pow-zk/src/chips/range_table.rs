@@ -1,5 +1,10 @@
 //! Generic range-table chip + four concrete instantiations.
 //!
+//! **Pearl ISC.** This file is derived from Pearl source code
+//! (Copyright (c) 2025-2026 Pearl Research Labs; 2015-2016 The Decred
+//! developers); see `crates/ai-pow-zk/LICENSE-PEARL` for the full
+//! permission notice.
+//!
 //! Port of `pearl/zk-pow/src/circuit/chip/range_table.rs`. One generic
 //! `RangeTableChip<COL, MIN, MAX>` parameterised by the table's
 //! column offset and `[MIN..=MAX]` integer range; four type aliases

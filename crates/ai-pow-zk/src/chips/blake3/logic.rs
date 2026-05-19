@@ -1,5 +1,10 @@
 //! Per-row BLAKE3 instruction descriptor.
 //!
+//! **Pearl ISC.** This file is derived from Pearl source code
+//! (Copyright (c) 2025-2026 Pearl Research Labs; 2015-2016 The Decred
+//! developers); see `crates/ai-pow-zk/LICENSE-PEARL` for the full
+//! permission notice.
+//!
 //! Port of `pearl/zk-pow/src/circuit/chip/blake3/logic.rs`. Defines
 //! the high-level "what should this row of the BLAKE3 chip do" type
 //! that Phase 8's trace generator + constraint evaluator consume.

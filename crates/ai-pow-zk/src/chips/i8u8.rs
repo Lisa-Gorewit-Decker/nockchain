@@ -1,5 +1,10 @@
 //! Signed↔unsigned 8-bit conversion table chip.
 //!
+//! **Pearl ISC.** This file is derived from Pearl source code
+//! (Copyright (c) 2025-2026 Pearl Research Labs; 2015-2016 The Decred
+//! developers); see `crates/ai-pow-zk/LICENSE-PEARL` for the full
+//! permission notice.
+//!
 //! Port of `pearl/zk-pow/src/circuit/chip/i8u8.rs`. The table
 //! enumerates all 256 valid `(i8, u8)` pairs related by the two's-
 //! complement convention `u8 = i8 + 128` (or equivalently `u8 =

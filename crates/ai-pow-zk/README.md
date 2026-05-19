@@ -169,6 +169,20 @@ Tip5: not upstream. We re-use Nockchain's in-repo
 [`nockchain_math::tip5`](../nockchain-math/src/tip5/) (7-round
 parameter set) as the FRI sponge.
 
+## Licensing
+
+The crate is dual-licensed under `LICENSE-APACHE` and `LICENSE-MIT`
+at the workspace root, **except** for the modules listed in
+[`LICENSE-PEARL`](LICENSE-PEARL) — those are Pearl-source ports
+(`pearl/zk-pow/src/circuit/...`) carrying a top-of-file ISC notice
+and are governed by the Pearl ISC license terms reproduced in
+that file (Copyright (c) 2025-2026 Pearl Research Labs;
+Copyright (c) 2015-2016 The Decred developers). The Pearl
+upstream itself is vendored read-only under
+[`../../pearl/`](../../pearl/) for line-level cross-reference;
+see also [`../ai-pow/LICENSE-PEARL`](../ai-pow/LICENSE-PEARL)
+for the ai-pow-side derived-file enumeration.
+
 ## Security parameters
 
 - **`CircuitConfig::PROD`**: `log_blowup = 3`, `num_queries = 80` →

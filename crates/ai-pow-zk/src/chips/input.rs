@@ -1,6 +1,11 @@
 //! Input chip — ties unpacked matrix bytes / unpacked noise to the
 //! packed `NOISED_PACKED` column read by the matmul + BLAKE3 chips.
 //!
+//! **Pearl ISC.** This file is derived from Pearl source code
+//! (Copyright (c) 2025-2026 Pearl Research Labs; 2015-2016 The Decred
+//! developers); see `crates/ai-pow-zk/LICENSE-PEARL` for the full
+//! permission notice.
+//!
 //! Port of `pearl/zk-pow/src/circuit/chip/input/constraints.rs`.
 //!
 //! ## Columns the chip reads

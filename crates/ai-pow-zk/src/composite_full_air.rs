@@ -1,5 +1,10 @@
 //! M10.1c composite AIR — Phase 12 integration layer.
 //!
+//! **Pearl ISC.** This file is derived from Pearl source code
+//! (Copyright (c) 2025-2026 Pearl Research Labs; 2015-2016 The Decred
+//! developers); see `crates/ai-pow-zk/LICENSE-PEARL` for the full
+//! permission notice.
+//!
 //! Port of `pearl/zk-pow/src/circuit/pearl_air.rs:46-89` — the
 //! top-level `eval` that wires every chip's constraints into a
 //! single AIR over [`composite_layout`]'s `TOTAL_TRACE_WIDTH`

@@ -1,5 +1,10 @@
 //! Constraint primitives for the BLAKE3 round AIR.
 //!
+//! **Pearl ISC.** This file is derived from Pearl source code
+//! (Copyright (c) 2025-2026 Pearl Research Labs; 2015-2016 The Decred
+//! developers); see `crates/ai-pow-zk/LICENSE-PEARL` for the full
+//! permission notice.
+//!
 //! Port of `pearl/zk-pow/src/circuit/chip/blake3/blake3_air.rs`,
 //! specifically the underlying constraint helpers
 //! (`add3_unchecked`, `add2_unchecked`, `xor_32_shift_if`,

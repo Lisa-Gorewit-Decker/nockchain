@@ -1,5 +1,10 @@
 //! `STARK_ROW_IDX` monotonic-increment chip.
 //!
+//! **Pearl ISC.** This file is derived from Pearl source code
+//! (Copyright (c) 2025-2026 Pearl Research Labs; 2015-2016 The Decred
+//! developers); see `crates/ai-pow-zk/LICENSE-PEARL` for the full
+//! permission notice.
+//!
 //! Port of `pearl/zk-pow/src/circuit/chip/monotonic_increment.rs`.
 //! Pearl uses this as the row-address column that `CV_OUT → CV_IN`
 //! LogUp routing keys on. We use it for the same purpose.
