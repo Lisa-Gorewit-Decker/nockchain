@@ -503,3 +503,109 @@ mandatory; this is invasive soundness-linchpin work and is
 M12/#127-adjacent, NOT a one-liner). DT-2 (§8) is *spent* — it
 was the prover-label hypothesis; DT-3 needs its own
 source-verified multiplicity hypothesis.
+
+## 10. DT-3 — source-verified multiplicity ledger + fix (2026-05-19; design-first, then driven)
+
+**Bus sign convention (source-pinned):** `p3 lookup/src/
+builder.rs:30,66` — `count>0` = SEND (produce), `count<0` =
+RECEIVE (consume); per-witness balance = creator SENDs
+`+n_reads` once, each reader RECEIVEs `-1`, net 0.
+
+**Exact ledger for wid 11468 @ D=2, tuple `[22936,·,0]`** (DT-2
+prover-label fix assumed in effect ⇒ Tip5 producer at
+`idx=wid·D=22936`; Tip5 NPO = instance 3):
+
+| # | site | role | ±mult | gate | D-dep? |
+|---|------|------|-------|------|--------|
+| 1 | `tip5-circuit-air air_circuit.rs:350,357` (mult `circuit-prover .../tip5.rs:429-441`) | Tip5 perm-A rate-OUT (creator, not dup — defined first `circuit.rs:466-486`) | **+`ext_reads`(=1)** | `out_ctl·kind` | label D-scaled |
+| 2 | `air_circuit.rs:330,337` | Tip5 perm-B IN (consumer) | **−1** | `−(in_ctl·kind)` | label D-scaled |
+| 3 | `recompose_air.rs:190` (mult `recompose.rs:345-350`) | `recompose/coeff` SEND | **+`ext_reads`(=1)** | `if hint_output_wids∋wid {ext_reads} else {0}` | **YES** |
+
+Rows 1+2 (the Tip5 table's own creator/consumer pair) **net
+0**. Row 3 is a **surplus duplicate creator** ⇒ **net +1**,
+matching the observed delta.
+
+**Root cause (source-confirmed).** The decompose coeff is an
+`Op::Hint` output (`circuit_builder.rs:1511-1522` →
+`npo.rs:67-68`) ⇒ ∈ `hint_output_wids` (`circuit.rs:272-284`,
+built from `Op::Hint` outputs). `set_recompose_coeff_ctl_for
+_decompose_links(true)` (the test + `fibonacci_batch_stark
+_prover_quintic.rs:143`) routes the duplex EF value through
+`decompose_ext_to_base_coeffs` → `recompose_base_coeffs_to_ext
+_with_coeff_lookups` (`circuit_builder.rs:1525-1530`), whose
+coeff `connect`s (DSU `connect_dsu.rs:91-104`) into the Tip5
+duplex-link witness class — so that wid is **both** a Tip5
+perm-A creator **and** ∈ `hint_output_wids`. The
+`recompose/coeff` producer's mult resolver
+(`recompose.rs:345-350`) tests *only* `hint_output_wids
+.contains(wid)` — too coarse: it does not exclude hint wids
+`connect`-merged onto an NPO/Tip5 creator ⇒ emits a **duplicate
++1 creator**. **Only D≥2:** the decompose round-trip is reached
+only via the `permutation_config.d()==1 && ext_degree>1` branch
+(`mmcs.rs:200`); at D=1 there is no decompose / no
+`recompose/coeff` rows, so rows 1+2 alone net 0 (= why C2.4-R-a
+D=1 is green). Off-by-one = **extra PRODUCE**, single
+responsible site = `recompose.rs:345-350` / `recompose_air
+.rs:190`.
+
+**Fix (DT-3, principled minimal — the exact analog of an
+existing validated carve-out).** `circuit.rs:263-284` already
+excludes Const/Public-defined wids (`const_public_wids`) from
+`hint_output_wids` *precisely* to stop the Recompose table
+double-creating a wid `ConstAir` already creates. Generalize
+that carve-out to also exclude **NPO/Tip5 output-index wids**
+(`register_non_primitive_output_index` targets) from
+`hint_output_wids`. Then for the duplex link row 3's mult →
+`else {0}` (the existing arm), net = +1 −1 +0 = **0**. The
+recompose arithmetic constraint `Σcᵢ·basisᵢ==x`
+(`circuit_builder.rs:1524-1530`) and the Tip5 perm-A/perm-B
+creator/consumer pair are **untouched**; only the *duplicate
+phantom creator's* multiplicity goes to 0. Soundness: the
+duplex link is still produced once (Tip5 perm-A, value pinned
+by the verbatim `Tip5PermLookupAir` x⁷/`tip5_l` constraints)
+and consumed once (perm-B), so net-0 IS the duplex-chain
+binding (perm-B-in == perm-A-out bit-for-bit); the +1 was pure
+bookkeeping surplus, not binding. Exactly the spirit of the
+`const_public_wids` precedent.
+
+**Blast radius (R1-critical) — SHARED, not Tip5-local.**
+`hint_output_wids` (`circuit.rs:272-284`) + the
+`RecomposePreprocessor` coeff path are shared with
+poseidon1/2 **and the quintic poseidon2 D=1-in-D=5
+decompose-link** (`fibonacci_batch_stark_prover_quintic.rs:143`
+= the *other* `set_recompose_coeff_ctl_for_decompose_links`
+caller). ⇒ invasive soundness-linchpin change; the carve-out
+must be **precisely scoped** (exclude a wid only when it is
+*both* a hint output *and* an NPO output-index — i.e. genuinely
+double-created; never drop a wid recompose is the *sole*
+creator of, else it orphans the other direction).
+
+**Decisive staged gate (the arbiter; R1, KAT-first).**
+- **G1 D=1 byte-identical** (the precise-scoping arbiter — if
+  the carve-out over-excludes, D=1 is no longer byte-identical
+  or poseidon orphans the other way): full C2.0–C2.4 D=1 suite
+  + orig 7 `test_tip5_layer0_recursion` +
+  `p3-tip5-circuit-air` 14 + `test_tip5_lookups` 2 +
+  `challenger_transcript` 46 + `p3_recursion` 32, green &
+  unchanged.
+- **G2 blast-radius arbiter**: poseidon1/2 10/10 **+
+  `fibonacci_batch_stark_prover_quintic`** (THE specific
+  shared-path regression the `hint_output_wids` change risks)
+  + recompose proptests + full `cargo test --workspace`
+  0-fail. Quintic regression ⇒ carve-out broke the validated
+  quintic producer-balance ⇒ **falsified, escalate**.
+- **G3 C3 done**: D=2 Tip5 Layer-0 outer cert
+  `prove_all_tables`/`verify_all_tables` balances + accepts
+  valid + **rejects tampered**, full 120-bit sweep, recursive
+  cert **≤ 65 KB**.
+
+**Escalation (hard stop, R1).** Any of G1/G2/G3 fails (esp. G2
+quintic = the author's shared-path warning materializing, or
+G3 orphan persists/moves): land nothing, revert byte-identical,
+record the precise empirical delta, escalate. No weakening, no
+fake. **UNVERIFIED (carry forward):** the numeric `wid 11468 →
+specific duplex call-site` map + exact `ext_reads` count are
+debug-run-only (not source-confirmable); robust to either way —
+the responsible site (`recompose.rs:345-350`) and the fix
+(scoped `hint_output_wids` carve-out) are unchanged, the gate
+is the arbiter.
