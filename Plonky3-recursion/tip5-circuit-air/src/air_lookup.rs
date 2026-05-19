@@ -1,32 +1,30 @@
-//! Lookup-table Tip5 permutation AIR (narrow split-S-box encoding).
+//! Lookup-table Tip5 permutation AIR — **global-bus form** (narrow
+//! split-S-box encoding, Tip5 paper IACR ePrint 2023/107 §4.7: a
+//! Hash table that *looks up* `L` in a 256-row Lookup table).
 //!
-//! ⚠ **KNOWN-FLAWED INTERMEDIATE (do not ship / do not prove via
-//! batch-stark as-is).** This file pushes **one
-//! `push_local_interaction` with all `7·4·8 = 224` byte-query tuples
-//! + 1 table tuple per row**. `LogUpGadget::constraint_degree`
-//! (`p3-lookup/src/logup.rs:339`) for one interaction is
-//! `1 + Σ_tuples(elem degree)` — here `1 + 225 ≈ **226**`, which is
-//! FRI-infeasible (`log_blowup ≥ 8`). [`BaseAir::max_constraint_
-//! degree`] below reports only the *hand-written algebraic*
-//! constraints; it deliberately does **not** model the LogUp
-//! gadget's own (degree-226) constraint — see the note there.
+//! **Degree flaw FIXED (L4, 2026-05-18).** The earlier single
+//! `push_local_interaction` with all 225 tuples/row was
+//! `LogUpGadget::constraint_degree = 1 + Σ ≈ 226` (FRI-infeasible).
+//! `eval` now emits **one small `push_interaction` per byte** on a
+//! shared global bus `tip5_l` (`LookupBus::lookup_key` query;
+//! `table_entry` provide) — each a single-tuple, degree-1-element,
+//! degree-1/2-count interaction ⇒ `constraint_degree = 2`
+//! (decisively asserted in `tests::global_bus_interactions_are
+//! _low_degree`). 224 query + 1 provide = 225 separate global
+//! interactions ⇒ 225 aux EF cols; the global net sum is
+//! reconciled across the Hash & Lookup tables by
+//! `verify_global_final_value`.
 //!
-//! What the `tests` here *do* validate (correctly, standalone): the
-//! generated trace is bit-for-bit `nockchain_math::tip5::permute`
-//! (native-equivalence), the algebraic constraints hold, and the
-//! LogUp **value** identity (`Σ = 0`) holds / breaks on tamper. They
-//! do **not** validate STARK-feasibility of the LogUp constraint.
-//!
-//! The feasible low-degree narrow form is the **multi-interaction
-//! shared bus** (Tip5 paper §4.7 Hash⟷Lookup table; the
-//! poseidon1-circuit-air `WitnessChecks` pattern — many small
-//! `push_interaction` calls, one aux column each, low degree), which
-//! is the C2.3 recursion-integration path. This module is retained
-//! only as the native-equivalence column-layout reference while that
-//! bus form is built; see `C2_TIP5_CIRCUIT_AIR_DESIGN.md` §2c.
-//!
-//! Tip5 paper IACR ePrint 2023/107 §4.7: a Hash table that *looks
-//! up* the split-and-lookup S-box `L` in a 256-row Lookup table.
+//! Validated standalone here: native-equivalence (trace ==
+//! `nockchain_math::tip5::permute`), algebraic constraints, the
+//! LogUp **value** identity (`Σ = 0` honest / ≠0 tamper), **and the
+//! per-interaction constraint degree ≤ 2** (the feasibility fix).
+//! *Residual (C2.3, precisely scoped):* a full `p3-batch-stark`
+//! `prove_all_tables`/`verify_all_tables` runs the global
+//! reconciliation in a real STARK — that needs the Tip5 NPO
+//! subsystem + circuit-prover table registration (the
+//! `test_poseidon2_ctl_lookups` machinery). Not faked here; see
+//! `C2_TIP5_CIRCUIT_AIR_DESIGN.md` §2c.
 //!
 //! This **replaces the ≈7168-column boolean range-check core** of
 //! the lookup-free [`crate::Tip5PermAir`] with **2 columns per byte**
@@ -163,16 +161,13 @@ impl<F: p3_field::Field> BaseAir<F> for Tip5PermLookupAir<F> {
         ))
     }
     fn max_constraint_degree(&self) -> Option<usize> {
-        // ⚠ This is the max degree of the *hand-written algebraic*
-        // constraints only (the kind-gated guard / x⁷ closer reach
-        // degree 4). It deliberately does NOT model the LogUp
-        // gadget's own constraint, which for this file's single
-        // 225-tuple `push_local_interaction` is degree ≈ 226
-        // (`LogUpGadget::constraint_degree = 1 + Σ tuple degrees`) —
-        // FRI-infeasible. Returning a value here would falsely imply
-        // the AIR is provable at B=4; it is not, until the lookup is
-        // restructured to the multi-interaction bus form (C2.3). See
-        // the module-level ⚠ note.
+        // Max over BOTH constraint families, now that the global-bus
+        // restructure (L4) made the LogUp interactions degree-2:
+        //  • hand-written algebraic constraints: degree 4 (the
+        //    kind-gated §4.6 guard / x⁷ closer);
+        //  • LogUp gadget (per the global bus): degree 2
+        //    (`tests::global_bus_interactions_are_low_degree`).
+        // ⇒ 4, the B=4 FRI tier (log_blowup=2) — FRI-feasible.
         Some(4)
     }
 }
@@ -199,26 +194,39 @@ where
         let mds = mds_matrix();
         let two32_m1 = fe((1u64 << 32) - 1);
 
-        // ---- LogUp local interaction (paper §4.7): perm rows QUERY
-        //      each (b,c); the preprocessed table PROVIDES (i,L[i]). ----
-        let mut tuples: alloc::vec::Vec<(alloc::vec::Vec<AB::Expr>, AB::Expr)> =
-            alloc::vec::Vec::with_capacity(NS * NBYTES * NUM_ROUNDS + 1);
+        // ---- LogUp GLOBAL bus (paper §4.7 Hash⟷Lookup table) ----
+        // Each byte (b,c) is its OWN small interaction on the shared
+        // `tip5_l` bus: `LookupBus::lookup_key` ⇒
+        // `push_interaction(name,[b,c],kind,1)` — ONE tuple, elements
+        // degree 1, count `kind` degree 1 ⇒ `LogUpGadget::
+        // constraint_degree = 1 + 1 = 2` (proven in
+        // `tests::global_bus_interactions_are_low_degree`). The
+        // 256-row preprocessed L-table PROVIDES `(i,L[i])` with global
+        // multiplicity `TMULT` via `table_entry`
+        // (`push_interaction(name,[i,L[i]],-(TMULT·IS_TABLE),0)`).
+        // 224 query + 1 provide = 225 separate global interactions ⇒
+        // 225 aux EF columns (the bus-form width cost), each a
+        // degree-2 running-sum constraint; the global net sum is
+        // reconciled by `verify_global_final_value` across the Hash &
+        // Lookup tables (the C2.3 batch-stark path — NOT the old
+        // degree-≈226 single-interaction batching).
+        let bus = p3_lookup::bus::LookupBus::new("tip5_l");
         for r in 0..NUM_ROUNDS {
             for t in 0..NS {
                 for k in 0..NBYTES {
-                    tuples.push((
-                        alloc::vec![var(b_col(r, t, k)), var(c_col(r, t, k))],
-                        kind.clone(), // query multiplicity = 1 on perm rows, 0 else
-                    ));
+                    bus.lookup_key(
+                        builder,
+                        [var(b_col(r, t, k)), var(c_col(r, t, k))],
+                        kind.clone(),
+                    );
                 }
             }
         }
-        // table side: provide (TIN,TOUT) with -TMULT (0 on perm/pad).
-        tuples.push((
-            alloc::vec![pvar(P_TIN), pvar(P_TOUT)],
-            -(var(C_TMULT) * pvar(P_IS_TABLE)),
-        ));
-        builder.push_local_interaction(tuples);
+        bus.table_entry(
+            builder,
+            [pvar(P_TIN), pvar(P_TOUT)],
+            var(C_TMULT) * pvar(P_IS_TABLE),
+        );
 
         // ---- algebraic constraints, gated by KIND (perm rows only;
         //      table/pad rows have KIND=0 ⇒ trivially satisfied) ----
@@ -286,8 +294,11 @@ mod tests {
     use std::{fs, vec};
 
     use p3_air::check_constraints;
+    use p3_air::symbolic::AirLayout;
     use p3_field::{Field, PrimeCharacteristicRing, PrimeField64};
     use p3_goldilocks::Goldilocks;
+    use p3_lookup::symbolic::InteractionSymbolicBuilder;
+    use p3_lookup::{Kind, LogUpGadget, Lookup, LookupProtocol};
     use p3_matrix::Matrix;
     use p3_test_utils::goldilocks_params::Challenge;
 
@@ -372,6 +383,64 @@ mod tests {
             }
         }
         acc
+    }
+
+    /// **The decisive degree-fix proof (L4).** Extract every global
+    /// `tip5_l` interaction the AIR emits and assert each compiles to
+    /// a LogUp `Lookup` of `constraint_degree ≤ 2` — i.e. the
+    /// catastrophic single-interaction degree (≈226) is gone and the
+    /// bus form is FRI-feasible (B=4, well within `log_blowup=2`).
+    /// Also asserts the exact interaction count
+    /// (`7·4·8 = 224` byte queries + 1 L-table provide = 225).
+    #[test]
+    fn global_bus_interactions_are_low_degree() {
+        let mut sb = InteractionSymbolicBuilder::<Goldilocks>::new(AirLayout {
+            preprocessed_width: PREP_WIDTH,
+            main_width: tip5_lookup_air_width(),
+            ..Default::default()
+        });
+        let air = Tip5PermLookupAir::<Goldilocks>::new(Vec::new());
+        Air::<InteractionSymbolicBuilder<Goldilocks>>::eval(&air, &mut sb);
+
+        let interactions = sb.global_interactions();
+        assert_eq!(
+            interactions.len(),
+            NUM_ROUNDS * NS * NBYTES + 1,
+            "expected 224 byte-query + 1 table-provide global interactions"
+        );
+
+        let gadget = LogUpGadget::new();
+        let mut max_deg = 0usize;
+        let (mut n_query, mut n_provide) = (0usize, 0usize);
+        for si in interactions {
+            assert_eq!(si.bus_name, "tip5_l");
+            match si.count_weight {
+                1 => n_query += 1,
+                0 => n_provide += 1,
+                w => panic!("unexpected count_weight {w}"),
+            }
+            // One push_interaction ⇒ one single-tuple Lookup.
+            let lookup = Lookup::<Goldilocks> {
+                kind: Kind::Global(si.bus_name.clone()),
+                elements: vec![si.fields.clone()],
+                multiplicities: vec![si.count.clone()],
+                column: 0,
+            };
+            let d = gadget.constraint_degree(&lookup);
+            assert!(
+                d <= 2,
+                "global interaction constraint_degree {d} > 2 — bus form not low-degree"
+            );
+            max_deg = max_deg.max(d);
+        }
+        assert_eq!(n_query, NUM_ROUNDS * NS * NBYTES);
+        assert_eq!(n_provide, 1);
+        std::eprintln!(
+            "tip5_l global bus: {} interactions, max LogUp constraint_degree = {} \
+             (was ≈226 for the single-interaction form)",
+            interactions.len(),
+            max_deg
+        );
     }
 
     /// Width: the lookup AIR must be dramatically narrower than the

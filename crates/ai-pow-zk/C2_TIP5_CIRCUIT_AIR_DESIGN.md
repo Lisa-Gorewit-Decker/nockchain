@@ -232,16 +232,40 @@ for one interaction is `1 + Σ_tuples(elem degree) = 1 + 225 ≈
   is retained only as the native-equivalence column-layout
   reference while the **bus form (L4)** is built.
 
-**L4 (next, user-directed "restructure to bus form"):** replace
-the single 225-tuple interaction with per-byte interactions on a
-shared bus (each ≤2 elements ⇒ degree ≈2–3, one aux EF column
-each; the table side provides via the same bus). Width ≈ 886 main
-+ O(#byte-lookups·D) aux EF cols; max degree ≈3–4 (B=4 tier).
-Re-run the full native-equivalence + adversarial + a
-**feasible-degree** LogUp gate (incl. an actual `p3-batch-stark`
-prove→verify that runs the permutation argument). Staged per R1;
-the lookup-free `Tip5PermAir` is retained as a redundant
-native-equivalence cross-oracle (R1).
+**L4 stage-1 — global-bus restructure: DONE & the degree flaw
+machine-proven FIXED (2026-05-18, user-directed "do the global
+bus and do it correctly").** `air_lookup.rs::eval` now emits, via
+`p3_lookup::bus::LookupBus` on the shared bus **`tip5_l`**, **224
+per-byte `lookup_key` query interactions + 1 `table_entry`
+provide = 225 separate single-tuple global interactions** (was
+one 225-tuple `push_local_interaction`). Decisively validated
+(`tests::global_bus_interactions_are_low_degree`): extracting the
+interactions via `InteractionSymbolicBuilder` and compiling each
+to a LogUp `Lookup`, **`LogUpGadget::constraint_degree` = 2 for
+every one of the 225** (max 2; was ≈226) — FRI-feasible, well
+within `log_blowup=2` (B=4). `BaseAir::max_constraint_degree =
+Some(4)` is now honest (algebraic kind-gated = 4 ≥ LogUp = 2).
+Native-equivalence preserved (generation unchanged;
+`lookup_air_equals_native_spec` still 315 fixture + 2048 random
+== `nockchain_math::tip5::permute`); algebraic + value-soundness
++ adversarial all green; crate **11/11**; lookup-free
+`Tip5PermAir` retained as the redundant native-equivalence
+cross-oracle; full Plonky3-recursion workspace builds clean.
+
+**L4 stage-2 — RESIDUAL (precisely scoped, = C2.3 bulk; NOT
+faked).** A real `p3-batch-stark` `prove_all_tables`/
+`verify_all_tables` that *runs* the global net-zero
+reconciliation (`verify_global_final_value` across the Hash &
+L-table) in an actual STARK requires the Tip5 **NPO subsystem**
+(`enable_tip5_perm`/`add_tip5_perm` + call/plugin/executor/
+trace/state, ~2650 LOC mirroring `poseidon1_perm`) and the
+**circuit-prover Tip5 table registration**
+(`register_tip5_table`, `tip5_air_builders`, `Tip5Preprocessor`)
+— exactly the `test_poseidon2_ctl_lookups` machinery. Atomic,
+soundness-critical, staged + KAT-first per R1; the interaction
+structure + degree feasibility it depends on are now proven
+(stage-1), so stage-2 is wiring the proven bus through the
+batch-stark prover.
 
 - **L1** — `Tip5PermLookupAir` + generation: per round, per split
   lane: 8 `b` + 8 `c` byte cols; recompose `Σ bₖ2⁸ᵏ = sbox_in[t]`;
