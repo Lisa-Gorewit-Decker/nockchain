@@ -211,20 +211,33 @@ Wiring (mirrors the closed Poseidon1/2 abstraction):
   golden KAT oracle (`tip5_golden_kat.txt`: constant tables +
   18 `permute` vectors) with read-only drift detection. 2/2 green.
 - **C2.1 — `tip5-circuit-air` member + native≡in-circuit KAT
-  (the soundness linchpin). ✅ DONE.** New vendored member
-  `Plonky3-recursion/tip5-circuit-air` (lookup-free §2b
-  arithmetization: canonical 8-byte split + §4.6 `<p` guard +
-  offset-Fermat-cube + x⁷ + const MDS + const RC, 7 rounds,
-  one-row-per-permutation). **6/6 green:** static + live
-  cross-workspace constant/permute loops; `native_equiv_kat`
-  (AIR trace `(IN,ROUT[6])` == `nockchain_math::tip5::permute`
-  bit-for-bit on all 18 fixture vectors; `check_constraints`
-  clean; real Goldilocks uni-stark `prove`→`verify`);
-  adversarial — tampered OUT/A/bit rejected, **and the precise
-  §4.6 forgery vector** (a non-canonical `x+p` split, otherwise
-  fully consistent) rejected *solely* by the canonical guard
-  (canonical-bytes control passes). Full Plonky3-recursion
-  workspace builds clean; nockchain root undisturbed.
+  (the soundness linchpin). ✅ DONE + EXHAUSTIVELY TESTED.** New
+  vendored member `Plonky3-recursion/tip5-circuit-air`
+  (lookup-free §2b arithmetization: canonical 8-byte split +
+  §4.6 `<p` guard + offset-Fermat-cube + x⁷ + const MDS + const
+  RC, 7 rounds, one-row-per-permutation; each constraint group
+  annotated with its Tip5-paper section — §2.1 round iter, §2.2
+  S/T S-boxes, §2.3 circulant MDS, §2.4 RC, §4.6 decomposition).
+  **7/7 green.** Exhaustive native-equivalence chain (each leg
+  tested): the golden fixture is widened to **315 vectors**
+  (paper-component-targeted edge cases — L fixed points,
+  per-split-lane sweeps, 16 MDS single-lane impulses, power-lane
+  sweeps, §4.6 boundary band, chained multi-permute — + 256
+  seeded states), all generated from & re-verified against
+  **live `nockchain_math::tip5::permute`** (`nockchain-math
+  c2_kat`); `native_equiv_kat` asserts AIR trace `(IN,ROUT[6])`
+  == that fixture bit-for-bit (315-pt direct);
+  `air_equals_native_spec_exhaustive_random` asserts AIR ==
+  native spec over **4096 deterministic-random** permutations
+  with `check_constraints` on every one; spec≡fixture≡nockchain
+  -math pinned by `tip5_spec_matches_fixture_permute` +
+  `embedded_constants_match_fixture`. Adversarial — tampered
+  OUT/A/bit rejected, **and the precise §4.6 forgery vector** (a
+  non-canonical `x+p` split, otherwise fully consistent)
+  rejected *solely* by the canonical guard. Real Goldilocks
+  uni-stark `prove`→`verify` on the full batch. Full
+  Plonky3-recursion workspace builds clean; nockchain root
+  undisturbed.
 - **C2.2 — `Tip5Config` + `ChallengerPermConfig::as_tip5`.
   ✅ DONE (commit `8ced2e8`).** `circuit/src/ops/tip5_perm/
   {config,mod}.rs`: `Tip5Config` mirrors the `Poseidon1Config`

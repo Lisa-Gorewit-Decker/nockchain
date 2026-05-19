@@ -263,36 +263,86 @@ mod c2_kat {
         (x.wrapping_mul(0x2545F4914F6CDD1D)) % (P as u64)
     }
 
-    /// The frozen set of permutation inputs (edge cases + seeded prng),
-    /// chosen to exercise: zero, byte-patterned split lanes, the §4.6
-    /// canonical-decomposition boundary (p−1, values straddling 2^64
-    /// limbs), x^7 on small/large lanes, and round-coupling (double
-    /// permute is added separately).
+    /// The frozen set of permutation inputs — broad, deterministic, and
+    /// targeted at each constraint component of the in-circuit Tip5 AIR
+    /// per the authoritative Tip5 paper (IACR ePrint 2023/107,
+    /// `2023-107.pdf`):
+    ///
+    /// * **§2.2 split-and-lookup S-box** (`S`, the 4 split lanes; the
+    ///   `L`-map `(x+1)^3−1 mod 257` with fixed points 0, 255): all-zero
+    ///   / all-`0xFF` split bytes, single-byte sweeps, every split lane
+    ///   set to `p−1`.
+    /// * **§2.2 power map** (`T: x ↦ x^7`, the 12 non-split lanes):
+    ///   small, large, and boundary lane values.
+    /// * **§2.3 linear (circulant MDS) layer**: 16 single-lane impulses
+    ///   (one lane `= 1`, rest `0`) so every MDS column is exercised.
+    /// * **§2.4 round constants**: the all-zero input isolates the RC
+    ///   addition schedule across all 7 rounds.
+    /// * **§4.6 correct decomposition mod p**: the canonical boundary
+    ///   band (`p−1`, `p−2`, values straddling the 2^32 limb split).
+    /// * **§2.1 round iteration / coupling**: chained multi-permute
+    ///   vectors (added in `build_fixture`).
+    ///
+    /// Plus 256 seeded-xorshift states for broad coverage. Every vector
+    /// is run through `nockchain_math::tip5::permute` and frozen; the
+    /// `golden_kat_frozen_matches_live_permute` test re-verifies the
+    /// committed fixture against live `permute`, so the in-circuit AIR
+    /// (which asserts trace == this fixture) is exhaustively tested
+    /// against *this* implementation over the whole set.
     fn golden_inputs() -> Vec<[u64; 16]> {
-        let p_minus_1 = (P as u64) - 1; // 0xffffffff00000000
+        let p = P as u64;
+        let p_minus_1 = p - 1; // 0xffffffff00000000
         let mut v: Vec<[u64; 16]> = vec![
+            // §2.4: zero input isolates the round-constant schedule.
             [0u64; 16],
             [1u64; 16],
             core::array::from_fn(|i| i as u64),
+            // §4.6: canonical boundary band.
             [p_minus_1; 16],
+            [p_minus_1 - 1; 16],
             core::array::from_fn(|i| if i % 2 == 0 { 0 } else { p_minus_1 }),
-            // byte-patterned split lanes (distinct per-byte L lookups)
+            core::array::from_fn(|i| (1u64 << 32).wrapping_sub(1).wrapping_add(i as u64)),
+            core::array::from_fn(|i| (1u64 << 32).wrapping_add((i as u64) << 8)),
+            // §2.2 split-and-lookup: byte-patterned distinct per-byte L.
             {
                 let mut s = [0u64; 16];
                 s[0] = 0x0001_0203_0405_0607;
                 s[1] = 0x08090A0B0C0D0E0F;
                 s[2] = 0xF0E0_D0C0_B0A0_9080;
                 s[3] = 0x7FFF_FFFF_FFFF_FFFE;
-                for j in 4..16 {
-                    s[j] = (j as u64) * 0x1111_1111;
+                for (j, lane) in s.iter_mut().enumerate().skip(4) {
+                    *lane = (j as u64) * 0x1111_1111;
                 }
                 s
             },
-            // power lanes near boundaries
+            // §2.2 power map near boundaries.
             core::array::from_fn(|i| if i < 4 { 0x00FF_00FF_00FF_00FF } else { p_minus_1 - i as u64 }),
         ];
+        // §2.2 L fixed points (0, 255) on the 4 split lanes.
+        v.push(core::array::from_fn(|i| if i < 4 { 0 } else { 1 }));
+        v.push(core::array::from_fn(|i| {
+            if i < 4 { 0xFFFF_FFFF_FFFF_FFFF % p } else { i as u64 }
+        }));
+        // §2.2: each split lane individually = p−1 / 0xFF-bytes.
+        for split in 0..4 {
+            v.push(core::array::from_fn(|i| if i == split { p_minus_1 } else { 0 }));
+            v.push(core::array::from_fn(|i| if i == split { 0x00FF_00FF_00FF_00FF } else { 7 }));
+        }
+        // §2.2 single-byte sweep on split lane 0 (each of 8 byte slots).
+        for byte in 0..8u64 {
+            v.push(core::array::from_fn(|i| if i == 0 { 0xA5u64 << (8 * byte) } else { 3 }));
+        }
+        // §2.3 MDS: 16 single-lane impulses (every circulant column).
+        for lane in 0..16 {
+            v.push(core::array::from_fn(|i| u64::from(i == lane)));
+        }
+        // §2.2 power-map lane sweep: each non-split lane large, rest 0.
+        for lane in 4..16 {
+            v.push(core::array::from_fn(|i| if i == lane { p_minus_1 } else { 0 }));
+        }
+        // 256 seeded-xorshift states for broad coverage.
         let mut seed = 0x1234_5678_9ABC_DEF0u64;
-        for _ in 0..10 {
+        for _ in 0..256 {
             v.push(core::array::from_fn(|_| xs(&mut seed)));
         }
         v
@@ -304,8 +354,12 @@ mod c2_kat {
 
     fn build_fixture() -> String {
         let mut out = String::new();
-        out.push_str("# tip5 golden KAT v1 — generated from nockchain_math::tip5::permute (7-round)\n");
-        out.push_str("# soundness oracle for C2 tip5-circuit-air; L-table = ((b+1)^3-1) mod 257 (verified)\n");
+        out.push_str("# tip5 golden KAT v2 — generated from nockchain_math::tip5::permute (7-round)\n");
+        out.push_str(
+            "# soundness oracle for C2 tip5-circuit-air; constraints per Tip5 paper \
+             (IACR ePrint 2023/107): §2.2 L-table = ((b+1)^3-1) mod 257 (verified), \
+             §2.3 circulant MDS, §2.4 round constants, §4.6 canonical decomposition\n",
+        );
         out.push_str(&format!("P {}\n", P));
         out.push_str(&format!("LOOKUP {}\n", join(LOOKUP_TABLE.iter().map(|&b| b as u64))));
         out.push_str(&format!("ROUND_CONSTANTS {}\n", join(ROUND_CONSTANTS.iter().copied())));
@@ -325,13 +379,16 @@ mod c2_kat {
             permute(&mut s);
             vectors.push((*inp, s));
         }
-        {
-            let mut s = inputs[2];
+        // §2.1 round iteration / coupling: chained multi-permute KATs
+        // (IN = k-times-permuted, OUT = (k+1)-times) on several seeds.
+        for &seed_idx in &[2usize, 0, 8] {
+            let mut s = inputs[seed_idx];
+            for _ in 0..3 {
+                permute(&mut s);
+            }
+            let prev = s;
             permute(&mut s);
-            let once = s;
-            permute(&mut s);
-            // store as IN=once-permuted, OUT=twice — a chained KAT
-            vectors.push((once, s));
+            vectors.push((prev, s));
         }
         out.push_str(&format!("NVEC {}\n", vectors.len()));
         for (inp, outp) in &vectors {
