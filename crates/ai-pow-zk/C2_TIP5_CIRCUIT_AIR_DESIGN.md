@@ -160,6 +160,81 @@ committed fixture). The LogUp/cross-table-bus form is required
 **only** for *how the recursion verifier invokes* the perm table
 (C2.2/C2.3) — a precise residual, not a soundness gap in C2.1.
 
+## 2c. CORRECTION (2026-05-18) — §2b over-justified the lookup-free form; width is unacceptable; implement the lookup table
+
+§2b's "why this is the right C2.1" **overstated** the case and
+produced a **pathologically wide AIR (≈7604 cols)** — the
+lookup-free byte range checks are **32 boolean columns per byte**
+(8 `b`-bits + 8 `c`-bits + 16 `q`-bits) × 8 bytes × 4 split lanes
+× 7 rounds = **7168 columns** of pure range-check scaffolding.
+The Tip5 paper uses a lookup table precisely to avoid this.
+
+The §2b claim that the lookup form "requires the batch-stark/
+LogUp recursion machinery" **conflated two different things**:
+
+- a **LOCAL LogUp lookup** into a 256-row preprocessed L-table —
+  collapses the ≈7168-col core to **2 cols/byte** (`b`,`c`) +
+  one shared 256-row table + a multiplicity col + 1 aux
+  (running-sum) col (≈ **8×** narrower). It is **standalone-
+  validatable with no recursion machinery** — Plonky3's own
+  `p3-lookup` `RangeCheckAir` (`lookup/src/tests.rs`) does exactly
+  this: build main+aux trace, assert the LogUp accumulator
+  `s_final + last_contribution == 0` (⟺ every queried `(b,c)` ∈
+  the table ⟺ `b∈[0,256)` *and* `c=L[b]`); a tamper ⇒ nonzero.
+- the **CROSS-table CTL / witness-bus** binding to the recursion
+  verifier — *that* is the genuine C2.3 residual.
+
+The local lookup is part of getting the permutation AIR *right*
+and should have been C2.1. **Decision: implement the lookup-table
+form (`Tip5PermLookupAir`).** The §4.6 canonical-`<p` guard is
+*retained* (the lookup gives `b∈[0,256)` and `c=L[b]` but not
+that `Σ bₖ2⁸ᵏ` is the unique canonical representative); x⁷/MDS/RC
+unchanged. The C2.0 identity theorem still anchors *which* table
+(`(i, LOOKUP_TABLE[i])`, i∈0..256). Plan (R1 — staged, additive,
+KAT-first; the validated lookup-free `Tip5PermAir` is kept as a
+cross-oracle until the lookup form passes the **entire** gate):
+
+**STATUS: L1+L2 DONE & VALIDATED (2026-05-18).** `Tip5PermLookupAir`
+(`air_lookup.rs`) + `generate_lookup_trace` (`generation_lookup.rs`):
+**886 columns vs 7604 — 8.6× narrower** (`width_is_dramatically
+_narrower`, printed). Native-equivalence: lookup-AIR trace
+`(IN,ROUT[6])` == `nockchain_math::tip5::permute` bit-for-bit on
+all **315 fixture vectors + 2048 random** (`lookup_air_equals
+_native_spec`); `check_constraints` clean against the **verifier-
+fixed preprocessed 256-row L-table**; LogUp accumulator **exactly
+0** for honest. Adversarial (`lookup_air_adversarial`): tampered
+S-box image `c` ⇒ accumulator ≠ 0; tampered `ROUT` ⇒ constraints
+fail; §4.6 non-canonical `x+p` split ⇒ guard fires. Full crate
+10/10 (7 lookup-free cross-oracle + 3 lookup-table); whole
+Plonky3-recursion workspace builds clean. *Honest scope:* L2
+validates the lookup AIR's correctness + the lookup-mechanism
+soundness *standalone* (the Plonky3 `RangeCheckAir` pattern:
+`check_constraints` + explicit LogUp-accumulator==0). A real
+`p3-batch-stark` prove→verify that *runs* the LogUp permutation
+argument is the **C2.3 recursion-integration path** (batch-stark/
+CTL machinery) — still the genuine residual, correctly not faked
+here. The lookup-free `Tip5PermAir` is retained as a redundant
+native-equivalence cross-oracle (R1).
+
+- **L1** — `Tip5PermLookupAir` + generation: per round, per split
+  lane: 8 `b` + 8 `c` byte cols; recompose `Σ bₖ2⁸ᵏ = sbox_in[t]`;
+  §4.6 `inv` guard; `A[t]=Σ cₖ2⁸ᵏ`; power lanes `x2,x3,A=x3·x3·x`;
+  MDS+RC→ROUT. A 256-row L-table region (`kind` selector: perm
+  row vs table row) + per-table-row multiplicity; one LogUp aux
+  running-sum col. Local interaction: perm rows push
+  `(vec![b,c], +1)` (gated by `kind`); table rows push
+  `(vec![i,L[i]], −mult_i)`.
+- **L2 — exhaustive gate (the current goal):** AIR-lookup trace
+  `(IN,ROUT[6])` == `nockchain_math::tip5::permute` bit-for-bit on
+  all **315** fixture vectors **and 4096 random** inputs;
+  `check_constraints` clean; LogUp accumulator == 0 for honest;
+  adversarial — tampered `c` / non-table `b` / §4.6 non-canonical
+  split / tampered output ⇒ accumulator ≠ 0 *or* constraints
+  fail. Width measured + reported (expect ≈8× reduction).
+- **L3** — once L2 fully green, `Tip5PermLookupAir` is the
+  default; the lookup-free `Tip5PermAir` is retained only as a
+  redundant native-equivalence cross-check. Docs/memory updated.
+
 ## 3. Faithful arithmetization & approach (paper §4.3/§4.6-anchored)
 
 Mirror `poseidon2-circuit-air` (Plonky3-recursion member;
