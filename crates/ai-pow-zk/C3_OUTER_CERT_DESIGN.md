@@ -349,3 +349,157 @@ itself**.
 - **R-b unchanged:** ai-pow-zk's actual M10.1c composite
   `RecursiveAir` (vs the representative `FibonacciAir` under the
   exact Layer-0 config) remains M12/#127, explicitly out of scope.
+
+---
+
+## 8. DT-2 (corrected, source-verified) — root cause + gate-arbitrated fix
+
+**Root cause (source-verified).** The `WitnessChecks` bus keys a
+witness by `idx`. Canonical namespace is **D-scaled**:
+`WitnessId::base_field_index::<F,D> = wid.0 * D`
+(`circuit/src/types.rs:16`) via
+`register_non_primitive_output_index` (`circuit/src/
+circuit.rs:105`); every table (poseidon1/2, recompose, the Tip5
+*verifier/committed* prep through `air_with_committed
+_preprocessed`) is on it. But the Tip5 **prover** instance
+(`circuit-prover/.../tip5.rs::batch_instance_base` line 227)
+builds its producer AIR from
+`build_tip5_circuit_preprocessed(&t.operations, height,
+idx_scale=1)`, and `t.operations` rows carry **UNSCALED**
+`input/output_indices = wid.0`
+(`circuit/src/ops/tip5_perm/executor.rs:272,283`). ⇒ prover
+labels Tip5 perm in/out witnesses `wid.0`; the rest of the bus
+labels them `wid.0·D`. **D=1: coincide** (why C2.4-R-a's D=1
+gate is green). **D≥2: split** ⇒ a Tip5 duplex-chain witness
+(perm-A out → perm-B in; the recursion challenger/MMCS duplexes
+Tip5) orphans at `wid·D` — exactly the observed
+`["22936",·,"0"]`, `22936 = wid 11468 × D(2)`.
+
+**Candidate fix (localized, soundness-faithful).**
+`tip5.rs:227` prover call `…, height, 1)` →
+`…, height, witness_ctl_scale)` (the `batch_instance_base`
+param, = circuit ext degree D). Rows are unscaled ⇒ this stores
+`wid.0·D`, aligning the prover producer with the canonical
+D-scaled/verifier namespace. **D=1 byte-identical**
+(`witness_ctl_scale==1` ⇒ literally today's value). The line-491
+*verifier* call stays `1` (its rows are *already* D-scaled from
+`resolved`; re-scaling there would double-scale — the C2.4-R-a
+author's comment is correct *for line 491* and **mis-applied to
+line 227**, whose rows are unscaled per `executor.rs:272,283`).
+
+**Soundness.** Changes only the prover's *bus label* (`idx`) to
+match the single canonical D-scaled namespace the verifier and
+every other table already use; **no constraint / multiplicity /
+tuple value / binding changes**. `WitnessChecks` global-sum is a
+multiset identity over `(idx,value)` requiring one consistent
+injective labeling — the Tip5 prover producer is currently on a
+*different* namespace at D≥2 (so the check is split there and
+would not reliably catch tamper); aligning it *restores* the
+bus's soundness function at D≥2. The contested "double-scale /
+regress C2.4-R-a" point is **decided by the exhaustive gate, not
+argument**: prover rows are unscaled (source-verified) so ×D is
+the *first* scaling, not a double.
+
+**Decisive gate (the arbiter; R1 staged, KAT-first).**
+1. **D=1 byte-identical**: full C2.0–C2.4 D=1 suite green
+   unchanged (`p3-tip5-circuit-air` 14, `test_tip5_lookups` 2,
+   `test_tip5_layer0_recursion` orig 7, `challenger_transcript`
+   46, `p3_recursion` 32) — verified, not assumed.
+2. **No regression**: poseidon1/2 10/10, `fibonacci_batch
+   _stark_prover_quintic`, recompose, full
+   `cargo test --workspace` green (this empirically settles the
+   double-scale question — any double-scale orphans these).
+3. **C3 done**: D=2 Tip5 Layer-0 outer cert
+   `prove_all_tables`/`verify_all_tables` balances + accepts a
+   valid real proof + **rejects tampered**, 120-bit sweep,
+   recursive cert **≤ 65 KB** (M-S5).
+
+**Escalation (hard stop, R1).** If (1) not byte-identical, or
+(2) poseidon/quintic regresses (the author's double-scale
+warning materializing on the prover path), or (3) the D=2 orphan
+persists/moves: candidate falsified — land nothing, record the
+precise empirical delta, escalate the prover-commit vs
+verifier-reconstruct preprocessed-contract fork. No weakening,
+no fake.
+
+## 9. DT-2 empirical result (2026-05-19) — NECESSARY-BUT-NOT-SUFFICIENT; candidate FALSIFIED at gate (3); nothing landed
+
+Drove the candidate exactly per §8 in an isolated worktree
+(Plonky3-recursion @ 6de5cba), full gate run, line-by-line
+review + gate re-run before recording. Outcome:
+
+- **Gate (1) D=1 byte-identical — PASS.** `witness_ctl_scale==1`
+  at D=1: `p3-tip5-circuit-air` 14/14, `test_tip5_lookups` 2/2,
+  `test_tip5_layer0_recursion` orig 7/7 (5 accept + 2 tamper),
+  `challenger_transcript` 46/46, `p3_recursion` 32/32 — green,
+  unchanged.
+- **Gate (2) no regression — PASS.** poseidon1 10/10,
+  poseidon2 10/10, `fibonacci_batch_stark_prover_quintic` 1/1,
+  recompose proptests, full `cargo test --release --workspace`
+  0 failed. **This empirically SETTLES the contested question:
+  the C2.4-R-a author's "double-scale" warning does NOT apply to
+  the prover line-227 call — its rows are genuinely unscaled
+  (`executor.rs:272,283`), so ×D is the first scaling.** DT-2's
+  source-verified root cause + namespace diagnosis is *correct*
+  and the prover-label fix is *necessary*.
+- **Gate (3) C3 D=2 outer cert — FAILS ⇒ candidate FALSIFIED.**
+  Built the exact `BuiltLayer0Circuit` (same circuit/proof as
+  the orig 7), D=2 `prove_all_tables` SUCCEEDS (ext_degree==2,
+  cert serialized) but `verify_all_tables` REJECTS:
+  `LookupError(GlobalCumulativeMismatch(None): WitnessChecks)`,
+  **all 5 sweep profiles** (PROD/LB2/LB4/LB5/LB6). prove/verify
+  genuinely ran the real D=2 batch-STARK incl. the WitnessChecks
+  global-sum (it is that check that rejected — not bypassed);
+  the PROD + orig tamper tests still correctly reject; ≤65 KB
+  assertion never relaxed (cert rejected ⇒ size moot, not
+  faked).
+- **Precise empirical delta** (`with_debug_lookups()`):
+  `tuple ["22936","10485455180627170985","0"]  net +1`,
+  `instance 3 (= Tip5 NPO table), lookup 241, row 292`.
+  `22936 = 11468 × D(2)` — the orphan is now **at the canonical
+  D-scaled address** `wid·D` (the prover-label fix worked: the
+  producer moved onto the correct namespace). A **net +1 surplus
+  persists at `idx = wid·D`** ⇒ the residual defect is **not
+  pure prover labeling** but a **producer/consumer MULTIPLICITY
+  (count) mismatch** at D=2 for the Tip5 duplex-chain witness.
+
+**Disposition (R1).** Genuine in-flight attempt → concrete
+correctness wall mid-validated-stage. Validated subset already
+landed (C2.0–C2.4-core + R-a, D=1, byte-identical, fenced
+linchpin intact). Candidate reverted to byte-identical baseline
+(`git diff --stat 27b1e9d -- Plonky3-recursion/` empty; orig 7
+re-run 7/7 post-revert). **Nothing landed, no weakening, no
+fake.** DT-2's diagnosis stands as a *partial advance*: the
+prover-label namespace split is real and the fix is necessary;
+it is **not sufficient** alone.
+
+### 9.1 Precise actionable residual — DT-3 (the closing fix; scoped, NOT yet attempted)
+
+The remaining net +1 at `idx = wid·D` (Tip5 NPO, instance 3) is
+a **multiplicity** discrepancy, not a label namespace. The C3
+certificate needs the DT-2 prover-label fix **plus** a count
+reconciliation between:
+
+1. the **recompose-coeff producer** `hint_output_wids` /
+   `RecomposePreprocessor` emission multiplicity for the
+   Tip5 duplex-chain witness at D=2, and
+2. the **Tip5-input decompose consumer** wiring inside
+   `verify_p3_uni_proof_circuit` (the fenced recursion
+   forgery-binding linchpin) at D=2.
+
+**DT-3 must (R1 KAT-first, before ANY invasive fenced edit):**
+source-verify, at D=2, the exact per-`(idx,value)` send/receive
+multiplicity ledger for the Tip5 perm-A-out → perm-B-in duplex
+witness across {prover Tip5 producer (post-DT-2-label),
+recompose-coeff producer, `verify_p3_uni_proof_circuit`
+decompose consumer}; identify which side is off-by-one at D≥2
+(extra produce vs. short consume); design the minimal scoped
+correction with a D=1-byte-identical + poseidon/quintic-no-
+regress + D=2-balances gate **before** editing the shared
+`RecomposePreprocessor`/`hint_output_wids` or the fenced
+`verify_p3_uni_proof_circuit` (both are shared with the
+validated poseidon1/2/quintic paths ⇒ full re-validation
+mandatory; this is invasive soundness-linchpin work and is
+M12/#127-adjacent, NOT a one-liner). DT-2 (§8) is *spent* — it
+was the prover-label hypothesis; DT-3 needs its own
+source-verified multiplicity hypothesis.
