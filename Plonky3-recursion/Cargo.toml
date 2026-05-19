@@ -94,6 +94,7 @@ p3-poseidon1-circuit-air = { path = "poseidon1-circuit-air", version = "0.1.0" }
 p3-poseidon2-circuit-air = { path = "poseidon2-circuit-air", version = "0.1.0" }
 p3-recursion = { path = "recursion", version = "0.1.0" }
 p3-test-utils = { path = "test-utils", version = "0.1.0" }
+p3-tip5-circuit-air = { path = "tip5-circuit-air", version = "0.1.0" }
 
 [profile.profiling]
 inherits = "release"

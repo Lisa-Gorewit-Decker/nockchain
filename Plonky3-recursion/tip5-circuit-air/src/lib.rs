@@ -29,12 +29,18 @@
 extern crate alloc;
 
 mod air;
+mod air_circuit;
 mod air_lookup;
 mod generation;
 mod generation_lookup;
 mod tip5_spec;
 
 pub use air::{Tip5PermAir, tip5_perm_air_width};
+pub use air_circuit::{
+    TIP5_CIRCUIT_PREP_WIDTH, TIP5_CTL_PREP_COLS, TIP5_RATE, TIP5_WIDTH, Tip5CircuitAir,
+    Tip5CircuitRow, build_tip5_circuit_preprocessed, generate_tip5_circuit_main,
+    tip5_inputs_from_rows,
+};
 pub use air_lookup::{TABLE_ROWS, Tip5PermLookupAir, tip5_lookup_air_width};
 pub use generation::generate_trace_rows;
 pub use generation_lookup::generate_lookup_trace;

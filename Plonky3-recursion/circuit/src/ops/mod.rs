@@ -49,7 +49,17 @@ pub use recompose::{
     generate_recompose_trace,
 };
 pub use tip5_perm::{
+    // Prover/AIR (trace access)
+    Tip5CircuitRow,
     // Configuration / NPO key (C2.2)
     Tip5Config,
     Tip5FieldId,
+    Tip5Goldilocks,
+    Tip5Params,
+    // Builder API
+    Tip5PermCall,
+    // Configuration
+    Tip5PermPrivateData,
+    Tip5Trace,
+    generate_tip5_trace,
 };

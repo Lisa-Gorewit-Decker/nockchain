@@ -126,6 +126,25 @@ pub const fn tip5_lookup_air_width() -> usize {
     RB0 + NUM_ROUNDS * ROUND_GROUP
 }
 
+/// Main-trace column index of the row-kind selector (`1` ⇒ permutation
+/// row, `0` ⇒ L-table / pad row). Read-only accessor for the circuit
+/// wrapper (`air_circuit`); does **not** alter the validated layout.
+pub(crate) const fn tip5_kind_col() -> usize {
+    C_KIND
+}
+
+/// Main-trace column index of input lane `lane` (`IN[lane]`, the Tip5
+/// permutation input state read by the WitnessChecks CTL).
+pub(crate) const fn tip5_in_col(lane: usize) -> usize {
+    C_IN + lane
+}
+
+/// Main-trace column index of the final-round output lane `lane`
+/// (`ROUT[NUM_ROUNDS-1][lane]`, the permuted state exposed via CTL).
+pub(crate) const fn tip5_out_col(lane: usize) -> usize {
+    rout_col(NUM_ROUNDS - 1, lane)
+}
+
 // ---- preprocessed (verifier-fixed) L-table: [IS_TABLE | TIN | TOUT] ----
 const P_IS_TABLE: usize = 0;
 const P_TIN: usize = 1;

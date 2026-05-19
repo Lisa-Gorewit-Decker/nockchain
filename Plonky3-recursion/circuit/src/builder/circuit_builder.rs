@@ -26,6 +26,7 @@ use crate::ops::poseidon2_perm::{
     Poseidon2CircuitPlugin, Poseidon2PermCallBase, Poseidon2PermExec,
 };
 use crate::ops::recompose::RecomposeCircuitPlugin;
+use crate::ops::tip5_perm::{Tip5CircuitPlugin, Tip5PermExec};
 use crate::ops::{
     HintExecutor, NpoConfig, NpoRegistry, NpoTypeId, Poseidon1Params, Poseidon1PermCall,
     Poseidon2Params, Poseidon2PermCall,
@@ -382,6 +383,36 @@ where
         });
 
         let plugin = Poseidon1CircuitPlugin::new(Config::CONFIG, exec, trace_generator);
+        self.register_npo(plugin);
+    }
+
+    /// Enables the Tip5 permutation operation for base field
+    /// challenges (D=1, width 16). Mirrors `enable_poseidon1_perm_base`.
+    ///
+    /// `perm` runs the deployed 7-round Tip5 (bit-for-bit
+    /// `nockchain_math::tip5::permute`); the executor witnesses exactly
+    /// its output, so the lookup-AIR trace == the native permutation.
+    pub fn enable_tip5_perm<Config, P>(&mut self, trace_generator: TraceGeneratorFn<F>, perm: P)
+    where
+        Config: crate::ops::Tip5Params,
+        F: Field,
+        P: Permutation<[F; 16]> + Clone + Send + Sync + 'static,
+    {
+        assert!(
+            Config::D == 1,
+            "enable_tip5_perm only supports extension degree D=1"
+        );
+        assert!(
+            Config::WIDTH == 16,
+            "enable_tip5_perm only supports WIDTH=16"
+        );
+
+        let exec: Tip5PermExec<F> = Arc::new(move |input: &[F]| {
+            let arr: [F; 16] = input.try_into().expect("Tip5 D=1 input must have 16 elements");
+            perm.permute(arr).to_vec()
+        });
+
+        let plugin = Tip5CircuitPlugin::new(Config::CONFIG, exec, trace_generator);
         self.register_npo(plugin);
     }
 

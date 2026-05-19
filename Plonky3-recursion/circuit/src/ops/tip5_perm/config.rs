@@ -239,11 +239,9 @@ impl Tip5Config {
 ///
 /// Consumed by the C2.3 NPO executor (plugin/builder/trace); declared
 /// here with the config so the geometry contract is single-sourced.
-#[allow(dead_code)]
 pub type Tip5PermExec<F> = Arc<dyn Fn(&[F]) -> Vec<F> + Send + Sync>;
 
 /// Config data stored inside `NpoConfig` for Tip5 operations (C2.3).
-#[allow(dead_code)]
 pub struct Tip5PermConfigData<F> {
     pub exec: Tip5PermExec<F>,
 }

@@ -1,15 +1,25 @@
 //! Tip5 permutation non-primitive operation (C2 / M-S4).
 //!
-//! **C2.2 (this commit): the configuration / NPO-key bundle only.**
-//! The full NPO machinery — `call`, `plugin`, `executor`, `builder`,
-//! `state`, `trace` (mirroring `poseidon1_perm`) — is C2.3 (threading
-//! Tip5 through the in-circuit challenger / MMCS / FRI verifier). The
-//! permutation *constraint system* already exists and is KAT-anchored
-//! to `nockchain_math::tip5::permute` in the sibling
-//! `p3-tip5-circuit-air` crate (C2.1, validated).
+//! Full NPO subsystem (C2.3), the faithful mechanical mirror of
+//! `poseidon1_perm`'s D=1 non-merkle path → the deployed Nockchain
+//! Tip5 (Goldilocks, D=1, width 16, rate 10, capacity 6, digest 5,
+//! 7-round). The permutation *constraint system* lives in the sibling
+//! `p3-tip5-circuit-air` (`Tip5PermLookupAir`, KAT-anchored to
+//! `nockchain_math::tip5::permute`); the circuit-prover Tip5 table
+//! (`p3_circuit_prover::batch_stark_prover::tip5`) wraps it and adds
+//! the WitnessChecks CTL.
 
+mod builder;
+pub mod call;
 pub(crate) mod config;
+pub(crate) mod executor;
+pub(crate) mod plugin;
+pub mod state;
+pub mod trace;
 
+pub use call::Tip5PermCall;
 pub use config::{Tip5Config, Tip5FieldId};
-// `Tip5PermExec` / `Tip5PermConfigData` are defined in `config` and
-// re-exported here in C2.3 when the NPO executor/plugin consume them.
+pub(crate) use config::Tip5PermExec;
+pub(crate) use plugin::Tip5CircuitPlugin;
+pub use state::Tip5PermPrivateData;
+pub use trace::{Tip5CircuitRow, Tip5Goldilocks, Tip5Params, Tip5Trace, generate_tip5_trace};

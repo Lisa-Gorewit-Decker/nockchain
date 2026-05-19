@@ -252,20 +252,63 @@ Native-equivalence preserved (generation unchanged;
 `Tip5PermAir` retained as the redundant native-equivalence
 cross-oracle; full Plonky3-recursion workspace builds clean.
 
-**L4 stage-2 — RESIDUAL (precisely scoped, = C2.3 bulk; NOT
-faked).** A real `p3-batch-stark` `prove_all_tables`/
-`verify_all_tables` that *runs* the global net-zero
-reconciliation (`verify_global_final_value` across the Hash &
-L-table) in an actual STARK requires the Tip5 **NPO subsystem**
-(`enable_tip5_perm`/`add_tip5_perm` + call/plugin/executor/
-trace/state, ~2650 LOC mirroring `poseidon1_perm`) and the
-**circuit-prover Tip5 table registration**
-(`register_tip5_table`, `tip5_air_builders`, `Tip5Preprocessor`)
-— exactly the `test_poseidon2_ctl_lookups` machinery. Atomic,
-soundness-critical, staged + KAT-first per R1; the interaction
-structure + degree feasibility it depends on are now proven
-(stage-1), so stage-2 is wiring the proven bus through the
-batch-stark prover.
+**L4 stage-2 — DONE & INDEPENDENTLY RE-VALIDATED (2026-05-18,
+user-directed "implement L4 stage-2: the Tip5 NPO subsystem and
+batch-stark gate").** The full Tip5 NPO subsystem + circuit-prover
+table + batch-stark gate, a faithful mechanical mirror of the
+Poseidon1 D=1 path (Goldilocks-only, no merkle/MMCS/D>1; rate
+10/cap 6):
+
+- **circuit NPO** `circuit/src/ops/tip5_perm/{call,builder,
+  executor,plugin,state,trace}.rs` (+ `npo.rs`/`builder/npo.rs`/
+  `mod.rs` wiring, `enable_tip5_perm`/`add_tip5_perm`); the
+  executor runs the closure = `tip5_spec::permute` (=
+  `nockchain_math::tip5::permute`).
+- **circuit-prover** `batch_stark_prover/tip5.rs`
+  (`Tip5Prover`/`Tip5Preprocessor`/`Tip5AirBuilder`,
+  `register_tip5_table`, `RegisterTip5ForExt<1>`) — wraps the
+  **existing validated** `Tip5PermLookupAir` via the new
+  `tip5-circuit-air::air_circuit::Tip5CircuitAir`: it calls the
+  *unmodified* inner `eval` **verbatim** (validated algebraic
+  constraints + the degree-2-proven `tip5_l` bus reused as-is)
+  and only **adds** the standard `WitnessChecks` CTL
+  (poseidon1-pattern, `kind`-gated) — confirmed by diff:
+  `air_lookup.rs` changed *only* by +3 read-only column
+  accessors; constraints/bus byte-for-byte unchanged.
+- **Gate** `recursion/tests/test_tip5_lookups.rs`:
+  `test_tip5_ctl_lookups` (real `prove_all_tables` +
+  `verify_all_tables` over the Tip5 NPO + `tip5_l` global
+  reconciliation — genuinely run, not bypassed) and
+  `test_tip5_tampered_proof_fails` (corrupts a FRI-bound opened
+  trace value ⇒ verification must reject; fails loudly if
+  accepted).
+- **Config**: added `circuit-prover config::goldilocks_tip5()`
+  FRI `log_blowup=2` (B=4) — the correct/validated tier for the
+  degree-4 §4.6/x⁷ Tip5 constraints (the default B=2 cannot
+  prove degree-4); not a soundness weakening (tamper test still
+  rejects at B=4).
+
+Independently re-validated (not trusting the agent's report):
+`air_lookup.rs` diff reviewed (additive-only); `Tip5CircuitAir::
+eval` reviewed (verbatim inner + additive CTL); re-ran
+**p3-tip5-circuit-air 11/11** (validated core intact),
+**`test_tip5_ctl_lookups` + `test_tip5_tampered_proof_fails`
+pass**, **full Plonky3-recursion workspace green, no regression**
+(poseidon1/2 10/10, recursion 27, circuit 358, circuit-prover
+40, …). Built in an isolated path, reviewed line-by-line on the
+soundness-critical pieces before trust.
+
+**Remaining C2 residual (honest, NOT this stage):** the gate
+proves the Tip5 permutation is soundly provable/verifiable
+through the batch-stark + CTL forgery-binding machinery. It does
+**not** yet have the recursion verifier consuming a *real
+ai-pow-zk Tip5 Layer-0 STARK proof* — that needs the in-circuit
+**challenger duplexing + MMCS-path** reconstruction wired with
+Tip5 (rate-10 `DuplexChallenger`/`PaddingFreeSponge`/
+`TruncatedPermutation`), and C2.4 (real Layer-0 end-to-end +
+120-bit sweep). That is the precisely-scoped remaining C2.3/C2.4
+work; the hard soundness-binding kernel (Tip5 ⇒ batch-stark CTL)
+is now done and validated.
 
 - **L1** — `Tip5PermLookupAir` + generation: per round, per split
   lane: 8 `b` + 8 `c` byte cols; recompose `Σ bₖ2⁸ᵏ = sbox_in[t]`;

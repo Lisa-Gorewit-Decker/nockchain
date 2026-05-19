@@ -207,6 +207,36 @@ pub fn goldilocks() -> GoldilocksConfig {
     build_poseidon2_stark_config(perm.clone(), perm)
 }
 
+/// Goldilocks configuration with **`log_blowup = 2` (FRI tier B = 4)**.
+///
+/// The standard [`goldilocks`] config uses `new_benchmark_high_arity`
+/// (`log_blowup = 1`, B = 2), which is sufficient for the
+/// low-degree primitive / Poseidon tables but **cannot** prove the
+/// **degree-4** `p3_tip5_circuit_air::Tip5PermLookupAir` constraint
+/// family (the §4.6 canonical guard / x⁷ closer). This builder uses
+/// `FriParameters::new_testing` (`log_blowup = 2`) — the exact FRI
+/// tier the Tip5 AIR's own standalone validation suite
+/// (`p3-tip5-circuit-air`'s `prove_verify_all_fixture_vectors`,
+/// `make_config`) is proven sound at. Use this for any batch that
+/// registers the Tip5 NPO table.
+#[inline]
+pub fn goldilocks_tip5() -> GoldilocksConfig {
+    use rand::SeedableRng;
+    let mut rng = rand::rngs::SmallRng::seed_from_u64(1);
+    let perm = p3_goldilocks::Poseidon2Goldilocks::<8>::new_from_rng_128(&mut rng);
+    let hash = PaddingFreeSponge::<_, 8, 4, 4>::new(perm.clone());
+    let compress = TruncatedPermutation::<_, COMPRESS_ARITY, 4, 8>::new(perm.clone());
+    let val_mmcs = MerkleTreeMmcs::new(hash, compress, 3);
+    let challenge_mmcs = ExtensionMmcs::new(val_mmcs.clone());
+    let dft = Radix2DitParallel::default();
+    // `new_testing` ⇒ log_blowup = 2 (B = 4) — required for the
+    // validated degree-4 Tip5 lookup-AIR constraints.
+    let fri_params = FriParameters::new_testing(challenge_mmcs, 0);
+    let pcs = TwoAdicFriPcs::new(dft, val_mmcs, fri_params);
+    let challenger = DuplexChallenger::new(perm);
+    StarkConfig::new(pcs, challenger)
+}
+
 /// Type alias for BabyBear STARK configuration.
 pub type BabyBearConfig =
     Config<BabyBear, Poseidon2BabyBear<16>, Poseidon2BabyBear<16>, 16, 16, 8, 8, 8, 4>;

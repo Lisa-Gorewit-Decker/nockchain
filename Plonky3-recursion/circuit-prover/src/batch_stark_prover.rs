@@ -14,6 +14,7 @@ use p3_batch_stark::common::{GlobalPreprocessed, PreprocessedInstanceMeta};
 use p3_batch_stark::{BatchProof, CommonData, ProverData, StarkGenericConfig, StarkInstance, Val};
 use p3_circuit::ops::{
     NonPrimitivePreprocessedMap, NpoTypeId, Poseidon1Config, Poseidon2Config, PrimitiveOpType,
+    Tip5Config,
 };
 use p3_circuit::tables::Traces;
 use p3_commit::Pcs;
@@ -43,6 +44,7 @@ mod packing;
 mod poseidon1;
 mod poseidon2;
 mod recompose;
+mod tip5;
 
 pub use dynamic_air::{
     BatchAir, BatchTableInstance, CloneableBatchAir, DynamicAirEntry, TableProver,
@@ -57,6 +59,10 @@ pub use poseidon2::{
     Poseidon2ProverD2, poseidon2_preprocessor, poseidon2_verifier_air_from_config,
 };
 pub use recompose::{RecomposeAirBuilder, RecomposePreprocessor, RecomposeProver};
+pub use tip5::{
+    Tip5AirBuilder, Tip5Preprocessor, Tip5Prover, tip5_air_builders, tip5_preprocessor,
+    tip5_verifier_air_from_config,
+};
 
 /// Prime modulus of the BabyBear field (`2^31 - 2^27 + 1`).
 pub const BABY_BEAR_MODULUS: u64 = 0x7800_0001;
@@ -791,6 +797,32 @@ where
     }
 }
 
+/// Const-generic dispatch for [`BatchStarkProver::register_tip5_table`]:
+/// Tip5 is Goldilocks D=1 only, so only `D == 1` is implemented (mirror
+/// of `RegisterPoseidon1ForExt`, single arm).
+#[doc(hidden)]
+pub trait RegisterTip5ForExt<const D: usize, SC>
+where
+    SC: StarkGenericConfig + 'static,
+{
+    fn register_tip5(prover: &mut BatchStarkProver<SC>, config: Tip5Config);
+}
+
+impl<SC> RegisterTip5ForExt<1, SC> for ()
+where
+    SC: StarkGenericConfig + 'static + Send + Sync,
+    Val<SC>: StarkField,
+    SymbolicExpressionExt<Val<SC>, SC::Challenge>:
+        Algebra<SymbolicExpression<Val<SC>>> + Algebra<SC::Challenge>,
+{
+    fn register_tip5(prover: &mut BatchStarkProver<SC>, config: Tip5Config) {
+        prover.register_table_prover(Box::new(tip5::Tip5Prover::new(
+            config,
+            ConstraintProfile::Standard,
+        )));
+    }
+}
+
 impl<SC> BatchStarkProver<SC>
 where
     SC: StarkGenericConfig + 'static,
@@ -853,6 +885,16 @@ where
         (): RegisterPoseidon1ForExt<D, SC>,
     {
         <() as RegisterPoseidon1ForExt<D, SC>>::register_poseidon1(self, config);
+    }
+
+    /// Register the non-primitive Tip5 table prover for extension
+    /// degree `D` (only `1` — the deployed Goldilocks base-field Tip5).
+    pub fn register_tip5_table<const D: usize>(&mut self, config: Tip5Config)
+    where
+        SC: Send + Sync,
+        (): RegisterTip5ForExt<D, SC>,
+    {
+        <() as RegisterTip5ForExt<D, SC>>::register_tip5(self, config);
     }
 
     /// Register the recompose (BF→EF packing) table prover(s) for extension degree `D`.

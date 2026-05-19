@@ -13,6 +13,7 @@ use serde::{Deserialize, Serialize};
 use super::executor::OpExecutionState;
 use super::poseidon1_perm::Poseidon1Config;
 use super::poseidon2_perm::Poseidon2Config;
+use super::tip5_perm::Tip5Config;
 use crate::NpoCircuitPlugin;
 
 /// Opaque, string-based identifier for non-primitive operation types.
@@ -41,6 +42,11 @@ impl NpoTypeId {
     /// Convenience: Poseidon1 permutation type ID for a given config.
     pub fn poseidon1_perm(config: Poseidon1Config) -> Self {
         Self::new(alloc::format!("poseidon1_perm/{}", config.variant_name()))
+    }
+
+    /// Convenience: Tip5 permutation type ID for a given config.
+    pub fn tip5_perm(config: Tip5Config) -> Self {
+        Self::new(alloc::format!("tip5_perm/{}", config.variant_name()))
     }
 
     /// Convenience: Recompose (BF→EF packing) operation type ID.
