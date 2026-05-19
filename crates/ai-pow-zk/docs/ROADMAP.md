@@ -1,3 +1,5 @@
+> _Created **2026-05-13** · last updated **2026-05-14** · organized into `crates/ai-pow-zk/docs/` on 2026-05-19._
+
 # `ai-pow-zk` — implementation roadmap
 
 The circuit is being built incrementally as a sequence of milestones.

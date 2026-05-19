@@ -1,3 +1,5 @@
+> _Created **2026-05-13** · last updated **2026-05-13** · organized into `crates/ai-pow/docs/` on 2026-05-19._
+
 # Flaws in `crates/ai-pow` vs. the Pearl Whitepaper and the cuPOW paper
 
 Evaluated against:

@@ -1,3 +1,5 @@
+> _Created **2026-05-17** · last updated **2026-05-17** · organized into `crates/ai-pow-zk/docs/` on 2026-05-19._
+
 # G3 Recursion — Security Audit: my design spec vs the Plonky3-recursion reference
 
 > **Status (2026-05-17): AUDIT.** Reviews `G3_RECURSION_AGGREGATION.md`

@@ -1,3 +1,5 @@
+> _Created **2026-05-14** · last updated **2026-05-14** · organized into `crates/ai-pow-zk/docs/` on 2026-05-19._
+
 # `ai-pow-zk` engineering report
 
 A pass over the entire ZKP stack as it stands at HEAD (after Phase

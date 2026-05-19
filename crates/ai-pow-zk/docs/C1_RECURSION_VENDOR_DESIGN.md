@@ -1,3 +1,5 @@
+> _Created **2026-05-18** · last updated **2026-05-18** · organized into `crates/ai-pow-zk/docs/` on 2026-05-19._
+
 # C1 / M-S3 — vendor Plonky3-recursion + align the Plonky3 rev
 
 > **Status:** DESIGN+IMPL (2026-05-18). Roadmap Phase C, the

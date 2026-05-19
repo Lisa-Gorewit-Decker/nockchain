@@ -1,3 +1,5 @@
+> _Created **2026-05-18** · last updated **2026-05-18** · organized into `crates/ai-pow-zk/docs/` on 2026-05-19._
+
 # C2 — Tip5 AIR degree↔width tradeoff (split to degree 4) + relative performance
 
 > **⚠ SUPERSEDED (2026-05-18).** This analysed the *lookup-free*

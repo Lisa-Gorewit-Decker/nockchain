@@ -1,3 +1,5 @@
+> _Created **2026-05-17** · last updated **2026-05-18** · organized into `crates/ai-pow-zk/docs/` on 2026-05-19._
+
 # §4.C.2 / Phase-A3 — store ↔ committed-plain-strip noise-derivation binding (design)
 
 > **✅ §4.C.2 RESOLVED 2026-05-18 — ZERO-GAP on the

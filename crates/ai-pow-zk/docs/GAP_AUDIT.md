@@ -1,3 +1,5 @@
+> _Created **2026-05-15** · last updated **2026-05-19** · organized into `crates/ai-pow-zk/docs/` on 2026-05-19._
+
 # ai-pow / ai-pow-zk — gap audit & remaining work
 
 Audit date: 2026-05-15. Scope: `crates/ai-pow` (plain PoUW

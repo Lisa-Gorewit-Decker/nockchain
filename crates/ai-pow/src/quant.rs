@@ -28,7 +28,7 @@
 //! KAT** (Pearl-independent). The *live* extraction is Phase D's
 //! vLLM plugin (external); the Pearl-digest-parity fixture
 //! (B2-fixture) is the one Pearl-side-gated residual — see
-//! `crates/ai-pow-zk/PHASE_B_DESIGN.md` §3/§7.
+//! `crates/ai-pow-zk/docs/PHASE_B_DESIGN.md` §3/§7.
 //!
 //! **Soundness-adjacent (R1, KAT-first):** B2's "the mined
 //! integers equal what Pearl mines" touches the *mined integer

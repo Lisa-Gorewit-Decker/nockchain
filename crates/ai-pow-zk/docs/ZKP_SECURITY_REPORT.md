@@ -1,3 +1,5 @@
+> _Created **2026-05-15** · last updated **2026-05-19** · organized into `crates/ai-pow-zk/docs/` on 2026-05-19._
+
 # ai-pow-zk — ZKP security report
 
 Audit date: 2026-05-15. Auditor pass over the M10.1c composite

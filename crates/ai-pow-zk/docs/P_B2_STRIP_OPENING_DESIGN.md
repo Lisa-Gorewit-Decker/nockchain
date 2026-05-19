@@ -1,3 +1,5 @@
+> _Created **2026-05-17** · last updated **2026-05-17** · organized into `crates/ai-pow-zk/docs/` on 2026-05-19._
+
 # P-B.2 — Pearl §4.6 Strip-Opening Matrix-Hash (implementation design)
 
 > **Status:** **P-B.2.0 ✅ LANDED 2026-05-17**

@@ -17,7 +17,7 @@
 //! The Pearl whitepaper §4.8 ("Supported PoW Parameters") *caps* the
 //! mining parameters so that **one opened tile's proof always fits a
 //! single STARK** — Pearl deliberately never segments (see
-//! `crates/ai-pow-zk/M_S2_PEARL_EVALUATION.md`). We adopt that
+//! `crates/ai-pow-zk/docs/M_S2_PEARL_EVALUATION.md`). We adopt that
 //! envelope here, split into two layers:
 //!
 //! * [`MatmulParams::validate`] enforces the **universal** Pearl §4.8

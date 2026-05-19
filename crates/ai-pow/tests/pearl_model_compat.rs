@@ -22,7 +22,7 @@
 //!     `fixtures/pearl_model.rs` and removing the stub's
 //!     `#[ignore]`.
 //!
-//! Authoritative plan: `crates/ai-pow-zk/PHASE_B_DESIGN.md`.
+//! Authoritative plan: `crates/ai-pow-zk/docs/PHASE_B_DESIGN.md`.
 
 use ai_pow::commit::{padded_chunk_len, CHUNK_LEN};
 use ai_pow::matmul::{compute_tile_from_slices, BlockNoise};

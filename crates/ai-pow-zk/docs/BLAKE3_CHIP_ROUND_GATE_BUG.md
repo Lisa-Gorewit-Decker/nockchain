@@ -1,3 +1,5 @@
+> _Created **2026-05-15** · last updated **2026-05-15** · organized into `crates/ai-pow-zk/docs/` on 2026-05-19._
+
 # BLAKE3 chip: `verify_round` leading-boundary gate bug
 
 **Status: FIXED 2026-05-15.** Gate changed to

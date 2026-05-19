@@ -1,3 +1,5 @@
+> _Created **2026-05-18** · last updated **2026-05-18** · organized into `crates/ai-pow-zk/docs/` on 2026-05-19._
+
 # Phase B — byte-equivalence & correctness vs Pearl for the production model
 
 > **Status:** DESIGN (2026-05-18). Roadmap milestone

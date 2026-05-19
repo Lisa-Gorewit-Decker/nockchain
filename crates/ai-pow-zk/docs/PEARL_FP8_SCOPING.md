@@ -1,3 +1,5 @@
+> _Created **2026-05-18** · last updated **2026-05-18** · organized into `crates/ai-pow-zk/docs/` on 2026-05-19._
+
 # FP8 scoping — how Pearl handles it, and what it means for Nockchain
 
 > **Status:** SCOPING (2026-05-18). Authoritative analysis of the

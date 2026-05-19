@@ -1,3 +1,5 @@
+> _Created **2026-05-13** · last updated **2026-05-13** · organized into `crates/ai-pow-zk/docs/` on 2026-05-19._
+
 # `ai-pow-zk` — circuit design
 
 A Plonky3 SNARK proving the `ai-pow` tiling-matmul puzzle. Logically

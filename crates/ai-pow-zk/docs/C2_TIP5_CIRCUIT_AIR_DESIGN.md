@@ -1,3 +1,5 @@
+> _Created **2026-05-18** · last updated **2026-05-19** · organized into `crates/ai-pow-zk/docs/` on 2026-05-19._
+
 # C2 / M-S4 — tip5-circuit-air + Tip5 challenger/MMCS (recursion verifies our Layer-0 proofs)
 
 > **Status:** DESIGN+IMPL (2026-05-18). Roadmap Phase C, blocked

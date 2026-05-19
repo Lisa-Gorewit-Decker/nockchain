@@ -1,3 +1,5 @@
+> _Created **2026-05-14** · last updated **2026-05-14** · organized into `crates/ai-pow-zk/docs/` on 2026-05-19._
+
 # M52 — `H_A` / `H_B` matrix bindings (Option 1)
 
 Live document tracking the implementation of in-circuit matrix

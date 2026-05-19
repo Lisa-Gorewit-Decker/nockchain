@@ -1,3 +1,5 @@
+> _Created **2026-05-18** · last updated **2026-05-18** · organized into `crates/ai-pow/docs/` on 2026-05-19._
+
 # Phase B / B1 — vendored-reference ↔ real-`pearl/zk-pow` faithfulness audit
 
 > **Status:** AUDIT COMPLETE (2026-05-18). Closes the B1

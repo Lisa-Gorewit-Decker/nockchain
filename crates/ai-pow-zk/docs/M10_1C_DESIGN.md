@@ -1,3 +1,5 @@
+> _Created **2026-05-14** · last updated **2026-05-14** · organized into `crates/ai-pow-zk/docs/` on 2026-05-19._
+
 # M10.1c — Pearl-style composite AIR design (Plonky3 port)
 
 Restore the PoUW property by binding `witness.a_rows` / `witness.b_cols`

@@ -32,7 +32,7 @@
 //! and asserted). Placing the real solved tile's matmul→fold
 //! chain (so `JACKPOT_MSG` = the real `TileState M` and the
 //! `noised_packed` binding bites) is HIGH-2.2 §4.A — see
-//! `crates/ai-pow-zk/HIGH2_2_DESIGN.md`.
+//! `crates/ai-pow-zk/docs/HIGH2_2_DESIGN.md`.
 //!
 //! ## Running
 //!
@@ -42,7 +42,7 @@
 //!   F1_SEED   — matrix synth seed (default "f1-harness-v1")
 //!   F1_ITERS  — prove+verify iterations for profiling (default 1)
 //!
-//! See `crates/ai-pow-zk/PROFILING.md` for samply / peak-RSS
+//! See `crates/ai-pow-zk/docs/PROFILING.md` for samply / peak-RSS
 //! recipes that wrap this binary.
 
 #[cfg(not(feature = "zk"))]

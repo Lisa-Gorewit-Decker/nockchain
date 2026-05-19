@@ -1,3 +1,5 @@
+> _Created **2026-05-13** · last updated **2026-05-18** · organized into `crates/ai-pow/docs/` on 2026-05-19._
+
 # `crates/ai-pow` vs. Pearl reference implementation (`pearl/zk-pow`)
 
 Compared against `pearl/zk-pow` at the version vendored in `pearl/` (Rust 2024,

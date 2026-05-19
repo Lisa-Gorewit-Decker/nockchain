@@ -1,3 +1,5 @@
+> _Created **2026-05-15** · last updated **2026-05-15** · organized into `crates/ai-pow-zk/docs/` on 2026-05-19._
+
 # Profiling & benchmarking the ai-pow → ai-pow-zk pipeline
 
 The F1 harness (`crates/ai-pow/examples/f1_harness.rs`) is the

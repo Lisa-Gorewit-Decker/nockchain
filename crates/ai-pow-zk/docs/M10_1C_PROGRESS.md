@@ -1,3 +1,5 @@
+> _Created **2026-05-14** · last updated **2026-05-14** · organized into `crates/ai-pow-zk/docs/` on 2026-05-19._
+
 # M10.1c — phase-by-phase progress
 
 Live document tracking the Plonky3 port of Pearl's composite-AIR

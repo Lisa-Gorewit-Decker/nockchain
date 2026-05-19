@@ -1,3 +1,5 @@
+> _Created **2026-05-19** · last updated **2026-05-19** · organized into `crates/ai-pow-zk/docs/` on 2026-05-19._
+
 # C3 / #124 — DT-1 design: D=2 Tip5 outer-cert recompose-coeff producer balancing
 
 > **Status:** DESIGN SUPERSEDED — root cause **empirically

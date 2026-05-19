@@ -1,3 +1,5 @@
+> _Created **2026-05-15** · last updated **2026-05-17** · organized into `crates/ai-pow-zk/docs/` on 2026-05-19._
+
 # HIGH-2.2 — Honest matmul→fold→C4-hash chain: problem space & design
 
 > **Status:** IN PROGRESS. Implementation tracked as tasks

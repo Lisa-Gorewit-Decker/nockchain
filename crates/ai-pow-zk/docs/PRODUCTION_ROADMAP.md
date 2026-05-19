@@ -1,3 +1,5 @@
+> _Created **2026-05-17** · last updated **2026-05-19** · organized into `crates/ai-pow-zk/docs/` on 2026-05-19._
+
 # Production Roadmap — mining `Llama-3.1-8B-Instruct-pearl` end to end
 
 > **Status:** PLANNING (2026-05-17). The authoritative *sequence*

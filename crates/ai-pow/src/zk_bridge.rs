@@ -37,7 +37,7 @@
 //! in one proof. The verifier rebuilds the canonical program
 //! from the trusted `ctx`/`params` (never the proof). See
 //! `ai_pow_zk::composite_proof` (entrypoint tier table) and
-//! `crates/ai-pow-zk/HIGH2_2_DESIGN.md` §4.C.
+//! `crates/ai-pow-zk/docs/HIGH2_2_DESIGN.md` §4.C.
 //!
 //! ## Remaining fidelity gap (not a binding gap) — HIGH-2.2 §4.A
 //!
@@ -51,7 +51,7 @@
 //! matmul→`X_STEP`→rotl13-XOR chain so `JACKPOT_MSG` = the real
 //! `TileState M`) is HIGH-2.2 §4.A; it does not weaken any
 //! binding, only the fidelity of *what* is hashed. Design +
-//! status: `crates/ai-pow-zk/HIGH2_2_DESIGN.md`.
+//! status: `crates/ai-pow-zk/docs/HIGH2_2_DESIGN.md`.
 
 use ai_pow_zk::composite_proof::build_config;
 use ai_pow_zk::{
@@ -218,7 +218,7 @@ fn bytes_to_words_le(b: &[u8; 32]) -> [u32; 8] {
 /// `target = difficulty_target(params)` internally and cannot be
 /// passed a forged target); this primitive is retained only for
 /// tests that deliberately inject a non-chain target. See
-/// `crates/ai-pow-zk/ZKP_SECURITY_REPORT.md` §MED-3.
+/// `crates/ai-pow-zk/docs/ZKP_SECURITY_REPORT.md` §MED-3.
 pub fn prove_and_verify(
     ctx: &BlockContext<'_>,
     params: &MatmulParams,

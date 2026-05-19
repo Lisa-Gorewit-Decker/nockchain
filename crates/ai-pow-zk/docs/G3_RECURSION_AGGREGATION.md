@@ -1,3 +1,5 @@
+> _Created **2026-05-17** · last updated **2026-05-17** · organized into `crates/ai-pow-zk/docs/` on 2026-05-19._
+
 # HIGH-2.2 §6(b)-G3 — Proof Recursion & Aggregation: Detailed Design Spec
 
 > ## ⚠️ AUDIT CORRECTIONS (2026-05-17) — read first

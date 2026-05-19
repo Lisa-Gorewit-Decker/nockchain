@@ -1,3 +1,5 @@
+> _Created **2026-05-17** · last updated **2026-05-18** · organized into `crates/ai-pow-zk/docs/` on 2026-05-19._
+
 # Phase A-CR — first-class params-pure `canonical_program` (CRIT-1 reconstruction hardening; subsumes §4.C.2-b2)
 
 > **Status:** DESIGN (2026-05-17). New roadmap milestone,

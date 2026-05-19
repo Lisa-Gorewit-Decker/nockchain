@@ -1,3 +1,5 @@
+> _Created **2026-05-17** · last updated **2026-05-17** · organized into `crates/ai-pow-zk/docs/` on 2026-05-19._
+
 # M-S2 — G3a + G3b Implementation Design (boundary-predicate parameterization + segment schedule)
 
 > **⛔ DEFERRED (2026-05-17, maintainer γ decision).** A Pearl
