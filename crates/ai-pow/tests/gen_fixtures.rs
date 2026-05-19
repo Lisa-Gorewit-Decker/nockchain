@@ -13,10 +13,10 @@
 //!
 //! The reference functions defined below are derived line-for-line from
 //! the Pearl source files
-//!   * `pearl/zk-pow/src/circuit/pearl_noise.rs`,
-//!   * `pearl/zk-pow/src/api/proof_utils.rs`,
-//!   * `pearl/zk-pow/src/ffi/mine.rs`, and
-//!   * `pearl/pearl-blake3/src/merkle.rs`.
+//!   * `Pearl zk-pow pearl_noise.rs`,
+//!   * `Pearl zk-pow api/proof_utils.rs`,
+//!   * `Pearl zk-pow ffi/mine.rs`, and
+//!   * `Pearl pearl-blake3 merkle.rs`.
 //!
 //! Pearl is distributed under the ISC license
 //! (Copyright (c) 2025-2026 Pearl Research Labs; Copyright (c) 2015-2016
@@ -38,13 +38,13 @@
 use blake3::Hasher;
 
 // ----------------------------------------------------------------------------
-// Pearl reference functions (vendored from pearl/zk-pow at this commit).
+// Pearl reference functions (vendored from Pearl zk-pow at this commit).
 // ----------------------------------------------------------------------------
 
 const BLAKE3_DIGEST_SIZE: usize = 32;
 const CHUNK_LEN: usize = 1024;
 
-// Pearl `pearl/zk-pow/src/circuit/pearl_noise.rs:12-16`:
+// Pearl `Pearl zk-pow pearl_noise.rs:12-16`:
 //   const NOISE_RANGE: usize = 128;
 //   const IDXS_PER_COL: usize = 2;
 //   const UNIFORM_NOISE_RANGE: usize = NOISE_RANGE / IDXS_PER_COL;  // 64

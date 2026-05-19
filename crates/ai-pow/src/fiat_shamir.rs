@@ -35,7 +35,7 @@ pub fn block_state(block_commitment: &[u8], nonce: &[u8]) -> Vec<u8> {
 }
 
 /// `κ` (Pearl `compute_job_key`,
-/// `pearl/zk-pow/src/ffi/mine.rs:156-161`): unkeyed BLAKE3 over the
+/// `Pearl zk-pow ffi/mine.rs:156-161`): unkeyed BLAKE3 over the
 /// concatenation of `block_commitment` and `params_tag`. Pearl uses
 /// `header.to_bytes() || config.to_bytes()`; we accept the two parts as
 /// separate slices but feed them into BLAKE3 in flat order (no length
@@ -48,7 +48,7 @@ pub fn commitment_key(block_commitment: &[u8], params_tag: &[u8; 32]) -> [u8; 32
 }
 
 /// `s_B` (Pearl `compute_commitment_hash` line 4,
-/// `pearl/zk-pow/src/ffi/mine.rs:167-170`): unkeyed BLAKE3 of the 64-byte
+/// `Pearl zk-pow ffi/mine.rs:167-170`): unkeyed BLAKE3 of the 64-byte
 /// concatenation `κ ‖ H_B`.
 pub fn noise_seed_b(kappa: &[u8; 32], h_b: &[u8; 32]) -> [u8; 32] {
     let mut input = [0u8; 64];
@@ -58,7 +58,7 @@ pub fn noise_seed_b(kappa: &[u8; 32], h_b: &[u8; 32]) -> [u8; 32] {
 }
 
 /// `s_A` (Pearl `compute_commitment_hash` line 5,
-/// `pearl/zk-pow/src/ffi/mine.rs:172-175`): unkeyed BLAKE3 of the 64-byte
+/// `Pearl zk-pow ffi/mine.rs:172-175`): unkeyed BLAKE3 of the 64-byte
 /// concatenation `s_B ‖ H_A`.
 pub fn noise_seed_a(s_b: &[u8; 32], h_a: &[u8; 32]) -> [u8; 32] {
     let mut input = [0u8; 64];

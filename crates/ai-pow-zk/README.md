@@ -2,7 +2,7 @@
 
 EXPERIMENTAL — a Plonky3 SNARK circuit for the
 [`ai-pow`](../ai-pow/) tiling matmul puzzle. The role is the same as
-Pearl's [`zk-pow`](../../pearl/zk-pow/): wrap the multi-MB plain proof
+Pearl's `zk-pow`: wrap the multi-MB plain proof
 in a compact SNARK so it can fit in a block certificate.
 
 **Status:** M10.1c is the canonical pipeline. A full composite AIR
@@ -174,14 +174,12 @@ parameter set) as the FRI sponge.
 The crate is dual-licensed under `LICENSE-APACHE` and `LICENSE-MIT`
 at the workspace root, **except** for the modules listed in
 [`LICENSE-PEARL`](LICENSE-PEARL) — those are Pearl-source ports
-(`pearl/zk-pow/src/circuit/...`) carrying a top-of-file ISC notice
+(`Pearl zk-pow ...`) carrying a top-of-file ISC notice
 and are governed by the Pearl ISC license terms reproduced in
 that file (Copyright (c) 2025-2026 Pearl Research Labs;
-Copyright (c) 2015-2016 The Decred developers). The Pearl
-upstream itself is vendored read-only under
-[`../../pearl/`](../../pearl/) for line-level cross-reference;
-see also [`../ai-pow/LICENSE-PEARL`](../ai-pow/LICENSE-PEARL)
-for the ai-pow-side derived-file enumeration.
+Copyright (c) 2015-2016 The Decred developers). See also
+[`../ai-pow/LICENSE-PEARL`](../ai-pow/LICENSE-PEARL) for the
+`ai-pow`-side derived-file enumeration.
 
 ## Security parameters
 

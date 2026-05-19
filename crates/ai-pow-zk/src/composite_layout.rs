@@ -1,6 +1,6 @@
 //! Column layout for the M10.1c Pearl-style composite AIR.
 //!
-//! Direct port of `pearl/zk-pow/src/circuit/pearl_layout.rs`. The full
+//! Direct port of `Pearl zk-pow pearl_layout.rs`. The full
 //! column set is mirrored, including Pearl's `NOISED_PACKED` /
 //! `A_NOISED` / `B_NOISED` / `MAT_ID` machinery for the matrix-tile
 //! RAM lookups. The lookups are essential for production-scale
@@ -80,7 +80,7 @@ pub const BLOCK_COMMITMENT_BYTES: usize = 32;
 /// Same in Goldilocks elements (4 bytes per u32, 8 u32s).
 pub const BLOCK_COMMITMENT_WORDS: usize = BLOCK_COMMITMENT_BYTES / BYTES_PER_GOLDILOCKS;
 
-/// Pearl-style tile dimensions (matches `pearl/zk-pow/src/circuit/
+/// Pearl-style tile dimensions (matches `Pearl zk-pow 
 /// pearl_program.rs:23-25`).
 pub const TILE_D: usize = 16;
 pub const TILE_H: usize = 2;
@@ -102,7 +102,7 @@ pub const MIN_STARK_LEN: usize = 1 << 13;
 // =====================================================================
 //  Column groups
 //
-//  Mirrors `pearl/zk-pow/src/circuit/pearl_layout.rs:7-81`'s
+//  Mirrors `Pearl zk-pow pearl_layout.rs:7-81`'s
 //  `pearl_columns` block. We use a manual const-offset scheme rather
 //  than a macro to keep dependencies tight.
 //

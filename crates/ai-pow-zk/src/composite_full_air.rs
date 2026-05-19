@@ -5,7 +5,7 @@
 //! developers); see `crates/ai-pow-zk/LICENSE-PEARL` for the full
 //! permission notice.
 //!
-//! Port of `pearl/zk-pow/src/circuit/pearl_air.rs:46-89` — the
+//! Port of `Pearl zk-pow pearl_air.rs:46-89` — the
 //! top-level `eval` that wires every chip's constraints into a
 //! single AIR over [`composite_layout`]'s `TOTAL_TRACE_WIDTH`
 //! columns.

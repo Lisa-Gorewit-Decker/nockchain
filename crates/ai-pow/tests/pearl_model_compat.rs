@@ -201,7 +201,7 @@ fn b1_0e_difficulty_target_well_formed_at_real_preset() {
 //
 // The B1 *protocol-equivalence* risk is audit-closed
 // (`2026-05-18_B1_PEARL_FAITHFULNESS_AUDIT.md`: vendored ref ≡ current real
-// `pearl/zk-pow`, line-for-line). With the real shipped weights
+// `Pearl zk-pow`, line-for-line). With the real shipped weights
 // now available (`~/Dev/Llama-3.1-8B-Instruct-pearl`, set
 // `PEARL_MODEL_DIR` to override), B1.1 exercises ai-pow's full
 // audited mineable-unit pipeline on a **real `gate_proj` INT7

@@ -5,7 +5,7 @@
 //! developers); see `crates/ai-pow-zk/LICENSE-PEARL` for the full
 //! permission notice.
 //!
-//! Port of `pearl/zk-pow/src/circuit/chip/jackpot/` — Pearl's
+//! Port of `Pearl zk-pow chip/jackpot/` — Pearl's
 //! per-tile state update from §4.5 of the Pearl whitepaper.
 //!
 //! The state is a 16-slot register; each row updates exactly one

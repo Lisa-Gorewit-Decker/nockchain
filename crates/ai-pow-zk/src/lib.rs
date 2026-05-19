@@ -2,7 +2,7 @@
 //!
 //! Mirrors Pearl's `zk-pow` role: where Pearl uses Plonky2 to compress
 //! its multi-MB `PlainProof` into a ~60 KB `ZKProof` (see
-//! `pearl/zk-pow/src/api/prove.rs::zk_prove_plain_proof`), this crate
+//! `Pearl zk-pow api/prove.rs::zk_prove_plain_proof`), this crate
 //! uses Plonky3 over Goldilocks + Tip5 + FRI to do the equivalent for
 //! the `ai-pow` plain proof.
 //!

@@ -144,7 +144,7 @@ impl CircuitConfig {
     /// Test profile for the M10.1c Pearl-style composite AIR.
     ///
     /// Pearl pins `constraint_degree = 3` (see
-    /// `pearl/zk-pow/src/circuit/pearl_stark.rs:208-210`); the M10.1c
+    /// `Pearl zk-pow pearl_stark.rs:208-210`); the M10.1c
     /// composite chip set inherits that degree budget because per-chip
     /// constraints get multiplied by a `is_<chip>` boolean selector
     /// before firing. Selectors are degree 1; chip-internal constraints

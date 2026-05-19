@@ -5,7 +5,7 @@
 //! developers); see `crates/ai-pow-zk/LICENSE-PEARL` for the full
 //! permission notice.
 //!
-//! Port of `pearl/zk-pow/src/circuit/chip/jackpot/jackpot_air.rs`.
+//! Port of `Pearl zk-pow chip/jackpot/jackpot_air.rs`.
 //! Each row updates exactly one slot of a 16-slot state register
 //! via the rotate-XOR-13 primitive.
 //!

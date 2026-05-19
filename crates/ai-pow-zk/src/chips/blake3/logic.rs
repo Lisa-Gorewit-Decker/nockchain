@@ -5,7 +5,7 @@
 //! developers); see `crates/ai-pow-zk/LICENSE-PEARL` for the full
 //! permission notice.
 //!
-//! Port of `pearl/zk-pow/src/circuit/chip/blake3/logic.rs`. Defines
+//! Port of `Pearl zk-pow chip/blake3/logic.rs`. Defines
 //! the high-level "what should this row of the BLAKE3 chip do" type
 //! that Phase 8's trace generator + constraint evaluator consume.
 //!

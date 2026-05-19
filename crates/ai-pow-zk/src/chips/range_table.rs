@@ -5,7 +5,7 @@
 //! developers); see `crates/ai-pow-zk/LICENSE-PEARL` for the full
 //! permission notice.
 //!
-//! Port of `pearl/zk-pow/src/circuit/chip/range_table.rs`. One generic
+//! Port of `Pearl zk-pow chip/range_table.rs`. One generic
 //! `RangeTableChip<COL, MIN, MAX>` parameterised by the table's
 //! column offset and `[MIN..=MAX]` integer range; four type aliases
 //! pin Pearl's specific tables:

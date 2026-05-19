@@ -240,7 +240,7 @@ impl MatmulParams {
         }
         // Pearl's permutation generator uses `rank_mask = r - 1` as a bitmask;
         // this is only well-formed for `r` a power of two
-        // (`pearl/zk-pow/src/circuit/pearl_noise.rs:107`).
+        // (`Pearl zk-pow pearl_noise.rs:107`).
         if !self.noise_rank.is_power_of_two() {
             return Err(ParamError::NoiseRankNotPowerOfTwo);
         }

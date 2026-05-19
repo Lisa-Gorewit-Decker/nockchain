@@ -6,7 +6,7 @@
 //!
 //! All 256-bit integers are encoded as little-endian byte arrays for parity
 //! with Pearl, which interprets the BLAKE3 keyed hash via
-//! `U256::from_little_endian` (pearl/zk-pow/src/ffi/mine.rs:101). Byte 0 is
+//! `U256::from_little_endian` (Pearl zk-pow ffi/mine.rs:101). Byte 0 is
 //! the LSB; byte 31 is the MSB. The comparison is the natural unsigned
 //! ordering on these 256-bit integers.
 

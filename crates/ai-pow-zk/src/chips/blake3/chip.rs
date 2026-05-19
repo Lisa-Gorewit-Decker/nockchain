@@ -6,7 +6,7 @@
 //! developers); see `crates/ai-pow-zk/LICENSE-PEARL` for the full
 //! permission notice.
 //!
-//! Port of `pearl/zk-pow/src/circuit/chip/blake3/blake3_air.rs` —
+//! Port of `Pearl zk-pow chip/blake3/blake3_air.rs` —
 //! the chip-level `eval` that wires `verify_init_state`,
 //! `verify_round`, and `finalize_blake` to per-row selector bits.
 //! Pearl spreads one BLAKE3 hash across `ROUNDS_PER_BLAKE_INSTRUCTION

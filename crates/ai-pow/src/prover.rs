@@ -320,7 +320,7 @@ fn mine_with_context(
     };
 
     // Pearl-analog ZK wrapping. At this point Pearl's pipeline invokes
-    // `zk_prove_plain_proof` (`pearl/zk-pow/src/api/prove.rs:18`) to
+    // `zk_prove_plain_proof` (`Pearl zk-pow api/prove.rs:18`) to
     // compress the multi-MB `PlainProof` into a ~60 KB Plonky2 STARK.
     // The `zk` feature swaps that step in here via the `ai-pow-zk`
     // crate's Plonky3 circuit. The plain proof is still returned: the

@@ -6,7 +6,7 @@
 //! developers); see `crates/ai-pow-zk/LICENSE-PEARL` for the full
 //! permission notice.
 //!
-//! Port of `pearl/zk-pow/src/circuit/chip/input/constraints.rs`.
+//! Port of `Pearl zk-pow chip/input/constraints.rs`.
 //!
 //! ## Columns the chip reads
 //!

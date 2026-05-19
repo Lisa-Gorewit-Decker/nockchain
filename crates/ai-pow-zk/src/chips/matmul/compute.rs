@@ -6,7 +6,7 @@
 //! permission notice.
 //!
 //! Port of the matmul logic at
-//! `pearl/zk-pow/src/circuit/chip/matmul/compute_cumsum.rs` —
+//! `Pearl zk-pow chip/matmul/compute_cumsum.rs` —
 //! specifically the per-row tile dot product and the
 //! reset/update/pass-through cumsum semantics.
 //!

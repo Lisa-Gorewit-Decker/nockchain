@@ -5,7 +5,7 @@
 //! developers); see `crates/ai-pow-zk/LICENSE-PEARL` for the full
 //! permission notice.
 //!
-//! Port of `pearl/zk-pow/src/circuit/chip/blake3/` — Pearl's
+//! Port of `Pearl zk-pow chip/blake3/` — Pearl's
 //! one-round-per-row BLAKE3 chip. Spreads one BLAKE3 compression
 //! across 8 trace rows × ~1k cols, matching the composite AIR's
 //! BLAKE3_ROUND block (`composite_layout::BLAKE3_ROUND_LEN = 1056`).

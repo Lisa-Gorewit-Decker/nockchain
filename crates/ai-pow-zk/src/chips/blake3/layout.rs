@@ -5,7 +5,7 @@
 //! developers); see `crates/ai-pow-zk/LICENSE-PEARL` for the full
 //! permission notice.
 //!
-//! Port of `pearl/zk-pow/src/circuit/chip/blake3/blake3_layout.rs`.
+//! Port of `Pearl zk-pow chip/blake3/blake3_layout.rs`.
 //! The BLAKE3 round AIR occupies [`crate::composite_layout::BLAKE3_ROUND_LEN`]
 //! = 1056 columns per row. This module defines the sub-layout *within*
 //! that 1056-column block.

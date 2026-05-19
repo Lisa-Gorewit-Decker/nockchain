@@ -5,7 +5,7 @@
 //! developers); see `crates/ai-pow-zk/LICENSE-PEARL` for the full
 //! permission notice.
 //!
-//! Port of `pearl/zk-pow/src/circuit/chip/jackpot/` arithmetic.
+//! Port of `Pearl zk-pow chip/jackpot/` arithmetic.
 //! Each row applies one of two operations:
 //!
 //! ```text

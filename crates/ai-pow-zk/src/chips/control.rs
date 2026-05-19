@@ -5,7 +5,7 @@
 //! developers); see `crates/ai-pow-zk/LICENSE-PEARL` for the full
 //! permission notice.
 //!
-//! Port of `pearl/zk-pow/src/circuit/chip/control_and_matid_packed.rs`.
+//! Port of `Pearl zk-pow chip/control_and_matid_packed.rs`.
 //!
 //! `CONTROL_PREP` is a single preprocessed Goldilocks element that
 //! bit-packs every per-row control flag (21 selectors) plus the
@@ -70,7 +70,7 @@ use crate::composite_layout::{
 };
 
 /// 21 selector bits in canonical Pearl pack order. See
-/// [`pearl/zk-pow/src/circuit/chip/control_and_matid_packed.rs:87-110`]
+/// [`Pearl zk-pow chip/control_and_matid_packed.rs:87-110`]
 /// for Pearl's authoritative ordering. We mirror it exactly.
 const SELECTOR_COLS: [usize; 21] = [
     // matmul (2)

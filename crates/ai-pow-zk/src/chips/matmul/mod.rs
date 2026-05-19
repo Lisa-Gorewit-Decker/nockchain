@@ -5,7 +5,7 @@
 //! developers); see `crates/ai-pow-zk/LICENSE-PEARL` for the full
 //! permission notice.
 //!
-//! Port of `pearl/zk-pow/src/circuit/chip/matmul/` — the chip that
+//! Port of `Pearl zk-pow chip/matmul/` — the chip that
 //! enforces the **inner accumulation step** of Pearl's tiled INT8
 //! `(A + E) · (B + F)` matrix multiplication. Each row consumes a
 //! TILE_H × TILE_D × TILE_H tile-block and updates a TILE_H × TILE_H

@@ -5,7 +5,7 @@
 //! developers); see `crates/ai-pow-zk/LICENSE-PEARL` for the full
 //! permission notice.
 //!
-//! Port of `pearl/zk-pow/src/circuit/chip/monotonic_increment.rs`.
+//! Port of `Pearl zk-pow chip/monotonic_increment.rs`.
 //! Pearl uses this as the row-address column that `CV_OUT → CV_IN`
 //! LogUp routing keys on. We use it for the same purpose.
 //!

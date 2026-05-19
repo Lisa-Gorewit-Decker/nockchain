@@ -194,7 +194,7 @@ impl TileState {
     /// hardness check value (Pearl §4.5 line 16).
     ///
     /// Byte-equivalent to Pearl's `compute_jackpot_hash(jackpot, key)`
-    /// (pearl/zk-pow/src/api/proof_utils.rs:1077-1081): hashes exactly
+    /// (Pearl zk-pow api/proof_utils.rs:1077-1081): hashes exactly
     /// 64 bytes (16 × `u32` little-endian) under the keyed BLAKE3 mode
     /// with `pow_key` as the key. No context prefix.
     pub fn keyed_hash(&self, pow_key: &[u8; 32]) -> [u8; 32] {

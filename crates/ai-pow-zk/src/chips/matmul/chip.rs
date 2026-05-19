@@ -5,7 +5,7 @@
 //! developers); see `crates/ai-pow-zk/LICENSE-PEARL` for the full
 //! permission notice.
 //!
-//! Port of Pearl's `pearl/zk-pow/src/circuit/chip/matmul/
+//! Port of Pearl `zk-pow chip/matmul/
 //! compute_cumsum.rs` constraint. One constraint per `(i, j)` cell
 //! in `CUMSUM_TILE`, asserting the reset / update / pass-through
 //! semantics:

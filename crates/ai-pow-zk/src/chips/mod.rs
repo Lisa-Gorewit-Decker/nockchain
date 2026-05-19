@@ -1,6 +1,6 @@
 //! Per-chip constraint generators for the M10.1c composite AIR.
 //!
-//! Each submodule ports one of Pearl's `pearl/zk-pow/src/circuit/chip/*`
+//! Each submodule ports one of Pearl `zk-pow chip/*`
 //! sub-modules. The chips are **not standalone AIRs** — they're
 //! constraint generators invoked from [`crate::composite_full_air`]'s
 //! top-level `eval`. This mirrors Pearl's `pearl_air.rs:46-89`

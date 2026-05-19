@@ -6,7 +6,7 @@
 //! developers); see `crates/ai-pow-zk/LICENSE-PEARL` for the full
 //! permission notice.
 //!
-//! Port of `pearl/zk-pow/src/circuit/chip/blake3/blake3_compress.rs`.
+//! Port of `Pearl zk-pow chip/blake3/blake3_compress.rs`.
 //! Byte-equivalent to:
 //!
 //!   * `blake3::Hasher::new_keyed(...).update(...).finalize()` for
@@ -29,7 +29,7 @@ pub const BLAKE3_MSG_LEN: usize = 64;
 
 /// BLAKE3 initialization vector — same constants used in
 /// SHA-512 (BLAKE3's predecessor) and reproduced verbatim from
-/// `pearl/zk-pow/.../blake3_compress.rs:26`.
+/// `Pearl zk-pow .../blake3_compress.rs:26`.
 pub const BLAKE3_IV: [u32; 8] = [
     0x6A09E667, 0xBB67AE85, 0x3C6EF372, 0xA54FF53A, 0x510E527F, 0x9B05688C, 0x1F83D9AB, 0x5BE0CD19,
 ];

@@ -5,7 +5,7 @@
 //! developers); see `crates/ai-pow-zk/LICENSE-PEARL` for the full
 //! permission notice.
 //!
-//! Port of `pearl/zk-pow/src/circuit/pearl_trace.rs` — produces a
+//! Port of `Pearl zk-pow pearl_trace.rs` — produces a
 //! `TOTAL_TRACE_WIDTH × N` trace matrix from a high-level
 //! "instruction list" (the sequence of hashes, matmul tile
 //! updates, jackpot rotations that the proof represents).

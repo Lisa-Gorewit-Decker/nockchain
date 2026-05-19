@@ -5,7 +5,7 @@
 //! developers); see `crates/ai-pow-zk/LICENSE-PEARL` for the full
 //! permission notice.
 //!
-//! Port of `pearl/zk-pow/src/circuit/chip/blake3/blake3_air.rs`,
+//! Port of `Pearl zk-pow chip/blake3/blake3_air.rs`,
 //! specifically the underlying constraint helpers
 //! (`add3_unchecked`, `add2_unchecked`, `xor_32_shift_if`,
 //! `xor_32`). These are the building blocks Pearl's `half_g`

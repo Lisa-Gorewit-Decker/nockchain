@@ -5,7 +5,7 @@
 //! developers); see `crates/ai-pow-zk/LICENSE-PEARL` for the full
 //! permission notice.
 //!
-//! Port of `pearl/zk-pow/src/circuit/pearl_preprocess.rs`,
+//! Port of `Pearl zk-pow pearl_preprocess.rs`,
 //! simplified to the minimum we need for the chip wiring landed in
 //! Phases 2–5. Pearl's full preprocessor is tied to a multi-
 //! thousand-line program-compilation pipeline (`pearl_program.rs`)

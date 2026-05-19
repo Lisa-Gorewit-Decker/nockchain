@@ -34,22 +34,22 @@ fn node_hash(left: &[u8; 32], right: &[u8; 32]) -> [u8; 32] {
 pub const CHUNK_LEN: usize = 1024;
 
 /// Round `raw_len` up to the next multiple of [`CHUNK_LEN`].
-/// (`pearl/pearl-blake3/src/merkle.rs:15-17`).
+/// (`Pearl pearl-blake3 merkle.rs:15-17`).
 pub fn padded_chunk_len(raw_len: usize) -> usize {
     raw_len.div_ceil(CHUNK_LEN) * CHUNK_LEN
 }
 
 /// Zero-pad `data` so its length is a multiple of [`CHUNK_LEN`]. Pearl's
 /// matrix commitments hash the chunk-padded byte stream
-/// (`pearl/pearl-blake3/src/merkle.rs:23-27`).
+/// (`Pearl pearl-blake3 merkle.rs:23-27`).
 pub fn pad_to_chunk_boundary(data: &[u8]) -> Vec<u8> {
     let mut padded = data.to_vec();
     padded.resize(padded_chunk_len(data.len()), 0);
     padded
 }
 
-/// Pearl matrix commitment (`pearl/zk-pow/src/ffi/mine.rs:163-165`,
-/// `pearl/pearl-blake3/src/merkle.rs:43-82`).
+/// Pearl matrix commitment (`Pearl zk-pow ffi/mine.rs:163-165`,
+/// `Pearl pearl-blake3 merkle.rs:43-82`).
 ///
 /// `H_A = BLAKE3(pad_to_chunk_boundary(A_row_major), key=kappa)` and
 /// `H_B = BLAKE3(pad_to_chunk_boundary(B_col_major), key=kappa)`. The

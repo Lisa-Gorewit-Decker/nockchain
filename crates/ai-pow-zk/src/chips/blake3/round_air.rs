@@ -5,7 +5,7 @@
 //! developers); see `crates/ai-pow-zk/LICENSE-PEARL` for the full
 //! permission notice.
 //!
-//! Port of `pearl/zk-pow/src/circuit/chip/blake3/blake3_air.rs`:
+//! Port of `Pearl zk-pow chip/blake3/blake3_air.rs`:
 //! `Blake3State`, `half_g`, `verify_round`, `finalize_blake`, and
 //! `verify_init_state`. Together these encode the BLAKE3
 //! compression function over Pearl's one-round-per-row trace
