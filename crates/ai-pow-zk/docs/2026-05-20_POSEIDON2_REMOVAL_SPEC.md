@@ -2,6 +2,73 @@
 
 # Poseidon2 removal spec — Tip5-unified outer-cert (M-S5b S1.B sub-stage 3.2.0)
 
+> **Status (R1, honest).** ✅ **LANDED 2026-05-20 (P0–P7 all
+> complete; commits `ab56262` → `e430982`).** Original spec
+> below preserved as the design record. Actual landing
+> deviated from prediction in important ways (see "EXECUTION
+> ADDENDUM" immediately below); R1-honest correction included.
+>
+> **EXECUTION ADDENDUM (2026-05-20):**
+>
+> 1. **P0 dispelled, not solved.** The predicted C2.4 R-a tail
+>    at D=2 (single orphan at wid 11468) did NOT trigger in
+>    either P3 (sub-component test) or P4 (full L1 build). The
+>    Tip5-unified path works at D=2 without the predicted fix.
+>    P0 is therefore "verified non-issue", not "fix landed".
+> 2. **Naming flip from `120bit` to `80bit`.** Maintainer noted
+>    `120bit` was historical inertia; production is at ≥80
+>    unconditional. Renamed during P5:
+>      `goldilocks_tip5_120bit()` → `goldilocks_tip5_80bit()`
+>      `goldilocks_tip5_120bit_higharity()` → `goldilocks_tip5_80bit_higharity()`
+> 3. **Predicted size savings DID NOT materialize.** P4
+>    measurement: Tip5-unified (digest=5) is **+49.3 KB LARGER**
+>    at L1 vs Poseidon2-W8 baseline (961.4 KB → 1010.7 KB).
+>    Cause: spec's "eliminate Poseidon2 perm AIR (-8–12 KB)" was
+>    based on a flawed premise — Poseidon2 was never an in-circuit
+>    AIR table in the L1 batch-STARK; the hash work is done
+>    out-of-circuit by the MMCS+challenger. Tip5's wider state
+>    (16 vs 8) and larger digest (5 vs 4 elements) makes per-MMCS
+>    operations more expensive.
+> 4. **Investigation finding (P4 supplement):** Tip5-out-4
+>    (digest=4) is SIZE-NEUTRAL with Poseidon2 baseline (−169
+>    bytes, statistically zero). Sponge collision security =
+>    min(192, 256) = 192 bits, equivalent to digest=5.
+>    Production stayed with digest=5 (paper-faithful per Tip5
+>    paper IACR 2023/107 Table 2); Tip5-out-4 retained as
+>    investigation artifact for future size-pressure scenarios.
+> 5. **Maintainer decision (2026-05-20):** "Investigate further.
+>    I'm not concerned at present. I'm not willing to use
+>    Poseidon2." → Continued with Tip5-out-5 (paper-faithful,
+>    +5% size) per user's hard "no Poseidon2" constraint.
+> 6. **P6 partial — test_tip5_layer0_compression.rs deferred.**
+>    The deep L2/L3 type migration in this measurement test was
+>    too invasive for one session (32+ Poseidon2-specific type
+>    references). Reverted; documented as P6 residual. The
+>    production L1 path (goldilocks_tip5_80bit) is fully Tip5;
+>    the deferred file is a historical-baseline test only.
+> 7. **P7 full regression PASS:**
+>      - ai-pow-zk lib: 370/0/22
+>      - ai-pow --features zk: ~176/0/3 (11 binaries)
+>      - p3-circuit-prover: all PASS (lib + 4 integration tests)
+>      - p3-recursion: all PASS (incl. test_tip5_layer0_recursion
+>        14/0/1, test_tip5_lookups 2/0/0)
+>
+> **NET RESULT (R1 honest):**
+>   ✅ Poseidon2 ELIMINATED from ai-pow-zk recursive proving
+>      (production path).
+>   ✅ Architectural cleanup: one hash family (Tip5) throughout.
+>   ✅ Soundness unchanged: chain MIN ≥82 unconditional.
+>   ⚠️ Size: +5% L1 (49 KB) — accepted by maintainer; Tip5-out-4
+>      available as future size-neutral variant.
+>   ⚠️ Residuals: test_tip5_layer0_compression.rs (historical
+>      Poseidon2 baseline; non-production); goldilocks_params
+>      test-utils (Poseidon2; used only by that one test);
+>      `goldilocks()` general-purpose Goldilocks STARK builder
+>      (intentional, not recursive proving).
+>
+> Original spec preserved unchanged below for design-history.
+> ---
+>
 > **Status (R1, honest).** SPEC + STAGED PLAN. **No code edit
 > by this document.** Implementation spec for the hash-
 > unification finding of
