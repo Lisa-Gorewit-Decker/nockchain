@@ -22,6 +22,7 @@ use p3_goldilocks::{Goldilocks, Poseidon2Goldilocks};
 use p3_koala_bear::{KoalaBear, Poseidon2KoalaBear, default_koalabear_poseidon2_16};
 use p3_merkle_tree::MerkleTreeMmcs;
 use p3_symmetric::{CryptographicPermutation, PaddingFreeSponge, TruncatedPermutation};
+use p3_tip5_circuit_air::Tip5Perm;
 use p3_uni_stark::StarkConfig;
 
 /// Compression function arity (number of inputs per compression).
@@ -333,6 +334,98 @@ pub fn goldilocks_tip5_120bit_higharity() -> GoldilocksConfig {
     StarkConfig::new(pcs, challenger)
 }
 
+/// **ADDITIVE (M-S5b S1.B Poseidon2-removal P2).** Tip5-unified
+/// Goldilocks outer-cert config at the **≥80-bit unconditional
+/// FRI tier** (Johnson radius; paper IACR ePrint 2025/2055 Theorem
+/// 1.5 + § 1.3.2), using **Tip5 throughout** instead of
+/// `Poseidon2Goldilocks<8>`.
+///
+/// Mirrors [`goldilocks_tip5_120bit`]'s FRI parameters (`log_blowup
+/// = 2, num_queries = 42, commit/query_proof_of_work_bits = 1, max_
+/// log_arity = 1, log_final_poly_len = 0`), so unconditional Johnson
+/// soundness is identical: `log_blowup · num_queries + query_pow_
+/// bits = 2 · 42 + 1 = 85` bits, ≥80 floor with 5-bit margin.
+///
+/// The hash is **`Tip5Perm`** (`p3-tip5-circuit-air`), width 16,
+/// sponge rate 10, digest 5 — the same Tip5 permutation the inner
+/// ai-pow-zk STARK uses (`crates/ai-pow-zk/src/circuit.rs:186,
+/// 203`). Eliminates the Poseidon2 perm AIR sub-circuit from L1/L2;
+/// predicted savings ~8–12 KB opened-values + structural max-
+/// constraint-degree drop from 7 (Poseidon2 x⁷) to 2 (Tip5 lookup-
+/// table post-L4) further shrinks the quotient polynomial by
+/// ~10–15 KB. **Combined predicted L2 floor savings: ~18–27 KB.**
+///
+/// **Prerequisite (M12 / `#127`):** C2.4 R-a tail at D=2 must be
+/// resolved before this config is used in the L2 outer-cert
+/// recursion verifier path. The recursion verifier `verify_p3_
+/// batch_proof_circuit` at D=2 currently has a single-orphan
+/// recompose-coeff producer multiplicity imbalance at wid 11468
+/// when Tip5 input-decompose produces non-Hint witnesses (per
+/// `2026-05-19_C3_OUTER_CERT_DESIGN.md` § 13). For toy STARK
+/// (Fibonacci AIR) round-trips and the D=1 outer-cert path,
+/// this config is immediately usable.
+///
+/// **Soundness:** chain MIN combined with S(−1) FRI: ≥82
+/// unconditional bits — unchanged from the LANDED Poseidon2-based
+/// chain. Inner Tip5 7-round retained (Nockchain spec; C2.1
+/// keystone byte-identical against `259cab2`).
+#[inline]
+pub fn goldilocks_tip5_unified_80bit() -> GoldilocksTipsConfig {
+    let perm = Tip5Perm;
+    let hash = PaddingFreeSponge::<_, 16, 10, 5>::new(perm);
+    let compress = TruncatedPermutation::<_, COMPRESS_ARITY, 5, 16>::new(perm);
+    let val_mmcs = MerkleTreeMmcs::new(hash, compress, 3);
+    let challenge_mmcs = ExtensionMmcs::new(val_mmcs.clone());
+    let dft = Radix2DitParallel::default();
+    // ≥80-bit unconditional Johnson-radius soundness (paper IACR
+    // ePrint 2025/2055 Theorem 1.5): log_blowup · num_queries +
+    // query_pow_bits = 2 · 42 + 1 = 85 bits, ≥80 floor.
+    // Same FRI parameters as `goldilocks_tip5_120bit()` — only the
+    // hash function differs (Tip5 instead of Poseidon2-W8).
+    let fri_params = FriParameters {
+        log_blowup: 2,
+        log_final_poly_len: 0,
+        max_log_arity: 1,
+        num_queries: 42,
+        commit_proof_of_work_bits: 1,
+        query_proof_of_work_bits: 1,
+        mmcs: challenge_mmcs,
+    };
+    let pcs = TwoAdicFriPcs::new(dft, val_mmcs, fri_params);
+    let challenger = DuplexChallenger::new(perm);
+    StarkConfig::new(pcs, challenger)
+}
+
+/// **ADDITIVE (M-S5b S1.B Poseidon2-removal P2).** Tip5-unified
+/// high-arity sibling of [`goldilocks_tip5_unified_80bit`]; same
+/// soundness, `max_log_arity = 3` + `log_final_poly_len = 2` for
+/// the C3 S3-style size-lever measurements at the new bar.
+/// Soundness-neutral: unconditional Johnson soundness depends only
+/// on `log_blowup · num_queries + query_pow_bits` (unchanged at
+/// `2 · 42 + 1 = 85` bits). Purely additive; does not modify
+/// [`goldilocks_tip5_unified_80bit`] or [`goldilocks_tip5_120bit`].
+#[inline]
+pub fn goldilocks_tip5_unified_80bit_higharity() -> GoldilocksTipsConfig {
+    let perm = Tip5Perm;
+    let hash = PaddingFreeSponge::<_, 16, 10, 5>::new(perm);
+    let compress = TruncatedPermutation::<_, COMPRESS_ARITY, 5, 16>::new(perm);
+    let val_mmcs = MerkleTreeMmcs::new(hash, compress, 3);
+    let challenge_mmcs = ExtensionMmcs::new(val_mmcs.clone());
+    let dft = Radix2DitParallel::default();
+    let fri_params = FriParameters {
+        log_blowup: 2,
+        log_final_poly_len: 2,
+        max_log_arity: 3,
+        num_queries: 42,
+        commit_proof_of_work_bits: 1,
+        query_proof_of_work_bits: 1,
+        mmcs: challenge_mmcs,
+    };
+    let pcs = TwoAdicFriPcs::new(dft, val_mmcs, fri_params);
+    let challenger = DuplexChallenger::new(perm);
+    StarkConfig::new(pcs, challenger)
+}
+
 /// Type alias for BabyBear STARK configuration.
 pub type BabyBearConfig =
     Config<BabyBear, Poseidon2BabyBear<16>, Poseidon2BabyBear<16>, 16, 16, 8, 8, 8, 4>;
@@ -344,6 +437,29 @@ pub type KoalaBearConfig =
 /// Type alias for Goldilocks STARK configuration.
 pub type GoldilocksConfig =
     Config<Goldilocks, Poseidon2Goldilocks<8>, Poseidon2Goldilocks<8>, 8, 8, 4, 4, 4, 2>;
+
+/// **ADDITIVE (M-S5b S1.B Poseidon2-removal P1).** Tip5-unified
+/// Goldilocks STARK configuration: Tip5Perm (7-round, width 16, rate
+/// 10, digest 5) for both MMCS hashing and Fiat-Shamir duplexing
+/// challenger. Mirrors the inner ai-pow-zk STARK's Tip5 choice
+/// (`crates/ai-pow-zk/src/circuit.rs:186, 203`); eliminates the
+/// dual-hash architectural defect identified in
+/// `crates/ai-pow-zk/docs/2026-05-20_PROOF_SIZE_REDUCTION_ROUTES_AUDIT.md`
+/// § 3.2.0 + spec'd in
+/// `crates/ai-pow-zk/docs/2026-05-20_POSEIDON2_REMOVAL_SPEC.md`.
+///
+/// **Predicted savings:** ~8–12 KB opened-values from eliminating
+/// the Poseidon2 perm AIR sub-circuit + a structural max-constraint-
+/// degree drop from 7 (Poseidon2 x⁷) to 2 (Tip5 lookup-table post-L4)
+/// that further shrinks the quotient polynomial.
+///
+/// **Soundness:** identical to `GoldilocksConfig` at the FRI side
+/// (same FRI params); Tip5 7-round provides ≥128 collision resistance
+/// + 4-round margin above the practically-broken 3-round per Opening
+/// the Blackbox (IACR 2024/1900). Chain MIN combined with S(−1) FRI
+/// ≥82 unconditional: ≥82 bits, unchanged from LANDED.
+pub type GoldilocksTipsConfig =
+    Config<Goldilocks, Tip5Perm, Tip5Perm, 16, 16, 10, 5, 5, 2>;
 
 /// Trait bounds for STARK-compatible fields.
 pub trait StarkField: Field + PrimeCharacteristicRing + TwoAdicField + PrimeField64 {}
@@ -359,5 +475,20 @@ mod tests {
         let _bb: BabyBearConfig = baby_bear();
         let _kb: KoalaBearConfig = koala_bear();
         let _gl: GoldilocksConfig = goldilocks();
+    }
+
+    /// M-S5b S1.B P1 — the new GoldilocksTipsConfig builder compiles
+    /// and constructs without panic. Validates that Tip5Perm satisfies
+    /// the Plonky3 Permutation + CryptographicPermutation trait bounds
+    /// that the Config<...> type alias requires.
+    #[test]
+    fn goldilocks_tip5_unified_compiles() {
+        let _c: GoldilocksTipsConfig = goldilocks_tip5_unified_80bit();
+    }
+
+    /// M-S5b S1.B P1 — high-arity sibling compiles + constructs.
+    #[test]
+    fn goldilocks_tip5_unified_higharity_compiles() {
+        let _c: GoldilocksTipsConfig = goldilocks_tip5_unified_80bit_higharity();
     }
 }
