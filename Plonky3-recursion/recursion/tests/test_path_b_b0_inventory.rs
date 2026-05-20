@@ -208,7 +208,15 @@ fn make_production_outer_cfg() -> TipsCfg {
     TipsCfg::new(pcs, TipsChallenger::new(perm))
 }
 
-fn build_production_l1() -> Result<BatchStarkProof<TipsCfg>, String> {
+/// Per-AIR width breakdown (computed from the actual airs vector
+/// before proving). Returned alongside the proof so the inventory
+/// dump can report (rows × cols) cell counts, not just rows.
+struct AirWidths {
+    /// One entry per AIR in `airs_degrees` order: (width, prep_width).
+    widths: Vec<(usize, usize)>,
+}
+
+fn build_production_l1() -> Result<(BatchStarkProof<TipsCfg>, AirWidths), String> {
     let outer_config = make_production_outer_cfg();
     let BuiltLayer0Circuit {
         circuit,
@@ -236,6 +244,20 @@ fn build_production_l1() -> Result<BatchStarkProof<TipsCfg>, String> {
         )
         .map_err(|e| format!("get_airs_and_degrees: {e:?}"))?;
     let (airs, degrees): (Vec<_>, Vec<usize>) = airs_degrees.into_iter().unzip();
+
+    // Extract per-AIR widths BEFORE consuming `airs` for proving.
+    use p3_air::BaseAir;
+    use p3_circuit_prover::common::CircuitTableAir;
+    let widths: Vec<(usize, usize)> = airs
+        .iter()
+        .map(|air| match air {
+            CircuitTableAir::Const(a) => (BaseAir::<Val>::width(a), BaseAir::<Val>::preprocessed_width(a)),
+            CircuitTableAir::Public(a) => (BaseAir::<Val>::width(a), BaseAir::<Val>::preprocessed_width(a)),
+            CircuitTableAir::Alu(a) => (BaseAir::<Val>::width(a), BaseAir::<Val>::preprocessed_width(a)),
+            CircuitTableAir::Dynamic(a) => (BaseAir::<Val>::width(a), BaseAir::<Val>::preprocessed_width(a)),
+        })
+        .collect();
+    let air_widths = AirWidths { widths };
 
     let mut runner = circuit.runner();
     runner
@@ -275,7 +297,7 @@ fn build_production_l1() -> Result<BatchStarkProof<TipsCfg>, String> {
     prover
         .verify_all_tables(&l1)
         .map_err(|e| format!("verify_all_tables: {e:?}"))?;
-    Ok(l1)
+    Ok((l1, air_widths))
 }
 
 // ---------------------------------------------------------------------
@@ -289,50 +311,75 @@ fn path_b_stage_0_l1_inventory() {
     eprintln!("Production FRI: lb=4 nq=20 mla=3 lfp=2 cap=3 d=5 (82-bit Johnson)");
     eprintln!("Substrate: 100% Tip5 (zero Poseidon2)\n");
 
-    let l1 = build_production_l1().expect("L1 must build");
+    let (l1, air_widths) = build_production_l1().expect("L1 must build");
     let total_bytes = postcard::to_allocvec(&l1).expect("serialize L1").len();
 
     eprintln!("L1 TOTAL serialized: {total_bytes} B ({:.2} KB)\n", total_bytes as f64 / 1024.0);
 
-    // ----- Primitive tables (Const, Public, Alu) -----
-    eprintln!("=== PRIMITIVE TABLES ===");
-    let primitives = [
-        ("Const", PrimitiveOpType::Const),
-        ("Public", PrimitiveOpType::Public),
-        ("Alu", PrimitiveOpType::Alu),
+    // ----- Per-AIR cell counts (rows × cols) -----
+    // Iteration order matches the airs vector returned by
+    // get_airs_and_degrees_with_prep: primitives first (Const, Public,
+    // Alu), then non-primitives in registration order. The widths come
+    // from the actual AIR instances at build time, so they reflect
+    // production parameters exactly.
+    let primitive_names = ["Const", "Public", "Alu"];
+    let nprim = primitive_names.len();
+    let primitive_rows = [
+        l1.rows[PrimitiveOpType::Const],
+        l1.rows[PrimitiveOpType::Public],
+        l1.rows[PrimitiveOpType::Alu],
     ];
-    let mut primitive_total_rows = 0usize;
-    for (idx, (name, op)) in primitives.iter().enumerate() {
-        let rows = l1.rows[*op];
-        eprintln!(
-            "  [{idx}] {name:<8}: rows={rows:>6}",
-        );
-        primitive_total_rows += rows;
-    }
-    eprintln!("  --");
-    eprintln!("  primitive_total_rows = {primitive_total_rows}\n");
 
-    // ----- Non-primitive tables (Tip5, Recompose, ...) -----
-    eprintln!("=== NON-PRIMITIVE TABLES (NPOs) ===");
-    let mut npo_total_rows = 0usize;
+    eprintln!("=== PER-AIR CELL COUNTS (rows × cols) ===");
+    eprintln!(
+        "  {:<3}  {:<40}  {:>6}  {:>6}  {:>6}  {:>10}",
+        "idx", "AIR", "rows", "width", "prep_w", "cells",
+    );
+    eprintln!("  {}", "-".repeat(82));
+
+    let mut primitive_total_cells = 0usize;
+    let mut primitive_total_rows_sum = 0usize;
+    for (i, name) in primitive_names.iter().enumerate() {
+        let rows = primitive_rows[i];
+        let (w, pw) = air_widths.widths.get(i).copied().unwrap_or((0, 0));
+        let cells = rows * (w + pw);
+        eprintln!(
+            "  [{i}]  {:<40}  {:>6}  {:>6}  {:>6}  {:>10}",
+            name, rows, w, pw, cells,
+        );
+        primitive_total_cells += cells;
+        primitive_total_rows_sum += rows;
+    }
+    eprintln!("  {}", "-".repeat(82));
+    eprintln!("  primitive_subtotal: rows={primitive_total_rows_sum}, cells={primitive_total_cells}\n");
+
+    let mut npo_total_cells = 0usize;
+    let mut npo_total_packed_rows = 0usize;
     for (i, entry) in l1.non_primitives.iter().enumerate() {
         let packed_rows = if entry.lanes > 0 { entry.rows.div_ceil(entry.lanes) } else { entry.rows };
+        let (w, pw) = air_widths.widths.get(nprim + i).copied().unwrap_or((0, 0));
+        let cells = packed_rows * (w + pw);
         eprintln!(
-            "  [{i}] op_type={:<40}  rows={:>6}  lanes={}  packed_rows={:>6}",
+            "  [{}]  {:<40}  {:>6}  {:>6}  {:>6}  {:>10}",
+            nprim + i,
             format!("{:?}", entry.op_type),
-            entry.rows,
-            entry.lanes,
             packed_rows,
+            w,
+            pw,
+            cells,
         );
-        eprintln!(
-            "         public_values.len()={}  air_variant={:?}",
-            entry.public_values.len(),
-            entry.air_variant,
-        );
-        npo_total_rows += packed_rows;
+        npo_total_cells += cells;
+        npo_total_packed_rows += packed_rows;
     }
-    eprintln!("  --");
-    eprintln!("  npo_total_packed_rows = {npo_total_rows}\n");
+    eprintln!("  {}", "-".repeat(82));
+    eprintln!("  npo_subtotal: rows={npo_total_packed_rows}, cells={npo_total_cells}\n");
+    eprintln!("  GRAND TOTAL: rows={}, cells={}\n",
+        primitive_total_rows_sum + npo_total_packed_rows,
+        primitive_total_cells + npo_total_cells,
+    );
+
+    let primitive_total_rows = primitive_total_rows_sum;
+    let npo_total_rows = npo_total_packed_rows;
 
     // ----- Summary -----
     eprintln!("=== SUMMARY ===");
