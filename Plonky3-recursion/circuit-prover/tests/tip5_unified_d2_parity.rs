@@ -1,6 +1,6 @@
 //! M-S5b S1.B Poseidon2-removal P3 — KAT parity test: D=2 batch-STARK
 //! with Tip5 NPO + recompose-coeff CTL at the new
-//! [`goldilocks_tip5_unified_80bit`] config.
+//! [`goldilocks_tip5_80bit`] config.
 //!
 //! This test exercises the **predicted C2.4 R-a tail trigger** per
 //! `crates/ai-pow-zk/docs/2026-05-20_POSEIDON2_REMOVAL_SPEC.md` §3.1:
@@ -27,7 +27,7 @@ use p3_circuit::ops::{
 };
 use p3_circuit_prover::batch_stark_prover::{recompose_air_builders, tip5_air_builders};
 use p3_circuit_prover::common::{NpoPreprocessor, get_airs_and_degrees_with_prep};
-use p3_circuit_prover::config::{GoldilocksTipsConfig, goldilocks_tip5_unified_80bit};
+use p3_circuit_prover::config::{GoldilocksTipsConfig, goldilocks_tip5_80bit};
 use p3_circuit_prover::{
     BatchStarkProver, CircuitProverData, ConstraintProfile, RecomposePreprocessor, TablePacking,
     Tip5Preprocessor,
@@ -111,7 +111,7 @@ fn p3_tip5_d2_npo_with_recompose_ctl_at_tip5_unified() {
 
     let circuit = builder.build().unwrap();
 
-    let cfg: GoldilocksTipsConfig = goldilocks_tip5_unified_80bit();
+    let cfg: GoldilocksTipsConfig = goldilocks_tip5_80bit();
 
     // D=2 NPO registration — the predicted R-a tail trigger.
     let npo_prep: Vec<Box<dyn NpoPreprocessor<Val>>> = vec![
