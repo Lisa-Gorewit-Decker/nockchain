@@ -10,7 +10,7 @@ use p3_circuit_prover::batch_stark_prover::{
     poseidon1_air_builders, poseidon1_air_builders_d5, poseidon1_preprocessor,
     poseidon1_table_provers_d5, poseidon2_air_builders, poseidon2_air_builders_d5,
     poseidon2_preprocessor, poseidon2_table_provers_d5, recompose_air_builders,
-    recompose_preprocessor,
+    recompose_preprocessor, tip5_air_builders, tip5_preprocessor,
 };
 use p3_circuit_prover::common::{NpoAirBuilder, NpoPreprocessor};
 use p3_circuit_prover::config::StarkField;
@@ -18,7 +18,7 @@ use p3_circuit_prover::field_params::ExtractBinomialW;
 use p3_circuit_prover::{
     ConstraintProfile, Poseidon1Preprocessor, Poseidon1Prover, Poseidon1ProverD2,
     Poseidon2Preprocessor, Poseidon2Prover, Poseidon2ProverD2, RecomposePreprocessor, TableProver,
-    recompose_table_provers,
+    Tip5Preprocessor, Tip5Prover, recompose_table_provers,
 };
 use p3_commit::Pcs;
 use p3_field::extension::BinomiallyExtendable;
@@ -450,6 +450,7 @@ where
     Val<SC>: PrimeField64 + BinomiallyExtendable<2> + StarkField,
     Poseidon1Preprocessor: NpoPreprocessor<Val<SC>>,
     Poseidon2Preprocessor: NpoPreprocessor<Val<SC>>,
+    Tip5Preprocessor: NpoPreprocessor<Val<SC>>,
     RecomposePreprocessor: NpoPreprocessor<Val<SC>>,
     SC::Challenge: BasedVectorSpace<Val<SC>>
         + From<Val<SC>>
@@ -511,7 +512,16 @@ where
 
     fn non_primitive_preprocessors(&self) -> Vec<Box<dyn NpoPreprocessor<Val<SC>>>> {
         let cl = self.0.challenger_perm_config.extension_degree() != 2;
-        let perm_prep = if self.0.challenger_perm_config.as_poseidon1().is_some() {
+        // 3-way dispatch on the configured challenger perm. The Tip5
+        // arm (M-S5b C2.2/C2.3 D=2 wiring, 2026-05-20) is the
+        // production path; Poseidon1 / Poseidon2 arms remain for
+        // upstream-compatibility with non-Tip5 consumers of this
+        // generic library crate but are NOT in the trust surface of
+        // the ai-pow-zk / nockchain production stack (per the user
+        // hard rule, no Poseidon2 anywhere in deployed proving).
+        let perm_prep = if self.0.challenger_perm_config.as_tip5().is_some() {
+            tip5_preprocessor::<Val<SC>>()
+        } else if self.0.challenger_perm_config.as_poseidon1().is_some() {
             poseidon1_preprocessor::<Val<SC>>()
         } else {
             poseidon2_preprocessor::<Val<SC>>()
@@ -522,15 +532,27 @@ where
     fn non_primitive_provers(&self, ext_degree: usize) -> Vec<Box<dyn TableProver<SC>>> {
         if ext_degree == 2 {
             let cl = self.0.challenger_perm_config.extension_degree() != 2;
+            // 3-way dispatch on the configured challenger perm. Tip5
+            // path uses `Tip5Prover` directly — Tip5Prover natively
+            // supports D=2 via `batch_instance_d2`
+            // (`circuit-prover/src/batch_stark_prover/tip5.rs:293-304`),
+            // unlike Poseidon2 which needs the `Poseidon2ProverD2`
+            // wrapper. Tip5 arm takes precedence so configs with both
+            // Tip5 AND a Poseidon perm somehow (not deployed, but
+            // defensive) route to Tip5.
             let mut provers: Vec<Box<dyn TableProver<SC>>> = match (
+                self.0.challenger_perm_config.as_tip5(),
                 self.0.challenger_perm_config.as_poseidon1(),
                 self.0.challenger_perm_config.as_poseidon2(),
             ) {
-                (Some(c), _) => vec![Box::new(Poseidon1ProverD2::new(
+                (Some(c), _, _) => {
+                    vec![Box::new(Tip5Prover::new(*c, ConstraintProfile::Standard))]
+                }
+                (_, Some(c), _) => vec![Box::new(Poseidon1ProverD2::new(
                     *c,
                     ConstraintProfile::Standard,
                 ))],
-                (_, Some(c)) => vec![Box::new(Poseidon2ProverD2::new(
+                (_, _, Some(c)) => vec![Box::new(Poseidon2ProverD2::new(
                     *c,
                     ConstraintProfile::Standard,
                 ))],
@@ -545,7 +567,13 @@ where
 
     fn non_primitive_air_builders(&self) -> Vec<Box<dyn NpoAirBuilder<SC, 2>>> {
         let cl = self.0.challenger_perm_config.extension_degree() != 2;
-        let mut builders = if self.0.challenger_perm_config.as_poseidon1().is_some() {
+        // 3-way dispatch on the configured challenger perm. Mirror of
+        // `non_primitive_preprocessors` / `non_primitive_provers`
+        // above — Tip5 (production for nockchain) takes precedence;
+        // Poseidon1 / Poseidon2 remain for upstream-compat.
+        let mut builders = if self.0.challenger_perm_config.as_tip5().is_some() {
+            tip5_air_builders::<SC, 2>()
+        } else if self.0.challenger_perm_config.as_poseidon1().is_some() {
             poseidon1_air_builders::<SC, 2>()
         } else {
             poseidon2_air_builders::<SC, 2>()
