@@ -262,19 +262,30 @@ pub fn goldilocks_tip5() -> GoldilocksTipsConfig {
 /// User-accepted per "I'm not concerned at present. I'm not
 /// willing to use Poseidon2." (2026-05-20).
 ///
-/// FRI parameters unchanged: `log_blowup = 2, num_queries = 42,
+/// **2026-05-20 (M-S5b S1.B size-reduction investigation; Tier B
+/// flip)**: FRI parameters updated from `lb=2 nq=42 pow=1+1` (~85
+/// bits, ~1011 KB L1) to **`lb=4 nq=20 pow=1+1` (82 bits, ~548 KB
+/// L1, −46%)** per Tier B of
+/// `crates/ai-pow-zk/docs/2026-05-20_RECURSIVE_PROOF_SIZE_INVESTIGATION.md`
+/// § 4.2. The trade-off: `log_blowup = 4` means **16× LDE** (vs
+/// previous 4× at lb=2), so prover memory + wall time scale
+/// proportionally. This is the largest single-parameter L1 size
+/// win available in-substrate while keeping ≥80-bit unconditional
+/// Johnson AND paper-faithful digest=5 (Tip5 paper IACR 2023/107
+/// Table 2 spec).
+///
+/// **FRI parameters (Tier B):** `log_blowup = 4, num_queries = 20,
 /// max_log_arity = 1, log_final_poly_len = 0,
 /// commit/query_proof_of_work_bits = 1`. Unconditional Johnson
-/// soundness ≈ `log_blowup · num_queries + query_pow_bits =
-/// 2 · 42 + 1 = 85` bits — comfortably above the 2026-05-19
+/// soundness = `log_blowup · num_queries + commit_pow + query_pow
+/// = 4 · 20 + 1 + 1 = 82` bits — +2-bit margin over the 2026-05-19
 /// maintainer-set 80-bit floor (per-block PoW at 2.5-min cadence
 /// does not need the 120/128-bit long-horizon margin; see
 /// `crates/ai-pow-zk/docs/2026-05-19_M_S5B_TERMINAL_COMPRESSION_DESIGN.md`
-/// § 1.4). The function name `goldilocks_tip5_80bit` is retained
-/// for cross-reference stability with the C3 LANDED commits
-/// (`14116b0` / `259cab2`) and the test harness. Proximity testing
-/// stays at γ < J(δ)−η (Johnson radius, never beyond — paper §8
-/// attacks avoided).
+/// § 1.4).
+///
+/// Proximity testing stays at γ < J(δ)−η (Johnson radius, never
+/// beyond — paper §8 attacks avoided).
 #[inline]
 pub fn goldilocks_tip5_80bit() -> GoldilocksTipsConfig {
     let perm = Tip5Perm;
@@ -284,13 +295,17 @@ pub fn goldilocks_tip5_80bit() -> GoldilocksTipsConfig {
     let challenge_mmcs = ExtensionMmcs::new(val_mmcs.clone());
     let dft = Radix2DitParallel::default();
     // ≥80-bit unconditional Johnson-radius soundness (paper IACR
-    // ePrint 2025/2055 Theorem 1.5): log_blowup · num_queries +
-    // query_pow_bits = 2 · 42 + 1 = 85 bits, ≥80 floor.
+    // ePrint 2025/2055 Theorem 1.5):
+    //   log_blowup · num_queries + commit_pow + query_pow
+    //   = 4 · 20 + 1 + 1 = 82 bits, ≥80 floor with +2-bit margin.
+    // Tier B per `2026-05-20_RECURSIVE_PROOF_SIZE_INVESTIGATION.md` §4.2:
+    // L1 ~548 KB vs the previous ~1011 KB at (lb=2, nq=42) (−46%).
+    // Cost: 16× LDE vs previous 4× ⇒ ~4× prover memory + slower proving.
     let fri_params = FriParameters {
-        log_blowup: 2,
+        log_blowup: 4,
         log_final_poly_len: 0,
         max_log_arity: 1,
-        num_queries: 42,
+        num_queries: 20,
         commit_proof_of_work_bits: 1,
         query_proof_of_work_bits: 1,
         mmcs: challenge_mmcs,
@@ -306,14 +321,22 @@ pub fn goldilocks_tip5_80bit() -> GoldilocksTipsConfig {
 /// folding** (`max_log_arity = 3`) and a non-trivial final
 /// polynomial (`log_final_poly_len = 2`). These two levers are
 /// **soundness-neutral**: unconditional Johnson soundness depends
-/// only on `log_blowup · num_queries + query_pow_bits` (unchanged
-/// at `2 · 42 + 1 = 85` bits); higher arity / earlier FRI stop
-/// only reshape the proof to fewer, fatter commit-phase steps.
+/// only on `log_blowup · num_queries + query_pow_bits`; higher
+/// arity / earlier FRI stop only reshape the proof to fewer,
+/// fatter commit-phase steps.
 ///
 /// **2026-05-20 (M-S5b S1.B P5)**: flipped to Tip5Perm-based,
 /// alongside [`goldilocks_tip5_80bit`]. Returns
 /// [`GoldilocksTipsConfig`] (Tip5-based) instead of
 /// [`GoldilocksConfig`] (Poseidon2-based).
+///
+/// **2026-05-20 (M-S5b S1.B Tier B flip)**: FRI params updated to
+/// match [`goldilocks_tip5_80bit`]'s new Tier B baseline
+/// (`lb=4 nq=20 pow=1+1` = 82 bits) — high-arity sibling preserved
+/// for size-lever measurements at the Pareto-aggressive
+/// combination (Tier C per
+/// `2026-05-20_RECURSIVE_PROOF_SIZE_INVESTIGATION.md` § 4.4 —
+/// add digest=4 + cap=3 for the ~470 KB floor).
 #[inline]
 pub fn goldilocks_tip5_80bit_higharity() -> GoldilocksTipsConfig {
     let perm = Tip5Perm;
@@ -323,10 +346,10 @@ pub fn goldilocks_tip5_80bit_higharity() -> GoldilocksTipsConfig {
     let challenge_mmcs = ExtensionMmcs::new(val_mmcs.clone());
     let dft = Radix2DitParallel::default();
     let fri_params = FriParameters {
-        log_blowup: 2,
+        log_blowup: 4,
         log_final_poly_len: 2,
         max_log_arity: 3,
-        num_queries: 42,
+        num_queries: 20,
         commit_proof_of_work_bits: 1,
         query_proof_of_work_bits: 1,
         mmcs: challenge_mmcs,

@@ -109,18 +109,27 @@ The **only** hash function in the live SNARK proving path is:
   - Inner Tip5-L0 PROD: `lb=3, nq=30, pow=0+0` ⇒ **90 bits**
     unconditional (configurable; LB2/LB4/LB5/LB6 variants all
     ≥80; per `crates/ai-pow-zk/src/circuit.rs:90-142`).
-  - Outer-cert L1/L2 (`goldilocks_tip5_80bit`): `lb=2, nq=42,
-    pow=1+1` ⇒ **85 bits** unconditional (`Plonky3-recursion/circuit-prover/src/config.rs:269-292`).
+  - Outer-cert L1/L2 (`goldilocks_tip5_80bit`): **Tier B flip
+    LANDED 2026-05-20** — `lb=4, nq=20, pow=1+1` ⇒ **82 bits**
+    unconditional (`Plonky3-recursion/circuit-prover/src/config.rs`).
+    Was `lb=2, nq=42, pow=1+1` ⇒ 85 bits; flipped for **−46% L1
+    size (~548 KB vs ~1011 KB)** per
+    [`2026-05-20_RECURSIVE_PROOF_SIZE_INVESTIGATION.md`](docs/2026-05-20_RECURSIVE_PROOF_SIZE_INVESTIGATION.md)
+    § 4.2. Trade-off: `lb=4` ⇒ 16× LDE (vs prior 4×) ⇒ ~4× prover
+    memory + slower proving.
 - **γ < J(δ)−η**: every layer operates strictly inside the
   Johnson radius (no list-decoding-regime attacks per paper §8).
   Per-layer J(δ) ∈ {0.5, 0.646, 0.75, 0.823, 0.875} across the
-  inner sweep; outer-cert J(δ)=0.5.
+  inner sweep; outer-cert J(δ) at Tier B (`lb=4`, ρ=1/16) =
+  **1 − √(1/16) = 0.75** (wider Johnson radius than the prior
+  `lb=2` ρ=1/4 → J(δ)=0.5; more headroom, not less).
 - **AIR-side soundness** (Plonky3 STARK reduction + Habock LogUp):
   - Per-AIR Schwartz–Zippel: `(d_max+1) · n_rows / q_chal` ≥98
     unconditional bits per AIR at production parameters.
   - Per-LogUp-bus: `3 · k_b / q_chal` ≥98 bits.
-  - **Combined chain MIN**: **82 bits unconditional** (FRI binds;
-    AIR + LogUp have ≥16-bit margin to FRI).
+  - **Combined chain MIN**: **82 bits unconditional at the
+    outer cert** (FRI binds at Tier B; AIR + LogUp have ≥16-bit
+    margin to FRI).
 
 Full derivations: see
 - [`2026-05-20_M_S5B_SOUNDNESS_ANALYSIS.md`](docs/2026-05-20_M_S5B_SOUNDNESS_ANALYSIS.md) (FRI side, S(−1))
@@ -196,7 +205,7 @@ the design / status doc that owns it.
 | Open work | Doc (in [`docs/`](docs/)) | Status |
 |---|---|---|
 | **Production roadmap** (the index of every milestone) | [`2026-05-17_PRODUCTION_ROADMAP.md`](docs/2026-05-17_PRODUCTION_ROADMAP.md) | Live |
-| **M-S5b / P-C2** — ≤65 KB terminal compression of the M-S5 cert | [`2026-05-19_M_S5B_TERMINAL_COMPRESSION_DESIGN.md`](docs/2026-05-19_M_S5B_TERMINAL_COMPRESSION_DESIGN.md) | S(−1) FRI soundness analysis LANDED ([`2026-05-20_M_S5B_SOUNDNESS_ANALYSIS.md`](docs/2026-05-20_M_S5B_SOUNDNESS_ANALYSIS.md)). S1 routes audit LANDED ([`2026-05-20_PROOF_SIZE_REDUCTION_ROUTES_AUDIT.md`](docs/2026-05-20_PROOF_SIZE_REDUCTION_ROUTES_AUDIT.md)). **S1.B Poseidon2 removal LANDED 2026-05-20 (P0–P7)** ([`2026-05-20_POSEIDON2_REMOVAL_SPEC.md`](docs/2026-05-20_POSEIDON2_REMOVAL_SPEC.md)) — outer-cert flipped from Poseidon2-Goldilocks<8> to Tip5 (one hash family throughout, analogous to Pearl's BLAKE3-throughout). Empirical L1 size: +5% (961→1011 KB) per spec's "size not concern" acceptance; size-neutral Tip5-out-4 variant available as future option. **Soundness unchanged: chain MIN ≥82 unconditional.** Empirical L2 still 618 KB → 9.5× over 65 KB; next milestone is Path A (outermost SNARK wrap) per routes-audit recommendation. |
+| **M-S5b / P-C2** — ≤65 KB terminal compression of the M-S5 cert | [`2026-05-19_M_S5B_TERMINAL_COMPRESSION_DESIGN.md`](docs/2026-05-19_M_S5B_TERMINAL_COMPRESSION_DESIGN.md) | S(−1) FRI soundness analysis LANDED ([`2026-05-20_M_S5B_SOUNDNESS_ANALYSIS.md`](docs/2026-05-20_M_S5B_SOUNDNESS_ANALYSIS.md)). S1 routes audit LANDED ([`2026-05-20_PROOF_SIZE_REDUCTION_ROUTES_AUDIT.md`](docs/2026-05-20_PROOF_SIZE_REDUCTION_ROUTES_AUDIT.md)). **S1.B Poseidon2 removal LANDED 2026-05-20 (P0–P7)** ([`2026-05-20_POSEIDON2_REMOVAL_SPEC.md`](docs/2026-05-20_POSEIDON2_REMOVAL_SPEC.md)) — outer-cert flipped from Poseidon2-Goldilocks<8> to Tip5 (one hash family throughout, analogous to Pearl's BLAKE3-throughout). **S1.B size-reduction investigation LANDED 2026-05-20** ([`2026-05-20_RECURSIVE_PROOF_SIZE_INVESTIGATION.md`](docs/2026-05-20_RECURSIVE_PROOF_SIZE_INVESTIGATION.md)): full per-lever empirical sweep at ≥80-bit Johnson; **Tier B production flip LANDED** — outer-cert FRI moved from `lb=2 nq=42` (~1011 KB, 85 bits) to `lb=4 nq=20` (~548 KB, 82 bits) for **−46% L1** at +2-bit margin / paper-faithful digest=5; trade-off is 16× LDE (4× prover memory). Tier C (~470 KB Pareto floor) deferred — requires digest=4 paper-divergence. Empirical L2 measurement at Tier B pending. In-substrate floor ~470 KB; ≤65 KB target still requires Path A (outermost SNARK wrap) per routes-audit recommendation. |
 | **C4 / M-S6** — independent crypto audit | [`2026-05-19_C4_AUDIT_READINESS.md`](docs/2026-05-19_C4_AUDIT_READINESS.md) | Readiness package landed (threat model + soundness-claim index + KAT/adversarial catalogue + known residuals). Team in-house audit walk is the next deliverable; people other than us will also audit. |
 | **CSA — Constraint Soundness Analysis (AIR-side of ≥80 unconditional, complements S(−1))** | [Design](docs/2026-05-20_CONSTRAINT_SOUNDNESS_ANALYSIS_DESIGN.md) + [S0](docs/2026-05-20_CONSTRAINT_INVENTORY.md) + [S1](docs/2026-05-20_CONSTRAINT_SOUNDNESS_DERIVATION.md) + [S2](docs/2026-05-20_TAMPER_GAP_LIST.md) + [S3](docs/2026-05-20_TAMPER_TEST_SPECIFICATION.md) + [S5](docs/2026-05-20_CSA_S5_CROSS_AIR_TAMPER_TESTS.md) + [S6](docs/2026-05-20_CSA_S6_PROPERTY_BASED_TESTS.md) + [S7](docs/2026-05-20_CSA_S7_AUDIT_SIGNOFF.md) | **LANDED 2026-05-20 (all 8 stages S0–S7)**. Verdict: per-AIR MIN bits ≥98 (BUS_IRANGE8 the tightest), chain MIN 82 unconditional bits combined with S(−1) FRI; ≥80 floor with margin. 11 new tamper tests + 3 audit-routing doc-comments landed; rejection rate empirically 1.0. Deferred-as-deepening (not gaps): F3–F20 FRI fold-round + per-constraint proptest sweep. M12 GAP-G3 items (BUS_MATMUL_INPUT, BUS_JACKPOT_X_BITS, Tip5 D=2 R-a tail) remain out of M-S6 scope. |
 | **Proof-size + parameter-choice measurements** (the post-recalibration source of truth) | [`2026-05-19_PROOF_SIZE_RECALIBRATION_MEASUREMENTS.md`](docs/2026-05-19_PROOF_SIZE_RECALIBRATION_MEASUREMENTS.md) | Stage A/B/C + S3(ii) measured; L2 = 618 KB; L3 > L2 ⇒ stacked recursion confirmed-dead at the new ≥80-Johnson bar. |
