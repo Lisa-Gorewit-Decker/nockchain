@@ -420,6 +420,7 @@ is `(attack class → test that already rejects it)`.
 | A-SOUND (sub-120-bit configuration) | every M-S5 tier asserts `lb·nq/2 ≥ 120` | C3 § 15 |
 | A-MAT (planted free `JACKPOT_MSG`) | `high2_*` adversarial ⇒ reject (M-S1) | HIGH-2.2 § 7 |
 | A-FRI (tampered FRI fold) | `WitnessConflict` at the in-circuit FRI fold-chain `connect` | C3 DT-4 + § 15 |
+| **A-CONSTRAINT** (per-AIR constraint-family tamper at single-cell / selector / bus / cross-AIR / property-based levels) | Every constraint family in the M-S5 chain has ≥1 tamper test exercising its rejection mechanism (M1/M2/M3/M4/M5). Per-AIR + per-bus rejection rate empirically 1.0. | CSA S0–S7 deliverables: `2026-05-20_CONSTRAINT_SOUNDNESS_ANALYSIS_DESIGN.md`, `2026-05-20_CSA_S7_AUDIT_SIGNOFF.md` § 5 (per-AIR sign-off table) |
 
 ---
 
@@ -438,7 +439,7 @@ otherwise be "surprised" by is here.
 | **G3** carry-vector segmentation | Deferred — this model is in `k ≤ 2¹⁶` Pearl envelope; revive only if a workload exceeds the envelope | `2026-05-17_M_S2_G3AB_DESIGN.md` |
 | **FP8 PoUW** | Pearl's FP protocol unshipped; INT-only production scope (documented limitation, not a defect) | `2026-05-17_PRODUCTION_ROADMAP.md` § 0 |
 | **D1 / D2** | vLLM miner-plugin + consensus block-cert integration — external | roadmap Phase D |
-| **CSA S1–S7** | AIR-side constraint soundness analysis stages S1–S7 of `2026-05-20_CONSTRAINT_SOUNDNESS_ANALYSIS_DESIGN.md`. S0 inventory LANDED 2026-05-20 (~117 constraint families across 27 AIRs/components catalogued). S1 (per-constraint Schwartz–Zippel + LogUp derivation), S2 (gap list), S3 (tamper-test specs), S4 (tamper-test impl), S5 (cross-AIR composition), S6 (property-based tampering), S7 (audit sign-off) are sequenced precise residuals. ε_AIR rough estimate ≤ 2^(−118) per CSA design §3.3 (≥80 floor with ~38-bit margin); S1 refines per-AIR. Not a blocker for the in-house C4 walk to begin on the soundness-claim index (§3); the CSA augments the index with per-constraint derivation depth. | `2026-05-20_CONSTRAINT_SOUNDNESS_ANALYSIS_DESIGN.md` + `2026-05-20_CONSTRAINT_INVENTORY.md` |
+| **CSA S0–S7 — LANDED 2026-05-20** | Constraint Soundness Analysis: AIR-side companion to S(−1). All 8 stages landed: S0 (inventory: ~117 families × 27 AIRs × ~190 existing tamper tests), S1 (Plonky3 STARK + Habock LogUp derivation: per-AIR MIN = 98 bits at BUS_IRANGE8, per-AIR MIN otherwise ≥ 103, chain MIN = 82 with S(−1) FRI), S2 (4-item GAP-G2/G1 backlog + 3 M12-deferred items routed), S3 (tamper-test specs per template), S4 (9 new tamper tests + 3 audit-routing doc-comments, all CI green), S5 (1 new K3 producer-side cross-AIR test + 7 boundary disposition rows), S6 (1 new demo proptest + 4 existing covered; deeper sweep deferred-as-deepening), S7 (audit sign-off + per-AIR table). **Verdict**: every AIR + bus ≥80 unconditional with margin; combined chain MIN ≥82. Deferred residuals (deepening, not gaps): F3–F20 fine-grained FRI fold-round tampers, per-constraint proptest sweep. | `2026-05-20_CONSTRAINT_SOUNDNESS_ANALYSIS_DESIGN.md` (design) + `2026-05-20_CONSTRAINT_INVENTORY.md` (S0) + `2026-05-20_CONSTRAINT_SOUNDNESS_DERIVATION.md` (S1) + `2026-05-20_TAMPER_GAP_LIST.md` (S2) + `2026-05-20_TAMPER_TEST_SPECIFICATION.md` (S3) + `2026-05-20_CSA_S5_CROSS_AIR_TAMPER_TESTS.md` (S5) + `2026-05-20_CSA_S6_PROPERTY_BASED_TESTS.md` (S6) + `2026-05-20_CSA_S7_AUDIT_SIGNOFF.md` (S7) |
 
 ### 8.1 Non-residuals (claims a careless audit might list — preempted here)
 
@@ -536,6 +537,12 @@ audit can begin on the in-scope items as listed.
 | **M-S5b S(−1) paper-grounded soundness analysis (closes A-LDR / §10 γ<J(δ)−η item)** | `2026-05-20_M_S5B_SOUNDNESS_ANALYSIS.md` |
 | **Constraint Soundness Analysis (CSA) — staged design (AIR-side of ≥80 unconditional)** | `2026-05-20_CONSTRAINT_SOUNDNESS_ANALYSIS_DESIGN.md` |
 | **CSA S0 — master constraint inventory (every AIR × every constraint family × tamper-test cross-link)** | `2026-05-20_CONSTRAINT_INVENTORY.md` |
+| **CSA S1 — per-constraint Schwartz–Zippel + LogUp derivation; per-AIR ≥80 verified** | `2026-05-20_CONSTRAINT_SOUNDNESS_DERIVATION.md` |
+| **CSA S2 — tamper-coverage gap list (G1/G2/G3 + M12 deferrals)** | `2026-05-20_TAMPER_GAP_LIST.md` |
+| **CSA S3 — tamper-test specifications (per S2 backlog × §4.2 template)** | `2026-05-20_TAMPER_TEST_SPECIFICATION.md` |
+| **CSA S5 — cross-AIR composition tamper tests (per-boundary bidirectional coverage)** | `2026-05-20_CSA_S5_CROSS_AIR_TAMPER_TESTS.md` |
+| **CSA S6 — property-based tampering (demo + deferred-as-deepening sweep)** | `2026-05-20_CSA_S6_PROPERTY_BASED_TESTS.md` |
+| **CSA S7 — audit sign-off (per-AIR table + GAP_AUDIT routing)** | `2026-05-20_CSA_S7_AUDIT_SIGNOFF.md` |
 | Phase B byte-equivalence | `2026-05-18_PHASE_B_DESIGN.md` |
 | Pearl divergence inventory | `2026-05-13_PEARL_COMPARISON.md` |
 | Phase-B B1 audit | `2026-05-18_B1_PEARL_FAITHFULNESS_AUDIT.md` |

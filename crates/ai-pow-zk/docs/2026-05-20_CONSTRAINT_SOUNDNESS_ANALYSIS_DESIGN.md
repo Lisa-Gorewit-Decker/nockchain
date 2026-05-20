@@ -2,13 +2,23 @@
 
 # Constraint-Side Soundness Analysis — staged design + per-stage tamper-test plan (the AIR-side companion to M-S5b S(−1))
 
-> **Status (R1, honest).** DESIGN + STAGED PLAN. **No invasive
-> code edit by this document.** The first stage (S0 — master
-> constraint inventory) is executed in the **same atomic
-> session** as this design (`2026-05-20_CONSTRAINT_INVENTORY.md`)
-> — per R1.1 anti-avoidance, once the design is laid out, the
-> implementation is *attempted and driven* in disciplined
-> validated increments.
+> **Status (R1, honest).** ✅ **LANDED 2026-05-20** (all 8
+> stages S0–S7 complete; see
+> `2026-05-20_CSA_S7_AUDIT_SIGNOFF.md` for the per-AIR
+> sign-off table + GAP_AUDIT routing). Original status:
+> DESIGN + STAGED PLAN. **No invasive code edit by this
+> document.** The first stage (S0 — master constraint
+> inventory) was executed in the **same atomic session** as
+> this design (`2026-05-20_CONSTRAINT_INVENTORY.md`) — per
+> R1.1 anti-avoidance, once the design was laid out, the
+> implementation was *attempted and driven* in disciplined
+> validated increments through S1–S7.
+>
+> **CSA verdict (the headline):** every AIR + LogUp bus
+> ≥98 unconditional bits at the production ceiling; combined
+> with S(−1) FRI ≥82, chain MIN = 82 unconditional bits with
+> 2-bit margin. 11 new tamper tests landed; rejection rate
+> empirically 1.0.
 >
 > **Scope.** Every AIR / chip / lookup / bus in the M-S5 chain
 > + the inner ai-pow-zk production AIR. Three crates in scope:

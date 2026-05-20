@@ -487,4 +487,49 @@ mod tests {
         let proof = prove::<AiPowStarkConfig, _>(&cfg, &air, trace, &[]);
         assert!(verify::<AiPowStarkConfig, _>(&cfg, &air, &proof, &[]).is_err());
     }
+
+    // =====================================================================
+    //  CSA S6 — property-based tampering (per
+    //  `crates/ai-pow-zk/docs/2026-05-20_CSA_S6_PROPERTY_BASED_TESTS.md`).
+    //
+    //  Demonstration of the proptest pattern applied to range-table
+    //  chips: random row + random bad value ⇒ verifier rejects. Case
+    //  count kept small (8) because each case runs a full prove+verify
+    //  (~1-2 s per case at TEST_PEARL).
+    // =====================================================================
+
+    use proptest::prelude::*;
+
+    proptest::proptest! {
+        #![proptest_config(ProptestConfig {
+            cases: 8,
+            .. ProptestConfig::default()
+        })]
+
+        /// CSA S6 — random URange8 mid-row tamper with guaranteed
+        /// non-boolean delta. For any row r ∈ [2, 253], setting
+        /// the value to `(r + 100) % 256` makes the transition
+        /// `r-1 → tampered` have delta `(r + 100) % 256 − (r-1)`,
+        /// which is guaranteed ∉ {0, 1} for all r in the range
+        /// (the +100 mod 256 makes the gap large enough).
+        /// Verifier must reject (M1 — AIR `eval()` non-boolean δ).
+        #[test]
+        fn prop_urange8_random_row_non_boolean_delta_rejects(
+            row in 2u32..253,
+        ) {
+            let cfg = build_stark_config(&test_zk_params(), &CircuitConfig::TEST_PEARL);
+            let air = RangeOnlyAir::<URange8Chip>::new();
+            let mut trace = build_valid_table_trace::<URANGE8_TABLE, 0, 255>(256);
+            // Honest value at `row` is `row`. Tamper to `(row + 100) % 256`.
+            let bad = ((row as i64 + 100) % 256) as u64;
+            let target = row as usize * TOTAL_TRACE_WIDTH + URANGE8_TABLE;
+            trace.values[target] = <Val as QuotientMap<u64>>::from_int(bad);
+            let proof = prove::<AiPowStarkConfig, _>(&cfg, &air, trace, &[]);
+            prop_assert!(
+                verify::<AiPowStarkConfig, _>(&cfg, &air, &proof, &[]).is_err(),
+                "URange8 tamper at row {} (honest={}, tampered={}) MUST reject",
+                row, row, bad
+            );
+        }
+    }
 }

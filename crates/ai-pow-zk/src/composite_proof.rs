@@ -962,6 +962,99 @@ mod tests {
         );
     }
 
+    /// **CSA S5 — HIGH-2.2 §6(b)-G2 keystone (K3) PRODUCER-SIDE tamper.**
+    ///
+    /// Cross-AIR composition test (per
+    /// `2026-05-20_CSA_S5_CROSS_AIR_TAMPER_TESTS.md`).
+    /// The K3 keystone binds FoldChip's `FOLD_XSTEP` (consumer side)
+    /// to StripeXorChip's `SX_XR[stripe]` (producer side). The S4
+    /// consumer-side test `high2_2_g2_xstep_stripe_pin_rejects`
+    /// tampers `FOLD_XSTEP`. This S5 test exercises the *opposite*
+    /// direction: tamper `SX_XR[0]` at the K3 row while leaving
+    /// `FOLD_XSTEP` honest. The K3 constraint
+    ///   `Σ_s FOLD_STRIPE_SEL[s] · (FOLD_XSTEP − SX_XR[s]) = 0`
+    /// becomes `1 · (FOLD_XSTEP − (SX_XR[0] + 1)) = −1 ≠ 0` ⇒ M1.
+    ///
+    /// **Defense-in-depth note (R1 honest).** Tampering `SX_XR[0]`
+    /// at one row also violates StripeXorChip's row-to-row
+    /// passthrough constraint (StripeXor is inactive at fold rows,
+    /// so the carry-forward `SX_XR[i+1] == SX_XR[i]` is enforced).
+    /// Either rejection mechanism catches the tamper. This test
+    /// asserts rejection without claiming which constraint fires
+    /// first; the *cross-AIR claim* is that the K3 binding is
+    /// **symmetric** — tampering the producer or the consumer both
+    /// reject, demonstrating the bidirectional integrity of the
+    /// FoldChip ↔ StripeXorChip soundness boundary.
+    #[test]
+    fn high2_2_g2_sx_xr_producer_side_tamper_rejects() {
+        use crate::composite_layout::{
+            FOLD_SLOT_SEL_START, SX_XR_START, TOTAL_TRACE_WIDTH,
+        };
+        use p3_field::integers::QuotientMap;
+        use p3_field::PrimeField64;
+
+        let cfg = build_config(&test_zk_params(), &CircuitConfig::TEST_PEARL);
+        let ch: [u32; 8] = core::array::from_fn(|i| 0x5EED_0000 + i as u32);
+        let mut trace = CompositeTrace::baseline_min();
+        let h = trace.height();
+
+        let (t, k, r, num_stripes) = (8usize, 64usize, 4usize, 16usize);
+        let a_prime: Vec<i8> = (0..(t * k) as i32)
+            .map(|i| (i.wrapping_mul(7) ^ (i >> 3)) as i8)
+            .collect();
+        let b_prime: Vec<i8> = (0..(t * k) as i32)
+            .map(|i| (i.wrapping_mul(5) ^ (i << 1) ^ 0x2A) as i8)
+            .collect();
+
+        let sweep_start = 8;
+        let (rows_used, x_steps) =
+            trace.place_useful_work_chain(sweep_start, &a_prime, &b_prime, t, r, num_stripes);
+
+        let store_chunks = CompositeTrace::enumerate_noised_chunks(
+            &a_prime, &b_prime, t, r, num_stripes,
+        );
+        let store_start = sweep_start + rows_used;
+        let n_store = trace.place_noised_store(store_start, &store_chunks, 0);
+
+        let xs: Vec<i32> = x_steps[..num_stripes].iter().map(|&u| u as i32).collect();
+        let fold_start = store_start + n_store + 4;
+        let m = trace.place_fold_chain(fold_start, &xs);
+        let _ = trace.place_jackpot_hash_block(h - 8, &m, &ch);
+
+        // Tamper SX_XR[0] at fold-row 0 by +1 in Goldilocks. This
+        // exercises the K3 producer-side path (and incidentally
+        // violates StripeXor's passthrough; both ⇒ M1).
+        let tampered_row = fold_start;
+        let base = tampered_row * TOTAL_TRACE_WIDTH;
+
+        // Sanity: confirm fold-row 0 is one-hot on slot 0.
+        let mut slot_check = usize::MAX;
+        for s in 0..16 {
+            if trace.matrix.values[base + FOLD_SLOT_SEL_START + s]
+                .as_canonical_u64() == 1
+            {
+                slot_check = s;
+            }
+        }
+        assert_eq!(
+            slot_check, 0,
+            "S5 K3 producer-side: row 0 must be one-hot on slot 0"
+        );
+
+        let sx_xr_honest = trace.matrix.values[base + SX_XR_START + 0];
+        let tampered = sx_xr_honest + <Val<AiPowStarkConfig> as QuotientMap<u64>>::from_int(1);
+        trace.matrix.values[base + SX_XR_START + 0] = tampered;
+
+        let pis = CompositePublicInputs::derive_from_trace(&trace);
+        let canonical = extract_program(&trace.matrix);
+        let (proof, _) = composite_prove_pinned_logup(&cfg, trace, &pis);
+        let result = composite_verify_pinned_logup(&cfg, &canonical, &proof, &pis);
+        assert!(
+            result.is_err(),
+            "S5: tampered SX_XR[0] (producer side of K3 keystone) MUST reject"
+        );
+    }
+
     // ───────────── CRIT-1 malicious-prover regression suite ─────────────
     //
     // ZKP_SECURITY_REPORT CRIT-1: a malicious prover can zero every
