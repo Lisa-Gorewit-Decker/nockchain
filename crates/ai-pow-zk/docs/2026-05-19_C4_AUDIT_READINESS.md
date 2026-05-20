@@ -171,7 +171,7 @@ The audit should *also* assess:
 | **A-CHAIN** | Forges the recursion chain (claims a valid inner that isn't) | C2.4 in-circuit Tip5 Layer-0 verify + C3 ≥120-bit outer cert |
 | **A-SOUND** | Exploits a sub-≥80-unconditional configuration | Every FRI tier in M-S5 is ≥ 80 unconditional under the IACR ePrint 2025/2055 Theorem 1.5 Johnson-radius bound (LANDED `lb=2, nq=120` is well above 80 unconditional; §15 of C3 doc + §1.3 above) |
 | **A-FRI** | Exploits a FRI commitment-scheme weakness | Standard Plonky3 FRI (audited upstream); we use established parameters; **proximity testing stays at γ < J(δ)−η** (Johnson radius, never beyond — IACR ePrint 2025/2055 §8 attacks avoided) |
-| **A-LDR** (new) | Pushes proximity testing beyond Johnson radius into the list-decoding regime where the paper's negative results + §8 attacks live | M-S5 chain audited to ensure no layer exceeds Johnson radius; M-S5b's S(−1) prerequisite (per the M-S5b design doc §3.0.A) will produce an explicit per-layer γ vs J(δ)−η table |
+| **A-LDR** (new) | Pushes proximity testing beyond Johnson radius into the list-decoding regime where the paper's negative results + §8 attacks live | ✅ **Per-layer γ vs J(δ)−η table landed 2026-05-20** in `2026-05-20_M_S5B_SOUNDNESS_ANALYSIS.md` §4.3 — every M-S5 link (inner PROD/LB2/LB4/LB5/LB6 + L1 + L2 outer-cert) operates strictly inside Johnson with `J(δ) ≥ 0.5` and `η > 0` at every layer; paper §8 attacks structurally avoided |
 | **A-HASH** | Exploits Tip5 / BLAKE3 weakness | Tip5: KAT-anchored to spec (paper IACR ePrint 2023/107); BLAKE3: as-published |
 
 ### 2.2 What is **not** mitigated by this audit alone
@@ -488,10 +488,12 @@ Before the auditor begins, confirm:
       R1/R1.1).
 - [x] **Soundness bar paper-grounded** (≥80 unconditional under
       IACR ePrint 2025/2055 Theorem 1.5 Johnson-radius bound; §1.3).
-- [ ] **Per-layer `γ < J(δ)−η` table produced** (M-S5b's S(−1)
+- [x] **Per-layer `γ < J(δ)−η` table produced** (M-S5b's S(−1)
       prerequisite — `2026-05-19_M_S5B_TERMINAL_COMPRESSION_DESIGN.md`
-      §3.0.A; not a blocker for the audit to *begin* but
-      should land before any new layer is added).
+      §3.0.A; landed 2026-05-20 in
+      `2026-05-20_M_S5B_SOUNDNESS_ANALYSIS.md` §4.3, with chain
+      MIN ≥ 82 unconditional under the combined
+      per-query + proximity-loss accounting).
 - [ ] **Pearl B1 reference vectors obtained** (B1 still open;
       this is a known residual not a blocker for starting the
       audit — the auditor can begin on the in-scope items and
@@ -530,6 +532,7 @@ audit can begin on the in-scope items as listed.
 | C2 degree/width tradeoff | `2026-05-18_C2_TIP5_AIR_DEGREE_WIDTH_TRADEOFF.md` |
 | C3 outer-cert (DT-1→DT-4 + LANDED) | `2026-05-19_C3_OUTER_CERT_DESIGN.md` |
 | M-S5b terminal compression (sibling) | `2026-05-19_M_S5B_TERMINAL_COMPRESSION_DESIGN.md` |
+| **M-S5b S(−1) paper-grounded soundness analysis (closes A-LDR / §10 γ<J(δ)−η item)** | `2026-05-20_M_S5B_SOUNDNESS_ANALYSIS.md` |
 | Phase B byte-equivalence | `2026-05-18_PHASE_B_DESIGN.md` |
 | Pearl divergence inventory | `2026-05-13_PEARL_COMPARISON.md` |
 | Phase-B B1 audit | `2026-05-18_B1_PEARL_FAITHFULNESS_AUDIT.md` |

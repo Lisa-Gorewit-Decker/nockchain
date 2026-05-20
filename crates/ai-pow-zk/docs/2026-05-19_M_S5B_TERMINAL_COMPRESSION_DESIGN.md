@@ -286,20 +286,31 @@ The new bar is paper-grounded but requires concrete audit
 work to bind the abstract Johnson-radius bound to *our exact
 FRI parameter configuration*:
 
-1. Confirm the paper's Theorem 1.5 hypotheses are satisfied by
-   our FRI parameters (in particular: code distance δ, rate, and
-   the proximity radius γ < J(δ)−η we target).
-2. Derive the explicit `(lb, nq, pow_bits) → unconditional bits`
-   formula for our exact Plonky3 FRI variant under Theorem 1.5.
-3. Verify the protocol does **not** push proximity testing
-   beyond Johnson radius at any point in the M-S5/M-S5b chain
-   (§8 of the paper shows beyond-Johnson is genuinely
-   unsafe).
-4. Add the paper to the C4 audit-readiness reference set
+1. ✅ **CLOSED 2026-05-20** (S(−1) landed). Confirm the paper's
+   Theorem 1.5 hypotheses are satisfied by our FRI parameters
+   (in particular: code distance δ, rate, and the proximity
+   radius γ < J(δ)−η we target). See
+   `2026-05-20_M_S5B_SOUNDNESS_ANALYSIS.md` §1, §4.
+2. **DEFERRED to C4 audit** (`2026-05-20_M_S5B_SOUNDNESS_ANALYSIS.md`
+   §6 residual #1). Derive the explicit `(lb, nq, pow_bits)
+   → unconditional bits` formula for our exact Plonky3 FRI
+   variant under Theorem 1.5. *S(−1) used the community-agreed
+   `lb · nq + pow_bits` formula — C4 auditor should walk the
+   `p3-fri` internal reduction in detail to confirm the
+   constant.*
+3. ✅ **CLOSED 2026-05-20** (S(−1) landed). Verify the protocol
+   does **not** push proximity testing beyond Johnson radius at
+   any point in the M-S5/M-S5b chain (§8 of the paper shows
+   beyond-Johnson is genuinely unsafe). See
+   `2026-05-20_M_S5B_SOUNDNESS_ANALYSIS.md` §4.3 (per-layer
+   J(δ)−η table) + §1.3 (paper §8 attacks summary).
+4. ✅ Add the paper to the C4 audit-readiness reference set
    (`2026-05-19_C4_AUDIT_READINESS.md` § 1.3 + § 11).
 
-Items 1–3 are part of the M-S5b S(−1) prerequisite (added to
-§3 below); item 4 is done by this commit.
+Items 1–3 were part of the M-S5b S(−1) prerequisite (added to
+§3 below); item 4 is done by the original 2026-05-19 commit.
+**As of 2026-05-20, items 1+3+4 are closed; item 2 is the only
+remaining C4-audit-deferred item from this list.**
 
 ---
 
@@ -489,14 +500,27 @@ choice empirically.
 
 | Stage | What it commits | Invasive to linchpin? | Cumulative substrate addition? |
 |---|---|---|---|
-| **S(−1)** | Paper-grounded `(lb, nq, pow_bits) → unconditional bits` mapping for our Plonky3-recursion FRI variant under IACR ePrint 2025/2055 Theorem 1.5; verify γ < J(δ)−η at every M-S5 link | No (analysis only) | No |
+| **S(−1)** ✅ LANDED 2026-05-20 (`2026-05-20_M_S5B_SOUNDNESS_ANALYSIS.md`) | Paper-grounded `(lb, nq, pow_bits) → unconditional bits` mapping for our Plonky3-recursion FRI variant under IACR ePrint 2025/2055 Theorem 1.5; verify γ < J(δ)−η at every M-S5 link | No (analysis only) | No |
 | **S0** | Path-A KAT-first prototype (toy Goldilocks STARK SNARK-wrap) in an excluded workspace — **demoted from primary path to fallback prototype after §1.4.C reframing** | No | No |
 | **S1** | L2 verifier AIR column-count audit + Path-B reduction map at the new ≥80-unconditional bar; **L2 size estimate at the new FRI parameters** | No (read-only) | No |
 | **S2** | Path-C / Sonobe KAT-first prototype, IF maintainer chooses to evaluate after S1 | No | No |
 | **S3** | Maintainer decision (**B-alone** vs B+A vs B+D+A vs B+C) | n/a | n/a |
 | **S4+** | Invasive substrate addition per the decision | Yes (staged) | Yes |
 
-### 3.0.A S(−1) — Paper-grounded soundness analysis (the new prerequisite)
+### 3.0.A S(−1) — Paper-grounded soundness analysis (the new prerequisite) — ✅ **LANDED 2026-05-20**
+
+> **Status update (2026-05-20).** S(−1) landed at
+> `crates/ai-pow-zk/docs/2026-05-20_M_S5B_SOUNDNESS_ANALYSIS.md`.
+> Verdict (verbatim from §5.1 of that doc): *"Every layer of the
+> LANDED M-S5 chain delivers ≥80 unconditional bits of
+> soundness at the Johnson radius under IACR ePrint 2025/2055
+> Theorem 1.5. Inner sweep (PROD + 4 LB profiles): 90–92 bits
+> per-query, ~82 bits combined. Outer cert (L1, L2): 85–86 bits
+> per-query, ~82 bits combined. Chain minimum (any combination):
+> ≥ 82 unconditional. Every layer operates at γ\_FRI < J(δ) − η
+> with η > 0; the §8 attacks of the paper (beyond-Johnson) are
+> structurally avoided."* No parameter change required for the
+> LANDED chain. S1 (next deliverable below) is now unblocked.
 
 **Goal.** Concretize the §1.4 abstract bar (≥80 unconditional
 bits under IACR ePrint 2025/2055 Theorem 1.5) into the **exact
@@ -520,15 +544,16 @@ edit.
   unconditional bits)`.
 
 **Exit gate.** A committed soundness-analysis note
-(`crates/ai-pow-zk/docs/2026-05-XX_M_S5B_SOUNDNESS_ANALYSIS.md`)
-with the formula, the per-layer table, and an explicit
-"comfortably above 80 unconditional" verdict for every link in
-the LANDED M-S5 chain (no parameter change required there).
-**No code change. Required input to S1's parameter choice.**
+(`crates/ai-pow-zk/docs/2026-05-20_M_S5B_SOUNDNESS_ANALYSIS.md`
+— ✅ landed) with the formula, the per-layer table, and an
+explicit "comfortably above 80 unconditional" verdict for every
+link in the LANDED M-S5 chain (no parameter change required
+there). **No code change. Required input to S1's parameter
+choice — now available for S1.**
 
 **Estimated effort.** 1–2 working days; depends on whether the
 audit (C4 / §1.4.D) confirms the mapping or surfaces
-adjustments.
+adjustments. Actual: ~1 day (2026-05-20).
 
 ### 3.1 S0 — Path-A KAT-first prototype (outermost SNARK on a toy STARK; demoted to fallback prototype)
 
