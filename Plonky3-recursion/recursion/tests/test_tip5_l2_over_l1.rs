@@ -258,7 +258,14 @@ fn make_tip5_outer_cfg(tier: Tip5OuterTier) -> TipsCfg {
     let perm = Tip5Perm;
     let hash = TipsHash::new(perm);
     let compress = TipsCompress::new(perm);
-    let val_mmcs = TipsValMmcs::new(hash, compress, 0);
+    // cap=3 to match the production builder
+    // `goldilocks_tip5_80bit()` at `circuit-prover/src/config.rs:294`.
+    // Prior cap=0 in this test was a substrate divergence — surfaced
+    // by Path B Stage B0 inventory 2026-05-20 (production L1 measured
+    // 487.65 KB at cap=3, vs the prior cap=0 test measurement of
+    // 512.24 KB at the same FRI). Documented in
+    // `crates/ai-pow-zk/docs/2026-05-20_PATH_B_STAGE_0_COLUMN_INVENTORY.md`.
+    let val_mmcs = TipsValMmcs::new(hash, compress, 3);
     let challenge_mmcs = TipsChallengeMmcs::new(val_mmcs.clone());
     let dft = TipsDft::default();
     let (lb, lfp, mla, nq, cpow, qpow) = tier.fri();
