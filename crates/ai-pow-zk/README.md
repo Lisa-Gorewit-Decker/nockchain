@@ -109,25 +109,32 @@ The **only** hash function in the live SNARK proving path is:
   - Inner Tip5-L0 PROD: `lb=3, nq=30, pow=0+0` ⇒ **90 bits**
     unconditional (configurable; LB2/LB4/LB5/LB6 variants all
     ≥80; per `crates/ai-pow-zk/src/circuit.rs:90-142`).
-  - Outer-cert L1/L2 (`goldilocks_tip5_80bit`): **Tier B flip
-    LANDED 2026-05-20** — `lb=4, nq=20, pow=1+1` ⇒ **82 bits**
-    unconditional (`Plonky3-recursion/circuit-prover/src/config.rs`).
-    Was `lb=2, nq=42, pow=1+1` ⇒ 85 bits; flipped for **−46% L1
-    size (547.88 KB measured vs ~1011 KB before)** per
+  - Outer-cert L1/L2 (`goldilocks_tip5_80bit`): **production FRI
+    parameters as of 2026-05-20** stack every soundness-neutral
+    compression lever — `lb=4, nq=20, mla=3, lfp=2, cap=3, pow=1+1,
+    d=5` ⇒ **82 bits** unconditional Johnson
+    (`Plonky3-recursion/circuit-prover/src/config.rs`). Pre-2026-05-20
+    baseline (`lb=2 nq=42 mla=1 lfp=0 cap=0`) was 85 bits, ~1011 KB
+    L1. Cumulative L1 reduction: **~−49%** (predicted ~520 KB; final
+    measurement pending). Trade-off: `lb=4` ⇒ 16× LDE (vs prior 4×)
+    ⇒ ~4× prover memory + slower proving. Soundness-neutral levers
+    (`mla=3 lfp=2 cap=3`) reshape the proof without affecting
+    unconditional Johnson bits.
+    Stage 5 measurement (prior config, `lb=4 nq=20 mla=1 lfp=0 cap=3`):
+    L1 = 547.88 KB, L2 = 646.76 KB, **L2/L1 = 1.18×** —
+    counterintuitive: L2 INFLATES L1 in the Tip5-throughout
+    substrate (Tip5 NPO trace overhead at every recursion layer
+    exceeds the savings from "collapsing" the inner STARK). More
+    recursion layers do NOT compress toward ≤65 KB; Path A (SNARK
+    wrap) is the only path to that target. See
     [`2026-05-20_RECURSIVE_PROOF_SIZE_INVESTIGATION.md`](docs/2026-05-20_RECURSIVE_PROOF_SIZE_INVESTIGATION.md)
-    § 4.2 + § 5. Trade-off: `lb=4` ⇒ 16× LDE (vs prior 4×) ⇒ ~4×
-    prover memory + slower proving. **L2-at-Tier-B measured 2026-05-20
-    Stage 5: 646.76 KB (1.18× L1) — counterintuitive: L2 INFLATES L1
-    in the Tip5-throughout substrate (Tip5 NPO trace overhead at
-    every recursion layer exceeds the savings from "collapsing" the
-    inner STARK). More recursion layers do NOT compress toward
-    ≤65 KB; Path A (SNARK wrap) is the only path to that target.**
+    § 4.2 + § 5 + the upcoming Phase 0 measurement section.
 - **γ < J(δ)−η**: every layer operates strictly inside the
   Johnson radius (no list-decoding-regime attacks per paper §8).
   Per-layer J(δ) ∈ {0.5, 0.646, 0.75, 0.823, 0.875} across the
-  inner sweep; outer-cert J(δ) at Tier B (`lb=4`, ρ=1/16) =
-  **1 − √(1/16) = 0.75** (wider Johnson radius than the prior
-  `lb=2` ρ=1/4 → J(δ)=0.5; more headroom, not less).
+  inner sweep; outer-cert J(δ) at the production rate (`lb=4`,
+  ρ=1/16) = **1 − √(1/16) = 0.75** (wider Johnson radius than
+  the pre-2026-05-20 `lb=2` ρ=1/4 → J(δ)=0.5; more headroom).
 - **AIR-side soundness** (Plonky3 STARK reduction + Habock LogUp):
   - Per-AIR Schwartz–Zippel: `(d_max+1) · n_rows / q_chal` ≥98
     unconditional bits per AIR at production parameters.

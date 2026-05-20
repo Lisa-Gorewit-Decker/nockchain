@@ -1,6 +1,6 @@
 //! M-S5b S1.B Tip5-NPO recursion backend Stage 4 — end-to-end
 //! L2-over-L1 in the Tip5-throughout substrate (ACCEPT +
-//! tamper-REJECT) + Stage 5 Tier B L2 size measurement.
+//! tamper-REJECT) + Stage 5 Production L2 size measurement.
 //!
 //! This is the FIRST end-to-end test of the L2 verifier circuit
 //! built atop a Tip5-throughout outer-cert. It exercises:
@@ -13,7 +13,8 @@
 //!    circuit reconstructing the L1's Tip5 MMCS commitments;
 //!  - the soundness chain MIN(inner Tip5-L0 PROD, L1 Tip5
 //!    outer-cert, L2 Tip5 outer-cert) ≥ 80 bits unconditional
-//!    Johnson at Tier B FRI parameters.
+//!    Johnson at the LANDED production FRI parameters (Production
+//!    tier: lb=4 nq=20 mla=3 lfp=2 cap=3 d=5).
 //!
 //! Per [no_poseidon2_anywhere] hard rule: ZERO Poseidon2 in
 //! this test — every layer (inner L0, L1, L2) uses Tip5
@@ -218,17 +219,19 @@ enum Tip5OuterTier {
     /// `lb=2, nq=2, pow=0+0` — fast unit-test tier (~5 bits, only
     /// usable for shape-correctness checks; not soundness-meaningful).
     Tiny,
-    /// LANDED production: `lb=4, nq=20, pow=1+1, d=5` ⇒ 82 bits
-    /// unconditional Johnson (`config::goldilocks_tip5_80bit()`
-    /// post-Tier-B-flip, commit `63a7f7a`).
-    TierB,
+    /// **LANDED production outer-cert FRI parameters** (matches
+    /// `config::goldilocks_tip5_80bit()` exactly). All
+    /// soundness-neutral compression levers stacked:
+    /// `lb=4, nq=20, mla=3, lfp=2, cap=3, pow=1+1, d=5` ⇒ 82 bits
+    /// unconditional Johnson, predicted L1 ~520 KB.
+    Production,
 }
 
 impl Tip5OuterTier {
     fn name(self) -> &'static str {
         match self {
             Self::Tiny => "Tiny(~5b)",
-            Self::TierB => "TierB(82b lb=4 nq=20)",
+            Self::Production => "Production(82b lb=4 nq=20 mla=3 lfp=2 cap=3 d=5)",
         }
     }
 
@@ -237,7 +240,7 @@ impl Tip5OuterTier {
     fn fri(self) -> (usize, usize, usize, usize, usize, usize) {
         match self {
             Self::Tiny => (2, 0, 1, 2, 0, 0),
-            Self::TierB => (4, 0, 1, 20, 1, 1),
+            Self::Production => (4, 2, 3, 20, 1, 1),
         }
     }
 
@@ -275,7 +278,7 @@ fn make_tip5_outer_cfg(tier: Tip5OuterTier) -> TipsCfg {
 /// L2 outer-cert is also Tip5-throughout. For now we use the same
 /// type alias (the test-utils only define one shape). If we ever
 /// need separate L2 perm geometry we'd add a parallel set; for
-/// Tier B both L1 and L2 use the same Tip5 W=16 R=10 D=5 setup.
+/// Production-tier L1 and L2 use the same Tip5 W=16 R=10 D=5 setup.
 type L2Val = Val;
 type L2Challenge = Challenge;
 type L2ChallengeMmcs = TipsChallengeMmcs;
@@ -538,7 +541,7 @@ fn stage3_tip5_l2_stack_assembles() {
     // Just construct + drop the outer config; assembling it exercises
     // every type-alias in the Tip5-throughout substrate.
     let _l1_cfg = make_tip5_outer_cfg(Tip5OuterTier::Tiny);
-    let _l2_cfg = make_tip5_outer_cfg(Tip5OuterTier::TierB);
+    let _l2_cfg = make_tip5_outer_cfg(Tip5OuterTier::Production);
     // Constructing the inner NPO provers exercises Tip5Prover's
     // TableProver<TipsCfg> bound — the precise bound the Stage 3
     // dispatch's `Box<dyn TableProver<SC>>` slot requires.
@@ -546,10 +549,10 @@ fn stage3_tip5_l2_stack_assembles() {
     // Verify the FRI params helper for both tiers without building
     // a proof.
     let _f_tiny = fri_vparams_for(Tip5OuterTier::Tiny);
-    let _f_tierb = fri_vparams_for(Tip5OuterTier::TierB);
+    let _f_tierb = fri_vparams_for(Tip5OuterTier::Production);
 
-    // Sanity: Tier B unconditional Johnson bits = 82.
-    assert_eq!(Tip5OuterTier::TierB.unconditional_bits(), 82);
+    // Sanity: Production unconditional Johnson bits = 82.
+    assert_eq!(Tip5OuterTier::Production.unconditional_bits(), 82);
 }
 
 /// **STAGE 4 ACCEPT** — toy Tip5-throughout L2 over Tip5-throughout
@@ -619,30 +622,31 @@ fn stage4_tip5_l2_over_l1_tiny_tamper_rejects() {
     }
 }
 
-/// **STAGE 5** — Tier B L2 size measurement (the original user ask:
-/// "measure L2 at current Tier B params"). Tip5-throughout L2 over
+/// **STAGE 5** — Production L2 size measurement (the original user ask:
+/// "measure L2 at the current production params"). Tip5-throughout
+/// L2 over
 /// Tip5-throughout L1, both at the LANDED production FRI params
 /// (`config::goldilocks_tip5_80bit` post-Tier-B-flip:
 /// `lb=4 nq=20 pow=1+1 d=5`, 82 bits unconditional Johnson).
 #[test]
-#[ignore = "Stage 5: Tip5-throughout L2-over-L1 at Tier B (VERY heavy ~many min); records L1+L2 sizes"]
-fn stage5_tip5_l2_over_l1_tier_b_measurement() {
-    let tier = Tip5OuterTier::TierB;
+#[ignore = "Stage 5: Tip5-throughout L2-over-L1 at Production (VERY heavy ~many min); records L1+L2 sizes"]
+fn stage5_tip5_l2_over_l1_production_measurement() {
+    let tier = Tip5OuterTier::Production;
     let sbits = tier.unconditional_bits();
-    assert!(sbits >= 80, "Tier B Johnson soundness {sbits} < 80 floor");
+    assert!(sbits >= 80, "Production Johnson soundness {sbits} < 80 floor");
 
     let l1 = build_l1_tip5_throughput(false, tier)
-        .expect("Tier B L1 over real inner Tip5-L0 must ACCEPT");
+        .expect("Production L1 over real inner Tip5-L0 must ACCEPT");
     let l1_bytes = postcard::to_allocvec(&l1).expect("serialize L1").len();
 
     let l2_bytes = l2_over_tip5_l1(
-        "Stage5-TierB",
+        "Stage5-Prod",
         &l1,
         &fri_vparams_for(tier),
         &make_tip5_outer_cfg(tier),
         make_tip5_outer_cfg(tier),
     )
-    .expect("Tier B L2 over Tier B L1 in Tip5-throughout substrate must ACCEPT");
+    .expect("Production L2 over Production L1 in Tip5-throughout substrate must ACCEPT");
 
     // Tamper-reject at the production tier too: a tampered inner MUST
     // NOT produce a verifying Tier-B L2 (soundness hole would be
@@ -654,7 +658,7 @@ fn stage5_tip5_l2_over_l1_tier_b_measurement() {
         ),
         Ok(bad) => {
             let r = l2_over_tip5_l1(
-                "Stage5-TierB-tamper",
+                "Stage5-Prod-tamper",
                 &bad,
                 &fri_vparams_for(tier),
                 &make_tip5_outer_cfg(tier),
@@ -662,7 +666,7 @@ fn stage5_tip5_l2_over_l1_tier_b_measurement() {
             );
             assert!(
                 r.is_err(),
-                "STAGE 5 SOUNDNESS HOLE: tampered inner produced VERIFYING Tier B L2: {r:?}"
+                "STAGE 5 SOUNDNESS HOLE: tampered inner produced VERIFYING Production L2: {r:?}"
             );
             eprintln!("[STAGE 5 TAMPER] tampered inner correctly rejected at L2: {r:?}");
         }
@@ -671,9 +675,9 @@ fn stage5_tip5_l2_over_l1_tier_b_measurement() {
     let (lb, lfp, mla, nq, cp, qp) = tier.fri();
     eprintln!(
         "\n[M-S5b S1.B STAGE 5 — Tip5-throughout L1+L2 @ {} (the LANDED production FRI)]\n  \
-         L1-outer = TierB (lb={lb} nq={nq} pow={cp}/{qp} mla={mla} lfp={lfp} d={DIGEST_ELEMS}) \
+         L1-outer = Production (lb={lb} nq={nq} pow={cp}/{qp} mla={mla} lfp={lfp} d={DIGEST_ELEMS}) \
          ⇒ {sbits} bits unconditional Johnson ≥ 80\n  \
-         L2-wrapper = TierB (same {sbits}-bit tier)\n  \
+         L2-wrapper = Production (same {sbits}-bit tier)\n  \
          soundness chain MIN(L0, L1, L2) ≥ 80 bits at EVERY link (L0 = Tip5-L0 PROD \
          lb=3 nq=30 = 90 bits)\n  \
          serialized L1 = {l1_bytes} B ({:.2} KB)\n  \

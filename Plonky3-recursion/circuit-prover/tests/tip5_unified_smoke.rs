@@ -8,9 +8,7 @@
 //! P1 + P2 sub-task of `crates/ai-pow-zk/docs/2026-05-20_POSEIDON2_REMOVAL_SPEC.md`.
 
 use p3_circuit::test_utils::{FibonacciAir, generate_trace_rows};
-use p3_circuit_prover::config::{
-    goldilocks_tip5_80bit, goldilocks_tip5_80bit_higharity,
-};
+use p3_circuit_prover::config::goldilocks_tip5_80bit;
 use p3_field::PrimeCharacteristicRing;
 use p3_goldilocks::Goldilocks;
 use p3_uni_stark::{prove, verify};
@@ -52,19 +50,11 @@ fn fibonacci_tampered_pi_at_tip5_80bit_rejects() {
     );
 }
 
-/// High-arity sibling smoke test.
-#[test]
-fn fibonacci_prove_verify_at_tip5_80bit_higharity() {
-    let n = 1 << 3;
-    let x = 21u64;
-
-    let cfg = goldilocks_tip5_80bit_higharity();
-    let trace = generate_trace_rows::<F>(0, 1, n);
-    let pis = vec![F::ZERO, F::ONE, F::from_u64(x)];
-    let air = FibonacciAir {};
-
-    let proof = prove(&cfg, &air, trace, &pis);
-    verify(&cfg, &air, &proof, &pis).expect(
-        "Fibonacci proof at tip5-80bit-higharity MUST verify",
-    );
-}
+// NOTE: a `fibonacci_prove_verify_at_tip5_80bit_higharity` test
+// existed here through 2026-05-20. It exercised the
+// `goldilocks_tip5_80bit_higharity()` builder, which has now been
+// folded into the production `goldilocks_tip5_80bit()` builder
+// (high-arity FRI fold + non-trivial final polynomial were rolled
+// into the production cumulative-lever stack). The sibling builder
+// no longer exists; the equivalent coverage now lives in the
+// `fibonacci_prove_verify_at_tip5_80bit` test above.
