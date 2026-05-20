@@ -399,27 +399,36 @@ change, no paper divergence, well-understood soundness math.
 
 ## 5. L2-over-L1 in Tip5-throughout substrate (M-S5b S1.B Stage 5; 2026-05-20)
 
-The post-2026-05-20 LANDED Tier B production config
-(`config::goldilocks_tip5_80bit`, lb=4 nq=20 pow=1+1 d=5,
-82 bits unconditional Johnson) was measured at the real L2
-layer for the first time via
+The 2026-05-20 production config (`config::goldilocks_tip5_80bit`,
+post-Phase-0 cumulative-lever stack: `lb=4 nq=20 mla=3 lfp=2
+cap=3 pow=1+1 d=5`, 82 bits unconditional Johnson) was measured
+at the real L1 + L2 layers via
 `Plonky3-recursion/recursion/tests/test_tip5_l2_over_l1.rs::
-stage5_tip5_l2_over_l1_tier_b_measurement` (1777s real-time;
-commit `c50e3e8`):
+stage5_tip5_l2_over_l1_production_measurement`. Two measurement
+runs landed across the two production-flip commits:
 
-| Layer | Size | Δ vs prior | Soundness |
-|---|--:|--:|--:|
-| L1 outer-cert (Tier B, Tip5-throughout) | **547.88 KB** | matches §4.2 prediction ✅ | 82 bits |
-| L2 outer-cert (Tier B over above L1) | **646.76 KB** | — | 82 bits |
-| L2/L1 ratio | **1.18×** | — | — |
+| Production config | L1 | L2 | L2/L1 | Run time |
+|---|--:|--:|--:|--:|
+| `lb=4 nq=20 mla=1 lfp=0 cap=3` (commit `63a7f7a`, "Tier B") | 547.88 KB | 646.76 KB | 1.18× | 1777s |
+| **`lb=4 nq=20 mla=3 lfp=2 cap=3` (commit `e2b791b`, Phase 0)** | **512.24 KB** | **543.68 KB** | **1.06×** | 1284s |
+| Δ across the Phase-0 flip | **−6.5%** | **−15.9%** | (closer to parity) | — |
 
 **Headline finding (counterintuitive but real):** L2 is **larger
-than** L1 in the Tip5-throughout substrate (118% of L1's bytes),
-**not smaller**. The L2 verifier circuit recomputes L1's Tip5
-MMCS commitments in-circuit + verifies L1's FRI fold chain
-in-circuit; that overhead (Tip5 NPO traces + recompose NPO
-traces + in-circuit FRI verifier logic) **exceeds** the saving
-from "collapsing" the inner L1 STARK into the L2 wrapper.
+than** L1 in the Tip5-throughout substrate. The L2 verifier
+circuit recomputes L1's Tip5 MMCS commitments in-circuit +
+verifies L1's FRI fold chain in-circuit; that overhead (Tip5 NPO
+traces + recompose NPO traces + in-circuit FRI verifier logic)
+exceeds the saving from "collapsing" the inner L1 STARK into the
+L2 wrapper. Phase 0 narrowed the inflation from 18% to 6% but
+did not invert it.
+
+**Secondary finding (Phase 0):** the soundness-neutral levers
+(`mla=3`, `lfp=2`) save **more** at L2 than at L1 (-15.9% vs
+-6.5%). Hypothesis: high-arity FRI folding + non-trivial final-
+polynomial tail compound at the L2 layer because L2's verifier
+circuit has more FRI rounds to fold (verifying L1's larger FRI
+chain). This is a positive cascading effect — the same lever
+helps more at deeper recursion layers.
 
 **Why the contrast vs Poseidon2-substrate L2** (historical
 baseline `c3_stage_b_l2_over_120bit_l1`: L1 ~961 KB, L2 ~618 KB,
@@ -452,11 +461,20 @@ unconditional Johnson at every link. SUBSTRATE: 100% Tip5
 | **Path B (verifier-AIR slim)** | Now MORE valuable: every column removed from the verifier circuit cuts size at EVERY recursion layer (compounding). |
 | **Tier C (in-substrate Pareto)** | Still applies at L1 (~470 KB measured). L2 effect not measured at Tier C; likely L2 ~550-600 KB by analogy. |
 
-**Tier B status:** the production flip stands. L1 is ~46% smaller
-than the pre-Tier-B baseline (~1011 → 548 KB). L2 is honest at
-~647 KB. Tier B + a future Path A is the realistic route to
-≤65 KB; Tier B alone bottoms out at L1 + an L2 wrapper that
-slightly enlarges, not shrinks, the cert.
+**Production status (post-Phase-0):** every in-substrate
+soundness-neutral lever is now on. L1 = 512 KB (~−49% from
+pre-2026-05-20 baseline ~1011 KB); L2 = 544 KB. L2/L1 is
+**1.06×** — the recursion chain is still size-monotone-non-
+decreasing in Tip5-throughout, but barely so. Any reduction
+that drops the verifier-AIR by even modest amounts (Path B
+column-by-column slim) would likely **flip the ratio**: smaller
+verifier circuit ⇒ less NPO overhead per layer ⇒ L_{n+1} < L_n
+again, restoring recursion compression. This makes Path B even
+more attractive than the routes audit originally suggested.
+
+The path to ≤65 KB still requires either Path A (SNARK wrap;
+trust-surface trade) or substantial Path B work; Phase 0 alone
+gets us to ~512 KB L1, not yet near the target.
 
 ---
 
