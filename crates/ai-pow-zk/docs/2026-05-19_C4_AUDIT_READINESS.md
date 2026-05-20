@@ -438,6 +438,7 @@ otherwise be "surprised" by is here.
 | **G3** carry-vector segmentation | Deferred — this model is in `k ≤ 2¹⁶` Pearl envelope; revive only if a workload exceeds the envelope | `2026-05-17_M_S2_G3AB_DESIGN.md` |
 | **FP8 PoUW** | Pearl's FP protocol unshipped; INT-only production scope (documented limitation, not a defect) | `2026-05-17_PRODUCTION_ROADMAP.md` § 0 |
 | **D1 / D2** | vLLM miner-plugin + consensus block-cert integration — external | roadmap Phase D |
+| **CSA S1–S7** | AIR-side constraint soundness analysis stages S1–S7 of `2026-05-20_CONSTRAINT_SOUNDNESS_ANALYSIS_DESIGN.md`. S0 inventory LANDED 2026-05-20 (~117 constraint families across 27 AIRs/components catalogued). S1 (per-constraint Schwartz–Zippel + LogUp derivation), S2 (gap list), S3 (tamper-test specs), S4 (tamper-test impl), S5 (cross-AIR composition), S6 (property-based tampering), S7 (audit sign-off) are sequenced precise residuals. ε_AIR rough estimate ≤ 2^(−118) per CSA design §3.3 (≥80 floor with ~38-bit margin); S1 refines per-AIR. Not a blocker for the in-house C4 walk to begin on the soundness-claim index (§3); the CSA augments the index with per-constraint derivation depth. | `2026-05-20_CONSTRAINT_SOUNDNESS_ANALYSIS_DESIGN.md` + `2026-05-20_CONSTRAINT_INVENTORY.md` |
 
 ### 8.1 Non-residuals (claims a careless audit might list — preempted here)
 
@@ -533,6 +534,8 @@ audit can begin on the in-scope items as listed.
 | C3 outer-cert (DT-1→DT-4 + LANDED) | `2026-05-19_C3_OUTER_CERT_DESIGN.md` |
 | M-S5b terminal compression (sibling) | `2026-05-19_M_S5B_TERMINAL_COMPRESSION_DESIGN.md` |
 | **M-S5b S(−1) paper-grounded soundness analysis (closes A-LDR / §10 γ<J(δ)−η item)** | `2026-05-20_M_S5B_SOUNDNESS_ANALYSIS.md` |
+| **Constraint Soundness Analysis (CSA) — staged design (AIR-side of ≥80 unconditional)** | `2026-05-20_CONSTRAINT_SOUNDNESS_ANALYSIS_DESIGN.md` |
+| **CSA S0 — master constraint inventory (every AIR × every constraint family × tamper-test cross-link)** | `2026-05-20_CONSTRAINT_INVENTORY.md` |
 | Phase B byte-equivalence | `2026-05-18_PHASE_B_DESIGN.md` |
 | Pearl divergence inventory | `2026-05-13_PEARL_COMPARISON.md` |
 | Phase-B B1 audit | `2026-05-18_B1_PEARL_FAITHFULNESS_AUDIT.md` |
