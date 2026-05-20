@@ -828,6 +828,140 @@ mod tests {
         );
     }
 
+    /// **CSA S4 — HIGH-2.2 §6(b)-G2 keystone (K3) explicit tamper.**
+    ///
+    /// The §6(b)-G2 keystone constraint (`composite_full_air.rs:318-334`)
+    /// binds the FoldChip's `FOLD_XSTEP` to the StripeXorChip's
+    /// `SX_XR[stripe]` lane selected by the verifier-fixed
+    /// `FOLD_STRIPE_SEL` (one-hot, packed into the CRIT-1 pinned
+    /// `CONTROL_PREP`):
+    ///
+    /// ```text
+    /// Σ_s FOLD_STRIPE_SEL[s] · (FOLD_XSTEP − SX_XR[s]) = 0   (sx_bound=true)
+    /// ```
+    ///
+    /// Positive control: `high2_2_fold_chain_pinned_logup` — the happy
+    /// path where `FOLD_XSTEP == SX_XR[slot]` at every fold-active row.
+    /// This test builds the *same* trace, then tampers fold-row 0's
+    /// `FOLD_XSTEP` cell to point at `SX_XR[1]` (a DIFFERENT lane than
+    /// the one-hot `FOLD_STRIPE_SEL[0]=1` claims). The K3 constraint
+    /// becomes `1 · (SX_XR[1] − SX_XR[0]) ≠ 0` ⇒ M1 rejection at
+    /// `composite_verify_pinned_logup`.
+    ///
+    /// Per `2026-05-20_TAMPER_TEST_SPECIFICATION.md` § 3.1 (S3 spec)
+    /// and `2026-05-20_TAMPER_GAP_LIST.md` § 2.2 (S2 reclassification
+    /// of K3 from GAP-G2 implicit-coverage to explicit-named test).
+    /// Closes the K3-G2-EXPLICIT backlog item.
+    #[test]
+    fn high2_2_g2_xstep_stripe_pin_rejects() {
+        use crate::composite_layout::{
+            FOLD_SLOT_SEL_START, FOLD_XSTEP, SX_XR_START, TOTAL_TRACE_WIDTH,
+        };
+        use p3_field::integers::QuotientMap;
+        use p3_field::PrimeField64;
+
+        let cfg = build_config(&test_zk_params(), &CircuitConfig::TEST_PEARL);
+        let ch: [u32; 8] = core::array::from_fn(|i| 0x5EED_0000 + i as u32);
+        let mut trace = CompositeTrace::baseline_min();
+        let h = trace.height();
+
+        // Same geometry as the positive control:
+        // MatmulParams::TEST_SMALL (t=8, k=64, r=4, num_stripes=16).
+        let (t, k, r, num_stripes) = (8usize, 64usize, 4usize, 16usize);
+        let a_prime: Vec<i8> = (0..(t * k) as i32)
+            .map(|i| (i.wrapping_mul(7) ^ (i >> 3)) as i8)
+            .collect();
+        let b_prime: Vec<i8> = (0..(t * k) as i32)
+            .map(|i| (i.wrapping_mul(5) ^ (i << 1) ^ 0x2A) as i8)
+            .collect();
+
+        let sweep_start = 8;
+        let (rows_used, x_steps) =
+            trace.place_useful_work_chain(sweep_start, &a_prime, &b_prime, t, r, num_stripes);
+
+        let store_chunks = CompositeTrace::enumerate_noised_chunks(
+            &a_prime, &b_prime, t, r, num_stripes,
+        );
+        let store_start = sweep_start + rows_used;
+        let n_store = trace.place_noised_store(store_start, &store_chunks, 0);
+
+        let xs: Vec<i32> = x_steps[..num_stripes].iter().map(|&u| u as i32).collect();
+        let fold_start = store_start + n_store + 4;
+        let m = trace.place_fold_chain(fold_start, &xs);
+        let _ = trace.place_jackpot_hash_block(h - 8, &m, &ch);
+
+        // === K3 §6(b)-G2 tamper: fold-row 0 has FOLD_SLOT_SEL[0]=1
+        // (one-hot stripe = 0), so the constraint asserts
+        //   FOLD_XSTEP == SX_XR[0].
+        // Tamper: replace FOLD_XSTEP with a value guaranteed to
+        // differ from SX_XR[0] (its honest value + 1, in the field).
+        // The constraint
+        //   Σ_s FOLD_STRIPE_SEL[s] · (FOLD_XSTEP − SX_XR[s])
+        // = FOLD_STRIPE_SEL[0] · ((SX_XR[0] + 1) − SX_XR[0])
+        // = 1 ≠ 0
+        // ⇒ M1 (AIR eval() violation) at verify.
+        //
+        // We tamper "+1" rather than "= SX_XR[other_lane]" because
+        // the SX_XR lanes at fold-row 0 can happen to be equal
+        // (e.g., when the synthetic XOR cancels both lanes to 0 in
+        // this small test geometry).
+        let tampered_row = fold_start; // step 0; slot 0 per the positive control's invariant.
+        let base = tampered_row * TOTAL_TRACE_WIDTH;
+
+        // Sanity: confirm the row is fold-active on slot 0 before tampering.
+        let mut slot_check = usize::MAX;
+        for s in 0..16 {
+            if trace.matrix.values[base + FOLD_SLOT_SEL_START + s]
+                .as_canonical_u64() == 1
+            {
+                slot_check = s;
+            }
+        }
+        assert_eq!(
+            slot_check, 0,
+            "K3 tamper-test precondition: row 0 of fold must be one-hot on slot 0"
+        );
+
+        // Sanity: confirm FOLD_XSTEP == SX_XR[0] before tampering
+        // (i.e., the keystone is satisfied honestly).
+        let sx_xr_correct = trace.matrix.values[base + SX_XR_START + 0];
+        let fold_xstep_honest = trace.matrix.values[base + FOLD_XSTEP];
+        assert_eq!(
+            fold_xstep_honest.as_canonical_u64(),
+            sx_xr_correct.as_canonical_u64(),
+            "K3 tamper-test precondition: honest FOLD_XSTEP must == SX_XR[0]"
+        );
+
+        // The tamper: FOLD_XSTEP ← SX_XR[0] + 1 (in Goldilocks).
+        // Guaranteed to differ from SX_XR[0] because 1 ≠ 0 in the
+        // field (Goldilocks has characteristic > 1).
+        let tampered_value =
+            sx_xr_correct + <Val<AiPowStarkConfig> as QuotientMap<u64>>::from_int(1);
+        // Strict inequality sanity (1 != 0 in Goldilocks).
+        assert_ne!(
+            tampered_value.as_canonical_u64(),
+            sx_xr_correct.as_canonical_u64(),
+            "K3 tamper-test internal: +1 in Goldilocks must change value",
+        );
+        trace.matrix.values[base + FOLD_XSTEP] = tampered_value;
+
+        // Derive PIs + canonical from the tampered trace. FOLD_XSTEP
+        // is not in PROGRAM_COLS (the CRIT-1 pin set is CONTROL_PREP,
+        // NOISE_PACKED_PREP×8, CV_OR_TWEAK_PREP, AB_ID_PREP,
+        // STARK_ROW_IDX — see composite_full_air.rs:126-139). Canonical
+        // is unchanged; PIs are unchanged (they bind HASH_A/B,
+        // HASH_JACKPOT, key-pin rows). The mismatch surfaces purely as
+        // an AIR-constraint failure on the K3 row.
+        let pis = CompositePublicInputs::derive_from_trace(&trace);
+        let canonical = extract_program(&trace.matrix);
+        let (proof, _) = composite_prove_pinned_logup(&cfg, trace, &pis);
+        let result = composite_verify_pinned_logup(&cfg, &canonical, &proof, &pis);
+        assert!(
+            result.is_err(),
+            "K3 §6(b)-G2 tamper (FOLD_XSTEP retargeted to SX_XR[1] != SX_XR[0]) MUST reject",
+        );
+    }
+
     // ───────────── CRIT-1 malicious-prover regression suite ─────────────
     //
     // ZKP_SECURITY_REPORT CRIT-1: a malicious prover can zero every

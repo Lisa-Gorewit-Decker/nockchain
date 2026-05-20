@@ -362,4 +362,129 @@ mod tests {
         verify::<AiPowStarkConfig, _>(&cfg, &air, &proof, &[])
             .expect("valid URANGE13 table must verify");
     }
+
+    // =====================================================================
+    //  CSA S4 — explicit constraint-rejection tests for URange13 /
+    //  IRange7P1 / IRange8 (per
+    //  `crates/ai-pow-zk/docs/2026-05-20_TAMPER_TEST_SPECIFICATION.md` §2).
+    //
+    //  The U8 + I8-non-boolean-delta variants already exist above. These
+    //  fill in the missing first-row / last-row / non-boolean-delta
+    //  variants for the other three chips, closing the GAP-G2 (rename-only)
+    //  items in `2026-05-20_TAMPER_GAP_LIST.md` §2.1. Each test is a
+    //  single-cell C1 tamper rejecting via mechanism M1 (AIR `eval()`
+    //  constraint violation ⇒ `verify` returns `Err`). The paired
+    //  acceptance positive controls are the existing
+    //  `prove_and_verify_{urange13,irange7p1,irange8}_table` tests.
+    // =====================================================================
+
+    // --- URange13 (0..=8191) ---
+
+    /// CSA S4 — Property: URange13 first row must equal MIN=0.
+    #[test]
+    fn urange13_verify_rejects_wrong_first_row() {
+        let cfg = build_stark_config(&test_zk_params(), &CircuitConfig::TEST_PEARL);
+        let air = RangeOnlyAir::<URange13Chip>::new();
+        let mut trace = build_valid_table_trace::<URANGE13_TABLE, 0, 8191>(8192);
+        // Row 0 should be 0. Make it 5.
+        trace.values[URANGE13_TABLE] = <Val as QuotientMap<u64>>::from_int(5);
+        let proof = prove::<AiPowStarkConfig, _>(&cfg, &air, trace, &[]);
+        assert!(verify::<AiPowStarkConfig, _>(&cfg, &air, &proof, &[]).is_err());
+    }
+
+    /// CSA S4 — Property: URange13 last row must equal MAX=8191.
+    #[test]
+    fn urange13_verify_rejects_wrong_last_row() {
+        let cfg = build_stark_config(&test_zk_params(), &CircuitConfig::TEST_PEARL);
+        let air = RangeOnlyAir::<URange13Chip>::new();
+        let mut trace = build_valid_table_trace::<URANGE13_TABLE, 0, 8191>(8192);
+        // Row 8191 should be 8191. Make it 100 → also breaks the
+        // transition 8190→100 (δ huge, not ∈ {0,1}).
+        let last_row = 8191 * TOTAL_TRACE_WIDTH + URANGE13_TABLE;
+        trace.values[last_row] = <Val as QuotientMap<u64>>::from_int(100);
+        let proof = prove::<AiPowStarkConfig, _>(&cfg, &air, trace, &[]);
+        assert!(verify::<AiPowStarkConfig, _>(&cfg, &air, &proof, &[]).is_err());
+    }
+
+    /// CSA S4 — Property: URange13 transition δ ∈ {0, 1}.
+    #[test]
+    fn urange13_verify_rejects_non_boolean_delta() {
+        let cfg = build_stark_config(&test_zk_params(), &CircuitConfig::TEST_PEARL);
+        let air = RangeOnlyAir::<URange13Chip>::new();
+        let mut trace = build_valid_table_trace::<URANGE13_TABLE, 0, 8191>(8192);
+        // Row 100 was 100, replace with 50 → δ = -49 (not boolean).
+        let r = 100 * TOTAL_TRACE_WIDTH + URANGE13_TABLE;
+        trace.values[r] = <Val as QuotientMap<u64>>::from_int(50);
+        let proof = prove::<AiPowStarkConfig, _>(&cfg, &air, trace, &[]);
+        assert!(verify::<AiPowStarkConfig, _>(&cfg, &air, &proof, &[]).is_err());
+    }
+
+    // --- IRange7P1 (-64..=64) ---
+
+    /// CSA S4 — Property: IRange7P1 first row must equal MIN=-64.
+    #[test]
+    fn irange7p1_verify_rejects_wrong_first_row() {
+        let cfg = build_stark_config(&test_zk_params(), &CircuitConfig::TEST_PEARL);
+        let air = RangeOnlyAir::<IRange7P1Chip>::new();
+        let mut trace = build_valid_table_trace::<IRANGE7P1_TABLE, -64, 64>(256);
+        // Row 0 should be -64. Make it 0.
+        trace.values[IRANGE7P1_TABLE] = <Val as QuotientMap<i32>>::from_int(0);
+        let proof = prove::<AiPowStarkConfig, _>(&cfg, &air, trace, &[]);
+        assert!(verify::<AiPowStarkConfig, _>(&cfg, &air, &proof, &[]).is_err());
+    }
+
+    /// CSA S4 — Property: IRange7P1 last row must equal MAX=64
+    /// (which is also the padding value after span=129).
+    #[test]
+    fn irange7p1_verify_rejects_wrong_last_row() {
+        let cfg = build_stark_config(&test_zk_params(), &CircuitConfig::TEST_PEARL);
+        let air = RangeOnlyAir::<IRange7P1Chip>::new();
+        let mut trace = build_valid_table_trace::<IRANGE7P1_TABLE, -64, 64>(256);
+        // Row 255 should be 64 (padded MAX). Make it 0.
+        let last_row = 255 * TOTAL_TRACE_WIDTH + IRANGE7P1_TABLE;
+        trace.values[last_row] = <Val as QuotientMap<i32>>::from_int(0);
+        let proof = prove::<AiPowStarkConfig, _>(&cfg, &air, trace, &[]);
+        assert!(verify::<AiPowStarkConfig, _>(&cfg, &air, &proof, &[]).is_err());
+    }
+
+    /// CSA S4 — Property: IRange7P1 transition δ ∈ {0, 1}.
+    #[test]
+    fn irange7p1_verify_rejects_non_boolean_delta() {
+        let cfg = build_stark_config(&test_zk_params(), &CircuitConfig::TEST_PEARL);
+        let air = RangeOnlyAir::<IRange7P1Chip>::new();
+        let mut trace = build_valid_table_trace::<IRANGE7P1_TABLE, -64, 64>(256);
+        // Row 80 was -64 + 80 = 16. Replace with -32 → δ from row 79
+        // (which is 15) is -47, not ∈ {0, 1}.
+        let r = 80 * TOTAL_TRACE_WIDTH + IRANGE7P1_TABLE;
+        trace.values[r] = <Val as QuotientMap<i32>>::from_int(-32);
+        let proof = prove::<AiPowStarkConfig, _>(&cfg, &air, trace, &[]);
+        assert!(verify::<AiPowStarkConfig, _>(&cfg, &air, &proof, &[]).is_err());
+    }
+
+    // --- IRange8 (-128..=127) ---
+
+    /// CSA S4 — Property: IRange8 first row must equal MIN=-128.
+    #[test]
+    fn irange8_verify_rejects_wrong_first_row() {
+        let cfg = build_stark_config(&test_zk_params(), &CircuitConfig::TEST_PEARL);
+        let air = RangeOnlyAir::<IRange8Chip>::new();
+        let mut trace = build_valid_table_trace::<IRANGE8_TABLE, -128, 127>(256);
+        // Row 0 should be -128. Make it 0.
+        trace.values[IRANGE8_TABLE] = <Val as QuotientMap<i32>>::from_int(0);
+        let proof = prove::<AiPowStarkConfig, _>(&cfg, &air, trace, &[]);
+        assert!(verify::<AiPowStarkConfig, _>(&cfg, &air, &proof, &[]).is_err());
+    }
+
+    /// CSA S4 — Property: IRange8 last row must equal MAX=127.
+    #[test]
+    fn irange8_verify_rejects_wrong_last_row() {
+        let cfg = build_stark_config(&test_zk_params(), &CircuitConfig::TEST_PEARL);
+        let air = RangeOnlyAir::<IRange8Chip>::new();
+        let mut trace = build_valid_table_trace::<IRANGE8_TABLE, -128, 127>(256);
+        // Row 255 should be 127 (MAX). Make it 0.
+        let last_row = 255 * TOTAL_TRACE_WIDTH + IRANGE8_TABLE;
+        trace.values[last_row] = <Val as QuotientMap<i32>>::from_int(0);
+        let proof = prove::<AiPowStarkConfig, _>(&cfg, &air, trace, &[]);
+        assert!(verify::<AiPowStarkConfig, _>(&cfg, &air, &proof, &[]).is_err());
+    }
 }

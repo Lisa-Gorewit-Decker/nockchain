@@ -2481,6 +2481,31 @@ mod tests {
     /// proof reject. This is the end-to-end proof that the §4.C.2
     /// plain tie is position-exact (a prover cannot swap the
     /// committed plain a co-located producer's `a′` derives from).
+    ///
+    /// **CSA S4 — h_a/h_b subsumption.** This test is one of the
+    /// **three layers** that bind the committed matrix roots
+    /// (`HASH_A` / `HASH_B`) to the proof:
+    ///
+    /// 1. **Extraction layer** (ai-pow-side; M5 = Merkle path
+    ///    mismatch): `reject_tampered_h_a@adversarial.rs:44`,
+    ///    `reject_tampered_h_b@adversarial.rs:63` — tampering
+    ///    the published roots breaks the Merkle authentication.
+    /// 2. **PI layer** (ai-pow-zk-side; M1 = AIR constraint
+    ///    violation): `full_air_rejects_tampered_hash_a_pi
+    ///    @composite_trace.rs:3033` — tampering the `HASH_A` /
+    ///    `HASH_B` public input breaks the PI-binding constraint.
+    /// 3. **Circuit-leaf layer** (this test; M1 = byte-level
+    ///    position-exact C3 binding): tampering a committed-plain
+    ///    leaf-row byte (after PIs/`HASH_A` are derived) breaks
+    ///    the C3 identity that ties leaf-row `UINT8_DATA[0..64]`
+    ///    to `BLAKE3_MSG ∈ HASH_A` at a specific position.
+    ///
+    /// Per `crates/ai-pow-zk/docs/2026-05-20_TAMPER_GAP_LIST.md`
+    /// § 3.1, this 3-layer coverage **subsumes** the conceptual
+    /// "h_a / h_b root binding at strip-opening leaf rows" gap
+    /// (GAP-G1 in the CSA categorization). A dedicated root-side
+    /// tamper would not exercise a new rejection mechanism — the
+    /// existing 3-layer coverage already binds the entire chain.
     #[test]
     fn sec_4c2_cx2_g1_p16_position_exact_adversarial_rejects() {
         use crate::synth::synth_matrices;
