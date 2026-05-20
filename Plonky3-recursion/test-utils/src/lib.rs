@@ -513,3 +513,58 @@ pub mod goldilocks_params {
     pub type MyPcs = TwoAdicFriPcs<F, Dft, MyMmcs, ChallengeMmcs>;
     pub type MyConfig = StarkConfig<MyPcs, Challenge, Challenger>;
 }
+
+/// **ADDITIVE (M-S5b S1.B Poseidon2-removal P4).** Tip5-unified
+/// Goldilocks STARK parameters — parallel to [`goldilocks_params`]
+/// but with **Tip5 (7-round, width 16, rate 10, digest 5)** as the
+/// MMCS hash + Fiat-Shamir challenger permutation, instead of
+/// Poseidon2-W8.
+///
+/// `MyMmcs` uses **packed MMCS** (`<F as Field>::Packing`) so that
+/// `verify_p3_batch_proof_circuit` (the recursion verifier) can
+/// consume L1 proofs built under this config. The packed-MMCS
+/// requirement is the same one [`goldilocks_params`] satisfies via
+/// Poseidon2-W8; here we satisfy it via Tip5 with the same
+/// `MerkleTreeMmcs::<<F as Field>::Packing, ...>` shape.
+///
+/// **`Tip5Perm`** (from `p3-tip5-circuit-air`) provides packed-
+/// Goldilocks variants for aarch64-neon, AVX2, AVX-512 (see
+/// `Plonky3-recursion/tip5-circuit-air/src/perm.rs:77-160`), which
+/// makes the packed-MMCS requirement satisfiable on all production
+/// targets.
+///
+/// **Soundness:** unchanged from [`goldilocks_params`] at the FRI
+/// side; Tip5 7-round (128-bit collision + 4-round margin per
+/// Opening the Blackbox IACR 2024/1900) replaces Poseidon2-W8
+/// (≈128-bit collision from the wide-trail design). Chain MIN
+/// preserved at ≥82 unconditional per S(−1) + CSA.
+pub mod goldilocks_tip5_params {
+    pub use p3_goldilocks::Goldilocks;
+    pub use p3_tip5_circuit_air::Tip5Perm;
+
+    pub use super::*;
+
+    pub type F = Goldilocks;
+    pub const D: usize = 2;
+    pub const WIDTH: usize = 16;
+    pub const RATE: usize = 10;
+    pub const DIGEST_ELEMS: usize = 5;
+
+    pub type Challenge = BinomialExtensionField<F, D>;
+    pub type Dft = Radix2DitParallel<F>;
+    pub type Perm = Tip5Perm;
+    pub type MyHash = PaddingFreeSponge<Perm, WIDTH, RATE, DIGEST_ELEMS>;
+    pub type MyCompress = TruncatedPermutation<Perm, 2, DIGEST_ELEMS, WIDTH>;
+    pub type MyMmcs = MerkleTreeMmcs<
+        <F as Field>::Packing,
+        <F as Field>::Packing,
+        MyHash,
+        MyCompress,
+        2,
+        DIGEST_ELEMS,
+    >;
+    pub type ChallengeMmcs = ExtensionMmcs<F, Challenge, MyMmcs>;
+    pub type Challenger = DuplexChallenger<F, Perm, WIDTH, RATE>;
+    pub type MyPcs = TwoAdicFriPcs<F, Dft, MyMmcs, ChallengeMmcs>;
+    pub type MyConfig = StarkConfig<MyPcs, Challenge, Challenger>;
+}
