@@ -19,7 +19,7 @@ use p3_circuit::CircuitBuilder;
 use p3_circuit::ops::{Tip5Config, Tip5Goldilocks, Tip5PermCall, generate_tip5_trace};
 use p3_circuit_prover::batch_stark_prover::tip5_air_builders;
 use p3_circuit_prover::common::{NpoPreprocessor, get_airs_and_degrees_with_prep};
-use p3_circuit_prover::config::{self, GoldilocksConfig};
+use p3_circuit_prover::config::{self, GoldilocksTipsConfig};
 use p3_circuit_prover::{
     BatchStarkProver, CircuitProverData, ConstraintProfile, TablePacking, Tip5Preprocessor,
 };
@@ -52,8 +52,8 @@ fn tip5_native(input: &[F; STATE_SIZE]) -> [F; STATE_SIZE] {
 /// Build the Tip5 CTL circuit + run a real `prove_all_tables`,
 /// returning the proof and the prover (for verification).
 fn build_and_prove() -> (
-    p3_circuit_prover::BatchStarkProof<GoldilocksConfig>,
-    BatchStarkProver<GoldilocksConfig>,
+    p3_circuit_prover::BatchStarkProof<GoldilocksTipsConfig>,
+    BatchStarkProver<GoldilocksTipsConfig>,
 ) {
     let mut builder: CircuitBuilder<F> = CircuitBuilder::new();
     let tip5_config = Tip5Config::GOLDILOCKS_W16;
@@ -95,9 +95,9 @@ fn build_and_prove() -> (
     let cfg = config::goldilocks_tip5();
 
     let npo_prep: Vec<Box<dyn NpoPreprocessor<F>>> = vec![Box::new(Tip5Preprocessor)];
-    let air_builders = tip5_air_builders::<GoldilocksConfig, 1>();
+    let air_builders = tip5_air_builders::<GoldilocksTipsConfig, 1>();
     let (airs_degrees, primitive_columns, non_primitive_columns) =
-        get_airs_and_degrees_with_prep::<GoldilocksConfig, F, 1>(
+        get_airs_and_degrees_with_prep::<GoldilocksTipsConfig, F, 1>(
             &circuit,
             &TablePacking::default(),
             &npo_prep,
@@ -165,7 +165,7 @@ fn test_tip5_tampered_proof_fails() {
         !inst.base_opened_values.trace_local.is_empty(),
         "expected Tip5 opened trace values"
     );
-    // `GoldilocksConfig`'s challenge field is `BinomialExtensionField<Goldilocks, 2>`.
+    // `GoldilocksTipsConfig`'s challenge field is `BinomialExtensionField<Goldilocks, 2>`.
     inst.base_opened_values.trace_local[0] += BinomialExtensionField::<Goldilocks, 2>::ONE;
 
     let tampered = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {

@@ -535,18 +535,20 @@ fn tip5_layer0_recursion_lb4_tampered_rejects() {
 
 use p3_batch_stark::ProverData;
 use p3_circuit_prover::common::{NpoPreprocessor, get_airs_and_degrees_with_prep};
-use p3_circuit_prover::config::{self, GoldilocksConfig};
+use p3_circuit_prover::config::{self, GoldilocksTipsConfig};
 use p3_circuit_prover::{
     BatchStarkProof, BatchStarkProver, CircuitProverData, ConstraintProfile, RecomposePreprocessor,
     TablePacking, Tip5Preprocessor, recompose_air_builders, tip5_air_builders,
 };
 
-/// Outer-cert STARK config: `goldilocks_tip5()` — `GoldilocksConfig`,
-/// challenge field `BinomialExtensionField<Goldilocks, 2>` (the
+/// Outer-cert STARK config: `goldilocks_tip5()` — `GoldilocksTipsConfig`
+/// (post-2026-05-20 P5 Poseidon2-removal flip; was `GoldilocksConfig`
+/// = Poseidon2-W8-based). Now: Tip5Perm width 16, rate 10, digest 5.
+/// Challenge field `BinomialExtensionField<Goldilocks, 2>` (the
 /// circuit's D=2), FRI tier B = 4 (`log_blowup = 2`), the exact tier
 /// the validated degree-4 `Tip5PermLookupAir` x⁷ / §4.6 constraints
-/// are proven sound at (the same config `test_tip5_lookups` uses).
-type OuterConfig = GoldilocksConfig;
+/// are proven sound at.
+type OuterConfig = GoldilocksTipsConfig;
 
 /// Build the exact `BuiltLayer0Circuit`, run it, and outer-prove +
 /// verify it with the real D=2 batch-STARK. Returns the serialized
