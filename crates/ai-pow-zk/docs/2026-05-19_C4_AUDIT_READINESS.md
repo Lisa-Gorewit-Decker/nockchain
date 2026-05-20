@@ -544,6 +544,7 @@ audit can begin on the in-scope items as listed.
 | **CSA S6 — property-based tampering (demo + deferred-as-deepening sweep)** | `2026-05-20_CSA_S6_PROPERTY_BASED_TESTS.md` |
 | **CSA S7 — audit sign-off (per-AIR table + GAP_AUDIT routing)** | `2026-05-20_CSA_S7_AUDIT_SIGNOFF.md` |
 | **M-S5b S1 — comprehensive proof-size-reduction routes audit (8 paths × Pearl/Plonky2 deep-dive × per-path quantitative comparison)** | `2026-05-20_PROOF_SIZE_REDUCTION_ROUTES_AUDIT.md` |
+| **M-S5b S1.B Poseidon2-removal spec (Tip5-unified outer-cert; P0–P7 phased plan; predicted ~18–27 KB L2 floor savings)** | `2026-05-20_POSEIDON2_REMOVAL_SPEC.md` |
 | Phase B byte-equivalence | `2026-05-18_PHASE_B_DESIGN.md` |
 | Pearl divergence inventory | `2026-05-13_PEARL_COMPARISON.md` |
 | Phase-B B1 audit | `2026-05-18_B1_PEARL_FAITHFULNESS_AUDIT.md` |
