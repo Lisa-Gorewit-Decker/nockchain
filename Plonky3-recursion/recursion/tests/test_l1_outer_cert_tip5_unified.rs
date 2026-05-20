@@ -355,35 +355,118 @@ mod tip5_unified_l1 {
     }
 }
 
+// ---------------------------------------------------------------------
+//  Tip5-out-4 variant — Tip5 with DIGEST_ELEMS=4 instead of 5
+//  (investigation: is the L1 size delta dominated by digest width?)
+// ---------------------------------------------------------------------
+
+mod tip5_out4_l1 {
+    use super::*;
+    use p3_test_utils::goldilocks_tip5_out4_params::{
+        Challenger as O4Challenger, ChallengeMmcs as O4ChallengeMmcs, Dft as O4Dft,
+        MyConfig as O4Cfg, MyCompress as O4Compress, MyHash as O4Hash,
+        MyMmcs as O4ValMmcs, MyPcs as O4Pcs,
+    };
+
+    pub fn build_l1_tip5_out4() -> Result<usize, String> {
+        let perm = Tip5Perm;
+        let hash = O4Hash::new(perm);
+        let compress = O4Compress::new(perm);
+        let val_mmcs = O4ValMmcs::new(hash, compress, 0);
+        let challenge_mmcs = O4ChallengeMmcs::new(val_mmcs.clone());
+        let dft = O4Dft::default();
+        let fri_params = FriParameters {
+            log_blowup: 2,
+            log_final_poly_len: 0,
+            max_log_arity: 1,
+            num_queries: 42,
+            commit_proof_of_work_bits: 1,
+            query_proof_of_work_bits: 1,
+            mmcs: challenge_mmcs,
+        };
+        let pcs = O4Pcs::new(dft, val_mmcs, fri_params);
+        let outer_cfg: O4Cfg = O4Cfg::new(pcs, O4Challenger::new(perm));
+
+        let BuiltLayer0Circuit {
+            circuit, public_inputs, private_inputs, mmcs_op_ids, proof,
+        } = build_layer0_verifier_circuit();
+
+        let table_packing = TablePacking::new(1, 8);
+        let npo_prep: Vec<Box<dyn NpoPreprocessor<Val>>> = vec![
+            Box::new(Tip5Preprocessor),
+            Box::new(RecomposePreprocessor::new(true)),
+        ];
+        let mut air_builders = tip5_air_builders::<O4Cfg, 2>();
+        air_builders.extend(recompose_air_builders::<O4Cfg, 2>(1, true));
+
+        let (airs_degrees, primitive_columns, non_primitive_columns) =
+            get_airs_and_degrees_with_prep::<O4Cfg, Challenge, 2>(
+                &circuit, &table_packing, &npo_prep, &air_builders,
+                ConstraintProfile::Standard,
+            ).map_err(|e| format!("get_airs_and_degrees [O4]: {e:?}"))?;
+        let airs_degrees_vec: Vec<_> = airs_degrees.into_iter().collect();
+        let (airs, degrees): (Vec<_>, Vec<usize>) = airs_degrees_vec.into_iter().unzip();
+
+        let mut runner = circuit.runner();
+        runner.set_public_inputs(&public_inputs).unwrap();
+        runner.set_private_inputs(&private_inputs).unwrap();
+        set_fri_mmcs_private_data::<
+            Val, Challenge, ChallengeMmcs, ValMmcs, Tip5Sponge, Tip5Compress, DIGEST_ELEMS,
+        >(&mut runner, &mmcs_op_ids, &proof.opening_proof, Tip5Config::GOLDILOCKS_W16)
+        .map_err(|e| format!("set_fri_mmcs_private_data [O4]: {e}"))?;
+
+        let traces = runner.run().map_err(|e| format!("[O4] runner: {e:?}"))?;
+
+        let prover_data = ProverData::from_airs_and_degrees(&outer_cfg, &airs, &degrees);
+        let circuit_prover_data =
+            CircuitProverData::new(prover_data, primitive_columns, non_primitive_columns);
+
+        let mut prover = BatchStarkProver::new(outer_cfg).with_table_packing(table_packing);
+        prover.register_tip5_table::<2>(Tip5Config::GOLDILOCKS_W16);
+        prover.register_recompose_table::<2>(true);
+
+        let batch_proof = prover.prove_all_tables(&traces, &circuit_prover_data)
+            .map_err(|e| format!("[O4] prove_all_tables: {e:?}"))?;
+        prover.verify_all_tables(&batch_proof)
+            .map_err(|e| format!("[O4] verify_all_tables: {e:?}"))?;
+
+        let size = postcard::to_allocvec(&batch_proof).expect("postcard").len();
+        eprintln!("[Tip5-out-4]   L1 outer-cert size: {} bytes ({:.1} KB)",
+                  size, size as f64 / 1024.0);
+        Ok(size)
+    }
+}
+
 /// P4 — Full L1 outer-cert size comparison at Tip5-unified vs Poseidon2.
 #[test]
 #[ignore = "M-S5b S1.B P4 — heavy L1 build (~30s); manual invocation"]
 fn p4_l1_size_tip5_unified_vs_poseidon2() {
     let size_poseidon2 = poseidon2_l1::build_l1_poseidon2();
     let size_tip5_result = tip5_unified_l1::build_l1_tip5_unified();
+    let size_tip5_out4_result = tip5_out4_l1::build_l1_tip5_out4();
 
     eprintln!("");
     eprintln!("=== M-S5b S1.B P4 — L1 SIZE COMPARISON ===");
-    eprintln!("Poseidon2-W8 baseline: {} bytes ({:.1} KB)",
+    eprintln!("Poseidon2-W8 baseline:        {} bytes ({:.1} KB)",
               size_poseidon2, size_poseidon2 as f64 / 1024.0);
+
     match size_tip5_result {
         Ok(size_tip5) => {
-            eprintln!("Tip5-unified:          {} bytes ({:.1} KB)",
-                      size_tip5, size_tip5 as f64 / 1024.0);
-            let delta = size_poseidon2 as i64 - size_tip5 as i64;
-            eprintln!("Delta (Po−Tips):       {} bytes ({:.1} KB)",
-                      delta, delta as f64 / 1024.0);
-            if delta > 0 {
-                eprintln!("Tip5-unified SAVES     {} bytes ({:.1}%)",
-                          delta, delta as f64 * 100.0 / size_poseidon2 as f64);
-            } else {
-                eprintln!("Tip5-unified is LARGER by {} bytes", -delta);
-            }
+            let delta = size_tip5 as i64 - size_poseidon2 as i64;
+            eprintln!("Tip5-unified (digest=5):      {} bytes ({:.1} KB) [{:+} bytes vs Po]",
+                      size_tip5, size_tip5 as f64 / 1024.0, delta);
         }
-        Err(e) => {
-            eprintln!("Tip5-unified:          BLOCKED");
-            eprintln!("Error: {e}");
-        }
+        Err(e) => eprintln!("Tip5-unified BLOCKED: {e}"),
     }
+
+    match size_tip5_out4_result {
+        Ok(size_tip5_out4) => {
+            let delta = size_tip5_out4 as i64 - size_poseidon2 as i64;
+            eprintln!("Tip5-out-4 (digest=4):        {} bytes ({:.1} KB) [{:+} bytes vs Po]",
+                      size_tip5_out4, size_tip5_out4 as f64 / 1024.0, delta);
+        }
+        Err(e) => eprintln!("Tip5-out-4 BLOCKED: {e}"),
+    }
+
     eprintln!("==========================================");
 }

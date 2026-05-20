@@ -514,6 +514,53 @@ pub mod goldilocks_params {
     pub type MyConfig = StarkConfig<MyPcs, Challenge, Challenger>;
 }
 
+/// **ADDITIVE (M-S5b S1.B Poseidon2-removal investigation).**
+/// Tip5-unified variant with `DIGEST_ELEMS = 4` instead of 5,
+/// truncating the Tip5 squeezed output to 4 elements (the first 4
+/// of 5). Sound: 4 × 64 = 256 bits of digest space ⇒ ~128-bit
+/// collision resistance by birthday bound, well above the ≥80
+/// floor. NOT the Tip5-paper-spec digest length (paper uses 5);
+/// this is a NOCKCHAIN-LOCAL VARIANT used solely to investigate
+/// whether the L1 size delta is dominated by MMCS digest width.
+///
+/// Soundness caveat: the Tip5 paper's published 128-bit collision
+/// security applies to the full digest=5 output. Truncating to 4
+/// elements is still highly collision-resistant (256-bit digest
+/// space → 128-bit collision via birthday) but **not** the paper-
+/// validated configuration. Acceptable for internal investigation
+/// and possibly for production if audit board signs off on the
+/// truncation.
+pub mod goldilocks_tip5_out4_params {
+    pub use p3_goldilocks::Goldilocks;
+    pub use p3_tip5_circuit_air::Tip5Perm;
+
+    pub use super::*;
+
+    pub type F = Goldilocks;
+    pub const D: usize = 2;
+    pub const WIDTH: usize = 16;
+    pub const RATE: usize = 10;
+    pub const DIGEST_ELEMS: usize = 4; // <-- 4 instead of 5
+
+    pub type Challenge = BinomialExtensionField<F, D>;
+    pub type Dft = Radix2DitParallel<F>;
+    pub type Perm = Tip5Perm;
+    pub type MyHash = PaddingFreeSponge<Perm, WIDTH, RATE, DIGEST_ELEMS>;
+    pub type MyCompress = TruncatedPermutation<Perm, 2, DIGEST_ELEMS, WIDTH>;
+    pub type MyMmcs = MerkleTreeMmcs<
+        <F as Field>::Packing,
+        <F as Field>::Packing,
+        MyHash,
+        MyCompress,
+        2,
+        DIGEST_ELEMS,
+    >;
+    pub type ChallengeMmcs = ExtensionMmcs<F, Challenge, MyMmcs>;
+    pub type Challenger = DuplexChallenger<F, Perm, WIDTH, RATE>;
+    pub type MyPcs = TwoAdicFriPcs<F, Dft, MyMmcs, ChallengeMmcs>;
+    pub type MyConfig = StarkConfig<MyPcs, Challenge, Challenger>;
+}
+
 /// **ADDITIVE (M-S5b S1.B Poseidon2-removal P4).** Tip5-unified
 /// Goldilocks STARK parameters — parallel to [`goldilocks_params`]
 /// but with **Tip5 (7-round, width 16, rate 10, digest 5)** as the
