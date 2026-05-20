@@ -5,6 +5,170 @@ EXPERIMENTAL — a Plonky3 SNARK circuit for the
 Pearl's `zk-pow`: wrap the multi-MB plain proof
 in a compact SNARK so it can fit in a block certificate.
 
+## Cryptographic assumptions (the load-bearing primitives)
+
+> **This is the AUTHORITATIVE list of cryptographic primitives the
+> ai-pow-zk soundness rests on.** Nothing else is allowed in the
+> AIR or the recursive proving stack. If you see a primitive
+> outside this list (e.g., Poseidon2, BLAKE3 inside the SNARK
+> circuit at the wrong layer, KZG, pairing-based curves), stop and
+> consult the maintainer — it is either a bug or a milestone
+> in-flight that hasn't updated this README. Last updated 2026-05-20
+> (M-S5b S1.B Poseidon2-removal P5+P6 landing).
+
+### Hash functions
+
+The **only** hash function in the live SNARK proving path is:
+
+- **Tip5** (Nockchain's 7-round variant; KAT-anchored to
+  `nockchain_math::tip5::permute`, the in-tree bit-for-bit twin
+  also exposed via `p3-tip5-circuit-air::Tip5Perm`). Used at
+  **every** layer:
+  - **Inner ai-pow-zk STARK** — `Tip5Perm` (width 16, rate 10,
+    digest 5) is the MMCS hash + Fiat-Shamir challenger
+    permutation (`crates/ai-pow-zk/src/circuit.rs:186, 203`).
+    KAT'd against the C2.1 Tip5 perm AIR (the soundness linchpin;
+    `Plonky3-recursion/tip5-circuit-air/src/air_lookup.rs`).
+  - **Outer-cert L1/L2 (recursion verifier circuit)** — `Tip5Perm`
+    everywhere via `config::goldilocks_tip5_80bit()` (post-2026-05-20
+    M-S5b S1.B P5 flip; was Poseidon2-Goldilocks<8>).
+    `Plonky3-recursion/circuit-prover/src/config.rs::goldilocks_tip5_80bit`.
+
+- **BLAKE3** (outside the SNARK; in the ai-pow puzzle's plain
+  data path). Used by `ai-pow` for the matrix commitment
+  (`HASH_A`, `HASH_B`), the strip-opening Merkle paths, and the
+  Jackpot hash on the mineable unit. **BLAKE3 is NOT in the SNARK
+  arithmetic circuit** — it appears as an AIR (`Blake3Chip` in
+  `crates/ai-pow-zk/src/chips/blake3/`) that proves the BLAKE3
+  computation matched the public input commitment. The
+  out-of-circuit BLAKE3 is used by the plain miner; the in-circuit
+  Blake3Chip is the prover-side AIR for it.
+
+#### Tip5 soundness
+
+- **Spec**: Tip5 paper (Szepieniec, Lemmens, Sauer, Threadbare,
+  Al Kindi, "The Tip5 Hash Function for Recursive STARKs",
+  **IACR ePrint 2023/107**). The paper specifies N=5 rounds.
+- **Nockchain choice**: **N=7 rounds** — 2 rounds above the
+  paper's spec, providing additional margin against future
+  cryptanalysis. C2.1 keystone byte-identical against `259cab2`.
+- **Third-party cryptanalysis**: "Opening the Blackbox" (Liu,
+  Koschatko, Grassi, Yan, Chen, Banik, Meier, **IACR ePrint
+  2024/1900**). Practical SFS collision on 3-round Tip5 at 2^41.2;
+  full collision on 3-round at 2^121.1. No attack reaches 4-round
+  Tip5 or above.
+- **Nockchain safety margin**: **4 rounds above broken** (7 − 3),
+  twice the Tip5 paper's post-OtB 2-round margin (5 − 3).
+- **Sponge collision security**: `min(capacity/2, output)` =
+  `min(6×64/2, 5×64)` = `min(192, 320)` = **192 bits**. Well
+  above the ≥80-bit floor.
+
+#### What's NOT in the SNARK proving stack
+
+- **No Poseidon2 (any variant: W8, W16, W24, Fused).** The
+  outer-cert flipped to Tip5 in P5 of M-S5b S1.B (2026-05-20)
+  per maintainer directive "I'm not willing to use Poseidon2".
+  Poseidon2 remains in:
+  - `Plonky3-recursion/circuit-prover/src/config.rs::goldilocks()`
+    — the GENERAL-PURPOSE Goldilocks STARK config; NOT used by
+    ai-pow-zk's recursive proving. Kept for non-recursive
+    test cases.
+  - `Plonky3-recursion/circuit-prover/src/batch_stark_prover/poseidon2.rs`
+    — Poseidon2 NPO prover impls; available but unregistered in
+    the ai-pow-zk batch-STARK. The ai-pow-zk path registers only
+    `Tip5Preprocessor` + `RecomposePreprocessor`.
+  - `p3_test_utils::goldilocks_params` (test-utils) — used by
+    one legacy measurement test (`test_tip5_layer0_compression.rs`)
+    that retains Poseidon2 only for historical-baseline
+    comparability. NOT a production code path; documented residual
+    pending follow-on cleanup.
+- **No Rescue, Rescue-Prime, Reinforced Concrete, Anemoi,
+  Griffin, Monolith, MiMC, Marvellous, Tip4, Tip4',** or other
+  arithmetization-oriented hashes. Tip5 is the sole choice.
+- **No SHA-2, SHA-3, Keccak inside the SNARK.** BLAKE3 is used
+  out-of-SNARK (matrix commit + strip openings) and via the
+  in-circuit `Blake3Chip` AIR (mirroring Pearl's spec).
+- **No pairing-friendly curves (BN254, BLS12-381, etc.).** No
+  pairing-based PCS. No KZG. No Groth16/Plonk SNARK wrap
+  currently. Path A SNARK-wrap (per
+  `docs/2026-05-20_PROOF_SIZE_REDUCTION_ROUTES_AUDIT.md` §3.1) is
+  a future option but NOT landed.
+- **No Halo/Nova/Sangria-style accumulation schemes.** No Pasta
+  curves. No R1CS.
+- **No Plonky2.** We are Plonky3-based throughout.
+
+### FRI soundness bounds
+
+- **Provable bound**: **≥80 bits unconditional at the Johnson
+  radius**, anchored on Ben-Sasson, Carmon, Habock, Kopparty,
+  Saraf, "On Proximity Gaps for Reed–Solomon Codes" (**IACR
+  ePrint 2025/2055**, Nov 2025) Theorem 1.5 + §1.3.2.
+- **Formula**: `unconditional_bits ≈ log_blowup · num_queries +
+  commit_proof_of_work_bits + query_proof_of_work_bits`.
+- **Per-layer (LANDED FRI configurations)**:
+  - Inner Tip5-L0 PROD: `lb=3, nq=30, pow=0+0` ⇒ **90 bits**
+    unconditional (configurable; LB2/LB4/LB5/LB6 variants all
+    ≥80; per `crates/ai-pow-zk/src/circuit.rs:90-142`).
+  - Outer-cert L1/L2 (`goldilocks_tip5_80bit`): `lb=2, nq=42,
+    pow=1+1` ⇒ **85 bits** unconditional (`Plonky3-recursion/circuit-prover/src/config.rs:269-292`).
+- **γ < J(δ)−η**: every layer operates strictly inside the
+  Johnson radius (no list-decoding-regime attacks per paper §8).
+  Per-layer J(δ) ∈ {0.5, 0.646, 0.75, 0.823, 0.875} across the
+  inner sweep; outer-cert J(δ)=0.5.
+- **AIR-side soundness** (Plonky3 STARK reduction + Habock LogUp):
+  - Per-AIR Schwartz–Zippel: `(d_max+1) · n_rows / q_chal` ≥98
+    unconditional bits per AIR at production parameters.
+  - Per-LogUp-bus: `3 · k_b / q_chal` ≥98 bits.
+  - **Combined chain MIN**: **82 bits unconditional** (FRI binds;
+    AIR + LogUp have ≥16-bit margin to FRI).
+
+Full derivations: see
+- [`2026-05-20_M_S5B_SOUNDNESS_ANALYSIS.md`](docs/2026-05-20_M_S5B_SOUNDNESS_ANALYSIS.md) (FRI side, S(−1))
+- [`2026-05-20_CONSTRAINT_SOUNDNESS_DERIVATION.md`](docs/2026-05-20_CONSTRAINT_SOUNDNESS_DERIVATION.md) (CSA S1; AIR + LogUp side)
+- [`2026-05-20_CSA_S7_AUDIT_SIGNOFF.md`](docs/2026-05-20_CSA_S7_AUDIT_SIGNOFF.md) (chain MIN sign-off)
+
+### Field stack
+
+- **Base field**: **Goldilocks** (`2^64 − 2^32 + 1`; `p3_goldilocks::Goldilocks`).
+  The single base field used throughout — inner STARK, outer-cert,
+  recursion verifier circuit.
+- **FRI challenge / extension field**: **`BinomialExtensionField<Goldilocks, 2>`**
+  (≈ `2^128`). D=2 across the M-S5 chain.
+- **No alternative fields.** No KoalaBear, BabyBear, M31, Mersenne,
+  or other primes. (These exist in `Plonky3-recursion/circuit-prover/src/config.rs`
+  for upstream Plonky3 compatibility — `baby_bear()`, `koala_bear()`
+  builders — but are NOT used by ai-pow-zk.)
+
+### Commitment scheme
+
+- **PCS**: `TwoAdicFriPcs<Goldilocks, _, _, _>` (univariate FRI;
+  upstream Plonky3 `p3-fri`).
+- **MMCS**: `MerkleTreeMmcs<F::Packing, F::Packing, Tip5Sponge,
+  Tip5Compress, 2, DIGEST_ELEMS=5>` (Tip5-based, packed-Goldilocks
+  for SIMD; cap height 0 at outer-cert per recursion-verifier
+  requirements; cap height 3 inner).
+- **Challenger**: `DuplexChallenger<Goldilocks, Tip5Perm, 16, 10>`
+  (Fiat-Shamir over Tip5).
+- **No KZG.** No vector commitments other than the Tip5-MMCS.
+
+### How to find every cryptographic primitive in code
+
+Grep these patterns in `crates/ai-pow-zk/src/` and
+`Plonky3-recursion/`:
+
+| Primitive | Where it lives | Grep pattern |
+|---|---|---|
+| Tip5 (the only in-SNARK hash) | `Tip5Perm`, `Tip5Sponge`, `Tip5Compress`, `Tip5Goldilocks`, `Tip5Config`, `Tip5Preprocessor`, `Tip5PermLookupAir` | `Tip5\b` |
+| BLAKE3 (out-of-SNARK + Blake3Chip AIR) | `crates/ai-pow/src/commit.rs`, `crates/ai-pow/src/blake3_tree.rs`, `crates/ai-pow-zk/src/chips/blake3/` | `blake3\b\|BLAKE3\|Blake3` |
+| Goldilocks field | `p3_goldilocks::Goldilocks` | `Goldilocks` |
+| FRI | `TwoAdicFriPcs`, `FriParameters` | `Fri\b\|FRI` |
+| MMCS | `MerkleTreeMmcs`, `ExtensionMmcs` | `Mmcs\b` |
+| **Poseidon2** (FORBIDDEN in ai-pow-zk recursive proving) | `goldilocks()` (general STARK only); `batch_stark_prover/poseidon2.rs` (NPO; not registered by ai-pow-zk); `test_tip5_layer0_compression.rs` (legacy measurement only) | `Poseidon2\|poseidon2` |
+
+If you ever see a primitive outside this table being **introduced** into the SNARK arithmetic circuit (`composite_full_air*.rs` or any AIR registered via `BatchStarkProver::register_*`), **that is a soundness change requiring maintainer review and a CSA AIR-inventory update** (see [`2026-05-20_CONSTRAINT_INVENTORY.md`](docs/2026-05-20_CONSTRAINT_INVENTORY.md)).
+
+
+
 **Status:** M10.1c is the canonical pipeline. A full composite AIR
 mirroring Pearl's design, with all 7 LogUp buses enforced at proof
 time via `p3-batch-stark`, public-input binding on the trace's last
