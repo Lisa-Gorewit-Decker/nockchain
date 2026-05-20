@@ -442,9 +442,23 @@ Comparison is at the *new* target, not the legacy
 
 ### 2.F Recommendation (for maintainer decision) — re-anchored to §1.4
 
-**Recommended sequence (updated 2026-05-19): Path B first
-*as the candidate solution*, not merely de-risk; Path A held in
-reserve as the fallback if Path B's measurements miss ≤65 KB.**
+> **SUPERSEDED 2026-05-20** by the comprehensive S1 routes audit
+> (`2026-05-20_PROOF_SIZE_REDUCTION_ROUTES_AUDIT.md` § 9). The
+> updated recommendation is **Path H = Path B + Path A** (B as
+> primary inner optimization, A as primary outer compression,
+> composed). The "Path B alone has a real shot at ≤65 KB" claim
+> below is **refined** by the L2 structural-floor analysis
+> (§ 1.3 of the routes audit): Path B alone bottoms out at
+> ~80–175 KB (above the 65 KB target); an outer compression is
+> required. **Path D2 (direct Plonky2 vendoring per Pearl's
+> approach) is the explicit fallback** if Path A's pairing-crypto
+> audit surface is rejected. See the routes audit for the full
+> 8-path analysis + per-path quantitative comparison.
+
+**Recommended sequence (updated 2026-05-19, superseded 2026-05-20):
+Path B first *as the candidate solution*, not merely de-risk; Path
+A held in reserve as the fallback if Path B's measurements miss
+≤65 KB.**
 
 Reasoning, re-evaluated at the ≥80-unconditional bar:
 

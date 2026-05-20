@@ -543,6 +543,7 @@ audit can begin on the in-scope items as listed.
 | **CSA S5 — cross-AIR composition tamper tests (per-boundary bidirectional coverage)** | `2026-05-20_CSA_S5_CROSS_AIR_TAMPER_TESTS.md` |
 | **CSA S6 — property-based tampering (demo + deferred-as-deepening sweep)** | `2026-05-20_CSA_S6_PROPERTY_BASED_TESTS.md` |
 | **CSA S7 — audit sign-off (per-AIR table + GAP_AUDIT routing)** | `2026-05-20_CSA_S7_AUDIT_SIGNOFF.md` |
+| **M-S5b S1 — comprehensive proof-size-reduction routes audit (8 paths × Pearl/Plonky2 deep-dive × per-path quantitative comparison)** | `2026-05-20_PROOF_SIZE_REDUCTION_ROUTES_AUDIT.md` |
 | Phase B byte-equivalence | `2026-05-18_PHASE_B_DESIGN.md` |
 | Pearl divergence inventory | `2026-05-13_PEARL_COMPARISON.md` |
 | Phase-B B1 audit | `2026-05-18_B1_PEARL_FAITHFULNESS_AUDIT.md` |
