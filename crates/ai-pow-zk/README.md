@@ -113,10 +113,15 @@ The **only** hash function in the live SNARK proving path is:
     LANDED 2026-05-20** — `lb=4, nq=20, pow=1+1` ⇒ **82 bits**
     unconditional (`Plonky3-recursion/circuit-prover/src/config.rs`).
     Was `lb=2, nq=42, pow=1+1` ⇒ 85 bits; flipped for **−46% L1
-    size (~548 KB vs ~1011 KB)** per
+    size (547.88 KB measured vs ~1011 KB before)** per
     [`2026-05-20_RECURSIVE_PROOF_SIZE_INVESTIGATION.md`](docs/2026-05-20_RECURSIVE_PROOF_SIZE_INVESTIGATION.md)
-    § 4.2. Trade-off: `lb=4` ⇒ 16× LDE (vs prior 4×) ⇒ ~4× prover
-    memory + slower proving.
+    § 4.2 + § 5. Trade-off: `lb=4` ⇒ 16× LDE (vs prior 4×) ⇒ ~4×
+    prover memory + slower proving. **L2-at-Tier-B measured 2026-05-20
+    Stage 5: 646.76 KB (1.18× L1) — counterintuitive: L2 INFLATES L1
+    in the Tip5-throughout substrate (Tip5 NPO trace overhead at
+    every recursion layer exceeds the savings from "collapsing" the
+    inner STARK). More recursion layers do NOT compress toward
+    ≤65 KB; Path A (SNARK wrap) is the only path to that target.**
 - **γ < J(δ)−η**: every layer operates strictly inside the
   Johnson radius (no list-decoding-regime attacks per paper §8).
   Per-layer J(δ) ∈ {0.5, 0.646, 0.75, 0.823, 0.875} across the
