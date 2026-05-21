@@ -5,15 +5,42 @@
 **Plonky3 rev:** `82cfad7` (matches our other `p3-*` deps via `Cargo.toml`'s `https://github.com/Plonky3/Plonky3.git` default branch).
 **Status:** Measurement complete. R1 honest residual: integration of WHIR into our STARK is NOT done — the prototype only measures per-polynomial PCS bytes.
 
+## ⚠️ MAINTAINER POLICY (2026-05-21): JohnsonBound only
+
+**Both FRI and WHIR (if ever integrated) MUST use JohnsonBound
+soundness.** CapacityBound is REJECTED for production use per
+the maintainer decision 2026-05-21.
+
+Reasoning:
+- JohnsonBound is **proven** (IACR ePrint 2025/2055 Theorem 1.5).
+- CapacityBound is a **20+ year-old open conjecture** with
+  documented attacks in some parameter regimes
+  (IACR ePrint 2025/2055 § 8 negative results).
+- The conjecture is the same for FRI@Capacity and WHIR@Capacity
+  (both rest on the underlying Reed-Solomon proximity gap at
+  capacity radius) — choosing WHIR doesn't reduce the
+  conjectural risk.
+- Nockchain's audit-readiness story is anchored on proven
+  soundness; relaxing to a conjectured bound for a money-handling
+  consensus layer is not acceptable.
+
+**The CapacityBound sweep in this doc + test file is retained
+ONLY as reference data** (to demonstrate what the savings would
+have been IF we accepted the conjecture) — not as a deployment
+option.
+
+See also: [no_poseidon2_anywhere] memory hard rule (similar
+pattern: never use Poseidon2; here: never use CapacityBound).
+
 ## TL;DR
 
-| Configuration | Per-PCS bytes (vs FRI@Johnson) | Soundness | Trust surface impact |
+| Configuration | Per-PCS bytes (vs FRI@Johnson) | Soundness | Status |
 |---|---|---|---|
-| Current FRI @ JohnsonBound | 1.0× (baseline) | proven (IACR 2025/2055 Thm 1.5) | shipped |
-| **WHIR @ JohnsonBound** | **0.86-0.95×** (5-15% smaller) | proven (same) | new substrate (~3 weeks integration) |
-| **WHIR @ CapacityBound** | **0.44-0.49×** (~2.1× smaller) | **CONJECTURED**, not proven | new substrate **+ stronger assumption** |
+| Current FRI @ JohnsonBound | 1.0× (baseline) | proven (IACR 2025/2055 Thm 1.5) | **shipped** |
+| **WHIR @ JohnsonBound** | **0.86-0.95×** (5-15% smaller) | proven (same) | candidate for ~3-week integration |
+| ~~WHIR @ CapacityBound~~ | ~~0.44-0.49× (~2.1× smaller)~~ | ~~CONJECTURED~~ | **REJECTED 2026-05-21** (maintainer policy: Johnson only) |
 
-**Key finding:** WHIR's much-marketed "3-5× smaller" claim **only materializes at CapacityBound soundness**, which is unproven and would require maintainer sign-off on the stronger assumption. At our production-faithful JohnsonBound, WHIR saves only 5-15% per PCS.
+**Key finding:** WHIR's much-marketed "3-5× smaller" claim only materialized at CapacityBound, which the maintainer has rejected for production. At our policy-permitted JohnsonBound, WHIR saves 5-15% per PCS — a modest win + a real ~2× prover speedup.
 
 ## Test setup
 
@@ -137,25 +164,39 @@ Our current production L1 = ~390 KB (commits ~3 polynomials: trace, quotient, po
 
 5. **CapacityBound conjecture risk:** if a future attack demonstrates the conjecture is false for some parameter regime, all WHIR-Capacity proofs become unsound retroactively. Johnson has been proven safe; Capacity has not.
 
-## Recommendations
+## Recommendations (post-2026-05-21 policy)
+
+### Constraint: JohnsonBound only
+
+Per the maintainer policy above, **WHIR @ CapacityBound is OFF
+the table**. Only WHIR @ JohnsonBound is a candidate for
+integration.
 
 ### If size is the priority
 
-1. **Acknowledge:** WHIR alone can't reach ≤65 KB at any soundness level.
-2. **WHIR @ JohnsonBound (~10% per-PCS saving)** is honest but small. Not worth multi-week integration for the size win alone.
-3. **WHIR @ CapacityBound (~55% per-PCS saving)** is a meaningful win but requires accepting a conjectured soundness bound — **maintainer-level decision**.
-4. **Path A (SNARK wrap)** remains required for ≤65 KB.
+1. **WHIR @ JohnsonBound saves ~10% per PCS** — modest. Multi-week
+   integration is not justified by size win alone.
+2. **Path A (SNARK wrap)** remains the only path to ≤65 KB.
 
 ### If prover time is the priority
 
-1. WHIR's **1.6-2.6× prover speedup** at our exact production parameters is a real operational win, independent of byte savings.
-2. If we already need WHIR for prover speed, the modest size win is a bonus.
+1. WHIR's **1.6-2.6× prover speedup** at our exact production
+   parameters is a real operational win.
+2. If block-mining is currently capped by prover wall time (not
+   proof bytes), WHIR @ Johnson IS a worthwhile lever.
+3. The size win is a small bonus on top of the prover speedup.
 
 ### Combined recommendation
 
-**The "WHIR is a silver bullet for proof size" framing the paper markets does NOT hold at our parameters.** At JohnsonBound (production-faithful), WHIR is a modest improvement. At CapacityBound, the size win is dramatic but the soundness story weakens.
+**WHIR @ JohnsonBound is a credible prover-speedup lever (~2×)
+with a modest size bonus (~10%).** Worth ~3 weeks of focused
+integration work IF prover wall time is the operational
+bottleneck.
 
-The path to ≤65 KB is **Path A regardless of WHIR**. WHIR might be worth pursuing for prover-time reasons, or as a "warm-up" before Path A (reduce L1 from 390 → 180 KB at Capacity, then wrap in SNARK for the final shrinkage).
+**WHIR is NOT a path to ≤65 KB.** Even at the conjectural
+Capacity bound (which we have rejected), L1 would be ~180 KB —
+still 2.8× over target. Path A (SNARK wrap) is unavoidable for
+the ≤65 KB target.
 
 ## How to reproduce
 
