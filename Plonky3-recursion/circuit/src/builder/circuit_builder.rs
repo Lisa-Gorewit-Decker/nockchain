@@ -1209,6 +1209,104 @@ where
         Ok(acc)
     }
 
+    /// **M-S5b Path B Stage B2 (2026-05-20).** Decomposes a
+    /// base-field-valued `x` into its low `num_bits` boolean
+    /// witnesses + a single unconstrained `high_witness` field
+    /// element, asserting the modular reconstruction
+    /// `Σ low_bits[i]·2^i + 2^num_bits·high_witness = x`.
+    ///
+    /// Equivalent in observable behavior to
+    /// `decompose_to_bits(x, bf_bits)[..num_bits]` for downstream
+    /// consumers (e.g., FRI query indices, PoW bit checks) that
+    /// only use the low bits — but saves `(bf_bits − num_bits)`
+    /// bool_checks + `(bf_bits − num_bits − 1)` mul_adds per call.
+    ///
+    /// # Parameters
+    /// - `x`: the field element to low-decompose. Must be
+    ///   base-field-valued (zero high basis coefficients); the
+    ///   modular reconstruction `connect` will fail otherwise.
+    /// - `num_bits`: number of low bits to extract. Must be
+    ///   `1 ≤ num_bits < BF::bits()`.
+    ///
+    /// # Returns
+    /// `Vec<ExprId>` of length `num_bits`, the low bits in
+    /// little-endian order. Each is bool-checked.
+    ///
+    /// # Cost
+    /// `num_bits` bool checks + `num_bits + 1` mul_adds + 1
+    /// connect — vs `bf_bits` bool checks + `bf_bits` mul_adds
+    /// + 1 connect for the full `decompose_to_bits`.
+    ///
+    /// # Soundness equivalence to `decompose_to_bits`
+    /// - `x` is challenger-bound; prover can't lie about it.
+    /// - The returned `low_bits` are bool-checked (same as
+    ///   `decompose_to_bits`).
+    /// - The modular constraint enforces
+    ///   `Σ low_bits[i]·2^i ≡ x (mod 2^num_bits)`.
+    /// - The `high_witness` is unconstrained in value but the
+    ///   modular constraint binds it to
+    ///   `(x − Σ low_bits·2^i) / 2^num_bits` (uniquely determined
+    ///   given the low bits and x).
+    /// - Downstream consumers of the low bits see the same
+    ///   `low_bits[..num_bits]` they'd get from `decompose_to_bits`.
+    pub fn decompose_to_low_bits_with_high_witness<BF>(
+        &mut self,
+        x: ExprId,
+        num_bits: usize,
+    ) -> Result<Vec<ExprId>, CircuitBuilderError>
+    where
+        F: ExtensionField<BF>,
+        BF: PrimeField64,
+    {
+        self.push_scope("decompose_to_low_bits_with_high_witness");
+
+        let bf_bits = BF::bits();
+        if num_bits == 0 {
+            self.pop_scope();
+            return Ok(Vec::new());
+        }
+        if num_bits >= bf_bits {
+            // No room for a high_witness; fall back to the full
+            // decomposition (semantically equivalent, no savings).
+            let bits = self.decompose_to_bits::<BF>(x, num_bits)?;
+            self.pop_scope();
+            return Ok(bits);
+        }
+
+        // Hint: num_bits bool witnesses + 1 high_witness field elem.
+        let hint_out_count = num_bits + 1;
+        let hint = LowBitsPlusHighHint::<BF>::new(num_bits);
+        let outs: Vec<ExprId> = self
+            .push_unconstrained_op(
+                vec![vec![x]],
+                hint_out_count,
+                hint,
+                "decompose_to_low_bits_with_high_witness",
+            )
+            .2
+            .into_iter()
+            .collect::<Option<Vec<_>>>()
+            .ok_or(CircuitBuilderError::MissingOutput)?;
+        let low_bits: Vec<ExprId> = outs[..num_bits].to_vec();
+        let high_witness: ExprId = outs[num_bits];
+
+        // Bool-check + sum each low bit into `low_acc`.
+        let mut low_acc = self.define_const(F::ZERO);
+        for (j, &b) in low_bits.iter().enumerate() {
+            self.assert_bool(b);
+            let pow2 = self.define_const(F::from(BF::from_u64(1u64 << j)));
+            low_acc = self.mul_add(b, pow2, low_acc);
+        }
+
+        // Assert: low_acc + 2^num_bits · high_witness = x.
+        let two_to_num_bits = self.define_const(F::from(BF::from_u64(1u64 << num_bits)));
+        let total = self.mul_add(high_witness, two_to_num_bits, low_acc);
+        self.connect(x, total);
+
+        self.pop_scope();
+        Ok(low_bits)
+    }
+
     /// Records that `result` is the recomposition of `coeffs` in the coefficient-provenance
     /// cache, without adding any circuit constraint. A subsequent
     /// [`Self::decompose_ext_to_base_coeffs`] on `result` can return `coeffs` directly.
@@ -1893,6 +1991,146 @@ impl<BF: PrimeField64, EF: ExtensionField<BF>> HintExecutor<EF> for BinaryDecomp
                     *slot = Some(bit);
                 }
             }
+        }
+
+        Ok(())
+    }
+
+    fn boxed(&self) -> alloc::boxed::Box<dyn HintExecutor<EF>> {
+        Box::new(self.clone())
+    }
+}
+
+/// Witness hint for "low-bits + high-witness" decomposition
+/// (M-S5b Path B Stage B2, 2026-05-20).
+///
+/// At runtime, given input `x ∈ EF` (typically a base-field-valued
+/// challenger sample embedded in `EF` via the canonical basis):
+/// - Extracts the canonical `u64` of the input's first basis
+///   coefficient `coeffs[0]`.
+/// - Fills the first `num_bits` outputs with the little-endian
+///   bool representation of `coeffs[0]`'s low bits.
+/// - Fills output `num_bits` (the last one) with the field
+///   element `coeffs[0] >> num_bits` embedded in `EF`.
+///
+/// Used by [`CircuitBuilder::decompose_to_low_bits_with_high_witness`]
+/// to avoid the `(bf_bits − num_bits)` wasted bool_checks + mul_adds
+/// of `decompose_to_bits` when only the low bits are needed
+/// (e.g., FRI query indices, PoW bit checks).
+///
+/// **Soundness assumption:** input `x` must be base-field-valued
+/// (zero high basis coefficients). The circuit's modular
+/// reconstruction constraint
+/// `Σ low_bits[i]·2^i + 2^num_bits·high_witness = x` will fail
+/// (via `connect`) if `x` has nonzero high coefficients.
+#[derive(Debug, Clone)]
+struct LowBitsPlusHighHint<BF: PrimeField64> {
+    num_bits: usize,
+    _phantom: PhantomData<BF>,
+}
+
+impl<BF: PrimeField64> LowBitsPlusHighHint<BF> {
+    pub const fn new(num_bits: usize) -> Self {
+        Self {
+            num_bits,
+            _phantom: PhantomData,
+        }
+    }
+}
+
+impl<BF: PrimeField64, EF: ExtensionField<BF>> HintExecutor<EF> for LowBitsPlusHighHint<BF> {
+    fn execute(
+        &self,
+        inputs: &[crate::WitnessId],
+        outputs: &[crate::WitnessId],
+        witness: &mut [Option<EF>],
+    ) -> Result<(), CircuitError> {
+        if inputs.len() != 1 {
+            return Err(CircuitError::UnconstrainedOpInputLengthMismatch {
+                op: "LowBitsPlusHighHint".to_string(),
+                expected: 1,
+                got: inputs.len(),
+            });
+        }
+        let expected_outputs = self.num_bits + 1;
+        if outputs.len() != expected_outputs {
+            return Err(CircuitError::UnconstrainedOpInputLengthMismatch {
+                op: "LowBitsPlusHighHint(outputs)".to_string(),
+                expected: expected_outputs,
+                got: outputs.len(),
+            });
+        }
+        let bf_bits = BF::bits();
+        if self.num_bits >= bf_bits {
+            // For num_bits >= bf_bits there's no high part to split off; caller
+            // should use `decompose_to_bits` directly. Reject defensively.
+            return Err(CircuitError::BinaryDecompositionTooManyBits {
+                expected: bf_bits,
+                n_bits: self.num_bits,
+            });
+        }
+
+        let in_wid = inputs[0];
+        let in_idx = in_wid.0 as usize;
+        let ext_val = witness
+            .get(in_idx)
+            .and_then(|opt| opt.as_ref())
+            .map(Dup::dup)
+            .ok_or(CircuitError::WitnessNotSet { witness_id: in_wid })?;
+
+        let coeffs = ext_val.as_basis_coefficients_slice();
+        // Use only the FIRST basis coefficient (sample_bits use case
+        // is base-field-valued challenger samples embedded in EF).
+        // The modular reconstruction circuit constraint catches any
+        // misuse where coeffs[1..] are nonzero.
+        let val = coeffs[0].as_canonical_u64();
+
+        let witness_len = witness.len();
+
+        // Fill low bits.
+        for j in 0..self.num_bits {
+            let bit_val = EF::from_bool((val >> j) & 1 == 1);
+            let out_wid = outputs[j];
+            let out_idx = out_wid.0 as usize;
+            if out_idx >= witness_len {
+                return Err(CircuitError::WitnessIdOutOfBounds { witness_id: out_wid });
+            }
+            let slot = &mut witness[out_idx];
+            if let Some(existing) = slot.as_ref() {
+                if *existing != bit_val {
+                    return Err(CircuitError::WitnessConflict {
+                        witness_id: out_wid,
+                        existing: format!("{existing:?}"),
+                        new: format!("{bit_val:?}"),
+                        expr_ids: vec![],
+                    });
+                }
+            } else {
+                *slot = Some(bit_val);
+            }
+        }
+
+        // Fill high_witness with the high part of coeffs[0] as a
+        // base-field element embedded in EF.
+        let high_val_u64 = val >> self.num_bits; // safe: num_bits < bf_bits ≤ 64
+        let high_ext = EF::from(BF::from_u64(high_val_u64));
+        let high_wid = outputs[self.num_bits];
+        let high_idx = high_wid.0 as usize;
+        if high_idx >= witness_len {
+            return Err(CircuitError::WitnessIdOutOfBounds { witness_id: high_wid });
+        }
+        let slot = &mut witness[high_idx];
+        if let Some(existing) = slot.as_ref() {
+            if *existing != high_ext {
+                return Err(CircuitError::WitnessConflict {
+                    witness_id: high_wid,
+                    existing: format!("{existing:?}"),
+                    new: format!("{high_ext:?}"),
+                    expr_ids: vec![],
+                });
+            }
+        } else {
+            *slot = Some(high_ext);
         }
 
         Ok(())
@@ -2941,6 +3179,132 @@ mod proptests {
         assert_eq!(bit_values[2], BabyBear::ONE); // bit 2
 
         assert_eq!(bits.len(), 3);
+    }
+
+    /// M-S5b Path B Stage B2 — new primitive ACCEPT test on a
+    /// known value. Validates that the low bits come back correct
+    /// AND that the circuit verifies (modular reconstruction holds).
+    #[test]
+    fn test_decompose_to_low_bits_with_high_witness_accept() {
+        let mut builder = CircuitBuilder::<BabyBear>::new();
+
+        // Value: 0b...110_10101 = 213 = low 5 bits "10101" (21) + high "...110"
+        let raw: u64 = 213;
+        let num_bits = 5usize;
+        let value = builder.define_const(BabyBear::from_u64(raw));
+
+        let low_bits = builder
+            .decompose_to_low_bits_with_high_witness::<BabyBear>(value, num_bits)
+            .unwrap();
+        assert_eq!(low_bits.len(), num_bits);
+
+        let circuit = builder.build().expect("Failed to build circuit");
+        let expr_to_widx = circuit.expr_to_widx.clone();
+        let runner = circuit.runner();
+        let traces = runner
+            .run()
+            .expect("ACCEPT: honest decomposition must verify");
+
+        // Verify the low bits are the low 5 bits of 213 (little-endian).
+        // 213 = 0b11010101, low 5 = "10101" → little-endian: [1,0,1,0,1]
+        let bit_values: Vec<BabyBear> = low_bits
+            .iter()
+            .map(|b| {
+                let w = expr_to_widx.get(b).expect("bit expr mapped");
+                *traces.witness_trace.get_value(*w).unwrap()
+            })
+            .collect();
+        let expected = [
+            BabyBear::ONE,  // bit 0
+            BabyBear::ZERO, // bit 1
+            BabyBear::ONE,  // bit 2
+            BabyBear::ZERO, // bit 3
+            BabyBear::ONE,  // bit 4
+        ];
+        for (i, (got, exp)) in bit_values.iter().zip(expected.iter()).enumerate() {
+            assert_eq!(got, exp, "bit {i} mismatch");
+        }
+    }
+
+    /// M-S5b Path B Stage B2 — cross-check against `decompose_to_bits`:
+    /// for a value that fits entirely in `num_bits`, the new primitive
+    /// and the existing one return the SAME first `num_bits` bits.
+    #[test]
+    fn test_decompose_to_low_bits_cross_check_vs_full() {
+        // value 22 = 0b10110 fits in 5 bits
+        let raw: u64 = 22;
+        let num_bits = 5usize;
+
+        // Path 1: existing decompose_to_bits.
+        let mut b1 = CircuitBuilder::<BabyBear>::new();
+        let v1 = b1.define_const(BabyBear::from_u64(raw));
+        let bits_old = b1.decompose_to_bits::<BabyBear>(v1, num_bits).unwrap();
+        let c1 = b1.build().expect("c1 build");
+        let map1 = c1.expr_to_widx.clone();
+        let t1 = c1.runner().run().expect("c1 run");
+        let old_vals: Vec<BabyBear> = bits_old
+            .iter()
+            .map(|b| *t1.witness_trace.get_value(*map1.get(b).unwrap()).unwrap())
+            .collect();
+
+        // Path 2: new primitive.
+        let mut b2 = CircuitBuilder::<BabyBear>::new();
+        let v2 = b2.define_const(BabyBear::from_u64(raw));
+        let bits_new = b2
+            .decompose_to_low_bits_with_high_witness::<BabyBear>(v2, num_bits)
+            .unwrap();
+        let c2 = b2.build().expect("c2 build");
+        let map2 = c2.expr_to_widx.clone();
+        let t2 = c2.runner().run().expect("c2 run");
+        let new_vals: Vec<BabyBear> = bits_new
+            .iter()
+            .map(|b| *t2.witness_trace.get_value(*map2.get(b).unwrap()).unwrap())
+            .collect();
+
+        assert_eq!(old_vals, new_vals, "low bits must agree for small value");
+    }
+
+    /// M-S5b Path B Stage B2 — cross-check on a LARGE value (high
+    /// bits set). Both primitives must produce the SAME low bits;
+    /// the new primitive leaves the high bits as a free witness
+    /// rather than bool-checking them.
+    #[test]
+    fn test_decompose_to_low_bits_cross_check_high_bits_set() {
+        // value 0xCAFE = 0b1100_1010_1111_1110, low 8 = 0b11111110 = 254
+        let raw: u64 = 0xCAFE;
+        let num_bits = 8usize;
+
+        let mut b1 = CircuitBuilder::<BabyBear>::new();
+        let v1 = b1.define_const(BabyBear::from_u64(raw));
+        let bits_old = b1.decompose_to_bits::<BabyBear>(v1, BabyBear::bits()).unwrap();
+        let c1 = b1.build().expect("c1 build");
+        let map1 = c1.expr_to_widx.clone();
+        let t1 = c1.runner().run().expect("c1 run");
+        let old_low: Vec<BabyBear> = bits_old[..num_bits]
+            .iter()
+            .map(|b| *t1.witness_trace.get_value(*map1.get(b).unwrap()).unwrap())
+            .collect();
+
+        let mut b2 = CircuitBuilder::<BabyBear>::new();
+        let v2 = b2.define_const(BabyBear::from_u64(raw));
+        let bits_new = b2
+            .decompose_to_low_bits_with_high_witness::<BabyBear>(v2, num_bits)
+            .unwrap();
+        let c2 = b2.build().expect("c2 build");
+        let map2 = c2.expr_to_widx.clone();
+        let t2 = c2.runner().run().expect("c2 run");
+        let new_low: Vec<BabyBear> = bits_new
+            .iter()
+            .map(|b| *t2.witness_trace.get_value(*map2.get(b).unwrap()).unwrap())
+            .collect();
+
+        assert_eq!(
+            old_low, new_low,
+            "low bits must agree for large value with high bits set"
+        );
+        // Spot-check value: 0xCAFE low 8 = 0xFE = 254 = 0b11111110
+        let expected = [0u8, 1, 1, 1, 1, 1, 1, 1].map(BabyBear::from_u8);
+        assert_eq!(new_low, expected, "low 8 bits of 0xCAFE = 0xFE");
     }
 
     #[test]

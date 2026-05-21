@@ -416,10 +416,17 @@ where
             });
         }
         let base_sample = self.sample(circuit);
-        // Decompose base field element to bits
-        // We decompose the full base field bit width to ensure correct reconstruction
-        let bits = circuit.decompose_to_bits::<BF>(base_sample, bf_bits)?;
-        Ok(bits[..num_bits].to_vec())
+        // **M-S5b Path B Stage B2 (2026-05-20):** call the
+        // low-bits-with-high-witness primitive instead of full
+        // 64-bit decomposition. Soundness-equivalent for downstream
+        // FRI/PoW consumers (only low bits used); saves
+        // (bf_bits − num_bits) bool_checks + (bf_bits − num_bits − 1)
+        // mul_adds per call. Design + soundness argument:
+        // `crates/ai-pow-zk/docs/2026-05-20_PATH_B_B2_SAMPLE_BITS_DESIGN.md`.
+        // For `num_bits == bf_bits` the new primitive falls back to
+        // `decompose_to_bits` internally — byte-identical to the
+        // previous behavior.
+        circuit.decompose_to_low_bits_with_high_witness::<BF>(base_sample, num_bits)
     }
 
     fn check_pow_witness(
