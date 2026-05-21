@@ -122,7 +122,20 @@ struct BuiltLayer0Circuit {
     proof: p3_uni_stark::Proof<Tip5Layer0Config>,
 }
 
+#[allow(dead_code)]
 fn build_layer0_verifier_circuit() -> BuiltLayer0Circuit {
+    build_layer0_verifier_circuit_with_profiling(false).0
+}
+
+/// Like `build_layer0_verifier_circuit` but optionally captures
+/// per-scope op counts from the CircuitBuilder before `build()`
+/// consumes it. Returns `(BuiltLayer0Circuit, scope_dump)` where
+/// scope_dump is `Some` only when compiled with `--features
+/// profiling`.
+fn build_layer0_verifier_circuit_with_profiling(
+    capture: bool,
+) -> (BuiltLayer0Circuit, Option<String>) {
+    let _ = capture; // referenced only under profiling
     let config = make_layer0_config();
     let n = 1 << 3;
     let x = 21u64;
@@ -171,17 +184,58 @@ fn build_layer0_verifier_circuit() -> BuiltLayer0Circuit {
     )
     .expect("L0 verifier circuit construction");
 
+    // Capture per-scope op counts BEFORE consuming the builder.
+    let scope_dump: Option<String> = {
+        #[cfg(feature = "profiling")]
+        {
+            if capture {
+                let global = circuit_builder.global_op_counts();
+                let per_scope = circuit_builder.scope_op_counts();
+                let mut out = String::new();
+                out.push_str(&format!(
+                    "  GLOBAL: publics={} consts={} adds={} subs={} muls={} divs={} horner_accs={} bool_checks={} mul_adds={} npos={:?}\n",
+                    global.publics, global.consts, global.adds, global.subs, global.muls,
+                    global.divs, global.horner_accs, global.bool_checks, global.mul_adds,
+                    global.non_primitives,
+                ));
+                let mut entries: Vec<_> = per_scope.iter().collect();
+                entries.sort_by(|a, b| {
+                    let a_total = a.1.adds + a.1.subs + a.1.muls + a.1.divs + a.1.horner_accs + a.1.bool_checks + a.1.mul_adds;
+                    let b_total = b.1.adds + b.1.subs + b.1.muls + b.1.divs + b.1.horner_accs + b.1.bool_checks + b.1.mul_adds;
+                    b_total.cmp(&a_total)
+                });
+                for (scope, c) in entries {
+                    let total = c.adds + c.subs + c.muls + c.divs + c.horner_accs + c.bool_checks + c.mul_adds;
+                    out.push_str(&format!(
+                        "  SCOPE {scope:<40}: total_alu_ops={total:>6}  adds={} subs={} muls={} divs={} horner_accs={} bool_checks={} mul_adds={} consts={} npos={:?}\n",
+                        c.adds, c.subs, c.muls, c.divs, c.horner_accs, c.bool_checks, c.mul_adds, c.consts, c.non_primitives,
+                    ));
+                }
+                Some(out)
+            } else {
+                None
+            }
+        }
+        #[cfg(not(feature = "profiling"))]
+        {
+            None
+        }
+    };
+
     let circuit = circuit_builder.build().expect("circuit build");
     let public_inputs = verifier_inputs.pack_public_values(&pis, &proof, &None);
     let private_inputs = verifier_inputs.pack_private_values(&proof);
 
-    BuiltLayer0Circuit {
-        circuit,
-        public_inputs,
-        private_inputs,
-        mmcs_op_ids,
-        proof,
-    }
+    (
+        BuiltLayer0Circuit {
+            circuit,
+            public_inputs,
+            private_inputs,
+            mmcs_op_ids,
+            proof,
+        },
+        scope_dump,
+    )
 }
 
 // ---------------------------------------------------------------------
@@ -216,15 +270,15 @@ struct AirWidths {
     widths: Vec<(usize, usize)>,
 }
 
-fn build_production_l1() -> Result<(BatchStarkProof<TipsCfg>, AirWidths), String> {
+fn build_production_l1() -> Result<(BatchStarkProof<TipsCfg>, AirWidths, Option<String>), String> {
     let outer_config = make_production_outer_cfg();
-    let BuiltLayer0Circuit {
+    let (BuiltLayer0Circuit {
         circuit,
         public_inputs,
         private_inputs,
         mmcs_op_ids,
         proof,
-    } = build_layer0_verifier_circuit();
+    }, scope_dump) = build_layer0_verifier_circuit_with_profiling(true);
 
     let table_packing = TablePacking::new(1, 8);
     let npo_prep: Vec<Box<dyn NpoPreprocessor<Val>>> = vec![
@@ -297,7 +351,7 @@ fn build_production_l1() -> Result<(BatchStarkProof<TipsCfg>, AirWidths), String
     prover
         .verify_all_tables(&l1)
         .map_err(|e| format!("verify_all_tables: {e:?}"))?;
-    Ok((l1, air_widths))
+    Ok((l1, air_widths, scope_dump))
 }
 
 // ---------------------------------------------------------------------
@@ -311,7 +365,7 @@ fn path_b_stage_0_l1_inventory() {
     eprintln!("Production FRI: lb=4 nq=20 mla=3 lfp=2 cap=3 d=5 (82-bit Johnson)");
     eprintln!("Substrate: 100% Tip5 (zero Poseidon2)\n");
 
-    let (l1, air_widths) = build_production_l1().expect("L1 must build");
+    let (l1, air_widths, scope_dump) = build_production_l1().expect("L1 must build");
     let total_bytes = postcard::to_allocvec(&l1).expect("serialize L1").len();
 
     eprintln!("L1 TOTAL serialized: {total_bytes} B ({:.2} KB)\n", total_bytes as f64 / 1024.0);
@@ -391,6 +445,14 @@ fn path_b_stage_0_l1_inventory() {
     eprintln!("  alu_variant = {:?}", l1.alu_variant);
     eprintln!("  table_packing = {:?}", l1.table_packing);
     eprintln!();
+
+    // ----- Per-scope CircuitBuilder op counts (profiling feature) -----
+    if let Some(dump) = &scope_dump {
+        eprintln!("=== PER-SCOPE OP COUNTS (profiling feature; verifier circuit construction) ===");
+        eprintln!("{dump}");
+    } else {
+        eprintln!("=== PER-SCOPE OP COUNTS: profiling feature NOT enabled (rebuild with `--features profiling`) ===\n");
+    }
 
     // ----- Per-section proof byte breakdown -----
     eprintln!("=== PROOF SECTION BYTES ===");

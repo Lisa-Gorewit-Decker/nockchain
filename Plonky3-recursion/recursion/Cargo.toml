@@ -60,5 +60,13 @@ rand.workspace = true
 tracing-forest = { workspace = true, features = ["smallvec"] }
 tracing-subscriber = { workspace = true, features = ["std", "env-filter"] }
 
+[features]
+# Path B inventory profiling — enables p3-circuit's per-scope op
+# counting in `CircuitBuilder`. When on, `circuit_builder.scope_op_counts()`
+# returns per-scope HashMap<String, OpCounts>. Used by the B0 inventory
+# tool to attribute Alu/Const rows to verifier-circuit source scopes
+# (the prerequisite for safe B2 reductions). Off by default.
+profiling = ["p3-circuit/profiling", "p3-circuit-prover/profiling"]
+
 [lints]
 workspace = true

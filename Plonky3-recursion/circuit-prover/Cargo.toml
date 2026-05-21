@@ -59,6 +59,11 @@ tracing-subscriber = { workspace = true, features = ["std", "env-filter"] }
 
 [features]
 parallel = ["p3-maybe-rayon/parallel"]
+# Path B inventory profiling — passthrough to p3-circuit's profiling
+# feature so `CircuitBuilder::scope_op_counts()` is callable. Used by
+# the M-S5b Path B Stage B0 inventory tool for per-scope source
+# attribution. Off by default.
+profiling = ["p3-circuit/profiling"]
 
 [[bench]]
 name = "prover"
