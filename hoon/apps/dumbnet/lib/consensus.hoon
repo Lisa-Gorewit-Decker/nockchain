@@ -140,6 +140,8 @@
   ?~  heaviest-block.c
     ~>  %slog.[1 'get-cur-balance: No known blocks, balance is empty']
     *(z-map nname:t nnote:t)
+  ?:  =(*page-number:t ~(height get:local-page:t (~(got z-by blocks.c) u.heaviest-block.c)))
+    *(z-map nname:t nnote:t)
   (~(got z-by balance.c) u.heaviest-block.c)
 ::
 ++  get-cur-balance-names
