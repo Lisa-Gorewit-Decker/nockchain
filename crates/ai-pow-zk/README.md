@@ -116,17 +116,17 @@ The **only** hash function in the live SNARK proving path is:
     Johnson (`Plonky3-recursion/circuit-prover/src/config.rs`).
     Pre-2026-05-20 baseline (`lb=2 nq=42 mla=1 lfp=0 cap=0`) was
     85 bits, ~1011 KB L1.
-    **Measured at production params:** L1 = 512.24 KB
-    (~−49% vs baseline), L2 = 543.68 KB, **L2/L1 = 1.06×**
-    (Stage 5 commit `e2b791b` 21.4 min). Trade-off: `lb=4` ⇒ 16×
-    LDE (vs prior 4×) ⇒ ~4× prover memory + slower proving.
-    L2 still slightly larger than L1 (Tip5 NPO trace overhead
-    at every recursion layer exceeds inner-STARK collapse
-    savings); pre-Phase-0 measurement had L2/L1 = 1.18×, so the
-    soundness-neutral levers saved MORE at L2 (-15.9%) than at
-    L1 (-6.5%) — a positive cascading effect. Even modest
-    further verifier-AIR slimming (Path B) is likely to flip
-    the ratio back to L2 < L1, restoring recursion compression.
+    **Measured at production-faithful params (Stage 5
+    re-baseline 2026-05-20 at cap=3, 23 min):** L1 = 487.65 KB
+    (~−51.8% vs pre-2026-05-20 baseline ~1011 KB), L2 = 519.18 KB,
+    **L2/L1 = 1.06×**. Trade-off: `lb=4` ⇒ 16× LDE (vs prior 4×)
+    ⇒ ~4× prover memory + slower proving. L2 still slightly larger
+    than L1 (Tip5 NPO trace overhead at every recursion layer
+    exceeds inner-STARK collapse savings); the soundness-neutral
+    levers (mla=3 lfp=2) saved more at L2 than at L1 — a positive
+    cascading effect. Even modest further verifier-AIR slimming
+    (Path B) is likely to flip the ratio back to L2 < L1,
+    restoring recursion compression.
     See [`2026-05-20_RECURSIVE_PROOF_SIZE_INVESTIGATION.md`](docs/2026-05-20_RECURSIVE_PROOF_SIZE_INVESTIGATION.md)
     § 4 + § 5.
 - **γ < J(δ)−η**: every layer operates strictly inside the

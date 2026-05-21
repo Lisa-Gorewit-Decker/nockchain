@@ -404,14 +404,25 @@ post-Phase-0 cumulative-lever stack: `lb=4 nq=20 mla=3 lfp=2
 cap=3 pow=1+1 d=5`, 82 bits unconditional Johnson) was measured
 at the real L1 + L2 layers via
 `Plonky3-recursion/recursion/tests/test_tip5_l2_over_l1.rs::
-stage5_tip5_l2_over_l1_production_measurement`. Two measurement
-runs landed across the two production-flip commits:
+stage5_tip5_l2_over_l1_production_measurement`.
 
-| Production config | L1 | L2 | L2/L1 | Run time |
-|---|--:|--:|--:|--:|
-| `lb=4 nq=20 mla=1 lfp=0 cap=3` (commit `63a7f7a`, "Tier B") | 547.88 KB | 646.76 KB | 1.18× | 1777s |
-| **`lb=4 nq=20 mla=3 lfp=2 cap=3` (commit `e2b791b`, Phase 0)** | **512.24 KB** | **543.68 KB** | **1.06×** | 1284s |
-| Δ across the Phase-0 flip | **−6.5%** | **−15.9%** | (closer to parity) | — |
+**Substrate correction (2026-05-20):** the original Stage 5 runs
+(commits `c50e3e8`, `2c12fe3`) used `make_tip5_outer_cfg` with
+`cap=0` in the test infrastructure, while the production builder
+uses `cap=3`. The Path B Stage B0 inventory (commit `e8b...`)
+surfaced this divergence; the test was corrected to `cap=3` and
+re-run. Production-faithful numbers below; cap=0 numbers retained
+for delta-comparison context.
+
+| Production config | L1 | L2 | L2/L1 | Substrate |
+|---|--:|--:|--:|---|
+| `lb=4 nq=20 mla=1 lfp=0 cap=0` ("Tier B" at cap=0) | 547.88 KB | 646.76 KB | 1.18× | test (cap=0) |
+| `lb=4 nq=20 mla=3 lfp=2 cap=0` (Phase 0 at cap=0) | 512.24 KB | 543.68 KB | 1.06× | test (cap=0) |
+| **`lb=4 nq=20 mla=3 lfp=2 cap=3` (Phase 0 production)** | **487.65 KB** | **519.18 KB** | **1.06×** | production (cap=3) |
+
+**Pre-2026-05-20 baseline:** ~1011 KB L1 at `lb=2 nq=42 mla=1
+lfp=0 cap=0`. Cumulative L1 reduction at production-faithful
+post-Phase-0: **~−51.8% (1011 → 487.65 KB)**.
 
 **Headline finding (counterintuitive but real):** L2 is **larger
 than** L1 in the Tip5-throughout substrate. The L2 verifier
@@ -461,20 +472,21 @@ unconditional Johnson at every link. SUBSTRATE: 100% Tip5
 | **Path B (verifier-AIR slim)** | Now MORE valuable: every column removed from the verifier circuit cuts size at EVERY recursion layer (compounding). |
 | **Tier C (in-substrate Pareto)** | Still applies at L1 (~470 KB measured). L2 effect not measured at Tier C; likely L2 ~550-600 KB by analogy. |
 
-**Production status (post-Phase-0):** every in-substrate
-soundness-neutral lever is now on. L1 = 512 KB (~−49% from
-pre-2026-05-20 baseline ~1011 KB); L2 = 544 KB. L2/L1 is
-**1.06×** — the recursion chain is still size-monotone-non-
-decreasing in Tip5-throughout, but barely so. Any reduction
-that drops the verifier-AIR by even modest amounts (Path B
-column-by-column slim) would likely **flip the ratio**: smaller
-verifier circuit ⇒ less NPO overhead per layer ⇒ L_{n+1} < L_n
-again, restoring recursion compression. This makes Path B even
-more attractive than the routes audit originally suggested.
+**Production status (post-Phase-0, cap=3 production-faithful):**
+every in-substrate soundness-neutral lever is now on. L1 =
+487.65 KB (~−51.8% from pre-2026-05-20 baseline ~1011 KB); L2
+= 519.18 KB. L2/L1 is **1.06×** — the recursion chain is still
+size-monotone-non-decreasing in Tip5-throughout, but barely so.
+Any reduction that drops the verifier-AIR by even modest
+amounts (Path B column-by-column slim) would likely **flip the
+ratio**: smaller verifier circuit ⇒ less NPO overhead per layer
+⇒ L_{n+1} < L_n again, restoring recursion compression. This
+makes Path B even more attractive than the routes audit
+originally suggested.
 
 The path to ≤65 KB still requires either Path A (SNARK wrap;
 trust-surface trade) or substantial Path B work; Phase 0 alone
-gets us to ~512 KB L1, not yet near the target.
+gets us to ~488 KB L1, not yet near the target.
 
 ---
 
