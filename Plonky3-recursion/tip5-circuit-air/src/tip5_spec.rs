@@ -1,13 +1,26 @@
-//! In-crate, native-faithful **7-round Tip5** reference.
+//! In-crate, native-faithful **5-round Tip5** reference for the
+//! ai-pow-zk recursive proving construction (per maintainer
+//! 2026-05-20).
 //!
-//! This is the bit-for-bit twin of `nockchain_math::tip5::permute`
+//! This is the bit-for-bit twin of `nockchain_math::tip5::permute_5round`
 //! (the two cannot share code — they live in separate, excluded Cargo
 //! workspaces). Faithfulness is *closed* by the committed golden KAT
-//! fixture (C2.0): `nockchain-math` proves the fixture matches its live
-//! `permute`; here `tests::*` proves these embedded constants and this
-//! `permute` match that *same committed fixture* bit-for-bit. So a
-//! divergence on either side fails a test — the cross-workspace
-//! soundness loop is closed without a code dependency.
+//! fixture `tip5_5round_golden_kat.txt`: `nockchain-math` proves the
+//! fixture matches its live `permute_5round`; here `tests::*` proves
+//! these embedded constants and this `permute` match that *same
+//! committed fixture* bit-for-bit. Cross-workspace soundness loop
+//! closed without a code dependency.
+//!
+//! **DIVERGENCE FROM CANONICAL NOCKCHAIN TIP5:** Nockchain's
+//! canonical hash (`nockchain_math::tip5::permute`) uses 7 rounds
+//! as a defensive cushion above the Tip5 paper's spec (N=5; IACR
+//! ePrint 2023/107 §2.4). This ai-pow-zk-specific 5-round variant
+//! trades that 2-round cushion for proof-size reduction in the
+//! in-circuit Tip5 AIR (~−25-30% AIR width). The cryptanalysis
+//! (IACR ePrint 2024/1900 "Opening the Blackbox": practical
+//! 3-round attacks) supports 5 rounds as paper-spec-secure with
+//! no extra margin. Maintainer-approved divergence per goal
+//! 2026-05-20.
 //!
 //! All arithmetic is plain canonical-domain Goldilocks (`mod p`),
 //! exactly as `belt::{bmul,badd,bpow}` (which use `reduce`/`reduce_159`,
@@ -17,8 +30,11 @@
 pub const P_GOLDILOCKS: u64 = 0xffff_ffff_0000_0001;
 /// Tip5 state width.
 pub const STATE_SIZE: usize = 16;
-/// Deployed Nockchain round count (paper N=5; Nockchain deploys 7).
-pub const NUM_ROUNDS: usize = 7;
+/// **5-round Tip5 (paper-spec IACR ePrint 2023/107 §2.4 N=5).**
+/// ai-pow-zk-specific divergence from canonical Nockchain
+/// `nockchain_math::tip5::NUM_ROUNDS=7`; bit-for-bit twin of
+/// `nockchain_math::tip5::NUM_ROUNDS_5ROUND=5`.
+pub const NUM_ROUNDS: usize = 5;
 /// Split-and-lookup S-box lanes (the rest use the x^7 power map).
 pub const NUM_SPLIT_AND_LOOKUP: usize = 4;
 
@@ -45,7 +61,11 @@ pub const LOOKUP_TABLE: [u8; 256] = [
     1, 170, 40, 131, 192, 229, 248, 255,
 ];
 
-/// `nockchain_math::tip5::ROUND_CONSTANTS` (raw; 7·16, row-major).
+/// **First 5·16 = 80** round constants from
+/// `nockchain_math::tip5::ROUND_CONSTANTS` (raw; row-major).
+/// The 5-round Tip5 variant uses ONLY these 80 entries; the
+/// remaining 32 entries from the canonical 7-round array are
+/// intentionally absent here.
 pub const ROUND_CONSTANTS: [u64; NUM_ROUNDS * STATE_SIZE] = [
     1332676891236936200, 16607633045354064669, 12746538998793080786, 15240351333789289931,
     10333439796058208418, 986873372968378050, 153505017314310505, 703086547770691416,
@@ -67,14 +87,6 @@ pub const ROUND_CONSTANTS: [u64; NUM_ROUNDS * STATE_SIZE] = [
     12448773944668684656, 13967843398310696452, 14838288394107326806, 13718313940616442191,
     15032565440414177483, 13769903572116157488, 17074377440395071208, 16931086385239297738,
     8723550055169003617, 590842605971518043, 16642348030861036090, 10708719298241282592,
-    12766914315707517909, 11780889552403245587, 113183285481780712, 9019899125655375514,
-    3300264967390964820, 12802381622653377935, 891063765000023873, 15939045541699412539,
-    3240223189948727743, 4087221142360949772, 10980466041788253952, 18199914337033135244,
-    7168108392363190150, 16860278046098150740, 13088202265571714855, 4712275036097525581,
-    16338034078141228133, 1455012125527134274, 5024057780895012002, 9289161311673217186,
-    9401110072402537104, 11919498251456187748, 4173156070774045271, 15647643457869530627,
-    15642078237964257476, 1405048341078324037, 3059193199283698832, 1605012781983592984,
-    7134876918849821827, 5796994175286958720, 7251651436095127661, 4565856221886323991,
 ];
 
 /// First row of the circulant MDS matrix
@@ -147,7 +159,10 @@ fn linear_layer(state: &[u64; STATE_SIZE]) -> [u64; STATE_SIZE] {
     result
 }
 
-/// The 7-round Tip5 permutation — bit-for-bit `nockchain_math::tip5::permute`.
+/// The **5-round** Tip5 permutation — bit-for-bit
+/// `nockchain_math::tip5::permute_5round` (the ai-pow-zk-specific
+/// paper-spec variant; NOT the canonical Nockchain 7-round
+/// `permute`).
 pub fn permute(sponge: &mut [u64; STATE_SIZE]) {
     for i in 0..NUM_ROUNDS {
         let a = sbox_layer(sponge);

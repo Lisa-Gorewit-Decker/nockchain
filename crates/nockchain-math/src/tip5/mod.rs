@@ -150,6 +150,48 @@ pub fn permute(sponge: &mut [u64; 16]) {
     }
 }
 
+/// Round count for the **paper-spec 5-round Tip5 variant** (Tip5
+/// paper IACR ePrint 2023/107 §2.4 N=5). Distinct from the
+/// canonical Nockchain [`NUM_ROUNDS`] (= 7), which is the deployed
+/// margin per the cryptanalysis (IACR 2024/1900 "Opening the
+/// Blackbox": practical 3-round attacks; 5-round paper-spec is
+/// secure; 7-round = Nockchain's defensive cushion).
+///
+/// This variant exists **specifically for the ai-pow-zk recursive
+/// proving construction** (per maintainer 2026-05-20). It is NOT
+/// the canonical Nockchain Tip5 — all other Nockchain crates
+/// continue to use [`permute`] (7 rounds).
+pub const NUM_ROUNDS_5ROUND: usize = 5;
+
+/// **5-round Tip5 variant for ai-pow-zk** — identical to [`permute`]
+/// (same MDS, same LOOKUP_TABLE, same RC schedule, same S-box) but
+/// iterates only 5 rounds using `ROUND_CONSTANTS[0..5*STATE_SIZE]`
+/// (i.e., the FIRST 80 of the 112 round constants).
+///
+/// Tip5 paper IACR ePrint 2023/107 §2.4 specifies N=5 as the
+/// secure round count; the cryptanalysis (IACR ePrint 2024/1900)
+/// shows practical 3-round attacks and 5-round security. The
+/// canonical Nockchain [`permute`] uses 7 rounds as a defensive
+/// 2-round cushion above the paper spec; this 5-round variant
+/// matches the paper-spec for the ai-pow-zk recursive proving
+/// construction where the cushion is traded for proof-size
+/// reduction (~−25-30% in the in-circuit Tip5 AIR width).
+///
+/// **Do not use this for canonical Nockchain hashing.** It is
+/// specifically an ai-pow-zk-only variant; all other Nockchain
+/// crates must continue to use the 7-round [`permute`].
+pub fn permute_5round(sponge: &mut [u64; 16]) {
+    for i in 0..NUM_ROUNDS_5ROUND {
+        let a = sbox_layer(array_ref![sponge, 0, STATE_SIZE]);
+        let b = linear_layer(&a);
+
+        for j in 0..STATE_SIZE {
+            let r_cons = (((ROUND_CONSTANTS[i * STATE_SIZE + j] as u128) * R) % PRIME_128) as u64;
+            sponge[j] = badd(r_cons, b[j]);
+        }
+    }
+}
+
 fn sbox_layer(state: &[u64; STATE_SIZE]) -> [u64; STATE_SIZE] {
     let mut res: [u64; STATE_SIZE] = [0; STATE_SIZE];
 
@@ -426,6 +468,114 @@ mod c2_kat {
             "tip5 golden KAT fixture drifted from live permute/constants — \
              the C2 soundness oracle changed; re-validate tip5-circuit-air \
              and run with REGEN_TIP5_KAT=1 only if the change is intended"
+        );
+    }
+
+    // ===== 5-ROUND VARIANT (ai-pow-zk-specific; 2026-05-20) =====
+    //
+    // Parallel c2_kat-style validation for the 5-round Tip5 variant
+    // [`permute_5round`]. Generates a SEPARATE fixture file
+    // `tip5_5round_golden_kat.txt` cross-anchored with the in-workspace
+    // `p3-tip5-circuit-air::tip5_spec` 5-round twin.
+    //
+    // The 7-round and 5-round fixtures coexist:
+    //  - `tip5_golden_kat.txt` — canonical Nockchain 7-round, anchored
+    //    to `permute` (used by all non-ai-pow-zk Nockchain code).
+    //  - `tip5_5round_golden_kat.txt` — ai-pow-zk's 5-round variant,
+    //    anchored to `permute_5round` (used by the recursive proving
+    //    construction only).
+    //
+    // Both fixtures share identical input vectors (golden_inputs).
+
+    fn build_fixture_5round() -> String {
+        let mut out = String::new();
+        out.push_str(
+            "# tip5 golden KAT (5-round variant) — generated from \
+             nockchain_math::tip5::permute_5round (paper-spec N=5; \
+             IACR ePrint 2023/107 §2.4)\n",
+        );
+        out.push_str(
+            "# DIVERGENCE NOTICE: this is the AI-POW-ZK-SPECIFIC \
+             5-round variant, NOT the canonical Nockchain 7-round Tip5 \
+             (see tip5_golden_kat.txt). Used only by the ai-pow-zk \
+             recursive proving construction per maintainer 2026-05-20.\n",
+        );
+        out.push_str(&format!("P {P}\n"));
+        out.push_str(&format!("LOOKUP {}\n", join(LOOKUP_TABLE.iter().map(|&b| b as u64))));
+        // Only the first 5*STATE_SIZE = 80 round constants are used by
+        // permute_5round; emit them explicitly so the fixture stands
+        // alone (a 5-round consumer doesn't need to know about the
+        // remaining 32 unused entries).
+        let used = &ROUND_CONSTANTS[..NUM_ROUNDS_5ROUND * STATE_SIZE];
+        out.push_str(&format!("ROUND_CONSTANTS {}\n", join(used.iter().copied())));
+        out.push_str(&format!(
+            "RC_PRECOMP {}\n",
+            join(used.iter().map(|&rc| rc_precomp(rc)))
+        ));
+        out.push_str(&format!(
+            "MDS_ROW0 {}\n",
+            join(MDS_MATRIX_I64[0].iter().map(|&m| m as u64))
+        ));
+        let inputs = golden_inputs();
+        let mut vectors: Vec<([u64; 16], [u64; 16])> = Vec::new();
+        for inp in &inputs {
+            let mut s = *inp;
+            permute_5round(&mut s);
+            vectors.push((*inp, s));
+        }
+        // §2.1 round iteration / coupling: chained multi-permute KATs.
+        for &seed_idx in &[2usize, 0, 8] {
+            let mut s = inputs[seed_idx];
+            for _ in 0..3 {
+                permute_5round(&mut s);
+            }
+            let prev = s;
+            permute_5round(&mut s);
+            vectors.push((prev, s));
+        }
+        out.push_str(&format!("NVEC {}\n", vectors.len()));
+        for (inp, outp) in &vectors {
+            out.push_str(&format!("IN {}\n", join(inp.iter().copied())));
+            out.push_str(&format!("OUT {}\n", join(outp.iter().copied())));
+        }
+        out
+    }
+
+    #[test]
+    fn golden_kat_5round_frozen_matches_live_permute_5round() {
+        // sanity: rc_precomp matches permute_5round's exact r_cons formula
+        // (only the first 5*STATE_SIZE = 80 constants are used).
+        for i in 0..NUM_ROUNDS_5ROUND {
+            for j in 0..STATE_SIZE {
+                let rc = ROUND_CONSTANTS[i * STATE_SIZE + j];
+                let expect = (((rc as u128) * R) % PRIME_128) as u64;
+                assert_eq!(
+                    rc_precomp(rc),
+                    expect,
+                    "5-round: rc_precomp != permute_5round r_cons"
+                );
+            }
+        }
+        let expected = build_fixture_5round();
+        let dir = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../ai-pow-zk/tests/fixtures"
+        );
+        let path = format!("{dir}/tip5_5round_golden_kat.txt");
+        let regen = std::env::var("REGEN_TIP5_KAT_5ROUND").is_ok();
+        let on_disk = std::fs::read_to_string(&path);
+        if regen || on_disk.is_err() {
+            std::fs::create_dir_all(dir).expect("create fixtures dir");
+            std::fs::write(&path, &expected).expect("write 5-round golden KAT fixture");
+            eprintln!("5-round KAT: wrote fixture -> {path}");
+        }
+        let committed = std::fs::read_to_string(&path).expect("read 5-round golden KAT fixture");
+        assert_eq!(
+            committed, expected,
+            "5-round tip5 golden KAT fixture drifted from live permute_5round/constants — \
+             the ai-pow-zk-specific 5-round Tip5 oracle changed; re-validate \
+             tip5-circuit-air 5-round AIR and run with REGEN_TIP5_KAT_5ROUND=1 only if \
+             the change is intended"
         );
     }
 }

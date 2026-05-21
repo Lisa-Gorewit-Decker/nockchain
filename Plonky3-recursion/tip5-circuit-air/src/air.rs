@@ -269,7 +269,8 @@ mod tests {
 
     const FIXTURE: &str = concat!(
         env!("CARGO_MANIFEST_DIR"),
-        "/../../crates/ai-pow-zk/tests/fixtures/tip5_golden_kat.txt"
+        // 5-round ai-pow-zk fixture (NOT the 7-round canonical Nockchain one).
+        "/../../crates/ai-pow-zk/tests/fixtures/tip5_5round_golden_kat.txt"
     );
 
     struct Kat {
