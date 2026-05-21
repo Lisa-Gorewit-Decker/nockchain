@@ -58,7 +58,31 @@ tracing-forest = { workspace = true, features = ["smallvec"] }
 tracing-subscriber = { workspace = true, features = ["std", "env-filter"] }
 
 [features]
-parallel = ["p3-maybe-rayon/parallel"]
+# Rayon-parallel prover. `p3-maybe-rayon/parallel` is the central
+# switch: when ON, every Plonky3 crate that imports
+# `p3_maybe_rayon::prelude::*` (uni-stark, dft, fri, batch-stark,
+# merkle-tree, …) uses real rayon parallel iterators; when OFF
+# they fall back to a serial mimic. The per-crate `parallel`
+# convenience features just forward to that same switch — we
+# enumerate them explicitly so Cargo's feature unification is
+# obvious. **Default ON 2026-05-21** to match ai-pow-zk's prover
+# default; serial = `--no-default-features`. Proofs are
+# bit-identical between serial and parallel (deterministic,
+# index-ordered reductions).
+default = ["parallel"]
+parallel = [
+    "p3-maybe-rayon/parallel",
+    # Upstream Plonky3 (the central switch + prover-side parallelism)
+    "p3-uni-stark/parallel",
+    "p3-batch-stark/parallel",
+    "p3-dft/parallel",
+    "p3-poseidon1-air/parallel",
+    "p3-poseidon2-air/parallel",
+    # In-tree (Plonky3-recursion-vendored) AIR trace-gen parallelism
+    "p3-poseidon1-circuit-air/parallel",
+    "p3-poseidon2-circuit-air/parallel",
+    "p3-tip5-circuit-air/parallel",
+]
 # Path B inventory profiling — passthrough to p3-circuit's profiling
 # feature so `CircuitBuilder::scope_op_counts()` is callable. Used by
 # the M-S5b Path B Stage B0 inventory tool for per-scope source

@@ -61,6 +61,20 @@ tracing-forest = { workspace = true, features = ["smallvec"] }
 tracing-subscriber = { workspace = true, features = ["std", "env-filter"] }
 
 [features]
+# Rayon-parallel prover. Mirrors p3-circuit-prover/parallel; we
+# enumerate consuming Plonky3 crates explicitly for clarity. When
+# ON, p3-maybe-rayon's prelude exposes real rayon iterators across
+# every Plonky3 crate (uni-stark, fri, dft, merkle-tree, …); when
+# OFF they fall back to a serial mimic. **Default ON 2026-05-21**;
+# serial = `--no-default-features`. Bit-identical proofs either
+# way (deterministic, index-ordered reductions).
+default = ["parallel"]
+parallel = [
+    "p3-circuit-prover/parallel",
+    "p3-uni-stark/parallel",
+    "p3-batch-stark/parallel",
+    "p3-poseidon2-air/parallel",
+]
 # Path B inventory profiling — enables p3-circuit's per-scope op
 # counting in `CircuitBuilder`. When on, `circuit_builder.scope_op_counts()`
 # returns per-scope HashMap<String, OpCounts>. Used by the B0 inventory
