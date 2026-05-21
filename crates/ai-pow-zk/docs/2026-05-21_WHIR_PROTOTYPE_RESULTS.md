@@ -193,17 +193,28 @@ The paper's "3-5×" benchmarks may use parameter combinations we haven't tested 
 
 ## Implications for L1 size
 
-Our current production L1 = ~390 KB (commits ~3 polynomials: trace, quotient, possibly random). Projecting from per-PCS savings:
+**2026-05-21 reanchored target ≤100 KB** (was ≤65 KB; see
+`2026-05-19_M_S5B_TERMINAL_COMPRESSION_DESIGN.md` 2026-05-21
+addendum for the relaxation rationale). Current production
+L1 = 306.91 KB at the anchored 60-bit Johnson floor
+(`lb=4 nq=15 pow=1+1`, Stage 5 measurement post-Rayon +
+`mds_cyclomul`). Projecting from per-PCS savings:
 
-| Scenario | Per-PCS savings | L1 projection | vs ≤65 KB target |
+| Scenario | Per-PCS savings | L1 projection | vs ≤100 KB target |
 |---|---|---:|---:|
-| Current FRI @ Johnson | baseline | **390 KB** | 6.0× over |
-| WHIR @ Johnson (k=4) | ~10% | **~350 KB** | 5.4× over |
-| WHIR @ CapacityBound (k=4) | ~55% | **~180 KB** | 2.8× over |
+| Current FRI @ Johnson (60-bit anchored) | baseline | **307 KB** | 3.07× over |
+| WHIR @ Johnson (k=4) | ~10% | **~275 KB** | 2.75× over |
+| WHIR @ CapacityBound (k=4) | ~55% | **~140 KB** | 1.40× over |
 
-**Even the most aggressive WHIR config doesn't reach ≤65 KB.** Path A (SNARK wrap) remains the only known path to the target.
+**Even the most aggressive WHIR config doesn't reach ≤100 KB on
+its own.** Combining WHIR @ Johnson with higher-lb outer (lb=6 nq=10
+at the anchored floor) might close part of the gap; Path A
+(SNARK wrap) remains the likely final lever to reach the target.
 
-**However, WHIR @ Capacity to ~180 KB IS a meaningful reduction** — closer to the target. The full Path A wrap would then have a smaller cert to wrap, potentially reducing SNARK overhead.
+Note: WHIR @ Capacity is **rejected** as a soundness model (see
+the MAINTAINER POLICY section at the top of this doc — paper has
+constructive attacks at γ ≥ LDR). The ~140 KB projection is
+shown as a comparator only; it would not be deployed.
 
 ## Caveats + R1 honest residuals
 
@@ -257,14 +268,16 @@ Path forward:
 2. Re-measure L1+L2 baseline.
 3. Estimate WHIR-integrated L1+L2 (likely ~70-100 KB at Capacity).
 4. Decide: WHIR integration (~3 weeks) vs Path A (~months;
-   reaches ≤65 KB).
+   reaches ≤100 KB).
 
-### ≤65 KB target status
+### ≤100 KB target status (2026-05-21 reanchored)
 
-At Capacity, the in-substrate floor MIGHT approach the target.
-Optimistic projection: FRI @ Capacity + WHIR @ Capacity + Tier C
-digest=4 could plausibly reach L1 ~70-90 KB. Still ~1.1-1.4×
-over target.
+The in-substrate Johnson floor at the anchored 60-bit FRI
+(`lb=4 nq=15 pow=1+1`) is L1 = 307 KB, L2 = 343 KB. Combining
+the proven-Johnson levers (WHIR @ Johnson ≈ −10%, higher-lb
+outer e.g. `lb=6 nq=10 pow=1+1` ≈ −20-25% queries) plausibly
+brings L1 into the ~200 KB range — still ~2× over the ≤100 KB
+target. Final closure most likely requires Path A.
 
 **Path A (SNARK wrap) may not be required** if the Capacity-bound
 in-substrate work gets close enough. Worth measuring before

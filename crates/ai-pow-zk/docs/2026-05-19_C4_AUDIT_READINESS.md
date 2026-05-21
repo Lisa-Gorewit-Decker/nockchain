@@ -96,7 +96,7 @@ mining the real shipped `Llama-3.1-8B-Instruct-pearl` model
 - **M-S5b terminal compression (`#131`)** is **deferred** (see
   `2026-05-19_M_S5B_TERMINAL_COMPRESSION_DESIGN.md`). When it
   lands, a follow-on audit round covers the substrate addition.
-  M-S5b is *not* hidden incompleteness of C3 — the ≤65 KB
+  M-S5b is *not* hidden incompleteness of C3 — the ≤100 KB
   target was explicitly carved out and the C3 milestone is the
   soundness-correct ≥120-bit cert (LANDED).
 - **G3 carry-vector segmentation.** Deferred (Pearl-faithful
@@ -288,7 +288,7 @@ backs it → status)`.
                 │   M-S5  ≥120-bit outer-recursive STARK cert │
                 │   (test_tip5_layer0_compression.rs)         │
                 │   L1 ≈ 2.69 MB, L2 ≈ 1.79 MB                │
-                │   M-S5b will compress this to ≤65 KB        │
+                │   M-S5b will compress this to ≤100 KB        │
                 └────────────────────┬────────────────────────┘
                                      │ verifies
                                      ▼
@@ -451,7 +451,7 @@ otherwise be "surprised" by is here.
 
 | Residual | What it is | Where tracked |
 |---|---|---|
-| **M-S5b / `#131`** | ≤65 KB terminal compression of the ≥120-bit M-S5 cert (size target only; soundness unaffected — the ≥120-bit cert is LANDED) | `2026-05-19_M_S5B_TERMINAL_COMPRESSION_DESIGN.md` |
+| **M-S5b / `#131`** | ≤100 KB terminal compression of the ≥120-bit M-S5 cert (size target only; soundness unaffected — the ≥120-bit cert is LANDED) | `2026-05-19_M_S5B_TERMINAL_COMPRESSION_DESIGN.md` |
 | **Phase B1** | Pearl **reference vectors** from Pearl's miner (golden `(κ,s_a,s_b,E/F,one tile digest)`); today only self-consistency vs ai-pow's own plain path is tested | `2026-05-18_PHASE_B_DESIGN.md` § B1; `2026-05-13_PEARL_COMPARISON.md` |
 | **Phase B2** | Quant-extraction contract: specify how the vLLM plugin maps the model's INT7/INT8 GEMM operands to Pearl type-0 `[−64,64]` int8 `(A,B,μ)`; integration KAT against a real model fixture | `2026-05-18_PHASE_B_DESIGN.md` § B2 |
 | **Packed-MMCS `GoldilocksConfig`** | Landed config is unpacked; `verify_p3_batch_proof_circuit` requires packed; aarch64-neon `Goldilocks::Packing ≠ Goldilocks`. Verified-soundness-neutral substitute used in measurement; production L2 needs the upstream fix or a packed-MMCS sibling. | `2026-05-19_C3_OUTER_CERT_DESIGN.md` § 14 |
@@ -464,7 +464,7 @@ otherwise be "surprised" by is here.
 ### 8.1 Non-residuals (claims a careless audit might list — preempted here)
 
 - "C3 incomplete" — C3 is the soundness-correct ≥120-bit cert,
-  LANDED + independently re-validated. The ≤65 KB *size* target
+  LANDED + independently re-validated. The ≤100 KB *size* target
   is a **separate carved-out milestone (M-S5b)**. This is not
   hidden C3 incompleteness. See § 8 of
   `2026-05-19_C3_OUTER_CERT_DESIGN.md`.
@@ -571,7 +571,7 @@ audit can begin on the in-scope items as listed.
 | Pearl FP8 scoping | `2026-05-18_PEARL_FP8_SCOPING.md` |
 | vLLM CPU fork design | `2026-05-18_PEARL_VLLM_CPU_FORK_DESIGN.md` |
 | G3 (deferred) | `2026-05-17_M_S2_G3AB_DESIGN.md` |
-| Pearl 3-layer recursion (origin of ≤65 KB target) | `2026-05-17_M_S2_PEARL_EVALUATION.md` |
+| Pearl 3-layer recursion (origin of the historic ≤65 KB target; relaxed to ≤100 KB 2026-05-21) | `2026-05-17_M_S2_PEARL_EVALUATION.md` |
 | **Soundness-bar anchor paper** (Johnson-radius proven; §1.3) | IACR ePrint 2025/2055 — Ben-Sasson, Carmon, Habock, Kopparty, Saraf, *"On Proximity Gaps for Reed–Solomon Codes"* (Nov 2025; Theorem 1.5 + §1.3.2 + §8 attacks) |
 | Tip5 paper (5.A round constants + §4.3/§4.6) | IACR ePrint 2023/107 |
 | Earlier roadmap (superseded) | `2026-05-13_ROADMAP.md` |

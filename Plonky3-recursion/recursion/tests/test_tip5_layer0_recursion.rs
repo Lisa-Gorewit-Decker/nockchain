@@ -745,11 +745,12 @@ fn tip5_layer0_outer_cert_lb6() {
 // ---------------------------------------------------------------------
 
 #[test]
-#[ignore = "DEFERRED terminal-compression milestone (≤65KB), NOT C3/M-S5: C3/M-S5 is RE-SCOPED to the soundness-correct ≥120-bit vertical-recursion cert (LANDED — see test_tip5_layer0_compression.rs c3_stage_a/b/c_* and 2026-05-19_C3_OUTER_CERT_DESIGN.md §13.2/§14). The ≤65KB size bar (actual D=2 Tip5-L0 cert ~117KB, ORTHOGONAL & fix-independent to the DT-4 soundness fix) is now a SEPARATE future terminal-compression milestone (size-targeted SNARK/STARK-to-SNARK wrap / proof-folding / smaller AIR); the EXACT unrelaxed `serialized_len <= 65_536` assert below is preserved verbatim and stays #[ignore]d until that deferred milestone closes it"]
+#[ignore = "DEFERRED terminal-compression milestone (≤100KB, relaxed 2026-05-21 from the original ≤65KB), NOT C3/M-S5: C3/M-S5 is RE-SCOPED to the soundness-correct vertical-recursion cert (LANDED — see test_tip5_layer0_compression.rs c3_stage_a/b/c_* and 2026-05-19_C3_OUTER_CERT_DESIGN.md §13.2/§14). The terminal-compression size bar is a SEPARATE future milestone (size-targeted SNARK/STARK-to-SNARK wrap / proof-folding / smaller AIR). The `serialized_len <= 102_400` assert below stays #[ignore]d until that deferred milestone closes it. Bar relaxation rationale: see 2026-05-19_M_S5B_TERMINAL_COMPRESSION_DESIGN.md 2026-05-21 addendum"]
 fn tip5_layer0_outer_cert_size_residual() {
     // Measure the serialized PROD `BatchStarkProof` length and assert
-    // the EXACT unrelaxed ≤65 KB M-S5 bar. Also print the measured
-    // size for ALL 5 sweep profiles so the residual is fully visible.
+    // the ≤100 KB M-S5b bar (2026-05-21 maintainer relaxation from
+    // the original ≤65 KB). Also print the measured size for ALL 5
+    // sweep profiles so the residual is fully visible.
     let mut prod_len: Option<usize> = None;
     for &profile in SWEEP.iter() {
         let bytes = outer_cert_layer0(profile, false).unwrap_or_else(|e| {
@@ -768,10 +769,10 @@ fn tip5_layer0_outer_cert_size_residual() {
 
     let serialized_len = prod_len.expect("PROD profile must be measured");
     assert!(
-        serialized_len <= 65_536,
-        "M-S5: serialized PROD BatchStarkProof is {serialized_len} bytes, exceeding the \
-         ≤65 KB (65_536-byte) certificate-size budget — open residual, NOT relaxed \
-         (2026-05-19_C3_OUTER_CERT_DESIGN.md §13.1)"
+        serialized_len <= 102_400,
+        "M-S5b: serialized PROD BatchStarkProof is {serialized_len} bytes, exceeding the \
+         ≤100 KB (102_400-byte) certificate-size budget — open residual, NOT relaxed \
+         (2026-05-19_M_S5B_TERMINAL_COMPRESSION_DESIGN.md 2026-05-21 addendum)"
     );
 }
 

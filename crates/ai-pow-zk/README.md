@@ -147,9 +147,13 @@ heuristic is **not** adopted).
     — bigger than Tier B (−46%), Phase 0 (additional −1%), Path B
     B2 (~0%), and the 2026-05-21 anchored-between reanchor
     (additional −24%) combined.**
-    **For ≤65 KB:** still requires Path A (SNARK wrap); in-substrate
-    post-quantum floor is now ~307 KB (vs ≤65 KB target = ~4.7×
-    over). Path A is the only known path to the target.
+    **For ≤100 KB** (2026-05-21 maintainer-relaxed target, was ≤65 KB):
+    in-substrate floor is now ~307 KB L1 / ~343 KB L2 (vs ≤100 KB
+    target = ~3.4× over). Combinable in-substrate levers (WHIR @
+    Johnson, higher-lb outer with the new 25 s L1+L2 latency
+    headroom) may close part of the gap; a Path A SNARK wrap
+    remains the most likely final lever. See `docs/2026-05-19_M_S5B_TERMINAL_COMPRESSION_DESIGN.md`
+    2026-05-21 addendum for the target-relaxation rationale.
     See [`2026-05-20_RECURSIVE_PROOF_SIZE_INVESTIGATION.md`](docs/2026-05-20_RECURSIVE_PROOF_SIZE_INVESTIGATION.md)
     § 4 + § 5.
 - **γ < J(δ)−η**: every layer operates strictly inside the
@@ -242,7 +246,7 @@ the design / status doc that owns it.
 | Open work | Doc (in [`docs/`](docs/)) | Status |
 |---|---|---|
 | **Production roadmap** (the index of every milestone) | [`2026-05-17_PRODUCTION_ROADMAP.md`](docs/2026-05-17_PRODUCTION_ROADMAP.md) | Live |
-| **M-S5b / P-C2** — ≤65 KB terminal compression of the M-S5 cert | [`2026-05-19_M_S5B_TERMINAL_COMPRESSION_DESIGN.md`](docs/2026-05-19_M_S5B_TERMINAL_COMPRESSION_DESIGN.md) | S(−1) FRI soundness analysis LANDED ([`2026-05-20_M_S5B_SOUNDNESS_ANALYSIS.md`](docs/2026-05-20_M_S5B_SOUNDNESS_ANALYSIS.md)). S1 routes audit LANDED ([`2026-05-20_PROOF_SIZE_REDUCTION_ROUTES_AUDIT.md`](docs/2026-05-20_PROOF_SIZE_REDUCTION_ROUTES_AUDIT.md)). **S1.B Poseidon2 removal LANDED 2026-05-20 (P0–P7)** ([`2026-05-20_POSEIDON2_REMOVAL_SPEC.md`](docs/2026-05-20_POSEIDON2_REMOVAL_SPEC.md)) — outer-cert flipped from Poseidon2-Goldilocks<8> to Tip5 (one hash family throughout, analogous to Pearl's BLAKE3-throughout). **S1.B size-reduction investigation LANDED 2026-05-20** ([`2026-05-20_RECURSIVE_PROOF_SIZE_INVESTIGATION.md`](docs/2026-05-20_RECURSIVE_PROOF_SIZE_INVESTIGATION.md)): full per-lever empirical sweep at ≥80-bit Johnson; **Tier B production flip LANDED** — outer-cert FRI moved from `lb=2 nq=42` (~1011 KB, 85 bits) to `lb=4 nq=20` (~548 KB, 82 bits) for **−46% L1** at +2-bit margin / paper-faithful digest=5; trade-off is 16× LDE (4× prover memory). Tier C (~470 KB Pareto floor) deferred — requires digest=4 paper-divergence. Empirical L2 measurement at Tier B pending. In-substrate floor ~470 KB; ≤65 KB target still requires Path A (outermost SNARK wrap) per routes-audit recommendation. |
+| **M-S5b / P-C2** — ≤100 KB terminal compression of the M-S5 cert (target relaxed from ≤65 KB on 2026-05-21) | [`2026-05-19_M_S5B_TERMINAL_COMPRESSION_DESIGN.md`](docs/2026-05-19_M_S5B_TERMINAL_COMPRESSION_DESIGN.md) | S(−1) FRI soundness analysis LANDED ([`2026-05-20_M_S5B_SOUNDNESS_ANALYSIS.md`](docs/2026-05-20_M_S5B_SOUNDNESS_ANALYSIS.md)). S1 routes audit LANDED ([`2026-05-20_PROOF_SIZE_REDUCTION_ROUTES_AUDIT.md`](docs/2026-05-20_PROOF_SIZE_REDUCTION_ROUTES_AUDIT.md)). **S1.B Poseidon2 removal LANDED 2026-05-20 (P0–P7)** ([`2026-05-20_POSEIDON2_REMOVAL_SPEC.md`](docs/2026-05-20_POSEIDON2_REMOVAL_SPEC.md)) — outer-cert flipped from Poseidon2-Goldilocks<8> to Tip5 (one hash family throughout, analogous to Pearl's BLAKE3-throughout). **S1.B size-reduction investigation LANDED 2026-05-20** ([`2026-05-20_RECURSIVE_PROOF_SIZE_INVESTIGATION.md`](docs/2026-05-20_RECURSIVE_PROOF_SIZE_INVESTIGATION.md)): full per-lever empirical sweep at ≥80-bit Johnson; **Tier B production flip LANDED** — outer-cert FRI moved from `lb=2 nq=42` (~1011 KB, 85 bits) to `lb=4 nq=20` (~548 KB, 82 bits) for **−46% L1** at +2-bit margin / paper-faithful digest=5; trade-off is 16× LDE (4× prover memory). Tier C (~470 KB Pareto floor) deferred — requires digest=4 paper-divergence. Empirical L2 measurement at Tier B pending. In-substrate floor ~470 KB; ≤100 KB target (relaxed 2026-05-21 from ≤65 KB) likely requires Path A (outermost SNARK wrap) per routes-audit recommendation, possibly attainable via WHIR @ Johnson + higher-lb outer first. |
 | **C4 / M-S6** — independent crypto audit | [`2026-05-19_C4_AUDIT_READINESS.md`](docs/2026-05-19_C4_AUDIT_READINESS.md) | Readiness package landed (threat model + soundness-claim index + KAT/adversarial catalogue + known residuals). Team in-house audit walk is the next deliverable; people other than us will also audit. |
 | **CSA — Constraint Soundness Analysis (AIR-side of ≥80 unconditional, complements S(−1))** | [Design](docs/2026-05-20_CONSTRAINT_SOUNDNESS_ANALYSIS_DESIGN.md) + [S0](docs/2026-05-20_CONSTRAINT_INVENTORY.md) + [S1](docs/2026-05-20_CONSTRAINT_SOUNDNESS_DERIVATION.md) + [S2](docs/2026-05-20_TAMPER_GAP_LIST.md) + [S3](docs/2026-05-20_TAMPER_TEST_SPECIFICATION.md) + [S5](docs/2026-05-20_CSA_S5_CROSS_AIR_TAMPER_TESTS.md) + [S6](docs/2026-05-20_CSA_S6_PROPERTY_BASED_TESTS.md) + [S7](docs/2026-05-20_CSA_S7_AUDIT_SIGNOFF.md) | **LANDED 2026-05-20 (all 8 stages S0–S7)**. Verdict: per-AIR MIN bits ≥98 (BUS_IRANGE8 the tightest), chain MIN 82 unconditional bits combined with S(−1) FRI; ≥80 floor with margin. 11 new tamper tests + 3 audit-routing doc-comments landed; rejection rate empirically 1.0. Deferred-as-deepening (not gaps): F3–F20 FRI fold-round + per-constraint proptest sweep. M12 GAP-G3 items (BUS_MATMUL_INPUT, BUS_JACKPOT_X_BITS, Tip5 D=2 R-a tail) remain out of M-S6 scope. |
 | **Proof-size + parameter-choice measurements** (the post-recalibration source of truth) | [`2026-05-19_PROOF_SIZE_RECALIBRATION_MEASUREMENTS.md`](docs/2026-05-19_PROOF_SIZE_RECALIBRATION_MEASUREMENTS.md) | Stage A/B/C + S3(ii) measured; L2 = 618 KB; L3 > L2 ⇒ stacked recursion confirmed-dead at the new ≥80-Johnson bar. |
@@ -325,12 +329,18 @@ form. This subsection is the in-narrative description.)
 - **Final CV_OUT in public inputs.** The composite trace doesn't
   yet thread "current CV" forward to the last row. Add when
   downstream protocols need the final hash output.
-- **Recursion compression (M-S5b / #131).** A vertical-recursion
-  cert lands at ~618 KB L2 at the new ≥80-Johnson bar (Stage B
-  measured); the ≤65 KB target remains deferred to M-S5b — see
+- **Recursion compression (M-S5b / #131).** Vertical-recursion
+  cert lands at L1 = 306.91 KB / L2 = 342.83 KB at the 2026-05-21
+  anchored 60-bit Johnson floor (Stage 5 measured, 25.1 s wall-clock
+  with Rayon + `mds_cyclomul`); the **≤100 KB target** (relaxed
+  2026-05-21 from the original ≤65 KB) remains a deferred terminal-
+  compression milestone — see
   [`docs/2026-05-19_M_S5B_TERMINAL_COMPRESSION_DESIGN.md`](docs/2026-05-19_M_S5B_TERMINAL_COMPRESSION_DESIGN.md)
-  for the path tree (Path B verifier-AIR floor-attack now primary;
-  stacked recursion confirmed-dead).
+  2026-05-21 addendum for the path tree (WHIR @ Johnson + higher-lb
+  outer in-substrate; Path A SNARK wrap as the final lever; Path B
+  verifier-AIR floor-attack already explored; stacked recursion
+  confirmed-dead at the prior 80-bit bar — re-evaluation pending
+  at the new 60-bit anchored floor).
 
 ## Module map
 

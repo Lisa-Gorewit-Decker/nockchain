@@ -1,6 +1,42 @@
 > _Created **2026-05-19** · last updated **2026-05-19**._
 
-# M-S5b / P-C2 — design + de-risk plan: ≤65 KB terminal compression of the ≥120-bit M-S5 cert
+# M-S5b / P-C2 — design + de-risk plan: ≤100 KB terminal compression of the M-S5 cert
+
+> **2026-05-21 ADDENDUM — target relaxed from ≤65 KB to ≤100 KB
+> (maintainer).** The original ≤65 KB target was set against
+> Pearl's 3-layer recursion budget (`2026-05-17_M_S2_PEARL_EVALUATION.md`,
+> the source-of-truth for the historic bar). After the 2026-05-21
+> anchored-between Johnson reanchor + Rayon parallelism + Tip5
+> `mds_cyclomul` work (current production L1 ≈ 307 KB, L2 ≈ 343 KB
+> at lb=4 nq=15 = 62-bit Johnson, Stage 5 wall-clock 25.1 s), the
+> in-substrate floor + latency picture changed materially. The
+> maintainer reset the size target to **≤100 KB** (= 102 400 bytes,
+> `100 · 1024`): a 3.4× gap from L2 (vs the prior 5.3× at ≤65 KB),
+> still requiring an outermost compression step but more attainable
+> with a combination of in-substrate levers (e.g. WHIR @ Johnson,
+> higher-lb outer with the new latency headroom) before reaching
+> for Path A. The body of this document below describes the prior
+> ≤65 KB framing as a historical reference; the binding bar is now
+> ≤100 KB (= `serialized_len <= 102_400`) per the maintainer
+> 2026-05-21 directive.
+>
+> **What changed in companion artifacts:**
+> - `Plonky3-recursion/recursion/tests/test_tip5_layer0_recursion.rs`
+>   `tip5_layer0_outer_cert_size_residual` (the `#[ignore]`d size
+>   residual): assert updated to `serialized_len <= 102_400` to
+>   reflect the new bar.
+> - `crates/ai-pow-zk/README.md` Cryptographic Assumptions + Open
+>   lines of work: ≤100 KB target.
+> - `crates/ai-pow-zk/docs/2026-05-19_C4_AUDIT_READINESS.md`: target
+>   references reanchored.
+> - `crates/ai-pow-zk/docs/2026-05-21_WHIR_PROTOTYPE_RESULTS.md`:
+>   target-status table reanchored.
+> - Memory `proof_size_target_2026_05_21.md`: project-level note
+>   of the change + rationale.
+
+---
+
+## (Original 2026-05-19 design — preserved for historical reference; target is now ≤100 KB per the addendum above)
 
 > **Status (R1, honest).** DESIGN + STAGED KAT-FIRST DE-RISK PLAN.
 > **No invasive code landed by this document.** This is the
