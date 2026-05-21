@@ -319,21 +319,147 @@ outcome.
 
 ## Honest residuals
 
-- **Per-Alu-source attribution** — we don't have a row-level map
-  of "which lines of verifier code produce which Alu rows."
-  Without it, the A.1 / A.3 candidates have wide uncertainty.
-  Future B0 refinement: instrument the CircuitBuilder to tag
-  emitted Alu rows by source location.
-- **Cell counts not yet measured** — Stage B0 only has row
-  counts. The cell-count refinement is landing concurrently
-  (`test_path_b_b0_inventory.rs` v2 reports widths × rows).
-  Will update this map once measured.
-- **L2 inventory not done** — cascading-effect predictions are
-  educated guesses; need an L2-side B0 to validate.
+- **Per-Alu-source attribution** — RESOLVED via the
+  `--features profiling` work in commit `87a78e1`. Per-scope
+  op counts now available; see § "Profiled attribution
+  results" below.
+- **Cell counts** — RESOLVED in B0 refinement. Production L1
+  cell hierarchy: Alu 1.24M (60%) > tip5_perm 829K (40%) >
+  everything else < 1%. The earlier B1 educated guess
+  ("tip5_perm dominates by cells") was WRONG — Alu's per-row
+  width is wider than estimated (70 main + 111 prep = 181
+  cols, not ~50). Alu reduction = highest-impact lever.
+- **L2 inventory not done** — cascading-effect predictions
+  remain educated guesses; need an L2-side B0 to validate.
 - **`opening_proof` 85% slice opacity** — FRI prover doesn't
   expose per-query byte counts; some savings in tip5_perm
   reduction may not actually shrink opening_proof bytes
   proportionally.
+
+## Profiled attribution results (Stage B0 + `--features profiling`)
+
+Per-scope CircuitBuilder op counts (from `test_path_b_b0_inventory`
+with `--features profiling`, sorted by total Alu-equivalent ops):
+
+| Scope | Total Alu ops | bool_checks | mul_adds | divs | NPOs |
+|---|--:|--:|--:|--:|---|
+| **`reconstruct_index_from_bits`** | **3,840** | 1,920 | 1,920 | 0 | — |
+| `fri_fold_one_phase` | 720 | 0 | 270 | 90 | — |
+| `fri_commit_phase_mmcs` | 720 | 0 | 360 | 0 | 450 Tip5 |
+| `precompute_evaluation_points` | 360 | 0 | 180 | 0 | — |
+| `fri_reconstruct_evals` | 360 | 0 | 180 | 0 | — |
+| `open_input` | 271 | 0 | 30 | 60 | 420 Tip5 |
+| `compute_single_reduced_opening` | 212 | 0 | 0 | 0 | — |
+| `compute_final_query_point` | 150 | 0 | 90 | 0 | — |
+| `verify_fri_query` | 108 | 0 | 93 | 3 | — |
+| `evaluate_polynomial` | 90 | 0 | 0 | 0 | — |
+| Other 6 scopes | < 30 ops each | | | | |
+| **TOTAL (profiled)** | **~6,840** | | | | |
+
+**Key finding:** `reconstruct_index_from_bits` dominates at 58%
+of all profiled Alu ops. It's called by `decompose_to_bits`,
+which is in turn called by `sample_bits` in
+`recursion/src/challenger/circuit.rs:421`. Each `sample_bits`
+call decomposes the full 64-bit base field element + bool-checks
+all 64 bits, even when only `num_bits ≪ 64` are returned to
+the caller.
+
+Per-call profile: ~30 `sample_bits` invocations × 64 bool-checked
+bits each = 1,920 bool_checks (exact match to profiled count).
+
+## Refined Stage B2 candidate (highest-impact specific)
+
+### B2.x — `sample_bits` waste-bit elimination
+
+**Source location:** `recursion/src/challenger/circuit.rs:419-423`:
+
+```rust
+let base_sample = self.sample(circuit);
+let bits = circuit.decompose_to_bits::<BF>(base_sample, bf_bits)?;
+Ok(bits[..num_bits].to_vec())  // ← throws away `bf_bits - num_bits` constrained bits
+```
+
+**The waste:** `decompose_to_bits` internally bool-checks +
+sum-reconstructs ALL `bf_bits` bits (= 64 for Goldilocks).
+Only `num_bits` are returned to the caller. The `bf_bits −
+num_bits` bool_checks + mul_adds in the high range are pure
+overhead.
+
+**Reduction proposal:** add a new CircuitBuilder primitive
+`decompose_to_low_bits_with_high_witness<BF>(x, num_bits)` that:
+
+1. Hints `num_bits` bool-checked bits PLUS a single
+   unconstrained `high_witness` field element.
+2. Asserts the modular reconstruction:
+   `Σ low_bits[i] · 2^i + 2^num_bits · high_witness = x`.
+3. Returns only the `num_bits` low bits.
+
+Then change `sample_bits` to call the new primitive.
+
+**Soundness equivalence argument:**
+
+Current: `sample_bits` returns `bits[..num_bits]` such that
+`Σ_{i=0..64} bits[i] · 2^i = base_sample` AND every bit is
+bool-checked. Downstream consumers (FRI query index, PoW bit
+checks) use only the low bits.
+
+Reduced: `sample_bits` returns `low_bits` such that `Σ_{i=0..num_bits}
+low_bits[i] · 2^i + 2^num_bits · high_witness = base_sample`
+AND every low_bit is bool-checked. The `high_witness` is a
+free witness whose value doesn't matter (it's not used
+downstream).
+
+The two are observationally equivalent for the FRI verifier:
+- `base_sample` is bound by challenger state (the prover can't
+  lie about it; challenger absorbs are constrained).
+- `low_bits` are bool-checked in both forms.
+- The aggregate relation `Σ low_bits · 2^i ≡ base_sample
+  (mod 2^num_bits)` is enforced in both forms (current: from
+  the full reconstruction; reduced: from the modular
+  reconstruction).
+- The high bits / high_witness value is not used by any
+  downstream consumer, so its constraint status is irrelevant.
+
+A malicious prover gains nothing from the relaxation: they
+still can't choose `low_bits` freely (must match
+`base_sample mod 2^num_bits`), and they couldn't manipulate
+the high bits even in the current form (no downstream
+consumer reads them).
+
+**Estimated saving:**
+- Per `sample_bits` call: `bf_bits − num_bits` bool_checks +
+  mul_adds removed. For Goldilocks (bf_bits=64) at typical
+  num_bits ~10, saves ~54 ops per call.
+- 30 calls × 54 ops = ~1,620 Alu ops removed from
+  `reconstruct_index_from_bits`.
+- L1 Alu savings: ~1,620 / 8 lanes ≈ 200 Alu rows = ~3% of
+  Alu rows = ~2% of L1 cells.
+- L2 cascade: per Phase 0 finding (-15.9% L2 vs -6.5% L1),
+  expect ~5% L2 reduction.
+
+**Implementation effort:** 2-3 hours focused work.
+
+  - Add `decompose_to_low_bits_with_high_witness` to
+    `circuit/src/builder/circuit_builder.rs` (~100 LOC + 2 KATs).
+  - Add a corresponding hint variant in
+    `circuit/src/builder/hints.rs` (~50 LOC).
+  - Modify `recursion/src/challenger/circuit.rs::sample_bits`
+    to use it (~5 LOC).
+  - Full regression + Stage 5 re-measure (~30 min).
+
+**Risk:** medium — soundness-critical primitive addition.
+KAT-first discipline mandatory; the new primitive needs:
+  - ACCEPT test (correct decomposition verifies).
+  - TAMPER-REJECT (bad `low_bits` rejected).
+  - TAMPER-REJECT (modular constraint violation rejected).
+  - Cross-check vs `decompose_to_bits` on values < 2^num_bits.
+
+**R1 framing:** soundness-critical invasive recursion-substrate
+work. Per R1.1, must be attempted + driven in a focused session
+with KAT-first discipline. NOT a half-session task.
+
+**Status:** identified + designed; implementation deferred to
+focused B2 session.
 
 ## Cross-references
 
