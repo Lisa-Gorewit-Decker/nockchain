@@ -87,10 +87,23 @@ impl CircuitConfig {
     /// penalty for unconditional security. Per-block PoW at 2.5-min
     /// cadence does not need a 120/128-bit margin (see
     /// `docs/2026-05-19_M_S5B_TERMINAL_COMPRESSION_DESIGN.md` §1.4).
+    /// **2026-05-20 C1 (inner-STARK FRI tuning to match outer-cert):**
+    /// `lb=4 nq=20 pow=1+1` ⇒ 82 bits unconditional Johnson
+    /// (`4·20 + 1 + 1 = 82`). Pre-C1: `lb=3 nq=30 pow=0+0` = 90 bits.
+    /// Matches the outer-cert config (`goldilocks_tip5_80bit` post-
+    /// Phase 0: `lb=4 nq=20 mla=3 lfp=2 cap=3 pow=1+1`) for chain
+    /// MIN soundness consistency (L0=L1=L2=82 unconditional Johnson).
+    /// Trade-off: inner STARK LDE 8× → 16× ⇒ ~2× prover memory for
+    /// the ai-pow-zk block-proof creation; +2 bits PoW witness (small
+    /// proof-size cost). Cascading effect: smaller inner cert
+    /// (~−15-25%) ⇒ fewer MMCS commitments + queries for the L1
+    /// verifier circuit to verify ⇒ predicted ~−10-15% L1 size
+    /// reduction. See
+    /// `docs/2026-05-20_RECURSIVE_PROOF_SIZE_INVESTIGATION.md` § 5.
     pub const PROD: Self = Self {
-        log_blowup: 3,
-        pow_bits: 0,
-        num_queries: 30,
+        log_blowup: 4,
+        pow_bits: 1,
+        num_queries: 20,
     };
 
     /// Small profile for unit tests once the circuit is real.
@@ -604,15 +617,18 @@ mod tests {
     fn circuit_config_constants_are_well_formed() {
         // PROD targets ≥80 bits unconditional FRI soundness at the
         // Johnson radius (IACR ePrint 2025/2055 Theorem 1.5) with no grinding:
-        // 30 queries × log_blowup 3 = 90 bits, ≥80 floor with ~10-bit
-        // margin. (Pre-2026-05-19 was lb·nq/2 = 120 classical
-        // unique-decoding; paper closes that gap.)
+        // **C1 flip (2026-05-20):** 20 queries × log_blowup 4 +
+        // 2 PoW = 82 bits, ≥80 floor with +2-bit margin. Matches
+        // outer-cert config for chain MIN(L0=L1=L2=82) consistency.
+        // (Pre-C1 was lb=3 nq=30 pow=0 → 90 bits unconditional;
+        // pre-2026-05-19 was lb·nq/2 = 120 classical unique-decoding;
+        // paper closes that gap.)
         let prod = CircuitConfig::PROD;
-        assert_eq!(prod.log_blowup, 3);
-        assert_eq!(prod.num_queries, 30);
-        assert_eq!(prod.pow_bits, 0);
-        let johnson_bits = prod.num_queries * prod.log_blowup;
-        assert_eq!(johnson_bits, 90);
+        assert_eq!(prod.log_blowup, 4);
+        assert_eq!(prod.num_queries, 20);
+        assert_eq!(prod.pow_bits, 1);
+        let johnson_bits = prod.num_queries * prod.log_blowup + 2 * prod.pow_bits;
+        assert_eq!(johnson_bits, 82);
         assert!(
             johnson_bits >= 80,
             "PROD must meet the 80-bit unconditional floor"
@@ -628,6 +644,11 @@ mod tests {
     /// Johnson-radius floor (paper Theorem 1.5).
     #[test]
     fn prod_sweep_profiles_meet_80bit_johnson_floor() {
+        // **C1 update (2026-05-20):** PROD now `lb=4 nq=20 pow=1+1` →
+        // 82 bits unconditional (4·20 + 1 + 1 = 82). Other PROD_LBn
+        // sweep variants retain `pow_bits = 0` (90+ bits via lb·nq
+        // alone) — they're measurement-tier comparators preserved
+        // for the C3 size de-risk study, not production-deployed.
         for (name, cfg) in [
             ("PROD", CircuitConfig::PROD),
             ("PROD_LB2", CircuitConfig::PROD_LB2),
@@ -635,13 +656,14 @@ mod tests {
             ("PROD_LB5", CircuitConfig::PROD_LB5),
             ("PROD_LB6", CircuitConfig::PROD_LB6),
         ] {
-            let bits = cfg.num_queries * cfg.log_blowup;
+            // Unconditional Johnson bound per IACR ePrint 2025/2055
+            // Theorem 1.5: lb·nq + commit_pow + query_pow = lb·nq + 2·pow_bits.
+            let bits = cfg.num_queries * cfg.log_blowup + 2 * cfg.pow_bits;
             assert!(
                 bits >= 80,
-                "{name}: johnson_bits = lb·nq = {}·{} = {} < 80",
-                cfg.log_blowup, cfg.num_queries, bits
+                "{name}: johnson_bits = lb·nq + 2·pow = {}·{} + 2·{} = {} < 80",
+                cfg.log_blowup, cfg.num_queries, cfg.pow_bits, bits
             );
-            assert_eq!(cfg.pow_bits, 0, "{name}: pow_bits must be 0 (no grinding)");
         }
     }
 
@@ -729,16 +751,16 @@ mod tests {
     #[test]
     fn build_stark_config_provable_soundness_at_prod() {
         // Sanity assertion of the security claim: log_blowup ·
-        // num_queries = 90 bits unconditional at Johnson radius
-        // (paper IACR ePrint 2025/2055 Theorem 1.5), ≥80-bit floor.
-        // (We can't read FRI params back through the PCS — see
-        // `build_stark_config_accepts_custom_knobs` for the rationale —
-        // so verify the math directly on `CircuitConfig::PROD` which
-        // is what gets fed into `build_stark_config`.)
+        // num_queries + commit_pow + query_pow = unconditional
+        // Johnson bits per paper IACR ePrint 2025/2055 Theorem 1.5,
+        // ≥80-bit floor. **C1 update (2026-05-20):** PROD is now
+        // `lb=4 nq=20 pow=1+1` ⇒ 4·20 + 1 + 1 = 82 bits (was
+        // lb=3 nq=30 pow=0 = 90 bits pre-C1).
         let prod = CircuitConfig::PROD;
         let _ = build_stark_config(&sample_zk_params(), &prod);
-        let johnson_bits = (prod.log_blowup * prod.num_queries) as usize;
-        assert_eq!(johnson_bits, 90);
+        let johnson_bits =
+            (prod.log_blowup * prod.num_queries + 2 * prod.pow_bits) as usize;
+        assert_eq!(johnson_bits, 82);
         assert!(johnson_bits >= 80, "PROD must meet the 80-bit floor");
     }
 

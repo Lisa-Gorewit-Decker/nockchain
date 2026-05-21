@@ -101,13 +101,15 @@ fn make_layer0_config() -> Tip5Layer0Config {
     let challenge_mmcs = ChallengeMmcs::new(val_mmcs.clone());
     let dft = Dft::default();
     let challenger = Layer0Challenger::new(perm);
+    // C1: inner Tip5-L0 STARK FRI matches outer-cert post-Phase-0
+    // (lb=4 nq=20 pow=1+1 = 82 bits unconditional Johnson).
     let fri_params = FriParameters {
-        log_blowup: 3,
+        log_blowup: 4,
         log_final_poly_len: 0,
         max_log_arity: 1,
-        num_queries: 30,
-        commit_proof_of_work_bits: 0,
-        query_proof_of_work_bits: 0,
+        num_queries: 20,
+        commit_proof_of_work_bits: 1,
+        query_proof_of_work_bits: 1,
         mmcs: challenge_mmcs,
     };
     let pcs = Pcs::new(dft, val_mmcs, fri_params);
@@ -142,7 +144,7 @@ fn build_layer0_verifier_circuit() -> BuiltLayer0Circuit {
     circuit_builder.set_recompose_coeff_ctl_for_decompose_links(true);
 
     let fri_verifier_params =
-        FriVerifierParams::with_mmcs(3, 0, 0, 0, Tip5Config::GOLDILOCKS_W16);
+        FriVerifierParams::with_mmcs(4, 0, 1, 1, Tip5Config::GOLDILOCKS_W16);
 
     let verifier_inputs = StarkVerifierInputsBuilder::<
         Tip5Layer0Config,
