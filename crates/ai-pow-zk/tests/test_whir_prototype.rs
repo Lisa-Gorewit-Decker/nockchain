@@ -260,6 +260,122 @@ fn whir_prototype_compiles_and_small_smoke() {
     assert!(bytes > 0);
 }
 
+/// Shared body for a WHIR-vs-FRI sweep at a given soundness model.
+fn sweep_whir_vs_fri(label: &str, soundness: SecurityAssumption) {
+    let sizes = [12usize, 14, 16, 18, 20];
+
+    eprintln!("\n=== {label} ===");
+    eprintln!("  WHIR soundness: {soundness:?}");
+    eprintln!(
+        "  {:>10}  {:>14}  {:>14}  {:>8}  {:>10}  {:>10}",
+        "log_size", "WHIR bytes", "FRI bytes", "ratio", "WHIR(ms)", "FRI(ms)",
+    );
+    eprintln!("  {}", "-".repeat(80));
+
+    for &n in &sizes {
+        let (whir_bytes, whir_open_ms, _) = measure_whir_bytes_with_soundness(
+            n, 80, 4, 4, 2, soundness,
+        );
+        let (fri_bytes, fri_open_ms, _) = measure_fri_bytes(
+            n, 4, 20, 2, 3, 1, 1,
+        );
+        let ratio = whir_bytes as f64 / fri_bytes as f64;
+        eprintln!(
+            "  {:>10}  {:>14}  {:>14}  {:>7.3}×  {:>10}  {:>10}",
+            format!("2^{n}"),
+            whir_bytes,
+            fri_bytes,
+            ratio,
+            whir_open_ms,
+            fri_open_ms,
+        );
+    }
+}
+
+/// Same as `measure_whir_bytes` but takes the soundness assumption
+/// as a parameter. Existing callers go through `measure_whir_bytes`
+/// which fixes JohnsonBound.
+fn measure_whir_bytes_with_soundness(
+    num_variables: usize,
+    security_level: usize,
+    starting_log_inv_rate: usize,
+    folding_factor_k: usize,
+    pow_bits: usize,
+    soundness: SecurityAssumption,
+) -> (usize, u128, u128) {
+    let perm = make_perm();
+    let merkle_hash = MerkleHash::new(perm.clone());
+    let merkle_compress = MerkleCompress::new(perm.clone());
+    let mmcs = MyMmcs::new(merkle_hash, merkle_compress, 0);
+
+    let folding_factor = FoldingFactor::Constant(folding_factor_k);
+
+    let (num_rounds, _) = folding_factor.compute_number_of_rounds(num_variables);
+    let mut rate = starting_log_inv_rate;
+    let mut round_log_inv_rates = Vec::with_capacity(num_rounds);
+    for round in 0..num_rounds {
+        rate += folding_factor.at_round(round) - 1;
+        round_log_inv_rates.push(rate);
+    }
+
+    let whir_params = ProtocolParameters {
+        security_level,
+        pow_bits,
+        folding_factor: folding_factor.clone(),
+        soundness_type: soundness,
+        starting_log_inv_rate,
+        round_log_inv_rates,
+    };
+    let config = WhirConfig::<EF, F, MyChallenger>::new(num_variables, whir_params);
+
+    let challenger = MyChallenger::new(perm);
+    let dft = Radix2DitParallel::<F>::default();
+    let pcs = MyWhirPcs::new(config, dft, mmcs);
+
+    let polynomial = Poly::<F>::new((0..1u64 << num_variables).map(F::from_u64).collect());
+    let table = Table::new(vec![polynomial]);
+    let witness = Layout::new_witness(vec![table], folding_factor_k);
+
+    let point_schedule: PointSchedule = (0..1).map(|_| vec![0]).collect();
+    let protocol = OpeningProtocol::new(vec![TableSpec::new(
+        TableShape::new(num_variables, 1),
+        point_schedule,
+    )])
+    .pad_to_min_num_variables(folding_factor_k);
+    assert_eq!(witness.table_shapes(), protocol.table_shapes());
+
+    let mut prover_challenger = challenger.clone();
+    let mut domainsep = DomainSeparator::new(vec![]);
+    pcs.add_domain_separator::<8>(&mut domainsep);
+    domainsep.observe_domain_separator(&mut prover_challenger);
+
+    let (commitment, prover_data) =
+        <MyWhirPcs as MultilinearPcs<EF, MyChallenger>>::commit(
+            &pcs, witness, &mut prover_challenger,
+        );
+
+    let t = Instant::now();
+    let proof = <MyWhirPcs as MultilinearPcs<EF, MyChallenger>>::open(
+        &pcs, prover_data, protocol.clone(), &mut prover_challenger,
+    );
+    let open_ms = t.elapsed().as_millis();
+
+    let mut verifier_challenger = challenger;
+    let mut domainsep = DomainSeparator::new(vec![]);
+    pcs.add_domain_separator::<8>(&mut domainsep);
+    domainsep.observe_domain_separator(&mut verifier_challenger);
+    let t = Instant::now();
+    <MyWhirPcs as MultilinearPcs<EF, MyChallenger>>::verify(
+        &pcs, &commitment, &proof, &mut verifier_challenger, protocol,
+    )
+    .expect("WHIR verification failed");
+    let verify_ms = t.elapsed().as_millis();
+
+    let proof_bytes = postcard::to_allocvec(&proof).expect("ser proof").len();
+    let commit_bytes = postcard::to_allocvec(&commitment).expect("ser commit").len();
+    (proof_bytes + commit_bytes, open_ms, verify_ms)
+}
+
 /// **M-S5b WHIR feasibility — WHIR vs FRI PCS byte comparison.**
 ///
 /// At parameters matched to our production STARK (≥80-bit Johnson,
@@ -314,4 +430,97 @@ fn whir_vs_fri_pcs_byte_comparison() {
     eprintln!("  ratio ≈ 1.0 → WHIR has no byte advantage at these params.");
     eprintln!("  ratio > 1.0 → WHIR is LARGER (parameter choice suboptimal).\n");
     eprintln!("Caveat: per-polynomial PCS bytes, NOT a full STARK proof.");
+}
+
+/// **WHIR at CapacityBound (stronger conjectured soundness)** vs
+/// FRI at JohnsonBound (proven). The CapacityBound regime is what
+/// the WHIR paper's "3-5× smaller" claim typically refers to.
+///
+/// **Soundness caveat:** CapacityBound is CONJECTURED, not proven.
+/// Adopting it for production means relying on the conjecture
+/// that proximity testing at γ < 1 − rate is sound (not just
+/// γ < 1 − √rate, the Johnson bound). The IACR ePrint 2025/2055
+/// Theorem 1.5 only proves up to Johnson; capacity bound is
+/// folklore + heuristic.
+#[test]
+#[ignore = "M-S5b WHIR feasibility — CapacityBound sweep (heavy ~5-15 min)"]
+fn whir_capacity_bound_vs_fri() {
+    sweep_whir_vs_fri(
+        "M-S5b WHIR @ CapacityBound vs FRI @ JohnsonBound",
+        SecurityAssumption::CapacityBound,
+    );
+    eprintln!(
+        "\nNOTE: WHIR uses CapacityBound (conjectured); FRI uses JohnsonBound\n\
+         (proven IACR 2025/2055 Theorem 1.5). This isolates the PCS savings\n\
+         WHIR can achieve IF the audit board accepts CapacityBound for it.\n",
+    );
+}
+
+/// **WHIR folding-factor sweep at fixed num_vars (2^18).** The
+/// folding factor `k` controls how many variables WHIR folds per
+/// round. Larger `k` = fewer rounds × bigger per-round work.
+///
+/// The WHIR paper's smaller-proof claims often involve k≥5 or
+/// k=8. This sweep measures whether our k=4 choice is suboptimal.
+#[test]
+#[ignore = "M-S5b WHIR feasibility — folding factor sweep (heavy ~5 min)"]
+fn whir_folding_factor_sweep() {
+    let num_vars = 18; // 2^18 = 262144 — production-scale.
+    let folding_factors = [3usize, 4, 5, 6, 8];
+
+    eprintln!("\n=== M-S5b WHIR folding-factor sweep at num_vars={num_vars} ===");
+    eprintln!("  JohnsonBound soundness; security_level=80, pow_bits=2, log_inv_rate=4");
+    eprintln!(
+        "  {:>5}  {:>14}  {:>10}  {:>10}",
+        "k", "WHIR bytes", "open(ms)", "verify(ms)",
+    );
+    eprintln!("  {}", "-".repeat(60));
+
+    let mut best_k = 0;
+    let mut best_bytes = usize::MAX;
+    for &k in &folding_factors {
+        let (bytes, open_ms, verify_ms) = measure_whir_bytes_with_soundness(
+            num_vars, 80, 4, k, 2, SecurityAssumption::JohnsonBound,
+        );
+        eprintln!(
+            "  {:>5}  {:>14}  {:>10}  {:>10}",
+            k, bytes, open_ms, verify_ms,
+        );
+        if bytes < best_bytes {
+            best_bytes = bytes;
+            best_k = k;
+        }
+    }
+
+    eprintln!(
+        "\n  Best k = {best_k}; bytes = {best_bytes} ({:.2} KB)",
+        best_bytes as f64 / 1024.0,
+    );
+
+    // Also sweep at CapacityBound for completeness.
+    eprintln!("\n--- same sweep at CapacityBound ---");
+    eprintln!(
+        "  {:>5}  {:>14}  {:>10}  {:>10}",
+        "k", "WHIR bytes", "open(ms)", "verify(ms)",
+    );
+    eprintln!("  {}", "-".repeat(60));
+    let mut best_k_cap = 0;
+    let mut best_bytes_cap = usize::MAX;
+    for &k in &folding_factors {
+        let (bytes, open_ms, verify_ms) = measure_whir_bytes_with_soundness(
+            num_vars, 80, 4, k, 2, SecurityAssumption::CapacityBound,
+        );
+        eprintln!(
+            "  {:>5}  {:>14}  {:>10}  {:>10}",
+            k, bytes, open_ms, verify_ms,
+        );
+        if bytes < best_bytes_cap {
+            best_bytes_cap = bytes;
+            best_k_cap = k;
+        }
+    }
+    eprintln!(
+        "\n  Best k (CapacityBound) = {best_k_cap}; bytes = {best_bytes_cap} ({:.2} KB)",
+        best_bytes_cap as f64 / 1024.0,
+    );
 }
