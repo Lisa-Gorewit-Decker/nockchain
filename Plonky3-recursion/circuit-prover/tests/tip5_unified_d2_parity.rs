@@ -1,6 +1,6 @@
 //! M-S5b S1.B Poseidon2-removal P3 — KAT parity test: D=2 batch-STARK
 //! with Tip5 NPO + recompose-coeff CTL at the new
-//! [`goldilocks_tip5_80bit`] config.
+//! [`goldilocks_tip5_60bit`] config.
 //!
 //! This test exercises the **predicted C2.4 R-a tail trigger** per
 //! `crates/ai-pow-zk/docs/2026-05-20_POSEIDON2_REMOVAL_SPEC.md` §3.1:
@@ -91,7 +91,7 @@ fn p3_tip5_d2_npo_with_recompose_ctl_at_tip5_unified() {
     builder.set_recompose_coeff_ctl_for_decompose_links(true);
 
     // **TRACE-GROW (2026-05-20):** the production builder
-    // `goldilocks_tip5_80bit()` post-Phase-0 uses `lfp=2`, which
+    // `goldilocks_tip5_60bit()` post-Phase-0 uses `lfp=2`, which
     // triggers the FRI prover assertion
     // `log_min_height > log_final_poly_len + log_blowup = 2 + 4 = 6`
     // (Plonky3 `fri/src/prover.rs:81`). The single-perm shape
@@ -141,7 +141,7 @@ fn p3_tip5_d2_npo_with_recompose_ctl_at_tip5_unified() {
     // **TEST-SCOPED OUTER CONFIG (2026-05-20)**: this test exercises
     // the D=2 Tip5 NPO + recompose-CTL parity at the Tip5-throughout
     // substrate — a CORRECTNESS check, not a FRI-parameter validation.
-    // The production builder `config::goldilocks_tip5_80bit()` post-
+    // The production builder `config::goldilocks_tip5_60bit()` post-
     // 2026-05-20 uses `lfp=2`, which triggers the FRI prover
     // assertion `log_min_height > lfp + lb` on tiny test traces (the
     // smallest packed primitive table — Const — stays below 2^7 even
@@ -162,7 +162,10 @@ fn p3_tip5_d2_npo_with_recompose_ctl_at_tip5_unified() {
         log_blowup: 4,
         log_final_poly_len: 0, // test-only override; production = 2
         max_log_arity: 3,
-        num_queries: 20,
+        // 2026-05-21 anchored-between reanchor: nq=15 matches new
+        // goldilocks_tip5_60bit() PROD (lb=4 nq=15 pow=1+1 = 62 bits
+        // Johnson, 60-bit anchored floor).
+        num_queries: 15,
         commit_proof_of_work_bits: 1,
         query_proof_of_work_bits: 1,
         mmcs: challenge_mmcs,
@@ -181,7 +184,7 @@ fn p3_tip5_d2_npo_with_recompose_ctl_at_tip5_unified() {
 
     // Min trace height must satisfy the FRI prover assertion
     // `log_min_height > log_final_poly_len + log_blowup`. The
-    // production builder `goldilocks_tip5_80bit()` post-2026-05-20
+    // production builder `goldilocks_tip5_60bit()` post-2026-05-20
     // sets lfp=2 + lb=4 ⇒ requires log_min_height ≥ 7 (i.e., min
     // trace height ≥ 128). The single-perm test naturally produces
     // an ~8-row NPO trace; we pad to 128 so the production FRI

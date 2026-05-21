@@ -109,34 +109,54 @@ mining the real shipped `Llama-3.1-8B-Instruct-pearl` model
 
 ### 1.3 What "soundness" means here
 
-**2026-05-19 maintainer recalibration:** the per-block /
-per-link soundness floor is **≥80 bits unconditional**,
-anchored on the Johnson-radius proximity-gap bound *proven* by
-Ben-Sasson, Carmon, Habock, Kopparty, Saraf, *"On Proximity
-Gaps for Reed–Solomon Codes"* (IACR ePrint 2025/2055, Nov 2025,
-Theorem 1.5 + §1.3.2). Rationale: per-block PoW that resets
-every 2.5 min does not need the 120/128-bit margin that
-defends long-horizon attacks; 80 unconditional bits in a 150 s
-window requires ≈ 7 × 10²¹ hashes/sec of adversary work — far
-past any feasible attacker. See
-`2026-05-19_M_S5B_TERMINAL_COMPRESSION_DESIGN.md` §1.4 for
-the full reasoning + per-path implications.
+**2026-05-21 anchored-between reanchor (maintainer):** the
+per-block / per-link soundness floor is now **≥60 bits
+unconditional Johnson**, anchored *inside* the (22, 80)
+interval bounded by:
 
-Two soundness objects, both **≥ 80 bits unconditional**:
+- **Known insecure** (IACR ePrint 2025/2055 § 1.4.5 + Thm 1.17
+  CYCLE-SUM): `log₂(n) + O(1)` ≈ 22 bits at n ≤ 2^22 — explicit
+  constructive STARK attack at γ ≥ LDR.
+- **Known secure** (paper Thm 1.5): `lb · nq + pow` ≥ 80 — the
+  prior conservative floor.
+
+The reanchor was triggered by a careful read of the paper's
+**negative results** (Thms 1.6, 1.9, 1.13, 1.17 + §§ 1.4, 6, 8)
+showing the Plonky3 `CapacityBound::log_eta` heuristic claiming
+~2× per-query bits at γ ≈ 1−ρ sits in the no-mans-land between
+Johnson (proven) and LDR (attacked) with no paper support
+against generic codes; that heuristic is **rejected**.
+
+**The 60-bit floor is justified by the time-bounded threat
+model:** PoW forgery in this chain is bounded by the 2.5-min
+block cadence (~150 s before a fresh honest block obsoletes the
+forge target). At 60 bits, 2^60 ops in 150 s ⇒ ~7.7·10^15
+ops/sec sustained throughput required; FRI verification's
+random-Merkle-path-access workload disfavors GPU/ASIC, putting
+the wall-clock budget beyond the block window even for
+state-actor-scale compute. The 80-bit margin only defends
+offline / long-horizon attackers, which the 2.5-min cadence
+forecloses. Maintainer verbatim (2026-05-21): *"an attacker has
+2.5 minutes to make a proof in our context, hence our optimism."*
+
+See `2026-05-20_M_S5B_SOUNDNESS_ANALYSIS.md` §0 (2026-05-21
+anchored-between addendum) for the full derivation + paper-
+end-point table.
+
+Two soundness objects, both **≥ 60 bits unconditional Johnson**:
 
 1. **Per-block** (one mined tile). A prover that does not know
    a witness clearing the published difficulty cannot produce
    an accepting `(proof, public_inputs)` pair, except with
-   probability ≤ 2⁻⁸⁰ over the verifier's randomness, in the
+   probability ≤ 2⁻⁶⁰ over the verifier's randomness, in the
    *unconditional* Johnson-radius regime (no list-decoding
    conjecture).
 2. **End-to-end recursion** (M-S5 cert). Every layer of the
-   verifier-recursion chain is **≥ 80 bits unconditional** ⇒
-   the compressed certificate's soundness floor is
-   `min_i ≥ 80`. **Status:** the LANDED M-S5 chain
-   (`lb=2, nq=120`) is comfortably ≥ 80 unconditional under
-   the new bound — no parameter change required at the M-S5
-   inner.
+   verifier-recursion chain is **≥ 60 bits unconditional
+   Johnson** at the 2026-05-21 anchored params (inner Tip5-L0
+   PROD `lb=4 nq=15 pow=1` = 61 bits; outer-cert L1/L2
+   `goldilocks_tip5_60bit` `lb=4 nq=15 pow=1+1` = 62 bits;
+   chain MIN = 61 bits).
 
 The audit should *also* assess:
 

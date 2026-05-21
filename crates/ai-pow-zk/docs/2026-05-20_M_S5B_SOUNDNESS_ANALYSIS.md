@@ -1,6 +1,87 @@
-> _Created **2026-05-20** · last updated **2026-05-20**._
+> _Created **2026-05-20** · last updated **2026-05-21** (anchored-between addendum)._
 
-# M-S5b S(−1) — paper-grounded soundness analysis: every M-S5 link is ≥80 unconditional under IACR ePrint 2025/2055 Theorem 1.5, with γ < J(δ)−η at every layer
+# M-S5b S(−1) — paper-grounded soundness analysis: every M-S5 link is ≥60 unconditional under IACR ePrint 2025/2055 Theorem 1.5, with γ < J(δ)−η at every layer
+
+> **2026-05-21 ANCHORED-BETWEEN ADDENDUM (maintainer reanchor).**
+> The original 2026-05-20 analysis targeted a **≥80-bit
+> unconditional Johnson floor** (recap §1.4 of the M-S5b design
+> doc). On 2026-05-21, after a careful read of IACR ePrint
+> 2025/2055 §§ 1.4, 6, 8 (i.e., the paper's **negative
+> results** including Theorem 1.6, 1.9, 1.13, and the §1.4.5
+> CYCLE-SUM STARK attack at the list-decoding radius), the
+> maintainer reanchored the floor to **≥60 bits** with the
+> following framing:
+>
+> ### The two paper end-points
+>
+> | End-point | Formula | Bits at our params (lb=4, n≤2^22) | Status |
+> |---|---|---:|---|
+> | Known **insecure** at γ ≥ LDR (Thm 1.17 CYCLE-SUM + §8) | `log₂(n) + O(1)` | ~22 | constructive attack, paper |
+> | Known **secure** at γ < J(δ)−η (Thm 1.5) | `lb · nq + pow` | 80+ | proven, paper |
+>
+> The paper provides **constructive attacks** at the list-decoding
+> radius (Thm 1.17 CYCLE-SUM cheating prob Ω(1/n); Thm 1.13
+> M_{31}^4 explicit proximity-loss failure; Thm 1.6 char-2
+> codes with exponential exception sets). The Plonky3
+> `CapacityBound::log_eta` heuristic — claiming ~2× more bits
+> per query at γ ≈ 1−ρ — sits in the no-mans-land between
+> Johnson (proven) and LDR (attacked) where the paper provides
+> neither a positive theorem nor a constructive attack against
+> generic codes. The heuristic is **not** adopted as the
+> production soundness model.
+>
+> ### The anchored-between policy
+>
+> The bits target is placed **inside the (22, 80) interval**,
+> **proven via Theorem 1.5** at the chosen `(lb, nq, pow)`.
+> Maintainer-targeted **60-bit floor** with the **2.5-min
+> block-cadence threat model**: an attacker has ≤150 s to
+> forge a block before a fresh honest block obsoletes the
+> target, so the offline-cryptographic 80-bit threshold is
+> unnecessary for per-block PoW; a 60-bit Johnson-proven floor
+> with ~38-bit margin over the known-insecure CYCLE-SUM ceiling
+> is "reasonable and optimistic." Maintainer 2026-05-21: *"an
+> attacker has 2.5 minutes to make a proof in our context,
+> hence our optimism."*
+>
+> ### New post-reanchor production parameters
+>
+> | Layer | `(lb, nq, c_pow, q_pow)` | Per-query bits | Pow bits | **Unconditional bits** |
+> |---|---|---:|---:|---:|
+> | Inner Tip5-L0 `CircuitConfig::PROD` | (4, 15, 0, 1) | 60 | 1 | **61** |
+> | L1 outer-cert `goldilocks_tip5_60bit()` | (4, 15, 1, 1) | 60 | 1+1=2 | **62** |
+> | L2 outer-cert `goldilocks_tip5_60bit()` | (4, 15, 1, 1) | 60 | 1+1=2 | **62** |
+>
+> **Chain MIN = MIN(61, 62, 62) = 61 bits**, ≥ 60-bit
+> maintainer-targeted anchored floor (proven via Theorem 1.5,
+> γ < J(δ) − η at every layer; §§ 4.3 + 4.4 of this doc
+> remain accurate — η-margin analysis is layer-shape-only, not
+> a function of nq).
+>
+> **What this addendum does NOT change in the original doc
+> below:** the Theorem 1.5 derivation (§§ 1, 2), the per-layer
+> J(δ) − η check (§§ 4.1, 4.2, 4.3, 4.4), and the formula
+> `bits_layer = MIN(lb·nq + pow, log₂(q_chal) − log₂(a))` (§ 4.5)
+> all hold exactly as stated; only the input `(lb, nq, pow)`
+> tuple changes and the resulting bits column shifts from
+> 80+ to 60+. The §1.4 negative-results discussion is
+> **strengthened** by the explicit no-mans-land framing above.
+>
+> ### Cross-references
+>
+> - `Plonky3-recursion/circuit-prover/src/config.rs::goldilocks_tip5_60bit()` —
+>   outer-cert with full doc-comment of the anchored-between
+>   rationale + 2.5-min threat-model paragraph.
+> - `crates/ai-pow-zk/src/circuit.rs::CircuitConfig::PROD` —
+>   inner with matching doc-comment.
+> - `~/.claude/projects/-Users-loganallen-Dev-nockchain/memory/soundness_capacity_bound.md` —
+>   superseded by this addendum; the "CapacityBound conjecture
+>   accepted" line is **withdrawn** in favor of the
+>   paper-grounded anchored-between Johnson policy.
+
+---
+
+## ORIGINAL 2026-05-20 ANALYSIS (preserved for historical record)
 
 > **Status (R1, honest).** ANALYTICAL DELIVERABLE. **No code edit
 > by this document.** Closes M-S5b's `S(−1)` stage gate per

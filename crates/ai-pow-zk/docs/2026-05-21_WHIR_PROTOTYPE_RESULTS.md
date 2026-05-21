@@ -5,76 +5,99 @@
 **Plonky3 rev:** `82cfad7` (matches our other `p3-*` deps via `Cargo.toml`'s `https://github.com/Plonky3/Plonky3.git` default branch).
 **Status:** Measurement complete. R1 honest residual: integration of WHIR into our STARK is NOT done — the prototype only measures per-polynomial PCS bytes.
 
-## MAINTAINER POLICY (2026-05-21, corrected): CapacityBound
+## MAINTAINER POLICY (2026-05-21, FINAL): Paper-grounded Johnson, anchored between insecure & 80-bit conservative — 60-bit floor
 
-**Production FRI + (future) WHIR use CapacityBound soundness.**
+**Production FRI + (future) WHIR use the paper-proven Johnson
+bound (IACR ePrint 2025/2055 Thm 1.5), with bits target
+anchored between the known-insecure CYCLE-SUM ceiling (~22 bits
+at γ ≥ LDR for n ≤ 2^22) and the prior conservative 80-bit
+floor. Maintainer-targeted ≥60-bit Johnson floor.**
 
-This corrects an earlier same-session typo: the initial message
-said "Johnson" but the intended decision was "Capacity." The
-intervening commit `18613ab` (which locked in a Johnson-only
-hard rule) is honest history — the typo correction is recorded
-here for clarity, not hidden.
+### Trail of the policy evolution (verbatim, for honest history)
 
-**The decision:**
+1. **2026-05-21 morning:** maintainer typo "Let's move to the
+   Johnson Bound" was corrected to "Let's move to the Capacity
+   Bound" — briefly accepted; the intervening commit `18613ab`
+   (Johnson-only hard rule) was reverted.
+2. **2026-05-21 mid-day:** *"Read the paper 2025-2055.pdf to
+   check your soundness math."* Paper re-read (pages 1–15)
+   revealed:
+   - Thm 1.5 proves up to Johnson only.
+   - §§ 1.4.1, 1.4.2, 1.4.3 + Thms 1.6, 1.9, 1.13 give
+     constructive negative results above Johnson.
+   - § 1.4.5 + § 8 + Thm 1.17 (CYCLE-SUM) give explicit STARK
+     attacks at γ ≥ LDR with cheating probability Ω(1/n).
+   - The Plonky3 `CapacityBound::log_eta` heuristic sits in the
+     no-mans-land between Johnson (proven) and LDR (attacked)
+     with no paper support against generic codes.
+3. **2026-05-21 afternoon:** *"Rather than relying on the Plonky3
+   numbers, let's make a configuration that is as optimistic as
+   is reasonable based on the paper's numbers and use that."*
+   + *"Let's hop up to 60 bits."* + *"An attacker has 2.5
+   minutes to make a proof in our context, hence our
+   optimism."* → final policy.
 
-- **Production FRI**: CapacityBound (was Johnson; needs parameter
-  retuning).
-- **WHIR (if integrated)**: CapacityBound.
-- **Future PCS**: CapacityBound by default.
+### The two paper end-points
 
-**The trade-off the maintainer accepted:**
+| End-point | Formula | Bits at our params (lb=4, n≤2^22) | Status |
+|---|---|---:|---|
+| Known **insecure** at γ ≥ LDR (Thm 1.17 CYCLE-SUM) | `log₂(n) + O(1)` | ~22 | constructive attack, paper |
+| Known **secure** at γ < J(δ)−η (Thm 1.5) | `lb · nq + pow` | 80+ | proven, paper |
 
-| Aspect | Johnson | **Capacity (chosen)** |
-|---|---|---|
-| Soundness proof | proven (IACR 2025/2055 Thm 1.5) | **conjectured** (20+ year open) |
-| Per-PCS byte savings | 1.0× | **~2× smaller** (Sweep 2 empirics) |
-| Audit anchoring | paper-cite | conjectural + cryptanalytic-exposure argument |
-| Known attacks | none below γ < 1−√ρ | IACR 2025/2055 § 8 documents attacks in some regimes |
+### The anchored-between policy
 
-**Risk accepted:**
+- **Soundness model:** Johnson (paper-proven, IACR 2025/2055
+  Thm 1.5). **CapacityBound NOT adopted** — the paper's
+  constructive negative results at γ ≥ LDR make the conjectural
+  ~2× per-query bits saving audit-undefendable for consensus.
+- **Bits target:** anchored *inside* (22, 80), maintainer-targeted
+  ≥60 bits Johnson floor.
+- **Justification:** 2.5-min block-cadence threat model. PoW
+  forgery is time-bounded; offline 80-bit cryptographic margin
+  is unnecessary; 60-bit Johnson-proven floor with ~38-bit
+  margin over known-insecure CYCLE-SUM ceiling is "reasonable
+  and optimistic."
 
-- The CapacityBound conjecture has not been proven; some
-  parameter regimes have documented attacks (IACR 2025/2055
-  § 8). For our specific parameters, no attack is known.
-- 20+ years of cryptanalytic exposure on the underlying RS
-  proximity gap without break for practical parameters is
-  taken as practical evidence.
-- The audit-readiness story shifts from "paper-proven" to
-  "no-known-attack + heuristic"; an external cryptographic
-  reviewer would evaluate the IACR § 8 attacks vs our specific
-  config.
+### Production parameters (2026-05-21, FINAL)
 
-**What this means for previously-committed work:**
+- **Outer-cert L1/L2** `Plonky3-recursion/circuit-prover/src/config.rs::goldilocks_tip5_60bit()`:
+  `lb=4, nq=15, pow=1+1` ⇒ `4·15 + 1 + 1 = 62` bits Johnson, proven.
+- **Inner Tip5-L0** `crates/ai-pow-zk/src/circuit.rs::CircuitConfig::PROD`:
+  `lb=4, nq=15, pow=1` ⇒ `4·15 + 1 = 61` bits Johnson, proven.
+- **Chain MIN** = MIN(61, 62, 62) = **61 bits**, ≥60-bit anchored floor.
 
-- Phase 0 / Tier B / 5-round Tip5 / C1 / Path-B B2 numbers
-  were taken with FRI at Johnson-derived parameters. They remain
-  valid as RELATIVE measurements; the absolute soundness claim
-  flips from "82 bits proven" to "82 bits at Johnson, larger at
-  Capacity (re-derivation pending)."
-- M-S5b soundness analysis + C4 audit-readiness docs anchor on
-  Theorem 1.5. They need a Capacity addendum (R1 residual).
+### What the Sweep 2 numbers below mean *under this policy*
 
-**Reference data in this doc:** Sweep 2 (WHIR @ Capacity) now
-represents the DEPLOYMENT-TARGET configuration, not a rejected
-option. Sweep 1 (WHIR @ Johnson) is retained as the alternative
-that would apply if we ever reverted.
+The WHIR @ CapacityBound numbers in Sweep 2 remain empirically
+accurate as measurements **but are NOT the production target**:
+they show what would be available *if* the CapacityBound
+conjecture were adopted (rejected). The deployed configuration
+follows Sweep 1's WHIR @ JohnsonBound trend (5–15% per-PCS-byte
+saving over FRI @ Johnson on the same hash), which is the
+proven envelope. Production FRI itself moves to `nq=15` (was
+`nq=20`) under the anchored 60-bit Johnson floor, capturing
+roughly 25% fewer queries vs the prior 80-bit-floor PROD.
 
-See `[soundness_capacity_bound]` memory entry for the full
-residual list + audit-readiness consequences.
+See `~/.claude/projects/-Users-loganallen-Dev-nockchain/memory/soundness_capacity_bound.md`
+for the full policy entry + cross-references.
 
-## TL;DR (post-policy: CapacityBound for both)
+## TL;DR (post-2026-05-21 anchored-between Johnson policy)
 
-| Configuration | Per-PCS bytes (vs FRI@Johnson baseline) | Soundness | Status |
+| Configuration | Per-PCS bytes (vs FRI@Johnson@nq=20 baseline) | Soundness | Status |
 |---|---|---|---|
-| Old FRI @ JohnsonBound | 1.0× (Johnson baseline) | proven (IACR 2025/2055 Thm 1.5) | superseded |
-| FRI @ CapacityBound | ~0.5× (predicted; needs retuning) | **conjectured** | **production target** |
-| **WHIR @ CapacityBound** | **0.44-0.49×** (~2.1× smaller) | **conjectured** | candidate for ~3-week integration |
-| WHIR @ JohnsonBound | 0.86-0.95× (5-15% smaller) | proven | reference comparator (not deployed) |
+| FRI @ Johnson, `nq=20` (prior 80-bit PROD) | 1.0× | proven (Thm 1.5) | superseded |
+| **FRI @ Johnson, `nq=15` (new 60-bit anchored PROD)** | **~0.75×** | **proven (Thm 1.5)** | **production** |
+| WHIR @ Johnson | 0.86–0.95× | proven (Thm 1.5) | integration candidate |
+| FRI @ Capacity (heuristic) | ~0.5× | conjectured | **REJECTED — paper has attacks at LDR** |
+| WHIR @ Capacity | 0.44–0.49× | conjectured | **REJECTED — same reason** |
 
-**Key finding:** WHIR's "3-5× smaller" claim materializes at
-CapacityBound — empirically 2.1× smaller than FRI @ Johnson on
-the same hash, for the same polynomial sizes. The cost is
-trusting the capacity-radius proximity-gap conjecture.
+**Key finding:** the ~2× saving WHIR claims at CapacityBound
+runs into the paper's constructive attacks at the list-decoding
+radius (§§ 1.4.5, 8, Thm 1.17). The deployable saving on a
+paper-grounded Johnson footing is more modest (FRI-internal
+`nq=20→15` retune for 25% query reduction; WHIR @ Johnson adds
+another 5–15%). The anchored 60-bit Johnson floor unlocks both
+without leaving the proven envelope.
 
 ## Test setup
 
@@ -217,7 +240,7 @@ Action items (R1 residuals):
    soundness with appropriate margin.
 3. **Stage 5 re-measure** L1+L2 at the retuned config.
 4. **Update doc-comments** in
-   `Plonky3-recursion/circuit-prover/src/config.rs::goldilocks_tip5_80bit()`
+   `Plonky3-recursion/circuit-prover/src/config.rs::goldilocks_tip5_60bit()`
    and `crates/ai-pow-zk/src/circuit.rs::CircuitConfig::PROD`.
 
 ### WHIR integration (post-FRI-retuning)

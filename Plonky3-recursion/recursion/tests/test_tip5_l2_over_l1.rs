@@ -118,15 +118,18 @@ fn make_layer0_config() -> Tip5Layer0Config {
     let challenge_mmcs = ChallengeMmcs::new(val_mmcs.clone());
     let dft = Dft::default();
     let challenger = Layer0Challenger::new(perm);
-    // **C1 (2026-05-20):** inner Tip5-L0 STARK FRI matches outer-cert
-    // `goldilocks_tip5_80bit` post-Phase-0 config (`lb=4 nq=20
-    // pow=1+1` = 82 bits unconditional Johnson). Was `lb=3 nq=30 pow=0+0`
-    // = 90 bits pre-C1. Mirrors `ai-pow-zk::CircuitConfig::PROD`.
+    // **2026-05-21 anchored-between reanchor:** inner Tip5-L0 STARK FRI
+    // matches `ai-pow-zk::CircuitConfig::PROD` post-2026-05-21 (`lb=4
+    // nq=15 pow=1+1` = 62 bits unconditional Johnson, 60-bit
+    // maintainer-targeted floor). Was `lb=4 nq=20 pow=1+1` = 82 bits
+    // pre-reanchor. Anchored between the known-insecure CYCLE-SUM
+    // ceiling (~22 bits at LDR) and the prior conservative 80-bit
+    // floor; proven via IACR ePrint 2025/2055 Theorem 1.5.
     let fri_params = FriParameters {
         log_blowup: 4,
         log_final_poly_len: 0,
         max_log_arity: 1,
-        num_queries: 20,
+        num_queries: 15,
         commit_proof_of_work_bits: 1,
         query_proof_of_work_bits: 1,
         mmcs: challenge_mmcs,
@@ -225,10 +228,11 @@ enum Tip5OuterTier {
     /// usable for shape-correctness checks; not soundness-meaningful).
     Tiny,
     /// **LANDED production outer-cert FRI parameters** (matches
-    /// `config::goldilocks_tip5_80bit()` exactly). All
+    /// `config::goldilocks_tip5_60bit()` exactly). All
     /// soundness-neutral compression levers stacked:
-    /// `lb=4, nq=20, mla=3, lfp=2, cap=3, pow=1+1, d=5` ⇒ 82 bits
-    /// unconditional Johnson, predicted L1 ~520 KB.
+    /// `lb=4, nq=15, mla=3, lfp=2, cap=3, pow=1+1, d=5` ⇒ 62 bits
+    /// unconditional Johnson (2026-05-21 anchored-between reanchor;
+    /// 60-bit maintainer-targeted floor).
     Production,
 }
 
@@ -236,7 +240,7 @@ impl Tip5OuterTier {
     fn name(self) -> &'static str {
         match self {
             Self::Tiny => "Tiny(~5b)",
-            Self::Production => "Production(82b lb=4 nq=20 mla=3 lfp=2 cap=3 d=5)",
+            Self::Production => "Production(62b lb=4 nq=15 mla=3 lfp=2 cap=3 d=5)",
         }
     }
 
@@ -245,7 +249,7 @@ impl Tip5OuterTier {
     fn fri(self) -> (usize, usize, usize, usize, usize, usize) {
         match self {
             Self::Tiny => (2, 0, 1, 2, 0, 0),
-            Self::Production => (4, 2, 3, 20, 1, 1),
+            Self::Production => (4, 2, 3, 15, 1, 1),
         }
     }
 
@@ -264,7 +268,7 @@ fn make_tip5_outer_cfg(tier: Tip5OuterTier) -> TipsCfg {
     let hash = TipsHash::new(perm);
     let compress = TipsCompress::new(perm);
     // cap=3 to match the production builder
-    // `goldilocks_tip5_80bit()` at `circuit-prover/src/config.rs:294`.
+    // `goldilocks_tip5_60bit()` at `circuit-prover/src/config.rs:294`.
     // Prior cap=0 in this test was a substrate divergence — surfaced
     // by Path B Stage B0 inventory 2026-05-20 (production L1 measured
     // 487.65 KB at cap=3, vs the prior cap=0 test measurement of
@@ -563,8 +567,10 @@ fn stage3_tip5_l2_stack_assembles() {
     let _f_tiny = fri_vparams_for(Tip5OuterTier::Tiny);
     let _f_tierb = fri_vparams_for(Tip5OuterTier::Production);
 
-    // Sanity: Production unconditional Johnson bits = 82.
-    assert_eq!(Tip5OuterTier::Production.unconditional_bits(), 82);
+    // Sanity: Production unconditional Johnson bits = 62 (2026-05-21
+    // anchored-between reanchor, lb=4 nq=15 pow=1+1; was 82 at the
+    // pre-reanchor nq=20).
+    assert_eq!(Tip5OuterTier::Production.unconditional_bits(), 62);
 }
 
 /// **STAGE 4 ACCEPT** — toy Tip5-throughout L2 over Tip5-throughout
@@ -638,14 +644,15 @@ fn stage4_tip5_l2_over_l1_tiny_tamper_rejects() {
 /// "measure L2 at the current production params"). Tip5-throughout
 /// L2 over
 /// Tip5-throughout L1, both at the LANDED production FRI params
-/// (`config::goldilocks_tip5_80bit` post-Tier-B-flip:
-/// `lb=4 nq=20 pow=1+1 d=5`, 82 bits unconditional Johnson).
+/// (`config::goldilocks_tip5_60bit` post-2026-05-21 anchored-between
+/// reanchor: `lb=4 nq=15 pow=1+1 d=5`, 62 bits unconditional Johnson,
+/// 60-bit maintainer-targeted floor).
 #[test]
 #[ignore = "Stage 5: Tip5-throughout L2-over-L1 at Production (VERY heavy ~many min); records L1+L2 sizes"]
 fn stage5_tip5_l2_over_l1_production_measurement() {
     let tier = Tip5OuterTier::Production;
     let sbits = tier.unconditional_bits();
-    assert!(sbits >= 80, "Production Johnson soundness {sbits} < 80 floor");
+    assert!(sbits >= 60, "Production Johnson soundness {sbits} < 60 anchored floor");
 
     let l1 = build_l1_tip5_throughput(false, tier)
         .expect("Production L1 over real inner Tip5-L0 must ACCEPT");
@@ -688,10 +695,10 @@ fn stage5_tip5_l2_over_l1_production_measurement() {
     eprintln!(
         "\n[M-S5b S1.B STAGE 5 — Tip5-throughout L1+L2 @ {} (the LANDED production FRI)]\n  \
          L1-outer = Production (lb={lb} nq={nq} pow={cp}/{qp} mla={mla} lfp={lfp} d={DIGEST_ELEMS}) \
-         ⇒ {sbits} bits unconditional Johnson ≥ 80\n  \
+         ⇒ {sbits} bits unconditional Johnson ≥ 60 (2026-05-21 anchored-between floor)\n  \
          L2-wrapper = Production (same {sbits}-bit tier)\n  \
-         soundness chain MIN(L0, L1, L2) ≥ 80 bits at EVERY link (L0 = Tip5-L0 PROD \
-         lb=3 nq=30 = 90 bits)\n  \
+         soundness chain MIN(L0, L1, L2) ≥ 60 bits Johnson at EVERY link \
+         (L0 = Tip5-L0 PROD lb=4 nq=15 pow=1 = 61 bits)\n  \
          serialized L1 = {l1_bytes} B ({:.2} KB)\n  \
          serialized L2 (THE CERT) = {l2_bytes} B ({:.2} KB)\n  \
          ACCEPT ✅  tamper-REJECT ✅\n  \

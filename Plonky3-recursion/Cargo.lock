@@ -1242,6 +1242,7 @@ dependencies = [
  "p3-matrix",
  "p3-merkle-tree",
  "p3-symmetric",
+ "p3-tip5-circuit-air",
  "p3-uni-stark",
 ]
 

@@ -101,13 +101,14 @@ fn make_layer0_config() -> Tip5Layer0Config {
     let challenge_mmcs = ChallengeMmcs::new(val_mmcs.clone());
     let dft = Dft::default();
     let challenger = Layer0Challenger::new(perm);
-    // C1: inner Tip5-L0 STARK FRI matches outer-cert post-Phase-0
-    // (lb=4 nq=20 pow=1+1 = 82 bits unconditional Johnson).
+    // 2026-05-21 anchored-between reanchor: inner Tip5-L0 STARK FRI
+    // matches outer-cert (lb=4 nq=15 pow=1+1 = 62 bits Johnson,
+    // 60-bit anchored floor). Was nq=20 = 82 bits pre-reanchor.
     let fri_params = FriParameters {
         log_blowup: 4,
         log_final_poly_len: 0,
         max_log_arity: 1,
-        num_queries: 20,
+        num_queries: 15,
         commit_proof_of_work_bits: 1,
         query_proof_of_work_bits: 1,
         mmcs: challenge_mmcs,

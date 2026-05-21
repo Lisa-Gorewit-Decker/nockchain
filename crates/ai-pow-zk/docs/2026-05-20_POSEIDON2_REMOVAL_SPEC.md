@@ -18,8 +18,8 @@
 > 2. **Naming flip from `120bit` to `80bit`.** Maintainer noted
 >    `120bit` was historical inertia; production is at ≥80
 >    unconditional. Renamed during P5:
->      `goldilocks_tip5_120bit()` → `goldilocks_tip5_80bit()`
->      `goldilocks_tip5_120bit_higharity()` → `goldilocks_tip5_80bit_higharity()`
+>      `goldilocks_tip5_120bit()` → `goldilocks_tip5_60bit()`
+>      `goldilocks_tip5_120bit_higharity()` → `goldilocks_tip5_60bit_higharity()`
 > 3. **Predicted size savings DID NOT materialize.** P4
 >    measurement: Tip5-unified (digest=5) is **+49.3 KB LARGER**
 >    at L1 vs Poseidon2-W8 baseline (961.4 KB → 1010.7 KB).
@@ -44,7 +44,7 @@
 >    The deep L2/L3 type migration in this measurement test was
 >    too invasive for one session (32+ Poseidon2-specific type
 >    references). Reverted; documented as P6 residual. The
->    production L1 path (goldilocks_tip5_80bit) is fully Tip5;
+>    production L1 path (goldilocks_tip5_60bit) is fully Tip5;
 >    the deferred file is a historical-baseline test only.
 > 7. **P7 full regression PASS:**
 >      - ai-pow-zk lib: 370/0/22

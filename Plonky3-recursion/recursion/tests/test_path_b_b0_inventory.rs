@@ -101,12 +101,13 @@ fn make_layer0_config() -> Tip5Layer0Config {
     let challenge_mmcs = ChallengeMmcs::new(val_mmcs.clone());
     let dft = Dft::default();
     let challenger = Layer0Challenger::new(perm);
-    // C1: inner Tip5-L0 FRI matches outer-cert (lb=4 nq=20 pow=1+1).
+    // 2026-05-21 anchored-between reanchor: inner Tip5-L0 FRI matches
+    // outer-cert (lb=4 nq=15 pow=1+1 = 62 bits Johnson, 60-bit floor).
     let fri_params = FriParameters {
         log_blowup: 4,
         log_final_poly_len: 0,
         max_log_arity: 1,
-        num_queries: 20,
+        num_queries: 15,
         commit_proof_of_work_bits: 1,
         query_proof_of_work_bits: 1,
         mmcs: challenge_mmcs,
@@ -254,7 +255,7 @@ fn make_production_outer_cfg() -> TipsCfg {
         log_blowup: 4,
         log_final_poly_len: 2,
         max_log_arity: 3,
-        num_queries: 20,
+        num_queries: 15,
         commit_proof_of_work_bits: 1,
         query_proof_of_work_bits: 1,
         mmcs: challenge_mmcs,
@@ -363,7 +364,7 @@ fn build_production_l1() -> Result<(BatchStarkProof<TipsCfg>, AirWidths, Option<
 #[ignore = "Path B Stage B0: production L1 outer-cert inventory (heavy ~few min)"]
 fn path_b_stage_0_l1_inventory() {
     eprintln!("\n=== M-S5b PATH B STAGE B0 — production L1 cert inventory ===");
-    eprintln!("Production FRI: lb=4 nq=20 mla=3 lfp=2 cap=3 d=5 (82-bit Johnson)");
+    eprintln!("Production FRI: lb=4 nq=15 mla=3 lfp=2 cap=3 d=5 (62-bit Johnson, 60-bit anchored floor; 2026-05-21)");
     eprintln!("Substrate: 100% Tip5 (zero Poseidon2)\n");
 
     let (l1, air_widths, scope_dump) = build_production_l1().expect("L1 must build");

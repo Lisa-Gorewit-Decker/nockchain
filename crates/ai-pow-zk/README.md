@@ -30,9 +30,9 @@ The **only** hash function in the live SNARK proving path is:
     KAT'd against the C2.1 Tip5 perm AIR (the soundness linchpin;
     `Plonky3-recursion/tip5-circuit-air/src/air_lookup.rs`).
   - **Outer-cert L1/L2 (recursion verifier circuit)** — `Tip5Perm`
-    everywhere via `config::goldilocks_tip5_80bit()` (post-2026-05-20
+    everywhere via `config::goldilocks_tip5_60bit()` (post-2026-05-20
     M-S5b S1.B P5 flip; was Poseidon2-Goldilocks<8>).
-    `Plonky3-recursion/circuit-prover/src/config.rs::goldilocks_tip5_80bit`.
+    `Plonky3-recursion/circuit-prover/src/config.rs::goldilocks_tip5_60bit`.
 
 - **BLAKE3** (outside the SNARK; in the ai-pow puzzle's plain
   data path). Used by `ai-pow` for the matrix commitment
@@ -99,35 +99,56 @@ The **only** hash function in the live SNARK proving path is:
 
 ### FRI soundness bounds
 
-- **Provable bound**: **≥80 bits unconditional at the Johnson
-  radius**, anchored on Ben-Sasson, Carmon, Habock, Kopparty,
-  Saraf, "On Proximity Gaps for Reed–Solomon Codes" (**IACR
-  ePrint 2025/2055**, Nov 2025) Theorem 1.5 + §1.3.2.
+**2026-05-21 anchored-between Johnson policy (maintainer FINAL):**
+production targets ≥60-bit Johnson floor (was ≥80), anchored
+between the paper's known-insecure CYCLE-SUM ceiling at γ ≥ LDR
+(~22 bits at n ≤ 2^22, IACR ePrint 2025/2055 §1.4.5 + Thm 1.17)
+and the prior conservative 80-bit offline-cryptographic floor.
+Justified by the **2.5-min block-cadence threat model** (PoW
+forgery is time-bounded, so the 80-bit margin is unnecessary;
+the 60-bit Johnson-proven floor with ~38-bit margin over the
+known-insecure ceiling is "reasonable and optimistic"). See
+[`2026-05-20_M_S5B_SOUNDNESS_ANALYSIS.md`](docs/2026-05-20_M_S5B_SOUNDNESS_ANALYSIS.md)
+2026-05-21 addendum for the full policy + paper-end-points
+derivation, and
+[`2026-05-21_WHIR_PROTOTYPE_RESULTS.md`](docs/2026-05-21_WHIR_PROTOTYPE_RESULTS.md)
+for the policy trail (including why the Plonky3 `CapacityBound`
+heuristic is **not** adopted).
+
+- **Provable bound**: **≥60 bits unconditional at the Johnson
+  radius** (paper-proven, anchored on Ben-Sasson, Carmon, Habock,
+  Kopparty, Saraf, "On Proximity Gaps for Reed–Solomon Codes"
+  (**IACR ePrint 2025/2055**, Nov 2025) Theorem 1.5 + §1.3.2).
 - **Formula**: `unconditional_bits ≈ log_blowup · num_queries +
   commit_proof_of_work_bits + query_proof_of_work_bits`.
-- **Per-layer (LANDED FRI configurations)**:
-  - Inner Tip5-L0 PROD: `lb=3, nq=30, pow=0+0` ⇒ **90 bits**
-    unconditional (configurable; LB2/LB4/LB5/LB6 variants all
-    ≥80; per `crates/ai-pow-zk/src/circuit.rs:90-142`).
-  - Outer-cert L1/L2 (`goldilocks_tip5_80bit`): **production FRI
-    parameters as of 2026-05-20 (post-Phase-0)** stack every
-    soundness-neutral compression lever — `lb=4, nq=20, mla=3,
-    lfp=2, cap=3, pow=1+1, d=5` ⇒ **82 bits** unconditional
+- **Per-layer (LANDED FRI configurations, 2026-05-21
+  anchored-between)**:
+  - Inner Tip5-L0 PROD: `lb=4, nq=15, pow=1` ⇒ **61 bits**
+    unconditional Johnson (`crates/ai-pow-zk/src/circuit.rs::CircuitConfig::PROD`).
+  - Outer-cert L1/L2 (`goldilocks_tip5_60bit`): **production FRI
+    parameters as of 2026-05-21 (anchored-between)** stack every
+    soundness-neutral compression lever — `lb=4, nq=15, mla=3,
+    lfp=2, cap=3, pow=1+1, d=5` ⇒ **62 bits** unconditional
     Johnson (`Plonky3-recursion/circuit-prover/src/config.rs`).
+    Historical context: prior `lb=4 nq=20 mla=3 lfp=2 cap=3
+    pow=1+1 d=5` ⇒ **82 bits** pre-anchored-between.
     Pre-2026-05-20 baseline (`lb=2 nq=42 mla=1 lfp=0 cap=0`) was
     85 bits, ~1011 KB L1.
-    **Measured at production-faithful params (Stage 5
-    post-5-round-Tip5 commit `88bb526`, 9.5 min):** L1 = 402.94 KB
-    (**~−60% vs pre-2026-05-20 baseline ~1011 KB**),
-    L2 = 438.79 KB, **L2/L1 = 1.089×**. Trade-off: `lb=4` ⇒ 16×
-    LDE (vs prior 4×) ⇒ ~4× prover memory; 5-round Tip5 dropped
-    prover time ~57% (22 min → 9.5 min). **The ai-pow-zk-specific
-    5-round Tip5 (paper-spec per IACR 2023/107 §2.4 N=5; canonical
-    Nockchain 7-round `permute` UNCHANGED) was the single biggest
-    proof-size lever — bigger than Tier B (−46%), Phase 0
-    (additional −1%), and Path B B2 (~0%) combined.**
+    **Measured at production-faithful params (Stage 5 at the
+    2026-05-21 anchored-between params, 9.7 min):** L1 = **306.91 KB**
+    (**~−24% vs the prior nq=20 82-bit point at 402.94 KB**;
+    **~−70% vs pre-2026-05-20 baseline ~1011 KB**), L2 = **342.74 KB**
+    (**−22% vs the prior 438.79 KB**), **L2/L1 = 1.117×**.
+    Trade-off: `lb=4` ⇒ 16× LDE (vs pre-2026-05-20 4×) ⇒ ~4×
+    prover memory; 5-round Tip5 dropped prover time ~57% (22 min
+    → 9.5 min). **The ai-pow-zk-specific 5-round Tip5 (paper-spec
+    per IACR 2023/107 §2.4 N=5; canonical Nockchain 7-round
+    `permute` UNCHANGED) was the single biggest proof-size lever
+    — bigger than Tier B (−46%), Phase 0 (additional −1%), Path B
+    B2 (~0%), and the 2026-05-21 anchored-between reanchor
+    (additional −24%) combined.**
     **For ≤65 KB:** still requires Path A (SNARK wrap); in-substrate
-    post-quantum floor is now ~403 KB (vs ≤65 KB target = ~6.2×
+    post-quantum floor is now ~307 KB (vs ≤65 KB target = ~4.7×
     over). Path A is the only known path to the target.
     See [`2026-05-20_RECURSIVE_PROOF_SIZE_INVESTIGATION.md`](docs/2026-05-20_RECURSIVE_PROOF_SIZE_INVESTIGATION.md)
     § 4 + § 5.
@@ -141,9 +162,11 @@ The **only** hash function in the live SNARK proving path is:
   - Per-AIR Schwartz–Zippel: `(d_max+1) · n_rows / q_chal` ≥98
     unconditional bits per AIR at production parameters.
   - Per-LogUp-bus: `3 · k_b / q_chal` ≥98 bits.
-  - **Combined chain MIN**: **82 bits unconditional at the
-    outer cert** (FRI binds at Tier B; AIR + LogUp have ≥16-bit
-    margin to FRI).
+  - **Combined chain MIN** (2026-05-21 anchored-between):
+    **61 bits unconditional Johnson** (= MIN(inner 61, L1 62,
+    L2 62); FRI is the binding term; AIR + LogUp have ≥37-bit
+    margin over FRI). Historical pre-anchored-between chain
+    MIN was 82 bits.
 
 Full derivations: see
 - [`2026-05-20_M_S5B_SOUNDNESS_ANALYSIS.md`](docs/2026-05-20_M_S5B_SOUNDNESS_ANALYSIS.md) (FRI side, S(−1))

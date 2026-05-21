@@ -365,7 +365,7 @@ top of the previous level — diminishing but real returns.
 If the audit board accepts a single FRI parameter change to a
 SLIGHTLY larger LDE:
 
-**FLIP: `goldilocks_tip5_80bit()` → `lb=3 nq=27 pow=1+1`**
+**FLIP: `goldilocks_tip5_60bit()` → `lb=3 nq=27 pow=1+1`**
 
 - digest=5 (paper-faithful; no change from current)
 - All other knobs unchanged (mla=1, lfp=0, cap=0)
@@ -399,7 +399,7 @@ change, no paper divergence, well-understood soundness math.
 
 ## 5. L2-over-L1 in Tip5-throughout substrate (M-S5b S1.B Stage 5; 2026-05-20)
 
-The 2026-05-20 production config (`config::goldilocks_tip5_80bit`,
+The 2026-05-20 production config (`config::goldilocks_tip5_60bit`,
 post-Phase-0 cumulative-lever stack: `lb=4 nq=20 mla=3 lfp=2
 cap=3 pow=1+1 d=5`, 82 bits unconditional Johnson) was measured
 at the real L1 + L2 layers via

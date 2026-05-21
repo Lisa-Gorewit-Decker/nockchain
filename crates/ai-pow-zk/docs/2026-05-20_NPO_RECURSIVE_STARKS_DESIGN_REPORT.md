@@ -133,7 +133,7 @@ that uses NPO tables for the expensive in-circuit hash work**.
 - Tip5 sponge: W=16, R=10, capacity=6, digest=5; 7 rounds.
 
 **L1 outer-cert** (`Plonky3-recursion/circuit-prover/src/config.rs`
-`goldilocks_tip5_80bit`):
+`goldilocks_tip5_60bit`):
 
 - A **multi-table batch STARK** whose AIRs include:
   1. The Plonky3-recursion verifier-circuit AIR — which embeds
@@ -151,7 +151,7 @@ that uses NPO tables for the expensive in-circuit hash work**.
   parallel to the Poseidon2 `goldilocks_params`).
 - Measured size: **547.88 KB** (commit `21cf77c`).
 
-**L2 outer-cert** (same `goldilocks_tip5_80bit` config, applied
+**L2 outer-cert** (same `goldilocks_tip5_60bit` config, applied
 to the L1 cert):
 
 - Another multi-table batch STARK whose AIRs are now `verify_p3_
@@ -239,7 +239,7 @@ let perm_prep = if self.0.challenger_perm_config.as_tip5().is_some() {
 ```
 
 When the outer config carries a `Tip5Config` challenger
-(post-Tier-B `goldilocks_tip5_80bit`), all three dispatch
+(post-Tier-B `goldilocks_tip5_60bit`), all three dispatch
 methods return the Tip5 NPO trio. The Poseidon1/Poseidon2
 branches remain for upstream Plonky3 consumers but are
 **never executed in nockchain's trust surface**.
@@ -389,7 +389,7 @@ default). This created:
 
 In 2026-05-20 (P0-P7 + the Stage-3 wiring), we removed
 Poseidon2 from nockchain's trust surface entirely:
-- `goldilocks_tip5_80bit()` is now Tip5-throughout.
+- `goldilocks_tip5_60bit()` is now Tip5-throughout.
 - `FriRecursionBackend` dispatches to Tip5 NPOs when the config
   carries `Tip5Config`.
 - The Poseidon1/Poseidon2 dispatch branches remain in
