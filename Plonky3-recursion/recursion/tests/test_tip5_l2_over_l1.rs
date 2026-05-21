@@ -234,6 +234,15 @@ enum Tip5OuterTier {
     /// unconditional Johnson (2026-05-21 anchored-between reanchor;
     /// 60-bit maintainer-targeted floor).
     Production,
+    /// **Measurement-only sweep point (2026-05-21):** outer cert at
+    /// `lb=6, nq=10, pow=1+1` ⇒ `6·10 + 1 + 1 = 62` bits unconditional
+    /// Johnson, same paper-proven soundness as `Production` but
+    /// 33% fewer FRI queries. Trade-off: 4× LDE memory (lb=4 → lb=6 ⇒
+    /// 16× → 64× trace) and slower outer-cert prove wall-clock.
+    /// Used by `stage5_tip5_l2_over_l1_lb6_nq10_measurement` to
+    /// quantify the in-substrate proof-size impact at the anchored
+    /// 60-bit Johnson floor. NOT deployed in `goldilocks_tip5_60bit()`.
+    Lb6Nq10,
 }
 
 impl Tip5OuterTier {
@@ -241,6 +250,7 @@ impl Tip5OuterTier {
         match self {
             Self::Tiny => "Tiny(~5b)",
             Self::Production => "Production(62b lb=4 nq=15 mla=3 lfp=2 cap=3 d=5)",
+            Self::Lb6Nq10 => "Lb6Nq10(62b lb=6 nq=10 mla=3 lfp=2 cap=3 d=5)",
         }
     }
 
@@ -250,6 +260,7 @@ impl Tip5OuterTier {
         match self {
             Self::Tiny => (2, 0, 1, 2, 0, 0),
             Self::Production => (4, 2, 3, 15, 1, 1),
+            Self::Lb6Nq10 => (6, 2, 3, 10, 1, 1),
         }
     }
 
@@ -699,6 +710,81 @@ fn stage5_tip5_l2_over_l1_production_measurement() {
          L2-wrapper = Production (same {sbits}-bit tier)\n  \
          soundness chain MIN(L0, L1, L2) ≥ 60 bits Johnson at EVERY link \
          (L0 = Tip5-L0 PROD lb=4 nq=15 pow=1 = 61 bits)\n  \
+         serialized L1 = {l1_bytes} B ({:.2} KB)\n  \
+         serialized L2 (THE CERT) = {l2_bytes} B ({:.2} KB)\n  \
+         ACCEPT ✅  tamper-REJECT ✅\n  \
+         SUBSTRATE: 100% Tip5 — zero Poseidon2 in trust surface.\n",
+        tier.name(),
+        l1_bytes as f64 / 1024.0,
+        l2_bytes as f64 / 1024.0,
+    );
+}
+
+/// **STAGE 5 — Lb6Nq10 measurement (2026-05-21).** Tip5-throughout
+/// L1+L2 at the alternative anchored-Johnson FRI tier `lb=6 nq=10
+/// pow=1+1` ⇒ `6·10 + 1 + 1 = 62` bits unconditional Johnson — same
+/// soundness as `Production` (`lb=4 nq=15 pow=1+1`) but 33% fewer
+/// FRI queries. Used to quantify the in-substrate L1+L2 proof-size
+/// impact of trading LDE memory (4× larger at lb=6) for query
+/// count. NOT a production deployment; the `goldilocks_tip5_60bit()`
+/// builder is unchanged at lb=4 nq=15.
+///
+/// The inner Tip5-L0 STARK is unchanged (matches ai-pow-zk
+/// `CircuitConfig::PROD` at lb=4 nq=15). Only the outer cert FRI
+/// flips to lb=6 nq=10.
+///
+/// Wall-clock note: the outer cert's prove time scales with the
+/// LDE size (4× for lb=6 vs lb=4), partially offset by 33% fewer
+/// queries to verify. The L1+L2 prove + verify wall-clock is the
+/// load-bearing measurement against the 30s per-proof budget.
+#[test]
+#[ignore = "Stage 5 (sweep): Tip5-throughout L2-over-L1 at lb=6 nq=10 (VERY heavy ~many min); records L1+L2 sizes + wall-clock"]
+fn stage5_tip5_l2_over_l1_lb6_nq10_measurement() {
+    let tier = Tip5OuterTier::Lb6Nq10;
+    let sbits = tier.unconditional_bits();
+    assert!(sbits >= 60, "Lb6Nq10 Johnson soundness {sbits} < 60 anchored floor");
+
+    let l1 = build_l1_tip5_throughput(false, tier)
+        .expect("Lb6Nq10 L1 over real inner Tip5-L0 must ACCEPT");
+    let l1_bytes = postcard::to_allocvec(&l1).expect("serialize L1").len();
+
+    let l2_bytes = l2_over_tip5_l1(
+        "Stage5-Lb6Nq10",
+        &l1,
+        &fri_vparams_for(tier),
+        &make_tip5_outer_cfg(tier),
+        make_tip5_outer_cfg(tier),
+    )
+    .expect("Lb6Nq10 L2 over Lb6Nq10 L1 in Tip5-throughout substrate must ACCEPT");
+
+    // Tamper-reject at the sweep tier too.
+    let tampered = build_l1_tip5_throughput(true, tier);
+    match tampered {
+        Err(e) => eprintln!(
+            "[STAGE 5 Lb6Nq10 TAMPER] tampered inner correctly rejected at L1 build: {e}"
+        ),
+        Ok(bad) => {
+            let r = l2_over_tip5_l1(
+                "Stage5-Lb6Nq10-tamper",
+                &bad,
+                &fri_vparams_for(tier),
+                &make_tip5_outer_cfg(tier),
+                make_tip5_outer_cfg(tier),
+            );
+            assert!(
+                r.is_err(),
+                "STAGE 5 SOUNDNESS HOLE: tampered inner produced VERIFYING Lb6Nq10 L2: {r:?}"
+            );
+            eprintln!("[STAGE 5 Lb6Nq10 TAMPER] tampered inner correctly rejected at L2: {r:?}");
+        }
+    }
+
+    let (lb, lfp, mla, nq, cp, qp) = tier.fri();
+    eprintln!(
+        "\n[M-S5b SWEEP — Tip5-throughout L1+L2 @ {}]\n  \
+         L1-outer = Lb6Nq10 (lb={lb} nq={nq} pow={cp}/{qp} mla={mla} lfp={lfp} d={DIGEST_ELEMS}) \
+         ⇒ {sbits} bits unconditional Johnson ≥ 60\n  \
+         L2-wrapper = Lb6Nq10 (same {sbits}-bit tier)\n  \
          serialized L1 = {l1_bytes} B ({:.2} KB)\n  \
          serialized L2 (THE CERT) = {l2_bytes} B ({:.2} KB)\n  \
          ACCEPT ✅  tamper-REJECT ✅\n  \
