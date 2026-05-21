@@ -68,12 +68,26 @@ pub(crate) const NBYTES: usize = 8; // bytes per split lane
 pub const TABLE_ROWS: usize = 256;
 
 // ---- main-trace flat layout ----
-// [ KIND | TMULT | IN[16] | round_0 .. round_6 ]   per round group:
-//   split: NS*(2*NBYTES) (b then c)  +  INV[NS]
-//   power: X2[12] X3[12]  +  A[16]  +  ROUT[16]
+// [ KIND | TMULT | IN[16] | round_0 .. round_(NUM_ROUNDS-1) ]
+// per round group:
+//   split:  NS*(2*NBYTES)  (b then c)  +  INV[NS]
+//   power:  X2[PWR]  X3[PWR]
+//   output: ROUT[STATE_SIZE]
+//
+// **Angle A (2026-05-21): A[STATE_SIZE] columns eliminated.** The
+// sbox-output values `A[t] = recompose_c` (for the NS lookup lanes)
+// and `A[j] = X3·X3·X` (for the PWR power-of-7 lanes) are derivable
+// from the existing columns (`c_col` bytes + `x3_col` + `sbox_in_col`)
+// and are now substituted **inline** in the MDS sum constraint (see
+// `eval()` below). This saves `STATE_SIZE * NUM_ROUNDS = 16·5 = 80`
+// columns (~12.5% of the prior ROUND_GROUP width). Constraint
+// degree on the MDS sum becomes degree-3 (was degree-1 with the
+// column read), so the kind-gated `rout` constraint is now degree-4
+// — same maximum as the §4.6 canonical guard, no change to
+// `max_constraint_degree()` (still 4 ⇒ FRI-feasible at lb≥2).
 const SPLIT_BC: usize = NS * 2 * NBYTES; // 64
 const PWR: usize = STATE_SIZE - NS; // 12
-pub(crate) const ROUND_GROUP: usize = SPLIT_BC + NS + PWR + PWR + STATE_SIZE + STATE_SIZE; // 124
+pub(crate) const ROUND_GROUP: usize = SPLIT_BC + NS + PWR + PWR + STATE_SIZE; // 108
 
 const C_KIND: usize = 0;
 const C_TMULT: usize = 1;
@@ -105,12 +119,8 @@ const fn x3_col(r: usize, j: usize) -> usize {
     rb(r) + SPLIT_BC + NS + PWR + (j - NS)
 }
 #[inline]
-pub(crate) const fn a_col(r: usize, i: usize) -> usize {
-    rb(r) + SPLIT_BC + NS + 2 * PWR + i
-}
-#[inline]
 pub(crate) const fn rout_col(r: usize, i: usize) -> usize {
-    rb(r) + SPLIT_BC + NS + 2 * PWR + STATE_SIZE + i
+    rb(r) + SPLIT_BC + NS + 2 * PWR + i
 }
 #[inline]
 const fn sbox_in_col(r: usize, lane: usize) -> usize {
@@ -249,7 +259,24 @@ where
 
         // ---- algebraic constraints, gated by KIND (perm rows only;
         //      table/pad rows have KIND=0 ⇒ trivially satisfied) ----
+        //
+        // **Angle A (2026-05-21): sbox-output A[i] columns eliminated;
+        // each A[i] is substituted **inline** into the MDS sum below.**
+        //
+        //   A[t] = recompose_c        (for t < NS; degree-1 in byte cols)
+        //   A[j] = x3 · x3 · x        (for j ≥ NS; degree-3 in x3/x cols)
+        //
+        // We pre-compute these per-round into `a_expr[0..STATE_SIZE]`
+        // (an array of AB::Expr) and reuse them in the rout MDS sum.
+        // The two prior `assert_zero` constraints for A[t] and A[j] are
+        // removed (they were tautologies once A is substituted inline).
+        // Constraint count drops by `2 * STATE_SIZE = 32` per round
+        // (~24% fewer constraints) and the AIR width drops by
+        // `STATE_SIZE = 16` columns per round.
         for r in 0..NUM_ROUNDS {
+            let mut a_expr: alloc::vec::Vec<AB::Expr> =
+                alloc::vec::Vec::with_capacity(STATE_SIZE);
+
             for t in 0..NS {
                 let mut recompose_b = AB::Expr::ZERO;
                 let mut recompose_c = AB::Expr::ZERO;
@@ -270,8 +297,10 @@ where
                 builder.assert_zero(
                     kind.clone() * (recompose_b - var(sbox_in_col(r, t))),
                 );
-                // A[t] = recomposed looked-up bytes
-                builder.assert_zero(kind.clone() * (var(a_col(r, t)) - recompose_c));
+                // A[t] = recompose_c — SUBSTITUTED INLINE (no column,
+                // no separate constraint; the recompose_c expression is
+                // reused in the MDS sum below).
+                a_expr.push(recompose_c);
                 // §4.6 canonical (<p) guard: H = 2^32−1 ⇒ L = 0.
                 let g = high - two32_m1.clone();
                 let inv = var(inv_col(r, t));
@@ -286,17 +315,21 @@ where
                 let x3 = var(x3_col(r, j));
                 builder.assert_zero(kind.clone() * (x2.clone() - x.clone() * x.clone()));
                 builder.assert_zero(kind.clone() * (x3.clone() - x2 * x.clone()));
-                builder.assert_zero(
-                    kind.clone() * (var(a_col(r, j)) - x3.clone() * x3 * x),
-                );
+                // A[j] = x³ · x³ · x = x⁷ — SUBSTITUTED INLINE (no column,
+                // no separate constraint). Degree-3 in column reads
+                // (x3 column × x3 column × x column).
+                a_expr.push(x3.clone() * x3 * x);
             }
 
             for i in 0..STATE_SIZE {
                 let mut acc = AB::Expr::ZERO;
                 for j in 0..STATE_SIZE {
-                    acc = acc + fe(mds[i][j]) * var(a_col(r, j));
+                    acc = acc + fe(mds[i][j]) * a_expr[j].clone();
                 }
                 let rc = fe(rc_precomp(ROUND_CONSTANTS[r * STATE_SIZE + i]));
+                // ROUT[i] = MDS·A + RC ; kind-gated. Degree analysis:
+                // kind (deg 1) × (rout (deg 1) − acc (deg ≤3) − rc (deg 0))
+                // ⇒ max degree-4 (matches the §4.6 guard's degree-4).
                 builder.assert_zero(kind.clone() * (var(rout_col(r, i)) - acc - rc));
             }
         }

@@ -7,8 +7,11 @@
 > Pearl's 3-layer recursion budget (`2026-05-17_M_S2_PEARL_EVALUATION.md`,
 > the source-of-truth for the historic bar). After the 2026-05-21
 > anchored-between Johnson reanchor + Rayon parallelism + Tip5
-> `mds_cyclomul` work (current production L1 ≈ 307 KB, L2 ≈ 343 KB
-> at lb=4 nq=15 = 62-bit Johnson, Stage 5 wall-clock 25.1 s), the
+> `mds_cyclomul` work (production at the time of this addendum:
+> L1 ≈ 307 KB, L2 ≈ 343 KB at lb=4 nq=15 = 62-bit Johnson, Stage 5
+> wall-clock 25.1 s; the subsequent 2026-05-21 Tip5 A-column
+> elimination dropped these another −4.6%/−4.1% to L1 = 293 KB,
+> L2 = 329 KB), the
 > in-substrate floor + latency picture changed materially. The
 > maintainer reset the size target to **≤100 KB** (= 102 400 bytes,
 > `100 · 1024`): a 3.4× gap from L2 (vs the prior 5.3× at ≤65 KB),

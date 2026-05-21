@@ -38,7 +38,7 @@ use p3_matrix::dense::RowMajorMatrix;
 use p3_maybe_rayon::prelude::*;
 
 use crate::air_lookup::{
-    NBYTES, NS, PREP_WIDTH, TABLE_ROWS, a_col, rout_col, tip5_lookup_air_width,
+    NBYTES, NS, PREP_WIDTH, TABLE_ROWS, rout_col, tip5_lookup_air_width,
 };
 use crate::tip5_spec::{
     LOOKUP_TABLE, NUM_ROUNDS, P_GOLDILOCKS, ROUND_CONSTANTS, STATE_SIZE, mds_matrix, rc_precomp,
@@ -80,7 +80,11 @@ const C_IN: usize = 2;
 const RB0: usize = C_IN + STATE_SIZE;
 const SPLIT_BC: usize = NS * 2 * NBYTES;
 const PWR: usize = STATE_SIZE - NS;
-const ROUND_GROUP: usize = SPLIT_BC + NS + PWR + PWR + STATE_SIZE + STATE_SIZE;
+// **Angle A (2026-05-21):** ROUND_GROUP shrunk by `STATE_SIZE` —
+// the `A[i]` sbox-output columns were eliminated (substituted inline
+// in the AIR's MDS-sum constraint; see `air_lookup.rs::eval()`).
+// `rout_col` (imported from `air_lookup`) reflects the new layout.
+const ROUND_GROUP: usize = SPLIT_BC + NS + PWR + PWR + STATE_SIZE;
 #[inline]
 fn rb(r: usize) -> usize {
     RB0 + r * ROUND_GROUP
@@ -105,6 +109,15 @@ fn x2_col(r: usize, j: usize) -> usize {
 fn x3_col(r: usize, j: usize) -> usize {
     rb(r) + SPLIT_BC + NS + PWR + (j - NS)
 }
+
+// **Angle A (2026-05-21):** `a_col` was removed from the layout —
+// `A[i]` is now substituted inline in the AIR's MDS sum (see
+// `air_lookup.rs::eval()`). The trace gen still computes the `a[i]`
+// values locally to drive the per-row MDS multiplication that
+// produces `rout`, but no longer writes them to a dedicated column.
+// `ROUND_GROUP` shrinks from `SPLIT_BC + NS + 2·PWR + 2·STATE_SIZE`
+// to `SPLIT_BC + NS + 2·PWR + STATE_SIZE`; all subsequent column
+// indices (including `rout_col`) shift left by `STATE_SIZE`.
 
 #[inline]
 fn set_row(row: &mut [Goldilocks], col: usize, v: u64) {
@@ -156,9 +169,12 @@ fn fill_perm_row(
             set_row(row, x2_col(r, j), x2);
             set_row(row, x3_col(r, j), x3);
         }
-        for i in 0..STATE_SIZE {
-            set_row(row, a_col(r, i), a[i]);
-        }
+        // **Angle A (2026-05-21):** the `A[i]` sbox-output column
+        // writes have been removed — `A[i]` is now substituted inline
+        // in the AIR's MDS-sum constraint. The `a` array remains as a
+        // local scratch buffer for driving the MDS multiplication
+        // below (its values are still needed to compute `rout`), but
+        // no longer occupies trace columns.
         for i in 0..STATE_SIZE {
             let mut acc = 0u64;
             for (j, &aj) in a.iter().enumerate() {

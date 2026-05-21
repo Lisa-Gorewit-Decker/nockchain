@@ -202,7 +202,7 @@ L1 = 306.91 KB at the anchored 60-bit Johnson floor
 
 | Scenario | Per-PCS savings | L1 projection | vs ≤100 KB target |
 |---|---|---:|---:|
-| Current FRI @ Johnson (60-bit anchored) | baseline | **307 KB** | 3.07× over |
+| Current FRI @ Johnson (60-bit anchored, post-Angle-A) | baseline | **293 KB** | 2.93× over |
 | WHIR @ Johnson (k=4) | ~10% | **~275 KB** | 2.75× over |
 | WHIR @ CapacityBound (k=4) | ~55% | **~140 KB** | 1.40× over |
 
@@ -273,7 +273,9 @@ Path forward:
 ### ≤100 KB target status (2026-05-21 reanchored)
 
 The in-substrate Johnson floor at the anchored 60-bit FRI
-(`lb=4 nq=15 pow=1+1`) is L1 = 307 KB, L2 = 343 KB. Combining
+(`lb=4 nq=15 pow=1+1`, post-Angle-A) is L1 = 293 KB, L2 = 329 KB
+(pre-Angle-A was 307 KB / 343 KB; the 2026-05-21 Tip5
+A-column-elimination refactor dropped Tip5 AIR width 638→558). Combining
 the proven-Johnson levers (WHIR @ Johnson ≈ −10%, higher-lb
 outer e.g. `lb=6 nq=10 pow=1+1` ≈ −20-25% queries) plausibly
 brings L1 into the ~200 KB range — still ~2× over the ≤100 KB

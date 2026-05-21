@@ -135,7 +135,7 @@ heuristic is **not** adopted).
     Pre-2026-05-20 baseline (`lb=2 nq=42 mla=1 lfp=0 cap=0`) was
     85 bits, ~1011 KB L1.
     **Measured at production-faithful params (Stage 5 at the
-    2026-05-21 anchored-between params, 9.7 min):** L1 = **306.91 KB**
+    2026-05-21 anchored-between params, 9.7 min):** L1 = **292.92 KB**
     (**~−24% vs the prior nq=20 82-bit point at 402.94 KB**;
     **~−70% vs pre-2026-05-20 baseline ~1011 KB**), L2 = **342.74 KB**
     (**−22% vs the prior 438.79 KB**), **L2/L1 = 1.117×**.
@@ -148,11 +148,13 @@ heuristic is **not** adopted).
     B2 (~0%), and the 2026-05-21 anchored-between reanchor
     (additional −24%) combined.**
     **For ≤100 KB** (2026-05-21 maintainer-relaxed target, was ≤65 KB):
-    in-substrate floor is now ~307 KB L1 / ~343 KB L2 (vs ≤100 KB
-    target = ~3.4× over). Combinable in-substrate levers (WHIR @
-    Johnson, higher-lb outer with the new 25 s L1+L2 latency
-    headroom) may close part of the gap; a Path A SNARK wrap
-    remains the most likely final lever. See `docs/2026-05-19_M_S5B_TERMINAL_COMPRESSION_DESIGN.md`
+    in-substrate floor is now ~293 KB L1 / ~329 KB L2 (vs ≤100 KB
+    target = ~2.93× over after the 2026-05-21 Angle-A Tip5 A-column
+    elimination, was 3.07× over at 307 KB pre-Angle-A). Combinable
+    in-substrate levers (WHIR @ Johnson, higher-lb outer with the
+    new 25 s L1+L2 latency headroom, further Tip5 AIR refactor)
+    may close part of the gap; a Path A SNARK wrap remains the
+    most likely final lever. See `docs/2026-05-19_M_S5B_TERMINAL_COMPRESSION_DESIGN.md`
     2026-05-21 addendum for the target-relaxation rationale.
     See [`2026-05-20_RECURSIVE_PROOF_SIZE_INVESTIGATION.md`](docs/2026-05-20_RECURSIVE_PROOF_SIZE_INVESTIGATION.md)
     § 4 + § 5.
@@ -330,7 +332,7 @@ form. This subsection is the in-narrative description.)
   yet thread "current CV" forward to the last row. Add when
   downstream protocols need the final hash output.
 - **Recursion compression (M-S5b / #131).** Vertical-recursion
-  cert lands at L1 = 306.91 KB / L2 = 342.83 KB at the 2026-05-21
+  cert lands at L1 = 292.92 KB / L2 = 328.83 KB at the 2026-05-21
   anchored 60-bit Johnson floor (Stage 5 measured, 25.1 s wall-clock
   with Rayon + `mds_cyclomul`); the **≤100 KB target** (relaxed
   2026-05-21 from the original ≤65 KB) remains a deferred terminal-
