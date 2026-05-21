@@ -7,6 +7,81 @@ completely. Bubble up any major decisions." (user 2026-05-20)
 B3 + B4 are precise residuals requiring a focused multi-hour
 session for safe R1 landing.
 
+## 2026-05-20 UPDATE — B2 landed; pivots the Path B recommendation
+
+**B2 reduction landed (commit `ce3e6a4`):** `sample_bits` now
+uses the new `decompose_to_low_bits_with_high_witness` primitive.
+Measured impact:
+
+  - Alu rows: 6,851 → 3,401 (**−50%**).
+  - bool_checks (global): 1,920 → 180 (**−91%**).
+  - Total verifier-circuit ops: ~6,840 → ~3,500 (**−49%**).
+  - L1 size: 499,353 B → 500,198 B (+845 B, **+0.17% GROWTH**).
+  - All tests green (challenger_transcript 46/46; full
+    p3-recursion + p3-circuit-prover regressions).
+
+**Surprising finding — Alu reduction is L1-byte-neutral in our
+substrate:**
+
+The TALLEST table determines FRI Merkle path depth. Both Alu
+(pre-B2: 6851 ops → 1024-row trace via lane-packing) and
+tip5_perm (881 → 1024 rows) were tied as tallest. Post-B2,
+Alu dropped to 512-row trace, but `tip5_perm` is still 1024
+rows — it remains the unilateral FRI height bottleneck.
+Per-query Merkle path bytes are unchanged.
+
+The L1-byte impact is the 30 new high_witness elements
+(~28 bytes each in opened_values), netting +845 B growth.
+
+**This invalidates the B1 prediction** that Alu reduction
+would cascade to L1 size (the "~2-3% L1 saving" estimate was
+based on counting Alu cells, ignoring the FRI Merkle path
+height effect).
+
+## NEW Phase B recommendation (post-B2 finding)
+
+For future verifier-AIR slim work:
+
+| Target | Why | Effort |
+|---|---|---|
+| **Reduce `tip5_perm` ROW COUNT** | tip5_perm is THE FRI height bottleneck (1024-row trace) — every row removed lowers the per-query Merkle path depth, compounding across all queries | high (each Tip5 call has soundness role; batched Fiat-Shamir absorbs save ~10-20 perms; MMCS prefix sharing saves ~50-100; ultra-batched challenger absorb saves ~5) |
+| Reduce FRI overhead directly | cap=3 already maxed; further would need substrate changes | substrate change |
+| Path B Alu reduction (B2 type) | NEUTRAL L1 impact; positive prover-cost | low value per L1 saving |
+
+**Alu reduction is still valuable** for prover-cost (smaller LDE,
+smaller commitment work). But it's NOT the right lever for L1
+size in our substrate.
+
+**Updated Phase A vs B trade-off** (per [path_b_status]):
+
+- Path B sub-targets that move L1: only those that lower the
+  TALLEST table's height. In our case: tip5_perm row reduction.
+- The dominant lever for `tip5_perm` row count is the number
+  of Tip5 perm calls in the verifier circuit (881 calls):
+  - ~450 from FRI commit-phase MMCS (1 per query × per fold
+    round × per commitment path).
+  - ~420 from `open_input` (MMCS path verification for openings).
+  - ~11 from `tip5_perm_for_challenger_base` (Fiat-Shamir
+    absorbs).
+- The 11 Fiat-Shamir absorbs are batchable (per B1 §B.1) —
+  small saving (~1%).
+- The 870+ MMCS-related Tip5 calls would require either:
+  - A different MMCS scheme with fewer hashes per path
+    (substrate change).
+  - Reducing the NUMBER OF QUERIES (already at nq=20 floor).
+  - Reducing per-path depth (cap=3 already maxed).
+
+**Reality check:** in-substrate Path B reductions to `tip5_perm`
+calls bottom out at very small savings. The TIP5 NPO is intrinsic
+to the recursion verifier's job (every Merkle path requires
+hashing). Reducing them meaningfully requires architectural
+change — which is essentially Path A territory (different MMCS
+construction, or a different verifier circuit shape entirely).
+
+**This sharpens the Phase A decision:** Path B's
+post-quantum-preserving in-substrate floor for L1 is plausibly
+~480 KB (where we are now). ≤65 KB requires Path A.
+
 ## What landed this session
 
 ### Stage B0 — Production L1 cert column inventory (COMPLETE)

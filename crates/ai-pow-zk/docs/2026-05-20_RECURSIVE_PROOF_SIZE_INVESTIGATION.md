@@ -472,21 +472,57 @@ unconditional Johnson at every link. SUBSTRATE: 100% Tip5
 | **Path B (verifier-AIR slim)** | Now MORE valuable: every column removed from the verifier circuit cuts size at EVERY recursion layer (compounding). |
 | **Tier C (in-substrate Pareto)** | Still applies at L1 (~470 KB measured). L2 effect not measured at Tier C; likely L2 ~550-600 KB by analogy. |
 
-**Production status (post-Phase-0, cap=3 production-faithful):**
-every in-substrate soundness-neutral lever is now on. L1 =
-487.65 KB (~−51.8% from pre-2026-05-20 baseline ~1011 KB); L2
-= 519.18 KB. L2/L1 is **1.06×** — the recursion chain is still
-size-monotone-non-decreasing in Tip5-throughout, but barely so.
-Any reduction that drops the verifier-AIR by even modest
-amounts (Path B column-by-column slim) would likely **flip the
-ratio**: smaller verifier circuit ⇒ less NPO overhead per layer
-⇒ L_{n+1} < L_n again, restoring recursion compression. This
-makes Path B even more attractive than the routes audit
-originally suggested.
+**Production status (post-Phase-0 + Path B B2, cap=3
+production-faithful):**
 
-The path to ≤65 KB still requires either Path A (SNARK wrap;
-trust-surface trade) or substantial Path B work; Phase 0 alone
-gets us to ~488 KB L1, not yet near the target.
+| | L1 | L2 | L2/L1 |
+|---|--:|--:|--:|
+| Pre-Phase-0 (post-Tier-B alone, cap=3) | ~520 KB (est.) | ~570 KB (est.) | ~1.10× |
+| Post-Phase-0 (commit `97db66d`) | 487.65 KB | 519.18 KB | 1.065× |
+| Post-Path-B B2 (commit `ce3e6a4`) | 488.47 KB | 518.88 KB | 1.062× |
+
+Cumulative L1 reduction from pre-2026-05-20 baseline (~1011 KB):
+**~−51.7%**. L2 inflation barely improved (ratio 1.065× → 1.062×).
+
+**REVISED FINDING (post-Path-B B2):** the B1 hypothesis that
+verifier-AIR slim (Path B) would flip the L_{n+1} < L_n ratio
+by reducing per-layer overhead is **partially falsified**. The
+B2 reduction halved Alu rows (6,851 → 3,401) without moving L1
+bytes — because `tip5_perm` is the FRI Merkle height bottleneck
+(both tables tied at 1024-row commitments pre-B2; tip5_perm
+remains 1024 post-B2 while Alu dropped to 512). Reducing
+non-bottleneck-table heights doesn't shrink the FRI proof.
+
+**For L1 reduction to actually move, the reduction must target
+the TALLEST table.** In our substrate, that's `tip5_perm`.
+Tip5 perm calls in the verifier circuit are intrinsic to:
+- FRI commit-phase MMCS (per-query Merkle path hashing).
+- Opening-proof MMCS (per-commitment Merkle authentication).
+- Fiat-Shamir challenger absorbs (~11 calls).
+
+Of these, only Fiat-Shamir absorbs are batchable in-substrate
+(per B1 § B.1, ~1% saving). The 870+ MMCS-related Tip5 calls
+are intrinsic to the verifier's job; reducing them requires
+either:
+- A different MMCS construction (substrate change).
+- Reducing query count (already at nq=20 floor).
+- Reducing path depth (cap=3 already maxed).
+
+**This sharpens Path A's role:** Path B's in-substrate
+post-quantum L1 floor is ~488 KB. ≤65 KB requires Path A.
+
+The path to ≤65 KB still requires Path A (SNARK wrap;
+trust-surface trade). Phase 0 + Path B B2 stabilize the
+production L1 at ~488 KB; further Path B reductions targeting
+non-bottleneck tables won't shrink it. Reaching ≤65 KB requires
+either:
+- **Path A** (post-quantum trust-surface trade, the only known
+  realistic path).
+- **STIR/WHIR PCS swap** (substrate change; ~−50% per layer;
+  still wouldn't reach ≤65 KB alone).
+- **Reducing `tip5_perm` row count substantially** — would
+  need a different MMCS construction, which is itself a
+  substrate change.
 
 ---
 
