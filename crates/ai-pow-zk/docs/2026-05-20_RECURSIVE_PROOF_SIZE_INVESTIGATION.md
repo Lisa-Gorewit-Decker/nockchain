@@ -472,17 +472,39 @@ unconditional Johnson at every link. SUBSTRATE: 100% Tip5
 | **Path B (verifier-AIR slim)** | Now MORE valuable: every column removed from the verifier circuit cuts size at EVERY recursion layer (compounding). |
 | **Tier C (in-substrate Pareto)** | Still applies at L1 (~470 KB measured). L2 effect not measured at Tier C; likely L2 ~550-600 KB by analogy. |
 
-**Production status (post-Phase-0 + Path B B2, cap=3
-production-faithful):**
+**Production status (post-Phase-0 + Path B B2 + 5-round Tip5
+switch, cap=3 production-faithful):**
 
-| | L1 | L2 | L2/L1 |
-|---|--:|--:|--:|
-| Pre-Phase-0 (post-Tier-B alone, cap=3) | ~520 KB (est.) | ~570 KB (est.) | ~1.10× |
-| Post-Phase-0 (commit `97db66d`) | 487.65 KB | 519.18 KB | 1.065× |
-| Post-Path-B B2 (commit `ce3e6a4`) | 488.47 KB | 518.88 KB | 1.062× |
+| | L1 | L2 | L2/L1 | Stage 5 runtime |
+|---|--:|--:|--:|--:|
+| Pre-Phase-0 (post-Tier-B alone, cap=3) | ~520 KB (est.) | ~570 KB (est.) | ~1.10× | — |
+| Post-Phase-0 (commit `97db66d`) | 487.65 KB | 519.18 KB | 1.065× | ~23 min |
+| Post-Path-B B2 (commit `ce3e6a4`) | 488.47 KB | 518.88 KB | 1.062× | ~22 min |
+| **Post-5-round-Tip5 (commit `88bb526`)** | **402.94 KB** | **438.79 KB** | **1.089×** | **9.5 min** |
 
 Cumulative L1 reduction from pre-2026-05-20 baseline (~1011 KB):
-**~−51.7%**. L2 inflation barely improved (ratio 1.065× → 1.062×).
+**−60.1%** (the single biggest reduction this investigation
+found). Prover time dropped ~57% from the switch alone.
+
+**THE 5-ROUND SWITCH FINDING:** the maintainer-approved
+ai-pow-zk-specific 5-round Tip5 (paper-spec per IACR ePrint
+2023/107 §2.4 N=5; trade 2-round cushion above paper-spec
+for proof size + prover time) reduces L1 by −17.5% and L2 by
+−15.4% — by far the biggest single lever in this work, and
+larger than the cumulative effect of Phase 0 + Path B B2.
+
+Why this works where Path B B2 didn't: the 5-round switch
+shrinks the tip5_perm AIR's WIDTH (per-round columns dropped
+~29%). Since tip5_perm is the FRI Merkle height bottleneck
+(at 1024-row commitment), reducing its WIDTH reduces opened
+values bytes per query, which IS in the dominant
+`opening_proof` 85% slice. Path B B2 reduced Alu rows but
+left tip5_perm width unchanged.
+
+**For the ≤65 KB target:** Path B + 5-round Tip5 brings the
+in-substrate post-quantum L1 floor to ~403 KB. Still ~6.2×
+over the target. Path A (SNARK wrap) remains required for
+the final shrinkage.
 
 **REVISED FINDING (post-Path-B B2):** the B1 hypothesis that
 verifier-AIR slim (Path B) would flip the L_{n+1} < L_n ratio

@@ -117,15 +117,18 @@ The **only** hash function in the live SNARK proving path is:
     Pre-2026-05-20 baseline (`lb=2 nq=42 mla=1 lfp=0 cap=0`) was
     85 bits, ~1011 KB L1.
     **Measured at production-faithful params (Stage 5
-    post-Path-B-B2 commit `ce3e6a4`, 22 min):** L1 = 488.47 KB
-    (~−51.7% vs pre-2026-05-20 baseline ~1011 KB), L2 = 518.88 KB,
-    **L2/L1 = 1.062×**. Trade-off: `lb=4` ⇒ 16× LDE (vs prior 4×)
-    ⇒ ~4× prover memory + slower proving. **L2/L1 inflation
-    confirmed at production**; Path B B2 Alu reduction (−50% Alu
-    rows + −91% bool_checks) was prover-cost-positive but
-    L1-byte-NEUTRAL because `tip5_perm` is the FRI Merkle height
-    bottleneck. **Conclusion: ≤65 KB requires Path A (SNARK
-    wrap)**; the in-substrate post-quantum floor is ~488 KB.
+    post-5-round-Tip5 commit `88bb526`, 9.5 min):** L1 = 402.94 KB
+    (**~−60% vs pre-2026-05-20 baseline ~1011 KB**),
+    L2 = 438.79 KB, **L2/L1 = 1.089×**. Trade-off: `lb=4` ⇒ 16×
+    LDE (vs prior 4×) ⇒ ~4× prover memory; 5-round Tip5 dropped
+    prover time ~57% (22 min → 9.5 min). **The ai-pow-zk-specific
+    5-round Tip5 (paper-spec per IACR 2023/107 §2.4 N=5; canonical
+    Nockchain 7-round `permute` UNCHANGED) was the single biggest
+    proof-size lever — bigger than Tier B (−46%), Phase 0
+    (additional −1%), and Path B B2 (~0%) combined.**
+    **For ≤65 KB:** still requires Path A (SNARK wrap); in-substrate
+    post-quantum floor is now ~403 KB (vs ≤65 KB target = ~6.2×
+    over). Path A is the only known path to the target.
     See [`2026-05-20_RECURSIVE_PROOF_SIZE_INVESTIGATION.md`](docs/2026-05-20_RECURSIVE_PROOF_SIZE_INVESTIGATION.md)
     § 4 + § 5.
 - **γ < J(δ)−η**: every layer operates strictly inside the
