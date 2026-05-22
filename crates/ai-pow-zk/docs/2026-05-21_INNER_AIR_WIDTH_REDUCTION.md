@@ -17,33 +17,38 @@ exhaustive column inventory is landed as a reproducible test
   the full ai-pow-zk regression (371 tests incl. the composite
   golden-KAT byte-equivalence) + the 8 SX-chip tests + the
   inventory test.
-- **LANDED — Path A O0-Stage-1** (§7.1): the SX chip's
-  data-validation constraints are now explicitly `IS_ACTIVE`-gated
-  in `stripe_xor::eval_at` — the first stage of the column-overlay
-  precondition (convert the composite from zero-default discipline
-  to explicit selector-gating). Validated by the full 371-test
-  regression + 8 SX-chip tests; behavior-preserving. ≈ 192 SX
-  columns are now overlay-eligible.
-- **RESIDUAL — Path A overlay** (the column-overlay big lever, §7):
-  a genuine in-flight de-risk (§7.1) traced the actual constraint +
-  trace-gen code and found **two structural walls + one parameter**
-  — (D1) the composite uses zero-default discipline, not
-  selector-gating, so the overlay needs a composite-wide
-  gating-model rewrite first; (D2) the §7-recommended candidate
-  `sx_stripe` is *stateful* (a cross-row `XR` register read by the
-  §6(b) keystone binding on the trace's last row), so its register
-  columns are un-overlayable; (D3) gating the SX `Q` cubic costs
-  degree 3→4 — *not* a wall (the maintainer authorized raising the
-  degree budget; the FRI configs already admit it), but it
-  cascades into an L1 verifier-circuit regeneration, so it is
-  folded into O2 where that regen happens anyway. The §7 design
-  premise was invalidated; §7.1 records the corrected staging.
-  O0-Stage-1 is landed (above); the residual is O0-Stage-2 (gate
-  the 1056-col `blake3_round` host AIR) → O2 (column re-pointing +
-  `Q`-cubic gating + measured width saving). Per R1 this is the
-  validated-subset + precise-residual outcome — the overlay is a
-  soundness-critical invasive change to the PoUW linchpin and is
-  NOT rushed.
+- **LANDED — Path A column-overlay** (§7.1): the §7 big lever,
+  implemented. `SX_IN_BITS` (the 128-column StripeXor IN
+  bit-decomposition) now physically *aliases* the first 128 columns
+  of the `blake3_round` region — `TOTAL_TRACE_WIDTH` 2103 → **1975**
+  (−128). Three sub-stages, all landed + committed:
+  - **O0-Stage-1** — the SX chip's data-validation constraints are
+    `IS_ACTIVE`-gated in `stripe_xor::eval_at` (so they are vacuous
+    on BLAKE3 rows).
+  - **O0-Stage-2** — `verify_round` in the BLAKE3 round AIR is
+    gated off on matmul rows (the de-risk found StripeXor activity
+    is co-located on the matmul sweep, so an SX row carries the
+    *pinned* `IS_RESET_CUMSUM`/`IS_UPDATE_CUMSUM` selectors — the
+    mutual-exclusion kernel was already verifier-fixed; **no
+    CRIT-1 program-pin change needed**). The gate excludes the
+    matmul selectors on *both* the current and next row
+    (`verify_round` is cross-row); each factor stays degree 1, the
+    gate stays degree 2 — **no degree bump, no recursion-config
+    change** (so D3's L1-regen concern does not arise).
+  - **O2** — `composite_layout.rs` re-points `SX_IN_BITS_START`
+    onto `BLAKE3_ROUND_START`; the trace-gen is offset-driven so it
+    needed no change (SX and BLAKE3 write disjoint rows).
+  Validated: full ai-pow-zk regression **371 pass / 0 fail / 23
+  ignored** — composite golden-KAT byte-equivalence, §6(b)
+  keystone chain, adversarial tamper-rejection, CRIT-1.
+- **RESIDUAL — roll the overlay forward**: the remaining
+  O0-Stage-1-gated SX runs (`SX_XR_SEL_BITS` 32, `SX_NEW_SEL_BITS`
+  32, `SX_IN` 4 — and `SX_Q` 32 once gated) can alias further
+  `blake3_round` sub-windows by the same mechanism, for roughly
+  another −100 columns; and a dedicated overlay-tamper adversarial
+  test (SX data forged into BLAKE3 columns / vice versa) should be
+  added to the suite. Each increment is the same bounded pattern,
+  KAT + full-regression-gated.
 
 ## 1. Column inventory — where the 2135 columns go
 
@@ -550,68 +555,53 @@ the L1 regen happens regardless.
     identity on active rows, and the gated columns are zero +
     unread cross-row on inactive rows, so no honest/adversarial
     verdict changes. ≈ 192 SX columns are now overlay-eligible.
-  - **O0-Stage-2 — residual (de-risked 2026-05-21; mechanism below).**
-    Gate the `blake3_round` AIR (the overlay *host*) so SX data is
-    vacuous to it on SX rows. The BLAKE3 chip (`chips/blake3/chip.rs`
-    `eval_at`) is **partially gated already**:
-    - `verify_init_state` is gated by `is_new_blake`; `finalize_blake`
-      + the `CV_OUT` equality by `is_last_round`. Both are *positive*
-      selectors = 0 on an SX row ⇒ already vacuous there. No change
-      needed.
-    - `verify_round` (the 1056-col round constraint — the bulk) is
-      gated by `is_round_active = (1−is_last_round)·(1−next_is_new_blake)`
-      (`chip.rs:228–238`). This does **not** exclude SX rows — on an
-      SX row whose successor is non-blake it evaluates to 1, so
-      `verify_round` *fires*. Today it self-satisfies on non-blake
-      rows only via zero-default (BLAKE3's round fixes zero:
-      `Round(0,0) = 0`). With SX data overlaid into the BLAKE3
-      columns that breaks. **Fix:** add a `(1−SX_IS_ACTIVE)` factor
-      to `is_round_active` (gate degree 2→3; `verify_round`'s
-      internal degree × the gate must be re-checked against the
-      degree budget — D3, may ride the same L1 regen).
-    - **Pre-edit reader audit (required, not yet done):** confirm no
-      *ungated* constraint or LogUp bus in `composite_full_air.rs` /
-      `composite_full_air_with_lookups.rs` reads the BLAKE3 round
-      columns on an SX row. The LogUp buses are selector-gated
-      (`IS_MSG_MAT`, `IS_HASH_*`, …) — verify each such selector is
-      0 on SX rows. A missed ungated reader = a forgery hole.
+  - **O0-Stage-2 — LANDED.** Gate the `blake3_round` AIR so SX data
+    is vacuous to it on the overlaid rows. The de-risk found the
+    BLAKE3 chip already partially gated — `verify_init_state`
+    (`is_new_blake`), `finalize_blake` + `CV_OUT` (`is_last_round`)
+    use positive selectors that are 0 on SX rows. Only
+    `verify_round` (the bulk) needed a gate. **Key de-risk finding:**
+    StripeXor activity is co-located on the matmul sweep
+    (`composite_trace.rs` — an SX row *is* a matmul row), so an SX
+    row already carries the **pinned** `IS_RESET_CUMSUM` /
+    `IS_UPDATE_CUMSUM` selectors. The `verify_round` round-active
+    gate now subtracts those matmul selectors — on **both** the
+    current and next row, since `verify_round` is cross-row (reads
+    `next.STATE0`). No new `SX_IS_ACTIVE` pin, **no CRIT-1
+    program-pin change, and no degree bump** (each gate factor stays
+    degree 1; the gate stays degree 2) — D3's L1-regen concern never
+    arose. `chips/blake3/chip.rs`; composite-only via the optional
+    `Blake3Offsets.round_gate_excl` field.
 - **Stage O1.** Classify every chip per-row-stateless vs stateful
   (cross-row register/accumulator). Only stateless chips are
   whole-region overlay-eligible. Stateful chips (`sx_stripe` `XR`,
   `matmul_tile` `CUMSUM`, `fold`) can at most overlay their
   *stateless sub-columns* — a finer, more delicate sub-column
   overlay deferred until O0+O2 prove out.
-- **Stage O2+ — residual (de-risked 2026-05-21).** Re-point the
-  ≈ 197 O0-Stage-1-gated SX columns (`SX_IN` 4, `SX_IN_BITS` 128,
-  `SX_XR_SEL_BITS` 32, `SX_NEW_SEL` 1, `SX_NEW_SEL_BITS` 32) onto a
-  sub-window of `BLAKE3_ROUND_START..+1056`. The composite layout
-  (`composite_layout.rs`) is a strict contiguous chain
-  (`X_START = PREV_START + PREV_LEN`), so aliasing the SX columns
-  into the BLAKE3 region shifts every block after the SX block
-  (`FOLD_STRIPE_SEL` onward) down and shrinks `TOTAL_TRACE_WIDTH` by
-  ≈ 197; the layout's contiguity + inventory tests must be rewritten
-  to expect the alias. `composite_trace.rs` must become
-  activity-aware for the shared region: on a BLAKE3 row only BLAKE3
-  writes those columns, on an SX row only SX writes them — never
-  both (a double-write corrupts the host). Add the **mutual-
-  exclusion constraint** (`SX_IS_ACTIVE` and the BLAKE3 round/
-  init/finalize selectors never both 1 on a row). This stage
-  changes `TOTAL_TRACE_WIDTH` ⇒ forces an L1 verifier-circuit
-  regeneration regardless — so it also absorbs the `Q`-cubic gating
-  (degree 3→4, D3), taking SX's overlay-eligible width from ≈ 197
-  to all ≈ 229 columns at no extra recursion-regen cost. Validate:
-  full ai-pow-zk regression (incl. composite golden-KAT) +
-  adversarial overlay tampers + the recursion stack
-  (`c3_stage_a`/`c3_stage_b`) at the regenerated L1.
+- **Stage O2 — LANDED (first application).** `composite_layout.rs`
+  re-points `SX_IN_BITS_START` (128 columns) onto
+  `BLAKE3_ROUND_START`; the SX layout chain skips `SX_IN_BITS`
+  (`SX_XR` follows `SX_IN` directly) and `TOTAL_TRACE_WIDTH` drops
+  by 128 (2103 → 1975). The trace-gen needed **no change** — it is
+  offset-driven, and StripeXor (matmul-sweep rows) and BLAKE3
+  (blake rows) write disjoint rows, so the shared columns are never
+  double-written. Layout contiguity + inventory tests updated; a new
+  pin asserts `SX_IN_BITS` stays within the `blake3_round` region.
+- **Stage O2+ — residual (roll forward).** The remaining
+  O0-Stage-1-gated SX runs (`SX_XR_SEL_BITS` 32, `SX_NEW_SEL_BITS`
+  32, `SX_IN` 4; and `SX_Q` 32 once gated) alias further
+  `blake3_round` sub-windows by the identical mechanism, for ≈ −100
+  more columns. Add a dedicated overlay-tamper adversarial test.
 
-R1 status: validated-subset + precise-residual for Path A. Landed
-this drive: **Path C** (§5c — SX_Q, −32 cols, committed `074aa0b`)
-and **Path A O0-Stage-1** (SX selector-gating, the overlay
-precondition; 371-test regression green). The overlay itself
-(O0-Stage-2 BLAKE3 gating → O2 column re-pointing → measured width
-saving) is the precise residual: its original §7 premise ("overlay
-`sx_stripe` first, bounded/mechanical per chip") was invalidated by
-D1+D2+D3; implementation continues from O0-Stage-2.
+R1 status: Path C **and** the Path A column-overlay are landed —
+**not** a precise-residual outcome. Landed + committed + 371-test
+regression green: **Path C** (§5c — SX_Q, −32 cols, `074aa0b`) and
+the **Path A column-overlay** (O0-Stage-1 SX gating + O0-Stage-2
+`verify_round` matmul-gating + O2 `SX_IN_BITS` alias, −128 cols,
+`TOTAL_TRACE_WIDTH` 2103 → 1975). The original §7 premise ("overlay
+`sx_stripe` first") was corrected by the de-risk (D1/D2/D3) to the
+landed mechanism above; rolling the overlay across the remaining
+gated SX runs is the only residual.
 
 ## 6. Files
 
