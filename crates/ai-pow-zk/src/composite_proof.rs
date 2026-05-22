@@ -1339,6 +1339,67 @@ mod tests {
         }
     }
 
+    /// **§4.C.10 — MAT_FREQ producer-planting adversarial test.**
+    /// `MAT_FREQ` is a free witness column. A malicious miner could
+    /// try to "plant" a phantom `noised_packed` producer — publish a
+    /// `(MAT_ID, NOISED_PACKED)` table entry with no balancing
+    /// consumer — by inflating a `MAT_FREQ` cell. A sound proof MUST
+    /// reject: `MAT_FREQ` feeds *only* the `noised_packed` LogUp, so
+    /// any value other than the one `populate_lookup_freq` computes
+    /// leaves the bus's global sum non-zero ⇒ the LogUp argument
+    /// fails to close ⇒ reject.
+    ///
+    /// The honest prover recomputes `MAT_FREQ` via
+    /// `populate_lookup_freq`, so this inlines the prove and tampers
+    /// `MAT_FREQ` *after* that step — exactly what a malicious
+    /// prover, controlling its own frequency pass, would do.
+    #[test]
+    fn sec_4c10_mat_freq_planted_producer_rejected() {
+        use crate::composite_full_air_with_lookups::CompositeFullAirWithLookupsPinned;
+        use crate::composite_layout::MAT_FREQ;
+        use p3_batch_stark::{prove_batch, ProverData, StarkInstance};
+        use p3_field::integers::QuotientMap;
+        use p3_field::PrimeField64;
+
+        let cfg = build_config(&test_zk_params(), &CircuitConfig::TEST_PEARL);
+        let pis = CompositePublicInputs::derive_from_matrix(&honest_trace().matrix);
+
+        // Honest control: an untampered trace proves + verifies.
+        let (ok_proof, ok_prog) =
+            composite_prove_pinned_logup(&cfg, honest_trace(), &pis);
+        composite_verify_pinned_logup(&cfg, &ok_prog, &ok_proof, &pis)
+            .expect("honest trace must verify");
+
+        // Attack: run the honest `populate_lookup_freq`, then plant a
+        // phantom producer by bumping `MAT_FREQ[0]`; prove WITHOUT
+        // re-populating (the malicious prover keeps its forged freq).
+        let mut t = honest_trace();
+        t.populate_lookup_freq();
+        let cur = t.matrix.values[MAT_FREQ].as_canonical_u64();
+        t.matrix.values[MAT_FREQ] =
+            <Val<AiPowStarkConfig> as QuotientMap<u64>>::from_int(cur.wrapping_add(1));
+        let program = extract_program(&t.matrix);
+        let air = CompositeFullAirWithLookupsPinned::new_with(program.clone(), true);
+        let instances = vec![StarkInstance {
+            air: &air,
+            trace: &t.matrix,
+            public_values: pis.to_vec(),
+        }];
+        let pd = ProverData::from_instances(&cfg, &instances);
+        let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let proof = prove_batch(&cfg, &instances, &pd);
+            composite_verify_pinned_logup(&cfg, &program, &proof, &pis)
+        }));
+        match res {
+            Ok(Ok(())) => panic!(
+                "§4.C.10: a planted noised_packed producer (inflated \
+                 MAT_FREQ) was ACCEPTED — the bus does not bind \
+                 producer multiplicity"
+            ),
+            Ok(Err(_)) | Err(_) => { /* rejected — correct */ }
+        }
+    }
+
     /// HIGH-2 keystone holds under Route A: a free (non-CUMSUM)
     /// winning jackpot message is rejected.
     #[test]
