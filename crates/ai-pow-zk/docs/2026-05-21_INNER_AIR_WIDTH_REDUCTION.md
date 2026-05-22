@@ -262,6 +262,37 @@ de-risk:
    counts updated to the new layout — that update IS the
    integration check).
 
+## 5b. The byte-XOR-lookup gadget has a table-height obstacle (de-risk finding, 2026-05-21)
+
+Designing the unified byte-XOR-lookup gadget surfaced a concrete
+feasibility wall:
+
+- A **byte**-XOR lookup table is `256 × 256 = 65 536` entries
+  `(a, b, a⊕b)`. A LogUp table must be materialised as that many
+  rows. The inner composite trace is `MIN_STARK_LEN = 8192` rows
+  (grows with workload). Embedding a 65 536-row table forces the
+  trace to **≥ 65 536 rows — 8× the baseline** ⇒ 8× the LDE ⇒
+  the prover gets *slower*, defeating the latency purpose, and
+  the inner proof grows. A *separate* 65 536-row table-table is
+  possible but is its own large commitment.
+- A **nibble**-XOR table is `16 × 16 = 256` entries — fits the
+  existing trace height trivially (the `URANGE8` table is
+  already 256 rows). But nibble decomposition gives only a **4×**
+  XOR-side width cut (32 bits → 8 nibbles), not 8×, and the
+  BLAKE3 rotate-by-7 is not nibble-aligned (`7 = 1 nibble + 3
+  bits`) ⇒ still needs sub-nibble handling.
+
+**Net:** the clean "−42% via byte-XOR-lookup" figure in §3 Path A
+is **not achievable as stated** — the byte table is
+trace-height-infeasible. The realistic ceiling is the
+nibble-table variant: a ~4× XOR-side reduction
+(BLAKE3 1024 bit-cols → ~256 nibble-cols, ~−768 cols / −36%
+trace) with the rotate-by-7 sub-nibble caveat, OR a separate
+byte-XOR table-table (a costing exercise of its own). This is
+the genuine, non-obvious research-grade obstacle that makes the
+inner-AIR width reduction a multi-session effort, not a
+session-scoped change.
+
 ## 5a. R1 status of this analysis drive
 
 This drive *attempted* the implementation and the de-risk step
