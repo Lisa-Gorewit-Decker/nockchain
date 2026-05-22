@@ -574,6 +574,139 @@ pub const TOTAL_TRACE_WIDTH: usize = MSG_PAIR_SEL_END;
 mod tests {
     use super::*;
 
+    /// **Inner composite-AIR column inventory (2026-05-21).**
+    ///
+    /// Exhaustive per-chip-group accounting of all `TOTAL_TRACE_WIDTH`
+    /// columns — the measurement underpinning the inner-AIR
+    /// width-reduction analysis (`docs/2026-05-21_INNER_AIR_WIDTH_REDUCTION.md`).
+    /// The 15 groups partition the trace; the test asserts (a) each
+    /// group's column count from the layout constants, (b) the groups
+    /// sum to `TOTAL_TRACE_WIDTH`, and (c) the dominant groups. Any
+    /// future layout change that shifts the per-group split trips this
+    /// test, keeping the width-reduction analysis honest.
+    ///
+    /// Run with `--nocapture` to print the breakdown table.
+    #[test]
+    fn inner_air_column_inventory() {
+        // Per-group column counts, derived from the layout constants.
+        let range_tables = NUM_RANGE_COLS; // 11
+        let control = NUM_CONTROL_COLS; // 22
+        let input_unpacking =
+            MAT_UNPACK_LEN + UINT8_DATA_LEN + NOISE_PACKED_PREP_LEN + NOISE_UNPACK_LEN; // 200
+        let noised_packed_indexing = NOISED_PACKED_LEN
+            + MAT_FREQ_LEN
+            + 1 // MAT_ID
+            + MAT_ID_LIMBS_LEN
+            + 1 // AB_ID_PREP
+            + AB_ID_LIMBS_LEN
+            + 1 // A_ID
+            + 1 // B_ID
+            + 1; // STARK_ROW_IDX
+        let matmul_tile =
+            A_NOISED_LEN + A_NOISED_UNPACK_LEN + B_NOISED_LEN + B_NOISED_UNPACK_LEN; // 80
+        let matmul_accum = CUMSUM_TILE_LEN + CUMSUM_BUFFER_LEN; // 8
+        let jackpot_state = JACKPOT_MSG_LEN + BIT_REG_LEN + JACKPOT_IDX_LEN; // 56
+        let blake3_buffers =
+            BLAKE3_MSG_BUFFER_LEN + 1 /* CV_OR_TWEAK_PREP */ + CV_IN_LEN + BLAKE3_MSG_LEN
+                + BLAKE3_CV_LEN; // 49
+        let blake3_round = BLAKE3_ROUND_LEN; // 1056
+        let blake3_output = CV_OUT_LEN; // 8
+        let jackpot_xbits = JACKPOT_X_BITS_LEN + JACKPOT_SLOT_SEL_LEN + 1 /* CV_OUT_FREQ */; // 49
+        let fold = 1 /* FOLD_IS_FOLD */
+            + FOLD_SLOT_SEL_LEN
+            + 1 /* FOLD_XSTEP */
+            + FOLD_XSTEP_BITS_LEN
+            + FOLD_STATE_LEN
+            + FOLD_MCUR_BITS_LEN
+            + 1; // FOLD_XOR_OUT
+        let sx = 1 /* SX_IS_ACTIVE */
+            + SX_LANE_SEL_LEN
+            + SX_IN_LEN
+            + SX_IN_BITS_LEN
+            + SX_XR_LEN
+            + SX_XR_SEL_BITS_LEN
+            + 1 /* SX_NEW_SEL */
+            + SX_NEW_SEL_BITS_LEN
+            + SX_Q_BITS_LEN;
+        let fold_stripe_sel = FOLD_STRIPE_SEL_LEN; // 64
+        let msg_pair_sel = MSG_PAIR_SEL_LEN; // 8
+
+        let groups: [(&str, usize); 15] = [
+            ("range_tables", range_tables),
+            ("control", control),
+            ("input_unpacking", input_unpacking),
+            ("noised_packed_indexing", noised_packed_indexing),
+            ("matmul_tile", matmul_tile),
+            ("matmul_accum", matmul_accum),
+            ("jackpot_state", jackpot_state),
+            ("blake3_buffers", blake3_buffers),
+            ("blake3_round", blake3_round),
+            ("blake3_output", blake3_output),
+            ("jackpot_xbits", jackpot_xbits),
+            ("fold", fold),
+            ("sx_stripe", sx),
+            ("fold_stripe_sel", fold_stripe_sel),
+            ("msg_pair_sel", msg_pair_sel),
+        ];
+
+        let sum: usize = groups.iter().map(|(_, n)| *n).sum();
+
+        std::eprintln!("\n=== INNER COMPOSITE-AIR COLUMN INVENTORY ===");
+        std::eprintln!("  {:<26} {:>6} {:>8}", "group", "cols", "% width");
+        std::eprintln!("  {}", "-".repeat(44));
+        let mut sorted = groups;
+        sorted.sort_by(|a, b| b.1.cmp(&a.1));
+        for (name, n) in sorted {
+            std::eprintln!(
+                "  {:<26} {:>6} {:>7.1}%",
+                name,
+                n,
+                100.0 * n as f64 / TOTAL_TRACE_WIDTH as f64
+            );
+        }
+        std::eprintln!("  {}", "-".repeat(44));
+        std::eprintln!("  {:<26} {:>6}", "TOTAL", sum);
+        std::eprintln!();
+
+        // (a) per-group pinned counts.
+        assert_eq!(range_tables, 11);
+        assert_eq!(control, 22);
+        assert_eq!(input_unpacking, 200);
+        assert_eq!(noised_packed_indexing, 35);
+        assert_eq!(matmul_tile, 80);
+        assert_eq!(matmul_accum, 8);
+        assert_eq!(jackpot_state, 56);
+        assert_eq!(blake3_buffers, 49);
+        assert_eq!(blake3_round, 1056);
+        assert_eq!(blake3_output, 8);
+        assert_eq!(jackpot_xbits, 49);
+        assert_eq!(fold, 99);
+        assert_eq!(sx, 390);
+        assert_eq!(fold_stripe_sel, 64);
+        assert_eq!(msg_pair_sel, 8);
+
+        // (b) the 15 groups exactly partition the trace.
+        assert_eq!(
+            sum, TOTAL_TRACE_WIDTH,
+            "inventory groups ({sum}) must sum to TOTAL_TRACE_WIDTH ({TOTAL_TRACE_WIDTH})"
+        );
+
+        // (c) the dominant group is the BLAKE3 round AIR — ~half the
+        // trace (49.5%). This is the primary inner-AIR width-reduction
+        // target. Of its 1056 columns, 1024 (4 snapshots × 2×128
+        // bit-decomposition rows) are full 32-bit bit-decompositions
+        // of the XOR-side state cells — the single largest reducible
+        // structure in the inner AIR.
+        assert!(
+            blake3_round * 100 >= TOTAL_TRACE_WIDTH * 49,
+            "blake3_round ({blake3_round}) should be ≥49% of the {TOTAL_TRACE_WIDTH}-col trace"
+        );
+        assert!(
+            (blake3_round + sx) * 100 >= TOTAL_TRACE_WIDTH * 67,
+            "blake3_round + sx_stripe should be ≥67% of the trace (the two reduction targets)"
+        );
+    }
+
     /// Phase-2 / Phase-2.5 const-pinning anchor: any reshuffling
     /// of the layout triggers this test, forcing the constraint
     /// code / trace generator / lookups to update in lockstep.
