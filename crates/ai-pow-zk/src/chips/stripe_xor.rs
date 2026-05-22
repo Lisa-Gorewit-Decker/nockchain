@@ -214,16 +214,28 @@ impl StripeXorChip {
     pub fn eval_at<AB: AirBuilder>(builder: &mut AB, off: &StripeXorOffsets) {
         let two = <AB::F as PrimeCharacteristicRing>::TWO;
 
-        // ---- Per-row structural constraints ----
+        // ---- IS_ACTIVE boolean — UNGATED ----
+        // The activity selector gates the data-validation
+        // constraints below and implicitly drives the ungated
+        // cross-row passthrough; it must be unconditionally boolean.
         {
             let main = builder.main();
             let cur = main.current_slice();
+            builder.assert_bool(cur[off.is_active]);
+        }
 
-            let is_active = cur[off.is_active];
-            builder.assert_bool(is_active);
-
-            // LANE_SEL: each boolean, Σ == IS_ACTIVE (one-hot on
-            // active rows, all-zero on padding).
+        // ---- LANE_SEL structural constraints — UNGATED ----
+        // LANE_SEL is boolean + one-hot (Σ == IS_ACTIVE) on every
+        // row. The cross-row register passthrough (also ungated,
+        // below) reads LANE_SEL to pick the updating lane; gating
+        // LANE_SEL would let a prover set LANE_SEL = 1 on an
+        // inactive row and corrupt the XR passthrough — a forgery
+        // of the §6(b) binding. Ungated, IS_ACTIVE = 0 on an
+        // inactive row forces Σ LANE_SEL = 0 ⇒ all LANE_SEL = 0,
+        // exactly the zero-default the passthrough relies on.
+        {
+            let main = builder.main();
+            let cur = main.current_slice();
             let mut sel_sum: AB::Expr = <AB::Expr as PrimeCharacteristicRing>::ZERO;
             for s in 0..cols::LANE_SEL_LEN {
                 let sel = cur[off.lane_sel + s];
@@ -231,6 +243,47 @@ impl StripeXorChip {
                 sel_sum = sel_sum + sel.into();
             }
             builder.assert_eq(sel_sum, cur[off.is_active].into());
+        }
+
+        // ---- Q range check — UNGATED (degree-3 cubic) ----
+        // Q[i] ∈ {0,1,2} via the cubic Q·(Q−1)·(Q−2) = 0. This is
+        // already degree 3 — the composite's pinned constraint-
+        // degree budget (`circuit.rs` `CircuitConfig`) — so it
+        // CANNOT be wrapped in a degree-1 IS_ACTIVE gate without
+        // overflowing to degree 4 (Path A / §7.1 finding D3). It
+        // stays ungated; the Q columns are therefore NOT overlay-
+        // eligible and must stay dedicated + zero on inactive rows
+        // (which keeps this ungated cubic trivially satisfied).
+        {
+            let main = builder.main();
+            let cur = main.current_slice();
+            for i in 0..32 {
+                let q: AB::Expr = cur[off.q + i].into();
+                let one = <AB::Expr as PrimeCharacteristicRing>::ONE;
+                builder.assert_zero(
+                    q.clone() * (q.clone() - one) * (q.clone() - two.clone()),
+                );
+            }
+        }
+
+        // ---- Per-row data-validation constraints — GATED by IS_ACTIVE ----
+        // The column groups validated here — IN, IN_BITS,
+        // XR_SEL_BITS, NEW_SEL, NEW_SEL_BITS — are checked intra-row
+        // only and read by no ungated cross-row constraint (the
+        // SX_IN transport in `eval_composite` is itself IS_ACTIVE-
+        // gated). Gating is therefore sound: on an inactive row this
+        // data is both unconstrained and unread. It also makes the
+        // bit-decomposition groups overlay-eligible (Path A / §7.1
+        // stage O2). Each constraint here is degree ≤ 2 ungated ⇒
+        // ≤ 3 gated — within the composite's degree-3 budget.
+        {
+            let is_active: AB::Expr = {
+                let main = builder.main();
+                main.current_slice()[off.is_active].into()
+            };
+            let mut b = builder.when(is_active);
+            let main = b.main();
+            let cur = main.current_slice();
 
             // Each IN cell is the **signed i32** matmul accumulator
             // value (the matmul chip stores `CUMSUM` via
@@ -248,13 +301,13 @@ impl StripeXorChip {
                 let mut pow: AB::F = <AB::F as PrimeCharacteristicRing>::ONE;
                 for i in 0..32 {
                     let bit = cur[off.in_bits + c * 32 + i];
-                    builder.assert_bool(bit);
+                    b.assert_bool(bit);
                     recon = recon + bit.into() * pow.clone();
                     pow = pow * two.clone();
                 }
                 let sign: AB::Expr =
                     cur[off.in_bits + c * 32 + 31].into() * two_pow_32.clone();
-                builder.assert_eq(cur[off.in_cells + c].into(), recon - sign);
+                b.assert_eq(cur[off.in_cells + c].into(), recon - sign);
             }
 
             // XR_SEL_BITS must be the bit-decomposition of the
@@ -264,7 +317,7 @@ impl StripeXorChip {
             let mut powx: AB::F = <AB::F as PrimeCharacteristicRing>::ONE;
             for i in 0..32 {
                 let bit = cur[off.xr_sel_bits + i];
-                builder.assert_bool(bit);
+                b.assert_bool(bit);
                 sel_recon = sel_recon + bit.into() * powx.clone();
                 powx = powx * two.clone();
             }
@@ -273,40 +326,32 @@ impl StripeXorChip {
                 sel_val =
                     sel_val + cur[off.lane_sel + s].into() * cur[off.xr + s].into();
             }
-            builder.assert_eq(sel_recon, sel_val);
+            b.assert_eq(sel_recon, sel_val);
 
             // NEW_SEL == Σ NEW_SEL_BITS[i]·2^i (bits boolean).
             let mut new_recon: AB::Expr = <AB::Expr as PrimeCharacteristicRing>::ZERO;
             let mut pown: AB::F = <AB::F as PrimeCharacteristicRing>::ONE;
             for i in 0..32 {
                 let bit = cur[off.new_sel_bits + i];
-                builder.assert_bool(bit);
+                b.assert_bool(bit);
                 new_recon = new_recon + bit.into() * pown.clone();
                 pown = pown * two.clone();
             }
-            builder.assert_eq(cur[off.new_sel].into(), new_recon);
+            b.assert_eq(cur[off.new_sel].into(), new_recon);
 
             // Per output bit i: parity of the 5 contributing bits
             // (selected XR lane + the IN_LEN input cells) ==
-            // NEW_SEL_BITS[i] + 2·Q[i], Q range-bounded.
+            // NEW_SEL_BITS[i] + 2·Q[i]. Q is range-bounded by the
+            // ungated cubic above; this parity equation then pins
+            // NEW_SEL_BITS to the true XOR. Degree 1 ⇒ 2 gated.
             for i in 0..32 {
                 let mut col_sum: AB::Expr = cur[off.xr_sel_bits + i].into();
                 for c in 0..IN_LEN {
                     col_sum = col_sum + cur[off.in_bits + c * 32 + i].into();
                 }
-                // Q[i] ∈ {0,1,2} — one value column, range-bounded by
-                // the cubic Q·(Q−1)·(Q−2)=0 (degree 3; replaces the
-                // prior 2-boolean-column QBITS decomposition — the
-                // 2026-05-21 width reduction). On inactive rows every
-                // SX column is 0 ⇒ Q=0 ⇒ the cubic holds trivially,
-                // so no `is_active` gate is needed.
-                let q: AB::Expr = cur[off.q + i].into();
-                let one = <AB::Expr as PrimeCharacteristicRing>::ONE;
-                builder.assert_zero(
-                    q.clone() * (q.clone() - one) * (q.clone() - two.clone()),
-                );
                 let nbit = cur[off.new_sel_bits + i];
-                builder.assert_eq(col_sum, nbit.into() + q * two.clone());
+                let q: AB::Expr = cur[off.q + i].into();
+                b.assert_eq(col_sum, nbit.into() + q * two.clone());
             }
         }
 
