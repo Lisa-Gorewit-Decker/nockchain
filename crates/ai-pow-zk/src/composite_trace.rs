@@ -76,7 +76,7 @@ use crate::composite_layout::{
     FOLD_IS_FOLD, FOLD_MCUR_BITS_START, FOLD_SLOT_SEL_START, FOLD_STATE_START,
     FOLD_XOR_OUT, FOLD_XSTEP, FOLD_XSTEP_BITS_START,
     FOLD_STRIPE_SEL_START, STRIPE_MAX, SX_IN_BITS_START, SX_IN_START, SX_IS_ACTIVE,
-    SX_LANE_SEL_START, SX_NEW_SEL, SX_NEW_SEL_BITS_START, SX_Q_BITS_START,
+    SX_LANE_SEL_START, SX_NEW_SEL, SX_NEW_SEL_BITS_START, SX_Q_START,
     SX_XR_SEL_BITS_START, SX_XR_START,
     TOTAL_TRACE_WIDTH, UINT8_DATA_WIN, UINT8_DATA_START, URANGE13_FREQ, URANGE8_FREQ,
 };
@@ -1710,12 +1710,10 @@ impl CompositeTrace {
                                     col_sum += (cumsum_new[c] as u32 >> i) & 1;
                                 }
                                 let q = (col_sum - ((new_sel >> i) & 1)) / 2;
-                                for b in 0..2 {
-                                    rs[SX_Q_BITS_START + i * 2 + b] =
-                                        <Val as QuotientMap<u64>>::from_int(
-                                            ((q >> b) & 1) as u64,
-                                        );
-                                }
+                                // 2026-05-21 width reduction: Q[i] ∈ {0,1,2}
+                                // stored as one value column (was 2 bits).
+                                rs[SX_Q_START + i] =
+                                    <Val as QuotientMap<u64>>::from_int(q as u64);
                             }
                             xr[step] = new_sel;
                         }

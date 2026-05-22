@@ -507,11 +507,15 @@ pub const SX_NEW_SEL: usize = SX_XR_SEL_BITS_START + SX_XR_SEL_BITS_LEN;
 /// 32 LE bits of `SX_NEW_SEL`.
 pub const SX_NEW_SEL_BITS_START: usize = SX_NEW_SEL + 1;
 pub const SX_NEW_SEL_BITS_LEN: usize = 32;
-/// `QBITS = 2` parity-quotient bits per output bit position.
-pub const SX_Q_BITS_START: usize = SX_NEW_SEL_BITS_START + SX_NEW_SEL_BITS_LEN;
-pub const SX_Q_BITS_LEN: usize = 32 * 2;
+/// Parity quotient — one value column per output-bit position,
+/// `Q[i] ∈ {0,1,2}`, range-bounded by the cubic `Q(Q−1)(Q−2)=0`.
+/// **2026-05-21 width reduction:** was `32 × 2` boolean columns
+/// (`SX_Q_BITS`); reclaimed 32 columns by storing the value
+/// directly. See `chips::stripe_xor`.
+pub const SX_Q_START: usize = SX_NEW_SEL_BITS_START + SX_NEW_SEL_BITS_LEN;
+pub const SX_Q_LEN: usize = 32;
 /// End-of-StripeXor cursor.
-pub const SX_END: usize = SX_Q_BITS_START + SX_Q_BITS_LEN;
+pub const SX_END: usize = SX_Q_START + SX_Q_LEN;
 
 // =====================================================================
 //  HIGH-2.2 §6(b)-G2 — per-fold-row stripe selector
@@ -627,7 +631,7 @@ mod tests {
             + SX_XR_SEL_BITS_LEN
             + 1 /* SX_NEW_SEL */
             + SX_NEW_SEL_BITS_LEN
-            + SX_Q_BITS_LEN;
+            + SX_Q_LEN;
         let fold_stripe_sel = FOLD_STRIPE_SEL_LEN; // 64
         let msg_pair_sel = MSG_PAIR_SEL_LEN; // 8
 
@@ -681,7 +685,9 @@ mod tests {
         assert_eq!(blake3_output, 8);
         assert_eq!(jackpot_xbits, 49);
         assert_eq!(fold, 99);
-        assert_eq!(sx, 390);
+        // sx_stripe: 358 post-2026-05-21 SX_Q width reduction
+        // (was 390 — SX_Q_BITS 64 cols → SX_Q 32 cols).
+        assert_eq!(sx, 358);
         assert_eq!(fold_stripe_sel, 64);
         assert_eq!(msg_pair_sel, 8);
 
@@ -983,13 +989,13 @@ mod tests {
             ),
             (
                 SX_NEW_SEL_BITS_START + SX_NEW_SEL_BITS_LEN,
-                SX_Q_BITS_START,
-                "SX_NEW_SEL_BITS → SX_Q_BITS",
+                SX_Q_START,
+                "SX_NEW_SEL_BITS → SX_Q",
             ),
             (
-                SX_Q_BITS_START + SX_Q_BITS_LEN,
+                SX_Q_START + SX_Q_LEN,
                 FOLD_STRIPE_SEL_START,
-                "SX_Q_BITS → FOLD_STRIPE_SEL",
+                "SX_Q → FOLD_STRIPE_SEL",
             ),
             (
                 FOLD_STRIPE_SEL_START + FOLD_STRIPE_SEL_LEN,

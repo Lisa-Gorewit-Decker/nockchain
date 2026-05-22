@@ -41,11 +41,17 @@
 //!   XR[lane]_bit[i] + Σ_{c<4} IN_bit[c][i]  ==  NEW_bit[i] + 2·Q[i]
 //! ```
 //!
-//! with `NEW_bit[i]` boolean and `Q[i]` range-bounded by a
-//! `QBITS`-bit decomposition (column sum ≤ 5 ⇒ `Q ≤ 2`, so
-//! `QBITS = 2` is a safe bound). Every constraint is degree ≤ 2
-//! and lives in plain `p3-uni-stark` — the same audited gadget
-//! shape as [`crate::chips::xstep`] / the FoldChip's rotl13-XOR.
+//! with `NEW_bit[i]` boolean and `Q[i]` range-bounded to
+//! `{0,1,2}` (column sum ≤ 5 ⇒ `NEW_bit + 2·Q ≤ 5` ⇒ `Q ≤ 2`).
+//!
+//! **2026-05-21 width reduction.** `Q[i]` is one value column per
+//! output-bit position, range-constrained by the cubic
+//! `Q·(Q−1)·(Q−2) = 0` — replacing the prior 2-boolean-column
+//! decomposition (which over-provisioned the range to `{0,1,2,3}`
+//! and cost double the width). 32 columns reclaimed. The cubic is
+//! degree 3 — within the composite AIR's budget (Pearl pins
+//! `constraint_degree = 3`). All constraints live in plain
+//! `p3-uni-stark`.
 //!
 //! Self-contained: `ai-pow-zk` must NOT depend on `ai-pow`
 //! (dependency cycle). The reference is a local hand-rolled
@@ -73,14 +79,10 @@ pub const STATE_LEN: usize = 64;
 /// Accumulator cells folded per row (the in-circuit micro-tile's
 /// `CUMSUM_TILE_LEN`).
 pub const IN_LEN: usize = 4;
-/// Quotient bound bits: per output bit the column sum is at most
-/// `1 (XR lane) + IN_LEN (= 4) = 5`, so `Q ≤ 2`; 2 bits (0..3) is
-/// a safe bound.
-pub const QBITS: usize = 2;
 
 /// Chip-local column offsets.
 pub mod cols {
-    use super::{IN_LEN, QBITS, STATE_LEN};
+    use super::{IN_LEN, STATE_LEN};
 
     /// 1 = active fold row, 0 = padding/passthrough.
     pub const IS_ACTIVE: usize = 0;
@@ -105,10 +107,22 @@ pub mod cols {
     /// 32 LE bits of `NEW_SEL`.
     pub const NEW_SEL_BITS: usize = NEW_SEL + 1;
     pub const NEW_SEL_BITS_LEN: usize = 32;
-    /// `QBITS` parity-quotient bits per output bit position.
-    pub const Q_BITS: usize = NEW_SEL_BITS + NEW_SEL_BITS_LEN;
-    pub const Q_BITS_LEN: usize = 32 * QBITS;
-    pub const ROW_W: usize = Q_BITS + Q_BITS_LEN;
+    /// Parity quotient per output bit position. `Q[i] ∈ {0,1,2}`
+    /// (the column sum of 5 contributing bits is ≤ 5, and
+    /// `col_sum = NEW_bit + 2·Q` with `NEW_bit ∈ {0,1}` ⇒ `Q ≤ 2`).
+    ///
+    /// **2026-05-21 width reduction.** Stored as ONE value column
+    /// per output-bit position, range-constrained by the cubic
+    /// `Q·(Q−1)·(Q−2) = 0`. This replaces the prior `QBITS = 2`
+    /// boolean columns per position (`Q_BITS_LEN = 64`), which
+    /// over-provisioned the range to `{0,1,2,3}` and cost 2× the
+    /// width. The cubic is degree-3 — within the composite AIR's
+    /// degree budget (Pearl pins `constraint_degree = 3`; the
+    /// `TEST_PEARL` `log_blowup = 2` tier admits degree 4). Net:
+    /// `Q_LEN = 32` vs the prior 64 — 32 columns reclaimed.
+    pub const Q: usize = NEW_SEL_BITS + NEW_SEL_BITS_LEN;
+    pub const Q_LEN: usize = 32;
+    pub const ROW_W: usize = Q + Q_LEN;
 }
 
 /// Zero-sized chip type.
@@ -127,7 +141,7 @@ pub struct StripeXorOffsets {
     pub xr_sel_bits: usize,
     pub new_sel: usize,
     pub new_sel_bits: usize,
-    pub q_bits: usize,
+    pub q: usize,
 }
 
 impl StripeXorChip {
@@ -140,7 +154,7 @@ impl StripeXorChip {
         xr_sel_bits: cols::XR_SEL_BITS,
         new_sel: cols::NEW_SEL,
         new_sel_bits: cols::NEW_SEL_BITS,
-        q_bits: cols::Q_BITS,
+        q: cols::Q,
     };
 
     /// Composite-trace offsets (HIGH-2.2 §6(b) wiring) — the
@@ -155,7 +169,7 @@ impl StripeXorChip {
         xr_sel_bits: crate::composite_layout::SX_XR_SEL_BITS_START,
         new_sel: crate::composite_layout::SX_NEW_SEL,
         new_sel_bits: crate::composite_layout::SX_NEW_SEL_BITS_START,
-        q_bits: crate::composite_layout::SX_Q_BITS_START,
+        q: crate::composite_layout::SX_Q_START,
     };
 
     /// Composite-layout entry point: the chip-internal XOR
@@ -280,14 +294,17 @@ impl StripeXorChip {
                 for c in 0..IN_LEN {
                     col_sum = col_sum + cur[off.in_bits + c * 32 + i].into();
                 }
-                let mut q: AB::Expr = <AB::Expr as PrimeCharacteristicRing>::ZERO;
-                let mut powq: AB::F = <AB::F as PrimeCharacteristicRing>::ONE;
-                for b in 0..QBITS {
-                    let qbit = cur[off.q_bits + i * QBITS + b];
-                    builder.assert_bool(qbit);
-                    q = q + qbit.into() * powq.clone();
-                    powq = powq * two.clone();
-                }
+                // Q[i] ∈ {0,1,2} — one value column, range-bounded by
+                // the cubic Q·(Q−1)·(Q−2)=0 (degree 3; replaces the
+                // prior 2-boolean-column QBITS decomposition — the
+                // 2026-05-21 width reduction). On inactive rows every
+                // SX column is 0 ⇒ Q=0 ⇒ the cubic holds trivially,
+                // so no `is_active` gate is needed.
+                let q: AB::Expr = cur[off.q + i].into();
+                let one = <AB::Expr as PrimeCharacteristicRing>::ONE;
+                builder.assert_zero(
+                    q.clone() * (q.clone() - one) * (q.clone() - two.clone()),
+                );
                 let nbit = cur[off.new_sel_bits + i];
                 builder.assert_eq(col_sum, nbit.into() + q * two.clone());
             }
@@ -424,17 +441,15 @@ pub fn build_trace(events: &[(usize, [i32; IN_LEN])]) -> RowMajorMatrix<Val> {
         row[cols::NEW_SEL] = <Val as QuotientMap<u64>>::from_int(new_sel as u64);
         set_bits(row, cols::NEW_SEL_BITS, new_sel);
 
-        // Q[i] = (XR_sel_bit[i] + Σ_c IN_bit[c][i] − NEW_bit[i]) / 2.
+        // Q[i] = (XR_sel_bit[i] + Σ_c IN_bit[c][i] − NEW_bit[i]) / 2
+        // ∈ {0,1,2}, written to a single value column per position.
         for i in 0..32 {
             let mut col_sum: u32 = (sel_val >> i) & 1;
             for c in 0..IN_LEN {
                 col_sum += (in4[c] as u32 >> i) & 1;
             }
             let q = (col_sum - ((new_sel >> i) & 1)) / 2;
-            for b in 0..QBITS {
-                row[cols::Q_BITS + i * QBITS + b] =
-                    <Val as QuotientMap<u64>>::from_int(((q >> b) & 1) as u64);
-            }
+            row[cols::Q + i] = <Val as QuotientMap<u64>>::from_int(q as u64);
         }
 
         xr[lane] = new_sel;
@@ -621,14 +636,16 @@ mod tests {
     }
 
     #[test]
-    fn rejects_out_of_range_q_bit() {
+    fn rejects_out_of_range_q() {
         let c = cfg();
         let mut t = honest();
-        t.values[cols::Q_BITS] = <Val as QuotientMap<u64>>::from_int(2);
+        // Q[0] = 3 is outside the valid range {0,1,2} — the cubic
+        // range constraint Q·(Q−1)·(Q−2)=0 must reject it.
+        t.values[cols::Q] = <Val as QuotientMap<u64>>::from_int(3);
         let p = prove::<AiPowStarkConfig, _>(&c, &StripeXorChip, t, &[]);
         assert!(
             verify::<AiPowStarkConfig, _>(&c, &StripeXorChip, &p, &[]).is_err(),
-            "non-boolean Q bit must reject"
+            "out-of-range Q (= 3) must reject"
         );
     }
 

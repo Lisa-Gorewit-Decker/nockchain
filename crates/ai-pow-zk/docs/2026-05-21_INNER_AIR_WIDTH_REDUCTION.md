@@ -326,6 +326,84 @@ conclusions, and the Path C / Path A de-risk plan. The Path C
 next dedicated drive — which, per R1.1, must drive it (the
 design + de-risk now exist) rather than re-analyze.
 
+## 5c. LANDED — SX_Q width reduction (−32 cols, 2026-05-21)
+
+A concrete bounded reduction *was* found and landed inside the SX
+block, missed by the first-pass analysis. The SX parity gadget's
+quotient `Q[i]` is a **bounded value** (`∈ {0,1,2}`), not an XOR
+operand — it was stored as `QBITS = 2` boolean columns per
+output-bit position (`SX_Q_BITS`, 64 cols), which over-provisions
+the range to `{0,1,2,3}`. Replaced with **one value column per
+position** (`SX_Q`, 32 cols) range-bounded by the cubic
+`Q·(Q−1)·(Q−2) = 0`:
+
+- −32 columns (`TOTAL_TRACE_WIDTH` 2135 → 2103, −1.5%).
+- Constraint degree on that gadget 2 → 3 — within the composite
+  AIR's budget (Pearl pins `constraint_degree = 3`).
+- Soundness *tighter*: the cubic constrains exactly `{0,1,2}`,
+  vs the 2-bit form's `{0,1,2,3}`.
+- Validated: 8/8 SX chip tests (incl. the re-pointed
+  `rejects_out_of_range_q` tamper test, Q = 3), the
+  `inner_air_column_inventory` test (`sx` pin 390 → 358), the
+  full ai-pow-zk lib regression.
+
+This is the "store the bounded value, not its bits" pattern (the
+same shape as the outer-cert Angle A A-column elimination). It is
+the *only* such derivable-column win in the SX block — the other
+256 SX bit columns are genuine XOR machinery (§3 Path C).
+
+## 7. The big lever — column overlay / activity-multiplexing (maintainer direction, 2026-05-21)
+
+> Maintainer: *"reuse existing space by adding a column that
+> switches a section's purpose."*
+
+This is a stronger architecture than the §3 byte-XOR-lookup
+redesign and **needs no new gadget, table, or rotation handling**.
+
+**Observation.** Every composite-AIR row performs exactly *one*
+activity — a matmul step, *or* a BLAKE3 round, *or* a jackpot
+step, *or* a stripe-XOR fold. The per-activity selector bits
+(`IS_HASH_A`, `IS_MSG_MAT`, `SX_IS_ACTIVE`, `FOLD_IS_FOLD`, the
+matmul selectors) already gate which constraints fire. But the
+*columns* are all dedicated: the 1056 BLAKE3 columns sit inert on
+a matmul row, the 358 SX columns sit inert on a BLAKE3 row, etc.
+
+**The overlay.** Mutually-exclusive chips can *share physical
+columns* — overlay the smaller chip regions (`sx_stripe` 358,
+`fold` 99, `jackpot_*` ~105, `matmul_tile` 80, …) onto sub-windows
+of the largest region (`blake3_round`, 1056). The activity
+selector already in the trace picks the interpretation. Ceiling:
+collapse ~650+ chip-specific columns into the BLAKE3 region ⇒
+**~−30% inner trace width**, comparable to the §3 Path A target
+but with no XOR-gadget redesign.
+
+**Soundness requirements (the R1 de-risk targets):**
+
+1. **Mutual exclusion** — must *constrain* (not assume) that at
+   most one overlaid chip's selector is 1 per row.
+2. **Full gating** — every constraint of each overlaid chip must
+   be gated by that chip's selector, so an overlaid foreign
+   chip's data is vacuous to it. Any ungated constraint breaks
+   the overlay. (`stripe_xor::eval_at`'s constraints are
+   self-satisfying at all-zero — that property must hold, or be
+   made to hold, for every overlaid chip.)
+3. **Trace-gen** — the active chip writes the shared region; the
+   "zero-default" discipline several layout blocks rely on
+   changes and must be re-audited.
+4. **Activity granularity** — confirm no row legitimately needs
+   two activities at once (e.g. a BLAKE3 row that also carries a
+   matmul-accumulator passthrough). Any genuine co-occurrence
+   blocks overlaying those two.
+
+This is the recommended big-win path. It is invasive
+(soundness-critical, touches every overlaid chip's column
+addressing + the mutual-exclusion proof) but it is *bounded and
+mechanical* per chip — a far better risk profile than the
+research-grade byte-XOR-lookup redesign of §3 Path A. Recommended
+staging: overlay one chip pair first (e.g. `sx_stripe` onto a
+BLAKE3 sub-window), KAT + full-regression-gated, then roll across
+the remaining mutually-exclusive chips.
+
 ## 6. Files
 
 - `crates/ai-pow-zk/src/composite_layout.rs`: added
