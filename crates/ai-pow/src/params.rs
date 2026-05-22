@@ -39,10 +39,12 @@
 
 use thiserror::Error;
 
-/// Pearl §4.8 verifier trace restriction `k·(h+w) ≤ 2²²`. With
-/// square `tile×tile` tiles `h = w = tile`. This bounds the Layer-0
-/// trace so one opened tile always proves in a single STARK
-/// (Pearl-faithful — no segmentation).
+/// Pearl §4.8 *whitepaper* trace proxy `k·(h+w) ≤ 2²²` (square
+/// tiles ⇒ `h = w = tile`). NOTE: this is the whitepaper's stated
+/// bound, but it is NOT the quantity that bounds the Layer-0 trace —
+/// Pearl's reference `expected_num_rows` scales as `h·w·(k/r)`, not
+/// `k·(h+w)`. The cap that actually keeps one tile in one STARK is
+/// the reference prover's per-tile `h·w ≤ 256` ([`PEARL_HW_MAX`]).
 pub const PEARL_TRACE_BOUND: u64 = 1 << 22;
 /// Pearl §4.8 common-dimension cap `k ≤ 2¹⁶`.
 pub const PEARL_K_MAX: u32 = 1 << 16;
@@ -53,6 +55,14 @@ pub const PEARL_R_MAX: u32 = 1 << 10;
 pub const PEARL_MN_MAX: u32 = 1 << 24;
 /// Pearl §4.8 entropy floor `h·w ≥ 32` (sufficient entropy in `M`).
 pub const PEARL_HW_MIN: u64 = 32;
+/// Pearl per-tile cap `h·w ≤ 256`. NOT in the whitepaper §4.8 text,
+/// but hard-enforced by Pearl's reference prover
+/// (`structure_matmul_in_stark` in `pearl/zk-pow/src/circuit/
+/// pearl_program.rs`: `ensure!(h * w <= 256)`). Because the real
+/// Layer-0 trace scales as `h·w·(k/r)`, this — not the whitepaper's
+/// `k·(h+w)` proxy — is the cap that actually keeps one opened tile
+/// in one STARK. Square tiles ⇒ `tile² ≤ 256`, i.e. `tile ≤ 16`.
+pub const PEARL_HW_MAX: u64 = 256;
 
 /// Parameters of a Pearl-style matmul PoW puzzle.
 ///
@@ -93,14 +103,19 @@ impl MatmulParams {
         difficulty_bits: 0,
     };
 
-    /// Production profile: 4096^3 INT8 matmul, 128-tile, 80 spot checks.
+    /// Production profile: 4096^3 INT8 matmul, 8-tile, 80 spot checks.
     /// `r = 64` so `16r = 1024 <= k = 4096 <= 4r^2 = 16384` (Pearl §4.8 OK).
+    /// `tile = 8` ⇒ `h·w = 64` — Pearl's reference `default_mining_config`
+    /// tile, well inside the `h·w ≤ 256` cap ([`PEARL_HW_MAX`]); the prior
+    /// `tile = 128` (`h·w = 16384`) was 256× over what Pearl mines per
+    /// block. `tile = 16` (`h·w = 256`, the cap) is also envelope-valid —
+    /// either config is supported; 8 is the lower-latency default.
     pub const PROD: Self = Self {
         m: 4096,
         k: 4096,
         n: 4096,
         noise_rank: 64,
-        tile: 128,
+        tile: 8,
         spot_checks: 80,
         difficulty_bits: 0,
     };
@@ -112,7 +127,7 @@ impl MatmulParams {
         k: 5376,
         n: 21504,
         noise_rank: 64,
-        tile: 64,
+        tile: 8,
         spot_checks: 80,
         difficulty_bits: 0,
     };
@@ -123,7 +138,7 @@ impl MatmulParams {
         k: 5120,
         n: 17408,
         noise_rank: 64,
-        tile: 64,
+        tile: 8,
         spot_checks: 80,
         difficulty_bits: 0,
     };
@@ -146,7 +161,7 @@ impl MatmulParams {
         k: 4096, // hidden_size
         n: 14336, // intermediate_size
         noise_rank: 64,
-        tile: 64,
+        tile: 8,
         spot_checks: 80,
         difficulty_bits: 0,
     };
@@ -164,7 +179,7 @@ impl MatmulParams {
     /// retained **only as a §4.8 trace-bound *sizing reference***
     /// (the binding largest-`k` envelope-math case: `16r ≤ k ≤
     /// 4r²` with `r = 64` ⇒ `1024 ≤ 14336 ≤ 16384` ✓; `64 |
-    /// 14336` ✓; `k·2·tile = 1 835 008 ≤ 2²²` ✓) — it is a valid
+    /// 14336` ✓; `k·2·tile = 229 376 ≤ 2²²` ✓) — it is a valid
     /// `validate_prod_envelope` *shape*, but mining it for this
     /// model would prove an FP8 layer, which production must not
     /// do. The mineable group_1 INT7 GEMMs are
@@ -175,7 +190,7 @@ impl MatmulParams {
         k: 14336, // intermediate_size
         n: 4096, // hidden_size
         noise_rank: 64,
-        tile: 64,
+        tile: 8,
         spot_checks: 80,
         difficulty_bits: 0,
     };
@@ -183,14 +198,14 @@ impl MatmulParams {
     /// Generic LLM-FFN profile builder. `batch_seq` is the M dimension (the
     /// product of mini-batch and sequence length the GEMM kernel sees);
     /// `hidden` and `intermediate` are the two model dimensions for the FFN
-    /// gate / up matmul. Picks `tile = 64`, `r = 64`, `sigma = 80`.
+    /// gate / up matmul. Picks `tile = 8`, `r = 64`, `sigma = 80`.
     pub const fn llm_ffn(hidden: u32, intermediate: u32, batch_seq: u32) -> Self {
         Self {
             m: batch_seq,
             k: hidden,
             n: intermediate,
             noise_rank: 64,
-            tile: 64,
+            tile: 8,
             spot_checks: 80,
             difficulty_bits: 0,
         }
@@ -276,6 +291,7 @@ impl MatmulParams {
     /// * `16r ≤ k ≤ 4r²` (the §4.8 security band)
     /// * `64 | k` (commitment-hash alignment)
     /// * `h·w ≥ 32` (entropy in `M`; square tiles ⇒ `tile² ≥ 32`)
+    /// * `h·w ≤ 256` (Pearl reference-prover per-tile cap ⇒ `tile ≤ 16`)
     ///
     /// Within this envelope Pearl proves one opened tile in a single
     /// STARK — which is exactly why the Pearl-faithful PROD path
@@ -300,6 +316,14 @@ impl MatmulParams {
         // h·w ≥ 32 with square tiles (h = w = tile).
         if (self.tile as u64) * (self.tile as u64) < PEARL_HW_MIN {
             return Err(ParamError::TileEntropyTooLow);
+        }
+        // h·w ≤ 256 — Pearl's reference prover (`structure_matmul_in_stark`)
+        // hard-rejects `h·w > 256`. The whitepaper §4.8 omits this cap, so
+        // the prior envelope (whitepaper `k·(h+w) ≤ 2²²` only) wrongly
+        // admitted `tile = 64` (`h·w = 4096`) — inflating the Layer-0
+        // trace ~16× over what Pearl proves per block. See `PEARL_HW_MAX`.
+        if (self.tile as u64) * (self.tile as u64) > PEARL_HW_MAX {
+            return Err(ParamError::TileTooLarge);
         }
         Ok(())
     }
@@ -456,7 +480,7 @@ impl LlamaFfnLayer {
             k,
             n,
             noise_rank: 64,
-            tile: 64,
+            tile: 8,
             spot_checks: 80,
             difficulty_bits: 0,
         };
@@ -487,6 +511,8 @@ pub enum ParamError {
     KNotAlignedTo64,
     #[error("tile^2 (= h·w) must be >= 32 (Pearl §4.8 entropy floor for M)")]
     TileEntropyTooLow,
+    #[error("tile^2 (= h·w) must be <= 256 (Pearl reference-prover per-tile cap)")]
+    TileTooLarge,
     #[error("noise_rank must be in 1..=k")]
     NoiseRankOutOfRange,
     #[error("noise_rank must divide k")]
@@ -581,9 +607,9 @@ mod tests {
     #[test]
     fn llm_profiles_have_padded_merkle() {
         let p = MatmulParams::GEMMA_4_31B_FFN;
-        assert_eq!(p.row_tiles(), 64); // 4096 / 64
-        assert_eq!(p.col_tiles(), 336); // 21504 / 64
-        assert_eq!(p.num_tiles(), 64 * 336);
+        assert_eq!(p.row_tiles(), 512); // 4096 / 8
+        assert_eq!(p.col_tiles(), 2688); // 21504 / 8
+        assert_eq!(p.num_tiles(), 512 * 2688);
         assert!(!p.num_tiles().is_power_of_two());
         assert_eq!(p.num_tiles_padded(), p.num_tiles().next_power_of_two());
     }
@@ -712,7 +738,7 @@ mod tests {
     /// (built by perturbing the known-good PROD preset minimally).
     #[test]
     fn envelope_rejects_each_security_violation() {
-        // m too large (still tile-aligned: 2^24 % 128 == 0).
+        // m too large (still tile-aligned: 2^24 and 128 are % 16 == 0).
         let p = MatmulParams { m: (1 << 24) + 128, ..MatmulParams::PROD };
         assert_eq!(p.validate_prod_envelope(), Err(ParamError::MatrixDimTooLarge));
 

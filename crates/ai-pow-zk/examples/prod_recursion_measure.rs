@@ -12,10 +12,12 @@
 //! `ZkParams` is `ai_pow::params::MatmulParams::LLAMA_3_1_8B_GATE_UP`
 //! — the real shipped `pearl-ai/Llama-3.1-8B-Instruct-pearl` FFN
 //! gate/up GEMM, the production mining target — and the FRI profile
-//! is `CircuitConfig::PROD` (log_blowup = 4, num_queries = 15). The
-//! real production composite trace for that model is **2^19 rows**
-//! (the `ai_pow::zk_bridge::expected_layer0_rows` budget — strip
-//! Merkle + §6(b) sweep + noised store — rounds up to 2^19).
+//! is `CircuitConfig::PROD` (log_blowup = 4, num_queries = 15). At the
+//! Pearl-faithful `tile = 8` (`h·w = 64`, Pearl's `default_mining_
+//! config`) the production composite trace for that model is
+//! **2^15 rows** (the `ai_pow::zk_bridge::expected_layer0_rows`
+//! budget — strip Merkle + §6(b) sweep + noised store — rounds up to
+//! 2^15). The earlier `tile = 64` over-tiling put it at 2^19.
 //!
 //! STARK proving is data-oblivious (same FFTs / Merkle tree / FRI
 //! folding regardless of cell values), so a zero-activity
@@ -27,8 +29,9 @@ use ai_pow_zk::composite_layout::TOTAL_TRACE_WIDTH;
 use ai_pow_zk::recursion::recurse_composite_to_l1;
 use ai_pow_zk::{CircuitConfig, CompositeTrace, ZkParams};
 
-/// Production composite-trace height for `LLAMA_3_1_8B_GATE_UP`.
-const PROD_TRACE_LOG2: u32 = 19;
+/// Production composite-trace height for `LLAMA_3_1_8B_GATE_UP` at
+/// the Pearl-faithful `tile = 8`.
+const PROD_TRACE_LOG2: u32 = 15;
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
@@ -41,7 +44,7 @@ fn main() {
         k: 4096,
         n: 14336,
         noise_rank: 64,
-        tile: 64,
+        tile: 8,
         difficulty_bits: 0,
     };
     let profile = CircuitConfig::PROD;
@@ -54,7 +57,7 @@ fn main() {
 
     eprintln!("══ ai-pow-zk → Plonky3-recursion · production caller ══");
     eprintln!("target model : Llama-3.1-8B-Instruct-pearl — FFN gate/up GEMM");
-    eprintln!("ZkParams     : m=4096 k=4096 n=14336 r=64 tile=64");
+    eprintln!("ZkParams     : m=4096 k=4096 n=14336 r=64 tile=8");
     eprintln!("FRI profile  : CircuitConfig::PROD (log_blowup=4, num_queries=15, pow_bits=1)");
     eprintln!("trace width  : {TOTAL_TRACE_WIDTH} columns");
     eprintln!(
