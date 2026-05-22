@@ -2364,7 +2364,10 @@ pub(crate) mod test {
                 "Battery value should match"
             );
             assert_eq!(
-                parent_axis.in_space(&space).as_u64().unwrap(),
+                parent_axis
+                    .in_space(&space)
+                    .as_u64()
+                    .expect("parent axis should fit in u64"),
                 *expected_axis,
                 "Parent axis should match"
             );
@@ -2436,7 +2439,10 @@ pub(crate) mod test {
                 "Battery value should match"
             );
             assert_eq!(
-                parent_axis.in_space(&space).as_u64().unwrap(),
+                parent_axis
+                    .in_space(&space)
+                    .as_u64()
+                    .expect("parent axis should fit in u64"),
                 0,
                 "Parent axis should be 0"
             );

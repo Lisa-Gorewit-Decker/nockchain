@@ -45,6 +45,7 @@ use crate::v2::pagination::{
 use crate::wire_conversion::{create_grpc_wire, grpc_wire_to_nockapp};
 
 const DEFAULT_HEAVIEST_CHAIN_REFRESH_INTERVAL: Duration = Duration::from_secs(60);
+const DEFAULT_BLOCK_EXPLORER_REFRESH_INTERVAL: Duration = Duration::from_secs(120);
 
 #[async_trait]
 pub trait BalanceHandle: Send + Sync {
@@ -282,7 +283,7 @@ impl PublicNockchainGrpcServer {
             };
 
             info!("Block explorer refresh worker starting");
-            let mut interval = time::interval(Duration::from_secs(15));
+            let mut interval = time::interval(DEFAULT_BLOCK_EXPLORER_REFRESH_INTERVAL);
             let mut initialized = false;
             let mut backfill_started = false;
 

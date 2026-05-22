@@ -3,7 +3,7 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use clap::{value_parser, ArgAction, Args, CommandFactory, FromArgMatches, Parser};
-use nockapp::kernel::boot::NockStackSize;
+use nockapp::kernel::boot::{NockStackSize, PmaSize};
 use nockchain_types::tx_engine::common::Hash;
 
 use crate::mining::MiningPkhConfig;
@@ -235,7 +235,13 @@ impl NockchainCli {
     {
         let mut matches = Self::command_with_default_stack_size(default_stack_size)
             .try_get_matches_from(args.into_iter().map(Into::into))?;
-        <Self as FromArgMatches>::from_arg_matches_mut(&mut matches)
+        let mut cli = <Self as FromArgMatches>::from_arg_matches_mut(&mut matches)?;
+        if cli.nockapp_cli.pma_initial_size.is_none() {
+            cli.nockapp_cli.pma_initial_size = Some(PmaSize::from_words(
+                cli.nockapp_cli.stack_size.stack_words(),
+            ));
+        }
+        Ok(cli)
     }
 
     fn command_with_default_stack_size(default_stack_size: NockStackSize) -> clap::Command {
@@ -291,6 +297,7 @@ impl NockchainCli {
 #[cfg(test)]
 mod tests {
     use nockapp::kernel::boot::{default_boot_cli, NockStackSize};
+    use nockapp::utils::{NOCK_STACK_SIZE, NOCK_STACK_SIZE_MEDIUM, NOCK_STACK_SIZE_SMALL};
 
     use super::*;
 
@@ -338,6 +345,10 @@ mod tests {
         let cli =
             NockchainCli::parse_from_with_default_stack_size(["nockchain"], NockStackSize::Medium);
         assert!(matches!(cli.nockapp_cli.stack_size, NockStackSize::Medium));
+        assert_eq!(
+            cli.nockapp_cli.pma_initial_size.unwrap().words(),
+            NOCK_STACK_SIZE_MEDIUM
+        );
     }
 
     #[test]
@@ -347,12 +358,33 @@ mod tests {
             NockStackSize::Medium,
         );
         assert!(matches!(cli.nockapp_cli.stack_size, NockStackSize::Normal));
+        assert_eq!(
+            cli.nockapp_cli.pma_initial_size.unwrap().words(),
+            NOCK_STACK_SIZE
+        );
 
         let cli = NockchainCli::parse_from_with_default_stack_size(
             ["nockchain", "--stack-size=small"],
             NockStackSize::Medium,
         );
         assert!(matches!(cli.nockapp_cli.stack_size, NockStackSize::Small));
+        assert_eq!(
+            cli.nockapp_cli.pma_initial_size.unwrap().words(),
+            NOCK_STACK_SIZE_SMALL
+        );
+    }
+
+    #[test]
+    fn explicit_pma_initial_size_overrides_nockchain_stack_default() {
+        let cli = NockchainCli::parse_from_with_default_stack_size(
+            ["nockchain", "--stack-size=small", "--pma-initial-size=512MiB"],
+            NockStackSize::Medium,
+        );
+        assert!(matches!(cli.nockapp_cli.stack_size, NockStackSize::Small));
+        assert_eq!(
+            cli.nockapp_cli.pma_initial_size.unwrap().words(),
+            64 * 1024 * 1024
+        );
     }
 
     #[test]

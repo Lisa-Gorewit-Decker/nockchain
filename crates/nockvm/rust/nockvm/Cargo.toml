@@ -66,5 +66,9 @@ name = "hoonc_hotspots"
 harness = false
 
 [[bench]]
+name = "pma_growth"
+harness = false
+
+[[bench]]
 name = "retag_noun_tree"
 harness = false

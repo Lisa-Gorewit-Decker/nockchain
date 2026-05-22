@@ -211,7 +211,7 @@ pub struct BlockExplorerCache {
 }
 
 impl BlockExplorerCache {
-    const RANGE_CHUNK: u64 = 1024;
+    const RANGE_CHUNK: u64 = 256;
     const INITIAL_SEED_RETRY_DELAY: Duration = Duration::from_secs(2);
     const INITIAL_SEED_MAX_WAIT: Duration = Duration::from_secs(120);
     const MIN_TX_PREFIX_LEN: usize = 8;

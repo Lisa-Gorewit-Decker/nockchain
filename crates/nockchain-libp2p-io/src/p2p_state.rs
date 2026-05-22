@@ -1,6 +1,8 @@
+use std::cmp::Reverse;
 use std::collections::{BTreeMap, BTreeSet};
 use std::net::IpAddr;
 use std::sync::Arc;
+use std::time::Instant;
 
 use libp2p::core::ConnectedPoint;
 use libp2p::swarm::ConnectionId;
@@ -11,6 +13,7 @@ use nockvm::noun::{Noun, NounSpace};
 use rand::prelude::SliceRandom;
 use tracing::{debug, info, trace};
 
+use crate::ip_block::PeerExclusions;
 use crate::messages::NockchainDataRequest;
 use crate::metrics::NockchainP2PMetrics;
 use crate::p2p_util::MultiaddrExt;
@@ -23,11 +26,20 @@ struct IpInfo {
     connections: BTreeSet<ConnectionId>,
 }
 
+#[derive(Default)]
+struct PeerRequestHealth {
+    successes: u64,
+    failures: u64,
+    last_success: Option<Instant>,
+    last_failure: Option<Instant>,
+}
+
 pub struct P2PState {
     metrics: Arc<NockchainP2PMetrics>,
     block_id_to_peers: BTreeMap<String, BTreeSet<PeerId>>,
     peer_to_block_ids: BTreeMap<PeerId, BTreeSet<String>>,
-    // It's stupid that we must track this state instead of just getting it from libp2p.
+    // It's stupid that we must track this state locally. libp2p does not expose
+    // the lookup shape this driver needs.
     connections: BTreeMap<ConnectionId, PeerId>,
     // subset of connections: all inbound connections
     inbound_connections: BTreeMap<ConnectionId, PeerId>,
@@ -40,6 +52,7 @@ pub struct P2PState {
     pub elders_cache: BTreeMap<String, NounSlab>,
     pub elders_negative_cache: BTreeSet<String>,
     pub seen_elders: BTreeSet<String>,
+    peer_request_health: BTreeMap<PeerId, PeerRequestHealth>,
     // Highest block height seen
     pub first_negative: u64,
     pub seen_tx_clear_interval: u64,
@@ -63,6 +76,7 @@ impl P2PState {
             elders_cache: BTreeMap::new(),
             elders_negative_cache: BTreeSet::new(),
             seen_elders: BTreeSet::new(),
+            peer_request_health: BTreeMap::new(),
             first_negative: 0,
             seen_tx_clear_interval,
             last_tx_cache_clear_height: 0,
@@ -96,7 +110,7 @@ impl P2PState {
                 self.ip_info.insert(
                     ip,
                     IpInfo {
-                        connections: BTreeSet::new(),
+                        connections,
                         request_count: 0,
                         ping_failure_count: 0,
                     },
@@ -170,6 +184,78 @@ impl P2PState {
         for (_ip, info) in self.ip_info.iter_mut() {
             info.request_count = 0;
         }
+    }
+
+    pub(crate) fn record_request_success(&mut self, peer_id: PeerId) {
+        let now = Instant::now();
+        let health = self.peer_request_health.entry(peer_id).or_default();
+        health.successes = health.successes.saturating_add(1);
+        health.last_success = Some(now);
+    }
+
+    pub(crate) fn record_request_failure(&mut self, peer_id: PeerId) {
+        let now = Instant::now();
+        let health = self.peer_request_health.entry(peer_id).or_default();
+        health.failures = health.failures.saturating_add(1);
+        health.last_failure = Some(now);
+    }
+
+    pub(crate) fn select_request_peers(
+        &self,
+        target_peers: Vec<PeerId>,
+        limit: usize,
+        exclusions: &PeerExclusions,
+    ) -> Vec<PeerId> {
+        let mut healthy = Vec::new();
+        let mut fallback = Vec::new();
+
+        for peer_id in target_peers {
+            if self.peer_has_only_excluded_ips(&peer_id, exclusions) {
+                self.metrics.fast_sync_peers_skipped_for_health.increment();
+                continue;
+            }
+
+            fallback.push(peer_id);
+            if exclusions.is_peer_request_cooled_down(&peer_id) {
+                self.metrics.fast_sync_peers_skipped_for_health.increment();
+                continue;
+            }
+            healthy.push(peer_id);
+        }
+
+        let mut selected_from = if healthy.is_empty() {
+            fallback
+        } else {
+            healthy
+        };
+        selected_from.shuffle(&mut rand::rng());
+        selected_from.sort_by_key(|peer_id| Reverse(self.request_score(peer_id)));
+        selected_from.truncate(limit);
+        selected_from
+    }
+
+    fn request_score(&self, peer_id: &PeerId) -> i64 {
+        self.peer_request_health
+            .get(peer_id)
+            .map(|health| health.successes as i64 * 2 - health.failures as i64)
+            .unwrap_or_default()
+    }
+
+    fn peer_has_only_excluded_ips(&self, peer_id: &PeerId, exclusions: &PeerExclusions) -> bool {
+        let Some(connections) = self.peer_connections.get(peer_id) else {
+            return false;
+        };
+        let mut saw_ip = false;
+        for addr in connections.values() {
+            let Some(ip) = addr.ip_addr() else {
+                continue;
+            };
+            saw_ip = true;
+            if !exclusions.is_ip_excluded(&ip) {
+                return false;
+            }
+        }
+        saw_ip
     }
 
     pub(crate) fn ping_succeeded(&mut self, connection: ConnectionId) {
@@ -429,8 +515,8 @@ mod tests {
     use nockvm::mem::{NockStack, NOCK_STACK_SIZE_TINY};
     use nockvm::noun::{NounAllocator, D, T};
 
-    use super::*;
-    use crate::config::LibP2PConfig;
+    use crate::config::{LibP2PConfig, PeerExclusionConfig};
+    use crate::p2p_state::*;
     use crate::p2p_util::PeerIdExt;
 
     pub static LIBP2P_CONFIG: LazyLock<LibP2PConfig> = LazyLock::new(LibP2PConfig::default);
@@ -810,6 +896,147 @@ mod tests {
         // Verify the other block ID is also no longer tracked
         // (since we removed the peers entirely)
         assert!(!tracker.is_tracking_block_id(other_block_id, &space));
+    }
+
+    #[test]
+    fn select_request_peers_skips_cooled_peer_when_healthy_peer_exists() {
+        let metrics = Arc::new(
+            NockchainP2PMetrics::register(gnort::global_metrics_registry())
+                .expect("Could not register metrics"),
+        );
+        let tracker = P2PState::new(metrics, LIBP2P_CONFIG.seen_tx_clear_interval);
+        let exclusions = PeerExclusions::new(PeerExclusionConfig {
+            request_peer_cooldown_secs: 60,
+            ..PeerExclusionConfig::default()
+        });
+        let cooled_peer = PeerId::random();
+        let healthy_peer = PeerId::random();
+
+        assert!(exclusions.record_peer_request_failure(cooled_peer));
+
+        let selected =
+            tracker.select_request_peers(vec![cooled_peer, healthy_peer], 10, &exclusions);
+
+        assert_eq!(selected, vec![healthy_peer]);
+    }
+
+    #[test]
+    fn select_request_peers_falls_back_when_every_peer_is_cooled() {
+        let metrics = Arc::new(
+            NockchainP2PMetrics::register(gnort::global_metrics_registry())
+                .expect("Could not register metrics"),
+        );
+        let tracker = P2PState::new(metrics, LIBP2P_CONFIG.seen_tx_clear_interval);
+        let exclusions = PeerExclusions::new(PeerExclusionConfig {
+            request_peer_cooldown_secs: 60,
+            ..PeerExclusionConfig::default()
+        });
+        let left = PeerId::random();
+        let right = PeerId::random();
+
+        assert!(exclusions.record_peer_request_failure(left));
+        assert!(exclusions.record_peer_request_failure(right));
+
+        let selected = tracker.select_request_peers(vec![left, right], 10, &exclusions);
+
+        assert_eq!(selected.len(), 2);
+        assert!(selected.contains(&left));
+        assert!(selected.contains(&right));
+    }
+
+    #[test]
+    fn select_request_peers_drops_peer_with_only_excluded_ips() {
+        let metrics = Arc::new(
+            NockchainP2PMetrics::register(gnort::global_metrics_registry())
+                .expect("Could not register metrics"),
+        );
+        let mut tracker = P2PState::new(metrics, LIBP2P_CONFIG.seen_tx_clear_interval);
+        let exclusions = PeerExclusions::new(PeerExclusionConfig {
+            wrong_peer_id_ip_threshold: 1,
+            ..PeerExclusionConfig::default()
+        });
+        let excluded_peer = PeerId::random();
+        let healthy_peer = PeerId::random();
+        let excluded_addr = "/ip4/15.235.216.78/udp/3602/quic-v1"
+            .parse::<Multiaddr>()
+            .expect("valid multiaddr");
+        let healthy_addr = "/ip4/203.0.113.9/udp/3006/quic-v1"
+            .parse::<Multiaddr>()
+            .expect("valid multiaddr");
+
+        tracker
+            .peer_connections
+            .entry(excluded_peer)
+            .or_default()
+            .insert(ConnectionId::new_unchecked(1), excluded_addr.clone());
+        tracker
+            .peer_connections
+            .entry(healthy_peer)
+            .or_default()
+            .insert(ConnectionId::new_unchecked(2), healthy_addr);
+
+        let outcome =
+            exclusions.record_wrong_peer_id(&excluded_addr, Some(excluded_peer), PeerId::random());
+        assert!(outcome.ip_exclusion.is_some());
+
+        let selected =
+            tracker.select_request_peers(vec![excluded_peer, healthy_peer], 10, &exclusions);
+
+        assert_eq!(selected, vec![healthy_peer]);
+    }
+
+    #[test]
+    fn select_request_peers_keeps_peer_with_a_clean_connection() {
+        let metrics = Arc::new(
+            NockchainP2PMetrics::register(gnort::global_metrics_registry())
+                .expect("Could not register metrics"),
+        );
+        let mut tracker = P2PState::new(metrics, LIBP2P_CONFIG.seen_tx_clear_interval);
+        let exclusions = PeerExclusions::new(PeerExclusionConfig {
+            wrong_peer_id_ip_threshold: 1,
+            ..PeerExclusionConfig::default()
+        });
+        let peer = PeerId::random();
+        let excluded_addr = "/ip4/15.235.216.78/udp/3602/quic-v1"
+            .parse::<Multiaddr>()
+            .expect("valid multiaddr");
+        let clean_addr = "/ip4/203.0.113.9/udp/3006/quic-v1"
+            .parse::<Multiaddr>()
+            .expect("valid multiaddr");
+
+        tracker
+            .peer_connections
+            .entry(peer)
+            .or_default()
+            .insert(ConnectionId::new_unchecked(1), excluded_addr.clone());
+        tracker
+            .peer_connections
+            .entry(peer)
+            .or_default()
+            .insert(ConnectionId::new_unchecked(2), clean_addr);
+
+        let outcome = exclusions.record_wrong_peer_id(&excluded_addr, Some(peer), PeerId::random());
+        assert!(outcome.ip_exclusion.is_some());
+
+        let selected = tracker.select_request_peers(vec![peer], 10, &exclusions);
+
+        assert_eq!(selected, vec![peer]);
+    }
+
+    #[test]
+    fn request_success_clears_request_cooldown() {
+        let exclusions = PeerExclusions::new(PeerExclusionConfig {
+            request_peer_cooldown_secs: 60,
+            ..PeerExclusionConfig::default()
+        });
+        let peer = PeerId::random();
+
+        assert!(exclusions.record_peer_request_failure(peer));
+        assert!(exclusions.is_peer_request_cooled_down(&peer));
+
+        exclusions.record_peer_request_success(&peer);
+
+        assert!(!exclusions.is_peer_request_cooled_down(&peer));
     }
 
     #[test]

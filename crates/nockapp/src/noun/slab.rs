@@ -530,14 +530,18 @@ impl<J> NounSlab<J> {
 
     /// Get the root noun
     ///
-    /// # Safety: The noun must not be used past the lifetime of the slab.
+    /// # Safety
+    ///
+    /// The noun must not be used past the lifetime of the slab.
     pub unsafe fn root(&self) -> &Noun {
         &self.root
     }
 
     /// Get the root noun
     ///
-    /// # Safety: The noun must not be used past the lifetime of the slab.
+    /// # Safety
+    ///
+    /// The noun must not be used past the lifetime of the slab.
     pub unsafe fn root_mut(&mut self) -> &mut Noun {
         &mut self.root
     }

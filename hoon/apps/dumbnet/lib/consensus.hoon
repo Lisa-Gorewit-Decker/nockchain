@@ -149,7 +149,14 @@
   ?~  heaviest-block.c
     ~>  %slog.[1 'get-cur-balance: No known blocks, balance is empty']
     *(h-map nname:t nnote:t)
-  (~(got h-by balance.c) u.heaviest-block.c)
+  =/  heaviest-page=local-page:t
+    (~(got h-by blocks.c) u.heaviest-block.c)
+  ?~  balance=(~(get h-by balance.c) u.heaviest-block.c)
+    ?:  =(*page-number:t ~(height get:local-page:t heaviest-page))
+      *(h-map nname:t nnote:t)
+    ~|  'get-cur-balance: Missing balance for non-genesis heaviest block'
+    !!
+  u.balance
 ::
 ++  get-cur-balance-names
   ^-  (h-set nname:t)
@@ -859,13 +866,22 @@
   |=  retain=(unit @)
   ^-  (h-set tx-id:t)
   ?~  heaviest-block.c  *(h-set tx-id:t)
+  ?:  =(*(h-set tx-id:t) excluded-txs.c)
+    *(h-set tx-id:t)
   =/  height  ~(height get:local-page:t (~(got h-by blocks.c) u.heaviest-block.c))
+  ::  Hoist the heaviest-balance name-set out of the per-tx fold: it is
+  ::  loop-invariant (depends only on balance.c / heaviest-block.c, neither
+  ::  mutated here), so computing it once turns the spent-fold from
+  ::  O(|excluded-txs| * |balance|) into O(|balance| + |excluded-txs|).
+  ::  Equivalent to the old per-tx (inputs-in-heaviest-balance raw), which
+  ::  is defined as (inputs-in-balance raw get-cur-balance-names).
+  =/  cur-balance-names=(h-set nname:t)  get-cur-balance-names
   =/  spent=(h-set tx-id:t)
     %-  ~(rep h-in excluded-txs.c)
     |=  [=tx-id:t spent=(h-set tx-id:t)]
     ^-  (h-set tx-id:t)
     =/  raw-tx  raw-tx:(~(got h-by raw-txs.c) tx-id)
-    ?.  (inputs-in-heaviest-balance raw-tx)
+    ?.  (inputs-in-balance raw-tx cur-balance-names)
       (~(put h-in spent) tx-id)
     spent
   ?~  retain  spent
@@ -891,6 +907,15 @@
 ++  garbage-collect
   |=  retain=(unit @)
   ^-  consensus-state:dk
+  ::  Excluded txs are GC'd on a much shorter window than pending blocks
+  ::  (decoupled): keep at most min(retain, 4) blocks of excluded-tx
+  ::  history -- 4 blocks if admin configured never-drop (~) -- so
+  ::  |excluded-txs| stays bounded and the dropable-txs spent-fold does
+  ::  not blow up. Pending blocks keep the full `retain`.
+  =/  tx-retain=(unit @)
+    ?~  retain  `4
+    `(min u.retain 4)
+  ~>  %slog.[0 (cat 3 'garbage-collect: excluded-txs count ' (rsh [3 2] (scot %ui ~(wyt h-in excluded-txs.c))))]
   =.  c  (drop-dropable-blocks retain)
-  (drop-dropable-txs retain)
+  (drop-dropable-txs tx-retain)
 --
