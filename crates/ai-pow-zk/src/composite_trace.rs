@@ -2597,6 +2597,50 @@ mod tests {
         );
     }
 
+    /// §M-S5b Path A column-overlay — adversarial.
+    ///
+    /// The StripeXor bit runs (`SX_IN_BITS`, `SX_XR_SEL_BITS`,
+    /// `SX_NEW_SEL_BITS`) physically alias `blake3_round[0..192]`.
+    /// This confirms the overlay did NOT weaken the BLAKE3 round
+    /// AIR: on a genuine BLAKE3 round row those same columns hold
+    /// BLAKE3 state and `verify_round` still constrains them, so
+    /// corrupting one rejects. (`verify_round` is gated off only on
+    /// *matmul* rows — `round_gate_excl` — never on BLAKE3 rows.)
+    #[test]
+    fn path_a_overlay_aliased_blake_columns_still_constrained() {
+        use crate::composite_layout::SX_IN_BITS_START;
+        use p3_field::integers::QuotientMap;
+
+        let cfg = build_stark_config(&test_zk_params(), &CircuitConfig::TEST_PEARL);
+        let mut trace = CompositeTrace::baseline_min();
+
+        let cv: [u32; 8] = core::array::from_fn(|i| BLAKE3_IV[i]);
+        let msg: [u32; 16] = core::array::from_fn(|i| (i as u32 + 1) * 0x01020304);
+        let tweak = Blake3Tweak {
+            counter_low: 0,
+            counter_high: 0,
+            block_len: 64,
+            flags: 0x1B,
+        };
+
+        let _ = trace.place_blake3_hash(0, &msg, &cv, &tweak);
+        // Tamper a column inside the SX-overlay sub-window
+        // (`blake3_round[0..192]`, i.e. `SX_IN_BITS_START + k`) on a
+        // genuine BLAKE3 round row (row 2). On a BLAKE3 row that
+        // column holds BLAKE3 state, so `verify_round` must reject.
+        let target = 2 * TOTAL_TRACE_WIDTH + SX_IN_BITS_START + 8;
+        trace.matrix.values[target] =
+            <Val as QuotientMap<u64>>::from_int(0xDEAD_BEEFu64);
+
+        let pis = crate::composite_public::CompositePublicInputs::derive_from_matrix(&trace.matrix).to_vec();
+        let proof =
+            prove::<AiPowStarkConfig, _>(&cfg, &CompositeFullAir, trace.matrix, &pis);
+        assert!(
+            verify::<AiPowStarkConfig, _>(&cfg, &CompositeFullAir, &proof, &pis).is_err(),
+            "tampered blake3_round column in the SX-overlay window must reject"
+        );
+    }
+
     /// Place a 3-step jackpot chain at rows 0..2 of the baseline
     /// trace and thread the final state through the rest. The
     /// composite AIR enforces the rotate-XOR-13 chain end-to-end.

@@ -18,37 +18,45 @@ exhaustive column inventory is landed as a reproducible test
   golden-KAT byte-equivalence) + the 8 SX-chip tests + the
   inventory test.
 - **LANDED — Path A column-overlay** (§7.1): the §7 big lever,
-  implemented. `SX_IN_BITS` (the 128-column StripeXor IN
-  bit-decomposition) now physically *aliases* the first 128 columns
-  of the `blake3_round` region — `TOTAL_TRACE_WIDTH` 2103 → **1975**
-  (−128). Three sub-stages, all landed + committed:
+  implemented and **rolled across every overlay-eligible SX run**.
+  The three StripeXor *bit* runs — `SX_IN_BITS` (128),
+  `SX_XR_SEL_BITS` (32), `SX_NEW_SEL_BITS` (32) — now physically
+  *alias* `blake3_round[0..192]`. `TOTAL_TRACE_WIDTH` 2103 →
+  **1911** (−192). Sub-stages, all landed + committed:
   - **O0-Stage-1** — the SX chip's data-validation constraints are
-    `IS_ACTIVE`-gated in `stripe_xor::eval_at` (so they are vacuous
-    on BLAKE3 rows).
+    `IS_ACTIVE`-gated in `stripe_xor::eval_at` (vacuous on BLAKE3
+    rows).
   - **O0-Stage-2** — `verify_round` in the BLAKE3 round AIR is
-    gated off on matmul rows (the de-risk found StripeXor activity
-    is co-located on the matmul sweep, so an SX row carries the
-    *pinned* `IS_RESET_CUMSUM`/`IS_UPDATE_CUMSUM` selectors — the
+    gated off on matmul rows (StripeXor activity is co-located on
+    the matmul sweep, so an SX row carries the *pinned*
+    `IS_RESET_CUMSUM`/`IS_UPDATE_CUMSUM` selectors — the
     mutual-exclusion kernel was already verifier-fixed; **no
     CRIT-1 program-pin change needed**). The gate excludes the
     matmul selectors on *both* the current and next row
-    (`verify_round` is cross-row); each factor stays degree 1, the
-    gate stays degree 2 — **no degree bump, no recursion-config
-    change** (so D3's L1-regen concern does not arise).
-  - **O2** — `composite_layout.rs` re-points `SX_IN_BITS_START`
-    onto `BLAKE3_ROUND_START`; the trace-gen is offset-driven so it
+    (`verify_round` is cross-row); the gate stays degree 2 — **no
+    degree bump, no recursion-config change**.
+  - **O2** — `composite_layout.rs` aliases the three bit runs onto
+    `blake3_round[0..192]`; the trace-gen is offset-driven so it
     needed no change (SX and BLAKE3 write disjoint rows).
+  - **Overlay-eligibility boundary** — only genuine 0/1 *bit*
+    columns may alias the `blake3_round` region: the BLAKE3 round
+    AIR boolean-checks its XOR-input bit columns *unconditionally*
+    (`round_ops.rs xor_32_shift_if` — an ungated `assert_bool`), so
+    a bit satisfies it wherever it lands. `SX_IN` (signed-i32
+    accumulator cells) and `SX_Q` (`∈{0,1,2}`) are **not**
+    bit-valued ⇒ **not overlay-eligible**; they stay block-own.
+    This was a de-risk finding — a first attempt that overlaid
+    `SX_IN` failed the §6(b) chain with `OodEvaluationMismatch`.
   Validated: full ai-pow-zk regression **371 pass / 0 fail / 23
   ignored** — composite golden-KAT byte-equivalence, §6(b)
-  keystone chain, adversarial tamper-rejection, CRIT-1.
-- **RESIDUAL — roll the overlay forward**: the remaining
-  O0-Stage-1-gated SX runs (`SX_XR_SEL_BITS` 32, `SX_NEW_SEL_BITS`
-  32, `SX_IN` 4 — and `SX_Q` 32 once gated) can alias further
-  `blake3_round` sub-windows by the same mechanism, for roughly
-  another −100 columns; and a dedicated overlay-tamper adversarial
-  test (SX data forged into BLAKE3 columns / vice versa) should be
-  added to the suite. Each increment is the same bounded pattern,
-  KAT + full-regression-gated.
+  keystone chain, adversarial tamper-rejection (incl. the new
+  `path_a_overlay_aliased_blake_columns_still_constrained`
+  overlay-tamper test), CRIT-1.
+- **No residual on Path A.** The overlay is rolled across all
+  overlay-eligible runs; `SX_IN`/`SX_Q` are bounded out by the
+  bit-column eligibility rule above, not deferred. Future width
+  work would target other chips' bit-decompositions (e.g. the
+  jackpot or fold bit columns) under the same mechanism.
 
 ## 1. Column inventory — where the 2135 columns go
 
