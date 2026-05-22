@@ -195,6 +195,13 @@ pub enum BridgeError {
     /// count for these params (pre-M2 this was an `expect("found_idx
     /// must be a valid tile index for these params")` panic).
     FoundIdxOutOfRange { found_idx: u32, num_tiles: u64 },
+    /// M3 (DoS audit): the ai-pow-zk verifier-side `canonical_program`
+    /// rejected a structurally-broken `ZkParams` (16|r invariant,
+    /// tile-grid bounds, trace_len lower bound). Defense-in-depth
+    /// behind M2; reachable only on a broken chain-pin trust
+    /// (CRIT-1) where the verifier would otherwise hit a deep
+    /// `assert!` panic in `schedule_layout` / `tile_chunk_range`.
+    ZkParamsInvalid(String),
 }
 
 impl core::fmt::Display for BridgeError {
@@ -209,6 +216,9 @@ impl core::fmt::Display for BridgeError {
                 f,
                 "found_idx ({found_idx}) >= num_tiles ({num_tiles})"
             ),
+            BridgeError::ZkParamsInvalid(msg) => {
+                write!(f, "ai-pow-zk canonical_program rejected params: {msg}")
+            }
         }
     }
 }
@@ -676,7 +686,8 @@ pub(crate) fn prove_and_verify_tiled_full<F: FnOnce(&mut CompositeTrace)>(
         };
         let canonical = ai_pow_zk::canonical::canonical_program(
             &zk_params, &bp, height,
-        );
+        )
+        .map_err(BridgeError::ZkParamsInvalid)?;
         composite_verify_pow_pinned_logup_sx(
             &cfg, &canonical, &proof, &pis, target, sx_bound,
         )
@@ -2890,7 +2901,7 @@ mod tests {
             tile_i, tile_j, kappa: ctx.kappa,
             s_a: ctx.s_a, s_b: ctx.s_b,
         };
-        let canon = canonical_program(&zk, &bp, h);
+        let canon = canonical_program(&zk, &bp, h).expect("test ZkParams valid");
         assert_eq!(canon.values.len(), ext_vals.len());
 
         let sched = row_schedule(&zk, tile_i, tile_j, h);
@@ -2993,7 +3004,7 @@ mod tests {
             tile_i, tile_j, kappa: ctx.kappa,
             s_a: ctx.s_a, s_b: ctx.s_b,
         };
-        let canon = canonical_program(&zk, &bp, h);
+        let canon = canonical_program(&zk, &bp, h).expect("test ZkParams valid");
         let sched = row_schedule(&zk, tile_i, tile_j, h);
 
         let (mut checked_pure, mut skipped_coloc) = (0usize, 0usize);

@@ -328,7 +328,43 @@ pub fn canonical_program(
     params: &ZkParams,
     bp: &BlockPublic,
     trace_len: usize,
-) -> RowMajorMatrix<Val> {
+) -> Result<RowMajorMatrix<Val>, String> {
+    // M3 (DoS audit): defense-in-depth at the verify-side params-pure
+    // entry. The deep helpers (`schedule_layout`, `tile_chunk_range`,
+    // `strip_opening_rows`) `assert!` invariants that *hold under
+    // validated `ZkParams` + in-range `tile_i/j` + a non-degenerate
+    // `trace_len`*. The production verifier reaches here only with
+    // M2-validated params (via `ai-pow::zk_bridge`), so the asserts
+    // are unreachable on the chain path. This entry validation turns
+    // an attacker-controlled-params bypass (broken CRIT-1 trust pin)
+    // into a typed `Err` rather than a deep cryptic panic.
+    params.validate()?;
+    if params.noise_rank % 16 != 0 {
+        return Err(format!(
+            "canonical_program requires 16 | noise_rank (Pearl §4.8 \
+             always-16|r co-location path); got noise_rank={}",
+            params.noise_rank
+        ));
+    }
+    let row_tiles = params.m / params.tile;
+    let col_tiles = params.n / params.tile;
+    if bp.tile_i >= row_tiles || bp.tile_j >= col_tiles {
+        return Err(format!(
+            "canonical_program: tile_i={} or tile_j={} out of grid \
+             ({}×{} tiles)",
+            bp.tile_i, bp.tile_j, row_tiles, col_tiles
+        ));
+    }
+    // Lower bound (the schedule needs ≥ 8 rows for the JackpotHash
+    // suffix alone). The exact `fold_end ≤ trace_len - 8` check is
+    // enforced inside `schedule_layout`; this catches the obvious
+    // degenerate cases.
+    if trace_len < 16 || !trace_len.is_power_of_two() {
+        return Err(format!(
+            "canonical_program: trace_len {trace_len} must be a \
+             power of two ≥ 16"
+        ));
+    }
     let l = schedule_layout(params, bp.tile_i, bp.tile_j, trace_len);
     let sp = StripPlan::build(params, bp);
     let program: Vec<RowDescriptor> = (0..trace_len)
@@ -337,7 +373,7 @@ pub fn canonical_program(
     let rows = build_preprocessed_columns(&program, trace_len);
     let w = rows.first().map(|r| r.len()).unwrap_or(0);
     let flat: Vec<Val> = rows.into_iter().flatten().collect();
-    RowMajorMatrix::new(flat, w)
+    Ok(RowMajorMatrix::new(flat, w))
 }
 
 /// One 8-row BLAKE3 block of a tile's strip-opening — the
@@ -756,7 +792,7 @@ mod tests {
 
         let p = p16();
         let len = 1 << 13;
-        let prog = canonical_program(&p, &bp0(), len);
+        let prog = canonical_program(&p, &bp0(), len).expect("test params valid");
         assert_eq!(prog.height(), len);
         assert_eq!(prog.width(), PROGRAM_COLS.len(), "12-wide");
 
@@ -795,7 +831,7 @@ mod tests {
         let p = p16();
         let len = 1 << 13;
         let l = schedule_layout(&p, 0, 0, len);
-        let prog = canonical_program(&p, &bp0(), len);
+        let prog = canonical_program(&p, &bp0(), len).expect("test params valid");
         let w = PROGRAM_COLS.len();
 
         // Expected CONTROL_PREP for each key-pin row: exactly one
@@ -843,7 +879,7 @@ mod tests {
         let p = p16();
         let len = 1 << 13;
         let l = schedule_layout(&p, 0, 0, len);
-        let prog = canonical_program(&p, &bp0(), len);
+        let prog = canonical_program(&p, &bp0(), len).expect("test params valid");
         let w = PROGRAM_COLS.len();
         let tw = jackpot_tweak_packed();
         assert_ne!(tw, 0, "jackpot tweak packs non-zero (flags=0x1B)");
@@ -948,5 +984,60 @@ mod tests {
             m: 64, k: 64, n: 64, noise_rank: 4, tile: 8, difficulty_bits: 0,
         };
         let _ = row_schedule(&p, 0, 0, 1 << 13);
+    }
+
+    /// M3 (DoS audit): `canonical_program` validates structurally-bad
+    /// `ZkParams` / out-of-range tile_i/j / degenerate trace_len AT
+    /// ENTRY — turning what were deep cryptic `assert!` panics in
+    /// `schedule_layout` / `tile_chunk_range` into a typed `Err`.
+    /// Reachable only on broken chain-pin trust (CRIT-1) in
+    /// production; this is defense-in-depth.
+    #[test]
+    fn m3_canonical_program_rejects_invalid_inputs_without_panic() {
+        let good = p16();
+        let bp = bp0();
+        let len = 1 << 13;
+        // Baseline: valid 16|r ZkParams succeeds.
+        canonical_program(&good, &bp, len).expect("baseline must succeed");
+
+        // (a) Structural — m == 0 (caught by ZkParams::validate).
+        let mut p = good;
+        p.m = 0;
+        let r = canonical_program(&p, &bp, len);
+        assert!(r.is_err(), "m=0 must yield Err");
+
+        // (b) noise_rank invalid (not a power of two ≥ 2) — caught by
+        //     ZkParams::validate.
+        let mut p = good;
+        p.noise_rank = 0;
+        assert!(canonical_program(&p, &bp, len).is_err(), "r=0 must yield Err");
+
+        // (c) Canonical-specific: 16 ∤ noise_rank. r=8 is a valid
+        //     power-of-two ≥ 2 that divides k=64 — so passes
+        //     ZkParams::validate, but the canonical 16|r co-location
+        //     entry must catch it.
+        let mut p = good;
+        p.noise_rank = 8;
+        let r = canonical_program(&p, &bp, len);
+        assert!(r.is_err(), "r=8 (16∤8) must yield Err");
+        let msg = r.unwrap_err();
+        assert!(msg.contains("16"), "Err message should mention 16|r: {msg}");
+
+        // (d) tile_j past the col-tile grid.
+        let bad_bp = BlockPublic { tile_j: 999, ..bp };
+        assert!(
+            canonical_program(&good, &bad_bp, len).is_err(),
+            "tile_j out of grid must yield Err"
+        );
+
+        // (e) trace_len degenerate.
+        assert!(
+            canonical_program(&good, &bp, 4).is_err(),
+            "trace_len=4 must yield Err"
+        );
+        assert!(
+            canonical_program(&good, &bp, 100).is_err(),
+            "non-power-of-two trace_len must yield Err"
+        );
     }
 }

@@ -41,6 +41,12 @@ impl ZkParams {
         if self.tile == 0 || self.m % self.tile != 0 || self.n % self.tile != 0 {
             return Err("tile must divide m and n".into());
         }
+        // M3 (DoS audit): explicit nonzero so `row_tiles = m/tile` and
+        // `col_tiles = n/tile` are ≥ 1 (tile divides 0 vacuously,
+        // hiding the 0-tile-grid case behind the divisibility check).
+        if self.m == 0 || self.n == 0 {
+            return Err("m and n must be > 0".into());
+        }
         if self.k == 0 || self.k > (1u32 << 16) {
             return Err("k must be in 1..=2^16".into());
         }
