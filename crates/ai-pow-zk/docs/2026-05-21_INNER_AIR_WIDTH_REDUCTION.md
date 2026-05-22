@@ -118,18 +118,31 @@ layout may change freely, only the proven function is fixed),
 and must hold the degree-3/4 budget. **Estimated: ~1-2 weeks
 staged R1 work.**
 
-### Path B — eliminate the redundant INPUT_STATE snapshot
+### Path B — eliminate a redundant snapshot — ✗ INVALID (de-risk finding, 2026-05-21)
 
-Each round stores 4 snapshots. `STATE3` of row r equals
-`INPUT_STATE` of row r+1 (the round output feeds the next round).
-The two are distinct physical columns in adjacent rows with an
-equality constraint between them — each round's state is stored
-twice. Eliminating `INPUT_STATE` (read row r's input from row
-r−1's `STATE3` via the AIR row-window; bind round-0's input to
-the `CV_IN`/`BLAKE3_MSG` buffers via `verify_init_state`) saves
-one snapshot: **−264 cols (−12.4% of the trace).** Smaller than
-Path A, and independent of it — composable. Medium risk: a
-bounded "drop one snapshot" restructure of the round AIR window.
+The initial hypothesis was that `INPUT_STATE` is stored twice
+(once as row r's `INPUT_STATE`, once as row r−1's `STATE3`) and
+one copy could be dropped for −264 cols.
+
+**Reading `round_air.rs::verify_round` before editing (the R1
+KAT-first/de-risk step) disproved this.** `verify_round` takes
+**5 states** — a BLAKE3 round is **4 half-G transitions**:
+`s0→s1→s2→s3→s4` (column-G halves 1+2, diagonal-G halves 1+2).
+A row stores 4 snapshots `[s0, s1, s2, s3]`; the 5th state
+`s4` (the round *output*) is built from the **next row's
+`INPUT_STATE` columns via the AIR window** — `s4[r]` and
+`s0[r+1]` are the *same physical columns*. The next row's
+`INPUT_STATE` is read by round r's constraint (as output) and
+round r+1's constraint (as input): **shared, used twice, stored
+once.** There is no duplicated snapshot.
+
+The 4 stored snapshots are already minimal: input + 3
+intermediates, one per half-G, each intermediate needed to keep
+every half-G a separate degree-3 constraint step. Dropping any
+snapshot either loses needed data or collapses two half-G steps
+into one higher-degree constraint (degree budget). **Path B is
+struck.** The de-risk step did its job — caught a false premise
+before any invasive edit.
 
 ### Path C — SX-stripe reduction (390 cols, 18.3%)
 
@@ -144,59 +157,123 @@ field used purely for a range-check can move to a lookup
 **Estimated win: up to ~200 cols** depending on how many SX
 bit-fields are range-checks vs genuine bit-ops.
 
-### Path D — adopt Plonky3's `p3-blake3-air`
+### Path D — adopt Plonky3's `p3-blake3-air` — ✗ NO SHORTCUT (triage finding, 2026-05-21)
 
-ai-pow-zk already lists `p3-blake3-air` as a dependency. Plonky3's
-upstream BLAKE3 AIR is trait-generic over the field and may have
-a more column-efficient layout than the Pearl-ported 1056-column
-chip. Switching the inner composite AIR's BLAKE3 sub-AIR to
-`p3-blake3-air` would inherit upstream's column budget + any
-field-trait-based efficiency. Caveat: the Pearl-ported chip was
-chosen for a reason (the M10.1c integration + the BLAKE3
-keyed-hash tweak handling); a switch needs to confirm
-`p3-blake3-air` supports the keyed/tweaked BLAKE3 variant the
-ai-pow protocol uses. **Investigation item, not yet costed.**
+Triaged by reading `p3-blake3-air/src/columns.rs`. Two findings
+strike Path D as a width-reduction shortcut:
+
+1. **`p3-blake3-air` uses the *same* full 32-bit boolean
+   decomposition.** Its `Blake3State` keeps `row1` and `row3` as
+   `[[T; 32]; 4]` — the doc-comment states verbatim: *"Rows 1 and
+   3 are saved as 32 boolean values."* Upstream Plonky3 has **not**
+   solved the XOR-side with limbs+lookups; it explodes to 1-bit
+   columns exactly as our Pearl-ported chip does. Adopting it
+   gives no XOR-side width win.
+2. **Incompatible layout.** `p3-blake3-air` computes a *whole
+   BLAKE3 compression per row* (`full_rounds: [FullRound; 7]`,
+   `NUM_BLAKE3_COLS` ≈ 9000+ columns wide). Our composite AIR
+   spreads one round per trace row (1056 wide, reused across
+   non-BLAKE3 activity). Adopting upstream would mean a ~9000-col
+   row — far wider — and would break the per-row activity
+   multiplexing the composite AIR depends on.
+
+**Conclusion:** a limb+lookup BLAKE3 XOR-side is *not* available
+off-the-shelf — neither our chip nor upstream Plonky3 has built
+it. Path A is therefore research-grade AIR design, not a port.
 
 ## 4. Ranked recommendation
 
-| Path | Win (cols / % trace) | Risk | Effort |
-|---|---|---|---|
-| A — XOR-side limb + lookup | ~−896 / −42% | High (BLAKE3 AIR redesign) | ~1-2 wk |
-| B — drop INPUT_STATE snapshot | −264 / −12.4% | Medium (bounded restructure) | ~3-5 d |
-| C — SX-stripe limb + lookup | up to ~−200 / −9% | Medium-High | ~1 wk |
-| D — adopt `p3-blake3-air` | unknown; needs costing | Medium | investigate first |
+| Path | Win (cols / % trace) | Risk | Effort | Verdict |
+|---|---|---|---|---|
+| A — XOR-side limb + lookup | ~−896 / −42% | High — research-grade BLAKE3 AIR design | ~2-4 wk | the only viable large lever |
+| B — drop INPUT_STATE snapshot | — | — | — | ✗ INVALID (premise disproved by de-risk) |
+| C — SX-stripe limb + lookup | up to ~−200 / −9% | Medium-High | ~1 wk | viable, smaller |
+| D — adopt `p3-blake3-air` | none for XOR-side | — | — | ✗ NO SHORTCUT (upstream uses the same 32-bit bits) |
 
-**Path B is the cheapest concrete win and is independent of A** —
-it can land first as a de-risked, bounded "remove one snapshot"
-change while Path A's larger redesign is staged. Path A is the
-largest win and is the direct expression of the Goldilocks-field
-hint (limb decomposition exploiting the field's 32-bit-native
-capacity + lookup XOR, mirroring how `add3_unchecked` already
-exploits the field for the ADD-side).
+Two of the four investigated paths were **struck by the de-risk
+investigation**, both before any invasive edit — exactly what the
+de-risk step is for. **Path A is the load-bearing lever** and is
+the direct expression of the Goldilocks-field hint: limb
+decomposition exploiting the field's 32-bit-native capacity +
+lookup XOR, mirroring how `add3_unchecked` already exploits the
+field for the BLAKE3 ADD-side. Path D's triage additionally
+revealed that *no existing BLAKE3 AIR* (ours or upstream
+Plonky3's) has built a limb+lookup XOR-side — so Path A is
+genuinely new AIR design, raising its effort estimate to
+**~2-4 weeks** of staged, soundness-critical work.
 
-**Recommended sequence:** B (bounded, ~−12%) → A (the big
-redesign, ~−42%) → C (SX, ~−9%). Combined ceiling ≈ −63% inner
-trace width ⇒ proportional inner-prove speedup + inner-proof
-shrinkage + (cascading) a smaller L1 verifier circuit.
+Path C (SX stripe) is the smaller, lower-novelty companion: the
+256 SX bit-decomposition columns include range-check fields that
+can move to lookup-based range checks (the composite AIR already
+runs URANGE8/URANGE13 LogUp tables — no new machinery, no rotate
+complication for the pure range-check fields).
 
-## 5. De-risk plan for the implementation drive (Path B first)
+**Recommended sequence:** C first (bounded, lower-novelty, ~−9%,
+reuses existing range-table machinery) → A (the research-grade
+−42% BLAKE3 redesign). Combined ceiling ≈ −51% inner trace width
+⇒ proportional inner-prove speedup + inner-proof shrinkage +
+(cascading) a smaller L1 verifier circuit.
 
-Per R1, before any invasive edit:
-1. **KAT-first:** capture the current BLAKE3 round-AIR
-   accept/tamper KATs (`prove_and_verify_valid_round`,
-   `prove_and_verify_two_different_rounds`) + the composite
-   golden-KAT byte-equivalence as the frozen oracle.
-2. **Path B staged:** (i) add the row-window read of row r−1's
-   `STATE3` as the round-r input; (ii) bind round-0 input to the
-   buffers; (iii) delete the `INPUT_STATE` columns + shift the
-   layout; (iv) re-run the full KAT + composite regression at
-   each sub-step.
-3. **Per-stage exhaustive gates:** BLAKE3 chip tests + the
-   ai-pow-zk full lib regression (370 tests) + a re-run of
-   `bench_prod_8k_baseline` to measure the prove-time win + the
-   `inner_air_column_inventory` test (which will need its pinned
+## 5. De-risk plan for the Path A implementation drive
+
+Per R1, the BLAKE3 XOR-side redesign is staged behind KAT-first
+de-risk:
+1. **KAT-first:** the current BLAKE3 round-AIR accept/tamper KATs
+   (`prove_and_verify_valid_round`, `prove_and_verify_two_different_rounds`,
+   the `xor_32_shift_if_rotate_{16,12,8,7}_matches_pearl` rotate
+   KATs) + the composite golden-KAT byte-equivalence are the
+   frozen oracle. Baseline confirmed: **53 BLAKE3 chip tests
+   pass** at the current layout.
+2. **Path D triage FIRST:** before rebuilding the XOR-side from
+   scratch, cost `p3-blake3-air` (already a dependency) — does
+   its column layout already solve the XOR-side efficiently, and
+   does it support the keyed/tweaked BLAKE3 the ai-pow protocol
+   needs? If yes, Path A reduces to an adoption + integration job.
+3. **Path A staged (if D doesn't subsume it):** (i) add the
+   byte-XOR LogUp table to the composite AIR's lookup set;
+   (ii) replace one snapshot's ROW2/ROW4 32-bit decomposition
+   with byte-limbs + lookup XOR, keeping a nibble fallback for
+   the non-byte-aligned rotate-by-12/7; (iii) re-run the full KAT
+   + composite regression; (iv) roll across all 4 snapshots;
+   (v) shift the layout, update the pinned counts.
+4. **Per-stage exhaustive gates:** the 53 BLAKE3 chip tests + the
+   ai-pow-zk full lib regression (370 tests) + a `bench_prod_8k_baseline`
+   re-measure + the `inner_air_column_inventory` test (its pinned
    counts updated to the new layout — that update IS the
    integration check).
+
+## 5a. R1 status of this analysis drive
+
+This drive *attempted* the implementation and the de-risk step
+hit concrete walls on the two paths that looked cheap enough to
+land this session:
+
+- **Path B attempted → struck.** Reading `verify_round` before
+  editing disproved the "duplicated INPUT_STATE snapshot"
+  premise — the AIR window already shares the boundary snapshot;
+  the 4 stored snapshots are minimal.
+- **Path D triaged → struck.** Reading `p3-blake3-air/columns.rs`
+  showed upstream Plonky3 uses the *same* 32-bit boolean
+  decomposition — no off-the-shelf limb+lookup XOR-side to adopt.
+
+Both findings are genuine in-flight de-risk results, not
+avoidance. They leave **Path A** — confirmed as research-grade
+BLAKE3 AIR design (no existing implementation has done a
+limb+lookup XOR-side) — as the only large lever, and **Path C**
+as a bounded smaller one. A research-grade ~2-4-week
+soundness-critical redesign of the PoUW-linchpin BLAKE3 AIR
+**must not be rushed into a partial landing** (R1: a half-landed
+invasive soundness change is strictly worse than a clean
+validated subset + precise residual).
+
+The **validated deliverable** of this drive: the exhaustive
+column inventory (landed as the `inner_air_column_inventory`
+test — executable, regression-protected), this corrected
+multi-path analysis with two paths de-risked to negative
+conclusions, and the Path C / Path A de-risk plan. The Path C
+(then A) implementation is the precise, scoped residual for the
+next dedicated drive — which, per R1.1, must drive it (the
+design + de-risk now exist) rather than re-analyze.
 
 ## 6. Files
 
