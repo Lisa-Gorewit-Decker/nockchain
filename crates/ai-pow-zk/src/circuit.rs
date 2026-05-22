@@ -7,7 +7,7 @@
 //! |-----------------------|-----------------------------------|-----|
 //! | Trace base field      | `Goldilocks` (p3-goldilocks)      | Native 64-bit prime; matches Pearl; friendly for the 32-bit ops in `p3-blake3-air`. |
 //! | FRI challenge field   | `BinomialExtensionField<Goldilocks, 2>` | 128-bit security per challenge; standard pairing for Goldilocks STARKs. |
-//! | FRI compression hash  | Nockchain Tip5 (`nockchain_math::tip5`) | 7-round variant; STATE_SIZE=16, RATE=10, CAPACITY=6, DIGEST_LENGTH=5. Plonky3 upstream does *not* ship a `p3-tip5` crate; the in-repo `nockchain-math::tip5` is the canonical source. |
+//! | FRI compression hash  | Nockchain Tip5 (`nockchain_math::tip5`) | **5-round** variant (`permute_5round`); STATE_SIZE=16, RATE=10, CAPACITY=6, DIGEST_LENGTH=5. §recursion-aligned with the `Plonky3-recursion` Tip5 AIR so the composite proof's transcript is recursively verifiable. Plonky3 upstream does *not* ship a `p3-tip5` crate; the in-repo `nockchain-math::tip5` is the canonical source. |
 //! | Merkle MMCS           | `MerkleTreeMmcs<Val, Tip5Perm, ...>` | Standard Plonky3 mixed-matrix commitment, wrapping the Tip5 permutation in `PaddingFreeSponge` + `TruncatedPermutation`. |
 //! | PCS                   | `TwoAdicFriPcs<…>`                | Univariate FRI; matches `p3-uni-stark`. |
 //! | Challenger            | `DuplexChallenger<Val, Tip5Perm, _, _>` | Fiat-Shamir over the same Tip5 permutation. |
@@ -291,10 +291,11 @@ pub fn build_stark_config(_params: &ZkParams, config: &CircuitConfig) -> AiPowSt
     StarkConfig::new(pcs, challenger)
 }
 
-/// Thin newtype around `nockchain_math::tip5::permute` that wraps the
-/// 16-element Goldilocks state so it can plug into Plonky3's
+/// Thin newtype around `nockchain_math::tip5::permute_5round` that
+/// wraps the 16-element Goldilocks state so it can plug into Plonky3's
 /// `CryptographicPermutation<[Val; 16]>` trait. The actual `permute`
-/// call writes the new state in-place via `nockchain_math::tip5::permute`.
+/// call writes the new state in-place via the **5-round** Tip5
+/// permutation (`§recursion`-aligned — see `Tip5Perm::NUM_ROUNDS`).
 ///
 /// Adapter layer — its `Permutation`/`CryptographicPermutation` impls
 /// will land alongside `build_stark_config`'s implementation. For the
@@ -315,13 +316,22 @@ impl Tip5Perm {
     /// `nockchain_math::tip5::CAPACITY`.
     pub const CAPACITY: usize = nockchain_math::tip5::CAPACITY;
 
-    /// Number of permutation rounds. Nockchain's 7-round Tip5 variant.
-    pub const NUM_ROUNDS: usize = nockchain_math::tip5::NUM_ROUNDS;
+    /// Number of permutation rounds — the **5-round** Tip5 variant.
+    ///
+    /// §recursion integration (2026-05-22): aligned with the
+    /// `Plonky3-recursion` Tip5 circuit AIR (`tip5-circuit-air/src/
+    /// tip5_spec.rs`, `NUM_ROUNDS = 5`) so the composite proof's
+    /// FRI/MMCS/challenger transcript is byte-identical to what the
+    /// in-circuit recursion verifier recomputes. Was the 7-round
+    /// `nockchain_math::tip5::NUM_ROUNDS`; the recursion verifier
+    /// rejected honest 7-round proofs (transcript divergence).
+    pub const NUM_ROUNDS: usize = nockchain_math::tip5::NUM_ROUNDS_5ROUND;
 
-    /// Apply the in-place Tip5 permutation to a 16-element state.
-    /// One-line wrapper so the call site reads `Tip5Perm::permute(&mut s)`.
+    /// Apply the in-place 5-round Tip5 permutation to a 16-element
+    /// state. One-line wrapper so the call site reads
+    /// `Tip5Perm::permute(&mut s)`.
     pub fn permute(state: &mut [u64; Self::WIDTH]) {
-        nockchain_math::tip5::permute(state);
+        nockchain_math::tip5::permute_5round(state);
     }
 }
 
@@ -337,7 +347,7 @@ impl Permutation<[Goldilocks; Tip5Perm::WIDTH]> for Tip5Perm {
         for i in 0..Tip5Perm::WIDTH {
             raw[i] = input[i].as_canonical_u64();
         }
-        nockchain_math::tip5::permute(&mut raw);
+        nockchain_math::tip5::permute_5round(&mut raw);
         // After the permutation, each lane is < ORDER_U64. The Plonky3
         // Goldilocks impl accepts arbitrary u64s; `from_int` is the
         // canonical "reduce a u64 into the field" constructor.
@@ -359,10 +369,15 @@ impl CryptographicPermutation<[Goldilocks; Tip5Perm::WIDTH]> for Tip5Perm {}
 //
 // On platforms where Goldilocks has a real SIMD-packed type (aarch64
 // Neon, x86_64 AVX2/AVX-512), we add a second `Permutation` impl that
-// unpacks lane-by-lane, runs scalar `nockchain_math::tip5::permute` on
-// each lane, and repacks. This is functionally correct (each SIMD lane
-// is an independent Goldilocks element); a real SIMD-native Tip5 would
-// be faster but is out of scope.
+// unpacks lane-by-lane, runs scalar `nockchain_math::tip5::permute_5round`
+// on each lane, and repacks. This MUST use the same 5-round permutation
+// as the scalar `Permutation` impl above (`§recursion` alignment) — the
+// MMCS commit step batches Merkle-tree hashing over the packed lanes, so
+// a packed/scalar round-count mismatch desynchronises the prover's
+// committed cap from the verifier's scalar-path recompute (`CapMismatch`).
+// This is functionally correct (each SIMD lane is an independent
+// Goldilocks element); a real SIMD-native Tip5 would be faster but is
+// out of scope.
 //
 // We name the concrete packed types directly (rather than going
 // through `<Goldilocks as Field>::Packing`) because rustc's coherence
@@ -384,7 +399,7 @@ mod packed_perm {
                 for i in 0..Tip5Perm::WIDTH {
                     state[i] = input[i].as_slice()[lane].as_canonical_u64();
                 }
-                nockchain_math::tip5::permute(&mut state);
+                nockchain_math::tip5::permute_5round(&mut state);
                 for i in 0..Tip5Perm::WIDTH {
                     input[i].as_slice_mut()[lane] =
                         <Goldilocks as QuotientMap<u64>>::from_int(state[i]);
@@ -410,7 +425,7 @@ mod packed_perm {
                 for i in 0..Tip5Perm::WIDTH {
                     state[i] = input[i].as_slice()[lane].as_canonical_u64();
                 }
-                nockchain_math::tip5::permute(&mut state);
+                nockchain_math::tip5::permute_5round(&mut state);
                 for i in 0..Tip5Perm::WIDTH {
                     input[i].as_slice_mut()[lane] =
                         <Goldilocks as QuotientMap<u64>>::from_int(state[i]);
@@ -440,7 +455,7 @@ mod packed_perm {
                 for i in 0..Tip5Perm::WIDTH {
                     state[i] = input[i].as_slice()[lane].as_canonical_u64();
                 }
-                nockchain_math::tip5::permute(&mut state);
+                nockchain_math::tip5::permute_5round(&mut state);
                 for i in 0..Tip5Perm::WIDTH {
                     input[i].as_slice_mut()[lane] =
                         <Goldilocks as QuotientMap<u64>>::from_int(state[i]);
@@ -483,8 +498,11 @@ mod tests {
         assert_eq!(Tip5Perm::RATE, 10);
         assert_eq!(Tip5Perm::CAPACITY, nockchain_math::tip5::CAPACITY);
         assert_eq!(Tip5Perm::CAPACITY, 6);
-        assert_eq!(Tip5Perm::NUM_ROUNDS, nockchain_math::tip5::NUM_ROUNDS);
-        assert_eq!(Tip5Perm::NUM_ROUNDS, 7);
+        // §recursion (2026-05-22): Tip5Perm uses the 5-round variant
+        // so the composite proof's transcript matches the recursion
+        // verifier (see `Tip5Perm::NUM_ROUNDS`).
+        assert_eq!(Tip5Perm::NUM_ROUNDS, nockchain_math::tip5::NUM_ROUNDS_5ROUND);
+        assert_eq!(Tip5Perm::NUM_ROUNDS, 5);
         assert_eq!(
             Tip5Perm::WIDTH,
             Tip5Perm::RATE + Tip5Perm::CAPACITY,
@@ -500,7 +518,7 @@ mod tests {
             std::array::from_fn(|i| (0x1234_5678_9abc_def0u64).wrapping_mul((i as u64) + 1));
         let mut raw_b = raw_a;
         Tip5Perm::permute(&mut raw_a);
-        nockchain_math::tip5::permute(&mut raw_b);
+        nockchain_math::tip5::permute_5round(&mut raw_b);
         assert_eq!(raw_a, raw_b);
     }
 
@@ -518,7 +536,7 @@ mod tests {
         let via_trait_u64 = to_u64s(&via_trait);
 
         let mut via_static = initial_u64;
-        nockchain_math::tip5::permute(&mut via_static);
+        nockchain_math::tip5::permute_5round(&mut via_static);
         // `from_int`'s canonicalization may not change the value modulo
         // the prime, so compare canonical forms.
         let via_static_canon: [u64; 16] = {

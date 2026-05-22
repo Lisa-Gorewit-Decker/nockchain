@@ -257,23 +257,20 @@ mod tests {
     }
 
     /// S3d — end-to-end: a real composite batch-STARK proof is
-    /// verified in-circuit by the L1 recursion verifier.
+    /// recursively verified in-circuit by the L1 recursion verifier,
+    /// and the verifier circuit **accepts**.
     ///
-    /// STATUS (residual): the integration is wired end-to-end — this
-    /// test *builds* the L1 verifier circuit for a real composite
-    /// proof and *runs* it. It currently fails: `runner.run()` returns
-    /// `WitnessConflict` at `WitnessId(237)` on the honest path (the
-    /// in-circuit recompute disagrees with the proof). Debugging leads,
-    /// in priority order: (1) the composite's LogUp buses (`noised_
-    /// packed`/range/i8u8/cv-routing, `Kind::Global`) vs how
-    /// `verify_batch_circuit` consumes `CommonData.lookups` — the
-    /// composite is a single LogUp AIR, a shape no recursion test
-    /// exercises; (2) the in-circuit `CircuitChallenger` transcript vs
-    /// the native `DuplexChallenger<Goldilocks, Tip5Perm, 16, 10>`
-    /// observe order; (3) the FRI verifier params. `#[ignore]` until
-    /// the divergence is resolved (S3d residual).
+    /// Proves a real honest composite proof
+    /// (`composite_prove_pinned_logup` over `baseline_min`), builds the
+    /// L1 recursive-verifier circuit via
+    /// `build_composite_l1_verifier_circuit`, and runs it. This is the
+    /// `ai-pow-zk` ↔ `Plonky3-recursion` integration end-to-end:
+    /// `runner.run()` succeeding means the in-circuit FRI / Tip5
+    /// challenger / MMCS recompute accepted the composite proof.
+    ///
+    /// (Both sides use 5-round Tip5 — see `circuit::Tip5Perm` and the
+    /// `Plonky3-recursion` `tip5-circuit-air`.)
     #[test]
-    #[ignore = "S3d residual — honest-path WitnessConflict; see doc-comment"]
     fn composite_recursively_verified_l1_accepts() {
         let profile = CircuitConfig::TEST_PEARL;
         let cfg = build_config(&test_zk_params(), &profile);
