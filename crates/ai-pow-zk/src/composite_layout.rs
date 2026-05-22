@@ -494,10 +494,26 @@ pub const SX_LANE_SEL_LEN: usize = STRIPE_MAX;
 pub const SX_IN_START: usize = SX_LANE_SEL_START + SX_LANE_SEL_LEN;
 pub const SX_IN_LEN: usize = 4;
 /// 32 LE bits per `SX_IN` cell.
-pub const SX_IN_BITS_START: usize = SX_IN_START + SX_IN_LEN;
+///
+/// **§M-S5b Path A column-overlay (2026-05-21):** `SX_IN_BITS`
+/// physically *aliases* the first `SX_IN_BITS_LEN` columns of the
+/// BLAKE3-round region (`BLAKE3_ROUND_START`). StripeXor activity is
+/// co-located on the matmul sweep (`composite_trace.rs`), which is
+/// mutually exclusive with BLAKE3 rounds. Soundness of the alias:
+/// the StripeXor `IN_BITS` constraints are `SX_IS_ACTIVE`-gated
+/// (Path A O0-Stage-1, `chips/stripe_xor.rs`) so they are vacuous on
+/// BLAKE3 rows, and `verify_round` is gated off on matmul rows
+/// (`chips/blake3/chip.rs` `round_gate_excl`, via the pinned matmul
+/// selectors) so it is vacuous where the columns hold StripeXor
+/// data — the two chips never both interpret these columns on one
+/// row. Reclaims `SX_IN_BITS_LEN` (128) columns from
+/// `TOTAL_TRACE_WIDTH`.
+pub const SX_IN_BITS_START: usize = BLAKE3_ROUND_START;
 pub const SX_IN_BITS_LEN: usize = SX_IN_LEN * 32; // 128
-/// `STRIPE_MAX`-lane register entering this row.
-pub const SX_XR_START: usize = SX_IN_BITS_START + SX_IN_BITS_LEN;
+/// `STRIPE_MAX`-lane register entering this row. The layout chain
+/// skips `SX_IN_BITS` (overlaid into the BLAKE3-round region,
+/// above), so `SX_XR` follows `SX_IN` directly.
+pub const SX_XR_START: usize = SX_IN_START + SX_IN_LEN;
 pub const SX_XR_LEN: usize = STRIPE_MAX;
 /// 32 LE bits of the selected lane value.
 pub const SX_XR_SEL_BITS_START: usize = SX_XR_START + SX_XR_LEN;
@@ -623,10 +639,12 @@ mod tests {
             + FOLD_STATE_LEN
             + FOLD_MCUR_BITS_LEN
             + 1; // FOLD_XOR_OUT
+        // §M-S5b Path A column-overlay: SX_IN_BITS is aliased into
+        // the BLAKE3-round region (its 128 columns are counted under
+        // `blake3_round`), so it is NOT a distinct StripeXor group.
         let sx = 1 /* SX_IS_ACTIVE */
             + SX_LANE_SEL_LEN
             + SX_IN_LEN
-            + SX_IN_BITS_LEN
             + SX_XR_LEN
             + SX_XR_SEL_BITS_LEN
             + 1 /* SX_NEW_SEL */
@@ -685,9 +703,10 @@ mod tests {
         assert_eq!(blake3_output, 8);
         assert_eq!(jackpot_xbits, 49);
         assert_eq!(fold, 99);
-        // sx_stripe: 358 post-2026-05-21 SX_Q width reduction
-        // (was 390 — SX_Q_BITS 64 cols → SX_Q 32 cols).
-        assert_eq!(sx, 358);
+        // sx_stripe: 230 — the post-SX_Q-reduction 358 minus the
+        // 128 SX_IN_BITS columns now aliased into the BLAKE3-round
+        // region (§M-S5b Path A column-overlay).
+        assert_eq!(sx, 230);
         assert_eq!(fold_stripe_sel, 64);
         assert_eq!(msg_pair_sel, 8);
 
@@ -707,9 +726,12 @@ mod tests {
             blake3_round * 100 >= TOTAL_TRACE_WIDTH * 49,
             "blake3_round ({blake3_round}) should be ≥49% of the {TOTAL_TRACE_WIDTH}-col trace"
         );
+        // §M-S5b Path A column-overlay shrank the trace (SX_IN_BITS
+        // aliased into blake3_round), so the two-group share is now
+        // ≈65% of the smaller trace (was ≈68% of the wider one).
         assert!(
-            (blake3_round + sx) * 100 >= TOTAL_TRACE_WIDTH * 67,
-            "blake3_round + sx_stripe should be ≥67% of the trace (the two reduction targets)"
+            (blake3_round + sx) * 100 >= TOTAL_TRACE_WIDTH * 64,
+            "blake3_round + sx_stripe should be ≥64% of the trace (the two reduction targets)"
         );
     }
 
@@ -966,12 +988,11 @@ mod tests {
                 SX_IN_START,
                 "SX_LANE_SEL → SX_IN",
             ),
-            (SX_IN_START + SX_IN_LEN, SX_IN_BITS_START, "SX_IN → SX_IN_BITS"),
-            (
-                SX_IN_BITS_START + SX_IN_BITS_LEN,
-                SX_XR_START,
-                "SX_IN_BITS → SX_XR",
-            ),
+            // §M-S5b Path A column-overlay — SX_IN_BITS is aliased
+            // into the BLAKE3-round region (checked separately
+            // below), so it is not in the SX contiguity chain;
+            // SX_XR follows SX_IN directly.
+            (SX_IN_START + SX_IN_LEN, SX_XR_START, "SX_IN → SX_XR"),
             (
                 SX_XR_START + SX_XR_LEN,
                 SX_XR_SEL_BITS_START,
@@ -1011,6 +1032,19 @@ mod tests {
         for &(end, next, name) in checkpoints {
             assert_eq!(end, next, "layout discontinuity at {name}: {end} != {next}");
         }
+
+        // §M-S5b Path A column-overlay — SX_IN_BITS aliases the head
+        // of the BLAKE3-round region rather than occupying its own
+        // columns. Pin the alias so any layout reshuffle that breaks
+        // it trips here.
+        assert_eq!(
+            SX_IN_BITS_START, BLAKE3_ROUND_START,
+            "SX_IN_BITS must alias BLAKE3_ROUND_START (Path A overlay)"
+        );
+        assert!(
+            SX_IN_BITS_START + SX_IN_BITS_LEN <= BLAKE3_ROUND_START + BLAKE3_ROUND_LEN,
+            "SX_IN_BITS overlay must fit within the BLAKE3-round region"
+        );
     }
 
     /// TOTAL_TRACE_WIDTH ≈ Pearl's pinned width (~1300 cols) plus

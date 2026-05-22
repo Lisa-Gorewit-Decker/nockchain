@@ -131,6 +131,16 @@ pub struct Blake3Offsets {
     pub is_new_blake_col: usize,
     /// Column of the IS_LAST_ROUND selector.
     pub is_last_round_col: usize,
+    /// §M-S5b Path A column-overlay — optional pair of activity
+    /// selector columns that additionally exclude a row from the
+    /// `verify_round` constraint. In the composite these are the
+    /// matmul `IS_RESET_CUMSUM` / `IS_UPDATE_CUMSUM` selectors
+    /// (pinned via the CRIT-1 `CONTROL_PREP`): StripeXor activity is
+    /// co-located on the matmul sweep, and the StripeXor
+    /// bit-decomposition columns are aliased onto a BLAKE3-round
+    /// sub-window, so `verify_round` must be vacuous on matmul rows.
+    /// `None` for the standalone chip (no matmul selectors exist).
+    pub round_gate_excl: Option<(usize, usize)>,
 }
 
 impl Blake3Chip {
@@ -143,6 +153,7 @@ impl Blake3Chip {
         cv_out_start: cols::CV_OUT,
         is_new_blake_col: cols::IS_NEW_BLAKE,
         is_last_round_col: cols::IS_LAST_ROUND,
+        round_gate_excl: None,
     };
 
     /// Composite-trace offsets. Maps each of the chip's column
@@ -158,6 +169,10 @@ impl Blake3Chip {
         cv_out_start: crate::composite_layout::CV_OUT_START,
         is_new_blake_col: crate::composite_layout::IS_NEW_BLAKE,
         is_last_round_col: crate::composite_layout::IS_LAST_ROUND,
+        round_gate_excl: Some((
+            crate::composite_layout::IS_RESET_CUMSUM,
+            crate::composite_layout::IS_UPDATE_CUMSUM,
+        )),
     };
 
     /// Emit the BLAKE3 chip's constraints at the given column
@@ -226,9 +241,30 @@ impl Blake3Chip {
         // first-row STATE0, so dropping the leading round link does
         // not unconstrain it.
         let next_is_new_blake: AB::Expr = nxt[off.is_new_blake_col].into();
-        let is_round_active: AB::Expr = (<AB::Expr as PrimeCharacteristicRing>::ONE
-            - is_last_round.clone())
-            * (<AB::Expr as PrimeCharacteristicRing>::ONE - next_is_new_blake);
+        // §M-S5b Path A column-overlay — `verify_round` is a
+        // CROSS-ROW constraint: it reads this row's STATE0..3 *and*
+        // the next row's STATE0. The StripeXor bit-decomposition
+        // columns are aliased onto a BLAKE3-round sub-window and
+        // StripeXor activity is co-located on the matmul sweep, so
+        // on a matmul row the BLAKE3-round columns hold StripeXor
+        // data, not BLAKE3 state. `verify_round` must therefore be
+        // vacuous on any transition that touches a matmul row —
+        // both when *this* row is matmul (`first_factor`) and when
+        // the *next* row is matmul (`next_factor`, since the
+        // constraint reads `next.STATE0`). The matmul selectors
+        // (`IS_RESET_CUMSUM` / `IS_UPDATE_CUMSUM`) are pinned via
+        // the CRIT-1 `CONTROL_PREP` and 0 on every genuine BLAKE3
+        // round row, so this never weakens a real round step; each
+        // factor stays degree 1 (extra subtraction terms only).
+        let mut first_factor: AB::Expr =
+            <AB::Expr as PrimeCharacteristicRing>::ONE - is_last_round.clone();
+        let mut next_factor: AB::Expr =
+            <AB::Expr as PrimeCharacteristicRing>::ONE - next_is_new_blake;
+        if let Some((excl_a, excl_b)) = off.round_gate_excl {
+            first_factor = first_factor - cur[excl_a].into() - cur[excl_b].into();
+            next_factor = next_factor - nxt[excl_a].into() - nxt[excl_b].into();
+        }
+        let is_round_active: AB::Expr = first_factor * next_factor;
 
         // verify_round only makes sense across two consecutive rows,
         // so guard with when_transition() (skips the last trace row).
