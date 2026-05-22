@@ -595,7 +595,11 @@ pub(crate) fn prove_and_verify_tiled_full<F: FnOnce(&mut CompositeTrace)>(
         tile: params.tile,
         difficulty_bits: params.difficulty_bits,
     };
-    let cfg = build_config(&zk_params, &CircuitConfig::TEST_PEARL);
+    // The production FRI profile. `prove_and_verify_*` is the live
+    // mining path (`prover.rs` → `prove_and_verify_for_block`), so it
+    // proves the composite at `CircuitConfig::PROD` (the ≥60-bit
+    // unconditional-Johnson production config) — never a TEST profile.
+    let cfg = build_config(&zk_params, &CircuitConfig::PROD);
 
     // HIGH-2.2 §4.C Route A: program-pinned proving **with the
     // cross-chip LogUp enforced** (batch-stark). `*_pinned_logup`
