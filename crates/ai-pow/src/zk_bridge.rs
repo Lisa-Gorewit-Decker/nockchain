@@ -281,6 +281,26 @@ pub(crate) fn prove_and_verify_tiled_tamper<F: FnOnce(&mut CompositeTrace)>(
     tile_j: u32,
     tamper: F,
 ) -> Result<ZkOutcome, BridgeError> {
+    prove_and_verify_tiled_full(ctx, params, target, tile_i, tile_j, tamper, None)
+}
+
+/// [`prove_and_verify_tiled_tamper`] plus the §4.C.10 adversarial
+/// seam. `sweep_override`: when `Some((a', b'))`, the §6(b) matmul
+/// sweep and the `noised_packed` producer store are built from
+/// `(a', b')`, while the strip-opening and the `HASH_A` / `HASH_B`
+/// public inputs stay the committed `ctx.a` / `ctx.b`. A sound AIR
+/// MUST reject any such proof — the §6(b) matmul was not performed
+/// on the committed matrices. Production callers pass `None`; only
+/// the §4.C.10 malicious-miner test passes `Some`.
+pub(crate) fn prove_and_verify_tiled_full<F: FnOnce(&mut CompositeTrace)>(
+    ctx: &BlockContext<'_>,
+    params: &MatmulParams,
+    target: &[u8; 32],
+    tile_i: u32,
+    tile_j: u32,
+    tamper: F,
+    sweep_override: Option<(&[i8], &[i8])>,
+) -> Result<ZkOutcome, BridgeError> {
     // P-B (γ Pearl-faithful): size the Layer-0 trace from `params`
     // — the faithful analogue of Pearl's `degree_bits()` — instead
     // of the fixed `MIN_STARK_LEN`. For sub-envelope test profiles
@@ -423,7 +443,12 @@ pub(crate) fn prove_and_verify_tiled_tamper<F: FnOnce(&mut CompositeTrace)>(
     // is attested; threading the specific *found* tile + binding
     // its index is §4.E (does not change this binding).
     let noise = crate::matmul::BlockNoise::expand(&ctx.s_a, &ctx.s_b, params);
-    let mats = crate::matmul::Matrices::build(ctx.a, ctx.b, &noise, params);
+    // §4.C.10 adversarial seam: the §6(b) matmul sweep + the
+    // `noised_packed` producer store are built from `sweep_override`
+    // when present; the strip-opening + `HASH_A`/`HASH_B` (above)
+    // always stay the committed `ctx.a`/`ctx.b`. Production = `None`.
+    let (sweep_a, sweep_b) = sweep_override.unwrap_or((ctx.a, ctx.b));
+    let mats = crate::matmul::Matrices::build(sweep_a, sweep_b, &noise, params);
     assert!(
         tile_i < params.row_tiles() && tile_j < params.col_tiles(),
         "attested tile ({tile_i},{tile_j}) out of grid \
@@ -3131,6 +3156,65 @@ mod tests {
              sx_bound + FOLD_XSTEP==SX_XR keystone live) — NOT the \
              off-circuit compute_tile_trace fallback. If this fails, \
              the matmul is not proven in-circuit for production."
+        );
+    }
+
+    /// **§4.C.10 — decisive malicious-miner adversarial test.** A
+    /// profit-incentivized miner runs the §6(b) in-circuit matmul
+    /// sweep on a matrix OTHER than the one it committed / strip-
+    /// opened (the `HASH_A`/`HASH_B` it publishes). If such a proof
+    /// verifies, the miner forged the PoW without doing the real
+    /// matmul of the committed matrices — a full A-FORGE break.
+    ///
+    /// A sound AIR MUST reject: the §6(b) sweep's `noised_packed`
+    /// bus queries consume the forged matrix's chunks, which are not
+    /// members of the committed-matrix producer store (the co-located
+    /// strip-opening leaf rows on the 16∣r path) ⇒ the LogUp bus is
+    /// unbalanced ⇒ reject.
+    #[test]
+    fn sec_4c10_sweep_on_uncommitted_matrix_rejects() {
+        use crate::synth::synth_matrices;
+
+        // 16∣r ⇒ coloc (production-faithful path); num_stripes=64.
+        let params = MatmulParams {
+            m: 16,
+            k: 1024,
+            n: 16,
+            noise_rank: 16,
+            tile: 8,
+            spot_checks: 2,
+            difficulty_bits: 0,
+        };
+        params.validate().unwrap();
+        let (a, b) = synth_matrices(b"4c10-committed", &params);
+        let ctx = BlockContext::build(b"4c10-blk", &a, &b, &params)
+            .expect("ctx");
+        let target = crate::tile_hash::difficulty_target(&params);
+
+        // Honest control: sweep == committed ⇒ must verify.
+        prove_and_verify_tiled_full(&ctx, &params, &target, 0, 0, |_| {}, None)
+            .expect("honest block (sweep == committed) must verify");
+
+        // Attack: a DIFFERENT matrix drives the §6(b) matmul sweep,
+        // while the strip-opening + HASH_A/HASH_B stay the committed
+        // (a, b). HASH_JACKPOT self-consistently becomes M(forged).
+        let (a2, b2) = synth_matrices(b"4c10-FORGED-sweep", &params);
+        assert!(a2 != a || b2 != b, "forged matrix must differ");
+        let res = prove_and_verify_tiled_full(
+            &ctx,
+            &params,
+            &target,
+            0,
+            0,
+            |_| {},
+            Some((&a2, &b2)),
+        );
+        assert!(
+            res.is_err(),
+            "§4.C.10: a proof whose §6(b) matmul sweep used a matrix \
+             OTHER than the committed / strip-opened one MUST be \
+             rejected — else a miner forges the PoW without doing \
+             the real matmul of the committed matrices."
         );
     }
 }
