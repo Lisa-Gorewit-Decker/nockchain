@@ -715,7 +715,7 @@ pub fn prove_and_verify_for_block(
 /// accumulator (the §6(b) work). Returns `None` for an
 /// out-of-range index (the verifier rejects).
 pub fn tile_ij(found_idx: u32, params: &MatmulParams) -> Option<(u32, u32)> {
-    if found_idx >= params.num_tiles() {
+    if u64::from(found_idx) >= params.num_tiles() {
         return None;
     }
     let col_tiles = params.col_tiles();
@@ -991,7 +991,7 @@ mod tests {
 
         let nt = params.num_tiles();
         let mut digests = std::collections::HashSet::new();
-        for &found_idx in &[0u32, 5, nt / 2, nt - 1] {
+        for &found_idx in &[0u32, 5, (nt / 2) as u32, (nt - 1) as u32] {
             let (ti, tj) = tile_ij(found_idx, &params).expect("valid idx");
             let out = prove_and_verify_for_block(&ctx, &params, found_idx)
                 .unwrap_or_else(|e| panic!("§4.E: tile ({ti},{tj}) must prove+verify: {e}"));
@@ -1020,17 +1020,17 @@ mod tests {
         let rt = params.row_tiles();
         let ct = params.col_tiles();
         let nt = params.num_tiles();
-        assert_eq!(nt, rt * ct);
+        assert_eq!(nt, u64::from(rt) * u64::from(ct));
 
         for idx in 0..nt {
-            let (ti, tj) = tile_ij(idx, &params).expect("in-range index must decompose");
+            let (ti, tj) = tile_ij(idx as u32, &params).expect("in-range index must decompose");
             assert!(ti < rt && tj < ct, "decomposed coords must be in grid");
             // Round-trips back to the linear index.
-            assert_eq!(ti * ct + tj, idx);
+            assert_eq!(u64::from(ti) * u64::from(ct) + u64::from(tj), idx);
         }
         // Out-of-range ⇒ verifier rejects.
-        assert_eq!(tile_ij(nt, &params), None);
-        assert_eq!(tile_ij(nt + 7, &params), None);
+        assert_eq!(tile_ij(nt as u32, &params), None);
+        assert_eq!(tile_ij((nt + 7) as u32, &params), None);
     }
 
     // ============================================================

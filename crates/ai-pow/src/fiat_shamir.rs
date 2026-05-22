@@ -106,9 +106,9 @@ pub fn transcript(label: &str, parts: &[&[u8]]) -> [u8; 32] {
 /// Derive `count` distinct indices in `0..range` from `seed`. Sampling is
 /// without-replacement over a streamed XOF with rejection-and-set.
 /// Determinism: same `(seed, count, range)` always yields the same vector.
-pub fn challenge_indices(seed: &[u8; 32], count: u32, range: u32) -> Vec<u32> {
+pub fn challenge_indices(seed: &[u8; 32], count: u32, range: u64) -> Vec<u64> {
     assert!(range > 0, "range must be > 0");
-    assert!(count <= range, "count must be <= range");
+    assert!(u64::from(count) <= range, "count must be <= range");
     let mut hasher = Hasher::new_derive_key(CTX_INDICES);
     hasher.update(seed);
     hasher.update(&count.to_le_bytes());
@@ -121,7 +121,7 @@ pub fn challenge_indices(seed: &[u8; 32], count: u32, range: u32) -> Vec<u32> {
     while chosen.len() < count as usize {
         xof.fill(&mut buf);
         let r = u64::from_le_bytes(buf);
-        let idx = (r % (range as u64)) as u32;
+        let idx = r % range;
         if !taken[idx as usize] {
             taken[idx as usize] = true;
             chosen.push(idx);

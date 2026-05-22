@@ -300,9 +300,9 @@ fn mine_with_context(
         return Ok(None);
     };
 
-    let spot_indices = challenge_indices(&chal, params.spot_checks, num_tiles as u32);
+    let spot_indices = challenge_indices(&chal, params.spot_checks, num_tiles as u64);
 
-    let found_opening = build_tile_opening(ctx, &leaves, found_idx)?;
+    let found_opening = build_tile_opening(ctx, &leaves, found_idx.into())?;
     let mut spot = Vec::with_capacity(spot_indices.len());
     for &idx in &spot_indices {
         spot.push(build_tile_opening(ctx, &leaves, idx)?);
@@ -369,7 +369,7 @@ fn mine_with_context(
 fn build_tile_opening(
     ctx: &BlockContext<'_>,
     leaves: &[[u8; 32]],
-    tile_idx: u32,
+    tile_idx: u64,
 ) -> Result<TileOpening, MineError> {
     let params = &ctx.params;
     let (i, j) = params.tile_coords(tile_idx);

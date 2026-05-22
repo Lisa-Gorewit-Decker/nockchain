@@ -226,6 +226,14 @@ impl MatmulParams {
         if total == 0 {
             return Err(ParamError::ZeroTiles);
         }
+        // Tile indices (`found_idx`, the spot-check challenge indices)
+        // are u32-addressed throughout the proof path. `total` is
+        // computed in u64 — so this check itself cannot overflow — but
+        // `num_tiles()` returning a value past `u32::MAX` could not be
+        // addressed by a proof. Reject such a puzzle outright.
+        if total > u32::MAX as u64 {
+            return Err(ParamError::TooManyTiles);
+        }
         // Pearl §4.8 caps k at 2^16. With `|A| <= 64`, `|E| <= 63`, the per-multiply
         // bound is (64+63)^2 = 16129 < 2^14, so `k * 16129 < 2^31` holds well past
         // Pearl's cap. Use Pearl's cap directly.
@@ -352,20 +360,24 @@ impl MatmulParams {
     pub fn col_tiles(&self) -> u32 {
         self.n / self.tile
     }
-    pub fn num_tiles(&self) -> u32 {
-        self.row_tiles() * self.col_tiles()
+    /// Total tile count. Returns `u64`: `row_tiles · col_tiles` can
+    /// exceed `u32::MAX` for large in-§4.8-envelope matrices
+    /// (`m, n ≤ 2²⁴`), so a `u32` product would silently overflow
+    /// (release) or panic (debug). Computed in `u64`.
+    pub fn num_tiles(&self) -> u64 {
+        (self.row_tiles() as u64) * (self.col_tiles() as u64)
     }
     /// Number of leaves in the padded Merkle tree (next power of two of
-    /// `num_tiles`).
-    pub fn num_tiles_padded(&self) -> u32 {
+    /// `num_tiles`). `u64` for the same reason as [`num_tiles`].
+    pub fn num_tiles_padded(&self) -> u64 {
         self.num_tiles().next_power_of_two()
     }
-    pub fn tile_index(&self, i: u32, j: u32) -> u32 {
-        i * self.col_tiles() + j
+    pub fn tile_index(&self, i: u32, j: u32) -> u64 {
+        (i as u64) * (self.col_tiles() as u64) + (j as u64)
     }
-    pub fn tile_coords(&self, idx: u32) -> (u32, u32) {
-        let cols = self.col_tiles();
-        (idx / cols, idx % cols)
+    pub fn tile_coords(&self, idx: u64) -> (u32, u32) {
+        let cols = self.col_tiles() as u64;
+        ((idx / cols) as u32, (idx % cols) as u32)
     }
     /// Number of accumulator stripes per tile (`⌊k / r⌋`). Each stripe folds
     /// one update into the 512-bit `M` state.
@@ -551,6 +563,12 @@ pub enum ParamError {
     #[error("spot_checks must be <= number of tiles")]
     TooManySpotChecks,
     #[error(
+        "tile count (m/t)·(n/t) must be <= u32::MAX — tile indices \
+         (found_idx, spot-check challenge indices) are u32-addressed \
+         throughout the proof path"
+    )]
+    TooManyTiles,
+    #[error(
         "layer is in the FP8 quant group (Pearl §4.1 type-0 is INT only; \
          the FP PoUW is unshipped — Pearl whitepaper §1.1): not mineable"
     )]
@@ -588,7 +606,7 @@ mod tests {
         assert_eq!(p.validate(), Err(ParamError::ZeroSpotChecks));
 
         p = MatmulParams::TEST_SMALL;
-        p.spot_checks = p.num_tiles() + 1;
+        p.spot_checks = (p.num_tiles() + 1) as u32;
         assert_eq!(p.validate(), Err(ParamError::TooManySpotChecks));
 
         // Noise rank must divide k.
@@ -627,6 +645,52 @@ mod tests {
         p.validate().unwrap();
         assert_eq!(p.num_tiles(), 96);
         assert_eq!(p.num_tiles_padded(), 128);
+    }
+
+    /// H1 (DoS/overflow audit): `num_tiles()` must compute the tile
+    /// count in `u64`. For an in-§4.8-envelope matrix (`m, n = 2²⁴`)
+    /// the product `row_tiles · col_tiles` is `2⁴²` — a `u32` multiply
+    /// would panic (debug) or silently wrap to a wrong, smaller count
+    /// (release). `validate()` must in turn *reject* such a puzzle:
+    /// tile indices (`found_idx`, the challenge indices) are
+    /// u32-addressed end-to-end, so a count past `u32::MAX` is
+    /// unrepresentable.
+    #[test]
+    fn num_tiles_no_overflow_then_rejected() {
+        // Envelope-max square matrix; tile = 8 (smallest entropy-valid).
+        let mut p = MatmulParams::TEST_SMALL;
+        p.m = 1 << 24;
+        p.n = 1 << 24;
+        p.tile = 8;
+        // row_tiles = col_tiles = 2²¹ ⇒ num_tiles = 2⁴² (exact, u64).
+        assert_eq!(p.row_tiles(), 1 << 21);
+        assert_eq!(p.col_tiles(), 1 << 21);
+        assert_eq!(p.num_tiles(), 1u64 << 42);
+        // tile_index over the whole grid must not overflow either.
+        assert_eq!(
+            p.tile_index(p.row_tiles() - 1, p.col_tiles() - 1),
+            (1u64 << 42) - 1,
+        );
+        // A puzzle with > u32::MAX tiles is unaddressable ⇒ rejected.
+        assert_eq!(p.validate(), Err(ParamError::TooManyTiles));
+
+        // Boundary: exactly u32::MAX + 1 tiles ⇒ rejected.
+        let mut at_boundary = MatmulParams::TEST_SMALL;
+        at_boundary.m = 1 << 16;
+        at_boundary.n = 1 << 16;
+        at_boundary.tile = 1;
+        assert_eq!(at_boundary.num_tiles(), 1u64 << 32);
+        assert_eq!(at_boundary.validate(), Err(ParamError::TooManyTiles));
+
+        // Just under the cap: the count gate must NOT fire (later
+        // structural checks may still reject — only the count gate is
+        // under test here).
+        let mut under = MatmulParams::TEST_SMALL;
+        under.m = 1 << 16;
+        under.n = (1 << 16) - 1;
+        under.tile = 1;
+        assert!(under.num_tiles() <= u64::from(u32::MAX));
+        assert_ne!(under.validate(), Err(ParamError::TooManyTiles));
     }
 
     #[test]
