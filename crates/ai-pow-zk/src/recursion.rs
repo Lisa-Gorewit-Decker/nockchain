@@ -223,6 +223,109 @@ pub fn run_composite_l1_verifier(
     Ok(())
 }
 
+/// S5 — produce the **L1 outer certificate** for a composite proof:
+/// prove the composite-L1 verifier circuit itself as a D=2 batch-STARK
+/// (`prove_all_tables`), then `verify_all_tables` — the live
+/// cross-table `WitnessChecks` LogUp soundness gate. This is the
+/// end-to-end recursive certificate: a small STARK whose statement is
+/// "I verified the composite proof".
+///
+/// Mirrors the validated `outer_cert_layer0` machinery
+/// (`Plonky3-recursion` `test_tip5_layer0_recursion.rs`) — D=2,
+/// Tip5 NPO (D=1 perm) + recompose with split coeff tables — with the
+/// composite-L1 circuit in place of the Fibonacci-L0 one.
+///
+/// Returns the L1 certificate (a `BatchStarkProof`) on accept; an
+/// `Err` if `runner.run()` or `verify_all_tables` rejects.
+pub fn prove_composite_l1_outer_cert(
+    built: &BuiltCompositeL1,
+    proof: &BatchProof<AiPowStarkConfig>,
+) -> Result<p3_circuit_prover::BatchStarkProof<p3_circuit_prover::config::GoldilocksTipsConfig>, VerificationError>
+{
+    use p3_batch_stark::ProverData;
+    use p3_circuit_prover::common::{get_airs_and_degrees_with_prep, NpoPreprocessor};
+    use p3_circuit_prover::{
+        config, recompose_air_builders, tip5_air_builders, BatchStarkProver, CircuitProverData,
+        ConstraintProfile, RecomposePreprocessor, TablePacking, Tip5Preprocessor,
+    };
+
+    type OuterConfig = config::GoldilocksTipsConfig;
+
+    // D=2 outer-cert table layout — Tip5 NPO (D=1 perm) + recompose
+    // with split coeff tables (the verifier circuit set
+    // `set_recompose_coeff_ctl_for_decompose_links(true)`).
+    let table_packing = TablePacking::new(1, 8);
+    let npo_prep: Vec<Box<dyn NpoPreprocessor<Val>>> = vec![
+        Box::new(Tip5Preprocessor),
+        Box::new(RecomposePreprocessor::new(true)),
+    ];
+    let mut air_builders = tip5_air_builders::<OuterConfig, 2>();
+    air_builders.extend(recompose_air_builders::<OuterConfig, 2>(1, true));
+
+    let (airs_degrees, primitive_columns, non_primitive_columns) =
+        get_airs_and_degrees_with_prep::<OuterConfig, Challenge, 2>(
+            &built.circuit,
+            &table_packing,
+            &npo_prep,
+            &air_builders,
+            ConstraintProfile::Standard,
+        )
+        .map_err(|e| {
+            VerificationError::InvalidProofShape(format!(
+                "composite L1 outer cert — get_airs_and_degrees: {e:?}"
+            ))
+        })?;
+    let (airs, degrees): (Vec<_>, Vec<usize>) = airs_degrees.into_iter().unzip();
+
+    // Run the verifier circuit to obtain its execution traces.
+    let mut runner = built.circuit.runner();
+    runner
+        .set_public_inputs(&built.public_inputs)
+        .map_err(VerificationError::Circuit)?;
+    runner
+        .set_private_inputs(&built.private_inputs)
+        .map_err(VerificationError::Circuit)?;
+    set_fri_mmcs_private_data::<
+        Val,
+        Challenge,
+        crate::circuit::ChallengeMmcs,
+        crate::circuit::ValMmcs,
+        Tip5Sponge,
+        Tip5Compress,
+        DIGEST_ELEMS,
+    >(
+        &mut runner,
+        &built.mmcs_op_ids,
+        &proof.opening_proof,
+        Tip5Config::GOLDILOCKS_W16,
+    )
+    .map_err(|e| VerificationError::InvalidProofShape(e.to_string()))?;
+    let traces = runner.run().map_err(VerificationError::Circuit)?;
+
+    // Prove the verifier circuit as a D=2 batch-STARK.
+    let prover_data =
+        ProverData::from_airs_and_degrees(&config::goldilocks_tip5(), &airs, &degrees);
+    let circuit_prover_data =
+        CircuitProverData::new(prover_data, primitive_columns, non_primitive_columns);
+    let mut prover =
+        BatchStarkProver::new(config::goldilocks_tip5()).with_table_packing(table_packing);
+    prover.register_tip5_table::<2>(Tip5Config::GOLDILOCKS_W16);
+    prover.register_recompose_table::<2>(true);
+
+    let batch_proof = prover.prove_all_tables(&traces, &circuit_prover_data).map_err(|e| {
+        VerificationError::InvalidProofShape(format!(
+            "composite L1 outer cert — prove_all_tables: {e:?}"
+        ))
+    })?;
+    // The cross-table `WitnessChecks` soundness gate.
+    prover.verify_all_tables(&batch_proof).map_err(|e| {
+        VerificationError::InvalidProofShape(format!(
+            "composite L1 outer cert — verify_all_tables rejected: {e:?}"
+        ))
+    })?;
+    Ok(batch_proof)
+}
+
 /// S3a — compile-time proof that the composite AIR satisfies the
 /// recursion substrate's `RecursiveAir` bound.
 fn _require_recursive_air<A>()
@@ -296,5 +399,78 @@ mod tests {
 
         run_composite_l1_verifier(&built, &proof)
             .expect("L1 recursive verification of the real composite proof must accept");
+    }
+
+    /// S5 — build a real composite proof, recursively verify it in the
+    /// L1 circuit, and outer-prove that verifier circuit as a D=2
+    /// batch-STARK (the L1 recursive certificate). When `tamper`, one
+    /// FRI-bound opened OOD trace evaluation of the composite proof is
+    /// corrupted before the L1 circuit is built — the in-circuit
+    /// quotient-consistency recompute must then reject. Returns the
+    /// serialized certificate byte length on accept.
+    fn run_composite_l1_outer_cert(tamper: bool) -> Result<usize, String> {
+        let profile = CircuitConfig::TEST_PEARL;
+        let cfg = build_config(&test_zk_params(), &profile);
+
+        let trace = CompositeTrace::baseline_min();
+        let pis = CompositePublicInputs::derive_from_trace(&trace);
+        let (mut proof, program) = composite_prove_pinned_logup(&cfg, trace, &pis);
+
+        if tamper {
+            // Corrupt a single FRI-bound opened OOD trace evaluation.
+            proof.opened_values.instances[0]
+                .base_opened_values
+                .trace_local[0] += Challenge::ONE;
+        }
+
+        let air = CompositeFullAirWithLookupsPinned::new_with(program.clone(), true);
+        let pd = logup_common_for(&cfg, &program, true);
+
+        let built = build_composite_l1_verifier_circuit(
+            &cfg,
+            &air,
+            &proof,
+            &pd.common,
+            &pis.to_vec(),
+            profile.log_blowup as usize,
+        )
+        .map_err(|e| format!("build composite L1 verifier circuit: {e:?}"))?;
+
+        let cert = prove_composite_l1_outer_cert(&built, &proof).map_err(|e| format!("{e:?}"))?;
+        let bytes =
+            postcard::to_allocvec(&cert).map_err(|e| format!("serialize L1 certificate: {e}"))?;
+        Ok(bytes.len())
+    }
+
+    /// S5 ACCEPT: an honest composite proof yields a valid L1 outer
+    /// certificate that `verify_all_tables` (the cross-table
+    /// `WitnessChecks` soundness gate) accepts.
+    #[test]
+    fn composite_l1_outer_cert_accepts() {
+        match run_composite_l1_outer_cert(false) {
+            Ok(bytes) => eprintln!(
+                "[S5] composite→L1 outer certificate ACCEPTED — serialized {} bytes ({:.2} KB)",
+                bytes,
+                bytes as f64 / 1024.0,
+            ),
+            Err(e) => panic!("valid composite→L1 outer certificate was REJECTED: {e}"),
+        }
+    }
+
+    /// S5 TAMPER-REJECT: a composite proof with one corrupted opened
+    /// OOD trace value must NOT yield a certificate — the in-circuit
+    /// FRI/quotient-consistency binding rejects it. A rejection via
+    /// `Err` (in-circuit `WitnessConflict`) or a panic (debug
+    /// assertion) both count; only a produced certificate fails.
+    #[test]
+    fn composite_l1_outer_cert_tamper_rejects() {
+        let res = std::panic::catch_unwind(|| run_composite_l1_outer_cert(true));
+        match res {
+            Ok(Ok(bytes)) => panic!(
+                "tampered composite→L1 outer certificate was ACCEPTED ({bytes} bytes) \
+                 — SOUNDNESS FAILURE"
+            ),
+            Ok(Err(_)) | Err(_) => { /* rejected — correct */ }
+        }
     }
 }
