@@ -144,18 +144,38 @@ into one higher-degree constraint (degree budget). **Path B is
 struck.** The de-risk step did its job — caught a false premise
 before any invasive edit.
 
-### Path C — SX-stripe reduction (390 cols, 18.3%)
+### Path C — SX-stripe reduction — ✗ RE-SCOPED (de-risk finding, 2026-05-21)
 
-`sx_stripe` carries `SX_IN_BITS` 128 + `SX_XR_SEL_BITS` 32 +
-`SX_NEW_SEL_BITS` 32 + `SX_Q_BITS` 64 = **256 columns of
-bit-decomposition** (66% of the SX block). The same
-limb+lookup substitution as Path A may apply to the
-bit-decomposed SX fields. Requires a study of what each SX
-bit-field feeds (XOR/rotate vs range-check vs selector) — a
-field used purely for a range-check can move to a lookup
-(byte-limbs + range table) with no rotate complication.
-**Estimated win: up to ~200 cols** depending on how many SX
-bit-fields are range-checks vs genuine bit-ops.
+The initial hypothesis was that some of `sx_stripe`'s 256
+bit-decomposition columns (`SX_IN_BITS` 128 + `SX_XR_SEL_BITS`
+32 + `SX_NEW_SEL_BITS` 32 + `SX_Q_BITS` 64) are pure
+range-checks movable to lookup-based range checks.
+
+**Reading `chips/stripe_xor.rs` before editing disproved this.**
+*All four* SX bit-fields are genuine XOR machinery — the SX
+chip computes `NEW_SEL = XR[lane] ⊕ ⊕SX_IN` (a 5-way 32-bit
+XOR) via the per-bit-parity identity
+`XR_bit[i] + Σ IN_bit[c][i] = NEW_bit[i] + 2·Q[i]`, where the
+`*_BITS` are the bit decompositions of the XOR operands/result
+and `Q_BITS` are the parity quotient bits. There are **no
+range-check-only bit-fields** in SX.
+
+Moreover the chip's own doc-comment ("Why per-bit parity, not a
+lookup") records that a lookup-based XOR was **already
+considered and deliberately rejected**: the per-bit-parity
+gadget keeps every constraint degree ≤ 2 and is the *uniform
+audited XOR-gadget shape* used across the codebase (`xstep`,
+the FoldChip rotl13-XOR, and SX).
+
+**Re-scoped conclusion.** "Path C" is not a separate
+range-check-to-lookup change. The only SX width reduction is
+the *same* core problem as Path A: replace per-bit XOR with a
+byte-limb + byte-XOR-lookup gadget. Path C (SX) and Path A
+(BLAKE3) therefore share one core deliverable — a sound,
+low-degree byte-XOR-lookup gadget — and Path C is just its
+rotation-free first application. They are **not separable**;
+"do C then A" collapses to "build the byte-XOR-lookup gadget,
+apply to SX, then apply to BLAKE3 (+rotation)."
 
 ### Path D — adopt Plonky3's `p3-blake3-air` — ✗ NO SHORTCUT (triage finding, 2026-05-21)
 
