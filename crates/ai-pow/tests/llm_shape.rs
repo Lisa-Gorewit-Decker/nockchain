@@ -1,8 +1,9 @@
 //! End-to-end tests at LLM-shaped, non-power-of-two-tile-count parameters.
 //!
-//! Production LLM dimensions are huge (Gemma 4 31B FFN tile count is
-//! 64 × 336 = 21504; padded depth 15) so we exercise small rectangular
-//! shapes that share the relevant structural properties.
+//! Production LLM dimensions are huge (Gemma 4 31B FFN tile count at
+//! the current tile=8 preset is 512 × 2688 = 1,376,256; padded depth
+//! 21) so we exercise small rectangular shapes that share the
+//! relevant structural properties.
 
 use ai_pow::params::MatmulParams;
 use ai_pow::prover::{mine, ProverOptions};
@@ -105,10 +106,12 @@ fn llm_profiles_validate() {
     MatmulParams::llm_ffn(5376, 21504, 4096).validate().unwrap();
     MatmulParams::llm_ffn(5120, 17408, 4096).validate().unwrap();
 
+    // GEMMA at tile=8: row_tiles=512, col_tiles=2688
+    // ⇒ num_tiles=1,376,256, padded to 2^21=2,097,152.
     assert_eq!(
         MatmulParams::GEMMA_4_31B_FFN
             .num_tiles_padded()
             .trailing_zeros(),
-        15,
+        21,
     );
 }
