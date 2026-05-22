@@ -42,20 +42,20 @@ blake3 = { workspace = true }
 #     matrix commits, jackpot hash); the sub-AIR proves the keyed-hash
 #     transitions inside the circuit so we don't have to re-prove BLAKE3
 #     by hand.
-p3-air = { git = "https://github.com/Plonky3/Plonky3.git" }
-p3-batch-stark = { git = "https://github.com/Plonky3/Plonky3.git" }
-p3-blake3-air = { git = "https://github.com/Plonky3/Plonky3.git" }
-p3-challenger = { git = "https://github.com/Plonky3/Plonky3.git" }
-p3-commit = { git = "https://github.com/Plonky3/Plonky3.git" }
-p3-dft = { git = "https://github.com/Plonky3/Plonky3.git" }
-p3-field = { git = "https://github.com/Plonky3/Plonky3.git" }
-p3-fri = { git = "https://github.com/Plonky3/Plonky3.git" }
-p3-goldilocks = { git = "https://github.com/Plonky3/Plonky3.git" }
-p3-lookup = { git = "https://github.com/Plonky3/Plonky3.git" }
-p3-matrix = { git = "https://github.com/Plonky3/Plonky3.git" }
-p3-merkle-tree = { git = "https://github.com/Plonky3/Plonky3.git" }
-p3-symmetric = { git = "https://github.com/Plonky3/Plonky3.git" }
-p3-uni-stark = { git = "https://github.com/Plonky3/Plonky3.git" }
+p3-air = { git = "https://github.com/Plonky3/Plonky3.git", rev = "9fc13fa223665268f3bec16ddd43d4b592cd57a1" }
+p3-batch-stark = { git = "https://github.com/Plonky3/Plonky3.git", rev = "9fc13fa223665268f3bec16ddd43d4b592cd57a1" }
+p3-blake3-air = { git = "https://github.com/Plonky3/Plonky3.git", rev = "9fc13fa223665268f3bec16ddd43d4b592cd57a1" }
+p3-challenger = { git = "https://github.com/Plonky3/Plonky3.git", rev = "9fc13fa223665268f3bec16ddd43d4b592cd57a1" }
+p3-commit = { git = "https://github.com/Plonky3/Plonky3.git", rev = "9fc13fa223665268f3bec16ddd43d4b592cd57a1" }
+p3-dft = { git = "https://github.com/Plonky3/Plonky3.git", rev = "9fc13fa223665268f3bec16ddd43d4b592cd57a1" }
+p3-field = { git = "https://github.com/Plonky3/Plonky3.git", rev = "9fc13fa223665268f3bec16ddd43d4b592cd57a1" }
+p3-fri = { git = "https://github.com/Plonky3/Plonky3.git", rev = "9fc13fa223665268f3bec16ddd43d4b592cd57a1" }
+p3-goldilocks = { git = "https://github.com/Plonky3/Plonky3.git", rev = "9fc13fa223665268f3bec16ddd43d4b592cd57a1" }
+p3-lookup = { git = "https://github.com/Plonky3/Plonky3.git", rev = "9fc13fa223665268f3bec16ddd43d4b592cd57a1" }
+p3-matrix = { git = "https://github.com/Plonky3/Plonky3.git", rev = "9fc13fa223665268f3bec16ddd43d4b592cd57a1" }
+p3-merkle-tree = { git = "https://github.com/Plonky3/Plonky3.git", rev = "9fc13fa223665268f3bec16ddd43d4b592cd57a1" }
+p3-symmetric = { git = "https://github.com/Plonky3/Plonky3.git", rev = "9fc13fa223665268f3bec16ddd43d4b592cd57a1" }
+p3-uni-stark = { git = "https://github.com/Plonky3/Plonky3.git", rev = "9fc13fa223665268f3bec16ddd43d4b592cd57a1" }
 
 # Tip5 sponge — Plonky3 upstream does NOT ship a `p3-tip5` crate.
 # Nockchain has its own in-repo Tip5 implementation in
@@ -97,13 +97,13 @@ proptest = { workspace = true }
 # the production trust surface. Used by `tests/test_whir_prototype.rs`
 # to measure WHIR proof bytes at parameters comparable to our FRI
 # production config + compare per-PCS bytes vs FRI head-to-head.
-p3-whir = { git = "https://github.com/Plonky3/Plonky3.git" }
-p3-multilinear-util = { git = "https://github.com/Plonky3/Plonky3.git" }
-p3-commit = { git = "https://github.com/Plonky3/Plonky3.git" }
-p3-merkle-tree = { git = "https://github.com/Plonky3/Plonky3.git" }
-p3-symmetric = { git = "https://github.com/Plonky3/Plonky3.git" }
-p3-dft = { git = "https://github.com/Plonky3/Plonky3.git" }
-p3-challenger = { git = "https://github.com/Plonky3/Plonky3.git" }
+p3-whir = { git = "https://github.com/Plonky3/Plonky3.git", rev = "9fc13fa223665268f3bec16ddd43d4b592cd57a1" }
+p3-multilinear-util = { git = "https://github.com/Plonky3/Plonky3.git", rev = "9fc13fa223665268f3bec16ddd43d4b592cd57a1" }
+p3-commit = { git = "https://github.com/Plonky3/Plonky3.git", rev = "9fc13fa223665268f3bec16ddd43d4b592cd57a1" }
+p3-merkle-tree = { git = "https://github.com/Plonky3/Plonky3.git", rev = "9fc13fa223665268f3bec16ddd43d4b592cd57a1" }
+p3-symmetric = { git = "https://github.com/Plonky3/Plonky3.git", rev = "9fc13fa223665268f3bec16ddd43d4b592cd57a1" }
+p3-dft = { git = "https://github.com/Plonky3/Plonky3.git", rev = "9fc13fa223665268f3bec16ddd43d4b592cd57a1" }
+p3-challenger = { git = "https://github.com/Plonky3/Plonky3.git", rev = "9fc13fa223665268f3bec16ddd43d4b592cd57a1" }
 postcard = { version = "1.1.3", features = ["alloc"] }
 # rand 0.10 — required by Plonky3's `Perm::new_from_rng_128`
 # bound on `rand_core::Rng` (0.10 line). Workspace rand (0.9.x)
