@@ -166,14 +166,12 @@ pub struct ZkOutcome {
     /// `f1_harness` example does — `bincode` is dev-only for this
     /// crate so the production lib path does not serialize here).
     pub pis: CompositePublicInputs,
-    /// `true` iff the §6(b) **in-circuit** matmul sweep ran
-    /// (`place_useful_work_chain` + `sx_bound`/keystone live) —
-    /// i.e. the matmul was proven in-circuit and the FoldChip
-    /// inputs are bound to the genuine accumulator. `false` iff
-    /// the legacy off-circuit `compute_tile_trace → place_fold_
-    /// chain` fallback was taken (`num_stripes > STRIPE_MAX` or the
-    /// sweep does not fit one Layer-0 STARK). Soundness-relevant:
-    /// the in-circuit path is the one that proves the matmul.
+    /// Always `true`: the §6(b) in-circuit matmul sweep is the only
+    /// matmul path. (The legacy off-circuit `compute_tile_trace`
+    /// fallback — which proved no matmul — was deleted; this field
+    /// is retained as an explicit invariant signal that the proof's
+    /// matmul was proven in-circuit with the `FOLD_XSTEP == SX_XR`
+    /// keystone live.)
     pub sweep_in_circuit: bool,
 }
 
@@ -473,12 +471,10 @@ pub(crate) fn prove_and_verify_tiled_full<F: FnOnce(&mut CompositeTrace)>(
     // micro-steps, so the full malicious-prover binding covers
     // **every params set with `num_stripes ≤ STRIPE_MAX` whose
     // sweep fits one Layer-0 STARK** — TEST_SMALL (`k/r = 16`) *and*
-    // the rectangular `llm_shape` shapes (`k/r = 20`). Only true
-    // PROD (`k/r = 64` but sweep ≈ 2²⁰ rows ≫ one STARK) still takes
-    // the legacy `compute_tile_trace → place_fold_chain` path
-    // (HIGH2_2_DESIGN §4.C.4-G3: segmentation/M12 — the residual,
-    // not a forgery hole; soundness held by CRIT-1 + §4.D + §6(a)).
-    let sweep_rows = (t / 2) * (t / 2) * num_stripes * r.div_ceil(16);
+    // every consensus-valid puzzle: `validate_prod_envelope` rejects
+    // `num_stripes > STRIPE_MAX`, so the §6(b) in-circuit sweep is
+    // the one and only matmul path (the legacy off-circuit
+    // `compute_tile_trace` fallback was deleted).
     // HIGH-2.2 §4.C.11 / M-S1 — the `noised_packed` producer store:
     // one row per *distinct* swept 8-i8 micro-tile chunk. The
     // chunked whole-micro-tile matmul query
@@ -530,9 +526,15 @@ pub(crate) fn prove_and_verify_tiled_full<F: FnOnce(&mut CompositeTrace)>(
         }
         (plain, noise)
     };
-    let sweep_fits = num_stripes <= ai_pow_zk::composite_layout::STRIPE_MAX
-        && mh_end + 3 + sweep_rows + n_store + 4 + num_stripes < height - 8;
-    let real_m = if sweep_fits {
+    // §6(b) in-circuit matmul sweep — the ONLY matmul path. The
+    // legacy off-circuit `compute_tile_trace → place_fold_chain`
+    // fallback was deleted: it proved no matmul (`sx_bound = false`,
+    // the `FOLD_XSTEP == SX_XR` keystone gated off). Every
+    // consensus-valid puzzle fits the in-circuit sweep —
+    // `validate_prod_envelope` rejects `num_stripes > STRIPE_MAX`
+    // and the trace is sized to the sweep by `expected_layer0_rows`;
+    // `place_useful_work_chain` self-asserts both invariants.
+    let real_m = {
         let sweep_start = mh_end + 3;
         let (rows_used, x_steps) = trace
             .place_useful_work_chain(sweep_start, &a_strips, &b_strips, t, r, num_stripes);
@@ -555,16 +557,6 @@ pub(crate) fn prove_and_verify_tiled_full<F: FnOnce(&mut CompositeTrace)>(
         let fold_start = store_start + placed + 4;
         let xs: Vec<i32> = x_steps[..num_stripes].iter().map(|&u| u as i32).collect();
         trace.place_fold_chain(fold_start, &xs)
-    } else {
-        let tile_trace = crate::matmul::compute_tile_trace(&mats, params, tile_i, tile_j);
-        let fold_start = mh_end + 3;
-        assert!(
-            fold_start + tile_trace.x_steps.len() < height - 8,
-            "fold chain + jackpot block must fit: fold_start={fold_start} \
-             stripes={} height={height}",
-            tile_trace.x_steps.len()
-        );
-        trace.place_fold_chain(fold_start, &tile_trace.x_steps)
     };
 
     // C4 — final jackpot-hash block (trace's last 8 rows):
@@ -616,13 +608,10 @@ pub(crate) fn prove_and_verify_tiled_full<F: FnOnce(&mut CompositeTrace)>(
     // bound to a different program and rejected vs the canonical
     // VK (ai-pow-zk `routea_*` regression suite). Cost ≈ 1.23x
     // the uni-stark pinned path (2026-05-15_HIGH2_2_DESIGN.md §4.C.10).
-    // §6(b)/G1+G2 keystone is live iff the full useful-work chain
-    // was placed (`sweep_fits`: num_stripes ≤ STRIPE_MAX and the
-    // chunked sweep fits one Layer-0). `sweep_fits` is a pure
-    // function of the trusted `params`/height — the verifier-side
-    // value, never the proof — so it is as sound as CRIT-1. Only
-    // true PROD (G3/M12) takes the legacy path with sx_bound=false.
-    let sx_bound = sweep_fits;
+    // §6(b)/G1+G2 keystone is always live: the in-circuit matmul
+    // sweep is the only matmul path (the off-circuit fallback was
+    // deleted), so `sx_bound` is unconditionally `true`.
+    let sx_bound = true;
     // §4.C.2 c-exact position-exact adversarial seam: no-op in
     // production (the wrapper passes `|_| {}`); a test tampers a
     // co-located leaf row's committed plain here, after the PI
@@ -674,7 +663,7 @@ pub(crate) fn prove_and_verify_tiled_full<F: FnOnce(&mut CompositeTrace)>(
         .map_err(BridgeError::Pow)?;
     }
 
-    Ok(ZkOutcome { pis, sweep_in_circuit: sweep_fits })
+    Ok(ZkOutcome { pis, sweep_in_circuit: true })
 }
 
 /// MED-3-hardened production entrypoint. Derives the difficulty
