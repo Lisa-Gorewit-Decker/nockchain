@@ -1,18 +1,25 @@
-//! M1 (DoS audit): `MatmulProof::decode` and the internal
-//! `decode_path_list` must NOT allocate memory disproportionate to
-//! the input length on a crafted blob. The pre-fix
-//! `Vec::with_capacity(untrusted_count)` pattern would let a
-//! ~200-byte blob trigger a ~100 MiB allocation by declaring the
-//! maximum policy-cap count and then truncating — a classic
-//! deserialization bomb.
+//! M1 + H2 (DoS audit): the two memory-DoS paths in `ai-pow` whose
+//! allocations were proportional to an *attacker-controlled* value
+//! rather than to actual input size.
+//!
+//! * **M1** — `MatmulProof::decode` / `decode_path_list` did
+//!   `Vec::with_capacity(untrusted_count)` after a *loose* cap check.
+//!   A ~200-byte blob declaring `MAX_SPOT = 2^20` and truncating
+//!   triggered ~100 MiB up-front allocation per decode (~500,000×
+//!   amplification).
+//! * **H2** — `fiat_shamir::challenge_indices` did
+//!   `vec![false; range]` where `range = num_tiles`. After H1 capped
+//!   `num_tiles` at `u32::MAX`, a call with `range = 2^32` would have
+//!   burned ~4 GiB. The fix uses a `HashSet` sized to `O(count)`,
+//!   regardless of `range`.
 //!
 //! This test installs a counting global allocator (scoped to this
-//! test binary) and asserts the allocation amplification of a
-//! crafted blob is bounded.
+//! test binary) and asserts both allocation paths are bounded.
 
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::sync::atomic::{AtomicUsize, Ordering};
 
+use ai_pow::fiat_shamir::challenge_indices;
 use ai_pow::proof::MatmulProof;
 
 struct CountingAlloc;
@@ -133,5 +140,23 @@ fn decode_does_not_amplify_attacker_declared_counts() {
     assert!(
         peak < AMPLIFICATION_LIMIT,
         "u32::MAX-count blob allocated {peak} bytes",
+    );
+
+    // (d) H2: `challenge_indices` allocation must be `O(count)`, not
+    // `O(range)`. Pre-fix: `vec![false; range]` allocated ~4 GiB for
+    // `range = 2^32`. Post-fix uses a `HashSet` sized to `count`.
+    let seed = [0xA5u8; 32];
+    let count: u32 = 80; // Pearl-class
+    let range: u64 = 1u64 << 32; // == H1's tile-count ceiling
+    let (out, peak) = measure_alloc_peak(|| challenge_indices(&seed, count, range));
+    assert_eq!(
+        out.len(),
+        count as usize,
+        "challenge_indices must return exactly `count` indices"
+    );
+    assert!(
+        peak < AMPLIFICATION_LIMIT,
+        "challenge_indices(count=80, range=2^32) allocated {peak} bytes — \
+         must be O(count) not O(range) (pre-fix bomb was ~4 GiB)",
     );
 }

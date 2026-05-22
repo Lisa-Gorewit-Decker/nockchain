@@ -17,6 +17,8 @@
 //! Pearl-pure (which uses `s_A` directly): it amortizes the matmul across
 //! nonce attempts and keeps a Bitcoin-style search loop.
 
+use std::collections::HashSet;
+
 use blake3::Hasher;
 
 const CTX_TRANSCRIPT: &str = "ai-pow v3 transcript";
@@ -115,15 +117,19 @@ pub fn challenge_indices(seed: &[u8; 32], count: u32, range: u64) -> Vec<u64> {
     hasher.update(&range.to_le_bytes());
     let mut xof = hasher.finalize_xof();
 
-    let mut chosen = Vec::with_capacity(count as usize);
-    let mut taken = vec![false; range as usize];
+    // H2 (DoS audit): the prior implementation allocated
+    // `vec![false; range as usize]` — `range = num_tiles`, which (post
+    // H1) is bounded only by `u32::MAX`. A crafted call with a huge
+    // range would burn up to ~4 GiB. A `HashSet` tracks "already-taken"
+    // indices in `O(count)` memory regardless of `range`.
+    let mut chosen: Vec<u64> = Vec::with_capacity(count as usize);
+    let mut taken: HashSet<u64> = HashSet::with_capacity(count as usize);
     let mut buf = [0u8; 8];
     while chosen.len() < count as usize {
         xof.fill(&mut buf);
         let r = u64::from_le_bytes(buf);
         let idx = r % range;
-        if !taken[idx as usize] {
-            taken[idx as usize] = true;
+        if taken.insert(idx) {
             chosen.push(idx);
         }
     }

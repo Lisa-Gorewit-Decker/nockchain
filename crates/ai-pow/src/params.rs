@@ -64,6 +64,16 @@ pub const PEARL_HW_MIN: u64 = 32;
 /// in one STARK. Square tiles ⇒ `tile² ≤ 256`, i.e. `tile ≤ 16`.
 pub const PEARL_HW_MAX: u64 = 256;
 
+/// H2 (DoS audit) — universal cap on `spot_checks`. `verifier::verify`
+/// iterates `spot_checks` times, each iteration re-hashing an
+/// up-to-2-MiB strip + a Merkle path. Without a cap, a crafted block
+/// with a huge `spot_checks` drives a CPU-time DoS. Production Pearl
+/// uses `sigma = 80`; **256** is ~3× headroom — generous for any
+/// realistic protocol choice and small enough to keep a single
+/// `verify` call bounded (at most ~5–10 s under the worst-case
+/// `validate()`-allowed `t·k`; sub-second on the production envelope).
+pub const SPOT_CHECKS_MAX: u32 = 256;
+
 /// Parameters of a Pearl-style matmul PoW puzzle.
 ///
 /// Matmul shape is `(m, k) * (k, n) = (m, n)`. Tiles are square `tile x tile`.
@@ -271,6 +281,15 @@ impl MatmulParams {
         }
         if self.spot_checks == 0 {
             return Err(ParamError::ZeroSpotChecks);
+        }
+        // H2 (DoS audit): hard cap on `spot_checks`. `verify` iterates
+        // `spot_checks` times, each iteration re-hashing an up-to-2-MiB
+        // strip — uncapped `spot_checks` ⇒ time-DoS on a crafted block.
+        // Checked BEFORE the count check so the cap-violation is
+        // reported precisely (rather than masked by `TooManySpotChecks`
+        // on a small-tile-grid test config).
+        if self.spot_checks > SPOT_CHECKS_MAX {
+            return Err(ParamError::SpotChecksAboveDosCap);
         }
         if (self.spot_checks as u64) > total {
             return Err(ParamError::TooManySpotChecks);
@@ -563,6 +582,12 @@ pub enum ParamError {
     #[error("spot_checks must be <= number of tiles")]
     TooManySpotChecks,
     #[error(
+        "spot_checks exceeds the verifier DoS cap (SPOT_CHECKS_MAX = 256) — \
+         a larger value would let a crafted block drive a CPU-time DoS \
+         in `verifier::verify`'s per-opening loop"
+    )]
+    SpotChecksAboveDosCap,
+    #[error(
         "tile count (m/t)·(n/t) must be <= u32::MAX — tile indices \
          (found_idx, spot-check challenge indices) are u32-addressed \
          throughout the proof path"
@@ -691,6 +716,24 @@ mod tests {
         under.tile = 1;
         assert!(under.num_tiles() <= u64::from(u32::MAX));
         assert_ne!(under.validate(), Err(ParamError::TooManyTiles));
+    }
+
+    /// H2 (DoS audit): `validate()` rejects `spot_checks` past the
+    /// hard cap (`SPOT_CHECKS_MAX = 256`). `verifier::verify` iterates
+    /// `spot_checks` times re-hashing up-to-2-MiB strips — uncapped
+    /// `spot_checks` ⇒ time-DoS on a crafted block.
+    #[test]
+    fn validate_rejects_spot_checks_above_dos_cap() {
+        let mut p = MatmulParams::TEST_SMALL;
+        p.spot_checks = SPOT_CHECKS_MAX + 1;
+        assert_eq!(p.validate(), Err(ParamError::SpotChecksAboveDosCap));
+
+        // At the cap: the DoS gate must NOT fire (the count-vs-tiles
+        // check may still bite when num_tiles is small — that is fine,
+        // it's not the DoS gate).
+        let mut at_cap = MatmulParams::TEST_SMALL;
+        at_cap.spot_checks = SPOT_CHECKS_MAX;
+        assert_ne!(at_cap.validate(), Err(ParamError::SpotChecksAboveDosCap));
     }
 
     #[test]

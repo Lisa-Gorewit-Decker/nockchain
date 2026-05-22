@@ -1,7 +1,7 @@
 //! Adversarial tests: every check the verifier performs must reject the
 //! corresponding tampering.
 
-use ai_pow::params::MatmulParams;
+use ai_pow::params::{MatmulParams, ParamError, SPOT_CHECKS_MAX};
 use ai_pow::proof::{MatmulProof, TileOpening};
 use ai_pow::prover::{mine, ProverOptions};
 use ai_pow::synth::synth_matrices;
@@ -246,4 +246,22 @@ fn reject_wrong_a_strip_length() {
     proof.found.a_rows.pop();
     let r = verify(block, nonce, &params, &proof);
     assert!(matches!(r, Err(VerifyError::BadAStripLen { .. })), "got {r:?}");
+}
+
+/// H2 (DoS audit): `verifier::verify` MUST reject a `params` whose
+/// `spot_checks` exceeds the hard DoS cap (`SPOT_CHECKS_MAX = 256`)
+/// *at validate time*, before entering the per-opening loop. The
+/// pre-fix verifier would have looped `spot_checks` times re-hashing
+/// up-to-2-MiB strips — a CPU-time DoS unbounded by the proof format
+/// (it's the *params* that drive the loop count, not the proof).
+#[test]
+fn reject_spot_checks_above_dos_cap() {
+    let (mut params, block, nonce, proof) = fresh_proof();
+    params.spot_checks = SPOT_CHECKS_MAX + 1;
+    let r = verify(block, nonce, &params, &proof);
+    assert_eq!(
+        r,
+        Err(VerifyError::Params(ParamError::SpotChecksAboveDosCap)),
+        "verify must reject crafted-spot_checks params at validate, not after the loop"
+    );
 }
