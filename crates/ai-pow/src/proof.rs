@@ -105,7 +105,15 @@ impl MatmulProof {
         if n > MAX_SPOT {
             return Err(DecodeError::SpotTooLarge);
         }
-        let mut spot = Vec::with_capacity(n as usize);
+        // Do NOT `Vec::with_capacity(n)`: `n` is an attacker-declared
+        // count, bounded only by the loose `MAX_SPOT` policy cap
+        // (2^20). A ~200-byte blob could declare 2^20 spot entries and
+        // force a ~100 MiB up-front allocation — a deserialization
+        // bomb. Grow the Vec as openings are *actually* decoded:
+        // `decode_opening` fails fast at EOF, so the loop
+        // self-terminates and the allocation stays proportional to the
+        // real input length.
+        let mut spot = Vec::new();
         for _ in 0..n {
             spot.push(decode_opening(&mut cur)?);
         }
@@ -185,7 +193,9 @@ fn decode_path_list(cur: &mut &[u8]) -> Result<Vec<Vec<[u8; 32]>>, DecodeError> 
     if n > MAX_STRIP_COUNT {
         return Err(DecodeError::StripCountTooLarge);
     }
-    let mut paths = Vec::with_capacity(n as usize);
+    // Attacker-declared count — no `with_capacity` (see `decode`):
+    // grow as path-lists are actually decoded.
+    let mut paths = Vec::new();
     for _ in 0..n {
         paths.push(decode_path_single(cur)?);
     }
