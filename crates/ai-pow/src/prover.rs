@@ -259,16 +259,68 @@ where
     Ok(None)
 }
 
+/// External-target variant of the per-nonce mining attempt. The
+/// chain's difficulty bound is passed explicitly rather than derived
+/// from `params.difficulty_bits` — needed by `ai-pow-mining` where
+/// the chain supplies an arbitrary 32-byte target (which Pearl-style
+/// `difficulty_bits` cannot express precisely).
+///
+/// Returns `Ok(Some(proof))` if a tile clears `target`, `Ok(None)`
+/// otherwise.
+///
+/// **The `#[cfg(feature = "zk")]` SNARK side-effect** that
+/// [`mine`] / [`mine_block`] perform (calling
+/// `zk_bridge::prove_and_verify_for_block`) is **NOT** invoked here:
+/// that bridge re-derives the target from `params` per MED-3 and
+/// would mismatch any caller-supplied `target` that doesn't equal
+/// `difficulty_target(params)`. Callers wanting the SNARK should
+/// drive it themselves on the returned `found` tile after ensuring
+/// `params` agrees with `target`.
+pub fn mine_with_context_at_target(
+    ctx: &BlockContext<'_>,
+    block_commitment: &[u8],
+    nonce: &[u8],
+    target: &[u8; 32],
+    opts: ProverOptions,
+) -> Result<Option<MatmulProof>, MineError> {
+    Ok(mine_inner(ctx, block_commitment, nonce, target, opts)?.map(|(p, _)| p))
+}
+
 fn mine_with_context(
     ctx: &BlockContext<'_>,
     block_commitment: &[u8],
     nonce: &[u8],
     opts: ProverOptions,
 ) -> Result<Option<MatmulProof>, MineError> {
+    let target = difficulty_target(&ctx.params);
+    let result = mine_inner(ctx, block_commitment, nonce, &target, opts)?;
+
+    // Pearl-analog ZK wrapping (preserved from the original
+    // mine_with_context). The bridge re-derives target from params
+    // per MED-3, so we only run it on the params-derived-target
+    // path; `mine_with_context_at_target` deliberately skips it.
+    #[cfg(feature = "zk")]
+    if let Some((_, found_idx)) = &result {
+        let _zk = crate::zk_bridge::prove_and_verify_for_block(ctx, &ctx.params, *found_idx)
+            .expect("F1 zk bridge: prove + pow-verify must succeed for a found tile");
+    }
+
+    Ok(result.map(|(p, _)| p))
+}
+
+/// Shared inner per-nonce attempt — returns both the plain proof
+/// and the winning linear tile index (the SNARK bridge consumes
+/// `found_idx`).
+fn mine_inner(
+    ctx: &BlockContext<'_>,
+    block_commitment: &[u8],
+    nonce: &[u8],
+    target: &[u8; 32],
+    opts: ProverOptions,
+) -> Result<Option<(MatmulProof, u32)>, MineError> {
     let params = &ctx.params;
     let state = block_state(block_commitment, nonce);
     let pow_key = pow_key_for_nonce(&ctx.s_a, nonce);
-    let target = difficulty_target(params);
 
     // Per-nonce: re-hash every cached M state with the per-nonce pow_key.
     let num_tiles = params.num_tiles() as usize;
@@ -283,7 +335,7 @@ fn mine_with_context(
     let mut found: Option<(u32, [u8; 32])> = None;
     for idx in 0..num_tiles as u32 {
         let h = &leaves[idx as usize];
-        if hash_le_target(h, &target) {
+        if hash_le_target(h, target) {
             match found {
                 None => found = Some((idx, *h)),
                 Some((_, ref best)) if opts.seek_best && h < best => {
@@ -319,51 +371,15 @@ fn mine_with_context(
         spot,
     };
 
-    // Pearl-analog ZK wrapping. At this point Pearl's pipeline invokes
-    // `zk_prove_plain_proof` (`Pearl zk-pow api/prove.rs:18`) to
-    // compress the multi-MB `PlainProof` into a ~60 KB Plonky2 STARK.
-    // The `zk` feature swaps that step in here via the `ai-pow-zk`
-    // crate's Plonky3 circuit. The plain proof is still returned: the
-    // caller decides whether to ship the plain witness or the SNARK
-    // (the chain only commits to one of them via the block certificate).
-    //
-    // `ai-pow-zk` is standalone (does not depend back on `ai-pow`), so
-    // the conversion from `MatmulParams` / `MatmulProof` / `BlockNoise`
-    // into the SNARK's own `(ZkParams, PublicInputs, Witness)` happens
-    // right here at the boundary.
-    // F1 integration (was a no-op stub). Under the `zk` feature,
-    // build the `ai-pow-zk` composite trace from this block's
-    // context, prove it, and PoW-verify it against the real
-    // difficulty target. This makes the SNARK a genuine proof of
-    // work for *this* block: anchored to κ / s_a via C1, the
-    // matrix bytes bound via C3 (HASH_A / HASH_B), checked against
-    // `target` via C2. See `crate::zk_bridge` for the precise
-    // binding inventory and the documented C4 (HASH_JACKPOT)
-    // blocker.
-    //
-    // The SNARK is currently produced + validated as a hard
-    // correctness gate; its bytes are not yet threaded into
-    // `MatmulProof` (that is a block-certificate format change,
-    // out of F1 scope — the chain layer decides plain-vs-SNARK
-    // transport). A bridge failure here is an integration bug,
-    // not a recoverable mining condition, so it panics under the
-    // opt-in `zk` feature rather than silently degrading.
-    #[cfg(feature = "zk")]
-    {
-        // MED-3: use the hardened entrypoint — it re-derives the
-        // difficulty target from chain-pinned `params` internally
-        // (never accepts a counterparty-supplied target). The local
-        // `target` (computed for the plain tile scan) is *not* passed
-        // through; the bridge recomputes the identical value.
-        // HIGH-2.2 §4.E: attest the *actual* solved tile
-        // (`found_idx`, the winning linear index from the scan
-        // above), not a hard-coded (0,0).
-        let _zk = crate::zk_bridge::prove_and_verify_for_block(ctx, params, found_idx)
-            .expect("F1 zk bridge: prove + pow-verify must succeed for a found tile");
-        let _ = (block_commitment, nonce);
-    }
-
-    Ok(Some(plain_proof))
+    // The Pearl-analog ZK wrapping that the previous monolithic
+    // `mine_with_context` performed (`zk_bridge::prove_and_verify_
+    // for_block`) is intentionally NOT done here. The bridge
+    // re-derives the difficulty target from `params` per MED-3, so
+    // running it against an arbitrary external `target` would
+    // mismatch. `mine_with_context` (the params-derived-target
+    // wrapper) drives the SNARK on the returned `found_idx`
+    // exactly when that mismatch is impossible.
+    Ok(Some((plain_proof, found_idx)))
 }
 
 fn build_tile_opening(
