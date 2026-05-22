@@ -59,7 +59,7 @@ use ai_pow_zk::{
     CompositePublicInputs, CompositeTrace, PowVerifyError, ZkParams,
 };
 
-use crate::params::MatmulParams;
+use crate::params::{MatmulParams, ParamError};
 use crate::prover::BlockContext;
 
 // ───────────────────────── P-B (γ Pearl-faithful) ─────────────────────────
@@ -183,6 +183,18 @@ pub enum BridgeError {
     CommitmentMismatch(&'static str),
     /// STARK valid but the PoW difficulty check failed.
     Pow(PowVerifyError),
+    /// `params` failed `MatmulParams::validate()` at the `pub`
+    /// bridge boundary — entry-point defense (M2) against malformed
+    /// params that would otherwise hit a downstream panic. The
+    /// concrete failure mode this prevents: `noise_rank == 0` ⇒
+    /// `params.num_stripes() = k/r` div-by-zero in
+    /// `expected_layer0_rows`. Production callers go through the
+    /// chain-pinned (CRIT-1) params and pass cleanly.
+    InvalidParams(ParamError),
+    /// `prove_and_verify_for_block`: `found_idx` is past the tile
+    /// count for these params (pre-M2 this was an `expect("found_idx
+    /// must be a valid tile index for these params")` panic).
+    FoundIdxOutOfRange { found_idx: u32, num_tiles: u64 },
 }
 
 impl core::fmt::Display for BridgeError {
@@ -192,6 +204,11 @@ impl core::fmt::Display for BridgeError {
                 write!(f, "SNARK PI != BlockContext: {w}")
             }
             BridgeError::Pow(e) => write!(f, "pow verify: {e}"),
+            BridgeError::InvalidParams(e) => write!(f, "invalid params: {e}"),
+            BridgeError::FoundIdxOutOfRange { found_idx, num_tiles } => write!(
+                f,
+                "found_idx ({found_idx}) >= num_tiles ({num_tiles})"
+            ),
         }
     }
 }
@@ -259,6 +276,10 @@ pub fn prove_and_verify_tiled(
     tile_i: u32,
     tile_j: u32,
 ) -> Result<ZkOutcome, BridgeError> {
+    // M2 (DoS audit): defensive validation at the `pub` boundary.
+    // Without this, downstream `expected_layer0_rows` would hit a
+    // `k / noise_rank` div-by-zero panic for `noise_rank = 0`.
+    params.validate().map_err(BridgeError::InvalidParams)?;
     prove_and_verify_tiled_tamper(ctx, params, target, tile_i, tile_j, |_| {})
 }
 
@@ -690,9 +711,15 @@ pub fn prove_and_verify_for_block(
     params: &MatmulParams,
     found_idx: u32,
 ) -> Result<ZkOutcome, BridgeError> {
+    // M2: validate at the entry boundary so a structurally-broken
+    // params never reaches the downstream panic surfaces. (Mine's
+    // chain-pinned params already pass; this is defense in depth
+    // for any direct `pub` caller.)
+    params.validate().map_err(BridgeError::InvalidParams)?;
     let target = crate::tile_hash::difficulty_target(params);
-    let (tile_i, tile_j) = tile_ij(found_idx, params)
-        .expect("found_idx must be a valid tile index for these params");
+    let (tile_i, tile_j) = tile_ij(found_idx, params).ok_or(
+        BridgeError::FoundIdxOutOfRange { found_idx, num_tiles: params.num_tiles() },
+    )?;
     prove_and_verify_tiled(ctx, params, &target, tile_i, tile_j)
 }
 
@@ -3271,5 +3298,71 @@ mod tests {
              not bind positions; the keystone / fold-schedule pin / \
              position-exact C3 must catch the permutation."
         );
+    }
+
+    // ===================================================================
+    // M2 (DoS audit): structural-invariant defense at the `pub` bridge
+    // boundary. A `MatmulParams` with `noise_rank = 0` historically hit
+    // a `k / noise_rank` div-by-zero panic in `expected_layer0_rows`,
+    // and a `found_idx >= num_tiles()` hit an `.expect()` panic in
+    // `prove_and_verify_for_block`. Both are now Clean Err.
+    // ===================================================================
+
+    #[test]
+    fn m2_invalid_params_yield_clean_error_not_panic() {
+        let good = MatmulParams::TEST_SMALL;
+        let (a, b) = synth_matrices(b"m2-seed", &good);
+        let ctx = BlockContext::build(b"m2-blk", &a, &b, &good).expect("ctx");
+        let target = [0xFFu8; 32];
+
+        // The concrete pre-fix panic: noise_rank == 0 ⇒ k/0 in
+        // `params.num_stripes()` inside `expected_layer0_rows`.
+        let mut bad = good;
+        bad.noise_rank = 0;
+
+        assert!(
+            matches!(
+                prove_and_verify(&ctx, &bad, &target),
+                Err(BridgeError::InvalidParams(ParamError::NoiseRankOutOfRange))
+            ),
+            "prove_and_verify must surface InvalidParams(NoiseRankOutOfRange) — not panic"
+        );
+        assert!(
+            matches!(
+                prove_and_verify_tiled(&ctx, &bad, &target, 0, 0),
+                Err(BridgeError::InvalidParams(ParamError::NoiseRankOutOfRange))
+            ),
+            "prove_and_verify_tiled must surface InvalidParams(NoiseRankOutOfRange) — not panic"
+        );
+        assert!(
+            matches!(
+                prove_and_verify_for_block(&ctx, &bad, 0),
+                Err(BridgeError::InvalidParams(ParamError::NoiseRankOutOfRange))
+            ),
+            "prove_and_verify_for_block must surface InvalidParams(NoiseRankOutOfRange) — not panic"
+        );
+    }
+
+    #[test]
+    fn m2_found_idx_out_of_range_yields_clean_error_not_panic() {
+        let params = MatmulParams::TEST_SMALL;
+        let (a, b) = synth_matrices(b"m2-fb-seed", &params);
+        let ctx = BlockContext::build(b"m2-fb-blk", &a, &b, &params).expect("ctx");
+
+        let nt = params.num_tiles();
+        let oob = nt as u32; // == num_tiles, just past the last valid idx
+        let res = prove_and_verify_for_block(&ctx, &params, oob);
+        match res {
+            Err(BridgeError::FoundIdxOutOfRange { found_idx, num_tiles }) => {
+                assert_eq!(u64::from(found_idx), nt);
+                assert_eq!(num_tiles, nt);
+            }
+            Err(other) => panic!(
+                "expected FoundIdxOutOfRange for oob found_idx={oob}, got Err: {other}"
+            ),
+            Ok(_) => panic!(
+                "expected FoundIdxOutOfRange for oob found_idx={oob}, got Ok"
+            ),
+        }
     }
 }
