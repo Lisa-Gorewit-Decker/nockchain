@@ -29,6 +29,7 @@ ai-pow = { path = "../ai-pow", features = ["zk"] }
 anyhow = { workspace = true }
 blake3 = { workspace = true }
 clap = { workspace = true, features = ["derive"] }
+hex = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
 
@@ -37,4 +38,3 @@ nockapp = { path = "../nockapp", optional = true }
 tokio = { workspace = true, optional = true, features = ["rt-multi-thread", "macros", "sync", "time"] }
 
 [dev-dependencies]
-hex = { workspace = true }

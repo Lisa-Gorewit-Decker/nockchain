@@ -49,18 +49,15 @@ pub fn run(
 
     loop {
         if cancel.is_cancelled() {
-            stats.elapsed = start.elapsed();
             return Err(MiningError::Cancelled);
         }
         if let Some(dl) = opts.deadline {
             if Instant::now() >= dl {
-                stats.elapsed = start.elapsed();
                 return Err(MiningError::DeadlineElapsed);
             }
         }
         if let Some(max) = opts.max_extranonces {
             if stats.extranonces_tried >= max {
-                stats.elapsed = start.elapsed();
                 return Err(MiningError::BudgetExhausted { max });
             }
         }
