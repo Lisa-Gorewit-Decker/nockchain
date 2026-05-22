@@ -71,6 +71,12 @@ const ROUND_CONSTANTS: [u64; NUM_ROUNDS * STATE_SIZE] = [
     7134876918849821827, 5796994175286958720, 7251651436095127661, 4565856221886323991,
 ];
 
+// The full circulant MDS matrix. Since the 2026-05-21 cyclomul
+// optimisation, `linear_layer` uses `MDS_FIRST_COLUMN_I64` (column 0)
+// as the cyclic-convolution kernel; the full matrix is retained only
+// as the `linear_layer_cyclomul_matches_naive` differential-test
+// oracle, hence `#[cfg(test)]`.
+#[cfg(test)]
 const MDS_MATRIX_I64: [[i64; STATE_SIZE]; STATE_SIZE] = [
     [
         61402, 17845, 26798, 59689, 12021, 40901, 41351, 27521, 56951, 12034, 53865, 43244, 7454,
@@ -136,6 +142,21 @@ const MDS_MATRIX_I64: [[i64; STATE_SIZE]; STATE_SIZE] = [
         17845, 26798, 59689, 12021, 40901, 41351, 27521, 56951, 12034, 53865, 43244, 7454, 33823,
         28750, 1108, 61402,
     ],
+];
+
+/// First **column** of the circulant [`MDS_MATRIX_I64`] — i.e.
+/// `MDS_FIRST_COLUMN_I64[i] = MDS_MATRIX_I64[i][0]`.
+///
+/// Used by [`mds_cyclomul`] as the kernel of a cyclic convolution.
+/// For any circulant matrix `C` (every row a rotation of the first
+/// row), the matrix-vector product `C · v` equals the cyclic
+/// convolution `first_column(C) ⋆ v`. This is the standard
+/// linear-algebra identity that makes the Karatsuba-based
+/// `mds_cyclomul` a bit-for-bit-equivalent, ~4×-fewer-multiplication
+/// replacement for the naive O(n²) [`linear_layer`].
+const MDS_FIRST_COLUMN_I64: [i64; STATE_SIZE] = [
+    61402, 1108, 28750, 33823, 7454, 43244, 53865, 12034, 56951, 27521, 41351, 40901, 12021, 59689,
+    26798, 17845,
 ];
 
 pub fn permute(sponge: &mut [u64; 16]) {
@@ -209,18 +230,289 @@ fn sbox_layer(state: &[u64; STATE_SIZE]) -> [u64; STATE_SIZE] {
     res
 }
 
+/// Tip5 linear layer — the circulant MDS matrix-vector product
+/// `MDS_MATRIX_I64 · state`, reduced mod the Goldilocks prime.
+///
+/// **2026-05-21 optimisation.** Computed as a **cyclic convolution
+/// of [`MDS_FIRST_COLUMN_I64`] with `state`** via Karatsuba
+/// polynomial multiplication in `Z[x]/(x¹⁶−1)` (see [`mds_cyclomul`]).
+/// This replaces the naive O(n²) = 256-multiply loop with ~64
+/// i64-multiplications — the MDS layer is ~¾ of the per-permutation
+/// cost, so this is a ~2-3× speedup on `permute` / `permute_5round`,
+/// which directly accelerates the ai-pow-zk inner STARK's Tip5-MMCS
+/// trace commitment (the dominant cost of block proving — see
+/// `crates/ai-pow-zk/docs/2026-05-21_E2E_LATENCY_AND_SWEEP_MEASUREMENTS.md`).
+///
+/// **Bit-for-bit identical** to the prior naive implementation
+/// (preserved as `tests::linear_layer_naive`): a circulant
+/// matrix-vector product *equals* the cyclic convolution of the
+/// matrix's first column with the vector, a standard linear-algebra
+/// identity. Gated by the `linear_layer_cyclomul_matches_naive`
+/// differential test below AND the binding
+/// `c2_kat::golden_kat_frozen_matches_live_permute` gate (the
+/// frozen-oracle KAT — `permute`'s output is unchanged).
 fn linear_layer(state: &[u64; 16]) -> [u64; 16] {
-    let mut result = [0u64; 16];
+    mds_cyclomul(state)
+}
 
-    for i in 0..16 {
-        for j in 0..16 {
-            let matrix_element = MDS_MATRIX_I64[i][j] as u64;
-            let product = bmul(matrix_element, state[j]);
-            result[i] = badd(result[i], product);
-        }
+// =====================================================================
+//  Cyclic-convolution MDS via Karatsuba.
+//
+//  The MDS matrix is circulant. For a circulant matrix C built from
+//  first row r, the matrix-vector product C·v equals the cyclic
+//  convolution of v with first_column(C). Cyclic convolution mod
+//  (x¹⁶−1) is polynomial multiplication mod (x¹⁶−1), computed via CRT:
+//  (x¹⁶−1) = (x⁸−1)(x⁸+1); (x⁸−1) = (x⁴−1)(x⁴+1); (x⁸+1) factors
+//  over Z[i]. Karatsuba multiplication at each level. ~64
+//  i64-multiplications vs ~256 field-multiplications naive.
+//
+//  Verbatim mirror of the validated implementation in the
+//  Plonky3-recursion `p3-tip5-circuit-air` crate's `tip5_spec.rs`
+//  (`mds_cyclomul`), itself gated there by a differential test +
+//  the C2 Tip5 AIR native-equivalence KAT. The differential test
+//  `tests::linear_layer_cyclomul_matches_naive` re-establishes the
+//  bit-identity locally against the naive reference.
+// =====================================================================
+
+#[derive(Copy, Clone, Default, PartialEq, Eq)]
+struct Complex([i64; 2]);
+
+#[inline(always)]
+fn cadd(a: Complex, b: Complex) -> Complex {
+    Complex([a.0[0] + b.0[0], a.0[1] + b.0[1]])
+}
+
+#[inline(always)]
+fn csub3(a: Complex, b: Complex, c: Complex) -> Complex {
+    Complex([a.0[0] - b.0[0] - c.0[0], a.0[1] - b.0[1] - c.0[1]])
+}
+
+#[inline(always)]
+fn cmul(f: Complex, g: Complex) -> Complex {
+    let a = f.0[0] * g.0[0];
+    let b = f.0[1] * g.0[1];
+    let c = (f.0[0] + f.0[1]) * (g.0[0] + g.0[1]);
+    Complex([a - b, c - a - b])
+}
+
+#[inline(always)]
+fn cpoly_add<const N: usize>(f: &[Complex; N], g: &[Complex; N]) -> [Complex; N] {
+    let mut res = [Complex([0, 0]); N];
+    for i in 0..N {
+        res[i] = cadd(f[i], g[i]);
     }
+    res
+}
 
-    result
+#[inline(always)]
+fn cpoly_sub3<const N: usize>(
+    f: &[Complex; N],
+    g: &[Complex; N],
+    h: &[Complex; N],
+) -> [Complex; N] {
+    let mut res = [Complex([0, 0]); N];
+    for i in 0..N {
+        res[i] = csub3(f[i], g[i], h[i]);
+    }
+    res
+}
+
+#[inline(always)]
+fn zpoly_add<const N: usize>(f: &[i64; N], g: &[i64; N]) -> [i64; N] {
+    let mut res = [0i64; N];
+    for i in 0..N {
+        res[i] = f[i] + g[i];
+    }
+    res
+}
+
+#[inline(always)]
+fn zpoly_sub<const N: usize>(f: &[i64; N], g: &[i64; N]) -> [i64; N] {
+    let mut res = [0i64; N];
+    for i in 0..N {
+        res[i] = f[i] - g[i];
+    }
+    res
+}
+
+#[inline(always)]
+fn zpoly_sub3<const N: usize>(f: &[i64; N], g: &[i64; N], h: &[i64; N]) -> [i64; N] {
+    let mut res = [0i64; N];
+    for i in 0..N {
+        res[i] = f[i] - g[i] - h[i];
+    }
+    res
+}
+
+#[inline(always)]
+fn integer_karatsuba_1(f: &[i64; 2], g: &[i64; 2]) -> [i64; 3] {
+    let a = f[0] * g[0];
+    let c = f[1] * g[1];
+    let b = ((f[0] + f[1]) * (g[0] + g[1])) - a - c;
+    [a, b, c]
+}
+
+#[inline(always)]
+fn integer_karatsuba_3(f: &[i64; 4], g: &[i64; 4]) -> [i64; 7] {
+    let a0 = [f[2], f[3]];
+    let a1 = [f[0], f[1]];
+    let b0 = [g[2], g[3]];
+    let b1 = [g[0], g[1]];
+
+    let m0 = integer_karatsuba_1(&a0, &b0);
+    let m2 = integer_karatsuba_1(&a1, &b1);
+    let m1 = zpoly_sub3(
+        &integer_karatsuba_1(&zpoly_add(&a0, &a1), &zpoly_add(&b0, &b1)),
+        &m0,
+        &m2,
+    );
+    [m2[0], m2[1], m2[2] + m1[0], m1[1], m1[2] + m0[0], m0[1], m0[2]]
+}
+
+#[inline(always)]
+fn complex_karatsuba_1(f: &[Complex; 2], g: &[Complex; 2]) -> [Complex; 3] {
+    let a = cmul(f[0], g[0]);
+    let c = cmul(f[1], g[1]);
+    let b = csub3(cmul(cadd(f[0], f[1]), cadd(g[0], g[1])), a, c);
+    [a, b, c]
+}
+
+#[inline(always)]
+fn complex_karatsuba_3(f: &[Complex; 4], g: &[Complex; 4]) -> [Complex; 7] {
+    let a0 = [f[2], f[3]];
+    let a1 = [f[0], f[1]];
+    let b0 = [g[2], g[3]];
+    let b1 = [g[0], g[1]];
+
+    let m0 = complex_karatsuba_1(&a0, &b0);
+    let m2 = complex_karatsuba_1(&a1, &b1);
+    let mid = complex_karatsuba_1(&cpoly_add(&a0, &a1), &cpoly_add(&b0, &b1));
+    let m1 = cpoly_sub3(&mid, &m0, &m2);
+    [m2[0], m2[1], cadd(m2[2], m1[0]), m1[1], cadd(m1[2], m0[0]), m0[1], m0[2]]
+}
+
+/// `f·g` in `Z[x] / (x⁴ + 1)`.
+#[inline(always)]
+fn poly_mul_mod_x4_plus_1(f: &[i64; 4], g: &[i64; 4]) -> [i64; 4] {
+    let prod = integer_karatsuba_3(f, g);
+    [prod[0] - prod[4], prod[1] - prod[5], prod[2] - prod[6], prod[3]]
+}
+
+/// `f·g` in `Z[x] / (x⁴ − 1)`.
+#[inline(always)]
+fn poly_mul_mod_x4_minus_1(f: &[i64; 4], g: &[i64; 4]) -> [i64; 4] {
+    let prod = integer_karatsuba_3(f, g);
+    [prod[0] + prod[4], prod[1] + prod[5], prod[2] + prod[6], prod[3]]
+}
+
+/// `f·g` in `Z[x] / (x⁸ − 1)` via CRT `(x⁸−1) = (x⁴−1)(x⁴+1)`.
+#[inline(always)]
+fn poly_mul_mod_x8_minus_1(f: &[i64; 8], g: &[i64; 8]) -> [i64; 8] {
+    let f0 = [f[0], f[1], f[2], f[3]];
+    let f1 = [f[4], f[5], f[6], f[7]];
+    let g0 = [g[0], g[1], g[2], g[3]];
+    let g1 = [g[4], g[5], g[6], g[7]];
+
+    let p0 = poly_mul_mod_x4_plus_1(&zpoly_sub(&f0, &f1), &zpoly_sub(&g0, &g1));
+    let p1 = poly_mul_mod_x4_minus_1(&zpoly_add(&f0, &f1), &zpoly_add(&g0, &g1));
+    [
+        (p0[0] + p1[0]) >> 1,
+        (p0[1] + p1[1]) >> 1,
+        (p0[2] + p1[2]) >> 1,
+        (p0[3] + p1[3]) >> 1,
+        (-p0[0] + p1[0]) >> 1,
+        (-p0[1] + p1[1]) >> 1,
+        (-p0[2] + p1[2]) >> 1,
+        (-p0[3] + p1[3]) >> 1,
+    ]
+}
+
+/// `f·g` in `Z[x] / (x⁸ + 1)` — requires the Gaussian integers
+/// `Z[i]` because `(x⁸+1) = (x⁴+i)(x⁴−i)`.
+#[inline(always)]
+fn poly_mul_mod_x8_plus_1(f: &[i64; 8], g: &[i64; 8]) -> [i64; 8] {
+    let cf = [
+        Complex([f[0], -f[4]]),
+        Complex([f[1], -f[5]]),
+        Complex([f[2], -f[6]]),
+        Complex([f[3], -f[7]]),
+    ];
+    let cg = [
+        Complex([g[0], -g[4]]),
+        Complex([g[1], -g[5]]),
+        Complex([g[2], -g[6]]),
+        Complex([g[3], -g[7]]),
+    ];
+    let p = complex_karatsuba_3(&cf, &cg);
+    [
+        p[0].0[0] + p[4].0[1],
+        p[1].0[0] + p[5].0[1],
+        p[2].0[0] + p[6].0[1],
+        p[3].0[0],
+        p[4].0[0] - p[0].0[1],
+        p[5].0[0] - p[1].0[1],
+        p[6].0[0] - p[2].0[1],
+        -p[3].0[1],
+    ]
+}
+
+/// `f·g` in `Z[x] / (x¹⁶ − 1)` via CRT `(x¹⁶−1) = (x⁸−1)(x⁸+1)`.
+#[inline(always)]
+fn poly_mul_mod_x16_minus_1(f: &[i64; 16], g: &[i64; 16]) -> [i64; 16] {
+    let f0 = [f[0], f[1], f[2], f[3], f[4], f[5], f[6], f[7]];
+    let f1 = [f[8], f[9], f[10], f[11], f[12], f[13], f[14], f[15]];
+    let g0 = [g[0], g[1], g[2], g[3], g[4], g[5], g[6], g[7]];
+    let g1 = [g[8], g[9], g[10], g[11], g[12], g[13], g[14], g[15]];
+
+    let p0 = poly_mul_mod_x8_minus_1(&zpoly_add(&f0, &f1), &zpoly_add(&g0, &g1));
+    let p1 = poly_mul_mod_x8_plus_1(&zpoly_sub(&f0, &f1), &zpoly_sub(&g0, &g1));
+    [
+        (p0[0] + p1[0]) >> 1,
+        (p0[1] + p1[1]) >> 1,
+        (p0[2] + p1[2]) >> 1,
+        (p0[3] + p1[3]) >> 1,
+        (p0[4] + p1[4]) >> 1,
+        (p0[5] + p1[5]) >> 1,
+        (p0[6] + p1[6]) >> 1,
+        (p0[7] + p1[7]) >> 1,
+        (p0[0] - p1[0]) >> 1,
+        (p0[1] - p1[1]) >> 1,
+        (p0[2] - p1[2]) >> 1,
+        (p0[3] - p1[3]) >> 1,
+        (p0[4] - p1[4]) >> 1,
+        (p0[5] - p1[5]) >> 1,
+        (p0[6] - p1[6]) >> 1,
+        (p0[7] - p1[7]) >> 1,
+    ]
+}
+
+const LO_MASK_U64: u64 = 0x0000_0000_ffff_ffff;
+
+/// Reduce a (possibly negative) i128 to canonical Goldilocks
+/// `[0, P)`. `rem_euclid` handles the sign; the cyclic-convolution
+/// results are mathematically non-negative for non-negative inputs
+/// but the Karatsuba decomposition produces signed intermediates.
+#[inline(always)]
+fn reduce_i128(n: i128) -> u64 {
+    n.rem_euclid(P as i128) as u64
+}
+
+/// Circulant-MDS matrix-vector product `MDS_MATRIX_I64 · state` mod
+/// `P`, computed as the cyclic convolution `MDS_FIRST_COLUMN ⋆ state`.
+/// Bit-for-bit identical to the naive O(n²) implementation for any
+/// `state ∈ [0, P)¹⁶`.
+fn mds_cyclomul(state: &[u64; STATE_SIZE]) -> [u64; STATE_SIZE] {
+    // Split each state element into hi/lo 32-bit halves so the
+    // integer convolutions stay well inside i64.
+    let hi: [i64; STATE_SIZE] = core::array::from_fn(|i| (state[i] >> 32) as i64);
+    let lo: [i64; STATE_SIZE] = core::array::from_fn(|i| (state[i] & LO_MASK_U64) as i64);
+
+    let hi_res = poly_mul_mod_x16_minus_1(&MDS_FIRST_COLUMN_I64, &hi);
+    let lo_res = poly_mul_mod_x16_minus_1(&MDS_FIRST_COLUMN_I64, &lo);
+
+    core::array::from_fn(|i| {
+        reduce_i128(((hi_res[i] as i128) << 32) + (lo_res[i] as i128))
+    })
 }
 
 /// C2.0 — the Tip5 soundness oracle, frozen.
@@ -263,6 +555,71 @@ mod c2_kat {
     fn l_map(b: u16) -> u16 {
         let x = (b as u32 + 1) % 257;
         ((((x * x % 257) * x % 257) + 257 - 1) % 257) as u16
+    }
+
+    /// **2026-05-21 Path-1 differential gate.** The cyclic-convolution
+    /// `mds_cyclomul` (now the body of `linear_layer`) must produce
+    /// byte-identical field output to the naive O(n²) MDS
+    /// matrix-vector product for every state — a circulant matvec
+    /// *is* the cyclic convolution of the matrix's first column with
+    /// the vector. Edge cases + 256 deterministic-seeded random
+    /// states. Together with `golden_kat_frozen_matches_live_permute`
+    /// (the frozen-oracle KAT, which exercises the full `permute`
+    /// using the new `linear_layer`), this closes the bit-identity
+    /// proof for the 2026-05-21 MDS optimisation.
+    #[test]
+    fn linear_layer_cyclomul_matches_naive() {
+        // Naive O(n²) reference — the pre-2026-05-21 `linear_layer`
+        // body, preserved verbatim here as the differential oracle.
+        fn linear_layer_naive(state: &[u64; 16]) -> [u64; 16] {
+            let mut result = [0u64; 16];
+            for i in 0..16 {
+                for j in 0..16 {
+                    let matrix_element = MDS_MATRIX_I64[i][j] as u64;
+                    let product = bmul(matrix_element, state[j]);
+                    result[i] = badd(result[i], product);
+                }
+            }
+            result
+        }
+
+        const PRIME: u64 = 0xffff_ffff_0000_0001;
+
+        // Edge: all zeros.
+        let zero = [0u64; 16];
+        assert_eq!(linear_layer_naive(&zero), mds_cyclomul(&zero));
+
+        // Edge: all P-1.
+        let max = [PRIME - 1; 16];
+        assert_eq!(linear_layer_naive(&max), mds_cyclomul(&max));
+
+        // Edge: single non-zero per slot.
+        for k in 0..16 {
+            let mut s = [0u64; 16];
+            s[k] = PRIME - 1;
+            assert_eq!(
+                linear_layer_naive(&s),
+                mds_cyclomul(&s),
+                "single-nonzero slot {k}"
+            );
+        }
+
+        // Deterministic-seeded random states (LCG; no rand dep).
+        let mut seed: u64 = 0x9e37_79b9_7f4a_7c15;
+        let mut lcg = || {
+            seed = seed
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            seed
+        };
+        for case in 0..256 {
+            let state: [u64; 16] = core::array::from_fn(|_| lcg() % PRIME);
+            assert_eq!(
+                linear_layer_naive(&state),
+                mds_cyclomul(&state),
+                "random case {case}"
+            );
+        }
     }
 
     #[test]

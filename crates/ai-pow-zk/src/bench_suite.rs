@@ -441,4 +441,36 @@ mod tests {
         let r = run_baseline_at(MIN_STARK_LEN, &CircuitConfig::PROD_LB6);
         r.print();
     }
+
+    // =================================================================
+    //  Prover profiling — span-timing attribution of the inner ai-pow
+    //  STARK prove. Installs a `tracing-subscriber` fmt layer with
+    //  span-CLOSE events at INFO level, so every Plonky3
+    //  `info_span!`-instrumented prove phase (commit-to-trace,
+    //  compute-quotient, commit-to-quotient, open) prints with its
+    //  wall-clock duration. Used to attribute the ~17.7 s PROD @ 8K
+    //  prove time (see 2026-05-21_E2E_LATENCY_AND_SWEEP_MEASUREMENTS.md)
+    //  to its dominant sub-phase ⇒ informs the inner-PoUW optimisation
+    //  path selection.
+    // =================================================================
+
+    #[test]
+    #[ignore = "profiling — span-timing breakdown of the PROD @ 8K inner prove"]
+    fn profile_prod_8k_baseline_prove_spans() {
+        use tracing_subscriber::fmt::format::FmtSpan;
+
+        // INFO-level fmt subscriber, emitting a line on each span CLOSE
+        // with the span's busy/idle time. `try_init` so a second
+        // profiling test in the same process doesn't panic.
+        let _ = tracing_subscriber::fmt()
+            .with_span_events(FmtSpan::CLOSE)
+            .with_max_level(tracing::Level::INFO)
+            .with_target(false)
+            .try_init();
+
+        eprintln!("\n=== PROFILE: PROD @ 8K baseline inner prove — span timings ===");
+        let r = run_baseline_at(MIN_STARK_LEN, &CircuitConfig::PROD);
+        r.print();
+        eprintln!("=== END PROFILE ===\n");
+    }
 }
