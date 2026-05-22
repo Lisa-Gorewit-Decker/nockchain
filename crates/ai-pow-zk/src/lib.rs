@@ -68,6 +68,12 @@ pub mod composite_trace;
 pub mod noise_ref;
 pub mod params;
 
+/// §recursion — integration of the composite proof with the vendored
+/// `Plonky3-recursion` substrate. Opt-in (`--features recursion`); the
+/// default build pulls no recursion crates.
+#[cfg(feature = "recursion")]
+pub mod recursion;
+
 pub use p3_goldilocks::Goldilocks as Val;
 
 pub use crate::circuit::{AiPowStarkConfig, CircuitConfig};

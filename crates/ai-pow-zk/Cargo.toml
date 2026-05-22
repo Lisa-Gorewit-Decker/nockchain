@@ -66,6 +66,19 @@ p3-uni-stark = { git = "https://github.com/Plonky3/Plonky3.git", rev = "9fc13fa2
 # surfaces.
 nockchain-math = { workspace = true }
 
+# §recursion integration (2026-05-22) — opt-in wiring of the composite
+# proof into the vendored `Plonky3-recursion` substrate. Path-deps on
+# the recursion workspace's crates; this is the correct dependency
+# direction (the generic `p3-recursion` substrate does NOT depend on
+# `ai-pow-zk` — the caller supplies `CompositeFullAirWithLookups` as the
+# generic AIR). Both workspaces pin the same Plonky3 rev (see S1), so
+# the `p3-*` git crates unify. Off by default — the default `ai-pow-zk`
+# build pulls none of these; `--features recursion` enables them.
+p3-recursion = { path = "../../Plonky3-recursion/recursion", optional = true }
+p3-circuit = { path = "../../Plonky3-recursion/circuit", optional = true }
+p3-circuit-prover = { path = "../../Plonky3-recursion/circuit-prover", optional = true }
+p3-tip5-circuit-air = { path = "../../Plonky3-recursion/tip5-circuit-air", optional = true }
+
 [features]
 # Rayon-parallel prover (Plonky3 README §"Benchmarks"/"CPU
 # features"). Forwards to the p3 `parallel` features (DFT +
@@ -89,6 +102,15 @@ parallel = [
     "p3-dft/parallel",
     "p3-uni-stark/parallel",
     "p3-batch-stark/parallel",
+]
+# §recursion integration — opt-in. Pulls the vendored Plonky3-recursion
+# crates so the composite proof can be recursively verified
+# (`crate::recursion`). See the dep block above.
+recursion = [
+    "dep:p3-recursion",
+    "dep:p3-circuit",
+    "dep:p3-circuit-prover",
+    "dep:p3-tip5-circuit-air",
 ]
 
 [dev-dependencies]
