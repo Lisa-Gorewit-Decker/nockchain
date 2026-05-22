@@ -121,12 +121,13 @@ impl MatmulParams {
     };
 
     /// Gemma 4 31B FFN gate / up matmul: `(B=4096, hidden=5376, intermediate=21504)`.
-    /// `r = 64` works because `64 | 5376`.
+    /// `r = 128` (`128 | 5376`; `num_stripes = k/r = 42 ≤ STRIPE_MAX`
+    /// ⇒ the §6(b) matmul is proven in-circuit).
     pub const GEMMA_4_31B_FFN: Self = Self {
         m: 4096,
         k: 5376,
         n: 21504,
-        noise_rank: 64,
+        noise_rank: 128,
         tile: 8,
         spot_checks: 80,
         difficulty_bits: 0,
@@ -137,7 +138,7 @@ impl MatmulParams {
         m: 4096,
         k: 5120,
         n: 17408,
-        noise_rank: 64,
+        noise_rank: 128,
         tile: 8,
         spot_checks: 80,
         difficulty_bits: 0,
@@ -178,8 +179,9 @@ impl MatmulParams {
     /// [`ParamError::Fp8LayerNotMineable`]). This preset is
     /// retained **only as a §4.8 trace-bound *sizing reference***
     /// (the binding largest-`k` envelope-math case: `16r ≤ k ≤
-    /// 4r²` with `r = 64` ⇒ `1024 ≤ 14336 ≤ 16384` ✓; `64 |
-    /// 14336` ✓; `k·2·tile = 229 376 ≤ 2²²` ✓) — it is a valid
+    /// 4r²` with `r = 256` ⇒ `4096 ≤ 14336 ≤ 262144` ✓; `256 |
+    /// 14336` ✓; `num_stripes = k/r = 56 ≤ STRIPE_MAX` ✓;
+    /// `k·2·tile = 229 376 ≤ 2²²` ✓) — it is a valid
     /// `validate_prod_envelope` *shape*, but mining it for this
     /// model would prove an FP8 layer, which production must not
     /// do. The mineable group_1 INT7 GEMMs are
@@ -189,7 +191,7 @@ impl MatmulParams {
         m: 4096,
         k: 14336, // intermediate_size
         n: 4096, // hidden_size
-        noise_rank: 64,
+        noise_rank: 256,
         tile: 8,
         spot_checks: 80,
         difficulty_bits: 0,
@@ -292,6 +294,8 @@ impl MatmulParams {
     /// * `64 | k` (commitment-hash alignment)
     /// * `h·w ≥ 32` (entropy in `M`; square tiles ⇒ `tile² ≥ 32`)
     /// * `h·w ≤ 256` (Pearl reference-prover per-tile cap ⇒ `tile ≤ 16`)
+    /// * `num_stripes = k/noise_rank ≤ STRIPE_MAX` (so the §6(b)
+    ///   matmul sweep is proven in-circuit, not the off-circuit fallback)
     ///
     /// Within this envelope Pearl proves one opened tile in a single
     /// STARK — which is exactly why the Pearl-faithful PROD path
@@ -324,6 +328,20 @@ impl MatmulParams {
         // trace ~16× over what Pearl proves per block. See `PEARL_HW_MAX`.
         if (self.tile as u64) * (self.tile as u64) > PEARL_HW_MAX {
             return Err(ParamError::TileTooLarge);
+        }
+        // num_stripes = k / noise_rank must fit the §6(b) in-circuit
+        // matmul-sweep capacity (`STRIPE_MAX` SX-register lanes). A
+        // config with num_stripes > STRIPE_MAX falls back to the
+        // off-circuit `compute_tile_trace` path where `sx_bound` is
+        // false and the matmul→fold keystone is gated off — the
+        // matmul would NOT be proven in-circuit. The consensus
+        // envelope rejects such configs outright (raise noise_rank
+        // so k/r <= STRIPE_MAX). The real Llama mineable GEMMs have
+        // k/r = 4096/64 = 64 = STRIPE_MAX ⇒ in-circuit.
+        if (self.num_stripes() as usize)
+            > ai_pow_zk::composite_layout::STRIPE_MAX
+        {
+            return Err(ParamError::TooManyStripes);
         }
         Ok(())
     }
@@ -513,6 +531,13 @@ pub enum ParamError {
     TileEntropyTooLow,
     #[error("tile^2 (= h·w) must be <= 256 (Pearl reference-prover per-tile cap)")]
     TileTooLarge,
+    #[error(
+        "num_stripes (= k / noise_rank) must be <= STRIPE_MAX — the §6(b) \
+         in-circuit matmul-sweep capacity; a larger value forces the \
+         unsound off-circuit fallback (matmul not proven in-circuit). \
+         Raise noise_rank so k/r <= STRIPE_MAX."
+    )]
+    TooManyStripes,
     #[error("noise_rank must be in 1..=k")]
     NoiseRankOutOfRange,
     #[error("noise_rank must divide k")]
@@ -773,7 +798,10 @@ mod tests {
     }
 
     /// `validate_prod_envelope` is strictly stronger than
-    /// `validate`: anything it accepts, `validate` accepts.
+    /// `validate`: anything it accepts, `validate` accepts. All
+    /// production presets have `num_stripes = k/r ≤ STRIPE_MAX`
+    /// (PROD/Llama r=64⇒64; GEMMA r=128⇒42; QWEN r=128⇒40) ⇒ the
+    /// §6(b) matmul is proven in-circuit for every one.
     #[test]
     fn envelope_implies_validate() {
         for p in [
