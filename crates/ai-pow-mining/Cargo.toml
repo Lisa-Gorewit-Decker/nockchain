@@ -1,0 +1,40 @@
+[package]
+name = "ai-pow-mining"
+version.workspace = true
+edition.workspace = true
+description = "Block-mining driver for the ai-pow PoW puzzle: nonce loop, cancellation, and a NockApp-compatible driver. Wraps ai-pow with merge-mining-compatible nonce shape."
+publish = false
+
+[lib]
+name = "ai_pow_mining"
+path = "src/lib.rs"
+
+[[bin]]
+name = "ai-pow-mine"
+path = "src/bin/ai_pow_mine.rs"
+
+[[bin]]
+name = "ai-pow-mine-driver-test"
+path = "src/bin/ai_pow_mine_driver_test.rs"
+required-features = ["nockapp"]
+
+[features]
+default = []
+# NockApp driver + the driver-test binary. Off by default so a bare
+# library/CLI user doesn't pull the nockapp dep tree.
+nockapp = ["dep:nockapp", "dep:tokio"]
+
+[dependencies]
+ai-pow = { path = "../ai-pow", features = ["zk"] }
+anyhow = { workspace = true }
+blake3 = { workspace = true }
+clap = { workspace = true, features = ["derive"] }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+
+# nockapp feature
+nockapp = { path = "../nockapp", optional = true }
+tokio = { workspace = true, optional = true, features = ["rt-multi-thread", "macros", "sync", "time"] }
+
+[dev-dependencies]
+hex = { workspace = true }
