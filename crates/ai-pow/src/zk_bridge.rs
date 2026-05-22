@@ -166,6 +166,15 @@ pub struct ZkOutcome {
     /// `f1_harness` example does — `bincode` is dev-only for this
     /// crate so the production lib path does not serialize here).
     pub pis: CompositePublicInputs,
+    /// `true` iff the §6(b) **in-circuit** matmul sweep ran
+    /// (`place_useful_work_chain` + `sx_bound`/keystone live) —
+    /// i.e. the matmul was proven in-circuit and the FoldChip
+    /// inputs are bound to the genuine accumulator. `false` iff
+    /// the legacy off-circuit `compute_tile_trace → place_fold_
+    /// chain` fallback was taken (`num_stripes > STRIPE_MAX` or the
+    /// sweep does not fit one Layer-0 STARK). Soundness-relevant:
+    /// the in-circuit path is the one that proves the matmul.
+    pub sweep_in_circuit: bool,
 }
 
 /// Errors from the F1 bridge.
@@ -640,7 +649,7 @@ pub(crate) fn prove_and_verify_tiled_tamper<F: FnOnce(&mut CompositeTrace)>(
         .map_err(BridgeError::Pow)?;
     }
 
-    Ok(ZkOutcome { pis })
+    Ok(ZkOutcome { pis, sweep_in_circuit: sweep_fits })
 }
 
 /// MED-3-hardened production entrypoint. Derives the difficulty
@@ -3061,6 +3070,67 @@ mod tests {
             "CR.6: a trace whose PROGRAM_COL ≠ the params-pure \
              canonical MUST be rejected by the canonical-VK verify \
              (pre-CR.6 this forge verified — the closed weakness)"
+        );
+    }
+
+    /// **Goal part 1 — the matmul is proven IN-CIRCUIT for the real
+    /// production parameters.** For the real shipped Llama mineable
+    /// GEMMs `num_stripes = k/r = 4096/64 = 64 = STRIPE_MAX`, so the
+    /// §6(b) `place_useful_work_chain` in-circuit matmul sweep runs
+    /// and `sx_bound` / the `FOLD_XSTEP == SX_XR` keystone is live —
+    /// the FoldChip inputs are bound to the genuine in-circuit
+    /// matmul accumulator, NOT the off-circuit `compute_tile_trace`
+    /// fallback. (`STRIPE_MAX = 64`; an earlier analysis wrongly
+    /// used 16 — that is `JACKPOT_SIZE`, the M-state slot count.)
+    ///
+    /// Exercises the production boundary `num_stripes = 64 =
+    /// STRIPE_MAX` at a tractable trace scale (`k=1024, r=16` ⇒
+    /// `k/r=64`) and asserts `ZkOutcome::sweep_in_circuit == true`,
+    /// plus that the real `LLAMA_3_1_8B_GATE_UP` preset itself has
+    /// `num_stripes() == 64 ≤ STRIPE_MAX`.
+    #[test]
+    fn matmul_proven_in_circuit_at_real_param_num_stripes() {
+        use crate::synth::synth_matrices;
+        use ai_pow_zk::composite_layout::STRIPE_MAX;
+
+        // The real shipped preset's stripe count: k=4096, r=64 ⇒ 64.
+        assert_eq!(STRIPE_MAX, 64);
+        assert_eq!(MatmulParams::LLAMA_3_1_8B_GATE_UP.num_stripes(), 64);
+        assert!(
+            (MatmulParams::LLAMA_3_1_8B_GATE_UP.num_stripes() as usize)
+                <= STRIPE_MAX,
+            "the real shipped preset must fit the in-circuit §6(b) sweep"
+        );
+
+        // num_stripes = k/r = 1024/16 = 64 = STRIPE_MAX — the exact
+        // production boundary — at a trace size small enough for a
+        // unit test. tile=8 ⇒ h·w=64 (Pearl-faithful). 16|r ⇒ coloc.
+        let params = MatmulParams {
+            m: 16,
+            k: 1024,
+            n: 16,
+            noise_rank: 16,
+            tile: 8,
+            spot_checks: 2,
+            difficulty_bits: 0,
+        };
+        params.validate().unwrap();
+        assert_eq!(params.num_stripes() as usize, 64, "boundary config");
+
+        let (a, b) = synth_matrices(b"in-circ-matmul", &params);
+        let ctx = BlockContext::build(b"in-circ-blk", &a, &b, &params)
+            .expect("ctx");
+        let target = crate::tile_hash::difficulty_target(&params);
+
+        let outcome = prove_and_verify_tiled(&ctx, &params, &target, 0, 0)
+            .expect("real-param block must prove + pow-verify");
+        assert!(
+            outcome.sweep_in_circuit,
+            "num_stripes = 64 = STRIPE_MAX MUST take the in-circuit \
+             §6(b) matmul-sweep path (place_useful_work_chain, \
+             sx_bound + FOLD_XSTEP==SX_XR keystone live) — NOT the \
+             off-circuit compute_tile_trace fallback. If this fails, \
+             the matmul is not proven in-circuit for production."
         );
     }
 }
