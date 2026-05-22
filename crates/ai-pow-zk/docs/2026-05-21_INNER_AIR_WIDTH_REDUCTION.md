@@ -550,24 +550,59 @@ the L1 regen happens regardless.
     identity on active rows, and the gated columns are zero +
     unread cross-row on inactive rows, so no honest/adversarial
     verdict changes. ≈ 192 SX columns are now overlay-eligible.
-  - **O0-Stage-2 — residual.** Apply the same gating to the
-    1056-col `blake3_round` AIR (the overlay *host*) and to every
-    other chip the overlay will touch. Largest + most delicate
-    piece; not yet attempted.
+  - **O0-Stage-2 — residual (de-risked 2026-05-21; mechanism below).**
+    Gate the `blake3_round` AIR (the overlay *host*) so SX data is
+    vacuous to it on SX rows. The BLAKE3 chip (`chips/blake3/chip.rs`
+    `eval_at`) is **partially gated already**:
+    - `verify_init_state` is gated by `is_new_blake`; `finalize_blake`
+      + the `CV_OUT` equality by `is_last_round`. Both are *positive*
+      selectors = 0 on an SX row ⇒ already vacuous there. No change
+      needed.
+    - `verify_round` (the 1056-col round constraint — the bulk) is
+      gated by `is_round_active = (1−is_last_round)·(1−next_is_new_blake)`
+      (`chip.rs:228–238`). This does **not** exclude SX rows — on an
+      SX row whose successor is non-blake it evaluates to 1, so
+      `verify_round` *fires*. Today it self-satisfies on non-blake
+      rows only via zero-default (BLAKE3's round fixes zero:
+      `Round(0,0) = 0`). With SX data overlaid into the BLAKE3
+      columns that breaks. **Fix:** add a `(1−SX_IS_ACTIVE)` factor
+      to `is_round_active` (gate degree 2→3; `verify_round`'s
+      internal degree × the gate must be re-checked against the
+      degree budget — D3, may ride the same L1 regen).
+    - **Pre-edit reader audit (required, not yet done):** confirm no
+      *ungated* constraint or LogUp bus in `composite_full_air.rs` /
+      `composite_full_air_with_lookups.rs` reads the BLAKE3 round
+      columns on an SX row. The LogUp buses are selector-gated
+      (`IS_MSG_MAT`, `IS_HASH_*`, …) — verify each such selector is
+      0 on SX rows. A missed ungated reader = a forgery hole.
 - **Stage O1.** Classify every chip per-row-stateless vs stateful
   (cross-row register/accumulator). Only stateless chips are
   whole-region overlay-eligible. Stateful chips (`sx_stripe` `XR`,
   `matmul_tile` `CUMSUM`, `fold`) can at most overlay their
   *stateless sub-columns* — a finer, more delicate sub-column
   overlay deferred until O0+O2 prove out.
-- **Stage O2+.** Overlay one *stateless* guest chip (or a stateful
-  chip's stateless sub-columns, e.g. SX's gated bit-columns) onto a
-  BLAKE3 sub-window, KAT + full-regression + adversarial-gated;
-  then roll across the remaining mutually-exclusive chips. This
-  stage changes `TOTAL_TRACE_WIDTH` ⇒ forces an L1 verifier-circuit
+- **Stage O2+ — residual (de-risked 2026-05-21).** Re-point the
+  ≈ 197 O0-Stage-1-gated SX columns (`SX_IN` 4, `SX_IN_BITS` 128,
+  `SX_XR_SEL_BITS` 32, `SX_NEW_SEL` 1, `SX_NEW_SEL_BITS` 32) onto a
+  sub-window of `BLAKE3_ROUND_START..+1056`. The composite layout
+  (`composite_layout.rs`) is a strict contiguous chain
+  (`X_START = PREV_START + PREV_LEN`), so aliasing the SX columns
+  into the BLAKE3 region shifts every block after the SX block
+  (`FOLD_STRIPE_SEL` onward) down and shrinks `TOTAL_TRACE_WIDTH` by
+  ≈ 197; the layout's contiguity + inventory tests must be rewritten
+  to expect the alias. `composite_trace.rs` must become
+  activity-aware for the shared region: on a BLAKE3 row only BLAKE3
+  writes those columns, on an SX row only SX writes them — never
+  both (a double-write corrupts the host). Add the **mutual-
+  exclusion constraint** (`SX_IS_ACTIVE` and the BLAKE3 round/
+  init/finalize selectors never both 1 on a row). This stage
+  changes `TOTAL_TRACE_WIDTH` ⇒ forces an L1 verifier-circuit
   regeneration regardless — so it also absorbs the `Q`-cubic gating
-  (degree 3→4, D3), taking SX's overlay-eligible width from ≈ 192
-  to all ≈ 224 bit-columns at no extra recursion-regen cost.
+  (degree 3→4, D3), taking SX's overlay-eligible width from ≈ 197
+  to all ≈ 229 columns at no extra recursion-regen cost. Validate:
+  full ai-pow-zk regression (incl. composite golden-KAT) +
+  adversarial overlay tampers + the recursion stack
+  (`c3_stage_a`/`c3_stage_b`) at the regenerated L1.
 
 R1 status: validated-subset + precise-residual for Path A. Landed
 this drive: **Path C** (§5c — SX_Q, −32 cols, committed `074aa0b`)
