@@ -8,14 +8,28 @@
 
 ## 0. Status (R1, honest)
 
-**Analysis + multi-path investigation deliverable.** The exhaustive
-column inventory is landed as a reproducible test
-(`composite_layout::tests::inner_air_column_inventory`). The
-width-reduction *implementation* is a soundness-critical invasive
-change to the PoUW linchpin (the composite AIR is what proves the
-mined work) — it is **precisely scoped as a staged residual here**,
-NOT rushed. Per R1: design + de-risk first, invasive edits + per-
-stage exhaustive validation as the dedicated next drive.
+**Analysis + multi-path investigation + one landed reduction.** The
+exhaustive column inventory is landed as a reproducible test
+(`composite_layout::tests::inner_air_column_inventory`).
+
+- **LANDED — Path C** (§5c): SX_Q width reduction, −32 inner-trace
+  columns (`TOTAL_TRACE_WIDTH` 2135→2103), committed, validated by
+  the full ai-pow-zk regression (371 tests incl. the composite
+  golden-KAT byte-equivalence) + the 8 SX-chip tests + the
+  inventory test.
+- **RESIDUAL — Path A** (the column-overlay big lever, §7): a
+  genuine in-flight de-risk (§7.1) traced the actual constraint +
+  trace-gen code and hit **two concrete walls** — (D1) the
+  composite uses zero-default discipline, not selector-gating, so
+  the overlay needs a composite-wide gating-model rewrite first;
+  (D2) the §7-recommended first candidate `sx_stripe` is *stateful*
+  (a cross-row `XR` register read by the §6(b) keystone binding on
+  the trace's last row) and is structurally un-overlayable. The §7
+  design premise was invalidated; §7.1 records the corrected
+  O0→O2 staging. Per R1 this is the validated-subset (Path C) +
+  precise-residual (Path A, corrected staging) outcome — the
+  overlay is a soundness-critical invasive change to the PoUW
+  linchpin and is NOT rushed.
 
 ## 1. Column inventory — where the 2135 columns go
 
@@ -394,15 +408,104 @@ but with no XOR-gadget redesign.
    two activities at once (e.g. a BLAKE3 row that also carries a
    matmul-accumulator passthrough). Any genuine co-occurrence
    blocks overlaying those two.
+5. **Per-row statelessness** — *(added by the 2026-05-21 de-risk,
+   §7.1)* the guest chip must carry no cross-row register /
+   accumulator that has to stay live on the host chip's rows. A
+   stateful chip's register columns cannot be overlaid at all:
+   the interleaved host rows would overwrite the register and
+   break its propagation. `sx_stripe` **fails** this — see §7.1.
 
 This is the recommended big-win path. It is invasive
 (soundness-critical, touches every overlaid chip's column
-addressing + the mutual-exclusion proof) but it is *bounded and
-mechanical* per chip — a far better risk profile than the
-research-grade byte-XOR-lookup redesign of §3 Path A. Recommended
-staging: overlay one chip pair first (e.g. `sx_stripe` onto a
-BLAKE3 sub-window), KAT + full-regression-gated, then roll across
-the remaining mutually-exclusive chips.
+addressing + the mutual-exclusion proof). The 2026-05-21 de-risk
+(§7.1) found it is **not** the "bounded and mechanical per chip"
+profile first assumed: it is gated on a composite-wide
+gating-model rewrite (precondition stage O0) and the guest chip
+must be per-row stateless. Corrected staging is in §7.1.
+
+## 7.1 De-risk findings — the overlay is gated on two preconditions (2026-05-21)
+
+A genuine in-flight de-risk attempt of §7 (tracing the actual
+constraint code in `composite_full_air.rs` + `chips/stripe_xor.rs`
+and the trace-gen in `stripe_xor::build_trace`, *before* any
+invasive edit, per R1's "KAT-first / de-risk before invasive
+edits") found **two concrete walls**. The §7 requirement list
+above is corrected accordingly.
+
+### Finding D1 — the composite uses *zero-default discipline*, not selector-gating
+
+§7 requirement #2 ("full gating — every constraint of each
+overlaid chip is gated by that chip's selector") is **currently
+false for the entire composite.** `composite_full_air.rs:36–47`
+documents the discipline verbatim: on a passthrough row "all
+selectors are 0, all data columns are 0, control_prep = 0" ⇒
+every chip's constraints *self-satisfy at all-zero* rather than
+being explicitly selector-gated. Confirmed in `stripe_xor::eval_at`
+(`chips/stripe_xor.rs:214–369`): every `assert_eq(A,B)` holds
+because `A = B = 0`, every `assert_bool(x)` because `x = 0`, every
+`assert_zero(e)` because `e = 0` — there is no `is_active` gate
+(the doc-comment at L300–302 says so explicitly for the `Q` cubic).
+
+Consequence: an overlay puts *non-zero foreign data* into the
+shared columns, which breaks self-satisfaction. So the overlay's
+precondition #2 requires first converting **both** the guest chip
+**and** the 1056-col `blake3_round` host AIR from zero-default to
+explicit per-constraint selector-gating. That is a composite-wide
+soundness-critical rewrite — larger and more delicate than any
+single §3 path — and is **not** behavior-preserving: gating a
+constraint removes its enforcement on inactive rows, so every
+cross-row reader of the gated chip's columns must be re-audited
+against now-unconstrained inactive-row data (a missed gate or a
+missed reader = a forgery hole).
+
+### Finding D2 — `sx_stripe` (the §7-recommended first candidate) is STATEFUL and cannot be overlaid
+
+The SX chip carries a global cross-row register `XR` (16 lanes).
+`stripe_xor::eval_at:313–369`: a `when_first_row` boundary forces
+`XR = 0`, and a `when_transition` passthrough propagates `XR`
+row-to-row. `stripe_xor::build_trace:417–464` threads the register
+through *every* row including padding rows — explicitly, because
+the HIGH-2.2 §6(b) keystone binding (`composite_full_air.rs:301`,
+`FOLD_STRIPE_SEL · (FOLD_XSTEP − SX_XR)`) reads `SX_XR` on the
+composite trace's **last row**.
+
+If the `XR` columns were overlaid onto BLAKE3 columns, every
+BLAKE3 row would overwrite the register with BLAKE3 data, the
+transition passthrough would be destroyed, and the §6(b)
+soundness chain `committed A/B → CUMSUM → SX_IN → SX_XR →
+FOLD_XSTEP` would break. A stateful chip's register columns are
+*structurally* un-overlayable: an overlay-eligible guest chip must
+be **per-row stateless**. This is the new requirement #5. SX fails
+it (so do `matmul_tile`'s `CUMSUM` accumulator and the `fold`
+accumulator — they need the same classification before any
+overlay).
+
+### Corrected staging
+
+- **Stage O0 (precondition).** Convert the composite from
+  zero-default discipline to explicit per-chip selector-gating —
+  per chip, KAT + full-regression-gated. This is the bulk of the
+  soundness-critical work (every overlaid chip *plus* the
+  1056-col `blake3_round` AIR) and must precede any column
+  re-pointing. Each chip's cross-row readers re-audited per D1.
+- **Stage O1.** Classify every chip per-row-stateless vs stateful
+  (cross-row register/accumulator). Only stateless chips are
+  whole-region overlay-eligible. Stateful chips (`sx_stripe` `XR`,
+  `matmul_tile` `CUMSUM`, `fold`) can at most overlay their
+  *stateless sub-columns* — a finer, more delicate sub-column
+  overlay deferred until O0+O2 prove out.
+- **Stage O2+.** Overlay one *stateless* guest chip onto a BLAKE3
+  sub-window, KAT + full-regression + adversarial-gated; then roll
+  across the remaining mutually-exclusive stateless chips.
+
+R1 status: this is the validated-subset + precise-residual outcome
+for Path A. The validated subset delivered in this analysis drive
+is **Path C** (§5c — SX_Q, −32 cols, committed, 371-test
+regression green). The overlay (Path A) is the precise residual:
+its design premise ("overlay `sx_stripe` first, bounded/mechanical
+per chip") was **invalidated by this de-risk** — implementation
+must begin from the corrected O0→O2 staging above, not the
+original §7 plan.
 
 ## 6. Files
 
