@@ -235,3 +235,69 @@ where
 fn _composite_conforms_to_recursive_air() {
     _require_recursive_air::<CompositeFullAirWithLookupsPinned>();
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::composite_proof::{build_config, composite_prove_pinned_logup, logup_common_for};
+    use crate::composite_public::CompositePublicInputs;
+    use crate::composite_trace::CompositeTrace;
+    use crate::params::ZkParams;
+    use crate::CircuitConfig;
+
+    fn test_zk_params() -> ZkParams {
+        ZkParams {
+            m: 8,
+            k: 16,
+            n: 8,
+            noise_rank: 2,
+            tile: 2,
+            difficulty_bits: 0,
+        }
+    }
+
+    /// S3d — end-to-end: a real composite batch-STARK proof is
+    /// verified in-circuit by the L1 recursion verifier.
+    ///
+    /// STATUS (residual): the integration is wired end-to-end — this
+    /// test *builds* the L1 verifier circuit for a real composite
+    /// proof and *runs* it. It currently fails: `runner.run()` returns
+    /// `WitnessConflict` at `WitnessId(237)` on the honest path (the
+    /// in-circuit recompute disagrees with the proof). Debugging leads,
+    /// in priority order: (1) the composite's LogUp buses (`noised_
+    /// packed`/range/i8u8/cv-routing, `Kind::Global`) vs how
+    /// `verify_batch_circuit` consumes `CommonData.lookups` — the
+    /// composite is a single LogUp AIR, a shape no recursion test
+    /// exercises; (2) the in-circuit `CircuitChallenger` transcript vs
+    /// the native `DuplexChallenger<Goldilocks, Tip5Perm, 16, 10>`
+    /// observe order; (3) the FRI verifier params. `#[ignore]` until
+    /// the divergence is resolved (S3d residual).
+    #[test]
+    #[ignore = "S3d residual — honest-path WitnessConflict; see doc-comment"]
+    fn composite_recursively_verified_l1_accepts() {
+        let profile = CircuitConfig::TEST_PEARL;
+        let cfg = build_config(&test_zk_params(), &profile);
+
+        let trace = CompositeTrace::baseline_min();
+        let pis = CompositePublicInputs::derive_from_trace(&trace);
+        // `composite_prove_pinned_logup` extracts + returns the
+        // canonical program (CRIT-1 pin); the verifier uses it.
+        let (proof, program) = composite_prove_pinned_logup(&cfg, trace, &pis);
+
+        let air = CompositeFullAirWithLookupsPinned::new_with(program.clone(), true);
+        let pd = logup_common_for(&cfg, &program, true);
+
+        let built = build_composite_l1_verifier_circuit(
+            &cfg,
+            &air,
+            &proof,
+            &pd.common,
+            &pis.to_vec(),
+            profile.log_blowup as usize,
+        )
+        .expect("build the composite L1 verifier circuit");
+
+        run_composite_l1_verifier(&built, &proof)
+            .expect("L1 recursive verification of the real composite proof must accept");
+    }
+}

@@ -356,7 +356,9 @@ pub fn composite_prove_pinned_logup_sx(
 
 /// Verifier-side `CommonData` for the canonical `program` —
 /// rebuilt witness-free from the program + its (public) height.
-fn logup_common_for(
+/// `pub(crate)` so the §recursion integration can obtain the
+/// `CommonData` the recursive verifier needs.
+pub(crate) fn logup_common_for(
     config: &AiPowStarkConfig,
     program: &Program,
     sx_bound: bool,
