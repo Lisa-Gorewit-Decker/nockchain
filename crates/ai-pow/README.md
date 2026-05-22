@@ -7,9 +7,10 @@ end-to-end: low-rank noise generation, tile-by-tile mining with an
 iterative 512-bit accumulator state, shape-aware difficulty thresholds,
 and a replication-style verifier.
 
-This is **Phase 1** of the AI-PoW track. Phase 2 (`crates/ai-pow-vi`)
-extends the same primitives to a verifiable-inference puzzle on real LLM
-weights.
+This is **Phase 1** of the AI-PoW track. The production path is
+`ai-pow` (the mineable matmul unit) plus `ai-pow-zk` (the SNARK side).
+An earlier experimental verifiable-inference crate (`ai-pow-vi`) was
+removed — it was offline tooling, not on the production path.
 
 ## Open lines of work
 

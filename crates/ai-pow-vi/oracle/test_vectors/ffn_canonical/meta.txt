@@ -1,1 +1,0 @@
-m=2 hidden=8 intermediate=16 gate_scale=512 up_scale=512 mid_scale=2048 down_scale=512

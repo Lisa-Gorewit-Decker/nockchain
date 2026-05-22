@@ -1,8 +1,0 @@
-# Oracle scripts. Pinned so fixture regeneration is deterministic across
-# developer machines.
-numpy==2.4.4
-blake3==1.0.5
-# `extract_weights.py` skeleton needs these for HF integration:
-torch==2.6.0
-transformers==4.50.0
-safetensors==0.5.0
