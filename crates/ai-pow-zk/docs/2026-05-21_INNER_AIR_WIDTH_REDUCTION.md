@@ -26,18 +26,21 @@ exhaustive column inventory is landed as a reproducible test
   columns are now overlay-eligible.
 - **RESIDUAL — Path A overlay** (the column-overlay big lever, §7):
   a genuine in-flight de-risk (§7.1) traced the actual constraint +
-  trace-gen code and hit **three concrete walls** — (D1) the
-  composite uses zero-default discipline, not selector-gating, so
-  the overlay needs a composite-wide gating-model rewrite first;
-  (D2) the §7-recommended candidate `sx_stripe` is *stateful* (a
-  cross-row `XR` register read by the §6(b) keystone binding on the
-  trace's last row), so its register columns are un-overlayable;
-  (D3) the SX `Q` cubic is degree-3 = the pinned `constraint_degree`
-  budget, so it cannot be gated without a recursion-layer degree
-  bump. The §7 design premise was invalidated; §7.1 records the
-  corrected staging. O0-Stage-1 is landed (above); the residual is
-  O0-Stage-2 (gate the 1056-col `blake3_round` host AIR) → O2
-  (column re-pointing + measured width saving). Per R1 this is the
+  trace-gen code and found **two structural walls + one parameter**
+  — (D1) the composite uses zero-default discipline, not
+  selector-gating, so the overlay needs a composite-wide
+  gating-model rewrite first; (D2) the §7-recommended candidate
+  `sx_stripe` is *stateful* (a cross-row `XR` register read by the
+  §6(b) keystone binding on the trace's last row), so its register
+  columns are un-overlayable; (D3) gating the SX `Q` cubic costs
+  degree 3→4 — *not* a wall (the maintainer authorized raising the
+  degree budget; the FRI configs already admit it), but it
+  cascades into an L1 verifier-circuit regeneration, so it is
+  folded into O2 where that regen happens anyway. The §7 design
+  premise was invalidated; §7.1 records the corrected staging.
+  O0-Stage-1 is landed (above); the residual is O0-Stage-2 (gate
+  the 1056-col `blake3_round` host AIR) → O2 (column re-pointing +
+  `Q`-cubic gating + measured width saving). Per R1 this is the
   validated-subset + precise-residual outcome — the overlay is a
   soundness-critical invasive change to the PoUW linchpin and is
   NOT rushed.
@@ -491,25 +494,39 @@ it (so do `matmul_tile`'s `CUMSUM` accumulator and the `fold`
 accumulator — they need the same classification before any
 overlay).
 
-### Finding D3 — the SX `Q` cubic is degree-3 = the pinned budget; gating overflows it
+### Finding D3 — gating the SX `Q` cubic costs degree 3→4 — a parameter, not a wall (maintainer, 2026-05-21)
 
-The composite AIR pins `constraint_degree = 3` (`circuit.rs`
-`CircuitConfig` doc-comment: "Selectors are degree 1; chip-internal
-constraints are degree 2; gated constraints reach degree 3";
-`TEST_PEARL` `log_blowup = 2` is sized for exactly degree 3). The
-SX `Q` range check `Q·(Q−1)·(Q−2) = 0` (landed by Path C, §5c) is
-**already degree 3**. Wrapping it in a degree-1 `IS_ACTIVE` gate
-makes it degree 4 — over the pinned budget, and a degree bump in
-the composite is itself a soundness-critical recursion-layer change
-(the L1/L2 outer-cert verifier-AIR + proof-size measurements assume
-the degree-3 composite).
+The SX `Q` range check `Q·(Q−1)·(Q−2) = 0` (landed by Path C, §5c)
+is **degree 3**. Wrapping it in a degree-1 `IS_ACTIVE` gate makes
+it degree 4. The composite has historically been kept at
+`constraint_degree = 3` (a Pearl design convention — `circuit.rs`
+`CircuitConfig` doc-comment), but this is **not a hard limit**:
 
-Consequence: `Q`'s 32 columns are **not overlay-eligible** — the
-`Q` cubic must stay ungated, which forces `Q` to stay dedicated +
-zero on inactive rows. The other SX bit-decomposition groups
-(`IN_BITS` 128, `XR_SEL_BITS` 32, `NEW_SEL_BITS` 32, `IN` 4) are
-degree ≤ 2 ungated ⇒ ≤ 3 gated, so they remain overlay-eligible.
-Net SX overlay-eligible width is ≈ 192 columns, not the full 358.
+- The FRI configs already admit degree 4. `quotient_degree <
+  2^log_blowup` (`circuit.rs:192–194`) ⇒ `constraint_degree ≤
+  2^log_blowup`. `PROD` `log_blowup = 4` ⇒ degree ≤ 16; even the
+  test profile `TEST_PEARL` `log_blowup = 2` ⇒ degree ≤ 4. So a
+  degree-4 composite needs **no FRI-soundness-config change**.
+- Maintainer 2026-05-21: *"We can increase degree in our
+  production params. It doesn't have to fit the TEST_PEARL
+  params."* — the degree budget is an accepted parameter.
+
+The real cost is **downstream, not local**: raising the composite's
+max constraint degree 3→4 changes the inner STARK's quotient
+splitting (`quotient_degree` 2→4 chunks), which changes the inner
+proof shape, which the L1 outer-cert verifier circuit is
+specialized for ⇒ an **L1 verifier-circuit regeneration + recursion
+re-validation** (`c3_stage_a`/`c3_stage_b`).
+
+Sequencing consequence: the overlay itself (O2) reduces
+`TOTAL_TRACE_WIDTH`, which *also* changes the inner AIR shape and
+*also* forces an L1 regeneration. So the `Q`-cubic gating is
+**free if folded into O2** (one L1 regen covers both) and wasteful
+if done standalone now (an L1 regen for 32 not-yet-overlaid
+columns = zero interim saving). Therefore: O0-Stage-1 leaves the
+`Q` cubic ungated; gating `Q` (→ all 224 SX bit-columns
+overlay-eligible, not just ≈ 192) is scheduled into **O2**, where
+the L1 regen happens regardless.
 
 ### Corrected staging
 
@@ -544,9 +561,13 @@ Net SX overlay-eligible width is ≈ 192 columns, not the full 358.
   *stateless sub-columns* — a finer, more delicate sub-column
   overlay deferred until O0+O2 prove out.
 - **Stage O2+.** Overlay one *stateless* guest chip (or a stateful
-  chip's stateless sub-columns, e.g. SX's ≈ 192 gated bit-columns)
-  onto a BLAKE3 sub-window, KAT + full-regression + adversarial-
-  gated; then roll across the remaining mutually-exclusive chips.
+  chip's stateless sub-columns, e.g. SX's gated bit-columns) onto a
+  BLAKE3 sub-window, KAT + full-regression + adversarial-gated;
+  then roll across the remaining mutually-exclusive chips. This
+  stage changes `TOTAL_TRACE_WIDTH` ⇒ forces an L1 verifier-circuit
+  regeneration regardless — so it also absorbs the `Q`-cubic gating
+  (degree 3→4, D3), taking SX's overlay-eligible width from ≈ 192
+  to all ≈ 224 bit-columns at no extra recursion-regen cost.
 
 R1 status: validated-subset + precise-residual for Path A. Landed
 this drive: **Path C** (§5c — SX_Q, −32 cols, committed `074aa0b`)
