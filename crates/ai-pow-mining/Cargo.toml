@@ -22,7 +22,7 @@ required-features = ["nockapp"]
 default = []
 # NockApp driver + the driver-test binary. Off by default so a bare
 # library/CLI user doesn't pull the nockapp dep tree.
-nockapp = ["dep:nockapp", "dep:tokio"]
+nockapp = ["dep:nockapp", "dep:nockvm", "dep:nockvm_macros", "dep:tokio"]
 
 [dependencies]
 ai-pow = { path = "../ai-pow", features = ["zk"] }
@@ -35,6 +35,8 @@ tracing = { workspace = true }
 
 # nockapp feature
 nockapp = { path = "../nockapp", optional = true }
+nockvm = { workspace = true, optional = true }
+nockvm_macros = { workspace = true, optional = true }
 tokio = { workspace = true, optional = true, features = ["rt-multi-thread", "macros", "sync", "time"] }
 
 [dev-dependencies]
