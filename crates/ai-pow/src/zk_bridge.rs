@@ -3217,4 +3217,66 @@ mod tests {
              the real matmul of the committed matrices."
         );
     }
+
+    /// **§4.C.10 — producer-planting / multiset-permutation
+    /// adversarial test.** The `noised_packed` bus is *value-keyed*
+    /// — "the chunk value is the discriminant" (multiset binding).
+    /// So a miner who runs the §6(b) sweep on a **row-permuted**
+    /// committed matrix presents the *same multiset* of chunks ⇒
+    /// the bus balances even though the matmul is of a different
+    /// matrix. This probes whether anything beyond the multiset bus
+    /// (the §6(b) keystone / §6(a) fold-schedule pin / position-
+    /// exact C3) binds the swept chunks to their committed
+    /// **positions**. A sound AIR MUST reject — else a miner forges
+    /// the PoW by permuting the committed matrix's rows.
+    #[test]
+    fn sec_4c10_sweep_on_row_permuted_matrix_rejects() {
+        use crate::synth::synth_matrices;
+
+        let params = MatmulParams {
+            m: 16,
+            k: 1024,
+            n: 16,
+            noise_rank: 16,
+            tile: 8,
+            spot_checks: 2,
+            difficulty_bits: 0,
+        };
+        params.validate().unwrap();
+        let (a, b) = synth_matrices(b"4c10-perm-committed", &params);
+        let ctx = BlockContext::build(b"4c10-perm-blk", &a, &b, &params)
+            .expect("ctx");
+        let target = crate::tile_hash::difficulty_target(&params);
+
+        // Row-reverse the committed A: a same-chunk-multiset but
+        // genuinely different matrix (1 row = k = 1024 bytes = one
+        // chunk, so the 8-byte sub-slice multiset is identical, just
+        // reordered). The §6(b) sweep runs on this; the strip-
+        // opening + HASH_A stay the committed `a`.
+        let k = params.k as usize;
+        let m = params.m as usize;
+        let a_perm: Vec<i8> = (0..m)
+            .rev()
+            .flat_map(|i| a[i * k..(i + 1) * k].iter().copied())
+            .collect();
+        assert_ne!(a_perm, a, "row-reversed A must differ (pick another seed)");
+
+        let res = prove_and_verify_tiled_full(
+            &ctx,
+            &params,
+            &target,
+            0,
+            0,
+            |_| {},
+            Some((&a_perm, &b)),
+        );
+        assert!(
+            res.is_err(),
+            "§4.C.10: a §6(b) sweep on a row-permuted committed \
+             matrix (same chunk multiset, different matrix) MUST be \
+             rejected — the multiset `noised_packed` bus alone does \
+             not bind positions; the keystone / fold-schedule pin / \
+             position-exact C3 must catch the permutation."
+        );
+    }
 }
