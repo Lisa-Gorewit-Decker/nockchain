@@ -113,6 +113,14 @@ recursion = [
     "dep:p3-tip5-circuit-air",
 ]
 
+# Production caller / measurement harness for the §recursion
+# integration — drives `recurse_composite_to_l1` at the real
+# Llama-3.1-8B mining params. Gated on `recursion`; the default
+# build does not compile it.
+[[example]]
+name = "prod_recursion_measure"
+required-features = ["recursion"]
+
 [dev-dependencies]
 proptest = { workspace = true }
 # WHIR PCS feasibility prototype (2026-05-21) — dev-only; NOT in

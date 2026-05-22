@@ -121,15 +121,19 @@ pub struct BuiltCompositeL1 {
 /// `A` (vs the circuit-prover multi-table path of
 /// `verify_p3_batch_proof_circuit`).
 ///
-/// `log_blowup` / `num_queries` must match the FRI parameters the
-/// composite proof was produced under (`build_stark_config`).
+/// `profile` MUST be the same `CircuitConfig` the composite proof was
+/// produced under: the L1 verifier circuit's FRI parameters
+/// (`log_blowup`, `commit/query_pow_bits`) are derived from it and
+/// must match the proof's transcript exactly, or the in-circuit
+/// challenger desynchronizes. (`num_queries` is intrinsic to the
+/// proof shape and need not be threaded.)
 pub fn build_composite_l1_verifier_circuit(
     config: &AiPowStarkConfig,
     composite_air: &CompositeFullAirWithLookupsPinned,
     proof: &BatchProof<AiPowStarkConfig>,
     common_data: &CommonData<AiPowStarkConfig>,
     public_values: &[Val],
-    log_blowup: usize,
+    profile: &crate::circuit::CircuitConfig,
 ) -> Result<BuiltCompositeL1, VerificationError> {
     let mut cb = CircuitBuilder::<Challenge>::new();
     // In-circuit Tip5 permutation NPO + the recompose link (mirror of
@@ -142,10 +146,22 @@ pub fn build_composite_l1_verifier_circuit(
     cb.enable_recompose::<Val>(generate_recompose_trace::<Val, Challenge>);
     cb.set_recompose_coeff_ctl_for_decompose_links(true);
 
-    // ai-pow-zk Layer-0 FRI verifier params — pow_bits = 0,
-    // log_final_poly_len = 0 (`build_stark_config`).
-    let fri_verifier_params =
-        FriVerifierParams::with_mmcs(log_blowup, 0, 0, 0, Tip5Config::GOLDILOCKS_W16);
+    // ai-pow-zk Layer-0 FRI verifier params — derived from the same
+    // `CircuitConfig` `build_stark_config` used to prove the
+    // composite. This mapping MUST mirror `build_stark_config`:
+    // `log_final_poly_len = 0` (fixed there), and BOTH the commit-
+    // and query-phase PoW tiers take `config.pow_bits`. Hard-coding
+    // the PoW bits to 0 (as an earlier revision did) desynchronizes
+    // the in-circuit challenger from any `pow_bits > 0` proof —
+    // `check_pow_witness` early-returns at 0 bits, skipping the
+    // observe+sample the prover's transcript performed.
+    let fri_verifier_params = FriVerifierParams::with_mmcs(
+        profile.log_blowup as usize,
+        0,
+        profile.pow_bits as usize,
+        profile.pow_bits as usize,
+        Tip5Config::GOLDILOCKS_W16,
+    );
 
     // The composite is a single AIR instance.
     let air_public_counts = [public_values.len()];
@@ -326,6 +342,97 @@ pub fn prove_composite_l1_outer_cert(
     Ok(batch_proof)
 }
 
+/// Per-stage instrumentation of one end-to-end composite→L1
+/// recursion run — the production caller's measurement output.
+pub struct L1RecursionRun {
+    /// Composite (Layer-0) STARK trace height — the dominant cost
+    /// and memory driver.
+    pub composite_trace_height: usize,
+    /// Composite trace width (`composite_layout::TOTAL_TRACE_WIDTH`).
+    pub composite_trace_width: usize,
+    /// Wall-clock (ms) to prove the composite batch-STARK (L0).
+    pub composite_prove_ms: u128,
+    /// Wall-clock (ms) to build the L1 recursive-verifier circuit.
+    pub l1_circuit_build_ms: u128,
+    /// Wall-clock (ms) to run the L1 verifier circuit — the
+    /// in-circuit accept check (S3).
+    pub l1_in_circuit_verify_ms: u128,
+    /// Wall-clock (ms) to outer-prove the L1 verifier circuit as a
+    /// D=2 batch-STARK + `verify_all_tables` — the L1 certificate (S5).
+    pub l1_outer_cert_ms: u128,
+    /// The composite (L0) proof.
+    pub composite_proof: BatchProof<AiPowStarkConfig>,
+    /// The L1 recursive certificate.
+    pub l1_cert:
+        p3_circuit_prover::BatchStarkProof<p3_circuit_prover::config::GoldilocksTipsConfig>,
+}
+
+/// **Production caller** — the full ai-pow-zk → Plonky3-recursion
+/// pipeline for one composite proof, end to end:
+///
+/// 1. prove the composite matmul-PoW batch-STARK (Layer 0);
+/// 2. build the L1 recursive-verifier circuit and run it — the
+///    composite proof is verified in-circuit (S3);
+/// 3. outer-prove that verifier circuit as a D=2 batch-STARK and
+///    `verify_all_tables` — the L1 recursive certificate (S5).
+///
+/// Returns per-stage timings + both proof objects so a caller can
+/// measure serialized sizes. This is the single public entrypoint a
+/// production consumer (or a measurement harness) drives; it hides
+/// the crate-internal program-pin / `CommonData` plumbing. The
+/// canonical program is extracted from the trace and pinned (CRIT-1),
+/// exactly as the production proving path
+/// (`composite_prove_pinned_logup`).
+pub fn recurse_composite_to_l1(
+    zk_params: &crate::params::ZkParams,
+    profile: &crate::circuit::CircuitConfig,
+    trace: crate::composite_trace::CompositeTrace,
+) -> Result<L1RecursionRun, VerificationError> {
+    use std::time::Instant;
+
+    let cfg = crate::composite_proof::build_config(zk_params, profile);
+    let composite_trace_height = trace.height();
+    let composite_trace_width = trace.width();
+    let pis = crate::composite_public::CompositePublicInputs::derive_from_trace(&trace);
+
+    let t = Instant::now();
+    let (composite_proof, program) =
+        crate::composite_proof::composite_prove_pinned_logup(&cfg, trace, &pis);
+    let composite_prove_ms = t.elapsed().as_millis();
+
+    let t = Instant::now();
+    let air = CompositeFullAirWithLookupsPinned::new_with(program.clone(), true);
+    let pd = crate::composite_proof::logup_common_for(&cfg, &program, true);
+    let built = build_composite_l1_verifier_circuit(
+        &cfg,
+        &air,
+        &composite_proof,
+        &pd.common,
+        &pis.to_vec(),
+        profile,
+    )?;
+    let l1_circuit_build_ms = t.elapsed().as_millis();
+
+    let t = Instant::now();
+    run_composite_l1_verifier(&built, &composite_proof)?;
+    let l1_in_circuit_verify_ms = t.elapsed().as_millis();
+
+    let t = Instant::now();
+    let l1_cert = prove_composite_l1_outer_cert(&built, &composite_proof)?;
+    let l1_outer_cert_ms = t.elapsed().as_millis();
+
+    Ok(L1RecursionRun {
+        composite_trace_height,
+        composite_trace_width,
+        composite_prove_ms,
+        l1_circuit_build_ms,
+        l1_in_circuit_verify_ms,
+        l1_outer_cert_ms,
+        composite_proof,
+        l1_cert,
+    })
+}
+
 /// S3a — compile-time proof that the composite AIR satisfies the
 /// recursion substrate's `RecursiveAir` bound.
 fn _require_recursive_air<A>()
@@ -393,7 +500,7 @@ mod tests {
             &proof,
             &pd.common,
             &pis.to_vec(),
-            profile.log_blowup as usize,
+            &profile,
         )
         .expect("build the composite L1 verifier circuit");
 
@@ -432,7 +539,7 @@ mod tests {
             &proof,
             &pd.common,
             &pis.to_vec(),
-            profile.log_blowup as usize,
+            &profile,
         )
         .map_err(|e| format!("build composite L1 verifier circuit: {e:?}"))?;
 
