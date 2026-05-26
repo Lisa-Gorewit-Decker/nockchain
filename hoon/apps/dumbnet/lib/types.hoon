@@ -498,9 +498,24 @@
       [%command p=command]  ::  originate locally
   ==
 ::
+::  Tagged union of proof-of-work variants. The miner pokes the consensus
+::  kernel with `[%command %pow pv=pow-variant]`; the consensus kernel
+::  dispatches on `-.pv` so additional puzzle types (e.g. %ai-pow) can be
+::  added without changing the outer `%command` shape.
++$  pow-variant
+  $+  pow-variant
+  $%  [%dumb-zkpow prf=proof:sp dig=tip5-hash-atom:zeke bc=noun-digest:tip5:zeke nonce=noun-digest:tip5:zeke]  ::  the existing puzzle-nock STARK PoW
+      ::  AI matmul PoW (active at and after ai-pow-activation-height).
+      ::  STUB PAYLOAD — the real serialization is deferred-task work.
+      ::  This single-atom placeholder lets the activation gate + the
+      ::  pow-variant dispatch land first; the deferred task replaces
+      ::  `placeholder=@` with the real fields the AI verifier reads.
+      [%ai-pow placeholder=@]
+  ==
+::
 +$  command
   $+  command
-  $%  [%pow prf=proof:sp dig=tip5-hash-atom:zeke bc=noun-digest:tip5:zeke nonce=noun-digest:tip5:zeke] :: check if a proof of work is good for the next block, issue a block if so
+  $%  [%pow pv=pow-variant]  ::  check if a proof of work is good for the next block, issue a block if so
       [%set-mining-key v0=@t v1=@t]  ::  set $lock for coinbase in mined blocks
       [%set-mining-key-advanced v0=(list [share=@ m=@ keys=(list @t)]) v1=(list [share=@ phk=@t])]  :: multisig and/or split coinbases
       [%enable-mining p=?]  ::  switch for generating candidate blocks for mining
@@ -551,7 +566,13 @@
       [%request p=request]  :: request specific tx or block
       [%track p=track]  :: runtime tracking of blocks for %liar-block-id effect
       [%seen p=seen]    ::  seen so don't reprocess
-      [%mine mine-start]
+      ::  Mining candidate emissions. `%mine-zk` is always emitted when
+      ::  the candidate block changes. `%mine-ai` is additionally emitted
+      ::  at and after ai-pow-activation-height — both carry the same
+      ::  commit but per-puzzle independently-computed targets. Each
+      ::  miner subscribes to its own head via WatchEffects.
+      [%mine-zk mine-start]
+      [%mine-ai mine-start]
       lie
       span-effect
       [%exit code=@]

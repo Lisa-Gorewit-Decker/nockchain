@@ -20,17 +20,17 @@
 ::    boundary semantics also live in the 2-arg
 ::    +post-asert-activation:v1 (used by +new-candidate); the inline
 ::    `gte` here is the canonical definition for callers that read
-::    asert-phase from blockchain-constants. See
+::    phase.zk-asert from blockchain-constants. See
 ::    014-aletheia-emissions-audit.md finding #3.
 ++  post-asert-activation
   |=  height=@
   ^-  ?
-  (gte height asert-phase)
+  (gte height phase.zk-asert)
 ::
 ++  pre-asert-activation
   |=  height=@
   ^-  ?
-  (lth height asert-phase)
+  (lth height phase.zk-asert)
 ::
 ++  bignum  bignum:v0
 ++  block-commitment  block-commitment:v0
@@ -350,7 +350,7 @@
   ::
   ::  +new-candidate: build candidate page for mining with v1 shares
   ::
-  ::    creates a v1 page with hash-based coinbase-split. `asert-phase`
+  ::    creates a v1 page with hash-based coinbase-split. `zk-asert-phase`
   ::    threads through so post-asert-activation candidates carry the 80/20
   ::    miner/fund split (014-aletheia).
   ++  new-candidate

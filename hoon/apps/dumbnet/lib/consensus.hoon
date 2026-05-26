@@ -209,37 +209,82 @@
   ~>  %slog.[0 (cat 3 'compute-target: New target: ' (rsh [3 2] (scot %ui next-target-atom)))]
   next-target-bn
 ::
-::  +compute-target-asert: aserti3-2d target for a post-asert-activation block
+::  +compute-target-zk-asert: aserti3-2d ZK puzzle target for a
+::  post-zk-asert-activation block. Selects between two ZK ASERT
+::  regimes based on .child-height:
 ::
-::    .child-height is the height the block is (or will be) at;
-::    .parent-digest identifies its parent so we can read the parent's
-::    median-of-11 from .min-timestamps (written during parent acceptance).
-::    callers must guarantee .child-height >= .asert-phase, which implies
-::    the min-timestamps lookup succeeds and the height >= anchor invariant
-::    holds. used both to validate an accepted page and to compute the
-::    target for a candidate block still being constructed.
+::    [zk-asert.phase, zk-asert-post-ai.phase)   → zk-asert (150s ideal)
+::    [zk-asert-post-ai.phase, +∞)               → zk-asert-post-ai (300s)
+::
+::  At and after ai-pow-activation-height the ZK puzzle re-anchors at
+::  zk-asert-post-ai.anchor-height with the regime-2 anchor-target.
+::  Each post-activation block walks back to ITS REGIME's anchor (not
+::  the original zk-asert anchor) for the time-diff computation.
+::
+::  Caller must guarantee .child-height >= zk-asert.phase. .parent-digest
+::  identifies the immediate parent — read from .min-timestamps for the
+::  median-of-11.
+++  compute-target-zk-asert
+  |=  [child-height=@ parent-digest=block-id:t]
+  ^-  bignum:bignum:t
+  =/  params
+    ?:  (gte child-height phase.zk-asert-post-ai.blockchain-constants)
+      zk-asert-post-ai.blockchain-constants
+    zk-asert.blockchain-constants
+  =/  parent-min-ts=@  (~(got h-by min-timestamps.c) parent-digest)
+  ::  Phase-2 of 014-aletheia: anchor's median-of-11 is a hardcoded
+  ::  protocol constant PER REGIME (replaces the phase-1 ancestry walk).
+  ::  Each ZK ASERT regime has its own anchor and its own pinned
+  ::  anchor-min-timestamp — see +$ zk-asert / +$ zk-asert-post-ai in
+  ::  tx-engine-1.hoon.
+  =/  anchor-min-ts=@  anchor-min-timestamp.params
+  %-  chunk:bignum:t
+  %-  compute-target:asert
+  :*  anchor-target-atom.params
+      anchor-min-ts
+      anchor-height.params
+      parent-min-ts
+      child-height
+      ideal-block-time.params
+      half-life.params
+      max-target-atom:t
+  ==
+::
+::  +compute-target-asert: legacy alias for +compute-target-zk-asert.
+::  Existing callers haven't migrated to the per-puzzle API yet; this
+::  wrapper preserves their semantics. New callers should use
+::  +compute-target-zk-asert directly.
 ++  compute-target-asert
   |=  [child-height=@ parent-digest=block-id:t]
   ^-  bignum:bignum:t
-  =/  parent-min-ts=@
-    (~(got h-by min-timestamps.c) parent-digest)
-  ::  phase 2 of 014-aletheia: the anchor's median-of-11 is a hardcoded
-  ::  protocol constant captured at the canonical anchor block (height
-  ::  65,499). paired with the [%65.499 ...] checkpoint in
-  ::  +checkpointed-digests, only one block at the anchor height is
-  ::  admissible network-wide, so reading the constant is consensus-
-  ::  identical to walking ancestry.
-  =/  anchor-min-ts=@
-    asert-anchor-min-timestamp.blockchain-constants
+  (compute-target-zk-asert child-height parent-digest)
+::
+::  +compute-target-ai-asert: aserti3-2d AI puzzle target for a
+::  post-ai-pow-activation block. Single regime — ai-asert is the only
+::  AI ASERT config. Same hardcoded-anchor pattern as compute-target-
+::  zk-asert; reads its anchor params from ai-asert.blockchain-constants.
+::
+::  TODO (Stage 6): .parent-digest should be the immediate parent's
+::  digest in the AI PUZZLE SUBCHAIN (the most recent prior %ai-pow
+::  block), not the global parent. Until the puzzle-types map +
+::  per-puzzle walker land, this function uses the global parent —
+::  meaning AI difficulty tracks global block cadence, not AI-only
+::  cadence. Correct once Stage 6 wires the per-puzzle lookups.
+++  compute-target-ai-asert
+  |=  [child-height=@ parent-digest=block-id:t]
+  ^-  bignum:bignum:t
+  =/  params  ai-asert.blockchain-constants
+  =/  parent-min-ts=@  (~(got h-by min-timestamps.c) parent-digest)
+  =/  anchor-min-ts=@  anchor-min-timestamp.params
   %-  chunk:bignum:t
   %-  compute-target:asert
-  :*  asert-anchor-target-atom.blockchain-constants
+  :*  anchor-target-atom.params
       anchor-min-ts
-      asert-anchor-height.blockchain-constants
+      anchor-height.params
       parent-min-ts
       child-height
-      asert-ideal-block-time.blockchain-constants
-      asert-half-life.blockchain-constants
+      ideal-block-time.params
+      half-life.params
       max-target-atom:t
   ==
 ::
@@ -535,7 +580,7 @@
   ::  Phase-gated v1 coinbase entry count. The +based:coinbase-split:v1
   ::  parser allows up to `max-coinbase-split + 1` entries to admit the
   ::  fund slot post-asert-activation, but pre-activation v1 blocks
-  ::  (v1-phase <= height < asert-phase) carry no fund slot and must
+  ::  (v1-phase <= height < zk-asert-phase) carry no fund slot and must
   ::  continue to cap at `max-coinbase-split` entries — matching the
   ::  legacy v0 rule. Without this gate, a miner could pre-activation
   ::  emit a 3-entry v1 coinbase that this branch accepts and stricter
