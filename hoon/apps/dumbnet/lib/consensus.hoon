@@ -194,36 +194,78 @@
   ~>  %slog.[0 (cat 3 'compute-target: New target: ' (rsh [3 2] (scot %ui next-target-atom)))]
   next-target-bn
 ::
-::  +compute-target-asert: aserti3-2d target for a post-asert-activation block
+::  +compute-target-zk-asert: aserti3-2d ZK puzzle target for a
+::  post-zk-asert-activation block. Selects between two ZK ASERT
+::  regimes based on .child-height:
 ::
-::    .child-height is the height the block is (or will be) at;
-::    .parent-digest identifies its parent so we can read the parent's
-::    median-of-11 from .min-timestamps (written during parent acceptance).
-::    callers must guarantee .child-height >= .zk-asert-phase, which implies
-::    the min-timestamps lookup succeeds and the height >= anchor invariant
-::    holds. used both to validate an accepted page and to compute the
-::    target for a candidate block still being constructed.
+::    [zk-asert.phase, zk-asert-post-ai.phase)   → zk-asert (150s ideal)
+::    [zk-asert-post-ai.phase, +∞)               → zk-asert-post-ai (300s)
+::
+::  At and after ai-pow-activation-height the ZK puzzle re-anchors at
+::  zk-asert-post-ai.anchor-height with the regime-2 anchor-target.
+::  Each post-activation block walks back to ITS REGIME's anchor (not
+::  the original zk-asert anchor) for the time-diff computation.
+::
+::  Caller must guarantee .child-height >= zk-asert.phase. .parent-digest
+::  identifies the immediate parent — read from .min-timestamps for the
+::  median-of-11.
+++  compute-target-zk-asert
+  |=  [child-height=@ parent-digest=block-id:t]
+  ^-  bignum:bignum:t
+  =/  params
+    ?:  (gte child-height phase.zk-asert-post-ai.blockchain-constants)
+      zk-asert-post-ai.blockchain-constants
+    zk-asert.blockchain-constants
+  =/  parent-min-ts=@  (~(got z-by min-timestamps.c) parent-digest)
+  =/  anchor-min-ts=@
+    (find-anchor-min-ts-at parent-digest anchor-height.params)
+  %-  chunk:bignum:t
+  %-  compute-target:asert
+  :*  anchor-target-atom.params
+      anchor-min-ts
+      anchor-height.params
+      parent-min-ts
+      child-height
+      ideal-block-time.params
+      half-life.params
+      max-target-atom:t
+  ==
+::
+::  +compute-target-asert: legacy alias for +compute-target-zk-asert.
+::  Existing callers haven't migrated to the per-puzzle API yet; this
+::  wrapper preserves their semantics. New callers should use
+::  +compute-target-zk-asert directly.
 ++  compute-target-asert
   |=  [child-height=@ parent-digest=block-id:t]
   ^-  bignum:bignum:t
-  =/  parent-min-ts=@
-    (~(got z-by min-timestamps.c) parent-digest)
-  ::  anchor-min-ts is derived by walking parent-digest through .blocks
-  ::  back to the ancestor at zk-asert-anchor-height and reading its
-  ::  median-of-11 from .min-timestamps. fork-correct by construction
-  ::  — every caller walks its own ancestry, with no shared mutable
-  ::  cache that competing forks could diverge. replaced by a hardcoded
-  ::  protocol constant post-65500 (phase 2 of 014-aletheia).
-  =/  anchor-min-ts=@  (find-anchor-min-ts parent-digest)
+  (compute-target-zk-asert child-height parent-digest)
+::
+::  +compute-target-ai-asert: aserti3-2d AI puzzle target for a
+::  post-ai-pow-activation block. Single regime — ai-asert is the only
+::  AI ASERT config.
+::
+::  TODO (Stage 6): .parent-digest should be the immediate parent's
+::  digest in the AI PUZZLE SUBCHAIN (the most recent prior %ai-pow
+::  block), not the global parent. Until the puzzle-types map +
+::  per-puzzle walker land, this function uses the global parent —
+::  meaning AI difficulty tracks global block cadence, not AI-only
+::  cadence. Correct once Stage 6 wires the per-puzzle lookups.
+++  compute-target-ai-asert
+  |=  [child-height=@ parent-digest=block-id:t]
+  ^-  bignum:bignum:t
+  =/  params  ai-asert.blockchain-constants
+  =/  parent-min-ts=@  (~(got z-by min-timestamps.c) parent-digest)
+  =/  anchor-min-ts=@
+    (find-anchor-min-ts-at parent-digest anchor-height.params)
   %-  chunk:bignum:t
   %-  compute-target:asert
-  :*  anchor-target-atom.zk-asert.blockchain-constants
+  :*  anchor-target-atom.params
       anchor-min-ts
-      anchor-height.zk-asert.blockchain-constants
+      anchor-height.params
       parent-min-ts
       child-height
-      ideal-block-time.zk-asert.blockchain-constants
-      half-life.zk-asert.blockchain-constants
+      ideal-block-time.params
+      half-life.params
       max-target-atom:t
   ==
 ::
@@ -581,25 +623,33 @@
   ~>  %slog.[0 log-message]
   c
 ::
-::  +find-anchor-min-ts: walk parent chain from .bid back to the block at
-::    zk-asert-anchor-height, return that block's median-of-11 timestamp
-::    from .min-timestamps.
+::  +find-anchor-min-ts-at: walk parent chain from .bid back to the block
+::    at .target-height, return that block's median-of-11 timestamp from
+::    .min-timestamps. Generalized version that lets callers walk to an
+::    arbitrary anchor (not just zk-asert.anchor-height) — needed for
+::    the per-puzzle / two-regime ZK ASERT design.
 ::
-::    callers must guarantee that .bid's block is in .blocks and has height
-::    >= zk-asert-anchor-height. fork-correct because .blocks and
+::    Callers must guarantee that .bid's block is in .blocks and has
+::    height >= .target-height. Fork-correct because .blocks and
 ::    .min-timestamps are keyed by digest, so each caller walks its own
-::    ancestry with no shared mutable state that competing forks could
-::    diverge. replaced by a hardcoded protocol constant post-65500
-::    (phase 2 of 014-aletheia).
+::    ancestry with no shared mutable state.
+++  find-anchor-min-ts-at
+  |=  [bid=block-id:t target-height=@]
+  ^-  @
+  =/  cur=page:t  (to-page:local-page:t (~(got z-by blocks.c) bid))
+  |-
+  ?:  =(~(height get:page:t cur) target-height)
+    (~(got z-by min-timestamps.c) ~(digest get:page:t cur))
+  $(cur (to-page:local-page:t (~(got z-by blocks.c) ~(parent get:page:t cur))))
+::
+::  +find-anchor-min-ts: backwards-compat wrapper — walks back to the
+::    pre-AI-activation ZK ASERT anchor. Used by callers that haven't
+::    been updated to the per-regime API yet.
 ++  find-anchor-min-ts
   |=  bid=block-id:t
   ^-  @
-  =/  anchor-height=@  anchor-height.zk-asert.blockchain-constants
-  =/  cur=page:t  (to-page:local-page:t (~(got z-by blocks.c) bid))
-  |-
-  ?:  =(~(height get:page:t cur) anchor-height)
-    (~(got z-by min-timestamps.c) ~(digest get:page:t cur))
-  $(cur (to-page:local-page:t (~(got z-by blocks.c) ~(parent get:page:t cur))))
+  %+  find-anchor-min-ts-at  bid
+  anchor-height.zk-asert.blockchain-constants
 ::
 ::  +check-fund-split: validate that a post-asert-activation coinbase pays
 ::  the consensus-known fund address exactly floor(emission/5) atoms.

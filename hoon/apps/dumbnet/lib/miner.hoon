@@ -284,27 +284,13 @@
   ::    parent's stored median-of-11. pre-activation: read the next target
   ::    stored at parent.digest by the epoch rule.
   =/  candidate-height=@  +(~(height get:page:t parent))
+  ::  Candidate target (currently ZK-puzzle-only — Stage 4 adds the
+  ::  parallel AI candidate target for emission of the second %mine-ai
+  ::  effect post-AI-activation). Pre-asert-activation falls through
+  ::  to the legacy epoch-stored target.
   =/  candidate-target=bignum:bignum:t
     ?:  (post-asert-activation:t candidate-height)
-      =/  parent-min-ts=@
-        (~(got z-by min-timestamps.c) u.heaviest-block.c)
-      ::  resolve the anchor's median-of-11 by walking .blocks back from
-      ::  heaviest to the ancestor at zk-asert-anchor-height (shared helper
-      ::  in /lib/consensus). replaced by a hardcoded protocol constant
-      ::  post-65500 (phase 2 of 014-aletheia).
-      =/  anchor-min-ts=@
-        (~(find-anchor-min-ts dcon c blockchain-constants) u.heaviest-block.c)
-      %-  chunk:bignum:t
-      %-  compute-target:asert
-      :*  anchor-target-atom.zk-asert.blockchain-constants
-          anchor-min-ts
-          anchor-height.zk-asert.blockchain-constants
-          parent-min-ts
-          candidate-height
-          ideal-block-time.zk-asert.blockchain-constants
-          half-life.zk-asert.blockchain-constants
-          max-target-atom:t
-      ==
+      (~(compute-target-zk-asert dcon c blockchain-constants) candidate-height u.heaviest-block.c)
     (~(got z-by targets.c) u.heaviest-block.c)
   =.  candidate-block.m
     ?^  -.parent
