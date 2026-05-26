@@ -1351,19 +1351,25 @@
       ++  do-pow
         ^-  [(list effect:dk) kernel-state:dk]
         ?>  ?=([%pow *] command)
-        =/  commit=block-commitment:t
-          (block-commitment:page:t candidate-block.m.k)
-        ?.  =(bc.command commit)
-          ~>  %slog.[1 'do-pow: Mined for wrong (old) block commitment']
+        ::  Dispatch on the inner pow-variant tag. New variants get
+        ::  their own arms here; the outer %command/%pow envelope is
+        ::  shared across all puzzle types.
+        ?-    -.pv.command
+            %dumb-zkpow
+          =/  commit=block-commitment:t
+            (block-commitment:page:t candidate-block.m.k)
+          ?.  =(bc.pv.command commit)
+            ~>  %slog.[1 'do-pow: Mined for wrong (old) block commitment']
+            [~ k]
+          ?:  %+  check-target:mine  dig.pv.command
+              ~(target get:page:t candidate-block.m.k)
+            =.  m.k  (set-pow:min prf.pv.command)
+            =.  m.k  set-digest:min
+            =^  heard-block-effs  k  (heard-block /poke/miner now candidate-block.m.k eny)
+            :_  k
+            heard-block-effs
           [~ k]
-        ?:  %+  check-target:mine  dig.command
-            ~(target get:page:t candidate-block.m.k)
-          =.  m.k  (set-pow:min prf.command)
-          =.  m.k  set-digest:min
-          =^  heard-block-effs  k  (heard-block /poke/miner now candidate-block.m.k eny)
-          :_  k
-          heard-block-effs
-        [~ k]
+        ==
       ::
       ++  do-set-mining-key
         ^-  [(list effect:dk) kernel-state:dk]
