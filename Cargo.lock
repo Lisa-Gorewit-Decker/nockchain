@@ -11468,6 +11468,36 @@ dependencies = [
 ]
 
 [[package]]
+name = "zk-pow-miner"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "blake3",
+ "clap",
+ "futures",
+ "gnort",
+ "ibig",
+ "kernels-open-miner",
+ "nockapp",
+ "nockapp-grpc",
+ "nockchain-math",
+ "nockchain-mining-common",
+ "nockvm",
+ "nockvm_macros",
+ "num_cpus",
+ "once_cell",
+ "rand 0.9.4",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tokio",
+ "tokio-util",
+ "tracing",
+ "tracing-subscriber",
+ "zkvm-jetpack",
+]
+
+[[package]]
 name = "zkvm-jetpack"
 version = "0.1.0"
 dependencies = [
