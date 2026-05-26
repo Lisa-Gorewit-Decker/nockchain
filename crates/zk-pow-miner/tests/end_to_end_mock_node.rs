@@ -5,7 +5,7 @@
 //! against it with a **real** `SerfWorker` pool (loaded with `assets/miner.jam`),
 //! publishes one synthetic `%mine` effect with `target = 2^400` so any
 //! digest passes, and asserts that within 60 seconds the mock observes a
-//! `MiningWire::Mined`-wire poke whose payload begins with
+//! `ZkPowMinerWire::Mined`-wire poke whose payload begins with
 //! `[%command %pow …]` — proving the miner ran the real STARK and routed
 //! the solution back over gRPC.
 //!
@@ -41,7 +41,8 @@ use nockapp::noun::slab::NounSlab;
 use nockapp::noun::AtomExt;
 use nockapp::NockAppExit;
 use nockapp_grpc::services::private_nockapp::server::PrivateNockAppGrpcServer;
-use nockchain_mining_common::{MiningPkhConfig, MiningWire};
+use nockchain_mining_common::MiningPkhConfig;
+use zk_pow_miner::wire::ZkPowMinerWire;
 use nockvm::ext::NounExt;
 use nockvm::noun::{Atom, D, T};
 use nockvm_macros::tas;
@@ -82,7 +83,7 @@ async fn miner_finds_and_submits_block_against_mock_node() {
         exit,
     };
 
-    // Drain action channel; collect MiningWire::Mined poke slabs.
+    // Drain action channel; collect ZkPowMinerWire::Mined poke slabs.
     let mined_pokes: Arc<TMutex<Vec<NounSlab>>> = Arc::new(TMutex::new(Vec::new()));
     let pokes_observed = Arc::new(AtomicU64::new(0));
     let mined_clone = mined_pokes.clone();
@@ -101,7 +102,7 @@ async fn miner_finds_and_submits_block_against_mock_node() {
                         "[mock-node] poke received: source={} v={} tags={:?}",
                         wire.source, wire.version, wire.tags
                     );
-                    let is_mined = wire.source == <MiningWire as Wire>::SOURCE
+                    let is_mined = wire.source == ZkPowMinerWire::SOURCE
                         && wire.tags.iter().any(|t| matches!(
                             t,
                             nockapp::wire::WireTag::String(s) if s == "mined"

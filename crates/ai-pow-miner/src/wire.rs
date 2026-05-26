@@ -1,10 +1,11 @@
 //! Wire vocabulary for the AI-PoW miner.
 //!
-//! [`AiPowMinerWire`] mirrors `nockchain_mining_common::MiningWire`
-//! (`SOURCE = "miner"`) but on its own source `"ai-pow-miner"` so the
+//! [`AiPowMinerWire`] mirrors `zk_pow_miner::wire::ZkPowMinerWire`
+//! (`SOURCE = "zk-pow-miner"`) on its own source `"ai-pow-miner"` so the
 //! kernel-side handler for the AI puzzle can be registered independently
-//! of the dumb-puzzle ZK PoW path. Both wires speak the same tag
-//! vocabulary (`enable`, `candidate`, `mined`, `mining-error`).
+//! of the dumb-puzzle ZK PoW path. Both wires share the same tag
+//! vocabulary (`enable`, `candidate`, `mined`, `setpubkey`,
+//! `mining-error`).
 //!
 //! Submission flow:
 //! 1. The run loop builds an `[%mined nonce-atom found-idx]` noun.
@@ -17,14 +18,16 @@
 use nockapp::nockapp::wire::{Wire, WireRepr};
 
 pub enum AiPowMinerWire {
-    /// Kernel → driver: enable / disable mining.
+    /// Driver → node: enable / disable mining.
     Enable,
-    /// Kernel → driver: a new puzzle is available.
+    /// Kernel-internal: a new candidate puzzle.
     Candidate,
-    /// Driver → kernel: solved tile. Payload (v1):
+    /// Driver → node: solved tile. Payload (v1):
     /// `[%mined nonce-as-atom found-idx-as-atom]`.
     Mined,
-    /// Driver → kernel: mining terminated without a solution.
+    /// Driver → node: set mining-payout pubkey(s).
+    SetPubKey,
+    /// Driver → node: mining terminated without a solution.
     /// Payload: `[%mining-error message-as-atom]`.
     MiningError,
 }
@@ -35,6 +38,7 @@ impl AiPowMinerWire {
             AiPowMinerWire::Enable => "enable",
             AiPowMinerWire::Candidate => "candidate",
             AiPowMinerWire::Mined => "mined",
+            AiPowMinerWire::SetPubKey => "setpubkey",
             AiPowMinerWire::MiningError => "mining-error",
         }
     }

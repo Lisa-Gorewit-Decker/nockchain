@@ -43,8 +43,10 @@
 
 pub mod pool;
 pub mod run;
+pub mod wire;
 pub mod worker;
 
 pub use pool::Pool;
 pub use run::{run, MinerConfig, MinerError};
+pub use wire::ZkPowMinerWire;
 pub use worker::{MineResult, SerfWorker, Worker, WorkerError, WorkerId};

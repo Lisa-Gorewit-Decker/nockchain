@@ -19,7 +19,9 @@ use nockapp::save::SaveableCheckpoint;
 use nockapp::utils::NOCK_STACK_SIZE_TINY;
 use nockchain_math::noun_ext::NounMathExt;
 use nockchain_math::structs::HoonList;
-use nockchain_mining_common::{MiningCandidate, MiningWire};
+use nockchain_mining_common::MiningCandidate;
+
+use crate::wire::ZkPowMinerWire;
 use nockvm::ext::NounExt;
 use nockvm::interpreter::NockCancelToken;
 use nockvm::jets::hot::HotEntry;
@@ -47,7 +49,7 @@ pub enum WorkerError {
 pub enum MineResult {
     /// The proof's digest cleared the target. `poke_slab` is the
     /// `[%command %pow %dumb-zkpow prf dig header nonce]` cause the caller
-    /// pokes the *node*'s main kernel with (via `MiningWire::Mined`).
+    /// pokes the *node*'s main kernel with (via `ZkPowMinerWire::Mined`).
     /// The `%dumb-zkpow` tag is the inner variant of the consensus kernel's
     /// `pow-variant` tagged union (see hoon/apps/dumbnet/lib/types.hoon).
     /// `hash_slab` is the digest as a tip5 5-tuple atom (the natural
@@ -121,7 +123,7 @@ impl Worker for SerfWorker {
         debug!(worker_id = self.id, "poking miner serf with candidate");
         let result_slab = self
             .serf
-            .poke(MiningWire::Candidate.to_wire(), poke)
+            .poke(ZkPowMinerWire::Candidate.to_wire(), poke)
             .await
             .map_err(|e| WorkerError::Poke(format!("{e}")))?;
         decode_mine_result(result_slab)

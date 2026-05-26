@@ -23,12 +23,14 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use futures::StreamExt;
+use nockapp::nockapp::wire::Wire;
 use nockchain_mining_common::{MiningCandidate, MiningKeyConfig, MiningPkhConfig, NodeClient};
 use thiserror::Error;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, info, warn};
 
 use crate::pool::Pool;
+use crate::wire::ZkPowMinerWire;
 use crate::worker::{build_candidate_poke, random_nonce, MineResult, SerfWorker, Worker};
 
 /// Default v0 mining key — pass-through for the kernel's v0 pubkey
@@ -168,7 +170,11 @@ pub async fn run_with_pool(
         // so the initial candidate (which the post-poke
         // update-candidate-block emits on enable) lands on a live stream.
         if let Err(e) = client
-            .set_mining_key(cfg.mining_configs.clone(), cfg.mining_pkh_configs.clone())
+            .set_mining_key(
+                ZkPowMinerWire::SetPubKey.to_wire(),
+                cfg.mining_configs.clone(),
+                cfg.mining_pkh_configs.clone(),
+            )
             .await
         {
             return Err(MinerError::Configure(format!("set_mining_key: {e}")));
@@ -181,7 +187,10 @@ pub async fn run_with_pool(
                 continue;
             }
         };
-        if let Err(e) = client.enable_mining(true).await {
+        if let Err(e) = client
+            .enable_mining(ZkPowMinerWire::Enable.to_wire(), true)
+            .await
+        {
             return Err(MinerError::Configure(format!("enable_mining(true): {e}")));
         }
         info!("zk-pow-miner: subscribed + mining enabled; awaiting candidates");
@@ -222,7 +231,10 @@ pub async fn run_with_pool(
                             // longer borrowed before we await on the client.
                             let respawn_poke = build_candidate_poke(cur, random_nonce());
                             info!(worker = wid, "found a block; submitting via gRPC");
-                            if let Err(e) = client.submit_mined_block(poke_slab).await {
+                            if let Err(e) = client
+                                .submit_mined_block(ZkPowMinerWire::Mined.to_wire(), poke_slab)
+                                .await
+                            {
                                 warn!(worker = wid, error = %e, "submit_mined_block failed (likely stale candidate)");
                             }
                             pool.dispatch_one(wid, respawn_poke);
@@ -246,7 +258,9 @@ pub async fn run_with_pool(
         while pool.busy_count() > 0 {
             let _ = pool.next_result().await;
         }
-        let _ = client.enable_mining(false).await;
+        let _ = client
+            .enable_mining(ZkPowMinerWire::Enable.to_wire(), false)
+            .await;
 
         match inner_result {
             InnerOutcome::Shutdown => return Ok(()),
@@ -287,7 +301,7 @@ mod tests {
     //! test in `crates/nockapp-grpc/src/tests.rs`), drive
     //! [`run_with_pool`] against it using a StubWorker-backed pool, push
     //! synthetic `%mine` effects, and assert the miner pokes
-    //! `MiningWire::Mined` back at the server within a tight timeout.
+    //! `ZkPowMinerWire::Mined` back at the server within a tight timeout.
 
     use std::net::{SocketAddr, TcpListener};
     use std::sync::atomic::{AtomicU64, Ordering};
@@ -297,10 +311,8 @@ mod tests {
     use async_trait::async_trait;
     use nockapp::driver::{IOAction, NockAppHandle};
     use nockapp::noun::slab::NounSlab;
-    use nockapp::nockapp::wire::Wire;
     use nockapp::NockAppExit;
     use nockapp_grpc::services::private_nockapp::server::PrivateNockAppGrpcServer;
-    use nockchain_mining_common::MiningWire;
     use nockvm::noun::{D, T};
     use nockvm_macros::tas;
     use once_cell::sync::Lazy;
@@ -350,7 +362,7 @@ mod tests {
                 metrics: METRICS.clone(),
                 exit,
             };
-            // Drain actions; collect MiningWire::Mined slabs.
+            // Drain actions; collect ZkPowMinerWire::Mined slabs.
             let pokes_observed = Arc::new(AtomicU64::new(0));
             let mined_pokes: Arc<TMutex<Vec<NounSlab>>> = Arc::new(TMutex::new(Vec::new()));
             let pokes_clone = pokes_observed.clone();
@@ -365,7 +377,7 @@ mod tests {
                             ..
                         } => {
                             pokes_clone.fetch_add(1, Ordering::SeqCst);
-                            if wire.source == <MiningWire as Wire>::SOURCE
+                            if wire.source == ZkPowMinerWire::SOURCE
                                 && wire.tags.iter().any(|t| match t {
                                     nockapp::wire::WireTag::String(s) => s == "mined",
                                     _ => false,

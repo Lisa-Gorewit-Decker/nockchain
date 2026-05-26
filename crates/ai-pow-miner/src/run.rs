@@ -205,7 +205,11 @@ pub async fn run(
         // candidate (which the post-poke update-candidate-block emits)
         // lands on a live stream.
         if let Err(e) = client
-            .set_mining_key(cfg.mining_configs.clone(), cfg.mining_pkh_configs.clone())
+            .set_mining_key(
+                AiPowMinerWire::SetPubKey.to_wire(),
+                cfg.mining_configs.clone(),
+                cfg.mining_pkh_configs.clone(),
+            )
             .await
         {
             return Err(MinerError::Configure(format!("set_mining_key: {e}")));
@@ -218,7 +222,10 @@ pub async fn run(
                 continue;
             }
         };
-        if let Err(e) = client.enable_mining(true).await {
+        if let Err(e) = client
+            .enable_mining(AiPowMinerWire::Enable.to_wire(), true)
+            .await
+        {
             return Err(MinerError::Configure(format!(
                 "enable_mining(true): {e}"
             )));
@@ -309,7 +316,9 @@ pub async fn run(
             c.cancel();
             let _ = h.await;
         }
-        let _ = client.enable_mining(false).await;
+        let _ = client
+            .enable_mining(AiPowMinerWire::Enable.to_wire(), false)
+            .await;
 
         match inner_result {
             InnerOutcome::Shutdown => return Ok(()),

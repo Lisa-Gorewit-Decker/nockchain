@@ -600,7 +600,14 @@
     ::~&  "inner dumbnet cause: {<[-.cause -.+.cause]>}"
     =^  effs  k
       ?+    wir  ~|("Unsupported wire: {<wir>}" !!)
-          [%poke src=?(%nc %timer %sys %miner %grpc) ver=@ *]
+          [%poke src=?(%nc %timer %sys %zk-pow-miner %ai-pow-miner %grpc) ver=@ *]
+        ::  miner sources: the legacy `%miner` source is split into
+        ::  per-puzzle sources (`%zk-pow-miner`, `%ai-pow-miner`) so the
+        ::  kernel can route by source as well as by inner pow-variant
+        ::  tag (see `pow-variant` in lib/types.hoon). Both miner sources
+        ::  share the same command/fact dispatch path here; the inner
+        ::  pow-variant tag is what determines which puzzle verifier runs
+        ::  on a `%pow` command (see do-pow).
         ?-  -.cause
           %command  (handle-command now eny p.cause)
           %fact     (handle-fact wir eny our now p.cause)
@@ -1238,11 +1245,12 @@
         ~|  'liar-effect: ATTN: received a bad block or tx via grpc driver'
         !!
       ::
-          [%poke %miner *]
-        ::  this indicates that the mining module built a bad block and then
-        ::  told the kernel about it. alternatively, +do-genesis produced
-        ::  a bad genesis block. this should never happen, it indicates
-        ::  a serious bug otherwise.
+          [%poke ?(%zk-pow-miner %ai-pow-miner) *]
+        ::  this indicates that one of the miner modules built a bad block
+        ::  and then told the kernel about it. alternatively, +do-genesis
+        ::  produced a bad genesis block. this should never happen — it
+        ::  indicates a serious bug otherwise. The wire's second
+        ::  component identifies which miner produced the bad block.
         ~|  'liar-effect: ATTN: miner or +do-genesis produced a bad block!'
         !!
       ::
@@ -1365,7 +1373,11 @@
               ~(target get:page:t candidate-block.m.k)
             =.  m.k  (set-pow:min prf.pv.command)
             =.  m.k  set-digest:min
-            =^  heard-block-effs  k  (heard-block /poke/miner now candidate-block.m.k eny)
+            ::  Synthesize a `/poke/zk-pow-miner` wire for downstream
+            ::  accounting — the block was produced by the zk-pow-miner
+            ::  puzzle path. (A future %ai-pow arm in this `?-` would
+            ::  synthesize `/poke/ai-pow-miner` instead.)
+            =^  heard-block-effs  k  (heard-block /poke/zk-pow-miner now candidate-block.m.k eny)
             :_  k
             heard-block-effs
           [~ k]

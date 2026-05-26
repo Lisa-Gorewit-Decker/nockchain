@@ -5,6 +5,13 @@
 //! `watch_candidates`, and `submit_mined_block`. These are the four
 //! operations every external miner binary (ZK-PoW + AI-PoW) needs.
 //!
+//! Each typed helper takes a [`WireRepr`] argument so the caller can
+//! supply its own crate-specific wire vocabulary (e.g.
+//! `zk_pow_miner::ZkPowMinerWire` with `SOURCE = "zk-pow-miner"`, or
+//! `ai_pow_miner::wire::AiPowMinerWire` with `SOURCE = "ai-pow-miner"`).
+//! The shared substrate stays wire-agnostic; the kernel-side dispatcher
+//! in `hoon/apps/dumbnet/inner.hoon` routes by source.
+//!
 //! The candidate watcher decodes `%mine` effects from the server's
 //! `WatchEffects` stream into [`MiningCandidate`]. The pokes mirror
 //! the noun shapes the kernel-side Hoon expects — historically built
@@ -15,7 +22,7 @@ use std::pin::Pin;
 use futures::{Stream, StreamExt};
 use nockapp::noun::slab::NounSlab;
 use nockapp::noun::AtomExt;
-use nockapp::nockapp::wire::{Wire, WireRepr};
+use nockapp::nockapp::wire::WireRepr;
 use nockapp_grpc::private_nockapp::client::PrivateNockAppGrpcClient;
 use nockapp_grpc::wire_conversion::nockapp_wire_to_grpc;
 use nockvm::noun::{Atom, D, NO, T, YES};
@@ -25,7 +32,6 @@ use tracing::debug;
 
 use crate::candidate::{CandidateDecodeError, MiningCandidate};
 use crate::key_config::{MiningKeyConfig, MiningPkhConfig};
-use crate::wire::MiningWire;
 
 #[derive(Debug, Error)]
 pub enum NodeClientError {
@@ -63,10 +69,11 @@ impl NodeClient {
     /// Push the mining-reward configuration to the node's kernel.
     /// Same noun shape as the old in-process
     /// `set_mining_key_advanced(...)`: `[%command %set-mining-key-advanced
-    /// configs-list pkh-configs-list]`, sent on the `MiningWire::SetPubKey`
-    /// wire (`SOURCE="miner"`, `VERSION=1`).
+    /// configs-list pkh-configs-list]`. The caller supplies the wire
+    /// (typically `XPowMinerWire::SetPubKey.to_wire()` for their crate).
     pub async fn set_mining_key(
         &mut self,
+        wire: WireRepr,
         configs: Vec<MiningKeyConfig>,
         pkh_configs: Vec<MiningPkhConfig>,
     ) -> Result<(), NodeClientError> {
@@ -108,12 +115,18 @@ impl NodeClient {
         );
         slab.set_root(poke);
 
-        self.poke_wire(MiningWire::SetPubKey.to_wire(), slab).await
+        self.poke_wire(wire, slab).await
     }
 
     /// Toggle mining on / off. Same noun shape as the old in-process
-    /// `enable_mining(...)`: `[%command %enable-mining flag]`.
-    pub async fn enable_mining(&mut self, enable: bool) -> Result<(), NodeClientError> {
+    /// `enable_mining(...)`: `[%command %enable-mining flag]`. The
+    /// caller supplies the wire (typically
+    /// `XPowMinerWire::Enable.to_wire()` for their crate).
+    pub async fn enable_mining(
+        &mut self,
+        wire: WireRepr,
+        enable: bool,
+    ) -> Result<(), NodeClientError> {
         let mut slab = NounSlab::new();
         let enable_mining_atom = <Atom as AtomExt>::from_value(&mut slab, "enable-mining")
             .expect("enable-mining atom");
@@ -126,15 +139,21 @@ impl NodeClient {
             ],
         );
         slab.set_root(poke);
-        self.poke_wire(MiningWire::Enable.to_wire(), slab).await
+        self.poke_wire(wire, slab).await
     }
 
     /// Submit a mined block. The caller produces the same poke payload
     /// the in-process driver historically poked the main kernel with
     /// (the `poke` tail of a `%mine-result` success effect from the
-    /// miner kernel) — this just wraps the gRPC round-trip.
-    pub async fn submit_mined_block(&mut self, slab: NounSlab) -> Result<(), NodeClientError> {
-        self.poke_wire(MiningWire::Mined.to_wire(), slab).await
+    /// miner kernel) — this just wraps the gRPC round-trip. The caller
+    /// supplies the wire (typically `XPowMinerWire::Mined.to_wire()`
+    /// for their crate).
+    pub async fn submit_mined_block(
+        &mut self,
+        wire: WireRepr,
+        slab: NounSlab,
+    ) -> Result<(), NodeClientError> {
+        self.poke_wire(wire, slab).await
     }
 
     /// Subscribe to the node's `%mine` effects, decoded into
@@ -168,14 +187,12 @@ impl NodeClient {
         Ok(Box::pin(mapped) as CandidateStream)
     }
 
-    /// Send a poke on an arbitrary `WireRepr`. This is the underlying
+    /// Send a poke on an arbitrary [`WireRepr`]. This is the underlying
     /// gRPC operation; the typed helpers
     /// ([`set_mining_key`](Self::set_mining_key),
     /// [`enable_mining`](Self::enable_mining),
     /// [`submit_mined_block`](Self::submit_mined_block)) all delegate
-    /// here. Exposed so non-`MiningWire` callers (e.g. an AI-PoW miner
-    /// poking on `source = "ai-pow-miner"`) can submit through the same
-    /// client without rebuilding the gRPC plumbing.
+    /// here.
     pub async fn poke_wire(
         &mut self,
         wire: WireRepr,
