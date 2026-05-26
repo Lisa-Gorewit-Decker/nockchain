@@ -46,8 +46,10 @@ pub enum WorkerError {
 /// Outcome of one mining attempt.
 pub enum MineResult {
     /// The proof's digest cleared the target. `poke_slab` is the
-    /// `[%command %pow prf dig header nonce]` cause the caller pokes
-    /// the *node*'s main kernel with (via `MiningWire::Mined`).
+    /// `[%command %pow %dumb-zkpow prf dig header nonce]` cause the caller
+    /// pokes the *node*'s main kernel with (via `MiningWire::Mined`).
+    /// The `%dumb-zkpow` tag is the inner variant of the consensus kernel's
+    /// `pow-variant` tagged union (see hoon/apps/dumbnet/lib/types.hoon).
     /// `hash_slab` is the digest as a tip5 5-tuple atom (the natural
     /// next-nonce seed if the caller wants to keep mining on the same
     /// candidate after submitting).
@@ -219,16 +221,30 @@ mod tests {
             .as_noun()
     }
 
-    /// Build a synthetic %mine-result success effect list:
-    ///   `[[%mine-result %& [d1 d2 d3 d4 d5] [%command %pow 101]] 0]`
+    /// Build a synthetic %mine-result success effect list shaped like
+    /// what the production miner kernel emits post-Hoon-generalization:
+    ///   `[[%mine-result %& [d1 d2 d3 d4 d5] [%command %pow %dumb-zkpow 101]] 0]`
+    /// The decoder is shape-agnostic on the inner poke payload (it just
+    /// copies the cell out) — `101` is a placeholder for what would be
+    /// the prf/dig/header/nonce 4-tuple in production. The `%dumb-zkpow`
+    /// tag is the inner pow-variant discriminator.
     fn synth_success_effect_list() -> NounSlab {
         let mut slab = NounSlab::new();
         let head = mine_result_head(&mut slab);
         let yes = D(0); // %&
         let digest = T(&mut slab, &[D(11), D(22), D(33), D(44), D(55)]);
+        // `dumb-zkpow` is 10 bytes — too long for the 8-byte `tas!` macro.
+        let dumb_zkpow_tag = <Atom as AtomExt>::from_value(&mut slab, "dumb-zkpow")
+            .expect("dumb-zkpow atom")
+            .as_noun();
         let poke = T(
             &mut slab,
-            &[D(tas!(b"command")), D(tas!(b"pow")), D(101)],
+            &[
+                D(tas!(b"command")),
+                D(tas!(b"pow")),
+                dumb_zkpow_tag,
+                D(101),
+            ],
         );
         let success_tail = T(&mut slab, &[yes, digest, poke]);
         let effect = T(&mut slab, &[head, success_tail]);
