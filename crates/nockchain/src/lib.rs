@@ -405,10 +405,14 @@ pub async fn init_with_kernel<J: Jammer + Send + 'static>(
             fakenet_constants = fakenet_constants.with_bythos_phase(bythos_phase);
         }
         if let Some(asert) = cli.fakenet_asert.into_config()? {
-            fakenet_constants = fakenet_constants
-                .with_asert_phase(asert.phase)
-                .with_asert_anchor_height(asert.anchor_height)
-                .with_asert_anchor_target_bex(asert.anchor_target_bex);
+            // CLI overrides apply to the ZK puzzle's ASERT. AI puzzle's
+            // ASERT stays at defaults until/unless we add dedicated
+            // `--fakenet-ai-asert-*` flags.
+            let mut zk_asert = fakenet_constants.zk_asert.clone();
+            zk_asert.phase = asert.phase;
+            zk_asert.anchor_height = asert.anchor_height;
+            zk_asert.anchor_target_atom = ibig::UBig::from(1u64) << (asert.anchor_target_bex as usize);
+            fakenet_constants = fakenet_constants.with_zk_asert(zk_asert);
         }
         setup::poke(
             &mut nockapp,

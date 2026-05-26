@@ -289,20 +289,20 @@
       =/  parent-min-ts=@
         (~(got z-by min-timestamps.c) u.heaviest-block.c)
       ::  resolve the anchor's median-of-11 by walking .blocks back from
-      ::  heaviest to the ancestor at asert-anchor-height (shared helper
+      ::  heaviest to the ancestor at zk-asert-anchor-height (shared helper
       ::  in /lib/consensus). replaced by a hardcoded protocol constant
       ::  post-65500 (phase 2 of 014-aletheia).
       =/  anchor-min-ts=@
         (~(find-anchor-min-ts dcon c blockchain-constants) u.heaviest-block.c)
       %-  chunk:bignum:t
       %-  compute-target:asert
-      :*  asert-anchor-target-atom.blockchain-constants
+      :*  anchor-target-atom.zk-asert.blockchain-constants
           anchor-min-ts
-          asert-anchor-height.blockchain-constants
+          anchor-height.zk-asert.blockchain-constants
           parent-min-ts
           candidate-height
-          asert-ideal-block-time.blockchain-constants
-          asert-half-life.blockchain-constants
+          ideal-block-time.zk-asert.blockchain-constants
+          half-life.zk-asert.blockchain-constants
           max-target-atom:t
       ==
     (~(got z-by targets.c) u.heaviest-block.c)
@@ -313,9 +313,9 @@
       ::    otherwise use v1 new-candidate with v1 shares
       ?:  (lth +(height.parent) v1-phase.blockchain-constants)
         (new-candidate:v0:page:t parent now candidate-target v0-shares.m)
-      (new-candidate:page:t parent now candidate-target shares.m asert-phase.blockchain-constants)
+      (new-candidate:page:t parent now candidate-target shares.m phase.zk-asert.blockchain-constants)
     ::  v1 parent - use v1 new-candidate with v1 shares
-    (new-candidate:page:t parent now candidate-target shares.m asert-phase.blockchain-constants)
+    (new-candidate:page:t parent now candidate-target shares.m phase.zk-asert.blockchain-constants)
   =.  candidate-acc.m
     %+  new:tx-acc:t
       (~(get z-by balance.c) u.heaviest-block.c)

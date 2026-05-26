@@ -105,7 +105,7 @@
 ::
 ::  kernel-state-7 has the same shape as kernel-state-6 but tracks the
 ::  schema change in blockchain-constants:v1 itself: five ASERT fields
-::  (asert-phase, anchor-height, anchor-target-atom, ideal-block-time,
+::  (zk-asert-phase, anchor-height, anchor-target-atom, ideal-block-time,
 ::  half-life) were appended to the v1 wrapper in tx-engine-1.hoon.
 ::  rbits is hardcoded in lib/asert.hoon and is not a constants field.
 ::  The state-6-to-7 upgrade fills those five fields from defaults while

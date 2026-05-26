@@ -59,6 +59,70 @@ pub struct NoteDataConstraints {
     pub min_fee: u64,
 }
 
+/// Aserti3-2d difficulty adjustment parameters — one instance per
+/// puzzle. Mirrors the Hoon `+$ zk-asert` / `+$ ai-asert` types in
+/// `hoon/common/tx-engine-1.hoon`: same field shape, each carries its
+/// own defaults at the type level.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AsertParams {
+    pub phase: u64,
+    pub anchor_height: u64,
+    pub anchor_target_atom: UBig,
+    pub ideal_block_time: u64,
+    pub half_life: u64,
+}
+
+impl AsertParams {
+    /// Defaults for the ZK puzzle ASERT, matching `+$ zk-asert`'s `$~`
+    /// clause in `hoon/common/tx-engine-1.hoon`.
+    pub fn zk_default() -> Self {
+        Self {
+            phase: 65_500,
+            anchor_height: 65_499,
+            anchor_target_atom: UBig::from(1u64) << 291,
+            // 5-min target per ZK block. Bumped from 150s post-AI-PoW design:
+            // each puzzle targets 5 min independently so the chain averages
+            // 2.5 min globally once both puzzles produce blocks.
+            ideal_block_time: 300,
+            half_life: 12 * 60 * 60,
+        }
+    }
+
+    /// Defaults for the AI puzzle ASERT, matching `+$ ai-asert`'s `$~`
+    /// clause. By default phase = anchor-height = ai-pow-activation-height
+    /// so the first AI block becomes the AI puzzle's anchor.
+    pub fn ai_default() -> Self {
+        Self {
+            phase: BlockchainConstants::DEFAULT_AI_POW_ACTIVATION_HEIGHT,
+            anchor_height: BlockchainConstants::DEFAULT_AI_POW_ACTIVATION_HEIGHT,
+            anchor_target_atom: UBig::from(1u64) << 291,
+            ideal_block_time: 300,
+            half_life: 12 * 60 * 60,
+        }
+    }
+}
+
+impl NounEncode for AsertParams {
+    fn to_noun<A: NounAllocator>(&self, allocator: &mut A) -> Noun {
+        let phase = Atom::new(allocator, self.phase).as_noun();
+        let anchor_height = Atom::new(allocator, self.anchor_height).as_noun();
+        let anchor_target_atom =
+            Atom::from_ubig(allocator, &self.anchor_target_atom).as_noun();
+        let ideal_block_time = Atom::new(allocator, self.ideal_block_time).as_noun();
+        let half_life = Atom::new(allocator, self.half_life).as_noun();
+        T(
+            allocator,
+            &[
+                phase,
+                anchor_height,
+                anchor_target_atom,
+                ideal_block_time,
+                half_life,
+            ],
+        )
+    }
+}
+
 /// Shared blockchain constants model used for explicit kernel constants pokes.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BlockchainConstants {
@@ -80,11 +144,13 @@ pub struct BlockchainConstants {
     pub note_data: NoteDataConstraints,
     pub base_fee: u64,
     pub input_fee_divisor: u64,
-    pub asert_phase: u64,
-    pub asert_anchor_height: u64,
-    pub asert_anchor_target_atom: UBig,
-    pub asert_ideal_block_time: u64,
-    pub asert_half_life: u64,
+    pub zk_asert: AsertParams,
+    /// At and after this height, the kernel's `do-pow` accepts `%ai-pow`
+    /// variants. Pre-activation, `%ai-pow` is rejected outright.
+    /// Post-activation the verifier is a hardcoded stub-reject in the
+    /// kernel until the deferred-task real verifier lands.
+    pub ai_pow_activation_height: u64,
+    pub ai_asert: AsertParams,
 }
 
 impl BlockchainConstants {
@@ -109,11 +175,7 @@ impl BlockchainConstants {
     pub const DEFAULT_NOTE_DATA_MIN_FEE: u64 = 256;
     pub const DEFAULT_BASE_FEE: u64 = 16_384;
     pub const DEFAULT_INPUT_FEE_DIVISOR: u64 = 4;
-    pub const DEFAULT_ASERT_PHASE: u64 = 65_500;
-    pub const DEFAULT_ASERT_ANCHOR_HEIGHT: u64 = 65_499;
-    pub const DEFAULT_ASERT_ANCHOR_TARGET_BEX: u64 = 291;
-    pub const DEFAULT_ASERT_IDEAL_BLOCK_TIME: u64 = 150;
-    pub const DEFAULT_ASERT_HALF_LIFE: u64 = 43_200;
+    pub const DEFAULT_AI_POW_ACTIVATION_HEIGHT: u64 = 95_000;
 
     pub fn new() -> Self {
         let max_target_atom = UBig::from_str_with_radix_prefix(Self::DEFAULT_MAX_TIP5_ATOM)
@@ -121,8 +183,6 @@ impl BlockchainConstants {
         let genesis_target_atom =
             UBig::from_str_with_radix_prefix(Self::DEFAULT_GENESIS_TARGET_ATOM)
                 .expect("Failed to parse genesis target atom");
-        let asert_anchor_target_atom =
-            UBig::from(1u64) << (Self::DEFAULT_ASERT_ANCHOR_TARGET_BEX as usize);
 
         Self {
             max_block_size: Self::DEFAULT_MAX_BLOCK_SIZE,
@@ -147,11 +207,9 @@ impl BlockchainConstants {
             },
             base_fee: Self::DEFAULT_BASE_FEE,
             input_fee_divisor: Self::DEFAULT_INPUT_FEE_DIVISOR,
-            asert_phase: Self::DEFAULT_ASERT_PHASE,
-            asert_anchor_height: Self::DEFAULT_ASERT_ANCHOR_HEIGHT,
-            asert_anchor_target_atom,
-            asert_ideal_block_time: Self::DEFAULT_ASERT_IDEAL_BLOCK_TIME,
-            asert_half_life: Self::DEFAULT_ASERT_HALF_LIFE,
+            zk_asert: AsertParams::zk_default(),
+            ai_pow_activation_height: Self::DEFAULT_AI_POW_ACTIVATION_HEIGHT,
+            ai_asert: AsertParams::ai_default(),
         }
     }
 
@@ -197,23 +255,18 @@ impl BlockchainConstants {
         self
     }
 
-    pub fn with_asert_phase(mut self, asert_phase: u64) -> Self {
-        self.asert_phase = asert_phase;
+    pub fn with_zk_asert(mut self, zk_asert: AsertParams) -> Self {
+        self.zk_asert = zk_asert;
         self
     }
 
-    pub fn with_asert_anchor_height(mut self, asert_anchor_height: u64) -> Self {
-        self.asert_anchor_height = asert_anchor_height;
+    pub fn with_ai_asert(mut self, ai_asert: AsertParams) -> Self {
+        self.ai_asert = ai_asert;
         self
     }
 
-    pub fn with_asert_anchor_target_atom(mut self, asert_anchor_target_atom: UBig) -> Self {
-        self.asert_anchor_target_atom = asert_anchor_target_atom;
-        self
-    }
-
-    pub fn with_asert_anchor_target_bex(mut self, bex: u64) -> Self {
-        self.asert_anchor_target_atom = UBig::from(1u64) << (bex as usize);
+    pub fn with_ai_pow_activation_height(mut self, h: u64) -> Self {
+        self.ai_pow_activation_height = h;
         self
     }
 
@@ -253,39 +306,18 @@ impl Default for BlockchainConstants {
 
 impl NounEncode for BlockchainConstants {
     fn to_noun<A: NounAllocator>(&self, allocator: &mut A) -> Noun {
-        // blockchain-constants:v1 from `hoon/common/tx-engine-1.hoon:208–263`.
-        // The Hoon $: is an 11-slot record:
+        // blockchain-constants:v1 — current Hoon shape per
+        // `hoon/common/tx-engine-1.hoon`. 9-slot right-fold:
         //
-        //     $:  v1-phase=@                       ::  slot 1
-        //         bythos-phase=@                   ::  slot 2
-        //         data=[max-size=@ min-fee=@]      ::  slot 3 (2-cell)
-        //         base-fee=@                       ::  slot 4
-        //         input-fee-divisor=@              ::  slot 5
-        //         blockchain-constants:v0          ::  slot 6 (13-tuple sub-cell)
-        //         asert-phase=@                    ::  slot 7
-        //         asert-anchor-height=@            ::  slot 8
-        //         asert-anchor-target-atom=@       ::  slot 9
-        //         asert-ideal-block-time=@         ::  slot 10
-        //         asert-half-life=@                ::  slot 11
-        //     ==
-        //
-        // Right-folded into a single noun:
-        //   [v1-phase [bythos-phase [data [base-fee [input-fee-divisor
-        //    [v0-13-tuple [asert-phase [asert-anchor-height
-        //    [asert-anchor-target [asert-ideal asert-half]]]]]]]]]]
-        //
-        // Confirmed empirically by the wallet's `PlannerBlockchainConstantsNoun`
-        // (crates/nockchain-wallet/src/create_tx.rs), which decodes 5 v1-prefix
-        // slots followed by `_legacy_constants = [v0_constants asert_block]` —
-        // i.e. the right-fold of slots 6..11 where slot 6 is the v0 sub-cell.
-        //
-        // History: the pre-rebuild legacy `assets/dumb.jam` (commit fccde2a,
-        // 2025-11-20, PRE-Bythos and PRE-ASERT) expected a 4-tuple
-        // [v1_phase note_data base_fee v0_constants]. Commit 794dfa9 patched
-        // this encoder to that shape to unblock fakenet on the legacy jam.
-        // After rebuilding the jam from current Hoon source (commit f495f43
-        // %pow tagged-union work), the kernel now expects the 11-slot shape
-        // again — this revert restores it.
+        //   slot 1: v1-phase
+        //   slot 2: bythos-phase
+        //   slot 3: data sub-cell [max-size min-fee]
+        //   slot 4: base-fee
+        //   slot 5: input-fee-divisor
+        //   slot 6: blockchain-constants:v0 (13-atom sub-cell)
+        //   slot 7: zk-asert sub-cell (5-atom right-fold; see AsertParams)
+        //   slot 8: ai-pow-activation-height
+        //   slot 9: ai-asert sub-cell (5-atom right-fold)
         let v1_phase = Atom::new(allocator, self.v1_phase).as_noun();
         let bythos_phase = Atom::new(allocator, self.bythos_phase).as_noun();
         let note_data = self.note_data.to_noun(allocator);
@@ -293,12 +325,10 @@ impl NounEncode for BlockchainConstants {
         let input_fee_divisor = Atom::new(allocator, self.input_fee_divisor).as_noun();
         let v0_fields = self.to_blockchain_constants_v0_fields(allocator);
         let v0_constants = T(allocator, &v0_fields);
-        let asert_phase = Atom::new(allocator, self.asert_phase).as_noun();
-        let asert_anchor_height = Atom::new(allocator, self.asert_anchor_height).as_noun();
-        let asert_anchor_target_atom =
-            Atom::from_ubig(allocator, &self.asert_anchor_target_atom).as_noun();
-        let asert_ideal_block_time = Atom::new(allocator, self.asert_ideal_block_time).as_noun();
-        let asert_half_life = Atom::new(allocator, self.asert_half_life).as_noun();
+        let zk_asert = self.zk_asert.to_noun(allocator);
+        let ai_pow_activation_height =
+            Atom::new(allocator, self.ai_pow_activation_height).as_noun();
+        let ai_asert = self.ai_asert.to_noun(allocator);
 
         T(
             allocator,
@@ -309,11 +339,9 @@ impl NounEncode for BlockchainConstants {
                 base_fee,
                 input_fee_divisor,
                 v0_constants,
-                asert_phase,
-                asert_anchor_height,
-                asert_anchor_target_atom,
-                asert_ideal_block_time,
-                asert_half_life,
+                zk_asert,
+                ai_pow_activation_height,
+                ai_asert,
             ],
         )
     }
@@ -373,122 +401,112 @@ mod tests {
         len
     }
 
-    /// Asserts that `BlockchainConstants::to_noun()` produces the 11-slot
-    /// right-fold matching `blockchain-constants:v1` in current Hoon source
-    /// (`hoon/common/tx-engine-1.hoon:208–263`):
-    ///
-    ///     [v1-phase bythos-phase data base-fee input-fee-divisor
-    ///      v0-sub-cell asert-phase asert-anchor-height
-    ///      asert-anchor-target-atom asert-ideal-block-time asert-half-life]
-    ///
-    /// Slot 3 (`data`) is a `[max-size min-fee]` sub-cell. Slot 6
-    /// (`blockchain-constants:v0`) is a 13-atom right-fold sub-cell.
-    /// Regression test for the jam rebuild after commit f495f43 (%pow
-    /// tagged-union work) which exposed the schema drift between current
-    /// Hoon source and the previous legacy-jam-targeting 4-tuple encoder.
-    #[test]
-    fn to_noun_matches_current_hoon_source_shape() {
-        let constants = default_fakenet_blockchain_constants();
+    /// Walk an `AsertParams` sub-cell (5-atom right-fold) and check each
+    /// field matches the expected `AsertParams` value.
+    fn assert_asert_subcell(noun: Noun, expected: &AsertParams) {
+        // slot 1 of 5: phase
+        let c1 = noun.as_cell().expect("asert sub-cell is a cell");
+        assert_eq!(
+            c1.head().as_atom().unwrap().as_u64().unwrap(),
+            expected.phase,
+            "asert.phase"
+        );
+        // slot 2: anchor-height
+        let c2 = c1.tail().as_cell().expect("c2");
+        assert_eq!(
+            c2.head().as_atom().unwrap().as_u64().unwrap(),
+            expected.anchor_height,
+            "asert.anchor_height"
+        );
+        // slot 3: anchor-target-atom (big atom; just confirm shape)
+        let c3 = c2.tail().as_cell().expect("c3");
+        assert!(c3.head().is_atom(), "asert.anchor_target_atom is atom");
+        // slot 4: ideal-block-time
+        let c4 = c3.tail().as_cell().expect("c4");
+        assert_eq!(
+            c4.head().as_atom().unwrap().as_u64().unwrap(),
+            expected.ideal_block_time,
+            "asert.ideal_block_time"
+        );
+        // slot 5: half-life (terminal — sits in c4.tail as atom)
+        assert_eq!(
+            c4.tail().as_atom().unwrap().as_u64().unwrap(),
+            expected.half_life,
+            "asert.half_life"
+        );
+    }
+
+    /// Walk the BlockchainConstants noun shape: 9-slot right-fold
+    /// `[v1-phase bythos-phase data base-fee input-fee-divisor
+    ///   v0-sub-cell zk-asert-sub-cell ai-pow-activation-height
+    ///   ai-asert-sub-cell]`. The two ASERT sub-cells are 5-atom
+    /// right-folds (see `AsertParams::to_noun`).
+    fn assert_blockchain_constants_shape(constants: &BlockchainConstants) {
         let mut slab: NounSlab = NounSlab::new();
         let noun = constants.to_noun(&mut slab);
         slab.set_root(noun);
         let root = unsafe { *slab.root() };
 
-        // slot 1: v1_phase (fakenet = 1)
+        // slot 1: v1_phase
         let c1 = root.as_cell().expect("root is a cell");
         assert_eq!(
             c1.head().as_atom().unwrap().as_u64().unwrap(),
-            FAKENET_V1_PHASE,
+            constants.v1_phase,
             "slot 1 = v1_phase"
         );
-
-        // slot 2: bythos_phase (fakenet = 1)
-        let c2 = c1.tail().as_cell().expect("c2 cell");
+        // slot 2: bythos_phase
+        let c2 = c1.tail().as_cell().expect("c2");
         assert_eq!(
             c2.head().as_atom().unwrap().as_u64().unwrap(),
-            FAKENET_BYTHOS_PHASE,
+            constants.bythos_phase,
             "slot 2 = bythos_phase"
         );
-
         // slot 3: data sub-cell [max-size min-fee]
-        let c3 = c2.tail().as_cell().expect("c3 cell");
+        let c3 = c2.tail().as_cell().expect("c3");
         let nd = c3.head().as_cell().expect("data sub-cell");
         assert_eq!(
             nd.head().as_atom().unwrap().as_u64().unwrap(),
-            BlockchainConstants::DEFAULT_NOTE_DATA_MAX_SIZE,
-            "data.max_size"
+            constants.note_data.max_size,
         );
         assert_eq!(
             nd.tail().as_atom().unwrap().as_u64().unwrap(),
-            BlockchainConstants::DEFAULT_NOTE_DATA_MIN_FEE,
-            "data.min_fee"
+            constants.note_data.min_fee,
         );
-
         // slot 4: base_fee
-        let c4 = c3.tail().as_cell().expect("c4 cell");
+        let c4 = c3.tail().as_cell().expect("c4");
         assert_eq!(
             c4.head().as_atom().unwrap().as_u64().unwrap(),
-            FAKENET_BASE_FEE,
+            constants.base_fee,
             "slot 4 = base_fee"
         );
-
         // slot 5: input_fee_divisor
-        let c5 = c4.tail().as_cell().expect("c5 cell");
+        let c5 = c4.tail().as_cell().expect("c5");
         assert_eq!(
             c5.head().as_atom().unwrap().as_u64().unwrap(),
-            BlockchainConstants::DEFAULT_INPUT_FEE_DIVISOR,
+            constants.input_fee_divisor,
             "slot 5 = input_fee_divisor"
         );
-
         // slot 6: v0 sub-cell (13-atom right-fold)
-        let c6 = c5.tail().as_cell().expect("c6 cell");
+        let c6 = c5.tail().as_cell().expect("c6");
         let v0 = c6.head();
-        assert_eq!(
-            tuple_len(v0),
-            13,
-            "slot 6 = v0 must be a 13-atom right-fold"
-        );
-        let v0c = v0.as_cell().expect("v0 is a cell");
-        assert_eq!(
-            v0c.head().as_atom().unwrap().as_u64().unwrap(),
-            BlockchainConstants::DEFAULT_MAX_BLOCK_SIZE,
-            "v0 head = max-block-size"
-        );
-
-        // slot 7: asert_phase
-        let c7 = c6.tail().as_cell().expect("c7 cell");
-        assert_eq!(
-            c7.head().as_atom().unwrap().as_u64().unwrap(),
-            BlockchainConstants::DEFAULT_ASERT_PHASE,
-            "slot 7 = asert_phase"
-        );
-
-        // slot 8: asert_anchor_height
-        let c8 = c7.tail().as_cell().expect("c8 cell");
+        assert_eq!(tuple_len(v0), 13, "slot 6 = v0 13-atom right-fold");
+        // slot 7: zk-asert sub-cell
+        let c7 = c6.tail().as_cell().expect("c7");
+        assert_asert_subcell(c7.head(), &constants.zk_asert);
+        // slot 8: ai-pow-activation-height
+        let c8 = c7.tail().as_cell().expect("c8");
         assert_eq!(
             c8.head().as_atom().unwrap().as_u64().unwrap(),
-            BlockchainConstants::DEFAULT_ASERT_ANCHOR_HEIGHT,
-            "slot 8 = asert_anchor_height"
+            constants.ai_pow_activation_height,
+            "slot 8 = ai_pow_activation_height"
         );
+        // slot 9: ai-asert sub-cell (terminal — sits in c8.tail directly)
+        assert_asert_subcell(c8.tail(), &constants.ai_asert);
+    }
 
-        // slot 9: asert_anchor_target_atom (big atom, just check it's an atom)
-        let c9 = c8.tail().as_cell().expect("c9 cell");
-        assert!(c9.head().is_atom(), "slot 9 = asert_anchor_target_atom");
-
-        // slot 10: asert_ideal_block_time
-        let c10 = c9.tail().as_cell().expect("c10 cell");
-        assert_eq!(
-            c10.head().as_atom().unwrap().as_u64().unwrap(),
-            BlockchainConstants::DEFAULT_ASERT_IDEAL_BLOCK_TIME,
-            "slot 10 = asert_ideal_block_time"
-        );
-
-        // slot 11: asert_half_life (last; sits in c10.tail as an atom)
-        assert_eq!(
-            c10.tail().as_atom().unwrap().as_u64().unwrap(),
-            BlockchainConstants::DEFAULT_ASERT_HALF_LIFE,
-            "slot 11 = asert_half_life (right-fold terminal)"
-        );
+    #[test]
+    fn to_noun_matches_current_hoon_source_shape() {
+        assert_blockchain_constants_shape(&default_fakenet_blockchain_constants());
     }
 
     #[test]
@@ -560,24 +578,15 @@ mod tests {
         );
         assert_eq!(constants.base_fee, 16_384, "base-fee mismatch");
         assert_eq!(constants.input_fee_divisor, 4, "input-fee-divisor mismatch");
-        assert_eq!(constants.asert_phase, 65_500, "asert-phase mismatch");
+        // zk-asert defaults: 5-min target per block (post-AI-PoW design).
+        assert_eq!(constants.zk_asert, AsertParams::zk_default(), "zk-asert mismatch");
+        // ai-pow activation + ai-asert defaults.
         assert_eq!(
-            constants.asert_anchor_height, 65_499,
-            "asert-anchor-height mismatch"
+            constants.ai_pow_activation_height,
+            BlockchainConstants::DEFAULT_AI_POW_ACTIVATION_HEIGHT,
+            "ai-pow-activation-height mismatch"
         );
-        assert_eq!(
-            constants.asert_anchor_target_atom,
-            UBig::from(1u64) << 291,
-            "asert-anchor-target-atom mismatch"
-        );
-        assert_eq!(
-            constants.asert_ideal_block_time, 150,
-            "asert-ideal-block-time mismatch"
-        );
-        assert_eq!(
-            constants.asert_half_life, 43_200,
-            "asert-half-life mismatch"
-        );
+        assert_eq!(constants.ai_asert, AsertParams::ai_default(), "ai-asert mismatch");
     }
 
     #[test]
@@ -612,110 +621,41 @@ mod tests {
     }
 
     #[test]
-    fn with_asert_overrides_default() {
-        let constants = BlockchainConstants::new()
-            .with_asert_phase(10)
-            .with_asert_anchor_height(9)
-            .with_asert_anchor_target_bex(2);
-
-        assert_eq!(constants.asert_phase, 10);
-        assert_eq!(constants.asert_anchor_height, 9);
-        assert_eq!(constants.asert_anchor_target_atom, UBig::from(1u64) << 2);
+    fn with_zk_asert_overrides_default() {
+        let custom = AsertParams {
+            phase: 10,
+            anchor_height: 9,
+            anchor_target_atom: UBig::from(1u64) << 2,
+            ideal_block_time: 60,
+            half_life: 3_600,
+        };
+        let constants = BlockchainConstants::new().with_zk_asert(custom.clone());
+        assert_eq!(constants.zk_asert, custom);
     }
 
-    /// Asserts mainnet defaults (`BlockchainConstants::new()`) round-trip
-    /// through the 11-slot current-Hoon-source shape (see
-    /// [`to_noun_matches_current_hoon_source_shape`] for the slot map).
-    /// This is the mainnet-side companion to the fakenet test.
+    #[test]
+    fn with_ai_asert_overrides_default() {
+        let custom = AsertParams {
+            phase: 100,
+            anchor_height: 100,
+            anchor_target_atom: UBig::from(1u64) << 10,
+            ideal_block_time: 600,
+            half_life: 3_600,
+        };
+        let constants = BlockchainConstants::new().with_ai_asert(custom.clone());
+        assert_eq!(constants.ai_asert, custom);
+    }
+
+    #[test]
+    fn with_ai_pow_activation_height_overrides_default() {
+        let constants = BlockchainConstants::new().with_ai_pow_activation_height(123);
+        assert_eq!(constants.ai_pow_activation_height, 123);
+    }
+
+    /// Mainnet-side companion: `BlockchainConstants::new()` round-trips
+    /// through the same shape the fakenet test exercises.
     #[test]
     fn mainnet_defaults_encode_in_current_hoon_source_shape() {
-        let slab = BlockchainConstants::new().into_slab();
-        let root = unsafe { *slab.root() };
-
-        // slot 1: v1_phase = 39000
-        let c1 = root.as_cell().expect("outer cell");
-        assert_eq!(
-            c1.head().as_atom().unwrap().as_u64().unwrap(),
-            BlockchainConstants::DEFAULT_V1_PHASE,
-            "slot 1 = v1_phase"
-        );
-
-        // slot 2: bythos_phase = 54000
-        let c2 = c1.tail().as_cell().expect("c2 cell");
-        assert_eq!(
-            c2.head().as_atom().unwrap().as_u64().unwrap(),
-            BlockchainConstants::DEFAULT_BYTHOS_PHASE,
-            "slot 2 = bythos_phase"
-        );
-
-        // slot 3: data sub-cell [max-size min-fee]
-        let c3 = c2.tail().as_cell().expect("c3 cell");
-        let nd = c3.head().as_cell().expect("data sub-cell");
-        assert_eq!(
-            nd.head().as_atom().unwrap().as_u64().unwrap(),
-            BlockchainConstants::DEFAULT_NOTE_DATA_MAX_SIZE,
-        );
-        assert_eq!(
-            nd.tail().as_atom().unwrap().as_u64().unwrap(),
-            BlockchainConstants::DEFAULT_NOTE_DATA_MIN_FEE,
-        );
-
-        // slot 4: base_fee
-        let c4 = c3.tail().as_cell().expect("c4 cell");
-        assert_eq!(
-            c4.head().as_atom().unwrap().as_u64().unwrap(),
-            BlockchainConstants::DEFAULT_BASE_FEE,
-            "slot 4 = base_fee"
-        );
-
-        // slot 5: input_fee_divisor
-        let c5 = c4.tail().as_cell().expect("c5 cell");
-        assert_eq!(
-            c5.head().as_atom().unwrap().as_u64().unwrap(),
-            BlockchainConstants::DEFAULT_INPUT_FEE_DIVISOR,
-            "slot 5 = input_fee_divisor"
-        );
-
-        // slot 6: v0 sub-cell (13 atoms)
-        let c6 = c5.tail().as_cell().expect("c6 cell");
-        let v0 = c6.head();
-        assert_eq!(
-            tuple_len(v0),
-            13,
-            "slot 6 = v0 must be a 13-atom right-fold"
-        );
-        let v0c = v0.as_cell().expect("v0 cell");
-        assert_eq!(
-            v0c.head().as_atom().unwrap().as_u64().unwrap(),
-            BlockchainConstants::DEFAULT_MAX_BLOCK_SIZE,
-            "v0 head = max-block-size"
-        );
-
-        // slots 7..11: asert fields
-        let c7 = c6.tail().as_cell().expect("c7 cell");
-        assert_eq!(
-            c7.head().as_atom().unwrap().as_u64().unwrap(),
-            BlockchainConstants::DEFAULT_ASERT_PHASE,
-            "slot 7 = asert_phase"
-        );
-        let c8 = c7.tail().as_cell().expect("c8 cell");
-        assert_eq!(
-            c8.head().as_atom().unwrap().as_u64().unwrap(),
-            BlockchainConstants::DEFAULT_ASERT_ANCHOR_HEIGHT,
-            "slot 8 = asert_anchor_height"
-        );
-        let c9 = c8.tail().as_cell().expect("c9 cell");
-        assert!(c9.head().is_atom(), "slot 9 = asert_anchor_target_atom");
-        let c10 = c9.tail().as_cell().expect("c10 cell");
-        assert_eq!(
-            c10.head().as_atom().unwrap().as_u64().unwrap(),
-            BlockchainConstants::DEFAULT_ASERT_IDEAL_BLOCK_TIME,
-            "slot 10 = asert_ideal_block_time"
-        );
-        assert_eq!(
-            c10.tail().as_atom().unwrap().as_u64().unwrap(),
-            BlockchainConstants::DEFAULT_ASERT_HALF_LIFE,
-            "slot 11 = asert_half_life"
-        );
+        assert_blockchain_constants_shape(&BlockchainConstants::new());
     }
 }

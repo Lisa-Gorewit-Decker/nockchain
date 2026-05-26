@@ -38,8 +38,8 @@
     |^
     =.  k  ~>  %bout  (update-constants (check-checkpoints (state-n-to-7 arg)))
     =.  c.k  ~>  %bout  check-and-repair:con
-    ~|  %v1-phase-must-be-lte-asert-phase
-    ?>  (lte v1-phase.constants.k asert-phase.constants.k)
+    ~|  %v1-phase-must-be-lte-zk-asert-phase
+    ?>  (lte v1-phase.constants.k phase.zk-asert.constants.k)
     k
     ::  this arm should be renamed each state upgrade to state-n-to-[latest] and extended to loop through all upgrades
     ++  state-n-to-7
@@ -80,7 +80,7 @@
             =((hash:page-msg:t ~(msg get:local-page:t u.genesis)) realnet-genesis-msg:dk)
           %.n
         =(realnet-genesis-msg:dk msg-hash.u.genesis-seal.c.arg)
-      =/  phase  asert-phase:*blockchain-constants:t
+      =/  phase  phase.zk-asert:*blockchain-constants:t
       ?:  &(on-mainnet ?=(^ highest-block-height.d.arg) (gte u.highest-block-height.d.arg phase))
         ~>  %slog.[0 'FATAL: late-upgrade - mainnet chain crossed ASERT activation under pre-ASERT rules']
         !!

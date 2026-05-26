@@ -199,7 +199,7 @@
 ::    .child-height is the height the block is (or will be) at;
 ::    .parent-digest identifies its parent so we can read the parent's
 ::    median-of-11 from .min-timestamps (written during parent acceptance).
-::    callers must guarantee .child-height >= .asert-phase, which implies
+::    callers must guarantee .child-height >= .zk-asert-phase, which implies
 ::    the min-timestamps lookup succeeds and the height >= anchor invariant
 ::    holds. used both to validate an accepted page and to compute the
 ::    target for a candidate block still being constructed.
@@ -209,7 +209,7 @@
   =/  parent-min-ts=@
     (~(got z-by min-timestamps.c) parent-digest)
   ::  anchor-min-ts is derived by walking parent-digest through .blocks
-  ::  back to the ancestor at asert-anchor-height and reading its
+  ::  back to the ancestor at zk-asert-anchor-height and reading its
   ::  median-of-11 from .min-timestamps. fork-correct by construction
   ::  — every caller walks its own ancestry, with no shared mutable
   ::  cache that competing forks could diverge. replaced by a hardcoded
@@ -217,13 +217,13 @@
   =/  anchor-min-ts=@  (find-anchor-min-ts parent-digest)
   %-  chunk:bignum:t
   %-  compute-target:asert
-  :*  asert-anchor-target-atom.blockchain-constants
+  :*  anchor-target-atom.zk-asert.blockchain-constants
       anchor-min-ts
-      asert-anchor-height.blockchain-constants
+      anchor-height.zk-asert.blockchain-constants
       parent-min-ts
       child-height
-      asert-ideal-block-time.blockchain-constants
-      asert-half-life.blockchain-constants
+      ideal-block-time.zk-asert.blockchain-constants
+      half-life.zk-asert.blockchain-constants
       max-target-atom:t
   ==
 ::
@@ -518,7 +518,7 @@
   ::  Phase-gated v1 coinbase entry count. The +based:coinbase-split:v1
   ::  parser allows up to `max-coinbase-split + 1` entries to admit the
   ::  fund slot post-asert-activation, but pre-activation v1 blocks
-  ::  (v1-phase <= height < asert-phase) carry no fund slot and must
+  ::  (v1-phase <= height < zk-asert-phase) carry no fund slot and must
   ::  continue to cap at `max-coinbase-split` entries — matching the
   ::  legacy v0 rule. Without this gate, a miner could pre-activation
   ::  emit a 3-entry v1 coinbase that this branch accepts and stricter
@@ -582,11 +582,11 @@
   c
 ::
 ::  +find-anchor-min-ts: walk parent chain from .bid back to the block at
-::    asert-anchor-height, return that block's median-of-11 timestamp
+::    zk-asert-anchor-height, return that block's median-of-11 timestamp
 ::    from .min-timestamps.
 ::
 ::    callers must guarantee that .bid's block is in .blocks and has height
-::    >= asert-anchor-height. fork-correct because .blocks and
+::    >= zk-asert-anchor-height. fork-correct because .blocks and
 ::    .min-timestamps are keyed by digest, so each caller walks its own
 ::    ancestry with no shared mutable state that competing forks could
 ::    diverge. replaced by a hardcoded protocol constant post-65500
@@ -594,7 +594,7 @@
 ++  find-anchor-min-ts
   |=  bid=block-id:t
   ^-  @
-  =/  anchor-height=@  asert-anchor-height.blockchain-constants
+  =/  anchor-height=@  anchor-height.zk-asert.blockchain-constants
   =/  cur=page:t  (to-page:local-page:t (~(got z-by blocks.c) bid))
   |-
   ?:  =(~(height get:page:t cur) anchor-height)
