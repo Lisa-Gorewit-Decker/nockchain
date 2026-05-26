@@ -14,8 +14,12 @@
 //! - `NodeClient` (Stage 3) — high-level wrapper over
 //!   `PrivateNockAppGrpcClient`.
 
+pub mod candidate;
 pub mod key_config;
+pub mod node_client;
 pub mod wire;
 
+pub use candidate::{CandidateDecodeError, MiningCandidate};
 pub use key_config::{MiningKeyConfig, MiningPkhConfig};
+pub use node_client::{NodeClient, NodeClientError};
 pub use wire::MiningWire;

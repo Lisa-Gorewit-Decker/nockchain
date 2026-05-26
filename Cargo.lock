@@ -5842,8 +5842,15 @@ dependencies = [
 name = "nockchain-mining-common"
 version = "0.1.0"
 dependencies = [
+ "bytes",
+ "futures",
  "nockapp",
+ "nockapp-grpc",
+ "nockchain-math",
+ "nockvm",
+ "nockvm_macros",
  "thiserror 2.0.18",
+ "tokio",
  "tracing",
 ]
 
