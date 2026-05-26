@@ -11,7 +11,7 @@ use nockapp::save::SaveableCheckpoint;
 use nockapp::utils::NOCK_STACK_SIZE_TINY;
 use nockapp::wire::Wire;
 use nockapp::AtomExt;
-use nockchain::mining::MiningWire;
+use nockchain_mining_common::MiningWire;
 use nockchain_math::noun_ext::NounMathExt;
 use nockchain_math::structs::HoonList;
 use nockchain_types::BlockchainConstants;
