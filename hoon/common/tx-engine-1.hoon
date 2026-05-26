@@ -221,15 +221,35 @@
 ::    .half-life: real-time seconds of drift to halve or double.
 ::    rbits is hardcoded to 16 in lib/asert.hoon.
 ::
-::  ZK puzzle ASERT (puzzle-nock STARK). 300s ideal ⇒ 5 min average per
-::  ZK block. Post ai-pow activation, AI mining produces blocks in
-::  parallel, so the chain's global cadence averages ~2.5 min.
-::  anchor-target = 2^291 (pre-activation mainnet target);
-::  half-life = 12 hours.
+::  ZK puzzle ASERT, pre-AI-activation regime. 150s ideal ⇒ 2.5 min
+::  average per ZK block. This is the current (single-puzzle) mainnet
+::  cadence and stays in force for blocks in [65500, ai-pow-activation).
+::  anchor-target = 2^291; half-life = 12 hours.
 +$  zk-asert
   $+  zk-asert
   $~  :*  phase=65.500
           anchor-height=65.499
+          anchor-target-atom=^~((bex 291))
+          ideal-block-time=150
+          half-life=^~((mul 12 ^~((mul 60 60))))
+      ==
+  $:  phase=@
+      anchor-height=@
+      anchor-target-atom=@
+      ideal-block-time=@
+      half-life=@
+  ==
+::
+::  ZK puzzle ASERT, post-AI-activation regime. 300s ideal ⇒ 5 min
+::  average per ZK block. Active for blocks at and after
+::  ai-pow-activation-height — at the boundary, the ZK ASERT
+::  computation re-anchors at height (ai-pow-activation-height - 1)
+::  with anchor-target = 2^291. Combined with ai-asert (also 300s
+::  ideal), the chain averages 2.5 min globally.
++$  zk-asert-post-ai
+  $+  zk-asert-post-ai
+  $~  :*  phase=95.000
+          anchor-height=94.999
           anchor-target-atom=^~((bex 291))
           ideal-block-time=300
           half-life=^~((mul 12 ^~((mul 60 60))))
@@ -241,11 +261,11 @@
       half-life=@
   ==
 ::
-::  AI puzzle ASERT (matmul). Same field shape as zk-asert; distinct
-::  type so each carries its own defaults. By default
-::  phase = anchor-height = ai-pow-activation-height (the first block
-::  where AI mining can land becomes the AI puzzle's anchor); ASERT
-::  is well-defined from the second AI block onward.
+::  AI puzzle ASERT (matmul). Single regime — active from
+::  ai-pow-activation-height onward. By default phase = anchor-height =
+::  ai-pow-activation-height (the first block where AI mining can land
+::  becomes the AI puzzle's anchor); ASERT is well-defined from the
+::  second AI block onward.
 +$  ai-asert
   $+  ai-asert
   $~  :*  phase=95.000
@@ -275,8 +295,13 @@
           ::  divisor for input fees (inputs cost 1/divisor of outputs)
           input-fee-divisor=4
           *blockchain-constants:v0
-          ::  ZK ASERT defaults come from `+$ zk-asert`'s own $~ clause.
+          ::  ZK ASERT regime 1 (pre-AI-activation, 150s ideal).
           *zk-asert
+          ::  ZK ASERT regime 2 (post-AI-activation, 300s ideal).
+          ::  Active at and after ai-pow-activation-height. Per-puzzle
+          ::  compute-target picks between regimes based on candidate
+          ::  height vs zk-asert-post-ai.phase.
+          *zk-asert-post-ai
           ::  AI PoW activation. At or past this height the kernel's
           ::  do-pow accepts %ai-pow variants alongside %dumb-zkpow.
           ::  Pre-activation, %ai-pow is rejected outright.
@@ -294,6 +319,7 @@
       input-fee-divisor=@
       blockchain-constants:v0
       =zk-asert
+      =zk-asert-post-ai
       ::  AI PoW puzzle (cf hoon/apps/dumbnet/lib/types.hoon::pow-variant
       ::  for the wire side). %ai-pow blocks become valid at and after
       ::  ai-pow-activation-height. The verifier itself is a hardcoded

@@ -73,16 +73,29 @@ pub struct AsertParams {
 }
 
 impl AsertParams {
-    /// Defaults for the ZK puzzle ASERT, matching `+$ zk-asert`'s `$~`
-    /// clause in `hoon/common/tx-engine-1.hoon`.
+    /// Defaults for the ZK puzzle ASERT pre-AI-activation regime,
+    /// matching `+$ zk-asert`'s `$~` clause in
+    /// `hoon/common/tx-engine-1.hoon`. 150s ideal — current mainnet.
     pub fn zk_default() -> Self {
         Self {
             phase: 65_500,
             anchor_height: 65_499,
             anchor_target_atom: UBig::from(1u64) << 291,
-            // 5-min target per ZK block. Bumped from 150s post-AI-PoW design:
-            // each puzzle targets 5 min independently so the chain averages
-            // 2.5 min globally once both puzzles produce blocks.
+            ideal_block_time: 150,
+            half_life: 12 * 60 * 60,
+        }
+    }
+
+    /// Defaults for the ZK puzzle ASERT post-AI-activation regime,
+    /// matching `+$ zk-asert-post-ai`'s `$~` clause. 300s ideal — ZK
+    /// re-anchors at ai-pow-activation-height-1 with this regime so
+    /// each puzzle targets 5 min and the chain averages 2.5 min
+    /// globally once both puzzles produce blocks.
+    pub fn zk_post_ai_default() -> Self {
+        Self {
+            phase: BlockchainConstants::DEFAULT_AI_POW_ACTIVATION_HEIGHT,
+            anchor_height: BlockchainConstants::DEFAULT_AI_POW_ACTIVATION_HEIGHT - 1,
+            anchor_target_atom: UBig::from(1u64) << 291,
             ideal_block_time: 300,
             half_life: 12 * 60 * 60,
         }
@@ -145,6 +158,10 @@ pub struct BlockchainConstants {
     pub base_fee: u64,
     pub input_fee_divisor: u64,
     pub zk_asert: AsertParams,
+    /// ZK ASERT regime 2 — active at and after `ai_pow_activation_height`.
+    /// 300s ideal; the per-puzzle compute-target picks this regime over
+    /// `zk_asert` when candidate-height >= `zk_asert_post_ai.phase`.
+    pub zk_asert_post_ai: AsertParams,
     /// At and after this height, the kernel's `do-pow` accepts `%ai-pow`
     /// variants. Pre-activation, `%ai-pow` is rejected outright.
     /// Post-activation the verifier is a hardcoded stub-reject in the
@@ -208,6 +225,7 @@ impl BlockchainConstants {
             base_fee: Self::DEFAULT_BASE_FEE,
             input_fee_divisor: Self::DEFAULT_INPUT_FEE_DIVISOR,
             zk_asert: AsertParams::zk_default(),
+            zk_asert_post_ai: AsertParams::zk_post_ai_default(),
             ai_pow_activation_height: Self::DEFAULT_AI_POW_ACTIVATION_HEIGHT,
             ai_asert: AsertParams::ai_default(),
         }
@@ -260,6 +278,11 @@ impl BlockchainConstants {
         self
     }
 
+    pub fn with_zk_asert_post_ai(mut self, zk_asert_post_ai: AsertParams) -> Self {
+        self.zk_asert_post_ai = zk_asert_post_ai;
+        self
+    }
+
     pub fn with_ai_asert(mut self, ai_asert: AsertParams) -> Self {
         self.ai_asert = ai_asert;
         self
@@ -307,17 +330,18 @@ impl Default for BlockchainConstants {
 impl NounEncode for BlockchainConstants {
     fn to_noun<A: NounAllocator>(&self, allocator: &mut A) -> Noun {
         // blockchain-constants:v1 — current Hoon shape per
-        // `hoon/common/tx-engine-1.hoon`. 9-slot right-fold:
+        // `hoon/common/tx-engine-1.hoon`. 10-slot right-fold:
         //
-        //   slot 1: v1-phase
-        //   slot 2: bythos-phase
-        //   slot 3: data sub-cell [max-size min-fee]
-        //   slot 4: base-fee
-        //   slot 5: input-fee-divisor
-        //   slot 6: blockchain-constants:v0 (13-atom sub-cell)
-        //   slot 7: zk-asert sub-cell (5-atom right-fold; see AsertParams)
-        //   slot 8: ai-pow-activation-height
-        //   slot 9: ai-asert sub-cell (5-atom right-fold)
+        //   slot 1 : v1-phase
+        //   slot 2 : bythos-phase
+        //   slot 3 : data sub-cell [max-size min-fee]
+        //   slot 4 : base-fee
+        //   slot 5 : input-fee-divisor
+        //   slot 6 : blockchain-constants:v0 (13-atom sub-cell)
+        //   slot 7 : zk-asert sub-cell (regime 1, pre-AI: 150s ideal)
+        //   slot 8 : zk-asert-post-ai sub-cell (regime 2, post-AI: 300s ideal)
+        //   slot 9 : ai-pow-activation-height
+        //   slot 10: ai-asert sub-cell
         let v1_phase = Atom::new(allocator, self.v1_phase).as_noun();
         let bythos_phase = Atom::new(allocator, self.bythos_phase).as_noun();
         let note_data = self.note_data.to_noun(allocator);
@@ -326,6 +350,7 @@ impl NounEncode for BlockchainConstants {
         let v0_fields = self.to_blockchain_constants_v0_fields(allocator);
         let v0_constants = T(allocator, &v0_fields);
         let zk_asert = self.zk_asert.to_noun(allocator);
+        let zk_asert_post_ai = self.zk_asert_post_ai.to_noun(allocator);
         let ai_pow_activation_height =
             Atom::new(allocator, self.ai_pow_activation_height).as_noun();
         let ai_asert = self.ai_asert.to_noun(allocator);
@@ -340,6 +365,7 @@ impl NounEncode for BlockchainConstants {
                 input_fee_divisor,
                 v0_constants,
                 zk_asert,
+                zk_asert_post_ai,
                 ai_pow_activation_height,
                 ai_asert,
             ],
@@ -436,11 +462,11 @@ mod tests {
         );
     }
 
-    /// Walk the BlockchainConstants noun shape: 9-slot right-fold
+    /// Walk the BlockchainConstants noun shape: 10-slot right-fold
     /// `[v1-phase bythos-phase data base-fee input-fee-divisor
-    ///   v0-sub-cell zk-asert-sub-cell ai-pow-activation-height
-    ///   ai-asert-sub-cell]`. The two ASERT sub-cells are 5-atom
-    /// right-folds (see `AsertParams::to_noun`).
+    ///   v0-sub-cell zk-asert zk-asert-post-ai ai-pow-activation-height
+    ///   ai-asert]`. The three ASERT sub-cells are 5-atom right-folds
+    /// (see `AsertParams::to_noun`).
     fn assert_blockchain_constants_shape(constants: &BlockchainConstants) {
         let mut slab: NounSlab = NounSlab::new();
         let noun = constants.to_noun(&mut slab);
@@ -490,18 +516,21 @@ mod tests {
         let c6 = c5.tail().as_cell().expect("c6");
         let v0 = c6.head();
         assert_eq!(tuple_len(v0), 13, "slot 6 = v0 13-atom right-fold");
-        // slot 7: zk-asert sub-cell
+        // slot 7: zk-asert sub-cell (pre-AI regime)
         let c7 = c6.tail().as_cell().expect("c7");
         assert_asert_subcell(c7.head(), &constants.zk_asert);
-        // slot 8: ai-pow-activation-height
+        // slot 8: zk-asert-post-ai sub-cell (post-AI regime)
         let c8 = c7.tail().as_cell().expect("c8");
+        assert_asert_subcell(c8.head(), &constants.zk_asert_post_ai);
+        // slot 9: ai-pow-activation-height
+        let c9 = c8.tail().as_cell().expect("c9");
         assert_eq!(
-            c8.head().as_atom().unwrap().as_u64().unwrap(),
+            c9.head().as_atom().unwrap().as_u64().unwrap(),
             constants.ai_pow_activation_height,
-            "slot 8 = ai_pow_activation_height"
+            "slot 9 = ai_pow_activation_height"
         );
-        // slot 9: ai-asert sub-cell (terminal — sits in c8.tail directly)
-        assert_asert_subcell(c8.tail(), &constants.ai_asert);
+        // slot 10: ai-asert sub-cell (terminal — sits in c9.tail directly)
+        assert_asert_subcell(c9.tail(), &constants.ai_asert);
     }
 
     #[test]
@@ -578,8 +607,14 @@ mod tests {
         );
         assert_eq!(constants.base_fee, 16_384, "base-fee mismatch");
         assert_eq!(constants.input_fee_divisor, 4, "input-fee-divisor mismatch");
-        // zk-asert defaults: 5-min target per block (post-AI-PoW design).
+        // zk-asert defaults: 150s pre-AI (current mainnet);
+        // zk-asert-post-ai defaults: 300s post-AI activation.
         assert_eq!(constants.zk_asert, AsertParams::zk_default(), "zk-asert mismatch");
+        assert_eq!(
+            constants.zk_asert_post_ai,
+            AsertParams::zk_post_ai_default(),
+            "zk-asert-post-ai mismatch"
+        );
         // ai-pow activation + ai-asert defaults.
         assert_eq!(
             constants.ai_pow_activation_height,
