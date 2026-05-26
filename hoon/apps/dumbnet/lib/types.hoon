@@ -385,6 +385,12 @@
 +$  pow-variant
   $+  pow-variant
   $%  [%dumb-zkpow prf=proof:sp dig=tip5-hash-atom:zeke bc=noun-digest:tip5:zeke nonce=noun-digest:tip5:zeke]  ::  the existing puzzle-nock STARK PoW
+      ::  AI matmul PoW (active at and after ai-pow-activation-height).
+      ::  STUB PAYLOAD — the real serialization is deferred-task work.
+      ::  This single-atom placeholder lets the activation gate + the
+      ::  pow-variant dispatch land first; the deferred task replaces
+      ::  `placeholder=@` with the real fields the AI verifier reads.
+      [%ai-pow placeholder=@]
   ==
 ::
 +$  command

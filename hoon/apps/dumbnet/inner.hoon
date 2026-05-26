@@ -1377,9 +1377,7 @@
       ++  do-pow
         ^-  [(list effect:dk) kernel-state:dk]
         ?>  ?=([%pow *] command)
-        ::  Dispatch on the inner pow-variant tag. New variants get
-        ::  their own arms here; the outer %command/%pow envelope is
-        ::  shared across all puzzle types.
+        ::  Dispatch on the inner pow-variant tag.
         ?-    -.pv.command
             %dumb-zkpow
           =/  commit=block-commitment:t
@@ -1391,13 +1389,28 @@
               ~(target get:page:t candidate-block.m.k)
             =.  m.k  (set-pow:min prf.pv.command)
             =.  m.k  set-digest:min
-            ::  Synthesize a `/poke/zk-pow-miner` wire for downstream
-            ::  accounting — the block was produced by the zk-pow-miner
-            ::  puzzle path. (A future %ai-pow arm in this `?-` would
-            ::  synthesize `/poke/ai-pow-miner` instead.)
+            ::  Synthesize a `/poke/zk-pow-miner` wire — the block was
+            ::  produced by the zk-pow-miner puzzle path.
             =^  heard-block-effs  k  (heard-block /poke/zk-pow-miner now candidate-block.m.k eny)
             :_  k
             heard-block-effs
+          [~ k]
+        ::
+            %ai-pow
+          ::  Activation gate: AI puzzle is invalid for any block whose
+          ::  height is below ai-pow-activation-height. Reject silently
+          ::  (no liar-effect — this is a misconfigured miner, not a
+          ::  bad-faith block proposer).
+          =/  candidate-height  ~(height get:page:t candidate-block.m.k)
+          ?:  (lth candidate-height ai-pow-activation-height.constants.k)
+            ~>  %slog.[1 'do-pow: %ai-pow pre-activation; rejected']
+            [~ k]
+          ::  Post-activation: STUB verifier. The deferred-task work
+          ::  replaces this branch with the real ai-pow verifier
+          ::  (proof decode + target check + ai-puzzle STARK verify).
+          ::  Until then, all %ai-pow submissions are rejected — even
+          ::  post-activation, no AI block can land.
+          ~>  %slog.[1 'do-pow: %ai-pow verifier stub — reject-all until real verifier lands']
           [~ k]
         ==
       ::
