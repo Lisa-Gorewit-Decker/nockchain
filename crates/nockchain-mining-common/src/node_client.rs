@@ -15,7 +15,7 @@ use std::pin::Pin;
 use futures::{Stream, StreamExt};
 use nockapp::noun::slab::NounSlab;
 use nockapp::noun::AtomExt;
-use nockapp::nockapp::wire::Wire;
+use nockapp::nockapp::wire::{Wire, WireRepr};
 use nockapp_grpc::private_nockapp::client::PrivateNockAppGrpcClient;
 use nockapp_grpc::wire_conversion::nockapp_wire_to_grpc;
 use nockvm::noun::{Atom, D, NO, T, YES};
@@ -108,7 +108,7 @@ impl NodeClient {
         );
         slab.set_root(poke);
 
-        self.poke(MiningWire::SetPubKey, slab).await
+        self.poke_wire(MiningWire::SetPubKey.to_wire(), slab).await
     }
 
     /// Toggle mining on / off. Same noun shape as the old in-process
@@ -126,7 +126,7 @@ impl NodeClient {
             ],
         );
         slab.set_root(poke);
-        self.poke(MiningWire::Enable, slab).await
+        self.poke_wire(MiningWire::Enable.to_wire(), slab).await
     }
 
     /// Submit a mined block. The caller produces the same poke payload
@@ -134,7 +134,7 @@ impl NodeClient {
     /// (the `poke` tail of a `%mine-result` success effect from the
     /// miner kernel) — this just wraps the gRPC round-trip.
     pub async fn submit_mined_block(&mut self, slab: NounSlab) -> Result<(), NodeClientError> {
-        self.poke(MiningWire::Mined, slab).await
+        self.poke_wire(MiningWire::Mined.to_wire(), slab).await
     }
 
     /// Subscribe to the node's `%mine` effects, decoded into
@@ -168,9 +168,20 @@ impl NodeClient {
         Ok(Box::pin(mapped) as CandidateStream)
     }
 
-    async fn poke(&mut self, wire: MiningWire, slab: NounSlab) -> Result<(), NodeClientError> {
-        let wire_repr = wire.to_wire();
-        let grpc_wire = nockapp_wire_to_grpc(&wire_repr);
+    /// Send a poke on an arbitrary `WireRepr`. This is the underlying
+    /// gRPC operation; the typed helpers
+    /// ([`set_mining_key`](Self::set_mining_key),
+    /// [`enable_mining`](Self::enable_mining),
+    /// [`submit_mined_block`](Self::submit_mined_block)) all delegate
+    /// here. Exposed so non-`MiningWire` callers (e.g. an AI-PoW miner
+    /// poking on `source = "ai-pow-miner"`) can submit through the same
+    /// client without rebuilding the gRPC plumbing.
+    pub async fn poke_wire(
+        &mut self,
+        wire: WireRepr,
+        slab: NounSlab,
+    ) -> Result<(), NodeClientError> {
+        let grpc_wire = nockapp_wire_to_grpc(&wire);
         let payload = slab.jam().to_vec();
         let acked = self.client.poke(DEFAULT_PID, grpc_wire, payload).await?;
         if !acked {

@@ -10,19 +10,42 @@ name = "ai_pow_miner"
 path = "src/lib.rs"
 
 [[bin]]
+# Production node-connecting miner. Mirrors `zk-pow-mine` in shape:
+# connects to a `nockchain` node's private gRPC, subscribes to %mine
+# effects, runs the AI-PoW prover, and submits %mined back.
 name = "ai-pow-mine"
 path = "src/bin/ai_pow_mine.rs"
+required-features = ["node"]
 
 [[bin]]
-name = "ai-pow-mine-driver-test"
-path = "src/bin/ai_pow_mine_driver_test.rs"
-required-features = ["nockapp"]
+# Prover-only smoke CLI. Runs `mining::run` against a synthetic /
+# file-provided puzzle without any node connection — useful for
+# benchmark capture and replaying captured candidates in a shell.
+# Has no `zk-pow-miner` analog because the ZK PoW STARK prover needs
+# a kernel SerfThread which only makes sense in the gRPC context.
+name = "ai-pow-mine-prover"
+path = "src/bin/ai_pow_mine_prover.rs"
 
 [features]
 default = []
-# NockApp driver + the driver-test binary. Off by default so a bare
-# library/CLI user doesn't pull the nockapp dep tree.
-nockapp = ["dep:nockapp", "dep:nockvm", "dep:nockvm_macros", "dep:tokio", "dep:gnort"]
+# Out-of-process node-connecting integration: pulls in the gRPC +
+# nockapp stack so `src/run.rs` + `src/wire.rs` + the
+# `ai-pow-mine` binary build. The bare crate (no features) keeps
+# `mining::run` + the prover-only smoke binary buildable without
+# the gRPC tree, which is handy for benchmarks and library users.
+node = [
+    "dep:nockapp",
+    "dep:nockvm",
+    "dep:nockvm_macros",
+    "dep:tokio",
+    "dep:gnort",
+    "dep:nockchain-mining-common",
+    "dep:nockapp-grpc",
+    "dep:futures",
+    "dep:tokio-util",
+    "dep:tracing-subscriber",
+    "dep:num_cpus",
+]
 
 [dependencies]
 ai-pow = { path = "../ai-pow", features = ["zk"] }
@@ -33,11 +56,18 @@ hex = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
 
-# nockapp feature
+# `node` feature (out-of-process gRPC integration).
+futures = { workspace = true, optional = true }
 gnort = { workspace = true, optional = true }
 nockapp = { path = "../nockapp", optional = true }
+nockapp-grpc = { workspace = true, optional = true }
+nockchain-mining-common = { workspace = true, optional = true }
 nockvm = { workspace = true, optional = true }
 nockvm_macros = { workspace = true, optional = true }
-tokio = { workspace = true, optional = true, features = ["rt-multi-thread", "macros", "sync", "time"] }
+num_cpus = { workspace = true, optional = true }
+tokio = { workspace = true, optional = true, features = ["rt-multi-thread", "macros", "sync", "time", "signal"] }
+tokio-util = { workspace = true, optional = true }
+tracing-subscriber = { workspace = true, optional = true, features = ["env-filter", "ansi"] }
 
 [dev-dependencies]
+once_cell = { workspace = true }

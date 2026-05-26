@@ -254,8 +254,16 @@ impl MiningCancel {
 
 pub mod mining;
 
-#[cfg(feature = "nockapp")]
-pub mod nockapp_driver;
+/// Wire vocabulary (`AiPowMinerWire`, `SOURCE = "ai-pow-miner"`). Behind
+/// the `node` feature because it implements `nockapp::wire::Wire`.
+#[cfg(feature = "node")]
+pub mod wire;
+
+/// Out-of-process node-connecting run loop ([`run::run`]) — the
+/// production entry point used by the `ai-pow-mine` binary. Behind the
+/// `node` feature because it pulls in the gRPC + nockapp dep tree.
+#[cfg(feature = "node")]
+pub mod run;
 
 // ─────────────────────────────────── tests ──────────────────────────────────
 

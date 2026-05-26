@@ -1,55 +1,70 @@
-//! `ai-pow-mine` — single-attempt mining CLI for the `ai-pow` PoW.
+//! `ai-pow-mine` — standalone AI-PoW (matmul puzzle) block miner.
 //!
-//! The minimal entry point on top of `ai_pow_miner::mining::run`.
-//! Useful for smoke tests, benchmark capture, and replaying captured
-//! candidates in a shell without standing up a full node.
+//! Mirrors `zk-pow-mine` in shape: connects to a `nockchain` node's
+//! private NockAppService gRPC, subscribes to `%mine` candidate
+//! effects, runs the AI-PoW prover, and pokes `[%mined nonce found-idx]`
+//! back on the `AiPowMinerWire::Mined` wire (`SOURCE = "ai-pow-miner"`,
+//! `VERSION = 1`).
 //!
-//! Quick start (synth-matrices smoke test):
-//! ```sh
-//! ai-pow-mine --synth-seed smoke --nck-commitment 0xAB...AB \
-//!             --target 0xFF..FF                # trivial target
-//! ```
+//! Quick start (assuming a fakenet node on `127.0.0.1:5555`):
+//!
+//!   ai-pow-mine \
+//!       --node-addr http://127.0.0.1:5555 \
+//!       --mining-pkh 9yPePjfWAdUnzaQKyxcRXKRa5PpUzKKEwtpECBZsUYt9Jd7egSDEWoV \
+//!       --synth-seed ai-pow-prod-v1
+//!
+//! ## AI puzzle inputs (local config)
+//! The chain's `%mine` effect carries only the block header + target +
+//! pow-len. The AI puzzle additionally needs `puzzle_id` + matmul
+//! `params` + matrices `a` / `b`. For now these come from CLI config
+//! (operator-supplied or synth-derived); a future chain-AI integration
+//! may derive them from chain state (layer/epoch). The substrate is
+//! structured so the run loop is unchanged when that swap lands.
 
 use std::fs;
 use std::path::PathBuf;
-use std::time::{Duration, Instant};
+use std::process::ExitCode;
+use std::sync::Arc;
+use std::time::Duration;
 
 use ai_pow::params::MatmulParams;
-use ai_pow_miner::{
-    mining, MineOptions, MiningCancel, MiningError, MiningJob, NonceAnchors,
-};
+use ai_pow::prover::ProverOptions;
+use ai_pow_miner::run::{default_v0_configs, run, AiPuzzleInputs, MinerConfig, MinerError};
+use ai_pow_miner::MineOptions;
 use anyhow::{anyhow, bail, Context, Result};
 use clap::Parser;
+use nockchain_mining_common::MiningPkhConfig;
+use tokio_util::sync::CancellationToken;
+use tracing::{error, info};
+use tracing_subscriber::{fmt, EnvFilter};
 
-/// `ai-pow-mine` — single-attempt block-mining CLI.
-#[derive(Debug, Parser)]
+/// `ai-pow-mine` — standalone AI-PoW block miner.
+#[derive(Parser, Debug)]
 #[command(
     name = "ai-pow-mine",
-    about = "Single-attempt block miner for ai-pow.",
+    about = "Standalone AI-PoW block miner. Subscribes to a nockchain node's %mine effects via gRPC and submits AI-puzzle solutions back.",
     version
 )]
 struct Args {
-    /// Stable puzzle id bound into κ (32-byte hex; defaults to
-    /// BLAKE3 of the matmul params if omitted).
+    /// Node's private gRPC URL.
+    #[arg(long, default_value = "http://127.0.0.1:5555")]
+    node_addr: String,
+
+    /// Single-recipient mining pubkey hash. Mutually exclusive with --mining-pkh-adv.
+    #[arg(long, conflicts_with = "mining_pkh_adv")]
+    mining_pkh: Option<String>,
+
+    /// Multi-recipient mining pkh configs. Each entry is `share,pkh`.
+    #[arg(long, value_parser = clap::value_parser!(MiningPkhConfig), num_args = 1..)]
+    mining_pkh_adv: Option<Vec<MiningPkhConfig>>,
+
+    // ── AI puzzle config ───────────────────────────────────────────
+    /// Stable puzzle id bound into κ (32-byte hex; defaults to BLAKE3
+    /// of the matmul params if omitted).
     #[arg(long)]
     puzzle_id: Option<String>,
 
-    /// Required Nockchain commitment (32-byte hex). Defaults to
-    /// `[0xAB; 32]` for smoke tests.
-    #[arg(long, default_value = "abababababababababababababababababababababababababababababababab")]
-    nck_commitment: String,
-
-    /// Optional external-chain commitment (32-byte hex). Reserved
-    /// for Pearl-compat etc.; absent ⇒ NCMN sentinel.
-    #[arg(long)]
-    external_commitment: Option<String>,
-
-    /// Chain difficulty target (32-byte hex, little-endian).
-    /// `FF…FF` (default) = trivial target, every hash wins.
-    #[arg(long, default_value = "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff")]
-    target: String,
-
-    // ── puzzle shape (defaults to TEST_SMALL: m=k=n=64, r=4, t=8, σ=8) ──
+    /// Matmul puzzle shape (defaults to TEST_SMALL: m=k=n=64, r=4, t=8, σ=8).
     #[arg(short = 'm', long, default_value_t = 64)]
     m: u32,
     #[arg(short = 'k', long, default_value_t = 64)]
@@ -65,61 +80,140 @@ struct Args {
     #[arg(long, default_value_t = 0)]
     difficulty_bits: u32,
 
-    // ── matrix inputs ──
-    /// Path to raw i8 matrix A (length m·k). Mutually exclusive
-    /// with --synth-seed.
-    #[arg(long, value_name = "PATH")]
+    /// Path to raw i8 matrix A (length m·k). Mutually exclusive with --synth-seed.
+    #[arg(long, value_name = "PATH", conflicts_with = "synth_seed")]
     a: Option<PathBuf>,
     /// Path to raw i8 matrix B (length k·n).
-    #[arg(long, value_name = "PATH")]
+    #[arg(long, value_name = "PATH", conflicts_with = "synth_seed")]
     b: Option<PathBuf>,
-    /// Synthesize A and B deterministically from this seed string
-    /// (uses ai_pow::synth::synth_matrices). Mutually exclusive
-    /// with --a / --b.
+    /// Synthesize A + B deterministically from this seed string.
     #[arg(long)]
     synth_seed: Option<String>,
 
-    // ── loop tuning ──
-    #[arg(long, default_value_t = 0)]
-    extranonce_start: u64,
+    /// Stop the per-attempt extranonce loop after this many tries
+    /// (None ⇒ unbounded). Useful for testing.
     #[arg(long)]
     max_extranonces: Option<u64>,
-    #[arg(long)]
-    deadline_secs: Option<u64>,
 
-    /// Optional path to write the encoded MatmulProof bytes.
-    #[arg(long, value_name = "PATH")]
-    output: Option<PathBuf>,
+    // ── reconnect tuning ───────────────────────────────────────────
+    /// Initial reconnect backoff in milliseconds.
+    #[arg(long, default_value = "1000")]
+    reconnect_backoff_initial_ms: u64,
+
+    /// Maximum reconnect backoff in milliseconds (cap).
+    #[arg(long, default_value = "30000")]
+    reconnect_backoff_max_ms: u64,
+
+    /// Consecutive reconnect attempts before giving up.
+    #[arg(long, default_value = "5")]
+    reconnect_max_attempts: u32,
+
+    /// Log filter (env-filter syntax). Override with the `RUST_LOG` env var.
+    #[arg(
+        long,
+        default_value = "info,ai_pow_miner=info,nockchain_mining_common=info"
+    )]
+    log: String,
 }
 
-fn parse_hex_32(s: &str, label: &str) -> Result<[u8; 32]> {
-    let trimmed = s.strip_prefix("0x").unwrap_or(s);
-    let bytes = hex::decode(trimmed)
-        .with_context(|| format!("{label}: invalid hex"))?;
-    if bytes.len() != 32 {
-        bail!("{label}: expected 32 bytes, got {}", bytes.len());
-    }
-    let mut out = [0u8; 32];
-    out.copy_from_slice(&bytes);
-    Ok(out)
-}
-
-fn load_matrix(path: &PathBuf, expected_len: usize, label: &str) -> Result<Vec<i8>> {
-    let bytes = fs::read(path)
-        .with_context(|| format!("{label}: read {}", path.display()))?;
-    if bytes.len() != expected_len {
-        bail!(
-            "{label}: expected {expected_len} bytes (i8 entries), got {}",
-            bytes.len()
-        );
-    }
-    // SAFETY: i8 and u8 share layout.
-    Ok(bytes.into_iter().map(|b| b as i8).collect())
-}
-
-fn main() -> Result<()> {
+fn main() -> ExitCode {
     let args = Args::parse();
+    init_tracing(&args.log);
 
+    let Some(pkh_configs) = build_pkh_configs(&args) else {
+        eprintln!(
+            "ai-pow-mine: must supply --mining-pkh <HASH> or --mining-pkh-adv \"share,pkh\""
+        );
+        return ExitCode::from(1);
+    };
+
+    let puzzle = match build_puzzle_inputs(&args) {
+        Ok(p) => p,
+        Err(e) => {
+            eprintln!("ai-pow-mine: invalid puzzle config: {e:#}");
+            return ExitCode::from(1);
+        }
+    };
+
+    let mut mine_opts = MineOptions::default();
+    mine_opts.prover = puzzle.prover_opts;
+    mine_opts.max_extranonces = args.max_extranonces;
+
+    let cfg = MinerConfig {
+        node_addr: args.node_addr,
+        mining_configs: default_v0_configs(),
+        mining_pkh_configs: pkh_configs,
+        puzzle,
+        mine_opts,
+        reconnect_backoff_initial: Duration::from_millis(args.reconnect_backoff_initial_ms),
+        reconnect_backoff_max: Duration::from_millis(args.reconnect_backoff_max_ms),
+        reconnect_max_attempts: args.reconnect_max_attempts,
+    };
+
+    let rt = match tokio::runtime::Builder::new_multi_thread().enable_all().build() {
+        Ok(rt) => rt,
+        Err(e) => {
+            eprintln!("ai-pow-mine: failed to build tokio runtime: {e}");
+            return ExitCode::from(1);
+        }
+    };
+
+    let r: Result<(), MinerError> = rt.block_on(async {
+        info!(
+            node = %cfg.node_addr,
+            puzzle_m = cfg.puzzle.params.m,
+            puzzle_k = cfg.puzzle.params.k,
+            puzzle_n = cfg.puzzle.params.n,
+            "ai-pow-mine: starting"
+        );
+        let shutdown = CancellationToken::new();
+        let shutdown_clone = shutdown.clone();
+        tokio::spawn(async move {
+            if tokio::signal::ctrl_c().await.is_ok() {
+                info!("ai-pow-mine: SIGINT received; shutting down");
+                shutdown_clone.cancel();
+            }
+        });
+        run(cfg, shutdown).await
+    });
+
+    match r {
+        Ok(()) => {
+            info!("ai-pow-mine: clean shutdown");
+            ExitCode::from(0)
+        }
+        Err(MinerError::TooManyReconnects { count }) => {
+            error!("ai-pow-mine: gave up after {count} consecutive reconnect failures");
+            ExitCode::from(2)
+        }
+        Err(e) => {
+            error!(error = %e, "ai-pow-mine: unrecoverable error");
+            ExitCode::from(1)
+        }
+    }
+}
+
+fn init_tracing(filter: &str) {
+    let env_filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(filter));
+    let _ = fmt()
+        .with_env_filter(env_filter)
+        .with_target(false)
+        .with_writer(std::io::stderr)
+        .try_init();
+}
+
+fn build_pkh_configs(args: &Args) -> Option<Vec<MiningPkhConfig>> {
+    if let Some(pkh) = &args.mining_pkh {
+        Some(vec![MiningPkhConfig {
+            share: 1,
+            pkh: pkh.clone(),
+        }])
+    } else {
+        args.mining_pkh_adv.clone()
+    }
+}
+
+fn build_puzzle_inputs(args: &Args) -> Result<AiPuzzleInputs> {
     let params = MatmulParams {
         m: args.m,
         k: args.k,
@@ -133,21 +227,16 @@ fn main() -> Result<()> {
         .validate()
         .map_err(|e| anyhow!("matmul params invalid: {e}"))?;
 
-    // Matrices.
     let (a, b) = match (&args.a, &args.b, &args.synth_seed) {
         (Some(ap), Some(bp), None) => {
             let a = load_matrix(ap, (args.m * args.k) as usize, "A")?;
             let b = load_matrix(bp, (args.k * args.n) as usize, "B")?;
             (a, b)
         }
-        (None, None, Some(seed)) => {
-            let (a, b) = ai_pow::synth::synth_matrices(seed.as_bytes(), &params);
-            (a, b)
-        }
+        (None, None, Some(seed)) => ai_pow::synth::synth_matrices(seed.as_bytes(), &params),
         _ => bail!("provide either --a + --b OR --synth-seed (not both, not neither)"),
     };
 
-    // Puzzle id: explicit, or BLAKE3 of params for smoke runs.
     let puzzle_id = match &args.puzzle_id {
         Some(s) => parse_hex_32(s, "--puzzle-id")?.to_vec(),
         None => blake3::hash(ai_pow::prover::params_tag(&params).as_slice())
@@ -155,82 +244,34 @@ fn main() -> Result<()> {
             .to_vec(),
     };
 
-    let nck = parse_hex_32(&args.nck_commitment, "--nck-commitment")?;
-    let ext = args
-        .external_commitment
-        .as_ref()
-        .map(|s| parse_hex_32(s, "--external-commitment"))
-        .transpose()?;
-    let target = parse_hex_32(&args.target, "--target")?;
-    let deadline = args
-        .deadline_secs
-        .map(|s| Instant::now() + Duration::from_secs(s));
+    Ok(AiPuzzleInputs {
+        puzzle_id,
+        params,
+        a: Arc::new(a),
+        b: Arc::new(b),
+        prover_opts: ProverOptions::default(),
+    })
+}
 
-    let anchors = NonceAnchors {
-        nck_commitment: nck,
-        external_commitment: ext,
-    };
-    let job = MiningJob {
-        puzzle_id: &puzzle_id,
-        anchors,
-        params: &params,
-        target,
-        a: &a,
-        b: &b,
-    };
-    let opts = MineOptions {
-        extranonce_start: args.extranonce_start,
-        max_extranonces: args.max_extranonces,
-        deadline,
-        prover: ai_pow::prover::ProverOptions::default(),
-        progress_interval: Some(Duration::from_secs(2)),
-    };
-
-    eprintln!(
-        "ai-pow-mine: m={} k={} n={} r={} t={} σ={} target={}",
-        args.m,
-        args.k,
-        args.n,
-        args.noise_rank,
-        args.tile,
-        args.spot_checks,
-        &args.target[..16.min(args.target.len())],
-    );
-    let started = Instant::now();
-    let cancel = MiningCancel::new();
-    let result = mining::run(&job, &opts, cancel);
-
-    match result {
-        Ok(sol) => {
-            eprintln!(
-                "ai-pow-mine: ✓ solution: extranonce={} tile_idx={} attempts={} elapsed={:?} rate={:.2}/s",
-                u64::from_be_bytes(sol.nonce[72..80].try_into().unwrap()),
-                sol.found_idx,
-                sol.stats.extranonces_tried,
-                started.elapsed(),
-                sol.stats.hash_rate_per_sec(),
-            );
-            // Stdout: the 80-byte nonce hex (for piping to a verifier).
-            println!("{}", hex::encode(sol.nonce));
-            if let Some(out) = args.output {
-                let bytes = sol.proof.encode();
-                fs::write(&out, &bytes)
-                    .with_context(|| format!("write proof to {}", out.display()))?;
-                eprintln!("ai-pow-mine: wrote {} proof bytes → {}", bytes.len(), out.display());
-            }
-            Ok(())
-        }
-        Err(e) => {
-            eprintln!("ai-pow-mine: ✗ {e}");
-            // Exit codes: 2 for the loop-terminated-without-success cases,
-            // 1 for real errors.
-            let code = match e {
-                MiningError::Cancelled
-                | MiningError::DeadlineElapsed
-                | MiningError::BudgetExhausted { .. } => 2,
-                MiningError::Mine(_) => 1,
-            };
-            std::process::exit(code);
-        }
+fn parse_hex_32(s: &str, label: &str) -> Result<[u8; 32]> {
+    let trimmed = s.strip_prefix("0x").unwrap_or(s);
+    let bytes = hex::decode(trimmed).with_context(|| format!("{label}: invalid hex"))?;
+    if bytes.len() != 32 {
+        bail!("{label}: expected 32 bytes, got {}", bytes.len());
     }
+    let mut out = [0u8; 32];
+    out.copy_from_slice(&bytes);
+    Ok(out)
+}
+
+fn load_matrix(path: &PathBuf, expected_len: usize, label: &str) -> Result<Vec<i8>> {
+    let bytes =
+        fs::read(path).with_context(|| format!("{label}: read {}", path.display()))?;
+    if bytes.len() != expected_len {
+        bail!(
+            "{label}: expected {expected_len} bytes (i8 entries), got {}",
+            bytes.len()
+        );
+    }
+    Ok(bytes.into_iter().map(|b| b as i8).collect())
 }

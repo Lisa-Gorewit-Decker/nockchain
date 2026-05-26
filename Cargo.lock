@@ -75,14 +75,21 @@ dependencies = [
  "anyhow",
  "blake3",
  "clap",
+ "futures",
  "gnort",
  "hex",
  "nockapp",
+ "nockapp-grpc",
+ "nockchain-mining-common",
  "nockvm",
  "nockvm_macros",
+ "num_cpus",
+ "once_cell",
  "thiserror 2.0.18",
  "tokio",
+ "tokio-util",
  "tracing",
+ "tracing-subscriber",
 ]
 
 [[package]]
