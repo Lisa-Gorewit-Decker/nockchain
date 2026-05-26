@@ -1,10 +1,12 @@
-//! Decoded form of a `%mine` effect emitted by the node's miner kernel.
+//! Decoded form of a `%mine-zk` or `%mine-ai` effect emitted by the
+//! node's kernel.
 //!
-//! The kernel-side Hoon emits effects shaped `[%mine version commit
-//! target pow-len]`; this struct mirrors the in-process `MiningData`
-//! the old in-tree driver carried (`crates/nockchain/src/mining.rs`,
-//! pre-extraction). Each component is captured as a fresh [`NounSlab`]
-//! so the candidate is owned + sendable across threads.
+//! The kernel-side Hoon emits effects shaped `[%mine-zk version commit
+//! target pow-len]` (always) and `[%mine-ai version commit target
+//! pow-len]` (post-AI-activation). Each miner subscribes via
+//! WatchEffects with its own head filter (`b"mine-zk"` / `b"mine-ai"`).
+//! This decoder is shape-symmetric: same field layout for both heads,
+//! so the same struct holds either kind of candidate.
 
 use nockapp::noun::slab::NounSlab;
 use nockchain_math::noun_ext::NounMathExt;
@@ -29,7 +31,7 @@ pub struct MiningCandidate {
 pub enum CandidateDecodeError {
     #[error("effect noun is not a cell")]
     NotACell,
-    #[error("effect head is not %mine")]
+    #[error("effect head is not %mine-zk or %mine-ai")]
     NotMine,
     #[error("effect tail does not match the 4-tuple [version commit target pow-len]")]
     BadTuple,
@@ -38,19 +40,22 @@ pub enum CandidateDecodeError {
 }
 
 impl MiningCandidate {
-    /// Decode a `[%mine version commit target pow-len]` effect noun
-    /// (read from a `WatchEffects` stream) into a `MiningCandidate`.
+    /// Decode a `[%mine-zk version commit target pow-len]` or
+    /// `[%mine-ai version commit target pow-len]` effect noun (read
+    /// from a `WatchEffects` stream) into a `MiningCandidate`. The
+    /// caller's head_filter on the subscription decides which head it
+    /// receives; this decoder accepts either.
     ///
-    /// Returns `Ok(None)` for an effect whose head is not `%mine`
-    /// (callers using a server-side head_filter should not see this,
-    /// but the check is defensive).
+    /// Returns `Ok(None)` for an effect whose head is neither
+    /// `%mine-zk` nor `%mine-ai`.
     pub fn from_effect_slab(slab: NounSlab) -> Result<Option<Self>, CandidateDecodeError> {
         // SAFETY: `slab.root()` returns a valid Noun owned by the slab
         // for the lifetime of `slab`. We construct nested slabs via
         // `copy_into`, which is safe.
         let root = unsafe { *slab.root() };
         let effect_cell = root.as_cell().map_err(|_| CandidateDecodeError::NotACell)?;
-        if !effect_cell.head().eq_bytes("mine") {
+        let head = effect_cell.head();
+        if !head.eq_bytes("mine-zk") && !head.eq_bytes("mine-ai") {
             return Ok(None);
         }
         let [version, commit, target, pow_len_noun] = effect_cell
@@ -90,12 +95,12 @@ mod tests {
     use nockvm::noun::{D, T};
     use nockvm_macros::tas;
 
-    /// Synthesize `[%mine version commit target pow-len]` and round-trip
+    /// Synthesize `[%mine-zk version commit target pow-len]` and round-trip
     /// it through `MiningCandidate::from_effect_slab`.
     #[test]
-    fn from_effect_slab_decodes_mine_tuple() {
+    fn from_effect_slab_decodes_mine_zk_tuple() {
         let mut slab = NounSlab::new();
-        let head = D(tas!(b"mine"));
+        let head = D(tas!(b"mine-zk"));
         let version = D(0xAA);
         let commit = D(0xBBBB);
         let target = D(0xCCCC_CCCC);
@@ -105,7 +110,7 @@ mod tests {
 
         let candidate = MiningCandidate::from_effect_slab(slab)
             .expect("decode")
-            .expect("head is %mine");
+            .expect("head is %mine-zk");
 
         assert_eq!(candidate.pow_len, 256);
         // The owned slabs round-trip the values.
@@ -130,6 +135,21 @@ mod tests {
     }
 
     #[test]
+    fn from_effect_slab_decodes_mine_ai_tuple() {
+        let mut slab = NounSlab::new();
+        let head = D(tas!(b"mine-ai"));
+        let root = T(
+            &mut slab,
+            &[head, D(0x11), D(0x22), D(0x33), D(64)],
+        );
+        slab.set_root(root);
+        let candidate = MiningCandidate::from_effect_slab(slab)
+            .expect("decode")
+            .expect("head is %mine-ai");
+        assert_eq!(candidate.pow_len, 64);
+    }
+
+    #[test]
     fn from_effect_slab_returns_none_for_other_heads() {
         let mut slab = NounSlab::new();
         let head = D(tas!(b"irrelvnt")); // 8-char tas! limit
@@ -137,14 +157,14 @@ mod tests {
         slab.set_root(root);
 
         let res = MiningCandidate::from_effect_slab(slab).expect("decode");
-        assert!(res.is_none(), "non-%mine head should decode to None");
+        assert!(res.is_none(), "non-mine head should decode to None");
     }
 
     #[test]
     fn from_effect_slab_errors_on_bad_tuple() {
-        // %mine head but the tail is a single atom, not a 4-tuple.
+        // %mine-zk head but the tail is a single atom, not a 4-tuple.
         let mut slab = NounSlab::new();
-        let head = D(tas!(b"mine"));
+        let head = D(tas!(b"mine-zk"));
         let root = T(&mut slab, &[head, D(0)]);
         slab.set_root(root);
 

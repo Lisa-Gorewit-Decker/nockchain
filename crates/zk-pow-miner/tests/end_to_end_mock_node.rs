@@ -217,12 +217,12 @@ async fn miner_finds_and_submits_block_against_mock_node() {
     eprintln!("[test] PASS: %mined poke shape is [%command %pow ...]");
 }
 
-/// Build a synthetic `[%mine version commit target pow-len]` effect with
+/// Build a synthetic `[%mine-zk version commit target pow-len]` effect with
 /// version=%0, commit=[0 0 0 0 0], target=2^400 (trivial), and the
 /// provided pow-len.
 fn build_synth_mine_effect(pow_len: u64) -> NounSlab {
     let mut slab = NounSlab::new();
-    let head = D(tas!(b"mine"));
+    let head = D(tas!(b"mine-zk"));
     let version = D(0);
     let commit = T(&mut slab, &[D(0), D(0), D(0), D(0), D(0)]);
     // target = 2^400 as [%bn list-of-u32-le]

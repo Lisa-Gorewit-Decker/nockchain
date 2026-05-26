@@ -156,18 +156,24 @@ impl NodeClient {
         self.poke_wire(wire, slab).await
     }
 
-    /// Subscribe to the node's `%mine` effects, decoded into
-    /// [`MiningCandidate`]s. The underlying RPC is `WatchEffects` with
-    /// `head_filter = [b"mine"]`, so non-`%mine` traffic is dropped
-    /// server-side.
+    /// Subscribe to the node's mining-candidate effects, decoded into
+    /// [`MiningCandidate`]s. The `head_filter` is passed through to the
+    /// `WatchEffects` RPC so non-matching traffic is dropped server-side.
+    ///
+    /// Typical callers:
+    /// - ZK-PoW miner: `vec![b"mine-zk".to_vec()]`
+    /// - AI-PoW miner: `vec![b"mine-ai".to_vec()]`
     ///
     /// The returned stream is owned; callers can drop it to end the
     /// subscription. Server-side disconnect surfaces as a `None` from
     /// `Stream::next`.
-    pub async fn watch_candidates(&mut self) -> Result<CandidateStream, NodeClientError> {
+    pub async fn watch_candidates(
+        &mut self,
+        head_filter: Vec<Vec<u8>>,
+    ) -> Result<CandidateStream, NodeClientError> {
         let raw = self
             .client
-            .watch_effects(DEFAULT_PID, vec![b"mine".to_vec()])
+            .watch_effects(DEFAULT_PID, head_filter)
             .await?;
         let mapped = raw.filter_map(|item| async move {
             match item {
@@ -177,7 +183,7 @@ impl NodeClient {
                     Ok(None) => {
                         // server-side head_filter should mean this never fires,
                         // but the check is defensive — keep the stream alive.
-                        debug!("watch_candidates: dropped non-%mine effect");
+                        debug!("watch_candidates: dropped non-mine-zk/mine-ai effect");
                         None
                     }
                     Err(e) => Some(Err(NodeClientError::Decode(e))),

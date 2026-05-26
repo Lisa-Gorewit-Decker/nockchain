@@ -621,16 +621,34 @@
     =^  candidate-changed  m.k  (update-candidate-block:min c.k now)
     :_  k
     ?.  candidate-changed  effs
-    :_  effs
     =/  version=proof-version:sp
       (height-to-proof-version:con ~(height get:page:t candidate-block.m.k))
-    =/  target  ~(target get:page:t candidate-block.m.k)
+    =/  zk-target  ~(target get:page:t candidate-block.m.k)
     =/  commit  (block-commitment:page:t candidate-block.m.k)
-    ?-  version
-      %0  [%mine %0 commit target pow-len:t]
-      %1  [%mine %1 commit target pow-len:t]
-      %2  [%mine %2 commit target pow-len:t]
-    ==
+    =/  candidate-height=@  ~(height get:page:t candidate-block.m.k)
+    =/  parent-bid=block-id:t  ~(parent get:page:t candidate-block.m.k)
+    =/  zk-effect
+      ?-  version
+        %0  [%mine-zk %0 commit zk-target pow-len:t]
+        %1  [%mine-zk %1 commit zk-target pow-len:t]
+        %2  [%mine-zk %2 commit zk-target pow-len:t]
+      ==
+    ::  Pre-AI-activation: emit only %mine-zk.
+    ::  Post-activation: also emit %mine-ai with the AI puzzle's
+    ::  independently-computed target. The two effects share `commit`
+    ::  (same block header) but carry different targets — each miner
+    ::  filters for its own effect head.
+    ?.  (gte candidate-height ai-pow-activation-height.constants.k)
+      [zk-effect effs]
+    =/  ai-target=bignum:bignum:t
+      (compute-target-ai-asert:con candidate-height parent-bid)
+    =/  ai-effect
+      ?-  version
+        %0  [%mine-ai %0 commit ai-target pow-len:t]
+        %1  [%mine-ai %1 commit ai-target pow-len:t]
+        %2  [%mine-ai %2 commit ai-target pow-len:t]
+      ==
+    [zk-effect ai-effect effs]
     ::
     ::  +heard-genesis-block: check if block is a genesis block and decide whether to keep it
     ++  heard-genesis-block
@@ -1547,16 +1565,32 @@
           `k
         =/  commit=block-commitment:t
           (block-commitment:page:t candidate-block.m.k)
-        =/  target  ~(target get:page:t candidate-block.m.k)
-        =/  proof-version  (height-to-proof-version:con ~(height get:page:t candidate-block.m.k))
-        =/  mine-start
+        =/  zk-target  ~(target get:page:t candidate-block.m.k)
+        =/  candidate-height=@  ~(height get:page:t candidate-block.m.k)
+        =/  parent-bid=block-id:t  ~(parent get:page:t candidate-block.m.k)
+        =/  proof-version  (height-to-proof-version:con candidate-height)
+        =/  zk-mine-start
           ?-  proof-version
-            %0  [%0 commit target pow-len:t]
-            %1  [%1 commit target pow-len:t]
-            %2  [%2 commit target pow-len:t]
+            %0  [%0 commit zk-target pow-len:t]
+            %1  [%1 commit zk-target pow-len:t]
+            %2  [%2 commit zk-target pow-len:t]
           ==
         :_  k
-        [%mine mine-start]~
+        ::  Pre-AI-activation: %mine-zk only. Post-activation: also
+        ::  %mine-ai with the AI puzzle's independently-computed target.
+        ?.  (gte candidate-height ai-pow-activation-height.constants.k)
+          [%mine-zk zk-mine-start]~
+        =/  ai-target=bignum:bignum:t
+          (compute-target-ai-asert:con candidate-height parent-bid)
+        =/  ai-mine-start
+          ?-  proof-version
+            %0  [%0 commit ai-target pow-len:t]
+            %1  [%1 commit ai-target pow-len:t]
+            %2  [%2 commit ai-target pow-len:t]
+          ==
+        :~  [%mine-zk zk-mine-start]
+            [%mine-ai ai-mine-start]
+        ==
       ::
       ::  only send a %elders request for reasonable heights
       ++  missing-parent-effects

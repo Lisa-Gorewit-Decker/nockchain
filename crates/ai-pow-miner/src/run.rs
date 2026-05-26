@@ -214,7 +214,7 @@ pub async fn run(
         {
             return Err(MinerError::Configure(format!("set_mining_key: {e}")));
         }
-        let mut candidates = match client.watch_candidates().await {
+        let mut candidates = match client.watch_candidates(vec![b"mine-ai".to_vec()]).await {
             Ok(s) => s,
             Err(e) => {
                 warn!(error = %e, "watch_candidates failed; reconnect");
@@ -560,9 +560,11 @@ mod tests {
             format!("http://{}", self.addr)
         }
 
+        // Publish a synthetic %mine-ai effect (the AI miner subscribes
+        // to mine-ai post Stage 4; the mock fixture publishes accordingly).
         fn publish_synth_mine_effect(&self, header_seed: u64, target_seed: u64, pow_len: u64) {
             let mut slab = NounSlab::new();
-            let head = D(tas!(b"mine"));
+            let head = D(tas!(b"mine-ai"));
             let version = D(0);
             let commit = T(
                 &mut slab,

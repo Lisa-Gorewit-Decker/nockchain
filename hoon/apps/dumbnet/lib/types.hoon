@@ -440,7 +440,13 @@
       [%request p=request]  :: request specific tx or block
       [%track p=track]  :: runtime tracking of blocks for %liar-block-id effect
       [%seen p=seen]    ::  seen so don't reprocess
-      [%mine mine-start]
+      ::  Mining candidate emissions. `%mine-zk` is always emitted when
+      ::  the candidate block changes. `%mine-ai` is additionally emitted
+      ::  at and after ai-pow-activation-height — both carry the same
+      ::  commit but per-puzzle independently-computed targets. Each
+      ::  miner subscribes to its own head via WatchEffects.
+      [%mine-zk mine-start]
+      [%mine-ai mine-start]
       lie
       span-effect
       [%exit code=@]
