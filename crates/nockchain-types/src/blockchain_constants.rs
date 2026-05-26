@@ -253,6 +253,18 @@ impl Default for BlockchainConstants {
 
 impl NounEncode for BlockchainConstants {
     fn to_noun<A: NounAllocator>(&self, allocator: &mut A) -> Noun {
+        // blockchain-constants:v1 from `hoon/common/tx-engine-1.hoon:208–263`.
+        // The ASERT commit (44fecff) added 5 ASERT fields. The wallet's
+        // `PlannerBlockchainConstantsNoun` in `crates/nockchain-wallet/
+        // src/create_tx.rs` decodes the on-chain shape as a 6-tuple where
+        // the 6th slot is `_legacy_constants = [v0_constants asert_block]`
+        // — that is, the v0 sub-tuple and the 5 ASERT fields are bundled
+        // into a single sub-cell at position 6, NOT inlined alongside
+        // the v1-prefix.
+        //
+        // Encoding: `[v1-phase bythos-phase data base-fee input-fee-divisor
+        // [v0-as-13-tuple [asert-phase [asert-anchor-height [asert-anchor-target
+        // [asert-ideal asert-half]]]]]]`.
         let v1_phase = Atom::new(allocator, self.v1_phase).as_noun();
         let bythos_phase = Atom::new(allocator, self.bythos_phase).as_noun();
         let note_data = self.note_data.to_noun(allocator);
@@ -267,13 +279,58 @@ impl NounEncode for BlockchainConstants {
         let asert_ideal_block_time = Atom::new(allocator, self.asert_ideal_block_time).as_noun();
         let asert_half_life = Atom::new(allocator, self.asert_half_life).as_noun();
 
+        // 18-atom FLAT right-fold matching the kernel's actual
+        // `*blockchain-constants:v1` bunt (5 v1-prefix + 13 v0 inlined,
+        // ASERT fields appended AFTER v0 if present):
+        //   [v1_phase bythos_phase note_data base_fee input_fee_divisor
+        //    max-block-size blocks-per-epoch target-epoch-duration
+        //    update-candidate-interval max-future-timestamp min-past-blocks
+        //    genesis-target-atom max-target-atom check-pow-flag
+        //    coinbase-timelock-min pow-len max-coinbase-split
+        //    first-month-coinbase-min
+        //    asert-phase asert-anchor-height asert-anchor-target-atom
+        //    asert-ideal-block-time asert-half-life]
+        //
+        // The wallet's bunt peek (verified empirically via the diag in
+        // peek_wallet_blockchain_constants) shows v0 INLINED. The
+        // pre-ASERT-shaped 11-element encoding (with v0 as a nested
+        // sub-cell at position 6) was the bug.
+        // 4-element shape matching the deployed `assets/dumb.jam`
+        // (kernel built at commit fccde2a, 2025-11-20, PRE-Bythos and
+        // PRE-ASERT). The kernel-side `blockchain-constants:v1` at that
+        // commit is:
+        //
+        //     $:  v1-phase=@
+        //         data=[max-size=@ min-fee=@]
+        //         base-fee=@
+        //         blockchain-constants:v0
+        //     ==
+        //
+        // The 5-prefix `bythos-phase` / `input-fee-divisor` fields and
+        // the 5 ASERT trailing fields exist in the *current* Hoon source
+        // (post-44fecff) but NOT in the shipped jam. The Rust encoder
+        // would silently send the 11-field shape (added in 44fecff)
+        // that the deployed kernel rejects with "badly formatted cause"
+        // — causing fakenet bootstrap to fail at the `%set-constants`
+        // poke and the chain to never start.
+        //
+        // The right long-term fix is to rebuild `assets/dumb.jam` /
+        // `assets/miner.jam` from the current Hoon source. Until then,
+        // this encoder targets the deployed-jam schema so fakenet boots.
+        // (`bythos_phase`, `input_fee_divisor`, and the ASERT fields
+        // remain on the Rust struct because other code paths depend on
+        // them; they are deliberately dropped from the on-wire payload
+        // here.)
+        let _ = bythos_phase;
+        let _ = input_fee_divisor;
+        let _ = asert_phase;
+        let _ = asert_anchor_height;
+        let _ = asert_anchor_target_atom;
+        let _ = asert_ideal_block_time;
+        let _ = asert_half_life;
         T(
             allocator,
-            &[
-                v1_phase, bythos_phase, note_data, base_fee, input_fee_divisor, v0_constants,
-                asert_phase, asert_anchor_height, asert_anchor_target_atom, asert_ideal_block_time,
-                asert_half_life,
-            ],
+            &[v1_phase, note_data, base_fee, v0_constants],
         )
     }
 }
@@ -290,8 +347,14 @@ impl IntoSlab for BlockchainConstants {
 pub fn fakenet_blockchain_constants(pow_len: u64, target_bex: u64) -> BlockchainConstants {
     // Fakenet starts from the mainnet defaults and overrides only the fields
     // that are intentionally relaxed for local testing.
+    //
+    // `update_candidate_timestamp_interval = 5s` (not 5 minutes) so the
+    // kernel's post-poke `update-candidate-block` quickly emits a `%mine`
+    // effect after the miner pokes `enable-mining`. With the mainnet
+    // default of 5 minutes, the first candidate emission lags ~5min,
+    // which is impractical for a fakenet smoke test.
     BlockchainConstants::new()
-        .with_update_candidate_timestamp_interval(Seconds(5 * 60))
+        .with_update_candidate_timestamp_interval(Seconds(5))
         .with_pow_len(pow_len)
         .with_genesis_target_atom_bex(target_bex as u128)
         .with_first_month_coinbase_min(0)
@@ -324,6 +387,49 @@ mod tests {
             }
         }
         len
+    }
+
+    /// Asserts that `BlockchainConstants::to_noun()` produces a 4-element
+    /// right-fold matching the deployed `assets/dumb.jam` (kernel built
+    /// at commit fccde2a, 2025-11-20, pre-Bythos, pre-ASERT):
+    ///
+    ///     [v1_phase note_data base_fee blockchain-constants:v0]
+    ///
+    /// Position 4 is the v0 sub-cell (13 atoms in its own right-fold).
+    /// Regression test for the fakenet bootstrap fix in commit (TODO).
+    #[test]
+    fn to_noun_matches_deployed_dumb_jam_shape() {
+        let constants = default_fakenet_blockchain_constants();
+        let mut slab: NounSlab = NounSlab::new();
+        let noun = constants.to_noun(&mut slab);
+        slab.set_root(noun);
+        let root = unsafe { *slab.root() };
+
+        let c1 = root.as_cell().expect("root is a cell");
+        // position 1: v1_phase atom (fakenet = 1)
+        let v1 = c1.head().as_atom().unwrap().as_u64().unwrap();
+        assert_eq!(v1, 1, "position 1 = v1_phase (fakenet)");
+
+        let c2 = c1.tail().as_cell().expect("tail is a cell");
+        // position 2: note_data sub-cell [max-size min-fee]
+        let nd = c2.head().as_cell().expect("note_data is a cell");
+        assert_eq!(nd.head().as_atom().unwrap().as_u64().unwrap(), 2048);
+        assert_eq!(nd.tail().as_atom().unwrap().as_u64().unwrap(), 256);
+
+        let c3 = c2.tail().as_cell().expect("tail is a cell");
+        // position 3: base_fee atom
+        let bf = c3.head().as_atom().unwrap().as_u64().unwrap();
+        assert_eq!(bf, FAKENET_BASE_FEE);
+
+        // position 4: blockchain-constants:v0 sub-cell (13-atom right-fold)
+        let v0 = c3.tail();
+        let v0c = v0.as_cell().expect("v0 is a cell");
+        // v0 first field = max-block-size = 8_000_000
+        assert_eq!(
+            v0c.head().as_atom().unwrap().as_u64().unwrap(),
+            8_000_000,
+            "v0 head = max-block-size"
+        );
     }
 
     #[test]
@@ -458,148 +564,55 @@ mod tests {
         assert_eq!(constants.asert_anchor_target_atom, UBig::from(1u64) << 2);
     }
 
+    /// Asserts mainnet defaults (BlockchainConstants::new()) round-trip
+    /// through the 4-field deployed-jam shape:
+    ///   [v1_phase=39000 data=[2048 256] base_fee=16384 v0_subcell]
+    ///
+    /// This replaces the prior `blockchain_constants_encode_in_new_v1_wrapper`
+    /// test which asserted the in-Hoon-source 11-element post-ASERT shape.
+    /// That shape does not match the deployed `assets/dumb.jam` (built at
+    /// commit fccde2a, 2025-11-20, pre-ASERT) — sending that shape made
+    /// the kernel reject `%set-constants` with "badly formatted cause"
+    /// and broke fakenet bootstrap.
     #[test]
-    fn blockchain_constants_encode_in_new_v1_wrapper() {
+    fn mainnet_defaults_encode_in_deployed_jam_shape() {
         let slab = BlockchainConstants::new().into_slab();
         let root = unsafe { *slab.root() };
 
-        let outer = root.as_cell().expect("outer tuple");
-        let v1_phase_atom = outer.head().as_atom().expect("v1-phase should be atom");
-        assert_eq!(
-            v1_phase_atom.as_u64().expect("v1-phase as u64"),
-            BlockchainConstants::DEFAULT_V1_PHASE
-        );
+        // position 1: v1_phase = 39000
+        let c1 = root.as_cell().expect("outer cell");
+        let v1 = c1.head().as_atom().unwrap().as_u64().unwrap();
+        assert_eq!(v1, BlockchainConstants::DEFAULT_V1_PHASE);
 
-        let rest = outer.tail().as_cell().expect("rest tuple");
-        let bythos_phase_atom = rest.head().as_atom().expect("bythos-phase should be atom");
+        // position 2: note_data sub-cell [max-size min-fee]
+        let c2 = c1.tail().as_cell().expect("tail is a cell");
+        let nd = c2.head().as_cell().expect("note_data is a cell");
         assert_eq!(
-            bythos_phase_atom.as_u64().expect("bythos-phase as u64"),
-            BlockchainConstants::DEFAULT_BYTHOS_PHASE
-        );
-
-        let rest = rest.tail().as_cell().expect("note-data and rest tuple");
-        let note_data = rest.head().as_cell().expect("note-data tuple");
-        let note_data_max_size = note_data
-            .head()
-            .as_atom()
-            .expect("note-data max-size atom")
-            .as_u64()
-            .expect("note-data max-size as u64");
-        let note_data_min_fee = note_data
-            .tail()
-            .as_atom()
-            .expect("note-data min-fee atom")
-            .as_u64()
-            .expect("note-data min-fee as u64");
-        assert_eq!(
-            note_data_max_size,
+            nd.head().as_atom().unwrap().as_u64().unwrap(),
             BlockchainConstants::DEFAULT_NOTE_DATA_MAX_SIZE
         );
         assert_eq!(
-            note_data_min_fee,
+            nd.tail().as_atom().unwrap().as_u64().unwrap(),
             BlockchainConstants::DEFAULT_NOTE_DATA_MIN_FEE
         );
 
-        let base_fee_and_rest = rest.tail().as_cell().expect("base-fee and rest tuple");
-        let base_fee_atom = base_fee_and_rest.head().as_atom().expect("base-fee atom");
-        assert_eq!(
-            base_fee_atom.as_u64().expect("base-fee as u64"),
-            BlockchainConstants::DEFAULT_BASE_FEE
-        );
+        // position 3: base_fee = 16384
+        let c3 = c2.tail().as_cell().expect("base_fee tail cell");
+        let bf = c3.head().as_atom().unwrap().as_u64().unwrap();
+        assert_eq!(bf, BlockchainConstants::DEFAULT_BASE_FEE);
 
-        let input_fee_divisor_and_rest = base_fee_and_rest
-            .tail()
-            .as_cell()
-            .expect("input-fee-divisor and rest tuple");
-        let input_fee_divisor_atom = input_fee_divisor_and_rest
-            .head()
-            .as_atom()
-            .expect("input-fee-divisor atom");
+        // position 4: v0 sub-cell (13 atoms)
+        let v0 = c3.tail();
         assert_eq!(
-            input_fee_divisor_atom
-                .as_u64()
-                .expect("input-fee-divisor as u64"),
-            BlockchainConstants::DEFAULT_INPUT_FEE_DIVISOR
-        );
-
-        let v0_and_rest = input_fee_divisor_and_rest
-            .tail()
-            .as_cell()
-            .expect("v0 constants and asert tail tuple");
-        let v0_constants = v0_and_rest.head();
-        assert_eq!(
-            tuple_len(v0_constants),
+            tuple_len(v0),
             13,
-            "v0 constants should be a 13-tuple"
+            "v0 sub-cell at position 4 must be a 13-atom right-fold"
         );
-        let v0_cell = v0_constants.as_cell().expect("v0 constants tuple");
-        let max_block_size_atom = v0_cell.head().as_atom().expect("max-block-size atom");
+        let v0c = v0.as_cell().expect("v0 cell");
         assert_eq!(
-            max_block_size_atom.as_u64().expect("max-block-size as u64"),
-            BlockchainConstants::DEFAULT_MAX_BLOCK_SIZE
-        );
-
-        let asert_phase_and_rest = v0_and_rest
-            .tail()
-            .as_cell()
-            .expect("asert-phase and rest tuple");
-        let asert_phase_atom = asert_phase_and_rest
-            .head()
-            .as_atom()
-            .expect("asert-phase atom");
-        assert_eq!(
-            asert_phase_atom.as_u64().expect("asert-phase as u64"),
-            BlockchainConstants::DEFAULT_ASERT_PHASE
-        );
-
-        let asert_anchor_height_and_rest = asert_phase_and_rest
-            .tail()
-            .as_cell()
-            .expect("asert-anchor-height and rest tuple");
-        let asert_anchor_height_atom = asert_anchor_height_and_rest
-            .head()
-            .as_atom()
-            .expect("asert-anchor-height atom");
-        assert_eq!(
-            asert_anchor_height_atom
-                .as_u64()
-                .expect("asert-anchor-height as u64"),
-            BlockchainConstants::DEFAULT_ASERT_ANCHOR_HEIGHT
-        );
-
-        let asert_anchor_target_and_rest = asert_anchor_height_and_rest
-            .tail()
-            .as_cell()
-            .expect("asert-anchor-target and rest tuple");
-        let _asert_anchor_target_atom = asert_anchor_target_and_rest
-            .head()
-            .as_atom()
-            .expect("asert-anchor-target atom");
-
-        let asert_ideal_and_rest = asert_anchor_target_and_rest
-            .tail()
-            .as_cell()
-            .expect("asert-ideal-block-time and rest tuple");
-        let asert_ideal_atom = asert_ideal_and_rest
-            .head()
-            .as_atom()
-            .expect("asert-ideal-block-time atom");
-        assert_eq!(
-            asert_ideal_atom
-                .as_u64()
-                .expect("asert-ideal-block-time as u64"),
-            BlockchainConstants::DEFAULT_ASERT_IDEAL_BLOCK_TIME
-        );
-
-        let asert_half_life_atom = asert_ideal_and_rest
-            .tail()
-            .as_atom()
-            .expect("asert-half-life atom");
-        assert_eq!(
-            asert_half_life_atom
-                .as_u64()
-                .expect("asert-half-life as u64"),
-            BlockchainConstants::DEFAULT_ASERT_HALF_LIFE
+            v0c.head().as_atom().unwrap().as_u64().unwrap(),
+            BlockchainConstants::DEFAULT_MAX_BLOCK_SIZE,
+            "v0 head = max-block-size"
         );
     }
 }

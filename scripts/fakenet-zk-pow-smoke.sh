@@ -90,6 +90,7 @@ cleanup() {
         kill "$NODE_PID" 2>/dev/null
         wait "$NODE_PID" 2>/dev/null
     fi
+    echo "[cleanup] logs preserved at $WORK_DIR"
     if [[ "$EXIT_CODE" -ne 0 ]]; then
         echo
         echo "===== node.log (tail) ====="
@@ -97,10 +98,6 @@ cleanup() {
         echo
         echo "===== miner.log (tail) ====="
         tail -40 "$MINER_LOG" 2>/dev/null || true
-        echo
-        echo "[cleanup] logs preserved at $WORK_DIR"
-    else
-        rm -rf "$WORK_DIR"
     fi
     exit "$EXIT_CODE"
 }
@@ -156,11 +153,15 @@ MINER_PID=$!
 echo "[boot ] miner pid=$MINER_PID"
 
 echo
-echo "[wait ] polling for accepted block (timeout ${TIMEOUT_SECS}s) ..."
+echo "[wait ] polling for accepted block h>=1 (timeout ${TIMEOUT_SECS}s) ..."
 DEADLINE=$(( SECONDS + TIMEOUT_SECS ))
 SAW_BLOCK=0
+# Require height >= 1 (post-genesis); genesis is at height 0 and lands
+# pre-mining as the fakenet bootstrap. h>=1 proves the miner ran a
+# real STARK and the node accepted the proof.
+PATTERN='added to validated blocks at ([1-9][0-9]*|[1-9])'
 while (( SECONDS < DEADLINE )); do
-    if grep -q "added to validated blocks at" "$NODE_LOG" 2>/dev/null; then
+    if grep -E -q "$PATTERN" "$NODE_LOG" 2>/dev/null; then
         SAW_BLOCK=1
         break
     fi
@@ -178,10 +179,10 @@ while (( SECONDS < DEADLINE )); do
 done
 
 if (( SAW_BLOCK == 1 )); then
-    echo "[ok   ] node accepted a mined block"
-    grep "added to validated blocks at" "$NODE_LOG" | tail -3
+    echo "[ok   ] node accepted a mined block (height>=1)"
+    grep -E "$PATTERN" "$NODE_LOG" | tail -3
     EXIT_CODE=0
 else
-    echo "[fail ] timeout waiting for accepted block"
+    echo "[fail ] timeout waiting for accepted block at height >= 1"
     EXIT_CODE=5
 fi
