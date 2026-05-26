@@ -65,7 +65,11 @@ pub enum MineResult {
 #[async_trait]
 pub trait Worker: Send + Sync + 'static {
     fn id(&self) -> WorkerId;
-    fn cancel_token(&self) -> NockCancelToken;
+    /// Signal the worker to abort its current `mine_attempt`. The
+    /// attempt's future will resolve with `Err(WorkerError::Poke(...))`
+    /// shortly after (the underlying Nock interpreter polls the
+    /// cancel flag at branch / opcode boundaries).
+    fn cancel(&self);
     /// Run one mining attempt. The caller pre-builds the `[version
     /// header nonce target pow-len]` poke slab via [`build_candidate_poke`]
     /// (the candidate isn't shared cross-thread because `NounSlab` is
@@ -108,8 +112,8 @@ impl Worker for SerfWorker {
     fn id(&self) -> WorkerId {
         self.id
     }
-    fn cancel_token(&self) -> NockCancelToken {
-        self.cancel.clone()
+    fn cancel(&self) {
+        self.cancel.cancel();
     }
     async fn mine_attempt(&self, poke: NounSlab) -> Result<MineResult, WorkerError> {
         debug!(worker_id = self.id, "poking miner serf with candidate");
