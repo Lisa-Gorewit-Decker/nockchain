@@ -68,6 +68,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "ai-pow-mining"
+version = "0.1.0"
+dependencies = [
+ "ai-pow",
+ "anyhow",
+ "blake3",
+ "clap",
+ "gnort",
+ "hex",
+ "nockapp",
+ "nockvm",
+ "nockvm_macros",
+ "thiserror 2.0.18",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "ai-pow-zk"
 version = "0.1.0-experimental"
 dependencies = [
@@ -5706,6 +5724,7 @@ dependencies = [
  "nockapp-grpc",
  "nockchain-libp2p-io",
  "nockchain-math",
+ "nockchain-mining-common",
  "nockchain-types",
  "nockvm",
  "nockvm_macros",
@@ -5815,6 +5834,15 @@ dependencies = [
  "quickcheck",
  "rkyv",
  "serde",
+ "thiserror 2.0.18",
+ "tracing",
+]
+
+[[package]]
+name = "nockchain-mining-common"
+version = "0.1.0"
+dependencies = [
+ "nockapp",
  "thiserror 2.0.18",
  "tracing",
 ]

@@ -36,6 +36,7 @@ nockapp.workspace = true
 nockapp-grpc.workspace = true
 nockchain-libp2p-io.workspace = true
 nockchain-math.workspace = true
+nockchain-mining-common.workspace = true
 nockchain-types.workspace = true
 nockvm.workspace = true
 nockvm_macros.workspace = true
