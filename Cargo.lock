@@ -68,7 +68,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "ai-pow-mining"
+name = "ai-pow-miner"
 version = "0.1.0"
 dependencies = [
  "ai-pow",

@@ -1,6 +1,6 @@
 //! `ai-pow-mine` — single-attempt mining CLI for the `ai-pow` PoW.
 //!
-//! The minimal entry point on top of `ai_pow_mining::mining::run`.
+//! The minimal entry point on top of `ai_pow_miner::mining::run`.
 //! Useful for smoke tests, benchmark capture, and replaying captured
 //! candidates in a shell without standing up a full node.
 //!
@@ -15,7 +15,7 @@ use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 use ai_pow::params::MatmulParams;
-use ai_pow_mining::{
+use ai_pow_miner::{
     mining, MineOptions, MiningCancel, MiningError, MiningJob, NonceAnchors,
 };
 use anyhow::{anyhow, bail, Context, Result};

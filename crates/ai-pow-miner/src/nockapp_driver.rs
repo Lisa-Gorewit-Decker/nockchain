@@ -38,7 +38,7 @@ use crate::{
 /// Wire enum mirroring the existing `MiningWire` shape in
 /// `crates/nockchain/src/mining.rs` so the kernel-side Hoon can
 /// re-use the established poke vocabulary.
-pub enum AiPowMiningWire {
+pub enum AiPowMinerWire {
     /// Kernel → driver: enable/disable mining.
     Enable,
     /// Kernel → driver: new puzzle. (V1 takes jobs via in-memory
@@ -53,24 +53,24 @@ pub enum AiPowMiningWire {
     MiningError,
 }
 
-impl AiPowMiningWire {
+impl AiPowMinerWire {
     pub fn label(&self) -> &'static str {
         match self {
-            AiPowMiningWire::Enable => "enable",
-            AiPowMiningWire::Candidate => "candidate",
-            AiPowMiningWire::Mined => "mined",
-            AiPowMiningWire::MiningError => "mining-error",
+            AiPowMinerWire::Enable => "enable",
+            AiPowMinerWire::Candidate => "candidate",
+            AiPowMinerWire::Mined => "mined",
+            AiPowMinerWire::MiningError => "mining-error",
         }
     }
 }
 
-impl Wire for AiPowMiningWire {
+impl Wire for AiPowMinerWire {
     const VERSION: u64 = 1;
-    const SOURCE: &'static str = "ai-pow-mining";
+    const SOURCE: &'static str = "ai-pow-miner";
 
     fn to_wire(&self) -> WireRepr {
         let tags = vec![self.label().into()];
-        WireRepr::new(AiPowMiningWire::SOURCE, AiPowMiningWire::VERSION, tags)
+        WireRepr::new(AiPowMinerWire::SOURCE, AiPowMinerWire::VERSION, tags)
     }
 }
 
@@ -166,7 +166,7 @@ pub fn create_driver(cfg: DriverConfig) -> IODriverFn {
                     let result = tokio::task::spawn_blocking(move || run_owned(job, cancel))
                         .await
                         .map_err(|e| nockapp::nockapp::NockAppError::OtherError(
-                            format!("ai-pow-mining: blocking task join error: {e}")
+                            format!("ai-pow-miner: blocking task join error: {e}")
                         ))?;
                     match result {
                         Ok(sol) => {
@@ -222,7 +222,7 @@ async fn poke_mined(
     let head = D(tas!(b"mined"));
     let payload: Noun = T(&mut slab, &[head, nonce_atom, D(found_idx as u64)]);
     slab.set_root(payload);
-    handle.poke(AiPowMiningWire::Mined.to_wire(), slab).await?;
+    handle.poke(AiPowMinerWire::Mined.to_wire(), slab).await?;
     Ok(())
 }
 
@@ -237,7 +237,7 @@ async fn poke_mining_error(
     let head = bytes_to_atom(&mut slab, b"mining-error");
     let payload: Noun = T(&mut slab, &[head, msg_atom]);
     slab.set_root(payload);
-    handle.poke(AiPowMiningWire::MiningError.to_wire(), slab).await?;
+    handle.poke(AiPowMinerWire::MiningError.to_wire(), slab).await?;
     Ok(())
 }
 

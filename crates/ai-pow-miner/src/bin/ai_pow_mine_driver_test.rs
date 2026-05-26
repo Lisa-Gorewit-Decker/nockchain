@@ -2,7 +2,7 @@
 //! NockApp mining driver.
 //!
 //! Constructs a `NockAppHandle` from raw channel primitives (no
-//! real Hoon kernel), spawns the ai-pow-mining driver against it,
+//! real Hoon kernel), spawns the ai-pow-miner driver against it,
 //! pushes one TEST_SMALL / trivial-target job in, observes
 //! the driver's `DriverEvent::Mined`, and acks the outbound
 //! `[%mined ...]` poke as a stand-in kernel would.
@@ -15,10 +15,10 @@ use std::time::Duration;
 
 use ai_pow::params::MatmulParams;
 use ai_pow::synth::synth_matrices;
-use ai_pow_mining::nockapp_driver::{
-    create_driver, AiPowMiningWire, DriverConfig, DriverEvent, OwnedMiningJob,
+use ai_pow_miner::nockapp_driver::{
+    create_driver, AiPowMinerWire, DriverConfig, DriverEvent, OwnedMiningJob,
 };
-use ai_pow_mining::{MineOptions, NonceAnchors};
+use ai_pow_miner::{MineOptions, NonceAnchors};
 use nockapp::nockapp::driver::{IOAction, NockAppHandle, PokeResult};
 use nockapp::nockapp::metrics::NockAppMetrics;
 use nockapp::nockapp::wire::Wire;
@@ -61,7 +61,7 @@ async fn main() -> anyhow::Result<()> {
                         wire.version,
                         pokes_observed_clone.load(Ordering::SeqCst),
                     );
-                    debug_assert_eq!(wire.source, <AiPowMiningWire as Wire>::SOURCE);
+                    debug_assert_eq!(wire.source, <AiPowMinerWire as Wire>::SOURCE);
                     let _ = ack_channel.send(PokeResult::Ack);
                 }
                 IOAction::Peek { .. } => {
@@ -119,7 +119,7 @@ async fn main() -> anyhow::Result<()> {
                         found_idx, extranonces_tried, elapsed,
                     );
                     // Sanity: nonce parses cleanly.
-                    let _ = ai_pow_mining::parse_ncmn_nonce(&nonce)
+                    let _ = ai_pow_miner::parse_ncmn_nonce(&nonce)
                         .expect("nonce parses");
                     got_mined = Some((found_idx, extranonces_tried, elapsed));
                     return Ok::<_, anyhow::Error>(());

@@ -261,7 +261,7 @@ where
 
 /// External-target variant of the per-nonce mining attempt. The
 /// chain's difficulty bound is passed explicitly rather than derived
-/// from `params.difficulty_bits` — needed by `ai-pow-mining` where
+/// from `params.difficulty_bits` — needed by `ai-pow-miner` where
 /// the chain supplies an arbitrary 32-byte target (which Pearl-style
 /// `difficulty_bits` cannot express precisely).
 ///

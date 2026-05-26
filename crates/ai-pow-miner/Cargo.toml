@@ -1,12 +1,12 @@
 [package]
-name = "ai-pow-mining"
+name = "ai-pow-miner"
 version.workspace = true
 edition.workspace = true
 description = "Block-mining driver for the ai-pow PoW puzzle: nonce loop, cancellation, and a NockApp-compatible driver. Wraps ai-pow with merge-mining-compatible nonce shape."
 publish = false
 
 [lib]
-name = "ai_pow_mining"
+name = "ai_pow_miner"
 path = "src/lib.rs"
 
 [[bin]]

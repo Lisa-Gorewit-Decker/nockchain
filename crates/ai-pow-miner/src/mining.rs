@@ -92,7 +92,7 @@ pub fn run(
         if let Some(interval) = opts.progress_interval {
             if last_progress.elapsed() >= interval {
                 tracing::info!(
-                    target: "ai_pow_mining",
+                    target: "ai_pow_miner",
                     extranonces = stats.extranonces_tried,
                     elapsed_s = stats.elapsed.as_secs_f64(),
                     rate = stats.hash_rate_per_sec(),
@@ -116,7 +116,7 @@ mod tests {
     /// Stable puzzle-id stand-in for tests. Production callers will
     /// derive this from layer/epoch/params_tag.
     fn puzzle_id() -> Vec<u8> {
-        b"ai-pow-mining-test-puzzle-id-v1".to_vec()
+        b"ai-pow-miner-test-puzzle-id-v1".to_vec()
     }
 
     fn test_job<'a>(

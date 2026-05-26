@@ -1,4 +1,4 @@
-//! `ai-pow-mining` — block-mining driver for the `ai-pow` PoW.
+//! `ai-pow-miner` — block-mining driver for the `ai-pow` PoW.
 //!
 //! Wraps [`ai_pow`] with:
 //! * The NCMN-v1 **nonce shape** (the chain-required Nockchain header
@@ -37,7 +37,7 @@ use ai_pow::proof::MatmulProof;
 //                                                  zero = "no external chain
 //                                                  bound." Reserved for a
 //                                                  future Pearl-compat
-//                                                  binding — ai-pow-mining
+//                                                  binding — ai-pow-miner
 //                                                  treats it as opaque bytes.
 //   72   extranonce          8 bytes (u64 BE)     miner's search variable
 //   ──── total 80 bytes
