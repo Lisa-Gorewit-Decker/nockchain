@@ -830,8 +830,19 @@
     ::  filters for its own effect head. AI mining always uses %3.
     ?.  (gte candidate-height ai-pow-activation-height.constants.k)
       [zk-effect effs]
+    ::  Stage 6: per-puzzle ASERT parent. For AI, walk back from
+    ::  the candidate's global parent to the nearest %ai-pow ancestor.
+    ::  When no AI ancestor exists yet (bootstrap), compute-target-
+    ::  ai-asert degenerates to anchor-target; passing the global
+    ::  parent in that case is safe because the function never
+    ::  consults min-timestamps on the bootstrap path.
+    =/  ai-parent=block-id:t
+      =/  found=(unit block-id:t)
+        (find-same-type-ancestor:con parent-bid %ai-pow)
+      ?~  found  parent-bid
+      u.found
     =/  ai-target=bignum:bignum:t
-      (compute-target-ai-asert:con candidate-height parent-bid)
+      (compute-target-ai-asert:con candidate-height ai-parent)
     =/  ai-effect=effect:dk  [%mine-ai %3 commit ai-target pow-len:t]
     [zk-effect ai-effect effs]
     ::
@@ -1779,8 +1790,15 @@
         ::  %mine-ai with the AI puzzle's independently-computed target.
         ?.  (gte candidate-height ai-pow-activation-height.constants.k)
           [%mine-zk zk-mine-start]~
+        ::  Stage 6: per-puzzle ASERT parent for AI; mirrors the
+        ::  candidate-emission path in update-candidate-block.
+        =/  ai-parent=block-id:t
+          =/  found=(unit block-id:t)
+            (find-same-type-ancestor:con parent-bid %ai-pow)
+          ?~  found  parent-bid
+          u.found
         =/  ai-target=bignum:bignum:t
-          (compute-target-ai-asert:con candidate-height parent-bid)
+          (compute-target-ai-asert:con candidate-height ai-parent)
         ::  AI mining always uses %3 (the AI proof arm). proof-version
         ::  computed above is the ZK version for this height and is
         ::  irrelevant to the AI mine-start dispatch.

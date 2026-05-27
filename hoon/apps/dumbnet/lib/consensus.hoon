@@ -176,32 +176,35 @@
     ==
   =(version legacy)
 ::
-::  +same-type-ancestor: walks parent edges from `pag` and returns
-::  the immediate same-puzzle-type ancestor's block-id, or ~ if no
-::  such ancestor exists within the bounded walk window.
+::  +find-same-type-ancestor: starting at `start-bid` (a block-id in
+::  blocks.c), walks parent edges and returns the FIRST block-id at
+::  or below start-bid whose puzzle-type matches `target-type`.
+::  Returns ~ if no such block exists within the bounded walk window
+::  (cap = 2 * min-past-blocks * 2 = 44 global hops — §4.2 of the
+::  Stage 6 design).
 ::
-::  Used by S3 to route ASERT call sites — the per-puzzle parent
-::  digest. Cap = 2 * min-past-blocks * 2 = 44 global hops (§4.2
-::  of the Stage 6 design); past that, the puzzle has stalled too
-::  long and we bootstrap to anchor (caller's responsibility).
-++  same-type-ancestor
-  |=  pag=local-page:t
+::  Used by S3 to route ASERT call sites: pass the candidate's
+::  parent + the candidate's puzzle-type, get back the per-puzzle
+::  parent-digest to feed to compute-target-*-asert.
+::
+::  When start-bid itself matches target-type, returns `start-bid.
+::  This lets callers just say "find me the nearest %dumb-zkpow at
+::  or above the heaviest" without an outer existence check.
+++  find-same-type-ancestor
+  |=  [start-bid=block-id:t target-type=?(%dumb-zkpow %ai-pow)]
   ^-  (unit block-id:t)
-  =/  target-type=?(%dumb-zkpow %ai-pow)
-    (block-id-to-puzzle-type ~(digest get:local-page:t pag))
   =/  cap=@  (mul 2 (mul min-past-blocks:t 2))  ::  44
   =/  hops=@  0
-  =/  cur=local-page:t  pag
+  =/  cur-bid=block-id:t  start-bid
   |-
+  =/  cur=local-page:t  (~(got h-by blocks.c) cur-bid)
+  ?:  =(target-type (block-id-to-puzzle-type cur-bid))
+    `cur-bid
   ?:  =(*page-number:t ~(height get:local-page:t cur))
-    ~  ::  hit genesis without finding a same-type ancestor
+    ~  ::  hit genesis without a same-type match
   ?:  (gte hops cap)
     ~  ::  exceeded the walk window
-  =/  parent-bid=block-id:t  ~(parent get:local-page:t cur)
-  =/  parent-pag=local-page:t  (~(got h-by blocks.c) parent-bid)
-  ?:  =(target-type (block-id-to-puzzle-type parent-bid))
-    `parent-bid
-  $(cur parent-pag, hops +(hops))
+  $(cur-bid ~(parent get:local-page:t cur), hops +(hops))
 ::
 ::  +set-genesis-seal: set .genesis-seal
 ++  set-genesis-seal
@@ -606,10 +609,23 @@
   ?.  =(~(height get:page:t pag) +(~(height get:page:t par)))
     [%.n %page-height-invalid]
   ::
-  ::  check target
+  ::  check target — Stage 6: dispatch by puzzle-type. ZK and AI
+  ::  blocks each use their own ASERT with the per-puzzle parent
+  ::  found via +find-same-type-ancestor. Pre-asert-activation
+  ::  falls back to the epoch-stored target (unchanged).
   =/  expected-target
     ?:  (post-asert-activation:t ~(height get:page:t pag))
-      (compute-target-asert ~(height get:page:t pag) ~(parent get:page:t pag))
+      =/  block-version=proof-version:sp  version:(need ~(pow get:page:t pag))
+      =/  block-puzzle-type=?(%dumb-zkpow %ai-pow)
+        (version-to-puzzle-type block-version)
+      =/  same-type-parent=block-id:t
+        =/  found=(unit block-id:t)
+          (find-same-type-ancestor ~(parent get:page:t pag) block-puzzle-type)
+        ?~  found  ~(parent get:page:t pag)  ::  bootstrap: degenerate
+        u.found
+      ?:  =(%dumb-zkpow block-puzzle-type)
+        (compute-target-zk-asert ~(height get:page:t pag) same-type-parent)
+      (compute-target-ai-asert ~(height get:page:t pag) same-type-parent)
     (~(got h-by targets.c) ~(parent get:page:t pag))
   ?.  =(~(target get:page:t pag) expected-target)
     [%.n %page-target-invalid]

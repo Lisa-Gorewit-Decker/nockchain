@@ -296,7 +296,19 @@
       ::  candidate-height. Each regime uses its own hardcoded anchor
       ::  median-of-11 (phase-2 of 014-aletheia + the AI activation
       ::  fork).
-      (~(compute-target-zk-asert dcon c d blockchain-constants) candidate-height u.heaviest-block.c)
+      ::
+      ::  Stage 6: parent-digest is the most recent ZK ancestor of
+      ::  the heaviest tip (which may itself be ZK). Pre-AI-
+      ::  activation the heaviest is always ZK, so this resolves to
+      ::  heaviest immediately. Post-AI-activation the heaviest may
+      ::  be an AI block, in which case find-same-type-ancestor
+      ::  walks back to the nearest ZK ancestor.
+      =/  zk-parent=block-id:t
+        =/  found=(unit block-id:t)
+          (~(find-same-type-ancestor dcon c d blockchain-constants) u.heaviest-block.c %dumb-zkpow)
+        ?~  found  u.heaviest-block.c  ::  bootstrap: degenerate to global heaviest
+        u.found
+      (~(compute-target-zk-asert dcon c d blockchain-constants) candidate-height zk-parent)
     (~(got h-by targets.c) u.heaviest-block.c)
   =.  candidate-block.m
     ?^  -.parent
