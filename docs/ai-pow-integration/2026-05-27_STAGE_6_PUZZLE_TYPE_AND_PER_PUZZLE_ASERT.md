@@ -522,15 +522,69 @@ Each stage is its own commit. Push only after the stage's gate is green.
 
 ---
 
-## 12. Verification summary (what "done" looks like)
+## 11b. Implementation log
 
-- All six stages (S0–S5) committed with passing gates.
-- `scripts/fakenet-zk-pow-smoke.sh` and `scripts/fakenet-zk-pow-post-ai-smoke.sh` green.
-- `scripts/mainnet-sync-compat.sh` reaches mainnet tip with zero panics
-  and the post-migration `block-versions` map matches height-derived
-  expectations for every accepted block.
-- A short residual section appended noting AI verifier for `%3` is still
-  stubbed.
-- Task #152 flipped to `completed` with honest scope ("`%3` arm +
-  version-based dispatch + per-puzzle walker wired; `%3` body shape and
-  AI verifier remain deferred").
+S0–S4 landed in this session as discrete commits. See git log for
+details; each stage's commit body documents what changed and how
+it was validated.
+
+| Stage | Commit  | Status      | Validation                                                                                                                                  |
+|-------|---------|-------------|---------------------------------------------------------------------------------------------------------------------------------------------|
+| S0    | (none)  | done        | Baseline confirmed: both fakenet smokes green at 827ca40 (pre-S6 cache commit).                                                             |
+| S1    | 49972e1 | done        | `make assets/dumb.jam` + both fakenet smokes green. Schema landed: %3 arm on +$ proof, block-versions map on consensus-state, kernel-state-11. |
+| S2    | 6e0499b | done        | Per-puzzle walker + version helpers + check-pow flip. Both fakenet smokes green; per-puzzle walker bit-identical to legacy on pre-activation chains. |
+| S3    | 754fe35 | done        | Three ASERT call sites route through +find-same-type-ancestor (miner.hoon:299, inner.hoon:834+1783, consensus.hoon validate-page-without-txs). |
+| S4    | 7b13b19 | done        | Post-ai smoke strengthened: explicit no-proof-version-invalid assertion. Catches predicate-level regressions on every CI run.               |
+| S5    | TBD     | in progress | Mainnet sync started on the S6 kernel (post-S4 build) over the existing data dir to exercise the state-10-to-11 migration on real state. **See §12 below for the in-flight status + acceptance criteria.** |
+
+## 12. Verification summary
+
+### Done in this session
+
+- **S0–S4 fully validated** via fakenet smokes; commits pushed.
+- **S1 schema migration validated on REAL mainnet state**: the
+  S6 binary booted against the existing pre-S6 data dir
+  (state-10) at h=1439, the `state-10-to-11` migration arm fired
+  ("State upgrade required" logged), the empty `block-versions`
+  map was materialized, and sync resumed cleanly at h=1440. The
+  highest-risk migration scenario — applying the schema bump to
+  a live, partially-synced consensus state — is **proven to
+  work** on real mainnet data. Sync continued processing
+  subsequent blocks at the normal rate with zero panics, zero
+  proof-version-invalid rejections, and zero cache-empty events.
+- Both fakenet smokes (pre + post-activation) green throughout.
+
+### Honest residual
+
+- **Full sync to mainnet tip is in flight.** As of S5 commit
+  time, the post-S6 sync had validated h=0..~1500. Reaching the
+  current mainnet tip (~100k+ blocks at the time of the AI
+  activation height of 95000) takes hours of background sync;
+  it was not feasible to wait for completion in this session.
+  The acceptance criterion (zero panics, zero pre-activation
+  block rejections, full chain validation through tip) is
+  monitored by the running script (see
+  `scripts/mainnet-sync-compat.sh`).
+- **`%3` body shape + AI verifier remain deferred** (separate
+  task). Stage 6 wired the dispatch + walker + per-puzzle
+  ASERT; the `%3` arm carries a placeholder body. The stub
+  `+do-pow` arm hard-rejects all `%3` proofs, so no AI block
+  can land until that task completes.
+- **Adversarial harness for arbitrary-version block injection
+  is deferred.** S4 strengthens the post-ai smoke with an
+  explicit no-`proof-version-invalid` assertion (catches
+  predicate regressions on every CI run). A deeper test
+  spawning a malicious miner to craft wrong-version blocks
+  would require building a custom miner harness, beyond the
+  in-tree test infrastructure.
+
+### Task accounting
+
+- Task #152 will flip to `completed` only after the in-flight
+  mainnet sync reaches tip with the documented acceptance
+  criteria. As of the S5 commit, scope is honestly described as
+  "S6 dispatch + walker + per-puzzle ASERT wired and proven to
+  migrate cleanly on real mainnet state; full-chain compat
+  validation in progress as a background sync".
+- Task #155 (mainnet sync compat) remains in_progress until
+  the same condition.
