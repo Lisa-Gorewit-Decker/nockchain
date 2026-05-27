@@ -94,8 +94,16 @@
       [%0 (from-b58:hash:t '7pR2bvzoMvfFcxXaHv4ERm8AgEnExcZLuEsjNgLkJziBkqBLidLg39Y')]
   ==
 ::
-::  map a block heigh to a corresponding proof version
-++  height-to-proof-version
+::  map a block heigh to a corresponding ZK proof version
+::
+::  Pre-Stage-6 behavior: this was the authoritative "what proof
+::  version is legal at this height" oracle. After Stage 6, post-
+::  activation heights accept either %2 (ZK) or %3 (AI); use
+::  +proof-version-valid-at-height for the activation-aware
+::  predicate. This arm retains the pre-activation deterministic
+::  mapping and is used as the fallback for pre-activation
+::  block-ids in +block-id-to-proof-version.
+++  height-to-proof-version-legacy
   |=  height=page-number:t
   ^-  proof-version:sp
   ?:  (gte height proof-version-2-start)
@@ -103,10 +111,97 @@
   ?:  (gte height proof-version-1-start)
     %1
   %0
+::  Alias kept temporarily for call-site compatibility while Stage 6
+::  call-site updates land. Identical behavior to the legacy arm.
+++  height-to-proof-version  height-to-proof-version-legacy
 :: What block to start using proof version 2
 ++  proof-version-2-start  12.000
 ::  What block to start using proof version 1
 ++  proof-version-1-start  6.750
+::
+::  Stage 6 helpers: version <-> puzzle-type, per-block version lookup,
+::  activation-aware predicate, same-type-ancestor walker.
+::
+::  +version-to-puzzle-type: maps a proof-version (the discriminator
+::  shared by all proof shapes) to a puzzle-type tag.
+::    %0/%1/%2 → %dumb-zkpow (ZK STARK PoW puzzle)
+::    %3       → %ai-pow     (AI PoW puzzle)
+::  Single source of truth for the version↔puzzle mapping. All
+::  consumers MUST go through this arm.
+++  version-to-puzzle-type
+  |=  version=proof-version:sp
+  ^-  ?(%dumb-zkpow %ai-pow)
+  ?:  ?=(%3 version)  %ai-pow
+  %dumb-zkpow
+::
+::  +block-id-to-proof-version: returns the proof version of an
+::  already-accepted block, given its block-id. Reads the
+::  block-versions map first (post-activation blocks); falls back
+::  to the deterministic height-derived map for pre-activation
+::  block-ids (block-versions is post-activation-only — see
+::  types.hoon consensus-state-10 doc).
+++  block-id-to-proof-version
+  |=  bid=block-id:t
+  ^-  proof-version:sp
+  =/  cached=(unit proof-version:sp)  (~(get h-by block-versions.c) bid)
+  ?^  cached  u.cached
+  =/  pag=local-page:t  (~(got h-by blocks.c) bid)
+  (height-to-proof-version-legacy ~(height get:local-page:t pag))
+::
+::  +block-id-to-puzzle-type: composition. Consumers walking
+::  ancestors should use this.
+++  block-id-to-puzzle-type
+  |=  bid=block-id:t
+  ^-  ?(%dumb-zkpow %ai-pow)
+  (version-to-puzzle-type (block-id-to-proof-version bid))
+::
+::  +proof-version-valid-at-height: Stage 6 replacement for the
+::  height-equality check in +check-pow.
+::    pre-activation: must equal the height-derived legacy ZK version
+::    post-activation: legacy ZK version at this height OR %3 (AI)
+::
+::  The post-activation legacy branch lets fakenets (with their
+::  low-height activation overrides) continue to use the height-
+::  derived ZK version (%0/%1/%2) for ZK blocks instead of forcing
+::  the latest %2. On mainnet (activation = 95000 > 12000), legacy
+::  at post-activation height = %2 by definition; on fakenet
+::  (activation = 2), legacy at height 2 = %0.
+++  proof-version-valid-at-height
+  |=  [version=proof-version:sp height=page-number:t]
+  ^-  ?
+  =/  legacy=proof-version:sp  (height-to-proof-version-legacy height)
+  ?:  (gte height ai-pow-activation-height.blockchain-constants)
+    ?|  ?=(%3 version)
+        =(version legacy)
+    ==
+  =(version legacy)
+::
+::  +same-type-ancestor: walks parent edges from `pag` and returns
+::  the immediate same-puzzle-type ancestor's block-id, or ~ if no
+::  such ancestor exists within the bounded walk window.
+::
+::  Used by S3 to route ASERT call sites — the per-puzzle parent
+::  digest. Cap = 2 * min-past-blocks * 2 = 44 global hops (§4.2
+::  of the Stage 6 design); past that, the puzzle has stalled too
+::  long and we bootstrap to anchor (caller's responsibility).
+++  same-type-ancestor
+  |=  pag=local-page:t
+  ^-  (unit block-id:t)
+  =/  target-type=?(%dumb-zkpow %ai-pow)
+    (block-id-to-puzzle-type ~(digest get:local-page:t pag))
+  =/  cap=@  (mul 2 (mul min-past-blocks:t 2))  ::  44
+  =/  hops=@  0
+  =/  cur=local-page:t  pag
+  |-
+  ?:  =(*page-number:t ~(height get:local-page:t cur))
+    ~  ::  hit genesis without finding a same-type ancestor
+  ?:  (gte hops cap)
+    ~  ::  exceeded the walk window
+  =/  parent-bid=block-id:t  ~(parent get:local-page:t cur)
+  =/  parent-pag=local-page:t  (~(got h-by blocks.c) parent-bid)
+  ?:  =(target-type (block-id-to-puzzle-type parent-bid))
+    `parent-bid
+  $(cur parent-pag, hops +(hops))
 ::
 ::  +set-genesis-seal: set .genesis-seal
 ++  set-genesis-seal
@@ -459,13 +554,14 @@
 ++  validate-page-without-txs
   |=  [pag=page:t now-secs=@]
   ^-  (reason:dk ~)
-  =/  version  (height-to-proof-version ~(height get:page:t pag))
+  =/  block-version=proof-version:sp  version:(need ~(pow get:page:t pag))
+  =/  block-height=@  ~(height get:page:t pag)
   =/  version-check=?
     ?.  check-pow-flag:t
       %.y
-    =(version version:(need ~(pow get:page:t pag)))
+    (proof-version-valid-at-height block-version block-height)
   ?.  version-check
-    ~&  [%expected-vs-actual version version:(need ~(pow get:page:t pag))]
+    ~&  [%proof-version-invalid block-version block-height]
     [%.n %proof-version-invalid]
   =/  par=page:t  (to-page:local-page:t (~(got h-by blocks.c) ~(parent get:page:t pag)))
   ::  this is already checked in +heard-block but is done here again
@@ -721,28 +817,68 @@
     ~
   $(height prev-height, ids [u.prev-id ids], count +(count))
 ::
-::  +update-min-timestamps: sets min timestamp of children of .id
+::  +update-min-timestamps: sets the median-of-11 timestamp of a new
+::    block, keyed by its digest. Stage 6 semantics: median of the
+::    most recent min-past-blocks timestamps whose blocks are the
+::    SAME puzzle-type as the new block, walked back from pag's
+::    parent edge, skipping wrong-type hops. The new block's own
+::    timestamp is always included as the first entry (matches
+::    pre-Stage-6 convention).
+::
+::    Pre-activation invariant: every walk hop's puzzle-type is
+::    %dumb-zkpow (height-derived legacy fallback in
+::    +block-id-to-proof-version), pag-type is also %dumb-zkpow.
+::    Filter is a no-op; output is bit-identical to the pre-Stage-6
+::    walker. This is the compat anchor — verified end-to-end by
+::    the pre-activation fakenet smoke + mainnet sync (S5).
+::
+::    Bounded walk: cap of 2 * min-past-blocks * 2 = 44 global hops
+::    to prevent unbounded walks when one puzzle stalls for many
+::    blocks of the other puzzle. On cap exit with fewer than
+::    min-past-blocks collected, we take the median of what we
+::    have (or fall back to pag's own timestamp if nothing else
+::    matched — pag is always included).
 ::
 ++  update-min-timestamps
   |=  [now=@da pag=page:t]
   ^-  (h-map block-id:t @)
+  =/  pag-version=proof-version:sp  version:(need ~(pow get:page:t pag))
+  =/  pag-type=?(%dumb-zkpow %ai-pow)
+    (version-to-puzzle-type pag-version)
   =/  min-timestamp=@
-    ::  get timestamps of up to N=min-past-blocks prior blocks.
+    ::  collect up to N=min-past-blocks same-type timestamps,
+    ::  starting with pag itself and walking parent edges.
     =|  prev-timestamps=(list @)
-    =/  b=@  (dec min-past-blocks:t)  :: iteration counter
-    =/  cur-block=page:t  pag
+    ::  pag is always type-matching (it IS pag-type); seed with its
+    ::  timestamp and one collected count.
+    =.  prev-timestamps  [~(timestamp get:page:t pag) prev-timestamps]
+    =/  collected=@  1
+    =/  hops=@  0
+    =/  cap=@  (mul 2 (mul min-past-blocks:t 2))  ::  44
+    =/  cur-bid=block-id:t  ~(parent get:page:t pag)
+    =/  cur-height=@  ~(height get:page:t pag)
     |-
-    =.  prev-timestamps  [~(timestamp get:page:t cur-block) prev-timestamps]
-    ?:  ?|  =(0 b)  :: we've looked back +min-past-blocks blocks
-            ::
-            :: we've reached genesis block
-            =(*page-number:t ~(height get:page:t cur-block))
-        ==
-      ::  return median of timestamps
+    ?:  =(collected min-past-blocks:t)
+      ::  collected enough; take median
       (median:t prev-timestamps)
+    ?:  =(*page-number:t cur-height)
+      ::  reached genesis; take median of what we have
+      (median:t prev-timestamps)
+    ?:  (gte hops cap)
+      ::  exceeded walk window; take median of what we have
+      (median:t prev-timestamps)
+    =/  cur-lp=local-page:t  (~(got h-by blocks.c) cur-bid)
+    =/  cur-page=page:t  (to-page:local-page:t cur-lp)
+    =/  cur-type=?(%dumb-zkpow %ai-pow)
+      (block-id-to-puzzle-type cur-bid)
+    =?  prev-timestamps  =(cur-type pag-type)
+      [~(timestamp get:page:t cur-page) prev-timestamps]
+    =?  collected  =(cur-type pag-type)
+      +(collected)
     %=  $
-      b          (dec b)
-      cur-block  (to-page:local-page:t (~(got h-by blocks.c) ~(parent get:page:t cur-block)))
+      hops        +(hops)
+      cur-bid     ~(parent get:local-page:t cur-lp)
+      cur-height  ~(height get:local-page:t cur-lp)
     ==
   ::
   (~(put h-by min-timestamps.c) ~(digest get:page:t pag) min-timestamp)
@@ -757,6 +893,14 @@
   ?<  (~(has h-by blocks.c) ~(digest get:page:t pag))
   ?<  (~(has h-by pending-blocks.c) ~(digest get:page:t pag))
   =.  blocks.c  (~(put h-by blocks.c) ~(digest get:page:t pag) (to-local-page:page:t pag))
+  ::  Stage 6: populate block-versions for post-activation blocks.
+  ::  Pre-activation block-ids are NOT inserted; their version is
+  ::  derived deterministically from height by +block-id-to-proof-version.
+  =?  block-versions.c
+      (gte ~(height get:page:t pag) ai-pow-activation-height.blockchain-constants)
+    %+  ~(put h-by block-versions.c)
+      ~(digest get:page:t pag)
+    version:(need ~(pow get:page:t pag))
   %-  ~(rep z-in ~(tx-ids get:page:t pag))
   |=  [=tx-id:t c=_c]
   =.  blocks-needed-by.c  (~(put h-ju blocks-needed-by.c) tx-id ~(digest get:page:t pag))
