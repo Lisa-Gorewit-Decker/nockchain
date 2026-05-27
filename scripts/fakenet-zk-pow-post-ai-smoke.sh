@@ -163,6 +163,17 @@ if (( SAW_BLOCK == 1 )); then
         exit 6
     fi
     echo "[ok   ] no cache-empty panic in node log — cache populated + read correctly"
+    # Stage 6 adversarial gate: kernel must NOT reject any block with
+    # %proof-version-invalid. The predicate accepts the height-derived
+    # legacy ZK version OR %3 (AI) post-activation. If anything else
+    # were accepted by the miner, this catches it.
+    if grep -q "proof-version-invalid" "$NODE_LOG" 2>/dev/null; then
+        echo "[fail ] kernel rejected block(s) with proof-version-invalid — predicate is wrong"
+        grep -E "proof-version-invalid" "$NODE_LOG" | head -5
+        EXIT_CODE=7
+        exit 7
+    fi
+    echo "[ok   ] no proof-version-invalid rejections — Stage 6 version-validity predicate intact"
     EXIT_CODE=0
 else
     echo "[fail ] timeout waiting for accepted block at height >= $MIN_HEIGHT"
