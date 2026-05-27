@@ -23,7 +23,12 @@
 ::
 +$  proof-objects  (list proof-data)
 ::
-+$  proof-version  ?(%2 %1 %0)
+::  proof-version: discriminates proof shapes.
+::    %0/%1/%2: ZK STARK proof variants (ZK PoW puzzle).
+::    %3: AI PoW puzzle proof. Body shape is placeholder until the
+::        AI-verifier task lands the real shape. version-to-puzzle-type
+::        in consensus.hoon maps %0/%1/%2 -> %dumb-zkpow, %3 -> %ai-pow.
++$  proof-version  ?(%3 %2 %1 %0)
 +$  proof
   $%  $:  version=%2
           objects=proof-objects
@@ -42,6 +47,19 @@
           hashes=(list noun-digest:tip5)
           read-index=@
       ==
+    ::
+      ::  %3: AI PoW arm. Structurally identical to %0/%1/%2 so the
+      ::  proof-stream door (|_ proof, ztd/five.hoon) and the ZK
+      ::  helpers (get-pow, hash-proof) can dispatch without case
+      ::  analysis on every field access. The AI-proof body is carried
+      ::  inside `objects` as one or more proof-data variants
+      ::  (placeholder shape; real arm lands with the AI verifier).
+      ::  ZK helpers crash on %3 via explicit ?= guards.
+      $:  version=%3
+          objects=proof-objects
+          hashes=(list noun-digest:tip5)
+          read-index=@
+      ==
   ==
 ::
 +$  tip5-hash-atom  @ux
@@ -53,6 +71,10 @@
   ~/  %get-pow
   |=  p=proof
   ^-  proof
+  ::  %3 (AI) has no proof-objects; it's an opaque atom. The ZK pow
+  ::  extraction helper is meaningless for AI; callers that reach here
+  ::  for a %3 proof are calling the wrong helper.
+  ?:  ?=(%3 -.p)  ~|(%get-pow-not-defined-for-v3 !!)
   p(objects (scag pow-items objects.p))
 ::
 ++  proof-to-pow
@@ -71,6 +93,7 @@
   ~/  %hash-proof
   |=  p=proof
   ^-  noun-digest:tip5
+  ?:  ?=(%3 -.p)  ~|(%hash-proof-not-defined-for-v3 !!)
   =/  rng  (absorb-proof-objects objects.p ~)
   =^  lis=(list belt)  rng  (belts:rng 5)
   =-  ?>  ?=(noun-digest:tip5 -)  -

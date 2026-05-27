@@ -619,6 +619,7 @@
       %0  [%& %0 objects.proof ~ 0]
       %1  [%& %1 objects.proof ~ 0]
       %2  [%& %2 objects.proof ~ 0]
+      %3  ~|(%zk-prover-cannot-generate-v3-ai-proof !!)
     ==
   ::
   ::

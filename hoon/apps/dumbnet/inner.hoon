@@ -36,16 +36,16 @@
     ~&  [%nockchain-state-version -.arg]
     ::  cut
     |^
-    =.  k  ~>  %bout  (update-constants (check-checkpoints (state-n-to-10 arg)))
+    =.  k  ~>  %bout  (update-constants (check-checkpoints (state-n-to-11 arg)))
     =.  c.k  ~>  %bout  check-and-repair:con
     ~|  %v1-phase-must-be-lte-zk-asert-phase
     ?>  (lte v1-phase.constants.k phase.zk-asert.constants.k)
     k
     ::  this arm should be renamed each state upgrade to state-n-to-[latest] and extended to loop through all upgrades
-    ++  state-n-to-10
+    ++  state-n-to-11
       |=  arg=load-kernel-state:dk
       ^-  kernel-state:dk
-      ?.  ?=(%10 -.arg)
+      ?.  ?=(%11 -.arg)
         ~>  %slog.[0 'load: State upgrade required']
         ?-  -.arg
             ::
@@ -59,8 +59,50 @@
           %7   $(arg (state-7-to-8 arg))
           %8   $(arg (state-8-to-9 arg))
           %9   $(arg (state-9-to-10 arg))
+          %10  $(arg (state-10-to-11 arg))
         ==
       arg
+    ::
+    ::  upgrade kernel state 10 to kernel state 11
+    ::    consensus-state gained a block-versions map (block-id ->
+    ::    proof-version), populated lazily at post-activation
+    ::    accept-block only. Migration is trivial: initialize the map
+    ::    to empty. No backfill of historical pre-activation blocks
+    ::    is needed because block-id-to-proof-version (consensus.hoon)
+    ::    falls back to the deterministic height->version map for any
+    ::    block-id not in block-versions.
+    ::
+    ::    Other consensus-state-9 fields carry forward unchanged.
+    ::    derived-state-10, admin-state-9, mining-state-9, and
+    ::    blockchain-constants are unaffected.
+    ++  state-10-to-11
+      |=  arg=kernel-state-10:dk
+      ^-  kernel-state-11:dk
+      =/  new-c=consensus-state-10:dk
+        %*  .  *consensus-state-10:dk
+          blocks-needed-by  blocks-needed-by.c.arg
+          excluded-txs      excluded-txs.c.arg
+          spent-by          spent-by.c.arg
+          pending-blocks    pending-blocks.c.arg
+          balance           balance.c.arg
+          txs               txs.c.arg
+          raw-txs           raw-txs.c.arg
+          blocks            blocks.c.arg
+          heaviest-block    heaviest-block.c.arg
+          min-timestamps    min-timestamps.c.arg
+          epoch-start       epoch-start.c.arg
+          targets           targets.c.arg
+          btc-data          btc-data.c.arg
+          genesis-seal      genesis-seal.c.arg
+          block-versions    *(h-map block-id:t proof-version:sp)
+        ==
+      :*  %11
+          c=new-c
+          a=a.arg
+          m=m.arg
+          d=d.arg
+          constants=constants.arg
+      ==
     ::
     ::  upgrade kernel state 9 to kernel state 10
     ::    derived-state gained two per-puzzle ASERT anchor caches
@@ -779,22 +821,18 @@
         %0  [%mine-zk %0 commit zk-target pow-len:t]
         %1  [%mine-zk %1 commit zk-target pow-len:t]
         %2  [%mine-zk %2 commit zk-target pow-len:t]
+        %3  ~|(%unexpected-v3-in-zk-effect !!)
       ==
     ::  Pre-AI-activation: emit only %mine-zk.
     ::  Post-activation: also emit %mine-ai with the AI puzzle's
     ::  independently-computed target. The two effects share `commit`
     ::  (same block header) but carry different targets — each miner
-    ::  filters for its own effect head.
+    ::  filters for its own effect head. AI mining always uses %3.
     ?.  (gte candidate-height ai-pow-activation-height.constants.k)
       [zk-effect effs]
     =/  ai-target=bignum:bignum:t
       (compute-target-ai-asert:con candidate-height parent-bid)
-    =/  ai-effect
-      ?-  version
-        %0  [%mine-ai %0 commit ai-target pow-len:t]
-        %1  [%mine-ai %1 commit ai-target pow-len:t]
-        %2  [%mine-ai %2 commit ai-target pow-len:t]
-      ==
+    =/  ai-effect=effect:dk  [%mine-ai %3 commit ai-target pow-len:t]
     [zk-effect ai-effect effs]
     ::
     ::  +heard-genesis-block: check if block is a genesis block and decide whether to keep it
@@ -1734,6 +1772,7 @@
             %0  [%0 commit zk-target pow-len:t]
             %1  [%1 commit zk-target pow-len:t]
             %2  [%2 commit zk-target pow-len:t]
+            %3  ~|(%unexpected-v3-in-zk-mine-start !!)
           ==
         :_  k
         ::  Pre-AI-activation: %mine-zk only. Post-activation: also
@@ -1742,12 +1781,10 @@
           [%mine-zk zk-mine-start]~
         =/  ai-target=bignum:bignum:t
           (compute-target-ai-asert:con candidate-height parent-bid)
-        =/  ai-mine-start
-          ?-  proof-version
-            %0  [%0 commit ai-target pow-len:t]
-            %1  [%1 commit ai-target pow-len:t]
-            %2  [%2 commit ai-target pow-len:t]
-          ==
+        ::  AI mining always uses %3 (the AI proof arm). proof-version
+        ::  computed above is the ZK version for this height and is
+        ::  irrelevant to the AI mine-start dispatch.
+        =/  ai-mine-start  [%3 commit ai-target pow-len:t]
         :~  [%mine-zk zk-mine-start]
             [%mine-ai ai-mine-start]
         ==
