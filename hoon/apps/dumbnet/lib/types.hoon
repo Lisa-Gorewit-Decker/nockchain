@@ -18,7 +18,22 @@
       kernel-state-7
       kernel-state-8
       kernel-state-9
+      kernel-state-10
   ==
+::
+::  Per-puzzle ASERT anchor cache. Populated lazily by accept-block when
+::  the first block crossing a puzzle's activation boundary lands. Once
+::  populated, replaces the runtime ancestry walk for subsequent
+::  compute-target calls. For ZK puzzle regime 2, the cached anchor is
+::  the block at ai-pow-activation-height-1 (the immediate parent of
+::  the first post-activation block). For AI puzzle, the cached anchor
+::  is the first %ai-pow block itself.
+::
+::  Replaceable later by hardcoding the values into the corresponding
+::  blockchain-constants AsertParams.anchor-{min-timestamp,target-atom}
+::  fields; the compute path checks the constant first and falls back
+::  to the cache when the constant is the 0 placeholder.
++$  cached-asert-anchor  [min-ts=@ target-atom=@]
 ::
 +$  kernel-state-0
   $:  %0
@@ -166,7 +181,19 @@
       constants=blockchain-constants:v1:dt
   ==
 ::
-+$  kernel-state  kernel-state-9
+::  kernel-state-10 adds per-puzzle ASERT anchor caches to derived-state.
+::  Otherwise identical to kernel-state-9.
++$  kernel-state-10
+  $:  %10
+      c=consensus-state-9
+      a=admin-state-9
+      m=mining-state-9
+    ::
+      d=derived-state-10
+      constants=blockchain-constants:v1:dt
+  ==
+::
++$  kernel-state  kernel-state-10
 ::
 +$  consensus-state-0
   $+  consensus-state-0
@@ -440,7 +467,28 @@
 ::
 +$  derived-state-9  $+(derived-state-9 derived-state-8)
 ::
-+$  derived-state  derived-state-9
+::  derived-state-10 extends derived-state-9 with per-puzzle ASERT
+::  anchor caches. See `+$ cached-asert-anchor` above for the
+::  cache-population contract.
+::    cached-zk-asert-post-ai-anchor: populated by accept-block when
+::      the first block at height >= ai-pow-activation-height lands;
+::      captures the parent block (at activation-height - 1)'s
+::      stored min-timestamp + target (read directly from
+::      consensus-state's min-timestamps + targets maps).
+::    cached-ai-asert-anchor: populated by accept-block when the
+::      first %ai-pow block lands; captures the block itself as the
+::      AI puzzle's anchor. Stays None in the stub-verifier era since
+::      no AI block can land until the deferred-task real verifier
+::      replaces the stub.
++$  derived-state-10
+  $+  derived-state-10
+  $:  highest-block-height=(unit page-number:dt)
+      heaviest-chain=(z-map page-number:dt block-id:dt)
+      cached-zk-asert-post-ai-anchor=(unit cached-asert-anchor)
+      cached-ai-asert-anchor=(unit cached-asert-anchor)
+  ==
+::
++$  derived-state  derived-state-10
 ::
 +$  mining-state-0
   $+  mining-state-0

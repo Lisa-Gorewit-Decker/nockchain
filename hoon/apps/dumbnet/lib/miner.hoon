@@ -7,7 +7,7 @@
 ::
 :: everything to do with mining and mining state
 ::
-|_  [m=mining-state:dk =blockchain-constants:dumb-transact]
+|_  [m=mining-state:dk d=derived-state:dk =blockchain-constants:dumb-transact]
 +*  t  ~(. dumb-transact blockchain-constants)
 +|  %admin
 ::  +set-mining: set .mining
@@ -296,7 +296,7 @@
       ::  candidate-height. Each regime uses its own hardcoded anchor
       ::  median-of-11 (phase-2 of 014-aletheia + the AI activation
       ::  fork).
-      (~(compute-target-zk-asert dcon c blockchain-constants) candidate-height u.heaviest-block.c)
+      (~(compute-target-zk-asert dcon c d blockchain-constants) candidate-height u.heaviest-block.c)
     (~(got h-by targets.c) u.heaviest-block.c)
   =.  candidate-block.m
     ?^  -.parent

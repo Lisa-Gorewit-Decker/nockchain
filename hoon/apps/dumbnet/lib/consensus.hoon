@@ -7,7 +7,7 @@
 ::
 ::  this library is where _every_ update to the consensus state
 ::  occurs, no matter how minor.
-|_  [c=consensus-state:dk =blockchain-constants:dumb-transact]
+|_  [c=consensus-state:dk d=derived-state:dk =blockchain-constants:dumb-transact]
 +*  t  ~(. dumb-transact blockchain-constants)
 ::
 ::  assert preconditions, provide reason for failure
@@ -227,20 +227,41 @@
 ++  compute-target-zk-asert
   |=  [child-height=@ parent-digest=block-id:t]
   ^-  bignum:bignum:t
+  =/  is-post-ai-regime=?
+    (gte child-height phase.zk-asert-post-ai.blockchain-constants)
   =/  params
-    ?:  (gte child-height phase.zk-asert-post-ai.blockchain-constants)
+    ?:  is-post-ai-regime
       zk-asert-post-ai.blockchain-constants
     zk-asert.blockchain-constants
   =/  parent-min-ts=@  (~(got h-by min-timestamps.c) parent-digest)
-  ::  Phase-2 of 014-aletheia: anchor's median-of-11 is a hardcoded
-  ::  protocol constant PER REGIME (replaces the phase-1 ancestry walk).
-  ::  Each ZK ASERT regime has its own anchor and its own pinned
-  ::  anchor-min-timestamp — see +$ zk-asert / +$ zk-asert-post-ai in
-  ::  tx-engine-1.hoon.
-  =/  anchor-min-ts=@  anchor-min-timestamp.params
+  ::  Anchor min-ts + target source priority:
+  ::    1. blockchain-constants AsertParams value if non-zero
+  ::       (phase-2-style hardcoded protocol constant)
+  ::    2. derived-state cache (lazily populated at activation by
+  ::       accept-block via populate-zk-asert-post-ai-anchor:der)
+  ::    3. crash (cache must be populated post-activation)
+  ::  Regime 1 (pre-AI) always uses the phase-2 hardcoded constant.
+  ::  Regime 2 (post-AI) defaults to 0 placeholder + cache; can be
+  ::  hardcoded later for code cleanliness.
+  =/  anchor-min-ts=@
+    ?.  =(0 anchor-min-timestamp.params)
+      anchor-min-timestamp.params
+    ?>  is-post-ai-regime
+    ?~  cached-zk-asert-post-ai-anchor.d
+      ~|  %zk-asert-post-ai-anchor-cache-empty
+      !!
+    min-ts.u.cached-zk-asert-post-ai-anchor.d
+  =/  anchor-target=@
+    ?.  =(0 anchor-target-atom.params)
+      anchor-target-atom.params
+    ?>  is-post-ai-regime
+    ?~  cached-zk-asert-post-ai-anchor.d
+      ~|  %zk-asert-post-ai-anchor-cache-empty
+      !!
+    target-atom.u.cached-zk-asert-post-ai-anchor.d
   %-  chunk:bignum:t
   %-  compute-target:asert
-  :*  anchor-target-atom.params
+  :*  anchor-target
       anchor-min-ts
       anchor-height.params
       parent-min-ts
@@ -274,12 +295,33 @@
   |=  [child-height=@ parent-digest=block-id:t]
   ^-  bignum:bignum:t
   =/  params  ai-asert.blockchain-constants
+  ::  Anchor sources, per-field: hardcoded constant (non-zero ⇒ in
+  ::  use), else cache (if populated). Bootstrap: when EITHER
+  ::  field has no source (no hardcoded AND cache empty), the AI
+  ::  subchain has no usable anchor yet — degenerate to
+  ::  anchor-target-atom (same value compute-target would produce
+  ::  at the anchor with zero elapsed time). Keeps AI candidate
+  ::  emission alive until the first AI block lands + populates
+  ::  the cache.
+  =/  use-hardcoded-min-ts=?  !=(0 anchor-min-timestamp.params)
+  =/  use-hardcoded-target=?  !=(0 anchor-target-atom.params)
+  =/  anchor-min-ts-opt=(unit @)
+    ?:  use-hardcoded-min-ts  `anchor-min-timestamp.params
+    ?~  cached-ai-asert-anchor.d  ~
+    `min-ts.u.cached-ai-asert-anchor.d
+  =/  anchor-target-opt=(unit @)
+    ?:  use-hardcoded-target  `anchor-target-atom.params
+    ?~  cached-ai-asert-anchor.d  ~
+    `target-atom.u.cached-ai-asert-anchor.d
+  ?~  anchor-min-ts-opt
+    (chunk:bignum:t anchor-target-atom.params)
+  ?~  anchor-target-opt
+    (chunk:bignum:t anchor-target-atom.params)
   =/  parent-min-ts=@  (~(got h-by min-timestamps.c) parent-digest)
-  =/  anchor-min-ts=@  anchor-min-timestamp.params
   %-  chunk:bignum:t
   %-  compute-target:asert
-  :*  anchor-target-atom.params
-      anchor-min-ts
+  :*  u.anchor-target-opt
+      u.anchor-min-ts-opt
       anchor-height.params
       parent-min-ts
       child-height

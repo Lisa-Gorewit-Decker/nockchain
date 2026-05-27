@@ -18,9 +18,9 @@
 ++  moat  (keep kernel-state:dk)
 ++  inner
   |_  k=kernel-state:dk
-  +*  min      ~(. dumb-miner m.k constants.k)
+  +*  min      ~(. dumb-miner m.k d.k constants.k)
       der      ~(. dumb-derived d.k constants.k)
-      con      ~(. dumb-consensus c.k constants.k)
+      con      ~(. dumb-consensus c.k d.k constants.k)
       t        ~(. c-transact constants.k)
   ::
   ::  We should be calling the inner kernel load in case of update
@@ -36,30 +36,63 @@
     ~&  [%nockchain-state-version -.arg]
     ::  cut
     |^
-    =.  k  ~>  %bout  (update-constants (check-checkpoints (state-n-to-9 arg)))
+    =.  k  ~>  %bout  (update-constants (check-checkpoints (state-n-to-10 arg)))
     =.  c.k  ~>  %bout  check-and-repair:con
     ~|  %v1-phase-must-be-lte-zk-asert-phase
     ?>  (lte v1-phase.constants.k phase.zk-asert.constants.k)
     k
     ::  this arm should be renamed each state upgrade to state-n-to-[latest] and extended to loop through all upgrades
-    ++  state-n-to-9
+    ++  state-n-to-10
       |=  arg=load-kernel-state:dk
       ^-  kernel-state:dk
-      ?.  ?=(%9 -.arg)
+      ?.  ?=(%10 -.arg)
         ~>  %slog.[0 'load: State upgrade required']
         ?-  -.arg
             ::
-          %0  $(arg (state-0-to-1 arg))
-          %1  $(arg (state-1-to-2 arg))
-          %2  $(arg (state-2-to-3 arg))
-          %3  $(arg (state-3-to-4 arg))
-          %4  $(arg (state-4-to-5 arg))
-          %5  $(arg (state-5-to-6 arg))
-          %6  $(arg (state-6-to-7 arg))
-          %7  $(arg (state-7-to-8 arg))
-          %8  $(arg (state-8-to-9 arg))
+          %0   $(arg (state-0-to-1 arg))
+          %1   $(arg (state-1-to-2 arg))
+          %2   $(arg (state-2-to-3 arg))
+          %3   $(arg (state-3-to-4 arg))
+          %4   $(arg (state-4-to-5 arg))
+          %5   $(arg (state-5-to-6 arg))
+          %6   $(arg (state-6-to-7 arg))
+          %7   $(arg (state-7-to-8 arg))
+          %8   $(arg (state-8-to-9 arg))
+          %9   $(arg (state-9-to-10 arg))
         ==
       arg
+    ::
+    ::  upgrade kernel state 9 to kernel state 10
+    ::    derived-state gained two per-puzzle ASERT anchor caches
+    ::    (cached-zk-asert-post-ai-anchor + cached-ai-asert-anchor),
+    ::    both initialized to ~ (None). The ZK cache populates lazily
+    ::    when the first block at height >= ai-pow-activation-height
+    ::    is accepted; the AI cache is reserved for the deferred-task
+    ::    AI verifier integration (stays None until then).
+    ::
+    ::    Existing fields (highest-block-height, heaviest-chain) carry
+    ::    over unchanged. The cache values themselves are deterministic
+    ::    functions of consensus state, so any honest node arriving at
+    ::    the activation boundary populates the same cache value. This
+    ::    means cross-state migrations don't need to reconstruct the
+    ::    cache — leaving it None on upgrade is safe and accept-block
+    ::    will populate it at the right time.
+    ++  state-9-to-10
+      |=  arg=kernel-state-9:dk
+      ^-  kernel-state-10:dk
+      =/  new-d=derived-state-10:dk
+        :*  highest-block-height.d.arg
+            heaviest-chain.d.arg
+            cached-zk-asert-post-ai-anchor=~
+            cached-ai-asert-anchor=~
+        ==
+      :*  %10
+          c=c.arg
+          a=a.arg
+          m=m.arg
+          d=new-d
+          constants=constants.arg
+      ==
     ::
     ::  upgrade kernel state 8 to kernel state 9
     ::    h-zoon replaces the remaining consensus z containers with

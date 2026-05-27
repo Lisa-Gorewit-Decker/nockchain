@@ -405,6 +405,24 @@ pub async fn init_with_kernel<J: Jammer + Send + 'static>(
         if let Some(bythos_phase) = cli.fakenet_bythos_phase {
             fakenet_constants = fakenet_constants.with_bythos_phase(bythos_phase);
         }
+        if let Some(ai_activation) = cli.fakenet_ai_pow_activation_height {
+            // Apply to ai-pow-activation-height AND to phase.zk-asert-post-ai
+            // and phase.ai-asert so the ZK regime switch + AI puzzle activation
+            // all happen at the same height. anchor-height for both stays at
+            // (phase - 1) per the design convention. The post-AI regime's
+            // anchor-target-atom keeps its default 2^291; the
+            // anchor-min-timestamp stays 0 placeholder and the cache populates
+            // it lazily when accept-block crosses the boundary.
+            fakenet_constants = fakenet_constants.with_ai_pow_activation_height(ai_activation);
+            let mut zk_post = fakenet_constants.zk_asert_post_ai.clone();
+            zk_post.phase = ai_activation;
+            zk_post.anchor_height = ai_activation - 1;
+            fakenet_constants = fakenet_constants.with_zk_asert_post_ai(zk_post);
+            let mut ai_asert = fakenet_constants.ai_asert.clone();
+            ai_asert.phase = ai_activation;
+            ai_asert.anchor_height = ai_activation;
+            fakenet_constants = fakenet_constants.with_ai_asert(ai_asert);
+        }
         if let Some(asert) = cli.fakenet_asert.into_config()? {
             // CLI overrides apply to the ZK puzzle's ASERT. AI puzzle's
             // ASERT stays at defaults until/unless we add dedicated

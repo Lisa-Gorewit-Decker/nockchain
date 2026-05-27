@@ -181,6 +181,16 @@ pub struct NockchainCli {
         requires = "fakenet"
     )]
     pub fakenet_bythos_phase: Option<u64>,
+    #[arg(
+        long,
+        help = "Override the AI-PoW activation height when running on fakenet. Also \
+                sets phase.zk-asert-post-ai and phase.ai-asert to the same value so the \
+                ZK regime switch + AI puzzle activation happen together. \
+                Defaults to mainnet 95000 (effectively never on fakenet). \
+                Requires --fakenet.",
+        requires = "fakenet"
+    )]
+    pub fakenet_ai_pow_activation_height: Option<u64>,
     #[command(flatten)]
     pub fakenet_asert: FakenetAsertArgs,
     #[arg(long, help = "Path to fake genesis block jam file")]
@@ -283,6 +293,7 @@ mod tests {
             fakenet_log_difficulty: 1,
             fakenet_v1_phase: None,
             fakenet_bythos_phase: None,
+            fakenet_ai_pow_activation_height: None,
             fakenet_asert: FakenetAsertArgs::default(),
             fakenet_genesis_jam_path: None,
             bind_public_grpc_addr: Some("127.0.0.1:5555".parse().unwrap()),
