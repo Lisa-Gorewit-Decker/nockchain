@@ -650,14 +650,6 @@
   |=  pag=page:t
   ^-  consensus-state:dk
   =/  digest-b58=cord  (to-b58:hash:t ~(digest get:page:t pag))
-  =/  log-message
-    %+  rap  3
-    :~  'update-heaviest: '
-        'Checking if block '
-        digest-b58
-        ' is heaviest'
-    ==
-  ~>  %slog.[0 log-message]
   ?:  =(~ heaviest-block.c)
     :: if we have no heaviest block, this must be genesis block.
     ~|  "update-heaviest: Received non-genesis block before genesis block"
@@ -666,23 +658,7 @@
   ::  > rather than >= since we take the first heaviest block we've heard
   ?:  %+  compare-heaviness:page:t  pag
       (~(got h-by blocks.c) (need heaviest-block.c))
-    =/  log-message
-      %+  rap  3
-      :~  'update-heaviest: '
-          'Block '
-          digest-b58
-          ' is new heaviest block'
-      ==
-    ~>  %slog.[0 log-message]
     c(heaviest-block (some ~(digest get:page:t pag)))
-  =/  log-message
-    %+  rap  3
-    :~  'update-heaviest: '
-        'Block '
-        digest-b58
-        ' is NOT new heaviest block'
-    ==
-  ~>  %slog.[0 log-message]
   c
 ::
 ::  +check-fund-split: validate that a post-asert-activation coinbase pays
