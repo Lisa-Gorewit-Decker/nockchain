@@ -447,10 +447,11 @@ mod tests {
     }
 
     /// Walk an `AsertParams` sub-cell (6-atom right-fold) and check each
-    /// field matches the expected `AsertParams` value.
-    fn assert_asert_subcell(noun: Noun, expected: &AsertParams) {
+    /// field matches the expected `AsertParams` value. Post-h-zoon: all
+    /// noun reads must be bound to a `NounSpace` via `in_space`.
+    fn assert_asert_subcell(noun: Noun, space: &nockvm::noun::NounSpace, expected: &AsertParams) {
         // slot 1 of 6: phase
-        let c1 = noun.as_cell().expect("asert sub-cell is a cell");
+        let c1 = noun.in_space(space).as_cell().expect("asert sub-cell is a cell");
         assert_eq!(
             c1.head().as_atom().unwrap().as_u64().unwrap(),
             expected.phase,
@@ -491,16 +492,18 @@ mod tests {
     /// Walk the BlockchainConstants noun shape: 10-slot right-fold
     /// `[v1-phase bythos-phase data base-fee input-fee-divisor
     ///   v0-sub-cell zk-asert zk-asert-post-ai ai-pow-activation-height
-    ///   ai-asert]`. The three ASERT sub-cells are 5-atom right-folds
+    ///   ai-asert]`. The three ASERT sub-cells are 6-atom right-folds
     /// (see `AsertParams::to_noun`).
     fn assert_blockchain_constants_shape(constants: &BlockchainConstants) {
+        use nockvm::noun::NounAllocator;
         let mut slab: NounSlab = NounSlab::new();
         let noun = constants.to_noun(&mut slab);
         slab.set_root(noun);
+        let space = slab.noun_space();
         let root = unsafe { *slab.root() };
 
         // slot 1: v1_phase
-        let c1 = root.as_cell().expect("root is a cell");
+        let c1 = root.in_space(&space).as_cell().expect("root is a cell");
         assert_eq!(
             c1.head().as_atom().unwrap().as_u64().unwrap(),
             constants.v1_phase,
@@ -540,14 +543,14 @@ mod tests {
         );
         // slot 6: v0 sub-cell (13-atom right-fold)
         let c6 = c5.tail().as_cell().expect("c6");
-        let v0 = c6.head();
-        assert_eq!(tuple_len(v0), 13, "slot 6 = v0 13-atom right-fold");
+        let v0 = c6.head().noun();
+        assert_eq!(tuple_len(v0, &space), 13, "slot 6 = v0 13-atom right-fold");
         // slot 7: zk-asert sub-cell (pre-AI regime)
         let c7 = c6.tail().as_cell().expect("c7");
-        assert_asert_subcell(c7.head(), &constants.zk_asert);
+        assert_asert_subcell(c7.head().noun(), &space, &constants.zk_asert);
         // slot 8: zk-asert-post-ai sub-cell (post-AI regime)
         let c8 = c7.tail().as_cell().expect("c8");
-        assert_asert_subcell(c8.head(), &constants.zk_asert_post_ai);
+        assert_asert_subcell(c8.head().noun(), &space, &constants.zk_asert_post_ai);
         // slot 9: ai-pow-activation-height
         let c9 = c8.tail().as_cell().expect("c9");
         assert_eq!(
@@ -555,8 +558,8 @@ mod tests {
             constants.ai_pow_activation_height,
             "slot 9 = ai_pow_activation_height"
         );
-        // slot 10: ai-asert sub-cell (terminal — sits in c9.tail directly)
-        assert_asert_subcell(c9.tail(), &constants.ai_asert);
+        // slot 10: ai-asert sub-cell (terminal — sits in c9.tail as cell-noun)
+        assert_asert_subcell(c9.tail().noun(), &space, &constants.ai_asert);
     }
 
     #[test]

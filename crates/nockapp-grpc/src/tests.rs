@@ -45,6 +45,7 @@ mod tests {
         use nockapp::noun::slab::NounSlab;
         use nockapp::NockAppExit;
         use nockvm::ext::NounExt;
+        use nockvm::noun::NounAllocator;
         use nockvm::noun::{D, T};
         use nockvm_macros::tas;
         use once_cell::sync::Lazy;
@@ -129,8 +130,9 @@ mod tests {
             .expect("stream.next within timeout")
             .expect("stream not closed")
             .expect("client received slab");
+        let space = received.noun_space();
         let received_noun = unsafe { *received.root() };
-        let cell = received_noun.as_cell().expect("effect is a cell");
+        let cell = received_noun.in_space(&space).as_cell().expect("effect is a cell");
         assert!(cell.head().eq_bytes("mine"));
         assert_eq!(
             cell.tail().as_atom().expect("payload atom").as_u64().expect("u64"),
@@ -165,8 +167,9 @@ mod tests {
             .expect("stream.next within timeout")
             .expect("stream not closed")
             .expect("client received slab 2");
+        let space = received.noun_space();
         let received_noun = unsafe { *received.root() };
-        let cell = received_noun.as_cell().expect("effect is a cell");
+        let cell = received_noun.in_space(&space).as_cell().expect("effect is a cell");
         assert!(cell.head().eq_bytes("mine"));
         assert_eq!(
             cell.tail().as_atom().expect("payload atom").as_u64().expect("u64"),

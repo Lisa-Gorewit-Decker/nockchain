@@ -9,9 +9,9 @@
 //! so the same struct holds either kind of candidate.
 
 use nockapp::noun::slab::NounSlab;
-use nockchain_math::noun_ext::NounMathExt;
+use nockchain_math::noun_ext::NounMathExtHandle;
 use nockvm::ext::NounExt;
-use nockvm::noun::Noun;
+use nockvm::noun::{Noun, NounAllocator};
 use thiserror::Error;
 
 /// A mining candidate: everything the miner needs to drive one
@@ -51,28 +51,33 @@ impl MiningCandidate {
     pub fn from_effect_slab(slab: NounSlab) -> Result<Option<Self>, CandidateDecodeError> {
         // SAFETY: `slab.root()` returns a valid Noun owned by the slab
         // for the lifetime of `slab`. We construct nested slabs via
-        // `copy_into`, which is safe.
+        // `copy_into`, which is safe. Post-h-zoon: noun reads must be
+        // explicitly bound to the slab's NounSpace via `in_space`.
         let root = unsafe { *slab.root() };
-        let effect_cell = root.as_cell().map_err(|_| CandidateDecodeError::NotACell)?;
+        let space = slab.noun_space();
+        let effect_cell = root
+            .in_space(&space)
+            .as_cell()
+            .map_err(|_| CandidateDecodeError::NotACell)?;
         let head = effect_cell.head();
         if !head.eq_bytes("mine-zk") && !head.eq_bytes("mine-ai") {
             return Ok(None);
         }
-        let [version, commit, target, pow_len_noun] = effect_cell
+        let [version_h, commit_h, target_h, pow_len_h] = effect_cell
             .tail()
             .uncell::<4>()
             .map_err(|_| CandidateDecodeError::BadTuple)?;
 
-        let pow_len = pow_len_noun
+        let pow_len = pow_len_h
             .as_atom()
             .map_err(|_| CandidateDecodeError::BadPowLen)?
             .as_u64()
             .map_err(|_| CandidateDecodeError::BadPowLen)?;
 
         Ok(Some(MiningCandidate {
-            version: noun_into_owned_slab(version),
-            block_header: noun_into_owned_slab(commit),
-            target: noun_into_owned_slab(target),
+            version: noun_into_owned_slab(version_h.noun(), &space),
+            block_header: noun_into_owned_slab(commit_h.noun(), &space),
+            target: noun_into_owned_slab(target_h.noun(), &space),
             pow_len,
         }))
     }
@@ -82,9 +87,9 @@ impl MiningCandidate {
 /// can be owned and moved independently of the source slab. Mirrors the
 /// `header_slab / version_slab / target_slab` build pattern in the old
 /// in-tree driver.
-fn noun_into_owned_slab(noun: Noun) -> NounSlab {
+fn noun_into_owned_slab(noun: Noun, space: &nockvm::noun::NounSpace) -> NounSlab {
     let mut slab = NounSlab::new();
-    let copied = slab.copy_into(noun);
+    let copied = slab.copy_into(noun, space);
     slab.set_root(copied);
     slab
 }
@@ -113,20 +118,27 @@ mod tests {
             .expect("head is %mine-zk");
 
         assert_eq!(candidate.pow_len, 256);
-        // The owned slabs round-trip the values.
+        // The owned slabs round-trip the values. Post-h-zoon: atom
+        // reads must be bound to a NounSpace via in_space.
+        let version_space = candidate.version.noun_space();
         let v = unsafe { *candidate.version.root() }
+            .in_space(&version_space)
             .as_atom()
             .expect("version atom")
             .as_u64()
             .expect("u64");
         assert_eq!(v, 0xAA);
+        let header_space = candidate.block_header.noun_space();
         let h = unsafe { *candidate.block_header.root() }
+            .in_space(&header_space)
             .as_atom()
             .expect("commit atom")
             .as_u64()
             .expect("u64");
         assert_eq!(h, 0xBBBB);
+        let target_space = candidate.target.noun_space();
         let t = unsafe { *candidate.target.root() }
+            .in_space(&target_space)
             .as_atom()
             .expect("target atom")
             .as_u64()

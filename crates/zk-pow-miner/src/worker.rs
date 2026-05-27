@@ -17,7 +17,7 @@ use nockapp::noun::slab::NounSlab;
 use nockapp::noun::AtomExt;
 use nockapp::save::SaveableCheckpoint;
 use nockapp::utils::NOCK_STACK_SIZE_TINY;
-use nockchain_math::noun_ext::NounMathExt;
+use nockchain_math::noun_ext::{NounMathExt, NounMathExtHandle};
 use nockchain_math::structs::HoonList;
 use nockchain_mining_common::MiningCandidate;
 
@@ -101,6 +101,7 @@ impl SerfWorker {
             None,
             hot_state,
             NOCK_STACK_SIZE_TINY,
+            None::<nockapp::kernel::form::PmaConfig>,
             test_jets,
             Default::default(),
         )
@@ -151,12 +152,19 @@ pub fn random_nonce() -> NounSlab {
 
 /// Build the miner-kernel poke cause: `[version header nonce target pow-len]`.
 /// Matches the `cause` schema in `hoon/apps/dumbnet/miner.hoon:19–23`.
+/// Post-h-zoon: cross-slab noun reads must be bound to the source slab's
+/// `NounSpace` via `copy_into(noun, &space)`.
 pub fn build_candidate_poke(candidate: &MiningCandidate, nonce_slab: NounSlab) -> NounSlab {
+    use nockvm::noun::NounAllocator;
+    let version_space = candidate.version.noun_space();
+    let header_space = candidate.block_header.noun_space();
+    let nonce_space = nonce_slab.noun_space();
+    let target_space = candidate.target.noun_space();
     let mut slab = NounSlab::new();
-    let version = slab.copy_into(unsafe { *candidate.version.root() });
-    let header = slab.copy_into(unsafe { *candidate.block_header.root() });
-    let nonce = slab.copy_into(unsafe { *nonce_slab.root() });
-    let target = slab.copy_into(unsafe { *candidate.target.root() });
+    let version = slab.copy_into(unsafe { *candidate.version.root() }, &version_space);
+    let header = slab.copy_into(unsafe { *candidate.block_header.root() }, &header_space);
+    let nonce = slab.copy_into(unsafe { *nonce_slab.root() }, &nonce_space);
+    let target = slab.copy_into(unsafe { *candidate.target.root() }, &target_space);
     let cause = T(&mut slab, &[version, header, nonce, target, D(candidate.pow_len)]);
     slab.set_root(cause);
     slab
@@ -165,17 +173,19 @@ pub fn build_candidate_poke(candidate: &MiningCandidate, nonce_slab: NounSlab) -
 /// Decode the miner kernel's emitted effect list, looking for the first
 /// `[%mine-result ?(%& %|) ...]` effect.
 pub(crate) fn decode_mine_result(slab: NounSlab) -> Result<MineResult, WorkerError> {
+    use nockvm::noun::NounAllocator;
+    let space = slab.noun_space();
     let root = unsafe { *slab.root() };
-    let effects =
-        HoonList::try_from(root).map_err(|_| WorkerError::Decode("effect-list not a HoonList"))?;
+    let effects = HoonList::try_from(root, &space)
+        .map_err(|_| WorkerError::Decode("effect-list not a HoonList"))?;
     let mine_result_tail = effects
         .filter_map(|effect| {
             if effect.is_atom() {
                 None
             } else {
-                let effect_cell = effect.as_cell().ok()?;
+                let effect_cell = effect.in_space(&space).as_cell().ok()?;
                 if effect_cell.head().eq_bytes("mine-result") {
-                    Some(effect_cell.tail())
+                    Some(effect_cell.tail().noun())
                 } else {
                     None
                 }
@@ -184,18 +194,22 @@ pub(crate) fn decode_mine_result(slab: NounSlab) -> Result<MineResult, WorkerErr
         .next()
         .ok_or(WorkerError::NoMineResult)?;
     let [res, tail] = mine_result_tail
+        .in_space(&space)
         .uncell::<2>()
-        .map_err(|_| WorkerError::Decode("mine-result tail not a 2-cell"))?;
+        .map_err(|_| WorkerError::Decode("mine-result tail not a 2-cell"))?
+        .map(|h| h.noun());
     if unsafe { res.raw_equals(&D(0)) } {
         // success: tail = [hash poke]
         let [hash, poke] = tail
+            .in_space(&space)
             .uncell::<2>()
-            .map_err(|_| WorkerError::Decode("success tail not [hash poke]"))?;
+            .map_err(|_| WorkerError::Decode("success tail not [hash poke]"))?
+            .map(|h| h.noun());
         let mut hash_slab = NounSlab::new();
-        let h = hash_slab.copy_into(hash);
+        let h = hash_slab.copy_into(hash, &space);
         hash_slab.set_root(h);
         let mut poke_slab = NounSlab::new();
-        let p = poke_slab.copy_into(poke);
+        let p = poke_slab.copy_into(poke, &space);
         poke_slab.set_root(p);
         Ok(MineResult::Success {
             hash_slab,
@@ -204,7 +218,7 @@ pub(crate) fn decode_mine_result(slab: NounSlab) -> Result<MineResult, WorkerErr
     } else {
         // retry: tail = the next nonce
         let mut next_nonce = NounSlab::new();
-        let n = next_nonce.copy_into(tail);
+        let n = next_nonce.copy_into(tail, &space);
         next_nonce.set_root(n);
         Ok(MineResult::Retry { next_nonce })
     }
@@ -271,16 +285,18 @@ mod tests {
 
     #[test]
     fn random_nonce_is_a_5_tuple_of_atoms() {
+        use nockvm::noun::NounAllocator;
         let n = random_nonce();
+        let space = n.noun_space();
         let root = unsafe { *n.root() };
         // Walk the right spine: 5 atoms on the left.
         let mut node = root;
         let mut count = 0;
         loop {
-            match node.as_cell() {
+            match node.in_space(&space).as_cell() {
                 Ok(cell) => {
                     assert!(cell.head().is_atom(), "spine head is an atom");
-                    node = cell.tail();
+                    node = cell.tail().noun();
                     count += 1;
                 }
                 Err(_) => {
@@ -295,6 +311,7 @@ mod tests {
 
     #[test]
     fn build_candidate_poke_has_correct_shape() {
+        use nockvm::noun::NounAllocator;
         // Synthesise a minimal MiningCandidate (the type's fields are
         // pub, so we can construct directly in the test).
         let mut version = NounSlab::new();
@@ -312,36 +329,40 @@ mod tests {
         };
         let nonce = random_nonce();
         let poke = build_candidate_poke(&candidate, nonce);
+        let space = poke.noun_space();
 
         // Should be [version=0 header=[0 0 0 0 0] nonce=[..] target=0xFFFFFFFF pow_len=7]
         let root = unsafe { *poke.root() };
-        let cell = root.as_cell().expect("poke is a cell");
+        let cell = root.in_space(&space).as_cell().expect("poke is a cell");
         // head = version
         let v = cell.head().as_atom().expect("version atom").as_u64().unwrap();
         assert_eq!(v, 0, "version is %0");
         // Walk right spine 5 deep; rightmost is pow_len = 7.
-        let mut node = cell.tail();
+        let mut node = cell.tail().noun();
         for _ in 0..3 {
-            node = node.as_cell().expect("spine cell").tail();
+            node = node.in_space(&space).as_cell().expect("spine cell").tail().noun();
         }
         // Now node should be the pow_len atom.
-        let pl = node.as_atom().expect("pow_len atom").as_u64().unwrap();
+        let pl = node.in_space(&space).as_atom().expect("pow_len atom").as_u64().unwrap();
         assert_eq!(pl, 7, "pow_len is at the end of the cause spine");
     }
 
     #[test]
     fn decode_success_round_trips() {
+        use nockvm::noun::NounAllocator;
         let slab = synth_success_effect_list();
         match decode_mine_result(slab).expect("decode") {
             MineResult::Success {
                 hash_slab,
                 poke_slab,
             } => {
+                let hash_space = hash_slab.noun_space();
                 let h = unsafe { *hash_slab.root() };
-                let hc = h.as_cell().expect("hash is a cell");
+                let hc = h.in_space(&hash_space).as_cell().expect("hash is a cell");
                 assert_eq!(hc.head().as_atom().unwrap().as_u64().unwrap(), 11);
+                let poke_space = poke_slab.noun_space();
                 let p = unsafe { *poke_slab.root() };
-                let pc = p.as_cell().expect("poke is a cell");
+                let pc = p.in_space(&poke_space).as_cell().expect("poke is a cell");
                 assert!(pc.head().eq_bytes("command"));
             }
             other => match other {
@@ -353,11 +374,13 @@ mod tests {
 
     #[test]
     fn decode_retry_round_trips() {
+        use nockvm::noun::NounAllocator;
         let slab = synth_retry_effect_list();
         match decode_mine_result(slab).expect("decode") {
             MineResult::Retry { next_nonce } => {
+                let space = next_nonce.noun_space();
                 let n = unsafe { *next_nonce.root() };
-                let nc = n.as_cell().expect("nonce is a cell");
+                let nc = n.in_space(&space).as_cell().expect("nonce is a cell");
                 assert_eq!(nc.head().as_atom().unwrap().as_u64().unwrap(), 101);
             }
             MineResult::Success { .. } => panic!("expected Retry, got Success"),

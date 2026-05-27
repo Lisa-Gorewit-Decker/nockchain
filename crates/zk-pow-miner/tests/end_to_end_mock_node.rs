@@ -201,15 +201,17 @@ async fn miner_finds_and_submits_block_against_mock_node() {
         "miner did not submit a %mined poke within 60s; total pokes observed = {total_pokes}"
     );
     // Validate the first %mined poke's shape: [%command %pow ...].
+    use nockvm::noun::NounAllocator;
     let first = &got_pokes[0];
+    let space = first.noun_space();
     let root = unsafe { *first.root() };
-    let cell = root.as_cell().expect("poke root is a cell");
+    let cell = root.in_space(&space).as_cell().expect("poke root is a cell");
     assert!(
         cell.head().eq_bytes("command"),
         "%mined poke head should be %command"
     );
-    let tail = cell.tail();
-    let tail_cell = tail.as_cell().expect("poke tail is a cell");
+    let tail = cell.tail().noun();
+    let tail_cell = tail.in_space(&space).as_cell().expect("poke tail is a cell");
     assert!(
         tail_cell.head().eq_bytes("pow"),
         "%mined poke command should be %pow"
