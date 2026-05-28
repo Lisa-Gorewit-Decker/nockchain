@@ -67,11 +67,33 @@ pub enum VerifyError {
     BColMerkleMismatch,
 }
 
-/// Verify a `MatmulProof` for the given block context.
+/// Verify a `MatmulProof` for the given block context using
+/// `difficulty_target(params)`.
+///
+/// Consensus callers with an externally supplied chain target must use
+/// [`verify_at_target`] instead. This wrapper is retained for tests and
+/// non-consensus callers whose target is intentionally derived from
+/// `params.difficulty_bits`.
 pub fn verify(
     block_commitment: &[u8],
     nonce: &[u8],
     params: &MatmulParams,
+    proof: &MatmulProof,
+) -> Result<(), VerifyError> {
+    let target = difficulty_target(params);
+    verify_at_target(block_commitment, nonce, params, &target, proof)
+}
+
+/// Verify a `MatmulProof` against an explicit 256-bit little-endian target.
+///
+/// This is the production-safe entry point for chain integration: the target
+/// must be the exact target for the candidate block, not a value recomputed
+/// from local proof parameters.
+pub fn verify_at_target(
+    block_commitment: &[u8],
+    nonce: &[u8],
+    params: &MatmulParams,
+    target: &[u8; 32],
     proof: &MatmulProof,
 ) -> Result<(), VerifyError> {
     params.validate()?;
@@ -87,7 +109,6 @@ pub fn verify(
 
     let state = block_state(block_commitment, nonce);
     let noise = BlockNoise::expand(&s_a, &s_b, params);
-    let target = difficulty_target(params);
     let chal = challenge_seed(&state, &proof.comm_m, &tag);
     let num_tiles = params.num_tiles();
 
@@ -101,7 +122,7 @@ pub fn verify(
         &pow_key,
         OpeningRole::Found,
     )?;
-    if !hash_le_target(&leaf_found, &target) {
+    if !hash_le_target(&leaf_found, target) {
         return Err(VerifyError::FoundAboveTarget);
     }
 

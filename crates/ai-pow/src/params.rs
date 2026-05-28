@@ -74,6 +74,12 @@ pub const PEARL_HW_MAX: u64 = 256;
 /// `validate()`-allowed `t·k`; sub-second on the production envelope).
 pub const SPOT_CHECKS_MAX: u32 = 256;
 
+/// §6(b) in-circuit matmul-sweep stripe capacity. This mirrors
+/// `ai-pow-zk::composite_layout::STRIPE_MAX`, but lives here so the
+/// `ai-pow` consensus parameter envelope does not require the optional
+/// `zk` dependency.
+pub const STRIPE_MAX: usize = 64;
+
 /// Parameters of a Pearl-style matmul PoW puzzle.
 ///
 /// Matmul shape is `(m, k) * (k, n) = (m, n)`. Tiles are square `tile x tile`.
@@ -365,9 +371,7 @@ impl MatmulParams {
         // envelope rejects such configs outright (raise noise_rank
         // so k/r <= STRIPE_MAX). The real Llama mineable GEMMs have
         // k/r = 4096/64 = 64 = STRIPE_MAX ⇒ in-circuit.
-        if (self.num_stripes() as usize)
-            > ai_pow_zk::composite_layout::STRIPE_MAX
-        {
+        if (self.num_stripes() as usize) > STRIPE_MAX {
             return Err(ParamError::TooManyStripes);
         }
         Ok(())

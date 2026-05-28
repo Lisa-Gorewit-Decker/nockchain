@@ -1,9 +1,9 @@
 //! End-to-end prover -> verifier tests at small dimensions.
 
 use ai_pow::params::MatmulParams;
-use ai_pow::prover::{mine, ProverOptions};
+use ai_pow::prover::{mine, mine_with_context_at_target, BlockContext, ProverOptions};
 use ai_pow::synth::synth_matrices;
-use ai_pow::verifier::verify;
+use ai_pow::verifier::{verify, verify_at_target, VerifyError};
 
 fn small_params() -> MatmulParams {
     // difficulty_bits = 0 ⇒ every tile passes hardness.
@@ -27,6 +27,37 @@ fn proof_round_trip_against_easy_target() {
     .unwrap()
     .expect("easy target must yield a proof");
     verify(block_commitment, nonce, &params, &proof).unwrap();
+}
+
+#[test]
+fn verifier_rejects_proof_mined_for_easier_external_target() {
+    let params = small_params();
+    let (a, b) = synth_matrices(b"external-target-seed", &params);
+    let block_commitment = b"external-target-block";
+    let nonce = b"external-target-nonce";
+    let ctx = BlockContext::build(block_commitment, &a, &b, &params).unwrap();
+    let easy_target = [0xff; 32];
+    let proof = mine_with_context_at_target(
+        &ctx,
+        block_commitment,
+        nonce,
+        &easy_target,
+        ProverOptions::default(),
+    )
+    .unwrap()
+    .expect("max external target must yield a proof");
+
+    let impossible_chain_target = [0u8; 32];
+    assert_eq!(
+        verify_at_target(
+            block_commitment,
+            nonce,
+            &params,
+            &impossible_chain_target,
+            &proof,
+        ),
+        Err(VerifyError::FoundAboveTarget)
+    );
 }
 
 #[test]
