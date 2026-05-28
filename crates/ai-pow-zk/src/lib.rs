@@ -84,7 +84,8 @@ pub use crate::composite_full_air_with_lookups::{
     CompositeFullAirWithLookups, CompositeFullAirWithLookupsPinned,
 };
 pub use crate::composite_proof::{
-    hash_jackpot_le_bytes, CompositeVerificationError, PowVerifyError,
+    hash_jackpot_le_bytes, CompositeVerificationError, PowVerifyError, ProgramShapeError,
+    StarkVerificationError,
 };
 pub use crate::composite_public::CompositePublicInputs;
 pub use crate::composite_trace::CompositeTrace;

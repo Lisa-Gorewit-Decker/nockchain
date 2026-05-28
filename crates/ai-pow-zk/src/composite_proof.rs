@@ -40,21 +40,39 @@ use crate::composite_trace::CompositeTrace;
 use crate::params::ZkParams;
 
 use p3_commit::Pcs;
+use p3_matrix::Matrix;
 #[cfg(any(test, feature = "dev-unsafe"))]
 use p3_uni_stark::{
     prove, prove_with_preprocessed, setup_preprocessed, verify, verify_with_preprocessed,
     PreprocessedProverData, PreprocessedVerifierKey, Proof,
 };
 use p3_uni_stark::{StarkGenericConfig, Val, VerificationError};
+use thiserror::Error;
 
-/// Concrete type of the verification error for the composite AIR.
+/// Concrete type of the underlying STARK verification error for the composite AIR.
 /// Equivalent to `VerificationError<PcsError<AiPowStarkConfig>>`.
-pub type CompositeVerificationError = VerificationError<
+pub type StarkVerificationError = VerificationError<
     <<AiPowStarkConfig as StarkGenericConfig>::Pcs as Pcs<
         <AiPowStarkConfig as StarkGenericConfig>::Challenge,
         <AiPowStarkConfig as StarkGenericConfig>::Challenger,
     >>::Error,
 >;
+
+#[derive(Debug, Error, PartialEq, Eq)]
+pub enum ProgramShapeError {
+    #[error("program width mismatch (expected {expected}, got {actual})")]
+    WidthMismatch { expected: usize, actual: usize },
+    #[error("program height must be a non-zero power of two, got {height}")]
+    HeightNotPowerOfTwo { height: usize },
+}
+
+#[derive(Debug, Error)]
+pub enum CompositeVerificationError {
+    #[error("invalid verifier program: {0}")]
+    InvalidProgram(#[from] ProgramShapeError),
+    #[error("stark verification failed: {0:?}")]
+    Stark(StarkVerificationError),
+}
 
 /// Build the composite STARK config for the given parameters +
 /// profile. Re-export of [`build_stark_config`] for ergonomics.
@@ -103,6 +121,7 @@ pub fn composite_verify(
 ) -> Result<(), CompositeVerificationError> {
     let pis = public_inputs.to_vec();
     verify::<AiPowStarkConfig, _>(config, &CompositeFullAir, proof, &pis)
+        .map_err(CompositeVerificationError::Stark)
 }
 
 /// Encode the 8×u32 `HASH_JACKPOT` PI as a 32-byte little-endian
@@ -146,7 +165,7 @@ pub enum PowVerifyError {
 impl core::fmt::Display for PowVerifyError {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
-            PowVerifyError::Stark(e) => write!(f, "stark verification failed: {e:?}"),
+            PowVerifyError::Stark(e) => write!(f, "stark verification failed: {e}"),
             PowVerifyError::DifficultyNotMet => {
                 write!(f, "HASH_JACKPOT does not clear the difficulty target")
             }
@@ -222,11 +241,17 @@ pub fn composite_verify_pow(
 
 type Program = p3_matrix::dense::RowMajorMatrix<Val<AiPowStarkConfig>>;
 
-fn program_degree_bits(program: &Program) -> usize {
-    use p3_matrix::Matrix;
-    let h = program.height();
-    assert!(h.is_power_of_two(), "trace height must be a power of two");
-    h.trailing_zeros() as usize
+fn checked_program_degree_bits(program: &Program) -> Result<usize, ProgramShapeError> {
+    let expected = crate::composite_full_air::PROGRAM_COLS.len();
+    let actual = program.width();
+    if actual != expected {
+        return Err(ProgramShapeError::WidthMismatch { expected, actual });
+    }
+    let height = program.height();
+    if !height.is_power_of_two() {
+        return Err(ProgramShapeError::HeightNotPowerOfTwo { height });
+    }
+    Ok(height.trailing_zeros() as usize)
 }
 
 /// Commit a program matrix as a preprocessed trace, returning the
@@ -242,7 +267,9 @@ pub fn composite_setup(
     PreprocessedVerifierKey<AiPowStarkConfig>,
 ) {
     let air = CompositeFullAirPinned::new(program.clone());
-    setup_preprocessed(config, &air, program_degree_bits(program))
+    let degree_bits =
+        checked_program_degree_bits(program).expect("canonical program shape already validated");
+    setup_preprocessed(config, &air, degree_bits)
         .expect("CompositeFullAirPinned always has preprocessed columns")
 }
 
@@ -283,10 +310,12 @@ pub fn composite_verify_pinned(
     proof: &Proof<AiPowStarkConfig>,
     public_inputs: &CompositePublicInputs,
 ) -> Result<(), CompositeVerificationError> {
+    checked_program_degree_bits(program)?;
     let air = CompositeFullAirPinned::new(program.clone());
     let (_pp, vk) = composite_setup(config, program);
     let pis = public_inputs.to_vec();
     verify_with_preprocessed(config, &air, proof, &pis, Some(&vk))
+        .map_err(CompositeVerificationError::Stark)
 }
 
 /// Program-pinned full PoW verify: pinned STARK verify + the C2
@@ -384,11 +413,13 @@ pub(crate) fn logup_common_for(
     sx_bound: bool,
 ) -> p3_batch_stark::ProverData<AiPowStarkConfig> {
     use p3_batch_stark::ProverData;
+    let log_ext_db = checked_program_degree_bits(program)
+        .expect("canonical program shape already validated")
+        + config.is_zk() as usize;
     let air = crate::composite_full_air_with_lookups::CompositeFullAirWithLookupsPinned::new_with(
         program.clone(),
         sx_bound,
     );
-    let log_ext_db = program_degree_bits(program) + config.is_zk() as usize;
     ProverData::from_airs_and_degrees(config, std::slice::from_ref(&air), &[log_ext_db])
 }
 
@@ -414,6 +445,7 @@ pub(crate) fn composite_verify_pinned_logup_sx(
     sx_bound: bool,
 ) -> Result<(), CompositeVerificationError> {
     use p3_batch_stark::verify_batch;
+    checked_program_degree_bits(program)?;
     let air = crate::composite_full_air_with_lookups::CompositeFullAirWithLookupsPinned::new_with(
         program.clone(),
         sx_bound,
@@ -426,6 +458,7 @@ pub(crate) fn composite_verify_pinned_logup_sx(
         &[public_inputs.to_vec()],
         &pd.common,
     )
+    .map_err(CompositeVerificationError::Stark)
 }
 
 /// Route-A pinned full PoW verify: pinned+LogUp STARK verify +
@@ -1301,6 +1334,47 @@ mod tests {
             Err(PowVerifyError::DifficultyNotMet) => {}
             other => panic!("expected DifficultyNotMet, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn routea_malformed_program_returns_error_not_panic() {
+        let cfg = build_config(&test_zk_params(), &CircuitConfig::TEST_PEARL);
+        let trace = honest_trace();
+        let pis = CompositePublicInputs::derive_from_trace(&trace);
+        let (proof, _) = composite_prove_pinned_logup(&cfg, trace, &pis);
+
+        let bad_width = p3_matrix::dense::RowMajorMatrix::new(vec![Default::default(); 8], 1);
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            composite_verify_pinned_logup(&cfg, &bad_width, &proof, &pis)
+        }));
+        assert!(result.is_ok(), "malformed program must not panic verifier");
+        assert!(matches!(
+            result.unwrap(),
+            Err(CompositeVerificationError::InvalidProgram(
+                ProgramShapeError::WidthMismatch { expected, actual: 1 }
+            )) if expected == crate::composite_full_air::PROGRAM_COLS.len()
+        ));
+
+        let bad_height = p3_matrix::dense::RowMajorMatrix::new(
+            vec![Default::default(); crate::composite_full_air::PROGRAM_COLS.len() * 3],
+            crate::composite_full_air::PROGRAM_COLS.len(),
+        );
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            composite_verify_pow_pinned_logup(
+                &cfg,
+                &bad_height,
+                &proof,
+                &pis,
+                &[0xffu8; 32],
+            )
+        }));
+        assert!(result.is_ok(), "malformed program must not panic PoW verifier");
+        assert!(matches!(
+            result.unwrap(),
+            Err(PowVerifyError::Stark(CompositeVerificationError::InvalidProgram(
+                ProgramShapeError::HeightNotPowerOfTwo { height: 3 }
+            )))
+        ));
     }
 
     /// CRIT-1 under Route A: a zeroed-selector forgery is
