@@ -2,7 +2,7 @@
 //!
 //! Pearl §4.5 hardness rule:
 //!
-//!   BLAKE3(M, key = s_a)  <=  2^(256 - b) · r · t_m · t_n
+//!   BLAKE3(M, key = pow_key_for_nonce(s_a, nonce))  <=  2^(256 - b) · r · t_m · t_n
 //!
 //! All 256-bit integers are encoded as little-endian byte arrays for parity
 //! with Pearl, which interprets the BLAKE3 keyed hash via

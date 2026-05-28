@@ -301,7 +301,7 @@ fn mine_with_context(
     // path; `mine_with_context_at_target` deliberately skips it.
     #[cfg(feature = "zk")]
     if let Some((_, found_idx)) = &result {
-        let _zk = crate::zk_bridge::prove_and_verify_for_block(ctx, &ctx.params, *found_idx)
+        let _zk = crate::zk_bridge::prove_and_verify_for_block(ctx, &ctx.params, nonce, *found_idx)
             .expect("F1 zk bridge: prove + pow-verify must succeed for a found tile");
     }
 

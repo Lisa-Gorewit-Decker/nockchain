@@ -144,7 +144,7 @@ impl std::error::Error for PowVerifyError {}
 /// C2 — full proof-of-work verification.
 ///
 /// Pearl's Layer-0 STARK does **not** enforce the difficulty
-/// inequality `BLAKE3(M, key=s_a) ≤ target` in-circuit; it is
+/// inequality `BLAKE3(M, key=jackpot_key) ≤ target` in-circuit; it is
 /// checked outside (block validation / higher recursion layers,
 /// see `pearl_circuit.rs`). `ai-pow-zk` is a single STARK with no
 /// recursion layers, so this wrapper performs the Pearl-equivalent
@@ -1223,7 +1223,7 @@ mod tests {
 
         // Honest baseline: CUMSUM = 0, JACKPOT_MSG = 0 on the last
         // row ⇒ keystone holds (0 == 0); HASH_JACKPOT =
-        // BLAKE3(0, key=s_a), a fixed value the attacker cannot
+        // BLAKE3(0, key=jackpot_key), a fixed value the attacker cannot
         // grind. Sanity: verifies.
         let ok = honest_trace();
         let canonical = extract_program(&ok.matrix);

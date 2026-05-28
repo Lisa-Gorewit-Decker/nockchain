@@ -1077,7 +1077,7 @@ impl CompositeTrace {
     ///
     /// `kind = false` → `IS_USE_JOB_KEY` (binds `PI_JOB_KEY` = κ).
     /// `kind = true`  → `IS_USE_COMMITMENT_HASH` (binds
-    /// `PI_COMMITMENT_HASH` = `s_a` noise seed).
+    /// `PI_COMMITMENT_HASH` = the caller-supplied jackpot key).
     ///
     /// The row carries no blake3 / jackpot / matmul activity, so
     /// only the C1 selector-gated constraint
@@ -1405,7 +1405,7 @@ impl CompositeTrace {
     /// Mirrors Pearl's `structure_jackpot_blake`
     /// (`pearl_program.rs:195`): an 8-row keyed BLAKE3 compression
     /// (flags `KEYED_HASH|CHUNK_START|CHUNK_END|ROOT` = 0x1B),
-    /// CV = `commitment_words` (= `s_a`), message = the jackpot
+    /// CV = `commitment_words` (= the caller-supplied jackpot key), message = the jackpot
     /// state.
     ///
     /// **Must be the trace's final 8 rows** (`row_start =
@@ -1427,7 +1427,7 @@ impl CompositeTrace {
     /// transition forces the state constant up to the last row.
     /// Threading the real tile-state fold is the remaining
     /// matmul→jackpot interleave; the C4 *binding* is fully
-    /// exercised either way (`BLAKE3(zeros, key=s_a)` is a genuine
+    /// exercised either way (`BLAKE3(zeros, key=jackpot_key)` is a genuine
     /// non-vacuous keyed digest). Returns the 8-word digest.
     pub fn place_jackpot_hash_block(
         &mut self,
@@ -1498,7 +1498,7 @@ impl CompositeTrace {
     /// final `TileState M`** — which the §4.D keystone binds to
     /// the last-row `JACKPOT_MSG`. Returns the final `M` (16 u32)
     /// so the caller feeds it to `place_jackpot_hash_block` as the
-    /// hashed message (⇒ `HASH_JACKPOT = BLAKE3(M, key=s_a)`, the
+    /// hashed message (⇒ `HASH_JACKPOT = BLAKE3(M, key=jackpot_key)`, the
     /// real PoW digest). Mirrors `chips::fold::build_trace` at
     /// composite offsets.
     pub fn place_fold_chain(&mut self, row_start: usize, x_steps: &[i32]) -> [u32; 16] {
@@ -3196,7 +3196,7 @@ mod tests {
             ControlChip.fill_row(&sel, 0, row);
         }
 
-        // Row 9: IS_USE_COMMITMENT_HASH = 1 (idx 3), CV_IN = s_a.
+        // Row 9: IS_USE_COMMITMENT_HASH = 1 (idx 3), CV_IN = jackpot key.
         let ch: [u32; 8] = core::array::from_fn(|i| 0x5EED_0000 + i as u32);
         let r2 = 9usize;
         let b2 = r2 * TOTAL_TRACE_WIDTH;

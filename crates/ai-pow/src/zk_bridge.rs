@@ -3,14 +3,14 @@
 //! Builds a `CompositeTrace` from a real solve's per-block
 //! context and proves + PoW-verifies it. After this, the SNARK is
 //! a genuine *proof of work for this block*: it is anchored to the
-//! chain-pinned BLAKE3 key (`JOB_KEY` = κ) and noise seed
-//! (`COMMITMENT_HASH` = `s_a`) via C1, binds the matrix bytes via
+//! chain-pinned BLAKE3 key (`JOB_KEY` = κ) and nonce-derived jackpot key
+//! (`COMMITMENT_HASH` = `pow_key_for_nonce(s_a, nonce)`) via C1, binds the matrix bytes via
 //! the C3 chain (`HASH_A` / `HASH_B`), and is checked against the
 //! real difficulty target via C2.
 //!
 //! ## What is bound (non-vacuous on a real solve)
 //!
-//! - **C1** — `JOB_KEY` (κ) and `COMMITMENT_HASH` (`s_a`) via
+//! - **C1** — `JOB_KEY` (κ) and `COMMITMENT_HASH` (the nonce-derived jackpot key) via
 //!   key-pin rows (`CompositeTrace::place_key_pin_row`). These
 //!   anchor the proof to *this* block; without them the SNARK
 //!   proves an unbounded "some matmul happened."
@@ -18,7 +18,7 @@
 //!   (row-major) and B (col-major) keyed by κ, byte-equivalent to
 //!   `commit::matrix_commitment` (asserted here).
 //! - **C4 / HASH_JACKPOT** — `BLAKE3(JACKPOT_MSG,
-//!   key=COMMITMENT_HASH=s_a)` via `place_jackpot_hash_block`
+//!   key=COMMITMENT_HASH=pow_key_for_nonce(s_a, nonce))` via `place_jackpot_hash_block`
 //!   (the trace's final 8 rows; row 7 co-carries the BLAKE3
 //!   finalize and a degenerate-but-valid jackpot step, so the
 //!   jackpot `when_transition` is vacuous on the last row).
@@ -45,8 +45,8 @@
 //! jackpot rows are placed, so the passthrough transition forces
 //! the state constant and the `noised_packed` *matmul-input*
 //! binding has no queries to bind. The C4 *binding* (CV_OUT ↦
-//! PI_HASH_JACKPOT, keyed by the real `s_a`) is fully exercised —
-//! `BLAKE3(zeros, key=s_a)` is a genuine non-vacuous keyed
+//! PI_HASH_JACKPOT, keyed by the real nonce-derived `pow_key`) is fully exercised —
+//! `BLAKE3(zeros, key=pow_key)` is a genuine non-vacuous keyed
 //! digest. Threading the *real* tile-state fold (the
 //! matmul→`X_STEP`→rotl13-XOR chain so `JACKPOT_MSG` = the real
 //! `TileState M`) is HIGH-2.2 §4.A; it does not weaken any
@@ -61,6 +61,7 @@ use ai_pow_zk::{
 
 use crate::params::{MatmulParams, ParamError};
 use crate::prover::BlockContext;
+use crate::fiat_shamir::pow_key_for_nonce;
 
 // ───────────────────────── P-B (γ Pearl-faithful) ─────────────────────────
 //
@@ -256,6 +257,7 @@ fn bytes_to_words_le(b: &[u8; 32]) -> [u32; 8] {
 pub fn prove_and_verify(
     ctx: &BlockContext<'_>,
     params: &MatmulParams,
+    nonce: &[u8],
     target: &[u8; 32],
 ) -> Result<ZkOutcome, BridgeError> {
     // Tile (0,0): the existing binding/regression tests use
@@ -263,7 +265,7 @@ pub fn prove_and_verify(
     // attested tile is irrelevant to what they assert. Real
     // mining attests the *found* tile via
     // [`prove_and_verify_for_block`] → [`prove_and_verify_tiled`].
-    prove_and_verify_tiled(ctx, params, target, 0, 0)
+    prove_and_verify_tiled(ctx, params, nonce, target, 0, 0)
 }
 
 /// HIGH-2.2 §4.E — attest the **actual solved tile**
@@ -282,6 +284,7 @@ pub fn prove_and_verify(
 pub fn prove_and_verify_tiled(
     ctx: &BlockContext<'_>,
     params: &MatmulParams,
+    nonce: &[u8],
     target: &[u8; 32],
     tile_i: u32,
     tile_j: u32,
@@ -290,7 +293,7 @@ pub fn prove_and_verify_tiled(
     // Without this, downstream `expected_layer0_rows` would hit a
     // `k / noise_rank` div-by-zero panic for `noise_rank = 0`.
     params.validate().map_err(BridgeError::InvalidParams)?;
-    prove_and_verify_tiled_tamper(ctx, params, target, tile_i, tile_j, |_| {})
+    prove_and_verify_tiled_tamper(ctx, params, nonce, target, tile_i, tile_j, |_| {})
 }
 
 /// Test seam for the §4.C.2 c-exact **position-exact
@@ -305,12 +308,13 @@ pub fn prove_and_verify_tiled(
 pub(crate) fn prove_and_verify_tiled_tamper<F: FnOnce(&mut CompositeTrace)>(
     ctx: &BlockContext<'_>,
     params: &MatmulParams,
+    nonce: &[u8],
     target: &[u8; 32],
     tile_i: u32,
     tile_j: u32,
     tamper: F,
 ) -> Result<ZkOutcome, BridgeError> {
-    prove_and_verify_tiled_full(ctx, params, target, tile_i, tile_j, tamper, None)
+    prove_and_verify_tiled_full(ctx, params, nonce, target, tile_i, tile_j, tamper, None)
 }
 
 /// [`prove_and_verify_tiled_tamper`] plus the §4.C.10 adversarial
@@ -324,6 +328,7 @@ pub(crate) fn prove_and_verify_tiled_tamper<F: FnOnce(&mut CompositeTrace)>(
 pub(crate) fn prove_and_verify_tiled_full<F: FnOnce(&mut CompositeTrace)>(
     ctx: &BlockContext<'_>,
     params: &MatmulParams,
+    nonce: &[u8],
     target: &[u8; 32],
     tile_i: u32,
     tile_j: u32,
@@ -438,11 +443,12 @@ pub(crate) fn prove_and_verify_tiled_full<F: FnOnce(&mut CompositeTrace)>(
     );
 
     // C1 — key-pin rows binding JOB_KEY = κ and
-    // COMMITMENT_HASH = s_a. Placed well clear of the matrix-hash
+    // COMMITMENT_HASH = pow_key_for_nonce(s_a, nonce). Placed well clear of the matrix-hash
     // blocks and of the last row (which carries the cumsum /
     // jackpot passthrough binding).
     let kappa_w = bytes_to_words_le(&ctx.kappa);
-    let s_a_w = bytes_to_words_le(&ctx.s_a);
+    let pow_key = pow_key_for_nonce(&ctx.s_a, nonce);
+    let pow_key_w = bytes_to_words_le(&pow_key);
     let jk_row = mh_end + 1;
     let ch_row = mh_end + 2;
     assert!(
@@ -450,7 +456,7 @@ pub(crate) fn prove_and_verify_tiled_full<F: FnOnce(&mut CompositeTrace)>(
         "trace too short for key-pin rows: mh_end={mh_end} height={height}"
     );
     trace.place_key_pin_row(jk_row, false, &kappa_w);
-    trace.place_key_pin_row(ch_row, true, &s_a_w);
+    trace.place_key_pin_row(ch_row, true, &pow_key_w);
 
     // HIGH-2.2 §6(b) — place the **real** solved tile's full
     // useful-work chain: the sub-block-major matmul sweep over the
@@ -466,7 +472,7 @@ pub(crate) fn prove_and_verify_tiled_full<F: FnOnce(&mut CompositeTrace)>(
     // it must do the real matmul. Reconstruct the noised matrices
     // the same way `BlockContext::build` does (it exposes the
     // seeds), then extract the attested tile's `t·k` row/col
-    // strips. `HASH_JACKPOT = BLAKE3(real M, key=s_a)` is the
+    // strips. `HASH_JACKPOT = BLAKE3(real M, key=pow_key)` is the
     // genuine PoW digest, byte-equivalent to the plain miner
     // (`high2_2_xstep_fold_pipeline_byte_equiv_plain`). Tile (0,0)
     // is attested; threading the specific *found* tile + binding
@@ -591,12 +597,12 @@ pub(crate) fn prove_and_verify_tiled_full<F: FnOnce(&mut CompositeTrace)>(
     };
 
     // C4 — final jackpot-hash block (trace's last 8 rows):
-    // HASH_JACKPOT = BLAKE3(JACKPOT_MSG = real M, key = s_a).
+    // HASH_JACKPOT = BLAKE3(JACKPOT_MSG = real M, key = pow_key_for_nonce(s_a, nonce)).
     assert!(
         ch_row + 1 < height - 8,
         "key-pin rows must clear the final jackpot-hash block"
     );
-    let _hj = trace.place_jackpot_hash_block(height - 8, &real_m, &s_a_w);
+    let _hj = trace.place_jackpot_hash_block(height - 8, &real_m, &pow_key_w);
 
     // Derive PIs and cross-check against the plain-side context.
     let pis = CompositePublicInputs::derive_from_trace(&trace);
@@ -614,8 +620,8 @@ pub(crate) fn prove_and_verify_tiled_full<F: FnOnce(&mut CompositeTrace)>(
     if pis.job_key != kappa_w {
         return Err(BridgeError::CommitmentMismatch("JOB_KEY != kappa"));
     }
-    if pis.commitment_hash != s_a_w {
-        return Err(BridgeError::CommitmentMismatch("COMMITMENT_HASH != s_a"));
+    if pis.commitment_hash != pow_key_w {
+        return Err(BridgeError::CommitmentMismatch("COMMITMENT_HASH != pow_key"));
     }
 
     let zk_params = ZkParams {
@@ -720,6 +726,7 @@ pub(crate) fn prove_and_verify_tiled_full<F: FnOnce(&mut CompositeTrace)>(
 pub fn prove_and_verify_for_block(
     ctx: &BlockContext<'_>,
     params: &MatmulParams,
+    nonce: &[u8],
     found_idx: u32,
 ) -> Result<ZkOutcome, BridgeError> {
     // M2: validate at the entry boundary so a structurally-broken
@@ -731,7 +738,7 @@ pub fn prove_and_verify_for_block(
     let (tile_i, tile_j) = tile_ij(found_idx, params).ok_or(
         BridgeError::FoundIdxOutOfRange { found_idx, num_tiles: params.num_tiles() },
     )?;
-    prove_and_verify_tiled(ctx, params, &target, tile_i, tile_j)
+    prove_and_verify_tiled(ctx, params, nonce, &target, tile_i, tile_j)
 }
 
 /// MED-3 / HIGH-2.2 §4.E — the **verifier-side derivation contract**
@@ -766,6 +773,8 @@ mod tests {
     use crate::synth::synth_matrices;
     use crate::tile_hash::difficulty_target;
 
+    const TEST_NONCE: &[u8] = b"zk-bridge-test-nonce";
+
     #[test]
     fn f1_bridge_real_solve_binds_c1_c2_c3_c4() {
         let params = MatmulParams::TEST_SMALL;
@@ -774,17 +783,18 @@ mod tests {
         let ctx = BlockContext::build(bc, &a, &b, &params).expect("ctx");
         let target = difficulty_target(&params);
 
-        let out = prove_and_verify(&ctx, &params, &target)
+        let out = prove_and_verify(&ctx, &params, TEST_NONCE, &target)
             .expect("F1 bridge: prove + pow-verify must succeed");
 
         // C1 non-vacuous: JOB_KEY / COMMITMENT_HASH bound to the
-        // real block's κ / s_a.
+        // real block's κ / nonce-derived jackpot key.
+        let pow_key = crate::fiat_shamir::pow_key_for_nonce(&ctx.s_a, TEST_NONCE);
         assert_eq!(out.pis.job_key, bytes_to_words_le(&ctx.kappa));
-        assert_eq!(out.pis.commitment_hash, bytes_to_words_le(&ctx.s_a));
+        assert_eq!(out.pis.commitment_hash, bytes_to_words_le(&pow_key));
         // C3: HASH_A / HASH_B bound to the real matrix commitments.
         assert_eq!(out.pis.hash_a, bytes_to_words_le(&ctx.h_a_chunk));
         assert_eq!(out.pis.hash_b, bytes_to_words_le(&ctx.h_b_chunk));
-        // C4 non-vacuous: HASH_JACKPOT = BLAKE3(zeros, key=s_a) ≠ 0.
+        // C4 non-vacuous: HASH_JACKPOT = BLAKE3(M, key=pow_key) ≠ 0.
         assert_ne!(out.pis.hash_jackpot, [0u32; 8]);
     }
 
@@ -987,7 +997,7 @@ mod tests {
         let (a, b) = synth_matrices(b"f1-bridge-seed-2", &params);
         let ctx = BlockContext::build(b"blk", &a, &b, &params).expect("ctx");
         let max_target = [0xFFu8; 32];
-        assert!(prove_and_verify(&ctx, &params, &max_target).is_ok());
+        assert!(prove_and_verify(&ctx, &params, TEST_NONCE, &max_target).is_ok());
     }
 
     /// MED-3: the hardened entrypoint round-trips a real solve and
@@ -999,17 +1009,18 @@ mod tests {
         let params = MatmulParams::TEST_SMALL;
         let (a, b) = synth_matrices(b"med3-seed", &params);
         let ctx = BlockContext::build(b"med3-blk", &a, &b, &params).expect("ctx");
+        let nonce = b"med3-nonce";
 
         // Hardened path: no target argument; found_idx 0 = tile
         // (0,0), matching the primitive's default tile so the PIs
         // are directly comparable.
-        let hardened = prove_and_verify_for_block(&ctx, &params, 0)
+        let hardened = prove_and_verify_for_block(&ctx, &params, nonce, 0)
             .expect("MED-3 hardened entrypoint must prove + pow-verify");
 
         // It must be equivalent to the primitive invoked with the
         // chain-derived target (same PIs, same tile).
         let target = difficulty_target(&params);
-        let primitive = prove_and_verify(&ctx, &params, &target)
+        let primitive = prove_and_verify(&ctx, &params, nonce, &target)
             .expect("primitive with chain target must also succeed");
         assert_eq!(hardened.pis, primitive.pis);
     }
@@ -1018,7 +1029,7 @@ mod tests {
     /// tile** (not a hard-coded (0,0)). For a spread of winning
     /// indices the full §6(b) chain proves+pow-verifies, and the
     /// bound `HASH_JACKPOT` is byte-identical to the plain miner's
-    /// `BLAKE3(compute_tile(tile_i,tile_j) fold, key=s_a)` for
+    /// `BLAKE3(compute_tile(tile_i,tile_j) fold, key=pow_key_for_nonce(s_a, nonce))` for
     /// *that* tile — and distinct tiles give distinct digests
     /// (proving the index is genuinely threaded, not constant).
     #[test]
@@ -1026,16 +1037,18 @@ mod tests {
         let params = MatmulParams::TEST_SMALL; // k/r = 16 ⇒ §6(b) live
         let (a, b) = synth_matrices(b"hi22-4e-seed", &params);
         let ctx = BlockContext::build(b"hi22-4e-blk", &a, &b, &params).expect("ctx");
+        let nonce = b"hi22-4e-nonce";
+        let pow_key = crate::fiat_shamir::pow_key_for_nonce(&ctx.s_a, nonce);
 
         let nt = params.num_tiles();
         let mut digests = std::collections::HashSet::new();
         for &found_idx in &[0u32, 5, (nt / 2) as u32, (nt - 1) as u32] {
             let (ti, tj) = tile_ij(found_idx, &params).expect("valid idx");
-            let out = prove_and_verify_for_block(&ctx, &params, found_idx)
+            let out = prove_and_verify_for_block(&ctx, &params, nonce, found_idx)
                 .unwrap_or_else(|e| panic!("§4.E: tile ({ti},{tj}) must prove+verify: {e}"));
 
             // Byte-equivalence to the plain solve for THIS tile.
-            let want = ctx.m_states[found_idx as usize].keyed_hash(&ctx.s_a);
+            let want = ctx.m_states[found_idx as usize].keyed_hash(&pow_key);
             assert_eq!(
                 ai_pow_zk::hash_jackpot_le_bytes(&out.pis.hash_jackpot),
                 want,
@@ -2520,7 +2533,7 @@ mod tests {
             .expect("ctx");
         // coloc=true ⇒ the g=1 co-location path. Must prove +
         // pow-verify with C3 ACTIVE and every bus balanced.
-        let out = prove_and_verify_for_block(&ctx, &params, 0).expect(
+        let out = prove_and_verify_for_block(&ctx, &params, TEST_NONCE, 0).expect(
             "cx.2 g=1 (16|r P16) Route-A roundtrip must prove + \
              pow-verify with C3 ACTIVE (the §4.C.2 plain tie live \
              end-to-end)",
@@ -2589,7 +2602,7 @@ mod tests {
         let target = crate::tile_hash::difficulty_target(&params);
 
         // Honest control: the seam is a no-op ⇒ must verify.
-        prove_and_verify_tiled_tamper(&ctx, &params, &target, 0, 0, |_| {})
+        prove_and_verify_tiled_tamper(&ctx, &params, TEST_NONCE, &target, 0, 0, |_| {})
             .expect("honest P16 g=1 (no tamper) must prove + pow-verify");
 
         // Adversarial: flip the committed-plain UINT8_DATA[0] on
@@ -2597,7 +2610,7 @@ mod tests {
         // g=1, C3 active). Keep it a valid u8 (urange8 ok) so the
         // rejection is the §4.C.2 plain tie, not a range check.
         let res = prove_and_verify_tiled_tamper(
-            &ctx, &params, &target, 0, 0,
+            &ctx, &params, TEST_NONCE, &target, 0, 0,
             |t: &mut CompositeTrace| {
                 let zero = ai_pow_zk::Val::default();
                 let h = t.height();
@@ -2698,7 +2711,7 @@ mod tests {
         // verifies — also re-confirms the P16 g=1 roundtrip).
         let rows: RefCell<Vec<[bool; 7]>> = RefCell::new(Vec::new());
         prove_and_verify_tiled_tamper(
-            &ctx, &params, &target, tile_i, tile_j,
+            &ctx, &params, TEST_NONCE, &target, tile_i, tile_j,
             |t: &mut CompositeTrace| {
                 let zero = ai_pow_zk::Val::default();
                 let h = t.height();
@@ -2879,7 +2892,7 @@ mod tests {
         let cap: RefCell<Option<(Vec<ai_pow_zk::Val>, usize)>> =
             RefCell::new(None);
         prove_and_verify_tiled_tamper(
-            &ctx, &params, &target, tile_i, tile_j,
+            &ctx, &params, TEST_NONCE, &target, tile_i, tile_j,
             |t: &mut CompositeTrace| {
                 let e = extract_program(&t.matrix);
                 *cap.borrow_mut() = Some((e.values, t.height()));
@@ -2975,7 +2988,7 @@ mod tests {
         let cap: RefCell<Option<(Vec<ai_pow_zk::Val>, Vec<bool>, usize)>> =
             RefCell::new(None);
         prove_and_verify_tiled_tamper(
-            &ctx, &params, &target, tile_i, tile_j,
+            &ctx, &params, TEST_NONCE, &target, tile_i, tile_j,
             |t: &mut CompositeTrace| {
                 let zero = ai_pow_zk::Val::default();
                 let h = t.height();
@@ -3083,7 +3096,7 @@ mod tests {
         // Honest control: CR.6 canonical-VK verify still accepts a
         // genuine proof (the §5 KAT equivalence, end-to-end).
         prove_and_verify_tiled_tamper(
-            &ctx, &params, &target, tile_i, tile_j, |_| {},
+            &ctx, &params, TEST_NONCE, &target, tile_i, tile_j, |_| {},
         )
         .expect(
             "CR.6: an honest proof must still verify against the \
@@ -3097,7 +3110,7 @@ mod tests {
             difficulty_bits: params.difficulty_bits,
         };
         let res = prove_and_verify_tiled_tamper(
-            &ctx, &params, &target, tile_i, tile_j,
+            &ctx, &params, TEST_NONCE, &target, tile_i, tile_j,
             |t: &mut CompositeTrace| {
                 let zero = ai_pow_zk::Val::default();
                 let h = t.height();
@@ -3178,7 +3191,7 @@ mod tests {
             .expect("ctx");
         let target = crate::tile_hash::difficulty_target(&params);
 
-        let outcome = prove_and_verify_tiled(&ctx, &params, &target, 0, 0)
+        let outcome = prove_and_verify_tiled(&ctx, &params, TEST_NONCE, &target, 0, 0)
             .expect("real-param block must prove + pow-verify");
         assert!(
             outcome.sweep_in_circuit,
@@ -3223,7 +3236,7 @@ mod tests {
         let target = crate::tile_hash::difficulty_target(&params);
 
         // Honest control: sweep == committed ⇒ must verify.
-        prove_and_verify_tiled_full(&ctx, &params, &target, 0, 0, |_| {}, None)
+        prove_and_verify_tiled_full(&ctx, &params, TEST_NONCE, &target, 0, 0, |_| {}, None)
             .expect("honest block (sweep == committed) must verify");
 
         // Attack: a DIFFERENT matrix drives the §6(b) matmul sweep,
@@ -3234,6 +3247,7 @@ mod tests {
         let res = prove_and_verify_tiled_full(
             &ctx,
             &params,
+            TEST_NONCE,
             &target,
             0,
             0,
@@ -3295,6 +3309,7 @@ mod tests {
         let res = prove_and_verify_tiled_full(
             &ctx,
             &params,
+            TEST_NONCE,
             &target,
             0,
             0,
@@ -3333,21 +3348,21 @@ mod tests {
 
         assert!(
             matches!(
-                prove_and_verify(&ctx, &bad, &target),
+                prove_and_verify(&ctx, &bad, TEST_NONCE, &target),
                 Err(BridgeError::InvalidParams(ParamError::NoiseRankOutOfRange))
             ),
             "prove_and_verify must surface InvalidParams(NoiseRankOutOfRange) — not panic"
         );
         assert!(
             matches!(
-                prove_and_verify_tiled(&ctx, &bad, &target, 0, 0),
+                prove_and_verify_tiled(&ctx, &bad, TEST_NONCE, &target, 0, 0),
                 Err(BridgeError::InvalidParams(ParamError::NoiseRankOutOfRange))
             ),
             "prove_and_verify_tiled must surface InvalidParams(NoiseRankOutOfRange) — not panic"
         );
         assert!(
             matches!(
-                prove_and_verify_for_block(&ctx, &bad, 0),
+                prove_and_verify_for_block(&ctx, &bad, TEST_NONCE, 0),
                 Err(BridgeError::InvalidParams(ParamError::NoiseRankOutOfRange))
             ),
             "prove_and_verify_for_block must surface InvalidParams(NoiseRankOutOfRange) — not panic"
@@ -3362,7 +3377,7 @@ mod tests {
 
         let nt = params.num_tiles();
         let oob = nt as u32; // == num_tiles, just past the last valid idx
-        let res = prove_and_verify_for_block(&ctx, &params, oob);
+        let res = prove_and_verify_for_block(&ctx, &params, TEST_NONCE, oob);
         match res {
             Err(BridgeError::FoundIdxOutOfRange { found_idx, num_tiles }) => {
                 assert_eq!(u64::from(found_idx), nt);

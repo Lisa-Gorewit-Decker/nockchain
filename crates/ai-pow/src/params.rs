@@ -9,7 +9,7 @@
 //!
 //! Difficulty is expressed in log-bits via `difficulty_bits = b` so the
 //! hardness condition matches Pearl §4.5:
-//!   BLAKE3(M, key = s_a)  <=  2^(256 - b) * r * t_m * t_n
+//!   BLAKE3(M, key = pow_key_for_nonce(s_a, nonce))  <=  2^(256 - b) * r * t_m * t_n
 //! (with square tiles, `t_m = t_n = tile`).
 //!
 //! # Pearl §4.8 envelope (the Pearl-faithful PROD path, "γ")
@@ -101,7 +101,7 @@ pub struct MatmulParams {
     pub tile: u32,
     pub spot_checks: u32,
     /// Logarithmic difficulty `b` (Pearl §4.5). A tile is accepted when
-    /// `BLAKE3(M, key = s_a) <= 2^(256 - b) * r * t^2`. `b = 0` accepts
+    /// `BLAKE3(M, key = pow_key_for_nonce(s_a, nonce)) <= 2^(256 - b) * r * t^2`. `b = 0` accepts
     /// every tile; values above 256 reject everything.
     pub difficulty_bits: u32,
 }

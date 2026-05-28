@@ -47,7 +47,7 @@ pub enum RowClass {
     StripOpenA,
     /// B-side strip-opening compression rows (`[na, na+nb)`).
     StripOpenB,
-    /// C1 key-pin rows (JOB_KEY = κ, then COMMITMENT_HASH = s_a).
+    /// C1 key-pin rows (JOB_KEY = κ, then COMMITMENT_HASH slot = jackpot key).
     KeyPin,
     /// §6(b)-G1/G2 sub-block-major matmul sweep + StripeXor.
     Sweep,
@@ -202,8 +202,10 @@ pub struct BlockPublic {
     pub tile_j: u32,
     /// C1-pinned keyed-BLAKE3 key κ (JOB_KEY).
     pub kappa: [u8; 32],
-    /// C1-pinned A-side public seed s_a (COMMITMENT_HASH; the
-    /// `noise_ref` seed for the §4.C.2/b2 store-noise pin).
+    /// Verifier-provided A-side public seed s_a. It remains the
+    /// `noise_ref` seed for the §4.C.2/b2 store-noise pin; Nockchain
+    /// AI-PoW uses the C1 COMMITMENT_HASH PI slot for the nonce-derived
+    /// jackpot key.
     pub s_a: [u8; 32],
     /// C1-pinned B-side public seed s_b.
     pub s_b: [u8; 32],
@@ -673,8 +675,8 @@ fn row_descriptor(
         RowClass::KeyPin => {
             // CR.2: `place_key_pin_row` sets exactly one selector
             // and `mat_id=0`; row mh_end+1 = JOB_KEY (SELECTOR_COLS
-            // idx 2), mh_end+2 = COMMITMENT_HASH (idx 3). The
-            // pinned PI (κ / s_a) is written to `CV_IN` — a chip
+            // idx 2), mh_end+2 = COMMITMENT_HASH slot (idx 3). The
+            // pinned PI (κ / jackpot key) is written to `CV_IN` — a chip
             // column, not a PROGRAM_COL — so the canonical
             // descriptor is `bp`-independent.
             let mut selectors = [false; NUM_SELECTORS];

@@ -263,7 +263,7 @@ impl<AB: AirBuilder<F = crate::Val>> Air<AB> for CompositeFullAirPinned {
         // sequence; the last row therefore carries the real
         // `TileState M` (the honest bridge places the real solved
         // tile's fold chain — §4.A). Hence HASH_JACKPOT =
-        // BLAKE3(M, key=s_a) is the genuine PoW digest, not a
+        // BLAKE3(M, key=pow_key_for_nonce(s_a, nonce)) is the genuine PoW digest, not a
         // prover-free constant nor the 2×2 micro-accumulator
         // stop-gap this replaces (which only pinned 4 of 16 words
         // and zeroed the rest — §4.0). Honest traces with no fold
