@@ -123,7 +123,7 @@ heuristic is **not** adopted).
   commit_proof_of_work_bits + query_proof_of_work_bits`.
 - **Per-layer (LANDED FRI configurations, 2026-05-21
   anchored-between)**:
-  - Inner Tip5-L0 PROD: `lb=4, nq=15, pow=1` ⇒ **61 bits**
+  - Inner Tip5-L0 PROD: `lb=4, nq=15, pow=1+1` ⇒ **62 bits**
     unconditional Johnson (`crates/ai-pow-zk/src/circuit.rs::CircuitConfig::PROD`).
   - Outer-cert L1/L2 (`goldilocks_tip5_60bit`): **production FRI
     parameters as of 2026-05-21 (anchored-between)** stack every
@@ -169,8 +169,8 @@ heuristic is **not** adopted).
     unconditional bits per AIR at production parameters.
   - Per-LogUp-bus: `3 · k_b / q_chal` ≥98 bits.
   - **Combined chain MIN** (2026-05-21 anchored-between):
-    **61 bits unconditional Johnson** (= MIN(inner 61, L1 62,
-    L2 62); FRI is the binding term; AIR + LogUp have ≥37-bit
+    **62 bits unconditional Johnson** (= MIN(inner 62, L1 62,
+    L2 62); FRI is the binding term; AIR + LogUp have ≥36-bit
     margin over FRI). Historical pre-anchored-between chain
     MIN was 82 bits.
 
@@ -406,12 +406,11 @@ Copyright (c) 2015-2016 The Decred developers). See also
 
 ## Security parameters
 
-- **`CircuitConfig::PROD`**: `log_blowup = 3`, `num_queries = 80` →
-  `80 · 3 / 2 = 120` bits provable FRI soundness. Bench: ~50 s
-  prove / ~140 ms verify / ~900 KB baseline / ~1.65 MB with
-  activity at `MIN_STARK_LEN = 8192` rows × 1378 cols.
+- **`CircuitConfig::PROD`**: `log_blowup = 4`, `num_queries = 15`,
+  `pow_bits = 1` → 62 bits unconditional Johnson FRI soundness.
+  This is the 2026-05-21 anchored-between production floor.
 - **`CircuitConfig::TEST_PEARL`**: `log_blowup = 2`, `num_queries = 16`
-  → ~12 bits provable soundness. For fast test round-trips only;
+  → 32 bits Johnson soundness. For fast test round-trips only;
   not production-grade.
 
 ## Tests

@@ -327,10 +327,9 @@ mod tests {
     }
 
     // =================================================================
-    //  PROD-profile benches (≥80-bit unconditional FRI soundness at
+    //  PROD-profile benches (62-bit unconditional FRI soundness at
     //  the Johnson radius — paper IACR ePrint 2025/2055 Theorem 1.5;
-    //  2026-05-19 recalibration from the pre-paper 120-bit
-    //  unique-decoding framing).
+    //  2026-05-21 anchored-between policy).
     // =================================================================
 
     #[test]
@@ -362,11 +361,12 @@ mod tests {
     }
 
     // =================================================================
-    //  FRI parameter sweep — all at ≥80-bit unconditional Johnson-
-    //  radius soundness (paper IACR ePrint 2025/2055 Theorem 1.5).
+    //  FRI parameter sweep. The historical PROD_LBn profiles remain
+    //  at ≥80-bit unconditional Johnson-radius soundness; current PROD
+    //  is the 62-bit anchored-between profile.
     //
-    //  Each profile pairs `log_blowup` with `num_queries` so that
-    //  `log_blowup · num_queries ≥ 80` (~90 bits each for margin).
+    //  The high-margin profiles pair `log_blowup` with `num_queries` so
+    //  that `log_blowup · num_queries ≥ 80` (~90 bits each for margin).
     //  The LDE size scales as `2^log_blowup × trace`; the proof
     //  size scales (roughly) as `num_queries × log2(LDE)`. So as
     //  log_blowup goes up:
@@ -385,8 +385,8 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "FRI sweep — log_blowup=3, num_queries=30 (current PROD) @ 8K heavy (≥80-bit Johnson)"]
-    fn bench_fri_sweep_lb3_8k_heavy() {
+    #[ignore = "FRI sweep — current PROD log_blowup=4, num_queries=15, pow_bits=1 @ 8K heavy (62-bit Johnson)"]
+    fn bench_fri_sweep_current_prod_8k_heavy() {
         let r = run_heavy_at(MIN_STARK_LEN, 100, 100, 100, &CircuitConfig::PROD);
         r.print();
     }

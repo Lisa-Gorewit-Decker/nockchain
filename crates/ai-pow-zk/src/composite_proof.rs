@@ -1715,9 +1715,9 @@ mod tests {
     ///
     /// Measures prove + verify wall-clock for the baseline trace
     /// at MIN_STARK_LEN under [`CircuitConfig::PROD`] (`log_blowup
-    /// = 3`, `num_queries = 30` — 90 bits unconditional FRI
-    /// soundness at the Johnson radius; paper IACR ePrint 2025/2055
-    /// Theorem 1.5). The baseline trace has no chip activity, so
+    /// = 4`, `num_queries = 15`, `pow_bits = 1` — 62 bits
+    /// unconditional FRI soundness at the Johnson radius; paper IACR
+    /// ePrint 2025/2055 Theorem 1.5). The baseline trace has no chip activity, so
     /// this bench is a structural ceiling: real proofs with
     /// matmul / BLAKE3 activity will take longer because the
     /// dot-product / round constraints actually evaluate to

@@ -13,8 +13,8 @@
 //! | Challenger            | `DuplexChallenger<Val, Tip5Perm, _, _>` | Fiat-Shamir over the same Tip5 permutation. |
 //!
 //! `CircuitConfig` is the tunable side (rate, query count, PoW bits).
-//! Default values are starting points borrowed from Pearl's `prove_block`
-//! and will move as the trace size differs from Pearl's STARK.
+//! Production values are pinned by the 2026-05-21 anchored-between
+//! Johnson policy below.
 
 use p3_challenger::DuplexChallenger;
 use p3_commit::ExtensionMmcs;
@@ -61,7 +61,7 @@ pub type Val = Goldilocks;
 ///   | End-point | Formula | Bits at lb=4, n≤2^22 | Status |
 ///   |---|---|---:|---|
 ///   | Known **insecure** at γ ≥ LDR (Thm 1.17 CYCLE-SUM) | `log₂(n) + O(1)` | ~22 | constructive attack |
-///   | Known **secure** at γ < J(δ)−η (Thm 1.5) | `lb·nq + pow` | 80+ | proven, paper |
+///   | Known **secure** at γ < J(δ)−η (Thm 1.5) | `lb·nq + 2*pow` | 60+ | proven, paper |
 ///
 /// The Plonky3 `CapacityBound::log_eta` heuristic claims `~2·lb`
 /// bits/query at γ ≈ 1−ρ, but that sits in the no-mans-land between
@@ -90,32 +90,39 @@ pub type Val = Goldilocks;
 #[derive(Debug, Clone, Copy)]
 pub struct CircuitConfig {
     /// Log2 of the FRI blowup factor. The committed evaluation domain
-    /// is `2^log_blowup` times the trace length. `PROD = 3` → rate
-    /// `1/8`, which gives roughly `log_blowup = 3` bits of
+    /// is `2^log_blowup` times the trace length. `PROD = 4` gives rate
+    /// `1/16`, which gives roughly `log_blowup = 4` bits of
     /// unconditional soundness per query at the Johnson radius (paper
     /// Theorem 1.5).
     pub log_blowup: u32,
-    /// FRI PoW grinding bits at the challenger. We don't use
-    /// grinding; soundness comes entirely from query count and rate.
-    /// Always `0` for both `PROD` and `TEST`.
+    /// FRI PoW grinding bits at the challenger. Plonky3 applies this
+    /// value to both commit-time and query-time PoW, so the Johnson
+    /// accounting includes `2 * pow_bits`.
     pub pow_bits: u32,
     /// Number of FRI queries. Unconditional soundness (Johnson radius,
-    /// paper Theorem 1.5): `num_queries · log_blowup` bits.
-    /// `PROD = 30` at `log_blowup = 3` → 90 bits unconditional (≥ 80
-    /// floor with ~10-bit margin to absorb the paper's constants).
+    /// paper Theorem 1.5): `num_queries * log_blowup + 2 * pow_bits`
+    /// bits as implemented in [`build_stark_config`]. `PROD = 15` at
+    /// `log_blowup = 4`, `pow_bits = 1` gives 62 bits.
     pub num_queries: u32,
 }
 
+pub const PROD_JOHNSON_FLOOR_BITS: u32 = 60;
+
 impl CircuitConfig {
+    /// Johnson-radius FRI soundness bits for this profile under the
+    /// accounting implemented in [`build_stark_config`].
+    pub const fn johnson_fri_bits(self) -> u32 {
+        self.log_blowup * self.num_queries + 2 * self.pow_bits
+    }
+
     /// Production defaults. **Anchored-between policy (2026-05-21):**
-    /// `lb=4 nq=15 pow=1` ⇒ `bits = lb·nq + pow = 4·15 + 1 = 61` bits
-    /// unconditional Johnson (Theorem 1.5, proven). The `pow_bits` field
-    /// on this struct is a single value, so the inner-side soundness
-    /// formula is the per-query term + one PoW; ≥39-bit margin above the
+    /// `lb=4 nq=15 pow=1` feeds one bit into each FRI PoW tier, so
+    /// `bits = lb*nq + 2*pow = 4*15 + 2 = 62` bits unconditional
+    /// Johnson (Theorem 1.5, proven). This leaves a ≥40-bit margin above the
     /// known-insecure CYCLE-SUM floor at the chain LDR (~22 bits at
     /// n≤2^22). Matches the outer-cert `goldilocks_tip5_60bit()`
-    /// `nq=15` anchoring for chain-MIN consistency (chain MIN =
-    /// MIN(61, 62, 62) = 61 bits ≥ 60-bit maintainer-targeted floor).
+    /// `nq=15` anchoring for chain-MIN consistency (chain MIN = 62
+    /// bits ≥ the 60-bit maintainer-targeted floor).
     ///
     /// **Trade-off vs the prior `lb=4 nq=20 = 82-bit` PROD:** 25%
     /// fewer queries ⇒ proportional proof-size shrinkage at the inner
@@ -196,9 +203,9 @@ impl CircuitConfig {
     ///
     /// `num_queries = 16` gives ~32 bits of Johnson-provable soundness
     /// (`2 · 16 = 32`) — still non-cryptographic, intended for
-    /// round-trip / tamper-detection tests. `PROD` (`log_blowup = 3,
-    /// num_queries = 30`) handles the real ≥80-bit unconditional PoUW
-    /// verification (paper Theorem 1.5).
+    /// round-trip / tamper-detection tests. `PROD` (`log_blowup = 4,
+    /// num_queries = 15`, `pow_bits = 1`) handles the real 62-bit
+    /// anchored-between PoUW verification (paper Theorem 1.5).
     pub const TEST_PEARL: Self = Self {
         log_blowup: 2,
         pow_bits: 0,
@@ -281,8 +288,8 @@ pub fn build_stark_config(_params: &ZkParams, config: &CircuitConfig) -> AiPowSt
         log_final_poly_len: 0,
         max_log_arity: 1, // binary folding
         num_queries: config.num_queries as usize,
-        // We intentionally hold pow_bits == 0 (2026-05-13_DESIGN.md §7); both PoW
-        // tiers in `FriParameters` come from the same knob.
+        // Both FRI PoW tiers come from the same knob; soundness accounting
+        // is `log_blowup * num_queries + 2 * pow_bits`.
         commit_proof_of_work_bits: config.pow_bits as usize,
         query_proof_of_work_bits: config.pow_bits as usize,
         mmcs: challenge_mmcs,
@@ -664,18 +671,17 @@ mod tests {
         // the known-insecure CYCLE-SUM ceiling at γ≥LDR (~22 bits at
         // n≤2^22, IACR ePrint 2025/2055 Thm 1.17) and the prior
         // conservative 80-bit ceiling). PROD `lb=4 nq=15 pow=1` ⇒
-        // 4·15 + 1 = 61 bits unconditional Johnson (Theorem 1.5,
-        // proven). The pow_bits field is single-value on this
-        // struct; on the outer-cert side which has separate
-        // commit/query PoW the analogous count is 62.
+        // 4·15 + 1 + 1 = 62 bits unconditional Johnson (Theorem 1.5,
+        // proven) because build_stark_config applies pow_bits to both
+        // commit and query PoW tiers.
         let prod = CircuitConfig::PROD;
         assert_eq!(prod.log_blowup, 4);
         assert_eq!(prod.num_queries, 15);
         assert_eq!(prod.pow_bits, 1);
-        let johnson_bits = prod.num_queries * prod.log_blowup + prod.pow_bits;
-        assert_eq!(johnson_bits, 61);
+        let johnson_bits = prod.johnson_fri_bits();
+        assert_eq!(johnson_bits, 62);
         assert!(
-            johnson_bits >= 60,
+            johnson_bits >= PROD_JOHNSON_FLOOR_BITS,
             "PROD must meet the 60-bit anchored Johnson floor"
         );
         // TEST is just for speed; sanity checks only.
@@ -690,8 +696,8 @@ mod tests {
     #[test]
     fn prod_sweep_profiles_meet_anchored_johnson_floor() {
         // **2026-05-21 anchored-between policy:** PROD `lb=4 nq=15
-        // pow=1` ⇒ 4·15 + 1 = 61 bits (using single-pow on this
-        // struct). The PROD_LBn sweep variants (with pow_bits=0)
+        // pow=1` ⇒ 4·15 + 2 = 62 bits. The PROD_LBn sweep variants
+        // (with pow_bits=0)
         // retain the 90+ bits per `lb·nq` alone — measurement
         // comparators for the M-S5b proof-size studies, not
         // production-deployed.
@@ -703,12 +709,16 @@ mod tests {
             ("PROD_LB6", CircuitConfig::PROD_LB6),
         ] {
             // Unconditional Johnson bound per IACR ePrint 2025/2055
-            // Theorem 1.5: lb·nq + pow_bits (single pow on this struct).
-            let bits = cfg.num_queries * cfg.log_blowup + cfg.pow_bits;
+            // Theorem 1.5: lb*nq + both FRI PoW tiers.
+            let bits = cfg.johnson_fri_bits();
             assert!(
-                bits >= 60,
-                "{name}: johnson_bits = lb·nq + pow = {}·{} + {} = {} < 60",
-                cfg.log_blowup, cfg.num_queries, cfg.pow_bits, bits
+                bits >= PROD_JOHNSON_FLOOR_BITS,
+                "{name}: johnson_bits = lb*nq + 2*pow = {}*{} + 2*{} = {} < {}",
+                cfg.log_blowup,
+                cfg.num_queries,
+                cfg.pow_bits,
+                bits,
+                PROD_JOHNSON_FLOOR_BITS
             );
         }
     }
@@ -797,19 +807,21 @@ mod tests {
     #[test]
     fn build_stark_config_provable_soundness_at_prod() {
         // Sanity assertion of the security claim: log_blowup ·
-        // num_queries + pow_bits = unconditional Johnson bits per
+        // num_queries + both FRI PoW tiers = unconditional Johnson bits per
         // paper IACR ePrint 2025/2055 Theorem 1.5. **2026-05-21
         // anchored-between policy:** PROD `lb=4 nq=15 pow=1` ⇒
-        // 4·15 + 1 = 61 bits (single-pow struct field). Meets the
+        // 4·15 + 2 = 62 bits. Meets the
         // ≥60-bit anchored-Johnson floor (maintainer 2026-05-21,
         // anchored between known-insecure ~22-bit CYCLE-SUM ceiling
         // at γ≥LDR and the prior conservative 80-bit floor).
         let prod = CircuitConfig::PROD;
         let _ = build_stark_config(&sample_zk_params(), &prod);
-        let johnson_bits =
-            (prod.log_blowup * prod.num_queries + prod.pow_bits) as usize;
-        assert_eq!(johnson_bits, 61);
-        assert!(johnson_bits >= 60, "PROD must meet the 60-bit anchored Johnson floor");
+        let johnson_bits = prod.johnson_fri_bits();
+        assert_eq!(johnson_bits, 62);
+        assert!(
+            johnson_bits >= PROD_JOHNSON_FLOOR_BITS,
+            "PROD must meet the 60-bit anchored Johnson floor"
+        );
     }
 
     #[test]

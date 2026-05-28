@@ -1189,8 +1189,9 @@ mod tests {
 
     /// **PROD bench with LogUp enabled.** Run the full
     /// CompositeFullAirWithLookups under PROD profile (log_blowup
-    /// = 3, num_queries = 30 → 90 bits unconditional Johnson-radius
-    /// FRI soundness; paper IACR ePrint 2025/2055 Theorem 1.5).
+    /// = 4, num_queries = 15, pow_bits = 1 → 62 bits unconditional
+    /// Johnson-radius FRI soundness; paper IACR ePrint 2025/2055
+    /// Theorem 1.5).
     /// Ignored by default; run with --ignored.
     #[test]
     #[ignore = "PROD bench — expensive; run with --ignored"]
