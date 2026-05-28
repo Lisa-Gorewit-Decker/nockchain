@@ -45,12 +45,16 @@ pub struct MatmulProof {
     pub h_a: [u8; 32],
     /// Pearl §4.3 `H_B`: BLAKE3-Merkle root over the columns of `B`.
     pub h_b: [u8; 32],
-    /// M52 step 5: chunk-Merkle `BLAKE3(pad(A_row_major), key=κ)`.
-    /// The commitment shape the `ai-pow-zk` SNARK binds to as
-    /// public input `HASH_A`. Distinct from `h_a` (row-Merkle,
-    /// used for spot-check opening) — they coexist.
+    /// Reserved for the ZK chunk-Merkle commitment formerly carried in the
+    /// plain proof.
+    ///
+    /// Plain verification cannot authenticate this full-matrix commitment from
+    /// a spot-check opening, so verifier-facing plain proofs must set it to
+    /// zero. Trusted ZK verification receives chunk commitments through
+    /// `ZkPublicCommitments`, not from this plain proof field.
     pub h_a_chunk: [u8; 32],
-    /// M52 step 5: chunk-Merkle commitment for matrix B.
+    /// Reserved counterpart to `h_a_chunk`; verifier-facing plain proofs must
+    /// set it to zero.
     pub h_b_chunk: [u8; 32],
     pub found: TileOpening,
     pub spot: Vec<TileOpening>,

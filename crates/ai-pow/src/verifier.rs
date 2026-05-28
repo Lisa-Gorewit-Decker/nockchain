@@ -36,6 +36,8 @@ pub enum VerifyError {
     Merkle(#[from] MerkleError),
     #[error("params tag in proof does not match expected")]
     ParamsTagMismatch,
+    #[error("plain proof carries unauthenticated chunk commitments")]
+    UnexpectedChunkCommitments,
     #[error("found tile coordinates out of range")]
     FoundOutOfRange,
     #[error("found tile hardness check failed")]
@@ -101,6 +103,9 @@ pub fn verify_at_target(
     let tag = params_tag(params);
     if tag != proof.params_tag {
         return Err(VerifyError::ParamsTagMismatch);
+    }
+    if proof.h_a_chunk != [0u8; 32] || proof.h_b_chunk != [0u8; 32] {
+        return Err(VerifyError::UnexpectedChunkCommitments);
     }
 
     let state = block_state(block_commitment, nonce);
@@ -413,8 +418,8 @@ mod tests {
             params_tag: params_tag(&params),
             h_a: [1u8; 32],
             h_b: [2u8; 32],
-            h_a_chunk: [3u8; 32],
-            h_b_chunk: [4u8; 32],
+            h_a_chunk: [0u8; 32],
+            h_b_chunk: [0u8; 32],
             found: empty_opening(),
             spot: Vec::new(),
         };

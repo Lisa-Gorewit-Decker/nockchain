@@ -76,6 +76,26 @@ fn reject_tampered_h_b() {
 }
 
 #[test]
+fn reject_unauthenticated_chunk_commitments() {
+    let (params, block, nonce, mut proof) = fresh_proof();
+    assert_eq!(proof.h_a_chunk, [0u8; 32]);
+    assert_eq!(proof.h_b_chunk, [0u8; 32]);
+
+    proof.h_a_chunk = [9u8; 32];
+    assert_eq!(
+        verify(block, nonce, &params, &proof),
+        Err(VerifyError::UnexpectedChunkCommitments)
+    );
+
+    proof.h_a_chunk = [0u8; 32];
+    proof.h_b_chunk = [10u8; 32];
+    assert_eq!(
+        verify(block, nonce, &params, &proof),
+        Err(VerifyError::UnexpectedChunkCommitments)
+    );
+}
+
+#[test]
 fn reject_tampered_found_m_path() {
     let (params, block, nonce, mut proof) = fresh_proof();
     proof.found.m_path[0][0] ^= 1;

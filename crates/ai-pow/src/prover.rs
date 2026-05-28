@@ -365,8 +365,12 @@ fn mine_inner(
         params_tag: ctx.tag,
         h_a: ctx.h_a,
         h_b: ctx.h_b,
-        h_a_chunk: ctx.h_a_chunk,
-        h_b_chunk: ctx.h_b_chunk,
+        // Plain verification authenticates only the row/column Merkle roots
+        // (`h_a`, `h_b`) opened by spot checks. Full chunk commitments are
+        // trusted only through the ZK statement artifact, so the plain proof
+        // reserves these legacy fields as zero.
+        h_a_chunk: [0u8; 32],
+        h_b_chunk: [0u8; 32],
         found: found_opening,
         spot,
     };
