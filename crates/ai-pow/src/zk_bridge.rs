@@ -322,7 +322,7 @@ pub fn prove_ai_pow_block(
     _target: &[u8; 32],
     found_idx: u32,
 ) -> Result<ZkProofArtifact, BridgeError> {
-    params.validate().map_err(BridgeError::InvalidParams)?;
+    params.validate_prod_envelope().map_err(BridgeError::InvalidParams)?;
     let (tile_i, tile_j) =
         tile_ij(found_idx, params).ok_or(BridgeError::FoundIdxOutOfRange {
             found_idx,
@@ -348,7 +348,7 @@ pub fn verify_ai_pow_block(
     commitments: &ZkPublicCommitments,
     artifact: &ZkProofArtifact,
 ) -> Result<(), BridgeError> {
-    params.validate().map_err(BridgeError::InvalidParams)?;
+    params.validate_prod_envelope().map_err(BridgeError::InvalidParams)?;
     let (tile_i, tile_j) =
         tile_ij(found_idx, params).ok_or(BridgeError::FoundIdxOutOfRange {
             found_idx,
@@ -459,7 +459,8 @@ fn verify_ai_pow_tiled_with_statement(
 /// passed a forged target); this primitive is retained only for
 /// tests that deliberately inject a non-chain target. See
 /// `crates/ai-pow-zk/docs/2026-05-15_ZKP_SECURITY_REPORT.md` §MED-3.
-pub fn prove_and_verify(
+#[cfg(test)]
+pub(crate) fn prove_and_verify(
     ctx: &BlockContext<'_>,
     params: &MatmulParams,
     nonce: &[u8],
@@ -486,7 +487,7 @@ pub fn prove_and_verify(
 /// the §4.C `noised_packed`-non-vacuity-on-sweep-rows residual
 /// (place_matmul_step sets `MAT_ID = 0`, emits no `noised_packed`
 /// query — HIGH2_2_DESIGN §4.C.10), tracked jointly.
-pub fn prove_and_verify_tiled(
+pub(crate) fn prove_and_verify_tiled(
     ctx: &BlockContext<'_>,
     params: &MatmulParams,
     nonce: &[u8],
@@ -936,7 +937,7 @@ pub(crate) fn prove_and_verify_tiled_full<F: FnOnce(&mut CompositeTrace)>(
 /// decomposed via the MED-3 [`tile_ij`] contract and the **actual
 /// solved tile** is attested (HIGH-2.2 §4.E). This is the only
 /// entrypoint production / `mine()` should use.
-pub fn prove_and_verify_for_block(
+pub(crate) fn prove_and_verify_for_block(
     ctx: &BlockContext<'_>,
     params: &MatmulParams,
     nonce: &[u8],
@@ -1277,15 +1278,15 @@ mod tests {
     #[test]
     fn snd03_verifier_only_api_rejects_substituted_public_inputs() {
         let params = MatmulParams {
-            m: 16,
-            k: 64,
-            n: 16,
-            noise_rank: 16,
+            m: 8,
+            k: 512,
+            n: 8,
+            noise_rank: 32,
             tile: 8,
-            spot_checks: 2,
+            spot_checks: 1,
             difficulty_bits: 0,
         };
-        params.validate().unwrap();
+        params.validate_prod_envelope().unwrap();
         let block_commitment = b"snd03-block";
         let nonce = b"snd03-nonce";
         let (a, b) = synth_matrices(b"snd03-seed", &params);
@@ -1335,6 +1336,45 @@ mod tests {
                 &artifact,
             ),
             Err(BridgeError::PublicInputMismatch("HASH_A"))
+        ));
+    }
+
+    #[test]
+    fn snd05_production_verifier_rejects_non_prod_params() {
+        let params = MatmulParams {
+            m: 8,
+            k: 512,
+            n: 8,
+            noise_rank: 32,
+            tile: 8,
+            spot_checks: 1,
+            difficulty_bits: 0,
+        };
+        params.validate_prod_envelope().unwrap();
+        let block_commitment = b"snd05-block";
+        let nonce = b"snd05-nonce";
+        let (a, b) = synth_matrices(b"snd05-seed", &params);
+        let ctx = BlockContext::build(block_commitment, &a, &b, &params).expect("ctx");
+        let target = difficulty_target(&params);
+        let public = ZkPublicCommitments::from_context(&ctx);
+        let artifact = prove_ai_pow_block(&ctx, &params, nonce, &target, 0).expect("proof");
+
+        let non_prod = MatmulParams::TEST_SMALL;
+        assert_eq!(
+            non_prod.validate_prod_envelope(),
+            Err(ParamError::NoiseRankOutOfEnvelope)
+        );
+        assert!(matches!(
+            verify_ai_pow_block(
+                block_commitment,
+                nonce,
+                &non_prod,
+                &target,
+                0,
+                &public,
+                &artifact,
+            ),
+            Err(BridgeError::InvalidParams(ParamError::NoiseRankOutOfEnvelope))
         ));
     }
 
