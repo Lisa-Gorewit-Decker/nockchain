@@ -23,122 +23,17 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use ai_pow::params::MatmulParams;
-use ai_pow::prover::{MineError, ProverOptions};
 use ai_pow::proof::MatmulProof;
+use ai_pow::prover::{MineError, ProverOptions};
 
 // ─────────────────────────── NCMN v1 nonce shape ──────────────────────────
 //
-// Layout (offsets in bytes):
-//   0    MAGIC               4 bytes  = b"NCMN"      self-describing
-//   4    version             1 byte   = 1
-//   5    reserved            3 bytes  = 0            (room for v1.x flags)
-//   8    nck_commitment      32 bytes              REQUIRED Nockchain anchor
-//   40   external_commitment 32 bytes              OPAQUE 32-byte slot. All-
-//                                                  zero = "no external chain
-//                                                  bound." Reserved for a
-//                                                  future Pearl-compat
-//                                                  binding — ai-pow-miner
-//                                                  treats it as opaque bytes.
-//   72   extranonce          8 bytes (u64 BE)     miner's search variable
-//   ──── total 80 bytes
-//
-// Versioned + self-describing: future revisions ("NCMN" magic + bumped
-// version, or a new magic) coexist on the wire without ambiguity.
-
-pub const NCMN_MAGIC: [u8; 4] = *b"NCMN";
-pub const NCMN_VERSION: u8 = 1;
-pub const NCMN_NONCE_LEN: usize = 80;
-pub type NcmnNonce = [u8; NCMN_NONCE_LEN];
-
-/// Sentinel value for the `external_commitment` slot: all-zero means
-/// "no external-chain commitment supplied" (Nockchain-only mining).
-pub const NCMN_EXTERNAL_ABSENT: [u8; 32] = [0u8; 32];
-
-/// The two anchors a single mining attempt commits to.
-///
-/// `nck_commitment` is the Nockchain header binding (required).
-/// `external_commitment` is reserved for a future external-chain
-/// binding (e.g. Pearl's `ProofCommitment`). Treated as opaque
-/// 32-byte bytes by this crate; the owning chain decides the
-/// derivation when integration lands. `None` ⇒ the all-zero
-/// sentinel is written.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct NonceAnchors {
-    pub nck_commitment: [u8; 32],
-    pub external_commitment: Option<[u8; 32]>,
-}
-
-impl NonceAnchors {
-    pub fn nck_only(nck_commitment: [u8; 32]) -> Self {
-        Self { nck_commitment, external_commitment: None }
-    }
-}
-
-#[derive(thiserror::Error, Debug, PartialEq, Eq)]
-pub enum NonceFormatError {
-    #[error("nonce length {0} != NCMN expected {NCMN_NONCE_LEN}")]
-    BadLength(usize),
-    #[error("nonce magic {0:?} != NCMN")]
-    BadMagic([u8; 4]),
-    #[error("nonce version {got} != NCMN version {expected}")]
-    BadVersion { got: u8, expected: u8 },
-    #[error("nonce reserved bytes must be zero, got {0:?}")]
-    BadReserved([u8; 3]),
-}
-
-/// Compose an NCMN v1 nonce from the anchors + extranonce.
-pub fn build_ncmn_nonce(anchors: &NonceAnchors, extranonce: u64) -> NcmnNonce {
-    let mut out = [0u8; NCMN_NONCE_LEN];
-    out[0..4].copy_from_slice(&NCMN_MAGIC);
-    out[4] = NCMN_VERSION;
-    // bytes 5..8 reserved, left as zero.
-    out[8..40].copy_from_slice(&anchors.nck_commitment);
-    out[40..72].copy_from_slice(
-        &anchors.external_commitment.unwrap_or(NCMN_EXTERNAL_ABSENT),
-    );
-    out[72..80].copy_from_slice(&extranonce.to_be_bytes());
-    out
-}
-
-/// Reverse direction. The `external_commitment` is reported as
-/// `None` iff the slot is the all-zero sentinel.
-pub fn parse_ncmn_nonce(
-    nonce: &[u8],
-) -> Result<(NonceAnchors, u64), NonceFormatError> {
-    if nonce.len() != NCMN_NONCE_LEN {
-        return Err(NonceFormatError::BadLength(nonce.len()));
-    }
-    let mut magic = [0u8; 4];
-    magic.copy_from_slice(&nonce[0..4]);
-    if magic != NCMN_MAGIC {
-        return Err(NonceFormatError::BadMagic(magic));
-    }
-    if nonce[4] != NCMN_VERSION {
-        return Err(NonceFormatError::BadVersion {
-            got: nonce[4],
-            expected: NCMN_VERSION,
-        });
-    }
-    let mut reserved = [0u8; 3];
-    reserved.copy_from_slice(&nonce[5..8]);
-    if reserved != [0u8; 3] {
-        return Err(NonceFormatError::BadReserved(reserved));
-    }
-    let mut nck = [0u8; 32];
-    nck.copy_from_slice(&nonce[8..40]);
-    let mut ext = [0u8; 32];
-    ext.copy_from_slice(&nonce[40..72]);
-    let mut xn = [0u8; 8];
-    xn.copy_from_slice(&nonce[72..80]);
-    let extranonce = u64::from_be_bytes(xn);
-    Ok((
-        NonceAnchors {
-            nck_commitment: nck,
-            external_commitment: if ext == NCMN_EXTERNAL_ABSENT { None } else { Some(ext) },
-        },
-        extranonce,
-    ))
-}
+// The canonical parser and constants live in `ai-pow` so verifier code cannot
+// drift from the miner-side nonce construction.
+pub use ai_pow::ncmn::{
+    build_ncmn_nonce, parse_ncmn_nonce, NcmnNonce, NonceAnchors, NonceFormatError,
+    NCMN_EXTERNAL_ABSENT, NCMN_MAGIC, NCMN_NONCE_LEN, NCMN_VERSION,
+};
 
 // ───────────────────────────── mining-job types ─────────────────────────────
 

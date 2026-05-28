@@ -20,6 +20,7 @@ use crate::fiat_shamir::{
     pow_key_for_nonce,
 };
 use crate::matmul::compute_tile_from_slices;
+use crate::ncmn::{parse_ncmn_nonce, NonceFormatError};
 use crate::params::{MatmulParams, ParamError};
 use crate::proof::{MatmulProof, TileOpening};
 use crate::prover::params_tag;
@@ -38,6 +39,12 @@ pub enum VerifyError {
     ParamsTagMismatch,
     #[error("plain proof carries unauthenticated chunk commitments")]
     UnexpectedChunkCommitments,
+    #[error("NCMN nonce: {0}")]
+    Nonce(#[from] NonceFormatError),
+    #[error("NCMN nonce Nockchain commitment does not match candidate block")]
+    NonceAnchorMismatch,
+    #[error("NCMN external commitment is reserved and must be absent")]
+    NonceExternalCommitmentPresent,
     #[error("found tile coordinates out of range")]
     FoundOutOfRange,
     #[error("found tile hardness check failed")]
@@ -158,6 +165,33 @@ pub fn verify_at_target(
     }
 
     Ok(())
+}
+
+/// Verify a proof whose nonce must be an NCMN v1 nonce anchored to a
+/// candidate Nockchain block commitment.
+///
+/// `puzzle_id` is the AI puzzle identity used for the Pearl transcript
+/// (`κ = commitment_key(puzzle_id, params_tag)`). `candidate_nck_commitment`
+/// is the trusted 32-byte commitment to the candidate Nockchain block that
+/// must appear inside the nonce. This wrapper is the production-safe entry
+/// point for NCMN-wrapped mining: it rejects malformed or mis-anchored nonces
+/// before running the ordinary AI-PoW verifier.
+pub fn verify_ncmn_at_target(
+    puzzle_id: &[u8],
+    candidate_nck_commitment: &[u8; 32],
+    nonce: &[u8],
+    params: &MatmulParams,
+    target: &[u8; 32],
+    proof: &MatmulProof,
+) -> Result<(), VerifyError> {
+    let (anchors, _) = parse_ncmn_nonce(nonce)?;
+    if anchors.nck_commitment != *candidate_nck_commitment {
+        return Err(VerifyError::NonceAnchorMismatch);
+    }
+    if anchors.external_commitment.is_some() {
+        return Err(VerifyError::NonceExternalCommitmentPresent);
+    }
+    verify_at_target(puzzle_id, nonce, params, target, proof)
 }
 
 #[derive(Copy, Clone)]

@@ -26,6 +26,7 @@
 pub mod commit;
 pub mod fiat_shamir;
 pub mod matmul;
+pub mod ncmn;
 pub mod params;
 pub mod prng;
 pub mod quant;
@@ -44,4 +45,4 @@ pub use crate::params::MatmulParams;
 pub use crate::proof::{MatmulProof, TileOpening};
 pub use crate::prover::{mine, mine_block, BlockContext, MineError, ProverOptions};
 pub use crate::synth::synth_matrices;
-pub use crate::verifier::{verify, verify_at_target, VerifyError};
+pub use crate::verifier::{verify, verify_at_target, verify_ncmn_at_target, VerifyError};
