@@ -53,11 +53,12 @@
 //! binding, only the fidelity of *what* is hashed. Design +
 //! status: `crates/ai-pow-zk/docs/2026-05-15_HIGH2_2_DESIGN.md`.
 
-use ai_pow_zk::composite_proof::build_config;
+use ai_pow_zk::composite_proof::{
+    build_config, composite_prove_pinned_logup_sx, composite_verify_pow_pinned_logup_sx,
+};
 use ai_pow_zk::{
-    composite_prove_pinned_logup_sx, composite_verify_pow_pinned_logup_sx, CircuitConfig,
-    AiPowBatchProof, AiPowProgram, CompositePublicInputs, CompositeTrace, PowVerifyError,
-    ZkParams,
+    AiPowBatchProof, AiPowProgram, CircuitConfig, CompositePublicInputs, CompositeTrace,
+    PowVerifyError, ZkParams,
 };
 
 use crate::fiat_shamir::{commitment_key, noise_seed_a, noise_seed_b, pow_key_for_nonce};
@@ -1561,7 +1562,7 @@ mod tests {
     fn high2_2_spike_subtile_sweep_verifies_in_composite() {
         use crate::matmul::{compute_tile_trace, BlockNoise, Matrices};
         use ai_pow_zk::composite_proof::build_config;
-        use ai_pow_zk::{composite_prove, composite_verify, CircuitConfig, ZkParams};
+        use ai_pow_zk::{dev_unpinned_prove, dev_unpinned_verify, CircuitConfig, ZkParams};
 
         let params = MatmulParams::TEST_SMALL;
         let (a, b) = synth_matrices(b"spike-gate2-seed", &params);
@@ -1614,8 +1615,8 @@ mod tests {
             // The matmul chip's cross-row recurrence holds for the
             // real swept schedule end-to-end.
             let pis = CompositePublicInputs::derive_from_trace(&trace);
-            let proof = composite_prove(&cfg, trace, &pis);
-            composite_verify(&cfg, &proof, &pis).unwrap_or_else(|e| {
+            let proof = dev_unpinned_prove(&cfg, trace, &pis);
+            dev_unpinned_verify(&cfg, &proof, &pis).unwrap_or_else(|e| {
                 panic!("subtile sweep must verify through CompositeFullAir @({ti},{tj}): {e:?}")
             });
         }
@@ -1695,7 +1696,7 @@ mod tests {
     fn high2_2_g1g2_chunked_and_wide_stripes() {
         use crate::matmul::{compute_tile_trace, BlockNoise, Matrices};
         use ai_pow_zk::composite_proof::build_config;
-        use ai_pow_zk::{composite_prove, composite_verify, CircuitConfig, ZkParams};
+        use ai_pow_zk::{dev_unpinned_prove, dev_unpinned_verify, CircuitConfig, ZkParams};
 
         let params = MatmulParams {
             m: 8,
@@ -1761,8 +1762,8 @@ mod tests {
             // AIR (matmul chunked sweep recurrence + StripeXor
             // 64-lane transport + SX_IN==nxt.CUMSUM binding + Fold).
             let pis = CompositePublicInputs::derive_from_trace(&trace);
-            let proof = composite_prove(&cfg, trace, &pis);
-            composite_verify(&cfg, &proof, &pis).unwrap_or_else(|e| {
+            let proof = dev_unpinned_prove(&cfg, trace, &pis);
+            dev_unpinned_verify(&cfg, &proof, &pis).unwrap_or_else(|e| {
                 panic!("§6(b)-G1+G2 chain must verify @({ti},{tj}): {e:?}")
             });
         }
@@ -1855,7 +1856,7 @@ mod tests {
     #[ignore = "measurement harness — opt-in (heavy)"]
     fn pb_prover_cost_scaling() {
         use ai_pow_zk::composite_proof::build_config;
-        use ai_pow_zk::{composite_prove, CircuitConfig, ZkParams};
+        use ai_pow_zk::{dev_unpinned_prove, CircuitConfig, ZkParams};
         use std::time::Instant;
 
         let zk = ZkParams {
@@ -1874,7 +1875,7 @@ mod tests {
             let trace = CompositeTrace::baseline(n);
             let pis = CompositePublicInputs::derive_from_trace(&trace);
             let t0 = Instant::now();
-            let _ = composite_prove(&cfg, trace, &pis);
+            let _ = dev_unpinned_prove(&cfg, trace, &pis);
             let ms = t0.elapsed().as_secs_f64() * 1e3;
             eprintln!("{n},{ms:.1},{:.3}", ms * 1e3 / n as f64);
         }

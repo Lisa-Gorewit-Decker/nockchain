@@ -84,16 +84,22 @@ pub use crate::composite_full_air_with_lookups::{
     CompositeFullAirWithLookups, CompositeFullAirWithLookupsPinned,
 };
 pub use crate::composite_proof::{
-    composite_prove, composite_prove_pinned, composite_prove_pinned_logup,
-    composite_prove_pinned_logup_sx, composite_setup, composite_verify,
-    composite_verify_pinned, composite_verify_pinned_logup, composite_verify_pinned_logup_sx,
-    composite_verify_pow, composite_verify_pow_pinned, composite_verify_pow_pinned_logup,
-    composite_verify_pow_pinned_logup_sx, hash_jackpot_le_bytes, CompositeVerificationError,
-    PowVerifyError,
+    hash_jackpot_le_bytes, CompositeVerificationError, PowVerifyError,
 };
 pub use crate::composite_public::CompositePublicInputs;
 pub use crate::composite_trace::CompositeTrace;
 pub use crate::params::ZkParams;
+
+#[cfg(any(test, feature = "dev-unsafe"))]
+pub use crate::composite_proof::{
+    composite_prove as dev_unpinned_prove,
+    composite_prove_pinned as dev_pinned_no_logup_prove,
+    composite_setup as dev_pinned_no_logup_setup,
+    composite_verify as dev_unpinned_verify,
+    composite_verify_pinned as dev_pinned_no_logup_verify,
+    composite_verify_pow as dev_unpinned_verify_pow,
+    composite_verify_pow_pinned as dev_pinned_no_logup_verify_pow,
+};
 
 /// Concrete pinned+LogUp proof type used by the production AI PoW circuit.
 pub type AiPowBatchProof = p3_batch_stark::BatchProof<AiPowStarkConfig>;

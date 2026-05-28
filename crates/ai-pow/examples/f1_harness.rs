@@ -59,10 +59,11 @@ fn main() {
     use ai_pow::prover::{mine, BlockContext, ProverOptions};
     use ai_pow::synth::synth_matrices;
     use ai_pow::tile_hash::difficulty_target;
-    use ai_pow_zk::composite_proof::build_config;
+    use ai_pow_zk::composite_proof::{
+        build_config, composite_prove_pinned_logup, composite_verify_pow_pinned_logup,
+    };
     use ai_pow_zk::{
-        composite_prove_pinned_logup, composite_verify_pow_pinned_logup, CircuitConfig,
-        CompositePublicInputs, CompositeTrace, ZkParams,
+        CircuitConfig, CompositePublicInputs, CompositeTrace, ZkParams,
     };
 
     let seed = std::env::var("F1_SEED").unwrap_or_else(|_| "f1-harness-v1".to_string());

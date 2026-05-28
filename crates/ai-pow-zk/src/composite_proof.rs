@@ -32,17 +32,20 @@
 //! the values from a generated trace.
 
 use crate::circuit::{build_stark_config, AiPowStarkConfig, CircuitConfig};
-use crate::composite_full_air::{extract_program, CompositeFullAir, CompositeFullAirPinned};
+use crate::composite_full_air::extract_program;
+#[cfg(any(test, feature = "dev-unsafe"))]
+use crate::composite_full_air::{CompositeFullAir, CompositeFullAirPinned};
 use crate::composite_public::CompositePublicInputs;
 use crate::composite_trace::CompositeTrace;
 use crate::params::ZkParams;
 
 use p3_commit::Pcs;
+#[cfg(any(test, feature = "dev-unsafe"))]
 use p3_uni_stark::{
     prove, prove_with_preprocessed, setup_preprocessed, verify, verify_with_preprocessed,
-    PreprocessedProverData, PreprocessedVerifierKey, Proof, StarkGenericConfig, Val,
-    VerificationError,
+    PreprocessedProverData, PreprocessedVerifierKey, Proof,
 };
+use p3_uni_stark::{StarkGenericConfig, Val, VerificationError};
 
 /// Concrete type of the verification error for the composite AIR.
 /// Equivalent to `VerificationError<PcsError<AiPowStarkConfig>>`.
@@ -61,6 +64,11 @@ pub fn build_config(params: &ZkParams, profile: &CircuitConfig) -> AiPowStarkCon
 
 /// Prove the composite AIR against a given trace + public inputs.
 ///
+/// DEV-UNSAFE: this is compiled only for this crate's tests or with the
+/// explicit `dev-unsafe` feature. It must not be used as a proof-of-work
+/// verifier primitive because the unpinned AIR lets a malicious trace
+/// disable selectors.
+///
 /// `trace` must be a [`CompositeTrace`] whose internal matrix has
 /// width [`crate::composite_layout::TOTAL_TRACE_WIDTH`] and height
 /// a power of 2 ≥ `MIN_STARK_LEN`. `public_inputs` must match the
@@ -69,6 +77,7 @@ pub fn build_config(params: &ZkParams, profile: &CircuitConfig) -> AiPowStarkCon
 ///
 /// The returned [`Proof`] can be serialised via [`bincode`] for
 /// transport.
+#[cfg(any(test, feature = "dev-unsafe"))]
 pub fn composite_prove(
     config: &AiPowStarkConfig,
     trace: CompositeTrace,
@@ -79,8 +88,14 @@ pub fn composite_prove(
 }
 
 /// Verify a composite proof against the claimed public inputs.
+///
+/// DEV-UNSAFE: this is compiled only for this crate's tests or with the
+/// explicit `dev-unsafe` feature. It verifies a local AIR statement, not a
+/// sound proof of work.
+///
 /// Returns `Ok(())` if valid; otherwise a
 /// [`CompositeVerificationError`] describing the failure.
+#[cfg(any(test, feature = "dev-unsafe"))]
 pub fn composite_verify(
     config: &AiPowStarkConfig,
     proof: &Proof<AiPowStarkConfig>,
@@ -117,9 +132,9 @@ fn le_u256_le(hash: &[u8; 32], target: &[u8; 32]) -> bool {
     true
 }
 
-/// Error from [`composite_verify_pow`]: either the STARK proof is
-/// invalid, or it is valid but the proven `HASH_JACKPOT` does not
-/// clear the difficulty target.
+/// Error from a proof-of-work wrapper: either the STARK proof is invalid,
+/// or it is valid but the proven `HASH_JACKPOT` does not clear the
+/// difficulty target.
 #[derive(Debug)]
 pub enum PowVerifyError {
     /// The underlying STARK proof failed verification.
@@ -174,6 +189,7 @@ impl std::error::Error for PowVerifyError {}
 /// `ai_pow::zk_bridge::prove_and_verify_for_block`, which recomputes
 /// the target internally so it cannot be forged. See
 /// `2026-05-15_ZKP_SECURITY_REPORT.md` §MED-3.
+#[cfg(any(test, feature = "dev-unsafe"))]
 pub fn composite_verify_pow(
     config: &AiPowStarkConfig,
     proof: &Proof<AiPowStarkConfig>,
@@ -217,6 +233,7 @@ fn program_degree_bits(program: &Program) -> usize {
 /// reusable prover data + verifying key. Deterministic in
 /// `program`: prover and verifier independently arrive at the
 /// same commitment iff they use the same canonical program.
+#[cfg(any(test, feature = "dev-unsafe"))]
 pub fn composite_setup(
     config: &AiPowStarkConfig,
     program: &Program,
@@ -239,6 +256,7 @@ pub fn composite_setup(
 /// **and** the program — the caller hands the program to the
 /// verifier *out of band from a trusted source* (params), never
 /// lets the verifier take it from the proof.
+#[cfg(any(test, feature = "dev-unsafe"))]
 pub fn composite_prove_pinned(
     config: &AiPowStarkConfig,
     trace: CompositeTrace,
@@ -258,6 +276,7 @@ pub fn composite_prove_pinned(
 /// preprocessed commitment in the derived VK pins the prover's
 /// selector schedule; a forged trace whose `*_PREP` columns
 /// differ fails the in-AIR equality (CRIT-1 closed).
+#[cfg(any(test, feature = "dev-unsafe"))]
 pub fn composite_verify_pinned(
     config: &AiPowStarkConfig,
     program: &Program,
@@ -272,6 +291,7 @@ pub fn composite_verify_pinned(
 
 /// Program-pinned full PoW verify: pinned STARK verify + the C2
 /// difficulty check against the bound `HASH_JACKPOT`.
+#[cfg(any(test, feature = "dev-unsafe"))]
 pub fn composite_verify_pow_pinned(
     config: &AiPowStarkConfig,
     program: &Program,
