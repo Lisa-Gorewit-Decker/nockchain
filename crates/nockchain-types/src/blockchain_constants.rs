@@ -166,7 +166,11 @@ pub struct BlockchainConstants {
     pub min_past_blocks: u64,
     pub genesis_target_atom: UBig,
     pub max_target_atom: UBig,
-    pub check_pow_flag: bool,
+    // NOTE: the Hoon `check-pow-flag` constant has been removed from the
+    // public API. PoW is unconditionally verified by the kernel (the
+    // no-pow skip path was deleted). The noun slot is preserved (always
+    // %.y) by to_noun to keep the blockchain-constants:v0 shape stable —
+    // removing the slot would be a cascading constants-version migration.
     pub coinbase_timelock_min: u64,
     pub pow_len: u64,
     pub max_coinbase_split: u64,
@@ -200,7 +204,10 @@ impl BlockchainConstants {
     pub const DEFAULT_MAX_TIP5_ATOM: &str =
         "0xfffffffb0000000effffffe20000002cffffffcd0000002cffffffe20000000efffffffb00000000";
     pub const DEFAULT_MIN_PAST_BLOCKS: u64 = 11;
-    pub const DEFAULT_CHECK_POW_FLAG: bool = true;
+    // Fixed value emitted for the legacy `check-pow-flag` noun slot in
+    // blockchain-constants:v0. PoW is always verified; this slot exists
+    // only to preserve the noun shape. Not a tunable knob.
+    pub const CHECK_POW_FLAG_NOUN_VALUE: bool = true;
     pub const DEFAULT_COINBASE_TIMELOCK_MIN: u64 = 100;
     pub const DEFAULT_POW_LEN: u64 = 64;
     pub const DEFAULT_MAX_COINBASE_SPLIT: u64 = 2;
@@ -230,7 +237,6 @@ impl BlockchainConstants {
             min_past_blocks: Self::DEFAULT_MIN_PAST_BLOCKS,
             genesis_target_atom,
             max_target_atom,
-            check_pow_flag: Self::DEFAULT_CHECK_POW_FLAG,
             coinbase_timelock_min: Self::DEFAULT_COINBASE_TIMELOCK_MIN,
             pow_len: Self::DEFAULT_POW_LEN,
             max_coinbase_split: Self::DEFAULT_MAX_COINBASE_SPLIT,
@@ -324,7 +330,9 @@ impl BlockchainConstants {
         let min_past_blocks = Atom::new(allocator, self.min_past_blocks).as_noun();
         let genesis_target_atom = Atom::from_ubig(allocator, &self.genesis_target_atom).as_noun();
         let max_target_atom = Atom::from_ubig(allocator, &self.max_target_atom).as_noun();
-        let check_pow_flag = self.check_pow_flag.to_noun(allocator);
+        // Legacy noun slot — always %.y. PoW is unconditionally verified;
+        // the slot is retained only to keep the v0 noun shape stable.
+        let check_pow_flag = Self::CHECK_POW_FLAG_NOUN_VALUE.to_noun(allocator);
         let coinbase_timelock_min = Atom::new(allocator, self.coinbase_timelock_min).as_noun();
         let pow_len = Atom::new(allocator, self.pow_len).as_noun();
         let max_coinbase_split = Atom::new(allocator, self.max_coinbase_split).as_noun();
@@ -610,7 +618,6 @@ mod tests {
             "genesis-target-atom mismatch",
         );
 
-        assert!(constants.check_pow_flag, "check-pow-flag mismatch");
         assert_eq!(
             constants.coinbase_timelock_min, 100,
             "coinbase-timelock-min mismatch"
