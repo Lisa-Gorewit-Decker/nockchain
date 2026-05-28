@@ -56,12 +56,13 @@
 use ai_pow_zk::composite_proof::build_config;
 use ai_pow_zk::{
     composite_prove_pinned_logup_sx, composite_verify_pow_pinned_logup_sx, CircuitConfig,
-    CompositePublicInputs, CompositeTrace, PowVerifyError, ZkParams,
+    AiPowBatchProof, AiPowProgram, CompositePublicInputs, CompositeTrace, PowVerifyError,
+    ZkParams,
 };
 
+use crate::fiat_shamir::{commitment_key, noise_seed_a, noise_seed_b, pow_key_for_nonce};
 use crate::params::{MatmulParams, ParamError};
-use crate::prover::BlockContext;
-use crate::fiat_shamir::pow_key_for_nonce;
+use crate::prover::{params_tag, BlockContext};
 
 // ───────────────────────── P-B (γ Pearl-faithful) ─────────────────────────
 //
@@ -176,6 +177,47 @@ pub struct ZkOutcome {
     pub sweep_in_circuit: bool,
 }
 
+/// Public commitments a verifier needs to derive the trusted ZK statement.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ZkPublicCommitments {
+    /// Plain row-Merkle root for A. Used to derive `s_a`.
+    pub h_a: [u8; 32],
+    /// Plain column-Merkle root for B. Used to derive `s_b`.
+    pub h_b: [u8; 32],
+    /// Chunk-Merkle commitment bound by the ZK `HASH_A` public input.
+    pub h_a_chunk: [u8; 32],
+    /// Chunk-Merkle commitment bound by the ZK `HASH_B` public input.
+    pub h_b_chunk: [u8; 32],
+}
+
+impl ZkPublicCommitments {
+    pub fn from_context(ctx: &BlockContext<'_>) -> Self {
+        Self {
+            h_a: ctx.h_a,
+            h_b: ctx.h_b,
+            h_a_chunk: ctx.h_a_chunk,
+            h_b_chunk: ctx.h_b_chunk,
+        }
+    }
+}
+
+/// Verifier-facing ZK proof artifact.
+///
+/// The verifier must not trust `pis` by itself; [`verify_ai_pow_block`]
+/// cross-checks these public inputs against chain-derived commitments and
+/// reconstructs the canonical program before invoking the STARK verifier.
+pub struct ZkProofArtifact {
+    pub proof: AiPowBatchProof,
+    pub pis: CompositePublicInputs,
+    pub trace_height: usize,
+}
+
+struct ZkDerivedStatement {
+    kappa: [u8; 32],
+    s_a: [u8; 32],
+    s_b: [u8; 32],
+}
+
 /// Errors from the F1 bridge.
 #[derive(Debug)]
 pub enum BridgeError {
@@ -184,6 +226,12 @@ pub enum BridgeError {
     CommitmentMismatch(&'static str),
     /// STARK valid but the PoW difficulty check failed.
     Pow(PowVerifyError),
+    /// Verifier-only API rejected a prover-supplied public input before
+    /// STARK verification because it did not match trusted chain data.
+    PublicInputMismatch(&'static str),
+    /// The proof artifact used a trace height different from the verifier's
+    /// params-derived construction.
+    TraceHeightMismatch { expected: usize, actual: usize },
     /// `params` failed `MatmulParams::validate()` at the `pub`
     /// bridge boundary — entry-point defense (M2) against malformed
     /// params that would otherwise hit a downstream panic. The
@@ -212,6 +260,13 @@ impl core::fmt::Display for BridgeError {
                 write!(f, "SNARK PI != BlockContext: {w}")
             }
             BridgeError::Pow(e) => write!(f, "pow verify: {e}"),
+            BridgeError::PublicInputMismatch(w) => {
+                write!(f, "ZK public input mismatch: {w}")
+            }
+            BridgeError::TraceHeightMismatch { expected, actual } => write!(
+                f,
+                "trace height mismatch: expected {expected}, got {actual}"
+            ),
             BridgeError::InvalidParams(e) => write!(f, "invalid params: {e}"),
             BridgeError::FoundIdxOutOfRange { found_idx, num_tiles } => write!(
                 f,
@@ -229,6 +284,155 @@ fn bytes_to_words_le(b: &[u8; 32]) -> [u32; 8] {
     core::array::from_fn(|i| {
         u32::from_le_bytes([b[i * 4], b[i * 4 + 1], b[i * 4 + 2], b[i * 4 + 3]])
     })
+}
+
+fn zk_params_from(params: &MatmulParams) -> ZkParams {
+    ZkParams {
+        m: params.m,
+        k: params.k,
+        n: params.n,
+        noise_rank: params.noise_rank,
+        tile: params.tile,
+        difficulty_bits: params.difficulty_bits,
+    }
+}
+
+fn expect_pi_eq(
+    got: &[u32; 8],
+    expected: &[u32; 8],
+    field: &'static str,
+) -> Result<(), BridgeError> {
+    if got == expected {
+        Ok(())
+    } else {
+        Err(BridgeError::PublicInputMismatch(field))
+    }
+}
+
+/// Build a verifier-facing ZK proof artifact for a solved block.
+///
+/// This is a prover-side constructor only. Consumers must verify the returned
+/// artifact with [`verify_ai_pow_block`], which derives the trusted statement
+/// from chain data and rejects substituted public inputs.
+pub fn prove_ai_pow_block(
+    ctx: &BlockContext<'_>,
+    params: &MatmulParams,
+    nonce: &[u8],
+    _target: &[u8; 32],
+    found_idx: u32,
+) -> Result<ZkProofArtifact, BridgeError> {
+    params.validate().map_err(BridgeError::InvalidParams)?;
+    let (tile_i, tile_j) =
+        tile_ij(found_idx, params).ok_or(BridgeError::FoundIdxOutOfRange {
+            found_idx,
+            num_tiles: params.num_tiles(),
+        })?;
+    let (artifact, _, _) =
+        prove_ai_pow_tiled_full(ctx, params, nonce, tile_i, tile_j, |_| {}, None)?;
+    Ok(artifact)
+}
+
+/// Production verifier-only ZK API.
+///
+/// The verifier derives `kappa`, `s_b`, `s_a`, `pow_key`, expected public
+/// inputs, and the canonical program from trusted block data before invoking
+/// the pinned+LogUp proof verifier. Prover-supplied public inputs are treated
+/// as claims and are rejected if they do not match these derived values.
+pub fn verify_ai_pow_block(
+    block_commitment: &[u8],
+    nonce: &[u8],
+    params: &MatmulParams,
+    target: &[u8; 32],
+    found_idx: u32,
+    commitments: &ZkPublicCommitments,
+    artifact: &ZkProofArtifact,
+) -> Result<(), BridgeError> {
+    params.validate().map_err(BridgeError::InvalidParams)?;
+    let (tile_i, tile_j) =
+        tile_ij(found_idx, params).ok_or(BridgeError::FoundIdxOutOfRange {
+            found_idx,
+            num_tiles: params.num_tiles(),
+        })?;
+    let tag = params_tag(params);
+    let kappa = commitment_key(block_commitment, &tag);
+    let s_b = noise_seed_b(&kappa, &commitments.h_b);
+    let s_a = noise_seed_a(&s_b, &commitments.h_a);
+    verify_ai_pow_tiled_with_statement(
+        nonce,
+        params,
+        target,
+        tile_i,
+        tile_j,
+        commitments,
+        ZkDerivedStatement { kappa, s_a, s_b },
+        artifact,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn verify_ai_pow_tiled_with_statement(
+    nonce: &[u8],
+    params: &MatmulParams,
+    target: &[u8; 32],
+    tile_i: u32,
+    tile_j: u32,
+    commitments: &ZkPublicCommitments,
+    derived: ZkDerivedStatement,
+    artifact: &ZkProofArtifact,
+) -> Result<(), BridgeError> {
+    params.validate().map_err(BridgeError::InvalidParams)?;
+    let expected_height = expected_layer0_rows(params).required_trace_len();
+    if artifact.trace_height != expected_height {
+        return Err(BridgeError::TraceHeightMismatch {
+            expected: expected_height,
+            actual: artifact.trace_height,
+        });
+    }
+
+    let pow_key = pow_key_for_nonce(&derived.s_a, nonce);
+    expect_pi_eq(
+        &artifact.pis.job_key,
+        &bytes_to_words_le(&derived.kappa),
+        "JOB_KEY",
+    )?;
+    expect_pi_eq(
+        &artifact.pis.commitment_hash,
+        &bytes_to_words_le(&pow_key),
+        "COMMITMENT_HASH",
+    )?;
+    expect_pi_eq(
+        &artifact.pis.hash_a,
+        &bytes_to_words_le(&commitments.h_a_chunk),
+        "HASH_A",
+    )?;
+    expect_pi_eq(
+        &artifact.pis.hash_b,
+        &bytes_to_words_le(&commitments.h_b_chunk),
+        "HASH_B",
+    )?;
+
+    let zk_params = zk_params_from(params);
+    let cfg = build_config(&zk_params, &CircuitConfig::PROD);
+    let bp = ai_pow_zk::canonical::BlockPublic {
+        tile_i,
+        tile_j,
+        kappa: derived.kappa,
+        s_a: derived.s_a,
+        s_b: derived.s_b,
+    };
+    let canonical =
+        ai_pow_zk::canonical::canonical_program(&zk_params, &bp, artifact.trace_height)
+            .map_err(BridgeError::ZkParamsInvalid)?;
+    let sx_bound = true;
+    composite_verify_pow_pinned_logup_sx(
+        &cfg,
+        &canonical,
+        &artifact.proof,
+        &artifact.pis,
+        target,
+        sx_bound,
+    )
+    .map_err(BridgeError::Pow)
 }
 
 /// Build a `CompositeTrace` from `ctx`, derive its public inputs,
@@ -325,16 +529,15 @@ pub(crate) fn prove_and_verify_tiled_tamper<F: FnOnce(&mut CompositeTrace)>(
 /// MUST reject any such proof — the §6(b) matmul was not performed
 /// on the committed matrices. Production callers pass `None`; only
 /// the §4.C.10 malicious-miner test passes `Some`.
-pub(crate) fn prove_and_verify_tiled_full<F: FnOnce(&mut CompositeTrace)>(
+fn prove_ai_pow_tiled_full<F: FnOnce(&mut CompositeTrace)>(
     ctx: &BlockContext<'_>,
     params: &MatmulParams,
     nonce: &[u8],
-    target: &[u8; 32],
     tile_i: u32,
     tile_j: u32,
     tamper: F,
     sweep_override: Option<(&[i8], &[i8])>,
-) -> Result<ZkOutcome, BridgeError> {
+) -> Result<(ZkProofArtifact, AiPowProgram, bool), BridgeError> {
     // P-B (γ Pearl-faithful): size the Layer-0 trace from `params`
     // — the faithful analogue of Pearl's `degree_bits()` — instead
     // of the fixed `MIN_STARK_LEN`. For sub-envelope test profiles
@@ -660,6 +863,26 @@ pub(crate) fn prove_and_verify_tiled_full<F: FnOnce(&mut CompositeTrace)>(
     tamper(&mut trace);
     let (proof, prover_program) =
         composite_prove_pinned_logup_sx(&cfg, trace, &pis, sx_bound);
+    let artifact = ZkProofArtifact {
+        proof,
+        pis,
+        trace_height: height,
+    };
+    Ok((artifact, prover_program, coloc))
+}
+
+pub(crate) fn prove_and_verify_tiled_full<F: FnOnce(&mut CompositeTrace)>(
+    ctx: &BlockContext<'_>,
+    params: &MatmulParams,
+    nonce: &[u8],
+    target: &[u8; 32],
+    tile_i: u32,
+    tile_j: u32,
+    tamper: F,
+    sweep_override: Option<(&[i8], &[i8])>,
+) -> Result<ZkOutcome, BridgeError> {
+    let (artifact, prover_program, coloc) =
+        prove_ai_pow_tiled_full(ctx, params, nonce, tile_i, tile_j, tamper, sweep_override)?;
     // Phase A-CR · CR.6 — CRIT-1 made first-class on the
     // production-faithful path. On the **16|r co-location path**
     // (Pearl §4.8 is *always* 16|r ⇒ this is the production /
@@ -667,45 +890,34 @@ pub(crate) fn prove_and_verify_tiled_full<F: FnOnce(&mut CompositeTrace)>(
     // **params-pure** from the trusted block public (`zk_params`
     // + the C1-pinned κ/s_a/s_b + the MED-3-attested tile), NEVER
     // the prover's. This closes the latent "bridge passes the
-    // prover's program to verify" weakness: soundness rests on
-    // the Phase A-CR §5 KAT (`canonical_program ==
-    // extract_program(honest_trace)` bit-for-bit on every row ×
-    // all 12 PROGRAM_COLS of the real P16(16|r) trace) — honest
-    // proofs still verify (identical preprocessed commitment),
-    // any forged trace whose any PROGRAM_COL ≠ the params-pure
-    // canonical fails the in-AIR pin vs the canonical VK.
-    // Non-16|r is the documented A3.2b **test** geometry whose
-    // separate-store row count is data-dependent — explicitly out
-    // of the params-pure / `canonical_program` scope (it panics
-    // the 16|r assert); it retains the prior extract-of-reference
-    // discipline (the `crit1_*`/`routea_*` regression — already
-    // "strictly-stronger-than-pre-A3, not a forgery hole" per the
-    // §4.C.2 verdict). `coloc` is the verifier-side
-    // `noise_rank % 16 == 0`, never the proof.
+    // prover's program to verify" weakness.
     if coloc {
-        let bp = ai_pow_zk::canonical::BlockPublic {
+        let commitments = ZkPublicCommitments::from_context(ctx);
+        verify_ai_pow_tiled_with_statement(
+            nonce,
+            params,
+            target,
             tile_i,
             tile_j,
-            kappa: ctx.kappa,
-            s_a: ctx.s_a,
-            s_b: ctx.s_b,
-        };
-        let canonical = ai_pow_zk::canonical::canonical_program(
-            &zk_params, &bp, height,
-        )
-        .map_err(BridgeError::ZkParamsInvalid)?;
-        composite_verify_pow_pinned_logup_sx(
-            &cfg, &canonical, &proof, &pis, target, sx_bound,
-        )
-        .map_err(BridgeError::Pow)?;
+            &commitments,
+            ZkDerivedStatement {
+                kappa: ctx.kappa,
+                s_a: ctx.s_a,
+                s_b: ctx.s_b,
+            },
+            &artifact,
+        )?;
     } else {
+        let zk_params = zk_params_from(params);
+        let cfg = build_config(&zk_params, &CircuitConfig::PROD);
+        let sx_bound = true;
         composite_verify_pow_pinned_logup_sx(
-            &cfg, &prover_program, &proof, &pis, target, sx_bound,
+            &cfg, &prover_program, &artifact.proof, &artifact.pis, target, sx_bound,
         )
         .map_err(BridgeError::Pow)?;
     }
 
-    Ok(ZkOutcome { pis, sweep_in_circuit: true })
+    Ok(ZkOutcome { pis: artifact.pis, sweep_in_circuit: true })
 }
 
 /// MED-3-hardened production entrypoint. Derives the difficulty
@@ -1059,6 +1271,70 @@ mod tests {
                 "distinct tiles must give distinct digests (idx {found_idx})"
             );
         }
+    }
+
+    #[test]
+    fn snd03_verifier_only_api_rejects_substituted_public_inputs() {
+        let params = MatmulParams {
+            m: 16,
+            k: 64,
+            n: 16,
+            noise_rank: 16,
+            tile: 8,
+            spot_checks: 2,
+            difficulty_bits: 0,
+        };
+        params.validate().unwrap();
+        let block_commitment = b"snd03-block";
+        let nonce = b"snd03-nonce";
+        let (a, b) = synth_matrices(b"snd03-seed", &params);
+        let ctx = BlockContext::build(block_commitment, &a, &b, &params).expect("ctx");
+        let target = difficulty_target(&params);
+        let public = ZkPublicCommitments::from_context(&ctx);
+        let mut artifact =
+            prove_ai_pow_block(&ctx, &params, nonce, &target, 0).expect("honest proof");
+
+        verify_ai_pow_block(
+            block_commitment,
+            nonce,
+            &params,
+            &target,
+            0,
+            &public,
+            &artifact,
+        )
+        .expect("honest verifier-only path must accept");
+
+        let honest_height = artifact.trace_height;
+        artifact.trace_height = honest_height * 2;
+        assert!(matches!(
+            verify_ai_pow_block(
+                block_commitment,
+                nonce,
+                &params,
+                &target,
+                0,
+                &public,
+                &artifact,
+            ),
+            Err(BridgeError::TraceHeightMismatch { expected, actual })
+                if expected == honest_height && actual == honest_height * 2
+        ));
+        artifact.trace_height = honest_height;
+
+        artifact.pis.hash_a[0] ^= 1;
+        assert!(matches!(
+            verify_ai_pow_block(
+                block_commitment,
+                nonce,
+                &params,
+                &target,
+                0,
+                &public,
+                &artifact,
+            ),
+            Err(BridgeError::PublicInputMismatch("HASH_A"))
+        ));
     }
 
     /// MED-3 / §4.E: the verifier-side tile-index derivation

@@ -94,3 +94,9 @@ pub use crate::composite_proof::{
 pub use crate::composite_public::CompositePublicInputs;
 pub use crate::composite_trace::CompositeTrace;
 pub use crate::params::ZkParams;
+
+/// Concrete pinned+LogUp proof type used by the production AI PoW circuit.
+pub type AiPowBatchProof = p3_batch_stark::BatchProof<AiPowStarkConfig>;
+
+/// Concrete preprocessed program matrix type used by the pinned AI PoW circuit.
+pub type AiPowProgram = p3_matrix::dense::RowMajorMatrix<p3_uni_stark::Val<AiPowStarkConfig>>;
