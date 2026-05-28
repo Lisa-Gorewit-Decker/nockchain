@@ -121,7 +121,7 @@ fn wire_format_round_trip() {
         .unwrap()
         .unwrap();
     let bytes = proof.encode();
-    let decoded = ai_pow::proof::MatmulProof::decode(&bytes).unwrap();
+    let decoded = ai_pow::proof::MatmulProof::decode_for_params(&bytes, &params).unwrap();
     assert_eq!(proof, decoded);
     verify(b"hdr", b"nce", &params, &decoded).unwrap();
 }

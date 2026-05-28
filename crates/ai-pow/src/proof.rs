@@ -12,6 +12,8 @@
 
 use thiserror::Error;
 
+use crate::params::{MatmulParams, ParamError};
+
 /// Opening of a single tile, sufficient for the verifier to reconstruct
 /// `M_{i,j}` and verify it against `comm_m`, `h_a`, and `h_b`.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -56,6 +58,8 @@ pub struct MatmulProof {
 
 #[derive(Debug, Error, PartialEq, Eq)]
 pub enum DecodeError {
+    #[error("invalid params: {0}")]
+    InvalidParams(#[from] ParamError),
     #[error("unexpected end of input")]
     Eof,
     #[error("trailing bytes after decode")]
@@ -68,6 +72,28 @@ pub enum DecodeError {
     StripCountTooLarge,
     #[error("strip length too large")]
     StripLenTooLarge,
+    #[error("proof bytes too large for params (max {max}, got {actual})")]
+    ProofTooLarge { max: usize, actual: usize },
+    #[error("spot count mismatch (expected {expected}, got {actual})")]
+    SpotCountMismatch { expected: u32, actual: u32 },
+    #[error("{what} length mismatch (expected {expected}, got {actual})")]
+    StripLenMismatch {
+        what: &'static str,
+        expected: usize,
+        actual: usize,
+    },
+    #[error("{what} path count mismatch (expected {expected}, got {actual})")]
+    PathCountMismatch {
+        what: &'static str,
+        expected: usize,
+        actual: usize,
+    },
+    #[error("{what} path depth mismatch (expected {expected}, got {actual})")]
+    PathDepthMismatch {
+        what: &'static str,
+        expected: usize,
+        actual: usize,
+    },
 }
 
 const MAX_PATH_LEN: u32 = 64;
@@ -92,6 +118,13 @@ impl MatmulProof {
         out
     }
 
+    /// Decode a syntactically valid proof without knowing the expected puzzle
+    /// shape.
+    ///
+    /// This decoder is intentionally loose so tests and offline tooling can
+    /// inspect malformed proofs. Verifier-facing code should use
+    /// [`Self::decode_for_params`], which applies the exact shape and count
+    /// limits before allocating attacker-declared fields.
     pub fn decode(bytes: &[u8]) -> Result<Self, DecodeError> {
         let mut cur = bytes;
         let comm_m = take_arr32(&mut cur)?;
@@ -131,6 +164,89 @@ impl MatmulProof {
             spot,
         })
     }
+
+    /// Decode with the exact shape required by `params`.
+    ///
+    /// This is the verifier-facing decoder: it rejects count, strip, path,
+    /// depth, and total-size mismatches while reading length prefixes, before
+    /// allocating attacker-declared large fields that a later verifier would
+    /// reject anyway.
+    pub fn decode_for_params(bytes: &[u8], params: &MatmulParams) -> Result<Self, DecodeError> {
+        params.validate()?;
+        let shape = DecodeShape::new(params);
+        let max = shape.encoded_len(params.spot_checks as usize);
+        if bytes.len() > max {
+            return Err(DecodeError::ProofTooLarge {
+                max,
+                actual: bytes.len(),
+            });
+        }
+
+        let mut cur = bytes;
+        let comm_m = take_arr32(&mut cur)?;
+        let params_tag = take_arr32(&mut cur)?;
+        let h_a = take_arr32(&mut cur)?;
+        let h_b = take_arr32(&mut cur)?;
+        let h_a_chunk = take_arr32(&mut cur)?;
+        let h_b_chunk = take_arr32(&mut cur)?;
+        let found = decode_opening_for_shape(&mut cur, &shape)?;
+        let n = take_u32(&mut cur)?;
+        if n != params.spot_checks {
+            return Err(DecodeError::SpotCountMismatch {
+                expected: params.spot_checks,
+                actual: n,
+            });
+        }
+        let mut spot = Vec::with_capacity(n as usize);
+        for _ in 0..n {
+            spot.push(decode_opening_for_shape(&mut cur, &shape)?);
+        }
+        if !cur.is_empty() {
+            return Err(DecodeError::Trailing);
+        }
+        Ok(MatmulProof {
+            comm_m,
+            params_tag,
+            h_a,
+            h_b,
+            h_a_chunk,
+            h_b_chunk,
+            found,
+            spot,
+        })
+    }
+}
+
+struct DecodeShape {
+    tile: usize,
+    strip_len: usize,
+    m_path_depth: usize,
+    a_path_depth: usize,
+    b_path_depth: usize,
+}
+
+impl DecodeShape {
+    fn new(params: &MatmulParams) -> Self {
+        Self {
+            tile: params.tile as usize,
+            strip_len: params.tile as usize * params.k as usize,
+            m_path_depth: params.num_tiles_padded().trailing_zeros() as usize,
+            a_path_depth: params.m.next_power_of_two().trailing_zeros() as usize,
+            b_path_depth: params.n.next_power_of_two().trailing_zeros() as usize,
+        }
+    }
+
+    fn encoded_len(&self, spot_checks: usize) -> usize {
+        (32 * 6) + self.opening_len() + 4 + spot_checks * self.opening_len()
+    }
+
+    fn opening_len(&self) -> usize {
+        8 + (4 + self.m_path_depth * 32)
+            + (4 + self.strip_len)
+            + (4 + self.strip_len)
+            + (4 + self.tile * (4 + self.a_path_depth * 32))
+            + (4 + self.tile * (4 + self.b_path_depth * 32))
+    }
 }
 
 fn encode_opening(o: &TileOpening, out: &mut Vec<u8>) {
@@ -162,6 +278,38 @@ fn decode_opening(cur: &mut &[u8]) -> Result<TileOpening, DecodeError> {
     })
 }
 
+fn decode_opening_for_shape(
+    cur: &mut &[u8],
+    shape: &DecodeShape,
+) -> Result<TileOpening, DecodeError> {
+    let i = take_u32(cur)?;
+    let j = take_u32(cur)?;
+    let m_path = decode_path_single_exact(cur, shape.m_path_depth, "m_path")?;
+    let a_rows = decode_i8_slice_exact(cur, shape.strip_len, "a_rows")?;
+    let b_cols = decode_i8_slice_exact(cur, shape.strip_len, "b_cols")?;
+    let a_row_paths = decode_path_list_exact(
+        cur,
+        shape.tile,
+        shape.a_path_depth,
+        "a_row_paths",
+    )?;
+    let b_col_paths = decode_path_list_exact(
+        cur,
+        shape.tile,
+        shape.b_path_depth,
+        "b_col_paths",
+    )?;
+    Ok(TileOpening {
+        i,
+        j,
+        m_path,
+        a_rows,
+        b_cols,
+        a_row_paths,
+        b_col_paths,
+    })
+}
+
 fn encode_path_list_single(path: &[[u8; 32]], out: &mut Vec<u8>) {
     out.extend_from_slice(&(path.len() as u32).to_le_bytes());
     for h in path {
@@ -175,6 +323,26 @@ fn decode_path_single(cur: &mut &[u8]) -> Result<Vec<[u8; 32]>, DecodeError> {
         return Err(DecodeError::PathTooLarge);
     }
     let mut path = Vec::with_capacity(pl as usize);
+    for _ in 0..pl {
+        path.push(take_arr32(cur)?);
+    }
+    Ok(path)
+}
+
+fn decode_path_single_exact(
+    cur: &mut &[u8],
+    expected: usize,
+    what: &'static str,
+) -> Result<Vec<[u8; 32]>, DecodeError> {
+    let pl = take_u32(cur)? as usize;
+    if pl != expected {
+        return Err(DecodeError::PathDepthMismatch {
+            what,
+            expected,
+            actual: pl,
+        });
+    }
+    let mut path = Vec::with_capacity(pl);
     for _ in 0..pl {
         path.push(take_arr32(cur)?);
     }
@@ -202,6 +370,27 @@ fn decode_path_list(cur: &mut &[u8]) -> Result<Vec<Vec<[u8; 32]>>, DecodeError> 
     Ok(paths)
 }
 
+fn decode_path_list_exact(
+    cur: &mut &[u8],
+    expected_count: usize,
+    expected_depth: usize,
+    what: &'static str,
+) -> Result<Vec<Vec<[u8; 32]>>, DecodeError> {
+    let n = take_u32(cur)? as usize;
+    if n != expected_count {
+        return Err(DecodeError::PathCountMismatch {
+            what,
+            expected: expected_count,
+            actual: n,
+        });
+    }
+    let mut paths = Vec::with_capacity(n);
+    for _ in 0..n {
+        paths.push(decode_path_single_exact(cur, expected_depth, what)?);
+    }
+    Ok(paths)
+}
+
 fn encode_i8_slice(s: &[i8], out: &mut Vec<u8>) {
     out.extend_from_slice(&(s.len() as u32).to_le_bytes());
     // SAFETY: i8 and u8 share layout; we only ship the raw byte pattern.
@@ -222,6 +411,27 @@ fn decode_i8_slice(cur: &mut &[u8]) -> Result<Vec<i8>, DecodeError> {
     // SAFETY: same layout in reverse.
     let v: Vec<i8> = bytes.iter().map(|&b| b as i8).collect();
     Ok(v)
+}
+
+fn decode_i8_slice_exact(
+    cur: &mut &[u8],
+    expected: usize,
+    what: &'static str,
+) -> Result<Vec<i8>, DecodeError> {
+    let len = take_u32(cur)? as usize;
+    if len != expected {
+        return Err(DecodeError::StripLenMismatch {
+            what,
+            expected,
+            actual: len,
+        });
+    }
+    if cur.len() < len {
+        return Err(DecodeError::Eof);
+    }
+    let bytes = &cur[..len];
+    *cur = &cur[len..];
+    Ok(bytes.iter().map(|&b| b as i8).collect())
 }
 
 fn take_u32(cur: &mut &[u8]) -> Result<u32, DecodeError> {
@@ -247,6 +457,45 @@ fn take_arr32(cur: &mut &[u8]) -> Result<[u8; 32], DecodeError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn shaped_params() -> MatmulParams {
+        MatmulParams {
+            m: 8,
+            k: 64,
+            n: 8,
+            noise_rank: 4,
+            tile: 8,
+            spot_checks: 1,
+            difficulty_bits: 0,
+        }
+    }
+
+    fn shaped_opening(i: u32, j: u32) -> TileOpening {
+        TileOpening {
+            i,
+            j,
+            m_path: Vec::new(),
+            a_rows: vec![1; 8 * 64],
+            b_cols: vec![2; 8 * 64],
+            a_row_paths: vec![vec![[3u8; 32]; 3]; 8],
+            b_col_paths: vec![vec![[4u8; 32]; 3]; 8],
+        }
+    }
+
+    fn shaped_proof(spot_count: usize) -> MatmulProof {
+        MatmulProof {
+            comm_m: [1u8; 32],
+            params_tag: [2u8; 32],
+            h_a: [3u8; 32],
+            h_b: [4u8; 32],
+            h_a_chunk: [5u8; 32],
+            h_b_chunk: [6u8; 32],
+            found: shaped_opening(0, 0),
+            spot: (0..spot_count)
+                .map(|idx| shaped_opening(0, idx as u32))
+                .collect(),
+        }
+    }
 
     fn sample_opening(seed: u8) -> TileOpening {
         TileOpening {
@@ -279,6 +528,61 @@ mod tests {
         let bytes = p.encode();
         let q = MatmulProof::decode(&bytes).unwrap();
         assert_eq!(p, q);
+    }
+
+    #[test]
+    fn decode_for_params_round_trip_exact_shape() {
+        let params = shaped_params();
+        let p = shaped_proof(params.spot_checks as usize);
+        let bytes = p.encode();
+        let q = MatmulProof::decode_for_params(&bytes, &params).unwrap();
+        assert_eq!(p, q);
+    }
+
+    #[test]
+    fn decode_for_params_rejects_wrong_spot_count_before_spot_bodies() {
+        let params = shaped_params();
+        let p = shaped_proof(2);
+        let bytes = p.encode();
+        assert_eq!(
+            MatmulProof::decode_for_params(&bytes, &params).err(),
+            Some(DecodeError::ProofTooLarge {
+                max: DecodeShape::new(&params).encoded_len(params.spot_checks as usize),
+                actual: bytes.len(),
+            })
+        );
+
+        let mut prefix_only = shaped_proof(0);
+        prefix_only.spot = Vec::new();
+        let mut bytes = prefix_only.encode();
+        let count_offset = bytes.len() - 4;
+        bytes[count_offset..].copy_from_slice(&2u32.to_le_bytes());
+        assert_eq!(
+            MatmulProof::decode_for_params(&bytes, &params).err(),
+            Some(DecodeError::SpotCountMismatch {
+                expected: 1,
+                actual: 2,
+            })
+        );
+    }
+
+    #[test]
+    fn decode_for_params_rejects_wrong_strip_len_before_allocating_body() {
+        let params = shaped_params();
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(&[0u8; 32 * 6]);
+        bytes.extend_from_slice(&0u32.to_le_bytes()); // i
+        bytes.extend_from_slice(&0u32.to_le_bytes()); // j
+        bytes.extend_from_slice(&0u32.to_le_bytes()); // m_path depth
+        bytes.extend_from_slice(&((params.tile * params.k) + 1).to_le_bytes()); // a_rows len
+        assert_eq!(
+            MatmulProof::decode_for_params(&bytes, &params).err(),
+            Some(DecodeError::StripLenMismatch {
+                what: "a_rows",
+                expected: (params.tile * params.k) as usize,
+                actual: (params.tile * params.k + 1) as usize,
+            })
+        );
     }
 
     #[test]
