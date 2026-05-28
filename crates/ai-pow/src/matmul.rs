@@ -19,6 +19,10 @@ use blake3::Hasher;
 use crate::params::MatmulParams;
 use crate::prng;
 
+#[cfg(test)]
+pub(crate) static BLOCK_NOISE_EXPAND_CALLS: std::sync::atomic::AtomicUsize =
+    std::sync::atomic::AtomicUsize::new(0);
+
 /// Per-block low-rank noise factors. Derived once per `block_commitment`
 /// (via `noise_seed`) and reused across all nonce attempts in that block.
 pub struct BlockNoise {
@@ -43,6 +47,9 @@ impl BlockNoise {
     /// `s_a`, `(F_R, F_L)` are keyed by `s_b`. The two seeds are derived in
     /// `fiat_shamir.rs` from `(block_commitment, params_tag, H_A, H_B)`.
     pub fn expand(s_a: &[u8; 32], s_b: &[u8; 32], params: &MatmulParams) -> Self {
+        #[cfg(test)]
+        BLOCK_NOISE_EXPAND_CALLS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+
         let m = params.m as usize;
         let k = params.k as usize;
         let n = params.n as usize;

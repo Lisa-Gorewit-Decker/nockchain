@@ -19,10 +19,11 @@ use crate::fiat_shamir::{
     block_state, challenge_indices, challenge_seed, commitment_key, noise_seed_a, noise_seed_b,
     pow_key_for_nonce,
 };
-use crate::matmul::{compute_tile_from_slices, BlockNoise};
+use crate::matmul::compute_tile_from_slices;
 use crate::params::{MatmulParams, ParamError};
 use crate::proof::{MatmulProof, TileOpening};
 use crate::prover::params_tag;
+use crate::prng;
 use crate::tile_hash::{difficulty_target, hash_le_target};
 
 const INPUT_RANGE_MAX: i8 = 64;
@@ -102,17 +103,25 @@ pub fn verify_at_target(
         return Err(VerifyError::ParamsTagMismatch);
     }
 
+    let state = block_state(block_commitment, nonce);
+    let chal = challenge_seed(&state, &proof.comm_m, &tag);
+    let num_tiles = params.num_tiles();
+
+    if (proof.spot.len() as u32) != params.spot_checks {
+        return Err(VerifyError::SpotCountMismatch);
+    }
+
+    precheck_opening(&proof.found, params, OpeningRole::Found)?;
+    for opening in &proof.spot {
+        precheck_opening(opening, params, OpeningRole::Spot)?;
+    }
+
     let kappa = commitment_key(block_commitment, &tag);
     let s_b = noise_seed_b(&kappa, &proof.h_b);
     let s_a = noise_seed_a(&s_b, &proof.h_a);
     let pow_key = pow_key_for_nonce(&s_a, nonce);
+    let noise = VerifierNoise::new(s_a, s_b, params);
 
-    let state = block_state(block_commitment, nonce);
-    let noise = BlockNoise::expand(&s_a, &s_b, params);
-    let chal = challenge_seed(&state, &proof.comm_m, &tag);
-    let num_tiles = params.num_tiles();
-
-    // Found tile.
     let leaf_found = verify_opening(
         &proof.found,
         proof,
@@ -126,18 +135,8 @@ pub fn verify_at_target(
         return Err(VerifyError::FoundAboveTarget);
     }
 
-    // Spot checks.
-    if (proof.spot.len() as u32) != params.spot_checks {
-        return Err(VerifyError::SpotCountMismatch);
-    }
     let expected_indices = challenge_indices(&chal, params.spot_checks, num_tiles);
     for (k, opening) in proof.spot.iter().enumerate() {
-        // Range-check (i, j) before computing tile_index, so an
-        // out-of-range coordinate reports as such rather than as an index
-        // mismatch.
-        if opening.i >= params.row_tiles() || opening.j >= params.col_tiles() {
-            return Err(VerifyError::SpotOutOfRange);
-        }
         let claimed_idx = params.tile_index(opening.i, opening.j);
         if claimed_idx != expected_indices[k] {
             return Err(VerifyError::SpotIndexMismatch);
@@ -162,6 +161,101 @@ enum OpeningRole {
     Spot,
 }
 
+struct VerifierNoise {
+    s_a: [u8; 32],
+    s_b: [u8; 32],
+    r: u32,
+    e_r_pos: Vec<(u32, u32)>,
+    f_l_pos: Vec<(u32, u32)>,
+}
+
+impl VerifierNoise {
+    fn new(s_a: [u8; 32], s_b: [u8; 32], params: &MatmulParams) -> Self {
+        let e_r_pos = (0..params.k)
+            .map(|l| prng::e_r_col_positions(&s_a, l, params.noise_rank))
+            .collect();
+        let f_l_pos = (0..params.k)
+            .map(|l| prng::f_l_row_positions(&s_b, l, params.noise_rank))
+            .collect();
+        Self {
+            s_a,
+            s_b,
+            r: params.noise_rank,
+            e_r_pos,
+            f_l_pos,
+        }
+    }
+
+    fn e_row_into(&self, i: u32, out: &mut [i8]) {
+        let mut e_l_row = vec![0i8; self.r as usize];
+        prng::expand_e_l_row(&self.s_a, i, self.r, &mut e_l_row);
+        for (l, slot) in out.iter_mut().enumerate() {
+            let (pp, pm) = self.e_r_pos[l];
+            *slot = e_l_row[pp as usize] - e_l_row[pm as usize];
+        }
+    }
+
+    fn f_col_into(&self, j: u32, out: &mut [i8]) {
+        let mut f_r_col = vec![0i8; self.r as usize];
+        prng::expand_f_r_col(&self.s_b, j, self.r, &mut f_r_col);
+        for (l, slot) in out.iter_mut().enumerate() {
+            let (pp, pm) = self.f_l_pos[l];
+            *slot = f_r_col[pp as usize] - f_r_col[pm as usize];
+        }
+    }
+}
+
+fn precheck_opening(
+    opening: &TileOpening,
+    params: &MatmulParams,
+    role: OpeningRole,
+) -> Result<(), VerifyError> {
+    let t = params.tile as usize;
+    let k = params.k as usize;
+
+    if opening.i >= params.row_tiles() || opening.j >= params.col_tiles() {
+        return Err(match role {
+            OpeningRole::Found => VerifyError::FoundOutOfRange,
+            OpeningRole::Spot => VerifyError::SpotOutOfRange,
+        });
+    }
+    if opening.a_rows.len() != t * k {
+        return Err(VerifyError::BadAStripLen {
+            expected: t * k,
+            actual: opening.a_rows.len(),
+        });
+    }
+    if opening.b_cols.len() != t * k {
+        return Err(VerifyError::BadBStripLen {
+            expected: t * k,
+            actual: opening.b_cols.len(),
+        });
+    }
+    if opening.a_row_paths.len() != t {
+        return Err(VerifyError::BadAPathCount {
+            expected: t,
+            actual: opening.a_row_paths.len(),
+        });
+    }
+    if opening.b_col_paths.len() != t {
+        return Err(VerifyError::BadBPathCount {
+            expected: t,
+            actual: opening.b_col_paths.len(),
+        });
+    }
+    for &v in &opening.a_rows {
+        if v < -INPUT_RANGE_MAX || v > INPUT_RANGE_MAX {
+            return Err(VerifyError::AStripOutOfRange);
+        }
+    }
+    for &v in &opening.b_cols {
+        if v < -INPUT_RANGE_MAX || v > INPUT_RANGE_MAX {
+            return Err(VerifyError::BStripOutOfRange);
+        }
+    }
+    Ok(())
+}
+
 /// Validate one tile opening end-to-end. Returns the keyed-hash leaf so the
 /// caller can apply the per-role hardness check (only meaningful for the
 /// `Found` opening).
@@ -169,7 +263,7 @@ fn verify_opening(
     opening: &TileOpening,
     proof: &MatmulProof,
     params: &MatmulParams,
-    noise: &BlockNoise,
+    noise: &VerifierNoise,
     kappa: &[u8; 32],
     pow_key: &[u8; 32],
     role: OpeningRole,
@@ -281,4 +375,57 @@ fn verify_opening(
         });
     }
     Ok(leaf)
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::atomic::Ordering;
+
+    use super::*;
+    use crate::matmul::BLOCK_NOISE_EXPAND_CALLS;
+
+    fn empty_opening() -> TileOpening {
+        TileOpening {
+            i: 0,
+            j: 0,
+            m_path: Vec::new(),
+            a_rows: Vec::new(),
+            b_cols: Vec::new(),
+            a_row_paths: Vec::new(),
+            b_col_paths: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn rejects_spot_count_before_full_noise_expansion() {
+        let params = MatmulParams {
+            m: 1 << 20,
+            k: 64,
+            n: 8,
+            noise_rank: 4,
+            tile: 8,
+            spot_checks: 1,
+            difficulty_bits: 0,
+        };
+        params.validate().unwrap();
+        let proof = MatmulProof {
+            comm_m: [0u8; 32],
+            params_tag: params_tag(&params),
+            h_a: [1u8; 32],
+            h_b: [2u8; 32],
+            h_a_chunk: [3u8; 32],
+            h_b_chunk: [4u8; 32],
+            found: empty_opening(),
+            spot: Vec::new(),
+        };
+
+        BLOCK_NOISE_EXPAND_CALLS.store(0, Ordering::Relaxed);
+        let res = verify_at_target(b"dos01-block", b"dos01-nonce", &params, &[0xFFu8; 32], &proof);
+        assert_eq!(res, Err(VerifyError::SpotCountMismatch));
+        assert_eq!(
+            BLOCK_NOISE_EXPAND_CALLS.load(Ordering::Relaxed),
+            0,
+            "verifier must reject cheap shape/count errors before full noise expansion"
+        );
+    }
 }
