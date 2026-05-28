@@ -971,11 +971,25 @@ pub(crate) fn prove_and_verify_for_block(
     nonce: &[u8],
     found_idx: u32,
 ) -> Result<ZkOutcome, BridgeError> {
+    prove_and_verify_for_block_inner(ctx, params, nonce, found_idx, true)
+}
+
+fn prove_and_verify_for_block_inner(
+    ctx: &BlockContext<'_>,
+    params: &MatmulParams,
+    nonce: &[u8],
+    found_idx: u32,
+    require_prod_envelope: bool,
+) -> Result<ZkOutcome, BridgeError> {
     // M2: validate at the entry boundary so a structurally-broken
     // params never reaches the downstream panic surfaces. (Mine's
     // chain-pinned params already pass; this is defense in depth
     // for any direct `pub` caller.)
-    params.validate().map_err(BridgeError::InvalidParams)?;
+    if require_prod_envelope {
+        params.validate_prod_envelope().map_err(BridgeError::InvalidParams)?;
+    } else {
+        params.validate().map_err(BridgeError::InvalidParams)?;
+    }
     ensure_context_params(ctx, params)?;
     let target = crate::tile_hash::difficulty_target(params);
     let (tile_i, tile_j) = tile_ij(found_idx, params).ok_or(
@@ -1257,7 +1271,7 @@ mod tests {
         // Hardened path: no target argument; found_idx 0 = tile
         // (0,0), matching the primitive's default tile so the PIs
         // are directly comparable.
-        let hardened = prove_and_verify_for_block(&ctx, &params, nonce, 0)
+        let hardened = prove_and_verify_for_block_inner(&ctx, &params, nonce, 0, false)
             .expect("MED-3 hardened entrypoint must prove + pow-verify");
 
         // It must be equivalent to the primitive invoked with the
@@ -1266,6 +1280,20 @@ mod tests {
         let primitive = prove_and_verify(&ctx, &params, nonce, &target)
             .expect("primitive with chain target must also succeed");
         assert_eq!(hardened.pis, primitive.pis);
+    }
+
+    #[test]
+    fn param01_prove_and_verify_for_block_rejects_non_prod_params() {
+        let params = MatmulParams::TEST_SMALL;
+        params.validate().unwrap();
+        assert!(params.validate_prod_envelope().is_err());
+        let (a, b) = synth_matrices(b"param01-zk-bridge", &params);
+        let ctx = BlockContext::build(b"param01-zk-bridge-blk", &a, &b, &params).expect("ctx");
+
+        assert!(matches!(
+            prove_and_verify_for_block(&ctx, &params, TEST_NONCE, 0),
+            Err(BridgeError::InvalidParams(_))
+        ));
     }
 
     /// HIGH-2.2 §4.E: the bridge attests the **actual solved
@@ -1287,7 +1315,7 @@ mod tests {
         let mut digests = std::collections::HashSet::new();
         for &found_idx in &[0u32, 5, (nt / 2) as u32, (nt - 1) as u32] {
             let (ti, tj) = tile_ij(found_idx, &params).expect("valid idx");
-            let out = prove_and_verify_for_block(&ctx, &params, nonce, found_idx)
+            let out = prove_and_verify_for_block_inner(&ctx, &params, nonce, found_idx, false)
                 .unwrap_or_else(|e| panic!("§4.E: tile ({ti},{tj}) must prove+verify: {e}"));
 
             // Byte-equivalence to the plain solve for THIS tile.
@@ -2895,7 +2923,7 @@ mod tests {
             .expect("ctx");
         // coloc=true ⇒ the g=1 co-location path. Must prove +
         // pow-verify with C3 ACTIVE and every bus balanced.
-        let out = prove_and_verify_for_block(&ctx, &params, TEST_NONCE, 0).expect(
+        let out = prove_and_verify_for_block_inner(&ctx, &params, TEST_NONCE, 0, false).expect(
             "cx.2 g=1 (16|r P16) Route-A roundtrip must prove + \
              pow-verify with C3 ACTIVE (the §4.C.2 plain tie live \
              end-to-end)",
@@ -3739,7 +3767,7 @@ mod tests {
 
         let nt = params.num_tiles();
         let oob = nt as u32; // == num_tiles, just past the last valid idx
-        let res = prove_and_verify_for_block(&ctx, &params, TEST_NONCE, oob);
+        let res = prove_and_verify_for_block_inner(&ctx, &params, TEST_NONCE, oob, false);
         match res {
             Err(BridgeError::FoundIdxOutOfRange { found_idx, num_tiles }) => {
                 assert_eq!(u64::from(found_idx), nt);

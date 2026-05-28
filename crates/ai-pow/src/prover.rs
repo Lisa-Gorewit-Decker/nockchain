@@ -301,8 +301,14 @@ fn mine_with_context(
     // path; `mine_with_context_at_target` deliberately skips it.
     #[cfg(feature = "zk")]
     if let Some((_, found_idx)) = &result {
-        let _zk = crate::zk_bridge::prove_and_verify_for_block(ctx, &ctx.params, nonce, *found_idx)
-            .expect("F1 zk bridge: prove + pow-verify must succeed for a found tile");
+        // The ZK side-effect is a production-envelope proof. Small
+        // structural profiles remain useful for local/plain tests even when
+        // the crate is compiled with `--features zk`.
+        if ctx.params.validate_prod_envelope().is_ok() {
+            let _zk =
+                crate::zk_bridge::prove_and_verify_for_block(ctx, &ctx.params, nonce, *found_idx)
+                    .expect("F1 zk bridge: prove + pow-verify must succeed for a found tile");
+        }
     }
 
     Ok(result.map(|(p, _)| p))

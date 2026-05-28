@@ -28,15 +28,31 @@ use crate::{
 ///   3. `deadline` elapsed → `Err(DeadlineElapsed)`.
 ///   4. `max_extranonces` reached → `Err(BudgetExhausted)`.
 ///
-/// `params` is validated at entry (defense in depth; the same
-/// validation runs inside ai-pow primitives, but failing early
-/// gives a clean error before any allocation).
+/// `params` must satisfy the production consensus envelope at entry
+/// (defense in depth; the lower-level ai-pow primitives also perform
+/// structural validation, but failing early gives a clean error before
+/// any allocation).
 pub fn run(
     job: &MiningJob<'_>,
     opts: &MineOptions,
     cancel: MiningCancel,
 ) -> Result<MinedSolution, MiningError> {
-    job.params.validate().map_err(ai_pow::prover::MineError::from)?;
+    run_inner(job, opts, cancel, true)
+}
+
+fn run_inner(
+    job: &MiningJob<'_>,
+    opts: &MineOptions,
+    cancel: MiningCancel,
+    require_prod_envelope: bool,
+) -> Result<MinedSolution, MiningError> {
+    if require_prod_envelope {
+        job.params
+            .validate_prod_envelope()
+            .map_err(ai_pow::prover::MineError::from)?;
+    } else {
+        job.params.validate().map_err(ai_pow::prover::MineError::from)?;
+    }
     let start = Instant::now();
     let ctx = BlockContext::build(job.puzzle_id, job.a, job.b, job.params)?;
 
@@ -142,7 +158,7 @@ mod tests {
         let (a, b) = synth_matrices(b"mining-trivial-seed", &params);
         let pid = puzzle_id();
         let job = test_job(&params, &a, &b, [0xFFu8; 32], &pid);
-        let sol = run(&job, &MineOptions::default(), MiningCancel::new())
+        let sol = run_inner(&job, &MineOptions::default(), MiningCancel::new(), false)
             .expect("trivial target ⇒ first extranonce wins");
         // Sanity: nonce parses cleanly + the anchors round-trip.
         let (anchors, xn) = crate::parse_ncmn_nonce(&sol.nonce).expect("nonce");
@@ -166,7 +182,7 @@ mod tests {
             max_extranonces: Some(3),
             ..MineOptions::default()
         };
-        match run(&job, &opts, MiningCancel::new()) {
+        match run_inner(&job, &opts, MiningCancel::new(), false) {
             Err(MiningError::BudgetExhausted { max }) => assert_eq!(max, 3),
             Ok(_) => panic!("expected BudgetExhausted, got Ok"),
             Err(e) => panic!("expected BudgetExhausted, got Err: {e}"),
@@ -181,7 +197,7 @@ mod tests {
         let job = test_job(&params, &a, &b, [0u8; 32], &pid);
         let cancel = MiningCancel::new();
         cancel.cancel();
-        match run(&job, &MineOptions::default(), cancel) {
+        match run_inner(&job, &MineOptions::default(), cancel, false) {
             Err(MiningError::Cancelled) => {}
             Ok(_) => panic!("expected Cancelled, got Ok"),
             Err(e) => panic!("expected Cancelled, got Err: {e}"),
@@ -198,10 +214,25 @@ mod tests {
             deadline: Some(Instant::now() - Duration::from_secs(1)),
             ..MineOptions::default()
         };
-        match run(&job, &opts, MiningCancel::new()) {
+        match run_inner(&job, &opts, MiningCancel::new(), false) {
             Err(MiningError::DeadlineElapsed) => {}
             Ok(_) => panic!("expected DeadlineElapsed, got Ok"),
             Err(e) => panic!("expected DeadlineElapsed, got Err: {e}"),
+        }
+    }
+
+    #[test]
+    fn mine_rejects_non_production_params_at_entry() {
+        let params = MatmulParams::TEST_SMALL;
+        params.validate().unwrap();
+        assert!(params.validate_prod_envelope().is_err());
+        let (a, b) = synth_matrices(b"mining-non-prod-seed", &params);
+        let pid = puzzle_id();
+        let job = test_job(&params, &a, &b, [0xFFu8; 32], &pid);
+        match run(&job, &MineOptions::default(), MiningCancel::new()) {
+            Err(MiningError::Mine(ai_pow::prover::MineError::Params(_))) => {}
+            Ok(_) => panic!("expected MiningError::Mine, got Ok"),
+            Err(e) => panic!("expected MiningError::Mine, got Err: {e}"),
         }
     }
 
@@ -212,7 +243,7 @@ mod tests {
         let (a, b) = synth_matrices(b"mining-bad-seed", &MatmulParams::TEST_SMALL);
         let pid = puzzle_id();
         let job = test_job(&params, &a, &b, [0xFFu8; 32], &pid);
-        match run(&job, &MineOptions::default(), MiningCancel::new()) {
+        match run_inner(&job, &MineOptions::default(), MiningCancel::new(), false) {
             Err(MiningError::Mine(_)) => {} // ParamError wrapped via From
             Ok(_) => panic!("expected MiningError::Mine, got Ok"),
             Err(e) => panic!("expected MiningError::Mine, got Err: {e}"),

@@ -96,9 +96,9 @@ pub fn verify(
 
 /// Verify a `MatmulProof` against an explicit 256-bit little-endian target.
 ///
-/// This is the production-safe entry point for chain integration: the target
-/// must be the exact target for the candidate block, not a value recomputed
-/// from local proof parameters.
+/// This is a low-level verifier primitive. It structurally validates `params`,
+/// but it does not enforce the production consensus envelope; production
+/// callers must use [`verify_prod_at_target`] or [`verify_ncmn_at_target`].
 pub fn verify_at_target(
     block_commitment: &[u8],
     nonce: &[u8],
@@ -167,6 +167,19 @@ pub fn verify_at_target(
     Ok(())
 }
 
+/// Verify a `MatmulProof` against an explicit target after enforcing the
+/// production consensus parameter envelope.
+pub fn verify_prod_at_target(
+    block_commitment: &[u8],
+    nonce: &[u8],
+    params: &MatmulParams,
+    target: &[u8; 32],
+    proof: &MatmulProof,
+) -> Result<(), VerifyError> {
+    params.validate_prod_envelope()?;
+    verify_at_target(block_commitment, nonce, params, target, proof)
+}
+
 /// Verify a proof whose nonce must be an NCMN v1 nonce anchored to a
 /// candidate Nockchain block commitment.
 ///
@@ -184,6 +197,51 @@ pub fn verify_ncmn_at_target(
     target: &[u8; 32],
     proof: &MatmulProof,
 ) -> Result<(), VerifyError> {
+    verify_ncmn_at_target_inner(
+        puzzle_id,
+        candidate_nck_commitment,
+        nonce,
+        params,
+        target,
+        proof,
+        true,
+    )
+}
+
+/// Low-level NCMN verifier for tests and local tools that intentionally use
+/// structurally-valid, non-production parameter sets. Consensus callers must
+/// use [`verify_ncmn_at_target`].
+pub fn verify_ncmn_at_target_structural(
+    puzzle_id: &[u8],
+    candidate_nck_commitment: &[u8; 32],
+    nonce: &[u8],
+    params: &MatmulParams,
+    target: &[u8; 32],
+    proof: &MatmulProof,
+) -> Result<(), VerifyError> {
+    verify_ncmn_at_target_inner(
+        puzzle_id,
+        candidate_nck_commitment,
+        nonce,
+        params,
+        target,
+        proof,
+        false,
+    )
+}
+
+fn verify_ncmn_at_target_inner(
+    puzzle_id: &[u8],
+    candidate_nck_commitment: &[u8; 32],
+    nonce: &[u8],
+    params: &MatmulParams,
+    target: &[u8; 32],
+    proof: &MatmulProof,
+    require_prod_envelope: bool,
+) -> Result<(), VerifyError> {
+    if require_prod_envelope {
+        params.validate_prod_envelope()?;
+    }
     let (anchors, _) = parse_ncmn_nonce(nonce)?;
     if anchors.nck_commitment != *candidate_nck_commitment {
         return Err(VerifyError::NonceAnchorMismatch);
@@ -422,6 +480,7 @@ mod tests {
 
     use super::*;
     use crate::matmul::BLOCK_NOISE_EXPAND_CALLS;
+    use crate::ncmn::{build_ncmn_nonce, NonceAnchors};
 
     fn empty_opening() -> TileOpening {
         TileOpening {
@@ -433,6 +492,51 @@ mod tests {
             a_row_paths: Vec::new(),
             b_col_paths: Vec::new(),
         }
+    }
+
+    fn empty_proof(params: &MatmulParams) -> MatmulProof {
+        MatmulProof {
+            comm_m: [0u8; 32],
+            params_tag: params_tag(params),
+            h_a: [1u8; 32],
+            h_b: [2u8; 32],
+            h_a_chunk: [0u8; 32],
+            h_b_chunk: [0u8; 32],
+            found: empty_opening(),
+            spot: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn production_verifiers_reject_structural_test_params() {
+        let params = MatmulParams::TEST_SMALL;
+        params.validate().unwrap();
+        assert!(params.validate_prod_envelope().is_err());
+        let proof = empty_proof(&params);
+        let anchors = NonceAnchors::nck_only([0xAB; 32]);
+        let nonce = build_ncmn_nonce(&anchors, 0);
+
+        assert!(matches!(
+            verify_prod_at_target(
+                b"param01-puzzle",
+                &nonce,
+                &params,
+                &[0xFFu8; 32],
+                &proof,
+            ),
+            Err(VerifyError::Params(_))
+        ));
+        assert!(matches!(
+            verify_ncmn_at_target(
+                b"param01-puzzle",
+                &anchors.nck_commitment,
+                &nonce,
+                &params,
+                &[0xFFu8; 32],
+                &proof,
+            ),
+            Err(VerifyError::Params(_))
+        ));
     }
 
     #[test]
@@ -447,16 +551,7 @@ mod tests {
             difficulty_bits: 0,
         };
         params.validate().unwrap();
-        let proof = MatmulProof {
-            comm_m: [0u8; 32],
-            params_tag: params_tag(&params),
-            h_a: [1u8; 32],
-            h_b: [2u8; 32],
-            h_a_chunk: [0u8; 32],
-            h_b_chunk: [0u8; 32],
-            found: empty_opening(),
-            spot: Vec::new(),
-        };
+        let proof = empty_proof(&params);
 
         BLOCK_NOISE_EXPAND_CALLS.store(0, Ordering::Relaxed);
         let res = verify_at_target(b"dos01-block", b"dos01-nonce", &params, &[0xFFu8; 32], &proof);

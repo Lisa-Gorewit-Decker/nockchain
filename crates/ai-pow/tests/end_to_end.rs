@@ -4,7 +4,9 @@ use ai_pow::ncmn::{build_ncmn_nonce, NonceAnchors, NonceFormatError};
 use ai_pow::params::MatmulParams;
 use ai_pow::prover::{mine, mine_with_context_at_target, BlockContext, ProverOptions};
 use ai_pow::synth::synth_matrices;
-use ai_pow::verifier::{verify, verify_at_target, verify_ncmn_at_target, VerifyError};
+use ai_pow::verifier::{
+    verify, verify_at_target, verify_ncmn_at_target_structural, VerifyError,
+};
 
 fn small_params() -> MatmulParams {
     // difficulty_bits = 0 ⇒ every tile passes hardness.
@@ -80,20 +82,20 @@ fn ncmn_verifier_enforces_nonce_block_anchor() {
     .unwrap()
     .expect("max target must yield a proof");
 
-    verify_ncmn_at_target(puzzle_id, &nck_commitment, &nonce, &params, &target, &proof)
+    verify_ncmn_at_target_structural(puzzle_id, &nck_commitment, &nonce, &params, &target, &proof)
         .expect("honest NCMN nonce must verify");
 
     let mut wrong_anchor = nck_commitment;
     wrong_anchor[0] ^= 1;
     assert_eq!(
-        verify_ncmn_at_target(puzzle_id, &wrong_anchor, &nonce, &params, &target, &proof),
+        verify_ncmn_at_target_structural(puzzle_id, &wrong_anchor, &nonce, &params, &target, &proof),
         Err(VerifyError::NonceAnchorMismatch)
     );
 
     let mut bad_magic = nonce;
     bad_magic[0] = b'X';
     assert_eq!(
-        verify_ncmn_at_target(puzzle_id, &nck_commitment, &bad_magic, &params, &target, &proof),
+        verify_ncmn_at_target_structural(puzzle_id, &nck_commitment, &bad_magic, &params, &target, &proof),
         Err(VerifyError::Nonce(NonceFormatError::BadMagic(*b"XCMN")))
     );
 
@@ -105,7 +107,7 @@ fn ncmn_verifier_enforces_nonce_block_anchor() {
         7,
     );
     assert_eq!(
-        verify_ncmn_at_target(
+        verify_ncmn_at_target_structural(
             puzzle_id,
             &nck_commitment,
             &external_nonce,
