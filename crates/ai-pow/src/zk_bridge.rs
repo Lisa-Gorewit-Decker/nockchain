@@ -233,6 +233,12 @@ pub enum BridgeError {
     /// The proof artifact used a trace height different from the verifier's
     /// params-derived construction.
     TraceHeightMismatch { expected: usize, actual: usize },
+    /// A prover-side bridge call supplied params that differ from the
+    /// `BlockContext`'s precomputed shape and transcript.
+    ParamsMismatch {
+        context: MatmulParams,
+        supplied: MatmulParams,
+    },
     /// `params` failed `MatmulParams::validate()` at the `pub`
     /// bridge boundary — entry-point defense (M2) against malformed
     /// params that would otherwise hit a downstream panic. The
@@ -267,6 +273,10 @@ impl core::fmt::Display for BridgeError {
             BridgeError::TraceHeightMismatch { expected, actual } => write!(
                 f,
                 "trace height mismatch: expected {expected}, got {actual}"
+            ),
+            BridgeError::ParamsMismatch { context, supplied } => write!(
+                f,
+                "BlockContext params {context:?} do not match supplied params {supplied:?}"
             ),
             BridgeError::InvalidParams(e) => write!(f, "invalid params: {e}"),
             BridgeError::FoundIdxOutOfRange { found_idx, num_tiles } => write!(
@@ -310,6 +320,20 @@ fn expect_pi_eq(
     }
 }
 
+fn ensure_context_params(
+    ctx: &BlockContext<'_>,
+    params: &MatmulParams,
+) -> Result<(), BridgeError> {
+    if ctx.params == *params {
+        Ok(())
+    } else {
+        Err(BridgeError::ParamsMismatch {
+            context: ctx.params,
+            supplied: *params,
+        })
+    }
+}
+
 /// Build a verifier-facing ZK proof artifact for a solved block.
 ///
 /// This is a prover-side constructor only. Consumers must verify the returned
@@ -323,6 +347,7 @@ pub fn prove_ai_pow_block(
     found_idx: u32,
 ) -> Result<ZkProofArtifact, BridgeError> {
     params.validate_prod_envelope().map_err(BridgeError::InvalidParams)?;
+    ensure_context_params(ctx, params)?;
     let (tile_i, tile_j) =
         tile_ij(found_idx, params).ok_or(BridgeError::FoundIdxOutOfRange {
             found_idx,
@@ -499,6 +524,7 @@ pub(crate) fn prove_and_verify_tiled(
     // Without this, downstream `expected_layer0_rows` would hit a
     // `k / noise_rank` div-by-zero panic for `noise_rank = 0`.
     params.validate().map_err(BridgeError::InvalidParams)?;
+    ensure_context_params(ctx, params)?;
     prove_and_verify_tiled_tamper(ctx, params, nonce, target, tile_i, tile_j, |_| {})
 }
 
@@ -540,6 +566,9 @@ fn prove_ai_pow_tiled_full<F: FnOnce(&mut CompositeTrace)>(
     tamper: F,
     sweep_override: Option<(&[i8], &[i8])>,
 ) -> Result<(ZkProofArtifact, AiPowProgram, bool), BridgeError> {
+    params.validate().map_err(BridgeError::InvalidParams)?;
+    ensure_context_params(ctx, params)?;
+
     // P-B (γ Pearl-faithful): size the Layer-0 trace from `params`
     // — the faithful analogue of Pearl's `degree_bits()` — instead
     // of the fixed `MIN_STARK_LEN`. For sub-envelope test profiles
@@ -948,6 +977,7 @@ pub(crate) fn prove_and_verify_for_block(
     // chain-pinned params already pass; this is defense in depth
     // for any direct `pub` caller.)
     params.validate().map_err(BridgeError::InvalidParams)?;
+    ensure_context_params(ctx, params)?;
     let target = crate::tile_hash::difficulty_target(params);
     let (tile_i, tile_j) = tile_ij(found_idx, params).ok_or(
         BridgeError::FoundIdxOutOfRange { found_idx, num_tiles: params.num_tiles() },
@@ -1375,6 +1405,22 @@ mod tests {
                 &artifact,
             ),
             Err(BridgeError::InvalidParams(ParamError::NoiseRankOutOfEnvelope))
+        ));
+    }
+
+    #[test]
+    fn snd07_bridge_rejects_context_params_mismatch() {
+        let params = MatmulParams::TEST_SMALL;
+        let (a, b) = synth_matrices(b"snd07-seed", &params);
+        let ctx = BlockContext::build(b"snd07-block", &a, &b, &params).expect("ctx");
+        let mut supplied = params;
+        supplied.spot_checks -= 1;
+        supplied.validate().unwrap();
+
+        assert!(matches!(
+            prove_and_verify_tiled(&ctx, &supplied, TEST_NONCE, &[0xffu8; 32], 0, 0),
+            Err(BridgeError::ParamsMismatch { context, supplied: got })
+                if context == params && got == supplied
         ));
     }
 
