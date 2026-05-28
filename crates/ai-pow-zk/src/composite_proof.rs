@@ -349,7 +349,7 @@ pub fn composite_prove_pinned_logup(
 /// never from the proof. `true` = production / TEST_SMALL path;
 /// `false` = `num_stripes > 16` legacy path (rectangular / PROD),
 /// the documented §6(b) wider-register residual.
-pub fn composite_prove_pinned_logup_sx(
+pub(crate) fn composite_prove_pinned_logup_sx(
     config: &AiPowStarkConfig,
     mut trace: CompositeTrace,
     public_inputs: &CompositePublicInputs,
@@ -406,7 +406,7 @@ pub fn composite_verify_pinned_logup(
 
 /// [`composite_verify_pinned_logup`] with an explicit §6(b)
 /// keystone flag (verifier-set from trusted params).
-pub fn composite_verify_pinned_logup_sx(
+pub(crate) fn composite_verify_pinned_logup_sx(
     config: &AiPowStarkConfig,
     program: &Program,
     proof: &p3_batch_stark::BatchProof<AiPowStarkConfig>,
@@ -443,7 +443,7 @@ pub fn composite_verify_pow_pinned_logup(
 /// [`composite_verify_pow_pinned_logup`] with an explicit §6(b)
 /// keystone flag. `sx_bound` MUST be derived by the verifier from
 /// the trusted block params (`num_stripes ≤ 16`), never the proof.
-pub fn composite_verify_pow_pinned_logup_sx(
+pub(crate) fn composite_verify_pow_pinned_logup_sx(
     config: &AiPowStarkConfig,
     program: &Program,
     proof: &p3_batch_stark::BatchProof<AiPowStarkConfig>,

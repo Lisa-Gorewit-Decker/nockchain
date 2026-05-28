@@ -17,3 +17,18 @@ fn root_api_does_not_reexport_dev_verifiers() {
         );
     }
 }
+
+#[test]
+fn sx_bound_helpers_are_not_public_module_api() {
+    let composite_proof_rs = include_str!("../src/composite_proof.rs");
+    for needle in [
+        "pub fn composite_prove_pinned_logup_sx",
+        "pub fn composite_verify_pinned_logup_sx",
+        "pub fn composite_verify_pow_pinned_logup_sx",
+    ] {
+        assert!(
+            !composite_proof_rs.contains(needle),
+            "`{needle}` exposes caller-controlled sx_bound"
+        );
+    }
+}

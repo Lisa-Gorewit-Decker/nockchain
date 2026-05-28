@@ -54,7 +54,7 @@
 //! status: `crates/ai-pow-zk/docs/2026-05-15_HIGH2_2_DESIGN.md`.
 
 use ai_pow_zk::composite_proof::{
-    build_config, composite_prove_pinned_logup_sx, composite_verify_pow_pinned_logup_sx,
+    build_config, composite_prove_pinned_logup, composite_verify_pow_pinned_logup,
 };
 use ai_pow_zk::{
     AiPowBatchProof, AiPowProgram, CircuitConfig, CompositePublicInputs, CompositeTrace,
@@ -449,14 +449,12 @@ fn verify_ai_pow_tiled_with_statement(
     let canonical =
         ai_pow_zk::canonical::canonical_program(&zk_params, &bp, artifact.trace_height)
             .map_err(BridgeError::ZkParamsInvalid)?;
-    let sx_bound = true;
-    composite_verify_pow_pinned_logup_sx(
+    composite_verify_pow_pinned_logup(
         &cfg,
         &canonical,
         &artifact.proof,
         &artifact.pis,
         target,
-        sx_bound,
     )
     .map_err(BridgeError::Pow)
 }
@@ -886,14 +884,12 @@ fn prove_ai_pow_tiled_full<F: FnOnce(&mut CompositeTrace)>(
     // §6(b)/G1+G2 keystone is always live: the in-circuit matmul
     // sweep is the only matmul path (the off-circuit fallback was
     // deleted), so `sx_bound` is unconditionally `true`.
-    let sx_bound = true;
     // §4.C.2 c-exact position-exact adversarial seam: no-op in
     // production (the wrapper passes `|_| {}`); a test tampers a
     // co-located leaf row's committed plain here, after the PI
     // checks, so the only defect is the tampered cell.
     tamper(&mut trace);
-    let (proof, prover_program) =
-        composite_prove_pinned_logup_sx(&cfg, trace, &pis, sx_bound);
+    let (proof, prover_program) = composite_prove_pinned_logup(&cfg, trace, &pis);
     let artifact = ZkProofArtifact {
         proof,
         pis,
@@ -941,9 +937,12 @@ pub(crate) fn prove_and_verify_tiled_full<F: FnOnce(&mut CompositeTrace)>(
     } else {
         let zk_params = zk_params_from(params);
         let cfg = build_config(&zk_params, &CircuitConfig::PROD);
-        let sx_bound = true;
-        composite_verify_pow_pinned_logup_sx(
-            &cfg, &prover_program, &artifact.proof, &artifact.pis, target, sx_bound,
+        composite_verify_pow_pinned_logup(
+            &cfg,
+            &prover_program,
+            &artifact.proof,
+            &artifact.pis,
+            target,
         )
         .map_err(BridgeError::Pow)?;
     }
