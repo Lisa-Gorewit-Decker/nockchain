@@ -2908,6 +2908,38 @@ mod tests {
         assert_eq!(next_row, 4 * 16 * 8 + 3 * 8);
     }
 
+    #[test]
+    fn place_matrix_hash_matches_blake3_for_non_power_of_two_chunk_counts() {
+        let key = [0xC3u8; 32];
+        for &chunks in &[3usize, 5, 9, 17, 31, 33] {
+            let mut matrix = vec![0u8; chunks * 1024 - 13];
+            for (i, b) in matrix.iter_mut().enumerate() {
+                *b = ((i * 17 + chunks * 29) & 0xff) as u8;
+            }
+            let mut padded = matrix.clone();
+            padded.resize(chunks * 1024, 0);
+            let expected = *blake3::Hasher::new_keyed(&key)
+                .update(&padded)
+                .finalize()
+                .as_bytes();
+            let expected_words: [u32; 8] = core::array::from_fn(|i| {
+                u32::from_le_bytes([
+                    expected[i * 4],
+                    expected[i * 4 + 1],
+                    expected[i * 4 + 2],
+                    expected[i * 4 + 3],
+                ])
+            });
+
+            let mut trace = CompositeTrace::baseline_min();
+            let (_, root_cv) = trace.place_matrix_hash_a(0, &matrix, &key);
+            assert_eq!(
+                root_cv, expected_words,
+                "place_matrix_hash_a must match canonical BLAKE3 at {chunks} chunks"
+            );
+        }
+    }
+
     /// Single-chunk path: 1 KiB input → 1 chunk → 16 blocks, no
     /// parents. The chunk's last block carries the ROOT flag.
     #[test]

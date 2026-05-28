@@ -10,9 +10,9 @@
 //! `n > 1` chunks splits with the **largest power of two number
 //! of chunks strictly less than `n`** on the left
 //! ([`left_len`]). The in-circuit `CompositeTrace::place_matrix_hash`
-//! currently uses a pairwise-with-promotion loop that only
-//! coincides with the true tree for **power-of-two** chunk
-//! counts (the latent gap P-B.2.1/D1-A fixes).
+//! uses an equivalent bottom-up pairwise/promote-odd reduction; the
+//! regression tests below compare both implementations against real
+//! `blake3::Hasher` for power-of-two and non-power-of-two chunk counts.
 //!
 //! This module is **pure / off-circuit** (no AIR, no trace). It
 //! provides the true tree, the full-matrix root, and an
