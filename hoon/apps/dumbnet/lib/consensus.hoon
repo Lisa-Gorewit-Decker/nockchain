@@ -557,14 +557,13 @@
 ++  validate-page-without-txs
   |=  [pag=page:t now-secs=@]
   ^-  (reason:dk ~)
-  =/  block-version=proof-version:sp  version:(need ~(pow get:page:t pag))
-  =/  block-height=@  ~(height get:page:t pag)
-  =/  version-check=?
-    ?.  check-pow-flag:t
-      %.y
-    (proof-version-valid-at-height block-version block-height)
-  ?.  version-check
-    ~&  [%proof-version-invalid block-version block-height]
+  ::  Version check: pow is always verified (the no-pow testing path
+  ::  was removed — see below). A powless block fails the `need`,
+  ::  which is correct: every accepted block must carry a proof.
+  ?.  %+  proof-version-valid-at-height
+        version:(need ~(pow get:page:t pag))
+      ~(height get:page:t pag)
+    ~&  [%proof-version-invalid ~(height get:page:t pag)]
     [%.n %proof-version-invalid]
   =/  par=page:t  (to-page:local-page:t (~(got h-by blocks.c) ~(parent get:page:t pag)))
   ::  this is already checked in +heard-block but is done here again
@@ -586,10 +585,6 @@
     [%.n %page-epoch-invalid]
   ::
   =/  check-pow-hash=?
-    ?.  check-pow-flag:t
-      ::  this case only happens during testing
-      ::~&  "skipping pow hash check for {(trip (to-b58:hash:t ~(digest get:page:t pag)))}"
-      %.y
     %-  check-target:mine
     :_  ~(target get:page:t pag)
     (proof-to-pow:t (need ~(pow get:page:t pag)))
@@ -615,9 +610,12 @@
   ::  falls back to the epoch-stored target (unchanged).
   =/  expected-target
     ?:  (post-asert-activation:t ~(height get:page:t pag))
-      =/  block-version=proof-version:sp  version:(need ~(pow get:page:t pag))
+      ::  powless block defaults to %dumb-zkpow (it will fail the pow
+      ::  check regardless); avoids a crash on the flag-off path.
       =/  block-puzzle-type=?(%dumb-zkpow %ai-pow)
-        (version-to-puzzle-type block-version)
+        =/  pow-unit  ~(pow get:page:t pag)
+        ?~  pow-unit  %dumb-zkpow
+        (version-to-puzzle-type version.u.pow-unit)
       =/  same-type-parent=block-id:t
         =/  found=(unit block-id:t)
           (find-same-type-ancestor ~(parent get:page:t pag) block-puzzle-type)
@@ -858,9 +856,16 @@
 ++  update-min-timestamps
   |=  [now=@da pag=page:t]
   ^-  (h-map block-id:t @)
-  =/  pag-version=proof-version:sp  version:(need ~(pow get:page:t pag))
+  ::  Determine the new block's puzzle-type from its proof version.
+  ::  A powless block (genesis, and any block where pow failed to
+  ::  decode) is %dumb-zkpow by definition: genesis is pre-activation
+  ::  and AI blocks cannot exist there. This guard restores the
+  ::  pre-Stage-6 walker's tolerance — the old walker never read pow
+  ::  at all, so it never crashed on a powless accepted block.
   =/  pag-type=?(%dumb-zkpow %ai-pow)
-    (version-to-puzzle-type pag-version)
+    =/  pow-unit  ~(pow get:page:t pag)
+    ?~  pow-unit  %dumb-zkpow
+    (version-to-puzzle-type version.u.pow-unit)
   =/  min-timestamp=@
     ::  collect up to N=min-past-blocks same-type timestamps,
     ::  starting with pag itself and walking parent edges.

@@ -1069,10 +1069,6 @@
      ^-  ?
      =/  check-digest  (check-digest:page:t pag)
      =/  check-pow-hash=?
-      ?.  check-pow-flag:t
-         ::  this case only happens during testing
-         ::~&  "skipping pow hash check for {(trip (to-b58:hash:t ~(digest get:page:t pag)))}"
-         %.y
        %-  check-target:mine
        :_  ~(target get:page:t pag)
        (proof-to-pow:zeke (need ~(pow get:page:t pag)))
@@ -1130,10 +1126,6 @@
     ++  check-pow
       |=  pag=page:t
       ^-  ?
-      ?.  check-pow-flag:t
-        ~>  %slog.[1 'check-pow: check-pow-flag is off, skipping pow check']
-        ::  this case only happens during testing
-        %.y
       =/  pow  ~(pow get:page:t pag)
       ?~  pow
         %.n
@@ -1341,13 +1333,11 @@
       =.  c.k  (accept-page:con pag acc now)
       =/  print-var
         =/  pow-print=@t
-          ?:  check-pow-flag:t
-            =/  pow  ~(pow get:page:t pag)
-            ?>  ?=(^ pow)
-            %+  rap  3
-            :~  ' with proof version '  (rsh [3 2] (scot %ui version.u.pow))
-            ==
-          '. Skipping pow check because check-pow-flag was disabled'
+          =/  pow  ~(pow get:page:t pag)
+          ?>  ?=(^ pow)
+          %+  rap  3
+          :~  ' with proof version '  (rsh [3 2] (scot %ui version.u.pow))
+          ==
         %-  trip
         ^-  @t
         %+  rap  3
