@@ -61,9 +61,25 @@ pub struct MatmulProof {
 }
 
 #[derive(Debug, Error, PartialEq, Eq)]
+pub enum EncodeError {
+    #[error("{what} length exceeds u32 wire limit (got {actual}, max {max})")]
+    LengthTooLarge {
+        what: &'static str,
+        actual: usize,
+        max: usize,
+    },
+}
+
+#[derive(Debug, Error, PartialEq, Eq)]
 pub enum DecodeError {
     #[error("invalid params: {0}")]
     InvalidParams(#[from] ParamError),
+    #[error("invalid MatmulProof consensus magic")]
+    BadMagic,
+    #[error("unsupported MatmulProof consensus version {version}")]
+    UnsupportedVersion { version: u8 },
+    #[error("MatmulProof consensus body length mismatch (declared {declared}, actual {actual})")]
+    EnvelopeLengthMismatch { declared: usize, actual: usize },
     #[error("unexpected end of input")]
     Eof,
     #[error("trailing bytes after decode")]
@@ -104,9 +120,17 @@ const MAX_PATH_LEN: u32 = 64;
 const MAX_SPOT: u32 = 1 << 20;
 const MAX_STRIP_COUNT: u32 = 1 << 20;
 const MAX_STRIP_LEN: u32 = 1 << 24; // 16 MiB cap per strip-concat field
+pub const MATMUL_PROOF_CONSENSUS_MAGIC: [u8; 4] = *b"AIPW";
+pub const MATMUL_PROOF_CONSENSUS_VERSION: u8 = 1;
+const MATMUL_PROOF_CONSENSUS_HEADER_LEN: usize = 4 + 1 + 4;
 
 impl MatmulProof {
     pub fn encode(&self) -> Vec<u8> {
+        self.encode_checked()
+            .expect("MatmulProof contains a field too large for u32 wire encoding")
+    }
+
+    pub fn encode_checked(&self) -> Result<Vec<u8>, EncodeError> {
         let mut out = Vec::new();
         out.extend_from_slice(&self.comm_m);
         out.extend_from_slice(&self.params_tag);
@@ -114,12 +138,28 @@ impl MatmulProof {
         out.extend_from_slice(&self.h_b);
         out.extend_from_slice(&self.h_a_chunk);
         out.extend_from_slice(&self.h_b_chunk);
-        encode_opening(&self.found, &mut out);
-        out.extend_from_slice(&(self.spot.len() as u32).to_le_bytes());
+        encode_opening(&self.found, &mut out)?;
+        put_len(&mut out, self.spot.len(), "spot")?;
         for s in &self.spot {
-            encode_opening(s, &mut out);
+            encode_opening(s, &mut out)?;
         }
-        out
+        Ok(out)
+    }
+
+    /// Encode a versioned, length-prefixed verifier-facing proof artifact.
+    ///
+    /// The inner body is the legacy `MatmulProof` layout. The outer envelope
+    /// prevents cross-version ambiguity and forces decoders to reject trailing
+    /// bytes before attempting shape-specific verification.
+    pub fn encode_consensus(&self) -> Result<Vec<u8>, EncodeError> {
+        let body = self.encode_checked()?;
+        let body_len = checked_len_u32(body.len(), "consensus body")?;
+        let mut out = Vec::with_capacity(MATMUL_PROOF_CONSENSUS_HEADER_LEN + body.len());
+        out.extend_from_slice(&MATMUL_PROOF_CONSENSUS_MAGIC);
+        out.push(MATMUL_PROOF_CONSENSUS_VERSION);
+        out.extend_from_slice(&body_len.to_le_bytes());
+        out.extend_from_slice(&body);
+        Ok(out)
     }
 
     /// Decode a syntactically valid proof without knowing the expected puzzle
@@ -219,6 +259,39 @@ impl MatmulProof {
             spot,
         })
     }
+
+    /// Decode a versioned consensus proof artifact for verifier/wire use.
+    ///
+    /// This rejects unknown versions, malformed length prefixes, and trailing
+    /// bytes at the envelope layer, then applies the exact parameter-derived
+    /// shape limits from [`Self::decode_for_params`] to the inner proof body.
+    pub fn decode_consensus_for_params(
+        bytes: &[u8],
+        params: &MatmulParams,
+    ) -> Result<Self, DecodeError> {
+        let mut cur = bytes;
+        if cur.len() < MATMUL_PROOF_CONSENSUS_MAGIC.len() {
+            return Err(DecodeError::Eof);
+        }
+        if cur[..MATMUL_PROOF_CONSENSUS_MAGIC.len()] != MATMUL_PROOF_CONSENSUS_MAGIC {
+            return Err(DecodeError::BadMagic);
+        }
+        cur = &cur[MATMUL_PROOF_CONSENSUS_MAGIC.len()..];
+        if cur.is_empty() {
+            return Err(DecodeError::Eof);
+        }
+        let version = cur[0];
+        cur = &cur[1..];
+        if version != MATMUL_PROOF_CONSENSUS_VERSION {
+            return Err(DecodeError::UnsupportedVersion { version });
+        }
+        let declared = take_u32(&mut cur)? as usize;
+        let actual = cur.len();
+        if declared != actual {
+            return Err(DecodeError::EnvelopeLengthMismatch { declared, actual });
+        }
+        Self::decode_for_params(cur, params)
+    }
 }
 
 struct DecodeShape {
@@ -253,14 +326,15 @@ impl DecodeShape {
     }
 }
 
-fn encode_opening(o: &TileOpening, out: &mut Vec<u8>) {
+fn encode_opening(o: &TileOpening, out: &mut Vec<u8>) -> Result<(), EncodeError> {
     out.extend_from_slice(&o.i.to_le_bytes());
     out.extend_from_slice(&o.j.to_le_bytes());
-    encode_path_list_single(&o.m_path, out);
-    encode_i8_slice(&o.a_rows, out);
-    encode_i8_slice(&o.b_cols, out);
-    encode_path_list(&o.a_row_paths, out);
-    encode_path_list(&o.b_col_paths, out);
+    encode_path_list_single(&o.m_path, out, "m_path")?;
+    encode_i8_slice(&o.a_rows, out, "a_rows")?;
+    encode_i8_slice(&o.b_cols, out, "b_cols")?;
+    encode_path_list(&o.a_row_paths, out, "a_row_paths")?;
+    encode_path_list(&o.b_col_paths, out, "b_col_paths")?;
+    Ok(())
 }
 
 fn decode_opening(cur: &mut &[u8]) -> Result<TileOpening, DecodeError> {
@@ -291,18 +365,8 @@ fn decode_opening_for_shape(
     let m_path = decode_path_single_exact(cur, shape.m_path_depth, "m_path")?;
     let a_rows = decode_i8_slice_exact(cur, shape.strip_len, "a_rows")?;
     let b_cols = decode_i8_slice_exact(cur, shape.strip_len, "b_cols")?;
-    let a_row_paths = decode_path_list_exact(
-        cur,
-        shape.tile,
-        shape.a_path_depth,
-        "a_row_paths",
-    )?;
-    let b_col_paths = decode_path_list_exact(
-        cur,
-        shape.tile,
-        shape.b_path_depth,
-        "b_col_paths",
-    )?;
+    let a_row_paths = decode_path_list_exact(cur, shape.tile, shape.a_path_depth, "a_row_paths")?;
+    let b_col_paths = decode_path_list_exact(cur, shape.tile, shape.b_path_depth, "b_col_paths")?;
     Ok(TileOpening {
         i,
         j,
@@ -314,11 +378,16 @@ fn decode_opening_for_shape(
     })
 }
 
-fn encode_path_list_single(path: &[[u8; 32]], out: &mut Vec<u8>) {
-    out.extend_from_slice(&(path.len() as u32).to_le_bytes());
+fn encode_path_list_single(
+    path: &[[u8; 32]],
+    out: &mut Vec<u8>,
+    what: &'static str,
+) -> Result<(), EncodeError> {
+    put_len(out, path.len(), what)?;
     for h in path {
         out.extend_from_slice(h);
     }
+    Ok(())
 }
 
 fn decode_path_single(cur: &mut &[u8]) -> Result<Vec<[u8; 32]>, DecodeError> {
@@ -353,11 +422,16 @@ fn decode_path_single_exact(
     Ok(path)
 }
 
-fn encode_path_list(paths: &[Vec<[u8; 32]>], out: &mut Vec<u8>) {
-    out.extend_from_slice(&(paths.len() as u32).to_le_bytes());
+fn encode_path_list(
+    paths: &[Vec<[u8; 32]>],
+    out: &mut Vec<u8>,
+    what: &'static str,
+) -> Result<(), EncodeError> {
+    put_len(out, paths.len(), what)?;
     for p in paths {
-        encode_path_list_single(p, out);
+        encode_path_list_single(p, out, what)?;
     }
+    Ok(())
 }
 
 fn decode_path_list(cur: &mut &[u8]) -> Result<Vec<Vec<[u8; 32]>>, DecodeError> {
@@ -395,11 +469,12 @@ fn decode_path_list_exact(
     Ok(paths)
 }
 
-fn encode_i8_slice(s: &[i8], out: &mut Vec<u8>) {
-    out.extend_from_slice(&(s.len() as u32).to_le_bytes());
+fn encode_i8_slice(s: &[i8], out: &mut Vec<u8>, what: &'static str) -> Result<(), EncodeError> {
+    put_len(out, s.len(), what)?;
     // SAFETY: i8 and u8 share layout; we only ship the raw byte pattern.
     let bytes: &[u8] = unsafe { core::slice::from_raw_parts(s.as_ptr() as *const u8, s.len()) };
     out.extend_from_slice(bytes);
+    Ok(())
 }
 
 fn decode_i8_slice(cur: &mut &[u8]) -> Result<Vec<i8>, DecodeError> {
@@ -456,6 +531,19 @@ fn take_arr32(cur: &mut &[u8]) -> Result<[u8; 32], DecodeError> {
     buf.copy_from_slice(&cur[..32]);
     *cur = &cur[32..];
     Ok(buf)
+}
+
+fn put_len(out: &mut Vec<u8>, len: usize, what: &'static str) -> Result<(), EncodeError> {
+    out.extend_from_slice(&checked_len_u32(len, what)?.to_le_bytes());
+    Ok(())
+}
+
+fn checked_len_u32(len: usize, what: &'static str) -> Result<u32, EncodeError> {
+    u32::try_from(len).map_err(|_| EncodeError::LengthTooLarge {
+        what,
+        actual: len,
+        max: u32::MAX as usize,
+    })
 }
 
 #[cfg(test)]
@@ -541,6 +629,89 @@ mod tests {
         let bytes = p.encode();
         let q = MatmulProof::decode_for_params(&bytes, &params).unwrap();
         assert_eq!(p, q);
+    }
+
+    #[test]
+    fn consensus_envelope_round_trip_exact_shape() {
+        let params = shaped_params();
+        let p = shaped_proof(params.spot_checks as usize);
+        let bytes = p.encode_consensus().unwrap();
+
+        assert_eq!(&bytes[..4], &MATMUL_PROOF_CONSENSUS_MAGIC);
+        assert_eq!(bytes[4], MATMUL_PROOF_CONSENSUS_VERSION);
+        let declared = u32::from_le_bytes(bytes[5..9].try_into().unwrap()) as usize;
+        assert_eq!(declared, bytes.len() - MATMUL_PROOF_CONSENSUS_HEADER_LEN);
+
+        let q = MatmulProof::decode_consensus_for_params(&bytes, &params).unwrap();
+        assert_eq!(p, q);
+    }
+
+    #[test]
+    fn consensus_envelope_rejects_unknown_version() {
+        let params = shaped_params();
+        let p = shaped_proof(params.spot_checks as usize);
+        let mut bytes = p.encode_consensus().unwrap();
+        bytes[4] = MATMUL_PROOF_CONSENSUS_VERSION + 1;
+
+        assert_eq!(
+            MatmulProof::decode_consensus_for_params(&bytes, &params).err(),
+            Some(DecodeError::UnsupportedVersion { version: bytes[4] })
+        );
+    }
+
+    #[test]
+    fn consensus_envelope_rejects_length_mismatch_and_trailing_bytes() {
+        let params = shaped_params();
+        let p = shaped_proof(params.spot_checks as usize);
+        let mut bytes = p.encode_consensus().unwrap();
+        bytes.push(0);
+
+        assert_eq!(
+            MatmulProof::decode_consensus_for_params(&bytes, &params).err(),
+            Some(DecodeError::EnvelopeLengthMismatch {
+                declared: bytes.len() - MATMUL_PROOF_CONSENSUS_HEADER_LEN - 1,
+                actual: bytes.len() - MATMUL_PROOF_CONSENSUS_HEADER_LEN,
+            })
+        );
+
+        let mut bytes = p.encode_consensus().unwrap();
+        let declared = (bytes.len() - MATMUL_PROOF_CONSENSUS_HEADER_LEN + 1) as u32;
+        bytes[5..9].copy_from_slice(&declared.to_le_bytes());
+        assert_eq!(
+            MatmulProof::decode_consensus_for_params(&bytes, &params).err(),
+            Some(DecodeError::EnvelopeLengthMismatch {
+                declared: declared as usize,
+                actual: bytes.len() - MATMUL_PROOF_CONSENSUS_HEADER_LEN,
+            })
+        );
+    }
+
+    #[test]
+    fn consensus_envelope_rejects_bad_magic() {
+        let params = shaped_params();
+        let p = shaped_proof(params.spot_checks as usize);
+        let mut bytes = p.encode_consensus().unwrap();
+        bytes[0] ^= 0xff;
+
+        assert_eq!(
+            MatmulProof::decode_consensus_for_params(&bytes, &params).err(),
+            Some(DecodeError::BadMagic)
+        );
+    }
+
+    #[test]
+    fn checked_encoder_rejects_u32_overflow_lengths_without_truncation() {
+        let too_large = (u32::MAX as usize)
+            .checked_add(1)
+            .expect("test requires usize wider than u32");
+        assert_eq!(
+            checked_len_u32(too_large, "spot").err(),
+            Some(EncodeError::LengthTooLarge {
+                what: "spot",
+                actual: too_large,
+                max: u32::MAX as usize,
+            })
+        );
     }
 
     #[test]
