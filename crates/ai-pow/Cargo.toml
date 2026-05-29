@@ -13,18 +13,17 @@ rayon = { workspace = true, optional = true }
 # core mining path stays lean; enable `zk` to wrap a plain `MatmulProof`
 # in a Plonky3 STARK at the Pearl-analog point in `prover.rs`.
 ai-pow-zk = { path = "../ai-pow-zk", optional = true }
+bincode = { workspace = true, features = ["serde"], optional = true }
 
 [dev-dependencies]
 criterion = { workspace = true }
 proptest = { workspace = true }
 ai-pow-zk = { path = "../ai-pow-zk", features = ["dev-unsafe"] }
-# Used by examples/f1_harness.rs to measure encoded proof size.
-bincode = { workspace = true, features = ["serde"] }
 
 [features]
 default = []
 parallel = ["dep:rayon"]
-zk = ["dep:ai-pow-zk"]
+zk = ["dep:ai-pow-zk", "dep:bincode"]
 
 [[bench]]
 name = "bench"

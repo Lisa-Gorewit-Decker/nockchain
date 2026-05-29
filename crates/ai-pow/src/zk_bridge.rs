@@ -63,7 +63,9 @@ use ai_pow_zk::{
 
 use crate::fiat_shamir::{commitment_key, noise_seed_a, noise_seed_b, pow_key_for_nonce};
 use crate::params::{MatmulParams, ParamError};
+use crate::proof::{DecodeError as ProofDecodeError, EncodeError as ProofEncodeError, MatmulProof};
 use crate::prover::{params_tag, BlockContext};
+use crate::verifier::{verify_prod_at_target, VerifyError};
 
 // ───────────────────────── P-B (γ Pearl-faithful) ─────────────────────────
 //
@@ -211,6 +213,271 @@ pub struct ZkProofArtifact {
     pub proof: AiPowBatchProof,
     pub pis: CompositePublicInputs,
     pub trace_height: usize,
+}
+
+/// Full verifier-facing AI-PoW artifact.
+///
+/// The outer consensus envelope is versioned and length-prefixed. The plain
+/// proof is encoded with `MatmulProof`'s own consensus envelope, while the ZK
+/// proof and public inputs are bincode-encoded under explicit byte caps.
+pub struct AiPowConsensusArtifact {
+    pub plain_proof: MatmulProof,
+    pub commitments: ZkPublicCommitments,
+    pub zk: ZkProofArtifact,
+}
+
+pub const AI_POW_CONSENSUS_MAGIC: [u8; 4] = *b"AIZK";
+pub const AI_POW_CONSENSUS_VERSION: u8 = 1;
+pub const MAX_CONSENSUS_PLAIN_PROOF_BYTES: usize = 64 * 1024 * 1024;
+pub const MAX_CONSENSUS_PUBLIC_INPUT_BYTES: usize = 4 * 1024;
+pub const MAX_CONSENSUS_ZK_PROOF_BYTES: usize = 128 * 1024 * 1024;
+const AI_POW_CONSENSUS_HEADER_LEN: usize = 4 + 1 + (4 * 3) + 8 + (32 * 4);
+
+#[derive(Debug, thiserror::Error)]
+pub enum ArtifactCodecError {
+    #[error("invalid AI-PoW consensus artifact magic")]
+    BadMagic,
+    #[error("unsupported AI-PoW consensus artifact version {version}")]
+    UnsupportedVersion { version: u8 },
+    #[error("unexpected end of AI-PoW consensus artifact")]
+    Eof,
+    #[error("trailing bytes after AI-PoW consensus artifact")]
+    Trailing,
+    #[error("{component} exceeds consensus byte limit (max {max}, got {actual})")]
+    ComponentTooLarge {
+        component: &'static str,
+        max: usize,
+        actual: usize,
+    },
+    #[error("AI-PoW consensus artifact length overflow")]
+    LengthOverflow,
+    #[error("invalid params: {0}")]
+    InvalidParams(#[from] ParamError),
+    #[error("plain proof encode: {0}")]
+    PlainEncode(#[from] ProofEncodeError),
+    #[error("plain proof decode: {0}")]
+    PlainDecode(#[from] ProofDecodeError),
+    #[error("public inputs encode: {0}")]
+    PublicInputEncode(String),
+    #[error("public inputs decode: {0}")]
+    PublicInputDecode(String),
+    #[error("ZK proof encode: {0}")]
+    ZkProofEncode(String),
+    #[error("ZK proof decode: {0}")]
+    ZkProofDecode(String),
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum ConsensusVerifyError {
+    #[error("artifact decode: {0}")]
+    Artifact(#[from] ArtifactCodecError),
+    #[error("plain proof verify: {0}")]
+    Plain(#[from] VerifyError),
+    #[error("ZK proof verify: {0}")]
+    Zk(#[from] BridgeError),
+    #[error("plain proof and ZK artifact disagree on {0}")]
+    PlainZkCommitmentMismatch(&'static str),
+}
+
+impl AiPowConsensusArtifact {
+    pub fn encode_consensus(&self) -> Result<Vec<u8>, ArtifactCodecError> {
+        let plain = self.plain_proof.encode_consensus()?;
+        let public_inputs = bincode::serde::encode_to_vec(
+            &self.zk.pis,
+            bincode::config::standard().with_limit::<MAX_CONSENSUS_PUBLIC_INPUT_BYTES>(),
+        )
+        .map_err(|e| ArtifactCodecError::PublicInputEncode(e.to_string()))?;
+        let zk_proof = bincode::serde::encode_to_vec(
+            &self.zk.proof,
+            bincode::config::standard().with_limit::<MAX_CONSENSUS_ZK_PROOF_BYTES>(),
+        )
+        .map_err(|e| ArtifactCodecError::ZkProofEncode(e.to_string()))?;
+
+        let plain_len =
+            checked_component_len("plain_proof", plain.len(), MAX_CONSENSUS_PLAIN_PROOF_BYTES)?;
+        let pi_len = checked_component_len(
+            "public_inputs",
+            public_inputs.len(),
+            MAX_CONSENSUS_PUBLIC_INPUT_BYTES,
+        )?;
+        let zk_len =
+            checked_component_len("zk_proof", zk_proof.len(), MAX_CONSENSUS_ZK_PROOF_BYTES)?;
+
+        let mut out = Vec::with_capacity(checked_total_len([
+            AI_POW_CONSENSUS_HEADER_LEN,
+            plain.len(),
+            public_inputs.len(),
+            zk_proof.len(),
+        ])?);
+        out.extend_from_slice(&AI_POW_CONSENSUS_MAGIC);
+        out.push(AI_POW_CONSENSUS_VERSION);
+        out.extend_from_slice(&plain_len.to_le_bytes());
+        out.extend_from_slice(&pi_len.to_le_bytes());
+        out.extend_from_slice(&zk_len.to_le_bytes());
+        out.extend_from_slice(&(self.zk.trace_height as u64).to_le_bytes());
+        encode_commitments(&self.commitments, &mut out);
+        out.extend_from_slice(&plain);
+        out.extend_from_slice(&public_inputs);
+        out.extend_from_slice(&zk_proof);
+        Ok(out)
+    }
+
+    pub fn decode_consensus_for_params(
+        bytes: &[u8],
+        params: &MatmulParams,
+    ) -> Result<Self, ArtifactCodecError> {
+        params.validate_prod_envelope()?;
+        let mut cur = bytes;
+        if take_exact(&mut cur, AI_POW_CONSENSUS_MAGIC.len())? != AI_POW_CONSENSUS_MAGIC {
+            return Err(ArtifactCodecError::BadMagic);
+        }
+        let version = take_u8(&mut cur)?;
+        if version != AI_POW_CONSENSUS_VERSION {
+            return Err(ArtifactCodecError::UnsupportedVersion { version });
+        }
+        let plain_len = take_u32(&mut cur)? as usize;
+        let pi_len = take_u32(&mut cur)? as usize;
+        let zk_len = take_u32(&mut cur)? as usize;
+        checked_component_len("plain_proof", plain_len, MAX_CONSENSUS_PLAIN_PROOF_BYTES)?;
+        checked_component_len("public_inputs", pi_len, MAX_CONSENSUS_PUBLIC_INPUT_BYTES)?;
+        checked_component_len("zk_proof", zk_len, MAX_CONSENSUS_ZK_PROOF_BYTES)?;
+        let trace_height = take_u64(&mut cur)? as usize;
+        let commitments = decode_commitments(&mut cur)?;
+        let plain_bytes = take_exact(&mut cur, plain_len)?;
+        let pi_bytes = take_exact(&mut cur, pi_len)?;
+        let zk_bytes = take_exact(&mut cur, zk_len)?;
+        if !cur.is_empty() {
+            return Err(ArtifactCodecError::Trailing);
+        }
+
+        let plain_proof = MatmulProof::decode_consensus_for_params(plain_bytes, params)?;
+        let (pis, pi_read) = bincode::serde::decode_from_slice::<CompositePublicInputs, _>(
+            pi_bytes,
+            bincode::config::standard().with_limit::<MAX_CONSENSUS_PUBLIC_INPUT_BYTES>(),
+        )
+        .map_err(|e| ArtifactCodecError::PublicInputDecode(e.to_string()))?;
+        if pi_read != pi_bytes.len() {
+            return Err(ArtifactCodecError::Trailing);
+        }
+        let (proof, zk_read) = bincode::serde::decode_from_slice::<AiPowBatchProof, _>(
+            zk_bytes,
+            bincode::config::standard().with_limit::<MAX_CONSENSUS_ZK_PROOF_BYTES>(),
+        )
+        .map_err(|e| ArtifactCodecError::ZkProofDecode(e.to_string()))?;
+        if zk_read != zk_bytes.len() {
+            return Err(ArtifactCodecError::Trailing);
+        }
+
+        Ok(Self {
+            plain_proof,
+            commitments,
+            zk: ZkProofArtifact {
+                proof,
+                pis,
+                trace_height,
+            },
+        })
+    }
+}
+
+/// Decode and verify a full versioned AI-PoW artifact.
+///
+/// This is the highest-level Rust verifier entrypoint for the artifact format:
+/// it verifies the plain spot-check proof, checks that the plain and ZK sides
+/// agree on the row/column commitments, and then verifies the STARK against a
+/// verifier-rebuilt canonical statement.
+pub fn verify_ai_pow_consensus_artifact(
+    block_commitment: &[u8],
+    nonce: &[u8],
+    params: &MatmulParams,
+    target: &[u8; 32],
+    found_idx: u32,
+    bytes: &[u8],
+) -> Result<(), ConsensusVerifyError> {
+    let artifact = AiPowConsensusArtifact::decode_consensus_for_params(bytes, params)?;
+    if artifact.plain_proof.h_a != artifact.commitments.h_a {
+        return Err(ConsensusVerifyError::PlainZkCommitmentMismatch("h_a"));
+    }
+    if artifact.plain_proof.h_b != artifact.commitments.h_b {
+        return Err(ConsensusVerifyError::PlainZkCommitmentMismatch("h_b"));
+    }
+    verify_prod_at_target(
+        block_commitment, nonce, params, target, &artifact.plain_proof,
+    )?;
+    verify_ai_pow_block(
+        block_commitment, nonce, params, target, found_idx, &artifact.commitments, &artifact.zk,
+    )?;
+    Ok(())
+}
+
+fn checked_component_len(
+    component: &'static str,
+    len: usize,
+    max: usize,
+) -> Result<u32, ArtifactCodecError> {
+    if len > max {
+        return Err(ArtifactCodecError::ComponentTooLarge {
+            component,
+            max,
+            actual: len,
+        });
+    }
+    u32::try_from(len).map_err(|_| ArtifactCodecError::ComponentTooLarge {
+        component,
+        max: u32::MAX as usize,
+        actual: len,
+    })
+}
+
+fn checked_total_len<const N: usize>(parts: [usize; N]) -> Result<usize, ArtifactCodecError> {
+    parts.into_iter().try_fold(0usize, |acc, part| {
+        acc.checked_add(part)
+            .ok_or(ArtifactCodecError::LengthOverflow)
+    })
+}
+
+fn encode_commitments(commitments: &ZkPublicCommitments, out: &mut Vec<u8>) {
+    out.extend_from_slice(&commitments.h_a);
+    out.extend_from_slice(&commitments.h_b);
+    out.extend_from_slice(&commitments.h_a_chunk);
+    out.extend_from_slice(&commitments.h_b_chunk);
+}
+
+fn decode_commitments(cur: &mut &[u8]) -> Result<ZkPublicCommitments, ArtifactCodecError> {
+    Ok(ZkPublicCommitments {
+        h_a: take_arr32(cur)?,
+        h_b: take_arr32(cur)?,
+        h_a_chunk: take_arr32(cur)?,
+        h_b_chunk: take_arr32(cur)?,
+    })
+}
+
+fn take_exact<'a>(cur: &mut &'a [u8], len: usize) -> Result<&'a [u8], ArtifactCodecError> {
+    if cur.len() < len {
+        return Err(ArtifactCodecError::Eof);
+    }
+    let (head, tail) = cur.split_at(len);
+    *cur = tail;
+    Ok(head)
+}
+
+fn take_u8(cur: &mut &[u8]) -> Result<u8, ArtifactCodecError> {
+    Ok(take_exact(cur, 1)?[0])
+}
+
+fn take_u32(cur: &mut &[u8]) -> Result<u32, ArtifactCodecError> {
+    let bytes = take_exact(cur, 4)?;
+    Ok(u32::from_le_bytes(bytes.try_into().expect("4-byte slice")))
+}
+
+fn take_u64(cur: &mut &[u8]) -> Result<u64, ArtifactCodecError> {
+    let bytes = take_exact(cur, 8)?;
+    Ok(u64::from_le_bytes(bytes.try_into().expect("8-byte slice")))
+}
+
+fn take_arr32(cur: &mut &[u8]) -> Result<[u8; 32], ArtifactCodecError> {
+    let bytes = take_exact(cur, 32)?;
+    Ok(bytes.try_into().expect("32-byte slice"))
 }
 
 struct ZkDerivedStatement {
@@ -1432,6 +1699,128 @@ mod tests {
                 &artifact,
             ),
             Err(BridgeError::InvalidParams(ParamError::NoiseRankOutOfEnvelope))
+        ));
+    }
+
+    #[test]
+    fn serial01_full_consensus_artifact_round_trip_and_verifies() {
+        let params = MatmulParams {
+            m: 8,
+            k: 512,
+            n: 8,
+            noise_rank: 32,
+            tile: 8,
+            spot_checks: 1,
+            difficulty_bits: 0,
+        };
+        params.validate_prod_envelope().unwrap();
+        let block_commitment = b"serial01-full-artifact-block";
+        let nonce = b"serial01-full-artifact-nonce";
+        let (a, b) = synth_matrices(b"serial01-full-artifact-seed", &params);
+        let ctx = BlockContext::build(block_commitment, &a, &b, &params).expect("ctx");
+        let target = difficulty_target(&params);
+        let plain_proof = crate::prover::mine_with_context_at_target(
+            &ctx,
+            block_commitment,
+            nonce,
+            &target,
+            crate::prover::ProverOptions::default(),
+        )
+        .expect("mine")
+        .expect("difficulty_bits=0 target accepts a tile");
+        let found_idx = params.tile_index(plain_proof.found.i, plain_proof.found.j) as u32;
+        let commitments = ZkPublicCommitments::from_context(&ctx);
+        let zk = prove_ai_pow_block(&ctx, &params, nonce, &target, found_idx).expect("zk proof");
+        let artifact = AiPowConsensusArtifact {
+            plain_proof,
+            commitments,
+            zk,
+        };
+
+        let bytes = artifact.encode_consensus().expect("encode");
+        let decoded =
+            AiPowConsensusArtifact::decode_consensus_for_params(&bytes, &params).expect("decode");
+        assert_eq!(decoded.commitments, commitments);
+        verify_ai_pow_consensus_artifact(
+            block_commitment, nonce, &params, &target, found_idx, &bytes,
+        )
+        .expect("full consensus artifact verifies");
+
+        let mut bad = bytes.clone();
+        let commitments_offset = 4 + 1 + (4 * 3) + 8;
+        bad[commitments_offset] ^= 1;
+        assert!(matches!(
+            verify_ai_pow_consensus_artifact(
+                block_commitment, nonce, &params, &target, found_idx, &bad,
+            ),
+            Err(ConsensusVerifyError::PlainZkCommitmentMismatch("h_a"))
+        ));
+    }
+
+    #[test]
+    fn serial01_full_consensus_artifact_rejects_version_trailing_and_oversize() {
+        let params = MatmulParams {
+            m: 8,
+            k: 512,
+            n: 8,
+            noise_rank: 32,
+            tile: 8,
+            spot_checks: 1,
+            difficulty_bits: 0,
+        };
+        params.validate_prod_envelope().unwrap();
+
+        let mut oversized = Vec::new();
+        oversized.extend_from_slice(&AI_POW_CONSENSUS_MAGIC);
+        oversized.push(AI_POW_CONSENSUS_VERSION);
+        oversized.extend_from_slice(&0u32.to_le_bytes());
+        oversized.extend_from_slice(&0u32.to_le_bytes());
+        oversized.extend_from_slice(&((MAX_CONSENSUS_ZK_PROOF_BYTES as u32) + 1).to_le_bytes());
+        assert!(matches!(
+            AiPowConsensusArtifact::decode_consensus_for_params(&oversized, &params),
+            Err(ArtifactCodecError::ComponentTooLarge {
+                component: "zk_proof",
+                max: MAX_CONSENSUS_ZK_PROOF_BYTES,
+                actual,
+            }) if actual == MAX_CONSENSUS_ZK_PROOF_BYTES + 1
+        ));
+
+        let block_commitment = b"serial01-version-block";
+        let nonce = b"serial01-version-nonce";
+        let (a, b) = synth_matrices(b"serial01-version-seed", &params);
+        let ctx = BlockContext::build(block_commitment, &a, &b, &params).expect("ctx");
+        let target = difficulty_target(&params);
+        let plain_proof = crate::prover::mine_with_context_at_target(
+            &ctx,
+            block_commitment,
+            nonce,
+            &target,
+            crate::prover::ProverOptions::default(),
+        )
+        .unwrap()
+        .unwrap();
+        let found_idx = params.tile_index(plain_proof.found.i, plain_proof.found.j) as u32;
+        let bytes = AiPowConsensusArtifact {
+            plain_proof,
+            commitments: ZkPublicCommitments::from_context(&ctx),
+            zk: prove_ai_pow_block(&ctx, &params, nonce, &target, found_idx).unwrap(),
+        }
+        .encode_consensus()
+        .unwrap();
+
+        let mut bad_version = bytes.clone();
+        bad_version[4] = AI_POW_CONSENSUS_VERSION + 1;
+        assert!(matches!(
+            AiPowConsensusArtifact::decode_consensus_for_params(&bad_version, &params),
+            Err(ArtifactCodecError::UnsupportedVersion { version })
+                if version == AI_POW_CONSENSUS_VERSION + 1
+        ));
+
+        let mut trailing = bytes;
+        trailing.push(0);
+        assert!(matches!(
+            AiPowConsensusArtifact::decode_consensus_for_params(&trailing, &params),
+            Err(ArtifactCodecError::Trailing)
         ));
     }
 
