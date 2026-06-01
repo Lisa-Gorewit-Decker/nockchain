@@ -21,6 +21,7 @@ const AI_POW_PROVER_RS: &str = include_str!("../../ai-pow/src/prover.rs");
 const AI_POW_VERIFIER_RS: &str = include_str!("../../ai-pow/src/verifier.rs");
 const AI_POW_ZK_RECURSION_RS: &str = include_str!("../../ai-pow-zk/src/recursion.rs");
 const AI_POW_ZK_BRIDGE_RS: &str = include_str!("../../ai-pow/src/zk_bridge.rs");
+const AI_POW_ZK_CARGO_TOML: &str = include_str!("../../ai-pow-zk/Cargo.toml");
 const AI_POW_ZK_README_MD: &str = include_str!("../../ai-pow-zk/README.md");
 const AI_POW_ZK_LIB_RS: &str = include_str!("../../ai-pow-zk/src/lib.rs");
 const AI_POW_PHASE_B_DESIGN_MD: &str =
@@ -81,6 +82,11 @@ fn ai_pow_consensus_wire_is_structured_but_fail_closed_without_verifier() {
                 .contains("raw Layer-0 proof is not the production block artifact")
             && AI_POW_ZK_README_MD
                 .contains("multi-tile selected-tile statements intentionally fail")
+            && AI_POW_ZK_README_MD.contains("For local Layer-0 circuit checks")
+            && AI_POW_ZK_README_MD.contains("composite_prove_pinned_logup")
+            && AI_POW_ZK_README_MD.contains("must use the recursive certificate APIs and the")
+            && AI_POW_ZK_README_MD.contains("require the explicit `dev-unsafe` feature")
+            && !AI_POW_ZK_README_MD.contains("use ai_pow_zk::{\n    composite_prove")
             && AI_POW_ZK_README_MD.contains("attempt reuse is a vulnerability")
             && AI_POW_ZK_README_MD.contains("not a desired trait or optimization target")
             && AI_POW_ZK_LIB_RS.contains("Nockchain's canonical recursive AI-PoW certificate")
@@ -88,6 +94,11 @@ fn ai_pow_consensus_wire_is_structured_but_fail_closed_without_verifier() {
             && AI_POW_ZK_LIB_RS
                 .contains("Production AI-PoW is intentionally minimal-reuse across nonce attempts")
             && AI_POW_ZK_LIB_RS.contains("desired trait or optimization target")
+            && AI_POW_ZK_LIB_RS.contains("#[cfg(any(test, feature = \"dev-unsafe\"))]")
+            && AI_POW_ZK_LIB_RS.contains("dev_unpinned_verify")
+            && !AI_POW_ZK_LIB_RS.contains("composite_verify as composite_verify")
+            && AI_POW_ZK_CARGO_TOML.contains("dev-unsafe = []")
+            && AI_POW_ZK_CARGO_TOML.contains("must not be enabled by consensus/block-wire")
             && !AI_POW_ZK_README_MD.contains("wrap the multi-MB plain proof")
             && !AI_POW_ZK_README_MD.contains("from a verified plain proof")
             && !AI_POW_ZK_LIB_RS.contains("the `ai-pow` plain proof"),

@@ -162,13 +162,19 @@ Tests:
 ### SND-04: Unsound/dev verifier entrypoints are public and re-exported
 
 Severity: Critical for downstream misuse
-Status: Partially remediated
+Status: Remediated at production-facing exports; Layer-0 modules remain
+available for explicit circuit development and are not block/wire APIs.
 
 Evidence:
 
 - `composite_proof.rs` documents `composite_prove` / `composite_verify` as “not sound for PoW” because a prover can zero selectors.
-- `composite_verify_pow` is public.
-- `ai-pow-zk/src/lib.rs` re-exports `composite_verify`, `composite_verify_pow`, `composite_verify_pinned`, and `composite_verify_pinned_logup_sx`.
+- Current root exports gate the unpinned/no-LogUp helpers behind
+  `#[cfg(any(test, feature = "dev-unsafe"))]` and expose them only with
+  explicit `dev_*` names.
+- The top-level `ai-pow-zk` README now shows `composite_prove_pinned_logup`
+  only as a local Layer-0 circuit check and says block/wire/Hoon boundaries
+  must use the recursive certificate APIs plus the full-matmul statement
+  precheck.
 - `ai-pow/src/zk_bridge.rs` previously published the legacy byte
   envelopes (`ZkProofArtifact`, `AiPowConsensusArtifact`,
   `AiPowProductionArtifact`) plus `prove_ai_pow_block`,
@@ -187,8 +193,10 @@ Fake ZK proof acceptance through public API misuse.
 
 Fix plan:
 
-- Move unpinned APIs under `#[cfg(any(test, feature = "dev-unsafe"))]`.
-- Rename remaining exported helpers with explicit names: `dev_unpinned_verify`, `dev_pinned_no_logup_verify`.
+- Done: move unpinned/no-LogUp root exports under
+  `#[cfg(any(test, feature = "dev-unsafe"))]`.
+- Done: rename those root exports with explicit names:
+  `dev_unpinned_verify`, `dev_pinned_no_logup_verify`, etc.
 - Export only production boundaries that derive the canonical statement
   internally. Current `ai-pow` status: `prove_ai_pow_recursive_certificate`
   and `verify_ai_pow_full_matmul_production_statement` remain public, while
@@ -196,7 +204,9 @@ Fix plan:
   statement plumbing for the current Pearl-style recursive certificate. The
   legacy Layer-0 byte artifacts and helper verifier/constructor functions are
   crate-internal.
-- Add rustdoc `compile_fail` or lints preventing consensus crates from importing dev APIs.
+- Done: `ai_pow_wire_stub` guards that the top-level docs no longer advertise
+  raw Layer-0 prove/verify as the normal block artifact path and that
+  `dev-unsafe` is explicitly not for consensus/block-wire consumers.
 
 Tests:
 
@@ -490,14 +500,17 @@ Tests:
 ### API-01: `sx_bound` is caller-controlled in public verifier APIs
 
 Severity: Medium to High depending on misuse
-Status: Confirmed
+Status: Remediated at public exports
 
 `composite_verify_pinned_logup_sx` and `composite_verify_pow_pinned_logup_sx` accept `sx_bound` directly. If a downstream verifier passes `false`, it disables the `FOLD_XSTEP == SX_XR` keystone. This must be derived from trusted params inside the production verifier, not supplied by the prover or caller.
 
 Fix:
 
-- Hide `_sx` variants from public exports.
-- Production verifier computes `sx_bound` internally and rejects params that would set it false until segmented proving is implemented.
+- Done: `_sx` variants are crate-private and are not re-exported from
+  `ai-pow-zk`.
+- Done: production-facing recursive certificate and statement-verifier
+  boundaries derive or reject the selected-tile/full-matmul params before proof
+  work; they do not accept a caller-supplied `sx_bound`.
 
 ### API-02: Public pinned verifier APIs panic on malformed `program`
 

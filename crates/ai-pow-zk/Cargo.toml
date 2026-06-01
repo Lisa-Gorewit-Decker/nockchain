@@ -99,6 +99,10 @@ postcard = { version = "1.1.3", features = ["alloc"], optional = true }
 # not emit by default (README §"CPU features"). See the dev-loop
 # note in `2026-05-15_HIGH2_2_DESIGN.md`.
 default = ["parallel"]
+# Exposes unpinned/no-LogUp Layer-0 helpers for local experiments and legacy
+# regression tests. This feature must not be enabled by consensus/block-wire
+# consumers; the canonical production proof is the recursive certificate plus
+# verifier-derived statement precheck.
 dev-unsafe = []
 parallel = [
     "p3-dft/parallel",

@@ -265,11 +265,12 @@ Pearl byte-equivalence / C1–C3 recursion substrate / Phase B etc.).
 
 ## What works today
 
+For local Layer-0 circuit checks:
+
 ```rust
 use ai_pow_zk::{
-    composite_prove, composite_verify,
     CircuitConfig, CompositePublicInputs, CompositeTrace, ZkParams,
-    composite_proof::build_config,
+    composite_proof::{build_config, composite_prove_pinned_logup, composite_verify_pinned_logup},
 };
 
 let params  = ZkParams { m: 8, k: 16, n: 8, noise_rank: 2, tile: 2, difficulty_bits: 0 };
@@ -288,18 +289,22 @@ trace.populate_lookup_freq();  // only needed when proving with
 let pis = CompositePublicInputs::derive_from_trace(&trace);
 
 // 3. Prove + verify.
-let proof = composite_prove(&config, trace, &pis);
-composite_verify(&config, &proof, &pis)?;
+let (proof, program) = composite_prove_pinned_logup(&config, trace, &pis);
+composite_verify_pinned_logup(&config, &program, &proof, &pis)?;
 ```
 
-`composite_prove` builds a [`composite_full_air::CompositeFullAir`]
-trace from the per-row column layout in [`composite_layout`], runs
-the full Plonky3 STARK pipeline through [`circuit::AiPowStarkConfig`]
-(Goldilocks + Tip5 sponge + FRI), and serializes via bincode.
+`composite_prove_pinned_logup` builds a
+[`composite_full_air_with_lookups::CompositeFullAirWithLookupsPinned`] trace
+from the per-row column layout in [`composite_layout`], runs the Plonky3
+batch-STARK pipeline through [`circuit::AiPowStarkConfig`] (Goldilocks + Tip5
+sponge + FRI), and returns the proof plus the canonical program needed by the
+verifier.
 
-For LogUp-enforced cross-chip lookups (the cryptographically
-complete form), wrap with `prove_batch` / `verify_batch` from
-`p3-batch-stark` against [`composite_full_air_with_lookups::CompositeFullAirWithLookups`].
+This is still only the Layer-0 circuit primitive. Nockchain block, wire, and
+Hoon boundaries must use the recursive certificate APIs and the
+full-matmul statement precheck; they must not persist or accept a raw
+`AiPowBatchProof`. The old unpinned `composite_prove` / `composite_verify`
+helpers are test/dev-only and require the explicit `dev-unsafe` feature.
 See the `bench_suite` module for the full pattern.
 
 The proof attests that:
