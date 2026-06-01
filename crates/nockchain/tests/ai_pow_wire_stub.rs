@@ -120,6 +120,26 @@ fn ai_pow_consensus_wire_is_structured_but_fail_closed_without_verifier() {
          the production crate-root verifier; consensus must use explicit-target \
          or NCMN verifier boundaries"
     );
+    assert!(
+        AI_POW_ZK_BRIDGE_RS.contains("pub fn prove_ai_pow_recursive_certificate")
+            && AI_POW_ZK_BRIDGE_RS.contains("pub fn verify_ai_pow_production_statement")
+            && AI_POW_ZK_BRIDGE_RS.contains("pub(crate) struct ZkProofArtifact")
+            && AI_POW_ZK_BRIDGE_RS.contains("pub(crate) struct AiPowProductionArtifact")
+            && AI_POW_ZK_BRIDGE_RS.contains("pub(crate) struct AiPowConsensusArtifact")
+            && AI_POW_ZK_BRIDGE_RS.contains("fn prove_ai_pow_block")
+            && AI_POW_ZK_BRIDGE_RS.contains("fn verify_ai_pow_block")
+            && AI_POW_ZK_BRIDGE_RS.contains("fn verify_ai_pow_consensus_artifact")
+            && !AI_POW_ZK_BRIDGE_RS.contains("pub struct ZkProofArtifact")
+            && !AI_POW_ZK_BRIDGE_RS.contains("pub struct AiPowProductionArtifact")
+            && !AI_POW_ZK_BRIDGE_RS.contains("pub struct AiPowConsensusArtifact")
+            && !AI_POW_ZK_BRIDGE_RS.contains("pub fn prove_ai_pow_block")
+            && !AI_POW_ZK_BRIDGE_RS.contains("pub fn verify_ai_pow_block")
+            && !AI_POW_ZK_BRIDGE_RS.contains("pub fn verify_ai_pow_consensus_artifact"),
+        "ai-pow must not publish legacy Layer-0 proof artifacts or byte \
+         envelopes as normal production APIs; the canonical production \
+         boundary is recursive certificate generation plus statement \
+         verification"
+    );
     let target_check = AI_POW_MINER_BIN_RS
         .find("verify_at_target")
         .expect("production miner must check the plain matmul target hit");

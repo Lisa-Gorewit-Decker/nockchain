@@ -157,13 +157,18 @@ Tests:
 ### SND-04: Unsound/dev verifier entrypoints are public and re-exported
 
 Severity: Critical for downstream misuse
-Status: Confirmed
+Status: Partially remediated
 
 Evidence:
 
 - `composite_proof.rs` documents `composite_prove` / `composite_verify` as “not sound for PoW” because a prover can zero selectors.
 - `composite_verify_pow` is public.
 - `ai-pow-zk/src/lib.rs` re-exports `composite_verify`, `composite_verify_pow`, `composite_verify_pinned`, and `composite_verify_pinned_logup_sx`.
+- `ai-pow/src/zk_bridge.rs` previously published the legacy byte
+  envelopes (`ZkProofArtifact`, `AiPowConsensusArtifact`,
+  `AiPowProductionArtifact`) plus `prove_ai_pow_block`,
+  `verify_ai_pow_block`, and `verify_ai_pow_consensus_artifact`, which made the
+  Layer-0 bridge easy to mistake for the production block verifier.
 
 Attack sketch:
 
@@ -179,13 +184,20 @@ Fix plan:
 
 - Move unpinned APIs under `#[cfg(any(test, feature = "dev-unsafe"))]`.
 - Rename remaining exported helpers with explicit names: `dev_unpinned_verify`, `dev_pinned_no_logup_verify`.
-- Export only one production verifier that derives the canonical program internally.
+- Export only production boundaries that derive the canonical statement
+  internally. Current `ai-pow` status: `prove_ai_pow_recursive_certificate`
+  and `verify_ai_pow_production_statement` remain public, while the legacy
+  Layer-0 byte artifacts and helper verifier/constructor functions are
+  crate-internal.
 - Add rustdoc `compile_fail` or lints preventing consensus crates from importing dev APIs.
 
 Tests:
 
 - Existing selector-zero forgery tests should stay, but the forged proof should be impossible to verify through any non-dev public API.
-- Add a dependency-level test in the intended consensus crate that only the production verifier is used.
+- Add a dependency-level test in the intended consensus crate that only the production verifier is used. Status: `ai_pow_wire_stub` now guards that the
+  legacy Layer-0 byte envelopes and `prove_ai_pow_block` /
+  `verify_ai_pow_block` / `verify_ai_pow_consensus_artifact` are not public
+  APIs.
 
 ### SND-05: Non-production params can bypass canonical program verification
 

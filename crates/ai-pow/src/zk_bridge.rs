@@ -76,9 +76,11 @@ use crate::fiat_shamir::{
     block_state, commitment_key, noise_seed_a, noise_seed_b, pow_key_for_nonce,
 };
 use crate::params::{MatmulParams, ParamError};
+#[cfg(test)]
 use crate::proof::{DecodeError as ProofDecodeError, EncodeError as ProofEncodeError, MatmulProof};
 use crate::prover::{params_tag, BlockContext};
 use crate::tile_hash::hash_le_target;
+#[cfg(test)]
 use crate::verifier::{verify_prod_at_target, VerifyError};
 
 // ───────────────────────── P-B (γ Pearl-faithful) ─────────────────────────
@@ -218,7 +220,7 @@ impl ZkPublicCommitments {
     }
 }
 
-/// Verifier-facing Layer-0 ZK proof artifact.
+/// Crate-internal Layer-0 ZK proof artifact.
 ///
 /// The verifier must not trust `pis` by itself; [`verify_ai_pow_block`]
 /// cross-checks these public inputs against chain-derived commitments and
@@ -226,7 +228,7 @@ impl ZkPublicCommitments {
 ///
 /// This is an intermediate recursive-prover input. It is not the
 /// canonical production certificate for Nockchain AI-PoW blocks.
-pub struct ZkProofArtifact {
+pub(crate) struct ZkProofArtifact {
     pub proof: AiPowBatchProof,
     pub pis: CompositePublicInputs,
     pub trace_height: usize,
@@ -261,8 +263,9 @@ pub struct AiPowRecursiveCertificateRun {
 /// submission uses the structured recursive-certificate noun carried by
 /// `[%command %pow %ai-pow nonce cert]`; this byte envelope remains available for
 /// non-Hoon bridge tests while that verifier path is being wired.
+#[cfg(test)]
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct AiPowProductionArtifact {
+pub(crate) struct AiPowProductionArtifact {
     /// ZK-relevant puzzle parameters required to reconstruct the verifier
     /// statement. Callers still cross-check these against chain-pinned params.
     pub zk_params: ZkParams,
@@ -290,26 +293,38 @@ pub struct AiPowProductionArtifact {
 /// the structured noun format. This legacy envelope remains useful for
 /// tests and for validating the Layer-0 bridge while the final noun
 /// encoder/verifier is wired.
-pub struct AiPowConsensusArtifact {
+#[cfg(test)]
+pub(crate) struct AiPowConsensusArtifact {
     pub plain_proof: MatmulProof,
     pub commitments: ZkPublicCommitments,
     pub zk: ZkProofArtifact,
 }
 
-pub const AI_POW_CONSENSUS_MAGIC: [u8; 4] = *b"AIZK";
-pub const AI_POW_CONSENSUS_VERSION: u8 = 1;
-pub const MAX_CONSENSUS_PLAIN_PROOF_BYTES: usize = 64 * 1024 * 1024;
-pub const MAX_CONSENSUS_PUBLIC_INPUT_BYTES: usize = 4 * 1024;
-pub const MAX_CONSENSUS_ZK_PROOF_BYTES: usize = 128 * 1024 * 1024;
+#[cfg(test)]
+pub(crate) const AI_POW_CONSENSUS_MAGIC: [u8; 4] = *b"AIZK";
+#[cfg(test)]
+pub(crate) const AI_POW_CONSENSUS_VERSION: u8 = 1;
+#[cfg(test)]
+pub(crate) const MAX_CONSENSUS_PLAIN_PROOF_BYTES: usize = 64 * 1024 * 1024;
+#[cfg(test)]
+pub(crate) const MAX_CONSENSUS_PUBLIC_INPUT_BYTES: usize = 4 * 1024;
+#[cfg(test)]
+pub(crate) const MAX_CONSENSUS_ZK_PROOF_BYTES: usize = 128 * 1024 * 1024;
+#[cfg(test)]
 const AI_POW_CONSENSUS_HEADER_LEN: usize = 4 + 1 + (4 * 3) + 8 + (32 * 4);
 
-pub const AI_POW_PRODUCTION_MAGIC: [u8; 4] = *b"AIRC";
-pub const AI_POW_PRODUCTION_VERSION: u8 = 1;
-pub const MAX_PRODUCTION_RECURSIVE_CERT_BYTES: usize = 512 * 1024;
+#[cfg(test)]
+pub(crate) const AI_POW_PRODUCTION_MAGIC: [u8; 4] = *b"AIRC";
+#[cfg(test)]
+pub(crate) const AI_POW_PRODUCTION_VERSION: u8 = 1;
+#[cfg(test)]
+pub(crate) const MAX_PRODUCTION_RECURSIVE_CERT_BYTES: usize = 512 * 1024;
+#[cfg(test)]
 const AI_POW_PRODUCTION_HEADER_LEN: usize = 4 + 1 + (4 * 6) + 4 + 8 + (4 * 2) + (32 * 4);
 
+#[cfg(test)]
 #[derive(Debug, thiserror::Error)]
-pub enum ArtifactCodecError {
+pub(crate) enum ArtifactCodecError {
     #[error("invalid AI-PoW consensus artifact magic")]
     BadMagic,
     #[error("unsupported AI-PoW consensus artifact version {version}")]
@@ -350,8 +365,9 @@ pub enum ArtifactCodecError {
     RecursiveCertificateEncode(String),
 }
 
+#[cfg(test)]
 #[derive(Debug, thiserror::Error)]
-pub enum ConsensusVerifyError {
+pub(crate) enum ConsensusVerifyError {
     #[error("artifact decode: {0}")]
     Artifact(#[from] ArtifactCodecError),
     #[error("plain proof verify: {0}")]
@@ -362,8 +378,9 @@ pub enum ConsensusVerifyError {
     PlainZkCommitmentMismatch(&'static str),
 }
 
+#[cfg(test)]
 impl AiPowConsensusArtifact {
-    pub fn encode_consensus(&self) -> Result<Vec<u8>, ArtifactCodecError> {
+    fn encode_consensus(&self) -> Result<Vec<u8>, ArtifactCodecError> {
         let plain = self.plain_proof.encode_consensus()?;
         let public_inputs = bincode::serde::encode_to_vec(
             &self.zk.pis,
@@ -405,7 +422,7 @@ impl AiPowConsensusArtifact {
         Ok(out)
     }
 
-    pub fn decode_consensus_for_params(
+    fn decode_consensus_for_params(
         bytes: &[u8],
         params: &MatmulParams,
     ) -> Result<Self, ArtifactCodecError> {
@@ -463,6 +480,7 @@ impl AiPowConsensusArtifact {
     }
 }
 
+#[cfg(test)]
 impl AiPowProductionArtifact {
     /// Build the recursive-certificate byte envelope from a completed
     /// recursive proving run.
@@ -471,7 +489,7 @@ impl AiPowProductionArtifact {
     /// verify it. It never serializes `run.composite_proof`. For the
     /// canonical Nockchain Hoon/block handoff, use the structured certificate
     /// noun path instead of this byte envelope.
-    pub fn from_recursion_run(
+    fn from_recursion_run(
         params: &MatmulParams,
         found_idx: u32,
         commitments: ZkPublicCommitments,
@@ -488,7 +506,7 @@ impl AiPowProductionArtifact {
         )
     }
 
-    pub fn from_recursive_certificate(
+    fn from_recursive_certificate(
         zk_params: ZkParams,
         found_idx: u32,
         commitments: ZkPublicCommitments,
@@ -503,7 +521,7 @@ impl AiPowProductionArtifact {
         )
     }
 
-    pub fn from_certificate_bytes(
+    fn from_certificate_bytes(
         zk_params: ZkParams,
         found_idx: u32,
         commitments: ZkPublicCommitments,
@@ -522,7 +540,7 @@ impl AiPowProductionArtifact {
         })
     }
 
-    pub fn encode_consensus(&self) -> Result<Vec<u8>, ArtifactCodecError> {
+    fn encode_consensus(&self) -> Result<Vec<u8>, ArtifactCodecError> {
         validate_production_artifact_shape(
             &self.zk_params,
             self.found_idx,
@@ -561,7 +579,7 @@ impl AiPowProductionArtifact {
         Ok(out)
     }
 
-    pub fn decode_consensus(bytes: &[u8]) -> Result<Self, ArtifactCodecError> {
+    fn decode_consensus(bytes: &[u8]) -> Result<Self, ArtifactCodecError> {
         let mut cur = bytes;
         if take_exact(&mut cur, AI_POW_PRODUCTION_MAGIC.len())? != AI_POW_PRODUCTION_MAGIC {
             return Err(ArtifactCodecError::BadMagic);
@@ -610,13 +628,14 @@ impl AiPowProductionArtifact {
     }
 }
 
-/// Decode and verify a full versioned AI-PoW artifact.
+/// Decode and verify a legacy full versioned AI-PoW artifact.
 ///
-/// This is the highest-level Rust verifier entrypoint for the artifact format:
-/// it verifies the plain spot-check proof, checks that the plain and ZK sides
-/// agree on the row/column commitments, and then verifies the STARK against a
-/// verifier-rebuilt canonical statement.
-pub fn verify_ai_pow_consensus_artifact(
+/// This is crate-internal test/diagnostic coverage for the deprecated Layer-0
+/// byte envelope. It is not a production Nockchain consensus API; production
+/// verification uses the recursive certificate noun and
+/// [`verify_ai_pow_production_statement`].
+#[cfg(test)]
+fn verify_ai_pow_consensus_artifact(
     block_commitment: &[u8],
     nonce: &[u8],
     params: &MatmulParams,
@@ -640,6 +659,7 @@ pub fn verify_ai_pow_consensus_artifact(
     Ok(())
 }
 
+#[cfg(test)]
 fn checked_component_len(
     component: &'static str,
     len: usize,
@@ -659,6 +679,7 @@ fn checked_component_len(
     })
 }
 
+#[cfg(test)]
 fn checked_total_len<const N: usize>(parts: [usize; N]) -> Result<usize, ArtifactCodecError> {
     parts.into_iter().try_fold(0usize, |acc, part| {
         acc.checked_add(part)
@@ -666,6 +687,7 @@ fn checked_total_len<const N: usize>(parts: [usize; N]) -> Result<usize, Artifac
     })
 }
 
+#[cfg(test)]
 fn encode_commitments(commitments: &ZkPublicCommitments, out: &mut Vec<u8>) {
     out.extend_from_slice(&commitments.h_a);
     out.extend_from_slice(&commitments.h_b);
@@ -673,6 +695,7 @@ fn encode_commitments(commitments: &ZkPublicCommitments, out: &mut Vec<u8>) {
     out.extend_from_slice(&commitments.h_b_chunk);
 }
 
+#[cfg(test)]
 fn encode_zk_params(params: &ZkParams, out: &mut Vec<u8>) {
     out.extend_from_slice(&params.m.to_le_bytes());
     out.extend_from_slice(&params.k.to_le_bytes());
@@ -682,6 +705,7 @@ fn encode_zk_params(params: &ZkParams, out: &mut Vec<u8>) {
     out.extend_from_slice(&params.difficulty_bits.to_le_bytes());
 }
 
+#[cfg(test)]
 fn decode_zk_params(cur: &mut &[u8]) -> Result<ZkParams, ArtifactCodecError> {
     Ok(ZkParams {
         m: take_u32(cur)?,
@@ -693,6 +717,7 @@ fn decode_zk_params(cur: &mut &[u8]) -> Result<ZkParams, ArtifactCodecError> {
     })
 }
 
+#[cfg(test)]
 fn validate_production_artifact_shape(
     params: &ZkParams,
     found_idx: u32,
@@ -716,6 +741,7 @@ fn validate_production_artifact_shape(
     Ok(())
 }
 
+#[cfg(test)]
 fn decode_commitments(cur: &mut &[u8]) -> Result<ZkPublicCommitments, ArtifactCodecError> {
     Ok(ZkPublicCommitments {
         h_a: take_arr32(cur)?,
@@ -725,6 +751,7 @@ fn decode_commitments(cur: &mut &[u8]) -> Result<ZkPublicCommitments, ArtifactCo
     })
 }
 
+#[cfg(test)]
 fn take_exact<'a>(cur: &mut &'a [u8], len: usize) -> Result<&'a [u8], ArtifactCodecError> {
     if cur.len() < len {
         return Err(ArtifactCodecError::Eof);
@@ -734,20 +761,24 @@ fn take_exact<'a>(cur: &mut &'a [u8], len: usize) -> Result<&'a [u8], ArtifactCo
     Ok(head)
 }
 
+#[cfg(test)]
 fn take_u8(cur: &mut &[u8]) -> Result<u8, ArtifactCodecError> {
     Ok(take_exact(cur, 1)?[0])
 }
 
+#[cfg(test)]
 fn take_u32(cur: &mut &[u8]) -> Result<u32, ArtifactCodecError> {
     let bytes = take_exact(cur, 4)?;
     Ok(u32::from_le_bytes(bytes.try_into().expect("4-byte slice")))
 }
 
+#[cfg(test)]
 fn take_u64(cur: &mut &[u8]) -> Result<u64, ArtifactCodecError> {
     let bytes = take_exact(cur, 8)?;
     Ok(u64::from_le_bytes(bytes.try_into().expect("8-byte slice")))
 }
 
+#[cfg(test)]
 fn take_arr32(cur: &mut &[u8]) -> Result<[u8; 32], ArtifactCodecError> {
     let bytes = take_exact(cur, 32)?;
     Ok(bytes.try_into().expect("32-byte slice"))
@@ -908,12 +939,13 @@ fn ensure_context_attempt(ctx: &BlockContext<'_>, nonce: &[u8]) -> Result<(), Br
     }
 }
 
-/// Build a verifier-facing ZK proof artifact for a solved block.
+/// Build a crate-internal Layer-0 ZK proof artifact for a solved block.
 ///
 /// This is a prover-side constructor only. Consumers must verify the returned
 /// artifact with [`verify_ai_pow_block`], which derives the trusted statement
 /// from chain data and rejects substituted public inputs.
-pub fn prove_ai_pow_block(
+#[cfg(test)]
+fn prove_ai_pow_block(
     ctx: &BlockContext<'_>,
     params: &MatmulParams,
     nonce: &[u8],
@@ -985,13 +1017,14 @@ pub fn prove_ai_pow_recursive_certificate(
     })
 }
 
-/// Production verifier-only ZK API.
+/// Crate-internal Layer-0 verifier-only ZK API.
 ///
 /// The verifier derives `kappa`, `s_b`, `s_a`, `pow_key`, expected public
 /// inputs, and the canonical program from trusted block data before invoking
 /// the pinned+LogUp proof verifier. Prover-supplied public inputs are treated
 /// as claims and are rejected if they do not match these derived values.
-pub fn verify_ai_pow_block(
+#[cfg(test)]
+fn verify_ai_pow_block(
     block_commitment: &[u8],
     nonce: &[u8],
     params: &MatmulParams,

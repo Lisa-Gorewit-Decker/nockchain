@@ -328,6 +328,13 @@ The current uncompressed Plonky3 `BatchProof` is therefore not the
 desired ~100 KiB wire artifact and is not the canonical production
 certificate.
 
+The legacy Rust byte envelopes for Layer-0 proofs and recursive-certificate
+diagnostics are crate-internal only. They exist to exercise bridge tests and
+codec guards, not as a Hoon/block serialization format. The public production
+surface is the recursive certificate prover plus statement verifier boundary;
+the persisted and transmitted artifact remains the structured
+`[%ai-pow nonce cert]` noun.
+
 The structured noun encoder/decoder is implemented for the generic
 recursive-certificate tree, and malformed packed atoms/list shapes have
 focused tests. The structured proof-node format is now invertible: a decoded
@@ -476,7 +483,7 @@ Before accepting `%ai-pow`, consensus must require:
 1. Add the Hoon command-boundary types above while keeping the page storage mold generic (`pow-artifact` is `*`) to avoid `hoonc` recursive-mold loops. Until the verifier lands, `%ai-pow` remains fail-closed and must not persist `[%ai-pow nonce cert]` in `page.pow`.
 2. Keep the miner's node-facing API canonical: the only AI-PoW block-submission payload is `[%command %pow %ai-pow nonce cert]`. If no recursive-certificate noun builder is configured, the miner must refuse to submit a legacy nonce/tile or plain `MatmulProof` artifact.
 3. Before recursive proving, require the plain matmul proof to verify against the same chain-derived target that the winning mining attempt used.
-4. Add a Rust `AiPowCertificateNoun` mirror type that converts the recursive production certificate into the Hoon `ai-proof-node` tree without `MatmulProof`, raw Layer-0 `AiPowBatchProof`, or bincode. Status: implemented as `certificate_noun::AiProofNode` plus top-level certificate noun construction.
+4. Add a Rust `AiPowCertificateNoun` mirror type that converts the recursive production certificate into the Hoon `ai-proof-node` tree without `MatmulProof`, raw Layer-0 `AiPowBatchProof`, or bincode. Status: implemented as `certificate_noun::AiProofNode` plus top-level certificate noun construction; the legacy Layer-0 and byte-envelope APIs are crate-internal so they cannot be imported as normal production APIs.
 5. Implement packed-vector helpers for Goldilocks, extension-field pairs, and Tip5 digest vectors.
 6. Reconstruct `LookupData` metadata from canonical AIR/config rather than serializing strings.
 7. Add jam/cue round-trip tests for a real proof and malformed nouns. Status: implemented for structured sample certificates, malformed packed/list/tag/version cases, non-canonical `ai-ext2` limbs, and an ignored real recursive certificate noun round-trip/size harness.
