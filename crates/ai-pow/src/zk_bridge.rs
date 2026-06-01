@@ -2035,9 +2035,10 @@ mod tests {
                 // PoW digest the plain side computes (C4 anchor).
                 let chip_words_i32: [i32; 16] = core::array::from_fn(|i| chip[i] as i32);
                 let chip_state = crate::matmul::TileState(chip_words_i32);
+                let pow_key = ctx.pow_key();
                 assert_eq!(
-                    chip_state.keyed_hash(&ctx.s_a),
-                    tr.state.keyed_hash(&ctx.s_a),
+                    chip_state.keyed_hash(&pow_key),
+                    tr.state.keyed_hash(&pow_key),
                     "keyed BLAKE3 of FoldChip output != plain PoW digest @({tile_i},{tile_j})"
                 );
             }
@@ -2167,9 +2168,10 @@ mod tests {
                 assert_eq!(m, bc, "pipeline M != BlockContext.m_states[{idx}]");
 
                 let m_i32: [i32; 16] = core::array::from_fn(|i| m[i] as i32);
+                let pow_key = ctx.pow_key();
                 assert_eq!(
-                    TileState(m_i32).keyed_hash(&ctx.s_a),
-                    tr.state.keyed_hash(&ctx.s_a),
+                    TileState(m_i32).keyed_hash(&pow_key),
+                    tr.state.keyed_hash(&pow_key),
                     "keyed BLAKE3 of pipeline M != plain PoW digest"
                 );
             }

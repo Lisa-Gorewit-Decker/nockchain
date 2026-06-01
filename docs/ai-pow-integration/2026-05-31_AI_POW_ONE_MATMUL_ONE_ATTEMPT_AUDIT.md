@@ -877,6 +877,13 @@ nonce, and the wire regression rejects the old `COMMITMENT_HASH = s_a` wording.
 This keeps local profiling examples from reintroducing the nonce-independent ZK
 jackpot-key bug as copy-paste guidance.
 
+Follow-up diagnostic hardening: real-model compatibility tests and ZK bridge
+internal tests no longer hash cached `TileState` values with raw `ctx.s_A`.
+They use `ctx.pow_key()` so even non-consensus assertions exercise the same
+nonce-bound jackpot key as production. The wire regression rejects
+`keyed_hash(ctx.s_a())` / `keyed_hash(&ctx.s_a)` patterns in these diagnostic
+surfaces.
+
 ## Latest Re-Audit: Decoded Recursive Certificate DoS Ordering
 
 The decoded Hoon-compatible certificate verifier had the right ordering for

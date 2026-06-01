@@ -392,11 +392,11 @@ fn b1_1c_real_weight_mineable_unit_end_to_end() {
     assert_eq!(
         ctx.tile_states()
             .iter()
-            .map(|s| s.keyed_hash(ctx.s_a()))
+            .map(|s| s.keyed_hash(&ctx.pow_key()))
             .collect::<Vec<_>>(),
         ctx2.tile_states()
             .iter()
-            .map(|s| s.keyed_hash(ctx2.s_a()))
+            .map(|s| s.keyed_hash(&ctx2.pow_key()))
             .collect::<Vec<_>>(),
         "mineable unit must be deterministic on the real weights"
     );
@@ -605,11 +605,11 @@ fn b1_1_gemma_c_real_weight_mineable_unit_end_to_end() {
     assert_eq!(
         ctx.tile_states()
             .iter()
-            .map(|s| s.keyed_hash(ctx.s_a()))
+            .map(|s| s.keyed_hash(&ctx.pow_key()))
             .collect::<Vec<_>>(),
         ctx2.tile_states()
             .iter()
-            .map(|s| s.keyed_hash(ctx2.s_a()))
+            .map(|s| s.keyed_hash(&ctx2.pow_key()))
             .collect::<Vec<_>>(),
         "mineable unit must be deterministic on the real Gemma weights"
     );
@@ -806,11 +806,11 @@ fn b1_1_l70b_c_real_weight_mineable_unit_end_to_end() {
     assert_eq!(
         ctx.tile_states()
             .iter()
-            .map(|s| s.keyed_hash(ctx.s_a()))
+            .map(|s| s.keyed_hash(&ctx.pow_key()))
             .collect::<Vec<_>>(),
         ctx2.tile_states()
             .iter()
-            .map(|s| s.keyed_hash(ctx2.s_a()))
+            .map(|s| s.keyed_hash(&ctx2.pow_key()))
             .collect::<Vec<_>>(),
         "mineable unit must be deterministic on the real Llama-70B weights"
     );

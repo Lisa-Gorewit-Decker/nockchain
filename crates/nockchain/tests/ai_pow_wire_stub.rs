@@ -20,6 +20,7 @@ const AI_POW_PROOF_RS: &str = include_str!("../../ai-pow/src/proof.rs");
 const AI_POW_PROVER_RS: &str = include_str!("../../ai-pow/src/prover.rs");
 const AI_POW_VERIFIER_RS: &str = include_str!("../../ai-pow/src/verifier.rs");
 const AI_POW_F1_HARNESS_RS: &str = include_str!("../../ai-pow/examples/f1_harness.rs");
+const AI_POW_PEARL_MODEL_COMPAT_RS: &str = include_str!("../../ai-pow/tests/pearl_model_compat.rs");
 const AI_POW_ZK_RECURSION_RS: &str = include_str!("../../ai-pow-zk/src/recursion.rs");
 const AI_POW_ZK_BRIDGE_RS: &str = include_str!("../../ai-pow/src/zk_bridge.rs");
 const AI_POW_ZK_CARGO_TOML: &str = include_str!("../../ai-pow-zk/Cargo.toml");
@@ -267,6 +268,16 @@ fn ai_pow_consensus_wire_is_structured_but_fail_closed_without_verifier() {
         "the executable F1 harness must not regress to the historical \
          nonce-independent ZK jackpot key; it must bind COMMITMENT_HASH to \
          the context's nonce-bound pow_key"
+    );
+    assert!(
+        AI_POW_PEARL_MODEL_COMPAT_RS.contains("s.keyed_hash(&ctx.pow_key())")
+            && AI_POW_PEARL_MODEL_COMPAT_RS.contains("s.keyed_hash(&ctx2.pow_key())")
+            && !AI_POW_PEARL_MODEL_COMPAT_RS.contains(concat!("s.keyed_hash", "(ctx.s_a())"))
+            && !AI_POW_PEARL_MODEL_COMPAT_RS.contains(concat!("s.keyed_hash", "(ctx2.s_a())"))
+            && !AI_POW_ZK_BRIDGE_RS.contains(concat!("keyed_hash", "(&ctx.s_a)")),
+        "diagnostic real-model and ZK bridge tests must hash cached tile \
+         states with the context-bound pow_key, not raw s_A; raw s_A hashing \
+         is the historical nonce-grinding pitfall"
     );
     let miner_run_inner = AI_POW_MINER_MINING_RS
         .split("fn run_inner")
