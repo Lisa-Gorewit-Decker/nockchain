@@ -3,14 +3,14 @@
 //!
 //! The kernel-side Hoon emits effects shaped `[%mine-zk version commit
 //! target pow-len]` (always) and `[%mine-ai version commit target
-//! pow-len]` (post-AI-activation). Each miner subscribes via
+//! pow-len]` (post-AI-activation). `commit` is the kernel's
+//! `block-commitment:page`, not a raw block header. Each miner subscribes via
 //! WatchEffects with its own head filter (`b"mine-zk"` / `b"mine-ai"`).
 //! This decoder is shape-symmetric: same field layout for both heads,
 //! so the same struct holds either kind of candidate.
 
 use nockapp::noun::slab::NounSlab;
 use nockchain_math::noun_ext::NounMathExtHandle;
-use nockvm::ext::NounExt;
 use nockvm::noun::{Noun, NounAllocator};
 use thiserror::Error;
 
@@ -19,7 +19,10 @@ use thiserror::Error;
 pub struct MiningCandidate {
     /// Block-version atom from the candidate (chain consensus version).
     pub version: NounSlab,
-    /// Tip5 commitment to the block header being mined.
+    /// Kernel-emitted `block-commitment:page` noun for the candidate block.
+    ///
+    /// The field name is kept for compatibility with existing ZK miner code,
+    /// but consumers should treat the noun as the candidate block commitment.
     pub block_header: NounSlab,
     /// PoW difficulty target.
     pub target: NounSlab,

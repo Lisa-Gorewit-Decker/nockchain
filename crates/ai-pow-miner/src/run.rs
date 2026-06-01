@@ -536,10 +536,13 @@ async fn await_worker(worker: &mut Option<MiningWorker>) -> WorkerOutcome {
 ///
 /// **`nck_commitment`** is `BLAKE3(jam(candidate.block_header))`, where
 /// `candidate.block_header` is the kernel-emitted `block-commitment:page:t`
-/// noun. That Hoon commitment is the same mining surface used by zk-pow: it
-/// binds the parent block id, tx-id set, coinbase split, timestamp, epoch
-/// counter, target, accumulated work, height, and page message before the PoW
-/// artifact is installed.
+/// noun. The field name is inherited from the shared ZK-miner substrate; for
+/// AI-PoW this is a commitment noun, not a raw block header. Hashing its
+/// canonical jam gives the 32-byte value carried in the Rust-owned `AIP1`
+/// nonce's Nockchain aux commitment. That Hoon commitment is the same mining
+/// surface used by zk-pow: it binds the parent block id, tx-id set, coinbase
+/// split, timestamp, epoch counter, target, accumulated work, height, and page
+/// message before the PoW artifact is installed.
 ///
 /// **`target`** is decoded from the kernel-side bignum noun
 /// `[%bn limbs]`, where `limbs` are little-endian u32 chunks. The
@@ -997,20 +1000,24 @@ mod tests {
 
         // Publish a synthetic %mine-ai effect (the AI miner subscribes
         // to mine-ai post Stage 4; the mock fixture publishes accordingly).
-        fn publish_synth_mine_effect(&self, header_seed: u64, target_seed: u64, pow_len: u64) {
-            self.publish_synth_mine_effect_with_target_limbs(header_seed, &[target_seed], pow_len);
+        fn publish_synth_mine_effect(&self, commitment_seed: u64, target_seed: u64, pow_len: u64) {
+            self.publish_synth_mine_effect_with_target_limbs(
+                commitment_seed,
+                &[target_seed],
+                pow_len,
+            );
         }
 
         fn publish_synth_mine_effect_with_target_limbs(
             &self,
-            header_seed: u64,
+            commitment_seed: u64,
             target_limbs: &[u64],
             pow_len: u64,
         ) {
             let mut slab = NounSlab::new();
             let head = D(tas!(b"mine-ai"));
             let version = D(0);
-            let commit_source = synth_block_header_slab(header_seed);
+            let commit_source = synth_block_commitment_slab(commitment_seed);
             let commit_space = commit_source.noun_space();
             let commit = slab.copy_into(unsafe { *commit_source.root() }, &commit_space);
             let mut target_list = D(0);
@@ -1181,32 +1188,43 @@ mod tests {
         slab
     }
 
-    fn synth_block_header_slab(header_seed: u64) -> NounSlab {
+    fn synth_block_commitment_slab(commitment_seed: u64) -> NounSlab {
         let mut slab = NounSlab::new();
         let commit = T(
             &mut slab,
             &[
-                D(header_seed),
-                D(header_seed + 1),
-                D(header_seed + 2),
-                D(header_seed + 3),
-                D(header_seed + 4),
+                D(commitment_seed),
+                D(commitment_seed + 1),
+                D(commitment_seed + 2),
+                D(commitment_seed + 3),
+                D(commitment_seed + 4),
             ],
         );
         slab.set_root(commit);
         slab
     }
 
-    fn candidate_for_target(target: NounSlab) -> MiningCandidate {
+    fn candidate_for_target_and_commitment(
+        target: NounSlab,
+        commitment_seed: u64,
+    ) -> MiningCandidate {
         let mut version = NounSlab::new();
         version.set_root(D(0));
-        let block_header = synth_block_header_slab(0xCAFE);
+        let block_header = synth_block_commitment_slab(commitment_seed);
         MiningCandidate {
             version,
             block_header,
             target,
             pow_len: 64,
         }
+    }
+
+    fn candidate_for_target(target: NounSlab) -> MiningCandidate {
+        candidate_for_target_and_commitment(target, 0xCAFE)
+    }
+
+    fn expected_aux_commitment_bridge(candidate: &MiningCandidate) -> [u8; 32] {
+        *blake3::hash(&candidate.block_header.jam()).as_bytes()
     }
 
     #[test]
@@ -1218,6 +1236,36 @@ mod tests {
 
         assert_eq!(&target[0..12], &[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]);
         assert!(target[12..].iter().all(|byte| *byte == 0));
+    }
+
+    #[test]
+    fn derive_pearl_merge_job_inputs_binds_aux_to_candidate_block_commitment() {
+        let cfg = test_cfg("http://127.0.0.1:1".to_string());
+        let candidate_a =
+            candidate_for_target_and_commitment(bignum_target_slab(&[u64::from(u32::MAX)]), 0xCAFE);
+        let candidate_b =
+            candidate_for_target_and_commitment(bignum_target_slab(&[u64::from(u32::MAX)]), 0xCAFF);
+
+        let job_a = derive_pearl_merge_job_inputs(&cfg, &candidate_a).expect("derive Pearl job A");
+        let job_b = derive_pearl_merge_job_inputs(&cfg, &candidate_b).expect("derive Pearl job B");
+
+        assert_eq!(
+            job_a.aux.nock_block_commitment,
+            expected_aux_commitment_bridge(&candidate_a)
+        );
+        assert_eq!(
+            job_b.aux.nock_block_commitment,
+            expected_aux_commitment_bridge(&candidate_b)
+        );
+        assert_ne!(
+            job_a.aux.nock_block_commitment, job_b.aux.nock_block_commitment,
+            "distinct kernel block commitments must produce distinct AIP1 aux bindings"
+        );
+        assert_ne!(
+            job_a.aux.nock_block_commitment,
+            pearl_test_aux().nock_block_commitment,
+            "candidate commitment must replace the static aux template placeholder"
+        );
     }
 
     #[test]
@@ -1734,7 +1782,7 @@ mod tests {
         };
 
         let expected_nock_commitment =
-            *blake3::hash(&synth_block_header_slab(header_seed).jam()).as_bytes();
+            *blake3::hash(&synth_block_commitment_slab(header_seed).jam()).as_bytes();
         let space = poke.noun_space();
         let root = unsafe { *poke.root() };
         let command_cell = root.in_space(&space).as_cell().expect("poke cell");
