@@ -738,15 +738,19 @@ Fix:
 ### CRYPTO-01: STARK security target and comments need independent sign-off
 
 Severity: Medium
-Status: Requires review
+Status: Remediated in tree; requires external activation sign-off
 
-`CircuitConfig::PROD` currently uses `log_blowup = 4`, `num_queries = 15`, `pow_bits = 1`, with comments justifying a roughly 60-bit time-bounded threat model. Some comments elsewhere still describe older values. This may be a product decision, but it should be explicitly signed off before chain activation.
+`CircuitConfig::PROD` currently uses `log_blowup = 4`, `num_queries = 15`, `pow_bits = 1`. `build_stark_config` applies `pow_bits` to both the commit-time and query-time FRI PoW tiers, so the in-tree Johnson-radius accounting is `4 * 15 + 2 * 1 = 62` bits. The accepted in-tree floor is `PROD_JOHNSON_FLOOR_BITS = 60`, justified by the documented 2.5-minute block-cadence threat model and the maintainer's 2026-05-21 anchored-between policy.
 
-Fix:
+Current behavior:
 
-- Record the accepted security level in a short protocol decision.
-- Make comments consistent with the actual constants.
-- Add a test asserting the configured minimum soundness target.
+- Done: `CircuitConfig::johnson_fri_bits()` is the single executable accounting helper.
+- Done: `circuit_config_constants_are_well_formed`, `prod_sweep_profiles_meet_anchored_johnson_floor`, and `build_stark_config_provable_soundness_at_prod` assert the production constants and minimum Johnson floor.
+- Done: stale in-tree comments that treated the inner `pow_bits = 1` as only one bit were corrected to `pow=1+1` / 62 bits.
+
+Activation requirement:
+
+- Before enabling `%ai-pow` consensus acceptance, record explicit external protocol sign-off that the 60-bit time-bounded floor is acceptable for Nockchain's block interval and threat model. Without that sign-off, keep activation fail-closed.
 
 ### SERIAL-01: Proof serialization needs a consensus envelope
 

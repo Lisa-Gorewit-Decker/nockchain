@@ -48,11 +48,11 @@
 >
 > | Layer | `(lb, nq, c_pow, q_pow)` | Per-query bits | Pow bits | **Unconditional bits** |
 > |---|---|---:|---:|---:|
-> | Inner Tip5-L0 `CircuitConfig::PROD` | (4, 15, 0, 1) | 60 | 1 | **61** |
+> | Inner Tip5-L0 `CircuitConfig::PROD` | (4, 15, 1, 1) | 60 | 1+1=2 | **62** |
 > | L1 outer-cert `goldilocks_tip5_60bit()` | (4, 15, 1, 1) | 60 | 1+1=2 | **62** |
 > | L2 outer-cert `goldilocks_tip5_60bit()` | (4, 15, 1, 1) | 60 | 1+1=2 | **62** |
 >
-> **Chain MIN = MIN(61, 62, 62) = 61 bits**, ≥ 60-bit
+> **Chain MIN = MIN(62, 62, 62) = 62 bits**, ≥ 60-bit
 > maintainer-targeted anchored floor (proven via Theorem 1.5,
 > γ < J(δ) − η at every layer; §§ 4.3 + 4.4 of this doc
 > remain accurate — η-margin analysis is layer-shape-only, not

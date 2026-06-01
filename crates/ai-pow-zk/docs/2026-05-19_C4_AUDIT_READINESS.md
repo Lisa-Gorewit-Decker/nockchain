@@ -154,9 +154,9 @@ Two soundness objects, both **≥ 60 bits unconditional Johnson**:
 2. **End-to-end recursion** (M-S5 cert). Every layer of the
    verifier-recursion chain is **≥ 60 bits unconditional
    Johnson** at the 2026-05-21 anchored params (inner Tip5-L0
-   PROD `lb=4 nq=15 pow=1` = 61 bits; outer-cert L1/L2
+   PROD `lb=4 nq=15 pow=1+1` = 62 bits; outer-cert L1/L2
    `goldilocks_tip5_60bit` `lb=4 nq=15 pow=1+1` = 62 bits;
-   chain MIN = 61 bits).
+   chain MIN = 62 bits).
 
 The audit should *also* assess:
 

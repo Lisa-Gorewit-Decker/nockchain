@@ -63,8 +63,8 @@ floor. Maintainer-targeted ≥60-bit Johnson floor.**
 - **Outer-cert L1/L2** `Plonky3-recursion/circuit-prover/src/config.rs::goldilocks_tip5_60bit()`:
   `lb=4, nq=15, pow=1+1` ⇒ `4·15 + 1 + 1 = 62` bits Johnson, proven.
 - **Inner Tip5-L0** `crates/ai-pow-zk/src/circuit.rs::CircuitConfig::PROD`:
-  `lb=4, nq=15, pow=1` ⇒ `4·15 + 1 = 61` bits Johnson, proven.
-- **Chain MIN** = MIN(61, 62, 62) = **61 bits**, ≥60-bit anchored floor.
+  `lb=4, nq=15, pow=1+1` ⇒ `4·15 + 1 + 1 = 62` bits Johnson, proven.
+- **Chain MIN** = MIN(62, 62, 62) = **62 bits**, ≥60-bit anchored floor.
 
 ### What the Sweep 2 numbers below mean *under this policy*
 
