@@ -773,6 +773,31 @@ reject. The direct `ai-pow-zk` recursion helpers remain lower-level wrappers
 over whatever Layer-0 statement the caller supplies; they are not the
 full-matmul admission rule.
 
+## Latest Re-Audit: Context/Nonce Boundary At ZK Trace Construction
+
+The public prover and production recursive-certificate builder already rejected
+a `BlockContext` supplied with a different nonce, but the deepest shared ZK
+trace constructor still accepted both `ctx` and `nonce` and did not
+independently check that they described the same attempt before building the
+Layer-0 trace.
+
+That lower-level helper is not a consensus entrypoint, but mixed-attempt
+statements are exactly the class of bug this audit is trying to eliminate. A
+caller that accidentally passed `ctx` from nonce A and `nonce` from nonce B
+could build public inputs with `JOB_KEY`, noise, and matmul state from nonce A
+but `COMMITMENT_HASH = pow_key_for_nonce(s_A, nonce B)`. On the production
+co-location path, verifier-derived statement checks catch this mismatch. On
+diagnostic non-production paths, the proof verifier can be intentionally less
+strict, so the core constructor itself must fail before proof work begins.
+
+Code status after this re-audit: `prove_ai_pow_tiled_full` now calls
+`ensure_context_attempt(ctx, nonce)` immediately after parameter/context-shape
+checks. The nonce-substitution regression covers this deepest shared path in
+addition to the production `prove_and_verify_for_block` and recursive
+certificate builder paths. The intended invariant is now local to the proof
+constructor: no ZK trace is built from a context/nonce pair that is not a single
+attempt.
+
 This is intentionally fail-closed. Pearl's reference miner computes every
 output tile before returning the final matrix and records an opened block when a
 tile hash hits the target, but the proof artifact only opens the winning tile.

@@ -1330,6 +1330,7 @@ fn prove_ai_pow_tiled_full<F: FnOnce(&mut CompositeTrace)>(
 ) -> Result<(ZkProofArtifact, AiPowProgram, bool), BridgeError> {
     params.validate().map_err(BridgeError::InvalidParams)?;
     ensure_context_params(ctx, params)?;
+    ensure_context_attempt(ctx, nonce)?;
 
     // P-B (γ Pearl-faithful): size the Layer-0 trace from `params`
     // — the faithful analogue of Pearl's `degree_bits()` — instead
@@ -2203,6 +2204,11 @@ mod tests {
 
         assert!(matches!(
             prove_and_verify_for_block_inner(&ctx, &params, wrong_nonce, 0, false),
+            Err(BridgeError::ContextAttemptMismatch)
+        ));
+        let target = [0xff; 32];
+        assert!(matches!(
+            prove_and_verify_tiled_full(&ctx, &params, wrong_nonce, &target, 0, 0, |_| {}, None),
             Err(BridgeError::ContextAttemptMismatch)
         ));
         assert!(matches!(

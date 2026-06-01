@@ -113,7 +113,7 @@ fn run_inner(
 
         if let Some(interval) = opts.progress_interval {
             if last_progress.elapsed() >= interval {
-                tracing::info!(
+                tracing::trace!(
                     target: "ai_pow_miner",
                     matmul_attempts = stats.matmul_attempts_tried,
                     elapsed_s = stats.elapsed.as_secs_f64(),
