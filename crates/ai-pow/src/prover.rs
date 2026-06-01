@@ -384,14 +384,15 @@ fn mine_with_context(
     // path; `mine_with_context_at_target` deliberately skips it.
     #[cfg(feature = "zk")]
     if let Some((_, found_idx)) = &result {
-        // The ZK side-effect is a production-envelope proof. Small
-        // structural profiles remain useful for local/plain tests even when
-        // the crate is compiled with `--features zk`.
-        if ctx.params.validate_prod_envelope().is_ok() {
+        // The selected-tile ZK side-effect is only full-matmul admissible when
+        // the whole attempt has exactly one tile. Multi-tile production proofs
+        // must go through the recursive certificate/full-matmul gate instead
+        // of treating one selected tile as the whole work unit.
+        if ctx.params.validate_prod_envelope().is_ok() && ctx.params.num_tiles() == 1 {
             let _zk = crate::zk_bridge::prove_and_verify_for_block(
                 ctx, &ctx.params, &ctx.nonce, *found_idx,
             )
-            .expect("F1 zk bridge: prove + pow-verify must succeed for a found tile");
+            .expect("F1 zk bridge: single-tile prove + pow-verify must succeed for a found tile");
         }
     }
 

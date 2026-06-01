@@ -1726,7 +1726,8 @@ pub(crate) fn prove_and_verify_tiled_full<F: FnOnce(&mut CompositeTrace)>(
 /// `target` itself from the **chain-pinned** `params`
 /// (`difficulty_target(params)` — a pure, deterministic function of
 /// `noise_rank` / `tile` / `difficulty_bits`, all part of the
-/// block's mining config) and delegates to [`prove_and_verify`].
+/// block's mining config) and delegates to [`prove_and_verify`] only when the
+/// selected-tile proof is full-matmul admissible.
 ///
 /// Because the target is recomputed from params and never taken as
 /// an argument, a caller (or counterparty) **cannot** influence the
@@ -1735,8 +1736,12 @@ pub(crate) fn prove_and_verify_tiled_full<F: FnOnce(&mut CompositeTrace)>(
 /// the out-of-circuit difficulty check is sound. `found_idx` is the
 /// miner's winning linear tile index (`mine_with_context`); it is
 /// decomposed via the MED-3 [`tile_ij`] contract and the **actual
-/// solved tile** is attested (HIGH-2.2 §4.E). This is the only
-/// entrypoint production / `mine()` should use.
+/// solved tile** is attested (HIGH-2.2 §4.E).
+///
+/// A selected-tile proof is a full-matmul proof only when `num_tiles == 1`.
+/// Multi-tile production callers must use the recursive certificate/full-work
+/// boundary, which currently fails closed until a full-matrix aggregate is
+/// bound.
 pub(crate) fn prove_and_verify_for_block(
     ctx: &BlockContext<'_>,
     params: &MatmulParams,
@@ -1771,6 +1776,10 @@ fn prove_and_verify_for_block_inner(
         ensure_attempt_found_idx(
             &ctx.block_commitment, &ctx.nonce, params, &commitments, found_idx,
         )?;
+        let num_tiles = params.num_tiles();
+        if num_tiles > 1 {
+            return Err(BridgeError::FullMatmulProofUnavailable { num_tiles });
+        }
     }
     let target = crate::tile_hash::difficulty_target(params);
     ensure_found_tile_hits_target(ctx, nonce, &target, found_idx)?;
@@ -2429,6 +2438,33 @@ mod tests {
         assert!(matches!(
             prove_and_verify_for_block(&ctx, &params, nonce, wrong),
             Err(BridgeError::FoundIdxMismatch { .. })
+        ));
+    }
+
+    #[test]
+    fn production_bridge_fails_closed_for_multi_tile_selected_tile_before_zkp() {
+        let params = MatmulParams {
+            m: 64,
+            k: 512,
+            n: 64,
+            noise_rank: 32,
+            tile: 8,
+            spot_checks: 8,
+            difficulty_bits: 0,
+        };
+        params.validate_prod_envelope().unwrap();
+        assert!(params.num_tiles() > 1);
+        let block = b"production-selected-tile-gap-block";
+        let nonce = b"production-selected-tile-gap-nonce";
+        let (a, b) = synth_matrices(b"production-selected-tile-gap-seed", &params);
+        let ctx = BlockContext::build(block, nonce, &a, &b, &params).expect("ctx");
+        let commitments = ZkPublicCommitments::from_context(&ctx);
+        let found_idx = expected_attempt_found_idx(block, nonce, &params, &commitments).unwrap();
+
+        assert!(matches!(
+            prove_and_verify_for_block(&ctx, &params, nonce, found_idx),
+            Err(BridgeError::FullMatmulProofUnavailable { num_tiles })
+                if num_tiles == params.num_tiles()
         ));
     }
 

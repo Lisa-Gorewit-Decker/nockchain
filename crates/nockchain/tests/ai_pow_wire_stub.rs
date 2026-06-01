@@ -223,6 +223,17 @@ fn ai_pow_consensus_wire_is_structured_but_fail_closed_without_verifier() {
     let recursive_target_guard = recursive_certificate_fn
         .find("ensure_found_tile_hits_target")
         .expect("recursive certificate prover must check the plain matmul target hit before ZK");
+    let production_layer0_fn = AI_POW_ZK_BRIDGE_RS
+        .split("fn prove_and_verify_for_block_inner")
+        .nth(1)
+        .and_then(|tail| tail.split("/// MED-3 / HIGH-2.2").next())
+        .expect("production Layer-0 bridge body must be present");
+    let production_layer0_full_matmul_guard = production_layer0_fn
+        .find("FullMatmulProofUnavailable")
+        .expect("production Layer-0 selected-tile bridge must fail closed for multi-tile params");
+    let production_layer0_prove = production_layer0_fn
+        .find("prove_and_verify_tiled")
+        .expect("production Layer-0 bridge must call selected-tile prover only after guards");
     assert!(
         AI_POW_MINER_LIB_RS.contains("pub target: DifficultyTarget")
             && AI_POW_MINER_LIB_RS.contains("Count of fully rebuilt nonce-bound matmul attempts")
@@ -247,6 +258,10 @@ fn ai_pow_consensus_wire_is_structured_but_fail_closed_without_verifier() {
             && recursive_prod_envelope < recursive_layer0_prove
             && recursive_full_matmul_guard < recursive_layer0_prove
             && recursive_target_guard < recursive_layer0_prove
+            && production_layer0_full_matmul_guard < production_layer0_prove
+            && AI_POW_ZK_BRIDGE_RS
+                .contains("production_bridge_fails_closed_for_multi_tile_selected_tile_before_zkp")
+            && AI_POW_PROVER_RS.contains("ctx.params.num_tiles() == 1")
             && AI_POW_ZK_BRIDGE_RS
                 .contains("prove_canonical_ai_pow_certificate_from_composite_proof")
             && !AI_POW_ZK_RECURSION_RS.contains("verify_production_certificate")

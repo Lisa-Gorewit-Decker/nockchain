@@ -948,6 +948,25 @@ recursive certificate generation, and the crate README now states that plain
 verifiers are diagnostics/prechecks, not canonical block-acceptance APIs. The
 wire regression asserts that crate-root plain verifier re-exports stay absent.
 
+## Latest Re-Audit: Layer-0 ZK Side-Effect Admission
+
+The crate-internal `prove_and_verify_for_block` path is not a persisted block
+artifact, but it was still reachable as a `mine()` side-effect when `ai-pow` was
+compiled with the `zk` feature. For multi-tile production parameters, that
+side-effect proved one verifier-derived selected tile. That is useful test
+coverage for the Layer-0 circuit, but it is not a proof of one full-matmul work
+unit and should not run behind a production-looking boundary.
+
+Code status after this re-audit: production-envelope
+`prove_and_verify_for_block` now performs the same selected-tile/full-matmul
+admission guard as the recursive certificate path and returns
+`FullMatmulProofUnavailable` for `params.num_tiles() > 1` before selected-tile
+ZK proving. The `mine()` ZK side-effect only runs when production params are
+single-tile, which is the only case where selected-tile equals full-matmul.
+The structural `prove_and_verify_for_block_inner(..., require_prod_envelope =
+false)` path remains available for local AIR/chip regression tests that
+intentionally exercise arbitrary selected tiles.
+
 This is intentionally fail-closed. Pearl's reference miner computes every
 output tile before returning the final matrix and records an opened block when a
 tile hash hits the target, but the proof artifact only opens the winning tile.
