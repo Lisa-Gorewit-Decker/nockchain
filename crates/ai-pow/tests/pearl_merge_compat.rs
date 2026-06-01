@@ -3,11 +3,16 @@ use ai_pow::fiat_shamir::{noise_seed_a, noise_seed_b};
 use ai_pow::params::MatmulParams;
 use ai_pow::pearl_compat::{
     compute_pearl_pattern_ticket, pearl_adjust_target_for_config, pearl_kappa,
-    pearl_nbits_to_target_le, verify_pearl_compatible_work, verify_pearl_pattern_ticket,
-    PearlAttempt, PearlCompatError, PearlIncompleteBlockHeader, PearlMiningConfig,
-    PearlPeriodicPattern, PearlPublicProofParams, PEARL_INCOMPLETE_BLOCK_HEADER_SIZE,
+    pearl_nbits_to_target_le, pearl_nockchain_aux_commitment, verify_pearl_compatible_public_data,
+    verify_pearl_compatible_work, verify_pearl_merge_mining_public_data,
+    verify_pearl_merge_mining_public_data_with_aux_bytes,
+    verify_pearl_merge_public_statement_bytes, verify_pearl_pattern_ticket, PearlAttempt,
+    PearlCompatError, PearlIncompleteBlockHeader, PearlMergePublicStatement, PearlMiningConfig,
+    PearlNockchainAux, PearlPeriodicPattern, PearlPublicProofParams,
+    PEARL_INCOMPLETE_BLOCK_HEADER_SIZE, PEARL_MERGE_PUBLIC_STATEMENT_MAGIC,
     PEARL_MINING_CONFIG_RESERVED_SIZE, PEARL_MINING_CONFIG_SIZE, PEARL_MMA_INT7XINT7_TO_INT32,
-    PEARL_PUBLIC_PROOF_PARAMS_SIZE,
+    PEARL_NOCKCHAIN_AUX_CHAIN_ID_MAX, PEARL_NOCKCHAIN_AUX_DOMAIN, PEARL_NOCKCHAIN_AUX_EXTRA_MAX,
+    PEARL_NOCKCHAIN_AUX_MAGIC, PEARL_PUBLIC_PROOF_PARAMS_SIZE,
 };
 use ai_pow::prover::{params_tag, BlockContext};
 use ai_pow::synth::synth_matrices;
@@ -667,5 +672,694 @@ fn pearl_compatible_work_precheck_rejects_target_and_input_failures() {
             expected: params.m as usize * params.k as usize,
             actual: params.m as usize * params.k as usize - 1,
         })
+    );
+}
+
+#[test]
+fn pearl_compatible_public_data_precheck_accepts_exact_wire_bytes() {
+    let params = pearl_square_params();
+    let config = pearl_square_config();
+    let easy_header = PearlIncompleteBlockHeader {
+        nbits: 0x207f_ffff,
+        ..header()
+    };
+    let (a, b) = synth_matrices(b"pearl-compatible-public-data", &params);
+    let attempt = PearlAttempt::build_with_config(&easy_header, &config, &a, &b, &params).unwrap();
+    let public = PearlPublicProofParams {
+        block_header: easy_header,
+        mining_config: config,
+        hash_a: attempt.commitments.h_a,
+        hash_b: attempt.commitments.h_b,
+        hash_jackpot: attempt.tile_digests[0].jackpot_hash,
+        m: params.m,
+        n: params.n,
+        t_rows: 0,
+        t_cols: 0,
+    };
+    let header_bytes = easy_header.to_bytes();
+    let public_data = public.to_public_data().unwrap();
+    let nockchain_target = [0xffu8; 32];
+
+    let precheck = verify_pearl_compatible_public_data(
+        &header_bytes, &public_data, &a, &b, &nockchain_target, 16,
+    )
+    .unwrap();
+    assert_eq!(precheck.commitments, attempt.commitments);
+    assert_eq!(precheck.ticket.jackpot_hash, public.hash_jackpot);
+}
+
+#[test]
+fn pearl_compatible_public_data_precheck_rejects_bad_wire_boundaries() {
+    let params = pearl_square_params();
+    let config = pearl_square_config();
+    let easy_header = PearlIncompleteBlockHeader {
+        nbits: 0x207f_ffff,
+        ..header()
+    };
+    let (a, b) = synth_matrices(b"pearl-compatible-public-data-boundaries", &params);
+    let attempt = PearlAttempt::build_with_config(&easy_header, &config, &a, &b, &params).unwrap();
+    let public = PearlPublicProofParams {
+        block_header: easy_header,
+        mining_config: config,
+        hash_a: attempt.commitments.h_a,
+        hash_b: attempt.commitments.h_b,
+        hash_jackpot: attempt.tile_digests[0].jackpot_hash,
+        m: params.m,
+        n: params.n,
+        t_rows: 0,
+        t_cols: 0,
+    };
+    let header_bytes = easy_header.to_bytes();
+    let public_data = public.to_public_data().unwrap();
+    let nockchain_target = [0xffu8; 32];
+
+    assert_eq!(
+        verify_pearl_compatible_public_data(
+            &header_bytes[..PEARL_INCOMPLETE_BLOCK_HEADER_SIZE - 1],
+            &public_data,
+            &a,
+            &b,
+            &nockchain_target,
+            16,
+        ),
+        Err(PearlCompatError::BadHeaderLen(
+            PEARL_INCOMPLETE_BLOCK_HEADER_SIZE - 1
+        ))
+    );
+
+    let mut header_with_trailing = header_bytes.to_vec();
+    header_with_trailing.push(0);
+    assert_eq!(
+        verify_pearl_compatible_public_data(
+            &header_with_trailing, &public_data, &a, &b, &nockchain_target, 16,
+        ),
+        Err(PearlCompatError::BadHeaderLen(
+            PEARL_INCOMPLETE_BLOCK_HEADER_SIZE + 1
+        ))
+    );
+
+    assert_eq!(
+        verify_pearl_compatible_public_data(
+            &header_bytes,
+            &public_data[..PEARL_PUBLIC_PROOF_PARAMS_SIZE - 1],
+            &a,
+            &b,
+            &nockchain_target,
+            16,
+        ),
+        Err(PearlCompatError::BadPublicParamsLen(
+            PEARL_PUBLIC_PROOF_PARAMS_SIZE - 1
+        ))
+    );
+
+    let mut public_data_with_trailing = public_data.to_vec();
+    public_data_with_trailing.push(0);
+    assert_eq!(
+        verify_pearl_compatible_public_data(
+            &header_bytes, &public_data_with_trailing, &a, &b, &nockchain_target, 16,
+        ),
+        Err(PearlCompatError::BadPublicParamsLen(
+            PEARL_PUBLIC_PROOF_PARAMS_SIZE + 1
+        ))
+    );
+}
+
+#[test]
+fn pearl_compatible_public_data_precheck_rejects_decode_time_tampering() {
+    let params = pearl_square_params();
+    let config = pearl_square_config();
+    let easy_header = PearlIncompleteBlockHeader {
+        nbits: 0x207f_ffff,
+        ..header()
+    };
+    let (a, b) = synth_matrices(b"pearl-compatible-public-data-tamper", &params);
+    let attempt = PearlAttempt::build_with_config(&easy_header, &config, &a, &b, &params).unwrap();
+    let public = PearlPublicProofParams {
+        block_header: easy_header,
+        mining_config: config,
+        hash_a: attempt.commitments.h_a,
+        hash_b: attempt.commitments.h_b,
+        hash_jackpot: attempt.tile_digests[0].jackpot_hash,
+        m: params.m,
+        n: params.n,
+        t_rows: 0,
+        t_cols: 0,
+    };
+    let header_bytes = easy_header.to_bytes();
+    let mut public_data = public.to_public_data().unwrap();
+    let nockchain_target = [0xffu8; 32];
+
+    public_data[156..160].copy_from_slice(&1u32.to_le_bytes());
+    assert_eq!(
+        verify_pearl_compatible_public_data(
+            &header_bytes, &public_data, &a, &b, &nockchain_target, 16,
+        ),
+        Err(PearlCompatError::InvalidPatternOffset)
+    );
+
+    public_data = public.to_public_data().unwrap();
+    public_data[52] ^= 1;
+    assert_eq!(
+        verify_pearl_compatible_public_data(
+            &header_bytes, &public_data, &a, &b, &nockchain_target, 16,
+        ),
+        Err(PearlCompatError::PublicCommitmentMismatch)
+    );
+}
+
+#[test]
+fn pearl_nockchain_aux_commitment_matches_explicit_bounded_encoding() {
+    let chain_id = b"nockchain-mainnet";
+    let nock_block_commitment = [0x42; 32];
+    let epoch = 123_456u64;
+    let extra = b"ai-pow-target-window";
+
+    let commitment =
+        pearl_nockchain_aux_commitment(chain_id, &nock_block_commitment, epoch, extra).unwrap();
+
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(PEARL_NOCKCHAIN_AUX_DOMAIN);
+    hasher.update(&(chain_id.len() as u32).to_le_bytes());
+    hasher.update(chain_id);
+    hasher.update(&nock_block_commitment);
+    hasher.update(&epoch.to_le_bytes());
+    hasher.update(&(extra.len() as u32).to_le_bytes());
+    hasher.update(extra);
+    assert_eq!(commitment, *hasher.finalize().as_bytes());
+}
+
+#[test]
+fn pearl_nockchain_aux_commitment_binds_every_replay_protection_field() {
+    let chain_id = b"nockchain-mainnet";
+    let nock_block_commitment = [0x42; 32];
+    let epoch = 123_456u64;
+    let extra = b"ai-pow-target-window";
+    let baseline =
+        pearl_nockchain_aux_commitment(chain_id, &nock_block_commitment, epoch, extra).unwrap();
+
+    assert_ne!(
+        baseline,
+        pearl_nockchain_aux_commitment(b"nockchain-testnet", &nock_block_commitment, epoch, extra)
+            .unwrap()
+    );
+
+    let mut other_block = nock_block_commitment;
+    other_block[7] ^= 1;
+    assert_ne!(
+        baseline,
+        pearl_nockchain_aux_commitment(chain_id, &other_block, epoch, extra).unwrap()
+    );
+
+    assert_ne!(
+        baseline,
+        pearl_nockchain_aux_commitment(chain_id, &nock_block_commitment, epoch + 1, extra).unwrap()
+    );
+    assert_ne!(
+        baseline,
+        pearl_nockchain_aux_commitment(chain_id, &nock_block_commitment, epoch, b"").unwrap()
+    );
+}
+
+#[test]
+fn pearl_nockchain_aux_commitment_length_prefixes_variable_fields() {
+    let block = [0xAA; 32];
+    let epoch = 9u64;
+    let left = pearl_nockchain_aux_commitment(b"ab", &block, epoch, b"c").unwrap();
+    let right = pearl_nockchain_aux_commitment(b"a", &block, epoch, b"bc").unwrap();
+    assert_ne!(left, right);
+}
+
+#[test]
+fn pearl_nockchain_aux_commitment_rejects_unbounded_or_missing_fields() {
+    let block = [0x11; 32];
+    assert_eq!(
+        pearl_nockchain_aux_commitment(b"", &block, 0, b""),
+        Err(PearlCompatError::NockchainAuxChainIdEmpty)
+    );
+
+    let long_chain_id = vec![0x22; PEARL_NOCKCHAIN_AUX_CHAIN_ID_MAX + 1];
+    assert_eq!(
+        pearl_nockchain_aux_commitment(&long_chain_id, &block, 0, b""),
+        Err(PearlCompatError::NockchainAuxChainIdTooLarge(
+            PEARL_NOCKCHAIN_AUX_CHAIN_ID_MAX + 1
+        ))
+    );
+
+    let long_extra = vec![0x33; PEARL_NOCKCHAIN_AUX_EXTRA_MAX + 1];
+    assert_eq!(
+        pearl_nockchain_aux_commitment(b"nockchain-mainnet", &block, 0, &long_extra),
+        Err(PearlCompatError::NockchainAuxExtraTooLarge(
+            PEARL_NOCKCHAIN_AUX_EXTRA_MAX + 1
+        ))
+    );
+}
+
+#[test]
+fn pearl_nockchain_aux_bytes_round_trip_exact_shape() {
+    let aux = PearlNockchainAux {
+        nockchain_chain_id: b"nockchain-mainnet".to_vec(),
+        nock_block_commitment: [0x42; 32],
+        nockchain_target_epoch_or_height: 123_456,
+        extra_domain_data: b"ai-pow-target-window".to_vec(),
+    };
+
+    let bytes = aux.to_bytes().unwrap();
+    assert_eq!(&bytes[0..4], &PEARL_NOCKCHAIN_AUX_MAGIC);
+    assert_eq!(bytes[4] as usize, aux.nockchain_chain_id.len());
+    assert_eq!(
+        &bytes[5..5 + aux.nockchain_chain_id.len()],
+        aux.nockchain_chain_id.as_slice()
+    );
+    let block_offset = 5 + aux.nockchain_chain_id.len();
+    assert_eq!(
+        &bytes[block_offset..block_offset + 32],
+        &aux.nock_block_commitment
+    );
+    let epoch_offset = block_offset + 32;
+    assert_eq!(
+        &bytes[epoch_offset..epoch_offset + 8],
+        &aux.nockchain_target_epoch_or_height.to_le_bytes()
+    );
+    let extra_len_offset = epoch_offset + 8;
+    assert_eq!(
+        &bytes[extra_len_offset..extra_len_offset + 2],
+        &(aux.extra_domain_data.len() as u16).to_le_bytes()
+    );
+    assert_eq!(
+        &bytes[extra_len_offset + 2..],
+        aux.extra_domain_data.as_slice()
+    );
+    assert_eq!(PearlNockchainAux::from_bytes(&bytes).unwrap(), aux);
+}
+
+#[test]
+fn pearl_nockchain_aux_bytes_reject_malformed_encodings() {
+    assert_eq!(
+        PearlNockchainAux::from_bytes(&[0u8; 8]),
+        Err(PearlCompatError::BadNockchainAuxLen(8))
+    );
+
+    let aux = PearlNockchainAux {
+        nockchain_chain_id: b"nockchain-mainnet".to_vec(),
+        nock_block_commitment: [0x42; 32],
+        nockchain_target_epoch_or_height: 123_456,
+        extra_domain_data: b"ai-pow-target-window".to_vec(),
+    };
+    let bytes = aux.to_bytes().unwrap();
+
+    let mut bad_magic = bytes.clone();
+    bad_magic[0] = b'X';
+    assert_eq!(
+        PearlNockchainAux::from_bytes(&bad_magic),
+        Err(PearlCompatError::BadNockchainAuxMagic(*b"XPA1"))
+    );
+
+    let mut empty_chain = bytes.clone();
+    empty_chain[4] = 0;
+    assert_eq!(
+        PearlNockchainAux::from_bytes(&empty_chain),
+        Err(PearlCompatError::NockchainAuxChainIdEmpty)
+    );
+
+    let mut trailing = bytes.clone();
+    trailing.push(0);
+    assert_eq!(
+        PearlNockchainAux::from_bytes(&trailing),
+        Err(PearlCompatError::NockchainAuxTrailingData {
+            expected: bytes.len(),
+            actual: bytes.len() + 1,
+        })
+    );
+
+    let mut long_extra = Vec::new();
+    long_extra.extend_from_slice(&PEARL_NOCKCHAIN_AUX_MAGIC);
+    long_extra.push(1);
+    long_extra.push(b'n');
+    long_extra.extend_from_slice(&[0x42; 32]);
+    long_extra.extend_from_slice(&123_456u64.to_le_bytes());
+    long_extra.extend_from_slice(&((PEARL_NOCKCHAIN_AUX_EXTRA_MAX + 1) as u16).to_le_bytes());
+    long_extra.extend(std::iter::repeat_n(0x33, PEARL_NOCKCHAIN_AUX_EXTRA_MAX + 1));
+    assert_eq!(
+        PearlNockchainAux::from_bytes(&long_extra),
+        Err(PearlCompatError::NockchainAuxExtraTooLarge(
+            PEARL_NOCKCHAIN_AUX_EXTRA_MAX + 1
+        ))
+    );
+}
+
+#[test]
+fn pearl_merge_mining_precheck_binds_work_to_expected_aux_commitment() {
+    let params = pearl_square_params();
+    let config = pearl_square_config();
+    let easy_header = PearlIncompleteBlockHeader {
+        nbits: 0x207f_ffff,
+        ..header()
+    };
+    let (a, b) = synth_matrices(b"pearl-merge-mining-precheck", &params);
+    let attempt = PearlAttempt::build_with_config(&easy_header, &config, &a, &b, &params).unwrap();
+    let public = PearlPublicProofParams {
+        block_header: easy_header,
+        mining_config: config,
+        hash_a: attempt.commitments.h_a,
+        hash_b: attempt.commitments.h_b,
+        hash_jackpot: attempt.tile_digests[0].jackpot_hash,
+        m: params.m,
+        n: params.n,
+        t_rows: 0,
+        t_cols: 0,
+    };
+    let header_bytes = easy_header.to_bytes();
+    let public_data = public.to_public_data().unwrap();
+    let nockchain_target = [0xffu8; 32];
+    let aux = PearlNockchainAux {
+        nockchain_chain_id: b"nockchain-mainnet".to_vec(),
+        nock_block_commitment: [0x42; 32],
+        nockchain_target_epoch_or_height: 123_456,
+        extra_domain_data: b"ai-pow-target-window".to_vec(),
+    };
+    let expected_aux_commitment = aux.commitment().unwrap();
+
+    let precheck = verify_pearl_merge_mining_public_data(
+        &aux.nock_block_commitment,
+        &header_bytes,
+        &public_data,
+        &a,
+        &b,
+        &nockchain_target,
+        16,
+        aux.clone(),
+        &expected_aux_commitment,
+    )
+    .unwrap();
+    assert_eq!(precheck.work.commitments, attempt.commitments);
+    assert_eq!(precheck.work.ticket.jackpot_hash, public.hash_jackpot);
+    assert_eq!(precheck.aux, aux);
+    assert_eq!(precheck.aux_commitment, expected_aux_commitment);
+}
+
+#[test]
+fn pearl_merge_mining_precheck_accepts_canonical_aux_bytes() {
+    let params = pearl_square_params();
+    let config = pearl_square_config();
+    let easy_header = PearlIncompleteBlockHeader {
+        nbits: 0x207f_ffff,
+        ..header()
+    };
+    let (a, b) = synth_matrices(b"pearl-merge-mining-aux-bytes", &params);
+    let attempt = PearlAttempt::build_with_config(&easy_header, &config, &a, &b, &params).unwrap();
+    let public = PearlPublicProofParams {
+        block_header: easy_header,
+        mining_config: config,
+        hash_a: attempt.commitments.h_a,
+        hash_b: attempt.commitments.h_b,
+        hash_jackpot: attempt.tile_digests[0].jackpot_hash,
+        m: params.m,
+        n: params.n,
+        t_rows: 0,
+        t_cols: 0,
+    };
+    let header_bytes = easy_header.to_bytes();
+    let public_data = public.to_public_data().unwrap();
+    let nockchain_target = [0xffu8; 32];
+    let aux = PearlNockchainAux {
+        nockchain_chain_id: b"nockchain-mainnet".to_vec(),
+        nock_block_commitment: [0x42; 32],
+        nockchain_target_epoch_or_height: 123_456,
+        extra_domain_data: b"ai-pow-target-window".to_vec(),
+    };
+    let aux_bytes = aux.to_bytes().unwrap();
+    let expected_aux_commitment = aux.commitment().unwrap();
+
+    let precheck = verify_pearl_merge_mining_public_data_with_aux_bytes(
+        &aux.nock_block_commitment, &header_bytes, &public_data, &a, &b, &nockchain_target, 16,
+        &aux_bytes, &expected_aux_commitment,
+    )
+    .unwrap();
+    assert_eq!(precheck.work.commitments, attempt.commitments);
+    assert_eq!(precheck.aux, aux);
+    assert_eq!(precheck.aux_commitment, expected_aux_commitment);
+}
+
+#[test]
+fn pearl_merge_mining_precheck_rejects_malformed_aux_bytes() {
+    let params = pearl_square_params();
+    let config = pearl_square_config();
+    let easy_header = PearlIncompleteBlockHeader {
+        nbits: 0x207f_ffff,
+        ..header()
+    };
+    let (a, b) = synth_matrices(b"pearl-merge-mining-bad-aux-bytes", &params);
+    let attempt = PearlAttempt::build_with_config(&easy_header, &config, &a, &b, &params).unwrap();
+    let public = PearlPublicProofParams {
+        block_header: easy_header,
+        mining_config: config,
+        hash_a: attempt.commitments.h_a,
+        hash_b: attempt.commitments.h_b,
+        hash_jackpot: attempt.tile_digests[0].jackpot_hash,
+        m: params.m,
+        n: params.n,
+        t_rows: 0,
+        t_cols: 0,
+    };
+    let header_bytes = easy_header.to_bytes();
+    let public_data = public.to_public_data().unwrap();
+    let nockchain_target = [0xffu8; 32];
+    let aux = PearlNockchainAux {
+        nockchain_chain_id: b"nockchain-mainnet".to_vec(),
+        nock_block_commitment: [0x42; 32],
+        nockchain_target_epoch_or_height: 123_456,
+        extra_domain_data: b"ai-pow-target-window".to_vec(),
+    };
+    let expected_aux_commitment = aux.commitment().unwrap();
+
+    assert_eq!(
+        verify_pearl_merge_mining_public_data_with_aux_bytes(
+            &aux.nock_block_commitment, &header_bytes, &public_data, &a, &b, &nockchain_target, 16,
+            &[0u8; 8], &expected_aux_commitment,
+        ),
+        Err(PearlCompatError::BadNockchainAuxLen(8))
+    );
+
+    let mut trailing = aux.to_bytes().unwrap();
+    let expected_len = trailing.len();
+    trailing.push(0);
+    assert_eq!(
+        verify_pearl_merge_mining_public_data_with_aux_bytes(
+            &aux.nock_block_commitment, &header_bytes, &public_data, &a, &b, &nockchain_target, 16,
+            &trailing, &expected_aux_commitment,
+        ),
+        Err(PearlCompatError::NockchainAuxTrailingData {
+            expected: expected_len,
+            actual: expected_len + 1,
+        })
+    );
+}
+
+#[test]
+fn pearl_merge_public_statement_bytes_round_trip_and_verify() {
+    let params = pearl_square_params();
+    let config = pearl_square_config();
+    let easy_header = PearlIncompleteBlockHeader {
+        nbits: 0x207f_ffff,
+        ..header()
+    };
+    let (a, b) = synth_matrices(b"pearl-merge-public-statement-bytes", &params);
+    let attempt = PearlAttempt::build_with_config(&easy_header, &config, &a, &b, &params).unwrap();
+    let public = PearlPublicProofParams {
+        block_header: easy_header,
+        mining_config: config,
+        hash_a: attempt.commitments.h_a,
+        hash_b: attempt.commitments.h_b,
+        hash_jackpot: attempt.tile_digests[0].jackpot_hash,
+        m: params.m,
+        n: params.n,
+        t_rows: 0,
+        t_cols: 0,
+    };
+    let aux = PearlNockchainAux {
+        nockchain_chain_id: b"nockchain-mainnet".to_vec(),
+        nock_block_commitment: [0x42; 32],
+        nockchain_target_epoch_or_height: 123_456,
+        extra_domain_data: b"ai-pow-target-window".to_vec(),
+    };
+    let statement = PearlMergePublicStatement {
+        block_header: easy_header.to_bytes(),
+        public_data: public.to_public_data().unwrap(),
+        expected_aux_commitment: aux.commitment().unwrap(),
+        aux_bytes: aux.to_bytes().unwrap(),
+    };
+    let bytes = statement.to_bytes().unwrap();
+    assert_eq!(&bytes[0..4], &PEARL_MERGE_PUBLIC_STATEMENT_MAGIC);
+    assert_eq!(
+        PearlMergePublicStatement::from_bytes(&bytes).unwrap(),
+        statement
+    );
+
+    let precheck = verify_pearl_merge_public_statement_bytes(
+        &aux.nock_block_commitment, &bytes, &a, &b, &[0xffu8; 32], 16,
+    )
+    .unwrap();
+    assert_eq!(precheck.work.commitments, attempt.commitments);
+    assert_eq!(precheck.aux, aux);
+}
+
+#[test]
+fn pearl_merge_public_statement_bytes_reject_malformed_envelopes() {
+    let aux = PearlNockchainAux {
+        nockchain_chain_id: b"nockchain-mainnet".to_vec(),
+        nock_block_commitment: [0x42; 32],
+        nockchain_target_epoch_or_height: 123_456,
+        extra_domain_data: b"ai-pow-target-window".to_vec(),
+    };
+    let statement = PearlMergePublicStatement {
+        block_header: header().to_bytes(),
+        public_data: PearlPublicProofParams {
+            block_header: header(),
+            mining_config: pearl_square_config(),
+            hash_a: [0xA1; 32],
+            hash_b: [0xB2; 32],
+            hash_jackpot: [0u8; 32],
+            m: pearl_square_params().m,
+            n: pearl_square_params().n,
+            t_rows: 0,
+            t_cols: 0,
+        }
+        .to_public_data()
+        .unwrap(),
+        expected_aux_commitment: aux.commitment().unwrap(),
+        aux_bytes: aux.to_bytes().unwrap(),
+    };
+    let bytes = statement.to_bytes().unwrap();
+
+    assert_eq!(
+        PearlMergePublicStatement::from_bytes(&[0u8; 16]),
+        Err(PearlCompatError::BadMergePublicStatementLen(16))
+    );
+
+    let mut bad_magic = bytes.clone();
+    bad_magic[0] = b'X';
+    assert_eq!(
+        PearlMergePublicStatement::from_bytes(&bad_magic),
+        Err(PearlCompatError::BadMergePublicStatementMagic(*b"XMP1"))
+    );
+
+    let aux_len_offset =
+        4 + PEARL_INCOMPLETE_BLOCK_HEADER_SIZE + PEARL_PUBLIC_PROOF_PARAMS_SIZE + 32;
+    let mut bad_len = bytes.clone();
+    let declared = statement.aux_bytes.len() - 1;
+    bad_len[aux_len_offset..aux_len_offset + 2].copy_from_slice(&(declared as u16).to_le_bytes());
+    assert_eq!(
+        PearlMergePublicStatement::from_bytes(&bad_len),
+        Err(PearlCompatError::MergePublicStatementTrailingData {
+            expected: bytes.len() - 1,
+            actual: bytes.len(),
+        })
+    );
+
+    let mut bad_aux = bytes;
+    bad_aux[aux_len_offset + 2] = b'X';
+    assert_eq!(
+        PearlMergePublicStatement::from_bytes(&bad_aux),
+        Err(PearlCompatError::BadNockchainAuxMagic(*b"XPA1"))
+    );
+}
+
+#[test]
+fn pearl_merge_mining_precheck_rejects_aux_and_work_tampering() {
+    let params = pearl_square_params();
+    let config = pearl_square_config();
+    let easy_header = PearlIncompleteBlockHeader {
+        nbits: 0x207f_ffff,
+        ..header()
+    };
+    let (a, b) = synth_matrices(b"pearl-merge-mining-precheck-tamper", &params);
+    let attempt = PearlAttempt::build_with_config(&easy_header, &config, &a, &b, &params).unwrap();
+    let mut public = PearlPublicProofParams {
+        block_header: easy_header,
+        mining_config: config,
+        hash_a: attempt.commitments.h_a,
+        hash_b: attempt.commitments.h_b,
+        hash_jackpot: attempt.tile_digests[0].jackpot_hash,
+        m: params.m,
+        n: params.n,
+        t_rows: 0,
+        t_cols: 0,
+    };
+    let header_bytes = easy_header.to_bytes();
+    let nockchain_target = [0xffu8; 32];
+    let aux = PearlNockchainAux {
+        nockchain_chain_id: b"nockchain-mainnet".to_vec(),
+        nock_block_commitment: [0x42; 32],
+        nockchain_target_epoch_or_height: 123_456,
+        extra_domain_data: b"ai-pow-target-window".to_vec(),
+    };
+    let expected_aux_commitment = aux.commitment().unwrap();
+
+    let mut bad_aux = aux.clone();
+    bad_aux.nock_block_commitment[0] ^= 1;
+    assert_eq!(
+        verify_pearl_merge_mining_public_data(
+            &aux.nock_block_commitment,
+            &header_bytes,
+            &public.to_public_data().unwrap(),
+            &a,
+            &b,
+            &nockchain_target,
+            16,
+            bad_aux,
+            &expected_aux_commitment,
+        ),
+        Err(PearlCompatError::NockchainAuxBlockCommitmentMismatch)
+    );
+
+    let mut bad_candidate_nock_block_commitment = aux.nock_block_commitment;
+    bad_candidate_nock_block_commitment[0] ^= 1;
+    assert_eq!(
+        verify_pearl_merge_mining_public_data(
+            &bad_candidate_nock_block_commitment,
+            &header_bytes,
+            &public.to_public_data().unwrap(),
+            &a,
+            &b,
+            &nockchain_target,
+            16,
+            aux.clone(),
+            &expected_aux_commitment,
+        ),
+        Err(PearlCompatError::NockchainAuxBlockCommitmentMismatch)
+    );
+
+    let mut bad_expected_aux_commitment = expected_aux_commitment;
+    bad_expected_aux_commitment[31] ^= 1;
+    assert_eq!(
+        verify_pearl_merge_mining_public_data(
+            &aux.nock_block_commitment,
+            &header_bytes,
+            &public.to_public_data().unwrap(),
+            &a,
+            &b,
+            &nockchain_target,
+            16,
+            aux.clone(),
+            &bad_expected_aux_commitment,
+        ),
+        Err(PearlCompatError::NockchainAuxCommitmentMismatch)
+    );
+
+    public.hash_jackpot[0] ^= 1;
+    let candidate_nock_block_commitment = aux.nock_block_commitment;
+    assert_eq!(
+        verify_pearl_merge_mining_public_data(
+            &candidate_nock_block_commitment,
+            &header_bytes,
+            &public.to_public_data().unwrap(),
+            &a,
+            &b,
+            &nockchain_target,
+            16,
+            aux,
+            &expected_aux_commitment,
+        ),
+        Err(PearlCompatError::JackpotHashMismatch)
     );
 }

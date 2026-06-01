@@ -39,6 +39,20 @@ pub const PEARL_TILE_D: u32 = 16;
 pub const PEARL_TILE_H: u32 = 2;
 pub const PEARL_DWORD_SIZE: u32 = 8;
 pub const PEARL_WORKER_INPUT_MAX: u64 = 1 << 22;
+pub const PEARL_NOCKCHAIN_AUX_DOMAIN: &[u8] = b"nockchain-ai-pow-aux-v1";
+pub const PEARL_NOCKCHAIN_AUX_MAGIC: [u8; 4] = *b"NPA1";
+pub const PEARL_NOCKCHAIN_AUX_CHAIN_ID_MAX: usize = 64;
+pub const PEARL_NOCKCHAIN_AUX_EXTRA_MAX: usize = 1024;
+pub const PEARL_NOCKCHAIN_AUX_MIN_SIZE: usize = 4 + 1 + 1 + 32 + 8 + 2;
+pub const PEARL_NOCKCHAIN_AUX_MAX_SIZE: usize =
+    4 + 1 + PEARL_NOCKCHAIN_AUX_CHAIN_ID_MAX + 32 + 8 + 2 + PEARL_NOCKCHAIN_AUX_EXTRA_MAX;
+pub const PEARL_MERGE_PUBLIC_STATEMENT_MAGIC: [u8; 4] = *b"PMP1";
+pub const PEARL_MERGE_PUBLIC_STATEMENT_FIXED_SIZE: usize =
+    4 + PEARL_INCOMPLETE_BLOCK_HEADER_SIZE + PEARL_PUBLIC_PROOF_PARAMS_SIZE + 32 + 2;
+pub const PEARL_MERGE_PUBLIC_STATEMENT_MIN_SIZE: usize =
+    PEARL_MERGE_PUBLIC_STATEMENT_FIXED_SIZE + PEARL_NOCKCHAIN_AUX_MIN_SIZE;
+pub const PEARL_MERGE_PUBLIC_STATEMENT_MAX_SIZE: usize =
+    PEARL_MERGE_PUBLIC_STATEMENT_FIXED_SIZE + PEARL_NOCKCHAIN_AUX_MAX_SIZE;
 
 #[derive(Debug, Error, PartialEq, Eq)]
 pub enum PearlCompatError {
@@ -106,6 +120,30 @@ pub enum PearlCompatError {
         index: usize,
         value: i8,
     },
+    #[error("Nockchain aux chain id must not be empty")]
+    NockchainAuxChainIdEmpty,
+    #[error("Nockchain aux chain id is too large: max 64 bytes, got {0}")]
+    NockchainAuxChainIdTooLarge(usize),
+    #[error("Nockchain aux extra domain data is too large: max 1024 bytes, got {0}")]
+    NockchainAuxExtraTooLarge(usize),
+    #[error("Nockchain aux commitment does not match the expected Pearl inclusion digest")]
+    NockchainAuxCommitmentMismatch,
+    #[error("Nockchain aux block commitment does not match the candidate block")]
+    NockchainAuxBlockCommitmentMismatch,
+    #[error("Nockchain aux bytes have wrong length: got {0}")]
+    BadNockchainAuxLen(usize),
+    #[error("Nockchain aux bytes have bad magic: {0:?}")]
+    BadNockchainAuxMagic([u8; 4]),
+    #[error("Nockchain aux bytes have trailing data: expected {expected}, got {actual}")]
+    NockchainAuxTrailingData { expected: usize, actual: usize },
+    #[error("Pearl merge public statement bytes have wrong length: got {0}")]
+    BadMergePublicStatementLen(usize),
+    #[error("Pearl merge public statement bytes have bad magic: {0:?}")]
+    BadMergePublicStatementMagic([u8; 4]),
+    #[error(
+        "Pearl merge public statement bytes have trailing data: expected {expected}, got {actual}"
+    )]
+    MergePublicStatementTrailingData { expected: usize, actual: usize },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -856,6 +894,164 @@ pub struct PearlCompatibleWorkPrecheck {
     pub nockchain_target: [u8; 32],
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PearlNockchainAux {
+    pub nockchain_chain_id: Vec<u8>,
+    pub nock_block_commitment: [u8; 32],
+    pub nockchain_target_epoch_or_height: u64,
+    pub extra_domain_data: Vec<u8>,
+}
+
+impl PearlNockchainAux {
+    pub fn commitment(&self) -> Result<[u8; 32], PearlCompatError> {
+        pearl_nockchain_aux_commitment(
+            &self.nockchain_chain_id, &self.nock_block_commitment,
+            self.nockchain_target_epoch_or_height, &self.extra_domain_data,
+        )
+    }
+
+    pub fn to_bytes(&self) -> Result<Vec<u8>, PearlCompatError> {
+        validate_nockchain_aux_fields(&self.nockchain_chain_id, &self.extra_domain_data)?;
+        let mut out = Vec::with_capacity(
+            4 + 1 + self.nockchain_chain_id.len() + 32 + 8 + 2 + self.extra_domain_data.len(),
+        );
+        out.extend_from_slice(&PEARL_NOCKCHAIN_AUX_MAGIC);
+        out.push(self.nockchain_chain_id.len() as u8);
+        out.extend_from_slice(&self.nockchain_chain_id);
+        out.extend_from_slice(&self.nock_block_commitment);
+        out.extend_from_slice(&self.nockchain_target_epoch_or_height.to_le_bytes());
+        out.extend_from_slice(&(self.extra_domain_data.len() as u16).to_le_bytes());
+        out.extend_from_slice(&self.extra_domain_data);
+        Ok(out)
+    }
+
+    pub fn from_bytes(bytes: &[u8]) -> Result<Self, PearlCompatError> {
+        if !(PEARL_NOCKCHAIN_AUX_MIN_SIZE..=PEARL_NOCKCHAIN_AUX_MAX_SIZE).contains(&bytes.len()) {
+            return Err(PearlCompatError::BadNockchainAuxLen(bytes.len()));
+        }
+        let magic: [u8; 4] = bytes[0..4].try_into().unwrap();
+        if magic != PEARL_NOCKCHAIN_AUX_MAGIC {
+            return Err(PearlCompatError::BadNockchainAuxMagic(magic));
+        }
+
+        let chain_len = bytes[4] as usize;
+        validate_nockchain_aux_chain_id_len(chain_len)?;
+
+        let mut offset = 5usize;
+        let after_chain = offset
+            .checked_add(chain_len)
+            .ok_or(PearlCompatError::BadNockchainAuxLen(bytes.len()))?;
+        let fixed_after_chain = after_chain
+            .checked_add(32 + 8 + 2)
+            .ok_or(PearlCompatError::BadNockchainAuxLen(bytes.len()))?;
+        if fixed_after_chain > bytes.len() {
+            return Err(PearlCompatError::BadNockchainAuxLen(bytes.len()));
+        }
+
+        let nockchain_chain_id = bytes[offset..after_chain].to_vec();
+        offset = after_chain;
+        let nock_block_commitment: [u8; 32] = bytes[offset..offset + 32].try_into().unwrap();
+        offset += 32;
+        let nockchain_target_epoch_or_height =
+            u64::from_le_bytes(bytes[offset..offset + 8].try_into().unwrap());
+        offset += 8;
+        let extra_len = u16::from_le_bytes(bytes[offset..offset + 2].try_into().unwrap()) as usize;
+        offset += 2;
+        validate_nockchain_aux_extra_len(extra_len)?;
+        let expected = offset
+            .checked_add(extra_len)
+            .ok_or(PearlCompatError::BadNockchainAuxLen(bytes.len()))?;
+        if expected != bytes.len() {
+            return Err(PearlCompatError::NockchainAuxTrailingData {
+                expected,
+                actual: bytes.len(),
+            });
+        }
+        let extra_domain_data = bytes[offset..expected].to_vec();
+
+        Ok(Self {
+            nockchain_chain_id,
+            nock_block_commitment,
+            nockchain_target_epoch_or_height,
+            extra_domain_data,
+        })
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PearlMergeMiningPrecheck {
+    pub work: PearlCompatibleWorkPrecheck,
+    pub aux: PearlNockchainAux,
+    pub aux_commitment: [u8; 32],
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PearlMergePublicStatement {
+    pub block_header: [u8; PEARL_INCOMPLETE_BLOCK_HEADER_SIZE],
+    pub public_data: [u8; PEARL_PUBLIC_PROOF_PARAMS_SIZE],
+    pub expected_aux_commitment: [u8; 32],
+    pub aux_bytes: Vec<u8>,
+}
+
+impl PearlMergePublicStatement {
+    pub fn to_bytes(&self) -> Result<Vec<u8>, PearlCompatError> {
+        PearlNockchainAux::from_bytes(&self.aux_bytes)?;
+        let mut out =
+            Vec::with_capacity(PEARL_MERGE_PUBLIC_STATEMENT_FIXED_SIZE + self.aux_bytes.len());
+        out.extend_from_slice(&PEARL_MERGE_PUBLIC_STATEMENT_MAGIC);
+        out.extend_from_slice(&self.block_header);
+        out.extend_from_slice(&self.public_data);
+        out.extend_from_slice(&self.expected_aux_commitment);
+        out.extend_from_slice(&(self.aux_bytes.len() as u16).to_le_bytes());
+        out.extend_from_slice(&self.aux_bytes);
+        Ok(out)
+    }
+
+    pub fn from_bytes(bytes: &[u8]) -> Result<Self, PearlCompatError> {
+        if !(PEARL_MERGE_PUBLIC_STATEMENT_MIN_SIZE..=PEARL_MERGE_PUBLIC_STATEMENT_MAX_SIZE)
+            .contains(&bytes.len())
+        {
+            return Err(PearlCompatError::BadMergePublicStatementLen(bytes.len()));
+        }
+        let magic: [u8; 4] = bytes[0..4].try_into().unwrap();
+        if magic != PEARL_MERGE_PUBLIC_STATEMENT_MAGIC {
+            return Err(PearlCompatError::BadMergePublicStatementMagic(magic));
+        }
+
+        let mut offset = 4usize;
+        let block_header = bytes[offset..offset + PEARL_INCOMPLETE_BLOCK_HEADER_SIZE]
+            .try_into()
+            .unwrap();
+        offset += PEARL_INCOMPLETE_BLOCK_HEADER_SIZE;
+        let public_data = bytes[offset..offset + PEARL_PUBLIC_PROOF_PARAMS_SIZE]
+            .try_into()
+            .unwrap();
+        offset += PEARL_PUBLIC_PROOF_PARAMS_SIZE;
+        let expected_aux_commitment = bytes[offset..offset + 32].try_into().unwrap();
+        offset += 32;
+        let aux_len = u16::from_le_bytes(bytes[offset..offset + 2].try_into().unwrap()) as usize;
+        offset += 2;
+        let expected = offset
+            .checked_add(aux_len)
+            .ok_or(PearlCompatError::BadMergePublicStatementLen(bytes.len()))?;
+        if expected != bytes.len() {
+            return Err(PearlCompatError::MergePublicStatementTrailingData {
+                expected,
+                actual: bytes.len(),
+            });
+        }
+        let aux_bytes = bytes[offset..expected].to_vec();
+        PearlNockchainAux::from_bytes(&aux_bytes)?;
+
+        Ok(Self {
+            block_header,
+            public_data,
+            expected_aux_commitment,
+            aux_bytes,
+        })
+    }
+}
+
 /// Verify the complete Pearl-compatible work precheck shared by Pearl and
 /// Nockchain.
 ///
@@ -895,6 +1091,111 @@ pub fn verify_pearl_compatible_work(
         pearl_target,
         nockchain_target: *nockchain_target,
     })
+}
+
+/// Decode Pearl's persisted/wire public statement bytes and run the complete
+/// shared-work precheck.
+///
+/// `block_header_bytes` is Pearl's 76-byte serialized `IncompleteBlockHeader`
+/// (`sigma`). `public_data` is Pearl's 164-byte public proof parameter blob
+/// (`mu || H_A || H_B || hash_jackpot || m || n || t_rows || t_cols`). This
+/// entrypoint is intentionally strict about lengths and uses the decoded bytes
+/// to rederive the exact same transcript checked by
+/// [`verify_pearl_compatible_work`].
+pub fn verify_pearl_compatible_public_data(
+    block_header_bytes: &[u8],
+    public_data: &[u8],
+    a_row_major: &[i8],
+    b_col_major: &[i8],
+    nockchain_target: &[u8; 32],
+    max_pattern_len: usize,
+) -> Result<PearlCompatibleWorkPrecheck, PearlCompatError> {
+    let block_header = PearlIncompleteBlockHeader::from_bytes(block_header_bytes)?;
+    let public_params = PearlPublicProofParams::from_public_data(block_header, public_data)?;
+    verify_pearl_compatible_work(
+        &public_params, a_row_major, b_col_major, nockchain_target, max_pattern_len,
+    )
+}
+
+/// Verify a Pearl-compatible public work statement and bind it to the expected
+/// Nockchain AuxPoW digest.
+///
+/// `expected_aux_commitment` must be the digest the caller has independently
+/// verified as included in the Pearl block/work state represented by
+/// `block_header_bytes`. This function does not prove that inclusion; it
+/// closes the replay gap between the verified Pearl work attempt and the
+/// candidate Nockchain block once the inclusion verifier has supplied that
+/// digest.
+pub fn verify_pearl_merge_mining_public_data(
+    candidate_nock_block_commitment: &[u8; 32],
+    block_header_bytes: &[u8],
+    public_data: &[u8],
+    a_row_major: &[i8],
+    b_col_major: &[i8],
+    nockchain_target: &[u8; 32],
+    max_pattern_len: usize,
+    aux: PearlNockchainAux,
+    expected_aux_commitment: &[u8; 32],
+) -> Result<PearlMergeMiningPrecheck, PearlCompatError> {
+    if aux.nock_block_commitment != *candidate_nock_block_commitment {
+        return Err(PearlCompatError::NockchainAuxBlockCommitmentMismatch);
+    }
+    let aux_commitment = aux.commitment()?;
+    if &aux_commitment != expected_aux_commitment {
+        return Err(PearlCompatError::NockchainAuxCommitmentMismatch);
+    }
+    let work = verify_pearl_compatible_public_data(
+        block_header_bytes, public_data, a_row_major, b_col_major, nockchain_target,
+        max_pattern_len,
+    )?;
+    Ok(PearlMergeMiningPrecheck {
+        work,
+        aux,
+        aux_commitment,
+    })
+}
+
+/// Decode canonical Nockchain aux bytes and verify the complete
+/// Pearl-compatible merge-mining statement.
+///
+/// This is the wire-facing variant of
+/// [`verify_pearl_merge_mining_public_data`]. It rejects malformed aux bytes
+/// before checking the trusted candidate Nockchain block commitment, the
+/// expected Pearl-included aux digest, and the shared Pearl work statement.
+pub fn verify_pearl_merge_mining_public_data_with_aux_bytes(
+    candidate_nock_block_commitment: &[u8; 32],
+    block_header_bytes: &[u8],
+    public_data: &[u8],
+    a_row_major: &[i8],
+    b_col_major: &[i8],
+    nockchain_target: &[u8; 32],
+    max_pattern_len: usize,
+    aux_bytes: &[u8],
+    expected_aux_commitment: &[u8; 32],
+) -> Result<PearlMergeMiningPrecheck, PearlCompatError> {
+    let aux = PearlNockchainAux::from_bytes(aux_bytes)?;
+    verify_pearl_merge_mining_public_data(
+        candidate_nock_block_commitment, block_header_bytes, public_data, a_row_major, b_col_major,
+        nockchain_target, max_pattern_len, aux, expected_aux_commitment,
+    )
+}
+
+/// Decode the complete canonical Pearl merge-mining public statement envelope
+/// and verify it against verifier-derived block/target data.
+pub fn verify_pearl_merge_public_statement_bytes(
+    candidate_nock_block_commitment: &[u8; 32],
+    statement_bytes: &[u8],
+    a_row_major: &[i8],
+    b_col_major: &[i8],
+    nockchain_target: &[u8; 32],
+    max_pattern_len: usize,
+) -> Result<PearlMergeMiningPrecheck, PearlCompatError> {
+    let statement = PearlMergePublicStatement::from_bytes(statement_bytes)?;
+    verify_pearl_merge_mining_public_data_with_aux_bytes(
+        candidate_nock_block_commitment, &statement.block_header, &statement.public_data,
+        a_row_major, b_col_major, nockchain_target, max_pattern_len, &statement.aux_bytes,
+        &statement.expected_aux_commitment,
+    )
 }
 
 fn validate_public_matrix_inputs(
@@ -1014,6 +1315,30 @@ pub fn pearl_jackpot_hash(tile_state: &TileState, s_a: &[u8; 32]) -> [u8; 32] {
     tile_state.keyed_hash(s_a)
 }
 
+/// Domain-separated Nockchain AuxPoW commitment to embed into Pearl's work
+/// state before mining.
+///
+/// The variable-length fields are length-prefixed so distinct tuples cannot
+/// collide by concatenation. The returned digest must be included in Pearl's
+/// block commitment path; Nockchain validation must then verify that inclusion
+/// against the exact Pearl `sigma` used for the shared work attempt.
+pub fn pearl_nockchain_aux_commitment(
+    nockchain_chain_id: &[u8],
+    nock_block_commitment: &[u8; 32],
+    nockchain_target_epoch_or_height: u64,
+    extra_domain_data: &[u8],
+) -> Result<[u8; 32], PearlCompatError> {
+    validate_nockchain_aux_fields(nockchain_chain_id, extra_domain_data)?;
+
+    let mut hasher = Hasher::new();
+    hasher.update(PEARL_NOCKCHAIN_AUX_DOMAIN);
+    hash_len_prefixed(&mut hasher, nockchain_chain_id);
+    hasher.update(nock_block_commitment);
+    hasher.update(&nockchain_target_epoch_or_height.to_le_bytes());
+    hash_len_prefixed(&mut hasher, extra_domain_data);
+    Ok(*hasher.finalize().as_bytes())
+}
+
 pub fn derive_pearl_work_commitments(
     sigma: &[u8],
     mu: &[u8],
@@ -1095,6 +1420,38 @@ impl PearlAttempt {
             tile_digests,
         })
     }
+}
+
+fn hash_len_prefixed(hasher: &mut Hasher, bytes: &[u8]) {
+    debug_assert!(u32::try_from(bytes.len()).is_ok());
+    hasher.update(&(bytes.len() as u32).to_le_bytes());
+    hasher.update(bytes);
+}
+
+fn validate_nockchain_aux_fields(
+    nockchain_chain_id: &[u8],
+    extra_domain_data: &[u8],
+) -> Result<(), PearlCompatError> {
+    validate_nockchain_aux_chain_id_len(nockchain_chain_id.len())?;
+    validate_nockchain_aux_extra_len(extra_domain_data.len())?;
+    Ok(())
+}
+
+fn validate_nockchain_aux_chain_id_len(len: usize) -> Result<(), PearlCompatError> {
+    if len == 0 {
+        return Err(PearlCompatError::NockchainAuxChainIdEmpty);
+    }
+    if len > PEARL_NOCKCHAIN_AUX_CHAIN_ID_MAX {
+        return Err(PearlCompatError::NockchainAuxChainIdTooLarge(len));
+    }
+    Ok(())
+}
+
+fn validate_nockchain_aux_extra_len(len: usize) -> Result<(), PearlCompatError> {
+    if len > PEARL_NOCKCHAIN_AUX_EXTRA_MAX {
+        return Err(PearlCompatError::NockchainAuxExtraTooLarge(len));
+    }
+    Ok(())
 }
 
 fn validate_config_matches_params(

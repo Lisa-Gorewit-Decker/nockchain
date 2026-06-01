@@ -38,6 +38,17 @@ certificate, while Nockchain receives a Nockchain-native recursive certificate
 that proves the same Pearl-compatible public statement and additionally binds
 that statement to a Nockchain block.
 
+The operational requirement is therefore:
+
+> A miner must be able to commit to a specific Pearl block candidate and a
+> specific Nockchain block candidate before mining, run one Pearl-compatible
+> AI-PoW attempt, and have that same attempt be eligible for both chains'
+> target checks.
+
+The Nockchain recursive ZKP is only Nockchain's certificate for that shared
+attempt. It is not part of Pearl compatibility, and it should not be forced to
+match Pearl's ZKP format, recursion stack, proof bytes, or verifier API.
+
 ## Implementation Progress
 
 Implemented in this branch:
@@ -77,6 +88,27 @@ Implemented in this branch:
     validates matrix shape/range, recomputes `H_A` / `H_B`, recomputes the
     pattern-indexed ticket, and rejects any public statement whose commitment
     or jackpot digest does not match the supplied work;
+  - a wire-facing byte verifier,
+    `verify_pearl_compatible_public_data`, that accepts exactly the 76-byte
+    serialized Pearl header plus exactly the 164-byte public proof parameter
+    blob and then runs the same composed precheck;
+  - a bounded Nockchain AuxPoW commitment primitive,
+    `pearl_nockchain_aux_commitment`, for replay-protecting a Nockchain block
+    commitment inside the Pearl work state before mining;
+  - canonical Nockchain aux byte encoding/decoding through
+    `PearlNockchainAux::to_bytes` / `from_bytes`, with magic `NPA1`, bounded
+    variable fields, and trailing-data rejection;
+  - a canonical Pearl merge public statement byte envelope,
+    `PearlMergePublicStatement`, with magic `PMP1`, fixed Pearl header/public
+    data fields, the expected Pearl-included aux digest, bounded aux bytes, and
+    trailing-data rejection;
+  - a combined merge-mining statement precheck,
+    `verify_pearl_merge_mining_public_data`, plus the wire-facing
+    `verify_pearl_merge_mining_public_data_with_aux_bytes` and
+    `verify_pearl_merge_public_statement_bytes`, that verifies the exact Pearl
+    public work bytes and rejects unless the Nockchain aux fields name the
+    trusted candidate Nockchain block commitment and hash to the expected
+    digest that the caller verified inside Pearl's work state;
   - all-legal-tile digest construction for the current square-tile
     `MatmulParams` model.
 - Release tests in `crates/ai-pow/tests/pearl_merge_compat.rs` proving:
@@ -101,7 +133,26 @@ Implemented in this branch:
   - the composed precheck accepts one shared Pearl-style work attempt for both
     target systems and rejects tampered header bytes, tampered mining config,
     tampered jackpot digest, Nockchain target failures, Pearl target failures,
-    and malformed matrix inputs.
+    and malformed matrix inputs;
+  - the wire-facing public-data precheck accepts exact serialized header/public
+    data bytes and rejects short/trailing header bytes, short/trailing public
+    data bytes, decode-time offset tampering, and commitment tampering;
+  - the AuxPoW commitment has an exact byte encoding, length-prefixes variable
+    fields to prevent concatenation ambiguity, binds chain id, Nockchain block
+    commitment, target epoch/height, and extra domain data, and rejects
+    unbounded or missing fields;
+  - the aux wire envelope round-trips exactly and rejects malformed length,
+    bad magic, empty chain id, oversized extra field, and trailing bytes;
+  - the `PMP1` merge public statement envelope round-trips exactly and rejects
+    short input, bad magic, bad declared aux length, and malformed nested aux
+    bytes;
+  - the combined merge-mining precheck accepts a work statement only when the
+    expected Pearl-included aux digest matches the supplied Nockchain aux
+    fields and those fields name the trusted candidate Nockchain block
+    commitment, and rejects aux replay/tamper, wrong-candidate replay, and
+    ordinary work tamper;
+  - the wire-facing merge precheck accepts canonical aux bytes and rejects
+    malformed aux bytes through the same verifier entrypoint.
 
 Still incomplete:
 
@@ -220,12 +271,55 @@ commitment.
    Pearl-consensus-valid commitment path includes:
 
    ```text
-   aux_commitment = HASH("nockchain-ai-pow-aux-v1" ||
-                         nockchain_chain_id ||
-                         nock_block_commitment ||
-                         nockchain_target_epoch_or_height ||
-                         optional_extra_domain_data)
+   aux_commitment = BLAKE3(
+       "nockchain-ai-pow-aux-v1" ||
+       le32(len(nockchain_chain_id)) ||
+       nockchain_chain_id ||
+       nock_block_commitment[32] ||
+       le64(nockchain_target_epoch_or_height) ||
+       le32(len(optional_extra_domain_data)) ||
+       optional_extra_domain_data
+   )
    ```
+
+   `nockchain_chain_id` is nonempty and at most 64 bytes.
+   `optional_extra_domain_data` is at most 1024 bytes. These bounds are
+   enforced by `ai_pow::pearl_compat::pearl_nockchain_aux_commitment`.
+
+   The Nockchain-side aux fields have this canonical byte envelope before
+   noun/wire embedding:
+
+   ```text
+   nockchain-aux-bytes =
+       magic[4]                    = "NPA1"
+       chain_id_len[1]             = u8, 1..=64
+       nockchain_chain_id[*]
+       nock_block_commitment[32]
+       nockchain_target_epoch_or_height[8] = little-endian u64
+       extra_domain_data_len[2]    = little-endian u16, 0..=1024
+       optional_extra_domain_data[*]
+   ```
+
+   The parser rejects short input, bad magic, zero-length chain id, oversized
+   fields, and trailing bytes.
+
+   The combined public statement envelope for Nockchain's merge verifier is:
+
+   ```text
+   pearl-merge-public-statement =
+       magic[4]                 = "PMP1"
+       pearl_header[76]          = serialized Pearl IncompleteBlockHeader
+       pearl_public_data[164]    = MiningConfiguration || H_A || H_B ||
+                                   jackpot_hash || m || n || t_rows || t_cols
+       expected_aux_commitment[32]
+       aux_bytes_len[2]          = little-endian u16
+       nockchain-aux-bytes[*]    = "NPA1" envelope above
+   ```
+
+   The verifier-facing Rust entrypoint is
+   `verify_pearl_merge_public_statement_bytes`. It still takes verifier-derived
+   `candidate_nock_block_commitment`, Nockchain target, and matrix/proof
+   witness data outside the miner-controlled envelope.
 
 3. Pearl's candidate header/work state `sigma` therefore commits, through the
    Pearl block, to the Nockchain candidate.
@@ -251,6 +345,30 @@ commitment.
 This is true merge-mining: the expensive matrix commitment, noise, matmul, and
 jackpot search work is shared. ZK certificate generation may be separate per
 chain.
+
+### Compatibility Boundary
+
+The shared cross-chain object is the Pearl-compatible PoW attempt:
+
+- the Pearl block/work state bytes `sigma`;
+- the Pearl mining configuration bytes `mu`;
+- the matrices `A` and `B`;
+- the Pearl-derived `kappa`, `H_A`, `H_B`, `s_B`, `s_A`;
+- the selected Pearl-legal tile state;
+- the jackpot digest `BLAKE3(M_i_j, key=s_A)`.
+
+The non-shared objects are the per-chain certificates and block wrappers:
+
+- Pearl may use Pearl's own block certificate and proof system.
+- Nockchain must use its canonical recursive AI-PoW certificate format.
+- Nockchain's certificate must prove the shared Pearl-compatible public
+  statement and the Nockchain block binding, but its bytes need not be accepted
+  by Pearl and Pearl's certificate bytes need not be accepted by Nockchain.
+
+This boundary is consensus-relevant. If Nockchain changes any input that feeds
+the shared attempt, it has forked the mineable work and is no longer
+merge-mining Pearl. If Nockchain changes only its recursive proof wrapper while
+proving the same public statement, compatibility is preserved.
 
 ## Required Nockchain Wire / Noun Shape
 
@@ -323,6 +441,8 @@ order.
 
 - Recompute `nock_block_commitment` from the candidate Nockchain block.
 - Recompute `aux_commitment`.
+- Reject if the aux fields' `nock_block_commitment` differs from the
+  recomputed candidate Nockchain block commitment.
 - Verify the Pearl auxiliary inclusion proof showing `aux_commitment` is
   committed into the Pearl work state used by `sigma`.
 - Reject if the Pearl work state can be reused for a different Nockchain block.
@@ -368,6 +488,18 @@ statement instead of the Pearl-compatible work statement. It does not need to
 reject merely because the certificate bytes or recursion stack differ from
 Pearl's.
 
+The certificate API should make this separation explicit. Production
+`pearl-merge-v1` verification should accept only:
+
+- the canonical Nockchain recursive proof artifact;
+- the canonical Pearl-compatible public statement envelope;
+- the auxiliary Pearl-inclusion data needed to bind the Nockchain block into
+  `sigma`.
+
+It should not expose or accept a "Pearl ZKP" path as the Nockchain production
+certificate, because that would confuse proof-format compatibility with
+mineable-attempt compatibility.
+
 ### 5. Nockchain Target Check
 
 Interpret `jackpot_hash` as a little-endian `uint256` and compare it to the
@@ -408,10 +540,22 @@ apply the current one-selected-tile rule in this mode.
 - Done for Rust statement prechecks: add full Pearl `PeriodicPattern`
   semantics, 164-byte public proof parameter parsing, pattern-indexed ticket
   recomputation, Pearl target checking, independent Nockchain target checking,
-  and the composed `verify_pearl_compatible_work` API. Still required: teach
-  the recursive proof statement/circuit to prove Pearl's general row/column
+  the composed `verify_pearl_compatible_work` API, and the serialized
+  `verify_pearl_compatible_public_data` API. Still required: teach the
+  recursive proof statement/circuit to prove Pearl's general row/column
   pattern-indexed ticket instead of only the current square-tile `MatmulParams`
   model.
+- Done for the Nockchain-side AuxPoW digest primitive: add
+  `pearl_nockchain_aux_commitment` with bounded, length-prefixed fields and
+  `verify_pearl_merge_mining_public_data` to tie the aux digest and candidate
+  Nockchain block commitment to the verified Pearl public work statement.
+  Also done: canonical `PearlNockchainAux` byte encode/decode and
+  `verify_pearl_merge_mining_public_data_with_aux_bytes` for the
+  Nockchain-side wire/noun boundary, plus the `PMP1`
+  `PearlMergePublicStatement` envelope and
+  `verify_pearl_merge_public_statement_bytes`. Still required: embed that
+  digest into a Pearl-consensus-valid commitment path and verify the inclusion
+  proof against the exact `sigma`.
 - Add byte-equivalence tests against Pearl source fixtures for:
   - `sigma || mu` serialization;
   - `kappa`;
@@ -549,10 +693,12 @@ verifier must derive the statement entirely according to that mode.
    commitments, seeds, tile state, and jackpot hash.
 3. [done for Rust precheck] Add a Pearl-compatible statement precheck in Rust
    that rejects Nockchain-native statement fields and verifies Pearl transcript
-   commitments, the pattern-indexed ticket, and both target systems over the
-   same jackpot digest.
-4. Define and implement the Nockchain auxiliary commitment and Pearl inclusion
-   proof.
+   commitments, the pattern-indexed ticket, exact serialized public-data
+   boundaries, and both target systems over the same jackpot digest.
+4. [partial] Define and implement the Nockchain auxiliary commitment and Pearl
+   inclusion proof:
+   - [done] bounded Nockchain aux commitment digest;
+   - [open] Pearl-consensus-valid inclusion location and verifier.
 5. [partial] Build a local end-to-end fixture:
    - one Pearl work instance;
    - one Nockchain-native certificate proving that Pearl-compatible statement;
