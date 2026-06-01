@@ -2385,7 +2385,8 @@ impl<'de> VariantAccess<'de> for NodeEnumAccess {
 #[cfg(test)]
 mod tests {
     use ai_pow::fiat_shamir::{
-        block_state, commitment_key, noise_seed_a, noise_seed_b, pow_key_for_nonce,
+        attempt_tile_index, block_state, commitment_key, noise_seed_a, noise_seed_b,
+        pow_key_for_nonce,
     };
     use ai_pow::ncmn::{build_ncmn_nonce, NonceAnchors};
     use ai_pow::prover::params_tag;
@@ -2446,6 +2447,7 @@ mod tests {
         ZkPublicCommitments,
         CompositePublicInputs,
         usize,
+        u32,
     ) {
         let params = MatmulParams::PROD;
         let commitments = ZkPublicCommitments {
@@ -2456,6 +2458,7 @@ mod tests {
         };
         let tag = params_tag(&params);
         let state = block_state(block_commitment, nonce);
+        let found_idx = attempt_tile_index(&state, &tag, params.num_tiles()) as u32;
         let kappa = commitment_key(&state, &tag);
         let s_b = noise_seed_b(&kappa, &commitments.h_b);
         let s_a = noise_seed_a(&s_b, &commitments.h_a);
@@ -2467,7 +2470,7 @@ mod tests {
         pis.hash_b = words_le(&commitments.h_b_chunk);
         pis.hash_jackpot = [1, 0, 0, 0, 0, 0, 0, 0];
         let trace_height = expected_layer0_rows(&params).required_trace_len();
-        (params, commitments, pis, trace_height)
+        (params, commitments, pis, trace_height, found_idx)
     }
 
     fn build_certificate_slab_with_raw_node<F>(build_certificate: F) -> NounSlab
@@ -2649,11 +2652,12 @@ mod tests {
         let block = b"noun-certificate-block";
         let nonce = b"noun-certificate-nonce";
         let target = [0xffu8; 32];
-        let (params, commitments, pis, trace_height) = production_statement_fixture(block, nonce);
+        let (params, commitments, pis, trace_height, found_idx) =
+            production_statement_fixture(block, nonce);
         let certificate = AiProofNode::Seq(vec![AiProofNode::U64(42)]);
         let slab = build_ai_pow_certificate_noun_from_node(
             &zk_params_from_matmul(&params),
-            0,
+            found_idx,
             trace_height,
             &commitments,
             &pis,
@@ -2692,12 +2696,12 @@ mod tests {
         let candidate_nck = [0x42u8; 32];
         let nonce = build_ncmn_nonce(&NonceAnchors::nck_only(candidate_nck), 99);
         let target = [0xffu8; 32];
-        let (params, commitments, pis, trace_height) =
+        let (params, commitments, pis, trace_height, found_idx) =
             production_statement_fixture(puzzle_id, &nonce);
         let certificate = AiProofNode::Seq(vec![AiProofNode::U64(42)]);
         let cert_slab = build_ai_pow_certificate_noun_from_node(
             &zk_params_from_matmul(&params),
-            0,
+            found_idx,
             trace_height,
             &commitments,
             &pis,
@@ -2708,7 +2712,7 @@ mod tests {
         let decoded = decode_ai_pow_artifact_slab(&artifact_slab, CertificateNounLimits::default())
             .expect("decode ai-pow artifact");
         assert_eq!(decoded.nonce, nonce);
-        assert_eq!(decoded.certificate.found_idx, 0);
+        assert_eq!(decoded.certificate.found_idx, found_idx);
         assert_eq!(decoded.certificate.commitments, commitments);
         assert_eq!(decoded.certificate.public_inputs, pis);
         assert_eq!(decoded.certificate.certificate, certificate);
@@ -2854,12 +2858,12 @@ mod tests {
         let candidate_nck = [0x4eu8; 32];
         let nonce = build_ncmn_nonce(&NonceAnchors::nck_only(candidate_nck), 7);
         let target = [0xffu8; 32];
-        let (params, commitments, pis, trace_height) =
+        let (params, commitments, pis, trace_height, found_idx) =
             production_statement_fixture(puzzle_id, &nonce);
         let certificate = AiProofNode::Seq(vec![AiProofNode::U64(42)]);
         let slab = build_ai_pow_certificate_noun_from_node(
             &zk_params_from_matmul(&params),
-            0,
+            found_idx,
             trace_height,
             &commitments,
             &pis,

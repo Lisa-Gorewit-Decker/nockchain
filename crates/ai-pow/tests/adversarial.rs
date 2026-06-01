@@ -141,9 +141,26 @@ fn reject_found_above_target() {
     assert!(
         matches!(
             r,
-            Err(VerifyError::FoundAboveTarget) | Err(VerifyError::FoundMerkleMismatch)
+            Err(VerifyError::FoundIndexMismatch)
+                | Err(VerifyError::FoundAboveTarget)
+                | Err(VerifyError::FoundMerkleMismatch)
         ),
         "got {r:?}"
+    );
+}
+
+#[test]
+fn reject_in_range_found_tile_substitution_before_merkle_or_target() {
+    let (params, block, nonce, mut proof) = fresh_proof();
+    let claimed = params.tile_index(proof.found.i, proof.found.j);
+    let other = (claimed + 1) % params.num_tiles();
+    let (i, j) = params.tile_coords(other);
+    proof.found.i = i;
+    proof.found.j = j;
+
+    assert_eq!(
+        verify(block, nonce, &params, &proof),
+        Err(VerifyError::FoundIndexMismatch)
     );
 }
 

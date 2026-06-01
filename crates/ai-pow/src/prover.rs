@@ -1,4 +1,5 @@
-//! Prover: search for a tile whose keyed BLAKE3 hash of the 512-bit Pearl
+//! Prover: derive the single eligible jackpot tile for this nonce-bound
+//! attempt and check whether its keyed BLAKE3 hash of the 512-bit Pearl
 //! tile state `M_{i,j}` falls below the shape-aware target
 //! `2^(256 - b) · r · t^2` (Pearl §4.5).
 //!
@@ -13,14 +14,15 @@
 //! The nonce is part of the per-attempt `sigma` before `κ`, `H_A`, `H_B`,
 //! `s_A`, `s_B`, low-rank noise, and all tile states are computed. Minimal
 //! work reuse across nonces is intentional; cache-friendly reuse of one matmul
-//! result across many nonce hashes would be a PoW soundness bug.
+//! result across many nonce hashes or many miner-selected tile hashes would be
+//! a PoW soundness bug.
 
 use thiserror::Error;
 
 use crate::commit::{a_row_leaf_hash, b_col_leaf_hash, merkle_path, merkle_root, MerkleError};
 use crate::fiat_shamir::{
-    block_state, challenge_indices, challenge_seed, commitment_key, noise_seed_a, noise_seed_b,
-    pow_key_for_nonce,
+    attempt_tile_index, block_state, challenge_indices, challenge_seed, commitment_key,
+    noise_seed_a, noise_seed_b, pow_key_for_nonce,
 };
 use crate::matmul::{compute_tile, BlockNoise, Matrices, TileState};
 use crate::params::{MatmulParams, ParamError};
@@ -32,8 +34,9 @@ const INPUT_RANGE_MAX: i8 = 64;
 
 #[derive(Debug, Clone, Copy)]
 pub struct ProverOptions {
-    /// If `true`, after finding a tile that satisfies hardness, continue
-    /// scanning to find the smallest hash. Off by default.
+    /// Deprecated no-op retained for API compatibility. Production mining uses
+    /// one verifier-derived jackpot tile per nonce-bound attempt, so there is
+    /// no miner-selected tile set to scan for a "best" hash.
     pub seek_best: bool,
 }
 
@@ -353,25 +356,12 @@ fn mine_inner(
     let comm_m = merkle_root(&leaves)?;
     let chal = challenge_seed(&ctx.attempt_state, &comm_m, &ctx.tag);
 
-    let mut found: Option<(u32, [u8; 32])> = None;
-    for idx in 0..num_tiles as u32 {
-        let h = &leaves[idx as usize];
-        if hash_le_target(h, target) {
-            match found {
-                None => found = Some((idx, *h)),
-                Some((_, ref best)) if opts.seek_best && h < best => {
-                    found = Some((idx, *h));
-                }
-                _ => {}
-            }
-            if !opts.seek_best {
-                break;
-            }
-        }
-    }
-    let Some((found_idx, _)) = found else {
+    let _ = opts;
+    let found_idx = attempt_tile_index(&ctx.attempt_state, &ctx.tag, num_tiles as u64) as u32;
+    let h = &leaves[found_idx as usize];
+    if !hash_le_target(h, target) {
         return Ok(None);
-    };
+    }
 
     let spot_indices = challenge_indices(&chal, params.spot_checks, num_tiles as u64);
 

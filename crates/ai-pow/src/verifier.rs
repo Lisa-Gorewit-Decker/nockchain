@@ -16,8 +16,8 @@ use thiserror::Error;
 
 use crate::commit::{a_row_leaf_hash, b_col_leaf_hash, merkle_recover_root, MerkleError};
 use crate::fiat_shamir::{
-    block_state, challenge_indices, challenge_seed, commitment_key, noise_seed_a, noise_seed_b,
-    pow_key_for_nonce,
+    attempt_tile_index, block_state, challenge_indices, challenge_seed, commitment_key,
+    noise_seed_a, noise_seed_b, pow_key_for_nonce,
 };
 use crate::matmul::compute_tile_from_slices;
 use crate::ncmn::{parse_ncmn_nonce, NonceFormatError};
@@ -47,6 +47,8 @@ pub enum VerifyError {
     NonceExternalCommitmentPresent,
     #[error("found tile coordinates out of range")]
     FoundOutOfRange,
+    #[error("found tile index does not match verifier-derived attempt tile")]
+    FoundIndexMismatch,
     #[error("found tile hardness check failed")]
     FoundAboveTarget,
     #[error("found tile Merkle path does not recover comm_m")]
@@ -119,12 +121,16 @@ pub fn verify_at_target(
     let state = block_state(block_commitment, nonce);
     let chal = challenge_seed(&state, &proof.comm_m, &tag);
     let num_tiles = params.num_tiles();
+    let expected_found = attempt_tile_index(&state, &tag, num_tiles);
 
     if (proof.spot.len() as u32) != params.spot_checks {
         return Err(VerifyError::SpotCountMismatch);
     }
 
     precheck_opening(&proof.found, params, OpeningRole::Found)?;
+    if params.tile_index(proof.found.i, proof.found.j) != expected_found {
+        return Err(VerifyError::FoundIndexMismatch);
+    }
     for opening in &proof.spot {
         precheck_opening(opening, params, OpeningRole::Spot)?;
     }

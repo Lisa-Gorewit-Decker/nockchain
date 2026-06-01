@@ -313,10 +313,13 @@ fn medium_params_round_trip() {
 }
 
 #[test]
-fn seek_best_returns_smallest_hash() {
+fn seek_best_does_not_scan_beyond_verifier_derived_attempt_tile() {
     let params = small_params();
     let (a, b) = synth_matrices(b"ab-seed", &params);
-    let proof = mine(
+    let default_proof = mine(b"hdr", b"nce", &a, &b, &params, ProverOptions::default())
+        .unwrap()
+        .unwrap();
+    let seek_best_proof = mine(
         b"hdr",
         b"nce",
         &a,
@@ -326,7 +329,11 @@ fn seek_best_returns_smallest_hash() {
     )
     .unwrap()
     .unwrap();
-    verify(b"hdr", b"nce", &params, &proof).unwrap();
+    assert_eq!(
+        (seek_best_proof.found.i, seek_best_proof.found.j),
+        (default_proof.found.i, default_proof.found.j)
+    );
+    verify(b"hdr", b"nce", &params, &seek_best_proof).unwrap();
 }
 
 #[test]

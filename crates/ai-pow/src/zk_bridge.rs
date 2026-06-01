@@ -73,7 +73,7 @@ use ai_pow_zk::{
 };
 
 use crate::fiat_shamir::{
-    block_state, commitment_key, noise_seed_a, noise_seed_b, pow_key_for_nonce,
+    attempt_tile_index, block_state, commitment_key, noise_seed_a, noise_seed_b, pow_key_for_nonce,
 };
 use crate::params::{MatmulParams, ParamError};
 #[cfg(test)]
@@ -700,6 +700,36 @@ fn validate_production_artifact_shape(
     Ok(())
 }
 
+fn expected_attempt_found_idx(
+    block_commitment: &[u8],
+    nonce: &[u8],
+    params: &MatmulParams,
+) -> Result<u32, BridgeError> {
+    let tag = params_tag(params);
+    let state = block_state(block_commitment, nonce);
+    let idx = attempt_tile_index(&state, &tag, params.num_tiles());
+    u32::try_from(idx).map_err(|_| BridgeError::FoundIdxOutOfRange {
+        found_idx: u32::MAX,
+        num_tiles: params.num_tiles(),
+    })
+}
+
+fn ensure_attempt_found_idx(
+    block_commitment: &[u8],
+    nonce: &[u8],
+    params: &MatmulParams,
+    found_idx: u32,
+) -> Result<(), BridgeError> {
+    let expected = expected_attempt_found_idx(block_commitment, nonce, params)?;
+    if found_idx != expected {
+        return Err(BridgeError::FoundIdxMismatch {
+            expected,
+            actual: found_idx,
+        });
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 fn decode_commitments(cur: &mut &[u8]) -> Result<ZkPublicCommitments, ArtifactCodecError> {
     Ok(ZkPublicCommitments {
@@ -793,6 +823,9 @@ pub enum BridgeError {
     /// count for these params (pre-M2 this was an `expect("found_idx
     /// must be a valid tile index for these params")` panic).
     FoundIdxOutOfRange { found_idx: u32, num_tiles: u64 },
+    /// `found_idx` is not the verifier-derived jackpot tile for this
+    /// nonce-bound attempt.
+    FoundIdxMismatch { expected: u32, actual: u32 },
     /// M3 (DoS audit): the ai-pow-zk verifier-side `canonical_program`
     /// rejected a structurally-broken `ZkParams` (16|r invariant,
     /// tile-grid bounds, trace_len lower bound). Defense-in-depth
@@ -833,6 +866,9 @@ impl core::fmt::Display for BridgeError {
                 found_idx,
                 num_tiles,
             } => write!(f, "found_idx ({found_idx}) >= num_tiles ({num_tiles})"),
+            BridgeError::FoundIdxMismatch { expected, actual } => {
+                write!(f, "found_idx mismatch: expected {expected}, got {actual}")
+            }
             BridgeError::ZkParamsInvalid(msg) => {
                 write!(f, "ai-pow-zk canonical_program rejected params: {msg}")
             }
@@ -916,6 +952,7 @@ fn prove_ai_pow_block(
         .map_err(BridgeError::InvalidParams)?;
     ensure_context_params(ctx, params)?;
     ensure_context_attempt(ctx, nonce)?;
+    ensure_attempt_found_idx(&ctx.block_commitment, &ctx.nonce, params, found_idx)?;
     let (tile_i, tile_j) = tile_ij(found_idx, params).ok_or(BridgeError::FoundIdxOutOfRange {
         found_idx,
         num_tiles: params.num_tiles(),
@@ -944,6 +981,7 @@ pub fn prove_ai_pow_recursive_certificate(
         .map_err(BridgeError::InvalidParams)?;
     ensure_context_params(ctx, params)?;
     ensure_context_attempt(ctx, nonce)?;
+    ensure_attempt_found_idx(&ctx.block_commitment, &ctx.nonce, params, found_idx)?;
     let (tile_i, tile_j) = tile_ij(found_idx, params).ok_or(BridgeError::FoundIdxOutOfRange {
         found_idx,
         num_tiles: params.num_tiles(),
@@ -1052,6 +1090,9 @@ fn derive_ai_pow_statement(
     })?;
     let tag = params_tag(params);
     let state = block_state(block_commitment, nonce);
+    if require_prod_envelope {
+        ensure_attempt_found_idx(block_commitment, nonce, params, found_idx)?;
+    }
     let kappa = commitment_key(&state, &tag);
     let s_b = noise_seed_b(&kappa, &commitments.h_b);
     let s_a = noise_seed_a(&s_b, &commitments.h_a);
@@ -1631,6 +1672,9 @@ fn prove_and_verify_for_block_inner(
     }
     ensure_context_params(ctx, params)?;
     ensure_context_attempt(ctx, nonce)?;
+    if require_prod_envelope {
+        ensure_attempt_found_idx(&ctx.block_commitment, &ctx.nonce, params, found_idx)?;
+    }
     let target = crate::tile_hash::difficulty_target(params);
     let (tile_i, tile_j) = tile_ij(found_idx, params).ok_or(BridgeError::FoundIdxOutOfRange {
         found_idx,
@@ -1640,9 +1684,10 @@ fn prove_and_verify_for_block_inner(
 }
 
 /// MED-3 / HIGH-2.2 §4.E — the **verifier-side derivation contract**
-/// for the attested tile index. The winning tile is the miner's
-/// linear tile index `found_idx` into `BlockContext::m_states`
-/// (`mine_with_context`); it decomposes to grid coordinates as
+/// for the attested tile index. In production, the winning tile is the
+/// verifier-derived attempt tile; submitted `found_idx` is only the linear
+/// index into `BlockContext::m_states` for that tile. It decomposes to grid
+/// coordinates as
 ///
 /// ```text
 ///   tile_i = found_idx / col_tiles      tile_j = found_idx % col_tiles
@@ -2107,27 +2152,68 @@ mod tests {
         pis.hash_b = bytes_to_words_le(&commitments.h_b_chunk);
         pis.hash_jackpot = [1, 0, 0, 0, 0, 0, 0, 0];
         let trace_height = expected_layer0_rows(&params).required_trace_len();
+        let found_idx = expected_attempt_found_idx(block, nonce, &params).unwrap();
 
         verify_ai_pow_production_statement(
-            block, nonce, &params, &target, 0, &commitments, &pis, trace_height,
+            block, nonce, &params, &target, found_idx, &commitments, &pis, trace_height,
         )
         .expect("honest statement metadata should precheck");
 
         assert!(matches!(
             verify_ai_pow_production_statement(
-                block, b"wrong-nonce", &params, &target, 0, &commitments, &pis, trace_height,
+                block, b"wrong-nonce", &params, &target, found_idx, &commitments, &pis,
+                trace_height,
             ),
-            Err(BridgeError::PublicInputMismatch("JOB_KEY"))
+            Err(BridgeError::FoundIdxMismatch { .. })
+                | Err(BridgeError::PublicInputMismatch("JOB_KEY"))
                 | Err(BridgeError::PublicInputMismatch("COMMITMENT_HASH"))
         ));
         assert_eq!(
             verify_ai_pow_production_statement(
-                block, nonce, &params, &[0u8; 32], 0, &commitments, &pis, trace_height,
+                block, nonce, &params, &[0u8; 32], found_idx, &commitments, &pis, trace_height,
             )
             .expect_err("jackpot above zero target must reject")
             .to_string(),
             BridgeError::FoundAboveTarget.to_string()
         );
+        assert!(matches!(
+            verify_ai_pow_production_statement(
+                block,
+                nonce,
+                &params,
+                &target,
+                found_idx.wrapping_add(1),
+                &commitments,
+                &pis,
+                trace_height,
+            ),
+            Err(BridgeError::FoundIdxMismatch { .. })
+        ));
+    }
+
+    #[test]
+    fn production_bridge_rejects_non_derived_found_idx_before_proving() {
+        let params = MatmulParams {
+            m: 64,
+            k: 512,
+            n: 64,
+            noise_rank: 32,
+            tile: 8,
+            spot_checks: 8,
+            difficulty_bits: 0,
+        };
+        params.validate_prod_envelope().unwrap();
+        let block = b"production-found-idx-block";
+        let nonce = b"production-found-idx-nonce";
+        let (a, b) = synth_matrices(b"production-found-idx-seed", &params);
+        let ctx = BlockContext::build(block, nonce, &a, &b, &params).expect("ctx");
+        let expected = expected_attempt_found_idx(block, nonce, &params).unwrap();
+        let wrong = ((u64::from(expected) + 1) % params.num_tiles()) as u32;
+
+        assert!(matches!(
+            prove_and_verify_for_block(&ctx, &params, nonce, wrong),
+            Err(BridgeError::FoundIdxMismatch { .. })
+        ));
     }
 
     /// HIGH-2.2 §4.E: the bridge attests the **actual solved

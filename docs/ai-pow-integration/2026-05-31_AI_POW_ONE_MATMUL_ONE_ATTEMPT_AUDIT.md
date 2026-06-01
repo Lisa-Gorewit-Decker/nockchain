@@ -40,6 +40,9 @@ Implementation status:
   context supplied with a different nonce.
 - Plain and ZK verifiers derive `kappa`, `s_B`, and `s_A` from the same
   nonce-bound attempt state.
+- The production miner and verifier now derive exactly one eligible jackpot
+  tile from the nonce-bound attempt state and parameter tag. `found_idx` is no
+  longer miner-selected search space.
 - The production recursive-certificate statement precheck re-derives
   `JOB_KEY`, `COMMITMENT_HASH`, `HASH_A`, `HASH_B`, trace height, and jackpot
   target satisfaction from verifier-supplied block data before recursive
@@ -69,9 +72,11 @@ verifier is enabled, every consensus-admissible AI-PoW block must satisfy:
 2. The verifier derives an attempt-specific transcript from that trusted data.
 3. The transcript used to generate the noised matrices must include the nonce,
    directly or through an attempt seed derived from the nonce.
-4. The recursive proof must prove the matmul over those nonce-derived noised
-   matrices for the verifier-derived `found_idx`.
-5. The final jackpot hash must be derived from that same nonce-bound matmul
+4. The verifier derives the single eligible jackpot tile from the nonce-bound
+   attempt state. The submitted `found_idx` must match that tile.
+5. The recursive proof must prove the matmul over those nonce-derived noised
+   matrices for that verifier-derived `found_idx`.
+6. The final jackpot hash must be derived from that same nonce-bound matmul
    result and checked against the target.
 
 Changing the nonce must invalidate the old matmul work. Consensus can tolerate
@@ -297,28 +302,29 @@ Impact:
 
 ## Attempt Accounting Rule
 
-The production accounting rule is Pearl's per-tile rule:
+The production accounting rule is stricter than a cache-friendly per-tile scan:
 
-- one nonce-bound tile state `M[i,j]` is one jackpot work unit;
-- one nonce may evaluate many tile work units only by performing the
-  corresponding nonce-bound tile matmul work;
+- one nonce-bound full matmul attempt gets exactly one eligible jackpot tile;
+- the eligible tile is derived by the verifier from
+  `block_state(block_commitment, nonce)` and `params_tag`;
+- a miner must not scan all tile hashes from one full matmul and submit the
+  best or first passing tile;
 - a tile result `M[i,j]` must not be re-keyed or rehashed across many nonces;
-- the verifier must bind the submitted `found_idx` to the actual tile whose
-  nonce-bound matmul/fold is proven.
+- the submitted `found_idx` is only verifier-checkable metadata and must equal
+  the derived jackpot tile.
 
-The current `found_idx` search model is therefore acceptable only because each
-searched tile is generated from the same fresh nonce-bound attempt context and
-the recursive certificate proves the selected opened tile. It is not acceptable
-to treat a cached tile state as many attempts by changing only the nonce or
-final hash key.
+This avoids two forms of work reuse:
 
-The code now has an explicit regression guard that
-`difficulty_target(params)` is per-tile, not multiplied by
-`params.num_tiles()`: increasing the tile grid size increases available tile
-work units, not the target for each tile. If Nockchain later wants a stricter
-"one whole matrix product yields one digest" protocol, that is a consensus
-change requiring a verifier-derived single tile or aggregate digest. It is not
-the Pearl-compatible rule implemented here.
+- nonce grinding over one cached noised matmul, where only the final hash key
+  changes;
+- tile grinding over one cached full matmul, where one expensive attempt yields
+  `params.num_tiles()` cheap jackpot trials.
+
+The code now has explicit regression guards that `seek_best` is a no-op in
+production mining and that the verifier rejects an in-range substituted
+`found_idx` before accepting a Merkle path or target check. The target remains
+checked against the eligible tile's digest, but the grid size does not create
+additional miner-selected lottery tickets inside one nonce-bound attempt.
 
 ## Recommended Repair
 
@@ -418,11 +424,11 @@ Regression coverage now includes:
 - decoded structured certificate nouns reject wrong nonce, zero target, and
   parameter mismatch at the statement precheck boundary.
 
-Tile scanning remains the Pearl per-tile block-opening model: all checked tile
-hashes are generated from nonce-bound tile matmul work and the target is
-shape-weighted per Pearl Section 4.5 (`r * t_m * t_n`). It is not
-final-hash-only grinding over a cached matmul result, and the target does not
-silently increase with the number of grid tiles.
+Tile scanning is no longer a production optimization. The only jackpot tile
+hash checked for a nonce-bound full matmul attempt is the verifier-derived
+attempt tile. The target is still shape-weighted per Pearl Section 4.5
+(`r * t_m * t_n`), but grid size does not silently grant extra cheap jackpot
+trials inside one cached full matmul.
 
 ## Latest Recursive-Certificate Re-Audit
 
@@ -502,9 +508,9 @@ until the verifier jet is wired.
    certificate verifier is callable from consensus.
 2. Do not activate AI-PoW block acceptance on mainnet through any legacy
    nonce-independent matmul statement or outer-only recursive verifier.
-3. Leave audit comments near `BlockContext`, `pow_key_for_nonce`, and the miner
-   loop so future readers do not mistake cache-friendly behavior for the desired
-   invariant.
+3. Leave audit comments near `BlockContext`, `pow_key_for_nonce`,
+   `attempt_tile_index`, and the miner loop so future readers do not mistake
+   cache-friendly behavior for the desired invariant.
 
 ### Phase 1: Refactor Plain Attempt Context
 
@@ -655,10 +661,13 @@ future hardening/measurement work.
 
 8. Difficulty calibration test:
    - Done: `difficulty_target_is_per_tile_not_per_grid` pins that the Pearl
-     target is per tile-work unit and does not scale with `num_tiles`.
+     target formula itself does not scale with `num_tiles`.
+   - Done: `seek_best_does_not_scan_beyond_verifier_derived_attempt_tile` and
+     the found-index substitution tests pin that production gets exactly one
+     eligible jackpot tile per nonce-bound attempt.
    - Future measurement: sample many small test attempts and confirm the
-     empirical success rate matches the per-tile probability model multiplied
-     by the number of nonce-bound tile work units actually evaluated.
+     empirical success rate matches a single eligible tile digest per full
+     matmul attempt.
 
 ### Phase 6: Benchmarks
 
@@ -698,16 +707,18 @@ The fix is complete only when all of these are true:
 7. AI-PoW consensus acceptance remains disabled or reject-all until the above
    tests pass.
 
-## Resolved Protocol Question: Tile Search Is Per-Tile Work
+## Resolved Protocol Question: No Miner-Selected Tile Search
 
-The repair above stops nonce grinding over one cached matmul result. It also
-settles the `found_idx` interpretation for the current protocol: the mineable
-unit is the nonce-bound tile fold, matching Pearl's opened-tile model. The
-miner may search tiles only by doing the corresponding nonce-bound tile work,
-and the certificate must prove the selected tile. The target remains per tile;
-grid size is not hidden inside `difficulty_target`.
+The repair above stops nonce grinding over one cached matmul result and also
+settles the `found_idx` interpretation for the current protocol: one
+nonce-bound full matmul attempt produces one verifier-derived jackpot tile.
+The miner cannot turn a single full matmul into many lottery tickets by scanning
+all tile digests. That cache-friendly behavior is a vulnerability because it
+discounts wide matrix products by `params.num_tiles()`.
 
-If a future design wants one digest for an entire matrix product, it must be
-specified as a new consensus rule. It would require deriving a single tile or
-aggregate digest from trusted block data and rejecting arbitrary `found_idx`
-search. That is outside the current Pearl-compatible production invariant.
+The certificate must prove the verifier-derived tile, and the verifier must
+reject any other in-range `found_idx` even if its opening is internally
+well-formed. If a future design wants multi-tile search, it must price that
+search as separate consensus work or specify a different aggregate digest rule.
+It must not reintroduce arbitrary `found_idx` selection over a cached full
+matmul.

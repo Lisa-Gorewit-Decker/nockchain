@@ -27,6 +27,7 @@ const CTX_TRANSCRIPT: &str = "ai-pow v3 transcript";
 const CTX_INDICES: &str = "ai-pow v3 challenge-indices";
 const CTX_POW_KEY: &str = "ai-pow v3 pow-key";
 const CTX_CHALLENGE: &str = "ai-pow v3 challenge-seed";
+const CTX_ATTEMPT_TILE: &str = "ai-pow v3 attempt-tile";
 
 /// Build the per-block `state` byte string fed to the prover and verifier.
 pub fn block_state(block_commitment: &[u8], nonce: &[u8]) -> Vec<u8> {
@@ -97,6 +98,22 @@ pub fn challenge_seed(state: &[u8], comm_m: &[u8; 32], params_tag: &[u8; 32]) ->
     hasher.update(comm_m);
     hasher.update(params_tag);
     *hasher.finalize().as_bytes()
+}
+
+/// Derive the single jackpot tile index for one nonce-bound attempt.
+///
+/// This removes `found_idx` as miner-selected search space: a nonce/full
+/// matmul attempt has exactly one verifier-derived tile whose hash may be
+/// checked against the target. Spot-check indices remain derived from
+/// `challenge_seed`, which additionally binds the full `comm_m` tree.
+pub fn attempt_tile_index(state: &[u8], params_tag: &[u8; 32], num_tiles: u64) -> u64 {
+    assert!(num_tiles > 0, "num_tiles must be > 0");
+    let mut hasher = Hasher::new_derive_key(CTX_ATTEMPT_TILE);
+    hasher.update(&(state.len() as u64).to_le_bytes());
+    hasher.update(state);
+    hasher.update(params_tag);
+    let seed = *hasher.finalize().as_bytes();
+    challenge_indices(&seed, 1, num_tiles)[0]
 }
 
 /// Generic transcript hash: returns 32 bytes for an arbitrary list of byte
@@ -207,6 +224,16 @@ mod tests {
             pow_key_for_nonce(&s_a, b"nce"),
             noise_seed_a(&[1u8; 32], &[2u8; 32])
         );
+    }
+
+    #[test]
+    fn attempt_tile_index_is_deterministic_bounded_and_attempt_bound() {
+        let tag = [9u8; 32];
+        let idx = attempt_tile_index(b"attempt-a", &tag, 17);
+        assert!(idx < 17);
+        assert_eq!(idx, attempt_tile_index(b"attempt-a", &tag, 17));
+        assert_ne!(idx, attempt_tile_index(b"attempt-b", &tag, 17));
+        assert_ne!(idx, attempt_tile_index(b"attempt-a", &[10u8; 32], 17));
     }
 
     #[test]
