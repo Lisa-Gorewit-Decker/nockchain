@@ -860,6 +860,30 @@ read-only values through accessors such as `nonce()`, `s_a()`,
 fields. The nockchain wire regression asserts that `nonce`, `s_A`, and
 `m_states` remain crate-private while read-only accessors remain available.
 
+## Latest Re-Audit: Decoded Recursive Certificate DoS Ordering
+
+The decoded Hoon-compatible certificate verifier had the right ordering for
+recursive proof verification, but not for recursive proof reconstruction:
+`verify_decoded_ai_pow_certificate` and the NCMN variant decoded the
+miner-controlled proof-node tree into an `AiPowRecursiveCertificate` before
+running the cheap statement precheck. A block with stale nonce, wrong target,
+wrong NCMN anchor, or multi-tile selected-tile metadata could therefore force
+extra recursive-certificate deserialization/canonicalization work before being
+rejected.
+
+This is not a forged-proof acceptance bug, but it is the wrong consensus
+boundary for a hostile wire artifact. The verifier should reject all cheap
+metadata failures before doing any work proportional to the proof tree whenever
+the already-decoded shape carries enough metadata to do so.
+
+Code status after this re-audit: the decoded certificate verifier APIs now run
+`precheck_ai_pow_certificate_statement` or
+`precheck_ai_pow_ncmn_certificate_statement` before
+`ai_pow_recursive_certificate_from_node`. Regression coverage constructs an
+intentionally invalid proof-node and confirms wrong statement metadata or a
+wrong NCMN anchor returns the cheap precheck error before proof-node
+reconstruction is attempted.
+
 This is intentionally fail-closed. Pearl's reference miner computes every
 output tile before returning the final matrix and records an opened block when a
 tile hash hits the target, but the proof artifact only opens the winning tile.

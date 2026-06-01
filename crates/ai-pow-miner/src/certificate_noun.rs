@@ -3,7 +3,7 @@
 //! This module intentionally accepts the recursive certificate object, not
 //! `MatmulProof` and not the raw Layer-0 `AiPowBatchProof`. Its verifier
 //! boundary also runs the full-matmul statement precheck before recursive proof
-//! verification.
+//! reconstruction or verification.
 
 use std::panic::{catch_unwind, AssertUnwindSafe};
 
@@ -604,10 +604,10 @@ pub fn verify_ai_pow_ncmn_certificate_statement_and_proof(
 /// trusted block data.
 ///
 /// This is the consensus-facing Rust boundary for the structured recursive
-/// certificate artifact: it decodes the proof tree into the canonical recursive
-/// certificate type, cheaply re-derives and checks the full-matmul statement
-/// metadata, and then verifies the recursive certificate against those
-/// verifier-derived Layer-0 public inputs.
+/// certificate artifact: it cheaply re-derives and checks the full-matmul
+/// statement metadata before decoding the proof tree into the canonical
+/// recursive certificate type, then verifies the recursive certificate against
+/// those verifier-derived Layer-0 public inputs.
 pub fn verify_decoded_ai_pow_certificate(
     shape: &AiPowCertificateShape,
     block_commitment: &[u8],
@@ -615,20 +615,20 @@ pub fn verify_decoded_ai_pow_certificate(
     params: &MatmulParams,
     target: &[u8; 32],
 ) -> Result<(), CertificateNounError> {
+    precheck_ai_pow_certificate_statement(shape, block_commitment, nonce, params, target)?;
     let certificate = ai_pow_recursive_certificate_from_node(&shape.certificate)?;
-    verify_ai_pow_certificate_statement_and_proof(
-        shape, block_commitment, nonce, params, target, &certificate,
-    )
+    ai_pow_zk::recursion::verify_recursive_certificate(&certificate, &shape.public_inputs)
+        .map_err(|e| CertificateNounError::RecursiveCertificate(e.to_string()))
 }
 
 /// Verify a fully decoded Hoon-compatible `ai-pow-certificate` noun for an
 /// NCMN-wrapped production attempt.
 ///
 /// This is the consensus-facing Rust boundary for Nockchain AI-PoW: it checks
-/// the nonce format and candidate-block anchor, reconstructs the canonical
-/// recursive certificate, re-derives the full-matmul-admissible statement from
-/// verifier-trusted data, and then verifies the recursive certificate against
-/// those public inputs.
+/// the nonce format and candidate-block anchor, re-derives the
+/// full-matmul-admissible statement from verifier-trusted data, reconstructs
+/// the canonical recursive certificate only after those cheap checks pass, and
+/// then verifies the recursive certificate against those public inputs.
 pub fn verify_decoded_ai_pow_ncmn_certificate(
     shape: &AiPowCertificateShape,
     puzzle_id: &[u8],
@@ -637,10 +637,12 @@ pub fn verify_decoded_ai_pow_ncmn_certificate(
     params: &MatmulParams,
     target: &[u8; 32],
 ) -> Result<(), CertificateNounError> {
+    precheck_ai_pow_ncmn_certificate_statement(
+        shape, puzzle_id, candidate_nck_commitment, nonce, params, target,
+    )?;
     let certificate = ai_pow_recursive_certificate_from_node(&shape.certificate)?;
-    verify_ai_pow_ncmn_certificate_statement_and_proof(
-        shape, puzzle_id, candidate_nck_commitment, nonce, params, target, &certificate,
-    )
+    ai_pow_zk::recursion::verify_recursive_certificate(&certificate, &shape.public_inputs)
+        .map_err(|e| CertificateNounError::RecursiveCertificate(e.to_string()))
 }
 
 /// Verify a fully decoded Hoon `%ai-pow` artifact against trusted block data.
@@ -2750,6 +2752,59 @@ mod tests {
             Err(CertificateNounError::Statement(
                 BridgeError::FullMatmulProofUnavailable { .. }
             ))
+        ));
+    }
+
+    #[test]
+    fn decoded_certificate_verify_prechecks_statement_before_proof_node_reconstruction() {
+        let block = b"precheck-before-proof-node-block";
+        let nonce = b"precheck-before-proof-node-nonce";
+        let target = [0xffu8; 32];
+        let (params, commitments, pis, trace_height, found_idx) =
+            production_statement_fixture(block, nonce);
+        let slab = build_ai_pow_certificate_noun_from_node(
+            &zk_params_from_matmul(&params),
+            found_idx,
+            trace_height,
+            &commitments,
+            &pis,
+            &AiProofNode::Unit,
+        );
+        let decoded = decode_ai_pow_certificate_slab(&slab, CertificateNounLimits::default())
+            .expect("decode certificate noun");
+
+        assert!(matches!(
+            verify_decoded_ai_pow_certificate(&decoded, block, b"wrong-nonce", &params, &target),
+            Err(CertificateNounError::Statement(_))
+        ));
+    }
+
+    #[test]
+    fn decoded_ncmn_certificate_verify_prechecks_anchor_before_proof_node_reconstruction() {
+        let puzzle_id = b"ncmn-precheck-before-proof-node-puzzle";
+        let candidate_nck = [0x5au8; 32];
+        let nonce = build_ncmn_nonce(&NonceAnchors::nck_only(candidate_nck), 17);
+        let target = [0xffu8; 32];
+        let (params, commitments, pis, trace_height, found_idx) =
+            production_statement_fixture(puzzle_id, &nonce);
+        let slab = build_ai_pow_certificate_noun_from_node(
+            &zk_params_from_matmul(&params),
+            found_idx,
+            trace_height,
+            &commitments,
+            &pis,
+            &AiProofNode::Unit,
+        );
+        let decoded = decode_ai_pow_certificate_slab(&slab, CertificateNounLimits::default())
+            .expect("decode certificate noun");
+        let mut wrong_anchor = candidate_nck;
+        wrong_anchor[0] ^= 1;
+
+        assert!(matches!(
+            verify_decoded_ai_pow_ncmn_certificate(
+                &decoded, puzzle_id, &wrong_anchor, &nonce, &params, &target
+            ),
+            Err(CertificateNounError::NonceAnchorMismatch)
         ));
     }
 
