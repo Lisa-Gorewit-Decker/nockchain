@@ -64,6 +64,7 @@ fn ai_pow_consensus_wire_is_structured_but_fail_closed_without_verifier() {
             && AI_POW_MINER_CERT_NOUN_RS.contains("pub fn precheck_ai_pow_certificate_statement")
             && AI_POW_MINER_CERT_NOUN_RS
                 .contains("pub fn precheck_ai_pow_ncmn_certificate_statement")
+            && AI_POW_MINER_CERT_NOUN_RS.contains("verify_ai_pow_full_matmul_production_statement")
             && AI_POW_MINER_CERT_NOUN_RS.contains("pub fn precheck_ai_pow_ncmn_artifact_statement")
             && AI_POW_MINER_CERT_NOUN_RS.contains("pub fn verify_decoded_ai_pow_ncmn_artifact")
             && AI_POW_MINER_CERT_NOUN_RS.contains("pub fn verify_ai_pow_ncmn_artifact_jam")
@@ -75,6 +76,9 @@ fn ai_pow_consensus_wire_is_structured_but_fail_closed_without_verifier() {
             && AI_POW_MINER_CERT_NOUN_RS.contains("jam noun count")
             && AI_POW_MINER_CERT_NOUN_RS.contains("jam atom bytes")
             && AI_POW_ZK_BRIDGE_RS.contains("pub fn verify_ai_pow_production_statement")
+            && AI_POW_ZK_BRIDGE_RS
+                .contains("pub fn verify_ai_pow_full_matmul_production_statement")
+            && AI_POW_ZK_BRIDGE_RS.contains("FullMatmulProofUnavailable")
             && AI_POW_MINER_CERT_NOUN_RS.contains("CertificateNounLimits")
             && AI_POW_MINER_CERT_NOUN_RS
                 .contains("certificate_noun_decoder_rejects_oversized_packed_atom")
@@ -123,6 +127,9 @@ fn ai_pow_consensus_wire_is_structured_but_fail_closed_without_verifier() {
     assert!(
         AI_POW_ZK_BRIDGE_RS.contains("pub fn prove_ai_pow_recursive_certificate")
             && AI_POW_ZK_BRIDGE_RS.contains("pub fn verify_ai_pow_production_statement")
+            && AI_POW_ZK_BRIDGE_RS
+                .contains("pub fn verify_ai_pow_full_matmul_production_statement")
+            && AI_POW_ZK_BRIDGE_RS.contains("FullMatmulProofUnavailable")
             && AI_POW_ZK_BRIDGE_RS.contains("pub(crate) struct ZkProofArtifact")
             && AI_POW_ZK_BRIDGE_RS.contains("pub(crate) struct AiPowProductionArtifact")
             && AI_POW_ZK_BRIDGE_RS.contains("pub(crate) struct AiPowConsensusArtifact")

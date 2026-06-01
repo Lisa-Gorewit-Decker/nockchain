@@ -8,7 +8,8 @@ use std::panic::{catch_unwind, AssertUnwindSafe};
 use ai_pow::ncmn::{parse_ncmn_nonce, NonceFormatError};
 use ai_pow::params::MatmulParams;
 use ai_pow::zk_bridge::{
-    verify_ai_pow_production_statement, zk_params_from_matmul, BridgeError, ZkPublicCommitments,
+    verify_ai_pow_full_matmul_production_statement, zk_params_from_matmul, BridgeError,
+    ZkPublicCommitments,
 };
 use ai_pow_zk::{CompositePublicInputs, ZkParams};
 use nockapp::noun::slab::{CueError, NounSlab};
@@ -478,6 +479,9 @@ pub fn decode_ai_pow_artifact_noun(
 /// This is deliberately separate from recursive proof verification. It rejects
 /// metadata replay across `(block_commitment, nonce, target)` before a caller
 /// spends verifier work on the miner-controlled recursive certificate tree.
+/// It also fails closed for multi-tile params until the recursive certificate
+/// statement binds a full-matrix aggregate, because the current recursive proof
+/// only opens one verifier-derived jackpot tile.
 ///
 /// Production NCMN consensus callers should prefer
 /// [`precheck_ai_pow_ncmn_certificate_statement`], which also checks that the
@@ -496,7 +500,7 @@ pub fn precheck_ai_pow_certificate_statement(
             actual: shape.zk_params.clone(),
         });
     }
-    verify_ai_pow_production_statement(
+    verify_ai_pow_full_matmul_production_statement(
         block_commitment, nonce, params, target, shape.found_idx, &shape.commitments,
         &shape.public_inputs, shape.trace_height,
     )
@@ -2439,7 +2443,20 @@ mod tests {
         })
     }
 
-    fn production_statement_fixture(
+    fn single_tile_prod_params() -> MatmulParams {
+        MatmulParams {
+            m: 8,
+            k: 512,
+            n: 8,
+            noise_rank: 32,
+            tile: 8,
+            spot_checks: 1,
+            difficulty_bits: 0,
+        }
+    }
+
+    fn production_statement_fixture_for_params(
+        params: MatmulParams,
         block_commitment: &[u8],
         nonce: &[u8],
     ) -> (
@@ -2449,7 +2466,7 @@ mod tests {
         usize,
         u32,
     ) {
-        let params = MatmulParams::PROD;
+        params.validate_prod_envelope().unwrap();
         let commitments = ZkPublicCommitments {
             h_a: [0x11; 32],
             h_b: [0x22; 32],
@@ -2471,6 +2488,19 @@ mod tests {
         pis.hash_jackpot = [1, 0, 0, 0, 0, 0, 0, 0];
         let trace_height = expected_layer0_rows(&params).required_trace_len();
         (params, commitments, pis, trace_height, found_idx)
+    }
+
+    fn production_statement_fixture(
+        block_commitment: &[u8],
+        nonce: &[u8],
+    ) -> (
+        MatmulParams,
+        ZkPublicCommitments,
+        CompositePublicInputs,
+        usize,
+        u32,
+    ) {
+        production_statement_fixture_for_params(single_tile_prod_params(), block_commitment, nonce)
     }
 
     fn build_certificate_slab_with_raw_node<F>(build_certificate: F) -> NounSlab
@@ -2687,6 +2717,34 @@ mod tests {
         assert!(matches!(
             precheck_ai_pow_certificate_statement(&decoded, block, nonce, &wrong_params, &target),
             Err(CertificateNounError::ZkParamsMismatch { .. })
+        ));
+    }
+
+    #[test]
+    fn certificate_statement_precheck_fails_closed_for_multi_tile_full_matmul_claim() {
+        let block = b"multi-tile-noun-certificate-block";
+        let nonce = b"multi-tile-noun-certificate-nonce";
+        let target = [0xffu8; 32];
+        let (params, commitments, pis, trace_height, found_idx) =
+            production_statement_fixture_for_params(MatmulParams::PROD, block, nonce);
+        assert!(params.num_tiles() > 1);
+        let certificate = AiProofNode::Seq(vec![AiProofNode::U64(42)]);
+        let slab = build_ai_pow_certificate_noun_from_node(
+            &zk_params_from_matmul(&params),
+            found_idx,
+            trace_height,
+            &commitments,
+            &pis,
+            &certificate,
+        );
+        let decoded = decode_ai_pow_certificate_slab(&slab, CertificateNounLimits::default())
+            .expect("decode certificate noun");
+
+        assert!(matches!(
+            precheck_ai_pow_certificate_statement(&decoded, block, nonce, &params, &target),
+            Err(CertificateNounError::Statement(
+                BridgeError::FullMatmulProofUnavailable { .. }
+            ))
         ));
     }
 

@@ -831,6 +831,11 @@ pub enum BridgeError {
     /// `found_idx` is not the verifier-derived jackpot tile for this
     /// nonce-bound attempt.
     FoundIdxMismatch { expected: u32, actual: u32 },
+    /// The submitted recursive statement only proves one opened tile. Until
+    /// the recursive certificate also binds a full-matrix aggregate, a
+    /// multi-tile statement cannot be accepted as proof of one full matmul
+    /// attempt.
+    FullMatmulProofUnavailable { num_tiles: u64 },
     /// M3 (DoS audit): the ai-pow-zk verifier-side `canonical_program`
     /// rejected a structurally-broken `ZkParams` (16|r invariant,
     /// tile-grid bounds, trace_len lower bound). Defense-in-depth
@@ -874,6 +879,10 @@ impl core::fmt::Display for BridgeError {
             BridgeError::FoundIdxMismatch { expected, actual } => {
                 write!(f, "found_idx mismatch: expected {expected}, got {actual}")
             }
+            BridgeError::FullMatmulProofUnavailable { num_tiles } => write!(
+                f,
+                "recursive certificate proves one selected tile, not a full {num_tiles}-tile matmul"
+            ),
             BridgeError::ZkParamsInvalid(msg) => {
                 write!(f, "ai-pow-zk canonical_program rejected params: {msg}")
             }
@@ -1073,6 +1082,38 @@ pub fn verify_ai_pow_production_statement(
         block_commitment, nonce, params, target, found_idx, commitments, pis, trace_height, true,
     )
     .map(|_| ())
+}
+
+/// Verify statement metadata for a consensus-facing full-matmul recursive
+/// certificate.
+///
+/// The current recursive certificate is Pearl-style: it proves the opened
+/// jackpot tile and all nonce/commitment/target bindings for that tile. It
+/// does not yet prove a full `comm_m` tree or equivalent aggregate over every
+/// tile state. Consensus callers that interpret one AI-PoW attempt as one full
+/// matmul must use this stricter API so multi-tile proofs fail closed until the
+/// full-matrix aggregate proof is implemented.
+#[allow(clippy::too_many_arguments)]
+pub fn verify_ai_pow_full_matmul_production_statement(
+    block_commitment: &[u8],
+    nonce: &[u8],
+    params: &MatmulParams,
+    target: &[u8; 32],
+    found_idx: u32,
+    commitments: &ZkPublicCommitments,
+    pis: &CompositePublicInputs,
+    trace_height: usize,
+) -> Result<(), BridgeError> {
+    params
+        .validate_prod_envelope()
+        .map_err(BridgeError::InvalidParams)?;
+    let num_tiles = params.num_tiles();
+    if num_tiles > 1 {
+        return Err(BridgeError::FullMatmulProofUnavailable { num_tiles });
+    }
+    verify_ai_pow_production_statement(
+        block_commitment, nonce, params, target, found_idx, commitments, pis, trace_height,
+    )
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1731,6 +1772,18 @@ mod tests {
 
     const TEST_NONCE: &[u8] = b"zk-bridge-test-nonce";
 
+    fn single_tile_prod_params() -> MatmulParams {
+        MatmulParams {
+            m: 8,
+            k: 512,
+            n: 8,
+            noise_rank: 32,
+            tile: 8,
+            spot_checks: 1,
+            difficulty_bits: 0,
+        }
+    }
+
     fn test_zk_params() -> ZkParams {
         ZkParams {
             m: 8,
@@ -2224,6 +2277,84 @@ mod tests {
             ),
             Err(BridgeError::FoundIdxMismatch { .. })
         ));
+    }
+
+    #[test]
+    fn full_matmul_production_statement_fails_closed_for_multi_tile_recursive_cert() {
+        let params = MatmulParams::PROD;
+        let block = b"full-matmul-statement-block";
+        let nonce = b"full-matmul-statement-nonce";
+        let target = [0xffu8; 32];
+        let commitments = ZkPublicCommitments {
+            h_a: [0x11; 32],
+            h_b: [0x22; 32],
+            h_a_chunk: [0x33; 32],
+            h_b_chunk: [0x44; 32],
+        };
+        let tag = params_tag(&params);
+        let state = block_state(block, nonce);
+        let kappa = commitment_key(&state, &tag);
+        let s_b = noise_seed_b(&kappa, &commitments.h_b);
+        let s_a = noise_seed_a(&s_b, &commitments.h_a);
+        let pow_key = pow_key_for_nonce(&s_a, nonce);
+        let mut pis = CompositePublicInputs::zero();
+        pis.job_key = bytes_to_words_le(&kappa);
+        pis.commitment_hash = bytes_to_words_le(&pow_key);
+        pis.hash_a = bytes_to_words_le(&commitments.h_a_chunk);
+        pis.hash_b = bytes_to_words_le(&commitments.h_b_chunk);
+        pis.hash_jackpot = [1, 0, 0, 0, 0, 0, 0, 0];
+        let trace_height = expected_layer0_rows(&params).required_trace_len();
+        let found_idx = expected_attempt_found_idx(block, nonce, &params, &commitments).unwrap();
+
+        assert!(matches!(
+            verify_ai_pow_full_matmul_production_statement(
+                block,
+                nonce,
+                &params,
+                &target,
+                found_idx,
+                &commitments,
+                &pis,
+                trace_height,
+            ),
+            Err(BridgeError::FullMatmulProofUnavailable { num_tiles })
+                if num_tiles == params.num_tiles()
+        ));
+    }
+
+    #[test]
+    fn full_matmul_production_statement_accepts_single_tile_recursive_cert() {
+        let params = single_tile_prod_params();
+        params.validate_prod_envelope().unwrap();
+        assert_eq!(params.num_tiles(), 1);
+        let block = b"single-tile-full-matmul-block";
+        let nonce = b"single-tile-full-matmul-nonce";
+        let target = [0xffu8; 32];
+        let commitments = ZkPublicCommitments {
+            h_a: [0x11; 32],
+            h_b: [0x22; 32],
+            h_a_chunk: [0x33; 32],
+            h_b_chunk: [0x44; 32],
+        };
+        let tag = params_tag(&params);
+        let state = block_state(block, nonce);
+        let kappa = commitment_key(&state, &tag);
+        let s_b = noise_seed_b(&kappa, &commitments.h_b);
+        let s_a = noise_seed_a(&s_b, &commitments.h_a);
+        let pow_key = pow_key_for_nonce(&s_a, nonce);
+        let mut pis = CompositePublicInputs::zero();
+        pis.job_key = bytes_to_words_le(&kappa);
+        pis.commitment_hash = bytes_to_words_le(&pow_key);
+        pis.hash_a = bytes_to_words_le(&commitments.h_a_chunk);
+        pis.hash_b = bytes_to_words_le(&commitments.h_b_chunk);
+        pis.hash_jackpot = [1, 0, 0, 0, 0, 0, 0, 0];
+        let trace_height = expected_layer0_rows(&params).required_trace_len();
+        let found_idx = expected_attempt_found_idx(block, nonce, &params, &commitments).unwrap();
+
+        verify_ai_pow_full_matmul_production_statement(
+            block, nonce, &params, &target, found_idx, &commitments, &pis, trace_height,
+        )
+        .expect("single-tile recursive statement is a full-matmul statement");
     }
 
     #[test]

@@ -749,3 +749,28 @@ an entire full-matrix product per attempt, the remaining design work is to add a
 full-matrix aggregate/commitment proof or keep AI-PoW block acceptance
 fail-closed until that proof exists. The current Hoon path remains fail-closed,
 so this residual issue is not consensus-admissible yet.
+
+Code status after this re-audit: consensus-facing recursive-certificate noun
+prechecks now call `verify_ai_pow_full_matmul_production_statement`. That API
+first enforces the production parameter envelope, then rejects every multi-tile
+statement with `FullMatmulProofUnavailable` until the recursive proof binds a
+full-matrix aggregate. The older `verify_ai_pow_production_statement` remains a
+selected-tile statement-binding helper for the current Pearl-style recursive
+certificate, benchmarks, and internal diagnostics; it must not be used as the
+full-matmul consensus admission rule.
+
+This is intentionally fail-closed. Pearl's reference miner computes every
+output tile before returning the final matrix and records an opened block when a
+tile hash hits the target, but the proof artifact only opens the winning tile.
+Honest-miner full scans are not a soundness argument against a custom miner. A
+verifier that receives only the recursive selected-tile proof cannot tell
+whether all other tile states were computed, so multi-tile AI-PoW block
+acceptance must remain disabled until one of the following is implemented:
+
+1. Recursive proof includes and verifies a commitment/aggregate over every tile
+   state and derives the jackpot from that aggregate.
+2. Recursive proof recursively folds all tile traces or an equivalent
+   full-matrix computation certificate into the production certificate.
+3. The protocol explicitly redefines the work unit as one selected tile and
+   prices difficulty accordingly. This is not the current "one matmul = one
+   attempt" target.
