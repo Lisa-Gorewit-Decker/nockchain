@@ -26,9 +26,7 @@
       data=ai-ext2s
   ==
 +$  ai-pow-commitments
-  $:  h-a=ai-blake
-      h-b=ai-blake
-      h-a-chunk=ai-blake
+  $:  h-a-chunk=ai-blake
       h-b-chunk=ai-blake
   ==
 +$  ai-pow-public-inputs

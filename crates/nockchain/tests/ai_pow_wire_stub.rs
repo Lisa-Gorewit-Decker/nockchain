@@ -49,6 +49,11 @@ fn ai_pow_consensus_wire_is_structured_but_fail_closed_without_verifier() {
             && TX_ENGINE_1_HOON.contains("[%ext2 value=ai-ext2]")
             && TX_ENGINE_1_HOON.contains("[%ext2s len=@ud data=ai-ext2s]")
             && TX_ENGINE_1_HOON.contains("[%u64s len=@ud data=@]")
+            && TX_ENGINE_1_HOON.contains(
+                "+$  ai-pow-commitments\n  $:  h-a-chunk=ai-blake\n      h-b-chunk=ai-blake"
+            )
+            && !TX_ENGINE_1_HOON.contains("\n      h-a=ai-blake")
+            && !TX_ENGINE_1_HOON.contains("\n      h-b=ai-blake")
             && TX_ENGINE_1_HOON.contains("+$  pow-artifact")
             && TX_ENGINE_1_HOON.contains("?=([%ai-pow *] u.pow.pag)")
             && CONSENSUS_HOON.contains("++  pow-artifact-to-proof-version")
