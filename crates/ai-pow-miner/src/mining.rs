@@ -8,10 +8,11 @@
 //! [`MiningError::DeadlineElapsed`] / [`MiningError::BudgetExhausted`]
 //! on non-success termination.
 //!
-//! Each extranonce builds a fresh nonce-bound [`BlockContext`]. Reusing keyed
-//! commitments, noise, matmul states, or jackpot preimages across extranonces
-//! is not production-sound for the intended "fresh nonce requires fresh
-//! matmul work" invariant.
+//! Each extranonce builds a fresh nonce-bound [`BlockContext`]. Minimal work
+//! reuse between attempts is a security requirement: reusing keyed
+//! commitments, noise, matmul states, jackpot preimages, or witness inputs
+//! across extranonces is not production-sound for the intended "fresh nonce
+//! requires fresh matmul work" invariant.
 
 use std::time::{Duration, Instant};
 
@@ -61,7 +62,7 @@ fn run_inner(
     let start = Instant::now();
 
     let mut stats = MiningStats {
-        extranonces_tried: 0,
+        matmul_attempts_tried: 0,
         elapsed: Duration::ZERO,
     };
     let mut extranonce = opts.extranonce_start;
@@ -77,7 +78,7 @@ fn run_inner(
             }
         }
         if let Some(max) = opts.max_extranonces {
-            if stats.extranonces_tried >= max {
+            if stats.matmul_attempts_tried >= max {
                 return Err(MiningError::BudgetExhausted { max });
             }
         }
@@ -87,7 +88,7 @@ fn run_inner(
         let result =
             mine_with_context_at_target(&ctx, job.puzzle_id, &nonce, &job.target, opts.prover)?;
 
-        stats.extranonces_tried += 1;
+        stats.matmul_attempts_tried += 1;
         stats.elapsed = start.elapsed();
 
         if let Some(proof) = result {
@@ -110,9 +111,9 @@ fn run_inner(
             if last_progress.elapsed() >= interval {
                 tracing::info!(
                     target: "ai_pow_miner",
-                    extranonces = stats.extranonces_tried,
+                    matmul_attempts = stats.matmul_attempts_tried,
                     elapsed_s = stats.elapsed.as_secs_f64(),
-                    rate = stats.hash_rate_per_sec(),
+                    matmul_attempt_rate = stats.matmul_attempt_rate_per_sec(),
                     "mining progress"
                 );
                 last_progress = Instant::now();
@@ -170,7 +171,7 @@ mod tests {
         let row_tiles = params.m / params.tile;
         let col_tiles = params.n / params.tile;
         assert!(sol.found_idx < row_tiles * col_tiles);
-        assert!(sol.stats.extranonces_tried >= 1);
+        assert!(sol.stats.matmul_attempts_tried >= 1);
     }
 
     #[test]

@@ -329,11 +329,13 @@ hash[i]       = BLAKE3(M[i,j], key=pow_key)
 ```
 
 This intentionally minimizes work reuse between attempts. Cache-friendly
-derivations are a vulnerability for this protocol goal, not a desired property:
-if a miner can carry keyed commitments, noised matrices, tile states, or
-jackpot inputs across nonces, the implementation is too close to the current
-bug. The recommended fix is to put the nonce in `sigma_attempt` and derive
-`kappa` from that.
+attempt derivations are a vulnerability for this protocol goal, not a desired
+property: if a miner can carry keyed commitments, noised matrices, tile states,
+jackpot inputs, Layer-0 witness data, or recursive proof inputs across nonces,
+the implementation is too close to the current bug. The recommended fix is to
+put the nonce in `sigma_attempt` and derive `kappa` from that. Raw matrix bytes
+may be read repeatedly, but any consensus-significant value derived under an
+attempt transcript must be rebuilt for the new attempt.
 
 The production design is acceptable only if:
 
@@ -357,6 +359,9 @@ Current code follows the recommended production design above:
   verifier noise.
 - `crates/ai-pow-miner/src/mining.rs`: the extranonce loop builds a fresh
   `BlockContext` for each NCMN nonce before checking the target.
+- `crates/ai-pow-miner/src/lib.rs`: miner telemetry now reports
+  `matmul_attempts_tried` and `matmul_attempt_rate_per_sec`, not a
+  BLAKE3-style hash rate or cheap extranonce rate.
 - `crates/ai-pow/src/zk_bridge.rs`: prover entrypoints reject a context used
   with a different nonce, verifier entrypoints derive public inputs from the
   nonce-bound attempt state, and `verify_ai_pow_production_statement` provides
@@ -441,7 +446,7 @@ Do not accept: verifying only the outer certificate and trusting adjacent block
 metadata. That permits metadata swapping or replay of a valid recursive
 certificate for a different statement.
 
-The zero-reuse mining rule remains stronger than "do not cache final hashes".
+The minimal-reuse mining rule remains stronger than "do not cache final hashes".
 Fresh attempts must rebuild every nonce-dependent work product:
 
 - `kappa`;
@@ -452,10 +457,12 @@ Fresh attempts must rebuild every nonce-dependent work product:
 - tile states and jackpot preimages;
 - Layer-0 witness/proof inputs for the selected winning attempt.
 
-Allowed reuse is limited to nonce-independent raw data and validation: input
-matrix bytes, shapes, chain-pinned params, and read-only model metadata.
-Cache-friendly reuse of nonce-derived work is a consensus vulnerability, not an
-optimization target.
+Allowed reuse is limited to nonce-independent non-work inputs: immutable input
+matrix bytes, shape constants, chain-pinned params, and read-only model
+metadata. Even validation caches should be treated as an API convenience only;
+they must never contain transcript-derived commitments, seeds, noised values,
+tile outputs, jackpot hashes, or proof witnesses. Cache-friendly reuse of
+nonce-derived work is a consensus vulnerability, not an optimization target.
 
 ## Concrete Implementation Plan
 
@@ -602,10 +609,11 @@ future hardening/measurement work.
      the Rust verifier.
 
 7. Miner accounting test:
-   - Future hardening: instrument the miner or attempt builder in tests and
-     assert each extranonce increments a matmul-attempt counter exactly once.
-   - Consider renaming stats from `extranonces_tried` to `attempts_tried` or
-     adding a separate `matmul_attempts_tried`.
+   - Implemented: miner stats expose `matmul_attempts_tried` and
+     `matmul_attempt_rate_per_sec`; every increment occurs after building a
+     fresh nonce-bound `BlockContext` and running the target check.
+   - Future hardening: instrument the attempt builder in tests and assert the
+     constructor is invoked exactly once per extranonce tried.
 
 8. Difficulty calibration test:
    - Measure expected success rate over many small test attempts after the
@@ -618,7 +626,8 @@ Re-benchmark after the semantic fix:
 
 1. Plain per-attempt latency with fresh nonce-derived matmul.
 2. Recursive certificate generation latency after a successful attempt.
-3. End-to-end miner rate reported as matmul attempts per second.
+3. End-to-end miner rate reported as matmul attempts per second via
+   `matmul_attempt_rate_per_sec`.
 4. Any allowed non-work reuse:
    - input shape/range validation only;
    - immutable references to input matrix bytes.
@@ -627,7 +636,9 @@ Do not cache keyed commitments, `s_A`/`s_B`, low-rank noise, noised matrix
 strips, tile states, jackpot preimages, or any other work whose reuse would
 reduce the cost of a new nonce attempt.
 
-Do not report BLAKE3-only nonce rate as mining rate.
+Do not report BLAKE3-only nonce rate as mining rate. Do not optimize for cache
+locality across attempts if the cache would hold anything below
+`sigma_attempt` in the derivation tree.
 
 ## Acceptance Criteria
 

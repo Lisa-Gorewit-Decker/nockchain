@@ -205,12 +205,12 @@ fn main() -> Result<()> {
     match result {
         Ok(sol) => {
             eprintln!(
-                "ai-pow-mine: ✓ solution: extranonce={} tile_idx={} attempts={} elapsed={:?} rate={:.2}/s",
+                "ai-pow-mine: ✓ solution: extranonce={} tile_idx={} matmul_attempts={} elapsed={:?} matmul_attempt_rate={:.2}/s",
                 u64::from_be_bytes(sol.nonce[72..80].try_into().unwrap()),
                 sol.found_idx,
-                sol.stats.extranonces_tried,
+                sol.stats.matmul_attempts_tried,
                 started.elapsed(),
-                sol.stats.hash_rate_per_sec(),
+                sol.stats.matmul_attempt_rate_per_sec(),
             );
             // Stdout: the 80-byte nonce hex (for piping to a verifier).
             println!("{}", hex::encode(sol.nonce));

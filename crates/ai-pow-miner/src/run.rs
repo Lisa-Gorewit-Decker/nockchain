@@ -305,9 +305,9 @@ pub async fn run(cfg: MinerConfig, shutdown: CancellationToken) -> Result<(), Mi
                         }
                         WorkerOutcome::Joined(Ok(Ok(sol))) => {
                             info!(
-                                attempts = sol.stats.extranonces_tried,
+                                matmul_attempts = sol.stats.matmul_attempts_tried,
                                 elapsed_s = sol.stats.elapsed.as_secs_f64(),
-                                rate = sol.stats.hash_rate_per_sec(),
+                                matmul_attempt_rate = sol.stats.matmul_attempt_rate_per_sec(),
                                 "ai-pow-miner: solution found; submitting"
                             );
                             let Some(build_certificate) = cfg.puzzle.certificate_builder.as_ref() else {

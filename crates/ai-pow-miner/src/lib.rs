@@ -89,15 +89,20 @@ impl Default for MineOptions {
 /// Snapshot for progress callbacks + the final solution.
 #[derive(Clone, Debug, Default)]
 pub struct MiningStats {
-    pub extranonces_tried: u64,
+    /// Count of fully rebuilt nonce-bound matmul attempts.
+    ///
+    /// This is intentionally not a cheap nonce/hash counter: every increment
+    /// corresponds to fresh keyed commitments, noise, noised matrices, and tile
+    /// states for one NCMN extranonce.
+    pub matmul_attempts_tried: u64,
     pub elapsed: Duration,
 }
 
 impl MiningStats {
-    pub fn hash_rate_per_sec(&self) -> f64 {
+    pub fn matmul_attempt_rate_per_sec(&self) -> f64 {
         let s = self.elapsed.as_secs_f64();
         if s > 0.0 {
-            (self.extranonces_tried as f64) / s
+            (self.matmul_attempts_tried as f64) / s
         } else {
             0.0
         }
