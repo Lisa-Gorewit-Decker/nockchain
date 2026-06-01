@@ -187,9 +187,10 @@ Fix plan:
 - Export only production boundaries that derive the canonical statement
   internally. Current `ai-pow` status: `prove_ai_pow_recursive_certificate`
   and `verify_ai_pow_full_matmul_production_statement` remain public, while
-  `verify_ai_pow_production_statement` is only a selected-tile statement helper
-  for the current Pearl-style recursive certificate. The legacy Layer-0 byte
-  artifacts and helper verifier/constructor functions are crate-internal.
+  `verify_ai_pow_selected_tile_statement` is crate-internal selected-tile
+  statement plumbing for the current Pearl-style recursive certificate. The
+  legacy Layer-0 byte artifacts and helper verifier/constructor functions are
+  crate-internal.
 - Add rustdoc `compile_fail` or lints preventing consensus crates from importing dev APIs.
 
 Tests:

@@ -1072,7 +1072,7 @@ fn verify_ai_pow_block(
     verify_ai_pow_tiled_with_statement(params, target, verified, artifact)
 }
 
-/// Verify the statement metadata carried next to a production recursive
+/// Verify the statement metadata carried next to a selected-tile recursive
 /// certificate.
 ///
 /// This does not verify the recursive certificate bytes themselves. It is the
@@ -1080,9 +1080,13 @@ fn verify_ai_pow_block(
 /// verification: all public inputs are re-derived from trusted
 /// `(block_commitment, nonce, params, target, found_idx, commitments)` so a
 /// certificate cannot be replayed across nonces or targets by swapping the
-/// metadata stored in the block artifact.
+/// metadata stored in the block artifact. It is not the full-matmul consensus
+/// admission rule; use [`verify_ai_pow_full_matmul_production_statement`] at
+/// any block/persistence/wire boundary. Kept private so external callers do
+/// not mistake a selected-tile statement check for full-work consensus
+/// verification.
 #[allow(clippy::too_many_arguments)]
-pub fn verify_ai_pow_production_statement(
+fn verify_ai_pow_selected_tile_statement(
     block_commitment: &[u8],
     nonce: &[u8],
     params: &MatmulParams,
@@ -1125,7 +1129,7 @@ pub fn verify_ai_pow_full_matmul_production_statement(
     if num_tiles > 1 {
         return Err(BridgeError::FullMatmulProofUnavailable { num_tiles });
     }
-    verify_ai_pow_production_statement(
+    verify_ai_pow_selected_tile_statement(
         block_commitment, nonce, params, target, found_idx, commitments, pis, trace_height,
     )
 }
@@ -2208,10 +2212,10 @@ mod tests {
     }
 
     #[test]
-    fn production_statement_precheck_binds_nonce_target_and_public_inputs() {
+    fn selected_tile_statement_precheck_binds_nonce_target_and_public_inputs() {
         let params = MatmulParams::PROD;
-        let block = b"production-statement-block";
-        let nonce = b"production-statement-nonce";
+        let block = b"selected-tile-statement-block";
+        let nonce = b"selected-tile-statement-nonce";
         let target = [0xffu8; 32];
         let commitments = ZkPublicCommitments {
             h_a: [0x11; 32],
@@ -2234,13 +2238,13 @@ mod tests {
         let trace_height = expected_layer0_rows(&params).required_trace_len();
         let found_idx = expected_attempt_found_idx(block, nonce, &params, &commitments).unwrap();
 
-        verify_ai_pow_production_statement(
+        verify_ai_pow_selected_tile_statement(
             block, nonce, &params, &target, found_idx, &commitments, &pis, trace_height,
         )
         .expect("honest statement metadata should precheck");
 
         assert!(matches!(
-            verify_ai_pow_production_statement(
+            verify_ai_pow_selected_tile_statement(
                 block, b"wrong-nonce", &params, &target, found_idx, &commitments, &pis,
                 trace_height,
             ),
@@ -2249,7 +2253,7 @@ mod tests {
                 | Err(BridgeError::PublicInputMismatch("COMMITMENT_HASH"))
         ));
         assert_eq!(
-            verify_ai_pow_production_statement(
+            verify_ai_pow_selected_tile_statement(
                 block, nonce, &params, &[0u8; 32], found_idx, &commitments, &pis, trace_height,
             )
             .expect_err("jackpot above zero target must reject")
@@ -2257,7 +2261,7 @@ mod tests {
             BridgeError::FoundAboveTarget.to_string()
         );
         assert!(matches!(
-            verify_ai_pow_production_statement(
+            verify_ai_pow_selected_tile_statement(
                 block,
                 nonce,
                 &params,
@@ -2285,7 +2289,7 @@ mod tests {
             "fixture should exercise s_a-bound found_idx"
         );
         assert!(matches!(
-            verify_ai_pow_production_statement(
+            verify_ai_pow_selected_tile_statement(
                 block, nonce, &params, &target, found_idx, &changed_commitments, &pis,
                 trace_height,
             ),

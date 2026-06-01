@@ -391,7 +391,8 @@ Current code follows the recommended production design above:
   nonce-bound attempt state, and
   `verify_ai_pow_full_matmul_production_statement` provides the persisted
   recursive-certificate full-matmul admission check. The lower-level
-  `verify_ai_pow_production_statement` remains a selected-tile binding helper.
+  `verify_ai_pow_selected_tile_statement` is crate-internal selected-tile
+  binding plumbing.
 - `crates/ai-pow-miner/src/certificate_noun.rs`: decoded Hoon-compatible
   certificate nouns can be reconstructed into
   `AiPowProductionCertificate` and verified via
@@ -759,10 +760,9 @@ Code status after this re-audit: consensus-facing recursive-certificate noun
 prechecks now call `verify_ai_pow_full_matmul_production_statement`. That API
 first enforces the production parameter envelope, then rejects every multi-tile
 statement with `FullMatmulProofUnavailable` until the recursive proof binds a
-full-matrix aggregate. The older `verify_ai_pow_production_statement` remains a
-selected-tile statement-binding helper for the current Pearl-style recursive
-certificate, benchmarks, and internal diagnostics; it must not be used as the
-full-matmul consensus admission rule.
+full-matrix aggregate. The selected-tile statement-binding helper is
+crate-internal plumbing for the current Pearl-style recursive certificate,
+benchmarks, and diagnostics; it is not an exported consensus admission rule.
 
 Follow-up integration status: `prove_ai_pow_recursive_certificate`, the
 production miner's certificate-builder entrypoint, now also fails closed for

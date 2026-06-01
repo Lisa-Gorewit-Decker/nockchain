@@ -75,7 +75,9 @@ fn ai_pow_consensus_wire_is_structured_but_fail_closed_without_verifier() {
             && AI_POW_MINER_CERT_NOUN_RS.contains("NonCanonicalJam")
             && AI_POW_MINER_CERT_NOUN_RS.contains("jam noun count")
             && AI_POW_MINER_CERT_NOUN_RS.contains("jam atom bytes")
-            && AI_POW_ZK_BRIDGE_RS.contains("pub fn verify_ai_pow_production_statement")
+            && !AI_POW_ZK_BRIDGE_RS.contains("pub fn verify_ai_pow_production_statement")
+            && !AI_POW_ZK_BRIDGE_RS.contains("pub fn verify_ai_pow_selected_tile_statement")
+            && AI_POW_ZK_BRIDGE_RS.contains("fn verify_ai_pow_selected_tile_statement")
             && AI_POW_ZK_BRIDGE_RS
                 .contains("pub fn verify_ai_pow_full_matmul_production_statement")
             && AI_POW_ZK_BRIDGE_RS.contains("FullMatmulProofUnavailable")
@@ -126,7 +128,9 @@ fn ai_pow_consensus_wire_is_structured_but_fail_closed_without_verifier() {
     );
     assert!(
         AI_POW_ZK_BRIDGE_RS.contains("pub fn prove_ai_pow_recursive_certificate")
-            && AI_POW_ZK_BRIDGE_RS.contains("pub fn verify_ai_pow_production_statement")
+            && !AI_POW_ZK_BRIDGE_RS.contains("pub fn verify_ai_pow_production_statement")
+            && !AI_POW_ZK_BRIDGE_RS.contains("pub fn verify_ai_pow_selected_tile_statement")
+            && AI_POW_ZK_BRIDGE_RS.contains("fn verify_ai_pow_selected_tile_statement")
             && AI_POW_ZK_BRIDGE_RS
                 .contains("pub fn verify_ai_pow_full_matmul_production_statement")
             && AI_POW_ZK_BRIDGE_RS.contains("FullMatmulProofUnavailable")
