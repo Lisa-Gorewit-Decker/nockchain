@@ -1,12 +1,13 @@
 //! F1: `MatmulProof` / `BlockContext` → `ai-pow-zk` SNARK.
 //!
-//! Builds a `CompositeTrace` from a real solve's per-block
-//! context and proves + PoW-verifies it. The current SNARK statement is
-//! anchored to the chain-pinned BLAKE3 key (`JOB_KEY` = κ) and
-//! nonce-derived jackpot key (`COMMITMENT_HASH` =
-//! `pow_key_for_nonce(s_a, nonce)`) via C1, binds the matrix bytes via the C3
-//! chain (`HASH_A` / `HASH_B`), and is checked against the real difficulty
-//! target via C2.
+//! Builds a `CompositeTrace` from a real solve's public work context and
+//! proves + PoW-verifies it. The SNARK statement is anchored to the
+//! chain-pinned BLAKE3 key (`JOB_KEY` = κ) and jackpot key
+//! (`COMMITMENT_HASH`) via C1, binds the matrix bytes via the C3 chain
+//! (`HASH_A` / `HASH_B`), and is checked against the real difficulty target
+//! via C2. Native Nockchain AI-PoW sets `COMMITMENT_HASH` to
+//! `pow_key_for_nonce(s_a, nonce)`. Pearl-compatible merge-mined AI-PoW sets
+//! `COMMITMENT_HASH` to Pearl's `s_A`.
 //!
 //! The `BlockContext` used here is nonce-bound: the nonce is included in the
 //! attempt `sigma` before deriving `κ`, matrix commitments, noise seeds, and
@@ -15,17 +16,16 @@
 //!
 //! ## What is bound (non-vacuous on a real solve)
 //!
-//! - **C1** — `JOB_KEY` (κ) and `COMMITMENT_HASH` (the nonce-derived jackpot key) via
-//!   key-pin rows (`CompositeTrace::place_key_pin_row`). These
-//!   anchor the proof to *this* block; without them the SNARK
-//!   proves an unbounded "some matmul happened."
+//! - **C1** — `JOB_KEY` (κ) and `COMMITMENT_HASH` (mode-specific jackpot key)
+//!   via key-pin rows (`CompositeTrace::place_key_pin_row`). These anchor the
+//!   proof to *this* work statement; without them the SNARK proves an
+//!   unbounded "some matmul happened."
 //! - **C3 / HASH_A / HASH_B** — chunk-Merkle commitments of A
 //!   (row-major) and B (col-major) keyed by κ, byte-equivalent to
 //!   `commit::matrix_commitment` (asserted here).
-//! - **C4 / HASH_JACKPOT** — `BLAKE3(JACKPOT_MSG,
-//!   key=COMMITMENT_HASH=pow_key_for_nonce(s_a, nonce))` via `place_jackpot_hash_block`
-//!   (the trace's final 8 rows; row 7 co-carries the BLAKE3
-//!   finalize and a degenerate-but-valid jackpot step, so the
+//! - **C4 / HASH_JACKPOT** — `BLAKE3(JACKPOT_MSG, key=COMMITMENT_HASH)` via
+//!   `place_jackpot_hash_block` (the trace's final 8 rows; row 7 co-carries
+//!   the BLAKE3 finalize and a degenerate-but-valid jackpot step, so the
 //!   jackpot `when_transition` is vacuous on the last row).
 //!   Non-vacuous: the bridge rejects a zero `HASH_JACKPOT`.
 //!   Enabled by the `verify_round` leading-boundary gate fix
@@ -48,22 +48,9 @@
 //! opened jackpot tile. It is soundness-critical, but it is not by itself a
 //! full-matmul consensus certificate. Production block persistence and wire
 //! format may only use a recursive certificate through the full-matmul guard
-//! below; multi-tile selected-tile certificates fail closed until the recursive
-//! statement binds a full-matrix aggregate.
-//!
-//! ## Remaining fidelity gap (not a binding gap) — HIGH-2.2 §4.A
-//!
-//! `JACKPOT_MSG` fed into the C4 hash is all-zero: no matmul /
-//! jackpot rows are placed, so the passthrough transition forces
-//! the state constant and the `noised_packed` *matmul-input*
-//! binding has no queries to bind. The C4 *binding* (CV_OUT ↦
-//! PI_HASH_JACKPOT, keyed by the real nonce-derived `pow_key`) is fully exercised —
-//! `BLAKE3(zeros, key=pow_key)` is a genuine non-vacuous keyed
-//! digest. Threading the *real* tile-state fold (the
-//! matmul→`X_STEP`→rotl13-XOR chain so `JACKPOT_MSG` = the real
-//! `TileState M`) is HIGH-2.2 §4.A; it does not weaken any
-//! binding, only the fidelity of *what* is hashed. Design +
-//! status: `crates/ai-pow-zk/docs/2026-05-15_HIGH2_2_DESIGN.md`.
+//! below. Native NCMN and Pearl-compatible merge mining are separate
+//! production statements; the Pearl path proves the shared Pearl-style attempt
+//! with Nockchain's recursive certificate and does not serialize Pearl's ZKP.
 
 use ai_pow_zk::composite_proof::{
     build_config, composite_prove_pinned_logup, composite_verify_pow_pinned_logup,
@@ -78,6 +65,10 @@ use crate::fiat_shamir::{
     pow_key_for_nonce,
 };
 use crate::params::{MatmulParams, ParamError};
+use crate::pearl_compat::{
+    verify_pearl_merge_public_statement_bytes, PearlCompatError, PearlIncompleteBlockHeader,
+    PearlMergePublicStatement, PearlMergeTicketAttempt, PearlPublicProofParams,
+};
 #[cfg(test)]
 use crate::proof::{DecodeError as ProofDecodeError, EncodeError as ProofEncodeError, MatmulProof};
 use crate::prover::{params_tag, BlockContext};
@@ -214,6 +205,34 @@ impl ZkPublicCommitments {
         Self {
             h_a_chunk: ctx.h_a_chunk,
             h_b_chunk: ctx.h_b_chunk,
+        }
+    }
+}
+
+struct ZkProverContext<'a> {
+    a: &'a [i8],
+    b: &'a [i8],
+    params: MatmulParams,
+    kappa: [u8; 32],
+    h_a_chunk: [u8; 32],
+    h_b_chunk: [u8; 32],
+    s_a: [u8; 32],
+    s_b: [u8; 32],
+    jackpot_key: [u8; 32],
+}
+
+impl<'a> ZkProverContext<'a> {
+    fn from_block_context(ctx: &BlockContext<'a>, nonce: &[u8]) -> Self {
+        Self {
+            a: ctx.a,
+            b: ctx.b,
+            params: ctx.params,
+            kappa: ctx.kappa,
+            h_a_chunk: ctx.h_a_chunk,
+            h_b_chunk: ctx.h_b_chunk,
+            s_a: ctx.s_a,
+            s_b: ctx.s_b,
+            jackpot_key: pow_key_for_nonce(&ctx.s_a, nonce),
         }
     }
 }
@@ -857,6 +876,11 @@ pub enum BridgeError {
     /// Recursive L1 certificate generation failed after the Layer-0
     /// proof was built.
     RecursiveCertificate(String),
+    /// Pearl-compatible merge-mining statement precheck failed.
+    PearlMergeStatement(PearlCompatError),
+    /// The Pearl-compatible ticket is outside the currently supported
+    /// square-contiguous recursive proof subset.
+    PearlMergeUnsupportedTileShape,
 }
 
 impl core::fmt::Display for BridgeError {
@@ -900,6 +924,13 @@ impl core::fmt::Display for BridgeError {
             BridgeError::RecursiveCertificate(msg) => {
                 write!(f, "recursive certificate generation failed: {msg}")
             }
+            BridgeError::PearlMergeStatement(e) => {
+                write!(f, "Pearl merge statement: {e}")
+            }
+            BridgeError::PearlMergeUnsupportedTileShape => write!(
+                f,
+                "Pearl merge ticket shape is outside the current square-contiguous recursive subset"
+            ),
         }
     }
 }
@@ -909,6 +940,10 @@ fn bytes_to_words_le(b: &[u8; 32]) -> [u32; 8] {
     core::array::from_fn(|i| {
         u32::from_le_bytes([b[i * 4], b[i * 4 + 1], b[i * 4 + 2], b[i * 4 + 3]])
     })
+}
+
+fn tile_state_words(tile_state: &crate::matmul::TileState) -> [u32; 16] {
+    core::array::from_fn(|i| tile_state.0[i] as u32)
 }
 
 /// Convert the production matrix parameters into the ZK circuit parameter
@@ -1048,6 +1083,186 @@ pub fn prove_ai_pow_recursive_certificate(
         zk_params,
         found_idx,
         commitments,
+        pis: artifact.pis,
+        trace_height: artifact.trace_height,
+        l1_circuit_build_ms: l1.l1_circuit_build_ms,
+        l1_in_circuit_verify_ms: l1.l1_in_circuit_verify_ms,
+        l1_outer_cert_ms: l1.l1_outer_cert_ms,
+        certificate: l1.l1_cert,
+    })
+}
+
+/// Build the recursive AI-PoW certificate for a Pearl-compatible merge-mined
+/// ticket.
+///
+/// This is the production prover handoff for `%ai-pmp` on the currently
+/// supported square-contiguous Pearl subset. It rechecks the public `PMP1`
+/// statement against trusted matrices and both targets, proves the exact
+/// Pearl ticket tile, uses Pearl's `s_A` directly as the jackpot key, and
+/// returns a Nockchain-native recursive certificate. It intentionally does not
+/// serialize or reuse Pearl's own ZKP.
+pub fn prove_pearl_merge_recursive_certificate(
+    attempt: &PearlMergeTicketAttempt,
+    params: &MatmulParams,
+    a_row_major: &[i8],
+    b_col_major: &[i8],
+    max_pattern_len: usize,
+) -> Result<AiPowRecursiveCertificateRun, BridgeError> {
+    params
+        .validate_prod_envelope()
+        .map_err(BridgeError::InvalidParams)?;
+    if params.difficulty_bits != 0 || params.spot_checks != 1 {
+        return Err(BridgeError::PearlMergeUnsupportedTileShape);
+    }
+
+    let statement_bytes = attempt
+        .statement
+        .to_bytes()
+        .map_err(BridgeError::PearlMergeStatement)?;
+    let statement = PearlMergePublicStatement::from_bytes(&statement_bytes)
+        .map_err(BridgeError::PearlMergeStatement)?;
+    let block_header = PearlIncompleteBlockHeader::from_bytes(&statement.block_header)
+        .map_err(BridgeError::PearlMergeStatement)?;
+    let public_params =
+        PearlPublicProofParams::from_public_data(block_header, &statement.public_data)
+            .map_err(BridgeError::PearlMergeStatement)?;
+
+    let precheck = verify_pearl_merge_public_statement_bytes(
+        &attempt.aux.nock_block_commitment, &statement_bytes, a_row_major, b_col_major,
+        &attempt.nockchain_target, max_pattern_len,
+    )
+    .map_err(BridgeError::PearlMergeStatement)?;
+    if precheck.work.commitments != attempt.commitments {
+        return Err(BridgeError::PublicInputMismatch("ticket.commitments"));
+    }
+    if precheck.work.ticket != attempt.ticket {
+        return Err(BridgeError::PublicInputMismatch("ticket.work"));
+    }
+
+    if params.m != public_params.m
+        || params.k != public_params.mining_config.common_dim
+        || params.n != public_params.n
+        || params.noise_rank != u32::from(public_params.mining_config.rank)
+    {
+        return Err(BridgeError::ParamsMismatch {
+            context: MatmulParams {
+                m: public_params.m,
+                k: public_params.mining_config.common_dim,
+                n: public_params.n,
+                noise_rank: u32::from(public_params.mining_config.rank),
+                tile: params.tile,
+                spot_checks: params.spot_checks,
+                difficulty_bits: params.difficulty_bits,
+            },
+            supplied: *params,
+        });
+    }
+
+    let h = public_params
+        .h()
+        .map_err(BridgeError::PearlMergeStatement)?;
+    let w = public_params
+        .w()
+        .map_err(BridgeError::PearlMergeStatement)?;
+    if h != w || params.tile != h {
+        return Err(BridgeError::PearlMergeUnsupportedTileShape);
+    }
+    let expected_rows: Vec<u32> = (0..h).map(|offset| public_params.t_rows + offset).collect();
+    let expected_cols: Vec<u32> = (0..w).map(|offset| public_params.t_cols + offset).collect();
+    if precheck.work.ticket.a_rows != expected_rows || precheck.work.ticket.b_cols != expected_cols
+    {
+        return Err(BridgeError::PearlMergeUnsupportedTileShape);
+    }
+    if public_params.t_rows % h != 0 || public_params.t_cols % w != 0 {
+        return Err(BridgeError::PearlMergeUnsupportedTileShape);
+    }
+    let row_tiles = public_params.m / h;
+    let col_tiles = public_params.n / w;
+    if row_tiles == 0 || col_tiles == 0 {
+        return Err(BridgeError::PearlMergeUnsupportedTileShape);
+    }
+    let found_idx = (public_params.t_rows / h)
+        .checked_mul(col_tiles)
+        .and_then(|base| base.checked_add(public_params.t_cols / w))
+        .ok_or(BridgeError::PearlMergeUnsupportedTileShape)?;
+    let (tile_i, tile_j) = tile_ij(found_idx, params).ok_or(BridgeError::FoundIdxOutOfRange {
+        found_idx,
+        num_tiles: params.num_tiles(),
+    })?;
+
+    let zctx = ZkProverContext {
+        a: a_row_major,
+        b: b_col_major,
+        params: *params,
+        kappa: precheck.work.commitments.kappa,
+        h_a_chunk: precheck.work.commitments.h_a,
+        h_b_chunk: precheck.work.commitments.h_b,
+        s_a: precheck.work.commitments.s_a,
+        s_b: precheck.work.commitments.s_b,
+        jackpot_key: precheck.work.commitments.s_a,
+    };
+    let (artifact, prover_program, _) =
+        prove_ai_pow_tiled_full_with_context(&zctx, params, tile_i, tile_j, |_| {}, None)?;
+
+    expect_pi_eq(
+        &artifact.pis.hash_a,
+        &bytes_to_words_le(&precheck.work.commitments.h_a),
+        "HASH_A",
+    )?;
+    expect_pi_eq(
+        &artifact.pis.hash_b,
+        &bytes_to_words_le(&precheck.work.commitments.h_b),
+        "HASH_B",
+    )?;
+    expect_pi_eq(
+        &artifact.pis.job_key,
+        &bytes_to_words_le(&precheck.work.commitments.kappa),
+        "JOB_KEY",
+    )?;
+    expect_pi_eq(
+        &artifact.pis.commitment_hash,
+        &bytes_to_words_le(&precheck.work.commitments.s_a),
+        "COMMITMENT_HASH",
+    )?;
+    if artifact.pis.jackpot != tile_state_words(&precheck.work.ticket.tile_state) {
+        return Err(BridgeError::PublicInputMismatch("JACKPOT_MSG"));
+    }
+    expect_pi_eq(
+        &artifact.pis.hash_jackpot,
+        &bytes_to_words_le(&precheck.work.ticket.jackpot_hash),
+        "HASH_JACKPOT",
+    )?;
+
+    let verified = VerifiedZkStatement {
+        tile_i,
+        tile_j,
+        derived: ZkDerivedStatement {
+            kappa: precheck.work.commitments.kappa,
+            s_a: precheck.work.commitments.s_a,
+            s_b: precheck.work.commitments.s_b,
+        },
+    };
+    verify_ai_pow_tiled_with_statement(
+        params, &precheck.work.nockchain_target, verified, &artifact,
+    )?;
+
+    let zk_params = zk_params_from(params);
+    let l1 = ai_pow_zk::recursion::prove_canonical_ai_pow_certificate_from_composite_proof(
+        &zk_params,
+        &CircuitConfig::PROD,
+        &prover_program,
+        &artifact.proof,
+        &artifact.pis,
+    )
+    .map_err(|e| BridgeError::RecursiveCertificate(format!("{e:?}")))?;
+
+    Ok(AiPowRecursiveCertificateRun {
+        zk_params,
+        found_idx,
+        commitments: ZkPublicCommitments {
+            h_a_chunk: precheck.work.commitments.h_a,
+            h_b_chunk: precheck.work.commitments.h_b,
+        },
         pis: artifact.pis,
         trace_height: artifact.trace_height,
         l1_circuit_build_ms: l1.l1_circuit_build_ms,
@@ -1366,7 +1581,25 @@ fn prove_ai_pow_tiled_full<F: FnOnce(&mut CompositeTrace)>(
     params.validate().map_err(BridgeError::InvalidParams)?;
     ensure_context_params(ctx, params)?;
     ensure_context_attempt(ctx, nonce)?;
+    let zctx = ZkProverContext::from_block_context(ctx, nonce);
+    prove_ai_pow_tiled_full_with_context(&zctx, params, tile_i, tile_j, tamper, sweep_override)
+}
 
+fn prove_ai_pow_tiled_full_with_context<F: FnOnce(&mut CompositeTrace)>(
+    zctx: &ZkProverContext<'_>,
+    params: &MatmulParams,
+    tile_i: u32,
+    tile_j: u32,
+    tamper: F,
+    sweep_override: Option<(&[i8], &[i8])>,
+) -> Result<(ZkProofArtifact, AiPowProgram, bool), BridgeError> {
+    params.validate().map_err(BridgeError::InvalidParams)?;
+    if zctx.params != *params {
+        return Err(BridgeError::ParamsMismatch {
+            context: zctx.params,
+            supplied: *params,
+        });
+    }
     // P-B (γ Pearl-faithful): size the Layer-0 trace from `params`
     // — the faithful analogue of Pearl's `degree_bits()` — instead
     // of the fixed `MIN_STARK_LEN`. For sub-envelope test profiles
@@ -1392,14 +1625,14 @@ fn prove_ai_pow_tiled_full<F: FnOnce(&mut CompositeTrace)>(
     // attested tile, so the prover cannot open a cheaper region.
     // O(t·k), size-independent ⇒ one tile = one STARK.
     use ai_pow_zk::blake3_tree::{open_strip, pad_to_chunk_boundary, tile_chunk_range};
-    let a_bytes: Vec<u8> = ctx.a.iter().map(|&v| v as u8).collect();
-    let b_bytes: Vec<u8> = ctx.b.iter().map(|&v| v as u8).collect();
+    let a_bytes: Vec<u8> = zctx.a.iter().map(|&v| v as u8).collect();
+    let b_bytes: Vec<u8> = zctx.b.iter().map(|&v| v as u8).collect();
     let tt = params.tile as usize;
     let kk = params.k as usize;
     // A row-major (m rows × k): tile_i's `t` rows, span t·k.
     let a_pad = pad_to_chunk_boundary(&a_bytes);
     let (ca0, ca1, a_nc) = tile_chunk_range(tile_i as usize, tt, kk, a_bytes.len());
-    let (_oa, a_sibs) = open_strip(&a_bytes, &ctx.kappa, ca0, ca1);
+    let (_oa, a_sibs) = open_strip(&a_bytes, &zctx.kappa, ca0, ca1);
     // §4.C.2 c-exact cx.2 g=1 co-location: the Pearl `noise_ref`
     // byte parallel to the opened A strip — entry j = noise at the
     // committed matrix position of `a_pad[ca0*1024 + j]` (A is
@@ -1422,7 +1655,7 @@ fn prove_ai_pow_tiled_full<F: FnOnce(&mut CompositeTrace)>(
         .map(|j| {
             let p = a_strip_lo + j;
             if p < a_bytes.len() {
-                ai_pow_zk::noise_ref::e_value(&ctx.s_a, (p / kk) as u32, (p % kk) as u32, rr)
+                ai_pow_zk::noise_ref::e_value(&zctx.s_a, (p / kk) as u32, (p % kk) as u32, rr)
             } else {
                 0
             }
@@ -1435,14 +1668,14 @@ fn prove_ai_pow_tiled_full<F: FnOnce(&mut CompositeTrace)>(
         ca1,
         a_nc,
         &a_sibs,
-        &ctx.kappa,
+        &zctx.kappa,
         4, // IS_HASH_A
         if coloc { Some(&a_noise_strip) } else { None },
     );
     // B col-major (n cols × k, col j at j·k): tile_j's `t` cols.
     let b_pad = pad_to_chunk_boundary(&b_bytes);
     let (cb0, cb1, b_nc) = tile_chunk_range(tile_j as usize, tt, kk, b_bytes.len());
-    let (_ob, b_sibs) = open_strip(&b_bytes, &ctx.kappa, cb0, cb1);
+    let (_ob, b_sibs) = open_strip(&b_bytes, &zctx.kappa, cb0, cb1);
     // B is col-major flattened [col0(k)|col1(k)|…]: for byte p the
     // matrix col = p/k, k-index = p%k ⇒ f_value(s_b, k-idx, col).
     let b_strip_lo = cb0 * 1024;
@@ -1450,7 +1683,7 @@ fn prove_ai_pow_tiled_full<F: FnOnce(&mut CompositeTrace)>(
         .map(|j| {
             let p = b_strip_lo + j;
             if p < b_bytes.len() {
-                ai_pow_zk::noise_ref::f_value(&ctx.s_b, (p % kk) as u32, (p / kk) as u32, rr)
+                ai_pow_zk::noise_ref::f_value(&zctx.s_b, (p % kk) as u32, (p / kk) as u32, rr)
             } else {
                 0
             }
@@ -1463,18 +1696,17 @@ fn prove_ai_pow_tiled_full<F: FnOnce(&mut CompositeTrace)>(
         cb1,
         b_nc,
         &b_sibs,
-        &ctx.kappa,
+        &zctx.kappa,
         5, // IS_HASH_B
         if coloc { Some(&b_noise_strip) } else { None },
     );
 
-    // C1 — key-pin rows binding JOB_KEY = κ and
-    // COMMITMENT_HASH = pow_key_for_nonce(s_a, nonce). Placed well clear of the matrix-hash
-    // blocks and of the last row (which carries the cumsum /
-    // jackpot passthrough binding).
-    let kappa_w = bytes_to_words_le(&ctx.kappa);
-    let pow_key = pow_key_for_nonce(&ctx.s_a, nonce);
-    let pow_key_w = bytes_to_words_le(&pow_key);
+    // C1 — key-pin rows binding JOB_KEY = κ and the mode-specific
+    // COMMITMENT_HASH jackpot key. Placed well clear of the matrix-hash blocks
+    // and of the last row (which carries the cumsum / jackpot passthrough
+    // binding).
+    let kappa_w = bytes_to_words_le(&zctx.kappa);
+    let jackpot_key_w = bytes_to_words_le(&zctx.jackpot_key);
     let jk_row = mh_end + 1;
     let ch_row = mh_end + 2;
     assert!(
@@ -1482,7 +1714,7 @@ fn prove_ai_pow_tiled_full<F: FnOnce(&mut CompositeTrace)>(
         "trace too short for key-pin rows: mh_end={mh_end} height={height}"
     );
     trace.place_key_pin_row(jk_row, false, &kappa_w);
-    trace.place_key_pin_row(ch_row, true, &pow_key_w);
+    trace.place_key_pin_row(ch_row, true, &jackpot_key_w);
 
     // HIGH-2.2 §6(b) — place the **real** solved tile's full
     // useful-work chain: the sub-block-major matmul sweep over the
@@ -1503,12 +1735,12 @@ fn prove_ai_pow_tiled_full<F: FnOnce(&mut CompositeTrace)>(
     // (`high2_2_xstep_fold_pipeline_byte_equiv_plain`). Tile (0,0)
     // is attested; threading the specific *found* tile + binding
     // its index is §4.E (does not change this binding).
-    let noise = crate::matmul::BlockNoise::expand(&ctx.s_a, &ctx.s_b, params);
+    let noise = crate::matmul::BlockNoise::expand(&zctx.s_a, &zctx.s_b, params);
     // §4.C.10 adversarial seam: the §6(b) matmul sweep + the
     // `noised_packed` producer store are built from `sweep_override`
     // when present; the strip-opening + `HASH_A`/`HASH_B` (above)
     // always stay the committed `ctx.a`/`ctx.b`. Production = `None`.
-    let (sweep_a, sweep_b) = sweep_override.unwrap_or((ctx.a, ctx.b));
+    let (sweep_a, sweep_b) = sweep_override.unwrap_or((zctx.a, zctx.b));
     let mats = crate::matmul::Matrices::build(sweep_a, sweep_b, &noise, params);
     assert!(
         tile_i < params.row_tiles() && tile_j < params.col_tiles(),
@@ -1576,12 +1808,12 @@ fn prove_ai_pow_tiled_full<F: FnOnce(&mut CompositeTrace)>(
             if let Some((lane, l)) = s.src[m] {
                 if s.side_a {
                     let i = tile_i * params.tile + lane;
-                    plain[m] = ctx.a[(i as usize) * kk2 + l as usize];
-                    noise[m] = ai_pow_zk::noise_ref::e_value(&ctx.s_a, i, l, r as u32);
+                    plain[m] = zctx.a[(i as usize) * kk2 + l as usize];
+                    noise[m] = ai_pow_zk::noise_ref::e_value(&zctx.s_a, i, l, r as u32);
                 } else {
                     let jc = tile_j * params.tile + lane;
-                    plain[m] = ctx.b[(jc as usize) * kk2 + l as usize];
-                    noise[m] = ai_pow_zk::noise_ref::f_value(&ctx.s_b, l, jc, r as u32);
+                    plain[m] = zctx.b[(jc as usize) * kk2 + l as usize];
+                    noise[m] = ai_pow_zk::noise_ref::f_value(&zctx.s_b, l, jc, r as u32);
                 }
             }
         }
@@ -1618,13 +1850,13 @@ fn prove_ai_pow_tiled_full<F: FnOnce(&mut CompositeTrace)>(
         trace.place_fold_chain(fold_start, &xs)
     };
 
-    // C4 — final jackpot-hash block (trace's last 8 rows):
-    // HASH_JACKPOT = BLAKE3(JACKPOT_MSG = real M, key = pow_key_for_nonce(s_a, nonce)).
+    // C4 — final jackpot-hash block (trace's last 8 rows). Native mode uses
+    // `pow_key_for_nonce(s_a, nonce)` here; Pearl-compatible mode uses `s_A`.
     assert!(
         ch_row + 1 < height - 8,
         "key-pin rows must clear the final jackpot-hash block"
     );
-    let _hj = trace.place_jackpot_hash_block(height - 8, &real_m, &pow_key_w);
+    let _hj = trace.place_jackpot_hash_block(height - 8, &real_m, &jackpot_key_w);
 
     // Derive PIs and cross-check against the plain-side context.
     let pis = CompositePublicInputs::derive_from_trace(&trace);
@@ -1633,18 +1865,18 @@ fn prove_ai_pow_tiled_full<F: FnOnce(&mut CompositeTrace)>(
             "HASH_JACKPOT vacuous (jackpot-hash block not bound)",
         ));
     }
-    if pis.hash_a != bytes_to_words_le(&ctx.h_a_chunk) {
+    if pis.hash_a != bytes_to_words_le(&zctx.h_a_chunk) {
         return Err(BridgeError::CommitmentMismatch("HASH_A != h_a_chunk"));
     }
-    if pis.hash_b != bytes_to_words_le(&ctx.h_b_chunk) {
+    if pis.hash_b != bytes_to_words_le(&zctx.h_b_chunk) {
         return Err(BridgeError::CommitmentMismatch("HASH_B != h_b_chunk"));
     }
     if pis.job_key != kappa_w {
         return Err(BridgeError::CommitmentMismatch("JOB_KEY != kappa"));
     }
-    if pis.commitment_hash != pow_key_w {
+    if pis.commitment_hash != jackpot_key_w {
         return Err(BridgeError::CommitmentMismatch(
-            "COMMITMENT_HASH != pow_key",
+            "COMMITMENT_HASH != jackpot_key",
         ));
     }
 
@@ -1846,6 +2078,82 @@ mod tests {
             spot_checks: 1,
             difficulty_bits: 0,
         }
+    }
+
+    fn pearl_merge_prod_params() -> MatmulParams {
+        MatmulParams {
+            m: 128,
+            k: 1024,
+            n: 128,
+            noise_rank: 64,
+            tile: 8,
+            spot_checks: 1,
+            difficulty_bits: 0,
+        }
+    }
+
+    fn pearl_test_pattern(length: u32) -> crate::pearl_compat::PearlPeriodicPattern {
+        crate::pearl_compat::PearlPeriodicPattern {
+            shape: [(1, length), (length, 1), (length, 1)],
+        }
+    }
+
+    fn pearl_test_header() -> crate::pearl_compat::PearlIncompleteBlockHeader {
+        crate::pearl_compat::PearlIncompleteBlockHeader {
+            version: 0x0102_0304,
+            prev_block: [0x11; 32],
+            merkle_root: [0x22; 32],
+            timestamp: 0x6677_8899,
+            nbits: 0x207f_ffff,
+        }
+    }
+
+    fn pearl_test_aux() -> crate::pearl_compat::PearlNockchainAux {
+        crate::pearl_compat::PearlNockchainAux {
+            nockchain_chain_id: b"nockchain-mainnet".to_vec(),
+            nock_block_commitment: [0x42; 32],
+            nockchain_target_epoch_or_height: 123_456,
+            extra_domain_data: b"ai-pow-target-window".to_vec(),
+        }
+    }
+
+    fn pearl_test_config(
+        params: &MatmulParams,
+        rows_pattern: crate::pearl_compat::PearlPeriodicPattern,
+        cols_pattern: crate::pearl_compat::PearlPeriodicPattern,
+    ) -> crate::pearl_compat::PearlMiningConfig {
+        crate::pearl_compat::PearlMiningConfig {
+            common_dim: params.k,
+            rank: params.noise_rank as u16,
+            mma_type: crate::pearl_compat::PEARL_MMA_INT7XINT7_TO_INT32,
+            rows_pattern,
+            cols_pattern,
+            reserved: [0; crate::pearl_compat::PEARL_MINING_CONFIG_RESERVED_SIZE],
+        }
+    }
+
+    fn pearl_merge_ticket_fixture(
+        seed: &[u8],
+        rows_pattern: crate::pearl_compat::PearlPeriodicPattern,
+        cols_pattern: crate::pearl_compat::PearlPeriodicPattern,
+    ) -> (PearlMergeTicketAttempt, MatmulParams, Vec<i8>, Vec<i8>) {
+        let params = pearl_merge_prod_params();
+        let (a, b) = synth_matrices(seed, &params);
+        let config = pearl_test_config(&params, rows_pattern, cols_pattern);
+        let attempt = crate::pearl_compat::evaluate_pearl_merge_ticket_attempt(
+            &pearl_test_header(),
+            &config,
+            &params,
+            0,
+            0,
+            &a,
+            &b,
+            &[0xff; 32],
+            16,
+            pearl_test_aux(),
+        )
+        .expect("evaluate Pearl merge ticket");
+        (attempt, params, a, b)
     }
 
     fn test_zk_params() -> ZkParams {
@@ -2260,6 +2568,79 @@ mod tests {
             prove_ai_pow_recursive_certificate(&ctx, &params, wrong_nonce, &[0xff; 32], 0),
             Err(BridgeError::ContextAttemptMismatch)
         ));
+    }
+
+    #[test]
+    fn pearl_merge_recursive_certificate_rejects_wrong_matrices_before_zkp() {
+        let (attempt, params, mut a, b) = pearl_merge_ticket_fixture(
+            b"pearl-recursive-wrong-matrix",
+            pearl_test_pattern(8),
+            pearl_test_pattern(8),
+        );
+        a[0] ^= 1;
+
+        assert!(matches!(
+            prove_pearl_merge_recursive_certificate(&attempt, &params, &a, &b, 16),
+            Err(BridgeError::PearlMergeStatement(
+                PearlCompatError::PublicCommitmentMismatch
+            ))
+        ));
+    }
+
+    #[test]
+    fn pearl_merge_recursive_certificate_rejects_noncontiguous_ticket_before_zkp() {
+        let noncontiguous =
+            crate::pearl_compat::PearlPeriodicPattern::from_list(&[0, 1, 8, 9, 64, 65, 72, 73])
+                .expect("representable Pearl pattern");
+        let (attempt, params, a, b) = pearl_merge_ticket_fixture(
+            b"pearl-recursive-noncontiguous",
+            noncontiguous,
+            pearl_test_pattern(8),
+        );
+
+        assert!(matches!(
+            prove_pearl_merge_recursive_certificate(&attempt, &params, &a, &b, 16),
+            Err(BridgeError::PearlMergeUnsupportedTileShape)
+        ));
+    }
+
+    /// Opt-in because this builds a real Layer-0 proof and recursive
+    /// certificate. Run with:
+    /// `GNORT_DISABLE=1 cargo test -p ai-pow --release --features zk \
+    /// real_pearl_merge_recursive_certificate_proves_same_ticket -- --ignored --nocapture`
+    #[test]
+    #[ignore = "real Pearl-compatible recursive proof generation is intentionally opt-in"]
+    fn real_pearl_merge_recursive_certificate_proves_same_ticket() {
+        let (attempt, params, a, b) = pearl_merge_ticket_fixture(
+            b"pearl-recursive-real-proof",
+            pearl_test_pattern(8),
+            pearl_test_pattern(8),
+        );
+
+        let run = prove_pearl_merge_recursive_certificate(&attempt, &params, &a, &b, 16)
+            .expect("prove Pearl merge recursive certificate");
+
+        assert_eq!(run.found_idx, 0);
+        assert_eq!(run.commitments.h_a_chunk, attempt.commitments.h_a);
+        assert_eq!(run.commitments.h_b_chunk, attempt.commitments.h_b);
+        assert_eq!(
+            run.pis.job_key,
+            bytes_to_words_le(&attempt.commitments.kappa)
+        );
+        assert_eq!(
+            run.pis.commitment_hash,
+            bytes_to_words_le(&attempt.commitments.s_a)
+        );
+        assert_eq!(
+            run.pis.jackpot,
+            tile_state_words(&attempt.ticket.tile_state)
+        );
+        assert_eq!(
+            run.pis.hash_jackpot,
+            bytes_to_words_le(&attempt.ticket.jackpot_hash)
+        );
+        ai_pow_zk::recursion::verify_recursive_certificate(&run.certificate, &run.pis)
+            .expect("recursive certificate verifies against Pearl public inputs");
     }
 
     #[test]

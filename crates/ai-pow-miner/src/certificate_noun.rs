@@ -18,7 +18,7 @@ use ai_pow::pearl_compat::{
 };
 use ai_pow::zk_bridge::{
     expected_layer0_rows, verify_ai_pow_full_matmul_production_statement, zk_params_from_matmul,
-    BridgeError, ZkPublicCommitments,
+    AiPowRecursiveCertificateRun, BridgeError, ZkPublicCommitments,
 };
 use ai_pow_zk::{CompositePublicInputs, ZkParams};
 use nockapp::noun::slab::{CueError, NounSlab};
@@ -544,6 +544,30 @@ pub fn pearl_merge_recursive_certificate_parts_from_ticket(
     })
 }
 
+/// Derive the exact `%ai-pmp` recursive metadata for one successful
+/// Pearl-compatible ticket attempt, preserving the public inputs produced by
+/// the actual recursive prover run.
+///
+/// The Pearl-bound slots are still fully re-derived from the ticket and
+/// trusted matrices. The only field this API does not derive is `cumsum`,
+/// because that is a Layer-0 trace detail rather than part of Pearl's public
+/// work statement. This is the handoff production provers should use once the
+/// Pearl-compatible recursive prover returns real public inputs.
+pub fn pearl_merge_recursive_certificate_parts_from_ticket_public_inputs(
+    attempt: &PearlMergeTicketAttempt,
+    a_row_major: &[i8],
+    b_col_major: &[i8],
+    max_pattern_len: usize,
+    public_inputs: &CompositePublicInputs,
+) -> Result<PearlMergeRecursiveCertificateParts, CertificateNounError> {
+    let mut parts = pearl_merge_recursive_certificate_parts_from_ticket(
+        attempt, a_row_major, b_col_major, max_pattern_len,
+    )?;
+    precheck_pearl_merge_bound_public_inputs(public_inputs, &parts.public_inputs)?;
+    parts.public_inputs = public_inputs.clone();
+    Ok(parts)
+}
+
 /// Build the canonical `%ai-pmp` artifact from a successful Pearl-compatible
 /// ticket and an already-serialized recursive proof node.
 pub fn build_ai_pow_pearl_merge_artifact_noun_from_ticket_node(
@@ -555,6 +579,26 @@ pub fn build_ai_pow_pearl_merge_artifact_noun_from_ticket_node(
 ) -> Result<NounSlab, CertificateNounError> {
     let parts = pearl_merge_recursive_certificate_parts_from_ticket(
         attempt, a_row_major, b_col_major, max_pattern_len,
+    )?;
+    Ok(build_ai_pow_pearl_merge_artifact_noun_from_node(
+        &parts.statement, &parts.zk_params, parts.found_idx, parts.trace_height,
+        &parts.commitments, &parts.public_inputs, certificate,
+    ))
+}
+
+/// Build the canonical `%ai-pmp` artifact from a successful Pearl-compatible
+/// ticket, actual recursive public inputs, and an already-serialized proof
+/// node.
+pub fn build_ai_pow_pearl_merge_artifact_noun_from_ticket_public_inputs_node(
+    attempt: &PearlMergeTicketAttempt,
+    a_row_major: &[i8],
+    b_col_major: &[i8],
+    max_pattern_len: usize,
+    public_inputs: &CompositePublicInputs,
+    certificate: &AiProofNode,
+) -> Result<NounSlab, CertificateNounError> {
+    let parts = pearl_merge_recursive_certificate_parts_from_ticket_public_inputs(
+        attempt, a_row_major, b_col_major, max_pattern_len, public_inputs,
     )?;
     Ok(build_ai_pow_pearl_merge_artifact_noun_from_node(
         &parts.statement, &parts.zk_params, parts.found_idx, parts.trace_height,
@@ -575,6 +619,61 @@ pub fn build_ai_pow_pearl_merge_artifact_noun_from_ticket<C: Serialize>(
     build_ai_pow_pearl_merge_artifact_noun_from_ticket_node(
         attempt, a_row_major, b_col_major, max_pattern_len, &certificate,
     )
+}
+
+/// Build the canonical `%ai-pmp` artifact from a successful Pearl-compatible
+/// ticket, actual recursive public inputs, and recursive certificate object.
+pub fn build_ai_pow_pearl_merge_artifact_noun_from_ticket_public_inputs<C: Serialize>(
+    attempt: &PearlMergeTicketAttempt,
+    a_row_major: &[i8],
+    b_col_major: &[i8],
+    max_pattern_len: usize,
+    public_inputs: &CompositePublicInputs,
+    recursive_certificate: &C,
+) -> Result<NounSlab, CertificateNounError> {
+    let certificate = recursive_certificate_to_node(recursive_certificate)?;
+    build_ai_pow_pearl_merge_artifact_noun_from_ticket_public_inputs_node(
+        attempt, a_row_major, b_col_major, max_pattern_len, public_inputs, &certificate,
+    )
+}
+
+/// Build the canonical `%ai-pmp` artifact from a successful Pearl-compatible
+/// ticket and a real recursive prover run.
+pub fn build_ai_pow_pearl_merge_artifact_noun_from_ticket_recursive_run(
+    attempt: &PearlMergeTicketAttempt,
+    a_row_major: &[i8],
+    b_col_major: &[i8],
+    max_pattern_len: usize,
+    run: &AiPowRecursiveCertificateRun,
+) -> Result<NounSlab, CertificateNounError> {
+    let parts = pearl_merge_recursive_certificate_parts_from_ticket_public_inputs(
+        attempt, a_row_major, b_col_major, max_pattern_len, &run.pis,
+    )?;
+    if run.zk_params != parts.zk_params {
+        return Err(CertificateNounError::PearlMergePublicInputMismatch(
+            "recursive-run.zk-params",
+        ));
+    }
+    if run.found_idx != parts.found_idx {
+        return Err(CertificateNounError::PearlMergePublicInputMismatch(
+            "recursive-run.found-idx",
+        ));
+    }
+    if run.trace_height != parts.trace_height {
+        return Err(CertificateNounError::PearlMergePublicInputMismatch(
+            "recursive-run.trace-height",
+        ));
+    }
+    if run.commitments != parts.commitments {
+        return Err(CertificateNounError::PearlMergePublicInputMismatch(
+            "recursive-run.commitments",
+        ));
+    }
+    let certificate = recursive_certificate_to_node(&run.certificate)?;
+    Ok(build_ai_pow_pearl_merge_artifact_noun_from_node(
+        &parts.statement, &parts.zk_params, parts.found_idx, parts.trace_height,
+        &parts.commitments, &parts.public_inputs, &certificate,
+    ))
 }
 
 /// Decode and validate the Hoon `ai-pow-certificate` root in a slab.
@@ -1251,32 +1350,43 @@ fn precheck_pearl_merge_certificate_metadata(
             "commitments.h-b-chunk",
         ));
     }
-    if metadata.public_inputs.hash_a != digest_words(&precheck.work.commitments.h_a) {
+    let expected_public_inputs = pearl_merge_recursive_public_inputs_from_work(
+        &precheck.work.commitments, &precheck.work.ticket,
+    );
+    precheck_pearl_merge_bound_public_inputs(&metadata.public_inputs, &expected_public_inputs)?;
+    Ok(())
+}
+
+fn precheck_pearl_merge_bound_public_inputs(
+    got: &CompositePublicInputs,
+    expected: &CompositePublicInputs,
+) -> Result<(), CertificateNounError> {
+    if got.hash_a != expected.hash_a {
         return Err(CertificateNounError::PearlMergePublicInputMismatch(
             "public-inputs.hash-a",
         ));
     }
-    if metadata.public_inputs.hash_b != digest_words(&precheck.work.commitments.h_b) {
+    if got.hash_b != expected.hash_b {
         return Err(CertificateNounError::PearlMergePublicInputMismatch(
             "public-inputs.hash-b",
         ));
     }
-    if metadata.public_inputs.job_key != digest_words(&precheck.work.commitments.kappa) {
+    if got.job_key != expected.job_key {
         return Err(CertificateNounError::PearlMergePublicInputMismatch(
             "public-inputs.job-key",
         ));
     }
-    if metadata.public_inputs.commitment_hash != digest_words(&precheck.work.commitments.s_a) {
+    if got.commitment_hash != expected.commitment_hash {
         return Err(CertificateNounError::PearlMergePublicInputMismatch(
             "public-inputs.commitment-hash",
         ));
     }
-    if metadata.public_inputs.jackpot != tile_state_words(&precheck.work.ticket.tile_state) {
+    if got.jackpot != expected.jackpot {
         return Err(CertificateNounError::PearlMergePublicInputMismatch(
             "public-inputs.jackpot",
         ));
     }
-    if metadata.public_inputs.hash_jackpot != digest_words(&precheck.work.ticket.jackpot_hash) {
+    if got.hash_jackpot != expected.hash_jackpot {
         return Err(CertificateNounError::PearlMergePublicInputMismatch(
             "public-inputs.hash-jackpot",
         ));
@@ -4198,6 +4308,52 @@ mod tests {
             pearl_merge_recursive_public_inputs_from_precheck(&precheck),
             parts.public_inputs
         );
+    }
+
+    #[test]
+    fn pearl_merge_ticket_artifact_builder_accepts_actual_recursive_public_inputs() {
+        let (attempt, a, b) = pearl_merge_ticket_attempt_fixture();
+        let mut proof_pis =
+            pearl_merge_recursive_public_inputs_from_work(&attempt.commitments, &attempt.ticket);
+        proof_pis.cumsum = [17, -23, 42, -99];
+
+        let parts = pearl_merge_recursive_certificate_parts_from_ticket_public_inputs(
+            &attempt, &a, &b, 16, &proof_pis,
+        )
+        .expect("derive recursive certificate parts with actual proof public inputs");
+        assert_eq!(parts.public_inputs, proof_pis);
+
+        let artifact_slab = build_ai_pow_pearl_merge_artifact_noun_from_ticket_public_inputs_node(
+            &attempt,
+            &a,
+            &b,
+            16,
+            &proof_pis,
+            &AiProofNode::Unit,
+        )
+        .expect("build ai-pmp artifact from ticket and proof public inputs");
+        let decoded = decode_ai_pow_pearl_merge_artifact_slab(
+            &artifact_slab,
+            CertificateNounLimits::default(),
+        )
+        .expect("decode ai-pmp artifact from ticket and proof public inputs");
+        assert_eq!(decoded.certificate.public_inputs.cumsum, proof_pis.cumsum);
+
+        precheck_ai_pow_pearl_merge_artifact_statement(
+            &decoded, &attempt.aux.nock_block_commitment, &a, &b, &attempt.nockchain_target, 16,
+        )
+        .expect("precheck accepts actual proof cumsum when Pearl-bound slots match");
+
+        let mut bad_pis = proof_pis.clone();
+        bad_pis.hash_jackpot[0] ^= 1;
+        assert!(matches!(
+            pearl_merge_recursive_certificate_parts_from_ticket_public_inputs(
+                &attempt, &a, &b, 16, &bad_pis,
+            ),
+            Err(CertificateNounError::PearlMergePublicInputMismatch(
+                "public-inputs.hash-jackpot"
+            ))
+        ));
     }
 
     #[test]

@@ -218,10 +218,23 @@ Implemented in this branch:
     against the trusted matrices and rejects target misses, forged statement
     drift, forged work/ticket fields, and Pearl geometries outside the current
     square contiguous recursive subset before an artifact can be built.
+  - `pearl_merge_recursive_certificate_parts_from_ticket_public_inputs` is the
+    production prover handoff variant for real recursive proof runs: it
+    preserves the proof-derived `cumsum` public inputs while re-deriving and
+    checking every Pearl-bound public-input slot from the successful ticket.
   - `build_ai_pow_pearl_merge_artifact_noun_from_ticket_node` and
     `build_ai_pow_pearl_merge_artifact_noun_from_ticket` build `%ai-pmp`
     directly from that canonical ticket-derived metadata instead of accepting
     caller-supplied `found-idx`, public inputs, or commitments.
+  - `build_ai_pow_pearl_merge_artifact_noun_from_ticket_public_inputs_node`
+    and `build_ai_pow_pearl_merge_artifact_noun_from_ticket_public_inputs`
+    build the same `%ai-pmp` artifact while preserving the actual recursive
+    proof public-input vector after the Pearl-bound slots are checked.
+  - `build_ai_pow_pearl_merge_artifact_noun_from_ticket_recursive_run` is the
+    production handoff from an actual recursive prover run to the `%ai-pmp`
+    noun. It uses the proof's own public inputs and certificate, while
+    re-deriving and checking the Pearl-compatible statement fields from the
+    shared attempt.
   - `ai_pow_miner::run::build_ai_pow_pearl_merge_certificate_poke` constructs
     the node submission noun `[%command %pow %ai-pmp artifact]` after first
     decoding the artifact as `%ai-pmp`, so miner-side code cannot accidentally
@@ -232,6 +245,13 @@ Implemented in this branch:
     miner-facing safe submission helpers: they derive `%ai-pmp` from the
     successful ticket and trusted matrices, then wrap only that derived
     artifact as the kernel command.
+  - `build_ai_pow_pearl_merge_certificate_poke_from_ticket_public_inputs_node`
+    and `build_ai_pow_pearl_merge_certificate_poke_from_ticket_public_inputs`
+    are the corresponding safe helpers for real prover runs whose recursive
+    public inputs include trace-derived fields such as `cumsum`.
+  - `build_ai_pow_pearl_merge_certificate_poke_from_ticket_recursive_run`
+    wraps the real recursive prover run into the production node command noun
+    after the same ticket-derived checks.
   - `AiPowSubmissionMode` makes the run-loop proof arm explicit. The current
     node loop accepts `NativeNcmn` only and fails closed for `PearlMerge`
     before enabling mining, so a caller cannot accidentally configure Pearl
@@ -243,6 +263,12 @@ Implemented in this branch:
     both Pearl and Nockchain targets. It maps linear attempt ordinals to
     Pearl-valid offsets without materializing all valid offset pairs up front,
     and it does not build a recursive proof or `%ai-pmp` artifact on misses.
+  - `ai_pow::zk_bridge::prove_pearl_merge_recursive_certificate` builds a
+    Nockchain-native recursive certificate for the supported
+    square-contiguous Pearl tile-ticket subset. It rechecks the shared `PMP1`
+    statement against trusted matrices, proves the exact Pearl ticket tile,
+    uses Pearl `s_A` as the jackpot key, and does not serialize or reuse
+    Pearl's ZKP.
 - Release tests in `crates/ai-pow-miner/src/certificate_noun.rs` proving:
   - `%ai-pmp` keeps the Pearl statement structured rather than as a single
     opaque statement atom;
@@ -577,21 +603,46 @@ Canonical Rust construction APIs:
   trace_height, commitments, public_inputs, recursive_certificate)`;
 - `pearl_merge_recursive_certificate_parts_from_ticket(attempt, a_row_major,
   b_col_major, max_pattern_len)`;
+- `pearl_merge_recursive_certificate_parts_from_ticket_public_inputs(attempt,
+  a_row_major, b_col_major, max_pattern_len, public_inputs)`;
 - `build_ai_pow_pearl_merge_artifact_noun_from_ticket_node(attempt,
   a_row_major, b_col_major, max_pattern_len, proof_node)`;
 - `build_ai_pow_pearl_merge_artifact_noun_from_ticket(attempt, a_row_major,
   b_col_major, max_pattern_len, recursive_certificate)`;
+- `build_ai_pow_pearl_merge_artifact_noun_from_ticket_public_inputs_node(
+  attempt, a_row_major, b_col_major, max_pattern_len, public_inputs,
+  proof_node)`;
+- `build_ai_pow_pearl_merge_artifact_noun_from_ticket_public_inputs(attempt,
+  a_row_major, b_col_major, max_pattern_len, public_inputs,
+  recursive_certificate)`;
+- `build_ai_pow_pearl_merge_artifact_noun_from_ticket_recursive_run(attempt,
+  a_row_major, b_col_major, max_pattern_len, run)`;
 - `build_ai_pow_pearl_merge_certificate_poke_from_ticket_node(attempt,
   a_row_major, b_col_major, max_pattern_len, proof_node)`;
 - `build_ai_pow_pearl_merge_certificate_poke_from_ticket(attempt, a_row_major,
-  b_col_major, max_pattern_len, recursive_certificate)`.
+  b_col_major, max_pattern_len, recursive_certificate)`;
+- `build_ai_pow_pearl_merge_certificate_poke_from_ticket_public_inputs_node(
+  attempt, a_row_major, b_col_major, max_pattern_len, public_inputs,
+  proof_node)`;
+- `build_ai_pow_pearl_merge_certificate_poke_from_ticket_public_inputs(attempt,
+  a_row_major, b_col_major, max_pattern_len, public_inputs,
+  recursive_certificate)`;
+- `build_ai_pow_pearl_merge_certificate_poke_from_ticket_recursive_run(attempt,
+  a_row_major, b_col_major, max_pattern_len, run)`.
 
 Production callers should prefer the ticket-derived `%ai-pmp` builders for
 Pearl-compatible mode. Those builders derive certificate metadata from the
 successful shared ticket, recompute the public work against the trusted
 matrices, and reject misses or forged ticket fields before recursive artifact
-construction. Callers should not separately serialize a Pearl ZKP, raw
-`MatmulProof`, or plain Layer-0 AI-PoW proof into Hoon consensus state.
+construction. Once a real Pearl-compatible recursive prover returns its public
+inputs, callers should use the `_public_inputs` variants so trace-derived
+fields such as `cumsum` are preserved while `HASH_A`, `HASH_B`, `JOB_KEY`,
+`COMMITMENT_HASH`, `JACKPOT_MSG`, and `HASH_JACKPOT` remain derived from the
+ticket. Once callers have an `AiPowRecursiveCertificateRun`, they should use
+the `_recursive_run` variants so the artifact is built from the exact proof
+output that was verified against the shared attempt. Callers should not
+separately serialize a Pearl ZKP, raw `MatmulProof`, or plain Layer-0 AI-PoW
+proof into Hoon consensus state.
 
 The exact Pearl header, `MiningConfiguration`, public proof parameter, and aux
 inclusion encodings must be derived from Pearl's current consensus code, not
@@ -754,16 +805,23 @@ apply the current one-selected-tile rule in this mode.
   structured statement shape, a single helper derives the Pearl statement
   public-input slots, ticket-derived artifact builders derive all recursive
   metadata from a successful shared attempt, recompute the public work against
-  trusted matrices, and reject target misses, statement drift, forged
-  work/ticket fields, and unsupported non-contiguous tickets, and the
-  miner-side `%ai-pmp` command-poke helpers either wrap only decoded Pearl
-  merge artifacts or derive the artifact directly from the successful ticket
-  and trusted matrices. Also done: the node run loop has an explicit
-  `AiPowSubmissionMode` and fails closed for `PearlMerge`, and the standalone
-  `ai_pow_miner::pearl_mining` loop scans Pearl-valid ticket offset pairs
-  without generating recursive proofs or artifacts on misses. Still required:
-  wire the verifier jet/callsite and recursive proof circuit for this
-  Pearl-compatible statement.
+  trusted matrices, preserve real proof public inputs only after checking the
+  Pearl-bound slots, and reject target misses, statement drift, forged
+  work/ticket fields, public-input tamper, and unsupported non-contiguous
+  tickets. Also done: the square-contiguous recursive prover path
+  (`prove_pearl_merge_recursive_certificate`) proves the exact Pearl ticket
+  tile with Pearl `s_A` as the jackpot key, and `_recursive_run` artifact and
+  poke builders serialize only the resulting Nockchain recursive certificate.
+  Also done: the miner-side `%ai-pmp` command-poke helpers either wrap only
+  decoded Pearl merge artifacts or derive the artifact directly from the
+  successful ticket and trusted matrices. Also done: the node run loop has an
+  explicit `AiPowSubmissionMode` and fails closed for `PearlMerge`, and the
+  standalone `ai_pow_miner::pearl_mining` loop scans Pearl-valid ticket offset
+  pairs without generating recursive proofs or artifacts on misses. Still
+  required: wire the verifier jet/callsite for `%ai-pmp`, derive/verify the
+  Pearl aux inclusion proof against Pearl consensus data, and either extend
+  the prover to Pearl's full row/column pattern language or activate only the
+  square-contiguous subset that Nockchain proves byte-for-byte.
 - Add byte-equivalence tests against Pearl source fixtures for:
   - `sigma || mu` serialization;
   - `kappa`;
@@ -774,15 +832,19 @@ apply the current one-selected-tile rule in this mode.
 
 ### `ai-pow-zk`
 
-- Add/identify a verifier entrypoint for a Nockchain recursive certificate that
-  proves the Pearl-compatible PoW statement.
+- Done for the current square-contiguous subset: add
+  `prove_pearl_merge_recursive_certificate`, a Nockchain recursive certificate
+  producer that proves the Pearl-compatible ticket statement with Pearl `s_A`
+  as the jackpot key.
 - Ensure public inputs match Pearl's work statement exactly. In
   Pearl-compatible mode, the public slot currently named `COMMITMENT_HASH` must
   contain `s_A`, not `pow_key_for_nonce(s_A, nonce)`.
-- Remove Nockchain-only `attempt_tile_index` from the Pearl-compatible
-  statement.
-- Support Pearl's tile-shape language or explicitly restrict merge-mining to
-  the subset of Pearl configs that Nockchain can prove byte-for-byte.
+- Done for the current subset: remove Nockchain-only `attempt_tile_index` from
+  the Pearl-compatible mineable statement. The prover derives `found_idx` from
+  Pearl `t_rows` / `t_cols` only after checking the ticket rows and columns.
+- Still required: support Pearl's full tile-shape language or explicitly
+  restrict production merge mining to the subset of Pearl configs that
+  Nockchain can prove byte-for-byte.
 - Add an end-to-end test that verifies a Nockchain-native certificate over
   Pearl fixture data and checks that Pearl's own transcript would derive the
   same jackpot digest.

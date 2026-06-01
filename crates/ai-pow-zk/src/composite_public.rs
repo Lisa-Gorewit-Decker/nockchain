@@ -22,7 +22,9 @@
 //!                  `IS_HASH_A · (CV_OUT[i] − PI_HASH_A[i]) = 0`.
 //!   index 28..36 : HASH_B — 8 u32 words for matrix B.
 //!   index 36..44 : JOB_KEY — κ bound to BLAKE3 key input rows.
-//!   index 44..52 : COMMITMENT_HASH — Nockchain's nonce-derived jackpot key.
+//!   index 44..52 : COMMITMENT_HASH — jackpot key. Native Nockchain
+//!                  AI-PoW uses `pow_key_for_nonce(s_A, nonce)`;
+//!                  Pearl-compatible merge mining uses Pearl's `s_A`.
 //!   index 52..60 : HASH_JACKPOT — jackpot digest checked against target.
 //! ```
 //!
@@ -75,10 +77,10 @@ pub const PI_HASH_B_LEN: usize = CV_OUT_LEN;
 /// Bound to `CV_IN` on rows where `IS_USE_JOB_KEY = 1`.
 pub const PI_JOB_KEY_OFFSET: usize = PI_HASH_B_OFFSET + PI_HASH_B_LEN;
 pub const PI_JOB_KEY_LEN: usize = CV_IN_LEN;
-/// Legacy Pearl `COMMITMENT_HASH` public-input slot. In Nockchain AI-PoW
-/// this carries the nonce-derived jackpot key
-/// `pow_key_for_nonce(s_a, nonce)`, bound to `CV_IN` on rows where
-/// `IS_USE_COMMITMENT_HASH = 1`.
+/// Legacy Pearl `COMMITMENT_HASH` public-input slot. Native Nockchain AI-PoW
+/// carries the nonce-derived jackpot key `pow_key_for_nonce(s_a, nonce)` here;
+/// Pearl-compatible merge mining carries Pearl's `s_A` directly. The value is
+/// bound to `CV_IN` on rows where `IS_USE_COMMITMENT_HASH = 1`.
 pub const PI_COMMITMENT_HASH_OFFSET: usize = PI_JOB_KEY_OFFSET + PI_JOB_KEY_LEN;
 pub const PI_COMMITMENT_HASH_LEN: usize = CV_IN_LEN;
 /// Pearl `HASH_JACKPOT` = BLAKE3(JACKPOT_MSG, key=COMMITMENT_HASH)
@@ -105,13 +107,13 @@ pub struct CompositePublicInputs {
     /// Pearl `JOB_KEY` (κ): chain-pinned BLAKE3(block-header ‖
     /// mining-config). Bound to `CV_IN` on `IS_USE_JOB_KEY` rows.
     pub job_key: [u32; PI_JOB_KEY_LEN],
-    /// Legacy Pearl `COMMITMENT_HASH` slot. Nockchain AI-PoW uses it for
-    /// the nonce-derived jackpot key. Bound to `CV_IN` on
-    /// `IS_USE_COMMITMENT_HASH` rows.
+    /// Legacy Pearl `COMMITMENT_HASH` slot. Native Nockchain AI-PoW uses it
+    /// for the nonce-derived jackpot key; Pearl-compatible merge mining uses
+    /// it for Pearl's `s_A`. Bound to `CV_IN` on `IS_USE_COMMITMENT_HASH`
+    /// rows.
     pub commitment_hash: [u32; PI_COMMITMENT_HASH_LEN],
-    /// `HASH_JACKPOT` = BLAKE3(JACKPOT_MSG, key=COMMITMENT_HASH slot)
-    /// where that slot is the nonce-derived jackpot key. This is the
-    /// tile-state keyed hash that the difficulty target is compared
+    /// `HASH_JACKPOT` = BLAKE3(JACKPOT_MSG, key=COMMITMENT_HASH slot). This
+    /// is the tile-state keyed hash that the difficulty target is compared
     /// against. Bound to `CV_OUT` on the `IS_HASH_JACKPOT` row.
     pub hash_jackpot: [u32; PI_HASH_JACKPOT_LEN],
 }

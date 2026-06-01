@@ -45,6 +45,8 @@ use std::time::Duration;
 use ai_pow::params::MatmulParams;
 use ai_pow::pearl_compat::PearlMergeTicketAttempt;
 use ai_pow::prover::ProverOptions;
+use ai_pow::zk_bridge::AiPowRecursiveCertificateRun;
+use ai_pow_zk::CompositePublicInputs;
 use futures::StreamExt;
 use nockapp::nockapp::wire::Wire;
 use nockapp::noun::slab::NounSlab;
@@ -59,6 +61,9 @@ use tracing::{debug, info, warn};
 use crate::certificate_noun::{
     build_ai_pow_pearl_merge_artifact_noun_from_ticket,
     build_ai_pow_pearl_merge_artifact_noun_from_ticket_node,
+    build_ai_pow_pearl_merge_artifact_noun_from_ticket_public_inputs,
+    build_ai_pow_pearl_merge_artifact_noun_from_ticket_public_inputs_node,
+    build_ai_pow_pearl_merge_artifact_noun_from_ticket_recursive_run,
     decode_ai_pow_pearl_merge_artifact_slab, AiProofNode, CertificateNounError,
     CertificateNounLimits,
 };
@@ -706,6 +711,55 @@ pub fn build_ai_pow_pearl_merge_certificate_poke_from_ticket<C: serde::Serialize
     build_ai_pow_pearl_merge_certificate_poke(&artifact)
 }
 
+/// Build the production Pearl merge-mined consensus poke from a successful
+/// Pearl-compatible ticket, actual recursive public inputs, and an
+/// already-serialized proof node.
+pub fn build_ai_pow_pearl_merge_certificate_poke_from_ticket_public_inputs_node(
+    attempt: &PearlMergeTicketAttempt,
+    a_row_major: &[i8],
+    b_col_major: &[i8],
+    max_pattern_len: usize,
+    public_inputs: &CompositePublicInputs,
+    certificate: &AiProofNode,
+) -> Result<NounSlab, AiPowCertificatePokeError> {
+    let artifact = build_ai_pow_pearl_merge_artifact_noun_from_ticket_public_inputs_node(
+        attempt, a_row_major, b_col_major, max_pattern_len, public_inputs, certificate,
+    )?;
+    build_ai_pow_pearl_merge_certificate_poke(&artifact)
+}
+
+/// Build the production Pearl merge-mined consensus poke from a successful
+/// Pearl-compatible ticket, actual recursive public inputs, and recursive
+/// certificate object.
+pub fn build_ai_pow_pearl_merge_certificate_poke_from_ticket_public_inputs<C: serde::Serialize>(
+    attempt: &PearlMergeTicketAttempt,
+    a_row_major: &[i8],
+    b_col_major: &[i8],
+    max_pattern_len: usize,
+    public_inputs: &CompositePublicInputs,
+    recursive_certificate: &C,
+) -> Result<NounSlab, AiPowCertificatePokeError> {
+    let artifact = build_ai_pow_pearl_merge_artifact_noun_from_ticket_public_inputs(
+        attempt, a_row_major, b_col_major, max_pattern_len, public_inputs, recursive_certificate,
+    )?;
+    build_ai_pow_pearl_merge_certificate_poke(&artifact)
+}
+
+/// Build the production Pearl merge-mined consensus poke from a successful
+/// Pearl-compatible ticket and the matching real recursive prover run.
+pub fn build_ai_pow_pearl_merge_certificate_poke_from_ticket_recursive_run(
+    attempt: &PearlMergeTicketAttempt,
+    a_row_major: &[i8],
+    b_col_major: &[i8],
+    max_pattern_len: usize,
+    run: &AiPowRecursiveCertificateRun,
+) -> Result<NounSlab, AiPowCertificatePokeError> {
+    let artifact = build_ai_pow_pearl_merge_artifact_noun_from_ticket_recursive_run(
+        attempt, a_row_major, b_col_major, max_pattern_len, run,
+    )?;
+    build_ai_pow_pearl_merge_certificate_poke(&artifact)
+}
+
 // ──────────────────────────── tests ────────────────────────────
 
 #[cfg(test)]
@@ -747,7 +801,8 @@ mod tests {
     use super::*;
     use crate::certificate_noun::{
         build_ai_pow_certificate_noun_from_node, build_ai_pow_pearl_merge_artifact_noun_from_node,
-        decode_ai_pow_pearl_merge_artifact_noun, AiProofNode, PearlMergePublicStatementShape,
+        decode_ai_pow_pearl_merge_artifact_noun, pearl_merge_recursive_public_inputs_from_work,
+        AiProofNode, PearlMergePublicStatementShape,
     };
     use crate::pearl_mining::{
         self, PearlMergeMineOptions, PearlMergeMiningError, PearlMergeMiningJob,
@@ -1299,6 +1354,61 @@ mod tests {
         );
         assert_eq!(decoded.certificate.found_idx, 0);
         assert_eq!(decoded.certificate.certificate, AiProofNode::Unit);
+    }
+
+    #[test]
+    fn build_ai_pow_pearl_merge_certificate_poke_from_ticket_preserves_proof_public_inputs() {
+        let params = pearl_test_params();
+        let (a, b) = synth_matrices(b"pearl-run-ticket-poke-proof-pis", &params);
+        let attempt = evaluate_pearl_merge_ticket_attempt(
+            &pearl_test_header(),
+            &pearl_test_config(),
+            &params,
+            0,
+            0,
+            &a,
+            &b,
+            &[0xff; 32],
+            16,
+            pearl_test_aux(),
+        )
+        .expect("evaluate Pearl ticket");
+        let mut public_inputs =
+            pearl_merge_recursive_public_inputs_from_work(&attempt.commitments, &attempt.ticket);
+        public_inputs.cumsum = [5, -8, 13, -21];
+
+        let poke = build_ai_pow_pearl_merge_certificate_poke_from_ticket_public_inputs_node(
+            &attempt,
+            &a,
+            &b,
+            16,
+            &public_inputs,
+            &AiProofNode::Unit,
+        )
+        .expect("build pearl merge poke from ticket and proof public inputs");
+        let space = poke.noun_space();
+        let root = unsafe { *poke.root() };
+        let command_cell = root.in_space(&space).as_cell().expect("poke cell");
+        let pow_cell = command_cell
+            .tail()
+            .noun()
+            .in_space(&space)
+            .as_cell()
+            .expect("pow cell");
+        let ai_pmp_cell = pow_cell
+            .tail()
+            .noun()
+            .in_space(&space)
+            .as_cell()
+            .expect("ai-pmp cell");
+        let decoded = decode_ai_pow_pearl_merge_artifact_noun(
+            ai_pmp_cell.tail().noun(),
+            &space,
+            CertificateNounLimits::default(),
+        )
+        .expect("decode wrapped pearl merge artifact");
+
+        assert_eq!(decoded.certificate.public_inputs, public_inputs);
     }
 
     #[test]
