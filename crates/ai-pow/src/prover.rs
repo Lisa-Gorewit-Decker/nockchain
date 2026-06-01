@@ -11,7 +11,9 @@
 //!  5. `s_A = derive_key("s_a", s_B ‖ H_A)`
 //!
 //! The nonce is part of the per-attempt `sigma` before `κ`, `H_A`, `H_B`,
-//! `s_A`, `s_B`, low-rank noise, and all tile states are computed.
+//! `s_A`, `s_B`, low-rank noise, and all tile states are computed. Minimal
+//! work reuse across nonces is intentional; cache-friendly reuse of one matmul
+//! result across many nonce hashes would be a PoW soundness bug.
 
 use thiserror::Error;
 

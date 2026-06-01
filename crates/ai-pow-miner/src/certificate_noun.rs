@@ -21,6 +21,7 @@ use serde::ser::{self, Serialize, SerializeMap, SerializeSeq, SerializeStruct, S
 
 const AI_POW_CERT_VERSION: u64 = 1;
 const GOLDILOCKS_MODULUS: u64 = 0xffff_ffff_0000_0001;
+const NCMN_NONCE_LEN: usize = ai_pow::ncmn::NCMN_NONCE_LEN;
 
 #[derive(Debug, thiserror::Error)]
 pub enum CertificateNounError {
@@ -100,6 +101,13 @@ pub struct AiPowCertificateShape {
     pub commitments: ZkPublicCommitments,
     pub public_inputs: CompositePublicInputs,
     pub certificate: AiProofNode,
+}
+
+/// Decoded `%ai-pow` block artifact shape.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AiPowArtifactShape {
+    pub nonce: ai_pow::ncmn::NcmnNonce,
+    pub certificate: AiPowCertificateShape,
 }
 
 /// Generic Hoon-compatible tree used for the recursive certificate internals.
@@ -259,6 +267,49 @@ pub fn decode_ai_pow_certificate_noun(
     })
 }
 
+/// Decode and validate a full Hoon `%ai-pow` block artifact in a slab.
+///
+/// The expected noun shape is:
+///
+/// ```hoon
+/// [%ai-pow nonce=ai-ncmn cert=ai-pow-certificate]
+/// ```
+///
+/// This is the production artifact shape persisted in blocks and received from
+/// miner pokes. It includes the NCMN nonce because the nonce is a verifier
+/// commitment parameter for the recursive certificate statement, not an
+/// optional side channel.
+pub fn decode_ai_pow_artifact_slab<J>(
+    slab: &NounSlab<J>,
+    limits: CertificateNounLimits,
+) -> Result<AiPowArtifactShape, CertificateNounError> {
+    let space = slab.noun_space();
+    let root = unsafe { *slab.root() };
+    decode_ai_pow_artifact_noun(root, &space, limits)
+}
+
+/// Decode and validate a full Hoon `%ai-pow` block artifact noun.
+pub fn decode_ai_pow_artifact_noun(
+    root: Noun,
+    space: &NounSpace,
+    limits: CertificateNounLimits,
+) -> Result<AiPowArtifactShape, CertificateNounError> {
+    let fields = tuple3(root, space, "ai-pow artifact")?;
+    let tag = expect_u64(fields[0], space, "ai-pow artifact tag")?;
+    if tag != tas!(b"ai-pow") {
+        return Err(CertificateNounError::Shape("expected %ai-pow artifact"));
+    }
+    let nonce = expect_fixed_bytes::<NCMN_NONCE_LEN>(fields[1], space, "ncmn nonce", limits)?;
+    let (anchors, _) = parse_ncmn_nonce(&nonce)?;
+    if anchors.external_commitment.is_some() {
+        return Err(CertificateNounError::NonceExternalCommitmentPresent);
+    }
+    Ok(AiPowArtifactShape {
+        nonce,
+        certificate: decode_ai_pow_certificate_noun(fields[2], space, limits)?,
+    })
+}
+
 /// Low-level statement precheck for verifier-derived AI-PoW metadata.
 ///
 /// This is deliberately separate from recursive proof verification. It rejects
@@ -320,6 +371,19 @@ pub fn precheck_ai_pow_ncmn_certificate_statement(
 ) -> Result<(), CertificateNounError> {
     precheck_ncmn_nonce(candidate_nck_commitment, nonce)?;
     precheck_ai_pow_certificate_statement(shape, puzzle_id, nonce, params, target)
+}
+
+/// Production NCMN statement precheck for a decoded `%ai-pow` artifact.
+pub fn precheck_ai_pow_ncmn_artifact_statement(
+    artifact: &AiPowArtifactShape,
+    puzzle_id: &[u8],
+    candidate_nck_commitment: &[u8; 32],
+    params: &MatmulParams,
+    target: &[u8; 32],
+) -> Result<(), CertificateNounError> {
+    precheck_ai_pow_ncmn_certificate_statement(
+        &artifact.certificate, puzzle_id, candidate_nck_commitment, &artifact.nonce, params, target,
+    )
 }
 
 /// Verify the decoded certificate metadata and the recursive production proof
@@ -404,6 +468,24 @@ pub fn verify_decoded_ai_pow_ncmn_certificate(
     let certificate = production_certificate_from_node(&shape.certificate)?;
     verify_ai_pow_ncmn_certificate_statement_and_proof(
         shape, puzzle_id, candidate_nck_commitment, nonce, params, target, &certificate,
+    )
+}
+
+/// Verify a fully decoded Hoon `%ai-pow` artifact against trusted block data.
+///
+/// This is the canonical Rust API a Hoon verifier jet should target after
+/// bounded noun decoding: it uses the nonce carried inside the artifact and
+/// verifies that the recursive certificate's statement matches the trusted
+/// puzzle id, candidate block commitment, params, and target.
+pub fn verify_decoded_ai_pow_ncmn_artifact(
+    artifact: &AiPowArtifactShape,
+    puzzle_id: &[u8],
+    candidate_nck_commitment: &[u8; 32],
+    params: &MatmulParams,
+    target: &[u8; 32],
+) -> Result<(), CertificateNounError> {
+    verify_decoded_ai_pow_ncmn_certificate(
+        &artifact.certificate, puzzle_id, candidate_nck_commitment, &artifact.nonce, params, target,
     )
 }
 
@@ -707,6 +789,22 @@ fn tuple2(
         .as_cell()
         .map_err(|_| CertificateNounError::Shape(name))?;
     Ok([c.head().noun(), c.tail().noun()])
+}
+
+fn tuple3(
+    noun: Noun,
+    space: &NounSpace,
+    name: &'static str,
+) -> Result<[Noun; 3], CertificateNounError> {
+    let c1 = noun
+        .in_space(space)
+        .as_cell()
+        .map_err(|_| CertificateNounError::Shape(name))?;
+    let c2 = c1
+        .tail()
+        .as_cell()
+        .map_err(|_| CertificateNounError::Shape(name))?;
+    Ok([c1.head().noun(), c2.head().noun(), c2.tail().noun()])
 }
 
 fn tuple4(
@@ -2215,6 +2313,16 @@ mod tests {
         slab
     }
 
+    fn build_ai_pow_artifact_slab(nonce: &[u8], certificate: &NounSlab) -> NounSlab {
+        let cert_space = certificate.noun_space();
+        let mut slab = NounSlab::new();
+        let nonce = bytes_to_atom(&mut slab, nonce);
+        let cert = slab.copy_into(unsafe { *certificate.root() }, &cert_space);
+        let root = T(&mut slab, &[D(tas!(b"ai-pow")), nonce, cert]);
+        slab.set_root(root);
+        slab
+    }
+
     #[test]
     fn recursive_certificate_serializer_packs_homogeneous_integer_vectors() {
         let cert = FakeRecursiveCert {
@@ -2393,6 +2501,106 @@ mod tests {
         assert!(matches!(
             precheck_ai_pow_certificate_statement(&decoded, block, nonce, &wrong_params, &target),
             Err(CertificateNounError::ZkParamsMismatch { .. })
+        ));
+    }
+
+    #[test]
+    fn ai_pow_artifact_decoder_binds_nonce_and_certificate_shape() {
+        let puzzle_id = b"artifact-puzzle-id";
+        let candidate_nck = [0x42u8; 32];
+        let nonce = build_ncmn_nonce(&NonceAnchors::nck_only(candidate_nck), 99);
+        let target = [0xffu8; 32];
+        let (params, commitments, pis, trace_height) =
+            production_statement_fixture(puzzle_id, &nonce);
+        let certificate = AiProofNode::Seq(vec![AiProofNode::U64(42)]);
+        let cert_slab = build_ai_pow_certificate_noun_from_node(
+            &zk_params_from_matmul(&params),
+            0,
+            trace_height,
+            &commitments,
+            &pis,
+            &certificate,
+        );
+        let artifact_slab = build_ai_pow_artifact_slab(&nonce, &cert_slab);
+
+        let decoded = decode_ai_pow_artifact_slab(&artifact_slab, CertificateNounLimits::default())
+            .expect("decode ai-pow artifact");
+        assert_eq!(decoded.nonce, nonce);
+        assert_eq!(decoded.certificate.found_idx, 0);
+        assert_eq!(decoded.certificate.commitments, commitments);
+        assert_eq!(decoded.certificate.public_inputs, pis);
+        assert_eq!(decoded.certificate.certificate, certificate);
+
+        precheck_ai_pow_ncmn_artifact_statement(
+            &decoded, puzzle_id, &candidate_nck, &params, &target,
+        )
+        .expect("honest artifact statement should precheck");
+
+        let mut wrong_anchor = candidate_nck;
+        wrong_anchor[0] ^= 1;
+        assert!(matches!(
+            precheck_ai_pow_ncmn_artifact_statement(
+                &decoded, puzzle_id, &wrong_anchor, &params, &target,
+            ),
+            Err(CertificateNounError::NonceAnchorMismatch)
+        ));
+    }
+
+    #[test]
+    fn ai_pow_artifact_decoder_rejects_malformed_nonce_and_tag() {
+        let params = sample_params();
+        let commitments = sample_commitments();
+        let pis = sample_pis();
+        let cert_slab = build_ai_pow_certificate_noun_from_node(
+            &params,
+            0,
+            16_384,
+            &commitments,
+            &pis,
+            &AiProofNode::Unit,
+        );
+
+        let bad_magic = [0u8; ai_pow::ncmn::NCMN_NONCE_LEN];
+        let bad_magic_slab = build_ai_pow_artifact_slab(&bad_magic, &cert_slab);
+        assert!(matches!(
+            decode_ai_pow_artifact_slab(&bad_magic_slab, CertificateNounLimits::default()),
+            Err(CertificateNounError::Nonce(_))
+        ));
+
+        let external_nonce = build_ncmn_nonce(
+            &NonceAnchors {
+                nck_commitment: [0x11; 32],
+                external_commitment: Some([0x22; 32]),
+            },
+            7,
+        );
+        let external_slab = build_ai_pow_artifact_slab(&external_nonce, &cert_slab);
+        assert!(matches!(
+            decode_ai_pow_artifact_slab(&external_slab, CertificateNounLimits::default()),
+            Err(CertificateNounError::NonceExternalCommitmentPresent)
+        ));
+
+        let oversized_nonce = [0xFFu8; ai_pow::ncmn::NCMN_NONCE_LEN + 1];
+        let oversized_slab = build_ai_pow_artifact_slab(&oversized_nonce, &cert_slab);
+        assert!(matches!(
+            decode_ai_pow_artifact_slab(&oversized_slab, CertificateNounLimits::default()),
+            Err(CertificateNounError::PackedLengthMismatch {
+                tag: "ncmn nonce",
+                declared: ai_pow::ncmn::NCMN_NONCE_LEN,
+                actual: 81,
+            })
+        ));
+
+        let cert_space = cert_slab.noun_space();
+        let mut wrong_tag_slab: NounSlab = NounSlab::new();
+        let nonce = build_ncmn_nonce(&NonceAnchors::nck_only([0x33; 32]), 7);
+        let nonce = bytes_to_atom(&mut wrong_tag_slab, &nonce);
+        let cert = wrong_tag_slab.copy_into(unsafe { *cert_slab.root() }, &cert_space);
+        let root = T(&mut wrong_tag_slab, &[D(tas!(b"not-ai")), nonce, cert]);
+        wrong_tag_slab.set_root(root);
+        assert!(matches!(
+            decode_ai_pow_artifact_slab(&wrong_tag_slab, CertificateNounLimits::default()),
+            Err(CertificateNounError::Shape("expected %ai-pow artifact"))
         ));
     }
 

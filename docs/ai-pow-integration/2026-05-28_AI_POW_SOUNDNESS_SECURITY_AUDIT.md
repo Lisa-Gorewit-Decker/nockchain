@@ -390,10 +390,11 @@ Evidence:
 - The low-level `ai_pow::verifier::verify` still treats `nonce` as opaque bytes
   and is not the NCMN production boundary.
 - `ai_pow::verifier::verify_ncmn_at_target` and
-  `ai_pow_miner::certificate_noun::verify_decoded_ai_pow_ncmn_certificate`
-  parse the NCMN nonce, reject malformed/reserved fields, reject nonzero
-  external commitments, and require the embedded Nockchain commitment to match
-  the verifier-trusted candidate block commitment.
+  `ai_pow_miner::certificate_noun::decode_ai_pow_artifact_slab` /
+  `verify_decoded_ai_pow_ncmn_artifact` parse the full `[%ai-pow nonce cert]`
+  artifact, reject malformed/reserved fields, reject nonzero external
+  commitments, and require the embedded Nockchain commitment to match the
+  verifier-trusted candidate block commitment.
 - The Hoon `%ai-pow` wire now carries `[%ai-pow nonce=ai-ncmn
   cert=ai-pow-certificate]`, so the verifier has the NCMN nonce needed to bind
   the recursive certificate to the block attempt.

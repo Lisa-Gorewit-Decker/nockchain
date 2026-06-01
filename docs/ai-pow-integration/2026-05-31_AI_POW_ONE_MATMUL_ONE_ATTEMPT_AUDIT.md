@@ -580,12 +580,11 @@ certificate; Hoon consensus still needs the verifier jet/wiring.
 ### Phase 4: Update Hoon/Noun Statement
 
 1. No new large proof artifact is required; the recursive proof remains the
-   only canonical artifact.
-2. The Rust noun boundary now exposes
-   `verify_decoded_ai_pow_ncmn_certificate` for the decoded
-   `ai-pow-certificate`; the Hoon/Rust verifier path must call it with the
-   trusted puzzle id, candidate block commitment, NCMN nonce, params, and
-   target.
+   only canonical proof artifact.
+2. The Rust noun boundary now exposes `decode_ai_pow_artifact_slab` and
+   `verify_decoded_ai_pow_ncmn_artifact` for the full persisted/wire artifact
+   `[%ai-pow nonce cert]`; the Hoon/Rust verifier path must call this boundary
+   with the trusted puzzle id, candidate block commitment, params, and target.
 3. The `%ai-pow` wire carries `[%ai-pow nonce cert]`, where `nonce` is an
    `@uxncmn` atom. This keeps the recursive certificate as the only proof
    artifact while still carrying the nonce commitment parameter needed to prove
@@ -594,6 +593,10 @@ certificate; Hoon consensus still needs the verifier jet/wiring.
    block data before recursive proof verification; if proof or params versions
    change again, add an explicit version check in the `ai-pow-certificate`
    decoder.
+5. Do not optimize this protocol around cached matrix/noise work across
+   nonces. Cache-friendly reuse between attempts is a soundness risk: a miner
+   must not be able to keep one expensive matmul result and cheaply grind
+   nonce-dependent hashes until the target hits.
 
 ### Phase 5: Regression Tests
 
