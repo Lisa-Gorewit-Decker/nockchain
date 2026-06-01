@@ -66,6 +66,12 @@
 //!   The current Rust measurement path serializes the L1 certificate as
 //!   a Rust proof object; consensus still needs the proof-shaped noun
 //!   format described in `docs/ai-pow-integration/`.
+//! - **Full recursive-certificate statement binding.** The recursion module
+//!   can verify the outer L1 STARK envelope, but production consensus must
+//!   additionally prove/compare that the embedded L1 public-input vector is
+//!   exactly the verifier-derived AI-PoW statement for the submitted block,
+//!   nonce, target, commitments, and `found_idx`. Until that hook is wired,
+//!   the Hoon/kernel path remains fail-closed.
 
 pub mod bench_suite;
 pub mod blake3_tree;

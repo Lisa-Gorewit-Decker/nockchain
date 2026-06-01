@@ -390,6 +390,69 @@ cached matmul result. If Nockchain wants a stricter rule of exactly one digest
 per whole matrix product, that is a separate protocol change requiring a
 verifier-derived single tile or aggregate digest.
 
+## Latest Recursive-Certificate Re-Audit
+
+The recursive certificate has two distinct verification layers:
+
+1. Outer recursive STARK verification: prove that the Plonky3-recursion L1
+   verifier circuit accepted its embedded Layer-0 composite proof.
+2. Statement binding: prove that the embedded Layer-0 public inputs are exactly
+   the verifier-derived AI-PoW statement for this block commitment, nonce,
+   target, matrix commitments, params, and `found_idx`.
+
+`crates/ai-pow-zk/src/recursion.rs` now exposes
+`verify_production_certificate_outer`. This is intentionally an outer-only
+helper. It enforces the production recursive-proof envelope (`D = 2`,
+`TablePacking::new(1, 8)`, Tip5, and split recompose tables) and then runs
+`BatchStarkProver::verify_all_tables`, including the `WitnessChecks` LogUp
+soundness gate.
+
+This does **not** yet make `%ai-pow` consensus-admissible. The current
+`BatchStarkProof` stores the L1 circuit's public inputs in the circuit-prover
+`PublicAir` trace. `verify_all_tables` verifies that this committed public
+table balances against the circuit witness bus, but it does not take a
+verifier-supplied AI-PoW public-input vector and compare it to that table. A
+valid outer certificate therefore proves "the L1 verifier accepted some
+embedded statement", not by itself "the L1 verifier accepted this block's
+nonce-bound AI-PoW statement".
+
+The Rust boundary already has the independent statement precheck
+(`verify_ai_pow_production_statement` /
+`precheck_ai_pow_certificate_statement`), but the missing consensus-critical
+piece is a cryptographic binding between that prechecked statement and the L1
+certificate's embedded public inputs. Until that exists, Hoon remains
+fail-closed for `%ai-pow`.
+
+Actionable fix options:
+
+1. Preferred: change the L1 outer certificate format so a compact statement
+   digest or the full `CompositePublicInputs::to_vec()` becomes actual
+   `p3_batch_stark` public values supplied to the outer verifier, then expose a
+   `verify_production_certificate(cert, expected_statement)` API that passes the
+   verifier-derived values into `verify_batch`.
+2. Acceptable: add a sound extraction/opening mechanism for the circuit-prover
+   `PublicAir` table and compare every embedded public-input element to the
+   verifier-derived statement before accepting the certificate.
+3. Do not accept: verify only the outer certificate and trust adjacent block
+   metadata. That permits metadata swapping or replay of a valid recursive
+   certificate for a different statement.
+
+The zero-reuse mining rule remains stronger than "do not cache final hashes".
+Fresh attempts must rebuild every nonce-dependent work product:
+
+- `kappa`;
+- matrix commitments under `kappa`;
+- `s_B` and `s_A`;
+- low-rank noise;
+- noised matrix strips;
+- tile states and jackpot preimages;
+- Layer-0 witness/proof inputs for the selected winning attempt.
+
+Allowed reuse is limited to nonce-independent raw data and validation: input
+matrix bytes, shapes, chain-pinned params, and read-only model metadata.
+Cache-friendly reuse of nonce-derived work is a consensus vulnerability, not an
+optimization target.
+
 ## Concrete Implementation Plan
 
 ### Phase 0: Stop Treating Current Path As Production-Sound

@@ -233,7 +233,14 @@ Rust conversion rules:
 2. Validate every scalar range and vector length.
 3. Reconstruct omitted recursive verifier metadata from canonical config.
 4. Rebuild `ai_pow_zk::recursion::AiPowProductionCertificate`.
-5. Invoke the recursive production verifier against the canonical verifier program.
+5. Invoke the recursive verifier in two parts:
+   - outer recursive STARK verification for the production envelope;
+   - cryptographic comparison that the certificate's embedded L1 public inputs
+     equal the verifier-derived AI-PoW statement.
+
+The current Rust helper can perform the first part (`verify_production_certificate_outer`).
+The second part is still the consensus blocker; accepting the outer proof while
+trusting adjacent statement metadata would permit certificate/metadata swaps.
 
 The verifier jet receives:
 
@@ -393,7 +400,8 @@ Before accepting `%ai-pow`, consensus must require:
 17. `public-inputs.hash-a == commitments.h-a-chunk`.
 18. `public-inputs.hash-b == commitments.h-b-chunk`.
 19. `public-inputs.hash-jackpot <= target`.
-20. Rust verifies the structured recursive certificate against the canonical program rebuilt from config, commitments, `found-idx`, block commitment, and nonce.
+20. Rust verifies the structured recursive certificate's outer recursive STARK envelope.
+21. Rust verifies that the embedded L1 public inputs are exactly the canonical statement rebuilt from config, commitments, `found-idx`, block commitment, nonce, and target.
 
 ## 11. Implementation Plan
 
@@ -406,5 +414,6 @@ Before accepting `%ai-pow`, consensus must require:
 7. Add jam/cue round-trip tests for a real proof and malformed nouns. Status: implemented for structured sample certificates, malformed packed/list/tag/version cases, non-canonical `ai-ext2` limbs, and an ignored real recursive certificate noun round-trip/size harness.
 8. Add size tests asserting total jammed noun budget and per-vector caps. Status: the ignored real recursive certificate harness asserts a coarse 2 MiB upper bound and prints measured size; production budget constants still need to be set after the harness is run on the final L1 shape.
 9. Add adversarial decode tests for oversized lengths, non-canonical field elements, mismatched lookup shapes, invalid FRI arities, and extra/trailing packed bytes.
-10. Add the verifier jet entrypoint consuming this noun shape.
-11. Replace the deferred-verifier accept path with real accept/reject checks only after end-to-end accept/reject tests exist.
+10. Expose a full recursive certificate verifier that takes verifier-derived public inputs and rejects an otherwise valid certificate when any block, nonce, target, commitment, params, or `found-idx` field is changed. Status: outer recursive STARK verification exists; embedded-public-input binding is not yet wired, so consensus remains fail-closed.
+11. Add the verifier jet entrypoint consuming this noun shape.
+12. Replace the deferred-verifier accept path with real accept/reject checks only after end-to-end accept/reject tests exist.
