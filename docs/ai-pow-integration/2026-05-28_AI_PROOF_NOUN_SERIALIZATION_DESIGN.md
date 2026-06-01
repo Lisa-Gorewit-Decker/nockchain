@@ -16,6 +16,14 @@ stages after this is reviewed.
 > 256-bit digests are encoded as single custom-aura atoms
 > (`@uxblake`), not as `[u32; 8]` tuples. The tuple design below is
 > retained only as historical context.
+>
+> Re-audit note, 2026-06-01: this precursor must not be read as
+> allowing `[%ai-pow prf bc nonce]`, a single opaque STARK atom, or
+> a raw Layer-0 proof on the block wire. The current Hoon shape is
+> `[%ai-pow nonce=ai-ncmn cert=ai-pow-certificate]`, where
+> `cert` is a structured recursive certificate noun with custom
+> digest/field auras. `MatmulProof` and Layer-0 `BatchProof` remain
+> prover internals.
 
 ---
 
@@ -59,15 +67,18 @@ The Rust side has two proof objects:
 | Object | Crate | Role | On chain? |
 |---|---|---|---|
 | `MatmulProof` (BLAKE3 Merkle openings, `found`+`spot` tiles) | `ai-pow/src/proof.rs` | Pearl §4.6 non-ZK opening proof; prover intermediate | **No** |
-| `BatchProof<AiPowStarkConfig>` + `CompositePublicInputs` | `ai-pow-zk` | The ZK STARK; matrix binding (`HASH_A/HASH_B`) is in-circuit | **Yes** |
+| `BatchProof<AiPowStarkConfig>` + `CompositePublicInputs` | `ai-pow-zk` | Layer-0 ZK STARK; matrix binding (`HASH_A/HASH_B`) is in-circuit | **No** |
+| `AiPowRecursiveCertificate` + structured metadata | `ai-pow-zk` / `ai-pow-miner` | Canonical recursive certificate noun checked against verifier-derived statement metadata | **Yes, once consensus verifier wiring lands** |
 
-In the production ZK path the STARK **subsumes** the plain spot-check
-openings: the matrix commitment is bound in-circuit (M52 `HASH_A`/`HASH_B`
-↔ `h_a_chunk`/`h_b_chunk`), and the jackpot/target relation is a circuit
-constraint. So the on-chain AI proof is exactly **`BatchProof` bytes +
-`CompositePublicInputs`** (eventually the recursed L1/L2 *certificate*
-bytes, targeting ≤100 KB — see `proof-size-target-100kb`). `MatmulProof`
-stays prover-internal and is **not** serialized into the block.
+In the production ZK path the recursive certificate **subsumes** the plain
+spot-check openings and the raw Layer-0 STARK. The matrix commitment is bound
+in-circuit (M52 `HASH_A`/`HASH_B` ↔ `h_a_chunk`/`h_b_chunk`), the
+jackpot/target relation is bound in the Layer-0 public inputs, and the
+recursive certificate binds those public inputs as outer public values.
+Therefore the block/wire artifact is the structured recursive certificate
+plus the metadata needed to re-derive and check that statement. `MatmulProof`
+and raw Layer-0 `BatchProof` values stay prover-internal and are **not**
+serialized into the block.
 
 ---
 
@@ -130,6 +141,15 @@ supersedes that hint with Option A, matching Stage-6 §5.1's stated intent
 (`version=%3 ai-proof=ai-proof-body`).
 
 ### `+$ pow-variant` `%ai-pow` arm (replaces `placeholder=@`)
+
+Superseded current shape:
+
+```hoon
+[%ai-pow nonce=ai-ncmn cert=ai-pow-certificate]
+```
+
+The historical sketch below is retained only to explain the superseded
+direction; it is not the production wire shape.
 
 In `hoon/apps/dumbnet/lib/types.hoon`, mirror the `%dumb-zkpow` shape so the
 consensus poke handler dispatches uniformly:

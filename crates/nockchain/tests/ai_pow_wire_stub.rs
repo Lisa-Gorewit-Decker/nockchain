@@ -17,6 +17,11 @@ const AI_POW_PROVER_RS: &str = include_str!("../../ai-pow/src/prover.rs");
 const AI_POW_VERIFIER_RS: &str = include_str!("../../ai-pow/src/verifier.rs");
 const AI_POW_ZK_RECURSION_RS: &str = include_str!("../../ai-pow-zk/src/recursion.rs");
 const AI_POW_ZK_BRIDGE_RS: &str = include_str!("../../ai-pow/src/zk_bridge.rs");
+const AI_POW_PHASE_B_DESIGN_MD: &str =
+    include_str!("../../ai-pow-zk/docs/2026-05-18_PHASE_B_DESIGN.md");
+const AI_POW_NOUN_DESIGN_MD: &str = include_str!(
+    "../../../docs/ai-pow-integration/2026-05-28_AI_PROOF_NOUN_SERIALIZATION_DESIGN.md"
+);
 
 #[test]
 fn ai_pow_consensus_wire_is_structured_but_fail_closed_without_verifier() {
@@ -49,6 +54,19 @@ fn ai_pow_consensus_wire_is_structured_but_fail_closed_without_verifier() {
             && !INNER_HOON.contains("(heard-block /poke/ai-pow-miner now candidate-block.m.k eny)"),
         "%ai-pow consensus must fail closed until the recursive certificate \
          verifier is wired; it must not persist or broadcast unverified AI proofs"
+    );
+    assert!(
+        AI_POW_PHASE_B_DESIGN_MD.contains("There is no matmul/noise amortization across nonces")
+            && AI_POW_PHASE_B_DESIGN_MD.contains("cached matmul result plus many nonce hashes")
+            && !AI_POW_PHASE_B_DESIGN_MD
+                .contains("Nockchain sweeps a Bitcoin-style\n> nonce and amortizes")
+            && !AI_POW_PHASE_B_DESIGN_MD.contains("Both are valid PoUW search loops")
+            && AI_POW_NOUN_DESIGN_MD.contains("[%ai-pow nonce=ai-ncmn cert=ai-pow-certificate]")
+            && AI_POW_NOUN_DESIGN_MD.contains("`MatmulProof`")
+            && AI_POW_NOUN_DESIGN_MD.contains("raw Layer-0 `BatchProof`")
+            && AI_POW_NOUN_DESIGN_MD.contains("prover-internal"),
+        "live design docs must not describe nonce-amortized matmul grinding or \
+         raw Layer-0 proofs as the production AI-PoW wire artifact"
     );
     assert!(
         AI_POW_MINER_RUN_RS.contains("build_ai_pow_certificate_poke")

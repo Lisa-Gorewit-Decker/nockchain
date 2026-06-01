@@ -212,10 +212,13 @@ Phase B must make the byte-equivalence claim **exact**, because
 > and difficulty target. They differ **by design** in: (D5) the
 > hash *key* — Pearl keys the jackpot hash with `a_noise_seed`;
 > Nockchain keys with `pow_key = derive_key("pow-key",
-> s_A‖nonce)`; (D6) the search loop — Pearl varies `A/B`
-> per-attempt with no nonce; Nockchain sweeps a Bitcoin-style
-> nonce and amortizes. Both are valid PoUW search loops; the
-> *unit of work* is identical.
+> s_A‖nonce)`. (D6) was superseded by the 2026-05-31 grinding
+> audit: Nockchain still carries a Bitcoin-style nonce, but that
+> nonce is part of Pearl's attempt state before `κ`, commitments,
+> noise seeds, and matmul-derived tile states are computed.
+> There is no matmul/noise amortization across nonces; treating a
+> cached matmul result plus many nonce hashes as many attempts is
+> the grinding vulnerability.
 
 Deliverable: a `2026-05-13_PEARL_COMPARISON.md` "Byte-equivalence claim
 (precise)" section stating exactly the above, and a test
