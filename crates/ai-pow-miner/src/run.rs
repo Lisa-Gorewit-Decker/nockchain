@@ -1374,6 +1374,27 @@ mod tests {
     }
 
     #[test]
+    fn production_preflight_rejects_noncanonical_pearl_aux_template() {
+        let mut cfg = test_cfg("http://127.0.0.1:1".to_string());
+        let pearl = cfg
+            .puzzle
+            .pearl_merge
+            .as_mut()
+            .expect("test config has Pearl merge submission");
+        pearl.aux_template.nockchain_chain_id.clear();
+
+        let err = cfg
+            .puzzle
+            .validate_canonical_submission_ready()
+            .expect_err("Pearl mode must reject noncanonical aux templates before mining");
+        assert!(
+            err.to_string()
+                .contains("Nockchain aux chain id must not be empty"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
     fn build_ai_pow_pearl_merge_certificate_poke_has_kernel_command_shape() {
         let aux = PearlNockchainAux {
             nockchain_chain_id: b"nockchain-mainnet".to_vec(),
