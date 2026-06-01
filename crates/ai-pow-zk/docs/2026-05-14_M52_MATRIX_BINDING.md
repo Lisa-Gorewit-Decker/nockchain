@@ -53,7 +53,8 @@ clarified:
 - Block-header `H_A` doubles as both SNARK PI and merge-mining
   hint — one value, not two.
 - BLAKE3 must remain in the AIR regardless for the **difficulty
-  check** (`BLAKE3(M, key=s_a) ≤ target`) and Fiat-Shamir
+  check** (`BLAKE3(M, key=pow_key_for_nonce(s_a, nonce)) ≤ target`
+  in Nockchain) and Fiat-Shamir
   transcript. Option 2 doesn't remove BLAKE3, it adds Tip5
   alongside.
 

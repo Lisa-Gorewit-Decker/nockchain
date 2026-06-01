@@ -28,6 +28,13 @@ const AI_POW_ZK_README_MD: &str = include_str!("../../ai-pow-zk/README.md");
 const AI_POW_ZK_LIB_RS: &str = include_str!("../../ai-pow-zk/src/lib.rs");
 const AI_POW_PHASE_B_DESIGN_MD: &str =
     include_str!("../../ai-pow-zk/docs/2026-05-18_PHASE_B_DESIGN.md");
+const AI_POW_ZK_HIGH2_DESIGN_MD: &str =
+    include_str!("../../ai-pow-zk/docs/2026-05-15_HIGH2_2_DESIGN.md");
+const AI_POW_ZK_GAP_AUDIT_MD: &str = include_str!("../../ai-pow-zk/docs/2026-05-15_GAP_AUDIT.md");
+const AI_POW_ZK_SECURITY_REPORT_MD: &str =
+    include_str!("../../ai-pow-zk/docs/2026-05-15_ZKP_SECURITY_REPORT.md");
+const AI_POW_ZK_M52_BINDING_MD: &str =
+    include_str!("../../ai-pow-zk/docs/2026-05-14_M52_MATRIX_BINDING.md");
 const AI_POW_NOUN_DESIGN_MD: &str = include_str!(
     "../../../docs/ai-pow-integration/2026-05-28_AI_PROOF_NOUN_SERIALIZATION_DESIGN.md"
 );
@@ -278,6 +285,23 @@ fn ai_pow_consensus_wire_is_structured_but_fail_closed_without_verifier() {
         "diagnostic real-model and ZK bridge tests must hash cached tile \
          states with the context-bound pow_key, not raw s_A; raw s_A hashing \
          is the historical nonce-grinding pitfall"
+    );
+    assert!(
+        AI_POW_ZK_HIGH2_DESIGN_MD.contains("pow_key_for_nonce(s_a, nonce)")
+            && AI_POW_ZK_GAP_AUDIT_MD.contains("pow_key_for_nonce(s_a, nonce)")
+            && AI_POW_ZK_SECURITY_REPORT_MD.contains("pow_key_for_nonce(s_a, nonce)")
+            && AI_POW_ZK_M52_BINDING_MD.contains("pow_key_for_nonce(s_a, nonce)")
+            && !AI_POW_ZK_HIGH2_DESIGN_MD.contains("key=s_a")
+            && !AI_POW_ZK_HIGH2_DESIGN_MD.contains("key = s_a")
+            && !AI_POW_ZK_HIGH2_DESIGN_MD.contains("pow_key = s_a")
+            && !AI_POW_ZK_GAP_AUDIT_MD.contains("COMMITMENT_HASH` = `s_a")
+            && !AI_POW_ZK_GAP_AUDIT_MD.contains("key = `s_a`")
+            && !AI_POW_ZK_SECURITY_REPORT_MD.contains("key=s_a")
+            && !AI_POW_ZK_SECURITY_REPORT_MD.contains("key = s_a")
+            && !AI_POW_ZK_M52_BINDING_MD.contains("key=s_a"),
+        "live ai-pow-zk design docs must not describe the Nockchain jackpot \
+         hash or COMMITMENT_HASH as raw s_A; they must point at the \
+         nonce-bound pow_key"
     );
     let miner_run_inner = AI_POW_MINER_MINING_RS
         .split("fn run_inner")

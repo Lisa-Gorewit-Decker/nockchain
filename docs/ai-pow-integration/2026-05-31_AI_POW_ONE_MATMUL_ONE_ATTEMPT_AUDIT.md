@@ -884,6 +884,13 @@ nonce-bound jackpot key as production. The wire regression rejects
 `keyed_hash(ctx.s_a())` / `keyed_hash(&ctx.s_a)` patterns in these diagnostic
 surfaces.
 
+Follow-up design-doc hardening: older `ai-pow-zk` design reports had live
+guidance that still described `HASH_JACKPOT` or `COMMITMENT_HASH` as raw
+`s_A`. Those reports now say Nockchain uses
+`pow_key_for_nonce(s_A, nonce)`, while Pearl-only historical context remains
+explicitly separated. The wire regression guards the live ZK design docs
+against drifting back to raw-`s_A` jackpot-key wording.
+
 ## Latest Re-Audit: Decoded Recursive Certificate DoS Ordering
 
 The decoded Hoon-compatible certificate verifier had the right ordering for

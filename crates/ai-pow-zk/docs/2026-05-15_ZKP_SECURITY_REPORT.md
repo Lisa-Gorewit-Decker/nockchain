@@ -170,9 +170,10 @@ the real solved tile's per-stripe fold into `FOLD_STATE`, and
 Route-A batch-stark path** (CRIT-1 pin **and** the
 `noised_packed` LogUp in one proof — `composite_*_pinned_logup`,
 `8ed627e`/`37f5c0f`). So an *honest* proof now attests
-`HASH_JACKPOT = BLAKE3(real M, key=s_a)` — byte-equivalent to
-the plain miner (`high2_2_xstep_fold_pipeline_byte_equiv_plain`)
-— not `BLAKE3(0,s_a)`. A pre-existing latent JackpotChip bug
+`HASH_JACKPOT = BLAKE3(real M, key=pow_key_for_nonce(s_a, nonce))`
+— byte-equivalent to the plain miner
+(`high2_2_xstep_fold_pipeline_byte_equiv_plain`) — not
+`BLAKE3(0,pow_key)`. A pre-existing latent JackpotChip bug
 (the `JACKPOT_MSG` RAM recurrence ungated by `is_active`, which
 forbade any non-zero `JACKPOT_MSG`; masked for years because
 every test hashed an all-zero message) was root-caused and fixed
@@ -308,12 +309,14 @@ rationale.
 **Original severity: High (PoW *usefulness* not enforced even if
 CRIT-1 is fixed).**
 
-`zk_bridge::prove_and_verify` and `place_jackpot_hash_block` hash
-an **all-zero** `JACKPOT_MSG`: `HASH_JACKPOT = BLAKE3(0,
-key = s_a)`. This is a fixed function of `s_a` alone. Even with
-CRIT-1 fixed (selector forced to fire), the C4 binding would only
-prove "the prover computed `BLAKE3(0, key=s_a)`" — which requires
-no matmul and no tile-state evolution. The difficulty check (C2)
+Historically, `zk_bridge::prove_and_verify` and
+`place_jackpot_hash_block` hashed an **all-zero** `JACKPOT_MSG`:
+`HASH_JACKPOT = BLAKE3(0, key=pow_key)`, with the Nockchain
+`pow_key` now derived as `pow_key_for_nonce(s_a, nonce)`. This is
+a fixed function of the attempt key alone. Even with CRIT-1 fixed
+(selector forced to fire), the C4 binding would only prove "the
+prover computed `BLAKE3(0, key=pow_key)`" — which requires no
+matmul and no tile-state evolution. The difficulty check (C2)
 would then gate on a value independent of any useful work. The
 rotate-XOR-13 tile-state fold that *should* feed `JACKPOT_MSG`
 (Pearl §4.5; the matmul→jackpot interleave) is not wired. Until
@@ -482,7 +485,7 @@ above.
    fail** `composite_verify`.
 2. **HIGH-2 — feed the real tile-state fold into `JACKPOT_MSG`**
    (matmul→jackpot rotate-XOR-13 interleave) so `HASH_JACKPOT`
-   commits to the actual work, not `BLAKE3(0, key=s_a)`.
+   commits to the actual work, not `BLAKE3(0, key=pow_key)`.
 3. **MED-3 — ✅ DONE 2026-05-16.** Resolved via the hardened
    `ai_pow::zk_bridge::prove_and_verify_for_block` entrypoint
    (re-derives `target = difficulty_target(params)` internally;
@@ -520,8 +523,8 @@ a `FoldChip` + `place_fold_chain` were added, and
 matmul→fold chain through the **production Route-A batch-stark
 path** (CRIT-1 pin + `noised_packed` LogUp unified). An honest
 proof now attests `HASH_JACKPOT = BLAKE3(real folded M,
-key=s_a)` — byte-equivalent to the plain miner, *not*
-`BLAKE3(0,s_a)`. A pre-existing latent JackpotChip bug (the
+key=pow_key_for_nonce(s_a, nonce))` — byte-equivalent to the plain
+miner, *not* `BLAKE3(0,pow_key)`. A pre-existing latent JackpotChip bug (the
 `JACKPOT_MSG` RAM recurrence ungated by `is_active`, masked for
 years by all-zero messages) was root-caused and fixed
 (`354b47e`). Full `cargo test -p ai-pow --features zk` green
