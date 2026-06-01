@@ -877,12 +877,13 @@ metadata failures before doing any work proportional to the proof tree whenever
 the already-decoded shape carries enough metadata to do so.
 
 Code status after this re-audit: the decoded certificate verifier APIs now run
-`precheck_ai_pow_certificate_statement` or
-`precheck_ai_pow_ncmn_certificate_statement` before
+the internal explicit-attempt precheck or the public NCMN precheck before
 `ai_pow_recursive_certificate_from_node`. Regression coverage constructs an
 intentionally invalid proof-node and confirms wrong statement metadata or a
 wrong NCMN anchor returns the cheap precheck error before proof-node
-reconstruction is attempted.
+reconstruction is attempted. A later API-surface hardening made the lower-level
+explicit-attempt verifier helpers private; public callers get the NCMN verifier
+entrypoints that enforce the candidate-block anchor.
 
 ## Latest Re-Audit: Legacy Plain-Proof Envelope Naming
 

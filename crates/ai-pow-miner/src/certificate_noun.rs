@@ -523,7 +523,7 @@ pub fn decode_ai_pow_artifact_noun(
 /// Production NCMN consensus callers should prefer
 /// [`precheck_ai_pow_ncmn_certificate_statement`], which also checks that the
 /// submitted nonce is an NCMN nonce anchored to the trusted candidate block.
-pub fn precheck_ai_pow_certificate_statement(
+fn precheck_ai_pow_certificate_statement(
     shape: &AiPowCertificateShape,
     block_commitment: &[u8],
     nonce: &[u8],
@@ -608,30 +608,6 @@ pub fn precheck_ai_pow_ncmn_artifact_statement(
     )
 }
 
-/// Verify decoded certificate metadata and recursive proof against an explicit
-/// attempt tuple.
-///
-/// This lower-level helper deliberately runs the cheap statement precheck before
-/// the recursive verifier, so wrong `(block_commitment, nonce, params, target,
-/// found_idx, commitments, public_inputs)` data is rejected before expensive
-/// proof work. It does not parse or enforce the NCMN candidate-block anchor, so
-/// it is not the Nockchain consensus/block-wire entrypoint. Consensus callers
-/// should use [`verify_ai_pow_ncmn_certificate_statement_and_proof`],
-/// [`verify_decoded_ai_pow_ncmn_certificate`], or
-/// [`verify_ai_pow_ncmn_artifact_jam`].
-pub fn verify_ai_pow_certificate_statement_and_proof(
-    shape: &AiPowCertificateShape,
-    block_commitment: &[u8],
-    nonce: &[u8],
-    params: &MatmulParams,
-    target: &[u8; 32],
-    certificate: &ai_pow_zk::recursion::AiPowRecursiveCertificate,
-) -> Result<(), CertificateNounError> {
-    precheck_ai_pow_certificate_statement(shape, block_commitment, nonce, params, target)?;
-    ai_pow_zk::recursion::verify_recursive_certificate(certificate, &shape.public_inputs)
-        .map_err(|e| CertificateNounError::RecursiveCertificate(e.to_string()))
-}
-
 /// Verify decoded certificate metadata and recursive proof for an NCMN-wrapped
 /// production AI-PoW attempt.
 ///
@@ -664,7 +640,7 @@ pub fn verify_ai_pow_ncmn_certificate_statement_and_proof(
 /// those verifier-derived Layer-0 public inputs. It does not parse or enforce
 /// the NCMN candidate-block anchor, so it is not the Nockchain
 /// consensus/block-wire entrypoint.
-pub fn verify_decoded_ai_pow_certificate(
+fn verify_decoded_ai_pow_certificate(
     shape: &AiPowCertificateShape,
     block_commitment: &[u8],
     nonce: &[u8],

@@ -280,10 +280,9 @@ artifacts:
    for callers that already separated the nonce from the decoded certificate but
    still need the NCMN consensus wrapper.
 
-The lower-level `verify_ai_pow_certificate_statement_and_proof` remains
-available only for callers that already hold a reconstructed
-`AiPowRecursiveCertificate` and are not depending on the NCMN consensus
-wrapper.
+The lower-level explicit-attempt helpers are crate-internal implementation
+details. They do not parse or enforce the NCMN candidate-block anchor and must
+not be used as Nockchain consensus/block-wire entrypoints.
 
 The deprecated `verify_recursive_certificate_outer` helper is outer-only
 diagnostic code for old unbound proof objects. Consensus must not use it:
