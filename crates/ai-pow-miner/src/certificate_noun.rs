@@ -608,15 +608,17 @@ pub fn precheck_ai_pow_ncmn_artifact_statement(
     )
 }
 
-/// Verify the decoded certificate metadata and the recursive production proof
-/// against trusted block data.
+/// Verify decoded certificate metadata and recursive proof against an explicit
+/// attempt tuple.
 ///
-/// This is the production-safe Rust boundary once the structured proof-node
-/// tail has been reconstructed into an
-/// [`ai_pow_zk::recursion::AiPowRecursiveCertificate`]. It deliberately runs
-/// the cheap statement precheck before the recursive verifier, so wrong
-/// `(block_commitment, nonce, params, target, found_idx, commitments,
-/// public_inputs)` data is rejected before expensive proof work.
+/// This lower-level helper deliberately runs the cheap statement precheck before
+/// the recursive verifier, so wrong `(block_commitment, nonce, params, target,
+/// found_idx, commitments, public_inputs)` data is rejected before expensive
+/// proof work. It does not parse or enforce the NCMN candidate-block anchor, so
+/// it is not the Nockchain consensus/block-wire entrypoint. Consensus callers
+/// should use [`verify_ai_pow_ncmn_certificate_statement_and_proof`],
+/// [`verify_decoded_ai_pow_ncmn_certificate`], or
+/// [`verify_ai_pow_ncmn_artifact_jam`].
 pub fn verify_ai_pow_certificate_statement_and_proof(
     shape: &AiPowCertificateShape,
     block_commitment: &[u8],
@@ -653,14 +655,15 @@ pub fn verify_ai_pow_ncmn_certificate_statement_and_proof(
         .map_err(|e| CertificateNounError::RecursiveCertificate(e.to_string()))
 }
 
-/// Verify a fully decoded Hoon-compatible `ai-pow-certificate` noun against
-/// trusted block data.
+/// Verify a fully decoded Hoon-compatible `ai-pow-certificate` noun against an
+/// explicit attempt tuple.
 ///
-/// This is the consensus-facing Rust boundary for the structured recursive
-/// certificate artifact: it cheaply re-derives and checks the full-matmul
+/// This lower-level helper cheaply re-derives and checks the full-matmul
 /// statement metadata before decoding the proof tree into the canonical
 /// recursive certificate type, then verifies the recursive certificate against
-/// those verifier-derived Layer-0 public inputs.
+/// those verifier-derived Layer-0 public inputs. It does not parse or enforce
+/// the NCMN candidate-block anchor, so it is not the Nockchain
+/// consensus/block-wire entrypoint.
 pub fn verify_decoded_ai_pow_certificate(
     shape: &AiPowCertificateShape,
     block_commitment: &[u8],
