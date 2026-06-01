@@ -357,7 +357,8 @@ fn mine_inner(
     let chal = challenge_seed(&ctx.attempt_state, &comm_m, &ctx.tag);
 
     let _ = opts;
-    let found_idx = attempt_tile_index(&ctx.attempt_state, &ctx.tag, num_tiles as u64) as u32;
+    let found_idx =
+        attempt_tile_index(&ctx.attempt_state, &ctx.tag, &ctx.s_a, num_tiles as u64) as u32;
     let h = &leaves[found_idx as usize];
     if !hash_le_target(h, target) {
         return Ok(None);

@@ -41,8 +41,9 @@ Implementation status:
 - Plain and ZK verifiers derive `kappa`, `s_B`, and `s_A` from the same
   nonce-bound attempt state.
 - The production miner and verifier now derive exactly one eligible jackpot
-  tile from the nonce-bound attempt state and parameter tag. `found_idx` is no
-  longer miner-selected search space.
+  tile from the nonce-bound attempt state, parameter tag, and nonce-bound
+  `s_A` seed. `found_idx` is no longer miner-selected search space, and the
+  eligible tile is not knowable from `(block, nonce, params)` alone.
 - The production recursive-certificate statement precheck re-derives
   `JOB_KEY`, `COMMITMENT_HASH`, `HASH_A`, `HASH_B`, trace height, and jackpot
   target satisfaction from verifier-supplied block data before recursive
@@ -73,7 +74,8 @@ verifier is enabled, every consensus-admissible AI-PoW block must satisfy:
 3. The transcript used to generate the noised matrices must include the nonce,
    directly or through an attempt seed derived from the nonce.
 4. The verifier derives the single eligible jackpot tile from the nonce-bound
-   attempt state. The submitted `found_idx` must match that tile.
+   attempt state after recomputing `s_A` from the matrix commitments. The
+   submitted `found_idx` must match that tile.
 5. The recursive proof must prove the matmul over those nonce-derived noised
    matrices for that verifier-derived `found_idx`.
 6. The final jackpot hash must be derived from that same nonce-bound matmul
@@ -306,7 +308,9 @@ The production accounting rule is stricter than a cache-friendly per-tile scan:
 
 - one nonce-bound full matmul attempt gets exactly one eligible jackpot tile;
 - the eligible tile is derived by the verifier from
-  `block_state(block_commitment, nonce)` and `params_tag`;
+  `block_state(block_commitment, nonce)`, `params_tag`, and `s_A`;
+- because `s_A = H(noise_seed_b(kappa, H_B), H_A)`, the tile cannot be known
+  until the nonce-bound matrix commitments are fixed;
 - a miner must not scan all tile hashes from one full matmul and submit the
   best or first passing tile;
 - a tile result `M[i,j]` must not be re-keyed or rehashed across many nonces;
@@ -426,9 +430,9 @@ Regression coverage now includes:
 
 Tile scanning is no longer a production optimization. The only jackpot tile
 hash checked for a nonce-bound full matmul attempt is the verifier-derived
-attempt tile. The target is still shape-weighted per Pearl Section 4.5
-(`r * t_m * t_n`), but grid size does not silently grant extra cheap jackpot
-trials inside one cached full matmul.
+attempt tile, sampled after `s_A` is fixed. The target is still shape-weighted
+per Pearl Section 4.5 (`r * t_m * t_n`), but grid size does not silently grant
+extra cheap jackpot trials inside one cached full matmul.
 
 ## Latest Recursive-Certificate Re-Audit
 
@@ -722,3 +726,26 @@ well-formed. If a future design wants multi-tile search, it must price that
 search as separate consensus work or specify a different aggregate digest rule.
 It must not reintroduce arbitrary `found_idx` selection over a cached full
 matmul.
+
+## Latest Re-Audit: Tile Preselection Boundary
+
+The first derived-tile repair sampled the jackpot tile from
+`block_state(block_commitment, nonce)` and `params_tag`. That removed
+miner-selected tile submission, but it still revealed the eligible tile before
+any nonce-bound matrix commitment or noise seed had been fixed. A custom miner
+could therefore specialize all later work around the known tile.
+
+The implementation now samples `attempt_tile_index` from
+`block_state(block_commitment, nonce)`, `params_tag`, and `s_A`. Since `s_A`
+depends on `kappa`, `H_B`, and `H_A`, changing either the nonce or the matrix
+commitment transcript changes the eligible tile before the target check. The
+production statement precheck rejects a certificate whose `found_idx` matches
+the old commitments but not the submitted commitment transcript.
+
+Residual design note: the current recursive certificate proves the selected
+opened tile's in-circuit matmul and hash. It does not prove a full `comm_m`
+Merkle tree over every tile state. If consensus requires cryptographic proof of
+an entire full-matrix product per attempt, the remaining design work is to add a
+full-matrix aggregate/commitment proof or keep AI-PoW block acceptance
+fail-closed until that proof exists. The current Hoon path remains fail-closed,
+so this residual issue is not consensus-admissible yet.

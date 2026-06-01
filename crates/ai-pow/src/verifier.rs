@@ -121,7 +121,10 @@ pub fn verify_at_target(
     let state = block_state(block_commitment, nonce);
     let chal = challenge_seed(&state, &proof.comm_m, &tag);
     let num_tiles = params.num_tiles();
-    let expected_found = attempt_tile_index(&state, &tag, num_tiles);
+    let kappa = commitment_key(&state, &tag);
+    let s_b = noise_seed_b(&kappa, &proof.h_b);
+    let s_a = noise_seed_a(&s_b, &proof.h_a);
+    let expected_found = attempt_tile_index(&state, &tag, &s_a, num_tiles);
 
     if (proof.spot.len() as u32) != params.spot_checks {
         return Err(VerifyError::SpotCountMismatch);
@@ -135,9 +138,6 @@ pub fn verify_at_target(
         precheck_opening(opening, params, OpeningRole::Spot)?;
     }
 
-    let kappa = commitment_key(&state, &tag);
-    let s_b = noise_seed_b(&kappa, &proof.h_b);
-    let s_a = noise_seed_a(&s_b, &proof.h_a);
     let pow_key = pow_key_for_nonce(&s_a, nonce);
     let noise = VerifierNoise::new(s_a, s_b, params);
 

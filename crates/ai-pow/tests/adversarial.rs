@@ -51,7 +51,8 @@ fn reject_tampered_h_a() {
     assert!(
         matches!(
             r,
-            Err(VerifyError::ARowMerkleMismatch)
+            Err(VerifyError::FoundIndexMismatch)
+                | Err(VerifyError::ARowMerkleMismatch)
                 | Err(VerifyError::FoundMerkleMismatch)
                 | Err(VerifyError::SpotMerkleMismatch)
         ),
@@ -67,7 +68,8 @@ fn reject_tampered_h_b() {
     assert!(
         matches!(
             r,
-            Err(VerifyError::BColMerkleMismatch)
+            Err(VerifyError::FoundIndexMismatch)
+                | Err(VerifyError::BColMerkleMismatch)
                 | Err(VerifyError::FoundMerkleMismatch)
                 | Err(VerifyError::SpotMerkleMismatch)
         ),

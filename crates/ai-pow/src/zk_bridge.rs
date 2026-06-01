@@ -704,10 +704,14 @@ fn expected_attempt_found_idx(
     block_commitment: &[u8],
     nonce: &[u8],
     params: &MatmulParams,
+    commitments: &ZkPublicCommitments,
 ) -> Result<u32, BridgeError> {
     let tag = params_tag(params);
     let state = block_state(block_commitment, nonce);
-    let idx = attempt_tile_index(&state, &tag, params.num_tiles());
+    let kappa = commitment_key(&state, &tag);
+    let s_b = noise_seed_b(&kappa, &commitments.h_b);
+    let s_a = noise_seed_a(&s_b, &commitments.h_a);
+    let idx = attempt_tile_index(&state, &tag, &s_a, params.num_tiles());
     u32::try_from(idx).map_err(|_| BridgeError::FoundIdxOutOfRange {
         found_idx: u32::MAX,
         num_tiles: params.num_tiles(),
@@ -718,9 +722,10 @@ fn ensure_attempt_found_idx(
     block_commitment: &[u8],
     nonce: &[u8],
     params: &MatmulParams,
+    commitments: &ZkPublicCommitments,
     found_idx: u32,
 ) -> Result<(), BridgeError> {
-    let expected = expected_attempt_found_idx(block_commitment, nonce, params)?;
+    let expected = expected_attempt_found_idx(block_commitment, nonce, params, commitments)?;
     if found_idx != expected {
         return Err(BridgeError::FoundIdxMismatch {
             expected,
@@ -952,7 +957,10 @@ fn prove_ai_pow_block(
         .map_err(BridgeError::InvalidParams)?;
     ensure_context_params(ctx, params)?;
     ensure_context_attempt(ctx, nonce)?;
-    ensure_attempt_found_idx(&ctx.block_commitment, &ctx.nonce, params, found_idx)?;
+    let commitments = ZkPublicCommitments::from_context(ctx);
+    ensure_attempt_found_idx(
+        &ctx.block_commitment, &ctx.nonce, params, &commitments, found_idx,
+    )?;
     let (tile_i, tile_j) = tile_ij(found_idx, params).ok_or(BridgeError::FoundIdxOutOfRange {
         found_idx,
         num_tiles: params.num_tiles(),
@@ -981,14 +989,16 @@ pub fn prove_ai_pow_recursive_certificate(
         .map_err(BridgeError::InvalidParams)?;
     ensure_context_params(ctx, params)?;
     ensure_context_attempt(ctx, nonce)?;
-    ensure_attempt_found_idx(&ctx.block_commitment, &ctx.nonce, params, found_idx)?;
+    let commitments = ZkPublicCommitments::from_context(ctx);
+    ensure_attempt_found_idx(
+        &ctx.block_commitment, &ctx.nonce, params, &commitments, found_idx,
+    )?;
     let (tile_i, tile_j) = tile_ij(found_idx, params).ok_or(BridgeError::FoundIdxOutOfRange {
         found_idx,
         num_tiles: params.num_tiles(),
     })?;
     let (artifact, prover_program, _) =
         prove_ai_pow_tiled_full(ctx, params, nonce, tile_i, tile_j, |_| {}, None)?;
-    let commitments = ZkPublicCommitments::from_context(ctx);
     let verified = derive_ai_pow_statement(
         &ctx.block_commitment, &ctx.nonce, params, target, found_idx, &commitments, &artifact.pis,
         artifact.trace_height, true,
@@ -1091,7 +1101,7 @@ fn derive_ai_pow_statement(
     let tag = params_tag(params);
     let state = block_state(block_commitment, nonce);
     if require_prod_envelope {
-        ensure_attempt_found_idx(block_commitment, nonce, params, found_idx)?;
+        ensure_attempt_found_idx(block_commitment, nonce, params, commitments, found_idx)?;
     }
     let kappa = commitment_key(&state, &tag);
     let s_b = noise_seed_b(&kappa, &commitments.h_b);
@@ -1673,7 +1683,10 @@ fn prove_and_verify_for_block_inner(
     ensure_context_params(ctx, params)?;
     ensure_context_attempt(ctx, nonce)?;
     if require_prod_envelope {
-        ensure_attempt_found_idx(&ctx.block_commitment, &ctx.nonce, params, found_idx)?;
+        let commitments = ZkPublicCommitments::from_context(ctx);
+        ensure_attempt_found_idx(
+            &ctx.block_commitment, &ctx.nonce, params, &commitments, found_idx,
+        )?;
     }
     let target = crate::tile_hash::difficulty_target(params);
     let (tile_i, tile_j) = tile_ij(found_idx, params).ok_or(BridgeError::FoundIdxOutOfRange {
@@ -2152,7 +2165,7 @@ mod tests {
         pis.hash_b = bytes_to_words_le(&commitments.h_b_chunk);
         pis.hash_jackpot = [1, 0, 0, 0, 0, 0, 0, 0];
         let trace_height = expected_layer0_rows(&params).required_trace_len();
-        let found_idx = expected_attempt_found_idx(block, nonce, &params).unwrap();
+        let found_idx = expected_attempt_found_idx(block, nonce, &params, &commitments).unwrap();
 
         verify_ai_pow_production_statement(
             block, nonce, &params, &target, found_idx, &commitments, &pis, trace_height,
@@ -2189,6 +2202,28 @@ mod tests {
             ),
             Err(BridgeError::FoundIdxMismatch { .. })
         ));
+
+        let mut changed_commitments = commitments;
+        for delta in 1u8..=u8::MAX {
+            changed_commitments.h_a[0] = commitments.h_a[0] ^ delta;
+            if expected_attempt_found_idx(block, nonce, &params, &changed_commitments).unwrap()
+                != found_idx
+            {
+                break;
+            }
+        }
+        assert_ne!(
+            expected_attempt_found_idx(block, nonce, &params, &changed_commitments).unwrap(),
+            found_idx,
+            "fixture should exercise s_a-bound found_idx"
+        );
+        assert!(matches!(
+            verify_ai_pow_production_statement(
+                block, nonce, &params, &target, found_idx, &changed_commitments, &pis,
+                trace_height,
+            ),
+            Err(BridgeError::FoundIdxMismatch { .. })
+        ));
     }
 
     #[test]
@@ -2207,7 +2242,8 @@ mod tests {
         let nonce = b"production-found-idx-nonce";
         let (a, b) = synth_matrices(b"production-found-idx-seed", &params);
         let ctx = BlockContext::build(block, nonce, &a, &b, &params).expect("ctx");
-        let expected = expected_attempt_found_idx(block, nonce, &params).unwrap();
+        let commitments = ZkPublicCommitments::from_context(&ctx);
+        let expected = expected_attempt_found_idx(block, nonce, &params, &commitments).unwrap();
         let wrong = ((u64::from(expected) + 1) % params.num_tiles()) as u32;
 
         assert!(matches!(

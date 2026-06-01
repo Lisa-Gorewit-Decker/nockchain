@@ -102,16 +102,23 @@ pub fn challenge_seed(state: &[u8], comm_m: &[u8; 32], params_tag: &[u8; 32]) ->
 
 /// Derive the single jackpot tile index for one nonce-bound attempt.
 ///
-/// This removes `found_idx` as miner-selected search space: a nonce/full
-/// matmul attempt has exactly one verifier-derived tile whose hash may be
-/// checked against the target. Spot-check indices remain derived from
-/// `challenge_seed`, which additionally binds the full `comm_m` tree.
-pub fn attempt_tile_index(state: &[u8], params_tag: &[u8; 32], num_tiles: u64) -> u64 {
+/// This removes `found_idx` as miner-selected search space and prevents
+/// preselecting a tile from `(block, nonce, params)` alone: the eligible tile is
+/// sampled only after the nonce-bound matrix commitments have fixed `s_a`.
+/// Spot-check indices remain derived from `challenge_seed`, which additionally
+/// binds the full `comm_m` tree.
+pub fn attempt_tile_index(
+    state: &[u8],
+    params_tag: &[u8; 32],
+    s_a: &[u8; 32],
+    num_tiles: u64,
+) -> u64 {
     assert!(num_tiles > 0, "num_tiles must be > 0");
     let mut hasher = Hasher::new_derive_key(CTX_ATTEMPT_TILE);
     hasher.update(&(state.len() as u64).to_le_bytes());
     hasher.update(state);
     hasher.update(params_tag);
+    hasher.update(s_a);
     let seed = *hasher.finalize().as_bytes();
     challenge_indices(&seed, 1, num_tiles)[0]
 }
@@ -229,11 +236,13 @@ mod tests {
     #[test]
     fn attempt_tile_index_is_deterministic_bounded_and_attempt_bound() {
         let tag = [9u8; 32];
-        let idx = attempt_tile_index(b"attempt-a", &tag, 17);
+        let s_a = [11u8; 32];
+        let idx = attempt_tile_index(b"attempt-a", &tag, &s_a, 17);
         assert!(idx < 17);
-        assert_eq!(idx, attempt_tile_index(b"attempt-a", &tag, 17));
-        assert_ne!(idx, attempt_tile_index(b"attempt-b", &tag, 17));
-        assert_ne!(idx, attempt_tile_index(b"attempt-a", &[10u8; 32], 17));
+        assert_eq!(idx, attempt_tile_index(b"attempt-a", &tag, &s_a, 17));
+        assert_ne!(idx, attempt_tile_index(b"attempt-b", &tag, &s_a, 17));
+        assert_ne!(idx, attempt_tile_index(b"attempt-a", &[10u8; 32], &s_a, 17));
+        assert_ne!(idx, attempt_tile_index(b"attempt-a", &tag, &[12u8; 32], 17));
     }
 
     #[test]

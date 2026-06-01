@@ -2458,10 +2458,10 @@ mod tests {
         };
         let tag = params_tag(&params);
         let state = block_state(block_commitment, nonce);
-        let found_idx = attempt_tile_index(&state, &tag, params.num_tiles()) as u32;
         let kappa = commitment_key(&state, &tag);
         let s_b = noise_seed_b(&kappa, &commitments.h_b);
         let s_a = noise_seed_a(&s_b, &commitments.h_a);
+        let found_idx = attempt_tile_index(&state, &tag, &s_a, params.num_tiles()) as u32;
         let pow_key = pow_key_for_nonce(&s_a, nonce);
         let mut pis = CompositePublicInputs::zero();
         pis.job_key = words_le(&kappa);
