@@ -798,6 +798,32 @@ certificate builder paths. The intended invariant is now local to the proof
 constructor: no ZK trace is built from a context/nonce pair that is not a single
 attempt.
 
+## Latest Re-Audit: Target-Hit Boundary Before Recursive Proving
+
+The production miner's certificate-builder closure already runs
+`verify_ncmn_at_target` before calling `prove_ai_pow_recursive_certificate`, so
+the normal node-facing miner does not start recursive proving unless the plain
+nonce-bound matmul proof clears the chain target. The public recursive
+certificate builder still needed the same cheap check at its own boundary. A
+direct caller could otherwise ask it to build the Layer-0 proof first and only
+learn after public-input derivation that `HASH_JACKPOT > target`.
+
+That is not a forged accepted block because the later statement check rejects,
+but it is the wrong API shape for a production certificate constructor: missed
+targets must fail before any ZK proving work. It also keeps the attempted work
+unit unambiguous: a recursive certificate is only requested for an already-won
+nonce-bound matmul attempt.
+
+Code status after this re-audit: `prove_ai_pow_recursive_certificate` now calls
+`ensure_found_tile_hits_target(ctx, nonce, target, found_idx)` after the
+production parameter, context/nonce, and verifier-derived `found_idx` checks
+and before `prove_ai_pow_tiled_full`. The helper hashes the already-computed
+nonce-bound `ctx.m_states[found_idx]` with `pow_key_for_nonce(ctx.s_a, nonce)`
+and rejects `FoundAboveTarget` before Layer-0 or recursive proving begins.
+The crate-internal Layer-0 solved-block constructor and params-derived
+`prove_and_verify_for_block` path use the same guard. Regression coverage
+asserts the recursive builder rejects a missed target before ZKP.
+
 This is intentionally fail-closed. Pearl's reference miner computes every
 output tile before returning the final matrix and records an opened block when a
 tile hash hits the target, but the proof artifact only opens the winning tile.

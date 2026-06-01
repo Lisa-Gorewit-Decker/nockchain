@@ -738,6 +738,27 @@ fn ensure_attempt_found_idx(
     Ok(())
 }
 
+fn ensure_found_tile_hits_target(
+    ctx: &BlockContext<'_>,
+    nonce: &[u8],
+    target: &[u8; 32],
+    found_idx: u32,
+) -> Result<(), BridgeError> {
+    let Some(state) = ctx.m_states.get(found_idx as usize) else {
+        return Err(BridgeError::FoundIdxOutOfRange {
+            found_idx,
+            num_tiles: ctx.params.num_tiles(),
+        });
+    };
+    let pow_key = pow_key_for_nonce(&ctx.s_a, nonce);
+    let hash = state.keyed_hash(&pow_key);
+    if hash_le_target(&hash, target) {
+        Ok(())
+    } else {
+        Err(BridgeError::FoundAboveTarget)
+    }
+}
+
 #[cfg(test)]
 fn decode_commitments(cur: &mut &[u8]) -> Result<ZkPublicCommitments, ArtifactCodecError> {
     Ok(ZkPublicCommitments {
@@ -961,7 +982,7 @@ fn prove_ai_pow_block(
     ctx: &BlockContext<'_>,
     params: &MatmulParams,
     nonce: &[u8],
-    _target: &[u8; 32],
+    target: &[u8; 32],
     found_idx: u32,
 ) -> Result<ZkProofArtifact, BridgeError> {
     params
@@ -973,6 +994,7 @@ fn prove_ai_pow_block(
     ensure_attempt_found_idx(
         &ctx.block_commitment, &ctx.nonce, params, &commitments, found_idx,
     )?;
+    ensure_found_tile_hits_target(ctx, nonce, target, found_idx)?;
     let (tile_i, tile_j) = tile_ij(found_idx, params).ok_or(BridgeError::FoundIdxOutOfRange {
         found_idx,
         num_tiles: params.num_tiles(),
@@ -1012,6 +1034,7 @@ pub fn prove_ai_pow_recursive_certificate(
     ensure_attempt_found_idx(
         &ctx.block_commitment, &ctx.nonce, params, &commitments, found_idx,
     )?;
+    ensure_found_tile_hits_target(ctx, nonce, target, found_idx)?;
     let num_tiles = params.num_tiles();
     if num_tiles > 1 {
         return Err(BridgeError::FullMatmulProofUnavailable { num_tiles });
@@ -1749,6 +1772,7 @@ fn prove_and_verify_for_block_inner(
         )?;
     }
     let target = crate::tile_hash::difficulty_target(params);
+    ensure_found_tile_hits_target(ctx, nonce, &target, found_idx)?;
     let (tile_i, tile_j) = tile_ij(found_idx, params).ok_or(BridgeError::FoundIdxOutOfRange {
         found_idx,
         num_tiles: params.num_tiles(),
@@ -2431,6 +2455,24 @@ mod tests {
             prove_ai_pow_recursive_certificate(&ctx, &params, nonce, &[0xff; 32], found_idx),
             Err(BridgeError::FullMatmulProofUnavailable { num_tiles })
                 if num_tiles == params.num_tiles()
+        ));
+    }
+
+    #[test]
+    fn recursive_certificate_builder_rejects_missed_target_before_zkp() {
+        let params = single_tile_prod_params();
+        params.validate_prod_envelope().unwrap();
+        assert_eq!(params.num_tiles(), 1);
+        let block = b"recursive-builder-target-block";
+        let nonce = b"recursive-builder-target-nonce";
+        let (a, b) = synth_matrices(b"recursive-builder-target-seed", &params);
+        let ctx = BlockContext::build(block, nonce, &a, &b, &params).expect("ctx");
+        let commitments = ZkPublicCommitments::from_context(&ctx);
+        let found_idx = expected_attempt_found_idx(block, nonce, &params, &commitments).unwrap();
+
+        assert!(matches!(
+            prove_ai_pow_recursive_certificate(&ctx, &params, nonce, &[0; 32], found_idx),
+            Err(BridgeError::FoundAboveTarget)
         ));
     }
 
