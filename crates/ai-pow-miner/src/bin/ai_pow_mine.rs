@@ -6,9 +6,8 @@
 //! submits `[%command %pow %ai-pow nonce cert]` on the `AiPowMinerWire::Mined` wire
 //! (`SOURCE = "ai-pow-miner"`, `VERSION = 1`) when the recursive certificate
 //! builder can prove the configured work unit. The production submission path
-//! currently fails closed before mining starts because the recursive statement
-//! still lacks the full-matrix aggregate and seed-root binding required for a
-//! canonical block certificate.
+//! fails closed for multi-tile configurations until the recursive statement
+//! binds a full-matrix aggregate.
 //!
 //! Quick start (assuming a fakenet node on `127.0.0.1:5555`):
 //!
@@ -18,9 +17,10 @@
 //!       --synth-seed ai-pow-prod-v1
 //!
 //! The CLI defaults are a single-tile, production-envelope smoke profile for
-//! local Layer-0 development. Canonical block submission remains fail-closed
-//! until the recursive certificate binds both a full-matrix aggregate and the
-//! `h_a` / `h_b` seed roots to the ZK matrix commitments.
+//! local Layer-0 development. That profile derives canonical seeds from the
+//! nonce-keyed chunk commitments bound by the recursive proof as `HASH_A` /
+//! `HASH_B`; larger production shapes remain closed until full-matrix
+//! aggregation is implemented.
 //!
 //! ## AI puzzle inputs (local config)
 //! The chain's `%mine` effect carries only the block header + target +
@@ -358,7 +358,7 @@ mod tests {
     }
 
     #[test]
-    fn cli_defaults_are_single_tile_layer0_smoke_but_submission_fail_closed() {
+    fn cli_defaults_are_single_tile_layer0_smoke_and_submission_ready() {
         let args = Args::parse_from([
             "ai-pow-mine", "--mining-pkh",
             "9yPePjfWAdUnzaQKyxcRXKRa5PpUzKKEwtpECBZsUYt9Jd7egSDEWoV", "--synth-seed",
@@ -369,13 +369,9 @@ mod tests {
         assert_eq!(args.spot_checks, 1);
 
         let puzzle = build_puzzle_inputs(&args).expect("default puzzle inputs");
-        let err = puzzle
+        puzzle
             .validate_canonical_submission_ready()
-            .expect_err("canonical submission must stay fail-closed until seed roots are bound");
-        assert!(
-            err.to_string().contains("does not yet bind h_a/h_b"),
-            "unexpected error: {err}"
-        );
+            .expect("single-tile canonical submission preflight should pass");
     }
 
     #[test]

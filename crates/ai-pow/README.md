@@ -63,9 +63,9 @@ What `ai-pow` provides:
   consensus API.
 - **Production certificate verification**: Nockchain block/persistence/wire
   boundaries must verify the structured recursive certificate noun and run the
-  full-matmul statement precheck. Recursive certificate statements remain
-  fail-closed until the proof binds both the intended full-matmul work unit and
-  the `h_a` / `h_b` seed roots to the ZK matrix commitments.
+  full-matmul statement precheck. Recursive certificate statements derive
+  canonical seeds from proof-bound chunk commitments and remain fail-closed for
+  multi-tile shapes until the proof binds the intended full-matmul work unit.
 - **Proof format**: 32-byte tile-state commitment `comm_m`, BLAKE3-keyed
   matrix commitments `H_A` and `H_B`, and per-tile openings (raw strips,
   m-path to `comm_m`, per-row/col paths to `H_A` / `H_B`).

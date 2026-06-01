@@ -52,16 +52,14 @@ pub struct MatmulProof {
     pub h_a: [u8; 32],
     /// Pearl §4.3 `H_B`: BLAKE3-Merkle root over the columns of `B`.
     pub h_b: [u8; 32],
-    /// Reserved for the ZK chunk-Merkle commitment formerly carried in the
-    /// plain proof.
+    /// Canonical nonce-keyed matrix commitment for A.
     ///
-    /// Plain verification cannot authenticate this full-matrix commitment from
-    /// a spot-check opening, so verifier-facing plain proofs must set it to
-    /// zero. Trusted ZK verification receives chunk commitments through
-    /// `ZkPublicCommitments`, not from this plain proof field.
+    /// Production recursive certificates bind this value as the ZK `HASH_A`
+    /// public input and derive the attempt noise from it. Legacy plain
+    /// verification cannot authenticate this full-matrix commitment from a
+    /// spot-check opening, so `MatmulProof` remains a diagnostic artifact.
     pub h_a_chunk: [u8; 32],
-    /// Reserved counterpart to `h_a_chunk`; verifier-facing plain proofs must
-    /// set it to zero.
+    /// Canonical nonce-keyed matrix commitment for B; see `h_a_chunk`.
     pub h_b_chunk: [u8; 32],
     pub found: TileOpening,
     pub spot: Vec<TileOpening>,

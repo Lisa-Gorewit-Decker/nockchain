@@ -78,22 +78,34 @@ fn reject_tampered_h_b() {
 }
 
 #[test]
-fn reject_unauthenticated_chunk_commitments() {
+fn reject_tampered_chunk_seed_commitments() {
     let (params, block, nonce, mut proof) = fresh_proof();
-    assert_eq!(proof.h_a_chunk, [0u8; 32]);
-    assert_eq!(proof.h_b_chunk, [0u8; 32]);
+    assert_ne!(proof.h_a_chunk, [0u8; 32]);
+    assert_ne!(proof.h_b_chunk, [0u8; 32]);
 
     proof.h_a_chunk = [9u8; 32];
-    assert_eq!(
-        verify(block, nonce, &params, &proof),
-        Err(VerifyError::UnexpectedChunkCommitments)
+    let r = verify(block, nonce, &params, &proof);
+    assert!(
+        matches!(
+            r,
+            Err(VerifyError::FoundIndexMismatch)
+                | Err(VerifyError::FoundMerkleMismatch)
+                | Err(VerifyError::SpotMerkleMismatch)
+        ),
+        "got {r:?}"
     );
 
-    proof.h_a_chunk = [0u8; 32];
+    let (_, _, _, mut proof) = fresh_proof();
     proof.h_b_chunk = [10u8; 32];
-    assert_eq!(
-        verify(block, nonce, &params, &proof),
-        Err(VerifyError::UnexpectedChunkCommitments)
+    let r = verify(block, nonce, &params, &proof);
+    assert!(
+        matches!(
+            r,
+            Err(VerifyError::FoundIndexMismatch)
+                | Err(VerifyError::FoundMerkleMismatch)
+                | Err(VerifyError::SpotMerkleMismatch)
+        ),
+        "got {r:?}"
     );
 }
 

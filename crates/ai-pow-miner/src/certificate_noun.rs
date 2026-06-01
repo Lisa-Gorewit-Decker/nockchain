@@ -613,8 +613,8 @@ pub fn precheck_ai_pow_ncmn_artifact_statement(
 ///
 /// This is the production-safe variant for callers that already reconstructed
 /// the recursive certificate object from the structured noun tail. It uses the
-/// full-matmul statement precheck, so selected-tile certificates and unbound
-/// seed-root statements are rejected before recursive verifier work.
+/// full-matmul statement precheck, so multi-tile selected-tile certificates
+/// are rejected before recursive verifier work.
 pub fn verify_ai_pow_ncmn_certificate_statement_and_proof(
     shape: &AiPowCertificateShape,
     puzzle_id: &[u8],
@@ -2461,8 +2461,8 @@ impl<'de> VariantAccess<'de> for NodeEnumAccess {
 #[cfg(test)]
 mod tests {
     use ai_pow::fiat_shamir::{
-        attempt_tile_index, block_state, commitment_key, noise_seed_a, noise_seed_b,
-        pow_key_for_nonce,
+        attempt_tile_index, block_state, canonical_noise_seeds_from_matrix_commitments,
+        commitment_key, pow_key_for_nonce,
     };
     use ai_pow::ncmn::{build_ncmn_nonce, NonceAnchors};
     use ai_pow::prover::params_tag;
@@ -2548,8 +2548,9 @@ mod tests {
         let tag = params_tag(&params);
         let state = block_state(block_commitment, nonce);
         let kappa = commitment_key(&state, &tag);
-        let s_b = noise_seed_b(&kappa, &commitments.h_b);
-        let s_a = noise_seed_a(&s_b, &commitments.h_a);
+        let (s_a, _) = canonical_noise_seeds_from_matrix_commitments(
+            &kappa, &commitments.h_a_chunk, &commitments.h_b_chunk,
+        );
         let found_idx = attempt_tile_index(&state, &tag, &s_a, params.num_tiles()) as u32;
         let pow_key = pow_key_for_nonce(&s_a, nonce);
         let mut pis = CompositePublicInputs::zero();
@@ -2800,12 +2801,8 @@ mod tests {
         let decoded = decode_ai_pow_certificate_slab(&slab, CertificateNounLimits::default())
             .expect("decode certificate noun");
 
-        assert!(matches!(
-            precheck_ai_pow_certificate_statement(&decoded, block, nonce, &params, &target),
-            Err(CertificateNounError::Statement(
-                BridgeError::SeedCommitmentBindingUnavailable
-            ))
-        ));
+        precheck_ai_pow_certificate_statement(&decoded, block, nonce, &params, &target)
+            .expect("single-tile certificate statement should bind chunk-derived seeds");
 
         assert!(matches!(
             precheck_ai_pow_certificate_statement(
@@ -3003,14 +3000,10 @@ mod tests {
         assert_eq!(decoded.certificate.public_inputs, pis);
         assert_eq!(decoded.certificate.certificate, certificate);
 
-        assert!(matches!(
-            precheck_ai_pow_ncmn_artifact_statement(
-                &decoded, puzzle_id, &candidate_nck, &params, &target,
-            ),
-            Err(CertificateNounError::Statement(
-                BridgeError::SeedCommitmentBindingUnavailable
-            ))
-        ));
+        precheck_ai_pow_ncmn_artifact_statement(
+            &decoded, puzzle_id, &candidate_nck, &params, &target,
+        )
+        .expect("single-tile NCMN artifact statement should bind chunk-derived seeds");
 
         let mut wrong_anchor = candidate_nck;
         wrong_anchor[0] ^= 1;
@@ -3162,14 +3155,10 @@ mod tests {
         let decoded = decode_ai_pow_certificate_slab(&slab, CertificateNounLimits::default())
             .expect("decode certificate noun");
 
-        assert!(matches!(
-            precheck_ai_pow_ncmn_certificate_statement(
-                &decoded, puzzle_id, &candidate_nck, &nonce, &params, &target,
-            ),
-            Err(CertificateNounError::Statement(
-                BridgeError::SeedCommitmentBindingUnavailable
-            ))
-        ));
+        precheck_ai_pow_ncmn_certificate_statement(
+            &decoded, puzzle_id, &candidate_nck, &nonce, &params, &target,
+        )
+        .expect("single-tile NCMN certificate statement should bind chunk-derived seeds");
 
         let mut wrong_anchor = candidate_nck;
         wrong_anchor[0] ^= 1;

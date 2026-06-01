@@ -330,12 +330,11 @@ The proof attests that:
 (See the "Open lines of work" table above for the doc-pointer
 form. This subsection is the in-narrative description.)
 
-- **`h_a` / `h_b` seed-root bindings.** The proof binds the
-  chunk-Merkle matrix commitments exposed as `HASH_A` / `HASH_B`,
-  but the Rust statement still derives `s_a` / `s_b` from separate
-  row/column roots. Consensus remains fail-closed until those seed
-  roots are proven to describe the same matrices or the seed chain
-  switches to proof-bound commitments.
+- **Full-matmul recursive statement.** The proof binds the chunk-Merkle
+  matrix commitments exposed as `HASH_A` / `HASH_B`, and the Rust statement
+  derives `s_a` / `s_b` from those proof-bound commitments. Multi-tile
+  consensus remains fail-closed until the recursive statement binds a
+  full-matmul aggregate or equivalent full-work certificate.
 - **Final CV_OUT in public inputs.** The composite trace doesn't
   yet thread "current CV" forward to the last row. Add when
   downstream protocols need the final hash output.
@@ -452,9 +451,10 @@ The `composite_prove` / `composite_verify` APIs are Layer-0 primitives. They
 are useful for circuit tests and for the recursive-certificate builder, but the
 raw Layer-0 proof is not the production block artifact. Block, wire, and Hoon
 boundaries must consume the recursive certificate and run the full-matmul
-statement precheck. That precheck intentionally fails closed until the
-recursive proof binds both the intended full-matmul work unit and the
-`h_a` / `h_b` seed roots to the ZK matrix commitments.
+statement precheck. That precheck derives canonical seeds from the same
+nonce-keyed chunk commitments bound by the proof as `HASH_A` / `HASH_B`, and
+it intentionally fails closed for multi-tile shapes until the recursive proof
+binds the intended full-matmul work unit.
 
 The production attempt boundary is intentionally minimal-reuse. Changing the
 NCMN nonce must force fresh transcript-derived commitments, noise, noised matrix

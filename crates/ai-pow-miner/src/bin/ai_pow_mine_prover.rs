@@ -58,7 +58,7 @@ struct Args {
 
     // ── puzzle shape ──────────────────────────────────────────────
     // Defaults match the node miner's single-tile Layer-0 smoke profile.
-    // Canonical block submission still fails closed until seed-root and
+    // Multi-tile canonical block submission still fails closed until
     // full-matrix recursive binding lands.
     #[arg(short = 'm', long, default_value_t = 8)]
     m: u32,

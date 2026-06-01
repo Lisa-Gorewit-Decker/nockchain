@@ -21,8 +21,8 @@ use thiserror::Error;
 
 use crate::commit::{a_row_leaf_hash, b_col_leaf_hash, merkle_path, merkle_root, MerkleError};
 use crate::fiat_shamir::{
-    attempt_tile_index, block_state, challenge_indices, challenge_seed, commitment_key,
-    noise_seed_a, noise_seed_b, pow_key_for_nonce,
+    attempt_tile_index, block_state, canonical_noise_seeds_from_matrix_commitments,
+    challenge_indices, challenge_seed, commitment_key, pow_key_for_nonce,
 };
 use crate::matmul::{compute_tile, BlockNoise, Matrices, TileState};
 use crate::params::{MatmulParams, ParamError};
@@ -279,8 +279,8 @@ impl<'a> BlockContext<'a> {
         let h_a_chunk = crate::commit::matrix_commitment(a_bytes, &kappa);
         let h_b_chunk = crate::commit::matrix_commitment(b_bytes, &kappa);
 
-        let s_b = noise_seed_b(&kappa, &h_b);
-        let s_a = noise_seed_a(&s_b, &h_a);
+        let (s_a, s_b) =
+            canonical_noise_seeds_from_matrix_commitments(&kappa, &h_a_chunk, &h_b_chunk);
 
         let noise = BlockNoise::expand(&s_a, &s_b, params);
         let matrices = Matrices::build(a, b, &noise, params);
@@ -468,12 +468,12 @@ fn mine_inner(
         params_tag: ctx.tag,
         h_a: ctx.h_a,
         h_b: ctx.h_b,
-        // Plain verification authenticates only the row/column Merkle roots
-        // (`h_a`, `h_b`) opened by spot checks. Full chunk commitments are
-        // trusted only through the ZK statement artifact, so the plain proof
-        // reserves these legacy fields as zero.
-        h_a_chunk: [0u8; 32],
-        h_b_chunk: [0u8; 32],
+        // Canonical seeds are derived from the nonce-keyed chunk commitments
+        // that the recursive ZK proof binds as HASH_A/HASH_B. The plain
+        // verifier still authenticates row/column roots only through spot
+        // openings, so this legacy artifact remains diagnostic, not consensus.
+        h_a_chunk: ctx.h_a_chunk,
+        h_b_chunk: ctx.h_b_chunk,
         found: found_opening,
         spot,
     };

@@ -70,12 +70,6 @@
 //!
 //! ## What's not yet bound
 //!
-//! - **`h_a` / `h_b` seed-root bindings.** The Layer-0 proof binds the
-//!   chunk-Merkle matrix commitments exposed as `HASH_A` / `HASH_B`, while
-//!   the Rust statement still derives `s_a` / `s_b` from separate row/column
-//!   roots. Consensus remains fail-closed until the recursive statement proves
-//!   those seed roots describe the same matrices or switches the seed chain to
-//!   proof-bound commitments.
 //! - **Full-matmul recursive statement.** The current recursive certificate
 //!   verifies one selected tile. Production block admission therefore remains
 //!   closed until the recursive statement binds a full-matmul aggregate or

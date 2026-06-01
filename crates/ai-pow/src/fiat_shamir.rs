@@ -1,11 +1,13 @@
 //! Fiat-Shamir transcript over BLAKE3 keyed-derive.
 //!
 //! Implements the Pearl §4.3 Algorithm 2-shaped commitment-hash
-//! derivation chain:
+//! derivation chain. Nockchain production uses the same hash shape, but the
+//! `H_A` / `H_B` inputs are the nonce-keyed matrix commitments bound by the
+//! recursive ZK proof, not the legacy row/column opening roots:
 //!
 //!   κ   = derive_key("kappa",        block_state(block, nonce) ‖ params_tag)
-//!   H_A = MerkleRoot({ BLAKE3(row_i_of_A, key=κ) }_{i∈[m]})
-//!   H_B = MerkleRoot({ BLAKE3(col_j_of_B, key=κ) }_{j∈[n]})
+//!   H_A = matrix_commitment(A, κ)    // ZK HASH_A / h_a_chunk
+//!   H_B = matrix_commitment(B, κ)    // ZK HASH_B / h_b_chunk
 //!   s_B = derive_key("s_b",          κ ‖ H_B)
 //!   s_A = derive_key("s_a",          s_B ‖ H_A)
 //!
@@ -74,6 +76,23 @@ pub fn noise_seed_a(s_b: &[u8; 32], h_a: &[u8; 32]) -> [u8; 32] {
     input[..32].copy_from_slice(s_b);
     input[32..].copy_from_slice(h_a);
     *Hasher::new().update(&input).finalize().as_bytes()
+}
+
+/// Canonical production seed derivation for one nonce-bound AI-PoW attempt.
+///
+/// The inputs named `h_a_chunk` / `h_b_chunk` are the keyed full-matrix
+/// commitments that the recursive proof exposes as `HASH_A` / `HASH_B`.
+/// Deriving noise from these values prevents a prover from choosing separate
+/// row/column roots as an unproved seed surface while proving different matrix
+/// commitments in ZK.
+pub fn canonical_noise_seeds_from_matrix_commitments(
+    kappa: &[u8; 32],
+    h_a_chunk: &[u8; 32],
+    h_b_chunk: &[u8; 32],
+) -> ([u8; 32], [u8; 32]) {
+    let s_b = noise_seed_b(kappa, h_b_chunk);
+    let s_a = noise_seed_a(&s_b, h_a_chunk);
+    (s_a, s_b)
 }
 
 /// Per-attempt `pow_key` used as the BLAKE3 key for

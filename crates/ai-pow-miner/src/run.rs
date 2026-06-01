@@ -32,10 +32,9 @@
 //! The canonical payload shape is the recursive AI-PoW certificate noun. The
 //! plain `MatmulProof`, nonce, and tile index are mining internals; they are
 //! not submitted to the kernel as the block proof. The current certificate
-//! support gate fails preflight until the recursive statement binds both a
-//! full-matrix aggregate and the `h_a` / `h_b` seed roots to the ZK matrix
-//! commitments, and the kernel remains fail-closed until recursive certificate
-//! verification is wired.
+//! support gate fails preflight for multi-tile shapes until the recursive
+//! statement binds a full-matrix aggregate, and the kernel remains fail-closed
+//! until recursive certificate verification is wired.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -764,16 +763,11 @@ mod tests {
     }
 
     #[test]
-    fn production_preflight_rejects_single_tile_until_seed_roots_are_bound() {
+    fn production_preflight_accepts_single_tile_chunk_seed_binding() {
         let cfg = test_cfg("http://127.0.0.1:1".to_string());
-        let err = cfg
-            .puzzle
+        cfg.puzzle
             .validate_canonical_submission_ready()
-            .expect_err("single-tile recursive certificate still lacks seed-root binding");
-        assert!(
-            err.to_string().contains("does not yet bind h_a/h_b"),
-            "unexpected error: {err}"
-        );
+            .expect("single-tile recursive certificate binds canonical chunk commitments");
     }
 
     #[test]
@@ -897,7 +891,7 @@ mod tests {
     /// modern machine; marked `#[ignore]` so `cargo test` is fast by
     /// default. Run with `cargo test -p ai-pow-miner --features node
     /// --test node_run_mock_node -- --ignored`.
-    #[ignore = "canonical certificate gate is fail-closed until seed-root binding lands"]
+    #[ignore = "manual mock-node integration test; runs the real prover"]
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn run_loop_against_mock_node_submits_ai_pow_command_after_certificate_gate_reopens() {
         let node = MockNode::spawn().await;
@@ -938,7 +932,8 @@ mod tests {
     /// the configured recursive certificate is not canonical-admissible.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn run_loop_rejects_before_connect_when_certificate_gate_is_closed() {
-        let cfg = test_cfg("http://127.0.0.1:1".to_string());
+        let mut cfg = test_cfg("http://127.0.0.1:1".to_string());
+        cfg.puzzle.params = multi_tile_prod_params();
         let shutdown = CancellationToken::new();
         let r = tokio::time::timeout(Duration::from_secs(2), run(cfg, shutdown))
             .await
@@ -946,7 +941,7 @@ mod tests {
         match r {
             Err(MinerError::CanonicalCertificateUnavailable(msg)) => {
                 assert!(
-                    msg.contains("does not yet bind h_a/h_b"),
+                    msg.contains("not a full 4-tile matmul"),
                     "unexpected error: {msg}"
                 );
             }
@@ -958,7 +953,8 @@ mod tests {
     /// preflight failure into a successful run.
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn run_loop_shutdown_still_reports_closed_certificate_gate() {
-        let cfg = test_cfg("http://127.0.0.1:1".to_string());
+        let mut cfg = test_cfg("http://127.0.0.1:1".to_string());
+        cfg.puzzle.params = multi_tile_prod_params();
         let shutdown = CancellationToken::new();
         let shutdown_clone = shutdown.clone();
         let mining_task = tokio::spawn(async move { run(cfg, shutdown_clone).await });

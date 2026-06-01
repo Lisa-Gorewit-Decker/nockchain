@@ -74,7 +74,8 @@ use ai_pow_zk::{
 };
 
 use crate::fiat_shamir::{
-    attempt_tile_index, block_state, commitment_key, noise_seed_a, noise_seed_b, pow_key_for_nonce,
+    attempt_tile_index, block_state, canonical_noise_seeds_from_matrix_commitments, commitment_key,
+    pow_key_for_nonce,
 };
 use crate::params::{MatmulParams, ParamError};
 #[cfg(test)]
@@ -200,13 +201,17 @@ pub struct ZkOutcome {
 /// Public commitments a verifier needs to derive the trusted ZK statement.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ZkPublicCommitments {
-    /// Plain row-Merkle root for A. Used to derive `s_a`.
+    /// Plain row-Merkle root for A. Retained for legacy opening diagnostics;
+    /// not part of the canonical recursive statement.
     pub h_a: [u8; 32],
-    /// Plain column-Merkle root for B. Used to derive `s_b`.
+    /// Plain column-Merkle root for B. Retained for legacy opening diagnostics;
+    /// not part of the canonical recursive statement.
     pub h_b: [u8; 32],
-    /// Chunk-Merkle commitment bound by the ZK `HASH_A` public input.
+    /// Chunk-Merkle commitment bound by the ZK `HASH_A` public input and used
+    /// to derive canonical `s_a`.
     pub h_a_chunk: [u8; 32],
-    /// Chunk-Merkle commitment bound by the ZK `HASH_B` public input.
+    /// Chunk-Merkle commitment bound by the ZK `HASH_B` public input and used
+    /// to derive canonical `s_b`.
     pub h_b_chunk: [u8; 32],
 }
 
@@ -713,8 +718,9 @@ fn expected_attempt_found_idx(
     let tag = params_tag(params);
     let state = block_state(block_commitment, nonce);
     let kappa = commitment_key(&state, &tag);
-    let s_b = noise_seed_b(&kappa, &commitments.h_b);
-    let s_a = noise_seed_a(&s_b, &commitments.h_a);
+    let (s_a, _) = canonical_noise_seeds_from_matrix_commitments(
+        &kappa, &commitments.h_a_chunk, &commitments.h_b_chunk,
+    );
     let idx = attempt_tile_index(&state, &tag, &s_a, params.num_tiles());
     u32::try_from(idx).map_err(|_| BridgeError::FoundIdxOutOfRange {
         found_idx: u32::MAX,
@@ -861,13 +867,6 @@ pub enum BridgeError {
     /// multi-tile statement cannot be accepted as proof of one full matmul
     /// attempt.
     FullMatmulProofUnavailable { num_tiles: u64 },
-    /// The recursive statement still derives `s_a` / `s_b` from the
-    /// row/column Merkle roots while the Layer-0 proof binds the chunk-Merkle
-    /// matrix commitments. Until the recursive proof also binds those seed
-    /// roots to the same matrices, the certificate leaves an extra
-    /// prover-chosen seed-grinding surface and cannot be a production block
-    /// artifact.
-    SeedCommitmentBindingUnavailable,
     /// M3 (DoS audit): the ai-pow-zk verifier-side `canonical_program`
     /// rejected a structurally-broken `ZkParams` (16|r invariant,
     /// tile-grid bounds, trace_len lower bound). Defense-in-depth
@@ -914,10 +913,6 @@ impl core::fmt::Display for BridgeError {
             BridgeError::FullMatmulProofUnavailable { num_tiles } => write!(
                 f,
                 "recursive certificate proves one selected tile, not a full {num_tiles}-tile matmul"
-            ),
-            BridgeError::SeedCommitmentBindingUnavailable => write!(
-                f,
-                "recursive certificate does not yet bind h_a/h_b seed roots to the ZK matrix commitments"
             ),
             BridgeError::ZkParamsInvalid(msg) => {
                 write!(f, "ai-pow-zk canonical_program rejected params: {msg}")
@@ -1085,18 +1080,14 @@ pub fn prove_ai_pow_recursive_certificate(
 /// Check whether the current canonical recursive certificate can serve as a
 /// production full-matmul certificate for `params`.
 ///
-/// Today two independent gaps keep this fail-closed:
-///
-/// - the recursive statement proves one selected tile, not a full multi-tile
-///   aggregate;
-/// - even for a one-tile smoke profile, `s_a` / `s_b` are derived from
-///   `h_a` / `h_b` row/column roots while the ZK proof binds
-///   `h_a_chunk` / `h_b_chunk`. Until the proof binds those seed roots to the
-///   same committed matrices, they are an extra prover-chosen grinding surface.
+/// Today this fails closed for multi-tile production shapes because the
+/// recursive statement proves one selected tile, not a full multi-tile
+/// aggregate. Single-tile smoke profiles are admissible at this Rust boundary:
+/// their canonical seeds are derived from the same chunk commitments that the
+/// recursive proof binds as `HASH_A` / `HASH_B`.
 ///
 /// Keep production miner and verifier preflights on this helper so the future
-/// full-matmul / seed-binding proof can widen the accepted parameter set in
-/// one place.
+/// full-matmul proof can widen the accepted parameter set in one place.
 pub fn validate_canonical_recursive_certificate_params(
     params: &MatmulParams,
 ) -> Result<(), BridgeError> {
@@ -1107,7 +1098,7 @@ pub fn validate_canonical_recursive_certificate_params(
     if num_tiles > 1 {
         return Err(BridgeError::FullMatmulProofUnavailable { num_tiles });
     }
-    Err(BridgeError::SeedCommitmentBindingUnavailable)
+    Ok(())
 }
 
 /// Crate-internal Layer-0 verifier-only ZK API.
@@ -1169,12 +1160,11 @@ fn verify_ai_pow_selected_tile_statement(
 /// The current recursive certificate is Pearl-style: it proves the opened
 /// jackpot tile and all nonce/commitment/target bindings for that tile. It
 /// does not yet prove a full `comm_m` tree or equivalent aggregate over every
-/// tile state. It also does not yet prove that the `h_a` / `h_b` roots used to
-/// derive `s_a` / `s_b` are the same matrices as the chunk commitments bound
-/// by `HASH_A` / `HASH_B`. Consensus callers that interpret one AI-PoW attempt
-/// as one full matmul must use this stricter API so recursive certificates fail
-/// closed until the full-matrix aggregate and seed-commitment binding proof is
-/// implemented.
+/// tile state. Consensus callers that interpret one AI-PoW attempt as one full
+/// matmul must use this stricter API so multi-tile recursive certificates fail
+/// closed until the full-matrix aggregate is implemented. The nonce/noise
+/// binding is already derived from the same chunk commitments bound by
+/// `HASH_A` / `HASH_B`.
 #[allow(clippy::too_many_arguments)]
 pub fn verify_ai_pow_full_matmul_production_statement(
     block_commitment: &[u8],
@@ -1195,8 +1185,7 @@ pub fn verify_ai_pow_full_matmul_production_statement(
     }
     verify_ai_pow_selected_tile_statement(
         block_commitment, nonce, params, target, found_idx, commitments, pis, trace_height,
-    )?;
-    Err(BridgeError::SeedCommitmentBindingUnavailable)
+    )
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1228,8 +1217,9 @@ fn derive_ai_pow_statement(
         ensure_attempt_found_idx(block_commitment, nonce, params, commitments, found_idx)?;
     }
     let kappa = commitment_key(&state, &tag);
-    let s_b = noise_seed_b(&kappa, &commitments.h_b);
-    let s_a = noise_seed_a(&s_b, &commitments.h_a);
+    let (s_a, s_b) = canonical_noise_seeds_from_matrix_commitments(
+        &kappa, &commitments.h_a_chunk, &commitments.h_b_chunk,
+    );
     let expected_height = expected_layer0_rows(params).required_trace_len();
     if trace_height != expected_height {
         return Err(BridgeError::TraceHeightMismatch {
@@ -2309,8 +2299,9 @@ mod tests {
         let tag = params_tag(&params);
         let state = block_state(block, nonce);
         let kappa = commitment_key(&state, &tag);
-        let s_b = noise_seed_b(&kappa, &commitments.h_b);
-        let s_a = noise_seed_a(&s_b, &commitments.h_a);
+        let (s_a, _) = canonical_noise_seeds_from_matrix_commitments(
+            &kappa, &commitments.h_a_chunk, &commitments.h_b_chunk,
+        );
         let pow_key = pow_key_for_nonce(&s_a, nonce);
         let mut pis = CompositePublicInputs::zero();
         pis.job_key = bytes_to_words_le(&kappa);
@@ -2359,7 +2350,7 @@ mod tests {
 
         let mut changed_commitments = commitments;
         for delta in 1u8..=u8::MAX {
-            changed_commitments.h_a[0] = commitments.h_a[0] ^ delta;
+            changed_commitments.h_a_chunk[0] = commitments.h_a_chunk[0] ^ delta;
             if expected_attempt_found_idx(block, nonce, &params, &changed_commitments).unwrap()
                 != found_idx
             {
@@ -2395,8 +2386,9 @@ mod tests {
         let tag = params_tag(&params);
         let state = block_state(block, nonce);
         let kappa = commitment_key(&state, &tag);
-        let s_b = noise_seed_b(&kappa, &commitments.h_b);
-        let s_a = noise_seed_a(&s_b, &commitments.h_a);
+        let (s_a, _) = canonical_noise_seeds_from_matrix_commitments(
+            &kappa, &commitments.h_a_chunk, &commitments.h_b_chunk,
+        );
         let pow_key = pow_key_for_nonce(&s_a, nonce);
         let mut pis = CompositePublicInputs::zero();
         pis.job_key = bytes_to_words_le(&kappa);
@@ -2424,7 +2416,7 @@ mod tests {
     }
 
     #[test]
-    fn canonical_recursive_certificate_param_gate_fails_until_full_binding() {
+    fn canonical_recursive_certificate_param_gate_accepts_single_tile_only() {
         let multi_tile = MatmulParams::PROD;
         assert!(multi_tile.num_tiles() > 1);
         assert!(matches!(
@@ -2435,14 +2427,12 @@ mod tests {
 
         let single_tile = single_tile_prod_params();
         assert_eq!(single_tile.num_tiles(), 1);
-        assert!(matches!(
-            validate_canonical_recursive_certificate_params(&single_tile),
-            Err(BridgeError::SeedCommitmentBindingUnavailable)
-        ));
+        validate_canonical_recursive_certificate_params(&single_tile)
+            .expect("single-tile recursive certificate binds canonical seed commitments");
     }
 
     #[test]
-    fn full_matmul_production_statement_rejects_single_tile_until_seed_roots_bound() {
+    fn full_matmul_production_statement_accepts_single_tile_seeded_by_chunk_commitments() {
         let params = single_tile_prod_params();
         params.validate_prod_envelope().unwrap();
         assert_eq!(params.num_tiles(), 1);
@@ -2458,8 +2448,9 @@ mod tests {
         let tag = params_tag(&params);
         let state = block_state(block, nonce);
         let kappa = commitment_key(&state, &tag);
-        let s_b = noise_seed_b(&kappa, &commitments.h_b);
-        let s_a = noise_seed_a(&s_b, &commitments.h_a);
+        let (s_a, _) = canonical_noise_seeds_from_matrix_commitments(
+            &kappa, &commitments.h_a_chunk, &commitments.h_b_chunk,
+        );
         let pow_key = pow_key_for_nonce(&s_a, nonce);
         let mut pis = CompositePublicInputs::zero();
         pis.job_key = bytes_to_words_le(&kappa);
@@ -2470,12 +2461,10 @@ mod tests {
         let trace_height = expected_layer0_rows(&params).required_trace_len();
         let found_idx = expected_attempt_found_idx(block, nonce, &params, &commitments).unwrap();
 
-        assert!(matches!(
-            verify_ai_pow_full_matmul_production_statement(
-                block, nonce, &params, &target, found_idx, &commitments, &pis, trace_height,
-            ),
-            Err(BridgeError::SeedCommitmentBindingUnavailable)
-        ));
+        verify_ai_pow_full_matmul_production_statement(
+            block, nonce, &params, &target, found_idx, &commitments, &pis, trace_height,
+        )
+        .expect("single-tile recursive statement should bind canonical seed commitments");
     }
 
     #[test]

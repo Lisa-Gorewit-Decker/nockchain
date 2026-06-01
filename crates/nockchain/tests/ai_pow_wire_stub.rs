@@ -89,9 +89,8 @@ fn ai_pow_consensus_wire_is_structured_but_fail_closed_without_verifier() {
             && AI_POW_ZK_README_MD.contains("plain `MatmulProof` remains a miner diagnostic")
             && AI_POW_ZK_README_MD
                 .contains("raw Layer-0 proof is not the production block artifact")
-            && AI_POW_ZK_README_MD
-                .contains("recursive proof binds both the intended full-matmul work unit")
-            && AI_POW_ZK_README_MD.contains("h_a` / `h_b` seed roots")
+            && AI_POW_ZK_README_MD.contains("binds the intended full-matmul work unit")
+            && AI_POW_ZK_README_MD.contains("nonce-keyed chunk commitments")
             && AI_POW_ZK_README_MD.contains("For local Layer-0 circuit checks")
             && AI_POW_ZK_README_MD.contains("composite_prove_pinned_logup")
             && AI_POW_ZK_README_MD.contains("must use the recursive certificate APIs and the")
@@ -161,7 +160,7 @@ fn ai_pow_consensus_wire_is_structured_but_fail_closed_without_verifier() {
             && AI_POW_ZK_BRIDGE_RS
                 .contains("pub fn verify_ai_pow_full_matmul_production_statement")
             && AI_POW_ZK_BRIDGE_RS.contains("FullMatmulProofUnavailable")
-            && AI_POW_ZK_BRIDGE_RS.contains("SeedCommitmentBindingUnavailable")
+            && AI_POW_ZK_BRIDGE_RS.contains("canonical_noise_seeds_from_matrix_commitments")
             && AI_POW_MINER_CERT_NOUN_RS.contains("CertificateNounLimits")
             && AI_POW_MINER_CERT_NOUN_RS
                 .contains("certificate_noun_decoder_rejects_oversized_packed_atom")
@@ -226,7 +225,7 @@ fn ai_pow_consensus_wire_is_structured_but_fail_closed_without_verifier() {
             && AI_POW_ZK_BRIDGE_RS
                 .contains("pub fn verify_ai_pow_full_matmul_production_statement")
             && AI_POW_ZK_BRIDGE_RS.contains("FullMatmulProofUnavailable")
-            && AI_POW_ZK_BRIDGE_RS.contains("SeedCommitmentBindingUnavailable")
+            && AI_POW_ZK_BRIDGE_RS.contains("canonical_noise_seeds_from_matrix_commitments")
             && AI_POW_ZK_BRIDGE_RS.contains("pub(crate) struct ZkProofArtifact")
             && AI_POW_ZK_BRIDGE_RS.contains("pub(crate) struct AiPowProductionArtifact")
             && AI_POW_ZK_BRIDGE_RS.contains("pub(crate) struct AiPowConsensusArtifact")
@@ -379,9 +378,6 @@ fn ai_pow_consensus_wire_is_structured_but_fail_closed_without_verifier() {
         .expect(
             "canonical cert param gate must fail closed for selected-tile multi-tile statements",
         );
-    let canonical_param_gate_seed_root_guard = canonical_param_gate_fn
-        .find("SeedCommitmentBindingUnavailable")
-        .expect("canonical cert param gate must fail closed until seed roots are ZK-bound");
     let recursive_target_guard = recursive_certificate_fn
         .find("ensure_found_tile_hits_target")
         .expect("recursive certificate prover must check the plain matmul target hit before ZK");
@@ -414,14 +410,13 @@ fn ai_pow_consensus_wire_is_structured_but_fail_closed_without_verifier() {
             )
             && AI_POW_ZK_BRIDGE_RS
                 .contains("recursive_certificate_builder_rejects_missed_target_before_zkp")
-            && AI_POW_ZK_BRIDGE_RS.contains("SeedCommitmentBindingUnavailable")
+            && AI_POW_ZK_BRIDGE_RS.contains("canonical_noise_seeds_from_matrix_commitments")
             && target_check < recursive_prove
             && AI_POW_ZK_BRIDGE_RS.contains("pub fn prove_ai_pow_recursive_certificate")
             && AI_POW_ZK_BRIDGE_RS
                 .contains("pub fn validate_canonical_recursive_certificate_params")
             && recursive_param_gate < recursive_layer0_prove
             && canonical_param_gate_prod_envelope < canonical_param_gate_full_matmul_guard
-            && canonical_param_gate_full_matmul_guard < canonical_param_gate_seed_root_guard
             && recursive_target_guard < recursive_layer0_prove
             && production_layer0_full_matmul_guard < production_layer0_prove
             && AI_POW_MINER_RUN_RS.contains("validate_canonical_submission_ready")
@@ -430,11 +425,11 @@ fn ai_pow_consensus_wire_is_structured_but_fail_closed_without_verifier() {
                 "production_preflight_rejects_multi_tile_selected_tile_gap_before_mining"
             )
             && AI_POW_MINER_RUN_RS
-                .contains("production_preflight_rejects_single_tile_until_seed_roots_are_bound")
-            && AI_POW_MINER_BIN_RS.contains("closed before mining starts")
+                .contains("production_preflight_accepts_single_tile_chunk_seed_binding")
+            && AI_POW_MINER_BIN_RS.contains("fails closed for multi-tile configurations")
             && AI_POW_MINER_BIN_RS
                 .contains("CLI defaults are a single-tile, production-envelope smoke profile for")
-            && AI_POW_MINER_BIN_RS.contains("Canonical block submission remains fail-closed")
+            && AI_POW_MINER_BIN_RS.contains("nonce-keyed chunk commitments")
             && AI_POW_MINER_BIN_RS.contains("default_value_t = 512")
             && AI_POW_MINER_PROVER_BIN_RS.contains("name = \"ai-pow-mine-prover\"")
             && AI_POW_MINER_PROVER_BIN_RS.contains("legacy plain MatmulProof diagnostic bytes")

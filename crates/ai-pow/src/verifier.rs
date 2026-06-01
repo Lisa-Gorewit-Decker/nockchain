@@ -4,7 +4,7 @@
 //!   1. Range-checks the supplied row/column strips of `A` and `B`.
 //!   2. Recomputes each row/column leaf via `a_row_leaf_hash` /
 //!      `b_col_leaf_hash` and confirms its Merkle path recovers the
-//!      committed `h_a` / `h_b` (Pearl §4.3 binds the noise to these).
+//!      committed `h_a` / `h_b` legacy opening roots.
 //!   3. Reconstructs `A' = A + E` and `B' = B + F` rows / columns from the
 //!      supplied strips and the re-derived noise factors.
 //!   4. Runs the iterative tile loop to recompute `M_{i,j}` (Pearl §4.5).
@@ -16,8 +16,8 @@ use thiserror::Error;
 
 use crate::commit::{a_row_leaf_hash, b_col_leaf_hash, merkle_recover_root, MerkleError};
 use crate::fiat_shamir::{
-    attempt_tile_index, block_state, challenge_indices, challenge_seed, commitment_key,
-    noise_seed_a, noise_seed_b, pow_key_for_nonce,
+    attempt_tile_index, block_state, canonical_noise_seeds_from_matrix_commitments,
+    challenge_indices, challenge_seed, commitment_key, pow_key_for_nonce,
 };
 use crate::matmul::compute_tile_from_slices;
 use crate::ncmn::{parse_ncmn_nonce, NonceFormatError};
@@ -37,8 +37,6 @@ pub enum VerifyError {
     Merkle(#[from] MerkleError),
     #[error("params tag in proof does not match expected")]
     ParamsTagMismatch,
-    #[error("plain proof carries unauthenticated chunk commitments")]
-    UnexpectedChunkCommitments,
     #[error("NCMN nonce: {0}")]
     Nonce(#[from] NonceFormatError),
     #[error("NCMN nonce Nockchain commitment does not match candidate block")]
@@ -117,16 +115,12 @@ pub fn verify_at_target(
     if tag != proof.params_tag {
         return Err(VerifyError::ParamsTagMismatch);
     }
-    if proof.h_a_chunk != [0u8; 32] || proof.h_b_chunk != [0u8; 32] {
-        return Err(VerifyError::UnexpectedChunkCommitments);
-    }
-
     let state = block_state(block_commitment, nonce);
     let chal = challenge_seed(&state, &proof.comm_m, &tag);
     let num_tiles = params.num_tiles();
     let kappa = commitment_key(&state, &tag);
-    let s_b = noise_seed_b(&kappa, &proof.h_b);
-    let s_a = noise_seed_a(&s_b, &proof.h_a);
+    let (s_a, s_b) =
+        canonical_noise_seeds_from_matrix_commitments(&kappa, &proof.h_a_chunk, &proof.h_b_chunk);
     let expected_found = attempt_tile_index(&state, &tag, &s_a, num_tiles);
 
     if (proof.spot.len() as u32) != params.spot_checks {
