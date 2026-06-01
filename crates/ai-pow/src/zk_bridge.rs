@@ -201,12 +201,6 @@ pub struct ZkOutcome {
 /// Public commitments a verifier needs to derive the trusted ZK statement.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ZkPublicCommitments {
-    /// Plain row-Merkle root for A. Retained for legacy opening diagnostics;
-    /// not part of the canonical recursive statement.
-    pub h_a: [u8; 32],
-    /// Plain column-Merkle root for B. Retained for legacy opening diagnostics;
-    /// not part of the canonical recursive statement.
-    pub h_b: [u8; 32],
     /// Chunk-Merkle commitment bound by the ZK `HASH_A` public input and used
     /// to derive canonical `s_a`.
     pub h_a_chunk: [u8; 32],
@@ -218,8 +212,6 @@ pub struct ZkPublicCommitments {
 impl ZkPublicCommitments {
     pub fn from_context(ctx: &BlockContext<'_>) -> Self {
         Self {
-            h_a: ctx.h_a,
-            h_b: ctx.h_b,
             h_a_chunk: ctx.h_a_chunk,
             h_b_chunk: ctx.h_b_chunk,
         }
@@ -319,7 +311,7 @@ pub(crate) const MAX_CONSENSUS_PUBLIC_INPUT_BYTES: usize = 4 * 1024;
 #[cfg(test)]
 pub(crate) const MAX_CONSENSUS_ZK_PROOF_BYTES: usize = 128 * 1024 * 1024;
 #[cfg(test)]
-const AI_POW_CONSENSUS_HEADER_LEN: usize = 4 + 1 + (4 * 3) + 8 + (32 * 4);
+const AI_POW_CONSENSUS_HEADER_LEN: usize = 4 + 1 + (4 * 3) + 8 + (32 * 2);
 
 #[cfg(test)]
 pub(crate) const AI_POW_PRODUCTION_MAGIC: [u8; 4] = *b"AIRC";
@@ -328,7 +320,7 @@ pub(crate) const AI_POW_PRODUCTION_VERSION: u8 = 1;
 #[cfg(test)]
 pub(crate) const MAX_PRODUCTION_RECURSIVE_CERT_BYTES: usize = 512 * 1024;
 #[cfg(test)]
-const AI_POW_PRODUCTION_HEADER_LEN: usize = 4 + 1 + (4 * 6) + 4 + 8 + (4 * 2) + (32 * 4);
+const AI_POW_PRODUCTION_HEADER_LEN: usize = 4 + 1 + (4 * 6) + 4 + 8 + (4 * 2) + (32 * 2);
 
 #[cfg(test)]
 #[derive(Debug, thiserror::Error)]
@@ -380,8 +372,6 @@ pub(crate) enum ConsensusVerifyError {
     Plain(#[from] VerifyError),
     #[error("ZK proof verify: {0}")]
     Zk(#[from] BridgeError),
-    #[error("plain proof and ZK artifact disagree on {0}")]
-    PlainZkCommitmentMismatch(&'static str),
 }
 
 #[cfg(test)]
@@ -612,12 +602,6 @@ fn verify_ai_pow_consensus_artifact(
     bytes: &[u8],
 ) -> Result<(), ConsensusVerifyError> {
     let artifact = AiPowConsensusArtifact::decode_consensus_for_params(bytes, params)?;
-    if artifact.plain_proof.h_a != artifact.commitments.h_a {
-        return Err(ConsensusVerifyError::PlainZkCommitmentMismatch("h_a"));
-    }
-    if artifact.plain_proof.h_b != artifact.commitments.h_b {
-        return Err(ConsensusVerifyError::PlainZkCommitmentMismatch("h_b"));
-    }
     verify_prod_at_target(
         block_commitment, nonce, params, target, &artifact.plain_proof,
     )?;
@@ -657,8 +641,6 @@ fn checked_total_len<const N: usize>(parts: [usize; N]) -> Result<usize, Artifac
 
 #[cfg(test)]
 fn encode_commitments(commitments: &ZkPublicCommitments, out: &mut Vec<u8>) {
-    out.extend_from_slice(&commitments.h_a);
-    out.extend_from_slice(&commitments.h_b);
     out.extend_from_slice(&commitments.h_a_chunk);
     out.extend_from_slice(&commitments.h_b_chunk);
 }
@@ -769,8 +751,6 @@ fn ensure_found_tile_hits_target(
 #[cfg(test)]
 fn decode_commitments(cur: &mut &[u8]) -> Result<ZkPublicCommitments, ArtifactCodecError> {
     Ok(ZkPublicCommitments {
-        h_a: take_arr32(cur)?,
-        h_b: take_arr32(cur)?,
         h_a_chunk: take_arr32(cur)?,
         h_b_chunk: take_arr32(cur)?,
     })
@@ -1881,8 +1861,6 @@ mod tests {
 
     fn test_commitments() -> ZkPublicCommitments {
         ZkPublicCommitments {
-            h_a: [1; 32],
-            h_b: [2; 32],
             h_a_chunk: [3; 32],
             h_b_chunk: [4; 32],
         }
@@ -2291,8 +2269,6 @@ mod tests {
         let nonce = b"selected-tile-statement-nonce";
         let target = [0xffu8; 32];
         let commitments = ZkPublicCommitments {
-            h_a: [0x11; 32],
-            h_b: [0x22; 32],
             h_a_chunk: [0x33; 32],
             h_b_chunk: [0x44; 32],
         };
@@ -2378,8 +2354,6 @@ mod tests {
         let nonce = b"full-matmul-statement-nonce";
         let target = [0xffu8; 32];
         let commitments = ZkPublicCommitments {
-            h_a: [0x11; 32],
-            h_b: [0x22; 32],
             h_a_chunk: [0x33; 32],
             h_b_chunk: [0x44; 32],
         };
@@ -2440,8 +2414,6 @@ mod tests {
         let nonce = b"single-tile-full-matmul-nonce";
         let target = [0xffu8; 32];
         let commitments = ZkPublicCommitments {
-            h_a: [0x11; 32],
-            h_b: [0x22; 32],
             h_a_chunk: [0x33; 32],
             h_b_chunk: [0x44; 32],
         };
@@ -2737,7 +2709,10 @@ mod tests {
             verify_ai_pow_consensus_artifact(
                 block_commitment, nonce, &params, &target, found_idx, &bad,
             ),
-            Err(ConsensusVerifyError::PlainZkCommitmentMismatch("h_a"))
+            Err(ConsensusVerifyError::Zk(
+                BridgeError::PublicInputMismatch("COMMITMENT_HASH")
+                    | BridgeError::PublicInputMismatch("HASH_A")
+            ))
         ));
     }
 

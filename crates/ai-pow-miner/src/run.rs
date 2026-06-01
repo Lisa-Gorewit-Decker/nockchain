@@ -795,8 +795,6 @@ mod tests {
                     difficulty_bits: 0,
                 };
                 let commitments = ZkPublicCommitments {
-                    h_a: [10; 32],
-                    h_b: [11; 32],
                     h_a_chunk: [12; 32],
                     h_b_chunk: [13; 32],
                 };

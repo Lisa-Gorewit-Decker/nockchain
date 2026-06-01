@@ -3,8 +3,10 @@
 //! For each opened tile the verifier:
 //!   1. Range-checks the supplied row/column strips of `A` and `B`.
 //!   2. Recomputes each row/column leaf via `a_row_leaf_hash` /
-//!      `b_col_leaf_hash` and confirms its Merkle path recovers the
-//!      committed `h_a` / `h_b` legacy opening roots.
+//!      `b_col_leaf_hash` and confirms its Merkle path recovers the plain
+//!      proof's diagnostic `h_a` / `h_b` opening roots. These roots are not
+//!      production recursive commitments and are not used for nonce/noise
+//!      derivation.
 //!   3. Reconstructs `A' = A + E` and `B' = B + F` rows / columns from the
 //!      supplied strips and the re-derived noise factors.
 //!   4. Runs the iterative tile loop to recompute `M_{i,j}` (Pearl §4.5).

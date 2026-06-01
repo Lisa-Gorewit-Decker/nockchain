@@ -6,11 +6,14 @@
 //! The miner supplies the input matrices `A` and `B`. Each nonce attempt
 //! commits to them via a Pearl §4.3 Alg. 2-shaped chain:
 //!  1. `κ = derive_key("kappa", block_state(block, nonce) ‖ params_tag)`
-//!  2. `h_a` / `h_b` are legacy row/column roots for spot-check openings.
-//!  3. `h_a_chunk` / `h_b_chunk` are nonce-keyed matrix commitments bound by
+//!  2. `h_a_chunk` / `h_b_chunk` are nonce-keyed matrix commitments bound by
 //!     the recursive ZK proof as `HASH_A` / `HASH_B`.
-//!  4. `s_B = derive_key("s_b", κ ‖ h_b_chunk)`
-//!  5. `s_A = derive_key("s_a", s_B ‖ h_a_chunk)`
+//!  3. `s_B = derive_key("s_b", κ ‖ h_b_chunk)`
+//!  4. `s_A = derive_key("s_a", s_B ‖ h_a_chunk)`
+//!
+//! Plain `MatmulProof` diagnostics still compute `h_a` / `h_b` for their
+//! own row/column spot openings, but those roots are not production recursive
+//! commitments and are not part of the nonce/noise seed surface.
 //!
 //! The nonce is part of the per-attempt `sigma` before `κ`, `H_A`, `H_B`,
 //! `s_A`, `s_B`, low-rank noise, and all tile states are computed. Minimal
@@ -471,8 +474,9 @@ fn mine_inner(
         h_b: ctx.h_b,
         // Canonical seeds are derived from the nonce-keyed chunk commitments
         // that the recursive ZK proof binds as HASH_A/HASH_B. The plain
-        // verifier still authenticates row/column roots only through spot
-        // openings, so this legacy artifact remains diagnostic, not consensus.
+        // verifier still authenticates row/column roots only inside the plain
+        // proof's spot openings, so this legacy artifact remains diagnostic,
+        // not consensus.
         h_a_chunk: ctx.h_a_chunk,
         h_b_chunk: ctx.h_b_chunk,
         found: found_opening,

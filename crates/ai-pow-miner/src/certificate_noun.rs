@@ -209,8 +209,8 @@ pub fn ai_pow_recursive_certificate_from_node(
 /// [version params found-idx trace-height commitments public-inputs certificate]
 ///
 /// `commitments` serializes only the production verifier inputs
-/// `[h-a-chunk h-b-chunk]`. Legacy `h_a` / `h_b` row/column roots remain in
-/// Rust diagnostic structures but are not part of the canonical noun.
+/// `[h-a-chunk h-b-chunk]`. Row/column opening roots are not part of the
+/// canonical noun.
 /// ```
 pub fn build_ai_pow_certificate_noun<C: Serialize>(
     zk_params: &ZkParams,
@@ -813,8 +813,6 @@ fn decode_commitments(
 ) -> Result<ZkPublicCommitments, CertificateNounError> {
     let fields = tuple2(noun, space, "ai-pow-commitments")?;
     Ok(ZkPublicCommitments {
-        h_a: [0u8; 32],
-        h_b: [0u8; 32],
         h_a_chunk: expect_fixed_bytes(fields[0], space, "commitments.h-a-chunk", limits)?,
         h_b_chunk: expect_fixed_bytes(fields[1], space, "commitments.h-b-chunk", limits)?,
     })
@@ -2504,8 +2502,6 @@ mod tests {
 
     fn sample_commitments() -> ZkPublicCommitments {
         ZkPublicCommitments {
-            h_a: [0x10; 32],
-            h_b: [0x20; 32],
             h_a_chunk: [0x30; 32],
             h_b_chunk: [0x40; 32],
         }
@@ -2513,8 +2509,6 @@ mod tests {
 
     fn noun_commitments(commitments: ZkPublicCommitments) -> ZkPublicCommitments {
         ZkPublicCommitments {
-            h_a: [0u8; 32],
-            h_b: [0u8; 32],
             h_a_chunk: commitments.h_a_chunk,
             h_b_chunk: commitments.h_b_chunk,
         }
@@ -2551,8 +2545,6 @@ mod tests {
     ) {
         params.validate_prod_envelope().unwrap();
         let commitments = ZkPublicCommitments {
-            h_a: [0x11; 32],
-            h_b: [0x22; 32],
             h_a_chunk: [0x33; 32],
             h_b_chunk: [0x44; 32],
         };
