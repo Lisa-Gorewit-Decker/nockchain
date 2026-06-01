@@ -162,6 +162,10 @@ fn ai_pow_consensus_wire_is_structured_but_fail_closed_without_verifier() {
             && AI_POW_ZK_BRIDGE_RS.contains("FullMatmulProofUnavailable")
             && AI_POW_ZK_BRIDGE_RS.contains("canonical_noise_seeds_from_matrix_commitments")
             && AI_POW_MINER_CERT_NOUN_RS.contains("CertificateNounLimits")
+            && AI_POW_MINER_CERT_NOUN_RS.contains("[h-a-chunk h-b-chunk]")
+            && AI_POW_MINER_CERT_NOUN_RS.contains("tuple2(noun, space, \"ai-pow-commitments\")")
+            && !AI_POW_MINER_CERT_NOUN_RS.contains("\"commitments.h-a\"")
+            && !AI_POW_MINER_CERT_NOUN_RS.contains("\"commitments.h-b\"")
             && AI_POW_MINER_CERT_NOUN_RS
                 .contains("certificate_noun_decoder_rejects_oversized_packed_atom")
             && AI_POW_MINER_CERT_NOUN_RS

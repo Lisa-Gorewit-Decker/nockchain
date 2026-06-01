@@ -6,10 +6,11 @@
 //! The miner supplies the input matrices `A` and `B`. Each nonce attempt
 //! commits to them via a Pearl §4.3 Alg. 2-shaped chain:
 //!  1. `κ = derive_key("kappa", block_state(block, nonce) ‖ params_tag)`
-//!  2. `H_A = MerkleRoot({ row_leaf_hash(A_i, κ) }_i)`
-//!  3. `H_B = MerkleRoot({ col_leaf_hash(B_j, κ) }_j)`
-//!  4. `s_B = derive_key("s_b", κ ‖ H_B)`
-//!  5. `s_A = derive_key("s_a", s_B ‖ H_A)`
+//!  2. `h_a` / `h_b` are legacy row/column roots for spot-check openings.
+//!  3. `h_a_chunk` / `h_b_chunk` are nonce-keyed matrix commitments bound by
+//!     the recursive ZK proof as `HASH_A` / `HASH_B`.
+//!  4. `s_B = derive_key("s_b", κ ‖ h_b_chunk)`
+//!  5. `s_A = derive_key("s_a", s_B ‖ h_a_chunk)`
 //!
 //! The nonce is part of the per-attempt `sigma` before `κ`, `H_A`, `H_B`,
 //! `s_A`, `s_B`, low-rank noise, and all tile states are computed. Minimal

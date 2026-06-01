@@ -104,9 +104,7 @@ large homogeneous vectors without traversing a cell per scalar.
 ```hoon
 ::  Matrix commitments needed to derive/check the ZK statement.
 +$  ai-pow-commitments
-  $:  h-a=ai-blake
-      h-b=ai-blake
-      h-a-chunk=ai-blake
+  $:  h-a-chunk=ai-blake
       h-b-chunk=ai-blake
   ==
 ::

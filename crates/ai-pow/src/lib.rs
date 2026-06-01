@@ -5,10 +5,12 @@
 //!
 //! 1. **Commitments** (Pearl §4.3, Alg. 2): `κ` derived from the
 //!    nonce-bound attempt state `(block_commitment, nonce, params_tag)`;
-//!    `H_A` and `H_B` are BLAKE3-Merkle roots over rows of `A` and columns
-//!    of `B` keyed by `κ`; seeds
-//!    `s_B = derive_key("s_b", κ ‖ H_B)` and `s_A = derive_key("s_a",
-//!    s_B ‖ H_A)` bind the noise to the chosen matrices.
+//!    `h_a` and `h_b` are legacy row/column Merkle roots for plain
+//!    spot-opening diagnostics; `h_a_chunk` and `h_b_chunk` are nonce-keyed
+//!    matrix commitments bound by the recursive ZK proof as `HASH_A` /
+//!    `HASH_B`. Seeds `s_B = derive_key("s_b", κ ‖ h_b_chunk)` and
+//!    `s_A = derive_key("s_a", s_B ‖ h_a_chunk)` bind the noise to the
+//!    proof-bound matrices.
 //! 2. **Low-rank noise** (Pearl §4.4, Alg. 3): `E = E_L · E_R` and
 //!    `F = F_L · F_R` of rank `r`; `E_L, F_R` are int6, `E_R, F_L` are
 //!    choice matrices (one `+1` and one `-1` per col/row).

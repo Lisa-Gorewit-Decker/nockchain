@@ -207,6 +207,10 @@ pub fn ai_pow_recursive_certificate_from_node(
 ///
 /// ```hoon
 /// [version params found-idx trace-height commitments public-inputs certificate]
+///
+/// `commitments` serializes only the production verifier inputs
+/// `[h-a-chunk h-b-chunk]`. Legacy `h_a` / `h_b` row/column roots remain in
+/// Rust diagnostic structures but are not part of the canonical noun.
 /// ```
 pub fn build_ai_pow_certificate_noun<C: Serialize>(
     zk_params: &ZkParams,
@@ -807,12 +811,12 @@ fn decode_commitments(
     space: &NounSpace,
     limits: CertificateNounLimits,
 ) -> Result<ZkPublicCommitments, CertificateNounError> {
-    let fields = tuple4(noun, space, "ai-pow-commitments")?;
+    let fields = tuple2(noun, space, "ai-pow-commitments")?;
     Ok(ZkPublicCommitments {
-        h_a: expect_fixed_bytes(fields[0], space, "commitments.h-a", limits)?,
-        h_b: expect_fixed_bytes(fields[1], space, "commitments.h-b", limits)?,
-        h_a_chunk: expect_fixed_bytes(fields[2], space, "commitments.h-a-chunk", limits)?,
-        h_b_chunk: expect_fixed_bytes(fields[3], space, "commitments.h-b-chunk", limits)?,
+        h_a: [0u8; 32],
+        h_b: [0u8; 32],
+        h_a_chunk: expect_fixed_bytes(fields[0], space, "commitments.h-a-chunk", limits)?,
+        h_b_chunk: expect_fixed_bytes(fields[1], space, "commitments.h-b-chunk", limits)?,
     })
 }
 
@@ -1446,11 +1450,9 @@ fn encode_commitments<A: NounAllocator>(
     allocator: &mut A,
     commitments: &ZkPublicCommitments,
 ) -> Noun {
-    let h_a = bytes_to_atom(allocator, &commitments.h_a);
-    let h_b = bytes_to_atom(allocator, &commitments.h_b);
     let h_a_chunk = bytes_to_atom(allocator, &commitments.h_a_chunk);
     let h_b_chunk = bytes_to_atom(allocator, &commitments.h_b_chunk);
-    T(allocator, &[h_a, h_b, h_a_chunk, h_b_chunk])
+    T(allocator, &[h_a_chunk, h_b_chunk])
 }
 
 fn encode_public_inputs<A: NounAllocator>(allocator: &mut A, pis: &CompositePublicInputs) -> Noun {
@@ -2509,6 +2511,15 @@ mod tests {
         }
     }
 
+    fn noun_commitments(commitments: ZkPublicCommitments) -> ZkPublicCommitments {
+        ZkPublicCommitments {
+            h_a: [0u8; 32],
+            h_b: [0u8; 32],
+            h_a_chunk: commitments.h_a_chunk,
+            h_b_chunk: commitments.h_b_chunk,
+        }
+    }
+
     fn words_le(b: &[u8; 32]) -> [u32; 8] {
         core::array::from_fn(|i| {
             u32::from_le_bytes([b[i * 4], b[i * 4 + 1], b[i * 4 + 2], b[i * 4 + 3]])
@@ -2749,6 +2760,29 @@ mod tests {
             cell.head().as_atom().unwrap().as_u64().unwrap(),
             AI_POW_CERT_VERSION
         );
+        let fields = tuple7(root, &space, "ai-pow-certificate").expect("certificate tuple");
+        let commitment_fields =
+            tuple2(fields[4], &space, "ai-pow-commitments").expect("commitment pair");
+        assert_eq!(
+            expect_fixed_bytes::<32>(
+                commitment_fields[0],
+                &space,
+                "h-a-chunk",
+                CertificateNounLimits::default()
+            )
+            .expect("h-a-chunk atom"),
+            commitments.h_a_chunk
+        );
+        assert_eq!(
+            expect_fixed_bytes::<32>(
+                commitment_fields[1],
+                &space,
+                "h-b-chunk",
+                CertificateNounLimits::default()
+            )
+            .expect("h-b-chunk atom"),
+            commitments.h_b_chunk
+        );
     }
 
     #[test]
@@ -2777,7 +2811,7 @@ mod tests {
         assert_eq!(decoded.zk_params, params);
         assert_eq!(decoded.found_idx, 9);
         assert_eq!(decoded.trace_height, 16_384);
-        assert_eq!(decoded.commitments, commitments);
+        assert_eq!(decoded.commitments, noun_commitments(commitments));
         assert_eq!(decoded.public_inputs, pis);
         assert_eq!(decoded.certificate, cert);
     }
@@ -2996,7 +3030,10 @@ mod tests {
             .expect("decode ai-pow artifact");
         assert_eq!(decoded.nonce, nonce);
         assert_eq!(decoded.certificate.found_idx, found_idx);
-        assert_eq!(decoded.certificate.commitments, commitments);
+        assert_eq!(
+            decoded.certificate.commitments,
+            noun_commitments(commitments)
+        );
         assert_eq!(decoded.certificate.public_inputs, pis);
         assert_eq!(decoded.certificate.certificate, certificate);
 
@@ -3338,7 +3375,7 @@ mod tests {
         assert_eq!(decoded.found_idx, 0);
         assert_eq!(decoded.trace_height, run.composite_trace_height);
         assert_eq!(decoded.public_inputs, run.public_inputs);
-        assert_eq!(decoded.commitments, commitments);
+        assert_eq!(decoded.commitments, noun_commitments(commitments));
         assert!(
             !matches!(decoded.certificate, AiProofNode::Unit),
             "real recursive certificate must not collapse to a unit proof-node"

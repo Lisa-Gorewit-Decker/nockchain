@@ -222,8 +222,8 @@ Pearl's intended derivation is straightforward:
 
 ```text
 kappa = BLAKE3(sigma || mu)
-H_A   = BLAKE3(flatten(A), key=kappa)
-H_B   = BLAKE3(flatten(B^T), key=kappa)
+H_A   = BLAKE3(flatten(A), key=kappa)       // Nockchain h_a_chunk / HASH_A
+H_B   = BLAKE3(flatten(B^T), key=kappa)     // Nockchain h_b_chunk / HASH_B
 s_B   = BLAKE3(kappa || H_B)
 s_A   = BLAKE3(s_B || H_A)
 E     = NoiseGeneration(key=s_A)
@@ -250,8 +250,11 @@ kappa         = BLAKE3(sigma_attempt || params_tag)
 
 In other words, if the nonce is the miner-controlled attempt variable, it must
 be part of Pearl's `sigma` before the matrix commitments and noise seeds are
-derived. Changing the nonce then changes `kappa`, `H_A`, `H_B`, `s_A`, `s_B`,
-the low-rank noise matrices, and the tile states `M`.
+derived. In current Nockchain code, the canonical seed inputs are the
+proof-bound chunk commitments `h_a_chunk` / `h_b_chunk`, while `h_a` / `h_b`
+remain legacy row/column spot-opening roots. Changing the nonce then changes
+`kappa`, all keyed matrix commitments, `s_A`, `s_B`, the low-rank noise
+matrices, and the tile states `M`.
 
 Pearl does not describe a construction where miners compute nonce-independent
 noise once and then obtain many independent attempts by changing only a final
@@ -323,8 +326,9 @@ The production accounting rule is stricter than a cache-friendly per-tile scan:
 - one nonce-bound full matmul attempt gets exactly one eligible jackpot tile;
 - the eligible tile is derived by the verifier from
   `block_state(block_commitment, nonce)`, `params_tag`, and `s_A`;
-- because `s_A = H(noise_seed_b(kappa, H_B), H_A)`, the tile cannot be known
-  until the nonce-bound matrix commitments are fixed;
+- because `s_A = H(noise_seed_b(kappa, h_b_chunk), h_a_chunk)`, the tile
+  cannot be known until the nonce-bound, proof-bound matrix commitments are
+  fixed;
 - a miner must not scan all tile hashes from one full matmul and submit the
   best or first passing tile;
 - a tile result `M[i,j]` must not be re-keyed or rehashed across many nonces;
@@ -356,10 +360,12 @@ Recommended production design:
 tag           = params_tag(params)
 attempt_state = block_state(block_commitment, nonce)
 kappa         = commitment_key(attempt_state, tag)
-H_A           = MerkleRoot(row_leaf_hash(A_i, kappa))
-H_B           = MerkleRoot(col_leaf_hash(B_j, kappa))
-s_B           = noise_seed_b(kappa, H_B)
-s_A           = noise_seed_a(s_B, H_A)
+h_a           = MerkleRoot(row_leaf_hash(A_i, kappa))      // plain openings
+h_b           = MerkleRoot(col_leaf_hash(B_j, kappa))      // plain openings
+h_a_chunk     = matrix_commitment(A_row_major, kappa)      // ZK HASH_A
+h_b_chunk     = matrix_commitment(B_col_major, kappa)      // ZK HASH_B
+s_B           = noise_seed_b(kappa, h_b_chunk)
+s_A           = noise_seed_a(s_B, h_a_chunk)
 noise         = BlockNoise::expand(s_A, s_B, params)
 M[i,j]        = compute_tile(A + E(s_A), B + F(s_B), i, j)
 pow_key       = pow_key_for_nonce(s_A, nonce)
@@ -589,8 +595,9 @@ pow_key_for_nonce(s_a, nonce) -> [u8; 32]
 ```
 
 2. In `verify_at_target`, derive `attempt_state = block_state(block_commitment,
-   nonce)`, then derive `kappa`, `H_A`, `H_B`, `s_B`, and `s_A` under that
-   attempt state.
+   nonce)`, then derive `kappa`, authenticate legacy `h_a` / `h_b` spot
+   openings, and derive `s_B` / `s_A` from the proof's canonical
+   `h_b_chunk` / `h_a_chunk` commitments under that attempt state.
 3. Recompute opened tile values with `VerifierNoise::new(s_A, s_B, params)`.
 4. Hash the recomputed tile state with `pow_key_for_nonce(s_A, nonce)`.
 5. Reject old proofs by deriving verifier noise from the nonce-bound attempt
@@ -603,8 +610,8 @@ Status: implemented for the Rust ZK bridge and recursive production
 certificate; Hoon consensus still needs the verifier jet/wiring.
 
 1. In `prove_ai_pow_tiled_full`, build the plain/ZK context from
-   `(block_commitment, nonce)` and use nonce-bound `kappa`, `H_A`, `H_B`,
-   `s_A`, and `s_B` for:
+   `(block_commitment, nonce)` and use nonce-bound `kappa`,
+   `h_a_chunk` / `h_b_chunk`, `s_A`, and `s_B` for:
    - noise strips passed into `place_matrix_strip_opening`;
    - `BlockNoise::expand`;
    - `Matrices::build`;
