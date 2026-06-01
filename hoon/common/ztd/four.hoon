@@ -25,9 +25,11 @@
 ::
 ::  proof-version: discriminates proof shapes.
 ::    %0/%1/%2: ZK STARK proof variants (ZK PoW puzzle).
-::    %3: AI PoW puzzle proof. Body shape is placeholder until the
-::        AI-verifier task lands the real shape. version-to-puzzle-type
-::        in consensus.hoon maps %0/%1/%2 -> %dumb-zkpow, %3 -> %ai-pow.
+::    %3: AI PoW puzzle marker. Blocks no longer persist the AI
+::        recursive certificate through this old proof-stream body;
+::        tx-engine-1 defines the structured `pow-artifact` /
+::        `%ai-pow` noun. version-to-puzzle-type in consensus.hoon
+::        still maps %0/%1/%2 -> %dumb-zkpow, %3 -> %ai-pow.
 +$  proof-version  ?(%3 %2 %1 %0)
 +$  proof
   $%  $:  version=%2
@@ -48,12 +50,10 @@
           read-index=@
       ==
     ::
-      ::  %3: AI PoW arm. Structurally identical to %0/%1/%2 so the
-      ::  proof-stream door (|_ proof, ztd/five.hoon) and the ZK
-      ::  helpers (get-pow, hash-proof) can dispatch without case
-      ::  analysis on every field access. The AI-proof body is carried
-      ::  inside `objects` as one or more proof-data variants
-      ::  (placeholder shape; real arm lands with the AI verifier).
+      ::  %3 is retained only as the legacy proof-version
+      ::  discriminator. The canonical AI block artifact is
+      ::  `[%ai-pow nonce=ai-ncmn cert=ai-pow-certificate]` via
+      ::  tx-engine-1 / dumbnet types, not this proof-stream arm.
       ::  ZK helpers crash on %3 via explicit ?= guards.
       $:  version=%3
           objects=proof-objects
@@ -71,9 +71,9 @@
   ~/  %get-pow
   |=  p=proof
   ^-  proof
-  ::  %3 (AI) has no proof-objects; it's an opaque atom. The ZK pow
-  ::  extraction helper is meaningless for AI; callers that reach here
-  ::  for a %3 proof are calling the wrong helper.
+  ::  %3 (AI) is not a ZK proof-stream artifact. The ZK pow extraction
+  ::  helper is meaningless for AI; callers that reach here for a %3
+  ::  proof are calling the wrong helper.
   ?:  ?=(%3 -.p)  ~|(%get-pow-not-defined-for-v3 !!)
   p(objects (scag pow-items objects.p))
 ::

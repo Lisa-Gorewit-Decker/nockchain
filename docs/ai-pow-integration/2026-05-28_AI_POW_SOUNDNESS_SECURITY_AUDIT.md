@@ -725,15 +725,43 @@ Fix:
 ### WIRE-01: `%ai-pow` consensus wire is a placeholder and reject-all
 
 Severity: Medium integration blocker
-Status: Confirmed
+Status: Wire shape defined; consensus verifier remains fail-closed
 
-`hoon/apps/dumbnet/lib/types.hoon` defines `%ai-pow placeholder=@`, and `do-pow` rejects all `%ai-pow` submissions after activation. This is safe today but must not be confused with a complete integration.
+Historical issue: `hoon/apps/dumbnet/lib/types.hoon` originally defined `%ai-pow`
+as a placeholder atom, and `do-pow` rejected all `%ai-pow` submissions after
+activation. The reject-all behavior was safe, but the placeholder type made the
+intended block artifact ambiguous.
+
+Current behavior:
+
+- Done: the Hoon wire type is now
+  `[%ai-pow nonce=ai-ncmn cert=ai-pow-certificate]`.
+- Done: `ai-pow-certificate` is a structured recursive certificate noun using
+  custom compact auras for BLAKE3 digests, NCMN nonce bytes, and degree-2 field
+  elements.
+- Done: the Rust miner emits `[%command %pow %ai-pow nonce cert]` only after it
+  has a canonical recursive certificate builder.
+- Done: `do-pow` still rejects `%ai-pow` before activation and still rejects it
+  after activation with `do-pow: %ai-pow verifier not wired; rejected`.
+- Done: `do-mine` still emits only `%mine-zk`; it refuses to emit `%mine-ai`
+  while `do-pow` must reject the result.
+
+Remaining blocker:
+
+- Wire the Hoon/Rust verifier jet so consensus can bounded-decode the jammed
+  `%ai-pow` artifact, check the NCMN anchor against the trusted candidate block,
+  derive the statement from trusted block data, and call the full recursive
+  certificate verifier.
+- Only after that verifier exists, add a post-activation integration test that
+  accepts one honest `%ai-pow` artifact and rejects tampered nonce, params,
+  commitments, public inputs, recursive proof, target, and candidate-block
+  anchor.
 
 Fix:
 
-- Define the final wire artifact only after SND-01 through SND-05 are fixed.
-- Keep activation defaults safe until a real verifier is wired.
-- Add an integration test that post-activation `%ai-pow` accepts one honest proof and rejects each tampered field.
+- Keep activation defaults safe until the real verifier is wired.
+- Keep `%mine-ai` disabled until `%ai-pow` can be accepted by consensus.
+- Add the honest/tampered post-activation integration suite with the verifier.
 
 ### CRYPTO-01: STARK security target and comments need independent sign-off
 
