@@ -8,9 +8,10 @@
 //! * A synchronous mining entrypoint that loops over `extranonce`
 //!   values, invokes [`ai_pow::prover::mine_with_context_at_target`]
 //!   for each, and returns the first solution that clears the
-//!   chain-supplied 32-byte difficulty target. **`mining::run` lives
-//!   in the [`mining`] module (added in a later commit) — this
-//!   scaffold stage exposes only the types + nonce helpers.**
+//!   chain-supplied 32-byte difficulty target. [`mining::run`] builds
+//!   a fresh nonce-bound attempt context for every extranonce; hoisting
+//!   keyed commitments, noise, matmul states, jackpot preimages, or
+//!   witness inputs out of that loop would reopen cheap nonce grinding.
 //! * A NockApp-compatible driver (under the `nockapp` feature) so
 //!   the node can register mining alongside its other IO drivers.
 //!

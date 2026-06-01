@@ -9,6 +9,7 @@ const TX_ENGINE_1_HOON: &str = include_str!("../../../hoon/common/tx-engine-1.ho
 const CONSENSUS_HOON: &str = include_str!("../../../hoon/apps/dumbnet/lib/consensus.hoon");
 const INNER_HOON: &str = include_str!("../../../hoon/apps/dumbnet/inner.hoon");
 const AI_POW_MINER_LIB_RS: &str = include_str!("../../ai-pow-miner/src/lib.rs");
+const AI_POW_MINER_MINING_RS: &str = include_str!("../../ai-pow-miner/src/mining.rs");
 const AI_POW_MINER_CERT_NOUN_RS: &str = include_str!("../../ai-pow-miner/src/certificate_noun.rs");
 const AI_POW_MINER_RUN_RS: &str = include_str!("../../ai-pow-miner/src/run.rs");
 const AI_POW_MINER_BIN_RS: &str = include_str!("../../ai-pow-miner/src/bin/ai_pow_mine.rs");
@@ -224,6 +225,43 @@ fn ai_pow_consensus_wire_is_structured_but_fail_closed_without_verifier() {
         "BlockContext may be public as an opaque nonce-bound attempt handle, \
          but external callers must not be able to mutate nonce-bound work \
          fields directly"
+    );
+    let miner_run_inner = AI_POW_MINER_MINING_RS
+        .split("fn run_inner")
+        .nth(1)
+        .and_then(|tail| tail.split("#[cfg(test)]").next())
+        .expect("miner run_inner must be present");
+    let before_miner_loop = miner_run_inner
+        .split("loop {")
+        .next()
+        .expect("miner run_inner must have pre-loop body");
+    let miner_loop = miner_run_inner
+        .split("loop {")
+        .nth(1)
+        .expect("miner run_inner must loop over extranonces");
+    let nonce_build = miner_loop
+        .find("let nonce = build_ncmn_nonce")
+        .expect("miner loop must build an NCMN nonce inside the loop");
+    let context_build = miner_loop
+        .find("let ctx = BlockContext::build")
+        .expect("miner loop must build a fresh BlockContext inside the loop");
+    let target_check = miner_loop
+        .find("mine_with_context_at_target")
+        .expect("miner loop must target-check the fresh context");
+    let attempt_count = miner_loop
+        .find("stats.matmul_attempts_tried += 1")
+        .expect("miner loop must count rebuilt matmul attempts");
+    assert!(
+        !before_miner_loop.contains("BlockContext::build")
+            && AI_POW_MINER_MINING_RS.contains("Each extranonce builds a fresh nonce-bound")
+            && AI_POW_MINER_LIB_RS
+                .contains("fresh nonce-bound attempt context for every extranonce")
+            && nonce_build < context_build
+            && context_build < target_check
+            && target_check < attempt_count,
+        "production mining must build one fresh nonce-bound BlockContext per \
+         NCMN extranonce before the target check, and must not hoist \
+         transcript-derived matmul work out of the extranonce loop"
     );
     let target_check = AI_POW_MINER_BIN_RS
         .find("verify_ncmn_at_target")
