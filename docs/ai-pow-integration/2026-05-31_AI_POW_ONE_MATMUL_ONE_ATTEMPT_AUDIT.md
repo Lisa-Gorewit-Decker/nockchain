@@ -986,8 +986,9 @@ docs for those claims and rejects the old plain-proof-wrapping phrases.
 The same top-level docs now surface the minimal-reuse security invariant:
 changing the NCMN nonce must force fresh transcript-derived commitments, noise,
 noised matrix strips, tile states, jackpot preimages, and proof witness data.
-Any cache-friendly reuse of those values across nonce attempts is treated as
-consensus attack surface, not as a production optimization target.
+Cache-friendly attempt reuse is a vulnerability, not a desired trait: any reuse
+of those values across nonce attempts is treated as consensus attack surface,
+not as a production optimization target.
 
 ## Latest Re-Audit: Miner Submission Preflight
 

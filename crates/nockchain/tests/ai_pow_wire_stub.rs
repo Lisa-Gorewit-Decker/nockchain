@@ -80,20 +80,20 @@ fn ai_pow_consensus_wire_is_structured_but_fail_closed_without_verifier() {
                 .contains("raw Layer-0 proof is not the production block artifact")
             && AI_POW_ZK_README_MD
                 .contains("multi-tile selected-tile statements intentionally fail")
-            && AI_POW_ZK_README_MD.contains("Cache-friendly")
-            && AI_POW_ZK_README_MD
-                .contains("reuse across nonce attempts is a consensus vulnerability")
+            && AI_POW_ZK_README_MD.contains("attempt reuse is a vulnerability")
+            && AI_POW_ZK_README_MD.contains("not a desired trait or optimization target")
             && AI_POW_ZK_LIB_RS.contains("Nockchain's canonical recursive AI-PoW certificate")
             && AI_POW_ZK_LIB_RS.contains("Full-matmul recursive statement")
             && AI_POW_ZK_LIB_RS
                 .contains("Production AI-PoW is intentionally minimal-reuse across nonce attempts")
-            && AI_POW_ZK_LIB_RS.contains("not an optimization target")
+            && AI_POW_ZK_LIB_RS.contains("desired trait or optimization target")
             && !AI_POW_ZK_README_MD.contains("wrap the multi-MB plain proof")
             && !AI_POW_ZK_README_MD.contains("from a verified plain proof")
             && !AI_POW_ZK_LIB_RS.contains("the `ai-pow` plain proof"),
         "ai-pow-zk top-level docs must present the recursive certificate as \
-         canonical and must not advertise plain-proof wrapping as the block \
-         certificate path"
+         canonical, must define cache-friendly attempt reuse as a consensus \
+         vulnerability rather than a goal, and must not advertise plain-proof \
+         wrapping as the block certificate path"
     );
     assert!(
         AI_POW_MINER_RUN_RS.contains("build_ai_pow_certificate_poke")
