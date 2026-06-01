@@ -31,6 +31,10 @@
 //!   it as a PI would always read zero on most traces. Add when a
 //!   downstream protocol needs the final hash output.
 
+use p3_field::integers::QuotientMap;
+use p3_field::PrimeField64;
+use serde::{Deserialize, Serialize};
+
 use crate::composite_layout::{
     CUMSUM_TILE_START, CV_IN_LEN, CV_IN_START, CV_OUT_LEN, CV_OUT_START, IS_HASH_A, IS_HASH_B,
     IS_HASH_JACKPOT, IS_USE_COMMITMENT_HASH, IS_USE_JOB_KEY, JACKPOT_MSG_START, JACKPOT_SIZE,
@@ -38,10 +42,6 @@ use crate::composite_layout::{
 };
 use crate::composite_trace::CompositeTrace;
 use crate::Val;
-
-use p3_field::integers::QuotientMap;
-use p3_field::PrimeField64;
-use serde::{Deserialize, Serialize};
 
 /// Number of field elements in the public-input vector.
 ///
@@ -191,8 +191,7 @@ impl CompositePublicInputs {
         let hash_b = read_cv_at_selector(matrix, n, IS_HASH_B, CV_OUT_START);
         let hash_jackpot = read_cv_at_selector(matrix, n, IS_HASH_JACKPOT, CV_OUT_START);
         let job_key = read_cv_at_selector(matrix, n, IS_USE_JOB_KEY, CV_IN_START);
-        let commitment_hash =
-            read_cv_at_selector(matrix, n, IS_USE_COMMITMENT_HASH, CV_IN_START);
+        let commitment_hash = read_cv_at_selector(matrix, n, IS_USE_COMMITMENT_HASH, CV_IN_START);
 
         Self {
             cumsum,
@@ -318,10 +317,7 @@ mod tests {
         let v = pis.to_vec();
         use p3_field::PrimeField64;
         // -1 in Goldilocks = p - 1.
-        assert_eq!(
-            v[0].as_canonical_u64(),
-            0xFFFF_FFFF_0000_0001u64 - 1
-        );
+        assert_eq!(v[0].as_canonical_u64(), 0xFFFF_FFFF_0000_0001u64 - 1);
         // Round-trip via goldilocks_to_i32.
         assert_eq!(goldilocks_to_i32(v[0].as_canonical_u64()), -1);
         assert_eq!(goldilocks_to_i32(v[1].as_canonical_u64()), -1000);
@@ -347,10 +343,14 @@ mod tests {
     #[test]
     fn hash_a_b_round_trip_via_to_vec() {
         let pis = CompositePublicInputs {
-            hash_a: [0x01020304, 0x05060708, 0x090A0B0C, 0x0D0E0F10,
-                     0xDEADBEEF, 0xFEEDFACE, 0xCAFEBABE, 0x12345678],
-            hash_b: [0x11111111, 0x22222222, 0x33333333, 0x44444444,
-                     0x55555555, 0x66666666, 0x77777777, 0x88888888],
+            hash_a: [
+                0x01020304, 0x05060708, 0x090A0B0C, 0x0D0E0F10, 0xDEADBEEF, 0xFEEDFACE, 0xCAFEBABE,
+                0x12345678,
+            ],
+            hash_b: [
+                0x11111111, 0x22222222, 0x33333333, 0x44444444, 0x55555555, 0x66666666, 0x77777777,
+                0x88888888,
+            ],
             ..CompositePublicInputs::zero()
         };
         let v = pis.to_vec();

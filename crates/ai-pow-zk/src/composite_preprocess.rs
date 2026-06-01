@@ -124,12 +124,7 @@ pub fn fill_preprocessed_row(row_idx: usize, desc: &RowDescriptor, row: &mut [Va
     // CONTROL_PREP: pack selectors + mat_id + (HIGH-2.2 §6/§6(b)-G2)
     // the FoldChip schedule (is_fold, slot, stripe).
     let control_prep = ControlChip::pack_control_prep_full(
-        &desc.selectors,
-        desc.mat_id,
-        desc.is_fold,
-        desc.fold_slot,
-        desc.fold_stripe,
-        desc.msg_pair,
+        &desc.selectors, desc.mat_id, desc.is_fold, desc.fold_slot, desc.fold_stripe, desc.msg_pair,
     );
     row[CONTROL_PREP] = <Val as QuotientMap<u64>>::from_int(control_prep);
 
@@ -160,11 +155,7 @@ pub fn build_preprocessed_columns(program: &[RowDescriptor], total_rows: usize) 
             RowDescriptor::padding()
         };
         let control_prep = ControlChip::pack_control_prep_full(
-            &desc.selectors,
-            desc.mat_id,
-            desc.is_fold,
-            desc.fold_slot,
-            desc.fold_stripe,
+            &desc.selectors, desc.mat_id, desc.is_fold, desc.fold_slot, desc.fold_stripe,
             desc.msg_pair,
         );
         // cx.2-pcols: PROGRAM_COLS order = [CONTROL_PREP,
@@ -178,7 +169,12 @@ pub fn build_preprocessed_columns(program: &[RowDescriptor], total_rows: usize) 
         out.push([
             <Val as QuotientMap<u64>>::from_int(control_prep),
             q(desc.noise_packed),
-            q(hi[0]), q(hi[1]), q(hi[2]), q(hi[3]), q(hi[4]), q(hi[5]),
+            q(hi[0]),
+            q(hi[1]),
+            q(hi[2]),
+            q(hi[3]),
+            q(hi[4]),
+            q(hi[5]),
             q(hi[6]),
             <Val as QuotientMap<u64>>::from_int(desc.cv_or_tweak),
             <Val as QuotientMap<u64>>::from_int(desc.ab_id),

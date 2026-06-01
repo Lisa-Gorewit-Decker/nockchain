@@ -201,9 +201,7 @@ impl PrivateNockApp for PrivateNockAppGrpcServer {
         });
 
         let stream = ReceiverStream::new(rx);
-        Ok(Response::new(
-            Box::pin(stream) as Self::WatchEffectsStream
-        ))
+        Ok(Response::new(Box::pin(stream) as Self::WatchEffectsStream))
     }
 
     async fn poke(

@@ -106,8 +106,9 @@ fn b1_0b_commitment_chunk_count_at_real_weight_scale() {
 fn b1_0c_noise_structure_at_real_rank() {
     let p = real_one_tile();
     let nz = BlockNoise::expand(&[7u8; 32], &[9u8; 32], &p);
-    let (m, k, n, r) =
-        (p.m as usize, p.k as usize, p.n as usize, p.noise_rank as usize);
+    let (m, k, n, r) = (
+        p.m as usize, p.k as usize, p.n as usize, p.noise_rank as usize,
+    );
 
     assert_eq!(nz.e_l.len(), m * r);
     assert_eq!(nz.f_r.len(), n * r);
@@ -185,7 +186,10 @@ fn b1_0e_difficulty_target_well_formed_at_real_preset() {
     // target genuinely responds to difficulty.
     let t0_saturates = t0.iter().all(|&x| x == 0xFF);
     assert!(t0_saturates, "b=0 ⇒ target saturates to 2^256-1 (all 0xFF)");
-    let harder = difficulty_target(&MatmulParams { difficulty_bits: 128, ..p });
+    let harder = difficulty_target(&MatmulParams {
+        difficulty_bits: 128,
+        ..p
+    });
     assert_ne!(
         harder, t0,
         "a non-saturating difficulty_bits must change the target \
@@ -240,8 +244,7 @@ fn model_shard1() -> Option<std::path::PathBuf> {
             std::env::var("HOME").unwrap_or_default()
         )
     });
-    let p = std::path::Path::new(&dir)
-        .join("model-00001-of-00002.safetensors");
+    let p = std::path::Path::new(&dir).join("model-00001-of-00002.safetensors");
     p.exists().then_some(p)
 }
 
@@ -321,8 +324,9 @@ fn b1_1b_real_weights_satisfy_pearl_int7_and_b2_lossless() {
     // the byte-equivalence-of-protocol claim; the live forward
     // pass is Phase-D usefulness, already covered).
     let (tok, k, out) = (8usize, MODEL_K, TILE_OUT);
-    let xq: Vec<i8> =
-        (0..tok * k).map(|i| ((i * 31 + 7) % 127 - 63) as i8).collect();
+    let xq: Vec<i8> = (0..tok * k)
+        .map(|i| ((i * 31 + 7) % 127 - 63) as i8)
+        .collect();
     let qg = QuantizedGemm {
         tokens: tok,
         in_dim: k,
@@ -371,8 +375,9 @@ fn b1_1c_real_weight_mineable_unit_end_to_end() {
     };
     let real_b = read_real_gate_proj_tile(&p); // n·k col-major (n=64,k=4096)
     let mp = real_one_tile(); // m=n=64, k=4096, r=64, tile=64 — the real μ
-    let a: Vec<i8> =
-        (0..(mp.m as usize) * MODEL_K).map(|i| ((i * 13 + 5) % 127 - 63) as i8).collect();
+    let a: Vec<i8> = (0..(mp.m as usize) * MODEL_K)
+        .map(|i| ((i * 13 + 5) % 127 - 63) as i8)
+        .collect();
 
     let hdr = b"b1.1c-block-header";
     let ctx = BlockContext::build(hdr, &a, &real_b, &mp)
@@ -384,8 +389,14 @@ fn b1_1c_real_weight_mineable_unit_end_to_end() {
     assert_eq!(ctx.s_a, ctx2.s_a);
     assert_eq!(ctx.s_b, ctx2.s_b);
     assert_eq!(
-        ctx.m_states.iter().map(|s| s.keyed_hash(&ctx.s_a)).collect::<Vec<_>>(),
-        ctx2.m_states.iter().map(|s| s.keyed_hash(&ctx2.s_a)).collect::<Vec<_>>(),
+        ctx.m_states
+            .iter()
+            .map(|s| s.keyed_hash(&ctx.s_a))
+            .collect::<Vec<_>>(),
+        ctx2.m_states
+            .iter()
+            .map(|s| s.keyed_hash(&ctx2.s_a))
+            .collect::<Vec<_>>(),
         "mineable unit must be deterministic on the real weights"
     );
     // The H_B chunk-commitment of the REAL weight bytes equals the
@@ -401,8 +412,9 @@ fn b1_1c_real_weight_mineable_unit_end_to_end() {
     );
     // The digest genuinely depends on the real weights: a
     // synthetic-B run differs (the pipeline is not weight-blind).
-    let synth_b: Vec<i8> =
-        (0..(mp.n as usize) * MODEL_K).map(|i| ((i * 17 + 3) % 127 - 63) as i8).collect();
+    let synth_b: Vec<i8> = (0..(mp.n as usize) * MODEL_K)
+        .map(|i| ((i * 17 + 3) % 127 - 63) as i8)
+        .collect();
     let ctx_s = BlockContext::build(hdr, &a, &synth_b, &mp).unwrap();
     assert_ne!(
         ctx.h_b_chunk, ctx_s.h_b_chunk,
@@ -529,8 +541,9 @@ fn b1_1_gemma_b_real_weights_satisfy_pearl_int7_and_b2_lossless() {
         );
     }
     let (tok, k, out) = (8usize, GEMMA_K, TILE_OUT);
-    let xq: Vec<i8> =
-        (0..tok * k).map(|i| ((i * 29 + 3) % 127 - 63) as i8).collect();
+    let xq: Vec<i8> = (0..tok * k)
+        .map(|i| ((i * 29 + 3) % 127 - 63) as i8)
+        .collect();
     let qg = QuantizedGemm {
         tokens: tok,
         in_dim: k,
@@ -586,8 +599,14 @@ fn b1_1_gemma_c_real_weight_mineable_unit_end_to_end() {
     assert_eq!(ctx.h_b_chunk, ctx2.h_b_chunk);
     assert_eq!(ctx.s_a, ctx2.s_a);
     assert_eq!(
-        ctx.m_states.iter().map(|s| s.keyed_hash(&ctx.s_a)).collect::<Vec<_>>(),
-        ctx2.m_states.iter().map(|s| s.keyed_hash(&ctx2.s_a)).collect::<Vec<_>>(),
+        ctx.m_states
+            .iter()
+            .map(|s| s.keyed_hash(&ctx.s_a))
+            .collect::<Vec<_>>(),
+        ctx2.m_states
+            .iter()
+            .map(|s| s.keyed_hash(&ctx2.s_a))
+            .collect::<Vec<_>>(),
         "mineable unit must be deterministic on the real Gemma weights"
     );
     let kappa = commitment_key(hdr, &params_tag(&mp));
@@ -637,8 +656,7 @@ fn l70b_shard1() -> Option<std::path::PathBuf> {
             std::env::var("HOME").unwrap_or_default()
         )
     });
-    let p = std::path::Path::new(&dir)
-        .join("model-00001-of-00015.safetensors");
+    let p = std::path::Path::new(&dir).join("model-00001-of-00015.safetensors");
     p.exists().then_some(p)
 }
 
@@ -722,8 +740,9 @@ fn b1_1_l70b_b_real_weights_satisfy_pearl_int7_and_b2_lossless() {
         );
     }
     let (tok, k, out) = (8usize, L70B_K, TILE_OUT);
-    let xq: Vec<i8> =
-        (0..tok * k).map(|i| ((i * 23 + 9) % 127 - 63) as i8).collect();
+    let xq: Vec<i8> = (0..tok * k)
+        .map(|i| ((i * 23 + 9) % 127 - 63) as i8)
+        .collect();
     let qg = QuantizedGemm {
         tokens: tok,
         in_dim: k,
@@ -778,8 +797,14 @@ fn b1_1_l70b_c_real_weight_mineable_unit_end_to_end() {
     assert_eq!(ctx.h_b_chunk, ctx2.h_b_chunk);
     assert_eq!(ctx.s_a, ctx2.s_a);
     assert_eq!(
-        ctx.m_states.iter().map(|s| s.keyed_hash(&ctx.s_a)).collect::<Vec<_>>(),
-        ctx2.m_states.iter().map(|s| s.keyed_hash(&ctx2.s_a)).collect::<Vec<_>>(),
+        ctx.m_states
+            .iter()
+            .map(|s| s.keyed_hash(&ctx.s_a))
+            .collect::<Vec<_>>(),
+        ctx2.m_states
+            .iter()
+            .map(|s| s.keyed_hash(&ctx2.s_a))
+            .collect::<Vec<_>>(),
         "mineable unit must be deterministic on the real Llama-70B weights"
     );
     let kappa = commitment_key(hdr, &params_tag(&mp));

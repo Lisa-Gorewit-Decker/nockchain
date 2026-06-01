@@ -587,7 +587,10 @@ mod tests {
                 for tile_j in 0..params.col_tiles() {
                     let tr = compute_tile_trace(&mats, &params, tile_i, tile_j);
                     let st = compute_tile(&mats, &params, tile_i, tile_j);
-                    assert_eq!(tr.state, st, "trace.state vs compute_tile @({tile_i},{tile_j}) seed={seed}");
+                    assert_eq!(
+                        tr.state, st,
+                        "trace.state vs compute_tile @({tile_i},{tile_j}) seed={seed}"
+                    );
                     assert_eq!(tr.x_steps.len(), n_stripes, "x_steps length");
                 }
             }
@@ -623,7 +626,10 @@ mod tests {
         assert_eq!(full.x_steps, sliced.x_steps, "x_steps full vs slice");
         assert_eq!(full.state, sliced.state, "state full vs slice");
         assert_eq!(full.state, compute_tile(&mats, &params, tile_i, tile_j));
-        assert_eq!(sliced.state, compute_tile_from_slices(&a_rows, &b_cols, &params));
+        assert_eq!(
+            sliced.state,
+            compute_tile_from_slices(&a_rows, &b_cols, &params)
+        );
     }
 
     /// The defining FoldChip invariant: `state` is a *pure
@@ -705,14 +711,19 @@ mod tests {
         // r|k per §4.8/validate). m,n kept small; r/k are what
         // drive the noise streams.
         for &(m, k, n, r) in &[
-            (8u32, 64u32, 8u32, 4u32),     // TEST_SMALL-shaped
-            (4, 128, 4, 32),               // r=2^5 (§4.8 floor)
-            (4, 256, 4, 64),               // r=2^6 (Llama r)
-            (2, 512, 2, 128),              // larger r, multi-chunk row
+            (8u32, 64u32, 8u32, 4u32), // TEST_SMALL-shaped
+            (4, 128, 4, 32),           // r=2^5 (§4.8 floor)
+            (4, 256, 4, 64),           // r=2^6 (Llama r)
+            (2, 512, 2, 128),          // larger r, multi-chunk row
         ] {
             let params = MatmulParams {
-                m, k, n, noise_rank: r, tile: 2,
-                spot_checks: 1, difficulty_bits: 0,
+                m,
+                k,
+                n,
+                noise_rank: r,
+                tile: 2,
+                spot_checks: 1,
+                difficulty_bits: 0,
             };
             let noise = BlockNoise::expand(&s_a, &s_b, &params);
             let mut e_row = vec![0i8; k as usize];
@@ -747,7 +758,8 @@ mod tests {
                         + ai_pow_zk::noise_ref::e_value(&s_a, i, l, r) as i16)
                         as i8;
                     assert_eq!(
-                        mats.a_prime[(i * k + l) as usize], want,
+                        mats.a_prime[(i * k + l) as usize],
+                        want,
                         "a_prime[{i},{l}] != A + noise_ref::e_value"
                     );
                 }

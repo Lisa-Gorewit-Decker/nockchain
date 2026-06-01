@@ -34,6 +34,18 @@ use p3_tip5_circuit_air::Tip5Perm as RecTip5Perm;
 use crate::circuit::{Challenge, Tip5Compress, Tip5Sponge};
 use crate::{AiPowStarkConfig, CompositeFullAirWithLookupsPinned, Val};
 
+/// Canonical production certificate for Nockchain's AI proof-of-work puzzle.
+///
+/// This recursive L1 certificate is the only ZK proof artifact intended
+/// for Nockchain consensus, block persistence, or wire transmission.
+/// Raw Layer-0 `AiPowBatchProof` values are intermediate prover inputs
+/// and are not production certificates by themselves.
+pub type AiPowRecursiveCertificate =
+    p3_circuit_prover::BatchStarkProof<p3_circuit_prover::config::GoldilocksTipsConfig>;
+
+/// Alias that makes the consensus-facing role explicit at call sites.
+pub type AiPowProductionCertificate = AiPowRecursiveCertificate;
+
 /// Tip5 digest width (`DIGEST_ELEMS`), sponge `WIDTH`, sponge `RATE` —
 /// the ai-pow-zk Layer-0 MMCS parameters (`circuit.rs`).
 const DIGEST_ELEMS: usize = 5;
@@ -140,8 +152,7 @@ pub fn build_composite_l1_verifier_circuit(
     // the validated Layer-0 verifier circuit, `test_tip5_layer0_
     // recursion.rs`).
     cb.enable_tip5_perm::<Tip5Goldilocks, _>(
-        generate_tip5_trace::<Challenge, Tip5Goldilocks>,
-        LiftTip5,
+        generate_tip5_trace::<Challenge, Tip5Goldilocks>, LiftTip5,
     );
     cb.enable_recompose::<Val>(generate_recompose_trace::<Val, Challenge>);
     cb.set_recompose_coeff_ctl_for_decompose_links(true);
@@ -166,11 +177,10 @@ pub fn build_composite_l1_verifier_circuit(
     // The composite is a single AIR instance.
     let air_public_counts = [public_values.len()];
 
-    let verifier_inputs = BatchStarkVerifierInputsBuilder::<
-        AiPowStarkConfig,
-        CompositeComm,
-        InnerFri,
-    >::allocate(&mut cb, proof, common_data, &air_public_counts);
+    let verifier_inputs =
+        BatchStarkVerifierInputsBuilder::<AiPowStarkConfig, CompositeComm, InnerFri>::allocate(
+            &mut cb, proof, common_data, &air_public_counts,
+        );
 
     let mmcs_op_ids = verify_batch_circuit::<
         CompositeFullAirWithLookupsPinned,
@@ -256,8 +266,10 @@ pub fn run_composite_l1_verifier(
 pub fn prove_composite_l1_outer_cert(
     built: &BuiltCompositeL1,
     proof: &BatchProof<AiPowStarkConfig>,
-) -> Result<p3_circuit_prover::BatchStarkProof<p3_circuit_prover::config::GoldilocksTipsConfig>, VerificationError>
-{
+) -> Result<
+    p3_circuit_prover::BatchStarkProof<p3_circuit_prover::config::GoldilocksTipsConfig>,
+    VerificationError,
+> {
     use p3_batch_stark::ProverData;
     use p3_circuit_prover::common::{get_airs_and_degrees_with_prep, NpoPreprocessor};
     use p3_circuit_prover::{
@@ -271,10 +283,8 @@ pub fn prove_composite_l1_outer_cert(
     // with split coeff tables (the verifier circuit set
     // `set_recompose_coeff_ctl_for_decompose_links(true)`).
     let table_packing = TablePacking::new(1, 8);
-    let npo_prep: Vec<Box<dyn NpoPreprocessor<Val>>> = vec![
-        Box::new(Tip5Preprocessor),
-        Box::new(RecomposePreprocessor::new(true)),
-    ];
+    let npo_prep: Vec<Box<dyn NpoPreprocessor<Val>>> =
+        vec![Box::new(Tip5Preprocessor), Box::new(RecomposePreprocessor::new(true))];
     let mut air_builders = tip5_air_builders::<OuterConfig, 2>();
     air_builders.extend(recompose_air_builders::<OuterConfig, 2>(1, true));
 
@@ -328,11 +338,13 @@ pub fn prove_composite_l1_outer_cert(
     prover.register_tip5_table::<2>(Tip5Config::GOLDILOCKS_W16);
     prover.register_recompose_table::<2>(true);
 
-    let batch_proof = prover.prove_all_tables(&traces, &circuit_prover_data).map_err(|e| {
-        VerificationError::InvalidProofShape(format!(
-            "composite L1 outer cert — prove_all_tables: {e:?}"
-        ))
-    })?;
+    let batch_proof = prover
+        .prove_all_tables(&traces, &circuit_prover_data)
+        .map_err(|e| {
+            VerificationError::InvalidProofShape(format!(
+                "composite L1 outer cert — prove_all_tables: {e:?}"
+            ))
+        })?;
     // The cross-table `WitnessChecks` soundness gate.
     prover.verify_all_tables(&batch_proof).map_err(|e| {
         VerificationError::InvalidProofShape(format!(
@@ -344,6 +356,11 @@ pub fn prove_composite_l1_outer_cert(
 
 /// Per-stage instrumentation of one end-to-end composite→L1
 /// recursion run — the production caller's measurement output.
+///
+/// `l1_cert` is the canonical production certificate. The included
+/// `composite_proof` is exposed only for benchmarking, diagnostics,
+/// and recursive-prover internals; it must not be used as the
+/// Nockchain consensus proof artifact.
 pub struct L1RecursionRun {
     /// Composite (Layer-0) STARK trace height — the dominant cost
     /// and memory driver.
@@ -360,14 +377,38 @@ pub struct L1RecursionRun {
     /// Wall-clock (ms) to outer-prove the L1 verifier circuit as a
     /// D=2 batch-STARK + `verify_all_tables` — the L1 certificate (S5).
     pub l1_outer_cert_ms: u128,
+    /// Public inputs bound by the composite proof that the L1 certificate
+    /// recursively verifies.
+    pub public_inputs: crate::composite_public::CompositePublicInputs,
     /// The composite (L0) proof.
+    ///
+    /// Intermediate only. Do not persist or transmit this as the
+    /// Nockchain AI-PoW certificate.
     pub composite_proof: BatchProof<AiPowStarkConfig>,
     /// The L1 recursive certificate.
-    pub l1_cert:
-        p3_circuit_prover::BatchStarkProof<p3_circuit_prover::config::GoldilocksTipsConfig>,
+    ///
+    /// This is the canonical production proof artifact.
+    pub l1_cert: AiPowProductionCertificate,
 }
 
-/// **Production caller** — the full ai-pow-zk → Plonky3-recursion
+/// Timings and certificate for recursively certifying an already-built
+/// Layer-0 composite proof.
+///
+/// This is useful for callers that already used the ai-pow bridge to build
+/// the canonical Layer-0 proof and pinned program from a mining solution.
+/// The returned `l1_cert` is still the only production proof artifact.
+pub struct L1CertificateRun {
+    /// Wall-clock (ms) to build the L1 recursive-verifier circuit.
+    pub l1_circuit_build_ms: u128,
+    /// Wall-clock (ms) to run the L1 verifier circuit.
+    pub l1_in_circuit_verify_ms: u128,
+    /// Wall-clock (ms) to outer-prove the L1 verifier circuit.
+    pub l1_outer_cert_ms: u128,
+    /// The canonical recursive production certificate.
+    pub l1_cert: AiPowProductionCertificate,
+}
+
+/// **Canonical production caller** — the full ai-pow-zk → Plonky3-recursion
 /// pipeline for one composite proof, end to end:
 ///
 /// 1. prove the composite matmul-PoW batch-STARK (Layer 0);
@@ -376,12 +417,15 @@ pub struct L1RecursionRun {
 /// 3. outer-prove that verifier circuit as a D=2 batch-STARK and
 ///    `verify_all_tables` — the L1 recursive certificate (S5).
 ///
-/// Returns per-stage timings + both proof objects so a caller can
-/// measure serialized sizes. This is the single public entrypoint a
-/// production consumer (or a measurement harness) drives; it hides
-/// the crate-internal program-pin / `CommonData` plumbing. The
-/// canonical program is extracted from the trace and pinned (CRIT-1),
-/// exactly as the production proving path
+/// Returns per-stage timings and the canonical L1 certificate. The
+/// returned Layer-0 proof is for diagnostics/measurement only. The L1
+/// recursive certificate is the only artifact that production
+/// Nockchain consensus should persist or transmit.
+///
+/// This is the single public entrypoint a production consumer (or a
+/// measurement harness) drives; it hides the crate-internal program-pin
+/// / `CommonData` plumbing. The canonical program is extracted from the
+/// trace and pinned (CRIT-1), exactly as the Layer-0 proving path
 /// (`composite_prove_pinned_logup`).
 pub fn recurse_composite_to_l1(
     zk_params: &crate::params::ZkParams,
@@ -428,9 +472,91 @@ pub fn recurse_composite_to_l1(
         l1_circuit_build_ms,
         l1_in_circuit_verify_ms,
         l1_outer_cert_ms,
+        public_inputs: pis,
         composite_proof,
         l1_cert,
     })
+}
+
+/// Produce Nockchain's canonical AI-PoW production certificate from an
+/// already-generated Layer-0 composite proof.
+///
+/// The caller supplies the pinned Layer-0 program and public inputs that were
+/// produced with the proof. This function recursively verifies that Layer-0
+/// proof in-circuit and returns only the recursive L1 certificate. It does not
+/// serialize, persist, or bless the Layer-0 proof as a block artifact.
+pub fn prove_canonical_ai_pow_certificate_from_composite_proof(
+    zk_params: &crate::params::ZkParams,
+    profile: &crate::circuit::CircuitConfig,
+    program: &crate::AiPowProgram,
+    proof: &BatchProof<AiPowStarkConfig>,
+    public_inputs: &crate::composite_public::CompositePublicInputs,
+) -> Result<L1CertificateRun, VerificationError> {
+    use std::time::Instant;
+
+    let cfg = crate::composite_proof::build_config(zk_params, profile);
+    let t = Instant::now();
+    let air = CompositeFullAirWithLookupsPinned::new_with(program.clone(), true);
+    let pd = crate::composite_proof::logup_common_for(&cfg, program, true);
+    let built = build_composite_l1_verifier_circuit(
+        &cfg,
+        &air,
+        proof,
+        &pd.common,
+        &public_inputs.to_vec(),
+        profile,
+    )?;
+    let l1_circuit_build_ms = t.elapsed().as_millis();
+
+    let t = Instant::now();
+    run_composite_l1_verifier(&built, proof)?;
+    let l1_in_circuit_verify_ms = t.elapsed().as_millis();
+
+    let t = Instant::now();
+    let l1_cert = prove_composite_l1_outer_cert(&built, proof)?;
+    let l1_outer_cert_ms = t.elapsed().as_millis();
+
+    Ok(L1CertificateRun {
+        l1_circuit_build_ms,
+        l1_in_circuit_verify_ms,
+        l1_outer_cert_ms,
+        l1_cert,
+    })
+}
+
+/// Produce Nockchain's canonical AI-PoW production certificate.
+///
+/// This is a name-level guardrail for consensus callers: the
+/// certificate is recursive. Callers that only need the canonical proof
+/// should use this function and persist/transmit `run.l1_cert`, never
+/// `run.composite_proof`.
+pub fn prove_canonical_ai_pow_certificate(
+    zk_params: &crate::params::ZkParams,
+    profile: &crate::circuit::CircuitConfig,
+    trace: crate::composite_trace::CompositeTrace,
+) -> Result<L1RecursionRun, VerificationError> {
+    recurse_composite_to_l1(zk_params, profile, trace)
+}
+
+/// Serialize the canonical recursive AI-PoW certificate into compact bytes.
+///
+/// This serializes only the recursive L1 certificate. It intentionally does
+/// not accept or produce a Layer-0 `AiPowBatchProof`, because Layer-0 proofs
+/// are not canonical block/wire certificates for Nockchain AI-PoW.
+pub fn encode_production_certificate(
+    cert: &AiPowProductionCertificate,
+) -> Result<Vec<u8>, postcard::Error> {
+    postcard::to_allocvec(cert)
+}
+
+/// Decode bytes previously produced by [`encode_production_certificate`].
+///
+/// Decoding is structural only; callers still need to verify the certificate
+/// against chain-derived statement data once the verifier is wired.
+pub fn decode_production_certificate(
+    bytes: &[u8],
+) -> Result<AiPowProductionCertificate, postcard::Error> {
+    postcard::from_bytes(bytes)
 }
 
 /// S3a — compile-time proof that the composite AIR satisfies the

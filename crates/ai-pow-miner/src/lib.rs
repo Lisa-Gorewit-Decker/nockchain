@@ -22,10 +22,6 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use ai_pow::params::MatmulParams;
-use ai_pow::proof::MatmulProof;
-use ai_pow::prover::{MineError, ProverOptions};
-
 // ─────────────────────────── NCMN v1 nonce shape ──────────────────────────
 //
 // The canonical parser and constants live in `ai-pow` so verifier code cannot
@@ -34,6 +30,9 @@ pub use ai_pow::ncmn::{
     build_ncmn_nonce, parse_ncmn_nonce, NcmnNonce, NonceAnchors, NonceFormatError,
     NCMN_EXTERNAL_ABSENT, NCMN_MAGIC, NCMN_NONCE_LEN, NCMN_VERSION,
 };
+use ai_pow::params::MatmulParams;
+use ai_pow::proof::MatmulProof;
+use ai_pow::prover::{MineError, ProverOptions};
 
 // ───────────────────────────── mining-job types ─────────────────────────────
 
@@ -109,6 +108,8 @@ impl MiningStats {
 pub struct MinedSolution {
     /// The full 80-byte NCMN nonce that cleared the target.
     pub nonce: NcmnNonce,
+    /// Chain-derived 32-byte target used by the winning attempt.
+    pub target: DifficultyTarget,
     /// Linear tile index of the winning tile.
     pub found_idx: u32,
     /// The plain ai-pow proof for the winning attempt.
@@ -153,6 +154,10 @@ pub mod mining;
 /// the `node` feature because it implements `nockapp::wire::Wire`.
 #[cfg(feature = "node")]
 pub mod wire;
+
+/// Noun encoder for the canonical recursive AI-PoW certificate.
+#[cfg(feature = "node")]
+pub mod certificate_noun;
 
 /// Out-of-process node-connecting run loop ([`run::run`]) — the
 /// production entry point used by the `ai-pow-mine` binary. Behind the
@@ -216,7 +221,10 @@ mod tests {
         bytes[4] = 99;
         assert_eq!(
             parse_ncmn_nonce(&bytes).unwrap_err(),
-            NonceFormatError::BadVersion { got: 99, expected: 1 },
+            NonceFormatError::BadVersion {
+                got: 99,
+                expected: 1
+            },
         );
     }
 

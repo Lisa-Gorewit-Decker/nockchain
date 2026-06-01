@@ -62,9 +62,7 @@ fn main() {
     use ai_pow_zk::composite_proof::{
         build_config, composite_prove_pinned_logup, composite_verify_pow_pinned_logup,
     };
-    use ai_pow_zk::{
-        CircuitConfig, CompositePublicInputs, CompositeTrace, ZkParams,
-    };
+    use ai_pow_zk::{CircuitConfig, CompositePublicInputs, CompositeTrace, ZkParams};
 
     let seed = std::env::var("F1_SEED").unwrap_or_else(|_| "f1-harness-v1".to_string());
     let iters: u32 = std::env::var("F1_ITERS")
@@ -92,8 +90,7 @@ fn main() {
     let mine_ms = t.elapsed().as_millis();
 
     // 2. Per-block context: chunk-Merkle commitments + κ.
-    let ctx =
-        BlockContext::build(block_commitment, &a, &b, &params).expect("BlockContext build");
+    let ctx = BlockContext::build(block_commitment, &a, &b, &params).expect("BlockContext build");
 
     // Helpers: 32-byte → 8 LE u32 words.
     let words = |b: &[u8; 32]| -> [u32; 8] {
@@ -180,12 +177,9 @@ fn main() {
             .expect("pinned+LogUp STARK valid + HASH_JACKPOT clears target");
         verify_ms_total += t.elapsed().as_millis();
 
-        proof_bytes = bincode::serde::encode_to_vec(
-            &proof,
-            bincode::config::standard(),
-        )
-        .expect("encode")
-        .len();
+        proof_bytes = bincode::serde::encode_to_vec(&proof, bincode::config::standard())
+            .expect("encode")
+            .len();
     }
 
     println!(

@@ -49,7 +49,11 @@ pub enum QuantError {
     #[error("operand value {value} at {what} is outside the Pearl type-0 int domain [-64, 64]")]
     OutOfDomain { what: &'static str, value: i32 },
     #[error("shape mismatch: {what} (expected {expected}, got {got})")]
-    Shape { what: &'static str, expected: usize, got: usize },
+    Shape {
+        what: &'static str,
+        expected: usize,
+        got: usize,
+    },
 }
 
 /// One served **group_1** INT7 GEMM as the vLLM plugin sees it
@@ -104,16 +108,32 @@ pub struct PearlOperands {
 pub fn extract(qg: &QuantizedGemm) -> Result<PearlOperands, QuantError> {
     let (m, k, n) = (qg.tokens, qg.in_dim, qg.out_dim);
     if qg.xq.len() != m * k {
-        return Err(QuantError::Shape { what: "xq", expected: m * k, got: qg.xq.len() });
+        return Err(QuantError::Shape {
+            what: "xq",
+            expected: m * k,
+            got: qg.xq.len(),
+        });
     }
     if qg.wq.len() != n * k {
-        return Err(QuantError::Shape { what: "wq", expected: n * k, got: qg.wq.len() });
+        return Err(QuantError::Shape {
+            what: "wq",
+            expected: n * k,
+            got: qg.wq.len(),
+        });
     }
     if qg.s_x.len() != m {
-        return Err(QuantError::Shape { what: "s_x", expected: m, got: qg.s_x.len() });
+        return Err(QuantError::Shape {
+            what: "s_x",
+            expected: m,
+            got: qg.s_x.len(),
+        });
     }
     if qg.s_w.len() != n {
-        return Err(QuantError::Shape { what: "s_w", expected: n, got: qg.s_w.len() });
+        return Err(QuantError::Shape {
+            what: "s_w",
+            expected: n,
+            got: qg.s_w.len(),
+        });
     }
     let check = |v: i8, what: &'static str| -> Result<i8, QuantError> {
         let x = v as i32;
@@ -139,7 +159,11 @@ pub fn extract(qg: &QuantizedGemm) -> Result<PearlOperands, QuantError> {
         }
     }
     Ok(PearlOperands {
-        m, k, n, a, b,
+        m,
+        k,
+        n,
+        a,
+        b,
         s_x: qg.s_x.clone(),
         s_w: qg.s_w.clone(),
     })
@@ -199,7 +223,15 @@ mod tests {
         let wq = (0..n * k).map(|_| nx()).collect();
         let s_x = (0..m).map(|i| 0.01 + (i as f32) * 1e-4).collect();
         let s_w = (0..n).map(|j| 0.02 + (j as f32) * 2e-4).collect();
-        QuantizedGemm { tokens: m, in_dim: k, out_dim: n, xq, wq, s_x, s_w }
+        QuantizedGemm {
+            tokens: m,
+            in_dim: k,
+            out_dim: n,
+            xq,
+            wq,
+            s_x,
+            s_w,
+        }
     }
 
     /// **B2.1 (the R1 soundness-adjacent gate): `Q` is
@@ -210,9 +242,7 @@ mod tests {
     /// "we mine precisely the integers vLLM already computed".
     #[test]
     fn b2_1_extraction_is_bit_lossless_on_the_mined_integers() {
-        for (m, k, n, seed) in
-            [(4, 8, 6, 1), (16, 64, 16, 7), (8, 32, 24, 99), (1, 128, 1, 1234)]
-        {
+        for (m, k, n, seed) in [(4, 8, 6, 1), (16, 64, 16, 7), (8, 32, 24, 99), (1, 128, 1, 1234)] {
             let qg = synth_int7_gemm(m, k, n, seed);
             let op = extract(&qg).expect("faithful int7 ⇒ in-domain");
             let mined = int_matmul(&op);
@@ -222,8 +252,7 @@ mod tests {
                 for o in 0..n {
                     let mut s = 0i32;
                     for l in 0..k {
-                        s += qg.xq[t * k + l] as i32
-                            * qg.wq[o * k + l] as i32;
+                        s += qg.xq[t * k + l] as i32 * qg.wq[o * k + l] as i32;
                     }
                     want[t * n + o] = s;
                 }
@@ -270,13 +299,19 @@ mod tests {
         qg.wq[5] = 100; // > PEARL_INT_HI
         assert_eq!(
             extract(&qg),
-            Err(QuantError::OutOfDomain { what: "wq", value: 100 }),
+            Err(QuantError::OutOfDomain {
+                what: "wq",
+                value: 100
+            }),
         );
         let mut qg2 = synth_int7_gemm(2, 4, 3, 6);
         qg2.xq[0] = -120; // < PEARL_INT_LO
         assert_eq!(
             extract(&qg2),
-            Err(QuantError::OutOfDomain { what: "xq", value: -120 }),
+            Err(QuantError::OutOfDomain {
+                what: "xq",
+                value: -120
+            }),
         );
         // Shape violations are caught too.
         let mut qg3 = synth_int7_gemm(2, 4, 3, 7);

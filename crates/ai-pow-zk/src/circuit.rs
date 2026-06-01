@@ -508,7 +508,10 @@ mod tests {
         // §recursion (2026-05-22): Tip5Perm uses the 5-round variant
         // so the composite proof's transcript matches the recursion
         // verifier (see `Tip5Perm::NUM_ROUNDS`).
-        assert_eq!(Tip5Perm::NUM_ROUNDS, nockchain_math::tip5::NUM_ROUNDS_5ROUND);
+        assert_eq!(
+            Tip5Perm::NUM_ROUNDS,
+            nockchain_math::tip5::NUM_ROUNDS_5ROUND
+        );
         assert_eq!(Tip5Perm::NUM_ROUNDS, 5);
         assert_eq!(
             Tip5Perm::WIDTH,

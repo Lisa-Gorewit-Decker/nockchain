@@ -58,7 +58,10 @@ pub fn pad_to_chunk_boundary(data: &[u8]) -> Vec<u8> {
 /// `pearl_blake3::MerkleTree::new(padded, kappa).root()`.
 pub fn matrix_commitment(matrix_bytes: &[u8], kappa: &[u8; 32]) -> [u8; 32] {
     let padded = pad_to_chunk_boundary(matrix_bytes);
-    *Hasher::new_keyed(kappa).update(&padded).finalize().as_bytes()
+    *Hasher::new_keyed(kappa)
+        .update(&padded)
+        .finalize()
+        .as_bytes()
 }
 
 /// Leaf hash for a row of `A` under `H_A` (Pearl §4.3 line 2). Keyed by
@@ -67,7 +70,7 @@ pub fn a_row_leaf_hash(row_bytes: &[i8], kappa: &[u8; 32]) -> [u8; 32] {
     let mut hasher = Hasher::new_keyed(kappa);
     hasher.update(CTX_A_ROW_LEAF.as_bytes());
     hasher.update(&[0u8]); // null terminator separating context from content
-    // SAFETY: i8 and u8 share layout; we only need the raw bits.
+                           // SAFETY: i8 and u8 share layout; we only need the raw bits.
     let bytes: &[u8] =
         unsafe { core::slice::from_raw_parts(row_bytes.as_ptr() as *const u8, row_bytes.len()) };
     hasher.update(bytes);
@@ -321,8 +324,10 @@ mod tests {
         let matrix: Vec<u8> = (0..4096).map(|i| ((i * 31 + 7) & 0xFF) as u8).collect();
         let kappa = [0xA5u8; 32];
         let got = matrix_commitment(&matrix, &kappa);
-        let expected =
-            *Hasher::new_keyed(&kappa).update(&matrix).finalize().as_bytes();
+        let expected = *Hasher::new_keyed(&kappa)
+            .update(&matrix)
+            .finalize()
+            .as_bytes();
         assert_eq!(got, expected, "multi-chunk byte-equivalence");
 
         // Sub-chunk padding case (500 bytes → padded to 1024).
@@ -330,8 +335,10 @@ mod tests {
         let mut padded = matrix2.clone();
         padded.resize(1024, 0);
         let got2 = matrix_commitment(&matrix2, &kappa);
-        let expected2 =
-            *Hasher::new_keyed(&kappa).update(&padded).finalize().as_bytes();
+        let expected2 = *Hasher::new_keyed(&kappa)
+            .update(&padded)
+            .finalize()
+            .as_bytes();
         assert_eq!(got2, expected2, "sub-chunk pad byte-equivalence");
 
         // Domain separation: changing κ changes the digest.

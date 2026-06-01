@@ -26,7 +26,7 @@
 //! the recursion cost is fixed by trace dimensions and FRI params.
 
 use ai_pow_zk::composite_layout::TOTAL_TRACE_WIDTH;
-use ai_pow_zk::recursion::recurse_composite_to_l1;
+use ai_pow_zk::recursion::prove_canonical_ai_pow_certificate;
 use ai_pow_zk::{CircuitConfig, CompositeTrace, ZkParams};
 
 /// Production composite-trace height for `LLAMA_3_1_8B_GATE_UP` at
@@ -73,8 +73,8 @@ fn main() {
 
     let trace = CompositeTrace::baseline(n);
 
-    eprintln!("running… (L0 composite prove → L1 verifier circuit → L1 outer cert)");
-    let run = match recurse_composite_to_l1(&zk, &profile, trace) {
+    eprintln!("running… (L0 composite prove → L1 verifier circuit → canonical L1 cert)");
+    let run = match prove_canonical_ai_pow_certificate(&zk, &profile, trace) {
         Ok(r) => r,
         Err(e) => {
             eprintln!("FAILED at 2^{log2_n}: {e:?}");
@@ -101,13 +101,28 @@ fn main() {
         "── results · composite trace 2^{log2_n} ({n} rows × {} cols) ──",
         run.composite_trace_width
     );
-    eprintln!("L0  composite prove        : {:>9.2} s", s(run.composite_prove_ms));
-    eprintln!("L1  verifier-circuit build : {:>9.2} s", s(run.l1_circuit_build_ms));
-    eprintln!("L1  in-circuit verify (S3) : {:>9.2} s", s(run.l1_in_circuit_verify_ms));
-    eprintln!("L1  outer cert    (S5)     : {:>9.2} s", s(run.l1_outer_cert_ms));
+    eprintln!(
+        "L0  composite prove        : {:>9.2} s",
+        s(run.composite_prove_ms)
+    );
+    eprintln!(
+        "L1  verifier-circuit build : {:>9.2} s",
+        s(run.l1_circuit_build_ms)
+    );
+    eprintln!(
+        "L1  in-circuit verify (S3) : {:>9.2} s",
+        s(run.l1_in_circuit_verify_ms)
+    );
+    eprintln!(
+        "L1  outer cert    (S5)     : {:>9.2} s",
+        s(run.l1_outer_cert_ms)
+    );
     eprintln!("    TOTAL wall-clock       : {:>9.2} s", s(total));
     eprintln!();
-    eprintln!("composite (L0) proof       : {:>9.1} KB", kb(composite_bytes));
+    eprintln!(
+        "composite (L0) proof       : {:>9.1} KB",
+        kb(composite_bytes)
+    );
     eprintln!("L1 recursive certificate   : {:>9.1} KB", kb(l1_cert_bytes));
     // Machine-greppable row: log2_n,n,width,prove_ms,build_ms,verify_ms,cert_ms,L0_bytes,L1_bytes
     println!(

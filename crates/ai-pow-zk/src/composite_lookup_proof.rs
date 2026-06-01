@@ -120,11 +120,7 @@ where
 ///   * Column 2 (QUERY) holds one query per "active" row; non-
 ///     active rows hold `query_padding`.
 ///   * Column 3 (QUERY_FLAG) is `1` on active rows, `0` otherwise.
-pub fn build_trace(
-    log_n: usize,
-    queries: &[u32],
-    query_padding: u32,
-) -> RowMajorMatrix<Val> {
+pub fn build_trace(log_n: usize, queries: &[u32], query_padding: u32) -> RowMajorMatrix<Val> {
     use p3_field::integers::QuotientMap;
 
     let n = 1usize << log_n;
@@ -153,12 +149,10 @@ pub fn build_trace(
     // (3) Fill QUERY / QUERY_FLAG.
     for r in 0..n {
         if r < queries.len() {
-            flat[r * WIDTH + COL_QUERY] =
-                <Val as QuotientMap<u64>>::from_int(queries[r] as u64);
+            flat[r * WIDTH + COL_QUERY] = <Val as QuotientMap<u64>>::from_int(queries[r] as u64);
             flat[r * WIDTH + COL_QUERY_FLAG] = <Val as QuotientMap<u64>>::from_int(1);
         } else {
-            flat[r * WIDTH + COL_QUERY] =
-                <Val as QuotientMap<u64>>::from_int(query_padding as u64);
+            flat[r * WIDTH + COL_QUERY] = <Val as QuotientMap<u64>>::from_int(query_padding as u64);
             flat[r * WIDTH + COL_QUERY_FLAG] = Val::default();
         }
     }
@@ -172,12 +166,12 @@ mod tests {
     //! the `UrangeBusDemoAir`. Valid traces verify; tampering a
     //! query to an out-of-range value rejects.
 
+    use p3_batch_stark::{prove_batch, verify_batch, ProverData, StarkInstance};
+    use p3_field::integers::QuotientMap;
+
     use super::*;
     use crate::circuit::{build_stark_config, AiPowStarkConfig, CircuitConfig};
     use crate::params::ZkParams;
-
-    use p3_batch_stark::{prove_batch, verify_batch, ProverData, StarkInstance};
-    use p3_field::integers::QuotientMap;
 
     fn test_zk_params() -> ZkParams {
         ZkParams {
@@ -213,8 +207,7 @@ mod tests {
     fn no_queries_balances_via_batch_stark() {
         let cfg = build_stark_config(&test_zk_params(), &CircuitConfig::TEST_PEARL);
         let trace = build_trace(8, &[], 0);
-        run_batch_proof(&cfg, &UrangeBusDemoAir, &trace)
-            .expect("empty-queries trace must verify");
+        run_batch_proof(&cfg, &UrangeBusDemoAir, &trace).expect("empty-queries trace must verify");
     }
 
     /// A trace with 5 in-range queries verifies (the FREQ column
@@ -224,8 +217,7 @@ mod tests {
         let cfg = build_stark_config(&test_zk_params(), &CircuitConfig::TEST_PEARL);
         let queries = [0, 1, 42, 100, 255];
         let trace = build_trace(8, &queries, 0);
-        run_batch_proof(&cfg, &UrangeBusDemoAir, &trace)
-            .expect("in-range queries must verify");
+        run_batch_proof(&cfg, &UrangeBusDemoAir, &trace).expect("in-range queries must verify");
     }
 
     /// Tamper a query to an out-of-range value (300, not in [0,
@@ -273,8 +265,7 @@ mod tests {
         let cfg = build_stark_config(&test_zk_params(), &CircuitConfig::TEST_PEARL);
         let queries = [42, 42, 42, 100, 100, 0];
         let trace = build_trace(8, &queries, 0);
-        run_batch_proof(&cfg, &UrangeBusDemoAir, &trace)
-            .expect("repeated queries must verify");
+        run_batch_proof(&cfg, &UrangeBusDemoAir, &trace).expect("repeated queries must verify");
     }
 
     /// Tamper QUERY_FLAG — drop a real query so the FREQ becomes

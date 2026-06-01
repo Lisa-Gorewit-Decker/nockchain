@@ -35,9 +35,11 @@
 ::
 +|  %candidate-block
 ++  set-pow
-  |=  prf=proof:sp
+  |=  prf=pow-artifact:t
   ^-  mining-state:dk
-  ?^  -.candidate-block.m  m(pow.candidate-block (some prf))
+  ?^  -.candidate-block.m
+    =/  old-prf=proof:sp  (need ((soft proof:sp) prf))
+    m(pow.candidate-block (some old-prf))
   m(pow.candidate-block (some prf))
 ::
 ++  set-digest

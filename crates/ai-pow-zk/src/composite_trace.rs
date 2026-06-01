@@ -53,32 +53,29 @@
 use p3_matrix::dense::RowMajorMatrix;
 
 use crate::chips::blake3::chip::pack_tweak;
-use crate::chips::jackpot::compute::{apply_jackpot_step, bit_decompose_u32, one_hot_select};
 use crate::chips::blake3::compress::{
     blake3_permute_msg, compress_full_state, round_with_snapshots, Blake3Tweak, BLAKE3_IV,
 };
 use crate::chips::blake3::layout::LIMBS_PER_STATE_SNAPSHOT;
 use crate::chips::control::ControlChip;
 use crate::chips::i8u8::I8U8Chip;
+use crate::chips::jackpot::compute::{apply_jackpot_step, bit_decompose_u32, one_hot_select};
 use crate::chips::matmul::compute::{compute_row, CUMSUM_LEN};
 use crate::chips::range_table::{IRange7P1Chip, IRange8Chip, URange13Chip, URange8Chip};
 use crate::composite_layout::{
-    AB_ID_LIMBS_LEN, AB_ID_LIMBS_START, A_ID, A_NOISED_LEN, A_NOISED_START,
-    A_NOISED_UNPACK_LEN, A_NOISED_UNPACK_START, BIT_REG_START, BLAKE3_CV_START,
-    BLAKE3_MSG_START, BLAKE3_ROUND_START, B_ID, B_NOISED_LEN, B_NOISED_START,
-    B_NOISED_UNPACK_LEN, B_NOISED_UNPACK_START,
-    CONTROL_PREP, CUMSUM_TILE_START, CV_IN_LEN, CV_IN_START, CV_OR_TWEAK_PREP, CV_OUT_FREQ,
-    CV_OUT_LEN, CV_OUT_START, I8U8_FREQ, IRANGE7P1_FREQ, IRANGE8_FREQ, IS_CV_IN,
-    IS_MSG_MAT, IS_RESET_CUMSUM, IS_UPDATE_CUMSUM, JACKPOT_MSG_START, JACKPOT_SIZE,
-    JACKPOT_SLOT_SEL_START, JACKPOT_X_BITS_START, MAT_FREQ, MAT_ID, MAT_ID_LIMBS_LEN,
-    MAT_ID_LIMBS_START, MAT_UNPACK_WIN, MAT_UNPACK_START, NOISED_PACKED_START,
-    NOISE_UNPACK_WIN, NOISE_UNPACK_START, STARK_ROW_IDX, TILE_D, TILE_H,
-    FOLD_IS_FOLD, FOLD_MCUR_BITS_START, FOLD_SLOT_SEL_START, FOLD_STATE_START,
-    FOLD_XOR_OUT, FOLD_XSTEP, FOLD_XSTEP_BITS_START,
-    FOLD_STRIPE_SEL_START, STRIPE_MAX, SX_IN_BITS_START, SX_IN_START, SX_IS_ACTIVE,
-    SX_LANE_SEL_START, SX_NEW_SEL, SX_NEW_SEL_BITS_START, SX_Q_START,
-    SX_XR_SEL_BITS_START, SX_XR_START,
-    TOTAL_TRACE_WIDTH, UINT8_DATA_WIN, UINT8_DATA_START, URANGE13_FREQ, URANGE8_FREQ,
+    AB_ID_LIMBS_LEN, AB_ID_LIMBS_START, A_ID, A_NOISED_LEN, A_NOISED_START, A_NOISED_UNPACK_LEN,
+    A_NOISED_UNPACK_START, BIT_REG_START, BLAKE3_CV_START, BLAKE3_MSG_START, BLAKE3_ROUND_START,
+    B_ID, B_NOISED_LEN, B_NOISED_START, B_NOISED_UNPACK_LEN, B_NOISED_UNPACK_START, CONTROL_PREP,
+    CUMSUM_TILE_START, CV_IN_LEN, CV_IN_START, CV_OR_TWEAK_PREP, CV_OUT_FREQ, CV_OUT_LEN,
+    CV_OUT_START, FOLD_IS_FOLD, FOLD_MCUR_BITS_START, FOLD_SLOT_SEL_START, FOLD_STATE_START,
+    FOLD_STRIPE_SEL_START, FOLD_XOR_OUT, FOLD_XSTEP, FOLD_XSTEP_BITS_START, I8U8_FREQ,
+    IRANGE7P1_FREQ, IRANGE8_FREQ, IS_CV_IN, IS_MSG_MAT, IS_RESET_CUMSUM, IS_UPDATE_CUMSUM,
+    JACKPOT_MSG_START, JACKPOT_SIZE, JACKPOT_SLOT_SEL_START, JACKPOT_X_BITS_START, MAT_FREQ,
+    MAT_ID, MAT_ID_LIMBS_LEN, MAT_ID_LIMBS_START, MAT_UNPACK_START, MAT_UNPACK_WIN,
+    NOISED_PACKED_START, NOISE_UNPACK_START, NOISE_UNPACK_WIN, STARK_ROW_IDX, STRIPE_MAX,
+    SX_IN_BITS_START, SX_IN_START, SX_IS_ACTIVE, SX_LANE_SEL_START, SX_NEW_SEL,
+    SX_NEW_SEL_BITS_START, SX_Q_START, SX_XR_SEL_BITS_START, SX_XR_START, TILE_D, TILE_H,
+    TOTAL_TRACE_WIDTH, UINT8_DATA_START, UINT8_DATA_WIN, URANGE13_FREQ, URANGE8_FREQ,
 };
 use crate::Val;
 
@@ -260,8 +257,7 @@ impl CompositeTrace {
 
         // Write CUMSUM = cumsum_old (the "entering" cumsum).
         for k in 0..CUMSUM_LEN {
-            row[CUMSUM_TILE_START + k] =
-                <Val as QuotientMap<i64>>::from_int(cumsum_old[k] as i64);
+            row[CUMSUM_TILE_START + k] = <Val as QuotientMap<i64>>::from_int(cumsum_old[k] as i64);
         }
 
         // Compute and return the post-step cumsum.
@@ -273,11 +269,7 @@ impl CompositeTrace {
     /// matmul step (so the AIR's cross-row equation
     /// `nxt.CUMSUM = cur.CUMSUM` is satisfied when the next row is
     /// not itself an active matmul step).
-    pub fn set_cumsum_row(
-        &mut self,
-        row_idx: usize,
-        cumsum: &[i32; CUMSUM_LEN],
-    ) {
+    pub fn set_cumsum_row(&mut self, row_idx: usize, cumsum: &[i32; CUMSUM_LEN]) {
         use p3_field::integers::QuotientMap;
         assert!(row_idx < self.height());
         let base = row_idx * TOTAL_TRACE_WIDTH;
@@ -332,11 +324,7 @@ impl CompositeTrace {
         // Run BLAKE3 once to get the final CV_OUT for the finalize
         // row.
         let full_state = compress_full_state(
-            cv_in,
-            message,
-            tweak.counter_low,
-            tweak.counter_high as u32,
-            tweak.block_len,
+            cv_in, message, tweak.counter_low, tweak.counter_high as u32, tweak.block_len,
             tweak.flags,
         );
         let cv_out: [u32; 8] = core::array::from_fn(|i| full_state[i]);
@@ -378,8 +366,7 @@ impl CompositeTrace {
             }
             for i in 4..8 {
                 for bit in 0..32 {
-                    dest[off] =
-                        <Val as QuotientMap<u64>>::from_int(((state[i] >> bit) & 1) as u64);
+                    dest[off] = <Val as QuotientMap<u64>>::from_int(((state[i] >> bit) & 1) as u64);
                     off += 1;
                 }
             }
@@ -389,8 +376,7 @@ impl CompositeTrace {
             }
             for i in 12..16 {
                 for bit in 0..32 {
-                    dest[off] =
-                        <Val as QuotientMap<u64>>::from_int(((state[i] >> bit) & 1) as u64);
+                    dest[off] = <Val as QuotientMap<u64>>::from_int(((state[i] >> bit) & 1) as u64);
                     off += 1;
                 }
             }
@@ -431,8 +417,7 @@ impl CompositeTrace {
             }
             // BLAKE3_CV (replicated across all 8 rows).
             for i in 0..8 {
-                row[BLAKE3_CV_START + i] =
-                    <Val as QuotientMap<u64>>::from_int(cv_in[i] as u64);
+                row[BLAKE3_CV_START + i] = <Val as QuotientMap<u64>>::from_int(cv_in[i] as u64);
             }
             // CV_OR_TWEAK_PREP.
             row[CV_OR_TWEAK_PREP] = <Val as QuotientMap<u64>>::from_int(tweak_packed);
@@ -488,12 +473,10 @@ impl CompositeTrace {
         // Last-permuted message + CV + tweak.
         let last_msg = round_msgs[6];
         for i in 0..16 {
-            row[BLAKE3_MSG_START + i] =
-                <Val as QuotientMap<u64>>::from_int(last_msg[i] as u64);
+            row[BLAKE3_MSG_START + i] = <Val as QuotientMap<u64>>::from_int(last_msg[i] as u64);
         }
         for i in 0..8 {
-            row[BLAKE3_CV_START + i] =
-                <Val as QuotientMap<u64>>::from_int(cv_in[i] as u64);
+            row[BLAKE3_CV_START + i] = <Val as QuotientMap<u64>>::from_int(cv_in[i] as u64);
         }
         row[CV_OR_TWEAK_PREP] = <Val as QuotientMap<u64>>::from_int(tweak_packed);
 
@@ -601,13 +584,8 @@ impl CompositeTrace {
                 } else {
                     &[]
                 };
-                chunk_cv = self.place_blake3_hash_with_selectors(
-                    row,
-                    &message,
-                    &chunk_cv,
-                    &tweak,
-                    extras,
-                );
+                chunk_cv =
+                    self.place_blake3_hash_with_selectors(row, &message, &chunk_cv, &tweak, extras);
                 row += 8;
             }
             chunk_cvs.push(chunk_cv);
@@ -645,13 +623,8 @@ impl CompositeTrace {
                 } else {
                     &[]
                 };
-                let parent_cv = self.place_blake3_hash_with_selectors(
-                    row,
-                    &message,
-                    &key_words,
-                    &tweak,
-                    extras,
-                );
+                let parent_cv = self
+                    .place_blake3_hash_with_selectors(row, &message, &key_words, &tweak, extras);
                 next.push(parent_cv);
                 row += 8;
                 i += 2;
@@ -753,12 +726,7 @@ impl CompositeTrace {
             );
         }
         let key_words: [u32; 8] = core::array::from_fn(|i| {
-            u32::from_le_bytes([
-                kappa[i * 4],
-                kappa[i * 4 + 1],
-                kappa[i * 4 + 2],
-                kappa[i * 4 + 3],
-            ])
+            u32::from_le_bytes([kappa[i * 4], kappa[i * 4 + 1], kappa[i * 4 + 2], kappa[i * 4 + 3]])
         });
         let mut row = row_start;
         if num_chunks == 1 {
@@ -779,18 +747,8 @@ impl CompositeTrace {
         }
         let mut si = 0usize;
         let root = self.fold_strip(
-            &mut row,
-            0,
-            num_chunks,
-            c0,
-            c1,
-            strip_bytes,
-            auth_siblings,
-            &mut si,
-            &key_words,
-            true,
-            selector_idx,
-            noise_strip,
+            &mut row, 0, num_chunks, c0, c1, strip_bytes, auth_siblings, &mut si, &key_words, true,
+            selector_idx, noise_strip,
         );
         assert_eq!(
             si,
@@ -822,11 +780,12 @@ impl CompositeTrace {
         // sub-slices (the X1 design, SEC_4C2 §8.6/§8.9).
         noise_chunk: Option<&[i8]>,
     ) -> [u32; 8] {
-        use crate::composite_layout::{
-            MAT_UNPACK_START, MSG_PAIR_SEL_START, NOISED_PACKED_START,
-            NOISE_PACKED_PREP, NOISE_UNPACK_START, UINT8_DATA_START,
-        };
         use p3_field::integers::QuotientMap;
+
+        use crate::composite_layout::{
+            MAT_UNPACK_START, MSG_PAIR_SEL_START, NOISED_PACKED_START, NOISE_PACKED_PREP,
+            NOISE_UNPACK_START, UINT8_DATA_START,
+        };
         const F_CHUNK_START: u32 = 1 << 0;
         const F_CHUNK_END: u32 = 1 << 1;
         const F_ROOT: u32 = 1 << 3;
@@ -835,12 +794,7 @@ impl CompositeTrace {
         for b in 0..16 {
             let blk = &chunk_bytes[b * 64..b * 64 + 64];
             let message: [u32; 16] = core::array::from_fn(|i| {
-                u32::from_le_bytes([
-                    blk[i * 4],
-                    blk[i * 4 + 1],
-                    blk[i * 4 + 2],
-                    blk[i * 4 + 3],
-                ])
+                u32::from_le_bytes([blk[i * 4], blk[i * 4 + 1], blk[i * 4 + 2], blk[i * 4 + 3]])
             });
             let mut flags = F_KEYED_HASH;
             if b == 0 {
@@ -1007,18 +961,12 @@ impl CompositeTrace {
                 s.hi
             );
             return core::array::from_fn(|i| {
-                u32::from_le_bytes([
-                    s.cv[i * 4],
-                    s.cv[i * 4 + 1],
-                    s.cv[i * 4 + 2],
-                    s.cv[i * 4 + 3],
-                ])
+                u32::from_le_bytes([s.cv[i * 4], s.cv[i * 4 + 1], s.cv[i * 4 + 2], s.cv[i * 4 + 3]])
             });
         }
         if c0 <= lo && hi <= c1 {
             return self.subtree_inside(
-                row, lo, hi, c0, strip_bytes, key_words, is_root, selector_idx,
-                noise_strip,
+                row, lo, hi, c0, strip_bytes, key_words, is_root, selector_idx, noise_strip,
             );
         }
         let mid = lo + crate::blake3_tree::left_len((hi - lo) as u64) as usize;
@@ -1087,8 +1035,9 @@ impl CompositeTrace {
     /// proof is unbounded. Encapsulates the CV_IN / ControlChip
     /// internals so `ai-pow`'s F1 bridge stays on the public API.
     pub fn place_key_pin_row(&mut self, row_idx: usize, commitment: bool, cv_in: &[u32; 8]) {
-        use crate::composite_layout::CV_IN_START;
         use p3_field::integers::QuotientMap;
+
+        use crate::composite_layout::CV_IN_START;
 
         assert!(
             row_idx < self.height(),
@@ -1231,12 +1180,13 @@ impl CompositeTrace {
         mat_id: u32,
         is_msg_mat: bool,
     ) -> [u64; 2] {
+        use p3_field::integers::QuotientMap;
+
         use crate::composite_layout::{
-            MAT_UNPACK_WIN, MAT_UNPACK_START, NOISED_PACKED_START, NOISED_PACKED_WIN,
+            MAT_UNPACK_START, MAT_UNPACK_WIN, NOISED_PACKED_START, NOISED_PACKED_WIN,
             NOISE_PACKED_PREP, NOISE_UNPACK_START, NOISE_UNPACK_WIN, UINT8_DATA_START,
             UINT8_DATA_WIN,
         };
-        use p3_field::integers::QuotientMap;
 
         assert!(
             row_idx < self.height(),
@@ -1258,15 +1208,13 @@ impl CompositeTrace {
         // MAT_UNPACK: the committed-plain i8 bytes (B1/C3 ties
         // these to HASH_A); UINT8_DATA: their u8 view.
         for i in 0..MAT_UNPACK_WIN {
-            row[MAT_UNPACK_START + i] =
-                <Val as QuotientMap<i64>>::from_int(plain[i] as i64);
+            row[MAT_UNPACK_START + i] = <Val as QuotientMap<i64>>::from_int(plain[i] as i64);
             row[UINT8_DATA_START + i] =
                 <Val as QuotientMap<u64>>::from_int((plain[i] as u8) as u64);
         }
         // NOISE_UNPACK: the Pearl `noise_ref` bytes.
         for i in 0..NOISE_UNPACK_WIN {
-            row[NOISE_UNPACK_START + i] =
-                <Val as QuotientMap<i64>>::from_int(noise[i] as i64);
+            row[NOISE_UNPACK_START + i] = <Val as QuotientMap<i64>>::from_int(noise[i] as i64);
         }
         // NOISE_PACKED_PREP = polyval(NOISE_UNPACK, base=129) — the
         // CRIT-1-pinned preprocessed noise (InputChip eqn 1).
@@ -1336,8 +1284,7 @@ impl CompositeTrace {
 
         // JACKPOT_MSG (16 slots).
         for i in 0..JACKPOT_SIZE {
-            row[JACKPOT_MSG_START + i] =
-                <Val as QuotientMap<u64>>::from_int(state[i] as u64);
+            row[JACKPOT_MSG_START + i] = <Val as QuotientMap<u64>>::from_int(state[i] as u64);
         }
 
         // V_BITS == bit-decomp of state[selected_slot] when active;
@@ -1358,8 +1305,7 @@ impl CompositeTrace {
             [0u32; 32]
         };
         for k in 0..32 {
-            row[JACKPOT_X_BITS_START + k] =
-                <Val as QuotientMap<u64>>::from_int(x_bits[k] as u64);
+            row[JACKPOT_X_BITS_START + k] = <Val as QuotientMap<u64>>::from_int(x_bits[k] as u64);
         }
 
         // SLOT_SEL one-hot.
@@ -1369,8 +1315,7 @@ impl CompositeTrace {
             [0u32; JACKPOT_SIZE]
         };
         for i in 0..JACKPOT_SIZE {
-            row[JACKPOT_SLOT_SEL_START + i] =
-                <Val as QuotientMap<u64>>::from_int(oh[i] as u64);
+            row[JACKPOT_SLOT_SEL_START + i] = <Val as QuotientMap<u64>>::from_int(oh[i] as u64);
         }
 
         // Compute and return the post-step state for the caller
@@ -1384,11 +1329,7 @@ impl CompositeTrace {
     /// cur.JACKPOT_MSG[i]` for every slot when both selectors are
     /// 0 (passthrough rows). Every passthrough row must thus hold
     /// the value the chain ended at.
-    pub fn fill_jackpot_passthrough(
-        &mut self,
-        from_row: usize,
-        state: &[u32; JACKPOT_SIZE],
-    ) {
+    pub fn fill_jackpot_passthrough(&mut self, from_row: usize, state: &[u32; JACKPOT_SIZE]) {
         use p3_field::integers::QuotientMap;
         for r in from_row..self.height() {
             let base = r * TOTAL_TRACE_WIDTH;
@@ -1453,13 +1394,8 @@ impl CompositeTrace {
 
         // 8-row keyed BLAKE3 block; row 7 (= last trace row) gets
         // IS_LAST_ROUND + IS_HASH_JACKPOT (selector idx 6).
-        let digest = self.place_blake3_hash_with_selectors(
-            row_start,
-            &msg,
-            commitment_words,
-            &tweak,
-            &[6],
-        );
+        let digest =
+            self.place_blake3_hash_with_selectors(row_start, &msg, commitment_words, &tweak, &[6]);
 
         // Co-write the degenerate jackpot step on row 7 (disjoint
         // columns from the blake3 chip; the unified selector set
@@ -1473,16 +1409,14 @@ impl CompositeTrace {
         }
         let v_bits = bit_decompose_u32(jackpot_state[0]);
         for k in 0..32 {
-            row[BIT_REG_START + k] =
-                <Val as QuotientMap<u64>>::from_int(v_bits[k] as u64);
+            row[BIT_REG_START + k] = <Val as QuotientMap<u64>>::from_int(v_bits[k] as u64);
         }
         for k in 0..32 {
             row[JACKPOT_X_BITS_START + k] = Val::default();
         }
         let oh = one_hot_select(0);
         for i in 0..JACKPOT_SIZE {
-            row[JACKPOT_SLOT_SEL_START + i] =
-                <Val as QuotientMap<u64>>::from_int(oh[i] as u64);
+            row[JACKPOT_SLOT_SEL_START + i] = <Val as QuotientMap<u64>>::from_int(oh[i] as u64);
         }
 
         digest
@@ -1538,16 +1472,15 @@ impl CompositeTrace {
             // slot)` holds and `extract_program` lifts the schedule
             // into the verifier-fixed canonical program.
             ControlChip.fill_row(&[false; crate::chips::control::NUM_SELECTORS], 0, row);
-            row[CONTROL_PREP] = <Val as QuotientMap<u64>>::from_int(
-                ControlChip::pack_control_prep_full(
+            row[CONTROL_PREP] =
+                <Val as QuotientMap<u64>>::from_int(ControlChip::pack_control_prep_full(
                     &[false; crate::chips::control::NUM_SELECTORS],
                     0,
                     true,
                     slot as u8,
                     t as u8, // §6(b)-G2: the stripe index (= fold-row t)
                     0,       // §4.C.2 c-exact: fold rows are not C3-leaf rows
-                ),
-            );
+                ));
             row[FOLD_IS_FOLD] = <Val as QuotientMap<u64>>::from_int(1);
             row[FOLD_SLOT_SEL_START + slot] = <Val as QuotientMap<u64>>::from_int(1);
             // §6(b)-G2: per-fold-row stripe one-hot (the keystone's
@@ -1663,20 +1596,17 @@ impl CompositeTrace {
                         // `compute_tile_trace`'s `c_blk[idx] += Σδ`).
                         let is_reset = step == 0 && chunk == 0;
                         let is_update = !is_reset;
-                        let cumsum_new = self.place_matmul_step(
-                            row, &a_blk, &b_blk, is_reset, is_update, &carry,
-                        );
+                        let cumsum_new = self
+                            .place_matmul_step(row, &a_blk, &b_blk, is_reset, is_update, &carry);
 
                         let base = row * TOTAL_TRACE_WIDTH;
-                        let rs =
-                            &mut self.matrix.values[base..base + TOTAL_TRACE_WIDTH];
+                        let rs = &mut self.matrix.values[base..base + TOTAL_TRACE_WIDTH];
                         // SX_XR register entering this row (every
                         // sweep row carries it for the StripeXor
                         // passthrough; only the stripe's *last* chunk
                         // is an active fold row).
                         for s in 0..STRIPE_MAX {
-                            rs[SX_XR_START + s] =
-                                <Val as QuotientMap<u64>>::from_int(xr[s] as u64);
+                            rs[SX_XR_START + s] = <Val as QuotientMap<u64>>::from_int(xr[s] as u64);
                         }
                         if chunk == chunks - 1 {
                             // Stripe complete ⇒ `cumsum_new` is the
@@ -1684,25 +1614,20 @@ impl CompositeTrace {
                             // into lane = `step`. `SX_IN` = cumsum_new
                             // (= nxt.CUMSUM_TILE — the matmul-chip-
                             // forced value the keystone binds).
-                            rs[SX_IS_ACTIVE] =
-                                <Val as QuotientMap<u64>>::from_int(1);
-                            rs[SX_LANE_SEL_START + step] =
-                                <Val as QuotientMap<u64>>::from_int(1);
+                            rs[SX_IS_ACTIVE] = <Val as QuotientMap<u64>>::from_int(1);
+                            rs[SX_LANE_SEL_START + step] = <Val as QuotientMap<u64>>::from_int(1);
                             let mut xin = 0u32;
                             for c in 0..CUMSUM_LEN {
                                 let u = cumsum_new[c] as u32;
                                 rs[SX_IN_START + c] =
-                                    <Val as QuotientMap<i64>>::from_int(
-                                        cumsum_new[c] as i64,
-                                    );
+                                    <Val as QuotientMap<i64>>::from_int(cumsum_new[c] as i64);
                                 set_bits(rs, SX_IN_BITS_START + c * 32, u);
                                 xin ^= u;
                             }
                             let sel_val = xr[step];
                             set_bits(rs, SX_XR_SEL_BITS_START, sel_val);
                             let new_sel = sel_val ^ xin;
-                            rs[SX_NEW_SEL] =
-                                <Val as QuotientMap<u64>>::from_int(new_sel as u64);
+                            rs[SX_NEW_SEL] = <Val as QuotientMap<u64>>::from_int(new_sel as u64);
                             set_bits(rs, SX_NEW_SEL_BITS_START, new_sel);
                             for i in 0..32 {
                                 let mut col_sum: u32 = (sel_val >> i) & 1;
@@ -1712,8 +1637,7 @@ impl CompositeTrace {
                                 let q = (col_sum - ((new_sel >> i) & 1)) / 2;
                                 // 2026-05-21 width reduction: Q[i] ∈ {0,1,2}
                                 // stored as one value column (was 2 bits).
-                                rs[SX_Q_START + i] =
-                                    <Val as QuotientMap<u64>>::from_int(q as u64);
+                                rs[SX_Q_START + i] = <Val as QuotientMap<u64>>::from_int(q as u64);
                             }
                             xr[step] = new_sel;
                         }
@@ -1735,8 +1659,7 @@ impl CompositeTrace {
             let base = rr * TOTAL_TRACE_WIDTH;
             let rs = &mut self.matrix.values[base..base + TOTAL_TRACE_WIDTH];
             for s in 0..STRIPE_MAX {
-                rs[SX_XR_START + s] =
-                    <Val as QuotientMap<u64>>::from_int(xr[s] as u64);
+                rs[SX_XR_START + s] = <Val as QuotientMap<u64>>::from_int(xr[s] as u64);
             }
         }
         (rows_used, xr)
@@ -2062,12 +1985,10 @@ impl CompositeTrace {
         let mut u8_count = [0u64; 256];
         for r in 0..n {
             let base = r * TOTAL_TRACE_WIDTH;
-            let is_msg_mat =
-                self.matrix.values[base + IS_MSG_MAT].as_canonical_u64();
+            let is_msg_mat = self.matrix.values[base + IS_MSG_MAT].as_canonical_u64();
             if is_msg_mat == 1 {
                 for i in 0..UINT8_DATA_WIN {
-                    let v =
-                        self.matrix.values[base + UINT8_DATA_START + i].as_canonical_u64();
+                    let v = self.matrix.values[base + UINT8_DATA_START + i].as_canonical_u64();
                     if (v as usize) < 256 {
                         u8_count[v as usize] += 1;
                     }
@@ -2094,15 +2015,13 @@ impl CompositeTrace {
         for r in 0..n {
             let base = r * TOTAL_TRACE_WIDTH;
             for i in 0..MAT_ID_LIMBS_LEN {
-                let v = self.matrix.values[base + MAT_ID_LIMBS_START + i]
-                    .as_canonical_u64();
+                let v = self.matrix.values[base + MAT_ID_LIMBS_START + i].as_canonical_u64();
                 if (v as usize) < 8192 {
                     u13_count[v as usize] += 1;
                 }
             }
             for i in 0..AB_ID_LIMBS_LEN {
-                let v = self.matrix.values[base + AB_ID_LIMBS_START + i]
-                    .as_canonical_u64();
+                let v = self.matrix.values[base + AB_ID_LIMBS_START + i].as_canonical_u64();
                 if (v as usize) < 8192 {
                     u13_count[v as usize] += 1;
                 }
@@ -2123,8 +2042,7 @@ impl CompositeTrace {
         for r in 0..n {
             let base = r * TOTAL_TRACE_WIDTH;
             for i in 0..NOISE_UNPACK_WIN {
-                let raw = self.matrix.values[base + NOISE_UNPACK_START + i]
-                    .as_canonical_u64();
+                let raw = self.matrix.values[base + NOISE_UNPACK_START + i].as_canonical_u64();
                 let signed = goldilocks_to_signed(raw);
                 if (-64..=64).contains(&signed) {
                     i7p1_count[(signed + 64) as usize] += 1;
@@ -2156,22 +2074,13 @@ impl CompositeTrace {
             }
         };
         scan_i8_cells(
-            A_NOISED_UNPACK_START,
-            A_NOISED_UNPACK_LEN,
-            &mut i8_count,
-            &self.matrix.values,
+            A_NOISED_UNPACK_START, A_NOISED_UNPACK_LEN, &mut i8_count, &self.matrix.values,
         );
         scan_i8_cells(
-            B_NOISED_UNPACK_START,
-            B_NOISED_UNPACK_LEN,
-            &mut i8_count,
-            &self.matrix.values,
+            B_NOISED_UNPACK_START, B_NOISED_UNPACK_LEN, &mut i8_count, &self.matrix.values,
         );
         scan_i8_cells(
-            MAT_UNPACK_START,
-            MAT_UNPACK_WIN,
-            &mut i8_count,
-            &self.matrix.values,
+            MAT_UNPACK_START, MAT_UNPACK_WIN, &mut i8_count, &self.matrix.values,
         );
         for v in 0..256.min(n) {
             self.matrix.values[v * TOTAL_TRACE_WIDTH + IRANGE8_FREQ] =
@@ -2190,17 +2099,14 @@ impl CompositeTrace {
         let pair_len = MAT_UNPACK_WIN.min(UINT8_DATA_WIN);
         for r in 0..n {
             let base = r * TOTAL_TRACE_WIDTH;
-            let is_msg_mat =
-                self.matrix.values[base + IS_MSG_MAT].as_canonical_u64();
+            let is_msg_mat = self.matrix.values[base + IS_MSG_MAT].as_canonical_u64();
             if is_msg_mat != 1 {
                 continue;
             }
             for i in 0..pair_len {
-                let signed_raw =
-                    self.matrix.values[base + MAT_UNPACK_START + i].as_canonical_u64();
+                let signed_raw = self.matrix.values[base + MAT_UNPACK_START + i].as_canonical_u64();
                 let signed = goldilocks_to_signed(signed_raw);
-                let unsigned = self.matrix.values[base + UINT8_DATA_START + i]
-                    .as_canonical_u64();
+                let unsigned = self.matrix.values[base + UINT8_DATA_START + i].as_canonical_u64();
                 // The valid pair condition: unsigned == signed.rem_euclid(256).
                 let expected_unsigned = (signed.rem_euclid(256)) as u64;
                 if (-128..=127).contains(&signed) && unsigned == expected_unsigned {
@@ -2259,20 +2165,16 @@ impl CompositeTrace {
             for s in 0..fl {
                 let key = (
                     mat_id,
-                    self.matrix.values[base + NOISED_PACKED_START + 2 * s]
-                        .as_canonical_u64(),
-                    self.matrix.values[base + NOISED_PACKED_START + 2 * s + 1]
-                        .as_canonical_u64(),
+                    self.matrix.values[base + NOISED_PACKED_START + 2 * s].as_canonical_u64(),
+                    self.matrix.values[base + NOISED_PACKED_START + 2 * s + 1].as_canonical_u64(),
                 );
                 key_to_first_row.entry(key).or_insert((r, s));
             }
         }
         for r in 0..n {
             let base = r * TOTAL_TRACE_WIDTH;
-            let is_reset =
-                self.matrix.values[base + IS_RESET_CUMSUM].as_canonical_u64();
-            let is_update =
-                self.matrix.values[base + IS_UPDATE_CUMSUM].as_canonical_u64();
+            let is_reset = self.matrix.values[base + IS_RESET_CUMSUM].as_canonical_u64();
+            let is_update = self.matrix.values[base + IS_UPDATE_CUMSUM].as_canonical_u64();
             let active = is_reset + is_update;
             if active > 0 {
                 // M-S1 (§4.C.11) — one query per 2-cell chunk so
@@ -2283,8 +2185,7 @@ impl CompositeTrace {
                     let a_key = (
                         a_id,
                         self.matrix.values[base + A_NOISED_START + 2 * j].as_canonical_u64(),
-                        self.matrix.values[base + A_NOISED_START + 2 * j + 1]
-                            .as_canonical_u64(),
+                        self.matrix.values[base + A_NOISED_START + 2 * j + 1].as_canonical_u64(),
                     );
                     if let Some(&(tr, ts)) = key_to_first_row.get(&a_key) {
                         mat_freq[tr * fl + ts] += active;
@@ -2295,8 +2196,7 @@ impl CompositeTrace {
                     let b_key = (
                         b_id,
                         self.matrix.values[base + B_NOISED_START + 2 * j].as_canonical_u64(),
-                        self.matrix.values[base + B_NOISED_START + 2 * j + 1]
-                            .as_canonical_u64(),
+                        self.matrix.values[base + B_NOISED_START + 2 * j + 1].as_canonical_u64(),
                     );
                     if let Some(&(tr, ts)) = key_to_first_row.get(&b_key) {
                         mat_freq[tr * fl + ts] += active;
@@ -2311,8 +2211,7 @@ impl CompositeTrace {
             // The row's own (MAT_ID, NOISED_PACKED) is the lookup
             // key — self-referential, so the matching table row is
             // this same row.
-            let is_msg_mat =
-                self.matrix.values[base + IS_MSG_MAT].as_canonical_u64();
+            let is_msg_mat = self.matrix.values[base + IS_MSG_MAT].as_canonical_u64();
             if is_msg_mat == 1 {
                 let key = (
                     self.matrix.values[base + MAT_ID].as_canonical_u64(),
@@ -2344,27 +2243,20 @@ impl CompositeTrace {
             let mut key = Vec::with_capacity(1 + CV_OUT_LEN);
             key.push(self.matrix.values[base + STARK_ROW_IDX].as_canonical_u64());
             for i in 0..CV_OUT_LEN {
-                key.push(
-                    self.matrix.values[base + CV_OUT_START + i].as_canonical_u64(),
-                );
+                key.push(self.matrix.values[base + CV_OUT_START + i].as_canonical_u64());
             }
             cv_key_to_first_row.entry(key).or_insert(r);
         }
         for r in 0..n {
             let base = r * TOTAL_TRACE_WIDTH;
-            let is_cv_in =
-                self.matrix.values[base + IS_CV_IN].as_canonical_u64();
+            let is_cv_in = self.matrix.values[base + IS_CV_IN].as_canonical_u64();
             if is_cv_in == 0 {
                 continue;
             }
             let mut query = Vec::with_capacity(1 + CV_IN_LEN);
-            query.push(
-                self.matrix.values[base + CV_OR_TWEAK_PREP].as_canonical_u64(),
-            );
+            query.push(self.matrix.values[base + CV_OR_TWEAK_PREP].as_canonical_u64());
             for i in 0..CV_IN_LEN {
-                query.push(
-                    self.matrix.values[base + CV_IN_START + i].as_canonical_u64(),
-                );
+                query.push(self.matrix.values[base + CV_IN_START + i].as_canonical_u64());
             }
             if let Some(&tr) = cv_key_to_first_row.get(&query) {
                 cv_freq[tr] += is_cv_in;
@@ -2387,11 +2279,7 @@ impl CompositeTrace {
     /// `when_transition()` silences the wraparound constraint at
     /// the very last row, so the trace doesn't need to "close the
     /// loop" — the last row's cumsum doesn't have to equal row 0's.
-    pub fn fill_cumsum_passthrough(
-        &mut self,
-        from_row: usize,
-        cumsum: &[i32; CUMSUM_LEN],
-    ) {
+    pub fn fill_cumsum_passthrough(&mut self, from_row: usize, cumsum: &[i32; CUMSUM_LEN]) {
         for r in from_row..self.height() {
             self.set_cumsum_row(r, cumsum);
         }
@@ -2400,13 +2288,13 @@ impl CompositeTrace {
 
 #[cfg(test)]
 mod tests {
+    use p3_uni_stark::{prove, verify};
+
     use super::*;
     use crate::circuit::{build_stark_config, AiPowStarkConfig, CircuitConfig};
     use crate::composite_full_air::CompositeFullAir;
     use crate::composite_layout::MIN_STARK_LEN;
     use crate::params::ZkParams;
-
-    use p3_uni_stark::{prove, verify};
 
     fn test_zk_params() -> ZkParams {
         ZkParams {
@@ -2424,10 +2312,7 @@ mod tests {
         let trace = CompositeTrace::baseline(MIN_STARK_LEN);
         assert_eq!(trace.height(), MIN_STARK_LEN);
         assert_eq!(trace.width(), TOTAL_TRACE_WIDTH);
-        assert_eq!(
-            trace.matrix.values.len(),
-            MIN_STARK_LEN * TOTAL_TRACE_WIDTH
-        );
+        assert_eq!(trace.matrix.values.len(), MIN_STARK_LEN * TOTAL_TRACE_WIDTH);
     }
 
     #[test]
@@ -2440,7 +2325,8 @@ mod tests {
     fn baseline_trace_verifies_through_composite_full_air() {
         let cfg = build_stark_config(&test_zk_params(), &CircuitConfig::TEST_PEARL);
         let trace = CompositeTrace::baseline_min();
-        let pis = crate::composite_public::CompositePublicInputs::derive_from_matrix(&trace.matrix).to_vec();
+        let pis = crate::composite_public::CompositePublicInputs::derive_from_matrix(&trace.matrix)
+            .to_vec();
         let proof = prove::<AiPowStarkConfig, _>(&cfg, &CompositeFullAir, trace.matrix, &pis);
         verify::<AiPowStarkConfig, _>(&cfg, &CompositeFullAir, &proof, &pis)
             .expect("baseline trace must verify");
@@ -2464,7 +2350,8 @@ mod tests {
         let cfg = build_stark_config(&test_zk_params(), &CircuitConfig::TEST_PEARL);
         let trace = CompositeTrace::baseline(MIN_STARK_LEN * 2);
         assert_eq!(trace.height(), MIN_STARK_LEN * 2);
-        let pis = crate::composite_public::CompositePublicInputs::derive_from_matrix(&trace.matrix).to_vec();
+        let pis = crate::composite_public::CompositePublicInputs::derive_from_matrix(&trace.matrix)
+            .to_vec();
         let proof = prove::<AiPowStarkConfig, _>(&cfg, &CompositeFullAir, trace.matrix, &pis);
         verify::<AiPowStarkConfig, _>(&cfg, &CompositeFullAir, &proof, &pis)
             .expect("2× baseline must verify");
@@ -2505,20 +2392,18 @@ mod tests {
         let after_reset =
             trace.place_matmul_step(0, &a, &b, /*reset*/ true, /*update*/ false, &zero);
         // Step 1: update.
-        let after_u1 =
-            trace.place_matmul_step(1, &a, &b, false, true, &after_reset);
+        let after_u1 = trace.place_matmul_step(1, &a, &b, false, true, &after_reset);
         // Step 2: update.
-        let after_u2 =
-            trace.place_matmul_step(2, &a, &b, false, true, &after_u1);
+        let after_u2 = trace.place_matmul_step(2, &a, &b, false, true, &after_u1);
         // Thread the final cumsum across all subsequent passthrough
         // rows. The matmul cross-row constraint silences only at
         // the trace's very last row (via when_transition), so every
         // intermediate row must hold the value the chain ended at.
         trace.fill_cumsum_passthrough(3, &after_u2);
 
-        let pis = crate::composite_public::CompositePublicInputs::derive_from_matrix(&trace.matrix).to_vec();
-        let proof =
-            prove::<AiPowStarkConfig, _>(&cfg, &CompositeFullAir, trace.matrix, &pis);
+        let pis = crate::composite_public::CompositePublicInputs::derive_from_matrix(&trace.matrix)
+            .to_vec();
+        let proof = prove::<AiPowStarkConfig, _>(&cfg, &CompositeFullAir, trace.matrix, &pis);
         verify::<AiPowStarkConfig, _>(&cfg, &CompositeFullAir, &proof, &pis)
             .expect("matmul chain must verify through composite_full_air");
     }
@@ -2545,20 +2430,15 @@ mod tests {
         let cv_out = trace.place_blake3_hash(0, &msg, &cv, &tweak);
         // Sanity: the returned cv_out matches a fresh BLAKE3 run.
         let full = compress_full_state(
-            &cv,
-            &msg,
-            tweak.counter_low,
-            tweak.counter_high as u32,
-            tweak.block_len,
-            tweak.flags,
+            &cv, &msg, tweak.counter_low, tweak.counter_high as u32, tweak.block_len, tweak.flags,
         );
         for i in 0..8 {
             assert_eq!(cv_out[i], full[i]);
         }
 
-        let pis = crate::composite_public::CompositePublicInputs::derive_from_matrix(&trace.matrix).to_vec();
-        let proof =
-            prove::<AiPowStarkConfig, _>(&cfg, &CompositeFullAir, trace.matrix, &pis);
+        let pis = crate::composite_public::CompositePublicInputs::derive_from_matrix(&trace.matrix)
+            .to_vec();
+        let proof = prove::<AiPowStarkConfig, _>(&cfg, &CompositeFullAir, trace.matrix, &pis);
         verify::<AiPowStarkConfig, _>(&cfg, &CompositeFullAir, &proof, &pis)
             .expect("BLAKE3 hash block must verify through composite_full_air");
     }
@@ -2567,8 +2447,9 @@ mod tests {
     /// constraint rejects.
     #[test]
     fn blake3_hash_block_rejects_tampered_cv_out() {
-        use crate::composite_layout::CV_OUT_START;
         use p3_field::integers::QuotientMap;
+
+        use crate::composite_layout::CV_OUT_START;
 
         let cfg = build_stark_config(&test_zk_params(), &CircuitConfig::TEST_PEARL);
         let mut trace = CompositeTrace::baseline_min();
@@ -2585,12 +2466,11 @@ mod tests {
         let _ = trace.place_blake3_hash(0, &msg, &cv, &tweak);
         // Tamper row 7's CV_OUT[0].
         let target = 7 * TOTAL_TRACE_WIDTH + CV_OUT_START;
-        trace.matrix.values[target] =
-            <Val as QuotientMap<u64>>::from_int(0xDEAD_BEEFu64);
+        trace.matrix.values[target] = <Val as QuotientMap<u64>>::from_int(0xDEAD_BEEFu64);
 
-        let pis = crate::composite_public::CompositePublicInputs::derive_from_matrix(&trace.matrix).to_vec();
-        let proof =
-            prove::<AiPowStarkConfig, _>(&cfg, &CompositeFullAir, trace.matrix, &pis);
+        let pis = crate::composite_public::CompositePublicInputs::derive_from_matrix(&trace.matrix)
+            .to_vec();
+        let proof = prove::<AiPowStarkConfig, _>(&cfg, &CompositeFullAir, trace.matrix, &pis);
         assert!(
             verify::<AiPowStarkConfig, _>(&cfg, &CompositeFullAir, &proof, &pis).is_err(),
             "tampered CV_OUT must reject"
@@ -2608,8 +2488,9 @@ mod tests {
     /// *matmul* rows — `round_gate_excl` — never on BLAKE3 rows.)
     #[test]
     fn path_a_overlay_aliased_blake_columns_still_constrained() {
-        use crate::composite_layout::SX_IN_BITS_START;
         use p3_field::integers::QuotientMap;
+
+        use crate::composite_layout::SX_IN_BITS_START;
 
         let cfg = build_stark_config(&test_zk_params(), &CircuitConfig::TEST_PEARL);
         let mut trace = CompositeTrace::baseline_min();
@@ -2629,12 +2510,11 @@ mod tests {
         // genuine BLAKE3 round row (row 2). On a BLAKE3 row that
         // column holds BLAKE3 state, so `verify_round` must reject.
         let target = 2 * TOTAL_TRACE_WIDTH + SX_IN_BITS_START + 8;
-        trace.matrix.values[target] =
-            <Val as QuotientMap<u64>>::from_int(0xDEAD_BEEFu64);
+        trace.matrix.values[target] = <Val as QuotientMap<u64>>::from_int(0xDEAD_BEEFu64);
 
-        let pis = crate::composite_public::CompositePublicInputs::derive_from_matrix(&trace.matrix).to_vec();
-        let proof =
-            prove::<AiPowStarkConfig, _>(&cfg, &CompositeFullAir, trace.matrix, &pis);
+        let pis = crate::composite_public::CompositePublicInputs::derive_from_matrix(&trace.matrix)
+            .to_vec();
+        let proof = prove::<AiPowStarkConfig, _>(&cfg, &CompositeFullAir, trace.matrix, &pis);
         assert!(
             verify::<AiPowStarkConfig, _>(&cfg, &CompositeFullAir, &proof, &pis).is_err(),
             "tampered blake3_round column in the SX-overlay window must reject"
@@ -2649,8 +2529,7 @@ mod tests {
         let cfg = build_stark_config(&test_zk_params(), &CircuitConfig::TEST_PEARL);
         let mut trace = CompositeTrace::baseline_min();
 
-        let initial: [u32; JACKPOT_SIZE] =
-            core::array::from_fn(|i| (i as u32 + 1) * 0xCAFE_BABE);
+        let initial: [u32; JACKPOT_SIZE] = core::array::from_fn(|i| (i as u32 + 1) * 0xCAFE_BABE);
 
         let s1 = trace.place_jackpot_step(0, &initial, 0, 0xDEAD_BEEF, true);
         let s2 = trace.place_jackpot_step(1, &s1, 3, 0xF00D_F00D, true);
@@ -2658,9 +2537,9 @@ mod tests {
 
         trace.fill_jackpot_passthrough(3, &s3);
 
-        let pis = crate::composite_public::CompositePublicInputs::derive_from_matrix(&trace.matrix).to_vec();
-        let proof =
-            prove::<AiPowStarkConfig, _>(&cfg, &CompositeFullAir, trace.matrix, &pis);
+        let pis = crate::composite_public::CompositePublicInputs::derive_from_matrix(&trace.matrix)
+            .to_vec();
+        let proof = prove::<AiPowStarkConfig, _>(&cfg, &CompositeFullAir, trace.matrix, &pis);
         verify::<AiPowStarkConfig, _>(&cfg, &CompositeFullAir, &proof, &pis)
             .expect("jackpot chain must verify through composite_full_air");
     }
@@ -2682,9 +2561,9 @@ mod tests {
         let target = 1 * TOTAL_TRACE_WIDTH + JACKPOT_MSG_START;
         trace.matrix.values[target] = <Val as QuotientMap<u64>>::from_int(0xBEEFu64);
 
-        let pis = crate::composite_public::CompositePublicInputs::derive_from_matrix(&trace.matrix).to_vec();
-        let proof =
-            prove::<AiPowStarkConfig, _>(&cfg, &CompositeFullAir, trace.matrix, &pis);
+        let pis = crate::composite_public::CompositePublicInputs::derive_from_matrix(&trace.matrix)
+            .to_vec();
+        let proof = prove::<AiPowStarkConfig, _>(&cfg, &CompositeFullAir, trace.matrix, &pis);
         assert!(
             verify::<AiPowStarkConfig, _>(&cfg, &CompositeFullAir, &proof, &pis).is_err(),
             "tampered JACKPOT_MSG must reject"
@@ -2725,18 +2604,15 @@ mod tests {
             b[1][d] = ((d as i8) + 5) % 9 - 4;
         }
         let zero_cumsum: [i32; CUMSUM_LEN] = [0; CUMSUM_LEN];
-        let cumsum_after_reset =
-            trace.place_matmul_step(8, &a, &b, true, false, &zero_cumsum);
-        let cumsum_final =
-            trace.place_matmul_step(9, &a, &b, false, true, &cumsum_after_reset);
+        let cumsum_after_reset = trace.place_matmul_step(8, &a, &b, true, false, &zero_cumsum);
+        let cumsum_final = trace.place_matmul_step(9, &a, &b, false, true, &cumsum_after_reset);
 
         // (c) Jackpot step chain at rows 10..11. The initial
         //     jackpot state must be present on every row before
         //     the first active step (rows 0..9 here) so the
         //     cross-row passthrough constraint `nxt = cur` holds
         //     across the row-9 → row-10 boundary.
-        let initial_jackpot: [u32; JACKPOT_SIZE] =
-            core::array::from_fn(|i| 0xDEAD_0000 + i as u32);
+        let initial_jackpot: [u32; JACKPOT_SIZE] = core::array::from_fn(|i| 0xDEAD_0000 + i as u32);
         trace.fill_jackpot_passthrough(0, &initial_jackpot);
 
         let jackpot_after_step1 =
@@ -2750,9 +2626,9 @@ mod tests {
         // For jackpot: rows 12..N hold the post-step-2 state.
         trace.fill_jackpot_passthrough(12, &jackpot_final);
 
-        let pis = crate::composite_public::CompositePublicInputs::derive_from_matrix(&trace.matrix).to_vec();
-        let proof =
-            prove::<AiPowStarkConfig, _>(&cfg, &CompositeFullAir, trace.matrix, &pis);
+        let pis = crate::composite_public::CompositePublicInputs::derive_from_matrix(&trace.matrix)
+            .to_vec();
+        let proof = prove::<AiPowStarkConfig, _>(&cfg, &CompositeFullAir, trace.matrix, &pis);
         verify::<AiPowStarkConfig, _>(&cfg, &CompositeFullAir, &proof, &pis)
             .expect("three-chip composite trace must verify");
     }
@@ -2795,9 +2671,9 @@ mod tests {
         // Thread the final cumsum through all subsequent rows.
         trace.fill_cumsum_passthrough(10, &after_update);
 
-        let pis = crate::composite_public::CompositePublicInputs::derive_from_matrix(&trace.matrix).to_vec();
-        let proof =
-            prove::<AiPowStarkConfig, _>(&cfg, &CompositeFullAir, trace.matrix, &pis);
+        let pis = crate::composite_public::CompositePublicInputs::derive_from_matrix(&trace.matrix)
+            .to_vec();
+        let proof = prove::<AiPowStarkConfig, _>(&cfg, &CompositeFullAir, trace.matrix, &pis);
         verify::<AiPowStarkConfig, _>(&cfg, &CompositeFullAir, &proof, &pis)
             .expect("combined BLAKE3 + matmul trace must verify");
     }
@@ -2819,14 +2695,15 @@ mod tests {
         // Tamper row 0's A_NOISED_UNPACK[0]: change from 1 to 2.
         // The dot product changes, so the constraint
         // `nxt.CUMSUM = (1+0) * dot + (0) * cur.CUMSUM` rejects.
-        use crate::composite_layout::A_NOISED_UNPACK_START;
         use p3_field::integers::QuotientMap;
+
+        use crate::composite_layout::A_NOISED_UNPACK_START;
         let target = 0 * TOTAL_TRACE_WIDTH + A_NOISED_UNPACK_START;
         trace.matrix.values[target] = <Val as QuotientMap<i64>>::from_int(2);
 
-        let pis = crate::composite_public::CompositePublicInputs::derive_from_matrix(&trace.matrix).to_vec();
-        let proof =
-            prove::<AiPowStarkConfig, _>(&cfg, &CompositeFullAir, trace.matrix, &pis);
+        let pis = crate::composite_public::CompositePublicInputs::derive_from_matrix(&trace.matrix)
+            .to_vec();
+        let proof = prove::<AiPowStarkConfig, _>(&cfg, &CompositeFullAir, trace.matrix, &pis);
         assert!(
             verify::<AiPowStarkConfig, _>(&cfg, &CompositeFullAir, &proof, &pis).is_err(),
             "tampered matmul input must reject"
@@ -2843,8 +2720,9 @@ mod tests {
     /// §4.C committed-store binding would not constrain the matmul).
     #[test]
     fn matmul_pack_link_rejects_inconsistent_a_noised() {
-        use crate::composite_layout::{A_NOISED_START, TILE_D};
         use p3_field::integers::QuotientMap;
+
+        use crate::composite_layout::{A_NOISED_START, TILE_D};
         let cfg = build_stark_config(&test_zk_params(), &CircuitConfig::TEST_PEARL);
         let mut trace = CompositeTrace::baseline_min();
         let a = [[3i8; TILE_D]; crate::composite_layout::TILE_H];
@@ -2854,14 +2732,10 @@ mod tests {
         trace.fill_cumsum_passthrough(1, &after);
         // Corrupt ONLY packed A_NOISED[0] ⇒ ≠ polyval(unpack[0..4]).
         let target = 0 * TOTAL_TRACE_WIDTH + A_NOISED_START;
-        trace.matrix.values[target] =
-            <Val as QuotientMap<i64>>::from_int(0xDEAD);
-        let pis = crate::composite_public::CompositePublicInputs::derive_from_matrix(
-            &trace.matrix,
-        )
-        .to_vec();
-        let proof =
-            prove::<AiPowStarkConfig, _>(&cfg, &CompositeFullAir, trace.matrix, &pis);
+        trace.matrix.values[target] = <Val as QuotientMap<i64>>::from_int(0xDEAD);
+        let pis = crate::composite_public::CompositePublicInputs::derive_from_matrix(&trace.matrix)
+            .to_vec();
+        let proof = prove::<AiPowStarkConfig, _>(&cfg, &CompositeFullAir, trace.matrix, &pis);
         assert!(
             verify::<AiPowStarkConfig, _>(&cfg, &CompositeFullAir, &proof, &pis).is_err(),
             "A_NOISED ≠ pack(A_NOISED_UNPACK) on a matmul row must reject"
@@ -3009,7 +2883,8 @@ mod tests {
         trace.place_matrix_hash_a(0, &matrix, &key);
 
         let cfg = build_stark_config(&test_zk_params(), &CircuitConfig::TEST_PEARL);
-        let pis = crate::composite_public::CompositePublicInputs::derive_from_matrix(&trace.matrix).to_vec();
+        let pis = crate::composite_public::CompositePublicInputs::derive_from_matrix(&trace.matrix)
+            .to_vec();
         let proof = prove::<AiPowStarkConfig, _>(&cfg, &CompositeFullAir, trace.matrix, &pis);
         verify::<AiPowStarkConfig, _>(&cfg, &CompositeFullAir, &proof, &pis)
             .expect("composite proof with matrix hash must verify");
@@ -3025,11 +2900,12 @@ mod tests {
     /// full prove+verify.
     #[test]
     fn place_matrix_staging_row_writes_expected_columns() {
+        use p3_field::integers::QuotientMap;
+        use p3_field::PrimeField64;
+
         use crate::composite_layout::{
             IS_MSG_MAT, MAT_ID, NOISED_PACKED_START, NOISE_UNPACK_START, UINT8_DATA_START,
         };
-        use p3_field::integers::QuotientMap;
-        use p3_field::PrimeField64;
 
         let mut trace = CompositeTrace::baseline_min();
         let bytes: [i8; 8] = [1, -2, 3, -4, 5, -6, 7, -8];
@@ -3070,8 +2946,9 @@ mod tests {
     /// what makes that path sound.)
     #[test]
     fn c3_rejects_is_msg_mat_row_with_mismatched_blake_msg() {
-        use crate::composite_layout::{IS_MSG_MAT, IS_NEW_BLAKE, UINT8_DATA_START};
         use p3_field::integers::QuotientMap;
+
+        use crate::composite_layout::{IS_MSG_MAT, IS_NEW_BLAKE, UINT8_DATA_START};
 
         let cfg = build_stark_config(&test_zk_params(), &CircuitConfig::TEST_PEARL);
 
@@ -3083,18 +2960,13 @@ mod tests {
         // = 7 ≠ 0 ⇒ C3 fails. (Bare IS_MSG_MAT without IS_NEW_BLAKE
         // is the i8u8/range bus data-validation case — C3 vacuous
         // there, which is what restores the 6 LogUp tests.)
-        trace.matrix.values[base + IS_MSG_MAT] =
-            <Val as QuotientMap<u64>>::from_int(1);
-        trace.matrix.values[base + IS_NEW_BLAKE] =
-            <Val as QuotientMap<u64>>::from_int(1);
-        trace.matrix.values[base + UINT8_DATA_START] =
-            <Val as QuotientMap<u64>>::from_int(7);
+        trace.matrix.values[base + IS_MSG_MAT] = <Val as QuotientMap<u64>>::from_int(1);
+        trace.matrix.values[base + IS_NEW_BLAKE] = <Val as QuotientMap<u64>>::from_int(1);
+        trace.matrix.values[base + UINT8_DATA_START] = <Val as QuotientMap<u64>>::from_int(7);
 
-        let pis =
-            crate::composite_public::CompositePublicInputs::derive_from_matrix(&trace.matrix)
-                .to_vec();
-        let proof =
-            prove::<AiPowStarkConfig, _>(&cfg, &CompositeFullAir, trace.matrix, &pis);
+        let pis = crate::composite_public::CompositePublicInputs::derive_from_matrix(&trace.matrix)
+            .to_vec();
+        let proof = prove::<AiPowStarkConfig, _>(&cfg, &CompositeFullAir, trace.matrix, &pis);
         assert!(
             verify::<AiPowStarkConfig, _>(&cfg, &CompositeFullAir, &proof, &pis).is_err(),
             "C3 must reject an IS_MSG_MAT row whose BLAKE3_MSG != base256(UINT8_DATA)"
@@ -3112,7 +2984,8 @@ mod tests {
         trace.place_matrix_hash_a(0, &matrix, &key);
 
         let cfg = build_stark_config(&test_zk_params(), &CircuitConfig::TEST_PEARL);
-        let mut pis = crate::composite_public::CompositePublicInputs::derive_from_matrix(&trace.matrix);
+        let mut pis =
+            crate::composite_public::CompositePublicInputs::derive_from_matrix(&trace.matrix);
         // Flip a bit in HASH_A — should make the PI binding fail.
         pis.hash_a[0] ^= 1;
         let pis_vec = pis.to_vec();
@@ -3138,22 +3011,21 @@ mod tests {
     /// chip's `is_active`), which is the F1 integration work.
     #[test]
     fn c4_hash_jackpot_derives_from_selector_row() {
-        use crate::composite_layout::{CV_OUT_START, IS_HASH_JACKPOT};
         use p3_field::integers::QuotientMap;
+
+        use crate::composite_layout::{CV_OUT_START, IS_HASH_JACKPOT};
 
         let mut trace = CompositeTrace::baseline_min();
         let n = trace.matrix.values.len() / TOTAL_TRACE_WIDTH;
         let r = 9usize.min(n - 1);
         let base = r * TOTAL_TRACE_WIDTH;
-        trace.matrix.values[base + IS_HASH_JACKPOT] =
-            <Val as QuotientMap<u64>>::from_int(1);
+        trace.matrix.values[base + IS_HASH_JACKPOT] = <Val as QuotientMap<u64>>::from_int(1);
         let expected: [u32; 8] = core::array::from_fn(|i| 0xABCD_0000u32 + i as u32 * 0x1111);
         for i in 0..8 {
             trace.matrix.values[base + CV_OUT_START + i] =
                 <Val as QuotientMap<u64>>::from_int(expected[i] as u64);
         }
-        let pis =
-            crate::composite_public::CompositePublicInputs::derive_from_matrix(&trace.matrix);
+        let pis = crate::composite_public::CompositePublicInputs::derive_from_matrix(&trace.matrix);
         assert_eq!(pis.hash_jackpot, expected);
     }
 
@@ -3165,16 +3037,16 @@ mod tests {
     /// for the chain-pinning PIs.
     #[test]
     fn c1_job_key_and_commitment_hash_derive_from_cv_in() {
-        use crate::composite_layout::{CV_IN_START, IS_USE_COMMITMENT_HASH, IS_USE_JOB_KEY};
         use p3_field::integers::QuotientMap;
+
+        use crate::composite_layout::{CV_IN_START, IS_USE_COMMITMENT_HASH, IS_USE_JOB_KEY};
 
         let mut trace = CompositeTrace::baseline_min();
         let n = trace.matrix.values.len() / TOTAL_TRACE_WIDTH;
 
         let jk_row = 4usize;
         let jk_base = jk_row * TOTAL_TRACE_WIDTH;
-        trace.matrix.values[jk_base + IS_USE_JOB_KEY] =
-            <Val as QuotientMap<u64>>::from_int(1);
+        trace.matrix.values[jk_base + IS_USE_JOB_KEY] = <Val as QuotientMap<u64>>::from_int(1);
         let job_key: [u32; 8] = core::array::from_fn(|i| 0xCAFE_0000 + i as u32);
         for i in 0..8 {
             trace.matrix.values[jk_base + CV_IN_START + i] =
@@ -3191,8 +3063,7 @@ mod tests {
                 <Val as QuotientMap<u64>>::from_int(commit[i] as u64);
         }
 
-        let pis =
-            crate::composite_public::CompositePublicInputs::derive_from_matrix(&trace.matrix);
+        let pis = crate::composite_public::CompositePublicInputs::derive_from_matrix(&trace.matrix);
         assert_eq!(pis.job_key, job_key, "JOB_KEY from IS_USE_JOB_KEY row");
         assert_eq!(
             pis.commitment_hash, commit,
@@ -3207,9 +3078,10 @@ mod tests {
     /// without the full Pearl per-row interleave.
     #[test]
     fn c1_key_pin_row_proves_and_verifies() {
+        use p3_field::integers::QuotientMap;
+
         use crate::chips::control::ControlChip;
         use crate::composite_layout::CV_IN_START;
-        use p3_field::integers::QuotientMap;
 
         let mut trace = CompositeTrace::baseline_min();
 
@@ -3220,8 +3092,7 @@ mod tests {
         {
             let row = &mut trace.matrix.values[b1..b1 + TOTAL_TRACE_WIDTH];
             for i in 0..8 {
-                row[CV_IN_START + i] =
-                    <Val as QuotientMap<u64>>::from_int(jk[i] as u64);
+                row[CV_IN_START + i] = <Val as QuotientMap<u64>>::from_int(jk[i] as u64);
             }
             let mut sel = [false; 21];
             sel[2] = true; // IS_USE_JOB_KEY
@@ -3235,8 +3106,7 @@ mod tests {
         {
             let row = &mut trace.matrix.values[b2..b2 + TOTAL_TRACE_WIDTH];
             for i in 0..8 {
-                row[CV_IN_START + i] =
-                    <Val as QuotientMap<u64>>::from_int(ch[i] as u64);
+                row[CV_IN_START + i] = <Val as QuotientMap<u64>>::from_int(ch[i] as u64);
             }
             let mut sel = [false; 21];
             sel[3] = true; // IS_USE_COMMITMENT_HASH
@@ -3244,13 +3114,11 @@ mod tests {
         }
 
         let cfg = build_stark_config(&test_zk_params(), &CircuitConfig::TEST_PEARL);
-        let pis =
-            crate::composite_public::CompositePublicInputs::derive_from_matrix(&trace.matrix);
+        let pis = crate::composite_public::CompositePublicInputs::derive_from_matrix(&trace.matrix);
         assert_eq!(pis.job_key, jk);
         assert_eq!(pis.commitment_hash, ch);
         let pv = pis.to_vec();
-        let proof =
-            prove::<AiPowStarkConfig, _>(&cfg, &CompositeFullAir, trace.matrix, &pv);
+        let proof = prove::<AiPowStarkConfig, _>(&cfg, &CompositeFullAir, trace.matrix, &pv);
         verify::<AiPowStarkConfig, _>(&cfg, &CompositeFullAir, &proof, &pv)
             .expect("key-pin row must prove+verify (C1 non-vacuous, tractable)");
     }
@@ -3281,16 +3149,11 @@ mod tests {
             };
             trace.place_blake3_hash_with_selectors(rs, &msg, &cv, &tweak, &[]);
             let pis =
-                crate::composite_public::CompositePublicInputs::derive_from_matrix(
-                    &trace.matrix,
-                )
-                .to_vec();
-            let proof =
-                prove::<AiPowStarkConfig, _>(&cfg, &CompositeFullAir, trace.matrix, &pis);
+                crate::composite_public::CompositePublicInputs::derive_from_matrix(&trace.matrix)
+                    .to_vec();
+            let proof = prove::<AiPowStarkConfig, _>(&cfg, &CompositeFullAir, trace.matrix, &pis);
             verify::<AiPowStarkConfig, _>(&cfg, &CompositeFullAir, &proof, &pis)
-                .unwrap_or_else(|e| {
-                    panic!("blake block at row {rs} must verify post-fix: {e:?}")
-                });
+                .unwrap_or_else(|e| panic!("blake block at row {rs} must verify post-fix: {e:?}"));
         }
     }
 
@@ -3309,8 +3172,7 @@ mod tests {
         let digest = trace.place_jackpot_hash_block(h - 8, &jackpot_state, &commitment);
         assert_ne!(digest, [0u32; 8], "BLAKE3(·, key) is non-zero");
 
-        let pis =
-            crate::composite_public::CompositePublicInputs::derive_from_matrix(&trace.matrix);
+        let pis = crate::composite_public::CompositePublicInputs::derive_from_matrix(&trace.matrix);
         assert_eq!(
             pis.hash_jackpot, digest,
             "C4: HASH_JACKPOT PI must equal the keyed-hash digest"
@@ -3318,8 +3180,7 @@ mod tests {
 
         let cfg = build_stark_config(&test_zk_params(), &CircuitConfig::TEST_PEARL);
         let pv = pis.to_vec();
-        let proof =
-            prove::<AiPowStarkConfig, _>(&cfg, &CompositeFullAir, trace.matrix, &pv);
+        let proof = prove::<AiPowStarkConfig, _>(&cfg, &CompositeFullAir, trace.matrix, &pv);
         verify::<AiPowStarkConfig, _>(&cfg, &CompositeFullAir, &proof, &pv).expect(
             "jackpot-hash block must prove+verify (C4 non-vacuous: blake finalize + \
              degenerate jackpot step co-located on the last row)",
@@ -3332,8 +3193,9 @@ mod tests {
     /// surfaces it.
     #[test]
     fn place_matrix_hash_sets_is_hash_a_selector() {
-        use crate::composite_layout::{IS_HASH_A, IS_HASH_B};
         use p3_field::PrimeField64;
+
+        use crate::composite_layout::{IS_HASH_A, IS_HASH_B};
 
         let matrix = vec![0x42u8; 1024];
         let key = [0x88u8; 32];
@@ -3405,19 +3267,11 @@ mod tests {
 
             for c0 in 0..nc {
                 for c1 in (c0 + 1)..=nc {
-                    let (_opened, sibs) =
-                        crate::blake3_tree::open_strip(&raw, &key, c0, c1);
+                    let (_opened, sibs) = crate::blake3_tree::open_strip(&raw, &key, c0, c1);
                     let strip_bytes = &raw[c0 * 1024..c1 * 1024];
                     let mut t = CompositeTrace::baseline_min();
                     let (n, strip_root) = t.place_matrix_strip_opening(
-                        0,
-                        strip_bytes,
-                        c0,
-                        c1,
-                        nc,
-                        &sibs,
-                        &key,
-                        4, // IS_HASH_A
+                        0, strip_bytes, c0, c1, nc, &sibs, &key, 4,    // IS_HASH_A
                         None, // hash-only (pre-cx.2; g=0)
                     );
                     assert_eq!(
@@ -3472,13 +3326,10 @@ mod tests {
         assert_eq!(root, committed, "opened root must be the real commitment");
 
         let cfg = build_stark_config(&test_zk_params(), &CircuitConfig::TEST_PEARL);
-        let pis = crate::composite_public::CompositePublicInputs::derive_from_matrix(
-            &trace.matrix,
-        );
+        let pis = crate::composite_public::CompositePublicInputs::derive_from_matrix(&trace.matrix);
         assert_eq!(pis.hash_a, committed, "C3 PI bound to the commitment");
         let pis_vec = pis.to_vec();
-        let proof =
-            prove::<AiPowStarkConfig, _>(&cfg, &CompositeFullAir, trace.matrix, &pis_vec);
+        let proof = prove::<AiPowStarkConfig, _>(&cfg, &CompositeFullAir, trace.matrix, &pis_vec);
         verify::<AiPowStarkConfig, _>(&cfg, &CompositeFullAir, &proof, &pis_vec)
             .expect("strip opening must verify through the composite AIR");
     }
@@ -3509,20 +3360,14 @@ mod tests {
             strip[10] ^= 1;
             let mut trace = CompositeTrace::baseline_min();
             trace.place_matrix_strip_opening(0, &strip, c0, c1, nc, &sibs, &key, 4, None);
-            let mut pis = crate::composite_public::CompositePublicInputs::derive_from_matrix(
-                &trace.matrix,
-            );
+            let mut pis =
+                crate::composite_public::CompositePublicInputs::derive_from_matrix(&trace.matrix);
             pis.hash_a = committed; // verifier holds the true commitment
             let pis_vec = pis.to_vec();
-            let proof = prove::<AiPowStarkConfig, _>(
-                &cfg,
-                &CompositeFullAir,
-                trace.matrix,
-                &pis_vec,
-            );
+            let proof =
+                prove::<AiPowStarkConfig, _>(&cfg, &CompositeFullAir, trace.matrix, &pis_vec);
             assert!(
-                verify::<AiPowStarkConfig, _>(&cfg, &CompositeFullAir, &proof, &pis_vec)
-                    .is_err(),
+                verify::<AiPowStarkConfig, _>(&cfg, &CompositeFullAir, &proof, &pis_vec).is_err(),
                 "tampered strip must fail the C3 commitment binding"
             );
         }
@@ -3543,20 +3388,14 @@ mod tests {
                 4,
                 None,
             );
-            let mut pis = crate::composite_public::CompositePublicInputs::derive_from_matrix(
-                &trace.matrix,
-            );
+            let mut pis =
+                crate::composite_public::CompositePublicInputs::derive_from_matrix(&trace.matrix);
             pis.hash_a = committed;
             let pis_vec = pis.to_vec();
-            let proof = prove::<AiPowStarkConfig, _>(
-                &cfg,
-                &CompositeFullAir,
-                trace.matrix,
-                &pis_vec,
-            );
+            let proof =
+                prove::<AiPowStarkConfig, _>(&cfg, &CompositeFullAir, trace.matrix, &pis_vec);
             assert!(
-                verify::<AiPowStarkConfig, _>(&cfg, &CompositeFullAir, &proof, &pis_vec)
-                    .is_err(),
+                verify::<AiPowStarkConfig, _>(&cfg, &CompositeFullAir, &proof, &pis_vec).is_err(),
                 "forged auth sibling must fail the C3 commitment binding"
             );
         }

@@ -20,8 +20,6 @@ use nockapp::utils::NOCK_STACK_SIZE_TINY;
 use nockchain_math::noun_ext::{NounMathExt, NounMathExtHandle};
 use nockchain_math::structs::HoonList;
 use nockchain_mining_common::MiningCandidate;
-
-use crate::wire::ZkPowMinerWire;
 use nockvm::ext::NounExt;
 use nockvm::interpreter::NockCancelToken;
 use nockvm::jets::hot::HotEntry;
@@ -30,6 +28,8 @@ use rand::Rng;
 use thiserror::Error;
 use tracing::debug;
 use zkvm_jetpack::form::belt::PRIME;
+
+use crate::wire::ZkPowMinerWire;
 
 pub type WorkerId = u64;
 
@@ -165,7 +165,10 @@ pub fn build_candidate_poke(candidate: &MiningCandidate, nonce_slab: NounSlab) -
     let header = slab.copy_into(unsafe { *candidate.block_header.root() }, &header_space);
     let nonce = slab.copy_into(unsafe { *nonce_slab.root() }, &nonce_space);
     let target = slab.copy_into(unsafe { *candidate.target.root() }, &target_space);
-    let cause = T(&mut slab, &[version, header, nonce, target, D(candidate.pow_len)]);
+    let cause = T(
+        &mut slab,
+        &[version, header, nonce, target, D(candidate.pow_len)],
+    );
     slab.set_root(cause);
     slab
 }
@@ -226,8 +229,9 @@ pub(crate) fn decode_mine_result(slab: NounSlab) -> Result<MineResult, WorkerErr
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use nockvm_macros::tas;
+
+    use super::*;
 
     /// Build a "mine-result" head atom — too long for the 8-char tas!
     /// macro, so use an indirect-atom string.
@@ -255,12 +259,7 @@ mod tests {
             .as_noun();
         let poke = T(
             &mut slab,
-            &[
-                D(tas!(b"command")),
-                D(tas!(b"pow")),
-                dumb_zkpow_tag,
-                D(101),
-            ],
+            &[D(tas!(b"command")), D(tas!(b"pow")), dumb_zkpow_tag, D(101)],
         );
         let success_tail = T(&mut slab, &[yes, digest, poke]);
         let effect = T(&mut slab, &[head, success_tail]);
@@ -335,15 +334,30 @@ mod tests {
         let root = unsafe { *poke.root() };
         let cell = root.in_space(&space).as_cell().expect("poke is a cell");
         // head = version
-        let v = cell.head().as_atom().expect("version atom").as_u64().unwrap();
+        let v = cell
+            .head()
+            .as_atom()
+            .expect("version atom")
+            .as_u64()
+            .unwrap();
         assert_eq!(v, 0, "version is %0");
         // Walk right spine 5 deep; rightmost is pow_len = 7.
         let mut node = cell.tail().noun();
         for _ in 0..3 {
-            node = node.in_space(&space).as_cell().expect("spine cell").tail().noun();
+            node = node
+                .in_space(&space)
+                .as_cell()
+                .expect("spine cell")
+                .tail()
+                .noun();
         }
         // Now node should be the pow_len atom.
-        let pl = node.in_space(&space).as_atom().expect("pow_len atom").as_u64().unwrap();
+        let pl = node
+            .in_space(&space)
+            .as_atom()
+            .expect("pow_len atom")
+            .as_u64()
+            .unwrap();
         assert_eq!(pl, 7, "pow_len is at the end of the cause spine");
     }
 
@@ -414,9 +428,7 @@ mod tests {
         use zkvm_jetpack::hot::produce_prover_hot_state;
 
         let hot_state = produce_prover_hot_state();
-        let worker = SerfWorker::spawn(0, hot_state)
-            .await
-            .expect("spawn worker");
+        let worker = SerfWorker::spawn(0, hot_state).await.expect("spawn worker");
 
         // Target = 2^400 — comfortably above max-tip5-atom (the merged
         // 5-belt tip5 hash atom; the chain checks `(lte proof-hash
@@ -446,9 +458,7 @@ mod tests {
             }
         };
         let elapsed = started.elapsed();
-        eprintln!(
-            "serf_worker_mines_trivial_target: {attempts} attempt(s) in {elapsed:?}"
-        );
+        eprintln!("serf_worker_mines_trivial_target: {attempts} attempt(s) in {elapsed:?}");
         assert!(matches!(result, MineResult::Success { .. }));
     }
 

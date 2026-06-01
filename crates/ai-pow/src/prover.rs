@@ -18,9 +18,7 @@
 
 use thiserror::Error;
 
-use crate::commit::{
-    a_row_leaf_hash, b_col_leaf_hash, merkle_path, merkle_root, MerkleError,
-};
+use crate::commit::{a_row_leaf_hash, b_col_leaf_hash, merkle_path, merkle_root, MerkleError};
 use crate::fiat_shamir::{
     block_state, challenge_indices, challenge_seed, commitment_key, noise_seed_a, noise_seed_b,
     pow_key_for_nonce,
@@ -176,12 +174,10 @@ impl<'a> BlockContext<'a> {
         // M52 step 5: chunk-Merkle commitments for SNARK PI binding.
         // BLAKE3 keyed-hash of pad(A_row_major) and pad(B_col_major).
         // i8 and u8 share layout; reinterpret without copying.
-        let a_bytes: &[u8] = unsafe {
-            core::slice::from_raw_parts(a.as_ptr() as *const u8, a.len())
-        };
-        let b_bytes: &[u8] = unsafe {
-            core::slice::from_raw_parts(b.as_ptr() as *const u8, b.len())
-        };
+        let a_bytes: &[u8] =
+            unsafe { core::slice::from_raw_parts(a.as_ptr() as *const u8, a.len()) };
+        let b_bytes: &[u8] =
+            unsafe { core::slice::from_raw_parts(b.as_ptr() as *const u8, b.len()) };
         let h_a_chunk = crate::commit::matrix_commitment(a_bytes, &kappa);
         let h_b_chunk = crate::commit::matrix_commitment(b_bytes, &kappa);
 

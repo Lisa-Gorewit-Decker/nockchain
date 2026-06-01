@@ -19,7 +19,7 @@
 //! responsibility.
 
 /// Subset of `ai_pow::params::MatmulParams` the SNARK's AIR cares about.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ZkParams {
     pub m: u32,
     pub k: u32,

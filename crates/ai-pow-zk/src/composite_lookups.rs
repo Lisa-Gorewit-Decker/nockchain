@@ -117,14 +117,8 @@ pub const BUS_STARK_ROW_IDX: &str = "stark_row_idx";
 
 /// All bus names in the composite AIR.
 pub const ALL_BUSES: &[&str] = &[
-    BUS_URANGE8,
-    BUS_URANGE13,
-    BUS_IRANGE7P1,
-    BUS_IRANGE8,
-    BUS_I8U8,
-    BUS_NOISED_PACKED,
-    BUS_CV_ROUTING,
-    BUS_STARK_ROW_IDX,
+    BUS_URANGE8, BUS_URANGE13, BUS_IRANGE7P1, BUS_IRANGE8, BUS_I8U8, BUS_NOISED_PACKED,
+    BUS_CV_ROUTING, BUS_STARK_ROW_IDX,
 ];
 
 // =====================================================================

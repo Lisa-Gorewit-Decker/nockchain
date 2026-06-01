@@ -75,7 +75,12 @@ const fn padded_seed_label(label: [u8; 8]) -> [u8; 32] {
 const SEED_LABEL_A: [u8; 32] = padded_seed_label(*b"A_tensor");
 const SEED_LABEL_B: [u8; 32] = padded_seed_label(*b"B_tensor");
 
-fn get_random_hash(index: usize, seed: &[u8; 32], key: &[u8; 32], prepend_index: usize) -> [u8; 32] {
+fn get_random_hash(
+    index: usize,
+    seed: &[u8; 32],
+    key: &[u8; 32],
+    prepend_index: usize,
+) -> [u8; 32] {
     let mut message = vec![0u8; 64];
     let prepend_value = (1 + index) as i32;
     message[prepend_index * 4..(prepend_index * 4 + 4)]
@@ -166,7 +171,10 @@ fn pearl_tile_loop(
                 }
             }
         }
-        let xored = jackpot_tile.iter().flatten().fold(0u32, |acc, &x| acc ^ x as u32);
+        let xored = jackpot_tile
+            .iter()
+            .flatten()
+            .fold(0u32, |acc, &x| acc ^ x as u32);
         let tid = (ll / rank - 1) % 16;
         jackpot[tid] = jackpot[tid].rotate_left(13) ^ xored;
         ll += rank;
@@ -395,22 +403,40 @@ fn emit_fixtures() {
     println!("pub const FIX4_R: usize = {r4};");
     // E_L: 4 rows × 4 cols, each entry in [-32, 31].
     let e_l_4: Vec<Vec<i8>> = (0..m4)
-        .map(|i| (0..r4).map(|p| (i as i32 * 5 + p as i32 * 3 - 16) as i8).collect())
+        .map(|i| {
+            (0..r4)
+                .map(|p| (i as i32 * 5 + p as i32 * 3 - 16) as i8)
+                .collect()
+        })
         .collect();
     // E_R^T: k pairs in [0, r-1] distinct.
-    let e_r_t_4: Vec<[u32; 2]> = (0..k4).map(|l| [(l % r4) as u32, ((l + 1) % r4) as u32]).collect();
+    let e_r_t_4: Vec<[u32; 2]> = (0..k4)
+        .map(|l| [(l % r4) as u32, ((l + 1) % r4) as u32])
+        .collect();
     // F_R: n cols × r rows.
     let f_r_4: Vec<Vec<i8>> = (0..n4)
-        .map(|j| (0..r4).map(|p| (j as i32 * 7 + p as i32 * 2 - 16) as i8).collect())
+        .map(|j| {
+            (0..r4)
+                .map(|p| (j as i32 * 7 + p as i32 * 2 - 16) as i8)
+                .collect()
+        })
         .collect();
     // F_L: k pairs in [0, r-1] distinct.
-    let f_l_4: Vec<[u32; 2]> = (0..k4).map(|l| [((l + 2) % r4) as u32, ((l + 3) % r4) as u32]).collect();
+    let f_l_4: Vec<[u32; 2]> = (0..k4)
+        .map(|l| [((l + 2) % r4) as u32, ((l + 3) % r4) as u32])
+        .collect();
     print_i8_array("FIX4_E_L", &flat_i8(&e_l_4));
     print_u32_pairs("FIX4_E_R_T_POS", &e_r_t_4);
     print_i8_array("FIX4_F_R", &flat_i8(&f_r_4));
     print_u32_pairs("FIX4_F_L_POS", &f_l_4);
-    let noise_a_4: Vec<Vec<i8>> = e_l_4.iter().map(|row| matvec_sparse_perm(&e_r_t_4, row)).collect();
-    let noise_b_t_4: Vec<Vec<i8>> = f_r_4.iter().map(|col| matvec_sparse_perm(&f_l_4, col)).collect();
+    let noise_a_4: Vec<Vec<i8>> = e_l_4
+        .iter()
+        .map(|row| matvec_sparse_perm(&e_r_t_4, row))
+        .collect();
+    let noise_b_t_4: Vec<Vec<i8>> = f_r_4
+        .iter()
+        .map(|col| matvec_sparse_perm(&f_l_4, col))
+        .collect();
     print_i8_array("FIX4_NOISE_A", &flat_i8(&noise_a_4));
     print_i8_array("FIX4_NOISE_B_T", &flat_i8(&noise_b_t_4));
 
@@ -458,8 +484,14 @@ fn emit_fixtures() {
     let e_r_t_5 = generate_permutation_matrix(&SEED_LABEL_A, &tile_a_seed, k5, r5);
     let f_l_5 = generate_permutation_matrix(&SEED_LABEL_B, &tile_b_seed, k5, r5);
     let f_r_5 = generate_uniform_random_matrix(&SEED_LABEL_B, &tile_b_seed, &b_cols5, r5);
-    let noise_a_5: Vec<Vec<i8>> = e_l_5.iter().map(|row| matvec_sparse_perm(&e_r_t_5, row)).collect();
-    let noise_b_t_5: Vec<Vec<i8>> = f_r_5.iter().map(|col| matvec_sparse_perm(&f_l_5, col)).collect();
+    let noise_a_5: Vec<Vec<i8>> = e_l_5
+        .iter()
+        .map(|row| matvec_sparse_perm(&e_r_t_5, row))
+        .collect();
+    let noise_b_t_5: Vec<Vec<i8>> = f_r_5
+        .iter()
+        .map(|col| matvec_sparse_perm(&f_l_5, col))
+        .collect();
     let a_noised5: Vec<Vec<i32>> = a5
         .iter()
         .zip(&noise_a_5)
@@ -572,7 +604,10 @@ fn emit_fixtures() {
     let big_padded = pad_to_chunk_boundary(&big_raw_a);
     let big_merkle = blake3_digest(&big_padded, Some(job_key7));
     println!("pub const FIX8_BIG_RAW_LEN: usize = {};", big_raw_a.len());
-    println!("pub const FIX8_BIG_PADDED_LEN: usize = {};", big_padded.len());
+    println!(
+        "pub const FIX8_BIG_PADDED_LEN: usize = {};",
+        big_padded.len()
+    );
     print_u8_array("FIX8_BIG_RAW", &big_raw_a);
     print_bytes32("FIX8_BIG_MERKLE_ROOT", &big_merkle);
 

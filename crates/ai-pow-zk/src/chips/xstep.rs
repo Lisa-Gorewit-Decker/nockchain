@@ -237,13 +237,13 @@ mod tests {
     //! per-stripe `x_steps` is asserted from the ai-pow side
     //! (zk_bridge, `zk` feature).
 
-    use super::*;
-    use crate::circuit::{build_stark_config, AiPowStarkConfig, CircuitConfig};
-    use crate::params::ZkParams;
-
     use p3_field::integers::QuotientMap;
     use p3_field::PrimeField64;
     use p3_uni_stark::{prove, verify};
+
+    use super::*;
+    use crate::circuit::{build_stark_config, AiPowStarkConfig, CircuitConfig};
+    use crate::params::ZkParams;
 
     fn cfg() -> AiPowStarkConfig {
         build_stark_config(
@@ -263,7 +263,9 @@ mod tests {
         let mut s = seed;
         (0..n)
             .map(|_| {
-                s = s.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+                s = s
+                    .wrapping_mul(6364136223846793005)
+                    .wrapping_add(1442695040888963407);
                 (s >> 32) as i32
             })
             .collect()
@@ -279,10 +281,10 @@ mod tests {
         let stripes: Vec<Vec<i32>> = vec![
             lcg(1, ACC_LEN),
             lcg(2, ACC_LEN),
-            lcg(3, 7),                       // short ⇒ zero-padded
-            vec![0x7FFF_FFFF],               // single cell
-            vec![0; ACC_LEN],                // all zero ⇒ X_STEP 0
-            vec![-1i32; ACC_LEN],            // every bit set in every cell
+            lcg(3, 7),            // short ⇒ zero-padded
+            vec![0x7FFF_FFFF],    // single cell
+            vec![0; ACC_LEN],     // all zero ⇒ X_STEP 0
+            vec![-1i32; ACC_LEN], // every bit set in every cell
         ];
         for s in &stripes {
             assert_eq!(
@@ -350,8 +352,7 @@ mod tests {
         // QBITS bound forbids it. (Leave XSTEP value as-is too ⇒
         // also breaks recon; either way must reject.)
         let cur = t.values[cols::XSTEP_BITS].as_canonical_u64();
-        t.values[cols::XSTEP_BITS] =
-            <Val as QuotientMap<u64>>::from_int(1 - cur);
+        t.values[cols::XSTEP_BITS] = <Val as QuotientMap<u64>>::from_int(1 - cur);
         let p = prove::<AiPowStarkConfig, _>(&c, &XStepChip, t, &[]);
         assert!(
             verify::<AiPowStarkConfig, _>(&c, &XStepChip, &p, &[]).is_err(),

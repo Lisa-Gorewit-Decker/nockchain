@@ -13,8 +13,7 @@ use std::time::{Duration, Instant};
 use ai_pow::prover::{mine_with_context_at_target, BlockContext};
 
 use crate::{
-    build_ncmn_nonce, MinedSolution, MineOptions, MiningCancel, MiningError, MiningJob,
-    MiningStats,
+    build_ncmn_nonce, MineOptions, MinedSolution, MiningCancel, MiningError, MiningJob, MiningStats,
 };
 
 /// Run a block-mining attempt. Builds the [`BlockContext`] once
@@ -51,7 +50,9 @@ fn run_inner(
             .validate_prod_envelope()
             .map_err(ai_pow::prover::MineError::from)?;
     } else {
-        job.params.validate().map_err(ai_pow::prover::MineError::from)?;
+        job.params
+            .validate()
+            .map_err(ai_pow::prover::MineError::from)?;
     }
     let start = Instant::now();
     let ctx = BlockContext::build(job.puzzle_id, job.a, job.b, job.params)?;
@@ -79,13 +80,8 @@ fn run_inner(
         }
 
         let nonce = build_ncmn_nonce(&job.anchors, extranonce);
-        let result = mine_with_context_at_target(
-            &ctx,
-            job.puzzle_id,
-            &nonce,
-            &job.target,
-            opts.prover,
-        )?;
+        let result =
+            mine_with_context_at_target(&ctx, job.puzzle_id, &nonce, &job.target, opts.prover)?;
 
         stats.extranonces_tried += 1;
         stats.elapsed = start.elapsed();
@@ -99,6 +95,7 @@ fn run_inner(
             let found_idx = found_idx_u64 as u32;
             return Ok(MinedSolution {
                 nonce,
+                target: job.target,
                 found_idx,
                 proof,
                 stats,
@@ -124,10 +121,11 @@ fn run_inner(
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use crate::NonceAnchors;
     use ai_pow::params::MatmulParams;
     use ai_pow::synth::synth_matrices;
+
+    use super::*;
+    use crate::NonceAnchors;
 
     /// Stable puzzle-id stand-in for tests. Production callers will
     /// derive this from layer/epoch/params_tag.

@@ -197,10 +197,8 @@ impl Blake3Chip {
         let state_w = cols::STATE_W;
         let s0_cells = &cur[off.state_start..off.state_start + state_w];
         let s1_cells = &cur[off.state_start + state_w..off.state_start + 2 * state_w];
-        let s2_cells =
-            &cur[off.state_start + 2 * state_w..off.state_start + 3 * state_w];
-        let s3_cells =
-            &cur[off.state_start + 3 * state_w..off.state_start + 4 * state_w];
+        let s2_cells = &cur[off.state_start + 2 * state_w..off.state_start + 3 * state_w];
+        let s3_cells = &cur[off.state_start + 3 * state_w..off.state_start + 4 * state_w];
         let s4_cells = &nxt[off.state_start..off.state_start + state_w];
 
         let s0 = Blake3State::from_slice(s0_cells);
@@ -323,6 +321,7 @@ fn fill_row(
     is_last_round: bool,
 ) {
     use p3_field::integers::QuotientMap;
+
     use crate::Val;
 
     fn write_state_into(dest: &mut [Val], state: &[u32; 16]) {
@@ -333,8 +332,7 @@ fn fill_row(
         }
         for i in 4..8 {
             for bit in 0..32 {
-                dest[off] =
-                    <Val as QuotientMap<u64>>::from_int(((state[i] >> bit) & 1) as u64);
+                dest[off] = <Val as QuotientMap<u64>>::from_int(((state[i] >> bit) & 1) as u64);
                 off += 1;
             }
         }
@@ -344,8 +342,7 @@ fn fill_row(
         }
         for i in 12..16 {
             for bit in 0..32 {
-                dest[off] =
-                    <Val as QuotientMap<u64>>::from_int(((state[i] >> bit) & 1) as u64);
+                dest[off] = <Val as QuotientMap<u64>>::from_int(((state[i] >> bit) & 1) as u64);
                 off += 1;
             }
         }
@@ -353,7 +350,10 @@ fn fill_row(
     }
 
     // 4 state snapshots.
-    write_state_into(&mut dest[cols::STATE0..cols::STATE0 + cols::STATE_W], snap_input);
+    write_state_into(
+        &mut dest[cols::STATE0..cols::STATE0 + cols::STATE_W],
+        snap_input,
+    );
     write_state_into(&mut dest[cols::STATE1..cols::STATE1 + cols::STATE_W], snap1);
     write_state_into(&mut dest[cols::STATE2..cols::STATE2 + cols::STATE_W], snap2);
     write_state_into(&mut dest[cols::STATE3..cols::STATE3 + cols::STATE_W], snap3);
@@ -425,11 +425,7 @@ impl Blake3Chip {
         // Run the full BLAKE3 compression once to get the canonical
         // CV_OUT for the finalize row.
         let full_state = compress_full_state(
-            cv_in,
-            message,
-            tweak.counter_low,
-            tweak.counter_high as u32,
-            tweak.block_len,
+            cv_in, message, tweak.counter_low, tweak.counter_high as u32, tweak.block_len,
             tweak.flags,
         );
         let final_cv_out: [u32; 8] = core::array::from_fn(|i| full_state[i]);
@@ -481,8 +477,8 @@ impl Blake3Chip {
                 cv_in,
                 tweak_packed,
                 &final_cv_out,
-                r == 0,  // is_new_blake on row 0
-                false,   // is_last_round
+                r == 0, // is_new_blake on row 0
+                false,  // is_last_round
             );
 
             // Advance input state for next row.
@@ -523,16 +519,8 @@ impl Blake3Chip {
         let row_start = 7 * cols::ROW_W;
         let row = &mut dest[row_start..row_start + cols::ROW_W];
         fill_row(
-            row,
-            &final_input,
-            &state1_for_finalize,
-            &[0u32; 16],
-            &[0u32; 16],
-            &finalize_msg,
-            cv_in,
-            tweak_packed,
-            &final_cv_out,
-            false, // is_new_blake
+            row, &final_input, &state1_for_finalize, &[0u32; 16], &[0u32; 16], &finalize_msg,
+            cv_in, tweak_packed, &final_cv_out, false, // is_new_blake
             true,  // is_last_round
         );
     }
@@ -556,13 +544,13 @@ mod tests {
     //! [`compress::blake3_compress`]'s scalar reference, then prove
     //! and verify with the chip's full AIR.
 
+    use p3_field::integers::QuotientMap;
+    use p3_uni_stark::{prove, verify};
+
     use super::*;
     use crate::chips::blake3::compress::{Blake3Tweak, BLAKE3_IV};
     use crate::circuit::{build_stark_config, AiPowStarkConfig, CircuitConfig};
     use crate::params::ZkParams;
-
-    use p3_field::integers::QuotientMap;
-    use p3_uni_stark::{prove, verify};
 
     fn test_zk_params() -> ZkParams {
         ZkParams {
@@ -618,12 +606,7 @@ mod tests {
     fn cv_out_matches_compress_full_state() {
         let (cv, msg, tweak) = canonical_inputs();
         let full = compress_full_state(
-            &cv,
-            &msg,
-            tweak.counter_low,
-            tweak.counter_high as u32,
-            tweak.block_len,
-            tweak.flags,
+            &cv, &msg, tweak.counter_low, tweak.counter_high as u32, tweak.block_len, tweak.flags,
         );
         let trace = Blake3Chip::build_trace_one_hash(&msg, &cv, &tweak);
         use p3_field::PrimeField64;
@@ -755,18 +738,8 @@ mod tests {
             flags: 0x0B,
         };
         let mut flat = vec![crate::Val::default(); 16 * cols::ROW_W];
-        Blake3Chip::fill_one_hash(
-            &mut flat[0..8 * cols::ROW_W],
-            &msg_a,
-            &cv_a,
-            &tweak_a,
-        );
-        Blake3Chip::fill_one_hash(
-            &mut flat[8 * cols::ROW_W..],
-            &msg_b,
-            &cv_b,
-            &tweak_b,
-        );
+        Blake3Chip::fill_one_hash(&mut flat[0..8 * cols::ROW_W], &msg_a, &cv_a, &tweak_a);
+        Blake3Chip::fill_one_hash(&mut flat[8 * cols::ROW_W..], &msg_b, &cv_b, &tweak_b);
         let trace = RowMajorMatrix::new(flat, cols::ROW_W);
         let proof = prove::<AiPowStarkConfig, _>(&cfg, &Blake3Chip, trace, &[]);
         verify::<AiPowStarkConfig, _>(&cfg, &Blake3Chip, &proof, &[])

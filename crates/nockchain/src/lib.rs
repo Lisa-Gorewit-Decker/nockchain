@@ -430,7 +430,8 @@ pub async fn init_with_kernel<J: Jammer + Send + 'static>(
             let mut zk_asert = fakenet_constants.zk_asert.clone();
             zk_asert.phase = asert.phase;
             zk_asert.anchor_height = asert.anchor_height;
-            zk_asert.anchor_target_atom = ibig::UBig::from(1u64) << (asert.anchor_target_bex as usize);
+            zk_asert.anchor_target_atom =
+                ibig::UBig::from(1u64) << (asert.anchor_target_bex as usize);
             fakenet_constants = fakenet_constants.with_zk_asert(zk_asert);
         }
         setup::poke(

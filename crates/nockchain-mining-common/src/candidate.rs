@@ -96,9 +96,10 @@ fn noun_into_owned_slab(noun: Noun, space: &nockvm::noun::NounSpace) -> NounSlab
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use nockvm::noun::{D, T};
     use nockvm_macros::tas;
+
+    use super::*;
 
     /// Synthesize `[%mine-zk version commit target pow-len]` and round-trip
     /// it through `MiningCandidate::from_effect_slab`.
@@ -150,10 +151,7 @@ mod tests {
     fn from_effect_slab_decodes_mine_ai_tuple() {
         let mut slab = NounSlab::new();
         let head = D(tas!(b"mine-ai"));
-        let root = T(
-            &mut slab,
-            &[head, D(0x11), D(0x22), D(0x33), D(64)],
-        );
+        let root = T(&mut slab, &[head, D(0x11), D(0x22), D(0x33), D(64)]);
         slab.set_root(root);
         let candidate = MiningCandidate::from_effect_slab(slab)
             .expect("decode")

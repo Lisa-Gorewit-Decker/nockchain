@@ -197,7 +197,10 @@ mod tests {
         // it's derived from.
         let s_a = [4u8; 32];
         assert_ne!(pow_key_for_nonce(&s_a, b""), s_a);
-        assert_ne!(pow_key_for_nonce(&s_a, b"nce"), noise_seed_a(&[1u8; 32], &[2u8; 32]));
+        assert_ne!(
+            pow_key_for_nonce(&s_a, b"nce"),
+            noise_seed_a(&[1u8; 32], &[2u8; 32])
+        );
     }
 
     #[test]
@@ -218,8 +221,14 @@ mod tests {
     fn indices_deterministic_and_seed_sensitive() {
         let s1 = [1u8; 32];
         let s2 = [2u8; 32];
-        assert_eq!(challenge_indices(&s1, 16, 64), challenge_indices(&s1, 16, 64));
-        assert_ne!(challenge_indices(&s1, 16, 64), challenge_indices(&s2, 16, 64));
+        assert_eq!(
+            challenge_indices(&s1, 16, 64),
+            challenge_indices(&s1, 16, 64)
+        );
+        assert_ne!(
+            challenge_indices(&s1, 16, 64),
+            challenge_indices(&s2, 16, 64)
+        );
     }
 
     #[test]

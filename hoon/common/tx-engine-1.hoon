@@ -17,6 +17,55 @@
 ++  bn  bignum
 ++  page-msg  page-msg:v0
 ++  proof  proof:v0
++$  ai-blake  @uxblake  ::  32-byte BLAKE3 digest, little-endian atom bytes
++$  ai-ext2   @uxfelt  ::  Goldilocks degree-2 scalar: low 8 bytes c0, high 8 bytes c1
++$  ai-ext2s  @uxfelts ::  Packed sequence of ai-ext2 scalars, 16 bytes per scalar
++$  ai-ext2-vec
+  $:  len=@ud
+      data=ai-ext2s
+  ==
++$  ai-pow-commitments
+  $:  h-a=ai-blake
+      h-b=ai-blake
+      h-a-chunk=ai-blake
+      h-b-chunk=ai-blake
+  ==
++$  ai-pow-public-inputs
+  $:  cumsum=[c0=@sd c1=@sd c2=@sd c3=@sd]
+      jackpot=[j0=@ud j1=@ud j2=@ud j3=@ud j4=@ud j5=@ud j6=@ud j7=@ud j8=@ud j9=@ud j10=@ud j11=@ud j12=@ud j13=@ud j14=@ud j15=@ud]
+      hash-a=ai-blake
+      hash-b=ai-blake
+      job-key=ai-blake
+      commitment-hash=ai-blake
+      hash-jackpot=ai-blake
+  ==
++$  ai-proof-node
+  $%  [%n ~]
+      [%b value=?]
+      [%u value=@ud]
+      [%i data=@]
+      [%ext2 value=ai-ext2]
+      [%ext2s len=@ud data=ai-ext2s]
+      [%bytes len=@ud data=@]
+      [%u64s len=@ud data=@]
+      [%i64s len=@ud data=@]
+      [%seq items=*]
+      [%map entries=*]
+      [%none ~]
+      [%some value=*]
+  ==
++$  ai-recursive-certificate  ai-proof-node
++$  ai-pow-certificate
+  $:  version=@ud
+      params=[m=@ud k=@ud n=@ud noise-rank=@ud tile=@ud difficulty-bits=@ud]
+      found-idx=@ud
+      trace-height=@ud
+      commitments=ai-pow-commitments
+      public-inputs=ai-pow-public-inputs
+      certificate=ai-recursive-certificate
+  ==
++$  pow-artifact
+  *
 ++  reason
   |$  object
   (each object term)
@@ -62,9 +111,10 @@
   =<  form
   |%
   +$  form
+    $+  page
     $:  version=%1
         digest=block-id
-        pow=$+(pow (unit proof))
+        pow=$+(pow (unit pow-artifact))
         parent=block-id
         tx-ids=(z-set tx-id)
         coinbase=coinbase-split
@@ -115,7 +165,7 @@
   ++  to-local-page
     |=  pag=form
     ^-  local-page
-    pag(pow (bind pow.pag |=(p=proof (jam p))))
+    pag(pow (bind pow.pag |=(p=pow-artifact (jam p))))
   ::
   ++  hashable-block-commitment
     |=  =form
@@ -143,7 +193,10 @@
     |=  pag=form
     ^-  hashable:tip5
     :-  ?~  pow.pag  leaf+~
-        [leaf+~ hash+(hash-proof:v0 u.pow.pag)]
+        ?:  ?=([%ai-pow *] u.pow.pag)
+          [leaf+%ai-pow leaf+(jam u.pow.pag)]
+        =/  prf=form:proof  (need ((soft form:proof) u.pow.pag))
+        [leaf+~ hash+(hash-proof:v0 prf)]
     (hashable-block-commitment pag)
   ::
   ++  block-commitment
@@ -196,7 +249,7 @@
   ++  to-page
     |=  lp=form
     ^-  page
-    lp(pow (biff pow.lp |=(j=@ ((soft proof) (cue j)))))
+    lp(pow (biff pow.lp |=(j=@ ((soft pow-artifact) (cue j)))))
   ::
   ++  to-page-no-pow
     |=  lp=form
@@ -320,9 +373,8 @@
           ::  AI PoW activation. At or past this height the kernel's
           ::  do-pow accepts %ai-pow variants alongside %dumb-zkpow.
           ::  Pre-activation, %ai-pow is rejected outright.
-          ::  Post-activation: the verifier in lib/inner.hoon do-pow's
-          ::  %ai-pow arm is currently a hardcoded reject (stub); the
-          ::  deferred-task work replaces it with the real verifier.
+          ::  Post-activation: lib/inner.hoon can persist the typed
+          ::  recursive certificate before the real verifier lands.
           ai-pow-activation-height=95.000
           ::  AI ASERT defaults come from `+$ ai-asert`'s own $~ clause.
           *ai-asert
@@ -337,9 +389,8 @@
       =zk-asert-post-ai
       ::  AI PoW puzzle (cf hoon/apps/dumbnet/lib/types.hoon::pow-variant
       ::  for the wire side). %ai-pow blocks become valid at and after
-      ::  ai-pow-activation-height. The verifier itself is a hardcoded
-      ::  stub-reject in do-pow until the deferred-task real verifier
-      ::  lands.
+      ::  ai-pow-activation-height. The current do-pow branch persists
+      ::  the recursive certificate; real verification is wired later.
       ai-pow-activation-height=@
       =ai-asert
   ==

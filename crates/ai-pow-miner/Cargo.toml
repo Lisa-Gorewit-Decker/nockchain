@@ -49,10 +49,12 @@ node = [
 
 [dependencies]
 ai-pow = { path = "../ai-pow", features = ["zk"] }
+ai-pow-zk = { path = "../ai-pow-zk", features = ["recursion"] }
 anyhow = { workspace = true }
 blake3 = { workspace = true }
 clap = { workspace = true, features = ["derive"] }
 hex = { workspace = true }
+serde = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
 

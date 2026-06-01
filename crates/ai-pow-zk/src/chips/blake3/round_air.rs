@@ -353,10 +353,12 @@ pub fn finalize_blake<AB: AirBuilder>(
 
     // Compute the XOR outputs via xor_32_packed (no shift, no
     // gating — the bits are already boolean-checked elsewhere).
-    let r1_xor_r3: [AB::Expr; 4] =
-        core::array::from_fn(|i| xor_32_packed::<AB>(builder, states[1].row2[i], states[1].row4[i]));
-    let r2_xor_r4: [AB::Expr; 4] =
-        core::array::from_fn(|i| xor_32_packed::<AB>(builder, states[0].row2[i], states[0].row4[i]));
+    let r1_xor_r3: [AB::Expr; 4] = core::array::from_fn(|i| {
+        xor_32_packed::<AB>(builder, states[1].row2[i], states[1].row4[i])
+    });
+    let r2_xor_r4: [AB::Expr; 4] = core::array::from_fn(|i| {
+        xor_32_packed::<AB>(builder, states[0].row2[i], states[0].row4[i])
+    });
 
     core::array::from_fn(|i| {
         if i < 4 {
@@ -435,11 +437,8 @@ pub fn verify_init_state<AB: AirBuilder>(
     builder.assert_zero(is_new_blake.clone() * (acc - blake3_tweak));
 
     // Remaining bits forced to zero.
-    let zero_bit_columns: [&[AB::Var]; 3] = [
-        &init.row4[1][16..],
-        &init.row4[2][7..],
-        &init.row4[3][8..],
-    ];
+    let zero_bit_columns: [&[AB::Var]; 3] =
+        [&init.row4[1][16..], &init.row4[2][7..], &init.row4[3][8..]];
     for slice in zero_bit_columns.iter() {
         for &b in slice.iter() {
             let z = is_new_blake.clone() * b;
@@ -454,17 +453,17 @@ mod tests {
     //! the constraint system and assert prove + verify succeed.
     //! Then tamper specific intermediate-state cells and assert
     //! rejection.
+    use p3_air::{Air, AirBuilder, BaseAir, WindowAccess};
+    use p3_field::integers::QuotientMap;
+    use p3_matrix::dense::RowMajorMatrix;
+    use p3_uni_stark::{prove, verify};
+
     use super::*;
     use crate::chips::blake3::compress::{round_with_snapshots, BLAKE3_IV};
     use crate::chips::blake3::layout::LIMBS_PER_STATE_SNAPSHOT;
     use crate::circuit::{build_stark_config, AiPowStarkConfig, CircuitConfig};
     use crate::params::ZkParams;
     use crate::Val;
-
-    use p3_air::{Air, AirBuilder, BaseAir, WindowAccess};
-    use p3_field::integers::QuotientMap;
-    use p3_matrix::dense::RowMajorMatrix;
-    use p3_uni_stark::{prove, verify};
 
     fn test_zk_params() -> ZkParams {
         ZkParams {
@@ -546,8 +545,7 @@ mod tests {
             let states = [s0, s1, s2, s3, s4];
 
             // Message: 16 packed u32s at cols [1320..1336].
-            let msg: Vec<AB::Expr> =
-                (0..16).map(|i| AB::Expr::from(cur[MSG_OFF + i])).collect();
+            let msg: Vec<AB::Expr> = (0..16).map(|i| AB::Expr::from(cur[MSG_OFF + i])).collect();
 
             verify_round::<AB>(
                 builder,
@@ -563,7 +561,10 @@ mod tests {
     /// must independently satisfy the round constraints. We use
     /// the same input state + message across all 4 rows for
     /// simplicity.
-    fn build_valid_round_trace(initial_state: [u32; 16], message: [u32; 16]) -> RowMajorMatrix<Val> {
+    fn build_valid_round_trace(
+        initial_state: [u32; 16],
+        message: [u32; 16],
+    ) -> RowMajorMatrix<Val> {
         let rows = 4;
         let mut flat = vec![Val::default(); rows * W];
 

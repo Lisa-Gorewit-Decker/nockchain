@@ -64,10 +64,7 @@ pub fn tile_dot(a: &[i8; TILE_D], b: &[i8; TILE_D]) -> i32 {
 /// matmul). Returns the dot products as a `CUMSUM_LEN`-element vector
 /// indexed `i * TILE_H + j`.
 #[inline]
-pub fn tile_dot_block(
-    a: &[[i8; TILE_D]; TILE_H],
-    b: &[[i8; TILE_D]; TILE_H],
-) -> [i32; CUMSUM_LEN] {
+pub fn tile_dot_block(a: &[[i8; TILE_D]; TILE_H], b: &[[i8; TILE_D]; TILE_H]) -> [i32; CUMSUM_LEN] {
     let mut out = [0i32; CUMSUM_LEN];
     for i in 0..TILE_H {
         for j in 0..TILE_H {

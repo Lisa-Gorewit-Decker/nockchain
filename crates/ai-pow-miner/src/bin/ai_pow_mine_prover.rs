@@ -15,9 +15,7 @@ use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 use ai_pow::params::MatmulParams;
-use ai_pow_miner::{
-    mining, MineOptions, MiningCancel, MiningError, MiningJob, NonceAnchors,
-};
+use ai_pow_miner::{mining, MineOptions, MiningCancel, MiningError, MiningJob, NonceAnchors};
 use anyhow::{anyhow, bail, Context, Result};
 use clap::Parser;
 
@@ -36,7 +34,10 @@ struct Args {
 
     /// Required Nockchain commitment (32-byte hex). Defaults to
     /// `[0xAB; 32]` for smoke tests.
-    #[arg(long, default_value = "abababababababababababababababababababababababababababababababab")]
+    #[arg(
+        long,
+        default_value = "abababababababababababababababababababababababababababababababab"
+    )]
     nck_commitment: String,
 
     /// Optional external-chain commitment (32-byte hex). Reserved
@@ -46,7 +47,10 @@ struct Args {
 
     /// Chain difficulty target (32-byte hex, little-endian).
     /// `FF…FF` (default) = trivial target, every hash wins.
-    #[arg(long, default_value = "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff")]
+    #[arg(
+        long,
+        default_value = "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+    )]
     target: String,
 
     // ── puzzle shape (defaults to TEST_SMALL: m=k=n=64, r=4, t=8, σ=8) ──
@@ -94,8 +98,7 @@ struct Args {
 
 fn parse_hex_32(s: &str, label: &str) -> Result<[u8; 32]> {
     let trimmed = s.strip_prefix("0x").unwrap_or(s);
-    let bytes = hex::decode(trimmed)
-        .with_context(|| format!("{label}: invalid hex"))?;
+    let bytes = hex::decode(trimmed).with_context(|| format!("{label}: invalid hex"))?;
     if bytes.len() != 32 {
         bail!("{label}: expected 32 bytes, got {}", bytes.len());
     }
@@ -105,8 +108,7 @@ fn parse_hex_32(s: &str, label: &str) -> Result<[u8; 32]> {
 }
 
 fn load_matrix(path: &PathBuf, expected_len: usize, label: &str) -> Result<Vec<i8>> {
-    let bytes = fs::read(path)
-        .with_context(|| format!("{label}: read {}", path.display()))?;
+    let bytes = fs::read(path).with_context(|| format!("{label}: read {}", path.display()))?;
     if bytes.len() != expected_len {
         bail!(
             "{label}: expected {expected_len} bytes (i8 entries), got {}",
@@ -216,7 +218,11 @@ fn main() -> Result<()> {
                 let bytes = sol.proof.encode();
                 fs::write(&out, &bytes)
                     .with_context(|| format!("write proof to {}", out.display()))?;
-                eprintln!("ai-pow-mine: wrote {} proof bytes → {}", bytes.len(), out.display());
+                eprintln!(
+                    "ai-pow-mine: wrote {} proof bytes → {}",
+                    bytes.len(),
+                    out.display()
+                );
             }
             Ok(())
         }

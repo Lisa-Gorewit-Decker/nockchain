@@ -23,7 +23,7 @@ ai-pow-zk = { path = "../ai-pow-zk", features = ["dev-unsafe"] }
 [features]
 default = []
 parallel = ["dep:rayon"]
-zk = ["dep:ai-pow-zk", "dep:bincode"]
+zk = ["dep:ai-pow-zk", "dep:bincode", "ai-pow-zk/recursion"]
 
 [[bench]]
 name = "bench"

@@ -134,6 +134,17 @@
   ?:  ?=(%3 version)  %ai-pow
   %dumb-zkpow
 ::
+::  +pow-artifact-to-proof-version: page.pow is a generic persisted noun
+::  so the AI certificate does not force hoonc to expand the recursive proof
+::  mold in every page consumer. Recover the version discriminator locally.
+++  pow-artifact-to-proof-version
+  |=  pow=*
+  ^-  proof-version:sp
+  ?:  ?=([%ai-pow *] pow)
+    %3
+  =/  prf=proof:sp  (need ((soft proof:sp) pow))
+  version.prf
+::
 ::  +block-id-to-proof-version: returns the proof version of an
 ::  already-accepted block, given its block-id. Reads the
 ::  block-versions map first (post-activation blocks); falls back
@@ -561,7 +572,7 @@
   ::  was removed — see below). A powless block fails the `need`,
   ::  which is correct: every accepted block must carry a proof.
   ?.  %+  proof-version-valid-at-height
-        version:(need ~(pow get:page:t pag))
+        (pow-artifact-to-proof-version (need ~(pow get:page:t pag)))
       ~(height get:page:t pag)
     ~&  [%proof-version-invalid ~(height get:page:t pag)]
     [%.n %proof-version-invalid]
@@ -585,9 +596,13 @@
     [%.n %page-epoch-invalid]
   ::
   =/  check-pow-hash=?
+    =/  pow  (need ~(pow get:page:t pag))
+    ?:  ?=([%ai-pow *] pow)
+      %.y
+    =/  prf=proof:sp  (need ((soft proof:sp) pow))
     %-  check-target:mine
     :_  ~(target get:page:t pag)
-    (proof-to-pow:t (need ~(pow get:page:t pag)))
+    (proof-to-pow:t prf)
   ?.  check-pow-hash
     [%.n %pow-target-check-failed]
   ::
@@ -615,7 +630,7 @@
       =/  block-puzzle-type=?(%dumb-zkpow %ai-pow)
         =/  pow-unit  ~(pow get:page:t pag)
         ?~  pow-unit  %dumb-zkpow
-        (version-to-puzzle-type version.u.pow-unit)
+        (version-to-puzzle-type (pow-artifact-to-proof-version u.pow-unit))
       =/  same-type-parent=block-id:t
         =/  found=(unit block-id:t)
           (find-same-type-ancestor ~(parent get:page:t pag) block-puzzle-type)
@@ -865,7 +880,7 @@
   =/  pag-type=?(%dumb-zkpow %ai-pow)
     =/  pow-unit  ~(pow get:page:t pag)
     ?~  pow-unit  %dumb-zkpow
-    (version-to-puzzle-type version.u.pow-unit)
+    (version-to-puzzle-type (pow-artifact-to-proof-version u.pow-unit))
   =/  min-timestamp=@
     ::  collect up to N=min-past-blocks same-type timestamps,
     ::  starting with pag itself and walking parent edges.
@@ -921,7 +936,7 @@
       (gte ~(height get:page:t pag) ai-pow-activation-height.blockchain-constants)
     %+  ~(put h-by block-versions.c)
       ~(digest get:page:t pag)
-    version:(need ~(pow get:page:t pag))
+    (pow-artifact-to-proof-version (need ~(pow get:page:t pag)))
   %-  ~(rep z-in ~(tx-ids get:page:t pag))
   |=  [=tx-id:t c=_c]
   =.  blocks-needed-by.c  (~(put h-ju blocks-needed-by.c) tx-id ~(digest get:page:t pag))

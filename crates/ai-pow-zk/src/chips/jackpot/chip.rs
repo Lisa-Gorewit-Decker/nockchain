@@ -44,10 +44,9 @@ use p3_air::{Air, AirBuilder, BaseAir, WindowAccess};
 use p3_field::PrimeCharacteristicRing;
 use p3_matrix::dense::RowMajorMatrix;
 
+use super::compute::{apply_jackpot_step, bit_decompose_u32, one_hot_select};
 use crate::composite_layout::{JACKPOT_SIZE, LROT_PER_TILE};
 use crate::Val;
-
-use super::compute::{apply_jackpot_step, bit_decompose_u32, one_hot_select};
 
 /// Chip-local column offsets.
 pub mod cols {
@@ -153,22 +152,18 @@ impl JackpotChip {
             let msg: AB::Expr = cur[off.jackpot_msg_start + i].into();
             selected_msg = selected_msg + sel * msg;
         }
-        let v_packed = polyval_bits::<AB>(
-            &cur[off.v_bits_start..off.v_bits_start + 32],
-        );
+        let v_packed = polyval_bits::<AB>(&cur[off.v_bits_start..off.v_bits_start + 32]);
         builder.assert_zero(is_active.clone() * (selected_msg - v_packed.clone()));
 
         // ---- 4. Cross-row rotate-XOR-13 update ----
-        let mut rotated_xor_packed: AB::Expr =
-            <AB::Expr as PrimeCharacteristicRing>::ZERO;
+        let mut rotated_xor_packed: AB::Expr = <AB::Expr as PrimeCharacteristicRing>::ZERO;
         let two = <AB::F as PrimeCharacteristicRing>::TWO;
         let mut pow: AB::F = <AB::F as PrimeCharacteristicRing>::ONE;
         for i in 0..32 {
             let src_bit_idx = (i + 32 - (LROT_PER_TILE as usize)) % 32;
             let v_bit: AB::Expr = cur[off.v_bits_start + src_bit_idx].into();
             let x_bit: AB::Expr = cur[off.x_bits_start + i].into();
-            let xor_bit: AB::Expr =
-                v_bit.clone() + x_bit.clone() - x_bit * v_bit * two.clone();
+            let xor_bit: AB::Expr = v_bit.clone() + x_bit.clone() - x_bit * v_bit * two.clone();
             rotated_xor_packed = rotated_xor_packed + xor_bit * pow.clone();
             pow = pow * two.clone();
         }
@@ -203,8 +198,7 @@ impl JackpotChip {
 
                 let one_minus_sel: AB::Expr =
                     <AB::Expr as PrimeCharacteristicRing>::ONE - sel_i.clone();
-                let rhs =
-                    sel_i * rotated_xor_packed.clone() + one_minus_sel * cur_msg;
+                let rhs = sel_i * rotated_xor_packed.clone() + one_minus_sel * cur_msg;
 
                 tb.assert_zero(is_active.clone() * (nxt_msg - rhs));
             }
@@ -326,12 +320,12 @@ pub fn build_trace(initial: &[u32; JACKPOT_SIZE], steps: &[Step]) -> RowMajorMat
 mod tests {
     //! End-to-end jackpot chip tests.
 
+    use p3_field::integers::QuotientMap;
+    use p3_uni_stark::{prove, verify};
+
     use super::*;
     use crate::circuit::{build_stark_config, AiPowStarkConfig, CircuitConfig};
     use crate::params::ZkParams;
-
-    use p3_field::integers::QuotientMap;
-    use p3_uni_stark::{prove, verify};
 
     fn test_zk_params() -> ZkParams {
         ZkParams {

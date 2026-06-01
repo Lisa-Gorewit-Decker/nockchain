@@ -1069,9 +1069,10 @@
      ^-  ?
      =/  check-digest  (check-digest:page:t pag)
      =/  check-pow-hash=?
+       =/  prf=proof:sp  (need ((soft proof:sp) (need ~(pow get:page:t pag))))
        %-  check-target:mine
        :_  ~(target get:page:t pag)
-       (proof-to-pow:zeke (need ~(pow get:page:t pag)))
+       (proof-to-pow:zeke prf)
      =/  check-pow-valid=?  (check-pow pag)
      ::
      ::  check if timestamp is in base field, this will anchor subsequent timestamp checks
@@ -1129,13 +1130,16 @@
       =/  pow  ~(pow get:page:t pag)
       ?~  pow
         %.n
+      ?:  ?=([%ai-pow *] u.pow)
+        (gte ~(height get:page:t pag) ai-pow-activation-height.constants.k)
+      =/  prf=proof:sp  (need ((soft proof:sp) u.pow))
       ::
       ::  validate that powork puzzle in the proof is correct.
-      ?&  (check-pow-puzzle u.pow pag)
+      ?&  (check-pow-puzzle prf pag)
           ::
           ::  validate the powork. this is done separately since the
           ::  other checks are much cheaper.
-          (verify:nv u.pow ~ eny)
+          (verify:nv prf ~ eny)
       ==
     ::
     ++  check-pow-puzzle
@@ -1335,8 +1339,11 @@
         =/  pow-print=@t
           =/  pow  ~(pow get:page:t pag)
           ?>  ?=(^ pow)
+          ?:  ?=([%ai-pow *] u.pow)
+            ' with ai-pow certificate'
+          =/  prf=proof:sp  (need ((soft proof:sp) u.pow))
           %+  rap  3
-          :~  ' with proof version '  (rsh [3 2] (scot %ui version.u.pow))
+          :~  ' with proof version '  (rsh [3 2] (scot %ui version.prf))
           ==
         %-  trip
         ^-  @t
@@ -1565,7 +1572,7 @@
         ?>  ?=([%pow *] command)
         ::  Dispatch on the inner pow-variant tag.
         ?-    -.pv.command
-            %dumb-zkpow
+        %dumb-zkpow
           =/  commit=block-commitment:t
             (block-commitment:page:t candidate-block.m.k)
           ?.  =(bc.pv.command commit)
@@ -1591,13 +1598,15 @@
           ?:  (lth candidate-height ai-pow-activation-height.constants.k)
             ~>  %slog.[1 'do-pow: %ai-pow pre-activation; rejected']
             [~ k]
-          ::  Post-activation: STUB verifier. The deferred-task work
-          ::  replaces this branch with the real ai-pow verifier
-          ::  (proof decode + target check + ai-puzzle STARK verify).
-          ::  Until then, all %ai-pow submissions are rejected — even
-          ::  post-activation, no AI block can land.
-          ~>  %slog.[1 'do-pow: %ai-pow verifier stub — reject-all until real verifier lands']
-          [~ k]
+          ::  Post-activation persistence path. The real verifier is
+          ::  still deferred; for now this stores the typed recursive
+          ::  certificate in the candidate page so the artifact can be
+          ::  poked, digested, and transmitted with the block.
+          =.  m.k  (set-pow:min [%ai-pow cert.pv.command])
+          =.  m.k  set-digest:min
+          =^  heard-block-effs  k  (heard-block /poke/ai-pow-miner now candidate-block.m.k eny)
+          :_  k
+          heard-block-effs
         ==
       ::
       ++  do-set-mining-key

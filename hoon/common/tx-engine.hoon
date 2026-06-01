@@ -142,6 +142,16 @@
 ++  page-summary  page-summary:v0
 ++  pkh-signature  pkh-signature:v1
 ++  proof  proof:v0
+++  ai-blake  ai-blake:v1
+++  ai-ext2   ai-ext2:v1
+++  ai-ext2s  ai-ext2s:v1
+++  ai-ext2-vec  ai-ext2-vec:v1
+++  ai-pow-commitments  ai-pow-commitments:v1
+++  ai-pow-public-inputs  ai-pow-public-inputs:v1
+++  ai-proof-node  ai-proof-node:v1
+++  ai-recursive-certificate  ai-recursive-certificate:v1
+++  ai-pow-certificate  ai-pow-certificate:v1
+++  pow-artifact  pow-artifact:v1
 ++  reason
   |$  object
   (each object term)
@@ -412,7 +422,7 @@
       msg.form
     ::
     ++  pow
-      ^-  (unit proof)
+      ^-  (unit pow-artifact)
       ?^  -.form  pow.form
       pow.form
     --

@@ -199,10 +199,7 @@ impl CompositeFullAirPinned {
     /// Build with an explicit §6(b)-keystone flag. `sx_bound`
     /// MUST be derived by the verifier from the trusted block
     /// params (`num_stripes ≤ 16`), never from the proof.
-    pub fn new_with(
-        program: p3_matrix::dense::RowMajorMatrix<crate::Val>,
-        sx_bound: bool,
-    ) -> Self {
+    pub fn new_with(program: p3_matrix::dense::RowMajorMatrix<crate::Val>, sx_bound: bool) -> Self {
         assert_eq!(
             program.width(),
             PROGRAM_COLS.len(),
@@ -278,11 +275,9 @@ impl<AB: AirBuilder<F = crate::Val>> Air<AB> for CompositeFullAirPinned {
         // constraint-logic harness.
         let main2 = builder.main();
         let c2 = main2.current_slice();
-        let fs: [AB::Var; JACKPOT_SIZE] = core::array::from_fn(|i| {
-            c2[crate::composite_layout::FOLD_STATE_START + i]
-        });
-        let jm: [AB::Var; JACKPOT_SIZE] =
-            core::array::from_fn(|i| c2[JACKPOT_MSG_START + i]);
+        let fs: [AB::Var; JACKPOT_SIZE] =
+            core::array::from_fn(|i| c2[crate::composite_layout::FOLD_STATE_START + i]);
+        let jm: [AB::Var; JACKPOT_SIZE] = core::array::from_fn(|i| c2[JACKPOT_MSG_START + i]);
         let mut last = builder.when_last_row();
         for i in 0..JACKPOT_SIZE {
             last.assert_eq(jm[i], fs[i]);
@@ -320,12 +315,10 @@ impl<AB: AirBuilder<F = crate::Val>> Air<AB> for CompositeFullAirPinned {
             let main3 = builder.main();
             let c3 = main3.current_slice();
             let fx: AB::Var = c3[crate::composite_layout::FOLD_XSTEP];
-            let sel: [AB::Var; STRIPE_MAX] = core::array::from_fn(|s| {
-                c3[crate::composite_layout::FOLD_STRIPE_SEL_START + s]
-            });
-            let xr: [AB::Var; STRIPE_MAX] = core::array::from_fn(|s| {
-                c3[crate::composite_layout::SX_XR_START + s]
-            });
+            let sel: [AB::Var; STRIPE_MAX] =
+                core::array::from_fn(|s| c3[crate::composite_layout::FOLD_STRIPE_SEL_START + s]);
+            let xr: [AB::Var; STRIPE_MAX] =
+                core::array::from_fn(|s| c3[crate::composite_layout::SX_XR_START + s]);
             let mut bind: AB::Expr = <AB::Expr as PrimeCharacteristicRing>::ZERO;
             for s in 0..STRIPE_MAX {
                 bind = bind + sel[s].into() * (fx.into() - xr[s].into());
@@ -409,8 +402,8 @@ impl<AB: AirBuilder> Air<AB> for CompositeFullAir {
         // rows ⇒ zero regression.
         {
             use crate::composite_layout::{
-                A_NOISED_LEN, A_NOISED_START, A_NOISED_UNPACK_START, B_NOISED_LEN,
-                B_NOISED_START, B_NOISED_UNPACK_START, IS_RESET_CUMSUM, IS_UPDATE_CUMSUM,
+                A_NOISED_LEN, A_NOISED_START, A_NOISED_UNPACK_START, B_NOISED_LEN, B_NOISED_START,
+                B_NOISED_UNPACK_START, IS_RESET_CUMSUM, IS_UPDATE_CUMSUM,
             };
             const N: usize = 8;
             debug_assert_eq!(A_NOISED_LEN, N);
@@ -434,8 +427,7 @@ impl<AB: AirBuilder> Air<AB> for CompositeFullAir {
             let b256 = <AB::F as PrimeCharacteristicRing>::from_i32(256);
             for (packed, unpack) in [(&a_p, &a_u), (&b_p, &b_u)] {
                 for c in 0..N {
-                    let mut recon: AB::Expr =
-                        <AB::Expr as PrimeCharacteristicRing>::ZERO;
+                    let mut recon: AB::Expr = <AB::Expr as PrimeCharacteristicRing>::ZERO;
                     let mut pow: AB::F = <AB::F as PrimeCharacteristicRing>::ONE;
                     for d in 0..4 {
                         recon = recon + unpack[c * 4 + d] * pow.clone();
@@ -486,10 +478,8 @@ impl<AB: AirBuilder> Air<AB> for CompositeFullAir {
         let cur_is_hash_jackpot: AB::Var = cur[IS_HASH_JACKPOT];
         let cur_is_use_job_key: AB::Var = cur[IS_USE_JOB_KEY];
         let cur_is_use_commitment_hash: AB::Var = cur[IS_USE_COMMITMENT_HASH];
-        let cur_cv_out: [AB::Var; CV_OUT_LEN] =
-            core::array::from_fn(|i| cur[CV_OUT_START + i]);
-        let cur_cv_in: [AB::Var; CV_IN_LEN] =
-            core::array::from_fn(|i| cur[CV_IN_START + i]);
+        let cur_cv_out: [AB::Var; CV_OUT_LEN] = core::array::from_fn(|i| cur[CV_OUT_START + i]);
+        let cur_cv_in: [AB::Var; CV_IN_LEN] = core::array::from_fn(|i| cur[CV_IN_START + i]);
 
         // Selector-gated per-row PI binding (fires on every row but
         // only constrains when the selector = 1).
@@ -503,16 +493,13 @@ impl<AB: AirBuilder> Air<AB> for CompositeFullAir {
         // making it a proof *of work for this block* rather than an
         // unanchored "some matmul happened" statement.
         for i in 0..CV_OUT_LEN {
-            builder.assert_zero(
-                cur_is_hash_a.into() * (cur_cv_out[i].into() - pi_hash_a[i].into()),
-            );
-            builder.assert_zero(
-                cur_is_hash_b.into() * (cur_cv_out[i].into() - pi_hash_b[i].into()),
-            );
+            builder
+                .assert_zero(cur_is_hash_a.into() * (cur_cv_out[i].into() - pi_hash_a[i].into()));
+            builder
+                .assert_zero(cur_is_hash_b.into() * (cur_cv_out[i].into() - pi_hash_b[i].into()));
             // C4: IS_HASH_JACKPOT · (CV_OUT[i] − PI_HASH_JACKPOT[i]) = 0
             builder.assert_zero(
-                cur_is_hash_jackpot.into()
-                    * (cur_cv_out[i].into() - pi_hash_jackpot[i].into()),
+                cur_is_hash_jackpot.into() * (cur_cv_out[i].into() - pi_hash_jackpot[i].into()),
             );
         }
         for i in 0..CV_IN_LEN {
@@ -617,14 +604,11 @@ impl<AB: AirBuilder> Air<AB> for CompositeFullAir {
             let mut recomposed: AB::Expr = <AB::Expr as PrimeCharacteristicRing>::ZERO;
             let mut pow: AB::F = <AB::F as PrimeCharacteristicRing>::ONE;
             for b in 0..4 {
-                recomposed =
-                    recomposed + cur[UINT8_DATA_START + 4 * w + b] * pow.clone();
+                recomposed = recomposed + cur[UINT8_DATA_START + 4 * w + b] * pow.clone();
                 pow = pow * base256.clone();
             }
             let msg_word: AB::Var = cur[BLAKE3_MSG_START + w];
-            builder.assert_zero(
-                c3_gate.clone() * (msg_word.into() - recomposed),
-            );
+            builder.assert_zero(c3_gate.clone() * (msg_word.into() - recomposed));
         }
 
         let mut last = builder.when_last_row();
@@ -643,16 +627,16 @@ mod tests {
     //! MIN_STARK_LEN trace where every wired chip's columns are
     //! filled correctly, then prove + verify.
 
+    use p3_field::integers::QuotientMap;
+    use p3_matrix::dense::RowMajorMatrix;
+    use p3_uni_stark::{prove, verify};
+
     use super::*;
     use crate::chips::i8u8::I8U8_TABLE_SIZE;
     use crate::chips::range_table::{IRange7P1Chip, IRange8Chip, URange13Chip, URange8Chip};
     use crate::circuit::{build_stark_config, AiPowStarkConfig, CircuitConfig};
     use crate::composite_layout::{MIN_STARK_LEN, STARK_ROW_IDX, TOTAL_TRACE_WIDTH};
     use crate::params::ZkParams;
-
-    use p3_field::integers::QuotientMap;
-    use p3_matrix::dense::RowMajorMatrix;
-    use p3_uni_stark::{prove, verify};
 
     fn test_zk_params() -> ZkParams {
         ZkParams {
@@ -707,7 +691,8 @@ mod tests {
     fn composite_full_air_baseline_trace_verifies() {
         let cfg = build_stark_config(&test_zk_params(), &CircuitConfig::TEST_PEARL);
         let trace = build_baseline_trace(MIN_STARK_LEN);
-        let pis = crate::composite_public::CompositePublicInputs::derive_from_matrix(&trace).to_vec();
+        let pis =
+            crate::composite_public::CompositePublicInputs::derive_from_matrix(&trace).to_vec();
         let proof = prove::<AiPowStarkConfig, _>(&cfg, &CompositeFullAir, trace, &pis);
         verify::<AiPowStarkConfig, _>(&cfg, &CompositeFullAir, &proof, &pis)
             .expect("baseline composite trace must verify");
@@ -721,7 +706,8 @@ mod tests {
         // Set row 3's STARK_ROW_IDX to 999 instead of 3.
         let target = 3 * TOTAL_TRACE_WIDTH + STARK_ROW_IDX;
         trace.values[target] = <crate::Val as QuotientMap<u64>>::from_int(999);
-        let pis = crate::composite_public::CompositePublicInputs::derive_from_matrix(&trace).to_vec();
+        let pis =
+            crate::composite_public::CompositePublicInputs::derive_from_matrix(&trace).to_vec();
         let proof = prove::<AiPowStarkConfig, _>(&cfg, &CompositeFullAir, trace, &pis);
         assert!(
             verify::<AiPowStarkConfig, _>(&cfg, &CompositeFullAir, &proof, &pis).is_err(),
@@ -739,7 +725,8 @@ mod tests {
         use crate::composite_layout::URANGE8_TABLE;
         let target = 1 * TOTAL_TRACE_WIDTH + URANGE8_TABLE;
         trace.values[target] = <crate::Val as QuotientMap<u64>>::from_int(5);
-        let pis = crate::composite_public::CompositePublicInputs::derive_from_matrix(&trace).to_vec();
+        let pis =
+            crate::composite_public::CompositePublicInputs::derive_from_matrix(&trace).to_vec();
         let proof = prove::<AiPowStarkConfig, _>(&cfg, &CompositeFullAir, trace, &pis);
         assert!(
             verify::<AiPowStarkConfig, _>(&cfg, &CompositeFullAir, &proof, &pis).is_err(),
@@ -757,7 +744,8 @@ mod tests {
         use crate::composite_layout::I8U8_AUX;
         let target = 0 * TOTAL_TRACE_WIDTH + I8U8_AUX;
         trace.values[target] = <crate::Val as QuotientMap<u64>>::from_int(1);
-        let pis = crate::composite_public::CompositePublicInputs::derive_from_matrix(&trace).to_vec();
+        let pis =
+            crate::composite_public::CompositePublicInputs::derive_from_matrix(&trace).to_vec();
         let proof = prove::<AiPowStarkConfig, _>(&cfg, &CompositeFullAir, trace, &pis);
         assert!(
             verify::<AiPowStarkConfig, _>(&cfg, &CompositeFullAir, &proof, &pis).is_err(),
@@ -777,7 +765,8 @@ mod tests {
         // Flip IS_RESET_CUMSUM on row 0 without updating CONTROL_PREP.
         let target = 0 * TOTAL_TRACE_WIDTH + IS_RESET_CUMSUM;
         trace.values[target] = <crate::Val as QuotientMap<u64>>::from_int(1);
-        let pis = crate::composite_public::CompositePublicInputs::derive_from_matrix(&trace).to_vec();
+        let pis =
+            crate::composite_public::CompositePublicInputs::derive_from_matrix(&trace).to_vec();
         let proof = prove::<AiPowStarkConfig, _>(&cfg, &CompositeFullAir, trace, &pis);
         assert!(
             verify::<AiPowStarkConfig, _>(&cfg, &CompositeFullAir, &proof, &pis).is_err(),
@@ -796,7 +785,8 @@ mod tests {
         use crate::composite_layout::NOISED_PACKED_START;
         let target = 0 * TOTAL_TRACE_WIDTH + NOISED_PACKED_START;
         trace.values[target] = <crate::Val as QuotientMap<u64>>::from_int(42);
-        let pis = crate::composite_public::CompositePublicInputs::derive_from_matrix(&trace).to_vec();
+        let pis =
+            crate::composite_public::CompositePublicInputs::derive_from_matrix(&trace).to_vec();
         let proof = prove::<AiPowStarkConfig, _>(&cfg, &CompositeFullAir, trace, &pis);
         assert!(
             verify::<AiPowStarkConfig, _>(&cfg, &CompositeFullAir, &proof, &pis).is_err(),
@@ -824,7 +814,8 @@ mod tests {
             MIN_STARK_LEN * TOTAL_TRACE_WIDTH,
             "trace dimensions"
         );
-        let pis = crate::composite_public::CompositePublicInputs::derive_from_matrix(&trace).to_vec();
+        let pis =
+            crate::composite_public::CompositePublicInputs::derive_from_matrix(&trace).to_vec();
         let proof = prove::<AiPowStarkConfig, _>(&cfg, &CompositeFullAir, trace, &pis);
         verify::<AiPowStarkConfig, _>(&cfg, &CompositeFullAir, &proof, &pis)
             .expect("min-stark-len trace must verify");
@@ -850,7 +841,8 @@ mod tests {
         // constraint forces row 1's CUMSUM = row 0's CUMSUM = 0.
         let target = 1 * TOTAL_TRACE_WIDTH + CUMSUM_TILE_START;
         trace.values[target] = <crate::Val as QuotientMap<u64>>::from_int(42);
-        let pis = crate::composite_public::CompositePublicInputs::derive_from_matrix(&trace).to_vec();
+        let pis =
+            crate::composite_public::CompositePublicInputs::derive_from_matrix(&trace).to_vec();
         let proof = prove::<AiPowStarkConfig, _>(&cfg, &CompositeFullAir, trace, &pis);
         assert!(
             verify::<AiPowStarkConfig, _>(&cfg, &CompositeFullAir, &proof, &pis).is_err(),
@@ -873,7 +865,8 @@ mod tests {
         const STATE_W: usize = 264;
         let target = 0 * TOTAL_TRACE_WIDTH + BLAKE3_ROUND_START + STATE_W + 4;
         trace.values[target] = <crate::Val as QuotientMap<u64>>::from_int(2);
-        let pis = crate::composite_public::CompositePublicInputs::derive_from_matrix(&trace).to_vec();
+        let pis =
+            crate::composite_public::CompositePublicInputs::derive_from_matrix(&trace).to_vec();
         let proof = prove::<AiPowStarkConfig, _>(&cfg, &CompositeFullAir, trace, &pis);
         assert!(
             verify::<AiPowStarkConfig, _>(&cfg, &CompositeFullAir, &proof, &pis).is_err(),
@@ -894,7 +887,8 @@ mod tests {
         use crate::composite_layout::A_NOISED_UNPACK_START;
         let target = 1 * TOTAL_TRACE_WIDTH + A_NOISED_UNPACK_START;
         trace.values[target] = <crate::Val as QuotientMap<i64>>::from_int(100);
-        let pis = crate::composite_public::CompositePublicInputs::derive_from_matrix(&trace).to_vec();
+        let pis =
+            crate::composite_public::CompositePublicInputs::derive_from_matrix(&trace).to_vec();
         let proof = prove::<AiPowStarkConfig, _>(&cfg, &CompositeFullAir, trace, &pis);
         verify::<AiPowStarkConfig, _>(&cfg, &CompositeFullAir, &proof, &pis)
             .expect("change to A_NOISED_UNPACK in passthrough mode must verify");

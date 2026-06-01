@@ -30,8 +30,7 @@ unsafe impl GlobalAlloc for CountingAlloc {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
         let p = unsafe { System.alloc(layout) };
         if !p.is_null() {
-            let cur =
-                ALLOCATED.fetch_add(layout.size(), Ordering::Relaxed) + layout.size();
+            let cur = ALLOCATED.fetch_add(layout.size(), Ordering::Relaxed) + layout.size();
             PEAK.fetch_max(cur, Ordering::Relaxed);
         }
         p

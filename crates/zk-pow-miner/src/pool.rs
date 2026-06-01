@@ -86,7 +86,10 @@ impl Pool {
     /// worker is already busy or the id is unknown.
     pub fn dispatch_one(&mut self, id: WorkerId, poke: NounSlab) {
         if self.busy.contains(&id) {
-            tracing::warn!(worker_id = id, "dispatch_one: worker already busy; skipping");
+            tracing::warn!(
+                worker_id = id,
+                "dispatch_one: worker already busy; skipping"
+            );
             return;
         }
         if !self.workers.iter().any(|w| w.id() == id) {
@@ -258,10 +261,8 @@ mod tests {
 
     #[tokio::test]
     async fn new_pool_starts_idle() {
-        let workers: Vec<Arc<dyn Worker>> = vec![
-            StubWorker::new(1, vec![]),
-            StubWorker::new(2, vec![]),
-        ];
+        let workers: Vec<Arc<dyn Worker>> =
+            vec![StubWorker::new(1, vec![]), StubWorker::new(2, vec![])];
         let pool = Pool::new(workers);
         assert_eq!(pool.worker_count(), 2);
         assert_eq!(pool.busy_count(), 0);
@@ -324,10 +325,7 @@ mod tests {
     async fn dispatch_one_respawns_after_result() {
         let w1 = StubWorker::new(
             1,
-            vec![
-                StubResponse::RetryImmediate,
-                StubResponse::SuccessImmediate,
-            ],
+            vec![StubResponse::RetryImmediate, StubResponse::SuccessImmediate],
         );
         let workers: Vec<Arc<dyn Worker>> = vec![w1.clone()];
         let mut pool = Pool::new(workers);
@@ -361,7 +359,7 @@ mod tests {
         let w1 = StubWorker::new_with_delay(
             1,
             vec![
-                StubResponse::WaitForCancel, // first attempt: will be cancelled
+                StubResponse::WaitForCancel,    // first attempt: will be cancelled
                 StubResponse::SuccessImmediate, // second attempt: succeeds
             ],
             Duration::from_millis(0), // WaitForCancel polls cancel flag itself
@@ -389,10 +387,8 @@ mod tests {
     #[test]
     #[should_panic(expected = "duplicate worker id")]
     fn duplicate_ids_panic_at_construction() {
-        let workers: Vec<Arc<dyn Worker>> = vec![
-            StubWorker::new(1, vec![]),
-            StubWorker::new(1, vec![]),
-        ];
+        let workers: Vec<Arc<dyn Worker>> =
+            vec![StubWorker::new(1, vec![]), StubWorker::new(1, vec![])];
         let _pool = Pool::new(workers);
     }
 }

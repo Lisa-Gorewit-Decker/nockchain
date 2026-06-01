@@ -42,7 +42,6 @@ use nockapp::noun::AtomExt;
 use nockapp::NockAppExit;
 use nockapp_grpc::services::private_nockapp::server::PrivateNockAppGrpcServer;
 use nockchain_mining_common::MiningPkhConfig;
-use zk_pow_miner::wire::ZkPowMinerWire;
 use nockvm::ext::NounExt;
 use nockvm::noun::{Atom, D, T};
 use nockvm_macros::tas;
@@ -51,6 +50,7 @@ use tokio::sync::{broadcast, mpsc, Mutex as TMutex};
 use tokio_util::sync::CancellationToken;
 use zk_pow_miner::pool::Pool;
 use zk_pow_miner::run::{default_v0_configs, run_with_pool, MinerConfig};
+use zk_pow_miner::wire::ZkPowMinerWire;
 use zk_pow_miner::worker::{SerfWorker, Worker};
 
 /// Singleton metrics — gnort's registry rejects double-registration.
@@ -103,10 +103,12 @@ async fn miner_finds_and_submits_block_against_mock_node() {
                         wire.source, wire.version, wire.tags
                     );
                     let is_mined = wire.source == ZkPowMinerWire::SOURCE
-                        && wire.tags.iter().any(|t| matches!(
-                            t,
-                            nockapp::wire::WireTag::String(s) if s == "mined"
-                        ));
+                        && wire.tags.iter().any(|t| {
+                            matches!(
+                                t,
+                                nockapp::wire::WireTag::String(s) if s == "mined"
+                            )
+                        });
                     if is_mined {
                         mined_clone.lock().await.push(poke);
                     }
@@ -150,9 +152,7 @@ async fn miner_finds_and_submits_block_against_mock_node() {
     };
     let shutdown = CancellationToken::new();
     let shutdown_clone = shutdown.clone();
-    let miner_task = tokio::spawn(async move {
-        run_with_pool(cfg, pool, shutdown_clone).await
-    });
+    let miner_task = tokio::spawn(async move { run_with_pool(cfg, pool, shutdown_clone).await });
 
     // Brief pause for the miner to connect + configure + subscribe.
     tokio::time::sleep(Duration::from_millis(500)).await;
@@ -205,13 +205,19 @@ async fn miner_finds_and_submits_block_against_mock_node() {
     let first = &got_pokes[0];
     let space = first.noun_space();
     let root = unsafe { *first.root() };
-    let cell = root.in_space(&space).as_cell().expect("poke root is a cell");
+    let cell = root
+        .in_space(&space)
+        .as_cell()
+        .expect("poke root is a cell");
     assert!(
         cell.head().eq_bytes("command"),
         "%mined poke head should be %command"
     );
     let tail = cell.tail().noun();
-    let tail_cell = tail.in_space(&space).as_cell().expect("poke tail is a cell");
+    let tail_cell = tail
+        .in_space(&space)
+        .as_cell()
+        .expect("poke tail is a cell");
     assert!(
         tail_cell.head().eq_bytes("pow"),
         "%mined poke command should be %pow"

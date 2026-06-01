@@ -22,9 +22,9 @@ use crate::fiat_shamir::{
 use crate::matmul::compute_tile_from_slices;
 use crate::ncmn::{parse_ncmn_nonce, NonceFormatError};
 use crate::params::{MatmulParams, ParamError};
+use crate::prng;
 use crate::proof::{MatmulProof, TileOpening};
 use crate::prover::params_tag;
-use crate::prng;
 use crate::tile_hash::{difficulty_target, hash_le_target};
 
 const INPUT_RANGE_MAX: i8 = 64;
@@ -198,13 +198,7 @@ pub fn verify_ncmn_at_target(
     proof: &MatmulProof,
 ) -> Result<(), VerifyError> {
     verify_ncmn_at_target_inner(
-        puzzle_id,
-        candidate_nck_commitment,
-        nonce,
-        params,
-        target,
-        proof,
-        true,
+        puzzle_id, candidate_nck_commitment, nonce, params, target, proof, true,
     )
 }
 
@@ -220,13 +214,7 @@ pub fn verify_ncmn_at_target_structural(
     proof: &MatmulProof,
 ) -> Result<(), VerifyError> {
     verify_ncmn_at_target_inner(
-        puzzle_id,
-        candidate_nck_commitment,
-        nonce,
-        params,
-        target,
-        proof,
-        false,
+        puzzle_id, candidate_nck_commitment, nonce, params, target, proof, false,
     )
 }
 
@@ -517,23 +505,12 @@ mod tests {
         let nonce = build_ncmn_nonce(&anchors, 0);
 
         assert!(matches!(
-            verify_prod_at_target(
-                b"param01-puzzle",
-                &nonce,
-                &params,
-                &[0xFFu8; 32],
-                &proof,
-            ),
+            verify_prod_at_target(b"param01-puzzle", &nonce, &params, &[0xFFu8; 32], &proof,),
             Err(VerifyError::Params(_))
         ));
         assert!(matches!(
             verify_ncmn_at_target(
-                b"param01-puzzle",
-                &anchors.nck_commitment,
-                &nonce,
-                &params,
-                &[0xFFu8; 32],
-                &proof,
+                b"param01-puzzle", &anchors.nck_commitment, &nonce, &params, &[0xFFu8; 32], &proof,
             ),
             Err(VerifyError::Params(_))
         ));
@@ -554,7 +531,9 @@ mod tests {
         let proof = empty_proof(&params);
 
         BLOCK_NOISE_EXPAND_CALLS.store(0, Ordering::Relaxed);
-        let res = verify_at_target(b"dos01-block", b"dos01-nonce", &params, &[0xFFu8; 32], &proof);
+        let res = verify_at_target(
+            b"dos01-block", b"dos01-nonce", &params, &[0xFFu8; 32], &proof,
+        );
         assert_eq!(res, Err(VerifyError::SpotCountMismatch));
         assert_eq!(
             BLOCK_NOISE_EXPAND_CALLS.load(Ordering::Relaxed),

@@ -8,8 +8,19 @@
 //!
 //! ## Public API
 //!
+//! - [`recursion::prove_canonical_ai_pow_certificate`] — the canonical
+//!   production prover API for Nockchain's AI-PoW certificate. It
+//!   proves the Layer-0 composite STARK, recursively verifies that
+//!   proof in an L1 circuit, and returns the recursive certificate.
+//!   This is the only proof object intended for Nockchain consensus,
+//!   block persistence, or wire transmission.
+//! - [`composite_proof::composite_prove_pinned_logup`] /
+//!   [`composite_proof::composite_verify_pinned_logup`] — Layer-0
+//!   composite STARK primitives. These are intermediate inputs to the
+//!   recursive certificate and are not canonical production
+//!   certificates by themselves.
 //! - [`composite_proof::composite_prove`] / [`composite_proof::composite_verify`]
-//!   — the canonical prove + verify pair, wrapping `p3-uni-stark`.
+//!   — dev-only unpinned prove + verify pair, wrapping `p3-uni-stark`.
 //! - [`composite_full_air::CompositeFullAir`] — the top-level AIR over
 //!   `TOTAL_TRACE_WIDTH` columns. 10 chips share every row, gated by
 //!   selector bits packed into `CONTROL_PREP`.
@@ -38,8 +49,11 @@
 //!
 //! ## Status
 //!
-//! M10.1c is the canonical pipeline. Earlier M9.1 / M10.1b prototypes
-//! were retired once M10.1c had full LogUp + PI binding + bench data.
+//! M10.1c is the Layer-0 composite pipeline. The production
+//! Nockchain certificate is the recursive L1 certificate produced by
+//! the `recursion` module, not the raw Layer-0 proof. Earlier M9.1 /
+//! M10.1b prototypes were retired once M10.1c had full LogUp + PI
+//! binding + bench data.
 //! See `2026-05-14_ENGINEERING_REPORT.md` for the architectural review and bench
 //! numbers; `2026-05-14_M10_1C_PROGRESS.md` for the phase-by-phase history.
 //!
@@ -48,8 +62,10 @@
 //! - **`h_a` / `h_b` matrix bindings** (task #52). The witness's
 //!   `a_rows` / `b_cols` aren't yet tied to chain-pinned chunk-Merkle
 //!   roots. Multi-week deferred work.
-//! - **Recursion compression** (M12). Plonky3 doesn't ship a
-//!   compressor yet; deferred per the original M10.1c design.
+//! - **Structured noun serialization for the recursive certificate.**
+//!   The current Rust measurement path serializes the L1 certificate as
+//!   a Rust proof object; consensus still needs the proof-shaped noun
+//!   format described in `docs/ai-pow-integration/`.
 
 pub mod bench_suite;
 pub mod blake3_tree;
@@ -77,11 +93,17 @@ pub mod recursion;
 pub use p3_goldilocks::Goldilocks as Val;
 
 pub use crate::circuit::{AiPowStarkConfig, CircuitConfig};
-pub use crate::composite_full_air::{
-    extract_program, CompositeFullAir, CompositeFullAirPinned,
-};
+pub use crate::composite_full_air::{extract_program, CompositeFullAir, CompositeFullAirPinned};
 pub use crate::composite_full_air_with_lookups::{
     CompositeFullAirWithLookups, CompositeFullAirWithLookupsPinned,
+};
+#[cfg(any(test, feature = "dev-unsafe"))]
+pub use crate::composite_proof::{
+    composite_prove as dev_unpinned_prove, composite_prove_pinned as dev_pinned_no_logup_prove,
+    composite_setup as dev_pinned_no_logup_setup, composite_verify as dev_unpinned_verify,
+    composite_verify_pinned as dev_pinned_no_logup_verify,
+    composite_verify_pow as dev_unpinned_verify_pow,
+    composite_verify_pow_pinned as dev_pinned_no_logup_verify_pow,
 };
 pub use crate::composite_proof::{
     hash_jackpot_le_bytes, CompositeVerificationError, PowVerifyError, ProgramShapeError,
@@ -91,18 +113,12 @@ pub use crate::composite_public::CompositePublicInputs;
 pub use crate::composite_trace::CompositeTrace;
 pub use crate::params::ZkParams;
 
-#[cfg(any(test, feature = "dev-unsafe"))]
-pub use crate::composite_proof::{
-    composite_prove as dev_unpinned_prove,
-    composite_prove_pinned as dev_pinned_no_logup_prove,
-    composite_setup as dev_pinned_no_logup_setup,
-    composite_verify as dev_unpinned_verify,
-    composite_verify_pinned as dev_pinned_no_logup_verify,
-    composite_verify_pow as dev_unpinned_verify_pow,
-    composite_verify_pow_pinned as dev_pinned_no_logup_verify_pow,
-};
-
-/// Concrete pinned+LogUp proof type used by the production AI PoW circuit.
+/// Concrete pinned+LogUp Layer-0 proof type.
+///
+/// This is an intermediate proof consumed by the recursive certificate
+/// prover. It is not the canonical Nockchain production certificate and
+/// must not be persisted in blocks or transmitted as the AI-PoW proof
+/// artifact.
 pub type AiPowBatchProof = p3_batch_stark::BatchProof<AiPowStarkConfig>;
 
 /// Concrete preprocessed program matrix type used by the pinned AI PoW circuit.

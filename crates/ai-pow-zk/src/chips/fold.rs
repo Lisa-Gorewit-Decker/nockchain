@@ -185,8 +185,7 @@ impl FoldChip {
             }
             let mut sel_val: AB::Expr = <AB::Expr as PrimeCharacteristicRing>::ZERO;
             for s in 0..cols::SLOT_SEL_LEN {
-                sel_val = sel_val
-                    + cur[off.slot_sel + s].into() * cur[off.fold_state + s].into();
+                sel_val = sel_val + cur[off.slot_sel + s].into() * cur[off.fold_state + s].into();
             }
             builder.assert_eq(m_acc, sel_val);
 
@@ -373,12 +372,12 @@ mod tests {
     //! feature (HIGH-2.2 §4.A/§7), where `ai-pow` → `ai-pow-zk` is
     //! the legal direction.
 
+    use p3_field::integers::QuotientMap;
+    use p3_uni_stark::{prove, verify};
+
     use super::*;
     use crate::circuit::{build_stark_config, AiPowStarkConfig, CircuitConfig};
     use crate::params::ZkParams;
-
-    use p3_field::integers::QuotientMap;
-    use p3_uni_stark::{prove, verify};
 
     fn cfg() -> AiPowStarkConfig {
         build_stark_config(
@@ -429,15 +428,18 @@ mod tests {
         let cfg = cfg();
         for xs in [
             vec![0x1234_5678i32],
-            (0..16i32).map(|i| i.wrapping_mul(2_000_003)).collect::<Vec<_>>(),
+            (0..16i32)
+                .map(|i| i.wrapping_mul(2_000_003))
+                .collect::<Vec<_>>(),
             (0..40i32)
                 .map(|i| i.wrapping_mul(0x9E37_79B1u32 as i32) ^ (i << 5))
                 .collect::<Vec<_>>(),
         ] {
             let trace = build_trace(&xs);
             let proof = prove::<AiPowStarkConfig, _>(&cfg, &FoldChip, trace, &[]);
-            verify::<AiPowStarkConfig, _>(&cfg, &FoldChip, &proof, &[])
-                .unwrap_or_else(|e| panic!("honest fold trace (len {}) must verify: {e:?}", xs.len()));
+            verify::<AiPowStarkConfig, _>(&cfg, &FoldChip, &proof, &[]).unwrap_or_else(|e| {
+                panic!("honest fold trace (len {}) must verify: {e:?}", xs.len())
+            });
         }
     }
 
@@ -471,7 +473,9 @@ mod tests {
     }
 
     fn honest() -> RowMajorMatrix<Val> {
-        let xs: Vec<i32> = (0..20i32).map(|i| i.wrapping_mul(0x0151_5151) ^ 0x33).collect();
+        let xs: Vec<i32> = (0..20i32)
+            .map(|i| i.wrapping_mul(0x0151_5151) ^ 0x33)
+            .collect();
         build_trace(&xs)
     }
 
@@ -496,8 +500,7 @@ mod tests {
         let mut trace = honest();
         // Flip XSTEP on row 2 without fixing its bits ⇒ the
         // XSTEP == Σ bits·2^i reconstruction must fail.
-        trace.values[2 * cols::ROW_W + cols::XSTEP] =
-            <Val as QuotientMap<u64>>::from_int(0x7);
+        trace.values[2 * cols::ROW_W + cols::XSTEP] = <Val as QuotientMap<u64>>::from_int(0x7);
         let proof = prove::<AiPowStarkConfig, _>(&c, &FoldChip, trace, &[]);
         assert!(
             verify::<AiPowStarkConfig, _>(&c, &FoldChip, &proof, &[]).is_err(),
@@ -523,8 +526,7 @@ mod tests {
         let mut trace = honest();
         // Set a second SLOT_SEL bit on row 1 ⇒ Σ SLOT_SEL == IS_FOLD
         // (=1) is violated.
-        trace.values[1 * cols::ROW_W + cols::SLOT_SEL + 5] =
-            <Val as QuotientMap<u64>>::from_int(1);
+        trace.values[1 * cols::ROW_W + cols::SLOT_SEL + 5] = <Val as QuotientMap<u64>>::from_int(1);
         let proof = prove::<AiPowStarkConfig, _>(&c, &FoldChip, trace, &[]);
         assert!(
             verify::<AiPowStarkConfig, _>(&c, &FoldChip, &proof, &[]).is_err(),

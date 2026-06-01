@@ -103,12 +103,7 @@ pub fn chunk_cv(
 }
 
 /// Keyed BLAKE3 **parent** compression of `left‖right`.
-pub fn parent_cv(
-    left: &[u8; 32],
-    right: &[u8; 32],
-    kappa: &[u8; 32],
-    is_root: bool,
-) -> [u8; 32] {
+pub fn parent_cv(left: &[u8; 32], right: &[u8; 32], kappa: &[u8; 32], is_root: bool) -> [u8; 32] {
     let mut msg = [0u8; BLOCK_LEN];
     msg[..32].copy_from_slice(left);
     msg[32..].copy_from_slice(right);
@@ -226,7 +221,10 @@ pub fn tile_chunk_range(
 /// strip-opening A/B regions. KAT'd `== place_matrix_strip_
 /// opening`'s actual row advance.
 pub fn strip_opening_rows(c0: usize, c1: usize, num_chunks: usize) -> usize {
-    assert!(c0 < c1 && c1 <= num_chunks, "range [{c0},{c1}) out of 0..{num_chunks}");
+    assert!(
+        c0 < c1 && c1 <= num_chunks,
+        "range [{c0},{c1}) out of 0..{num_chunks}"
+    );
     // Fully-recomputed subtree [lo,hi) ⊆ [c0,c1): leaves = 16
     // compressions each; internal node = +1 parent compression.
     fn inside(lo: usize, hi: usize) -> usize {
@@ -247,7 +245,11 @@ pub fn strip_opening_rows(c0: usize, c1: usize, num_chunks: usize) -> usize {
         let mid = lo + left_len((hi - lo) as u64) as usize;
         fold(lo, mid, c0, c1) + fold(mid, hi, c0, c1) + 1
     }
-    let compressions = if num_chunks == 1 { 16 } else { fold(0, num_chunks, c0, c1) };
+    let compressions = if num_chunks == 1 {
+        16
+    } else {
+        fold(0, num_chunks, c0, c1)
+    };
     compressions * 8
 }
 
@@ -432,9 +434,8 @@ mod tests {
         let k = kappa();
         // raw byte lengths chosen to land on these chunk counts:
         // 1..=17, 31, 32, 33, 100, 1000 — pow2 and very much not.
-        let chunk_counts = [
-            1usize, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 13, 16, 17, 31, 32, 33, 100, 1000,
-        ];
+        let chunk_counts =
+            [1usize, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 13, 16, 17, 31, 32, 33, 100, 1000];
         for &nc in &chunk_counts {
             // Use a non-chunk-multiple raw length so padding is
             // exercised too (last chunk partially zero-padded).
@@ -505,19 +506,12 @@ mod tests {
                         let mut chunk = [0u8; CHUNK_LEN];
                         chunk.copy_from_slice(&pad_to_chunk_boundary(&raw));
                         let opened = [chunk_cv(&chunk, 0, &k, true)];
-                        assert_eq!(
-                            verify_strip_opening(&opened, &[], 0, 1, 1, &k),
-                            root
-                        );
+                        assert_eq!(verify_strip_opening(&opened, &[], 0, 1, 1, &k), root);
                         continue;
                     }
                     let (opened, sibs) = open_strip(&raw, &k, c0, c1);
-                    let got =
-                        verify_strip_opening(&opened, &sibs, c0, c1, nc, &k);
-                    assert_eq!(
-                        got, root,
-                        "open [{c0},{c1}) of {nc} chunks != root"
-                    );
+                    let got = verify_strip_opening(&opened, &sibs, c0, c1, nc, &k);
+                    assert_eq!(got, root, "open [{c0},{c1}) of {nc} chunks != root");
                 }
             }
         }
@@ -584,18 +578,12 @@ mod tests {
         // Tampered opened leaf.
         let (mut opened, sibs) = open_strip(&raw, &k, c0, c1);
         opened[2][0] ^= 1;
-        assert_ne!(
-            verify_strip_opening(&opened, &sibs, c0, c1, nc, &k),
-            root
-        );
+        assert_ne!(verify_strip_opening(&opened, &sibs, c0, c1, nc, &k), root);
 
         // Forged authentication sibling.
         let (opened, mut sibs) = open_strip(&raw, &k, c0, c1);
         sibs[0].cv[7] ^= 0x80;
-        assert_ne!(
-            verify_strip_opening(&opened, &sibs, c0, c1, nc, &k),
-            root
-        );
+        assert_ne!(verify_strip_opening(&opened, &sibs, c0, c1, nc, &k), root);
     }
 
     fn in_circuit_root(raw: &[u8], k: &[u8; 32], trace_len: usize) -> [u8; 32] {

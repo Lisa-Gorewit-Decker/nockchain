@@ -54,10 +54,12 @@ pub fn pearl_random_hash(
 ) -> [u8; 32] {
     let mut message = [0u8; 64];
     let prepend_value = (1 + index) as i32;
-    message[prepend * 4..prepend * 4 + 4]
-        .copy_from_slice(&prepend_value.to_le_bytes());
+    message[prepend * 4..prepend * 4 + 4].copy_from_slice(&prepend_value.to_le_bytes());
     message[32..64].copy_from_slice(seed);
-    *Hasher::new_keyed(key).update(&message).finalize().as_bytes()
+    *Hasher::new_keyed(key)
+        .update(&message)
+        .finalize()
+        .as_bytes()
 }
 
 /// `(b & 0x3F) - 32` ∈ `[-32, 31]` (Pearl `E_L`/`F_R` 6-bit).
@@ -75,12 +77,7 @@ fn mul_hi_u32(a: u32, b: u32) -> u32 {
 /// values `[-32,31]`) of the flat 6-bit uniform stream — used
 /// for an `E_L` row (`seed=SEED_A,key=s_a`) or `F_R` column
 /// (`seed=SEED_B,key=s_b`).
-pub fn fill_uniform_row(
-    seed: &[u8; 32],
-    key: &[u8; 32],
-    row_idx: u32,
-    num_cols: u32,
-) -> Vec<i8> {
+pub fn fill_uniform_row(seed: &[u8; 32], key: &[u8; 32], row_idx: u32, num_cols: u32) -> Vec<i8> {
     let num_cols = num_cols as usize;
     let mut out = vec![0i8; num_cols];
     let start = row_idx as usize * num_cols;
@@ -90,9 +87,7 @@ pub fn fill_uniform_row(
     for block in first_block..last_block {
         let hash = pearl_random_hash(block, seed, key, 0);
         let block_start = block * PEARL_DIGEST_SIZE;
-        let lo = start
-            .saturating_sub(block_start)
-            .min(PEARL_DIGEST_SIZE);
+        let lo = start.saturating_sub(block_start).min(PEARL_DIGEST_SIZE);
         let hi = (end - block_start).min(PEARL_DIGEST_SIZE);
         for k in lo..hi {
             out[block_start + k - start] = byte_to_i6(hash[k]);
@@ -111,12 +106,7 @@ pub fn perm_pair(seed: &[u8; 32], key: &[u8; 32], j: u32, r: u32) -> (u32, u32) 
     let slot = j as usize % PEARL_PAIRS_PER_HASH;
     let hash = pearl_random_hash(chunk_idx, seed, key, 1);
     let off = slot * 4;
-    let rnd = u32::from_le_bytes([
-        hash[off],
-        hash[off + 1],
-        hash[off + 2],
-        hash[off + 3],
-    ]);
+    let rnd = u32::from_le_bytes([hash[off], hash[off + 1], hash[off + 2], hash[off + 3]]);
     let mask = r - 1;
     let first = rnd & mask;
     let second = first ^ (1 + mul_hi_u32(mask, rnd));

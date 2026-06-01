@@ -80,7 +80,7 @@ pub const BLOCK_COMMITMENT_BYTES: usize = 32;
 /// Same in Goldilocks elements (4 bytes per u32, 8 u32s).
 pub const BLOCK_COMMITMENT_WORDS: usize = BLOCK_COMMITMENT_BYTES / BYTES_PER_GOLDILOCKS;
 
-/// Pearl-style tile dimensions (matches `Pearl zk-pow 
+/// Pearl-style tile dimensions (matches `Pearl zk-pow
 /// pearl_program.rs:23-25`).
 pub const TILE_D: usize = 16;
 pub const TILE_H: usize = 2;
@@ -564,8 +564,7 @@ pub const SX_XR_SEL_BITS_START: usize = SX_IN_BITS_START + SX_IN_BITS_LEN;
 /// `SX_NEW_SEL_BITS` aliases `blake3_round[160 .. 192]`.
 pub const SX_NEW_SEL_BITS_START: usize = SX_XR_SEL_BITS_START + SX_XR_SEL_BITS_LEN;
 /// Total `blake3_round` sub-window consumed by the SX overlay.
-pub const SX_OVERLAY_LEN: usize =
-    SX_IN_BITS_LEN + SX_XR_SEL_BITS_LEN + SX_NEW_SEL_BITS_LEN;
+pub const SX_OVERLAY_LEN: usize = SX_IN_BITS_LEN + SX_XR_SEL_BITS_LEN + SX_NEW_SEL_BITS_LEN;
 
 // =====================================================================
 //  HIGH-2.2 §6(b)-G2 — per-fold-row stripe selector
@@ -656,12 +655,10 @@ mod tests {
             + 1 // A_ID
             + 1 // B_ID
             + 1; // STARK_ROW_IDX
-        let matmul_tile =
-            A_NOISED_LEN + A_NOISED_UNPACK_LEN + B_NOISED_LEN + B_NOISED_UNPACK_LEN; // 80
+        let matmul_tile = A_NOISED_LEN + A_NOISED_UNPACK_LEN + B_NOISED_LEN + B_NOISED_UNPACK_LEN; // 80
         let matmul_accum = CUMSUM_TILE_LEN + CUMSUM_BUFFER_LEN; // 8
         let jackpot_state = JACKPOT_MSG_LEN + BIT_REG_LEN + JACKPOT_IDX_LEN; // 56
-        let blake3_buffers =
-            BLAKE3_MSG_BUFFER_LEN + 1 /* CV_OR_TWEAK_PREP */ + CV_IN_LEN + BLAKE3_MSG_LEN
+        let blake3_buffers = BLAKE3_MSG_BUFFER_LEN + 1 /* CV_OR_TWEAK_PREP */ + CV_IN_LEN + BLAKE3_MSG_LEN
                 + BLAKE3_CV_LEN; // 49
         let blake3_round = BLAKE3_ROUND_LEN; // 1056
         let blake3_output = CV_OUT_LEN; // 8
@@ -673,11 +670,11 @@ mod tests {
             + FOLD_STATE_LEN
             + FOLD_MCUR_BITS_LEN
             + 1; // FOLD_XOR_OUT
-        // §M-S5b Path A column-overlay: the SX bit runs (SX_IN_BITS,
-        // SX_XR_SEL_BITS, SX_NEW_SEL_BITS) are aliased into the
-        // BLAKE3-round region (counted under `blake3_round`); the
-        // StripeXor block-own columns — incl. SX_IN (signed-i32, not
-        // overlay-eligible) — remain here.
+                 // §M-S5b Path A column-overlay: the SX bit runs (SX_IN_BITS,
+                 // SX_XR_SEL_BITS, SX_NEW_SEL_BITS) are aliased into the
+                 // BLAKE3-round region (counted under `blake3_round`); the
+                 // StripeXor block-own columns — incl. SX_IN (signed-i32, not
+                 // overlay-eligible) — remain here.
         let sx = 1 /* SX_IS_ACTIVE */
             + SX_LANE_SEL_LEN
             + SX_IN_LEN
@@ -1014,7 +1011,11 @@ mod tests {
             ),
             // HIGH-2.2 §6(b) — StripeXorChip block, appended after
             // the FoldChip block; contiguous to TOTAL_TRACE_WIDTH.
-            (FOLD_XOR_OUT + 1, SX_IS_ACTIVE, "FOLD_XOR_OUT → SX_IS_ACTIVE"),
+            (
+                FOLD_XOR_OUT + 1,
+                SX_IS_ACTIVE,
+                "FOLD_XOR_OUT → SX_IS_ACTIVE",
+            ),
             (
                 SX_IS_ACTIVE + 1,
                 SX_LANE_SEL_START,
@@ -1060,7 +1061,9 @@ mod tests {
         // breaks the alias (or makes a run escape `blake3_round`)
         // trips here.
         let overlay_chain: [(usize, usize, &str); 3] = [
-            (SX_IN_BITS_START, BLAKE3_ROUND_START, "SX_IN_BITS @ BLAKE3_ROUND_START"),
+            (
+                SX_IN_BITS_START, BLAKE3_ROUND_START, "SX_IN_BITS @ BLAKE3_ROUND_START",
+            ),
             (
                 SX_XR_SEL_BITS_START,
                 SX_IN_BITS_START + SX_IN_BITS_LEN,
@@ -1073,7 +1076,10 @@ mod tests {
             ),
         ];
         for &(got, want, name) in overlay_chain.iter() {
-            assert_eq!(got, want, "SX overlay misaligned at {name}: {got} != {want}");
+            assert_eq!(
+                got, want,
+                "SX overlay misaligned at {name}: {got} != {want}"
+            );
         }
         assert_eq!(
             SX_OVERLAY_LEN,

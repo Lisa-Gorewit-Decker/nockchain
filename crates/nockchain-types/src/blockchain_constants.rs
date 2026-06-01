@@ -135,20 +135,14 @@ impl NounEncode for AsertParams {
     fn to_noun<A: NounAllocator>(&self, allocator: &mut A) -> Noun {
         let phase = Atom::new(allocator, self.phase).as_noun();
         let anchor_height = Atom::new(allocator, self.anchor_height).as_noun();
-        let anchor_target_atom =
-            Atom::from_ubig(allocator, &self.anchor_target_atom).as_noun();
+        let anchor_target_atom = Atom::from_ubig(allocator, &self.anchor_target_atom).as_noun();
         let ideal_block_time = Atom::new(allocator, self.ideal_block_time).as_noun();
         let half_life = Atom::new(allocator, self.half_life).as_noun();
-        let anchor_min_timestamp =
-            Atom::new(allocator, self.anchor_min_timestamp).as_noun();
+        let anchor_min_timestamp = Atom::new(allocator, self.anchor_min_timestamp).as_noun();
         T(
             allocator,
             &[
-                phase,
-                anchor_height,
-                anchor_target_atom,
-                ideal_block_time,
-                half_life,
+                phase, anchor_height, anchor_target_atom, ideal_block_time, half_life,
                 anchor_min_timestamp,
             ],
         )
@@ -385,16 +379,8 @@ impl NounEncode for BlockchainConstants {
         T(
             allocator,
             &[
-                v1_phase,
-                bythos_phase,
-                note_data,
-                base_fee,
-                input_fee_divisor,
-                v0_constants,
-                zk_asert,
-                zk_asert_post_ai,
-                ai_pow_activation_height,
-                ai_asert,
+                v1_phase, bythos_phase, note_data, base_fee, input_fee_divisor, v0_constants,
+                zk_asert, zk_asert_post_ai, ai_pow_activation_height, ai_asert,
             ],
         )
     }
@@ -459,7 +445,10 @@ mod tests {
     /// noun reads must be bound to a `NounSpace` via `in_space`.
     fn assert_asert_subcell(noun: Noun, space: &nockvm::noun::NounSpace, expected: &AsertParams) {
         // slot 1 of 6: phase
-        let c1 = noun.in_space(space).as_cell().expect("asert sub-cell is a cell");
+        let c1 = noun
+            .in_space(space)
+            .as_cell()
+            .expect("asert sub-cell is a cell");
         assert_eq!(
             c1.head().as_atom().unwrap().as_u64().unwrap(),
             expected.phase,
@@ -645,7 +634,11 @@ mod tests {
         assert_eq!(constants.input_fee_divisor, 4, "input-fee-divisor mismatch");
         // zk-asert defaults: 150s pre-AI (current mainnet);
         // zk-asert-post-ai defaults: 300s post-AI activation.
-        assert_eq!(constants.zk_asert, AsertParams::zk_default(), "zk-asert mismatch");
+        assert_eq!(
+            constants.zk_asert,
+            AsertParams::zk_default(),
+            "zk-asert mismatch"
+        );
         assert_eq!(
             constants.zk_asert_post_ai,
             AsertParams::zk_post_ai_default(),
@@ -657,7 +650,11 @@ mod tests {
             BlockchainConstants::DEFAULT_AI_POW_ACTIVATION_HEIGHT,
             "ai-pow-activation-height mismatch"
         );
-        assert_eq!(constants.ai_asert, AsertParams::ai_default(), "ai-asert mismatch");
+        assert_eq!(
+            constants.ai_asert,
+            AsertParams::ai_default(),
+            "ai-asert mismatch"
+        );
     }
 
     #[test]

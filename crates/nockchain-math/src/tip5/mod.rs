@@ -510,9 +510,7 @@ fn mds_cyclomul(state: &[u64; STATE_SIZE]) -> [u64; STATE_SIZE] {
     let hi_res = poly_mul_mod_x16_minus_1(&MDS_FIRST_COLUMN_I64, &hi);
     let lo_res = poly_mul_mod_x16_minus_1(&MDS_FIRST_COLUMN_I64, &lo);
 
-    core::array::from_fn(|i| {
-        reduce_i128(((hi_res[i] as i128) << 32) + (lo_res[i] as i128))
-    })
+    core::array::from_fn(|i| reduce_i128(((hi_res[i] as i128) << 32) + (lo_res[i] as i128)))
 }
 
 /// C2.0 — the Tip5 soundness oracle, frozen.
@@ -632,7 +630,10 @@ mod c2_kat {
                 got, want,
                 "L-table mismatch at b={b}: table={got}, (x+1)^3-1 mod257={want}"
             );
-            assert!(want < 256, "L({b})={want} not a byte — table type is [u8;256]");
+            assert!(
+                want < 256,
+                "L({b})={want} not a byte — table type is [u8;256]"
+            );
         }
         // 2. Bijection on bytes: all 256 values distinct (a permutation).
         let mut seen = [false; 256];
@@ -714,21 +715,45 @@ mod c2_kat {
                 s
             },
             // §2.2 power map near boundaries.
-            core::array::from_fn(|i| if i < 4 { 0x00FF_00FF_00FF_00FF } else { p_minus_1 - i as u64 }),
+            core::array::from_fn(|i| {
+                if i < 4 {
+                    0x00FF_00FF_00FF_00FF
+                } else {
+                    p_minus_1 - i as u64
+                }
+            }),
         ];
         // §2.2 L fixed points (0, 255) on the 4 split lanes.
         v.push(core::array::from_fn(|i| if i < 4 { 0 } else { 1 }));
         v.push(core::array::from_fn(|i| {
-            if i < 4 { 0xFFFF_FFFF_FFFF_FFFF % p } else { i as u64 }
+            if i < 4 {
+                0xFFFF_FFFF_FFFF_FFFF % p
+            } else {
+                i as u64
+            }
         }));
         // §2.2: each split lane individually = p−1 / 0xFF-bytes.
         for split in 0..4 {
-            v.push(core::array::from_fn(|i| if i == split { p_minus_1 } else { 0 }));
-            v.push(core::array::from_fn(|i| if i == split { 0x00FF_00FF_00FF_00FF } else { 7 }));
+            v.push(core::array::from_fn(
+                |i| if i == split { p_minus_1 } else { 0 },
+            ));
+            v.push(core::array::from_fn(|i| {
+                if i == split {
+                    0x00FF_00FF_00FF_00FF
+                } else {
+                    7
+                }
+            }));
         }
         // §2.2 single-byte sweep on split lane 0 (each of 8 byte slots).
         for byte in 0..8u64 {
-            v.push(core::array::from_fn(|i| if i == 0 { 0xA5u64 << (8 * byte) } else { 3 }));
+            v.push(core::array::from_fn(|i| {
+                if i == 0 {
+                    0xA5u64 << (8 * byte)
+                } else {
+                    3
+                }
+            }));
         }
         // §2.3 MDS: 16 single-lane impulses (every circulant column).
         for lane in 0..16 {
@@ -736,7 +761,9 @@ mod c2_kat {
         }
         // §2.2 power-map lane sweep: each non-split lane large, rest 0.
         for lane in 4..16 {
-            v.push(core::array::from_fn(|i| if i == lane { p_minus_1 } else { 0 }));
+            v.push(core::array::from_fn(
+                |i| if i == lane { p_minus_1 } else { 0 },
+            ));
         }
         // 256 seeded-xorshift states for broad coverage.
         let mut seed = 0x1234_5678_9ABC_DEF0u64;
@@ -747,20 +774,31 @@ mod c2_kat {
     }
 
     fn join(xs: impl IntoIterator<Item = u64>) -> String {
-        xs.into_iter().map(|x| x.to_string()).collect::<Vec<_>>().join(" ")
+        xs.into_iter()
+            .map(|x| x.to_string())
+            .collect::<Vec<_>>()
+            .join(" ")
     }
 
     fn build_fixture() -> String {
         let mut out = String::new();
-        out.push_str("# tip5 golden KAT v2 — generated from nockchain_math::tip5::permute (7-round)\n");
+        out.push_str(
+            "# tip5 golden KAT v2 — generated from nockchain_math::tip5::permute (7-round)\n",
+        );
         out.push_str(
             "# soundness oracle for C2 tip5-circuit-air; constraints per Tip5 paper \
              (IACR ePrint 2023/107): §2.2 L-table = ((b+1)^3-1) mod 257 (verified), \
              §2.3 circulant MDS, §2.4 round constants, §4.6 canonical decomposition\n",
         );
         out.push_str(&format!("P {}\n", P));
-        out.push_str(&format!("LOOKUP {}\n", join(LOOKUP_TABLE.iter().map(|&b| b as u64))));
-        out.push_str(&format!("ROUND_CONSTANTS {}\n", join(ROUND_CONSTANTS.iter().copied())));
+        out.push_str(&format!(
+            "LOOKUP {}\n",
+            join(LOOKUP_TABLE.iter().map(|&b| b as u64))
+        ));
+        out.push_str(&format!(
+            "ROUND_CONSTANTS {}\n",
+            join(ROUND_CONSTANTS.iter().copied())
+        ));
         out.push_str(&format!(
             "RC_PRECOMP {}\n",
             join(ROUND_CONSTANTS.iter().map(|&rc| rc_precomp(rc)))
@@ -807,10 +845,7 @@ mod c2_kat {
             }
         }
         let expected = build_fixture();
-        let dir = concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/../ai-pow-zk/tests/fixtures"
-        );
+        let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/../ai-pow-zk/tests/fixtures");
         let path = format!("{dir}/tip5_golden_kat.txt");
         let regen = std::env::var("REGEN_TIP5_KAT").is_ok();
         let on_disk = std::fs::read_to_string(&path);
@@ -858,7 +893,10 @@ mod c2_kat {
              recursive proving construction per maintainer 2026-05-20.\n",
         );
         out.push_str(&format!("P {P}\n"));
-        out.push_str(&format!("LOOKUP {}\n", join(LOOKUP_TABLE.iter().map(|&b| b as u64))));
+        out.push_str(&format!(
+            "LOOKUP {}\n",
+            join(LOOKUP_TABLE.iter().map(|&b| b as u64))
+        ));
         // Only the first 5*STATE_SIZE = 80 round constants are used by
         // permute_5round; emit them explicitly so the fixture stands
         // alone (a 5-round consumer doesn't need to know about the
@@ -914,10 +952,7 @@ mod c2_kat {
             }
         }
         let expected = build_fixture_5round();
-        let dir = concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/../ai-pow-zk/tests/fixtures"
-        );
+        let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/../ai-pow-zk/tests/fixtures");
         let path = format!("{dir}/tip5_5round_golden_kat.txt");
         let regen = std::env::var("REGEN_TIP5_KAT_5ROUND").is_ok();
         let on_disk = std::fs::read_to_string(&path);

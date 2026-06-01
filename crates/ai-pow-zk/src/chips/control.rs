@@ -62,11 +62,11 @@ use p3_field::PrimeCharacteristicRing;
 
 use crate::composite_layout::{
     BITS_PER_LIMB, CONTROL_PREP, FOLD_IS_FOLD, FOLD_SLOT_SEL_LEN, FOLD_SLOT_SEL_START,
-    FOLD_STRIPE_SEL_LEN, FOLD_STRIPE_SEL_START, MSG_PAIR_SEL_LEN, MSG_PAIR_SEL_START, IS_CV_IN,
-    IS_DUMP_CUMSUM_BUFFER, IS_HASH_A, IS_HASH_B, IS_HASH_JACKPOT, IS_LAST_ROUND, IS_LOAD,
-    IS_MSG_AUX_DATA, IS_MSG_CV, IS_MSG_JACKPOT, IS_MSG_MAT, IS_NEW_BLAKE, IS_RESET_CUMSUM,
-    IS_SHIFT3, IS_STORE0, IS_STORE1, IS_STORE2, IS_UPDATE_CUMSUM, IS_USE_COMMITMENT_HASH,
-    IS_USE_JOB_KEY, IS_XOR, MAT_ID, MAT_ID_LIMBS_START,
+    FOLD_STRIPE_SEL_LEN, FOLD_STRIPE_SEL_START, IS_CV_IN, IS_DUMP_CUMSUM_BUFFER, IS_HASH_A,
+    IS_HASH_B, IS_HASH_JACKPOT, IS_LAST_ROUND, IS_LOAD, IS_MSG_AUX_DATA, IS_MSG_CV, IS_MSG_JACKPOT,
+    IS_MSG_MAT, IS_NEW_BLAKE, IS_RESET_CUMSUM, IS_SHIFT3, IS_STORE0, IS_STORE1, IS_STORE2,
+    IS_UPDATE_CUMSUM, IS_USE_COMMITMENT_HASH, IS_USE_JOB_KEY, IS_XOR, MAT_ID, MAT_ID_LIMBS_START,
+    MSG_PAIR_SEL_LEN, MSG_PAIR_SEL_START,
 };
 
 /// 21 selector bits in canonical Pearl pack order. See
@@ -182,8 +182,7 @@ impl ControlChip {
         // enforced by `FoldChip`, which `CompositeFullAir::eval`
         // always wires alongside this chip; here we only need
         // `FOLD_IS_FOLD` boolean for the pack term to be well-formed.
-        let two_pow_mat_id =
-            <AB::F as PrimeCharacteristicRing>::from_u32(1u32 << MAT_ID_BITS);
+        let two_pow_mat_id = <AB::F as PrimeCharacteristicRing>::from_u32(1u32 << MAT_ID_BITS);
         pow = pow * two_pow_mat_id; // pow = 2^(21+26) = 2^47
 
         let is_fold: AB::Var = cur[FOLD_IS_FOLD];
@@ -204,8 +203,7 @@ impl ControlChip {
         // `FOLD_STRIPE_SEL` booleanity / one-hot (`Σ == FOLD_IS_FOLD`)
         // is enforced by `FoldChip`; zero on non-fold rows ⇒ zero
         // blast radius (CONTROL_PREP byte-identical there).
-        let two_pow_slot =
-            <AB::F as PrimeCharacteristicRing>::from_u32(1u32 << FOLD_SLOT_BITS);
+        let two_pow_slot = <AB::F as PrimeCharacteristicRing>::from_u32(1u32 << FOLD_SLOT_BITS);
         pow = pow * two_pow_slot; // pow = 2^52
         let mut stripe_idx: AB::Expr = <AB::Expr as PrimeCharacteristicRing>::ZERO;
         for s in 0..FOLD_STRIPE_SEL_LEN {
@@ -224,8 +222,7 @@ impl ControlChip {
         // every current trace (`MSG_PAIR_SEL` all 0 ⇒ +0,
         // `CONTROL_PREP` byte-identical) — the §6(a)/G2
         // zero-blast property.
-        let two_pow_stripe =
-            <AB::F as PrimeCharacteristicRing>::from_u32(1u32 << FOLD_STRIPE_BITS);
+        let two_pow_stripe = <AB::F as PrimeCharacteristicRing>::from_u32(1u32 << FOLD_STRIPE_BITS);
         pow = pow * two_pow_stripe; // pow = 2^58
         let mut pair_idx: AB::Expr = <AB::Expr as PrimeCharacteristicRing>::ZERO;
         for p in 0..MSG_PAIR_SEL_LEN {
@@ -266,7 +263,10 @@ impl ControlChip {
         fold_stripe: u8,
         msg_pair: u8,
     ) -> u64 {
-        debug_assert!((fold_slot as usize) < FOLD_SLOT_SEL_LEN, "fold_slot out of range");
+        debug_assert!(
+            (fold_slot as usize) < FOLD_SLOT_SEL_LEN,
+            "fold_slot out of range"
+        );
         debug_assert!(
             (fold_stripe as usize) < FOLD_STRIPE_SEL_LEN,
             "fold_stripe out of range"
@@ -284,10 +284,8 @@ impl ControlChip {
         packed |= (mat_id as u64) << NUM_SELECTORS;
         packed |= (is_fold as u64) << FOLD_IS_FOLD_BIT;
         packed |= ((fold_slot as u64) & ((1u64 << FOLD_SLOT_BITS) - 1)) << FOLD_SLOT_BIT;
-        packed |=
-            ((fold_stripe as u64) & ((1u64 << FOLD_STRIPE_BITS) - 1)) << FOLD_STRIPE_BIT;
-        packed |=
-            ((msg_pair as u64) & ((1u64 << MSG_PAIR_BITS) - 1)) << MSG_PAIR_BIT;
+        packed |= ((fold_stripe as u64) & ((1u64 << FOLD_STRIPE_BITS) - 1)) << FOLD_STRIPE_BIT;
+        packed |= ((msg_pair as u64) & ((1u64 << MSG_PAIR_BITS) - 1)) << MSG_PAIR_BIT;
         packed
     }
 
@@ -514,21 +512,15 @@ mod tests {
     fn make_fold_row(trace: &mut RowMajorMatrix<Val>, r: usize, slot: usize, consistent: bool) {
         let base = r * TOTAL_TRACE_WIDTH;
         trace.values[base + FOLD_IS_FOLD] = <Val as QuotientMap<u64>>::from_int(1);
-        trace.values[base + FOLD_SLOT_SEL_START + slot] =
-            <Val as QuotientMap<u64>>::from_int(1);
-        trace.values[base + FOLD_STRIPE_SEL_START + slot] =
-            <Val as QuotientMap<u64>>::from_int(1);
+        trace.values[base + FOLD_SLOT_SEL_START + slot] = <Val as QuotientMap<u64>>::from_int(1);
+        trace.values[base + FOLD_STRIPE_SEL_START + slot] = <Val as QuotientMap<u64>>::from_int(1);
         let packed_slot = if consistent { slot } else { (slot + 1) % 16 };
-        trace.values[base + CONTROL_PREP] = <Val as QuotientMap<u64>>::from_int(
-            ControlChip::pack_control_prep_full(
-                &[false; NUM_SELECTORS],
-                0,
-                true,
-                packed_slot as u8,
+        trace.values[base + CONTROL_PREP] =
+            <Val as QuotientMap<u64>>::from_int(ControlChip::pack_control_prep_full(
+                &[false; NUM_SELECTORS], 0, true, packed_slot as u8,
                 slot as u8, // fold_stripe (consistent with the one-hot)
                 0,          // msg_pair (not a C3-leaf row)
-            ),
-        );
+            ));
     }
 
     /// `FOLD_IS_FOLD_BIT` / `FOLD_SLOT_BIT` / `FOLD_STRIPE_BIT` sit
@@ -600,8 +592,7 @@ mod tests {
         // FOLD_IS_FOLD = 1, slot 7 selected, but CONTROL_PREP left
         // at the build_uniform_trace value (no fold bits).
         trace.values[base + FOLD_IS_FOLD] = <Val as QuotientMap<u64>>::from_int(1);
-        trace.values[base + FOLD_SLOT_SEL_START + 7] =
-            <Val as QuotientMap<u64>>::from_int(1);
+        trace.values[base + FOLD_SLOT_SEL_START + 7] = <Val as QuotientMap<u64>>::from_int(1);
         let proof = prove::<AiPowStarkConfig, _>(&cfg, &air, trace, &[]);
         assert!(
             verify::<AiPowStarkConfig, _>(&cfg, &air, &proof, &[]).is_err(),
@@ -639,11 +630,9 @@ mod tests {
         let mut trace = build_uniform_trace(16, &s, 0);
         let base = 8 * TOTAL_TRACE_WIDTH;
         trace.values[base + FOLD_IS_FOLD] = <Val as QuotientMap<u64>>::from_int(1);
-        trace.values[base + FOLD_SLOT_SEL_START + 5] =
-            <Val as QuotientMap<u64>>::from_int(1);
+        trace.values[base + FOLD_SLOT_SEL_START + 5] = <Val as QuotientMap<u64>>::from_int(1);
         // One-hot says stripe = 5 …
-        trace.values[base + FOLD_STRIPE_SEL_START + 5] =
-            <Val as QuotientMap<u64>>::from_int(1);
+        trace.values[base + FOLD_STRIPE_SEL_START + 5] = <Val as QuotientMap<u64>>::from_int(1);
         // … but CONTROL_PREP packs stripe = 7.
         trace.values[base + CONTROL_PREP] = <Val as QuotientMap<u64>>::from_int(
             ControlChip::pack_control_prep_full(&[false; NUM_SELECTORS], 0, true, 5, 7, 0),
@@ -670,8 +659,7 @@ mod tests {
         let mut trace = build_uniform_trace(16, &s, 0);
         let base = 8 * TOTAL_TRACE_WIDTH;
         // One-hot says C3 word-pair = 2 …
-        trace.values[base + MSG_PAIR_SEL_START + 2] =
-            <Val as QuotientMap<u64>>::from_int(1);
+        trace.values[base + MSG_PAIR_SEL_START + 2] = <Val as QuotientMap<u64>>::from_int(1);
         // … but CONTROL_PREP packs msg_pair = 5 (no fold activity).
         trace.values[base + CONTROL_PREP] = <Val as QuotientMap<u64>>::from_int(
             ControlChip::pack_control_prep_full(&[false; NUM_SELECTORS], 0, false, 0, 0, 5),

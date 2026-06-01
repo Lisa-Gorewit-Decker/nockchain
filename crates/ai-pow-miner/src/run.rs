@@ -20,18 +20,17 @@
 //!    - new candidate → cancel any in-flight attempt, derive the
 //!      mining job, spawn-blocking [`crate::mining::run`].
 //!    - worker result:
-//!      - success → poke the node with `[%mined nonce found-idx]` on
-//!        [`AiPowMinerWire::Mined`], then idle until the next candidate.
+//!      - success → build the canonical recursive certificate via the
+//!        configured certificate builder and poke the node with
+//!        `[%command %pow %ai-pow cert]` on [`AiPowMinerWire::Mined`],
+//!        then idle until the next candidate.
 //!      - error → log + idle.
 //! 5. Stream drop → outer loop reconnects.
 //!
 //! ## Note on submission
-//! The current deployed Hoon kernel has **no AI-PoW verifier** —
-//! `AiPowMinerWire::Mined` pokes will be NACK'd or ignored by the
-//! kernel until the kernel-side AI puzzle handler lands. That's
-//! by design for this session: the goal is to wire the substrate
-//! end-to-end (gRPC connect / configure / watch / submit) so the
-//! kernel-side integration has a working client to land against.
+//! The canonical production payload is the recursive AI-PoW certificate
+//! noun. The plain `MatmulProof`, nonce, and tile index are mining
+//! internals; they are not submitted to the kernel as the block proof.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -39,24 +38,40 @@ use std::time::Duration;
 use ai_pow::params::MatmulParams;
 use ai_pow::prover::ProverOptions;
 use futures::StreamExt;
-use nockapp::noun::slab::NounSlab;
 use nockapp::nockapp::wire::Wire;
-use nockchain_mining_common::{
-    MiningCandidate, MiningKeyConfig, MiningPkhConfig, NodeClient,
-};
-use nockvm::noun::{Noun, D, T};
+use nockapp::noun::slab::NounSlab;
+use nockchain_mining_common::{MiningCandidate, MiningKeyConfig, MiningPkhConfig, NodeClient};
+use nockvm::noun::{D, T};
 use nockvm_macros::tas;
 use thiserror::Error;
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, info, warn};
 
-use crate::mining;
 use crate::wire::AiPowMinerWire;
 use crate::{
-    DifficultyTarget, MineOptions, MinedSolution, MiningCancel, MiningError as PuzzleMiningError,
-    MiningJob, NonceAnchors,
+    mining, DifficultyTarget, MineOptions, MinedSolution, MiningCancel,
+    MiningError as PuzzleMiningError, MiningJob, NonceAnchors,
 };
+
+pub type AiPowCertificateBuilder =
+    dyn Fn(&MinedSolution) -> Result<NounSlab, AiPowCertificateBuildError> + Send + Sync + 'static;
+
+#[derive(Debug, Error)]
+#[error("AI-PoW recursive certificate build failed: {0}")]
+pub struct AiPowCertificateBuildError(pub String);
+
+impl From<String> for AiPowCertificateBuildError {
+    fn from(value: String) -> Self {
+        Self(value)
+    }
+}
+
+impl From<&str> for AiPowCertificateBuildError {
+    fn from(value: &str) -> Self {
+        Self(value.to_string())
+    }
+}
 
 /// Default v0 mining key — pass-through for the kernel's v0 pubkey
 /// infrastructure (matches `zk-pow-miner`'s default).
@@ -93,6 +108,10 @@ pub struct AiPuzzleInputs {
     pub b: Arc<Vec<i8>>,
     /// Forwarded to the per-attempt prover (mostly defaults).
     pub prover_opts: ProverOptions,
+    /// Production handoff that turns a winning mining attempt into the
+    /// canonical structured recursive certificate noun. If absent, the
+    /// run loop mines but refuses to submit anything to consensus.
+    pub certificate_builder: Option<Arc<AiPowCertificateBuilder>>,
 }
 
 #[derive(Clone)]
@@ -148,14 +167,13 @@ pub enum MinerError {
     CandidateDecode(String),
     #[error("worker join failed: {0}")]
     WorkerJoin(String),
+    #[error("{0}")]
+    CertificateBuild(String),
 }
 
 /// Production entry point. Returns `Ok(())` on clean shutdown, `Err` on
 /// unrecoverable failure.
-pub async fn run(
-    cfg: MinerConfig,
-    shutdown: CancellationToken,
-) -> Result<(), MinerError> {
+pub async fn run(cfg: MinerConfig, shutdown: CancellationToken) -> Result<(), MinerError> {
     info!(
         node = %cfg.node_addr,
         puzzle_id_len = cfg.puzzle.puzzle_id.len(),
@@ -226,9 +244,7 @@ pub async fn run(
             .enable_mining(AiPowMinerWire::Enable.to_wire(), true)
             .await
         {
-            return Err(MinerError::Configure(format!(
-                "enable_mining(true): {e}"
-            )));
+            return Err(MinerError::Configure(format!("enable_mining(true): {e}")));
         }
         info!("ai-pow-miner: subscribed + mining enabled; awaiting candidates");
 
@@ -237,7 +253,10 @@ pub async fn run(
         // any). `cancel` is the AI-PoW MiningCancel handle for it.
         // On a new candidate we cancel the existing attempt + spawn
         // a fresh one. On shutdown we cancel + drain.
-        let mut worker: Option<(JoinHandle<Result<MinedSolution, PuzzleMiningError>>, MiningCancel)> = None;
+        let mut worker: Option<(
+            JoinHandle<Result<MinedSolution, PuzzleMiningError>>,
+            MiningCancel,
+        )> = None;
         let inner_result: InnerOutcome = loop {
             tokio::select! {
                 biased;
@@ -289,12 +308,25 @@ pub async fn run(
                                 rate = sol.stats.hash_rate_per_sec(),
                                 "ai-pow-miner: solution found; submitting"
                             );
-                            let poke = build_mined_poke(&sol.nonce, sol.found_idx);
+                            let Some(build_certificate) = cfg.puzzle.certificate_builder.as_ref() else {
+                                warn!(
+                                    "ai-pow-miner: solution found but no recursive certificate builder configured; refusing to submit legacy nonce/tile artifact"
+                                );
+                                continue;
+                            };
+                            let cert = match build_certificate(&sol) {
+                                Ok(cert) => cert,
+                                Err(e) => {
+                                    warn!(error = %e, "canonical AI-PoW certificate build failed");
+                                    break InnerOutcome::Fatal(MinerError::CertificateBuild(e.to_string()));
+                                }
+                            };
+                            let poke = build_ai_pow_certificate_poke(&cert);
                             if let Err(e) = client
                                 .poke_wire(AiPowMinerWire::Mined.to_wire(), poke)
                                 .await
                             {
-                                warn!(error = %e, "submit_mined poke failed (likely stale candidate or no AI verifier yet)");
+                                warn!(error = %e, "submit canonical ai-pow certificate poke failed (likely stale candidate)");
                             }
                         }
                         WorkerOutcome::Joined(Ok(Err(PuzzleMiningError::Cancelled))) => {
@@ -361,7 +393,10 @@ enum WorkerOutcome {
 /// awaits it (drops it on join). Mutates `worker` in place so the
 /// caller doesn't need to thread the take/put.
 async fn await_worker(
-    worker: &mut Option<(JoinHandle<Result<MinedSolution, PuzzleMiningError>>, MiningCancel)>,
+    worker: &mut Option<(
+        JoinHandle<Result<MinedSolution, PuzzleMiningError>>,
+        MiningCancel,
+    )>,
 ) -> WorkerOutcome {
     if let Some((handle, _)) = worker.as_mut() {
         let outcome = handle.await;
@@ -426,22 +461,28 @@ fn spawn_attempt(
     })
 }
 
-/// Build the `[%mined nonce-atom found-idx]` poke shape (mirrors
-/// `nockapp_driver::poke_mined`, just hoisted up so the gRPC path
-/// can use the same noun shape as the in-process driver).
-fn build_mined_poke(nonce: &[u8; crate::NCMN_NONCE_LEN], found_idx: u32) -> NounSlab {
+/// Build the production consensus poke shape:
+///
+/// ```hoon
+/// [%command %pow %ai-pow cert]
+/// ```
+///
+/// `cert` must already be the structured Hoon-compatible
+/// `ai-pow-certificate` noun. This helper deliberately does not accept
+/// the plain `MatmulProof`, nonce, or tile index because those are not
+/// canonical block proof artifacts.
+pub fn build_ai_pow_certificate_poke(certificate: &NounSlab) -> NounSlab {
+    use nockvm::noun::NounAllocator;
+
+    let cert_space = certificate.noun_space();
     let mut slab = NounSlab::new();
-    let nonce_atom = bytes_to_atom(&mut slab, nonce);
-    let head = D(tas!(b"mined"));
-    let payload: Noun = T(&mut slab, &[head, nonce_atom, D(found_idx as u64)]);
+    let cert = slab.copy_into(unsafe { *certificate.root() }, &cert_space);
+    let payload = T(
+        &mut slab,
+        &[D(tas!(b"command")), D(tas!(b"pow")), D(tas!(b"ai-pow")), cert],
+    );
     slab.set_root(payload);
     slab
-}
-
-fn bytes_to_atom(slab: &mut NounSlab, bytes: &[u8]) -> Noun {
-    use nockvm::noun::IndirectAtom;
-    let atom = <IndirectAtom as nockapp::IndirectAtomExt>::from_bytes(slab, bytes);
-    atom.as_noun()
 }
 
 // ──────────────────────────── tests ────────────────────────────
@@ -465,6 +506,8 @@ mod tests {
 
     use ai_pow::params::MatmulParams;
     use ai_pow::synth::synth_matrices;
+    use ai_pow::zk_bridge::ZkPublicCommitments;
+    use ai_pow_zk::{CompositePublicInputs, ZkParams};
     use nockapp::driver::{IOAction, NockAppHandle};
     use nockapp::noun::slab::NounSlab;
     use nockapp::NockAppExit;
@@ -476,15 +519,14 @@ mod tests {
     use tokio::sync::{broadcast, mpsc, Mutex as TMutex};
 
     use super::*;
+    use crate::certificate_noun::{build_ai_pow_certificate_noun_from_node, AiProofNode};
     use crate::wire::AiPowMinerWire;
 
     // Shared NockAppMetrics — gnort rejects double-registration.
     static METRICS: Lazy<Arc<nockapp::nockapp::metrics::NockAppMetrics>> = Lazy::new(|| {
         Arc::new(
-            nockapp::nockapp::metrics::NockAppMetrics::register(
-                gnort::global_metrics_registry(),
-            )
-            .expect("register NockAppMetrics"),
+            nockapp::nockapp::metrics::NockAppMetrics::register(gnort::global_metrics_registry())
+                .expect("register NockAppMetrics"),
         )
     });
 
@@ -601,6 +643,28 @@ mod tests {
             a: Arc::new(a),
             b: Arc::new(b),
             prover_opts: ProverOptions::default(),
+            certificate_builder: Some(Arc::new(|sol: &MinedSolution| {
+                let params = ZkParams {
+                    m: 64,
+                    k: 64,
+                    n: 64,
+                    noise_rank: 4,
+                    tile: 8,
+                    difficulty_bits: 0,
+                };
+                let commitments = ZkPublicCommitments {
+                    h_a: [10; 32],
+                    h_b: [11; 32],
+                    h_a_chunk: [12; 32],
+                    h_b_chunk: [13; 32],
+                };
+                let mut pis = CompositePublicInputs::zero();
+                pis.jackpot = core::array::from_fn(|i| i as u32);
+                let certificate = AiProofNode::Seq(vec![AiProofNode::U64(sol.found_idx as u64)]);
+                Ok(build_ai_pow_certificate_noun_from_node(
+                    &params, sol.found_idx, 8_192, &commitments, &pis, &certificate,
+                ))
+            })),
         };
         MinerConfig {
             node_addr,
@@ -620,6 +684,45 @@ mod tests {
         }
     }
 
+    #[test]
+    fn build_ai_pow_certificate_poke_has_kernel_command_shape() {
+        use nockvm::noun::NounAllocator;
+
+        let mut cert = NounSlab::new();
+        cert.set_root(D(999));
+
+        let poke = build_ai_pow_certificate_poke(&cert);
+        let space = poke.noun_space();
+        let root = unsafe { *poke.root() };
+
+        let command_cell = root.in_space(&space).as_cell().expect("poke cell");
+        assert!(command_cell.head().eq_bytes("command"));
+
+        let pow_cell = command_cell
+            .tail()
+            .noun()
+            .in_space(&space)
+            .as_cell()
+            .expect("pow cell");
+        assert!(pow_cell.head().eq_bytes("pow"));
+
+        let ai_pow_cell = pow_cell
+            .tail()
+            .noun()
+            .in_space(&space)
+            .as_cell()
+            .expect("ai-pow cell");
+        assert!(ai_pow_cell.head().eq_bytes("ai-pow"));
+
+        let cert_atom = ai_pow_cell
+            .tail()
+            .as_atom()
+            .expect("certificate atom")
+            .as_u64()
+            .expect("certificate atom fits u64");
+        assert_eq!(cert_atom, 999);
+    }
+
     /// Heavy: runs the real ai-pow prover on TEST_SMALL with a trivial
     /// `FF..FF` target. Should complete in well under 30 s on any
     /// modern machine; marked `#[ignore]` so `cargo test` is fast by
@@ -627,7 +730,7 @@ mod tests {
     /// --test node_run_mock_node -- --ignored`.
     #[ignore]
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-    async fn run_loop_against_mock_node_submits_mined() {
+    async fn run_loop_against_mock_node_submits_ai_pow_command() {
         let node = MockNode::spawn().await;
         let cfg = test_cfg(node.url());
 
@@ -639,7 +742,7 @@ mod tests {
         tokio::time::sleep(Duration::from_millis(300)).await;
         node.publish_synth_mine_effect(100, 0xFFFF_FFFF, 64);
 
-        // Poll for the %mined poke. Allow up to 30 s for the trivial-target prover.
+        // Poll for the miner wire poke. Allow up to 30 s for the trivial-target prover.
         let deadline = std::time::Instant::now() + Duration::from_secs(30);
         let mut got_mined = false;
         while std::time::Instant::now() < deadline {
@@ -690,7 +793,7 @@ mod tests {
     async fn run_loop_exits_cleanly_on_shutdown() {
         let node = MockNode::spawn().await;
         // Use an impossible target so the worker keeps running until cancel.
-        // (build_mined_poke etc. won't be called.)
+        // (certificate submission won't be called.)
         let mut cfg = test_cfg(node.url());
         cfg.mine_opts.max_extranonces = None;
         let shutdown = CancellationToken::new();

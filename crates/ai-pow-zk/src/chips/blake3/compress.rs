@@ -153,8 +153,7 @@ pub fn round_with_snapshots(s: &mut [u32; 16], m: &[u32; 16]) -> [[u32; 16]; 4] 
 
     // Column half round 2 (msg[1,3,5,7]).
     for i in 0..4 {
-        let (a, b, c, d) =
-            half_g_scalar(s[i], s[4 + i], s[8 + i], s[12 + i], m[2 * i + 1], true);
+        let (a, b, c, d) = half_g_scalar(s[i], s[4 + i], s[8 + i], s[12 + i], m[2 * i + 1], true);
         s[i] = a;
         s[4 + i] = b;
         s[8 + i] = c;

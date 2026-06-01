@@ -28,8 +28,7 @@ fn h_a_chunk_matches_snark_place_matrix_hash_a() {
     let (a, b) = synth_matrices(b"m52-seed-a", &params);
     let block_commitment = b"m52-block-header";
 
-    let ctx = BlockContext::build(block_commitment, &a, &b, &params)
-        .expect("BlockContext build");
+    let ctx = BlockContext::build(block_commitment, &a, &b, &params).expect("BlockContext build");
 
     // Plain-side h_a_chunk computed via matrix_commitment.
     let plain_h_a = ctx.h_a_chunk;
@@ -52,8 +51,7 @@ fn h_b_chunk_matches_snark_place_matrix_hash_b() {
     let (a, b) = synth_matrices(b"m52-seed-b", &params);
     let block_commitment = b"m52-block-header-b";
 
-    let ctx = BlockContext::build(block_commitment, &a, &b, &params)
-        .expect("BlockContext build");
+    let ctx = BlockContext::build(block_commitment, &a, &b, &params).expect("BlockContext build");
 
     let plain_h_b = ctx.h_b_chunk;
 

@@ -55,10 +55,9 @@ use p3_air::{Air, AirBuilder, BaseAir, WindowAccess};
 use p3_field::PrimeCharacteristicRing;
 use p3_matrix::dense::RowMajorMatrix;
 
+use super::compute::{compute_row, CUMSUM_LEN};
 use crate::composite_layout::{TILE_D, TILE_H};
 use crate::Val;
-
-use super::compute::{compute_row, CUMSUM_LEN};
 
 /// Chip-local column offsets. Independent of `composite_layout` —
 /// Phase 12 stitches them into the global trace.
@@ -170,8 +169,7 @@ impl MatmulCumsumChip {
                     <AB::Expr as PrimeCharacteristicRing>::ONE - is_reset.clone();
                 let reset_plus_update: AB::Expr = is_reset.clone() + is_update.clone();
 
-                let rhs =
-                    reset_plus_update * dot[k].clone() + one_minus_reset * cur_cumsum;
+                let rhs = reset_plus_update * dot[k].clone() + one_minus_reset * cur_cumsum;
 
                 tb.assert_eq(nxt_cumsum, rhs);
             }
@@ -265,21 +263,12 @@ pub fn build_trace(steps: &[Step]) -> RowMajorMatrix<Val> {
         let row = &mut flat[row_start..row_start + cols::ROW_W];
 
         let cumsum_new = compute_row(
-            &step.a,
-            &step.b,
-            &cumsum_prev,
-            step.is_reset,
-            step.is_update,
+            &step.a, &step.b, &cumsum_prev, step.is_reset, step.is_update,
         );
 
         // Write this row with `cumsum_prev` as the CUMSUM cell.
         fill_row(
-            row,
-            &step.a,
-            &step.b,
-            &cumsum_prev,
-            step.is_reset,
-            step.is_update,
+            row, &step.a, &step.b, &cumsum_prev, step.is_reset, step.is_update,
         );
 
         cumsum_prev = cumsum_new;
@@ -313,12 +302,12 @@ mod tests {
     //! [`CircuitConfig::TEST_PEARL`]. Tamper tests confirm each
     //! constraint detection mode.
 
+    use p3_field::integers::QuotientMap;
+    use p3_uni_stark::{prove, verify};
+
     use super::*;
     use crate::circuit::{build_stark_config, AiPowStarkConfig, CircuitConfig};
     use crate::params::ZkParams;
-
-    use p3_field::integers::QuotientMap;
-    use p3_uni_stark::{prove, verify};
 
     fn test_zk_params() -> ZkParams {
         ZkParams {

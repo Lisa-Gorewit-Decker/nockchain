@@ -139,13 +139,23 @@ fn s3_uniform_noise_matches_pearl() {
     let mut e_l = vec![0i8; m * r as usize];
     for i in 0..m {
         let off = i * r as usize;
-        prng::expand_e_l_row(&fix::FIX3_NOISE_KEY, i as u32, r, &mut e_l[off..off + r as usize]);
+        prng::expand_e_l_row(
+            &fix::FIX3_NOISE_KEY,
+            i as u32,
+            r,
+            &mut e_l[off..off + r as usize],
+        );
     }
     assert_eq!(e_l.as_slice(), fix::FIX3_E_L);
     let mut f_r = vec![0i8; n * r as usize];
     for j in 0..n {
         let off = j * r as usize;
-        prng::expand_f_r_col(&fix::FIX3_NOISE_KEY, j as u32, r, &mut f_r[off..off + r as usize]);
+        prng::expand_f_r_col(
+            &fix::FIX3_NOISE_KEY,
+            j as u32,
+            r,
+            &mut f_r[off..off + r as usize],
+        );
     }
     assert_eq!(f_r.as_slice(), fix::FIX3_F_R);
 }
@@ -270,7 +280,10 @@ fn s8_matrix_merkle_root_matches_pearl() {
     // Single-chunk case: 512 bytes pad up to one full 1024-byte chunk.
     assert_eq!(fix::FIX8_RAW_A_LEN, 512);
     assert_eq!(fix::FIX8_PADDED_A_LEN, 1024);
-    assert_eq!(padded_chunk_len(fix::FIX8_RAW_A_LEN), fix::FIX8_PADDED_A_LEN);
+    assert_eq!(
+        padded_chunk_len(fix::FIX8_RAW_A_LEN),
+        fix::FIX8_PADDED_A_LEN
+    );
     let our_a = matrix_commitment(fix::FIX7_A_BYTES_ROW_MAJOR, &fix::FIX7_JOB_KEY);
     assert_eq!(our_a, fix::FIX8_MERKLE_ROOT_A);
     let our_b = matrix_commitment(fix::FIX7_B_T_BYTES_ROW_MAJOR, &fix::FIX7_JOB_KEY);
@@ -280,7 +293,10 @@ fn s8_matrix_merkle_root_matches_pearl() {
     // BLAKE3's internal chunk-tree construction.
     assert_eq!(fix::FIX8_BIG_RAW_LEN, 3000);
     assert_eq!(fix::FIX8_BIG_PADDED_LEN, 3072);
-    assert_eq!(padded_chunk_len(fix::FIX8_BIG_RAW_LEN), fix::FIX8_BIG_PADDED_LEN);
+    assert_eq!(
+        padded_chunk_len(fix::FIX8_BIG_RAW_LEN),
+        fix::FIX8_BIG_PADDED_LEN
+    );
     let our_big = matrix_commitment(fix::FIX8_BIG_RAW, &fix::FIX7_JOB_KEY);
     assert_eq!(our_big, fix::FIX8_BIG_MERKLE_ROOT);
 
@@ -330,7 +346,10 @@ fn s9_le_compare_matches_pearl_u256_semantics() {
             continue;
         }
         // hash == target should be true.
-        assert!(hash_le_target(&target, &target), "b={b} r={r} t={t}: target should equal itself");
+        assert!(
+            hash_le_target(&target, &target),
+            "b={b} r={r} t={t}: target should equal itself"
+        );
         // smaller hash → true.
         let mut smaller = target;
         let mut idx = 0;

@@ -324,10 +324,8 @@ mod tests {
     // Shared NockAppMetrics across tests — gnort rejects double-registration.
     static METRICS: Lazy<Arc<nockapp::nockapp::metrics::NockAppMetrics>> = Lazy::new(|| {
         Arc::new(
-            nockapp::nockapp::metrics::NockAppMetrics::register(
-                gnort::global_metrics_registry(),
-            )
-            .expect("register NockAppMetrics"),
+            nockapp::nockapp::metrics::NockAppMetrics::register(gnort::global_metrics_registry())
+                .expect("register NockAppMetrics"),
         )
     });
 
@@ -419,16 +417,20 @@ mod tests {
             let version = D(0);
             let commit = T(
                 &mut slab,
-                &[D(header_seed), D(header_seed + 1), D(header_seed + 2), D(header_seed + 3), D(header_seed + 4)],
+                &[
+                    D(header_seed),
+                    D(header_seed + 1),
+                    D(header_seed + 2),
+                    D(header_seed + 3),
+                    D(header_seed + 4),
+                ],
             );
             let target_list = T(&mut slab, &[D(target_seed), D(0)]);
             let target = T(&mut slab, &[D(tas!(b"bn")), target_list]);
             let plen = D(pow_len);
             let effect = T(&mut slab, &[head, version, commit, target, plen]);
             slab.set_root(effect);
-            self.effect_tx
-                .send(slab)
-                .expect("publish %mine effect");
+            self.effect_tx.send(slab).expect("publish %mine effect");
         }
 
         async fn shutdown(self) {
@@ -487,7 +489,10 @@ mod tests {
                     hash_slab.set_root(D(0));
                     let mut poke_slab = NounSlab::new();
                     // Construct a small fake `%pow` poke noun: `[%command %pow 42]`.
-                    let cmd = T(&mut poke_slab, &[D(tas!(b"command")), D(tas!(b"pow")), D(42)]);
+                    let cmd = T(
+                        &mut poke_slab,
+                        &[D(tas!(b"command")), D(tas!(b"pow")), D(42)],
+                    );
                     poke_slab.set_root(cmd);
                     Ok(MineResult::Success {
                         hash_slab,
@@ -522,7 +527,7 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn run_loop_against_mock_node_submits_mined() {
-let node = MockNode::spawn().await;
+        let node = MockNode::spawn().await;
         let cfg = test_config(node.url());
 
         // Pool with one stub worker that wins on its first attempt.
@@ -533,9 +538,8 @@ let node = MockNode::spawn().await;
         // Run with a shutdown token we'll trigger after observing the poke.
         let shutdown = CancellationToken::new();
         let shutdown_clone = shutdown.clone();
-        let mining_task = tokio::spawn(async move {
-            run_with_pool(cfg, pool, shutdown_clone).await
-        });
+        let mining_task =
+            tokio::spawn(async move { run_with_pool(cfg, pool, shutdown_clone).await });
 
         // Brief pause for the miner to connect + configure + subscribe.
         tokio::time::sleep(Duration::from_millis(300)).await;
@@ -567,7 +571,7 @@ let node = MockNode::spawn().await;
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn run_loop_reconnects_when_node_unreachable_then_exits() {
-// No node — point at an unused localhost port that nothing's listening on.
+        // No node — point at an unused localhost port that nothing's listening on.
         let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
         let addr = listener.local_addr().expect("local_addr");
         drop(listener);
@@ -588,12 +592,9 @@ let node = MockNode::spawn().await;
         let pool = Pool::new(workers);
         let shutdown = CancellationToken::new();
         // Expect TooManyReconnects within ~500ms.
-        let r = tokio::time::timeout(
-            Duration::from_secs(2),
-            run_with_pool(cfg, pool, shutdown),
-        )
-        .await
-        .expect("run_with_pool didn't terminate");
+        let r = tokio::time::timeout(Duration::from_secs(2), run_with_pool(cfg, pool, shutdown))
+            .await
+            .expect("run_with_pool didn't terminate");
         match r {
             Err(MinerError::TooManyReconnects { count }) => {
                 assert!(count >= 3, "expected at least 3 attempts, got {count}");
@@ -604,7 +605,7 @@ let node = MockNode::spawn().await;
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn run_loop_exits_cleanly_on_shutdown() {
-let node = MockNode::spawn().await;
+        let node = MockNode::spawn().await;
         let cfg = test_config(node.url());
         // Worker that hangs forever on cancel.
         let worker = ScriptedStubWorker::new(0, vec![StubAction::WaitForCancel]);
@@ -612,9 +613,8 @@ let node = MockNode::spawn().await;
         let pool = Pool::new(workers);
         let shutdown = CancellationToken::new();
         let shutdown_clone = shutdown.clone();
-        let mining_task = tokio::spawn(async move {
-            run_with_pool(cfg, pool, shutdown_clone).await
-        });
+        let mining_task =
+            tokio::spawn(async move { run_with_pool(cfg, pool, shutdown_clone).await });
         // Let miner connect + configure + start its first attempt.
         tokio::time::sleep(Duration::from_millis(200)).await;
         // Push a candidate so the pool actually dispatches.

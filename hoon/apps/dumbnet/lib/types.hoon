@@ -548,9 +548,9 @@
 ::      consensus-state's min-timestamps + targets maps).
 ::    cached-ai-asert-anchor: populated by accept-block when the
 ::      first %ai-pow block lands; captures the block itself as the
-::      AI puzzle's anchor. Stays None in the stub-verifier era since
-::      no AI block can land until the deferred-task real verifier
-::      replaces the stub.
+::      AI puzzle's anchor. During the verifier-deferred era, this can
+::      be populated by the post-activation persistence path that stores
+::      the recursive certificate without verifying it.
 +$  derived-state-10
   $+  derived-state-10
   $:  highest-block-height=(unit page-number:dt)
@@ -617,6 +617,16 @@
       [%command p=command]  ::  originate locally
   ==
 ::
++$  ai-blake  ai-blake:dt
++$  ai-ext2  ai-ext2:dt
++$  ai-ext2s  ai-ext2s:dt
++$  ai-ext2-vec  ai-ext2-vec:dt
++$  ai-pow-commitments  ai-pow-commitments:dt
++$  ai-pow-public-inputs  ai-pow-public-inputs:dt
++$  ai-proof-node  ai-proof-node:dt
++$  ai-recursive-certificate  ai-recursive-certificate:dt
++$  ai-pow-certificate  ai-pow-certificate:dt
+::
 ::  Tagged union of proof-of-work variants. The miner pokes the consensus
 ::  kernel with `[%command %pow pv=pow-variant]`; the consensus kernel
 ::  dispatches on `-.pv` so additional puzzle types (e.g. %ai-pow) can be
@@ -625,11 +635,9 @@
   $+  pow-variant
   $%  [%dumb-zkpow prf=proof:sp dig=tip5-hash-atom:zeke bc=noun-digest:tip5:zeke nonce=noun-digest:tip5:zeke]  ::  the existing puzzle-nock STARK PoW
       ::  AI matmul PoW (active at and after ai-pow-activation-height).
-      ::  STUB PAYLOAD — the real serialization is deferred-task work.
-      ::  This single-atom placeholder lets the activation gate + the
-      ::  pow-variant dispatch land first; the deferred task replaces
-      ::  `placeholder=@` with the real fields the AI verifier reads.
-      [%ai-pow placeholder=@]
+      ::  Carries the recursive certificate only; raw Layer-0 proofs and
+      ::  the plain MatmulProof are not persisted in blocks.
+      [%ai-pow cert=ai-pow-certificate]
   ==
 ::
 +$  command

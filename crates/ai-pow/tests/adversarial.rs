@@ -124,8 +124,7 @@ fn reject_found_above_target() {
     let block = b"block";
     let nonce = b"nonce";
     let (a, b) = synth_matrices(b"ab-seed", &params);
-    let Some(proof) = mine(block, nonce, &a, &b, &params, ProverOptions::default()).unwrap()
-    else {
+    let Some(proof) = mine(block, nonce, &a, &b, &params, ProverOptions::default()).unwrap() else {
         return;
     };
     let Some(alt) = proof
@@ -217,7 +216,10 @@ fn reject_tampered_a_row_bytes() {
     // its Merkle path to h_a.
     proof.found.a_rows[0] ^= 1;
     let r = verify(block, nonce, &params, &proof);
-    assert!(matches!(r, Err(VerifyError::ARowMerkleMismatch)), "got {r:?}");
+    assert!(
+        matches!(r, Err(VerifyError::ARowMerkleMismatch)),
+        "got {r:?}"
+    );
 }
 
 #[test]
@@ -225,7 +227,10 @@ fn reject_tampered_b_col_bytes() {
     let (params, block, nonce, mut proof) = fresh_proof();
     proof.found.b_cols[0] ^= 1;
     let r = verify(block, nonce, &params, &proof);
-    assert!(matches!(r, Err(VerifyError::BColMerkleMismatch)), "got {r:?}");
+    assert!(
+        matches!(r, Err(VerifyError::BColMerkleMismatch)),
+        "got {r:?}"
+    );
 }
 
 #[test]
@@ -233,7 +238,10 @@ fn reject_tampered_a_row_path() {
     let (params, block, nonce, mut proof) = fresh_proof();
     proof.found.a_row_paths[0][0][0] ^= 1;
     let r = verify(block, nonce, &params, &proof);
-    assert!(matches!(r, Err(VerifyError::ARowMerkleMismatch)), "got {r:?}");
+    assert!(
+        matches!(r, Err(VerifyError::ARowMerkleMismatch)),
+        "got {r:?}"
+    );
 }
 
 #[test]
@@ -241,7 +249,10 @@ fn reject_tampered_b_col_path() {
     let (params, block, nonce, mut proof) = fresh_proof();
     proof.found.b_col_paths[0][0][0] ^= 1;
     let r = verify(block, nonce, &params, &proof);
-    assert!(matches!(r, Err(VerifyError::BColMerkleMismatch)), "got {r:?}");
+    assert!(
+        matches!(r, Err(VerifyError::BColMerkleMismatch)),
+        "got {r:?}"
+    );
 }
 
 #[test]
@@ -265,7 +276,10 @@ fn reject_wrong_a_strip_length() {
     let (params, block, nonce, mut proof) = fresh_proof();
     proof.found.a_rows.pop();
     let r = verify(block, nonce, &params, &proof);
-    assert!(matches!(r, Err(VerifyError::BadAStripLen { .. })), "got {r:?}");
+    assert!(
+        matches!(r, Err(VerifyError::BadAStripLen { .. })),
+        "got {r:?}"
+    );
 }
 
 /// H2 (DoS audit): `verifier::verify` MUST reject a `params` whose

@@ -38,9 +38,7 @@ use p3_merkle_tree::MerkleTreeMmcs;
 use p3_multilinear_util::poly::Poly;
 use p3_symmetric::{PaddingFreeSponge, TruncatedPermutation};
 use p3_whir::fiat_shamir::domain_separator::DomainSeparator;
-use p3_whir::parameters::{
-    FoldingFactor, ProtocolParameters, SecurityAssumption, WhirConfig,
-};
+use p3_whir::parameters::{FoldingFactor, ProtocolParameters, SecurityAssumption, WhirConfig};
 use p3_whir::pcs::prover::WhirProver;
 use p3_whir::sumcheck::layout::{Layout as _, SuffixProver, Table};
 use p3_whir::sumcheck::{OpeningProtocol, PointSchedule, TableShape, TableSpec};
@@ -137,12 +135,9 @@ fn measure_whir_bytes(
     domainsep.observe_domain_separator(&mut prover_challenger);
 
     let t = Instant::now();
-    let (commitment, prover_data) =
-        <MyWhirPcs as MultilinearPcs<EF, MyChallenger>>::commit(
-            &pcs,
-            witness,
-            &mut prover_challenger,
-        );
+    let (commitment, prover_data) = <MyWhirPcs as MultilinearPcs<EF, MyChallenger>>::commit(
+        &pcs, witness, &mut prover_challenger,
+    );
     let _commit_us = t.elapsed().as_micros();
 
     let t = Instant::now();
@@ -161,17 +156,15 @@ fn measure_whir_bytes(
     domainsep.observe_domain_separator(&mut verifier_challenger);
     let t = Instant::now();
     <MyWhirPcs as MultilinearPcs<EF, MyChallenger>>::verify(
-        &pcs,
-        &commitment,
-        &proof,
-        &mut verifier_challenger,
-        protocol,
+        &pcs, &commitment, &proof, &mut verifier_challenger, protocol,
     )
     .expect("WHIR verification failed");
     let verify_ms = t.elapsed().as_millis();
 
     let proof_bytes = postcard::to_allocvec(&proof).expect("ser proof").len();
-    let commit_bytes = postcard::to_allocvec(&commitment).expect("ser commit").len();
+    let commit_bytes = postcard::to_allocvec(&commitment)
+        .expect("ser commit")
+        .len();
     (proof_bytes + commit_bytes, open_ms, verify_ms)
 }
 
@@ -206,15 +199,14 @@ fn measure_fri_bytes(
     let pcs = MyFriPcs::new(dft, val_mmcs, fri_params);
 
     // Deterministic univariate polynomial of degree 2^log_height (one column).
-    let domain = <MyFriPcs as Pcs<EF, MyChallenger>>::natural_domain_for_degree(&pcs, 1 << log_height);
+    let domain =
+        <MyFriPcs as Pcs<EF, MyChallenger>>::natural_domain_for_degree(&pcs, 1 << log_height);
     let evals: Vec<F> = (0..1u64 << log_height).map(F::from_u64).collect();
     let matrix = p3_matrix::dense::RowMajorMatrix::new(evals, 1);
 
     let t = Instant::now();
-    let (commitment, prover_data) = <MyFriPcs as Pcs<EF, MyChallenger>>::commit(
-        &pcs,
-        vec![(domain, matrix)],
-    );
+    let (commitment, prover_data) =
+        <MyFriPcs as Pcs<EF, MyChallenger>>::commit(&pcs, vec![(domain, matrix)]);
     let _commit_us = t.elapsed().as_micros();
 
     use p3_challenger::{CanObserve, FieldChallenger};
@@ -230,8 +222,12 @@ fn measure_fri_bytes(
     );
     let open_ms = t.elapsed().as_millis();
 
-    let proof_bytes = postcard::to_allocvec(&opening_proof).expect("ser proof").len();
-    let commit_bytes = postcard::to_allocvec(&commitment).expect("ser commit").len();
+    let proof_bytes = postcard::to_allocvec(&opening_proof)
+        .expect("ser proof")
+        .len();
+    let commit_bytes = postcard::to_allocvec(&commitment)
+        .expect("ser commit")
+        .len();
     (proof_bytes + commit_bytes, open_ms, 0)
 }
 
@@ -245,8 +241,7 @@ fn measure_fri_bytes(
 fn whir_prototype_compiles_and_small_smoke() {
     let num_vars = 12; // 2^12 = 4096 — small/fast.
     let (bytes, open_ms, verify_ms) = measure_whir_bytes(
-        num_vars,
-        80, // security_level
+        num_vars, 80, // security_level
         4,  // starting_log_inv_rate (matches FRI lb=4)
         4,  // folding_factor_k
         2,  // pow_bits
@@ -273,12 +268,9 @@ fn sweep_whir_vs_fri(label: &str, soundness: SecurityAssumption) {
     eprintln!("  {}", "-".repeat(80));
 
     for &n in &sizes {
-        let (whir_bytes, whir_open_ms, _) = measure_whir_bytes_with_soundness(
-            n, 80, 4, 4, 2, soundness,
-        );
-        let (fri_bytes, fri_open_ms, _) = measure_fri_bytes(
-            n, 4, 20, 2, 3, 1, 1,
-        );
+        let (whir_bytes, whir_open_ms, _) =
+            measure_whir_bytes_with_soundness(n, 80, 4, 4, 2, soundness);
+        let (fri_bytes, fri_open_ms, _) = measure_fri_bytes(n, 4, 20, 2, 3, 1, 1);
         let ratio = whir_bytes as f64 / fri_bytes as f64;
         eprintln!(
             "  {:>10}  {:>14}  {:>14}  {:>7.3}×  {:>10}  {:>10}",
@@ -349,14 +341,16 @@ fn measure_whir_bytes_with_soundness(
     pcs.add_domain_separator::<8>(&mut domainsep);
     domainsep.observe_domain_separator(&mut prover_challenger);
 
-    let (commitment, prover_data) =
-        <MyWhirPcs as MultilinearPcs<EF, MyChallenger>>::commit(
-            &pcs, witness, &mut prover_challenger,
-        );
+    let (commitment, prover_data) = <MyWhirPcs as MultilinearPcs<EF, MyChallenger>>::commit(
+        &pcs, witness, &mut prover_challenger,
+    );
 
     let t = Instant::now();
     let proof = <MyWhirPcs as MultilinearPcs<EF, MyChallenger>>::open(
-        &pcs, prover_data, protocol.clone(), &mut prover_challenger,
+        &pcs,
+        prover_data,
+        protocol.clone(),
+        &mut prover_challenger,
     );
     let open_ms = t.elapsed().as_millis();
 
@@ -372,7 +366,9 @@ fn measure_whir_bytes_with_soundness(
     let verify_ms = t.elapsed().as_millis();
 
     let proof_bytes = postcard::to_allocvec(&proof).expect("ser proof").len();
-    let commit_bytes = postcard::to_allocvec(&commitment).expect("ser commit").len();
+    let commit_bytes = postcard::to_allocvec(&commitment)
+        .expect("ser commit")
+        .len();
     (proof_bytes + commit_bytes, open_ms, verify_ms)
 }
 
@@ -405,13 +401,13 @@ fn whir_vs_fri_pcs_byte_comparison() {
             2,  // pow_bits
         );
         let (fri_bytes, fri_open_ms, _) = measure_fri_bytes(
-            n, // log_height
-            4, // log_blowup
+            n,  // log_height
+            4,  // log_blowup
             20, // num_queries (4*20+2 = 82 bits)
-            2, // log_final_poly_len
-            3, // max_log_arity
-            1, // commit_pow
-            1, // query_pow
+            2,  // log_final_poly_len
+            3,  // max_log_arity
+            1,  // commit_pow
+            1,  // query_pow
         );
         let ratio = whir_bytes as f64 / fri_bytes as f64;
         eprintln!(
@@ -480,7 +476,12 @@ fn whir_folding_factor_sweep() {
     let mut best_bytes = usize::MAX;
     for &k in &folding_factors {
         let (bytes, open_ms, verify_ms) = measure_whir_bytes_with_soundness(
-            num_vars, 80, 4, k, 2, SecurityAssumption::JohnsonBound,
+            num_vars,
+            80,
+            4,
+            k,
+            2,
+            SecurityAssumption::JohnsonBound,
         );
         eprintln!(
             "  {:>5}  {:>14}  {:>10}  {:>10}",
@@ -508,7 +509,12 @@ fn whir_folding_factor_sweep() {
     let mut best_bytes_cap = usize::MAX;
     for &k in &folding_factors {
         let (bytes, open_ms, verify_ms) = measure_whir_bytes_with_soundness(
-            num_vars, 80, 4, k, 2, SecurityAssumption::CapacityBound,
+            num_vars,
+            80,
+            4,
+            k,
+            2,
+            SecurityAssumption::CapacityBound,
         );
         eprintln!(
             "  {:>5}  {:>14}  {:>10}  {:>10}",

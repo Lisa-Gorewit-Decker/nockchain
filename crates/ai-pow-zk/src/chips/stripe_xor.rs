@@ -198,15 +198,11 @@ impl StripeXorChip {
         let nxt_cumsum: [AB::Var; IN_LEN] = {
             let main = builder.main();
             let nxt = main.next_slice();
-            core::array::from_fn(|k| {
-                nxt[crate::composite_layout::CUMSUM_TILE_START + k]
-            })
+            core::array::from_fn(|k| nxt[crate::composite_layout::CUMSUM_TILE_START + k])
         };
         let mut tb = builder.when_transition();
         for k in 0..IN_LEN {
-            tb.assert_zero(
-                is_active.clone() * (in_cells[k].into() - nxt_cumsum[k].into()),
-            );
+            tb.assert_zero(is_active.clone() * (in_cells[k].into() - nxt_cumsum[k].into()));
         }
     }
 
@@ -260,9 +256,7 @@ impl StripeXorChip {
             for i in 0..32 {
                 let q: AB::Expr = cur[off.q + i].into();
                 let one = <AB::Expr as PrimeCharacteristicRing>::ONE;
-                builder.assert_zero(
-                    q.clone() * (q.clone() - one) * (q.clone() - two.clone()),
-                );
+                builder.assert_zero(q.clone() * (q.clone() - one) * (q.clone() - two.clone()));
             }
         }
 
@@ -305,8 +299,7 @@ impl StripeXorChip {
                     recon = recon + bit.into() * pow.clone();
                     pow = pow * two.clone();
                 }
-                let sign: AB::Expr =
-                    cur[off.in_bits + c * 32 + 31].into() * two_pow_32.clone();
+                let sign: AB::Expr = cur[off.in_bits + c * 32 + 31].into() * two_pow_32.clone();
                 b.assert_eq(cur[off.in_cells + c].into(), recon - sign);
             }
 
@@ -323,8 +316,7 @@ impl StripeXorChip {
             }
             let mut sel_val: AB::Expr = <AB::Expr as PrimeCharacteristicRing>::ZERO;
             for s in 0..cols::XR_LEN {
-                sel_val =
-                    sel_val + cur[off.lane_sel + s].into() * cur[off.xr + s].into();
+                sel_val = sel_val + cur[off.lane_sel + s].into() * cur[off.xr + s].into();
             }
             b.assert_eq(sel_recon, sel_val);
 
@@ -528,12 +520,12 @@ mod tests {
     //! sub-block-major sweep) is asserted from the `ai-pow` side
     //! under the `zk` feature (HIGH-2.2 §6(b)).
 
+    use p3_field::integers::QuotientMap;
+    use p3_uni_stark::{prove, verify};
+
     use super::*;
     use crate::circuit::{build_stark_config, AiPowStarkConfig, CircuitConfig};
     use crate::params::ZkParams;
-
-    use p3_field::integers::QuotientMap;
-    use p3_uni_stark::{prove, verify};
 
     fn cfg() -> AiPowStarkConfig {
         build_stark_config(
@@ -553,7 +545,9 @@ mod tests {
         let mut s = seed;
         (0..n)
             .map(|_| {
-                s = s.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+                s = s
+                    .wrapping_mul(6364136223846793005)
+                    .wrapping_add(1442695040888963407);
                 (s >> 32) as i32
             })
             .collect()
@@ -575,8 +569,7 @@ mod tests {
             for sb in 0..n_sb {
                 for step in 0..n_stripes {
                     let base = (sb * n_stripes + step) * IN_LEN;
-                    let in4: [i32; IN_LEN] =
-                        core::array::from_fn(|k| raw[base + k]);
+                    let in4: [i32; IN_LEN] = core::array::from_fn(|k| raw[base + k]);
                     events.push((step, in4));
                 }
             }
@@ -657,8 +650,7 @@ mod tests {
     fn rejects_tampered_new_sel_without_bits() {
         let c = cfg();
         let mut t = honest();
-        t.values[2 * cols::ROW_W + cols::NEW_SEL] =
-            <Val as QuotientMap<u64>>::from_int(0x7);
+        t.values[2 * cols::ROW_W + cols::NEW_SEL] = <Val as QuotientMap<u64>>::from_int(0x7);
         let p = prove::<AiPowStarkConfig, _>(&c, &StripeXorChip, t, &[]);
         assert!(
             verify::<AiPowStarkConfig, _>(&c, &StripeXorChip, &p, &[]).is_err(),
@@ -671,8 +663,7 @@ mod tests {
         let c = cfg();
         let mut t = honest();
         // A second LANE_SEL bit on row 1 ⇒ Σ == IS_ACTIVE violated.
-        t.values[1 * cols::ROW_W + cols::LANE_SEL + 9] =
-            <Val as QuotientMap<u64>>::from_int(1);
+        t.values[1 * cols::ROW_W + cols::LANE_SEL + 9] = <Val as QuotientMap<u64>>::from_int(1);
         let p = prove::<AiPowStarkConfig, _>(&c, &StripeXorChip, t, &[]);
         assert!(
             verify::<AiPowStarkConfig, _>(&c, &StripeXorChip, &p, &[]).is_err(),

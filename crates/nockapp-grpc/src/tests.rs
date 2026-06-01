@@ -45,15 +45,13 @@ mod tests {
         use nockapp::noun::slab::NounSlab;
         use nockapp::NockAppExit;
         use nockvm::ext::NounExt;
-        use nockvm::noun::NounAllocator;
-        use nockvm::noun::{D, T};
+        use nockvm::noun::{NounAllocator, D, T};
         use nockvm_macros::tas;
         use once_cell::sync::Lazy;
         use tokio::sync::{broadcast, mpsc, Mutex};
 
-        use crate::services::private_nockapp::{
-            client::PrivateNockAppGrpcClient, server::PrivateNockAppGrpcServer,
-        };
+        use crate::services::private_nockapp::client::PrivateNockAppGrpcClient;
+        use crate::services::private_nockapp::server::PrivateNockAppGrpcServer;
 
         // Singleton metrics — gnort's global registry rejects double-registration.
         // Carry the metrics across tests via Lazy, shared by Arc clone.
@@ -132,10 +130,17 @@ mod tests {
             .expect("client received slab");
         let space = received.noun_space();
         let received_noun = unsafe { *received.root() };
-        let cell = received_noun.in_space(&space).as_cell().expect("effect is a cell");
+        let cell = received_noun
+            .in_space(&space)
+            .as_cell()
+            .expect("effect is a cell");
         assert!(cell.head().eq_bytes("mine"));
         assert_eq!(
-            cell.tail().as_atom().expect("payload atom").as_u64().expect("u64"),
+            cell.tail()
+                .as_atom()
+                .expect("payload atom")
+                .as_u64()
+                .expect("u64"),
             42
         );
 
@@ -169,10 +174,17 @@ mod tests {
             .expect("client received slab 2");
         let space = received.noun_space();
         let received_noun = unsafe { *received.root() };
-        let cell = received_noun.in_space(&space).as_cell().expect("effect is a cell");
+        let cell = received_noun
+            .in_space(&space)
+            .as_cell()
+            .expect("effect is a cell");
         assert!(cell.head().eq_bytes("mine"));
         assert_eq!(
-            cell.tail().as_atom().expect("payload atom").as_u64().expect("u64"),
+            cell.tail()
+                .as_atom()
+                .expect("payload atom")
+                .as_u64()
+                .expect("u64"),
             7
         );
 

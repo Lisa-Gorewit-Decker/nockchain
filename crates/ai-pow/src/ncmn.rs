@@ -58,18 +58,14 @@ pub fn build_ncmn_nonce(anchors: &NonceAnchors, extranonce: u64) -> NcmnNonce {
     out[0..4].copy_from_slice(&NCMN_MAGIC);
     out[4] = NCMN_VERSION;
     out[8..40].copy_from_slice(&anchors.nck_commitment);
-    out[40..72].copy_from_slice(
-        &anchors.external_commitment.unwrap_or(NCMN_EXTERNAL_ABSENT),
-    );
+    out[40..72].copy_from_slice(&anchors.external_commitment.unwrap_or(NCMN_EXTERNAL_ABSENT));
     out[72..80].copy_from_slice(&extranonce.to_be_bytes());
     out
 }
 
 /// Parse an NCMN v1 nonce. The external commitment is `None` iff its 32-byte
 /// slot is all zero.
-pub fn parse_ncmn_nonce(
-    nonce: &[u8],
-) -> Result<(NonceAnchors, u64), NonceFormatError> {
+pub fn parse_ncmn_nonce(nonce: &[u8]) -> Result<(NonceAnchors, u64), NonceFormatError> {
     if nonce.len() != NCMN_NONCE_LEN {
         return Err(NonceFormatError::BadLength(nonce.len()));
     }

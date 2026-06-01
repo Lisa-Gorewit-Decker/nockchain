@@ -6,13 +6,17 @@
 //! |---|---|---|---|
 //! | [`composite_prove`] / [`composite_verify`] | `CompositeFullAir` (unpinned) | uni-stark | unit / constraint-logic dev only — **not sound for PoW** (CRIT-1: a prover can zero selectors) |
 //! | [`composite_prove_pinned`] / [`composite_verify_pinned`] / [`composite_verify_pow_pinned`] | `CompositeFullAirPinned` | uni-stark | CRIT-1 program-pinned, **no LogUp**. Lighter; backs the `crit1_*` / `high2_*` constraint-logic regression suite. Not the production path (matmul reads unbound — §4.C). |
-//! | [`composite_prove_pinned_logup`] / [`composite_verify_pinned_logup`] / [`composite_verify_pow_pinned_logup`] | `CompositeFullAirWithLookupsPinned` | **batch-stark** | ★ **PRODUCTION ENTRYPOINT** (HIGH-2.2 §4.C Route A). CRIT-1 program-pin **and** the `noised_packed`/range/i8u8/cv-routing LogUp enforced in one proof. Used by [`ai-pow::zk_bridge`] (the `mine()` gate) and `f1_harness`. ≈1.23x the uni-stark pinned cost. |
+//! | [`composite_prove_pinned_logup`] / [`composite_verify_pinned_logup`] / [`composite_verify_pow_pinned_logup`] | `CompositeFullAirWithLookupsPinned` | **batch-stark** | Layer-0 Route A (HIGH-2.2 §4.C). CRIT-1 program-pin **and** the `noised_packed`/range/i8u8/cv-routing LogUp enforced in one proof. Used by [`ai-pow::zk_bridge`] and as the inner proof for the recursive production certificate. ≈1.23x the uni-stark pinned cost. |
 //!
-//! New production callers should use the **`*_pinned_logup`**
-//! family. The uni-stark `*_pinned` family is retained as the
-//! lighter no-LogUp variant + the home of the CRIT-1/HIGH-2
-//! constraint-logic adversarial suite. The unpinned
-//! `composite_prove`/`verify` is dev-only and PoW-unsound.
+//! New Layer-0 callers should use the **`*_pinned_logup`** family.
+//! Nockchain production consensus callers should not stop at this
+//! layer: the canonical block/wire certificate is the recursive L1
+//! certificate produced by
+//! `crate::recursion::prove_canonical_ai_pow_certificate`. The
+//! uni-stark `*_pinned` family is retained as the lighter no-LogUp
+//! variant + the home of the CRIT-1/HIGH-2 constraint-logic
+//! adversarial suite. The unpinned `composite_prove`/`verify` is
+//! dev-only and PoW-unsound.
 //!
 //! ## CRIT-1 trust model (all `*_pinned*` families)
 //!
@@ -31,14 +35,6 @@
 //! `CompositePublicInputs::derive_from_trace` helper that snapshots
 //! the values from a generated trace.
 
-use crate::circuit::{build_stark_config, AiPowStarkConfig, CircuitConfig};
-use crate::composite_full_air::extract_program;
-#[cfg(any(test, feature = "dev-unsafe"))]
-use crate::composite_full_air::{CompositeFullAir, CompositeFullAirPinned};
-use crate::composite_public::CompositePublicInputs;
-use crate::composite_trace::CompositeTrace;
-use crate::params::ZkParams;
-
 use p3_commit::Pcs;
 use p3_matrix::Matrix;
 #[cfg(any(test, feature = "dev-unsafe"))]
@@ -48,6 +44,14 @@ use p3_uni_stark::{
 };
 use p3_uni_stark::{StarkGenericConfig, Val, VerificationError};
 use thiserror::Error;
+
+use crate::circuit::{build_stark_config, AiPowStarkConfig, CircuitConfig};
+use crate::composite_full_air::extract_program;
+#[cfg(any(test, feature = "dev-unsafe"))]
+use crate::composite_full_air::{CompositeFullAir, CompositeFullAirPinned};
+use crate::composite_public::CompositePublicInputs;
+use crate::composite_trace::CompositeTrace;
+use crate::params::ZkParams;
 
 /// Concrete type of the underlying STARK verification error for the composite AIR.
 /// Equivalent to `VerificationError<PcsError<AiPowStarkConfig>>`.
@@ -339,7 +343,7 @@ pub fn composite_verify_pow_pinned(
 }
 
 // ───────────────────────────────────────────────────────────────
-//  HIGH-2.2 §4.C Route A: pinned + LogUp production prove/verify
+//  HIGH-2.2 §4.C Route A: pinned + LogUp Layer-0 prove/verify
 //
 //  The uni-stark `composite_*_pinned` above enforce the CRIT-1
 //  program-pin but NOT the cross-chip LogUp — so the matmul
@@ -359,11 +363,15 @@ pub fn composite_verify_pow_pinned(
 //  against that.
 // ───────────────────────────────────────────────────────────────
 
-/// Route-A pinned prove. `trace` is LogUp-balanced here
+/// Route-A pinned Layer-0 prove. `trace` is LogUp-balanced here
 /// (`populate_lookup_freq`) so the bus argument closes. Returns
 /// the batch proof + the canonical program (handed to the
 /// verifier out-of-band from a trusted source, never via the
 /// proof — identical CRIT-1 discipline to `composite_prove_pinned`).
+///
+/// This proof is the inner input to the recursive production
+/// certificate. It is not itself the canonical Nockchain block/wire
+/// certificate.
 pub fn composite_prove_pinned_logup(
     config: &AiPowStarkConfig,
     trace: CompositeTrace,
@@ -603,11 +611,12 @@ mod tests {
     /// the `ai-pow` side — GATEs 1/3).
     #[test]
     fn high2_2_fold_chain_pinned_logup() {
+        use p3_field::integers::QuotientMap;
+        use p3_field::PrimeField64;
+
         use crate::composite_layout::{
             FOLD_SLOT_SEL_START, FOLD_XSTEP, SX_XR_START, TOTAL_TRACE_WIDTH,
         };
-        use p3_field::integers::QuotientMap;
-        use p3_field::PrimeField64;
 
         let cfg = build_config(&test_zk_params(), &CircuitConfig::TEST_PEARL);
         let ch: [u32; 8] = core::array::from_fn(|i| 0x5EED_0000 + i as u32);
@@ -635,9 +644,8 @@ mod tests {
         // sub-queries per matmul-active row) is a multiset of a
         // declared canonical store. Without it the bus is
         // unbalanced and Route-A rejects (this is the binding).
-        let store_chunks = CompositeTrace::enumerate_noised_chunks(
-            &a_prime, &b_prime, t, r, num_stripes,
-        );
+        let store_chunks =
+            CompositeTrace::enumerate_noised_chunks(&a_prime, &b_prime, t, r, num_stripes);
         let store_start = sweep_start + rows_used;
         let n_store = trace.place_noised_store(store_start, &store_chunks, 0);
 
@@ -650,16 +658,17 @@ mod tests {
         // FOLD_STATE == M.
         let last = (h - 1) * TOTAL_TRACE_WIDTH;
         for s in 0..16 {
-            let jm = trace.matrix.values
-                [last + crate::composite_layout::JACKPOT_MSG_START + s];
-            let fs = trace.matrix.values
-                [last + crate::composite_layout::FOLD_STATE_START + s];
+            let jm = trace.matrix.values[last + crate::composite_layout::JACKPOT_MSG_START + s];
+            let fs = trace.matrix.values[last + crate::composite_layout::FOLD_STATE_START + s];
             assert_eq!(
                 jm,
                 <Val<AiPowStarkConfig> as QuotientMap<u64>>::from_int(m[s] as u64),
                 "JACKPOT_MSG[{s}] != M"
             );
-            assert_eq!(jm, fs, "§4.D precondition: JACKPOT_MSG[{s}] != FOLD_STATE[{s}]");
+            assert_eq!(
+                jm, fs,
+                "§4.D precondition: JACKPOT_MSG[{s}] != FOLD_STATE[{s}]"
+            );
         }
         // §6(b) keystone precondition: every fold row's FOLD_XSTEP
         // equals the StripeXor register lane for its stripe.
@@ -669,24 +678,23 @@ mod tests {
             // one-hot slot = stripe (num_stripes ≤ STATE_LEN ⇒ 1:1).
             let mut slot = usize::MAX;
             for s in 0..16 {
-                if trace.matrix.values[base + FOLD_SLOT_SEL_START + s]
-                    .as_canonical_u64()
-                    == 1
-                {
+                if trace.matrix.values[base + FOLD_SLOT_SEL_START + s].as_canonical_u64() == 1 {
                     slot = s;
                 }
             }
             assert_eq!(slot, step % 16, "fold slot != stripe");
             let xr = trace.matrix.values[base + SX_XR_START + slot].as_canonical_u64();
-            assert_eq!(fx, xr, "§6(b) precondition: FOLD_XSTEP != SX_XR @stripe {step}");
+            assert_eq!(
+                fx, xr,
+                "§6(b) precondition: FOLD_XSTEP != SX_XR @stripe {step}"
+            );
         }
 
         let pis = CompositePublicInputs::derive_from_trace(&trace);
         let canonical = extract_program(&trace.matrix);
         let (proof, _) = composite_prove_pinned_logup(&cfg, trace, &pis);
-        composite_verify_pinned_logup(&cfg, &canonical, &proof, &pis).expect(
-            "full §6(b) useful-work chain + keystones must verify under Route-A",
-        );
+        composite_verify_pinned_logup(&cfg, &canonical, &proof, &pis)
+            .expect("full §6(b) useful-work chain + keystones must verify under Route-A");
     }
 
     /// M-S1 (§4.C.11) coverage net: the producer store from
@@ -697,12 +705,13 @@ mod tests {
     /// construction (they are duplicated, not shared).
     #[test]
     fn noised_store_covers_every_swept_chunk() {
-        use crate::composite_layout::{
-            A_NOISED_LEN, A_NOISED_START, B_NOISED_LEN, B_NOISED_START,
-            IS_RESET_CUMSUM, IS_UPDATE_CUMSUM, TOTAL_TRACE_WIDTH,
-        };
         use p3_field::integers::QuotientMap;
         use p3_field::PrimeField64;
+
+        use crate::composite_layout::{
+            A_NOISED_LEN, A_NOISED_START, B_NOISED_LEN, B_NOISED_START, IS_RESET_CUMSUM,
+            IS_UPDATE_CUMSUM, TOTAL_TRACE_WIDTH,
+        };
 
         let (t, k, r, num_stripes) = (8usize, 64usize, 4usize, 16usize);
         let a_prime: Vec<i8> = (0..(t * k) as i32)
@@ -719,9 +728,7 @@ mod tests {
         // Store key set: pack each enumerated 8-i8 chunk the way
         // `place_matmul_step` packs `A_NOISED` (base-256 polyval of
         // each 4-i8 half), in the canonical Goldilocks encoding.
-        let chunks = CompositeTrace::enumerate_noised_chunks(
-            &a_prime, &b_prime, t, r, num_stripes,
-        );
+        let chunks = CompositeTrace::enumerate_noised_chunks(&a_prime, &b_prime, t, r, num_stripes);
         let pack = |b: &[i8]| -> u64 {
             let mut acc = 0i64;
             let mut p = 1i64;
@@ -729,11 +736,9 @@ mod tests {
                 acc += x as i64 * p;
                 p *= 256;
             }
-            <Val<AiPowStarkConfig> as QuotientMap<i64>>::from_int(acc)
-                .as_canonical_u64()
+            <Val<AiPowStarkConfig> as QuotientMap<i64>>::from_int(acc).as_canonical_u64()
         };
-        let mut store: std::collections::HashSet<(u64, u64)> =
-            std::collections::HashSet::new();
+        let mut store: std::collections::HashSet<(u64, u64)> = std::collections::HashSet::new();
         for c in &chunks {
             store.insert((pack(&c[0..4]), pack(&c[4..8])));
         }
@@ -742,27 +747,22 @@ mod tests {
         // store.
         for row in 8..8 + rows_used {
             let base = row * TOTAL_TRACE_WIDTH;
-            let active = trace.matrix.values[base + IS_RESET_CUMSUM]
-                .as_canonical_u64()
+            let active = trace.matrix.values[base + IS_RESET_CUMSUM].as_canonical_u64()
                 + trace.matrix.values[base + IS_UPDATE_CUMSUM].as_canonical_u64();
             if active == 0 {
                 continue;
             }
             for j in 0..(A_NOISED_LEN / 2) {
                 let key = (
-                    trace.matrix.values[base + A_NOISED_START + 2 * j]
-                        .as_canonical_u64(),
-                    trace.matrix.values[base + A_NOISED_START + 2 * j + 1]
-                        .as_canonical_u64(),
+                    trace.matrix.values[base + A_NOISED_START + 2 * j].as_canonical_u64(),
+                    trace.matrix.values[base + A_NOISED_START + 2 * j + 1].as_canonical_u64(),
                 );
                 assert!(store.contains(&key), "A chunk {j}@row {row} ∉ store");
             }
             for j in 0..(B_NOISED_LEN / 2) {
                 let key = (
-                    trace.matrix.values[base + B_NOISED_START + 2 * j]
-                        .as_canonical_u64(),
-                    trace.matrix.values[base + B_NOISED_START + 2 * j + 1]
-                        .as_canonical_u64(),
+                    trace.matrix.values[base + B_NOISED_START + 2 * j].as_canonical_u64(),
+                    trace.matrix.values[base + B_NOISED_START + 2 * j + 1].as_canonical_u64(),
                 );
                 assert!(store.contains(&key), "B chunk {j}@row {row} ∉ store");
             }
@@ -790,12 +790,8 @@ mod tests {
         let (a1, b1) = (mk(0), mk(0x11));
         let (a2, b2) = (mk(0x5A), mk(0x77));
 
-        let p1 = CompositeTrace::enumerate_noised_chunks_positioned(
-            &a1, &b1, t, r, num_stripes,
-        );
-        let p2 = CompositeTrace::enumerate_noised_chunks_positioned(
-            &a2, &b2, t, r, num_stripes,
-        );
+        let p1 = CompositeTrace::enumerate_noised_chunks_positioned(&a1, &b1, t, r, num_stripes);
+        let p2 = CompositeTrace::enumerate_noised_chunks_positioned(&a2, &b2, t, r, num_stripes);
         assert_eq!(p1.len(), p2.len(), "layout length is params-fixed");
         assert!(!p1.is_empty());
         for (c1, c2) in p1.iter().zip(p2.iter()) {
@@ -813,8 +809,7 @@ mod tests {
 
         // M-S1 consistency: every deduped store chunk is some
         // positioned row's bytes (producer set unchanged).
-        let deduped =
-            CompositeTrace::enumerate_noised_chunks(&a1, &b1, t, r, num_stripes);
+        let deduped = CompositeTrace::enumerate_noised_chunks(&a1, &b1, t, r, num_stripes);
         let positioned_bytes: std::collections::HashSet<[i8; 8]> =
             p1.iter().map(|c| c.bytes).collect();
         for ch in &deduped {
@@ -856,18 +851,15 @@ mod tests {
         let b_evil: Vec<i8> = b_canon.iter().map(|&v| v ^ 0x33).collect();
 
         let sweep_start = 8;
-        let (rows_used, x_steps) = trace.place_useful_work_chain(
-            sweep_start, &a_evil, &b_evil, t, r, num_stripes,
-        );
+        let (rows_used, x_steps) =
+            trace.place_useful_work_chain(sweep_start, &a_evil, &b_evil, t, r, num_stripes);
         // Store published from the CANONICAL tile (≠ swept tile).
-        let store_chunks = CompositeTrace::enumerate_noised_chunks(
-            &a_canon, &b_canon, t, r, num_stripes,
-        );
+        let store_chunks =
+            CompositeTrace::enumerate_noised_chunks(&a_canon, &b_canon, t, r, num_stripes);
         let store_start = sweep_start + rows_used;
         let n_store = trace.place_noised_store(store_start, &store_chunks, 0);
 
-        let xs: Vec<i32> =
-            x_steps[..num_stripes].iter().map(|&u| u as i32).collect();
+        let xs: Vec<i32> = x_steps[..num_stripes].iter().map(|&u| u as i32).collect();
         let fold_start = store_start + n_store + 4;
         let m = trace.place_fold_chain(fold_start, &xs);
         let _ = trace.place_jackpot_hash_block(h - 8, &m, &ch);
@@ -909,11 +901,12 @@ mod tests {
     /// Closes the K3-G2-EXPLICIT backlog item.
     #[test]
     fn high2_2_g2_xstep_stripe_pin_rejects() {
+        use p3_field::integers::QuotientMap;
+        use p3_field::PrimeField64;
+
         use crate::composite_layout::{
             FOLD_SLOT_SEL_START, FOLD_XSTEP, SX_XR_START, TOTAL_TRACE_WIDTH,
         };
-        use p3_field::integers::QuotientMap;
-        use p3_field::PrimeField64;
 
         let cfg = build_config(&test_zk_params(), &CircuitConfig::TEST_PEARL);
         let ch: [u32; 8] = core::array::from_fn(|i| 0x5EED_0000 + i as u32);
@@ -934,9 +927,8 @@ mod tests {
         let (rows_used, x_steps) =
             trace.place_useful_work_chain(sweep_start, &a_prime, &b_prime, t, r, num_stripes);
 
-        let store_chunks = CompositeTrace::enumerate_noised_chunks(
-            &a_prime, &b_prime, t, r, num_stripes,
-        );
+        let store_chunks =
+            CompositeTrace::enumerate_noised_chunks(&a_prime, &b_prime, t, r, num_stripes);
         let store_start = sweep_start + rows_used;
         let n_store = trace.place_noised_store(store_start, &store_chunks, 0);
 
@@ -966,9 +958,7 @@ mod tests {
         // Sanity: confirm the row is fold-active on slot 0 before tampering.
         let mut slot_check = usize::MAX;
         for s in 0..16 {
-            if trace.matrix.values[base + FOLD_SLOT_SEL_START + s]
-                .as_canonical_u64() == 1
-            {
+            if trace.matrix.values[base + FOLD_SLOT_SEL_START + s].as_canonical_u64() == 1 {
                 slot_check = s;
             }
         }
@@ -1042,11 +1032,10 @@ mod tests {
     /// FoldChip ↔ StripeXorChip soundness boundary.
     #[test]
     fn high2_2_g2_sx_xr_producer_side_tamper_rejects() {
-        use crate::composite_layout::{
-            FOLD_SLOT_SEL_START, SX_XR_START, TOTAL_TRACE_WIDTH,
-        };
         use p3_field::integers::QuotientMap;
         use p3_field::PrimeField64;
+
+        use crate::composite_layout::{FOLD_SLOT_SEL_START, SX_XR_START, TOTAL_TRACE_WIDTH};
 
         let cfg = build_config(&test_zk_params(), &CircuitConfig::TEST_PEARL);
         let ch: [u32; 8] = core::array::from_fn(|i| 0x5EED_0000 + i as u32);
@@ -1065,9 +1054,8 @@ mod tests {
         let (rows_used, x_steps) =
             trace.place_useful_work_chain(sweep_start, &a_prime, &b_prime, t, r, num_stripes);
 
-        let store_chunks = CompositeTrace::enumerate_noised_chunks(
-            &a_prime, &b_prime, t, r, num_stripes,
-        );
+        let store_chunks =
+            CompositeTrace::enumerate_noised_chunks(&a_prime, &b_prime, t, r, num_stripes);
         let store_start = sweep_start + rows_used;
         let n_store = trace.place_noised_store(store_start, &store_chunks, 0);
 
@@ -1085,9 +1073,7 @@ mod tests {
         // Sanity: confirm fold-row 0 is one-hot on slot 0.
         let mut slot_check = usize::MAX;
         for s in 0..16 {
-            if trace.matrix.values[base + FOLD_SLOT_SEL_START + s]
-                .as_canonical_u64() == 1
-            {
+            if trace.matrix.values[base + FOLD_SLOT_SEL_START + s].as_canonical_u64() == 1 {
                 slot_check = s;
             }
         }
@@ -1199,10 +1185,8 @@ mod tests {
             "CRIT-1: forged proof must fail against the canonical program VK"
         );
         assert!(
-            composite_verify_pow_pinned(
-                &cfg, &canonical, &evil_proof, &forged, &[0xFFu8; 32]
-            )
-            .is_err(),
+            composite_verify_pow_pinned(&cfg, &canonical, &evil_proof, &forged, &[0xFFu8; 32])
+                .is_err(),
             "CRIT-1: forged winning PoW must be rejected"
         );
     }
@@ -1212,10 +1196,11 @@ mod tests {
     /// against the canonical program rejects it.
     #[test]
     fn crit1_tampered_program_col_rejected() {
-        use crate::composite_full_air::PROGRAM_COLS;
-        use crate::composite_layout::TOTAL_TRACE_WIDTH;
         use p3_field::integers::QuotientMap;
         use p3_field::PrimeField64;
+
+        use crate::composite_full_air::PROGRAM_COLS;
+        use crate::composite_layout::TOTAL_TRACE_WIDTH;
 
         let cfg = build_config(&test_zk_params(), &CircuitConfig::TEST_PEARL);
         let canonical = extract_program(&honest_trace().matrix);
@@ -1224,13 +1209,9 @@ mod tests {
             let mut t = honest_trace();
             // Tamper this program column on a mid-trace row.
             let r = 50usize;
-            let cur = t.matrix.values
-                [r * TOTAL_TRACE_WIDTH + col]
-                .as_canonical_u64();
+            let cur = t.matrix.values[r * TOTAL_TRACE_WIDTH + col].as_canonical_u64();
             t.matrix.values[r * TOTAL_TRACE_WIDTH + col] =
-                <Val<AiPowStarkConfig> as QuotientMap<u64>>::from_int(
-                    cur.wrapping_add(1),
-                );
+                <Val<AiPowStarkConfig> as QuotientMap<u64>>::from_int(cur.wrapping_add(1));
             let pis = CompositePublicInputs::derive_from_matrix(&t.matrix);
             let (proof, _) = composite_prove_pinned(&cfg, t, &pis);
             assert!(
@@ -1269,8 +1250,9 @@ mod tests {
     /// equals the bound accumulator.
     #[test]
     fn high2_free_jackpot_message_rejected() {
-        use crate::composite_layout::{JACKPOT_MSG_START, TOTAL_TRACE_WIDTH};
         use p3_field::integers::QuotientMap;
+
+        use crate::composite_layout::{JACKPOT_MSG_START, TOTAL_TRACE_WIDTH};
 
         let cfg = build_config(&test_zk_params(), &CircuitConfig::TEST_PEARL);
 
@@ -1360,20 +1342,19 @@ mod tests {
             crate::composite_full_air::PROGRAM_COLS.len(),
         );
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            composite_verify_pow_pinned_logup(
-                &cfg,
-                &bad_height,
-                &proof,
-                &pis,
-                &[0xffu8; 32],
-            )
+            composite_verify_pow_pinned_logup(&cfg, &bad_height, &proof, &pis, &[0xffu8; 32])
         }));
-        assert!(result.is_ok(), "malformed program must not panic PoW verifier");
+        assert!(
+            result.is_ok(),
+            "malformed program must not panic PoW verifier"
+        );
         assert!(matches!(
             result.unwrap(),
-            Err(PowVerifyError::Stark(CompositeVerificationError::InvalidProgram(
-                ProgramShapeError::HeightNotPowerOfTwo { height: 3 }
-            )))
+            Err(PowVerifyError::Stark(
+                CompositeVerificationError::InvalidProgram(
+                    ProgramShapeError::HeightNotPowerOfTwo { height: 3 }
+                )
+            ))
         ));
     }
 
@@ -1409,10 +1390,11 @@ mod tests {
     /// program under Route A (full coverage of all PROGRAM_COLS).
     #[test]
     fn routea_crit1_tampered_program_col_rejected() {
-        use crate::composite_full_air::PROGRAM_COLS;
-        use crate::composite_layout::TOTAL_TRACE_WIDTH;
         use p3_field::integers::QuotientMap;
         use p3_field::PrimeField64;
+
+        use crate::composite_full_air::PROGRAM_COLS;
+        use crate::composite_layout::TOTAL_TRACE_WIDTH;
 
         let cfg = build_config(&test_zk_params(), &CircuitConfig::TEST_PEARL);
         let canonical = extract_program(&honest_trace().matrix);
@@ -1420,8 +1402,7 @@ mod tests {
         for &col in &PROGRAM_COLS {
             let mut t = honest_trace();
             let r = 50usize;
-            let cur =
-                t.matrix.values[r * TOTAL_TRACE_WIDTH + col].as_canonical_u64();
+            let cur = t.matrix.values[r * TOTAL_TRACE_WIDTH + col].as_canonical_u64();
             t.matrix.values[r * TOTAL_TRACE_WIDTH + col] =
                 <Val<AiPowStarkConfig> as QuotientMap<u64>>::from_int(cur.wrapping_add(1));
             let pis = CompositePublicInputs::derive_from_matrix(&t.matrix);
@@ -1449,18 +1430,18 @@ mod tests {
     /// prover, controlling its own frequency pass, would do.
     #[test]
     fn sec_4c10_mat_freq_planted_producer_rejected() {
-        use crate::composite_full_air_with_lookups::CompositeFullAirWithLookupsPinned;
-        use crate::composite_layout::MAT_FREQ;
         use p3_batch_stark::{prove_batch, ProverData, StarkInstance};
         use p3_field::integers::QuotientMap;
         use p3_field::PrimeField64;
+
+        use crate::composite_full_air_with_lookups::CompositeFullAirWithLookupsPinned;
+        use crate::composite_layout::MAT_FREQ;
 
         let cfg = build_config(&test_zk_params(), &CircuitConfig::TEST_PEARL);
         let pis = CompositePublicInputs::derive_from_matrix(&honest_trace().matrix);
 
         // Honest control: an untampered trace proves + verifies.
-        let (ok_proof, ok_prog) =
-            composite_prove_pinned_logup(&cfg, honest_trace(), &pis);
+        let (ok_proof, ok_prog) = composite_prove_pinned_logup(&cfg, honest_trace(), &pis);
         composite_verify_pinned_logup(&cfg, &ok_prog, &ok_proof, &pis)
             .expect("honest trace must verify");
 
@@ -1498,8 +1479,9 @@ mod tests {
     /// winning jackpot message is rejected.
     #[test]
     fn routea_high2_free_jackpot_message_rejected() {
-        use crate::composite_layout::{JACKPOT_MSG_START, TOTAL_TRACE_WIDTH};
         use p3_field::integers::QuotientMap;
+
+        use crate::composite_layout::{JACKPOT_MSG_START, TOTAL_TRACE_WIDTH};
 
         let cfg = build_config(&test_zk_params(), &CircuitConfig::TEST_PEARL);
 
@@ -1528,17 +1510,15 @@ mod tests {
         // word i ↦ bytes[4i..4i+4] little-endian — the inverse of
         // M52's `u32::from_le_bytes([digest[4i..4i+4]])`.
         let hj: [u32; 8] = [
-            0x04030201, 0x08070605, 0x0C0B0A09, 0x100F0E0D,
-            0xEFBEADDE, 0xCEFAEDFE, 0xBEBAFECA, 0x78563412,
+            0x04030201, 0x08070605, 0x0C0B0A09, 0x100F0E0D, 0xEFBEADDE, 0xCEFAEDFE, 0xBEBAFECA,
+            0x78563412,
         ];
         let bytes = hash_jackpot_le_bytes(&hj);
         assert_eq!(&bytes[0..4], &[0x01, 0x02, 0x03, 0x04]);
         assert_eq!(&bytes[28..32], &[0x12, 0x34, 0x56, 0x78]);
         // Round-trip back to words (the place_matrix_hash encoding).
         let back: [u32; 8] = core::array::from_fn(|i| {
-            u32::from_le_bytes([
-                bytes[i * 4], bytes[i * 4 + 1], bytes[i * 4 + 2], bytes[i * 4 + 3],
-            ])
+            u32::from_le_bytes([bytes[i * 4], bytes[i * 4 + 1], bytes[i * 4 + 2], bytes[i * 4 + 3]])
         });
         assert_eq!(back, hj);
     }
@@ -1597,8 +1577,7 @@ mod tests {
         let pis = CompositePublicInputs::derive_from_trace(&trace);
         let proof = composite_prove(&cfg, trace, &pis);
 
-        let encoded =
-            bincode::serde::encode_to_vec(&proof, bincode_standard()).expect("encode");
+        let encoded = bincode::serde::encode_to_vec(&proof, bincode_standard()).expect("encode");
         let (decoded, _len) = bincode::serde::decode_from_slice::<Proof<AiPowStarkConfig>, _>(
             &encoded,
             bincode_standard(),
@@ -1619,8 +1598,7 @@ mod tests {
         let p_small = composite_prove(&cfg, trace_small, &pis_small);
         composite_verify(&cfg, &p_small, &pis_small).expect("small proof");
 
-        let trace_big =
-            CompositeTrace::baseline(crate::composite_layout::MIN_STARK_LEN * 2);
+        let trace_big = CompositeTrace::baseline(crate::composite_layout::MIN_STARK_LEN * 2);
         let pis_big = CompositePublicInputs::derive_from_trace(&trace_big);
         let p_big = composite_prove(&cfg, trace_big, &pis_big);
         composite_verify(&cfg, &p_big, &pis_big).expect("big proof");
@@ -1739,8 +1717,7 @@ mod tests {
 
         // Serialise to measure proof size.
         use bincode::config::standard as bincode_standard;
-        let bytes = bincode::serde::encode_to_vec(&proof, bincode_standard())
-            .expect("encode");
+        let bytes = bincode::serde::encode_to_vec(&proof, bincode_standard()).expect("encode");
         let proof_bytes = bytes.len();
 
         println!(

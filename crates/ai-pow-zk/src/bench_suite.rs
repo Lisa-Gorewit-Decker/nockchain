@@ -41,20 +41,19 @@
 
 #[cfg(test)]
 mod tests {
+    use std::time::Instant;
+
+    use bincode::config::standard as bincode_standard;
+    use p3_batch_stark::{prove_batch, verify_batch, ProverData, StarkInstance};
+
     use crate::chips::blake3::compress::{Blake3Tweak, BLAKE3_IV};
     use crate::chips::jackpot::compute::apply_jackpot_step;
     use crate::chips::matmul::compute::CUMSUM_LEN;
     use crate::circuit::{build_stark_config, AiPowStarkConfig, CircuitConfig};
     use crate::composite_full_air_with_lookups::CompositeFullAirWithLookups;
-    use crate::composite_layout::{
-        JACKPOT_SIZE, MIN_STARK_LEN, TILE_D, TILE_H, TOTAL_TRACE_WIDTH,
-    };
+    use crate::composite_layout::{JACKPOT_SIZE, MIN_STARK_LEN, TILE_D, TILE_H, TOTAL_TRACE_WIDTH};
     use crate::composite_trace::CompositeTrace;
     use crate::params::ZkParams;
-
-    use bincode::config::standard as bincode_standard;
-    use p3_batch_stark::{prove_batch, verify_batch, ProverData, StarkInstance};
-    use std::time::Instant;
 
     fn test_zk_params() -> ZkParams {
         ZkParams {
@@ -142,8 +141,7 @@ mod tests {
         // (c) Jackpot @ row 10.
         let initial_jackpot = [0u32; JACKPOT_SIZE];
         let _after_step = trace.place_jackpot_step(10, &initial_jackpot, 0, 0xDEAD_BEEF, true);
-        let jackpot_final =
-            apply_jackpot_step(&initial_jackpot, 0, 0xDEAD_BEEF, true);
+        let jackpot_final = apply_jackpot_step(&initial_jackpot, 0, 0xDEAD_BEEF, true);
         trace.fill_jackpot_passthrough(11, &jackpot_final);
 
         let trace_gen_ms = t.elapsed().as_millis();
@@ -169,7 +167,12 @@ mod tests {
         let matmul_rows = n_matmul;
         let jackpot_rows = n_jackpot;
         let total_active = blake3_rows + matmul_rows + jackpot_rows;
-        assert!(total_active < n, "heavy activity ({}) exceeds trace size ({})", total_active, n);
+        assert!(
+            total_active < n,
+            "heavy activity ({}) exceeds trace size ({})",
+            total_active,
+            n
+        );
 
         let cfg = build_stark_config(&test_zk_params(), profile);
 
@@ -251,12 +254,11 @@ mod tests {
         let prove_ms = t.elapsed().as_millis();
 
         let t = Instant::now();
-        verify_batch(cfg, &[air], &proof, &[pis], &prover_data.common)
-            .expect("bench verify");
+        verify_batch(cfg, &[air], &proof, &[pis], &prover_data.common).expect("bench verify");
         let verify_ms = t.elapsed().as_millis();
 
-        let encoded = bincode::serde::encode_to_vec(&proof, bincode_standard())
-            .expect("bincode encode");
+        let encoded =
+            bincode::serde::encode_to_vec(&proof, bincode_standard()).expect("bincode encode");
 
         BenchResult {
             rows: n,

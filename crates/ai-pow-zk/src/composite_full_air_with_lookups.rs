@@ -48,17 +48,16 @@ use crate::composite_full_air::{CompositeFullAir, CompositeFullAirPinned};
 use crate::composite_layout::{
     AB_ID_LIMBS_LEN, AB_ID_LIMBS_START, A_ID, A_NOISED_START, A_NOISED_UNPACK_LEN,
     A_NOISED_UNPACK_START, B_ID, B_NOISED_START, B_NOISED_UNPACK_LEN, B_NOISED_UNPACK_START,
-    CV_IN_LEN, CV_IN_START, CV_OR_TWEAK_PREP, CV_OUT_FREQ, CV_OUT_LEN, CV_OUT_START,
-    I8U8_FREQ, I8U8_TABLE, IRANGE7P1_FREQ, IRANGE7P1_TABLE, IRANGE8_FREQ, IRANGE8_TABLE,
-    IS_CV_IN, IS_MSG_MAT, IS_RESET_CUMSUM, IS_UPDATE_CUMSUM, MAT_FREQ, MAT_ID,
-    MAT_ID_LIMBS_LEN, MAT_ID_LIMBS_START, MAT_UNPACK_WIN, MAT_UNPACK_START,
-    NOISED_PACKED_START, NOISE_UNPACK_START, NOISE_UNPACK_WIN, STARK_ROW_IDX,
-    TOTAL_TRACE_WIDTH, UINT8_DATA_START, UINT8_DATA_WIN, URANGE13_FREQ, URANGE13_TABLE,
-    URANGE8_FREQ, URANGE8_TABLE,
+    CV_IN_LEN, CV_IN_START, CV_OR_TWEAK_PREP, CV_OUT_FREQ, CV_OUT_LEN, CV_OUT_START, I8U8_FREQ,
+    I8U8_TABLE, IRANGE7P1_FREQ, IRANGE7P1_TABLE, IRANGE8_FREQ, IRANGE8_TABLE, IS_CV_IN, IS_MSG_MAT,
+    IS_RESET_CUMSUM, IS_UPDATE_CUMSUM, MAT_FREQ, MAT_ID, MAT_ID_LIMBS_LEN, MAT_ID_LIMBS_START,
+    MAT_UNPACK_START, MAT_UNPACK_WIN, NOISED_PACKED_START, NOISE_UNPACK_START, NOISE_UNPACK_WIN,
+    STARK_ROW_IDX, TOTAL_TRACE_WIDTH, UINT8_DATA_START, UINT8_DATA_WIN, URANGE13_FREQ,
+    URANGE13_TABLE, URANGE8_FREQ, URANGE8_TABLE,
 };
 use crate::composite_lookups::{
-    BUS_CV_ROUTING, BUS_I8U8, BUS_IRANGE7P1, BUS_IRANGE8, BUS_NOISED_PACKED,
-    BUS_URANGE13, BUS_URANGE8,
+    BUS_CV_ROUTING, BUS_I8U8, BUS_IRANGE7P1, BUS_IRANGE8, BUS_NOISED_PACKED, BUS_URANGE13,
+    BUS_URANGE8,
 };
 
 /// Lookup-aware composite AIR.
@@ -139,10 +138,7 @@ impl CompositeFullAirWithLookupsPinned {
 
     /// Build with an explicit §6(b)-keystone flag (verifier-set
     /// from trusted params; see [`CompositeFullAirPinned::new_with`]).
-    pub fn new_with(
-        program: p3_matrix::dense::RowMajorMatrix<crate::Val>,
-        sx_bound: bool,
-    ) -> Self {
+    pub fn new_with(program: p3_matrix::dense::RowMajorMatrix<crate::Val>, sx_bound: bool) -> Self {
         Self {
             inner: CompositeFullAirPinned::new_with(program, sx_bound),
         }
@@ -159,9 +155,7 @@ impl BaseAir<crate::Val> for CompositeFullAirWithLookupsPinned {
     fn preprocessed_width(&self) -> usize {
         BaseAir::<crate::Val>::preprocessed_width(&self.inner)
     }
-    fn preprocessed_trace(
-        &self,
-    ) -> Option<p3_matrix::dense::RowMajorMatrix<crate::Val>> {
+    fn preprocessed_trace(&self) -> Option<p3_matrix::dense::RowMajorMatrix<crate::Val>> {
         BaseAir::<crate::Val>::preprocessed_trace(&self.inner)
     }
 }
@@ -404,9 +398,8 @@ mod bus_emit {
         // `populate_lookup_freq` accounts these queries. A swept
         // chunk ∉ the store ⇒ no table key ⇒ LogUp unbalanced ⇒
         // reject. (Store ↔ plain-A `HASH_A` is the §4.C.2 residual.)
-        let matmul_active: AB::Expr =
-            <AB::Var as Into<AB::Expr>>::into(cur[IS_RESET_CUMSUM])
-                + <AB::Var as Into<AB::Expr>>::into(cur[IS_UPDATE_CUMSUM]);
+        let matmul_active: AB::Expr = <AB::Var as Into<AB::Expr>>::into(cur[IS_RESET_CUMSUM])
+            + <AB::Var as Into<AB::Expr>>::into(cur[IS_UPDATE_CUMSUM]);
         for j in 0..(crate::composite_layout::A_NOISED_LEN / 2) {
             builder.push_interaction(
                 BUS_NOISED_PACKED,
@@ -498,6 +491,9 @@ mod tests {
     //! time. Valid traces verify; over-claimed `URANGE8_FREQ` or
     //! out-of-range `UINT8_DATA[0]` queries are rejected.
 
+    use p3_batch_stark::{prove_batch, verify_batch, ProverData, StarkInstance};
+    use p3_field::integers::QuotientMap;
+
     use super::*;
     use crate::chips::control::ControlChip;
     use crate::circuit::{build_stark_config, AiPowStarkConfig, CircuitConfig};
@@ -505,9 +501,6 @@ mod tests {
     use crate::composite_trace::CompositeTrace;
     use crate::params::ZkParams;
     use crate::Val;
-
-    use p3_batch_stark::{prove_batch, verify_batch, ProverData, StarkInstance};
-    use p3_field::integers::QuotientMap;
 
     fn test_zk_params() -> ZkParams {
         ZkParams {
@@ -527,7 +520,8 @@ mod tests {
         // Derive PIs via the centralized helper — picks up CUMSUM_TILE
         // and JACKPOT_MSG from the last row plus HASH_A / HASH_B from
         // their selector rows (zero for baseline traces).
-        let pis: Vec<Val> = crate::composite_public::CompositePublicInputs::derive_from_matrix(trace).to_vec();
+        let pis: Vec<Val> =
+            crate::composite_public::CompositePublicInputs::derive_from_matrix(trace).to_vec();
 
         let air = CompositeFullAirWithLookups;
         let instances = vec![StarkInstance {
@@ -569,11 +563,7 @@ mod tests {
     ///   - URange8 query on UINT8_DATA[0] = u8_value
     ///   - IRange8 query on MAT_UNPACK[0] = i8_view
     ///   - I8U8 query on the packed pair (matches valid table entry)
-    fn place_urange8_query(
-        trace: &mut CompositeTrace,
-        row_idx: usize,
-        u8_value: u32,
-    ) {
+    fn place_urange8_query(trace: &mut CompositeTrace, row_idx: usize, u8_value: u32) {
         assert!(row_idx < trace.height());
         assert!(u8_value < 256);
         let base = row_idx * TOTAL_TRACE_WIDTH;
@@ -758,8 +748,7 @@ mod tests {
     fn out_of_range_a_noised_unpack_rejected_by_logup() {
         let cfg = build_stark_config(&test_zk_params(), &CircuitConfig::TEST_PEARL);
         let mut trace = CompositeTrace::baseline_min();
-        let target =
-            0 * TOTAL_TRACE_WIDTH + crate::composite_layout::A_NOISED_UNPACK_START;
+        let target = 0 * TOTAL_TRACE_WIDTH + crate::composite_layout::A_NOISED_UNPACK_START;
         trace.matrix.values[target] = <Val as QuotientMap<u64>>::from_int(200);
         trace.populate_lookup_freq();
         let res = run_batch(&cfg, &trace.matrix);
@@ -777,8 +766,7 @@ mod tests {
     fn out_of_range_b_noised_unpack_negative_rejected_by_logup() {
         let cfg = build_stark_config(&test_zk_params(), &CircuitConfig::TEST_PEARL);
         let mut trace = CompositeTrace::baseline_min();
-        let target =
-            0 * TOTAL_TRACE_WIDTH + crate::composite_layout::B_NOISED_UNPACK_START;
+        let target = 0 * TOTAL_TRACE_WIDTH + crate::composite_layout::B_NOISED_UNPACK_START;
         trace.matrix.values[target] = <Val as QuotientMap<i64>>::from_int(-200);
         trace.populate_lookup_freq();
         let res = run_batch(&cfg, &trace.matrix);
@@ -822,13 +810,11 @@ mod tests {
         let row_start = 0 * TOTAL_TRACE_WIDTH;
         let test_vals: [(usize, i64); 4] = [(0, -128), (1, 127), (2, 0), (3, -1)];
         for (off, v) in test_vals {
-            trace.matrix.values
-                [row_start + crate::composite_layout::A_NOISED_UNPACK_START + off] =
+            trace.matrix.values[row_start + crate::composite_layout::A_NOISED_UNPACK_START + off] =
                 <Val as QuotientMap<i64>>::from_int(v);
         }
         trace.populate_lookup_freq();
-        run_batch(&cfg, &trace.matrix)
-            .expect("in-range i8 A_NOISED_UNPACK values must verify");
+        run_batch(&cfg, &trace.matrix).expect("in-range i8 A_NOISED_UNPACK values must verify");
     }
 
     // =================================================================
@@ -859,8 +845,7 @@ mod tests {
         let mut trace = CompositeTrace::baseline_min();
         place_urange8_query(&mut trace, 0, 255);
         trace.populate_lookup_freq();
-        run_batch(&cfg, &trace.matrix)
-            .expect("valid (-1, 255) pair must verify");
+        run_batch(&cfg, &trace.matrix).expect("valid (-1, 255) pair must verify");
     }
 
     /// **Cryptographically critical test.** Place a valid (42, 42)
@@ -981,8 +966,7 @@ mod tests {
         let target = 0 * TOTAL_TRACE_WIDTH + MAT_FREQ;
         use p3_field::PrimeField64;
         let prev = trace.matrix.values[target].as_canonical_u64();
-        trace.matrix.values[target] =
-            <Val as QuotientMap<u64>>::from_int(prev + 1);
+        trace.matrix.values[target] = <Val as QuotientMap<u64>>::from_int(prev + 1);
         let res = run_batch(&cfg, &trace.matrix);
         assert!(
             res.is_err(),
@@ -1039,8 +1023,7 @@ mod tests {
         let cfg = build_stark_config(&test_zk_params(), &CircuitConfig::TEST_PEARL);
         let mut trace = CompositeTrace::baseline_min();
         trace.populate_lookup_freq();
-        run_batch(&cfg, &trace.matrix)
-            .expect("baseline cv_routing must verify");
+        run_batch(&cfg, &trace.matrix).expect("baseline cv_routing must verify");
     }
 
     /// Place a CV_IN reference: row 100 reads the CV_OUT
@@ -1064,8 +1047,7 @@ mod tests {
         // CV_IN[0..8] left at 0.
 
         trace.populate_lookup_freq();
-        run_batch(&cfg, &trace.matrix)
-            .expect("cv_routing with zero CV at row 50 must verify");
+        run_batch(&cfg, &trace.matrix).expect("cv_routing with zero CV at row 50 must verify");
     }
 
     /// Place a CV_IN reference to a NON-EXISTENT row+CV pair:
@@ -1113,11 +1095,7 @@ mod tests {
 
         trace.populate_lookup_freq();
         let res = run_batch(&cfg, &trace.matrix);
-        assert!(
-            res.is_err(),
-            "wrong CV value must reject; got {:?}",
-            res
-        );
+        assert!(res.is_err(), "wrong CV value must reject; got {:?}", res);
     }
 
     // =================================================================
@@ -1155,27 +1133,20 @@ mod tests {
         // stay zero (so IRange8 queries balance via FREQ[128]).
         let a = [[0i8; TILE_D]; crate::composite_layout::TILE_H];
         let b = [[0i8; TILE_D]; crate::composite_layout::TILE_H];
-        let zero_cumsum =
-            [0i32; crate::chips::matmul::compute::CUMSUM_LEN];
+        let zero_cumsum = [0i32; crate::chips::matmul::compute::CUMSUM_LEN];
         let after_reset = trace.place_matmul_step(8, &a, &b, true, false, &zero_cumsum);
-        let after_update =
-            trace.place_matmul_step(9, &a, &b, false, true, &after_reset);
+        let after_update = trace.place_matmul_step(9, &a, &b, false, true, &after_reset);
         trace.fill_cumsum_passthrough(10, &after_update);
 
         // (c) Jackpot step at row 10. Initial state is all-zero
         // so cross-row passthrough on rows 0..9 holds trivially
         // (already at zero from baseline).
-        let initial_jackpot =
-            [0u32; crate::composite_layout::JACKPOT_SIZE];
-        let _jackpot_after =
-            trace.place_jackpot_step(10, &initial_jackpot, 0, 0xDEAD_BEEF, true);
+        let initial_jackpot = [0u32; crate::composite_layout::JACKPOT_SIZE];
+        let _jackpot_after = trace.place_jackpot_step(10, &initial_jackpot, 0, 0xDEAD_BEEF, true);
         trace.fill_jackpot_passthrough(
             11,
             &crate::chips::jackpot::compute::apply_jackpot_step(
-                &initial_jackpot,
-                0,
-                0xDEAD_BEEF,
-                true,
+                &initial_jackpot, 0, 0xDEAD_BEEF, true,
             ),
         );
 
@@ -1253,8 +1224,7 @@ mod tests {
         let target = 0 * TOTAL_TRACE_WIDTH + crate::composite_layout::URANGE13_FREQ;
         use p3_field::PrimeField64;
         let prev = trace.matrix.values[target].as_canonical_u64();
-        trace.matrix.values[target] =
-            <Val as QuotientMap<u64>>::from_int(prev + 1);
+        trace.matrix.values[target] = <Val as QuotientMap<u64>>::from_int(prev + 1);
         let res = run_batch(&cfg, &trace.matrix);
         assert!(
             res.is_err(),
@@ -1495,7 +1465,10 @@ mod tests {
         let mat_cumsum = (mat.cumsum_start, mat.cumsum_start + TILE_H * TILE_H);
 
         // BLAKE3's STATE block [start, start + 4 * 264).
-        let bl_state = (bl.state_start, bl.state_start + 4 * LIMBS_PER_STATE_SNAPSHOT);
+        let bl_state = (
+            bl.state_start,
+            bl.state_start + 4 * LIMBS_PER_STATE_SNAPSHOT,
+        );
         let bl_msg = (bl.msg_start, bl.msg_start + 16);
         let bl_cv = (bl.cv_start, bl.cv_start + 8);
         let bl_cv_out = (bl.cv_out_start, bl.cv_out_start + 8);
@@ -1505,15 +1478,10 @@ mod tests {
         let jp_x = (jp.x_bits_start, jp.x_bits_start + 32);
         let jp_sel = (jp.slot_sel_start, jp.slot_sel_start + JACKPOT_SIZE);
 
-        let disjoint =
-            |a: (usize, usize), b: (usize, usize)| a.1 <= b.0 || b.1 <= a.0;
+        let disjoint = |a: (usize, usize), b: (usize, usize)| a.1 <= b.0 || b.1 <= a.0;
 
         // Matmul vs. BLAKE3 vs. Jackpot — pairwise disjoint.
-        for (an, a) in [
-            ("mat_a", mat_a),
-            ("mat_b", mat_b),
-            ("mat_cumsum", mat_cumsum),
-        ] {
+        for (an, a) in [("mat_a", mat_a), ("mat_b", mat_b), ("mat_cumsum", mat_cumsum)] {
             for (bn, b) in [
                 ("bl_state", bl_state),
                 ("bl_msg", bl_msg),

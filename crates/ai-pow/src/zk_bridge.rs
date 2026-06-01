@@ -28,7 +28,7 @@
 //! - **C2** — the difficulty check on the bound `HASH_JACKPOT`
 //!   vs the real `difficulty_target`.
 //!
-//! ## Entrypoint (production)
+//! ## Layer-0 entrypoint
 //!
 //! Proving/verifying goes through `ai-pow-zk`'s **Route A**
 //! family `composite_prove_pinned_logup` /
@@ -38,6 +38,12 @@
 //! from the trusted `ctx`/`params` (never the proof). See
 //! `ai_pow_zk::composite_proof` (entrypoint tier table) and
 //! `crates/ai-pow-zk/docs/2026-05-15_HIGH2_2_DESIGN.md` §4.C.
+//!
+//! This bridge produces and verifies the Layer-0 composite proof. It is
+//! soundness-critical, but it is not the final Nockchain consensus
+//! certificate. Production block persistence and wire format must use
+//! the recursive certificate from
+//! `ai_pow_zk::recursion::prove_canonical_ai_pow_certificate`.
 //!
 //! ## Remaining fidelity gap (not a binding gap) — HIGH-2.2 §4.A
 //!
@@ -204,22 +210,78 @@ impl ZkPublicCommitments {
     }
 }
 
-/// Verifier-facing ZK proof artifact.
+/// Verifier-facing Layer-0 ZK proof artifact.
 ///
 /// The verifier must not trust `pis` by itself; [`verify_ai_pow_block`]
 /// cross-checks these public inputs against chain-derived commitments and
 /// reconstructs the canonical program before invoking the STARK verifier.
+///
+/// This is an intermediate recursive-prover input. It is not the
+/// canonical production certificate for Nockchain AI-PoW blocks.
 pub struct ZkProofArtifact {
     pub proof: AiPowBatchProof,
     pub pis: CompositePublicInputs,
     pub trace_height: usize,
 }
 
-/// Full verifier-facing AI-PoW artifact.
+/// Prover-side result for the canonical recursive AI-PoW certificate.
+///
+/// This is the object production callers should hand to the Hoon noun encoder:
+/// it contains the recursive L1 certificate plus only the statement data
+/// needed to verify it later. It does not contain the plain `MatmulProof` or
+/// a serialized Layer-0 `AiPowBatchProof`.
+pub struct AiPowRecursiveCertificateRun {
+    pub zk_params: ZkParams,
+    pub found_idx: u32,
+    pub commitments: ZkPublicCommitments,
+    pub pis: CompositePublicInputs,
+    pub trace_height: usize,
+    pub l1_circuit_build_ms: u128,
+    pub l1_in_circuit_verify_ms: u128,
+    pub l1_outer_cert_ms: u128,
+    pub certificate: ai_pow_zk::recursion::AiPowProductionCertificate,
+}
+
+/// Recursive-certificate byte envelope for bridge tests and diagnostics.
+///
+/// This envelope carries the chain-verifier statement metadata plus the
+/// serialized recursive L1 certificate. It deliberately does not contain
+/// the plain `MatmulProof` or the raw Layer-0 `AiPowBatchProof`; those are
+/// prover internals and legacy bridge artifacts.
+///
+/// This is not the canonical Hoon/block proof artifact. Nockchain block
+/// submission uses the structured recursive-certificate noun carried by
+/// `[%command %pow %ai-pow cert]`; this byte envelope remains available for
+/// non-Hoon bridge tests while that verifier path is being wired.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AiPowProductionArtifact {
+    /// ZK-relevant puzzle parameters required to reconstruct the verifier
+    /// statement. Callers still cross-check these against chain-pinned params.
+    pub zk_params: ZkParams,
+    /// Tile index found by the miner, encoded as `i * col_tiles + j`.
+    pub found_idx: u32,
+    /// Public commitments needed to derive trusted seeds and cross-check PIs.
+    pub commitments: ZkPublicCommitments,
+    /// Public inputs committed by the recursive certificate's Layer-0 proof.
+    pub pis: CompositePublicInputs,
+    /// Layer-0 composite trace height verified by the recursive certificate.
+    pub trace_height: usize,
+    /// Compact serialization of `ai_pow_zk::recursion::AiPowProductionCertificate`.
+    pub certificate: Vec<u8>,
+}
+
+/// Legacy verifier-facing AI-PoW artifact for the Layer-0 bridge.
 ///
 /// The outer consensus envelope is versioned and length-prefixed. The plain
 /// proof is encoded with `MatmulProof`'s own consensus envelope, while the ZK
 /// proof and public inputs are bincode-encoded under explicit byte caps.
+///
+/// This type is not the canonical block/wire proof format. The
+/// production Nockchain AI-PoW certificate is the recursive
+/// `ai_pow_zk::recursion::AiPowProductionCertificate`, serialized via
+/// the structured noun format. This legacy envelope remains useful for
+/// tests and for validating the Layer-0 bridge while the final noun
+/// encoder/verifier is wired.
 pub struct AiPowConsensusArtifact {
     pub plain_proof: MatmulProof,
     pub commitments: ZkPublicCommitments,
@@ -232,6 +294,11 @@ pub const MAX_CONSENSUS_PLAIN_PROOF_BYTES: usize = 64 * 1024 * 1024;
 pub const MAX_CONSENSUS_PUBLIC_INPUT_BYTES: usize = 4 * 1024;
 pub const MAX_CONSENSUS_ZK_PROOF_BYTES: usize = 128 * 1024 * 1024;
 const AI_POW_CONSENSUS_HEADER_LEN: usize = 4 + 1 + (4 * 3) + 8 + (32 * 4);
+
+pub const AI_POW_PRODUCTION_MAGIC: [u8; 4] = *b"AIRC";
+pub const AI_POW_PRODUCTION_VERSION: u8 = 1;
+pub const MAX_PRODUCTION_RECURSIVE_CERT_BYTES: usize = 512 * 1024;
+const AI_POW_PRODUCTION_HEADER_LEN: usize = 4 + 1 + (4 * 6) + 4 + 8 + (4 * 2) + (32 * 4);
 
 #[derive(Debug, thiserror::Error)]
 pub enum ArtifactCodecError {
@@ -253,6 +320,12 @@ pub enum ArtifactCodecError {
     LengthOverflow,
     #[error("invalid params: {0}")]
     InvalidParams(#[from] ParamError),
+    #[error("invalid ZK params: {0}")]
+    InvalidZkParams(String),
+    #[error("found_idx ({found_idx}) >= num_tiles ({num_tiles})")]
+    FoundIdxOutOfRange { found_idx: u32, num_tiles: u64 },
+    #[error("trace height {trace_height} cannot be represented on this platform")]
+    TraceHeightTooLarge { trace_height: u64 },
     #[error("plain proof encode: {0}")]
     PlainEncode(#[from] ProofEncodeError),
     #[error("plain proof decode: {0}")]
@@ -265,6 +338,8 @@ pub enum ArtifactCodecError {
     ZkProofEncode(String),
     #[error("ZK proof decode: {0}")]
     ZkProofDecode(String),
+    #[error("recursive certificate encode: {0}")]
+    RecursiveCertificateEncode(String),
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -380,6 +455,153 @@ impl AiPowConsensusArtifact {
     }
 }
 
+impl AiPowProductionArtifact {
+    /// Build the recursive-certificate byte envelope from a completed
+    /// recursive proving run.
+    ///
+    /// This persists only `run.l1_cert` plus the statement data needed to
+    /// verify it. It never serializes `run.composite_proof`. For the
+    /// canonical Nockchain Hoon/block handoff, use the structured certificate
+    /// noun path instead of this byte envelope.
+    pub fn from_recursion_run(
+        params: &MatmulParams,
+        found_idx: u32,
+        commitments: ZkPublicCommitments,
+        run: &ai_pow_zk::recursion::L1RecursionRun,
+    ) -> Result<Self, ArtifactCodecError> {
+        params.validate_prod_envelope()?;
+        Self::from_recursive_certificate(
+            zk_params_from(params),
+            found_idx,
+            commitments,
+            run.public_inputs.clone(),
+            run.composite_trace_height,
+            &run.l1_cert,
+        )
+    }
+
+    pub fn from_recursive_certificate(
+        zk_params: ZkParams,
+        found_idx: u32,
+        commitments: ZkPublicCommitments,
+        pis: CompositePublicInputs,
+        trace_height: usize,
+        cert: &ai_pow_zk::recursion::AiPowProductionCertificate,
+    ) -> Result<Self, ArtifactCodecError> {
+        let certificate = ai_pow_zk::recursion::encode_production_certificate(cert)
+            .map_err(|e| ArtifactCodecError::RecursiveCertificateEncode(e.to_string()))?;
+        Self::from_certificate_bytes(
+            zk_params, found_idx, commitments, pis, trace_height, certificate,
+        )
+    }
+
+    pub fn from_certificate_bytes(
+        zk_params: ZkParams,
+        found_idx: u32,
+        commitments: ZkPublicCommitments,
+        pis: CompositePublicInputs,
+        trace_height: usize,
+        certificate: Vec<u8>,
+    ) -> Result<Self, ArtifactCodecError> {
+        validate_production_artifact_shape(&zk_params, found_idx, certificate.len())?;
+        Ok(Self {
+            zk_params,
+            found_idx,
+            commitments,
+            pis,
+            trace_height,
+            certificate,
+        })
+    }
+
+    pub fn encode_consensus(&self) -> Result<Vec<u8>, ArtifactCodecError> {
+        validate_production_artifact_shape(
+            &self.zk_params,
+            self.found_idx,
+            self.certificate.len(),
+        )?;
+        let public_inputs = bincode::serde::encode_to_vec(
+            &self.pis,
+            bincode::config::standard().with_limit::<MAX_CONSENSUS_PUBLIC_INPUT_BYTES>(),
+        )
+        .map_err(|e| ArtifactCodecError::PublicInputEncode(e.to_string()))?;
+        let pi_len = checked_component_len(
+            "public_inputs",
+            public_inputs.len(),
+            MAX_CONSENSUS_PUBLIC_INPUT_BYTES,
+        )?;
+        let cert_len = checked_component_len(
+            "recursive_certificate",
+            self.certificate.len(),
+            MAX_PRODUCTION_RECURSIVE_CERT_BYTES,
+        )?;
+        let mut out = Vec::with_capacity(checked_total_len([
+            AI_POW_PRODUCTION_HEADER_LEN,
+            public_inputs.len(),
+            self.certificate.len(),
+        ])?);
+        out.extend_from_slice(&AI_POW_PRODUCTION_MAGIC);
+        out.push(AI_POW_PRODUCTION_VERSION);
+        encode_zk_params(&self.zk_params, &mut out);
+        out.extend_from_slice(&self.found_idx.to_le_bytes());
+        out.extend_from_slice(&(self.trace_height as u64).to_le_bytes());
+        out.extend_from_slice(&pi_len.to_le_bytes());
+        out.extend_from_slice(&cert_len.to_le_bytes());
+        encode_commitments(&self.commitments, &mut out);
+        out.extend_from_slice(&public_inputs);
+        out.extend_from_slice(&self.certificate);
+        Ok(out)
+    }
+
+    pub fn decode_consensus(bytes: &[u8]) -> Result<Self, ArtifactCodecError> {
+        let mut cur = bytes;
+        if take_exact(&mut cur, AI_POW_PRODUCTION_MAGIC.len())? != AI_POW_PRODUCTION_MAGIC {
+            return Err(ArtifactCodecError::BadMagic);
+        }
+        let version = take_u8(&mut cur)?;
+        if version != AI_POW_PRODUCTION_VERSION {
+            return Err(ArtifactCodecError::UnsupportedVersion { version });
+        }
+        let zk_params = decode_zk_params(&mut cur)?;
+        let found_idx = take_u32(&mut cur)?;
+        let trace_height_u64 = take_u64(&mut cur)?;
+        let trace_height = usize::try_from(trace_height_u64).map_err(|_| {
+            ArtifactCodecError::TraceHeightTooLarge {
+                trace_height: trace_height_u64,
+            }
+        })?;
+        let pi_len = take_u32(&mut cur)? as usize;
+        let cert_len = take_u32(&mut cur)? as usize;
+        checked_component_len("public_inputs", pi_len, MAX_CONSENSUS_PUBLIC_INPUT_BYTES)?;
+        checked_component_len(
+            "recursive_certificate", cert_len, MAX_PRODUCTION_RECURSIVE_CERT_BYTES,
+        )?;
+        validate_production_artifact_shape(&zk_params, found_idx, cert_len)?;
+        let commitments = decode_commitments(&mut cur)?;
+        let pi_bytes = take_exact(&mut cur, pi_len)?;
+        let certificate = take_exact(&mut cur, cert_len)?.to_vec();
+        if !cur.is_empty() {
+            return Err(ArtifactCodecError::Trailing);
+        }
+        let (pis, pi_read) = bincode::serde::decode_from_slice::<CompositePublicInputs, _>(
+            pi_bytes,
+            bincode::config::standard().with_limit::<MAX_CONSENSUS_PUBLIC_INPUT_BYTES>(),
+        )
+        .map_err(|e| ArtifactCodecError::PublicInputDecode(e.to_string()))?;
+        if pi_read != pi_bytes.len() {
+            return Err(ArtifactCodecError::Trailing);
+        }
+        Ok(Self {
+            zk_params,
+            found_idx,
+            commitments,
+            pis,
+            trace_height,
+            certificate,
+        })
+    }
+}
+
 /// Decode and verify a full versioned AI-PoW artifact.
 ///
 /// This is the highest-level Rust verifier entrypoint for the artifact format:
@@ -441,6 +663,49 @@ fn encode_commitments(commitments: &ZkPublicCommitments, out: &mut Vec<u8>) {
     out.extend_from_slice(&commitments.h_b);
     out.extend_from_slice(&commitments.h_a_chunk);
     out.extend_from_slice(&commitments.h_b_chunk);
+}
+
+fn encode_zk_params(params: &ZkParams, out: &mut Vec<u8>) {
+    out.extend_from_slice(&params.m.to_le_bytes());
+    out.extend_from_slice(&params.k.to_le_bytes());
+    out.extend_from_slice(&params.n.to_le_bytes());
+    out.extend_from_slice(&params.noise_rank.to_le_bytes());
+    out.extend_from_slice(&params.tile.to_le_bytes());
+    out.extend_from_slice(&params.difficulty_bits.to_le_bytes());
+}
+
+fn decode_zk_params(cur: &mut &[u8]) -> Result<ZkParams, ArtifactCodecError> {
+    Ok(ZkParams {
+        m: take_u32(cur)?,
+        k: take_u32(cur)?,
+        n: take_u32(cur)?,
+        noise_rank: take_u32(cur)?,
+        tile: take_u32(cur)?,
+        difficulty_bits: take_u32(cur)?,
+    })
+}
+
+fn validate_production_artifact_shape(
+    params: &ZkParams,
+    found_idx: u32,
+    certificate_len: usize,
+) -> Result<(), ArtifactCodecError> {
+    params
+        .validate()
+        .map_err(ArtifactCodecError::InvalidZkParams)?;
+    checked_component_len(
+        "recursive_certificate", certificate_len, MAX_PRODUCTION_RECURSIVE_CERT_BYTES,
+    )?;
+    let row_tiles = u64::from(params.m / params.tile);
+    let col_tiles = u64::from(params.n / params.tile);
+    let num_tiles = row_tiles.saturating_mul(col_tiles);
+    if u64::from(found_idx) >= num_tiles {
+        return Err(ArtifactCodecError::FoundIdxOutOfRange {
+            found_idx,
+            num_tiles,
+        });
+    }
+    Ok(())
 }
 
 fn decode_commitments(cur: &mut &[u8]) -> Result<ZkPublicCommitments, ArtifactCodecError> {
@@ -525,6 +790,9 @@ pub enum BridgeError {
     /// (CRIT-1) where the verifier would otherwise hit a deep
     /// `assert!` panic in `schedule_layout` / `tile_chunk_range`.
     ZkParamsInvalid(String),
+    /// Recursive L1 certificate generation failed after the Layer-0
+    /// proof was built.
+    RecursiveCertificate(String),
 }
 
 impl core::fmt::Display for BridgeError {
@@ -546,12 +814,15 @@ impl core::fmt::Display for BridgeError {
                 "BlockContext params {context:?} do not match supplied params {supplied:?}"
             ),
             BridgeError::InvalidParams(e) => write!(f, "invalid params: {e}"),
-            BridgeError::FoundIdxOutOfRange { found_idx, num_tiles } => write!(
-                f,
-                "found_idx ({found_idx}) >= num_tiles ({num_tiles})"
-            ),
+            BridgeError::FoundIdxOutOfRange {
+                found_idx,
+                num_tiles,
+            } => write!(f, "found_idx ({found_idx}) >= num_tiles ({num_tiles})"),
             BridgeError::ZkParamsInvalid(msg) => {
                 write!(f, "ai-pow-zk canonical_program rejected params: {msg}")
+            }
+            BridgeError::RecursiveCertificate(msg) => {
+                write!(f, "recursive certificate generation failed: {msg}")
             }
         }
     }
@@ -587,10 +858,7 @@ fn expect_pi_eq(
     }
 }
 
-fn ensure_context_params(
-    ctx: &BlockContext<'_>,
-    params: &MatmulParams,
-) -> Result<(), BridgeError> {
+fn ensure_context_params(ctx: &BlockContext<'_>, params: &MatmulParams) -> Result<(), BridgeError> {
     if ctx.params == *params {
         Ok(())
     } else {
@@ -613,16 +881,76 @@ pub fn prove_ai_pow_block(
     _target: &[u8; 32],
     found_idx: u32,
 ) -> Result<ZkProofArtifact, BridgeError> {
-    params.validate_prod_envelope().map_err(BridgeError::InvalidParams)?;
+    params
+        .validate_prod_envelope()
+        .map_err(BridgeError::InvalidParams)?;
     ensure_context_params(ctx, params)?;
-    let (tile_i, tile_j) =
-        tile_ij(found_idx, params).ok_or(BridgeError::FoundIdxOutOfRange {
-            found_idx,
-            num_tiles: params.num_tiles(),
-        })?;
+    let (tile_i, tile_j) = tile_ij(found_idx, params).ok_or(BridgeError::FoundIdxOutOfRange {
+        found_idx,
+        num_tiles: params.num_tiles(),
+    })?;
     let (artifact, _, _) =
         prove_ai_pow_tiled_full(ctx, params, nonce, tile_i, tile_j, |_| {}, None)?;
     Ok(artifact)
+}
+
+/// Build the canonical recursive AI-PoW certificate for a solved block.
+///
+/// This is the production prover handoff for Nockchain block submission:
+/// it constructs the Layer-0 composite proof internally, recursively
+/// verifies that proof in the L1 circuit, and returns the recursive
+/// certificate plus typed statement data for the Hoon noun encoder. The
+/// returned value deliberately does not expose the plain `MatmulProof`.
+pub fn prove_ai_pow_recursive_certificate(
+    ctx: &BlockContext<'_>,
+    params: &MatmulParams,
+    nonce: &[u8],
+    target: &[u8; 32],
+    found_idx: u32,
+) -> Result<AiPowRecursiveCertificateRun, BridgeError> {
+    params.validate().map_err(BridgeError::InvalidParams)?;
+    ensure_context_params(ctx, params)?;
+    let (tile_i, tile_j) = tile_ij(found_idx, params).ok_or(BridgeError::FoundIdxOutOfRange {
+        found_idx,
+        num_tiles: params.num_tiles(),
+    })?;
+    let (artifact, prover_program, _) =
+        prove_ai_pow_tiled_full(ctx, params, nonce, tile_i, tile_j, |_| {}, None)?;
+    let commitments = ZkPublicCommitments::from_context(ctx);
+    verify_ai_pow_tiled_with_statement(
+        nonce,
+        params,
+        target,
+        tile_i,
+        tile_j,
+        &commitments,
+        ZkDerivedStatement {
+            kappa: ctx.kappa,
+            s_a: ctx.s_a,
+            s_b: ctx.s_b,
+        },
+        &artifact,
+    )?;
+    let zk_params = zk_params_from(params);
+    let l1 = ai_pow_zk::recursion::prove_canonical_ai_pow_certificate_from_composite_proof(
+        &zk_params,
+        &CircuitConfig::PROD,
+        &prover_program,
+        &artifact.proof,
+        &artifact.pis,
+    )
+    .map_err(|e| BridgeError::RecursiveCertificate(format!("{e:?}")))?;
+    Ok(AiPowRecursiveCertificateRun {
+        zk_params,
+        found_idx,
+        commitments,
+        pis: artifact.pis,
+        trace_height: artifact.trace_height,
+        l1_circuit_build_ms: l1.l1_circuit_build_ms,
+        l1_in_circuit_verify_ms: l1.l1_in_circuit_verify_ms,
+        l1_outer_cert_ms: l1.l1_outer_cert_ms,
+        certificate: l1.l1_cert,
+    })
 }
 
 /// Production verifier-only ZK API.
@@ -640,12 +968,13 @@ pub fn verify_ai_pow_block(
     commitments: &ZkPublicCommitments,
     artifact: &ZkProofArtifact,
 ) -> Result<(), BridgeError> {
-    params.validate_prod_envelope().map_err(BridgeError::InvalidParams)?;
-    let (tile_i, tile_j) =
-        tile_ij(found_idx, params).ok_or(BridgeError::FoundIdxOutOfRange {
-            found_idx,
-            num_tiles: params.num_tiles(),
-        })?;
+    params
+        .validate_prod_envelope()
+        .map_err(BridgeError::InvalidParams)?;
+    let (tile_i, tile_j) = tile_ij(found_idx, params).ok_or(BridgeError::FoundIdxOutOfRange {
+        found_idx,
+        num_tiles: params.num_tiles(),
+    })?;
     let tag = params_tag(params);
     let kappa = commitment_key(block_commitment, &tag);
     let s_b = noise_seed_b(&kappa, &commitments.h_b);
@@ -713,17 +1042,10 @@ fn verify_ai_pow_tiled_with_statement(
         s_a: derived.s_a,
         s_b: derived.s_b,
     };
-    let canonical =
-        ai_pow_zk::canonical::canonical_program(&zk_params, &bp, artifact.trace_height)
-            .map_err(BridgeError::ZkParamsInvalid)?;
-    composite_verify_pow_pinned_logup(
-        &cfg,
-        &canonical,
-        &artifact.proof,
-        &artifact.pis,
-        target,
-    )
-    .map_err(BridgeError::Pow)
+    let canonical = ai_pow_zk::canonical::canonical_program(&zk_params, &bp, artifact.trace_height)
+        .map_err(BridgeError::ZkParamsInvalid)?;
+    composite_verify_pow_pinned_logup(&cfg, &canonical, &artifact.proof, &artifact.pis, target)
+        .map_err(BridgeError::Pow)
 }
 
 /// Build a `CompositeTrace` from `ctx`, derive its public inputs,
@@ -865,8 +1187,7 @@ fn prove_ai_pow_tiled_full<F: FnOnce(&mut CompositeTrace)>(
     let kk = params.k as usize;
     // A row-major (m rows × k): tile_i's `t` rows, span t·k.
     let a_pad = pad_to_chunk_boundary(&a_bytes);
-    let (ca0, ca1, a_nc) =
-        tile_chunk_range(tile_i as usize, tt, kk, a_bytes.len());
+    let (ca0, ca1, a_nc) = tile_chunk_range(tile_i as usize, tt, kk, a_bytes.len());
     let (_oa, a_sibs) = open_strip(&a_bytes, &ctx.kappa, ca0, ca1);
     // §4.C.2 c-exact cx.2 g=1 co-location: the Pearl `noise_ref`
     // byte parallel to the opened A strip — entry j = noise at the
@@ -890,9 +1211,7 @@ fn prove_ai_pow_tiled_full<F: FnOnce(&mut CompositeTrace)>(
         .map(|j| {
             let p = a_strip_lo + j;
             if p < a_bytes.len() {
-                ai_pow_zk::noise_ref::e_value(
-                    &ctx.s_a, (p / kk) as u32, (p % kk) as u32, rr,
-                )
+                ai_pow_zk::noise_ref::e_value(&ctx.s_a, (p / kk) as u32, (p % kk) as u32, rr)
             } else {
                 0
             }
@@ -911,8 +1230,7 @@ fn prove_ai_pow_tiled_full<F: FnOnce(&mut CompositeTrace)>(
     );
     // B col-major (n cols × k, col j at j·k): tile_j's `t` cols.
     let b_pad = pad_to_chunk_boundary(&b_bytes);
-    let (cb0, cb1, b_nc) =
-        tile_chunk_range(tile_j as usize, tt, kk, b_bytes.len());
+    let (cb0, cb1, b_nc) = tile_chunk_range(tile_j as usize, tt, kk, b_bytes.len());
     let (_ob, b_sibs) = open_strip(&b_bytes, &ctx.kappa, cb0, cb1);
     // B is col-major flattened [col0(k)|col1(k)|…]: for byte p the
     // matrix col = p/k, k-index = p%k ⇒ f_value(s_b, k-idx, col).
@@ -921,9 +1239,7 @@ fn prove_ai_pow_tiled_full<F: FnOnce(&mut CompositeTrace)>(
         .map(|j| {
             let p = b_strip_lo + j;
             if p < b_bytes.len() {
-                ai_pow_zk::noise_ref::f_value(
-                    &ctx.s_b, (p % kk) as u32, (p / kk) as u32, rr,
-                )
+                ai_pow_zk::noise_ref::f_value(&ctx.s_b, (p % kk) as u32, (p / kk) as u32, rr)
             } else {
                 0
             }
@@ -1038,13 +1354,11 @@ fn prove_ai_pow_tiled_full<F: FnOnce(&mut CompositeTrace)>(
     //    (MAT_UNPACK=committed-plain, NOISE_UNPACK=noise_ref,
     //    NOISE_PACKED_PREP CRIT-1-pinned ⇒ strictly stronger than
     //    pre-A3, not zero-gap).
-    let store_srcs = CompositeTrace::enumerate_noised_chunks_with_src(
-        &a_strips, &b_strips, t, r, num_stripes,
-    );
+    let store_srcs =
+        CompositeTrace::enumerate_noised_chunks_with_src(&a_strips, &b_strips, t, r, num_stripes);
     let n_store = store_srcs.len();
     let kk2 = params.k as usize;
-    let plain_noise = |s: &ai_pow_zk::composite_trace::NoisedChunkSrc|
-        -> ([i8; 8], [i8; 8]) {
+    let plain_noise = |s: &ai_pow_zk::composite_trace::NoisedChunkSrc| -> ([i8; 8], [i8; 8]) {
         let mut plain = [0i8; 8];
         let mut noise = [0i8; 8];
         for m in 0..8 {
@@ -1072,8 +1386,8 @@ fn prove_ai_pow_tiled_full<F: FnOnce(&mut CompositeTrace)>(
     // `place_useful_work_chain` self-asserts both invariants.
     let real_m = {
         let sweep_start = mh_end + 3;
-        let (rows_used, x_steps) = trace
-            .place_useful_work_chain(sweep_start, &a_strips, &b_strips, t, r, num_stripes);
+        let (rows_used, x_steps) =
+            trace.place_useful_work_chain(sweep_start, &a_strips, &b_strips, t, r, num_stripes);
         // Store rows live in the post-sweep passthrough region
         // (place AFTER the sweep so its SX/CUMSUM passthrough on
         // `[sweep_start+rows_used, h)` is already written — this
@@ -1084,9 +1398,7 @@ fn prove_ai_pow_tiled_full<F: FnOnce(&mut CompositeTrace)>(
         } else {
             for (i, s) in store_srcs.iter().enumerate() {
                 let (plain, noise) = plain_noise(s);
-                trace.place_noised_store_row_split(
-                    store_start + i, &plain, &noise, 0,
-                );
+                trace.place_noised_store_row_split(store_start + i, &plain, &noise, 0);
             }
             n_store
         };
@@ -1120,7 +1432,9 @@ fn prove_ai_pow_tiled_full<F: FnOnce(&mut CompositeTrace)>(
         return Err(BridgeError::CommitmentMismatch("JOB_KEY != kappa"));
     }
     if pis.commitment_hash != pow_key_w {
-        return Err(BridgeError::CommitmentMismatch("COMMITMENT_HASH != pow_key"));
+        return Err(BridgeError::CommitmentMismatch(
+            "COMMITMENT_HASH != pow_key",
+        ));
     }
 
     let zk_params = ZkParams {
@@ -1205,16 +1519,15 @@ pub(crate) fn prove_and_verify_tiled_full<F: FnOnce(&mut CompositeTrace)>(
         let zk_params = zk_params_from(params);
         let cfg = build_config(&zk_params, &CircuitConfig::PROD);
         composite_verify_pow_pinned_logup(
-            &cfg,
-            &prover_program,
-            &artifact.proof,
-            &artifact.pis,
-            target,
+            &cfg, &prover_program, &artifact.proof, &artifact.pis, target,
         )
         .map_err(BridgeError::Pow)?;
     }
 
-    Ok(ZkOutcome { pis: artifact.pis, sweep_in_circuit: true })
+    Ok(ZkOutcome {
+        pis: artifact.pis,
+        sweep_in_circuit: true,
+    })
 }
 
 /// MED-3-hardened production entrypoint. Derives the difficulty
@@ -1253,15 +1566,18 @@ fn prove_and_verify_for_block_inner(
     // chain-pinned params already pass; this is defense in depth
     // for any direct `pub` caller.)
     if require_prod_envelope {
-        params.validate_prod_envelope().map_err(BridgeError::InvalidParams)?;
+        params
+            .validate_prod_envelope()
+            .map_err(BridgeError::InvalidParams)?;
     } else {
         params.validate().map_err(BridgeError::InvalidParams)?;
     }
     ensure_context_params(ctx, params)?;
     let target = crate::tile_hash::difficulty_target(params);
-    let (tile_i, tile_j) = tile_ij(found_idx, params).ok_or(
-        BridgeError::FoundIdxOutOfRange { found_idx, num_tiles: params.num_tiles() },
-    )?;
+    let (tile_i, tile_j) = tile_ij(found_idx, params).ok_or(BridgeError::FoundIdxOutOfRange {
+        found_idx,
+        num_tiles: params.num_tiles(),
+    })?;
     prove_and_verify_tiled(ctx, params, nonce, &target, tile_i, tile_j)
 }
 
@@ -1299,6 +1615,114 @@ mod tests {
 
     const TEST_NONCE: &[u8] = b"zk-bridge-test-nonce";
 
+    fn test_zk_params() -> ZkParams {
+        ZkParams {
+            m: 8,
+            k: 512,
+            n: 8,
+            noise_rank: 32,
+            tile: 8,
+            difficulty_bits: 0,
+        }
+    }
+
+    fn test_commitments() -> ZkPublicCommitments {
+        ZkPublicCommitments {
+            h_a: [1; 32],
+            h_b: [2; 32],
+            h_a_chunk: [3; 32],
+            h_b_chunk: [4; 32],
+        }
+    }
+
+    fn test_production_artifact() -> AiPowProductionArtifact {
+        let mut pis = CompositePublicInputs::zero();
+        pis.hash_a = [0x1111_1111; 8];
+        pis.hash_b = [0x2222_2222; 8];
+        pis.job_key = [0x3333_3333; 8];
+        pis.commitment_hash = [0x4444_4444; 8];
+        pis.hash_jackpot = [0x5555_5555; 8];
+        AiPowProductionArtifact::from_certificate_bytes(
+            test_zk_params(),
+            0,
+            test_commitments(),
+            pis,
+            1 << 15,
+            (0..=255).collect(),
+        )
+        .expect("test artifact shape")
+    }
+
+    #[test]
+    fn production_artifact_roundtrip_carries_only_recursive_certificate_bytes() {
+        let artifact = test_production_artifact();
+        let bytes = artifact.encode_consensus().expect("encode");
+        let decoded = AiPowProductionArtifact::decode_consensus(&bytes).expect("decode");
+
+        assert_eq!(decoded, artifact);
+        assert!(!bytes
+            .windows(AI_POW_CONSENSUS_MAGIC.len())
+            .any(|w| w == AI_POW_CONSENSUS_MAGIC.as_slice()));
+        assert_eq!(decoded.certificate.len(), 256);
+    }
+
+    #[test]
+    fn production_artifact_rejects_version_trailing_oversize_and_bad_tile() {
+        let bytes = test_production_artifact()
+            .encode_consensus()
+            .expect("encode");
+
+        let mut bad_version = bytes.clone();
+        bad_version[4] = AI_POW_PRODUCTION_VERSION + 1;
+        assert!(matches!(
+            AiPowProductionArtifact::decode_consensus(&bad_version),
+            Err(ArtifactCodecError::UnsupportedVersion { version })
+                if version == AI_POW_PRODUCTION_VERSION + 1
+        ));
+
+        let mut trailing = bytes;
+        trailing.push(0);
+        assert!(matches!(
+            AiPowProductionArtifact::decode_consensus(&trailing),
+            Err(ArtifactCodecError::Trailing)
+        ));
+
+        let mut oversized = Vec::new();
+        oversized.extend_from_slice(&AI_POW_PRODUCTION_MAGIC);
+        oversized.push(AI_POW_PRODUCTION_VERSION);
+        encode_zk_params(&test_zk_params(), &mut oversized);
+        oversized.extend_from_slice(&0u32.to_le_bytes());
+        oversized.extend_from_slice(&(1u64 << 15).to_le_bytes());
+        oversized.extend_from_slice(&0u32.to_le_bytes());
+        oversized
+            .extend_from_slice(&((MAX_PRODUCTION_RECURSIVE_CERT_BYTES as u32) + 1).to_le_bytes());
+        assert!(matches!(
+            AiPowProductionArtifact::decode_consensus(&oversized),
+            Err(ArtifactCodecError::ComponentTooLarge {
+                component: "recursive_certificate",
+                max: MAX_PRODUCTION_RECURSIVE_CERT_BYTES,
+                actual,
+            }) if actual == MAX_PRODUCTION_RECURSIVE_CERT_BYTES + 1
+        ));
+
+        let err = AiPowProductionArtifact::from_certificate_bytes(
+            test_zk_params(),
+            1,
+            test_commitments(),
+            CompositePublicInputs::zero(),
+            1 << 15,
+            vec![1],
+        )
+        .expect_err("8x8 tile grid has exactly one tile");
+        assert!(matches!(
+            err,
+            ArtifactCodecError::FoundIdxOutOfRange {
+                found_idx: 1,
+                num_tiles: 1
+            }
+        ));
+    }
+
     #[test]
     fn f1_bridge_real_solve_binds_c1_c2_c3_c4() {
         let params = MatmulParams::TEST_SMALL;
@@ -1335,8 +1759,9 @@ mod tests {
     /// `zk` feature is the legal direction.
     #[test]
     fn high2_2_foldchip_byte_equiv_plain_tilestate() {
-        use crate::matmul::{compute_tile_trace, BlockNoise, Matrices};
         use ai_pow_zk::chips::fold::{build_trace, final_state};
+
+        use crate::matmul::{compute_tile_trace, BlockNoise, Matrices};
 
         let params = MatmulParams::TEST_SMALL;
         let (a, b) = synth_matrices(b"high2_2-byteequiv", &params);
@@ -1390,8 +1815,9 @@ mod tests {
     /// cannot assert itself (no ai-pow dep).
     #[test]
     fn high2_2_xstepchip_byte_equiv_plain_x_steps() {
-        use crate::matmul::{compute_tile_trace, BlockNoise, Matrices};
         use ai_pow_zk::chips::xstep::{build_trace, xsteps};
+
+        use crate::matmul::{compute_tile_trace, BlockNoise, Matrices};
 
         let params = MatmulParams::TEST_SMALL;
         let (a, b) = synth_matrices(b"high2_2-xstep", &params);
@@ -1448,9 +1874,10 @@ mod tests {
     /// the CRIT-1-pinned HASH_A (§4.C Route-C composite step).
     #[test]
     fn high2_2_xstep_fold_pipeline_byte_equiv_plain() {
-        use crate::matmul::{compute_tile_trace, BlockNoise, Matrices, TileState};
         use ai_pow_zk::chips::fold::{build_trace as fold_trace, final_state};
         use ai_pow_zk::chips::xstep::{build_trace as xstep_trace, xsteps};
+
+        use crate::matmul::{compute_tile_trace, BlockNoise, Matrices, TileState};
 
         let params = MatmulParams::TEST_SMALL;
         let (a, b) = synth_matrices(b"high2_2-pipeline", &params);
@@ -1621,13 +2048,7 @@ mod tests {
             prove_ai_pow_block(&ctx, &params, nonce, &target, 0).expect("honest proof");
 
         verify_ai_pow_block(
-            block_commitment,
-            nonce,
-            &params,
-            &target,
-            0,
-            &public,
-            &artifact,
+            block_commitment, nonce, &params, &target, 0, &public, &artifact,
         )
         .expect("honest verifier-only path must accept");
 
@@ -1650,15 +2071,7 @@ mod tests {
 
         artifact.pis.hash_a[0] ^= 1;
         assert!(matches!(
-            verify_ai_pow_block(
-                block_commitment,
-                nonce,
-                &params,
-                &target,
-                0,
-                &public,
-                &artifact,
-            ),
+            verify_ai_pow_block(block_commitment, nonce, &params, &target, 0, &public, &artifact,),
             Err(BridgeError::PublicInputMismatch("HASH_A"))
         ));
     }
@@ -1690,15 +2103,11 @@ mod tests {
         );
         assert!(matches!(
             verify_ai_pow_block(
-                block_commitment,
-                nonce,
-                &non_prod,
-                &target,
-                0,
-                &public,
-                &artifact,
+                block_commitment, nonce, &non_prod, &target, 0, &public, &artifact,
             ),
-            Err(BridgeError::InvalidParams(ParamError::NoiseRankOutOfEnvelope))
+            Err(BridgeError::InvalidParams(
+                ParamError::NoiseRankOutOfEnvelope
+            ))
         ));
     }
 
@@ -1892,7 +2301,10 @@ mod tests {
         let r = params.noise_rank as usize;
         let steps = params.num_stripes() as usize;
         assert!(t % TILE_H == 0, "tile must tile into TILE_H sub-blocks");
-        assert!(r <= TILE_D, "stripe width must fit one micro-step (zero-pad)");
+        assert!(
+            r <= TILE_D,
+            "stripe width must fit one micro-step (zero-pad)"
+        );
         let n_sb = t / TILE_H; // sub-blocks per axis
         let row0 = (tile_i * params.tile) as usize;
         let col0 = (tile_j * params.tile) as usize;
@@ -1919,8 +2331,7 @@ mod tests {
                     let sb = sbi * n_sb + sbj;
                     let is_reset = step == 0;
                     let is_update = step > 0;
-                    cumsum[sb] =
-                        compute_row(&a_blk, &b_blk, &cumsum[sb], is_reset, is_update);
+                    cumsum[sb] = compute_row(&a_blk, &b_blk, &cumsum[sb], is_reset, is_update);
                 }
             }
             // ⊕ over ALL t·t accumulator cells (XOR is order-free, so
@@ -2039,9 +2450,8 @@ mod tests {
                     // = the prior row's returned cumsum_new. `carry`
                     // entering a run's reset row is discarded by the
                     // chip's `(1−is_reset)` term (analysis §6(b)).
-                    let new = trace.place_matmul_step(
-                        row, &a_blk, &b_blk, is_reset, is_update, &carry,
-                    );
+                    let new =
+                        trace.place_matmul_step(row, &a_blk, &b_blk, is_reset, is_update, &carry);
                     acc_after[sb][step] = new;
                     carry = new;
                     row += 1;
@@ -2062,9 +2472,10 @@ mod tests {
     /// is materialized in the real trace).
     #[test]
     fn high2_2_spike_subtile_sweep_verifies_in_composite() {
-        use crate::matmul::{compute_tile_trace, BlockNoise, Matrices};
         use ai_pow_zk::composite_proof::build_config;
         use ai_pow_zk::{dev_unpinned_prove, dev_unpinned_verify, CircuitConfig, ZkParams};
+
+        use crate::matmul::{compute_tile_trace, BlockNoise, Matrices};
 
         let params = MatmulParams::TEST_SMALL;
         let (a, b) = synth_matrices(b"spike-gate2-seed", &params);
@@ -2137,10 +2548,11 @@ mod tests {
     /// `chips::stripe_xor` suite (the legal-direction split).
     #[test]
     fn high2_2_spike_stripe_xor_reduces_swept_to_x_steps() {
-        use crate::matmul::{compute_tile_trace, BlockNoise, Matrices};
         use ai_pow_zk::chips::stripe_xor::{
             build_trace as sx_build, final_register, ref_stripe_xor, IN_LEN,
         };
+
+        use crate::matmul::{compute_tile_trace, BlockNoise, Matrices};
 
         let params = MatmulParams::TEST_SMALL;
         let (a, b) = synth_matrices(b"spike-gate3-seed", &params);
@@ -2149,11 +2561,7 @@ mod tests {
         let mats = Matrices::build(ctx.a, ctx.b, &noise, &params);
         let steps = params.num_stripes() as usize;
 
-        for &(ti, tj) in &[
-            (0u32, 0u32),
-            (params.row_tiles() - 1, params.col_tiles() - 1),
-            (2, 5),
-        ] {
+        for &(ti, tj) in &[(0u32, 0u32), (params.row_tiles() - 1, params.col_tiles() - 1), (2, 5)] {
             let mut trace = CompositeTrace::baseline_min();
             let (_rows, acc_after, _final) =
                 place_subtile_sweep(&mut trace, &mats, &params, ti, tj, 0);
@@ -2196,9 +2604,10 @@ mod tests {
     /// could not bind; G1+G2 close it for any single-Layer-0 tile.
     #[test]
     fn high2_2_g1g2_chunked_and_wide_stripes() {
-        use crate::matmul::{compute_tile_trace, BlockNoise, Matrices};
         use ai_pow_zk::composite_proof::build_config;
         use ai_pow_zk::{dev_unpinned_prove, dev_unpinned_verify, CircuitConfig, ZkParams};
+
+        use crate::matmul::{compute_tile_trace, BlockNoise, Matrices};
 
         let params = MatmulParams {
             m: 8,
@@ -2239,8 +2648,8 @@ mod tests {
                 .collect();
 
             let mut trace = CompositeTrace::baseline_min();
-            let (rows_used, x_steps) = trace
-                .place_useful_work_chain(8, &a_strips, &b_strips, t, r, num_stripes);
+            let (rows_used, x_steps) =
+                trace.place_useful_work_chain(8, &a_strips, &b_strips, t, r, num_stripes);
             // (t/2)² sub-blocks · num_stripes · ⌈r/16⌉ chunks.
             assert_eq!(rows_used, (t / 2) * (t / 2) * num_stripes * 2);
 
@@ -2265,9 +2674,8 @@ mod tests {
             // 64-lane transport + SX_IN==nxt.CUMSUM binding + Fold).
             let pis = CompositePublicInputs::derive_from_trace(&trace);
             let proof = dev_unpinned_prove(&cfg, trace, &pis);
-            dev_unpinned_verify(&cfg, &proof, &pis).unwrap_or_else(|e| {
-                panic!("§6(b)-G1+G2 chain must verify @({ti},{tj}): {e:?}")
-            });
+            dev_unpinned_verify(&cfg, &proof, &pis)
+                .unwrap_or_else(|e| panic!("§6(b)-G1+G2 chain must verify @({ti},{tj}): {e:?}"));
         }
     }
 
@@ -2357,9 +2765,10 @@ mod tests {
     #[test]
     #[ignore = "measurement harness — opt-in (heavy)"]
     fn pb_prover_cost_scaling() {
+        use std::time::Instant;
+
         use ai_pow_zk::composite_proof::build_config;
         use ai_pow_zk::{dev_unpinned_prove, CircuitConfig, ZkParams};
-        use std::time::Instant;
 
         let zk = ZkParams {
             m: 64,
@@ -2396,27 +2805,30 @@ mod tests {
     /// P-B.2.0 discipline).
     #[test]
     fn sec_4c2_store_chunks_decompose_as_committed_plus_noise_ref() {
+        use ai_pow_zk::composite_trace::CompositeTrace;
+
         use crate::matmul::{BlockNoise, Matrices};
         use crate::synth::synth_matrices;
-        use ai_pow_zk::composite_trace::CompositeTrace;
 
         for params in [
             MatmulParams::TEST_SMALL,
             // a second, distinct geometry (rectangular, r=4|k).
-            MatmulParams { m: 16, k: 64, n: 24, noise_rank: 4, tile: 8,
-                spot_checks: 2, difficulty_bits: 0 },
+            MatmulParams {
+                m: 16,
+                k: 64,
+                n: 24,
+                noise_rank: 4,
+                tile: 8,
+                spot_checks: 2,
+                difficulty_bits: 0,
+            },
         ] {
             params.validate().unwrap();
             let (a, b) = synth_matrices(b"sec4c2-a3.1", &params);
-            let ctx = BlockContext::build(b"sec4c2-blk", &a, &b, &params)
-                .expect("ctx");
+            let ctx = BlockContext::build(b"sec4c2-blk", &a, &b, &params).expect("ctx");
             let noise = BlockNoise::expand(&ctx.s_a, &ctx.s_b, &params);
             let mats = Matrices::build(ctx.a, ctx.b, &noise, &params);
-            let (t, r, k) = (
-                params.tile as usize,
-                params.noise_rank,
-                params.k as usize,
-            );
+            let (t, r, k) = (params.tile as usize, params.noise_rank, params.k as usize);
             let num_stripes = params.num_stripes() as usize;
             let (ti, tj) = (0u32, 0u32);
             let a_strips: Vec<i8> = (0..t as u32)
@@ -2439,27 +2851,20 @@ mod tests {
             for s in &srcs {
                 for m in 0..8 {
                     match s.src[m] {
-                        None => assert_eq!(
-                            s.bytes[m], 0,
-                            "zero-pad byte must be 0"
-                        ),
+                        None => assert_eq!(s.bytes[m], 0, "zero-pad byte must be 0"),
                         Some((lane, l)) => {
                             let (plain, nz) = if s.side_a {
                                 let i = ti * params.tile + lane;
                                 (
                                     ctx.a[(i as usize) * k + l as usize],
-                                    ai_pow_zk::noise_ref::e_value(
-                                        &ctx.s_a, i, l, r,
-                                    ),
+                                    ai_pow_zk::noise_ref::e_value(&ctx.s_a, i, l, r),
                                 )
                             } else {
                                 let j = tj * params.tile + lane;
                                 (
                                     // B is column-major: col j at j*k.
                                     ctx.b[(j as usize) * k + l as usize],
-                                    ai_pow_zk::noise_ref::f_value(
-                                        &ctx.s_b, l, j, r,
-                                    ),
+                                    ai_pow_zk::noise_ref::f_value(&ctx.s_b, l, j, r),
                                 )
                             };
                             assert_eq!(
@@ -2491,24 +2896,30 @@ mod tests {
     /// discipline, applied to c-mset before any bus AIR.)
     #[test]
     fn sec_4c2_cmset0_store_plain_is_contiguous_window_of_strip_opening() {
-        use crate::matmul::{BlockNoise, Matrices};
-        use crate::synth::synth_matrices;
         use ai_pow_zk::blake3_tree::{pad_to_chunk_boundary, tile_chunk_range};
         use ai_pow_zk::composite_trace::CompositeTrace;
 
+        use crate::matmul::{BlockNoise, Matrices};
+        use crate::synth::synth_matrices;
+
         for params in [
             MatmulParams::TEST_SMALL,
-            MatmulParams { m: 16, k: 64, n: 24, noise_rank: 4, tile: 8,
-                spot_checks: 2, difficulty_bits: 0 },
+            MatmulParams {
+                m: 16,
+                k: 64,
+                n: 24,
+                noise_rank: 4,
+                tile: 8,
+                spot_checks: 2,
+                difficulty_bits: 0,
+            },
         ] {
             params.validate().unwrap();
             let (a, b) = synth_matrices(b"sec4c2-cmset0", &params);
-            let ctx = BlockContext::build(b"sec4c2-cmset0-blk", &a, &b, &params)
-                .expect("ctx");
+            let ctx = BlockContext::build(b"sec4c2-cmset0-blk", &a, &b, &params).expect("ctx");
             let noise = BlockNoise::expand(&ctx.s_a, &ctx.s_b, &params);
             let mats = Matrices::build(ctx.a, ctx.b, &noise, &params);
-            let (t, r, k) = (params.tile as usize, params.noise_rank,
-                params.k as usize);
+            let (t, r, k) = (params.tile as usize, params.noise_rank, params.k as usize);
             let num_stripes = params.num_stripes() as usize;
             let (ti, tj) = (0u32, 0u32);
             let a_strips: Vec<i8> = (0..t as u32)
@@ -2523,10 +2934,8 @@ mod tests {
             let b_bytes: Vec<u8> = ctx.b.iter().map(|&v| v as u8).collect();
             let a_pad = pad_to_chunk_boundary(&a_bytes);
             let b_pad = pad_to_chunk_boundary(&b_bytes);
-            let (ca0, ca1, _) =
-                tile_chunk_range(ti as usize, t, k, a_bytes.len());
-            let (cb0, cb1, _) =
-                tile_chunk_range(tj as usize, t, k, b_bytes.len());
+            let (ca0, ca1, _) = tile_chunk_range(ti as usize, t, k, a_bytes.len());
+            let (cb0, cb1, _) = tile_chunk_range(tj as usize, t, k, b_bytes.len());
 
             let srcs = CompositeTrace::enumerate_noised_chunks_with_src(
                 &a_strips, &b_strips, t, r as usize, num_stripes,
@@ -2537,8 +2946,7 @@ mod tests {
                 // of ONE strip lane (enumerate splits a chunk into
                 // di-fixed 8-col windows) ⇒ a contiguous run in
                 // the row/col-major committed matrix.
-                let present: Vec<(u32, u32)> =
-                    s.src.iter().filter_map(|x| *x).collect();
+                let present: Vec<(u32, u32)> = s.src.iter().filter_map(|x| *x).collect();
                 if present.is_empty() {
                     continue; // all zero-pad
                 }
@@ -2546,7 +2954,8 @@ mod tests {
                 for (m, &(lane, l)) in present.iter().enumerate() {
                     assert_eq!(lane, lane0, "window spans one lane");
                     assert_eq!(
-                        l, l0 + m as u32,
+                        l,
+                        l0 + m as u32,
                         "window is contiguous in the committed matrix"
                     );
                 }
@@ -2571,15 +2980,24 @@ mod tests {
                     // committed byte (∈ HASH_A via the strip-opening)
                     // == the store row's plain MAT_UNPACK byte.
                     assert_eq!(
-                        pad[idx + m] as i8, s.bytes[m].wrapping_sub(
+                        pad[idx + m] as i8,
+                        s.bytes[m].wrapping_sub(
                             // plain = a′ − noise; recover via the
                             // A3.1-proven decomposition.
                             if s.side_a {
                                 ai_pow_zk::noise_ref::e_value(
-                                    &ctx.s_a, lane_g, l0 + m as u32, r as u32)
+                                    &ctx.s_a,
+                                    lane_g,
+                                    l0 + m as u32,
+                                    r as u32,
+                                )
                             } else {
                                 ai_pow_zk::noise_ref::f_value(
-                                    &ctx.s_b, l0 + m as u32, lane_g, r as u32)
+                                    &ctx.s_b,
+                                    l0 + m as u32,
+                                    lane_g,
+                                    r as u32,
+                                )
                             }
                         ),
                         "store plain byte != committed (strip-opening) byte"
@@ -2638,11 +3056,13 @@ mod tests {
     /// single-STARK geometry, **not** `TEST_SMALL`.
     #[test]
     fn sec_4c2_cmset1a_air_key_producer_superset_of_store_iff_16_divides_r() {
-        use crate::matmul::{BlockNoise, Matrices};
-        use crate::synth::synth_matrices;
+        use std::collections::HashSet;
+
         use ai_pow_zk::blake3_tree::{pad_to_chunk_boundary, tile_chunk_range};
         use ai_pow_zk::composite_trace::CompositeTrace;
-        use std::collections::HashSet;
+
+        use crate::matmul::{BlockNoise, Matrices};
+        use crate::synth::synth_matrices;
 
         // The exact 8-byte BUS_PLAIN key (2 u32-LE words = the
         // producer's BLAKE3_MSG word-pair = the consumer's
@@ -2671,14 +3091,11 @@ mod tests {
         let check = |params: MatmulParams| -> (bool, bool) {
             params.validate().unwrap();
             let (a, b) = synth_matrices(b"sec4c2-cmset1a", &params);
-            let ctx = BlockContext::build(b"sec4c2-cmset1a-blk", &a, &b, &params)
-                .expect("ctx");
+            let ctx = BlockContext::build(b"sec4c2-cmset1a-blk", &a, &b, &params).expect("ctx");
             let noise = BlockNoise::expand(&ctx.s_a, &ctx.s_b, &params);
             let mats = Matrices::build(ctx.a, ctx.b, &noise, &params);
             let (t, r, k) = (
-                params.tile as usize,
-                params.noise_rank as usize,
-                params.k as usize,
+                params.tile as usize, params.noise_rank as usize, params.k as usize,
             );
             let num_stripes = params.num_stripes() as usize;
             let (ti, tj) = (0u32, 0u32);
@@ -2692,10 +3109,8 @@ mod tests {
             let b_bytes: Vec<u8> = ctx.b.iter().map(|&v| v as u8).collect();
             let a_pad = pad_to_chunk_boundary(&a_bytes);
             let b_pad = pad_to_chunk_boundary(&b_bytes);
-            let (ca0, ca1, _) =
-                tile_chunk_range(ti as usize, t, k, a_bytes.len());
-            let (cb0, cb1, _) =
-                tile_chunk_range(tj as usize, t, k, b_bytes.len());
+            let (ca0, ca1, _) = tile_chunk_range(ti as usize, t, k, a_bytes.len());
+            let (cb0, cb1, _) = tile_chunk_range(tj as usize, t, k, b_bytes.len());
             let prod_a = producer_set(&a_pad, ca0, ca1);
             let prod_b = producer_set(&b_pad, cb0, cb1);
 
@@ -2713,9 +3128,7 @@ mod tests {
                 for m in 0..8 {
                     if let Some((lane, l)) = s.src[m] {
                         all_pad = false;
-                        let lane_g = (if s.side_a { ti } else { tj })
-                            * params.tile
-                            + lane;
+                        let lane_g = (if s.side_a { ti } else { tj }) * params.tile + lane;
                         let pad = if s.side_a { &a_pad } else { &b_pad };
                         win[m] = pad[lane_g as usize * k + l as usize];
                     }
@@ -2739,13 +3152,23 @@ mod tests {
             // single-chunk tile, r=16; §6(b)-live single-STARK class
             // (num_stripes = k/r = 4 ≤ STRIPE_MAX).
             MatmulParams {
-                m: 16, k: 64, n: 16, noise_rank: 16, tile: 8,
-                spot_checks: 2, difficulty_bits: 0,
+                m: 16,
+                k: 64,
+                n: 16,
+                noise_rank: 16,
+                tile: 8,
+                spot_checks: 2,
+                difficulty_bits: 0,
             },
             // multi-chunk tile (t·k = 2048 = 2 chunks), r=32.
             MatmulParams {
-                m: 32, k: 128, n: 32, noise_rank: 32, tile: 16,
-                spot_checks: 2, difficulty_bits: 0,
+                m: 32,
+                k: 128,
+                n: 32,
+                noise_rank: 32,
+                tile: 16,
+                spot_checks: 2,
+                difficulty_bits: 0,
             },
         ] {
             let (a_ok, b_ok) = check(p);
@@ -2811,10 +3234,11 @@ mod tests {
     /// the exact `(block,word-offset)` address + the C3 pack.
     #[test]
     fn sec_4c2_cx0_store_binds_exact_committed_leaf_subposition_via_c3() {
-        use crate::matmul::{BlockNoise, Matrices};
-        use crate::synth::synth_matrices;
         use ai_pow_zk::blake3_tree::{pad_to_chunk_boundary, tile_chunk_range};
         use ai_pow_zk::composite_trace::CompositeTrace;
+
+        use crate::matmul::{BlockNoise, Matrices};
+        use crate::synth::synth_matrices;
 
         fn base256(b: &[u8]) -> u32 {
             u32::from_le_bytes([b[0], b[1], b[2], b[3]])
@@ -2822,25 +3246,32 @@ mod tests {
 
         for params in [
             MatmulParams {
-                m: 16, k: 64, n: 16, noise_rank: 16, tile: 8,
-                spot_checks: 2, difficulty_bits: 0,
+                m: 16,
+                k: 64,
+                n: 16,
+                noise_rank: 16,
+                tile: 8,
+                spot_checks: 2,
+                difficulty_bits: 0,
             },
             MatmulParams {
-                m: 32, k: 128, n: 32, noise_rank: 32, tile: 16,
-                spot_checks: 2, difficulty_bits: 0,
+                m: 32,
+                k: 128,
+                n: 32,
+                noise_rank: 32,
+                tile: 16,
+                spot_checks: 2,
+                difficulty_bits: 0,
             },
         ] {
             params.validate().unwrap();
             assert_eq!(params.noise_rank % 16, 0, "cx.0 requires 16|r");
             let (a, b) = synth_matrices(b"sec4c2-cx0", &params);
-            let ctx = BlockContext::build(b"sec4c2-cx0-blk", &a, &b, &params)
-                .expect("ctx");
+            let ctx = BlockContext::build(b"sec4c2-cx0-blk", &a, &b, &params).expect("ctx");
             let noise = BlockNoise::expand(&ctx.s_a, &ctx.s_b, &params);
             let mats = Matrices::build(ctx.a, ctx.b, &noise, &params);
             let (t, r, k) = (
-                params.tile as usize,
-                params.noise_rank as usize,
-                params.k as usize,
+                params.tile as usize, params.noise_rank as usize, params.k as usize,
             );
             let num_stripes = params.num_stripes() as usize;
             let (ti, tj) = (0u32, 0u32);
@@ -2854,10 +3285,8 @@ mod tests {
             let b_bytes: Vec<u8> = ctx.b.iter().map(|&v| v as u8).collect();
             let a_pad = pad_to_chunk_boundary(&a_bytes);
             let b_pad = pad_to_chunk_boundary(&b_bytes);
-            let (ca0, ca1, _) =
-                tile_chunk_range(ti as usize, t, k, a_bytes.len());
-            let (cb0, cb1, _) =
-                tile_chunk_range(tj as usize, t, k, b_bytes.len());
+            let (ca0, ca1, _) = tile_chunk_range(ti as usize, t, k, a_bytes.len());
+            let (cb0, cb1, _) = tile_chunk_range(tj as usize, t, k, b_bytes.len());
 
             // A3.2a position-addressed store (NOT value-deduped) —
             // the layout c-exact's verifier-recomputable word-
@@ -2868,8 +3297,7 @@ mod tests {
             // (4) witness-free: the params-pure skeleton (no a′
             // values) reproduces the exact (side, src) sequence ⇒
             // the leaf address / o is verifier-recomputable.
-            let skel =
-                CompositeTrace::noised_store_layout(t, r, num_stripes, k);
+            let skel = CompositeTrace::noised_store_layout(t, r, num_stripes, k);
             assert_eq!(skel.len(), pos.len(), "skeleton length mismatch");
             for (sk, p) in skel.iter().zip(pos.iter()) {
                 assert_eq!(sk.0, p.side_a, "skeleton side mismatch");
@@ -2900,8 +3328,7 @@ mod tests {
                     assert_eq!(*lane, lane0, "window spans one lane");
                     assert_eq!(*l, l0 + m as u32, "window contiguous");
                 }
-                let lane_g =
-                    (if s.side_a { ti } else { tj }) * params.tile + lane0;
+                let lane_g = (if s.side_a { ti } else { tj }) * params.tile + lane0;
                 let (pad, c0, c1) = if s.side_a {
                     (&a_pad, ca0, ca1)
                 } else {
@@ -2944,13 +3371,9 @@ mod tests {
                 let mut plain = [0u8; 8];
                 for (m, (_, (lane_b, l))) in present.iter().enumerate() {
                     let nz = if s.side_a {
-                        ai_pow_zk::noise_ref::e_value(
-                            &ctx.s_a, lane_g, *l, r as u32,
-                        )
+                        ai_pow_zk::noise_ref::e_value(&ctx.s_a, lane_g, *l, r as u32)
                     } else {
-                        ai_pow_zk::noise_ref::f_value(
-                            &ctx.s_b, *l, lane_g, r as u32,
-                        )
+                        ai_pow_zk::noise_ref::f_value(&ctx.s_b, *l, lane_g, r as u32)
                     };
                     let _ = lane_b;
                     let pl = s.bytes[m].wrapping_sub(nz) as u8;
@@ -2964,8 +3387,7 @@ mod tests {
                 // (3) exact C3 identity at the leaf address.
                 for j in 0..2usize {
                     let w = word_off + j;
-                    let msg_word =
-                        base256(&pad[blk_base + w * 4..blk_base + w * 4 + 4]);
+                    let msg_word = base256(&pad[blk_base + w * 4..blk_base + w * 4 + 4]);
                     assert_eq!(
                         msg_word,
                         base256(&plain[4 * j..4 * j + 4]),
@@ -3010,11 +3432,13 @@ mod tests {
     ///     X1 must resolve) is genuinely exercised, not vacuous.
     #[test]
     fn sec_4c2_cx21_x1_whole_block_covers_all_swept_subslices() {
-        use crate::matmul::{BlockNoise, Matrices};
-        use crate::synth::synth_matrices;
+        use std::collections::HashMap;
+
         use ai_pow_zk::blake3_tree::pad_to_chunk_boundary;
         use ai_pow_zk::composite_trace::CompositeTrace;
-        use std::collections::HashMap;
+
+        use crate::matmul::{BlockNoise, Matrices};
+        use crate::synth::synth_matrices;
 
         fn base256(b: &[u8]) -> u32 {
             u32::from_le_bytes([b[0], b[1], b[2], b[3]])
@@ -3022,25 +3446,32 @@ mod tests {
 
         for params in [
             MatmulParams {
-                m: 16, k: 64, n: 16, noise_rank: 16, tile: 8,
-                spot_checks: 2, difficulty_bits: 0,
+                m: 16,
+                k: 64,
+                n: 16,
+                noise_rank: 16,
+                tile: 8,
+                spot_checks: 2,
+                difficulty_bits: 0,
             },
             MatmulParams {
-                m: 32, k: 128, n: 32, noise_rank: 32, tile: 16,
-                spot_checks: 2, difficulty_bits: 0,
+                m: 32,
+                k: 128,
+                n: 32,
+                noise_rank: 32,
+                tile: 16,
+                spot_checks: 2,
+                difficulty_bits: 0,
             },
         ] {
             params.validate().unwrap();
             assert_eq!(params.noise_rank % 16, 0, "cx.2.1 requires 16|r");
             let (a, b) = synth_matrices(b"sec4c2-cx21", &params);
-            let ctx = BlockContext::build(b"sec4c2-cx21-blk", &a, &b, &params)
-                .expect("ctx");
+            let ctx = BlockContext::build(b"sec4c2-cx21-blk", &a, &b, &params).expect("ctx");
             let noise = BlockNoise::expand(&ctx.s_a, &ctx.s_b, &params);
             let mats = Matrices::build(ctx.a, ctx.b, &noise, &params);
             let (t, r, k) = (
-                params.tile as usize,
-                params.noise_rank as usize,
-                params.k as usize,
+                params.tile as usize, params.noise_rank as usize, params.k as usize,
             );
             let num_stripes = params.num_stripes() as usize;
             let (ti, tj) = (0u32, 0u32);
@@ -3060,8 +3491,7 @@ mod tests {
             );
             // (side, leaf-block-base) -> set of swept sub-slice
             // indices p, with the per-window plain bytes recorded.
-            let mut by_block: HashMap<(bool, usize), Vec<(usize, [u8; 8])>> =
-                HashMap::new();
+            let mut by_block: HashMap<(bool, usize), Vec<(usize, [u8; 8])>> = HashMap::new();
             for s in &pos {
                 let present: Vec<(usize, (u32, u32))> = s
                     .src
@@ -3074,8 +3504,7 @@ mod tests {
                 }
                 assert_eq!(present.len(), 8, "16|r ⇒ dense 8-byte window");
                 let (lane0, l0) = present[0].1;
-                let lane_g =
-                    (if s.side_a { ti } else { tj }) * params.tile + lane0;
+                let lane_g = (if s.side_a { ti } else { tj }) * params.tile + lane0;
                 let idx = lane_g as usize * k + l0 as usize;
                 assert_eq!(idx % 8, 0, "16|r ⇒ 8-aligned");
                 let block_base = (idx / 64) * 64;
@@ -3159,35 +3588,44 @@ mod tests {
     ///        co-located row must carry).
     #[test]
     fn sec_4c2_cx2coloc0_leaf_producer_superset_and_noise_pin() {
-        use crate::matmul::{BlockNoise, Matrices};
-        use crate::synth::synth_matrices;
+        use std::collections::HashSet;
+
         use ai_pow_zk::blake3_tree::{pad_to_chunk_boundary, tile_chunk_range};
         use ai_pow_zk::composite_trace::CompositeTrace;
-        use std::collections::HashSet;
+
+        use crate::matmul::{BlockNoise, Matrices};
+        use crate::synth::synth_matrices;
 
         const NPB: i64 = 129; // NOISE_PACKING_BASE
 
         for params in [
             MatmulParams {
-                m: 16, k: 64, n: 16, noise_rank: 16, tile: 8,
-                spot_checks: 2, difficulty_bits: 0,
+                m: 16,
+                k: 64,
+                n: 16,
+                noise_rank: 16,
+                tile: 8,
+                spot_checks: 2,
+                difficulty_bits: 0,
             },
             MatmulParams {
-                m: 32, k: 128, n: 32, noise_rank: 32, tile: 16,
-                spot_checks: 2, difficulty_bits: 0,
+                m: 32,
+                k: 128,
+                n: 32,
+                noise_rank: 32,
+                tile: 16,
+                spot_checks: 2,
+                difficulty_bits: 0,
             },
         ] {
             params.validate().unwrap();
             assert_eq!(params.noise_rank % 16, 0, "cx.2-coloc.0 requires 16|r");
             let (a, b) = synth_matrices(b"sec4c2-cx2coloc0", &params);
-            let ctx = BlockContext::build(b"sec4c2-cx2coloc0-blk", &a, &b, &params)
-                .expect("ctx");
+            let ctx = BlockContext::build(b"sec4c2-cx2coloc0-blk", &a, &b, &params).expect("ctx");
             let noise = BlockNoise::expand(&ctx.s_a, &ctx.s_b, &params);
             let mats = Matrices::build(ctx.a, ctx.b, &noise, &params);
             let (t, r, k) = (
-                params.tile as usize,
-                params.noise_rank as usize,
-                params.k as usize,
+                params.tile as usize, params.noise_rank as usize, params.k as usize,
             );
             let num_stripes = params.num_stripes() as usize;
             let (ti, tj) = (0u32, 0u32);
@@ -3201,17 +3639,18 @@ mod tests {
             let b_bytes: Vec<u8> = ctx.b.iter().map(|&v| v as u8).collect();
             let a_pad = pad_to_chunk_boundary(&a_bytes);
             let b_pad = pad_to_chunk_boundary(&b_bytes);
-            let (ca0, ca1, _) =
-                tile_chunk_range(ti as usize, t, k, a_bytes.len());
-            let (cb0, cb1, _) =
-                tile_chunk_range(tj as usize, t, k, b_bytes.len());
+            let (ca0, ca1, _) = tile_chunk_range(ti as usize, t, k, a_bytes.len());
+            let (cb0, cb1, _) = tile_chunk_range(tj as usize, t, k, b_bytes.len());
 
             // Build the leaf-row producer set (per side) over the
             // opened chunk range: every 8-byte sub-slice's a′ =
             // committed_plain + noise_ref; also (P2) check the
             // sub-slice NOISE_PACKED_PREP is well-formed.
-            let build_producer = |pad: &[u8], c0: usize, c1: usize,
-                                  real_len: usize, side_a: bool|
+            let build_producer = |pad: &[u8],
+                                  c0: usize,
+                                  c1: usize,
+                                  real_len: usize,
+                                  side_a: bool|
              -> HashSet<[i8; 8]> {
                 let mut set = HashSet::new();
                 let mut off = c0 * 1024;
@@ -3226,13 +3665,17 @@ mod tests {
                             let plain = pad[p] as i8;
                             let nz = if side_a {
                                 ai_pow_zk::noise_ref::e_value(
-                                    &ctx.s_a, (p / k) as u32, (p % k) as u32,
+                                    &ctx.s_a,
+                                    (p / k) as u32,
+                                    (p % k) as u32,
                                     r as u32,
                                 )
                             } else {
                                 // B is col-major flattened [col0(k)|col1(k)|..]
                                 ai_pow_zk::noise_ref::f_value(
-                                    &ctx.s_b, (p % k) as u32, (p / k) as u32,
+                                    &ctx.s_b,
+                                    (p % k) as u32,
+                                    (p / k) as u32,
                                     r as u32,
                                 )
                             };
@@ -3275,7 +3718,8 @@ mod tests {
                     "swept a′ chunk {:?} (side_a={}) not in the \
                      opened-leaf-block producer set — noised_packed \
                      would unbalance after co-location",
-                    s.bytes, s.side_a
+                    s.bytes,
+                    s.side_a
                 );
                 checked += 1;
             }
@@ -3302,14 +3746,18 @@ mod tests {
     fn sec_4c2_cx2_g1_p16_route_a_c3_active_roundtrip() {
         use crate::synth::synth_matrices;
         let params = MatmulParams {
-            m: 16, k: 64, n: 16, noise_rank: 16, tile: 8,
-            spot_checks: 2, difficulty_bits: 0,
+            m: 16,
+            k: 64,
+            n: 16,
+            noise_rank: 16,
+            tile: 8,
+            spot_checks: 2,
+            difficulty_bits: 0,
         };
         params.validate().unwrap();
         assert_eq!(params.noise_rank % 16, 0, "P16 must be 16|r ⇒ coloc=true");
         let (a, b) = synth_matrices(b"cx2g1-p16", &params);
-        let ctx = BlockContext::build(b"cx2g1-p16-blk", &a, &b, &params)
-            .expect("ctx");
+        let ctx = BlockContext::build(b"cx2g1-p16-blk", &a, &b, &params).expect("ctx");
         // coloc=true ⇒ the g=1 co-location path. Must prove +
         // pow-verify with C3 ACTIVE and every bus balanced.
         let out = prove_and_verify_for_block_inner(&ctx, &params, TEST_NONCE, 0, false).expect(
@@ -3365,19 +3813,22 @@ mod tests {
     /// existing 3-layer coverage already binds the entire chain.
     #[test]
     fn sec_4c2_cx2_g1_p16_position_exact_adversarial_rejects() {
+        use ai_pow_zk::composite_layout::{IS_MSG_MAT, TOTAL_TRACE_WIDTH, UINT8_DATA_START};
+
         use crate::synth::synth_matrices;
-        use ai_pow_zk::composite_layout::{
-            IS_MSG_MAT, TOTAL_TRACE_WIDTH, UINT8_DATA_START,
-        };
 
         let params = MatmulParams {
-            m: 16, k: 64, n: 16, noise_rank: 16, tile: 8,
-            spot_checks: 2, difficulty_bits: 0,
+            m: 16,
+            k: 64,
+            n: 16,
+            noise_rank: 16,
+            tile: 8,
+            spot_checks: 2,
+            difficulty_bits: 0,
         };
         params.validate().unwrap();
         let (a, b) = synth_matrices(b"cx2g1-adv", &params);
-        let ctx = BlockContext::build(b"cx2g1-adv-blk", &a, &b, &params)
-            .expect("ctx");
+        let ctx = BlockContext::build(b"cx2g1-adv-blk", &a, &b, &params).expect("ctx");
         let target = crate::tile_hash::difficulty_target(&params);
 
         // Honest control: the seam is a no-op ⇒ must verify.
@@ -3389,7 +3840,12 @@ mod tests {
         // g=1, C3 active). Keep it a valid u8 (urange8 ok) so the
         // rejection is the §4.C.2 plain tie, not a range check.
         let res = prove_and_verify_tiled_tamper(
-            &ctx, &params, TEST_NONCE, &target, 0, 0,
+            &ctx,
+            &params,
+            TEST_NONCE,
+            &target,
+            0,
+            0,
             |t: &mut CompositeTrace| {
                 let zero = ai_pow_zk::Val::default();
                 let h = t.height();
@@ -3405,8 +3861,7 @@ mod tests {
                         // ok) but ≠ the byte BLAKE3 hashed ⇒ the
                         // cx.2-c3 whole-block C3 (∈ HASH_A) rejects.
                         for off in 1..64 {
-                            let vo =
-                                t.matrix.values[base + UINT8_DATA_START + off];
+                            let vo = t.matrix.values[base + UINT8_DATA_START + off];
                             if vo != v0 {
                                 t.matrix.values[base + UINT8_DATA_START] = vo;
                                 return;
@@ -3461,25 +3916,30 @@ mod tests {
     /// change (CR.0).**
     #[test]
     fn cr0_row_schedule_matches_real_bridge_trace() {
-        use crate::synth::synth_matrices;
-        use ai_pow_zk::canonical::{row_schedule, RowClass};
-        use ai_pow_zk::composite_layout::{
-            FOLD_IS_FOLD, IS_HASH_A, IS_HASH_B, IS_HASH_JACKPOT,
-            IS_MSG_MAT, IS_USE_COMMITMENT_HASH, IS_USE_JOB_KEY,
-            TOTAL_TRACE_WIDTH,
-        };
-        use ai_pow_zk::params::ZkParams;
         use std::cell::RefCell;
 
+        use ai_pow_zk::canonical::{row_schedule, RowClass};
+        use ai_pow_zk::composite_layout::{
+            FOLD_IS_FOLD, IS_HASH_A, IS_HASH_B, IS_HASH_JACKPOT, IS_MSG_MAT,
+            IS_USE_COMMITMENT_HASH, IS_USE_JOB_KEY, TOTAL_TRACE_WIDTH,
+        };
+        use ai_pow_zk::params::ZkParams;
+
+        use crate::synth::synth_matrices;
+
         let params = MatmulParams {
-            m: 16, k: 64, n: 16, noise_rank: 16, tile: 8,
-            spot_checks: 2, difficulty_bits: 0,
+            m: 16,
+            k: 64,
+            n: 16,
+            noise_rank: 16,
+            tile: 8,
+            spot_checks: 2,
+            difficulty_bits: 0,
         };
         params.validate().unwrap();
         assert_eq!(params.noise_rank % 16, 0, "P16 must be 16|r ⇒ coloc");
         let (a, b) = synth_matrices(b"cr0-sched", &params);
-        let ctx = BlockContext::build(b"cr0-sched-blk", &a, &b, &params)
-            .expect("ctx");
+        let ctx = BlockContext::build(b"cr0-sched-blk", &a, &b, &params).expect("ctx");
         let target = crate::tile_hash::difficulty_target(&params);
         // The seam's explicit attested tile (CR.0 takes the same
         // (tile_i,tile_j); production derives it MED-3 via tile_ij).
@@ -3490,15 +3950,19 @@ mod tests {
         // verifies — also re-confirms the P16 g=1 roundtrip).
         let rows: RefCell<Vec<[bool; 7]>> = RefCell::new(Vec::new());
         prove_and_verify_tiled_tamper(
-            &ctx, &params, TEST_NONCE, &target, tile_i, tile_j,
+            &ctx,
+            &params,
+            TEST_NONCE,
+            &target,
+            tile_i,
+            tile_j,
             |t: &mut CompositeTrace| {
                 let zero = ai_pow_zk::Val::default();
                 let h = t.height();
                 let mut v = rows.borrow_mut();
                 v.reserve(h);
-                let nz = |t: &CompositeTrace, base: usize, c: usize| {
-                    t.matrix.values[base + c] != zero
-                };
+                let nz =
+                    |t: &CompositeTrace, base: usize, c: usize| t.matrix.values[base + c] != zero;
                 for r in 0..h {
                     let base = r * TOTAL_TRACE_WIDTH;
                     v.push([
@@ -3520,20 +3984,21 @@ mod tests {
         assert!(h >= 8, "captured a non-empty trace");
 
         let zk = ZkParams {
-            m: params.m, k: params.k, n: params.n,
-            noise_rank: params.noise_rank, tile: params.tile,
+            m: params.m,
+            k: params.k,
+            n: params.n,
+            noise_rank: params.noise_rank,
+            tile: params.tile,
             difficulty_bits: params.difficulty_bits,
         };
         let sched = row_schedule(&zk, tile_i, tile_j, h);
         assert_eq!(sched.len(), h);
-        let ( jk, ch, ha, hb, mm, fo, jp ) = (0, 1, 2, 3, 4, 5, 6);
+        let (jk, ch, ha, hb, mm, fo, jp) = (0, 1, 2, 3, 4, 5, 6);
 
         // (1) Key-pin: the two IS_USE_* rows are EXACTLY the
         // schedule's two KeyPin rows (⇒ pins mh_end = na+nb, the
         // CR.0a strip_opening_rows arithmetic on both sides).
-        let kp: Vec<usize> = (0..h)
-            .filter(|&r| sched[r] == RowClass::KeyPin)
-            .collect();
+        let kp: Vec<usize> = (0..h).filter(|&r| sched[r] == RowClass::KeyPin).collect();
         assert_eq!(kp.len(), 2, "schedule has exactly two KeyPin rows");
         assert!(rows[kp[0]][jk], "JOB_KEY on schedule's 1st KeyPin row");
         assert!(rows[kp[1]][ch], "COMMITMENT_HASH on 2nd KeyPin row");
@@ -3556,22 +4021,21 @@ mod tests {
         assert_eq!(ha_rows.len(), 1, "exactly one HASH_A root");
         assert_eq!(hb_rows.len(), 1, "exactly one HASH_B root");
         assert_eq!(
-            sched[ha_rows[0]], RowClass::StripOpenA,
+            sched[ha_rows[0]],
+            RowClass::StripOpenA,
             "HASH_A root must fall in the schedule's StripOpenA region"
         );
         assert_eq!(
-            sched[hb_rows[0]], RowClass::StripOpenB,
+            sched[hb_rows[0]],
+            RowClass::StripOpenB,
             "HASH_B root must fall in the schedule's StripOpenB region"
         );
 
         // (3) Sweep formula + num_stripes: FOLD_IS_FOLD row set ==
         // schedule's Fold set (⇒ pins fold_start = mh_end+3 +
         // sweep_rows + 4, hence the §6(b) sweep_rows formula).
-        let fold_actual: Vec<usize> =
-            (0..h).filter(|&r| rows[r][fo]).collect();
-        let fold_sched: Vec<usize> = (0..h)
-            .filter(|&r| sched[r] == RowClass::Fold)
-            .collect();
+        let fold_actual: Vec<usize> = (0..h).filter(|&r| rows[r][fo]).collect();
+        let fold_sched: Vec<usize> = (0..h).filter(|&r| sched[r] == RowClass::Fold).collect();
         assert_eq!(
             fold_actual, fold_sched,
             "FOLD_IS_FOLD rows must be exactly the schedule's Fold rows"
@@ -3592,10 +4056,7 @@ mod tests {
         );
         for r in mm_rows {
             assert!(
-                matches!(
-                    sched[r],
-                    RowClass::StripOpenA | RowClass::StripOpenB
-                ),
+                matches!(sched[r], RowClass::StripOpenA | RowClass::StripOpenB),
                 "co-located producer row {r} must be a StripOpen* row \
                  (the leaf round-0 rows ARE the M-S1 producers), \
                  got {:?}",
@@ -3608,15 +4069,15 @@ mod tests {
         for r in 0..h {
             if rows[r][jp] {
                 assert_eq!(
-                    sched[r], RowClass::JackpotHash,
+                    sched[r],
+                    RowClass::JackpotHash,
                     "IS_HASH_JACKPOT row {r} must be JackpotHash"
                 );
             }
-            if rows[r][jk] || rows[r][ch] || rows[r][ha]
-                || rows[r][hb] || rows[r][fo]
-            {
+            if rows[r][jk] || rows[r][ch] || rows[r][ha] || rows[r][hb] || rows[r][fo] {
                 assert_ne!(
-                    sched[r], RowClass::Pad,
+                    sched[r],
+                    RowClass::Pad,
                     "a live anchor at row {r} must not be \
                      misclassified as Pad by the schedule"
                 );
@@ -3642,23 +4103,28 @@ mod tests {
     /// CR.2–CR.5. **No verify-path change (CR.1).**
     #[test]
     fn cr1_canonical_program_eq_extract_on_canonical_classes() {
-        use crate::synth::synth_matrices;
+        use std::cell::RefCell;
+
         use ai_pow_zk::canonical::{
-            canonical_program, is_class_canonical, row_schedule,
-            BlockPublic,
+            canonical_program, is_class_canonical, row_schedule, BlockPublic,
         };
         use ai_pow_zk::composite_full_air::extract_program;
         use ai_pow_zk::params::ZkParams;
-        use std::cell::RefCell;
+
+        use crate::synth::synth_matrices;
 
         let params = MatmulParams {
-            m: 16, k: 64, n: 16, noise_rank: 16, tile: 8,
-            spot_checks: 2, difficulty_bits: 0,
+            m: 16,
+            k: 64,
+            n: 16,
+            noise_rank: 16,
+            tile: 8,
+            spot_checks: 2,
+            difficulty_bits: 0,
         };
         params.validate().unwrap();
         let (a, b) = synth_matrices(b"cr1-eq-extract", &params);
-        let ctx = BlockContext::build(b"cr1-eq-extract-blk", &a, &b, &params)
-            .expect("ctx");
+        let ctx = BlockContext::build(b"cr1-eq-extract-blk", &a, &b, &params).expect("ctx");
         let target = crate::tile_hash::difficulty_target(&params);
         let (tile_i, tile_j) = (0u32, 0u32);
 
@@ -3668,10 +4134,14 @@ mod tests {
         // program under current CRIT-1). Run extract_program inside
         // the closure (where `&t.matrix` is in scope) so ai-pow
         // need not name the p3_matrix type.
-        let cap: RefCell<Option<(Vec<ai_pow_zk::Val>, usize)>> =
-            RefCell::new(None);
+        let cap: RefCell<Option<(Vec<ai_pow_zk::Val>, usize)>> = RefCell::new(None);
         prove_and_verify_tiled_tamper(
-            &ctx, &params, TEST_NONCE, &target, tile_i, tile_j,
+            &ctx,
+            &params,
+            TEST_NONCE,
+            &target,
+            tile_i,
+            tile_j,
             |t: &mut CompositeTrace| {
                 let e = extract_program(&t.matrix);
                 *cap.borrow_mut() = Some((e.values, t.height()));
@@ -3683,15 +4153,21 @@ mod tests {
         assert_eq!(ext_vals.len(), h * w, "extract is h×12");
 
         let zk = ZkParams {
-            m: params.m, k: params.k, n: params.n,
-            noise_rank: params.noise_rank, tile: params.tile,
+            m: params.m,
+            k: params.k,
+            n: params.n,
+            noise_rank: params.noise_rank,
+            tile: params.tile,
             difficulty_bits: params.difficulty_bits,
         };
         // CR.4c: co-located StripOpen noise pins depend on the
         // C1-pinned s_a/s_b ⇒ wire the REAL block public.
         let bp = BlockPublic {
-            tile_i, tile_j, kappa: ctx.kappa,
-            s_a: ctx.s_a, s_b: ctx.s_b,
+            tile_i,
+            tile_j,
+            kappa: ctx.kappa,
+            s_a: ctx.s_a,
+            s_b: ctx.s_b,
         };
         let canon = canonical_program(&zk, &bp, h).expect("test ZkParams valid");
         assert_eq!(canon.values.len(), ext_vals.len());
@@ -3740,44 +4216,46 @@ mod tests {
     /// strip row diverges ⇒ this fails. **No verify-path change.**
     #[test]
     fn cr4a_strip_open_pure_blake3_schedule_eq_extract() {
-        use crate::synth::synth_matrices;
-        use ai_pow_zk::canonical::{
-            canonical_program, row_schedule, BlockPublic, RowClass,
-        };
-        use ai_pow_zk::composite_full_air::extract_program;
-        use ai_pow_zk::composite_layout::{
-            IS_MSG_MAT, TOTAL_TRACE_WIDTH,
-        };
-        use ai_pow_zk::params::ZkParams;
         use std::cell::RefCell;
 
+        use ai_pow_zk::canonical::{canonical_program, row_schedule, BlockPublic, RowClass};
+        use ai_pow_zk::composite_full_air::extract_program;
+        use ai_pow_zk::composite_layout::{IS_MSG_MAT, TOTAL_TRACE_WIDTH};
+        use ai_pow_zk::params::ZkParams;
+
+        use crate::synth::synth_matrices;
+
         let params = MatmulParams {
-            m: 16, k: 64, n: 16, noise_rank: 16, tile: 8,
-            spot_checks: 2, difficulty_bits: 0,
+            m: 16,
+            k: 64,
+            n: 16,
+            noise_rank: 16,
+            tile: 8,
+            spot_checks: 2,
+            difficulty_bits: 0,
         };
         params.validate().unwrap();
         let (a, b) = synth_matrices(b"cr4a-strip", &params);
-        let ctx = BlockContext::build(b"cr4a-strip-blk", &a, &b, &params)
-            .expect("ctx");
+        let ctx = BlockContext::build(b"cr4a-strip-blk", &a, &b, &params).expect("ctx");
         let target = crate::tile_hash::difficulty_target(&params);
         let (tile_i, tile_j) = (0u32, 0u32);
 
         // Capture extract_program + per-row IS_MSG_MAT of the real
         // honest P16 trace (no-tamper seam ⇒ still verifies).
-        let cap: RefCell<Option<(Vec<ai_pow_zk::Val>, Vec<bool>, usize)>> =
-            RefCell::new(None);
+        let cap: RefCell<Option<(Vec<ai_pow_zk::Val>, Vec<bool>, usize)>> = RefCell::new(None);
         prove_and_verify_tiled_tamper(
-            &ctx, &params, TEST_NONCE, &target, tile_i, tile_j,
+            &ctx,
+            &params,
+            TEST_NONCE,
+            &target,
+            tile_i,
+            tile_j,
             |t: &mut CompositeTrace| {
                 let zero = ai_pow_zk::Val::default();
                 let h = t.height();
                 let e = extract_program(&t.matrix);
                 let mm: Vec<bool> = (0..h)
-                    .map(|r| {
-                        t.matrix.values
-                            [r * TOTAL_TRACE_WIDTH + IS_MSG_MAT]
-                            != zero
-                    })
+                    .map(|r| t.matrix.values[r * TOTAL_TRACE_WIDTH + IS_MSG_MAT] != zero)
                     .collect();
                 *cap.borrow_mut() = Some((e.values, mm, h));
             },
@@ -3787,24 +4265,27 @@ mod tests {
         let w = extract_program_width();
 
         let zk = ZkParams {
-            m: params.m, k: params.k, n: params.n,
-            noise_rank: params.noise_rank, tile: params.tile,
+            m: params.m,
+            k: params.k,
+            n: params.n,
+            noise_rank: params.noise_rank,
+            tile: params.tile,
             difficulty_bits: params.difficulty_bits,
         };
         // Real block public (CR.4c co-located noise pins).
         let bp = BlockPublic {
-            tile_i, tile_j, kappa: ctx.kappa,
-            s_a: ctx.s_a, s_b: ctx.s_b,
+            tile_i,
+            tile_j,
+            kappa: ctx.kappa,
+            s_a: ctx.s_a,
+            s_b: ctx.s_b,
         };
         let canon = canonical_program(&zk, &bp, h).expect("test ZkParams valid");
         let sched = row_schedule(&zk, tile_i, tile_j, h);
 
         let (mut checked_pure, mut skipped_coloc) = (0usize, 0usize);
         for (r, &class) in sched.iter().enumerate() {
-            if !matches!(
-                class,
-                RowClass::StripOpenA | RowClass::StripOpenB
-            ) {
+            if !matches!(class, RowClass::StripOpenA | RowClass::StripOpenB) {
                 continue;
             }
             if is_mm[r] {
@@ -3854,42 +4335,51 @@ mod tests {
     /// the exact latent weakness CR.6 closes.
     #[test]
     fn cr6_verify_uses_canonical_not_prover_program_rejects_forge() {
-        use crate::synth::synth_matrices;
         use ai_pow_zk::canonical::{row_schedule, RowClass};
-        use ai_pow_zk::composite_layout::{
-            NOISE_PACKED_PREP, TOTAL_TRACE_WIDTH,
-        };
+        use ai_pow_zk::composite_layout::{NOISE_PACKED_PREP, TOTAL_TRACE_WIDTH};
         use ai_pow_zk::params::ZkParams;
 
+        use crate::synth::synth_matrices;
+
         let params = MatmulParams {
-            m: 16, k: 64, n: 16, noise_rank: 16, tile: 8,
-            spot_checks: 2, difficulty_bits: 0,
+            m: 16,
+            k: 64,
+            n: 16,
+            noise_rank: 16,
+            tile: 8,
+            spot_checks: 2,
+            difficulty_bits: 0,
         };
         params.validate().unwrap();
         let (a, b) = synth_matrices(b"cr6-forge", &params);
-        let ctx = BlockContext::build(b"cr6-forge-blk", &a, &b, &params)
-            .expect("ctx");
+        let ctx = BlockContext::build(b"cr6-forge-blk", &a, &b, &params).expect("ctx");
         let target = crate::tile_hash::difficulty_target(&params);
         let (tile_i, tile_j) = (0u32, 0u32);
 
         // Honest control: CR.6 canonical-VK verify still accepts a
         // genuine proof (the §5 KAT equivalence, end-to-end).
-        prove_and_verify_tiled_tamper(
-            &ctx, &params, TEST_NONCE, &target, tile_i, tile_j, |_| {},
-        )
-        .expect(
-            "CR.6: an honest proof must still verify against the \
+        prove_and_verify_tiled_tamper(&ctx, &params, TEST_NONCE, &target, tile_i, tile_j, |_| {})
+            .expect(
+                "CR.6: an honest proof must still verify against the \
              verifier's params-pure canonical program",
-        );
+            );
 
         // Forge: bump NOISE_PACKED_PREP+1 on the first Pad row.
         let zk = ZkParams {
-            m: params.m, k: params.k, n: params.n,
-            noise_rank: params.noise_rank, tile: params.tile,
+            m: params.m,
+            k: params.k,
+            n: params.n,
+            noise_rank: params.noise_rank,
+            tile: params.tile,
             difficulty_bits: params.difficulty_bits,
         };
         let res = prove_and_verify_tiled_tamper(
-            &ctx, &params, TEST_NONCE, &target, tile_i, tile_j,
+            &ctx,
+            &params,
+            TEST_NONCE,
+            &target,
+            tile_i,
+            tile_j,
             |t: &mut CompositeTrace| {
                 let zero = ai_pow_zk::Val::default();
                 let h = t.height();
@@ -3897,8 +4387,7 @@ mod tests {
                 let pad = (0..h)
                     .find(|&r| sched[r] == RowClass::Pad)
                     .expect("P16 schedule has a Pad row");
-                let cell =
-                    pad * TOTAL_TRACE_WIDTH + NOISE_PACKED_PREP + 1;
+                let cell = pad * TOTAL_TRACE_WIDTH + NOISE_PACKED_PREP + 1;
                 // A known-nonzero Val (≠ the canonical 0) without
                 // naming p3_field: lift any nonzero trace cell.
                 let nz = *t
@@ -3938,15 +4427,15 @@ mod tests {
     /// `num_stripes() == 64 ≤ STRIPE_MAX`.
     #[test]
     fn matmul_proven_in_circuit_at_real_param_num_stripes() {
-        use crate::synth::synth_matrices;
         use ai_pow_zk::composite_layout::STRIPE_MAX;
+
+        use crate::synth::synth_matrices;
 
         // The real shipped preset's stripe count: k=4096, r=64 ⇒ 64.
         assert_eq!(STRIPE_MAX, 64);
         assert_eq!(MatmulParams::LLAMA_3_1_8B_GATE_UP.num_stripes(), 64);
         assert!(
-            (MatmulParams::LLAMA_3_1_8B_GATE_UP.num_stripes() as usize)
-                <= STRIPE_MAX,
+            (MatmulParams::LLAMA_3_1_8B_GATE_UP.num_stripes() as usize) <= STRIPE_MAX,
             "the real shipped preset must fit the in-circuit §6(b) sweep"
         );
 
@@ -3966,8 +4455,7 @@ mod tests {
         assert_eq!(params.num_stripes() as usize, 64, "boundary config");
 
         let (a, b) = synth_matrices(b"in-circ-matmul", &params);
-        let ctx = BlockContext::build(b"in-circ-blk", &a, &b, &params)
-            .expect("ctx");
+        let ctx = BlockContext::build(b"in-circ-blk", &a, &b, &params).expect("ctx");
         let target = crate::tile_hash::difficulty_target(&params);
 
         let outcome = prove_and_verify_tiled(&ctx, &params, TEST_NONCE, &target, 0, 0)
@@ -4010,8 +4498,7 @@ mod tests {
         };
         params.validate().unwrap();
         let (a, b) = synth_matrices(b"4c10-committed", &params);
-        let ctx = BlockContext::build(b"4c10-blk", &a, &b, &params)
-            .expect("ctx");
+        let ctx = BlockContext::build(b"4c10-blk", &a, &b, &params).expect("ctx");
         let target = crate::tile_hash::difficulty_target(&params);
 
         // Honest control: sweep == committed ⇒ must verify.
@@ -4068,8 +4555,7 @@ mod tests {
         };
         params.validate().unwrap();
         let (a, b) = synth_matrices(b"4c10-perm-committed", &params);
-        let ctx = BlockContext::build(b"4c10-perm-blk", &a, &b, &params)
-            .expect("ctx");
+        let ctx = BlockContext::build(b"4c10-perm-blk", &a, &b, &params).expect("ctx");
         let target = crate::tile_hash::difficulty_target(&params);
 
         // Row-reverse the committed A: a same-chunk-multiset but
@@ -4158,16 +4644,17 @@ mod tests {
         let oob = nt as u32; // == num_tiles, just past the last valid idx
         let res = prove_and_verify_for_block_inner(&ctx, &params, TEST_NONCE, oob, false);
         match res {
-            Err(BridgeError::FoundIdxOutOfRange { found_idx, num_tiles }) => {
+            Err(BridgeError::FoundIdxOutOfRange {
+                found_idx,
+                num_tiles,
+            }) => {
                 assert_eq!(u64::from(found_idx), nt);
                 assert_eq!(num_tiles, nt);
             }
-            Err(other) => panic!(
-                "expected FoundIdxOutOfRange for oob found_idx={oob}, got Err: {other}"
-            ),
-            Ok(_) => panic!(
-                "expected FoundIdxOutOfRange for oob found_idx={oob}, got Ok"
-            ),
+            Err(other) => {
+                panic!("expected FoundIdxOutOfRange for oob found_idx={oob}, got Err: {other}")
+            }
+            Ok(_) => panic!("expected FoundIdxOutOfRange for oob found_idx={oob}, got Ok"),
         }
     }
 }

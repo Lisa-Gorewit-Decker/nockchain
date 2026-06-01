@@ -62,7 +62,10 @@ struct Args {
 
     /// Log filter (env-filter syntax: e.g., `info`, `zk_pow_miner=debug,info`).
     /// Override with the `RUST_LOG` env var.
-    #[arg(long, default_value = "info,zk_pow_miner=info,nockchain_mining_common=info")]
+    #[arg(
+        long,
+        default_value = "info,zk_pow_miner=info,nockchain_mining_common=info"
+    )]
     log: String,
 }
 
@@ -72,15 +75,13 @@ fn main() -> ExitCode {
 
     // Validate args.
     let Some(pkh_configs) = build_pkh_configs(&args) else {
-        eprintln!(
-            "zk-pow-mine: must supply --mining-pkh <HASH> or --mining-pkh-adv \"share,pkh\""
-        );
+        eprintln!("zk-pow-mine: must supply --mining-pkh <HASH> or --mining-pkh-adv \"share,pkh\"");
         return ExitCode::from(1);
     };
 
-    let num_threads = args.num_threads.unwrap_or_else(|| {
-        num_cpus::get().saturating_sub(1).max(1) as u64
-    });
+    let num_threads = args
+        .num_threads
+        .unwrap_or_else(|| num_cpus::get().saturating_sub(1).max(1) as u64);
 
     let cfg = MinerConfig {
         node_addr: args.node_addr,
@@ -94,7 +95,10 @@ fn main() -> ExitCode {
 
     // Build a tokio runtime here (rather than tokio::main) so we can return
     // a precise ExitCode.
-    let rt = match tokio::runtime::Builder::new_multi_thread().enable_all().build() {
+    let rt = match tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+    {
         Ok(rt) => rt,
         Err(e) => {
             eprintln!("zk-pow-mine: failed to build tokio runtime: {e}");

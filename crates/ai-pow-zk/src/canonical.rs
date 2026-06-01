@@ -22,17 +22,18 @@
 //! cx.0/cx.2-coloc.0 KAT-first discipline. **No verify-path
 //! change in CR.0.**
 
+use p3_matrix::dense::RowMajorMatrix;
+
 use crate::blake3_tree::{left_len, strip_opening_rows, tile_chunk_range};
 use crate::chips::blake3::chip::pack_tweak;
 use crate::chips::blake3::compress::Blake3Tweak;
 use crate::chips::control::NUM_SELECTORS;
 use crate::chips::input::NOISE_PACKING_BASE;
-use crate::noise_ref::{e_value, f_value};
 use crate::composite_layout::{TILE_D, TILE_H};
 use crate::composite_preprocess::{build_preprocessed_columns, RowDescriptor};
+use crate::noise_ref::{e_value, f_value};
 use crate::params::ZkParams;
 use crate::Val;
-use p3_matrix::dense::RowMajorMatrix;
 
 /// Coarse per-row class — the CR.0 granularity (the bridge's
 /// top-level row regions). CR.1..CR.5 refine the
@@ -166,8 +167,7 @@ pub(crate) fn schedule_layout(
     let sweep_start = mh_end + 3;
     // §6(b)-G1/G2 sweep = (t/TILE_H)² · num_stripes · ⌈r/TILE_D⌉
     // (== place_useful_work_chain's rows_used).
-    let sweep_rows =
-        (t / TILE_H) * (t / TILE_H) * num_stripes * r.div_ceil(TILE_D);
+    let sweep_rows = (t / TILE_H) * (t / TILE_H) * num_stripes * r.div_ceil(TILE_D);
     let store_start = sweep_start + sweep_rows;
     // 16|r: producers are the co-located StripOpen leaf round-0
     // rows ⇒ ZERO separate store rows. fold_start =
@@ -182,7 +182,12 @@ pub(crate) fn schedule_layout(
     let jpot_start = trace_len - 8;
 
     ScheduleLayout {
-        na, mh_end, sweep_start, store_start, fold_start, fold_end,
+        na,
+        mh_end,
+        sweep_start,
+        store_start,
+        fold_start,
+        fold_end,
         jpot_start,
     }
 }
@@ -285,11 +290,7 @@ pub(crate) fn jackpot_tweak_packed() -> u64 {
 /// `JackpotHash` and (CR.4) `StripOpen*` — they differ *only* in
 /// the tweak and the finalize-extra selectors (+ CR.4's
 /// co-located leaf noise sub-slice pins, layered on top).
-fn blake3_block_descriptor(
-    j: usize,
-    tweak_packed: u64,
-    finalize_extra: &[usize],
-) -> RowDescriptor {
+fn blake3_block_descriptor(j: usize, tweak_packed: u64, finalize_extra: &[usize]) -> RowDescriptor {
     let mut selectors = [false; NUM_SELECTORS];
     if j == 0 {
         selectors[8] = true; // IS_NEW_BLAKE
@@ -388,7 +389,11 @@ enum StripBlock {
     /// `chunk_index` (`place_leaf_chunk`). `single_chunk_root` ⇒
     /// the lone-chunk path (block 15 carries `F_ROOT` + the
     /// `IS_HASH_A/B` finalize selector).
-    Leaf { chunk_index: u64, b: usize, single_chunk_root: bool },
+    Leaf {
+        chunk_index: u64,
+        b: usize,
+        single_chunk_root: bool,
+    },
     /// An auth-fold parent compression (`place_parent`); `is_root`
     /// ⇒ `F_ROOT` + the `IS_HASH_A/B` finalize selector.
     Parent { is_root: bool },
@@ -413,12 +418,7 @@ fn strip_blocks(c0: usize, c1: usize, num_chunks: usize) -> Vec<StripBlock> {
         }
         return out;
     }
-    fn subtree_inside(
-        out: &mut Vec<StripBlock>,
-        lo: usize,
-        hi: usize,
-        is_root: bool,
-    ) {
+    fn subtree_inside(out: &mut Vec<StripBlock>, lo: usize, hi: usize, is_root: bool) {
         if hi - lo == 1 {
             // place_leaf_chunk(chunk_index=lo,
             // single_chunk_root=false) — a leaf is never root when
@@ -437,14 +437,7 @@ fn strip_blocks(c0: usize, c1: usize, num_chunks: usize) -> Vec<StripBlock> {
         subtree_inside(out, mid, hi, false);
         out.push(StripBlock::Parent { is_root });
     }
-    fn fold(
-        out: &mut Vec<StripBlock>,
-        lo: usize,
-        hi: usize,
-        c0: usize,
-        c1: usize,
-        is_root: bool,
-    ) {
+    fn fold(out: &mut Vec<StripBlock>, lo: usize, hi: usize, c0: usize, c1: usize, is_root: bool) {
         if hi <= c0 || lo >= c1 {
             return; // auth sibling — 0 rows
         }
@@ -475,10 +468,8 @@ impl StripPlan {
         let k = params.k as usize;
         let m = params.m as usize;
         let n = params.n as usize;
-        let (ca0, ca1, a_nc) =
-            tile_chunk_range(bp.tile_i as usize, t, k, m * k);
-        let (cb0, cb1, b_nc) =
-            tile_chunk_range(bp.tile_j as usize, t, k, n * k);
+        let (ca0, ca1, a_nc) = tile_chunk_range(bp.tile_i as usize, t, k, m * k);
+        let (cb0, cb1, b_nc) = tile_chunk_range(bp.tile_j as usize, t, k, n * k);
         StripPlan {
             blocks_a: strip_blocks(ca0, ca1, a_nc),
             blocks_b: strip_blocks(cb0, cb1, b_nc),
@@ -508,13 +499,13 @@ const F_KEYED_HASH: u32 = 1 << 4;
 /// → `F_KEYED_HASH | F_PARENT | F_ROOT(is_root)`; the root
 /// block's finalize row gets the `IS_HASH_A/B` extra
 /// (`selector_idx`).
-fn strip_row_descriptor(
-    spec: StripBlock,
-    j: usize,
-    selector_idx: usize,
-) -> RowDescriptor {
+fn strip_row_descriptor(spec: StripBlock, j: usize, selector_idx: usize) -> RowDescriptor {
     let (tweak, is_root) = match spec {
-        StripBlock::Leaf { chunk_index, b, single_chunk_root } => {
+        StripBlock::Leaf {
+            chunk_index,
+            b,
+            single_chunk_root,
+        } => {
             let mut flags = F_KEYED_HASH;
             if b == 0 {
                 flags |= F_CHUNK_START;
@@ -552,8 +543,11 @@ fn strip_row_descriptor(
             )
         }
     };
-    let extra: &[usize] =
-        if is_root { core::slice::from_ref(&selector_idx) } else { &[] };
+    let extra: &[usize] = if is_root {
+        core::slice::from_ref(&selector_idx)
+    } else {
+        &[]
+    };
     let mut desc = blake3_block_descriptor(j, pack_tweak(&tweak), extra);
     // CR.4b: co-located leaf round-0 producer row (16|r path —
     // `row_schedule` guarantees 16|r, and `place_leaf_chunk`
@@ -662,12 +656,9 @@ fn row_descriptor(
             // co-located leaf round-0 producer rows (16|r path).
             if let StripBlock::Leaf { chunk_index, b, .. } = spec {
                 if j == 0 {
-                    let pins = coloc_leaf_noise_pins(
-                        side_a, chunk_index, b, params, bp,
-                    );
+                    let pins = coloc_leaf_noise_pins(side_a, chunk_index, b, params, bp);
                     desc.noise_packed = pins[0];
-                    desc.noise_packed_hi
-                        .copy_from_slice(&pins[1..8]);
+                    desc.noise_packed_hi.copy_from_slice(&pins[1..8]);
                 }
             }
             desc
@@ -686,7 +677,10 @@ fn row_descriptor(
                 debug_assert_eq!(row_idx, layout.mh_end + 2);
                 selectors[3] = true; // IS_USE_COMMITMENT_HASH
             }
-            RowDescriptor { selectors, ..RowDescriptor::padding() }
+            RowDescriptor {
+                selectors,
+                ..RowDescriptor::padding()
+            }
         }
         RowClass::JackpotHash => {
             // CR.3: the final 8-row keyed-BLAKE3 block at
@@ -716,7 +710,10 @@ fn row_descriptor(
             let is_reset = step == 0 && chunk == 0;
             let mut selectors = [false; NUM_SELECTORS];
             selectors[if is_reset { 0 } else { 1 }] = true;
-            RowDescriptor { selectors, ..RowDescriptor::padding() }
+            RowDescriptor {
+                selectors,
+                ..RowDescriptor::padding()
+            }
         }
         RowClass::Fold => {
             // CR.5: `place_fold_chain` row `offset` (0..num_stripes)
@@ -739,7 +736,14 @@ mod tests {
     use super::*;
 
     fn p16() -> ZkParams {
-        ZkParams { m: 16, k: 64, n: 16, noise_rank: 16, tile: 8, difficulty_bits: 0 }
+        ZkParams {
+            m: 16,
+            k: 64,
+            n: 16,
+            noise_rank: 16,
+            tile: 8,
+            difficulty_bits: 0,
+        }
     }
 
     #[test]
@@ -762,32 +766,38 @@ mod tests {
             8,
             "jackpot-hash block is the last 8 rows"
         );
-        let nsweep =
-            s.iter().filter(|&&c| c == RowClass::Sweep).count();
-        let nfold =
-            s.iter().filter(|&&c| c == RowClass::Fold).count();
+        let nsweep = s.iter().filter(|&&c| c == RowClass::Sweep).count();
+        let nfold = s.iter().filter(|&&c| c == RowClass::Fold).count();
         assert_eq!(nfold, (p.k / p.noise_rank) as usize, "fold = num_stripes");
         assert!(nsweep > 0 && s.contains(&RowClass::StripOpenB));
     }
 
     fn bp0() -> BlockPublic {
         BlockPublic {
-            tile_i: 0, tile_j: 0, kappa: [0u8; 32],
-            s_a: [0u8; 32], s_b: [0u8; 32],
+            tile_i: 0,
+            tile_j: 0,
+            kappa: [0u8; 32],
+            s_a: [0u8; 32],
+            s_b: [0u8; 32],
         }
     }
 
     #[test]
     fn cr1_canonical_program_pad_rows_are_exact_padding_pack() {
-        use crate::composite_full_air::PROGRAM_COLS;
         use p3_field::PrimeField64;
         use p3_matrix::Matrix;
 
+        use crate::composite_full_air::PROGRAM_COLS;
+
         // is_class_canonical fence: CR.0–CR.5 ⇒ EVERY class.
         for c in [
-            RowClass::Pad, RowClass::KeyPin, RowClass::JackpotHash,
-            RowClass::StripOpenA, RowClass::StripOpenB,
-            RowClass::Sweep, RowClass::Fold,
+            RowClass::Pad,
+            RowClass::KeyPin,
+            RowClass::JackpotHash,
+            RowClass::StripOpenA,
+            RowClass::StripOpenB,
+            RowClass::Sweep,
+            RowClass::Fold,
         ] {
             assert!(is_class_canonical(c), "{c:?} canonical by CR.5");
         }
@@ -826,9 +836,10 @@ mod tests {
 
     #[test]
     fn cr2_canonical_program_keypin_rows_are_exact() {
+        use p3_field::PrimeField64;
+
         use crate::chips::control::ControlChip;
         use crate::composite_full_air::PROGRAM_COLS;
-        use p3_field::PrimeField64;
 
         let p = p16();
         let len = 1 << 13;
@@ -839,15 +850,11 @@ mod tests {
         // Expected CONTROL_PREP for each key-pin row: exactly one
         // selector set (JOB_KEY idx 2 at mh_end+1, COMMITMENT_HASH
         // idx 3 at mh_end+2), mat_id=0, no fold/msg_pair.
-        for (row, sel_idx) in
-            [(l.mh_end + 1, 2usize), (l.mh_end + 2, 3usize)]
-        {
+        for (row, sel_idx) in [(l.mh_end + 1, 2usize), (l.mh_end + 2, 3usize)] {
             assert_eq!(l.class_of(row), RowClass::KeyPin);
             let mut sel = [false; NUM_SELECTORS];
             sel[sel_idx] = true;
-            let want_cp = ControlChip::pack_control_prep_full(
-                &sel, 0, false, 0, 0, 0,
-            );
+            let want_cp = ControlChip::pack_control_prep_full(&sel, 0, false, 0, 0, 0);
             // PROGRAM_COLS[0] = CONTROL_PREP.
             assert_eq!(
                 prog.values[row * w].as_canonical_u64(),
@@ -874,9 +881,10 @@ mod tests {
 
     #[test]
     fn cr3_canonical_program_jackpot_block_is_exact() {
+        use p3_field::PrimeField64;
+
         use crate::chips::control::ControlChip;
         use crate::composite_full_air::PROGRAM_COLS;
-        use p3_field::PrimeField64;
 
         let p = p16();
         let len = 1 << 13;
@@ -898,28 +906,30 @@ mod tests {
                 sel[9] = true; // IS_LAST_ROUND
                 sel[6] = true; // IS_HASH_JACKPOT
             }
-            let want_cp = ControlChip::pack_control_prep_full(
-                &sel, 0, false, 0, 0, 0,
-            );
+            let want_cp = ControlChip::pack_control_prep_full(&sel, 0, false, 0, 0, 0);
             // PROGRAM_COLS: [0]=CONTROL_PREP, [1..9]=NOISE×8,
             // [9]=CV_OR_TWEAK_PREP, [10]=AB_ID, [11]=STARK_ROW_IDX.
             assert_eq!(
-                prog.values[row * w].as_canonical_u64(), want_cp,
+                prog.values[row * w].as_canonical_u64(),
+                want_cp,
                 "jackpot row j={j} CONTROL_PREP"
             );
             for c in 1..9 {
                 assert_eq!(
-                    prog.values[row * w + c].as_canonical_u64(), 0,
+                    prog.values[row * w + c].as_canonical_u64(),
+                    0,
                     "jackpot row j={j} NOISE_PACKED_PREP[{}] must be 0",
                     c - 1
                 );
             }
             assert_eq!(
-                prog.values[row * w + 9].as_canonical_u64(), tw,
+                prog.values[row * w + 9].as_canonical_u64(),
+                tw,
                 "jackpot row j={j} CV_OR_TWEAK_PREP == jackpot tweak"
             );
             assert_eq!(
-                prog.values[row * w + 10].as_canonical_u64(), 0,
+                prog.values[row * w + 10].as_canonical_u64(),
+                0,
                 "jackpot row j={j} AB_ID_PREP must be 0"
             );
             assert_eq!(
@@ -948,7 +958,10 @@ mod tests {
                         assert_eq!(blocks.len(), 16);
                         assert!(blocks.iter().all(|b| matches!(
                             b,
-                            StripBlock::Leaf { single_chunk_root: true, .. }
+                            StripBlock::Leaf {
+                                single_chunk_root: true,
+                                ..
+                            }
                         )));
                     }
                     // Exactly one root block (the post-order last).
@@ -956,22 +969,17 @@ mod tests {
                         let roots = blocks
                             .iter()
                             .filter(|b| {
-                                matches!(
-                                    b,
-                                    StripBlock::Parent { is_root: true }
-                                ) || matches!(
-                                    b,
-                                    StripBlock::Leaf {
-                                        single_chunk_root: true,
-                                        ..
-                                    }
-                                )
+                                matches!(b, StripBlock::Parent { is_root: true })
+                                    || matches!(
+                                        b,
+                                        StripBlock::Leaf {
+                                            single_chunk_root: true,
+                                            ..
+                                        }
+                                    )
                             })
                             .count();
-                        assert_eq!(
-                            roots, 1,
-                            "nc={nc} [{c0},{c1}) must have exactly one root"
-                        );
+                        assert_eq!(roots, 1, "nc={nc} [{c0},{c1}) must have exactly one root");
                     }
                 }
             }
@@ -983,7 +991,12 @@ mod tests {
     fn row_schedule_rejects_non_16r() {
         // TEST_SMALL-shaped: r=4, 16∤4 — out of params-pure scope.
         let p = ZkParams {
-            m: 64, k: 64, n: 64, noise_rank: 4, tile: 8, difficulty_bits: 0,
+            m: 64,
+            k: 64,
+            n: 64,
+            noise_rank: 4,
+            tile: 8,
+            difficulty_bits: 0,
         };
         let _ = row_schedule(&p, 0, 0, 1 << 13);
     }
@@ -1012,7 +1025,10 @@ mod tests {
         //     ZkParams::validate.
         let mut p = good;
         p.noise_rank = 0;
-        assert!(canonical_program(&p, &bp, len).is_err(), "r=0 must yield Err");
+        assert!(
+            canonical_program(&p, &bp, len).is_err(),
+            "r=0 must yield Err"
+        );
 
         // (c) Canonical-specific: 16 ∤ noise_rank. r=8 is a valid
         //     power-of-two ≥ 2 that divides k=64 — so passes

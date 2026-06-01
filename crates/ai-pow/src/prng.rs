@@ -71,10 +71,12 @@ pub fn pearl_random_hash(
 ) -> [u8; 32] {
     let mut message = [0u8; 64];
     let prepend_value = (1 + index) as i32;
-    message[prepend_index * 4..prepend_index * 4 + 4]
-        .copy_from_slice(&prepend_value.to_le_bytes());
+    message[prepend_index * 4..prepend_index * 4 + 4].copy_from_slice(&prepend_value.to_le_bytes());
     message[32..64].copy_from_slice(seed);
-    *Hasher::new_keyed(key).update(&message).finalize().as_bytes()
+    *Hasher::new_keyed(key)
+        .update(&message)
+        .finalize()
+        .as_bytes()
 }
 
 fn xof(context: &str, root: &[u8], idx: u64) -> blake3::OutputReader {
@@ -204,12 +206,8 @@ fn pearl_permutation_pair(seed: &[u8; 32], key: &[u8; 32], j: u32, r: u32) -> (u
     let slot_idx = (j as usize) % PEARL_PAIRS_PER_HASH;
     let hash = pearl_random_hash(chunk_idx, seed, key, 1);
     let off = slot_idx * 4;
-    let random_uint32 = u32::from_le_bytes([
-        hash[off],
-        hash[off + 1],
-        hash[off + 2],
-        hash[off + 3],
-    ]);
+    let random_uint32 =
+        u32::from_le_bytes([hash[off], hash[off + 1], hash[off + 2], hash[off + 3]]);
     let rank_mask = r - 1;
     let first = random_uint32 & rank_mask;
     let second = first ^ (1 + mul_hi_u32(rank_mask, random_uint32));

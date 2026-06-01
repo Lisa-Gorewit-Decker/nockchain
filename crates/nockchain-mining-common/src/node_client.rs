@@ -20,9 +20,9 @@
 use std::pin::Pin;
 
 use futures::{Stream, StreamExt};
+use nockapp::nockapp::wire::WireRepr;
 use nockapp::noun::slab::NounSlab;
 use nockapp::noun::AtomExt;
-use nockapp::nockapp::wire::WireRepr;
 use nockapp_grpc::private_nockapp::client::PrivateNockAppGrpcClient;
 use nockapp_grpc::wire_conversion::nockapp_wire_to_grpc;
 use nockvm::noun::{Atom, D, NO, T, YES};
@@ -78,16 +78,16 @@ impl NodeClient {
         pkh_configs: Vec<MiningPkhConfig>,
     ) -> Result<(), NodeClientError> {
         let mut slab = NounSlab::new();
-        let set_mining_key_adv = <Atom as AtomExt>::from_value(&mut slab, "set-mining-key-advanced")
-            .expect("set-mining-key-advanced atom");
+        let set_mining_key_adv =
+            <Atom as AtomExt>::from_value(&mut slab, "set-mining-key-advanced")
+                .expect("set-mining-key-advanced atom");
 
         // v0 (pubkey) configs list — cons-cell list, terminated by 0.
         let mut configs_list = D(0);
         for config in configs {
             let mut keys_noun = D(0);
             for key in config.keys {
-                let key_atom =
-                    <Atom as AtomExt>::from_value(&mut slab, key).expect("key atom");
+                let key_atom = <Atom as AtomExt>::from_value(&mut slab, key).expect("key atom");
                 keys_noun = T(&mut slab, &[key_atom.as_noun(), keys_noun]);
             }
             let config_tuple = T(&mut slab, &[D(config.share), D(config.m), keys_noun]);
@@ -128,15 +128,11 @@ impl NodeClient {
         enable: bool,
     ) -> Result<(), NodeClientError> {
         let mut slab = NounSlab::new();
-        let enable_mining_atom = <Atom as AtomExt>::from_value(&mut slab, "enable-mining")
-            .expect("enable-mining atom");
+        let enable_mining_atom =
+            <Atom as AtomExt>::from_value(&mut slab, "enable-mining").expect("enable-mining atom");
         let poke = T(
             &mut slab,
-            &[
-                D(tas!(b"command")),
-                enable_mining_atom.as_noun(),
-                if enable { YES } else { NO },
-            ],
+            &[D(tas!(b"command")), enable_mining_atom.as_noun(), if enable { YES } else { NO }],
         );
         slab.set_root(poke);
         self.poke_wire(wire, slab).await
@@ -171,10 +167,7 @@ impl NodeClient {
         &mut self,
         head_filter: Vec<Vec<u8>>,
     ) -> Result<CandidateStream, NodeClientError> {
-        let raw = self
-            .client
-            .watch_effects(DEFAULT_PID, head_filter)
-            .await?;
+        let raw = self.client.watch_effects(DEFAULT_PID, head_filter).await?;
         let mapped = raw.filter_map(|item| async move {
             match item {
                 Err(e) => Some(Err(NodeClientError::Grpc(e))),

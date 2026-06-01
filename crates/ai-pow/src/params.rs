@@ -175,7 +175,7 @@ impl MatmulParams {
     /// strictly smaller and also in-envelope.)
     pub const LLAMA_3_1_8B_GATE_UP: Self = Self {
         m: 4096,
-        k: 4096, // hidden_size
+        k: 4096,  // hidden_size
         n: 14336, // intermediate_size
         noise_rank: 64,
         tile: 8,
@@ -206,7 +206,7 @@ impl MatmulParams {
     pub const LLAMA_3_1_8B_DOWN: Self = Self {
         m: 4096,
         k: 14336, // intermediate_size
-        n: 4096, // hidden_size
+        n: 4096,  // hidden_size
         noise_rank: 256,
         tile: 8,
         spot_checks: 80,
@@ -483,9 +483,9 @@ impl LlamaFfnLayer {
     /// group_1 iff `layer_idx ∈ 16..=31` else group_0.
     pub fn quant_group(&self) -> QuantGroup {
         match self {
-            LlamaFfnLayer::GateProj
-            | LlamaFfnLayer::UpProj
-            | LlamaFfnLayer::OProj => QuantGroup::Int7Mined,
+            LlamaFfnLayer::GateProj | LlamaFfnLayer::UpProj | LlamaFfnLayer::OProj => {
+                QuantGroup::Int7Mined
+            }
             LlamaFfnLayer::DownProj => QuantGroup::Fp8Deferred,
             LlamaFfnLayer::AttnQkv { layer_idx, .. } => {
                 if (16..=31).contains(layer_idx) {
@@ -510,10 +510,7 @@ impl LlamaFfnLayer {
     /// GQA `q=4096`, `k=v=1024` (8 KV heads × 128); `M` =
     /// `batch_seq` (the GEMM's batched-token dimension). Returned
     /// params are `validate_prod_envelope`-valid.
-    pub fn mineable_matmul_params(
-        &self,
-        batch_seq: u32,
-    ) -> Result<MatmulParams, ParamError> {
+    pub fn mineable_matmul_params(&self, batch_seq: u32) -> Result<MatmulParams, ParamError> {
         if self.quant_group() == QuantGroup::Fp8Deferred {
             return Err(ParamError::Fp8LayerNotMineable);
         }
@@ -813,7 +810,12 @@ mod tests {
         assert_eq!(p.pearl_trace_bound(), 1 << 23);
         assert_eq!(p.validate(), Err(ParamError::TraceBoundExceeded));
         // Halving the tile brings it back to exactly the bound.
-        let ok = MatmulParams { tile: 32, m: 64, n: 64, ..p };
+        let ok = MatmulParams {
+            tile: 32,
+            m: 64,
+            n: 64,
+            ..p
+        };
         assert_eq!(ok.pearl_trace_bound(), PEARL_TRACE_BOUND);
         ok.validate().unwrap();
     }
@@ -875,11 +877,20 @@ mod tests {
     #[test]
     fn envelope_rejects_each_security_violation() {
         // m too large (still tile-aligned: 2^24 and 128 are % 16 == 0).
-        let p = MatmulParams { m: (1 << 24) + 128, ..MatmulParams::PROD };
-        assert_eq!(p.validate_prod_envelope(), Err(ParamError::MatrixDimTooLarge));
+        let p = MatmulParams {
+            m: (1 << 24) + 128,
+            ..MatmulParams::PROD
+        };
+        assert_eq!(
+            p.validate_prod_envelope(),
+            Err(ParamError::MatrixDimTooLarge)
+        );
 
         // r below the {2^5..2^10} band (16 | 4096, pow2, but < 32).
-        let p = MatmulParams { noise_rank: 16, ..MatmulParams::PROD };
+        let p = MatmulParams {
+            noise_rank: 16,
+            ..MatmulParams::PROD
+        };
         assert_eq!(
             p.validate_prod_envelope(),
             Err(ParamError::NoiseRankOutOfEnvelope)
@@ -887,12 +898,22 @@ mod tests {
 
         // k outside the 16r..=4r² band (r=64 ⇒ band [1024, 16384];
         // k=512 is below it; 512%64==0, 64|512, trace ok).
-        let p = MatmulParams { k: 512, ..MatmulParams::PROD };
-        assert_eq!(p.validate_prod_envelope(), Err(ParamError::KOutOfSecurityBand));
+        let p = MatmulParams {
+            k: 512,
+            ..MatmulParams::PROD
+        };
+        assert_eq!(
+            p.validate_prod_envelope(),
+            Err(ParamError::KOutOfSecurityBand)
+        );
 
         // k not aligned to 64 (r=32, k=544: 32|544, in band [512,4096],
         // 544%64==32≠0).
-        let p = MatmulParams { noise_rank: 32, k: 544, ..MatmulParams::PROD };
+        let p = MatmulParams {
+            noise_rank: 32,
+            k: 544,
+            ..MatmulParams::PROD
+        };
         assert_eq!(p.validate_prod_envelope(), Err(ParamError::KNotAlignedTo64));
 
         // tile entropy floor: tile²<32 (tile=4 ⇒ 16<32; m,n%4==0,
@@ -905,7 +926,10 @@ mod tests {
             noise_rank: 32,
             ..MatmulParams::PROD
         };
-        assert_eq!(p.validate_prod_envelope(), Err(ParamError::TileEntropyTooLow));
+        assert_eq!(
+            p.validate_prod_envelope(),
+            Err(ParamError::TileEntropyTooLow)
+        );
     }
 
     /// `validate_prod_envelope` is strictly stronger than
@@ -933,11 +957,7 @@ mod tests {
     fn b3_quant_group_classification_matches_config() {
         use QkvProj::*;
         // group_1 INT7 (always mined): gate/up/o_proj.
-        for l in [
-            LlamaFfnLayer::GateProj,
-            LlamaFfnLayer::UpProj,
-            LlamaFfnLayer::OProj,
-        ] {
+        for l in [LlamaFfnLayer::GateProj, LlamaFfnLayer::UpProj, LlamaFfnLayer::OProj] {
             assert_eq!(l.quant_group(), QuantGroup::Int7Mined);
             assert!(l.is_mineable());
         }
@@ -956,12 +976,11 @@ mod tests {
             (31, QuantGroup::Int7Mined),
         ] {
             for which in [Q, K, V] {
-                let l = LlamaFfnLayer::AttnQkv { layer_idx: idx, which };
-                assert_eq!(
-                    l.quant_group(),
-                    want,
-                    "layer {idx} {which:?} group"
-                );
+                let l = LlamaFfnLayer::AttnQkv {
+                    layer_idx: idx,
+                    which,
+                };
+                assert_eq!(l.quant_group(), want, "layer {idx} {which:?} group");
             }
         }
     }
@@ -978,8 +997,11 @@ mod tests {
         for idx in [0u32, 7, 15] {
             for which in [Q, K, V] {
                 assert_eq!(
-                    LlamaFfnLayer::AttnQkv { layer_idx: idx, which }
-                        .mineable_matmul_params(4096),
+                    LlamaFfnLayer::AttnQkv {
+                        layer_idx: idx,
+                        which
+                    }
+                    .mineable_matmul_params(4096),
                     Err(ParamError::Fp8LayerNotMineable),
                     "early-layer {idx} {which:?} qkv is FP8 ⇒ rejected"
                 );
@@ -997,9 +1019,18 @@ mod tests {
             LlamaFfnLayer::GateProj,
             LlamaFfnLayer::UpProj,
             LlamaFfnLayer::OProj,
-            LlamaFfnLayer::AttnQkv { layer_idx: 16, which: Q },
-            LlamaFfnLayer::AttnQkv { layer_idx: 31, which: K },
-            LlamaFfnLayer::AttnQkv { layer_idx: 20, which: V },
+            LlamaFfnLayer::AttnQkv {
+                layer_idx: 16,
+                which: Q,
+            },
+            LlamaFfnLayer::AttnQkv {
+                layer_idx: 31,
+                which: K,
+            },
+            LlamaFfnLayer::AttnQkv {
+                layer_idx: 20,
+                which: V,
+            },
         ] {
             let p = l
                 .mineable_matmul_params(bs)
@@ -1009,9 +1040,7 @@ mod tests {
                 "{l:?} params must be envelope-valid"
             );
         }
-        let gu = LlamaFfnLayer::GateProj
-            .mineable_matmul_params(bs)
-            .unwrap();
+        let gu = LlamaFfnLayer::GateProj.mineable_matmul_params(bs).unwrap();
         assert_eq!(
             (gu.k, gu.n),
             (

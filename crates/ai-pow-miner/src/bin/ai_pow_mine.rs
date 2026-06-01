@@ -2,9 +2,10 @@
 //!
 //! Mirrors `zk-pow-mine` in shape: connects to a `nockchain` node's
 //! private NockAppService gRPC, subscribes to `%mine` candidate
-//! effects, runs the AI-PoW prover, and pokes `[%mined nonce found-idx]`
-//! back on the `AiPowMinerWire::Mined` wire (`SOURCE = "ai-pow-miner"`,
-//! `VERSION = 1`).
+//! effects, runs the AI-PoW prover, and submits
+//! `[%command %pow %ai-pow cert]` on the `AiPowMinerWire::Mined` wire
+//! (`SOURCE = "ai-pow-miner"`, `VERSION = 1`) when a recursive
+//! certificate builder is configured.
 //!
 //! Quick start (assuming a fakenet node on `127.0.0.1:5555`):
 //!
@@ -29,7 +30,11 @@ use std::time::Duration;
 
 use ai_pow::params::MatmulParams;
 use ai_pow::prover::ProverOptions;
-use ai_pow_miner::run::{default_v0_configs, run, AiPuzzleInputs, MinerConfig, MinerError};
+use ai_pow::zk_bridge::prove_ai_pow_recursive_certificate;
+use ai_pow_miner::certificate_noun::build_ai_pow_certificate_noun;
+use ai_pow_miner::run::{
+    default_v0_configs, run, AiPowCertificateBuildError, AiPuzzleInputs, MinerConfig, MinerError,
+};
 use ai_pow_miner::MineOptions;
 use anyhow::{anyhow, bail, Context, Result};
 use clap::Parser;
@@ -121,9 +126,7 @@ fn main() -> ExitCode {
     init_tracing(&args.log);
 
     let Some(pkh_configs) = build_pkh_configs(&args) else {
-        eprintln!(
-            "ai-pow-mine: must supply --mining-pkh <HASH> or --mining-pkh-adv \"share,pkh\""
-        );
+        eprintln!("ai-pow-mine: must supply --mining-pkh <HASH> or --mining-pkh-adv \"share,pkh\"");
         return ExitCode::from(1);
     };
 
@@ -150,7 +153,10 @@ fn main() -> ExitCode {
         reconnect_max_attempts: args.reconnect_max_attempts,
     };
 
-    let rt = match tokio::runtime::Builder::new_multi_thread().enable_all().build() {
+    let rt = match tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+    {
         Ok(rt) => rt,
         Err(e) => {
             eprintln!("ai-pow-mine: failed to build tokio runtime: {e}");
@@ -244,12 +250,46 @@ fn build_puzzle_inputs(args: &Args) -> Result<AiPuzzleInputs> {
             .to_vec(),
     };
 
+    let puzzle_id_for_builder = puzzle_id.clone();
+    let params_for_builder = params;
+    let a = Arc::new(a);
+    let b = Arc::new(b);
+    let a_for_builder = a.clone();
+    let b_for_builder = b.clone();
+    let certificate_builder = Arc::new(move |sol: &ai_pow_miner::MinedSolution| {
+        ai_pow::verify_at_target(
+            &puzzle_id_for_builder, &sol.nonce, &params_for_builder, &sol.target, &sol.proof,
+        )
+        .map_err(|e| {
+            AiPowCertificateBuildError(format!(
+                "refusing to build recursive certificate before successful matmul target check: {e}"
+            ))
+        })?;
+        let ctx = ai_pow::prover::BlockContext::build(
+            &puzzle_id_for_builder,
+            a_for_builder.as_slice(),
+            b_for_builder.as_slice(),
+            &params_for_builder,
+        )
+        .map_err(|e| AiPowCertificateBuildError(e.to_string()))?;
+        let run = prove_ai_pow_recursive_certificate(
+            &ctx, &params_for_builder, &sol.nonce, &sol.target, sol.found_idx,
+        )
+        .map_err(|e| AiPowCertificateBuildError(e.to_string()))?;
+        build_ai_pow_certificate_noun(
+            &run.zk_params, run.found_idx, run.trace_height, &run.commitments, &run.pis,
+            &run.certificate,
+        )
+        .map_err(|e| AiPowCertificateBuildError(e.to_string()))
+    });
+
     Ok(AiPuzzleInputs {
         puzzle_id,
         params,
-        a: Arc::new(a),
-        b: Arc::new(b),
+        a,
+        b,
         prover_opts: ProverOptions::default(),
+        certificate_builder: Some(certificate_builder),
     })
 }
 
@@ -265,8 +305,7 @@ fn parse_hex_32(s: &str, label: &str) -> Result<[u8; 32]> {
 }
 
 fn load_matrix(path: &PathBuf, expected_len: usize, label: &str) -> Result<Vec<i8>> {
-    let bytes =
-        fs::read(path).with_context(|| format!("{label}: read {}", path.display()))?;
+    let bytes = fs::read(path).with_context(|| format!("{label}: read {}", path.display()))?;
     if bytes.len() != expected_len {
         bail!(
             "{label}: expected {expected_len} bytes (i8 entries), got {}",
@@ -274,4 +313,66 @@ fn load_matrix(path: &PathBuf, expected_len: usize, label: &str) -> Result<Vec<i
         );
     }
     Ok(bytes.into_iter().map(|b| b as i8).collect())
+}
+
+#[cfg(test)]
+mod tests {
+    use ai_pow_miner::{MiningCancel, MiningJob, NonceAnchors};
+
+    use super::*;
+
+    fn test_args() -> Args {
+        Args {
+            node_addr: "http://127.0.0.1:5555".to_string(),
+            mining_pkh: Some("9yPePjfWAdUnzaQKyxcRXKRa5PpUzKKEwtpECBZsUYt9Jd7egSDEWoV".to_string()),
+            mining_pkh_adv: None,
+            puzzle_id: None,
+            m: 64,
+            k: 512,
+            n: 64,
+            noise_rank: 32,
+            tile: 8,
+            spot_checks: 8,
+            difficulty_bits: 0,
+            a: None,
+            b: None,
+            synth_seed: Some("ai-pow-zkp-builder-target-check".to_string()),
+            max_extranonces: Some(1),
+            reconnect_backoff_initial_ms: 1_000,
+            reconnect_backoff_max_ms: 30_000,
+            reconnect_max_attempts: 5,
+            log: "off".to_string(),
+        }
+    }
+
+    #[test]
+    fn recursive_certificate_builder_rejects_before_zkp_when_target_check_fails() {
+        let puzzle = build_puzzle_inputs(&test_args()).expect("test puzzle");
+        let easy_target = [0xFF; 32];
+        let job = MiningJob {
+            puzzle_id: &puzzle.puzzle_id,
+            anchors: NonceAnchors::nck_only([7; 32]),
+            params: &puzzle.params,
+            target: easy_target,
+            a: puzzle.a.as_slice(),
+            b: puzzle.b.as_slice(),
+        };
+        let mut opts = MineOptions::default();
+        opts.max_extranonces = Some(1);
+        let mut sol =
+            ai_pow_miner::mining::run(&job, &opts, MiningCancel::new()).expect("easy solution");
+        sol.target = [0; 32];
+
+        let build = puzzle
+            .certificate_builder
+            .as_ref()
+            .expect("production builder configured");
+        let err = build(&sol).expect_err("bad target must not build a recursive certificate");
+        assert!(
+            err.to_string().contains(
+                "refusing to build recursive certificate before successful matmul target check"
+            ),
+            "unexpected error: {err}"
+        );
+    }
 }
