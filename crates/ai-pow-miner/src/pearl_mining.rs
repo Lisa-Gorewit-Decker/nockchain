@@ -402,6 +402,34 @@ mod tests {
     }
 
     #[test]
+    fn pearl_merge_mining_requires_nockchain_target_not_pearl_target() {
+        let params = pearl_test_params();
+        let mut header = pearl_test_header();
+        header.nbits = 0x1d00_0000; // zero Pearl target after compact decode.
+        let config = pearl_test_config();
+        let (a, b) = synth_matrices(b"pearl-ticket-loop-nockchain-only", &params);
+        let job = pearl_job(&header, &config, &params, &a, &b, [0xff; 32]);
+
+        let mined = run(&job, &PearlMergeMineOptions::default(), MiningCancel::new())
+            .expect("Nockchain target hit should not require Pearl target hit");
+
+        assert_eq!(mined.stats.matmul_attempts_tried, 1);
+        mined
+            .attempt
+            .public_params
+            .check_nockchain_jackpot_target(&job.nockchain_target)
+            .expect("ticket satisfies Nockchain target");
+        assert!(
+            mined
+                .attempt
+                .public_params
+                .check_pearl_jackpot_difficulty()
+                .is_err(),
+            "fixture must prove the miner did not require Pearl target satisfaction"
+        );
+    }
+
+    #[test]
     fn pearl_merge_mining_misses_do_not_emit_ticket_artifacts() {
         let params = pearl_test_params();
         let header = pearl_test_header();
