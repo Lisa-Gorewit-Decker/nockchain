@@ -45,10 +45,12 @@ What `ai-pow` provides:
 - **Mining**: `mine(block_commitment, nonce, a, b, params, opts)` searches
   for a tile whose keyed-hash of the tile state falls below a shape-aware
   difficulty target `2^(256-b) · r · t²` (Pearl §4.5).
-- **Verification**: `verify(block_commitment, nonce, params, proof)`
-  replays one tile from the supplied row/column strips plus per-block
-  noise, then re-checks both the tile-state commitment and σ
-  Fiat-Shamir-sampled spot tiles.
+- **Verification**: production callers use
+  `verify_ncmn_at_target(puzzle_id, candidate_nck_commitment, nonce, params, target, proof)`;
+  lower-level callers that already enforce the production envelope and chain
+  binding use `verify_at_target(block_commitment, nonce, params, target, proof)`.
+  The old `verifier::verify` helper derives its target from
+  `params.difficulty_bits` and is not a consensus API.
 - **Proof format**: 32-byte tile-state commitment `comm_m`, BLAKE3-keyed
   matrix commitments `H_A` and `H_B`, and per-tile openings (raw strips,
   m-path to `comm_m`, per-row/col paths to `H_A` / `H_B`).

@@ -77,13 +77,14 @@ pub enum VerifyError {
     BColMerkleMismatch,
 }
 
-/// Verify a `MatmulProof` for the given block context using
-/// `difficulty_target(params)`.
+/// Non-production helper: verify a `MatmulProof` for the given block context
+/// using `difficulty_target(params)`.
 ///
 /// Consensus callers with an externally supplied chain target must use
-/// [`verify_at_target`] instead. This wrapper is retained for tests and
-/// non-consensus callers whose target is intentionally derived from
-/// `params.difficulty_bits`.
+/// [`verify_at_target`] or [`verify_ncmn_at_target`] instead. This wrapper is
+/// retained under `ai_pow::verifier::verify` for tests and local tools whose
+/// target is intentionally derived from `params.difficulty_bits`; it is not
+/// re-exported from the crate root.
 pub fn verify(
     block_commitment: &[u8],
     nonce: &[u8],

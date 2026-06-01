@@ -12,6 +12,8 @@ const AI_POW_MINER_LIB_RS: &str = include_str!("../../ai-pow-miner/src/lib.rs");
 const AI_POW_MINER_CERT_NOUN_RS: &str = include_str!("../../ai-pow-miner/src/certificate_noun.rs");
 const AI_POW_MINER_RUN_RS: &str = include_str!("../../ai-pow-miner/src/run.rs");
 const AI_POW_MINER_BIN_RS: &str = include_str!("../../ai-pow-miner/src/bin/ai_pow_mine.rs");
+const AI_POW_LIB_RS: &str = include_str!("../../ai-pow/src/lib.rs");
+const AI_POW_VERIFIER_RS: &str = include_str!("../../ai-pow/src/verifier.rs");
 const AI_POW_ZK_RECURSION_RS: &str = include_str!("../../ai-pow-zk/src/recursion.rs");
 const AI_POW_ZK_BRIDGE_RS: &str = include_str!("../../ai-pow/src/zk_bridge.rs");
 
@@ -98,6 +100,25 @@ fn ai_pow_consensus_wire_is_structured_but_fail_closed_without_verifier() {
         "AI-PoW miner submissions must use the canonical recursive certificate \
          command payload, not a legacy nonce/tile mined artifact, and must keep \
          bounded structured noun decode coverage"
+    );
+    let verifier_reexports = AI_POW_LIB_RS
+        .split("pub use crate::verifier::{")
+        .nth(1)
+        .and_then(|tail| tail.split("};").next())
+        .expect("ai-pow crate root must have a verifier re-export block");
+    assert!(
+        verifier_reexports.contains("verify_at_target")
+            && verifier_reexports.contains("verify_ncmn_at_target")
+            && !verifier_reexports
+                .split(',')
+                .map(str::trim)
+                .any(|item| item == "verify")
+            && AI_POW_VERIFIER_RS.contains("Non-production helper")
+            && AI_POW_VERIFIER_RS.contains("it is not")
+            && AI_POW_VERIFIER_RS.contains("re-exported from the crate root"),
+        "plain params-derived-target verification must not be advertised as \
+         the production crate-root verifier; consensus must use explicit-target \
+         or NCMN verifier boundaries"
     );
     let target_check = AI_POW_MINER_BIN_RS
         .find("verify_at_target")

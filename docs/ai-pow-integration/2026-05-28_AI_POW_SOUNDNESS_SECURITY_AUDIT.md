@@ -40,7 +40,9 @@ A production verifier must accept an AI-PoW block only if all of the following a
 ### SND-01: Plain verifier ignores the chain target
 
 Severity: Critical
-Status: Confirmed
+Status: Implemented at the Rust API boundary; consensus still remains
+fail-closed until the Hoon verifier wiring calls the target-explicit
+recursive verifier.
 
 Evidence:
 
@@ -48,6 +50,11 @@ Evidence:
 - The mining loop passes that target to `mine_with_context_at_target`: `crates/ai-pow-miner/src/mining.rs`.
 - `ai_pow::verifier::verify` has no target argument and instead computes `difficulty_target(params)` from `params.difficulty_bits`: `crates/ai-pow/src/verifier.rs`.
 - `mine_with_context_at_target` explicitly documents that the chain target may not equal `difficulty_target(params)`: `crates/ai-pow/src/prover.rs`.
+- The crate root no longer re-exports `verify`; production-facing imports
+  expose `verify_at_target`, `verify_prod_at_target`, and
+  `verify_ncmn_at_target`.
+- `ai-pow` README now documents `verify_ncmn_at_target` as the production
+  verifier and labels `verifier::verify` as non-consensus.
 
 Attack sketch:
 
@@ -61,16 +68,20 @@ Fake proof of work if consensus uses `ai_pow::verifier::verify` directly.
 
 Fix plan:
 
-- Add `verify_at_target(block_commitment, nonce, params, target, proof)`.
-- Make `verify` either private/test-only or a thin wrapper only for params-derived-target tests.
-- In future Hoon/Rust consensus integration, call only the target-explicit verifier.
+- Done: add `verify_at_target(block_commitment, nonce, params, target, proof)`.
+- Done: keep `verify` only as `ai_pow::verifier::verify` for
+  params-derived-target tests/local tools and remove it from the crate-root
+  production-facing re-export set.
+- In future Hoon/Rust consensus integration, call only the target-explicit
+  recursive verifier boundary.
 - Consider removing `difficulty_bits` from the plain external-target path or explicitly documenting it as non-consensus metadata.
 
 Tests:
 
 - Mine with an easy external target and verify with a harder chain target; `verify_at_target` must reject.
 - Set `params.difficulty_bits = 0` and chain target to zero; verifier must reject unless the actual hash is zero.
-- Regression test that `verify` is not reachable from the consensus integration module.
+- Regression test that `verify` is not advertised from the crate-root
+  production API surface.
 
 ### SND-02: ZK bridge proves a nonce-independent PoW hash
 
