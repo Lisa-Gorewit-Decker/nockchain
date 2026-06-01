@@ -4734,16 +4734,26 @@ mod tests {
         )
         .expect("precheck accepts actual proof cumsum when Pearl-bound slots match");
 
-        let mut bad_pis = proof_pis.clone();
-        bad_pis.hash_jackpot[0] ^= 1;
-        assert!(matches!(
-            pearl_merge_recursive_certificate_parts_from_ticket_public_inputs(
-                &attempt, &a, &b, 16, &bad_pis,
-            ),
-            Err(CertificateNounError::PearlMergePublicInputMismatch(
-                "public-inputs.hash-jackpot"
-            ))
-        ));
+        let cases: [(&str, fn(&mut CompositePublicInputs)); 6] = [
+            ("public-inputs.hash-a", |pis| pis.hash_a[0] ^= 1),
+            ("public-inputs.hash-b", |pis| pis.hash_b[0] ^= 1),
+            ("public-inputs.job-key", |pis| pis.job_key[0] ^= 1),
+            ("public-inputs.commitment-hash", |pis| {
+                pis.commitment_hash[0] ^= 1
+            }),
+            ("public-inputs.jackpot", |pis| pis.jackpot[0] ^= 1),
+            ("public-inputs.hash-jackpot", |pis| pis.hash_jackpot[0] ^= 1),
+        ];
+        for (field, tamper) in cases {
+            let mut bad_pis = proof_pis.clone();
+            tamper(&mut bad_pis);
+            assert!(matches!(
+                pearl_merge_recursive_certificate_parts_from_ticket_public_inputs(
+                    &attempt, &a, &b, 16, &bad_pis,
+                ),
+                Err(CertificateNounError::PearlMergePublicInputMismatch(got)) if got == field
+            ));
+        }
     }
 
     #[test]
