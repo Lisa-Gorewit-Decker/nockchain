@@ -13,6 +13,7 @@ const AI_POW_MINER_CERT_NOUN_RS: &str = include_str!("../../ai-pow-miner/src/cer
 const AI_POW_MINER_RUN_RS: &str = include_str!("../../ai-pow-miner/src/run.rs");
 const AI_POW_MINER_BIN_RS: &str = include_str!("../../ai-pow-miner/src/bin/ai_pow_mine.rs");
 const AI_POW_LIB_RS: &str = include_str!("../../ai-pow/src/lib.rs");
+const AI_POW_PROOF_RS: &str = include_str!("../../ai-pow/src/proof.rs");
 const AI_POW_PROVER_RS: &str = include_str!("../../ai-pow/src/prover.rs");
 const AI_POW_VERIFIER_RS: &str = include_str!("../../ai-pow/src/verifier.rs");
 const AI_POW_ZK_RECURSION_RS: &str = include_str!("../../ai-pow-zk/src/recursion.rs");
@@ -125,6 +126,18 @@ fn ai_pow_consensus_wire_is_structured_but_fail_closed_without_verifier() {
         "AI-PoW miner submissions must use the canonical recursive certificate \
          command payload, not a legacy nonce/tile mined artifact, and must keep \
          bounded structured noun decode coverage"
+    );
+    assert!(
+        AI_POW_PROOF_RS.contains("Wire format for the legacy plain `MatmulProof`")
+            && AI_POW_PROOF_RS.contains("not Nockchain's canonical production AI-PoW")
+            && AI_POW_PROOF_RS
+                .contains("production AI-PoW uses the structured recursive certificate noun")
+            && AI_POW_PROOF_RS.contains("pub fn encode_consensus")
+            && AI_POW_PROOF_RS.contains("pub fn decode_consensus_for_params")
+            && AI_POW_PROOF_RS.matches("#[deprecated(").count() >= 2,
+        "legacy MatmulProof consensus-envelope helpers must stay visibly \
+         deprecated so they cannot be mistaken for canonical AI-PoW block \
+         proof serialization"
     );
     let verifier_reexports = AI_POW_LIB_RS
         .split("pub use crate::verifier::{")

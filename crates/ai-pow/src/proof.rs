@@ -1,4 +1,11 @@
-//! Wire format for `MatmulProof`.
+//! Wire format for the legacy plain `MatmulProof`.
+//!
+//! `MatmulProof` is a prover/internal diagnostic artifact for the non-ZK
+//! Pearl opening proof. It is not Nockchain's canonical production AI-PoW
+//! block or wire proof. Production block persistence and transmission use the
+//! recursive AI-PoW certificate noun from `ai-pow-miner`, with verifier-derived
+//! statement checks around it. The versioned envelope below is retained for
+//! legacy/offline tooling and parameter-aware decode tests only.
 //!
 //! Per Pearl §4.6 the block-opening proof contains:
 //!  * Matrix commitments `H_A`, `H_B`.
@@ -146,11 +153,18 @@ impl MatmulProof {
         Ok(out)
     }
 
-    /// Encode a versioned, length-prefixed verifier-facing proof artifact.
+    /// Encode a versioned, length-prefixed legacy plain proof artifact.
     ///
     /// The inner body is the legacy `MatmulProof` layout. The outer envelope
     /// prevents cross-version ambiguity and forces decoders to reject trailing
     /// bytes before attempting shape-specific verification.
+    ///
+    /// This is not the canonical Nockchain AI-PoW production block/wire
+    /// artifact. Production callers must submit the structured recursive
+    /// certificate noun instead.
+    #[deprecated(
+        note = "legacy plain MatmulProof envelope; production AI-PoW uses the structured recursive certificate noun"
+    )]
     pub fn encode_consensus(&self) -> Result<Vec<u8>, EncodeError> {
         let body = self.encode_checked()?;
         let body_len = checked_len_u32(body.len(), "consensus body")?;
@@ -260,11 +274,18 @@ impl MatmulProof {
         })
     }
 
-    /// Decode a versioned consensus proof artifact for verifier/wire use.
+    /// Decode a versioned legacy plain proof artifact for verifier/tooling use.
     ///
     /// This rejects unknown versions, malformed length prefixes, and trailing
     /// bytes at the envelope layer, then applies the exact parameter-derived
     /// shape limits from [`Self::decode_for_params`] to the inner proof body.
+    ///
+    /// This is not the canonical Nockchain AI-PoW production block/wire
+    /// artifact decoder. Production callers must decode and verify the
+    /// structured recursive certificate noun instead.
+    #[deprecated(
+        note = "legacy plain MatmulProof envelope; production AI-PoW uses the structured recursive certificate noun"
+    )]
     pub fn decode_consensus_for_params(
         bytes: &[u8],
         params: &MatmulParams,
@@ -547,6 +568,7 @@ fn checked_len_u32(len: usize, what: &'static str) -> Result<u32, EncodeError> {
 }
 
 #[cfg(test)]
+#[allow(deprecated)]
 mod tests {
     use super::*;
 

@@ -380,6 +380,7 @@ pub(crate) enum ConsensusVerifyError {
 }
 
 #[cfg(test)]
+#[allow(deprecated)]
 impl AiPowConsensusArtifact {
     fn encode_consensus(&self) -> Result<Vec<u8>, ArtifactCodecError> {
         let plain = self.plain_proof.encode_consensus()?;

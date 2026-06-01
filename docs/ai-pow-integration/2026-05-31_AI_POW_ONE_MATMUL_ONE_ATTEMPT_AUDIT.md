@@ -884,6 +884,28 @@ intentionally invalid proof-node and confirms wrong statement metadata or a
 wrong NCMN anchor returns the cheap precheck error before proof-node
 reconstruction is attempted.
 
+## Latest Re-Audit: Legacy Plain-Proof Envelope Naming
+
+`MatmulProof` still exposes historical helpers named `encode_consensus` and
+`decode_consensus_for_params`. Those helpers serialize the plain Pearl opening
+proof, not Nockchain's canonical production AI-PoW block artifact. The names
+are legacy from the earlier selected-tile/Layer-0 transition and are easy to
+misread now that production submission is `[%ai-pow nonce cert]` with a
+structured recursive certificate noun.
+
+This is an API soundness hazard rather than a verifier acceptance bug: a
+downstream caller that sees "consensus" on `MatmulProof` could accidentally
+persist or transmit the wrong proof object, bypassing the recursive certificate
+path and reopening the selected-tile/plain-proof confusion this audit is
+closing.
+
+Code status after this re-audit: the `MatmulProof` module now documents itself
+as the legacy plain-proof wire format, states that it is not the canonical
+production block/wire proof, and marks the versioned plain-proof envelope
+helpers deprecated with a note pointing callers to the structured recursive
+certificate noun. The nockchain wire regression asserts those warnings remain
+present.
+
 This is intentionally fail-closed. Pearl's reference miner computes every
 output tile before returning the final matrix and records an opened block when a
 tile hash hits the target, but the proof artifact only opens the winning tile.
