@@ -5,10 +5,12 @@ Nockchain. The crate implements the `(A + E)(B + F)` tiled matmul puzzle
 from the Pearl Whitepaper (cited by name; PDF not in repo)
 end-to-end: low-rank noise generation, tile-by-tile mining with an
 iterative 512-bit accumulator state, shape-aware difficulty thresholds,
-and a replication-style verifier.
+and a replication-style verifier for diagnostic/plain-proof checks.
 
-This is **Phase 1** of the AI-PoW track. The production path is
-`ai-pow` (the mineable matmul unit) plus `ai-pow-zk` (the SNARK side).
+This is **Phase 1** of the AI-PoW track. The production block artifact is
+not the plain `MatmulProof`; it is the structured recursive certificate noun
+built through the `ai-pow-zk` integration and consumed at the Rust/Hoon
+boundary. Plain proofs are mining internals and diagnostics.
 An earlier experimental verifiable-inference crate (`ai-pow-vi`) was
 removed — it was offline tooling, not on the production path.
 
@@ -45,12 +47,20 @@ What `ai-pow` provides:
 - **Mining**: `mine(block_commitment, nonce, a, b, params, opts)` searches
   for a tile whose keyed-hash of the tile state falls below a shape-aware
   difficulty target `2^(256-b) · r · t²` (Pearl §4.5).
-- **Verification**: production callers use
-  `verify_ncmn_at_target(puzzle_id, candidate_nck_commitment, nonce, params, target, proof)`;
-  lower-level callers that already enforce the production envelope and chain
-  binding use `verify_at_target(block_commitment, nonce, params, target, proof)`.
-  The old `verifier::verify` helper derives its target from
-  `params.difficulty_bits` and is not a consensus API.
+- **Plain-proof verification**: diagnostic and pre-ZKP callers use
+  `ai_pow::verifier::verify_ncmn_at_target(puzzle_id, candidate_nck_commitment, nonce, params, target, proof)`
+  to confirm that a mined `MatmulProof` hit the exact chain target before
+  recursive certificate generation. Lower-level test/tooling callers can use
+  `ai_pow::verifier::verify_at_target(block_commitment, nonce, params, target, proof)`.
+  These plain verifiers are intentionally not re-exported from the crate root
+  and are not canonical block-acceptance APIs. The old `verifier::verify`
+  helper derives its target from `params.difficulty_bits` and is not a
+  consensus API.
+- **Production certificate verification**: Nockchain block/persistence/wire
+  boundaries must verify the structured recursive certificate noun and run the
+  full-matmul statement precheck. Multi-tile selected-tile recursive
+  statements remain fail-closed until the recursive proof binds the intended
+  full-matmul work unit.
 - **Proof format**: 32-byte tile-state commitment `comm_m`, BLAKE3-keyed
   matrix commitments `H_A` and `H_B`, and per-tile openings (raw strips,
   m-path to `comm_m`, per-row/col paths to `H_A` / `H_B`).

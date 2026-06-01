@@ -144,24 +144,18 @@ fn ai_pow_consensus_wire_is_structured_but_fail_closed_without_verifier() {
          deprecated so they cannot be mistaken for canonical AI-PoW block \
          proof serialization"
     );
-    let verifier_reexports = AI_POW_LIB_RS
-        .split("pub use crate::verifier::{")
-        .nth(1)
-        .and_then(|tail| tail.split("};").next())
-        .expect("ai-pow crate root must have a verifier re-export block");
     assert!(
-        verifier_reexports.contains("verify_at_target")
-            && verifier_reexports.contains("verify_ncmn_at_target")
-            && !verifier_reexports
-                .split(',')
-                .map(str::trim)
-                .any(|item| item == "verify")
+        !AI_POW_LIB_RS.contains("pub use crate::verifier::{")
+            && !AI_POW_LIB_RS.contains("verify_at_target")
+            && !AI_POW_LIB_RS.contains("verify_ncmn_at_target")
+            && !AI_POW_LIB_RS.contains("verify_prod_at_target")
+            && AI_POW_LIB_RS.contains("intentionally not re-exported at the crate root")
             && AI_POW_VERIFIER_RS.contains("Non-production helper")
             && AI_POW_VERIFIER_RS.contains("it is not")
             && AI_POW_VERIFIER_RS.contains("re-exported from the crate root"),
-        "plain params-derived-target verification must not be advertised as \
-         the production crate-root verifier; consensus must use explicit-target \
-         or NCMN verifier boundaries"
+        "plain MatmulProof verification must not be advertised as a \
+         crate-root production API; the canonical block artifact is the \
+         structured recursive certificate noun"
     );
     assert!(
         AI_POW_ZK_BRIDGE_RS.contains("pub fn prove_ai_pow_recursive_certificate")
@@ -236,6 +230,8 @@ fn ai_pow_consensus_wire_is_structured_but_fail_closed_without_verifier() {
             && AI_POW_MINER_BIN_RS.contains("certificate_builder: Some")
             && !AI_POW_MINER_BIN_RS.contains("certificate_builder: None")
             && !AI_POW_MINER_BIN_RS.contains("ai_pow::verify_at_target(")
+            && !AI_POW_MINER_BIN_RS.contains("ai_pow::verify_ncmn_at_target(")
+            && AI_POW_MINER_BIN_RS.contains("ai_pow::verifier::verify_ncmn_at_target(")
             && AI_POW_MINER_BIN_RS.contains("&sol.candidate_nck_commitment")
             && AI_POW_MINER_BIN_RS.contains(
                 "recursive_certificate_builder_rejects_nonce_anchor_substitution_before_zkp"

@@ -1,8 +1,8 @@
 //! NCMN v1 nonce format shared by the miner and verifier.
 //!
 //! The nonce is part of the PoW transcript, but it also carries a chain anchor
-//! that the production verifier must check before accepting work for a
-//! candidate Nockchain block.
+//! that the plain pre-ZKP check and final recursive-certificate verifier must
+//! check before accepting work for a candidate Nockchain block.
 //!
 //! Layout:
 //!

@@ -259,7 +259,7 @@ fn build_puzzle_inputs(args: &Args) -> Result<AiPuzzleInputs> {
     let a_for_builder = a.clone();
     let b_for_builder = b.clone();
     let certificate_builder = Arc::new(move |sol: &ai_pow_miner::MinedSolution| {
-        ai_pow::verify_ncmn_at_target(
+        ai_pow::verifier::verify_ncmn_at_target(
             &puzzle_id_for_builder, &sol.candidate_nck_commitment, &sol.nonce, &params_for_builder,
             &sol.target, &sol.proof,
         )

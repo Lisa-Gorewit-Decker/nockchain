@@ -930,6 +930,24 @@ recursive certificate. Regression coverage builds jammed `%ai-pow` artifacts
 with an intentionally invalid proof node and confirms wrong candidate anchors
 and missed targets return the cheap precheck errors before proof-node decode.
 
+## Latest Re-Audit: Plain Verifier API Visibility
+
+The plain `MatmulProof` verifier remains useful as an internal/diagnostic
+target-hit check before recursive certificate generation, but it is not the
+canonical block proof verifier. A crate-root re-export of
+`verify_ncmn_at_target` or `verify_at_target` makes the plain proof path look
+like a normal production API and increases the risk that a downstream caller
+admits a legacy selected-tile/plain proof instead of the structured recursive
+certificate noun.
+
+Code status after this re-audit: `ai-pow` no longer re-exports plain proof
+verifier functions from the crate root. Callers that intentionally need the
+plain pre-ZKP check must use the explicit `ai_pow::verifier::...` module path.
+The production miner was updated to use that explicit module path before
+recursive certificate generation, and the crate README now states that plain
+verifiers are diagnostics/prechecks, not canonical block-acceptance APIs. The
+wire regression asserts that crate-root plain verifier re-exports stay absent.
+
 This is intentionally fail-closed. Pearl's reference miner computes every
 output tile before returning the final matrix and records an opened block when a
 tile hash hits the target, but the proof artifact only opens the winning tile.

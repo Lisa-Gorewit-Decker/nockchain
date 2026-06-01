@@ -38,7 +38,7 @@ pub mod synth;
 pub mod tile_hash;
 pub mod verifier;
 
-/// F1 integration: `MatmulProof` → `ai-pow-zk` `CompositeTrace`.
+/// F1 integration: internal `MatmulProof` → recursive AI-PoW certificate.
 /// Only compiled with the `zk` feature (pulls in `ai-pow-zk`).
 #[cfg(feature = "zk")]
 pub mod zk_bridge;
@@ -47,6 +47,10 @@ pub use crate::params::MatmulParams;
 pub use crate::proof::{MatmulProof, TileOpening};
 pub use crate::prover::{mine, mine_block, BlockContext, MineError, ProverOptions};
 pub use crate::synth::synth_matrices;
-pub use crate::verifier::{
-    verify_at_target, verify_ncmn_at_target, verify_prod_at_target, VerifyError,
-};
+pub use crate::verifier::VerifyError;
+
+// Plain `MatmulProof` verification remains available under
+// `ai_pow::verifier` for diagnostics and for the miner's pre-ZKP target hit
+// check. It is intentionally not re-exported at the crate root: Nockchain's
+// canonical production block artifact is the structured recursive certificate
+// noun, not a plain opening proof.

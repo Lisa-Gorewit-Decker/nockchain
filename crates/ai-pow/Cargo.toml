@@ -9,9 +9,10 @@ publish = false
 blake3 = { workspace = true }
 thiserror = { workspace = true }
 rayon = { workspace = true, optional = true }
-# Optional Plonky3 SNARK over the matmul AIR. Disabled by default so the
-# core mining path stays lean; enable `zk` to wrap a plain `MatmulProof`
-# in a Plonky3 STARK at the Pearl-analog point in `prover.rs`.
+# Optional Plonky3 STARK/recursion integration. Disabled by default so the
+# core mining path stays lean; enable `zk` for recursive AI-PoW certificate
+# construction. The plain `MatmulProof` remains a prover-internal diagnostic,
+# not the canonical block artifact.
 ai-pow-zk = { path = "../ai-pow-zk", optional = true }
 bincode = { workspace = true, features = ["serde"], optional = true }
 

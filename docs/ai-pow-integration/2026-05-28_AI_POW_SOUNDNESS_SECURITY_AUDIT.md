@@ -4,11 +4,13 @@ Date: 2026-05-28
 Branch audited: `claude/ai-pow-integration-squash`
 Scope: `crates/ai-pow`, `crates/ai-pow-zk`, and the immediate miner/consensus integration points needed to evaluate proof soundness and verifier DoS risk.
 
-Update: this is a historical audit. The 2026-05-31 grinding remediation moves
-the Nockchain nonce into Pearl's attempt state before `kappa`, commitments,
-noise seeds, and matmul-derived tile states. Current code should be evaluated
-against `2026-05-31_AI_POW_ONE_MATMUL_ONE_ATTEMPT_AUDIT.md` for nonce-grinding
-status.
+Update: this is a historical audit from before the grinding remediation. The
+2026-05-31 remediation moves the Nockchain nonce into Pearl's attempt state
+before `kappa`, commitments, noise seeds, and matmul-derived tile states.
+Current code should be evaluated against
+`2026-05-31_AI_POW_ONE_MATMUL_ONE_ATTEMPT_AUDIT.md` for nonce-grinding status
+and against `2026-05-29_AI_ZKP_NOUN_WIRE_SPEC.md` for the canonical recursive
+certificate wire format.
 
 ## Executive Summary
 
@@ -28,7 +30,9 @@ A production verifier must accept an AI-PoW block only if all of the following a
 - `params` are exactly the chain-admitted AI puzzle parameters and pass the production envelope.
 - `target` is the exact chain target for the candidate block.
 - `nonce` is the exact nonce committed into the block.
-- `kappa = commitment_key(block_commitment, params_tag(params))`.
+- `attempt_state = block_state(block_commitment, nonce)`, and
+  `kappa = commitment_key(attempt_state, params_tag(params))`; omitting the
+  nonce here would re-open cached-matmul grinding.
 - `s_b` and `s_a` are derived from authenticated row/column commitments, or otherwise are public inputs that the verifier can recompute from committed data.
 - `pow_key = pow_key_for_nonce(s_a, nonce)`.
 - The winning hash is `BLAKE3(M, key=pow_key)`, not `BLAKE3(M, key=s_a)`.
@@ -50,11 +54,12 @@ Evidence:
 - The mining loop passes that target to `mine_with_context_at_target`: `crates/ai-pow-miner/src/mining.rs`.
 - `ai_pow::verifier::verify` has no target argument and instead computes `difficulty_target(params)` from `params.difficulty_bits`: `crates/ai-pow/src/verifier.rs`.
 - `mine_with_context_at_target` explicitly documents that the chain target may not equal `difficulty_target(params)`: `crates/ai-pow/src/prover.rs`.
-- The crate root no longer re-exports `verify`; production-facing imports
-  expose `verify_at_target`, `verify_prod_at_target`, and
-  `verify_ncmn_at_target`.
-- `ai-pow` README now documents `verify_ncmn_at_target` as the production
-  verifier and labels `verifier::verify` as non-consensus.
+- The crate root no longer re-exports plain `MatmulProof` verifier helpers.
+  Intentional plain-proof checks must use the explicit `ai_pow::verifier`
+  module path.
+- `ai-pow` README now documents `verify_ncmn_at_target` as a diagnostic /
+  pre-ZKP target-hit check, not as the canonical block verifier, and labels
+  `verifier::verify` as non-consensus.
 
 Attack sketch:
 
@@ -521,9 +526,9 @@ only `validate()`.
 Current status:
 
 - `ai-pow-miner::mining::run` enforces `validate_prod_envelope()` at entry.
-- `ai_pow::verifier::verify_ncmn_at_target`,
-  `verify_prod_at_target`, and the structured certificate noun verifier enforce
-  the production envelope.
+- `ai_pow::verifier::verify_ncmn_at_target` and `verify_prod_at_target` enforce
+  the production envelope for plain-proof prechecks. The structured recursive
+  certificate noun verifier is the block/wire boundary.
 - `zk_bridge::prove_and_verify_for_block`,
   `prove_ai_pow_recursive_certificate`, and
   `verify_ai_pow_full_matmul_production_statement` enforce the production

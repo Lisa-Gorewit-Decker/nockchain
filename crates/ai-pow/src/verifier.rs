@@ -97,11 +97,14 @@ pub fn verify(
     verify_at_target(block_commitment, nonce, params, &target, proof)
 }
 
-/// Verify a `MatmulProof` against an explicit 256-bit little-endian target.
+/// Verify a plain `MatmulProof` against an explicit 256-bit little-endian
+/// target.
 ///
 /// This is a low-level verifier primitive. It structurally validates `params`,
-/// but it does not enforce the production consensus envelope; production
-/// callers must use [`verify_prod_at_target`] or [`verify_ncmn_at_target`].
+/// but it does not enforce the production consensus envelope; plain-proof
+/// callers that need those extra checks must use [`verify_prod_at_target`] or
+/// [`verify_ncmn_at_target`]. Nockchain block acceptance must verify the
+/// structured recursive certificate noun instead of a plain proof.
 pub fn verify_at_target(
     block_commitment: &[u8],
     nonce: &[u8],
@@ -174,8 +177,11 @@ pub fn verify_at_target(
     Ok(())
 }
 
-/// Verify a `MatmulProof` against an explicit target after enforcing the
-/// production consensus parameter envelope.
+/// Verify a plain `MatmulProof` against an explicit target after enforcing the
+/// production parameter envelope.
+///
+/// This is not a canonical Nockchain block verifier. It exists for diagnostics
+/// and pre-ZKP checks before recursive certificate generation.
 pub fn verify_prod_at_target(
     block_commitment: &[u8],
     nonce: &[u8],
@@ -194,9 +200,11 @@ pub fn verify_prod_at_target(
 /// attempt state (`κ = commitment_key(block_state(puzzle_id, nonce),
 /// params_tag)`). `candidate_nck_commitment`
 /// is the trusted 32-byte commitment to the candidate Nockchain block that
-/// must appear inside the nonce. This wrapper is the production-safe entry
-/// point for NCMN-wrapped mining: it rejects malformed or mis-anchored nonces
-/// before running the ordinary AI-PoW verifier.
+/// must appear inside the nonce. This wrapper is the production-envelope plain
+/// proof precheck for NCMN-wrapped mining: it rejects malformed or
+/// mis-anchored nonces before running the ordinary AI-PoW verifier. It is not
+/// the canonical block verifier; persisted/wire AI-PoW blocks must carry and
+/// verify the structured recursive certificate noun.
 pub fn verify_ncmn_at_target(
     puzzle_id: &[u8],
     candidate_nck_commitment: &[u8; 32],
