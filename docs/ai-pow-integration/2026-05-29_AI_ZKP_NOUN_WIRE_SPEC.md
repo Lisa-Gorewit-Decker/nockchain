@@ -259,10 +259,12 @@ artifacts:
 2. `certificate_noun::decode_ai_pow_artifact_jam` is the byte-oriented
    production boundary for persisted/network artifacts. It enforces
    `CertificateNounLimits::max_jam_bytes` before cueing attacker-controlled
-   jam bytes, rejects empty input before cue, contains cue panics, then calls
-   the same bounded artifact parser. It also requires `jam(cue(bytes)) ==
-   bytes`, so non-canonical jam encodings such as trailing bytes are rejected
-   instead of being silently canonicalized.
+   jam bytes, then runs a no-allocation jam preflight enforcing total noun
+   count, noun depth, and atom byte limits before any `NounSlab` allocation.
+   It rejects empty input before cue, contains cue panics, then calls the same
+   bounded artifact parser. It also requires `jam(cue(bytes)) == bytes`, so
+   non-canonical jam encodings such as trailing bytes are rejected instead of
+   being silently canonicalized.
 3. `certificate_noun::verify_ai_pow_ncmn_artifact_jam` is the intended
    consensus-facing helper when the caller has jam bytes: byte-size cap, cue,
    bounded decode, NCMN anchor check, cheap statement precheck, and recursive

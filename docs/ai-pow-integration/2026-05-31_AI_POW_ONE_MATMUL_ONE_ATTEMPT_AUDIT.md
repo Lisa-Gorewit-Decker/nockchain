@@ -586,7 +586,8 @@ certificate; Hoon consensus still needs the verifier jet/wiring.
    `verify_decoded_ai_pow_ncmn_artifact` for the full persisted/wire artifact
    `[%ai-pow nonce cert]`; the Hoon/Rust verifier path must call this boundary
    with the trusted puzzle id, candidate block commitment, params, and target.
-   The jam-byte entrypoint caps attacker input before cueing.
+   The jam-byte entrypoint caps attacker input and preflights noun count,
+   depth, and atom bytes before cueing.
 3. The `%ai-pow` wire carries `[%ai-pow nonce cert]`, where `nonce` is an
    `@uxncmn` atom. This keeps the recursive certificate as the only proof
    artifact while still carrying the nonce commitment parameter needed to prove

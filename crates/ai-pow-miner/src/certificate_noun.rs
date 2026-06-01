@@ -322,6 +322,7 @@ pub fn decode_ai_pow_artifact_jam(
             actual: jammed.len(),
         });
     }
+    preflight_ai_pow_artifact_jam(jammed, limits)?;
 
     let mut slab: NounSlab = NounSlab::new();
     let root = catch_unwind(AssertUnwindSafe(|| {
@@ -333,6 +334,121 @@ pub fn decode_ai_pow_artifact_jam(
         return Err(CertificateNounError::NonCanonicalJam);
     }
     decode_ai_pow_artifact_slab(&slab, limits)
+}
+
+fn preflight_ai_pow_artifact_jam(
+    jammed: &[u8],
+    limits: CertificateNounLimits,
+) -> Result<(), CertificateNounError> {
+    let total_bits = jammed
+        .len()
+        .checked_mul(8)
+        .ok_or(CertificateNounError::LimitExceeded("jam bytes"))?;
+    let mut cursor = 0usize;
+    let mut total_nodes = 0usize;
+    let mut stack = vec![1usize];
+
+    while let Some(depth) = stack.pop() {
+        if depth > limits.max_depth {
+            return Err(CertificateNounError::LimitExceeded("jam noun depth"));
+        }
+        total_nodes = total_nodes
+            .checked_add(1)
+            .ok_or(CertificateNounError::LimitExceeded("jam noun count"))?;
+        if total_nodes > limits.max_total_nodes {
+            return Err(CertificateNounError::LimitExceeded("jam noun count"));
+        }
+
+        let first = bit_at(jammed, cursor).ok_or(CueError::TruncatedBuffer)?;
+        cursor += 1;
+        if first {
+            let second = bit_at(jammed, cursor).ok_or(CueError::TruncatedBuffer)?;
+            cursor += 1;
+            if second {
+                let backref = rub_usize(&mut cursor, jammed, total_bits, "jam backref")?;
+                if backref >= cursor {
+                    return Err(CertificateNounError::Cue(CueError::BadBackref));
+                }
+            } else {
+                let child_depth = depth
+                    .checked_add(1)
+                    .ok_or(CertificateNounError::LimitExceeded("jam noun depth"))?;
+                stack.push(child_depth);
+                stack.push(child_depth);
+            }
+        } else {
+            let atom_bits = rub_usize(&mut cursor, jammed, total_bits, "jam atom size")?;
+            let atom_bytes = atom_bits.saturating_add(7) / 8;
+            if atom_bytes > limits.max_atom_bytes {
+                return Err(CertificateNounError::LimitExceeded("jam atom bytes"));
+            }
+            cursor = cursor
+                .checked_add(atom_bits)
+                .ok_or(CertificateNounError::LimitExceeded("jam atom size"))?;
+            if cursor > total_bits {
+                return Err(CertificateNounError::Cue(CueError::TruncatedBuffer));
+            }
+        }
+    }
+
+    Ok(())
+}
+
+fn rub_usize(
+    cursor: &mut usize,
+    jammed: &[u8],
+    total_bits: usize,
+    field: &'static str,
+) -> Result<usize, CertificateNounError> {
+    let Some(idx) = first_one(jammed, *cursor, total_bits) else {
+        return Err(CertificateNounError::Cue(CueError::TruncatedBuffer));
+    };
+    if idx == 0 {
+        *cursor = (*cursor)
+            .checked_add(1)
+            .ok_or(CertificateNounError::LimitExceeded(field))?;
+        return Ok(0);
+    }
+
+    let size_bits = idx - 1;
+    if size_bits >= usize::BITS as usize {
+        return Err(CertificateNounError::LimitExceeded(field));
+    }
+    *cursor = (*cursor)
+        .checked_add(idx + 1)
+        .ok_or(CertificateNounError::LimitExceeded(field))?;
+    if total_bits < (*cursor).saturating_add(size_bits) {
+        return Err(CertificateNounError::Cue(CueError::TruncatedBuffer));
+    }
+
+    let mut value = 1usize << size_bits;
+    for bit in 0..size_bits {
+        if bit_at(jammed, *cursor + bit).ok_or(CueError::TruncatedBuffer)? {
+            value |= 1usize << bit;
+        }
+    }
+    *cursor = (*cursor)
+        .checked_add(size_bits)
+        .ok_or(CertificateNounError::LimitExceeded(field))?;
+    Ok(value)
+}
+
+fn first_one(jammed: &[u8], start: usize, total_bits: usize) -> Option<usize> {
+    let mut offset = 0usize;
+    let mut cursor = start;
+    while cursor < total_bits {
+        if bit_at(jammed, cursor)? {
+            return Some(offset);
+        }
+        offset += 1;
+        cursor += 1;
+    }
+    None
+}
+
+fn bit_at(jammed: &[u8], bit: usize) -> Option<bool> {
+    let byte = *jammed.get(bit / 8)?;
+    Some(((byte >> (bit % 8)) & 1) == 1)
 }
 
 /// Decode and validate a full Hoon `%ai-pow` block artifact noun.
@@ -2638,6 +2754,27 @@ mod tests {
         assert!(matches!(
             decode_ai_pow_artifact_jam(&non_canonical, CertificateNounLimits::default()),
             Err(CertificateNounError::NonCanonicalJam)
+        ));
+
+        let mut node_limits = CertificateNounLimits::default();
+        node_limits.max_total_nodes = 1;
+        assert!(matches!(
+            decode_ai_pow_artifact_jam(&jammed, node_limits),
+            Err(CertificateNounError::LimitExceeded("jam noun count"))
+        ));
+
+        let mut depth_limits = CertificateNounLimits::default();
+        depth_limits.max_depth = 1;
+        assert!(matches!(
+            decode_ai_pow_artifact_jam(&jammed, depth_limits),
+            Err(CertificateNounError::LimitExceeded("jam noun depth"))
+        ));
+
+        let mut atom_limits = CertificateNounLimits::default();
+        atom_limits.max_atom_bytes = 0;
+        assert!(matches!(
+            decode_ai_pow_artifact_jam(&jammed, atom_limits),
+            Err(CertificateNounError::LimitExceeded("jam atom bytes"))
         ));
 
         let mut limits = CertificateNounLimits::default();

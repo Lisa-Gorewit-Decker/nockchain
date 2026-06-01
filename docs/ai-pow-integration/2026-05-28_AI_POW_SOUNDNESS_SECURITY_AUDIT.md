@@ -399,9 +399,11 @@ Evidence:
 - `decode_ai_pow_artifact_jam` enforces a jammed-byte cap before cueing the
   block artifact, so the future consensus path has a bounded byte entrypoint
   rather than relying on every caller to remember to cap attacker input first.
-  It also rejects empty jam input and converts cue panics into verifier errors,
-  preventing malformed block artifacts from crashing the verifier process, and
-  rejects non-canonical jam encodings by requiring a byte-identical re-jam.
+  It also runs a no-allocation jam preflight for noun count, depth, and atom
+  bytes before any `NounSlab` allocation, rejects empty jam input, converts cue
+  panics into verifier errors, preventing malformed block artifacts from
+  crashing the verifier process, and rejects non-canonical jam encodings by
+  requiring a byte-identical re-jam.
 - The Hoon `%ai-pow` wire now carries `[%ai-pow nonce=ai-ncmn
   cert=ai-pow-certificate]`, so the verifier has the NCMN nonce needed to bind
   the recursive certificate to the block attempt.
