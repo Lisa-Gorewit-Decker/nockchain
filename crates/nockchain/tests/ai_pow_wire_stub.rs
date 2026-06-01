@@ -18,6 +18,8 @@ const AI_POW_PROVER_RS: &str = include_str!("../../ai-pow/src/prover.rs");
 const AI_POW_VERIFIER_RS: &str = include_str!("../../ai-pow/src/verifier.rs");
 const AI_POW_ZK_RECURSION_RS: &str = include_str!("../../ai-pow-zk/src/recursion.rs");
 const AI_POW_ZK_BRIDGE_RS: &str = include_str!("../../ai-pow/src/zk_bridge.rs");
+const AI_POW_ZK_README_MD: &str = include_str!("../../ai-pow-zk/README.md");
+const AI_POW_ZK_LIB_RS: &str = include_str!("../../ai-pow-zk/src/lib.rs");
 const AI_POW_PHASE_B_DESIGN_MD: &str =
     include_str!("../../ai-pow-zk/docs/2026-05-18_PHASE_B_DESIGN.md");
 const AI_POW_NOUN_DESIGN_MD: &str = include_str!(
@@ -68,6 +70,28 @@ fn ai_pow_consensus_wire_is_structured_but_fail_closed_without_verifier() {
             && AI_POW_NOUN_DESIGN_MD.contains("prover-internal"),
         "live design docs must not describe nonce-amortized matmul grinding or \
          raw Layer-0 proofs as the production AI-PoW wire artifact"
+    );
+    assert!(
+        AI_POW_ZK_README_MD.contains("canonical recursive AI-PoW certificate")
+            && AI_POW_ZK_README_MD.contains("plain `MatmulProof` remains a miner diagnostic")
+            && AI_POW_ZK_README_MD
+                .contains("raw Layer-0 proof is not the production block artifact")
+            && AI_POW_ZK_README_MD
+                .contains("multi-tile selected-tile statements intentionally fail")
+            && AI_POW_ZK_README_MD.contains("Cache-friendly")
+            && AI_POW_ZK_README_MD
+                .contains("reuse across nonce attempts is a consensus vulnerability")
+            && AI_POW_ZK_LIB_RS.contains("Nockchain's canonical recursive AI-PoW certificate")
+            && AI_POW_ZK_LIB_RS.contains("Full-matmul recursive statement")
+            && AI_POW_ZK_LIB_RS
+                .contains("Production AI-PoW is intentionally minimal-reuse across nonce attempts")
+            && AI_POW_ZK_LIB_RS.contains("not an optimization target")
+            && !AI_POW_ZK_README_MD.contains("wrap the multi-MB plain proof")
+            && !AI_POW_ZK_README_MD.contains("from a verified plain proof")
+            && !AI_POW_ZK_LIB_RS.contains("the `ai-pow` plain proof"),
+        "ai-pow-zk top-level docs must present the recursive certificate as \
+         canonical and must not advertise plain-proof wrapping as the block \
+         certificate path"
     );
     assert!(
         AI_POW_MINER_RUN_RS.contains("build_ai_pow_certificate_poke")

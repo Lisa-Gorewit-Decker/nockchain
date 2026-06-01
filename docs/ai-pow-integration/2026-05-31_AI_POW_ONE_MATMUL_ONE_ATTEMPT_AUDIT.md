@@ -967,6 +967,28 @@ The structural `prove_and_verify_for_block_inner(..., require_prod_envelope =
 false)` path remains available for local AIR/chip regression tests that
 intentionally exercise arbitrary selected tiles.
 
+## Latest Re-Audit: ai-pow-zk Top-Level Documentation
+
+The `ai-pow-zk` library docs had been partially updated for recursive
+certificates, but the README still described the crate as wrapping a multi-MB
+plain proof and constructing traces from a verified plain proof. That wording
+was historical and conflicted with the current canonical block artifact:
+`[%ai-pow nonce cert]` carrying the recursive certificate noun, with
+`MatmulProof` only serving as miner diagnostic / pre-ZKP target-hit evidence.
+
+Code status after this re-audit: the `ai-pow-zk` README and crate-level docs
+now describe the recursive AI-PoW certificate as the production-facing artifact,
+state that raw Layer-0 proofs and plain `MatmulProof` values are not persisted
+block proofs, and repeat the fail-closed rule for multi-tile selected-tile
+statements. The Nockchain wire regression now checks the `ai-pow-zk` top-level
+docs for those claims and rejects the old plain-proof-wrapping phrases.
+
+The same top-level docs now surface the minimal-reuse security invariant:
+changing the NCMN nonce must force fresh transcript-derived commitments, noise,
+noised matrix strips, tile states, jackpot preimages, and proof witness data.
+Any cache-friendly reuse of those values across nonce attempts is treated as
+consensus attack surface, not as a production optimization target.
+
 This is intentionally fail-closed. Pearl's reference miner computes every
 output tile before returning the final matrix and records an opened block when a
 tile hash hits the target, but the proof artifact only opens the winning tile.

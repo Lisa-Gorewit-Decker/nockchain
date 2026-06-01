@@ -1,9 +1,10 @@
 # `ai-pow-zk`
 
-EXPERIMENTAL — a Plonky3 SNARK circuit for the
-[`ai-pow`](../ai-pow/) tiling matmul puzzle. The role is the same as
-Pearl's `zk-pow`: wrap the multi-MB plain proof
-in a compact SNARK so it can fit in a block certificate.
+EXPERIMENTAL — a Plonky3 STARK and recursive-certificate stack for the
+[`ai-pow`](../ai-pow/) tiling matmul puzzle. The production-facing role is to
+build the canonical recursive AI-PoW certificate for Nockchain block
+submission. The plain `MatmulProof` remains a miner diagnostic / pre-ZKP
+target-hit check; it is not the persisted block artifact.
 
 ## Cryptographic assumptions (the load-bearing primitives)
 
@@ -433,16 +434,23 @@ anchor merge-mining compat.
 
 ## Where this fits in the `ai-pow` flow
 
-`ai-pow-zk` is downstream of `ai-pow`'s `MatmulProof` / plain
-proof. The plan is for `ai-pow` to construct a `CompositeTrace`
-from a verified plain proof + place the corresponding instructions
-into specific rows, then call `composite_prove` to produce the
-compact SNARK that gets transmitted in the block certificate.
+`ai-pow-zk` is downstream of `ai-pow`'s nonce-bound attempt context. The
+`ai-pow` bridge constructs a `CompositeTrace` and
+`CompositePublicInputs` from verifier-derived attempt data, proves the
+Layer-0 composite STARK, and wraps that proof with the canonical recursive
+certificate. The recursive certificate plus statement metadata is what the
+Hoon-compatible noun encoder serializes for block submission.
 
-The `composite_prove` / `composite_verify` API is the boundary;
-neither crate sees the other's types past `ZkParams` +
-`CompositeTrace` + `CompositePublicInputs`.
+The `composite_prove` / `composite_verify` APIs are Layer-0 primitives. They
+are useful for circuit tests and for the recursive-certificate builder, but the
+raw Layer-0 proof is not the production block artifact. Block, wire, and Hoon
+boundaries must consume the recursive certificate and run the full-matmul
+statement precheck; multi-tile selected-tile statements intentionally fail
+closed until the recursive proof binds the intended full-matmul work unit.
 
-Today the integration is one-directional — `ai-pow-zk` exposes the
-API; `ai-pow` hasn't yet been updated to actually call it. The
-`prover.rs` in `ai-pow` has a stub comment marking the call site.
+The production attempt boundary is intentionally minimal-reuse. Changing the
+NCMN nonce must force fresh transcript-derived commitments, noise, noised matrix
+strips, tile states, jackpot preimages, and proof witness data. Cache-friendly
+reuse across nonce attempts is a consensus vulnerability for this puzzle, not a
+desired optimization target; only immutable non-work inputs such as matrix bytes,
+shape metadata, and chain-pinned parameters may be reused across attempts.

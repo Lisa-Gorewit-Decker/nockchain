@@ -1,10 +1,19 @@
 //! Plonky3 SNARK circuit for the `ai-pow` tiling matmul puzzle.
 //!
-//! Mirrors Pearl's `zk-pow` role: where Pearl uses Plonky2 to compress
-//! its multi-MB `PlainProof` into a ~60 KB `ZKProof` (see
-//! `Pearl zk-pow api/prove.rs::zk_prove_plain_proof`), this crate
-//! uses Plonky3 over Goldilocks + Tip5 + FRI to do the equivalent for
-//! the `ai-pow` plain proof.
+//! Mirrors Pearl's `zk-pow` role at the proof-certificate layer: where Pearl
+//! uses a compact proof to certify the opened useful-work statement, this
+//! crate uses Plonky3 over Goldilocks + Tip5 + FRI plus recursion to build
+//! Nockchain's canonical recursive AI-PoW certificate. The plain
+//! `MatmulProof` remains a miner-side diagnostic/pre-ZKP target-hit check,
+//! not the persisted block artifact.
+//!
+//! ## Attempt Reuse Boundary
+//!
+//! Production AI-PoW is intentionally minimal-reuse across nonce attempts.
+//! Changing the NCMN nonce must force fresh transcript-derived commitments,
+//! noise, noised matrix strips, tile states, jackpot preimages, and proof
+//! witness data. Cache-friendly reuse of those values is a consensus
+//! vulnerability for this puzzle, not an optimization target.
 //!
 //! ## Public API
 //!
@@ -64,16 +73,14 @@
 //! - **`h_a` / `h_b` matrix bindings** (task #52). The witness's
 //!   `a_rows` / `b_cols` aren't yet tied to chain-pinned chunk-Merkle
 //!   roots. Multi-week deferred work.
-//! - **Structured noun serialization for the recursive certificate.**
-//!   The current Rust measurement path serializes the L1 certificate as
-//!   a Rust proof object; consensus still needs the proof-shaped noun
-//!   format described in `docs/ai-pow-integration/`.
-//! - **Hoon/kernel verifier wiring.** The Rust recursive production
-//!   certificate now binds the Layer-0 AI-PoW public-input vector as outer
-//!   STARK public values and verifies it with
-//!   [`recursion::verify_recursive_certificate`]. Consensus still needs the
-//!   Hoon jet/wiring that decodes the structured noun, reconstructs the
-//!   verifier-derived statement from block data, and calls that Rust verifier.
+//! - **Full-matmul recursive statement.** The current recursive certificate
+//!   verifies one selected tile. Production block admission therefore fails
+//!   closed for multi-tile params until the recursive statement binds a
+//!   full-matmul aggregate or equivalent full-work certificate.
+//! - **Hoon noun verifier hook.** The structured recursive-certificate noun
+//!   encoder exists in the miner crate, but consensus still needs the jet /
+//!   wiring that decodes the noun at the block boundary, reconstructs the
+//!   verifier-derived statement from block data, and calls the Rust verifier.
 //!   Until that hook is wired, the Hoon/kernel path remains fail-closed.
 
 pub mod bench_suite;
