@@ -5558,6 +5558,53 @@ mod tests {
             ))
         ));
 
+        assert!(matches!(
+            precheck_ai_pow_pearl_merge_command_metadata_with_context(
+                &command_slab,
+                CertificateNounLimits::default(),
+                PearlMergeAiPowVerifierContext {
+                    candidate_nock_block_commitment: &statement.aux.nock_block_commitment,
+                    a_row_major: &a,
+                    b_col_major: &b,
+                    nockchain_target: &[0u8; 32],
+                    max_pattern_len: 16,
+                },
+            ),
+            Err(CertificateNounError::PearlMergeStatement(
+                PearlCompatError::NockchainTargetNotMet
+            ))
+        ));
+
+        let mut bad_commitments = commitments;
+        bad_commitments.h_b_chunk[0] ^= 1;
+        let bad_cert_slab = build_certificate_slab_with_statement_and_raw_node(
+            &zk_params_from_matmul(&params),
+            0,
+            expected_layer0_rows(&params).required_trace_len(),
+            &bad_commitments,
+            &pis,
+            |_| D(0),
+        );
+        let bad_artifact_slab =
+            build_pearl_merge_artifact_slab(&statement, &aux_inclusion, &bad_cert_slab);
+        let bad_command_slab = build_ai_pow_command_slab(&bad_artifact_slab);
+        assert!(matches!(
+            precheck_ai_pow_pearl_merge_command_metadata_with_context(
+                &bad_command_slab,
+                CertificateNounLimits::default(),
+                PearlMergeAiPowVerifierContext {
+                    candidate_nock_block_commitment: &statement.aux.nock_block_commitment,
+                    a_row_major: &a,
+                    b_col_major: &b,
+                    nockchain_target: &[0xffu8; 32],
+                    max_pattern_len: 16,
+                },
+            ),
+            Err(CertificateNounError::PearlMergePublicInputMismatch(
+                "commitments.h-b-chunk"
+            ))
+        ));
+
         let decoded = decode_ai_pow_pearl_merge_command_metadata_slab(
             &command_slab,
             CertificateNounLimits::default(),
