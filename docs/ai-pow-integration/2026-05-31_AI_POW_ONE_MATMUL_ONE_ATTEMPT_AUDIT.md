@@ -1019,6 +1019,23 @@ and messages identify it as `ai-pow-mine-prover`, and its optional output is
 documented as legacy plain `MatmulProof` diagnostics rather than a canonical
 block artifact.
 
+## Latest Re-Audit: Jammed Artifact Verifier Source of Truth
+
+The jammed `%ai-pow` verifier already enforced the intended DoS-resistant
+ordering: byte cap, jam preflight, cue, canonical jam check, NCMN anchor check,
+metadata-only statement precheck, proof-node reconstruction, and recursive
+verification. A small cleanup remained: after prechecking the metadata-only
+decode, the final recursive verifier used the public-inputs field from a second
+full certificate decode of the same noun. Honest artifacts decode identically,
+but the production boundary should not carry two apparent public-input sources.
+
+Code status after this re-audit: `verify_ai_pow_ncmn_artifact_jam` now verifies
+the reconstructed recursive certificate against `metadata.public_inputs`, the
+exact public-input vector that passed the cheap verifier-derived statement
+precheck. The full certificate decode is still used to reconstruct the proof
+tree, but it no longer supplies a separate public-input source for recursive
+verification. The Nockchain wire regression guards this verifier ordering.
+
 This is intentionally fail-closed. Pearl's reference miner computes every
 output tile before returning the final matrix and records an opened block when a
 tile hash hits the target, but the proof artifact only opens the winning tile.

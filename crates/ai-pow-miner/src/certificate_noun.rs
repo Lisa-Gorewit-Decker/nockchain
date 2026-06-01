@@ -764,10 +764,8 @@ pub fn verify_ai_pow_ncmn_artifact_jam(
 
     let certificate_shape = decode_ai_pow_certificate_noun(fields[2], &space, limits)?;
     let certificate = ai_pow_recursive_certificate_from_node(&certificate_shape.certificate)?;
-    ai_pow_zk::recursion::verify_recursive_certificate(
-        &certificate, &certificate_shape.public_inputs,
-    )
-    .map_err(|e| CertificateNounError::RecursiveCertificate(e.to_string()))
+    ai_pow_zk::recursion::verify_recursive_certificate(&certificate, &metadata.public_inputs)
+        .map_err(|e| CertificateNounError::RecursiveCertificate(e.to_string()))
 }
 
 #[derive(Debug)]
