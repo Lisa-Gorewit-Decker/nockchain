@@ -457,8 +457,8 @@ it intentionally fails closed for multi-tile shapes until the recursive proof
 binds the intended full-matmul work unit.
 
 The production attempt boundary is intentionally minimal-reuse. Changing the
-NCMN nonce must force fresh transcript-derived commitments, noise, noised matrix
-strips, tile states, jackpot preimages, and proof witness data. Cache-friendly
-attempt reuse is a vulnerability, not a desired trait or optimization target;
-only immutable non-work inputs such as matrix bytes, shape metadata, and
-chain-pinned parameters may be reused across attempts.
+opaque AI-PoW nonce must force fresh transcript-derived commitments, noise,
+noised matrix strips, tile states, jackpot preimages, and proof witness data.
+Cache-friendly attempt reuse is a vulnerability, not a desired trait or
+optimization target; only immutable non-work inputs such as matrix bytes, shape
+metadata, and chain-pinned parameters may be reused across attempts.

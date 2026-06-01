@@ -612,6 +612,21 @@ fn pearl_nbits_and_adjusted_target_match_reference_edges() {
     assert_eq!(pearl_nbits_to_target_le(0x1d00_0000), [0u8; 32]);
     assert_eq!(pearl_nbits_to_target_le(0x1d80_0000), [0u8; 32]);
 
+    let exp_33 = pearl_nbits_to_target_le(0x2112_3456);
+    assert_eq!(exp_33[30], 0x56);
+    assert_eq!(exp_33[31], 0x34);
+    assert!(exp_33[..30].iter().all(|&b| b == 0));
+
+    let exp_34 = pearl_nbits_to_target_le(0x2212_3456);
+    assert_eq!(exp_34[31], 0x56);
+    assert!(exp_34[..31].iter().all(|&b| b == 0));
+
+    assert_eq!(
+        pearl_nbits_to_target_le(0x2312_3456),
+        [0u8; 32],
+        "Pearl U256 left-shift by 256 bits truncates to zero"
+    );
+
     let adjusted = pearl_adjust_target_for_config(0x0312_3456, &mining_config()).unwrap();
     let expected = 0x123456u128 * 4096u128;
     assert_eq!(&adjusted[..16], &expected.to_le_bytes());

@@ -10,10 +10,10 @@
 //! ## Attempt Reuse Boundary
 //!
 //! Production AI-PoW is intentionally minimal-reuse across nonce attempts.
-//! Changing the NCMN nonce must force fresh transcript-derived commitments,
-//! noise, noised matrix strips, tile states, jackpot preimages, and proof
-//! witness data. Cache-friendly attempt reuse is a vulnerability, not a
-//! desired trait or optimization target.
+//! Changing the opaque AI-PoW nonce must force fresh transcript-derived
+//! commitments, noise, noised matrix strips, tile states, jackpot preimages,
+//! and proof witness data. Cache-friendly attempt reuse is a vulnerability,
+//! not a desired trait or optimization target.
 //!
 //! ## Public API
 //!
