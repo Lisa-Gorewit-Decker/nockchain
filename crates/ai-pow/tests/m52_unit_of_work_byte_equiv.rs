@@ -33,12 +33,12 @@ fn h_a_chunk_matches_snark_place_matrix_hash_a() {
         BlockContext::build(block_commitment, nonce, &a, &b, &params).expect("BlockContext build");
 
     // Plain-side h_a_chunk computed via matrix_commitment.
-    let plain_h_a = ctx.h_a_chunk;
+    let plain_h_a = *ctx.h_a_chunk();
 
     // SNARK-side equivalent: place_matrix_hash_a on the same bytes + κ.
     let a_bytes: Vec<u8> = a.iter().map(|&v| v as u8).collect();
     let mut trace = CompositeTrace::baseline_min();
-    let (_next_row, snark_root_cv) = trace.place_matrix_hash_a(0, &a_bytes, &ctx.kappa);
+    let (_next_row, snark_root_cv) = trace.place_matrix_hash_a(0, &a_bytes, ctx.kappa());
 
     let expected_words = u32_words_from_bytes(&plain_h_a);
     assert_eq!(
@@ -57,11 +57,11 @@ fn h_b_chunk_matches_snark_place_matrix_hash_b() {
     let ctx =
         BlockContext::build(block_commitment, nonce, &a, &b, &params).expect("BlockContext build");
 
-    let plain_h_b = ctx.h_b_chunk;
+    let plain_h_b = *ctx.h_b_chunk();
 
     let b_bytes: Vec<u8> = b.iter().map(|&v| v as u8).collect();
     let mut trace = CompositeTrace::baseline_min();
-    let (_, snark_root_cv) = trace.place_matrix_hash_b(0, &b_bytes, &ctx.kappa);
+    let (_, snark_root_cv) = trace.place_matrix_hash_b(0, &b_bytes, ctx.kappa());
 
     let expected_words = u32_words_from_bytes(&plain_h_b);
     assert_eq!(
@@ -80,6 +80,6 @@ fn distinct_matrices_have_distinct_chunk_commitments() {
     let (a2, b2) = synth_matrices(b"seed-2", &params);
     let ctx1 = BlockContext::build(bc, nonce, &a1, &b1, &params).unwrap();
     let ctx2 = BlockContext::build(bc, nonce, &a2, &b2, &params).unwrap();
-    assert_ne!(ctx1.h_a_chunk, ctx2.h_a_chunk);
-    assert_ne!(ctx1.h_b_chunk, ctx2.h_b_chunk);
+    assert_ne!(ctx1.h_a_chunk(), ctx2.h_a_chunk());
+    assert_ne!(ctx1.h_b_chunk(), ctx2.h_b_chunk());
 }

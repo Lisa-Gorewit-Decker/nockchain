@@ -385,18 +385,18 @@ fn b1_1c_real_weight_mineable_unit_end_to_end() {
         .expect("ai-pow must mine the real model's weights at real μ");
     // Deterministic (the audited pipeline is a pure fn of inputs).
     let ctx2 = BlockContext::build(hdr, nonce, &a, &real_b, &mp).unwrap();
-    assert_eq!(ctx.h_a_chunk, ctx2.h_a_chunk);
-    assert_eq!(ctx.h_b_chunk, ctx2.h_b_chunk);
-    assert_eq!(ctx.s_a, ctx2.s_a);
-    assert_eq!(ctx.s_b, ctx2.s_b);
+    assert_eq!(ctx.h_a_chunk(), ctx2.h_a_chunk());
+    assert_eq!(ctx.h_b_chunk(), ctx2.h_b_chunk());
+    assert_eq!(ctx.s_a(), ctx2.s_a());
+    assert_eq!(ctx.s_b(), ctx2.s_b());
     assert_eq!(
-        ctx.m_states
+        ctx.tile_states()
             .iter()
-            .map(|s| s.keyed_hash(&ctx.s_a))
+            .map(|s| s.keyed_hash(ctx.s_a()))
             .collect::<Vec<_>>(),
-        ctx2.m_states
+        ctx2.tile_states()
             .iter()
-            .map(|s| s.keyed_hash(&ctx2.s_a))
+            .map(|s| s.keyed_hash(ctx2.s_a()))
             .collect::<Vec<_>>(),
         "mineable unit must be deterministic on the real weights"
     );
@@ -408,7 +408,7 @@ fn b1_1c_real_weight_mineable_unit_end_to_end() {
     let kappa = commitment_key(&state, &params_tag(&mp));
     let b_bytes: Vec<u8> = real_b.iter().map(|&v| v as u8).collect();
     assert_eq!(
-        ctx.h_b_chunk,
+        *ctx.h_b_chunk(),
         matrix_commitment(&b_bytes, &kappa),
         "H_B_chunk of the real weights == Pearl §4.6 chunk-Merkle"
     );
@@ -419,7 +419,8 @@ fn b1_1c_real_weight_mineable_unit_end_to_end() {
         .collect();
     let ctx_s = BlockContext::build(hdr, nonce, &a, &synth_b, &mp).unwrap();
     assert_ne!(
-        ctx.h_b_chunk, ctx_s.h_b_chunk,
+        ctx.h_b_chunk(),
+        ctx_s.h_b_chunk(),
         "real vs synthetic B ⇒ different commitment (weight-sensitive)"
     );
 }
@@ -599,16 +600,16 @@ fn b1_1_gemma_c_real_weight_mineable_unit_end_to_end() {
     let ctx = BlockContext::build(hdr, nonce, &a, &real_b, &mp)
         .expect("ai-pow must mine the real Gemma weights at real μ");
     let ctx2 = BlockContext::build(hdr, nonce, &a, &real_b, &mp).unwrap();
-    assert_eq!(ctx.h_b_chunk, ctx2.h_b_chunk);
-    assert_eq!(ctx.s_a, ctx2.s_a);
+    assert_eq!(ctx.h_b_chunk(), ctx2.h_b_chunk());
+    assert_eq!(ctx.s_a(), ctx2.s_a());
     assert_eq!(
-        ctx.m_states
+        ctx.tile_states()
             .iter()
-            .map(|s| s.keyed_hash(&ctx.s_a))
+            .map(|s| s.keyed_hash(ctx.s_a()))
             .collect::<Vec<_>>(),
-        ctx2.m_states
+        ctx2.tile_states()
             .iter()
-            .map(|s| s.keyed_hash(&ctx2.s_a))
+            .map(|s| s.keyed_hash(ctx2.s_a()))
             .collect::<Vec<_>>(),
         "mineable unit must be deterministic on the real Gemma weights"
     );
@@ -616,7 +617,7 @@ fn b1_1_gemma_c_real_weight_mineable_unit_end_to_end() {
     let kappa = commitment_key(&state, &params_tag(&mp));
     let b_bytes: Vec<u8> = real_b.iter().map(|&v| v as u8).collect();
     assert_eq!(
-        ctx.h_b_chunk,
+        *ctx.h_b_chunk(),
         matrix_commitment(&b_bytes, &kappa),
         "H_B_chunk of the real Gemma weights == Pearl §4.6 chunk-Merkle"
     );
@@ -625,7 +626,8 @@ fn b1_1_gemma_c_real_weight_mineable_unit_end_to_end() {
         .collect();
     let ctx_s = BlockContext::build(hdr, nonce, &a, &synth_b, &mp).unwrap();
     assert_ne!(
-        ctx.h_b_chunk, ctx_s.h_b_chunk,
+        ctx.h_b_chunk(),
+        ctx_s.h_b_chunk(),
         "real vs synthetic Gemma B ⇒ different commitment"
     );
 }
@@ -799,16 +801,16 @@ fn b1_1_l70b_c_real_weight_mineable_unit_end_to_end() {
     let ctx = BlockContext::build(hdr, nonce, &a, &real_b, &mp)
         .expect("ai-pow must mine the real Llama-70B weights at real μ");
     let ctx2 = BlockContext::build(hdr, nonce, &a, &real_b, &mp).unwrap();
-    assert_eq!(ctx.h_b_chunk, ctx2.h_b_chunk);
-    assert_eq!(ctx.s_a, ctx2.s_a);
+    assert_eq!(ctx.h_b_chunk(), ctx2.h_b_chunk());
+    assert_eq!(ctx.s_a(), ctx2.s_a());
     assert_eq!(
-        ctx.m_states
+        ctx.tile_states()
             .iter()
-            .map(|s| s.keyed_hash(&ctx.s_a))
+            .map(|s| s.keyed_hash(ctx.s_a()))
             .collect::<Vec<_>>(),
-        ctx2.m_states
+        ctx2.tile_states()
             .iter()
-            .map(|s| s.keyed_hash(&ctx2.s_a))
+            .map(|s| s.keyed_hash(ctx2.s_a()))
             .collect::<Vec<_>>(),
         "mineable unit must be deterministic on the real Llama-70B weights"
     );
@@ -816,7 +818,7 @@ fn b1_1_l70b_c_real_weight_mineable_unit_end_to_end() {
     let kappa = commitment_key(&state, &params_tag(&mp));
     let b_bytes: Vec<u8> = real_b.iter().map(|&v| v as u8).collect();
     assert_eq!(
-        ctx.h_b_chunk,
+        *ctx.h_b_chunk(),
         matrix_commitment(&b_bytes, &kappa),
         "H_B_chunk of the real Llama-70B weights == Pearl §4.6 chunk-Merkle"
     );
@@ -825,7 +827,8 @@ fn b1_1_l70b_c_real_weight_mineable_unit_end_to_end() {
         .collect();
     let ctx_s = BlockContext::build(hdr, nonce, &a, &synth_b, &mp).unwrap();
     assert_ne!(
-        ctx.h_b_chunk, ctx_s.h_b_chunk,
+        ctx.h_b_chunk(),
+        ctx_s.h_b_chunk(),
         "real vs synthetic Llama-70B B ⇒ different commitment"
     );
 }

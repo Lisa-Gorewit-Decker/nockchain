@@ -108,13 +108,13 @@ fn main() {
     // identical trace.
     let a_bytes: Vec<u8> = a.iter().map(|&v| v as u8).collect();
     let b_bytes: Vec<u8> = b.iter().map(|&v| v as u8).collect();
-    let kappa_w = words(&ctx.kappa);
-    let s_a_w = words(&ctx.s_a);
+    let kappa_w = words(ctx.kappa());
+    let s_a_w = words(ctx.s_a());
     let build_trace = || -> CompositeTrace {
         let mut tr = CompositeTrace::baseline_min();
         let h = tr.height();
-        let (n1, _) = tr.place_matrix_hash_a(0, &a_bytes, &ctx.kappa);
-        let (mh_end, _) = tr.place_matrix_hash_b(n1, &b_bytes, &ctx.kappa);
+        let (n1, _) = tr.place_matrix_hash_a(0, &a_bytes, ctx.kappa());
+        let (mh_end, _) = tr.place_matrix_hash_b(n1, &b_bytes, ctx.kappa());
         tr.place_key_pin_row(mh_end + 1, false, &kappa_w); // JOB_KEY = κ
         tr.place_key_pin_row(mh_end + 2, true, &s_a_w); // COMMITMENT_HASH = s_a
         tr.place_jackpot_hash_block(h - 8, &[0u32; 16], &s_a_w); // C4
@@ -131,12 +131,12 @@ fn main() {
     let pis = CompositePublicInputs::derive_from_trace(&trace);
     assert_eq!(
         pis.hash_a,
-        words(&ctx.h_a_chunk),
+        words(ctx.h_a_chunk()),
         "C3: SNARK HASH_A PI must byte-equal BlockContext.h_a_chunk"
     );
     assert_eq!(
         pis.hash_b,
-        words(&ctx.h_b_chunk),
+        words(ctx.h_b_chunk()),
         "C3: SNARK HASH_B PI must byte-equal BlockContext.h_b_chunk"
     );
     assert_eq!(

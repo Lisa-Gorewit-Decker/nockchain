@@ -13,6 +13,7 @@ const AI_POW_MINER_CERT_NOUN_RS: &str = include_str!("../../ai-pow-miner/src/cer
 const AI_POW_MINER_RUN_RS: &str = include_str!("../../ai-pow-miner/src/run.rs");
 const AI_POW_MINER_BIN_RS: &str = include_str!("../../ai-pow-miner/src/bin/ai_pow_mine.rs");
 const AI_POW_LIB_RS: &str = include_str!("../../ai-pow/src/lib.rs");
+const AI_POW_PROVER_RS: &str = include_str!("../../ai-pow/src/prover.rs");
 const AI_POW_VERIFIER_RS: &str = include_str!("../../ai-pow/src/verifier.rs");
 const AI_POW_ZK_RECURSION_RS: &str = include_str!("../../ai-pow-zk/src/recursion.rs");
 const AI_POW_ZK_BRIDGE_RS: &str = include_str!("../../ai-pow/src/zk_bridge.rs");
@@ -150,6 +151,21 @@ fn ai_pow_consensus_wire_is_structured_but_fail_closed_without_verifier() {
          envelopes as normal production APIs; the production boundary is \
          recursive certificate generation plus full-matmul statement \
          verification"
+    );
+    assert!(
+        AI_POW_LIB_RS.contains("BlockContext")
+            && AI_POW_PROVER_RS.contains("pub(crate) nonce: Vec<u8>")
+            && AI_POW_PROVER_RS.contains("pub(crate) s_a: [u8; 32]")
+            && AI_POW_PROVER_RS.contains("pub(crate) m_states: Vec<TileState>")
+            && AI_POW_PROVER_RS.contains("pub fn nonce(&self) -> &[u8]")
+            && AI_POW_PROVER_RS.contains("pub fn s_a(&self) -> &[u8; 32]")
+            && AI_POW_PROVER_RS.contains("pub fn tile_states(&self) -> &[TileState]")
+            && !AI_POW_PROVER_RS.contains("pub nonce: Vec<u8>")
+            && !AI_POW_PROVER_RS.contains("pub s_a: [u8; 32]")
+            && !AI_POW_PROVER_RS.contains("pub m_states: Vec<TileState>"),
+        "BlockContext may be public as an opaque nonce-bound attempt handle, \
+         but external callers must not be able to mutate nonce-bound work \
+         fields directly"
     );
     let target_check = AI_POW_MINER_BIN_RS
         .find("verify_ncmn_at_target")

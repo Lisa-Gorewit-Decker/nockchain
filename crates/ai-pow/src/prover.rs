@@ -87,34 +87,98 @@ pub fn params_tag(p: &MatmulParams) -> [u8; 32] {
 /// noise factors, perturbed matrices, all `M_{i,j}` tile states, and the
 /// leaves of `H_A` / `H_B` for opening-path extraction.
 pub struct BlockContext<'a> {
-    pub block_commitment: Vec<u8>,
-    pub nonce: Vec<u8>,
-    pub attempt_state: Vec<u8>,
-    pub a: &'a [i8],
-    pub b: &'a [i8],
-    pub params: MatmulParams,
-    pub tag: [u8; 32],
-    pub kappa: [u8; 32],
-    pub h_a: [u8; 32],
-    pub h_b: [u8; 32],
+    pub(crate) block_commitment: Vec<u8>,
+    pub(crate) nonce: Vec<u8>,
+    pub(crate) attempt_state: Vec<u8>,
+    pub(crate) a: &'a [i8],
+    pub(crate) b: &'a [i8],
+    pub(crate) params: MatmulParams,
+    pub(crate) tag: [u8; 32],
+    pub(crate) kappa: [u8; 32],
+    pub(crate) h_a: [u8; 32],
+    pub(crate) h_b: [u8; 32],
     /// M52 step 5: chunk-Merkle BLAKE3 keyed-hash of `pad(A)` —
     /// the commitment shape the `ai-pow-zk` SNARK binds to as
     /// public input `HASH_A`. Distinct from `h_a` (per-row
     /// Merkle, used for spot-check opening) — both coexist so
     /// the plain-side spot-check protocol AND the SNARK PI
     /// binding work without conflict.
-    pub h_a_chunk: [u8; 32],
+    pub(crate) h_a_chunk: [u8; 32],
     /// M52 step 5: chunk-Merkle commitment for matrix B
     /// (column-major bytes), analogous to `h_a_chunk`.
-    pub h_b_chunk: [u8; 32],
-    pub s_a: [u8; 32],
-    pub s_b: [u8; 32],
-    pub h_a_leaves: Vec<[u8; 32]>,
-    pub h_b_leaves: Vec<[u8; 32]>,
-    pub m_states: Vec<TileState>,
+    pub(crate) h_b_chunk: [u8; 32],
+    pub(crate) s_a: [u8; 32],
+    pub(crate) s_b: [u8; 32],
+    pub(crate) h_a_leaves: Vec<[u8; 32]>,
+    pub(crate) h_b_leaves: Vec<[u8; 32]>,
+    pub(crate) m_states: Vec<TileState>,
 }
 
 impl<'a> BlockContext<'a> {
+    pub fn block_commitment(&self) -> &[u8] {
+        &self.block_commitment
+    }
+
+    pub fn nonce(&self) -> &[u8] {
+        &self.nonce
+    }
+
+    pub fn attempt_state(&self) -> &[u8] {
+        &self.attempt_state
+    }
+
+    pub fn a(&self) -> &[i8] {
+        self.a
+    }
+
+    pub fn b(&self) -> &[i8] {
+        self.b
+    }
+
+    pub fn params(&self) -> &MatmulParams {
+        &self.params
+    }
+
+    pub fn params_tag(&self) -> &[u8; 32] {
+        &self.tag
+    }
+
+    pub fn kappa(&self) -> &[u8; 32] {
+        &self.kappa
+    }
+
+    pub fn h_a(&self) -> &[u8; 32] {
+        &self.h_a
+    }
+
+    pub fn h_b(&self) -> &[u8; 32] {
+        &self.h_b
+    }
+
+    pub fn h_a_chunk(&self) -> &[u8; 32] {
+        &self.h_a_chunk
+    }
+
+    pub fn h_b_chunk(&self) -> &[u8; 32] {
+        &self.h_b_chunk
+    }
+
+    pub fn s_a(&self) -> &[u8; 32] {
+        &self.s_a
+    }
+
+    pub fn s_b(&self) -> &[u8; 32] {
+        &self.s_b
+    }
+
+    pub fn tile_states(&self) -> &[TileState] {
+        &self.m_states
+    }
+
+    pub fn tile_state(&self, idx: usize) -> Option<&TileState> {
+        self.m_states.get(idx)
+    }
+
     /// Validate inputs and run the full per-block precomputation. Returns
     /// `Err` only for parameter or shape problems.
     pub fn build(

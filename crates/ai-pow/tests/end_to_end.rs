@@ -129,26 +129,36 @@ fn nonce_changes_commitments_noise_and_tile_states_before_final_hashing() {
     let ctx_a = BlockContext::build(block_commitment, nonce_a, &a, &b, &params).unwrap();
     let ctx_b = BlockContext::build(block_commitment, nonce_b, &a, &b, &params).unwrap();
 
-    assert_ne!(ctx_a.attempt_state, ctx_b.attempt_state);
-    assert_ne!(ctx_a.kappa, ctx_b.kappa, "nonce must change kappa");
-    assert_ne!(ctx_a.h_a, ctx_b.h_a, "nonce-bound kappa must re-key H_A");
-    assert_ne!(ctx_a.h_b, ctx_b.h_b, "nonce-bound kappa must re-key H_B");
+    assert_ne!(ctx_a.attempt_state(), ctx_b.attempt_state());
+    assert_ne!(ctx_a.kappa(), ctx_b.kappa(), "nonce must change kappa");
     assert_ne!(
-        ctx_a.h_a_chunk, ctx_b.h_a_chunk,
+        ctx_a.h_a(),
+        ctx_b.h_a(),
+        "nonce-bound kappa must re-key H_A"
+    );
+    assert_ne!(
+        ctx_a.h_b(),
+        ctx_b.h_b(),
+        "nonce-bound kappa must re-key H_B"
+    );
+    assert_ne!(
+        ctx_a.h_a_chunk(),
+        ctx_b.h_a_chunk(),
         "nonce-bound kappa must re-key chunk H_A"
     );
     assert_ne!(
-        ctx_a.h_b_chunk, ctx_b.h_b_chunk,
+        ctx_a.h_b_chunk(),
+        ctx_b.h_b_chunk(),
         "nonce-bound kappa must re-key chunk H_B"
     );
-    assert_ne!(ctx_a.s_a, ctx_b.s_a, "nonce must change s_A");
-    assert_ne!(ctx_a.s_b, ctx_b.s_b, "nonce must change s_B");
-    assert_eq!(ctx_a.m_states.len(), ctx_b.m_states.len());
+    assert_ne!(ctx_a.s_a(), ctx_b.s_a(), "nonce must change s_A");
+    assert_ne!(ctx_a.s_b(), ctx_b.s_b(), "nonce must change s_B");
+    assert_eq!(ctx_a.tile_states().len(), ctx_b.tile_states().len());
     assert!(
         ctx_a
-            .m_states
+            .tile_states()
             .iter()
-            .zip(ctx_b.m_states.iter())
+            .zip(ctx_b.tile_states().iter())
             .any(|(a, b)| a != b),
         "nonce must change the matmul-derived tile states, not only the final hash key"
     );

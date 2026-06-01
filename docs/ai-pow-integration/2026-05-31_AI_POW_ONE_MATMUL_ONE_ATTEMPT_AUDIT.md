@@ -10,6 +10,11 @@ The intended production invariant is:
 > A miner must not be able to change a nonce and get a fresh proof-of-work trial
 > unless that nonce also forces fresh AI matmul work.
 
+Equivalently, the protocol should minimize reusable work between attempts.
+Cache-friendly reuse of nonce-independent noised matrices, tile states, or final
+matmul outputs is not a performance feature for this puzzle; it is the attack
+class this audit is closing.
+
 The pre-fix `ai-pow` and `ai-pow-miner` implementation did not satisfy that
 invariant.
 
@@ -58,6 +63,9 @@ Implementation status:
 - Release regression tests now assert that changing the nonce changes `kappa`,
   `H_A`, `H_B`, chunk commitments, `s_A`, `s_B`, and matmul-derived tile
   states before final hashing.
+- Miner accounting reports `matmul_attempts_tried`, not cheap hash or extranonce
+  trials. Each increment is intended to mean a fully rebuilt nonce-bound
+  commitment/noise/matmul attempt.
 - Re-audit searches over active source, tests, benches, and README found no
   remaining code path or live documentation that presents final-hash-only nonce
   retrying as a valid production mode.
@@ -86,6 +94,12 @@ reuse of raw matrix bytes, shape constants, and validation results only because
 those are not attempt work; this reuse is not a protocol goal. It is not
 acceptable to cache nonce-independent noised matrices, tile states, or `M`
 values and treat many nonce hashes as many PoW attempts.
+
+Engineering rule for this codebase: when in doubt, prefer more recomputation at
+the nonce boundary over more reusable per-attempt state. The only safe cached
+objects are those that are either independent of any attempted work (for
+example parsed matrix bytes and shape validation) or already include the exact
+nonce and block commitment they will be used with.
 
 This matches the Pearl whitepaper's intended dependency chain: the noise seeds
 are derived from commitments to `A`, `B`, mining configuration, and blockchain
@@ -823,6 +837,28 @@ and rejects `FoundAboveTarget` before Layer-0 or recursive proving begins.
 The crate-internal Layer-0 solved-block constructor and params-derived
 `prove_and_verify_for_block` path use the same guard. Regression coverage
 asserts the recursive builder rejects a missed target before ZKP.
+
+## Latest Re-Audit: Public Attempt Context Mutability
+
+`BlockContext` is part of the public Rust API because tests, diagnostics, and
+the miner use it as the precomputed handle for one nonce-bound attempt. Before
+this re-audit, every field on that handle was public, including `nonce`,
+`attempt_state`, `s_A`, `s_B`, and `m_states`. That made it possible for
+external callers to mutate the attempt identity or nonce-bound work fields
+directly and then pass the incoherent context into lower-level helpers.
+
+The production verifier paths do not trust a caller-mutated context, but public
+mutable fields are still the wrong shape for a soundness-critical attempt
+handle. They make it easy for downstream code to accidentally bypass the
+constructor invariant that `kappa`, commitments, seeds, noise, and tile states
+all came from the same `(block_commitment, nonce, params, A, B)` attempt.
+
+Code status after this re-audit: `BlockContext` fields are now crate-private.
+External users can build a context through `BlockContext::build` and inspect
+read-only values through accessors such as `nonce()`, `s_a()`,
+`h_a_chunk()`, and `tile_states()`, but they cannot rewrite nonce-bound work
+fields. The nockchain wire regression asserts that `nonce`, `s_A`, and
+`m_states` remain crate-private while read-only accessors remain available.
 
 This is intentionally fail-closed. Pearl's reference miner computes every
 output tile before returning the final matrix and records an opened block when a
