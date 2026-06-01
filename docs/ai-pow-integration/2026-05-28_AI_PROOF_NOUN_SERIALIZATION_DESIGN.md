@@ -38,19 +38,34 @@ Stage 6 wired the *dispatch* for a second PoW puzzle type (AI matmul PoW)
 into the kernel: the `proof-version` enum gained a `%3` arm, the
 `pow-variant` union gained an `[%ai-pow ...]` arm, per-puzzle ASERT
 retargeting walks same-type ancestors, and the activation gate accepts
-either `%2` (ZK) or `%3` (AI) past `ai-pow-activation-height`. All of that
-landed with **placeholders** for the actual AI proof payload:
+either `%2` (ZK) or `%3` (AI) past `ai-pow-activation-height`. Historically,
+that work landed with placeholders for the actual AI proof payload:
 
-- `hoon/common/ztd/four.hoon` — the `%3` arm of `+$ proof` is currently a
-  *copy* of the `%0/%1/%2` shape (`objects` / `hashes` / `read-index`),
-  carrying nothing AI-specific. ZK helpers crash on `%3` via `?=` guards.
-- `hoon/apps/dumbnet/lib/types.hoon` — `+$ pow-variant` carries
+- `hoon/common/ztd/four.hoon` — the `%3` arm of `+$ proof` remains a legacy
+  proof-version discriminator with the old proof-stream fields. It does not
+  carry the AI recursive certificate; `tx-engine-1` / dumbnet types define the
+  structured `%ai-pow` artifact instead. ZK helpers crash on `%3` via explicit
+  guards.
+- `hoon/apps/dumbnet/lib/types.hoon` — early drafts carried
   `[%ai-pow placeholder=@]`, a single stub atom.
 
-This document defines the **real** noun data type for the AI proof and its
-**serialization** across the Rust ⇄ Hoon boundary, so the verifier jet and
-consensus binding checks have a concrete, soundness-legible shape to build
-against.
+Current code no longer uses that placeholder. The only Hoon-visible AI block
+artifact shape is:
+
+```hoon
+[%ai-pow nonce=ai-pow-nonce cert=ai-pow-certificate]
+```
+
+where `ai-pow-nonce` is `[len=@ud data=@uxaipownonce]` and the data bytes are
+opaque to Hoon. Rust owns the Pearl-compatible `AIP1` envelope inside those
+bytes. The certificate is the structured recursive certificate noun; plain
+`MatmulProof`, raw Layer-0 STARKs, and single opaque proof atoms are not block
+artifacts.
+
+This document is retained as the historical path that motivated the current
+noun shape. The normative current spec is
+`2026-05-29_AI_ZKP_NOUN_WIRE_SPEC.md`, plus the Pearl-compatible submission
+updates in `2026-06-01_PEARL_MERGE_MINING_COMPATIBILITY_SPEC.md`.
 
 The AI PoW is architecturally different from the existing ZK PoW in one
 load-bearing way: **the existing `%dumb-zkpow` proof is verified natively in
@@ -87,7 +102,7 @@ serialized into the block.
 
 ---
 
-## 3. Hoon data type — `+$ ai-proof`
+## 3. Historical Hoon data type — rejected `+$ ai-proof`
 
 Place in `hoon/common/ztd/four.hoon` (the proof-stack types module, `sp`),
 next to `+$ proof`.
@@ -120,10 +135,12 @@ next to `+$ proof`.
   ==
 ```
 
-### `+$ proof` `%3` arm (replaces the Stage-6 placeholder)
+### Historical `+$ proof` `%3` arm sketch
 
-Recommended shape — **Option A (distinct arm)**: the AI proof is not a
-Hoon proof-stream and should not pretend to be one.
+This was the recommended shape in the superseded design. It was not adopted.
+The current Hoon proof-stream keeps `%3` only as a legacy proof-version
+discriminator; the actual AI block artifact is `[%ai-pow nonce cert]` in
+`pow-variant`.
 
 ```hoon
 +$  proof
@@ -145,9 +162,9 @@ The placeholder comment in `four.hoon` hinted at Option B; this design
 supersedes that hint with Option A, matching Stage-6 §5.1's stated intent
 (`version=%3 ai-proof=ai-proof-body`).
 
-### `+$ pow-variant` `%ai-pow` arm (replaces `placeholder=@`)
+### `+$ pow-variant` `%ai-pow` arm
 
-Superseded current shape:
+Current shape:
 
 ```hoon
 [%ai-pow nonce=ai-pow-nonce cert=ai-pow-certificate]
@@ -156,11 +173,8 @@ Superseded current shape:
 Earlier drafts used an `ai-ncmn` atom here. The current production wire shape
 uses `ai-pow-nonce=[len=@ud data=@uxaipownonce]`, which is opaque to Hoon and
 allows the Rust nonce envelope to carry Pearl-compatible commitment material.
-The historical sketch below is retained only to explain the superseded
-direction; it is not the production wire shape.
-
-In `hoon/apps/dumbnet/lib/types.hoon`, mirror the `%dumb-zkpow` shape so the
-consensus poke handler dispatches uniformly:
+The historical sketch below is invalid for production and is retained only to
+explain what was rejected:
 
 ```hoon
 +$  pow-variant
@@ -170,11 +184,9 @@ consensus poke handler dispatches uniformly:
   ==
 ```
 
-No separate `dig` field: for the AI path the work value **is**
-`prf.public.hash-jackpot` (the difficulty-target preimage). `bc` (block
-commitment) and `nonce` are carried so consensus can recompute `job-key`
-and `commitment-hash` and check them against the proof's claimed values
-(§6, soundness).
+Do not implement or accept that shape. It would expose Pearl/Nockchain binding
+fields as a second Hoon-side API and bypass the current recursive certificate
+noun boundary.
 
 ---
 
@@ -227,41 +239,41 @@ mapping is positional and total (no `Vec`s), so it cannot fail on shape;
 ## 5. End-to-end data flow
 
 ```
-miner (Rust, ai-pow-zk)
-  prove → BatchProof + CompositePublicInputs
-  AiProofNoun{public, stark=bincode(BatchProof), config-id}.to_noun()
-        │  packed as [%command %pow %ai-pow prf bc nonce]
+miner (Rust, ai-pow-miner)
+  Pearl-compatible ticket clears Nockchain target
+  prove_pearl_merge_recursive_certificate(...)
+  build [%ai-pow nonce=[len AIP1-bytes] cert=ai-pow-certificate]
+        │
+        │  packed as [%command %pow %ai-pow nonce cert]
         ▼
-consensus kernel (Hoon)  — poke handler, inner.hoon
+consensus kernel (Hoon) — poke handler, inner.hoon
   ?- -.pv.command
     %dumb-zkpow  (existing Hoon STARK verify)
-    %ai-pow      ++verify-ai   ← NEW
-        │
-        ├─ recompute job-key' = blake3(header ‖ cfg);  assert = public.job-key
-        ├─ recompute commitment-hash' from (bc,nonce);  assert = public.commitment-hash
-        ├─ assert config-id ∈ allowed-ai-configs(height)
-        ├─ assert (lte hash-jackpot target)            ← difficulty
-        └─ assert (ai-pow-verify-jet stark public config-id)   ← Rust jet, soundness linchpin
+    %ai-pow      reject fail-closed until the real recursive verifier is wired
 ```
 
-The jet `+ai-pow-verify` is the only piece that parses `stark`; everything
-above it is Hoon and consensus-checked.
+The current milestone deliberately does not wire a Hoon verifier. Rust-side
+metadata prechecks and tests define the verifier contract, but Hoon must not
+accept `%ai-pow` blocks until that verifier work is explicitly scheduled.
 
 ---
 
 ## 6. Soundness requirements the noun shape must support
 
-These are constraints on the *verifier* (deferred), but the data type is
-designed to make them expressible — call them out so the shape is not
-under-specified:
+These were constraints on the deferred verifier in the superseded `ai-proof`
+design. In the current design, the same trust-boundary intent is enforced by
+Rust-side `%ai-pow` metadata prechecks over the opaque `AIP1` nonce and
+recursive certificate noun. Hoon remains fail-closed until the real verifier
+is scheduled.
 
 1. **Public inputs are checked, not trusted.** `job-key` and
    `commitment-hash` are functions of the block (header/`bc`/`nonce`). The
    kernel must **recompute** them and assert equality against
    `public.job-key` / `public.commitment-hash`. The proof carries them only
-   so the jet can form the PI vector the STARK binds to; consensus must not
-   accept the prover's word. This is why `bc`+`nonce` ride in the
-   `pow-variant` arm.
+   so the verifier can form the public-input vector the proof binds to;
+   consensus must not accept the prover's word. In the current shape these
+   bindings live inside the Rust-owned nonce envelope and recursive certificate
+   metadata, not as `bc` / `nonce` fields in the Hoon `pow-variant` arm.
 2. **Difficulty uses `hash-jackpot`.** The work value is
    `public.hash-jackpot` (the keyed tile-state digest the circuit's target
    constraint pins). Target check replaces the `dig`/`check-target` step of
@@ -278,9 +290,9 @@ under-specified:
 
 ---
 
-## 7. Verification plan (for the implementation stages)
+## 7. Historical verification plan
 
-- **KAT (round-trip):** Rust `AiProofNoun.to_noun → jam → cue → from_noun`
+- **KAT (round-trip):** historical Rust `AiProofNoun.to_noun → jam → cue → from_noun`
   is identity on a real PROD proof; assert byte-equality of `stark` and
   field-equality of every `public` element.
 - **Cross-language:** jam a known `ai-proof` in Hoon and `cue` it in Rust
@@ -297,10 +309,11 @@ under-specified:
 
 ---
 
-## 8. Residual (NOT done here — explicitly scoped)
+## 8. Residual (superseded)
 
-This document is design only. The following is the soundness-critical
-invasive work that lands in validated stages **after** review:
+This document is design only. The original residual work below is superseded
+by the current recursive certificate noun and Pearl-compatible `%ai-pow`
+artifact. It is retained as historical context, not as the current task list:
 
 1. **`+ai-pow-verify` jet** wrapping `composite_verify_pow_pinned_logup` —
    the linchpin. Jet registration, panic-safety, and KAT against the Rust
@@ -314,5 +327,8 @@ invasive work that lands in validated stages **after** review:
 5. **`config-id` allow-set** + the model-commitment comparison for
    `hash-a`/`hash-b` (#4 of §6).
 
-None of the above is started; the AI verifier remains a stub that rejects
-all `%3` blocks until these stages land.
+Current status: `AiProofNoun` did not become the production API. The current
+Rust mirror is `ai_pow_miner::certificate_noun::AiProofNode` plus the
+`[%ai-pow nonce cert]` artifact builders/decoders. Hoon consensus still
+rejects `%ai-pow` fail-closed; the real verifier remains out of scope for the
+current milestone.
