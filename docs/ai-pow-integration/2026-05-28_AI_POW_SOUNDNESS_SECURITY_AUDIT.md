@@ -454,31 +454,50 @@ Tests:
 ### SND-08: Legacy full-matrix `place_matrix_hash` is non-canonical for non-power-of-two chunk counts
 
 Severity: High if used in production traces
-Status: Confirmed by in-code documentation
+Status: Disproven by current in-code equivalence tests
 
 Evidence:
 
-- `blake3_tree.rs` says BLAKE3's tree is not a naive pairwise-with-promotion reduction and that `CompositeTrace::place_matrix_hash` only coincides with the true tree for power-of-two chunk counts.
-- `CompositeTrace::place_matrix_hash` still uses a pairwise-with-promotion parent layer and comments that this is the BLAKE3 spec for non-power-of-two chunk counts.
-- The production bridge currently uses strip openings, not this full-matrix helper.
+- Historical concern: BLAKE3's tree split is described as
+  largest-power-of-two-left, while `CompositeTrace::place_matrix_hash` uses a
+  bottom-up pair-adjacent/promote-odd parent reduction.
+- Current tests in `ai-pow-zk` show those constructions are equivalent for
+  the relevant keyed chunk tree: `place_matrix_hash_equals_true_tree_and_blake3_all_counts`
+  sweeps `1..=31` chunks, and
+  `place_matrix_hash_equals_blake3_large_nonpow2` covers a 100-chunk
+  non-power-of-two case.
+- `CompositeTrace::place_matrix_hash_matches_blake3_for_non_power_of_two_chunk_counts`
+  also compares 3, 5, 9, 17, 31, and 33 chunk matrices against
+  `blake3::Hasher::new_keyed`.
+- The production bridge currently uses strip openings, not the full-matrix
+  helper, but the helper is not presently contradicted by the BLAKE3 reference.
 
 Attack / failure sketch:
 
-If a future path uses `place_matrix_hash` for a matrix with a non-power-of-two number of chunks, the circuit can bind to a root different from `commit::matrix_commitment`. Depending on how the root is compared, this can either reject honest proofs or authenticate a non-standard commitment.
+The original attack sketch would require `place_matrix_hash` to diverge from
+`commit::matrix_commitment` for a non-power-of-two number of chunks. Current
+behavior-level tests do not support that premise.
 
 Impact:
 
-Potential commitment mismatch or matrix-binding unsoundness if the helper is reused.
+No current soundness issue from this hypothesis. Keep the equivalence tests as
+regression coverage because future edits to the tree walker or in-circuit hash
+placement could reintroduce the mismatch.
 
 Fix plan:
 
-- Replace `place_matrix_hash` parent reduction with the true `left_len` BLAKE3 tree.
-- Add tests comparing `place_matrix_hash` roots to `blake3::Hasher::new_keyed` for non-power-of-two chunk counts.
-- Until fixed, mark the helper dev-only or panic for non-power-of-two `num_chunks`.
+- Done: keep behavior-level tests comparing `place_matrix_hash` roots to
+  `blake3::Hasher::new_keyed` for power-of-two and non-power-of-two chunk
+  counts.
+- No code change is currently required unless a future BLAKE3 compatibility
+  review finds a missed flag/counter/detail not covered by those tests.
 
 Tests:
 
-- 3, 5, 9, 17, 31, 33 chunk matrices must match `commit::matrix_commitment`.
+- Done: 3, 5, 9, 17, 31, and 33 chunk matrices match canonical keyed BLAKE3.
+- Done: 1 through 31 chunk matrices match both the off-circuit true-tree walker
+  and `CompositeTrace::place_matrix_hash`.
+- Done: 100 chunk non-power-of-two matrix matches keyed BLAKE3.
 
 ### SND-09: NCMN nonce anchor is miner-side only unless consensus explicitly checks it
 
