@@ -29,7 +29,13 @@ loop used to hash the jammed target noun instead of decoding the Hoon bignum
 target. That made the miner's attempted difficulty a serialization hash rather
 than the chain target and could cause honest miners to mine the wrong puzzle.
 
-There are also API-level hazards: unsound/dev verifier functions are public and re-exported, pinned verifier functions accept caller-supplied programs and `sx_bound`, and there is no production verifier-only wrapper that derives all public inputs from chain data. DoS risk is also material: the plain verifier expands full matrix noise before doing cheap rejection and the decoder is not parameter-aware.
+There are also API-level hazards: unsound/dev verifier functions are public and
+re-exported, pinned verifier functions accept caller-supplied programs and
+`sx_bound`, and Hoon consensus still needs the verifier jet/wiring. Historical
+plain-proof DoS issues around full noise expansion and parameter-unaware
+decoding have been remediated at the Rust diagnostic boundary, but the
+canonical production path remains the bounded recursive certificate noun
+verifier.
 
 ## Required Production Invariant
 
@@ -300,78 +306,99 @@ Tests:
 ### DOS-01: Plain verifier expands full noise before cheap rejection
 
 Severity: High
-Status: Confirmed
+Status: Remediated for current plain verifier; keep regression coverage
 
 Evidence:
 
-- `ai_pow::verifier::verify` calls `BlockNoise::expand(&s_a, &s_b, params)` before verifying spot count, challenge indices, or proof shape.
-- `BlockNoise::expand` allocates `m * r` and `n * r` noise vectors and iterates over `m`, `n`, and `k`.
-- `MatmulParams::validate()` is much looser than `validate_prod_envelope()`.
+- Historical issue: `ai_pow::verifier::verify` called
+  `BlockNoise::expand(&s_a, &s_b, params)` before verifying spot count,
+  challenge indices, or proof shape.
+- Current `verify_at_target` validates params, checks the proof params tag,
+  computes cheap transcript values, checks spot count, prechecks found/spot
+  opening shape and coordinates, and only then constructs verifier noise.
+- Current verifier noise is on-demand: `VerifierNoise` precomputes only the
+  `k`-length sparse-position schedules and derives opened rows/columns during
+  `verify_opening`. It no longer allocates full `m * r` and `n * r` noise
+  matrices.
+- `rejects_spot_count_before_full_noise_expansion` asserts that a huge-`m`
+  malformed proof rejects before any `BlockNoise::expand` call.
 
 Attack sketch:
 
 1. Attacker submits params with very large `m` and/or `n` but small tile grid, so `validate()` can pass.
-2. Verifier allocates and fills huge noise arrays before rejecting the proof.
-3. Node runs out of memory or spends excessive CPU.
+2. Historical verifier allocated and filled huge noise arrays before rejecting the proof.
+3. Node could run out of memory or spend excessive CPU.
 
 Impact:
 
-Remote verifier memory/CPU DoS if params are attacker-controlled or not strictly chain-pinned.
+The original full-noise allocation DoS is not present in the current plain
+verifier. Plain proofs remain diagnostic/non-consensus; production block
+acceptance must use the recursive certificate noun boundary with chain-pinned
+params.
 
 Fix plan:
 
-- Enforce consensus params before decoding or verifying.
-- Reorder verification: params admission, params tag, spot count, coordinate/path/strip shape, then expensive work.
-- Replace full `BlockNoise::expand` in verifier with on-demand row/column derivation for only opened rows/columns.
-- Add hard verifier resource caps independent of production envelope: maximum proof bytes, maximum `t * k`, maximum spot checks, maximum row/column openings, maximum total hash work.
+- Done: production wrappers enforce `validate_prod_envelope()`.
+- Done: plain verifier prechecks params tag, spot count, coordinates, and
+  opening shapes before expensive opening verification.
+- Done: full `BlockNoise::expand` was replaced with on-demand row/column
+  derivation for opened rows/columns.
+- Keep hard resource-cap coverage in the canonical recursive noun decoder and
+  in `MatmulProof::decode_for_params` for legacy/plain diagnostics.
 
 Tests:
 
-- Malformed params with huge `m`/`n` return an error without allocating proportional memory.
-- Instrumented test or allocator test proving verifier memory is `O(spot_checks * tile * k)`, not `O((m+n) * r)`.
+- Done: malformed huge-`m` proof with the wrong spot count rejects before full
+  noise expansion.
+- Done: proof decode DoS tests assert attacker-declared counts and shape
+  prefixes do not amplify allocation.
 
 ### DOS-02: Proof decoding is not parameter-aware and still permits large real-input bombs
 
 Severity: High
-Status: Confirmed
+Status: Remediated for verifier-facing plain-proof decoding
 
 Evidence:
 
-- `MatmulProof::decode` decodes `spot` using attacker-declared count up to `MAX_SPOT = 2^20`.
-- `decode_path_list` allows attacker-declared strip path counts up to `MAX_STRIP_COUNT = 2^20`.
-- `decode_i8_slice` allows each strip-concat field up to 16 MiB.
-- Shape checks against `params.spot_checks`, `tile`, and `k` happen later in `verify`.
-
-The prior up-front allocation bomb is partially fixed by avoiding `Vec::with_capacity(n)` for spot/path-list counts, but the decoder still accepts attacker-supplied actual bytes proportional to these loose caps before a params-aware verifier can reject them.
+- `MatmulProof::decode` remains a loose legacy/offline decoder and is
+  documented as such. It no longer preallocates attacker-declared spot/path
+  counts.
+- `MatmulProof::decode_for_params` is the verifier-facing decoder. It computes
+  a parameter-derived maximum encoded length, rejects oversized bodies before
+  parsing, and checks spot count, strip lengths, path counts, and path depths
+  while reading prefixes.
+- `MatmulProof::decode_consensus_for_params` wraps the legacy body in a
+  versioned length envelope, rejects bad magic/versions/length mismatches, then
+  delegates to `decode_for_params`.
 
 Attack sketch:
 
 1. Send a syntactically valid proof with many actual spot openings or huge strip/path fields.
-2. Decoder allocates and copies the whole object.
-3. Verifier later rejects because `spot.len() != params.spot_checks` or strip lengths do not match.
+2. Historical verifier-facing decode allocated and copied the whole object.
+3. Verifier later rejected because `spot.len() != params.spot_checks` or strip lengths did not match.
 
 Impact:
 
-Remote memory/CPU DoS through large but syntactically valid proof blobs.
+The verifier-facing plain-proof decode path is bounded by the expected
+parameter shape. Generic `decode` remains non-consensus tooling.
 
 Fix plan:
 
-- Add `MatmulProof::decode_for_params(bytes, params)` that:
-  - enforces a total byte limit before decoding,
-  - requires `spot_count == params.spot_checks`,
-  - requires `a_rows.len() == tile * k`,
-  - requires `b_cols.len() == tile * k`,
-  - requires path-list counts equal `tile`,
-  - requires path depths equal the expected Merkle depths,
-  - rejects trailing bytes.
-- Keep generic `decode` only for tests/tools, or make it private.
-- Define network-level max proof byte size per admitted params.
+- Done: `MatmulProof::decode_for_params(bytes, params)` enforces a total byte
+  limit before decoding, requires exact spot count, strip lengths, path-list
+  counts, path depths, and trailing-byte rejection.
+- Done: `decode_consensus_for_params` adds a versioned length envelope for the
+  legacy plain proof format.
+- Keep generic `decode` documented as loose legacy/offline tooling only.
 
 Tests:
 
-- Declared `spot_count > params.spot_checks` rejects before decoding spot bodies.
-- Oversized strip fields reject before allocation.
-- A proof with valid total bytes but wrong path count rejects in decode, not verify.
+- Done: declared `spot_count > params.spot_checks` rejects before decoding
+  spot bodies.
+- Done: oversized strip fields reject before allocation.
+- Done: the allocator regression covers a prefix-only `decode_for_params`
+  strip-length bomb.
+- Done: wrong path/strip counts reject in decode, not verify.
 
 ### SND-06: Plain proof carries chunk commitments that the plain verifier ignores
 

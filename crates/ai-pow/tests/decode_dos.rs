@@ -20,6 +20,7 @@ use std::alloc::{GlobalAlloc, Layout, System};
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use ai_pow::fiat_shamir::challenge_indices;
+use ai_pow::params::MatmulParams;
 use ai_pow::proof::MatmulProof;
 
 struct CountingAlloc;
@@ -76,6 +77,32 @@ fn malicious_path_list_blob(declared_n: u32) -> Vec<u8> {
     b.extend_from_slice(&0u32.to_le_bytes()); // b_cols: len 0
     b.extend_from_slice(&declared_n.to_le_bytes()); // a_row_paths: count = bomb
     b
+}
+
+/// Parameter-aware decoder bomb: a syntactically plausible proof prefix whose
+/// found opening declares an enormous A-strip length. The verifier-facing
+/// decoder must compare that prefix against `params` and return before
+/// allocating or copying any strip body.
+fn malicious_param_strip_len_blob(declared_len: u32) -> Vec<u8> {
+    let mut b = Vec::new();
+    b.extend_from_slice(&[0u8; 32 * 6]);
+    b.extend_from_slice(&0u32.to_le_bytes()); // i
+    b.extend_from_slice(&0u32.to_le_bytes()); // j
+    b.extend_from_slice(&0u32.to_le_bytes()); // m_path depth
+    b.extend_from_slice(&declared_len.to_le_bytes()); // a_rows len = bomb
+    b
+}
+
+fn shaped_params() -> MatmulParams {
+    MatmulParams {
+        m: 8,
+        k: 64,
+        n: 8,
+        noise_rank: 4,
+        tile: 8,
+        spot_checks: 1,
+        difficulty_bits: 0,
+    }
 }
 
 /// Measure the peak allocation `f()` triggers, in bytes.
@@ -157,5 +184,17 @@ fn decode_does_not_amplify_attacker_declared_counts() {
         peak < AMPLIFICATION_LIMIT,
         "challenge_indices(count=80, range=2^32) allocated {peak} bytes — \
          must be O(count) not O(range) (pre-fix bomb was ~4 GiB)",
+    );
+
+    // (e) Verifier-facing parameter-aware decode must reject shape-impossible
+    // strip lengths from the prefix alone, before allocating a declared
+    // strip body.
+    let params = shaped_params();
+    let strip_blob = malicious_param_strip_len_blob(u32::MAX);
+    let (res, peak) = measure_alloc_peak(|| MatmulProof::decode_for_params(&strip_blob, &params));
+    assert!(res.is_err(), "shape-impossible strip length must reject");
+    assert!(
+        peak < AMPLIFICATION_LIMIT,
+        "decode_for_params allocated {peak} bytes for a prefix-only strip-length bomb",
     );
 }
