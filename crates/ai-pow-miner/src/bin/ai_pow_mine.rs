@@ -281,11 +281,12 @@ fn build_puzzle_inputs(args: &Args) -> Result<AiPuzzleInputs> {
     params
         .validate()
         .map_err(|e| anyhow!("matmul params invalid: {e}"))?;
+    validate_pearl_recursive_cli_params(args, params)?;
 
     let (a, b) = match (&args.a, &args.b, &args.synth_seed) {
         (Some(ap), Some(bp), None) => {
-            let a = load_matrix(ap, (args.m * args.k) as usize, "A")?;
-            let b = load_matrix(bp, (args.k * args.n) as usize, "B")?;
+            let a = load_matrix(ap, checked_matrix_len(args.m, args.k, "A")?, "A")?;
+            let b = load_matrix(bp, checked_matrix_len(args.n, args.k, "B")?, "B")?;
             (a, b)
         }
         (None, None, Some(seed)) => ai_pow::synth::synth_matrices(seed.as_bytes(), &params),
@@ -313,12 +314,7 @@ fn build_puzzle_inputs(args: &Args) -> Result<AiPuzzleInputs> {
     })
 }
 
-fn build_pearl_merge_submission_config(
-    args: &Args,
-    params: MatmulParams,
-    a: &Arc<Vec<i8>>,
-    b: &Arc<Vec<i8>>,
-) -> Result<PearlMergeSubmissionConfig> {
+fn validate_pearl_recursive_cli_params(args: &Args, params: MatmulParams) -> Result<()> {
     if params.difficulty_bits != 0 || params.spot_checks != 1 {
         bail!(
             "Pearl-compatible recursive certificates require --difficulty-bits 0 and --spot-checks 1"
@@ -333,6 +329,16 @@ fn build_pearl_merge_submission_config(
             args.pearl_max_pattern_len
         );
     }
+    Ok(())
+}
+
+fn build_pearl_merge_submission_config(
+    args: &Args,
+    params: MatmulParams,
+    a: &Arc<Vec<i8>>,
+    b: &Arc<Vec<i8>>,
+) -> Result<PearlMergeSubmissionConfig> {
+    validate_pearl_recursive_cli_params(args, params)?;
 
     let prev_block = parse_required_hex_32(
         args.pearl_prev_block.as_deref(),
@@ -470,6 +476,13 @@ fn parse_optional_hex_or_utf8(s: &str) -> Result<Vec<u8>> {
     }
 }
 
+fn checked_matrix_len(rows: u32, cols: u32, label: &str) -> Result<usize> {
+    let len = u64::from(rows)
+        .checked_mul(u64::from(cols))
+        .ok_or_else(|| anyhow!("{label}: matrix length overflows u64"))?;
+    usize::try_from(len).map_err(|_| anyhow!("{label}: matrix length does not fit usize"))
+}
+
 fn load_matrix(path: &PathBuf, expected_len: usize, label: &str) -> Result<Vec<i8>> {
     let bytes = fs::read(path).with_context(|| format!("{label}: read {}", path.display()))?;
     if bytes.len() != expected_len {
@@ -575,6 +588,26 @@ mod tests {
         assert!(
             err.to_string()
                 .contains("require --difficulty-bits 0 and --spot-checks 1"),
+            "unexpected error: {err:#}"
+        );
+    }
+
+    #[test]
+    fn cli_rejects_nonproduction_shape_before_matrix_synthesis() {
+        let args = Args::parse_from([
+            "ai-pow-mine", "--mining-pkh",
+            "9yPePjfWAdUnzaQKyxcRXKRa5PpUzKKEwtpECBZsUYt9Jd7egSDEWoV", "--synth-seed",
+            "must-not-materialize-matrix", "--m", "16777224", "--k", "512", "--n", "8",
+            "--noise-rank", "32", "--tile", "8", "--spot-checks", "1", "--difficulty-bits", "0",
+        ]);
+
+        let err = match build_puzzle_inputs(&args) {
+            Ok(_) => panic!("nonproduction Pearl shape must fail before matrix synthesis"),
+            Err(err) => err,
+        };
+        assert!(
+            err.to_string()
+                .contains("Pearl-compatible params are not production-admissible"),
             "unexpected error: {err:#}"
         );
     }
