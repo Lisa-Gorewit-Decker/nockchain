@@ -143,7 +143,7 @@
 ++  pkh-signature  pkh-signature:v1
 ++  proof  proof:v0
 ++  ai-blake  ai-blake:v1
-++  ai-ncmn   ai-ncmn:v1
+++  ai-pow-nonce  ai-pow-nonce:v1
 ++  ai-ext2   ai-ext2:v1
 ++  ai-ext2s  ai-ext2s:v1
 ++  ai-ext2-vec  ai-ext2-vec:v1
@@ -152,13 +152,7 @@
 ++  ai-proof-node  ai-proof-node:v1
 ++  ai-recursive-certificate  ai-recursive-certificate:v1
 ++  ai-pow-certificate  ai-pow-certificate:v1
-++  pearl-header  pearl-header:v1
-++  pearl-public-data  pearl-public-data:v1
-++  pearl-chain-id  pearl-chain-id:v1
-++  pearl-extra-data  pearl-extra-data:v1
-++  pearl-nockchain-aux  pearl-nockchain-aux:v1
-++  pearl-merge-public-statement  pearl-merge-public-statement:v1
-++  pearl-merge-ai-pow-artifact  pearl-merge-ai-pow-artifact:v1
+++  ai-pow-artifact  ai-pow-artifact:v1
 ++  pow-artifact  pow-artifact:v1
 ++  reason
   |$  object

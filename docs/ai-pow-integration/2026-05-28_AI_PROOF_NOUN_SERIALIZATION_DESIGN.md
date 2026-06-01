@@ -20,10 +20,15 @@ stages after this is reviewed.
 > Re-audit note, 2026-06-01: this precursor must not be read as
 > allowing `[%ai-pow prf bc nonce]`, a single opaque STARK atom, or
 > a raw Layer-0 proof on the block wire. The current Hoon shape is
-> `[%ai-pow nonce=ai-ncmn cert=ai-pow-certificate]`, where
+> `[%ai-pow nonce=ai-pow-nonce cert=ai-pow-certificate]`, where
 > `cert` is a structured recursive certificate noun with custom
-> digest/field auras. `MatmulProof` and Layer-0 `BatchProof` remain
-> prover internals.
+> digest/field auras. The nonce is an opaque Rust-owned `[len data]`
+> envelope, not the legacy `@uxncmn` atom. `MatmulProof` and Layer-0
+> `BatchProof` remain prover internals.
+>
+> Scope note, 2026-06-01: real Hoon verifier wiring is intentionally not part
+> of the current milestone. Treat the verifier sections below as historical
+> acceptance-contract notes only, not as an implementation plan for this branch.
 
 ---
 
@@ -145,9 +150,12 @@ supersedes that hint with Option A, matching Stage-6 §5.1's stated intent
 Superseded current shape:
 
 ```hoon
-[%ai-pow nonce=ai-ncmn cert=ai-pow-certificate]
+[%ai-pow nonce=ai-pow-nonce cert=ai-pow-certificate]
 ```
 
+Earlier drafts used an `ai-ncmn` atom here. The current production wire shape
+uses `ai-pow-nonce=[len=@ud data=@uxaipownonce]`, which is opaque to Hoon and
+allows the Rust nonce envelope to carry Pearl-compatible commitment material.
 The historical sketch below is retained only to explain the superseded
 direction; it is not the production wire shape.
 

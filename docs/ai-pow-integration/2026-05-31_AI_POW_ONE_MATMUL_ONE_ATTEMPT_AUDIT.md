@@ -3,6 +3,12 @@
 Date: 2026-05-31
 Status: Critical audit finding, repair plan, and implementation tracking
 
+> Supersession note, 2026-06-01: this audit's grinding invariant still applies,
+> but any references below to `@uxncmn` are historical. The current canonical
+> `%ai-pow` artifact carries `ai-pow-nonce=[len data]`, an opaque Rust-owned
+> nonce envelope described in
+> `2026-06-01_PEARL_MERGE_MINING_COMPATIBILITY_SPEC.md`.
+
 ## Executive Summary
 
 The intended production invariant is:
@@ -978,21 +984,20 @@ and missed targets return the cheap precheck errors before proof-node decode.
 
 ## Latest Re-Audit: Plain Verifier API Visibility
 
-The plain `MatmulProof` verifier remains useful as an internal/diagnostic
-target-hit check before recursive certificate generation, but it is not the
-canonical block proof verifier. A crate-root re-export of
-`verify_ncmn_at_target` or `verify_at_target` makes the plain proof path look
-like a normal production API and increases the risk that a downstream caller
-admits a legacy selected-tile/plain proof instead of the structured recursive
-certificate noun.
+The plain `MatmulProof` object, plain mining helpers, and plain verifier remain
+useful as internal/diagnostic target-hit plumbing before recursive certificate
+generation, but they are not canonical block proof APIs. Crate-root re-exports
+make the plain proof path look like normal production surface area and increase
+the risk that a downstream caller admits a legacy selected-tile/plain proof
+instead of the structured recursive certificate noun.
 
 Code status after this re-audit: `ai-pow` no longer re-exports plain proof
-verifier functions from the crate root. Callers that intentionally need the
-plain pre-ZKP check must use the explicit `ai_pow::verifier::...` module path.
-The production miner was updated to use that explicit module path before
-recursive certificate generation, and the crate README now states that plain
-verifiers are diagnostics/prechecks, not canonical block-acceptance APIs. The
-wire regression asserts that crate-root plain verifier re-exports stay absent.
+objects, plain mining helpers, or plain verifier functions from the crate root.
+Callers that intentionally need diagnostic/plain pre-ZKP functionality must use
+explicit `ai_pow::proof::...`, `ai_pow::prover::...`, or
+`ai_pow::verifier::...` module paths. The production miner uses explicit module
+paths before recursive certificate generation, and the crate docs state that
+plain verifiers are diagnostics/prechecks, not canonical block-acceptance APIs.
 
 ## Latest Re-Audit: Layer-0 ZK Side-Effect Admission
 
@@ -1054,11 +1059,12 @@ refuses to connect or enable mining when no recursive certificate builder is
 configured, when the current selected-tile recursive statement is used with
 multi-tile parameters. Tests cover missing builder, the production-valid
 multi-tile fixture that fails before mining, and the single-tile chunk-seed
-admission case. The `ai-pow-mine` CLI defaults remain a
-single-tile production-envelope smoke profile
-(`m=8, k=512, n=8, r=32, tile=8, sigma=1`) for local Layer-0 development, while
-multi-tile canonical block submission remains fail-closed until the recursive
-certificate binds a full-matrix aggregate.
+admission case. The `ai-pow-mine` CLI now defaults to Pearl-compatible
+submission with single-tile production-envelope smoke parameters
+(`m=8, k=512, n=8, r=32, tile=8, sigma=1`) for local Layer-0 development; the
+Pearl header fields are still explicit because they define the shared attempt
+transcript. Multi-tile canonical block submission remains fail-closed until the
+recursive certificate binds a full-matrix aggregate.
 
 Follow-up code status: the prover-only `ai-pow-mine-prover` smoke CLI had the
 same stale `TEST_SMALL` defaults even though it calls the production

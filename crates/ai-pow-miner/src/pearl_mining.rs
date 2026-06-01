@@ -2,9 +2,9 @@
 //!
 //! This loop is deliberately separate from the NCMN nonce miner. One iteration
 //! evaluates one explicit Pearl-valid `t_rows` / `t_cols` ticket attempt and
-//! returns only after the shared Pearl jackpot digest clears both Pearl's
-//! adjusted target and the Nockchain target. Recursive proof construction and
-//! `%ai-pmp` artifact submission happen after this function returns.
+//! returns only after the shared Pearl jackpot digest clears the Nockchain
+//! target. Recursive proof construction and canonical `%ai-pow` artifact
+//! submission happen after this function returns.
 
 use std::time::{Duration, Instant};
 

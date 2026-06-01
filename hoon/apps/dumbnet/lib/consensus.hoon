@@ -142,8 +142,6 @@
   ^-  proof-version:sp
   ?:  ?=([%ai-pow *] pow)
     %3
-  ?:  ?=([%ai-pmp *] pow)
-    %3
   =/  prf=proof:sp  (need ((soft proof:sp) pow))
   version.prf
 ::
@@ -602,10 +600,6 @@
     ?:  ?=([%ai-pow *] pow)
       ::  Fail closed until recursive AI-PoW certificate verification is
       ::  wired. A typed certificate is not itself a target check.
-      %.n
-    ?:  ?=([%ai-pmp *] pow)
-      ::  Fail closed until Pearl-compatible recursive AI-PoW certificate
-      ::  verification and aux inclusion verification are wired.
       %.n
     =/  prf=proof:sp  (need ((soft proof:sp) pow))
     %-  check-target:mine

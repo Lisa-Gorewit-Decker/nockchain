@@ -47,18 +47,16 @@ pub mod verifier;
 pub mod zk_bridge;
 
 pub use crate::params::MatmulParams;
-pub use crate::proof::{MatmulProof, TileOpening};
-pub use crate::prover::{mine, mine_block, MineError, ProverOptions};
 pub use crate::synth::synth_matrices;
-pub use crate::verifier::VerifyError;
 
 // `BlockContext` remains available as `ai_pow::prover::BlockContext` for
 // explicit diagnostics, tests, and miner internals. It is intentionally not
 // re-exported at the crate root because it contains cached, nonce-bound matmul
 // state and must not look like the normal production mining API.
 //
-// Plain `MatmulProof` verification remains available under
-// `ai_pow::verifier` for diagnostics and for the miner's pre-ZKP target hit
-// check. It is intentionally not re-exported at the crate root: Nockchain's
-// canonical production block artifact is the structured recursive certificate
-// noun, not a plain opening proof.
+// Plain `MatmulProof`, plain mining helpers, and plain verification helpers
+// remain available under `ai_pow::proof`, `ai_pow::prover`, and
+// `ai_pow::verifier` for diagnostics and for the miner's pre-ZKP target-hit
+// check. They are intentionally not re-exported at the crate root:
+// Nockchain's canonical production block artifact is the structured recursive
+// certificate noun, not a plain opening proof.

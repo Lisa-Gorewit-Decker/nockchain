@@ -5,8 +5,8 @@
 //! [`nockapp_grpc`] `NockAppService`. The substrate (connect /
 //! `set-mining-key` / `enable-mining` / `WatchEffects` / `submit`)
 //! is shared via [`nockchain_mining_common::NodeClient`]; only the
-//! puzzle-specific bits (the AI-PoW matmul prover, the NCMN nonce
-//! shape, the `AiPowMinerWire` submission wire) live here.
+//! puzzle-specific bits (the AI-PoW matmul prover and
+//! `AiPowMinerWire` submission wire) live here.
 //!
 //! ## Lifecycle
 //! 1. Build the [`MinerConfig`] with the AI-puzzle parameters
@@ -17,36 +17,36 @@
 //! 4. Inner loop (single worker for v1):
 //!    - shutdown → cancel current attempt + best-effort
 //!      `enable_mining(false)` + exit.
-//!    - new candidate → cancel any in-flight attempt, derive the
-//!      mining job, spawn-blocking [`crate::mining::run`].
+//!    - new candidate → cancel any in-flight attempt, derive the configured
+//!      mining job, and spawn the native NCMN or Pearl-compatible worker.
 //!    - worker result:
-//!      - success → build the canonical recursive certificate via the
-//!        configured certificate builder once the proof is sound for
-//!        production, and poke the node with
-//!        `[%command %pow %ai-pow nonce cert]` on [`AiPowMinerWire::Mined`],
-//!        then idle until the next candidate.
+//!      - success → build the canonical recursive certificate only after a
+//!        target hit, then poke the node with a canonical `%ai-pow` command on
+//!        [`AiPowMinerWire::Mined`].
 //!      - error → log + idle.
 //! 5. Stream drop → outer loop reconnects.
 //!
 //! ## Note on submission
-//! The canonical payload shape is the recursive AI-PoW certificate noun. The
-//! plain `MatmulProof`, nonce, and tile index are mining internals; they are
-//! not submitted to the kernel as the block proof. The current certificate
-//! support gate fails preflight for multi-tile shapes until the recursive
-//! statement binds a full-matrix aggregate, and the kernel remains fail-closed
-//! until recursive certificate verification is wired. Pearl merge-mined
-//! submissions use the separate `%ai-pmp` helper in this module, but the run
-//! loop remains native `%ai-pow` until the Pearl ticket prover and consensus
-//! verifier are wired end to end.
+//! The canonical payload shape is a `%ai-pow` noun carrying an opaque
+//! Rust-owned nonce and the recursive AI-PoW certificate noun. The plain
+//! `MatmulProof` and tile index are mining internals; they are not submitted
+//! to the kernel as the block proof. In Pearl-compatible mode the run loop
+//! constructs the Rust-owned `AIP1` nonce and submits only the Nockchain
+//! `%ai-pow` command; it does not submit anything to Pearl. The kernel remains
+//! fail-closed until recursive certificate verification is wired.
 
 use std::sync::Arc;
 use std::time::Duration;
 
 use ai_pow::params::MatmulParams;
-use ai_pow::pearl_compat::PearlMergeTicketAttempt;
+use ai_pow::pearl_compat::{
+    pearl_bitcoin_double_sha256_raw, validate_pearl_merge_config_for_recursive_prover,
+    PearlAuxInclusionProof, PearlIncompleteBlockHeader, PearlMergeTicketAttempt, PearlMiningConfig,
+    PearlNockchainAux, PEARL_NOCKCHAIN_AUX_COMMITMENT_TAG,
+};
 use ai_pow::prover::ProverOptions;
-use ai_pow::zk_bridge::AiPowRecursiveCertificateRun;
-use ai_pow_zk::CompositePublicInputs;
+use ai_pow::zk_bridge::{AiPowRecursiveCertificateRun, ZkPublicCommitments};
+use ai_pow_zk::{CompositePublicInputs, ZkParams};
 use futures::StreamExt;
 use nockapp::nockapp::wire::Wire;
 use nockapp::noun::slab::NounSlab;
@@ -59,13 +59,13 @@ use tokio_util::sync::CancellationToken;
 use tracing::{debug, info, warn};
 
 use crate::certificate_noun::{
-    build_ai_pow_pearl_merge_artifact_noun_from_ticket,
-    build_ai_pow_pearl_merge_artifact_noun_from_ticket_node,
-    build_ai_pow_pearl_merge_artifact_noun_from_ticket_public_inputs,
     build_ai_pow_pearl_merge_artifact_noun_from_ticket_public_inputs_node,
     build_ai_pow_pearl_merge_artifact_noun_from_ticket_recursive_run,
-    decode_ai_pow_pearl_merge_artifact_slab, AiProofNode, CertificateNounError,
+    decode_ai_pow_pearl_merge_artifact_metadata_slab, AiProofNode, CertificateNounError,
     CertificateNounLimits,
+};
+use crate::pearl_mining::{
+    self, PearlMergeMineOptions, PearlMergeMinedTicket, PearlMergeMiningError, PearlMergeMiningJob,
 };
 use crate::wire::AiPowMinerWire;
 use crate::{
@@ -78,19 +78,72 @@ const MAX_CHAIN_TARGET_U32_LIMBS: usize = 10;
 pub type AiPowCertificateBuilder =
     dyn Fn(&MinedSolution) -> Result<NounSlab, AiPowCertificateBuildError> + Send + Sync + 'static;
 
-/// Which canonical block proof arm this miner configuration is allowed to
-/// submit.
+pub type AiPowPearlMergeCertificateBuilder = dyn Fn(&PearlMergeTicketAttempt) -> Result<PearlMergeCertificateProof, AiPowCertificateBuildError>
+    + Send
+    + Sync
+    + 'static;
+
+/// Recursive proof data produced only after a Pearl-compatible ticket clears
+/// Nockchain's target.
+///
+/// Public callers can construct this only from a real recursive prover run.
+/// Tests inside this crate may still inject synthetic proof nodes to exercise
+/// the surrounding noun and run-loop plumbing without running the prover.
+#[derive(Debug, Clone)]
+pub struct PearlMergeCertificateProof {
+    zk_params: ZkParams,
+    found_idx: u32,
+    commitments: ZkPublicCommitments,
+    public_inputs: CompositePublicInputs,
+    trace_height: usize,
+    certificate: AiProofNode,
+}
+
+impl PearlMergeCertificateProof {
+    pub fn from_recursive_run(
+        run: &AiPowRecursiveCertificateRun,
+    ) -> Result<Self, AiPowCertificateBuildError> {
+        let certificate = crate::certificate_noun::recursive_certificate_to_node(&run.certificate)
+            .map_err(|e| AiPowCertificateBuildError(e.to_string()))?;
+        Ok(Self {
+            zk_params: run.zk_params,
+            found_idx: run.found_idx,
+            commitments: run.commitments,
+            public_inputs: run.pis.clone(),
+            trace_height: run.trace_height,
+            certificate,
+        })
+    }
+}
+
+/// Rust-only Nockchain submission settings for Pearl-compatible mining.
+///
+/// Hoon still receives only the opaque `AIP1` nonce bytes and recursive
+/// certificate; these Pearl fields are used only by the miner to construct the
+/// shared attempt transcript and aux commitment.
+#[derive(Clone)]
+pub struct PearlMergeSubmissionConfig {
+    pub header_template: PearlIncompleteBlockHeader,
+    pub mining_config: PearlMiningConfig,
+    pub aux_template: PearlNockchainAux,
+    pub max_pattern_len: usize,
+    pub mine_opts: PearlMergeMineOptions,
+    pub certificate_builder: Arc<AiPowPearlMergeCertificateBuilder>,
+}
+
+/// Which block proof mode this miner configuration is allowed to submit.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AiPowSubmissionMode {
-    /// Native Nockchain AI-PoW: mine NCMN nonce-bound attempts and submit
-    /// `[%command %pow %ai-pow nonce cert]`.
-    NativeNcmn,
-    /// Pearl-compatible merge-mined AI-PoW: mine Pearl ticket attempts and
-    /// submit `[%command %pow %ai-pmp artifact]`.
+    /// Legacy NCMN smoke path: mine NCMN nonce-bound attempts and submit a
+    /// `%ai-pow` noun. This is not the Pearl-format-compatible production
+    /// path.
+    LegacyNcmn,
+    /// Pearl-format-compatible Nockchain AI-PoW: mine Pearl-style ticket
+    /// attempts and submit winners through Nockchain's canonical `%ai-pow`
+    /// block proof arm.
     ///
-    /// The public helper APIs for constructing `%ai-pmp` artifacts exist, but
-    /// the main node run loop remains fail-closed in this mode until it has a
-    /// Pearl candidate/job source and recursive Pearl statement prover.
+    /// The run loop wires this only for Nockchain-side submission. Pearl-chain
+    /// block submission remains out of scope.
     PearlMerge,
 }
 
@@ -160,6 +213,9 @@ pub struct AiPuzzleInputs {
     /// recursive proof lacks the full production binding, the production node
     /// miner fails preflight before enabling mining.
     pub certificate_builder: Option<Arc<AiPowCertificateBuilder>>,
+    /// Pearl-format-compatible Nockchain submission configuration. Required
+    /// when `submission_mode == PearlMerge`; ignored by the legacy NCMN path.
+    pub pearl_merge: Option<PearlMergeSubmissionConfig>,
     /// The block proof arm this run-loop configuration may submit.
     pub submission_mode: AiPowSubmissionMode,
 }
@@ -169,23 +225,57 @@ impl AiPuzzleInputs {
     /// configured puzzle can be converted into the canonical recursive
     /// certificate accepted at the block boundary.
     pub fn validate_canonical_submission_ready(&self) -> Result<(), MinerError> {
-        if self.submission_mode == AiPowSubmissionMode::PearlMerge {
-            return Err(MinerError::CanonicalCertificateUnavailable(
-                "Pearl merge-mining mode is explicit but the node run loop is not wired to mine Pearl ticket attempts yet; use the %ai-pmp ticket-derived submission helpers only after a Pearl ticket/prover path succeeds".to_string(),
-            ));
+        match self.submission_mode {
+            AiPowSubmissionMode::LegacyNcmn => {
+                if self.pearl_merge.is_some() {
+                    return Err(MinerError::CanonicalCertificateUnavailable(
+                        "legacy NCMN smoke mode must not carry Pearl merge submission config"
+                            .to_string(),
+                    ));
+                }
+                if self.certificate_builder.is_none() {
+                    return Err(MinerError::CanonicalCertificateUnavailable(
+                        "no recursive certificate builder configured".to_string(),
+                    ));
+                }
+                ai_pow::zk_bridge::validate_canonical_recursive_certificate_params(&self.params)
+                    .map_err(|e| {
+                        MinerError::CanonicalCertificateUnavailable(format!(
+                            "configured AI-PoW params cannot produce a canonical full-matmul recursive certificate: {e}"
+                        ))
+                    })?;
+            }
+            AiPowSubmissionMode::PearlMerge => {
+                let Some(pearl) = self.pearl_merge.as_ref() else {
+                    return Err(MinerError::CanonicalCertificateUnavailable(
+                        "Pearl-format-compatible mode requires Pearl merge submission config"
+                            .to_string(),
+                    ));
+                };
+                if self.certificate_builder.is_some() {
+                    return Err(MinerError::CanonicalCertificateUnavailable(
+                        "Pearl-format-compatible mode must not carry legacy NCMN certificate builder"
+                            .to_string(),
+                    ));
+                }
+                validate_pearl_merge_config_for_recursive_prover(
+                    &pearl.mining_config,
+                    &self.params,
+                    pearl.max_pattern_len,
+                )
+                .map_err(|e| {
+                    MinerError::CanonicalCertificateUnavailable(format!(
+                        "configured Pearl merge AI-PoW params/config cannot produce a canonical recursive certificate: {e}"
+                    ))
+                })?;
+                pearl.aux_template.to_bytes().map_err(|e| {
+                    MinerError::CanonicalCertificateUnavailable(format!(
+                        "Pearl aux template is not canonical: {e}"
+                    ))
+                })?;
+            }
         }
-        if self.certificate_builder.is_none() {
-            return Err(MinerError::CanonicalCertificateUnavailable(
-                "no recursive certificate builder configured".to_string(),
-            ));
-        }
-        ai_pow::zk_bridge::validate_canonical_recursive_certificate_params(&self.params).map_err(
-            |e| {
-                MinerError::CanonicalCertificateUnavailable(format!(
-                    "configured AI-PoW params cannot produce a canonical full-matmul recursive certificate: {e}"
-                ))
-            },
-        )
+        Ok(())
     }
 }
 
@@ -332,10 +422,7 @@ pub async fn run(cfg: MinerConfig, shutdown: CancellationToken) -> Result<(), Mi
         // any). `cancel` is the AI-PoW MiningCancel handle for it.
         // On a new candidate we cancel the existing attempt + spawn
         // a fresh one. On shutdown we cancel + drain.
-        let mut worker: Option<(
-            JoinHandle<Result<MinedSolution, PuzzleMiningError>>,
-            MiningCancel,
-        )> = None;
+        let mut worker: Option<MiningWorker> = None;
         let inner_result: InnerOutcome = loop {
             tokio::select! {
                 biased;
@@ -352,24 +439,39 @@ pub async fn run(cfg: MinerConfig, shutdown: CancellationToken) -> Result<(), Mi
                     // Cancel any in-flight attempt; await its join so we
                     // don't accumulate handles. Drop the result — we're
                     // moving on.
-                    if let Some((h, c)) = worker.take() {
-                        c.cancel();
-                        match h.await {
-                            Ok(_) => {}
-                            Err(e) => debug!(error = %e, "prior worker join error (ignored)"),
+                    if let Some(w) = worker.take() {
+                        w.cancel();
+                        if let Err(e) = w.await_join().await {
+                            debug!(error = %e, "prior worker join error (ignored)");
                         }
                     }
-                    let (target, anchors) = match derive_job_inputs(&candidate) {
-                        Ok(x) => x,
-                        Err(e) => {
-                            warn!(error = %e, "could not derive job inputs from candidate; skipping");
-                            continue;
-                        }
-                    };
-                    info!(pow_len = candidate.pow_len, "new candidate; dispatching ai-pow attempt");
                     let cancel = MiningCancel::new();
-                    let h = spawn_attempt(&cfg, anchors, target, cancel.clone());
-                    worker = Some((h, cancel));
+                    match cfg.puzzle.submission_mode {
+                        AiPowSubmissionMode::LegacyNcmn => {
+                            let (target, anchors) = match derive_job_inputs(&candidate) {
+                                Ok(x) => x,
+                                Err(e) => {
+                                    warn!(error = %e, "could not derive job inputs from candidate; skipping");
+                                    continue;
+                                }
+                            };
+                            info!(pow_len = candidate.pow_len, "new candidate; dispatching native ai-pow attempt");
+                            let h = spawn_attempt(&cfg, anchors, target, cancel.clone());
+                            worker = Some(MiningWorker::LegacyNcmn { handle: h, cancel });
+                        }
+                        AiPowSubmissionMode::PearlMerge => {
+                            let pearl_job = match derive_pearl_merge_job_inputs(&cfg, &candidate) {
+                                Ok(x) => x,
+                                Err(e) => {
+                                    warn!(error = %e, "could not derive Pearl merge job inputs from candidate; skipping");
+                                    continue;
+                                }
+                            };
+                            info!(pow_len = candidate.pow_len, "new candidate; dispatching Pearl-compatible ai-pow attempt");
+                            let h = spawn_pearl_merge_attempt(&cfg, pearl_job, cancel.clone());
+                            worker = Some(MiningWorker::PearlMerge { handle: h, cancel });
+                        }
+                    }
                 }
                 done = await_worker(&mut worker) => {
                     // worker is now None.
@@ -400,7 +502,7 @@ pub async fn run(cfg: MinerConfig, shutdown: CancellationToken) -> Result<(), Mi
                                     break InnerOutcome::Fatal(MinerError::CertificateBuild(e.to_string()));
                                 }
                             };
-                            let poke = match build_ai_pow_certificate_poke(&sol.nonce, &cert) {
+                            let poke = match build_legacy_ncmn_ai_pow_certificate_poke(&sol.nonce, &cert) {
                                 Ok(poke) => poke,
                                 Err(e) => {
                                     warn!(error = %e, "canonical AI-PoW certificate poke build failed");
@@ -423,15 +525,64 @@ pub async fn run(cfg: MinerConfig, shutdown: CancellationToken) -> Result<(), Mi
                         WorkerOutcome::Joined(Err(e)) => {
                             break InnerOutcome::Fatal(MinerError::WorkerJoin(format!("{e}")));
                         }
+                        WorkerOutcome::PearlJoined(Ok(Ok(mined))) => {
+                            info!(
+                                matmul_attempts = mined.ticket.stats.matmul_attempts_tried,
+                                elapsed_s = mined.ticket.stats.elapsed.as_secs_f64(),
+                                matmul_attempt_rate = mined.ticket.stats.matmul_attempt_rate_per_sec(),
+                                "ai-pow-miner: Pearl-compatible solution found; submitting Nockchain %ai-pow"
+                            );
+                            let Some(pearl_cfg) = cfg.puzzle.pearl_merge.as_ref() else {
+                                break InnerOutcome::Fatal(MinerError::CertificateBuild(
+                                    "Pearl merge solution found without Pearl config".to_string(),
+                                ));
+                            };
+                            let proof = match (pearl_cfg.certificate_builder)(&mined.ticket.attempt) {
+                                Ok(proof) => proof,
+                                Err(e) => {
+                                    warn!(error = %e, "Pearl-compatible recursive AI-PoW certificate build failed");
+                                    break InnerOutcome::Fatal(MinerError::CertificateBuild(e.to_string()));
+                                }
+                            };
+                            let poke = match build_ai_pow_pearl_merge_certificate_poke_from_ticket_proof(
+                                &mined.ticket.attempt,
+                                &mined.aux_inclusion,
+                                &cfg.puzzle.a,
+                                &cfg.puzzle.b,
+                                pearl_cfg.max_pattern_len,
+                                &proof,
+                            ) {
+                                Ok(poke) => poke,
+                                Err(e) => {
+                                    warn!(error = %e, "canonical Pearl-compatible AI-PoW certificate poke build failed");
+                                    break InnerOutcome::Fatal(MinerError::CertificateBuild(e.to_string()));
+                                }
+                            };
+                            if let Err(e) = client
+                                .poke_wire(AiPowMinerWire::Mined.to_wire(), poke)
+                                .await
+                            {
+                                warn!(error = %e, "submit Pearl-compatible ai-pow certificate poke failed (likely stale candidate)");
+                            }
+                        }
+                        WorkerOutcome::PearlJoined(Ok(Err(PearlMergeMiningError::Cancelled))) => {
+                            debug!("Pearl-compatible worker cancelled (expected on candidate supersede / shutdown)");
+                        }
+                        WorkerOutcome::PearlJoined(Ok(Err(e))) => {
+                            warn!(error = %e, "Pearl-compatible ai-pow attempt terminated without solution");
+                        }
+                        WorkerOutcome::PearlJoined(Err(e)) => {
+                            break InnerOutcome::Fatal(MinerError::WorkerJoin(format!("{e}")));
+                        }
                     }
                 }
             }
         };
 
         // ── cleanup before reconnect or exit ──
-        if let Some((h, c)) = worker.take() {
-            c.cancel();
-            let _ = h.await;
+        if let Some(w) = worker.take() {
+            w.cancel();
+            let _ = w.await_join().await;
         }
         let _ = client
             .enable_mining(AiPowMinerWire::Enable.to_wire(), false)
@@ -465,11 +616,42 @@ enum InnerOutcome {
     Fatal(MinerError),
 }
 
+enum MiningWorker {
+    LegacyNcmn {
+        handle: JoinHandle<Result<MinedSolution, PuzzleMiningError>>,
+        cancel: MiningCancel,
+    },
+    PearlMerge {
+        handle: JoinHandle<Result<PearlMergeMinedSubmission, PearlMergeMiningError>>,
+        cancel: MiningCancel,
+    },
+}
+
+impl MiningWorker {
+    fn cancel(&self) {
+        match self {
+            MiningWorker::LegacyNcmn { cancel, .. } | MiningWorker::PearlMerge { cancel, .. } => {
+                cancel.cancel();
+            }
+        }
+    }
+
+    async fn await_join(self) -> Result<(), tokio::task::JoinError> {
+        match self {
+            MiningWorker::LegacyNcmn { handle, .. } => handle.await.map(|_| ()),
+            MiningWorker::PearlMerge { handle, .. } => handle.await.map(|_| ()),
+        }
+    }
+}
+
 enum WorkerOutcome {
     /// No worker was running; the future returned immediately.
     None,
     /// Worker joined: outer Result = tokio JoinError, inner = mining result.
     Joined(Result<Result<MinedSolution, PuzzleMiningError>, tokio::task::JoinError>),
+    PearlJoined(
+        Result<Result<PearlMergeMinedSubmission, PearlMergeMiningError>, tokio::task::JoinError>,
+    ),
 }
 
 /// Helper to make `tokio::select!` work over an `Option<JoinHandle>`.
@@ -477,29 +659,23 @@ enum WorkerOutcome {
 /// (caller pauses to avoid a busy-loop). If the slot has a handle,
 /// awaits it (drops it on join). Mutates `worker` in place so the
 /// caller doesn't need to thread the take/put.
-async fn await_worker(
-    worker: &mut Option<(
-        JoinHandle<Result<MinedSolution, PuzzleMiningError>>,
-        MiningCancel,
-    )>,
-) -> WorkerOutcome {
-    if let Some((handle, _)) = worker.as_mut() {
-        let outcome = handle.await;
-        *worker = None;
-        WorkerOutcome::Joined(outcome)
-    } else {
-        WorkerOutcome::None
+async fn await_worker(worker: &mut Option<MiningWorker>) -> WorkerOutcome {
+    match worker.take() {
+        Some(MiningWorker::LegacyNcmn { handle, .. }) => WorkerOutcome::Joined(handle.await),
+        Some(MiningWorker::PearlMerge { handle, .. }) => WorkerOutcome::PearlJoined(handle.await),
+        None => WorkerOutcome::None,
     }
 }
 
 /// Derive the per-candidate job inputs the AI-PoW prover needs:
 /// the 32-byte chain difficulty target and the NCMN nonce anchors.
 ///
-/// **`nck_commitment`** is `BLAKE3(jam(candidate.block_header))` — a
-/// deterministic, collision-resistant 32-byte commitment to the
-/// chain's per-block header noun. The exact derivation is local to
-/// this miner crate (the chain-AI integration will swap this in for
-/// a chain-prescribed binding when the kernel-side puzzle lands).
+/// **`nck_commitment`** is `BLAKE3(jam(candidate.block_header))`, where
+/// `candidate.block_header` is the kernel-emitted `block-commitment:page:t`
+/// noun. That Hoon commitment is the same mining surface used by zk-pow: it
+/// binds the parent block id, tx-id set, coinbase split, timestamp, epoch
+/// counter, target, accumulated work, height, and page message before the PoW
+/// artifact is installed.
 ///
 /// **`target`** is decoded from the kernel-side bignum noun
 /// `[%bn limbs]`, where `limbs` are little-endian u32 chunks. The
@@ -514,6 +690,81 @@ fn derive_job_inputs(
     let nck = *blake3::hash(&header_bytes).as_bytes();
     let target = decode_chain_target_bignum(&candidate.target)?;
     Ok((target, NonceAnchors::nck_only(nck)))
+}
+
+struct PearlMergeCandidateJob {
+    header: PearlIncompleteBlockHeader,
+    aux_inclusion: PearlAuxInclusionProof,
+    target: DifficultyTarget,
+    aux: PearlNockchainAux,
+}
+
+struct PearlMergeMinedSubmission {
+    ticket: PearlMergeMinedTicket,
+    aux_inclusion: PearlAuxInclusionProof,
+}
+
+fn derive_pearl_merge_job_inputs(
+    cfg: &MinerConfig,
+    candidate: &MiningCandidate,
+) -> Result<PearlMergeCandidateJob, String> {
+    let (target, anchors) = derive_job_inputs(candidate)?;
+    let pearl = cfg
+        .puzzle
+        .pearl_merge
+        .as_ref()
+        .ok_or_else(|| "missing Pearl merge submission config".to_string())?;
+    let mut aux = pearl.aux_template.clone();
+    aux.nock_block_commitment = anchors.nck_commitment;
+    let (header, aux_inclusion) =
+        build_coinbase_only_pearl_aux_inclusion(&pearl.header_template, &aux)
+            .map_err(|e| format!("build Pearl aux inclusion: {e}"))?;
+    Ok(PearlMergeCandidateJob {
+        header,
+        aux_inclusion,
+        target,
+        aux,
+    })
+}
+
+fn build_coinbase_only_pearl_aux_inclusion(
+    header_template: &PearlIncompleteBlockHeader,
+    aux: &PearlNockchainAux,
+) -> Result<(PearlIncompleteBlockHeader, PearlAuxInclusionProof), CertificateNounError> {
+    let aux_commitment = aux.commitment()?;
+    let coinbase_tx = build_coinbase_only_pearl_aux_tx(&aux_commitment);
+    let mut merkle_root = pearl_bitcoin_double_sha256_raw(&coinbase_tx);
+    merkle_root.reverse();
+    let mut header = header_template.clone();
+    header.merkle_root = merkle_root;
+    Ok((
+        header,
+        PearlAuxInclusionProof {
+            coinbase_tx,
+            merkle_branch: Vec::new(),
+        },
+    ))
+}
+
+fn build_coinbase_only_pearl_aux_tx(aux_commitment: &[u8; 32]) -> Vec<u8> {
+    let mut script = Vec::from([0x01, 0x00]);
+    script.extend_from_slice(PEARL_NOCKCHAIN_AUX_COMMITMENT_TAG);
+    script.extend_from_slice(aux_commitment);
+
+    let mut tx = Vec::new();
+    tx.extend_from_slice(&1u32.to_le_bytes());
+    tx.push(1);
+    tx.extend_from_slice(&[0u8; 32]);
+    tx.extend_from_slice(&u32::MAX.to_le_bytes());
+    tx.push(script.len() as u8);
+    tx.extend_from_slice(&script);
+    tx.extend_from_slice(&u32::MAX.to_le_bytes());
+    tx.push(1);
+    tx.extend_from_slice(&0u64.to_le_bytes());
+    tx.push(1);
+    tx.push(0x51);
+    tx.extend_from_slice(&0u32.to_le_bytes());
+    tx
 }
 
 fn decode_chain_target_bignum(target: &NounSlab) -> Result<DifficultyTarget, String> {
@@ -608,19 +859,54 @@ fn spawn_attempt(
     })
 }
 
-/// Build the production consensus poke shape:
+/// Spawn the Pearl-compatible ticket worker. This evaluates ticket attempts
+/// only; recursive proof construction happens in the async submission path
+/// after the worker returns a Nockchain-target hit.
+fn spawn_pearl_merge_attempt(
+    cfg: &MinerConfig,
+    job_inputs: PearlMergeCandidateJob,
+    cancel: MiningCancel,
+) -> JoinHandle<Result<PearlMergeMinedSubmission, PearlMergeMiningError>> {
+    let params = cfg.puzzle.params;
+    let a = cfg.puzzle.a.clone();
+    let b = cfg.puzzle.b.clone();
+    let pearl = cfg
+        .puzzle
+        .pearl_merge
+        .as_ref()
+        .expect("Pearl merge config prechecked")
+        .clone();
+    tokio::task::spawn_blocking(move || {
+        let job = PearlMergeMiningJob {
+            header: &job_inputs.header,
+            config: &pearl.mining_config,
+            params: &params,
+            nockchain_target: job_inputs.target,
+            a: &a,
+            b: &b,
+            max_pattern_len: pearl.max_pattern_len,
+            aux: job_inputs.aux,
+        };
+        let ticket = pearl_mining::run(&job, &pearl.mine_opts, cancel)?;
+        Ok(PearlMergeMinedSubmission {
+            ticket,
+            aux_inclusion: job_inputs.aux_inclusion,
+        })
+    })
+}
+
+/// Build the legacy NCMN consensus poke shape:
 ///
 /// ```hoon
 /// [%command %pow %ai-pow nonce cert]
 /// ```
 ///
 /// `cert` must already be the structured Hoon-compatible
-/// `ai-pow-certificate` noun. The NCMN nonce is carried alongside it because
-/// the production verifier must check that the attempt is anchored to the
-/// candidate block before accepting the recursive proof. This helper
-/// deliberately does not accept the plain `MatmulProof` or tile index because
-/// those are not canonical block proof artifacts.
-pub fn build_ai_pow_certificate_poke(
+/// `ai-pow-certificate` noun. This helper remains for native NCMN smoke tests
+/// and legacy tooling; Pearl-format-compatible Nockchain submission should use
+/// the ticket-derived `%ai-pow` artifact helpers below. This helper
+/// deliberately does not accept the plain `MatmulProof` or tile index.
+pub fn build_legacy_ncmn_ai_pow_certificate_poke(
     nonce: &NcmnNonce,
     certificate: &NounSlab,
 ) -> Result<NounSlab, AiPowCertificatePokeError> {
@@ -634,7 +920,8 @@ pub fn build_ai_pow_certificate_poke(
 
     let cert_space = certificate.noun_space();
     let mut slab = NounSlab::new();
-    let nonce = <IndirectAtom as IndirectAtomExt>::from_bytes(&mut slab, nonce).as_noun();
+    let nonce_atom = <IndirectAtom as IndirectAtomExt>::from_bytes(&mut slab, nonce).as_noun();
+    let nonce = T(&mut slab, &[D(nonce.len() as u64), nonce_atom]);
     let cert = slab.copy_into(unsafe { *certificate.root() }, &cert_space);
     let payload = T(
         &mut slab,
@@ -644,78 +931,66 @@ pub fn build_ai_pow_certificate_poke(
     Ok(slab)
 }
 
-/// Build the production Pearl merge-mined consensus poke shape:
+/// Internal wrapper for a prebuilt Pearl-format-compatible `%ai-pow` artifact:
 ///
 /// ```hoon
-/// [%command %pow %ai-pmp artifact]
+/// [%command %pow %ai-pow nonce cert]
 /// ```
 ///
-/// `artifact` must already be the structured Hoon-compatible `%ai-pmp`
-/// artifact:
+/// `artifact` must already be the Hoon-compatible `%ai-pow` artifact:
 ///
 /// ```hoon
-/// [%ai-pmp statement=pearl-merge-public-statement cert=ai-pow-certificate]
+/// [%ai-pow nonce=ai-pow-nonce cert=ai-pow-certificate]
 /// ```
 ///
-/// The helper decodes the artifact shape before wrapping it so miner-side code
-/// cannot accidentally submit a native `%ai-pow` certificate, a Pearl ZKP, or a
-/// raw `MatmulProof` on the Pearl merge-mining arm.
-pub fn build_ai_pow_pearl_merge_certificate_poke(
+/// The helper is crate-internal so external callers cannot bypass the
+/// recursive-run construction path by handing in an arbitrary prebuilt artifact.
+/// It decodes the artifact tag, opaque nonce, and certificate metadata before
+/// wrapping it. It deliberately does not traverse the recursive proof-node tail;
+/// ticket-derived helpers construct that tail from typed recursive proof data,
+/// and consensus verification performs proof-node traversal only after cheap
+/// statement checks pass.
+pub(crate) fn build_ai_pow_pearl_merge_certificate_poke(
     artifact: &NounSlab,
 ) -> Result<NounSlab, AiPowCertificatePokeError> {
-    decode_ai_pow_pearl_merge_artifact_slab(artifact, CertificateNounLimits::default())?;
+    decode_ai_pow_pearl_merge_artifact_metadata_slab(artifact, CertificateNounLimits::default())?;
 
     let artifact_space = artifact.noun_space();
     let mut slab = NounSlab::new();
     let artifact = slab.copy_into(unsafe { *artifact.root() }, &artifact_space);
-    let payload = T(
-        &mut slab,
-        &[D(tas!(b"command")), D(tas!(b"pow")), D(tas!(b"ai-pmp")), artifact],
-    );
+    let payload = T(&mut slab, &[D(tas!(b"command")), D(tas!(b"pow")), artifact]);
     slab.set_root(payload);
     Ok(slab)
 }
 
-/// Build the production Pearl merge-mined consensus poke directly from a
-/// successful Pearl-compatible ticket and an already-serialized recursive
-/// proof node.
+/// Test-only poke builder from an already-serialized recursive proof node.
 ///
-/// This is the miner-facing safe path for `%ai-pmp`: it recomputes the public
-/// Pearl work against trusted matrices before deriving recursive metadata, then
-/// wraps only the resulting structured `%ai-pmp` artifact.
-pub fn build_ai_pow_pearl_merge_certificate_poke_from_ticket_node(
+/// Production callers use
+/// [`build_ai_pow_pearl_merge_certificate_poke_from_ticket_recursive_run`].
+#[cfg(test)]
+pub(crate) fn build_ai_pow_pearl_merge_certificate_poke_from_ticket_node(
     attempt: &PearlMergeTicketAttempt,
+    aux_inclusion: &PearlAuxInclusionProof,
     a_row_major: &[i8],
     b_col_major: &[i8],
     max_pattern_len: usize,
     certificate: &AiProofNode,
 ) -> Result<NounSlab, AiPowCertificatePokeError> {
-    let artifact = build_ai_pow_pearl_merge_artifact_noun_from_ticket_node(
-        attempt, a_row_major, b_col_major, max_pattern_len, certificate,
-    )?;
+    let artifact =
+        crate::certificate_noun::build_ai_pow_pearl_merge_artifact_noun_from_ticket_node(
+            attempt, aux_inclusion, a_row_major, b_col_major, max_pattern_len, certificate,
+        )?;
     build_ai_pow_pearl_merge_certificate_poke(&artifact)
 }
 
-/// Build the production Pearl merge-mined consensus poke directly from a
-/// successful Pearl-compatible ticket and recursive certificate object.
-pub fn build_ai_pow_pearl_merge_certificate_poke_from_ticket<C: serde::Serialize>(
+/// Crate-internal poke builder for the run loop after its certificate builder
+/// has produced private-field [`PearlMergeCertificateProof`] data. Tests use it
+/// with synthetic proof nodes; external callers cannot construct that wrapper
+/// except through [`PearlMergeCertificateProof::from_recursive_run`].
+#[cfg(test)]
+pub(crate) fn build_ai_pow_pearl_merge_certificate_poke_from_ticket_public_inputs_node(
     attempt: &PearlMergeTicketAttempt,
-    a_row_major: &[i8],
-    b_col_major: &[i8],
-    max_pattern_len: usize,
-    recursive_certificate: &C,
-) -> Result<NounSlab, AiPowCertificatePokeError> {
-    let artifact = build_ai_pow_pearl_merge_artifact_noun_from_ticket(
-        attempt, a_row_major, b_col_major, max_pattern_len, recursive_certificate,
-    )?;
-    build_ai_pow_pearl_merge_certificate_poke(&artifact)
-}
-
-/// Build the production Pearl merge-mined consensus poke from a successful
-/// Pearl-compatible ticket, actual recursive public inputs, and an
-/// already-serialized proof node.
-pub fn build_ai_pow_pearl_merge_certificate_poke_from_ticket_public_inputs_node(
-    attempt: &PearlMergeTicketAttempt,
+    aux_inclusion: &PearlAuxInclusionProof,
     a_row_major: &[i8],
     b_col_major: &[i8],
     max_pattern_len: usize,
@@ -723,39 +998,70 @@ pub fn build_ai_pow_pearl_merge_certificate_poke_from_ticket_public_inputs_node(
     certificate: &AiProofNode,
 ) -> Result<NounSlab, AiPowCertificatePokeError> {
     let artifact = build_ai_pow_pearl_merge_artifact_noun_from_ticket_public_inputs_node(
-        attempt, a_row_major, b_col_major, max_pattern_len, public_inputs, certificate,
+        attempt, aux_inclusion, a_row_major, b_col_major, max_pattern_len, public_inputs,
+        certificate,
     )?;
     build_ai_pow_pearl_merge_certificate_poke(&artifact)
 }
 
-/// Build the production Pearl merge-mined consensus poke from a successful
-/// Pearl-compatible ticket, actual recursive public inputs, and recursive
-/// certificate object.
-pub fn build_ai_pow_pearl_merge_certificate_poke_from_ticket_public_inputs<C: serde::Serialize>(
+/// Crate-internal production handoff for the run loop.
+///
+/// The ticket-derived statement metadata is recomputed from the candidate,
+/// trusted matrices, and aux inclusion. The recursive-run metadata copied into
+/// `proof` must match that recomputation before the proof node is serialized
+/// into a command. This catches wrong-ticket or stale-run builders before the
+/// node receives a doomed block proof.
+pub(crate) fn build_ai_pow_pearl_merge_certificate_poke_from_ticket_proof(
     attempt: &PearlMergeTicketAttempt,
+    aux_inclusion: &PearlAuxInclusionProof,
     a_row_major: &[i8],
     b_col_major: &[i8],
     max_pattern_len: usize,
-    public_inputs: &CompositePublicInputs,
-    recursive_certificate: &C,
+    proof: &PearlMergeCertificateProof,
 ) -> Result<NounSlab, AiPowCertificatePokeError> {
-    let artifact = build_ai_pow_pearl_merge_artifact_noun_from_ticket_public_inputs(
-        attempt, a_row_major, b_col_major, max_pattern_len, public_inputs, recursive_certificate,
+    let artifact = build_ai_pow_pearl_merge_artifact_noun_from_ticket_public_inputs_node(
+        attempt, aux_inclusion, a_row_major, b_col_major, max_pattern_len, &proof.public_inputs,
+        &proof.certificate,
     )?;
+    let decoded = decode_ai_pow_pearl_merge_artifact_metadata_slab(
+        &artifact,
+        CertificateNounLimits::default(),
+    )?;
+    if decoded.certificate.zk_params != proof.zk_params {
+        return Err(AiPowCertificatePokeError::PearlMergeArtifact(
+            CertificateNounError::PearlMergePublicInputMismatch("recursive-run.zk-params"),
+        ));
+    }
+    if decoded.certificate.found_idx != proof.found_idx {
+        return Err(AiPowCertificatePokeError::PearlMergeArtifact(
+            CertificateNounError::PearlMergePublicInputMismatch("recursive-run.found-idx"),
+        ));
+    }
+    if decoded.certificate.trace_height != proof.trace_height {
+        return Err(AiPowCertificatePokeError::PearlMergeArtifact(
+            CertificateNounError::PearlMergePublicInputMismatch("recursive-run.trace-height"),
+        ));
+    }
+    if decoded.certificate.commitments != proof.commitments {
+        return Err(AiPowCertificatePokeError::PearlMergeArtifact(
+            CertificateNounError::PearlMergePublicInputMismatch("recursive-run.commitments"),
+        ));
+    }
     build_ai_pow_pearl_merge_certificate_poke(&artifact)
 }
 
-/// Build the production Pearl merge-mined consensus poke from a successful
-/// Pearl-compatible ticket and the matching real recursive prover run.
+/// Build the production Pearl-format-compatible Nockchain consensus poke from
+/// a successful shared ticket and the matching real recursive prover run.
 pub fn build_ai_pow_pearl_merge_certificate_poke_from_ticket_recursive_run(
     attempt: &PearlMergeTicketAttempt,
+    aux_inclusion: &PearlAuxInclusionProof,
     a_row_major: &[i8],
     b_col_major: &[i8],
     max_pattern_len: usize,
     run: &AiPowRecursiveCertificateRun,
 ) -> Result<NounSlab, AiPowCertificatePokeError> {
     let artifact = build_ai_pow_pearl_merge_artifact_noun_from_ticket_recursive_run(
-        attempt, a_row_major, b_col_major, max_pattern_len, run,
+        attempt, aux_inclusion, a_row_major, b_col_major, max_pattern_len, run,
     )?;
     build_ai_pow_pearl_merge_certificate_poke(&artifact)
 }
@@ -801,8 +1107,9 @@ mod tests {
     use super::*;
     use crate::certificate_noun::{
         build_ai_pow_certificate_noun_from_node, build_ai_pow_pearl_merge_artifact_noun_from_node,
-        decode_ai_pow_pearl_merge_artifact_noun, pearl_merge_recursive_public_inputs_from_work,
-        AiProofNode, PearlMergePublicStatementShape,
+        decode_ai_pow_pearl_merge_artifact_noun,
+        pearl_merge_recursive_certificate_parts_from_ticket,
+        pearl_merge_recursive_public_inputs_from_work, AiProofNode, PearlMergePublicStatementShape,
     };
     use crate::pearl_mining::{
         self, PearlMergeMineOptions, PearlMergeMiningError, PearlMergeMiningJob,
@@ -892,20 +1199,25 @@ mod tests {
         // Publish a synthetic %mine-ai effect (the AI miner subscribes
         // to mine-ai post Stage 4; the mock fixture publishes accordingly).
         fn publish_synth_mine_effect(&self, header_seed: u64, target_seed: u64, pow_len: u64) {
+            self.publish_synth_mine_effect_with_target_limbs(header_seed, &[target_seed], pow_len);
+        }
+
+        fn publish_synth_mine_effect_with_target_limbs(
+            &self,
+            header_seed: u64,
+            target_limbs: &[u64],
+            pow_len: u64,
+        ) {
             let mut slab = NounSlab::new();
             let head = D(tas!(b"mine-ai"));
             let version = D(0);
-            let commit = T(
-                &mut slab,
-                &[
-                    D(header_seed),
-                    D(header_seed + 1),
-                    D(header_seed + 2),
-                    D(header_seed + 3),
-                    D(header_seed + 4),
-                ],
-            );
-            let target_list = T(&mut slab, &[D(target_seed), D(0)]);
+            let commit_source = synth_block_header_slab(header_seed);
+            let commit_space = commit_source.noun_space();
+            let commit = slab.copy_into(unsafe { *commit_source.root() }, &commit_space);
+            let mut target_list = D(0);
+            for limb in target_limbs.iter().rev() {
+                target_list = T(&mut slab, &[D(*limb), target_list]);
+            }
             let target = T(&mut slab, &[D(tas!(b"bn")), target_list]);
             let plen = D(pow_len);
             let effect = T(&mut slab, &[head, version, commit, target, plen]);
@@ -993,6 +1305,71 @@ mod tests {
         }
     }
 
+    fn pearl_submission_cfg() -> PearlMergeSubmissionConfig {
+        PearlMergeSubmissionConfig {
+            header_template: pearl_test_header(),
+            mining_config: pearl_test_config(),
+            aux_template: pearl_test_aux(),
+            max_pattern_len: 16,
+            mine_opts: PearlMergeMineOptions {
+                max_attempts: Some(1),
+                ..PearlMergeMineOptions::default()
+            },
+            certificate_builder: Arc::new(|attempt: &PearlMergeTicketAttempt| {
+                let params = pearl_test_params();
+                let (a, b) = synth_matrices(b"pearl-node-run-submit", &params);
+                let parts =
+                    pearl_merge_recursive_certificate_parts_from_ticket(attempt, &a, &b, 16)
+                        .map_err(|e| AiPowCertificateBuildError(e.to_string()))?;
+                Ok(PearlMergeCertificateProof {
+                    zk_params: parts.zk_params,
+                    found_idx: parts.found_idx,
+                    commitments: parts.commitments,
+                    public_inputs: parts.public_inputs,
+                    trace_height: parts.trace_height,
+                    certificate: AiProofNode::Unit,
+                })
+            }),
+        }
+    }
+
+    fn pearl_test_coinbase_tx(aux_commitment: &[u8; 32]) -> Vec<u8> {
+        let mut script = Vec::from([0x01, 0x00]);
+        script.extend_from_slice(ai_pow::pearl_compat::PEARL_NOCKCHAIN_AUX_COMMITMENT_TAG);
+        script.extend_from_slice(aux_commitment);
+        let mut tx = Vec::new();
+        tx.extend_from_slice(&1u32.to_le_bytes());
+        tx.push(1);
+        tx.extend_from_slice(&[0u8; 32]);
+        tx.extend_from_slice(&u32::MAX.to_le_bytes());
+        tx.push(script.len() as u8);
+        tx.extend_from_slice(&script);
+        tx.extend_from_slice(&u32::MAX.to_le_bytes());
+        tx.push(1);
+        tx.extend_from_slice(&0u64.to_le_bytes());
+        tx.push(1);
+        tx.push(0x51);
+        tx.extend_from_slice(&0u32.to_le_bytes());
+        tx
+    }
+
+    fn pearl_test_aux_inclusion(
+        aux_commitment: &[u8; 32],
+    ) -> (PearlIncompleteBlockHeader, PearlAuxInclusionProof) {
+        let coinbase_tx = pearl_test_coinbase_tx(aux_commitment);
+        let mut merkle_root = ai_pow::pearl_compat::pearl_bitcoin_double_sha256_raw(&coinbase_tx);
+        merkle_root.reverse();
+        let mut header = pearl_test_header();
+        header.merkle_root = merkle_root;
+        (
+            header,
+            PearlAuxInclusionProof {
+                coinbase_tx,
+                merkle_branch: Vec::new(),
+            },
+        )
+    }
+
     fn test_cfg(node_addr: String) -> MinerConfig {
         let params = single_tile_prod_params();
         let (a, b) = synth_matrices(b"ai-pow-node-run-test", &params);
@@ -1022,7 +1399,8 @@ mod tests {
                     &params, sol.found_idx, 8_192, &commitments, &pis, &certificate,
                 ))
             })),
-            submission_mode: AiPowSubmissionMode::NativeNcmn,
+            pearl_merge: None,
+            submission_mode: AiPowSubmissionMode::LegacyNcmn,
         };
         MinerConfig {
             node_addr,
@@ -1053,11 +1431,26 @@ mod tests {
         slab
     }
 
+    fn synth_block_header_slab(header_seed: u64) -> NounSlab {
+        let mut slab = NounSlab::new();
+        let commit = T(
+            &mut slab,
+            &[
+                D(header_seed),
+                D(header_seed + 1),
+                D(header_seed + 2),
+                D(header_seed + 3),
+                D(header_seed + 4),
+            ],
+        );
+        slab.set_root(commit);
+        slab
+    }
+
     fn candidate_for_target(target: NounSlab) -> MiningCandidate {
         let mut version = NounSlab::new();
         version.set_root(D(0));
-        let mut block_header = NounSlab::new();
-        block_header.set_root(D(0xCAFE));
+        let block_header = synth_block_header_slab(0xCAFE);
         MiningCandidate {
             version,
             block_header,
@@ -1131,6 +1524,22 @@ mod tests {
     }
 
     #[test]
+    fn production_preflight_rejects_legacy_mode_with_pearl_config() {
+        let mut cfg = test_cfg("http://127.0.0.1:1".to_string());
+        cfg.puzzle.pearl_merge = Some(pearl_submission_cfg());
+
+        let err = cfg
+            .puzzle
+            .validate_canonical_submission_ready()
+            .expect_err("legacy mode must not silently ignore Pearl config");
+        assert!(
+            err.to_string()
+                .contains("must not carry Pearl merge submission config"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
     fn production_preflight_rejects_multi_tile_selected_tile_gap_before_mining() {
         let mut cfg = test_cfg("http://127.0.0.1:1".to_string());
         let params = multi_tile_prod_params();
@@ -1155,23 +1564,135 @@ mod tests {
     }
 
     #[test]
-    fn production_preflight_rejects_pearl_merge_mode_until_ticket_loop_is_wired() {
+    fn production_preflight_rejects_pearl_merge_mode_without_submission_config() {
         let mut cfg = test_cfg("http://127.0.0.1:1".to_string());
         cfg.puzzle.submission_mode = AiPowSubmissionMode::PearlMerge;
 
         let err = cfg
             .puzzle
             .validate_canonical_submission_ready()
-            .expect_err("run loop must not silently submit native ai-pow in Pearl mode");
+            .expect_err("Pearl mode must require an explicit Rust-side merge config");
         assert!(
             err.to_string()
-                .contains("Pearl merge-mining mode is explicit"),
+                .contains("requires Pearl merge submission config"),
             "unexpected error: {err}"
         );
     }
 
     #[test]
-    fn build_ai_pow_certificate_poke_has_kernel_command_shape() {
+    fn production_preflight_rejects_pearl_merge_with_legacy_builder() {
+        let mut cfg = test_cfg("http://127.0.0.1:1".to_string());
+        let params = pearl_test_params();
+        let (a, b) = synth_matrices(b"pearl-node-run-mixed-mode-preflight", &params);
+        cfg.puzzle.params = params;
+        cfg.puzzle.a = Arc::new(a);
+        cfg.puzzle.b = Arc::new(b);
+        cfg.puzzle.pearl_merge = Some(pearl_submission_cfg());
+        cfg.puzzle.submission_mode = AiPowSubmissionMode::PearlMerge;
+
+        let err = cfg
+            .puzzle
+            .validate_canonical_submission_ready()
+            .expect_err("Pearl mode must not silently ignore legacy builder");
+        assert!(
+            err.to_string()
+                .contains("must not carry legacy NCMN certificate builder"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn production_preflight_accepts_configured_pearl_merge_submission() {
+        let mut cfg = test_cfg("http://127.0.0.1:1".to_string());
+        let params = pearl_test_params();
+        let (a, b) = synth_matrices(b"pearl-node-run-preflight", &params);
+        cfg.puzzle.params = params;
+        cfg.puzzle.a = Arc::new(a);
+        cfg.puzzle.b = Arc::new(b);
+        cfg.puzzle.certificate_builder = None;
+        cfg.puzzle.pearl_merge = Some(pearl_submission_cfg());
+        cfg.puzzle.submission_mode = AiPowSubmissionMode::PearlMerge;
+
+        cfg.puzzle.validate_canonical_submission_ready().expect(
+            "configured Pearl mode should mine ticket attempts before Nockchain submission",
+        );
+    }
+
+    #[test]
+    fn production_preflight_rejects_pearl_merge_config_param_mismatch() {
+        let mut cfg = test_cfg("http://127.0.0.1:1".to_string());
+        let params = pearl_test_params();
+        let (a, b) = synth_matrices(b"pearl-node-run-mismatch-preflight", &params);
+        let mut pearl = pearl_submission_cfg();
+        pearl.mining_config.rank = 32;
+        cfg.puzzle.params = params;
+        cfg.puzzle.a = Arc::new(a);
+        cfg.puzzle.b = Arc::new(b);
+        cfg.puzzle.certificate_builder = None;
+        cfg.puzzle.pearl_merge = Some(pearl);
+        cfg.puzzle.submission_mode = AiPowSubmissionMode::PearlMerge;
+
+        let err = cfg
+            .puzzle
+            .validate_canonical_submission_ready()
+            .expect_err("Pearl mode must reject mining configs that do not match AI params");
+        assert!(
+            err.to_string().contains("rank does not match"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn production_preflight_rejects_pearl_merge_unsupported_recursive_params() {
+        let mut cfg = test_cfg("http://127.0.0.1:1".to_string());
+        let mut params = pearl_test_params();
+        params.difficulty_bits = 1;
+        let (a, b) = synth_matrices(b"pearl-node-run-unsupported-params-preflight", &params);
+        cfg.puzzle.params = params;
+        cfg.puzzle.a = Arc::new(a);
+        cfg.puzzle.b = Arc::new(b);
+        cfg.puzzle.certificate_builder = None;
+        cfg.puzzle.pearl_merge = Some(pearl_submission_cfg());
+        cfg.puzzle.submission_mode = AiPowSubmissionMode::PearlMerge;
+
+        let err = cfg
+            .puzzle
+            .validate_canonical_submission_ready()
+            .expect_err("Pearl mode must reject unsupported recursive params before mining");
+        assert!(
+            err.to_string().contains("difficulty_bits must be 0"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn production_preflight_rejects_pearl_merge_unsupported_recursive_pattern() {
+        let mut cfg = test_cfg("http://127.0.0.1:1".to_string());
+        let params = pearl_test_params();
+        let (a, b) = synth_matrices(b"pearl-node-run-pattern-preflight", &params);
+        let mut pearl = pearl_submission_cfg();
+        pearl.mining_config.rows_pattern =
+            PearlPeriodicPattern::from_list(&[0, 1, 8, 9, 64, 65, 72, 73]).unwrap();
+        cfg.puzzle.params = params;
+        cfg.puzzle.a = Arc::new(a);
+        cfg.puzzle.b = Arc::new(b);
+        cfg.puzzle.certificate_builder = None;
+        cfg.puzzle.pearl_merge = Some(pearl);
+        cfg.puzzle.submission_mode = AiPowSubmissionMode::PearlMerge;
+
+        let err = cfg
+            .puzzle
+            .validate_canonical_submission_ready()
+            .expect_err("Pearl mode must reject patterns outside the recursive prover subset");
+        assert!(
+            err.to_string()
+                .contains("outside the current recursive prover subset"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn build_legacy_ncmn_ai_pow_certificate_poke_has_kernel_command_shape() {
         use nockvm::jets::bits::util::met;
         use nockvm::noun::NounAllocator;
 
@@ -1179,7 +1700,7 @@ mod tests {
         cert.set_root(D(999));
         let nonce = crate::build_ncmn_nonce(&crate::NonceAnchors::nck_only([0xA5; 32]), 7);
 
-        let poke = build_ai_pow_certificate_poke(&nonce, &cert).expect("build poke");
+        let poke = build_legacy_ncmn_ai_pow_certificate_poke(&nonce, &cert).expect("build poke");
         let space = poke.noun_space();
         let root = unsafe { *poke.root() };
 
@@ -1208,7 +1729,22 @@ mod tests {
             .in_space(&space)
             .as_cell()
             .expect("nonce/certificate cell");
-        let nonce_atom = nonce_cell.head().as_atom().expect("nonce atom");
+        let nonce_pair = nonce_cell
+            .head()
+            .noun()
+            .in_space(&space)
+            .as_cell()
+            .expect("nonce pair");
+        assert_eq!(
+            nonce_pair
+                .head()
+                .as_atom()
+                .expect("nonce len")
+                .as_u64()
+                .expect("nonce len fits"),
+            ai_pow::ncmn::NCMN_NONCE_LEN as u64
+        );
+        let nonce_atom = nonce_pair.tail().as_atom().expect("nonce atom");
         assert_eq!(
             met(3, nonce_atom.atom(), &space),
             ai_pow::ncmn::NCMN_NONCE_LEN
@@ -1225,16 +1761,19 @@ mod tests {
 
     #[test]
     fn build_ai_pow_pearl_merge_certificate_poke_has_kernel_command_shape() {
+        let aux = PearlNockchainAux {
+            nockchain_chain_id: b"nockchain-mainnet".to_vec(),
+            nock_block_commitment: [0x42; 32],
+            nockchain_target_epoch_or_height: 123_456,
+            extra_domain_data: b"ai-pow-target-window".to_vec(),
+        };
+        let expected_aux_commitment = aux.commitment().expect("aux commitment");
+        let (header, aux_inclusion) = pearl_test_aux_inclusion(&expected_aux_commitment);
         let statement = PearlMergePublicStatementShape {
-            block_header: [0x10; ai_pow::pearl_compat::PEARL_INCOMPLETE_BLOCK_HEADER_SIZE],
+            block_header: header.to_bytes(),
             public_data: [0x20; ai_pow::pearl_compat::PEARL_PUBLIC_PROOF_PARAMS_SIZE],
-            expected_aux_commitment: [0x30; 32],
-            aux: PearlNockchainAux {
-                nockchain_chain_id: b"nockchain-mainnet".to_vec(),
-                nock_block_commitment: [0x42; 32],
-                nockchain_target_epoch_or_height: 123_456,
-                extra_domain_data: b"ai-pow-target-window".to_vec(),
-            },
+            expected_aux_commitment,
+            aux,
         };
         let params = ZkParams {
             m: 8,
@@ -1251,13 +1790,15 @@ mod tests {
         let pis = CompositePublicInputs::zero();
         let artifact = build_ai_pow_pearl_merge_artifact_noun_from_node(
             &statement,
+            &aux_inclusion,
             &params,
             0,
             8_192,
             &commitments,
             &pis,
             &AiProofNode::Unit,
-        );
+        )
+        .expect("build ai-pow artifact");
 
         let poke =
             build_ai_pow_pearl_merge_certificate_poke(&artifact).expect("build pearl merge poke");
@@ -1275,21 +1816,18 @@ mod tests {
             .expect("pow cell");
         assert!(pow_cell.head().eq_bytes("pow"));
 
-        let ai_pmp_cell = pow_cell
-            .tail()
-            .noun()
-            .in_space(&space)
-            .as_cell()
-            .expect("ai-pmp cell");
-        assert!(ai_pmp_cell.head().eq_bytes("ai-pmp"));
+        let ai_pow_noun = pow_cell.tail().noun();
+        let ai_pow_cell = ai_pow_noun.in_space(&space).as_cell().expect("ai-pow cell");
+        assert!(ai_pow_cell.head().eq_bytes("ai-pow"));
 
         let decoded = decode_ai_pow_pearl_merge_artifact_noun(
-            ai_pmp_cell.tail().noun(),
+            ai_pow_noun,
             &space,
             CertificateNounLimits::default(),
         )
         .expect("decode wrapped pearl merge artifact");
         assert_eq!(decoded.statement, statement);
+        assert_eq!(decoded.aux_inclusion, aux_inclusion);
         assert_eq!(decoded.certificate.zk_params, params);
         assert_eq!(decoded.certificate.commitments, commitments);
         assert_eq!(decoded.certificate.public_inputs, pis);
@@ -1300,8 +1838,10 @@ mod tests {
     fn build_ai_pow_pearl_merge_certificate_poke_from_ticket_derives_artifact() {
         let params = pearl_test_params();
         let (a, b) = synth_matrices(b"pearl-run-ticket-poke", &params);
+        let aux = pearl_test_aux();
+        let (header, aux_inclusion) = pearl_test_aux_inclusion(&aux.commitment().unwrap());
         let attempt = evaluate_pearl_merge_ticket_attempt(
-            &pearl_test_header(),
+            &header,
             &pearl_test_config(),
             &params,
             0,
@@ -1310,12 +1850,13 @@ mod tests {
             &b,
             &[0xff; 32],
             16,
-            pearl_test_aux(),
+            aux,
         )
         .expect("evaluate Pearl ticket");
 
         let poke = build_ai_pow_pearl_merge_certificate_poke_from_ticket_node(
             &attempt,
+            &aux_inclusion,
             &a,
             &b,
             16,
@@ -1333,16 +1874,12 @@ mod tests {
             .as_cell()
             .expect("pow cell");
         assert!(pow_cell.head().eq_bytes("pow"));
-        let ai_pmp_cell = pow_cell
-            .tail()
-            .noun()
-            .in_space(&space)
-            .as_cell()
-            .expect("ai-pmp cell");
-        assert!(ai_pmp_cell.head().eq_bytes("ai-pmp"));
+        let ai_pow_noun = pow_cell.tail().noun();
+        let ai_pow_cell = ai_pow_noun.in_space(&space).as_cell().expect("ai-pow cell");
+        assert!(ai_pow_cell.head().eq_bytes("ai-pow"));
 
         let decoded = decode_ai_pow_pearl_merge_artifact_noun(
-            ai_pmp_cell.tail().noun(),
+            ai_pow_noun,
             &space,
             CertificateNounLimits::default(),
         )
@@ -1353,6 +1890,7 @@ mod tests {
                 .expect("statement shape")
         );
         assert_eq!(decoded.certificate.found_idx, 0);
+        assert_eq!(decoded.aux_inclusion, aux_inclusion);
         assert_eq!(decoded.certificate.certificate, AiProofNode::Unit);
     }
 
@@ -1360,8 +1898,10 @@ mod tests {
     fn build_ai_pow_pearl_merge_certificate_poke_from_ticket_preserves_proof_public_inputs() {
         let params = pearl_test_params();
         let (a, b) = synth_matrices(b"pearl-run-ticket-poke-proof-pis", &params);
+        let aux = pearl_test_aux();
+        let (header, aux_inclusion) = pearl_test_aux_inclusion(&aux.commitment().unwrap());
         let attempt = evaluate_pearl_merge_ticket_attempt(
-            &pearl_test_header(),
+            &header,
             &pearl_test_config(),
             &params,
             0,
@@ -1370,7 +1910,7 @@ mod tests {
             &b,
             &[0xff; 32],
             16,
-            pearl_test_aux(),
+            aux,
         )
         .expect("evaluate Pearl ticket");
         let mut public_inputs =
@@ -1379,6 +1919,7 @@ mod tests {
 
         let poke = build_ai_pow_pearl_merge_certificate_poke_from_ticket_public_inputs_node(
             &attempt,
+            &aux_inclusion,
             &a,
             &b,
             16,
@@ -1395,14 +1936,11 @@ mod tests {
             .in_space(&space)
             .as_cell()
             .expect("pow cell");
-        let ai_pmp_cell = pow_cell
-            .tail()
-            .noun()
-            .in_space(&space)
-            .as_cell()
-            .expect("ai-pmp cell");
+        let ai_pow_noun = pow_cell.tail().noun();
+        let ai_pow_cell = ai_pow_noun.in_space(&space).as_cell().expect("ai-pow cell");
+        assert!(ai_pow_cell.head().eq_bytes("ai-pow"));
         let decoded = decode_ai_pow_pearl_merge_artifact_noun(
-            ai_pmp_cell.tail().noun(),
+            ai_pow_noun,
             &space,
             CertificateNounLimits::default(),
         )
@@ -1412,12 +1950,52 @@ mod tests {
     }
 
     #[test]
-    fn pearl_ticket_loop_output_builds_canonical_ai_pmp_poke() {
+    fn build_ai_pow_pearl_merge_certificate_poke_rejects_stale_recursive_run_metadata() {
+        let params = pearl_test_params();
+        let (a, b) = synth_matrices(b"pearl-run-ticket-poke-stale-run", &params);
+        let aux = pearl_test_aux();
+        let (header, aux_inclusion) = pearl_test_aux_inclusion(&aux.commitment().unwrap());
+        let attempt = evaluate_pearl_merge_ticket_attempt(
+            &header,
+            &pearl_test_config(),
+            &params,
+            0,
+            0,
+            &a,
+            &b,
+            &[0xff; 32],
+            16,
+            aux,
+        )
+        .expect("evaluate Pearl ticket");
+        let parts =
+            pearl_merge_recursive_certificate_parts_from_ticket(&attempt, &a, &b, 16).unwrap();
+        let stale = PearlMergeCertificateProof {
+            zk_params: parts.zk_params,
+            found_idx: parts.found_idx + 1,
+            commitments: parts.commitments,
+            public_inputs: parts.public_inputs,
+            trace_height: parts.trace_height,
+            certificate: AiProofNode::Unit,
+        };
+
+        let err = build_ai_pow_pearl_merge_certificate_poke_from_ticket_proof(
+            &attempt, &aux_inclusion, &a, &b, 16, &stale,
+        )
+        .expect_err("stale recursive-run metadata must not be submitted");
+        assert!(
+            err.to_string().contains("recursive-run.found-idx"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn pearl_ticket_loop_output_builds_canonical_ai_pow_poke() {
         let params = pearl_test_params();
         let (a, b) = synth_matrices(b"pearl-run-loop-to-poke", &params);
-        let header = pearl_test_header();
         let config = pearl_test_config();
         let aux = pearl_test_aux();
+        let (header, aux_inclusion) = pearl_test_aux_inclusion(&aux.commitment().unwrap());
         let job = PearlMergeMiningJob {
             header: &header,
             config: &config,
@@ -1440,12 +2018,13 @@ mod tests {
 
         let poke = build_ai_pow_pearl_merge_certificate_poke_from_ticket_node(
             &mined.attempt,
+            &aux_inclusion,
             &a,
             &b,
             job.max_pattern_len,
             &AiProofNode::Unit,
         )
-        .expect("mined Pearl ticket should build ai-pmp poke");
+        .expect("mined Pearl ticket should build ai-pow poke");
         let space = poke.noun_space();
         let root = unsafe { *poke.root() };
         let command_cell = root.in_space(&space).as_cell().expect("poke cell");
@@ -1457,20 +2036,16 @@ mod tests {
             .as_cell()
             .expect("pow cell");
         assert!(pow_cell.head().eq_bytes("pow"));
-        let ai_pmp_cell = pow_cell
-            .tail()
-            .noun()
-            .in_space(&space)
-            .as_cell()
-            .expect("ai-pmp cell");
-        assert!(ai_pmp_cell.head().eq_bytes("ai-pmp"));
+        let ai_pow_noun = pow_cell.tail().noun();
+        let ai_pow_cell = ai_pow_noun.in_space(&space).as_cell().expect("ai-pow cell");
+        assert!(ai_pow_cell.head().eq_bytes("ai-pow"));
 
         let decoded = decode_ai_pow_pearl_merge_artifact_noun(
-            ai_pmp_cell.tail().noun(),
+            ai_pow_noun,
             &space,
             CertificateNounLimits::default(),
         )
-        .expect("decode mined-ticket ai-pmp artifact");
+        .expect("decode mined-ticket ai-pow artifact");
         assert_eq!(
             decoded.certificate.found_idx,
             mined.attempt.public_params.t_rows
@@ -1480,10 +2055,11 @@ mod tests {
             PearlMergePublicStatementShape::from_wire_statement(&mined.attempt.statement)
                 .expect("statement shape")
         );
+        assert_eq!(decoded.aux_inclusion, aux_inclusion);
     }
 
     #[test]
-    fn pearl_ticket_loop_miss_cannot_build_ai_pmp_poke() {
+    fn pearl_ticket_loop_miss_cannot_build_ai_pow_poke() {
         let params = pearl_test_params();
         let (a, b) = synth_matrices(b"pearl-run-loop-miss-no-poke", &params);
         let header = pearl_test_header();
@@ -1516,8 +2092,10 @@ mod tests {
     fn build_ai_pow_pearl_merge_certificate_poke_from_ticket_rejects_wrong_matrices() {
         let params = pearl_test_params();
         let (mut a, b) = synth_matrices(b"pearl-run-ticket-poke-wrong-matrices", &params);
+        let aux = pearl_test_aux();
+        let (header, aux_inclusion) = pearl_test_aux_inclusion(&aux.commitment().unwrap());
         let attempt = evaluate_pearl_merge_ticket_attempt(
-            &pearl_test_header(),
+            &header,
             &pearl_test_config(),
             &params,
             0,
@@ -1526,7 +2104,7 @@ mod tests {
             &b,
             &[0xff; 32],
             16,
-            pearl_test_aux(),
+            aux,
         )
         .expect("evaluate Pearl ticket");
         a[0] ^= 1;
@@ -1534,6 +2112,7 @@ mod tests {
         assert!(matches!(
             build_ai_pow_pearl_merge_certificate_poke_from_ticket_node(
                 &attempt,
+                &aux_inclusion,
                 &a,
                 &b,
                 16,
@@ -1559,13 +2138,13 @@ mod tests {
     }
 
     #[test]
-    fn build_ai_pow_certificate_poke_rejects_non_canonical_nonce() {
+    fn build_legacy_ncmn_ai_pow_certificate_poke_rejects_non_canonical_nonce() {
         let mut cert = NounSlab::new();
         cert.set_root(D(999));
 
         let bad_magic = [0u8; ai_pow::ncmn::NCMN_NONCE_LEN];
         assert!(matches!(
-            build_ai_pow_certificate_poke(&bad_magic, &cert),
+            build_legacy_ncmn_ai_pow_certificate_poke(&bad_magic, &cert),
             Err(AiPowCertificatePokeError::Nonce(_))
         ));
 
@@ -1577,9 +2156,83 @@ mod tests {
             7,
         );
         assert!(matches!(
-            build_ai_pow_certificate_poke(&external_nonce, &cert),
+            build_legacy_ncmn_ai_pow_certificate_poke(&external_nonce, &cert),
             Err(AiPowCertificatePokeError::NonceExternalCommitmentPresent)
         ));
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn run_loop_pearl_merge_submits_nockchain_ai_pow_after_ticket_hit() {
+        let node = MockNode::spawn().await;
+        let mut cfg = test_cfg(node.url());
+        let params = pearl_test_params();
+        let (a, b) = synth_matrices(b"pearl-node-run-submit", &params);
+        cfg.puzzle.params = params;
+        cfg.puzzle.a = Arc::new(a);
+        cfg.puzzle.b = Arc::new(b);
+        cfg.puzzle.certificate_builder = None;
+        cfg.puzzle.pearl_merge = Some(pearl_submission_cfg());
+        cfg.puzzle.submission_mode = AiPowSubmissionMode::PearlMerge;
+
+        let shutdown = CancellationToken::new();
+        let shutdown_clone = shutdown.clone();
+        let mining_task = tokio::spawn(async move { run(cfg, shutdown_clone).await });
+
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        let header_seed = 700;
+        node.publish_synth_mine_effect_with_target_limbs(
+            header_seed,
+            &[u64::from(u32::MAX); 8],
+            64,
+        );
+
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        let poke = loop {
+            if let Some(poke) = node.mined_pokes.lock().await.pop() {
+                break poke;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "Pearl merge miner did not submit a %mined poke within 10s; observed {} total pokes",
+                node.pokes_observed.load(Ordering::SeqCst)
+            );
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        };
+
+        let expected_nock_commitment =
+            *blake3::hash(&synth_block_header_slab(header_seed).jam()).as_bytes();
+        let space = poke.noun_space();
+        let root = unsafe { *poke.root() };
+        let command_cell = root.in_space(&space).as_cell().expect("poke cell");
+        assert!(command_cell.head().eq_bytes("command"));
+        let pow_cell = command_cell
+            .tail()
+            .noun()
+            .in_space(&space)
+            .as_cell()
+            .expect("pow cell");
+        assert!(pow_cell.head().eq_bytes("pow"));
+        let ai_pow_noun = pow_cell.tail().noun();
+        let decoded = decode_ai_pow_pearl_merge_artifact_noun(
+            ai_pow_noun,
+            &space,
+            CertificateNounLimits::default(),
+        )
+        .expect("decode submitted Pearl-compatible ai-pow artifact");
+        assert_eq!(
+            decoded.statement.aux.nock_block_commitment,
+            expected_nock_commitment
+        );
+        assert_eq!(decoded.aux_inclusion.merkle_branch.len(), 0);
+        assert_eq!(decoded.certificate.certificate, AiProofNode::Unit);
+
+        shutdown.cancel();
+        let r = tokio::time::timeout(Duration::from_secs(5), mining_task)
+            .await
+            .expect("miner task did not exit")
+            .expect("miner panicked");
+        assert!(matches!(r, Ok(())), "unexpected miner result: {r:?}");
+        node.shutdown().await;
     }
 
     /// Heavy: runs the real ai-pow prover on TEST_SMALL with a trivial

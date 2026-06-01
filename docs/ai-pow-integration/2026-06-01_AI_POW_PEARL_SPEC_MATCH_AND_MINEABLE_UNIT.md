@@ -1,7 +1,19 @@
 # AI-PoW vs Pearl: Proof / PoW Spec Match and Mineable Unit
 
 Date: 2026-06-01
-Status: Current-state audit and fix plan
+Status: Historical pre-pivot audit; superseded for current Pearl merge-mining implementation
+
+> Supersession note, 2026-06-01: this comparison describes the pre-pivot
+> Nockchain-native NCMN path. The current Nockchain-side submission target is
+> Pearl-format-compatible `%ai-pow` with opaque `ai-pow-nonce=[len data]` and
+> no Pearl-specific Hoon molds. See
+> `2026-06-01_PEARL_MERGE_MINING_COMPATIBILITY_SPEC.md`.
+
+The live implementation now mines Pearl-compatible ticket attempts in Rust,
+submits only Nockchain `%ai-pow`, and rejects mixed legacy/Pearl miner configs
+before mining. The sections below are retained as historical context for the
+native NCMN attempt model and should not be used as the current activation
+plan.
 
 ## Executive Summary
 
@@ -99,8 +111,9 @@ The current Rust pipeline is:
    verifier-derived `found_idx` before accepting the recursive certificate
    metadata.
 7. The canonical artifact intended for Hoon/block persistence is:
-   `[%ai-pow nonce=ai-ncmn cert=ai-pow-certificate]`, with commitments
-   `[h-a-chunk h-b-chunk]` only.
+   `[%ai-pow nonce=ai-pow-nonce cert=ai-pow-certificate]`, where
+   `ai-pow-nonce=[len=@ud data=@uxaipownonce]` is opaque to Hoon and the
+   certificate carries commitments `[h-a-chunk h-b-chunk]` only.
 
 This is intentionally not a reusable mining cache. Changing the nonce changes
 `kappa`, commitments, noise, noised matrices, tile states, and final jackpot
@@ -293,7 +306,8 @@ the cache-friendly nonce-grinding bug:
 
 Remaining caveats:
 
-- Hoon consensus still rejects `%ai-pow` until the verifier jet/path is wired.
+- Hoon consensus still rejects `%ai-pow`; real verifier work is deliberately
+  out of scope for the current milestone.
 - Multi-tile canonical recursive proof is not enabled.
 - The current recursive proof stack is not Pearl's Plonky2 three-layer stack,
   so proof size and verification assumptions differ from Pearl's paper.
@@ -302,8 +316,8 @@ Remaining caveats:
 
 ## Action Plan
 
-1. Keep `%ai-pow` fail-closed in Hoon until recursive certificate verification
-   is wired end-to-end.
+1. Keep `%ai-pow` fail-closed in Hoon. Do not pursue real verifier wiring in
+   the current milestone.
 2. Write the multi-tile lottery rule explicitly before enabling real AI
    workloads:
    - Pearl-style per-tile tickets, or
@@ -318,11 +332,7 @@ Remaining caveats:
    Do not reintroduce row/column opening roots as commitment parameters.
 6. Rename or document the `COMMITMENT_HASH` public-input slot as the
    nonce-derived jackpot key to avoid future Pearl/Nockchain confusion.
-7. Add behavior tests for the final Hoon/Rust verifier path:
-   - honest single-tile recursive certificate accepted after activation;
-   - nonce tamper rejected;
-   - `h_a_chunk` / `h_b_chunk` tamper rejected;
-   - wrong `found_idx` rejected;
-   - multi-tile certificate rejected until the chosen multi-tile rule is
-     implemented.
-
+7. Keep Rust metadata-precheck tests broad enough to cover nonce tamper,
+   `h_a_chunk` / `h_b_chunk` tamper, wrong `found_idx`, target misses, and
+   multi-tile rejection for the currently unsupported rule. Do not add Hoon
+   verifier-acceptance tests until real verifier work is explicitly scheduled.

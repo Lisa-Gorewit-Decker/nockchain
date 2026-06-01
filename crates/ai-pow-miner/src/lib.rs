@@ -1,23 +1,31 @@
 //! `ai-pow-miner` — block-mining driver for the `ai-pow` PoW.
 //!
 //! Wraps [`ai_pow`] with:
-//! * The NCMN-v1 **nonce shape** (the chain-required Nockchain header
-//!   commitment + an opaque 32-byte slot reserved for a future Pearl-
-//!   style external-chain commitment + an 8-byte extranonce search
-//!   variable). See [`build_ncmn_nonce`] / [`parse_ncmn_nonce`].
-//! * A synchronous mining entrypoint that loops over `extranonce`
-//!   values, invokes [`ai_pow::prover::mine_with_context_at_target`]
-//!   for each, and returns the first solution that clears the
-//!   chain-supplied 32-byte difficulty target. [`mining::run`] builds
-//!   a fresh nonce-bound attempt context for every extranonce; hoisting
-//!   keyed commitments, noise, matmul states, jackpot preimages, or
-//!   witness inputs out of that loop would reopen cheap nonce grinding.
-//! * A NockApp-compatible driver (under the `nockapp` feature) so
-//!   the node can register mining alongside its other IO drivers.
+//! * The production-oriented NockApp driver, [`run`], which defaults to
+//!   Pearl-format-compatible Nockchain `%ai-pow` submission. In that mode the
+//!   miner searches Pearl-style ticket attempts, constructs the canonical
+//!   recursive certificate only after the Nockchain target is hit, and submits
+//!   only a Nockchain command. Pearl-chain block submission is deliberately
+//!   outside this crate's current scope.
+//! * A Rust-owned opaque nonce envelope for `%ai-pow` artifacts. Hoon sees the
+//!   nonce only as `[len data]`; Pearl-format transcript details remain Rust
+//!   metadata and must not become Hoon kernel concepts.
+//! * Legacy NCMN-v1 smoke tooling: the chain-required Nockchain header
+//!   commitment, reserved external slot, and 8-byte extranonce search variable.
+//!   See [`build_ncmn_nonce`] / [`parse_ncmn_nonce`]. This path is retained for
+//!   explicit diagnostics and tests, not as the production network submission
+//!   API.
+//! * A synchronous legacy mining entrypoint that loops over `extranonce`
+//!   values, invokes [`ai_pow::prover::mine_with_context_at_target`] for each,
+//!   and returns the first solution that clears the chain-supplied 32-byte
+//!   difficulty target. [`mining::run`] builds a fresh nonce-bound attempt
+//!   context for every extranonce; hoisting keyed commitments, noise, matmul
+//!   states, jackpot preimages, or witness inputs out of that loop would reopen
+//!   cheap nonce grinding.
 //!
-//! The bare crate (no features) has no async / NockApp dep — useful
-//! for benchmarks, fuzz harnesses, and the smoke-test
-//! `ai-pow-mine` binary. The driver lives behind `feature = "nockapp"`.
+//! The bare crate (no features) has no async / NockApp dep, which is useful for
+//! benchmarks and fuzz harnesses. The connected node driver lives behind
+//! `feature = "nockapp"`.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -41,7 +49,7 @@ use ai_pow::prover::{MineError, ProverOptions};
 /// little-endian (`ai_pow::tile_hash::hash_le_target` semantics).
 pub type DifficultyTarget = [u8; 32];
 
-/// One block's mining job. Borrows the matrices; the wrapper crate
+/// One legacy NCMN smoke mining job. Borrows the matrices; the wrapper crate
 /// does not own the model-weight bytes.
 pub struct MiningJob<'a> {
     /// Stable puzzle identity bound into `κ` (ai-pow's
@@ -110,7 +118,7 @@ impl MiningStats {
     }
 }
 
-/// Returned on success.
+/// Returned on success by the legacy NCMN smoke path.
 pub struct MinedSolution {
     /// The full 80-byte NCMN nonce that cleared the target.
     pub nonce: NcmnNonce,
@@ -122,7 +130,8 @@ pub struct MinedSolution {
     pub target: DifficultyTarget,
     /// Linear tile index of the winning tile.
     pub found_idx: u32,
-    /// The plain ai-pow proof for the winning attempt.
+    /// The plain ai-pow proof for the winning attempt. This is diagnostic
+    /// material, not the canonical recursive `%ai-pow` block certificate.
     pub proof: MatmulProof,
     pub stats: MiningStats,
 }

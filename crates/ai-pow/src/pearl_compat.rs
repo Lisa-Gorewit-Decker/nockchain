@@ -19,6 +19,7 @@
 //! bytes in Pearl-compatible mode.
 
 use blake3::Hasher;
+use sha2::{Digest, Sha256};
 use thiserror::Error;
 
 use crate::commit::matrix_commitment;
@@ -46,6 +47,9 @@ pub const PEARL_NOCKCHAIN_AUX_EXTRA_MAX: usize = 1024;
 pub const PEARL_NOCKCHAIN_AUX_MIN_SIZE: usize = 4 + 1 + 1 + 32 + 8 + 2;
 pub const PEARL_NOCKCHAIN_AUX_MAX_SIZE: usize =
     4 + 1 + PEARL_NOCKCHAIN_AUX_CHAIN_ID_MAX + 32 + 8 + 2 + PEARL_NOCKCHAIN_AUX_EXTRA_MAX;
+pub const PEARL_NOCKCHAIN_AUX_COMMITMENT_TAG: &[u8] = b"NOCKCHAIN-AI-POW-AUX";
+pub const PEARL_AUX_INCLUSION_MAX_COINBASE_TX_BYTES: usize = 100_000;
+pub const PEARL_AUX_INCLUSION_MAX_MERKLE_BRANCH: usize = 32;
 pub const PEARL_MERGE_PUBLIC_STATEMENT_MAGIC: [u8; 4] = *b"PMP1";
 pub const PEARL_MERGE_PUBLIC_STATEMENT_FIXED_SIZE: usize =
     4 + PEARL_INCOMPLETE_BLOCK_HEADER_SIZE + PEARL_PUBLIC_PROOF_PARAMS_SIZE + 32 + 2;
@@ -102,6 +106,10 @@ pub enum PearlCompatError {
     PatternOutOfMatrix,
     #[error("Pearl public proof params violate the production parameter envelope")]
     PublicParamEnvelope,
+    #[error("Pearl mining config is outside the current recursive prover subset")]
+    UnsupportedRecursivePearlShape,
+    #[error("Pearl recursive prover params are outside the current supported subset: {0}")]
+    UnsupportedRecursivePearlParams(&'static str),
     #[error("Pearl public proof commitments do not match the derived work commitments")]
     PublicCommitmentMismatch,
     #[error("Pearl public proof jackpot hash does not match the recomputed pattern ticket")]
@@ -144,6 +152,20 @@ pub enum PearlCompatError {
         "Pearl merge public statement bytes have trailing data: expected {expected}, got {actual}"
     )]
     MergePublicStatementTrailingData { expected: usize, actual: usize },
+    #[error("Pearl aux inclusion coinbase transaction is empty")]
+    PearlAuxCoinbaseTxEmpty,
+    #[error("Pearl aux inclusion coinbase transaction is too large: max 100000 bytes, got {0}")]
+    PearlAuxCoinbaseTxTooLarge(usize),
+    #[error("Pearl aux inclusion merkle branch is too deep: max 32 siblings, got {0}")]
+    PearlAuxMerkleBranchTooDeep(usize),
+    #[error("Pearl aux inclusion coinbase transaction has malformed Bitcoin encoding")]
+    PearlAuxMalformedCoinbaseTx,
+    #[error("Pearl aux inclusion proof leaf is not a coinbase transaction")]
+    PearlAuxNotCoinbase,
+    #[error("Pearl aux commitment tag is not present in the txid-committed coinbase script")]
+    PearlAuxCommitmentTagMissing,
+    #[error("Pearl aux inclusion merkle branch does not match the Pearl header merkle root")]
+    PearlAuxMerkleRootMismatch,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -698,6 +720,42 @@ pub fn pearl_adjust_target_for_config(
     ))
 }
 
+/// Validate the Pearl mining config that Nockchain's current recursive
+/// certificate producer can prove.
+///
+/// Pearl's pattern language is more general than the current Nockchain
+/// recursive bridge. Until that bridge proves arbitrary Pearl row/column
+/// patterns, production Pearl-compatible Nockchain mining must use square,
+/// contiguous tiles whose row and column patterns are exactly
+/// `[0, 1, ..., params.tile - 1]`.
+pub fn validate_pearl_merge_config_for_recursive_prover(
+    config: &PearlMiningConfig,
+    params: &MatmulParams,
+    max_pattern_len: usize,
+) -> Result<(), PearlCompatError> {
+    if params.difficulty_bits != 0 {
+        return Err(PearlCompatError::UnsupportedRecursivePearlParams(
+            "difficulty_bits must be 0; Nockchain target is verifier-supplied",
+        ));
+    }
+    if params.spot_checks != 1 {
+        return Err(PearlCompatError::UnsupportedRecursivePearlParams(
+            "spot_checks must be 1; Pearl-compatible mode proves one explicit ticket",
+        ));
+    }
+    params.validate_prod_envelope()?;
+    config.to_bytes()?;
+    validate_config_matches_params(config, params)?;
+
+    let expected: Vec<u32> = (0..params.tile).collect();
+    let rows = config.rows_pattern.to_list_bounded(max_pattern_len)?;
+    let cols = config.cols_pattern.to_list_bounded(max_pattern_len)?;
+    if rows != expected || cols != expected {
+        return Err(PearlCompatError::UnsupportedRecursivePearlShape);
+    }
+    Ok(())
+}
+
 fn u256_le_mul_u128_saturating(value: &[u8; 32], factor: u128) -> [u8; 32] {
     if factor == 0 || value.iter().all(|&b| b == 0) {
         return [0u8; 32];
@@ -897,6 +955,10 @@ pub struct PearlCompatibleWorkPrecheck {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PearlNockchainAux {
     pub nockchain_chain_id: Vec<u8>,
+    /// Canonical 32-byte digest of Nockchain's kernel-emitted
+    /// `block-commitment:page:t` mining surface. The Hoon commitment itself
+    /// binds the parent block id, tx-id set, coinbase split, timestamp, epoch
+    /// counter, target, accumulated work, height, and page message.
     pub nock_block_commitment: [u8; 32],
     pub nockchain_target_epoch_or_height: u64,
     pub extra_domain_data: Vec<u8>,
@@ -978,6 +1040,82 @@ impl PearlNockchainAux {
     }
 }
 
+/// Pearl-side evidence that the Nockchain aux digest was committed before the
+/// shared work attempt was mined.
+///
+/// The proof is intentionally coinbase-rooted: Pearl consensus fixes the
+/// coinbase transaction at merkle index 0, so the branch is the left edge of
+/// the Bitcoin/Pearl transaction merkle tree. Nockchain production can use the
+/// coinbase-only Pearl block profile, where this branch is empty; nonempty
+/// branches are accepted only to keep the artifact format compatible with
+/// ordinary Pearl block merkle roots. Branch hashes are raw double-SHA256 byte
+/// order, matching Pearl's `chainhash.Hash` merkle calculation. The header
+/// stores the resulting root in display byte order, matching
+/// `IncompleteBlockHeader::merkle_root`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PearlAuxInclusionProof {
+    pub coinbase_tx: Vec<u8>,
+    pub merkle_branch: Vec<[u8; 32]>,
+}
+
+/// Verify that `aux_commitment` is present in the txid-committed coinbase script
+/// and that the coinbase txid is included in the Pearl header merkle root.
+///
+/// This checks the Pearl block commitment side of merge mining without
+/// requiring Nockchain to parse or verify Pearl's ZKP, or to construct Pearl
+/// transaction trees itself. For the production coinbase-only Pearl profile,
+/// the merkle branch is empty and the header root is just the coinbase txid in
+/// header byte order. The tagged payload is:
+///
+/// ```text
+/// "NOCKCHAIN-AI-POW-AUX" || aux_commitment
+/// ```
+///
+/// The tag must appear in the coinbase input script bytes committed by the
+/// transaction id; a SegWit witness-only occurrence is rejected because witness
+/// bytes are not part of the txid or regular transaction merkle root.
+pub fn verify_pearl_aux_inclusion(
+    header: &PearlIncompleteBlockHeader,
+    aux_commitment: &[u8; 32],
+    proof: &PearlAuxInclusionProof,
+) -> Result<(), PearlCompatError> {
+    if proof.coinbase_tx.is_empty() {
+        return Err(PearlCompatError::PearlAuxCoinbaseTxEmpty);
+    }
+    if proof.coinbase_tx.len() > PEARL_AUX_INCLUSION_MAX_COINBASE_TX_BYTES {
+        return Err(PearlCompatError::PearlAuxCoinbaseTxTooLarge(
+            proof.coinbase_tx.len(),
+        ));
+    }
+    if proof.merkle_branch.len() > PEARL_AUX_INCLUSION_MAX_MERKLE_BRANCH {
+        return Err(PearlCompatError::PearlAuxMerkleBranchTooDeep(
+            proof.merkle_branch.len(),
+        ));
+    }
+
+    let parsed_tx = pearl_txid_committed_bytes(&proof.coinbase_tx)?;
+    let mut tagged = Vec::with_capacity(PEARL_NOCKCHAIN_AUX_COMMITMENT_TAG.len() + 32);
+    tagged.extend_from_slice(PEARL_NOCKCHAIN_AUX_COMMITMENT_TAG);
+    tagged.extend_from_slice(aux_commitment);
+    if !contains_subslice(&parsed_tx.coinbase_script, &tagged) {
+        return Err(PearlCompatError::PearlAuxCommitmentTagMissing);
+    }
+
+    let mut root = pearl_bitcoin_double_sha256_raw(&parsed_tx.txid_committed_bytes);
+    for sibling in &proof.merkle_branch {
+        let mut pair = [0u8; 64];
+        pair[..32].copy_from_slice(&root);
+        pair[32..].copy_from_slice(sibling);
+        root = pearl_bitcoin_double_sha256_raw(&pair);
+    }
+    root.reverse();
+    if root != header.merkle_root {
+        return Err(PearlCompatError::PearlAuxMerkleRootMismatch);
+    }
+
+    Ok(())
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PearlMergeMiningPrecheck {
     pub work: PearlCompatibleWorkPrecheck,
@@ -1056,8 +1194,8 @@ impl PearlMergePublicStatement {
 /// Nockchain.
 ///
 /// This is the canonical Rust entrypoint for checking that a public
-/// Pearl-style work statement is tied to the supplied matrices, clears Pearl's
-/// `nbits` target, and clears the independent Nockchain target. It deliberately
+/// Pearl-style work statement is tied to the supplied matrices and clears the
+/// independent Nockchain target. It deliberately
 /// uses Pearl's serialized `sigma` and `mu` transcript, with no Nockchain nonce
 /// or selected-tile derivation mixed in.
 pub fn verify_pearl_compatible_work(
@@ -1070,9 +1208,6 @@ pub fn verify_pearl_compatible_work(
     public_params.sanity_check()?;
 
     let pearl_target = public_params.pearl_adjusted_target()?;
-    if !hash_le_target(&public_params.hash_jackpot, &pearl_target) {
-        return Err(PearlCompatError::PearlTargetNotMet);
-    }
     if !hash_le_target(&public_params.hash_jackpot, nockchain_target) {
         return Err(PearlCompatError::NockchainTargetNotMet);
     }
@@ -1180,6 +1315,33 @@ pub fn verify_pearl_merge_mining_public_data_with_aux_bytes(
     )
 }
 
+/// Verify a Pearl-compatible public work statement and the Pearl merkle
+/// inclusion proof for the Nockchain aux digest.
+///
+/// This is the Rust-side verifier API that closes the aux replay gap: it first
+/// proves that `expected_aux_commitment` is present in txid-committed coinbase
+/// bytes under the Pearl header merkle root, then runs the normal
+/// Nockchain/Pearl shared-work precheck.
+pub fn verify_pearl_merge_mining_public_data_with_aux_inclusion(
+    candidate_nock_block_commitment: &[u8; 32],
+    block_header_bytes: &[u8],
+    public_data: &[u8],
+    a_row_major: &[i8],
+    b_col_major: &[i8],
+    nockchain_target: &[u8; 32],
+    max_pattern_len: usize,
+    aux_bytes: &[u8],
+    expected_aux_commitment: &[u8; 32],
+    inclusion_proof: &PearlAuxInclusionProof,
+) -> Result<PearlMergeMiningPrecheck, PearlCompatError> {
+    let header = PearlIncompleteBlockHeader::from_bytes(block_header_bytes)?;
+    verify_pearl_aux_inclusion(&header, expected_aux_commitment, inclusion_proof)?;
+    verify_pearl_merge_mining_public_data_with_aux_bytes(
+        candidate_nock_block_commitment, block_header_bytes, public_data, a_row_major, b_col_major,
+        nockchain_target, max_pattern_len, aux_bytes, expected_aux_commitment,
+    )
+}
+
 /// Decode the complete canonical Pearl merge-mining public statement envelope
 /// and verify it against verifier-derived block/target data.
 pub fn verify_pearl_merge_public_statement_bytes(
@@ -1195,6 +1357,26 @@ pub fn verify_pearl_merge_public_statement_bytes(
         candidate_nock_block_commitment, &statement.block_header, &statement.public_data,
         a_row_major, b_col_major, nockchain_target, max_pattern_len, &statement.aux_bytes,
         &statement.expected_aux_commitment,
+    )
+}
+
+/// Decode the complete canonical Pearl merge-mining public statement envelope,
+/// verify the aux digest is included in the Pearl header's transaction merkle
+/// root, and then verify the shared Pearl/Nockchain work statement.
+pub fn verify_pearl_merge_public_statement_bytes_with_aux_inclusion(
+    candidate_nock_block_commitment: &[u8; 32],
+    statement_bytes: &[u8],
+    a_row_major: &[i8],
+    b_col_major: &[i8],
+    nockchain_target: &[u8; 32],
+    max_pattern_len: usize,
+    inclusion_proof: &PearlAuxInclusionProof,
+) -> Result<PearlMergeMiningPrecheck, PearlCompatError> {
+    let statement = PearlMergePublicStatement::from_bytes(statement_bytes)?;
+    verify_pearl_merge_mining_public_data_with_aux_inclusion(
+        candidate_nock_block_commitment, &statement.block_header, &statement.public_data,
+        a_row_major, b_col_major, nockchain_target, max_pattern_len, &statement.aux_bytes,
+        &statement.expected_aux_commitment, inclusion_proof,
     )
 }
 
@@ -1279,9 +1461,9 @@ pub fn evaluate_pearl_merge_ticket_attempt(
     })
 }
 
-/// Return the canonical Pearl merge-mining public statement for one explicit
-/// ticket only when that ticket satisfies both Pearl's adjusted target and the
-/// caller-supplied Nockchain target.
+/// Return the canonical Pearl-format-compatible Nockchain public statement for
+/// one explicit ticket only when that ticket satisfies the caller-supplied
+/// Nockchain target.
 pub fn mine_pearl_merge_ticket_attempt(
     header: &PearlIncompleteBlockHeader,
     config: &PearlMiningConfig,
@@ -1300,12 +1482,8 @@ pub fn mine_pearl_merge_ticket_attempt(
     )?;
     if attempt
         .public_params
-        .check_pearl_jackpot_difficulty()
+        .check_nockchain_jackpot_target(nockchain_target)
         .is_err()
-        || attempt
-            .public_params
-            .check_nockchain_jackpot_target(nockchain_target)
-            .is_err()
     {
         return Ok(None);
     }
@@ -1433,9 +1611,12 @@ pub fn pearl_jackpot_hash(tile_state: &TileState, s_a: &[u8; 32]) -> [u8; 32] {
 /// state before mining.
 ///
 /// The variable-length fields are length-prefixed so distinct tuples cannot
-/// collide by concatenation. The returned digest must be included in Pearl's
-/// block commitment path; Nockchain validation must then verify that inclusion
-/// against the exact Pearl `sigma` used for the shared work attempt.
+/// collide by concatenation. `nock_block_commitment` is the canonical digest of
+/// Nockchain's kernel-emitted `block-commitment:page:t`, so it transitively
+/// binds the previous block id/header chain and the candidate tx-id set. The
+/// returned digest must be included in Pearl's block commitment path;
+/// Nockchain validation must then verify that inclusion against the exact Pearl
+/// `sigma` used for the shared work attempt.
 pub fn pearl_nockchain_aux_commitment(
     nockchain_chain_id: &[u8],
     nock_block_commitment: &[u8; 32],
@@ -1621,6 +1802,146 @@ fn validate_attempt_inputs(
         }
     }
     Ok(())
+}
+
+pub fn pearl_bitcoin_double_sha256_raw(bytes: &[u8]) -> [u8; 32] {
+    let first = Sha256::digest(bytes);
+    Sha256::digest(first).into()
+}
+
+struct PearlTxidCommittedBytes {
+    txid_committed_bytes: Vec<u8>,
+    coinbase_script: Vec<u8>,
+}
+
+fn pearl_txid_committed_bytes(tx: &[u8]) -> Result<PearlTxidCommittedBytes, PearlCompatError> {
+    let mut offset = 0usize;
+    take(tx, &mut offset, 4)?;
+    let mut txid = Vec::with_capacity(tx.len());
+    txid.extend_from_slice(&tx[..4]);
+
+    let segwit = if tx.get(offset) == Some(&0) {
+        if tx.get(offset + 1) != Some(&1) {
+            return Err(PearlCompatError::PearlAuxMalformedCoinbaseTx);
+        }
+        offset += 2;
+        true
+    } else {
+        false
+    };
+
+    let committed_start = offset;
+    let input_count = read_canonical_varint(tx, &mut offset)?;
+    if input_count != 1 {
+        return Err(PearlCompatError::PearlAuxMalformedCoinbaseTx);
+    }
+    let first_input_start = offset;
+    let mut coinbase_script = Vec::new();
+    for _ in 0..input_count {
+        take(tx, &mut offset, 36)?;
+        let script_len = read_canonical_varint_usize(tx, &mut offset)?;
+        coinbase_script = take(tx, &mut offset, script_len)?.to_vec();
+        take(tx, &mut offset, 4)?;
+    }
+    validate_first_input_is_coinbase(tx, first_input_start)?;
+
+    let output_count = read_canonical_varint(tx, &mut offset)?;
+    if output_count == 0 {
+        return Err(PearlCompatError::PearlAuxMalformedCoinbaseTx);
+    }
+    for _ in 0..output_count {
+        take(tx, &mut offset, 8)?;
+        let script_len = read_canonical_varint_usize(tx, &mut offset)?;
+        take(tx, &mut offset, script_len)?;
+    }
+    txid.extend_from_slice(&tx[committed_start..offset]);
+
+    if segwit {
+        for _ in 0..input_count {
+            let item_count = read_canonical_varint(tx, &mut offset)?;
+            for _ in 0..item_count {
+                let item_len = read_canonical_varint_usize(tx, &mut offset)?;
+                take(tx, &mut offset, item_len)?;
+            }
+        }
+    }
+
+    let locktime = take(tx, &mut offset, 4)?;
+    txid.extend_from_slice(locktime);
+    if offset != tx.len() {
+        return Err(PearlCompatError::PearlAuxMalformedCoinbaseTx);
+    }
+    Ok(PearlTxidCommittedBytes {
+        txid_committed_bytes: txid,
+        coinbase_script,
+    })
+}
+
+fn validate_first_input_is_coinbase(tx: &[u8], input_start: usize) -> Result<(), PearlCompatError> {
+    let prevout = tx
+        .get(input_start..input_start + 36)
+        .ok_or(PearlCompatError::PearlAuxMalformedCoinbaseTx)?;
+    if prevout[..32] != [0u8; 32] || prevout[32..36] != u32::MAX.to_le_bytes() {
+        return Err(PearlCompatError::PearlAuxNotCoinbase);
+    }
+    Ok(())
+}
+
+fn read_canonical_varint(tx: &[u8], offset: &mut usize) -> Result<u64, PearlCompatError> {
+    let tag = *tx
+        .get(*offset)
+        .ok_or(PearlCompatError::PearlAuxMalformedCoinbaseTx)?;
+    *offset += 1;
+    match tag {
+        0x00..=0xfc => Ok(u64::from(tag)),
+        0xfd => {
+            let bytes = take(tx, offset, 2)?;
+            let value = u16::from_le_bytes(bytes.try_into().unwrap()) as u64;
+            if value < 0xfd {
+                return Err(PearlCompatError::PearlAuxMalformedCoinbaseTx);
+            }
+            Ok(value)
+        }
+        0xfe => {
+            let bytes = take(tx, offset, 4)?;
+            let value = u32::from_le_bytes(bytes.try_into().unwrap()) as u64;
+            if value <= u64::from(u16::MAX) {
+                return Err(PearlCompatError::PearlAuxMalformedCoinbaseTx);
+            }
+            Ok(value)
+        }
+        0xff => {
+            let bytes = take(tx, offset, 8)?;
+            let value = u64::from_le_bytes(bytes.try_into().unwrap());
+            if value <= u64::from(u32::MAX) {
+                return Err(PearlCompatError::PearlAuxMalformedCoinbaseTx);
+            }
+            Ok(value)
+        }
+    }
+}
+
+fn read_canonical_varint_usize(tx: &[u8], offset: &mut usize) -> Result<usize, PearlCompatError> {
+    usize::try_from(read_canonical_varint(tx, offset)?)
+        .map_err(|_| PearlCompatError::PearlAuxMalformedCoinbaseTx)
+}
+
+fn take<'a>(bytes: &'a [u8], offset: &mut usize, len: usize) -> Result<&'a [u8], PearlCompatError> {
+    let end = offset
+        .checked_add(len)
+        .ok_or(PearlCompatError::PearlAuxMalformedCoinbaseTx)?;
+    let out = bytes
+        .get(*offset..end)
+        .ok_or(PearlCompatError::PearlAuxMalformedCoinbaseTx)?;
+    *offset = end;
+    Ok(out)
+}
+
+fn contains_subslice(haystack: &[u8], needle: &[u8]) -> bool {
+    !needle.is_empty()
+        && haystack
+            .windows(needle.len())
+            .any(|window| window == needle)
 }
 
 fn i8_slice_as_u8(input: &[i8]) -> &[u8] {

@@ -617,7 +617,7 @@
   ==
 ::
 +$  ai-blake  ai-blake:dt
-+$  ai-ncmn   ai-ncmn:dt
++$  ai-pow-nonce  ai-pow-nonce:dt
 +$  ai-ext2  ai-ext2:dt
 +$  ai-ext2s  ai-ext2s:dt
 +$  ai-ext2-vec  ai-ext2-vec:dt
@@ -626,13 +626,7 @@
 +$  ai-proof-node  ai-proof-node:dt
 +$  ai-recursive-certificate  ai-recursive-certificate:dt
 +$  ai-pow-certificate  ai-pow-certificate:dt
-+$  pearl-header  pearl-header:dt
-+$  pearl-public-data  pearl-public-data:dt
-+$  pearl-chain-id  pearl-chain-id:dt
-+$  pearl-extra-data  pearl-extra-data:dt
-+$  pearl-nockchain-aux  pearl-nockchain-aux:dt
-+$  pearl-merge-public-statement  pearl-merge-public-statement:dt
-+$  pearl-merge-ai-pow-artifact  pearl-merge-ai-pow-artifact:dt
++$  ai-pow-artifact  ai-pow-artifact:dt
 ::
 ::  Tagged union of proof-of-work variants. The miner pokes the consensus
 ::  kernel with `[%command %pow pv=pow-variant]`; the consensus kernel
@@ -641,16 +635,11 @@
 +$  pow-variant
   $+  pow-variant
   $%  [%dumb-zkpow prf=proof:sp dig=tip5-hash-atom:zeke bc=noun-digest:tip5:zeke nonce=noun-digest:tip5:zeke]  ::  the existing puzzle-nock STARK PoW
-      ::  AI matmul PoW wire shape. Carries the NCMN nonce plus the
+      ::  AI matmul PoW wire shape. Carries a Rust-owned nonce plus the
       ::  recursive certificate only; raw Layer-0 proofs and the plain
       ::  MatmulProof are not persisted in blocks. Consensus rejects this arm
       ::  until the recursive verifier is wired.
-      [%ai-pow nonce=ai-ncmn cert=ai-pow-certificate]
-      ::  Pearl-compatible merge-mined AI matmul PoW. Carries a structured
-      ::  Pearl-compatible public statement plus the Nockchain-native
-      ::  recursive certificate only; Pearl ZK proof bytes and raw Layer-0
-      ::  proofs are not valid production artifacts.
-      [%ai-pmp artifact=pearl-merge-ai-pow-artifact]
+      [%ai-pow nonce=ai-pow-nonce cert=ai-pow-certificate]
   ==
 ::
 +$  command

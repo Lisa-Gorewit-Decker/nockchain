@@ -1095,9 +1095,9 @@ pub fn prove_ai_pow_recursive_certificate(
 /// Build the recursive AI-PoW certificate for a Pearl-compatible merge-mined
 /// ticket.
 ///
-/// This is the production prover handoff for `%ai-pmp` on the currently
+/// This is the production prover handoff for canonical `%ai-pow` on the currently
 /// supported square-contiguous Pearl subset. It rechecks the public `PMP1`
-/// statement against trusted matrices and both targets, proves the exact
+/// statement against trusted matrices and the Nockchain target, proves the exact
 /// Pearl ticket tile, uses Pearl's `s_A` directly as the jackpot key, and
 /// returns a Nockchain-native recursive certificate. It intentionally does not
 /// serialize or reuse Pearl's own ZKP.

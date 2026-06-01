@@ -64,6 +64,7 @@ dependencies = [
  "criterion",
  "proptest",
  "rayon",
+ "sha2",
  "thiserror 2.0.18",
 ]
 

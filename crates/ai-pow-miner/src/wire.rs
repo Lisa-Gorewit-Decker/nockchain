@@ -24,7 +24,7 @@ pub enum AiPowMinerWire {
     /// Kernel-internal: a new candidate puzzle.
     Candidate,
     /// Driver → node: canonical recursive certificate. Payload (v1):
-    /// `[%command %pow %ai-pow nonce=@uxncmn cert=ai-pow-certificate]`.
+    /// `[%command %pow %ai-pow nonce=[len data] cert=ai-pow-certificate]`.
     Mined,
     /// Driver → node: set mining-payout pubkey(s).
     SetPubKey,

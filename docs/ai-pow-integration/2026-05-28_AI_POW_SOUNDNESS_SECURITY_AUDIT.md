@@ -15,6 +15,12 @@ surface is now only `[h_a_chunk h_b_chunk]`; legacy row/column roots `h_a` /
 `h_b` are diagnostic/plain-proof opening roots and must not be reintroduced as
 block artifact commitment parameters.
 
+Update, 2026-06-01: references below to `nonce=ai-ncmn` / `@uxncmn` are
+historical. The current canonical Hoon block artifact is
+`[%ai-pow nonce=ai-pow-nonce cert=ai-pow-certificate]`, where
+`ai-pow-nonce` is an opaque Rust-owned `[len data]` envelope. See
+`2026-06-01_PEARL_MERGE_MINING_COMPATIBILITY_SPEC.md`.
+
 ## Executive Summary
 
 The current branch must not be enabled for accepting `%ai-pow` blocks yet. The Hoon consensus path is still reject-all, which prevents exploitation on-chain today, but the Rust proof/verifier APIs are not yet safe as consensus interfaces.
@@ -71,9 +77,10 @@ Evidence:
 - The mining loop passes that target to `mine_with_context_at_target`: `crates/ai-pow-miner/src/mining.rs`.
 - `ai_pow::verifier::verify` has no target argument and instead computes `difficulty_target(params)` from `params.difficulty_bits`: `crates/ai-pow/src/verifier.rs`.
 - `mine_with_context_at_target` explicitly documents that the chain target may not equal `difficulty_target(params)`: `crates/ai-pow/src/prover.rs`.
-- The crate root no longer re-exports plain `MatmulProof` verifier helpers.
-  Intentional plain-proof checks must use the explicit `ai_pow::verifier`
-  module path.
+- The crate root no longer re-exports plain `MatmulProof` objects, plain mining
+  helpers, or plain verifier helpers. Intentional plain-proof checks must use
+  explicit `ai_pow::proof`, `ai_pow::prover`, or `ai_pow::verifier` module
+  paths.
 - `ai-pow` README now documents `verify_ncmn_at_target` as a diagnostic /
   pre-ZKP target-hit check, not as the canonical block verifier, and labels
   `verifier::verify` as non-consensus.
@@ -553,9 +560,9 @@ Evidence:
   panics into verifier errors, preventing malformed block artifacts from
   crashing the verifier process, and rejects non-canonical jam encodings by
   requiring a byte-identical re-jam.
-- The Hoon `%ai-pow` wire now carries `[%ai-pow nonce=ai-ncmn
-  cert=ai-pow-certificate]`, so the verifier has the NCMN nonce needed to bind
-  the recursive certificate to the block attempt.
+- The Hoon `%ai-pow` wire now carries `[%ai-pow nonce=ai-pow-nonce
+  cert=ai-pow-certificate]`, so the verifier has a Rust-owned opaque nonce
+  envelope needed to bind the recursive certificate to the block attempt.
 
 Attack sketch:
 
@@ -735,10 +742,10 @@ intended block artifact ambiguous.
 Current behavior:
 
 - Done: the Hoon wire type is now
-  `[%ai-pow nonce=ai-ncmn cert=ai-pow-certificate]`.
+  `[%ai-pow nonce=ai-pow-nonce cert=ai-pow-certificate]`.
 - Done: `ai-pow-certificate` is a structured recursive certificate noun using
-  custom compact auras for BLAKE3 digests, NCMN nonce bytes, and degree-2 field
-  elements.
+  custom compact auras for BLAKE3 digests, AI-PoW nonce bytes, and degree-2
+  field elements.
 - Done: the Rust miner emits `[%command %pow %ai-pow nonce cert]` only after it
   has a canonical recursive certificate builder.
 - Done: `do-pow` still rejects `%ai-pow` before activation and still rejects it
@@ -800,7 +807,8 @@ Current behavior:
   conversion, and reject bad magic, unknown versions, length mismatch, trailing
   bytes, and shape/parameter mismatches before verifier work.
 - Done: production persistence/wire shape is structured Hoon noun data:
-  `[%ai-pow nonce=ai-ncmn cert=ai-pow-certificate]`, where the certificate is a
+  `[%ai-pow nonce=ai-pow-nonce cert=ai-pow-certificate]`, where the nonce is a
+  Rust-owned `[len=@ud data=@uxaipownonce]` envelope and the certificate is a
   structured recursive proof-node tree, not a raw Layer-0 STARK blob and not a
   single opaque atom.
 - Done: `CertificateNounLimits` bounds recursive proof-node depth, total nodes,
@@ -811,7 +819,7 @@ Current behavior:
   reject unknown certificate versions/tags, and run the NCMN/statement precheck
   before reconstructing the recursive certificate.
 - Done: Hoon types use custom auras for compact atoms (`@uxblake`,
-  `@uxncmn`, `@uxfelt`, `@uxfelts`) instead of digest/field tuples.
+  `@uxaipownonce`, `@uxfelt`, `@uxfelts`) instead of digest/field tuples.
 
 Regression coverage:
 

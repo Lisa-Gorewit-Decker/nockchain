@@ -7,6 +7,7 @@ publish = false
 
 [dependencies]
 blake3 = { workspace = true }
+sha2 = { workspace = true }
 thiserror = { workspace = true }
 rayon = { workspace = true, optional = true }
 # Optional Plonky3 STARK/recursion integration. Disabled by default so the
