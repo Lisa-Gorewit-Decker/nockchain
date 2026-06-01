@@ -367,9 +367,11 @@ Current code follows the recommended production design above:
   nonce-bound attempt state, and `verify_ai_pow_production_statement` provides
   the same binding checks for persisted recursive-certificate metadata.
 - `crates/ai-pow-miner/src/certificate_noun.rs`: decoded Hoon-compatible
-  certificate nouns can be prechecked against trusted block state via
-  `precheck_ai_pow_certificate_statement` before recursive proof verification
-  consumes the miner-controlled proof tree.
+  certificate nouns can be reconstructed into
+  `AiPowProductionCertificate` and verified via
+  `verify_decoded_ai_pow_certificate`, which runs the trusted statement
+  precheck before recursive proof verification consumes the miner-controlled
+  proof tree.
 - `crates/ai-pow-miner/src/bin/ai_pow_mine.rs`: recursive certificate
   construction rebuilds the context for the winning nonce and refuses to prove
   unless the plain target check succeeds first.
@@ -388,6 +390,10 @@ Regression coverage now includes:
 - the recursive production certificate itself binds the Layer-0 public-input
   vector as outer STARK public values, so swapping verifier-derived statement
   inputs rejects at recursive certificate verification.
+- real recursive certificate nouns roundtrip through structured proof-node
+  serialization, jam/cue, bounded decode, reconstruction into
+  `AiPowProductionCertificate`, canonical re-serialization, and recursive
+  verification.
 - decoded structured certificate nouns reject wrong nonce, zero target, and
   parameter mismatch at the statement precheck boundary.
 
@@ -565,13 +571,13 @@ certificate; Hoon consensus still needs the verifier jet/wiring.
 1. No new large proof artifact is required; the recursive proof remains the
    only canonical artifact.
 2. The Rust noun boundary now exposes
-   `precheck_ai_pow_certificate_statement` for the decoded
-   `ai-pow-certificate`; the Hoon/Rust verifier path must call it with the
-   trusted block commitment, block nonce, params, and target before or alongside
-   recursive certificate verification.
+   `verify_decoded_ai_pow_certificate` for the decoded `ai-pow-certificate`;
+   the Hoon/Rust verifier path must call it with the trusted block commitment,
+   block nonce, params, and target.
 3. The Rust decoder/precheck rejects statement data that does not match trusted
-   block data; if proof or params versions change again, add an explicit version
-   check in the `ai-pow-certificate` decoder.
+   block data before recursive proof verification; if proof or params versions
+   change again, add an explicit version check in the `ai-pow-certificate`
+   decoder.
 
 ### Phase 5: Regression Tests
 

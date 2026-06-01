@@ -239,11 +239,13 @@ Rust conversion rules:
    proof's public values and the Layer-0 AI-PoW statement.
 
 The node-side Rust helper
-`certificate_noun::verify_ai_pow_certificate_statement_and_proof` packages the
-required ordering once the structured proof-node tail has been reconstructed
-into an `AiPowProductionCertificate`: it runs the cheap statement precheck
-first, then calls the recursive production verifier with the decoded public
-inputs.
+`certificate_noun::verify_decoded_ai_pow_certificate` packages the required
+ordering for decoded noun artifacts: it reconstructs the
+`AiPowProductionCertificate` from the structured proof-node tail, runs the
+cheap statement precheck first, then calls the recursive production verifier
+with the decoded public inputs. The lower-level
+`verify_ai_pow_certificate_statement_and_proof` remains available only for
+callers that already hold a reconstructed `AiPowProductionCertificate`.
 
 The deprecated `verify_production_certificate_outer` helper is outer-only
 diagnostic code for old unbound proof objects. Consensus must not use it:
@@ -292,15 +294,40 @@ certificate.
 
 The structured noun encoder/decoder is implemented for the generic
 recursive-certificate tree, and malformed packed atoms/list shapes have
-focused tests. The exact jammed size for a real recursive production
-certificate still needs an encoder measurement. The expected size
-profile is:
+focused tests. The structured proof-node format is now invertible: a decoded
+real recursive certificate noun can be reconstructed into
+`AiPowProductionCertificate` and verified with
+`verify_production_certificate`. Reconstruction performs a canonical
+re-serialization check, so proof-node structures with ignored extra fields or
+lossy sequence encodings are rejected.
+
+The current real recursive certificate noun measurement is:
+
+```text
+GNORT_DISABLE=1 cargo test -p ai-pow-miner --features node \
+  real_recursive_certificate_noun_roundtrips_and_prints_size \
+  --release -- --ignored --nocapture
+```
+
+Measured on 2026-06-01 with the current small recursive fixture:
+
+| Artifact | Bytes | KiB |
+|---|---:|---:|
+| jammed structured `ai-pow-certificate` noun | 193,093 | 188.6 KiB |
+| postcard L1 recursive certificate | 125,162 | 122.2 KiB |
+
+That fixture proves the structural path, but it is not yet the final
+production-size benchmark. Exact byte counts can vary slightly across proof
+runs because some encoded vectors use variable-width atom/jam representation.
+The production `prod_recursion_measure` harness below remains the better
+estimate for the compact L1 certificate payload. The expected structured-noun
+size profile is:
 
 | Encoding choice | Expected size impact |
 |---|---:|
 | one proof-wide bincode atom | about 383 KiB today, but rejected by this spec |
 | fully exploded Hoon lists of every field element and digest limb | likely materially larger than bincode and not acceptable |
-| structured noun with packed homogeneous vectors as specified here | close to bincode size plus structural/list overhead |
+| structured noun with packed homogeneous vectors as specified here | currently about 1.54x postcard on the small real recursive fixture |
 | future ~100 KiB recursive/compressed certificate using the same structured-vector approach | about 100-110 KiB, depending on certificate shape |
 
 The packed-vector structure is necessary. A pure list encoding would add one cell per field element, per extension limb, and per Merkle digest limb. That is precisely the cost we need to avoid while still giving Hoon a proof-shaped noun.
@@ -310,12 +337,9 @@ The implementation includes an ignored measurement test
 for a real recursive production certificate:
 
 - total jammed `ai-pow-certificate` size;
-- size of `commitments`;
-- size of `opened-values`;
-- size of `opening-proof`;
-- size of fixed statement fields;
-- max packed-vector atom byte length;
-- count of list cells allocated by cue.
+- compact postcard L1 certificate size;
+- recursive prove/build/verify timing;
+- proof-node reconstruction and recursive verification success after jam/cue.
 
 ### Recursive Production Proof Benchmark
 
@@ -379,11 +403,11 @@ l1_verify_ms, l1_cert_ms, l0_bytes, l1_bytes
 ```
 
 Important caveat: these byte counts are `postcard` serialization of the
-current Rust proof objects. They are the best current measurement of the
-recursive certificate payload size, but the final consensus artifact is
-the structured noun encoder described here. The target should be measured
-again by jamming a real L1 certificate noun, not by measuring postcard
-bytes.
+current Rust proof objects. The final consensus artifact is the structured noun
+encoder described here. The current structured-noun harness proves the noun
+roundtrip on a small real recursive certificate; the final production-size gate
+must run the same structured noun measurement on the final production L1
+certificate shape.
 
 ## 10. Verification Checks Required By This Shape
 
@@ -422,6 +446,6 @@ Before accepting `%ai-pow`, consensus must require:
 7. Add jam/cue round-trip tests for a real proof and malformed nouns. Status: implemented for structured sample certificates, malformed packed/list/tag/version cases, non-canonical `ai-ext2` limbs, and an ignored real recursive certificate noun round-trip/size harness.
 8. Add size tests asserting total jammed noun budget and per-vector caps. Status: the ignored real recursive certificate harness asserts a coarse 2 MiB upper bound and prints measured size; production budget constants still need to be set after the harness is run on the final L1 shape.
 9. Add adversarial decode tests for oversized lengths, non-canonical field elements, mismatched lookup shapes, invalid FRI arities, and extra/trailing packed bytes.
-10. Expose a full recursive certificate verifier that takes verifier-derived public inputs and rejects an otherwise valid certificate when any block, nonce, target, commitment, params, or `found-idx` field is changed. Status: outer recursive STARK verification exists; embedded-public-input binding is not yet wired, so consensus remains fail-closed.
+10. Expose a full recursive certificate verifier that takes verifier-derived public inputs and rejects an otherwise valid certificate when any block, nonce, target, commitment, params, or `found-idx` field is changed. Status: implemented at the Rust boundary: `verify_decoded_ai_pow_certificate` reconstructs the structured noun proof, prechecks the statement, and calls `verify_production_certificate`, whose outer proof binds the Layer-0 public-input vector as STARK public values. Hoon consensus remains fail-closed until the verifier jet calls this boundary.
 11. Add the verifier jet entrypoint consuming this noun shape.
 12. Replace the deferred-verifier accept path with real accept/reject checks only after end-to-end accept/reject tests exist.

@@ -12,6 +12,10 @@ use nockapp::noun::slab::NounSlab;
 use nockvm::jets::bits::util::met;
 use nockvm::noun::{Noun, NounAllocator, NounSpace, D, T};
 use nockvm_macros::tas;
+use serde::de::{
+    self, DeserializeOwned, EnumAccess, IntoDeserializer, MapAccess, SeqAccess, VariantAccess,
+    Visitor,
+};
 use serde::ser::{self, Serialize, SerializeMap, SerializeSeq, SerializeStruct, SerializeTuple};
 
 const AI_POW_CERT_VERSION: u64 = 1;
@@ -21,8 +25,12 @@ const GOLDILOCKS_MODULUS: u64 = 0xffff_ffff_0000_0001;
 pub enum CertificateNounError {
     #[error("recursive certificate serialization: {0}")]
     Serialize(String),
+    #[error("recursive certificate deserialization: {0}")]
+    Deserialize(String),
     #[error("recursive certificate noun has invalid shape: {0}")]
     Shape(&'static str),
+    #[error("recursive certificate proof-node is not canonical")]
+    NonCanonicalProofNode,
     #[error("unsupported AI-PoW certificate version {0}")]
     UnsupportedVersion(u64),
     #[error("recursive certificate noun exceeds {0} limit")]
@@ -118,6 +126,39 @@ pub fn recursive_certificate_to_node<C: Serialize>(
         .serialize(NodeSerializer)
         .map_err(|e| CertificateNounError::Serialize(e.to_string()))?;
     Ok(node.normalized())
+}
+
+/// Reconstruct a serde-backed recursive certificate from a decoded proof-node
+/// tree.
+///
+/// This is the inverse of [`recursive_certificate_to_node`]. It exists so the
+/// production Rust/Hoon boundary can verify the structured noun artifact
+/// directly instead of requiring an adjacent compact byte blob.
+pub fn recursive_certificate_from_node<C: DeserializeOwned>(
+    node: &AiProofNode,
+) -> Result<C, CertificateNounError> {
+    C::deserialize(NodeDeserializer { node: node.clone() })
+        .map_err(|e| CertificateNounError::Deserialize(e.to_string()))
+}
+
+fn canonical_certificate_from_node<C>(node: &AiProofNode) -> Result<C, CertificateNounError>
+where
+    C: DeserializeOwned + Serialize,
+{
+    let certificate: C = recursive_certificate_from_node(node)?;
+    let canonical = recursive_certificate_to_node(&certificate)?;
+    if &canonical != node {
+        return Err(CertificateNounError::NonCanonicalProofNode);
+    }
+    Ok(certificate)
+}
+
+/// Reconstruct the canonical recursive production certificate from a decoded
+/// Hoon-compatible proof-node tree.
+pub fn production_certificate_from_node(
+    node: &AiProofNode,
+) -> Result<ai_pow_zk::recursion::AiPowProductionCertificate, CertificateNounError> {
+    canonical_certificate_from_node(node)
 }
 
 /// Build the Hoon `ai-pow-certificate` noun:
@@ -258,6 +299,27 @@ pub fn verify_ai_pow_certificate_statement_and_proof(
     precheck_ai_pow_certificate_statement(shape, block_commitment, nonce, params, target)?;
     ai_pow_zk::recursion::verify_production_certificate(certificate, &shape.public_inputs)
         .map_err(|e| CertificateNounError::RecursiveCertificate(e.to_string()))
+}
+
+/// Verify a fully decoded Hoon-compatible `ai-pow-certificate` noun against
+/// trusted block data.
+///
+/// This is the consensus-facing Rust boundary for the structured recursive
+/// certificate artifact: it decodes the proof tree into the canonical recursive
+/// certificate type, cheaply re-derives and checks the statement metadata, and
+/// then verifies the recursive certificate against those verifier-derived
+/// Layer-0 public inputs.
+pub fn verify_decoded_ai_pow_certificate(
+    shape: &AiPowCertificateShape,
+    block_commitment: &[u8],
+    nonce: &[u8],
+    params: &MatmulParams,
+    target: &[u8; 32],
+) -> Result<(), CertificateNounError> {
+    let certificate = production_certificate_from_node(&shape.certificate)?;
+    verify_ai_pow_certificate_statement_and_proof(
+        shape, block_commitment, nonce, params, target, &certificate,
+    )
 }
 
 #[derive(Debug)]
@@ -878,6 +940,9 @@ fn normalize_seq_with_kind(items: Vec<AiProofNode>, kind: SeqKind) -> AiProofNod
             other => Some(other),
         })
         .collect::<Vec<_>>();
+    if items.is_empty() {
+        return AiProofNode::Seq(items);
+    }
     if matches!(kind, SeqKind::Tuple) && items.len() == 2 {
         if let [AiProofNode::U64(c0), AiProofNode::U64(c1)] = items.as_slice() {
             return AiProofNode::Ext2([*c0, *c1]);
@@ -918,9 +983,6 @@ fn normalize_seq_with_kind(items: Vec<AiProofNode>, kind: SeqKind) -> AiProofNod
                 })
                 .collect(),
         );
-    }
-    if items.len() == 1 {
-        return items.into_iter().next().expect("len checked");
     }
     AiProofNode::Seq(items)
 }
@@ -1366,6 +1428,595 @@ impl SerializeMap for NodeMap {
     }
 }
 
+#[derive(Debug)]
+struct DeError(String);
+
+impl std::fmt::Display for DeError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.0.fmt(f)
+    }
+}
+
+impl std::error::Error for DeError {}
+
+impl de::Error for DeError {
+    fn custom<T: std::fmt::Display>(msg: T) -> Self {
+        Self(msg.to_string())
+    }
+}
+
+type DeResult<T> = Result<T, DeError>;
+
+struct NodeDeserializer {
+    node: AiProofNode,
+}
+
+impl<'de> de::Deserializer<'de> for NodeDeserializer {
+    type Error = DeError;
+
+    fn deserialize_any<V>(self, visitor: V) -> DeResult<V::Value>
+    where
+        V: Visitor<'de>,
+    {
+        match &self.node {
+            AiProofNode::Unit => visitor.visit_unit(),
+            AiProofNode::Bool(value) => visitor.visit_bool(*value),
+            AiProofNode::U64(value) => visitor.visit_u64(*value),
+            AiProofNode::I64(value) => visitor.visit_i64(*value),
+            AiProofNode::Ext2(value) => visitor.visit_seq(NodeSeqAccess::from_owned(vec![
+                AiProofNode::U64(value[0]),
+                AiProofNode::U64(value[1]),
+            ])),
+            AiProofNode::Ext2s(values) => visitor.visit_seq(NodeSeqAccess::from_owned(
+                values.iter().copied().map(AiProofNode::Ext2).collect(),
+            )),
+            AiProofNode::Bytes(bytes) => visitor.visit_byte_buf(bytes.clone()),
+            AiProofNode::U64s(values) => visitor.visit_seq(NodeSeqAccess::from_owned(
+                values.iter().copied().map(AiProofNode::U64).collect(),
+            )),
+            AiProofNode::I64s(values) => visitor.visit_seq(NodeSeqAccess::from_owned(
+                values.iter().copied().map(AiProofNode::I64).collect(),
+            )),
+            AiProofNode::Seq(items) => visitor.visit_seq(NodeSeqAccess::from_slice(items)),
+            AiProofNode::Map(items) => visitor.visit_map(NodeMapAccess::new(items)),
+            AiProofNode::None => visitor.visit_none(),
+            AiProofNode::Some(inner) => visitor.visit_some(NodeDeserializer {
+                node: inner.as_ref().clone(),
+            }),
+        }
+    }
+
+    fn deserialize_bool<V>(self, visitor: V) -> DeResult<V::Value>
+    where
+        V: Visitor<'de>,
+    {
+        match &self.node {
+            AiProofNode::Bool(value) => visitor.visit_bool(*value),
+            other => Err(DeError(format!("expected bool, got {other:?}"))),
+        }
+    }
+
+    fn deserialize_i8<V>(self, visitor: V) -> DeResult<V::Value>
+    where
+        V: Visitor<'de>,
+    {
+        self.deserialize_i64(visitor)
+    }
+
+    fn deserialize_i16<V>(self, visitor: V) -> DeResult<V::Value>
+    where
+        V: Visitor<'de>,
+    {
+        self.deserialize_i64(visitor)
+    }
+
+    fn deserialize_i32<V>(self, visitor: V) -> DeResult<V::Value>
+    where
+        V: Visitor<'de>,
+    {
+        self.deserialize_i64(visitor)
+    }
+
+    fn deserialize_i64<V>(self, visitor: V) -> DeResult<V::Value>
+    where
+        V: Visitor<'de>,
+    {
+        match &self.node {
+            AiProofNode::I64(value) => visitor.visit_i64(*value),
+            AiProofNode::U64(value) => {
+                let value = i64::try_from(*value)
+                    .map_err(|_| DeError("unsigned integer does not fit i64".into()))?;
+                visitor.visit_i64(value)
+            }
+            other => Err(DeError(format!("expected signed integer, got {other:?}"))),
+        }
+    }
+
+    fn deserialize_i128<V>(self, visitor: V) -> DeResult<V::Value>
+    where
+        V: Visitor<'de>,
+    {
+        match &self.node {
+            AiProofNode::I64(value) => visitor.visit_i128(*value as i128),
+            AiProofNode::U64(value) => visitor.visit_i128(*value as i128),
+            other => Err(DeError(format!(
+                "expected i128-compatible integer, got {other:?}"
+            ))),
+        }
+    }
+
+    fn deserialize_u8<V>(self, visitor: V) -> DeResult<V::Value>
+    where
+        V: Visitor<'de>,
+    {
+        self.deserialize_u64(visitor)
+    }
+
+    fn deserialize_u16<V>(self, visitor: V) -> DeResult<V::Value>
+    where
+        V: Visitor<'de>,
+    {
+        self.deserialize_u64(visitor)
+    }
+
+    fn deserialize_u32<V>(self, visitor: V) -> DeResult<V::Value>
+    where
+        V: Visitor<'de>,
+    {
+        self.deserialize_u64(visitor)
+    }
+
+    fn deserialize_u64<V>(self, visitor: V) -> DeResult<V::Value>
+    where
+        V: Visitor<'de>,
+    {
+        match &self.node {
+            AiProofNode::U64(value) => visitor.visit_u64(*value),
+            AiProofNode::I64(value) => {
+                let value = u64::try_from(*value)
+                    .map_err(|_| DeError("negative integer does not fit u64".into()))?;
+                visitor.visit_u64(value)
+            }
+            other => Err(DeError(format!("expected unsigned integer, got {other:?}"))),
+        }
+    }
+
+    fn deserialize_u128<V>(self, visitor: V) -> DeResult<V::Value>
+    where
+        V: Visitor<'de>,
+    {
+        match &self.node {
+            AiProofNode::U64(value) => visitor.visit_u128(*value as u128),
+            AiProofNode::I64(value) => {
+                let value = u128::try_from(*value)
+                    .map_err(|_| DeError("negative integer does not fit u128".into()))?;
+                visitor.visit_u128(value)
+            }
+            other => Err(DeError(format!(
+                "expected u128-compatible integer, got {other:?}"
+            ))),
+        }
+    }
+
+    fn deserialize_f32<V>(self, _visitor: V) -> DeResult<V::Value>
+    where
+        V: Visitor<'de>,
+    {
+        Err(DeError(
+            "floating-point values are not valid in AI-PoW certificates".into(),
+        ))
+    }
+
+    fn deserialize_f64<V>(self, _visitor: V) -> DeResult<V::Value>
+    where
+        V: Visitor<'de>,
+    {
+        Err(DeError(
+            "floating-point values are not valid in AI-PoW certificates".into(),
+        ))
+    }
+
+    fn deserialize_char<V>(self, visitor: V) -> DeResult<V::Value>
+    where
+        V: Visitor<'de>,
+    {
+        let value = match &self.node {
+            AiProofNode::U64(value) => u32::try_from(*value)
+                .ok()
+                .and_then(char::from_u32)
+                .ok_or_else(|| DeError("invalid char scalar value".into()))?,
+            other => return Err(DeError(format!("expected char integer, got {other:?}"))),
+        };
+        visitor.visit_char(value)
+    }
+
+    fn deserialize_str<V>(self, visitor: V) -> DeResult<V::Value>
+    where
+        V: Visitor<'de>,
+    {
+        match &self.node {
+            AiProofNode::Bytes(bytes) => {
+                let s = std::str::from_utf8(bytes)
+                    .map_err(|e| DeError(format!("invalid utf8 string: {e}")))?;
+                visitor.visit_str(s)
+            }
+            other => Err(DeError(format!("expected string bytes, got {other:?}"))),
+        }
+    }
+
+    fn deserialize_string<V>(self, visitor: V) -> DeResult<V::Value>
+    where
+        V: Visitor<'de>,
+    {
+        match &self.node {
+            AiProofNode::Bytes(bytes) => {
+                let s = String::from_utf8(bytes.clone())
+                    .map_err(|e| DeError(format!("invalid utf8 string: {e}")))?;
+                visitor.visit_string(s)
+            }
+            other => Err(DeError(format!("expected string bytes, got {other:?}"))),
+        }
+    }
+
+    fn deserialize_bytes<V>(self, visitor: V) -> DeResult<V::Value>
+    where
+        V: Visitor<'de>,
+    {
+        match &self.node {
+            AiProofNode::Bytes(bytes) => visitor.visit_bytes(bytes),
+            AiProofNode::U64s(values) => {
+                let mut bytes = Vec::with_capacity(values.len());
+                for &value in values {
+                    bytes.push(
+                        u8::try_from(value)
+                            .map_err(|_| DeError("packed byte value out of range".into()))?,
+                    );
+                }
+                visitor.visit_byte_buf(bytes)
+            }
+            other => Err(DeError(format!("expected bytes, got {other:?}"))),
+        }
+    }
+
+    fn deserialize_byte_buf<V>(self, visitor: V) -> DeResult<V::Value>
+    where
+        V: Visitor<'de>,
+    {
+        self.deserialize_bytes(visitor)
+    }
+
+    fn deserialize_option<V>(self, visitor: V) -> DeResult<V::Value>
+    where
+        V: Visitor<'de>,
+    {
+        match &self.node {
+            AiProofNode::None => visitor.visit_none(),
+            AiProofNode::Some(inner) => visitor.visit_some(NodeDeserializer {
+                node: inner.as_ref().clone(),
+            }),
+            other => visitor.visit_some(NodeDeserializer {
+                node: other.clone(),
+            }),
+        }
+    }
+
+    fn deserialize_unit<V>(self, visitor: V) -> DeResult<V::Value>
+    where
+        V: Visitor<'de>,
+    {
+        match &self.node {
+            AiProofNode::Unit => visitor.visit_unit(),
+            other => Err(DeError(format!("expected unit, got {other:?}"))),
+        }
+    }
+
+    fn deserialize_unit_struct<V>(self, _name: &'static str, visitor: V) -> DeResult<V::Value>
+    where
+        V: Visitor<'de>,
+    {
+        self.deserialize_unit(visitor)
+    }
+
+    fn deserialize_newtype_struct<V>(self, _name: &'static str, visitor: V) -> DeResult<V::Value>
+    where
+        V: Visitor<'de>,
+    {
+        visitor.visit_newtype_struct(self)
+    }
+
+    fn deserialize_seq<V>(self, visitor: V) -> DeResult<V::Value>
+    where
+        V: Visitor<'de>,
+    {
+        visitor.visit_seq(NodeSeqAccess::for_node(&self.node))
+    }
+
+    fn deserialize_tuple<V>(self, _len: usize, visitor: V) -> DeResult<V::Value>
+    where
+        V: Visitor<'de>,
+    {
+        self.deserialize_seq(visitor)
+    }
+
+    fn deserialize_tuple_struct<V>(
+        self,
+        _name: &'static str,
+        _len: usize,
+        visitor: V,
+    ) -> DeResult<V::Value>
+    where
+        V: Visitor<'de>,
+    {
+        self.deserialize_seq(visitor)
+    }
+
+    fn deserialize_map<V>(self, visitor: V) -> DeResult<V::Value>
+    where
+        V: Visitor<'de>,
+    {
+        match &self.node {
+            AiProofNode::Map(items) => visitor.visit_map(NodeMapAccess::new(items)),
+            other => Err(DeError(format!("expected map, got {other:?}"))),
+        }
+    }
+
+    fn deserialize_struct<V>(
+        self,
+        _name: &'static str,
+        fields: &'static [&'static str],
+        visitor: V,
+    ) -> DeResult<V::Value>
+    where
+        V: Visitor<'de>,
+    {
+        visitor.visit_seq(NodeSeqAccess::for_struct_node(&self.node, fields.len()))
+    }
+
+    fn deserialize_enum<V>(
+        self,
+        _name: &'static str,
+        _variants: &'static [&'static str],
+        visitor: V,
+    ) -> DeResult<V::Value>
+    where
+        V: Visitor<'de>,
+    {
+        visitor.visit_enum(NodeEnumAccess::new(&self.node)?)
+    }
+
+    fn deserialize_identifier<V>(self, visitor: V) -> DeResult<V::Value>
+    where
+        V: Visitor<'de>,
+    {
+        self.deserialize_u32(visitor)
+    }
+
+    fn deserialize_ignored_any<V>(self, visitor: V) -> DeResult<V::Value>
+    where
+        V: Visitor<'de>,
+    {
+        visitor.visit_unit()
+    }
+}
+
+struct NodeSeqAccess {
+    items: Vec<AiProofNode>,
+    index: usize,
+}
+
+impl NodeSeqAccess {
+    fn from_slice(items: &[AiProofNode]) -> Self {
+        Self {
+            items: items.to_vec(),
+            index: 0,
+        }
+    }
+
+    fn from_owned(items: Vec<AiProofNode>) -> Self {
+        Self { items, index: 0 }
+    }
+
+    fn for_node(node: &AiProofNode) -> Self {
+        match node {
+            AiProofNode::Seq(items) => Self::from_slice(items),
+            AiProofNode::Ext2(value) => {
+                Self::from_owned(vec![AiProofNode::U64(value[0]), AiProofNode::U64(value[1])])
+            }
+            AiProofNode::Ext2s(values) => {
+                Self::from_owned(values.iter().copied().map(AiProofNode::Ext2).collect())
+            }
+            AiProofNode::U64s(values) => {
+                Self::from_owned(values.iter().copied().map(AiProofNode::U64).collect())
+            }
+            AiProofNode::I64s(values) => {
+                Self::from_owned(values.iter().copied().map(AiProofNode::I64).collect())
+            }
+            other => Self::from_owned(vec![other.clone()]),
+        }
+    }
+
+    fn for_struct_node(node: &AiProofNode, fields: usize) -> Self {
+        let mut access = Self::for_node(node);
+        while access.items.len() < fields {
+            access.items.push(AiProofNode::Unit);
+        }
+        access
+    }
+}
+
+impl<'de> SeqAccess<'de> for NodeSeqAccess {
+    type Error = DeError;
+
+    fn next_element_seed<T>(&mut self, seed: T) -> DeResult<Option<T::Value>>
+    where
+        T: de::DeserializeSeed<'de>,
+    {
+        let Some(node) = self.items.get(self.index).cloned() else {
+            return Ok(None);
+        };
+        self.index += 1;
+        seed.deserialize(NodeDeserializer { node }).map(Some)
+    }
+
+    fn size_hint(&self) -> Option<usize> {
+        Some(self.items.len().saturating_sub(self.index))
+    }
+}
+
+struct NodeMapAccess {
+    items: Vec<(AiProofNode, AiProofNode)>,
+    index: usize,
+    value_ready: bool,
+}
+
+impl NodeMapAccess {
+    fn new(items: &[(AiProofNode, AiProofNode)]) -> Self {
+        Self {
+            items: items.to_vec(),
+            index: 0,
+            value_ready: false,
+        }
+    }
+}
+
+impl<'de> MapAccess<'de> for NodeMapAccess {
+    type Error = DeError;
+
+    fn next_key_seed<K>(&mut self, seed: K) -> DeResult<Option<K::Value>>
+    where
+        K: de::DeserializeSeed<'de>,
+    {
+        let Some((key, _)) = self.items.get(self.index).cloned() else {
+            return Ok(None);
+        };
+        self.value_ready = true;
+        seed.deserialize(NodeDeserializer { node: key }).map(Some)
+    }
+
+    fn next_value_seed<V>(&mut self, seed: V) -> DeResult<V::Value>
+    where
+        V: de::DeserializeSeed<'de>,
+    {
+        if !self.value_ready {
+            return Err(DeError("deserialize map value before key".into()));
+        }
+        let (_, value) = self
+            .items
+            .get(self.index)
+            .cloned()
+            .ok_or_else(|| DeError("deserialize map value past end".into()))?;
+        self.index += 1;
+        self.value_ready = false;
+        seed.deserialize(NodeDeserializer { node: value })
+    }
+
+    fn size_hint(&self) -> Option<usize> {
+        Some(self.items.len().saturating_sub(self.index))
+    }
+}
+
+struct NodeEnumAccess {
+    variant: u32,
+    payload: Option<AiProofNode>,
+}
+
+impl NodeEnumAccess {
+    fn new(node: &AiProofNode) -> DeResult<Self> {
+        match node {
+            AiProofNode::U64(variant) => Ok(Self {
+                variant: u32::try_from(*variant)
+                    .map_err(|_| DeError("enum variant index out of range".into()))?,
+                payload: None,
+            }),
+            AiProofNode::Seq(items) => {
+                let Some(AiProofNode::U64(variant)) = items.first() else {
+                    return Err(DeError("enum sequence missing numeric variant tag".into()));
+                };
+                let payload = match &items[1..] {
+                    [] => None,
+                    [single] => Some(single.clone()),
+                    rest => Some(AiProofNode::Seq(rest.to_vec())),
+                };
+                Ok(Self {
+                    variant: u32::try_from(*variant)
+                        .map_err(|_| DeError("enum variant index out of range".into()))?,
+                    payload,
+                })
+            }
+            AiProofNode::U64s(values) => {
+                let Some(&variant) = values.first() else {
+                    return Err(DeError("enum packed integer sequence is empty".into()));
+                };
+                let payload = match &values[1..] {
+                    [] => None,
+                    [single] => Some(AiProofNode::U64(*single)),
+                    rest => Some(AiProofNode::U64s(rest.to_vec())),
+                };
+                Ok(Self {
+                    variant: u32::try_from(variant)
+                        .map_err(|_| DeError("enum variant index out of range".into()))?,
+                    payload,
+                })
+            }
+            other => Err(DeError(format!("expected enum node, got {other:?}"))),
+        }
+    }
+}
+
+impl<'de> EnumAccess<'de> for NodeEnumAccess {
+    type Error = DeError;
+    type Variant = Self;
+
+    fn variant_seed<V>(self, seed: V) -> DeResult<(V::Value, Self::Variant)>
+    where
+        V: de::DeserializeSeed<'de>,
+    {
+        let variant = seed.deserialize(self.variant.into_deserializer())?;
+        Ok((variant, self))
+    }
+}
+
+impl<'de> VariantAccess<'de> for NodeEnumAccess {
+    type Error = DeError;
+
+    fn unit_variant(self) -> DeResult<()> {
+        if self.payload.is_some() {
+            return Err(DeError("unit enum variant has payload".into()));
+        }
+        Ok(())
+    }
+
+    fn newtype_variant_seed<T>(self, seed: T) -> DeResult<T::Value>
+    where
+        T: de::DeserializeSeed<'de>,
+    {
+        let node = self
+            .payload
+            .ok_or_else(|| DeError("newtype enum variant missing payload".into()))?;
+        seed.deserialize(NodeDeserializer { node })
+    }
+
+    fn tuple_variant<V>(self, _len: usize, visitor: V) -> DeResult<V::Value>
+    where
+        V: Visitor<'de>,
+    {
+        let node = self
+            .payload
+            .ok_or_else(|| DeError("tuple enum variant missing payload".into()))?;
+        de::Deserializer::deserialize_seq(NodeDeserializer { node }, visitor)
+    }
+
+    fn struct_variant<V>(self, _fields: &'static [&'static str], visitor: V) -> DeResult<V::Value>
+    where
+        V: Visitor<'de>,
+    {
+        let node = self
+            .payload
+            .ok_or_else(|| DeError("struct enum variant missing payload".into()))?;
+        de::Deserializer::deserialize_seq(NodeDeserializer { node }, visitor)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use ai_pow::fiat_shamir::{
@@ -1376,7 +2027,7 @@ mod tests {
 
     use super::*;
 
-    #[derive(serde::Serialize)]
+    #[derive(Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
     struct FakeRecursiveCert {
         cap: Vec<[u64; 5]>,
         ext_values: Vec<[u64; 2]>,
@@ -1492,6 +2143,53 @@ mod tests {
         assert!(matches!(fields[0], AiProofNode::Seq(_)));
         assert!(matches!(fields[1], AiProofNode::Ext2s(_)));
         assert!(matches!(fields[2], AiProofNode::Some(_)));
+    }
+
+    #[test]
+    fn recursive_certificate_node_roundtrips_through_deserializer() {
+        let cert = FakeRecursiveCert {
+            cap: vec![[1, 2, 3, 4, 5], [6, 7, 8, 9, 10]],
+            ext_values: vec![[11, 12], [13, 14]],
+            maybe: Some(vec![15, 16, 17]),
+        };
+        let node = recursive_certificate_to_node(&cert).expect("serialize fake cert");
+        let decoded: FakeRecursiveCert =
+            recursive_certificate_from_node(&node).expect("deserialize fake cert");
+        assert_eq!(decoded, cert);
+    }
+
+    #[test]
+    fn canonical_certificate_deserializer_rejects_ignored_extra_fields() {
+        let cert = FakeRecursiveCert {
+            cap: vec![[1, 2, 3, 4, 5]],
+            ext_values: vec![[11, 12]],
+            maybe: Some(vec![15]),
+        };
+        let mut node = recursive_certificate_to_node(&cert).expect("serialize fake cert");
+        match &mut node {
+            AiProofNode::Seq(fields) => fields.push(AiProofNode::U64(999)),
+            _ => panic!("fake certificate struct should encode as seq"),
+        }
+
+        let decoded: FakeRecursiveCert =
+            recursive_certificate_from_node(&node).expect("serde ignores trailing fields");
+        assert_eq!(decoded, cert);
+        assert!(matches!(
+            canonical_certificate_from_node::<FakeRecursiveCert>(&node),
+            Err(CertificateNounError::NonCanonicalProofNode)
+        ));
+
+        match &mut node {
+            AiProofNode::Seq(fields) => {
+                fields.pop();
+                fields.push(AiProofNode::Unit);
+            }
+            _ => panic!("fake certificate struct should encode as seq"),
+        }
+        assert!(matches!(
+            canonical_certificate_from_node::<FakeRecursiveCert>(&node),
+            Err(CertificateNounError::NonCanonicalProofNode)
+        ));
     }
 
     #[test]
@@ -1715,25 +2413,44 @@ mod tests {
         let trace = ai_pow_zk::CompositeTrace::baseline_min();
 
         let start = std::time::Instant::now();
+        eprintln!("real recursive certificate noun: proving canonical certificate");
         let run = ai_pow_zk::recursion::prove_canonical_ai_pow_certificate(&zk, &profile, trace)
             .expect("real recursive certificate should prove");
         let recursive_prove_ms = start.elapsed().as_millis();
+        eprintln!(
+            "real recursive certificate noun: serializing recursive certificate to proof-node"
+        );
+        let certificate_node = recursive_certificate_to_node(&run.l1_cert)
+            .expect("serialize real recursive cert node");
+        eprintln!("real recursive certificate noun: reconstructing directly from proof-node");
+        let direct_cert = production_certificate_from_node(&certificate_node)
+            .expect("reconstruct direct recursive certificate from proof-node");
+        ai_pow_zk::recursion::verify_production_certificate(&direct_cert, &run.public_inputs)
+            .expect("direct reconstructed recursive certificate verifies");
+        eprintln!("real recursive certificate noun: encoding structured noun");
 
         let commitments = sample_commitments();
-        let cert = build_ai_pow_certificate_noun(
-            &zk, 0, run.composite_trace_height, &commitments, &run.public_inputs, &run.l1_cert,
-        )
-        .expect("encode real recursive certificate noun");
+        let cert = build_ai_pow_certificate_noun_from_node(
+            &zk, 0, run.composite_trace_height, &commitments, &run.public_inputs, &certificate_node,
+        );
         let jammed = cert.jam();
         let l1_postcard_bytes = ai_pow_zk::recursion::encode_production_certificate(&run.l1_cert)
             .expect("postcard L1 certificate")
             .len();
 
         let mut cued: NounSlab = NounSlab::new();
+        eprintln!("real recursive certificate noun: cueing jammed noun");
         let root = cued.cue_into(jammed.clone()).expect("cue real cert noun");
         cued.set_root(root);
+        eprintln!("real recursive certificate noun: bounded decoding noun");
         let decoded = decode_ai_pow_certificate_slab(&cued, CertificateNounLimits::default())
             .expect("bounded decode real cert noun");
+        eprintln!("real recursive certificate noun: reconstructing recursive certificate");
+        let decoded_cert = production_certificate_from_node(&decoded.certificate)
+            .expect("reconstruct recursive certificate from proof-node");
+        eprintln!("real recursive certificate noun: verifying reconstructed recursive certificate");
+        ai_pow_zk::recursion::verify_production_certificate(&decoded_cert, &run.public_inputs)
+            .expect("reconstructed recursive certificate verifies");
 
         assert_eq!(decoded.version, AI_POW_CERT_VERSION);
         assert_eq!(decoded.zk_params, zk);
