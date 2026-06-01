@@ -48,6 +48,9 @@ Implementation status:
   `precheck_ai_pow_certificate_statement`, so the Rust/Hoon boundary can run
   those same nonce, target, params, and public-input binding checks immediately
   after bounded noun decoding.
+- Hoon consensus remains fail-closed for `%ai-pow`: the kernel does not emit
+  `%mine-ai`, does not persist `[%ai-pow cert]`, and rejects typed AI
+  certificates until recursive certificate verification is wired.
 - Release regression tests now assert that changing the nonce changes `kappa`,
   `H_A`, `H_B`, chunk commitments, `s_A`, `s_B`, and matmul-derived tile
   states before final hashing.
@@ -57,7 +60,9 @@ Implementation status:
 
 ## Security Property
 
-For every consensus-admissible AI-PoW block:
+No `%ai-pow` block is currently consensus-admissible: the Hoon/kernel path is
+fail-closed until recursive certificate verification is wired. Once that
+verifier is enabled, every consensus-admissible AI-PoW block must satisfy:
 
 1. The trusted block data includes a candidate block commitment, AI parameters,
    matrix commitments, a nonce, a target, and a claimed `found_idx`.

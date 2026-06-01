@@ -1,10 +1,8 @@
 //! Regression guard for the in-flight AI-PoW consensus wire.
 //!
-//! Until the final `%ai-pow` verifier jet lands, the Hoon consensus branch
-//! must keep the persistence path explicit. This test intentionally checks the
-//! source-level contract: post-activation `%ai-pow` pokes may persist the typed
-//! recursive certificate, but the branch must still say that real verification
-//! is deferred.
+//! Until the final `%ai-pow` recursive verifier lands, the Hoon consensus
+//! branch must fail closed: the structured certificate type may exist, but no
+//! `%ai-pow` block or miner poke may satisfy consensus without verification.
 
 const TYPES_HOON: &str = include_str!("../../../hoon/apps/dumbnet/lib/types.hoon");
 const TX_ENGINE_1_HOON: &str = include_str!("../../../hoon/common/tx-engine-1.hoon");
@@ -13,13 +11,12 @@ const INNER_HOON: &str = include_str!("../../../hoon/apps/dumbnet/inner.hoon");
 const AI_POW_MINER_LIB_RS: &str = include_str!("../../ai-pow-miner/src/lib.rs");
 const AI_POW_MINER_CERT_NOUN_RS: &str = include_str!("../../ai-pow-miner/src/certificate_noun.rs");
 const AI_POW_MINER_RUN_RS: &str = include_str!("../../ai-pow-miner/src/run.rs");
-const AI_POW_MINER_WIRE_RS: &str = include_str!("../../ai-pow-miner/src/wire.rs");
 const AI_POW_MINER_BIN_RS: &str = include_str!("../../ai-pow-miner/src/bin/ai_pow_mine.rs");
 const AI_POW_ZK_RECURSION_RS: &str = include_str!("../../ai-pow-zk/src/recursion.rs");
 const AI_POW_ZK_BRIDGE_RS: &str = include_str!("../../ai-pow/src/zk_bridge.rs");
 
 #[test]
-fn ai_pow_consensus_wire_persists_structured_certificate_without_verifier() {
+fn ai_pow_consensus_wire_is_structured_but_fail_closed_without_verifier() {
     assert!(
         TX_ENGINE_1_HOON.contains("+$  ai-blake  @uxblake")
             && TX_ENGINE_1_HOON.contains("+$  ai-ext2   @uxfelt")
@@ -40,17 +37,19 @@ fn ai_pow_consensus_wire_persists_structured_certificate_without_verifier() {
          hoonc, and expose no plain AI ZKP proof type"
     );
     assert!(
-        INNER_HOON.contains("real verifier is")
-            && INNER_HOON.contains("(set-pow:min [%ai-pow cert.pv.command])")
-            && INNER_HOON.contains("(heard-block /poke/ai-pow-miner now candidate-block.m.k eny)"),
-        "%ai-pow do-pow branch must persist the typed certificate while keeping \
-         verification deferred explicitly documented"
+        INNER_HOON.contains("do-pow: %ai-pow verifier not wired; rejected")
+            && INNER_HOON.contains("Height-gating alone is not proof verification")
+            && INNER_HOON.contains("Emitting %mine-ai here would")
+            && CONSENSUS_HOON.contains("A typed certificate is not itself a target check")
+            && !INNER_HOON.contains("(set-pow:min [%ai-pow cert.pv.command])")
+            && !INNER_HOON.contains("(heard-block /poke/ai-pow-miner now candidate-block.m.k eny)"),
+        "%ai-pow consensus must fail closed until the recursive certificate \
+         verifier is wired; it must not persist or broadcast unverified AI proofs"
     );
     assert!(
         AI_POW_MINER_RUN_RS.contains("build_ai_pow_certificate_poke")
             && AI_POW_MINER_RUN_RS.contains("[%command %pow %ai-pow cert]")
             && AI_POW_MINER_RUN_RS.contains("refusing to submit legacy nonce/tile artifact")
-            && AI_POW_MINER_WIRE_RS.contains("[%command %pow %ai-pow cert=ai-pow-certificate]")
             && AI_POW_MINER_CERT_NOUN_RS.contains("pub fn decode_ai_pow_certificate_slab")
             && AI_POW_MINER_CERT_NOUN_RS.contains("pub fn precheck_ai_pow_certificate_statement")
             && AI_POW_ZK_BRIDGE_RS.contains("pub fn verify_ai_pow_production_statement")

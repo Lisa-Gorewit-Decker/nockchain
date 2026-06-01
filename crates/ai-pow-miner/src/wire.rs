@@ -13,7 +13,8 @@
 //!    [`nockchain_mining_common::NodeClient::poke_wire`] with
 //!    `AiPowMinerWire::Mined.to_wire()`.
 //! 3. The payload is the consensus command `[%command %pow %ai-pow cert]`;
-//!    the kernel persists `cert` in the candidate block's `pow` slot.
+//!    the kernel must reject it until recursive certificate verification is
+//!    wired into consensus.
 
 use nockapp::nockapp::wire::{Wire, WireRepr};
 

@@ -598,7 +598,9 @@
   =/  check-pow-hash=?
     =/  pow  (need ~(pow get:page:t pag))
     ?:  ?=([%ai-pow *] pow)
-      %.y
+      ::  Fail closed until recursive AI-PoW certificate verification is
+      ::  wired. A typed certificate is not itself a target check.
+      %.n
     =/  prf=proof:sp  (need ((soft proof:sp) pow))
     %-  check-target:mine
     :_  ~(target get:page:t pag)

@@ -370,11 +370,9 @@
           ::  compute-target picks between regimes based on candidate
           ::  height vs zk-asert-post-ai.phase.
           *zk-asert-post-ai
-          ::  AI PoW activation. At or past this height the kernel's
-          ::  do-pow accepts %ai-pow variants alongside %dumb-zkpow.
-          ::  Pre-activation, %ai-pow is rejected outright.
-          ::  Post-activation: lib/inner.hoon can persist the typed
-          ::  recursive certificate before the real verifier lands.
+          ::  AI PoW activation threshold. The wire/type surface exists
+          ::  here, but consensus remains fail-closed for %ai-pow until
+          ::  recursive certificate verification is wired.
           ai-pow-activation-height=95.000
           ::  AI ASERT defaults come from `+$ ai-asert`'s own $~ clause.
           *ai-asert
@@ -388,9 +386,9 @@
       =zk-asert
       =zk-asert-post-ai
       ::  AI PoW puzzle (cf hoon/apps/dumbnet/lib/types.hoon::pow-variant
-      ::  for the wire side). %ai-pow blocks become valid at and after
-      ::  ai-pow-activation-height. The current do-pow branch persists
-      ::  the recursive certificate; real verification is wired later.
+      ::  for the wire side). The height remains a threshold for future
+      ::  activation, but current consensus rejects %ai-pow until the
+      ::  recursive certificate verifier is wired.
       ai-pow-activation-height=@
       =ai-asert
   ==

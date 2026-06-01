@@ -823,28 +823,10 @@
         %2  [%mine-zk %2 commit zk-target pow-len:t]
         %3  ~|(%unexpected-v3-in-zk-effect !!)
       ==
-    ::  Pre-AI-activation: emit only %mine-zk.
-    ::  Post-activation: also emit %mine-ai with the AI puzzle's
-    ::  independently-computed target. The two effects share `commit`
-    ::  (same block header) but carry different targets — each miner
-    ::  filters for its own effect head. AI mining always uses %3.
-    ?.  (gte candidate-height ai-pow-activation-height.constants.k)
-      [zk-effect effs]
-    ::  Stage 6: per-puzzle ASERT parent. For AI, walk back from
-    ::  the candidate's global parent to the nearest %ai-pow ancestor.
-    ::  When no AI ancestor exists yet (bootstrap), compute-target-
-    ::  ai-asert degenerates to anchor-target; passing the global
-    ::  parent in that case is safe because the function never
-    ::  consults min-timestamps on the bootstrap path.
-    =/  ai-parent=block-id:t
-      =/  found=(unit block-id:t)
-        (find-same-type-ancestor:con parent-bid %ai-pow)
-      ?~  found  parent-bid
-      u.found
-    =/  ai-target=bignum:bignum:t
-      (compute-target-ai-asert:con candidate-height ai-parent)
-    =/  ai-effect=effect:dk  [%mine-ai %3 commit ai-target pow-len:t]
-    [zk-effect ai-effect effs]
+    ::  AI mining remains fail-closed until the recursive-certificate
+    ::  verifier is wired into consensus. Emitting %mine-ai here would
+    ::  ask honest miners to build certificates that +do-pow must reject.
+    [zk-effect effs]
     ::
     ::  +heard-genesis-block: check if block is a genesis block and decide whether to keep it
     ++  heard-genesis-block
@@ -1131,7 +1113,9 @@
       ?~  pow
         %.n
       ?:  ?=([%ai-pow *] u.pow)
-        (gte ~(height get:page:t pag) ai-pow-activation-height.constants.k)
+        ::  Fail closed until recursive AI-PoW certificate verification is
+        ::  wired. Height-gating alone is not proof verification.
+        %.n
       =/  prf=proof:sp  (need ((soft proof:sp) u.pow))
       ::
       ::  validate that powork puzzle in the proof is correct.
@@ -1598,15 +1582,11 @@
           ?:  (lth candidate-height ai-pow-activation-height.constants.k)
             ~>  %slog.[1 'do-pow: %ai-pow pre-activation; rejected']
             [~ k]
-          ::  Post-activation persistence path. The real verifier is
-          ::  still deferred; for now this stores the typed recursive
-          ::  certificate in the candidate page so the artifact can be
-          ::  poked, digested, and transmitted with the block.
-          =.  m.k  (set-pow:min [%ai-pow cert.pv.command])
-          =.  m.k  set-digest:min
-          =^  heard-block-effs  k  (heard-block /poke/ai-pow-miner now candidate-block.m.k eny)
-          :_  k
-          heard-block-effs
+          ::  Fail closed until recursive certificate verification is
+          ::  wired. Persisting the typed certificate without verifying
+          ::  it would let a forged %ai-pow block satisfy consensus.
+          ~>  %slog.[1 'do-pow: %ai-pow verifier not wired; rejected']
+          [~ k]
         ==
       ::
       ++  do-set-mining-key
@@ -1785,26 +1765,9 @@
             %3  ~|(%unexpected-v3-in-zk-mine-start !!)
           ==
         :_  k
-        ::  Pre-AI-activation: %mine-zk only. Post-activation: also
-        ::  %mine-ai with the AI puzzle's independently-computed target.
-        ?.  (gte candidate-height ai-pow-activation-height.constants.k)
-          [%mine-zk zk-mine-start]~
-        ::  Stage 6: per-puzzle ASERT parent for AI; mirrors the
-        ::  candidate-emission path in update-candidate-block.
-        =/  ai-parent=block-id:t
-          =/  found=(unit block-id:t)
-            (find-same-type-ancestor:con parent-bid %ai-pow)
-          ?~  found  parent-bid
-          u.found
-        =/  ai-target=bignum:bignum:t
-          (compute-target-ai-asert:con candidate-height ai-parent)
-        ::  AI mining always uses %3 (the AI proof arm). proof-version
-        ::  computed above is the ZK version for this height and is
-        ::  irrelevant to the AI mine-start dispatch.
-        =/  ai-mine-start  [%3 commit ai-target pow-len:t]
-        :~  [%mine-zk zk-mine-start]
-            [%mine-ai ai-mine-start]
-        ==
+        ::  AI mining remains fail-closed until the recursive-certificate
+        ::  verifier is wired into consensus.
+        [%mine-zk zk-mine-start]~
       ::
       ::  only send a %elders request for reasonable heights
       ++  missing-parent-effects

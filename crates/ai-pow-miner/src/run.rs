@@ -30,7 +30,9 @@
 //! ## Note on submission
 //! The canonical production payload is the recursive AI-PoW certificate
 //! noun. The plain `MatmulProof`, nonce, and tile index are mining
-//! internals; they are not submitted to the kernel as the block proof.
+//! internals; they are not submitted to the kernel as the block proof. The
+//! current kernel remains fail-closed for this payload until recursive
+//! certificate verification is wired.
 
 use std::sync::Arc;
 use std::time::Duration;

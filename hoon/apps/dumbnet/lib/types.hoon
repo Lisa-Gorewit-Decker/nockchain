@@ -547,10 +547,9 @@
 ::      stored min-timestamp + target (read directly from
 ::      consensus-state's min-timestamps + targets maps).
 ::    cached-ai-asert-anchor: populated by accept-block when the
-::      first %ai-pow block lands; captures the block itself as the
-::      AI puzzle's anchor. During the verifier-deferred era, this can
-::      be populated by the post-activation persistence path that stores
-::      the recursive certificate without verifying it.
+::      first verified %ai-pow block lands; captures the block itself as
+::      the AI puzzle's anchor. Consensus remains fail-closed for %ai-pow
+::      until recursive certificate verification is wired.
 +$  derived-state-10
   $+  derived-state-10
   $:  highest-block-height=(unit page-number:dt)
@@ -634,9 +633,10 @@
 +$  pow-variant
   $+  pow-variant
   $%  [%dumb-zkpow prf=proof:sp dig=tip5-hash-atom:zeke bc=noun-digest:tip5:zeke nonce=noun-digest:tip5:zeke]  ::  the existing puzzle-nock STARK PoW
-      ::  AI matmul PoW (active at and after ai-pow-activation-height).
-      ::  Carries the recursive certificate only; raw Layer-0 proofs and
-      ::  the plain MatmulProof are not persisted in blocks.
+      ::  AI matmul PoW wire shape. Carries the recursive certificate only;
+      ::  raw Layer-0 proofs and the plain MatmulProof are not persisted in
+      ::  blocks. Consensus rejects this arm until the recursive verifier is
+      ::  wired.
       [%ai-pow cert=ai-pow-certificate]
   ==
 ::
@@ -693,11 +693,10 @@
       [%request p=request]  :: request specific tx or block
       [%track p=track]  :: runtime tracking of blocks for %liar-block-id effect
       [%seen p=seen]    ::  seen so don't reprocess
-      ::  Mining candidate emissions. `%mine-zk` is always emitted when
-      ::  the candidate block changes. `%mine-ai` is additionally emitted
-      ::  at and after ai-pow-activation-height — both carry the same
-      ::  commit but per-puzzle independently-computed targets. Each
-      ::  miner subscribes to its own head via WatchEffects.
+      ::  Mining candidate emissions. `%mine-zk` is emitted when the
+      ::  candidate block changes. `%mine-ai` is reserved for the AI
+      ::  puzzle but is not emitted while consensus is fail-closed
+      ::  awaiting recursive certificate verification.
       [%mine-zk mine-start]
       [%mine-ai mine-start]
       lie
@@ -709,7 +708,8 @@
   $%  [%0 block-commitment=noun-digest:tip5:zeke target=bignum:bignum:dt pow-len=@]
       [%1 block-commitment=noun-digest:tip5:zeke target=bignum:bignum:dt pow-len=@]
       [%2 block-commitment=noun-digest:tip5:zeke target=bignum:bignum:dt pow-len=@]
-      ::  %3: AI PoW mining. Only ever emitted in [%mine-ai ...].
+      ::  %3: AI PoW mining. Reserved for [%mine-ai ...] once the
+      ::  recursive verifier is wired.
       [%3 block-commitment=noun-digest:tip5:zeke target=bignum:bignum:dt pow-len=@]
   ==
 ::
