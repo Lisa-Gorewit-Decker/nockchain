@@ -57,13 +57,18 @@ fn ai_pow_consensus_wire_is_structured_but_fail_closed_without_verifier() {
             && AI_POW_MINER_RUN_RS.contains("refusing to submit legacy nonce/tile artifact")
             && AI_POW_MINER_CERT_NOUN_RS.contains("pub fn decode_ai_pow_certificate_slab")
             && AI_POW_MINER_CERT_NOUN_RS.contains("pub fn decode_ai_pow_artifact_slab")
+            && AI_POW_MINER_CERT_NOUN_RS.contains("pub fn decode_ai_pow_artifact_jam")
             && AI_POW_MINER_CERT_NOUN_RS.contains("pub struct AiPowArtifactShape")
             && AI_POW_MINER_CERT_NOUN_RS.contains("pub fn precheck_ai_pow_certificate_statement")
             && AI_POW_MINER_CERT_NOUN_RS
                 .contains("pub fn precheck_ai_pow_ncmn_certificate_statement")
             && AI_POW_MINER_CERT_NOUN_RS.contains("pub fn precheck_ai_pow_ncmn_artifact_statement")
             && AI_POW_MINER_CERT_NOUN_RS.contains("pub fn verify_decoded_ai_pow_ncmn_artifact")
+            && AI_POW_MINER_CERT_NOUN_RS.contains("pub fn verify_ai_pow_ncmn_artifact_jam")
             && AI_POW_MINER_CERT_NOUN_RS.contains("pub fn verify_decoded_ai_pow_ncmn_certificate")
+            && AI_POW_MINER_CERT_NOUN_RS.contains("max_jam_bytes")
+            && AI_POW_MINER_CERT_NOUN_RS.contains("CuePanic")
+            && AI_POW_MINER_CERT_NOUN_RS.contains("NonCanonicalJam")
             && AI_POW_ZK_BRIDGE_RS.contains("pub fn verify_ai_pow_production_statement")
             && AI_POW_MINER_CERT_NOUN_RS.contains("CertificateNounLimits")
             && AI_POW_MINER_CERT_NOUN_RS
@@ -76,6 +81,8 @@ fn ai_pow_consensus_wire_is_structured_but_fail_closed_without_verifier() {
                 .contains("ncmn_certificate_statement_precheck_enforces_nonce_anchor")
             && AI_POW_MINER_CERT_NOUN_RS
                 .contains("ai_pow_artifact_decoder_binds_nonce_and_certificate_shape")
+            && AI_POW_MINER_CERT_NOUN_RS
+                .contains("ai_pow_artifact_jam_decoder_enforces_byte_limit_before_cue")
             && AI_POW_MINER_CERT_NOUN_RS
                 .contains("ai_pow_artifact_decoder_rejects_malformed_nonce_and_tag")
             && AI_POW_MINER_CERT_NOUN_RS.contains("AiProofNode::Ext2s")

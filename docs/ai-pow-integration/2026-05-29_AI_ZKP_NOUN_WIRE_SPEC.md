@@ -256,12 +256,23 @@ artifacts:
    the structured recursive certificate, parses the `@uxncmn` nonce, rejects
    malformed/reserved/external-commitment nonces, and keeps the nonce adjacent
    to the certificate shape.
-2. `certificate_noun::verify_decoded_ai_pow_ncmn_artifact` is the intended
+2. `certificate_noun::decode_ai_pow_artifact_jam` is the byte-oriented
+   production boundary for persisted/network artifacts. It enforces
+   `CertificateNounLimits::max_jam_bytes` before cueing attacker-controlled
+   jam bytes, rejects empty input before cue, contains cue panics, then calls
+   the same bounded artifact parser. It also requires `jam(cue(bytes)) ==
+   bytes`, so non-canonical jam encodings such as trailing bytes are rejected
+   instead of being silently canonicalized.
+3. `certificate_noun::verify_ai_pow_ncmn_artifact_jam` is the intended
+   consensus-facing helper when the caller has jam bytes: byte-size cap, cue,
+   bounded decode, NCMN anchor check, cheap statement precheck, and recursive
+   certificate verification happen in that order.
+4. `certificate_noun::verify_decoded_ai_pow_ncmn_artifact` is the intended
    verifier-jet Rust boundary after noun decoding. It reconstructs the
    `AiPowProductionCertificate` from the structured proof-node tail, checks the
    NCMN nonce anchor, runs the cheap statement precheck first, then calls the
    recursive production verifier with the decoded public inputs.
-3. `certificate_noun::verify_decoded_ai_pow_ncmn_certificate` remains available
+5. `certificate_noun::verify_decoded_ai_pow_ncmn_certificate` remains available
    for callers that already separated the nonce from the decoded certificate but
    still need the NCMN consensus wrapper.
 
@@ -469,6 +480,6 @@ Before accepting `%ai-pow`, consensus must require:
 7. Add jam/cue round-trip tests for a real proof and malformed nouns. Status: implemented for structured sample certificates, malformed packed/list/tag/version cases, non-canonical `ai-ext2` limbs, and an ignored real recursive certificate noun round-trip/size harness.
 8. Add size tests asserting total jammed noun budget and per-vector caps. Status: the ignored real recursive certificate harness asserts a coarse 2 MiB upper bound and prints measured size; production budget constants still need to be set after the harness is run on the final L1 shape.
 9. Add adversarial decode tests for oversized lengths, non-canonical field elements, mismatched lookup shapes, invalid FRI arities, and extra/trailing packed bytes.
-10. Expose a full recursive certificate verifier that takes verifier-derived public inputs and rejects an otherwise valid certificate when any puzzle id, candidate block commitment, NCMN nonce, target, commitment, params, or `found-idx` field is changed. Status: implemented at the Rust boundary: `decode_ai_pow_artifact_slab` parses the full `[%ai-pow nonce cert]` wire artifact, and `verify_decoded_ai_pow_ncmn_artifact` reconstructs the structured noun proof, checks the NCMN nonce anchor, prechecks the statement, and calls `verify_production_certificate`, whose outer proof binds the Layer-0 public-input vector as STARK public values. Hoon consensus remains fail-closed until the verifier jet calls this boundary.
+10. Expose a full recursive certificate verifier that takes verifier-derived public inputs and rejects an otherwise valid certificate when any puzzle id, candidate block commitment, NCMN nonce, target, commitment, params, or `found-idx` field is changed. Status: implemented at the Rust boundary: `decode_ai_pow_artifact_jam` caps jammed bytes before cue, `decode_ai_pow_artifact_slab` parses the full `[%ai-pow nonce cert]` wire artifact, and `verify_ai_pow_ncmn_artifact_jam` / `verify_decoded_ai_pow_ncmn_artifact` reconstruct the structured noun proof, check the NCMN nonce anchor, precheck the statement, and call `verify_production_certificate`, whose outer proof binds the Layer-0 public-input vector as STARK public values. Hoon consensus remains fail-closed until the verifier jet calls this boundary.
 11. Add the verifier jet entrypoint consuming this noun shape.
 12. Replace the deferred-verifier accept path with real accept/reject checks only after end-to-end accept/reject tests exist.

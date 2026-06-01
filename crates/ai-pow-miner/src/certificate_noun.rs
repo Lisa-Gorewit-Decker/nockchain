@@ -3,13 +3,16 @@
 //! This module intentionally accepts the recursive production certificate
 //! object, not `MatmulProof` and not the raw Layer-0 `AiPowBatchProof`.
 
+use std::panic::{catch_unwind, AssertUnwindSafe};
+
 use ai_pow::ncmn::{parse_ncmn_nonce, NonceFormatError};
 use ai_pow::params::MatmulParams;
 use ai_pow::zk_bridge::{
     verify_ai_pow_production_statement, zk_params_from_matmul, BridgeError, ZkPublicCommitments,
 };
 use ai_pow_zk::{CompositePublicInputs, ZkParams};
-use nockapp::noun::slab::NounSlab;
+use nockapp::noun::slab::{CueError, NounSlab};
+use nockapp::Bytes;
 use nockvm::jets::bits::util::met;
 use nockvm::noun::{Noun, NounAllocator, NounSpace, D, T};
 use nockvm_macros::tas;
@@ -64,6 +67,14 @@ pub enum CertificateNounError {
     Statement(#[from] BridgeError),
     #[error("recursive production certificate verification failed: {0}")]
     RecursiveCertificate(String),
+    #[error("jammed AI-PoW artifact is {actual} bytes, exceeding {limit} byte limit")]
+    JammedLengthExceeded { limit: usize, actual: usize },
+    #[error("jammed AI-PoW artifact cue failed: {0}")]
+    Cue(#[from] CueError),
+    #[error("jammed AI-PoW artifact cue panicked")]
+    CuePanic,
+    #[error("jammed AI-PoW artifact is not canonical jam")]
+    NonCanonicalJam,
 }
 
 /// Resource limits for decoding the structured certificate noun.
@@ -77,6 +88,8 @@ pub struct CertificateNounLimits {
     pub max_list_items: usize,
     pub max_atom_bytes: usize,
     pub max_packed_items: usize,
+    /// Maximum jammed artifact bytes accepted before cueing attacker input.
+    pub max_jam_bytes: usize,
 }
 
 impl Default for CertificateNounLimits {
@@ -87,6 +100,7 @@ impl Default for CertificateNounLimits {
             max_list_items: 1_000_000,
             max_atom_bytes: 1 << 20,
             max_packed_items: 1_000_000,
+            max_jam_bytes: 4 << 20,
         }
     }
 }
@@ -288,6 +302,39 @@ pub fn decode_ai_pow_artifact_slab<J>(
     decode_ai_pow_artifact_noun(root, &space, limits)
 }
 
+/// Decode and validate a jammed Hoon `%ai-pow` block artifact.
+///
+/// This is the byte-oriented boundary a consensus verifier should use when it
+/// starts from persisted or network-transmitted jam bytes. It enforces the
+/// configured jam byte limit before cueing so attacker-controlled bytes cannot
+/// force unbounded noun allocation before the structured certificate limits
+/// apply.
+pub fn decode_ai_pow_artifact_jam(
+    jammed: &[u8],
+    limits: CertificateNounLimits,
+) -> Result<AiPowArtifactShape, CertificateNounError> {
+    if jammed.is_empty() {
+        return Err(CertificateNounError::Cue(CueError::TruncatedBuffer));
+    }
+    if jammed.len() > limits.max_jam_bytes {
+        return Err(CertificateNounError::JammedLengthExceeded {
+            limit: limits.max_jam_bytes,
+            actual: jammed.len(),
+        });
+    }
+
+    let mut slab: NounSlab = NounSlab::new();
+    let root = catch_unwind(AssertUnwindSafe(|| {
+        slab.cue_into(Bytes::copy_from_slice(jammed))
+    }))
+    .map_err(|_| CertificateNounError::CuePanic)??;
+    slab.set_root(root);
+    if slab.jam().as_ref() != jammed {
+        return Err(CertificateNounError::NonCanonicalJam);
+    }
+    decode_ai_pow_artifact_slab(&slab, limits)
+}
+
 /// Decode and validate a full Hoon `%ai-pow` block artifact noun.
 pub fn decode_ai_pow_artifact_noun(
     root: Noun,
@@ -486,6 +533,25 @@ pub fn verify_decoded_ai_pow_ncmn_artifact(
 ) -> Result<(), CertificateNounError> {
     verify_decoded_ai_pow_ncmn_certificate(
         &artifact.certificate, puzzle_id, candidate_nck_commitment, &artifact.nonce, params, target,
+    )
+}
+
+/// Decode a jammed `%ai-pow` artifact and verify it against trusted block data.
+///
+/// This combines the intended production ordering: byte-size cap, cue, bounded
+/// structured decode, NCMN anchor check, cheap statement precheck, and recursive
+/// certificate verification.
+pub fn verify_ai_pow_ncmn_artifact_jam(
+    jammed: &[u8],
+    limits: CertificateNounLimits,
+    puzzle_id: &[u8],
+    candidate_nck_commitment: &[u8; 32],
+    params: &MatmulParams,
+    target: &[u8; 32],
+) -> Result<(), CertificateNounError> {
+    let artifact = decode_ai_pow_artifact_jam(jammed, limits)?;
+    verify_decoded_ai_pow_ncmn_artifact(
+        &artifact, puzzle_id, candidate_nck_commitment, params, target,
     )
 }
 
@@ -2544,6 +2610,47 @@ mod tests {
             ),
             Err(CertificateNounError::NonceAnchorMismatch)
         ));
+    }
+
+    #[test]
+    fn ai_pow_artifact_jam_decoder_enforces_byte_limit_before_cue() {
+        let params = sample_params();
+        let commitments = sample_commitments();
+        let pis = sample_pis();
+        let cert_slab = build_ai_pow_certificate_noun_from_node(
+            &params,
+            0,
+            16_384,
+            &commitments,
+            &pis,
+            &AiProofNode::Unit,
+        );
+        let nonce = build_ncmn_nonce(&NonceAnchors::nck_only([0x44; 32]), 8);
+        let artifact_slab = build_ai_pow_artifact_slab(&nonce, &cert_slab);
+        let jammed = artifact_slab.jam();
+
+        let decoded = decode_ai_pow_artifact_jam(&jammed, CertificateNounLimits::default())
+            .expect("decode artifact jam");
+        assert_eq!(decoded.nonce, nonce);
+
+        let mut non_canonical = jammed.to_vec();
+        non_canonical.push(0xff);
+        assert!(matches!(
+            decode_ai_pow_artifact_jam(&non_canonical, CertificateNounLimits::default()),
+            Err(CertificateNounError::NonCanonicalJam)
+        ));
+
+        let mut limits = CertificateNounLimits::default();
+        limits.max_jam_bytes = jammed.len() - 1;
+        assert!(matches!(
+            decode_ai_pow_artifact_jam(&jammed, limits),
+            Err(CertificateNounError::JammedLengthExceeded { limit, actual })
+                if limit == jammed.len() - 1 && actual == jammed.len()
+        ));
+
+        let err = decode_ai_pow_artifact_jam(&[], CertificateNounLimits::default())
+            .expect_err("malformed jam must reject");
+        assert!(matches!(err, CertificateNounError::Cue(_)));
     }
 
     #[test]

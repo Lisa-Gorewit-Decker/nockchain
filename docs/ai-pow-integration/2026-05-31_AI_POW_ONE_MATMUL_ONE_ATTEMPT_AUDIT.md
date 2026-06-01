@@ -581,10 +581,12 @@ certificate; Hoon consensus still needs the verifier jet/wiring.
 
 1. No new large proof artifact is required; the recursive proof remains the
    only canonical proof artifact.
-2. The Rust noun boundary now exposes `decode_ai_pow_artifact_slab` and
+2. The Rust noun boundary now exposes `decode_ai_pow_artifact_jam`,
+   `decode_ai_pow_artifact_slab`, and `verify_ai_pow_ncmn_artifact_jam` /
    `verify_decoded_ai_pow_ncmn_artifact` for the full persisted/wire artifact
    `[%ai-pow nonce cert]`; the Hoon/Rust verifier path must call this boundary
    with the trusted puzzle id, candidate block commitment, params, and target.
+   The jam-byte entrypoint caps attacker input before cueing.
 3. The `%ai-pow` wire carries `[%ai-pow nonce cert]`, where `nonce` is an
    `@uxncmn` atom. This keeps the recursive certificate as the only proof
    artifact while still carrying the nonce commitment parameter needed to prove
