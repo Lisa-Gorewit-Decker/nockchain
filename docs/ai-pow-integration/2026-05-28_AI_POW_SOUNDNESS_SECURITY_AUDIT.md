@@ -10,7 +10,10 @@ before `kappa`, commitments, noise seeds, and matmul-derived tile states.
 Current code should be evaluated against
 `2026-05-31_AI_POW_ONE_MATMUL_ONE_ATTEMPT_AUDIT.md` for nonce-grinding status
 and against `2026-05-29_AI_ZKP_NOUN_WIRE_SPEC.md` for the canonical recursive
-certificate wire format.
+certificate wire format. In particular, the canonical persisted commitment
+surface is now only `[h_a_chunk h_b_chunk]`; legacy row/column roots `h_a` /
+`h_b` are diagnostic/plain-proof opening roots and must not be reintroduced as
+block artifact commitment parameters.
 
 ## Executive Summary
 
@@ -33,7 +36,10 @@ A production verifier must accept an AI-PoW block only if all of the following a
 - `attempt_state = block_state(block_commitment, nonce)`, and
   `kappa = commitment_key(attempt_state, params_tag(params))`; omitting the
   nonce here would re-open cached-matmul grinding.
-- `s_b` and `s_a` are derived from authenticated row/column commitments, or otherwise are public inputs that the verifier can recompute from committed data.
+- `s_b` and `s_a` are derived from the proof-bound chunk commitments
+  `h_a_chunk` / `h_b_chunk`, which are exposed as the recursive proof's
+  `HASH_A` / `HASH_B` public inputs. Legacy row/column roots `h_a` / `h_b`
+  are not seed inputs and are not persisted commitment parameters.
 - `pow_key = pow_key_for_nonce(s_a, nonce)`.
 - The winning hash is `BLAKE3(M, key=pow_key)`, not `BLAKE3(M, key=s_a)`.
 - The STARK proof is verified only against a verifier-rebuilt canonical program, never a prover-supplied program.
@@ -122,20 +128,30 @@ Tests:
 
 - Done: generate one honest trace for a nonce and verify it rejects when the nonce is changed.
 - Done: assert ZK `HASH_JACKPOT` equals plain `TileState::keyed_hash(pow_key_for_nonce(s_a, nonce))`.
-- Done: `ai_pow_wire_stub` guards that the executable F1 harness does not regress to `COMMITMENT_HASH = s_a`.
+- Done: executable and bridge-level tests exercise `COMMITMENT_HASH` as the
+  nonce-bound `pow_key`, not raw `s_a`.
 - Add a negative test where `BLAKE3(M, key=s_a)` clears target but `BLAKE3(M, key=pow_key)` does not.
 
 ### SND-03: No production verifier-only ZK API derives the trusted statement
 
 Severity: Critical
-Status: Confirmed API gap
+Status: Remediated at the Rust recursive-certificate boundary; Hoon consensus
+still remains fail-closed until the verifier jet calls that boundary.
 
 Evidence:
 
 - `composite_verify_pow_pinned_logup_sx` verifies a proof against caller-provided `program`, `public_inputs`, `target`, and `sx_bound`.
 - The verifier-side canonical program needs `BlockPublic { tile_i, tile_j, kappa, s_a, s_b }`.
-- `CompositePublicInputs` contains `job_key`, `commitment_hash`, and `hash_jackpot`, but not `s_b`, the plain row Merkle roots `h_a`/`h_b`, or a nonce-derived `pow_key`.
-- The bridge currently proves and immediately verifies locally; it returns `ZkOutcome { pis, sweep_in_circuit }` but no serialized proof artifact for consensus.
+- `CompositePublicInputs` contains `job_key`, `commitment_hash`, and
+  `hash_jackpot`. Current production statement checks derive `s_b`, `s_a`, and
+  `pow_key` from verifier-trusted `(block_commitment, nonce, params, target,
+  found_idx, h_a_chunk, h_b_chunk)` and then compare the public inputs against
+  those derived values.
+- The production-facing Rust artifact is the structured recursive certificate
+  noun. Its verifier path decodes bounded metadata, checks the NCMN nonce
+  anchor, checks the full-matmul recursive statement gate, re-derives public
+  inputs from trusted block data, and only then reconstructs/verifies the
+  recursive proof.
 
 Attack sketch:
 
@@ -149,11 +165,20 @@ Easy misuse can create fake ZK PoW verification even if the AIR constraints are 
 
 Fix plan:
 
-- Add a single production verification API, for example:
-  `verify_ai_pow_block(block_commitment, nonce, params, target, found_idx, proof_bytes, public_artifact)`.
-- This API must derive `kappa`, derive or authenticate `s_a`/`s_b`, derive `pow_key`, derive canonical program, derive expected public inputs, and then call the pinned+LogUp verifier.
-- Make lower-level verifier functions crate-private or mark them `unsafe_dev_*` behind a feature.
-- Define the consensus artifact before implementing verification: it likely needs `params_tag`, `nonce`, `target`, `found_idx`, `h_a`, `h_b`, `h_a_chunk`, `h_b_chunk`, `s_b` derivation data or enough data to recompute it, `CompositePublicInputs`, and the STARK proof.
+- Done: `verify_ai_pow_full_matmul_production_statement` derives `kappa`,
+  derives `s_a` / `s_b` from `h_a_chunk` / `h_b_chunk`, derives `pow_key`,
+  checks `found_idx`, checks target satisfaction, and rejects multi-tile
+  selected-tile statements with `FullMatmulProofUnavailable`.
+- Done: `verify_ai_pow_ncmn_artifact_jam` / `verify_decoded_ai_pow_ncmn_artifact`
+  are the Rust consensus-facing recursive certificate entrypoints. They bind
+  the NCMN nonce to the trusted candidate-block commitment and reject cheap
+  metadata failures before recursive proof reconstruction.
+- Done: lower-level selected-tile statement helpers are crate-private; dev
+  `ai-pow-zk` verifier helpers are gated behind explicit `dev-unsafe`.
+- Current canonical artifact fields are `nonce`, `zk_params`, `found_idx`,
+  `trace_height`, `[h_a_chunk h_b_chunk]`, `CompositePublicInputs`, and the
+  structured recursive certificate. It must not persist legacy `h_a` / `h_b`
+  row/column roots.
 
 Tests:
 
@@ -205,17 +230,16 @@ Fix plan:
   statement plumbing for the current Pearl-style recursive certificate. The
   legacy Layer-0 byte artifacts and helper verifier/constructor functions are
   crate-internal.
-- Done: `ai_pow_wire_stub` guards that the top-level docs no longer advertise
-  raw Layer-0 prove/verify as the normal block artifact path and that
-  `dev-unsafe` is explicitly not for consensus/block-wire consumers.
+- Done: top-level docs no longer advertise raw Layer-0 prove/verify as the
+  normal block artifact path, and `dev-unsafe` is explicitly not for
+  consensus/block-wire consumers.
 
 Tests:
 
 - Existing selector-zero forgery tests should stay, but the forged proof should be impossible to verify through any non-dev public API.
-- Add a dependency-level test in the intended consensus crate that only the production verifier is used. Status: `ai_pow_wire_stub` now guards that the
-  legacy Layer-0 byte envelopes and `prove_ai_pow_block` /
-  `verify_ai_pow_block` / `verify_ai_pow_consensus_artifact` are not public
-  APIs.
+- Add behavior-level consensus integration coverage when the verifier jet is
+  wired. Do not use source-grep tests for this; the useful test is an actual
+  accepted/rejected block artifact path through the verifier boundary.
 
 ### SND-05: Non-production params can bypass canonical program verification
 
@@ -262,9 +286,8 @@ Tests:
   shape.
 - `param01_prove_and_verify_for_block_rejects_non_prod_params` now covers both
   the older hardened block bridge and the public recursive certificate prover.
-- `ai_pow_wire_stub` guards that production mining builds the recursive
-  certificate and that the bridge source still contains the production envelope
-  check.
+- Production mining builds the recursive certificate through the explicit
+  builder path, and bridge tests cover production-envelope rejection.
 
 ## High Severity Findings
 
@@ -347,13 +370,20 @@ Tests:
 ### SND-06: Plain proof carries chunk commitments that the plain verifier ignores
 
 Severity: High for combined plain+ZK integration
-Status: Confirmed
+Status: Remediated for seed binding; legacy plain proof remains diagnostic and
+must not be used as the canonical block artifact.
 
 Evidence:
 
-- `MatmulProof` includes `h_a_chunk` and `h_b_chunk`.
-- `ai_pow::verifier::verify` validates `h_a` and `h_b` row/column Merkle roots but does not check or use `h_a_chunk` / `h_b_chunk`.
-- The ZK bridge separately checks `pis.hash_a == ctx.h_a_chunk` and `pis.hash_b == ctx.h_b_chunk`.
+- `MatmulProof` includes `h_a_chunk` and `h_b_chunk` for diagnostic/plain
+  pre-ZKP checks.
+- Current `ai_pow::verifier::verify_at_target` derives canonical noise seeds
+  from `proof.h_a_chunk` / `proof.h_b_chunk`; tampering either value changes
+  `s_A`, the verifier-derived `found_idx`, the jackpot key, and/or the Merkle
+  leaf checks and is rejected.
+- The recursive certificate statement separately checks
+  `pis.hash_a == h_a_chunk` and `pis.hash_b == h_b_chunk`, using the same
+  proof-bound chunk commitment family as the seed chain.
 
 Attack sketch:
 
@@ -367,9 +397,14 @@ Commitment substitution risk at the integration boundary.
 
 Fix plan:
 
-- Decide whether `h_a_chunk` / `h_b_chunk` belong in `MatmulProof`.
-- If they remain, the plain verifier should recompute or cross-check them against a trusted source. If recomputation is too expensive, the verifier must return them as unauthenticated fields or ignore them entirely.
-- The combined verifier must explicitly check that the plain proof commitments and ZK public inputs refer to the same matrix commitment family and seeds.
+- Done: canonical seed derivation uses `h_a_chunk` / `h_b_chunk` through
+  `canonical_noise_seeds_from_matrix_commitments`.
+- Done: the persisted recursive certificate noun carries only
+  `[h_a_chunk h_b_chunk]` in `ai-pow-commitments`; `h_a` / `h_b` stay out of
+  the block artifact.
+- Keep `MatmulProof` as a legacy diagnostic/pre-ZKP artifact only. Consensus
+  block acceptance must enter through the recursive certificate noun verifier,
+  not through plain proof verification.
 
 Tests:
 
