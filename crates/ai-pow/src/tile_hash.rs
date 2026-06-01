@@ -4,6 +4,9 @@
 //!
 //!   BLAKE3(M, key = pow_key_for_nonce(s_a, nonce))  <=  2^(256 - b) · r · t_m · t_n
 //!
+//! `s_a` is derived from the nonce-bound attempt state before the noised
+//! matmul is computed; `pow_key_for_nonce` is not the sole nonce binding.
+//!
 //! All 256-bit integers are encoded as little-endian byte arrays for parity
 //! with Pearl, which interprets the BLAKE3 keyed hash via
 //! `U256::from_little_endian` (Pearl zk-pow ffi/mine.rs:101). Byte 0 is

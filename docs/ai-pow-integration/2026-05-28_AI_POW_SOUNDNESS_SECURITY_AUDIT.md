@@ -4,6 +4,12 @@ Date: 2026-05-28
 Branch audited: `claude/ai-pow-integration-squash`
 Scope: `crates/ai-pow`, `crates/ai-pow-zk`, and the immediate miner/consensus integration points needed to evaluate proof soundness and verifier DoS risk.
 
+Update: this is a historical audit. The 2026-05-31 grinding remediation moves
+the Nockchain nonce into Pearl's attempt state before `kappa`, commitments,
+noise seeds, and matmul-derived tile states. Current code should be evaluated
+against `2026-05-31_AI_POW_ONE_MATMUL_ONE_ATTEMPT_AUDIT.md` for nonce-grinding
+status.
+
 ## Executive Summary
 
 The current branch must not be enabled for accepting `%ai-pow` blocks yet. The Hoon consensus path is still reject-all, which prevents exploitation on-chain today, but the Rust proof/verifier APIs are not yet safe as consensus interfaces.

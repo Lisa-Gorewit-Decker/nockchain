@@ -1,21 +1,23 @@
 //! Fiat-Shamir transcript over BLAKE3 keyed-derive.
 //!
-//! Implements the Pearl §4.3 Algorithm 2 commitment-hash derivation chain:
+//! Implements the Pearl §4.3 Algorithm 2-shaped commitment-hash
+//! derivation chain:
 //!
-//!   κ   = derive_key("kappa",        block_commitment ‖ params_tag)
+//!   κ   = derive_key("kappa",        block_state(block, nonce) ‖ params_tag)
 //!   H_A = MerkleRoot({ BLAKE3(row_i_of_A, key=κ) }_{i∈[m]})
 //!   H_B = MerkleRoot({ BLAKE3(col_j_of_B, key=κ) }_{j∈[n]})
 //!   s_B = derive_key("s_b",          κ ‖ H_B)
 //!   s_A = derive_key("s_a",          s_B ‖ H_A)
 //!
 //! Noise generation reads s_A (for `E = E_L · E_R`) and s_B (for `F = F_L ·
-//! F_R`). Per Pearl §4.3 the asymmetry lets future AI workloads pre-noise
-//! `B` once per σ update without re-noising on every change of `A`.
+//! F_R`). Pearl's asymmetry only permits reuse while `σ` is fixed. For
+//! Nockchain production, each nonce attempt changes `σ`, so the keyed
+//! commitments, seeds, noise, and matmul-derived values must not be reused
+//! across nonces.
 //!
-//! The per-nonce `pow_key = derive_key("pow-key", s_A ‖ nonce)` is the
-//! keyed-BLAKE3 key for the tile-state hashes. This is an extension over
-//! Pearl-pure (which uses `s_A` directly): it amortizes the matmul across
-//! nonce attempts and keeps a Bitcoin-style search loop.
+//! The final `pow_key = derive_key("pow-key", s_A ‖ nonce)` is the
+//! keyed-BLAKE3 key for the tile-state hashes. It is domain separation on top
+//! of an already nonce-bound `s_A`; it is not the sole attempt binding.
 
 use std::collections::HashSet;
 
@@ -36,15 +38,19 @@ pub fn block_state(block_commitment: &[u8], nonce: &[u8]) -> Vec<u8> {
     buf
 }
 
-/// `κ` (Pearl `compute_job_key`,
+/// Current `κ` helper (Pearl `compute_job_key`,
 /// `Pearl zk-pow ffi/mine.rs:156-161`): unkeyed BLAKE3 over the
-/// concatenation of `block_commitment` and `params_tag`. Pearl uses
+/// concatenation of the attempt state and `params_tag`. Pearl uses
 /// `header.to_bytes() || config.to_bytes()`; we accept the two parts as
 /// separate slices but feed them into BLAKE3 in flat order (no length
 /// prefix) to match Pearl exactly.
-pub fn commitment_key(block_commitment: &[u8], params_tag: &[u8; 32]) -> [u8; 32] {
+///
+/// The caller must pass the full per-attempt state. Omitting the
+/// nonce/extranonce would make downstream noise reusable and is not
+/// production-sound.
+pub fn commitment_key(attempt_state: &[u8], params_tag: &[u8; 32]) -> [u8; 32] {
     let mut hasher = Hasher::new();
-    hasher.update(block_commitment);
+    hasher.update(attempt_state);
     hasher.update(params_tag);
     *hasher.finalize().as_bytes()
 }
@@ -69,10 +75,11 @@ pub fn noise_seed_a(s_b: &[u8; 32], h_a: &[u8; 32]) -> [u8; 32] {
     *Hasher::new().update(&input).finalize().as_bytes()
 }
 
-/// Per-nonce `pow_key` used as the BLAKE3 key for `BLAKE3(M_{i,j},
-/// key=pow_key)` (Pearl §4.5 line 16). Pearl-pure would use `s_A` here; we
-/// extend by hashing `s_A ‖ nonce` so a single `(block, A, B)` admits many
-/// cheap nonce retries without re-running the matmul.
+/// Per-attempt `pow_key` used as the BLAKE3 key for
+/// `BLAKE3(M_{i,j}, key=pow_key)`.
+///
+/// This function is not the only production attempt binding; callers must
+/// derive `s_a` from the nonce-bound attempt state before computing `M`.
 pub fn pow_key_for_nonce(s_a: &[u8; 32], nonce: &[u8]) -> [u8; 32] {
     let mut hasher = Hasher::new_derive_key(CTX_POW_KEY);
     hasher.update(s_a);
@@ -148,21 +155,20 @@ mod tests {
     }
 
     #[test]
-    fn commitment_key_independent_of_nonce() {
-        // κ depends on block_commitment + params_tag only. Any value the
-        // caller wants to vary across nonces must NOT feed into κ.
+    fn commitment_key_binds_attempt_state() {
+        // κ depends on the full attempt state + params_tag. Production callers
+        // construct that attempt state with block_state(block_commitment, nonce).
         let tag = [9u8; 32];
         let k1 = commitment_key(b"hdr", &tag);
         let k2 = commitment_key(b"hdr", &tag);
         assert_eq!(k1, k2);
-        // But it does depend on block_commitment and params_tag.
         assert_ne!(commitment_key(b"hdr2", &tag), k1);
         assert_ne!(commitment_key(b"hdr", &[10u8; 32]), k1);
     }
 
     #[test]
     fn pearl_derivation_chain_binds_all_inputs() {
-        // s_A must differ when *any* of (block, params, h_a, h_b) differs.
+        // s_A must differ when *any* of (attempt state, params, h_a, h_b) differs.
         let kappa = commitment_key(b"hdr", &[1u8; 32]);
         let h_a = [2u8; 32];
         let h_b = [3u8; 32];
@@ -172,7 +178,7 @@ mod tests {
         let kappa2 = commitment_key(b"hdr-other", &[1u8; 32]);
         let s_b2 = noise_seed_b(&kappa2, &h_b);
         let s_a2 = noise_seed_a(&s_b2, &h_a);
-        assert_ne!(s_a, s_a2, "changing block must change s_A");
+        assert_ne!(s_a, s_a2, "changing attempt state must change s_A");
 
         let s_a3 = noise_seed_a(&noise_seed_b(&kappa, &[7u8; 32]), &h_a);
         assert_ne!(s_a, s_a3, "changing h_b must change s_A");

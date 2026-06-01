@@ -128,7 +128,7 @@ pub fn verify_at_target(
         precheck_opening(opening, params, OpeningRole::Spot)?;
     }
 
-    let kappa = commitment_key(block_commitment, &tag);
+    let kappa = commitment_key(&state, &tag);
     let s_b = noise_seed_b(&kappa, &proof.h_b);
     let s_a = noise_seed_a(&s_b, &proof.h_a);
     let pow_key = pow_key_for_nonce(&s_a, nonce);
@@ -183,8 +183,9 @@ pub fn verify_prod_at_target(
 /// Verify a proof whose nonce must be an NCMN v1 nonce anchored to a
 /// candidate Nockchain block commitment.
 ///
-/// `puzzle_id` is the AI puzzle identity used for the Pearl transcript
-/// (`κ = commitment_key(puzzle_id, params_tag)`). `candidate_nck_commitment`
+/// `puzzle_id` is the AI puzzle identity used inside the nonce-bound Pearl
+/// attempt state (`κ = commitment_key(block_state(puzzle_id, nonce),
+/// params_tag)`). `candidate_nck_commitment`
 /// is the trusted 32-byte commitment to the candidate Nockchain block that
 /// must appear inside the nonce. This wrapper is the production-safe entry
 /// point for NCMN-wrapped mining: it rejects malformed or mis-anchored nonces

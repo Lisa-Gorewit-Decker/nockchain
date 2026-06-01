@@ -27,8 +27,10 @@ fn h_a_chunk_matches_snark_place_matrix_hash_a() {
     let params = MatmulParams::TEST_SMALL;
     let (a, b) = synth_matrices(b"m52-seed-a", &params);
     let block_commitment = b"m52-block-header";
+    let nonce = b"m52-nonce-a";
 
-    let ctx = BlockContext::build(block_commitment, &a, &b, &params).expect("BlockContext build");
+    let ctx =
+        BlockContext::build(block_commitment, nonce, &a, &b, &params).expect("BlockContext build");
 
     // Plain-side h_a_chunk computed via matrix_commitment.
     let plain_h_a = ctx.h_a_chunk;
@@ -50,8 +52,10 @@ fn h_b_chunk_matches_snark_place_matrix_hash_b() {
     let params = MatmulParams::TEST_SMALL;
     let (a, b) = synth_matrices(b"m52-seed-b", &params);
     let block_commitment = b"m52-block-header-b";
+    let nonce = b"m52-nonce-b";
 
-    let ctx = BlockContext::build(block_commitment, &a, &b, &params).expect("BlockContext build");
+    let ctx =
+        BlockContext::build(block_commitment, nonce, &a, &b, &params).expect("BlockContext build");
 
     let plain_h_b = ctx.h_b_chunk;
 
@@ -71,10 +75,11 @@ fn distinct_matrices_have_distinct_chunk_commitments() {
     // Sanity: two different seeds yield two different h_a_chunks.
     let params = MatmulParams::TEST_SMALL;
     let bc = b"m52-distinct-block";
+    let nonce = b"m52-distinct-nonce";
     let (a1, b1) = synth_matrices(b"seed-1", &params);
     let (a2, b2) = synth_matrices(b"seed-2", &params);
-    let ctx1 = BlockContext::build(bc, &a1, &b1, &params).unwrap();
-    let ctx2 = BlockContext::build(bc, &a2, &b2, &params).unwrap();
+    let ctx1 = BlockContext::build(bc, nonce, &a1, &b1, &params).unwrap();
+    let ctx2 = BlockContext::build(bc, nonce, &a2, &b2, &params).unwrap();
     assert_ne!(ctx1.h_a_chunk, ctx2.h_a_chunk);
     assert_ne!(ctx1.h_b_chunk, ctx2.h_b_chunk);
 }

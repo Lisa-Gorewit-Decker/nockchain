@@ -11,6 +11,8 @@
 //! hardness condition matches Pearl §4.5:
 //!   BLAKE3(M, key = pow_key_for_nonce(s_a, nonce))  <=  2^(256 - b) * r * t_m * t_n
 //! (with square tiles, `t_m = t_n = tile`).
+//! `s_a` is nonce-bound before noise generation and matmul; changing the nonce
+//! changes the commitments, noise, and tile states before this final hash.
 //!
 //! # Pearl §4.8 envelope (the Pearl-faithful PROD path, "γ")
 //!
@@ -101,8 +103,10 @@ pub struct MatmulParams {
     pub tile: u32,
     pub spot_checks: u32,
     /// Logarithmic difficulty `b` (Pearl §4.5). A tile is accepted when
-    /// `BLAKE3(M, key = pow_key_for_nonce(s_a, nonce)) <= 2^(256 - b) * r * t^2`. `b = 0` accepts
-    /// every tile; values above 256 reject everything.
+    /// `BLAKE3(M, key = pow_key_for_nonce(s_a, nonce)) <= 2^(256 - b) * r * t^2`.
+    /// The `s_a` seed is already nonce-bound through the per-attempt
+    /// commitment hash. `b = 0` accepts every tile; values above 256 reject
+    /// everything.
     pub difficulty_bits: u32,
 }
 

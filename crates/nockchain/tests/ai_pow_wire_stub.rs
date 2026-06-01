@@ -52,11 +52,15 @@ fn ai_pow_consensus_wire_persists_structured_certificate_without_verifier() {
             && AI_POW_MINER_RUN_RS.contains("refusing to submit legacy nonce/tile artifact")
             && AI_POW_MINER_WIRE_RS.contains("[%command %pow %ai-pow cert=ai-pow-certificate]")
             && AI_POW_MINER_CERT_NOUN_RS.contains("pub fn decode_ai_pow_certificate_slab")
+            && AI_POW_MINER_CERT_NOUN_RS.contains("pub fn precheck_ai_pow_certificate_statement")
+            && AI_POW_ZK_BRIDGE_RS.contains("pub fn verify_ai_pow_production_statement")
             && AI_POW_MINER_CERT_NOUN_RS.contains("CertificateNounLimits")
             && AI_POW_MINER_CERT_NOUN_RS
                 .contains("certificate_noun_decoder_rejects_oversized_packed_atom")
             && AI_POW_MINER_CERT_NOUN_RS
                 .contains("certificate_noun_roundtrips_through_jam_cue_and_bounded_decoder")
+            && AI_POW_MINER_CERT_NOUN_RS
+                .contains("certificate_statement_precheck_binds_noun_metadata_to_nonce_and_target")
             && AI_POW_MINER_CERT_NOUN_RS.contains("AiProofNode::Ext2s")
             && AI_POW_MINER_CERT_NOUN_RS.contains(
                 "recursive_certificate_serializer_packs_two_felt_tuples_as_ext2_aura_nodes"

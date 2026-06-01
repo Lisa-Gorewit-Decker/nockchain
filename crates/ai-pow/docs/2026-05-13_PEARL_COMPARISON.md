@@ -75,10 +75,11 @@ State this exactly; the unqualified "byte-equivalent to Pearl" is
 >   it with `a_noise_seed`, Nockchain with `pow_key =
 >   derive_key("pow-key", s_A ‖ nonce)`. The divergence is the
 >   *key argument*, not the hashing.
-> - **D6 (search loop).** Pearl varies `A/B` per attempt with no
->   nonce; Nockchain sweeps a Bitcoin-style nonce and amortizes
->   the matmul/noise. Both are valid PoUW search loops; a single
->   attempt's unit of work is identical.
+> - **D6 (search loop).** Superseded by the 2026-05-31 grinding fix.
+>   Nockchain still carries a Bitcoin-style nonce, but that nonce is
+>   included in Pearl's attempt state before `κ`, matrix commitments,
+>   noise seeds, and matmul-derived tile states are computed. There is
+>   no matmul/noise amortization across nonces.
 >
 > Equivalently: normalize the key/nonce out (use Pearl's
 > `a_noise_seed` as the key, fix one attempt) ⇒ **every protocol
@@ -282,11 +283,10 @@ attempt. To search, miners vary `A` or `B`. The `try_mine_one` function in
 inside a loop (`mine` at line 125-142) until a jackpot is found.
 
 Our crate keeps a Bitcoin-style nonce loop (`mine_block` sweeps a nonce
-iterator) and mixes `nonce` into the keyed-hash key via `pow_key_for_nonce`
-so the matmul + noise + M-state can amortize across many cheap retries.
-
-Both are valid PoUW search loops — Pearl's matches the whitepaper literally,
-ours adds an amortization-friendly extension.
+iterator), but the nonce is included in Pearl's `sigma` before `κ`, matrix
+commitments, noise seeds, and matmul-derived tile states are computed.
+`pow_key_for_nonce` remains a final-hash domain key only; it is not the unit of
+work and does not allow cheap nonce retries.
 
 ## What matches Pearl byte-for-byte today
 

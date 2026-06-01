@@ -1,7 +1,6 @@
-//! Tests for the per-block context cache: `mine_block` must produce the
-//! same proof bytes as `mine` at the same nonce, and the per-block
-//! precomputation (commitments, noise, M states) must not depend on the
-//! nonce.
+//! Tests for nonce-bound attempts: `mine_block` must produce the same proof
+//! bytes as `mine` at the same nonce, and each nonce must rebuild the
+//! commitment/noise/matmul-derived state rather than reusing work.
 
 use ai_pow::params::MatmulParams;
 use ai_pow::prover::{mine, mine_block, ProverOptions};
@@ -76,13 +75,14 @@ fn mine_block_preserves_per_nonce_diversity() {
         .unwrap()
         .unwrap();
     assert_ne!(p_a, p_b);
-    // But the block-level commitments stay fixed.
-    assert_eq!(p_a.h_a, p_b.h_a);
-    assert_eq!(p_a.h_b, p_b.h_b);
+    // The nonce is part of the Pearl attempt state, so commitments are
+    // re-keyed before noise and matmul.
+    assert_ne!(p_a.h_a, p_b.h_a);
+    assert_ne!(p_a.h_b, p_b.h_b);
 }
 
 #[test]
-fn block_level_commitments_are_block_scoped() {
+fn attempt_commitments_are_block_scoped() {
     let params = MatmulParams::TEST_SMALL;
     let (a, b) = synth_matrices(b"ab-seed", &params);
     let p_a = mine(b"hdr-A", b"nce", &a, &b, &params, ProverOptions::default())
@@ -92,8 +92,8 @@ fn block_level_commitments_are_block_scoped() {
         .unwrap()
         .unwrap();
     assert_ne!(p_a, p_b);
-    // κ depends on block_commitment, so H_A and H_B differ between blocks
-    // even though A and B are identical.
+    // κ depends on the attempt state, including block_commitment, so H_A and
+    // H_B differ between blocks even though A and B are identical.
     assert_ne!(p_a.h_a, p_b.h_a);
     assert_ne!(p_a.h_b, p_b.h_b);
 }

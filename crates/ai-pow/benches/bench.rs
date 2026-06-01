@@ -50,10 +50,11 @@ fn bench_verifier(c: &mut Criterion) {
     });
 }
 
-fn bench_mine_block_amortized(c: &mut Criterion) {
-    // Sweep 4 nonces with a difficulty so tight nothing satisfies, so the
-    // prover does the full per-block precomputation once and the amortized
-    // per-nonce cost is just leaf-rehashing + Merkle build.
+fn bench_mine_block_nonce_bound(c: &mut Criterion) {
+    // Sweep 4 nonces with a difficulty so tight nothing satisfies. Each nonce
+    // now rebuilds the attempt transcript, commitments, noise, matmul-derived
+    // tile states, and final hashes; this must not measure final-hash-only
+    // retry cost.
     let mut params = pick_params();
     params.difficulty_bits = 400;
     let (a, b) = synth_matrices(b"bench-ab", &params);
@@ -80,6 +81,6 @@ criterion_group! {
     config = Criterion::default()
         .sample_size(10)
         .measurement_time(Duration::from_secs(5));
-    targets = bench_prover, bench_verifier, bench_mine_block_amortized
+    targets = bench_prover, bench_verifier, bench_mine_block_nonce_bound
 }
 criterion_main!(benches);

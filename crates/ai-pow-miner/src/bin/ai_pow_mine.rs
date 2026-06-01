@@ -267,6 +267,7 @@ fn build_puzzle_inputs(args: &Args) -> Result<AiPuzzleInputs> {
         })?;
         let ctx = ai_pow::prover::BlockContext::build(
             &puzzle_id_for_builder,
+            &sol.nonce,
             a_for_builder.as_slice(),
             b_for_builder.as_slice(),
             &params_for_builder,

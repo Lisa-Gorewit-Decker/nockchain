@@ -1,12 +1,17 @@
 //! F1: `MatmulProof` / `BlockContext` → `ai-pow-zk` SNARK.
 //!
 //! Builds a `CompositeTrace` from a real solve's per-block
-//! context and proves + PoW-verifies it. After this, the SNARK is
-//! a genuine *proof of work for this block*: it is anchored to the
-//! chain-pinned BLAKE3 key (`JOB_KEY` = κ) and nonce-derived jackpot key
-//! (`COMMITMENT_HASH` = `pow_key_for_nonce(s_a, nonce)`) via C1, binds the matrix bytes via
-//! the C3 chain (`HASH_A` / `HASH_B`), and is checked against the
-//! real difficulty target via C2.
+//! context and proves + PoW-verifies it. The current SNARK statement is
+//! anchored to the chain-pinned BLAKE3 key (`JOB_KEY` = κ) and
+//! nonce-derived jackpot key (`COMMITMENT_HASH` =
+//! `pow_key_for_nonce(s_a, nonce)`) via C1, binds the matrix bytes via the C3
+//! chain (`HASH_A` / `HASH_B`), and is checked against the real difficulty
+//! target via C2.
+//!
+//! The `BlockContext` used here is nonce-bound: the nonce is included in the
+//! attempt `sigma` before deriving `κ`, matrix commitments, noise seeds, and
+//! noised matmul values. Bridge entrypoints reject a context supplied with a
+//! different nonce.
 //!
 //! ## What is bound (non-vacuous on a real solve)
 //!
@@ -67,10 +72,13 @@ use ai_pow_zk::{
     PowVerifyError, ZkParams,
 };
 
-use crate::fiat_shamir::{commitment_key, noise_seed_a, noise_seed_b, pow_key_for_nonce};
+use crate::fiat_shamir::{
+    block_state, commitment_key, noise_seed_a, noise_seed_b, pow_key_for_nonce,
+};
 use crate::params::{MatmulParams, ParamError};
 use crate::proof::{DecodeError as ProofDecodeError, EncodeError as ProofEncodeError, MatmulProof};
 use crate::prover::{params_tag, BlockContext};
+use crate::tile_hash::hash_le_target;
 use crate::verifier::{verify_prod_at_target, VerifyError};
 
 // ───────────────────────── P-B (γ Pearl-faithful) ─────────────────────────
@@ -751,6 +759,12 @@ struct ZkDerivedStatement {
     s_b: [u8; 32],
 }
 
+struct VerifiedZkStatement {
+    tile_i: u32,
+    tile_j: u32,
+    derived: ZkDerivedStatement,
+}
+
 /// Errors from the F1 bridge.
 #[derive(Debug)]
 pub enum BridgeError {
@@ -759,6 +773,9 @@ pub enum BridgeError {
     CommitmentMismatch(&'static str),
     /// STARK valid but the PoW difficulty check failed.
     Pow(PowVerifyError),
+    /// Public inputs matched the verifier-derived statement but the jackpot
+    /// digest did not clear the supplied target.
+    FoundAboveTarget,
     /// Verifier-only API rejected a prover-supplied public input before
     /// STARK verification because it did not match trusted chain data.
     PublicInputMismatch(&'static str),
@@ -771,6 +788,9 @@ pub enum BridgeError {
         context: MatmulParams,
         supplied: MatmulParams,
     },
+    /// A prover-side bridge call supplied a nonce different from the nonce
+    /// used to build the attempt context.
+    ContextAttemptMismatch,
     /// `params` failed `MatmulParams::validate()` at the `pub`
     /// bridge boundary — entry-point defense (M2) against malformed
     /// params that would otherwise hit a downstream panic. The
@@ -802,6 +822,7 @@ impl core::fmt::Display for BridgeError {
                 write!(f, "SNARK PI != BlockContext: {w}")
             }
             BridgeError::Pow(e) => write!(f, "pow verify: {e}"),
+            BridgeError::FoundAboveTarget => write!(f, "ZK HASH_JACKPOT above target"),
             BridgeError::PublicInputMismatch(w) => {
                 write!(f, "ZK public input mismatch: {w}")
             }
@@ -812,6 +833,10 @@ impl core::fmt::Display for BridgeError {
             BridgeError::ParamsMismatch { context, supplied } => write!(
                 f,
                 "BlockContext params {context:?} do not match supplied params {supplied:?}"
+            ),
+            BridgeError::ContextAttemptMismatch => write!(
+                f,
+                "BlockContext attempt nonce does not match supplied nonce"
             ),
             BridgeError::InvalidParams(e) => write!(f, "invalid params: {e}"),
             BridgeError::FoundIdxOutOfRange {
@@ -835,7 +860,9 @@ fn bytes_to_words_le(b: &[u8; 32]) -> [u32; 8] {
     })
 }
 
-fn zk_params_from(params: &MatmulParams) -> ZkParams {
+/// Convert the production matrix parameters into the ZK circuit parameter
+/// shape carried by recursive AI-PoW certificates.
+pub fn zk_params_from_matmul(params: &MatmulParams) -> ZkParams {
     ZkParams {
         m: params.m,
         k: params.k,
@@ -844,6 +871,10 @@ fn zk_params_from(params: &MatmulParams) -> ZkParams {
         tile: params.tile,
         difficulty_bits: params.difficulty_bits,
     }
+}
+
+fn zk_params_from(params: &MatmulParams) -> ZkParams {
+    zk_params_from_matmul(params)
 }
 
 fn expect_pi_eq(
@@ -869,6 +900,14 @@ fn ensure_context_params(ctx: &BlockContext<'_>, params: &MatmulParams) -> Resul
     }
 }
 
+fn ensure_context_attempt(ctx: &BlockContext<'_>, nonce: &[u8]) -> Result<(), BridgeError> {
+    if ctx.nonce == nonce {
+        Ok(())
+    } else {
+        Err(BridgeError::ContextAttemptMismatch)
+    }
+}
+
 /// Build a verifier-facing ZK proof artifact for a solved block.
 ///
 /// This is a prover-side constructor only. Consumers must verify the returned
@@ -885,6 +924,7 @@ pub fn prove_ai_pow_block(
         .validate_prod_envelope()
         .map_err(BridgeError::InvalidParams)?;
     ensure_context_params(ctx, params)?;
+    ensure_context_attempt(ctx, nonce)?;
     let (tile_i, tile_j) = tile_ij(found_idx, params).ok_or(BridgeError::FoundIdxOutOfRange {
         found_idx,
         num_tiles: params.num_tiles(),
@@ -910,6 +950,7 @@ pub fn prove_ai_pow_recursive_certificate(
 ) -> Result<AiPowRecursiveCertificateRun, BridgeError> {
     params.validate().map_err(BridgeError::InvalidParams)?;
     ensure_context_params(ctx, params)?;
+    ensure_context_attempt(ctx, nonce)?;
     let (tile_i, tile_j) = tile_ij(found_idx, params).ok_or(BridgeError::FoundIdxOutOfRange {
         found_idx,
         num_tiles: params.num_tiles(),
@@ -917,20 +958,11 @@ pub fn prove_ai_pow_recursive_certificate(
     let (artifact, prover_program, _) =
         prove_ai_pow_tiled_full(ctx, params, nonce, tile_i, tile_j, |_| {}, None)?;
     let commitments = ZkPublicCommitments::from_context(ctx);
-    verify_ai_pow_tiled_with_statement(
-        nonce,
-        params,
-        target,
-        tile_i,
-        tile_j,
-        &commitments,
-        ZkDerivedStatement {
-            kappa: ctx.kappa,
-            s_a: ctx.s_a,
-            s_b: ctx.s_b,
-        },
-        &artifact,
+    let verified = derive_ai_pow_production_statement(
+        &ctx.block_commitment, &ctx.nonce, params, target, found_idx, &commitments, &artifact.pis,
+        artifact.trace_height,
     )?;
+    verify_ai_pow_tiled_with_statement(params, target, verified, &artifact)?;
     let zk_params = zk_params_from(params);
     let l1 = ai_pow_zk::recursion::prove_canonical_ai_pow_certificate_from_composite_proof(
         &zk_params,
@@ -968,6 +1000,50 @@ pub fn verify_ai_pow_block(
     commitments: &ZkPublicCommitments,
     artifact: &ZkProofArtifact,
 ) -> Result<(), BridgeError> {
+    let verified = derive_ai_pow_production_statement(
+        block_commitment, nonce, params, target, found_idx, commitments, &artifact.pis,
+        artifact.trace_height,
+    )?;
+    verify_ai_pow_tiled_with_statement(params, target, verified, artifact)
+}
+
+/// Verify the statement metadata carried next to a production recursive
+/// certificate.
+///
+/// This does not verify the recursive certificate bytes themselves. It is the
+/// verifier-side binding check that must run before or alongside recursive
+/// verification: all public inputs are re-derived from trusted
+/// `(block_commitment, nonce, params, target, found_idx, commitments)` so a
+/// certificate cannot be replayed across nonces or targets by swapping the
+/// metadata stored in the block artifact.
+#[allow(clippy::too_many_arguments)]
+pub fn verify_ai_pow_production_statement(
+    block_commitment: &[u8],
+    nonce: &[u8],
+    params: &MatmulParams,
+    target: &[u8; 32],
+    found_idx: u32,
+    commitments: &ZkPublicCommitments,
+    pis: &CompositePublicInputs,
+    trace_height: usize,
+) -> Result<(), BridgeError> {
+    derive_ai_pow_production_statement(
+        block_commitment, nonce, params, target, found_idx, commitments, pis, trace_height,
+    )
+    .map(|_| ())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn derive_ai_pow_production_statement(
+    block_commitment: &[u8],
+    nonce: &[u8],
+    params: &MatmulParams,
+    target: &[u8; 32],
+    found_idx: u32,
+    commitments: &ZkPublicCommitments,
+    pis: &CompositePublicInputs,
+    trace_height: usize,
+) -> Result<VerifiedZkStatement, BridgeError> {
     params
         .validate_prod_envelope()
         .map_err(BridgeError::InvalidParams)?;
@@ -976,71 +1052,60 @@ pub fn verify_ai_pow_block(
         num_tiles: params.num_tiles(),
     })?;
     let tag = params_tag(params);
-    let kappa = commitment_key(block_commitment, &tag);
+    let state = block_state(block_commitment, nonce);
+    let kappa = commitment_key(&state, &tag);
     let s_b = noise_seed_b(&kappa, &commitments.h_b);
     let s_a = noise_seed_a(&s_b, &commitments.h_a);
-    verify_ai_pow_tiled_with_statement(
-        nonce,
-        params,
-        target,
-        tile_i,
-        tile_j,
-        commitments,
-        ZkDerivedStatement { kappa, s_a, s_b },
-        artifact,
-    )
-}
-
-#[allow(clippy::too_many_arguments)]
-fn verify_ai_pow_tiled_with_statement(
-    nonce: &[u8],
-    params: &MatmulParams,
-    target: &[u8; 32],
-    tile_i: u32,
-    tile_j: u32,
-    commitments: &ZkPublicCommitments,
-    derived: ZkDerivedStatement,
-    artifact: &ZkProofArtifact,
-) -> Result<(), BridgeError> {
-    params.validate().map_err(BridgeError::InvalidParams)?;
     let expected_height = expected_layer0_rows(params).required_trace_len();
-    if artifact.trace_height != expected_height {
+    if trace_height != expected_height {
         return Err(BridgeError::TraceHeightMismatch {
             expected: expected_height,
-            actual: artifact.trace_height,
+            actual: trace_height,
         });
     }
 
-    let pow_key = pow_key_for_nonce(&derived.s_a, nonce);
+    let pow_key = pow_key_for_nonce(&s_a, nonce);
+    expect_pi_eq(&pis.job_key, &bytes_to_words_le(&kappa), "JOB_KEY")?;
     expect_pi_eq(
-        &artifact.pis.job_key,
-        &bytes_to_words_le(&derived.kappa),
-        "JOB_KEY",
-    )?;
-    expect_pi_eq(
-        &artifact.pis.commitment_hash,
+        &pis.commitment_hash,
         &bytes_to_words_le(&pow_key),
         "COMMITMENT_HASH",
     )?;
     expect_pi_eq(
-        &artifact.pis.hash_a,
+        &pis.hash_a,
         &bytes_to_words_le(&commitments.h_a_chunk),
         "HASH_A",
     )?;
     expect_pi_eq(
-        &artifact.pis.hash_b,
+        &pis.hash_b,
         &bytes_to_words_le(&commitments.h_b_chunk),
         "HASH_B",
     )?;
+    let jackpot = ai_pow_zk::hash_jackpot_le_bytes(&pis.hash_jackpot);
+    if !hash_le_target(&jackpot, target) {
+        return Err(BridgeError::FoundAboveTarget);
+    }
+    Ok(VerifiedZkStatement {
+        tile_i,
+        tile_j,
+        derived: ZkDerivedStatement { kappa, s_a, s_b },
+    })
+}
 
+fn verify_ai_pow_tiled_with_statement(
+    params: &MatmulParams,
+    target: &[u8; 32],
+    verified: VerifiedZkStatement,
+    artifact: &ZkProofArtifact,
+) -> Result<(), BridgeError> {
     let zk_params = zk_params_from(params);
     let cfg = build_config(&zk_params, &CircuitConfig::PROD);
     let bp = ai_pow_zk::canonical::BlockPublic {
-        tile_i,
-        tile_j,
-        kappa: derived.kappa,
-        s_a: derived.s_a,
-        s_b: derived.s_b,
+        tile_i: verified.tile_i,
+        tile_j: verified.tile_j,
+        kappa: verified.derived.kappa,
+        s_a: verified.derived.s_a,
+        s_b: verified.derived.s_b,
     };
     let canonical = ai_pow_zk::canonical::canonical_program(&zk_params, &bp, artifact.trace_height)
         .map_err(BridgeError::ZkParamsInvalid)?;
@@ -1112,6 +1177,7 @@ pub(crate) fn prove_and_verify_tiled(
     // `k / noise_rank` div-by-zero panic for `noise_rank = 0`.
     params.validate().map_err(BridgeError::InvalidParams)?;
     ensure_context_params(ctx, params)?;
+    ensure_context_attempt(ctx, nonce)?;
     prove_and_verify_tiled_tamper(ctx, params, nonce, target, tile_i, tile_j, |_| {})
 }
 
@@ -1501,20 +1567,12 @@ pub(crate) fn prove_and_verify_tiled_full<F: FnOnce(&mut CompositeTrace)>(
     // prover's program to verify" weakness.
     if coloc {
         let commitments = ZkPublicCommitments::from_context(ctx);
-        verify_ai_pow_tiled_with_statement(
-            nonce,
-            params,
-            target,
-            tile_i,
-            tile_j,
-            &commitments,
-            ZkDerivedStatement {
-                kappa: ctx.kappa,
-                s_a: ctx.s_a,
-                s_b: ctx.s_b,
-            },
-            &artifact,
+        let found_idx = params.tile_index(tile_i, tile_j) as u32;
+        let verified = derive_ai_pow_production_statement(
+            &ctx.block_commitment, &ctx.nonce, params, target, found_idx, &commitments,
+            &artifact.pis, artifact.trace_height,
         )?;
+        verify_ai_pow_tiled_with_statement(params, target, verified, &artifact)?;
     } else {
         let zk_params = zk_params_from(params);
         let cfg = build_config(&zk_params, &CircuitConfig::PROD);
@@ -1573,6 +1631,7 @@ fn prove_and_verify_for_block_inner(
         params.validate().map_err(BridgeError::InvalidParams)?;
     }
     ensure_context_params(ctx, params)?;
+    ensure_context_attempt(ctx, nonce)?;
     let target = crate::tile_hash::difficulty_target(params);
     let (tile_i, tile_j) = tile_ij(found_idx, params).ok_or(BridgeError::FoundIdxOutOfRange {
         found_idx,
@@ -1728,7 +1787,7 @@ mod tests {
         let params = MatmulParams::TEST_SMALL;
         let (a, b) = synth_matrices(b"f1-bridge-seed", &params);
         let bc = b"f1-bridge-block";
-        let ctx = BlockContext::build(bc, &a, &b, &params).expect("ctx");
+        let ctx = BlockContext::build(bc, TEST_NONCE, &a, &b, &params).expect("ctx");
         let target = difficulty_target(&params);
 
         let out = prove_and_verify(&ctx, &params, TEST_NONCE, &target)
@@ -1765,7 +1824,7 @@ mod tests {
 
         let params = MatmulParams::TEST_SMALL;
         let (a, b) = synth_matrices(b"high2_2-byteequiv", &params);
-        let ctx = BlockContext::build(b"high2_2-blk", &a, &b, &params).expect("ctx");
+        let ctx = BlockContext::build(b"high2_2-blk", TEST_NONCE, &a, &b, &params).expect("ctx");
 
         // Reconstruct the same noised matrices BlockContext built
         // internally (it exposes the seeds, not the matrices).
@@ -1821,7 +1880,8 @@ mod tests {
 
         let params = MatmulParams::TEST_SMALL;
         let (a, b) = synth_matrices(b"high2_2-xstep", &params);
-        let ctx = BlockContext::build(b"high2_2-xstep-blk", &a, &b, &params).expect("ctx");
+        let ctx =
+            BlockContext::build(b"high2_2-xstep-blk", TEST_NONCE, &a, &b, &params).expect("ctx");
         let noise = BlockNoise::expand(&ctx.s_a, &ctx.s_b, &params);
         let mats = Matrices::build(ctx.a, ctx.b, &noise, &params);
 
@@ -1881,7 +1941,8 @@ mod tests {
 
         let params = MatmulParams::TEST_SMALL;
         let (a, b) = synth_matrices(b"high2_2-pipeline", &params);
-        let ctx = BlockContext::build(b"high2_2-pipe-blk", &a, &b, &params).expect("ctx");
+        let ctx =
+            BlockContext::build(b"high2_2-pipe-blk", TEST_NONCE, &a, &b, &params).expect("ctx");
         let noise = BlockNoise::expand(&ctx.s_a, &ctx.s_b, &params);
         let mats = Matrices::build(ctx.a, ctx.b, &noise, &params);
 
@@ -1946,7 +2007,7 @@ mod tests {
         // direction that is testable today.
         let params = MatmulParams::TEST_SMALL;
         let (a, b) = synth_matrices(b"f1-bridge-seed-2", &params);
-        let ctx = BlockContext::build(b"blk", &a, &b, &params).expect("ctx");
+        let ctx = BlockContext::build(b"blk", TEST_NONCE, &a, &b, &params).expect("ctx");
         let max_target = [0xFFu8; 32];
         assert!(prove_and_verify(&ctx, &params, TEST_NONCE, &max_target).is_ok());
     }
@@ -1959,8 +2020,8 @@ mod tests {
     fn med3_prove_and_verify_for_block_roundtrips_and_derives_target() {
         let params = MatmulParams::TEST_SMALL;
         let (a, b) = synth_matrices(b"med3-seed", &params);
-        let ctx = BlockContext::build(b"med3-blk", &a, &b, &params).expect("ctx");
         let nonce = b"med3-nonce";
+        let ctx = BlockContext::build(b"med3-blk", nonce, &a, &b, &params).expect("ctx");
 
         // Hardened path: no target argument; found_idx 0 = tile
         // (0,0), matching the primitive's default tile so the PIs
@@ -1982,12 +2043,79 @@ mod tests {
         params.validate().unwrap();
         assert!(params.validate_prod_envelope().is_err());
         let (a, b) = synth_matrices(b"param01-zk-bridge", &params);
-        let ctx = BlockContext::build(b"param01-zk-bridge-blk", &a, &b, &params).expect("ctx");
+        let ctx = BlockContext::build(b"param01-zk-bridge-blk", TEST_NONCE, &a, &b, &params)
+            .expect("ctx");
 
         assert!(matches!(
             prove_and_verify_for_block(&ctx, &params, TEST_NONCE, 0),
             Err(BridgeError::InvalidParams(_))
         ));
+    }
+
+    #[test]
+    fn zk_bridge_rejects_context_nonce_substitution_before_proving() {
+        let params = MatmulParams::TEST_SMALL;
+        let (a, b) = synth_matrices(b"zk-nonce-substitution", &params);
+        let ctx = BlockContext::build(b"zk-nonce-substitution-block", b"nonce-a", &a, &b, &params)
+            .expect("ctx");
+        let wrong_nonce = b"nonce-b";
+
+        assert!(matches!(
+            prove_and_verify_for_block_inner(&ctx, &params, wrong_nonce, 0, false),
+            Err(BridgeError::ContextAttemptMismatch)
+        ));
+        assert!(matches!(
+            prove_ai_pow_recursive_certificate(&ctx, &params, wrong_nonce, &[0xff; 32], 0),
+            Err(BridgeError::ContextAttemptMismatch)
+        ));
+    }
+
+    #[test]
+    fn production_statement_precheck_binds_nonce_target_and_public_inputs() {
+        let params = MatmulParams::PROD;
+        let block = b"production-statement-block";
+        let nonce = b"production-statement-nonce";
+        let target = [0xffu8; 32];
+        let commitments = ZkPublicCommitments {
+            h_a: [0x11; 32],
+            h_b: [0x22; 32],
+            h_a_chunk: [0x33; 32],
+            h_b_chunk: [0x44; 32],
+        };
+        let tag = params_tag(&params);
+        let state = block_state(block, nonce);
+        let kappa = commitment_key(&state, &tag);
+        let s_b = noise_seed_b(&kappa, &commitments.h_b);
+        let s_a = noise_seed_a(&s_b, &commitments.h_a);
+        let pow_key = pow_key_for_nonce(&s_a, nonce);
+        let mut pis = CompositePublicInputs::zero();
+        pis.job_key = bytes_to_words_le(&kappa);
+        pis.commitment_hash = bytes_to_words_le(&pow_key);
+        pis.hash_a = bytes_to_words_le(&commitments.h_a_chunk);
+        pis.hash_b = bytes_to_words_le(&commitments.h_b_chunk);
+        pis.hash_jackpot = [1, 0, 0, 0, 0, 0, 0, 0];
+        let trace_height = expected_layer0_rows(&params).required_trace_len();
+
+        verify_ai_pow_production_statement(
+            block, nonce, &params, &target, 0, &commitments, &pis, trace_height,
+        )
+        .expect("honest statement metadata should precheck");
+
+        assert!(matches!(
+            verify_ai_pow_production_statement(
+                block, b"wrong-nonce", &params, &target, 0, &commitments, &pis, trace_height,
+            ),
+            Err(BridgeError::PublicInputMismatch("JOB_KEY"))
+                | Err(BridgeError::PublicInputMismatch("COMMITMENT_HASH"))
+        ));
+        assert_eq!(
+            verify_ai_pow_production_statement(
+                block, nonce, &params, &[0u8; 32], 0, &commitments, &pis, trace_height,
+            )
+            .expect_err("jackpot above zero target must reject")
+            .to_string(),
+            BridgeError::FoundAboveTarget.to_string()
+        );
     }
 
     /// HIGH-2.2 §4.E: the bridge attests the **actual solved
@@ -2001,8 +2129,8 @@ mod tests {
     fn high2_2_attests_real_solved_tile() {
         let params = MatmulParams::TEST_SMALL; // k/r = 16 ⇒ §6(b) live
         let (a, b) = synth_matrices(b"hi22-4e-seed", &params);
-        let ctx = BlockContext::build(b"hi22-4e-blk", &a, &b, &params).expect("ctx");
         let nonce = b"hi22-4e-nonce";
+        let ctx = BlockContext::build(b"hi22-4e-blk", nonce, &a, &b, &params).expect("ctx");
         let pow_key = crate::fiat_shamir::pow_key_for_nonce(&ctx.s_a, nonce);
 
         let nt = params.num_tiles();
@@ -2041,7 +2169,7 @@ mod tests {
         let block_commitment = b"snd03-block";
         let nonce = b"snd03-nonce";
         let (a, b) = synth_matrices(b"snd03-seed", &params);
-        let ctx = BlockContext::build(block_commitment, &a, &b, &params).expect("ctx");
+        let ctx = BlockContext::build(block_commitment, nonce, &a, &b, &params).expect("ctx");
         let target = difficulty_target(&params);
         let public = ZkPublicCommitments::from_context(&ctx);
         let mut artifact =
@@ -2091,7 +2219,7 @@ mod tests {
         let block_commitment = b"snd05-block";
         let nonce = b"snd05-nonce";
         let (a, b) = synth_matrices(b"snd05-seed", &params);
-        let ctx = BlockContext::build(block_commitment, &a, &b, &params).expect("ctx");
+        let ctx = BlockContext::build(block_commitment, nonce, &a, &b, &params).expect("ctx");
         let target = difficulty_target(&params);
         let public = ZkPublicCommitments::from_context(&ctx);
         let artifact = prove_ai_pow_block(&ctx, &params, nonce, &target, 0).expect("proof");
@@ -2126,7 +2254,7 @@ mod tests {
         let block_commitment = b"serial01-full-artifact-block";
         let nonce = b"serial01-full-artifact-nonce";
         let (a, b) = synth_matrices(b"serial01-full-artifact-seed", &params);
-        let ctx = BlockContext::build(block_commitment, &a, &b, &params).expect("ctx");
+        let ctx = BlockContext::build(block_commitment, nonce, &a, &b, &params).expect("ctx");
         let target = difficulty_target(&params);
         let plain_proof = crate::prover::mine_with_context_at_target(
             &ctx,
@@ -2197,7 +2325,7 @@ mod tests {
         let block_commitment = b"serial01-version-block";
         let nonce = b"serial01-version-nonce";
         let (a, b) = synth_matrices(b"serial01-version-seed", &params);
-        let ctx = BlockContext::build(block_commitment, &a, &b, &params).expect("ctx");
+        let ctx = BlockContext::build(block_commitment, nonce, &a, &b, &params).expect("ctx");
         let target = difficulty_target(&params);
         let plain_proof = crate::prover::mine_with_context_at_target(
             &ctx,
@@ -2237,7 +2365,7 @@ mod tests {
     fn snd07_bridge_rejects_context_params_mismatch() {
         let params = MatmulParams::TEST_SMALL;
         let (a, b) = synth_matrices(b"snd07-seed", &params);
-        let ctx = BlockContext::build(b"snd07-block", &a, &b, &params).expect("ctx");
+        let ctx = BlockContext::build(b"snd07-block", TEST_NONCE, &a, &b, &params).expect("ctx");
         let mut supplied = params;
         supplied.spot_checks -= 1;
         supplied.validate().unwrap();
@@ -2360,7 +2488,8 @@ mod tests {
 
         let params = MatmulParams::TEST_SMALL;
         let (a, b) = synth_matrices(b"spike-sweep-seed", &params);
-        let ctx = BlockContext::build(b"spike-sweep-blk", &a, &b, &params).expect("ctx");
+        let ctx =
+            BlockContext::build(b"spike-sweep-blk", TEST_NONCE, &a, &b, &params).expect("ctx");
         let noise = BlockNoise::expand(&ctx.s_a, &ctx.s_b, &params);
         let mats = Matrices::build(ctx.a, ctx.b, &noise, &params);
 
@@ -2479,7 +2608,8 @@ mod tests {
 
         let params = MatmulParams::TEST_SMALL;
         let (a, b) = synth_matrices(b"spike-gate2-seed", &params);
-        let ctx = BlockContext::build(b"spike-gate2-blk", &a, &b, &params).expect("ctx");
+        let ctx =
+            BlockContext::build(b"spike-gate2-blk", TEST_NONCE, &a, &b, &params).expect("ctx");
         let noise = BlockNoise::expand(&ctx.s_a, &ctx.s_b, &params);
         let mats = Matrices::build(ctx.a, ctx.b, &noise, &params);
 
@@ -2556,7 +2686,8 @@ mod tests {
 
         let params = MatmulParams::TEST_SMALL;
         let (a, b) = synth_matrices(b"spike-gate3-seed", &params);
-        let ctx = BlockContext::build(b"spike-gate3-blk", &a, &b, &params).expect("ctx");
+        let ctx =
+            BlockContext::build(b"spike-gate3-blk", TEST_NONCE, &a, &b, &params).expect("ctx");
         let noise = BlockNoise::expand(&ctx.s_a, &ctx.s_b, &params);
         let mats = Matrices::build(ctx.a, ctx.b, &noise, &params);
         let steps = params.num_stripes() as usize;
@@ -2624,7 +2755,7 @@ mod tests {
         assert_eq!((params.noise_rank as usize).div_ceil(16), 2); // G1 chunks
 
         let (a, b) = synth_matrices(b"g1g2-seed", &params);
-        let ctx = BlockContext::build(b"g1g2-blk", &a, &b, &params).expect("ctx");
+        let ctx = BlockContext::build(b"g1g2-blk", TEST_NONCE, &a, &b, &params).expect("ctx");
         let noise = BlockNoise::expand(&ctx.s_a, &ctx.s_b, &params);
         let mats = Matrices::build(ctx.a, ctx.b, &noise, &params);
         let zk = ZkParams {
@@ -2825,7 +2956,7 @@ mod tests {
         ] {
             params.validate().unwrap();
             let (a, b) = synth_matrices(b"sec4c2-a3.1", &params);
-            let ctx = BlockContext::build(b"sec4c2-blk", &a, &b, &params).expect("ctx");
+            let ctx = BlockContext::build(b"sec4c2-blk", TEST_NONCE, &a, &b, &params).expect("ctx");
             let noise = BlockNoise::expand(&ctx.s_a, &ctx.s_b, &params);
             let mats = Matrices::build(ctx.a, ctx.b, &noise, &params);
             let (t, r, k) = (params.tile as usize, params.noise_rank, params.k as usize);
@@ -2916,7 +3047,8 @@ mod tests {
         ] {
             params.validate().unwrap();
             let (a, b) = synth_matrices(b"sec4c2-cmset0", &params);
-            let ctx = BlockContext::build(b"sec4c2-cmset0-blk", &a, &b, &params).expect("ctx");
+            let ctx = BlockContext::build(b"sec4c2-cmset0-blk", TEST_NONCE, &a, &b, &params)
+                .expect("ctx");
             let noise = BlockNoise::expand(&ctx.s_a, &ctx.s_b, &params);
             let mats = Matrices::build(ctx.a, ctx.b, &noise, &params);
             let (t, r, k) = (params.tile as usize, params.noise_rank, params.k as usize);
@@ -3091,7 +3223,8 @@ mod tests {
         let check = |params: MatmulParams| -> (bool, bool) {
             params.validate().unwrap();
             let (a, b) = synth_matrices(b"sec4c2-cmset1a", &params);
-            let ctx = BlockContext::build(b"sec4c2-cmset1a-blk", &a, &b, &params).expect("ctx");
+            let ctx = BlockContext::build(b"sec4c2-cmset1a-blk", TEST_NONCE, &a, &b, &params)
+                .expect("ctx");
             let noise = BlockNoise::expand(&ctx.s_a, &ctx.s_b, &params);
             let mats = Matrices::build(ctx.a, ctx.b, &noise, &params);
             let (t, r, k) = (
@@ -3267,7 +3400,8 @@ mod tests {
             params.validate().unwrap();
             assert_eq!(params.noise_rank % 16, 0, "cx.0 requires 16|r");
             let (a, b) = synth_matrices(b"sec4c2-cx0", &params);
-            let ctx = BlockContext::build(b"sec4c2-cx0-blk", &a, &b, &params).expect("ctx");
+            let ctx =
+                BlockContext::build(b"sec4c2-cx0-blk", TEST_NONCE, &a, &b, &params).expect("ctx");
             let noise = BlockNoise::expand(&ctx.s_a, &ctx.s_b, &params);
             let mats = Matrices::build(ctx.a, ctx.b, &noise, &params);
             let (t, r, k) = (
@@ -3467,7 +3601,8 @@ mod tests {
             params.validate().unwrap();
             assert_eq!(params.noise_rank % 16, 0, "cx.2.1 requires 16|r");
             let (a, b) = synth_matrices(b"sec4c2-cx21", &params);
-            let ctx = BlockContext::build(b"sec4c2-cx21-blk", &a, &b, &params).expect("ctx");
+            let ctx =
+                BlockContext::build(b"sec4c2-cx21-blk", TEST_NONCE, &a, &b, &params).expect("ctx");
             let noise = BlockNoise::expand(&ctx.s_a, &ctx.s_b, &params);
             let mats = Matrices::build(ctx.a, ctx.b, &noise, &params);
             let (t, r, k) = (
@@ -3621,7 +3756,8 @@ mod tests {
             params.validate().unwrap();
             assert_eq!(params.noise_rank % 16, 0, "cx.2-coloc.0 requires 16|r");
             let (a, b) = synth_matrices(b"sec4c2-cx2coloc0", &params);
-            let ctx = BlockContext::build(b"sec4c2-cx2coloc0-blk", &a, &b, &params).expect("ctx");
+            let ctx = BlockContext::build(b"sec4c2-cx2coloc0-blk", TEST_NONCE, &a, &b, &params)
+                .expect("ctx");
             let noise = BlockNoise::expand(&ctx.s_a, &ctx.s_b, &params);
             let mats = Matrices::build(ctx.a, ctx.b, &noise, &params);
             let (t, r, k) = (
@@ -3757,7 +3893,7 @@ mod tests {
         params.validate().unwrap();
         assert_eq!(params.noise_rank % 16, 0, "P16 must be 16|r ⇒ coloc=true");
         let (a, b) = synth_matrices(b"cx2g1-p16", &params);
-        let ctx = BlockContext::build(b"cx2g1-p16-blk", &a, &b, &params).expect("ctx");
+        let ctx = BlockContext::build(b"cx2g1-p16-blk", TEST_NONCE, &a, &b, &params).expect("ctx");
         // coloc=true ⇒ the g=1 co-location path. Must prove +
         // pow-verify with C3 ACTIVE and every bus balanced.
         let out = prove_and_verify_for_block_inner(&ctx, &params, TEST_NONCE, 0, false).expect(
@@ -3828,7 +3964,7 @@ mod tests {
         };
         params.validate().unwrap();
         let (a, b) = synth_matrices(b"cx2g1-adv", &params);
-        let ctx = BlockContext::build(b"cx2g1-adv-blk", &a, &b, &params).expect("ctx");
+        let ctx = BlockContext::build(b"cx2g1-adv-blk", TEST_NONCE, &a, &b, &params).expect("ctx");
         let target = crate::tile_hash::difficulty_target(&params);
 
         // Honest control: the seam is a no-op ⇒ must verify.
@@ -3939,7 +4075,7 @@ mod tests {
         params.validate().unwrap();
         assert_eq!(params.noise_rank % 16, 0, "P16 must be 16|r ⇒ coloc");
         let (a, b) = synth_matrices(b"cr0-sched", &params);
-        let ctx = BlockContext::build(b"cr0-sched-blk", &a, &b, &params).expect("ctx");
+        let ctx = BlockContext::build(b"cr0-sched-blk", TEST_NONCE, &a, &b, &params).expect("ctx");
         let target = crate::tile_hash::difficulty_target(&params);
         // The seam's explicit attested tile (CR.0 takes the same
         // (tile_i,tile_j); production derives it MED-3 via tile_ij).
@@ -4124,7 +4260,8 @@ mod tests {
         };
         params.validate().unwrap();
         let (a, b) = synth_matrices(b"cr1-eq-extract", &params);
-        let ctx = BlockContext::build(b"cr1-eq-extract-blk", &a, &b, &params).expect("ctx");
+        let ctx =
+            BlockContext::build(b"cr1-eq-extract-blk", TEST_NONCE, &a, &b, &params).expect("ctx");
         let target = crate::tile_hash::difficulty_target(&params);
         let (tile_i, tile_j) = (0u32, 0u32);
 
@@ -4236,7 +4373,7 @@ mod tests {
         };
         params.validate().unwrap();
         let (a, b) = synth_matrices(b"cr4a-strip", &params);
-        let ctx = BlockContext::build(b"cr4a-strip-blk", &a, &b, &params).expect("ctx");
+        let ctx = BlockContext::build(b"cr4a-strip-blk", TEST_NONCE, &a, &b, &params).expect("ctx");
         let target = crate::tile_hash::difficulty_target(&params);
         let (tile_i, tile_j) = (0u32, 0u32);
 
@@ -4352,7 +4489,7 @@ mod tests {
         };
         params.validate().unwrap();
         let (a, b) = synth_matrices(b"cr6-forge", &params);
-        let ctx = BlockContext::build(b"cr6-forge-blk", &a, &b, &params).expect("ctx");
+        let ctx = BlockContext::build(b"cr6-forge-blk", TEST_NONCE, &a, &b, &params).expect("ctx");
         let target = crate::tile_hash::difficulty_target(&params);
         let (tile_i, tile_j) = (0u32, 0u32);
 
@@ -4455,7 +4592,7 @@ mod tests {
         assert_eq!(params.num_stripes() as usize, 64, "boundary config");
 
         let (a, b) = synth_matrices(b"in-circ-matmul", &params);
-        let ctx = BlockContext::build(b"in-circ-blk", &a, &b, &params).expect("ctx");
+        let ctx = BlockContext::build(b"in-circ-blk", TEST_NONCE, &a, &b, &params).expect("ctx");
         let target = crate::tile_hash::difficulty_target(&params);
 
         let outcome = prove_and_verify_tiled(&ctx, &params, TEST_NONCE, &target, 0, 0)
@@ -4498,7 +4635,7 @@ mod tests {
         };
         params.validate().unwrap();
         let (a, b) = synth_matrices(b"4c10-committed", &params);
-        let ctx = BlockContext::build(b"4c10-blk", &a, &b, &params).expect("ctx");
+        let ctx = BlockContext::build(b"4c10-blk", TEST_NONCE, &a, &b, &params).expect("ctx");
         let target = crate::tile_hash::difficulty_target(&params);
 
         // Honest control: sweep == committed ⇒ must verify.
@@ -4555,7 +4692,7 @@ mod tests {
         };
         params.validate().unwrap();
         let (a, b) = synth_matrices(b"4c10-perm-committed", &params);
-        let ctx = BlockContext::build(b"4c10-perm-blk", &a, &b, &params).expect("ctx");
+        let ctx = BlockContext::build(b"4c10-perm-blk", TEST_NONCE, &a, &b, &params).expect("ctx");
         let target = crate::tile_hash::difficulty_target(&params);
 
         // Row-reverse the committed A: a same-chunk-multiset but
@@ -4603,7 +4740,7 @@ mod tests {
     fn m2_invalid_params_yield_clean_error_not_panic() {
         let good = MatmulParams::TEST_SMALL;
         let (a, b) = synth_matrices(b"m2-seed", &good);
-        let ctx = BlockContext::build(b"m2-blk", &a, &b, &good).expect("ctx");
+        let ctx = BlockContext::build(b"m2-blk", TEST_NONCE, &a, &b, &good).expect("ctx");
         let target = [0xFFu8; 32];
 
         // The concrete pre-fix panic: noise_rank == 0 ⇒ k/0 in
@@ -4638,7 +4775,7 @@ mod tests {
     fn m2_found_idx_out_of_range_yields_clean_error_not_panic() {
         let params = MatmulParams::TEST_SMALL;
         let (a, b) = synth_matrices(b"m2-fb-seed", &params);
-        let ctx = BlockContext::build(b"m2-fb-blk", &a, &b, &params).expect("ctx");
+        let ctx = BlockContext::build(b"m2-fb-blk", TEST_NONCE, &a, &b, &params).expect("ctx");
 
         let nt = params.num_tiles();
         let oob = nt as u32; // == num_tiles, just past the last valid idx

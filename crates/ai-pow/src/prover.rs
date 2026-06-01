@@ -2,19 +2,16 @@
 //! tile state `M_{i,j}` falls below the shape-aware target
 //! `2^(256 - b) · r · t^2` (Pearl §4.5).
 //!
-//! The miner supplies the input matrices `A` and `B`. The prover commits
-//! to them via Pearl §4.3 Alg. 2:
-//!  1. `κ = derive_key("kappa", block ‖ params_tag)`
+//! The miner supplies the input matrices `A` and `B`. Each nonce attempt
+//! commits to them via a Pearl §4.3 Alg. 2-shaped chain:
+//!  1. `κ = derive_key("kappa", block_state(block, nonce) ‖ params_tag)`
 //!  2. `H_A = MerkleRoot({ row_leaf_hash(A_i, κ) }_i)`
 //!  3. `H_B = MerkleRoot({ col_leaf_hash(B_j, κ) }_j)`
 //!  4. `s_B = derive_key("s_b", κ ‖ H_B)`
 //!  5. `s_A = derive_key("s_a", s_B ‖ H_A)`
 //!
-//! The matmul, noise factors, and per-tile `M` states are computed **once
-//! per block** (independent of nonce). Per nonce, `pow_key = derive_key(
-//! "pow-key", s_A ‖ nonce)` is mixed in and used to re-hash the cached
-//! `M` states. This makes `mine_block` amortize the matmul cost across an
-//! arbitrary number of nonce attempts.
+//! The nonce is part of the per-attempt `sigma` before `κ`, `H_A`, `H_B`,
+//! `s_A`, `s_B`, low-rank noise, and all tile states are computed.
 
 use thiserror::Error;
 
@@ -60,6 +57,8 @@ pub enum MineError {
         index: usize,
         value: i8,
     },
+    #[error("BlockContext was built for a different block commitment or nonce")]
+    ContextAttemptMismatch,
 }
 
 /// Compute the 32-byte tag binding a `MatmulParams` instance into the
@@ -79,11 +78,13 @@ pub fn params_tag(p: &MatmulParams) -> [u8; 32] {
     )
 }
 
-/// Per-block precomputation: commitments to `A` and `B`, derived seeds,
+/// Per-attempt computation: commitments to `A` and `B`, derived seeds,
 /// noise factors, perturbed matrices, all `M_{i,j}` tile states, and the
-/// leaves of `H_A` / `H_B` for opening-path extraction. Independent of
-/// the nonce — built once per `(block_commitment, A, B)` triple.
+/// leaves of `H_A` / `H_B` for opening-path extraction.
 pub struct BlockContext<'a> {
+    pub block_commitment: Vec<u8>,
+    pub nonce: Vec<u8>,
+    pub attempt_state: Vec<u8>,
     pub a: &'a [i8],
     pub b: &'a [i8],
     pub params: MatmulParams,
@@ -113,6 +114,7 @@ impl<'a> BlockContext<'a> {
     /// `Err` only for parameter or shape problems.
     pub fn build(
         block_commitment: &[u8],
+        nonce: &[u8],
         a: &'a [i8],
         b: &'a [i8],
         params: &MatmulParams,
@@ -153,7 +155,8 @@ impl<'a> BlockContext<'a> {
         }
 
         let tag = params_tag(params);
-        let kappa = commitment_key(block_commitment, &tag);
+        let attempt_state = block_state(block_commitment, nonce);
+        let kappa = commitment_key(&attempt_state, &tag);
 
         // Row leaves for H_A.
         let mut h_a_leaves = Vec::with_capacity(m);
@@ -197,6 +200,9 @@ impl<'a> BlockContext<'a> {
         }
 
         Ok(BlockContext {
+            block_commitment: block_commitment.to_vec(),
+            nonce: nonce.to_vec(),
+            attempt_state,
             a,
             b,
             params: *params,
@@ -215,6 +221,18 @@ impl<'a> BlockContext<'a> {
     }
 }
 
+fn ensure_context_attempt(
+    ctx: &BlockContext<'_>,
+    block_commitment: &[u8],
+    nonce: &[u8],
+) -> Result<(), MineError> {
+    if ctx.block_commitment == block_commitment && ctx.nonce == nonce {
+        Ok(())
+    } else {
+        Err(MineError::ContextAttemptMismatch)
+    }
+}
+
 /// Run one nonce attempt with caller-supplied `A` and `B`. Returns
 /// `Ok(Some(proof))` if a tile satisfies the hardness target, `Ok(None)`
 /// if no tile does, or `Err` for parameter / shape / range problems.
@@ -226,14 +244,14 @@ pub fn mine(
     params: &MatmulParams,
     opts: ProverOptions,
 ) -> Result<Option<MatmulProof>, MineError> {
-    let ctx = BlockContext::build(block_commitment, a, b, params)?;
-    mine_with_context(&ctx, block_commitment, nonce, opts)
+    let ctx = BlockContext::build(block_commitment, nonce, a, b, params)?;
+    mine_with_context(&ctx, opts)
 }
 
-/// Run the prover repeatedly over a sequence of nonces, caching all
-/// per-block computation (commitments, noise, matmul, all tile `M`
-/// states). Returns the first proof found or `Ok(None)` if no nonce in
-/// the iterator satisfies the target.
+/// Run the prover repeatedly over a sequence of nonces. Every nonce builds a
+/// fresh attempt context, including fresh commitments, noise, matmul, and tile
+/// states. Returns the first proof found or `Ok(None)` if no nonce in the
+/// iterator satisfies the target.
 pub fn mine_block<I, N>(
     block_commitment: &[u8],
     nonces: I,
@@ -246,9 +264,9 @@ where
     I: IntoIterator<Item = N>,
     N: AsRef<[u8]>,
 {
-    let ctx = BlockContext::build(block_commitment, a, b, params)?;
     for nonce in nonces {
-        if let Some(proof) = mine_with_context(&ctx, block_commitment, nonce.as_ref(), opts)? {
+        let ctx = BlockContext::build(block_commitment, nonce.as_ref(), a, b, params)?;
+        if let Some(proof) = mine_with_context(&ctx, opts)? {
             return Ok(Some(proof));
         }
     }
@@ -279,17 +297,16 @@ pub fn mine_with_context_at_target(
     target: &[u8; 32],
     opts: ProverOptions,
 ) -> Result<Option<MatmulProof>, MineError> {
-    Ok(mine_inner(ctx, block_commitment, nonce, target, opts)?.map(|(p, _)| p))
+    ensure_context_attempt(ctx, block_commitment, nonce)?;
+    Ok(mine_inner(ctx, target, opts)?.map(|(p, _)| p))
 }
 
 fn mine_with_context(
     ctx: &BlockContext<'_>,
-    block_commitment: &[u8],
-    nonce: &[u8],
     opts: ProverOptions,
 ) -> Result<Option<MatmulProof>, MineError> {
     let target = difficulty_target(&ctx.params);
-    let result = mine_inner(ctx, block_commitment, nonce, &target, opts)?;
+    let result = mine_inner(ctx, &target, opts)?;
 
     // Pearl-analog ZK wrapping (preserved from the original
     // mine_with_context). The bridge re-derives target from params
@@ -301,9 +318,10 @@ fn mine_with_context(
         // structural profiles remain useful for local/plain tests even when
         // the crate is compiled with `--features zk`.
         if ctx.params.validate_prod_envelope().is_ok() {
-            let _zk =
-                crate::zk_bridge::prove_and_verify_for_block(ctx, &ctx.params, nonce, *found_idx)
-                    .expect("F1 zk bridge: prove + pow-verify must succeed for a found tile");
+            let _zk = crate::zk_bridge::prove_and_verify_for_block(
+                ctx, &ctx.params, &ctx.nonce, *found_idx,
+            )
+            .expect("F1 zk bridge: prove + pow-verify must succeed for a found tile");
         }
     }
 
@@ -315,16 +333,14 @@ fn mine_with_context(
 /// `found_idx`).
 fn mine_inner(
     ctx: &BlockContext<'_>,
-    block_commitment: &[u8],
-    nonce: &[u8],
     target: &[u8; 32],
     opts: ProverOptions,
 ) -> Result<Option<(MatmulProof, u32)>, MineError> {
     let params = &ctx.params;
-    let state = block_state(block_commitment, nonce);
-    let pow_key = pow_key_for_nonce(&ctx.s_a, nonce);
+    let pow_key = pow_key_for_nonce(&ctx.s_a, &ctx.nonce);
 
-    // Per-nonce: re-hash every cached M state with the per-nonce pow_key.
+    // Final attempt hash: these M states are already nonce-bound because the
+    // context's kappa/noise/matmul were built from block_state(block, nonce).
     let num_tiles = params.num_tiles() as usize;
     let mut leaves: Vec<[u8; 32]> = Vec::with_capacity(num_tiles);
     for state in &ctx.m_states {
@@ -332,7 +348,7 @@ fn mine_inner(
     }
 
     let comm_m = merkle_root(&leaves)?;
-    let chal = challenge_seed(&state, &comm_m, &ctx.tag);
+    let chal = challenge_seed(&ctx.attempt_state, &comm_m, &ctx.tag);
 
     let mut found: Option<(u32, [u8; 32])> = None;
     for idx in 0..num_tiles as u32 {

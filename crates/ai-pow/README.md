@@ -97,8 +97,8 @@ list of `ai-pow`-side derived portions.
 | `src/matmul.rs` | `BlockNoise`, `Matrices` (`A' = A + E`, `B' = B + F`), `TileState`, `compute_tile`, `compute_tile_from_slices` |
 | `src/tile_hash.rs` | `difficulty_target`, `hash_le_target` (little-endian U256 semantics) |
 | `src/commit.rs` | Tile-state Merkle (sentinel-padded) and Pearl `matrix_commitment` chunk-Merkle |
-| `src/fiat_shamir.rs` | Pearl §4.3 commitment-hash chain + per-nonce pow-key derivation |
-| `src/prover.rs` | `BlockContext`, `mine`, `mine_block` |
+| `src/fiat_shamir.rs` | Pearl §4.3 commitment-hash chain over nonce-bound attempt state + final pow-key derivation |
+| `src/prover.rs` | nonce-bound `BlockContext`, `mine`, `mine_block` |
 | `src/verifier.rs` | `verify` |
 | `src/proof.rs` | `MatmulProof`, `TileOpening`, encode / decode |
 | `src/synth.rs` | Deterministic `(A, B)` test synthesis |
@@ -108,11 +108,13 @@ list of `ai-pow`-side derived portions.
 
 ## Tests
 
-`cargo test -p ai-pow` runs 109 tests across 7 binaries:
+`cargo test -p ai-pow` runs the crate's unit, integration, and fixture tests:
 
 - 53 unit (params, prng, matmul, tile_hash, commit, fiat_shamir, proof, synth)
 - 19 adversarial (every verifier rejection path exercised by tampering)
-- 5 block-noise cache (`mine_block` amortization)
+- nonce-grinding regressions: different nonces re-key commitments, change
+  noise/tile states before final hashing, and stale attempt contexts are
+  rejected
 - 13 end-to-end (round-trip prove → verify)
 - 5 LLM-shape (rectangular, non-pow-2 tile counts, Gemma 4 / Qwen 3.6 FFN profiles)
 - 11 Pearl-compat fixtures (sections S0 – S9 above)

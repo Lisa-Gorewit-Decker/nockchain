@@ -3,9 +3,10 @@
 //! Implements the Pearl Whitepaper PoUW puzzle for caller-chosen INT8
 //! matrices `A` and `B`:
 //!
-//! 1. **Commitments** (Pearl §4.3, Alg. 2): `κ` derived from
-//!    `(block_commitment, params_tag)`; `H_A` and `H_B` are BLAKE3-Merkle
-//!    roots over rows of `A` and columns of `B` keyed by `κ`; seeds
+//! 1. **Commitments** (Pearl §4.3, Alg. 2): `κ` derived from the
+//!    nonce-bound attempt state `(block_commitment, nonce, params_tag)`;
+//!    `H_A` and `H_B` are BLAKE3-Merkle roots over rows of `A` and columns
+//!    of `B` keyed by `κ`; seeds
 //!    `s_B = derive_key("s_b", κ ‖ H_B)` and `s_A = derive_key("s_a",
 //!    s_B ‖ H_A)` bind the noise to the chosen matrices.
 //! 2. **Low-rank noise** (Pearl §4.4, Alg. 3): `E = E_L · E_R` and
@@ -15,8 +16,9 @@
 //!    accumulator updated every `r`-stripe along the `k`-axis via
 //!    `M[ℓ mod 16] ← (M[ℓ mod 16] ≪ 13) ⊕ X_ℓ`.
 //! 4. **Shape-aware hardness**: `BLAKE3(M, key = pow_key) ≤ 2^(256-b) · r · t^2`,
-//!    with `pow_key = derive_key("pow-key", s_A ‖ nonce)` allowing nonce
-//!    retries to amortize the matmul.
+//!    with `pow_key = derive_key("pow-key", s_A ‖ nonce)`. Since `s_A` is
+//!    already nonce-bound through `κ`, changing the nonce requires fresh
+//!    commitments, noise, and matmul-derived tile states before the hash check.
 //!
 //! The proof contains `H_A`, `H_B`, and per-opening row/column strips of
 //! `A`/`B` with BLAKE3 Merkle authentication paths up to those roots, so

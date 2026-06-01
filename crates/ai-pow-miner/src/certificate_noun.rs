@@ -3,7 +3,10 @@
 //! This module intentionally accepts the recursive production certificate
 //! object, not `MatmulProof` and not the raw Layer-0 `AiPowBatchProof`.
 
-use ai_pow::zk_bridge::ZkPublicCommitments;
+use ai_pow::params::MatmulParams;
+use ai_pow::zk_bridge::{
+    verify_ai_pow_production_statement, zk_params_from_matmul, BridgeError, ZkPublicCommitments,
+};
 use ai_pow_zk::{CompositePublicInputs, ZkParams};
 use nockapp::noun::slab::NounSlab;
 use nockvm::jets::bits::util::met;
@@ -36,6 +39,13 @@ pub enum CertificateNounError {
     IntegerOutOfRange { field: &'static str },
     #[error("field element {field} is not canonical")]
     NonCanonicalField { field: &'static str },
+    #[error("certificate ZK params do not match trusted AI-PoW params: expected {expected:?}, got {actual:?}")]
+    ZkParamsMismatch {
+        expected: ZkParams,
+        actual: ZkParams,
+    },
+    #[error("certificate statement metadata is not bound to trusted block state: {0}")]
+    Statement(#[from] BridgeError),
 }
 
 /// Resource limits for decoding the structured certificate noun.
@@ -197,6 +207,33 @@ pub fn decode_ai_pow_certificate_noun(
         public_inputs: decode_public_inputs(fields[5], space, limits)?,
         certificate: decode_proof_node(fields[6], space, &mut state, 0)?,
     })
+}
+
+/// Re-derive and validate the trusted statement data adjacent to a decoded
+/// recursive certificate noun.
+///
+/// This is deliberately separate from recursive proof verification. It rejects
+/// metadata replay across `(block_commitment, nonce, target)` before a caller
+/// spends verifier work on the miner-controlled recursive certificate tree.
+pub fn precheck_ai_pow_certificate_statement(
+    shape: &AiPowCertificateShape,
+    block_commitment: &[u8],
+    nonce: &[u8],
+    params: &MatmulParams,
+    target: &[u8; 32],
+) -> Result<(), CertificateNounError> {
+    let expected = zk_params_from_matmul(params);
+    if shape.zk_params != expected {
+        return Err(CertificateNounError::ZkParamsMismatch {
+            expected,
+            actual: shape.zk_params.clone(),
+        });
+    }
+    verify_ai_pow_production_statement(
+        block_commitment, nonce, params, target, shape.found_idx, &shape.commitments,
+        &shape.public_inputs, shape.trace_height,
+    )
+    .map_err(CertificateNounError::Statement)
 }
 
 #[derive(Debug)]
@@ -1307,6 +1344,12 @@ impl SerializeMap for NodeMap {
 
 #[cfg(test)]
 mod tests {
+    use ai_pow::fiat_shamir::{
+        block_state, commitment_key, noise_seed_a, noise_seed_b, pow_key_for_nonce,
+    };
+    use ai_pow::prover::params_tag;
+    use ai_pow::zk_bridge::{expected_layer0_rows, zk_params_from_matmul};
+
     use super::*;
 
     #[derive(serde::Serialize)]
@@ -1346,6 +1389,44 @@ mod tests {
             h_a_chunk: [0x30; 32],
             h_b_chunk: [0x40; 32],
         }
+    }
+
+    fn words_le(b: &[u8; 32]) -> [u32; 8] {
+        core::array::from_fn(|i| {
+            u32::from_le_bytes([b[i * 4], b[i * 4 + 1], b[i * 4 + 2], b[i * 4 + 3]])
+        })
+    }
+
+    fn production_statement_fixture(
+        block_commitment: &[u8],
+        nonce: &[u8],
+    ) -> (
+        MatmulParams,
+        ZkPublicCommitments,
+        CompositePublicInputs,
+        usize,
+    ) {
+        let params = MatmulParams::PROD;
+        let commitments = ZkPublicCommitments {
+            h_a: [0x11; 32],
+            h_b: [0x22; 32],
+            h_a_chunk: [0x33; 32],
+            h_b_chunk: [0x44; 32],
+        };
+        let tag = params_tag(&params);
+        let state = block_state(block_commitment, nonce);
+        let kappa = commitment_key(&state, &tag);
+        let s_b = noise_seed_b(&kappa, &commitments.h_b);
+        let s_a = noise_seed_a(&s_b, &commitments.h_a);
+        let pow_key = pow_key_for_nonce(&s_a, nonce);
+        let mut pis = CompositePublicInputs::zero();
+        pis.job_key = words_le(&kappa);
+        pis.commitment_hash = words_le(&pow_key);
+        pis.hash_a = words_le(&commitments.h_a_chunk);
+        pis.hash_b = words_le(&commitments.h_b_chunk);
+        pis.hash_jackpot = [1, 0, 0, 0, 0, 0, 0, 0];
+        let trace_height = expected_layer0_rows(&params).required_trace_len();
+        (params, commitments, pis, trace_height)
     }
 
     fn build_certificate_slab_with_raw_node<F>(build_certificate: F) -> NounSlab
@@ -1463,6 +1544,48 @@ mod tests {
         assert_eq!(decoded.commitments, commitments);
         assert_eq!(decoded.public_inputs, pis);
         assert_eq!(decoded.certificate, cert);
+    }
+
+    #[test]
+    fn certificate_statement_precheck_binds_noun_metadata_to_nonce_and_target() {
+        let block = b"noun-certificate-block";
+        let nonce = b"noun-certificate-nonce";
+        let target = [0xffu8; 32];
+        let (params, commitments, pis, trace_height) = production_statement_fixture(block, nonce);
+        let certificate = AiProofNode::Seq(vec![AiProofNode::U64(42)]);
+        let slab = build_ai_pow_certificate_noun_from_node(
+            &zk_params_from_matmul(&params),
+            0,
+            trace_height,
+            &commitments,
+            &pis,
+            &certificate,
+        );
+        let decoded = decode_ai_pow_certificate_slab(&slab, CertificateNounLimits::default())
+            .expect("decode certificate noun");
+
+        precheck_ai_pow_certificate_statement(&decoded, block, nonce, &params, &target)
+            .expect("honest certificate metadata should precheck");
+
+        assert!(matches!(
+            precheck_ai_pow_certificate_statement(
+                &decoded, block, b"wrong-nonce", &params, &target
+            ),
+            Err(CertificateNounError::Statement(_))
+        ));
+        assert!(matches!(
+            precheck_ai_pow_certificate_statement(&decoded, block, nonce, &params, &[0u8; 32]),
+            Err(CertificateNounError::Statement(
+                BridgeError::FoundAboveTarget
+            ))
+        ));
+
+        let mut wrong_params = params;
+        wrong_params.difficulty_bits += 1;
+        assert!(matches!(
+            precheck_ai_pow_certificate_statement(&decoded, block, nonce, &wrong_params, &target),
+            Err(CertificateNounError::ZkParamsMismatch { .. })
+        ));
     }
 
     #[test]

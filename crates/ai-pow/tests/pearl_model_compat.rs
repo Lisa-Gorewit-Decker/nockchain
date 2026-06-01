@@ -367,7 +367,7 @@ fn b1_1b_real_weights_satisfy_pearl_int7_and_b2_lossless() {
 #[test]
 fn b1_1c_real_weight_mineable_unit_end_to_end() {
     use ai_pow::commit::matrix_commitment;
-    use ai_pow::fiat_shamir::commitment_key;
+    use ai_pow::fiat_shamir::{block_state, commitment_key};
     use ai_pow::prover::{params_tag, BlockContext};
     let Some(p) = model_shard1() else {
         eprintln!("SKIP b1_1c: real model absent");
@@ -380,10 +380,11 @@ fn b1_1c_real_weight_mineable_unit_end_to_end() {
         .collect();
 
     let hdr = b"b1.1c-block-header";
-    let ctx = BlockContext::build(hdr, &a, &real_b, &mp)
+    let nonce = b"b1.1c-nonce";
+    let ctx = BlockContext::build(hdr, nonce, &a, &real_b, &mp)
         .expect("ai-pow must mine the real model's weights at real μ");
     // Deterministic (the audited pipeline is a pure fn of inputs).
-    let ctx2 = BlockContext::build(hdr, &a, &real_b, &mp).unwrap();
+    let ctx2 = BlockContext::build(hdr, nonce, &a, &real_b, &mp).unwrap();
     assert_eq!(ctx.h_a_chunk, ctx2.h_a_chunk);
     assert_eq!(ctx.h_b_chunk, ctx2.h_b_chunk);
     assert_eq!(ctx.s_a, ctx2.s_a);
@@ -403,7 +404,8 @@ fn b1_1c_real_weight_mineable_unit_end_to_end() {
     // audited Pearl §4.6 keyed chunk hash recomputed independently
     // here (matrix_commitment is the audited path; this pins it on
     // real model bytes — the S8 invariant on real weights).
-    let kappa = commitment_key(hdr, &params_tag(&mp));
+    let state = block_state(hdr, nonce);
+    let kappa = commitment_key(&state, &params_tag(&mp));
     let b_bytes: Vec<u8> = real_b.iter().map(|&v| v as u8).collect();
     assert_eq!(
         ctx.h_b_chunk,
@@ -415,7 +417,7 @@ fn b1_1c_real_weight_mineable_unit_end_to_end() {
     let synth_b: Vec<i8> = (0..(mp.n as usize) * MODEL_K)
         .map(|i| ((i * 17 + 3) % 127 - 63) as i8)
         .collect();
-    let ctx_s = BlockContext::build(hdr, &a, &synth_b, &mp).unwrap();
+    let ctx_s = BlockContext::build(hdr, nonce, &a, &synth_b, &mp).unwrap();
     assert_ne!(
         ctx.h_b_chunk, ctx_s.h_b_chunk,
         "real vs synthetic B ⇒ different commitment (weight-sensitive)"
@@ -580,7 +582,7 @@ fn b1_1_gemma_b_real_weights_satisfy_pearl_int7_and_b2_lossless() {
 #[test]
 fn b1_1_gemma_c_real_weight_mineable_unit_end_to_end() {
     use ai_pow::commit::matrix_commitment;
-    use ai_pow::fiat_shamir::commitment_key;
+    use ai_pow::fiat_shamir::{block_state, commitment_key};
     use ai_pow::prover::{params_tag, BlockContext};
     let Some(p) = gemma_model_file() else {
         eprintln!("SKIP b1_1_gemma_c: Gemma model absent");
@@ -593,9 +595,10 @@ fn b1_1_gemma_c_real_weight_mineable_unit_end_to_end() {
         .collect();
 
     let hdr = b"b1.1-gemma-block-header";
-    let ctx = BlockContext::build(hdr, &a, &real_b, &mp)
+    let nonce = b"b1.1-gemma-nonce";
+    let ctx = BlockContext::build(hdr, nonce, &a, &real_b, &mp)
         .expect("ai-pow must mine the real Gemma weights at real μ");
-    let ctx2 = BlockContext::build(hdr, &a, &real_b, &mp).unwrap();
+    let ctx2 = BlockContext::build(hdr, nonce, &a, &real_b, &mp).unwrap();
     assert_eq!(ctx.h_b_chunk, ctx2.h_b_chunk);
     assert_eq!(ctx.s_a, ctx2.s_a);
     assert_eq!(
@@ -609,7 +612,8 @@ fn b1_1_gemma_c_real_weight_mineable_unit_end_to_end() {
             .collect::<Vec<_>>(),
         "mineable unit must be deterministic on the real Gemma weights"
     );
-    let kappa = commitment_key(hdr, &params_tag(&mp));
+    let state = block_state(hdr, nonce);
+    let kappa = commitment_key(&state, &params_tag(&mp));
     let b_bytes: Vec<u8> = real_b.iter().map(|&v| v as u8).collect();
     assert_eq!(
         ctx.h_b_chunk,
@@ -619,7 +623,7 @@ fn b1_1_gemma_c_real_weight_mineable_unit_end_to_end() {
     let synth_b: Vec<i8> = (0..(mp.n as usize) * GEMMA_K)
         .map(|i| ((i * 19 + 5) % 127 - 63) as i8)
         .collect();
-    let ctx_s = BlockContext::build(hdr, &a, &synth_b, &mp).unwrap();
+    let ctx_s = BlockContext::build(hdr, nonce, &a, &synth_b, &mp).unwrap();
     assert_ne!(
         ctx.h_b_chunk, ctx_s.h_b_chunk,
         "real vs synthetic Gemma B ⇒ different commitment"
@@ -778,7 +782,7 @@ fn b1_1_l70b_b_real_weights_satisfy_pearl_int7_and_b2_lossless() {
 #[test]
 fn b1_1_l70b_c_real_weight_mineable_unit_end_to_end() {
     use ai_pow::commit::matrix_commitment;
-    use ai_pow::fiat_shamir::commitment_key;
+    use ai_pow::fiat_shamir::{block_state, commitment_key};
     use ai_pow::prover::{params_tag, BlockContext};
     let Some(p) = l70b_shard1() else {
         eprintln!("SKIP b1_1_l70b_c: Llama-70B absent");
@@ -791,9 +795,10 @@ fn b1_1_l70b_c_real_weight_mineable_unit_end_to_end() {
         .collect();
 
     let hdr = b"b1.1-l70b-block-header";
-    let ctx = BlockContext::build(hdr, &a, &real_b, &mp)
+    let nonce = b"b1.1-l70b-nonce";
+    let ctx = BlockContext::build(hdr, nonce, &a, &real_b, &mp)
         .expect("ai-pow must mine the real Llama-70B weights at real μ");
-    let ctx2 = BlockContext::build(hdr, &a, &real_b, &mp).unwrap();
+    let ctx2 = BlockContext::build(hdr, nonce, &a, &real_b, &mp).unwrap();
     assert_eq!(ctx.h_b_chunk, ctx2.h_b_chunk);
     assert_eq!(ctx.s_a, ctx2.s_a);
     assert_eq!(
@@ -807,7 +812,8 @@ fn b1_1_l70b_c_real_weight_mineable_unit_end_to_end() {
             .collect::<Vec<_>>(),
         "mineable unit must be deterministic on the real Llama-70B weights"
     );
-    let kappa = commitment_key(hdr, &params_tag(&mp));
+    let state = block_state(hdr, nonce);
+    let kappa = commitment_key(&state, &params_tag(&mp));
     let b_bytes: Vec<u8> = real_b.iter().map(|&v| v as u8).collect();
     assert_eq!(
         ctx.h_b_chunk,
@@ -817,7 +823,7 @@ fn b1_1_l70b_c_real_weight_mineable_unit_end_to_end() {
     let synth_b: Vec<i8> = (0..(mp.n as usize) * L70B_K)
         .map(|i| ((i * 31 + 6) % 127 - 63) as i8)
         .collect();
-    let ctx_s = BlockContext::build(hdr, &a, &synth_b, &mp).unwrap();
+    let ctx_s = BlockContext::build(hdr, nonce, &a, &synth_b, &mp).unwrap();
     assert_ne!(
         ctx.h_b_chunk, ctx_s.h_b_chunk,
         "real vs synthetic Llama-70B B ⇒ different commitment"

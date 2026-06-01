@@ -89,8 +89,9 @@ fn main() {
     .expect("difficulty_bits=0 ⇒ a tile always clears");
     let mine_ms = t.elapsed().as_millis();
 
-    // 2. Per-block context: chunk-Merkle commitments + κ.
-    let ctx = BlockContext::build(block_commitment, &a, &b, &params).expect("BlockContext build");
+    // 2. Per-attempt context: chunk-Merkle commitments + nonce-bound κ.
+    let ctx =
+        BlockContext::build(block_commitment, nonce, &a, &b, &params).expect("BlockContext build");
 
     // Helpers: 32-byte → 8 LE u32 words.
     let words = |b: &[u8; 32]| -> [u32; 8] {

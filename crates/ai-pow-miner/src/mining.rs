@@ -2,11 +2,16 @@
 //!
 //! [`run`] takes a [`MiningJob`], iterates `extranonce` values
 //! (NCMN-v1-wrapped), calls
-//! [`ai_pow::prover::mine_with_context_at_target`] per attempt, and
+//! [`ai_pow::prover::mine_with_context_at_target`] per extranonce, and
 //! returns the first solution that clears the chain's
 //! [`DifficultyTarget`]. Returns one of [`MiningError::Cancelled`] /
 //! [`MiningError::DeadlineElapsed`] / [`MiningError::BudgetExhausted`]
 //! on non-success termination.
+//!
+//! Each extranonce builds a fresh nonce-bound [`BlockContext`]. Reusing keyed
+//! commitments, noise, matmul states, or jackpot preimages across extranonces
+//! is not production-sound for the intended "fresh nonce requires fresh
+//! matmul work" invariant.
 
 use std::time::{Duration, Instant};
 
@@ -16,10 +21,9 @@ use crate::{
     build_ncmn_nonce, MineOptions, MinedSolution, MiningCancel, MiningError, MiningJob, MiningStats,
 };
 
-/// Run a block-mining attempt. Builds the [`BlockContext`] once
-/// (the noise expansion + cached `m_states` matmul — the expensive
-/// part), then loops over `extranonce` values, invoking the
-/// per-attempt ai-pow primitive for each.
+/// Run a block-mining attempt. Each `extranonce` builds a fresh
+/// nonce-bound [`BlockContext`] before the target check, so the expensive
+/// commitment/noise/matmul work is part of every attempt.
 ///
 /// Termination order is checked at each `extranonce`:
 ///   1. Solution → `Ok(MinedSolution)`.
@@ -55,7 +59,6 @@ fn run_inner(
             .map_err(ai_pow::prover::MineError::from)?;
     }
     let start = Instant::now();
-    let ctx = BlockContext::build(job.puzzle_id, job.a, job.b, job.params)?;
 
     let mut stats = MiningStats {
         extranonces_tried: 0,
@@ -80,6 +83,7 @@ fn run_inner(
         }
 
         let nonce = build_ncmn_nonce(&job.anchors, extranonce);
+        let ctx = BlockContext::build(job.puzzle_id, &nonce, job.a, job.b, job.params)?;
         let result =
             mine_with_context_at_target(&ctx, job.puzzle_id, &nonce, &job.target, opts.prover)?;
 

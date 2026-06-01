@@ -2,7 +2,7 @@
 
 use ai_pow::ncmn::{build_ncmn_nonce, NonceAnchors, NonceFormatError};
 use ai_pow::params::MatmulParams;
-use ai_pow::prover::{mine, mine_with_context_at_target, BlockContext, ProverOptions};
+use ai_pow::prover::{mine, mine_with_context_at_target, BlockContext, MineError, ProverOptions};
 use ai_pow::synth::synth_matrices;
 use ai_pow::verifier::{verify, verify_at_target, verify_ncmn_at_target_structural, VerifyError};
 
@@ -36,7 +36,7 @@ fn verifier_rejects_proof_mined_for_easier_external_target() {
     let (a, b) = synth_matrices(b"external-target-seed", &params);
     let block_commitment = b"external-target-block";
     let nonce = b"external-target-nonce";
-    let ctx = BlockContext::build(block_commitment, &a, &b, &params).unwrap();
+    let ctx = BlockContext::build(block_commitment, nonce, &a, &b, &params).unwrap();
     let easy_target = [0xff; 32];
     let proof = mine_with_context_at_target(
         &ctx,
@@ -62,7 +62,7 @@ fn ncmn_verifier_enforces_nonce_block_anchor() {
     let puzzle_id = b"ncmn-puzzle-id";
     let nck_commitment = [0x4eu8; 32];
     let nonce = build_ncmn_nonce(&NonceAnchors::nck_only(nck_commitment), 7);
-    let ctx = BlockContext::build(puzzle_id, &a, &b, &params).unwrap();
+    let ctx = BlockContext::build(puzzle_id, &nonce, &a, &b, &params).unwrap();
     let target = [0xff; 32];
     let proof =
         mine_with_context_at_target(&ctx, puzzle_id, &nonce, &target, ProverOptions::default())
@@ -119,6 +119,91 @@ fn proof_is_deterministic() {
 }
 
 #[test]
+fn nonce_changes_commitments_noise_and_tile_states_before_final_hashing() {
+    let params = small_params();
+    let (a, b) = synth_matrices(b"nonce-bound-context-seed", &params);
+    let block_commitment = b"nonce-bound-block";
+    let nonce_a = b"nonce-a";
+    let nonce_b = b"nonce-b";
+
+    let ctx_a = BlockContext::build(block_commitment, nonce_a, &a, &b, &params).unwrap();
+    let ctx_b = BlockContext::build(block_commitment, nonce_b, &a, &b, &params).unwrap();
+
+    assert_ne!(ctx_a.attempt_state, ctx_b.attempt_state);
+    assert_ne!(ctx_a.kappa, ctx_b.kappa, "nonce must change kappa");
+    assert_ne!(ctx_a.h_a, ctx_b.h_a, "nonce-bound kappa must re-key H_A");
+    assert_ne!(ctx_a.h_b, ctx_b.h_b, "nonce-bound kappa must re-key H_B");
+    assert_ne!(
+        ctx_a.h_a_chunk, ctx_b.h_a_chunk,
+        "nonce-bound kappa must re-key chunk H_A"
+    );
+    assert_ne!(
+        ctx_a.h_b_chunk, ctx_b.h_b_chunk,
+        "nonce-bound kappa must re-key chunk H_B"
+    );
+    assert_ne!(ctx_a.s_a, ctx_b.s_a, "nonce must change s_A");
+    assert_ne!(ctx_a.s_b, ctx_b.s_b, "nonce must change s_B");
+    assert_eq!(ctx_a.m_states.len(), ctx_b.m_states.len());
+    assert!(
+        ctx_a
+            .m_states
+            .iter()
+            .zip(ctx_b.m_states.iter())
+            .any(|(a, b)| a != b),
+        "nonce must change the matmul-derived tile states, not only the final hash key"
+    );
+}
+
+#[test]
+fn stale_attempt_context_cannot_be_reused_for_another_nonce() {
+    let params = small_params();
+    let (a, b) = synth_matrices(b"stale-context-seed", &params);
+    let block_commitment = b"stale-context-block";
+    let nonce_a = b"stale-nonce-a";
+    let nonce_b = b"stale-nonce-b";
+    let ctx_a = BlockContext::build(block_commitment, nonce_a, &a, &b, &params).unwrap();
+    let target = [0xff; 32];
+
+    assert_eq!(
+        mine_with_context_at_target(
+            &ctx_a,
+            block_commitment,
+            nonce_b,
+            &target,
+            ProverOptions::default(),
+        ),
+        Err(MineError::ContextAttemptMismatch)
+    );
+}
+
+#[test]
+fn proof_for_one_nonce_fails_verification_under_another_nonce() {
+    let params = small_params();
+    let (a, b) = synth_matrices(b"nonce-substitution-seed", &params);
+    let block_commitment = b"nonce-substitution-block";
+    let nonce_a = b"nonce-substitution-a";
+    let nonce_b = b"nonce-substitution-b";
+    let target = [0xff; 32];
+
+    let proof = mine(
+        block_commitment,
+        nonce_a,
+        &a,
+        &b,
+        &params,
+        ProverOptions::default(),
+    )
+    .unwrap()
+    .expect("max target must yield a proof");
+
+    verify_at_target(block_commitment, nonce_a, &params, &target, &proof).unwrap();
+    assert!(
+        verify_at_target(block_commitment, nonce_b, &params, &target, &proof).is_err(),
+        "proofs must not survive nonce substitution"
+    );
+}
+
+#[test]
 fn different_nonce_yields_different_proof() {
     let params = small_params();
     let (a, b) = synth_matrices(b"ab-seed", &params);
@@ -129,10 +214,10 @@ fn different_nonce_yields_different_proof() {
         .unwrap()
         .unwrap();
     assert_ne!(p1, p2);
-    // But H_A and H_B (block-level commitments) must be the same — they
-    // depend only on (block_commitment, params, A, B), not on the nonce.
-    assert_eq!(p1.h_a, p2.h_a);
-    assert_eq!(p1.h_b, p2.h_b);
+    // The nonce is part of Pearl's attempt state, so matrix commitments are
+    // re-keyed per nonce before noise and matmul are computed.
+    assert_ne!(p1.h_a, p2.h_a);
+    assert_ne!(p1.h_b, p2.h_b);
 }
 
 #[test]
