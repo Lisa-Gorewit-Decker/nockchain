@@ -5306,32 +5306,40 @@ mod tests {
             ))
         ));
 
-        let mut bad_commitments = commitments;
-        bad_commitments.h_a_chunk[0] ^= 1;
-        let bad_commitments_slab = build_ai_pow_certificate_noun_from_node(
-            &zk_params_from_matmul(&params),
-            0,
-            expected_layer0_rows(&params).required_trace_len(),
-            &bad_commitments,
-            &pis,
-            &AiProofNode::Unit,
-        );
-        let bad_commitments_artifact =
-            build_pearl_merge_artifact_slab(&statement, &aux_inclusion, &bad_commitments_slab);
-        let bad_commitments_decoded = decode_ai_pow_pearl_merge_artifact_slab(
-            &bad_commitments_artifact,
-            CertificateNounLimits::default(),
-        )
-        .expect("decode pearl merge artifact with bad commitments");
-        assert!(matches!(
-            precheck_ai_pow_pearl_merge_artifact_statement(
-                &bad_commitments_decoded, &statement.aux.nock_block_commitment, &a, &b,
-                &[0xffu8; 32], 16,
-            ),
-            Err(CertificateNounError::PearlMergePublicInputMismatch(
-                "commitments.h-a-chunk"
-            ))
-        ));
+        let commitment_cases: [(&str, fn(&mut ZkPublicCommitments)); 2] = [
+            ("commitments.h-a-chunk", |commitments| {
+                commitments.h_a_chunk[0] ^= 1
+            }),
+            ("commitments.h-b-chunk", |commitments| {
+                commitments.h_b_chunk[0] ^= 1
+            }),
+        ];
+        for (field, tamper) in commitment_cases {
+            let mut bad_commitments = commitments;
+            tamper(&mut bad_commitments);
+            let bad_commitments_slab = build_ai_pow_certificate_noun_from_node(
+                &zk_params_from_matmul(&params),
+                0,
+                expected_layer0_rows(&params).required_trace_len(),
+                &bad_commitments,
+                &pis,
+                &AiProofNode::Unit,
+            );
+            let bad_commitments_artifact =
+                build_pearl_merge_artifact_slab(&statement, &aux_inclusion, &bad_commitments_slab);
+            let bad_commitments_decoded = decode_ai_pow_pearl_merge_artifact_slab(
+                &bad_commitments_artifact,
+                CertificateNounLimits::default(),
+            )
+            .expect("decode pearl merge artifact with bad commitments");
+            assert!(matches!(
+                precheck_ai_pow_pearl_merge_artifact_statement(
+                    &bad_commitments_decoded, &statement.aux.nock_block_commitment, &a, &b,
+                    &[0xffu8; 32], 16,
+                ),
+                Err(CertificateNounError::PearlMergePublicInputMismatch(got)) if got == field
+            ));
+        }
 
         let wrong_found_idx_slab = build_ai_pow_certificate_noun_from_node(
             &zk_params_from_matmul(&params),
