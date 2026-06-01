@@ -388,7 +388,10 @@ Current code follows the recommended production design above:
   consumes the miner-controlled proof tree.
 - `crates/ai-pow-miner/src/bin/ai_pow_mine.rs`: recursive certificate
   construction rebuilds the context for the winning nonce and refuses to prove
-  unless the plain target check succeeds first.
+  unless the production NCMN verifier confirms that the plain target check
+  succeeds first. This precheck enforces the production parameter envelope,
+  NCMN nonce shape, absent external commitment, and target satisfaction before
+  recursive proof generation begins.
 
 Regression coverage now includes:
 
@@ -399,6 +402,8 @@ Regression coverage now includes:
 - `mine_block` is byte-equivalent to `mine` for the same nonce but rebuilds
   nonce-bound work for each nonce;
 - ZK prover entrypoints reject nonce-substituted contexts before proving;
+- the standalone miner's recursive certificate builder rejects bad targets and
+  non-canonical NCMN nonces before recursive proof generation;
 - production recursive-certificate statement metadata rejects wrong nonce,
   wrong public inputs, and jackpots above target before recursive verification;
 - the recursive production certificate itself binds the Layer-0 public-input

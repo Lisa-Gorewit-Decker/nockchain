@@ -141,8 +141,8 @@ fn ai_pow_consensus_wire_is_structured_but_fail_closed_without_verifier() {
          verification"
     );
     let target_check = AI_POW_MINER_BIN_RS
-        .find("verify_at_target")
-        .expect("production miner must check the plain matmul target hit");
+        .find("verify_ncmn_at_target")
+        .expect("production miner must check the plain matmul target hit at the NCMN boundary");
     let recursive_prove = AI_POW_MINER_BIN_RS
         .find("let run = prove_ai_pow_recursive_certificate")
         .expect("production miner must build the recursive certificate");
@@ -165,6 +165,8 @@ fn ai_pow_consensus_wire_is_structured_but_fail_closed_without_verifier() {
             && AI_POW_MINER_LIB_RS.contains("Count of fully rebuilt nonce-bound matmul attempts")
             && AI_POW_MINER_BIN_RS.contains("certificate_builder: Some")
             && !AI_POW_MINER_BIN_RS.contains("certificate_builder: None")
+            && !AI_POW_MINER_BIN_RS.contains("ai_pow::verify_at_target(")
+            && AI_POW_MINER_BIN_RS.contains("parse_ncmn_nonce")
             && target_check < recursive_prove
             && AI_POW_ZK_BRIDGE_RS.contains("pub fn prove_ai_pow_recursive_certificate")
             && recursive_certificate_fn.contains("validate_prod_envelope")

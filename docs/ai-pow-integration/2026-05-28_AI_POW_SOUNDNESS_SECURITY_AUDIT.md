@@ -503,15 +503,32 @@ Fix:
 ### PARAM-01: Production envelope is documented but not enforced in exposed verifier/miner entrypoints
 
 Severity: Medium to High
-Status: Confirmed
+Status: Implemented at production boundaries; legacy helpers remain explicit
 
-`MatmulParams::validate_prod_envelope()` captures the consensus/security envelope, but `ai-pow-miner::run`, `ai_pow::verifier::verify`, and `zk_bridge::prove_and_verify_for_block` use only `validate()`.
+Historical issue: `MatmulParams::validate_prod_envelope()` captured the
+consensus/security envelope, but production-looking entrypoints previously used
+only `validate()`.
+
+Current status:
+
+- `ai-pow-miner::mining::run` enforces `validate_prod_envelope()` at entry.
+- `ai_pow::verifier::verify_ncmn_at_target`,
+  `verify_prod_at_target`, and the structured certificate noun verifier enforce
+  the production envelope.
+- `zk_bridge::prove_and_verify_for_block`,
+  `prove_ai_pow_recursive_certificate`, and
+  `verify_ai_pow_production_statement` enforce the production envelope.
+- `ai-pow-mine`'s recursive certificate builder runs the plain target precheck
+  through `verify_ncmn_at_target`, not the structural low-level verifier, before
+  it starts recursive proof generation.
+- `validate()` and `verify_at_target` remain available for tests/local tools
+  and are documented as non-production helpers.
 
 Fix:
 
-- Define the exact consensus-admitted parameter set.
-- Enforce it at every production boundary.
-- Keep `validate()` for tests and local tools only.
+- Keep source-level guards/tests proving production call sites use the envelope
+  and NCMN boundary.
+- Do not re-export or advertise structural helpers as consensus APIs.
 
 ### WIRE-01: `%ai-pow` consensus wire is a placeholder and reject-all
 

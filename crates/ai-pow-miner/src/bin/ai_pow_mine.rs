@@ -257,8 +257,14 @@ fn build_puzzle_inputs(args: &Args) -> Result<AiPuzzleInputs> {
     let a_for_builder = a.clone();
     let b_for_builder = b.clone();
     let certificate_builder = Arc::new(move |sol: &ai_pow_miner::MinedSolution| {
-        ai_pow::verify_at_target(
-            &puzzle_id_for_builder, &sol.nonce, &params_for_builder, &sol.target, &sol.proof,
+        let (anchors, _) = ai_pow_miner::parse_ncmn_nonce(&sol.nonce).map_err(|e| {
+            AiPowCertificateBuildError(format!(
+                "refusing to build recursive certificate before successful matmul target check: {e}"
+            ))
+        })?;
+        ai_pow::verify_ncmn_at_target(
+            &puzzle_id_for_builder, &anchors.nck_commitment, &sol.nonce, &params_for_builder,
+            &sol.target, &sol.proof,
         )
         .map_err(|e| {
             AiPowCertificateBuildError(format!(
@@ -318,7 +324,7 @@ fn load_matrix(path: &PathBuf, expected_len: usize, label: &str) -> Result<Vec<i
 
 #[cfg(test)]
 mod tests {
-    use ai_pow_miner::{MiningCancel, MiningJob, NonceAnchors};
+    use ai_pow_miner::{build_ncmn_nonce, MiningCancel, MiningJob, NonceAnchors};
 
     use super::*;
 
@@ -373,6 +379,43 @@ mod tests {
             err.to_string().contains(
                 "refusing to build recursive certificate before successful matmul target check"
             ),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn recursive_certificate_builder_rejects_noncanonical_ncmn_before_zkp() {
+        let puzzle = build_puzzle_inputs(&test_args()).expect("test puzzle");
+        let easy_target = [0xFF; 32];
+        let job = MiningJob {
+            puzzle_id: &puzzle.puzzle_id,
+            anchors: NonceAnchors::nck_only([7; 32]),
+            params: &puzzle.params,
+            target: easy_target,
+            a: puzzle.a.as_slice(),
+            b: puzzle.b.as_slice(),
+        };
+        let mut opts = MineOptions::default();
+        opts.max_extranonces = Some(1);
+        let mut sol =
+            ai_pow_miner::mining::run(&job, &opts, MiningCancel::new()).expect("easy solution");
+        sol.nonce = build_ncmn_nonce(
+            &NonceAnchors {
+                nck_commitment: [7; 32],
+                external_commitment: Some([9; 32]),
+            },
+            0,
+        );
+
+        let build = puzzle
+            .certificate_builder
+            .as_ref()
+            .expect("production builder configured");
+        let err = build(&sol).expect_err("external anchor must not build a recursive certificate");
+        assert!(
+            err.to_string().contains(
+                "refusing to build recursive certificate before successful matmul target check"
+            ) && err.to_string().contains("external commitment"),
             "unexpected error: {err}"
         );
     }
