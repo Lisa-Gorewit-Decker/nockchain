@@ -187,9 +187,9 @@ where
 
 /// Reconstruct the canonical recursive certificate from a decoded
 /// Hoon-compatible proof-node tree.
-pub fn production_certificate_from_node(
+pub fn ai_pow_recursive_certificate_from_node(
     node: &AiProofNode,
-) -> Result<ai_pow_zk::recursion::AiPowProductionCertificate, CertificateNounError> {
+) -> Result<ai_pow_zk::recursion::AiPowRecursiveCertificate, CertificateNounError> {
     canonical_certificate_from_node(node)
 }
 
@@ -560,7 +560,7 @@ pub fn precheck_ai_pow_ncmn_artifact_statement(
 ///
 /// This is the production-safe Rust boundary once the structured proof-node
 /// tail has been reconstructed into an
-/// [`ai_pow_zk::recursion::AiPowProductionCertificate`]. It deliberately runs
+/// [`ai_pow_zk::recursion::AiPowRecursiveCertificate`]. It deliberately runs
 /// the cheap statement precheck before the recursive verifier, so wrong
 /// `(block_commitment, nonce, params, target, found_idx, commitments,
 /// public_inputs)` data is rejected before expensive proof work.
@@ -570,10 +570,10 @@ pub fn verify_ai_pow_certificate_statement_and_proof(
     nonce: &[u8],
     params: &MatmulParams,
     target: &[u8; 32],
-    certificate: &ai_pow_zk::recursion::AiPowProductionCertificate,
+    certificate: &ai_pow_zk::recursion::AiPowRecursiveCertificate,
 ) -> Result<(), CertificateNounError> {
     precheck_ai_pow_certificate_statement(shape, block_commitment, nonce, params, target)?;
-    ai_pow_zk::recursion::verify_production_certificate(certificate, &shape.public_inputs)
+    ai_pow_zk::recursion::verify_recursive_certificate(certificate, &shape.public_inputs)
         .map_err(|e| CertificateNounError::RecursiveCertificate(e.to_string()))
 }
 
@@ -591,12 +591,12 @@ pub fn verify_ai_pow_ncmn_certificate_statement_and_proof(
     nonce: &[u8],
     params: &MatmulParams,
     target: &[u8; 32],
-    certificate: &ai_pow_zk::recursion::AiPowProductionCertificate,
+    certificate: &ai_pow_zk::recursion::AiPowRecursiveCertificate,
 ) -> Result<(), CertificateNounError> {
     precheck_ai_pow_ncmn_certificate_statement(
         shape, puzzle_id, candidate_nck_commitment, nonce, params, target,
     )?;
-    ai_pow_zk::recursion::verify_production_certificate(certificate, &shape.public_inputs)
+    ai_pow_zk::recursion::verify_recursive_certificate(certificate, &shape.public_inputs)
         .map_err(|e| CertificateNounError::RecursiveCertificate(e.to_string()))
 }
 
@@ -615,7 +615,7 @@ pub fn verify_decoded_ai_pow_certificate(
     params: &MatmulParams,
     target: &[u8; 32],
 ) -> Result<(), CertificateNounError> {
-    let certificate = production_certificate_from_node(&shape.certificate)?;
+    let certificate = ai_pow_recursive_certificate_from_node(&shape.certificate)?;
     verify_ai_pow_certificate_statement_and_proof(
         shape, block_commitment, nonce, params, target, &certificate,
     )
@@ -637,7 +637,7 @@ pub fn verify_decoded_ai_pow_ncmn_certificate(
     params: &MatmulParams,
     target: &[u8; 32],
 ) -> Result<(), CertificateNounError> {
-    let certificate = production_certificate_from_node(&shape.certificate)?;
+    let certificate = ai_pow_recursive_certificate_from_node(&shape.certificate)?;
     verify_ai_pow_ncmn_certificate_statement_and_proof(
         shape, puzzle_id, candidate_nck_commitment, nonce, params, target, &certificate,
     )
@@ -3084,9 +3084,9 @@ mod tests {
         let certificate_node = recursive_certificate_to_node(&run.l1_cert)
             .expect("serialize real recursive cert node");
         eprintln!("real recursive certificate noun: reconstructing directly from proof-node");
-        let direct_cert = production_certificate_from_node(&certificate_node)
+        let direct_cert = ai_pow_recursive_certificate_from_node(&certificate_node)
             .expect("reconstruct direct recursive certificate from proof-node");
-        ai_pow_zk::recursion::verify_production_certificate(&direct_cert, &run.public_inputs)
+        ai_pow_zk::recursion::verify_recursive_certificate(&direct_cert, &run.public_inputs)
             .expect("direct reconstructed recursive certificate verifies");
         eprintln!("real recursive certificate noun: encoding structured noun");
 
@@ -3095,7 +3095,7 @@ mod tests {
             &zk, 0, run.composite_trace_height, &commitments, &run.public_inputs, &certificate_node,
         );
         let jammed = cert.jam();
-        let l1_postcard_bytes = ai_pow_zk::recursion::encode_production_certificate(&run.l1_cert)
+        let l1_postcard_bytes = ai_pow_zk::recursion::encode_recursive_certificate(&run.l1_cert)
             .expect("postcard L1 certificate")
             .len();
 
@@ -3107,10 +3107,10 @@ mod tests {
         let decoded = decode_ai_pow_certificate_slab(&cued, CertificateNounLimits::default())
             .expect("bounded decode real cert noun");
         eprintln!("real recursive certificate noun: reconstructing recursive certificate");
-        let decoded_cert = production_certificate_from_node(&decoded.certificate)
+        let decoded_cert = ai_pow_recursive_certificate_from_node(&decoded.certificate)
             .expect("reconstruct recursive certificate from proof-node");
         eprintln!("real recursive certificate noun: verifying reconstructed recursive certificate");
-        ai_pow_zk::recursion::verify_production_certificate(&decoded_cert, &run.public_inputs)
+        ai_pow_zk::recursion::verify_recursive_certificate(&decoded_cert, &run.public_inputs)
             .expect("reconstructed recursive certificate verifies");
 
         assert_eq!(decoded.version, AI_POW_CERT_VERSION);

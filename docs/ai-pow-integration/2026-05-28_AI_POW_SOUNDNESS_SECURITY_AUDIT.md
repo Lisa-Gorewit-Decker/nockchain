@@ -632,4 +632,4 @@ Consensus integration:
 
 ## Notes on Current Non-Exploitability
 
-The Hoon `%ai-pow` branch currently rejects all submissions, and the `%ai-pow` payload is a placeholder. That means the critical Rust issues above are not currently exploitable through the main consensus path. They become exploitable as soon as a real `%ai-pow` verifier is wired unless the production verifier API is fixed first.
+The Hoon `%ai-pow` branch currently rejects all submissions, and the `%ai-pow` payload is a placeholder. That means the critical Rust issues above are not currently exploitable through the main consensus path. They become exploitable as soon as a real `%ai-pow` verifier is wired unless consensus enters through the full-matmul recursive-certificate gate and rejects selected-tile-only statements.

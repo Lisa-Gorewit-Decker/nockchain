@@ -395,7 +395,7 @@ Current code follows the recommended production design above:
   binding plumbing.
 - `crates/ai-pow-miner/src/certificate_noun.rs`: decoded Hoon-compatible
   certificate nouns can be reconstructed into
-  `AiPowProductionCertificate` and verified via
+  `AiPowRecursiveCertificate` and verified via
   `verify_decoded_ai_pow_ncmn_certificate`, which checks the NCMN nonce anchor
   and runs the trusted statement precheck before recursive proof verification
   consumes the miner-controlled proof tree. Multi-tile selected-tile recursive
@@ -429,7 +429,7 @@ Regression coverage now includes:
   inputs rejects at recursive certificate verification.
 - real recursive certificate nouns roundtrip through structured proof-node
   serialization, jam/cue, bounded decode, reconstruction into
-  `AiPowProductionCertificate`, canonical re-serialization, and recursive
+  `AiPowRecursiveCertificate`, canonical re-serialization, and recursive
   verification.
 - decoded structured certificate nouns reject wrong nonce, zero target, and
   parameter mismatch at the statement precheck boundary.
@@ -450,15 +450,15 @@ The recursive certificate has two distinct verification layers:
    the verifier-derived AI-PoW statement for this block commitment, nonce,
    target, matrix commitments, params, and `found_idx`.
 
-`crates/ai-pow-zk/src/recursion.rs` now exposes the production verifier API:
+`crates/ai-pow-zk/src/recursion.rs` now exposes the recursive verifier API:
 
-- `verify_production_certificate(cert, public_inputs)` accepts only the
+- `verify_recursive_certificate(cert, public_inputs)` accepts only the
   canonical recursive certificate and a verifier-derived
   `CompositePublicInputs`.
-- `verify_production_certificate_with_public_values(cert, public_values)` is the
+- `verify_recursive_certificate_with_public_values(cert, public_values)` is the
   lower-level equivalent for callers that already hold the exact Layer-0 public
-  input vector. It rejects empty statement vectors on the production path.
-- `verify_production_certificate_outer` is deprecated outer-only diagnostic
+  input vector. It rejects empty statement vectors on the normal recursive path.
+- `verify_recursive_certificate_outer` is deprecated outer-only diagnostic
   code for old unbound proof objects. Canonical bound certificates reject on
   that helper and direct callers to the full verifier.
 
@@ -472,7 +472,7 @@ The implemented binding is:
    values and constrains the first row to equal the supplied values.
 4. `BatchStarkProof` serializes `public_binding_lanes` and validates that it
    agrees with `table_packing`.
-5. `verify_production_certificate` recomputes the expected production table
+5. `verify_recursive_certificate` recomputes the expected recursive table
    packing from the caller's public inputs, flattens each Goldilocks value into
    the D=2 outer field representation `[value, 0]`, and calls
    `verify_all_tables_with_public_values`.
@@ -601,7 +601,7 @@ certificate; Hoon consensus still needs the verifier jet/wiring.
    `(block_commitment, nonce, params, commitments)` and pass those into
    `verify_ai_pow_tiled_with_statement`.
 5. Done: the recursive certificate path accepts the updated Layer-0 public
-   input layout through `verify_production_certificate`.
+   input layout through `verify_recursive_certificate`.
 
 ### Phase 4: Update Hoon/Noun Statement
 

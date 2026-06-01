@@ -252,7 +252,7 @@ pub struct AiPowRecursiveCertificateRun {
     pub l1_circuit_build_ms: u128,
     pub l1_in_circuit_verify_ms: u128,
     pub l1_outer_cert_ms: u128,
-    pub certificate: ai_pow_zk::recursion::AiPowProductionCertificate,
+    pub certificate: ai_pow_zk::recursion::AiPowRecursiveCertificate,
 }
 
 /// Recursive-certificate byte envelope for bridge tests and diagnostics.
@@ -280,7 +280,7 @@ pub(crate) struct AiPowProductionArtifact {
     pub pis: CompositePublicInputs,
     /// Layer-0 composite trace height verified by the recursive certificate.
     pub trace_height: usize,
-    /// Compact serialization of `ai_pow_zk::recursion::AiPowProductionCertificate`.
+    /// Compact serialization of `ai_pow_zk::recursion::AiPowRecursiveCertificate`.
     pub certificate: Vec<u8>,
 }
 
@@ -292,7 +292,7 @@ pub(crate) struct AiPowProductionArtifact {
 ///
 /// This type is not the canonical block/wire proof format. The
 /// production Nockchain AI-PoW certificate is the recursive
-/// `ai_pow_zk::recursion::AiPowProductionCertificate`, serialized via
+/// `ai_pow_zk::recursion::AiPowRecursiveCertificate`, serialized via
 /// the structured noun format. This legacy envelope remains useful for
 /// tests and for validating the Layer-0 bridge while the final noun
 /// encoder/verifier is wired.

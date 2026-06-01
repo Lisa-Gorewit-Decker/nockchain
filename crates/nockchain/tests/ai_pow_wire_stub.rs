@@ -195,6 +195,10 @@ fn ai_pow_consensus_wire_is_structured_but_fail_closed_without_verifier() {
             && recursive_full_matmul_guard < recursive_layer0_prove
             && AI_POW_ZK_BRIDGE_RS
                 .contains("prove_canonical_ai_pow_certificate_from_composite_proof")
+            && !AI_POW_ZK_RECURSION_RS.contains("verify_production_certificate")
+            && !AI_POW_ZK_RECURSION_RS.contains("AiPowProductionCertificate")
+            && AI_POW_ZK_RECURSION_RS.contains("pub fn verify_recursive_certificate")
+            && AI_POW_ZK_RECURSION_RS.contains("pub type AiPowRecursiveCertificate")
             && AI_POW_ZK_RECURSION_RS
                 .contains("pub fn prove_canonical_ai_pow_certificate_from_composite_proof"),
         "production miner must only start recursive ZKP generation after a \

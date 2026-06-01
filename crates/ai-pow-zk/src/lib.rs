@@ -71,7 +71,7 @@
 //! - **Hoon/kernel verifier wiring.** The Rust recursive production
 //!   certificate now binds the Layer-0 AI-PoW public-input vector as outer
 //!   STARK public values and verifies it with
-//!   [`recursion::verify_production_certificate`]. Consensus still needs the
+//!   [`recursion::verify_recursive_certificate`]. Consensus still needs the
 //!   Hoon jet/wiring that decodes the structured noun, reconstructs the
 //!   verifier-derived statement from block data, and calls that Rust verifier.
 //!   Until that hook is wired, the Hoon/kernel path remains fail-closed.
