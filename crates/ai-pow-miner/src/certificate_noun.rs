@@ -4586,6 +4586,15 @@ mod tests {
         .expect("metadata precheck should not traverse the bad proof node");
 
         assert!(matches!(
+            precheck_ai_pow_pearl_merge_artifact_metadata(
+                &metadata, &statement.aux.nock_block_commitment, &a, &b, &[0u8; 32], 16,
+            ),
+            Err(CertificateNounError::PearlMergeStatement(
+                PearlCompatError::NockchainTargetNotMet
+            ))
+        ));
+
+        assert!(matches!(
             decode_ai_pow_pearl_merge_artifact_slab(
                 &artifact_slab,
                 CertificateNounLimits::default()
@@ -5284,6 +5293,33 @@ mod tests {
             ),
             Err(CertificateNounError::PearlMergePublicInputMismatch(
                 "public-inputs.jackpot"
+            ))
+        ));
+
+        let mut bad_commitments = commitments;
+        bad_commitments.h_a_chunk[0] ^= 1;
+        let bad_commitments_slab = build_ai_pow_certificate_noun_from_node(
+            &zk_params_from_matmul(&params),
+            0,
+            expected_layer0_rows(&params).required_trace_len(),
+            &bad_commitments,
+            &pis,
+            &AiProofNode::Unit,
+        );
+        let bad_commitments_artifact =
+            build_pearl_merge_artifact_slab(&statement, &aux_inclusion, &bad_commitments_slab);
+        let bad_commitments_decoded = decode_ai_pow_pearl_merge_artifact_slab(
+            &bad_commitments_artifact,
+            CertificateNounLimits::default(),
+        )
+        .expect("decode pearl merge artifact with bad commitments");
+        assert!(matches!(
+            precheck_ai_pow_pearl_merge_artifact_statement(
+                &bad_commitments_decoded, &statement.aux.nock_block_commitment, &a, &b,
+                &[0xffu8; 32], 16,
+            ),
+            Err(CertificateNounError::PearlMergePublicInputMismatch(
+                "commitments.h-a-chunk"
             ))
         ));
 
