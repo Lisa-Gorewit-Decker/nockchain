@@ -860,6 +860,14 @@ read-only values through accessors such as `nonce()`, `s_a()`,
 fields. The nockchain wire regression asserts that `nonce`, `s_A`, and
 `m_states` remain crate-private while read-only accessors remain available.
 
+Follow-up API hardening: `BlockContext` is no longer re-exported from the
+`ai-pow` crate root. It remains available only through the explicit
+`ai_pow::prover::BlockContext` module path for diagnostics, tests, and miner
+internals. This keeps the crate-root production-looking API centered on
+`mine`/`mine_block`, both of which rebuild the nonce-bound attempt state, and
+prevents the cached attempt handle from being advertised as a normal mining
+primitive.
+
 ## Latest Re-Audit: Decoded Recursive Certificate DoS Ordering
 
 The decoded Hoon-compatible certificate verifier had the right ordering for

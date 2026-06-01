@@ -47,6 +47,11 @@ What `ai-pow` provides:
 - **Mining**: `mine(block_commitment, nonce, a, b, params, opts)` searches
   for a tile whose keyed-hash of the tile state falls below a shape-aware
   difficulty target `2^(256-b) · r · t²` (Pearl §4.5).
+- **Nonce-bound attempt diagnostics**: `ai_pow::prover::BlockContext` exists
+  for explicit diagnostics, tests, and miner internals. It is intentionally not
+  re-exported from the crate root because it contains cached matmul state for
+  exactly one nonce-bound attempt; normal callers should use `mine` or
+  `mine_block`, which rebuild attempt state per nonce.
 - **Plain-proof verification**: diagnostic and pre-ZKP callers use
   `ai_pow::verifier::verify_ncmn_at_target(puzzle_id, candidate_nck_commitment, nonce, params, target, proof)`
   to confirm that a mined `MatmulProof` hit the exact chain target before
@@ -103,7 +108,7 @@ list of `ai-pow`-side derived portions.
 
 | Path | Purpose |
 |---|---|
-| `src/lib.rs` | Public re-exports |
+| `src/lib.rs` | Public re-exports; intentionally omits verifier helpers and `BlockContext` |
 | `src/params.rs` | `MatmulParams` and validation (Pearl §4.8 constraints) |
 | `src/prng.rs` | Pearl-compatible PRNG building blocks (`pearl_random_hash`, uniform-noise, permutation, A/B synth) |
 | `src/matmul.rs` | `BlockNoise`, `Matrices` (`A' = A + E`, `B' = B + F`), `TileState`, `compute_tile`, `compute_tile_from_slices` |

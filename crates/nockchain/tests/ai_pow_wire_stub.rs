@@ -233,7 +233,10 @@ fn ai_pow_consensus_wire_is_structured_but_fail_closed_without_verifier() {
          verification"
     );
     assert!(
-        AI_POW_LIB_RS.contains("BlockContext")
+        !AI_POW_LIB_RS.contains("pub use crate::prover::{mine, mine_block, BlockContext")
+            && AI_POW_LIB_RS
+                .contains("BlockContext` remains available as `ai_pow::prover::BlockContext`")
+            && AI_POW_LIB_RS.contains("must not look like the normal production mining API")
             && AI_POW_PROVER_RS.contains("pub(crate) nonce: Vec<u8>")
             && AI_POW_PROVER_RS.contains("pub(crate) s_a: [u8; 32]")
             && AI_POW_PROVER_RS.contains("pub(crate) m_states: Vec<TileState>")
