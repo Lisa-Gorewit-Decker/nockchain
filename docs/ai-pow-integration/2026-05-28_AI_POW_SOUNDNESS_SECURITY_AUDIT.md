@@ -755,16 +755,51 @@ Activation requirement:
 ### SERIAL-01: Proof serialization needs a consensus envelope
 
 Severity: Medium
-Status: Design gap
+Status: Remediated for current Rust/Hoon artifact shape; consensus verifier
+wiring remains WIRE-01
 
-`MatmulProof` has an ad hoc binary format with no version byte, no top-level length prefix, and unchecked `usize -> u32` casts in `encode`. `ai-pow-zk` proof examples use `bincode`, but no bounded consensus decoder exists.
+Historical issue: `MatmulProof` had an ad hoc binary format with no version byte,
+no top-level length prefix, and unchecked `usize -> u32` casts in `encode`.
+Earlier `ai-pow-zk` examples also used raw `bincode` proof bytes without a
+bounded consensus decoder.
 
-Fix:
+Current behavior:
 
-- Define versioned consensus bytes for the full AI-PoW artifact.
-- Include length prefixes and maximum lengths for plain proof, ZK proof, and public inputs.
-- Use bounded bincode config or a custom decoder for STARK proofs.
-- Reject unknown versions and trailing bytes.
+- Done: `MatmulProof` is documented as a legacy diagnostic/plain-proof
+  artifact, not the canonical production block proof.
+- Done: legacy `MatmulProof::encode_consensus` / `decode_consensus_for_params`
+  wrap the old body in `AIPW || version || body_len`, use checked length
+  conversion, and reject bad magic, unknown versions, length mismatch, trailing
+  bytes, and shape/parameter mismatches before verifier work.
+- Done: production persistence/wire shape is structured Hoon noun data:
+  `[%ai-pow nonce=ai-ncmn cert=ai-pow-certificate]`, where the certificate is a
+  structured recursive proof-node tree, not a raw Layer-0 STARK blob and not a
+  single opaque atom.
+- Done: `CertificateNounLimits` bounds recursive proof-node depth, total nodes,
+  list lengths, atom bytes, packed item counts, and jammed artifact bytes.
+- Done: `decode_ai_pow_artifact_jam` and
+  `verify_ai_pow_ncmn_artifact_jam` enforce a byte cap before cueing, preflight
+  jam structure, reject noncanonical jam re-encodings, decode the bounded noun,
+  reject unknown certificate versions/tags, and run the NCMN/statement precheck
+  before reconstructing the recursive certificate.
+- Done: Hoon types use custom auras for compact atoms (`@uxblake`,
+  `@uxncmn`, `@uxfelt`, `@uxfelts`) instead of digest/field tuples.
+
+Regression coverage:
+
+- Legacy plain-proof consensus envelope roundtrips and rejects bad magic,
+  unknown version, length mismatch, trailing bytes, and u32 length overflow.
+- Structured certificate/artifact tests cover jam/cue roundtrip, byte-limit
+  rejection before cue, noncanonical jam rejection, node/depth/atom/list
+  limits, malformed nonce/tag rejection, unsupported certificate versions,
+  oversized packed atoms, and noncanonical Goldilocks limbs.
+
+Residual surface:
+
+- Hoon consensus still rejects `%ai-pow` before recursive verifier wiring. Keep
+  that fail-closed behavior until WIRE-01 lands and the Hoon/Rust jet calls
+  `verify_ai_pow_ncmn_artifact_jam` or the equivalent bounded decode plus full
+  recursive verifier path.
 
 ## Recommended Fix Order
 
