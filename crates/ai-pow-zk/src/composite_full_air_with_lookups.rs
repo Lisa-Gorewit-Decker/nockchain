@@ -44,7 +44,7 @@
 use p3_air::{Air, AirBuilder, BaseAir, WindowAccess};
 use p3_lookup::InteractionBuilder;
 
-use crate::composite_full_air::{CompositeFullAir, CompositeFullAirPinned};
+use crate::composite_full_air::{CompositeFullAir, CompositeFullAirPinned, ProgramShapeError};
 use crate::composite_layout::{
     AB_ID_LIMBS_LEN, AB_ID_LIMBS_START, A_ID, A_NOISED_START, A_NOISED_UNPACK_LEN,
     A_NOISED_UNPACK_START, B_ID, B_NOISED_START, B_NOISED_UNPACK_LEN, B_NOISED_UNPACK_START,
@@ -136,12 +136,28 @@ impl CompositeFullAirWithLookupsPinned {
         Self::new_with(program, true)
     }
 
+    /// Fallible version of [`Self::new`] for verifier-facing code
+    /// that may be handed malformed block/proof artifacts.
+    pub fn try_new(
+        program: p3_matrix::dense::RowMajorMatrix<crate::Val>,
+    ) -> Result<Self, ProgramShapeError> {
+        Self::try_new_with(program, true)
+    }
+
     /// Build with an explicit §6(b)-keystone flag (verifier-set
     /// from trusted params; see [`CompositeFullAirPinned::new_with`]).
     pub fn new_with(program: p3_matrix::dense::RowMajorMatrix<crate::Val>, sx_bound: bool) -> Self {
-        Self {
-            inner: CompositeFullAirPinned::new_with(program, sx_bound),
-        }
+        Self::try_new_with(program, sx_bound).expect("canonical program shape already validated")
+    }
+
+    /// Fallible constructor for verifier-facing code.
+    pub fn try_new_with(
+        program: p3_matrix::dense::RowMajorMatrix<crate::Val>,
+        sx_bound: bool,
+    ) -> Result<Self, ProgramShapeError> {
+        Ok(Self {
+            inner: CompositeFullAirPinned::try_new_with(program, sx_bound)?,
+        })
     }
 }
 

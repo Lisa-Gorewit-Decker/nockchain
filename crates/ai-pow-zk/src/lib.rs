@@ -106,7 +106,9 @@ pub mod recursion;
 pub use p3_goldilocks::Goldilocks as Val;
 
 pub use crate::circuit::{AiPowStarkConfig, CircuitConfig};
-pub use crate::composite_full_air::{extract_program, CompositeFullAir, CompositeFullAirPinned};
+pub use crate::composite_full_air::{
+    extract_program, CompositeFullAir, CompositeFullAirPinned, ProgramShapeError,
+};
 pub use crate::composite_full_air_with_lookups::{
     CompositeFullAirWithLookups, CompositeFullAirWithLookupsPinned,
 };
@@ -119,8 +121,7 @@ pub use crate::composite_proof::{
     composite_verify_pow_pinned as dev_pinned_no_logup_verify_pow,
 };
 pub use crate::composite_proof::{
-    hash_jackpot_le_bytes, CompositeVerificationError, PowVerifyError, ProgramShapeError,
-    StarkVerificationError,
+    hash_jackpot_le_bytes, CompositeVerificationError, PowVerifyError, StarkVerificationError,
 };
 pub use crate::composite_public::CompositePublicInputs;
 pub use crate::composite_trace::CompositeTrace;

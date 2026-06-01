@@ -36,7 +36,6 @@
 //! the values from a generated trace.
 
 use p3_commit::Pcs;
-use p3_matrix::Matrix;
 #[cfg(any(test, feature = "dev-unsafe"))]
 use p3_uni_stark::{
     prove, prove_with_preprocessed, setup_preprocessed, verify, verify_with_preprocessed,
@@ -46,7 +45,7 @@ use p3_uni_stark::{StarkGenericConfig, Val, VerificationError};
 use thiserror::Error;
 
 use crate::circuit::{build_stark_config, AiPowStarkConfig, CircuitConfig};
-use crate::composite_full_air::extract_program;
+use crate::composite_full_air::{extract_program, program_degree_bits, ProgramShapeError};
 #[cfg(any(test, feature = "dev-unsafe"))]
 use crate::composite_full_air::{CompositeFullAir, CompositeFullAirPinned};
 use crate::composite_public::CompositePublicInputs;
@@ -61,14 +60,6 @@ pub type StarkVerificationError = VerificationError<
         <AiPowStarkConfig as StarkGenericConfig>::Challenger,
     >>::Error,
 >;
-
-#[derive(Debug, Error, PartialEq, Eq)]
-pub enum ProgramShapeError {
-    #[error("program width mismatch (expected {expected}, got {actual})")]
-    WidthMismatch { expected: usize, actual: usize },
-    #[error("program height must be a non-zero power of two, got {height}")]
-    HeightNotPowerOfTwo { height: usize },
-}
 
 #[derive(Debug, Error)]
 pub enum CompositeVerificationError {
@@ -246,16 +237,7 @@ pub fn composite_verify_pow(
 type Program = p3_matrix::dense::RowMajorMatrix<Val<AiPowStarkConfig>>;
 
 fn checked_program_degree_bits(program: &Program) -> Result<usize, ProgramShapeError> {
-    let expected = crate::composite_full_air::PROGRAM_COLS.len();
-    let actual = program.width();
-    if actual != expected {
-        return Err(ProgramShapeError::WidthMismatch { expected, actual });
-    }
-    let height = program.height();
-    if !height.is_power_of_two() {
-        return Err(ProgramShapeError::HeightNotPowerOfTwo { height });
-    }
-    Ok(height.trailing_zeros() as usize)
+    program_degree_bits(program)
 }
 
 /// Commit a program matrix as a preprocessed trace, returning the
@@ -270,9 +252,10 @@ pub fn composite_setup(
     PreprocessedProverData<AiPowStarkConfig>,
     PreprocessedVerifierKey<AiPowStarkConfig>,
 ) {
-    let air = CompositeFullAirPinned::new(program.clone());
     let degree_bits =
         checked_program_degree_bits(program).expect("canonical program shape already validated");
+    let air = CompositeFullAirPinned::try_new(program.clone())
+        .expect("canonical program shape validated");
     setup_preprocessed(config, &air, degree_bits)
         .expect("CompositeFullAirPinned always has preprocessed columns")
 }
@@ -315,7 +298,7 @@ pub fn composite_verify_pinned(
     public_inputs: &CompositePublicInputs,
 ) -> Result<(), CompositeVerificationError> {
     checked_program_degree_bits(program)?;
-    let air = CompositeFullAirPinned::new(program.clone());
+    let air = CompositeFullAirPinned::try_new(program.clone())?;
     let (_pp, vk) = composite_setup(config, program);
     let pis = public_inputs.to_vec();
     verify_with_preprocessed(config, &air, proof, &pis, Some(&vk))
@@ -396,10 +379,12 @@ pub(crate) fn composite_prove_pinned_logup_sx(
 
     trace.populate_lookup_freq();
     let program = extract_program(&trace.matrix);
-    let air = crate::composite_full_air_with_lookups::CompositeFullAirWithLookupsPinned::new_with(
-        program.clone(),
-        sx_bound,
-    );
+    let air =
+        crate::composite_full_air_with_lookups::CompositeFullAirWithLookupsPinned::try_new_with(
+            program.clone(),
+            sx_bound,
+        )
+        .expect("canonical program shape validated");
     let pvs = public_inputs.to_vec();
     let instances = vec![StarkInstance {
         air: &air,
@@ -424,10 +409,12 @@ pub(crate) fn logup_common_for(
     let log_ext_db = checked_program_degree_bits(program)
         .expect("canonical program shape already validated")
         + config.is_zk() as usize;
-    let air = crate::composite_full_air_with_lookups::CompositeFullAirWithLookupsPinned::new_with(
-        program.clone(),
-        sx_bound,
-    );
+    let air =
+        crate::composite_full_air_with_lookups::CompositeFullAirWithLookupsPinned::try_new_with(
+            program.clone(),
+            sx_bound,
+        )
+        .expect("canonical program shape validated");
     ProverData::from_airs_and_degrees(config, std::slice::from_ref(&air), &[log_ext_db])
 }
 
@@ -454,10 +441,11 @@ pub(crate) fn composite_verify_pinned_logup_sx(
 ) -> Result<(), CompositeVerificationError> {
     use p3_batch_stark::verify_batch;
     checked_program_degree_bits(program)?;
-    let air = crate::composite_full_air_with_lookups::CompositeFullAirWithLookupsPinned::new_with(
-        program.clone(),
-        sx_bound,
-    );
+    let air =
+        crate::composite_full_air_with_lookups::CompositeFullAirWithLookupsPinned::try_new_with(
+            program.clone(),
+            sx_bound,
+        )?;
     let pd = logup_common_for(config, program, sx_bound);
     verify_batch(
         config,

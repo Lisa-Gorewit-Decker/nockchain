@@ -657,17 +657,37 @@ Fix:
 ### API-02: Public pinned verifier APIs panic on malformed `program`
 
 Severity: Medium DoS
-Status: Confirmed
+Status: Remediated for verifier entrypoints; low-level constructors remain
+trusted-setup APIs
 
-`program_degree_bits` uses `assert!(h.is_power_of_two())`. `CompositeFullAirPinned::new_with` asserts the program width. Several strip-opening helpers also assert on malformed ranges/siblings.
+Historical issue: the pinned verifier path used panic-on-bad-shape helpers before
+constructing the verifier's preprocessed AIR. A malformed `program` could
+therefore become a verifier crash if it ever crossed a public verification
+boundary.
 
-If these helpers are reachable with attacker-controlled data, malformed inputs can crash a verifier.
+Current behavior:
 
-Fix:
+- Done: `ProgramShapeError` is the shared typed error for malformed program
+  width and non-power-of-two height.
+- Done: `CompositeFullAirPinned` and `CompositeFullAirWithLookupsPinned` expose
+  fallible `try_new` / `try_new_with` constructors.
+- Done: `composite_verify_pinned_logup` and
+  `composite_verify_pow_pinned_logup` validate the program and construct the
+  AIR through fallible constructors before invoking batch verification.
+- Done: dev-only no-LogUp pinned verifier APIs also validate before AIR setup.
+- Done: malformed width and malformed height regression tests wrap the verifier
+  calls in `catch_unwind` and assert typed errors instead of panics.
 
-- Production verifier must never accept a program from the wire.
-- Convert public verifier setup helpers to return typed errors instead of panicking.
-- Add `catch_unwind` tests only as temporary regression guards; the real fix is typed validation.
+Residual surface:
+
+- `new` / `new_with` constructors remain convenience APIs for trusted setup and
+  internally derived canonical programs. They intentionally `expect` after the
+  same validation and should not be used on wire/proof data.
+- Production consensus still must rebuild the canonical program from trusted
+  params and must not deserialize a prover-supplied program from the block.
+- Strip-opening helpers still contain local invariants and should stay behind
+  canonical verifier scheduling. If any become directly exposed to block bytes,
+  add typed validation at that boundary.
 
 ### PARAM-01: Production envelope is documented but not enforced in exposed verifier/miner entrypoints
 

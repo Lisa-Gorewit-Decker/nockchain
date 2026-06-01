@@ -50,6 +50,7 @@
 use p3_air::{Air, AirBuilder, BaseAir, WindowAccess};
 use p3_field::PrimeCharacteristicRing;
 use p3_matrix::Matrix;
+use thiserror::Error;
 
 use crate::chips::blake3::chip::Blake3Chip;
 use crate::chips::control::ControlChip;
@@ -138,6 +139,31 @@ pub const PROGRAM_COLS: [usize; 12] = [
     crate::composite_layout::STARK_ROW_IDX,
 ];
 
+#[derive(Debug, Error, PartialEq, Eq)]
+pub enum ProgramShapeError {
+    #[error("program width mismatch (expected {expected}, got {actual})")]
+    WidthMismatch { expected: usize, actual: usize },
+    #[error("program height must be a non-zero power of two, got {height}")]
+    HeightNotPowerOfTwo { height: usize },
+}
+
+pub fn program_degree_bits(
+    program: &p3_matrix::dense::RowMajorMatrix<crate::Val>,
+) -> Result<usize, ProgramShapeError> {
+    let expected = PROGRAM_COLS.len();
+    let actual = program.width();
+    if actual != expected {
+        return Err(ProgramShapeError::WidthMismatch { expected, actual });
+    }
+
+    let height = program.height();
+    if !height.is_power_of_two() {
+        return Err(ProgramShapeError::HeightNotPowerOfTwo { height });
+    }
+
+    Ok(height.trailing_zeros() as usize)
+}
+
 /// Extract the [`PROGRAM_COLS`] from a full trace into a
 /// `len(PROGRAM_COLS)`-wide row-major matrix — the canonical
 /// "program" for that shape. The honest prover and the verifier
@@ -196,19 +222,36 @@ impl CompositeFullAirPinned {
         Self::new_with(program, true)
     }
 
+    /// Fallible version of [`Self::new`] for verifier-facing code
+    /// that may be handed malformed block/proof artifacts.
+    pub fn try_new(
+        program: p3_matrix::dense::RowMajorMatrix<crate::Val>,
+    ) -> Result<Self, ProgramShapeError> {
+        Self::try_new_with(program, true)
+    }
+
     /// Build with an explicit §6(b)-keystone flag. `sx_bound`
     /// MUST be derived by the verifier from the trusted block
-    /// params (`num_stripes ≤ 16`), never from the proof.
+    /// params (`num_stripes ≤ 16`), never from the proof. This
+    /// constructor is for trusted setup paths; use
+    /// [`Self::try_new_with`] when malformed input must be rejected
+    /// as an ordinary verifier error.
     pub fn new_with(program: p3_matrix::dense::RowMajorMatrix<crate::Val>, sx_bound: bool) -> Self {
-        assert_eq!(
-            program.width(),
-            PROGRAM_COLS.len(),
-            "program matrix must have exactly PROGRAM_COLS columns"
-        );
-        Self {
+        Self::try_new_with(program, sx_bound).expect("canonical program shape already validated")
+    }
+
+    /// Fallible constructor for verifier-facing code. It validates
+    /// both width and power-of-two height before the AIR reaches any
+    /// panic-on-bad-shape setup path.
+    pub fn try_new_with(
+        program: p3_matrix::dense::RowMajorMatrix<crate::Val>,
+        sx_bound: bool,
+    ) -> Result<Self, ProgramShapeError> {
+        program_degree_bits(&program)?;
+        Ok(Self {
             preprocessed: std::sync::Arc::new(program),
             sx_bound,
-        }
+        })
     }
 }
 
@@ -685,6 +728,33 @@ mod tests {
         }
 
         RowMajorMatrix::new(flat, TOTAL_TRACE_WIDTH)
+    }
+
+    #[test]
+    fn pinned_try_new_rejects_malformed_program_shape() {
+        let bad_width = RowMajorMatrix::new(vec![crate::Val::default(); 8], 1);
+        assert!(matches!(
+            CompositeFullAirPinned::try_new(bad_width),
+            Err(ProgramShapeError::WidthMismatch {
+                expected,
+                actual: 1
+            }) if expected == PROGRAM_COLS.len()
+        ));
+
+        let bad_height = RowMajorMatrix::new(
+            vec![crate::Val::default(); PROGRAM_COLS.len() * 3],
+            PROGRAM_COLS.len(),
+        );
+        assert!(matches!(
+            CompositeFullAirPinned::try_new(bad_height),
+            Err(ProgramShapeError::HeightNotPowerOfTwo { height: 3 })
+        ));
+
+        let valid = RowMajorMatrix::new(
+            vec![crate::Val::default(); PROGRAM_COLS.len() * 4],
+            PROGRAM_COLS.len(),
+        );
+        assert!(CompositeFullAirPinned::try_new(valid).is_ok());
     }
 
     #[test]
