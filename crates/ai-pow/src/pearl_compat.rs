@@ -727,7 +727,8 @@ pub fn pearl_adjust_target_for_config(
 /// recursive bridge. Until that bridge proves arbitrary Pearl row/column
 /// patterns, production Pearl-compatible Nockchain mining must use square,
 /// contiguous tiles whose row and column patterns are exactly
-/// `[0, 1, ..., params.tile - 1]`.
+/// `[0, 1, ..., params.tile - 1]`, and the trusted matrix shape must contain
+/// exactly one tile.
 pub fn validate_pearl_merge_config_for_recursive_prover(
     config: &PearlMiningConfig,
     params: &MatmulParams,
@@ -744,6 +745,11 @@ pub fn validate_pearl_merge_config_for_recursive_prover(
         ));
     }
     params.validate_prod_envelope()?;
+    if params.num_tiles() > 1 {
+        return Err(PearlCompatError::UnsupportedRecursivePearlParams(
+            "num_tiles must be 1; current recursive certificate proves one selected tile",
+        ));
+    }
     config.to_bytes()?;
     validate_config_matches_params(config, params)?;
 

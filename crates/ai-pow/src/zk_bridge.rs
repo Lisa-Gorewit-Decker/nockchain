@@ -1155,9 +1155,7 @@ pub fn prove_pearl_merge_recursive_certificate(
     b_col_major: &[i8],
     max_pattern_len: usize,
 ) -> Result<AiPowRecursiveCertificateRun, BridgeError> {
-    params
-        .validate_prod_envelope()
-        .map_err(BridgeError::InvalidParams)?;
+    validate_canonical_recursive_certificate_params(params)?;
     if params.difficulty_bits != 0 || params.spot_checks != 1 {
         return Err(BridgeError::PearlMergeUnsupportedTileShape);
     }
@@ -2129,9 +2127,9 @@ mod tests {
 
     fn pearl_merge_prod_params() -> MatmulParams {
         MatmulParams {
-            m: 128,
+            m: 8,
             k: 1024,
-            n: 128,
+            n: 8,
             noise_rank: 64,
             tile: 8,
             spot_checks: 1,
@@ -2648,6 +2646,22 @@ mod tests {
             Err(BridgeError::PearlMergeStatement(
                 PearlCompatError::NockchainTargetNotMet
             ))
+        ));
+    }
+
+    #[test]
+    fn pearl_merge_recursive_certificate_rejects_multi_tile_before_zkp() {
+        let (attempt, mut params, a, b) = pearl_merge_ticket_fixture(
+            b"pearl-recursive-multi-tile",
+            pearl_test_pattern(8),
+            pearl_test_pattern(8),
+        );
+        params.m = 16;
+
+        assert!(matches!(
+            prove_pearl_merge_recursive_certificate(&attempt, &params, &a, &b, 16),
+            Err(BridgeError::FullMatmulProofUnavailable { num_tiles })
+                if num_tiles == params.num_tiles()
         ));
     }
 

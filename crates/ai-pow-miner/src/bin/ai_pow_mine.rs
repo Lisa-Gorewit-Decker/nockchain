@@ -323,6 +323,12 @@ fn validate_pearl_recursive_cli_params(args: &Args, params: MatmulParams) -> Res
     params
         .validate_prod_envelope()
         .map_err(|e| anyhow!("Pearl-compatible params are not production-admissible: {e}"))?;
+    if params.num_tiles() > 1 {
+        bail!(
+            "Pearl-compatible recursive certificates require exactly one tile; current params have {} tiles",
+            params.num_tiles()
+        );
+    }
     if args.pearl_max_pattern_len < params.tile as usize {
         bail!(
             "--pearl-max-pattern-len must be at least --tile ({}), got {}", params.tile,
@@ -588,6 +594,25 @@ mod tests {
         assert!(
             err.to_string()
                 .contains("require --difficulty-bits 0 and --spot-checks 1"),
+            "unexpected error: {err:#}"
+        );
+    }
+
+    #[test]
+    fn cli_rejects_pearl_merge_multi_tile_before_matrix_synthesis() {
+        let args = Args::parse_from([
+            "ai-pow-mine", "--mining-pkh",
+            "9yPePjfWAdUnzaQKyxcRXKRa5PpUzKKEwtpECBZsUYt9Jd7egSDEWoV", "--synth-seed",
+            "must-not-materialize-multi-tile", "--m", "16", "--k", "512", "--n", "8",
+            "--noise-rank", "32", "--tile", "8", "--spot-checks", "1", "--difficulty-bits", "0",
+        ]);
+
+        let err = match build_puzzle_inputs(&args) {
+            Ok(_) => panic!("multi-tile Pearl recursive params must fail before matrix synthesis"),
+            Err(err) => err,
+        };
+        assert!(
+            err.to_string().contains("require exactly one tile"),
             "unexpected error: {err:#}"
         );
     }

@@ -1068,9 +1068,9 @@ mod tests {
 
     fn pearl_test_params() -> MatmulParams {
         MatmulParams {
-            m: 128,
+            m: 8,
             k: 1024,
-            n: 128,
+            n: 8,
             noise_rank: 64,
             tile: 8,
             spot_checks: 1,
@@ -1350,6 +1350,21 @@ mod tests {
             .expect_err("Pearl mode must reject unsupported recursive params before mining");
         assert!(
             err.to_string().contains("difficulty_bits must be 0"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn production_preflight_rejects_pearl_merge_multi_tile_recursive_params() {
+        let mut cfg = test_cfg("http://127.0.0.1:1".to_string());
+        cfg.puzzle.params.m = 16;
+
+        let err = cfg
+            .puzzle
+            .validate_canonical_submission_ready()
+            .expect_err("Pearl mode must reject multi-tile recursive params before mining");
+        assert!(
+            err.to_string().contains("num_tiles must be 1"),
             "unexpected error: {err}"
         );
     }

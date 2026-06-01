@@ -451,9 +451,9 @@ fn pearl_periodic_pattern_rejects_noncanonical_or_unbounded_shapes() {
 #[test]
 fn pearl_recursive_prover_config_preflight_rejects_unsupported_patterns() {
     let params = MatmulParams {
-        m: 128,
+        m: 8,
         k: 1024,
-        n: 128,
+        n: 8,
         noise_rank: 64,
         tile: 8,
         spot_checks: 1,
@@ -471,6 +471,15 @@ fn pearl_recursive_prover_config_preflight_rejects_unsupported_patterns() {
     };
     validate_pearl_merge_config_for_recursive_prover(&supported, &params, 16)
         .expect("contiguous square tile pattern is currently supported");
+
+    let mut multi_tile = params;
+    multi_tile.m = 16;
+    assert_eq!(
+        validate_pearl_merge_config_for_recursive_prover(&supported, &multi_tile, 16),
+        Err(PearlCompatError::UnsupportedRecursivePearlParams(
+            "num_tiles must be 1; current recursive certificate proves one selected tile"
+        ))
+    );
 
     let mut wrong_difficulty = params;
     wrong_difficulty.difficulty_bits = 1;
