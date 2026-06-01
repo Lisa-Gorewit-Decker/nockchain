@@ -361,8 +361,6 @@ pub(crate) enum ArtifactCodecError {
     ZkProofEncode(String),
     #[error("ZK proof decode: {0}")]
     ZkProofDecode(String),
-    #[error("recursive certificate encode: {0}")]
-    RecursiveCertificateEncode(String),
 }
 
 #[cfg(test)]
@@ -482,45 +480,6 @@ impl AiPowConsensusArtifact {
 
 #[cfg(test)]
 impl AiPowProductionArtifact {
-    /// Build the recursive-certificate byte envelope from a completed
-    /// recursive proving run.
-    ///
-    /// This persists only `run.l1_cert` plus the statement data needed to
-    /// verify it. It never serializes `run.composite_proof`. For the
-    /// canonical Nockchain Hoon/block handoff, use the structured certificate
-    /// noun path instead of this byte envelope.
-    fn from_recursion_run(
-        params: &MatmulParams,
-        found_idx: u32,
-        commitments: ZkPublicCommitments,
-        run: &ai_pow_zk::recursion::L1RecursionRun,
-    ) -> Result<Self, ArtifactCodecError> {
-        params.validate_prod_envelope()?;
-        Self::from_recursive_certificate(
-            zk_params_from(params),
-            found_idx,
-            commitments,
-            run.public_inputs.clone(),
-            run.composite_trace_height,
-            &run.l1_cert,
-        )
-    }
-
-    fn from_recursive_certificate(
-        zk_params: ZkParams,
-        found_idx: u32,
-        commitments: ZkPublicCommitments,
-        pis: CompositePublicInputs,
-        trace_height: usize,
-        cert: &ai_pow_zk::recursion::AiPowProductionCertificate,
-    ) -> Result<Self, ArtifactCodecError> {
-        let certificate = ai_pow_zk::recursion::encode_production_certificate(cert)
-            .map_err(|e| ArtifactCodecError::RecursiveCertificateEncode(e.to_string()))?;
-        Self::from_certificate_bytes(
-            zk_params, found_idx, commitments, pis, trace_height, certificate,
-        )
-    }
-
     fn from_certificate_bytes(
         zk_params: ZkParams,
         found_idx: u32,
@@ -980,7 +939,9 @@ pub fn prove_ai_pow_recursive_certificate(
     target: &[u8; 32],
     found_idx: u32,
 ) -> Result<AiPowRecursiveCertificateRun, BridgeError> {
-    params.validate().map_err(BridgeError::InvalidParams)?;
+    params
+        .validate_prod_envelope()
+        .map_err(BridgeError::InvalidParams)?;
     ensure_context_params(ctx, params)?;
     ensure_context_attempt(ctx, nonce)?;
     let (tile_i, tile_j) = tile_ij(found_idx, params).ok_or(BridgeError::FoundIdxOutOfRange {
@@ -990,9 +951,9 @@ pub fn prove_ai_pow_recursive_certificate(
     let (artifact, prover_program, _) =
         prove_ai_pow_tiled_full(ctx, params, nonce, tile_i, tile_j, |_| {}, None)?;
     let commitments = ZkPublicCommitments::from_context(ctx);
-    let verified = derive_ai_pow_production_statement(
+    let verified = derive_ai_pow_statement(
         &ctx.block_commitment, &ctx.nonce, params, target, found_idx, &commitments, &artifact.pis,
-        artifact.trace_height,
+        artifact.trace_height, true,
     )?;
     verify_ai_pow_tiled_with_statement(params, target, verified, &artifact)?;
     let zk_params = zk_params_from(params);
@@ -1033,9 +994,9 @@ fn verify_ai_pow_block(
     commitments: &ZkPublicCommitments,
     artifact: &ZkProofArtifact,
 ) -> Result<(), BridgeError> {
-    let verified = derive_ai_pow_production_statement(
+    let verified = derive_ai_pow_statement(
         block_commitment, nonce, params, target, found_idx, commitments, &artifact.pis,
-        artifact.trace_height,
+        artifact.trace_height, true,
     )?;
     verify_ai_pow_tiled_with_statement(params, target, verified, artifact)
 }
@@ -1060,14 +1021,14 @@ pub fn verify_ai_pow_production_statement(
     pis: &CompositePublicInputs,
     trace_height: usize,
 ) -> Result<(), BridgeError> {
-    derive_ai_pow_production_statement(
-        block_commitment, nonce, params, target, found_idx, commitments, pis, trace_height,
+    derive_ai_pow_statement(
+        block_commitment, nonce, params, target, found_idx, commitments, pis, trace_height, true,
     )
     .map(|_| ())
 }
 
 #[allow(clippy::too_many_arguments)]
-fn derive_ai_pow_production_statement(
+fn derive_ai_pow_statement(
     block_commitment: &[u8],
     nonce: &[u8],
     params: &MatmulParams,
@@ -1076,10 +1037,15 @@ fn derive_ai_pow_production_statement(
     commitments: &ZkPublicCommitments,
     pis: &CompositePublicInputs,
     trace_height: usize,
+    require_prod_envelope: bool,
 ) -> Result<VerifiedZkStatement, BridgeError> {
-    params
-        .validate_prod_envelope()
-        .map_err(BridgeError::InvalidParams)?;
+    if require_prod_envelope {
+        params
+            .validate_prod_envelope()
+            .map_err(BridgeError::InvalidParams)?;
+    } else {
+        params.validate().map_err(BridgeError::InvalidParams)?;
+    }
     let (tile_i, tile_j) = tile_ij(found_idx, params).ok_or(BridgeError::FoundIdxOutOfRange {
         found_idx,
         num_tiles: params.num_tiles(),
@@ -1601,9 +1567,9 @@ pub(crate) fn prove_and_verify_tiled_full<F: FnOnce(&mut CompositeTrace)>(
     if coloc {
         let commitments = ZkPublicCommitments::from_context(ctx);
         let found_idx = params.tile_index(tile_i, tile_j) as u32;
-        let verified = derive_ai_pow_production_statement(
+        let verified = derive_ai_pow_statement(
             &ctx.block_commitment, &ctx.nonce, params, target, found_idx, &commitments,
-            &artifact.pis, artifact.trace_height,
+            &artifact.pis, artifact.trace_height, false,
         )?;
         verify_ai_pow_tiled_with_statement(params, target, verified, &artifact)?;
     } else {
@@ -2083,11 +2049,24 @@ mod tests {
             prove_and_verify_for_block(&ctx, &params, TEST_NONCE, 0),
             Err(BridgeError::InvalidParams(_))
         ));
+        assert!(matches!(
+            prove_ai_pow_recursive_certificate(&ctx, &params, TEST_NONCE, &[0xff; 32], 0),
+            Err(BridgeError::InvalidParams(_))
+        ));
     }
 
     #[test]
     fn zk_bridge_rejects_context_nonce_substitution_before_proving() {
-        let params = MatmulParams::TEST_SMALL;
+        let params = MatmulParams {
+            m: 64,
+            k: 512,
+            n: 64,
+            noise_rank: 32,
+            tile: 8,
+            spot_checks: 8,
+            difficulty_bits: 0,
+        };
+        params.validate_prod_envelope().unwrap();
         let (a, b) = synth_matrices(b"zk-nonce-substitution", &params);
         let ctx = BlockContext::build(b"zk-nonce-substitution-block", b"nonce-a", &a, &b, &params)
             .expect("ctx");

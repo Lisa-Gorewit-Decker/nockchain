@@ -154,6 +154,27 @@ mod tests {
     }
 
     #[test]
+    fn difficulty_target_is_per_tile_not_per_grid() {
+        let mut base = MatmulParams::TEST_SMALL;
+        base.difficulty_bits = 128;
+        let mut wider_grid = base;
+        wider_grid.m *= 2;
+        wider_grid.n *= 2;
+        assert_eq!(wider_grid.noise_rank, base.noise_rank);
+        assert_eq!(wider_grid.tile, base.tile);
+        assert!(
+            wider_grid.num_tiles() > base.num_tiles(),
+            "test must increase the number of searchable tiles"
+        );
+        assert_eq!(
+            difficulty_target(&base),
+            difficulty_target(&wider_grid),
+            "Pearl target prices one nonce-bound tile work unit; total grid \
+             size increases available work units, not the per-tile target"
+        );
+    }
+
+    #[test]
     fn difficulty_b_256_equals_weight_le() {
         let mut p = MatmulParams::TEST_SMALL;
         p.difficulty_bits = 256;

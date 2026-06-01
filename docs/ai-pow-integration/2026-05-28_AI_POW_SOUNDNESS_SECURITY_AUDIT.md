@@ -202,14 +202,20 @@ Tests:
 ### SND-05: Non-production params can bypass canonical program verification
 
 Severity: Critical if non-prod params are accepted by a verifier
-Status: Confirmed API hazard
+Status: Implemented at the production Rust API boundary
 
 Evidence:
 
-- `zk_bridge::prove_and_verify_tiled` calls only `params.validate()`.
-- For `noise_rank % 16 == 0`, the bridge rebuilds `canonical_program`.
-- For non-`16 | r`, it verifies with `prover_program`, extracted from the trace.
-- `canonical_program` itself rejects non-`16 | noise_rank`.
+- Historical hazard: `zk_bridge::prove_and_verify_tiled` accepted structurally
+  valid non-production params and older bridge paths could fall back to
+  prover-derived programs when the canonical program could not be rebuilt.
+- Current production entrypoints reject this before proving or verifying:
+  `prove_and_verify_for_block` and `prove_ai_pow_recursive_certificate` call
+  `validate_prod_envelope()`, and `verify_ai_pow_production_statement`
+  re-runs the same envelope check before accepting recursive certificate
+  metadata.
+- The legacy Layer-0 helper paths are crate-internal/test-only and are no
+  longer normal public production APIs.
 
 Attack sketch:
 
@@ -223,14 +229,21 @@ CRIT-1 is reopened for non-production parameter sets if they are ever accepted o
 
 Fix plan:
 
-- Production entrypoints must call `validate_prod_envelope()` or an equivalent consensus admission rule before any ZK verification.
-- Delete the `else { verifier uses prover_program }` path from any production-reachable function.
-- Put the non-16 path behind `#[cfg(test)]` or rename it as a test harness only.
+- Done: production entrypoints call `validate_prod_envelope()` before any ZK
+  proof generation or production statement verification.
+- Done: `prove_ai_pow_recursive_certificate` now rejects structural test params
+  instead of attempting to build a canonical production certificate.
+- Keep the non-production Layer-0 seams crate-internal/test-only.
 
 Tests:
 
-- Production verifier rejects `MatmulParams::TEST_SMALL` and any `noise_rank % 16 != 0`.
-- There is no non-test code path where a verifier consumes `prover_program`.
+- Production verifier rejects `MatmulParams::TEST_SMALL` and any non-envelope
+  shape.
+- `param01_prove_and_verify_for_block_rejects_non_prod_params` now covers both
+  the older hardened block bridge and the public recursive certificate prover.
+- `ai_pow_wire_stub` guards that production mining builds the recursive
+  certificate and that the bridge source still contains the production envelope
+  check.
 
 ## High Severity Findings
 

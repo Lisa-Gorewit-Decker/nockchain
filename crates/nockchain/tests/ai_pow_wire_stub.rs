@@ -146,12 +146,29 @@ fn ai_pow_consensus_wire_is_structured_but_fail_closed_without_verifier() {
     let recursive_prove = AI_POW_MINER_BIN_RS
         .find("let run = prove_ai_pow_recursive_certificate")
         .expect("production miner must build the recursive certificate");
+    let recursive_certificate_fn = AI_POW_ZK_BRIDGE_RS
+        .split("pub fn prove_ai_pow_recursive_certificate")
+        .nth(1)
+        .and_then(|tail| {
+            tail.split("/// Crate-internal Layer-0 verifier-only ZK API.")
+                .next()
+        })
+        .expect("recursive certificate prover body must be present");
+    let recursive_prod_envelope = recursive_certificate_fn
+        .find("validate_prod_envelope")
+        .expect("recursive certificate prover must enforce production params");
+    let recursive_layer0_prove = recursive_certificate_fn
+        .find("prove_ai_pow_tiled_full")
+        .expect("recursive certificate prover must build the Layer-0 proof internally");
     assert!(
         AI_POW_MINER_LIB_RS.contains("pub target: DifficultyTarget")
+            && AI_POW_MINER_LIB_RS.contains("Count of fully rebuilt nonce-bound matmul attempts")
             && AI_POW_MINER_BIN_RS.contains("certificate_builder: Some")
             && !AI_POW_MINER_BIN_RS.contains("certificate_builder: None")
             && target_check < recursive_prove
             && AI_POW_ZK_BRIDGE_RS.contains("pub fn prove_ai_pow_recursive_certificate")
+            && recursive_certificate_fn.contains("validate_prod_envelope")
+            && recursive_prod_envelope < recursive_layer0_prove
             && AI_POW_ZK_BRIDGE_RS
                 .contains("prove_canonical_ai_pow_certificate_from_composite_proof")
             && AI_POW_ZK_RECURSION_RS

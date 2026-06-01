@@ -295,26 +295,30 @@ Impact:
   selects which tile was proved; it does not make the tile computation
   nonce-dependent.
 
-## Required Design Decision
+## Attempt Accounting Rule
 
-There are two distinct "attempt accounting" questions:
+The production accounting rule is Pearl's per-tile rule:
 
-1. Nonce grinding over one matmul result:
-   A single tile result `M[i,j]` must not be reusable across many nonces. This
-   audit treats this as mandatory and currently broken.
+- one nonce-bound tile state `M[i,j]` is one jackpot work unit;
+- one nonce may evaluate many tile work units only by performing the
+  corresponding nonce-bound tile matmul work;
+- a tile result `M[i,j]` must not be re-keyed or rehashed across many nonces;
+- the verifier must bind the submitted `found_idx` to the actual tile whose
+  nonce-bound matmul/fold is proven.
 
-2. Tile scanning within one nonce:
-   The current code searches all tiles for one nonce and returns the first
-   passing `found_idx`. If the intended rule is literally "one whole matrix
-   multiplication yields exactly one jackpot digest", then tile scanning is
-   also too permissive and the verifier must derive a single tile from the
-   nonce or block data. If the intended Pearl rule is "one tile matmul is one
-   work unit", then scanning many tiles is acceptable only if difficulty and
-   reward accounting explicitly price the number of tile work units.
+The current `found_idx` search model is therefore acceptable only because each
+searched tile is generated from the same fresh nonce-bound attempt context and
+the recursive certificate proves the selected opened tile. It is not acceptable
+to treat a cached tile state as many attempts by changing only the nonce or
+final hash key.
 
-The immediate fix below closes nonce grinding while preserving the current
-`found_idx`/tile-search model. A separate protocol decision should explicitly
-settle whether one full matrix multiplication may expose many tile attempts.
+The code now has an explicit regression guard that
+`difficulty_target(params)` is per-tile, not multiplied by
+`params.num_tiles()`: increasing the tile grid size increases available tile
+work units, not the target for each tile. If Nockchain later wants a stricter
+"one whole matrix product yields one digest" protocol, that is a consensus
+change requiring a verifier-derived single tile or aggregate digest. It is not
+the Pearl-compatible rule implemented here.
 
 ## Recommended Repair
 
@@ -408,11 +412,10 @@ Regression coverage now includes:
   parameter mismatch at the statement precheck boundary.
 
 Tile scanning remains the Pearl per-tile block-opening model: all checked tile
-hashes are generated from nonce-bound matmul work and the target is
-shape-weighted per Pearl Section 4.5. It is not final-hash-only grinding over a
-cached matmul result. If Nockchain wants a stricter rule of exactly one digest
-per whole matrix product, that is a separate protocol change requiring a
-verifier-derived single tile or aggregate digest.
+hashes are generated from nonce-bound tile matmul work and the target is
+shape-weighted per Pearl Section 4.5 (`r * t_m * t_n`). It is not
+final-hash-only grinding over a cached matmul result, and the target does not
+silently increase with the number of grid tiles.
 
 ## Latest Recursive-Certificate Re-Audit
 
@@ -644,9 +647,11 @@ future hardening/measurement work.
      constructor is invoked exactly once per extranonce tried.
 
 8. Difficulty calibration test:
-   - Measure expected success rate over many small test attempts after the
-     change.
-   - Confirm the probability model matches the intended "one attempt" unit.
+   - Done: `difficulty_target_is_per_tile_not_per_grid` pins that the Pearl
+     target is per tile-work unit and does not scale with `num_tiles`.
+   - Future measurement: sample many small test attempts and confirm the
+     empirical success rate matches the per-tile probability model multiplied
+     by the number of nonce-bound tile work units actually evaluated.
 
 ### Phase 6: Benchmarks
 
@@ -686,16 +691,16 @@ The fix is complete only when all of these are true:
 7. AI-PoW consensus acceptance remains disabled or reject-all until the above
    tests pass.
 
-## Open Protocol Question
+## Resolved Protocol Question: Tile Search Is Per-Tile Work
 
-The repair above stops nonce grinding over one cached matmul result. It does
-not decide whether one full matrix product may expose multiple tile jackpot
-checks through `found_idx`.
+The repair above stops nonce grinding over one cached matmul result. It also
+settles the `found_idx` interpretation for the current protocol: the mineable
+unit is the nonce-bound tile fold, matching Pearl's opened-tile model. The
+miner may search tiles only by doing the corresponding nonce-bound tile work,
+and the certificate must prove the selected tile. The target remains per tile;
+grid size is not hidden inside `difficulty_target`.
 
-If the rule is "one tile matmul equals one attempt", the current `found_idx`
-model can remain, but difficulty and metrics must price tile work explicitly.
-
-If the rule is "one full AI puzzle matmul equals one attempt", then the verifier
-must derive a single tile or aggregate digest from the nonce/block data and
-reject arbitrary `found_idx` search. That is a larger consensus change and
-should be decided before final difficulty calibration.
+If a future design wants one digest for an entire matrix product, it must be
+specified as a new consensus rule. It would require deriving a single tile or
+aggregate digest from trusted block data and rejecting arbitrary `found_idx`
+search. That is outside the current Pearl-compatible production invariant.
