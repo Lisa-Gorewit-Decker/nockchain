@@ -219,12 +219,17 @@ fn ai_pow_consensus_wire_is_structured_but_fail_closed_without_verifier() {
             && AI_POW_PROVER_RS.contains("pub fn nonce(&self) -> &[u8]")
             && AI_POW_PROVER_RS.contains("pub fn s_a(&self) -> &[u8; 32]")
             && AI_POW_PROVER_RS.contains("pub fn tile_states(&self) -> &[TileState]")
+            && AI_POW_PROVER_RS.contains("not a reusable mining cache")
+            && AI_POW_PROVER_RS.contains("cheap-rehash grinding bug")
+            && AI_POW_PROVER_RS.contains("Do not use this with a different nonce")
+            && AI_POW_PROVER_RS.contains("attempts must rebuild them for every NCMN extranonce")
             && !AI_POW_PROVER_RS.contains("pub nonce: Vec<u8>")
             && !AI_POW_PROVER_RS.contains("pub s_a: [u8; 32]")
             && !AI_POW_PROVER_RS.contains("pub m_states: Vec<TileState>"),
         "BlockContext may be public as an opaque nonce-bound attempt handle, \
          but external callers must not be able to mutate nonce-bound work \
-         fields directly"
+         fields directly, and diagnostic accessors must not be framed as a \
+         reusable cross-nonce mining cache"
     );
     let miner_run_inner = AI_POW_MINER_MINING_RS
         .split("fn run_inner")

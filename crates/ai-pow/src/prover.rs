@@ -86,6 +86,13 @@ pub fn params_tag(p: &MatmulParams) -> [u8; 32] {
 /// Per-attempt computation: commitments to `A` and `B`, derived seeds,
 /// noise factors, perturbed matrices, all `M_{i,j}` tile states, and the
 /// leaves of `H_A` / `H_B` for opening-path extraction.
+///
+/// This is a nonce-bound attempt handle, not a reusable mining cache. Public
+/// getters below exist for diagnostics, tests, and ZK bridge consistency checks.
+/// Production mining must call [`mine`], [`mine_block`], or
+/// [`mine_with_context_at_target`] with a context built for the exact nonce
+/// being attempted; scanning alternate nonces over this context's `s_A` or tile
+/// states would recreate the cheap-rehash grinding bug.
 pub struct BlockContext<'a> {
     pub(crate) block_commitment: Vec<u8>,
     pub(crate) nonce: Vec<u8>,
@@ -163,18 +170,28 @@ impl<'a> BlockContext<'a> {
         &self.h_b_chunk
     }
 
+    /// Diagnostic accessor for the nonce-bound `s_A` seed.
+    ///
+    /// Do not use this with a different nonce to derive alternate
+    /// [`pow_key_for_nonce`] values over cached tile states.
     pub fn s_a(&self) -> &[u8; 32] {
         &self.s_a
     }
 
+    /// Diagnostic accessor for the nonce-bound `s_B` seed.
     pub fn s_b(&self) -> &[u8; 32] {
         &self.s_b
     }
 
+    /// Diagnostic accessor for nonce-bound matmul tile states.
+    ///
+    /// These states are valid only for this context's `nonce`; production
+    /// attempts must rebuild them for every NCMN extranonce.
     pub fn tile_states(&self) -> &[TileState] {
         &self.m_states
     }
 
+    /// Diagnostic accessor for one nonce-bound matmul tile state.
     pub fn tile_state(&self, idx: usize) -> Option<&TileState> {
         self.m_states.get(idx)
     }
