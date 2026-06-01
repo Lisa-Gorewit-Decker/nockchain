@@ -1,9 +1,11 @@
 //! End-to-end prover -> verifier tests at small dimensions.
 
+use ai_pow::fiat_shamir::attempt_tile_index;
 use ai_pow::ncmn::{build_ncmn_nonce, NonceAnchors, NonceFormatError};
 use ai_pow::params::MatmulParams;
 use ai_pow::prover::{mine, mine_with_context_at_target, BlockContext, MineError, ProverOptions};
 use ai_pow::synth::synth_matrices;
+use ai_pow::tile_hash::hash_le_target;
 use ai_pow::verifier::{verify, verify_at_target, verify_ncmn_at_target_structural, VerifyError};
 
 fn small_params() -> MatmulParams {
@@ -184,6 +186,53 @@ fn stale_attempt_context_cannot_be_reused_for_another_nonce() {
         ),
         Err(MineError::ContextAttemptMismatch)
     );
+}
+
+#[test]
+fn raw_s_a_hash_target_hit_is_not_a_valid_pow_attempt() {
+    let params = small_params();
+    let (a, b) = synth_matrices(b"raw-sa-negative-seed", &params);
+    let block_commitment = b"raw-sa-negative-block";
+
+    for extranonce in 0u64..64 {
+        let nonce = format!("raw-sa-negative-nonce-{extranonce}");
+        let ctx = BlockContext::build(block_commitment, nonce.as_bytes(), &a, &b, &params).unwrap();
+        let found_idx = attempt_tile_index(
+            ctx.attempt_state(),
+            ctx.params_tag(),
+            ctx.s_a(),
+            params.num_tiles(),
+        ) as usize;
+        let state = ctx.tile_state(found_idx).expect("attempt tile in range");
+        let raw_s_a_hash = state.keyed_hash(ctx.s_a());
+        let pow_key_hash = state.keyed_hash(&ctx.pow_key());
+
+        if raw_s_a_hash != pow_key_hash && !hash_le_target(&pow_key_hash, &raw_s_a_hash) {
+            assert!(
+                hash_le_target(&raw_s_a_hash, &raw_s_a_hash),
+                "raw s_a hash must clear its own target"
+            );
+            assert!(
+                !hash_le_target(&pow_key_hash, &raw_s_a_hash),
+                "nonce-bound pow_key hash must not clear the raw-s_a target"
+            );
+            let mined = mine_with_context_at_target(
+                &ctx,
+                block_commitment,
+                nonce.as_bytes(),
+                &raw_s_a_hash,
+                ProverOptions::default(),
+            )
+            .expect("valid context");
+            assert!(
+                mined.is_none(),
+                "miner must use pow_key_for_nonce(s_a, nonce), not raw s_a"
+            );
+            return;
+        }
+    }
+
+    panic!("test fixture did not find a raw-s_a-only target hit");
 }
 
 #[test]

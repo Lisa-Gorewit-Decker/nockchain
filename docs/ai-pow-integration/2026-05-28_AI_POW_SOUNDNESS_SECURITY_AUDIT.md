@@ -135,7 +135,8 @@ Tests:
 - Done: assert ZK `HASH_JACKPOT` equals plain `TileState::keyed_hash(pow_key_for_nonce(s_a, nonce))`.
 - Done: executable and bridge-level tests exercise `COMMITMENT_HASH` as the
   nonce-bound `pow_key`, not raw `s_a`.
-- Add a negative test where `BLAKE3(M, key=s_a)` clears target but `BLAKE3(M, key=pow_key)` does not.
+- Done: add a negative test where `BLAKE3(M, key=s_a)` clears target but
+  `BLAKE3(M, key=pow_key)` does not; mining must return no solution.
 
 ### SND-03: No production verifier-only ZK API derives the trusted statement
 
@@ -419,13 +420,16 @@ Tests:
 ### SND-07: `ctx.params` and explicit `params` can diverge in ZK bridge APIs
 
 Severity: High API hazard
-Status: Confirmed
+Status: Remediated at bridge entrypoints
 
 Evidence:
 
 - `BlockContext` stores `params`.
 - `prove_and_verify_for_block`, `prove_and_verify_tiled`, and `prove_and_verify_tiled_full` also accept `params` separately.
 - The bridge indexes `ctx.a`, `ctx.b`, `ctx.s_a`, `ctx.s_b`, `ctx.h_a_chunk`, and `ctx.h_b_chunk` while using the separately supplied `params` for shape, tile range, target, and circuit config.
+- Current bridge entrypoints call `ensure_context_params(ctx, params)` before
+  proof construction, trace sizing, target derivation, or matrix indexing. A
+  mismatch returns `BridgeError::ParamsMismatch`.
 
 Attack / failure sketch:
 
@@ -438,12 +442,14 @@ Verifier/prover crash or invalid statement construction through API misuse.
 
 Fix plan:
 
-- Remove the redundant `params` argument from bridge functions; use `ctx.params`.
-- If a separate argument is retained, assert equality and return a typed error before any allocation or indexing.
+- Done: retain the separate `params` argument for existing bridge call sites,
+  but compare it to `ctx.params` and return a typed error before allocation or
+  indexing.
 
 Tests:
 
-- Build `ctx` with one params set and call bridge with another; must return `ParamsMismatch`, not panic.
+- Done: build `ctx` with one params set and call the bridge with another; it
+  returns `ParamsMismatch`, not a panic.
 
 ### SND-08: Legacy full-matrix `place_matrix_hash` is non-canonical for non-power-of-two chunk counts
 
