@@ -199,7 +199,8 @@ impl<'a> BlockContext<'a> {
     /// Diagnostic accessor for nonce-bound matmul tile states.
     ///
     /// These states are valid only for this context's `nonce`; production
-    /// attempts must rebuild them for every NCMN extranonce.
+    /// attempts must rebuild them for every explicit attempt nonce or
+    /// Pearl-compatible ticket.
     pub fn tile_states(&self) -> &[TileState] {
         &self.m_states
     }

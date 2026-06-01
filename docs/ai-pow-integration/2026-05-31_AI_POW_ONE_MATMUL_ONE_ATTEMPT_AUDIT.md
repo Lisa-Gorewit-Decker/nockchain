@@ -59,10 +59,10 @@ Implementation status:
   `JOB_KEY`, `COMMITMENT_HASH`, `HASH_A`, `HASH_B`, trace height, and jackpot
   target satisfaction from verifier-supplied block data before recursive
   certificate verification is allowed to trust the persisted metadata.
-- The structured certificate noun decoder exposes
-  `precheck_ai_pow_ncmn_certificate_statement`, so the Rust/Hoon boundary can
-  check the NCMN nonce anchor and run those same nonce, target, params, and
-  public-input binding checks immediately after bounded noun decoding.
+- The structured Pearl merge artifact decoder exposes bounded metadata and
+  statement prechecks, so the Rust/Hoon boundary can reject replay, target,
+  params, aux-inclusion, and public-input mismatches immediately after bounded
+  noun decoding.
 - The canonical certificate noun and Hoon `ai-pow-commitments` mold now carry
   only the proof-bound chunk commitments `[h-a-chunk h-b-chunk]`. Legacy
   row/column roots `h_a` / `h_b` remain Rust diagnostic/plain-proof fields and
@@ -158,8 +158,8 @@ This was confirmed by:
 - `mine_inner(ctx, block_commitment, nonce, target, opts)` hashes `ctx.m_states`
   with `pow_key_for_nonce(&ctx.s_a, nonce)`.
 - `mine_block` built one `BlockContext` and looped over nonces.
-- `ai-pow-miner::mining::run_inner` built one `BlockContext` and looped over
-  `extranonce`.
+- The removed legacy `ai-pow-miner::mining::run_inner` built one
+  `BlockContext` and looped over `extranonce`.
 
 ### Plain Verifier
 
@@ -423,22 +423,16 @@ Current code follows the recommended production design above:
   recursive-certificate full-matmul admission check. The lower-level
   `verify_ai_pow_selected_tile_statement` is crate-internal selected-tile
   binding plumbing.
-- `crates/ai-pow-miner/src/certificate_noun.rs`: decoded Hoon-compatible
-  certificate nouns can be reconstructed into
-  `AiPowRecursiveCertificate` and verified via
-  `verify_decoded_ai_pow_ncmn_certificate`, which checks the NCMN nonce anchor
-  and runs the trusted statement precheck before recursive proof verification
-  consumes the miner-controlled proof tree. Multi-tile selected-tile recursive
-  statements are rejected at this precheck. Single-tile smoke statements derive
-  canonical seeds from the same nonce-keyed chunk commitments bound by the ZK
-  proof as `HASH_A` / `HASH_B`.
+- `crates/ai-pow-miner/src/certificate_noun.rs`: decoded Pearl merge-mined
+  `%ai-pow` artifacts can be prechecked against verifier-trusted Nockchain block
+  data, matrix inputs, target, and aux inclusion before recursive proof
+  verification consumes the miner-controlled proof tree. Single-ticket
+  statements derive canonical public inputs from the same chunk commitments
+  bound by the ZK proof as `HASH_A` / `HASH_B`.
 - `crates/ai-pow-miner/src/bin/ai_pow_mine.rs`: recursive certificate
-  construction rebuilds the context for the winning nonce and refuses to prove
-  unless the production NCMN verifier confirms that the plain target check
-  succeeds first against the trusted candidate Nockchain commitment carried by
-  the mining result. This precheck enforces the production parameter envelope,
-  NCMN nonce shape, candidate anchor, absent external commitment, and target
-  satisfaction before recursive proof generation begins.
+  construction is reachable only from a winning Pearl-compatible ticket
+  attempt. Target misses return no ticket artifact, and stale or mismatched
+  recursive-run metadata is rejected before submission.
   It also rejects the current selected-tile recursive statement before
   spending ZK proving work when the configured proof would lack full-matrix
   binding.
@@ -587,8 +581,10 @@ mine_attempt_at_target(&attempt, target, opts)
 
 4. Done: `mine_block` builds a fresh nonce-bound context per nonce and its docs
    state that it recomputes nonce-derived matmul work per nonce.
-5. Done: `ai-pow-miner::mining::run_inner` builds a fresh nonce-bound context
-   per extranonce before target checking.
+5. Superseded: the legacy NCMN miner loop was removed. The remaining
+   production miner loop is `pearl_mining::run`, where one counted attempt is
+   one explicit Pearl-valid `(t_rows, t_cols)` ticket evaluation and recursive
+   proof construction is performed only after a Nockchain target hit.
 
 ### Phase 2: Update Plain Verification
 
@@ -641,13 +637,12 @@ certificate; Hoon consensus still needs the verifier jet/wiring.
 
 1. No new large proof artifact is required; the recursive proof remains the
    only canonical proof artifact.
-2. The Rust noun boundary now exposes `decode_ai_pow_artifact_jam`,
-   `decode_ai_pow_artifact_slab`, and `verify_ai_pow_ncmn_artifact_jam` /
-   `verify_decoded_ai_pow_ncmn_artifact` for the full persisted/wire artifact
-   `[%ai-pow nonce cert]`; the Hoon/Rust verifier path must call this boundary
-   with the trusted puzzle id, candidate block commitment, params, and target.
-   The jam-byte entrypoint caps attacker input and preflights noun count,
-   depth, and atom bytes before cueing.
+2. The Rust noun boundary now exposes bounded Pearl merge artifact decoding and
+   verification for the full persisted/wire artifact `[%ai-pow nonce cert]`;
+   the Hoon/Rust verifier path must call this boundary with trusted Nockchain
+   block data, matrix inputs, target, and aux-inclusion policy. The jam-byte
+   entrypoint caps attacker input and preflights noun count, depth, and atom
+   bytes before cueing.
 3. The `%ai-pow` wire carries `[%ai-pow nonce cert]`, where `nonce` is an
    `@uxncmn` atom. This keeps the recursive certificate as the only proof
    artifact while still carrying the nonce commitment parameter needed to prove
@@ -834,13 +829,13 @@ attempt.
 
 ## Latest Re-Audit: Target-Hit Boundary Before Recursive Proving
 
-The production miner's certificate-builder closure already runs
-`verify_ncmn_at_target` before calling `prove_ai_pow_recursive_certificate`, so
-the normal node-facing miner does not start recursive proving unless the plain
-nonce-bound matmul proof clears the chain target. The public recursive
-certificate builder still needed the same cheap check at its own boundary. A
-direct caller could otherwise ask it to build the Layer-0 proof first and only
-learn after public-input derivation that `HASH_JACKPOT > target`.
+The production miner now constructs recursive certificates only from a winning
+Pearl-compatible ticket attempt. The normal node-facing miner does not start
+recursive proving unless `pearl_mining::run` has returned a ticket that clears
+the Nockchain target. The public recursive certificate builders still need the
+same cheap check at their own boundary so direct callers cannot ask them to
+build the Layer-0 proof first and only learn after public-input derivation that
+`HASH_JACKPOT > target`.
 
 That is not a forged accepted block because the later statement check rejects,
 but it is the wrong API shape for a production certificate constructor: missed
@@ -913,13 +908,11 @@ against drifting back to raw-`s_A` jackpot-key wording.
 
 ## Latest Re-Audit: Decoded Recursive Certificate DoS Ordering
 
-The decoded Hoon-compatible certificate verifier had the right ordering for
-recursive proof verification, but not for recursive proof reconstruction:
-`verify_decoded_ai_pow_certificate` and the NCMN variant decoded the
-miner-controlled proof-node tree into an `AiPowRecursiveCertificate` before
-running the cheap statement precheck. A block with stale nonce, wrong target,
-wrong NCMN anchor, or multi-tile selected-tile metadata could therefore force
-extra recursive-certificate deserialization/canonicalization work before being
+Historical note: the decoded Hoon-compatible certificate verifier had the right
+ordering for recursive proof verification, but not for recursive proof
+reconstruction. A block with stale nonce, wrong target, wrong anchor, or
+multi-tile selected-tile metadata could therefore force extra
+recursive-certificate deserialization/canonicalization work before being
 rejected.
 
 This is not a forged-proof acceptance bug, but it is the wrong consensus
@@ -927,14 +920,12 @@ boundary for a hostile wire artifact. The verifier should reject all cheap
 metadata failures before doing any work proportional to the proof tree whenever
 the already-decoded shape carries enough metadata to do so.
 
-Code status after this re-audit: the decoded certificate verifier APIs now run
-the internal explicit-attempt precheck or the public NCMN precheck before
+Code status after this re-audit: the Pearl merge artifact verifier now runs
+metadata-only Pearl/Nockchain statement prechecks before
 `ai_pow_recursive_certificate_from_node`. Regression coverage constructs an
-intentionally invalid proof-node and confirms wrong statement metadata or a
-wrong NCMN anchor returns the cheap precheck error before proof-node
-reconstruction is attempted. A later API-surface hardening made the lower-level
-explicit-attempt verifier helpers private; public callers get the NCMN verifier
-entrypoints that enforce the candidate-block anchor.
+intentionally invalid proof-node and confirms replay or wrong statement
+metadata returns the cheap precheck error before proof-node reconstruction is
+attempted. The legacy NCMN verifier entrypoints have since been removed.
 
 ## Latest Re-Audit: Legacy Plain-Proof Envelope Naming
 
@@ -960,13 +951,11 @@ present.
 
 ## Latest Re-Audit: Jammed Artifact DoS Ordering
 
-The byte-oriented verifier `verify_ai_pow_ncmn_artifact_jam` still routed
-through `decode_ai_pow_artifact_jam`, which fully decoded the structured
-proof-node tail before the verifier checked the trusted candidate-block anchor
-or re-derived the cheap statement metadata. The decoded-certificate APIs had
-already been fixed, but a hostile block/wire artifact could still force bounded
-proof-node traversal before rejection when the NCMN anchor was wrong or the
-claimed `HASH_JACKPOT` missed the target.
+Historical NCMN note: the byte-oriented NCMN verifier previously routed through
+`decode_ai_pow_artifact_jam`, which fully decoded the structured proof-node
+tail before the verifier checked trusted block data or re-derived cheap
+statement metadata. That verifier has now been removed from `ai-pow-miner`; the
+active Pearl merge verifier keeps the same intended ordering.
 
 This is bounded by `CertificateNounLimits`, so it is not an unbounded parser
 bomb, but it is still the wrong consensus ordering: cheap rejection using
@@ -974,10 +963,10 @@ trusted block data should happen before semantic traversal of the
 miner-controlled recursive certificate tree whenever the top-level noun shape
 already exposes the required metadata.
 
-Code status after this re-audit: `verify_ai_pow_ncmn_artifact_jam` now performs
-the byte-length cap, jam preflight, cue, canonical-jam check, artifact tag
-check, NCMN anchor check, certificate metadata decode, and full-matmul
-statement precheck before decoding the proof-node tail or reconstructing the
+Code status after this re-audit: Pearl merge artifact verification performs the
+byte-length cap, jam preflight, cue, canonical-jam check, artifact tag check,
+metadata decode, and Pearl/Nockchain statement precheck before decoding the
+proof-node tail or reconstructing the
 recursive certificate. Regression coverage builds jammed `%ai-pow` artifacts
 with an intentionally invalid proof node and confirms wrong candidate anchors
 and missed targets return the cheap precheck errors before proof-node decode.
@@ -1036,11 +1025,11 @@ checks the `ai-pow-zk` top-level docs for those claims and rejects the old
 plain-proof-wrapping phrases.
 
 The same top-level docs now surface the minimal-reuse security invariant:
-changing the NCMN nonce must force fresh transcript-derived commitments, noise,
-noised matrix strips, tile states, jackpot preimages, and proof witness data.
-Cache-friendly attempt reuse is a vulnerability, not a desired trait: any reuse
-of those values across nonce attempts is treated as consensus attack surface,
-not as a production optimization target.
+changing the explicit attempt input must force fresh transcript-derived
+commitments, noise, noised matrix strips, tile states, jackpot preimages, and
+proof witness data. Cache-friendly attempt reuse is a vulnerability, not a
+desired trait: any reuse of those values across attempts is treated as
+consensus attack surface, not as a production optimization target.
 
 ## Latest Re-Audit: Miner Submission Preflight
 
@@ -1057,21 +1046,21 @@ for whether the canonical recursive certificate is full-matmul-admissible for a
 parameter set. The node miner calls this gate during startup preflight and
 refuses to connect or enable mining when no recursive certificate builder is
 configured, when the current selected-tile recursive statement is used with
-multi-tile parameters. Tests cover missing builder, the production-valid
-multi-tile fixture that fails before mining, and the single-tile chunk-seed
-admission case. The `ai-pow-mine` CLI now defaults to Pearl-compatible
-submission with single-tile production-envelope smoke parameters
+multi-tile parameters. The legacy NCMN miner path has since been removed; the
+remaining tests cover required Pearl submission config, parameter/config
+mismatches, unsupported recursive params and patterns, stale recursive-run
+metadata, target misses that produce no `%ai-pow` poke, and successful
+Nockchain-side Pearl-compatible submission. The `ai-pow-mine` CLI now uses
+Pearl-compatible submission with single-tile production-envelope smoke parameters
 (`m=8, k=512, n=8, r=32, tile=8, sigma=1`) for local Layer-0 development; the
 Pearl header fields are still explicit because they define the shared attempt
 transcript. Multi-tile canonical block submission remains fail-closed until the
 recursive certificate binds a full-matrix aggregate.
 
-Follow-up code status: the prover-only `ai-pow-mine-prover` smoke CLI had the
-same stale `TEST_SMALL` defaults even though it calls the production
-`mining::run` entrypoint, which rejects non-production parameters. Its defaults
-now match the single-tile Layer-0 smoke profile, its command name and messages
-identify it as `ai-pow-mine-prover`, and its optional output is documented as
-legacy plain `MatmulProof` diagnostics rather than a canonical block artifact.
+Follow-up code status: the prover-only `ai-pow-mine-prover` smoke CLI and the
+legacy NCMN miner module have been removed. They served only diagnostic
+plain-proof smoke coverage and were not the canonical production submission
+API.
 
 ## Latest Re-Audit: Seed-Root Binding
 
@@ -1112,18 +1101,18 @@ document, and the Hoon type mold.
 
 ## Latest Re-Audit: Jammed Artifact Verifier Source of Truth
 
-The jammed `%ai-pow` verifier already enforced the intended DoS-resistant
-ordering: byte cap, jam preflight, cue, canonical jam check, NCMN anchor check,
-metadata-only statement precheck, proof-node reconstruction, and recursive
+The jammed Pearl merge `%ai-pow` verifier enforces the intended DoS-resistant
+ordering: byte cap, jam preflight, cue, canonical jam check, metadata-only
+Pearl/Nockchain statement precheck, proof-node reconstruction, and recursive
 verification. A small cleanup remained: after prechecking the metadata-only
 decode, the final recursive verifier used the public-inputs field from a second
 full certificate decode of the same noun. Honest artifacts decode identically,
 but the production boundary should not carry two apparent public-input sources.
 
-Code status after this re-audit: `verify_ai_pow_ncmn_artifact_jam` now verifies
-the reconstructed recursive certificate against `metadata.public_inputs`, the
-exact public-input vector that passed the cheap verifier-derived statement
-precheck. The full certificate decode is still used to reconstruct the proof
+Code status after this re-audit: the Pearl merge verifier verifies the
+reconstructed recursive certificate against the public-input vector that passed
+the cheap verifier-derived statement precheck. The full certificate decode is
+still used to reconstruct the proof
 tree, but it no longer supplies a separate public-input source for recursive
 verification. The Nockchain wire regression guards this verifier ordering.
 

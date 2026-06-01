@@ -73,15 +73,19 @@ recursive verifier.
 
 Evidence:
 
-- `ai_pow_miner::MiningJob` carries a caller-supplied 256-bit chain target: `crates/ai-pow-miner/src/lib.rs`.
-- The mining loop passes that target to `mine_with_context_at_target`: `crates/ai-pow-miner/src/mining.rs`.
+- `ai_pow_miner::pearl_mining::PearlMergeMiningJob` carries the caller-supplied
+  256-bit Nockchain target.
+- The production miner no longer exposes the legacy NCMN `MiningJob` /
+  `mining::run` path. Its connected run loop derives a Pearl-compatible ticket
+  attempt and only constructs the recursive certificate after the ticket clears
+  the Nockchain target.
 - `ai_pow::verifier::verify` has no target argument and instead computes `difficulty_target(params)` from `params.difficulty_bits`: `crates/ai-pow/src/verifier.rs`.
 - `mine_with_context_at_target` explicitly documents that the chain target may not equal `difficulty_target(params)`: `crates/ai-pow/src/prover.rs`.
 - The crate root no longer re-exports plain `MatmulProof` objects, plain mining
   helpers, or plain verifier helpers. Intentional plain-proof checks must use
   explicit `ai_pow::proof`, `ai_pow::prover`, or `ai_pow::verifier` module
   paths.
-- `ai-pow` README now documents `verify_ncmn_at_target` as a diagnostic /
+- `ai-pow` README now documents `verify_prod_at_target` as a diagnostic /
   pre-ZKP target-hit check, not as the canonical block verifier, and labels
   `verifier::verify` as non-consensus.
 
@@ -166,11 +170,10 @@ Evidence:
   `pow_key` from verifier-trusted `(block_commitment, nonce, params, target,
   found_idx, h_a_chunk, h_b_chunk)` and then compare the public inputs against
   those derived values.
-- The production-facing Rust artifact is the structured recursive certificate
-  noun. Its verifier path decodes bounded metadata, checks the NCMN nonce
-  anchor, checks the full-matmul recursive statement gate, re-derives public
-  inputs from trusted block data, and only then reconstructs/verifies the
-  recursive proof.
+- The production-facing Rust artifact is the structured Pearl merge-mined
+  `%ai-pow` noun. Its verifier path decodes bounded metadata, checks the
+  Pearl/Nockchain statement and aux inclusion, re-derives public inputs from
+  trusted block data, and only then reconstructs/verifies the recursive proof.
 
 Attack sketch:
 
@@ -188,10 +191,10 @@ Fix plan:
   derives `s_a` / `s_b` from `h_a_chunk` / `h_b_chunk`, derives `pow_key`,
   checks `found_idx`, checks target satisfaction, and rejects multi-tile
   selected-tile statements with `FullMatmulProofUnavailable`.
-- Done: `verify_ai_pow_ncmn_artifact_jam` / `verify_decoded_ai_pow_ncmn_artifact`
-  are the Rust consensus-facing recursive certificate entrypoints. They bind
-  the NCMN nonce to the trusted candidate-block commitment and reject cheap
-  metadata failures before recursive proof reconstruction.
+- Superseded: the legacy NCMN Rust artifact verifier entrypoints were removed
+  from `ai-pow-miner`. The current recursive-certificate Rust boundary is the
+  Pearl merge-mined `%ai-pow` artifact verifier, which rejects cheap statement
+  and metadata failures before recursive proof reconstruction.
 - Done: lower-level selected-tile statement helpers are crate-private; dev
   `ai-pow-zk` verifier helpers are gated behind explicit `dev-unsafe`.
 - Current canonical artifact fields are `nonce`, `zk_params`, `found_idx`,
@@ -533,25 +536,26 @@ Tests:
   and `CompositeTrace::place_matrix_hash`.
 - Done: 100 chunk non-power-of-two matrix matches keyed BLAKE3.
 
-### SND-09: NCMN nonce anchor is miner-side only unless consensus explicitly checks it
+### SND-09: Removed NCMN nonce anchor path must not re-enter consensus
 
 Severity: High integration hazard
-Status: Implemented at the Rust and wire boundary; Hoon consensus remains
-fail-closed until the verifier jet is wired.
+Status: Superseded by Pearl merge-mined `%ai-pow`; Hoon consensus remains
+fail-closed until the Pearl verifier jet is wired.
 
 Evidence:
 
-- `ai-pow-miner` builds an 80-byte NCMN nonce containing the Nockchain block commitment and an extranonce.
-- The miner calls `mine_with_context_at_target(&ctx, job.puzzle_id, &nonce, &job.target, ...)`; `job.puzzle_id`, not the candidate block commitment, is the `block_commitment` argument to `ai-pow`.
+- Historical: the removed NCMN miner built an 80-byte NCMN nonce containing the
+  Nockchain block commitment and an extranonce.
+- Historical: that miner called
+  `mine_with_context_at_target(&ctx, job.puzzle_id, &nonce, &job.target, ...)`;
+  `job.puzzle_id`, not the candidate block commitment, was the
+  `block_commitment` argument to `ai-pow`.
 - The low-level `ai_pow::verifier::verify` still treats `nonce` as opaque bytes
   and is not the NCMN production boundary.
-- `ai_pow::verifier::verify_ncmn_at_target` and
+- The production miner now submits only Pearl merge-mined `%ai-pow` artifacts.
   `ai_pow_miner::certificate_noun::decode_ai_pow_artifact_jam` /
-  `decode_ai_pow_artifact_slab` /
-  `verify_decoded_ai_pow_ncmn_artifact` parse the full `[%ai-pow nonce cert]`
-  artifact, reject malformed/reserved fields, reject nonzero external
-  commitments, and require the embedded Nockchain commitment to match the
-  verifier-trusted candidate block commitment.
+  `decode_ai_pow_artifact_slab` remain bounded generic decoders; the
+  production verifier path is the Pearl merge artifact verifier.
 - `decode_ai_pow_artifact_jam` enforces a jammed-byte cap before cueing the
   block artifact, so the future consensus path has a bounded byte entrypoint
   rather than relying on every caller to remember to cap attacker input first.
@@ -566,8 +570,10 @@ Evidence:
 
 Attack sketch:
 
-1. A future consensus verifier calls the AI-PoW verifier with opaque nonce bytes.
-2. It verifies the PoW hash but never checks that the nonce's `nck_commitment` equals the candidate block commitment.
+1. A future consensus verifier reintroduces the removed NCMN-style explicit
+   nonce path.
+2. It verifies the PoW hash but does not bind the work to verifier-trusted
+   block data.
 3. A proof can be accepted as work for a block it did not anchor to.
 
 Impact:
@@ -576,24 +582,22 @@ Block-binding failure at the chain integration layer. This is especially dangero
 
 Fix status:
 
-- Done: the production verifier parses the NCMN nonce.
-- Done: bad magic, version, reserved bytes, and length reject.
-- Done: `nonce.nck_commitment != candidate block commitment` rejects.
-- Done: the opaque external commitment slot is reserved and must be zero until
-  a future consensus rule specifies it.
+- Superseded: the NCMN nonce parser, miner, and Rust artifact verifier helpers
+  have been removed from `ai-pow-miner` and `ai-pow`.
 - Done: the standalone miner carries the trusted candidate Nockchain
-  commitment in `MinedSolution` and recursive certificate generation checks the
-  nonce against that trusted value. It must not parse a miner-controlled nonce
-  and use the nonce's own `nck_commitment` as the expected anchor.
-- Done: parsed nonce fields and malformed/external-anchor cases are covered by
-  Rust tests and the AI-PoW wire regression guard.
+  commitment through the Rust-only Pearl aux payload and recursive certificate
+  generation checks ticket-derived metadata against the opaque recursive prover
+  run before submission.
+- Done: Pearl merge artifact tests cover malformed opaque nonce envelopes,
+  replay, aux-inclusion tampering, target misses, stale recursive-run metadata,
+  and bounded decode ordering.
 
 Tests:
 
-- Honest NCMN nonce verifies.
-- Mutating the embedded Nockchain commitment rejects.
-- Bad magic/version/reserved bytes reject before proof verification.
-- Reusing a valid proof/nonce on a different candidate block rejects.
+- Honest Pearl-compatible ticket builds and submits a Nockchain `%ai-pow` poke.
+- Reusing or tampering with candidate block commitment / aux data rejects.
+- Malformed `AIP1` nonce envelopes reject before proof-tail traversal.
+- Target misses do not produce `%ai-pow` artifacts.
 
 ### SND-10: Miner hashed the target noun instead of decoding the chain target
 
@@ -699,7 +703,7 @@ Residual surface:
 ### PARAM-01: Production envelope is documented but not enforced in exposed verifier/miner entrypoints
 
 Severity: Medium to High
-Status: Implemented at production boundaries; legacy helpers remain explicit
+Status: Implemented at production boundaries; legacy miner submission removed
 
 Historical issue: `MatmulParams::validate_prod_envelope()` captured the
 consensus/security envelope, but production-looking entrypoints previously used
@@ -707,17 +711,19 @@ only `validate()`.
 
 Current status:
 
-- `ai-pow-miner::mining::run` enforces `validate_prod_envelope()` at entry.
-- `ai_pow::verifier::verify_ncmn_at_target` and `verify_prod_at_target` enforce
-  the production envelope for plain-proof prechecks. The structured recursive
-  certificate noun verifier is the block/wire boundary.
+- `ai-pow-miner::pearl_mining::run` is the only miner loop, and the connected
+  run-loop preflight validates the Pearl merge config against the canonical
+  recursive prover subset before enabling mining.
+- `ai_pow::verifier::verify_prod_at_target` enforces the production envelope
+  for plain-proof diagnostics. The structured Pearl merge recursive certificate
+  noun verifier is the block/wire boundary.
 - `zk_bridge::prove_and_verify_for_block`,
   `prove_ai_pow_recursive_certificate`, and
   `verify_ai_pow_full_matmul_production_statement` enforce the production
   envelope. The recursive certificate builder and full-matmul verifier both
   fail closed for multi-tile selected-tile recursive statements.
-- `ai-pow-mine`'s recursive certificate builder runs the plain target precheck
-  through `verify_ncmn_at_target`, not the structural low-level verifier, using
+- `ai-pow-mine`'s recursive certificate builder is Pearl-ticket-derived and
+  constructible only after the ticket loop reports a Nockchain target hit, using
   the trusted candidate Nockchain commitment carried by the mining result before
   it starts recursive proof generation.
 - `validate()` and `verify_at_target` remain available for tests/local tools
@@ -725,8 +731,8 @@ Current status:
 
 Fix:
 
-- Keep source-level guards/tests proving production call sites use the envelope
-  and NCMN boundary.
+- Keep source-level guards/tests proving production call sites use the Pearl
+  merge recursive envelope.
 - Do not re-export or advertise structural helpers as consensus APIs.
 
 ### WIRE-01: `%ai-pow` consensus wire is a placeholder and reject-all
@@ -753,12 +759,12 @@ Current behavior:
 - Done: `do-mine` still emits only `%mine-zk`; it refuses to emit `%mine-ai`
   while `do-pow` must reject the result.
 
-Remaining blocker:
+Deferred verifier work:
 
-- Wire the Hoon/Rust verifier jet so consensus can bounded-decode the jammed
-  `%ai-pow` artifact, check the NCMN anchor against the trusted candidate block,
-  derive the statement from trusted block data, and call the full recursive
-  certificate verifier.
+- Wire the Hoon/Rust verifier jet only when that milestone is explicitly in
+  scope, so consensus can bounded-decode the jammed Pearl merge `%ai-pow`
+  artifact, check the Pearl/Nockchain statement against trusted block data, and
+  call the full recursive certificate verifier.
 - Only after that verifier exists, add a post-activation integration test that
   accepts one honest `%ai-pow` artifact and rejects tampered nonce, params,
   commitments, public inputs, recursive proof, target, and candidate-block
@@ -768,7 +774,8 @@ Fix:
 
 - Keep activation defaults safe until the real verifier is wired.
 - Keep `%mine-ai` disabled until `%ai-pow` can be accepted by consensus.
-- Add the honest/tampered post-activation integration suite with the verifier.
+- Do not add the honest/tampered post-activation integration suite until real
+  verifier work is explicitly scheduled.
 
 ### CRYPTO-01: STARK security target and comments need independent sign-off
 
@@ -813,11 +820,11 @@ Current behavior:
   single opaque atom.
 - Done: `CertificateNounLimits` bounds recursive proof-node depth, total nodes,
   list lengths, atom bytes, packed item counts, and jammed artifact bytes.
-- Done: `decode_ai_pow_artifact_jam` and
-  `verify_ai_pow_ncmn_artifact_jam` enforce a byte cap before cueing, preflight
-  jam structure, reject noncanonical jam re-encodings, decode the bounded noun,
-  reject unknown certificate versions/tags, and run the NCMN/statement precheck
-  before reconstructing the recursive certificate.
+- Done: Pearl merge artifact verification enforces a byte cap before cueing,
+  preflights jam structure, rejects noncanonical jam re-encodings, decodes the
+  bounded noun, rejects unknown certificate versions/tags, and runs the
+  Pearl/Nockchain statement precheck before reconstructing the recursive
+  certificate.
 - Done: Hoon types use custom auras for compact atoms (`@uxblake`,
   `@uxaipownonce`, `@uxfelt`, `@uxfelts`) instead of digest/field tuples.
 
@@ -833,8 +840,8 @@ Regression coverage:
 Residual surface:
 
 - Hoon consensus still rejects `%ai-pow` before recursive verifier wiring. Keep
-  that fail-closed behavior until WIRE-01 lands and the Hoon/Rust jet calls
-  `verify_ai_pow_ncmn_artifact_jam` or the equivalent bounded decode plus full
+  that fail-closed behavior until WIRE-01 lands and the Hoon/Rust jet calls the
+  Pearl merge artifact verifier or the equivalent bounded decode plus full
   recursive verifier path.
 
 ## Recommended Fix Order
@@ -846,7 +853,8 @@ Residual surface:
 5. Hide or rename all dev/unsafe ZK APIs.
 6. Enforce production params at production boundaries.
 7. Make decoding parameter-aware and bounded.
-8. Parse and enforce the NCMN nonce anchor in the production verifier.
+8. Parse and enforce the opaque `AIP1` nonce and Pearl/Nockchain statement in
+   the production verifier.
 9. Replace full verifier noise expansion with on-demand derivation.
 10. Fix or remove noncanonical `place_matrix_hash`.
 11. Add end-to-end tamper tests for every trusted field.
@@ -857,7 +865,8 @@ Plain verifier:
 
 - Reject wrong target.
 - Reject wrong nonce.
-- Reject NCMN nonce whose embedded block commitment does not match the candidate block.
+- Reject opaque nonce / aux data whose embedded Nockchain commitment does not
+  match the candidate block.
 - Reject wrong params tag.
 - Reject wrong found tile path.
 - Reject wrong spot index.
@@ -887,4 +896,11 @@ Consensus integration:
 
 ## Notes on Current Non-Exploitability
 
-The Hoon `%ai-pow` branch currently rejects all submissions, and the `%ai-pow` payload is a placeholder. That means the critical Rust issues above are not currently exploitable through the main consensus path. They become exploitable as soon as a real `%ai-pow` verifier is wired unless consensus enters through the full-matmul recursive-certificate gate and rejects selected-tile-only statements.
+The Hoon `%ai-pow` branch currently rejects all submissions. The payload is no
+longer a placeholder: it is the structured
+`[%ai-pow nonce=ai-pow-nonce cert=ai-pow-certificate]` artifact, but Hoon keeps
+it fail-closed because real verifier wiring is out of scope for the current
+milestone. That means the critical Rust issues above are not currently
+exploitable through the main consensus path. They become exploitable if a real
+`%ai-pow` verifier is wired without entering through the full-matmul recursive
+certificate boundary and rejecting selected-tile-only statements.

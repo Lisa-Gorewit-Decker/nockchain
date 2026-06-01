@@ -3,11 +3,12 @@
 //! This module intentionally accepts the recursive certificate object, not
 //! `MatmulProof` and not the raw Layer-0 `AiPowBatchProof`. Its verifier
 //! boundary also runs the full-matmul statement precheck before recursive proof
-//! reconstruction or verification.
+//! reconstruction or verification. Those recursive verifier helpers are Rust
+//! boundaries only; Hoon consensus remains fail-closed and does not call them
+//! in the current milestone.
 
 use std::panic::{catch_unwind, AssertUnwindSafe};
 
-use ai_pow::ncmn::{parse_ncmn_nonce, NonceFormatError};
 use ai_pow::params::MatmulParams;
 use ai_pow::pearl_compat::{
     verify_pearl_aux_inclusion, verify_pearl_merge_public_statement_bytes,
@@ -38,7 +39,6 @@ use serde::ser::{self, Serialize, SerializeMap, SerializeSeq, SerializeStruct, S
 
 const AI_POW_CERT_VERSION: u64 = 1;
 const GOLDILOCKS_MODULUS: u64 = 0xffff_ffff_0000_0001;
-const NCMN_NONCE_LEN: usize = ai_pow::ncmn::NCMN_NONCE_LEN;
 pub const AI_POW_NONCE_MAGIC: [u8; 4] = *b"AIP1";
 pub const AI_POW_NONCE_MAX_SIZE: usize = 4
     + 2
@@ -79,12 +79,6 @@ pub enum CertificateNounError {
         expected: ZkParams,
         actual: ZkParams,
     },
-    #[error("NCMN nonce: {0}")]
-    Nonce(#[from] NonceFormatError),
-    #[error("NCMN nonce Nockchain commitment does not match candidate block")]
-    NonceAnchorMismatch,
-    #[error("NCMN external commitment is reserved and must be absent")]
-    NonceExternalCommitmentPresent,
     #[error("certificate statement metadata is not bound to trusted block state: {0}")]
     Statement(#[from] BridgeError),
     #[error("Pearl merge statement is invalid: {0}")]
@@ -356,8 +350,9 @@ pub struct PearlMergeAiPowArtifactMetadataShape {
 ///
 /// These values must come from consensus state or verifier configuration, not
 /// from the miner-controlled proof artifact. Keeping them in one struct makes
-/// the future Hoon verifier jet contract explicit and avoids argument-order
-/// mistakes at the trust boundary.
+/// the future verifier integration contract explicit and avoids argument-order
+/// mistakes at the trust boundary. Hoon does not call the verifier helpers in
+/// the current milestone.
 #[derive(Debug, Clone, Copy)]
 pub struct PearlMergeAiPowVerifierContext<'a> {
     pub candidate_nock_block_commitment: &'a [u8; 32],
@@ -382,6 +377,8 @@ pub struct PearlMergeAiPowNonceShape {
 ///
 /// The producer-side `%ai-pow` builders use this shape to avoid accepting
 /// caller-supplied recursive metadata that can drift from the Pearl statement.
+/// This is metadata only; public production artifact construction still
+/// requires an [`AiPowRecursiveCertificateRun`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PearlMergeRecursiveCertificateParts {
     pub statement: PearlMergePublicStatementShape,
@@ -495,15 +492,20 @@ fn build_ai_pow_certificate_noun<C: Serialize>(
 ///
 /// This is the public production constructor for Nockchain's recursive
 /// AI-PoW certificate noun. It deliberately takes the typed prover-run result
-/// instead of an arbitrary `Serialize` value so downstream callers cannot
-/// accidentally package a diagnostic or non-canonical proof object as the
-/// block certificate.
+/// instead of an arbitrary `Serialize` value. `AiPowRecursiveCertificateRun`
+/// has private fields, so downstream callers cannot synthesize a fake run or
+/// accidentally package a diagnostic or non-canonical proof object as the block
+/// certificate.
 pub fn build_ai_pow_certificate_noun_from_recursive_run(
     run: &AiPowRecursiveCertificateRun,
 ) -> Result<NounSlab, CertificateNounError> {
     build_ai_pow_certificate_noun(
-        &run.zk_params, run.found_idx, run.trace_height, &run.commitments, &run.pis,
-        &run.certificate,
+        &run.zk_params(),
+        run.found_idx(),
+        run.trace_height(),
+        &run.commitments(),
+        run.public_inputs(),
+        run.certificate(),
     )
 }
 
@@ -619,7 +621,9 @@ pub(crate) fn build_ai_pow_pearl_merge_artifact_noun_from_node(
 /// This is the producer-side canonicalization boundary. It rejects non-winning
 /// tickets, forged statement/public-param drift, forged public ticket work, and
 /// Pearl geometries outside the square contiguous subset supported by the
-/// current recursive verifier.
+/// current recursive verifier. It does not build a block artifact and does not
+/// accept proof material; the public production artifact builder requires a
+/// real [`AiPowRecursiveCertificateRun`].
 pub fn pearl_merge_recursive_certificate_parts_from_ticket(
     attempt: &PearlMergeTicketAttempt,
     a_row_major: &[i8],
@@ -760,8 +764,8 @@ pub fn pearl_merge_recursive_certificate_parts_from_ticket(
 /// The Pearl-bound slots are still fully re-derived from the ticket and
 /// trusted matrices. The only field this API does not derive is `cumsum`,
 /// because that is a Layer-0 trace detail rather than part of Pearl's public
-/// work statement. This is the handoff production provers should use once the
-/// Pearl-compatible recursive prover returns real public inputs.
+/// work statement. This is still a metadata helper, not a public artifact
+/// constructor; block submission uses the recursive-run builder.
 pub fn pearl_merge_recursive_certificate_parts_from_ticket_public_inputs(
     attempt: &PearlMergeTicketAttempt,
     a_row_major: &[i8],
@@ -841,30 +845,34 @@ pub fn build_ai_pow_pearl_merge_artifact_noun_from_ticket_recursive_run(
     run: &AiPowRecursiveCertificateRun,
 ) -> Result<NounSlab, CertificateNounError> {
     let parts = pearl_merge_recursive_certificate_parts_from_ticket_public_inputs(
-        attempt, a_row_major, b_col_major, max_pattern_len, &run.pis,
+        attempt,
+        a_row_major,
+        b_col_major,
+        max_pattern_len,
+        run.public_inputs(),
     )?;
     validate_pearl_merge_ticket_aux_inclusion(&parts, aux_inclusion)?;
-    if run.zk_params != parts.zk_params {
+    if run.zk_params() != parts.zk_params {
         return Err(CertificateNounError::PearlMergePublicInputMismatch(
             "recursive-run.zk-params",
         ));
     }
-    if run.found_idx != parts.found_idx {
+    if run.found_idx() != parts.found_idx {
         return Err(CertificateNounError::PearlMergePublicInputMismatch(
             "recursive-run.found-idx",
         ));
     }
-    if run.trace_height != parts.trace_height {
+    if run.trace_height() != parts.trace_height {
         return Err(CertificateNounError::PearlMergePublicInputMismatch(
             "recursive-run.trace-height",
         ));
     }
-    if run.commitments != parts.commitments {
+    if run.commitments() != parts.commitments {
         return Err(CertificateNounError::PearlMergePublicInputMismatch(
             "recursive-run.commitments",
         ));
     }
-    let certificate = recursive_certificate_to_node(&run.certificate)?;
+    let certificate = recursive_certificate_to_node(run.certificate())?;
     build_ai_pow_pearl_merge_artifact_noun_from_node(
         &parts.statement, aux_inclusion, &parts.zk_params, parts.found_idx, parts.trace_height,
         &parts.commitments, &parts.public_inputs, &certificate,
@@ -1362,10 +1370,6 @@ pub fn decode_ai_pow_pearl_merge_artifact_jam(
 /// It also fails closed for multi-tile params until the recursive certificate
 /// statement binds a full-matrix aggregate, because the current recursive proof
 /// only opens one verifier-derived jackpot tile.
-///
-/// Production NCMN consensus callers should prefer
-/// [`precheck_ai_pow_ncmn_certificate_statement`], which also checks that the
-/// submitted nonce is an NCMN nonce anchored to the trusted candidate block.
 fn precheck_ai_pow_certificate_statement(
     shape: &AiPowCertificateShape,
     block_commitment: &[u8],
@@ -1405,59 +1409,13 @@ fn precheck_ai_pow_certificate_metadata(
     .map_err(CertificateNounError::Statement)
 }
 
-fn precheck_ncmn_nonce(
-    candidate_nck_commitment: &[u8; 32],
-    nonce: &[u8],
-) -> Result<(), CertificateNounError> {
-    let (anchors, _) = parse_ncmn_nonce(nonce)?;
-    if anchors.nck_commitment != *candidate_nck_commitment {
-        return Err(CertificateNounError::NonceAnchorMismatch);
-    }
-    if anchors.external_commitment.is_some() {
-        return Err(CertificateNounError::NonceExternalCommitmentPresent);
-    }
-    Ok(())
-}
-
-/// Production NCMN statement precheck for decoded recursive certificate nouns.
-///
-/// `puzzle_id` is the stable AI puzzle identity bound into the Pearl attempt
-/// state. `candidate_nck_commitment` is the trusted 32-byte commitment to the
-/// candidate Nockchain block and must appear inside the NCMN nonce. This is the
-/// precheck consensus wiring should call before spending recursive verifier
-/// work on the miner-controlled proof tree.
-pub fn precheck_ai_pow_ncmn_certificate_statement(
-    shape: &AiPowCertificateShape,
-    puzzle_id: &[u8],
-    candidate_nck_commitment: &[u8; 32],
-    nonce: &[u8],
-    params: &MatmulParams,
-    target: &[u8; 32],
-) -> Result<(), CertificateNounError> {
-    precheck_ncmn_nonce(candidate_nck_commitment, nonce)?;
-    precheck_ai_pow_certificate_statement(shape, puzzle_id, nonce, params, target)
-}
-
-/// Production NCMN statement precheck for a decoded `%ai-pow` artifact.
-pub fn precheck_ai_pow_ncmn_artifact_statement(
-    artifact: &AiPowArtifactShape,
-    puzzle_id: &[u8],
-    candidate_nck_commitment: &[u8; 32],
-    params: &MatmulParams,
-    target: &[u8; 32],
-) -> Result<(), CertificateNounError> {
-    precheck_ai_pow_ncmn_certificate_statement(
-        &artifact.certificate, puzzle_id, candidate_nck_commitment, &artifact.nonce, params, target,
-    )
-}
-
 /// Production statement precheck for a decoded Pearl merge-mined AI-PoW
 /// artifact.
 ///
 /// This checks the shared Pearl-compatible attempt, verifies the Pearl
 /// coinbase/transaction merkle inclusion proof for the Nockchain aux digest,
 /// and confirms the recursive certificate's public statement fields are the
-/// Pearl fields, not the NCMN-local nonce statement.
+/// Pearl fields, not a native explicit-nonce statement.
 pub fn precheck_ai_pow_pearl_merge_artifact_statement(
     artifact: &PearlMergeAiPowArtifactShape,
     candidate_nock_block_commitment: &[u8; 32],
@@ -1661,9 +1619,10 @@ pub fn verify_ai_pow_pearl_merge_artifact_statement_and_proof_with_context(
 
 /// Verify a fully decoded Hoon `%ai-pow` artifact against trusted block data.
 ///
-/// This is the Rust API a Hoon verifier jet should target after bounded noun
-/// decoding. It rejects replay/tamper through the Pearl-compatible statement
-/// precheck before reconstructing and verifying the recursive certificate.
+/// This is a future Rust API for verifier integration after bounded noun
+/// decoding. It is not wired from Hoon in the current milestone. It rejects
+/// replay/tamper through the Pearl-compatible statement precheck before
+/// reconstructing and verifying the recursive certificate.
 pub fn verify_decoded_ai_pow_pearl_merge_artifact(
     artifact: &PearlMergeAiPowArtifactShape,
     candidate_nock_block_commitment: &[u8; 32],
@@ -1701,12 +1660,13 @@ pub fn verify_decoded_ai_pow_pearl_merge_artifact_with_context(
 /// Verify a Hoon `%ai-pow` artifact slab against trusted Nockchain-side
 /// verifier context.
 ///
-/// This is the Rust boundary a Hoon verifier jet should call once consensus
-/// has derived the trusted candidate-block commitment, matrix operands,
-/// Nockchain target, and Pearl pattern bound. It mirrors the jammed verifier
-/// ordering without requiring the caller to re-jam the noun: tag and opaque
-/// nonce decode, recursive certificate metadata decode, cheap Pearl-compatible
-/// statement precheck, then proof-node traversal and recursive verification.
+/// This is a future Rust boundary for verifier integration once consensus has
+/// derived the trusted candidate-block commitment, matrix operands, Nockchain
+/// target, and Pearl pattern bound. Hoon does not call it in the current
+/// milestone. It mirrors the jammed verifier ordering without requiring the
+/// caller to re-jam the noun: tag and opaque nonce decode, recursive
+/// certificate metadata decode, cheap Pearl-compatible statement precheck, then
+/// proof-node traversal and recursive verification.
 pub fn verify_ai_pow_pearl_merge_artifact_slab<J>(
     slab: &NounSlab<J>,
     limits: CertificateNounLimits,
@@ -1918,10 +1878,11 @@ fn contiguous_indices(start: u32, len: u32) -> Vec<u32> {
 /// but with Pearl semantics: `JOB_KEY = kappa`, `COMMITMENT_HASH = s_A`,
 /// `JACKPOT_MSG = TileState`, and `HASH_JACKPOT = BLAKE3(TileState, key=s_A)`.
 /// Keeping this derivation centralized prevents miner/prover code from mixing
-/// native NCMN public-input semantics into the `%ai-pow` artifact. The `cumsum`
-/// slots are left at zero here because the current Pearl precheck does not
-/// derive them; the recursive proof verifier still checks the full public
-/// input vector supplied by the certificate.
+/// incompatible public-input semantics into the `%ai-pow` artifact. The
+/// `cumsum` slots are left at zero here because the current Pearl precheck does
+/// not derive them; the recursive proof verifier still checks the full public
+/// input vector supplied by the certificate. This helper is not a production
+/// artifact constructor.
 pub fn pearl_merge_recursive_public_inputs_from_work(
     commitments: &PearlWorkCommitments,
     ticket: &PearlPatternTicket,
@@ -1937,7 +1898,8 @@ pub fn pearl_merge_recursive_public_inputs_from_work(
 }
 
 /// Derive the recursive certificate public inputs from a completed Pearl
-/// merge-mining precheck.
+/// merge-mining precheck. This helper derives metadata only and does not build
+/// a block artifact.
 pub fn pearl_merge_recursive_public_inputs_from_precheck(
     precheck: &PearlMergeMiningPrecheck,
 ) -> CompositePublicInputs {
@@ -1948,38 +1910,15 @@ fn tile_state_words(tile_state: &ai_pow::matmul::TileState) -> [u32; 16] {
     core::array::from_fn(|i| tile_state.0[i] as u32)
 }
 
-/// Verify decoded certificate metadata and recursive proof for an NCMN-wrapped
-/// production AI-PoW attempt.
-///
-/// This is the production-safe variant for callers that already reconstructed
-/// the recursive certificate object from the structured noun tail. It uses the
-/// full-matmul statement precheck, so multi-tile selected-tile certificates
-/// are rejected before recursive verifier work.
-pub fn verify_ai_pow_ncmn_certificate_statement_and_proof(
-    shape: &AiPowCertificateShape,
-    puzzle_id: &[u8],
-    candidate_nck_commitment: &[u8; 32],
-    nonce: &[u8],
-    params: &MatmulParams,
-    target: &[u8; 32],
-    certificate: &ai_pow_zk::recursion::AiPowRecursiveCertificate,
-) -> Result<(), CertificateNounError> {
-    precheck_ai_pow_ncmn_certificate_statement(
-        shape, puzzle_id, candidate_nck_commitment, nonce, params, target,
-    )?;
-    ai_pow_zk::recursion::verify_recursive_certificate(certificate, &shape.public_inputs)
-        .map_err(|e| CertificateNounError::RecursiveCertificate(e.to_string()))
-}
-
 /// Verify a fully decoded Hoon-compatible `ai-pow-certificate` noun against an
 /// explicit attempt tuple.
 ///
 /// This lower-level helper cheaply re-derives and checks the full-matmul
 /// statement metadata before decoding the proof tree into the canonical
 /// recursive certificate type, then verifies the recursive certificate against
-/// those verifier-derived Layer-0 public inputs. It does not parse or enforce
-/// the NCMN candidate-block anchor, so it is not the Nockchain
-/// consensus/block-wire entrypoint.
+/// those verifier-derived Layer-0 public inputs. It is not the Nockchain
+/// consensus/block-wire entrypoint; the production artifact boundary is the
+/// Pearl merge-mined `%ai-pow` verifier.
 pub fn verify_decoded_ai_pow_certificate(
     shape: &AiPowCertificateShape,
     block_commitment: &[u8],
@@ -1993,108 +1932,13 @@ pub fn verify_decoded_ai_pow_certificate(
         .map_err(|e| CertificateNounError::RecursiveCertificate(e.to_string()))
 }
 
-/// Verify a fully decoded Hoon-compatible `ai-pow-certificate` noun for an
-/// NCMN-wrapped production attempt.
-///
-/// This is the consensus-facing Rust boundary for Nockchain AI-PoW: it checks
-/// the nonce format and candidate-block anchor, re-derives the
-/// full-matmul-admissible statement from verifier-trusted data, reconstructs
-/// the canonical recursive certificate only after those cheap checks pass, and
-/// then verifies the recursive certificate against those public inputs.
-pub fn verify_decoded_ai_pow_ncmn_certificate(
-    shape: &AiPowCertificateShape,
-    puzzle_id: &[u8],
-    candidate_nck_commitment: &[u8; 32],
-    nonce: &[u8],
-    params: &MatmulParams,
-    target: &[u8; 32],
-) -> Result<(), CertificateNounError> {
-    precheck_ai_pow_ncmn_certificate_statement(
-        shape, puzzle_id, candidate_nck_commitment, nonce, params, target,
-    )?;
-    let certificate = ai_pow_recursive_certificate_from_node(&shape.certificate)?;
-    ai_pow_zk::recursion::verify_recursive_certificate(&certificate, &shape.public_inputs)
-        .map_err(|e| CertificateNounError::RecursiveCertificate(e.to_string()))
-}
-
-/// Verify a fully decoded Hoon `%ai-pow` artifact against trusted block data.
-///
-/// This is the canonical Rust API a Hoon verifier jet should target after
-/// bounded noun decoding: it uses the nonce carried inside the artifact and
-/// verifies that the recursive certificate's statement matches the trusted
-/// puzzle id, candidate block commitment, params, and target.
-pub fn verify_decoded_ai_pow_ncmn_artifact(
-    artifact: &AiPowArtifactShape,
-    puzzle_id: &[u8],
-    candidate_nck_commitment: &[u8; 32],
-    params: &MatmulParams,
-    target: &[u8; 32],
-) -> Result<(), CertificateNounError> {
-    verify_decoded_ai_pow_ncmn_certificate(
-        &artifact.certificate, puzzle_id, candidate_nck_commitment, &artifact.nonce, params, target,
-    )
-}
-
-/// Decode a jammed `%ai-pow` artifact and verify it against trusted block data.
-///
-/// This combines the intended production ordering: byte-size cap, cue, bounded
-/// structured decode, NCMN anchor check, cheap statement precheck, and recursive
-/// certificate verification.
-pub fn verify_ai_pow_ncmn_artifact_jam(
-    jammed: &[u8],
-    limits: CertificateNounLimits,
-    puzzle_id: &[u8],
-    candidate_nck_commitment: &[u8; 32],
-    params: &MatmulParams,
-    target: &[u8; 32],
-) -> Result<(), CertificateNounError> {
-    if jammed.is_empty() {
-        return Err(CertificateNounError::Cue(CueError::TruncatedBuffer));
-    }
-    if jammed.len() > limits.max_jam_bytes {
-        return Err(CertificateNounError::JammedLengthExceeded {
-            limit: limits.max_jam_bytes,
-            actual: jammed.len(),
-        });
-    }
-    preflight_ai_pow_artifact_jam(jammed, limits)?;
-
-    let mut slab: NounSlab = NounSlab::new();
-    let root = catch_unwind(AssertUnwindSafe(|| {
-        slab.cue_into(Bytes::copy_from_slice(jammed))
-    }))
-    .map_err(|_| CertificateNounError::CuePanic)??;
-    slab.set_root(root);
-    if slab.jam().as_ref() != jammed {
-        return Err(CertificateNounError::NonCanonicalJam);
-    }
-
-    let space = slab.noun_space();
-    let root = unsafe { *slab.root() };
-    let fields = tuple3(root, &space, "ai-pow artifact")?;
-    let tag = expect_u64(fields[0], &space, "ai-pow artifact tag")?;
-    if tag != tas!(b"ai-pow") {
-        return Err(CertificateNounError::Shape("expected %ai-pow artifact"));
-    }
-    let nonce = expect_declared_bounded_bytes(
-        fields[1], &space, NCMN_NONCE_LEN, NCMN_NONCE_LEN, "ncmn nonce", limits,
-    )?;
-    precheck_ncmn_nonce(candidate_nck_commitment, &nonce)?;
-    let metadata = decode_ai_pow_certificate_metadata_noun(fields[2], &space, limits)?;
-    precheck_ai_pow_certificate_metadata(&metadata, puzzle_id, &nonce, params, target)?;
-
-    let certificate_shape = decode_ai_pow_certificate_noun(fields[2], &space, limits)?;
-    let certificate = ai_pow_recursive_certificate_from_node(&certificate_shape.certificate)?;
-    ai_pow_zk::recursion::verify_recursive_certificate(&certificate, &metadata.public_inputs)
-        .map_err(|e| CertificateNounError::RecursiveCertificate(e.to_string()))
-}
-
 /// Decode a jammed `%ai-pow` artifact and verify it against trusted block data.
 ///
 /// Ordering is consensus-critical: this performs byte-size cap, jam preflight,
 /// canonical cue, opaque nonce decode, certificate metadata decode,
 /// Nockchain statement precheck, and only then proof-node traversal and
-/// recursive verification.
+/// recursive verification. It is a Rust verifier boundary only; Hoon
+/// consensus remains fail-closed and does not call it in this milestone.
 pub fn verify_ai_pow_pearl_merge_artifact_jam(
     jammed: &[u8],
     limits: CertificateNounLimits,
@@ -3941,7 +3785,6 @@ mod tests {
         attempt_tile_index, block_state, canonical_noise_seeds_from_matrix_commitments,
         commitment_key, pow_key_for_nonce,
     };
-    use ai_pow::ncmn::{build_ncmn_nonce, NonceAnchors};
     use ai_pow::pearl_compat::{
         compute_pearl_pattern_ticket, derive_pearl_work_commitments,
         evaluate_pearl_merge_ticket_attempt, pearl_bitcoin_double_sha256_raw, PearlAttempt,
@@ -4639,107 +4482,9 @@ mod tests {
     }
 
     #[test]
-    fn decoded_ncmn_certificate_verify_prechecks_anchor_before_proof_node_reconstruction() {
-        let puzzle_id = b"ncmn-precheck-before-proof-node-puzzle";
-        let candidate_nck = [0x5au8; 32];
-        let nonce = build_ncmn_nonce(&NonceAnchors::nck_only(candidate_nck), 17);
-        let target = [0xffu8; 32];
-        let (params, commitments, pis, trace_height, found_idx) =
-            production_statement_fixture(puzzle_id, &nonce);
-        let slab = build_ai_pow_certificate_noun_from_node(
-            &zk_params_from_matmul(&params),
-            found_idx,
-            trace_height,
-            &commitments,
-            &pis,
-            &AiProofNode::Unit,
-        );
-        let decoded = decode_ai_pow_certificate_slab(&slab, CertificateNounLimits::default())
-            .expect("decode certificate noun");
-        let mut wrong_anchor = candidate_nck;
-        wrong_anchor[0] ^= 1;
-
-        assert!(matches!(
-            verify_decoded_ai_pow_ncmn_certificate(
-                &decoded, puzzle_id, &wrong_anchor, &nonce, &params, &target
-            ),
-            Err(CertificateNounError::NonceAnchorMismatch)
-        ));
-    }
-
-    #[test]
-    fn jammed_artifact_verify_prechecks_anchor_before_proof_node_decode() {
-        let puzzle_id = b"jam-anchor-before-proof-node-puzzle";
-        let candidate_nck = [0x61u8; 32];
-        let nonce = build_ncmn_nonce(&NonceAnchors::nck_only(candidate_nck), 21);
-        let target = [0xffu8; 32];
-        let (params, commitments, pis, trace_height, found_idx) =
-            production_statement_fixture(puzzle_id, &nonce);
-        let cert_slab = build_certificate_slab_with_statement_and_raw_node(
-            &zk_params_from_matmul(&params),
-            found_idx,
-            trace_height,
-            &commitments,
-            &pis,
-            |_| D(0),
-        );
-        let artifact_slab = build_ai_pow_artifact_slab(&nonce, &cert_slab);
-        let jammed = artifact_slab.jam();
-        let mut wrong_anchor = candidate_nck;
-        wrong_anchor[0] ^= 1;
-
-        assert!(matches!(
-            verify_ai_pow_ncmn_artifact_jam(
-                &jammed,
-                CertificateNounLimits::default(),
-                puzzle_id,
-                &wrong_anchor,
-                &params,
-                &target
-            ),
-            Err(CertificateNounError::NonceAnchorMismatch)
-        ));
-    }
-
-    #[test]
-    fn jammed_artifact_verify_prechecks_statement_before_proof_node_decode() {
-        let puzzle_id = b"jam-statement-before-proof-node-puzzle";
-        let candidate_nck = [0x62u8; 32];
-        let nonce = build_ncmn_nonce(&NonceAnchors::nck_only(candidate_nck), 22);
-        let (params, commitments, pis, trace_height, found_idx) =
-            production_statement_fixture(puzzle_id, &nonce);
-        let cert_slab = build_certificate_slab_with_statement_and_raw_node(
-            &zk_params_from_matmul(&params),
-            found_idx,
-            trace_height,
-            &commitments,
-            &pis,
-            |_| D(0),
-        );
-        let artifact_slab = build_ai_pow_artifact_slab(&nonce, &cert_slab);
-        let jammed = artifact_slab.jam();
-
-        assert!(matches!(
-            verify_ai_pow_ncmn_artifact_jam(
-                &jammed,
-                CertificateNounLimits::default(),
-                puzzle_id,
-                &candidate_nck,
-                &params,
-                &[0u8; 32]
-            ),
-            Err(CertificateNounError::Statement(
-                BridgeError::FoundAboveTarget
-            ))
-        ));
-    }
-
-    #[test]
     fn ai_pow_artifact_decoder_binds_nonce_and_certificate_shape() {
         let puzzle_id = b"artifact-puzzle-id";
-        let candidate_nck = [0x42u8; 32];
-        let nonce = build_ncmn_nonce(&NonceAnchors::nck_only(candidate_nck), 99);
-        let target = [0xffu8; 32];
+        let nonce = b"opaque-ai-pow-nonce".to_vec();
         let (params, commitments, pis, trace_height, found_idx) =
             production_statement_fixture(puzzle_id, &nonce);
         let certificate = AiProofNode::Seq(vec![AiProofNode::U64(42)]);
@@ -4763,20 +4508,6 @@ mod tests {
         );
         assert_eq!(decoded.certificate.public_inputs, pis);
         assert_eq!(decoded.certificate.certificate, certificate);
-
-        precheck_ai_pow_ncmn_artifact_statement(
-            &decoded, puzzle_id, &candidate_nck, &params, &target,
-        )
-        .expect("single-tile NCMN artifact statement should bind chunk-derived seeds");
-
-        let mut wrong_anchor = candidate_nck;
-        wrong_anchor[0] ^= 1;
-        assert!(matches!(
-            precheck_ai_pow_ncmn_artifact_statement(
-                &decoded, puzzle_id, &wrong_anchor, &params, &target,
-            ),
-            Err(CertificateNounError::NonceAnchorMismatch)
-        ));
     }
 
     #[test]
@@ -5976,7 +5707,7 @@ mod tests {
             &pis,
             &AiProofNode::Unit,
         );
-        let nonce = build_ncmn_nonce(&NonceAnchors::nck_only([0x44; 32]), 8);
+        let nonce = b"bounded-opaque-ai-pow-nonce".to_vec();
         let artifact_slab = build_ai_pow_artifact_slab(&nonce, &cert_slab);
         let jammed = artifact_slab.jam();
 
@@ -6056,7 +5787,7 @@ mod tests {
         ));
 
         let mut wrong_tag_slab: NounSlab = NounSlab::new();
-        let nonce = build_ncmn_nonce(&NonceAnchors::nck_only([0x33; 32]), 7);
+        let nonce = b"wrong-tag-opaque-ai-pow-nonce".to_vec();
         let nonce = build_ai_pow_nonce_noun(&mut wrong_tag_slab, &nonce);
         let cert = wrong_tag_slab.copy_into(unsafe { *cert_slab.root() }, &cert_space);
         let root = T(&mut wrong_tag_slab, &[D(tas!(b"not-ai")), nonce, cert]);
@@ -6064,62 +5795,6 @@ mod tests {
         assert!(matches!(
             decode_ai_pow_artifact_slab(&wrong_tag_slab, CertificateNounLimits::default()),
             Err(CertificateNounError::Shape("expected %ai-pow artifact"))
-        ));
-    }
-
-    #[test]
-    fn ncmn_certificate_statement_precheck_enforces_nonce_anchor() {
-        let puzzle_id = b"noun-certificate-puzzle-id";
-        let candidate_nck = [0x4eu8; 32];
-        let nonce = build_ncmn_nonce(&NonceAnchors::nck_only(candidate_nck), 7);
-        let target = [0xffu8; 32];
-        let (params, commitments, pis, trace_height, found_idx) =
-            production_statement_fixture(puzzle_id, &nonce);
-        let certificate = AiProofNode::Seq(vec![AiProofNode::U64(42)]);
-        let slab = build_ai_pow_certificate_noun_from_node(
-            &zk_params_from_matmul(&params),
-            found_idx,
-            trace_height,
-            &commitments,
-            &pis,
-            &certificate,
-        );
-        let decoded = decode_ai_pow_certificate_slab(&slab, CertificateNounLimits::default())
-            .expect("decode certificate noun");
-
-        precheck_ai_pow_ncmn_certificate_statement(
-            &decoded, puzzle_id, &candidate_nck, &nonce, &params, &target,
-        )
-        .expect("single-tile NCMN certificate statement should bind chunk-derived seeds");
-
-        let mut wrong_anchor = candidate_nck;
-        wrong_anchor[0] ^= 1;
-        assert!(matches!(
-            precheck_ai_pow_ncmn_certificate_statement(
-                &decoded, puzzle_id, &wrong_anchor, &nonce, &params, &target,
-            ),
-            Err(CertificateNounError::NonceAnchorMismatch)
-        ));
-
-        let external_nonce = build_ncmn_nonce(
-            &NonceAnchors {
-                nck_commitment: candidate_nck,
-                external_commitment: Some([0x77u8; 32]),
-            },
-            7,
-        );
-        assert!(matches!(
-            precheck_ai_pow_ncmn_certificate_statement(
-                &decoded, puzzle_id, &candidate_nck, &external_nonce, &params, &target,
-            ),
-            Err(CertificateNounError::NonceExternalCommitmentPresent)
-        ));
-
-        assert!(matches!(
-            precheck_ai_pow_ncmn_certificate_statement(
-                &decoded, puzzle_id, &candidate_nck, b"not-an-ncmn-nonce", &params, &target,
-            ),
-            Err(CertificateNounError::Nonce(_))
         ));
     }
 

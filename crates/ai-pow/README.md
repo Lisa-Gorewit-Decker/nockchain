@@ -53,9 +53,10 @@ What `ai-pow` provides:
   exactly one nonce-bound attempt; normal callers should use `mine` or
   `mine_block`, which rebuild attempt state per nonce.
 - **Plain-proof verification**: diagnostic and pre-ZKP callers use
-  `ai_pow::verifier::verify_ncmn_at_target(puzzle_id, candidate_nck_commitment, nonce, params, target, proof)`
-  to confirm that a mined `MatmulProof` hit the exact chain target before
-  recursive certificate generation. Lower-level test/tooling callers can use
+  `ai_pow::verifier::verify_prod_at_target(block_commitment, nonce, params, target, proof)`
+  to confirm that a mined `MatmulProof` hit the exact chain target under the
+  production parameter envelope before recursive certificate generation.
+  Lower-level test/tooling callers can use
   `ai_pow::verifier::verify_at_target(block_commitment, nonce, params, target, proof)`.
   These plain verifiers are intentionally not re-exported from the crate root
   and are not canonical block-acceptance APIs. The old `verifier::verify`

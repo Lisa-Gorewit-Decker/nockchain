@@ -30,7 +30,6 @@
 pub mod commit;
 pub mod fiat_shamir;
 pub mod matmul;
-pub mod ncmn;
 pub mod params;
 pub mod pearl_compat;
 pub mod prng;

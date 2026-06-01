@@ -48,9 +48,9 @@
 //! opened jackpot tile. It is soundness-critical, but it is not by itself a
 //! full-matmul consensus certificate. Production block persistence and wire
 //! format may only use a recursive certificate through the full-matmul guard
-//! below. Native NCMN and Pearl-compatible merge mining are separate
-//! production statements; the Pearl path proves the shared Pearl-style attempt
-//! with Nockchain's recursive certificate and does not serialize Pearl's ZKP.
+//! below. The production Nockchain path proves the shared Pearl-compatible
+//! attempt with Nockchain's recursive certificate and does not serialize
+//! Pearl's ZKP.
 
 use ai_pow_zk::composite_proof::{
     build_config, composite_prove_pinned_logup, composite_verify_pow_pinned_logup,
@@ -259,16 +259,63 @@ pub(crate) struct ZkProofArtifact {
 /// a serialized Layer-0 `AiPowBatchProof`. For multi-tile params the current
 /// recursive statement is selected-tile only, so
 /// [`prove_ai_pow_recursive_certificate`] rejects before producing this value.
+/// Fields are private so downstream crates cannot synthesize a fake prover-run
+/// handle and accidentally feed noncanonical proof material into production
+/// artifact builders.
 pub struct AiPowRecursiveCertificateRun {
-    pub zk_params: ZkParams,
-    pub found_idx: u32,
-    pub commitments: ZkPublicCommitments,
-    pub pis: CompositePublicInputs,
-    pub trace_height: usize,
-    pub l1_circuit_build_ms: u128,
-    pub l1_in_circuit_verify_ms: u128,
-    pub l1_outer_cert_ms: u128,
-    pub certificate: ai_pow_zk::recursion::AiPowRecursiveCertificate,
+    zk_params: ZkParams,
+    found_idx: u32,
+    commitments: ZkPublicCommitments,
+    pis: CompositePublicInputs,
+    trace_height: usize,
+    l1_circuit_build_ms: u128,
+    l1_in_circuit_verify_ms: u128,
+    l1_outer_cert_ms: u128,
+    certificate: ai_pow_zk::recursion::AiPowRecursiveCertificate,
+}
+
+impl AiPowRecursiveCertificateRun {
+    /// ZK parameter subset bound by this recursive certificate.
+    pub fn zk_params(&self) -> ZkParams {
+        self.zk_params
+    }
+
+    /// Linear tile index proved by the recursive certificate.
+    pub fn found_idx(&self) -> u32 {
+        self.found_idx
+    }
+
+    /// Public matrix commitments bound by the recursive certificate.
+    pub fn commitments(&self) -> ZkPublicCommitments {
+        self.commitments
+    }
+
+    /// Layer-0 public inputs bound by the recursive certificate.
+    pub fn public_inputs(&self) -> &CompositePublicInputs {
+        &self.pis
+    }
+
+    /// Layer-0 trace height bound by the recursive certificate.
+    pub fn trace_height(&self) -> usize {
+        self.trace_height
+    }
+
+    /// Recursive certificate object produced by the prover.
+    pub fn certificate(&self) -> &ai_pow_zk::recursion::AiPowRecursiveCertificate {
+        &self.certificate
+    }
+
+    pub fn l1_circuit_build_ms(&self) -> u128 {
+        self.l1_circuit_build_ms
+    }
+
+    pub fn l1_in_circuit_verify_ms(&self) -> u128 {
+        self.l1_in_circuit_verify_ms
+    }
+
+    pub fn l1_outer_cert_ms(&self) -> u128 {
+        self.l1_outer_cert_ms
+    }
 }
 
 /// Recursive-certificate byte envelope for bridge tests and diagnostics.

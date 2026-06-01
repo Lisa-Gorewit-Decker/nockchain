@@ -189,32 +189,30 @@ Implemented in this branch:
   only.
 - `mine_pearl_merge_ticket_attempt` returns a ticket before ZKP work only when
   the Nockchain target is hit.
-- `ai_pow_miner::run` now has an explicit Rust-only
-  `PearlMergeSubmissionConfig`. In `AiPowSubmissionMode::PearlMerge`, the
-  connected node run loop derives the Nockchain candidate commitment, builds a
-  coinbase-only Pearl-format aux inclusion, mines Pearl-compatible ticket
-  attempts, and constructs the recursive proof-node payload only after a ticket
-  hits the Nockchain target.
+- `ai_pow_miner::run` now requires an explicit Rust-only
+  `PearlMergeSubmissionConfig`. The connected node run loop derives the
+  Nockchain candidate commitment, builds a coinbase-only Pearl-format aux
+  inclusion, mines Pearl-compatible ticket attempts, and constructs the
+  recursive proof-node payload only after a ticket hits the Nockchain target.
 - The connected run loop submits only the Nockchain `%ai-pow` command. It does
   not submit Pearl blocks, and the Hoon kernel still receives no Pearl-specific
   fields beyond the Rust-owned opaque nonce bytes.
 - The Pearl-compatible run loop accepts recursive certificate data only through
-  a wrapper constructible by public callers from a real
-  `AiPowRecursiveCertificateRun`. Before wrapping the command it rechecks the
-  run's `zk_params`, `found_idx`, `trace_height`, commitments, and bound public
-  inputs against the ticket-derived metadata, so a stale or wrong-ticket
-  recursive run is rejected before it is submitted to the node.
-- `ai-pow-mine` defaults to `--submission-mode pearl-merge`. Pearl mode
-  requires the operator to provide the Pearl header fields that define the
-  shared transcript (`--pearl-prev-block`, `--pearl-timestamp`, and
-  `--pearl-nbits`) and derives the Rust-only Pearl mining config from the
-  canonical recursive AI-PoW params. The `legacy-ncmn` mode remains available
-  only as an explicit dev smoke path. It does not submit to Pearl and does not
-  expose Pearl concepts to Hoon.
-- Miner preflight rejects mixed-mode configuration: `legacy-ncmn` must not
-  carry Pearl submission config, and `pearl-merge` must not carry the legacy
-  NCMN certificate builder. This prevents callers from silently mining one mode
-  while assuming the other.
+  a wrapper constructible by public callers from the opaque
+  `AiPowRecursiveCertificateRun` returned by the recursive prover. Downstream
+  crates cannot synthesize this run object directly. Before wrapping the
+  command, the miner rechecks the run's `zk_params`, `found_idx`,
+  `trace_height`, commitments, and bound public inputs against the
+  ticket-derived metadata, so a stale or wrong-ticket recursive run is rejected
+  before it is submitted to the node.
+- `ai-pow-mine` no longer has a submission-mode switch. It requires the
+  operator to provide the Pearl header fields that define the shared transcript
+  (`--pearl-prev-block`, `--pearl-timestamp`, and `--pearl-nbits`) and derives
+  the Rust-only Pearl mining config from the canonical recursive AI-PoW params.
+  The legacy NCMN miner and prover-only smoke CLI were removed so downstream
+  callers cannot accidentally treat them as production submission APIs.
+- Miner preflight rejects configurations without Pearl submission config before
+  enabling mining. There is no mixed-mode branch in the connected run loop.
 - Pearl-compatible miner preflight rejects Rust-side submission configs whose
   `common_dim`, `rank`, recursive params, or row/column patterns do not match
   the configured AI params and the current square-contiguous recursive prover
@@ -226,9 +224,9 @@ Implemented in this branch:
 - `ai_pow_miner::certificate_noun` emits canonical `%ai-pow` artifacts with an
   opaque `[len data]` nonce and structured recursive certificate.
 - Public certificate-noun construction is typed around
-  `AiPowRecursiveCertificateRun`; generic serde proof-node serializers and
-  raw-node certificate builders are crate-internal test/plumbing helpers, not
-  production submission APIs.
+  the opaque `AiPowRecursiveCertificateRun`; generic serde proof-node
+  serializers and raw-node certificate builders are crate-internal
+  test/plumbing helpers, not production submission APIs.
 - Hoon-shaped Pearl public-statement noun builders/decoders are test-only
   Rust plumbing. Production block submission carries the Pearl statement only
   inside the opaque `AIP1` nonce bytes.
@@ -244,7 +242,7 @@ Implemented in this branch:
   verifier: it parses the command wrapper and runs cheap metadata checks only,
   leaving recursive proof verification disabled in Hoon for now.
 - The Rust noun boundary also exposes a slab-level metadata-precheck entrypoint
-  for a future Hoon verifier integration. It accepts a `%ai-pow` artifact noun
+  for future verifier integration. It accepts a `%ai-pow` artifact noun
   plus trusted Nockchain context and performs the same cheap metadata checks.
   This branch does not wire or pursue the real verifier.
 - The trusted Nockchain verifier context is a named Rust struct rather than a
@@ -276,18 +274,15 @@ GNORT_DISABLE=1 cargo test -p ai-pow --release --features zk --test pearl_merge_
 
 1. Keep Hoon `%ai-pow` fail-closed and keep real verifier work out of this
    milestone.
-2. Keep the future Hoon verifier call surface generic in the design: opaque
-   nonce bytes, structured certificate, trusted candidate block commitment,
-   target, params, and verifier context flow into Rust when that work is
-   explicitly scheduled.
-3. Retire the legacy NCMN smoke path only after verifier integration is
-   separately scheduled, implemented, and production Pearl-compatible
-   submission is the only accepted network path.
-4. Decide the production chain-id and extra-domain-data policy for `NPA1`.
-5. Decide whether Nockchain production will require coinbase-only Pearl-format
+2. Keep any future verifier call surface generic in the design: opaque nonce
+   bytes, structured certificate, trusted candidate block commitment, target,
+   params, and verifier context flow into Rust when that work is explicitly
+   scheduled.
+3. Decide the production chain-id and extra-domain-data policy for `NPA1`.
+4. Decide whether Nockchain production will require coinbase-only Pearl-format
    block templates (`merkle_branch_len = 0`) or continue accepting bounded
    nonempty branches.
-6. Re-run and tighten real recursive certificate size-budget caps after the
+5. Re-run and tighten real recursive certificate size-budget caps after the
    final production proof shape is fixed.
 7. Keep metadata-precheck tests covering malformed `AIP1`, `PMP1`, `NPA1`,
    candidate-block replay, aux inclusion tamper, target miss, metadata drift,

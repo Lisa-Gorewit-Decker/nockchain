@@ -1,19 +1,19 @@
 # AI-PoW vs Pearl: Proof / PoW Spec Match and Mineable Unit
 
 Date: 2026-06-01
-Status: Historical pre-pivot audit; superseded for current Pearl merge-mining implementation
+Status: Current compatibility audit, updated after legacy NCMN removal
 
-> Supersession note, 2026-06-01: this comparison describes the pre-pivot
-> Nockchain-native NCMN path. The current Nockchain-side submission target is
-> Pearl-format-compatible `%ai-pow` with opaque `ai-pow-nonce=[len data]` and
-> no Pearl-specific Hoon molds. See
-> `2026-06-01_PEARL_MERGE_MINING_COMPATIBILITY_SPEC.md`.
+> Update, 2026-06-01: this document has been revised after removal of the
+> legacy NCMN miner/verifier path. The current Nockchain-side submission target
+> is Pearl-format-compatible `%ai-pow` with opaque `ai-pow-nonce=[len data]`
+> and no Pearl-specific Hoon molds. See
+> `2026-06-01_PEARL_MERGE_MINING_COMPATIBILITY_SPEC.md` for the wire-level
+> production shape.
 
-The live implementation now mines Pearl-compatible ticket attempts in Rust,
-submits only Nockchain `%ai-pow`, and rejects mixed legacy/Pearl miner configs
-before mining. The sections below are retained as historical context for the
-native NCMN attempt model and should not be used as the current activation
-plan.
+The live implementation mines Pearl-compatible ticket attempts in Rust,
+submits only Nockchain `%ai-pow`, and has no submission-mode switch or native
+NCMN miner fallback. Hoon sees only an opaque AI-PoW nonce envelope plus the
+recursive certificate noun; Pearl-specific construction remains Rust-side.
 
 ## Executive Summary
 
@@ -28,29 +28,33 @@ core mineable primitive:
 - Little-endian 256-bit target comparison.
 - Shape-aware target weight `r * tile_m * tile_n`.
 
-The important caveat is that "close to Pearl" is only true after accounting
-for deliberate Nockchain extensions:
+The important caveat is that "close to Pearl" now means close at the mineable
+ticket attempt layer, not identical at the proof-system or chain-submission
+layer:
 
-- Nockchain carries an explicit NCMN nonce and now binds it before `kappa`,
+- The mineable attempt nonce is a Rust-owned Pearl-compatible `AIP1` ticket
+  envelope. Hoon treats it as opaque bytes and does not model Pearl fields.
+- The attempt binds Pearl header fields, mining configuration, Nockchain aux
+  commitment, ticket offset, and ticket rows/columns before deriving `kappa`,
   matrix commitments, noise, noised matrices, and matmul-derived tile states.
-- Nockchain uses a derived `pow_key = derive_key("pow-key", s_A || nonce)` in
-  the jackpot hash public-input slot that Pearl calls `COMMITMENT_HASH`.
+- The current Nockchain submission path only submits to Nockchain. A hit may
+  satisfy either chain's target in principle, but the current milestone wires
+  only Nockchain-side `%ai-pow` submission.
 - The canonical Nockchain block artifact is the recursive ZK certificate noun,
   not Pearl's plain block-opening proof and not a raw Layer-0 STARK blob.
 
 The biggest remaining semantic difference is the mineable unit for multi-tile
 matmuls. Pearl's paper describes computing the full tiled noised matmul and
 checking the block-opening condition on computed full-rank tiles. Current
-Nockchain production admission derives exactly one eligible jackpot tile for a
-nonce-bound attempt. Today this does not admit multi-tile canonical block
-certificates: the miner preflight rejects multi-tile parameters because the
-recursive certificate proves one selected tile, not a full-matrix aggregate.
+Nockchain production admission is intentionally limited to the supported
+recursive certificate shape and rejects unsupported recursive parameters before
+mining.
 
 Therefore:
 
 - For the current single-tile canonical smoke profile, the unit of mineable
-  work is effectively the same kind of Pearl tile execution, with Nockchain
-  nonce binding added.
+  work is effectively the same Pearl-style ticket/tile execution, with
+  Nockchain aux commitment binding included in the Rust-owned ticket envelope.
 - For real multi-tile AI workloads, the current canonical proof path is not yet
   Pearl-equivalent because it is fail-closed. Before enabling multi-tile
   consensus, we must explicitly choose and implement the lottery semantics:
@@ -92,25 +96,31 @@ prescribed noised matmul under commitments derived from the chain state."
 
 The current Rust pipeline is:
 
-1. `params_tag(params)` binds the `MatmulParams`.
-2. `block_state(block_commitment, nonce)` binds the candidate block commitment
-   and the exact NCMN nonce bytes.
-3. `commitment_key(block_state(...), params_tag)` derives `kappa`.
-4. `BlockContext::build(block_commitment, nonce, A, B, params)` computes:
+1. `PearlNockchainAux` binds the Nockchain chain id, candidate block
+   commitment, target epoch/height, Nockchain target, recursive ZK params, and
+   domain-separated extra data.
+2. `PearlMergeMiningJob` combines the Pearl header template, Pearl mining
+   configuration, canonical aux bytes, matrix bytes, and Nockchain target.
+3. Each loop iteration constructs one explicit Pearl-compatible ticket attempt
+   (`AIP1`) with a ticket offset and concrete row/column ticket selections.
+4. `params_tag(params)` binds the `MatmulParams`.
+5. `pearl_merge_attempt_state(...)` binds the ticket bytes and aux context
+   before `commitment_key(..., params_tag)` derives `kappa`.
+6. `BlockContext::build(block_commitment, nonce, A, B, params)` computes:
    - legacy diagnostic row/column roots `h_a` / `h_b`;
    - canonical chunk commitments `h_a_chunk` / `h_b_chunk`;
    - `s_A` / `s_B` from the chunk commitments;
    - low-rank noise;
    - noised matrices;
-   - all per-tile `M` states for that exact nonce-bound attempt.
-5. `mine_inner` derives `pow_key_for_nonce(s_A, nonce)`, hashes tile states
-   with that key, derives exactly one eligible `found_idx`, and checks only that
-   tile against the target.
-6. The ZK statement precheck re-derives `kappa`, `s_A`, `s_B`, `pow_key`,
+   - per-tile `M` states for that exact ticket attempt.
+7. The ticket worker hashes the Pearl jackpot digest for that exact attempt and
+   returns only after the Nockchain target is hit. Recursive proof construction
+   happens after the target hit, not for target misses.
+8. The ZK statement precheck re-derives `kappa`, `s_A`, `s_B`, `pow_key`,
    `HASH_A`, `HASH_B`, trace height, target satisfaction, and the
    verifier-derived `found_idx` before accepting the recursive certificate
    metadata.
-7. The canonical artifact intended for Hoon/block persistence is:
+9. The canonical artifact intended for Hoon/block persistence is:
    `[%ai-pow nonce=ai-pow-nonce cert=ai-pow-certificate]`, where
    `ai-pow-nonce=[len=@ud data=@uxaipownonce]` is opaque to Hoon and the
    certificate carries commitments `[h-a-chunk h-b-chunk]` only.
@@ -172,16 +182,17 @@ explicit 32-byte target instead of relying on `difficulty_bits`.
 
 ## Deliberate Differences
 
-### Explicit NCMN Nonce
+### Opaque Pearl-Compatible Attempt Nonce
 
 Pearl removes the Bitcoin-style nonce from the block header and carries a
-variable-size proof/certificate. Nockchain still carries an explicit NCMN nonce
-inside the AI-PoW command.
+variable-size proof/certificate. Nockchain carries an explicit AI-PoW nonce
+inside the `%ai-pow` command, but that nonce is no longer an NCMN structure.
+It is an opaque Rust-owned Pearl-compatible ticket envelope.
 
-This is safe only because the nonce is part of the attempt state before
-`kappa`. If the nonce only keyed the final BLAKE3 jackpot hash, one expensive
-matmul could be reused for many cheap hash trials. That was the critical bug
-class fixed in the current branch.
+This is safe only because the ticket bytes and Nockchain aux commitment are
+part of the attempt state before `kappa`. If the nonce only keyed the final
+BLAKE3 jackpot hash, one expensive matmul could be reused for many cheap hash
+trials. That was the critical bug class fixed in the current branch.
 
 ### Jackpot Key
 
@@ -196,8 +207,10 @@ hash    = BLAKE3(M, key=pow_key)
 
 Since `s_A` is already nonce-bound, this is extra domain separation and
 statement binding, not the sole nonce binding. The hash primitive and target
-comparison are still Pearl-shaped. This difference means Nockchain jackpot
-digests are not byte-identical to Pearl unless the key argument is normalized.
+comparison are still Pearl-shaped. For merge mining, the Rust ticket worker
+uses the Pearl-compatible jackpot digest for attempt search; the recursive
+certificate path must continue to bind the same ticket bytes and target-hit
+metadata before any Nockchain submission.
 
 ### One Verifier-Derived Tile
 
@@ -206,7 +219,7 @@ full-rank tiles during the tiled matmul. In the straightforward reading, a
 multi-tile matmul creates many tile-level tickets, each weighted by
 `r * tile_m * tile_n`.
 
-Nockchain currently derives one eligible jackpot tile:
+Nockchain's local recursive statement derives one eligible jackpot tile:
 
 ```text
 found_idx = attempt_tile_index(block_state, params_tag, s_A, num_tiles)
@@ -220,9 +233,8 @@ matmul with only one admissible ticket is not the same lottery as Pearl's
 "all eligible computed tiles can win" model.
 
 Current consensus-facing code avoids silently choosing wrong multi-tile
-economics by failing closed: multi-tile canonical recursive submissions are
-rejected by preflight until the recursive proof can bind a full-matrix
-aggregate.
+economics by failing closed for unsupported recursive configurations until the
+recursive proof and target/work accounting are explicitly extended.
 
 ### Proof System and Artifact
 
@@ -260,13 +272,13 @@ is not identical.
 For the currently admissible single-tile recursive path, yes in the operational
 sense that matters for soundness:
 
-- one nonce-bound attempt builds fresh commitments, noise, noised matrices, and
-  tile state;
+- one Pearl-compatible ticket attempt builds fresh commitments, noise, noised
+  matrices, and tile state;
 - the proof certifies the tile computation;
 - the jackpot hash is checked against a Pearl-shaped target.
 
-The unit is not a cheap nonce hash. It is the nonce-bound noised matmul work for
-that tile.
+The unit is not a cheap nonce hash. It is the ticket-bound noised matmul work
+for that tile.
 
 ### Multi-Tile Real AI Workloads
 

@@ -797,7 +797,7 @@ fn pearl_attempt_transcript_matches_reference_formulas() {
 }
 
 #[test]
-fn pearl_attempt_is_not_the_native_nockchain_nonce_path() {
+fn pearl_attempt_is_not_the_native_explicit_nonce_path() {
     let params = MatmulParams::TEST_SMALL;
     let (a, b) = synth_matrices(b"pearl-merge-native-separation", &params);
     let header = header();
@@ -805,7 +805,7 @@ fn pearl_attempt_is_not_the_native_nockchain_nonce_path() {
     let sigma = header.to_bytes();
     let pearl = PearlAttempt::build_with_config(&header, &config, &a, &b, &params).unwrap();
 
-    let native_nonce = b"native-ncmn-nonce-bytes";
+    let native_nonce = b"native-explicit-nonce-bytes";
     let native = BlockContext::build(&sigma, native_nonce, &a, &b, &params).unwrap();
     assert_ne!(
         pearl.commitments.kappa,

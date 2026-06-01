@@ -22,7 +22,6 @@ use crate::fiat_shamir::{
     challenge_indices, challenge_seed, commitment_key, pow_key_for_nonce,
 };
 use crate::matmul::compute_tile_from_slices;
-use crate::ncmn::{parse_ncmn_nonce, NonceFormatError};
 use crate::params::{MatmulParams, ParamError};
 use crate::prng;
 use crate::proof::{MatmulProof, TileOpening};
@@ -39,12 +38,6 @@ pub enum VerifyError {
     Merkle(#[from] MerkleError),
     #[error("params tag in proof does not match expected")]
     ParamsTagMismatch,
-    #[error("NCMN nonce: {0}")]
-    Nonce(#[from] NonceFormatError),
-    #[error("NCMN nonce Nockchain commitment does not match candidate block")]
-    NonceAnchorMismatch,
-    #[error("NCMN external commitment is reserved and must be absent")]
-    NonceExternalCommitmentPresent,
     #[error("found tile coordinates out of range")]
     FoundOutOfRange,
     #[error("found tile index does not match verifier-derived attempt tile")]
@@ -83,7 +76,7 @@ pub enum VerifyError {
 /// using `difficulty_target(params)`.
 ///
 /// Consensus callers with an externally supplied chain target must use
-/// [`verify_at_target`] or [`verify_ncmn_at_target`] instead. This wrapper is
+/// [`verify_at_target`] instead. This wrapper is
 /// retained under `ai_pow::verifier::verify` for tests and local tools whose
 /// target is intentionally derived from `params.difficulty_bits`; it is not
 /// re-exported from the crate root.
@@ -102,9 +95,9 @@ pub fn verify(
 ///
 /// This is a low-level verifier primitive. It structurally validates `params`,
 /// but it does not enforce the production consensus envelope; plain-proof
-/// callers that need those extra checks must use [`verify_prod_at_target`] or
-/// [`verify_ncmn_at_target`]. Nockchain block acceptance must verify the
-/// structured recursive certificate noun instead of a plain proof.
+/// callers that need those extra checks must use [`verify_prod_at_target`].
+/// Nockchain block acceptance must verify the structured recursive certificate
+/// noun instead of a plain proof.
 pub fn verify_at_target(
     block_commitment: &[u8],
     nonce: &[u8],
@@ -187,69 +180,6 @@ pub fn verify_prod_at_target(
 ) -> Result<(), VerifyError> {
     params.validate_prod_envelope()?;
     verify_at_target(block_commitment, nonce, params, target, proof)
-}
-
-/// Verify a proof whose nonce must be an NCMN v1 nonce anchored to a
-/// candidate Nockchain block commitment.
-///
-/// `puzzle_id` is the AI puzzle identity used inside the nonce-bound Pearl
-/// attempt state (`κ = commitment_key(block_state(puzzle_id, nonce),
-/// params_tag)`). `candidate_nck_commitment`
-/// is the trusted 32-byte commitment to the candidate Nockchain block that
-/// must appear inside the nonce. This wrapper is the production-envelope plain
-/// proof precheck for NCMN-wrapped mining: it rejects malformed or
-/// mis-anchored nonces before running the ordinary AI-PoW verifier. It is not
-/// the canonical block verifier; persisted/wire AI-PoW blocks must carry and
-/// verify the structured recursive certificate noun.
-pub fn verify_ncmn_at_target(
-    puzzle_id: &[u8],
-    candidate_nck_commitment: &[u8; 32],
-    nonce: &[u8],
-    params: &MatmulParams,
-    target: &[u8; 32],
-    proof: &MatmulProof,
-) -> Result<(), VerifyError> {
-    verify_ncmn_at_target_inner(
-        puzzle_id, candidate_nck_commitment, nonce, params, target, proof, true,
-    )
-}
-
-/// Low-level NCMN verifier for tests and local tools that intentionally use
-/// structurally-valid, non-production parameter sets. Consensus callers must
-/// use [`verify_ncmn_at_target`].
-pub fn verify_ncmn_at_target_structural(
-    puzzle_id: &[u8],
-    candidate_nck_commitment: &[u8; 32],
-    nonce: &[u8],
-    params: &MatmulParams,
-    target: &[u8; 32],
-    proof: &MatmulProof,
-) -> Result<(), VerifyError> {
-    verify_ncmn_at_target_inner(
-        puzzle_id, candidate_nck_commitment, nonce, params, target, proof, false,
-    )
-}
-
-fn verify_ncmn_at_target_inner(
-    puzzle_id: &[u8],
-    candidate_nck_commitment: &[u8; 32],
-    nonce: &[u8],
-    params: &MatmulParams,
-    target: &[u8; 32],
-    proof: &MatmulProof,
-    require_prod_envelope: bool,
-) -> Result<(), VerifyError> {
-    if require_prod_envelope {
-        params.validate_prod_envelope()?;
-    }
-    let (anchors, _) = parse_ncmn_nonce(nonce)?;
-    if anchors.nck_commitment != *candidate_nck_commitment {
-        return Err(VerifyError::NonceAnchorMismatch);
-    }
-    if anchors.external_commitment.is_some() {
-        return Err(VerifyError::NonceExternalCommitmentPresent);
-    }
-    verify_at_target(puzzle_id, nonce, params, target, proof)
 }
 
 #[derive(Copy, Clone)]
@@ -480,7 +410,6 @@ mod tests {
 
     use super::*;
     use crate::matmul::BLOCK_NOISE_EXPAND_CALLS;
-    use crate::ncmn::{build_ncmn_nonce, NonceAnchors};
 
     fn empty_opening() -> TileOpening {
         TileOpening {
@@ -513,17 +442,10 @@ mod tests {
         params.validate().unwrap();
         assert!(params.validate_prod_envelope().is_err());
         let proof = empty_proof(&params);
-        let anchors = NonceAnchors::nck_only([0xAB; 32]);
-        let nonce = build_ncmn_nonce(&anchors, 0);
+        let nonce = b"diagnostic-nonce";
 
         assert!(matches!(
-            verify_prod_at_target(b"param01-puzzle", &nonce, &params, &[0xFFu8; 32], &proof,),
-            Err(VerifyError::Params(_))
-        ));
-        assert!(matches!(
-            verify_ncmn_at_target(
-                b"param01-puzzle", &anchors.nck_commitment, &nonce, &params, &[0xFFu8; 32], &proof,
-            ),
+            verify_prod_at_target(b"param01-puzzle", nonce, &params, &[0xFFu8; 32], &proof,),
             Err(VerifyError::Params(_))
         ));
     }

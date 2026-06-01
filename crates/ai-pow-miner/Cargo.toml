@@ -2,7 +2,7 @@
 name = "ai-pow-miner"
 version.workspace = true
 edition.workspace = true
-description = "Block-mining driver for the ai-pow PoW puzzle: nonce loop, cancellation, and a NockApp-compatible driver. Wraps ai-pow with merge-mining-compatible nonce shape."
+description = "NockApp-compatible AI-PoW miner for Pearl-compatible ticket search and canonical recursive %ai-pow submission."
 publish = false
 
 [lib]
@@ -12,27 +12,19 @@ path = "src/lib.rs"
 [[bin]]
 # Production node-connecting miner. Mirrors `zk-pow-mine` in shape:
 # connects to a `nockchain` node's private gRPC, subscribes to %mine
-# effects, runs the AI-PoW prover, and submits %mined back.
+# effects, mines Pearl-compatible tickets, builds the recursive certificate
+# after a target hit, and submits the canonical %ai-pow command on %mined.
 name = "ai-pow-mine"
 path = "src/bin/ai_pow_mine.rs"
 required-features = ["node"]
-
-[[bin]]
-# Prover-only smoke CLI. Runs `mining::run` against a synthetic /
-# file-provided puzzle without any node connection — useful for
-# benchmark capture and replaying captured candidates in a shell.
-# Has no `zk-pow-miner` analog because the ZK PoW STARK prover needs
-# a kernel SerfThread which only makes sense in the gRPC context.
-name = "ai-pow-mine-prover"
-path = "src/bin/ai_pow_mine_prover.rs"
 
 [features]
 default = []
 # Out-of-process node-connecting integration: pulls in the gRPC +
 # nockapp stack so `src/run.rs` + `src/wire.rs` + the
-# `ai-pow-mine` binary build. The bare crate (no features) keeps
-# `mining::run` + the prover-only smoke binary buildable without
-# the gRPC tree, which is handy for benchmarks and library users.
+# `ai-pow-mine` binary build. The bare crate (no features) keeps the
+# Pearl-compatible ticket loop buildable without the gRPC tree, which is handy
+# for benchmarks and library users.
 node = [
     "dep:nockapp",
     "dep:nockvm",
