@@ -178,6 +178,15 @@ impl<'a> BlockContext<'a> {
         &self.s_a
     }
 
+    /// Derived jackpot hash key for this exact nonce-bound attempt.
+    ///
+    /// Prefer this over combining [`Self::s_a`] with an arbitrary nonce in
+    /// diagnostics. Production mining and proof construction use the context's
+    /// own nonce so one cached context cannot be presented as many attempts.
+    pub fn pow_key(&self) -> [u8; 32] {
+        pow_key_for_nonce(&self.s_a, &self.nonce)
+    }
+
     /// Diagnostic accessor for the nonce-bound `s_B` seed.
     pub fn s_b(&self) -> &[u8; 32] {
         &self.s_b

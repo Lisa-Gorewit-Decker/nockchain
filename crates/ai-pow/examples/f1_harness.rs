@@ -21,7 +21,7 @@
 //!   the real `difficulty_target` (C2).
 //! - Hard assertions (non-vacuous): `HASH_A`/`HASH_B` byte-equal
 //!   `BlockContext::h_a_chunk`/`h_b_chunk` (C3); `JOB_KEY`/
-//!   `COMMITMENT_HASH` == the block's κ / s_a (C1);
+//!   `COMMITMENT_HASH` == the block's κ / nonce-bound jackpot key (C1);
 //!   `HASH_JACKPOT` is the non-zero keyed digest (C4).
 //!
 //! ## What it does NOT yet exercise (tracked separately — §4.A)
@@ -102,22 +102,23 @@ fn main() {
 
     // Build the composite trace exactly as the F1 bridge does:
     // matrix-hash A/B (C3) + key-pin rows for JOB_KEY=κ and
-    // COMMITMENT_HASH=s_a (C1) + final jackpot-hash block (C4:
-    // HASH_JACKPOT = BLAKE3(JACKPOT_MSG, key=s_a)). Encapsulated
-    // as a closure so the per-iteration prove loop rebuilds an
-    // identical trace.
+    // COMMITMENT_HASH=pow_key_for_nonce(s_a, nonce) (C1) + final
+    // jackpot-hash block (C4: HASH_JACKPOT = BLAKE3(JACKPOT_MSG,
+    // key=pow_key)). Encapsulated as a closure so the per-iteration prove
+    // loop rebuilds an identical trace.
     let a_bytes: Vec<u8> = a.iter().map(|&v| v as u8).collect();
     let b_bytes: Vec<u8> = b.iter().map(|&v| v as u8).collect();
     let kappa_w = words(ctx.kappa());
-    let s_a_w = words(ctx.s_a());
+    let pow_key = ctx.pow_key();
+    let pow_key_w = words(&pow_key);
     let build_trace = || -> CompositeTrace {
         let mut tr = CompositeTrace::baseline_min();
         let h = tr.height();
         let (n1, _) = tr.place_matrix_hash_a(0, &a_bytes, ctx.kappa());
         let (mh_end, _) = tr.place_matrix_hash_b(n1, &b_bytes, ctx.kappa());
         tr.place_key_pin_row(mh_end + 1, false, &kappa_w); // JOB_KEY = κ
-        tr.place_key_pin_row(mh_end + 2, true, &s_a_w); // COMMITMENT_HASH = s_a
-        tr.place_jackpot_hash_block(h - 8, &[0u32; 16], &s_a_w); // C4
+        tr.place_key_pin_row(mh_end + 2, true, &pow_key_w); // COMMITMENT_HASH = pow_key
+        tr.place_jackpot_hash_block(h - 8, &[0u32; 16], &pow_key_w); // C4
         tr
     };
 
@@ -127,7 +128,7 @@ fn main() {
 
     // Derive PIs and assert the non-vacuous C1 + C3 bindings:
     // HASH_A/HASH_B == BlockContext chunk commitments, and
-    // JOB_KEY/COMMITMENT_HASH == the real block's κ / s_a.
+    // JOB_KEY/COMMITMENT_HASH == the real block's κ / bound pow_key.
     let pis = CompositePublicInputs::derive_from_trace(&trace);
     assert_eq!(
         pis.hash_a,
@@ -144,8 +145,8 @@ fn main() {
         "C1: SNARK JOB_KEY PI must equal the block's κ"
     );
     assert_eq!(
-        pis.commitment_hash, s_a_w,
-        "C1: SNARK COMMITMENT_HASH PI must equal the block's s_a"
+        pis.commitment_hash, pow_key_w,
+        "C1: SNARK COMMITMENT_HASH PI must equal the block's nonce-bound pow_key"
     );
     assert_ne!(
         pis.hash_jackpot, [0u32; 8],

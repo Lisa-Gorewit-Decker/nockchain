@@ -91,14 +91,14 @@ Tests:
 ### SND-02: ZK bridge proves a nonce-independent PoW hash
 
 Severity: Critical
-Status: Confirmed
+Status: Remediated at production and executable harness boundaries
 
 Evidence:
 
 - Plain PoW derives `pow_key_for_nonce(s_a, nonce)` and hashes tile states with that key: `crates/ai-pow/src/fiat_shamir.rs`, `crates/ai-pow/src/prover.rs`, `crates/ai-pow/src/verifier.rs`.
-- `zk_bridge::prove_and_verify_for_block` has no `nonce` argument.
-- The bridge places the jackpot hash using `s_a` / `COMMITMENT_HASH`: `trace.place_jackpot_hash_block(height - 8, &real_m, &s_a_w)`.
-- `CompositePublicInputs` documents `HASH_JACKPOT = BLAKE3(JACKPOT_MSG, key=COMMITMENT_HASH)`, i.e. `s_a`.
+- Done: `zk_bridge::prove_and_verify_for_block` and the recursive certificate builder take the submitted nonce and reject context/nonce mismatches before proof construction.
+- Done: the bridge derives `pow_key = pow_key_for_nonce(s_a, nonce)`, binds it into `CompositePublicInputs.commitment_hash`, and uses it as the BLAKE3 key for `HASH_JACKPOT`.
+- Done: the executable `f1_harness` now uses `ctx.pow_key()` for `COMMITMENT_HASH` and the jackpot hash block; the wire regression rejects the old `COMMITMENT_HASH = s_a` harness wording.
 
 Attack sketch:
 
@@ -112,16 +112,17 @@ The ZK proof is not a proof for the submitted block nonce. It proves a different
 
 Fix plan:
 
-- Add `nonce` to the ZK bridge production entrypoint.
-- Derive `pow_key = pow_key_for_nonce(s_a, nonce)` outside the circuit from verifier-known data.
-- Bind `pow_key` as a public input and use it as the BLAKE3 key for `HASH_JACKPOT`.
-- Rename `COMMITMENT_HASH` usage in the jackpot path to avoid confusing `s_a` with `pow_key`.
+- Done: add `nonce` to the ZK bridge production entrypoint.
+- Done: derive `pow_key = pow_key_for_nonce(s_a, nonce)` outside the circuit from verifier-known data.
+- Done: bind `pow_key` as a public input and use it as the BLAKE3 key for `HASH_JACKPOT`.
+- Done: keep `COMMITMENT_HASH` as the existing field name for compatibility, but document and test that its production value is the nonce-bound jackpot key, not raw `s_a`.
 - Update `CompositePublicInputs` with `pow_key` or replace `commitment_hash` in the jackpot block with a dedicated `jackpot_key`.
 
 Tests:
 
-- Generate one honest trace for a nonce and verify it rejects when the nonce is changed.
-- Assert ZK `HASH_JACKPOT` equals plain `TileState::keyed_hash(pow_key_for_nonce(s_a, nonce))`.
+- Done: generate one honest trace for a nonce and verify it rejects when the nonce is changed.
+- Done: assert ZK `HASH_JACKPOT` equals plain `TileState::keyed_hash(pow_key_for_nonce(s_a, nonce))`.
+- Done: `ai_pow_wire_stub` guards that the executable F1 harness does not regress to `COMMITMENT_HASH = s_a`.
 - Add a negative test where `BLAKE3(M, key=s_a)` clears target but `BLAKE3(M, key=pow_key)` does not.
 
 ### SND-03: No production verifier-only ZK API derives the trusted statement

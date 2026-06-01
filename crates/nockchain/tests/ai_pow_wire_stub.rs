@@ -19,6 +19,7 @@ const AI_POW_LIB_RS: &str = include_str!("../../ai-pow/src/lib.rs");
 const AI_POW_PROOF_RS: &str = include_str!("../../ai-pow/src/proof.rs");
 const AI_POW_PROVER_RS: &str = include_str!("../../ai-pow/src/prover.rs");
 const AI_POW_VERIFIER_RS: &str = include_str!("../../ai-pow/src/verifier.rs");
+const AI_POW_F1_HARNESS_RS: &str = include_str!("../../ai-pow/examples/f1_harness.rs");
 const AI_POW_ZK_RECURSION_RS: &str = include_str!("../../ai-pow-zk/src/recursion.rs");
 const AI_POW_ZK_BRIDGE_RS: &str = include_str!("../../ai-pow/src/zk_bridge.rs");
 const AI_POW_ZK_CARGO_TOML: &str = include_str!("../../ai-pow-zk/Cargo.toml");
@@ -242,10 +243,12 @@ fn ai_pow_consensus_wire_is_structured_but_fail_closed_without_verifier() {
             && AI_POW_PROVER_RS.contains("pub(crate) m_states: Vec<TileState>")
             && AI_POW_PROVER_RS.contains("pub fn nonce(&self) -> &[u8]")
             && AI_POW_PROVER_RS.contains("pub fn s_a(&self) -> &[u8; 32]")
+            && AI_POW_PROVER_RS.contains("pub fn pow_key(&self) -> [u8; 32]")
             && AI_POW_PROVER_RS.contains("pub fn tile_states(&self) -> &[TileState]")
             && AI_POW_PROVER_RS.contains("not a reusable mining cache")
             && AI_POW_PROVER_RS.contains("cheap-rehash grinding bug")
             && AI_POW_PROVER_RS.contains("Do not use this with a different nonce")
+            && AI_POW_PROVER_RS.contains("Prefer this over combining [`Self::s_a`]")
             && AI_POW_PROVER_RS.contains("attempts must rebuild them for every NCMN extranonce")
             && !AI_POW_PROVER_RS.contains("pub nonce: Vec<u8>")
             && !AI_POW_PROVER_RS.contains("pub s_a: [u8; 32]")
@@ -254,6 +257,16 @@ fn ai_pow_consensus_wire_is_structured_but_fail_closed_without_verifier() {
          but external callers must not be able to mutate nonce-bound work \
          fields directly, and diagnostic accessors must not be framed as a \
          reusable cross-nonce mining cache"
+    );
+    assert!(
+        AI_POW_F1_HARNESS_RS.contains("let pow_key = ctx.pow_key()")
+            && AI_POW_F1_HARNESS_RS.contains("COMMITMENT_HASH = pow_key")
+            && AI_POW_F1_HARNESS_RS.contains("nonce-bound jackpot key")
+            && !AI_POW_F1_HARNESS_RS.contains("COMMITMENT_HASH = s_a")
+            && !AI_POW_F1_HARNESS_RS.contains("key=s_a"),
+        "the executable F1 harness must not regress to the historical \
+         nonce-independent ZK jackpot key; it must bind COMMITMENT_HASH to \
+         the context's nonce-bound pow_key"
     );
     let miner_run_inner = AI_POW_MINER_MINING_RS
         .split("fn run_inner")

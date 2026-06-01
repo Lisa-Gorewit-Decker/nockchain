@@ -868,6 +868,15 @@ internals. This keeps the crate-root production-looking API centered on
 prevents the cached attempt handle from being advertised as a normal mining
 primitive.
 
+Follow-up harness hardening: the executable `f1_harness` had stale historical
+wording and trace construction that set the ZK `COMMITMENT_HASH` slot to raw
+`s_A`. Production code already binds this slot to
+`pow_key_for_nonce(s_A, nonce)`. The harness now uses `ctx.pow_key()`, a
+context-bound accessor that derives the jackpot key from the context's own
+nonce, and the wire regression rejects the old `COMMITMENT_HASH = s_a` wording.
+This keeps local profiling examples from reintroducing the nonce-independent ZK
+jackpot-key bug as copy-paste guidance.
+
 ## Latest Re-Audit: Decoded Recursive Certificate DoS Ordering
 
 The decoded Hoon-compatible certificate verifier had the right ordering for
