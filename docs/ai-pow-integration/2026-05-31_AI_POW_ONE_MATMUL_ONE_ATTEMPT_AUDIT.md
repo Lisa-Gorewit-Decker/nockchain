@@ -952,10 +952,11 @@ present.
 ## Latest Re-Audit: Jammed Artifact DoS Ordering
 
 Historical NCMN note: the byte-oriented NCMN verifier previously routed through
-`decode_ai_pow_artifact_jam`, which fully decoded the structured proof-node
+a generic `%ai-pow` jam decoder, which fully decoded the structured proof-node
 tail before the verifier checked trusted block data or re-derived cheap
 statement metadata. That verifier has now been removed from `ai-pow-miner`; the
-active Pearl merge verifier keeps the same intended ordering.
+generic decoder is crate-internal, and the active Pearl merge verifier keeps
+the same intended ordering through the public Pearl-specific artifact APIs.
 
 This is bounded by `CertificateNounLimits`, so it is not an unbounded parser
 bomb, but it is still the wrong consensus ordering: cheap rejection using

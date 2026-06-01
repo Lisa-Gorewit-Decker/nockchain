@@ -256,29 +256,25 @@ Rust conversion rules:
    proof's public values and the Layer-0 AI-PoW statement.
 
 The node-side Rust helpers package the required ordering for decoded noun
-artifacts:
+artifacts. The generic `%ai-pow` parser is crate-internal; the public
+production-shaped boundary is Pearl-specific:
 
-1. `certificate_noun::decode_ai_pow_artifact_slab` is the canonical bounded
-   parser for the persisted/wire artifact `[%ai-pow nonce cert]`. It decodes
-   the structured recursive certificate, parses the `ai-pow-nonce` envelope,
-   rejects malformed nonce bytes, and keeps the nonce adjacent to the
-   certificate shape.
-2. `certificate_noun::decode_ai_pow_artifact_jam` is the byte-oriented
-   production boundary for persisted/network artifacts. It enforces
-   `CertificateNounLimits::max_jam_bytes` before cueing attacker-controlled
-   jam bytes, then runs a no-allocation jam preflight enforcing total noun
-   count, noun depth, and atom byte limits before any `NounSlab` allocation.
-   It rejects empty input before cue, contains cue panics, then calls the same
-   bounded artifact parser. It also requires `jam(cue(bytes)) == bytes`, so
+1. `certificate_noun::precheck_ai_pow_pearl_merge_artifact_jam` is the
+   byte-oriented metadata boundary for persisted/network artifacts. It enforces
+   `CertificateNounLimits::max_jam_bytes` before cueing attacker-controlled jam
+   bytes, then runs a no-allocation jam preflight enforcing total noun count,
+   noun depth, and atom byte limits before any `NounSlab` allocation. It
+   rejects empty input before cue, contains cue panics, decodes only the
+   `AIP1` nonce plus certificate metadata, then checks aux binding, target,
+   and recursive metadata drift before any proof-node traversal.
+2. `certificate_noun::verify_ai_pow_pearl_merge_artifact_jam` extends the same
+   ordering by reconstructing and verifying the recursive proof only after the
+   Pearl/Nockchain statement precheck succeeds. It also requires
+   `jam(cue(bytes)) == bytes`, so
    non-canonical jam encodings such as trailing bytes are rejected instead of
-   being silently canonicalized.
-3. `certificate_noun::verify_ai_pow_pearl_merge_artifact_jam` is the current
-   Rust verifier helper when the caller has jam bytes: byte-size cap, cue,
-   bounded decode, opaque `AIP1` nonce parse, Pearl aux-inclusion check,
-   Nockchain target precheck, recursive public-input precheck, and recursive
-   certificate verification happen in that order. It is not wired from Hoon in
-   the current milestone.
-4. Legacy NCMN artifact verifier helpers have been removed from
+   being silently canonicalized. It is not wired from Hoon in the current
+   milestone.
+3. Legacy NCMN artifact verifier helpers have been removed from
    `ai-pow-miner`; the miner now exposes only the Pearl merge production
    submission/verifier shape.
 
@@ -491,6 +487,6 @@ Before accepting `%ai-pow`, consensus must require:
 7. Add jam/cue round-trip tests for a real proof and malformed nouns. Status: implemented for structured sample certificates, malformed packed/list/tag/version cases, non-canonical `ai-ext2` limbs, and an ignored real recursive certificate noun round-trip/size harness.
 8. Add size tests asserting total jammed noun budget and per-vector caps. Status: the ignored real recursive certificate harness asserts a coarse 2 MiB upper bound and prints measured size; production budget constants still need to be set after the harness is run on the final L1 shape.
 9. Add adversarial decode tests for oversized lengths, non-canonical field elements, mismatched lookup shapes, invalid FRI arities, and extra/trailing packed bytes.
-10. Expose a full recursive certificate verifier that takes verifier-derived public inputs and rejects an otherwise valid certificate when any trusted Nockchain block data, opaque Pearl-compatible nonce, target, commitment, params, aux inclusion, or `found-idx` field is changed. Status: implemented at the Rust boundary only for Pearl merge artifacts: `decode_ai_pow_artifact_jam` caps jammed bytes before cue, `decode_ai_pow_artifact_slab` parses the full `[%ai-pow nonce cert]` wire artifact, and `verify_ai_pow_pearl_merge_artifact_jam` reconstructs the structured noun proof only after the cheap Pearl/Nockchain statement precheck succeeds. Hoon consensus remains fail-closed and does not call this verifier in the current milestone.
+10. Expose a full recursive certificate verifier that takes verifier-derived public inputs and rejects an otherwise valid certificate when any trusted Nockchain block data, opaque Pearl-compatible nonce, target, commitment, params, aux inclusion, or `found-idx` field is changed. Status: implemented at the Rust boundary only for Pearl merge artifacts: `precheck_ai_pow_pearl_merge_artifact_jam` caps jammed bytes before cue and parses only the `AIP1` nonce plus certificate metadata, while `verify_ai_pow_pearl_merge_artifact_jam` reconstructs the structured noun proof only after the cheap Pearl/Nockchain statement precheck succeeds. Hoon consensus remains fail-closed and does not call this verifier in the current milestone.
 11. Future milestone only: add the verifier jet entrypoint consuming this noun shape.
 12. Future milestone only: replace the deferred-verifier accept path with real accept/reject checks after that work is explicitly scheduled and end-to-end accept/reject tests exist.

@@ -553,16 +553,18 @@ Evidence:
 - The low-level `ai_pow::verifier::verify` still treats `nonce` as opaque bytes
   and is not the NCMN production boundary.
 - The production miner now submits only Pearl merge-mined `%ai-pow` artifacts.
-  `ai_pow_miner::certificate_noun::decode_ai_pow_artifact_jam` /
-  `decode_ai_pow_artifact_slab` remain bounded generic decoders; the
-  production verifier path is the Pearl merge artifact verifier.
-- `decode_ai_pow_artifact_jam` enforces a jammed-byte cap before cueing the
-  block artifact, so the future consensus path has a bounded byte entrypoint
-  rather than relying on every caller to remember to cap attacker input first.
-  It also runs a no-allocation jam preflight for noun count, depth, and atom
-  bytes before any `NounSlab` allocation, rejects empty jam input, converts cue
-  panics into verifier errors, preventing malformed block artifacts from
-  crashing the verifier process, and rejects non-canonical jam encodings by
+  The generic `%ai-pow` artifact decoders are crate-internal implementation
+  details; public verifier-facing code must use the Pearl merge artifact or
+  command APIs.
+- `precheck_ai_pow_pearl_merge_artifact_jam` and
+  `verify_ai_pow_pearl_merge_artifact_jam` enforce a jammed-byte cap before
+  cueing the block artifact, so the future consensus path has a bounded byte
+  entrypoint rather than relying on every caller to remember to cap attacker
+  input first. They also run a no-allocation jam preflight for noun count,
+  depth, and atom bytes before any `NounSlab` allocation, reject empty jam
+  input, convert cue panics into verifier errors, preventing malformed block
+  artifacts from crashing the verifier process, and reject non-canonical jam
+  encodings by
   requiring a byte-identical re-jam.
 - The Hoon `%ai-pow` wire now carries `[%ai-pow nonce=ai-pow-nonce
   cert=ai-pow-certificate]`, so the verifier has a Rust-owned opaque nonce

@@ -140,8 +140,9 @@ pub struct AiPowCertificateShape {
 }
 
 /// Decoded `%ai-pow` block artifact shape.
+#[cfg(test)]
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct AiPowArtifactShape {
+pub(crate) struct AiPowArtifactShape {
     pub nonce: Vec<u8>,
     pub certificate: AiPowCertificateShape,
 }
@@ -153,7 +154,7 @@ pub struct AiPowArtifactShape {
 /// bindings, target misses, and certificate metadata drift before traversing a
 /// miner-controlled proof tree.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct AiPowArtifactMetadataShape {
+pub(crate) struct AiPowArtifactMetadataShape {
     pub nonce: Vec<u8>,
     pub certificate: AiPowCertificateMetadata,
 }
@@ -945,7 +946,7 @@ fn decode_ai_pow_certificate_metadata_fields(
     })
 }
 
-/// Decode and validate a full Hoon `%ai-pow` block artifact in a slab.
+/// Decode and validate a generic Hoon `%ai-pow` block artifact in a slab.
 ///
 /// The expected noun shape is:
 ///
@@ -953,9 +954,12 @@ fn decode_ai_pow_certificate_metadata_fields(
 /// [%ai-pow nonce=ai-pow-nonce cert=ai-pow-certificate]
 /// ```
 ///
-/// The nonce is an opaque `[len data]` byte envelope owned by Rust. The Hoon
-/// kernel does not parse Pearl-compatible fields.
-pub fn decode_ai_pow_artifact_slab<J>(
+/// This is a crate-internal parser shared by the Pearl-compatible artifact
+/// decoders. Public callers should use the `%ai-pow` Pearl-merge APIs, which
+/// additionally parse the Rust-owned `AIP1` nonce and run the Nockchain/Pearl
+/// statement prechecks before proof traversal.
+#[cfg(test)]
+fn decode_ai_pow_artifact_slab<J>(
     slab: &NounSlab<J>,
     limits: CertificateNounLimits,
 ) -> Result<AiPowArtifactShape, CertificateNounError> {
@@ -964,14 +968,14 @@ pub fn decode_ai_pow_artifact_slab<J>(
     decode_ai_pow_artifact_noun(root, &space, limits)
 }
 
-/// Decode and validate a jammed Hoon `%ai-pow` block artifact.
+/// Decode and validate a jammed generic Hoon `%ai-pow` block artifact.
 ///
-/// This is the byte-oriented boundary a consensus verifier should use when it
-/// starts from persisted or network-transmitted jam bytes. It enforces the
-/// configured jam byte limit before cueing so attacker-controlled bytes cannot
-/// force unbounded noun allocation before the structured certificate limits
-/// apply.
-pub fn decode_ai_pow_artifact_jam(
+/// This is crate-internal. Consensus-facing callers should use
+/// [`precheck_ai_pow_pearl_merge_artifact_jam`] or
+/// [`verify_ai_pow_pearl_merge_artifact_jam`], which enforce the `AIP1` nonce,
+/// aux binding, target, and recursive metadata before proof traversal.
+#[cfg(test)]
+fn decode_ai_pow_artifact_jam(
     jammed: &[u8],
     limits: CertificateNounLimits,
 ) -> Result<AiPowArtifactShape, CertificateNounError> {
@@ -1121,8 +1125,9 @@ fn bit_at(jammed: &[u8], bit: usize) -> Option<bool> {
     Some(((byte >> (bit % 8)) & 1) == 1)
 }
 
-/// Decode and validate a full Hoon `%ai-pow` block artifact noun.
-pub fn decode_ai_pow_artifact_noun(
+/// Decode and validate a full generic Hoon `%ai-pow` block artifact noun.
+#[cfg(test)]
+fn decode_ai_pow_artifact_noun(
     root: Noun,
     space: &NounSpace,
     limits: CertificateNounLimits,
@@ -1141,10 +1146,10 @@ pub fn decode_ai_pow_artifact_noun(
     })
 }
 
-/// Decode only the top-level `%ai-pow` nonce and certificate metadata.
+/// Decode only the top-level generic `%ai-pow` nonce and certificate metadata.
 ///
 /// This does not traverse the recursive proof-node tail.
-pub fn decode_ai_pow_artifact_metadata_noun(
+fn decode_ai_pow_artifact_metadata_noun(
     root: Noun,
     space: &NounSpace,
     limits: CertificateNounLimits,
@@ -1161,16 +1166,6 @@ pub fn decode_ai_pow_artifact_metadata_noun(
         nonce,
         certificate: decode_ai_pow_certificate_metadata_noun(fields[2], space, limits)?,
     })
-}
-
-/// Decode only the top-level `%ai-pow` nonce and certificate metadata in a slab.
-pub fn decode_ai_pow_artifact_metadata_slab<J>(
-    slab: &NounSlab<J>,
-    limits: CertificateNounLimits,
-) -> Result<AiPowArtifactMetadataShape, CertificateNounError> {
-    let space = slab.noun_space();
-    let root = unsafe { *slab.root() };
-    decode_ai_pow_artifact_metadata_noun(root, &space, limits)
 }
 
 /// Decode and validate a Rust/test-only structured statement noun.
@@ -1570,51 +1565,6 @@ pub fn precheck_ai_pow_pearl_merge_command_metadata_with_context<J>(
 ) -> Result<PearlMergeMiningPrecheck, CertificateNounError> {
     let metadata = decode_ai_pow_pearl_merge_command_metadata_slab(command, limits)?;
     precheck_ai_pow_pearl_merge_artifact_metadata_with_context(&metadata, context)
-}
-
-/// Verify decoded certificate metadata and recursive proof for a Pearl
-/// merge-mined AI-PoW attempt.
-///
-/// This is the production-shaped verifier boundary for callers that already
-/// reconstructed the recursive certificate object from the structured noun
-/// tail. It first checks the shared Pearl-compatible attempt and Nockchain aux
-/// binding, then verifies the Nockchain-native recursive certificate against
-/// the Pearl-compatible public inputs.
-pub fn verify_ai_pow_pearl_merge_artifact_statement_and_proof(
-    artifact: &PearlMergeAiPowArtifactShape,
-    candidate_nock_block_commitment: &[u8; 32],
-    a_row_major: &[i8],
-    b_col_major: &[i8],
-    nockchain_target: &[u8; 32],
-    max_pattern_len: usize,
-    certificate: &ai_pow_zk::recursion::AiPowRecursiveCertificate,
-) -> Result<PearlMergeMiningPrecheck, CertificateNounError> {
-    verify_ai_pow_pearl_merge_artifact_statement_and_proof_with_context(
-        artifact,
-        PearlMergeAiPowVerifierContext {
-            candidate_nock_block_commitment,
-            a_row_major,
-            b_col_major,
-            nockchain_target,
-            max_pattern_len,
-        },
-        certificate,
-    )
-}
-
-/// Context-based form of
-/// [`verify_ai_pow_pearl_merge_artifact_statement_and_proof`].
-pub fn verify_ai_pow_pearl_merge_artifact_statement_and_proof_with_context(
-    artifact: &PearlMergeAiPowArtifactShape,
-    context: PearlMergeAiPowVerifierContext<'_>,
-    certificate: &ai_pow_zk::recursion::AiPowRecursiveCertificate,
-) -> Result<PearlMergeMiningPrecheck, CertificateNounError> {
-    let precheck = precheck_ai_pow_pearl_merge_artifact_statement_with_context(artifact, context)?;
-    ai_pow_zk::recursion::verify_recursive_certificate(
-        certificate, &artifact.certificate.public_inputs,
-    )
-    .map_err(|e| CertificateNounError::RecursiveCertificate(e.to_string()))?;
-    Ok(precheck)
 }
 
 /// Verify a fully decoded Hoon `%ai-pow` artifact against trusted block data.
