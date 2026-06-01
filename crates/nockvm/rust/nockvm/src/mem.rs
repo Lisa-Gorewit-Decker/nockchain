@@ -1,3 +1,5 @@
+#![allow(clippy::missing_safety_doc)]
+
 // TODO: fix stack push in PC
 use std::alloc::{alloc, dealloc, Layout};
 use std::fs::{File, OpenOptions};

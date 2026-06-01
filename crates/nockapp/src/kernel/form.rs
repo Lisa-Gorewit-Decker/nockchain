@@ -1,5 +1,6 @@
 #![allow(dead_code)]
 #![allow(clippy::items_after_test_module)]
+#![allow(clippy::missing_safety_doc)]
 use std::any::Any;
 use std::fs;
 use std::future::Future;
@@ -978,25 +979,45 @@ impl<C> SerfThread<C> {
         let (result_ack_sender, result_ack) = oneshot::channel();
         let action_sender = self.action_sender.clone();
         let cancel = self.cancel_token.clone();
-        let timer = tokio::time::sleep(timeout);
-        let cancel_task = tokio::spawn(async move {
-            timer.await;
-            cancel.cancel();
-        });
         async move {
-            action_sender
-                .send(SerfAction::Poke {
+            let deadline = tokio::time::Instant::now() + timeout;
+            tokio::time::timeout_at(
+                deadline,
+                action_sender.send(SerfAction::Poke {
                     wire,
                     cause,
                     result,
                     result_ack,
-                })
-                .await?;
-            let res = result_fut.await?;
+                }),
+            )
+            .await
+            .map_err(|_| CrownError::Timeout)??;
+
+            let cancel_for_task = cancel.clone();
+            let cancel_task = tokio::spawn(async move {
+                tokio::time::sleep_until(deadline).await;
+                cancel_for_task.cancel();
+            });
+
+            let result = tokio::time::timeout_at(deadline, result_fut).await;
             cancel_task.abort();
             let _ = cancel_task.await;
-            let _ = result_ack_sender.send(());
-            res
+
+            match result {
+                Ok(Ok(res)) => {
+                    let _ = result_ack_sender.send(());
+                    res
+                }
+                Ok(Err(err)) => {
+                    let _ = result_ack_sender.send(());
+                    Err(err.into())
+                }
+                Err(_) => {
+                    cancel.cancel();
+                    let _ = result_ack_sender.send(());
+                    Err(CrownError::Timeout)
+                }
+            }
         }
     }
 
@@ -3442,13 +3463,23 @@ mod tests {
         }
     }
 
+    fn load_jam_bytes(jam: &str) -> Vec<u8> {
+        let possible_paths = [
+            Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("test-jams")
+                .join(jam),
+            Path::new("open/crates/nockapp/test-jams").join(jam),
+        ];
+        for path in &possible_paths {
+            if let Ok(bytes) = fs::read(path) {
+                return bytes;
+            }
+        }
+        panic!("Failed to read {} file from any known path", jam)
+    }
+
     async fn setup_kernel(jam: &str) -> Kernel<SaveableCheckpoint> {
-        let jam_path = Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("..")
-            .join("assets")
-            .join(jam);
-        let jam_bytes =
-            fs::read(jam_path).unwrap_or_else(|_| panic!("Failed to read {} file", jam));
+        let jam_bytes = load_jam_bytes(jam);
         Kernel::load(&jam_bytes, None, vec![], TraceOpts::default(), None)
             .await
             .expect("Could not load kernel")
@@ -3617,6 +3648,29 @@ mod tests {
             jam_bytes: cold_jam.len(),
         };
         report.print();
+    }
+
+    #[tokio::test]
+    async fn load_allows_checkpoint_kernel_hash_mismatch() {
+        let jam_bytes = load_jam_bytes("test-ker.jam");
+        let kernel = setup_kernel("test-ker.jam").await;
+        let mut checkpoint = kernel
+            .checkpoint()
+            .await
+            .expect("Could not checkpoint kernel");
+        let mut hasher = Hasher::new();
+        hasher.update(b"mismatched-checkpoint-kernel");
+        checkpoint.ker_hash = hasher.finalize();
+
+        Kernel::load(
+            &jam_bytes,
+            Some(checkpoint),
+            vec![],
+            TraceOpts::default(),
+            None,
+        )
+        .await
+        .expect("checkpoint load should tolerate kernel hash drift");
     }
 
     // Convert this to an integration test and feed it the kernel.jam from Choo in CI/CD

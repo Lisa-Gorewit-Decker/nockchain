@@ -33,7 +33,6 @@
     ::
     ::  use this for production
     |=  arg=load-kernel-state:dk
-    ~&  [%nockchain-state-version -.arg]
     ::  cut
     |^
     =.  k  ~>  %bout  (update-constants (check-checkpoints (state-n-to-9 arg)))
@@ -385,9 +384,9 @@
   ++  peek
     |=  arg=path
     ^-  (unit (unit *))
+    |^
     ~>  %slog.[0 (cat 3 'peek: %' -.arg)]
     =/  =(pole)  arg
-    |^
     ?+  pole  ~
     ::
         [%mainnet ~]
@@ -395,6 +394,11 @@
     ::
         [%genesis-seal-set ~]
       ``?=(^ genesis-seal.c.k)
+    ::  Expose the active blockchain constants so external tools (E2E
+    ::  harness, diagnostics) can verify a running node's configuration
+    ::  without relying on hardcoded values.
+        [%constants ~]
+      ``constants.k
     ::
         [%blocks ~]
       ^-  (unit (unit (z-map block-id:t page:t)))
@@ -480,6 +484,14 @@
       :-  ~
       (get-raw-tx:con (from-b58:hash:t tid.pole))
     ::
+        [%heavy-txs pag=@ ~]
+      ^-  (unit (unit heavy-txs))
+      ?~  height=((soft page-number:t) pag.pole)
+        ~
+      ?~  found=(heavy-txs-at u.height)
+        [~ ~]
+      ``u.found
+    ::
         [%heavy ~]
       ^-  (unit (unit (unit block-id:t)))
       ``heaviest-block.c.k
@@ -513,10 +525,7 @@
       ``heaviest-chain.d.k
     ::
         [%heaviest-chain-blocks-range start=@ end=@ ~]
-      (heaviest-chain-blocks-range start.pole end.pole %.y)
-    ::
-        [%heaviest-chain-blocks-range-no-pow start=@ end=@ ~]
-      (heaviest-chain-blocks-range start.pole end.pole %.n)
+      (heaviest-chain-blocks-range start.pole end.pole)
     ::
         [%desk-hash ~]
       ^-  (unit (unit (unit @uvI)))
@@ -656,42 +665,50 @@
       =+  tid=(from-b58:hash:t tid-b58:pole)
       ``(~(has h-by raw-txs.c.k) tid)
     ==
+    ::
+    +$  heavy-tx  [=tx-id:t =raw-tx:t]
+    +$  heavy-txs
+      $:  =page-number:t
+          =block-id:t
+          =page:t
+          txs=(list heavy-tx)
+      ==
+    ::
+    ++  heavy-txs-at
+      |=  =page-number:t
+      ^-  (unit heavy-txs)
+      ?~  block-id=(~(get z-by heaviest-chain.d.k) page-number)
+        ~
+      ?~  local-page=(~(get h-by blocks.c.k) u.block-id)
+        ~
+      =/  =page:t  (to-page:local-page:t u.local-page)
+      =/  txs=(list heavy-tx)
+        %+  turn  ~(tap z-in ~(tx-ids get:page:t page))
+        |=  =tx-id:t
+        [tx-id (got-raw-tx:con tx-id)]
+      `[page-number u.block-id page txs]
+    ::
     ++  heaviest-chain-blocks-range
-      |=  [start=@ end=@ include-pow=?]
-      ^-  (unit (unit (list [page-number:t block-id:t page:t (z-map tx-id:t tx:t)])))
+      |=  [start=@ end=@]
+      ^-  (unit (unit (list [page-number:t block-id:t page:t (z-map tx-id:t raw-tx:t)])))
       =/  start-height  ((soft page-number:t) start)
       =/  end-height  ((soft page-number:t) end)
       ?~  start-height  ~
       ?~  end-height  ~
-      ::  ensure start <= end
       ?:  (gth u.start-height u.end-height)
         ``~
-      =/  to-page
-        ?:  include-pow
-          to-page:local-page:t
-        to-page-no-pow:local-page:t
-      ::  build list of blocks in range from heaviest chain
-      =/  result=(list [page-number:t block-id:t page:t (z-map tx-id:t tx:t)])
+      =/  result=(list [page-number:t block-id:t page:t (z-map tx-id:t raw-tx:t)])
         =/  height  u.start-height
-        |-  ^-  (list [page-number:t block-id:t page:t (z-map tx-id:t tx:t)])
+        |-  ^-  (list [page-number:t block-id:t page:t (z-map tx-id:t raw-tx:t)])
         ?:  (gth height u.end-height)
           ~
-        ::  get block-id from heaviest chain
-        =/  block-id=(unit block-id:t)
-          (~(get z-by heaviest-chain.d.k) height)
-        ?~  block-id
+        ?~  heavy-txs=(heavy-txs-at height)
           $(height +(height))
-        ::  get block data
-        =/  local-block=(unit local-page:t)
-          (~(get h-by blocks.c.k) u.block-id)
-        ?~  local-block
-          $(height +(height))
-        ::  get transactions for this block
-        =/  block-txs=(unit (h-map tx-id:t tx:t))
-          (~(get h-by txs.c.k) u.block-id)
-        =/  txs-map  ?~(block-txs ~ (hz-molt u.block-txs))
-        ::  add to result list
-        :-  [height u.block-id (to-page u.local-block) txs-map]
+        =/  txs-map=(z-map tx-id:t raw-tx:t)
+          %+  roll  txs.u.heavy-txs
+          |=  [[=tx-id:t =raw-tx:t] acc=(z-map tx-id:t raw-tx:t)]
+          (~(put z-by acc) tx-id raw-tx)
+        :-  [height block-id.u.heavy-txs page.u.heavy-txs txs-map]
         $(height +(height))
       ``result
     --
@@ -826,7 +843,7 @@
         ::  block has bad data
         :_  k
         ::  the order here matters since we want to add the block to tracking
-        ::  and then ban the peer who sent it. we do this instead of %liar-peer
+        ::  and then ban the peer who sent it. this path replaces %liar-peer
         ::  since its possible for another poke to be processed after %track %add
         ::  but before %liar-block-id, so more peers may be added to tracking
         ::  before %liar-block-id is processed.
@@ -842,7 +859,7 @@
       ::
       ::  tell driver we have seen this block so don't send it back to the kernel again
       =.  block-effs
-        [[%seen %block ~(digest get:page:t pag) `~(height get:page:t pag)] block-effs]
+        [[%seen %block ~(digest get:page:t pag) ~] block-effs]
       ::  stop tracking block id as soon as we verify pow
       =.  block-effs
         %+  snoc  block-effs

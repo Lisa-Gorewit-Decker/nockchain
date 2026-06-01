@@ -223,6 +223,20 @@
       ~
     `~(address to-b58:coil:wt coil)
     ::
+    ::  returns local v1 signer pubkey hashes
+      [%signing-keys ~]
+    :+  ~
+      ~
+    %+  murn
+      ~(coils get:v %pub)
+    |=  =coil:wt
+    ?.  ?=(%1 -.coil)
+      ~
+    =/  signer-pkh=hash:transact
+      %-  hash:schnorr-pubkey:transact
+      (from-ser:schnorr-pubkey:transact p.key.coil)
+    `signer-pkh
+    ::
     ::  returns tracked first-name lock cache entries in machine-readable form
       [%tracked-locks ~]
     :+  ~

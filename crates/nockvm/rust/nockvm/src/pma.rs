@@ -3873,7 +3873,7 @@ mod tests {
 
 #[cfg(all(test, any(target_os = "linux", target_os = "macos")))]
 mod paging_tests {
-    use super::{madvise_drop_file_backed_pages, test_pma_path, Pma};
+    use crate::pma::{madvise_drop_file_backed_pages, test_pma_path, Pma};
 
     const SLAB_BYTES: usize = 64 * 1024 * 1024;
     const TOUCH_PAGES: usize = 64;
@@ -3907,37 +3907,63 @@ mod paging_tests {
         drop_all_pages(base, len);
         let after_drop = mincore_bitmap(base, len);
         let post_drop_ratio = residency_ratio(&after_drop);
+        let dropped_pages = nonresident_page_indices(&after_drop);
         println!(
-            "[pma-paging] post-drop residency ratio {:.3}",
-            post_drop_ratio
+            "[pma-paging] post-drop residency ratio {:.3}; dropped {} pages",
+            post_drop_ratio,
+            dropped_pages.len()
         );
-        if post_drop_ratio > 0.9 {
+        if dropped_pages.is_empty() {
             println!(
                 "[pma-paging] paging did not drop pages; skipping remainder (ratio={post_drop_ratio:.3})"
             );
             return;
         }
-        assert!(
-            post_drop_ratio < 0.1,
-            "expected paging to drop most pages, ratio={post_drop_ratio}"
-        );
 
         let total_pages = len / page;
-        let touched_pages = fault_sparse(base, len, page, TOUCH_PAGES);
-        assert!(touched_pages > 0, "expected to fault at least one page");
+        let touched_pages = sparse_page_indices(&dropped_pages, TOUCH_PAGES);
+        assert!(
+            !touched_pages.is_empty(),
+            "expected to fault at least one dropped page"
+        );
+        fault_pages(base, page, &touched_pages);
 
         let post_fault = mincore_bitmap(base, len);
         let post_fault_ratio = residency_ratio(&post_fault);
-        let expected_ratio = touched_pages as f64 / total_pages.max(1) as f64;
+        let mut touched_page_bitmap = vec![false; total_pages];
+        for page_idx in &touched_pages {
+            touched_page_bitmap[*page_idx] = true;
+        }
+        let touched_resident = touched_pages
+            .iter()
+            .filter(|page_idx| post_fault[**page_idx] & 1 == 1)
+            .count();
+        let extra_refaulted = dropped_pages
+            .iter()
+            .filter(|page_idx| !touched_page_bitmap[**page_idx] && post_fault[**page_idx] & 1 == 1)
+            .count();
+        let untouched_dropped_pages = dropped_pages.len().saturating_sub(touched_pages.len());
+        let max_extra_refaulted = (touched_pages.len() * 16)
+            .max(8)
+            .min(untouched_dropped_pages);
         println!(
-            "[pma-paging] post-fault residency ratio {:.4} (expected {:.4}, touched {} pages)",
-            post_fault_ratio, expected_ratio, touched_pages
+            "[pma-paging] post-fault residency ratio {:.4}; touched {} dropped pages; extra refaulted {}",
+            post_fault_ratio,
+            touched_pages.len(),
+            extra_refaulted
+        );
+        assert_eq!(
+            touched_resident,
+            touched_pages.len(),
+            "all touched dropped pages should become resident after sparse faults"
         );
         assert!(
-            post_fault_ratio >= expected_ratio * 0.5 && post_fault_ratio <= expected_ratio * 2.0,
-            "faulted pages should roughly match touched subset (ratio {} expected {})",
-            post_fault_ratio,
-            expected_ratio
+            extra_refaulted <= max_extra_refaulted,
+            "dropped pages refaulted too broadly: extra={} allowed={} dropped={} touched={}",
+            extra_refaulted,
+            max_extra_refaulted,
+            dropped_pages.len(),
+            touched_pages.len()
         );
     }
 
@@ -3949,23 +3975,25 @@ mod paging_tests {
         }
     }
 
-    fn fault_sparse(ptr: *mut u8, len: usize, page: usize, desired_pages: usize) -> usize {
-        let total_pages = len / page;
-        if total_pages == 0 {
-            return 0;
+    fn sparse_page_indices(candidates: &[usize], desired_pages: usize) -> Vec<usize> {
+        if candidates.is_empty() || desired_pages == 0 {
+            return Vec::new();
         }
-        let touches = desired_pages.min(total_pages.max(1));
-        let stride = (total_pages / touches).max(1);
-        let mut touched = 0;
-        let mut page_idx = 0;
-        while touched < touches && page_idx < total_pages {
+        let touches = desired_pages.min(candidates.len());
+        let mut pages = Vec::with_capacity(touches);
+        for touch_idx in 0..touches {
+            let candidate_idx = touch_idx * candidates.len() / touches;
+            pages.push(candidates[candidate_idx]);
+        }
+        pages
+    }
+
+    fn fault_pages(ptr: *mut u8, page: usize, page_indices: &[usize]) {
+        for page_idx in page_indices {
             unsafe {
-                std::ptr::read_volatile(ptr.add(page_idx * page));
+                std::ptr::read_volatile(ptr.add(*page_idx * page));
             }
-            touched += 1;
-            page_idx = page_idx.saturating_add(stride);
         }
-        touched
     }
 
     fn drop_all_pages(ptr: *mut u8, len: usize) {
@@ -3996,6 +4024,14 @@ mod paging_tests {
         }
         let resident = bitmap.iter().filter(|b| **b & 1 == 1).count();
         resident as f64 / bitmap.len() as f64
+    }
+
+    fn nonresident_page_indices(bitmap: &[u8]) -> Vec<usize> {
+        bitmap
+            .iter()
+            .enumerate()
+            .filter_map(|(page_idx, byte)| (byte & 1 == 0).then_some(page_idx))
+            .collect()
     }
 
     fn page_size() -> usize {

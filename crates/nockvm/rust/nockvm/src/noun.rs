@@ -1,3 +1,5 @@
+#![allow(clippy::missing_safety_doc)]
+
 use std::slice::{from_raw_parts, from_raw_parts_mut};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;

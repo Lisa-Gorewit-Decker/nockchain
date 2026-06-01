@@ -105,6 +105,13 @@ impl FakenetAsertArgs {
     }
 }
 
+/// Fakenet phase defaults applied by the CLI when no explicit `--fakenet-*-phase`
+/// override is passed.  Exported so the E2E harness can configure scenarios to
+/// match whatever the node will actually use, rather than duplicating magic
+/// numbers in test code.
+pub const DEFAULT_FAKENET_V1_PHASE: u64 = 1;
+pub const DEFAULT_FAKENET_BYTHOS_PHASE: u64 = 1;
+
 /// Command line arguments
 #[derive(Parser, Debug, Clone)]
 #[command(name = "nockchain")]
@@ -201,14 +208,27 @@ pub struct NockchainCli {
     pub fakenet_bythos_phase: Option<u64>,
     #[command(flatten)]
     pub fakenet_asert: FakenetAsertArgs,
+    #[arg(
+        long,
+        help = "Override the candidate timestamp update interval in seconds when running on fakenet. Requires --fakenet.",
+        requires = "fakenet"
+    )]
+    pub fakenet_update_candidate_interval_secs: Option<u64>,
     #[arg(long, help = "Path to fake genesis block jam file")]
     pub fakenet_genesis_jam_path: Option<PathBuf>,
     #[arg(long, help = "Public gRPC binding address (off by default), recommended value = \"127.0.0.1:5555\"", value_parser = clap::value_parser!(std::net::SocketAddr))]
     pub bind_public_grpc_addr: Option<std::net::SocketAddr>,
+    #[arg(
+        long,
+        help = "Private gRPC binding address (e.g. 0.0.0.0:5555). \
+                Overrides --bind-private-grpc-port when set. \
+                Needed when the node runs inside a Docker container and the \
+                test host must reach the gRPC endpoint from outside.",
+        value_parser = clap::value_parser!(std::net::SocketAddr)
+    )]
+    pub bind_private_grpc_addr: Option<std::net::SocketAddr>,
     #[arg(long, default_value = "5555")]
     pub bind_private_grpc_port: u16,
-    #[arg(long, default_value = "false")]
-    pub fast_sync: bool,
 }
 
 impl NockchainCli {
@@ -333,10 +353,11 @@ mod tests {
             fakenet_v1_phase: None,
             fakenet_bythos_phase: None,
             fakenet_asert: FakenetAsertArgs::default(),
+            fakenet_update_candidate_interval_secs: None,
             fakenet_genesis_jam_path: None,
             bind_public_grpc_addr: Some("127.0.0.1:5555".parse().unwrap()),
+            bind_private_grpc_addr: None,
             bind_private_grpc_port: 5555,
-            fast_sync: false,
         }
     }
 

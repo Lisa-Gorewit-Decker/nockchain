@@ -51,6 +51,8 @@ pub(crate) struct AddressKey {
 pub(crate) enum ExclusionReason {
     WrongPeerId,
     RepeatedWrongPeerId,
+    PeerMisbehavior,
+    RepeatedPeerMisbehavior,
     PermissionDenied,
     RepeatedDialFailure,
     KadSameIpCardinality,
@@ -61,6 +63,8 @@ impl fmt::Display for ExclusionReason {
         match self {
             ExclusionReason::WrongPeerId => write!(f, "wrong-peer-id"),
             ExclusionReason::RepeatedWrongPeerId => write!(f, "repeated-wrong-peer-id"),
+            ExclusionReason::PeerMisbehavior => write!(f, "peer-misbehavior"),
+            ExclusionReason::RepeatedPeerMisbehavior => write!(f, "repeated-peer-misbehavior"),
             ExclusionReason::PermissionDenied => write!(f, "permission-denied"),
             ExclusionReason::RepeatedDialFailure => write!(f, "repeated-dial-failure"),
             ExclusionReason::KadSameIpCardinality => write!(f, "kad-same-ip-cardinality"),
@@ -93,6 +97,7 @@ pub(crate) struct ExclusionOutcome {
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
 enum EvidenceKind {
     WrongPeerId,
+    PeerMisbehavior,
     DialFailure,
     PermissionDenied,
     PingFailure,
@@ -304,14 +309,87 @@ impl PeerExclusions {
         }
     }
 
+    pub(crate) fn record_peer_misbehavior(
+        &self,
+        address: &Multiaddr,
+        peer_id: PeerId,
+    ) -> ExclusionOutcome {
+        self.record_peer_misbehavior_at(address, peer_id, Instant::now())
+    }
+
+    fn record_peer_misbehavior_at(
+        &self,
+        address: &Multiaddr,
+        peer_id: PeerId,
+        now: Instant,
+    ) -> ExclusionOutcome {
+        let Some(key) = address_key(address, Some(peer_id)) else {
+            return ExclusionOutcome::default();
+        };
+        if !self.config.enabled || self.config.allow_ips.contains(&key.ip) {
+            return ExclusionOutcome::default();
+        }
+
+        let mut state = write_state(&self.inner);
+        prune_state(&mut state, now, &self.config);
+        push_event(
+            &mut state,
+            PeerHealthEvent {
+                ip: key.ip,
+                port: key.port,
+                expected_peer: Some(peer_id),
+                obtained_peer: None,
+                at: now,
+                kind: EvidenceKind::PeerMisbehavior,
+            },
+            now,
+            &self.config,
+        );
+        let address_cooldown = insert_address_cooldown(
+            &mut state,
+            key,
+            address.clone(),
+            self.config.address_cooldown(),
+            ExclusionReason::PeerMisbehavior,
+            now,
+        );
+
+        let ip_exclusion = if peer_threshold_met(
+            &state,
+            key.ip,
+            EvidenceKind::PeerMisbehavior,
+            now,
+            &self.config,
+        ) {
+            insert_ip_exclusion(
+                &mut state,
+                key.ip,
+                ExclusionReason::RepeatedPeerMisbehavior,
+                now,
+                &self.config,
+            )
+        } else {
+            None
+        };
+
+        ExclusionOutcome {
+            address_cooldown,
+            ip_exclusion,
+        }
+    }
+
     pub(crate) fn record_permission_denied(&self, address: &Multiaddr) -> ExclusionOutcome {
+        self.record_permission_denied_at(address, Instant::now())
+    }
+
+    fn record_permission_denied_at(&self, address: &Multiaddr, now: Instant) -> ExclusionOutcome {
         self.record_address_failure_at(
             address,
             None,
             EvidenceKind::PermissionDenied,
             ExclusionReason::PermissionDenied,
             self.config.permission_denied_cooldown(),
-            Instant::now(),
+            now,
         )
     }
 
@@ -320,13 +398,22 @@ impl PeerExclusions {
         address: &Multiaddr,
         expected_peer: Option<PeerId>,
     ) -> ExclusionOutcome {
+        self.record_dial_failure_at(address, expected_peer, Instant::now())
+    }
+
+    fn record_dial_failure_at(
+        &self,
+        address: &Multiaddr,
+        expected_peer: Option<PeerId>,
+        now: Instant,
+    ) -> ExclusionOutcome {
         self.record_address_failure_at(
             address,
             expected_peer,
             EvidenceKind::DialFailure,
             ExclusionReason::RepeatedDialFailure,
             self.config.address_cooldown(),
-            Instant::now(),
+            now,
         )
     }
 
@@ -362,49 +449,27 @@ impl PeerExclusions {
             &self.config,
         );
 
-        let failure_count = state
-            .events
-            .iter()
-            .filter(|event| {
-                event.ip == key.ip
-                    && event.at + self.config.evidence_window() >= now
-                    && matches!(
-                        event.kind,
-                        EvidenceKind::DialFailure
-                            | EvidenceKind::PermissionDenied
-                            | EvidenceKind::PingFailure
-                    )
-            })
-            .count();
-
         let address_cooldown =
             insert_address_cooldown(&mut state, key, address.clone(), address_ttl, reason, now);
-        let ip_exclusion = if failure_count >= self.config.dial_failure_ip_threshold {
-            insert_ip_exclusion(
-                &mut state,
-                key.ip,
-                ExclusionReason::RepeatedDialFailure,
-                now,
-                &self.config,
-            )
-        } else {
-            None
-        };
 
         ExclusionOutcome {
             address_cooldown,
-            ip_exclusion,
+            ip_exclusion: None,
         }
     }
 
     pub(crate) fn record_ping_failure(&self, address: &Multiaddr) -> ExclusionOutcome {
+        self.record_ping_failure_at(address, Instant::now())
+    }
+
+    fn record_ping_failure_at(&self, address: &Multiaddr, now: Instant) -> ExclusionOutcome {
         self.record_address_failure_at(
             address,
             None,
             EvidenceKind::PingFailure,
             ExclusionReason::RepeatedDialFailure,
             self.config.address_cooldown(),
-            Instant::now(),
+            now,
         )
     }
 
@@ -551,10 +616,6 @@ impl PeerExclusions {
             .values()
             .filter(|entry| entry.expires_at > now)
             .count()
-    }
-
-    pub(crate) fn fail2ban_enabled(&self) -> bool {
-        self.config.fail2ban_on_temp_exclusion
     }
 }
 
@@ -712,9 +773,10 @@ fn insert_ip_exclusion(
     }
 }
 
-fn wrong_peer_threshold_met(
+fn peer_threshold_met(
     state: &ExclusionState,
     ip: IpAddr,
+    kind: EvidenceKind,
     now: Instant,
     config: &PeerExclusionConfig,
 ) -> bool {
@@ -722,9 +784,7 @@ fn wrong_peer_threshold_met(
     let mut obtained_peers = HashSet::new();
     let mut ports = HashSet::new();
     for event in state.events.iter().filter(|event| {
-        event.ip == ip
-            && event.kind == EvidenceKind::WrongPeerId
-            && event.at + config.evidence_window() >= now
+        event.ip == ip && event.kind == kind && event.at + config.evidence_window() >= now
     }) {
         if let Some(peer) = event.expected_peer {
             peers.insert(peer);
@@ -741,6 +801,15 @@ fn wrong_peer_threshold_met(
         || ports.len() >= config.wrong_peer_id_ip_threshold
 }
 
+fn wrong_peer_threshold_met(
+    state: &ExclusionState,
+    ip: IpAddr,
+    now: Instant,
+    config: &PeerExclusionConfig,
+) -> bool {
+    peer_threshold_met(state, ip, EvidenceKind::WrongPeerId, now, config)
+}
+
 fn has_recent_failure(
     state: &ExclusionState,
     ip: IpAddr,
@@ -753,6 +822,7 @@ fn has_recent_failure(
             && matches!(
                 event.kind,
                 EvidenceKind::WrongPeerId
+                    | EvidenceKind::PeerMisbehavior
                     | EvidenceKind::DialFailure
                     | EvidenceKind::PermissionDenied
                     | EvidenceKind::PingFailure
@@ -834,6 +904,21 @@ fn enforce_not_excluded(
     expected_peer: Option<PeerId>,
 ) -> Result<(), ConnectionDenied> {
     if exclusions.is_address_excluded(addr, expected_peer) {
+        return Err(ConnectionDenied::new(BlockedEndpoint {
+            addr: addr.clone(),
+        }));
+    }
+    Ok(())
+}
+
+fn enforce_ip_not_excluded(
+    exclusions: &PeerExclusions,
+    addr: &Multiaddr,
+) -> Result<(), ConnectionDenied> {
+    if addr
+        .ip_addr()
+        .is_some_and(|ip| exclusions.is_ip_excluded(&ip))
+    {
         return Err(ConnectionDenied::new(BlockedEndpoint {
             addr: addr.clone(),
         }));
@@ -953,8 +1038,8 @@ impl NetworkBehaviour for IpFilteredKad {
     }
 }
 
-/// A [`NetworkBehaviour`] that denies any connection whose remote endpoint is
-/// under active local exclusion.
+/// A [`NetworkBehaviour`] that denies IP-excluded connections and applies
+/// endpoint cooldowns to outbound dials.
 pub(crate) struct Behaviour {
     exclusions: PeerExclusions,
 }
@@ -983,17 +1068,17 @@ impl NetworkBehaviour for Behaviour {
         _local_addr: &Multiaddr,
         remote_addr: &Multiaddr,
     ) -> Result<(), ConnectionDenied> {
-        self.enforce(remote_addr, None)
+        enforce_ip_not_excluded(&self.exclusions, remote_addr)
     }
 
     fn handle_established_inbound_connection(
         &mut self,
         _: ConnectionId,
-        peer: PeerId,
+        _peer: PeerId,
         _local_addr: &Multiaddr,
         remote_addr: &Multiaddr,
     ) -> Result<THandler<Self>, ConnectionDenied> {
-        self.enforce(remote_addr, Some(peer))?;
+        enforce_ip_not_excluded(&self.exclusions, remote_addr)?;
         Ok(dummy::ConnectionHandler)
     }
 
@@ -1074,7 +1159,6 @@ mod tests {
             ip_exclusion_history_secs: 300,
             permission_denied_cooldown_secs: 30,
             wrong_peer_id_ip_threshold: 3,
-            dial_failure_ip_threshold: 3,
             same_ip_kad_entry_threshold: 3,
             max_auto_exclusion_secs: 360,
             max_exclusion_entries: 128,
@@ -1164,6 +1248,51 @@ mod tests {
         assert!(first.ip_exclusion.is_none());
         assert!(second.ip_exclusion.is_none());
         assert!(third.ip_exclusion.is_some());
+        assert!(exclusions.is_ip_excluded_at(&IpAddr::V4(ip), now + Duration::from_secs(3)));
+    }
+
+    #[test]
+    fn peer_misbehavior_cools_precise_address_first() {
+        let exclusions = PeerExclusions::new(config());
+        let now = Instant::now();
+        let addr = quic_addr(Ipv4Addr::new(15, 235, 216, 78), 3602);
+        let bad_peer = PeerId::random();
+        let clean_peer = PeerId::random();
+
+        let outcome = exclusions.record_peer_misbehavior_at(&addr, bad_peer, now);
+
+        assert!(outcome.address_cooldown.is_some());
+        assert!(outcome.ip_exclusion.is_none());
+        assert!(exclusions.is_address_excluded_at(&addr, Some(bad_peer), now));
+        assert!(!exclusions.is_address_excluded_at(&addr, Some(clean_peer), now));
+    }
+
+    #[test]
+    fn repeated_peer_misbehavior_triggers_ip_exclusion() {
+        let exclusions = PeerExclusions::new(config());
+        let now = Instant::now();
+        let ip = Ipv4Addr::new(15, 235, 216, 78);
+
+        let first =
+            exclusions.record_peer_misbehavior_at(&quic_addr(ip, 3602), PeerId::random(), now);
+        let second = exclusions.record_peer_misbehavior_at(
+            &quic_addr(ip, 3603),
+            PeerId::random(),
+            now + Duration::from_secs(1),
+        );
+        let third = exclusions.record_peer_misbehavior_at(
+            &quic_addr(ip, 3604),
+            PeerId::random(),
+            now + Duration::from_secs(2),
+        );
+
+        assert!(first.ip_exclusion.is_none());
+        assert!(second.ip_exclusion.is_none());
+        assert!(third.ip_exclusion.is_some());
+        assert_eq!(
+            third.ip_exclusion.as_ref().map(|outcome| outcome.reason),
+            Some(ExclusionReason::RepeatedPeerMisbehavior)
+        );
         assert!(exclusions.is_ip_excluded_at(&IpAddr::V4(ip), now + Duration::from_secs(3)));
     }
 
@@ -1288,6 +1417,70 @@ mod tests {
     }
 
     #[test]
+    fn repeated_dial_failures_stay_endpoint_local() {
+        let exclusions = PeerExclusions::new(config());
+        let now = Instant::now();
+        let ip = Ipv4Addr::new(15, 235, 216, 78);
+        let first_peer = PeerId::random();
+        let second_peer = PeerId::random();
+        let third_peer = PeerId::random();
+
+        let first = exclusions.record_dial_failure_at(&quic_addr(ip, 3602), Some(first_peer), now);
+        let second = exclusions.record_dial_failure_at(
+            &quic_addr(ip, 3603),
+            Some(second_peer),
+            now + Duration::from_secs(1),
+        );
+        let third = exclusions.record_dial_failure_at(
+            &quic_addr(ip, 3604),
+            Some(third_peer),
+            now + Duration::from_secs(2),
+        );
+
+        assert!(first.address_cooldown.is_some());
+        assert!(second.address_cooldown.is_some());
+        assert!(third.address_cooldown.is_some());
+        assert!(first.ip_exclusion.is_none());
+        assert!(second.ip_exclusion.is_none());
+        assert!(third.ip_exclusion.is_none());
+        assert!(exclusions.is_address_excluded_at(
+            &quic_addr(ip, 3602),
+            Some(first_peer),
+            now + Duration::from_secs(3)
+        ));
+        assert!(!exclusions.is_ip_excluded_at(&IpAddr::V4(ip), now + Duration::from_secs(3)));
+        assert!(!exclusions.is_address_excluded_at(
+            &quic_addr(ip, 3605),
+            Some(PeerId::random()),
+            now + Duration::from_secs(3)
+        ));
+    }
+
+    #[test]
+    fn transport_liveness_failures_do_not_prime_ip_exclusion() {
+        let exclusions = PeerExclusions::new(config());
+        let now = Instant::now();
+        let ip = Ipv4Addr::new(15, 235, 216, 78);
+
+        exclusions.record_dial_failure_at(&quic_addr(ip, 3602), Some(PeerId::random()), now);
+        exclusions.record_dial_failure_at(
+            &quic_addr(ip, 3603),
+            Some(PeerId::random()),
+            now + Duration::from_secs(1),
+        );
+        let permission_denied = exclusions
+            .record_permission_denied_at(&quic_addr(ip, 3604), now + Duration::from_secs(2));
+        let ping_failure =
+            exclusions.record_ping_failure_at(&quic_addr(ip, 3605), now + Duration::from_secs(3));
+
+        assert!(permission_denied.address_cooldown.is_some());
+        assert!(ping_failure.address_cooldown.is_some());
+        assert!(permission_denied.ip_exclusion.is_none());
+        assert!(ping_failure.ip_exclusion.is_none());
+        assert!(!exclusions.is_ip_excluded_at(&IpAddr::V4(ip), now + Duration::from_secs(4)));
+    }
+
+    #[test]
     fn kad_cardinality_needs_recent_failure_before_ip_exclusion() {
         let exclusions = PeerExclusions::new(config());
         let now = Instant::now();
@@ -1354,6 +1547,37 @@ mod tests {
                 Endpoint::Dialer,
             )
             .is_ok());
+    }
+
+    #[test]
+    fn behaviour_allows_inbound_endpoint_cooldown_and_denies_outbound() {
+        let exclusions = PeerExclusions::new(config());
+        let now = Instant::now();
+        let peer = PeerId::random();
+        let addr = quic_addr(Ipv4Addr::new(15, 235, 216, 78), 3602);
+        let local_addr = quic_addr(Ipv4Addr::new(203, 0, 113, 9), 3006);
+
+        let outcome = exclusions.record_dial_failure_at(&addr, Some(peer), now);
+        assert!(outcome.address_cooldown.is_some());
+        assert!(exclusions.is_address_excluded_at(&addr, Some(peer), now));
+
+        let mut behaviour = Behaviour::new(exclusions);
+        let cid = ConnectionId::new_unchecked(42);
+
+        assert!(behaviour
+            .handle_pending_inbound_connection(cid, &local_addr, &addr)
+            .is_ok());
+        assert!(behaviour
+            .handle_established_inbound_connection(cid, peer, &local_addr, &addr)
+            .is_ok());
+        assert!(behaviour
+            .handle_pending_outbound_connection(
+                cid,
+                Some(peer),
+                std::slice::from_ref(&addr),
+                Endpoint::Dialer,
+            )
+            .is_err());
     }
 
     #[test]

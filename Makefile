@@ -144,6 +144,7 @@ fmt:
 docs-check:
 	./scripts/docs/check_docs_metadata.sh
 	./scripts/docs/check_canonical_links.sh
+	./scripts/docs/check_nous_validation_entrypoints.sh
 
 .PHONY: build-hoonc
 build-hoonc: nuke-hoonc-data ## Build hoonc from this repo
