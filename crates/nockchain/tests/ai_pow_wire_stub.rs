@@ -12,6 +12,8 @@ const AI_POW_MINER_LIB_RS: &str = include_str!("../../ai-pow-miner/src/lib.rs");
 const AI_POW_MINER_CERT_NOUN_RS: &str = include_str!("../../ai-pow-miner/src/certificate_noun.rs");
 const AI_POW_MINER_RUN_RS: &str = include_str!("../../ai-pow-miner/src/run.rs");
 const AI_POW_MINER_BIN_RS: &str = include_str!("../../ai-pow-miner/src/bin/ai_pow_mine.rs");
+const AI_POW_MINER_PROVER_BIN_RS: &str =
+    include_str!("../../ai-pow-miner/src/bin/ai_pow_mine_prover.rs");
 const AI_POW_LIB_RS: &str = include_str!("../../ai-pow/src/lib.rs");
 const AI_POW_PROOF_RS: &str = include_str!("../../ai-pow/src/proof.rs");
 const AI_POW_PROVER_RS: &str = include_str!("../../ai-pow/src/prover.rs");
@@ -235,15 +237,28 @@ fn ai_pow_consensus_wire_is_structured_but_fail_closed_without_verifier() {
                 .next()
         })
         .expect("recursive certificate prover body must be present");
-    let recursive_prod_envelope = recursive_certificate_fn
-        .find("validate_prod_envelope")
-        .expect("recursive certificate prover must enforce production params");
+    let canonical_param_gate_fn = AI_POW_ZK_BRIDGE_RS
+        .split("pub fn validate_canonical_recursive_certificate_params")
+        .nth(1)
+        .and_then(|tail| {
+            tail.split("/// Crate-internal Layer-0 verifier-only ZK API.")
+                .next()
+        })
+        .expect("canonical recursive certificate param gate must be present");
+    let recursive_param_gate = recursive_certificate_fn
+        .find("validate_canonical_recursive_certificate_params")
+        .expect("recursive certificate prover must enforce the canonical cert param gate");
     let recursive_layer0_prove = recursive_certificate_fn
         .find("prove_ai_pow_tiled_full")
         .expect("recursive certificate prover must build the Layer-0 proof internally");
-    let recursive_full_matmul_guard = recursive_certificate_fn
+    let canonical_param_gate_prod_envelope = canonical_param_gate_fn
+        .find("validate_prod_envelope")
+        .expect("canonical cert param gate must enforce production params");
+    let canonical_param_gate_full_matmul_guard = canonical_param_gate_fn
         .find("FullMatmulProofUnavailable")
-        .expect("recursive certificate prover must fail closed before ZK for selected-tile multi-tile statements");
+        .expect(
+            "canonical cert param gate must fail closed for selected-tile multi-tile statements",
+        );
     let recursive_target_guard = recursive_certificate_fn
         .find("ensure_found_tile_hits_target")
         .expect("recursive certificate prover must check the plain matmul target hit before ZK");
@@ -278,11 +293,28 @@ fn ai_pow_consensus_wire_is_structured_but_fail_closed_without_verifier() {
                 .contains("recursive_certificate_builder_rejects_missed_target_before_zkp")
             && target_check < recursive_prove
             && AI_POW_ZK_BRIDGE_RS.contains("pub fn prove_ai_pow_recursive_certificate")
-            && recursive_certificate_fn.contains("validate_prod_envelope")
-            && recursive_prod_envelope < recursive_layer0_prove
-            && recursive_full_matmul_guard < recursive_layer0_prove
+            && AI_POW_ZK_BRIDGE_RS
+                .contains("pub fn validate_canonical_recursive_certificate_params")
+            && recursive_param_gate < recursive_layer0_prove
+            && canonical_param_gate_prod_envelope < canonical_param_gate_full_matmul_guard
             && recursive_target_guard < recursive_layer0_prove
             && production_layer0_full_matmul_guard < production_layer0_prove
+            && AI_POW_MINER_RUN_RS.contains("validate_canonical_submission_ready")
+            && AI_POW_MINER_RUN_RS.contains("CanonicalCertificateUnavailable")
+            && AI_POW_MINER_RUN_RS.contains(
+                "production_preflight_rejects_multi_tile_selected_tile_gap_before_mining"
+            )
+            && AI_POW_MINER_BIN_RS.contains("closed before mining starts")
+            && AI_POW_MINER_BIN_RS
+                .contains("CLI defaults are a single-tile, production-envelope smoke profile")
+            && AI_POW_MINER_BIN_RS.contains("default_value_t = 512")
+            && AI_POW_MINER_BIN_RS
+                .contains("cli_defaults_are_canonical_certificate_submit_capable")
+            && AI_POW_MINER_PROVER_BIN_RS.contains("name = \"ai-pow-mine-prover\"")
+            && AI_POW_MINER_PROVER_BIN_RS.contains("legacy plain MatmulProof diagnostic bytes")
+            && AI_POW_MINER_PROVER_BIN_RS.contains("default_value_t = 512")
+            && AI_POW_MINER_PROVER_BIN_RS
+                .contains("prover_cli_defaults_are_production_envelope_single_tile_smoke_params")
             && AI_POW_ZK_BRIDGE_RS
                 .contains("production_bridge_fails_closed_for_multi_tile_selected_tile_before_zkp")
             && AI_POW_PROVER_RS.contains("ctx.params.num_tiles() == 1")

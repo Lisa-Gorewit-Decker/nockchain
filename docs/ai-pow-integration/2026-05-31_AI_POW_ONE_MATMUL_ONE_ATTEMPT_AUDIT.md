@@ -989,6 +989,36 @@ noised matrix strips, tile states, jackpot preimages, and proof witness data.
 Any cache-friendly reuse of those values across nonce attempts is treated as
 consensus attack surface, not as a production optimization target.
 
+## Latest Re-Audit: Miner Submission Preflight
+
+The node-connecting `ai-pow-mine` integration previously allowed production
+mining to start with multi-tile parameters and only discovered the current
+selected-tile/full-matmul recursive proof gap after a plain matmul solution was
+found. That behavior was fail-closed for consensus submission, but it still
+made the operator-facing miner look usable for a configuration that cannot
+produce the canonical block certificate.
+
+Code status after this re-audit: `ai_pow::zk_bridge` now exposes
+`validate_canonical_recursive_certificate_params`, the single production gate
+for whether the canonical recursive certificate is full-matmul-admissible for a
+parameter set. The node miner calls this gate during startup preflight and
+refuses to connect or enable mining when no recursive certificate builder is
+configured or when the current selected-tile recursive statement is used with
+multi-tile parameters. Tests cover the accepted single-tile case, missing
+builder, and a production-valid multi-tile fixture that fails before mining.
+The `ai-pow-mine` CLI defaults now use a single-tile production-envelope smoke
+profile (`m=8, k=512, n=8, r=32, tile=8, sigma=1`) so the quick-start path is
+submit-capable under the current canonical certificate rules instead of
+defaulting to an unsubmitable multi-tile/test-parameter shape.
+
+Follow-up code status: the prover-only `ai-pow-mine-prover` smoke CLI had the
+same stale `TEST_SMALL` defaults even though it calls the production
+`mining::run` entrypoint, which rejects non-production parameters. Its defaults
+now match the single-tile production-envelope smoke profile, its command name
+and messages identify it as `ai-pow-mine-prover`, and its optional output is
+documented as legacy plain `MatmulProof` diagnostics rather than a canonical
+block artifact.
+
 This is intentionally fail-closed. Pearl's reference miner computes every
 output tile before returning the final matrix and records an opened block when a
 tile hash hits the target, but the proof artifact only opens the winning tile.

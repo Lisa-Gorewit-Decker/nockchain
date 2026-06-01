@@ -1,12 +1,15 @@
-//! `ai-pow-mine` — single-attempt mining CLI for the `ai-pow` PoW.
+//! `ai-pow-mine-prover` — prover-only mining CLI for the `ai-pow` PoW.
 //!
 //! The minimal entry point on top of `ai_pow_miner::mining::run`.
 //! Useful for smoke tests, benchmark capture, and replaying captured
 //! candidates in a shell without standing up a full node.
+//! It emits the winning nonce and can optionally write the legacy plain
+//! `MatmulProof` bytes for diagnostics. It does not build or submit the
+//! canonical recursive certificate noun used by Nockchain blocks.
 //!
 //! Quick start (synth-matrices smoke test):
 //! ```sh
-//! ai-pow-mine --synth-seed smoke --nck-commitment 0xAB...AB \
+//! ai-pow-mine-prover --synth-seed smoke --nck-commitment 0xAB...AB \
 //!             --target 0xFF..FF                # trivial target
 //! ```
 
@@ -19,11 +22,11 @@ use ai_pow_miner::{mining, MineOptions, MiningCancel, MiningError, MiningJob, No
 use anyhow::{anyhow, bail, Context, Result};
 use clap::Parser;
 
-/// `ai-pow-mine` — single-attempt block-mining CLI.
+/// `ai-pow-mine-prover` — prover-only block-mining CLI.
 #[derive(Debug, Parser)]
 #[command(
-    name = "ai-pow-mine",
-    about = "Single-attempt block miner for ai-pow.",
+    name = "ai-pow-mine-prover",
+    about = "Prover-only block miner for ai-pow. Emits nonce and optional plain MatmulProof diagnostics, not the canonical recursive certificate.",
     version
 )]
 struct Args {
@@ -53,18 +56,20 @@ struct Args {
     )]
     target: String,
 
-    // ── puzzle shape (defaults to TEST_SMALL: m=k=n=64, r=4, t=8, σ=8) ──
-    #[arg(short = 'm', long, default_value_t = 64)]
+    // ── puzzle shape ──────────────────────────────────────────────
+    // Defaults match the node miner's single-tile production-envelope smoke
+    // profile. `mining::run` intentionally rejects non-production params.
+    #[arg(short = 'm', long, default_value_t = 8)]
     m: u32,
-    #[arg(short = 'k', long, default_value_t = 64)]
+    #[arg(short = 'k', long, default_value_t = 512)]
     k: u32,
-    #[arg(short = 'n', long, default_value_t = 64)]
+    #[arg(short = 'n', long, default_value_t = 8)]
     n: u32,
-    #[arg(long, default_value_t = 4)]
+    #[arg(long, default_value_t = 32)]
     noise_rank: u32,
     #[arg(long, default_value_t = 8)]
     tile: u32,
-    #[arg(long, default_value_t = 8)]
+    #[arg(long, default_value_t = 1)]
     spot_checks: u32,
     #[arg(long, default_value_t = 0)]
     difficulty_bits: u32,
@@ -91,7 +96,8 @@ struct Args {
     #[arg(long)]
     deadline_secs: Option<u64>,
 
-    /// Optional path to write the encoded MatmulProof bytes.
+    /// Optional path to write legacy plain MatmulProof diagnostic bytes.
+    /// This is not Nockchain's canonical recursive certificate artifact.
     #[arg(long, value_name = "PATH")]
     output: Option<PathBuf>,
 }
@@ -189,7 +195,7 @@ fn main() -> Result<()> {
     };
 
     eprintln!(
-        "ai-pow-mine: m={} k={} n={} r={} t={} σ={} target={}",
+        "ai-pow-mine-prover: m={} k={} n={} r={} t={} σ={} target={}",
         args.m,
         args.k,
         args.n,
@@ -205,7 +211,7 @@ fn main() -> Result<()> {
     match result {
         Ok(sol) => {
             eprintln!(
-                "ai-pow-mine: ✓ solution: extranonce={} tile_idx={} matmul_attempts={} elapsed={:?} matmul_attempt_rate={:.2}/s",
+                "ai-pow-mine-prover: ✓ solution: extranonce={} tile_idx={} matmul_attempts={} elapsed={:?} matmul_attempt_rate={:.2}/s",
                 u64::from_be_bytes(sol.nonce[72..80].try_into().unwrap()),
                 sol.found_idx,
                 sol.stats.matmul_attempts_tried,
@@ -219,7 +225,7 @@ fn main() -> Result<()> {
                 fs::write(&out, &bytes)
                     .with_context(|| format!("write proof to {}", out.display()))?;
                 eprintln!(
-                    "ai-pow-mine: wrote {} proof bytes → {}",
+                    "ai-pow-mine-prover: wrote {} legacy plain proof bytes → {}",
                     bytes.len(),
                     out.display()
                 );
@@ -227,7 +233,7 @@ fn main() -> Result<()> {
             Ok(())
         }
         Err(e) => {
-            eprintln!("ai-pow-mine: ✗ {e}");
+            eprintln!("ai-pow-mine-prover: ✗ {e}");
             // Exit codes: 2 for the loop-terminated-without-success cases,
             // 1 for real errors.
             let code = match e {
@@ -238,5 +244,38 @@ fn main() -> Result<()> {
             };
             std::process::exit(code);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn prover_cli_defaults_are_production_envelope_single_tile_smoke_params() {
+        let args =
+            Args::parse_from(["ai-pow-mine-prover", "--synth-seed", "ai-pow-prover-default-smoke"]);
+        assert_eq!((args.m, args.k, args.n), (8, 512, 8));
+        assert_eq!(args.noise_rank, 32);
+        assert_eq!(args.tile, 8);
+        assert_eq!(args.spot_checks, 1);
+
+        let params = MatmulParams {
+            m: args.m,
+            k: args.k,
+            n: args.n,
+            noise_rank: args.noise_rank,
+            tile: args.tile,
+            spot_checks: args.spot_checks,
+            difficulty_bits: args.difficulty_bits,
+        };
+        params
+            .validate_prod_envelope()
+            .expect("prover CLI defaults must satisfy production mining entrypoint");
+        assert_eq!(
+            params.num_tiles(),
+            1,
+            "defaults should remain full-matmul-admissible for the current selected-tile certificate"
+        );
     }
 }

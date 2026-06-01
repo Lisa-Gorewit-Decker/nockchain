@@ -31,9 +31,9 @@
 //! The canonical payload shape is the recursive AI-PoW certificate noun. The
 //! plain `MatmulProof`, nonce, and tile index are mining internals; they are
 //! not submitted to the kernel as the block proof. The current certificate
-//! builder fails closed for multi-tile params until the recursive statement
-//! binds a full-matrix aggregate, and the kernel remains fail-closed until
-//! recursive certificate verification is wired.
+//! support gate fails preflight for multi-tile params until the recursive
+//! statement binds a full-matrix aggregate, and the kernel remains fail-closed
+//! until recursive certificate verification is wired.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -122,9 +122,29 @@ pub struct AiPuzzleInputs {
     /// Production handoff that turns a winning mining attempt into a
     /// full-matmul-admissible structured recursive certificate noun. If
     /// absent, or if the current recursive proof is only a selected-tile proof
-    /// for multi-tile params, the run loop mines but refuses to submit
-    /// anything to consensus.
+    /// for multi-tile params, the production node miner fails preflight before
+    /// enabling mining.
     pub certificate_builder: Option<Arc<AiPowCertificateBuilder>>,
+}
+
+impl AiPuzzleInputs {
+    /// Production node-mining preflight: do not spend matmul work unless the
+    /// configured puzzle can be converted into the canonical recursive
+    /// certificate accepted at the block boundary.
+    pub fn validate_canonical_submission_ready(&self) -> Result<(), MinerError> {
+        if self.certificate_builder.is_none() {
+            return Err(MinerError::CanonicalCertificateUnavailable(
+                "no recursive certificate builder configured".to_string(),
+            ));
+        }
+        ai_pow::zk_bridge::validate_canonical_recursive_certificate_params(&self.params).map_err(
+            |e| {
+                MinerError::CanonicalCertificateUnavailable(format!(
+                    "configured AI-PoW params cannot produce a canonical full-matmul recursive certificate: {e}"
+                ))
+            },
+        )
+    }
 }
 
 #[derive(Clone)]
@@ -182,11 +202,14 @@ pub enum MinerError {
     WorkerJoin(String),
     #[error("{0}")]
     CertificateBuild(String),
+    #[error("{0}")]
+    CanonicalCertificateUnavailable(String),
 }
 
 /// Production entry point. Returns `Ok(())` on clean shutdown, `Err` on
 /// unrecoverable failure.
 pub async fn run(cfg: MinerConfig, shutdown: CancellationToken) -> Result<(), MinerError> {
+    cfg.puzzle.validate_canonical_submission_ready()?;
     info!(
         node = %cfg.node_addr,
         puzzle_id_len = cfg.puzzle.puzzle_id.len(),
@@ -665,8 +688,32 @@ mod tests {
         }
     }
 
+    fn single_tile_prod_params() -> MatmulParams {
+        MatmulParams {
+            m: 8,
+            k: 512,
+            n: 8,
+            noise_rank: 32,
+            tile: 8,
+            spot_checks: 1,
+            difficulty_bits: 0,
+        }
+    }
+
+    fn multi_tile_prod_params() -> MatmulParams {
+        MatmulParams {
+            m: 16,
+            k: 512,
+            n: 16,
+            noise_rank: 32,
+            tile: 8,
+            spot_checks: 4,
+            difficulty_bits: 0,
+        }
+    }
+
     fn test_cfg(node_addr: String) -> MinerConfig {
-        let params = MatmulParams::TEST_SMALL;
+        let params = single_tile_prod_params();
         let (a, b) = synth_matrices(b"ai-pow-node-run-test", &params);
         let puzzle = AiPuzzleInputs {
             puzzle_id: b"ai-pow-node-run-test-pid".to_vec(),
@@ -676,10 +723,10 @@ mod tests {
             prover_opts: ProverOptions::default(),
             certificate_builder: Some(Arc::new(|sol: &MinedSolution| {
                 let params = ZkParams {
-                    m: 64,
-                    k: 64,
-                    n: 64,
-                    noise_rank: 4,
+                    m: 8,
+                    k: 512,
+                    n: 8,
+                    noise_rank: 32,
                     tile: 8,
                     difficulty_bits: 0,
                 };
@@ -713,6 +760,53 @@ mod tests {
             reconnect_backoff_max: Duration::from_millis(200),
             reconnect_max_attempts: 3,
         }
+    }
+
+    #[test]
+    fn production_preflight_accepts_single_tile_certificate_params() {
+        let cfg = test_cfg("http://127.0.0.1:1".to_string());
+        cfg.puzzle
+            .validate_canonical_submission_ready()
+            .expect("single-tile selected-tile certificate is full-matmul admissible");
+    }
+
+    #[test]
+    fn production_preflight_rejects_missing_certificate_builder() {
+        let mut cfg = test_cfg("http://127.0.0.1:1".to_string());
+        cfg.puzzle.certificate_builder = None;
+        let err = cfg
+            .puzzle
+            .validate_canonical_submission_ready()
+            .expect_err("node miner must not mine without canonical certificate builder");
+        assert!(
+            err.to_string()
+                .contains("no recursive certificate builder configured"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn production_preflight_rejects_multi_tile_selected_tile_gap_before_mining() {
+        let mut cfg = test_cfg("http://127.0.0.1:1".to_string());
+        let params = multi_tile_prod_params();
+        assert_eq!(params.num_tiles(), 4);
+        params
+            .validate_prod_envelope()
+            .expect("fixture should isolate the full-matmul gap, not params validity");
+        let (a, b) = synth_matrices(b"ai-pow-node-run-multi-tile-preflight", &params);
+        cfg.puzzle.params = params;
+        cfg.puzzle.a = Arc::new(a);
+        cfg.puzzle.b = Arc::new(b);
+
+        let err = cfg
+            .puzzle
+            .validate_canonical_submission_ready()
+            .expect_err("multi-tile selected-tile certificate must fail before mining");
+        assert!(
+            err.to_string()
+                .contains("recursive certificate proves one selected tile"),
+            "unexpected error: {err}"
+        );
     }
 
     #[test]

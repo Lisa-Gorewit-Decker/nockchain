@@ -6,7 +6,7 @@
 //! `[%command %pow %ai-pow nonce cert]` on the `AiPowMinerWire::Mined` wire
 //! (`SOURCE = "ai-pow-miner"`, `VERSION = 1`) when the recursive certificate
 //! builder can prove the configured work unit. Multi-tile params currently fail
-//! closed before ZK proving because the recursive statement is selected-tile
+//! closed before mining starts because the recursive statement is selected-tile
 //! only until a full-matrix aggregate is added.
 //!
 //! Quick start (assuming a fakenet node on `127.0.0.1:5555`):
@@ -15,6 +15,11 @@
 //!       --node-addr http://127.0.0.1:5555 \
 //!       --mining-pkh 9yPePjfWAdUnzaQKyxcRXKRa5PpUzKKEwtpECBZsUYt9Jd7egSDEWoV \
 //!       --synth-seed ai-pow-prod-v1
+//!
+//! The CLI defaults are a single-tile, production-envelope smoke profile so
+//! the current selected-tile recursive certificate is full-matmul-admissible.
+//! Real multi-tile model shapes remain fail-closed until the recursive
+//! certificate binds a full-matrix aggregate.
 //!
 //! ## AI puzzle inputs (local config)
 //! The chain's `%mine` effect carries only the block header + target +
@@ -71,18 +76,20 @@ struct Args {
     #[arg(long)]
     puzzle_id: Option<String>,
 
-    /// Matmul puzzle shape (defaults to TEST_SMALL: m=k=n=64, r=4, t=8, σ=8).
-    #[arg(short = 'm', long, default_value_t = 64)]
+    /// Matmul puzzle rows. Default is the current single-tile canonical-cert smoke profile.
+    #[arg(short = 'm', long, default_value_t = 8)]
     m: u32,
-    #[arg(short = 'k', long, default_value_t = 64)]
+    /// Matmul shared dimension. Default satisfies the production envelope with r=32.
+    #[arg(short = 'k', long, default_value_t = 512)]
     k: u32,
-    #[arg(short = 'n', long, default_value_t = 64)]
+    /// Matmul output columns. Default is one tile until full-matmul recursion lands.
+    #[arg(short = 'n', long, default_value_t = 8)]
     n: u32,
-    #[arg(long, default_value_t = 4)]
+    #[arg(long, default_value_t = 32)]
     noise_rank: u32,
     #[arg(long, default_value_t = 8)]
     tile: u32,
-    #[arg(long, default_value_t = 8)]
+    #[arg(long, default_value_t = 1)]
     spot_checks: u32,
     #[arg(long, default_value_t = 0)]
     difficulty_bits: u32,
@@ -347,6 +354,23 @@ mod tests {
             reconnect_max_attempts: 5,
             log: "off".to_string(),
         }
+    }
+
+    #[test]
+    fn cli_defaults_are_canonical_certificate_submit_capable() {
+        let args = Args::parse_from([
+            "ai-pow-mine", "--mining-pkh",
+            "9yPePjfWAdUnzaQKyxcRXKRa5PpUzKKEwtpECBZsUYt9Jd7egSDEWoV", "--synth-seed",
+            "ai-pow-default-submit-capable",
+        ]);
+        assert_eq!((args.m, args.k, args.n), (8, 512, 8));
+        assert_eq!(args.noise_rank, 32);
+        assert_eq!(args.spot_checks, 1);
+
+        let puzzle = build_puzzle_inputs(&args).expect("default puzzle inputs");
+        puzzle
+            .validate_canonical_submission_ready()
+            .expect("default node miner params must pass canonical certificate preflight");
     }
 
     #[test]

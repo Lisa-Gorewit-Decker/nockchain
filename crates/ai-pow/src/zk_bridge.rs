@@ -1026,9 +1026,7 @@ pub fn prove_ai_pow_recursive_certificate(
     target: &[u8; 32],
     found_idx: u32,
 ) -> Result<AiPowRecursiveCertificateRun, BridgeError> {
-    params
-        .validate_prod_envelope()
-        .map_err(BridgeError::InvalidParams)?;
+    validate_canonical_recursive_certificate_params(params)?;
     ensure_context_params(ctx, params)?;
     ensure_context_attempt(ctx, nonce)?;
     let commitments = ZkPublicCommitments::from_context(ctx);
@@ -1037,9 +1035,6 @@ pub fn prove_ai_pow_recursive_certificate(
     )?;
     ensure_found_tile_hits_target(ctx, nonce, target, found_idx)?;
     let num_tiles = params.num_tiles();
-    if num_tiles > 1 {
-        return Err(BridgeError::FullMatmulProofUnavailable { num_tiles });
-    }
     let (tile_i, tile_j) = tile_ij(found_idx, params).ok_or(BridgeError::FoundIdxOutOfRange {
         found_idx,
         num_tiles,
@@ -1071,6 +1066,27 @@ pub fn prove_ai_pow_recursive_certificate(
         l1_outer_cert_ms: l1.l1_outer_cert_ms,
         certificate: l1.l1_cert,
     })
+}
+
+/// Check whether the current canonical recursive certificate can serve as a
+/// production full-matmul certificate for `params`.
+///
+/// Today the recursive statement proves one selected tile. That is a complete
+/// work certificate only when the configured puzzle has exactly one tile. Keep
+/// production miner and verifier preflights on this helper so the future
+/// full-matmul aggregate proof can widen the accepted parameter set in one
+/// place.
+pub fn validate_canonical_recursive_certificate_params(
+    params: &MatmulParams,
+) -> Result<(), BridgeError> {
+    params
+        .validate_prod_envelope()
+        .map_err(BridgeError::InvalidParams)?;
+    let num_tiles = params.num_tiles();
+    if num_tiles > 1 {
+        return Err(BridgeError::FullMatmulProofUnavailable { num_tiles });
+    }
+    Ok(())
 }
 
 /// Crate-internal Layer-0 verifier-only ZK API.
@@ -2378,6 +2394,22 @@ mod tests {
             Err(BridgeError::FullMatmulProofUnavailable { num_tiles })
                 if num_tiles == params.num_tiles()
         ));
+    }
+
+    #[test]
+    fn canonical_recursive_certificate_param_gate_matches_full_matmul_boundary() {
+        let multi_tile = MatmulParams::PROD;
+        assert!(multi_tile.num_tiles() > 1);
+        assert!(matches!(
+            validate_canonical_recursive_certificate_params(&multi_tile),
+            Err(BridgeError::FullMatmulProofUnavailable { num_tiles })
+                if num_tiles == multi_tile.num_tiles()
+        ));
+
+        let single_tile = single_tile_prod_params();
+        assert_eq!(single_tile.num_tiles(), 1);
+        validate_canonical_recursive_certificate_params(&single_tile)
+            .expect("selected-tile recursive certificate is full-matmul only for one tile");
     }
 
     #[test]
