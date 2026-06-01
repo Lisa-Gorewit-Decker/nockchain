@@ -13,12 +13,14 @@ attempt to mine:
 - a Pearl block, and
 - a Nockchain block.
 
-The ZK proof systems do not need to be identical. In fact, Nockchain should keep
-its own proof artifact and verifier stack if that is smaller, easier to verify
-from Hoon/Rust, or better aligned with Nockchain consensus. Compatibility is
-defined at the PoW attempt layer: both chains must be checking the same public
-work instance and jackpot digest, even if they receive different certificates
-proving that statement.
+The ZK proof systems do not need to be identical. In fact, Nockchain should not
+try to make its production proof artifact byte-compatible with Pearl's proof
+artifact unless that independently becomes the best Nockchain verifier design.
+Nockchain should keep its own proof artifact and verifier stack if that is
+smaller, easier to verify from Hoon/Rust, or better aligned with Nockchain
+consensus. Compatibility is defined at the PoW attempt layer: both chains must
+be checking the same public work instance and jackpot digest, even if they
+receive different certificates proving that statement.
 
 The compatibility target is not merely "similar algorithms." It is:
 
@@ -37,6 +39,13 @@ it does not mean the same proof bytes. Pearl can receive Pearl's own block
 certificate, while Nockchain receives a Nockchain-native recursive certificate
 that proves the same Pearl-compatible public statement and additionally binds
 that statement to a Nockchain block.
+
+This gives the desired merge-mining property without coupling verifier stacks:
+a miner can commit to one Pearl block candidate and one Nockchain block
+candidate, evaluate one Pearl-compatible work attempt, and then produce whatever
+per-chain certificate each chain expects for that same attempt. Pearl does not
+need to parse Nockchain's recursive proof, and Nockchain does not need to parse
+Pearl's proof. The shared object is the mineable attempt, not the ZKP artifact.
 
 The operational requirement is therefore:
 
@@ -102,6 +111,11 @@ Implemented in this branch:
     `PearlMergePublicStatement`, with magic `PMP1`, fixed Pearl header/public
     data fields, the expected Pearl-included aux digest, bounded aux bytes, and
     trailing-data rejection;
+  - single-ticket Pearl merge-mining construction APIs,
+    `evaluate_pearl_merge_ticket_attempt` and
+    `mine_pearl_merge_ticket_attempt`, that build the public `PMP1` statement
+    for one explicit `t_rows` / `t_cols` ticket and return `None` before ZKP
+    work when that exact ticket fails either target;
   - a combined merge-mining statement precheck,
     `verify_pearl_merge_mining_public_data`, plus the wire-facing
     `verify_pearl_merge_mining_public_data_with_aux_bytes` and
@@ -153,6 +167,130 @@ Implemented in this branch:
     ordinary work tamper;
   - the wire-facing merge precheck accepts canonical aux bytes and rejects
     malformed aux bytes through the same verifier entrypoint.
+- Hoon/Rust structured artifact boundary for the merge-mined variant:
+  - `hoon/common/tx-engine-1.hoon` defines `pearl-merge-public-statement`,
+    `pearl-nockchain-aux`, and `pearl-merge-ai-pow-artifact` with fixed
+    digest fields carried as `@uxblake` atoms, variable-length aux fields
+    carried as `[len data]` pairs so trailing zero bytes are canonical, and no
+    Pearl ZKP arm;
+  - `hoon/apps/dumbnet/lib/types.hoon` admits a separate `%ai-pmp` PoW
+    variant for Pearl merge-mined AI-PoW;
+  - dumbnet consensus dispatch and page hashing recognize `%ai-pmp`, but
+    remain fail-closed until recursive proof verification and Pearl aux
+    inclusion verification are wired;
+  - `ai_pow_miner::certificate_noun` decodes the structured `%ai-pmp`
+    artifact, reconstructs the canonical `PMP1`/`NPA1` byte statement for the
+    Rust precheck, and rejects recursive-certificate metadata/public inputs
+    that prove an NCMN-local statement, wrong tile, wrong trace height, or
+    wrong target-mode metadata instead of the Pearl-compatible statement;
+    this includes binding both `JACKPOT_MSG` to the recomputed Pearl ticket
+    `TileState` and `HASH_JACKPOT` to the recomputed Pearl jackpot digest;
+  - the `%ai-pmp` verifier boundary explicitly validates the mirrored
+    `MatmulParams` production envelope and rejects Pearl-compatible public
+    work statements whose geometry is outside the current Nockchain recursive
+    square-tile subset;
+  - `precheck_ai_pow_pearl_merge_artifact_jam` performs byte-limit, jam
+    preflight, canonical-cue, statement decode, certificate-metadata decode,
+    and Pearl merge precheck before walking the recursive proof-node tail;
+  - `verify_decoded_ai_pow_pearl_merge_artifact`,
+    `verify_ai_pow_pearl_merge_artifact_statement_and_proof`, and
+    `verify_ai_pow_pearl_merge_artifact_jam` are the production-shaped Rust
+    verifier APIs for decoded nouns, already reconstructed certificates, and
+    jammed block artifacts.
+  - canonical Rust noun builders now exist for the production artifact shape:
+    `build_pearl_merge_public_statement_noun`,
+    `build_pearl_merge_public_statement_slab`,
+    `build_ai_pow_pearl_merge_artifact_noun_from_node`, and
+    `build_ai_pow_pearl_merge_artifact_noun`. These builders emit `%ai-pmp`
+    artifacts only; they do not emit Pearl ZKPs, raw Layer-0 `MatmulProof`s,
+    or plain nonrecursive ZK proof nouns.
+  - `PearlMergePublicStatementShape::from_wire_statement` and
+    `from_wire_bytes` bridge the `ai_pow::pearl_compat` `PMP1` statement into
+    the structured Hoon noun shape used by `%ai-pmp`.
+  - `pearl_merge_recursive_public_inputs_from_work` /
+    `pearl_merge_recursive_public_inputs_from_precheck` centralize the
+    Pearl-mode mapping into existing recursive public-input slots:
+    `HASH_A`, `HASH_B`, `JOB_KEY = kappa`, `COMMITMENT_HASH = s_A`,
+    `JACKPOT_MSG = TileState`, and `HASH_JACKPOT = jackpot_hash`.
+  - `pearl_merge_recursive_certificate_parts_from_ticket` is the canonical
+    producer-side bridge from a successful `PearlMergeTicketAttempt` to the
+    recursive certificate metadata in `%ai-pmp`. It rechecks the public ticket
+    against the trusted matrices and rejects target misses, forged statement
+    drift, forged work/ticket fields, and Pearl geometries outside the current
+    square contiguous recursive subset before an artifact can be built.
+  - `build_ai_pow_pearl_merge_artifact_noun_from_ticket_node` and
+    `build_ai_pow_pearl_merge_artifact_noun_from_ticket` build `%ai-pmp`
+    directly from that canonical ticket-derived metadata instead of accepting
+    caller-supplied `found-idx`, public inputs, or commitments.
+  - `ai_pow_miner::run::build_ai_pow_pearl_merge_certificate_poke` constructs
+    the node submission noun `[%command %pow %ai-pmp artifact]` after first
+    decoding the artifact as `%ai-pmp`, so miner-side code cannot accidentally
+    submit a native `%ai-pow` certificate, Pearl ZKP, or raw `MatmulProof` on
+    the merge-mining arm.
+  - `build_ai_pow_pearl_merge_certificate_poke_from_ticket_node` and
+    `build_ai_pow_pearl_merge_certificate_poke_from_ticket` are the
+    miner-facing safe submission helpers: they derive `%ai-pmp` from the
+    successful ticket and trusted matrices, then wrap only that derived
+    artifact as the kernel command.
+  - `AiPowSubmissionMode` makes the run-loop proof arm explicit. The current
+    node loop accepts `NativeNcmn` only and fails closed for `PearlMerge`
+    before enabling mining, so a caller cannot accidentally configure Pearl
+    mode and submit native `%ai-pow` attempts.
+  - `ai_pow_miner::pearl_mining` now provides a standalone
+    `PearlMergeMiningJob` / `PearlMergeMineOptions` loop that scans
+    Pearl-valid `t_rows` / `t_cols` ticket pairs and returns a
+    `PearlMergeTicketAttempt` only after the shared jackpot digest satisfies
+    both Pearl and Nockchain targets. It maps linear attempt ordinals to
+    Pearl-valid offsets without materializing all valid offset pairs up front,
+    and it does not build a recursive proof or `%ai-pmp` artifact on misses.
+- Release tests in `crates/ai-pow-miner/src/certificate_noun.rs` proving:
+  - `%ai-pmp` keeps the Pearl statement structured rather than as a single
+    opaque statement atom;
+  - aux `chain-id` and `extra-domain-data` preserve trailing zero bytes through
+    explicit `[len data]` fields;
+  - the public statement builder round-trips the exact `NPA1`/`PMP1` bytes,
+    including trailing zero bytes in aux fields;
+  - malformed `[len data]` aux nouns with a declared length shorter than the
+    nonzero atom payload are rejected before statement precheck;
+  - the public `%ai-pmp` artifact builder round-trips through jam decoding and
+    preserves recursive certificate metadata, public inputs, and the structured
+    Pearl-compatible statement;
+  - the ticket-derived `%ai-pmp` builder derives `zk_params`, `found-idx`,
+    `trace-height`, commitments, and Pearl-mode recursive public inputs from
+    the successful shared ticket, then round-trips through decode and precheck;
+  - ticket-derived artifact construction rejects non-winning tickets,
+    tampered `PMP1` statement bytes, forged jackpot work that is not derived
+    from the trusted matrices, wrong trusted matrices that do not match the
+    ticket's public commitments, and non-contiguous Pearl tickets outside the
+    current recursive verifier subset;
+  - precheck-derived Pearl statement public-input slots exactly match the
+    artifact metadata used for recursive verification;
+  - the `%ai-pmp` miner poke builder wraps only a decoded Pearl merge artifact
+    as `[%command %pow %ai-pmp artifact]` and rejects the wrong artifact arm;
+  - the ticket-derived `%ai-pmp` miner poke helpers derive the wrapped artifact
+    from the ticket and trusted matrices, and reject wrong matrices before
+    command construction;
+  - run-loop preflight rejects explicit `PearlMerge` submission mode until the
+    Pearl ticket work loop and recursive Pearl statement prover are wired;
+  - the standalone Pearl ticket loop returns a ticket before proof/artifact
+    construction on success, returns budget exhaustion without emitting any
+    ticket artifact on misses, supports deterministic later-start scanning,
+    rejects malformed matrix inputs, and honors cancellation before work;
+  - a miner-side integration regression runs the standalone Pearl ticket loop,
+    feeds the returned ticket into the ticket-derived `%ai-pmp` poke helper,
+    and decodes the wrapped artifact; the miss path has no ticket to submit;
+  - the decoded artifact prechecks the exact shared Pearl attempt and
+    Nockchain aux binding;
+  - wrong-candidate replay, wrong `found-idx`, wrong trace height, wrong
+    difficulty metadata, wrong `JACKPOT_MSG`, and recursive-certificate
+    public-input tampering are rejected before recursive proof
+    reconstruction/verification;
+  - Pearl-valid public work statements with matrix geometry outside the
+    current recursive square-tile subset are rejected as unsupported instead of
+    being floor-divided into a different tile grid;
+  - jammed `%ai-pmp` full verification preserves the same failure ordering:
+    replay/tamper rejects before proof-node decode, while a valid precheck with
+    malformed proof tail reaches the proof-node/proof-verification error.
 
 Still incomplete:
 
@@ -162,7 +300,7 @@ Still incomplete:
 - Nockchain-native recursive certificate whose public inputs prove the
   Pearl-compatible statement;
 - AuxPoW inclusion binding from Pearl `sigma` to a Nockchain block commitment;
-- Hoon noun type and Rust verifier jet for the merge-mined artifact;
+- Rust verifier jet / consensus callsite for the merge-mined artifact;
 - activation-gated consensus tests.
 
 ## Current Blocking Differences
@@ -346,6 +484,12 @@ This is true merge-mining: the expensive matrix commitment, noise, matmul, and
 jackpot search work is shared. ZK certificate generation may be separate per
 chain.
 
+The phrase "Pearl-compatible proof of work" in this document always means this
+shared attempt and jackpot digest. It does not mean "use Pearl's exact ZKP" or
+"store Pearl's certificate in Nockchain." Nockchain's production artifact should
+remain the structured `%ai-pmp` noun containing the Pearl-compatible public
+statement plus Nockchain's canonical recursive certificate for that statement.
+
 ### Compatibility Boundary
 
 The shared cross-chain object is the Pearl-compatible PoW attempt:
@@ -375,51 +519,82 @@ proving the same public statement, compatibility is preserved.
 Add a Pearl-compatible AI-PoW artifact variant. Do not overload the current
 Nockchain-specific `ai-pow-certificate` silently.
 
-Proposed Hoon-level shape:
+Implemented Hoon-level shape:
 
 ```hoon
-$:  version=%pearl-merge-v1
-    pearl-work=pearl-work-statement
-    aux=pearl-nockchain-aux
-    cert=nockchain-ai-pow-certificate
-==
-```
-
-Where:
-
-```hoon
-+$  pearl-work-statement
-  $:  sigma=pearl-sigma
-      mu=pearl-mining-config
-      tile-i=@ud
-      tile-j=@ud
-      commitments=pearl-commitments
-      public=pearl-public-witness
-      pouw-meta=@uxblake
-  ==
-
-+$  pearl-commitments
-  $:  h-a=@uxblake
-      h-b=@uxblake
-  ==
-
-+$  pearl-public-witness
-  $:  jackpot-hash=@uxblake
-      :: Include every public value needed to identify the Pearl-compatible
-      :: PoW statement: shape, tile position, commitment roots, proof-version
-      :: domain, and any public-input vector commitments.
-  ==
-
++$  pearl-header  @uxpearlhdr
++$  pearl-public-data  @uxpearlpub
++$  pearl-chain-id  [len=@ud data=@uxpearlid]
++$  pearl-extra-data  [len=@ud data=@uxpearlextra]
 +$  pearl-nockchain-aux
-  $:  nock-block-commitment=@uxblake
-      nock-target=@uxblake
-      pearl-header=pearl-header
-      aux-path=pearl-aux-inclusion-proof
+  $:  nockchain-chain-id=pearl-chain-id
+      nock-block-commitment=@uxblake
+      nockchain-target-epoch-or-height=@ud
+      extra-domain-data=pearl-extra-data
+  ==
++$  pearl-merge-public-statement
+  $:  block-header=pearl-header
+      public-data=pearl-public-data
+      expected-aux-commitment=@uxblake
+      aux=pearl-nockchain-aux
+  ==
++$  pearl-merge-ai-pow-artifact
+  $:  statement=pearl-merge-public-statement
+      certificate=ai-pow-certificate
+  ==
++$  pow-variant
+  $%  [%ai-pmp artifact=pearl-merge-ai-pow-artifact]
+      ...
   ==
 ```
 
-The exact `pearl-sigma`, `pearl-mining-config`, `pearl-header`, and
-`pouw-meta` encodings must be derived from Pearl's current consensus code, not
+The `%ai-pmp` tag is the short on-wire noun tag for Pearl merge-mined
+AI-PoW. It maps to the longer spec version name `pearl-merge-v1`.
+
+The structured Hoon noun maps to the Rust `PMP1` byte envelope as follows:
+
+- `block-header` is exactly the 76-byte Pearl `IncompleteBlockHeader`;
+- `public-data` is exactly the 164-byte Pearl public proof params
+  (`MiningConfiguration || H_A || H_B || jackpot_hash || m || n || t_rows ||
+  t_cols`);
+- `expected-aux-commitment` is the Pearl-included aux digest;
+- `aux` is re-encoded as `NPA1` before the Rust merge precheck.
+
+The `[len data]` aux fields are consensus-significant. The canonical builders
+MUST set `len` to the intended byte length before atom trimming, and decoders
+MUST reconstruct exactly `len` bytes by zero-padding the atom representation
+when necessary. This is what lets Hoon nouns represent `NPA1` fields ending in
+zero bytes without losing consensus-visible data. A decoder MUST reject a noun
+when the atom contains more nonzero payload bytes than the declared length.
+
+Canonical Rust construction APIs:
+
+- `build_pearl_merge_public_statement_noun(allocator, statement)`;
+- `build_pearl_merge_public_statement_slab(statement)`;
+- `build_ai_pow_pearl_merge_artifact_noun_from_node(statement, zk_params,
+  found_idx, trace_height, commitments, public_inputs, proof_node)`;
+- `build_ai_pow_pearl_merge_artifact_noun(statement, zk_params, found_idx,
+  trace_height, commitments, public_inputs, recursive_certificate)`;
+- `pearl_merge_recursive_certificate_parts_from_ticket(attempt, a_row_major,
+  b_col_major, max_pattern_len)`;
+- `build_ai_pow_pearl_merge_artifact_noun_from_ticket_node(attempt,
+  a_row_major, b_col_major, max_pattern_len, proof_node)`;
+- `build_ai_pow_pearl_merge_artifact_noun_from_ticket(attempt, a_row_major,
+  b_col_major, max_pattern_len, recursive_certificate)`;
+- `build_ai_pow_pearl_merge_certificate_poke_from_ticket_node(attempt,
+  a_row_major, b_col_major, max_pattern_len, proof_node)`;
+- `build_ai_pow_pearl_merge_certificate_poke_from_ticket(attempt, a_row_major,
+  b_col_major, max_pattern_len, recursive_certificate)`.
+
+Production callers should prefer the ticket-derived `%ai-pmp` builders for
+Pearl-compatible mode. Those builders derive certificate metadata from the
+successful shared ticket, recompute the public work against the trusted
+matrices, and reject misses or forged ticket fields before recursive artifact
+construction. Callers should not separately serialize a Pearl ZKP, raw
+`MatmulProof`, or plain Layer-0 AI-PoW proof into Hoon consensus state.
+
+The exact Pearl header, `MiningConfiguration`, public proof parameter, and aux
+inclusion encodings must be derived from Pearl's current consensus code, not
 from informal reimplementation. The Nockchain certificate format can be
 Nockchain-native, but the statement it proves must be byte-for-byte compatible
 with Pearl's PoW attempt serialization.
@@ -541,10 +716,13 @@ apply the current one-selected-tile rule in this mode.
   semantics, 164-byte public proof parameter parsing, pattern-indexed ticket
   recomputation, Pearl target checking, independent Nockchain target checking,
   the composed `verify_pearl_compatible_work` API, and the serialized
-  `verify_pearl_compatible_public_data` API. Still required: teach the
-  recursive proof statement/circuit to prove Pearl's general row/column
-  pattern-indexed ticket instead of only the current square-tile `MatmulParams`
-  model.
+  `verify_pearl_compatible_public_data` API. Also done:
+  `evaluate_pearl_merge_ticket_attempt` and `mine_pearl_merge_ticket_attempt`
+  construct a canonical `PMP1` statement for one explicit Pearl ticket and
+  return no work product before recursive proof generation when the ticket
+  misses either target. Still required: teach the recursive proof
+  statement/circuit to prove Pearl's general row/column pattern-indexed ticket
+  instead of only the current square-tile `MatmulParams` model.
 - Done for the Nockchain-side AuxPoW digest primitive: add
   `pearl_nockchain_aux_commitment` with bounded, length-prefixed fields and
   `verify_pearl_merge_mining_public_data` to tie the aux digest and candidate
@@ -556,6 +734,36 @@ apply the current one-selected-tile rule in this mode.
   `verify_pearl_merge_public_statement_bytes`. Still required: embed that
   digest into a Pearl-consensus-valid commitment path and verify the inclusion
   proof against the exact `sigma`.
+- Done for Hoon/Rust artifact shape: add `%ai-pmp` as a distinct Hoon PoW
+  variant, define structured `pearl-merge-public-statement` /
+  `pearl-nockchain-aux` nouns, keep consensus fail-closed for the new arm, and
+  add `decode_ai_pow_pearl_merge_artifact_*` plus
+  `precheck_ai_pow_pearl_merge_artifact_statement` in the Rust noun boundary.
+  Also done: variable-length aux fields are `[len data]`, and
+  `precheck_ai_pow_pearl_merge_artifact_jam` rejects replay and metadata
+  mismatch before proof-node traversal. Also done: decoded, already
+  reconstructed-certificate, and jammed `%ai-pmp` verifier APIs run the same
+  precheck before recursive verification, including explicit rejection for
+  Pearl-valid geometries outside the current recursive square-tile production
+  envelope and explicit binding of both `JACKPOT_MSG` and `HASH_JACKPOT` to
+  the recomputed Pearl ticket. Also done: canonical builder APIs for structured
+  `pearl-merge-public-statement` and `%ai-pmp` nouns, with tests covering exact
+  trailing-zero aux byte preservation, malformed declared aux lengths, and
+  jam-decoded artifact round-trips. Also done: wire-statement conversion APIs
+  bridge the `ai-pow` `PMP1` construction result into the Hoon-compatible
+  structured statement shape, a single helper derives the Pearl statement
+  public-input slots, ticket-derived artifact builders derive all recursive
+  metadata from a successful shared attempt, recompute the public work against
+  trusted matrices, and reject target misses, statement drift, forged
+  work/ticket fields, and unsupported non-contiguous tickets, and the
+  miner-side `%ai-pmp` command-poke helpers either wrap only decoded Pearl
+  merge artifacts or derive the artifact directly from the successful ticket
+  and trusted matrices. Also done: the node run loop has an explicit
+  `AiPowSubmissionMode` and fails closed for `PearlMerge`, and the standalone
+  `ai_pow_miner::pearl_mining` loop scans Pearl-valid ticket offset pairs
+  without generating recursive proofs or artifacts on misses. Still required:
+  wire the verifier jet/callsite and recursive proof circuit for this
+  Pearl-compatible statement.
 - Add byte-equivalence tests against Pearl source fixtures for:
   - `sigma || mu` serialization;
   - `kappa`;
@@ -581,30 +789,44 @@ apply the current one-selected-tile rule in this mode.
 
 ### `ai-pow-miner`
 
-- Add a merge-mining job type:
+- Done for the standalone merge-mining ticket loop:
 
   ```rust
   PearlMergeMiningJob {
-      nockchain_candidate,
-      pearl_candidate_header_or_template,
-      pearl_mu,
-      matrices,
+      header,
+      config,
+      params,
       nockchain_target,
-      pearl_target,
+      matrices,
+      aux,
+      max_pattern_len,
   }
   ```
 
+  `pearl_mining::run` scans Pearl-valid offset pairs, counts one matmul
+  attempt per explicit ticket, maps attempt ordinals to offsets without
+  precomputing the full offset-pair list, returns only a successful
+  `PearlMergeTicketAttempt`, and never constructs recursive proof/artifact data
+  for target misses. The mined ticket is directly consumable by the
+  ticket-derived `%ai-pmp` poke helpers; tests cover this handoff and the
+  no-ticket miss path.
+- Done for the current node run-loop boundary: `AiPowSubmissionMode` is
+  explicit, `NativeNcmn` remains the only runnable mode, and `PearlMerge`
+  fails preflight before mining can start. This is intentional until the
+  following items are implemented; it prevents a misconfigured merge miner from
+  silently producing native `%ai-pow` submissions.
 - Build the auxiliary commitment into the Pearl block template before mining.
-- Run one Pearl-compatible work loop.
+- Wire the standalone Pearl-compatible work loop into the node run loop once a
+  Pearl candidate/job source exists.
 - On success, emit:
   - Pearl submission payload for Pearl;
-  - Nockchain `%ai-pow` payload with Pearl work statement, aux proof, and
+  - Nockchain `%ai-pmp` payload with Pearl work statement, aux proof, and
     Nockchain-native recursive certificate.
 
 ### Hoon / Consensus
 
 - Add a new wire/certificate variant for Pearl-compatible merge-mined AI-PoW.
-- Keep the existing `%ai-pow` path fail-closed until the Rust verifier jet can
+- Keep the new `%ai-pmp` path fail-closed until the Rust verifier jet can
   verify:
   - bounded decode;
   - auxiliary inclusion;
@@ -645,6 +867,10 @@ New design:
 - Pearl tile-ticket semantics;
 - Nockchain-native recursive certificate proving a Pearl-compatible statement;
 - Nockchain block bound by AuxPoW inclusion in Pearl work state.
+
+This mode deliberately does not require Pearl and Nockchain to share a ZKP
+format. It requires only that both proof systems authenticate the same public
+work attempt and jackpot digest.
 
 This mode is the compatibility target.
 
@@ -705,6 +931,10 @@ verifier must derive the statement entirely according to that mode.
    - one Nockchain block commitment included through aux;
    - [done in Rust precheck] both Pearl target and Nockchain target checks run
      over the same digest.
-6. Wire the Hoon noun type and Rust verifier jet.
+6. [partial] Wire the Hoon noun type and Rust verifier jet:
+   - [done] Hoon `%ai-pmp` artifact shape;
+   - [done] Rust structured noun decoder, statement precheck, and
+     production-shaped verifier APIs;
+   - [open] Rust verifier jet / consensus callsite.
 7. Only after honest/tamper tests pass, consider activating Pearl
    merge-mining mode.

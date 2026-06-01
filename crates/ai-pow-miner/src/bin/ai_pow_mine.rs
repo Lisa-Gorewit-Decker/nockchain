@@ -41,7 +41,8 @@ use ai_pow::prover::ProverOptions;
 use ai_pow::zk_bridge::prove_ai_pow_recursive_certificate;
 use ai_pow_miner::certificate_noun::build_ai_pow_certificate_noun;
 use ai_pow_miner::run::{
-    default_v0_configs, run, AiPowCertificateBuildError, AiPuzzleInputs, MinerConfig, MinerError,
+    default_v0_configs, run, AiPowCertificateBuildError, AiPowSubmissionMode, AiPuzzleInputs,
+    MinerConfig, MinerError,
 };
 use ai_pow_miner::MineOptions;
 use anyhow::{anyhow, bail, Context, Result};
@@ -302,6 +303,7 @@ fn build_puzzle_inputs(args: &Args) -> Result<AiPuzzleInputs> {
         b,
         prover_opts: ProverOptions::default(),
         certificate_builder: Some(certificate_builder),
+        submission_mode: AiPowSubmissionMode::NativeNcmn,
     })
 }
 

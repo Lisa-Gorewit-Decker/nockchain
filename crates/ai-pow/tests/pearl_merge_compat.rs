@@ -2,7 +2,8 @@ use ai_pow::commit::matrix_commitment;
 use ai_pow::fiat_shamir::{noise_seed_a, noise_seed_b};
 use ai_pow::params::MatmulParams;
 use ai_pow::pearl_compat::{
-    compute_pearl_pattern_ticket, pearl_adjust_target_for_config, pearl_kappa,
+    compute_pearl_pattern_ticket, evaluate_pearl_merge_ticket_attempt,
+    mine_pearl_merge_ticket_attempt, pearl_adjust_target_for_config, pearl_kappa,
     pearl_nbits_to_target_le, pearl_nockchain_aux_commitment, verify_pearl_compatible_public_data,
     verify_pearl_compatible_work, verify_pearl_merge_mining_public_data,
     verify_pearl_merge_mining_public_data_with_aux_bytes,
@@ -1201,6 +1202,128 @@ fn pearl_merge_public_statement_bytes_round_trip_and_verify() {
     .unwrap();
     assert_eq!(precheck.work.commitments, attempt.commitments);
     assert_eq!(precheck.aux, aux);
+}
+
+#[test]
+fn pearl_merge_ticket_attempt_builds_statement_for_one_explicit_ticket() {
+    let params = pearl_square_params();
+    let config = pearl_square_config();
+    let easy_header = PearlIncompleteBlockHeader {
+        nbits: 0x207f_ffff,
+        ..header()
+    };
+    let (a, b) = synth_matrices(b"pearl-merge-ticket-attempt", &params);
+    let aux = PearlNockchainAux {
+        nockchain_chain_id: b"nockchain-mainnet".to_vec(),
+        nock_block_commitment: [0x42; 32],
+        nockchain_target_epoch_or_height: 123_456,
+        extra_domain_data: b"ai-pow-target-window".to_vec(),
+    };
+
+    let attempt = mine_pearl_merge_ticket_attempt(
+        &easy_header,
+        &config,
+        &params,
+        0,
+        0,
+        &a,
+        &b,
+        &[0xffu8; 32],
+        16,
+        aux.clone(),
+    )
+    .unwrap()
+    .expect("easy Pearl and Nockchain targets should accept the explicit ticket");
+
+    assert_eq!(attempt.public_params.t_rows, 0);
+    assert_eq!(attempt.public_params.t_cols, 0);
+    assert_eq!(attempt.public_params.hash_a, attempt.commitments.h_a);
+    assert_eq!(attempt.public_params.hash_b, attempt.commitments.h_b);
+    assert_eq!(
+        attempt.public_params.hash_jackpot,
+        attempt.ticket.jackpot_hash
+    );
+    assert_eq!(attempt.aux, aux);
+    assert_eq!(attempt.aux_commitment, aux.commitment().unwrap());
+
+    let statement_bytes = attempt.statement.to_bytes().unwrap();
+    let precheck = verify_pearl_merge_public_statement_bytes(
+        &aux.nock_block_commitment, &statement_bytes, &a, &b, &[0xffu8; 32], 16,
+    )
+    .unwrap();
+    assert_eq!(precheck.work.commitments, attempt.commitments);
+    assert_eq!(precheck.work.ticket, attempt.ticket);
+    assert_eq!(precheck.aux, aux);
+}
+
+#[test]
+fn pearl_merge_ticket_attempt_returns_none_before_zkp_when_target_fails() {
+    let params = pearl_square_params();
+    let config = pearl_square_config();
+    let easy_header = PearlIncompleteBlockHeader {
+        nbits: 0x207f_ffff,
+        ..header()
+    };
+    let (a, b) = synth_matrices(b"pearl-merge-ticket-target-fail", &params);
+    let aux = PearlNockchainAux {
+        nockchain_chain_id: b"nockchain-mainnet".to_vec(),
+        nock_block_commitment: [0x42; 32],
+        nockchain_target_epoch_or_height: 123_456,
+        extra_domain_data: b"ai-pow-target-window".to_vec(),
+    };
+
+    let miss = mine_pearl_merge_ticket_attempt(
+        &easy_header, &config, &params, 0, 0, &a, &b, &[0u8; 32], 16, aux,
+    )
+    .unwrap();
+    assert_eq!(miss, None);
+}
+
+#[test]
+fn pearl_merge_ticket_attempt_rejects_invalid_offsets_and_supports_pattern_offsets() {
+    let params = pearl_square_params();
+    let config = PearlMiningConfig {
+        common_dim: params.k,
+        rank: params.noise_rank as u16,
+        mma_type: PEARL_MMA_INT7XINT7_TO_INT32,
+        rows_pattern: pearl_compat_test_pattern(),
+        cols_pattern: pearl_compat_test_pattern(),
+        reserved: [0u8; PEARL_MINING_CONFIG_RESERVED_SIZE],
+    };
+    let easy_header = PearlIncompleteBlockHeader {
+        nbits: 0x207f_ffff,
+        ..header()
+    };
+    let (a, b) = synth_matrices(b"pearl-merge-ticket-pattern-offsets", &params);
+    let aux = PearlNockchainAux {
+        nockchain_chain_id: b"nockchain-mainnet".to_vec(),
+        nock_block_commitment: [0x42; 32],
+        nockchain_target_epoch_or_height: 123_456,
+        extra_domain_data: b"ai-pow-target-window".to_vec(),
+    };
+
+    let attempt = evaluate_pearl_merge_ticket_attempt(
+        &easy_header,
+        &config,
+        &params,
+        2,
+        4,
+        &a,
+        &b,
+        &[0xffu8; 32],
+        16,
+        aux.clone(),
+    )
+    .unwrap();
+    assert_eq!(attempt.ticket.a_rows, vec![2, 3, 10, 11, 66, 67, 74, 75]);
+    assert_eq!(attempt.ticket.b_cols, vec![4, 5, 12, 13, 68, 69, 76, 77]);
+
+    assert_eq!(
+        evaluate_pearl_merge_ticket_attempt(
+            &easy_header, &config, &params, 8, 0, &a, &b, &[0xffu8; 32], 16, aux,
+        ),
+        Err(PearlCompatError::InvalidPatternOffset)
+    );
 }
 
 #[test]

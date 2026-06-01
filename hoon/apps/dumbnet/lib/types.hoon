@@ -626,6 +626,13 @@
 +$  ai-proof-node  ai-proof-node:dt
 +$  ai-recursive-certificate  ai-recursive-certificate:dt
 +$  ai-pow-certificate  ai-pow-certificate:dt
++$  pearl-header  pearl-header:dt
++$  pearl-public-data  pearl-public-data:dt
++$  pearl-chain-id  pearl-chain-id:dt
++$  pearl-extra-data  pearl-extra-data:dt
++$  pearl-nockchain-aux  pearl-nockchain-aux:dt
++$  pearl-merge-public-statement  pearl-merge-public-statement:dt
++$  pearl-merge-ai-pow-artifact  pearl-merge-ai-pow-artifact:dt
 ::
 ::  Tagged union of proof-of-work variants. The miner pokes the consensus
 ::  kernel with `[%command %pow pv=pow-variant]`; the consensus kernel
@@ -639,6 +646,11 @@
       ::  MatmulProof are not persisted in blocks. Consensus rejects this arm
       ::  until the recursive verifier is wired.
       [%ai-pow nonce=ai-ncmn cert=ai-pow-certificate]
+      ::  Pearl-compatible merge-mined AI matmul PoW. Carries a structured
+      ::  Pearl-compatible public statement plus the Nockchain-native
+      ::  recursive certificate only; Pearl ZK proof bytes and raw Layer-0
+      ::  proofs are not valid production artifacts.
+      [%ai-pmp artifact=pearl-merge-ai-pow-artifact]
   ==
 ::
 +$  command

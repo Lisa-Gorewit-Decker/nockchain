@@ -63,6 +63,26 @@
       public-inputs=ai-pow-public-inputs
       certificate=ai-recursive-certificate
   ==
++$  pearl-header  @uxpearlhdr  ::  Pearl IncompleteBlockHeader bytes, 76 bytes
++$  pearl-public-data  @uxpearlpub  ::  Pearl public proof params bytes, 164 bytes
++$  pearl-chain-id  [len=@ud data=@uxpearlid]  ::  Bounded Nockchain chain id bytes
++$  pearl-extra-data  [len=@ud data=@uxpearlextra]  ::  Bounded extra replay-protection bytes
++$  pearl-nockchain-aux
+  $:  nockchain-chain-id=pearl-chain-id
+      nock-block-commitment=ai-blake
+      nockchain-target-epoch-or-height=@ud
+      extra-domain-data=pearl-extra-data
+  ==
++$  pearl-merge-public-statement
+  $:  block-header=pearl-header
+      public-data=pearl-public-data
+      expected-aux-commitment=ai-blake
+      aux=pearl-nockchain-aux
+  ==
++$  pearl-merge-ai-pow-artifact
+  $:  statement=pearl-merge-public-statement
+      certificate=ai-pow-certificate
+  ==
 +$  pow-artifact
   *
 ++  reason
@@ -194,6 +214,8 @@
     :-  ?~  pow.pag  leaf+~
         ?:  ?=([%ai-pow *] u.pow.pag)
           [leaf+%ai-pow leaf+(jam u.pow.pag)]
+        ?:  ?=([%ai-pmp *] u.pow.pag)
+          [leaf+%ai-pmp leaf+(jam u.pow.pag)]
         =/  prf=form:proof  (need ((soft form:proof) u.pow.pag))
         [leaf+~ hash+(hash-proof:v0 prf)]
     (hashable-block-commitment pag)

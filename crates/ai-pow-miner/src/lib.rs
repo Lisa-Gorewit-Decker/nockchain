@@ -162,6 +162,9 @@ impl MiningCancel {
 
 pub mod mining;
 
+/// Pearl-compatible merge-mining ticket loop.
+pub mod pearl_mining;
+
 /// Wire vocabulary (`AiPowMinerWire`, `SOURCE = "ai-pow-miner"`). Behind
 /// the `node` feature because it implements `nockapp::wire::Wire`.
 #[cfg(feature = "node")]

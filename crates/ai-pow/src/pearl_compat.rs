@@ -1198,6 +1198,120 @@ pub fn verify_pearl_merge_public_statement_bytes(
     )
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PearlMergeTicketAttempt {
+    pub public_params: PearlPublicProofParams,
+    pub ticket: PearlPatternTicket,
+    pub commitments: PearlWorkCommitments,
+    pub pearl_target: [u8; 32],
+    pub nockchain_target: [u8; 32],
+    pub aux: PearlNockchainAux,
+    pub aux_commitment: [u8; 32],
+    pub statement: PearlMergePublicStatement,
+}
+
+/// Build the exact Pearl-compatible ticket statement for one explicit
+/// `t_rows`/`t_cols` attempt.
+///
+/// This does not search alternate offsets or nonce-like values over cached
+/// work. Callers that want to try another ticket must call this again with the
+/// next Pearl-valid offset pair and then generate the Nockchain recursive proof
+/// only if [`mine_pearl_merge_ticket_attempt`] returns `Some`.
+pub fn evaluate_pearl_merge_ticket_attempt(
+    header: &PearlIncompleteBlockHeader,
+    config: &PearlMiningConfig,
+    params: &MatmulParams,
+    t_rows: u32,
+    t_cols: u32,
+    a_row_major: &[i8],
+    b_col_major: &[i8],
+    nockchain_target: &[u8; 32],
+    max_pattern_len: usize,
+    aux: PearlNockchainAux,
+) -> Result<PearlMergeTicketAttempt, PearlCompatError> {
+    if !config.rows_pattern.offset_is_valid(t_rows) || !config.cols_pattern.offset_is_valid(t_cols)
+    {
+        return Err(PearlCompatError::InvalidPatternOffset);
+    }
+    let aux_commitment = aux.commitment()?;
+    let aux_bytes = aux.to_bytes()?;
+    validate_config_matches_params(config, params)?;
+    validate_attempt_inputs(a_row_major, b_col_major, params)?;
+
+    let sigma = header.to_bytes();
+    let mu = config.to_bytes()?;
+    let commitments = derive_pearl_work_commitments(&sigma, &mu, a_row_major, b_col_major);
+    let mut public_params = PearlPublicProofParams {
+        block_header: *header,
+        mining_config: *config,
+        hash_a: commitments.h_a,
+        hash_b: commitments.h_b,
+        hash_jackpot: [0u8; 32],
+        m: params.m,
+        n: params.n,
+        t_rows,
+        t_cols,
+    };
+    public_params.sanity_check()?;
+
+    let ticket = compute_pearl_pattern_ticket(
+        &public_params, a_row_major, b_col_major, &commitments, max_pattern_len,
+    )?;
+    public_params.hash_jackpot = ticket.jackpot_hash;
+    let pearl_target = public_params.pearl_adjusted_target()?;
+    let public_data = public_params.to_public_data()?;
+    let statement = PearlMergePublicStatement {
+        block_header: sigma,
+        public_data,
+        expected_aux_commitment: aux_commitment,
+        aux_bytes,
+    };
+
+    Ok(PearlMergeTicketAttempt {
+        public_params,
+        ticket,
+        commitments,
+        pearl_target,
+        nockchain_target: *nockchain_target,
+        aux,
+        aux_commitment,
+        statement,
+    })
+}
+
+/// Return the canonical Pearl merge-mining public statement for one explicit
+/// ticket only when that ticket satisfies both Pearl's adjusted target and the
+/// caller-supplied Nockchain target.
+pub fn mine_pearl_merge_ticket_attempt(
+    header: &PearlIncompleteBlockHeader,
+    config: &PearlMiningConfig,
+    params: &MatmulParams,
+    t_rows: u32,
+    t_cols: u32,
+    a_row_major: &[i8],
+    b_col_major: &[i8],
+    nockchain_target: &[u8; 32],
+    max_pattern_len: usize,
+    aux: PearlNockchainAux,
+) -> Result<Option<PearlMergeTicketAttempt>, PearlCompatError> {
+    let attempt = evaluate_pearl_merge_ticket_attempt(
+        header, config, params, t_rows, t_cols, a_row_major, b_col_major, nockchain_target,
+        max_pattern_len, aux,
+    )?;
+    if attempt
+        .public_params
+        .check_pearl_jackpot_difficulty()
+        .is_err()
+        || attempt
+            .public_params
+            .check_nockchain_jackpot_target(nockchain_target)
+            .is_err()
+    {
+        return Ok(None);
+    }
+    Ok(Some(attempt))
+}
+
 fn validate_public_matrix_inputs(
     a_row_major: &[i8],
     b_col_major: &[i8],

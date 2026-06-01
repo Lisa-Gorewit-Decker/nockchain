@@ -1116,6 +1116,10 @@
         ::  Fail closed until recursive AI-PoW certificate verification is
         ::  wired. Height-gating alone is not proof verification.
         %.n
+      ?:  ?=([%ai-pmp *] u.pow)
+        ::  Fail closed until Pearl-compatible recursive AI-PoW certificate
+        ::  verification and aux inclusion verification are wired.
+        %.n
       =/  prf=proof:sp  (need ((soft proof:sp) u.pow))
       ::
       ::  validate that powork puzzle in the proof is correct.
@@ -1325,6 +1329,8 @@
           ?>  ?=(^ pow)
           ?:  ?=([%ai-pow *] u.pow)
             ' with ai-pow certificate'
+          ?:  ?=([%ai-pmp *] u.pow)
+            ' with ai-pow pearl-merge certificate'
           =/  prf=proof:sp  (need ((soft proof:sp) u.pow))
           %+  rap  3
           :~  ' with proof version '  (rsh [3 2] (scot %ui version.prf))
@@ -1586,6 +1592,17 @@
           ::  wired. Persisting the typed certificate without verifying
           ::  it would let a forged %ai-pow block satisfy consensus.
           ~>  %slog.[1 'do-pow: %ai-pow verifier not wired; rejected']
+          [~ k]
+        ::
+            %ai-pmp
+          ::  Same activation gate as native AI-PoW. This arm stays
+          ::  fail-closed until the Pearl-compatible recursive verifier and
+          ::  auxiliary Pearl-inclusion verifier are wired.
+          =/  candidate-height  ~(height get:page:t candidate-block.m.k)
+          ?:  (lth candidate-height ai-pow-activation-height.constants.k)
+            ~>  %slog.[1 'do-pow: %ai-pmp pre-activation; rejected']
+            [~ k]
+          ~>  %slog.[1 'do-pow: %ai-pmp verifier not wired; rejected']
           [~ k]
         ==
       ::

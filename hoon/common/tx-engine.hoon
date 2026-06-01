@@ -152,6 +152,13 @@
 ++  ai-proof-node  ai-proof-node:v1
 ++  ai-recursive-certificate  ai-recursive-certificate:v1
 ++  ai-pow-certificate  ai-pow-certificate:v1
+++  pearl-header  pearl-header:v1
+++  pearl-public-data  pearl-public-data:v1
+++  pearl-chain-id  pearl-chain-id:v1
+++  pearl-extra-data  pearl-extra-data:v1
+++  pearl-nockchain-aux  pearl-nockchain-aux:v1
+++  pearl-merge-public-statement  pearl-merge-public-statement:v1
+++  pearl-merge-ai-pow-artifact  pearl-merge-ai-pow-artifact:v1
 ++  pow-artifact  pow-artifact:v1
 ++  reason
   |$  object

@@ -52,8 +52,9 @@
     ::
       ::  %3 is retained only as the legacy proof-version
       ::  discriminator. The canonical AI block artifact is
-      ::  `[%ai-pow nonce=ai-ncmn cert=ai-pow-certificate]` via
-      ::  tx-engine-1 / dumbnet types, not this proof-stream arm.
+      ::  `[%ai-pow nonce=ai-ncmn cert=ai-pow-certificate]` or
+      ::  `[%ai-pmp artifact=pearl-merge-ai-pow-artifact]`
+      ::  via tx-engine-1 / dumbnet types, not this proof-stream arm.
       ::  ZK helpers crash on %3 via explicit ?= guards.
       $:  version=%3
           objects=proof-objects
