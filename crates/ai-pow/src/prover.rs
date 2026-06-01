@@ -190,7 +190,8 @@ impl<'a> BlockContext<'a> {
         let noise = BlockNoise::expand(&s_a, &s_b, params);
         let matrices = Matrices::build(a, b, &noise, params);
 
-        // Pre-compute every tile's M state. These are independent of nonce.
+        // Pre-compute every tile's M state for this single nonce-bound attempt.
+        // Reusing these states across nonce values would be a PoW soundness bug.
         let num_tiles = params.num_tiles() as usize;
         let mut m_states = Vec::with_capacity(num_tiles);
         for tile_i in 0..params.row_tiles() {

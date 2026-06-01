@@ -23,8 +23,9 @@ use crate::prng;
 pub(crate) static BLOCK_NOISE_EXPAND_CALLS: std::sync::atomic::AtomicUsize =
     std::sync::atomic::AtomicUsize::new(0);
 
-/// Per-block low-rank noise factors. Derived once per `block_commitment`
-/// (via `noise_seed`) and reused across all nonce attempts in that block.
+/// Per-attempt low-rank noise factors. In production these seeds are derived
+/// after the nonce is folded into the Pearl attempt state, so reusing expanded
+/// noise across nonce values would be a PoW soundness bug.
 pub struct BlockNoise {
     pub m: u32,
     pub k: u32,
@@ -45,7 +46,8 @@ pub struct BlockNoise {
 impl BlockNoise {
     /// Build the noise factors per Pearl Alg. 1: `(E_L, E_R)` are keyed by
     /// `s_a`, `(F_R, F_L)` are keyed by `s_b`. The two seeds are derived in
-    /// `fiat_shamir.rs` from `(block_commitment, params_tag, H_A, H_B)`.
+    /// `fiat_shamir.rs` from the nonce-bound attempt transcript and matrix
+    /// commitments.
     pub fn expand(s_a: &[u8; 32], s_b: &[u8; 32], params: &MatmulParams) -> Self {
         #[cfg(test)]
         BLOCK_NOISE_EXPAND_CALLS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);

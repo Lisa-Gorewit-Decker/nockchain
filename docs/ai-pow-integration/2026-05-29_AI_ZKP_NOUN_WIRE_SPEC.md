@@ -233,14 +233,22 @@ Rust conversion rules:
 2. Validate every scalar range and vector length.
 3. Reconstruct omitted recursive verifier metadata from canonical config.
 4. Rebuild `ai_pow_zk::recursion::AiPowProductionCertificate`.
-5. Invoke the recursive verifier in two parts:
-   - outer recursive STARK verification for the production envelope;
-   - cryptographic comparison that the certificate's embedded L1 public inputs
-     equal the verifier-derived AI-PoW statement.
+5. Invoke `ai_pow_zk::recursion::verify_production_certificate` with the
+   verifier-derived `CompositePublicInputs`. This verifies both the production
+   recursive STARK envelope and the cryptographic binding between the outer
+   proof's public values and the Layer-0 AI-PoW statement.
 
-The current Rust helper can perform the first part (`verify_production_certificate_outer`).
-The second part is still the consensus blocker; accepting the outer proof while
-trusting adjacent statement metadata would permit certificate/metadata swaps.
+The node-side Rust helper
+`certificate_noun::verify_ai_pow_certificate_statement_and_proof` packages the
+required ordering once the structured proof-node tail has been reconstructed
+into an `AiPowProductionCertificate`: it runs the cheap statement precheck
+first, then calls the recursive production verifier with the decoded public
+inputs.
+
+The deprecated `verify_production_certificate_outer` helper is outer-only
+diagnostic code for old unbound proof objects. Consensus must not use it:
+accepting an outer proof while trusting adjacent statement metadata would
+permit certificate/metadata swaps.
 
 The verifier jet receives:
 
@@ -400,8 +408,8 @@ Before accepting `%ai-pow`, consensus must require:
 17. `public-inputs.hash-a == commitments.h-a-chunk`.
 18. `public-inputs.hash-b == commitments.h-b-chunk`.
 19. `public-inputs.hash-jackpot <= target`.
-20. Rust verifies the structured recursive certificate's outer recursive STARK envelope.
-21. Rust verifies that the embedded L1 public inputs are exactly the canonical statement rebuilt from config, commitments, `found-idx`, block commitment, nonce, and target.
+20. Rust verifies the structured recursive certificate with `verify_production_certificate`, including the outer recursive STARK envelope.
+21. Rust verifies that the certificate's bound public values are exactly the canonical statement rebuilt from config, commitments, `found-idx`, block commitment, nonce, and target.
 
 ## 11. Implementation Plan
 

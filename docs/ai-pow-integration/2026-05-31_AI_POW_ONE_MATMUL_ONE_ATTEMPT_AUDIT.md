@@ -324,8 +324,8 @@ s_B           = noise_seed_b(kappa, H_B)
 s_A           = noise_seed_a(s_B, H_A)
 noise         = BlockNoise::expand(s_A, s_B, params)
 M[i,j]        = compute_tile(A + E(s_A), B + F(s_B), i, j)
-jackpot_key   = jackpot_key_for_attempt(s_A)
-hash[i]       = BLAKE3(M[i,j], key=jackpot_key)
+pow_key       = pow_key_for_nonce(s_A, nonce)
+hash[i]       = BLAKE3(M[i,j], key=pow_key)
 ```
 
 This intentionally minimizes work reuse between attempts. Cache-friendly
@@ -379,7 +379,10 @@ Regression coverage now includes:
   nonce-bound work for each nonce;
 - ZK prover entrypoints reject nonce-substituted contexts before proving;
 - production recursive-certificate statement metadata rejects wrong nonce,
-  wrong public inputs, and jackpots above target before recursive verification.
+  wrong public inputs, and jackpots above target before recursive verification;
+- the recursive production certificate itself binds the Layer-0 public-input
+  vector as outer STARK public values, so swapping verifier-derived statement
+  inputs rejects at recursive certificate verification.
 - decoded structured certificate nouns reject wrong nonce, zero target, and
   parameter mismatch at the statement precheck boundary.
 
@@ -400,42 +403,43 @@ The recursive certificate has two distinct verification layers:
    the verifier-derived AI-PoW statement for this block commitment, nonce,
    target, matrix commitments, params, and `found_idx`.
 
-`crates/ai-pow-zk/src/recursion.rs` now exposes
-`verify_production_certificate_outer`. This is intentionally an outer-only
-helper. It enforces the production recursive-proof envelope (`D = 2`,
-`TablePacking::new(1, 8)`, Tip5, and split recompose tables) and then runs
-`BatchStarkProver::verify_all_tables`, including the `WitnessChecks` LogUp
-soundness gate.
+`crates/ai-pow-zk/src/recursion.rs` now exposes the production verifier API:
 
-This does **not** yet make `%ai-pow` consensus-admissible. The current
-`BatchStarkProof` stores the L1 circuit's public inputs in the circuit-prover
-`PublicAir` trace. `verify_all_tables` verifies that this committed public
-table balances against the circuit witness bus, but it does not take a
-verifier-supplied AI-PoW public-input vector and compare it to that table. A
-valid outer certificate therefore proves "the L1 verifier accepted some
-embedded statement", not by itself "the L1 verifier accepted this block's
-nonce-bound AI-PoW statement".
+- `verify_production_certificate(cert, public_inputs)` accepts only the
+  canonical recursive certificate and a verifier-derived
+  `CompositePublicInputs`.
+- `verify_production_certificate_with_public_values(cert, public_values)` is the
+  lower-level equivalent for callers that already hold the exact Layer-0 public
+  input vector. It rejects empty statement vectors on the production path.
+- `verify_production_certificate_outer` is deprecated outer-only diagnostic
+  code for old unbound proof objects. Canonical bound certificates reject on
+  that helper and direct callers to the full verifier.
 
-The Rust boundary already has the independent statement precheck
-(`verify_ai_pow_production_statement` /
-`precheck_ai_pow_certificate_statement`), but the missing consensus-critical
-piece is a cryptographic binding between that prechecked statement and the L1
-certificate's embedded public inputs. Until that exists, Hoon remains
-fail-closed for `%ai-pow`.
+The implemented binding is:
 
-Actionable fix options:
+1. `build_composite_l1_verifier_circuit` records the Layer-0 AI-PoW public
+   input vector passed to the L1 verifier circuit.
+2. `prove_composite_l1_outer_cert` sets
+   `TablePacking::with_public_binding_lanes(public_values.len())`.
+3. The circuit-prover `PublicAir` exposes those leading lanes as STARK public
+   values and constrains the first row to equal the supplied values.
+4. `BatchStarkProof` serializes `public_binding_lanes` and validates that it
+   agrees with `table_packing`.
+5. `verify_production_certificate` recomputes the expected production table
+   packing from the caller's public inputs, flattens each Goldilocks value into
+   the D=2 outer field representation `[value, 0]`, and calls
+   `verify_all_tables_with_public_values`.
 
-1. Preferred: change the L1 outer certificate format so a compact statement
-   digest or the full `CompositePublicInputs::to_vec()` becomes actual
-   `p3_batch_stark` public values supplied to the outer verifier, then expose a
-   `verify_production_certificate(cert, expected_statement)` API that passes the
-   verifier-derived values into `verify_batch`.
-2. Acceptable: add a sound extraction/opening mechanism for the circuit-prover
-   `PublicAir` table and compare every embedded public-input element to the
-   verifier-derived statement before accepting the certificate.
-3. Do not accept: verify only the outer certificate and trust adjacent block
-   metadata. That permits metadata swapping or replay of a valid recursive
-   certificate for a different statement.
+This closes the metadata-swap gap at the Rust recursive verifier boundary:
+reusing a valid recursive certificate with a different verifier-derived
+Layer-0 public-input vector fails recursive certificate verification. Hoon
+consensus still remains fail-closed for `%ai-pow` until the jet/wiring decodes
+the structured noun, derives the trusted statement from block data, and calls
+this full Rust verifier.
+
+Do not accept: verifying only the outer certificate and trusting adjacent block
+metadata. That permits metadata swapping or replay of a valid recursive
+certificate for a different statement.
 
 The zero-reuse mining rule remains stronger than "do not cache final hashes".
 Fresh attempts must rebuild every nonce-dependent work product:
@@ -455,18 +459,27 @@ optimization target.
 
 ## Concrete Implementation Plan
 
-### Phase 0: Stop Treating Current Path As Production-Sound
+### Phase 0: Stop Treating Unbound Paths As Production-Sound
 
-1. Keep the Hoon verifier path reject/deferred until this issue is fixed.
-2. Do not activate AI-PoW block acceptance on mainnet with the current
-   nonce-independent matmul statement.
+Status: implemented for current Hoon consensus; still required operationally
+until the verifier jet is wired.
+
+1. Keep the Hoon verifier path reject/deferred until the full recursive
+   certificate verifier is callable from consensus.
+2. Do not activate AI-PoW block acceptance on mainnet through any legacy
+   nonce-independent matmul statement or outer-only recursive verifier.
 3. Leave audit comments near `BlockContext`, `pow_key_for_nonce`, and the miner
-   loop so future readers do not mistake current behavior for the desired
+   loop so future readers do not mistake cache-friendly behavior for the desired
    invariant.
 
 ### Phase 1: Refactor Plain Attempt Context
 
-1. Split `BlockContext` into two concepts:
+Status: functionally implemented with `BlockContext` now representing one
+nonce-bound attempt. A future cleanup may still split raw immutable inputs from
+attempt-local state, but the soundness boundary no longer exposes nonce-free
+`m_states`.
+
+1. Split `BlockContext` into two concepts if the API is cleaned up further:
    - `BlockInputs`: immutable references to `A`, `B`, `params`, and at most
      trivial shape/range validation results. It must not contain keyed
      commitments, seeds, noised matrices, tile states, or jackpot inputs.
@@ -489,34 +502,38 @@ AttemptContext::build(&inputs, block_commitment, nonce)
 mine_attempt_at_target(&attempt, target, opts)
 ```
 
-4. Delete or rewrite `mine_block` so every nonce builds a fresh
-   `AttemptContext`. If a helper keeps the name, its docs must state that it
-   recomputes nonce-derived matmul work per nonce.
-5. Update `ai-pow-miner::mining::run_inner` so every extranonce performs a
-   fresh nonce-bound matmul attempt. `extranonces_tried` can then legitimately
-   mean `matmul_attempts_tried`.
+4. Done: `mine_block` builds a fresh nonce-bound context per nonce and its docs
+   state that it recomputes nonce-derived matmul work per nonce.
+5. Done: `ai-pow-miner::mining::run_inner` builds a fresh nonce-bound context
+   per extranonce before target checking.
 
 ### Phase 2: Update Plain Verification
 
-1. Replace the current commitment helper with a version that consumes the full
-   Pearl attempt state:
+Status: implemented. The current code keeps `pow_key_for_nonce(s_A, nonce)` as
+extra domain separation, but `s_A` is already nonce-bound before noise and
+matmul.
+
+1. The commitment helper consumes the full Pearl attempt state:
 
 ```rust
 attempt_state(block_commitment, nonce) -> Vec<u8>
 commitment_key_for_attempt(attempt_state, params_tag) -> [u8; 32]
-jackpot_key_for_attempt(s_a) -> [u8; 32]
+pow_key_for_nonce(s_a, nonce) -> [u8; 32]
 ```
 
 2. In `verify_at_target`, derive `attempt_state = block_state(block_commitment,
    nonce)`, then derive `kappa`, `H_A`, `H_B`, `s_B`, and `s_A` under that
    attempt state.
 3. Recompute opened tile values with `VerifierNoise::new(s_A, s_B, params)`.
-4. Hash the recomputed tile state with `jackpot_key_for_attempt`.
-5. Reject old proofs by changing `params_tag` domain/version or adding a proof
-   format version bump so legacy cheap-retry proofs cannot verify under the new
+4. Hash the recomputed tile state with `pow_key_for_nonce(s_A, nonce)`.
+5. Reject old proofs by deriving verifier noise from the nonce-bound attempt
+   state; legacy cheap-retry statements no longer verify under the new
    semantics.
 
 ### Phase 3: Update ZK Statement
+
+Status: implemented for the Rust ZK bridge and recursive production
+certificate; Hoon consensus still needs the verifier jet/wiring.
 
 1. In `prove_ai_pow_tiled_full`, build the plain/ZK context from
    `(block_commitment, nonce)` and use nonce-bound `kappa`, `H_A`, `H_B`,
@@ -533,8 +550,8 @@ jackpot_key_for_attempt(s_a) -> [u8; 32]
 4. In `verify_ai_pow_block`, derive the same attempt seeds from trusted
    `(block_commitment, nonce, params, commitments)` and pass those into
    `verify_ai_pow_tiled_with_statement`.
-5. Ensure the recursive certificate path only accepts the updated Layer-0
-   public input layout and proof version.
+5. Done: the recursive certificate path accepts the updated Layer-0 public
+   input layout through `verify_production_certificate`.
 
 ### Phase 4: Update Hoon/Noun Statement
 
@@ -545,13 +562,14 @@ jackpot_key_for_attempt(s_a) -> [u8; 32]
    `ai-pow-certificate`; the Hoon/Rust verifier path must call it with the
    trusted block commitment, block nonce, params, and target before or alongside
    recursive certificate verification.
-3. If proof or params versions change, add a version check in the
-   `ai-pow-certificate` decoder and reject version-1 certificates whose public
-   inputs correspond to the old nonce-independent matmul statement.
+3. The Rust decoder/precheck rejects statement data that does not match trusted
+   block data; if proof or params versions change again, add an explicit version
+   check in the `ai-pow-certificate` decoder.
 
 ### Phase 5: Regression Tests
 
-Add tests that fail on the current implementation and pass after the repair:
+Status: implemented for the main soundness paths; keep the remaining items as
+future hardening/measurement work.
 
 1. Plain attempt seed test:
    - Same `(block, A, B, params)`, different nonce.
@@ -565,15 +583,12 @@ Add tests that fail on the current implementation and pass after the repair:
 
 3. Proof nonce substitution:
    - A proof generated for nonce A must fail with nonce B.
-   - This likely already fails today through `pow_key`, but keep it as a
-     baseline.
+   - Implemented as a baseline regression.
 
 4. Matmul nonce substitution:
-   - Construct a proof using nonce A's noised matmul but nonce B's jackpot key.
-   - Verifier must reject.
-   - This is the decisive test that currently would not be expressible through
-     public APIs without an adversarial seam; add such a seam under `#[cfg(test)]`
-     if needed.
+   - Covered by stale-context rejection and verifier recomputation from the
+     nonce-bound attempt state; add a dedicated adversarial seam if future API
+     changes make mixed-context construction reachable again.
 
 5. ZK public input test:
    - For two nonces, prove the same `found_idx`.
@@ -581,16 +596,16 @@ Add tests that fail on the current implementation and pass after the repair:
      noised rows, and `HASH_JACKPOT` differ.
 
 6. Recursive certificate test:
-   - Recursive certificate for nonce A must fail verifier reconstruction for
-     nonce B.
-   - Recursive certificate built with base seeds and nonce-derived jackpot key
-     must fail under the new verifier.
+   - Implemented: a recursive certificate rejects when verified with a different
+     Layer-0 public-input vector.
+   - Keep a follow-up integration test at the noun/jet boundary once Hoon calls
+     the Rust verifier.
 
 7. Miner accounting test:
-   - Instrument the miner or attempt builder in tests and assert each
-     extranonce increments a matmul-attempt counter exactly once.
-   - Rename stats from `extranonces_tried` to `attempts_tried` or add a
-     separate `matmul_attempts_tried`.
+   - Future hardening: instrument the miner or attempt builder in tests and
+     assert each extranonce increments a matmul-attempt counter exactly once.
+   - Consider renaming stats from `extranonces_tried` to `attempts_tried` or
+     adding a separate `matmul_attempts_tried`.
 
 8. Difficulty calibration test:
    - Measure expected success rate over many small test attempts after the

@@ -45,6 +45,9 @@ pub struct PublicAir<F, const D: usize = 1> {
     pub preprocessed: Vec<F>,
     /// Minimum trace height (for FRI compatibility with higher log_final_poly_len).
     pub min_height: usize,
+    /// Number of leading lanes in the first row that must equal the STARK
+    /// public values supplied to this AIR.
+    pub public_binding_lanes: usize,
     _phantom: PhantomData<F>,
 }
 
@@ -62,6 +65,7 @@ impl<F: Field, const D: usize> PublicAir<F, D> {
             lanes,
             preprocessed: Vec::new(),
             min_height: 1,
+            public_binding_lanes: 0,
             _phantom: PhantomData,
         }
     }
@@ -80,6 +84,7 @@ impl<F: Field, const D: usize> PublicAir<F, D> {
             lanes,
             preprocessed,
             min_height: 1,
+            public_binding_lanes: 0,
             _phantom: PhantomData,
         }
     }
@@ -90,6 +95,17 @@ impl<F: Field, const D: usize> PublicAir<F, D> {
     /// So `min_height` should be >= `2^(log_final_poly_len + log_blowup + 1)`.
     pub const fn with_min_height(mut self, min_height: usize) -> Self {
         self.min_height = min_height;
+        self
+    }
+
+    /// Bind the first row's leading `lanes` values to this AIR's STARK public
+    /// values. Each logical lane contributes `D` base-field public values.
+    pub const fn with_public_binding_lanes(mut self, lanes: usize) -> Self {
+        assert!(
+            lanes <= self.lanes,
+            "public binding lanes cannot exceed packed public lanes"
+        );
+        self.public_binding_lanes = lanes;
         self
     }
 
@@ -172,6 +188,10 @@ impl<F: Field, const D: usize> BaseAir<F> for PublicAir<F, D> {
         self.lanes * Self::preprocessed_lane_width()
     }
 
+    fn num_public_values(&self) -> usize {
+        self.public_binding_lanes * D
+    }
+
     fn preprocessed_trace(&self) -> Option<RowMajorMatrix<F>> {
         let width = self.lanes * Self::preprocessed_lane_width();
         let mut mat = RowMajorMatrix::from_flat_padded(self.preprocessed.to_vec(), width, F::ZERO);
@@ -218,6 +238,14 @@ where
             }
 
             builder.push_interaction("WitnessChecks", fields, multiplicity, 1);
+
+            if lane < self.public_binding_lanes {
+                for j in 0..D {
+                    let expected = builder.public_values()[lane * D + j];
+                    let mut first_row = builder.when_first_row();
+                    first_row.assert_eq(main_local[main_off + j], expected);
+                }
+            }
         }
     }
 }

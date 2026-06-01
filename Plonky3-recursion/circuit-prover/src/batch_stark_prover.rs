@@ -398,6 +398,38 @@ fn clone_common_data<SC: StarkGenericConfig>(common: &CommonData<SC>) -> CommonD
     )
 }
 
+fn flatten_public_binding_values<SC, EF, const D: usize>(
+    traces: &Traces<EF>,
+    public_binding_lanes: usize,
+) -> Result<Vec<Val<SC>>, BatchStarkProverError>
+where
+    SC: StarkGenericConfig,
+    EF: Field + BasedVectorSpace<Val<SC>>,
+{
+    if public_binding_lanes == 0 {
+        return Ok(Vec::new());
+    }
+    if public_binding_lanes > traces.public_trace.values.len() {
+        return Err(BatchStarkProverError::Verify(format!(
+            "public binding lanes ({public_binding_lanes}) exceed public trace values ({})",
+            traces.public_trace.values.len()
+        )));
+    }
+
+    let mut out = Vec::with_capacity(public_binding_lanes * D);
+    for value in traces.public_trace.values.iter().take(public_binding_lanes) {
+        let coeffs = value.as_basis_coefficients_slice();
+        if coeffs.len() != D {
+            return Err(BatchStarkProverError::Verify(format!(
+                "public binding extension degree mismatch: expected {D}, got {}",
+                coeffs.len()
+            )));
+        }
+        out.extend_from_slice(coeffs);
+    }
+    Ok(out)
+}
+
 /// Custom (de)serialization for [`BatchStarkProof::stark_common`]. Persists only the
 /// preprocessed binding (commitment + per-instance metadata): the part the verifier
 /// needs to bind the proof to the [`CommonData`] it was generated against. `lookups`
@@ -441,6 +473,12 @@ where
     pub proof: BatchProof<SC>,
     /// Packing configuration used for the Witness, Public, and unified ALU tables.
     pub table_packing: TablePacking,
+    /// Number of leading Public table lanes exposed as STARK public values.
+    ///
+    /// This duplicates `table_packing.public_binding_lanes()` for cheap,
+    /// explicit verifier checks after deserialization.
+    #[serde(default)]
+    pub public_binding_lanes: usize,
     /// The number of rows in each of the circuit tables.
     pub rows: RowCounts,
     /// Variant used for the primitive ALU table.
@@ -473,6 +511,7 @@ where
         });
         f.debug_struct("BatchStarkProof")
             .field("table_packing", &self.table_packing)
+            .field("public_binding_lanes", &self.public_binding_lanes)
             .field("rows", &self.rows)
             .field("ext_degree", &self.ext_degree)
             .field("w_binomial", &self.w_binomial)
@@ -498,6 +537,12 @@ where
         }
         self.rows.validate()?;
         self.table_packing.validate()?;
+        if self.public_binding_lanes != self.table_packing.public_binding_lanes() {
+            return Err(ProofMetadataError::PublicBindingMismatch {
+                proof_lanes: self.public_binding_lanes,
+                packing_lanes: self.table_packing.public_binding_lanes(),
+            });
+        }
         for entry in &self.non_primitives {
             entry.validate()?;
         }
@@ -546,6 +591,24 @@ pub enum ProofMetadataError {
     /// `horner_packed_steps` is less than 2.
     #[error("horner_packed_steps must be at least 2 (got {0})")]
     BadHornerPackedSteps(usize),
+
+    /// The public table cannot bind more lanes than it packs into the first row.
+    #[error(
+        "public binding lanes ({binding_lanes}) exceed public lanes ({public_lanes})"
+    )]
+    PublicBindingExceedsLanes {
+        binding_lanes: usize,
+        public_lanes: usize,
+    },
+
+    /// Serialized proof metadata disagrees with the table packing's public binding lanes.
+    #[error(
+        "public binding lane metadata mismatch: proof has {proof_lanes}, packing has {packing_lanes}"
+    )]
+    PublicBindingMismatch {
+        proof_lanes: usize,
+        packing_lanes: usize,
+    },
 
     /// `ext_degree` is not one of the supported values.
     #[error("unsupported extension degree {0} (supported: 1,2,4,5,6,8)")]
@@ -608,6 +671,17 @@ where
             Self::Alu(a) => a.preprocessed_trace(),
             Self::Dynamic(a) => {
                 <dyn CloneableBatchAir<SC> as BaseAir<Val<SC>>>::preprocessed_trace(a.air())
+            }
+        }
+    }
+
+    fn num_public_values(&self) -> usize {
+        match self {
+            Self::Const(a) => a.num_public_values(),
+            Self::Public(a) => a.num_public_values(),
+            Self::Alu(a) => a.num_public_values(),
+            Self::Dynamic(a) => {
+                <dyn CloneableBatchAir<SC> as BaseAir<Val<SC>>>::num_public_values(a.air())
             }
         }
     }
@@ -681,9 +755,32 @@ where
 {
     match air {
         CircuitTableAir::Const(a) => Lookups::from_air::<SC::Challenge, _>(a),
-        CircuitTableAir::Public(a) => Lookups::from_air::<SC::Challenge, _>(a),
+        CircuitTableAir::Public(a) => {
+            let mut lookup_air = a.clone();
+            lookup_air.public_binding_lanes = 0;
+            Lookups::from_air::<SC::Challenge, _>(&lookup_air)
+        }
         CircuitTableAir::Alu(a) => Lookups::from_air::<SC::Challenge, _>(a),
         CircuitTableAir::Dynamic(a) => Lookups::from_air::<SC::Challenge, _>(a),
+    }
+}
+
+pub fn strip_public_binding_for_lookup_metadata<SC, const D: usize>(
+    air: &CircuitTableAir<SC, D>,
+) -> CircuitTableAir<SC, D>
+where
+    SC: StarkGenericConfig,
+    Val<SC>: PrimeField,
+    SymbolicExpressionExt<Val<SC>, SC::Challenge>:
+        Algebra<SymbolicExpression<Val<SC>>> + Algebra<SC::Challenge>,
+{
+    match air {
+        CircuitTableAir::Public(a) => {
+            let mut lookup_air = a.clone();
+            lookup_air.public_binding_lanes = 0;
+            CircuitTableAir::Public(lookup_air)
+        }
+        _ => air.clone(),
     }
 }
 
@@ -992,15 +1089,25 @@ where
         &self,
         proof: &BatchStarkProof<SC>,
     ) -> Result<(), BatchStarkProverError> {
+        self.verify_all_tables_with_public_values(proof, &[])
+    }
+
+    /// Verify the unified batch STARK proof while binding the leading Public
+    /// table lanes to caller-supplied STARK public values.
+    pub fn verify_all_tables_with_public_values(
+        &self,
+        proof: &BatchStarkProof<SC>,
+        public_values: &[Val<SC>],
+    ) -> Result<(), BatchStarkProverError> {
         proof.validate()?;
         let common = &proof.stark_common;
         match proof.ext_degree {
-            1 => self.verify::<1>(proof, None, common),
-            2 => self.verify::<2>(proof, proof.w_binomial, common),
-            4 => self.verify::<4>(proof, proof.w_binomial, common),
-            5 => self.verify::<5>(proof, proof.w_binomial, common),
-            6 => self.verify::<6>(proof, proof.w_binomial, common),
-            8 => self.verify::<8>(proof, proof.w_binomial, common),
+            1 => self.verify::<1>(proof, None, common, public_values),
+            2 => self.verify::<2>(proof, proof.w_binomial, common, public_values),
+            4 => self.verify::<4>(proof, proof.w_binomial, common, public_values),
+            5 => self.verify::<5>(proof, proof.w_binomial, common, public_values),
+            6 => self.verify::<6>(proof, proof.w_binomial, common, public_values),
+            8 => self.verify::<8>(proof, proof.w_binomial, common, public_values),
             d => Err(BatchStarkProverError::UnsupportedDegree(d)),
         }
     }
@@ -1081,12 +1188,15 @@ where
         let public_prep = primitive[PrimitiveOpType::Public as usize].clone();
         let public_air =
             PublicAir::<Val<SC>, D>::new_with_preprocessed(public_rows, public_lanes, public_prep)
+                .with_public_binding_lanes(packing.public_binding_lanes())
                 .with_min_height(min_height);
         let public_matrix: RowMajorMatrix<Val<SC>> = PublicAir::<Val<SC>, D>::trace_to_matrix(
             &traces.public_trace,
             public_lanes,
             min_height,
         );
+        let public_binding_values =
+            flatten_public_binding_values::<SC, EF, D>(traces, packing.public_binding_lanes())?;
 
         // ALU — preprocessed is already in 10-col format (with multiplicities) from
         // get_airs_and_degrees_with_prep. When the trace is empty, a dummy row is included.
@@ -1265,7 +1375,7 @@ where
 
         air_storage.push(CircuitTableAir::Public(public_air));
         trace_storage.push(public_matrix);
-        public_storage.push(Vec::new());
+        public_storage.push(public_binding_values);
 
         air_storage.push(CircuitTableAir::Alu(alu_air));
         trace_storage.push(alu_matrix);
@@ -1297,9 +1407,13 @@ where
                 .iter()
                 .map(|m| log2_strict_usize(m.height()) + self.config.is_zk())
                 .collect();
+            let lookup_metadata_airs: Vec<CircuitTableAir<SC, D>> = air_storage
+                .iter()
+                .map(strip_public_binding_for_lookup_metadata)
+                .collect();
             Some(ProverData::from_airs_and_degrees(
                 &self.config,
-                &air_storage,
+                &lookup_metadata_airs,
                 &trace_ext_degree_bits,
             ))
         } else {
@@ -1398,6 +1512,7 @@ where
         Ok(BatchStarkProof {
             proof,
             table_packing: effective_packing,
+            public_binding_lanes: packing.public_binding_lanes(),
             rows: RowCounts::new([const_rows_padded, public_rows_padded, alu_rows_padded]),
             alu_variant: self.alu_variant,
             ext_degree: D,
@@ -1418,7 +1533,15 @@ where
         proof: &BatchStarkProof<SC>,
         w_binomial: Option<Val<SC>>,
         common: &CommonData<SC>,
+        public_values: &[Val<SC>],
     ) -> Result<(), BatchStarkProverError> {
+        let expected_public_values = proof.public_binding_lanes * D;
+        if public_values.len() != expected_public_values {
+            return Err(BatchStarkProverError::Verify(format!(
+                "public binding values length mismatch: expected {expected_public_values}, got {}",
+                public_values.len()
+            )));
+        }
         let prover_index_by_type: BTreeMap<NpoTypeId, usize> = self
             .non_primitive_provers
             .iter()
@@ -1438,6 +1561,7 @@ where
         );
         let public_air = CircuitTableAir::Public(
             PublicAir::<Val<SC>, D>::new(proof.rows[PrimitiveTable::Public], public_lanes)
+                .with_public_binding_lanes(proof.public_binding_lanes)
                 .with_min_height(min_height),
         );
         let horner_k = packing.horner_packed_steps();
@@ -1468,6 +1592,7 @@ where
         let mut pvs: Vec<Vec<Val<SC>>> =
             Vec::with_capacity(NUM_PRIMITIVE_TABLES + proof.non_primitives.len());
         pvs.resize_with(NUM_PRIMITIVE_TABLES, Vec::new);
+        pvs[PrimitiveTable::Public as usize] = public_values.to_vec();
 
         for entry in &proof.non_primitives {
             let pi = *prover_index_by_type.get(&entry.op_type).ok_or_else(|| {

@@ -353,6 +353,7 @@ where
                     effective_public_lanes,
                     base_prep[idx].clone(),
                 )
+                .with_public_binding_lanes(packing.public_binding_lanes())
                 .with_min_height(min_height);
                 let num_rows = num_ops.div_ceil(effective_public_lanes);
                 table_preps.push((

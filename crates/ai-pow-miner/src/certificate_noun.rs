@@ -46,6 +46,8 @@ pub enum CertificateNounError {
     },
     #[error("certificate statement metadata is not bound to trusted block state: {0}")]
     Statement(#[from] BridgeError),
+    #[error("recursive production certificate verification failed: {0}")]
+    RecursiveCertificate(String),
 }
 
 /// Resource limits for decoding the structured certificate noun.
@@ -234,6 +236,28 @@ pub fn precheck_ai_pow_certificate_statement(
         &shape.public_inputs, shape.trace_height,
     )
     .map_err(CertificateNounError::Statement)
+}
+
+/// Verify the decoded certificate metadata and the recursive production proof
+/// against trusted block data.
+///
+/// This is the production-safe Rust boundary once the structured proof-node
+/// tail has been reconstructed into an
+/// [`ai_pow_zk::recursion::AiPowProductionCertificate`]. It deliberately runs
+/// the cheap statement precheck before the recursive verifier, so wrong
+/// `(block_commitment, nonce, params, target, found_idx, commitments,
+/// public_inputs)` data is rejected before expensive proof work.
+pub fn verify_ai_pow_certificate_statement_and_proof(
+    shape: &AiPowCertificateShape,
+    block_commitment: &[u8],
+    nonce: &[u8],
+    params: &MatmulParams,
+    target: &[u8; 32],
+    certificate: &ai_pow_zk::recursion::AiPowProductionCertificate,
+) -> Result<(), CertificateNounError> {
+    precheck_ai_pow_certificate_statement(shape, block_commitment, nonce, params, target)?;
+    ai_pow_zk::recursion::verify_production_certificate(certificate, &shape.public_inputs)
+        .map_err(|e| CertificateNounError::RecursiveCertificate(e.to_string()))
 }
 
 #[derive(Debug)]

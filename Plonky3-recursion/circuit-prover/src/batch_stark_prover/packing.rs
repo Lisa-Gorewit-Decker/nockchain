@@ -24,6 +24,14 @@ pub struct TablePacking {
     /// Must be at least 2. Default 2 matches the previous double-step Horner layout.
     #[serde(default = "default_horner_pack_k")]
     horner_packed_steps: usize,
+    /// Number of leading public-input lanes in the first Public table row that
+    /// are also exposed as STARK public values.
+    ///
+    /// This is used by recursive certificates whose outer verifier must bind a
+    /// small statement prefix, while the rest of the recursive verifier's
+    /// public table may still carry proof-internal data.
+    #[serde(default)]
+    public_binding_lanes: usize,
 }
 
 const fn default_horner_pack_k() -> usize {
@@ -41,6 +49,7 @@ impl TablePacking {
             npo_lanes: Vec::new(),
             min_trace_height: 1,
             horner_packed_steps: 2,
+            public_binding_lanes: 0,
         }
     }
 
@@ -60,6 +69,14 @@ impl TablePacking {
     pub fn with_public_alu_lanes(mut self, public_lanes: usize, alu_lanes: usize) -> Self {
         self.public_lanes = public_lanes.max(1);
         self.alu_lanes = alu_lanes.max(1);
+        self
+    }
+
+    /// Expose the leading `lanes` public-input lanes of the first Public table
+    /// row as STARK public values.
+    #[must_use]
+    pub fn with_public_binding_lanes(mut self, lanes: usize) -> Self {
+        self.public_binding_lanes = lanes;
         self
     }
 
@@ -136,6 +153,11 @@ impl TablePacking {
         self.horner_packed_steps
     }
 
+    /// Number of leading public lanes bound to STARK public values.
+    pub const fn public_binding_lanes(&self) -> usize {
+        self.public_binding_lanes
+    }
+
     /// Re-check the invariants the builder methods enforce, after deserialization.
     pub fn validate(&self) -> Result<(), ProofMetadataError> {
         if self.public_lanes == 0 {
@@ -156,6 +178,12 @@ impl TablePacking {
             return Err(ProofMetadataError::BadHornerPackedSteps(
                 self.horner_packed_steps,
             ));
+        }
+        if self.public_binding_lanes > self.public_lanes {
+            return Err(ProofMetadataError::PublicBindingExceedsLanes {
+                binding_lanes: self.public_binding_lanes,
+                public_lanes: self.public_lanes,
+            });
         }
         Ok(())
     }

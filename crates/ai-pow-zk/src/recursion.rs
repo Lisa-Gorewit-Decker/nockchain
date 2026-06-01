@@ -52,6 +52,20 @@ const DIGEST_ELEMS: usize = 5;
 const WIDTH: usize = 16;
 const RATE: usize = 10;
 
+fn production_l1_table_packing(public_value_count: usize) -> p3_circuit_prover::TablePacking {
+    p3_circuit_prover::TablePacking::new(public_value_count.max(1), 8)
+        .with_public_binding_lanes(public_value_count)
+}
+
+fn flatten_l1_statement_public_values(public_values: &[Val]) -> Vec<Val> {
+    let mut out = Vec::with_capacity(public_values.len() * 2);
+    for &value in public_values {
+        out.push(value);
+        out.push(Val::ZERO);
+    }
+    out
+}
+
 /// The recursion `OpeningProof` target type for ai-pow-zk's Layer-0
 /// `TwoAdicFriPcs` (the `InnerFriGeneric` alias from the recursion test
 /// suite, instantiated with ai-pow-zk's own MMCS hash/compress).
@@ -115,6 +129,9 @@ impl Permutation<[Challenge; 16]> for LiftTip5 {
 pub struct BuiltCompositeL1 {
     /// The L1 verifier circuit (proves "I verified the composite proof").
     pub circuit: p3_circuit::Circuit<Challenge>,
+    /// Layer-0 AI-PoW statement values that are exposed and bound by the L1
+    /// outer certificate.
+    pub statement_public_values: Vec<Val>,
     /// Public inputs for the runner.
     pub public_inputs: Vec<Challenge>,
     /// Private inputs for the runner (opened values etc.).
@@ -210,6 +227,7 @@ pub fn build_composite_l1_verifier_circuit(
 
     Ok(BuiltCompositeL1 {
         circuit,
+        statement_public_values: public_values.to_vec(),
         public_inputs,
         private_inputs,
         mmcs_op_ids,
@@ -273,8 +291,9 @@ pub fn prove_composite_l1_outer_cert(
     use p3_batch_stark::ProverData;
     use p3_circuit_prover::common::{get_airs_and_degrees_with_prep, NpoPreprocessor};
     use p3_circuit_prover::{
-        config, recompose_air_builders, tip5_air_builders, BatchStarkProver, CircuitProverData,
-        ConstraintProfile, RecomposePreprocessor, TablePacking, Tip5Preprocessor,
+        config, recompose_air_builders, strip_public_binding_for_lookup_metadata,
+        tip5_air_builders, BatchStarkProver, CircuitProverData, ConstraintProfile,
+        RecomposePreprocessor, Tip5Preprocessor,
     };
 
     type OuterConfig = config::GoldilocksTipsConfig;
@@ -282,7 +301,8 @@ pub fn prove_composite_l1_outer_cert(
     // D=2 outer-cert table layout — Tip5 NPO (D=1 perm) + recompose
     // with split coeff tables (the verifier circuit set
     // `set_recompose_coeff_ctl_for_decompose_links(true)`).
-    let table_packing = TablePacking::new(1, 8);
+    let public_binding_lanes = built.statement_public_values.len();
+    let table_packing = production_l1_table_packing(public_binding_lanes);
     let npo_prep: Vec<Box<dyn NpoPreprocessor<Val>>> =
         vec![Box::new(Tip5Preprocessor), Box::new(RecomposePreprocessor::new(true))];
     let mut air_builders = tip5_air_builders::<OuterConfig, 2>();
@@ -329,8 +349,15 @@ pub fn prove_composite_l1_outer_cert(
     let traces = runner.run().map_err(VerificationError::Circuit)?;
 
     // Prove the verifier circuit as a D=2 batch-STARK.
-    let prover_data =
-        ProverData::from_airs_and_degrees(&config::goldilocks_tip5(), &airs, &degrees);
+    let lookup_metadata_airs = airs
+        .iter()
+        .map(strip_public_binding_for_lookup_metadata)
+        .collect::<Vec<_>>();
+    let prover_data = ProverData::from_airs_and_degrees(
+        &config::goldilocks_tip5(),
+        &lookup_metadata_airs,
+        &degrees,
+    );
     let circuit_prover_data =
         CircuitProverData::new(prover_data, primitive_columns, non_primitive_columns);
     let mut prover =
@@ -346,35 +373,82 @@ pub fn prove_composite_l1_outer_cert(
             ))
         })?;
     // The cross-table `WitnessChecks` soundness gate.
-    prover.verify_all_tables(&batch_proof).map_err(|e| {
-        VerificationError::InvalidProofShape(format!(
-            "composite L1 outer cert — verify_all_tables rejected: {e:?}"
-        ))
-    })?;
+    let bound_public_values = flatten_l1_statement_public_values(&built.statement_public_values);
+    prover
+        .verify_all_tables_with_public_values(&batch_proof, &bound_public_values)
+        .map_err(|e| {
+            VerificationError::InvalidProofShape(format!(
+                "composite L1 outer cert — verify_all_tables rejected: {e:?}"
+            ))
+        })?;
     Ok(batch_proof)
 }
 
-/// Verify the outer recursive STARK envelope for Nockchain's canonical
-/// AI-PoW production certificate.
+/// Verify only a legacy unbound outer recursive STARK envelope.
 ///
 /// This checks that `cert` is a valid D=2 `BatchStarkProof` over the
 /// circuit-prover tables used by [`prove_composite_l1_outer_cert`], including
 /// the cross-table `WitnessChecks` LogUp argument. It deliberately enforces
-/// the production recursion envelope (D=2, Tip5 + split recompose, public
-/// lanes 1, ALU lanes 8) instead of accepting arbitrary circuit-prover proof
-/// metadata as a production certificate.
+/// the production recursion envelope (D=2, Tip5 + split recompose, ALU lanes
+/// 8) instead of accepting arbitrary circuit-prover proof metadata as a
+/// production certificate.
 ///
-/// This is still **outer-only** verification. The current circuit-prover proof
-/// object proves that the L1 verifier circuit accepted some embedded Layer-0
-/// public-input vector; it does not expose a verifier-supplied hook here that
-/// compares that vector to block-derived AI-PoW statement data. Consensus
-/// callers must not treat this function alone as a full block verifier.
+/// Canonical production certificates bind the Layer-0 public-input vector as
+/// outer STARK public values. This helper rejects those bound certificates and
+/// exists only as a diagnostic for old unbound proof objects. Consensus callers
+/// must use [`verify_production_certificate`] with verifier-derived public
+/// inputs.
+#[deprecated(
+    note = "outer-only verification is not a production AI-PoW verifier; use verify_production_certificate"
+)]
 pub fn verify_production_certificate_outer(
     cert: &AiPowProductionCertificate,
 ) -> Result<(), VerificationError> {
-    use p3_circuit_prover::{config, BatchStarkProver, TablePacking};
+    if cert.public_binding_lanes != 0 {
+        return Err(VerificationError::InvalidProofShape(
+            "AI-PoW recursive production certificate binds public statement values; use \
+             verify_production_certificate with verifier-derived public inputs"
+                .to_string(),
+        ));
+    }
 
-    let expected_packing = TablePacking::new(1, 8);
+    verify_production_certificate_with_public_values_inner(cert, &[], true)
+}
+
+/// Verify the canonical recursive production certificate against the
+/// verifier-derived Layer-0 AI-PoW public inputs.
+pub fn verify_production_certificate(
+    cert: &AiPowProductionCertificate,
+    public_inputs: &crate::composite_public::CompositePublicInputs,
+) -> Result<(), VerificationError> {
+    verify_production_certificate_with_public_values(cert, &public_inputs.to_vec())
+}
+
+/// Verify the canonical recursive production certificate against the
+/// verifier-derived Layer-0 AI-PoW public-input vector.
+pub fn verify_production_certificate_with_public_values(
+    cert: &AiPowProductionCertificate,
+    public_values: &[Val],
+) -> Result<(), VerificationError> {
+    verify_production_certificate_with_public_values_inner(cert, public_values, false)
+}
+
+fn verify_production_certificate_with_public_values_inner(
+    cert: &AiPowProductionCertificate,
+    public_values: &[Val],
+    allow_empty_statement: bool,
+) -> Result<(), VerificationError> {
+    use p3_circuit_prover::{config, BatchStarkProver};
+
+    if public_values.is_empty() && !allow_empty_statement {
+        return Err(VerificationError::InvalidProofShape(
+            "AI-PoW recursive production certificate verification requires non-empty \
+             verifier-derived public inputs"
+                .to_string(),
+        ));
+    }
+
+    let expected_packing = production_l1_table_packing(public_values.len());
     if cert.ext_degree != 2 {
         return Err(VerificationError::InvalidProofShape(format!(
             "AI-PoW recursive production certificate uses extension degree {}; expected 2",
@@ -388,6 +462,13 @@ pub fn verify_production_certificate_outer(
             cert.table_packing, expected_packing
         )));
     }
+    if cert.public_binding_lanes != public_values.len() {
+        return Err(VerificationError::InvalidProofShape(format!(
+            "AI-PoW recursive production certificate binds {} statement values; expected {}",
+            cert.public_binding_lanes,
+            public_values.len()
+        )));
+    }
     if cert.alu_quintic_trinomial {
         return Err(VerificationError::InvalidProofShape(
             "AI-PoW recursive production certificate unexpectedly selected quintic ALU".to_string(),
@@ -398,11 +479,14 @@ pub fn verify_production_certificate_outer(
         BatchStarkProver::new(config::goldilocks_tip5()).with_table_packing(expected_packing);
     verifier.register_tip5_table::<2>(Tip5Config::GOLDILOCKS_W16);
     verifier.register_recompose_table::<2>(true);
-    verifier.verify_all_tables(cert).map_err(|e| {
-        VerificationError::InvalidProofShape(format!(
-            "AI-PoW recursive production certificate outer verification rejected: {e:?}"
-        ))
-    })
+    let bound_public_values = flatten_l1_statement_public_values(public_values);
+    verifier
+        .verify_all_tables_with_public_values(cert, &bound_public_values)
+        .map_err(|e| {
+            VerificationError::InvalidProofShape(format!(
+                "AI-PoW recursive production certificate verification rejected: {e:?}"
+            ))
+        })
 }
 
 /// Per-stage instrumentation of one end-to-end composite→L1
@@ -763,8 +847,10 @@ mod tests {
         let cert = prove_composite_l1_outer_cert(&built, &proof)
             .expect("honest recursive production certificate");
 
-        verify_production_certificate_outer(&cert)
-            .expect("outer recursive production certificate verifier must accept honest cert");
+        verify_production_certificate(&cert, &pis)
+            .expect("recursive production certificate verifier must accept honest cert");
+        verify_production_certificate_with_public_values(&cert, &[])
+            .expect_err("production verifier must reject empty statement public inputs");
     }
 
     #[test]
@@ -790,8 +876,36 @@ mod tests {
             .expect("honest recursive production certificate");
 
         cert.ext_degree = 1;
-        verify_production_certificate_outer(&cert)
+        verify_production_certificate(&cert, &pis)
             .expect_err("production verifier must reject non-D=2 recursion envelope");
+    }
+
+    #[test]
+    fn production_certificate_rejects_wrong_statement_public_inputs() {
+        let profile = CircuitConfig::TEST_PEARL;
+        let cfg = build_config(&test_zk_params(), &profile);
+
+        let trace = CompositeTrace::baseline_min();
+        let pis = CompositePublicInputs::derive_from_trace(&trace);
+        let (proof, program) = composite_prove_pinned_logup(&cfg, trace, &pis);
+        let air = CompositeFullAirWithLookupsPinned::new_with(program.clone(), true);
+        let pd = logup_common_for(&cfg, &program, true);
+        let built = build_composite_l1_verifier_circuit(
+            &cfg,
+            &air,
+            &proof,
+            &pd.common,
+            &pis.to_vec(),
+            &profile,
+        )
+        .expect("build composite L1 verifier circuit");
+        let cert = prove_composite_l1_outer_cert(&built, &proof)
+            .expect("honest recursive production certificate");
+
+        let mut wrong = pis.clone();
+        wrong.job_key[0] ^= 1;
+        verify_production_certificate(&cert, &wrong)
+            .expect_err("recursive certificate must reject metadata-swapped public inputs");
     }
 
     /// S5 TAMPER-REJECT: a composite proof with one corrupted opened
