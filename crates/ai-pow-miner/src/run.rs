@@ -20,7 +20,7 @@
 //!    - new candidate → cancel any in-flight attempt, derive the
 //!      mining job, spawn-blocking [`crate::mining::run`].
 //!    - worker result:
-//!      - success → build the canonical recursive certificate via the
+//!      - success → build the full-matmul-admissible recursive certificate via the
 //!        configured certificate builder and poke the node with
 //!        `[%command %pow %ai-pow nonce cert]` on [`AiPowMinerWire::Mined`],
 //!        then idle until the next candidate.
@@ -28,11 +28,12 @@
 //! 5. Stream drop → outer loop reconnects.
 //!
 //! ## Note on submission
-//! The canonical production payload is the recursive AI-PoW certificate
-//! noun. The plain `MatmulProof`, nonce, and tile index are mining
-//! internals; they are not submitted to the kernel as the block proof. The
-//! current kernel remains fail-closed for this payload until recursive
-//! certificate verification is wired.
+//! The canonical payload shape is the recursive AI-PoW certificate noun. The
+//! plain `MatmulProof`, nonce, and tile index are mining internals; they are
+//! not submitted to the kernel as the block proof. The current certificate
+//! builder fails closed for multi-tile params until the recursive statement
+//! binds a full-matrix aggregate, and the kernel remains fail-closed until
+//! recursive certificate verification is wired.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -118,9 +119,11 @@ pub struct AiPuzzleInputs {
     pub b: Arc<Vec<i8>>,
     /// Forwarded to the per-attempt prover (mostly defaults).
     pub prover_opts: ProverOptions,
-    /// Production handoff that turns a winning mining attempt into the
-    /// canonical structured recursive certificate noun. If absent, the
-    /// run loop mines but refuses to submit anything to consensus.
+    /// Production handoff that turns a winning mining attempt into a
+    /// full-matmul-admissible structured recursive certificate noun. If
+    /// absent, or if the current recursive proof is only a selected-tile proof
+    /// for multi-tile params, the run loop mines but refuses to submit
+    /// anything to consensus.
     pub certificate_builder: Option<Arc<AiPowCertificateBuilder>>,
 }
 

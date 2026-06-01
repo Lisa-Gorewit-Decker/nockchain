@@ -44,11 +44,12 @@
 //! `ai_pow_zk::composite_proof` (entrypoint tier table) and
 //! `crates/ai-pow-zk/docs/2026-05-15_HIGH2_2_DESIGN.md` §4.C.
 //!
-//! This bridge produces and verifies the Layer-0 composite proof. It is
-//! soundness-critical, but it is not the final Nockchain consensus
-//! certificate. Production block persistence and wire format must use
-//! the recursive certificate from
-//! `ai_pow_zk::recursion::prove_canonical_ai_pow_certificate`.
+//! This bridge produces and verifies the Layer-0 composite proof for one
+//! opened jackpot tile. It is soundness-critical, but it is not by itself a
+//! full-matmul consensus certificate. Production block persistence and wire
+//! format may only use a recursive certificate through the full-matmul guard
+//! below; multi-tile selected-tile certificates fail closed until the recursive
+//! statement binds a full-matrix aggregate.
 //!
 //! ## Remaining fidelity gap (not a binding gap) — HIGH-2.2 §4.A
 //!
@@ -226,20 +227,22 @@ impl ZkPublicCommitments {
 /// cross-checks these public inputs against chain-derived commitments and
 /// reconstructs the canonical program before invoking the STARK verifier.
 ///
-/// This is an intermediate recursive-prover input. It is not the
-/// canonical production certificate for Nockchain AI-PoW blocks.
+/// This is an intermediate recursive-prover input. It is not the persisted
+/// recursive certificate and does not prove a full multi-tile matmul by itself.
 pub(crate) struct ZkProofArtifact {
     pub proof: AiPowBatchProof,
     pub pis: CompositePublicInputs,
     pub trace_height: usize,
 }
 
-/// Prover-side result for the canonical recursive AI-PoW certificate.
+/// Prover-side result for a recursive AI-PoW certificate.
 ///
 /// This is the object production callers should hand to the Hoon noun encoder:
 /// it contains the recursive L1 certificate plus only the statement data
 /// needed to verify it later. It does not contain the plain `MatmulProof` or
-/// a serialized Layer-0 `AiPowBatchProof`.
+/// a serialized Layer-0 `AiPowBatchProof`. For multi-tile params the current
+/// recursive statement is selected-tile only, so
+/// [`prove_ai_pow_recursive_certificate`] rejects before producing this value.
 pub struct AiPowRecursiveCertificateRun {
     pub zk_params: ZkParams,
     pub found_idx: u32,
@@ -592,7 +595,7 @@ impl AiPowProductionArtifact {
 /// This is crate-internal test/diagnostic coverage for the deprecated Layer-0
 /// byte envelope. It is not a production Nockchain consensus API; production
 /// verification uses the recursive certificate noun and
-/// [`verify_ai_pow_production_statement`].
+/// [`verify_ai_pow_full_matmul_production_statement`].
 #[cfg(test)]
 fn verify_ai_pow_consensus_artifact(
     block_commitment: &[u8],
@@ -979,13 +982,20 @@ fn prove_ai_pow_block(
     Ok(artifact)
 }
 
-/// Build the canonical recursive AI-PoW certificate for a solved block.
+/// Build the recursive AI-PoW certificate for a solved block.
 ///
 /// This is the production prover handoff for Nockchain block submission:
 /// it constructs the Layer-0 composite proof internally, recursively
 /// verifies that proof in the L1 circuit, and returns the recursive
 /// certificate plus typed statement data for the Hoon noun encoder. The
 /// returned value deliberately does not expose the plain `MatmulProof`.
+///
+/// Current soundness boundary: the recursive Layer-0 statement proves one
+/// verifier-derived jackpot tile. For `params.num_tiles() > 1`, that is not a
+/// proof of one full-matmul attempt, so this production-facing builder fails
+/// before spending ZK proving work. Re-enable multi-tile production only after
+/// the recursive statement binds a full-matrix aggregate or equivalent
+/// full-work certificate.
 pub fn prove_ai_pow_recursive_certificate(
     ctx: &BlockContext<'_>,
     params: &MatmulParams,
@@ -1002,9 +1012,13 @@ pub fn prove_ai_pow_recursive_certificate(
     ensure_attempt_found_idx(
         &ctx.block_commitment, &ctx.nonce, params, &commitments, found_idx,
     )?;
+    let num_tiles = params.num_tiles();
+    if num_tiles > 1 {
+        return Err(BridgeError::FullMatmulProofUnavailable { num_tiles });
+    }
     let (tile_i, tile_j) = tile_ij(found_idx, params).ok_or(BridgeError::FoundIdxOutOfRange {
         found_idx,
-        num_tiles: params.num_tiles(),
+        num_tiles,
     })?;
     let (artifact, prover_program, _) =
         prove_ai_pow_tiled_full(ctx, params, nonce, tile_i, tile_j, |_| {}, None)?;
@@ -2380,6 +2394,33 @@ mod tests {
         assert!(matches!(
             prove_and_verify_for_block(&ctx, &params, nonce, wrong),
             Err(BridgeError::FoundIdxMismatch { .. })
+        ));
+    }
+
+    #[test]
+    fn recursive_certificate_builder_fails_closed_for_multi_tile_before_zkp() {
+        let params = MatmulParams {
+            m: 64,
+            k: 512,
+            n: 64,
+            noise_rank: 32,
+            tile: 8,
+            spot_checks: 8,
+            difficulty_bits: 0,
+        };
+        params.validate_prod_envelope().unwrap();
+        assert!(params.num_tiles() > 1);
+        let block = b"recursive-builder-multi-tile-block";
+        let nonce = b"recursive-builder-multi-tile-nonce";
+        let (a, b) = synth_matrices(b"recursive-builder-multi-tile-seed", &params);
+        let ctx = BlockContext::build(block, nonce, &a, &b, &params).expect("ctx");
+        let commitments = ZkPublicCommitments::from_context(&ctx);
+        let found_idx = expected_attempt_found_idx(block, nonce, &params, &commitments).unwrap();
+
+        assert!(matches!(
+            prove_ai_pow_recursive_certificate(&ctx, &params, nonce, &[0xff; 32], found_idx),
+            Err(BridgeError::FullMatmulProofUnavailable { num_tiles })
+                if num_tiles == params.num_tiles()
         ));
     }
 

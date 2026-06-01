@@ -388,14 +388,17 @@ Current code follows the recommended production design above:
   BLAKE3-style hash rate or cheap extranonce rate.
 - `crates/ai-pow/src/zk_bridge.rs`: prover entrypoints reject a context used
   with a different nonce, verifier entrypoints derive public inputs from the
-  nonce-bound attempt state, and `verify_ai_pow_production_statement` provides
-  the same binding checks for persisted recursive-certificate metadata.
+  nonce-bound attempt state, and
+  `verify_ai_pow_full_matmul_production_statement` provides the persisted
+  recursive-certificate full-matmul admission check. The lower-level
+  `verify_ai_pow_production_statement` remains a selected-tile binding helper.
 - `crates/ai-pow-miner/src/certificate_noun.rs`: decoded Hoon-compatible
   certificate nouns can be reconstructed into
   `AiPowProductionCertificate` and verified via
   `verify_decoded_ai_pow_ncmn_certificate`, which checks the NCMN nonce anchor
   and runs the trusted statement precheck before recursive proof verification
-  consumes the miner-controlled proof tree.
+  consumes the miner-controlled proof tree. Multi-tile selected-tile recursive
+  statements are rejected at this precheck.
 - `crates/ai-pow-miner/src/bin/ai_pow_mine.rs`: recursive certificate
   construction rebuilds the context for the winning nonce and refuses to prove
   unless the production NCMN verifier confirms that the plain target check
@@ -403,6 +406,8 @@ Current code follows the recommended production design above:
   the mining result. This precheck enforces the production parameter envelope,
   NCMN nonce shape, candidate anchor, absent external commitment, and target
   satisfaction before recursive proof generation begins.
+  It also rejects the current multi-tile selected-tile recursive statement
+  before spending ZK proving work.
 
 Regression coverage now includes:
 
@@ -413,12 +418,12 @@ Regression coverage now includes:
 - `mine_block` is byte-equivalent to `mine` for the same nonce but rebuilds
   nonce-bound work for each nonce;
 - ZK prover entrypoints reject nonce-substituted contexts before proving;
-- the standalone miner's recursive certificate builder rejects bad targets and
-  non-canonical, wrong-anchor, or externally anchored NCMN nonces before
-  recursive proof generation;
+- the standalone miner's recursive certificate builder rejects bad targets,
+  non-canonical, wrong-anchor, externally anchored NCMN nonces, and multi-tile
+  selected-tile recursive statements before recursive proof generation;
 - production recursive-certificate statement metadata rejects wrong nonce,
   wrong public inputs, and jackpots above target before recursive verification;
-- the recursive production certificate itself binds the Layer-0 public-input
+- the recursive certificate itself binds the Layer-0 public-input
   vector as outer STARK public values, so swapping verifier-derived statement
   inputs rejects at recursive certificate verification.
 - real recursive certificate nouns roundtrip through structured proof-node
@@ -758,6 +763,15 @@ full-matrix aggregate. The older `verify_ai_pow_production_statement` remains a
 selected-tile statement-binding helper for the current Pearl-style recursive
 certificate, benchmarks, and internal diagnostics; it must not be used as the
 full-matmul consensus admission rule.
+
+Follow-up integration status: `prove_ai_pow_recursive_certificate`, the
+production miner's certificate-builder entrypoint, now also fails closed for
+multi-tile params after the cheap nonce/commitment/`found_idx` checks and
+before any Layer-0 or recursive ZK proving work. That prevents the miner from
+manufacturing a selected-tile recursive noun that the consensus boundary must
+reject. The direct `ai-pow-zk` recursion helpers remain lower-level wrappers
+over whatever Layer-0 statement the caller supplies; they are not the
+full-matmul admission rule.
 
 This is intentionally fail-closed. Pearl's reference miner computes every
 output tile before returning the final matrix and records an opened block when a

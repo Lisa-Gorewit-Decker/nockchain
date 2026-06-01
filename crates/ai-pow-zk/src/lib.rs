@@ -9,16 +9,18 @@
 //! ## Public API
 //!
 //! - [`recursion::prove_canonical_ai_pow_certificate`] — the canonical
-//!   production prover API for Nockchain's AI-PoW certificate. It
-//!   proves the Layer-0 composite STARK, recursively verifies that
-//!   proof in an L1 circuit, and returns the recursive certificate.
-//!   This is the only proof object intended for Nockchain consensus,
-//!   block persistence, or wire transmission.
+//!   recursive wrapper for Nockchain's AI-PoW certificate. It proves
+//!   the Layer-0 composite STARK, recursively verifies that proof in
+//!   an L1 circuit, and returns the recursive certificate. This is the
+//!   only proof object intended for Nockchain consensus, block
+//!   persistence, or wire transmission; consensus code must still
+//!   verify that the bound Layer-0 public statement is the intended
+//!   full-matmul work unit.
 //! - [`composite_proof::composite_prove_pinned_logup`] /
 //!   [`composite_proof::composite_verify_pinned_logup`] — Layer-0
 //!   composite STARK primitives. These are intermediate inputs to the
-//!   recursive certificate and are not canonical production
-//!   certificates by themselves.
+//!   recursive certificate and are not persisted proof artifacts by
+//!   themselves.
 //! - [`composite_proof::composite_prove`] / [`composite_proof::composite_verify`]
 //!   — dev-only unpinned prove + verify pair, wrapping `p3-uni-stark`.
 //! - [`composite_full_air::CompositeFullAir`] — the top-level AIR over
@@ -123,7 +125,7 @@ pub use crate::params::ZkParams;
 /// Concrete pinned+LogUp Layer-0 proof type.
 ///
 /// This is an intermediate proof consumed by the recursive certificate
-/// prover. It is not the canonical Nockchain production certificate and
+/// prover. It is not the canonical Nockchain recursive certificate and
 /// must not be persisted in blocks or transmitted as the AI-PoW proof
 /// artifact.
 pub type AiPowBatchProof = p3_batch_stark::BatchProof<AiPowStarkConfig>;

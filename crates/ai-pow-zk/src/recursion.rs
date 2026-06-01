@@ -34,12 +34,16 @@ use p3_tip5_circuit_air::Tip5Perm as RecTip5Perm;
 use crate::circuit::{Challenge, Tip5Compress, Tip5Sponge};
 use crate::{AiPowStarkConfig, CompositeFullAirWithLookupsPinned, Val};
 
-/// Canonical production certificate for Nockchain's AI proof-of-work puzzle.
+/// Canonical recursive certificate wrapper for Nockchain's AI proof-of-work
+/// puzzle statement.
 ///
 /// This recursive L1 certificate is the only ZK proof artifact intended
 /// for Nockchain consensus, block persistence, or wire transmission.
 /// Raw Layer-0 `AiPowBatchProof` values are intermediate prover inputs
-/// and are not production certificates by themselves.
+/// and are not production certificates by themselves. The certificate binds
+/// the Layer-0 public input vector supplied by the caller; consensus code must
+/// still derive and check that statement, including any full-matmul admission
+/// guard, before accepting it.
 pub type AiPowRecursiveCertificate =
     p3_circuit_prover::BatchStarkProof<p3_circuit_prover::config::GoldilocksTipsConfig>;
 
@@ -391,13 +395,14 @@ pub fn prove_composite_l1_outer_cert(
 /// the cross-table `WitnessChecks` LogUp argument. It deliberately enforces
 /// the production recursion envelope (D=2, Tip5 + split recompose, ALU lanes
 /// 8) instead of accepting arbitrary circuit-prover proof metadata as a
-/// production certificate.
+/// recursive certificate.
 ///
-/// Canonical production certificates bind the Layer-0 public-input vector as
+/// Canonical recursive certificates bind the Layer-0 public-input vector as
 /// outer STARK public values. This helper rejects those bound certificates and
 /// exists only as a diagnostic for old unbound proof objects. Consensus callers
 /// must use [`verify_production_certificate`] with verifier-derived public
-/// inputs.
+/// inputs, after the outer protocol has checked that those inputs describe the
+/// intended full work unit.
 #[deprecated(
     note = "outer-only verification is not a production AI-PoW verifier; use verify_production_certificate"
 )]
@@ -406,7 +411,7 @@ pub fn verify_production_certificate_outer(
 ) -> Result<(), VerificationError> {
     if cert.public_binding_lanes != 0 {
         return Err(VerificationError::InvalidProofShape(
-            "AI-PoW recursive production certificate binds public statement values; use \
+            "AI-PoW recursive certificate binds public statement values; use \
              verify_production_certificate with verifier-derived public inputs"
                 .to_string(),
         ));
@@ -415,8 +420,8 @@ pub fn verify_production_certificate_outer(
     verify_production_certificate_with_public_values_inner(cert, &[], true)
 }
 
-/// Verify the canonical recursive production certificate against the
-/// verifier-derived Layer-0 AI-PoW public inputs.
+/// Verify the canonical recursive certificate against the verifier-derived
+/// Layer-0 AI-PoW public inputs.
 pub fn verify_production_certificate(
     cert: &AiPowProductionCertificate,
     public_inputs: &crate::composite_public::CompositePublicInputs,
@@ -424,8 +429,8 @@ pub fn verify_production_certificate(
     verify_production_certificate_with_public_values(cert, &public_inputs.to_vec())
 }
 
-/// Verify the canonical recursive production certificate against the
-/// verifier-derived Layer-0 AI-PoW public-input vector.
+/// Verify the canonical recursive certificate against the verifier-derived
+/// Layer-0 AI-PoW public-input vector.
 pub fn verify_production_certificate_with_public_values(
     cert: &AiPowProductionCertificate,
     public_values: &[Val],
@@ -442,7 +447,7 @@ fn verify_production_certificate_with_public_values_inner(
 
     if public_values.is_empty() && !allow_empty_statement {
         return Err(VerificationError::InvalidProofShape(
-            "AI-PoW recursive production certificate verification requires non-empty \
+            "AI-PoW recursive certificate verification requires non-empty \
              verifier-derived public inputs"
                 .to_string(),
         ));
@@ -451,27 +456,27 @@ fn verify_production_certificate_with_public_values_inner(
     let expected_packing = production_l1_table_packing(public_values.len());
     if cert.ext_degree != 2 {
         return Err(VerificationError::InvalidProofShape(format!(
-            "AI-PoW recursive production certificate uses extension degree {}; expected 2",
+            "AI-PoW recursive certificate uses extension degree {}; expected 2",
             cert.ext_degree
         )));
     }
     if cert.table_packing != expected_packing {
         return Err(VerificationError::InvalidProofShape(format!(
-            "AI-PoW recursive production certificate uses non-production table packing {:?}; \
+            "AI-PoW recursive certificate uses non-production table packing {:?}; \
              expected {:?}",
             cert.table_packing, expected_packing
         )));
     }
     if cert.public_binding_lanes != public_values.len() {
         return Err(VerificationError::InvalidProofShape(format!(
-            "AI-PoW recursive production certificate binds {} statement values; expected {}",
+            "AI-PoW recursive certificate binds {} statement values; expected {}",
             cert.public_binding_lanes,
             public_values.len()
         )));
     }
     if cert.alu_quintic_trinomial {
         return Err(VerificationError::InvalidProofShape(
-            "AI-PoW recursive production certificate unexpectedly selected quintic ALU".to_string(),
+            "AI-PoW recursive certificate unexpectedly selected quintic ALU".to_string(),
         ));
     }
 
@@ -484,7 +489,7 @@ fn verify_production_certificate_with_public_values_inner(
         .verify_all_tables_with_public_values(cert, &bound_public_values)
         .map_err(|e| {
             VerificationError::InvalidProofShape(format!(
-                "AI-PoW recursive production certificate verification rejected: {e:?}"
+                "AI-PoW recursive certificate verification rejected: {e:?}"
             ))
         })
 }
@@ -492,7 +497,7 @@ fn verify_production_certificate_with_public_values_inner(
 /// Per-stage instrumentation of one end-to-end composite→L1
 /// recursion run — the production caller's measurement output.
 ///
-/// `l1_cert` is the canonical production certificate. The included
+/// `l1_cert` is the canonical recursive certificate. The included
 /// `composite_proof` is exposed only for benchmarking, diagnostics,
 /// and recursive-prover internals; it must not be used as the
 /// Nockchain consensus proof artifact.
@@ -522,7 +527,7 @@ pub struct L1RecursionRun {
     pub composite_proof: BatchProof<AiPowStarkConfig>,
     /// The L1 recursive certificate.
     ///
-    /// This is the canonical production proof artifact.
+    /// This is the canonical recursive proof artifact.
     pub l1_cert: AiPowProductionCertificate,
 }
 
@@ -539,7 +544,7 @@ pub struct L1CertificateRun {
     pub l1_in_circuit_verify_ms: u128,
     /// Wall-clock (ms) to outer-prove the L1 verifier circuit.
     pub l1_outer_cert_ms: u128,
-    /// The canonical recursive production certificate.
+    /// The canonical recursive certificate.
     pub l1_cert: AiPowProductionCertificate,
 }
 
@@ -613,13 +618,15 @@ pub fn recurse_composite_to_l1(
     })
 }
 
-/// Produce Nockchain's canonical AI-PoW production certificate from an
+/// Produce Nockchain's canonical recursive AI-PoW certificate from an
 /// already-generated Layer-0 composite proof.
 ///
 /// The caller supplies the pinned Layer-0 program and public inputs that were
 /// produced with the proof. This function recursively verifies that Layer-0
 /// proof in-circuit and returns only the recursive L1 certificate. It does not
-/// serialize, persist, or bless the Layer-0 proof as a block artifact.
+/// serialize, persist, or bless the Layer-0 proof as a block artifact. It also
+/// does not decide whether the Layer-0 statement represents enough consensus
+/// work; that check belongs to the chain-derived statement verifier.
 pub fn prove_canonical_ai_pow_certificate_from_composite_proof(
     zk_params: &crate::params::ZkParams,
     profile: &crate::circuit::CircuitConfig,
@@ -659,12 +666,14 @@ pub fn prove_canonical_ai_pow_certificate_from_composite_proof(
     })
 }
 
-/// Produce Nockchain's canonical AI-PoW production certificate.
+/// Produce Nockchain's canonical recursive AI-PoW certificate.
 ///
 /// This is a name-level guardrail for consensus callers: the
 /// certificate is recursive. Callers that only need the canonical proof
 /// should use this function and persist/transmit `run.l1_cert`, never
-/// `run.composite_proof`.
+/// `run.composite_proof`. Consensus callers must separately derive the exact
+/// public statement and reject selected-tile statements that do not prove the
+/// intended full-matmul work unit.
 pub fn prove_canonical_ai_pow_certificate(
     zk_params: &crate::params::ZkParams,
     profile: &crate::circuit::CircuitConfig,
@@ -844,11 +853,11 @@ mod tests {
             &profile,
         )
         .expect("build composite L1 verifier circuit");
-        let cert = prove_composite_l1_outer_cert(&built, &proof)
-            .expect("honest recursive production certificate");
+        let cert =
+            prove_composite_l1_outer_cert(&built, &proof).expect("honest recursive certificate");
 
         verify_production_certificate(&cert, &pis)
-            .expect("recursive production certificate verifier must accept honest cert");
+            .expect("recursive certificate verifier must accept honest cert");
         verify_production_certificate_with_public_values(&cert, &[])
             .expect_err("production verifier must reject empty statement public inputs");
     }
@@ -872,8 +881,8 @@ mod tests {
             &profile,
         )
         .expect("build composite L1 verifier circuit");
-        let mut cert = prove_composite_l1_outer_cert(&built, &proof)
-            .expect("honest recursive production certificate");
+        let mut cert =
+            prove_composite_l1_outer_cert(&built, &proof).expect("honest recursive certificate");
 
         cert.ext_degree = 1;
         verify_production_certificate(&cert, &pis)
@@ -899,8 +908,8 @@ mod tests {
             &profile,
         )
         .expect("build composite L1 verifier circuit");
-        let cert = prove_composite_l1_outer_cert(&built, &proof)
-            .expect("honest recursive production certificate");
+        let cert =
+            prove_composite_l1_outer_cert(&built, &proof).expect("honest recursive certificate");
 
         let mut wrong = pis.clone();
         wrong.job_key[0] ^= 1;

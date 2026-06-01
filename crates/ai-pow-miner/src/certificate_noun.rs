@@ -1,7 +1,9 @@
 //! Structured noun encoder for the canonical recursive AI-PoW certificate.
 //!
-//! This module intentionally accepts the recursive production certificate
-//! object, not `MatmulProof` and not the raw Layer-0 `AiPowBatchProof`.
+//! This module intentionally accepts the recursive certificate object, not
+//! `MatmulProof` and not the raw Layer-0 `AiPowBatchProof`. Its verifier
+//! boundary also runs the full-matmul statement precheck before recursive proof
+//! verification.
 
 use std::panic::{catch_unwind, AssertUnwindSafe};
 
@@ -66,7 +68,7 @@ pub enum CertificateNounError {
     NonceExternalCommitmentPresent,
     #[error("certificate statement metadata is not bound to trusted block state: {0}")]
     Statement(#[from] BridgeError),
-    #[error("recursive production certificate verification failed: {0}")]
+    #[error("recursive certificate verification failed: {0}")]
     RecursiveCertificate(String),
     #[error("jammed AI-PoW artifact is {actual} bytes, exceeding {limit} byte limit")]
     JammedLengthExceeded { limit: usize, actual: usize },
@@ -148,7 +150,7 @@ pub enum AiProofNode {
     Some(Box<AiProofNode>),
 }
 
-/// Convert a recursive production certificate into the generic proof-node tree.
+/// Convert a recursive certificate into the generic proof-node tree.
 pub fn recursive_certificate_to_node<C: Serialize>(
     certificate: &C,
 ) -> Result<AiProofNode, CertificateNounError> {
@@ -183,7 +185,7 @@ where
     Ok(certificate)
 }
 
-/// Reconstruct the canonical recursive production certificate from a decoded
+/// Reconstruct the canonical recursive certificate from a decoded
 /// Hoon-compatible proof-node tree.
 pub fn production_certificate_from_node(
     node: &AiProofNode,
@@ -579,7 +581,9 @@ pub fn verify_ai_pow_certificate_statement_and_proof(
 /// production AI-PoW attempt.
 ///
 /// This is the production-safe variant for callers that already reconstructed
-/// the recursive certificate object from the structured noun tail.
+/// the recursive certificate object from the structured noun tail. It uses the
+/// full-matmul statement precheck, so multi-tile selected-tile certificates are
+/// rejected before recursive verifier work.
 pub fn verify_ai_pow_ncmn_certificate_statement_and_proof(
     shape: &AiPowCertificateShape,
     puzzle_id: &[u8],
@@ -601,9 +605,9 @@ pub fn verify_ai_pow_ncmn_certificate_statement_and_proof(
 ///
 /// This is the consensus-facing Rust boundary for the structured recursive
 /// certificate artifact: it decodes the proof tree into the canonical recursive
-/// certificate type, cheaply re-derives and checks the statement metadata, and
-/// then verifies the recursive certificate against those verifier-derived
-/// Layer-0 public inputs.
+/// certificate type, cheaply re-derives and checks the full-matmul statement
+/// metadata, and then verifies the recursive certificate against those
+/// verifier-derived Layer-0 public inputs.
 pub fn verify_decoded_ai_pow_certificate(
     shape: &AiPowCertificateShape,
     block_commitment: &[u8],
@@ -622,8 +626,9 @@ pub fn verify_decoded_ai_pow_certificate(
 ///
 /// This is the consensus-facing Rust boundary for Nockchain AI-PoW: it checks
 /// the nonce format and candidate-block anchor, reconstructs the canonical
-/// recursive certificate, re-derives the statement from verifier-trusted data,
-/// and then verifies the recursive certificate against those public inputs.
+/// recursive certificate, re-derives the full-matmul-admissible statement from
+/// verifier-trusted data, and then verifies the recursive certificate against
+/// those public inputs.
 pub fn verify_decoded_ai_pow_ncmn_certificate(
     shape: &AiPowCertificateShape,
     puzzle_id: &[u8],
@@ -3045,8 +3050,8 @@ mod tests {
     }
 
     /// Heavy opt-in measurement: proves a real recursive L1 certificate,
-    /// converts that production certificate into the Hoon noun, jams/cues it,
-    /// and decodes it back through the bounded parser.
+    /// converts that certificate into the Hoon noun, jams/cues it, and decodes
+    /// it back through the bounded parser.
     ///
     /// Run with:
     ///

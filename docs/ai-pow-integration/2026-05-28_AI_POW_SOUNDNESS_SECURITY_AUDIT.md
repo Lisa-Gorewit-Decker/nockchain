@@ -186,9 +186,10 @@ Fix plan:
 - Rename remaining exported helpers with explicit names: `dev_unpinned_verify`, `dev_pinned_no_logup_verify`.
 - Export only production boundaries that derive the canonical statement
   internally. Current `ai-pow` status: `prove_ai_pow_recursive_certificate`
-  and `verify_ai_pow_production_statement` remain public, while the legacy
-  Layer-0 byte artifacts and helper verifier/constructor functions are
-  crate-internal.
+  and `verify_ai_pow_full_matmul_production_statement` remain public, while
+  `verify_ai_pow_production_statement` is only a selected-tile statement helper
+  for the current Pearl-style recursive certificate. The legacy Layer-0 byte
+  artifacts and helper verifier/constructor functions are crate-internal.
 - Add rustdoc `compile_fail` or lints preventing consensus crates from importing dev APIs.
 
 Tests:
@@ -211,9 +212,11 @@ Evidence:
   prover-derived programs when the canonical program could not be rebuilt.
 - Current production entrypoints reject this before proving or verifying:
   `prove_and_verify_for_block` and `prove_ai_pow_recursive_certificate` call
-  `validate_prod_envelope()`, and `verify_ai_pow_production_statement`
-  re-runs the same envelope check before accepting recursive certificate
-  metadata.
+  `validate_prod_envelope()`, and
+  `verify_ai_pow_full_matmul_production_statement` re-runs the same envelope
+  check before accepting recursive certificate metadata. The full-matmul API
+  also rejects multi-tile selected-tile statements until the recursive proof
+  binds a full-matrix aggregate.
 - The legacy Layer-0 helper paths are crate-internal/test-only and are no
   longer normal public production APIs.
 
@@ -232,7 +235,8 @@ Fix plan:
 - Done: production entrypoints call `validate_prod_envelope()` before any ZK
   proof generation or production statement verification.
 - Done: `prove_ai_pow_recursive_certificate` now rejects structural test params
-  instead of attempting to build a canonical production certificate.
+  and multi-tile selected-tile statements instead of attempting to build a
+  production-facing recursive certificate.
 - Keep the non-production Layer-0 seams crate-internal/test-only.
 
 Tests:
@@ -521,7 +525,9 @@ Current status:
   the production envelope.
 - `zk_bridge::prove_and_verify_for_block`,
   `prove_ai_pow_recursive_certificate`, and
-  `verify_ai_pow_production_statement` enforce the production envelope.
+  `verify_ai_pow_full_matmul_production_statement` enforce the production
+  envelope. The recursive certificate builder and full-matmul verifier both
+  fail closed for multi-tile selected-tile recursive statements.
 - `ai-pow-mine`'s recursive certificate builder runs the plain target precheck
   through `verify_ncmn_at_target`, not the structural low-level verifier, using
   the trusted candidate Nockchain commitment carried by the mining result before

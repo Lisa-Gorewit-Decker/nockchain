@@ -2,10 +2,12 @@
 //!
 //! Mirrors `zk-pow-mine` in shape: connects to a `nockchain` node's
 //! private NockAppService gRPC, subscribes to `%mine` candidate
-//! effects, runs the AI-PoW prover, and submits
+//! effects, runs the AI-PoW prover, and submits a full-matmul-admissible
 //! `[%command %pow %ai-pow nonce cert]` on the `AiPowMinerWire::Mined` wire
-//! (`SOURCE = "ai-pow-miner"`, `VERSION = 1`) when a recursive
-//! certificate builder is configured.
+//! (`SOURCE = "ai-pow-miner"`, `VERSION = 1`) when the recursive certificate
+//! builder can prove the configured work unit. Multi-tile params currently fail
+//! closed before ZK proving because the recursive statement is selected-tile
+//! only until a full-matrix aggregate is added.
 //!
 //! Quick start (assuming a fakenet node on `127.0.0.1:5555`):
 //!
@@ -442,6 +444,37 @@ mod tests {
             err.to_string().contains(
                 "refusing to build recursive certificate before successful matmul target check"
             ) && err.to_string().contains("does not match candidate block"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn recursive_certificate_builder_rejects_multi_tile_full_matmul_gap_before_zkp() {
+        let puzzle = build_puzzle_inputs(&test_args()).expect("test puzzle");
+        assert!(puzzle.params.num_tiles() > 1);
+        let easy_target = [0xFF; 32];
+        let job = MiningJob {
+            puzzle_id: &puzzle.puzzle_id,
+            anchors: NonceAnchors::nck_only([7; 32]),
+            params: &puzzle.params,
+            target: easy_target,
+            a: puzzle.a.as_slice(),
+            b: puzzle.b.as_slice(),
+        };
+        let mut opts = MineOptions::default();
+        opts.max_extranonces = Some(1);
+        let sol =
+            ai_pow_miner::mining::run(&job, &opts, MiningCancel::new()).expect("easy solution");
+
+        let build = puzzle
+            .certificate_builder
+            .as_ref()
+            .expect("production builder configured");
+        let err = build(&sol)
+            .expect_err("multi-tile selected-tile proof must not build a recursive certificate");
+        assert!(
+            err.to_string()
+                .contains("recursive certificate proves one selected tile"),
             "unexpected error: {err}"
         );
     }

@@ -57,7 +57,7 @@ recursive certificate only.
 3. Homogeneous vectors are packed into atoms using fixed-width little-endian limbs. This avoids one Hoon cell per field element.
 4. Field/vector lengths are either fixed by the admitted `params` or carried in a small `len` atom and checked against config-derived bounds before verifier execution.
 5. Strings and prover-controlled metadata are not consensus proof data. The verifier reconstructs AIR list, recursive FRI parameters, lookup metadata, and program commitment expectations from canonical config.
-6. Rust noun decoding must rebuild the exact recursive production certificate from this canonical structure, with strict range and shape checks.
+6. Rust noun decoding must rebuild the exact recursive certificate from this canonical structure, with strict range and shape checks.
 
 ## 4. Primitive Noun Types And Auras
 
@@ -127,7 +127,7 @@ The verifier must treat `public` as claimed public input data, not trusted data.
 ## 6. Recursive Certificate Types
 
 This is the only AI-PoW proof structure admitted by Hoon. It carries
-the recursive production certificate as a tagged noun tree. Hoon does
+the recursive certificate as a tagged noun tree. Hoon does
 not define or accept a type for the plain Layer-0 ZKP and does not
 define or accept a type for the plain `MatmulProof`.
 
@@ -267,13 +267,15 @@ artifacts:
    being silently canonicalized.
 3. `certificate_noun::verify_ai_pow_ncmn_artifact_jam` is the intended
    consensus-facing helper when the caller has jam bytes: byte-size cap, cue,
-   bounded decode, NCMN anchor check, cheap statement precheck, and recursive
-   certificate verification happen in that order.
+   bounded decode, NCMN anchor check, full-matmul statement precheck, and
+   recursive certificate verification happen in that order. Multi-tile
+   selected-tile recursive statements fail closed until the certificate binds a
+   full-matrix aggregate.
 4. `certificate_noun::verify_decoded_ai_pow_ncmn_artifact` is the intended
    verifier-jet Rust boundary after noun decoding. It reconstructs the
    `AiPowProductionCertificate` from the structured proof-node tail, checks the
-   NCMN nonce anchor, runs the cheap statement precheck first, then calls the
-   recursive production verifier with the decoded public inputs.
+   NCMN nonce anchor, runs the cheap full-matmul statement precheck first, then
+   calls the recursive production verifier with the decoded public inputs.
 5. `certificate_noun::verify_decoded_ai_pow_ncmn_certificate` remains available
    for callers that already separated the nonce from the decoded certificate but
    still need the NCMN consensus wrapper.
@@ -325,7 +327,7 @@ Interpretation:
 | current opaque-bincode artifact, excluding outer block/page | about 383 KiB |
 
 The current uncompressed Plonky3 `BatchProof` is therefore not the
-desired ~100 KiB wire artifact and is not the canonical production
+desired ~100 KiB wire artifact and is not the canonical recursive
 certificate.
 
 The legacy Rust byte envelopes for Layer-0 proofs and recursive-certificate
@@ -377,7 +379,7 @@ The packed-vector structure is necessary. A pure list encoding would add one cel
 
 The implementation includes an ignored measurement test
 `real_recursive_certificate_noun_roundtrips_and_prints_size` that prints,
-for a real recursive production certificate:
+for a real recursive certificate:
 
 - total jammed `ai-pow-certificate` size;
 - compact postcard L1 certificate size;
@@ -483,12 +485,12 @@ Before accepting `%ai-pow`, consensus must require:
 1. Add the Hoon command-boundary types above while keeping the page storage mold generic (`pow-artifact` is `*`) to avoid `hoonc` recursive-mold loops. Until the verifier lands, `%ai-pow` remains fail-closed and must not persist `[%ai-pow nonce cert]` in `page.pow`.
 2. Keep the miner's node-facing API canonical: the only AI-PoW block-submission payload is `[%command %pow %ai-pow nonce cert]`. If no recursive-certificate noun builder is configured, the miner must refuse to submit a legacy nonce/tile or plain `MatmulProof` artifact.
 3. Before recursive proving, require the plain matmul proof to verify against the same chain-derived target that the winning mining attempt used.
-4. Add a Rust `AiPowCertificateNoun` mirror type that converts the recursive production certificate into the Hoon `ai-proof-node` tree without `MatmulProof`, raw Layer-0 `AiPowBatchProof`, or bincode. Status: implemented as `certificate_noun::AiProofNode` plus top-level certificate noun construction; the legacy Layer-0 and byte-envelope APIs are crate-internal so they cannot be imported as normal production APIs.
+4. Add a Rust `AiPowCertificateNoun` mirror type that converts the recursive certificate into the Hoon `ai-proof-node` tree without `MatmulProof`, raw Layer-0 `AiPowBatchProof`, or bincode. Status: implemented as `certificate_noun::AiProofNode` plus top-level certificate noun construction; the legacy Layer-0 and byte-envelope APIs are crate-internal so they cannot be imported as normal production APIs.
 5. Implement packed-vector helpers for Goldilocks, extension-field pairs, and Tip5 digest vectors.
 6. Reconstruct `LookupData` metadata from canonical AIR/config rather than serializing strings.
 7. Add jam/cue round-trip tests for a real proof and malformed nouns. Status: implemented for structured sample certificates, malformed packed/list/tag/version cases, non-canonical `ai-ext2` limbs, and an ignored real recursive certificate noun round-trip/size harness.
 8. Add size tests asserting total jammed noun budget and per-vector caps. Status: the ignored real recursive certificate harness asserts a coarse 2 MiB upper bound and prints measured size; production budget constants still need to be set after the harness is run on the final L1 shape.
 9. Add adversarial decode tests for oversized lengths, non-canonical field elements, mismatched lookup shapes, invalid FRI arities, and extra/trailing packed bytes.
-10. Expose a full recursive certificate verifier that takes verifier-derived public inputs and rejects an otherwise valid certificate when any puzzle id, candidate block commitment, NCMN nonce, target, commitment, params, or `found-idx` field is changed. Status: implemented at the Rust boundary: `decode_ai_pow_artifact_jam` caps jammed bytes before cue, `decode_ai_pow_artifact_slab` parses the full `[%ai-pow nonce cert]` wire artifact, and `verify_ai_pow_ncmn_artifact_jam` / `verify_decoded_ai_pow_ncmn_artifact` reconstruct the structured noun proof, check the NCMN nonce anchor, precheck the statement, and call `verify_production_certificate`, whose outer proof binds the Layer-0 public-input vector as STARK public values. Hoon consensus remains fail-closed until the verifier jet calls this boundary.
+10. Expose a full recursive certificate verifier that takes verifier-derived public inputs and rejects an otherwise valid certificate when any puzzle id, candidate block commitment, NCMN nonce, target, commitment, params, or `found-idx` field is changed. Status: implemented at the Rust boundary: `decode_ai_pow_artifact_jam` caps jammed bytes before cue, `decode_ai_pow_artifact_slab` parses the full `[%ai-pow nonce cert]` wire artifact, and `verify_ai_pow_ncmn_artifact_jam` / `verify_decoded_ai_pow_ncmn_artifact` reconstruct the structured noun proof, check the NCMN nonce anchor, precheck the full-matmul statement, and call `verify_production_certificate`, whose outer proof binds the Layer-0 public-input vector as STARK public values. The precheck rejects multi-tile selected-tile statements with `FullMatmulProofUnavailable`; Hoon consensus remains fail-closed until the verifier jet calls this boundary and the recursive statement proves the intended full-matmul work unit.
 11. Add the verifier jet entrypoint consuming this noun shape.
 12. Replace the deferred-verifier accept path with real accept/reject checks only after end-to-end accept/reject tests exist.

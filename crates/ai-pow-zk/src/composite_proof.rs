@@ -6,7 +6,7 @@
 //! |---|---|---|---|
 //! | [`composite_prove`] / [`composite_verify`] | `CompositeFullAir` (unpinned) | uni-stark | unit / constraint-logic dev only — **not sound for PoW** (CRIT-1: a prover can zero selectors) |
 //! | [`composite_prove_pinned`] / [`composite_verify_pinned`] / [`composite_verify_pow_pinned`] | `CompositeFullAirPinned` | uni-stark | CRIT-1 program-pinned, **no LogUp**. Lighter; backs the `crit1_*` / `high2_*` constraint-logic regression suite. Not the production path (matmul reads unbound — §4.C). |
-//! | [`composite_prove_pinned_logup`] / [`composite_verify_pinned_logup`] / [`composite_verify_pow_pinned_logup`] | `CompositeFullAirWithLookupsPinned` | **batch-stark** | Layer-0 Route A (HIGH-2.2 §4.C). CRIT-1 program-pin **and** the `noised_packed`/range/i8u8/cv-routing LogUp enforced in one proof. Used by [`ai-pow::zk_bridge`] and as the inner proof for the recursive production certificate. ≈1.23x the uni-stark pinned cost. |
+//! | [`composite_prove_pinned_logup`] / [`composite_verify_pinned_logup`] / [`composite_verify_pow_pinned_logup`] | `CompositeFullAirWithLookupsPinned` | **batch-stark** | Layer-0 Route A (HIGH-2.2 §4.C). CRIT-1 program-pin **and** the `noised_packed`/range/i8u8/cv-routing LogUp enforced in one proof. Used by [`ai-pow::zk_bridge`] and as the inner proof for the recursive certificate. ≈1.23x the uni-stark pinned cost. |
 //!
 //! New Layer-0 callers should use the **`*_pinned_logup`** family.
 //! Nockchain production consensus callers should not stop at this
