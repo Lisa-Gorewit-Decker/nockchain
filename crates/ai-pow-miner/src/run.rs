@@ -1817,6 +1817,59 @@ mod tests {
         node.shutdown().await;
     }
 
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn run_loop_rejects_stale_recursive_metadata_without_submitting_poke() {
+        let node = MockNode::spawn().await;
+        let mut cfg = test_cfg(node.url());
+        let pearl_cfg = cfg
+            .puzzle
+            .pearl_merge
+            .as_mut()
+            .expect("test config has Pearl merge submission");
+        pearl_cfg.certificate_builder = Arc::new(|attempt: &PearlMergeTicketAttempt| {
+            let params = pearl_test_params();
+            let (a, b) = synth_matrices(b"pearl-node-run-submit", &params);
+            let parts = pearl_merge_recursive_certificate_parts_from_ticket(attempt, &a, &b, 16)
+                .map_err(|e| AiPowCertificateBuildError(e.to_string()))?;
+            Ok(PearlMergeCertificateProof {
+                zk_params: parts.zk_params,
+                found_idx: parts.found_idx + 1,
+                commitments: parts.commitments,
+                public_inputs: parts.public_inputs,
+                trace_height: parts.trace_height,
+                certificate: AiProofNode::Unit,
+            })
+        });
+
+        let shutdown = CancellationToken::new();
+        let shutdown_clone = shutdown.clone();
+        let mining_task = tokio::spawn(async move { run(cfg, shutdown_clone).await });
+
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        node.publish_synth_mine_effect_with_target_limbs(701, &[u64::from(u32::MAX); 8], 64);
+
+        let r = tokio::time::timeout(Duration::from_secs(10), mining_task)
+            .await
+            .expect("miner task did not exit")
+            .expect("miner panicked");
+        match r {
+            Err(MinerError::CertificateBuild(msg)) => {
+                assert!(
+                    msg.contains("recursive-run.found-idx"),
+                    "unexpected certificate build error: {msg}"
+                );
+            }
+            other => panic!("expected stale recursive metadata to fail closed, got {other:?}"),
+        }
+        assert!(
+            node.mined_pokes.lock().await.is_empty(),
+            "stale recursive metadata must not be submitted to the node"
+        );
+
+        shutdown.cancel();
+        node.shutdown().await;
+    }
+
     /// Heavy: runs the real ai-pow prover on TEST_SMALL with a trivial
     /// `FF..FF` target. Should complete in well under 30 s on any
     /// modern machine; marked `#[ignore]` so `cargo test` is fast by
