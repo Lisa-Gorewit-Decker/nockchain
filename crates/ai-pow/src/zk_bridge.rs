@@ -2635,6 +2635,23 @@ mod tests {
     }
 
     #[test]
+    fn pearl_merge_recursive_certificate_rejects_target_miss_before_zkp() {
+        let (mut attempt, params, a, b) = pearl_merge_ticket_fixture(
+            b"pearl-recursive-target-miss",
+            pearl_test_pattern(8),
+            pearl_test_pattern(8),
+        );
+        attempt.nockchain_target = [0u8; 32];
+
+        assert!(matches!(
+            prove_pearl_merge_recursive_certificate(&attempt, &params, &a, &b, 16),
+            Err(BridgeError::PearlMergeStatement(
+                PearlCompatError::NockchainTargetNotMet
+            ))
+        ));
+    }
+
+    #[test]
     fn pearl_merge_recursive_certificate_rejects_noncontiguous_ticket_before_zkp() {
         let noncontiguous =
             crate::pearl_compat::PearlPeriodicPattern::from_list(&[0, 1, 8, 9, 64, 65, 72, 73])
