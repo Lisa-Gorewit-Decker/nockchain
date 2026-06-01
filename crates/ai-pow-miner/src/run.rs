@@ -22,7 +22,7 @@
 //!    - worker result:
 //!      - success → build the canonical recursive certificate via the
 //!        configured certificate builder and poke the node with
-//!        `[%command %pow %ai-pow cert]` on [`AiPowMinerWire::Mined`],
+//!        `[%command %pow %ai-pow nonce cert]` on [`AiPowMinerWire::Mined`],
 //!        then idle until the next candidate.
 //!      - error → log + idle.
 //! 5. Stream drop → outer loop reconnects.
@@ -52,8 +52,8 @@ use tracing::{debug, info, warn};
 
 use crate::wire::AiPowMinerWire;
 use crate::{
-    mining, DifficultyTarget, MineOptions, MinedSolution, MiningCancel,
-    MiningError as PuzzleMiningError, MiningJob, NonceAnchors,
+    mining, parse_ncmn_nonce, DifficultyTarget, MineOptions, MinedSolution, MiningCancel,
+    MiningError as PuzzleMiningError, MiningJob, NcmnNonce, NonceAnchors, NonceFormatError,
 };
 
 pub type AiPowCertificateBuilder =
@@ -62,6 +62,14 @@ pub type AiPowCertificateBuilder =
 #[derive(Debug, Error)]
 #[error("AI-PoW recursive certificate build failed: {0}")]
 pub struct AiPowCertificateBuildError(pub String);
+
+#[derive(Debug, Error)]
+pub enum AiPowCertificatePokeError {
+    #[error("NCMN nonce: {0}")]
+    Nonce(#[from] NonceFormatError),
+    #[error("NCMN external commitment is reserved and must be absent")]
+    NonceExternalCommitmentPresent,
+}
 
 impl From<String> for AiPowCertificateBuildError {
     fn from(value: String) -> Self {
@@ -323,7 +331,13 @@ pub async fn run(cfg: MinerConfig, shutdown: CancellationToken) -> Result<(), Mi
                                     break InnerOutcome::Fatal(MinerError::CertificateBuild(e.to_string()));
                                 }
                             };
-                            let poke = build_ai_pow_certificate_poke(&cert);
+                            let poke = match build_ai_pow_certificate_poke(&sol.nonce, &cert) {
+                                Ok(poke) => poke,
+                                Err(e) => {
+                                    warn!(error = %e, "canonical AI-PoW certificate poke build failed");
+                                    break InnerOutcome::Fatal(MinerError::CertificateBuild(e.to_string()));
+                                }
+                            };
                             if let Err(e) = client
                                 .poke_wire(AiPowMinerWire::Mined.to_wire(), poke)
                                 .await
@@ -466,25 +480,37 @@ fn spawn_attempt(
 /// Build the production consensus poke shape:
 ///
 /// ```hoon
-/// [%command %pow %ai-pow cert]
+/// [%command %pow %ai-pow nonce cert]
 /// ```
 ///
 /// `cert` must already be the structured Hoon-compatible
-/// `ai-pow-certificate` noun. This helper deliberately does not accept
-/// the plain `MatmulProof`, nonce, or tile index because those are not
-/// canonical block proof artifacts.
-pub fn build_ai_pow_certificate_poke(certificate: &NounSlab) -> NounSlab {
-    use nockvm::noun::NounAllocator;
+/// `ai-pow-certificate` noun. The NCMN nonce is carried alongside it because
+/// the production verifier must check that the attempt is anchored to the
+/// candidate block before accepting the recursive proof. This helper
+/// deliberately does not accept the plain `MatmulProof` or tile index because
+/// those are not canonical block proof artifacts.
+pub fn build_ai_pow_certificate_poke(
+    nonce: &NcmnNonce,
+    certificate: &NounSlab,
+) -> Result<NounSlab, AiPowCertificatePokeError> {
+    use nockapp::IndirectAtomExt;
+    use nockvm::noun::{IndirectAtom, NounAllocator};
+
+    let (anchors, _) = parse_ncmn_nonce(nonce)?;
+    if anchors.external_commitment.is_some() {
+        return Err(AiPowCertificatePokeError::NonceExternalCommitmentPresent);
+    }
 
     let cert_space = certificate.noun_space();
     let mut slab = NounSlab::new();
+    let nonce = <IndirectAtom as IndirectAtomExt>::from_bytes(&mut slab, nonce).as_noun();
     let cert = slab.copy_into(unsafe { *certificate.root() }, &cert_space);
     let payload = T(
         &mut slab,
-        &[D(tas!(b"command")), D(tas!(b"pow")), D(tas!(b"ai-pow")), cert],
+        &[D(tas!(b"command")), D(tas!(b"pow")), D(tas!(b"ai-pow")), nonce, cert],
     );
     slab.set_root(payload);
-    slab
+    Ok(slab)
 }
 
 // ──────────────────────────── tests ────────────────────────────
@@ -688,12 +714,14 @@ mod tests {
 
     #[test]
     fn build_ai_pow_certificate_poke_has_kernel_command_shape() {
+        use nockvm::jets::bits::util::met;
         use nockvm::noun::NounAllocator;
 
         let mut cert = NounSlab::new();
         cert.set_root(D(999));
+        let nonce = crate::build_ncmn_nonce(&crate::NonceAnchors::nck_only([0xA5; 32]), 7);
 
-        let poke = build_ai_pow_certificate_poke(&cert);
+        let poke = build_ai_pow_certificate_poke(&nonce, &cert).expect("build poke");
         let space = poke.noun_space();
         let root = unsafe { *poke.root() };
 
@@ -716,13 +744,49 @@ mod tests {
             .expect("ai-pow cell");
         assert!(ai_pow_cell.head().eq_bytes("ai-pow"));
 
-        let cert_atom = ai_pow_cell
+        let nonce_cell = ai_pow_cell
+            .tail()
+            .noun()
+            .in_space(&space)
+            .as_cell()
+            .expect("nonce/certificate cell");
+        let nonce_atom = nonce_cell.head().as_atom().expect("nonce atom");
+        assert_eq!(
+            met(3, nonce_atom.atom(), &space),
+            ai_pow::ncmn::NCMN_NONCE_LEN
+        );
+
+        let cert_atom = nonce_cell
             .tail()
             .as_atom()
             .expect("certificate atom")
             .as_u64()
             .expect("certificate atom fits u64");
         assert_eq!(cert_atom, 999);
+    }
+
+    #[test]
+    fn build_ai_pow_certificate_poke_rejects_non_canonical_nonce() {
+        let mut cert = NounSlab::new();
+        cert.set_root(D(999));
+
+        let bad_magic = [0u8; ai_pow::ncmn::NCMN_NONCE_LEN];
+        assert!(matches!(
+            build_ai_pow_certificate_poke(&bad_magic, &cert),
+            Err(AiPowCertificatePokeError::Nonce(_))
+        ));
+
+        let external_nonce = crate::build_ncmn_nonce(
+            &crate::NonceAnchors {
+                nck_commitment: [0x11; 32],
+                external_commitment: Some([0x22; 32]),
+            },
+            7,
+        );
+        assert!(matches!(
+            build_ai_pow_certificate_poke(&external_nonce, &cert),
+            Err(AiPowCertificatePokeError::NonceExternalCommitmentPresent)
+        ));
     }
 
     /// Heavy: runs the real ai-pow prover on TEST_SMALL with a trivial

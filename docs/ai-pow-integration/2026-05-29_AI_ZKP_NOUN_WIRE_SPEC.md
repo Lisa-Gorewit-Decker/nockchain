@@ -17,6 +17,7 @@ The proof must also not be serialized as one opaque bincode byte atom. The Hoon/
 The intended on-chain object is:
 
 - a structured recursive Plonky3/AI-PoW certificate noun;
+- the NCMN nonce needed to bind the attempt to the candidate block;
 - fixed-size public inputs and matrix commitments required to reconstruct the trusted verifier statement;
 - small version/config/index atoms;
 - no plain `MatmulProof`;
@@ -28,9 +29,9 @@ Large homogeneous proof vectors are represented as packed atoms inside typed fie
 
 Current Hoon integration:
 
-- `hoon/apps/dumbnet/lib/types.hoon` admits only `[%ai-pow cert=ai-pow-certificate]` for the AI-PoW block-submission variant.
-- `hoon/common/tx-engine-1.hoon` keeps `page.pow` as a generic structured `pow-artifact` noun (`*`) so legacy `%dumb-zkpow` pages remain decodable and the Hoon compiler does not recursively expand the AI proof-tree mold in every page consumer. The `%ai-pow` command boundary remains typed as `[%ai-pow cert=ai-pow-certificate]`, but current consensus rejects it fail-closed until recursive certificate verification is wired. Rust performs bounded certificate shape validation before verifier work.
-- The Rust miner's canonical submission payload is `[%command %pow %ai-pow cert]`. The production binary configures a recursive-certificate noun builder. Library callers that omit that builder must refuse to submit rather than falling back to nonce/tile or plain-proof placeholders.
+- `hoon/apps/dumbnet/lib/types.hoon` admits only `[%ai-pow nonce=ai-ncmn cert=ai-pow-certificate]` for the AI-PoW block-submission variant.
+- `hoon/common/tx-engine-1.hoon` keeps `page.pow` as a generic structured `pow-artifact` noun (`*`) so legacy `%dumb-zkpow` pages remain decodable and the Hoon compiler does not recursively expand the AI proof-tree mold in every page consumer. The `%ai-pow` command boundary remains typed as `[%ai-pow nonce=ai-ncmn cert=ai-pow-certificate]`, but current consensus rejects it fail-closed until recursive certificate verification is wired. Rust performs bounded certificate shape validation before verifier work.
+- The Rust miner's canonical submission payload is `[%command %pow %ai-pow nonce cert]`. The production binary configures a recursive-certificate noun builder. Library callers that omit that builder must refuse to submit rather than falling back to nonce/tile or plain-proof placeholders.
 - Recursive proving is started only after the plain matmul proof is checked against the chain-derived target used by the winning mining attempt.
 
 Current non-admissible Rust prover internals:
@@ -72,6 +73,10 @@ recursive certificate only.
 ::  met 3 <= 32 and zero-pad missing high bytes when reconstructing
 ::  [u8; 32].
 +$  ai-blake  @uxblake
+::
+::  80-byte NCMN nonce as a single atom.
+::  Byte 0 of the Rust nonce is the least-significant byte.
++$  ai-ncmn  @uxncmn
 ::
 ::  Packed vector of extension field elements.
 ::  data stores 2*len little-endian u64 limbs:
@@ -174,10 +179,11 @@ For the same reason, the persisted page field uses:
 
 This is a compiler-safety compromise, not a wire-format relaxation. Once the
 recursive verifier is wired, the AI artifact noun persisted by dumbnet will be
-`[%ai-pow cert]`, where `cert` is the recursive certificate structure above.
-Until then, consensus rejects `%ai-pow` fail-closed. The block-submission
-`pow-variant` mold remains typed, and the Rust decoder/verifier must reject any
-non-canonical or oversized recursive-certificate noun.
+`[%ai-pow nonce cert]`, where `nonce` is the NCMN nonce and `cert` is the
+recursive certificate structure above. Until then, consensus rejects `%ai-pow`
+fail-closed. The block-submission `pow-variant` mold remains typed, and the Rust
+decoder/verifier must reject any non-canonical or oversized
+recursive-certificate noun.
 
 ## 7. Top-Level Certificate Arm
 
@@ -199,14 +205,17 @@ Recommended `%ai-pow` block payload:
 ```hoon
 +$  pow-variant
   $%  [%dumb-zkpow prf=proof:sp dig=tip5-hash-atom:zeke bc=noun-digest:tip5:zeke nonce=noun-digest:tip5:zeke]
-      [%ai-pow cert=ai-pow-certificate]
+      [%ai-pow nonce=ai-ncmn cert=ai-pow-certificate]
   ==
 ```
 
-The block commitment and nonce stay outside `ai-pow-certificate` because
-they are block fields. The verifier uses them to derive the trusted
-statement and compare against `public`. The certificate itself is the
-recursive production proof only.
+The NCMN nonce stays outside `ai-pow-certificate` but inside the `%ai-pow`
+artifact because it is a necessary commitment parameter, not proof witness data.
+The verifier parses it, checks that its `nck_commitment` equals the trusted
+candidate block commitment, rejects reserved external commitments, then derives
+the trusted statement from `(puzzle_id, nonce, params, target, commitments,
+found_idx, trace_height)`. The certificate itself is the recursive production
+proof only.
 
 ## 8. Serialization Rules
 
@@ -239,13 +248,14 @@ Rust conversion rules:
    proof's public values and the Layer-0 AI-PoW statement.
 
 The node-side Rust helper
-`certificate_noun::verify_decoded_ai_pow_certificate` packages the required
+`certificate_noun::verify_decoded_ai_pow_ncmn_certificate` packages the required
 ordering for decoded noun artifacts: it reconstructs the
-`AiPowProductionCertificate` from the structured proof-node tail, runs the
-cheap statement precheck first, then calls the recursive production verifier
-with the decoded public inputs. The lower-level
+`AiPowProductionCertificate` from the structured proof-node tail, checks the
+NCMN nonce anchor, runs the cheap statement precheck first, then calls the
+recursive production verifier with the decoded public inputs. The lower-level
 `verify_ai_pow_certificate_statement_and_proof` remains available only for
-callers that already hold a reconstructed `AiPowProductionCertificate`.
+callers that already hold a reconstructed `AiPowProductionCertificate` and are
+not depending on the NCMN consensus wrapper.
 
 The deprecated `verify_production_certificate_outer` helper is outer-only
 diagnostic code for old unbound proof objects. Consensus must not use it:
@@ -255,7 +265,7 @@ permit certificate/metadata swaps.
 The verifier jet receives:
 
 ```text
-params, found-idx, trace-height, commitments, public, recursive-certificate, block commitment, nonce, target
+params, found-idx, trace-height, commitments, public, recursive-certificate, puzzle id, candidate block commitment, NCMN nonce, target
 ```
 
 It must reconstruct the canonical program and expected public inputs from trusted data, then verify the ZK proof. Hoon may parse and pre-check shape/length, but soundness-critical Plonky3 verification stays in Rust.
@@ -437,8 +447,8 @@ Before accepting `%ai-pow`, consensus must require:
 
 ## 11. Implementation Plan
 
-1. Add the Hoon command-boundary types above while keeping the page storage mold generic (`pow-artifact` is `*`) to avoid `hoonc` recursive-mold loops. Until the verifier lands, `%ai-pow` remains fail-closed and must not persist `[%ai-pow cert]` in `page.pow`.
-2. Keep the miner's node-facing API canonical: the only AI-PoW block-submission payload is `[%command %pow %ai-pow cert]`. If no recursive-certificate noun builder is configured, the miner must refuse to submit a legacy nonce/tile or plain `MatmulProof` artifact.
+1. Add the Hoon command-boundary types above while keeping the page storage mold generic (`pow-artifact` is `*`) to avoid `hoonc` recursive-mold loops. Until the verifier lands, `%ai-pow` remains fail-closed and must not persist `[%ai-pow nonce cert]` in `page.pow`.
+2. Keep the miner's node-facing API canonical: the only AI-PoW block-submission payload is `[%command %pow %ai-pow nonce cert]`. If no recursive-certificate noun builder is configured, the miner must refuse to submit a legacy nonce/tile or plain `MatmulProof` artifact.
 3. Before recursive proving, require the plain matmul proof to verify against the same chain-derived target that the winning mining attempt used.
 4. Add a Rust `AiPowCertificateNoun` mirror type that converts the recursive production certificate into the Hoon `ai-proof-node` tree without `MatmulProof`, raw Layer-0 `AiPowBatchProof`, or bincode. Status: implemented as `certificate_noun::AiProofNode` plus top-level certificate noun construction.
 5. Implement packed-vector helpers for Goldilocks, extension-field pairs, and Tip5 digest vectors.
@@ -446,6 +456,6 @@ Before accepting `%ai-pow`, consensus must require:
 7. Add jam/cue round-trip tests for a real proof and malformed nouns. Status: implemented for structured sample certificates, malformed packed/list/tag/version cases, non-canonical `ai-ext2` limbs, and an ignored real recursive certificate noun round-trip/size harness.
 8. Add size tests asserting total jammed noun budget and per-vector caps. Status: the ignored real recursive certificate harness asserts a coarse 2 MiB upper bound and prints measured size; production budget constants still need to be set after the harness is run on the final L1 shape.
 9. Add adversarial decode tests for oversized lengths, non-canonical field elements, mismatched lookup shapes, invalid FRI arities, and extra/trailing packed bytes.
-10. Expose a full recursive certificate verifier that takes verifier-derived public inputs and rejects an otherwise valid certificate when any block, nonce, target, commitment, params, or `found-idx` field is changed. Status: implemented at the Rust boundary: `verify_decoded_ai_pow_certificate` reconstructs the structured noun proof, prechecks the statement, and calls `verify_production_certificate`, whose outer proof binds the Layer-0 public-input vector as STARK public values. Hoon consensus remains fail-closed until the verifier jet calls this boundary.
+10. Expose a full recursive certificate verifier that takes verifier-derived public inputs and rejects an otherwise valid certificate when any puzzle id, candidate block commitment, NCMN nonce, target, commitment, params, or `found-idx` field is changed. Status: implemented at the Rust boundary: `verify_decoded_ai_pow_ncmn_certificate` reconstructs the structured noun proof, checks the NCMN nonce anchor, prechecks the statement, and calls `verify_production_certificate`, whose outer proof binds the Layer-0 public-input vector as STARK public values. Hoon consensus remains fail-closed until the verifier jet calls this boundary.
 11. Add the verifier jet entrypoint consuming this noun shape.
 12. Replace the deferred-verifier accept path with real accept/reject checks only after end-to-end accept/reject tests exist.

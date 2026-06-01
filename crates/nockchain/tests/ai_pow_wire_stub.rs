@@ -19,6 +19,7 @@ const AI_POW_ZK_BRIDGE_RS: &str = include_str!("../../ai-pow/src/zk_bridge.rs");
 fn ai_pow_consensus_wire_is_structured_but_fail_closed_without_verifier() {
     assert!(
         TX_ENGINE_1_HOON.contains("+$  ai-blake  @uxblake")
+            && TX_ENGINE_1_HOON.contains("+$  ai-ncmn   @uxncmn")
             && TX_ENGINE_1_HOON.contains("+$  ai-ext2   @uxfelt")
             && TX_ENGINE_1_HOON.contains("+$  ai-proof-node")
             && TX_ENGINE_1_HOON.contains("[%ext2 value=ai-ext2]")
@@ -28,7 +29,7 @@ fn ai_pow_consensus_wire_is_structured_but_fail_closed_without_verifier() {
             && TX_ENGINE_1_HOON.contains("?=([%ai-pow *] u.pow.pag)")
             && CONSENSUS_HOON.contains("++  pow-artifact-to-proof-version")
             && CONSENSUS_HOON.contains("?=([%ai-pow *] pow)")
-            && TYPES_HOON.contains("[%ai-pow cert=ai-pow-certificate]")
+            && TYPES_HOON.contains("[%ai-pow nonce=ai-ncmn cert=ai-pow-certificate]")
             && !TX_ENGINE_1_HOON.contains("+$  ai-recursive-fri-proof")
             && !TX_ENGINE_1_HOON.contains("+$  ai-fri-proof")
             && !TYPES_HOON.contains("+$  ai-fri-proof"),
@@ -41,17 +42,24 @@ fn ai_pow_consensus_wire_is_structured_but_fail_closed_without_verifier() {
             && INNER_HOON.contains("Height-gating alone is not proof verification")
             && INNER_HOON.contains("Emitting %mine-ai here would")
             && CONSENSUS_HOON.contains("A typed certificate is not itself a target check")
-            && !INNER_HOON.contains("(set-pow:min [%ai-pow cert.pv.command])")
+            && !INNER_HOON.contains("(set-pow:min [%ai-pow")
             && !INNER_HOON.contains("(heard-block /poke/ai-pow-miner now candidate-block.m.k eny)"),
         "%ai-pow consensus must fail closed until the recursive certificate \
          verifier is wired; it must not persist or broadcast unverified AI proofs"
     );
     assert!(
         AI_POW_MINER_RUN_RS.contains("build_ai_pow_certificate_poke")
-            && AI_POW_MINER_RUN_RS.contains("[%command %pow %ai-pow cert]")
+            && AI_POW_MINER_RUN_RS.contains("[%command %pow %ai-pow nonce cert]")
+            && AI_POW_MINER_RUN_RS.contains("nonce: &NcmnNonce")
+            && AI_POW_MINER_RUN_RS.contains("AiPowCertificatePokeError")
+            && AI_POW_MINER_RUN_RS
+                .contains("build_ai_pow_certificate_poke_rejects_non_canonical_nonce")
             && AI_POW_MINER_RUN_RS.contains("refusing to submit legacy nonce/tile artifact")
             && AI_POW_MINER_CERT_NOUN_RS.contains("pub fn decode_ai_pow_certificate_slab")
             && AI_POW_MINER_CERT_NOUN_RS.contains("pub fn precheck_ai_pow_certificate_statement")
+            && AI_POW_MINER_CERT_NOUN_RS
+                .contains("pub fn precheck_ai_pow_ncmn_certificate_statement")
+            && AI_POW_MINER_CERT_NOUN_RS.contains("pub fn verify_decoded_ai_pow_ncmn_certificate")
             && AI_POW_ZK_BRIDGE_RS.contains("pub fn verify_ai_pow_production_statement")
             && AI_POW_MINER_CERT_NOUN_RS.contains("CertificateNounLimits")
             && AI_POW_MINER_CERT_NOUN_RS
@@ -60,6 +68,8 @@ fn ai_pow_consensus_wire_is_structured_but_fail_closed_without_verifier() {
                 .contains("certificate_noun_roundtrips_through_jam_cue_and_bounded_decoder")
             && AI_POW_MINER_CERT_NOUN_RS
                 .contains("certificate_statement_precheck_binds_noun_metadata_to_nonce_and_target")
+            && AI_POW_MINER_CERT_NOUN_RS
+                .contains("ncmn_certificate_statement_precheck_enforces_nonce_anchor")
             && AI_POW_MINER_CERT_NOUN_RS.contains("AiProofNode::Ext2s")
             && AI_POW_MINER_CERT_NOUN_RS.contains(
                 "recursive_certificate_serializer_packs_two_felt_tuples_as_ext2_aura_nodes"

@@ -259,7 +259,7 @@ pub struct AiPowRecursiveCertificateRun {
 ///
 /// This is not the canonical Hoon/block proof artifact. Nockchain block
 /// submission uses the structured recursive-certificate noun carried by
-/// `[%command %pow %ai-pow cert]`; this byte envelope remains available for
+/// `[%command %pow %ai-pow nonce cert]`; this byte envelope remains available for
 /// non-Hoon bridge tests while that verifier path is being wired.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AiPowProductionArtifact {

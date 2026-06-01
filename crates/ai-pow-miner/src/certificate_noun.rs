@@ -3,6 +3,7 @@
 //! This module intentionally accepts the recursive production certificate
 //! object, not `MatmulProof` and not the raw Layer-0 `AiPowBatchProof`.
 
+use ai_pow::ncmn::{parse_ncmn_nonce, NonceFormatError};
 use ai_pow::params::MatmulParams;
 use ai_pow::zk_bridge::{
     verify_ai_pow_production_statement, zk_params_from_matmul, BridgeError, ZkPublicCommitments,
@@ -52,6 +53,12 @@ pub enum CertificateNounError {
         expected: ZkParams,
         actual: ZkParams,
     },
+    #[error("NCMN nonce: {0}")]
+    Nonce(#[from] NonceFormatError),
+    #[error("NCMN nonce Nockchain commitment does not match candidate block")]
+    NonceAnchorMismatch,
+    #[error("NCMN external commitment is reserved and must be absent")]
+    NonceExternalCommitmentPresent,
     #[error("certificate statement metadata is not bound to trusted block state: {0}")]
     Statement(#[from] BridgeError),
     #[error("recursive production certificate verification failed: {0}")]
@@ -252,12 +259,15 @@ pub fn decode_ai_pow_certificate_noun(
     })
 }
 
-/// Re-derive and validate the trusted statement data adjacent to a decoded
-/// recursive certificate noun.
+/// Low-level statement precheck for verifier-derived AI-PoW metadata.
 ///
 /// This is deliberately separate from recursive proof verification. It rejects
 /// metadata replay across `(block_commitment, nonce, target)` before a caller
 /// spends verifier work on the miner-controlled recursive certificate tree.
+///
+/// Production NCMN consensus callers should prefer
+/// [`precheck_ai_pow_ncmn_certificate_statement`], which also checks that the
+/// submitted nonce is an NCMN nonce anchored to the trusted candidate block.
 pub fn precheck_ai_pow_certificate_statement(
     shape: &AiPowCertificateShape,
     block_commitment: &[u8],
@@ -277,6 +287,39 @@ pub fn precheck_ai_pow_certificate_statement(
         &shape.public_inputs, shape.trace_height,
     )
     .map_err(CertificateNounError::Statement)
+}
+
+fn precheck_ncmn_nonce(
+    candidate_nck_commitment: &[u8; 32],
+    nonce: &[u8],
+) -> Result<(), CertificateNounError> {
+    let (anchors, _) = parse_ncmn_nonce(nonce)?;
+    if anchors.nck_commitment != *candidate_nck_commitment {
+        return Err(CertificateNounError::NonceAnchorMismatch);
+    }
+    if anchors.external_commitment.is_some() {
+        return Err(CertificateNounError::NonceExternalCommitmentPresent);
+    }
+    Ok(())
+}
+
+/// Production NCMN statement precheck for decoded recursive certificate nouns.
+///
+/// `puzzle_id` is the stable AI puzzle identity bound into the Pearl attempt
+/// state. `candidate_nck_commitment` is the trusted 32-byte commitment to the
+/// candidate Nockchain block and must appear inside the NCMN nonce. This is the
+/// precheck consensus wiring should call before spending recursive verifier
+/// work on the miner-controlled proof tree.
+pub fn precheck_ai_pow_ncmn_certificate_statement(
+    shape: &AiPowCertificateShape,
+    puzzle_id: &[u8],
+    candidate_nck_commitment: &[u8; 32],
+    nonce: &[u8],
+    params: &MatmulParams,
+    target: &[u8; 32],
+) -> Result<(), CertificateNounError> {
+    precheck_ncmn_nonce(candidate_nck_commitment, nonce)?;
+    precheck_ai_pow_certificate_statement(shape, puzzle_id, nonce, params, target)
 }
 
 /// Verify the decoded certificate metadata and the recursive production proof
@@ -301,6 +344,27 @@ pub fn verify_ai_pow_certificate_statement_and_proof(
         .map_err(|e| CertificateNounError::RecursiveCertificate(e.to_string()))
 }
 
+/// Verify decoded certificate metadata and recursive proof for an NCMN-wrapped
+/// production AI-PoW attempt.
+///
+/// This is the production-safe variant for callers that already reconstructed
+/// the recursive certificate object from the structured noun tail.
+pub fn verify_ai_pow_ncmn_certificate_statement_and_proof(
+    shape: &AiPowCertificateShape,
+    puzzle_id: &[u8],
+    candidate_nck_commitment: &[u8; 32],
+    nonce: &[u8],
+    params: &MatmulParams,
+    target: &[u8; 32],
+    certificate: &ai_pow_zk::recursion::AiPowProductionCertificate,
+) -> Result<(), CertificateNounError> {
+    precheck_ai_pow_ncmn_certificate_statement(
+        shape, puzzle_id, candidate_nck_commitment, nonce, params, target,
+    )?;
+    ai_pow_zk::recursion::verify_production_certificate(certificate, &shape.public_inputs)
+        .map_err(|e| CertificateNounError::RecursiveCertificate(e.to_string()))
+}
+
 /// Verify a fully decoded Hoon-compatible `ai-pow-certificate` noun against
 /// trusted block data.
 ///
@@ -319,6 +383,27 @@ pub fn verify_decoded_ai_pow_certificate(
     let certificate = production_certificate_from_node(&shape.certificate)?;
     verify_ai_pow_certificate_statement_and_proof(
         shape, block_commitment, nonce, params, target, &certificate,
+    )
+}
+
+/// Verify a fully decoded Hoon-compatible `ai-pow-certificate` noun for an
+/// NCMN-wrapped production attempt.
+///
+/// This is the consensus-facing Rust boundary for Nockchain AI-PoW: it checks
+/// the nonce format and candidate-block anchor, reconstructs the canonical
+/// recursive certificate, re-derives the statement from verifier-trusted data,
+/// and then verifies the recursive certificate against those public inputs.
+pub fn verify_decoded_ai_pow_ncmn_certificate(
+    shape: &AiPowCertificateShape,
+    puzzle_id: &[u8],
+    candidate_nck_commitment: &[u8; 32],
+    nonce: &[u8],
+    params: &MatmulParams,
+    target: &[u8; 32],
+) -> Result<(), CertificateNounError> {
+    let certificate = production_certificate_from_node(&shape.certificate)?;
+    verify_ai_pow_ncmn_certificate_statement_and_proof(
+        shape, puzzle_id, candidate_nck_commitment, nonce, params, target, &certificate,
     )
 }
 
@@ -2022,6 +2107,7 @@ mod tests {
     use ai_pow::fiat_shamir::{
         block_state, commitment_key, noise_seed_a, noise_seed_b, pow_key_for_nonce,
     };
+    use ai_pow::ncmn::{build_ncmn_nonce, NonceAnchors};
     use ai_pow::prover::params_tag;
     use ai_pow::zk_bridge::{expected_layer0_rows, zk_params_from_matmul};
 
@@ -2307,6 +2393,62 @@ mod tests {
         assert!(matches!(
             precheck_ai_pow_certificate_statement(&decoded, block, nonce, &wrong_params, &target),
             Err(CertificateNounError::ZkParamsMismatch { .. })
+        ));
+    }
+
+    #[test]
+    fn ncmn_certificate_statement_precheck_enforces_nonce_anchor() {
+        let puzzle_id = b"noun-certificate-puzzle-id";
+        let candidate_nck = [0x4eu8; 32];
+        let nonce = build_ncmn_nonce(&NonceAnchors::nck_only(candidate_nck), 7);
+        let target = [0xffu8; 32];
+        let (params, commitments, pis, trace_height) =
+            production_statement_fixture(puzzle_id, &nonce);
+        let certificate = AiProofNode::Seq(vec![AiProofNode::U64(42)]);
+        let slab = build_ai_pow_certificate_noun_from_node(
+            &zk_params_from_matmul(&params),
+            0,
+            trace_height,
+            &commitments,
+            &pis,
+            &certificate,
+        );
+        let decoded = decode_ai_pow_certificate_slab(&slab, CertificateNounLimits::default())
+            .expect("decode certificate noun");
+
+        precheck_ai_pow_ncmn_certificate_statement(
+            &decoded, puzzle_id, &candidate_nck, &nonce, &params, &target,
+        )
+        .expect("honest NCMN certificate metadata should precheck");
+
+        let mut wrong_anchor = candidate_nck;
+        wrong_anchor[0] ^= 1;
+        assert!(matches!(
+            precheck_ai_pow_ncmn_certificate_statement(
+                &decoded, puzzle_id, &wrong_anchor, &nonce, &params, &target,
+            ),
+            Err(CertificateNounError::NonceAnchorMismatch)
+        ));
+
+        let external_nonce = build_ncmn_nonce(
+            &NonceAnchors {
+                nck_commitment: candidate_nck,
+                external_commitment: Some([0x77u8; 32]),
+            },
+            7,
+        );
+        assert!(matches!(
+            precheck_ai_pow_ncmn_certificate_statement(
+                &decoded, puzzle_id, &candidate_nck, &external_nonce, &params, &target,
+            ),
+            Err(CertificateNounError::NonceExternalCommitmentPresent)
+        ));
+
+        assert!(matches!(
+            precheck_ai_pow_ncmn_certificate_statement(
+                &decoded, puzzle_id, &candidate_nck, b"not-an-ncmn-nonce", &params, &target,
+            ),
+            Err(CertificateNounError::Nonce(_))
         ));
     }
 

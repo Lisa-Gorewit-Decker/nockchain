@@ -18,6 +18,7 @@
 ++  page-msg  page-msg:v0
 ++  proof  proof:v0
 +$  ai-blake  @uxblake  ::  32-byte BLAKE3 digest, little-endian atom bytes
++$  ai-ncmn   @uxncmn   ::  80-byte NCMN nonce, little-endian atom bytes
 +$  ai-ext2   @uxfelt  ::  Goldilocks degree-2 scalar: low 8 bytes c0, high 8 bytes c1
 +$  ai-ext2s  @uxfelts ::  Packed sequence of ai-ext2 scalars, 16 bytes per scalar
 +$  ai-ext2-vec

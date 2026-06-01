@@ -45,11 +45,11 @@ Implementation status:
   target satisfaction from verifier-supplied block data before recursive
   certificate verification is allowed to trust the persisted metadata.
 - The structured certificate noun decoder exposes
-  `precheck_ai_pow_certificate_statement`, so the Rust/Hoon boundary can run
-  those same nonce, target, params, and public-input binding checks immediately
-  after bounded noun decoding.
+  `precheck_ai_pow_ncmn_certificate_statement`, so the Rust/Hoon boundary can
+  check the NCMN nonce anchor and run those same nonce, target, params, and
+  public-input binding checks immediately after bounded noun decoding.
 - Hoon consensus remains fail-closed for `%ai-pow`: the kernel does not emit
-  `%mine-ai`, does not persist `[%ai-pow cert]`, and rejects typed AI
+  `%mine-ai`, does not persist `[%ai-pow nonce cert]`, and rejects typed AI
   certificates until recursive certificate verification is wired.
 - Release regression tests now assert that changing the nonce changes `kappa`,
   `H_A`, `H_B`, chunk commitments, `s_A`, `s_B`, and matmul-derived tile
@@ -74,10 +74,20 @@ verifier is enabled, every consensus-admissible AI-PoW block must satisfy:
 5. The final jackpot hash must be derived from that same nonce-bound matmul
    result and checked against the target.
 
-Changing the nonce must invalidate the old matmul work. It is acceptable to
-cache input validation and raw matrix bytes. It is not acceptable to cache
-nonce-independent noised matrices, tile states, or `M` values and treat many
-nonce hashes as many PoW attempts.
+Changing the nonce must invalidate the old matmul work. Consensus can tolerate
+reuse of raw matrix bytes, shape constants, and validation results only because
+those are not attempt work; this reuse is not a protocol goal. It is not
+acceptable to cache nonce-independent noised matrices, tile states, or `M`
+values and treat many nonce hashes as many PoW attempts.
+
+This matches the Pearl whitepaper's intended dependency chain: the noise seeds
+are derived from commitments to `A`, `B`, mining configuration, and blockchain
+state `sigma`, and the noisy matmul is the work whose trace is certified. For
+Nockchain, the NCMN nonce is part of the blockchain attempt state. Therefore
+changing the nonce must change the commitment key, matrix commitments, noise
+seeds, noised matrices, matmul tile states, and jackpot preimages. Any design
+that lets a miner keep the same noised matmul and merely resample the nonce hash
+violates that Pearl-style lottery model.
 
 ## Pre-Fix Data Flow
 
@@ -369,9 +379,9 @@ Current code follows the recommended production design above:
 - `crates/ai-pow-miner/src/certificate_noun.rs`: decoded Hoon-compatible
   certificate nouns can be reconstructed into
   `AiPowProductionCertificate` and verified via
-  `verify_decoded_ai_pow_certificate`, which runs the trusted statement
-  precheck before recursive proof verification consumes the miner-controlled
-  proof tree.
+  `verify_decoded_ai_pow_ncmn_certificate`, which checks the NCMN nonce anchor
+  and runs the trusted statement precheck before recursive proof verification
+  consumes the miner-controlled proof tree.
 - `crates/ai-pow-miner/src/bin/ai_pow_mine.rs`: recursive certificate
   construction rebuilds the context for the winning nonce and refuses to prove
   unless the plain target check succeeds first.
@@ -465,10 +475,11 @@ Fresh attempts must rebuild every nonce-dependent work product:
 
 Allowed reuse is limited to nonce-independent non-work inputs: immutable input
 matrix bytes, shape constants, chain-pinned params, and read-only model
-metadata. Even validation caches should be treated as an API convenience only;
-they must never contain transcript-derived commitments, seeds, noised values,
-tile outputs, jackpot hashes, or proof witnesses. Cache-friendly reuse of
-nonce-derived work is a consensus vulnerability, not an optimization target.
+metadata. Even those caches should be treated as an engineering convenience
+rather than a protocol objective. They must never contain transcript-derived
+commitments, seeds, noised values, tile outputs, jackpot hashes, or proof
+witnesses. Cache-friendly reuse between attempts is a consensus vulnerability,
+not an optimization target.
 
 ## Concrete Implementation Plan
 
@@ -571,10 +582,15 @@ certificate; Hoon consensus still needs the verifier jet/wiring.
 1. No new large proof artifact is required; the recursive proof remains the
    only canonical artifact.
 2. The Rust noun boundary now exposes
-   `verify_decoded_ai_pow_certificate` for the decoded `ai-pow-certificate`;
-   the Hoon/Rust verifier path must call it with the trusted block commitment,
-   block nonce, params, and target.
-3. The Rust decoder/precheck rejects statement data that does not match trusted
+   `verify_decoded_ai_pow_ncmn_certificate` for the decoded
+   `ai-pow-certificate`; the Hoon/Rust verifier path must call it with the
+   trusted puzzle id, candidate block commitment, NCMN nonce, params, and
+   target.
+3. The `%ai-pow` wire carries `[%ai-pow nonce cert]`, where `nonce` is an
+   `@uxncmn` atom. This keeps the recursive certificate as the only proof
+   artifact while still carrying the nonce commitment parameter needed to prove
+   one NCMN nonce equals one fresh matmul attempt.
+4. The Rust decoder/precheck rejects statement data that does not match trusted
    block data before recursive proof verification; if proof or params versions
    change again, add an explicit version check in the `ai-pow-certificate`
    decoder.

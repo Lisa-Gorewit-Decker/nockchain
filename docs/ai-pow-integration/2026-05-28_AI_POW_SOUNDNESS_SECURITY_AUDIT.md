@@ -380,13 +380,23 @@ Tests:
 ### SND-09: NCMN nonce anchor is miner-side only unless consensus explicitly checks it
 
 Severity: High integration hazard
-Status: Confirmed design gap
+Status: Implemented at the Rust and wire boundary; Hoon consensus remains
+fail-closed until the verifier jet is wired.
 
 Evidence:
 
 - `ai-pow-miner` builds an 80-byte NCMN nonce containing the Nockchain block commitment and an extranonce.
 - The miner calls `mine_with_context_at_target(&ctx, job.puzzle_id, &nonce, &job.target, ...)`; `job.puzzle_id`, not the candidate block commitment, is the `block_commitment` argument to `ai-pow`.
-- `ai_pow::verifier::verify` treats `nonce` as opaque bytes and does not parse the NCMN shape or check the embedded Nockchain commitment.
+- The low-level `ai_pow::verifier::verify` still treats `nonce` as opaque bytes
+  and is not the NCMN production boundary.
+- `ai_pow::verifier::verify_ncmn_at_target` and
+  `ai_pow_miner::certificate_noun::verify_decoded_ai_pow_ncmn_certificate`
+  parse the NCMN nonce, reject malformed/reserved fields, reject nonzero
+  external commitments, and require the embedded Nockchain commitment to match
+  the verifier-trusted candidate block commitment.
+- The Hoon `%ai-pow` wire now carries `[%ai-pow nonce=ai-ncmn
+  cert=ai-pow-certificate]`, so the verifier has the NCMN nonce needed to bind
+  the recursive certificate to the block attempt.
 
 Attack sketch:
 
@@ -398,13 +408,15 @@ Impact:
 
 Block-binding failure at the chain integration layer. This is especially dangerous combined with SND-02, where the ZK proof omits the nonce entirely.
 
-Fix plan:
+Fix status:
 
-- Make the production verifier parse the NCMN nonce.
-- Reject bad magic, version, reserved bytes, and length.
-- Reject if `nonce.nck_commitment != candidate block commitment`.
-- Decide whether the opaque external commitment slot is consensus-relevant; if not, require it to be zero until it is specified.
-- Include the parsed nonce fields in the final artifact tests.
+- Done: the production verifier parses the NCMN nonce.
+- Done: bad magic, version, reserved bytes, and length reject.
+- Done: `nonce.nck_commitment != candidate block commitment` rejects.
+- Done: the opaque external commitment slot is reserved and must be zero until
+  a future consensus rule specifies it.
+- Done: parsed nonce fields and malformed/external-anchor cases are covered by
+  Rust tests and the AI-PoW wire regression guard.
 
 Tests:
 

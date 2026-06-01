@@ -143,6 +143,7 @@
 ++  pkh-signature  pkh-signature:v1
 ++  proof  proof:v0
 ++  ai-blake  ai-blake:v1
+++  ai-ncmn   ai-ncmn:v1
 ++  ai-ext2   ai-ext2:v1
 ++  ai-ext2s  ai-ext2s:v1
 ++  ai-ext2-vec  ai-ext2-vec:v1

@@ -3,7 +3,7 @@
 //! Mirrors `zk-pow-mine` in shape: connects to a `nockchain` node's
 //! private NockAppService gRPC, subscribes to `%mine` candidate
 //! effects, runs the AI-PoW prover, and submits
-//! `[%command %pow %ai-pow cert]` on the `AiPowMinerWire::Mined` wire
+//! `[%command %pow %ai-pow nonce cert]` on the `AiPowMinerWire::Mined` wire
 //! (`SOURCE = "ai-pow-miner"`, `VERSION = 1`) when a recursive
 //! certificate builder is configured.
 //!

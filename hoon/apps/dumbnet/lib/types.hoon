@@ -617,6 +617,7 @@
   ==
 ::
 +$  ai-blake  ai-blake:dt
++$  ai-ncmn   ai-ncmn:dt
 +$  ai-ext2  ai-ext2:dt
 +$  ai-ext2s  ai-ext2s:dt
 +$  ai-ext2-vec  ai-ext2-vec:dt
@@ -633,11 +634,11 @@
 +$  pow-variant
   $+  pow-variant
   $%  [%dumb-zkpow prf=proof:sp dig=tip5-hash-atom:zeke bc=noun-digest:tip5:zeke nonce=noun-digest:tip5:zeke]  ::  the existing puzzle-nock STARK PoW
-      ::  AI matmul PoW wire shape. Carries the recursive certificate only;
-      ::  raw Layer-0 proofs and the plain MatmulProof are not persisted in
-      ::  blocks. Consensus rejects this arm until the recursive verifier is
-      ::  wired.
-      [%ai-pow cert=ai-pow-certificate]
+      ::  AI matmul PoW wire shape. Carries the NCMN nonce plus the
+      ::  recursive certificate only; raw Layer-0 proofs and the plain
+      ::  MatmulProof are not persisted in blocks. Consensus rejects this arm
+      ::  until the recursive verifier is wired.
+      [%ai-pow nonce=ai-ncmn cert=ai-pow-certificate]
   ==
 ::
 +$  command

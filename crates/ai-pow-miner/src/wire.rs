@@ -12,9 +12,9 @@
 //! 2. It pokes the node over gRPC via
 //!    [`nockchain_mining_common::NodeClient::poke_wire`] with
 //!    `AiPowMinerWire::Mined.to_wire()`.
-//! 3. The payload is the consensus command `[%command %pow %ai-pow cert]`;
-//!    the kernel must reject it until recursive certificate verification is
-//!    wired into consensus.
+//! 3. The payload is the consensus command
+//!    `[%command %pow %ai-pow nonce cert]`; the kernel must reject it until
+//!    recursive certificate verification is wired into consensus.
 
 use nockapp::nockapp::wire::{Wire, WireRepr};
 
@@ -24,7 +24,7 @@ pub enum AiPowMinerWire {
     /// Kernel-internal: a new candidate puzzle.
     Candidate,
     /// Driver → node: canonical recursive certificate. Payload (v1):
-    /// `[%command %pow %ai-pow cert=ai-pow-certificate]`.
+    /// `[%command %pow %ai-pow nonce=@uxncmn cert=ai-pow-certificate]`.
     Mined,
     /// Driver → node: set mining-payout pubkey(s).
     SetPubKey,
