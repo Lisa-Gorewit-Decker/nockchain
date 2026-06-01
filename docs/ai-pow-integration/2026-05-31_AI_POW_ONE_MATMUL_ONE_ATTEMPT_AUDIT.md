@@ -57,6 +57,10 @@ Implementation status:
   `precheck_ai_pow_ncmn_certificate_statement`, so the Rust/Hoon boundary can
   check the NCMN nonce anchor and run those same nonce, target, params, and
   public-input binding checks immediately after bounded noun decoding.
+- The canonical certificate noun and Hoon `ai-pow-commitments` mold now carry
+  only the proof-bound chunk commitments `[h-a-chunk h-b-chunk]`. Legacy
+  row/column roots `h_a` / `h_b` remain Rust diagnostic/plain-proof fields and
+  are not persisted in the block artifact.
 - Hoon consensus remains fail-closed for `%ai-pow`: the kernel does not emit
   `%mine-ai`, does not persist `[%ai-pow nonce cert]`, and rejects typed AI
   certificates until recursive certificate verification is wired.
@@ -1081,6 +1085,24 @@ spot-opening roots and are no longer seed inputs. Single-tile recursive
 statements can pass the Rust production precheck; multi-tile params still fail
 first with `FullMatmulProofUnavailable` until the recursive certificate binds a
 full-matrix aggregate.
+
+## Latest Re-Audit: Hoon Commitment Mold Source of Truth
+
+After moving canonical seed derivation to proof-bound chunk commitments, the
+Rust noun codec serialized only `[h_a_chunk h_b_chunk]`, but the Hoon
+`ai-pow-commitments` mold still listed the legacy row/column roots before the
+chunk commitments. That was not yet an accepting consensus path because the
+Hoon verifier remains fail-closed, but it was a dangerous boundary drift:
+future Hoon-side code could accidentally treat `h_a` / `h_b` as persisted
+commitment parameters even though they are not bound by the recursive proof's
+`HASH_A` / `HASH_B` public inputs.
+
+Code status after this re-audit: `hoon/common/tx-engine-1.hoon` now defines
+`ai-pow-commitments` as exactly two fields, `h-a-chunk` and `h-b-chunk`. The
+Nockchain wire regression checks for that two-field mold and rejects the old
+`h-a=ai-blake` / `h-b=ai-blake` entries. The canonical persisted/wire
+commitment surface is now the same in Rust, the noun encoder, the specification
+document, and the Hoon type mold.
 
 ## Latest Re-Audit: Jammed Artifact Verifier Source of Truth
 
