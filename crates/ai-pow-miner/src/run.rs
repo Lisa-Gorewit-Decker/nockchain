@@ -45,7 +45,7 @@ use futures::StreamExt;
 use nockapp::nockapp::wire::Wire;
 use nockapp::noun::slab::NounSlab;
 use nockchain_mining_common::{MiningCandidate, MiningKeyConfig, MiningPkhConfig, NodeClient};
-use nockvm::noun::{D, T};
+use nockvm::noun::{NounAllocator, D, T};
 use nockvm_macros::tas;
 use thiserror::Error;
 use tokio::task::JoinHandle;
@@ -57,6 +57,8 @@ use crate::{
     mining, parse_ncmn_nonce, DifficultyTarget, MineOptions, MinedSolution, MiningCancel,
     MiningError as PuzzleMiningError, MiningJob, NcmnNonce, NonceAnchors, NonceFormatError,
 };
+
+const MAX_CHAIN_TARGET_U32_LIMBS: usize = 10;
 
 pub type AiPowCertificateBuilder =
     dyn Fn(&MinedSolution) -> Result<NounSlab, AiPowCertificateBuildError> + Send + Sync + 'static;
@@ -458,23 +460,85 @@ async fn await_worker(
 /// this miner crate (the chain-AI integration will swap this in for
 /// a chain-prescribed binding when the kernel-side puzzle lands).
 ///
-/// **`target`** is the low 32 bytes of `candidate.target` jammed.
-/// The kernel-side `%mine` effect carries the target as a noun
-/// `[%bn limbs]` (big-num); for the substrate v1 we just hash it
-/// to a fixed-shape 32-byte bound. The exact little-endian
-/// derivation is again local to this miner — the chain-side
-/// puzzle pin will replace this with the consensus-correct
-/// extraction in the same follow-up.
+/// **`target`** is decoded from the kernel-side bignum noun
+/// `[%bn limbs]`, where `limbs` are little-endian u32 chunks. The
+/// ai-pow primitive compares BLAKE3 attempt hashes as 256-bit
+/// little-endian integers, so bignum values above `2^256 - 1`
+/// saturate to `FF..FF`.
 fn derive_job_inputs(
     candidate: &MiningCandidate,
 ) -> Result<(DifficultyTarget, NonceAnchors), String> {
     // Hash the jammed block_header to a 32-byte commitment.
     let header_bytes = candidate.block_header.jam();
     let nck = *blake3::hash(&header_bytes).as_bytes();
-    // Hash the jammed target to a 32-byte target.
-    let target_bytes = candidate.target.jam();
-    let target = *blake3::hash(&target_bytes).as_bytes();
+    let target = decode_chain_target_bignum(&candidate.target)?;
     Ok((target, NonceAnchors::nck_only(nck)))
+}
+
+fn decode_chain_target_bignum(target: &NounSlab) -> Result<DifficultyTarget, String> {
+    let space = target.noun_space();
+    let root = unsafe { *target.root() };
+    let target_cell = root
+        .in_space(&space)
+        .as_cell()
+        .map_err(|_| "target must be a Hoon bignum cell [%bn limbs]".to_string())?;
+    if !target_cell.head().eq_bytes("bn") {
+        return Err("target must have %bn bignum tag".to_string());
+    }
+
+    let mut out = [0u8; 32];
+    let mut list = target_cell.tail().noun();
+    let mut limb_index = 0usize;
+    let mut saturate = false;
+
+    loop {
+        if noun_is_zero_atom(list, &space)? {
+            break;
+        }
+        if limb_index >= MAX_CHAIN_TARGET_U32_LIMBS {
+            return Err(format!(
+                "target bignum exceeds {MAX_CHAIN_TARGET_U32_LIMBS} u32 limbs"
+            ));
+        }
+
+        let limb_cell = list
+            .in_space(&space)
+            .as_cell()
+            .map_err(|_| "target bignum limbs must be a proper list".to_string())?;
+        let limb = limb_cell
+            .head()
+            .as_atom()
+            .map_err(|_| "target bignum limb must be an atom".to_string())?
+            .as_u64()
+            .map_err(|_| "target bignum limb does not fit in u64".to_string())?;
+        let limb =
+            u32::try_from(limb).map_err(|_| "target bignum limb must fit in u32".to_string())?;
+
+        if limb_index < 8 {
+            let offset = limb_index * 4;
+            out[offset..offset + 4].copy_from_slice(&limb.to_le_bytes());
+        } else if limb != 0 {
+            saturate = true;
+        }
+
+        list = limb_cell.tail().noun();
+        limb_index += 1;
+    }
+
+    Ok(if saturate { [0xFF; 32] } else { out })
+}
+
+fn noun_is_zero_atom(
+    noun: nockvm::noun::Noun,
+    space: &nockvm::noun::NounSpace,
+) -> Result<bool, String> {
+    match noun.in_space(space).as_atom() {
+        Ok(atom) => atom
+            .as_u64()
+            .map(|value| value == 0)
+            .map_err(|_| "target bignum list terminator does not fit in u64".to_string()),
+        Err(_) => Ok(false),
+    }
 }
 
 /// Spawn the per-attempt blocking worker. Holds owned clones of the
@@ -760,6 +824,71 @@ mod tests {
             reconnect_backoff_max: Duration::from_millis(200),
             reconnect_max_attempts: 3,
         }
+    }
+
+    fn bignum_target_slab(limbs: &[u64]) -> NounSlab {
+        let mut slab = NounSlab::new();
+        let mut list = D(0);
+        for limb in limbs.iter().rev() {
+            list = T(&mut slab, &[D(*limb), list]);
+        }
+        let target = T(&mut slab, &[D(tas!(b"bn")), list]);
+        slab.set_root(target);
+        slab
+    }
+
+    fn candidate_for_target(target: NounSlab) -> MiningCandidate {
+        let mut version = NounSlab::new();
+        version.set_root(D(0));
+        let mut block_header = NounSlab::new();
+        block_header.set_root(D(0xCAFE));
+        MiningCandidate {
+            version,
+            block_header,
+            target,
+            pow_len: 64,
+        }
+    }
+
+    #[test]
+    fn derive_job_inputs_decodes_bignum_target_little_endian() {
+        let candidate =
+            candidate_for_target(bignum_target_slab(&[0x0403_0201, 0x0807_0605, 0x0c0b_0a09]));
+
+        let (target, _) = derive_job_inputs(&candidate).expect("derive job inputs");
+
+        assert_eq!(&target[0..12], &[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]);
+        assert!(target[12..].iter().all(|byte| *byte == 0));
+    }
+
+    #[test]
+    fn derive_job_inputs_saturates_targets_above_u256() {
+        let mut limbs = vec![0u64; 10];
+        limbs[9] = 0x8;
+        let candidate = candidate_for_target(bignum_target_slab(&limbs));
+
+        let (target, _) = derive_job_inputs(&candidate).expect("derive job inputs");
+
+        assert_eq!(target, [0xFF; 32]);
+    }
+
+    #[test]
+    fn derive_job_inputs_rejects_malformed_target_nouns() {
+        let mut atom_target = NounSlab::new();
+        atom_target.set_root(D(0xFFFF));
+        let err = derive_job_inputs(&candidate_for_target(atom_target))
+            .expect_err("target atom is not a bignum");
+        assert!(err.contains("bignum cell"), "unexpected error: {err}");
+
+        let err = derive_job_inputs(&candidate_for_target(bignum_target_slab(&[u64::from(
+            u32::MAX,
+        ) + 1])))
+        .expect_err("u64 limb exceeds u32");
+        assert!(err.contains("u32"), "unexpected error: {err}");
+
+        let err = derive_job_inputs(&candidate_for_target(bignum_target_slab(&[0; 11])))
+            .expect_err("oversized limb list is rejected");
+        assert!(err.contains("exceeds"), "unexpected error: {err}");
     }
 
     #[test]

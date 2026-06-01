@@ -24,6 +24,11 @@ The two most important soundness problems are:
 1. The plain `ai-pow` verifier recomputes difficulty from `params.difficulty_bits`, while the miner mines against a chain-supplied 256-bit target. A verifier using the current API can accept fake work for the real chain target.
 2. The ZK bridge proves `BLAKE3(M, key=s_a) <= target`, but the plain PoW and miner use `BLAKE3(M, key=pow_key_for_nonce(s_a, nonce)) <= target`. The ZK proof is therefore not a proof for the winning nonce.
 
+An additional miner-side integration bug has been remediated: the node run
+loop used to hash the jammed target noun instead of decoding the Hoon bignum
+target. That made the miner's attempted difficulty a serialization hash rather
+than the chain target and could cause honest miners to mine the wrong puzzle.
+
 There are also API-level hazards: unsound/dev verifier functions are public and re-exported, pinned verifier functions accept caller-supplied programs and `sx_bound`, and there is no production verifier-only wrapper that derives all public inputs from chain data. DoS risk is also material: the plain verifier expands full matrix noise before doing cheap rejection and the decoder is not parameter-aware.
 
 ## Required Production Invariant
@@ -530,6 +535,55 @@ Tests:
 - Mutating the embedded Nockchain commitment rejects.
 - Bad magic/version/reserved bytes reject before proof verification.
 - Reusing a valid proof/nonce on a different candidate block rejects.
+
+### SND-10: Miner hashed the target noun instead of decoding the chain target
+
+Severity: High integration hazard
+Status: Remediated in `ai-pow-miner` node run-loop input derivation.
+
+Evidence:
+
+- The Hoon `%mine-ai` effect carries `target=bignum:bignum`, represented as
+  `[%bn p=(list u32)]` with limbs in least-significant-first order.
+- `ai_pow::tile_hash::hash_le_target` compares BLAKE3 attempt hashes against a
+  32-byte little-endian unsigned integer.
+- The previous `derive_job_inputs` implementation used
+  `BLAKE3(jam(candidate.target))` as the miner's 32-byte target. This is not
+  order-preserving, not equal to the chain bignum, and depends on noun
+  serialization rather than consensus difficulty.
+
+Attack / failure sketch:
+
+1. The node emits a valid candidate with target `T`.
+2. The miner attempts work against `BLAKE3(jam(T))` instead of `T`.
+3. If the hashed target is easier than the real target, the miner can waste
+   proof-generation effort producing blocks the verifier must reject. If it is
+   harder, honest mining is artificially throttled. Either case means the
+   miner is not solving the advertised chain puzzle.
+
+Impact:
+
+Incorrect miner behavior and potential block-submission DoS against honest
+miners. This is not an on-chain fake-work acceptance path while Hoon remains
+fail-closed, but it would become a consensus-integration hazard if verifier and
+miner target derivations diverged.
+
+Fix status:
+
+- Done: `derive_job_inputs` decodes `[%bn limbs]` directly.
+- Done: the first eight u32 limbs are packed into the 256-bit little-endian
+  target used by `ai-pow`.
+- Done: bignum values above `2^256 - 1` saturate to `FF..FF`, matching the
+  256-bit BLAKE3 hash domain.
+- Done: malformed targets, non-u32 limbs, and oversized limb lists reject
+  before mining starts.
+
+Tests:
+
+- Behavior-level Rust tests decode real noun bignums into little-endian target
+  bytes.
+- Over-256-bit Hoon targets saturate to max 256-bit target.
+- Malformed target nouns reject without source-text assertions.
 
 ## Medium Severity Findings
 
