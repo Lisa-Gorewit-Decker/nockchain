@@ -2,12 +2,13 @@
 //!
 //! Mirrors `zk-pow-mine` in shape: connects to a `nockchain` node's
 //! private NockAppService gRPC, subscribes to `%mine` candidate
-//! effects, runs the AI-PoW prover, and submits a full-matmul-admissible
-//! `[%command %pow %ai-pow nonce cert]` on the `AiPowMinerWire::Mined` wire
+//! effects, runs the AI-PoW prover once the certificate gate is open, and
+//! submits `[%command %pow %ai-pow nonce cert]` on the `AiPowMinerWire::Mined` wire
 //! (`SOURCE = "ai-pow-miner"`, `VERSION = 1`) when the recursive certificate
-//! builder can prove the configured work unit. Multi-tile params currently fail
-//! closed before mining starts because the recursive statement is selected-tile
-//! only until a full-matrix aggregate is added.
+//! builder can prove the configured work unit. The production submission path
+//! currently fails closed before mining starts because the recursive statement
+//! still lacks the full-matrix aggregate and seed-root binding required for a
+//! canonical block certificate.
 //!
 //! Quick start (assuming a fakenet node on `127.0.0.1:5555`):
 //!
@@ -16,10 +17,10 @@
 //!       --mining-pkh 9yPePjfWAdUnzaQKyxcRXKRa5PpUzKKEwtpECBZsUYt9Jd7egSDEWoV \
 //!       --synth-seed ai-pow-prod-v1
 //!
-//! The CLI defaults are a single-tile, production-envelope smoke profile so
-//! the current selected-tile recursive certificate is full-matmul-admissible.
-//! Real multi-tile model shapes remain fail-closed until the recursive
-//! certificate binds a full-matrix aggregate.
+//! The CLI defaults are a single-tile, production-envelope smoke profile for
+//! local Layer-0 development. Canonical block submission remains fail-closed
+//! until the recursive certificate binds both a full-matrix aggregate and the
+//! `h_a` / `h_b` seed roots to the ZK matrix commitments.
 //!
 //! ## AI puzzle inputs (local config)
 //! The chain's `%mine` effect carries only the block header + target +
@@ -76,13 +77,13 @@ struct Args {
     #[arg(long)]
     puzzle_id: Option<String>,
 
-    /// Matmul puzzle rows. Default is the current single-tile canonical-cert smoke profile.
+    /// Matmul puzzle rows. Default is the current single-tile Layer-0 smoke profile.
     #[arg(short = 'm', long, default_value_t = 8)]
     m: u32,
     /// Matmul shared dimension. Default satisfies the production envelope with r=32.
     #[arg(short = 'k', long, default_value_t = 512)]
     k: u32,
-    /// Matmul output columns. Default is one tile until full-matmul recursion lands.
+    /// Matmul output columns. Default is one tile for local recursive-proof smoke runs.
     #[arg(short = 'n', long, default_value_t = 8)]
     n: u32,
     #[arg(long, default_value_t = 32)]
@@ -357,20 +358,24 @@ mod tests {
     }
 
     #[test]
-    fn cli_defaults_are_canonical_certificate_submit_capable() {
+    fn cli_defaults_are_single_tile_layer0_smoke_but_submission_fail_closed() {
         let args = Args::parse_from([
             "ai-pow-mine", "--mining-pkh",
             "9yPePjfWAdUnzaQKyxcRXKRa5PpUzKKEwtpECBZsUYt9Jd7egSDEWoV", "--synth-seed",
-            "ai-pow-default-submit-capable",
+            "ai-pow-default-layer0-smoke",
         ]);
         assert_eq!((args.m, args.k, args.n), (8, 512, 8));
         assert_eq!(args.noise_rank, 32);
         assert_eq!(args.spot_checks, 1);
 
         let puzzle = build_puzzle_inputs(&args).expect("default puzzle inputs");
-        puzzle
+        let err = puzzle
             .validate_canonical_submission_ready()
-            .expect("default node miner params must pass canonical certificate preflight");
+            .expect_err("canonical submission must stay fail-closed until seed roots are bound");
+        assert!(
+            err.to_string().contains("does not yet bind h_a/h_b"),
+            "unexpected error: {err}"
+        );
     }
 
     #[test]

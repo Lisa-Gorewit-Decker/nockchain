@@ -413,7 +413,9 @@ Current code follows the recommended production design above:
   `verify_decoded_ai_pow_ncmn_certificate`, which checks the NCMN nonce anchor
   and runs the trusted statement precheck before recursive proof verification
   consumes the miner-controlled proof tree. Multi-tile selected-tile recursive
-  statements are rejected at this precheck.
+  statements are rejected at this precheck, and single-tile smoke statements
+  remain rejected until the recursive proof also binds the `h_a` / `h_b` seed
+  roots to the ZK matrix commitments.
 - `crates/ai-pow-miner/src/bin/ai_pow_mine.rs`: recursive certificate
   construction rebuilds the context for the winning nonce and refuses to prove
   unless the production NCMN verifier confirms that the plain target check
@@ -421,8 +423,9 @@ Current code follows the recommended production design above:
   the mining result. This precheck enforces the production parameter envelope,
   NCMN nonce shape, candidate anchor, absent external commitment, and target
   satisfaction before recursive proof generation begins.
-  It also rejects the current multi-tile selected-tile recursive statement
-  before spending ZK proving work.
+  It also rejects the current selected-tile recursive statement before
+  spending ZK proving work when the configured proof would lack full-matrix or
+  seed-root binding.
 
 Regression coverage now includes:
 
@@ -990,14 +993,16 @@ coverage for the Layer-0 circuit, but it is not a proof of one full-matmul work
 unit and should not run behind a production-looking boundary.
 
 Code status after this re-audit: production-envelope
-`prove_and_verify_for_block` now performs the same selected-tile/full-matmul
-admission guard as the recursive certificate path and returns
-`FullMatmulProofUnavailable` for `params.num_tiles() > 1` before selected-tile
-ZK proving. The `mine()` ZK side-effect only runs when production params are
-single-tile, which is the only case where selected-tile equals full-matmul.
-The structural `prove_and_verify_for_block_inner(..., require_prod_envelope =
-false)` path remains available for local AIR/chip regression tests that
-intentionally exercise arbitrary selected tiles.
+`prove_and_verify_for_block` now performs the selected-tile/full-matmul
+admission guard and returns `FullMatmulProofUnavailable` for
+`params.num_tiles() > 1` before selected-tile ZK proving. The `mine()` ZK
+side-effect only runs on the single-tile smoke shape. That path is retained as
+Layer-0 circuit coverage, not as a block certificate, because a later re-audit
+found that even the single-tile recursive statement still needs seed-root
+binding before it can be canonical. The structural
+`prove_and_verify_for_block_inner(..., require_prod_envelope = false)` path
+remains available for local AIR/chip regression tests that intentionally
+exercise arbitrary selected tiles.
 
 ## Latest Re-Audit: ai-pow-zk Top-Level Documentation
 
@@ -1011,9 +1016,10 @@ was historical and conflicted with the current canonical block artifact:
 Code status after this re-audit: the `ai-pow-zk` README and crate-level docs
 now describe the recursive AI-PoW certificate as the production-facing artifact,
 state that raw Layer-0 proofs and plain `MatmulProof` values are not persisted
-block proofs, and repeat the fail-closed rule for multi-tile selected-tile
-statements. The Nockchain wire regression now checks the `ai-pow-zk` top-level
-docs for those claims and rejects the old plain-proof-wrapping phrases.
+block proofs, and repeat the fail-closed rule for selected-tile statements that
+lack full-matrix and seed-root binding. The Nockchain wire regression now checks
+the `ai-pow-zk` top-level docs for those claims and rejects the old
+plain-proof-wrapping phrases.
 
 The same top-level docs now surface the minimal-reuse security invariant:
 changing the NCMN nonce must force fresh transcript-derived commitments, noise,
@@ -1036,21 +1042,43 @@ Code status after this re-audit: `ai_pow::zk_bridge` now exposes
 for whether the canonical recursive certificate is full-matmul-admissible for a
 parameter set. The node miner calls this gate during startup preflight and
 refuses to connect or enable mining when no recursive certificate builder is
-configured or when the current selected-tile recursive statement is used with
-multi-tile parameters. Tests cover the accepted single-tile case, missing
-builder, and a production-valid multi-tile fixture that fails before mining.
-The `ai-pow-mine` CLI defaults now use a single-tile production-envelope smoke
-profile (`m=8, k=512, n=8, r=32, tile=8, sigma=1`) so the quick-start path is
-submit-capable under the current canonical certificate rules instead of
-defaulting to an unsubmitable multi-tile/test-parameter shape.
+configured, when the current selected-tile recursive statement is used with
+multi-tile parameters, or when the single-tile smoke statement would leave
+`h_a` / `h_b` as unbound prover-chosen seed roots. Tests cover missing builder,
+the production-valid multi-tile fixture that fails before mining, and the
+single-tile fail-closed seed-root case. The `ai-pow-mine` CLI defaults remain a
+single-tile production-envelope smoke profile
+(`m=8, k=512, n=8, r=32, tile=8, sigma=1`) for local Layer-0 development, but
+canonical block submission remains fail-closed until the recursive certificate
+binds both a full-matrix aggregate and the seed roots.
 
 Follow-up code status: the prover-only `ai-pow-mine-prover` smoke CLI had the
 same stale `TEST_SMALL` defaults even though it calls the production
 `mining::run` entrypoint, which rejects non-production parameters. Its defaults
-now match the single-tile production-envelope smoke profile, its command name
-and messages identify it as `ai-pow-mine-prover`, and its optional output is
-documented as legacy plain `MatmulProof` diagnostics rather than a canonical
-block artifact.
+now match the single-tile Layer-0 smoke profile, its command name and messages
+identify it as `ai-pow-mine-prover`, and its optional output is documented as
+legacy plain `MatmulProof` diagnostics rather than a canonical block artifact.
+
+## Latest Re-Audit: Seed-Root Binding
+
+The recursive statement metadata carries `h_a` and `h_b`, which derive
+`s_B`, `s_A`, noise, the verifier-derived tile index, and the final jackpot
+key. The Layer-0 proof binds the chunk-Merkle commitments `h_a_chunk` and
+`h_b_chunk` as `HASH_A` / `HASH_B`. Without an in-proof relation between those
+two commitment families, `h_a` / `h_b` are an extra prover-chosen seed surface.
+Even if every changed seed forces a fresh noised matmul, it is not the intended
+NCMN nonce-bound attempt statement.
+
+Code status after this re-audit: `validate_canonical_recursive_certificate_params`
+and `verify_ai_pow_full_matmul_production_statement` now fail closed with
+`SeedCommitmentBindingUnavailable` for the single-tile smoke profile after
+performing the cheap statement checks. Multi-tile params still fail first with
+`FullMatmulProofUnavailable`. The node miner preflight rejects the single-tile
+case before connecting or enabling mining, and the noun verifier boundary
+rejects decoded artifacts before recursive proof reconstruction. Production
+acceptance can only reopen after the recursive proof either binds `h_a` /
+`h_b` to the same matrices as `HASH_A` / `HASH_B` or changes the canonical seed
+chain to derive from proof-bound commitments.
 
 ## Latest Re-Audit: Jammed Artifact Verifier Source of Truth
 

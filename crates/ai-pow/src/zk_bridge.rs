@@ -861,6 +861,13 @@ pub enum BridgeError {
     /// multi-tile statement cannot be accepted as proof of one full matmul
     /// attempt.
     FullMatmulProofUnavailable { num_tiles: u64 },
+    /// The recursive statement still derives `s_a` / `s_b` from the
+    /// row/column Merkle roots while the Layer-0 proof binds the chunk-Merkle
+    /// matrix commitments. Until the recursive proof also binds those seed
+    /// roots to the same matrices, the certificate leaves an extra
+    /// prover-chosen seed-grinding surface and cannot be a production block
+    /// artifact.
+    SeedCommitmentBindingUnavailable,
     /// M3 (DoS audit): the ai-pow-zk verifier-side `canonical_program`
     /// rejected a structurally-broken `ZkParams` (16|r invariant,
     /// tile-grid bounds, trace_len lower bound). Defense-in-depth
@@ -907,6 +914,10 @@ impl core::fmt::Display for BridgeError {
             BridgeError::FullMatmulProofUnavailable { num_tiles } => write!(
                 f,
                 "recursive certificate proves one selected tile, not a full {num_tiles}-tile matmul"
+            ),
+            BridgeError::SeedCommitmentBindingUnavailable => write!(
+                f,
+                "recursive certificate does not yet bind h_a/h_b seed roots to the ZK matrix commitments"
             ),
             BridgeError::ZkParamsInvalid(msg) => {
                 write!(f, "ai-pow-zk canonical_program rejected params: {msg}")
@@ -1026,7 +1037,9 @@ pub fn prove_ai_pow_recursive_certificate(
     target: &[u8; 32],
     found_idx: u32,
 ) -> Result<AiPowRecursiveCertificateRun, BridgeError> {
-    validate_canonical_recursive_certificate_params(params)?;
+    params
+        .validate_prod_envelope()
+        .map_err(BridgeError::InvalidParams)?;
     ensure_context_params(ctx, params)?;
     ensure_context_attempt(ctx, nonce)?;
     let commitments = ZkPublicCommitments::from_context(ctx);
@@ -1034,6 +1047,7 @@ pub fn prove_ai_pow_recursive_certificate(
         &ctx.block_commitment, &ctx.nonce, params, &commitments, found_idx,
     )?;
     ensure_found_tile_hits_target(ctx, nonce, target, found_idx)?;
+    validate_canonical_recursive_certificate_params(params)?;
     let num_tiles = params.num_tiles();
     let (tile_i, tile_j) = tile_ij(found_idx, params).ok_or(BridgeError::FoundIdxOutOfRange {
         found_idx,
@@ -1071,11 +1085,18 @@ pub fn prove_ai_pow_recursive_certificate(
 /// Check whether the current canonical recursive certificate can serve as a
 /// production full-matmul certificate for `params`.
 ///
-/// Today the recursive statement proves one selected tile. That is a complete
-/// work certificate only when the configured puzzle has exactly one tile. Keep
-/// production miner and verifier preflights on this helper so the future
-/// full-matmul aggregate proof can widen the accepted parameter set in one
-/// place.
+/// Today two independent gaps keep this fail-closed:
+///
+/// - the recursive statement proves one selected tile, not a full multi-tile
+///   aggregate;
+/// - even for a one-tile smoke profile, `s_a` / `s_b` are derived from
+///   `h_a` / `h_b` row/column roots while the ZK proof binds
+///   `h_a_chunk` / `h_b_chunk`. Until the proof binds those seed roots to the
+///   same committed matrices, they are an extra prover-chosen grinding surface.
+///
+/// Keep production miner and verifier preflights on this helper so the future
+/// full-matmul / seed-binding proof can widen the accepted parameter set in
+/// one place.
 pub fn validate_canonical_recursive_certificate_params(
     params: &MatmulParams,
 ) -> Result<(), BridgeError> {
@@ -1086,7 +1107,7 @@ pub fn validate_canonical_recursive_certificate_params(
     if num_tiles > 1 {
         return Err(BridgeError::FullMatmulProofUnavailable { num_tiles });
     }
-    Ok(())
+    Err(BridgeError::SeedCommitmentBindingUnavailable)
 }
 
 /// Crate-internal Layer-0 verifier-only ZK API.
@@ -1148,9 +1169,12 @@ fn verify_ai_pow_selected_tile_statement(
 /// The current recursive certificate is Pearl-style: it proves the opened
 /// jackpot tile and all nonce/commitment/target bindings for that tile. It
 /// does not yet prove a full `comm_m` tree or equivalent aggregate over every
-/// tile state. Consensus callers that interpret one AI-PoW attempt as one full
-/// matmul must use this stricter API so multi-tile proofs fail closed until the
-/// full-matrix aggregate proof is implemented.
+/// tile state. It also does not yet prove that the `h_a` / `h_b` roots used to
+/// derive `s_a` / `s_b` are the same matrices as the chunk commitments bound
+/// by `HASH_A` / `HASH_B`. Consensus callers that interpret one AI-PoW attempt
+/// as one full matmul must use this stricter API so recursive certificates fail
+/// closed until the full-matrix aggregate and seed-commitment binding proof is
+/// implemented.
 #[allow(clippy::too_many_arguments)]
 pub fn verify_ai_pow_full_matmul_production_statement(
     block_commitment: &[u8],
@@ -1171,7 +1195,8 @@ pub fn verify_ai_pow_full_matmul_production_statement(
     }
     verify_ai_pow_selected_tile_statement(
         block_commitment, nonce, params, target, found_idx, commitments, pis, trace_height,
-    )
+    )?;
+    Err(BridgeError::SeedCommitmentBindingUnavailable)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -2399,7 +2424,7 @@ mod tests {
     }
 
     #[test]
-    fn canonical_recursive_certificate_param_gate_matches_full_matmul_boundary() {
+    fn canonical_recursive_certificate_param_gate_fails_until_full_binding() {
         let multi_tile = MatmulParams::PROD;
         assert!(multi_tile.num_tiles() > 1);
         assert!(matches!(
@@ -2410,12 +2435,14 @@ mod tests {
 
         let single_tile = single_tile_prod_params();
         assert_eq!(single_tile.num_tiles(), 1);
-        validate_canonical_recursive_certificate_params(&single_tile)
-            .expect("selected-tile recursive certificate is full-matmul only for one tile");
+        assert!(matches!(
+            validate_canonical_recursive_certificate_params(&single_tile),
+            Err(BridgeError::SeedCommitmentBindingUnavailable)
+        ));
     }
 
     #[test]
-    fn full_matmul_production_statement_accepts_single_tile_recursive_cert() {
+    fn full_matmul_production_statement_rejects_single_tile_until_seed_roots_bound() {
         let params = single_tile_prod_params();
         params.validate_prod_envelope().unwrap();
         assert_eq!(params.num_tiles(), 1);
@@ -2443,10 +2470,12 @@ mod tests {
         let trace_height = expected_layer0_rows(&params).required_trace_len();
         let found_idx = expected_attempt_found_idx(block, nonce, &params, &commitments).unwrap();
 
-        verify_ai_pow_full_matmul_production_statement(
-            block, nonce, &params, &target, found_idx, &commitments, &pis, trace_height,
-        )
-        .expect("single-tile recursive statement is a full-matmul statement");
+        assert!(matches!(
+            verify_ai_pow_full_matmul_production_statement(
+                block, nonce, &params, &target, found_idx, &commitments, &pis, trace_height,
+            ),
+            Err(BridgeError::SeedCommitmentBindingUnavailable)
+        ));
     }
 
     #[test]

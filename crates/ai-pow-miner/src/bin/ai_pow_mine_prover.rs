@@ -57,8 +57,9 @@ struct Args {
     target: String,
 
     // ── puzzle shape ──────────────────────────────────────────────
-    // Defaults match the node miner's single-tile production-envelope smoke
-    // profile. `mining::run` intentionally rejects non-production params.
+    // Defaults match the node miner's single-tile Layer-0 smoke profile.
+    // Canonical block submission still fails closed until seed-root and
+    // full-matrix recursive binding lands.
     #[arg(short = 'm', long, default_value_t = 8)]
     m: u32,
     #[arg(short = 'k', long, default_value_t = 512)]
@@ -252,7 +253,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn prover_cli_defaults_are_production_envelope_single_tile_smoke_params() {
+    fn prover_cli_defaults_are_single_tile_layer0_smoke_params() {
         let args =
             Args::parse_from(["ai-pow-mine-prover", "--synth-seed", "ai-pow-prover-default-smoke"]);
         assert_eq!((args.m, args.k, args.n), (8, 512, 8));
@@ -275,7 +276,7 @@ mod tests {
         assert_eq!(
             params.num_tiles(),
             1,
-            "defaults should remain full-matmul-admissible for the current selected-tile certificate"
+            "defaults should remain a one-tile Layer-0 smoke profile"
         );
     }
 }

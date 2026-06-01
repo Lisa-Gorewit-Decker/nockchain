@@ -20,8 +20,9 @@
 //!    - new candidate → cancel any in-flight attempt, derive the
 //!      mining job, spawn-blocking [`crate::mining::run`].
 //!    - worker result:
-//!      - success → build the full-matmul-admissible recursive certificate via the
-//!        configured certificate builder and poke the node with
+//!      - success → build the canonical recursive certificate via the
+//!        configured certificate builder once the proof is sound for
+//!        production, and poke the node with
 //!        `[%command %pow %ai-pow nonce cert]` on [`AiPowMinerWire::Mined`],
 //!        then idle until the next candidate.
 //!      - error → log + idle.
@@ -31,9 +32,10 @@
 //! The canonical payload shape is the recursive AI-PoW certificate noun. The
 //! plain `MatmulProof`, nonce, and tile index are mining internals; they are
 //! not submitted to the kernel as the block proof. The current certificate
-//! support gate fails preflight for multi-tile params until the recursive
-//! statement binds a full-matrix aggregate, and the kernel remains fail-closed
-//! until recursive certificate verification is wired.
+//! support gate fails preflight until the recursive statement binds both a
+//! full-matrix aggregate and the `h_a` / `h_b` seed roots to the ZK matrix
+//! commitments, and the kernel remains fail-closed until recursive certificate
+//! verification is wired.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -120,10 +122,9 @@ pub struct AiPuzzleInputs {
     /// Forwarded to the per-attempt prover (mostly defaults).
     pub prover_opts: ProverOptions,
     /// Production handoff that turns a winning mining attempt into a
-    /// full-matmul-admissible structured recursive certificate noun. If
-    /// absent, or if the current recursive proof is only a selected-tile proof
-    /// for multi-tile params, the production node miner fails preflight before
-    /// enabling mining.
+    /// structured recursive certificate noun. If absent, or if the current
+    /// recursive proof lacks the full production binding, the production node
+    /// miner fails preflight before enabling mining.
     pub certificate_builder: Option<Arc<AiPowCertificateBuilder>>,
 }
 
@@ -763,11 +764,16 @@ mod tests {
     }
 
     #[test]
-    fn production_preflight_accepts_single_tile_certificate_params() {
+    fn production_preflight_rejects_single_tile_until_seed_roots_are_bound() {
         let cfg = test_cfg("http://127.0.0.1:1".to_string());
-        cfg.puzzle
+        let err = cfg
+            .puzzle
             .validate_canonical_submission_ready()
-            .expect("single-tile selected-tile certificate is full-matmul admissible");
+            .expect_err("single-tile recursive certificate still lacks seed-root binding");
+        assert!(
+            err.to_string().contains("does not yet bind h_a/h_b"),
+            "unexpected error: {err}"
+        );
     }
 
     #[test]
@@ -891,9 +897,9 @@ mod tests {
     /// modern machine; marked `#[ignore]` so `cargo test` is fast by
     /// default. Run with `cargo test -p ai-pow-miner --features node
     /// --test node_run_mock_node -- --ignored`.
-    #[ignore]
+    #[ignore = "canonical certificate gate is fail-closed until seed-root binding lands"]
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-    async fn run_loop_against_mock_node_submits_ai_pow_command() {
+    async fn run_loop_against_mock_node_submits_ai_pow_command_after_certificate_gate_reopens() {
         let node = MockNode::spawn().await;
         let cfg = test_cfg(node.url());
 
@@ -928,50 +934,42 @@ mod tests {
         node.shutdown().await;
     }
 
-    /// Cheap: confirms reconnect-with-backoff terminates as
-    /// `TooManyReconnects` when nothing is listening.
+    /// Cheap: confirms the node runner fails closed before reconnect work when
+    /// the configured recursive certificate is not canonical-admissible.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn run_loop_reconnects_when_node_unreachable_then_exits() {
-        let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
-        let addr = listener.local_addr().expect("local_addr");
-        drop(listener);
-        let cfg = test_cfg(format!("http://{addr}"));
+    async fn run_loop_rejects_before_connect_when_certificate_gate_is_closed() {
+        let cfg = test_cfg("http://127.0.0.1:1".to_string());
         let shutdown = CancellationToken::new();
         let r = tokio::time::timeout(Duration::from_secs(2), run(cfg, shutdown))
             .await
             .expect("run didn't terminate");
         match r {
-            Err(MinerError::TooManyReconnects { count }) => {
-                assert!(count >= 3, "expected at least 3 attempts, got {count}");
+            Err(MinerError::CanonicalCertificateUnavailable(msg)) => {
+                assert!(
+                    msg.contains("does not yet bind h_a/h_b"),
+                    "unexpected error: {msg}"
+                );
             }
-            other => panic!("expected TooManyReconnects, got {other:?}"),
+            other => panic!("expected CanonicalCertificateUnavailable, got {other:?}"),
         }
     }
 
-    /// Cheap: confirms clean shutdown drains any in-flight worker
-    /// (without actually completing a heavy proof — we cancel
-    /// quickly enough that the worker terminates on its first
-    /// MiningCancel check).
+    /// Cheap: confirms shutdown does not turn the canonical-certificate
+    /// preflight failure into a successful run.
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-    async fn run_loop_exits_cleanly_on_shutdown() {
-        let node = MockNode::spawn().await;
-        // Use an impossible target so the worker keeps running until cancel.
-        // (certificate submission won't be called.)
-        let mut cfg = test_cfg(node.url());
-        cfg.mine_opts.max_extranonces = None;
+    async fn run_loop_shutdown_still_reports_closed_certificate_gate() {
+        let cfg = test_cfg("http://127.0.0.1:1".to_string());
         let shutdown = CancellationToken::new();
         let shutdown_clone = shutdown.clone();
         let mining_task = tokio::spawn(async move { run(cfg, shutdown_clone).await });
-        tokio::time::sleep(Duration::from_millis(200)).await;
-        // Push a candidate so the worker dispatches.
-        node.publish_synth_mine_effect(50, 0x0000_0001, 64);
-        tokio::time::sleep(Duration::from_millis(100)).await;
         shutdown.cancel();
         let r = tokio::time::timeout(Duration::from_secs(10), mining_task)
             .await
             .expect("miner did not exit within 10s")
             .expect("miner panicked");
-        assert!(r.is_ok(), "expected clean Ok on shutdown, got {r:?}");
-        node.shutdown().await;
+        assert!(
+            matches!(r, Err(MinerError::CanonicalCertificateUnavailable(_))),
+            "expected closed canonical certificate gate, got {r:?}"
+        );
     }
 }

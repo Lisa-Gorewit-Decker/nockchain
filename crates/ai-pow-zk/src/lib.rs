@@ -41,9 +41,9 @@
 //! - [`composite_trace::CompositeTrace`] — trace generator with
 //!   `place_*` helpers for each instruction type (matmul step, BLAKE3
 //!   hash, jackpot rotation).
-//! - [`composite_public::CompositePublicInputs`] — typed 20-element PI
-//!   vector (4 i32 cumsum + 16 u32 jackpot) bound by the AIR on the
-//!   trace's last row.
+//! - [`composite_public::CompositePublicInputs`] — typed 60-element PI
+//!   vector: cumsum, jackpot state, matrix commitments, nonce-bound job key,
+//!   jackpot key, and jackpot hash.
 //! - [`params::ZkParams`] — circuit parameter shape (rows / cols of the
 //!   matmul puzzle).
 //! - [`circuit::AiPowStarkConfig`] / [`circuit::CircuitConfig`] — the
@@ -70,13 +70,16 @@
 //!
 //! ## What's not yet bound
 //!
-//! - **`h_a` / `h_b` matrix bindings** (task #52). The witness's
-//!   `a_rows` / `b_cols` aren't yet tied to chain-pinned chunk-Merkle
-//!   roots. Multi-week deferred work.
+//! - **`h_a` / `h_b` seed-root bindings.** The Layer-0 proof binds the
+//!   chunk-Merkle matrix commitments exposed as `HASH_A` / `HASH_B`, while
+//!   the Rust statement still derives `s_a` / `s_b` from separate row/column
+//!   roots. Consensus remains fail-closed until the recursive statement proves
+//!   those seed roots describe the same matrices or switches the seed chain to
+//!   proof-bound commitments.
 //! - **Full-matmul recursive statement.** The current recursive certificate
-//!   verifies one selected tile. Production block admission therefore fails
-//!   closed for multi-tile params until the recursive statement binds a
-//!   full-matmul aggregate or equivalent full-work certificate.
+//!   verifies one selected tile. Production block admission therefore remains
+//!   closed until the recursive statement binds a full-matmul aggregate or
+//!   equivalent full-work certificate.
 //! - **Hoon noun verifier hook.** The structured recursive-certificate noun
 //!   encoder exists in the miner crate, but consensus still needs the jet /
 //!   wiring that decodes the noun at the block boundary, reconstructs the

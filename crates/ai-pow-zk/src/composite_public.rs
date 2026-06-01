@@ -6,7 +6,7 @@
 //! constraints on the trace's last row, plus selector-gated
 //! per-row constraints for `HASH_A` / `HASH_B`.
 //!
-//! ## Layout (36 field elements)
+//! ## Layout (60 field elements)
 //!
 //! ```text
 //!   index 0..4   : final CUMSUM_TILE (4 i32 cells, signed —
@@ -21,6 +21,9 @@
 //!                  Bound to the row where `IS_HASH_A = 1` via
 //!                  `IS_HASH_A · (CV_OUT[i] − PI_HASH_A[i]) = 0`.
 //!   index 28..36 : HASH_B — 8 u32 words for matrix B.
+//!   index 36..44 : JOB_KEY — κ bound to BLAKE3 key input rows.
+//!   index 44..52 : COMMITMENT_HASH — Nockchain's nonce-derived jackpot key.
+//!   index 52..60 : HASH_JACKPOT — jackpot digest checked against target.
 //! ```
 //!
 //! ## Deferred from PIs

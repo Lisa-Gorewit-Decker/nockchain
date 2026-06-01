@@ -613,8 +613,8 @@ pub fn precheck_ai_pow_ncmn_artifact_statement(
 ///
 /// This is the production-safe variant for callers that already reconstructed
 /// the recursive certificate object from the structured noun tail. It uses the
-/// full-matmul statement precheck, so multi-tile selected-tile certificates are
-/// rejected before recursive verifier work.
+/// full-matmul statement precheck, so selected-tile certificates and unbound
+/// seed-root statements are rejected before recursive verifier work.
 pub fn verify_ai_pow_ncmn_certificate_statement_and_proof(
     shape: &AiPowCertificateShape,
     puzzle_id: &[u8],
@@ -2800,8 +2800,12 @@ mod tests {
         let decoded = decode_ai_pow_certificate_slab(&slab, CertificateNounLimits::default())
             .expect("decode certificate noun");
 
-        precheck_ai_pow_certificate_statement(&decoded, block, nonce, &params, &target)
-            .expect("honest certificate metadata should precheck");
+        assert!(matches!(
+            precheck_ai_pow_certificate_statement(&decoded, block, nonce, &params, &target),
+            Err(CertificateNounError::Statement(
+                BridgeError::SeedCommitmentBindingUnavailable
+            ))
+        ));
 
         assert!(matches!(
             precheck_ai_pow_certificate_statement(
@@ -2999,10 +3003,14 @@ mod tests {
         assert_eq!(decoded.certificate.public_inputs, pis);
         assert_eq!(decoded.certificate.certificate, certificate);
 
-        precheck_ai_pow_ncmn_artifact_statement(
-            &decoded, puzzle_id, &candidate_nck, &params, &target,
-        )
-        .expect("honest artifact statement should precheck");
+        assert!(matches!(
+            precheck_ai_pow_ncmn_artifact_statement(
+                &decoded, puzzle_id, &candidate_nck, &params, &target,
+            ),
+            Err(CertificateNounError::Statement(
+                BridgeError::SeedCommitmentBindingUnavailable
+            ))
+        ));
 
         let mut wrong_anchor = candidate_nck;
         wrong_anchor[0] ^= 1;
@@ -3154,10 +3162,14 @@ mod tests {
         let decoded = decode_ai_pow_certificate_slab(&slab, CertificateNounLimits::default())
             .expect("decode certificate noun");
 
-        precheck_ai_pow_ncmn_certificate_statement(
-            &decoded, puzzle_id, &candidate_nck, &nonce, &params, &target,
-        )
-        .expect("honest NCMN certificate metadata should precheck");
+        assert!(matches!(
+            precheck_ai_pow_ncmn_certificate_statement(
+                &decoded, puzzle_id, &candidate_nck, &nonce, &params, &target,
+            ),
+            Err(CertificateNounError::Statement(
+                BridgeError::SeedCommitmentBindingUnavailable
+            ))
+        ));
 
         let mut wrong_anchor = candidate_nck;
         wrong_anchor[0] ^= 1;
