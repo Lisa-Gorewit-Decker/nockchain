@@ -906,6 +906,30 @@ helpers deprecated with a note pointing callers to the structured recursive
 certificate noun. The nockchain wire regression asserts those warnings remain
 present.
 
+## Latest Re-Audit: Jammed Artifact DoS Ordering
+
+The byte-oriented verifier `verify_ai_pow_ncmn_artifact_jam` still routed
+through `decode_ai_pow_artifact_jam`, which fully decoded the structured
+proof-node tail before the verifier checked the trusted candidate-block anchor
+or re-derived the cheap statement metadata. The decoded-certificate APIs had
+already been fixed, but a hostile block/wire artifact could still force bounded
+proof-node traversal before rejection when the NCMN anchor was wrong or the
+claimed `HASH_JACKPOT` missed the target.
+
+This is bounded by `CertificateNounLimits`, so it is not an unbounded parser
+bomb, but it is still the wrong consensus ordering: cheap rejection using
+trusted block data should happen before semantic traversal of the
+miner-controlled recursive certificate tree whenever the top-level noun shape
+already exposes the required metadata.
+
+Code status after this re-audit: `verify_ai_pow_ncmn_artifact_jam` now performs
+the byte-length cap, jam preflight, cue, canonical-jam check, artifact tag
+check, NCMN anchor check, certificate metadata decode, and full-matmul
+statement precheck before decoding the proof-node tail or reconstructing the
+recursive certificate. Regression coverage builds jammed `%ai-pow` artifacts
+with an intentionally invalid proof node and confirms wrong candidate anchors
+and missed targets return the cheap precheck errors before proof-node decode.
+
 This is intentionally fail-closed. Pearl's reference miner computes every
 output tile before returning the final matrix and records an opened block when a
 tile hash hits the target, but the proof artifact only opens the winning tile.

@@ -127,6 +127,16 @@ pub struct AiPowArtifactShape {
     pub certificate: AiPowCertificateShape,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct AiPowCertificateMetadata {
+    version: u64,
+    zk_params: ZkParams,
+    found_idx: u32,
+    trace_height: usize,
+    commitments: ZkPublicCommitments,
+    public_inputs: CompositePublicInputs,
+}
+
 /// Generic Hoon-compatible tree used for the recursive certificate internals.
 ///
 /// Homogeneous integer vectors are packed into atoms so the real recursive
@@ -263,12 +273,38 @@ pub fn decode_ai_pow_certificate_noun(
     limits: CertificateNounLimits,
 ) -> Result<AiPowCertificateShape, CertificateNounError> {
     let fields = tuple7(root, space, "ai-pow-certificate")?;
+    let metadata = decode_ai_pow_certificate_metadata_fields(&fields, space, limits)?;
+    let mut state = DecodeState::new(limits);
+    Ok(AiPowCertificateShape {
+        version: metadata.version,
+        zk_params: metadata.zk_params,
+        found_idx: metadata.found_idx,
+        trace_height: metadata.trace_height,
+        commitments: metadata.commitments,
+        public_inputs: metadata.public_inputs,
+        certificate: decode_proof_node(fields[6], space, &mut state, 0)?,
+    })
+}
+
+fn decode_ai_pow_certificate_metadata_noun(
+    root: Noun,
+    space: &NounSpace,
+    limits: CertificateNounLimits,
+) -> Result<AiPowCertificateMetadata, CertificateNounError> {
+    let fields = tuple7(root, space, "ai-pow-certificate")?;
+    decode_ai_pow_certificate_metadata_fields(&fields, space, limits)
+}
+
+fn decode_ai_pow_certificate_metadata_fields(
+    fields: &[Noun; 7],
+    space: &NounSpace,
+    limits: CertificateNounLimits,
+) -> Result<AiPowCertificateMetadata, CertificateNounError> {
     let version = expect_u64(fields[0], space, "version")?;
     if version != AI_POW_CERT_VERSION {
         return Err(CertificateNounError::UnsupportedVersion(version));
     }
-    let mut state = DecodeState::new(limits);
-    Ok(AiPowCertificateShape {
+    Ok(AiPowCertificateMetadata {
         version,
         zk_params: decode_params(fields[1], space)?,
         found_idx: u32::try_from(expect_u64(fields[2], space, "found-idx")?)
@@ -280,7 +316,6 @@ pub fn decode_ai_pow_certificate_noun(
         )?,
         commitments: decode_commitments(fields[4], space, limits)?,
         public_inputs: decode_public_inputs(fields[5], space, limits)?,
-        certificate: decode_proof_node(fields[6], space, &mut state, 0)?,
     })
 }
 
@@ -495,16 +530,34 @@ pub fn precheck_ai_pow_certificate_statement(
     params: &MatmulParams,
     target: &[u8; 32],
 ) -> Result<(), CertificateNounError> {
+    let metadata = AiPowCertificateMetadata {
+        version: shape.version,
+        zk_params: shape.zk_params.clone(),
+        found_idx: shape.found_idx,
+        trace_height: shape.trace_height,
+        commitments: shape.commitments.clone(),
+        public_inputs: shape.public_inputs.clone(),
+    };
+    precheck_ai_pow_certificate_metadata(&metadata, block_commitment, nonce, params, target)
+}
+
+fn precheck_ai_pow_certificate_metadata(
+    metadata: &AiPowCertificateMetadata,
+    block_commitment: &[u8],
+    nonce: &[u8],
+    params: &MatmulParams,
+    target: &[u8; 32],
+) -> Result<(), CertificateNounError> {
     let expected = zk_params_from_matmul(params);
-    if shape.zk_params != expected {
+    if metadata.zk_params != expected {
         return Err(CertificateNounError::ZkParamsMismatch {
             expected,
-            actual: shape.zk_params.clone(),
+            actual: metadata.zk_params.clone(),
         });
     }
     verify_ai_pow_full_matmul_production_statement(
-        block_commitment, nonce, params, target, shape.found_idx, &shape.commitments,
-        &shape.public_inputs, shape.trace_height,
+        block_commitment, nonce, params, target, metadata.found_idx, &metadata.commitments,
+        &metadata.public_inputs, metadata.trace_height,
     )
     .map_err(CertificateNounError::Statement)
 }
@@ -676,10 +729,45 @@ pub fn verify_ai_pow_ncmn_artifact_jam(
     params: &MatmulParams,
     target: &[u8; 32],
 ) -> Result<(), CertificateNounError> {
-    let artifact = decode_ai_pow_artifact_jam(jammed, limits)?;
-    verify_decoded_ai_pow_ncmn_artifact(
-        &artifact, puzzle_id, candidate_nck_commitment, params, target,
+    if jammed.is_empty() {
+        return Err(CertificateNounError::Cue(CueError::TruncatedBuffer));
+    }
+    if jammed.len() > limits.max_jam_bytes {
+        return Err(CertificateNounError::JammedLengthExceeded {
+            limit: limits.max_jam_bytes,
+            actual: jammed.len(),
+        });
+    }
+    preflight_ai_pow_artifact_jam(jammed, limits)?;
+
+    let mut slab: NounSlab = NounSlab::new();
+    let root = catch_unwind(AssertUnwindSafe(|| {
+        slab.cue_into(Bytes::copy_from_slice(jammed))
+    }))
+    .map_err(|_| CertificateNounError::CuePanic)??;
+    slab.set_root(root);
+    if slab.jam().as_ref() != jammed {
+        return Err(CertificateNounError::NonCanonicalJam);
+    }
+
+    let space = slab.noun_space();
+    let root = unsafe { *slab.root() };
+    let fields = tuple3(root, &space, "ai-pow artifact")?;
+    let tag = expect_u64(fields[0], &space, "ai-pow artifact tag")?;
+    if tag != tas!(b"ai-pow") {
+        return Err(CertificateNounError::Shape("expected %ai-pow artifact"));
+    }
+    let nonce = expect_fixed_bytes::<NCMN_NONCE_LEN>(fields[1], &space, "ncmn nonce", limits)?;
+    precheck_ncmn_nonce(candidate_nck_commitment, &nonce)?;
+    let metadata = decode_ai_pow_certificate_metadata_noun(fields[2], &space, limits)?;
+    precheck_ai_pow_certificate_metadata(&metadata, puzzle_id, &nonce, params, target)?;
+
+    let certificate_shape = decode_ai_pow_certificate_noun(fields[2], &space, limits)?;
+    let certificate = ai_pow_recursive_certificate_from_node(&certificate_shape.certificate)?;
+    ai_pow_zk::recursion::verify_recursive_certificate(
+        &certificate, &certificate_shape.public_inputs,
     )
+    .map_err(|e| CertificateNounError::RecursiveCertificate(e.to_string()))
 }
 
 #[derive(Debug)]
@@ -2545,6 +2633,38 @@ mod tests {
         slab
     }
 
+    fn build_certificate_slab_with_statement_and_raw_node<F>(
+        zk_params: &ZkParams,
+        found_idx: u32,
+        trace_height: usize,
+        commitments: &ZkPublicCommitments,
+        pis: &CompositePublicInputs,
+        build_certificate: F,
+    ) -> NounSlab
+    where
+        F: FnOnce(&mut NounSlab) -> Noun,
+    {
+        let mut slab = NounSlab::new();
+        let params = encode_params(&mut slab, zk_params);
+        let commitments = encode_commitments(&mut slab, commitments);
+        let public_inputs = encode_public_inputs(&mut slab, pis);
+        let certificate = build_certificate(&mut slab);
+        let root = T(
+            &mut slab,
+            &[
+                D(AI_POW_CERT_VERSION),
+                params,
+                D(found_idx as u64),
+                D(trace_height as u64),
+                commitments,
+                public_inputs,
+                certificate,
+            ],
+        );
+        slab.set_root(root);
+        slab
+    }
+
     #[test]
     fn recursive_certificate_serializer_packs_homogeneous_integer_vectors() {
         let cert = FakeRecursiveCert {
@@ -2805,6 +2925,73 @@ mod tests {
                 &decoded, puzzle_id, &wrong_anchor, &nonce, &params, &target
             ),
             Err(CertificateNounError::NonceAnchorMismatch)
+        ));
+    }
+
+    #[test]
+    fn jammed_artifact_verify_prechecks_anchor_before_proof_node_decode() {
+        let puzzle_id = b"jam-anchor-before-proof-node-puzzle";
+        let candidate_nck = [0x61u8; 32];
+        let nonce = build_ncmn_nonce(&NonceAnchors::nck_only(candidate_nck), 21);
+        let target = [0xffu8; 32];
+        let (params, commitments, pis, trace_height, found_idx) =
+            production_statement_fixture(puzzle_id, &nonce);
+        let cert_slab = build_certificate_slab_with_statement_and_raw_node(
+            &zk_params_from_matmul(&params),
+            found_idx,
+            trace_height,
+            &commitments,
+            &pis,
+            |_| D(0),
+        );
+        let artifact_slab = build_ai_pow_artifact_slab(&nonce, &cert_slab);
+        let jammed = artifact_slab.jam();
+        let mut wrong_anchor = candidate_nck;
+        wrong_anchor[0] ^= 1;
+
+        assert!(matches!(
+            verify_ai_pow_ncmn_artifact_jam(
+                &jammed,
+                CertificateNounLimits::default(),
+                puzzle_id,
+                &wrong_anchor,
+                &params,
+                &target
+            ),
+            Err(CertificateNounError::NonceAnchorMismatch)
+        ));
+    }
+
+    #[test]
+    fn jammed_artifact_verify_prechecks_statement_before_proof_node_decode() {
+        let puzzle_id = b"jam-statement-before-proof-node-puzzle";
+        let candidate_nck = [0x62u8; 32];
+        let nonce = build_ncmn_nonce(&NonceAnchors::nck_only(candidate_nck), 22);
+        let (params, commitments, pis, trace_height, found_idx) =
+            production_statement_fixture(puzzle_id, &nonce);
+        let cert_slab = build_certificate_slab_with_statement_and_raw_node(
+            &zk_params_from_matmul(&params),
+            found_idx,
+            trace_height,
+            &commitments,
+            &pis,
+            |_| D(0),
+        );
+        let artifact_slab = build_ai_pow_artifact_slab(&nonce, &cert_slab);
+        let jammed = artifact_slab.jam();
+
+        assert!(matches!(
+            verify_ai_pow_ncmn_artifact_jam(
+                &jammed,
+                CertificateNounLimits::default(),
+                puzzle_id,
+                &candidate_nck,
+                &params,
+                &[0u8; 32]
+            ),
+            Err(CertificateNounError::Statement(
+                BridgeError::FoundAboveTarget
+            ))
         ));
     }
 

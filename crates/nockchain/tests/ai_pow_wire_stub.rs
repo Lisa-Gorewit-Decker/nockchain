@@ -116,6 +116,11 @@ fn ai_pow_consensus_wire_is_structured_but_fail_closed_without_verifier() {
                 .contains("ai_pow_artifact_jam_decoder_enforces_byte_limit_before_cue")
             && AI_POW_MINER_CERT_NOUN_RS
                 .contains("ai_pow_artifact_decoder_rejects_malformed_nonce_and_tag")
+            && AI_POW_MINER_CERT_NOUN_RS.contains("decode_ai_pow_certificate_metadata_noun")
+            && AI_POW_MINER_CERT_NOUN_RS
+                .contains("jammed_artifact_verify_prechecks_anchor_before_proof_node_decode")
+            && AI_POW_MINER_CERT_NOUN_RS
+                .contains("jammed_artifact_verify_prechecks_statement_before_proof_node_decode")
             && AI_POW_MINER_CERT_NOUN_RS.contains("AiProofNode::Ext2s")
             && AI_POW_MINER_CERT_NOUN_RS.contains(
                 "recursive_certificate_serializer_packs_two_felt_tuples_as_ext2_aura_nodes"
