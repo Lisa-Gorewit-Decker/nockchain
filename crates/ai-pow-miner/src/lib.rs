@@ -113,6 +113,10 @@ impl MiningStats {
 pub struct MinedSolution {
     /// The full 80-byte NCMN nonce that cleared the target.
     pub nonce: NcmnNonce,
+    /// Trusted Nockchain candidate anchor from the mining job used to build
+    /// `nonce`. Recursive certificate generation must verify the nonce
+    /// against this value, never against the nonce's own parsed anchor.
+    pub candidate_nck_commitment: [u8; 32],
     /// Chain-derived 32-byte target used by the winning attempt.
     pub target: DifficultyTarget,
     /// Linear tile index of the winning tile.
@@ -132,6 +136,8 @@ pub enum MiningError {
     DeadlineElapsed,
     #[error("extranonce budget exhausted ({max} attempts)")]
     BudgetExhausted { max: u64 },
+    #[error("NCMN external commitment is reserved and must be absent")]
+    NonceExternalCommitmentPresent,
 }
 
 /// Cooperative cancellation. Clone freely; checked at every

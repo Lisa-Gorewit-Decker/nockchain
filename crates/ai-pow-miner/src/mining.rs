@@ -54,6 +54,9 @@ fn run_inner(
         job.params
             .validate_prod_envelope()
             .map_err(ai_pow::prover::MineError::from)?;
+        if job.anchors.external_commitment.is_some() {
+            return Err(MiningError::NonceExternalCommitmentPresent);
+        }
     } else {
         job.params
             .validate()
@@ -100,6 +103,7 @@ fn run_inner(
             let found_idx = found_idx_u64 as u32;
             return Ok(MinedSolution {
                 nonce,
+                candidate_nck_commitment: job.anchors.nck_commitment,
                 target: job.target,
                 found_idx,
                 proof,
@@ -166,6 +170,7 @@ mod tests {
         // Sanity: nonce parses cleanly + the anchors round-trip.
         let (anchors, xn) = crate::parse_ncmn_nonce(&sol.nonce).expect("nonce");
         assert_eq!(anchors, job.anchors);
+        assert_eq!(sol.candidate_nck_commitment, job.anchors.nck_commitment);
         assert_eq!(xn, 0, "first extranonce should win at trivial target");
         // The winning idx is in range.
         let row_tiles = params.m / params.tile;
@@ -237,6 +242,31 @@ mod tests {
             Ok(_) => panic!("expected MiningError::Mine, got Ok"),
             Err(e) => panic!("expected MiningError::Mine, got Err: {e}"),
         }
+    }
+
+    #[test]
+    fn mine_rejects_external_nonce_anchor_at_entry() {
+        let mut params = MatmulParams::PROD;
+        params.difficulty_bits = 0;
+        let a = [];
+        let b = [];
+        let pid = puzzle_id();
+        let job = MiningJob {
+            puzzle_id: &pid,
+            anchors: NonceAnchors {
+                nck_commitment: [0xAB; 32],
+                external_commitment: Some([0xCD; 32]),
+            },
+            params: &params,
+            target: [0xFF; 32],
+            a: &a,
+            b: &b,
+        };
+
+        assert!(matches!(
+            run(&job, &MineOptions::default(), MiningCancel::new()),
+            Err(MiningError::NonceExternalCommitmentPresent)
+        ));
     }
 
     #[test]

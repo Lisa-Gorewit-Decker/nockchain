@@ -257,13 +257,8 @@ fn build_puzzle_inputs(args: &Args) -> Result<AiPuzzleInputs> {
     let a_for_builder = a.clone();
     let b_for_builder = b.clone();
     let certificate_builder = Arc::new(move |sol: &ai_pow_miner::MinedSolution| {
-        let (anchors, _) = ai_pow_miner::parse_ncmn_nonce(&sol.nonce).map_err(|e| {
-            AiPowCertificateBuildError(format!(
-                "refusing to build recursive certificate before successful matmul target check: {e}"
-            ))
-        })?;
         ai_pow::verify_ncmn_at_target(
-            &puzzle_id_for_builder, &anchors.nck_commitment, &sol.nonce, &params_for_builder,
+            &puzzle_id_for_builder, &sol.candidate_nck_commitment, &sol.nonce, &params_for_builder,
             &sol.target, &sol.proof,
         )
         .map_err(|e| {
@@ -416,6 +411,37 @@ mod tests {
             err.to_string().contains(
                 "refusing to build recursive certificate before successful matmul target check"
             ) && err.to_string().contains("external commitment"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn recursive_certificate_builder_rejects_nonce_anchor_substitution_before_zkp() {
+        let puzzle = build_puzzle_inputs(&test_args()).expect("test puzzle");
+        let easy_target = [0xFF; 32];
+        let job = MiningJob {
+            puzzle_id: &puzzle.puzzle_id,
+            anchors: NonceAnchors::nck_only([7; 32]),
+            params: &puzzle.params,
+            target: easy_target,
+            a: puzzle.a.as_slice(),
+            b: puzzle.b.as_slice(),
+        };
+        let mut opts = MineOptions::default();
+        opts.max_extranonces = Some(1);
+        let mut sol =
+            ai_pow_miner::mining::run(&job, &opts, MiningCancel::new()).expect("easy solution");
+        sol.nonce = build_ncmn_nonce(&NonceAnchors::nck_only([8; 32]), 0);
+
+        let build = puzzle
+            .certificate_builder
+            .as_ref()
+            .expect("production builder configured");
+        let err = build(&sol).expect_err("wrong anchor must not build a recursive certificate");
+        assert!(
+            err.to_string().contains(
+                "refusing to build recursive certificate before successful matmul target check"
+            ) && err.to_string().contains("does not match candidate block"),
             "unexpected error: {err}"
         );
     }

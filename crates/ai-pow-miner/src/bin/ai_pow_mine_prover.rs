@@ -234,7 +234,7 @@ fn main() -> Result<()> {
                 MiningError::Cancelled
                 | MiningError::DeadlineElapsed
                 | MiningError::BudgetExhausted { .. } => 2,
-                MiningError::Mine(_) => 1,
+                MiningError::Mine(_) | MiningError::NonceExternalCommitmentPresent => 1,
             };
             std::process::exit(code);
         }

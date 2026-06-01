@@ -163,10 +163,14 @@ fn ai_pow_consensus_wire_is_structured_but_fail_closed_without_verifier() {
     assert!(
         AI_POW_MINER_LIB_RS.contains("pub target: DifficultyTarget")
             && AI_POW_MINER_LIB_RS.contains("Count of fully rebuilt nonce-bound matmul attempts")
+            && AI_POW_MINER_LIB_RS.contains("candidate_nck_commitment")
             && AI_POW_MINER_BIN_RS.contains("certificate_builder: Some")
             && !AI_POW_MINER_BIN_RS.contains("certificate_builder: None")
             && !AI_POW_MINER_BIN_RS.contains("ai_pow::verify_at_target(")
-            && AI_POW_MINER_BIN_RS.contains("parse_ncmn_nonce")
+            && AI_POW_MINER_BIN_RS.contains("&sol.candidate_nck_commitment")
+            && AI_POW_MINER_BIN_RS.contains(
+                "recursive_certificate_builder_rejects_nonce_anchor_substitution_before_zkp"
+            )
             && target_check < recursive_prove
             && AI_POW_ZK_BRIDGE_RS.contains("pub fn prove_ai_pow_recursive_certificate")
             && recursive_certificate_fn.contains("validate_prod_envelope")

@@ -461,6 +461,10 @@ Fix status:
 - Done: `nonce.nck_commitment != candidate block commitment` rejects.
 - Done: the opaque external commitment slot is reserved and must be zero until
   a future consensus rule specifies it.
+- Done: the standalone miner carries the trusted candidate Nockchain
+  commitment in `MinedSolution` and recursive certificate generation checks the
+  nonce against that trusted value. It must not parse a miner-controlled nonce
+  and use the nonce's own `nck_commitment` as the expected anchor.
 - Done: parsed nonce fields and malformed/external-anchor cases are covered by
   Rust tests and the AI-PoW wire regression guard.
 
@@ -519,7 +523,8 @@ Current status:
   `prove_ai_pow_recursive_certificate`, and
   `verify_ai_pow_production_statement` enforce the production envelope.
 - `ai-pow-mine`'s recursive certificate builder runs the plain target precheck
-  through `verify_ncmn_at_target`, not the structural low-level verifier, before
+  through `verify_ncmn_at_target`, not the structural low-level verifier, using
+  the trusted candidate Nockchain commitment carried by the mining result before
   it starts recursive proof generation.
 - `validate()` and `verify_at_target` remain available for tests/local tools
   and are documented as non-production helpers.
