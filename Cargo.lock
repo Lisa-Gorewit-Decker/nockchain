@@ -59,7 +59,7 @@ name = "ai-pow"
 version = "0.1.0"
 dependencies = [
  "ai-pow-zk",
- "bincode",
+ "bincode 2.0.1",
  "blake3",
  "criterion",
  "proptest",
@@ -76,6 +76,7 @@ dependencies = [
  "ai-pow-zk",
  "anyhow",
  "base64",
+ "bincode 1.3.3",
  "blake3",
  "clap",
  "futures",
@@ -101,7 +102,7 @@ dependencies = [
 name = "ai-pow-zk"
 version = "0.1.0-experimental"
 dependencies = [
- "bincode",
+ "bincode 2.0.1",
  "blake3",
  "hashbrown 0.15.5",
  "nockchain-math",
@@ -1518,6 +1519,15 @@ checksum = "230c5f1ca6a325a32553f8640d31ac9b49f2411e901e427570154868b46da4f7"
 
 [[package]]
 name = "bincode"
+version = "1.3.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b1f45e9417d87227c7a56d22e471c6206462cba514c7590c09aff4cf6d1ddcad"
+dependencies = [
+ "serde",
+]
+
+[[package]]
+name = "bincode"
 version = "2.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "36eaf5d7b090263e8150820482d5d93cd964a81e4019913c972f4edcc6edb740"
@@ -1694,7 +1704,7 @@ dependencies = [
  "anyhow",
  "async-trait",
  "backon",
- "bincode",
+ "bincode 2.0.1",
  "blake3",
  "bs58",
  "chrono",
@@ -1948,7 +1958,7 @@ checksum = "613afe47fcd5fac7ccf1db93babcb082c5994d996f20b8b159f2ad1658eb5724"
 name = "chaff"
 version = "0.1.0"
 dependencies = [
- "bincode",
+ "bincode 2.0.1",
  "blake3",
  "bytes",
  "criterion",
@@ -4061,7 +4071,7 @@ dependencies = [
 name = "hoonc"
 version = "0.2.0"
 dependencies = [
- "bincode",
+ "bincode 2.0.1",
  "blake3",
  "bytes",
  "chaff",
@@ -5658,7 +5668,7 @@ dependencies = [
  "async-trait",
  "axum",
  "axum-server",
- "bincode",
+ "bincode 2.0.1",
  "bitvec",
  "blake3",
  "byteorder",
@@ -5717,7 +5727,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "async-trait",
- "bincode",
+ "bincode 2.0.1",
  "bytes",
  "dashmap",
  "futures",
@@ -6026,7 +6036,7 @@ name = "nockvm"
 version = "0.1.0"
 dependencies = [
  "autotools",
- "bincode",
+ "bincode 2.0.1",
  "bitvec",
  "bytes",
  "cc",

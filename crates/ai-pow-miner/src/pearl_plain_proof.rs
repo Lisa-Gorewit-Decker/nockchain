@@ -337,8 +337,68 @@ mod tests {
     };
     use ai_pow::synth::synth_matrices;
     use base64::Engine as _;
+    use serde::Serialize;
 
     use super::*;
+
+    #[derive(Serialize)]
+    struct SerdePlainProof {
+        m: usize,
+        n: usize,
+        k: usize,
+        noise_rank: usize,
+        a: SerdeMatrixMerkleProof,
+        bt: SerdeMatrixMerkleProof,
+    }
+
+    #[derive(Serialize)]
+    struct SerdeMatrixMerkleProof {
+        proof: SerdeMerkleProof,
+        row_indices: Vec<usize>,
+    }
+
+    #[derive(Serialize)]
+    struct SerdeMerkleProof {
+        leaf_data: Vec<Vec<u8>>,
+        leaf_indices: Vec<usize>,
+        total_leaves: usize,
+        root: [u8; 32],
+        siblings: Vec<[u8; 32]>,
+    }
+
+    impl From<&PearlPlainProof> for SerdePlainProof {
+        fn from(value: &PearlPlainProof) -> Self {
+            Self {
+                m: value.m,
+                n: value.n,
+                k: value.k,
+                noise_rank: value.noise_rank,
+                a: SerdeMatrixMerkleProof::from(&value.a),
+                bt: SerdeMatrixMerkleProof::from(&value.bt),
+            }
+        }
+    }
+
+    impl From<&PearlMatrixMerkleProof> for SerdeMatrixMerkleProof {
+        fn from(value: &PearlMatrixMerkleProof) -> Self {
+            Self {
+                proof: SerdeMerkleProof::from(&value.proof),
+                row_indices: value.row_indices.clone(),
+            }
+        }
+    }
+
+    impl From<&PearlMerkleProof> for SerdeMerkleProof {
+        fn from(value: &PearlMerkleProof) -> Self {
+            Self {
+                leaf_data: value.leaf_data.iter().map(|leaf| leaf.to_vec()).collect(),
+                leaf_indices: value.leaf_indices.clone(),
+                total_leaves: value.total_leaves,
+                root: value.root,
+                siblings: value.siblings.clone(),
+            }
+        }
+    }
 
     fn test_config() -> PearlMiningConfig {
         PearlMiningConfig {
@@ -426,6 +486,38 @@ mod tests {
             raw
         );
         assert!(raw.len() > 2 * CHUNK_LEN);
+    }
+
+    #[test]
+    fn pearl_plain_proof_manual_bytes_match_bincode1_serde_layout() {
+        let params = test_params();
+        let config = test_config();
+        let (a, b) = synth_matrices(b"pearl-plain-proof-bincode1", &params);
+        let attempt = evaluate_pearl_merge_ticket_attempt(
+            &test_header(),
+            &config,
+            &params,
+            0,
+            0,
+            &a,
+            &b,
+            &[0xffu8; 32],
+            16,
+            test_aux(),
+        )
+        .expect("evaluate Pearl ticket");
+        let proof =
+            PearlPlainProof::from_attempt(&params, &attempt, &a, &b).expect("build plain proof");
+
+        let mut manual = Vec::new();
+        proof.encode_bincode1(&mut manual).expect("manual encode");
+        let serde_shape = SerdePlainProof::from(&proof);
+        let bincode = bincode1::serialize(&serde_shape).expect("bincode1 serialize");
+
+        assert_eq!(
+            manual, bincode,
+            "manual Pearl PlainProof encoder must match Pearl's bincode 1 serde layout"
+        );
     }
 
     #[test]
