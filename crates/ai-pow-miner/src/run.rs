@@ -1661,6 +1661,49 @@ mod tests {
     }
 
     #[test]
+    fn build_ai_pow_pearl_merge_certificate_poke_rejects_stale_aux_inclusion() {
+        let params = pearl_test_params();
+        let (a, b) = synth_matrices(b"pearl-run-ticket-poke-stale-aux", &params);
+        let aux = pearl_test_aux();
+        let (header, _) = pearl_test_aux_inclusion(&aux.commitment().unwrap());
+        let attempt = evaluate_pearl_merge_ticket_attempt(
+            &header,
+            &pearl_test_config(),
+            &params,
+            0,
+            0,
+            &a,
+            &b,
+            &[0xff; 32],
+            16,
+            aux,
+        )
+        .expect("evaluate Pearl ticket");
+        let parts =
+            pearl_merge_recursive_certificate_parts_from_ticket(&attempt, &a, &b, 16).unwrap();
+        let proof = PearlMergeCertificateProof {
+            zk_params: parts.zk_params,
+            found_idx: parts.found_idx,
+            commitments: parts.commitments,
+            public_inputs: parts.public_inputs,
+            trace_height: parts.trace_height,
+            certificate: AiProofNode::Unit,
+        };
+        let (_, stale_aux_inclusion) = pearl_test_aux_inclusion(&[0x99; 32]);
+
+        let err = build_ai_pow_pearl_merge_certificate_poke_from_ticket_proof(
+            &attempt, &stale_aux_inclusion, &a, &b, 16, &proof,
+        )
+        .expect_err("stale aux inclusion must not be submitted");
+        assert!(
+            err.to_string().contains(
+                "Pearl aux commitment tag is not present in the txid-committed coinbase script"
+            ),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
     fn pearl_ticket_loop_output_builds_canonical_ai_pow_poke() {
         let params = pearl_test_params();
         let (a, b) = synth_matrices(b"pearl-run-loop-to-poke", &params);
