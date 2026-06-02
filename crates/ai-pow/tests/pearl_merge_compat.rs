@@ -12,12 +12,12 @@ use ai_pow::pearl_compat::{
     verify_pearl_merge_public_statement_bytes_with_aux_inclusion, verify_pearl_pattern_ticket,
     PearlAttempt, PearlAuxInclusionProof, PearlCompatError, PearlIncompleteBlockHeader,
     PearlMergePublicStatement, PearlMiningConfig, PearlNockchainAux, PearlPeriodicPattern,
-    PearlPublicProofParams, PEARL_AUX_INCLUSION_MAX_MERKLE_BRANCH,
-    PEARL_INCOMPLETE_BLOCK_HEADER_SIZE, PEARL_MERGE_PUBLIC_STATEMENT_MAGIC,
-    PEARL_MINING_CONFIG_RESERVED_SIZE, PEARL_MINING_CONFIG_SIZE, PEARL_MMA_INT7XINT7_TO_INT32,
-    PEARL_NOCKCHAIN_AUX_CHAIN_ID_MAX, PEARL_NOCKCHAIN_AUX_COMMITMENT_TAG,
-    PEARL_NOCKCHAIN_AUX_DOMAIN, PEARL_NOCKCHAIN_AUX_EXTRA_MAX, PEARL_NOCKCHAIN_AUX_MAGIC,
-    PEARL_PUBLIC_PROOF_PARAMS_SIZE,
+    PearlPublicProofParams, PEARL_AUX_INCLUSION_MAX_COINBASE_TX_BYTES,
+    PEARL_AUX_INCLUSION_MAX_MERKLE_BRANCH, PEARL_INCOMPLETE_BLOCK_HEADER_SIZE,
+    PEARL_MERGE_PUBLIC_STATEMENT_MAGIC, PEARL_MINING_CONFIG_RESERVED_SIZE,
+    PEARL_MINING_CONFIG_SIZE, PEARL_MMA_INT7XINT7_TO_INT32, PEARL_NOCKCHAIN_AUX_CHAIN_ID_MAX,
+    PEARL_NOCKCHAIN_AUX_COMMITMENT_TAG, PEARL_NOCKCHAIN_AUX_DOMAIN, PEARL_NOCKCHAIN_AUX_EXTRA_MAX,
+    PEARL_NOCKCHAIN_AUX_MAGIC, PEARL_PUBLIC_PROOF_PARAMS_SIZE,
 };
 use ai_pow::prover::{params_tag, BlockContext};
 use ai_pow::synth::synth_matrices;
@@ -295,6 +295,30 @@ fn pearl_aux_inclusion_rejects_oversized_branch_before_hashing() {
         verify_pearl_aux_inclusion(&header(), &aux_commitment, &proof),
         Err(PearlCompatError::PearlAuxMerkleBranchTooDeep(
             PEARL_AUX_INCLUSION_MAX_MERKLE_BRANCH + 1
+        ))
+    );
+}
+
+#[test]
+fn pearl_aux_inclusion_rejects_empty_or_oversized_coinbase_before_parsing() {
+    let aux_commitment = [0x42; 32];
+    let empty = PearlAuxInclusionProof {
+        coinbase_tx: Vec::new(),
+        merkle_branch: vec![],
+    };
+    assert_eq!(
+        verify_pearl_aux_inclusion(&header(), &aux_commitment, &empty),
+        Err(PearlCompatError::PearlAuxCoinbaseTxEmpty)
+    );
+
+    let oversized = PearlAuxInclusionProof {
+        coinbase_tx: vec![0u8; PEARL_AUX_INCLUSION_MAX_COINBASE_TX_BYTES + 1],
+        merkle_branch: vec![],
+    };
+    assert_eq!(
+        verify_pearl_aux_inclusion(&header(), &aux_commitment, &oversized),
+        Err(PearlCompatError::PearlAuxCoinbaseTxTooLarge(
+            PEARL_AUX_INCLUSION_MAX_COINBASE_TX_BYTES + 1
         ))
     );
 }
