@@ -22,7 +22,8 @@ use ai_pow::pearl_compat::{
 #[cfg(test)]
 use ai_pow::pearl_compat::{PEARL_NOCKCHAIN_AUX_CHAIN_ID_MAX, PEARL_NOCKCHAIN_AUX_EXTRA_MAX};
 use ai_pow::zk_bridge::{
-    expected_layer0_rows, verify_ai_pow_full_matmul_production_statement, zk_params_from_matmul,
+    expected_layer0_rows, validate_canonical_recursive_certificate_params,
+    verify_ai_pow_full_matmul_production_statement, zk_params_from_matmul,
     AiPowRecursiveCertificateRun, BridgeError, ZkPublicCommitments,
 };
 use ai_pow_zk::{CompositePublicInputs, ZkParams};
@@ -740,6 +741,8 @@ pub fn pearl_merge_recursive_certificate_parts_from_ticket(
     };
     params
         .validate_prod_envelope()
+        .map_err(|_| CertificateNounError::PearlMergeUnsupportedTileShape)?;
+    validate_canonical_recursive_certificate_params(&params)
         .map_err(|_| CertificateNounError::PearlMergeUnsupportedTileShape)?;
     let trace_height = expected_layer0_rows(&params).required_trace_len();
 
@@ -4017,9 +4020,9 @@ mod tests {
 
     fn pearl_test_params() -> MatmulParams {
         MatmulParams {
-            m: 128,
+            m: 8,
             k: 1024,
-            n: 128,
+            n: 8,
             noise_rank: 64,
             tile: 8,
             spot_checks: 1,
@@ -4781,8 +4784,34 @@ mod tests {
     }
 
     #[test]
+    fn pearl_merge_ticket_artifact_builder_rejects_multi_tile_recursive_claim() {
+        let params = MatmulParams {
+            m: 16,
+            ..pearl_test_params()
+        };
+        let aux = pearl_test_aux();
+        let (header, _) = pearl_test_aux_inclusion(&aux.commitment().unwrap());
+        let config = pearl_test_config();
+        let (a, b) = synth_matrices(b"pearl-ticket-multi-tile-artifact", &params);
+        let attempt = evaluate_pearl_merge_ticket_attempt(
+            &header, &config, &params, 0, 0, &a, &b, &[0xff; 32], 16, aux,
+        )
+        .expect("evaluate multi-tile Pearl merge ticket attempt");
+        assert!(params.num_tiles() > 1);
+
+        assert!(matches!(
+            pearl_merge_recursive_certificate_parts_from_ticket(&attempt, &a, &b, 16),
+            Err(CertificateNounError::PearlMergeUnsupportedTileShape)
+        ));
+    }
+
+    #[test]
     fn pearl_merge_ticket_artifact_builder_rejects_unsupported_noncontiguous_ticket() {
-        let params = pearl_test_params();
+        let params = MatmulParams {
+            m: 128,
+            n: 128,
+            ..pearl_test_params()
+        };
         let header = pearl_test_header();
         let config = PearlMiningConfig {
             rows_pattern: pearl_noncontiguous_test_pattern(),
