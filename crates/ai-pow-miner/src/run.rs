@@ -747,7 +747,7 @@ fn expect_ai_pow_candidate_version(candidate: &MiningCandidate) -> Result<(), St
 
 struct PearlMergeCandidateJob {
     header: PearlIncompleteBlockHeader,
-    gateway_mining_job: Option<PearlGatewayResolvedMiningJob>,
+    gateway_mining_job: PearlGatewayResolvedMiningJob,
     aux_inclusion: PearlAuxInclusionProof,
     target: DifficultyTarget,
     aux: PearlNockchainAux,
@@ -755,7 +755,7 @@ struct PearlMergeCandidateJob {
 
 struct PearlMergeMinedSubmission {
     ticket: PearlMergeMinedTicket,
-    gateway_mining_job: Option<PearlGatewayResolvedMiningJob>,
+    gateway_mining_job: PearlGatewayResolvedMiningJob,
     aux_inclusion: PearlAuxInclusionProof,
 }
 
@@ -811,7 +811,11 @@ fn derive_pearl_merge_job_inputs_from_nockchain(
                 .map_err(|e| format!("build Pearl aux inclusion: {e}"))?;
         return Ok(PearlMergeCandidateJob {
             header,
-            gateway_mining_job: None,
+            gateway_mining_job: PearlGatewayResolvedMiningJob {
+                header,
+                target: serde_json::Value::from(0u64),
+                aux_inclusion: None,
+            },
             aux_inclusion,
             target: candidate.target,
             aux,
@@ -833,7 +837,7 @@ fn derive_pearl_merge_job_inputs_from_nockchain(
                 );
             }
         };
-        (header, Some(job), aux_inclusion)
+        (header, job, aux_inclusion)
     };
     Ok(PearlMergeCandidateJob {
         header,
@@ -1343,11 +1347,7 @@ fn submit_pearl_solution_to_gateway(
     }
     let gateway = &pearl_cfg.gateway;
     let mined_header = mined.ticket.attempt.public_params.block_header;
-    let Some(gateway_job) = mined.gateway_mining_job.as_ref() else {
-        return Err(
-            "Pearl Gateway submission requested without a Gateway mining-job header".to_string(),
-        );
-    };
+    let gateway_job = &mined.gateway_mining_job;
     if gateway_job.header != mined_header {
         return Err(
             "Pearl Gateway mining job header does not match the aux-bearing mined header; \
@@ -2043,11 +2043,11 @@ mod tests {
                 nockchain_target_hit: false,
                 stats: crate::MiningStats::default(),
             },
-            gateway_mining_job: Some(PearlGatewayResolvedMiningJob {
+            gateway_mining_job: PearlGatewayResolvedMiningJob {
                 header: header_template,
                 target: serde_json::Value::from(123_456u64),
                 aux_inclusion: None,
-            }),
+            },
             aux_inclusion,
         };
 
@@ -2346,10 +2346,7 @@ mod tests {
         gateway.join().expect("gateway fixture exited");
 
         assert_eq!(job.header, gateway_header);
-        assert_eq!(
-            job.gateway_mining_job.as_ref().expect("gateway job").header,
-            gateway_header
-        );
+        assert_eq!(job.gateway_mining_job.header, gateway_header);
         verify_pearl_aux_inclusion(&job.header, &aux_commitment, &job.aux_inclusion)
             .expect("Gateway-returned aux inclusion should verify");
         assert_eq!(job.aux_inclusion.coinbase_tx, coinbase_tx);
